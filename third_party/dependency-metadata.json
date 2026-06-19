@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "npmLicenseFiles": {
+    "html-parse-stringify@3.0.1": "third_party/licenses/html-parse-stringify-3.0.1-MIT.txt"
+  },
+  "vendoredAssets": [
+    {
+      "name": "@fontsource/noto-sans-sc",
+      "version": "5.3.0",
+      "path": "ui/src/assets/fonts/noto-sans-sc-500.woff2",
+      "sourcePath": "package/files/noto-sans-sc-chinese-simplified-500-normal.woff2",
+      "downloadLocation": "https://registry.npmjs.org/@fontsource/noto-sans-sc/-/noto-sans-sc-5.3.0.tgz",
+      "sha256": "885f52ca6a25fddde7641eaf9cf6d6fd9e8f1a454f99f77f0f1be1be0c6470a5",
+      "license": "OFL-1.1",
+      "licenseFile": "third_party/licenses/noto-sans-sc-OFL-1.1.txt"
+    }
+  ]
+}

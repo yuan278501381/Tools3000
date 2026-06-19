@@ -1,0 +1,195 @@
+<div align="center">
+
+<img src="resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
+
+# Tools3000
+
+**Suite de productividad nativa todo-en-uno y ultraligera para Windows**
+
+[简体中文](README.md) · [繁體中文](README.zh-TW.md) · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · **Español**
+
+[![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
+[![Stars](https://img.shields.io/github/stars/yuan278501381/Tools3000?style=flat-square&color=F59E0B)](https://github.com/yuan278501381/Tools3000/stargazers)
+[![Downloads](https://img.shields.io/github/downloads/yuan278501381/Tools3000/total?style=flat-square&color=0EA5E9)](https://github.com/yuan278501381/Tools3000/releases)
+[![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20%2F%20Server-0F172A?style=flat-square)](#descarga-e-instalación)
+[![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#descarga-e-instalación)
+[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
+
+**[Descargar última versión](#descarga-e-instalación)** · [Por qué lo creé](#por-qué-creé-tools3000) · [Qué reemplaza](#qué-reemplaza-tools3000) · [Vista general](#vista-general) · [Seguridad y verificación](#verificación-de-seguridad-y-confianza) · [Demostraciones](#demostraciones) · [Contribuir](#comentarios-y-cocreación) · [Guía para desarrolladores](docs/DEVELOPER.md)
+
+</div>
+
+<br />
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/search_demo.webp" alt="Búsqueda instantánea de archivos y vista previa con Espacio" width="100%" /><br />
+      <sub><b>Búsqueda Instantánea y QuickLook</b> · Encuentra archivos en milisegundos y previsualízalos con Espacio</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/ocr_live_text_demo.webp" alt="OCR sin conexión de alta precisión, selección y edición directa" width="100%" /><br />
+      <sub><b>OCR Sin Conexión de Alta Precisión</b> · 100% local; arrastra para copiar, subraya con línea ondulada o edita en el sitio</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/scroll_capture_demo.webp" alt="Captura con desplazamiento automático y recorte no destructivo" width="100%" /><br />
+      <sub><b>Captura con Desplazamiento</b> · Unión automática con vista previa en vivo y recorte no destructivo</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/screen_recording_demo.webp" alt="Grabación de pantalla a 60 FPS y Estudio con zoom automático" width="100%" /><br />
+      <sub><b>Grabación 60 FPS y Estudio Auto-Zoom</b> · Zoom inteligente en clics y exportación a MP4, GIF y WebP animado</sub>
+    </td>
+  </tr>
+</table>
+
+Tools3000 integra en una sola aplicación nativa para Windows las herramientas esenciales de uso diario: **búsqueda instantánea de archivos, búsqueda de contenido en documentos, captura con desplazamiento, anotación precisa de capturas, fijación en pantalla con grupos de pines, OCR sin conexión de alta precisión, grabación de pantalla a 60 FPS con Estudio de zoom automático (exportación a MP4, GIF optimizado para mensajería/WeChat y WebP animado) y gestos globales de ratón**. Consume apenas una docena de MB de RAM en reposo, funciona 100% sin conexión y es compatible tanto con PCs personales (`x64` y `ARM64`) como con entornos Windows Server multiusuario concurrentes.
+
+---
+
+## Por qué creé Tools3000
+
+Llevo más de diez años usando **Everything** a diario. En capturas de pantalla pasé de **FastStone Capture** a **Snipaste**, y luego me cambié a **PixPin** por la captura con desplazamiento, el efecto lupa y el OCR; en gestos de ratón utilicé **WGestures** y **WGestures 2**, además de probar muchos grabadores de pantalla — a mitad de camino incluso probé Microsoft **PowerToys**, pero seguían faltando varias piezas clave de mi día a día y acabé de nuevo con varias utilidades residentes.
+
+Un día, mirando la fila de iconos acumulados en la bandeja del sistema de Windows, pensé: **qué bien sería unir todo esto en una sola aplicación.** A eso se sumaban dos molestias cotidianas — el OCR de PixPin seguía por detrás de WeChat en precisión y velocidad, y WGestures empezó a dejar un pequeño cuadro de texto atascado en pantalla que solo desaparecía al reiniciar el programa. Aprovechando la llegada de la IA, decidí crear esta suite todo-en-uno por mi cuenta: **Tools3000**.
+
+Para ser totalmente sincero con quienes lo prueben: llevo **4 meses usándolo a diario**, añadiendo funciones de forma gradual y corrigiendo fallos sobre la marcha. Al principio mantenía las apps anteriores abiertas por si algo fallaba y volvía a ellas mientras lo arreglaba; **hoy mi bandeja del sistema por fin está limpia, con Tools3000 como única herramienta residente.**
+
+Por supuesto, los entornos reales de Windows son muy complejos y seguro aparecerán nuevos casos límite. En la era de la IA podemos mejorar el proyecto juntos con mucha más agilidad — tanto si quieres **[reportar un problema en GitHub Issues](https://github.com/yuan278501381/Tools3000/issues)** como **cocrear mediante Pull Requests**, toda ayuda es bienvenida.
+
+---
+
+## Qué reemplaza Tools3000
+
+Cada utilidad especializada destaca en flujos muy concretos. Tools3000 cubre más del 90% de las tareas diarias en **una sola app nativa, gratuita y GPL-3.0**, reconociendo con honestidad dónde las herramientas dedicadas siguen brillando:
+
+| Utilidad Clásica | Flujos cotidianos cubiertos por Tools3000 | Cuándo conviene mantener la herramienta dedicada |
+| :--- | :--- | :--- |
+| **Everything** | `Alt + Space` para búsqueda NTFS instantánea por nombre y `content:` dentro de documentos, arrancando bajo demanda | Si necesitas servidores HTTP/ETP, indexación de propiedades EXIF/multimedia o el ecosistema CLI `es.exe` |
+| **QuickLook** | Pulsa `Space` en los resultados para previsualizar imágenes, Office, PDF, código, CAD, PSD y 3D al instante | Si buscas vista previa global con Espacio directo en el Explorador de Windows o plugins `.qlplugin` de terceros |
+| **Snipaste / PixPin** | `F1` captura sin parpadeos, lupa discontinua, captura con desplazamiento, `F3` grupos de pines y OCR local con edición directa | Si dependes del ajuste extremo a controles GUI heredados o flujos CLI personalizados |
+| **WGestures / StrokesPlus** | Gestos con botón derecho, disparo inmediato, volumen en bordes, esquinas activas, pausa en juegos y scripts Lua | Si empleas gestos con múltiples botones simultáneos, condiciones complejas de ventana o macros históricos |
+| **Grabadores (ej. ShareX)** | 60 FPS, teclas en pantalla, Estudio con zoom automático y audio, exportación a MP4, GIF y WebP | Si necesitas subida automática a 80+ nubes/S3/FTP/Webhook o pipelines FFmpeg muy personalizados |
+
+---
+
+## Vista general
+
+<p align="center">
+  <img src="docs/images/es-ES/feature_bento_overview.png" alt="Resumen de las ocho capacidades principales de Tools3000" width="100%" />
+</p>
+
+---
+
+## Descarga e instalación
+
+### Opción 1: Gestores de paquetes (Recomendado)
+
+- **Scoop (Disponible ahora — modo portátil real con configuración persistente en `data/`)**:
+
+```powershell
+scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000
+scoop install tools3000/tools3000
+```
+
+- **Winget (Manifiestos oficiales incluidos)**: los manifiestos de `Yy1.Tools3000` en [`packaging/winget/`](packaging/winget/) se actualizan y validan con `winget validate` en cada lanzamiento. Una vez integrado en `microsoft/winget-pkgs`, instala con `winget install Yy1.Tools3000` (validación local: `winget install -m packaging/winget`).
+
+### Opción 2: Descarga directa desde GitHub Releases
+
+Obtén la última versión en **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases/latest)**:
+
+- **Instalador estándar (`Tools3000-Setup.exe`)** — Recomendado para el día a día, con componentes opcionales, inicio automático y actualizaciones fluidas sobre la instalación existente.
+- **Archivo portátil (`Tools3000-Portable-x64.zip`)** — Extrae y ejecuta directamente guardando toda la configuración en la misma carpeta.
+- **Sumas de verificación (`SHA256SUMS.txt`)** — Hashes SHA-256 para comprobar la integridad de cada artefacto publicado.
+
+> **Requisitos del sistema**: Windows 10 (1809+) / Windows 11 / Windows Server 2019–2025, con soporte nativo en código y compilación para `x64` y `ARM64` (GitHub Releases ofrece actualmente instalador y versión portátil precompilados para `x64`; en equipos ARM64 se puede compilar nativamente siguiendo la [Guía para desarrolladores](docs/DEVELOPER.md) o ejecutar la versión `x64`), requiere Microsoft Edge WebView2 Runtime integrado. La interfaz de la aplicación admite de forma nativa 8 idiomas (incluido español) y sigue el idioma del sistema de forma predeterminada.
+
+### Verificación de seguridad y confianza
+
+Transparencia total sin cajas negras (detalles completos en **[SECURITY.md](SECURITY.md)**):
+
+1. **Verificación SHA-256**: comprueba el archivo descargado frente a `SHA256SUMS.txt` en PowerShell:
+   ```powershell
+   Get-FileHash .\Tools3000-Setup.exe -Algorithm SHA256
+   ```
+2. **Inspección pública en VirusTotal**: introduce el SHA-256 en **[VirusTotal](https://www.virustotal.com/)** (o usa los enlaces directos incluidos en las notas de los próximos lanzamientos) para consultar 70+ motores de seguridad.
+3. **Aviso de Windows Defender SmartScreen**: mientras un proyecto independiente de código abierto no cuente con firma comercial EV/pública de confianza (SignPath / Trusted Signing en trámite) o en versiones recién publicadas, Windows puede mostrar «Editor desconocido». Tras verificar SHA-256 y VirusTotal, haz clic en **Más información -> Ejecutar de todas formas**, o compila desde el código fuente con la **[Guía para desarrolladores](docs/DEVELOPER.md)**.
+4. **SPDX SBOM integrado**: tanto el instalador como el archivo portátil incluyen `SBOM.spdx.json` y `THIRD_PARTY_NOTICES.txt`.
+
+---
+
+## Demostraciones
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/content_search_demo.webp" alt="Búsqueda en contenido de documentos con copia en un clic" width="100%" /><br />
+      <sub><b>Búsqueda de Contenido</b> · Busca dentro de PDF, Word, Excel y código fuente con copia de línea en un clic</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/capture_markup_demo.webp" alt="Anotación precisa con lupa óptica discontinua y mosaico" width="100%" /><br />
+      <sub><b>Anotación Precisa</b> · Congelado sin parpadeos, lupa óptica discontinua, mosaico de privacidad y pasos numerados</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/pin_groups_demo.webp" alt="Pines en pantalla con filtrado por grupos y mosaico automático" width="100%" /><br />
+      <sub><b>Pines en Pantalla y Grupos</b> · Fija referencias arriba (F3), filtra por color de grupo y ordena en cuadrícula en un clic</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/mouse_gesture_demo.webp" alt="Gestos globales de ratón y volumen con rueda en el borde" width="100%" /><br />
+      <sub><b>Gestos Globales de Ratón</b> · Arrastra con clic derecho para cerrar pestañas, disparo instantáneo y volumen en el borde</sub>
+    </td>
+  </tr>
+</table>
+
+| Módulo | Qué ofrece |
+| :--- | :--- |
+| **Búsqueda Instantánea de Archivos** | Pulsa `Alt + Space` para buscar entre millones de archivos en milisegundos; pulsa `Space` para previsualizar imágenes, Office, PDF, código, CAD, PSD y modelos 3D sin abrir aplicaciones pesadas. |
+| **Búsqueda de Contenido** | Usa `content:` para buscar directamente dentro de Word, Excel, PDF, PowerPoint, CAD y código fuente con fragmentos resaltados y copia de línea en un clic. |
+| **Captura con Desplazamiento** | Une automáticamente páginas web largas, chats y documentos con vista previa lateral en tiempo real, recorte superior/inferior no destructivo y anotación directa sobre la imagen larga. |
+| **Anotación Precisa** | `F1` congela la pantalla sin destellos negros y se ajusta automáticamente a ventanas y controles; incluye selector de color por píxel, lupa óptica discontinua, 6 tipos de flecha, numeración autoajustable, mosaico y marcos. |
+| **Pines en Pantalla y Grupos** | Fija capturas o contenido del portapapeles siempre encima (`F3`) con zoom por rueda, opacidad y paso de clics; organízalos en grupos de color, alterna visibilidad desde la barra superior o alinéalos en cuadrícula en un clic. |
+| **OCR Sin Conexión de Alta Precisión** | Reconocimiento 100% local con alta precisión en código, JSON y diseños densos: selecciona y copia directamente sobre imágenes fijadas, subraya con línea ondulada, resalta, edita texto en el sitio y extrae tablas o códigos QR. |
+| **Grabación 60 FPS y Estudio** | Graba a 60 FPS con superposición de teclas y clics y pasa al instante al Estudio: zoom automático inteligente en clics, fondos seleccionados, edición por forma de onda y exportación a **MP4**, **GIF listo para mensajería/WeChat** y **WebP animado**. |
+| **Gestos Globales de Ratón** | Mantén el botón derecho y desliza para cambiar pestañas, retroceder o cerrar ventanas; admite ejecución instantánea, control de volumen en el borde de la pantalla, reglas por aplicación y pausa automática en juegos a pantalla completa. |
+| **Presentación y Escritorio Remoto** | Visualización limpia de teclas y foco de cursor con doble toque en `Ctrl`; barra de acceso rápido en los cuadros Abrir/Guardar de Windows; paso directo de atajos en mstsc, RustDesk, ToDesk y AnyDesk con liberación de teclas bloqueadas. |
+
+---
+
+## Atajos predeterminados
+
+Todos los atajos se pueden personalizar desde Configuración con detección de conflictos en tiempo real:
+
+| Atajo | Acción |
+| :--- | :--- |
+| `Alt + Space` | Mostrar / ocultar búsqueda instantánea (`Space` sobre un resultado abre QuickLook) |
+| `F1` | Captura de región y anotación |
+| `F3` | Fijar imagen o texto del portapapeles siempre encima |
+| Doble toque en `Ctrl` | Activar / desactivar foco del cursor |
+| `Ctrl + Alt + Backspace` | Liberar teclas modificadoras bloqueadas en escritorio remoto (o doble toque en `Ctrl` derecho) |
+
+---
+
+## Privacidad y principios
+
+- **100% Sin Conexión**: La indexación de archivos, la búsqueda de texto completo, el OCR, las anotaciones y las estadísticas funcionan exclusivamente en tu equipo, incluso sin internet.
+- **Cero Telemetría, Sin Cuentas**: Sin anuncios, sin inicio de sesión y sin subir archivos ni pulsaciones a servidores externos.
+- **Ligero por Defecto**: Cada módulo se puede activar o desactivar de forma independiente, y el servicio de búsqueda solo se inicia bajo demanda para mantener un consumo mínimo en reposo.
+
+---
+
+## Comentarios y cocreación
+
+- **Reportar un error**: utiliza la **[plantilla de Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
+- **Proponer mejoras**: abre un **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** o conversa en **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**.
+- **Cocrear código**: los Pull Requests son bienvenidos — consulta la **[Guía para desarrolladores](docs/DEVELOPER.md)** y la **[Guía de empaquetado](packaging/README.md)**.
+
+---
+
+## Documentación y licencia
+
+- **Desarrollo y Seguridad**: instrucciones de compilación en la **[Guía para desarrolladores](docs/DEVELOPER.md)**, política de seguridad en **[SECURITY.md](SECURITY.md)** e historial en **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**.
+- **Licencia**: Publicado bajo la **[GNU GPL v3.0](LICENSE)** (con [excepción de enlace Windows / WebView2](LICENSE-EXCEPTION.md)).
+- **Derechos de autor**: `Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)

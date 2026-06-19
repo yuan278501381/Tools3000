@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 2,
+  "abiVersion": 1,
+  "id": "keycast",
+  "name": "Keycast",
+  "version": "@PROJECT_VERSION@",
+  "minimumHostVersion": "1.0.0",
+  "entryPoint": "CreatePlugin",
+  "executionModel": "trusted-native-in-process",
+  "capabilities": ["keycast"],
+  "permissions": ["global-input-hook", "overlay-window"]
+}

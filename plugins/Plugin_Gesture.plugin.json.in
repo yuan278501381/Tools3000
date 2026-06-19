@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 2,
+  "abiVersion": 1,
+  "id": "gesture",
+  "name": "Gesture",
+  "version": "@PROJECT_VERSION@",
+  "minimumHostVersion": "1.0.0",
+  "entryPoint": "CreatePlugin",
+  "executionModel": "trusted-native-in-process",
+  "capabilities": ["gestures", "hot-corners", "radial-menu"],
+  "permissions": ["global-input-hook", "launch-process"]
+}

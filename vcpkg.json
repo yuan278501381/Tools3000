@@ -1,0 +1,23 @@
+{
+  "name": "tools3000",
+  "version-string": "dev",
+  "description": "High-performance desktop productivity toolkit",
+  "builtin-baseline": "8cdd1410ea4e2b65c7e5176e63237240460886a6",
+  "supports": "windows & (x64 | arm64)",
+  "dependencies": [
+    "spdlog",
+    "nlohmann-json",
+    "sol2",
+    "lua",
+    "fmt",
+    "opencv4",
+    {
+      "name": "ffmpeg",
+      "features": [
+        "openh264"
+      ]
+    },
+    "gtest",
+    "zlib"
+  ]
+}
