@@ -1,0 +1,12 @@
+﻿fix(core/ui): 修复因动态库加载与内置IPC未注册导致的全局性功能失效与白屏缺陷
+
+业务视角：
+- 彻底解决了设置页面的“按键统计”、“截屏工具”、“鼠标手势”等所有核心配置子面板长时间处于“加载中...”无法使用的白屏假死问题。
+- 保证了数据维度的准确性，新增并实装了对用户的历史累计按键数据统计的后端查询支持。
+- 避免了打包时因构建工具依赖丢失造成的发布版本残缺，恢复发布版本的核心功能（截图、手势、录屏等）。
+
+技术视角：
+- [Vite 侧] 引入 `type { Plugin }` 修复前端 Vite 打包类型编译失败导致的报错。
+- [前端与 IPC] 修改了 `KeyStatsPage` 结构，将无效的 `stats.getDaily` 调用替换为后端实际支持的 `stats.getHistory`，并且将无错误处理导致 Promise 挂起的隐患修正为使用 `catch` 拦截捕获异常；最后将传回的 Map 数据重新组合排序为 Array 图表数据结构。
+- [构建发布层] 修改 `deploy.ps1` 部署脚本中的提纯输出逻辑，通过原子化匹配和拷贝 `$BuildDir\bin\plugins\$Configuration`，将 `Plugin_Capture.dll` 等关键底层插件动态库成功合并打包至外层发布环境。
+- [C++ 后端 IPC] 修正了 `StatsManager.cpp` 未曾对所有数据实现累计统计的遗漏，新增 `getTotalStats()` 方法；在生命周期核心主控 `main.cpp` 的 `initializeSubsystems` 环节打入 `MessageBridge::instance().registerBuiltinHandlers()` 方法以填补漏洞，确保“性能统计”、“系统设置”等非插件级的基础 IPC 服务能挂载路由。
