@@ -1,0 +1,176 @@
+# ==============================================================================
+# 1. 编译与构建产物 (Build Outputs & Intermediate Artifacts)
+# ==============================================================================
+build/
+build-*/
+.build/
+cmake-build-*/
+out/
+bin/
+obj/
+Output/
+dist/
+deploy_dist*/
+deploy_schemes/
+deploy_symbols/
+deploy_logs/
+release_assets/
+
+# 二进制目标与中间符号 (Binary Targets & Debug Symbols)
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.obj
+*.iobj
+*.ipdb
+*.dylib
+*.so
+*.a
+
+# ==============================================================================
+# 2. CMake / MSBuild / 编译器工程缓存与配置
+# ==============================================================================
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+CMakeUserPresets.json
+CTestTestfile.cmake
+cmake_install.cmake
+Makefile
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+.vs/
+*.suo
+*.user
+*.VC.db
+*.VC.opendb
+ipch/
+
+# ==============================================================================
+# 3. 包管理器与外部依赖库 (Package Managers & SDKs)
+# ==============================================================================
+vcpkg_installed/
+.vcpkg/
+packages/
+vcpkg-packages/
+node_modules/
+ui/node_modules/
+ui/.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+
+# ==============================================================================
+# 4. 前端构建与本地运行时 (Frontend & Webpack/Vite)
+# ==============================================================================
+ui/dist/
+ui/build/
+.vite/
+.eslintcache
+*.tsbuildinfo
+ui/.env.local
+ui/.env.*.local
+*.env.local
+
+# ==============================================================================
+# 5. 测试、覆盖率与性能基线报告 (Testing, Coverage & Baselines)
+# ==============================================================================
+coverage_report/
+TestResults/
+*.profraw
+*.profdata
+*.gcno
+*.gcda
+*.trx
+test.log
+testrr.exe
+testrr.log
+
+# ==============================================================================
+# 6. 系统转储、崩溃报告与通用日志 (Dumps, Diagnostics & Logs)
+# ==============================================================================
+*.log
+logs/
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.dmp
+*.mdmp
+crash_dumps/
+crash_reports/
+
+# ==============================================================================
+# 7. IDE 与现代编辑器配置 (IDEs & Editors)
+# ==============================================================================
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.bundle
+.git.pre_clean_backup/
+*.pre_clean_backup/
+
+# ==============================================================================
+# 8. AI 辅助智能体与生成式工具痕迹 (AI Agents & LLM Workspace Artifacts)
+# ==============================================================================
+.claude/
+.codex/
+.gemini/
+.cursor/
+.aider*
+.continue/
+.agents/
+scratch/
+*commit*.py
+*commit*.ps1
+*commit*.sh
+*commit*.bat
+commit_msg*
+do_git_commit*
+rewrite_msg*
+msg_map.json
+*diff*.txt
+yyj_commits_diff.txt
+
+# ==============================================================================
+# 9. 操作系统特定缓存与隐藏文件 (OS Specific)
+# ==============================================================================
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+__pycache__/
+*.py[cod]
+
+# ==============================================================================
+# 10. 证书、私钥与敏感配置 (Security & Credentials - 零泄露红线)
+# ==============================================================================
+*.pfx
+*.p12
+*.key
+*.pem
+*.cer
+*.crt
+.env
+.env.*
+!.env.example
+docs/design/

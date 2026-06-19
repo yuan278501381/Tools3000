@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2,
+  "abiVersion": 1,
+  "id": "dialogenhancer",
+  "name": "DialogEnhancer",
+  "displayName": "文件对话框助手",
+  "version": "@PROJECT_VERSION@",
+  "minimumHostVersion": "1.0.0",
+  "entryPoint": "CreatePlugin",
+  "executionModel": "trusted-native-in-process",
+  "capabilities": ["dialog-enhancer", "path-memory", "explorer-sync"],
+  "permissions": ["win-event-hook"]
+}
