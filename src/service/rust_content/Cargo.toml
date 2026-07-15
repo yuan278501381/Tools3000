@@ -1,0 +1,16 @@
+[package]
+name = "tools3000_content_rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust SIMD-accelerated zero-allocation content search kernel for Tools3000_Service"
+license = "MIT"
+
+[lib]
+name = "tools3000_content_rs"
+crate-type = ["staticlib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
