@@ -1,0 +1,138 @@
+#pragma once
+
+#include <windows.h>
+#include <d2d1.h>
+#include <dwrite.h>
+#include <wrl/client.h>
+
+#include "core/accessibility/OverlayUiaProvider.h"
+
+#include <atomic>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace tools3000::capture {
+
+enum class ShortcutHintContext {
+    CaptureSelecting,    // 1. 未选区刚呼出阶段
+    CaptureDragging,     // 2. 拖拽选区阶段
+    CaptureSelected,     // 3. 选区已锁定/调整阶段
+    CaptureMarking,      // 4. 正在进行几何/箭头标注阶段
+    CaptureMarkingNumber,// 5. 正在进行序号标记 (可拖拽引出箭头)
+    CaptureEditingText,  // 6. 正在编辑文字/输入阶段
+    RecordSelecting,
+    ScrollCapture,
+    Recording,
+    RecordingPaused,
+};
+
+struct ShortcutHintItem {
+    std::wstring key;
+    std::wstring label;
+};
+
+/// Click-through contextual shortcut HUD anchored to the lower-left of the
+/// active monitor. Uses an adaptive Bento 2-column matrix with tactile 3D
+/// keycaps and destroys its layered window when hidden (zero idle cost).
+class ShortcutHintOverlay {
+public:
+    static ShortcutHintOverlay& instance();
+
+    void show(ShortcutHintContext context, POINT anchor = {LONG_MIN, LONG_MIN},
+              const std::vector<RECT>& avoidRects = {});
+    void updateAvoidance(const std::vector<RECT>& avoidRects);
+    void hide();
+    void shutdown() { hide(); }
+    bool isVisible() const;
+    RECT getBounds() const;
+    RECT getAnimatedWindowBounds() const;
+    bool isAnimating() const noexcept { return m_animating.load(std::memory_order_acquire); }
+    void stepAnimationForTest(float dtSeconds);
+    std::vector<ShortcutHintItem> getItemsForContext(ShortcutHintContext context) const { return itemsFor(context); }
+
+    using OwnerActiveChecker = bool (*)(ShortcutHintContext context);
+    void setOwnerActiveChecker(OwnerActiveChecker checker) { m_ownerActiveChecker = checker; }
+
+    /// 计算微晶操作提示卡片的最佳布局点位与几何避让 (供渲染与自动化测试调用)
+    static POINT computeOptimalPosition(int width, int height, const RECT& workArea, float scale,
+                                        const std::vector<RECT>& avoidRects);
+
+private:
+    struct PositionedItem {
+        ShortcutHintItem item;
+        float x = 0.0f;
+        float y = 0.0f;
+        float keyWidth = 0.0f;
+        float labelWidth = 0.0f;
+        float labelX = 0.0f;
+    };
+
+    ShortcutHintOverlay() = default;
+    ~ShortcutHintOverlay() { hide(); }
+
+    bool createWindow();
+    bool createResources(float scale);
+    bool checkOwnerActive(ShortcutHintContext context) const;
+    std::vector<ShortcutHintItem> itemsFor(ShortcutHintContext context) const;
+    std::wstring headerTitleFor(ShortcutHintContext context) const;
+    float measureText(const std::wstring& text, IDWriteTextFormat* format) const;
+    bool layout(ShortcutHintContext context, const std::vector<ShortcutHintItem>& items,
+                int workWidth, float scale, int& width, int& height);
+    void render(int retryDepth = 0);
+    void discardResources();
+    std::vector<RECT> effectiveAvoidRects() const;
+    void syncPosition();
+    void startOrSnapToTarget(POINT targetPos, bool allowAnimate);
+    void advanceAnimation(float dtSeconds);
+    std::vector<tools3000::core::accessibility::OverlayUiaAction> accessibilityActions() const;
+    static LRESULT CALLBACK wndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+
+    HWND m_hwnd = nullptr;
+    HINSTANCE m_module = nullptr;
+    ShortcutHintContext m_context = ShortcutHintContext::CaptureSelecting;
+    std::atomic<bool> m_hasContext{false};
+    bool m_observedOwnerActive = false;
+    OwnerActiveChecker m_ownerActiveChecker = nullptr;
+    RECT m_workArea{};
+    float m_scale = 1.0f;
+    int m_width = 0;
+    int m_height = 0;
+    POINT m_targetPos{0, 0};
+    float m_animX = 0.0f;
+    float m_animY = 0.0f;
+    std::atomic<bool> m_animating{false};
+    ULONGLONG m_lastAnimTick = 0;
+    mutable std::mutex m_avoidMutex;
+    std::vector<RECT> m_avoidRects;
+    POINT m_initialCursorPos{LONG_MIN, LONG_MIN};
+    POINT m_trackedCursorPos{LONG_MIN, LONG_MIN};
+    bool m_hasTrackedCursor = false;
+    std::vector<PositionedItem> m_items;
+    std::wstring m_headerTitle;
+    std::wstring m_headerBadge;
+    bool m_twoColumnLayout = false;
+    float m_columnDividerX = 0.0f;
+    float m_headerDividerY = 0.0f;
+    D2D1_RECT_F m_cardRect = {};
+
+    Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
+    Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;
+    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_renderTarget;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_keyFormat;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_labelFormat;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_headerFormat;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_badgeFormat;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_panelBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_borderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_keyBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_keyBevelBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_keyBorderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_keyTextBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_labelBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_headerBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_accentBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_sheenBrush;
+};
+
+}  // namespace tools3000::capture
