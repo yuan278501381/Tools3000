@@ -1,0 +1,540 @@
+#include "capture/ClipboardUtils.h"
+#include "capture/ScreenCapture.h"
+#include "common/AtomicFile.h"
+#include "core/logger/Logger.h"
+#include "core/utils/WinUtils.h"
+#include <shlobj.h>
+#include <shellapi.h>
+#include <vector>
+#include <filesystem>
+#include <chrono>
+#include <algorithm>
+#include <atomic>
+#include <mutex>
+
+namespace tools3000::capture {
+
+namespace {
+std::mutex s_metaMutex;
+uint32_t s_lastCopiedSeqNumber = 0;
+bool s_hasPinMeta = false;
+Tools3000PinMetadata s_lastPinMeta{};
+std::atomic<uint64_t> s_lastTempPruneTickMs{0};
+
+void pruneStaleClipboardTempFiles(const std::filesystem::path& tempDir,
+                                  const std::wstring& keepFilePath) noexcept {
+    const uint64_t nowTick = GetTickCount64();
+    uint64_t prevTick = s_lastTempPruneTickMs.load(std::memory_order_relaxed);
+    if (prevTick != 0 && (nowTick - prevTick) < 60'000ULL) {
+        return;
+    }
+    if (!s_lastTempPruneTickMs.compare_exchange_strong(prevTick, nowTick, std::memory_order_relaxed)) {
+        return;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(tempDir, ec)) return;
+
+    struct TempEntry {
+        std::filesystem::path path;
+        std::filesystem::file_time_type mtime;
+    };
+    std::vector<TempEntry> entries;
+    const auto nowFs = std::filesystem::file_time_type::clock::now();
+
+    for (std::filesystem::directory_iterator it(tempDir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const std::wstring fname = it->path().filename().wstring();
+        if (fname.rfind(L"Tools3000_", 0) != 0) continue;
+        if (fname.size() < 4 || fname.substr(fname.size() - 4) != L".png") continue;
+        if (!keepFilePath.empty() && it->path().wstring() == keepFilePath) continue;
+
+        const auto mtime = it->last_write_time(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (nowFs > mtime && (nowFs - mtime) > std::chrono::hours(24)) {
+            std::filesystem::remove(it->path(), ec);
+            ec.clear();
+            continue;
+        }
+        entries.push_back(TempEntry{it->path(), mtime});
+    }
+
+    constexpr std::size_t kMaxRetainedTempPngs = 32;
+    if (entries.size() > kMaxRetainedTempPngs) {
+        std::sort(entries.begin(), entries.end(), [](const TempEntry& a, const TempEntry& b) {
+            return a.mtime > b.mtime;
+        });
+        for (std::size_t i = kMaxRetainedTempPngs; i < entries.size(); ++i) {
+            if (nowFs > entries[i].mtime && (nowFs - entries[i].mtime) > std::chrono::minutes(2)) {
+                std::filesystem::remove(entries[i].path, ec);
+                ec.clear();
+            }
+        }
+    }
+}
+}
+
+bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
+                                         const std::wstring& preferredFilePath,
+                                         HWND ownerHwnd,
+                                         const CaptureRegion* sourceRegion,
+                                         int padX,
+                                         int padY) {
+    if (image.empty() || image.cols <= 0 || image.rows <= 0) {
+        LOG_WARN("ClipboardUtils: image buffer is empty, aborting clipboard write");
+        return false;
+    }
+
+    // 1. 剪贴板宿主窗口保障：若外部传入合法窗口则绑定，否则传入 nullptr 直接与当前任务(Current Task)绑定。
+    // 严禁创建临时窗口又在退出时 DestroyWindow，避免破坏 Windows 剪贴板底层句柄所有权。
+    HWND safeOwner = (ownerHwnd && IsWindow(ownerHwnd)) ? ownerHwnd : nullptr;
+
+    // 2. 在进入系统剪贴板全局锁之前预先完成 PNG 编码、像素色彩转换与 CF_HDROP 临时文件落盘，
+    // 将 OpenClipboard 临界区耗时从数十毫秒缩短至亚毫秒级，彻底消除剪贴板锁竞争与重复编码开销。
+    std::vector<uint8_t> pngBytes;
+    if (!cv::imencode(".png", image, pngBytes) || pngBytes.empty()) {
+        LOG_WARN("ClipboardUtils: image buffer is empty, aborting clipboard write");
+        return false;
+    }
+
+    std::wstring dropFilePath = preferredFilePath;
+    std::error_code ec;
+    if (dropFilePath.empty() || !std::filesystem::exists(dropFilePath, ec)) {
+        // 若外部未显式持久化文件，自动在应用临时目录输出高可用截图副本 (宽字符时间戳原生写盘，杜绝中文路径乱码)
+        auto tempDir = tools3000::core::WinUtils::getAppDataDirectory() / L"temp";
+        std::filesystem::create_directories(tempDir, ec);
+
+        auto now = std::chrono::system_clock::now();
+        auto in_time_t = std::chrono::system_clock::to_time_t(now);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+        std::tm tm{};
+        localtime_s(&tm, &in_time_t);
+        wchar_t timeBuf[64];
+        swprintf_s(timeBuf, L"Tools3000_%04d%02d%02d_%02d%02d%02d_%03d.png",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                  tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<int>(ms.count()));
+        auto tempFile = tempDir / timeBuf;
+
+        if (tools3000::common::atomicWriteBinaryFileWithFlush(tempFile.wstring(), pngBytes.data(), pngBytes.size())) {
+            dropFilePath = tempFile.wstring();
+        } else {
+            static std::atomic<uint32_t> s_dropFallbackSeq{1};
+            wchar_t fallbackBuf[80];
+            swprintf_s(fallbackBuf, L"Tools3000_%04d%02d%02d_%02d%02d%02d_%03d_%u.png",
+                      tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                      tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<int>(ms.count()),
+                      s_dropFallbackSeq.fetch_add(1, std::memory_order_relaxed));
+            auto fallbackFile = tempDir / fallbackBuf;
+            if (tools3000::common::atomicWriteBinaryFileWithFlush(fallbackFile.wstring(), pngBytes.data(), pngBytes.size())) {
+                dropFilePath = fallbackFile.wstring();
+            }
+        }
+        pruneStaleClipboardTempFiles(tempDir, dropFilePath);
+    }
+
+    cv::Mat bgrMat;
+    if (image.channels() == 4) {
+        // 对于带透明通道的截图 (圆角/阴影/外壳)，合并不透明纯白底消除黑边
+        cv::Mat bg(image.size(), CV_8UC3, cv::Scalar(255, 255, 255));
+        for (int y = 0; y < image.rows; ++y) {
+            const auto* srcPtr = image.ptr<cv::Vec4b>(y);
+            auto* dstPtr = bg.ptr<cv::Vec3b>(y);
+            for (int x = 0; x < image.cols; ++x) {
+                const float alpha = srcPtr[x][3] / 255.0f;
+                dstPtr[x][0] = static_cast<uint8_t>(srcPtr[x][0] * alpha + 255.0f * (1.0f - alpha));
+                dstPtr[x][1] = static_cast<uint8_t>(srcPtr[x][1] * alpha + 255.0f * (1.0f - alpha));
+                dstPtr[x][2] = static_cast<uint8_t>(srcPtr[x][2] * alpha + 255.0f * (1.0f - alpha));
+            }
+        }
+        bgrMat = bg;
+    } else {
+        bgrMat = image.isContinuous() ? image : image.clone();
+    }
+
+    cv::Mat bgraMat;
+    if (image.channels() == 4) {
+        bgraMat = image.isContinuous() ? image : image.clone();
+    } else {
+        cv::cvtColor(image, bgraMat, cv::COLOR_BGR2BGRA);
+    }
+
+    // 3. 剪贴板锁定：针对系统剪贴板监听器 (如 Win+V 剪贴板历史、微信、Office) 瞬时占用的有界退避重试 (最大约 380ms)
+    bool opened = false;
+    for (int retry = 0; retry < 20; ++retry) {
+        if (OpenClipboard(safeOwner)) {
+            opened = true;
+            break;
+        }
+        Sleep(10 + retry * 5);
+    }
+
+    if (!opened) {
+        LOG_WARN("ClipboardUtils: failed to open clipboard after 20 retries, error={}", GetLastError());
+        return false;
+    }
+
+    struct ClipboardGuard {
+        ~ClipboardGuard() {
+            CloseClipboard();
+        }
+    } clipGuard;
+
+    if (!EmptyClipboard()) {
+        LOG_WARN("ClipboardUtils: EmptyClipboard failed, error={}", GetLastError());
+        return false;
+    }
+
+    bool pngSet = false;
+    bool bmpSet = false;
+    bool dibSet = false;
+    bool dib5Set = false;
+    bool dropSet = false;
+
+    // 4. 格式 1: 写入 PNG 格式 (保留透明通道与最高画质，现代社交与协同软件首选)
+    UINT formatPng = RegisterClipboardFormatW(L"PNG");
+    if (formatPng != 0 && !pngBytes.empty()) {
+        HGLOBAL hPngGlobal = GlobalAlloc(GMEM_MOVEABLE, pngBytes.size());
+        if (hPngGlobal) {
+            void* pPngMem = GlobalLock(hPngGlobal);
+            if (pPngMem) {
+                memcpy(pPngMem, pngBytes.data(), pngBytes.size());
+                GlobalUnlock(hPngGlobal);
+                if (SetClipboardData(formatPng, hPngGlobal)) {
+                    pngSet = true;
+                } else {
+                    GlobalFree(hPngGlobal);
+                }
+            } else {
+                GlobalFree(hPngGlobal);
+            }
+        }
+    }
+
+    // 5. 格式 2 & 3: 写入标准底向上 CF_DIB (24位 BGR) 与 CF_BITMAP (HBITMAP)
+    // 优先写入 24 位白底合并 DIB：确保微信、Office Word 等 Win32 应用粘贴时作为无损图片展示，消除透明黑底失真
+    BITMAPINFOHEADER bi{};
+    bi.biSize = sizeof(BITMAPINFOHEADER);
+    bi.biWidth = image.cols;
+    bi.biHeight = image.rows; // 正数 = 规范底向上 (Bottom-Up)
+    bi.biPlanes = 1;
+    bi.biBitCount = 24;
+    bi.biCompression = BI_RGB;
+    const int rowBytes24 = image.cols * 3;
+    const int stride24 = (rowBytes24 + 3) & ~3; // 4 字节边界对齐
+    bi.biSizeImage = stride24 * image.rows;
+
+    const size_t totalSizeDib = sizeof(BITMAPINFOHEADER) + bi.biSizeImage;
+    HGLOBAL hGlobalDib = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, totalSizeDib);
+    if (hGlobalDib) {
+        auto* pMemDib = static_cast<uint8_t*>(GlobalLock(hGlobalDib));
+        if (pMemDib) {
+            memcpy(pMemDib, &bi, sizeof(bi));
+            for (int y = 0; y < bgrMat.rows; ++y) {
+                const int srcY = bgrMat.rows - 1 - y;
+                memcpy(pMemDib + sizeof(bi) + y * stride24, bgrMat.ptr(srcY), rowBytes24);
+            }
+
+            // CF_BITMAP (HBITMAP)
+            HDC screenDc = GetDC(nullptr);
+            if (screenDc) {
+                HBITMAP hBmp = CreateDIBitmap(
+                    screenDc,
+                    &bi,
+                    CBM_INIT,
+                    pMemDib + sizeof(bi),
+                    reinterpret_cast<const BITMAPINFO*>(&bi),
+                    DIB_RGB_COLORS
+                );
+                ReleaseDC(nullptr, screenDc);
+                if (hBmp) {
+                    if (SetClipboardData(CF_BITMAP, hBmp)) {
+                        bmpSet = true;
+                    } else {
+                        DeleteObject(hBmp);
+                    }
+                }
+            }
+
+            GlobalUnlock(hGlobalDib);
+            if (SetClipboardData(CF_DIB, hGlobalDib)) {
+                dibSet = true;
+            } else {
+                GlobalFree(hGlobalDib);
+            }
+        } else {
+            GlobalFree(hGlobalDib);
+        }
+    }
+
+    // 6. 格式 4: 写入 CF_DIBV5 (BITMAPV5HEADER 32位 BGRA 带 Alpha，支持现代图形软件)
+    {
+        BITMAPV5HEADER bi5{};
+        bi5.bV5Size = sizeof(BITMAPV5HEADER);
+        bi5.bV5Width = image.cols;
+        bi5.bV5Height = image.rows; // 正数 = 规范底向上 (Bottom-Up)
+        bi5.bV5Planes = 1;
+        bi5.bV5BitCount = 32;
+        bi5.bV5Compression = BI_BITFIELDS;
+        bi5.bV5RedMask   = 0x00FF0000;
+        bi5.bV5GreenMask = 0x0000FF00;
+        bi5.bV5BlueMask  = 0x000000FF;
+        bi5.bV5AlphaMask = 0xFF000000;
+        bi5.bV5CSType    = LCS_sRGB;
+        bi5.bV5Intent    = LCS_GM_IMAGES;
+
+        const int stride32 = image.cols * 4;
+        bi5.bV5SizeImage = stride32 * image.rows;
+        const size_t totalSize5 = sizeof(BITMAPV5HEADER) + bi5.bV5SizeImage;
+
+        HGLOBAL hGlobal5 = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, totalSize5);
+        if (hGlobal5) {
+            auto* pMem5 = static_cast<uint8_t*>(GlobalLock(hGlobal5));
+            if (pMem5) {
+                memcpy(pMem5, &bi5, sizeof(bi5));
+                for (int y = 0; y < bgraMat.rows; ++y) {
+                    const int srcY = bgraMat.rows - 1 - y;
+                    memcpy(pMem5 + sizeof(bi5) + y * stride32, bgraMat.ptr(srcY), stride32);
+                }
+
+                GlobalUnlock(hGlobal5);
+                if (SetClipboardData(CF_DIBV5, hGlobal5)) {
+                    dib5Set = true;
+                } else {
+                    GlobalFree(hGlobal5);
+                }
+            } else {
+                GlobalFree(hGlobal5);
+            }
+        }
+    }
+
+    // 7. 格式 5: 写入 CF_HDROP (文件拖拽句柄，赋予 Windows 桌面与资源管理器直接 Ctrl+V 粘贴 PNG 图片文件的原生能力)
+    if (!dropFilePath.empty() && std::filesystem::exists(dropFilePath, ec)) {
+        DROPFILES df{};
+        df.pFiles = sizeof(DROPFILES);
+        df.pt = {0, 0};
+        df.fNC = FALSE;
+        df.fWide = TRUE; // 采用 UTF-16 宽字符编码
+
+        const size_t pathChars = dropFilePath.length() + 1; // 包含单个终止 \0
+        const size_t stringBytes = (pathChars + 1) * sizeof(wchar_t); // 规范双 \0\0 终结
+        const size_t totalBytes = sizeof(DROPFILES) + stringBytes;
+
+        HGLOBAL hGlobalDrop = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, totalBytes);
+        if (hGlobalDrop) {
+            auto* pMemDrop = static_cast<uint8_t*>(GlobalLock(hGlobalDrop));
+            if (pMemDrop) {
+                memcpy(pMemDrop, &df, sizeof(DROPFILES));
+                memcpy(pMemDrop + sizeof(DROPFILES), dropFilePath.c_str(), pathChars * sizeof(wchar_t));
+                // GMEM_ZEROINIT 自动保障第二个 \0 结尾
+                GlobalUnlock(hGlobalDrop);
+                if (SetClipboardData(CF_HDROP, hGlobalDrop)) {
+                    dropSet = true;
+                } else {
+                    GlobalFree(hGlobalDrop);
+                }
+            } else {
+                GlobalFree(hGlobalDrop);
+            }
+        }
+    }
+
+    if (!pngSet || !bmpSet || !dibSet || !dib5Set || !dropSet) {
+        return false;
+    }
+
+    // 7. 格式 6: 写入 Tools3000_PinMetadata (原生贴图原位还原与美化外壳 padding 逆向对齐元数据)
+    UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
+    if (sourceRegion && formatPinMeta != 0) {
+        Tools3000PinMetadata meta{};
+        meta.magic = 0x54333030;
+        meta.regionX = sourceRegion->x;
+        meta.regionY = sourceRegion->y;
+        meta.regionW = sourceRegion->width;
+        meta.regionH = sourceRegion->height;
+        meta.padX = padX;
+        meta.padY = padY;
+        meta.cornerRadius = sourceRegion->cornerRadius;
+        meta.sequenceNumber = GetClipboardSequenceNumber();
+
+        HGLOBAL hGlobalMeta = GlobalAlloc(GMEM_MOVEABLE, sizeof(Tools3000PinMetadata));
+        if (hGlobalMeta) {
+            void* pMem = GlobalLock(hGlobalMeta);
+            if (pMem) {
+                memcpy(pMem, &meta, sizeof(Tools3000PinMetadata));
+                GlobalUnlock(hGlobalMeta);
+                if (!SetClipboardData(formatPinMeta, hGlobalMeta)) {
+                    GlobalFree(hGlobalMeta);
+                }
+            } else {
+                GlobalFree(hGlobalMeta);
+            }
+        }
+    }
+
+    {
+        std::lock_guard lock(s_metaMutex);
+        s_lastCopiedSeqNumber = GetClipboardSequenceNumber();
+        if (sourceRegion) {
+            s_hasPinMeta = true;
+            s_lastPinMeta.magic = 0x54333030;
+            s_lastPinMeta.regionX = sourceRegion->x;
+            s_lastPinMeta.regionY = sourceRegion->y;
+            s_lastPinMeta.regionW = sourceRegion->width;
+            s_lastPinMeta.regionH = sourceRegion->height;
+            s_lastPinMeta.padX = padX;
+            s_lastPinMeta.padY = padY;
+            s_lastPinMeta.cornerRadius = sourceRegion->cornerRadius;
+            s_lastPinMeta.sequenceNumber = s_lastCopiedSeqNumber;
+        } else {
+            s_hasPinMeta = false;
+        }
+    }
+
+    LOG_INFO("ClipboardUtils: image copied to clipboard successfully, size={}x{}, file={}",
+             image.cols, image.rows, tools3000::core::WinUtils::wstringToUtf8(dropFilePath));
+    return true;
+}
+
+cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
+    bool opened = false;
+    for (int retry = 0; retry < 25; ++retry) {
+        if (OpenClipboard(nullptr)) {
+            opened = true;
+            break;
+        }
+        Sleep(5);
+    }
+    if (!opened) {
+        return {};
+    }
+
+    struct ClipboardGuard {
+        ~ClipboardGuard() { CloseClipboard(); }
+    } guard;
+
+    if (outMeta) {
+        *outMeta = Tools3000PinMetadata{};
+        outMeta->magic = 0;
+        UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
+        if (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta)) {
+            if (HANDLE h = GetClipboardData(formatPinMeta)) {
+                if (auto* p = static_cast<const Tools3000PinMetadata*>(GlobalLock(h))) {
+                    *outMeta = *p;
+                    GlobalUnlock(h);
+                }
+            }
+        }
+        if (outMeta->magic != 0x54333030) {
+            std::lock_guard lock(s_metaMutex);
+            if (s_hasPinMeta && GetClipboardSequenceNumber() == s_lastCopiedSeqNumber) {
+                *outMeta = s_lastPinMeta;
+            }
+        }
+    }
+
+    cv::Mat result;
+
+    // 1. 优先读取 PNG 格式（保留完整透明通道与最高画质）
+    UINT formatPng = RegisterClipboardFormatW(L"PNG");
+    if (formatPng != 0 && IsClipboardFormatAvailable(formatPng)) {
+        if (HANDLE h = GetClipboardData(formatPng)) {
+            size_t size = GlobalSize(h);
+            if (size > 0) {
+                if (auto* p = static_cast<const uint8_t*>(GlobalLock(h))) {
+                    std::vector<uint8_t> buffer(p, p + size);
+                    GlobalUnlock(h);
+                    try {
+                        result = cv::imdecode(buffer, cv::IMREAD_UNCHANGED);
+                    } catch (...) {
+                        result.release();
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. 次选读取 CF_DIBV5（32位 BGRA；若为 GDI 合成的全 0 Alpha 通道则自动转为不透明 BGR）
+    if (result.empty() && IsClipboardFormatAvailable(CF_DIBV5)) {
+        if (HANDLE h = GetClipboardData(CF_DIBV5)) {
+            const size_t totalSize = GlobalSize(h);
+            if (totalSize >= sizeof(BITMAPV5HEADER)) {
+                if (auto* p5 = static_cast<const BITMAPV5HEADER*>(GlobalLock(h))) {
+                    int w = p5->bV5Width;
+                    int hImg = std::abs(p5->bV5Height);
+                    const size_t pixelBytes = (w > 0 && hImg > 0)
+                        ? (static_cast<size_t>(w) * static_cast<size_t>(hImg) * 4)
+                        : 0;
+                    size_t headerOffset = p5->bV5Size;
+                    if (p5->bV5Compression == BI_BITFIELDS &&
+                        p5->bV5Size == sizeof(BITMAPINFOHEADER) &&
+                        totalSize >= headerOffset + 12 + pixelBytes) {
+                        headerOffset += 12;
+                    }
+                    if (w > 0 && hImg > 0 && p5->bV5BitCount == 32 &&
+                        totalSize >= headerOffset + pixelBytes) {
+                        const uint8_t* bits = reinterpret_cast<const uint8_t*>(p5) + headerOffset;
+                        cv::Mat bgra(hImg, w, CV_8UC4);
+                        int stride = w * 4;
+                        bool isTopDown = (p5->bV5Height < 0);
+                        bool hasNonZeroAlpha = false;
+                        for (int y = 0; y < hImg; ++y) {
+                            int srcY = isTopDown ? y : (hImg - 1 - y);
+                            const uint8_t* srcRow = bits + static_cast<size_t>(srcY) * stride;
+                            uint8_t* dstRow = bgra.ptr<uint8_t>(y);
+                            memcpy(dstRow, srcRow, stride);
+                            if (!hasNonZeroAlpha) {
+                                for (int x = 0; x < w; ++x) {
+                                    if (dstRow[x * 4 + 3] != 0) {
+                                        hasNonZeroAlpha = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (hasNonZeroAlpha) {
+                            result = bgra;
+                        } else {
+                            cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+                        }
+                    }
+                    GlobalUnlock(h);
+                }
+            }
+        }
+    }
+
+    // 3. 兜底读取 CF_BITMAP
+    if (result.empty() && IsClipboardFormatAvailable(CF_BITMAP)) {
+        if (HBITMAP hbm = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP))) {
+            BITMAP bm{};
+            if (GetObject(hbm, sizeof(bm), &bm)) {
+                int w = bm.bmWidth;
+                int hImg = std::abs(bm.bmHeight);
+                if (w > 0 && hImg > 0) {
+                    BITMAPINFOHEADER bi{};
+                    bi.biSize = sizeof(bi);
+                    bi.biWidth = w;
+                    bi.biHeight = -hImg; // top-down
+                    bi.biPlanes = 1;
+                    bi.biBitCount = 32;
+                    bi.biCompression = BI_RGB;
+                    cv::Mat bgra(hImg, w, CV_8UC4);
+                    HDC dc = GetDC(nullptr);
+                    int got = GetDIBits(dc, hbm, 0, hImg, bgra.data, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS);
+                    ReleaseDC(nullptr, dc);
+                    if (got > 0) {
+                        cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+                    }
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+} // namespace tools3000::capture
