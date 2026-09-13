@@ -79,7 +79,7 @@ bool copyMatToClipboard(const cv::Mat& image);
 
 class ScreenCapture {
 public:
-    bool copyToClipboard(const cv::Mat& image, const std::wstring& filePath = L"");
+    bool copyToClipboard(const cv::Mat& image, const std::wstring& filePath = L"", const CaptureRegion* sourceRegion = nullptr, int padX = 0, int padY = 0);
 public:
     static ScreenCapture& instance();
 

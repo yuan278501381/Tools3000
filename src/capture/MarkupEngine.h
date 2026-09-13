@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ─────────────────────────────────────────────────────────────────────────────
 // MarkupEngine — 截图标注引擎
 //
@@ -239,6 +239,9 @@ public:
 
     /// 获取当前标注数量
     size_t elementCount() const { return m_elements.size(); }
+
+    /// 获取所有图元元素列表
+    const std::vector<std::unique_ptr<MarkupElement>>& elements() const noexcept { return m_elements; }
 
     /// 是否存在任何标注（含撤销栈中已撤销但可重做的元素）
     bool hasAnyMarkup() const { return !m_elements.empty() || !m_undoStack.empty(); }

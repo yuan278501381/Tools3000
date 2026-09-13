@@ -1,4 +1,5 @@
 #include "capture/ClipboardUtils.h"
+#include "capture/ScreenCapture.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 #include <shlobj.h>
@@ -7,12 +8,23 @@
 #include <filesystem>
 #include <chrono>
 #include <algorithm>
+#include <mutex>
 
 namespace tools3000::capture {
 
+namespace {
+std::mutex s_metaMutex;
+uint32_t s_lastCopiedSeqNumber = 0;
+bool s_hasPinMeta = false;
+Tools3000PinMetadata s_lastPinMeta{};
+}
+
 bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
                                          const std::wstring& preferredFilePath,
-                                         HWND ownerHwnd) {
+                                         HWND ownerHwnd,
+                                         const CaptureRegion* sourceRegion,
+                                         int padX,
+                                         int padY) {
     if (image.empty() || image.cols <= 0 || image.rows <= 0) {
         LOG_WARN("ClipboardUtils: image buffer is empty, aborting clipboard write");
         return false;
@@ -227,9 +239,158 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
         }
     }
 
+    // 7. 格式 6: 写入 Tools3000_PinMetadata (原生贴图原位还原与美化外壳 padding 逆向对齐元数据)
+    UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
+    if (sourceRegion && formatPinMeta != 0) {
+        Tools3000PinMetadata meta{};
+        meta.magic = 0x54333030;
+        meta.regionX = sourceRegion->x;
+        meta.regionY = sourceRegion->y;
+        meta.regionW = sourceRegion->width;
+        meta.regionH = sourceRegion->height;
+        meta.padX = padX;
+        meta.padY = padY;
+        meta.cornerRadius = sourceRegion->cornerRadius;
+        meta.sequenceNumber = GetClipboardSequenceNumber();
+
+        HGLOBAL hGlobalMeta = GlobalAlloc(GMEM_MOVEABLE, sizeof(Tools3000PinMetadata));
+        if (hGlobalMeta) {
+            void* pMem = GlobalLock(hGlobalMeta);
+            if (pMem) {
+                memcpy(pMem, &meta, sizeof(Tools3000PinMetadata));
+                GlobalUnlock(hGlobalMeta);
+                if (!SetClipboardData(formatPinMeta, hGlobalMeta)) {
+                    GlobalFree(hGlobalMeta);
+                }
+            } else {
+                GlobalFree(hGlobalMeta);
+            }
+        }
+    }
+
+    {
+        std::lock_guard lock(s_metaMutex);
+        s_lastCopiedSeqNumber = GetClipboardSequenceNumber();
+        if (sourceRegion) {
+            s_hasPinMeta = true;
+            s_lastPinMeta.magic = 0x54333030;
+            s_lastPinMeta.regionX = sourceRegion->x;
+            s_lastPinMeta.regionY = sourceRegion->y;
+            s_lastPinMeta.regionW = sourceRegion->width;
+            s_lastPinMeta.regionH = sourceRegion->height;
+            s_lastPinMeta.padX = padX;
+            s_lastPinMeta.padY = padY;
+            s_lastPinMeta.cornerRadius = sourceRegion->cornerRadius;
+            s_lastPinMeta.sequenceNumber = s_lastCopiedSeqNumber;
+        } else {
+            s_hasPinMeta = false;
+        }
+    }
+
     LOG_INFO("ClipboardUtils: image copied to clipboard successfully, size={}x{}, file={}",
              image.cols, image.rows, tools3000::core::WinUtils::wstringToUtf8(dropFilePath));
     return true;
+}
+
+cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
+    if (!OpenClipboard(nullptr)) {
+        return {};
+    }
+
+    struct ClipboardGuard {
+        ~ClipboardGuard() { CloseClipboard(); }
+    } guard;
+
+    if (outMeta) {
+        *outMeta = Tools3000PinMetadata{};
+        UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
+        if (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta)) {
+            if (HANDLE h = GetClipboardData(formatPinMeta)) {
+                if (auto* p = static_cast<const Tools3000PinMetadata*>(GlobalLock(h))) {
+                    *outMeta = *p;
+                    GlobalUnlock(h);
+                }
+            }
+        }
+        if (outMeta->magic != 0x54333030) {
+            std::lock_guard lock(s_metaMutex);
+            if (s_hasPinMeta && GetClipboardSequenceNumber() == s_lastCopiedSeqNumber) {
+                *outMeta = s_lastPinMeta;
+            }
+        }
+    }
+
+    cv::Mat result;
+
+    // 1. 优先读取 PNG 格式（保留完整透明通道与最高画质）
+    UINT formatPng = RegisterClipboardFormatW(L"PNG");
+    if (formatPng != 0 && IsClipboardFormatAvailable(formatPng)) {
+        if (HANDLE h = GetClipboardData(formatPng)) {
+            size_t size = GlobalSize(h);
+            if (size > 0) {
+                if (auto* p = static_cast<const uint8_t*>(GlobalLock(h))) {
+                    std::vector<uint8_t> buffer(p, p + size);
+                    GlobalUnlock(h);
+                    try {
+                        result = cv::imdecode(buffer, cv::IMREAD_UNCHANGED);
+                    } catch (...) {
+                        result.release();
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. 次选读取 CF_DIBV5（32位 BGRA，保留透明通道）
+    if (result.empty() && IsClipboardFormatAvailable(CF_DIBV5)) {
+        if (HANDLE h = GetClipboardData(CF_DIBV5)) {
+            if (auto* p5 = static_cast<const BITMAPV5HEADER*>(GlobalLock(h))) {
+                int w = p5->bV5Width;
+                int hImg = std::abs(p5->bV5Height);
+                if (w > 0 && hImg > 0 && p5->bV5BitCount == 32) {
+                    const uint8_t* bits = reinterpret_cast<const uint8_t*>(p5) + p5->bV5Size;
+                    cv::Mat bgra(hImg, w, CV_8UC4);
+                    int stride = w * 4;
+                    bool isTopDown = (p5->bV5Height < 0);
+                    for (int y = 0; y < hImg; ++y) {
+                        int srcY = isTopDown ? y : (hImg - 1 - y);
+                        memcpy(bgra.ptr(y), bits + srcY * stride, stride);
+                    }
+                    result = bgra;
+                }
+                GlobalUnlock(h);
+            }
+        }
+    }
+
+    // 3. 兜底读取 CF_BITMAP
+    if (result.empty() && IsClipboardFormatAvailable(CF_BITMAP)) {
+        if (HBITMAP hbm = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP))) {
+            BITMAP bm{};
+            if (GetObject(hbm, sizeof(bm), &bm)) {
+                int w = bm.bmWidth;
+                int hImg = std::abs(bm.bmHeight);
+                if (w > 0 && hImg > 0) {
+                    BITMAPINFOHEADER bi{};
+                    bi.biSize = sizeof(bi);
+                    bi.biWidth = w;
+                    bi.biHeight = -hImg; // top-down
+                    bi.biPlanes = 1;
+                    bi.biBitCount = 32;
+                    bi.biCompression = BI_RGB;
+                    cv::Mat bgra(hImg, w, CV_8UC4);
+                    HDC dc = GetDC(nullptr);
+                    int got = GetDIBits(dc, hbm, 0, hImg, bgra.data, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS);
+                    ReleaseDC(nullptr, dc);
+                    if (got > 0) {
+                        cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+                    }
+                }
+            }
+        }
+    }
+
+    return result;
 }
 
 } // namespace tools3000::capture

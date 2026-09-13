@@ -8,6 +8,7 @@
 #include "core/utils/ThemeUtils.h"
 #include "capture/CaptureHistory.h"
 #include "capture/CaptureToolbarLayout.h"
+#include "capture/HudAvoidanceEngine.h"
 #include <format>
 #include <algorithm>
 #include <cmath>
@@ -716,12 +717,106 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
 
     float labelW = textWidth + 18.0f * scale;
     float labelH = 28.0f * scale;
-    float labelX = rect.left;
-    float labelY = rect.top - labelH - 6.0f * scale;
-    if (labelY < 4.0f * scale) labelY = rect.bottom + 6.0f * scale;
 
-    auto pillRect = D2D1::RectF(labelX, labelY, labelX + labelW, labelY + labelH);
+    // 前置确保工具栏几何布局最新，为 HUD 智能躲避求解器提供精确的主/二级工具栏障碍物矩形
+    rebuildCaptureToolbar(state, rect, m_renderTarget->GetSize());
+
+    std::vector<HudObstacle> obstacles;
+    if (state.primaryToolbarRect.right > state.primaryToolbarRect.left &&
+        state.primaryToolbarRect.bottom > state.primaryToolbarRect.top) {
+        obstacles.push_back({state.primaryToolbarRect, HudObstacleType::PrimaryToolbar, 2.5f});
+    }
+    if (!state.secondaryToolbarButtons.empty() &&
+        state.secondaryToolbarRect.right > state.secondaryToolbarRect.left &&
+        state.secondaryToolbarRect.bottom > state.secondaryToolbarRect.top) {
+        obstacles.push_back({state.secondaryToolbarRect, HudObstacleType::SecondaryToolbar, 2.0f});
+    }
+
+    // 1. 注册 8 个调节手柄热区为障碍物，杜绝尺寸胶囊遮挡把手与圆角指示点
+    const float handleBoxR = 12.0f * scale;
+    const float cx = (rect.left + rect.right) * 0.5f;
+    const float cy = (rect.top + rect.bottom) * 0.5f;
+    const D2D1_POINT_2F handlePoints[8] = {
+        {rect.left, rect.top}, {cx, rect.top}, {rect.right, rect.top},
+        {rect.left, cy},                       {rect.right, cy},
+        {rect.left, rect.bottom}, {cx, rect.bottom}, {rect.right, rect.bottom}
+    };
+    for (const auto& hp : handlePoints) {
+        obstacles.push_back({
+            D2D1::RectF(hp.x - handleBoxR, hp.y - handleBoxR, hp.x + handleBoxR, hp.y + handleBoxR),
+            HudObstacleType::SelectionHandle,
+            1.5f
+        });
+    }
+
+    // 2. 注册所有截图标注框（文本框、矩形、箭头、序列号等）为障碍物，彻底杜绝挡住标注
+    for (const auto& elem : state.markup.elements()) {
+        if (!elem) continue;
+        cv::Rect bbox = elem->getBoundingBox();
+        if (bbox.width <= 0 || bbox.height <= 0) continue;
+        float bLeft = rect.left + static_cast<float>(bbox.x);
+        float bTop = rect.top + static_cast<float>(bbox.y);
+        float bRight = bLeft + static_cast<float>(bbox.width);
+        float bBottom = bTop + static_cast<float>(bbox.height);
+        obstacles.push_back({D2D1::RectF(bLeft, bTop, bRight, bBottom), HudObstacleType::ActiveAnnotation, 2.0f});
+    }
+
+    // 3. 正在绘制图元（isMarking）时的动态拉框预览避让
+    if (state.isMarking) {
+        float mx1 = (std::min)(static_cast<float>(state.markupStart.x), static_cast<float>(state.markupEnd.x));
+        float my1 = (std::min)(static_cast<float>(state.markupStart.y), static_cast<float>(state.markupEnd.y));
+        float mx2 = (std::max)(static_cast<float>(state.markupStart.x), static_cast<float>(state.markupEnd.x));
+        float my2 = (std::max)(static_cast<float>(state.markupStart.y), static_cast<float>(state.markupEnd.y));
+        const float pad = 8.0f * scale;
+        obstacles.push_back({D2D1::RectF(mx1 - pad, my1 - pad, mx2 + pad, my2 + pad), HudObstacleType::ActiveAnnotation, 2.2f});
+    }
+
+    // 4. 光标避让策略：
+    // 展开尺寸菜单时用户正在点击菜单选项，不主动躲避光标；
+    // 处于拖拽、调整选区、手柄操作、图元绘制或光标进入选区内部/靠近把手时，强力避让光标，彻底杜绝挡住鼠标或把手
+    const bool isInteracting = state.dragging || state.isMarking || state.isManipulating ||
+                               state.isAdjustingSelection || state.isAdjustingCornerRadius;
+    const float handleSafeR = 26.0f * scale;
+    bool nearAnyHandle = false;
+    for (const auto& hp : handlePoints) {
+        if (std::hypot(static_cast<float>(state.currentCursor.x) - hp.x,
+                       static_cast<float>(state.currentCursor.y) - hp.y) <= handleSafeR) {
+            nearAnyHandle = true;
+            break;
+        }
+    }
+    const bool cursorInsideSelection = (state.currentCursor.x >= rect.left && state.currentCursor.x <= rect.right &&
+                                        state.currentCursor.y >= rect.top && state.currentCursor.y <= rect.bottom);
+
+    if (!state.isSizeMenuOpen) {
+        float curSafeR = 28.0f * scale;
+        D2D1_RECT_F cursorObstacle = D2D1::RectF(
+            static_cast<float>(state.currentCursor.x) - curSafeR,
+            static_cast<float>(state.currentCursor.y) - curSafeR,
+            static_cast<float>(state.currentCursor.x) + curSafeR,
+            static_cast<float>(state.currentCursor.y) + curSafeR);
+        if (isInteracting || nearAnyHandle || cursorInsideSelection) {
+            obstacles.push_back({cursorObstacle, HudObstacleType::Cursor, 3.0f});
+        }
+    }
+
+    HudPlacementConfig hudCfg;
+    hudCfg.edgeGap = 16.0f;
+    hudCfg.screenMargin = 8.0f;
+    hudCfg.cursorSafeRadius = 28.0f;
+    hudCfg.stabilityBonus = 45.0f;
+    hudCfg.allowInsideCandidates = true;
+    hudCfg.avoidCursor = true;
+
+    auto placement = HudAvoidanceEngine::solvePlacement(
+        rect, labelW, labelH, m_renderTarget->GetSize(), obstacles, hudCfg, scale, state.lastSizeHudEdge);
+
+    state.lastSizeHudEdge = static_cast<int>(placement.edge);
+    auto pillRect = placement.rect;
     state.sizeHudRect = pillRect;
+
+    float labelX = pillRect.left;
+    float labelY = pillRect.top;
 
     // 判定鼠标悬停状态
     bool isHovered = (state.currentCursor.x >= pillRect.left && state.currentCursor.x <= pillRect.right &&
@@ -770,6 +865,13 @@ void CaptureRenderer::drawSizeMenu(const D2D1_RECT_F& hudRect, CaptureState& sta
     if (menuX + menuW > sz.width - 4.0f * scale) {
         menuX = sz.width - menuW - 4.0f * scale;
     }
+    if (menuX < 4.0f * scale) {
+        menuX = 4.0f * scale;
+    }
+    if (menuY + menuH > sz.height - 4.0f * scale) {
+        menuY = hudRect.top - menuH - 8.0f * scale;
+    }
+    menuY = std::clamp(menuY, 4.0f * scale, (std::max)(4.0f * scale, sz.height - menuH - 4.0f * scale));
 
     auto menuRect = D2D1::RectF(menuX, menuY, menuX + menuW, menuY + menuH);
     state.sizeMenuRect = menuRect;

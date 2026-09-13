@@ -3,6 +3,7 @@
 #include <windowsx.h>
 #include "capture/CaptureInput.h"
 #include "capture/CaptureHistory.h"
+#include "capture/ClipboardUtils.h"
 #include "capture/PinWindow.h"
 #include "capture/ScrollCapture.h"
 #include "capture/ScrollCaptureOverlay.h"
@@ -1330,10 +1331,16 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             break;
 
         case ToolbarCommand::PinWindow: {
+            if (m_state->isMarking) {
+                finishMarkup(m_state->markupEnd);
+            }
             int x1 = std::min(m_state->dragStart.x, m_state->dragEnd.x);
             int y1 = std::min(m_state->dragStart.y, m_state->dragEnd.y);
-            int w = std::abs(m_state->dragEnd.x - m_state->dragStart.x);
-            int h = std::abs(m_state->dragEnd.y - m_state->dragStart.y);
+            int x2 = std::max(m_state->dragStart.x, m_state->dragEnd.x);
+            int y2 = std::max(m_state->dragStart.y, m_state->dragEnd.y);
+            int w = x2 - x1;
+            int h = y2 - y1;
+            if (w <= 0 || h <= 0) break;
             
             cv::Mat cropped;
             if (m_state->markup.elementCount() > 0) cropped = m_state->markup.getCompositeImage();
@@ -1342,21 +1349,31 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 roi &= cv::Rect(0, 0, m_state->frozenScreen.cols, m_state->frozenScreen.rows);
                 if (roi.area() > 0) m_state->frozenScreen(roi).copyTo(cropped);
             }
-            if (cropped.channels() == 4) {
-                cv::cvtColor(cropped, cropped, cv::COLOR_BGRA2BGR);
-            }
+            int origX = x1 + GetSystemMetrics(SM_XVIRTUALSCREEN);
+            int origY = y1 + GetSystemMetrics(SM_YVIRTUALSCREEN);
+            CaptureRegion reg{origX, origY, w, h, m_state->cornerRadius};
+
             if (m_state->beautyShell.enabled && !cropped.empty()) {
                 cropped = applyBeautyShell(cropped, m_state->beautyShell);
+            } else if (m_state->cornerRadius > 0.5f && !cropped.empty()) {
+                cropped = applyRoundedCorners(cropped, m_state->cornerRadius);
             }
 
-            int offsetX = GetSystemMetrics(SM_XVIRTUALSCREEN);
-            int offsetY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-            
-            // 先关闭截图覆盖层
-            if(m_cancelCb) m_cancelCb();
+            int padX = (cropped.cols > reg.width && reg.width > 0) ? (cropped.cols - reg.width) / 2 : 0;
+            int padY = (cropped.rows > reg.height && reg.height > 0) ? (cropped.rows - reg.height) / 2 : 0;
 
-            // 贴图在原位置
-            PinWindow::create(cropped, x1 + offsetX, y1 + offsetY);
+            // 写入剪贴板与历史记录，赋予贴图后可随时粘贴并追溯历史的能力
+            CaptureHistory::instance().push(cropped, reg);
+            ClipboardUtils::copyImageToClipboard(cropped, L"", nullptr, &reg, padX, padY);
+
+            // 计算智能贴图坐标（原位对齐并避让重叠）
+            POINT spawnPos = PinWindow::calculateSmartSpawnPosition(cropped.cols, cropped.rows, nullptr, &reg, padX, padY);
+
+            // 先关闭截图覆盖层
+            if (m_cancelCb) m_cancelCb();
+
+            // 精确原位贴图
+            PinWindow::create(cropped, spawnPos.x, spawnPos.y);
             break;
         }
 
@@ -3208,7 +3225,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 return 0;
             }
 
-            // 正在输入文字：支持 Ctrl+V 粘贴与其余按键交给 WM_CHAR
+            // 正在输入文字：支持 Ctrl+V 粘贴与其余按键交给 WM_CHAR；支持 Ctrl+C 提交并完成截图
             if (editingText) {
                 if (ctrl && (wParam == 'V' || wParam == 'v')) {
                     std::string clipText = tools3000::core::WinUtils::captureSelectedText();
@@ -3220,6 +3237,16 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                     }
+                    return 0;
+                }
+                if (ctrl && (wParam == 'C' || wParam == 'c')) {
+                    // 文本编辑中按 Ctrl+C：提交文本图元，丝滑完成截图并复制到剪贴板
+                    m_state->activeElement->isEditing = false;
+                    m_state->activeElement->isActive = false;
+                    m_state->activeElement = nullptr;
+                    prepareMarkupBase();
+                    if (m_confirmCb) m_confirmCb({CaptureCompletionAction::Copy});
+                    return 0;
                 }
                 return 0;
             }
@@ -3305,12 +3332,51 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     }
                     break;
                 case VK_RETURN:
-                    if (hasSelection) if (m_confirmCb) m_confirmCb({CaptureCompletionAction::Copy});
-                    return 0;
-                case 'C':
-                    if (ctrl && hasSelection) {
+                    if (m_state->isMarking) {
+                        finishMarkup(m_state->markupEnd);
+                    }
+                    if (hasSelection) {
                         if (m_confirmCb) m_confirmCb({CaptureCompletionAction::Copy});
                         return 0;
+                    } else if (m_state->detectedWindow.right > m_state->detectedWindow.left &&
+                               m_state->detectedWindow.bottom > m_state->detectedWindow.top) {
+                        m_state->dragStart = {static_cast<LONG>(m_state->detectedWindow.left),
+                                             static_cast<LONG>(m_state->detectedWindow.top)};
+                        m_state->dragEnd = {static_cast<LONG>(m_state->detectedWindow.right),
+                                           static_cast<LONG>(m_state->detectedWindow.bottom)};
+                        m_state->cornerRadius = m_state->detectedWindowCornerRadius;
+                        m_state->state = OverlayState::Selected;
+                        prepareMarkupBase();
+                        if (m_confirmCb) m_confirmCb({CaptureCompletionAction::Copy});
+                        return 0;
+                    }
+                    return 0;
+                case 'C':
+                    if (ctrl) {
+                        if (m_state->isMarking) {
+                            finishMarkup(m_state->markupEnd);
+                        }
+                        if (hasSelection) {
+                            if (m_confirmCb) m_confirmCb({CaptureCompletionAction::Copy});
+                            return 0;
+                        } else if (m_state->dragging) {
+                            m_state->dragging = false;
+                            m_state->state = OverlayState::Selected;
+                            prepareMarkupBase();
+                            if (m_confirmCb) m_confirmCb({CaptureCompletionAction::Copy});
+                            return 0;
+                        } else if (m_state->detectedWindow.right > m_state->detectedWindow.left &&
+                                   m_state->detectedWindow.bottom > m_state->detectedWindow.top) {
+                            m_state->dragStart = {static_cast<LONG>(m_state->detectedWindow.left),
+                                                 static_cast<LONG>(m_state->detectedWindow.top)};
+                            m_state->dragEnd = {static_cast<LONG>(m_state->detectedWindow.right),
+                                               static_cast<LONG>(m_state->detectedWindow.bottom)};
+                            m_state->cornerRadius = m_state->detectedWindowCornerRadius;
+                            m_state->state = OverlayState::Selected;
+                            prepareMarkupBase();
+                            if (m_confirmCb) m_confirmCb({CaptureCompletionAction::Copy});
+                            return 0;
+                        }
                     }
                     break;
                 case 'T':

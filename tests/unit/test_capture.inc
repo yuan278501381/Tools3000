@@ -4376,5 +4376,271 @@ TEST(ClipboardUtilsTest, TrimWorkingSetZeroDamageClipboardIntegrity) {
     CloseClipboard();
 }
 
+TEST(HudAvoidanceEngineTest, BasicPlacementPrefersTopLeftWhenClear) {
+    using namespace tools3000::capture;
+    D2D1_RECT_F anchor = D2D1::RectF(200.0f, 200.0f, 600.0f, 500.0f);
+    D2D1_SIZE_F surface = D2D1::SizeF(1920.0f, 1080.0f);
+    std::vector<HudObstacle> obstacles;
+    HudPlacementConfig config;
+
+    auto result = HudAvoidanceEngine::solvePlacement(anchor, 120.0f, 28.0f, surface, obstacles, config, 1.0f);
+    EXPECT_EQ(result.edge, HudAnchorEdge::TopLeft);
+    EXPECT_FALSE(result.isInside);
+    EXPECT_NEAR(result.rect.left, 200.0f, 0.5f);
+    EXPECT_NEAR(result.rect.bottom, 200.0f - config.edgeGap, 0.5f);
+}
+
+TEST(HudAvoidanceEngineTest, AvoidsTopScreenBoundaryByFlippingOrClamping) {
+    using namespace tools3000::capture;
+    // 选区贴近屏幕顶部 (top = 10px)，上方无法容纳 28px 的 HUD
+    D2D1_RECT_F anchor = D2D1::RectF(100.0f, 10.0f, 500.0f, 400.0f);
+    D2D1_SIZE_F surface = D2D1::SizeF(1920.0f, 1080.0f);
+    std::vector<HudObstacle> obstacles;
+    HudPlacementConfig config;
+
+    auto result = HudAvoidanceEngine::solvePlacement(anchor, 120.0f, 28.0f, surface, obstacles, config, 1.0f);
+    // 此时不应越界超出屏幕顶部 (screenMargin = 8px)
+    EXPECT_GE(result.rect.top, config.screenMargin);
+    // 算法会选择底部、居中或内嵌等无越界惩罚的候选
+    EXPECT_NE(result.edge, HudAnchorEdge::TopLeft);
+}
+
+TEST(HudAvoidanceEngineTest, AvoidsCursorCollisionAtHandle) {
+    using namespace tools3000::capture;
+    D2D1_RECT_F anchor = D2D1::RectF(200.0f, 200.0f, 600.0f, 500.0f);
+    D2D1_SIZE_F surface = D2D1::SizeF(1920.0f, 1080.0f);
+
+    // 模拟鼠标正在调节左上角把手 (200, 200)，并在光标周围建立障碍物安全圈
+    D2D1_RECT_F cursorObstacle = D2D1::RectF(175.0f, 175.0f, 225.0f, 225.0f);
+    std::vector<HudObstacle> obstacles = {
+        {cursorObstacle, HudObstacleType::Cursor, 3.0f}
+    };
+    HudPlacementConfig config;
+
+    auto result = HudAvoidanceEngine::solvePlacement(anchor, 120.0f, 28.0f, surface, obstacles, config, 1.0f);
+    // 不应与光标安全圈发生交叠
+    float overlap = HudAvoidanceEngine::intersectionArea(result.rect, cursorObstacle);
+    EXPECT_FLOAT_EQ(overlap, 0.0f);
+    EXPECT_NE(result.edge, HudAnchorEdge::TopLeft);
+}
+
+TEST(HudAvoidanceEngineTest, AvoidsActiveAnnotationBox) {
+    using namespace tools3000::capture;
+    D2D1_RECT_F anchor = D2D1::RectF(200.0f, 200.0f, 600.0f, 500.0f);
+    D2D1_SIZE_F surface = D2D1::SizeF(1920.0f, 1080.0f);
+
+    // 活跃标注框位于选区上方与左上角
+    D2D1_RECT_F annotation = D2D1::RectF(190.0f, 160.0f, 340.0f, 205.0f);
+    std::vector<HudObstacle> obstacles = {
+        {annotation, HudObstacleType::ActiveAnnotation, 2.0f}
+    };
+    HudPlacementConfig config;
+
+    auto result = HudAvoidanceEngine::solvePlacement(anchor, 120.0f, 28.0f, surface, obstacles, config, 1.0f);
+    float overlap = HudAvoidanceEngine::intersectionArea(result.rect, annotation);
+    EXPECT_FLOAT_EQ(overlap, 0.0f);
+}
+
+TEST(HudAvoidanceEngineTest, HysteresisStabilityBonusPreventsJitter) {
+    using namespace tools3000::capture;
+    D2D1_RECT_F anchor = D2D1::RectF(200.0f, 200.0f, 600.0f, 500.0f);
+    D2D1_SIZE_F surface = D2D1::SizeF(1920.0f, 1080.0f);
+    std::vector<HudObstacle> obstacles;
+    HudPlacementConfig config;
+
+    // 上一帧已采纳 TopRight (成本较 TopLeft 仅高 12分，但 stabilityBonus=45分)
+    auto result = HudAvoidanceEngine::solvePlacement(
+        anchor, 120.0f, 28.0f, surface, obstacles, config, 1.0f,
+        static_cast<int>(HudAnchorEdge::TopRight));
+
+    EXPECT_EQ(result.edge, HudAnchorEdge::TopRight);
+}
+
+TEST(PinSpawnCalculatorTest, ExactInPlaceRestoreFromLastHistory) {
+    using namespace tools3000::capture;
+    PinSpawnInput input;
+    input.imageWidth = 400;
+    input.imageHeight = 300;
+    input.cursor = {800, 600};
+    input.workArea = {0, 0, 1920, 1040};
+    input.virtualScreen = {0, 0, 1920, 1080};
+
+    PinHistorySnapshot hist;
+    hist.imageWidth = 400;
+    hist.imageHeight = 300;
+    hist.region = {150, 220, 400, 300};
+    input.lastHistory = hist;
+
+    POINT pt = PinSpawnCalculator::calculate(input);
+    EXPECT_EQ(pt.x, 150);
+    EXPECT_EQ(pt.y, 220);
+}
+
+TEST(PinSpawnCalculatorTest, DeductsBeautyShellPaddingOffset) {
+    using namespace tools3000::capture;
+    PinSpawnInput input;
+    // 原截屏尺寸 400x300，加上四周 40px 美化外壳后变为 480x380
+    input.imageWidth = 480;
+    input.imageHeight = 380;
+    input.cursor = {800, 600};
+    input.workArea = {0, 0, 1920, 1040};
+    input.virtualScreen = {0, 0, 1920, 1080};
+
+    PinHistorySnapshot hist;
+    hist.imageWidth = 480;
+    hist.imageHeight = 380;
+    hist.region = {200, 200, 400, 300}; // 实际截图内容位于屏幕 (200, 200)
+    input.lastHistory = hist;
+
+    POINT pt = PinSpawnCalculator::calculate(input);
+    // 逆向平移 padX=(480-400)/2=40, padY=(380-300)/2=40
+    EXPECT_EQ(pt.x, 160);
+    EXPECT_EQ(pt.y, 160);
+}
+
+TEST(PinSpawnCalculatorTest, ExternalContentCenteredAtCursorAndClampedToWorkArea) {
+    using namespace tools3000::capture;
+    PinSpawnInput input;
+    input.imageWidth = 500;
+    input.imageHeight = 400;
+    input.cursor = {1000, 500};
+    input.workArea = {0, 0, 1920, 1040};
+    input.virtualScreen = {0, 0, 1920, 1080};
+
+    // 无历史记录 (外部图像或剪贴板文本)
+    POINT pt = PinSpawnCalculator::calculate(input);
+    EXPECT_EQ(pt.x, 1000 - 500 / 2); // 750
+    EXPECT_EQ(pt.y, 500 - 400 / 2);  // 300
+
+    // 测试贴靠屏幕右下角工作区边界夹取
+    input.cursor = {1900, 1020};
+    pt = PinSpawnCalculator::calculate(input);
+    EXPECT_EQ(pt.x, 1920 - 500); // 1420 (严格约束在 workArea.right 之内)
+    EXPECT_EQ(pt.y, 1040 - 400); // 640  (严格避让任务栏 workArea.bottom)
+}
+
+TEST(PinSpawnCalculatorTest, SmartCascadingAvoidsOverlappingExistingPins) {
+    using namespace tools3000::capture;
+    PinSpawnInput input;
+    input.imageWidth = 300;
+    input.imageHeight = 200;
+    input.cursor = {500, 400};
+    input.workArea = {0, 0, 1920, 1040};
+    input.virtualScreen = {0, 0, 1920, 1080};
+
+    PinSpawnRegion preferred{300, 300, 300, 200};
+    input.preferredRegion = preferred;
+
+    // 已有一个贴图在 (300, 300)
+    RECT existing1{300, 300, 600, 500};
+    input.existingPins.push_back(existing1);
+
+    POINT pt = PinSpawnCalculator::calculate(input);
+    // 自动级联 +24px
+    EXPECT_EQ(pt.x, 324);
+    EXPECT_EQ(pt.y, 324);
+
+    // 再加一个重叠在 (324, 324)
+    RECT existing2{324, 324, 624, 524};
+    input.existingPins.push_back(existing2);
+
+    pt = PinSpawnCalculator::calculate(input);
+    // 链式级联 +48px
+    EXPECT_EQ(pt.x, 348);
+    EXPECT_EQ(pt.y, 348);
+}
+
+TEST(PinSpawnCalculatorTest, ClampsWithinVirtualScreenAllowingPaddingOverflow) {
+    using namespace tools3000::capture;
+    PinSpawnInput input;
+    // 原截屏位于屏幕绝对左上角 (0, 0)，加上四周 40px 美化外壳后变为 480x380
+    input.imageWidth = 480;
+    input.imageHeight = 380;
+    input.padX = 40;
+    input.padY = 40;
+    input.cursor = {500, 400};
+    input.workArea = {0, 0, 1920, 1040};
+    input.virtualScreen = {0, 0, 1920, 1080};
+
+    PinSpawnRegion preferred{0, 0, 400, 300};
+    input.preferredRegion = preferred;
+
+    POINT pt = PinSpawnCalculator::calculate(input);
+    // 允许 padding 负坐标微溢出 (-40, -40)，确保内部截屏内容绝对 1:1 锚定在屏幕 (0, 0)
+    EXPECT_EQ(pt.x, -40);
+    EXPECT_EQ(pt.y, -40);
+    EXPECT_EQ(pt.x + input.padX, 0);
+    EXPECT_EQ(pt.y + input.padY, 0);
+
+    // 测试右下角极限贴边截图 (1520, 780, 400, 300) -> 右边缘为 1920, 下边缘为 1080
+    input.preferredRegion = PinSpawnRegion{1520, 780, 400, 300};
+    pt = PinSpawnCalculator::calculate(input);
+    EXPECT_EQ(pt.x, 1480);
+    EXPECT_EQ(pt.y, 740);
+    EXPECT_EQ(pt.x + input.padX, 1520);
+    EXPECT_EQ(pt.y + input.padY, 780);
+}
+
+TEST(PinSpawnCalculatorTest, ExplicitPreferredRegionWithDirectPadParams) {
+    using namespace tools3000::capture;
+    PinSpawnInput input;
+    input.imageWidth = 264;
+    input.imageHeight = 264;
+    input.padX = 32;
+    input.padY = 32;
+    input.cursor = {500, 400};
+    input.workArea = {0, 0, 1920, 1040};
+    input.virtualScreen = {0, 0, 1920, 1080};
+
+    input.preferredRegion = PinSpawnRegion{100, 100, 200, 200};
+
+    POINT pt = PinSpawnCalculator::calculate(input);
+    EXPECT_EQ(pt.x, 68);
+    EXPECT_EQ(pt.y, 68);
+}
+
+TEST(HudAvoidanceEngineTest, EdgeGapClearsHandlesWithoutCollision) {
+    using namespace tools3000::capture;
+    D2D1_RECT_F anchor = D2D1::RectF(200.0f, 200.0f, 600.0f, 500.0f);
+    D2D1_SIZE_F surface = D2D1::SizeF(1920.0f, 1080.0f);
+
+    // 左上角手柄 (200, 200) 半径 12px -> 范围 [188, 188, 212, 212]
+    D2D1_RECT_F handleObstacle = D2D1::RectF(188.0f, 188.0f, 212.0f, 212.0f);
+    std::vector<HudObstacle> obstacles = {
+        {handleObstacle, HudObstacleType::SelectionHandle, 1.5f}
+    };
+    HudPlacementConfig config;
+    config.edgeGap = 16.0f; // 16px 间隙彻底避开 12px 半径手柄
+
+    auto result = HudAvoidanceEngine::solvePlacement(anchor, 120.0f, 28.0f, surface, obstacles, config, 1.0f);
+    float overlap = HudAvoidanceEngine::intersectionArea(result.rect, handleObstacle);
+    EXPECT_FLOAT_EQ(overlap, 0.0f);
+    EXPECT_EQ(result.edge, HudAnchorEdge::TopLeft);
+}
+
+TEST(HudAvoidanceEngineTest, EscapesToOuterSideWhenTopAndBottomBlocked) {
+    using namespace tools3000::capture;
+    // 窄高选区 (w=80, h=600)，且顶部贴屏 (top=10)，底部被工具栏完全封死
+    D2D1_RECT_F anchor = D2D1::RectF(300.0f, 10.0f, 380.0f, 610.0f);
+    D2D1_SIZE_F surface = D2D1::SizeF(1920.0f, 1080.0f);
+
+    D2D1_RECT_F bottomToolbar = D2D1::RectF(250.0f, 610.0f, 600.0f, 680.0f);
+    std::vector<HudObstacle> obstacles = {
+        {bottomToolbar, HudObstacleType::PrimaryToolbar, 2.0f}
+    };
+    HudPlacementConfig config;
+    config.allowInsideCandidates = false; // 选区过窄不允许内嵌
+
+    auto result = HudAvoidanceEngine::solvePlacement(anchor, 120.0f, 28.0f, surface, obstacles, config, 1.0f);
+    // 算法优雅逃逸至右侧或左侧外侧侧边锚点
+    EXPECT_TRUE(result.edge == HudAnchorEdge::OuterRightTop ||
+                result.edge == HudAnchorEdge::OuterRightCenter ||
+                result.edge == HudAnchorEdge::OuterLeftTop ||
+                result.edge == HudAnchorEdge::OuterLeftCenter);
+    EXPECT_FLOAT_EQ(HudAvoidanceEngine::intersectionArea(result.rect, bottomToolbar), 0.0f);
+}
+
+
+
 
 

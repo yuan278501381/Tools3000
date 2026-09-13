@@ -83,7 +83,9 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
              completion.action == CaptureCompletionAction::Default) &&
             !markedImage.empty()) {
             const std::wstring widePath = tools3000::core::WinUtils::utf8ToWstring(result.filePath);
-            copyToClipboard(markedImage, widePath);
+            int padX = (markedImage.cols > region.width && region.width > 0) ? (markedImage.cols - region.width) / 2 : 0;
+            int padY = (markedImage.rows > region.height && region.height > 0) ? (markedImage.rows - region.height) / 2 : 0;
+            copyToClipboard(markedImage, widePath, &region, padX, padY);
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"截图已复制到剪贴板"});
         }
 
@@ -306,7 +308,7 @@ CaptureResult ScreenCapture::captureRegion(const CaptureRegion& region, const Ca
 
     // 复制到剪贴板
     if (options.copyToClipboard) {
-        if (copyToClipboard(*image)) {
+        if (copyToClipboard(*image, L"", &region)) {
             LOG_DEBUG("截图已复制到剪贴板");
         } else {
             LOG_WARN("复制到剪贴板失败");
@@ -479,8 +481,8 @@ std::vector<uint8_t> ScreenCapture::encodeImage(const cv::Mat& image, ImageForma
 // 剪贴板
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool ScreenCapture::copyToClipboard(const cv::Mat& image, const std::wstring& filePath) {
-    return ClipboardUtils::copyImageToClipboard(image, filePath);
+bool ScreenCapture::copyToClipboard(const cv::Mat& image, const std::wstring& filePath, const CaptureRegion* sourceRegion, int padX, int padY) {
+    return ClipboardUtils::copyImageToClipboard(image, filePath, nullptr, sourceRegion, padX, padY);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

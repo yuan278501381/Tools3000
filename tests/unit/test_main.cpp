@@ -46,6 +46,8 @@
 #include "capture/BeautyShell.h"
 #include "capture/MarkupEngine.h"
 #include "capture/CornerRadiusHelper.h"
+#include "capture/HudAvoidanceEngine.h"
+#include "capture/PinSpawnCalculator.h"
 #include "keycast/KeycastStyle.h"
 #include "keycast/KeycastOverlay.h"
 #include "ocr/OcrResultStyle.h"

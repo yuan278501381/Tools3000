@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #ifndef TOOLS3000_CAPTURE_CAPTURE_STATE_H
 #define TOOLS3000_CAPTURE_CAPTURE_STATE_H
 
@@ -298,6 +298,7 @@ public:
     bool isSizeMenuOpen = false;
     D2D1_RECT_F sizeHudRect{};
     D2D1_RECT_F sizeMenuRect{};
+    int lastSizeHudEdge = -1; ///< 用于 HUD 自动躲避防抖动迟滞跟踪的上一次布局边缘
 
     // 多态微晶下拉菜单状态
     DropdownMenuState dropdownMenu{};

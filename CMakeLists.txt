@@ -171,6 +171,8 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/RecordingGpuProbe.cpp
     src/capture/ScrollCapture.cpp
     src/capture/ShortcutHintOverlay.cpp
+    src/capture/HudAvoidanceEngine.cpp
+    src/capture/PinSpawnCalculator.cpp
 )
 add_library(capture_objects OBJECT ${CAPTURE_OBJECT_SOURCES})
 target_include_directories(capture_objects PUBLIC ${CMAKE_SOURCE_DIR}/src)

@@ -2881,6 +2881,10 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 创建 DirectComposition Toast 双表面失败: hr1=0x{:X}, hr2=0x{:X}",
             "[{}] Failed to create DirectComposition toast double surface: hr1=0x{:X}, hr2=0x{:X}"
         }},
+        {"PinWindow: 智能计算最佳生成坐标 @ ({}, {})", {
+            "[{}] PinWindow: 智能计算最佳生成坐标 @ ({}, {})",
+            "[{}] PinWindow: smart calculated optimal spawn position @ ({}, {})"
+        }},
     };
     return catalog;
 }

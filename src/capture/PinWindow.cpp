@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // PinWindow.cpp — 贴图窗口实现
 //
 // 功能:
@@ -9,9 +9,12 @@
 
 #include "capture/PinWindow.h"
 #include "capture/ScreenCapture.h"
+#include "capture/ClipboardUtils.h"
 #include "capture/CaptureOverlay.h"
 #include "capture/CaptureVectorIcons.h"
 #include "capture/FloatingGlassBar.h"
+#include "capture/CaptureHistory.h"
+#include "capture/PinSpawnCalculator.h"
 #include "core/events/EventBus.h"
 #include "core/logger/Logger.h"
 #include "core/config/ConfigManager.h"
@@ -1022,34 +1025,96 @@ static cv::Mat renderTextToImage(const std::wstring& text) {
     return result;
 }
 
+POINT PinWindow::calculateSmartSpawnPosition(int imageWidth, int imageHeight, const POINT* fallbackCursor, const CaptureRegion* preferredRegion, int padX, int padY) {
+    POINT cursor{};
+    if (fallbackCursor) {
+        cursor = *fallbackCursor;
+    } else {
+        GetCursorPos(&cursor);
+    }
+
+    POINT refPoint = cursor;
+    if (preferredRegion && preferredRegion->width > 0 && preferredRegion->height > 0) {
+        refPoint = POINT{preferredRegion->x + preferredRegion->width / 2,
+                         preferredRegion->y + preferredRegion->height / 2};
+    }
+
+    HMONITOR mon = MonitorFromPoint(refPoint, MONITOR_DEFAULTTONEAREST);
+    RECT work = tools3000::core::dpi::workArea(mon);
+
+    int minVx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int minVy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int maxVw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int maxVh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    RECT vScreen{minVx, minVy, minVx + maxVw, minVy + maxVh};
+
+    PinSpawnInput input;
+    input.imageWidth = imageWidth;
+    input.imageHeight = imageHeight;
+    input.padX = padX;
+    input.padY = padY;
+    input.cursor = cursor;
+    input.workArea = work;
+    input.virtualScreen = vScreen;
+
+    if (preferredRegion && preferredRegion->width > 0 && preferredRegion->height > 0) {
+        input.preferredRegion = PinSpawnRegion{
+            preferredRegion->x, preferredRegion->y,
+            preferredRegion->width, preferredRegion->height
+        };
+    }
+
+    auto lastEntry = CaptureHistory::instance().get(0);
+    if (lastEntry.has_value() && !lastEntry->image.empty()) {
+        PinHistorySnapshot hist;
+        hist.imageWidth = lastEntry->image.cols;
+        hist.imageHeight = lastEntry->image.rows;
+        hist.region = PinSpawnRegion{
+            lastEntry->region.x, lastEntry->region.y,
+            lastEntry->region.width, lastEntry->region.height
+        };
+        input.lastHistory = hist;
+    }
+
+    for (const auto& pin : s_instances) {
+        if (!pin || !pin->isAlive() || !pin->m_hwnd || !IsWindowVisible(pin->m_hwnd)) continue;
+        RECT rc{};
+        GetWindowRect(pin->m_hwnd, &rc);
+        input.existingPins.push_back(rc);
+    }
+
+    POINT spawnPos = PinSpawnCalculator::calculate(input);
+    LOG_INFO("PinWindow: 智能计算最佳生成坐标 @ ({}, {})", spawnPos.x, spawnPos.y);
+    return spawnPos;
+}
+
 std::shared_ptr<PinWindow> PinWindow::createFromClipboard() {
     POINT pt;
     GetCursorPos(&pt);
 
-    cv::Mat img;
+    Tools3000PinMetadata meta{};
+    cv::Mat img = ClipboardUtils::readImageFromClipboard(&meta);
     std::wstring text;
-    if (OpenClipboard(nullptr)) {
-        if (IsClipboardFormatAvailable(CF_BITMAP)) {
-            if (HBITMAP hbm = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP))) {
-                img = hbitmapToMat(hbm);  // 句柄归剪贴板所有，期间使用、勿释放
-            }
-        }
-        if (img.empty() && IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-            if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
-                if (auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
-                    text = p;
-                    GlobalUnlock(h);
+
+    if (img.empty()) {
+        if (OpenClipboard(nullptr)) {
+            if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+                if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+                    if (auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
+                        text = p;
+                        GlobalUnlock(h);
+                    }
                 }
             }
+            CloseClipboard();
         }
-        CloseClipboard();
-    }
 
-    if (img.empty() && !text.empty()) {
-        cv::Scalar c;
-        std::wstring hexLabel;
-        if (parseHexColor(text, c, hexLabel)) img = renderColorSwatch(c, hexLabel);
-        else img = renderTextToImage(text);
+        if (!text.empty()) {
+            cv::Scalar c;
+            std::wstring hexLabel;
+            if (parseHexColor(text, c, hexLabel)) img = renderColorSwatch(c, hexLabel);
+            else img = renderTextToImage(text);
+        }
     }
 
     if (img.empty()) {
@@ -1057,8 +1122,20 @@ std::shared_ptr<PinWindow> PinWindow::createFromClipboard() {
         return nullptr;
     }
 
-    LOG_INFO("剪贴板贴图：{}x{} @ ({},{})", img.cols, img.rows, pt.x, pt.y);
-    return create(img, pt.x, pt.y);
+    CaptureRegion reg{};
+    const CaptureRegion* pReg = nullptr;
+    if (meta.magic == 0x54333030 && meta.regionW > 0 && meta.regionH > 0) {
+        reg.x = meta.regionX;
+        reg.y = meta.regionY;
+        reg.width = meta.regionW;
+        reg.height = meta.regionH;
+        reg.cornerRadius = meta.cornerRadius;
+        pReg = &reg;
+    }
+
+    POINT spawnPos = calculateSmartSpawnPosition(img.cols, img.rows, &pt, pReg, meta.padX, meta.padY);
+    LOG_INFO("剪贴板贴图：{}x{} @ ({},{})", img.cols, img.rows, spawnPos.x, spawnPos.y);
+    return create(img, spawnPos.x, spawnPos.y);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

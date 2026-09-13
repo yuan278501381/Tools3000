@@ -765,7 +765,8 @@ public:
                 if (!image.empty()) {
                     POINT pt;
                     GetCursorPos(&pt);
-                    tools3000::capture::PinWindow::create(image, pt.x, pt.y);
+                    POINT spawnPos = tools3000::capture::PinWindow::calculateSmartSpawnPosition(image.cols, image.rows, &pt);
+                    tools3000::capture::PinWindow::create(image, spawnPos.x, spawnPos.y);
                     return {{"success", true}};
                 }
             } catch (const std::exception& e) {
@@ -832,7 +833,10 @@ public:
             }
             POINT cursor{};
             GetCursorPos(&cursor);
-            const auto pin = tools3000::capture::PinWindow::create(entry->image, cursor.x, cursor.y);
+            const auto& reg = entry->region;
+            const tools3000::capture::CaptureRegion* pReg = (reg.width > 0 && reg.height > 0) ? &reg : nullptr;
+            POINT spawnPos = tools3000::capture::PinWindow::calculateSmartSpawnPosition(entry->image.cols, entry->image.rows, &cursor, pReg);
+            const auto pin = tools3000::capture::PinWindow::create(entry->image, spawnPos.x, spawnPos.y);
             return {{"success", static_cast<bool>(pin)}};
         });
 

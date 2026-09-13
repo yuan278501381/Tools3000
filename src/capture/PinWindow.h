@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ─────────────────────────────────────────────────────────────────────────────
 // PinWindow — 贴图窗口
 //
@@ -30,13 +30,20 @@ struct PinOcrBlock {
     cv::Rect origBox;
 };
 
+struct CaptureRegion;
+
 class PinWindow : public std::enable_shared_from_this<PinWindow> {
 public:
     /// 创建一个新的贴图窗口
     static std::shared_ptr<PinWindow> create(const cv::Mat& image, int x, int y);
 
-    /// 将剪贴板内容（图像 / 文本 / #颜色）直接贴成浮空贴图，置于当前光标处。
+    /// 将剪贴板内容（图像 / 文本 / #颜色）智能贴成浮空贴图
     static std::shared_ptr<PinWindow> createFromClipboard();
+
+    /// 根据图像大小与来源上下文，智能计算世界级最佳贴图生成坐标
+    /// 若剪贴板图像与最近一次截图匹配，则精确贴在原截图坐标；
+    /// 若为外部内容或无法匹配，则以光标为中心智能吸附居中，并严格限制在显示器工作区内部（杜绝超出屏幕边缘）
+    static POINT calculateSmartSpawnPosition(int imageWidth, int imageHeight, const POINT* fallbackCursor = nullptr, const CaptureRegion* preferredRegion = nullptr, int padX = 0, int padY = 0);
 
     /// 关闭此贴图窗口
     void close();
