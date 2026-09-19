@@ -45,8 +45,8 @@ SetupIconFile=resources\app.ico
 UninstallDisplayIcon={app}\Tools3000.exe
 ; 全盘 NTFS 索引服务需要管理员权限注册并读取 USN Journal。
 PrivilegesRequired=admin
-; 启用 Inno Setup 原生进程管理器，智能关闭占用文件的应用程序；禁用自动重启以防意外拉起
-CloseApplications=yes
+; 进程管理由 Tools3000 原生互斥体与消息循环毫秒级接管；禁用重启管理器以消除 1000ms 开销
+CloseApplications=no
 RestartApplications=no
 ; 默认严格跟随系统 UI 语言，非中文环境一律纯英文兜底，零弹窗干扰
 ShowLanguageDialog=no
@@ -150,6 +150,14 @@ Type: files; Name: "{commondesktop}\Tools3000.lnk"
 Type: filesandordirs; Name: "{autoprograms}\Tools3000"
 Type: filesandordirs; Name: "{userprograms}\Tools3000"
 Type: filesandordirs; Name: "{commonprograms}\Tools3000"
+Type: files; Name: "{app}\initial_modules.json"
+Type: files; Name: "{app}\*.log"
+Type: dirifempty; Name: "{app}\plugins"
+Type: dirifempty; Name: "{app}\resources\scripts"
+Type: dirifempty; Name: "{app}\resources"
+Type: dirifempty; Name: "{app}\ui\assets"
+Type: dirifempty; Name: "{app}\ui"
+Type: dirifempty; Name: "{app}"
 
 [Icons]
 Name: "{group}\Tools3000"; Filename: "{app}\Tools3000.exe"; AppUserModelID: "Yy1.Tools3000"
@@ -164,10 +172,6 @@ Filename: "{sys}\sc.exe"; Parameters: "config Tools3000_SearchService binPath= "
 Filename: "{sys}\sc.exe"; Parameters: "description Tools3000_SearchService ""Tools3000 本地文件快速搜索索引"""; Flags: runhidden waituntilterminated; Check: IsSearchComponentSelected
 Filename: "{app}\Tools3000.exe"; Description: "{cm:LaunchProgram,Tools3000}"; Flags: nowait postinstall skipifsilent
 
-[UninstallRun]
-Filename: "{sys}\sc.exe"; Parameters: "stop Tools3000_SearchService"; Flags: runhidden waituntilterminated; RunOnceId: "StopTools3000Search"
-Filename: "{sys}\sc.exe"; Parameters: "delete Tools3000_SearchService"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteTools3000Search"
-Filename: "{app}\Tools3000.exe"; Parameters: "--unregister-autostart"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteTools3000AutoStartUser"
 
 [Code]
 var
@@ -213,17 +217,61 @@ function CloseHandle(hObject: THandle): Boolean;
 function PostMessage(hWnd: LongWord; Msg, wParam: LongWord; lParam: LongInt): Boolean;
   external 'PostMessageW@user32.dll stdcall';
 
+function GetTickCount(): DWORD;
+  external 'GetTickCount@kernel32.dll stdcall';
+
+const
+  SC_MANAGER_CONNECT = $0001;
+  SC_MANAGER_ALL_ACCESS = $F003F;
+  SERVICE_QUERY_STATUS = $0004;
+  SERVICE_STOP = $0020;
+  DELETE_ACCESS = $00010000;
+  SERVICE_CONTROL_STOP = 1;
+  ERROR_SHARING_VIOLATION = 32;
+  ERROR_LOCK_VIOLATION = 33;
+
+type
+  TServiceStatus = record
+    dwServiceType: DWORD;
+    dwCurrentState: DWORD;
+    dwControlsAccepted: DWORD;
+    dwWin32ExitCode: DWORD;
+    dwServiceSpecificExitCode: DWORD;
+    dwCheckPoint: DWORD;
+    dwWaitHint: DWORD;
+  end;
+
+function OpenSCManager(lpMachineName, lpDatabaseName: String; dwDesiredAccess: DWORD): THandle;
+  external 'OpenSCManagerW@advapi32.dll stdcall';
+function OpenService(hSCManager: THandle; lpServiceName: String; dwDesiredAccess: DWORD): THandle;
+  external 'OpenServiceW@advapi32.dll stdcall';
+function QueryServiceStatus(hService: THandle; var lpServiceStatus: TServiceStatus): BOOL;
+  external 'QueryServiceStatus@advapi32.dll stdcall';
+function ControlService(hService: THandle; dwControl: DWORD; var lpServiceStatus: TServiceStatus): BOOL;
+  external 'ControlService@advapi32.dll stdcall';
+function DeleteService(hService: THandle): BOOL;
+  external 'DeleteService@advapi32.dll stdcall';
+function CloseServiceHandle(hSCObject: THandle): BOOL;
+  external 'CloseServiceHandle@advapi32.dll stdcall';
+function GetLastError(): DWORD;
+  external 'GetLastError@kernel32.dll stdcall';
+
 function ServiceExists(): Boolean; forward;
 
 function IsFileLocked(const Filename: String): Boolean;
 var
   H: THandle;
+  Err: DWORD;
 begin
   Result := False;
   if not FileExists(Filename) then Exit;
   H := CreateFile(Filename, GENERIC_READ_FLAG or GENERIC_WRITE_FLAG, 0, 0, OPEN_EXISTING_FLAG, FILE_ATTRIBUTE_NORMAL, 0);
   if (H = -1) or (H = 0) or (H = 4294967295) then
-    Result := True
+  begin
+    Err := GetLastError();
+    // 仅当底层返回共享冲突或文件锁冲突时确认为活跃进程独占占用，杜绝只读属性或权限误报
+    Result := (Err = ERROR_SHARING_VIOLATION) or (Err = ERROR_LOCK_VIOLATION);
+  end
   else
     CloseHandle(H);
 end;
@@ -231,10 +279,12 @@ end;
 function CheckDirFilesLocked(const DirPath: String): Boolean;
 var
   FindRec: TFindRec;
-  Ext: String;
+  Ext, FileNameLower, UninstallerName: String;
 begin
   Result := False;
   if not DirExists(DirPath) then Exit;
+
+  UninstallerName := Lowercase(ExtractFileName(ExpandConstant('{uninstallexe}')));
 
   if FindFirst(DirPath + '\*.*', FindRec) then
   begin
@@ -242,6 +292,11 @@ begin
       repeat
         if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
         begin
+          FileNameLower := Lowercase(FindRec.Name);
+          // 绝对排除卸载程序自身与其数据文件 (unins*)，彻底杜绝自锁误报与假死超时
+          if (Pos('unins', FileNameLower) = 1) or ((UninstallerName <> '') and (FileNameLower = UninstallerName)) then
+            Continue;
+
           Ext := Lowercase(ExtractFileExt(FindRec.Name));
           if (Ext = '.dll') or (Ext = '.exe') then
           begin
@@ -290,74 +345,238 @@ begin
   Result := AreAppFilesLocked();
 end;
 
-function IsProcessRunning(const ExeName: String): Boolean;
-var
-  ResultCode: Integer;
-  Cmd: String;
-begin
-  Cmd := Format('/c "tasklist /FI ""IMAGENAME eq %s"" /NH | findstr /i ""%s"""', [ExeName, ExeName]);
-  Result := Exec(ExpandConstant('{sys}\cmd.exe'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
-end;
-
 function IsTools3000Running(): Boolean;
 begin
-  Result := CheckForMutexes('Global\Tools3000_SingleInstance_Mutex') or
-            CheckForMutexes('Tools3000_SingleInstance_Mutex') or
-            (FindWindowByClassName('Tools3000_MessageWindow') <> 0) or
-            IsProcessRunning('Tools3000.exe');
+  // 1. 全局单实例互斥体秒级探测 (0.001ms)：Tools3000 进程存活之唯一底层真相
+  if CheckForMutexes('Global\Tools3000_SingleInstance_Mutex') or
+     CheckForMutexes('Tools3000_SingleInstance_Mutex') then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  // 2. 隐藏消息窗口句柄快速探测 (0.001ms)
+  if FindWindowByClassName('Tools3000_MessageWindow') <> 0 then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  Result := False;
 end;
 
 function IsSearchServiceRunning(): Boolean;
+var
+  hSCM, hSvc: THandle;
+  Status: TServiceStatus;
 begin
-  Result := IsProcessRunning('Tools3000_Service.exe');
+  Result := False;
+
+  // SCM 内核状态秒级直查 (0.01ms)：免创建任何进程，直连服务控制管理器断言
+  hSCM := OpenSCManager('', '', SC_MANAGER_CONNECT);
+  if hSCM <> 0 then
+  begin
+    try
+      hSvc := OpenService(hSCM, 'Tools3000_SearchService', SERVICE_QUERY_STATUS);
+      if hSvc <> 0 then
+      begin
+        try
+          if QueryServiceStatus(hSvc, Status) then
+          begin
+            if (Status.dwCurrentState = 4 { SERVICE_RUNNING }) or
+               (Status.dwCurrentState = 2 { SERVICE_START_PENDING }) or
+               (Status.dwCurrentState = 3 { SERVICE_STOP_PENDING }) then
+            begin
+              Result := True;
+              Exit;
+            end;
+          end;
+        finally
+          CloseServiceHandle(hSvc);
+        end;
+      end;
+    finally
+      CloseServiceHandle(hSCM);
+    end;
+  end;
+end;
+
+procedure StopSearchServiceNative();
+var
+  hSCM, hSvc: THandle;
+  Status: TServiceStatus;
+  Dummy: Integer;
+begin
+  hSCM := OpenSCManager('', '', SC_MANAGER_CONNECT);
+  if hSCM <> 0 then
+  begin
+    try
+      hSvc := OpenService(hSCM, 'Tools3000_SearchService', SERVICE_STOP or SERVICE_QUERY_STATUS);
+      if hSvc <> 0 then
+      begin
+        try
+          ControlService(hSvc, SERVICE_CONTROL_STOP, Status);
+          Log('StopSearchServiceNative: Sent SERVICE_CONTROL_STOP via Win32 SCM API.');
+        finally
+          CloseServiceHandle(hSvc);
+        end;
+      end;
+    finally
+      CloseServiceHandle(hSCM);
+    end;
+  end;
+  // 仅当服务仍在运行或文件锁定时才执行兜底 taskkill，绝不在已停止状态下空转创建外部进程
+  if IsSearchServiceRunning() or IsFileLocked(ExpandConstant('{app}\Tools3000_Service.exe')) then
+  begin
+    Log('StopSearchServiceNative: Service process still active, issuing taskkill...');
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
+  end;
+end;
+
+procedure DeleteSearchServiceNative();
+var
+  hSCM, hSvc: THandle;
+  Status: TServiceStatus;
+  Dummy: Integer;
+begin
+  hSCM := OpenSCManager('', '', SC_MANAGER_CONNECT);
+  if hSCM <> 0 then
+  begin
+    try
+      hSvc := OpenService(hSCM, 'Tools3000_SearchService', SERVICE_STOP or DELETE_ACCESS or SERVICE_QUERY_STATUS);
+      if hSvc <> 0 then
+      begin
+        try
+          if QueryServiceStatus(hSvc, Status) then
+          begin
+            if Status.dwCurrentState <> 1 { SERVICE_STOPPED } then
+              ControlService(hSvc, SERVICE_CONTROL_STOP, Status);
+          end;
+          if DeleteService(hSvc) then
+            Log('DeleteSearchServiceNative: Search service stopped and marked for deletion via Win32 SCM API.')
+          else
+            Log(Format('DeleteSearchServiceNative: DeleteService returned false, code=%d', [GetLastError()]));
+        finally
+          CloseServiceHandle(hSvc);
+        end;
+      end;
+    finally
+      CloseServiceHandle(hSCM);
+    end;
+  end;
+  // 仅当服务仍在运行或文件锁定时才执行兜底 taskkill，绝不在已停止状态下空转创建外部进程
+  if IsSearchServiceRunning() or IsFileLocked(ExpandConstant('{app}\Tools3000_Service.exe')) then
+  begin
+    Log('DeleteSearchServiceNative: Service process still active, issuing taskkill fallback...');
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
+  end;
+end;
+
+procedure CleanScheduledTasksAndRegistries();
+var
+  TaskService, RootFolder, ToolsFolder, Tasks, TaskItem: Variant;
+  I, Dummy: Integer;
+  ComSuccess: Boolean;
+begin
+  ComSuccess := False;
+  try
+    TaskService := CreateOleObject('Schedule.Service');
+    TaskService.Connect();
+    try
+      ToolsFolder := TaskService.GetFolder('\Tools3000');
+      Tasks := ToolsFolder.GetTasks(0);
+      for I := Tasks.Count downto 1 do
+      begin
+        TaskItem := Tasks.Item(I);
+        ToolsFolder.DeleteTask(TaskItem.Name, 0);
+      end;
+      RootFolder := TaskService.GetFolder('\');
+      RootFolder.DeleteFolder('Tools3000', 0);
+      ComSuccess := True;
+      Log('CleanScheduledTasksAndRegistries: Cleaned all tasks in Tools3000 folder via COM.');
+    except
+      ComSuccess := True;
+      Log('CleanScheduledTasksAndRegistries: No \Tools3000 folder found in Task Scheduler.');
+    end;
+  except
+    Log('CleanScheduledTasksAndRegistries: Schedule.Service COM initialization failed, falling back to schtasks.');
+  end;
+
+  if not ComSuccess then
+  begin
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "Tools3000\Autorun for ' + GetUserNameString() + '" /f', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
+  end;
+
+  // 清除注册表当前用户自启动项 (HKCU Run)
+  RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Tools3000');
 end;
 
 procedure StopAndKillAllTools3000Processes();
 var
   ResultCode: Integer;
   MsgHwnd: LongWord;
+  NeedKillApp: Boolean;
+  NeedKillService: Boolean;
 begin
-  Log('StopAndKillAllTools3000Processes: Initiating graceful and forceful termination of all processes and services...');
-  MsgHwnd := FindWindowByClassName('Tools3000_MessageWindow');
-  if MsgHwnd <> 0 then
+  NeedKillApp := IsTools3000Running();
+  NeedKillService := IsSearchServiceRunning();
+
+  // 若均未运行且关键文件未锁定，毫秒级直接跳过，杜绝空转执行 taskkill/sc 造成的 500ms~1000ms 进程创建开销
+  if (not NeedKillApp) and (not NeedKillService) and (not AreAppFilesLocked()) then
   begin
-    PostMessage(MsgHwnd, WM_CLOSE_MSG, 0, 0);
-    Sleep(100);
+    Log('StopAndKillAllTools3000Processes: No running Tools3000 instances or file locks detected, skipping process kills.');
+    Exit;
   end;
 
-  // 无条件停止搜索服务
-  Exec(ExpandConstant('{sys}\sc.exe'), 'stop Tools3000_SearchService', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Log('StopAndKillAllTools3000Processes: Initiating graceful and forceful termination of active processes and services...');
 
-  // 无条件强杀主程序进程树与服务进程树
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if NeedKillApp then
+  begin
+    MsgHwnd := FindWindowByClassName('Tools3000_MessageWindow');
+    if MsgHwnd <> 0 then
+    begin
+      PostMessage(MsgHwnd, WM_CLOSE_MSG, 0, 0);
+      Sleep(20);
+    end;
+    // 强杀主程序进程树（包含子 WebView2 进程）
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+
+  if NeedKillService then
+  begin
+    StopSearchServiceNative();
+  end;
 end;
 
 function WaitForProcessesAndFilesReleased(MaxWaitMs: Integer): Boolean;
 var
-  Elapsed: Integer;
-  IntervalMs: Integer;
+  StartTick: DWORD;
+  Elapsed: DWORD;
   Dummy: Integer;
 begin
   Result := False;
-  IntervalMs := 100;
-  Elapsed := 0;
+  StartTick := GetTickCount();
 
-  while Elapsed < MaxWaitMs do
+  while True do
   begin
-    if (not IsProcessRunning('Tools3000.exe')) and
+    if (not IsTools3000Running()) and
        (not IsSearchServiceRunning()) and
        (not AreAppFilesLocked()) then
     begin
+      Elapsed := GetTickCount() - StartTick;
       Log(Format('WaitForProcessesAndFilesReleased: All processes exited and file locks released in %d ms', [Elapsed]));
       Result := True;
       Exit;
     end;
 
-    Sleep(IntervalMs);
-    Elapsed := Elapsed + IntervalMs;
+    Elapsed := GetTickCount() - StartTick;
+    if Elapsed >= DWORD(MaxWaitMs) then
+      Break;
 
-    if (Elapsed mod 1500 = 0) and (Elapsed < MaxWaitMs) then
+    Sleep(30);
+
+    // 超过 500ms 仍未释放时重试一次 taskkill 确保彻底干掉残留进程
+    if (Elapsed > 500) and ((Elapsed mod 500) < 40) then
     begin
       Log('WaitForProcessesAndFilesReleased: Locks or processes still active, re-issuing taskkill /f /t...');
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
@@ -365,9 +584,10 @@ begin
     end;
   end;
 
-  Result := (not IsProcessRunning('Tools3000.exe')) and
+  Result := (not IsTools3000Running()) and
             (not IsSearchServiceRunning()) and
             (not AreAppFilesLocked());
+  Elapsed := GetTickCount() - StartTick;
   if Result then
     Log(Format('WaitForProcessesAndFilesReleased: Released at final check (%d ms)', [Elapsed]))
   else
@@ -933,12 +1153,16 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
+    // 1. 毫秒级停止并清理后台搜索服务，终止进程树
     StopAndKillAllTools3000Processes();
-    WaitForProcessesAndFilesReleased(3000);
+    DeleteSearchServiceNative();
+    DeleteFile(ExpandConstant('{app}\initial_modules.json'));
+    WaitForProcessesAndFilesReleased(1000);
   end;
   if CurUninstallStep = usPostUninstall then
   begin
-    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Tools3000');
+    // 2. 原生注销自启动计划任务（单次通配符覆盖全账户）与注册表 Run 键
+    CleanScheduledTasksAndRegistries();
     DeleteSelectedPersonalData();
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
   end;
@@ -965,14 +1189,14 @@ begin
     Exit;
   end;
 
-  // 检查 Tools3000 是否在运行
+  // 仅在 Tools3000 正在运行时提示用户自动关闭
   if IsTools3000Running() then
   begin
     // 弹出多语言确认提示框，用户确认后自动杀掉进程并继续卸载
     if SuppressibleMsgBox(CustomMessage('AppRunningUninstallPrompt'), mbConfirmation, MB_YESNO, IDYES) = IDYES then
     begin
       StopAndKillAllTools3000Processes();
-      WaitForProcessesAndFilesReleased(4000);
+      WaitForProcessesAndFilesReleased(1000);
     end
     else
     begin
@@ -980,11 +1204,6 @@ begin
       Result := False;
       Exit;
     end;
-  end
-  else if ServiceExists() or IsSearchServiceRunning() or AreAppFilesLocked() then
-  begin
-    StopAndKillAllTools3000Processes();
-    WaitForProcessesAndFilesReleased(3000);
   end;
 end;
 

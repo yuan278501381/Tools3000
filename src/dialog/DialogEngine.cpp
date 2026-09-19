@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tools3000 - High Performance Windows Productivity Suite
  *
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
@@ -260,6 +260,7 @@ void DialogEngine::onWinEvent(DWORD event, HWND hwnd, LONG idObject, LONG idChil
 
 void DialogEngine::handleDialogShown(HWND hwnd) {
     if (!isDialogHostClass(hwnd)) return;
+    if (DialogNavigator::isProgressOrTransferDialog(hwnd)) return;
 
     DWORD processId = 0;
     GetWindowThreadProcessId(hwnd, &processId);
@@ -276,7 +277,7 @@ void DialogEngine::handleDialogShown(HWND hwnd) {
         session.lastPoll = session.discoveredAt;
         m_sessions.emplace(hwnd, std::move(session));
     }
-    LOG_DEBUG("DialogEngine: 收到候选对话框 SHOW, hwnd=0x{:X}, pid={}",
+    LOG_DEBUG("DialogEngine: received candidate dialog SHOW, hwnd=0x{:X}, pid={}",
               reinterpret_cast<uintptr_t>(hwnd), processId);
     m_monitorCv.notify_one();
 }
@@ -331,7 +332,9 @@ void DialogEngine::handleDialogDestroyed(HWND hwnd) {
 }
 
 void DialogEngine::handleForegroundChange(HWND hwnd) {
-    if (hwnd && isDialogHostClass(hwnd)) handleDialogShown(hwnd);
+    if (hwnd && isDialogHostClass(hwnd) && !DialogNavigator::isProgressOrTransferDialog(hwnd)) {
+        handleDialogShown(hwnd);
+    }
 
     bool attach = false;
     std::string processName;
@@ -344,7 +347,8 @@ void DialogEngine::handleForegroundChange(HWND hwnd) {
         }
     }
 
-    if (attach && PathMemoryManager::instance().isRibbonEnabled()) {
+    if (attach && PathMemoryManager::instance().isRibbonEnabled() &&
+        DialogNavigator::isFileDialog(hwnd)) {
         DialogRibbonOverlay::instance().attachToDialog(hwnd, processName);
     } else {
         DialogRibbonOverlay::instance().updatePosition();
@@ -461,7 +465,16 @@ void DialogEngine::monitorThreadMain() {
                         it->second.restoreAttempted = true;
                     }
 
-                    if (!snapshot.restorePath.empty() &&
+                    // 安装程序向导及目录选择器严禁自动恢复路径，防止向导目录被覆盖或注入键盘回车引发向导提前安装/崩溃
+                    const DialogType dtype = DialogNavigator::detectDialogType(hwnd);
+                    const bool isInstaller = DialogNavigator::isInstallerOrWizard(hwnd) ||
+                                             DialogNavigator::isInstallerProcess(snapshot.processName);
+                    const bool isFolderPicker = (dtype == DialogType::FolderPicker);
+
+                    if (isInstaller || isFolderPicker) {
+                        LOG_INFO("DialogEngine: installer or folder picker detected, safely skipped auto-restore: exe={}",
+                                 snapshot.processName);
+                    } else if (!snapshot.restorePath.empty() &&
                         !equalsIgnoreCase(snapshot.restorePath, snapshot.initialFolder)) {
                         stage = "restore-folder";
                         const bool restored = DialogNavigator::instance().navigateToFolder(
@@ -476,12 +489,20 @@ void DialogEngine::monitorThreadMain() {
                     }
                 }
 
-                if (now - snapshot.lastPoll < 200ms) continue;
+                if (now - snapshot.lastPoll < 1000ms) continue;
+
+                const DialogType dtype = DialogNavigator::detectDialogType(hwnd);
+                const bool isInstaller = DialogNavigator::isInstallerOrWizard(hwnd) ||
+                                         DialogNavigator::isInstallerProcess(snapshot.processName);
+                const bool isFolderPicker = (dtype == DialogType::FolderPicker);
 
                 stage = "poll-current-folder";
-                const std::string currentFolder = DialogNavigator::getCurrentDialogFolder(hwnd);
+                const std::string currentFolder = isFolderPicker ? std::string{} : DialogNavigator::getCurrentDialogFolder(hwnd);
                 stage = "poll-selection";
-                const std::string selectedPath = DialogNavigator::getSelectedPath(hwnd);
+                const std::string selectedPath =
+                    (isInstaller || isFolderPicker)
+                        ? std::string{}
+                        : DialogNavigator::getSelectedPath(hwnd);
                 stage = "commit-poll-snapshot";
                 {
                     std::lock_guard lock(m_mutex);
@@ -547,6 +568,17 @@ void DialogEngine::finalizeDialog(HWND hwnd, bool windowStillReadable) {
     }
 
     if (!session.initialized) return;
+
+    const bool isInstaller = DialogNavigator::isInstallerOrWizard(hwnd) ||
+                             DialogNavigator::isInstallerProcess(session.processName);
+    if (isInstaller) {
+        LOG_INFO("DialogEngine: installer dialog closed, safely skipping directory memory recording: exe={}",
+                 session.processName);
+        if (DialogRibbonOverlay::instance().getTargetDialog() == hwnd) {
+            DialogRibbonOverlay::instance().hide();
+        }
+        return;
+    }
 
     std::string selectedPath;
     std::string currentFolder = session.currentFolder;

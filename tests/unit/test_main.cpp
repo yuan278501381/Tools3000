@@ -45,6 +45,7 @@
 #include "capture/CaptureVectorIcons.h"
 #include "capture/BeautyShell.h"
 #include "capture/MarkupEngine.h"
+#include "capture/MarkupBaseHelper.h"
 #include "capture/CornerRadiusHelper.h"
 #include "capture/HudAvoidanceEngine.h"
 #include "capture/PinSpawnCalculator.h"
@@ -165,6 +166,7 @@ using namespace tools3000::gesture;
 // ─────────────────────────────────────────────────────────────────────────────
 #include "test_gesture.inc"
 #include "test_core.inc"
+// Force recompilation of test_capture.inc v3
 #include "test_capture.inc"
 #include "test_search.inc"
 #include "test_ui_lifecycle.inc"

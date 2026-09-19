@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <windows.h>
 #include <d2d1.h>
@@ -43,6 +43,7 @@ public:
     void hide();
     void shutdown() { hide(); }
     bool isVisible() const;
+    RECT getBounds() const;
     std::vector<ShortcutHintItem> getItemsForContext(ShortcutHintContext context) const { return itemsFor(context); }
 
     /// 计算微晶操作提示卡片的最佳布局点位与几何避让 (供渲染与自动化测试调用)

@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // MarkupEngine.cpp — 截图标注引擎实现
 //
 // 所有标注元素使用 OpenCV 绘制:
@@ -133,12 +133,12 @@ namespace {
             }
         }
     }
-    cv::Size measureSnipasteText(const std::wstring& text, int fontSize, bool isEditing = false) {
+    cv::Size measureSnipasteText(const std::wstring& text, int fontSize, bool /*isEditing*/ = false) {
         ensureGdiplusStartup();
-        if (text.empty() || g_gdiPlusToken == 0) {
-            int w = isEditing ? 140 : static_cast<int>(std::max(80.0f, fontSize * 4.0f));
-            int h = isEditing ? (fontSize + 12) : static_cast<int>(std::max(26.0f, fontSize * 1.4f));
-            return cv::Size(std::max(w, 24), std::max(h, fontSize + 8));
+        if (g_gdiPlusToken == 0) {
+            int w = text.empty() ? 140 : static_cast<int>((std::max)(40.0f, fontSize * 2.0f));
+            int h = static_cast<int>((std::max)(24.0f, fontSize * 1.3f));
+            return cv::Size((std::max)(w, 24), (std::max)(h, fontSize + 8));
         }
 
         Gdiplus::FontFamily fontFamily(L"Microsoft YaHei UI");
@@ -155,15 +155,11 @@ namespace {
         Gdiplus::Bitmap tmpBmp(1, 1, PixelFormat32bppARGB);
         Gdiplus::Graphics g(&tmpBmp);
         Gdiplus::RectF boundRect;
-        std::wstring measureStr = text.empty() ? (isEditing ? L"点击输入文字..." : L" ") : text;
+        std::wstring measureStr = text.empty() ? L"点击输入文字..." : text;
         g.MeasureString(measureStr.c_str(), -1, &font, Gdiplus::PointF(0, 0), &format, &boundRect);
         int w = static_cast<int>(std::ceil(boundRect.Width)) + 16;
         int h = static_cast<int>(std::ceil(boundRect.Height)) + 8;
-        if (isEditing) {
-            w = (std::max)(w, 140);
-            h = (std::max)(h, fontSize + 12);
-        }
-        return cv::Size(std::max(w, 24), std::max(h, fontSize + 8));
+        return cv::Size((std::max)(w, 24), (std::max)(h, fontSize + 8));
     }
 
     void renderSnipasteStyleText(cv::Mat& canvas, const std::string& text, cv::Point pt, const cv::Scalar& color,
@@ -619,8 +615,8 @@ MarkupElement* MarkupEngine::getElementById(uint32_t id) const {
 MarkupElement* MarkupEngine::drawRectangle(cv::Point p1, cv::Point p2, MarkupColor color, float thickness) {
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Rectangle;
-    elem->startPt = p1;
-    elem->endPt = p2;
+    elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
+    elem->endPt   = cv::Point((std::max)(p1.x, p2.x), (std::max)(p1.y, p2.y));
     elem->color = color;
     elem->thickness = thickness;
     return addElement(std::move(elem));
@@ -650,8 +646,8 @@ MarkupElement* MarkupEngine::drawArrow(cv::Point from, cv::Point to, MarkupColor
 MarkupElement* MarkupEngine::drawEllipse(cv::Point p1, cv::Point p2, MarkupColor color, float thickness) {
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Ellipse;
-    elem->startPt = p1;
-    elem->endPt = p2;
+    elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
+    elem->endPt   = cv::Point((std::max)(p1.x, p2.x), (std::max)(p1.y, p2.y));
     elem->color = color;
     elem->thickness = thickness;
     return addElement(std::move(elem));
@@ -674,8 +670,8 @@ MarkupElement* MarkupEngine::drawPenStroke(const std::vector<cv::Point>& points,
 MarkupElement* MarkupEngine::drawHighlight(cv::Point p1, cv::Point p2, MarkupColor color) {
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Highlight;
-    elem->startPt = p1;
-    elem->endPt = p2;
+    elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
+    elem->endPt   = cv::Point((std::max)(p1.x, p2.x), (std::max)(p1.y, p2.y));
     elem->color = color;
     elem->color.a = 210;  // 正片叠底荧光笔默认高鲜明度
     return addElement(std::move(elem));
@@ -684,8 +680,8 @@ MarkupElement* MarkupEngine::drawHighlight(cv::Point p1, cv::Point p2, MarkupCol
 MarkupElement* MarkupEngine::applyMosaic(cv::Point p1, cv::Point p2, int blockSize) {
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Mosaic;
-    elem->startPt = p1;
-    elem->endPt = p2;
+    elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
+    elem->endPt   = cv::Point((std::max)(p1.x, p2.x), (std::max)(p1.y, p2.y));
     elem->mosaicBlockSize = blockSize;
     return addElement(std::move(elem));
 }
@@ -693,8 +689,8 @@ MarkupElement* MarkupEngine::applyMosaic(cv::Point p1, cv::Point p2, int blockSi
 MarkupElement* MarkupEngine::applyBlur(cv::Point p1, cv::Point p2, int kernelSize) {
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Blur;
-    elem->startPt = p1;
-    elem->endPt = p2;
+    elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
+    elem->endPt   = cv::Point((std::max)(p1.x, p2.x), (std::max)(p1.y, p2.y));
     elem->mosaicBlockSize = kernelSize;
     return addElement(std::move(elem));
 }
@@ -704,6 +700,7 @@ MarkupElement* MarkupEngine::addText(cv::Point position, const std::string& text
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Text;
     elem->startPt = position;
+    elem->endPt = position;
     elem->text = text;
     elem->color = color;
     elem->fontSize = fontSize;
@@ -741,8 +738,8 @@ void MarkupEngine::addMagnifier(cv::Point center, float scale, int radius) {
 void MarkupEngine::addSpotlight(cv::Point p1, cv::Point p2, MarkupColor color, float dimAlpha, bool ellipse) {
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Spotlight;
-    elem->startPt = p1;
-    elem->endPt = p2;
+    elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
+    elem->endPt   = cv::Point((std::max)(p1.x, p2.x), (std::max)(p1.y, p2.y));
     elem->color = color;
     elem->spotlightDimAlpha = dimAlpha;
     elem->spotlightEllipse = ellipse;
@@ -754,8 +751,8 @@ void MarkupEngine::addSpotlight(cv::Point p1, cv::Point p2, MarkupColor color, f
 void MarkupEngine::addWatermark(cv::Point p1, cv::Point p2, const std::string& text, float opacity, float angle) {
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Watermark;
-    elem->startPt = p1;
-    elem->endPt = p2;
+    elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
+    elem->endPt   = cv::Point((std::max)(p1.x, p2.x), (std::max)(p1.y, p2.y));
     elem->watermarkText = text;
     elem->watermarkOpacity = opacity;
     elem->watermarkAngle = angle;
@@ -767,12 +764,212 @@ void MarkupEngine::addWatermark(cv::Point p1, cv::Point p2, const std::string& t
 void MarkupEngine::applyInpaint(cv::Point p1, cv::Point p2, int radius) {
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Inpaint;
-    elem->startPt = p1;
-    elem->endPt = p2;
+    elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
+    elem->endPt   = cv::Point((std::max)(p1.x, p2.x), (std::max)(p1.y, p2.y));
     elem->inpaintRadius = radius;
     addElement(std::move(elem));
     LOG_DEBUG("标注引擎: 添加智能消除 ({},{})→({},{}) radius={}",
               p1.x, p1.y, p2.x, p2.y, radius);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 统一 8 方向控制手柄几何与通用包围盒处理引擎 (HandleGeometry & DefaultBoxHandler)
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::array<HandleGeometry::HandlePoint, 8> HandleGeometry::getBoxHandles(const cv::Rect& bbox) {
+    const int x = bbox.x;
+    const int y = bbox.y;
+    const int w = bbox.width;
+    const int h = bbox.height;
+    const int cx = x + w / 2;
+    const int cy = y + h / 2;
+
+    return {{
+        { cv::Point(x, y),         HitArea::LT },
+        { cv::Point(cx, y),        HitArea::T  },
+        { cv::Point(x + w, y),     HitArea::RT },
+        { cv::Point(x + w, cy),    HitArea::R  },
+        { cv::Point(x + w, y + h), HitArea::RB },
+        { cv::Point(cx, y + h),    HitArea::B  },
+        { cv::Point(x, y + h),     HitArea::LB },
+        { cv::Point(x, cy),        HitArea::L  }
+    }};
+}
+
+HitArea HandleGeometry::hitTestHandles(const cv::Rect& bbox, cv::Point pt, int handleHalfSize) {
+    auto handles = getBoxHandles(bbox);
+    const int hw = (std::max)(1, handleHalfSize);
+
+    // 优先检测 4 个角手柄
+    static constexpr std::array<size_t, 4> kCorners = {0, 2, 4, 6};
+    for (size_t idx : kCorners) {
+        const auto& hp = handles[idx];
+        cv::Rect hrect(hp.point.x - hw, hp.point.y - hw, hw * 2, hw * 2);
+        if (hrect.contains(pt)) return hp.area;
+    }
+
+    // 其次检测 4 个边中点手柄
+    static constexpr std::array<size_t, 4> kEdges = {1, 3, 5, 7};
+    for (size_t idx : kEdges) {
+        const auto& hp = handles[idx];
+        cv::Rect hrect(hp.point.x - hw, hp.point.y - hw, hw * 2, hw * 2);
+        if (hrect.contains(pt)) return hp.area;
+    }
+
+    return HitArea::None;
+}
+
+void HandleGeometry::renderBoxHandles(cv::Mat& canvas, const cv::Rect& bbox,
+                                     const cv::Scalar& activeColor,
+                                     int handleHalfSize) {
+    cv::rectangle(canvas, bbox, activeColor, 1, cv::LINE_AA);
+
+    const int hw = (std::max)(2, handleHalfSize);
+    auto handles = getBoxHandles(bbox);
+
+    for (const auto& hp : handles) {
+        cv::Rect hrect(hp.point.x - hw, hp.point.y - hw, hw * 2, hw * 2);
+        cv::rectangle(canvas, hrect, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
+        cv::rectangle(canvas, hrect, activeColor, 1, cv::LINE_AA);
+    }
+}
+
+cv::Rect HandleGeometry::computeResizedRect(const cv::Rect& originalRect, int dx, int dy, HitArea handle,
+                                           int minW, int minH) {
+    int l = originalRect.x;
+    int t = originalRect.y;
+    int r = originalRect.x + originalRect.width;
+    int b = originalRect.y + originalRect.height;
+
+    switch (handle) {
+        case HitArea::LT: l += dx; t += dy; break;
+        case HitArea::T:  t += dy; break;
+        case HitArea::RT: r += dx; t += dy; break;
+        case HitArea::R:  r += dx; break;
+        case HitArea::RB: r += dx; b += dy; break;
+        case HitArea::B:  b += dy; break;
+        case HitArea::LB: l += dx; b += dy; break;
+        case HitArea::L:  l += dx; break;
+        default: break;
+    }
+
+    if (r - l < minW) {
+        if (handle == HitArea::L || handle == HitArea::LT || handle == HitArea::LB) {
+            l = r - minW;
+        } else {
+            r = l + minW;
+        }
+    }
+    if (b - t < minH) {
+        if (handle == HitArea::T || handle == HitArea::LT || handle == HitArea::RT) {
+            t = b - minH;
+        } else {
+            b = t + minH;
+        }
+    }
+
+    return cv::Rect(l, t, r - l, b - t);
+}
+
+int HandleGeometry::computeScalarDelta(int dx, int dy, HitArea handle) {
+    switch (handle) {
+        case HitArea::R:  return dx;
+        case HitArea::L:  return -dx;
+        case HitArea::B:  return dy;
+        case HitArea::T:  return -dy;
+        case HitArea::RB: return static_cast<int>(std::round((dx + dy) * 0.5f));
+        case HitArea::LT: return static_cast<int>(std::round((-dx - dy) * 0.5f));
+        case HitArea::RT: return static_cast<int>(std::round((dx - dy) * 0.5f));
+        case HitArea::LB: return static_cast<int>(std::round((-dx + dy) * 0.5f));
+        default: return 0;
+    }
+}
+
+cv::Point HandleGeometry::computeAnchoredOrigin(const cv::Point& currentOrigin, int dW, int dH, HitArea handle) {
+    cv::Point origin = currentOrigin;
+    switch (handle) {
+        case HitArea::R:
+            // 右边拉伸：左边固定，垂直中心绝对锚定
+            origin.y -= dH / 2;
+            break;
+        case HitArea::L:
+            // 左边拉伸：右边固定，垂直中心绝对锚定
+            origin.x -= dW;
+            origin.y -= dH / 2;
+            break;
+        case HitArea::B:
+            // 下边拉伸：顶边固定，水平中心绝对锚定
+            origin.x -= dW / 2;
+            break;
+        case HitArea::T:
+            // 上边拉伸：底边固定，水平中心绝对锚定
+            origin.x -= dW / 2;
+            origin.y -= dH;
+            break;
+        case HitArea::RB:
+            // 右下角拉伸：左上角固定
+            break;
+        case HitArea::LT:
+            // 左上角拉伸：右下角固定
+            origin.x -= dW;
+            origin.y -= dH;
+            break;
+        case HitArea::RT:
+            // 右上角拉伸：左下角固定
+            origin.y -= dH;
+            break;
+        case HitArea::LB:
+            // 左下角拉伸：右上角固定
+            origin.x -= dW;
+            break;
+        default:
+            break;
+    }
+    return origin;
+}
+
+cv::Rect DefaultBoxHandler::getBoundingBox(const MarkupElement& element) const {
+    int x1 = (std::min)(element.startPt.x, element.endPt.x);
+    int y1 = (std::min)(element.startPt.y, element.endPt.y);
+    int x2 = (std::max)(element.startPt.x, element.endPt.x);
+    int y2 = (std::max)(element.startPt.y, element.endPt.y);
+    return cv::Rect(x1, y1, x2 - x1, y2 - y1);
+}
+
+HitArea DefaultBoxHandler::hitTestHandles(const MarkupElement& element, cv::Point pt, int padding) const {
+    if (!element.isActive) return HitArea::None;
+    cv::Rect bbox = getBoundingBox(element);
+    int hw = (std::max)(padding, HandleGeometry::kDefaultHandleHalfSize);
+    return HandleGeometry::hitTestHandles(bbox, pt, hw);
+}
+
+HitArea DefaultBoxHandler::hitTest(const MarkupElement& element, cv::Point pt, int padding) const {
+    cv::Rect bbox = getBoundingBox(element);
+    if (element.isActive) {
+        HitArea h = hitTestHandles(element, pt, padding);
+        if (h != HitArea::None) return h;
+    }
+    int p = (std::max)(padding, 6);
+    cv::Rect expandedBox(bbox.x - p, bbox.y - p, bbox.width + p * 2, bbox.height + p * 2);
+    if (expandedBox.contains(pt)) return HitArea::Body;
+    return HitArea::None;
+}
+
+void DefaultBoxHandler::resize(MarkupElement& element, int dx, int dy, HitArea handle) const {
+    cv::Rect origBox = getBoundingBox(element);
+    cv::Rect newBox = HandleGeometry::computeResizedRect(origBox, dx, dy, handle,
+                                                        HandleGeometry::kDefaultMinBoxSize,
+                                                        HandleGeometry::kDefaultMinBoxSize);
+    element.startPt = cv::Point(newBox.x, newBox.y);
+    element.endPt = cv::Point(newBox.x + newBox.width, newBox.y + newBox.height);
+    LOG_DEBUG("MarkupEngine: DefaultBoxHandler::resize tool={}, handle={}, dx={}, dy={}, bounds=[{},{},{},{}]",
+              static_cast<int>(element.tool), static_cast<int>(handle), dx, dy,
+              newBox.x, newBox.y, newBox.x + newBox.width, newBox.y + newBox.height);
+}
+
+void DefaultBoxHandler::renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const {
+    cv::Rect bbox = getBoundingBox(element);
+    HandleGeometry::renderBoxHandles(canvas, bbox);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -913,72 +1110,6 @@ void drawPatternedRect(cv::Mat& canvas, cv::Point p1, cv::Point p2, const cv::Sc
     }
 }
 
-class DefaultBoxHandler : public IMarkupToolHandler {
-public:
-    cv::Rect getBoundingBox(const MarkupElement& element) const override {
-        int x1 = (std::min)(element.startPt.x, element.endPt.x);
-        int y1 = (std::min)(element.startPt.y, element.endPt.y);
-        int x2 = (std::max)(element.startPt.x, element.endPt.x);
-        int y2 = (std::max)(element.startPt.y, element.endPt.y);
-        return cv::Rect(x1, y1, x2 - x1, y2 - y1);
-    }
-
-    HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
-        cv::Rect bbox = getBoundingBox(element);
-        if (element.isActive) {
-            int hw = 7;
-            cv::Point handles[8] = {
-                {bbox.x, bbox.y}, {bbox.x + bbox.width / 2, bbox.y}, {bbox.x + bbox.width, bbox.y},
-                {bbox.x + bbox.width, bbox.y + bbox.height / 2},
-                {bbox.x + bbox.width, bbox.y + bbox.height}, {bbox.x + bbox.width / 2, bbox.y + bbox.height},
-                {bbox.x, bbox.y + bbox.height}, {bbox.x, bbox.y + bbox.height / 2}
-            };
-            HitArea areas[8] = { HitArea::LT, HitArea::T, HitArea::RT, HitArea::R, HitArea::RB, HitArea::B, HitArea::LB, HitArea::L };
-            for (int i = 0; i < 8; ++i) {
-                cv::Rect hrect(handles[i].x - hw, handles[i].y - hw, hw * 2, hw * 2);
-                if (hrect.contains(pt)) return areas[i];
-            }
-        }
-        int p = (std::max)(padding, 6);
-        bbox.x -= p; bbox.y -= p; bbox.width += p * 2; bbox.height += p * 2;
-        if (bbox.contains(pt)) return HitArea::Body;
-        return HitArea::None;
-    }
-
-    void resize(MarkupElement& element, int dx, int dy, HitArea handle) const override {
-        switch (handle) {
-            case HitArea::LT: element.startPt.x += dx; element.startPt.y += dy; break;
-            case HitArea::T:  element.startPt.y += dy; break;
-            case HitArea::RT: element.endPt.x += dx; element.startPt.y += dy; break;
-            case HitArea::R:  element.endPt.x += dx; break;
-            case HitArea::RB: element.endPt.x += dx; element.endPt.y += dy; break;
-            case HitArea::B:  element.endPt.y += dy; break;
-            case HitArea::LB: element.startPt.x += dx; element.endPt.y += dy; break;
-            case HitArea::L:  element.startPt.x += dx; break;
-            default: break;
-        }
-    }
-
-    void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const override {
-        cv::Rect bbox = getBoundingBox(element);
-        cv::Scalar activeColor(255, 140, 0); // BGR: Deep Sky Blue / Azure style
-        cv::rectangle(canvas, bbox, activeColor, 1, cv::LINE_AA);
-        
-        int hw = 5;
-        cv::Point handles[8] = {
-            {bbox.x, bbox.y}, {bbox.x + bbox.width / 2, bbox.y}, {bbox.x + bbox.width, bbox.y},
-            {bbox.x + bbox.width, bbox.y + bbox.height / 2},
-            {bbox.x + bbox.width, bbox.y + bbox.height}, {bbox.x + bbox.width / 2, bbox.y + bbox.height},
-            {bbox.x, bbox.y + bbox.height}, {bbox.x, bbox.y + bbox.height / 2}
-        };
-
-        for (const auto& pt : handles) {
-            cv::rectangle(canvas, cv::Rect(pt.x - hw, pt.y - hw, hw * 2, hw * 2), cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
-            cv::rectangle(canvas, cv::Rect(pt.x - hw, pt.y - hw, hw * 2, hw * 2), activeColor, 1, cv::LINE_AA);
-        }
-    }
-};
-
 class RectangleHandler : public DefaultBoxHandler {
 public:
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
@@ -989,38 +1120,25 @@ public:
 
     HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
         if (element.isActive) {
-            int x1 = (std::min)(element.startPt.x, element.endPt.x);
-            int y1 = (std::min)(element.startPt.y, element.endPt.y);
-            int x2 = (std::max)(element.startPt.x, element.endPt.x);
-            int y2 = (std::max)(element.startPt.y, element.endPt.y);
-            float w = static_cast<float>(x2 - x1);
-            float h = static_cast<float>(y2 - y1);
+            // 1. 优先检测激活态 8 方向拉伸手柄 (统一由 HandleGeometry 管理)
+            HitArea handleHit = hitTestHandles(element, pt, padding);
+            if (handleHit != HitArea::None) return handleHit;
+
+            // 2. 检测内角圆角调节手柄 (位于角内侧)
+            cv::Rect bbox = getBoundingBox(element);
+            float w = static_cast<float>(bbox.width);
+            float h = static_cast<float>(bbox.height);
             if (CornerRadiusHelper::canShowHandles(w, h, 1.0f, 40.0f)) {
                 bool isSmall = (w < 80.0f || h < 80.0f);
                 int hitIdx = CornerRadiusHelper::hitTestHandles(
-                    static_cast<float>(x1), static_cast<float>(y1),
-                    static_cast<float>(x2), static_cast<float>(y2),
+                    static_cast<float>(bbox.x), static_cast<float>(bbox.y),
+                    static_cast<float>(bbox.x + bbox.width), static_cast<float>(bbox.y + bbox.height),
                     element.cornerRadius,
                     static_cast<float>(pt.x), static_cast<float>(pt.y),
                     1.0f, 9.0f, isSmall);
                 if (hitIdx >= 0) {
                     return HitArea::CornerRadius;
                 }
-            }
-
-            // 激活态 8 方向拉伸手柄
-            cv::Rect bbox = getBoundingBox(element);
-            int hw = 7;
-            cv::Point handles[8] = {
-                {bbox.x, bbox.y}, {bbox.x + bbox.width / 2, bbox.y}, {bbox.x + bbox.width, bbox.y},
-                {bbox.x + bbox.width, bbox.y + bbox.height / 2},
-                {bbox.x + bbox.width, bbox.y + bbox.height}, {bbox.x + bbox.width / 2, bbox.y + bbox.height},
-                {bbox.x, bbox.y + bbox.height}, {bbox.x, bbox.y + bbox.height / 2}
-            };
-            HitArea areas[8] = { HitArea::LT, HitArea::T, HitArea::RT, HitArea::R, HitArea::RB, HitArea::B, HitArea::LB, HitArea::L };
-            for (int i = 0; i < 8; ++i) {
-                cv::Rect hrect(handles[i].x - hw, handles[i].y - hw, hw * 2, hw * 2);
-                if (hrect.contains(pt)) return areas[i];
             }
         }
 
@@ -1052,7 +1170,15 @@ public:
                 element.cornerRadius, static_cast<float>(dx), static_cast<float>(dy), 1.0f, 1.0f, maxR);
         } else {
             DefaultBoxHandler::resize(element, dx, dy, handle);
+            int w = element.endPt.x - element.startPt.x;
+            int h = element.endPt.y - element.startPt.y;
+            float maxR = (std::min)(w, h) * 0.5f;
+            if (element.cornerRadius > maxR) {
+                element.cornerRadius = maxR;
+            }
         }
+        LOG_DEBUG("MarkupEngine: RectangleHandler::resize handle={}, dx={}, dy={}, radius={:.1f}",
+                  static_cast<int>(handle), dx, dy, element.cornerRadius);
     }
 
     void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const override {
@@ -1317,14 +1443,6 @@ public:
 
 class EllipseHandler : public DefaultBoxHandler {
 public:
-    cv::Rect getBoundingBox(const MarkupElement& element) const override {
-        int rx = std::abs(element.endPt.x - element.startPt.x) / 2;
-        int ry = std::abs(element.endPt.y - element.startPt.y) / 2;
-        int cx = (element.startPt.x + element.endPt.x) / 2;
-        int cy = (element.startPt.y + element.endPt.y) / 2;
-        return cv::Rect(cx - rx, cy - ry, rx * 2, ry * 2);
-    }
-
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
         auto color = element.color.toCvScalar();
         int thick = (std::max)(1, static_cast<int>(element.thickness));
@@ -1353,21 +1471,11 @@ public:
     }
 
     HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
-        cv::Rect bbox = getBoundingBox(element);
         if (element.isActive) {
-            int hw = 7;
-            cv::Point handles[8] = {
-                {bbox.x, bbox.y}, {bbox.x + bbox.width / 2, bbox.y}, {bbox.x + bbox.width, bbox.y},
-                {bbox.x + bbox.width, bbox.y + bbox.height / 2},
-                {bbox.x + bbox.width, bbox.y + bbox.height}, {bbox.x + bbox.width / 2, bbox.y + bbox.height},
-                {bbox.x, bbox.y + bbox.height}, {bbox.x, bbox.y + bbox.height / 2}
-            };
-            HitArea areas[8] = { HitArea::LT, HitArea::T, HitArea::RT, HitArea::R, HitArea::RB, HitArea::B, HitArea::LB, HitArea::L };
-            for (int i = 0; i < 8; ++i) {
-                cv::Rect hrect(handles[i].x - hw, handles[i].y - hw, hw * 2, hw * 2);
-                if (hrect.contains(pt)) return areas[i];
-            }
+            HitArea handleHit = hitTestHandles(element, pt, padding);
+            if (handleHit != HitArea::None) return handleHit;
         }
+        cv::Rect bbox = getBoundingBox(element);
         double rx = bbox.width * 0.5;
         double ry = bbox.height * 0.5;
         if (rx < 1e-4 || ry < 1e-4) return HitArea::None;
@@ -1401,7 +1509,9 @@ public:
             minX = (std::min)(minX, pt.x); minY = (std::min)(minY, pt.y);
             maxX = (std::max)(maxX, pt.x); maxY = (std::max)(maxY, pt.y);
         }
-        return cv::Rect(minX, minY, maxX - minX, maxY - minY);
+        int w = (std::max)(HandleGeometry::kDefaultMinBoxSize, maxX - minX);
+        int h = (std::max)(HandleGeometry::kDefaultMinBoxSize, maxY - minY);
+        return cv::Rect(minX, minY, w, h);
     }
 
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
@@ -1421,19 +1531,8 @@ public:
     HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
         if (element.penPoints.empty()) return HitArea::None;
         if (element.isActive) {
-            cv::Rect bbox = getBoundingBox(element);
-            int hw = 7;
-            cv::Point handles[8] = {
-                {bbox.x, bbox.y}, {bbox.x + bbox.width / 2, bbox.y}, {bbox.x + bbox.width, bbox.y},
-                {bbox.x + bbox.width, bbox.y + bbox.height / 2},
-                {bbox.x + bbox.width, bbox.y + bbox.height}, {bbox.x + bbox.width / 2, bbox.y + bbox.height},
-                {bbox.x, bbox.y + bbox.height}, {bbox.x, bbox.y + bbox.height / 2}
-            };
-            HitArea areas[8] = { HitArea::LT, HitArea::T, HitArea::RT, HitArea::R, HitArea::RB, HitArea::B, HitArea::LB, HitArea::L };
-            for (int i = 0; i < 8; ++i) {
-                cv::Rect hrect(handles[i].x - hw, handles[i].y - hw, hw * 2, hw * 2);
-                if (hrect.contains(pt)) return areas[i];
-            }
+            HitArea handleHit = hitTestHandles(element, pt, padding);
+            if (handleHit != HitArea::None) return handleHit;
         }
         int p = (std::max)(padding, static_cast<int>(element.thickness * 0.5f) + 6);
         double pSq = static_cast<double>(p * p);
@@ -1457,6 +1556,39 @@ public:
             }
         }
         return HitArea::None;
+    }
+
+    void resize(MarkupElement& element, int dx, int dy, HitArea handle) const override {
+        if (element.penPoints.empty()) return;
+        cv::Rect bbox = getBoundingBox(element);
+        if (bbox.width <= 0 || bbox.height <= 0) return;
+
+        cv::Rect newBox = HandleGeometry::computeResizedRect(bbox, dx, dy, handle, 4, 4);
+
+        int minX = element.penPoints[0].x, minY = element.penPoints[0].y;
+        int maxX = minX, maxY = minY;
+        for (const auto& pt : element.penPoints) {
+            minX = (std::min)(minX, pt.x); minY = (std::min)(minY, pt.y);
+            maxX = (std::max)(maxX, pt.x); maxY = (std::max)(maxY, pt.y);
+        }
+        int origSpanX = maxX - minX;
+        int origSpanY = maxY - minY;
+
+        float scaleX = (origSpanX > 0) ? (static_cast<float>(newBox.width) / static_cast<float>(origSpanX)) : 1.0f;
+        float scaleY = (origSpanY > 0) ? (static_cast<float>(newBox.height) / static_cast<float>(origSpanY)) : 1.0f;
+
+        for (auto& pt : element.penPoints) {
+            if (origSpanX > 0) {
+                pt.x = newBox.x + static_cast<int>(std::round((pt.x - minX) * scaleX));
+            } else {
+                pt.x = newBox.x + newBox.width / 2;
+            }
+            if (origSpanY > 0) {
+                pt.y = newBox.y + static_cast<int>(std::round((pt.y - minY) * scaleY));
+            } else {
+                pt.y = newBox.y + newBox.height / 2;
+            }
+        }
     }
 };
 
@@ -1575,37 +1707,49 @@ public:
         }
         int bw = element.textRenderSize.width;
         int bh = element.textRenderSize.height;
-        if (bw < 80) bw = static_cast<int>((std::max)(80.0f, element.fontSize * 4.0f));
-        if (bh < static_cast<int>(element.fontSize * 1.3f)) bh = static_cast<int>((std::max)(26.0f, element.fontSize * 1.3f));
+        if (element.text.empty()) {
+            if (bw < 140) bw = static_cast<int>((std::max)(140.0f, element.fontSize * 5.0f));
+            if (bh < static_cast<int>(element.fontSize + 12)) bh = static_cast<int>((std::max)(28.0f, element.fontSize + 12.0f));
+        } else {
+            if (bw < 32) bw = static_cast<int>((std::max)(32.0f, element.fontSize * 1.5f));
+            if (bh < static_cast<int>(element.fontSize * 1.2f)) bh = static_cast<int>((std::max)(24.0f, element.fontSize * 1.2f));
+        }
+        const_cast<MarkupElement&>(element).endPt = cv::Point(element.startPt.x + bw, element.startPt.y + bh);
         return cv::Rect(element.startPt.x, element.startPt.y, bw, bh);
     }
 
     void resize(MarkupElement& element, int dx, int dy, HitArea handle) const override {
-        int delta = 0;
-        switch (handle) {
-            case HitArea::LT: delta = -dx - dy; element.startPt.x += dx; element.startPt.y += dy; break;
-            case HitArea::T:  delta = -dy; element.startPt.y += dy; break;
-            case HitArea::RT: delta = dx - dy; element.startPt.y += dy; break;
-            case HitArea::R:  delta = dx; break;
-            case HitArea::RB: delta = dx + dy; break;
-            case HitArea::B:  delta = dy; break;
-            case HitArea::LB: delta = -dx + dy; element.startPt.x += dx; break;
-            case HitArea::L:  delta = -dx; break;
-            default: break;
-        }
+        cv::Rect oldBox = getBoundingBox(element);
+        int oldW = oldBox.width;
+        int oldH = oldBox.height;
+
+        int delta = HandleGeometry::computeScalarDelta(dx, dy, handle);
         element.fontSize += delta * 0.35f;
         if (element.fontSize < 12.0f) element.fontSize = 12.0f;
         if (element.fontSize > 180.0f) element.fontSize = 180.0f;
-        element.textRenderSize = cv::Size(0,0);
+        element.textRenderSize = cv::Size(0, 0);
+
+        cv::Rect newBox = getBoundingBox(element);
+        int newW = newBox.width;
+        int newH = newBox.height;
+        int dW = newW - oldW;
+        int dH = newH - oldH;
+
+        element.startPt = HandleGeometry::computeAnchoredOrigin(element.startPt, dW, dH, handle);
+        element.endPt = cv::Point(element.startPt.x + newW, element.startPt.y + newH);
     }
 
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
         auto color = element.color.toCvScalar();
         cv::Size renderedSize(0, 0);
+        bool showPlaceholder = element.isEditing || element.isActive;
         renderSnipasteStyleText(canvas, element.text, element.startPt, color, static_cast<int>(element.fontSize),
-                                element.isEditing, element.fill, renderedSize,
+                                showPlaceholder, element.fill, renderedSize,
                                 element.textOutline, element.textOutlineColor);
         const_cast<MarkupElement&>(element).textRenderSize = renderedSize;
+        if (renderedSize.width > 0 && renderedSize.height > 0) {
+            const_cast<MarkupElement&>(element).endPt = cv::Point(element.startPt.x + renderedSize.width, element.startPt.y + renderedSize.height);
+        }
     }
 };
 
@@ -1724,19 +1868,8 @@ public:
     }
 
     void resize(MarkupElement& element, int dx, int dy, HitArea handle) const override {
-        int delta = 0;
-        switch (handle) {
-            case HitArea::LT: delta = -dx - dy; break;
-            case HitArea::T:  delta = -dy; break;
-            case HitArea::RT: delta = dx - dy; break;
-            case HitArea::R:  delta = dx; break;
-            case HitArea::RB: delta = dx + dy; break;
-            case HitArea::B:  delta = dy; break;
-            case HitArea::LB: delta = -dx + dy; break;
-            case HitArea::L:  delta = -dx; break;
-            default: break;
-        }
-        element.magnifierRadius += delta / 2;
+        int delta = HandleGeometry::computeScalarDelta(dx, dy, handle);
+        element.magnifierRadius += delta;
         if (element.magnifierRadius < 20) element.magnifierRadius = 20;
         if (element.magnifierRadius > 500) element.magnifierRadius = 500;
     }
@@ -1744,38 +1877,42 @@ public:
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
         int r = element.magnifierRadius;
         float scale = element.magnifierScale;
-        int srcR = static_cast<int>(r / scale);
+        int srcR = static_cast<int>(std::round(r / scale));
+        if (r <= 0 || srcR <= 0) return;
+
         cv::Rect srcRect(element.startPt.x - srcR, element.startPt.y - srcR, srcR * 2, srcR * 2);
-        srcRect &= cv::Rect(0, 0, canvas.cols, canvas.rows);
+        cv::Rect dstRect(element.startPt.x - r, element.startPt.y - r, r * 2, r * 2);
+        cv::Rect screenBounds(0, 0, canvas.cols, canvas.rows);
 
-        if (srcRect.area() > 0) {
-            cv::Mat srcROI = canvas(srcRect);
-            cv::Mat enlarged;
-            cv::resize(srcROI, enlarged, cv::Size(r * 2, r * 2), 0, 0, cv::INTER_CUBIC);
+        cv::Rect validSrc = srcRect & screenBounds;
+        cv::Rect validDst = dstRect & screenBounds;
+        if (validSrc.area() <= 0 || validDst.area() <= 0) return;
 
-            cv::Mat mask = cv::Mat::zeros(r * 2, r * 2, CV_8UC1);
-            cv::circle(mask, cv::Point(r, r), r - 2, cv::Scalar(255), cv::FILLED, cv::LINE_AA);
+        // 构建严格等比例正方形源补丁，消除边缘裁切引起的宽高比失真与拉伸形变
+        cv::Mat srcPatch = cv::Mat::zeros(srcR * 2, srcR * 2, canvas.type());
+        cv::Rect patchDst(validSrc.x - srcRect.x, validSrc.y - srcRect.y, validSrc.width, validSrc.height);
+        canvas(validSrc).copyTo(srcPatch(patchDst));
 
-            cv::Rect dstRect(element.startPt.x - r, element.startPt.y - r, r * 2, r * 2);
-            dstRect &= cv::Rect(0, 0, canvas.cols, canvas.rows);
-            if (dstRect.area() > 0) {
-                cv::Mat dstROI = canvas(dstRect);
-                cv::Mat croppedEnlarged = enlarged(cv::Rect(0, 0, dstRect.width, dstRect.height));
-                cv::Mat croppedMask = mask(cv::Rect(0, 0, dstRect.width, dstRect.height));
-                croppedEnlarged.copyTo(dstROI, croppedMask);
+        cv::Mat enlarged;
+        cv::resize(srcPatch, enlarged, cv::Size(r * 2, r * 2), 0, 0, cv::INTER_CUBIC);
 
-                cv::circle(canvas, element.startPt, r, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
-                cv::circle(canvas, element.startPt, r - 2, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+        cv::Mat mask = cv::Mat::zeros(r * 2, r * 2, CV_8UC1);
+        cv::circle(mask, cv::Point(r, r), r - 2, cv::Scalar(255), cv::FILLED, cv::LINE_AA);
 
-                int ch = 4;
-                cv::line(canvas, cv::Point(element.startPt.x - ch, element.startPt.y), 
-                                 cv::Point(element.startPt.x + ch, element.startPt.y), 
-                                 cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
-                cv::line(canvas, cv::Point(element.startPt.x, element.startPt.y - ch), 
-                                 cv::Point(element.startPt.x, element.startPt.y + ch), 
-                                 cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
-            }
-        }
+        cv::Rect patchSrc(validDst.x - dstRect.x, validDst.y - dstRect.y, validDst.width, validDst.height);
+        cv::Mat dstROI = canvas(validDst);
+        enlarged(patchSrc).copyTo(dstROI, mask(patchSrc));
+
+        cv::circle(canvas, element.startPt, r, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
+        cv::circle(canvas, element.startPt, r - 2, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+
+        int ch = 4;
+        cv::line(canvas, cv::Point(element.startPt.x - ch, element.startPt.y), 
+                         cv::Point(element.startPt.x + ch, element.startPt.y), 
+                         cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
+        cv::line(canvas, cv::Point(element.startPt.x, element.startPt.y - ch), 
+                         cv::Point(element.startPt.x, element.startPt.y + ch), 
+                         cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
     }
 };
 

@@ -39,24 +39,18 @@ Write-Host "   Tools3000 Official CLI Uninstaller (2026)           " -Foreground
 Write-Host "   Copyright (c) 2026 Yy1 (@yuan278501381)             " -ForegroundColor DarkGray
 Write-Host "=======================================================" -ForegroundColor Cyan
 
-# 1. 优雅停止运行中的 Tools3000 进程
+# 1. 毫秒级极速停止运行中的 Tools3000 与服务进程树
 Write-CliLog "正在检测运行中的 Tools3000 进程..." "INFO"
-$Processes = Get-Process -Name "Tools3000", "Tools3000_Service" -ErrorAction SilentlyContinue
-if ($Processes) {
-    Write-CliLog "正在退出运行中的 Tools3000 实例..." "INFO"
-    foreach ($p in $Processes) {
-        try {
-            $p.CloseMainWindow() | Out-Null
-            Start-Sleep -Milliseconds 300
-            if (-not $p.HasExited) {
-                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
-    }
+$ActiveProcs = Get-Process -Name "Tools3000", "Tools3000_Service" -ErrorAction SilentlyContinue
+if ($ActiveProcs) {
+    Write-CliLog "检测到运行中的实例，正在极速终止进程树..." "INFO"
+    taskkill.exe /F /T /IM Tools3000.exe 2>$null | Out-Null
+    taskkill.exe /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
 }
-sc.exe stop Tools3000_SearchService 2>$null | Out-Null
-taskkill /F /T /IM Tools3000.exe 2>$null | Out-Null
-taskkill /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
+$svc = Get-Service -Name "Tools3000_SearchService" -ErrorAction SilentlyContinue
+if ($svc -and $svc.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+    Stop-Service -Name "Tools3000_SearchService" -Force -NoWait -ErrorAction SilentlyContinue
+}
 
 # 2. 检索卸载程序路径
 $UninstallKeys = @(
@@ -100,6 +94,10 @@ if ($UninstallerPath -and (Test-Path $UninstallerPath)) {
         $p.WaitForExit()
         if ($p.ExitCode -eq 0) {
             Write-CliLog "Tools3000 主程序与系统服务已成功卸载！" "SUCCESS"
+            $InstallDir = Split-Path -Parent $UninstallerPath
+            if ($InstallDir -and (Test-Path -LiteralPath $InstallDir)) {
+                Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
         } else {
             Write-CliLog "卸载退出代码: $($p.ExitCode)" "WARN"
         }
@@ -108,7 +106,25 @@ if ($UninstallerPath -and (Test-Path $UninstallerPath)) {
         exit 1
     }
 } else {
-    Write-CliLog "未在注册表或默认路径检测到 Tools3000 安装记录。" "WARN"
+    Write-CliLog "未在注册表或默认路径检测到 Tools3000 安装包记录，执行绿色/便携与残留深度清理..." "WARN"
+    $svc = Get-Service -Name "Tools3000_SearchService" -ErrorAction SilentlyContinue
+    if ($svc) {
+        sc.exe delete Tools3000_SearchService 2>$null | Out-Null
+    }
+    try {
+        $ts = New-Object -ComObject "Schedule.Service"
+        $ts.Connect()
+        $folder = $ts.GetFolder("\Tools3000")
+        $tasks = $folder.GetTasks(0)
+        for ($i = $tasks.Count; $i -ge 1; $i--) {
+            $folder.DeleteTask($tasks.Item($i).Name, 0)
+        }
+        $root = $ts.GetFolder("\")
+        $root.DeleteFolder("Tools3000", 0)
+    } catch {
+        schtasks.exe /delete /tn "Tools3000\Autorun for $env:USERNAME" /f 2>$null | Out-Null
+    }
+    Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Tools3000" -ErrorAction SilentlyContinue
 }
 
 # 3. 默认清理全部个人数据；可用 -KeepPersonalData 明确保留

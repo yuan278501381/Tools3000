@@ -1,4 +1,4 @@
-﻿#include "capture/CaptureToolbarLayout.h"
+#include "capture/CaptureToolbarLayout.h"
 #include "capture/ShortcutHintOverlay.h"
 
 #include "core/config/ConfigManager.h"
@@ -167,7 +167,8 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
     specs.push_back({ToolbarCommand::ToggleBeautyShell, MarkupTool::Rectangle, {}, L"", 30.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.beautyShell.enabled, false, false, false});
 
     // 动作组（带前置分隔线）
-    specs.push_back({ToolbarCommand::Cancel, MarkupTool::Rectangle, {}, L"", 30.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, true});
+    specs.push_back({ToolbarCommand::Copy, MarkupTool::Rectangle, {}, L"", 30.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, true});
+    specs.push_back({ToolbarCommand::Cancel, MarkupTool::Rectangle, {}, L"", 30.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false});
     specs.push_back({ToolbarCommand::Confirm, MarkupTool::Rectangle, {}, L"", 38.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false});
 
     return specs;
@@ -175,7 +176,7 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
 
 // 2. 二级属性栏规格（根据 currentTool 动态变幻）
 std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh) {
-    if (state.mode == OverlayMode::RecordRegion) return {};
+    if (state.mode == OverlayMode::RecordRegion || !state.isMarkupToolActive) return {};
 
     static const std::array colors{
         MarkupColor::Red(), MarkupColor::Orange(), MarkupColor::Yellow(),
@@ -420,16 +421,36 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
 
     float totalHeight = priPanelH + (secSpecs.empty() ? 0.0f : (tierGap + secPanelH));
 
-    // 计算放置在选区下方还是上方
+    // 智能几何避让计算：依次尝试下方外部、上方外部、下方内嵌、屏幕边缘安全退化
+    const float selH = selectionRect.bottom - selectionRect.top;
+    const float gap = 8.0f * scale;
+    const float insideMargin = 12.0f * scale;
+    const float spaceBelow = (surfaceSize.height - screenMargin) - (selectionRect.bottom + gap);
+    const float spaceAbove = (selectionRect.top - gap) - screenMargin;
+
     float priPanelX = std::clamp(selectionRect.left, screenMargin,
                                  std::max(screenMargin, surfaceSize.width - priPanelW - screenMargin));
-    float priPanelY = selectionRect.bottom + 8.0f * scale;
+    float priPanelY = 0.0f;
 
-    if (priPanelY + totalHeight > surfaceSize.height - screenMargin) {
-        priPanelY = selectionRect.top - totalHeight - 8.0f * scale;
+    if (spaceBelow >= totalHeight) {
+        // 1. 选区下方外部空间充裕（默认黄金布局）
+        priPanelY = selectionRect.bottom + gap;
+    } else if (spaceAbove >= totalHeight) {
+        // 2. 选区上方外部空间充裕（自动翻转至上方外部，不遮挡选区内部）
+        priPanelY = selectionRect.top - totalHeight - gap;
+    } else if (selH >= totalHeight + 2.0f * insideMargin) {
+        // 3. 上下外部空间均不足（大选区/近全屏），优雅内嵌至选区内部下方，避开上下手柄
+        priPanelY = selectionRect.bottom - totalHeight - insideMargin;
+    } else {
+        // 4. 极窄/极小贴边选区，退化至空间较大的一侧并做屏幕安全边距夹取
+        if (spaceAbove > spaceBelow) {
+            priPanelY = std::clamp(selectionRect.top - totalHeight - gap, screenMargin,
+                                   std::max(screenMargin, surfaceSize.height - totalHeight - screenMargin));
+        } else {
+            priPanelY = std::clamp(selectionRect.bottom + gap, screenMargin,
+                                   std::max(screenMargin, surfaceSize.height - totalHeight - screenMargin));
+        }
     }
-    priPanelY = std::clamp(priPanelY, screenMargin,
-                           std::max(screenMargin, surfaceSize.height - totalHeight - screenMargin));
 
     state.primaryToolbarRect = D2D1::RectF(priPanelX, priPanelY, priPanelX + priPanelW, priPanelY + priPanelH);
 
@@ -492,12 +513,13 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
             state.secondaryToolbarButtons.push_back(btn);
             sCurX += w + secGapX * secShrink;
         }
+    } else {
+        state.secondaryToolbarRect = {};
     }
 
     // 3. 选区侧边自适应浮动菜单布局 (PixPin 标杆：紧贴选区右侧垂直排列，带屏幕右边缘自适应翻转)
     state.selectionSideButtons.clear();
     float selW = selectionRect.right - selectionRect.left;
-    float selH = selectionRect.bottom - selectionRect.top;
     if (state.mode == OverlayMode::Screenshot && selW >= 20.0f * scale && selH >= 20.0f * scale) {
         const float sideBtnSz = 28.0f * scale;
         const float sideGapY = 5.0f * scale;
@@ -554,6 +576,8 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
         float y4 = y3 + sideBtnSz + sideGapY;
         btnReset.rect = D2D1::RectF(sideX + sidePad, y4, sideX + sidePad + sideBtnSz, y4 + sideBtnSz);
         state.selectionSideButtons.push_back(btnReset);
+    } else {
+        state.selectionSideRect = {};
     }
 
     state.toolbarLayoutSelection = selectionRect;
@@ -605,7 +629,7 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
         case ToolbarCommand::SideInvertSelection: return chinese ? L"反向选择 / 选区扩展" : L"Invert Selection";
         case ToolbarCommand::SideResetSelection: return chinese ? L"重置选区直角 (0px)" : L"Reset Corner Radius";
         case ToolbarCommand::ExtractText: return chinese ? L"提取文字 (OCR)" : L"Extract text (OCR)";
-        case ToolbarCommand::PinWindow: return chinese ? L"贴图置顶 (Ctrl+T)" : L"Pin to screen (Ctrl+T)";
+        case ToolbarCommand::PinWindow: return chinese ? L"贴图置顶到屏幕 (Ctrl+T)" : L"Pin to screen (Ctrl+T)";
         case ToolbarCommand::ScrollCapture: return chinese ? L"长截图" : L"Scrolling capture";
         case ToolbarCommand::StartRecord: return chinese ? L"区域录屏" : L"Record Video";
         case ToolbarCommand::ToggleBeautyShell: return chinese ? L"美化外壳导出 (B)" : L"Beauty Shell (B)";
@@ -614,7 +638,8 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
         case ToolbarCommand::CycleBeautyBg: return chinese ? L"外壳质感风格 (Shift+B)" : L"Shell Background Theme (Shift+B)";
         case ToolbarCommand::CycleBeautyPadding: return chinese ? L"外壳留白边距 (Alt+B)" : L"Shell Padding (Alt+B)";
         case ToolbarCommand::CycleBeautyRadius: return chinese ? L"外壳圆角弧度" : L"Shell Corner Radius";
-        case ToolbarCommand::Confirm: return chinese ? L"复制并完成 (Enter / Ctrl+C)" : L"Copy & Done (Enter / Ctrl+C)";
+        case ToolbarCommand::Copy: return chinese ? L"复制到剪贴板 (Ctrl+C)" : L"Copy to clipboard (Ctrl+C)";
+        case ToolbarCommand::Confirm: return chinese ? L"完成并复制 (Enter)" : L"Done & Copy (Enter)";
         case ToolbarCommand::Cancel: return chinese ? L"取消 (Esc)" : L"Cancel (Esc)";
         case ToolbarCommand::ToggleFill: return chinese ? L"切换填充模式" : L"Toggle Fill";
         case ToolbarCommand::ToggleTextOutline: return chinese ? L"文字高反差描边 (开/关)" : L"Text High-Contrast Outline (On/Off)";

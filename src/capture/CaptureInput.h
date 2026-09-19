@@ -38,6 +38,7 @@ private:
     void pickCustomColor();
     
     void setCurrentTool(MarkupTool tool);
+    void toggleOrSetTool(MarkupTool tool);
     bool isPointInSelection(POINT point) const;
     cv::Point toMarkupPoint(POINT point) const;
     

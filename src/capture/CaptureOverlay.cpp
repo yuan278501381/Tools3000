@@ -1,6 +1,7 @@
 #include "capture/CaptureOverlay.h"
 #include "capture/CaptureBackend.h"
 #include "capture/CursorOverlay.h"
+#include "capture/MarkupBaseHelper.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 #include "core/events/EventBus.h"
@@ -163,6 +164,7 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     m_state.dragging = false;
     m_state.isMarking = false;
     m_state.markupBaseReady = false;
+    m_state.markupBaseRect = {0, 0, 0, 0};
     m_state.activeElement = nullptr;
     m_state.dragHandle = HitArea::None;
     m_state.isManipulating = false;
@@ -171,6 +173,7 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     m_state.markup.clearAll();
     m_state.loupeToastUntil = 0;
     m_state.currentTool = MarkupTool::Rectangle;
+    m_state.isMarkupToolActive = false;
     m_state.isFadingOut = false;
     m_state.fadeOutStart = 0;
 
@@ -295,6 +298,7 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
     m_state.dragging = false;
     m_state.isMarking = false;
     m_state.markupBaseReady = false;
+    m_state.markupBaseRect = {0, 0, 0, 0};
     m_state.activeElement = nullptr;
     m_state.dragHandle = HitArea::None;
     m_state.isManipulating = false;
@@ -555,18 +559,12 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     }
 
     cv::Mat cropped;
+    cv::Rect targetRect(x1, y1, w, h);
     if (m_state.markup.elementCount() > 0) {
+        syncMarkupBase(m_state.frozenScreen, targetRect, m_state.markupBaseReady, m_state.markupBaseRect, m_state.markup);
         cropped = m_state.markup.getCompositeImage();
     } else {
-        cv::Rect roiRect(x1, y1, w, h);
-        roiRect &= cv::Rect(0, 0, m_state.frozenScreen.cols, m_state.frozenScreen.rows);
-
-        if (roiRect.area() > 0) {
-            m_state.frozenScreen(roiRect).copyTo(cropped);
-            if (cropped.channels() == 4) {
-                cv::cvtColor(cropped, cropped, cv::COLOR_BGRA2BGR);
-            }
-        }
+        cropped = cropMarkupBase(m_state.frozenScreen, targetRect);
     }
 
     if (m_state.beautyShell.enabled && !cropped.empty() && m_state.mode != OverlayMode::RecordRegion) {

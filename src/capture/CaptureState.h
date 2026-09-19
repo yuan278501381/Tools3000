@@ -33,6 +33,7 @@ enum class ToolbarCommand {
     ScrollCapture,
     StartRecord,
     ToggleBeautyShell,       // 一键切换美化外壳导出模式 (CleanShot X / PixPin 风格)
+    Copy,                    // 复制到剪贴板 (Ctrl+C)
     Confirm,
     Cancel,
     // 二级属性栏专属命令
@@ -221,6 +222,7 @@ public:
 
     MarkupEngine markup;
     MarkupTool currentTool = MarkupTool::Rectangle;
+    bool isMarkupToolActive = false;
     MarkupColor currentColor = MarkupColor::Red();
     MarkupColor customColor{139, 92, 246, 255}; // 默认典雅紫罗兰 #8B5CF6
     bool hasCustomColor = false;
@@ -234,6 +236,7 @@ public:
     MarkupColor currentTextOutlineColor = MarkupColor::Auto(); // 描边颜色: Auto / Black / White
 
     bool markupBaseReady = false;
+    cv::Rect markupBaseRect{0, 0, 0, 0};
     bool isMarking = false;
     POINT markupStart{};
     POINT markupEnd{};

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #ifndef TOOLS3000_CAPTURE_CAPTURERENDERER_H
 #define TOOLS3000_CAPTURE_CAPTURERENDERER_H
 
@@ -81,6 +81,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_screenBitmap;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_markupCacheBitmap;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_historyBitmap;
+    Microsoft::WRL::ComPtr<ID2D1Layer> m_markupClipLayer;
     
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_dimBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_borderBrush;

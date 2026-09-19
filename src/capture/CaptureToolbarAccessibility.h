@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "capture/CaptureState.h"
 
@@ -57,6 +57,7 @@ inline std::wstring toolbarButtonAccessibleName(const ToolbarButton& button) {
         case ToolbarCommand::RecordToggleSystemAudio: return L"录屏系统声音开关";
         case ToolbarCommand::RecordToggleMicrophone: return L"录屏麦克风开关";
         case ToolbarCommand::RecordStartConfirm: return L"正式开始录屏";
+        case ToolbarCommand::Copy: return L"复制到剪贴板";
         case ToolbarCommand::Confirm: return L"确认截图";
         case ToolbarCommand::Cancel: return L"取消截图";
     }
@@ -70,6 +71,7 @@ inline std::wstring toolbarButtonKeyboardShortcut(const ToolbarButton& button) {
         case ToolbarCommand::ToggleBeautyShell: return L"B";
         case ToolbarCommand::Undo: return L"Ctrl+Z";
         case ToolbarCommand::Redo: return L"Ctrl+Y";
+        case ToolbarCommand::Copy: return L"Ctrl+C";
         case ToolbarCommand::Confirm: return L"Enter";
         case ToolbarCommand::Cancel: return L"Escape";
         default: return L"";

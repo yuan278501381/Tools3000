@@ -1,4 +1,4 @@
-﻿#include "capture/ShortcutHintOverlay.h"
+#include "capture/ShortcutHintOverlay.h"
 #include "core/accessibility/OverlayAnnouncement.h"
 #include "core/accessibility/OverlayUiaProvider.h"
 #include "capture/ShortcutHintStyle.h"
@@ -61,6 +61,13 @@ ShortcutHintOverlay& ShortcutHintOverlay::instance() {
 
 bool ShortcutHintOverlay::isVisible() const {
     return m_hwnd && IsWindowVisible(m_hwnd);
+}
+
+RECT ShortcutHintOverlay::getBounds() const {
+    if (!isVisible()) return {};
+    RECT r{};
+    GetWindowRect(m_hwnd, &r);
+    return r;
 }
 
 std::vector<ShortcutHintItem>
@@ -314,12 +321,12 @@ POINT ShortcutHintOverlay::computeOptimalPosition(int width, int height, const R
     // 6. 顶部居中
     const int centerX = std::clamp(workLeft + std::max(margin, (workWidth - width) / 2), minX, maxX);
     std::vector<POINT> candidates = {
-        {minX, maxY},
-        {minX, minY},
-        {maxX, minY},
-        {maxX, maxY},
-        {centerX, maxY},
-        {centerX, minY},
+        {minX, maxY},       // 1. 左下角 (默认最优)
+        {minX, minY},       // 2. 左上角
+        {maxX, minY},       // 3. 右上角
+        {maxX, maxY},       // 4. 右下角
+        {centerX, maxY},    // 5. 底部居中
+        {centerX, minY},    // 6. 顶部居中
     };
 
     auto calcIntersectionArea = [](const RECT& r1, const RECT& r2) -> long long {
@@ -347,17 +354,54 @@ POINT ShortcutHintOverlay::computeOptimalPosition(int width, int height, const R
             collision += calcIntersectionArea(candRect, paddedAvoid);
         }
 
-        // 如果左下角没有任何碰撞，100% 保持首选左下角
-        if (collision == 0 && i == 0) {
+        // 如果首选候选或某标准候选无任何碰撞，按标准优先级直接采纳并返回
+        if (collision == 0) {
             return cand;
         }
 
         if (minCollisionArea == -1 || collision < minCollisionArea) {
             minCollisionArea = collision;
             bestPos = cand;
-            if (collision == 0) {
-                break;
-            }
+        }
+    }
+
+    // 动态探测障碍物四周邻接候选点（当 6 大标准锚点均存在碰撞时，在障碍物四周滑动探测零碰撞空隙）
+    std::vector<POINT> dynamicCandidates;
+    for (const auto& avoid : avoidRects) {
+        if (avoid.right <= avoid.left || avoid.bottom <= avoid.top) continue;
+        int rx = std::clamp(static_cast<int>(avoid.right + margin), minX, maxX);
+        dynamicCandidates.push_back({rx, maxY});
+        dynamicCandidates.push_back({rx, minY});
+
+        int lx = std::clamp(static_cast<int>(avoid.left - width - margin), minX, maxX);
+        dynamicCandidates.push_back({lx, maxY});
+        dynamicCandidates.push_back({lx, minY});
+
+        int by = std::clamp(static_cast<int>(avoid.bottom + margin), minY, maxY);
+        dynamicCandidates.push_back({minX, by});
+        dynamicCandidates.push_back({maxX, by});
+
+        int ty = std::clamp(static_cast<int>(avoid.top - height - margin), minY, maxY);
+        dynamicCandidates.push_back({minX, ty});
+        dynamicCandidates.push_back({maxX, ty});
+    }
+
+    for (const auto& cand : dynamicCandidates) {
+        RECT candRect{cand.x, cand.y, cand.x + width, cand.y + height};
+        long long collision = 0;
+        for (const auto& avoid : avoidRects) {
+            if (avoid.right <= avoid.left || avoid.bottom <= avoid.top) continue;
+            RECT paddedAvoid{avoid.left - 10, avoid.top - 10, avoid.right + 10, avoid.bottom + 10};
+            collision += calcIntersectionArea(candRect, paddedAvoid);
+        }
+
+        if (collision == 0) {
+            return cand;
+        }
+
+        if (collision < minCollisionArea) {
+            minCollisionArea = collision;
+            bestPos = cand;
         }
     }
 

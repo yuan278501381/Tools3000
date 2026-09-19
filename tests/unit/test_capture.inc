@@ -502,18 +502,22 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
 
     CaptureState screenshot;
     screenshot.mode = OverlayMode::Screenshot;
+    screenshot.isMarkupToolActive = true;
     screenshot.dpiScale = 1.5f;  // Windows 150% / 144 DPI
     const D2D1_SIZE_F desktop150 = D2D1::SizeF(2304.0f, 1440.0f);
     rebuildCaptureToolbar(screenshot, D2D1::RectF(180.0f, 120.0f, 1600.0f, 980.0f),
                           desktop150);
-    EXPECT_EQ(screenshot.toolbarButtons.size(), 16u);
+    EXPECT_EQ(screenshot.toolbarButtons.size(), 17u);
     EXPECT_EQ(screenshot.secondaryToolbarButtons.size(), 15u); // 7 属性 + 7 预设色 + 1 拾色器
     EXPECT_EQ(screenshot.selectionSideButtons.size(), 4u);
     bool hasRecordBtn = false;
+    bool hasCopyBtn = false;
     for (const auto& btn : screenshot.toolbarButtons) {
         if (btn.command == ToolbarCommand::StartRecord) hasRecordBtn = true;
+        if (btn.command == ToolbarCommand::Copy) hasCopyBtn = true;
     }
     EXPECT_TRUE(hasRecordBtn);
+    EXPECT_TRUE(hasCopyBtn);
     EXPECT_NEAR(screenshot.toolbarButtons.front().rect.bottom -
                 screenshot.toolbarButtons.front().rect.top, 45.0f, 0.01f);
     check_toolbar_inside_surface(screenshot, desktop150);
@@ -524,10 +528,11 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
 
     CaptureState wrapped;
     wrapped.mode = OverlayMode::Screenshot;
+    wrapped.isMarkupToolActive = true;
     wrapped.dpiScale = 2.0f;
     const D2D1_SIZE_F compact = D2D1::SizeF(1000.0f, 700.0f);
     rebuildCaptureToolbar(wrapped, D2D1::RectF(80.0f, 100.0f, 850.0f, 480.0f), compact);
-    EXPECT_EQ(wrapped.toolbarButtons.size(), 16u);
+    EXPECT_EQ(wrapped.toolbarButtons.size(), 17u);
     EXPECT_EQ(wrapped.secondaryToolbarButtons.size(), 15u); // 7 属性 + 7 预设色 + 1 拾色器
     EXPECT_EQ(wrapped.selectionSideButtons.size(), 4u);
     check_toolbar_inside_surface(wrapped, compact);
@@ -552,7 +557,7 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
     const D2D1_SIZE_F desktop500 = D2D1::SizeF(7680.0f, 4320.0f);
     rebuildCaptureToolbar(extreme, D2D1::RectF(500.0f, 400.0f, 7000.0f, 3600.0f),
                           desktop500);
-    EXPECT_EQ(extreme.toolbarButtons.size(), 16u);
+    EXPECT_EQ(extreme.toolbarButtons.size(), 17u);
     check_toolbar_inside_surface(extreme, desktop500);
 }
 
@@ -590,6 +595,15 @@ TEST(CaptureToolbarTest, AccessibilitySemanticsReflectActualState) {
     EXPECT_EQ(toolbarButtonKeyboardShortcut(confirm), L"Enter");
     state.state = OverlayState::Idle;
     EXPECT_FALSE(isToolbarButtonEnabled(confirm, state));
+
+    ToolbarButton copyBtn;
+    copyBtn.command = ToolbarCommand::Copy;
+    EXPECT_EQ(toolbarButtonAccessibleName(copyBtn), L"复制到剪贴板");
+    EXPECT_EQ(toolbarButtonKeyboardShortcut(copyBtn), L"Ctrl+C");
+    state.state = OverlayState::Selected;
+    EXPECT_TRUE(isToolbarButtonEnabled(copyBtn, state));
+    state.state = OverlayState::Idle;
+    EXPECT_FALSE(isToolbarButtonEnabled(copyBtn, state));
 
     ToolbarButton startRecord;
     startRecord.command = ToolbarCommand::StartRecord;
@@ -840,6 +854,7 @@ TEST(CaptureTwoTierToolbarAndSubmenuTest, LayoutAndSecondaryProperties) {
     state.dpiScale = 1.0f;
     state.mode = OverlayMode::Screenshot;
     state.currentTool = MarkupTool::Rectangle;
+    state.isMarkupToolActive = true;
 
     D2D1_RECT_F selRect = D2D1::RectF(100.0f, 100.0f, 600.0f, 500.0f);
     D2D1_SIZE_F surfaceSize = D2D1::SizeF(1920.0f, 1080.0f);
@@ -2040,6 +2055,7 @@ TEST(PolymorphicMarkupAndPinEnhancementTest, PolymorphicHandlersAndLineAndPinOpe
     tbState.dpiScale = 1.0f;
     tbState.mode = OverlayMode::Screenshot;
     tbState.currentTool = MarkupTool::Rectangle;
+    tbState.isMarkupToolActive = true;
     rebuildCaptureToolbar(tbState, D2D1::RectF(100, 100, 500, 400), D2D1::SizeF(1920, 1080));
     bool hasSubRect = false, hasSubEllipse = false, hasSubLine = false;
     for (const auto& btn : tbState.secondaryToolbarButtons) {
@@ -3929,6 +3945,7 @@ TEST(CaptureHudAndCursorAndOutlineTest, TextOutlineToolbarLayoutAndCommandGenera
 
     CaptureState state;
     state.currentTool = MarkupTool::Text;
+    state.isMarkupToolActive = true;
     state.currentTextOutline = true;
     state.currentTextOutlineColor = MarkupColor::Auto();
     state.dragStart = {100, 100};
@@ -4640,7 +4657,995 @@ TEST(HudAvoidanceEngineTest, EscapesToOuterSideWhenTopAndBottomBlocked) {
     EXPECT_FLOAT_EQ(HudAvoidanceEngine::intersectionArea(result.rect, bottomToolbar), 0.0f);
 }
 
+TEST(CaptureToolbarAvoidanceTest, FourTierIntelligentAvoidance) {
+    using namespace tools3000::capture;
+    CaptureState state;
+    state.mode = OverlayMode::Screenshot;
+    state.dpiScale = 1.0f;
+    const D2D1_SIZE_F surfaceSize = D2D1::SizeF(1920.0f, 1080.0f);
 
+    // 1. Tier 1: 选区下方外部空间充裕（默认黄金布局：工具栏位于选区下方外部）
+    D2D1_RECT_F selBelow = D2D1::RectF(200.0f, 200.0f, 800.0f, 600.0f);
+    rebuildCaptureToolbar(state, selBelow, surfaceSize);
+    EXPECT_GE(state.primaryToolbarRect.top, selBelow.bottom);
+    EXPECT_LE(state.primaryToolbarRect.bottom, surfaceSize.height);
+
+    // 2. Tier 2: 选区下方紧贴屏幕底部，上方空间充裕（翻转至选区上方外部，不遮挡选区）
+    state.toolbarLayoutValid = false;
+    D2D1_RECT_F selNearBottom = D2D1::RectF(200.0f, 800.0f, 800.0f, 1060.0f);
+    rebuildCaptureToolbar(state, selNearBottom, surfaceSize);
+    EXPECT_LE(state.primaryToolbarRect.bottom, selNearBottom.top);
+    EXPECT_GE(state.primaryToolbarRect.top, 0.0f);
+
+    // 3. Tier 3: 上下外部均无充裕空间（近全屏高大选区），优雅内嵌于选区底部，彻底放开顶部标注区与手柄
+    state.toolbarLayoutValid = false;
+    D2D1_RECT_F selTall = D2D1::RectF(10.0f, 10.0f, 1910.0f, 1070.0f);
+    rebuildCaptureToolbar(state, selTall, surfaceSize);
+    EXPECT_GE(state.primaryToolbarRect.top, selTall.top + 500.0f);
+    EXPECT_LE(state.primaryToolbarRect.bottom, selTall.bottom);
+    EXPECT_GE(state.primaryToolbarRect.top, selTall.top);
+
+    // 4. 侧边浮动菜单：当选区极小时自动清理
+    state.toolbarLayoutValid = false;
+    D2D1_RECT_F selTiny = D2D1::RectF(100.0f, 100.0f, 110.0f, 110.0f);
+    rebuildCaptureToolbar(state, selTiny, surfaceSize);
+    EXPECT_TRUE(state.selectionSideButtons.empty());
+    EXPECT_EQ(state.selectionSideRect.left, 0.0f);
+    EXPECT_EQ(state.selectionSideRect.right, 0.0f);
+}
+
+TEST(CaptureSelectionAdjustmentModeTest, InitialStateAndFlagControl) {
+    using namespace tools3000::capture;
+    CaptureState state;
+    // 初始或重置后，未激活标注工具 (处于选区调整模式)
+    EXPECT_FALSE(state.isMarkupToolActive);
+
+    // 激活工具后标记为 active
+    state.isMarkupToolActive = true;
+    EXPECT_TRUE(state.isMarkupToolActive);
+
+    // 取消激活后重置为 false
+    state.isMarkupToolActive = false;
+    EXPECT_FALSE(state.isMarkupToolActive);
+}
+
+TEST(CaptureToolbarAvoidanceTest, SecondaryToolbarSuppressionWhenNotMarking) {
+    using namespace tools3000::capture;
+    CaptureState state;
+    state.mode = OverlayMode::Screenshot;
+    state.dpiScale = 1.0f;
+    const D2D1_SIZE_F surfaceSize = D2D1::SizeF(1920.0f, 1080.0f);
+    D2D1_RECT_F sel = D2D1::RectF(200.0f, 200.0f, 800.0f, 600.0f);
+
+    // 未激活标注工具时，二级属性工具栏必须为空，且矩形清零，彻底释放操作视野
+    state.isMarkupToolActive = false;
+    rebuildCaptureToolbar(state, sel, surfaceSize);
+    EXPECT_TRUE(state.secondaryToolbarButtons.empty());
+    EXPECT_FLOAT_EQ(state.secondaryToolbarRect.right - state.secondaryToolbarRect.left, 0.0f);
+
+    // 激活标注工具后，二级属性栏正常展开
+    state.toolbarLayoutValid = false;
+    state.isMarkupToolActive = true;
+    state.currentTool = MarkupTool::Rectangle;
+    rebuildCaptureToolbar(state, sel, surfaceSize);
+    EXPECT_FALSE(state.secondaryToolbarButtons.empty());
+    EXPECT_GT(state.secondaryToolbarRect.right - state.secondaryToolbarRect.left, 0.0f);
+}
+
+TEST(ShortcutHintOverlayTest, DynamicObstacleAvoidance) {
+    using namespace tools3000::capture;
+    const RECT workArea{0, 0, 1920, 1080};
+    const int width = 240;
+    const int height = 180;
+    const float scale = 1.0f;
+
+    // 1. 无任何障碍物时，首选左下角
+    std::vector<RECT> emptyAvoid;
+    POINT posDefault = ShortcutHintOverlay::computeOptimalPosition(width, height, workArea, scale, emptyAvoid);
+    const int expectedMargin = static_cast<int>(ShortcutHintStyle::BaseScreenMargin * scale);
+    EXPECT_EQ(posDefault.x, expectedMargin);
+    EXPECT_EQ(posDefault.y, 1080 - 180 - expectedMargin);
+
+    // 2. 左下角存在障碍物遮挡时，智能重定位至无碰撞区域
+    std::vector<RECT> blockedAvoid;
+    blockedAvoid.push_back({0, 800, 300, 1080}); // 遮挡左下角
+    POINT posAvoided = ShortcutHintOverlay::computeOptimalPosition(width, height, workArea, scale, blockedAvoid);
+    RECT resRect{posAvoided.x, posAvoided.y, posAvoided.x + width, posAvoided.y + height};
+
+    // 验证求解出的位置与障碍物无任何交集
+    int interLeft = (std::max)(resRect.left, blockedAvoid[0].left);
+    int interTop = (std::max)(resRect.top, blockedAvoid[0].top);
+    int interRight = (std::min)(resRect.right, blockedAvoid[0].right);
+    int interBottom = (std::min)(resRect.bottom, blockedAvoid[0].bottom);
+    bool hasIntersection = (interLeft < interRight && interTop < interBottom);
+    EXPECT_FALSE(hasIntersection);
+}
+
+// -----------------------------------------------------------------------------
+// 截图标注选区图像无损防拉伸与 1:1 像素映射测试套件
+// -----------------------------------------------------------------------------
+TEST(CaptureMarkupImageDeformationTest, BoundaryOverflowZeroDistortion) {
+    using namespace tools3000::capture;
+
+    // 1. 构造一个 1920x1080 的虚拟屏幕图像，填充高对比度特征像素
+    cv::Mat screen = cv::Mat::zeros(1080, 1920, CV_8UC3);
+    for (int y = 0; y < 1080; ++y) {
+        auto* row = screen.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < 1920; ++x) {
+            row[x] = cv::Vec3b(
+                static_cast<uint8_t>(x % 256),
+                static_cast<uint8_t>(y % 256),
+                static_cast<uint8_t>((x + y) % 256)
+            );
+        }
+    }
+
+    // 2. 模拟 Windows DWM 隐形阴影或跨屏溢出矩形: x = -8, y = -8, w = 1936, h = 1096
+    const cv::Rect targetRect(-8, -8, 1936, 1096);
+    cv::Mat canvas = cropMarkupBase(screen, targetRect);
+
+    // 验证画布严格为目标选区尺寸，绝无尺寸截断
+    EXPECT_EQ(canvas.cols, 1936);
+    EXPECT_EQ(canvas.rows, 1096);
+
+    // 3. 验证屏幕内有效像素在画布上严格 1:1 放置于 (sx - targetRect.x, sy - targetRect.y)
+    // 随机抽查多个屏幕采样点，断言像素值 100% 绝对一致 (0 色差、0 偏移、0 模糊)
+    const std::vector<cv::Point> checkPoints = {
+        {0, 0}, {100, 100}, {960, 540}, {1919, 1079}, {500, 800}
+    };
+    for (const auto& pt : checkPoints) {
+        cv::Vec3b srcPixel = screen.at<cv::Vec3b>(pt.y, pt.x);
+        int canvasX = pt.x - targetRect.x; // pt.x - (-8) = pt.x + 8
+        int canvasY = pt.y - targetRect.y; // pt.y - (-8) = pt.y + 8
+        cv::Vec3b dstPixel = canvas.at<cv::Vec3b>(canvasY, canvasX);
+        EXPECT_EQ(srcPixel[0], dstPixel[0]);
+        EXPECT_EQ(srcPixel[1], dstPixel[1]);
+        EXPECT_EQ(srcPixel[2], dstPixel[2]);
+    }
+
+    // 4. 验证选区溢出屏幕外部的阴影边界像素为安全底色 0
+    EXPECT_EQ(canvas.at<cv::Vec3b>(0, 0), cv::Vec3b(0, 0, 0));
+    EXPECT_EQ(canvas.at<cv::Vec3b>(7, 7), cv::Vec3b(0, 0, 0));
+    EXPECT_EQ(canvas.at<cv::Vec3b>(1095, 1935), cv::Vec3b(0, 0, 0));
+}
+
+TEST(CaptureMarkupImageDeformationTest, ScreenPhysicalCoordinateToMarkupPoint1To1) {
+    using namespace tools3000::capture;
+
+    const cv::Rect targetRect(-8, -8, 1936, 1096);
+
+    // 验证屏幕原点 (0, 0) 精确映射至画布 (8, 8)
+    cv::Point p0 = calculateMarkupPoint(POINT{0, 0}, targetRect);
+    EXPECT_EQ(p0.x, 8);
+    EXPECT_EQ(p0.y, 8);
+
+    // 验证屏幕内部点 (100, 200) 精确映射至画布 (108, 208)
+    cv::Point p1 = calculateMarkupPoint(POINT{100, 200}, targetRect);
+    EXPECT_EQ(p1.x, 108);
+    EXPECT_EQ(p1.y, 208);
+
+    // 验证屏幕边缘点 (1919, 1079) 精确映射至画布 (1927, 1087)
+    cv::Point p2 = calculateMarkupPoint(POINT{1919, 1079}, targetRect);
+    EXPECT_EQ(p2.x, 1927);
+    EXPECT_EQ(p2.y, 1087);
+}
+
+TEST(CaptureMarkupImageDeformationTest, Direct2DPixelExact1To1Mapping) {
+    using namespace tools3000::capture;
+
+    // 浮点选区输入 (带亚像素浮点数)
+    D2D1_RECT_F selRect = D2D1::RectF(100.2f, 200.7f, 900.2f, 700.7f);
+    const UINT32 bmpW = 800;
+    const UINT32 bmpH = 500;
+
+    D2D1_RECT_F destRect = calculateMarkupDestRect(selRect, bmpW, bmpH);
+    D2D1_RECT_F srcRect  = calculateMarkupSrcRect(bmpW, bmpH);
+
+    // 1. 验证目标绘制矩形左上角严格对齐整数物理像素
+    EXPECT_FLOAT_EQ(destRect.left, 100.0f);
+    EXPECT_FLOAT_EQ(destRect.top,  201.0f);
+
+    // 2. 验证目标绘制矩形宽高严格与位图尺寸 1:1 绝对相等
+    EXPECT_FLOAT_EQ(destRect.right - destRect.left, static_cast<float>(bmpW));
+    EXPECT_FLOAT_EQ(destRect.bottom - destRect.top, static_cast<float>(bmpH));
+
+    // 3. 验证源矩形覆盖整个位图像素范围
+    EXPECT_FLOAT_EQ(srcRect.left,   0.0f);
+    EXPECT_FLOAT_EQ(srcRect.top,    0.0f);
+    EXPECT_FLOAT_EQ(srcRect.right,  static_cast<float>(bmpW));
+    EXPECT_FLOAT_EQ(srcRect.bottom, static_cast<float>(bmpH));
+
+    // 4. 验证缩放比例绝对为 1.0 (无双线性插值拉伸)
+    float scaleX = (destRect.right - destRect.left) / (srcRect.right - srcRect.left);
+    float scaleY = (destRect.bottom - destRect.top) / (srcRect.bottom - srcRect.top);
+    EXPECT_FLOAT_EQ(scaleX, 1.0f);
+    EXPECT_FLOAT_EQ(scaleY, 1.0f);
+}
+
+TEST(CaptureMarkupImageDeformationTest, WindowDetectionScreenBoundaryClamping) {
+    using namespace tools3000::capture;
+
+    const int screenW = 1920;
+    const int screenH = 1080;
+
+    // 1. 最大化窗口携带 -8px 阴影溢出：安全夹取至有效屏幕范围 [0, 0, 1920, 1080]
+    RECT maxWin{-8, -8, 1928, 1088};
+    cv::Rect clampedMax = clampToScreenBounds(maxWin, screenW, screenH);
+    EXPECT_EQ(clampedMax.x, 0);
+    EXPECT_EQ(clampedMax.y, 0);
+    EXPECT_EQ(clampedMax.width, 1920);
+    EXPECT_EQ(clampedMax.height, 1080);
+
+    // 2. 正常内部窗口：保持原尺寸
+    RECT normalWin{100, 150, 600, 550};
+    cv::Rect clampedNorm = clampToScreenBounds(normalWin, screenW, screenH);
+    EXPECT_EQ(clampedNorm.x, 100);
+    EXPECT_EQ(clampedNorm.y, 150);
+    EXPECT_EQ(clampedNorm.width, 500);
+    EXPECT_EQ(clampedNorm.height, 400);
+
+    // 3. 右侧越界窗口：右边缘安全截断
+    RECT rightWin{1700, 200, 2000, 800};
+    cv::Rect clampedRight = clampToScreenBounds(rightWin, screenW, screenH);
+    EXPECT_EQ(clampedRight.x, 1700);
+    EXPECT_EQ(clampedRight.y, 200);
+    EXPECT_EQ(clampedRight.width, 220);
+    EXPECT_EQ(clampedRight.height, 600);
+}
+
+TEST(CaptureMarkupImageDeformationTest, MarkupEngineBaseImageLifecycleAndTranslation) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    EXPECT_FALSE(engine.hasBaseImage());
+
+    // 1. 设置初始底图 400x300
+    cv::Mat base1 = cv::Mat::ones(300, 400, CV_8UC3);
+    engine.setBaseImage(base1);
+    EXPECT_TRUE(engine.hasBaseImage());
+    EXPECT_EQ(engine.baseWidth(), 400);
+    EXPECT_EQ(engine.baseHeight(), 300);
+
+    // 2. 添加标注图元
+    auto* rectElem = engine.drawRectangle(cv::Point(50, 50), cv::Point(150, 150), MarkupColor::Red());
+    ASSERT_NE(rectElem, nullptr);
+    EXPECT_EQ(engine.elementCount(), 1u);
+    EXPECT_EQ(rectElem->startPt.x, 50);
+    EXPECT_EQ(rectElem->startPt.y, 50);
+
+    // 3. 选区调整并平移标注图元 (例如选区向右移动 100px, 向下移动 50px)
+    engine.translateAll(-100, -50);
+    EXPECT_EQ(rectElem->startPt.x, -50);
+    EXPECT_EQ(rectElem->startPt.y, 0);
+
+    // 4. 更新底图为新尺寸 700x600 (二次调整后底图动态无损重裁)
+    cv::Mat base2 = cv::Mat::ones(600, 700, CV_8UC3);
+    engine.updateBaseImage(base2);
+    EXPECT_EQ(engine.baseWidth(), 700);
+    EXPECT_EQ(engine.baseHeight(), 600);
+    EXPECT_EQ(engine.elementCount(), 1u); // 图元依然保留
+}
+
+TEST(CaptureMarkupImageDeformationTest, SyncMarkupBaseSingleSourceOfTruth) {
+    using namespace tools3000::capture;
+
+    cv::Mat frozenScreen = cv::Mat::ones(1080, 1920, CV_8UC3);
+    bool markupBaseReady = false;
+    cv::Rect markupBaseRect(0, 0, 0, 0);
+    MarkupEngine markup;
+
+    // 1. 首次调用：正确初始化底图和状态
+    cv::Rect initialRect(100, 100, 400, 300);
+    syncMarkupBase(frozenScreen, initialRect, markupBaseReady, markupBaseRect, markup);
+
+    EXPECT_TRUE(markupBaseReady);
+    EXPECT_EQ(markupBaseRect, initialRect);
+    EXPECT_TRUE(markup.hasBaseImage());
+    EXPECT_EQ(markup.baseWidth(), 400);
+    EXPECT_EQ(markup.baseHeight(), 300);
+
+    // 绘制一个测试图元
+    auto* rectElem = markup.drawRectangle(cv::Point(20, 20), cv::Point(80, 80), MarkupColor::Red());
+    ASSERT_NE(rectElem, nullptr);
+    EXPECT_EQ(markup.elementCount(), 1u);
+
+    // 2. 幂等性验证：尺寸与矩形完全相同时，不触发重复更新
+    syncMarkupBase(frozenScreen, initialRect, markupBaseReady, markupBaseRect, markup);
+    EXPECT_EQ(rectElem->startPt.x, 20);
+    EXPECT_EQ(rectElem->startPt.y, 20);
+
+    // 3. 选区平移：选区整体向右移动 50px，向下移动 30px (即 targetRect 变为 150, 130)
+    // 标注图元应被反向平移以保持在屏幕物理空间绝对不动：dx = 100 - 150 = -50, dy = 100 - 130 = -30
+    cv::Rect movedRect(150, 130, 400, 300);
+    syncMarkupBase(frozenScreen, movedRect, markupBaseReady, markupBaseRect, markup);
+
+    EXPECT_EQ(markupBaseRect, movedRect);
+    EXPECT_EQ(rectElem->startPt.x, -30); // 20 - 50 = -30
+    EXPECT_EQ(rectElem->startPt.y, -10); // 20 - 30 = -10
+    EXPECT_EQ(markup.elementCount(), 1u);
+
+    // 4. 选区尺寸调整：扩大为 600x500
+    cv::Rect resizedRect(150, 130, 600, 500);
+    syncMarkupBase(frozenScreen, resizedRect, markupBaseReady, markupBaseRect, markup);
+    EXPECT_EQ(markupBaseRect, resizedRect);
+    EXPECT_EQ(markup.baseWidth(), 600);
+    EXPECT_EQ(markup.baseHeight(), 500);
+    EXPECT_EQ(markup.elementCount(), 1u);
+}
+
+TEST(CaptureMarkupImageDeformationTest, MultiMonitorNegativeCoordinateMapping) {
+    using namespace tools3000::capture;
+
+    // 模拟双显示器场景: 虚拟桌面宽度 3840x1080 (左侧副屏 [-1920, 0, 1920, 1080]，主屏 [0, 0, 1920, 1080])
+    // 捕获的 frozenScreen 尺寸为 3840x1080，其 (0, 0) 对应物理虚拟屏幕 (-1920, 0)
+    cv::Mat virtualScreen(1080, 3840, CV_8UC3, cv::Scalar(40, 50, 60));
+    // 在左副屏物理坐标 (-500, 200) 对应 frozenScreen 的 (-500 - (-1920) = 1420, 200) 处绘制特征点
+    virtualScreen.at<cv::Vec3b>(200, 1420) = cv::Vec3b(255, 128, 0);
+
+    // 选区落在左副屏: 局部屏幕矩形 targetRect = (1320, 100, 400, 300)
+    cv::Rect targetRect(1320, 100, 400, 300);
+    cv::Mat base = cropMarkupBase(virtualScreen, targetRect);
+    ASSERT_FALSE(base.empty());
+    EXPECT_EQ(base.cols, 400);
+    EXPECT_EQ(base.rows, 300);
+
+    // 验证特征点在画布上的位置: (1420 - 1320 = 100, 200 - 100 = 100)
+    cv::Vec3b featurePix = base.at<cv::Vec3b>(100, 100);
+    EXPECT_EQ(featurePix[0], 255);
+    EXPECT_EQ(featurePix[1], 128);
+    EXPECT_EQ(featurePix[2], 0);
+
+    // 验证 calculateMarkupPoint 针对此区域屏幕坐标的 1:1 对齐映射
+    cv::Point localPt = calculateMarkupPoint(POINT{1420, 200}, targetRect);
+    EXPECT_EQ(localPt.x, 100);
+    EXPECT_EQ(localPt.y, 100);
+}
+
+TEST(CaptureMarkupImageDeformationTest, MagnifierBoundaryZeroDistortion) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    // 构造一个 200x200 的底图，绘制黑白方格图案
+    cv::Mat canvas = cv::Mat::zeros(200, 200, CV_8UC3);
+    for (int y = 0; y < 200; ++y) {
+        for (int x = 0; x < 200; ++x) {
+            if ((x / 20 + y / 20) % 2 == 0) {
+                canvas.at<cv::Vec3b>(y, x) = cv::Vec3b(200, 200, 200);
+            }
+        }
+    }
+    engine.setBaseImage(canvas);
+
+    // 1. 在紧贴左上角边界处添加放大镜 (center = 10, 10，半径 50，倍率 2.0x)
+    // 此时放大镜的采样源与目标均严重超出左侧与上方画布边界
+    engine.addMagnifier(cv::Point(10, 10), 2.0f, 50);
+    EXPECT_EQ(engine.elementCount(), 1u);
+
+    // 2. 渲染合成图：断言绝不崩溃、内存越界，且安全产出正确尺寸的图像
+    cv::Mat composite;
+    EXPECT_NO_THROW({
+        composite = engine.getCompositeImage();
+    });
+    ASSERT_FALSE(composite.empty());
+    EXPECT_EQ(composite.cols, 200);
+    EXPECT_EQ(composite.rows, 200);
+
+    // 3. 在右下角极端越界处添加放大镜 (center = 195, 195)
+    engine.clearAll();
+    engine.setBaseImage(canvas);
+    engine.addMagnifier(cv::Point(195, 195), 3.0f, 60);
+    EXPECT_NO_THROW({
+        composite = engine.getCompositeImage();
+    });
+    ASSERT_FALSE(composite.empty());
+    EXPECT_EQ(composite.cols, 200);
+    EXPECT_EQ(composite.rows, 200);
+}
+
+
+TEST(CaptureMarkupResizeTest, EightDirectionHandleResizeAndNormalization) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(600, 800, CV_8UC3);
+    engine.setBaseImage(base);
+
+    // 1. 正常构造正向矩形 (100, 100) -> (200, 200)
+    auto* rect = engine.drawRectangle(cv::Point(100, 100), cv::Point(200, 200), MarkupColor::Red());
+    ASSERT_NE(rect, nullptr);
+    EXPECT_EQ(rect->startPt.x, 100);
+    EXPECT_EQ(rect->startPt.y, 100);
+    EXPECT_EQ(rect->endPt.x, 200);
+    EXPECT_EQ(rect->endPt.y, 200);
+
+    // 2. 测试右侧手柄拉大 (+50)
+    rect->resize(50, 0, HitArea::R);
+    EXPECT_EQ(rect->startPt.x, 100);
+    EXPECT_EQ(rect->endPt.x, 250);
+
+    // 3. 测试右侧手柄向左越过左边界缩小 (试图缩至比左边还小) -> 触发 kMinSize 保护
+    rect->resize(-300, 0, HitArea::R);
+    EXPECT_EQ(rect->startPt.x, 100);
+    EXPECT_EQ(rect->endPt.x, 104); // 100 + kMinSize(4)
+
+    // 4. 测试下侧手柄拉大 (+60)
+    rect->resize(0, 60, HitArea::B);
+    EXPECT_EQ(rect->startPt.y, 100);
+    EXPECT_EQ(rect->endPt.y, 260);
+
+    // 5. 测试左侧手柄向左拉大 (-20)
+    rect->resize(-20, 0, HitArea::L);
+    EXPECT_EQ(rect->startPt.x, 80);
+    EXPECT_EQ(rect->endPt.x, 104);
+
+    // 6. 测试上侧手柄向上拉大 (-30)
+    rect->resize(0, -30, HitArea::T);
+    EXPECT_EQ(rect->startPt.y, 70);
+    EXPECT_EQ(rect->endPt.y, 260);
+
+    // 7. 测试四个角点手柄
+    rect->resize(-10, -10, HitArea::LT);
+    EXPECT_EQ(rect->startPt.x, 70);
+    EXPECT_EQ(rect->startPt.y, 60);
+
+    rect->resize(20, -10, HitArea::RT);
+    EXPECT_EQ(rect->endPt.x, 124);
+    EXPECT_EQ(rect->startPt.y, 50);
+
+    rect->resize(20, 20, HitArea::RB);
+    EXPECT_EQ(rect->endPt.x, 144);
+    EXPECT_EQ(rect->endPt.y, 280);
+
+    rect->resize(-10, 20, HitArea::LB);
+    EXPECT_EQ(rect->startPt.x, 60);
+    EXPECT_EQ(rect->endPt.y, 300);
+
+    // 8. 逆向绘制自动归一化验证：用户从 (300, 400) 拖拽到 (150, 200)
+    auto* invRect = engine.drawRectangle(cv::Point(300, 400), cv::Point(150, 200), MarkupColor::Blue());
+    ASSERT_NE(invRect, nullptr);
+    EXPECT_EQ(invRect->startPt.x, 150);
+    EXPECT_EQ(invRect->startPt.y, 200);
+    EXPECT_EQ(invRect->endPt.x, 300);
+    EXPECT_EQ(invRect->endPt.y, 400);
+
+    // 逆向创建的椭圆也均在构建时归一化
+    auto* invEllipse = engine.drawEllipse(cv::Point(250, 350), cv::Point(100, 150), MarkupColor::Green());
+    ASSERT_NE(invEllipse, nullptr);
+    EXPECT_EQ(invEllipse->startPt.x, 100);
+    EXPECT_EQ(invEllipse->startPt.y, 150);
+    EXPECT_EQ(invEllipse->endPt.x, 250);
+    EXPECT_EQ(invEllipse->endPt.y, 350);
+}
+
+TEST(CaptureMarkupResizeTest, RectangleCornerRadiusClampingOnShrink) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(400, 400, CV_8UC3);
+    engine.setBaseImage(base);
+
+    auto* rect = engine.drawRectangle(cv::Point(50, 50), cv::Point(250, 250), MarkupColor::Red());
+    ASSERT_NE(rect, nullptr);
+    rect->cornerRadius = 80.0f; // 初始圆角 80 (200x200 内有效)
+
+    // 缩放到 30x30
+    rect->resize(-170, -170, HitArea::RB);
+    EXPECT_EQ(rect->endPt.x - rect->startPt.x, 30);
+    EXPECT_EQ(rect->endPt.y - rect->startPt.y, 30);
+    // cornerRadius 必须被限制在 30 * 0.5 = 15.0 以内
+    EXPECT_LE(rect->cornerRadius, 15.0f);
+}
+
+TEST(CaptureMarkupResizeTest, RectangleHandlerHitTestPriorityOverCornerRadius) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(600, 800, CV_8UC3);
+    engine.setBaseImage(base);
+
+    // 绘制 200x200 矩形 (100, 100) -> (300, 300)，圆角 30
+    auto* rect = engine.drawRectangle(cv::Point(100, 100), cv::Point(300, 300), MarkupColor::Red());
+    ASSERT_NE(rect, nullptr);
+    rect->cornerRadius = 30.0f;
+    rect->isActive = true;
+
+    // 1. 验证激活状态下，点击四角顶点必须 100% 优先命中 8 方向拉伸手柄，绝不被内角圆角手柄抢占
+    EXPECT_EQ(rect->hitTestEx(cv::Point(100, 100)), HitArea::LT);
+    EXPECT_EQ(rect->hitTestEx(cv::Point(300, 100)), HitArea::RT);
+    EXPECT_EQ(rect->hitTestEx(cv::Point(300, 300)), HitArea::RB);
+    EXPECT_EQ(rect->hitTestEx(cv::Point(100, 300)), HitArea::LB);
+
+    // 2. 验证激活状态下，点击边中点命中边手柄
+    EXPECT_EQ(rect->hitTestEx(cv::Point(200, 100)), HitArea::T);
+    EXPECT_EQ(rect->hitTestEx(cv::Point(300, 200)), HitArea::R);
+    EXPECT_EQ(rect->hitTestEx(cv::Point(200, 300)), HitArea::B);
+    EXPECT_EQ(rect->hitTestEx(cv::Point(100, 200)), HitArea::L);
+
+    // 3. 验证点击内角圆角调节把手区域时，仍能正确命中 HitArea::CornerRadius
+    const auto handles = CornerRadiusHelper::getCornerHandles(100.0f, 100.0f, 300.0f, 300.0f, 30.0f, 1.0f, false);
+    ASSERT_FALSE(handles.empty());
+    for (const auto& hnd : handles) {
+        cv::Point innerPt(static_cast<int>(std::round(hnd.x)), static_cast<int>(std::round(hnd.y)));
+        EXPECT_EQ(rect->hitTestEx(innerPt), HitArea::CornerRadius);
+    }
+
+    // 4. 验证未激活状态下，点击四角和边沿不会返回拉伸手柄，而是返回 Body
+    rect->isActive = false;
+    EXPECT_EQ(rect->hitTestEx(cv::Point(100, 100)), HitArea::Body);
+    EXPECT_EQ(rect->hitTestEx(cv::Point(300, 300)), HitArea::Body);
+    EXPECT_EQ(rect->hitTestEx(cv::Point(200, 100)), HitArea::Body);
+}
+
+TEST(CaptureMarkupResizeTest, PenHandlerProportionalResize) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(500, 500, CV_8UC3);
+    engine.setBaseImage(base);
+
+    // 1. 2 点原始线段缩放
+    std::vector<cv::Point> pts = {{100, 100}, {200, 200}};
+    auto* pen = engine.drawPenStroke(pts, MarkupColor::Blue());
+    ASSERT_NE(pen, nullptr);
+    ASSERT_EQ(pen->penPoints.size(), 2u);
+
+    const auto* handler = MarkupToolRegistry::instance().getHandler(MarkupTool::Pen);
+    ASSERT_NE(handler, nullptr);
+
+    // 初始包围盒: (100, 100) -> (200, 200)
+    cv::Rect bboxBefore = handler->getBoundingBox(*pen);
+    EXPECT_EQ(bboxBefore.x, 100);
+    EXPECT_EQ(bboxBefore.y, 100);
+    EXPECT_EQ(bboxBefore.width, 100);
+    EXPECT_EQ(bboxBefore.height, 100);
+
+    // 拉伸右下角手柄，使宽度增加 100，高度增加 100 (右下变为 300, 300)
+    pen->resize(100, 100, HitArea::RB);
+
+    cv::Rect bboxAfter = handler->getBoundingBox(*pen);
+    EXPECT_EQ(bboxAfter.x, 100);
+    EXPECT_EQ(bboxAfter.y, 100);
+    EXPECT_EQ(bboxAfter.width, 200);
+    EXPECT_EQ(bboxAfter.height, 200);
+
+    EXPECT_EQ(pen->penPoints[0].x, 100);
+    EXPECT_EQ(pen->penPoints[0].y, 100);
+    EXPECT_EQ(pen->penPoints[1].x, 300);
+    EXPECT_EQ(pen->penPoints[1].y, 300);
+
+    // 2. 3 点样条平滑曲线等比例缩放
+    std::vector<cv::Point> splinePts = {{100, 100}, {150, 150}, {200, 200}};
+    auto* splinePen = engine.drawPenStroke(splinePts, MarkupColor::Red());
+    ASSERT_NE(splinePen, nullptr);
+    ASSERT_GT(splinePen->penPoints.size(), 2u);
+    splinePen->resize(100, 100, HitArea::RB);
+    for (const auto& pt : splinePen->penPoints) {
+        EXPECT_GE(pt.x, 100);
+        EXPECT_LE(pt.x, 300);
+        EXPECT_GE(pt.y, 100);
+        EXPECT_LE(pt.y, 300);
+    }
+}
+
+TEST(CaptureMarkupResizeTest, HandleGeometryEngineContractAndClamping) {
+    using namespace tools3000::capture;
+
+    cv::Rect bbox(100, 200, 300, 400);
+    auto handles = HandleGeometry::getBoxHandles(bbox);
+    ASSERT_EQ(handles.size(), 8u);
+
+    EXPECT_EQ(handles[0].area, HitArea::LT);
+    EXPECT_EQ(handles[0].point, cv::Point(100, 200));
+
+    EXPECT_EQ(handles[1].area, HitArea::T);
+    EXPECT_EQ(handles[1].point, cv::Point(250, 200));
+
+    EXPECT_EQ(handles[2].area, HitArea::RT);
+    EXPECT_EQ(handles[2].point, cv::Point(400, 200));
+
+    EXPECT_EQ(handles[3].area, HitArea::R);
+    EXPECT_EQ(handles[3].point, cv::Point(400, 400));
+
+    EXPECT_EQ(handles[4].area, HitArea::RB);
+    EXPECT_EQ(handles[4].point, cv::Point(400, 600));
+
+    EXPECT_EQ(handles[5].area, HitArea::B);
+    EXPECT_EQ(handles[5].point, cv::Point(250, 600));
+
+    EXPECT_EQ(handles[6].area, HitArea::LB);
+    EXPECT_EQ(handles[6].point, cv::Point(100, 600));
+
+    EXPECT_EQ(handles[7].area, HitArea::L);
+    EXPECT_EQ(handles[7].point, cv::Point(100, 400));
+
+    // 命中测试验证：所有 8 个手柄均能被准确命中
+    for (const auto& h : handles) {
+        HitArea hit = HandleGeometry::hitTestHandles(bbox, h.point, 7);
+        EXPECT_EQ(hit, h.area);
+    }
+
+    // 角手柄优先于边手柄（当手柄范围重叠时）
+    cv::Rect tinyBox(100, 100, 4, 4);
+    HitArea cornerHit = HandleGeometry::hitTestHandles(tinyBox, cv::Point(100, 100), 7);
+    EXPECT_EQ(cornerHit, HitArea::LT);
+
+    // 统一缩放几何计算与越界防畸变
+    cv::Rect resizedR = HandleGeometry::computeResizedRect(bbox, 50, 0, HitArea::R, 4, 4);
+    EXPECT_EQ(resizedR, cv::Rect(100, 200, 350, 400));
+
+    cv::Rect clampedR = HandleGeometry::computeResizedRect(bbox, -500, 0, HitArea::R, 4, 4);
+    EXPECT_EQ(clampedR, cv::Rect(100, 200, 4, 400));
+
+    cv::Rect clampedL = HandleGeometry::computeResizedRect(bbox, 500, 0, HitArea::L, 4, 4);
+    EXPECT_EQ(clampedL, cv::Rect(396, 200, 4, 400));
+}
+
+TEST(CaptureMarkupResizeTest, TextHandlerEightDirectionZeroDriftAnchoring) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(800, 1000, CV_8UC3);
+    engine.setBaseImage(base);
+
+    auto* text = engine.addText(cv::Point(200, 300), "Tools3000 Architecture", MarkupColor::Blue(), 24.0f);
+    ASSERT_NE(text, nullptr);
+    text->isActive = true;
+
+    const auto* handler = MarkupToolRegistry::instance().getHandler(MarkupTool::Text);
+    ASSERT_NE(handler, nullptr);
+
+    cv::Rect initialBox = handler->getBoundingBox(*text);
+    EXPECT_GT(initialBox.width, 80);
+    EXPECT_GT(initialBox.height, 20);
+    const int initW = initialBox.width;
+    const double initialCenterY = initialBox.y + initialBox.height / 2.0;
+
+    // 1. 核心缺陷复现与修复验证：向右拉伸 (HitArea::R)
+    // 现象：老代码中往右拉导致字体变大但顶部固定，使得右侧手柄与文字向下偏移（“往右拉它往下”）
+    // 修复断言：向右拉伸时，左边绝对固定，垂直中心绝对锚定（垂直中心偏移 <= 1px 像素整除），绝不向下漂移！
+    text->resize(30, 0, HitArea::R);
+    cv::Rect boxAfterR = handler->getBoundingBox(*text);
+    EXPECT_GT(text->fontSize, 24.0f);
+    EXPECT_GT(boxAfterR.width, initW);
+    EXPECT_EQ(boxAfterR.x, initialBox.x); // 左边绝对锚定
+    double centerYAfterR = boxAfterR.y + boxAfterR.height / 2.0;
+    EXPECT_NEAR(centerYAfterR, initialCenterY, 1.0); // 垂直中心不漂移！
+
+    // 2. 向左拉伸 (HitArea::L)：右边固定，垂直中心绝对锚定
+    float fontBeforeL = text->fontSize;
+    cv::Rect boxBeforeL = handler->getBoundingBox(*text);
+    const int rightEdgeBeforeL = boxBeforeL.x + boxBeforeL.width;
+    const double centerYBeforeL = boxBeforeL.y + boxBeforeL.height / 2.0;
+
+    text->resize(-20, 0, HitArea::L);
+    cv::Rect boxAfterL = handler->getBoundingBox(*text);
+    EXPECT_GT(text->fontSize, fontBeforeL);
+    EXPECT_GT(boxAfterL.width, boxBeforeL.width);
+    EXPECT_EQ(boxAfterL.x + boxAfterL.width, rightEdgeBeforeL); // 右边绝对锚定
+    EXPECT_NEAR(boxAfterL.y + boxAfterL.height / 2.0, centerYBeforeL, 1.0); // 垂直中心不漂移！
+
+    // 3. 向下拉伸 (HitArea::B)：顶边固定，水平中心绝对锚定（绝不向右偏移）
+    float fontBeforeB = text->fontSize;
+    cv::Rect boxBeforeB = handler->getBoundingBox(*text);
+    const double centerXBeforeB = boxBeforeB.x + boxBeforeB.width / 2.0;
+
+    text->resize(0, 20, HitArea::B);
+    cv::Rect boxAfterB = handler->getBoundingBox(*text);
+    EXPECT_GT(text->fontSize, fontBeforeB);
+    EXPECT_EQ(boxAfterB.y, boxBeforeB.y); // 顶边绝对锚定
+    EXPECT_NEAR(boxAfterB.x + boxAfterB.width / 2.0, centerXBeforeB, 1.0); // 水平中心不漂移！
+
+    // 4. 向上拉伸 (HitArea::T)：底边固定，水平中心绝对锚定
+    float fontBeforeT = text->fontSize;
+    cv::Rect boxBeforeT = handler->getBoundingBox(*text);
+    const int bottomEdgeBeforeT = boxBeforeT.y + boxBeforeT.height;
+    const double centerXBeforeT = boxBeforeT.x + boxBeforeT.width / 2.0;
+
+    text->resize(0, -20, HitArea::T);
+    cv::Rect boxAfterT = handler->getBoundingBox(*text);
+    EXPECT_GT(text->fontSize, fontBeforeT);
+    EXPECT_EQ(boxAfterT.y + boxAfterT.height, bottomEdgeBeforeT); // 底边绝对锚定
+    EXPECT_NEAR(boxAfterT.x + boxAfterT.width / 2.0, centerXBeforeT, 1.0); // 水平中心不漂移！
+
+    // 5. 角手柄锚定验证：
+    // HitArea::RB：左上角绝对固定
+    cv::Rect boxBeforeRB = handler->getBoundingBox(*text);
+    text->resize(15, 15, HitArea::RB);
+    cv::Rect boxAfterRB = handler->getBoundingBox(*text);
+    EXPECT_EQ(boxAfterRB.x, boxBeforeRB.x);
+    EXPECT_EQ(boxAfterRB.y, boxBeforeRB.y);
+
+    // HitArea::RT：左下角绝对固定
+    cv::Rect boxBeforeRT = handler->getBoundingBox(*text);
+    const int bottomBeforeRT = boxBeforeRT.y + boxBeforeRT.height;
+    text->resize(15, -15, HitArea::RT);
+    cv::Rect boxAfterRT = handler->getBoundingBox(*text);
+    EXPECT_EQ(boxAfterRT.x, boxBeforeRT.x);
+    EXPECT_EQ(boxAfterRT.y + boxAfterRT.height, bottomBeforeRT);
+
+    // HitArea::LB：右上角绝对固定
+    cv::Rect boxBeforeLB = handler->getBoundingBox(*text);
+    const int rightBeforeLB = boxBeforeLB.x + boxBeforeLB.width;
+    text->resize(-15, 15, HitArea::LB);
+    cv::Rect boxAfterLB = handler->getBoundingBox(*text);
+    EXPECT_EQ(boxAfterLB.x + boxAfterLB.width, rightBeforeLB);
+    EXPECT_EQ(boxAfterLB.y, boxBeforeLB.y);
+
+    // 6. 缩小行为验证 (向左缩小 R 手柄)
+    cv::Rect boxBeforeShrinkR = handler->getBoundingBox(*text);
+    float fontBeforeShrinkR = text->fontSize;
+    text->resize(-10, 0, HitArea::R);
+    cv::Rect boxAfterShrinkR = handler->getBoundingBox(*text);
+    EXPECT_LT(text->fontSize, fontBeforeShrinkR);
+    EXPECT_EQ(boxAfterShrinkR.x, boxBeforeShrinkR.x);
+    EXPECT_NEAR(boxAfterShrinkR.y + boxAfterShrinkR.height / 2.0,
+                boxBeforeShrinkR.y + boxBeforeShrinkR.height / 2.0, 1.0);
+
+    // 7. 极端值截断保护：字号缩放绝不越出 [12.0f, 180.0f] 边界
+    text->resize(-5000, 0, HitArea::R);
+    EXPECT_FLOAT_EQ(text->fontSize, 12.0f);
+    text->resize(5000, 0, HitArea::R);
+    EXPECT_FLOAT_EQ(text->fontSize, 180.0f);
+}
+
+TEST(CaptureMarkupResizeTest, HandleGeometryAnchoredOriginAndScalarDeltaAllEightDirections) {
+    using namespace tools3000::capture;
+
+    // 1. 标量增量投射验证 (computeScalarDelta)
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(10, 0, HitArea::R), 10);
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(-10, 0, HitArea::L), 10);
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(0, 10, HitArea::B), 10);
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(0, -10, HitArea::T), 10);
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(10, 10, HitArea::RB), 10);
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(-10, -10, HitArea::LT), 10);
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(10, -10, HitArea::RT), 10);
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(-10, 10, HitArea::LB), 10);
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(10, 10, HitArea::Body), 0);
+    EXPECT_EQ(HandleGeometry::computeScalarDelta(10, 10, HitArea::None), 0);
+
+    // 2. 8 方向等比缩放锚点坐标求解数学验证 (computeAnchoredOrigin)
+    const cv::Point orig(100, 100);
+    const int dW = 40;
+    const int dH = 20;
+
+    // R: 左边固定 (x=100), 垂直中心固定 (100 - 10 = 90)
+    cv::Point pR = HandleGeometry::computeAnchoredOrigin(orig, dW, dH, HitArea::R);
+    EXPECT_EQ(pR.x, 100);
+    EXPECT_EQ(pR.y, 90);
+
+    // L: 右边固定 (100 - 40 = 60), 垂直中心固定 (90)
+    cv::Point pL = HandleGeometry::computeAnchoredOrigin(orig, dW, dH, HitArea::L);
+    EXPECT_EQ(pL.x, 60);
+    EXPECT_EQ(pL.y, 90);
+
+    // B: 顶边固定 (y=100), 水平中心固定 (100 - 20 = 80)
+    cv::Point pB = HandleGeometry::computeAnchoredOrigin(orig, dW, dH, HitArea::B);
+    EXPECT_EQ(pB.x, 80);
+    EXPECT_EQ(pB.y, 100);
+
+    // T: 底边固定 (100 - 20 = 80), 水平中心固定 (80)
+    cv::Point pT = HandleGeometry::computeAnchoredOrigin(orig, dW, dH, HitArea::T);
+    EXPECT_EQ(pT.x, 80);
+    EXPECT_EQ(pT.y, 80);
+
+    // RB: 左上角固定 (100, 100)
+    cv::Point pRB = HandleGeometry::computeAnchoredOrigin(orig, dW, dH, HitArea::RB);
+    EXPECT_EQ(pRB.x, 100);
+    EXPECT_EQ(pRB.y, 100);
+
+    // LT: 右下角固定 (60, 80)
+    cv::Point pLT = HandleGeometry::computeAnchoredOrigin(orig, dW, dH, HitArea::LT);
+    EXPECT_EQ(pLT.x, 60);
+    EXPECT_EQ(pLT.y, 80);
+
+    // RT: 左下角固定 (100, 80)
+    cv::Point pRT = HandleGeometry::computeAnchoredOrigin(orig, dW, dH, HitArea::RT);
+    EXPECT_EQ(pRT.x, 100);
+    EXPECT_EQ(pRT.y, 80);
+
+    // LB: 右上角固定 (60, 100)
+    cv::Point pLB = HandleGeometry::computeAnchoredOrigin(orig, dW, dH, HitArea::LB);
+    EXPECT_EQ(pLB.x, 60);
+    EXPECT_EQ(pLB.y, 100);
+}
+
+TEST(CaptureMarkupResizeTest, EllipseHandlerOddDimensionsNoTruncation) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(500, 500, CV_8UC3);
+    engine.setBaseImage(base);
+
+    // 绘制奇数长宽椭圆 (100, 100) -> (201, 201), 宽=101, 高=101
+    auto* ellipse = engine.drawEllipse(cv::Point(100, 100), cv::Point(201, 201), MarkupColor::Yellow());
+    ASSERT_NE(ellipse, nullptr);
+
+    const auto* handler = MarkupToolRegistry::instance().getHandler(MarkupTool::Ellipse);
+    ASSERT_NE(handler, nullptr);
+
+    // 验证多态基类 getBoundingBox 绝不截断奇数像素
+    cv::Rect bbox = handler->getBoundingBox(*ellipse);
+    EXPECT_EQ(bbox.x, 100);
+    EXPECT_EQ(bbox.y, 100);
+    EXPECT_EQ(bbox.width, 101);
+    EXPECT_EQ(bbox.height, 101);
+
+    // 验证拉伸右侧手柄 +10px
+    ellipse->resize(10, 0, HitArea::R);
+    cv::Rect bboxAfter = handler->getBoundingBox(*ellipse);
+    EXPECT_EQ(bboxAfter.x, 100);
+    EXPECT_EQ(bboxAfter.width, 111);
+    EXPECT_EQ(bboxAfter.height, 101);
+}
+
+TEST(CaptureMarkupResizeTest, PenHandlerSingleAxisDegenerateStrokeResize) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(400, 400, CV_8UC3);
+    engine.setBaseImage(base);
+
+    // 1. 垂直线退化笔画 (x=150 绝对垂直，spanX=0)
+    std::vector<cv::Point> vertPts = {{150, 100}, {150, 150}, {150, 200}};
+    auto* vertPen = engine.drawPenStroke(vertPts, MarkupColor::Red());
+    ASSERT_NE(vertPen, nullptr);
+
+    const auto* handler = MarkupToolRegistry::instance().getHandler(MarkupTool::Pen);
+    ASSERT_NE(handler, nullptr);
+
+    cv::Rect vertBBox = handler->getBoundingBox(*vertPen);
+    EXPECT_GE(vertBBox.width, 4); // 确保最小包围盒不为 0
+    EXPECT_EQ(vertBBox.height, 100);
+
+    // 沿 B 方向拉长 50px：必须成功拉伸且无除零崩溃
+    vertPen->resize(0, 50, HitArea::B);
+    cv::Rect vertAfter = handler->getBoundingBox(*vertPen);
+    EXPECT_EQ(vertAfter.height, 150);
+
+    // 2. 水平线退化笔画 (y=150 绝对水平，spanY=0)
+    std::vector<cv::Point> horizPts = {{100, 150}, {150, 150}, {200, 150}};
+    auto* horizPen = engine.drawPenStroke(horizPts, MarkupColor::Blue());
+    ASSERT_NE(horizPen, nullptr);
+
+    cv::Rect horizBBox = handler->getBoundingBox(*horizPen);
+    EXPECT_EQ(horizBBox.width, 100);
+    EXPECT_GE(horizBBox.height, 4);
+
+    // 沿 R 方向拉长 40px
+    horizPen->resize(40, 0, HitArea::R);
+    cv::Rect horizAfter = handler->getBoundingBox(*horizPen);
+    EXPECT_EQ(horizAfter.width, 140);
+}
+
+TEST(CaptureMarkupResizeTest, MagnifierHandlerSinglePixelIncrementResponsiveness) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(600, 600, CV_8UC3);
+    engine.setBaseImage(base);
+
+    engine.addMagnifier(cv::Point(200, 200), 2.0f, 60);
+    auto* mag = engine.elements().back().get();
+    ASSERT_NE(mag, nullptr);
+    EXPECT_EQ(mag->magnifierRadius, 60);
+
+    const auto* handler = MarkupToolRegistry::instance().getHandler(MarkupTool::Magnifier);
+    ASSERT_NE(handler, nullptr);
+
+    // 微量移动 1 像素测试：必须即时响应，绝无 1/2 == 0 丢步死区
+    mag->resize(1, 0, HitArea::R);
+    EXPECT_EQ(mag->magnifierRadius, 61);
+
+    mag->resize(-1, 0, HitArea::R);
+    EXPECT_EQ(mag->magnifierRadius, 60);
+
+    mag->resize(0, 1, HitArea::B);
+    EXPECT_EQ(mag->magnifierRadius, 61);
+
+    mag->resize(0, -1, HitArea::T);
+    EXPECT_EQ(mag->magnifierRadius, 62);
+}
+
+TEST(CaptureMarkupResizeTest, TextHandlerEditingStateSizeConsistency) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(500, 500, CV_8UC3);
+    engine.setBaseImage(base);
+
+    // 1. 空文本：无论处于编辑中还是处于非编辑态手柄拖拽中，包围盒尺寸绝对恒定，绝无 60px 跳变闪烁
+    auto* emptyText = engine.addText(cv::Point(100, 100), "", MarkupColor::Green(), 18.0f);
+    ASSERT_NE(emptyText, nullptr);
+
+    const auto* handler = MarkupToolRegistry::instance().getHandler(MarkupTool::Text);
+    ASSERT_NE(handler, nullptr);
+
+    emptyText->isEditing = true;
+    cv::Rect boxEditing = handler->getBoundingBox(*emptyText);
+
+    emptyText->isEditing = false;
+    cv::Rect boxNonEditing = handler->getBoundingBox(*emptyText);
+
+    EXPECT_EQ(boxEditing.width, boxNonEditing.width);
+    EXPECT_EQ(boxEditing.height, boxNonEditing.height);
+
+    // 2. 非空文本：无论编辑态还是拖拽态，尺寸同样一致
+    auto* text = engine.addText(cv::Point(100, 100), "Hello", MarkupColor::Blue(), 18.0f);
+    ASSERT_NE(text, nullptr);
+
+    text->isEditing = true;
+    cv::Rect filledEditing = handler->getBoundingBox(*text);
+
+    text->isEditing = false;
+    cv::Rect filledNonEditing = handler->getBoundingBox(*text);
+
+    EXPECT_EQ(filledEditing.width, filledNonEditing.width);
+    EXPECT_EQ(filledEditing.height, filledNonEditing.height);
+}
+
+TEST(CaptureMarkupResizeTest, TextElementActiveHandlesHitTestAndNonEditingCaret) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base = cv::Mat::ones(600, 600, CV_8UC3);
+    engine.setBaseImage(base);
+
+    auto* text = engine.addText(cv::Point(100, 100), "Zero Emoji Standard", MarkupColor::Green(), 20.0f);
+    ASSERT_NE(text, nullptr);
+    text->isActive = true;
+
+    const auto* handler = MarkupToolRegistry::instance().getHandler(MarkupTool::Text);
+    ASSERT_NE(handler, nullptr);
+
+    cv::Rect bbox = handler->getBoundingBox(*text);
+    auto handles = HandleGeometry::getBoxHandles(bbox);
+
+    // 激活状态下：点击 8 个手柄中的每一个均返回对应的 HitArea，而不是 HitArea::Body
+    for (const auto& hp : handles) {
+        HitArea hit = handler->hitTest(*text, hp.point, 5);
+        EXPECT_EQ(hit, hp.area);
+        EXPECT_NE(hit, HitArea::Body);
+    }
+
+    // 点击在文字正中间（非手柄区域）返回 HitArea::Body
+    cv::Point centerPt(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2);
+    HitArea bodyHit = handler->hitTest(*text, centerPt, 5);
+    EXPECT_EQ(bodyHit, HitArea::Body);
+
+    // 验证 endPt 始终与 getBoundingBox 同步形成有效包围盒
+    EXPECT_EQ(text->endPt.x, bbox.x + bbox.width);
+    EXPECT_EQ(text->endPt.y, bbox.y + bbox.height);
+}
+
+TEST(ClipboardUtilsTest, TimestampedHdropFileNamePatternAndContent) {
+    auto openClipboardWithRetry = []() -> bool {
+        for (int retry = 0; retry < 25; ++retry) {
+            if (OpenClipboard(nullptr)) return true;
+            Sleep(10);
+        }
+        return false;
+    };
+
+    cv::Mat testImage(32, 32, CV_8UC3, cv::Scalar(100, 150, 200));
+    ASSERT_TRUE(tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage));
+
+    ASSERT_TRUE(openClipboardWithRetry());
+    HDROP hDrop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
+    ASSERT_NE(hDrop, nullptr);
+    wchar_t retrievedPath[MAX_PATH] = {};
+    const UINT pathChars = DragQueryFileW(hDrop, 0, retrievedPath, MAX_PATH);
+    EXPECT_GT(pathChars, 0u);
+    CloseClipboard();
+
+    std::error_code ec;
+    EXPECT_TRUE(std::filesystem::exists(retrievedPath, ec));
+    std::wstring filename = std::filesystem::path(retrievedPath).filename().wstring();
+    EXPECT_TRUE(filename.rfind(L"Tools3000_", 0) == 0);
+    EXPECT_EQ(std::filesystem::path(retrievedPath).extension(), L".png");
+    EXPECT_GT(std::filesystem::file_size(retrievedPath, ec), 50u);
+
+    std::filesystem::remove(retrievedPath, ec);
+}
 
 
 

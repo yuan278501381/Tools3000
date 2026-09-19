@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ─────────────────────────────────────────────────────────────────────────────
 // GestureInputPolicy — 手势触发键与取消条件的纯判定
 //
@@ -627,6 +627,28 @@ inline bool lowLevelHookCanObserveTarget(ProcessIntegrityRelation rel) noexcept 
 inline bool shouldWarnGestureIntegrityBlocked(ProcessIntegrityRelation rel,
                                               bool tools3000Ui) noexcept {
     return rel == ProcessIntegrityRelation::Higher && !tools3000Ui;
+}
+
+/// 手势专用异步渲染工作线程优先级策略：采用最高优先级杜绝高负载丢帧与时钟抖动
+constexpr int gestureRenderThreadPriority() noexcept {
+    return THREAD_PRIORITY_HIGHEST;
+}
+
+/// 轨迹点推入即时唤醒策略：在持有窗口句柄时无条件即时唤醒，杜绝 8ms/15.6ms 时钟截断延迟
+constexpr bool gestureShouldWakeRenderImmediately(bool hasHwnd) noexcept {
+    return hasHwnd;
+}
+
+/// 物理光标尖端原子同步插值策略：
+/// 在非淡出态且已有轨迹点时，若物理光标位移平方达到阈值（默认 1.0px^2），原子补入尖端点抹平 DWM 合成相位差
+inline bool gestureShouldInterpolateCursorTip(bool isFading, bool hasPoints,
+                                              float cursorX, float cursorY,
+                                              float lastX, float lastY,
+                                              float minDistanceSq = 1.0f) noexcept {
+    if (isFading || !hasPoints) return false;
+    const float dx = cursorX - lastX;
+    const float dy = cursorY - lastY;
+    return (dx * dx + dy * dy) >= minDistanceSq;
 }
 
 }  // namespace tools3000::gesture

@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <deque>
 #include <unordered_map>
+#include <array>
 
 namespace tools3000::capture {
 
@@ -188,6 +189,52 @@ public:
     virtual void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const = 0;
 };
 
+/// 8 方向控制手柄几何与命中管理引擎 (Single-Responsibility Handle Geometry Engine)
+class HandleGeometry {
+public:
+    static constexpr int kDefaultHandleHalfSize = 7;
+    static constexpr int kDefaultMinBoxSize = 4;
+
+    struct HandlePoint {
+        cv::Point point;
+        HitArea area;
+    };
+
+    /// 计算给定包围盒的 8 个手柄位置与对应 HitArea (LT, T, RT, R, RB, B, LB, L)
+    static std::array<HandlePoint, 8> getBoxHandles(const cv::Rect& bbox);
+
+    /// 对给定包围盒的 8 方向手柄进行命中测试 (优先角手柄，后边手柄)
+    static HitArea hitTestHandles(const cv::Rect& bbox, cv::Point pt, int handleHalfSize = kDefaultHandleHalfSize);
+
+    /// 在画布上统一渲染 8 方向激活手柄 (外圈纯白高反差 + 细边框 + 微晶阴影，与桌面质感完全对齐)
+    static void renderBoxHandles(cv::Mat& canvas, const cv::Rect& bbox,
+                                 const cv::Scalar& activeColor = cv::Scalar(255, 140, 0),
+                                 int handleHalfSize = 5);
+
+    /// 计算 8 方向手柄拖拽后的包围盒几何，保证尺寸不低于 minW / minH
+    static cv::Rect computeResizedRect(const cv::Rect& originalRect, int dx, int dy, HitArea handle,
+                                       int minW = kDefaultMinBoxSize, int minH = kDefaultMinBoxSize);
+
+    /// 计算 8 方向手柄在鼠标微移 (dx, dy) 下的标量伸缩分量 (统一用于文字、放大镜等等比缩放图元)
+    static int computeScalarDelta(int dx, int dy, HitArea handle);
+
+    /// 计算在尺寸增量 (dW, dH) 下，根据被拖拽手柄保持对应锚点边/中心不动的新左上角坐标 (多态等比图元通用)
+    static cv::Point computeAnchoredOrigin(const cv::Point& currentOrigin, int dW, int dH, HitArea handle);
+};
+
+/// 通用包围盒标注工具基类 (Default Bounding Box Tool Handler Base)
+class DefaultBoxHandler : public IMarkupToolHandler {
+public:
+    cv::Rect getBoundingBox(const MarkupElement& element) const override;
+    HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override;
+    void resize(MarkupElement& element, int dx, int dy, HitArea handle) const override;
+    void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const override;
+
+protected:
+    /// 辅助方法：统一对手柄进行命中测试
+    HitArea hitTestHandles(const MarkupElement& element, cv::Point pt, int padding) const;
+};
+
 /// 标注工具单例注册表 (Open-Closed Extensible Tool Registry)
 class MarkupToolRegistry {
 public:
@@ -217,6 +264,12 @@ public:
     /// 获取当前合成图（底图 + 所有标注）
     /// @param includeActiveHandles 是否绘制激活手柄 (预览传 true，复制/保存传 false 避免污染图片)
     cv::Mat getCompositeImage(bool includeActiveHandles = false) const;
+
+    /// 查询与获取底图信息
+    bool hasBaseImage() const noexcept { return !m_baseImage.empty(); }
+    const cv::Mat& getBaseImage() const noexcept { return m_baseImage; }
+    int baseWidth() const noexcept { return m_baseImage.cols; }
+    int baseHeight() const noexcept { return m_baseImage.rows; }
 
     // ── 元素操作 ─────────────────────────────────────────────────────────
 

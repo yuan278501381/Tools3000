@@ -72,6 +72,16 @@ if ($Portable) {
 # 2. 卸载模式
 if ($Uninstall) {
     Write-CliLog "正在检索系统中的 Tools3000 安装实例..." "INFO"
+    $ActiveProcs = Get-Process -Name "Tools3000", "Tools3000_Service" -ErrorAction SilentlyContinue
+    if ($ActiveProcs) {
+        Write-CliLog "检测到运行中的实例，正在极速终止进程树..." "INFO"
+        taskkill.exe /F /T /IM Tools3000.exe 2>$null | Out-Null
+        taskkill.exe /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
+    }
+    $svc = Get-Service -Name "Tools3000_SearchService" -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+        Stop-Service -Name "Tools3000_SearchService" -Force -NoWait -ErrorAction SilentlyContinue
+    }
     $UninstallKeys = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Tools3000_is1",
         "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Tools3000_is1",
@@ -105,11 +115,33 @@ if ($Uninstall) {
         $proc = Start-Process -FilePath $UninstallerPath -ArgumentList $UninstArgs -Wait -PassThru
         if ($proc.ExitCode -eq 0) {
             Write-CliLog "Tools3000 已成功卸载并清理完毕！" "SUCCESS"
+            $InstallDir = Split-Path -Parent $UninstallerPath
+            if ($InstallDir -and (Test-Path -LiteralPath $InstallDir)) {
+                Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
         } else {
             Write-CliLog "卸载退出代码: $($proc.ExitCode)" "WARN"
         }
     } else {
-        Write-CliLog "未在系统中检测到已安装的 Tools3000。" "WARN"
+        Write-CliLog "未在系统中检测到 Tools3000 安装程序，执行绿色/便携与残留深度清理..." "WARN"
+        $svc = Get-Service -Name "Tools3000_SearchService" -ErrorAction SilentlyContinue
+        if ($svc) {
+            sc.exe delete Tools3000_SearchService 2>$null | Out-Null
+        }
+        try {
+            $ts = New-Object -ComObject "Schedule.Service"
+            $ts.Connect()
+            $folder = $ts.GetFolder("\Tools3000")
+            $tasks = $folder.GetTasks(0)
+            for ($i = $tasks.Count; $i -ge 1; $i--) {
+                $folder.DeleteTask($tasks.Item($i).Name, 0)
+            }
+            $root = $ts.GetFolder("\")
+            $root.DeleteFolder("Tools3000", 0)
+        } catch {
+            schtasks.exe /delete /tn "Tools3000\Autorun for $env:USERNAME" /f 2>$null | Out-Null
+        }
+        Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Tools3000" -ErrorAction SilentlyContinue
     }
     if (-not $KeepPersonalData) {
         @(

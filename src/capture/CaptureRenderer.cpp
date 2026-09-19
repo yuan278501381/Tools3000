@@ -9,6 +9,8 @@
 #include "capture/CaptureHistory.h"
 #include "capture/CaptureToolbarLayout.h"
 #include "capture/HudAvoidanceEngine.h"
+#include "capture/ShortcutHintOverlay.h"
+#include "capture/MarkupBaseHelper.h"
 #include <format>
 #include <algorithm>
 #include <cmath>
@@ -286,6 +288,7 @@ void CaptureRenderer::releaseWindowResources() {
     m_screenBitmap.Reset();
     m_markupCacheBitmap.Reset();
     m_historyBitmap.Reset();
+    m_markupClipLayer.Reset();
     m_textInputFormat.Reset();
     m_infoTextFormat.Reset();
     m_textScale = 0.0f;
@@ -731,6 +734,22 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
         state.secondaryToolbarRect.bottom > state.secondaryToolbarRect.top) {
         obstacles.push_back({state.secondaryToolbarRect, HudObstacleType::SecondaryToolbar, 2.0f});
     }
+    if (!state.selectionSideButtons.empty() &&
+        state.selectionSideRect.right > state.selectionSideRect.left &&
+        state.selectionSideRect.bottom > state.selectionSideRect.top) {
+        obstacles.push_back({state.selectionSideRect, HudObstacleType::SecondaryToolbar, 2.0f});
+    }
+    if (ShortcutHintOverlay::instance().isVisible()) {
+        RECT hintRect = ShortcutHintOverlay::instance().getBounds();
+        if (hintRect.right > hintRect.left && hintRect.bottom > hintRect.top) {
+            obstacles.push_back({
+                D2D1::RectF(static_cast<float>(hintRect.left), static_cast<float>(hintRect.top),
+                            static_cast<float>(hintRect.right), static_cast<float>(hintRect.bottom)),
+                HudObstacleType::ActiveAnnotation,
+                2.0f
+            });
+        }
+    }
 
     // 1. 注册 8 个调节手柄热区为障碍物，杜绝尺寸胶囊遮挡把手与圆角指示点
     const float handleBoxR = 12.0f * scale;
@@ -814,6 +833,29 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
     state.lastSizeHudEdge = static_cast<int>(placement.edge);
     auto pillRect = placement.rect;
     state.sizeHudRect = pillRect;
+
+    if (ShortcutHintOverlay::instance().isVisible()) {
+        const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        std::vector<RECT> avoidRects;
+        avoidRects.push_back({ static_cast<LONG>(rect.left + vx), static_cast<LONG>(rect.top + vy),
+                               static_cast<LONG>(rect.right + vx), static_cast<LONG>(rect.bottom + vy) });
+        if (state.primaryToolbarRect.right > state.primaryToolbarRect.left) {
+            avoidRects.push_back({ static_cast<LONG>(state.primaryToolbarRect.left + vx), static_cast<LONG>(state.primaryToolbarRect.top + vy),
+                                   static_cast<LONG>(state.primaryToolbarRect.right + vx), static_cast<LONG>(state.primaryToolbarRect.bottom + vy) });
+        }
+        if (state.secondaryToolbarRect.right > state.secondaryToolbarRect.left) {
+            avoidRects.push_back({ static_cast<LONG>(state.secondaryToolbarRect.left + vx), static_cast<LONG>(state.secondaryToolbarRect.top + vy),
+                                   static_cast<LONG>(state.secondaryToolbarRect.right + vx), static_cast<LONG>(state.secondaryToolbarRect.bottom + vy) });
+        }
+        if (state.selectionSideRect.right > state.selectionSideRect.left) {
+            avoidRects.push_back({ static_cast<LONG>(state.selectionSideRect.left + vx), static_cast<LONG>(state.selectionSideRect.top + vy),
+                                   static_cast<LONG>(state.selectionSideRect.right + vx), static_cast<LONG>(state.selectionSideRect.bottom + vy) });
+        }
+        avoidRects.push_back({ static_cast<LONG>(pillRect.left + vx), static_cast<LONG>(pillRect.top + vy),
+                               static_cast<LONG>(pillRect.right + vx), static_cast<LONG>(pillRect.bottom + vy) });
+        ShortcutHintOverlay::instance().updateAvoidance(avoidRects);
+    }
 
     float labelX = pillRect.left;
     float labelY = pillRect.top;
@@ -1039,15 +1081,17 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
             bool isTool = button.command == ToolbarCommand::SelectTool;
             bool isActiveTool = false;
             if (isTool) {
-                if (button.tool == MarkupTool::Rectangle || button.tool == MarkupTool::Ellipse || button.tool == MarkupTool::Line) {
-                    isActiveTool = (state.currentTool == MarkupTool::Rectangle || state.currentTool == MarkupTool::Ellipse || state.currentTool == MarkupTool::Line);
-                } else if (button.tool == MarkupTool::Pen || button.tool == MarkupTool::Highlight) {
-                    isActiveTool = (state.currentTool == MarkupTool::Pen || state.currentTool == MarkupTool::Highlight);
-                } else {
-                    isActiveTool = (button.tool == state.currentTool);
-                }
-                if (button.isSecondary) {
-                    isActiveTool = (button.tool == state.currentTool);
+                if (state.isMarkupToolActive || button.isSecondary) {
+                    if (button.tool == MarkupTool::Rectangle || button.tool == MarkupTool::Ellipse || button.tool == MarkupTool::Line) {
+                        isActiveTool = (state.currentTool == MarkupTool::Rectangle || state.currentTool == MarkupTool::Ellipse || state.currentTool == MarkupTool::Line);
+                    } else if (button.tool == MarkupTool::Pen || button.tool == MarkupTool::Highlight) {
+                        isActiveTool = (state.currentTool == MarkupTool::Pen || state.currentTool == MarkupTool::Highlight);
+                    } else {
+                        isActiveTool = (button.tool == state.currentTool);
+                    }
+                    if (button.isSecondary) {
+                        isActiveTool = (button.tool == state.currentTool);
+                    }
                 }
             }
             if (button.command == ToolbarCommand::ToggleFill) {
@@ -2002,6 +2046,9 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
     float cy = (rect.top + rect.bottom) * 0.5f;
 
     switch (button.command) {
+        case ToolbarCommand::Copy:
+            CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionCopy, rect, brush, scale);
+            return;
         case ToolbarCommand::Confirm:
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionConfirm, rect, brush, scale);
             return;
@@ -2369,18 +2416,73 @@ void CaptureRenderer::drawMarkupPreview(const D2D1_RECT_F& selectionRect, Captur
     }
 
     if (m_markupCacheBitmap) {
-        m_renderTarget->DrawBitmap(m_markupCacheBitmap.Get(), selectionRect);
+        auto sz = m_markupCacheBitmap->GetPixelSize();
+        // 目标矩形严格对齐整数物理像素，尺寸与位图像素 1:1 绝对对齐，消除双线性重采样引起的模糊与拉伸
+        D2D1_RECT_F destRect = calculateMarkupDestRect(selectionRect, sz.width, sz.height);
+        D2D1_RECT_F srcRect = calculateMarkupSrcRect(sz.width, sz.height);
+
+        const float scale = (state.dpiScale > 0.0f ? state.dpiScale : 1.0f);
+        float effectiveRadius = state.effectiveCornerRadius();
+        float radius = effectiveRadius * scale;
+
+        // 如果选区启用了圆角，使用几何图层进行超平滑抗锯齿裁剪，防止尖角溢出底层圆角
+        if (radius > 0.5f && m_d2dFactory) {
+            auto rounded = D2D1::RoundedRect(destRect, radius, radius);
+            ComPtr<ID2D1RoundedRectangleGeometry> clipGeo;
+            if (SUCCEEDED(m_d2dFactory->CreateRoundedRectangleGeometry(rounded, clipGeo.GetAddressOf())) && clipGeo) {
+                if (!m_markupClipLayer) {
+                    m_renderTarget->CreateLayer(m_markupClipLayer.GetAddressOf());
+                }
+                if (m_markupClipLayer) {
+                    m_renderTarget->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clipGeo.Get()), m_markupClipLayer.Get());
+                    m_renderTarget->DrawBitmap(
+                        m_markupCacheBitmap.Get(),
+                        destRect,
+                        1.0f,
+                        D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                        srcRect
+                    );
+                    m_renderTarget->PopLayer();
+                } else {
+                    m_renderTarget->DrawBitmap(
+                        m_markupCacheBitmap.Get(),
+                        destRect,
+                        1.0f,
+                        D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                        srcRect
+                    );
+                }
+            } else {
+                m_renderTarget->DrawBitmap(
+                    m_markupCacheBitmap.Get(),
+                    destRect,
+                    1.0f,
+                    D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                    srcRect
+                );
+            }
+        } else {
+            m_renderTarget->DrawBitmap(
+                m_markupCacheBitmap.Get(),
+                destRect,
+                1.0f,
+                D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                srcRect
+            );
+        }
     }
 
     // Figma / CleanShot X 级交互：当处于激活态的元素为矩形时，在 Direct2D 层叠加动态微晶圆角手柄与 [ ╭ R ] 胶囊反馈
     if (state.activeElement && state.activeElement->isActive && state.activeElement->tool == MarkupTool::Rectangle) {
         const float scale = std::clamp(state.dpiScale > 0.0f ? state.dpiScale : 1.0f, 1.0f, 5.0f);
         cv::Rect bbox = state.activeElement->getBoundingBox();
+        float destLeft = std::round(selectionRect.left);
+        float destTop  = std::round(selectionRect.top);
         D2D1_RECT_F elemRect = D2D1::RectF(
-            selectionRect.left + static_cast<float>(bbox.x),
-            selectionRect.top + static_cast<float>(bbox.y),
-            selectionRect.left + static_cast<float>(bbox.x + bbox.width),
-            selectionRect.top + static_cast<float>(bbox.y + bbox.height)
+            destLeft + static_cast<float>(bbox.x),
+            destTop  + static_cast<float>(bbox.y),
+            destLeft + static_cast<float>(bbox.x + bbox.width),
+            destTop  + static_cast<float>(bbox.y + bbox.height)
         );
         bool isDragging = (state.isManipulating && state.dragHandle == HitArea::CornerRadius);
         drawCornerRadiusHandleVisual(

@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // GestureTrailOverlay.cpp — 手势轨迹可视化覆盖层实现
 //
 // 核心原理:
@@ -102,7 +102,7 @@ bool GestureTrailOverlay::initialize(HINSTANCE hInstance) {
     });
 
     if (m_renderThread.native_handle()) {
-        SetThreadPriority(m_renderThread.native_handle(), THREAD_PRIORITY_ABOVE_NORMAL);
+        SetThreadPriority(m_renderThread.native_handle(), gestureRenderThreadPriority());
     }
 
     // 等待渲染线程完成窗口与 DirectComposition 设备创建
@@ -528,20 +528,13 @@ void GestureTrailOverlay::beginTrail() {
 void GestureTrailOverlay::addPoint(float x, float y) {
     m_pointQueue.push(TrailPoint{x, y, GetTickCount()});
 
-    if (m_hwnd) {
+    if (gestureShouldWakeRenderImmediately(m_hwnd != nullptr)) {
         m_fading.store(false, std::memory_order_release);
         m_fadeAlpha = 1.0f;
-        const bool firstVisible =
-            !m_wantVisible.exchange(true, std::memory_order_acq_rel);
+        m_wantVisible.store(true, std::memory_order_release);
         m_renderRequested.store(true, std::memory_order_release);
-        // 高频鼠标可能以 500/1000 Hz 上报。渲染线程只需要按 120 Hz 合并
-        // 最新点；松手和状态变化仍会无条件唤醒，不会丢掉最终一帧。
-        const DWORD now = GetTickCount();
-        const DWORD lastWake = m_lastWakeTick.load(std::memory_order_relaxed);
-        if (firstVisible || now - lastWake >= 8) {
-            m_lastWakeTick.store(now, std::memory_order_relaxed);
-            wakeRender();
-        }
+        // 极致零延迟：点位推入后立即唤醒渲染线程，彻底根除 Windows GetTickCount 15.6ms 粗粒度时钟带来的轨迹跟手延迟
+        wakeRender();
     }
 }
 
@@ -1992,6 +1985,16 @@ bool GestureTrailOverlay::render() {
     POINT cursor{};
     GetCursorPos(&cursor);
     m_dpiScale = tools3000::core::dpi::scaleAtPoint(cursor);
+
+    // 毫秒级跟手：在非淡出态下将实时采样的物理光标尖端原子补入轨迹尾部，
+    // 彻底抹平输入队列投递与 DWM 表面合成间的采样相位差，实现极致贴合跟手感
+    const float lastPtX = points.empty() ? 0.0f : points.back().x;
+    const float lastPtY = points.empty() ? 0.0f : points.back().y;
+    if (gestureShouldInterpolateCursorTip(m_fading.load(std::memory_order_relaxed), !points.empty(),
+                                          static_cast<float>(cursor.x), static_cast<float>(cursor.y),
+                                          lastPtX, lastPtY)) {
+        points.push_back({static_cast<float>(cursor.x), static_cast<float>(cursor.y), GetTickCount()});
+    }
     const HMONITOR toastMonitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
     const RECT toastWork = tools3000::core::dpi::workArea(toastMonitor);
     const float toastScale = tools3000::core::dpi::scaleForMonitor(toastMonitor);

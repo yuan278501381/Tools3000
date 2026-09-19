@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // test_gesture.inc — GESTURE 模块化单元测试集
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2433,3 +2433,70 @@ TEST(GestureModifierStuckAndAutoHealingTest, VirtualDesktopWheelThrottlingPreven
     EXPECT_EQ(acceptedSwitches, 2);
     EXPECT_EQ(prevDesktopExecuted.load(), 2);
 }
+
+// -----------------------------------------------------------------------------
+// 手势零延迟跟手调优门禁化测试套件 (对标 WGestures2)
+// -----------------------------------------------------------------------------
+TEST(GestureZeroLatencyPipelineTest, ImmediateWakeRenderPolicy) {
+    using namespace tools3000::gesture;
+    // 持有有效 HWND 时无条件即时唤醒渲染，消除 8ms/15.6ms 时钟截断延迟
+    EXPECT_TRUE(gestureShouldWakeRenderImmediately(true));
+    // 无 HWND 时不触发唤醒
+    EXPECT_FALSE(gestureShouldWakeRenderImmediately(false));
+}
+
+TEST(GestureZeroLatencyPipelineTest, RenderThreadPriorityIsHighest) {
+    using namespace tools3000::gesture;
+    // 异步渲染线程必须固定采用最高优先级，杜绝高负载下的掉帧与时钟抖动
+    EXPECT_EQ(gestureRenderThreadPriority(), THREAD_PRIORITY_HIGHEST);
+}
+
+TEST(GestureZeroLatencyPipelineTest, PhysicalCursorTipAtomicInterpolation) {
+    using namespace tools3000::gesture;
+    // 1. 淡出态锁定：手势结束淡出期严禁向尾部插值，防止尾迹形变
+    EXPECT_FALSE(gestureShouldInterpolateCursorTip(true, true, 100.0f, 100.0f, 90.0f, 90.0f));
+
+    // 2. 无轨迹点保护：点队列为空时不进行插值
+    EXPECT_FALSE(gestureShouldInterpolateCursorTip(false, false, 100.0f, 100.0f, 0.0f, 0.0f));
+
+    // 3. 微位移防抖：位移平方小于阈值 (默认 1.0 px^2) 时不插入冗余点
+    EXPECT_FALSE(gestureShouldInterpolateCursorTip(false, true, 100.4f, 100.3f, 100.0f, 100.0f, 1.0f));
+
+    // 4. 有效位移原子补入：大于等于 1.0px 时立即补入光标物理坐标，抹平 DWM 合成相位差
+    EXPECT_TRUE(gestureShouldInterpolateCursorTip(false, true, 101.0f, 100.0f, 100.0f, 100.0f, 1.0f));
+    EXPECT_TRUE(gestureShouldInterpolateCursorTip(false, true, 100.0f, 101.5f, 100.0f, 100.0f, 1.0f));
+    EXPECT_TRUE(gestureShouldInterpolateCursorTip(false, true, 95.0f, 90.0f, 100.0f, 100.0f, 1.0f)); // 负向位移
+}
+
+TEST(GestureZeroLatencyPipelineTest, HighFrequencyHookNoWakeDecimation) {
+    using namespace tools3000::gesture;
+
+    // 模拟 1000Hz 高频电竞鼠标在 1 秒内连续上报 1000 次微位移 (每次移动 2.0px)
+    // 验证门禁策略：每一次合法位移均 100% 触发即时唤醒，0 时钟截断，0 帧丢失
+    int wakeCount = 0;
+    int tipInterpolateCount = 0;
+    float lastX = 0.0f;
+    float lastY = 0.0f;
+
+    for (int i = 1; i <= 1000; ++i) {
+        float curX = static_cast<float>(i * 2);
+        float curY = static_cast<float>(i * 1);
+
+        if (gestureShouldWakeRenderImmediately(true)) {
+            wakeCount++;
+        }
+
+        if (gestureShouldInterpolateCursorTip(false, true, curX, curY, lastX, lastY, 1.0f)) {
+            tipInterpolateCount++;
+            lastX = curX;
+            lastY = curY;
+        }
+    }
+
+    EXPECT_EQ(wakeCount, 1000);
+    EXPECT_EQ(tipInterpolateCount, 1000);
+
+    // 验证微位移防抖：若移动距离小于 1.0px，尖端插值应安全防抖拦截
+    EXPECT_FALSE(gestureShouldInterpolateCursorTip(false, true, lastX + 0.3f, lastY + 0.3f, lastX, lastY, 1.0f));
+}
+

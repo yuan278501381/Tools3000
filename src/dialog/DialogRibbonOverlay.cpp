@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tools3000 - High Performance Windows Productivity Suite
  * 
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
@@ -158,6 +158,12 @@ void DialogRibbonOverlay::attachToDialog(HWND dialogHwnd, const std::string& pro
         wcscmp(className, L"#32770") != 0) {
         return;
     }
+
+    // 防御门禁：必须是有效的文件/文件夹对话框，严禁附着于文件传输进度条或属性页
+    if (!DialogNavigator::isFileDialog(dialogHwnd)) {
+        return;
+    }
+
     DWORD processId = 0;
     GetWindowThreadProcessId(dialogHwnd, &processId);
     if (processId == 0) return;
@@ -249,6 +255,12 @@ bool DialogRibbonOverlay::doUpdatePosition() {
             return false;
         }
 
+        // 动态验证目标对话框是否仍为合法的文件对话框，杜绝 HWND 复用为非文件弹窗
+        if (!DialogNavigator::isFileDialog(m_targetDialog)) {
+            doHideLocked();
+            return false;
+        }
+
         // 如果下拉菜单正在弹出交互中，始终保持展示
         if (m_menuOpen) {
             return true;
@@ -291,6 +303,11 @@ bool DialogRibbonOverlay::doUpdatePosition() {
             // top-right: 贴合在对话框右上角标题栏（位于系统最小化/关闭按钮左侧）
             posX = dlgRect.right - m_width - static_cast<int>(145.0f * m_dpiScale);
             posY = dlgRect.top + static_cast<int>(5.0f * m_dpiScale);
+        }
+
+        // 防溢出保护：防止小尺寸或窄窗口导致左侧越界
+        if (posX < dlgRect.left + static_cast<int>(8.0f * m_dpiScale)) {
+            posX = dlgRect.left + static_cast<int>(8.0f * m_dpiScale);
         }
 
         SetWindowPos(m_hwnd, HWND_TOPMOST, posX, posY, m_width, m_height,

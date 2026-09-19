@@ -12,6 +12,7 @@
 #include "capture/CaptureToolbarLayout.h"
 #include "capture/CaptureToolbarAccessibility.h"
 #include "capture/CaptureDropdownMenu.h"
+#include "capture/MarkupBaseHelper.h"
 #include "core/config/ConfigManager.h"
 #include "core/accessibility/OverlayAnnouncement.h"
 #include "core/logger/Logger.h"
@@ -578,7 +579,7 @@ void CaptureInput::updateHoverCursor(POINT point) {
                 if (!cur) {
                     HitResult hit = m_state->markup.getElementAtEx(local);
                     if (hit.element) {
-                        if (hit.element->tool == MarkupTool::Text) {
+                        if (hit.element->tool == MarkupTool::Text && hit.area == HitArea::Body) {
                             cur = LoadCursor(nullptr, IDC_IBEAM);
                         } else {
                             cur = cursorForArea(hit.area);
@@ -592,7 +593,7 @@ void CaptureInput::updateHoverCursor(POINT point) {
         if (!cur) {
             const float effDpi = (m_state && m_state->dpiScale > 0.0f) ? m_state->dpiScale : 1.0f;
             if (isPointInSelection(point)) {
-                if (m_state->mode == OverlayMode::RecordRegion) {
+                if (m_state->mode == OverlayMode::RecordRegion || !m_state->isMarkupToolActive) {
                     cur = LoadCursor(nullptr, IDC_SIZEALL);
                 } else if (m_state->currentTool == MarkupTool::Text) {
                     if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text && m_state->activeElement->isEditing) {
@@ -770,15 +771,16 @@ void CaptureInput::adjustSelection(HitArea handle, int dx, int dy) {
 
     int newLeft = std::min(m_state->dragStart.x, m_state->dragEnd.x);
     int newTop  = std::min(m_state->dragStart.y, m_state->dragEnd.y);
+    m_state->toolbarLayoutValid = false;
 
     if (m_state->markup.hasAnyMarkup()) {
-        // 已有标注（含撤销栈）：按左上角位移反向平移，使其"钉"在原屏幕内容上；并按新选区重裁底图
-        m_state->markup.translateAll(oldLeft - newLeft, oldTop - newTop);
+        // 已有标注（含撤销栈）：按新选区重裁底图，并由 prepareMarkupBase 统筹平移已有图元
         rebuildMarkupBase();
         m_renderer->markMarkupDirty();
     } else {
-        // 无任何标注：底图在下次标注时按新选区再裁（避免每帧重裁）
+        // 无任何标注：底图在下次标注或选区确定时按新选区再裁（避免拖拽选区期间每帧重裁开销）
         m_state->markupBaseReady = false;
+        m_state->markupBaseRect = {0, 0, 0, 0};
     }
     m_renderer->invalidate();
 }
@@ -952,7 +954,11 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
 
     switch (button.command) {
         case ToolbarCommand::SelectTool:
-            setCurrentTool(button.tool);
+            if (!button.isSecondary) {
+                toggleOrSetTool(button.tool);
+            } else {
+                setCurrentTool(button.tool);
+            }
             return;
 
         case ToolbarCommand::SelectColor:
@@ -1309,17 +1315,12 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 int y1 = std::min(m_state->dragStart.y, m_state->dragEnd.y);
                 int w = std::abs(m_state->dragEnd.x - m_state->dragStart.x);
                 int h = std::abs(m_state->dragEnd.y - m_state->dragStart.y);
-                
+                if (w <= 0 || h <= 0) break;
+                prepareMarkupBase();
+
                 cv::Mat cropped;
                 if (m_state->markup.elementCount() > 0) cropped = m_state->markup.getCompositeImage();
-                else {
-                    cv::Rect roi(x1, y1, w, h);
-                    roi &= cv::Rect(0, 0, m_state->frozenScreen.cols, m_state->frozenScreen.rows);
-                    if (roi.area() > 0) m_state->frozenScreen(roi).copyTo(cropped);
-                }
-                if (cropped.channels() == 4) {
-                    cv::cvtColor(cropped, cropped, cv::COLOR_BGRA2BGR);
-                }
+                else cropped = cropMarkupBase(m_state->frozenScreen, cv::Rect(x1, y1, w, h));
 
                 int offsetX = GetSystemMetrics(SM_XVIRTUALSCREEN);
                 int offsetY = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -1341,14 +1342,11 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             int w = x2 - x1;
             int h = y2 - y1;
             if (w <= 0 || h <= 0) break;
-            
+            prepareMarkupBase();
+
             cv::Mat cropped;
             if (m_state->markup.elementCount() > 0) cropped = m_state->markup.getCompositeImage();
-            else {
-                cv::Rect roi(x1, y1, w, h);
-                roi &= cv::Rect(0, 0, m_state->frozenScreen.cols, m_state->frozenScreen.rows);
-                if (roi.area() > 0) m_state->frozenScreen(roi).copyTo(cropped);
-            }
+            else cropped = cropMarkupBase(m_state->frozenScreen, cv::Rect(x1, y1, w, h));
             int origX = x1 + GetSystemMetrics(SM_XVIRTUALSCREEN);
             int origY = y1 + GetSystemMetrics(SM_YVIRTUALSCREEN);
             CaptureRegion reg{origX, origY, w, h, m_state->cornerRadius};
@@ -1420,6 +1418,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             break;
         }
 
+        case ToolbarCommand::Copy:
         case ToolbarCommand::Confirm:
             if(m_confirmCb) m_confirmCb({CaptureCompletionAction::Copy});
             break;
@@ -1449,6 +1448,7 @@ void CaptureInput::setCurrentTool(MarkupTool tool) {
         }
     }
     m_state->currentTool = tool;
+    m_state->isMarkupToolActive = true;
     m_state->isMarking = false;
     m_state->openSubmenu = SubmenuType::None;
     m_state->sliderPopup.type = SliderPopupType::None;
@@ -1459,6 +1459,20 @@ void CaptureInput::setCurrentTool(MarkupTool tool) {
     updateHoverCursor(m_state->currentCursor);
 }
 
+void CaptureInput::toggleOrSetTool(MarkupTool tool) {
+    if (m_state->isMarkupToolActive && m_state->currentTool == tool) {
+        m_state->isMarkupToolActive = false;
+        m_state->openSubmenu = SubmenuType::None;
+        m_state->sliderPopup.type = SliderPopupType::None;
+        m_state->toolbarLayoutValid = false;
+        m_renderer->invalidate();
+        updateHoverCursor(m_state->currentCursor);
+    } else {
+        m_state->isMarkupToolActive = true;
+        setCurrentTool(tool);
+    }
+}
+
 bool CaptureInput::isPointInSelection(POINT point) const {
     auto rect = currentSelectionRect();
     return point.x >= rect.left && point.x <= rect.right &&
@@ -1467,11 +1481,11 @@ bool CaptureInput::isPointInSelection(POINT point) const {
 
 cv::Point CaptureInput::toMarkupPoint(POINT point) const {
     auto rect = currentSelectionRect();
-    int width = std::max(1, static_cast<int>(rect.right - rect.left));
-    int height = std::max(1, static_cast<int>(rect.bottom - rect.top));
-    int x = std::clamp(static_cast<int>(point.x - rect.left), 0, width - 1);
-    int y = std::clamp(static_cast<int>(point.y - rect.top), 0, height - 1);
-    return {x, y};
+    int x0 = static_cast<int>(std::round(rect.left));
+    int y0 = static_cast<int>(std::round(rect.top));
+    int width = std::max(1, static_cast<int>(std::round(rect.right - rect.left)));
+    int height = std::max(1, static_cast<int>(std::round(rect.bottom - rect.top)));
+    return calculateMarkupPoint(point, cv::Rect(x0, y0, width, height));
 }
 
 void CaptureInput::beginMarkup(POINT point) {
@@ -1677,49 +1691,24 @@ void CaptureInput::finishMarkup(POINT point) {
 }
 
 void CaptureInput::prepareMarkupBase() {
-    if (m_state->markupBaseReady || m_state->frozenScreen.empty()) return;
+    if (!m_state || m_state->frozenScreen.empty()) return;
 
     auto rect = currentSelectionRect();
-    int x = static_cast<int>(rect.left);
-    int y = static_cast<int>(rect.top);
-    int w = static_cast<int>(rect.right - rect.left);
-    int h = static_cast<int>(rect.bottom - rect.top);
+    int x = static_cast<int>(std::round(rect.left));
+    int y = static_cast<int>(std::round(rect.top));
+    int w = static_cast<int>(std::round(rect.right - rect.left));
+    int h = static_cast<int>(std::round(rect.bottom - rect.top));
     if (w <= 0 || h <= 0) return;
 
-    cv::Rect roiRect(x, y, w, h);
-    roiRect &= cv::Rect(0, 0, m_state->frozenScreen.cols, m_state->frozenScreen.rows);
-    if (roiRect.area() <= 0) return;
-
-    cv::Mat cropped;
-    m_state->frozenScreen(roiRect).copyTo(cropped);
-    if (cropped.channels() == 4) {
-        cv::cvtColor(cropped, cropped, cv::COLOR_BGRA2BGR);
+    cv::Rect targetRect(x, y, w, h);
+    syncMarkupBase(m_state->frozenScreen, targetRect, m_state->markupBaseReady, m_state->markupBaseRect, m_state->markup);
+    if (m_renderer) {
+        m_renderer->markMarkupDirty();
     }
-
-    m_state->markup.setBaseImage(cropped);
-    m_state->markupBaseReady = true;
 }
 
 void CaptureInput::rebuildMarkupBase() {
-    if (m_state->frozenScreen.empty()) return;
-    auto rect = currentSelectionRect();
-    int x = static_cast<int>(rect.left);
-    int y = static_cast<int>(rect.top);
-    int w = static_cast<int>(rect.right - rect.left);
-    int h = static_cast<int>(rect.bottom - rect.top);
-    if (w <= 0 || h <= 0) return;
-
-    cv::Rect roi(x, y, w, h);
-    roi &= cv::Rect(0, 0, m_state->frozenScreen.cols, m_state->frozenScreen.rows);
-    if (roi.area() <= 0) return;
-
-    cv::Mat cropped;
-    m_state->frozenScreen(roi).copyTo(cropped);
-    if (cropped.channels() == 4) {
-        cv::cvtColor(cropped, cropped, cv::COLOR_BGRA2BGR);
-    }
-    m_state->markup.updateBaseImage(cropped);  // 保留标注，仅替换底图
-    m_state->markupBaseReady = true;
+    prepareMarkupBase();
 }
 
 std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
@@ -1775,6 +1764,18 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
                 rc.top -= offsetY;
                 rc.right -= offsetX;
                 rc.bottom -= offsetY;
+
+                if (!m_state->frozenScreen.empty()) {
+                    cv::Rect clamped = clampToScreenBounds(rc, m_state->frozenScreen.cols, m_state->frozenScreen.rows);
+                    rc.left = clamped.x;
+                    rc.top = clamped.y;
+                    rc.right = clamped.x + clamped.width;
+                    rc.bottom = clamped.y + clamped.height;
+                    if (clamped.width <= 8 || clamped.height <= 8) {
+                        curr = GetParent(curr);
+                        continue;
+                    }
+                }
 
                 bool exists = false;
                 for (const auto& existing : hierarchy) {
@@ -2140,11 +2141,11 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     HitArea activeElemHit = m_state->activeElement->hitTestEx(local);
                     if (activeElemHit != HitArea::None) {
                         if (m_state->activeElement->tool == MarkupTool::Text) {
-                            if (activeElemHit == HitArea::CornerRadius) {
-                                m_state->activeElement->isEditing = false;
-                            } else {
+                            if (activeElemHit == HitArea::Body) {
                                 m_state->activeElement->isEditing = true;
                                 SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
+                            } else {
+                                m_state->activeElement->isEditing = false;
                             }
                         }
 
@@ -2167,6 +2168,8 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                             m_state->cornerDragIndex = (hitIdx >= 0) ? hitIdx : 0;
                         }
 
+                        LOG_DEBUG("CaptureInput: active element handle selected hitArea={}, tool={}",
+                                  static_cast<int>(activeElemHit), static_cast<int>(m_state->activeElement->tool));
                         m_state->dragHandle = (activeElemHit == HitArea::Body) ? HitArea::None : activeElemHit;
                         m_state->isManipulating = true;
                         m_state->lastMousePos = point;
@@ -2208,8 +2211,12 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         m_state->toolbarLayoutValid = false;
 
                         if (hit.element->tool == MarkupTool::Text) {
-                            m_state->activeElement->isEditing = true;
-                            SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
+                            if (hit.area == HitArea::Body) {
+                                m_state->activeElement->isEditing = true;
+                                SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
+                            } else {
+                                m_state->activeElement->isEditing = false;
+                            }
                         } else {
                             m_state->activeElement->isEditing = false;
                         }
@@ -2266,6 +2273,15 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         return 0;
                     }
 
+                    // 若未激活标注工具，点击选区内部空白区域整体拖拽调整选区位置
+                    if (!m_state->isMarkupToolActive) {
+                        m_state->isAdjustingSelection = true;
+                        m_state->selAdjustHandle = HitArea::Body;
+                        m_state->selAdjustLast = point;
+                        updateHoverCursor(point);
+                        return 0;
+                    }
+
                     // 在选区内部空白区域立即启动新标注绘制流程
                     beginMarkup(point);
                     return 0;
@@ -2278,6 +2294,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             m_state->lastMousePos = point;
             m_state->dragging = true;
             m_state->state = OverlayState::Selecting;
+            m_state->isMarkupToolActive = false;
             if (m_state->options.showShortcutHints) {
                 ShortcutHintOverlay::instance().show(
                     m_state->mode == OverlayMode::RecordRegion
@@ -2431,6 +2448,8 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 } else {
                     int dx = m_state->currentCursor.x - m_state->lastMousePos.x;
                     int dy = m_state->currentCursor.y - m_state->lastMousePos.y;
+                    LOG_TRACE("CaptureInput: manipulating element dragHandle={}, dx={}, dy={}",
+                              static_cast<int>(m_state->dragHandle), dx, dy);
                     if (m_state->dragHandle == HitArea::None) {
                         m_state->activeElement->moveBy(dx, dy);
                     } else {
@@ -2583,6 +2602,8 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             if (m_state->isAdjustingSelection) {
                 m_state->isAdjustingSelection = false;
                 m_state->selAdjustHandle = HitArea::None;
+                prepareMarkupBase();
+                m_state->toolbarLayoutValid = false;
                 m_renderer->invalidate();
                 updateHoverCursor(m_state->currentCursor);
                 return 0;
@@ -2620,12 +2641,21 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
             if (w > 3 && h > 3) {
                 m_state->state = OverlayState::Selected;
+                m_state->isMarkupToolActive = false;
                 prepareMarkupBase();
                 if (m_state->options.showShortcutHints) {
+                    RECT sel = {
+                        std::min(m_state->dragStart.x, m_state->dragEnd.x),
+                        std::min(m_state->dragStart.y, m_state->dragEnd.y),
+                        std::max(m_state->dragStart.x, m_state->dragEnd.x),
+                        std::max(m_state->dragStart.y, m_state->dragEnd.y)
+                    };
                     ShortcutHintOverlay::instance().show(
                         m_state->mode == OverlayMode::RecordRegion
                             ? ShortcutHintContext::RecordSelecting
-                            : ShortcutHintContext::CaptureSelected);
+                            : ShortcutHintContext::CaptureSelected,
+                        {LONG_MIN, LONG_MIN},
+                        {sel});
                 }
             } else {
                 // 拖拽太小，视为点击——吸附到检测的窗口
@@ -2641,12 +2671,21 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                                        static_cast<LONG>(m_state->detectedWindow.bottom)};
                     m_state->cornerRadius = m_state->detectedWindowCornerRadius; // 自动继承现代 Win11 窗口圆角
                     m_state->state = OverlayState::Selected;
+                    m_state->isMarkupToolActive = false;
                     prepareMarkupBase();
                     if (m_state->options.showShortcutHints) {
+                        RECT sel = {
+                            std::min(m_state->dragStart.x, m_state->dragEnd.x),
+                            std::min(m_state->dragStart.y, m_state->dragEnd.y),
+                            std::max(m_state->dragStart.x, m_state->dragEnd.x),
+                            std::max(m_state->dragStart.y, m_state->dragEnd.y)
+                        };
                         ShortcutHintOverlay::instance().show(
                             m_state->mode == OverlayMode::RecordRegion
                                 ? ShortcutHintContext::RecordSelecting
-                                : ShortcutHintContext::CaptureSelected);
+                                : ShortcutHintContext::CaptureSelected,
+                            {LONG_MIN, LONG_MIN},
+                            {sel});
                     }
                 } else {
                     if (m_cancelCb) m_cancelCb();
@@ -2753,6 +2792,17 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_state->activeElement->isActive = false;
                 m_state->activeElement = nullptr;
                 m_renderer->invalidate();
+                return 0;
+            }
+
+            // 3.5 若激活了标注工具：右键取消当前工具，返回选区调整模式
+            if (m_state->isMarkupToolActive) {
+                m_state->isMarkupToolActive = false;
+                m_state->openSubmenu = SubmenuType::None;
+                m_state->sliderPopup.type = SliderPopupType::None;
+                m_state->toolbarLayoutValid = false;
+                m_renderer->invalidate();
+                updateHoverCursor(m_state->currentCursor);
                 return 0;
             }
 
@@ -3197,6 +3247,13 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     m_state->activeElement->isActive = false;
                     m_state->activeElement = nullptr;
                     m_renderer->invalidate();
+                } else if (m_state->isMarkupToolActive) {
+                    m_state->isMarkupToolActive = false;
+                    m_state->openSubmenu = SubmenuType::None;
+                    m_state->sliderPopup.type = SliderPopupType::None;
+                    m_state->toolbarLayoutValid = false;
+                    m_renderer->invalidate();
+                    updateHoverCursor(m_state->currentCursor);
                 } else if ((int)m_state->state.load() == (int)OverlayState::Selected || (int)m_state->state.load() == (int)OverlayState::Marking) {
                     m_state->state = OverlayState::Selecting;
                     m_state->dragStart = {0, 0};
@@ -3256,6 +3313,8 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_state->dragStart = {0, 0};
                 m_state->dragEnd = {m_state->frozenScreen.cols, m_state->frozenScreen.rows};
                 m_state->state = OverlayState::Selected;
+                m_state->isMarkupToolActive = false;
+                m_state->toolbarLayoutValid = false;
                 prepareMarkupBase();
                 m_renderer->invalidate();
                 if (m_state->options.showShortcutHints) {
@@ -3386,7 +3445,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         executeToolbarCommand(pinBtn);
                         return 0;
                     } else if (!ctrl) {
-                        setCurrentTool(MarkupTool::Text);
+                        toggleOrSetTool(MarkupTool::Text);
                         return 0;
                     }
                     break;
@@ -3496,16 +3555,16 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         return 0;
                     }
                     break;
-                case 'R': if (!ctrl) { setCurrentTool(MarkupTool::Rectangle); return 0; } break;
-                case 'A': if (!ctrl) { setCurrentTool(MarkupTool::Arrow);     return 0; } break;
-                case 'O': case 'E': if (!ctrl) { setCurrentTool(MarkupTool::Ellipse); return 0; } break;
-                case 'P': if (!ctrl) { setCurrentTool(MarkupTool::Pen);       return 0; } break;
-                case 'H': if (!ctrl) { setCurrentTool(MarkupTool::Highlight); return 0; } break;
-                case 'M': if (!ctrl) { setCurrentTool(MarkupTool::Mosaic);    return 0; } break;
-                case 'N': if (!ctrl) { setCurrentTool(MarkupTool::Number);    return 0; } break;
-                case 'G': if (!ctrl) { setCurrentTool(MarkupTool::Magnifier); return 0; } break;
-                case 'W': if (!ctrl) { setCurrentTool(MarkupTool::Watermark); return 0; } break;
-                case 'I': if (!ctrl) { setCurrentTool(MarkupTool::Inpaint);   return 0; } break;
+                case 'R': if (!ctrl) { toggleOrSetTool(MarkupTool::Rectangle); return 0; } break;
+                case 'A': if (!ctrl) { toggleOrSetTool(MarkupTool::Arrow);     return 0; } break;
+                case 'O': case 'E': if (!ctrl) { toggleOrSetTool(MarkupTool::Ellipse); return 0; } break;
+                case 'P': if (!ctrl) { toggleOrSetTool(MarkupTool::Pen);       return 0; } break;
+                case 'H': if (!ctrl) { toggleOrSetTool(MarkupTool::Highlight); return 0; } break;
+                case 'M': if (!ctrl) { toggleOrSetTool(MarkupTool::Mosaic);    return 0; } break;
+                case 'N': if (!ctrl) { toggleOrSetTool(MarkupTool::Number);    return 0; } break;
+                case 'G': if (!ctrl) { toggleOrSetTool(MarkupTool::Magnifier); return 0; } break;
+                case 'W': if (!ctrl) { toggleOrSetTool(MarkupTool::Watermark); return 0; } break;
+                case 'I': if (!ctrl) { toggleOrSetTool(MarkupTool::Inpaint);   return 0; } break;
                 case VK_UP:
                 case VK_DOWN:
                 case VK_LEFT:
@@ -3524,9 +3583,11 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     pt.y += dy;
                     SetCursorPos(pt.x, pt.y);
 
-                    m_state->currentCursor = {pt.x, pt.y};
+                    POINT clientPt = pt;
+                    ScreenToClient(hwnd, &clientPt);
+                    m_state->currentCursor = clientPt;
                     if (m_state->dragging) {
-                        m_state->dragEnd = m_state->currentCursor;
+                        m_state->dragEnd = clientPt;
                     }
                     m_renderer->invalidate();
                     return 0;

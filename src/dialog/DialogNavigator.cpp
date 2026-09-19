@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tools3000 - High Performance Windows Productivity Suite
  *
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
@@ -21,22 +21,13 @@
 #include <chrono>
 #include <cwctype>
 #include <filesystem>
+#include <string_view>
 #include <wrl/client.h>
 
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "UIAutomationCore.lib")
 #pragma comment(lib, "ole32.lib")
-
-#ifndef CDM_FIRST
-#define CDM_FIRST (WM_USER + 100)
-#endif
-#ifndef CDM_GETFOLDERPATH
-#define CDM_GETFOLDERPATH (CDM_FIRST + 2)
-#endif
-#ifndef CDM_GETFILEPATH
-#define CDM_GETFILEPATH (CDM_FIRST + 1)
-#endif
 
 namespace tools3000::dialog {
 
@@ -205,15 +196,23 @@ std::wstring uiaGetValue(IUIAutomationElement* elem) {
     return result;
 }
 
-// 枚举子控件上下文结构体
+//// 枚举子控件上下文结构体
 struct EnumChildContext {
     HWND editHwnd{nullptr};
+    HWND standardFileEditHwnd{nullptr};
     HWND comboBoxHwnd{nullptr};
     HWND addressBandHwnd{nullptr};
     HWND shellViewHwnd{nullptr};
     HWND namespaceTreeHwnd{nullptr};
+    HWND treeViewHwnd{nullptr};
     HWND okButtonHwnd{nullptr};
+    HWND cancelButtonHwnd{nullptr};
+    HWND backButtonHwnd{nullptr};
     bool hasTabControl{false};
+    bool hasApplyButton{false};
+    bool hasProgressBar{false};
+    bool hasAnimation{false};
+    bool hasProgressText{false};
     bool hasDefView{false};
     bool hasDirectUI{false};
     bool hasBreadcrumb{false};
@@ -236,12 +235,21 @@ BOOL CALLBACK EnumFileDialogChildren(HWND hwnd, LPARAM lParam) {
         ctx->hasDirectUI = true;
     } else if (wcscmp(className, L"NamespaceTreeControl") == 0) {
         ctx->namespaceTreeHwnd = hwnd;
+    } else if (wcscmp(className, L"SysTreeView32") == 0) {
+        ctx->treeViewHwnd = hwnd;
     } else if (wcscmp(className, L"SysTabControl32") == 0) {
         ctx->hasTabControl = true;
+    } else if (wcscmp(className, L"msctls_progress32") == 0) {
+        ctx->hasProgressBar = true;
+    } else if (wcscmp(className, L"SysAnimate32") == 0) {
+        ctx->hasAnimation = true;
     } else if (wcscmp(className, L"ComboBoxEx32") == 0 || wcscmp(className, L"ComboBox") == 0) {
         ctx->comboBoxHwnd = hwnd;
     } else if (wcscmp(className, L"Edit") == 0) {
-        if (ctrlId == 0x047C || ctrlId == 0x0442 || ctrlId == 1152 || !ctx->editHwnd) {
+        if (ctrlId == 0x047C || ctrlId == 1152) {
+            ctx->standardFileEditHwnd = hwnd;
+        }
+        if (!ctx->editHwnd) {
             ctx->editHwnd = hwnd;
         }
     } else if (wcscmp(className, L"ToolbarWindow32") == 0 || wcscmp(className, L"Breadcrumb Parent") == 0) {
@@ -254,8 +262,50 @@ BOOL CALLBACK EnumFileDialogChildren(HWND hwnd, LPARAM lParam) {
                 ctx->addressBandHwnd = hwnd;
             }
         }
-    } else if (wcscmp(className, L"Button") == 0 && (ctrlId == IDOK || ctrlId == 1 || ctrlId == 0x0400)) {
-        ctx->okButtonHwnd = hwnd;
+    } else if (wcscmp(className, L"Button") == 0) {
+        if (ctrlId == 0x3021 || ctrlId == 12321) {
+            ctx->hasApplyButton = true;
+        } else if (ctrlId == 0x3023 || ctrlId == 12323 || ctrlId == 1002 || ctrlId == 1028 || ctrlId == 1044) {
+            ctx->backButtonHwnd = hwnd;
+        } else if (ctrlId == IDOK || ctrlId == 1 || ctrlId == 0x0400) {
+            ctx->okButtonHwnd = hwnd;
+        } else if (ctrlId == IDCANCEL || ctrlId == 2) {
+            ctx->cancelButtonHwnd = hwnd;
+        }
+
+        wchar_t btnText[64] = {0};
+        if (GetWindowTextW(hwnd, btnText, 64) > 0) {
+            std::wstring_view bv(btnText);
+            if (bv.find(L"上一步") != std::wstring_view::npos ||
+                bv.find(L"Back") != std::wstring_view::npos ||
+                bv.find(L"back") != std::wstring_view::npos ||
+                bv.find(L"<") != std::wstring_view::npos ||
+                bv.find(L"戻る") != std::wstring_view::npos ||
+                bv.find(L"Zurück") != std::wstring_view::npos ||
+                bv.find(L"Précédent") != std::wstring_view::npos) {
+                ctx->backButtonHwnd = hwnd;
+            }
+        }
+    } else if (wcscmp(className, L"Static") == 0) {
+        wchar_t text[128] = {0};
+        if (GetWindowTextW(hwnd, text, 128) > 0) {
+            std::wstring_view sv(text);
+            if (sv.find(L"正在复制") != std::wstring_view::npos ||
+                sv.find(L"正在移动") != std::wstring_view::npos ||
+                sv.find(L"正在删除") != std::wstring_view::npos ||
+                sv.find(L"正在准备") != std::wstring_view::npos ||
+                sv.find(L"正在计算") != std::wstring_view::npos ||
+                sv.find(L"正在传输") != std::wstring_view::npos ||
+                sv.find(L"正在解压") != std::wstring_view::npos ||
+                sv.find(L"正在压缩") != std::wstring_view::npos ||
+                sv.find(L"Copying") != std::wstring_view::npos ||
+                sv.find(L"Moving") != std::wstring_view::npos ||
+                sv.find(L"Deleting") != std::wstring_view::npos ||
+                sv.find(L"Transferring") != std::wstring_view::npos ||
+                sv.find(L"Extracting") != std::wstring_view::npos) {
+                ctx->hasProgressText = true;
+            }
+        }
     }
     return TRUE;
 }
@@ -263,7 +313,219 @@ BOOL CALLBACK EnumFileDialogChildren(HWND hwnd, LPARAM lParam) {
 } // namespace
 
 // ============================================================
-// 对话框类型检测：Modern(IFileOpenDialog) vs Legacy(OPENFILENAME)
+// isProgressOrTransferDialog — 文件传输/复制/移动进度弹窗探测
+// ============================================================
+bool DialogNavigator::isProgressOrTransferDialog(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+
+    // 1. 窗口类名排查：资源管理器文件操作专用类名 OperationStatusWindow
+    wchar_t className[64] = {0};
+    if (GetClassNameW(hwnd, className, 64) > 0) {
+        if (_wcsicmp(className, L"OperationStatusWindow") == 0) {
+            return true;
+        }
+    }
+
+    // 2. 根窗口类名排查
+    HWND root = GetAncestor(hwnd, GA_ROOT);
+    if (root && root != hwnd) {
+        wchar_t rootClass[64] = {0};
+        if (GetClassNameW(root, rootClass, 64) > 0 &&
+            _wcsicmp(rootClass, L"OperationStatusWindow") == 0) {
+            return true;
+        }
+    }
+
+    // 3. 标题排查：多语言文件传输/操作进度关键词
+    wchar_t title[256] = {0};
+    GetWindowTextW(hwnd, title, 256);
+    std::wstring_view tv(title);
+
+    static constexpr std::wstring_view kProgressTitleKeywords[] = {
+        L"正在复制", L"正在移动", L"正在删除", L"正在准备", L"正在计算", L"正在撤消", L"正在还原",
+        L"正在同步", L"正在传输", L"正在解压", L"正在压缩", L"正在清理",
+        L"文件复制", L"文件移动", L"文件删除", L"复制进度", L"移动进度", L"删除进度", L"传输进度", L"操作进度",
+        L"Copying", L"copying", L"Moving", L"moving", L"Deleting", L"deleting",
+        L"Preparing to copy", L"Preparing to move", L"Calculating", L"calculating",
+        L"Transferring", L"transferring", L"Extracting", L"extracting",
+        L"Operation Status", L"Copy Progress", L"Move Progress", L"File Transfer",
+        L"コピー中", L"移動中", L"削除中",
+        L"Kopiervorgang", L"Verschiebevorgang", L"Löschvorgang",
+        L"Copie en cours", L"Déplacement en cours", L"Suppression en cours",
+        L"Copiando", L"Moviendo", L"Eliminando",
+        L"Копирование", L"Перемещение", L"Удаление"
+    };
+
+    for (const auto& keyword : kProgressTitleKeywords) {
+        if (tv.find(keyword) != std::wstring_view::npos) {
+            return true;
+        }
+    }
+
+    // 4. 子控件特征排查：是否包含进度条或动画控件或进度文本
+    bool hasProgressFeature = false;
+    EnumChildWindows(hwnd, [](HWND child, LPARAM lParam) -> BOOL {
+        wchar_t childClass[64] = {0};
+        GetClassNameW(child, childClass, 64);
+        if (_wcsicmp(childClass, L"msctls_progress32") == 0 ||
+            _wcsicmp(childClass, L"SysAnimate32") == 0) {
+            *reinterpret_cast<bool*>(lParam) = true;
+            return FALSE;
+        }
+
+        wchar_t text[128] = {0};
+        if (GetWindowTextW(child, text, 128) > 0) {
+            std::wstring_view sv(text);
+            if (sv.find(L"正在复制") != std::wstring_view::npos ||
+                sv.find(L"正在移动") != std::wstring_view::npos ||
+                sv.find(L"正在删除") != std::wstring_view::npos ||
+                sv.find(L"正在传输") != std::wstring_view::npos ||
+                sv.find(L"正在解压") != std::wstring_view::npos ||
+                sv.find(L"Copying") != std::wstring_view::npos ||
+                sv.find(L"Moving") != std::wstring_view::npos ||
+                sv.find(L"Deleting") != std::wstring_view::npos ||
+                sv.find(L"Transferring") != std::wstring_view::npos ||
+                sv.find(L"Extracting") != std::wstring_view::npos) {
+                *reinterpret_cast<bool*>(lParam) = true;
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&hasProgressFeature));
+
+    return hasProgressFeature;
+}
+
+// ============================================================
+// isInstallerProcess — 安装程序进程安全识别
+// ============================================================
+bool DialogNavigator::isInstallerProcess(const std::string& processName) {
+    if (processName.empty()) return false;
+    std::string lower = processName;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    static constexpr const char* kInstallerKeywords[] = {
+        "setup", "install", "unins", "msiexec", "update", "patch", "deploy", "wizard",
+        "bootstrapper", "downloader", "package", "extract"
+    };
+    for (const auto* kw : kInstallerKeywords) {
+        if (lower.find(kw) != std::string::npos) return true;
+    }
+    return false;
+}
+
+// ============================================================
+// isInstallerOrWizard — 安装程序向导深度多维识别
+// ============================================================
+bool DialogNavigator::isInstallerOrWizard(HWND dialogHwnd) {
+    if (!dialogHwnd || !IsWindow(dialogHwnd)) return false;
+
+    // 1. 检查目标窗口所属进程及顶层 Owner 进程
+    std::string processName = tools3000::core::WinUtils::getProcessNameFromWindow(dialogHwnd);
+    if (isInstallerProcess(processName)) {
+        return true;
+    }
+
+    HWND rootOwner = GetAncestor(dialogHwnd, GA_ROOTOWNER);
+    if (rootOwner && rootOwner != dialogHwnd) {
+        std::string ownerProc = tools3000::core::WinUtils::getProcessNameFromWindow(rootOwner);
+        if (isInstallerProcess(ownerProc)) {
+            return true;
+        }
+    }
+
+    // 2. 检查窗口类名（Inno Setup, WiX, InstallShield, NSIS 等专有向导窗体类）
+    auto checkClassName = [](HWND hwnd) -> bool {
+        wchar_t cls[64] = {0};
+        if (GetClassNameW(hwnd, cls, 64) > 0) {
+            if (wcsstr(cls, L"TSetupForm") ||
+                wcsstr(cls, L"TWizardForm") ||
+                wcsstr(cls, L"TFolderTreeView") ||
+                wcsstr(cls, L"TNewNotebook") ||
+                wcsstr(cls, L"WixBurn") ||
+                wcsstr(cls, L"InstallShield") ||
+                wcsstr(cls, L"MsiDialogCloseClass")) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    if (checkClassName(dialogHwnd) || (rootOwner && checkClassName(rootOwner))) {
+        return true;
+    }
+
+    // 3. 检查窗口标题与顶层 Owner 标题（安装向导多语言关键词）
+    auto checkTitle = [](HWND hwnd) -> bool {
+        wchar_t title[256] = {0};
+        if (GetWindowTextW(hwnd, title, 256) > 0) {
+            std::wstring_view tv(title);
+            static constexpr std::wstring_view kWizardTitleKeywords[] = {
+                L"安装向导", L"设置向导", L"更新向导", L"升级向导", L"卸载向导",
+                L"安装程序", L"卸载程序", L"安装", L"向导", L"卸载",
+                L"Setup Wizard", L"Installation Wizard", L"Update Wizard", L"Setup",
+                L"Installer", L"Installation", L"Wizard", L"Uninstall", L"Uninstaller",
+                L"Destination Folder", L"Select Destination", L"Choose Install",
+                L"Installation Folder", L"Install Location", L"安装目录", L"安装位置",
+                L"目標資料夾", L"安裝精靈", L"安裝程式", L"安裝",
+                L"セットアップ", L"インストール", L"ウィザード", L"アンインストール",
+                L"Installations-Assistent", L"Assistent", L"Désinstallation", L"Assistant",
+                L"Asistente para la instalación", L"Asistente", L"Мастер установки"
+            };
+            for (const auto& kw : kWizardTitleKeywords) {
+                if (tv.find(kw) != std::wstring_view::npos) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    if (checkTitle(dialogHwnd) || (rootOwner && checkTitle(rootOwner))) {
+        return true;
+    }
+
+    // 4. 检查子控件：是否具备向导标志性按钮（< Back / 上一步 / ID 0x3023 / 12323 / 1002 / 1028 / 1044）
+    bool hasWizardControl = false;
+    EnumChildWindows(dialogHwnd, [](HWND child, LPARAM lParam) -> BOOL {
+        wchar_t cls[64] = {0};
+        GetClassNameW(child, cls, 64);
+        int ctrlId = GetDlgCtrlID(child);
+
+        if (wcscmp(cls, L"Button") == 0) {
+            if (ctrlId == 0x3023 || ctrlId == 12323 || ctrlId == 1002 || ctrlId == 1028 || ctrlId == 1044) {
+                *reinterpret_cast<bool*>(lParam) = true;
+                return FALSE;
+            }
+            wchar_t text[64] = {0};
+            if (GetWindowTextW(child, text, 64) > 0) {
+                std::wstring_view sv(text);
+                if (sv.find(L"上一步") != std::wstring_view::npos ||
+                    sv.find(L"Back") != std::wstring_view::npos ||
+                    sv.find(L"back") != std::wstring_view::npos ||
+                    sv.find(L"<") != std::wstring_view::npos ||
+                    sv.find(L"戻る") != std::wstring_view::npos ||
+                    sv.find(L"Zurück") != std::wstring_view::npos ||
+                    sv.find(L"Précédent") != std::wstring_view::npos ||
+                    sv.find(L"Назад") != std::wstring_view::npos) {
+                    *reinterpret_cast<bool*>(lParam) = true;
+                    return FALSE;
+                }
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&hasWizardControl));
+
+    if (hasWizardControl) {
+        return true;
+    }
+
+    return false;
+}
+
+// ============================================================
+// 对话框类型检测：Modern(IFileOpenDialog) vs Legacy(OPENFILENAME) vs FolderPicker
 // ============================================================
 DialogType DialogNavigator::detectDialogType(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd)) return DialogType::Unknown;
@@ -271,20 +533,33 @@ DialogType DialogNavigator::detectDialogType(HWND hwnd) {
     EnumChildContext ctx;
     EnumChildWindows(hwnd, EnumFileDialogChildren, reinterpret_cast<LPARAM>(&ctx));
 
-    // Modern 对话框拥有 DirectUI、DefView 或 Breadcrumb 架构
-    if (ctx.hasDirectUI || ctx.hasDefView || ctx.hasBreadcrumb || ctx.namespaceTreeHwnd) {
+    // 如果包含向导后退按钮，则绝非标准文件对话框
+    if (ctx.backButtonHwnd) {
+        return DialogType::Unknown;
+    }
+
+    // Modern 对话框拥有 DefView 架构
+    if (ctx.hasDefView) {
         return DialogType::Modern;
     }
-    if (ctx.editHwnd || ctx.comboBoxHwnd) {
+    // FolderPicker: 具备树形控件且具备确认与取消按钮，控件数在合理范围内
+    if ((ctx.namespaceTreeHwnd || ctx.treeViewHwnd) && ctx.okButtonHwnd && ctx.cancelButtonHwnd && ctx.totalControls <= 18) {
+        return DialogType::FolderPicker;
+    }
+    // Legacy: 具备标准文件名输入控件
+    if (ctx.standardFileEditHwnd || (ctx.comboBoxHwnd && ctx.okButtonHwnd)) {
         return DialogType::Legacy;
     }
-    return DialogType::Modern;
+    if (ctx.hasDirectUI && ctx.hasBreadcrumb && ctx.okButtonHwnd) {
+        return DialogType::Modern;
+    }
+    return DialogType::Unknown;
 }
 
 // ============================================================
 // isFileDialog — 纯只读高鲁棒性文件对话框判定
 // ============================================================
-bool DialogNavigator::isFileDialog(HWND hwnd) {
+bool DialogNavigator::isFileDialog(HWND hwnd, bool allowCurrentProcess) {
     if (!hwnd || !IsWindow(hwnd)) return false;
 
     wchar_t className[64] = {0};
@@ -293,20 +568,71 @@ bool DialogNavigator::isFileDialog(HWND hwnd) {
 
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == 0 || pid == GetCurrentProcessId()) return false;
+    if (pid == 0 || (!allowCurrentProcess && pid == GetCurrentProcessId())) return false;
+
+    // 1. 绝对排除文件传输/复制/移动/删除等进度弹窗
+    if (isProgressOrTransferDialog(hwnd)) {
+        return false;
+    }
+
+    // 2. 标准属性表/选项卡对话框（含 ID_APPLY_NOW 0x3021/12321 应用按钮）绝对排除
+    if (GetDlgItem(hwnd, 0x3021) != nullptr || GetDlgItem(hwnd, 12321) != nullptr) {
+        return false;
+    }
+
+    // 3. 标题排查：Windows 资源管理器属性对话框多语言标题后缀排除
+    wchar_t title[256] = {0};
+    GetWindowTextW(hwnd, title, 256);
+    std::wstring_view tv(title);
+    static constexpr std::wstring_view kPropertySuffixes[] = {
+        L" 属性", L"属性",
+        L" Properties", L"Properties",
+        L" Property", L"Property",
+        L" 屬性", L"屬性",
+        L" 內容", L"內容",
+        L" のプロパティ", L" プロパティ", L"プロパティ",
+        L" 속성", L"속성",
+        L" Eigenschaften", L"Eigenschaften",
+        L" Propriétés", L"Propriétés",
+        L" Propiedades", L"Propiedades",
+        L" Proprietà", L"Proprietà",
+        L" Propriedades", L"Propriedades",
+        L" Свойства", L"Свойства"
+    };
+    for (const auto& suffix : kPropertySuffixes) {
+        if (tv.ends_with(suffix)) {
+            return false;
+        }
+    }
 
     EnumChildContext ctx;
     EnumChildWindows(hwnd, EnumFileDialogChildren, reinterpret_cast<LPARAM>(&ctx));
 
-    // 1. 属性页对话框（包含 SysTabControl32）绝对不是文件对话框
-    if (ctx.hasTabControl) return false;
+    // 4. 包含进度条、动画或进度文本的窗口绝对排除
+    if (ctx.hasProgressBar || ctx.hasAnimation || ctx.hasProgressText) return false;
 
-    // 2. 现代与经典文件对话框判定：
-    // 必须具备 DirectUI、DefView、左侧导航树、面包屑地址栏、或标准文件输入框
-    if (ctx.hasDirectUI || ctx.hasDefView || ctx.namespaceTreeHwnd || ctx.hasBreadcrumb) {
+    // 5. 包含多标签页（SysTabControl32）或应用按钮的属性表对话框绝对排除
+    if (ctx.hasTabControl || ctx.hasApplyButton) return false;
+
+    // 6. 必须具备确认按钮 (IDOK)。所有合法文件对话框与目录选择器均有确认选择机制；仅有取消按钮的进度/等待窗口绝对排除
+    if (!ctx.okButtonHwnd) return false;
+
+    // 包含向导后退按钮的复合向导页一律排除
+    if (ctx.backButtonHwnd) return false;
+
+    // 7. 真实文件/文件夹选择对话框核心特征正向识别：
+    // (a) 现代文件对话框：必须拥有 Shell 文件列表视图 (SHELLDLL_DefView)
+    if (ctx.hasDefView) {
         return true;
     }
-    if (ctx.editHwnd && (ctx.comboBoxHwnd || ctx.okButtonHwnd)) {
+
+    // (b) 经典文件对话框 (Legacy OPENFILENAME)：必须拥有专用文件名编辑框 (edt1: 1152 或 cmb13: 0x047C) 并配合下拉框或确认按钮
+    if (ctx.standardFileEditHwnd && (ctx.comboBoxHwnd || ctx.okButtonHwnd)) {
+        return true;
+    }
+
+    // (c) 目录/文件夹选择对话框：拥有命名空间导航树控件或标准树形控件 (NamespaceTreeControl / SysTreeView32) 且同时具备确认与取消按钮，无后退按钮，且控件总数不超过 18（排除包含树形控件的复杂向导组件页）
+    if ((ctx.namespaceTreeHwnd || ctx.treeViewHwnd) && ctx.okButtonHwnd && ctx.cancelButtonHwnd && !ctx.backButtonHwnd && ctx.totalControls <= 18) {
         return true;
     }
 
@@ -786,35 +1112,38 @@ bool DialogNavigator::uiaNavigate(HWND dialogHwnd, const std::wstring& wPath) {
         }
     }
 
-    struct Activator { WORD modifier; WORD key; const char* name; };
-    constexpr Activator activators[] = {
-        {VK_MENU, 'D', "Alt+D"},
-        {VK_CONTROL, 'L', "Ctrl+L"},
-        {0, VK_F4, "F4"},
-    };
+    const std::string processName = tools3000::core::WinUtils::getProcessNameFromWindow(dialogHwnd);
+    if (!isInstallerProcess(processName) && !isInstallerOrWizard(dialogHwnd)) {
+        struct Activator { WORD modifier; WORD key; const char* name; };
+        constexpr Activator activators[] = {
+            {VK_MENU, 'D', "Alt+D"},
+            {VK_CONTROL, 'L', "Ctrl+L"},
+            {0, VK_F4, "F4"},
+        };
 
-    for (const auto& activator : activators) {
-        if (!sendKeyChord(dialogHwnd, activator.modifier, activator.key)) {
-            LOG_WARN("UIA: {} 未能发送到目标对话框", activator.name);
-            continue;
+        for (const auto& activator : activators) {
+            if (!sendKeyChord(dialogHwnd, activator.modifier, activator.key)) {
+                LOG_WARN("DialogNavigator: UIA {} could not be sent to target dialog", activator.name);
+                continue;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(90));
+            if (!IsWindow(dialogHwnd) || !isTargetForeground(dialogHwnd)) return false;
+
+            ComPtr<IUIAutomationElement> focusedElem;
+            HRESULT hr = uia->GetFocusedElement(focusedElem.GetAddressOf());
+            if (FAILED(hr) || !focusedElem) continue;
+
+            if (commitAddress(focusedElem.Get(), activator.name)) return true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(90));
-        if (!IsWindow(dialogHwnd) || !isTargetForeground(dialogHwnd)) return false;
-
-        ComPtr<IUIAutomationElement> focusedElem;
-        HRESULT hr = uia->GetFocusedElement(focusedElem.GetAddressOf());
-        if (FAILED(hr) || !focusedElem) continue;
-
-        if (commitAddress(focusedElem.Get(), activator.name)) return true;
     }
 
-    LOG_WARN("UIA: 所有地址栏激活方式均未通过安全校验，本次不导航");
+    LOG_WARN("DialogNavigator: address bar navigation safety checks not passed, skipping");
     return false;
 }
 
 
 // ============================================================
-// getCurrentDialogFolder — Modern + Legacy 双模
+// getCurrentDialogFolder — Modern + FolderPicker + Legacy 安全多模
 // ============================================================
 std::string DialogNavigator::getCurrentDialogFolder(HWND dialogHwnd) {
     if (!dialogHwnd || !IsWindow(dialogHwnd)) return "";
@@ -827,40 +1156,44 @@ std::string DialogNavigator::getCurrentDialogFolder(HWND dialogHwnd) {
         if (!uiaPath.empty()) {
             return uiaPath;
         }
-        // UIA 降级：枚举子窗口文字找绝对路径
-        std::string foundPath;
-        EnumChildWindows(dialogHwnd, [](HWND hwnd, LPARAM lParam) -> BOOL {
-            auto* outStr = reinterpret_cast<std::string*>(lParam);
-            wchar_t buf[MAX_PATH * 2] = {0};
-            GetWindowTextW(hwnd, buf, MAX_PATH * 2);
-            std::wstring text = buf;
-            if (text.size() >= 3 && iswalpha(text[0]) && text[1] == L':' && text[2] == L'\\') {
-                if (GetFileAttributesW(text.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                    *outStr = tools3000::core::WinUtils::wstringToUtf8(text);
-                    return FALSE;
-                }
-            }
-            return TRUE;
-        }, reinterpret_cast<LPARAM>(&foundPath));
-        return foundPath;
     }
 
-    // Legacy: CDM_GETFOLDERPATH
-    wchar_t cdmBuffer[MAX_PATH] = {0};
-    LRESULT lr = 0;
-    sendMessageWithTimeout(dialogHwnd, CDM_GETFOLDERPATH, MAX_PATH,
-                           reinterpret_cast<LPARAM>(cdmBuffer), lr);
-    if (lr > 0 && cdmBuffer[0] != L'\0') {
-        std::wstring raw(cdmBuffer);
-        if (GetFileAttributesW(raw.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            return tools3000::core::WinUtils::wstringToUtf8(raw);
+    if (dtype == DialogType::FolderPicker) {
+        // FolderPicker (如 SHBrowseForFolder 带 BIF_EDITBOX): 安全读取 Edit 内容
+        HWND edit = findPathEditControl(dialogHwnd);
+        if (edit) {
+            std::wstring text = getWindowTextWithTimeout(edit, MAX_PATH);
+            if (!text.empty()) {
+                DWORD attr = GetFileAttributesW(text.c_str());
+                if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                    return tools3000::core::WinUtils::wstringToUtf8(text);
+                }
+            }
         }
     }
-    return "";
+
+    // 严禁发送 CDM_GETFOLDERPATH (WM_USER+102)！因其跨进程传递裸指针且缺乏 OS 编组，会导致目标进程内存非法访问 (0xC0000005) 崩溃！
+    // 降级方案：枚举子窗口文字寻找已存在的物理目录绝对路径（基于 User32 WM_GETTEXT 安全内核级跨进程编组）
+    std::string foundPath;
+    EnumChildWindows(dialogHwnd, [](HWND hwnd, LPARAM lParam) -> BOOL {
+        auto* outStr = reinterpret_cast<std::string*>(lParam);
+        wchar_t buf[MAX_PATH * 2] = {0};
+        GetWindowTextW(hwnd, buf, MAX_PATH * 2);
+        std::wstring text = buf;
+        if (text.size() >= 3 && iswalpha(text[0]) && text[1] == L':' && text[2] == L'\\') {
+            DWORD attr = GetFileAttributesW(text.c_str());
+            if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                *outStr = tools3000::core::WinUtils::wstringToUtf8(text);
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&foundPath));
+    return foundPath;
 }
 
 // ============================================================
-// getSelectedPath — Modern + Legacy 双模
+// getSelectedPath — Modern + FolderPicker + Legacy 安全多模
 // ============================================================
 std::string DialogNavigator::getSelectedPath(HWND dialogHwnd) {
     if (!dialogHwnd || !IsWindow(dialogHwnd)) return "";
@@ -895,23 +1228,11 @@ std::string DialogNavigator::getSelectedPath(HWND dialogHwnd) {
                 uiaGetSelectedShellChild(dialogHwnd, currentFolder);
             if (!selectedChild.empty()) return selectedChild;
         }
-        // 没有明确选择时必须返回空。当前目录不等于“用户已选择”，否则取消
-        // 对话框或自动回位都会污染按 EXE 的记忆。
         return "";
     }
 
-    // Legacy: CDM_GETFILEPATH
-    wchar_t cdmBuffer[MAX_PATH] = {0};
-    LRESULT lr = 0;
-    sendMessageWithTimeout(dialogHwnd, CDM_GETFILEPATH, MAX_PATH,
-                           reinterpret_cast<LPARAM>(cdmBuffer), lr);
-    if (lr > 0 && cdmBuffer[0] != L'\0') {
-        std::wstring raw(cdmBuffer);
-        if (GetFileAttributesW(raw.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            return tools3000::core::WinUtils::wstringToUtf8(raw);
-        }
-    }
-    // Legacy 降级：底部 Edit 拼接
+    // 严禁发送 CDM_GETFILEPATH (WM_USER+101)！
+    // 安全方式：读取输入控件文本
     HWND editHwnd = findPathEditControl(dialogHwnd);
     if (editHwnd && IsWindow(editHwnd)) {
         std::wstring editStr = getWindowTextWithTimeout(editHwnd, MAX_PATH);
@@ -935,7 +1256,7 @@ std::string DialogNavigator::getSelectedPath(HWND dialogHwnd) {
 }
 
 // ============================================================
-// navigateToFolder — Modern UIAutomation + Legacy 容灾双模
+// navigateToFolder — Modern UIAutomation + Legacy 安全多模
 // ============================================================
 bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folderPath) {
     if (!dialogHwnd || !IsWindow(dialogHwnd) || folderPath.empty()) return false;
@@ -944,34 +1265,78 @@ bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folde
     if (wPath.empty()) return false;
     DWORD attrs = GetFileAttributesW(wPath.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-        LOG_WARN("拒绝导航到不存在或非目录路径: {}", folderPath);
+        LOG_WARN("DialogNavigator: reject navigating to non-directory or non-existent path: {}", folderPath);
         return false;
     }
 
     DialogType dtype = detectDialogType(dialogHwnd);
-    LOG_INFO("执行文件对话框导航: hwnd=0x{:X}, type={}, targetPath={}",
+    LOG_INFO("DialogNavigator: navigating dialog hwnd=0x{:X}, type={}, path={}",
              reinterpret_cast<uintptr_t>(dialogHwnd),
-             (dtype == DialogType::Modern ? "Modern(UIA)" : "Legacy(CDM)"),
-             folderPath);
+             static_cast<int>(dtype), folderPath);
 
     if (dtype == DialogType::Modern) {
         // Modern: UIAutomation 地址栏导航（唯一可靠方案）
         bool ok = uiaNavigate(dialogHwnd, wPath);
         if (!ok) {
-            LOG_WARN("UIA: Modern 对话框导航失败，目标路径={}", folderPath);
+            LOG_WARN("DialogNavigator: UIA modern navigation failed for {}", folderPath);
         }
         return ok;
     }
 
-    // Legacy 对话框没有跨进程可用的 SetFolder API。采用 Windows 传统的
-    // “目录尾随反斜杠 + Enter”语义，但保存并恢复原输入内容，避免目录名
-    // 留在底部输入框形成预选或误提交。
+    // 检查宿主窗口及进程是否属于安装向导程序
+    std::string processName = tools3000::core::WinUtils::getProcessNameFromWindow(dialogHwnd);
+    const bool isInstaller = isInstallerOrWizard(dialogHwnd) || isInstallerProcess(processName);
+
+    // FolderPicker: 安全设置 Edit 控件内容，绝不发送 VK_RETURN，绝不恢复 oldText
+    if (dtype == DialogType::FolderPicker) {
+        HWND editHwnd = findPathEditControl(dialogHwnd);
+        if (!editHwnd) {
+            LOG_WARN("DialogNavigator: FolderPicker has no edit control, skipping: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(dialogHwnd));
+            return false;
+        }
+        DWORD_PTR ignored = 0;
+        if (!SendMessageTimeoutW(editHwnd, WM_SETTEXT, 0,
+                                 reinterpret_cast<LPARAM>(wPath.c_str()),
+                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored)) {
+            return false;
+        }
+        HWND parent = GetParent(editHwnd);
+        if (parent) {
+            SendMessageTimeoutW(parent, WM_COMMAND,
+                                MAKEWPARAM(GetDlgCtrlID(editHwnd), EN_CHANGE),
+                                reinterpret_cast<LPARAM>(editHwnd),
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
+        }
+        LOG_INFO("DialogNavigator: FolderPicker directory updated safely via WM_SETTEXT without VK_RETURN: {}", folderPath);
+        return true;
+    }
+
     HWND editHwnd = findPathEditControl(dialogHwnd);
     if (!editHwnd) {
-        LOG_WARN("Legacy: 未找到底部输入控件, hwnd=0x{:X}", reinterpret_cast<uintptr_t>(dialogHwnd));
+        LOG_WARN("DialogNavigator: path edit control not found, hwnd=0x{:X}", reinterpret_cast<uintptr_t>(dialogHwnd));
         return false;
     }
 
+    // 安装程序向导严禁发送 VK_RETURN！单行文本框收到回车会被转为向导的默认确认按钮（Next/Install），导致向导提前安装或状态紊乱崩溃
+    if (isInstaller) {
+        DWORD_PTR ignored = 0;
+        if (!SendMessageTimeoutW(editHwnd, WM_SETTEXT, 0,
+                                 reinterpret_cast<LPARAM>(wPath.c_str()),
+                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored)) {
+            return false;
+        }
+        HWND parent = GetParent(editHwnd);
+        if (parent) {
+            SendMessageTimeoutW(parent, WM_COMMAND,
+                                MAKEWPARAM(GetDlgCtrlID(editHwnd), EN_CHANGE),
+                                reinterpret_cast<LPARAM>(editHwnd),
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
+        }
+        LOG_INFO("DialogNavigator: installer directory updated safely via WM_SETTEXT without VK_RETURN: {}", folderPath);
+        return true;
+    }
+
+    // Legacy OPENFILENAME 标准对话框导航流程
     std::wstring wPathDir = wPath;
     if (wPathDir.back() != L'\\' && wPathDir.back() != L'/') wPathDir.push_back(L'\\');
 
@@ -994,6 +1359,7 @@ bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folde
                             reinterpret_cast<LPARAM>(editHwnd),
                             SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
     }
+
     SendMessageTimeoutW(editHwnd, WM_KEYDOWN, VK_RETURN, 0x001C0001,
                         SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
     SendMessageTimeoutW(editHwnd, WM_KEYUP, VK_RETURN, 0xC01C0001,
@@ -1001,14 +1367,14 @@ bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folde
 
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
     if (!IsWindow(dialogHwnd)) {
-        LOG_ERROR("Legacy 导航导致对话框意外关闭，已停止后续操作: {}", folderPath);
+        LOG_ERROR("DialogNavigator: dialog closed unexpectedly after navigation: {}", folderPath);
         return false;
     }
 
     SendMessageTimeoutW(editHwnd, WM_SETTEXT, 0,
                         reinterpret_cast<LPARAM>(oldText.c_str()),
                         SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
-    LOG_INFO("Legacy: 已提交目录导航并恢复底部输入内容: {}", folderPath);
+    LOG_INFO("DialogNavigator: legacy navigation completed: {}", folderPath);
     return true;
 }
 
