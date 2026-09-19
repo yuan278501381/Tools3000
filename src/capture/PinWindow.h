@@ -40,6 +40,15 @@ public:
     /// 将剪贴板内容（图像 / 文本 / #颜色）智能贴成浮空贴图
     static std::shared_ptr<PinWindow> createFromClipboard();
 
+    /// 连续历史贴图会话调度入口：按时间先后倒序依次贴出历史截图（或当前剪贴板内容）
+    /// 支持连续触发快捷键依次贴出倒数第 1 张、倒数第 2 张、倒数第 3 张...直至第 N 张
+    static std::shared_ptr<PinWindow> pasteNextHistoryOrClipboard();
+
+    /// 颜色与文本卡片生成工具（供贴图渲染及连续回溯会话调度器复用）
+    static bool parseHexColor(const std::wstring& s, cv::Scalar& bgr, std::wstring& label);
+    static cv::Mat renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label);
+    static cv::Mat renderTextToImage(const std::wstring& text);
+
     /// 根据图像大小与来源上下文，智能计算世界级最佳贴图生成坐标
     /// 若剪贴板图像与最近一次截图匹配，则精确贴在原截图坐标；
     /// 若为外部内容或无法匹配，则以光标为中心智能吸附居中，并严格限制在显示器工作区内部（杜绝超出屏幕边缘）
@@ -164,6 +173,7 @@ private:
     POINT m_dragOffset{};
     bool m_clickThrough = false;
     bool m_focused = false;  // 选中态（键盘焦点）：显示高亮边框，可按 Esc 隐藏
+    int m_historyBrowseIndex = 0;  // 获焦状态下时光机翻页游标 (0=最新, 1=上一张...)
     bool m_inverted = false;
     bool m_grayscale = false;
     bool m_folded = false;

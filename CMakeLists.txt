@@ -173,6 +173,8 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/ShortcutHintOverlay.cpp
     src/capture/HudAvoidanceEngine.cpp
     src/capture/PinSpawnCalculator.cpp
+    src/capture/PinPasteCoordinator.cpp
+    src/capture/CaptureHistory.cpp
 )
 add_library(capture_objects OBJECT ${CAPTURE_OBJECT_SOURCES})
 target_include_directories(capture_objects PUBLIC ${CMAKE_SOURCE_DIR}/src)
@@ -284,7 +286,6 @@ set_target_properties(Plugin_Gesture PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAK
 
 # ── 3. Plugin_Capture (动态库) ────────────────────────────────────────────────
 set(CAPTURE_OTHER_SOURCES
-    src/capture/CaptureHistory.cpp
     src/capture/CaptureInput.cpp
     src/capture/CaptureOverlay.cpp
     src/capture/CaptureRenderer.cpp

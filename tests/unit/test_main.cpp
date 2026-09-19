@@ -49,6 +49,8 @@
 #include "capture/CornerRadiusHelper.h"
 #include "capture/HudAvoidanceEngine.h"
 #include "capture/PinSpawnCalculator.h"
+#include "capture/PinPasteCoordinator.h"
+#include "capture/CaptureHistory.h"
 #include "keycast/KeycastStyle.h"
 #include "keycast/KeycastOverlay.h"
 #include "ocr/OcrResultStyle.h"

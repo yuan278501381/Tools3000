@@ -5647,5 +5647,309 @@ TEST(ClipboardUtilsTest, TimestampedHdropFileNamePatternAndContent) {
     std::filesystem::remove(retrievedPath, ec);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PinPasteCoordinatorTest — 连续历史倒序贴图会话测试套件
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(PinPasteCoordinatorTest, CandidateResolutionAndReverseOrder) {
+    using namespace tools3000::capture;
+    auto clearClipboardSafely = []() {
+        for (int retry = 0; retry < 10; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                CloseClipboard();
+                break;
+            }
+            Sleep(5);
+        }
+    };
+    clearClipboardSafely();
+
+    auto& history = CaptureHistory::instance();
+    history.clear();
+
+    // 依序推入 3 张模拟截图：A (最老), B (中间), C (最新)
+    cv::Mat imgA(100, 120, CV_8UC3, cv::Scalar(255, 0, 0));
+    CaptureRegion regA{100, 100, 120, 100};
+    history.push(imgA, regA);
+
+    cv::Mat imgB(150, 180, CV_8UC3, cv::Scalar(0, 255, 0));
+    CaptureRegion regB{200, 200, 180, 150};
+    history.push(imgB, regB);
+
+    cv::Mat imgC(200, 240, CV_8UC3, cv::Scalar(0, 0, 255));
+    CaptureRegion regC{300, 300, 240, 200};
+    history.push(imgC, regC);
+
+    ASSERT_EQ(history.count(), 3);
+
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+
+    DWORD seq = GetClipboardSequenceNumber();
+    auto candidates = coord.resolveCandidates(seq, 3);
+    ASSERT_EQ(candidates.size(), 3u);
+
+    // 验证历史排序：最新截图 (C) 在最前，最老截图 (A) 在最后
+    EXPECT_EQ(candidates[0].image.cols, 240); // 倒数第 1 张 (最新 C)
+    EXPECT_EQ(candidates[0].image.rows, 200);
+    EXPECT_EQ(candidates[0].region.x, 300);
+
+    EXPECT_EQ(candidates[1].image.cols, 180); // 倒数第 2 张 (B)
+    EXPECT_EQ(candidates[1].image.rows, 150);
+    EXPECT_EQ(candidates[1].region.x, 200);
+
+    EXPECT_EQ(candidates[2].image.cols, 120); // 倒数第 3 张 (最老 A)
+    EXPECT_EQ(candidates[2].image.rows, 100);
+    EXPECT_EQ(candidates[2].region.x, 100);
+
+    history.clear();
+    clearClipboardSafely();
+}
+
+TEST(PinPasteCoordinatorTest, ContinuousRollbackAndWrapAround) {
+    using namespace tools3000::capture;
+    auto clearClipboardSafely = []() {
+        for (int retry = 0; retry < 10; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                CloseClipboard();
+                break;
+            }
+            Sleep(5);
+        }
+    };
+    clearClipboardSafely();
+
+    auto& history = CaptureHistory::instance();
+    history.clear();
+
+    // 推入 3 张截图：从老到新
+    history.push(cv::Mat(60, 60, CV_8UC3, cv::Scalar(10, 10, 10)), CaptureRegion{10, 10, 60, 60});
+    history.push(cv::Mat(80, 80, CV_8UC3, cv::Scalar(20, 20, 20)), CaptureRegion{20, 20, 80, 80});
+    history.push(cv::Mat(100, 100, CV_8UC3, cv::Scalar(30, 30, 30)), CaptureRegion{30, 30, 100, 100});
+
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+    coord.setSessionTimeoutMs(3000);
+
+    // 第一次按快捷键：倒数第 1 张 (最新，100x100)
+    auto dec1 = coord.stepNext();
+    ASSERT_TRUE(dec1.has_value());
+    EXPECT_EQ(dec1->reverseIndex, 0);
+    EXPECT_EQ(dec1->targetIndex, 0);
+    EXPECT_EQ(dec1->candidate.image.cols, 100);
+    EXPECT_FALSE(dec1->isLooped);
+    EXPECT_TRUE(coord.isSessionActive());
+
+    // 连续第二次按快捷键：倒数第 2 张 (80x80)
+    auto dec2 = coord.stepNext();
+    ASSERT_TRUE(dec2.has_value());
+    EXPECT_EQ(dec2->reverseIndex, 1);
+    EXPECT_EQ(dec2->targetIndex, 1);
+    EXPECT_EQ(dec2->candidate.image.cols, 80);
+    EXPECT_FALSE(dec2->isLooped);
+
+    // 连续第三次按快捷键：倒数第 3 张 (60x60)
+    auto dec3 = coord.stepNext();
+    ASSERT_TRUE(dec3.has_value());
+    EXPECT_EQ(dec3->reverseIndex, 2);
+    EXPECT_EQ(dec3->targetIndex, 2);
+    EXPECT_EQ(dec3->candidate.image.cols, 60);
+    EXPECT_FALSE(dec3->isLooped);
+
+    // 连续第四次按快捷键：循环回最新 (100x100)
+    auto dec4 = coord.stepNext();
+    ASSERT_TRUE(dec4.has_value());
+    EXPECT_EQ(dec4->reverseIndex, 3);
+    EXPECT_EQ(dec4->targetIndex, 0);
+    EXPECT_EQ(dec4->candidate.image.cols, 100);
+    EXPECT_TRUE(dec4->isLooped);
+
+    history.clear();
+    coord.reset();
+    clearClipboardSafely();
+}
+
+TEST(PinPasteCoordinatorTest, SessionTimeoutResetsToLatest) {
+    using namespace tools3000::capture;
+    auto clearClipboardSafely = []() {
+        for (int retry = 0; retry < 10; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                CloseClipboard();
+                break;
+            }
+            Sleep(5);
+        }
+    };
+    clearClipboardSafely();
+
+    auto& history = CaptureHistory::instance();
+    history.clear();
+
+    history.push(cv::Mat(50, 50, CV_8UC3, cv::Scalar(1, 1, 1)), CaptureRegion{0, 0, 50, 50});
+    history.push(cv::Mat(90, 90, CV_8UC3, cv::Scalar(2, 2, 2)), CaptureRegion{0, 0, 90, 90});
+
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+    coord.setSessionTimeoutMs(500); // 短超时用于快速测试
+
+    auto dec1 = coord.stepNext();
+    ASSERT_TRUE(dec1.has_value());
+    EXPECT_EQ(dec1->reverseIndex, 0);
+    EXPECT_EQ(dec1->candidate.image.cols, 90);
+
+    // 超过超时阈值
+    Sleep(550);
+    EXPECT_FALSE(coord.isSessionActive());
+
+    // 超时后再次触发，必须重置为倒数第 1 张 (90)
+    auto decAfterTimeout = coord.stepNext();
+    ASSERT_TRUE(decAfterTimeout.has_value());
+    EXPECT_EQ(decAfterTimeout->reverseIndex, 0);
+    EXPECT_EQ(decAfterTimeout->candidate.image.cols, 90);
+
+    history.clear();
+    coord.reset();
+    coord.setSessionTimeoutMs(3000);
+    clearClipboardSafely();
+}
+
+TEST(PinPasteCoordinatorTest, NewCaptureMutationResetsSession) {
+    using namespace tools3000::capture;
+    auto clearClipboardSafely = []() {
+        for (int retry = 0; retry < 10; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                CloseClipboard();
+                break;
+            }
+            Sleep(5);
+        }
+    };
+    clearClipboardSafely();
+
+    auto& history = CaptureHistory::instance();
+    history.clear();
+
+    history.push(cv::Mat(40, 40, CV_8UC3, cv::Scalar(10, 10, 10)), CaptureRegion{0, 0, 40, 40});
+    history.push(cv::Mat(70, 70, CV_8UC3, cv::Scalar(20, 20, 20)), CaptureRegion{0, 0, 70, 70});
+
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+
+    auto dec1 = coord.stepNext();
+    ASSERT_TRUE(dec1.has_value());
+    EXPECT_EQ(dec1->reverseIndex, 0);
+    EXPECT_EQ(dec1->candidate.image.cols, 70);
+
+    // 用户在按键间隔截了新图推入历史
+    history.push(cv::Mat(120, 120, CV_8UC3, cv::Scalar(30, 30, 30)), CaptureRegion{0, 0, 120, 120});
+
+    // 再次按键时检测到历史数量突变，会话重置为 0 并贴出绝对最新图 (120)
+    auto dec2 = coord.stepNext();
+    ASSERT_TRUE(dec2.has_value());
+    EXPECT_EQ(dec2->reverseIndex, 0);
+    EXPECT_EQ(dec2->candidate.image.cols, 120);
+
+    history.clear();
+    coord.reset();
+    clearClipboardSafely();
+}
+
+TEST(PinPasteCoordinatorTest, ClipboardMutationResetsSession) {
+    using namespace tools3000::capture;
+    auto clearClipboardSafely = []() {
+        for (int retry = 0; retry < 10; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                CloseClipboard();
+                break;
+            }
+            Sleep(5);
+        }
+    };
+    clearClipboardSafely();
+
+    auto& history = CaptureHistory::instance();
+    history.clear();
+
+    history.push(cv::Mat(40, 40, CV_8UC3, cv::Scalar(10, 10, 10)), CaptureRegion{0, 0, 40, 40});
+    history.push(cv::Mat(70, 70, CV_8UC3, cv::Scalar(20, 20, 20)), CaptureRegion{0, 0, 70, 70});
+
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+
+    auto dec1 = coord.stepNext();
+    ASSERT_TRUE(dec1.has_value());
+    EXPECT_EQ(dec1->reverseIndex, 0);
+
+    // 连续按键推进游标到倒数第 2 张
+    auto dec2 = coord.stepNext();
+    ASSERT_TRUE(dec2.has_value());
+    EXPECT_EQ(dec2->reverseIndex, 1);
+
+    // 用户在外部复制了新内容：写入剪贴板使 Windows 剪贴板序列号递增
+    cv::Mat externalImg(15, 15, CV_8UC3, cv::Scalar(50, 50, 50));
+    ClipboardUtils::copyImageToClipboard(externalImg);
+
+    // 再次按键时检测到剪贴板序列号突变，会话重置为 0
+    auto dec3 = coord.stepNext();
+    ASSERT_TRUE(dec3.has_value());
+    EXPECT_EQ(dec3->reverseIndex, 0);
+
+    history.clear();
+    coord.reset();
+    clearClipboardSafely();
+}
+
+TEST(PinPasteCoordinatorTest, ExternalClipboardPrecedesHistory) {
+    using namespace tools3000::capture;
+    auto clearClipboardSafely = []() {
+        for (int retry = 0; retry < 10; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                CloseClipboard();
+                break;
+            }
+            Sleep(5);
+        }
+    };
+    clearClipboardSafely();
+
+    auto& history = CaptureHistory::instance();
+    history.clear();
+
+    // 历史中有 1 张截图 (100x100)
+    history.push(cv::Mat(100, 100, CV_8UC3, cv::Scalar(10, 10, 10)), CaptureRegion{0, 0, 100, 100});
+
+    // 用户在外部（如浏览器）复制了一张新图片 (48x48)
+    cv::Mat externalImg(48, 48, CV_8UC3, cv::Scalar(99, 99, 99));
+    ClipboardUtils::copyImageToClipboard(externalImg);
+
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+
+    // 第一次贴图：外部复制的图片作为最新内容（倒数第 1 个）贴出
+    auto dec1 = coord.stepNext();
+    ASSERT_TRUE(dec1.has_value());
+    EXPECT_EQ(dec1->reverseIndex, 0);
+    EXPECT_EQ(dec1->totalCount, 2);
+    EXPECT_EQ(dec1->candidate.image.cols, 48);
+    EXPECT_TRUE(dec1->candidate.isFromClipboard);
+
+    // 第二次连续贴图：回溯出截图历史中的图 (100x100)
+    auto dec2 = coord.stepNext();
+    ASSERT_TRUE(dec2.has_value());
+    EXPECT_EQ(dec2->reverseIndex, 1);
+    EXPECT_EQ(dec2->candidate.image.cols, 100);
+    EXPECT_FALSE(dec2->candidate.isFromClipboard);
+
+    history.clear();
+    coord.reset();
+    clearClipboardSafely();
+}
+
 
 

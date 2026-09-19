@@ -2885,6 +2885,14 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] PinWindow: 智能计算最佳生成坐标 @ ({}, {})",
             "[{}] PinWindow: smart calculated optimal spawn position @ ({}, {})"
         }},
+        {"PinPasteCoordinator: 剪贴板与历史记录中无可贴内容", {
+            "[{}] PinPasteCoordinator: 剪贴板与历史记录中无可贴内容",
+            "[{}] PinPasteCoordinator: no clippable or history content available to pin"
+        }},
+        {"PinPasteCoordinator: 贴出历史条目 [{}/{}], 尺寸={}x{}, 坐标=({}, {})", {
+            "[{}] PinPasteCoordinator: 贴出历史条目 [{}/{}], 尺寸={}x{}, 坐标=({}, {})",
+            "[{}] PinPasteCoordinator: pinned history item [{}/{}], size={}x{}, pos=({}, {})"
+        }},
     };
     return catalog;
 }

@@ -481,7 +481,7 @@ public:
             tools3000::capture::PinWindow::toggleClickThroughUnderCursor();
         });
         hotkeys.registerHotkey("Pin Paste", configuredHotkey("Pin Paste", {tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Alt | tools3000::core::ModKey::Shift, 'V'}), []() {
-            tools3000::capture::PinWindow::createFromClipboard();
+            tools3000::capture::PinWindow::pasteNextHistoryOrClipboard();
         });
         hotkeys.registerHotkey("Pin Hide All", configuredHotkey("Pin Hide All", {tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Alt | tools3000::core::ModKey::Shift, 'H'}), []() {
             tools3000::capture::PinWindow::toggleHideAll();
@@ -777,7 +777,7 @@ public:
         });
 
         mb.registerHandler("capture.pasteAsPin", [](const nlohmann::json&) -> nlohmann::json {
-            auto pin = tools3000::capture::PinWindow::createFromClipboard();
+            auto pin = tools3000::capture::PinWindow::pasteNextHistoryOrClipboard();
             return {{"success", static_cast<bool>(pin)}};
         });
 

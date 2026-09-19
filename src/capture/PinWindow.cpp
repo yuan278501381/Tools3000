@@ -15,6 +15,7 @@
 #include "capture/FloatingGlassBar.h"
 #include "capture/CaptureHistory.h"
 #include "capture/PinSpawnCalculator.h"
+#include "capture/PinPasteCoordinator.h"
 #include "core/events/EventBus.h"
 #include "core/logger/Logger.h"
 #include "core/config/ConfigManager.h"
@@ -878,7 +879,7 @@ static cv::Mat hbitmapToMat(HBITMAP hbm) {
 }
 
 // 解析 #RGB / #RRGGBB 文本为 BGR 颜色
-static bool parseHexColor(const std::wstring& in, cv::Scalar& bgr, std::wstring& label) {
+bool PinWindow::parseHexColor(const std::wstring& in, cv::Scalar& bgr, std::wstring& label) {
     size_t a = in.find_first_not_of(L" \t\r\n");
     size_t b = in.find_last_not_of(L" \t\r\n");
     if (a == std::wstring::npos) return false;
@@ -901,7 +902,7 @@ static bool parseHexColor(const std::wstring& in, cv::Scalar& bgr, std::wstring&
 }
 
 // 颜色 → 色卡贴图（色块 + 文字按亮度自动取黑/白以保证对比）
-static cv::Mat renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label) {
+cv::Mat PinWindow::renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label) {
     const int w = 180, h = 130;
     cv::Mat img(h, w, CV_8UC3, bgr);
     double lum = 0.114 * bgr[0] + 0.587 * bgr[1] + 0.299 * bgr[2];
@@ -913,7 +914,7 @@ static cv::Mat renderColorSwatch(const cv::Scalar& bgr, const std::wstring& labe
 }
 
 // 文本/代码 → Mac 极客风卡片贴图（含红黄绿三色窗口点、代码行号与深邃极客磨砂卡片）
-static cv::Mat renderTextToImage(const std::wstring& text) {
+cv::Mat PinWindow::renderTextToImage(const std::wstring& text) {
     HDC screen = GetDC(nullptr);
     HDC memdc = CreateCompatibleDC(screen);
 
@@ -1136,6 +1137,28 @@ std::shared_ptr<PinWindow> PinWindow::createFromClipboard() {
     POINT spawnPos = calculateSmartSpawnPosition(img.cols, img.rows, &pt, pReg, meta.padX, meta.padY);
     LOG_INFO("剪贴板贴图：{}x{} @ ({},{})", img.cols, img.rows, spawnPos.x, spawnPos.y);
     return create(img, spawnPos.x, spawnPos.y);
+}
+
+std::shared_ptr<PinWindow> PinWindow::pasteNextHistoryOrClipboard() {
+    auto decision = PinPasteCoordinator::instance().stepNext();
+    if (!decision.has_value()) return nullptr;
+    const auto& d = *decision;
+    auto pin = create(d.candidate.image, d.spawnPos.x, d.spawnPos.y);
+
+    if (d.totalCount > 1 && d.reverseIndex > 0) {
+        bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
+        std::wstring toastMsg;
+        if (d.isLooped) {
+            toastMsg = isZh ? std::format(L"[INFO] 历史贴图: 循环回最新截图 (1/{})", d.totalCount)
+                            : std::format(L"[INFO] Pin History: Looped to latest (1/{})", d.totalCount);
+        } else {
+            toastMsg = isZh ? std::format(L"[INFO] 历史贴图: 倒数第 {} 张 (共 {} 张)", d.targetIndex + 1, d.totalCount)
+                            : std::format(L"[INFO] Pin History: #{} from last (total {})", d.targetIndex + 1, d.totalCount);
+        }
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
+    }
+
+    return pin;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1681,6 +1704,40 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             // 0 或 1: 恢复 100% 原始尺寸
             if (wParam == '0' || wParam == VK_NUMPAD0) {
                 self->resetScale();
+                return 0;
+            }
+            // , / < 键: 获焦时光机上溯历史（更早前截图）
+            if (wParam == VK_OEM_COMMA && !ctrl) {
+                const int totalHist = CaptureHistory::instance().count();
+                if (totalHist > 1) {
+                    self->m_historyBrowseIndex = std::min(self->m_historyBrowseIndex + 1, totalHist - 1);
+                    auto entry = CaptureHistory::instance().get(self->m_historyBrowseIndex);
+                    if (entry.has_value() && !entry->image.empty()) {
+                        self->updateImage(entry->image);
+                        bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
+                        std::wstring msg = isZh
+                            ? std::format(L"[INFO] 历史贴图: 倒数第 {} 张 (共 {} 张)", self->m_historyBrowseIndex + 1, totalHist)
+                            : std::format(L"[INFO] Pin History: #{} from last (total {})", self->m_historyBrowseIndex + 1, totalHist);
+                        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{msg});
+                    }
+                }
+                return 0;
+            }
+            // . / > 键: 获焦时光机回溯历史（更近期截图）
+            if (wParam == VK_OEM_PERIOD && !ctrl) {
+                const int totalHist = CaptureHistory::instance().count();
+                if (totalHist > 1 && self->m_historyBrowseIndex > 0) {
+                    self->m_historyBrowseIndex = std::max(0, self->m_historyBrowseIndex - 1);
+                    auto entry = CaptureHistory::instance().get(self->m_historyBrowseIndex);
+                    if (entry.has_value() && !entry->image.empty()) {
+                        self->updateImage(entry->image);
+                        bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
+                        std::wstring msg = isZh
+                            ? std::format(L"[INFO] 历史贴图: 倒数第 {} 张 (共 {} 张)", self->m_historyBrowseIndex + 1, totalHist)
+                            : std::format(L"[INFO] Pin History: #{} from last (total {})", self->m_historyBrowseIndex + 1, totalHist);
+                        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{msg});
+                    }
+                }
                 return 0;
             }
             break;
