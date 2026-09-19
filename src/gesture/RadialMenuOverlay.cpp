@@ -1,4 +1,4 @@
-﻿#include "gesture/RadialMenuOverlay.h"
+#include "gesture/RadialMenuOverlay.h"
 #include "gesture/RadialMenuStyle.h"
 #include "gesture/BuiltinCommands.h"
 #include "core/logger/Logger.h"
@@ -150,7 +150,9 @@ void RadialMenuOverlay::hide() {
             KillTimer(m_hwnd, TIMER_ID_ANIMATION);
             m_timerId = 0;
         }
-        ReleaseCapture();
+        if (GetCapture() == m_hwnd) {
+            ReleaseCapture();
+        }
         ShowWindow(m_hwnd, SW_HIDE);
         m_visible = false;
         m_hoverIndex = -1;
@@ -485,6 +487,12 @@ LRESULT RadialMenuOverlay::handleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam
         }
         case WM_KILLFOCUS: {
             hide();
+            return 0;
+        }
+        case WM_CAPTURECHANGED: {
+            if (reinterpret_cast<HWND>(lParam) != m_hwnd) {
+                hide();
+            }
             return 0;
         }
     }

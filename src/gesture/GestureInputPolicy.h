@@ -24,11 +24,20 @@
 
 namespace tools3000::gesture {
 
-/// 左键手势触发合法性校验：仅当对应边缘有效激活或明确开启左键手势时才允许拦截
+/// 左键手势触发合法性校验：仅当对应边缘确实开启了滑动/左键手势或全局显式开启左键时才允许拦截
 inline bool isLeftButtonGestureAllowed(ScreenEdgeZone activeEdge, uint8_t modifiers, uint32_t triggerMask) noexcept {
     (void)modifiers;
-    if (activeEdge != ScreenEdgeZone::None) {
-        return true;
+    if (activeEdge == ScreenEdgeZone::Left) {
+        return (triggerMask & (GestureTriggerMask::EdgeLeftSlide | GestureTriggerMask::Left)) != 0;
+    }
+    if (activeEdge == ScreenEdgeZone::Right) {
+        return (triggerMask & (GestureTriggerMask::EdgeRightSlide | GestureTriggerMask::Left)) != 0;
+    }
+    if (activeEdge == ScreenEdgeZone::Bottom) {
+        return (triggerMask & (GestureTriggerMask::EdgeBottomSlide | GestureTriggerMask::Left)) != 0;
+    }
+    if (activeEdge == ScreenEdgeZone::Top) {
+        return (triggerMask & (GestureTriggerMask::EdgeTopSlide | GestureTriggerMask::EdgeTopLeft | GestureTriggerMask::Left)) != 0;
     }
     return (triggerMask & GestureTriggerMask::Left) != 0;
 }
@@ -454,6 +463,18 @@ inline bool isSystemDesktopOrShellWindow(std::wstring_view cls) noexcept {
            cls == L"Windows.UI.Core.CoreWindow" ||
            cls == L"XamlExplorerHostIslandWindow" ||
            cls == L"DV2ControlHost";
+}
+
+/// 识别 Windows 桌面、资源管理器文件夹窗口、通用文件对话框及外壳视图控件。
+/// 在这些窗口与控件中，左键点击与拖拽为 Windows 原生核心交互（框选、移动、复制、多选等），
+/// 绝对禁止作为左键手势拦截，确保人类桌面文件拖拽与文件管理 100% 原生穿透。
+inline bool isDesktopOrFileManagerWindow(std::wstring_view cls) noexcept {
+    if (cls.empty()) return false;
+    if (isSystemDesktopOrShellWindow(cls)) return true;
+    return cls == L"CabinetWClass" ||
+           cls == L"ExploreWClass" ||
+           cls == L"DirectUIHWND" ||
+           cls == L"#32770";
 }
 
 /// 从覆盖层往下找真实窗口时，不可见、覆盖层、几何上不含该点的候选都跳过。

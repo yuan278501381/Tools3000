@@ -2500,3 +2500,126 @@ TEST(GestureZeroLatencyPipelineTest, HighFrequencyHookNoWakeDecimation) {
     EXPECT_FALSE(gestureShouldInterpolateCursorTip(false, true, lastX + 0.3f, lastY + 0.3f, lastX, lastY, 1.0f));
 }
 
+TEST(GestureInputPolicyTest, LeftButtonDesktopDragProtection) {
+    using namespace tools3000::gesture;
+
+    // 1. 默认右键触发手势模式下，屏幕任意边缘与常规区域均绝对不允许左键触发手势，
+    // 杜绝桌面边缘文件/图标被点击或拖拽时被手势状态机拦截
+    const uint32_t rightMask = GestureTriggerMask::Right;
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::None, 0, rightMask));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::Left, 0, rightMask));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::Right, 0, rightMask));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::Bottom, 0, rightMask));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::Top, 0, rightMask));
+
+    // 2. 当仅开启中键或侧键时，边缘区域同样绝对不允许左键触发
+    const uint32_t nonLeftMask = GestureTriggerMask::Middle | GestureTriggerMask::X1 | GestureTriggerMask::X2;
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::Left, 0, nonLeftMask));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::Right, 0, nonLeftMask));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::Bottom, 0, nonLeftMask));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::Top, 0, nonLeftMask));
+
+    // 3. 仅在明确开启顶部左键 (EdgeTopLeft) 或顶部滑动 (EdgeTopSlide) 时，且位于屏幕顶部时才允许
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::Top, 0, GestureTriggerMask::EdgeTopLeft));
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::Top, 0, GestureTriggerMask::EdgeTopSlide));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::Left, 0, GestureTriggerMask::EdgeTopLeft));
+
+    // 4. 显式开启左键手势掩码时全域允许
+    const uint32_t leftMask = GestureTriggerMask::Left;
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::None, 0, leftMask));
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::Left, 0, leftMask));
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::Right, 0, leftMask));
+}
+
+TEST(GestureInputPolicyTest, SystemDesktopAndShellWindowRecognition) {
+    using namespace tools3000::gesture;
+
+    // 桌面关键窗口类名必须被精准识别为系统桌面/外壳窗口
+    EXPECT_TRUE(isSystemDesktopOrShellWindow(L"Progman"));
+    EXPECT_TRUE(isSystemDesktopOrShellWindow(L"WorkerW"));
+    EXPECT_TRUE(isSystemDesktopOrShellWindow(L"SHELLDLL_DefView"));
+    EXPECT_TRUE(isSystemDesktopOrShellWindow(L"SysListView32"));
+
+    // 任务栏与系统托盘类名识别
+    EXPECT_TRUE(isSystemDesktopOrShellWindow(L"Shell_TrayWnd"));
+    EXPECT_TRUE(isSystemDesktopOrShellWindow(L"Shell_SecondaryTrayWnd"));
+    EXPECT_TRUE(isSystemDesktopOrShellWindow(L"TrayNotifyWnd"));
+    EXPECT_TRUE(isSystemDesktopOrShellWindow(L"NotifyIconOverflowWindow"));
+    EXPECT_TRUE(isSystemDesktopOrShellWindow(L"TopLevelWindowForOverflowXamlIsland"));
+
+    // 普通应用窗口不应被误判为桌面/外壳
+    EXPECT_FALSE(isSystemDesktopOrShellWindow(L"Notepad"));
+    EXPECT_FALSE(isSystemDesktopOrShellWindow(L"Chrome_WidgetWin_1"));
+    EXPECT_FALSE(isSystemDesktopOrShellWindow(L""));
+}
+
+TEST(WinUtilsTest, EmergencyFlushInputStateSafety) {
+    // 验证应急输入状态清理函数执行安全性：释放捕获、解除裁剪，无异常崩溃
+    EXPECT_NO_THROW(tools3000::core::WinUtils::emergencyFlushInputState());
+}
+
+TEST(GestureInputPolicyTest, DesktopAndFileManagerRecognition) {
+    using namespace tools3000::gesture;
+
+    // 资源管理器与通用文件对话框强保护识别
+    EXPECT_TRUE(isDesktopOrFileManagerWindow(L"CabinetWClass"));
+    EXPECT_TRUE(isDesktopOrFileManagerWindow(L"ExploreWClass"));
+    EXPECT_TRUE(isDesktopOrFileManagerWindow(L"DirectUIHWND"));
+    EXPECT_TRUE(isDesktopOrFileManagerWindow(L"#32770"));
+
+    // 桌面与外壳窗口同等纳入保护
+    EXPECT_TRUE(isDesktopOrFileManagerWindow(L"Progman"));
+    EXPECT_TRUE(isDesktopOrFileManagerWindow(L"WorkerW"));
+    EXPECT_TRUE(isDesktopOrFileManagerWindow(L"SHELLDLL_DefView"));
+    EXPECT_TRUE(isDesktopOrFileManagerWindow(L"SysListView32"));
+    EXPECT_TRUE(isDesktopOrFileManagerWindow(L"Shell_TrayWnd"));
+
+    // 普通应用窗口不应误判
+    EXPECT_FALSE(isDesktopOrFileManagerWindow(L"Notepad"));
+    EXPECT_FALSE(isDesktopOrFileManagerWindow(L"Chrome_WidgetWin_1"));
+    EXPECT_FALSE(isDesktopOrFileManagerWindow(L""));
+}
+
+TEST(GestureInputPolicyTest, CancelsGestureTrackingRules) {
+    using namespace tools3000::gesture;
+
+    // 右键手势进行中，按左键必须立即取消追踪自愈
+    EXPECT_TRUE(cancelsGestureTracking(MouseEventType::LeftDown, MouseEventType::RightDown));
+    EXPECT_TRUE(cancelsGestureTracking(MouseEventType::LeftUp, MouseEventType::RightDown));
+
+    // 中键或侧键手势进行中，按左键同样必须立即取消追踪自愈
+    EXPECT_TRUE(cancelsGestureTracking(MouseEventType::LeftDown, MouseEventType::MiddleDown));
+    EXPECT_TRUE(cancelsGestureTracking(MouseEventType::LeftDown, MouseEventType::X1Down));
+    EXPECT_TRUE(cancelsGestureTracking(MouseEventType::LeftDown, MouseEventType::X2Down));
+
+    // 左键手势进行中，左键不取消自身
+    EXPECT_FALSE(cancelsGestureTracking(MouseEventType::LeftDown, MouseEventType::LeftDown));
+
+    // 异种按键按下相互取消
+    EXPECT_TRUE(cancelsGestureTracking(MouseEventType::RightDown, MouseEventType::MiddleDown));
+    EXPECT_TRUE(cancelsGestureTracking(MouseEventType::MiddleDown, MouseEventType::RightDown));
+    EXPECT_FALSE(cancelsGestureTracking(MouseEventType::RightDown, MouseEventType::RightDown));
+}
+
+TEST(GestureInputPolicyTest, TriggerUpForMapping) {
+    using namespace tools3000::gesture;
+
+    EXPECT_EQ(triggerUpFor(MouseEventType::RightDown), MouseEventType::RightUp);
+    EXPECT_EQ(triggerUpFor(MouseEventType::MiddleDown), MouseEventType::MiddleUp);
+    EXPECT_EQ(triggerUpFor(MouseEventType::X1Down), MouseEventType::X1Up);
+    EXPECT_EQ(triggerUpFor(MouseEventType::X2Down), MouseEventType::X2Up);
+    EXPECT_EQ(triggerUpFor(MouseEventType::LeftDown), MouseEventType::LeftUp);
+}
+
+TEST(MouseHookTest, TriggerStateResetCompleteness) {
+    using namespace tools3000::gesture;
+    auto& hook = MouseHook::instance();
+    hook.resetTriggerState();
+
+    EXPECT_FALSE(hook.isTriggerButtonDown());
+    EXPECT_EQ(hook.activeTriggerDown(), MouseEventType::Move);
+}
+
+
+
+

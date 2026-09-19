@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // MouseHook.cpp — 低级鼠标钩子实现 (接入核心独立输入线程与无锁 SPSC 环形队列)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -83,6 +83,10 @@ void MouseHook::setTriggerButton(MouseEventType downEvent) {
 void MouseHook::resetTriggerState() noexcept {
     m_triggerButtonDown.store(false, std::memory_order_release);
     m_activeTriggerDown.store(MouseEventType::Move, std::memory_order_release);
+    m_cachedForegroundWindow = nullptr;
+    m_cachedModifiers = 0;
+    m_cachedEdgeZone = ScreenEdgeZone::None;
+    m_cachedIsTopEdge = false;
 }
 
 std::vector<MouseEvent> MouseHook::drainEvents(size_t maxCount) {
@@ -131,7 +135,7 @@ ScreenEdgeZone MouseHook::getActiveScreenEdgeZone(POINT pt, MouseEventType type)
                     ? ScreenEdgeZone::Top : ScreenEdgeZone::None;
             }
             if (type == MouseEventType::LeftDown) {
-                return ((mask & GestureTriggerMask::EdgeTopSlide) || (mask & GestureTriggerMask::EdgeTopLeft))
+                return ((mask & GestureTriggerMask::EdgeTopSlide) || (mask & GestureTriggerMask::EdgeTopLeft) || (mask & GestureTriggerMask::Left))
                     ? ScreenEdgeZone::Top : ScreenEdgeZone::None;
             }
             const uint32_t topMask = GestureTriggerMask::EdgeTopSlide | GestureTriggerMask::EdgeTopWheel |
@@ -143,15 +147,15 @@ ScreenEdgeZone MouseHook::getActiveScreenEdgeZone(POINT pt, MouseEventType type)
             if (isWheel) {
                 return (mask & GestureTriggerMask::EdgeBottomWheel) ? ScreenEdgeZone::Bottom : ScreenEdgeZone::None;
             }
-            return (mask & GestureTriggerMask::EdgeBottomSlide) ? ScreenEdgeZone::Bottom : ScreenEdgeZone::None;
+            return (mask & (GestureTriggerMask::EdgeBottomSlide | GestureTriggerMask::Left)) ? ScreenEdgeZone::Bottom : ScreenEdgeZone::None;
         }
         case ScreenEdgeZone::Left: {
             if (isWheel) return ScreenEdgeZone::None;
-            return (mask & GestureTriggerMask::EdgeLeftSlide) ? ScreenEdgeZone::Left : ScreenEdgeZone::None;
+            return (mask & (GestureTriggerMask::EdgeLeftSlide | GestureTriggerMask::Left)) ? ScreenEdgeZone::Left : ScreenEdgeZone::None;
         }
         case ScreenEdgeZone::Right: {
             if (isWheel) return ScreenEdgeZone::None;
-            return (mask & GestureTriggerMask::EdgeRightSlide) ? ScreenEdgeZone::Right : ScreenEdgeZone::None;
+            return (mask & (GestureTriggerMask::EdgeRightSlide | GestureTriggerMask::Left)) ? ScreenEdgeZone::Right : ScreenEdgeZone::None;
         }
         default:
             return ScreenEdgeZone::None;
@@ -283,9 +287,14 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                 if (m_activeTriggerDown.load(std::memory_order_relaxed) == MouseEventType::RightDown) {
                     shouldCapture = gestureEnabled;
                     m_triggerButtonDown.store(false, std::memory_order_relaxed);
+                    m_activeTriggerDown.store(MouseEventType::Move, std::memory_order_relaxed);
                 } else {
                     shouldCapture = false;
                 }
+                m_cachedForegroundWindow = nullptr;
+                m_cachedModifiers = 0;
+                m_cachedEdgeZone = ScreenEdgeZone::None;
+                m_cachedIsTopEdge = false;
                 break;
             case WM_MBUTTONDOWN: {
                 event.type = MouseEventType::MiddleDown;
@@ -317,7 +326,14 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                 if (m_activeTriggerDown.load(std::memory_order_relaxed) == MouseEventType::MiddleDown) {
                     shouldCapture = gestureEnabled;
                     m_triggerButtonDown.store(false, std::memory_order_relaxed);
+                    m_activeTriggerDown.store(MouseEventType::Move, std::memory_order_relaxed);
+                } else {
+                    shouldCapture = false;
                 }
+                m_cachedForegroundWindow = nullptr;
+                m_cachedModifiers = 0;
+                m_cachedEdgeZone = ScreenEdgeZone::None;
+                m_cachedIsTopEdge = false;
                 break;
             case WM_XBUTTONDOWN: {
                 const WORD xbtn = HIWORD(data.mouseData);
@@ -356,7 +372,14 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                     (active == MouseEventType::X2Down && xbtn == XBUTTON2)) {
                     shouldCapture = gestureEnabled;
                     m_triggerButtonDown.store(false, std::memory_order_relaxed);
+                    m_activeTriggerDown.store(MouseEventType::Move, std::memory_order_relaxed);
+                } else {
+                    shouldCapture = false;
                 }
+                m_cachedForegroundWindow = nullptr;
+                m_cachedModifiers = 0;
+                m_cachedEdgeZone = ScreenEdgeZone::None;
+                m_cachedIsTopEdge = false;
                 break;
             }
             case WM_LBUTTONDOWN: {
@@ -369,7 +392,31 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                 if (GetAsyncKeyState(VK_SHIFT)   & 0x8000) mods |= MOUSE_MOD_SHIFT;
 
                 const uint32_t mask = m_activeTriggerMask.load(std::memory_order_relaxed);
-                const bool canStartGesture = isLeftButtonGestureAllowed(event.edgeZone, mods, mask);
+                bool canStartGesture = isLeftButtonGestureAllowed(event.edgeZone, mods, mask);
+
+                // 桌面与文件管理窗口强保护：
+                // 当鼠标落在 Windows 桌面 (Progman/WorkerW/SHELLDLL_DefView/SysListView32)、
+                // 资源管理器文件窗口 (CabinetWClass/ExploreWClass)、通用文件对话框 (#32770) 或系统外壳上时，
+                // 绝对禁止左键被当作手势开始拦截，保障人类桌面图标框选、移动与文件拖拽 100% 原生穿透！
+                if (canStartGesture) {
+                    HWND hit = WindowFromPoint(data.pt);
+                    if (hit) {
+                        wchar_t hitCls[256] = {};
+                        GetClassNameW(hit, hitCls, 256);
+                        if (isDesktopOrFileManagerWindow(hitCls)) {
+                            canStartGesture = false;
+                        } else {
+                            HWND root = GetAncestor(hit, GA_ROOT);
+                            if (root && root != hit) {
+                                wchar_t rootCls[256] = {};
+                                GetClassNameW(root, rootCls, 256);
+                                if (isDesktopOrFileManagerWindow(rootCls)) {
+                                    canStartGesture = false;
+                                }
+                            }
+                        }
+                    }
+                }
 
                 if (gestureEnabled && !m_triggerButtonDown.load(std::memory_order_relaxed) && canStartGesture) {
                     m_activeTriggerDown.store(event.type, std::memory_order_relaxed);
@@ -381,16 +428,27 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                     shouldCapture = true;
                 } else {
                     // 常规左键点击：无论此前 MouseHook 是否记录触发键按下，均防御性复位触发态，
-                    // 并确保将 LeftDown 事件推入 processEvent 驱动手势状态机执行 cancelsGestureTracking 自愈，
-                    // 彻底解除手势拦截与双脑失步，且 shouldCapture 设为 false 确保 100% 穿透放行！
+                    // 清空缓存的旧边缘与修饰键，防止普通点击被污染为手势边缘事件；
+                    const bool wasTriggerDown = m_triggerButtonDown.load(std::memory_order_relaxed);
                     m_triggerButtonDown.store(false, std::memory_order_release);
                     m_activeTriggerDown.store(MouseEventType::Move, std::memory_order_release);
-                    event.foregroundWindow = m_cachedForegroundWindow;
-                    event.modifiers = m_cachedModifiers;
-                    event.edgeZone = m_cachedEdgeZone;
-                    event.isTopEdge = m_cachedIsTopEdge;
-                    m_ringBuffer.push(event);
-                    processEvent(event);
+                    m_cachedForegroundWindow = nullptr;
+                    m_cachedModifiers = 0;
+                    m_cachedEdgeZone = ScreenEdgeZone::None;
+                    m_cachedIsTopEdge = false;
+
+                    // 仅当此前确有触发键处于按下状态（如右键手势追踪过程中用户按下了左键），
+                    // 才将 LeftDown 推入 processEvent 驱动手势引擎执行 cancelsGestureTracking 取消自愈；
+                    // 当手势引擎原本处于 Idle 状态时，严禁向其投递非手势的常规 LeftDown，
+                    // 彻底阻断 GestureEngine 误判启动手势与双脑失步！
+                    if (wasTriggerDown) {
+                        event.foregroundWindow = GetForegroundWindow();
+                        event.modifiers = mods;
+                        event.edgeZone = ScreenEdgeZone::None;
+                        event.isTopEdge = false;
+                        m_ringBuffer.push(event);
+                        processEvent(event);
+                    }
                     shouldCapture = false;
                 }
                 tools3000::core::StatsManager::instance().recordLeftClick();
@@ -401,9 +459,14 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                 if (m_activeTriggerDown.load(std::memory_order_relaxed) == MouseEventType::LeftDown) {
                     shouldCapture = gestureEnabled;
                     m_triggerButtonDown.store(false, std::memory_order_relaxed);
+                    m_activeTriggerDown.store(MouseEventType::Move, std::memory_order_relaxed);
                 } else {
                     shouldCapture = false;
                 }
+                m_cachedForegroundWindow = nullptr;
+                m_cachedModifiers = 0;
+                m_cachedEdgeZone = ScreenEdgeZone::None;
+                m_cachedIsTopEdge = false;
                 break;
             case WM_MOUSEWHEEL: {
                 short delta = HIWORD(data.mouseData);

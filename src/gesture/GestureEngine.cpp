@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // GestureEngine.cpp — 手势引擎实现
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -679,8 +679,9 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
         }
         if (res.disabled) {
             LOG_INFO("手势异步检测命中黑名单或全屏独占，取消手势并补发原按键");
+            const MouseEventType trigger = m_activeTriggerDown;
             cancelTracking();
-            reinjectTriggerClick();
+            reinjectTriggerClick(trigger);
             return;
         }
         m_gestureStartWindow = res.targetWindow;
@@ -904,6 +905,8 @@ void GestureEngine::endTracking(const MouseEvent& event) {
         }
     }
 
+    m_activeTriggerDown = MouseEventType::Move;
+    m_activeTriggerUp = MouseEventType::Move;
     m_state = GestureState::Idle;
 }
 
@@ -1127,8 +1130,10 @@ void GestureEngine::actionWorkerLoop(std::stop_token stopToken) {
 
 // 把被吞掉的触发键点击补发出去 (注入事件会被 MouseHook 忽略, 不会再次触发手势)。
 // 用于"没有有效手势/未绑定动作/窗口禁用"时, 让右键(或中键)菜单等正常工作。
-void GestureEngine::reinjectTriggerClick() {
-    const MouseEventType trigger = m_activeTriggerDown;
+void GestureEngine::reinjectTriggerClick(MouseEventType triggerOverride) {
+    const MouseEventType trigger = (triggerOverride != MouseEventType::Move)
+        ? triggerOverride
+        : m_activeTriggerDown;
     const std::string traceId = m_gestureTraceId;
     auto inject = [trigger, traceId]() {
         tools3000::core::TraceId::setCurrent(traceId);
@@ -1187,6 +1192,11 @@ void GestureEngine::cancelActiveGesture() {
 
 void GestureEngine::cancelTracking() {
     MouseHook::instance().resetTriggerState();
+    m_activeTriggerDown = MouseEventType::Move;
+    m_activeTriggerUp = MouseEventType::Move;
+    m_gestureEdgeZone = ScreenEdgeZone::None;
+    m_gestureModifiers = 0;
+    m_recognizer.reset();
     m_wheelExecutedDuringTracking = false;
     m_activeProfile.reset();
     m_fallbackProfile.reset();

@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // main.cpp — Tools3000 程序入口点
 //
 // 启动流程:
@@ -1453,6 +1453,7 @@ void shutdownSubsystems() {
     tools3000::core::RemoteMasterEngine::instance().shutdown();
     tools3000::core::KeyboardHook::instance().uninstall();
     tools3000::core::MouseHook::instance().uninstall();
+    tools3000::core::WinUtils::emergencyFlushInputState();
     tools3000::core::StatsManager::instance().shutdown();
     tools3000::core::PerformanceMonitor::instance().stop();
     tools3000::core::MainThreadDispatcher::instance().shutdown();
@@ -1592,6 +1593,7 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             g_powerNotify = nullptr;
         }
         WTSUnRegisterSessionNotification(hwnd);
+        tools3000::core::WinUtils::emergencyFlushInputState();
         PostQuitMessage(0);
         return 0;
     }

@@ -713,6 +713,15 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd) {
         SetForegroundWindow(target);
     }
 
+    // 注入中立 VK_F24 脉冲，彻底中和后续释放 Alt (VK_LMENU/VK_RMENU) 触发的 SC_KEYMENU 菜单模态死锁
+    INPUT neutral[2]{};
+    neutral[0].type = INPUT_KEYBOARD;
+    neutral[0].ki.wVk = VK_F24;
+    neutral[1].type = INPUT_KEYBOARD;
+    neutral[1].ki.wVk = VK_F24;
+    neutral[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, neutral, sizeof(INPUT));
+
     // 1. 原子化 SendInput 发送 11 组 KEYUP 与 MOUSEUP 硬件脉冲
     auto inputs = buildEmergencyFlushInputs();
     if (!inputs.empty()) {

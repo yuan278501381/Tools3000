@@ -1,4 +1,4 @@
-﻿#include "core/plugin/IPlugin.h"
+#include "core/plugin/IPlugin.h"
 #include "core/logger/Logger.h"
 #include "core/hotkey/KeyboardHook.h"
 #include "core/ipc/MessageBridge.h"
@@ -271,16 +271,19 @@ public:
         m_cancelSubscription = bus.subscribe<tools3000::core::CancelTransientUiEvent>([](const tools3000::core::CancelTransientUiEvent&) {
             tools3000::gesture::GestureEngine::instance().cancelActiveGesture();
             tools3000::gesture::RadialMenuOverlay::instance().hide();
+            tools3000::core::WinUtils::emergencyFlushInputState();
         });
         m_sessionSubscription = bus.subscribe<tools3000::core::SystemSessionChangedEvent>([](const tools3000::core::SystemSessionChangedEvent&) {
             tools3000::gesture::GestureEngine::instance().cancelActiveGesture();
             tools3000::gesture::MouseHook::instance().resetTriggerState();
             tools3000::gesture::RadialMenuOverlay::instance().hide();
+            tools3000::core::WinUtils::emergencyFlushInputState();
         });
         m_powerSubscription = bus.subscribe<tools3000::core::SystemPowerChangedEvent>([](const tools3000::core::SystemPowerChangedEvent&) {
             tools3000::gesture::GestureEngine::instance().cancelActiveGesture();
             tools3000::gesture::MouseHook::instance().resetTriggerState();
             tools3000::gesture::RadialMenuOverlay::instance().hide();
+            tools3000::core::WinUtils::emergencyFlushInputState();
         });
         m_themeSubscription = bus.subscribe<tools3000::core::ThemeChangedEvent>([](const tools3000::core::ThemeChangedEvent&) {
             tools3000::gesture::GestureTrailOverlay::instance().reloadThemeColors();

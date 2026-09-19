@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // WinUtils.cpp — Windows API 常用操作封装实现
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1442,6 +1442,56 @@ void WinUtils::syncApplicationShortcuts() {
 
     // 广播 SHChangeNotify 通知 Windows Shell 刷新图标与属性存储
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+}
+
+void WinUtils::emergencyFlushInputState() noexcept {
+    // 1. 如果当前进程任意窗口持有鼠标捕获，立即强制释放
+    if (GetCapture() != nullptr) {
+        ReleaseCapture();
+    }
+    // 2. 解除可能存在的光标区域限制
+    ClipCursor(nullptr);
+
+    // 3. 释放可能被卡住的修饰键 (Win, Ctrl, Shift, Alt)
+    std::vector<INPUT> inputs;
+    inputs.reserve(10);
+
+    auto addKeyUp = [&](WORD vk, bool extended = false) {
+        INPUT inp{};
+        inp.type = INPUT_KEYBOARD;
+        inp.ki.wVk = vk;
+        inp.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+        inp.ki.dwFlags = KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+        inputs.push_back(inp);
+    };
+
+    if ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) addKeyUp(VK_LWIN, true);
+    if ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0) addKeyUp(VK_RWIN, true);
+    if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) addKeyUp(VK_CONTROL, false);
+    if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) addKeyUp(VK_SHIFT, false);
+
+    // 针对 Alt 键 (VK_MENU)：若处于逻辑按下态，绝不能单独发裸 Alt KeyUp，
+    // 否则 Windows 会立即判定为单按 Alt 并触发前台窗口 (尤其是 Explorer) 激活系统菜单栏 SC_KEYMENU，
+    // 从而锁死文件拖拽和 OLE DragDrop。
+    // 正确方案：先行注入中立无害按键脉冲 (VK_F24 Down + Up)，彻底消除 SC_KEYMENU 判定，再安全释放 Alt。
+    if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+        INPUT neutralDown{};
+        neutralDown.type = INPUT_KEYBOARD;
+        neutralDown.ki.wVk = VK_F24;
+        inputs.push_back(neutralDown);
+
+        INPUT neutralUp{};
+        neutralUp.type = INPUT_KEYBOARD;
+        neutralUp.ki.wVk = VK_F24;
+        neutralUp.ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs.push_back(neutralUp);
+
+        addKeyUp(VK_MENU, false);
+    }
+
+    if (!inputs.empty()) {
+        SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+    }
 }
 
 }  // namespace tools3000::core

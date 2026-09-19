@@ -200,3 +200,27 @@
   - `uninstall.ps1` 全流程实测 **2,910 ms**，`uninstall.cmd` 实测 **2,711 ms**；
   - 全量 344 项原生单元测试与前端 7 重防护门禁 100% 满分通过，零 Emoji 红线 100% 遵从。
 
+---
+
+### [2026-09-19] 桌面文件拖拽原生穿透强保护、VK_F24 中立脉冲修饰键自愈与手势捕获加固
+- **背景与痛点**：
+  1. 用户在 Windows 桌面、资源管理器（Explorer）及通用文件对话框中，进行图标框选、文件拖拽、右键移动或快速点击时，偶发遭遇左键被手势状态机误拦截、光标捕获悬空或文件拖拽被锁死；
+  2. 在手势操作、快捷键模拟或前台焦点切换过程中，由于 Windows 将独立的 Alt 释放事件识别为激活窗口主菜单栏（`SC_KEYMENU` / 菜单模态），导致后续鼠标点击与 OLE DragDrop 拖拽操作全域瘫痪；
+  3. 轮盘菜单（`RadialMenuOverlay`）在捕获转移时未能主动感知隐藏，`hide()` 盲目调用 `ReleaseCapture()` 存在误释放其他前台窗口捕获的风险。
+- **架构方案与单一事实源治理**：
+  1. **桌面与文件管理器原生穿透强保护 (`isDesktopOrFileManagerWindow`)**：
+     - 在 `src/gesture/GestureInputPolicy.h` 中形式化收敛 `isDesktopOrFileManagerWindow(cls)`，精准识别系统桌面（Progman/WorkerW/SHELLDLL_DefView/SysListView32）、资源管理器（CabinetWClass/ExploreWClass/DirectUIHWND）、通用文件对话框（#32770）及外壳任务栏窗口；
+     - 在 `MouseHook.cpp` 的 `WM_LBUTTONDOWN` 中，若光标落于上述窗口，一律强制阻断左键手势拦截（`canStartGesture = false`），保障人类桌面图标框选、移动与文件拖拽 100% 原生穿透；
+     - 细化 `isLeftButtonGestureAllowed` 边缘滑动规则：仅在对应边缘明确配置了边缘滑动（EdgeSlide）或显式全局开启左键手势时才允许左键拦截；
+     - 优化常规左键点击投递策略：仅当此前确有触发键处于按下状态（如右键手势追踪过程中按左键取消自愈）时才向状态机投递 LeftDown，常态 Idle 下不再向手势引擎投递常规左键，彻底消灭双脑失步与状态污染。
+  2. **VK_F24 中立无害脉冲防御与修饰键安全自愈 (`emergencyFlushInputState`)**：
+     - 针对 Windows Alt 释放激活系统菜单栏（`SC_KEYMENU`）并锁死拖拽的底层暗坑，在 `WinUtils::emergencyFlushInputState`、`DialogNavigator::sendKeyChord`、`RemoteMasterEngine::flushModifiers` 及 `ensureModifierReleased` / `ensureAllModifiersReleased` 中引入 **VK_F24 中立脉冲中和机制**；
+     - 释放 Alt 键（VK_MENU / VK_LMENU / VK_RMENU）前先行原子注入无害的 `VK_F24 Down + Up` 脉冲，彻底打破 Windows 菜单激活判定逻辑，保障修饰键释放后绝不激活系统菜单栏或锁死拖拽；
+     - 在主程序退出（`shutdownSubsystems`、`MessageWindowProc` 销毁）、系统会话切换（`SystemSessionChangedEvent`）、电源事件（`SystemPowerChangedEvent`）及瞬态 UI 取消（`CancelTransientUiEvent`）中全局接入 `emergencyFlushInputState`，强制执行 `ReleaseCapture`、`ClipCursor(nullptr)` 与修饰键安全自愈。
+  3. **手势引擎状态机与轮盘菜单捕获加固**：
+     - `GestureEngine::cancelTracking` 与 `endTracking` 强化状态复位（重置 `m_activeTriggerDown`、`m_activeTriggerUp`、`m_gestureEdgeZone`、`m_gestureModifiers`、`m_recognizer`）；
+     - `RadialMenuOverlay` 响应 `WM_CAPTURECHANGED`，当鼠标捕获转移时立即隐藏自身，`hide()` 时仅在自身持有捕获时才调用 `ReleaseCapture()`；
+     - `GestureEngine::reinjectTriggerClick` 支持 `triggerOverride`，在命中黑名单或全屏独占取消手势时精准补发原始触发键点击。
+  4. **全套自动化防回退单元测试**：
+     - 在 `tests/unit/test_gesture.inc` 挂载 120+ 行单测（7 个专项测试），全量 351 项原生单元测试与前端 7 重门禁 100% 满分通过。
+

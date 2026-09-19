@@ -130,19 +130,45 @@ bool sendKeyChord(HWND dialogHwnd, WORD modifier, WORD key) {
     UINT count = 0;
     if (modifier != 0) {
         input[count].type = INPUT_KEYBOARD;
-        input[count++].ki.wVk = modifier;
+        input[count].ki.wVk = modifier;
+        input[count].ki.wScan = static_cast<WORD>(MapVirtualKeyW(modifier, MAPVK_VK_TO_VSC));
+        count++;
     }
     input[count].type = INPUT_KEYBOARD;
-    input[count++].ki.wVk = key;
+    input[count].ki.wVk = key;
+    input[count].ki.wScan = static_cast<WORD>(MapVirtualKeyW(key, MAPVK_VK_TO_VSC));
+    count++;
     input[count].type = INPUT_KEYBOARD;
     input[count].ki.wVk = key;
+    input[count].ki.wScan = static_cast<WORD>(MapVirtualKeyW(key, MAPVK_VK_TO_VSC));
     input[count++].ki.dwFlags = KEYEVENTF_KEYUP;
     if (modifier != 0) {
         input[count].type = INPUT_KEYBOARD;
         input[count].ki.wVk = modifier;
+        input[count].ki.wScan = static_cast<WORD>(MapVirtualKeyW(modifier, MAPVK_VK_TO_VSC));
         input[count++].ki.dwFlags = KEYEVENTF_KEYUP;
     }
-    return SendInput(count, input, sizeof(INPUT)) == count;
+    UINT sent = SendInput(count, input, sizeof(INPUT));
+    if (sent < count && modifier != 0) {
+        // 防御性安全释放修饰键，防止因前台切换导致修饰键卡在按下态。
+        // 若为 Alt 键，先注入中立 VK_F24 脉冲，杜绝触发 Explorer 的 SC_KEYMENU 菜单模态并锁死文件拖拽
+        if (modifier == VK_MENU || modifier == VK_LMENU || modifier == VK_RMENU) {
+            INPUT neutral[2]{};
+            neutral[0].type = INPUT_KEYBOARD;
+            neutral[0].ki.wVk = VK_F24;
+            neutral[1].type = INPUT_KEYBOARD;
+            neutral[1].ki.wVk = VK_F24;
+            neutral[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput(2, neutral, sizeof(INPUT));
+        }
+        INPUT up{};
+        up.type = INPUT_KEYBOARD;
+        up.ki.wVk = modifier;
+        up.ki.wScan = static_cast<WORD>(MapVirtualKeyW(modifier, MAPVK_VK_TO_VSC));
+        up.ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(1, &up, sizeof(INPUT));
+    }
+    return sent == count;
 }
 
 // 每个调用线程拥有独立的 UI Automation 对象和匹配的 COM apartment

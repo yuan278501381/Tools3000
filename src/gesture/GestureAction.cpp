@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // GestureAction.cpp — 手势动作执行与序列化
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -264,11 +264,18 @@ struct ThreadInputAttach {
 };
 
 void pulseForegroundUnlock() noexcept {
-    INPUT inp{};
-    inp.type = INPUT_KEYBOARD;
-    inp.ki.wVk = VK_MENU;
-    inp.ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(1, &inp, sizeof(INPUT));
+    // 严禁发送裸 VK_MENU (Alt) KeyUp！发送裸 Alt KeyUp 会导致前台资源管理器 (CabinetWClass/Progman)
+    // 立即激活系统菜单栏 SC_KEYMENU 模态循环，彻底锁死桌面文件拖拽 (DoDragDrop) 与正常点击。
+    // 使用中立且无绑定的 VK_F24 Down + Up 脉冲满足 Windows 输入事件判定，既能解锁前台激活权限，
+    // 又绝不会触发菜单模态或污染任何应用程序状态。
+    INPUT inps[2]{};
+    inps[0].type = INPUT_KEYBOARD;
+    inps[0].ki.wVk = VK_F24;
+    inps[0].ki.dwFlags = 0;
+    inps[1].type = INPUT_KEYBOARD;
+    inps[1].ki.wVk = VK_F24;
+    inps[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, inps, sizeof(INPUT));
 }
 
 bool activateTargetWindow(HWND targetHwnd, bool allowWait) noexcept {
@@ -369,6 +376,18 @@ void ensureModifierReleased(WORD vk) noexcept {
     if (!(GetAsyncKeyState(vk) & 0x8000)) {
         return;
     }
+
+    // 若释放 Alt 键，必须先行注入中立的 VK_F24 脉冲，彻底阻断 Windows 激活 SC_KEYMENU 菜单模态并死锁拖拽
+    if (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU) {
+        INPUT neutral[2]{};
+        neutral[0].type = INPUT_KEYBOARD;
+        neutral[0].ki.wVk = VK_F24;
+        neutral[1].type = INPUT_KEYBOARD;
+        neutral[1].ki.wVk = VK_F24;
+        neutral[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(2, neutral, sizeof(INPUT));
+    }
+
     INPUT inps[2]{};
     inps[0].type = INPUT_KEYBOARD;
     inps[0].ki.wVk = vk;
@@ -421,8 +440,20 @@ void ensureAllModifiersReleased(bool /*forceAll*/) noexcept {
         addKeyUp(VK_SHIFT, false);
     }
 
-    // 4. Alt 键：仅在确认物理/逻辑按下时才补发，杜绝裸 Alt 唤起菜单
+    // 4. Alt 键：仅在确认物理/逻辑按下时才补发。
+    // 先行注入 VK_F24 脉冲中和系统菜单拦截，杜绝裸 Alt KeyUp 唤起 Windows Explorer 菜单栏或锁死拖拽
     if (GetAsyncKeyState(VK_MENU) & 0x8000) {
+        INPUT neutralDown{};
+        neutralDown.type = INPUT_KEYBOARD;
+        neutralDown.ki.wVk = VK_F24;
+        inputs.push_back(neutralDown);
+
+        INPUT neutralUp{};
+        neutralUp.type = INPUT_KEYBOARD;
+        neutralUp.ki.wVk = VK_F24;
+        neutralUp.ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs.push_back(neutralUp);
+
         addKeyUp(VK_MENU, false);
     }
 

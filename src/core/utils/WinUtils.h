@@ -225,6 +225,9 @@ public:
 
     /// 全局同步 Tools3000 桌面与开始菜单快捷方式属性，清除历史遗留旧快捷方式并广播 Windows Shell 刷新通知
     static void syncApplicationShortcuts();
+
+    /// 应急输入状态自愈与清理：强制释放鼠标捕获、解除光标裁剪并使用 VK_F24 中立脉冲安全释放被卡住的修饰键
+    static void emergencyFlushInputState() noexcept;
 };
 
 }  // namespace tools3000::core

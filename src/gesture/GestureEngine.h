@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ─────────────────────────────────────────────────────────────────────────────
 // GestureEngine — 手势引擎主入口
 //
@@ -163,7 +163,7 @@ private:
         POINT endPt);
 
     /// 把被吞掉的触发键点击补发出去 (无有效手势时还原右键/中键的正常点击)
-    void reinjectTriggerClick();
+    void reinjectTriggerClick(MouseEventType triggerOverride = MouseEventType::Move);
 
     void enqueueAction(GestureAction action, std::string traceId, HWND targetWindow = nullptr);
     void actionWorkerLoop(std::stop_token stopToken);
