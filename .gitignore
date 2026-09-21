@@ -134,6 +134,7 @@ crash_reports/
 .cursor/
 .aider*
 .continue/
+.agents/
 scratch/
 *commit*.py
 *commit*.ps1

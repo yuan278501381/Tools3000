@@ -193,7 +193,7 @@ target_link_libraries(capture_objects PUBLIC Tools3000Core ${OpenCV_LIBS}
     shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 windowscodecs winhttp windowsapp Shcore imm32
 )
 
-# 2. gesture_objects (7 个源文件)
+# 2. gesture_objects (8 个源文件)
 set(GESTURE_OBJECT_SOURCES
     src/gesture/GestureRecognizer.cpp
     src/gesture/ScopeRule.cpp
@@ -202,6 +202,7 @@ set(GESTURE_OBJECT_SOURCES
     src/gesture/BuiltinCommands.cpp
     src/gesture/HotCornerEngine.cpp
     src/gesture/MouseHook.cpp
+    src/gesture/GesturePacer.cpp
 )
 add_library(gesture_objects OBJECT ${GESTURE_OBJECT_SOURCES})
 target_include_directories(gesture_objects PUBLIC ${CMAKE_SOURCE_DIR}/src)
@@ -270,6 +271,7 @@ target_link_libraries(ui_objects PUBLIC Tools3000Core
 # ── 2. Plugin_Gesture (动态库) ────────────────────────────────────────────────
 set(GESTURE_OTHER_SOURCES
     src/gesture/GestureEngine.cpp
+    src/gesture/GestureDispatchWorker.cpp
     src/gesture/GestureTrailOverlay.cpp
     src/gesture/RadialMenuOverlay.cpp
     src/gesture/PluginEntry.cpp

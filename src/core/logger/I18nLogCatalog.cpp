@@ -2893,6 +2893,30 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] PinPasteCoordinator: 贴出历史条目 [{}/{}], 尺寸={}x{}, 坐标=({}, {})",
             "[{}] PinPasteCoordinator: pinned history item [{}/{}], size={}x{}, pos=({}, {})"
         }},
+        {"GestureDispatchWorker: 异步手势输入分发工作线程已启动", {
+            "[{}] GestureDispatchWorker: 异步手势输入分发工作线程已启动",
+            "[{}] GestureDispatchWorker: asynchronous gesture input dispatch worker started"
+        }},
+        {"GestureDispatchWorker: 异步手势输入分发工作线程已安全停止, 累计处理包数={}", {
+            "[{}] GestureDispatchWorker: 异步手势输入分发工作线程已安全停止, 累计处理包数={}",
+            "[{}] GestureDispatchWorker: asynchronous gesture input dispatch worker safely stopped, total packets={}"
+        }},
+        {"GestureDispatchWorker: 异步分发工作循环捕获异常: {}", {
+            "[{}] GestureDispatchWorker: 异步分发工作循环捕获异常: {}",
+            "[{}] GestureDispatchWorker: exception caught in dispatch worker loop: {}"
+        }},
+        {"GestureDispatchWorker: 异步分发工作循环捕获未知异常", {
+            "[{}] GestureDispatchWorker: 异步分发工作循环捕获未知异常",
+            "[{}] GestureDispatchWorker: unknown exception caught in dispatch worker loop"
+        }},
+        {"GestureDispatchWorker: 退出排空捕获异常: {}", {
+            "[{}] GestureDispatchWorker: 退出排空捕获异常: {}",
+            "[{}] GestureDispatchWorker: exception caught while flushing on exit: {}"
+        }},
+        {"GestureDispatchWorker: 退出排空捕获未知异常", {
+            "[{}] GestureDispatchWorker: 退出排空捕获未知异常",
+            "[{}] GestureDispatchWorker: unknown exception caught while flushing on exit"
+        }},
     };
     return catalog;
 }

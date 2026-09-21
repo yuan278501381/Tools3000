@@ -655,9 +655,11 @@ constexpr int gestureRenderThreadPriority() noexcept {
     return THREAD_PRIORITY_HIGHEST;
 }
 
-/// 轨迹点推入即时唤醒策略：在持有窗口句柄时无条件即时唤醒，杜绝 8ms/15.6ms 时钟截断延迟
-constexpr bool gestureShouldWakeRenderImmediately(bool hasHwnd) noexcept {
-    return hasHwnd;
+/// 轨迹点推入即时唤醒与节流合并策略 (F13):
+/// 1. 持有有效 HWND 且渲染循环处于休眠(renderLoopActive == false)时，立即唤醒渲染，杜绝粗粒度时钟截断延迟；
+/// 2. 当渲染循环已处于活跃节拍(renderLoopActive == true)时，返回 false，抑制冗余的 SetEvent 系统调用风暴。
+constexpr bool gestureShouldWakeRenderImmediately(bool hasHwnd, bool renderLoopActive = false) noexcept {
+    return hasHwnd && !renderLoopActive;
 }
 
 /// 物理光标尖端原子同步插值策略：
@@ -670,6 +672,58 @@ inline bool gestureShouldInterpolateCursorTip(bool isFading, bool hasPoints,
     const float dx = cursorX - lastX;
     const float dy = cursorY - lastY;
     return (dx * dx + dy * dy) >= minDistanceSq;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Feature F10: 动态物理显示器刷新率与 QPC 节拍计算纯策略
+// ─────────────────────────────────────────────────────────────────────────────
+
+inline constexpr uint32_t kMinDisplayFrequencyHz = 60;
+inline constexpr uint32_t kMaxDisplayFrequencyHz = 360;
+inline constexpr uint32_t kDefaultDisplayFrequencyHz = 60;
+
+/// 物理显示器刷新率安全钳制规则：
+/// 1. 原始频率 <= 1 时（驱动默认或虚拟机占位），安全回退至默认 60Hz
+/// 2. 原始频率在 (1, 60) 之间时（如 24Hz/30Hz/59Hz），钳制向上提至 60Hz，保障桌面手势基础跟手度
+/// 3. 原始频率在 [60, 360] 之间时，原样采用真实物理硬件刷新率（如 75, 120, 144, 165, 240, 360）
+/// 4. 原始频率 > 360 时（如 540Hz 极端模式），钳制上限至 360Hz，杜绝 GPU 指令堆叠
+inline constexpr uint32_t clampDisplayFrequency(uint32_t rawHz) noexcept {
+    if (rawHz <= 1) {
+        return kDefaultDisplayFrequencyHz;
+    }
+    if (rawHz < kMinDisplayFrequencyHz) {
+        return kMinDisplayFrequencyHz;
+    }
+    if (rawHz > kMaxDisplayFrequencyHz) {
+        return kMaxDisplayFrequencyHz;
+    }
+    return rawHz;
+}
+
+/// 计算单帧物理周期的 QPC Ticks 计数
+inline constexpr uint64_t computeFramePeriodTicks(uint64_t qpcFrequency, uint32_t refreshRateHz) noexcept {
+    const uint32_t safeHz = clampDisplayFrequency(refreshRateHz);
+    return qpcFrequency > 0 ? (qpcFrequency / safeHz) : 0;
+}
+
+/// 计算单帧物理周期的浮点毫秒数 (用于平滑动画与统计)
+inline constexpr double computeFramePeriodMs(uint32_t refreshRateHz) noexcept {
+    const uint32_t safeHz = clampDisplayFrequency(refreshRateHz);
+    return 1000.0 / static_cast<double>(safeHz);
+}
+
+/// 基于 QPC 测量已流逝 Ticks 计算到下一帧截止点所需等待的毫秒数 (向下取整，0 表示应即刻渲染)
+inline constexpr DWORD computePacingWaitMs(uint64_t elapsedTicks, uint64_t framePeriodTicks, uint64_t qpcFrequency) noexcept {
+    if (framePeriodTicks == 0 || qpcFrequency == 0 || elapsedTicks >= framePeriodTicks) {
+        return 0;
+    }
+    const uint64_t remainingTicks = framePeriodTicks - elapsedTicks;
+    return static_cast<DWORD>((remainingTicks * 1000) / qpcFrequency);
+}
+
+/// 空间包围盒高速命中判定：检查光标坐标是否落在指定显示器物理区域内 (含半开区间 [left, right), [top, bottom))
+inline constexpr bool isPointInMonitorRect(const RECT& rc, POINT pt) noexcept {
+    return pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom;
 }
 
 }  // namespace tools3000::gesture

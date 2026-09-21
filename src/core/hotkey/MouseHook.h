@@ -53,7 +53,9 @@ private:
     std::atomic<MouseHookRawCallback*> m_interceptor{nullptr};
     std::unique_ptr<MouseHookRawCallback> m_interceptorHolder;
 
-    std::function<void(int button, long x, long y)> m_activityCallback;
+    std::atomic<bool> m_hasActivityCallback{false};
+    std::atomic<std::function<void(int, long, long)>*> m_activityCallback{nullptr};
+    std::unique_ptr<std::function<void(int, long, long)>> m_activityCallbackHolder;
     mutable std::mutex m_callbackMutex;
 };
 

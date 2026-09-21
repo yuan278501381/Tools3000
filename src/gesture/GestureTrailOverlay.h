@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ─────────────────────────────────────────────────────────────────────────────
 // GestureTrailOverlay — 手势轨迹可视化覆盖层 (自建 HWND + 原生 DirectComposition 硬件合成)
 //
@@ -14,6 +14,7 @@
 
 #include "core/utils/SpscRingBuffer.h"
 #include "core/utils/ThemeUtils.h"
+#include "gesture/GesturePacer.h"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -105,6 +106,13 @@ public:
     /// DirectComposition 合成器是否就绪
     bool isCompositorReady() const { return m_compositorReady; }
 
+    /// 获取高精度 QPC 节拍器引用 (供 F10 刷新率跟踪与外部诊断接入)
+    GesturePacer& pacer() noexcept { return m_pacer; }
+    const GesturePacer& pacer() const noexcept { return m_pacer; }
+
+    /// 渲染循环当前是否处于活跃节拍/呈现状态 (F13 审计断言)
+    bool isRenderLoopActive() const noexcept { return m_renderLoopActive.load(std::memory_order_relaxed); }
+
 private:
     GestureTrailOverlay() = default;
     ~GestureTrailOverlay() = default;
@@ -129,16 +137,17 @@ private:
 
     // ── DirectComposition GPU 显存直通硬件合成管线 ──
     bool ensureCompositorLocked();
+    /// 预分配全虚拟屏 DirectComposition 双缓冲硬件表面 (0 SetWindowPos, 0 CreateSurface)
+    bool preallocateTrailSurfacesLocked(int width, int height);
+    /// 响应系统显示器拓扑变更 (WM_DISPLAYCHANGE 冷路径)
+    void handleDisplayChange();
     void releaseCompositorSurfacesLocked();
     void releaseCompositorLocked();
 
-    bool ensureToastSurfaceLocked(int width, int height);
     bool presentToastLocked(const std::string& resultText, bool recognized, bool excessive,
                             int toastCenterX, int toastCenterY, float toastScale,
                             float pulseIntensity = 0.0f);
     void hideToastWindow();
-    void releaseToastSurfaceLocked();
-    bool ensureToastTargetLocked();
 
     struct GpuSurfaceContext {
         Microsoft::WRL::ComPtr<IDCompositionSurface> surface;
@@ -170,13 +179,23 @@ private:
         }
     };
 
+    /// 计算指定轨迹点集的外接脏矩形（含画笔线宽、柔光光晕与抗锯齿裕量）
+    RECT computeTrailDirtyRect(
+        const std::vector<TrailPoint>& points,
+        size_t startIdx,
+        int originX,
+        int originY,
+        int surfaceW,
+        int surfaceH) const noexcept;
+
     bool renderTrailToSurfaceLocked(
         GpuSurfaceContext& ctx,
         const std::vector<TrailPoint>& points,
         bool isRecognized,
         float fadeAlpha,
         int originX,
-        int originY);
+        int originY,
+        const RECT* pDirtyRect = nullptr);
 
     bool renderToastToSurfaceLocked(
         GpuSurfaceContext& ctx,
@@ -188,6 +207,10 @@ private:
         float toastScale,
         float fadeAlpha,
         float pulseIntensity = 0.0f);
+
+    /// 硬件级更新 Visual 不透明度并提交 DWM，0 次 CPU/GPU 重绘
+    void applyVisualOpacityLocked(float alpha);
+    void resetVisualOpacityLocked();
 
     /// 统一图元渲染核心 (供 DComp 与 GDI 降级管线复用)
     void drawTrailGeometryDirect(
@@ -206,14 +229,6 @@ private:
                            const std::vector<TrailPoint>& points,
                            bool isRecognized,
                            float fadeAlpha);
-    void drawToastContent(ID2D1RenderTarget* rt,
-                          const std::string& resultText,
-                          bool isRecognized,
-                          bool excessive,
-                          int toastW, int toastH,
-                          float toastScale,
-                          float fadeAlpha,
-                          float pulseIntensity = 0.0f);
     void drawToastContentDirect(
         ID2D1RenderTarget* rt,
         GpuSurfaceContext& ctx,
@@ -247,7 +262,6 @@ private:
     HINSTANCE m_hInstance = nullptr;
     HWND m_helperOwnerHwnd = nullptr;
     HWND m_hwnd = nullptr;
-    HWND m_toastHwnd = nullptr;
     TrailStyle m_style;
     std::atomic<bool> m_visible{false};
     std::atomic<bool> m_fading{false};
@@ -257,6 +271,8 @@ private:
     std::atomic<bool> m_dismissPrevious{false};
     std::atomic<bool> m_wakeRender{false};
     std::atomic<uint64_t> m_trailEpoch{0};
+    std::atomic<uint64_t> m_hideEpoch{0};
+    GesturePacer m_pacer;
     uint64_t m_fadeEpoch = 0;
     std::atomic<float> m_fadeAlpha{1.0f};
     std::atomic<float> m_pulseIntensity{0.0f};
@@ -266,6 +282,9 @@ private:
     std::atomic<bool> m_zOrderYielded{false};
     std::atomic<bool> m_zOrderYieldRequested{false};
     std::atomic<bool> m_zOrderRaiseRequested{false};
+
+    // F13: 渲染循环活跃状态标志（原子无锁），用于 1000Hz 输入唤醒合并与节流
+    std::atomic<bool> m_renderLoopActive{false};
 
     // 专用异步渲染引擎
     std::jthread m_renderThread;
@@ -298,7 +317,6 @@ private:
 
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_renderTarget;
-    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_toastTarget;
     HDC m_memoryDC = nullptr;
     HBITMAP m_memoryBitmap = nullptr;
     HBITMAP m_oldBitmap = nullptr;
@@ -306,26 +324,23 @@ private:
     int m_memoryPitch = 0;
     int m_width = 0;
     int m_height = 0;
-    HDC m_toastDC = nullptr;
-    HBITMAP m_toastBitmap = nullptr;
-    HBITMAP m_toastOldBitmap = nullptr;
-    void* m_toastBits = nullptr;
-    int m_toastPitch = 0;
 
     // DirectComposition 硬件合成设备与视口表面
     bool m_compositorReady = false;
     Microsoft::WRL::ComPtr<ID3D11Device> m_d3dDevice;
     Microsoft::WRL::ComPtr<IDCompositionDevice> m_dcompDevice;
     Microsoft::WRL::ComPtr<IDCompositionTarget> m_trailDcompTarget;
+    Microsoft::WRL::ComPtr<IDCompositionVisual> m_rootDcompVisual;
     Microsoft::WRL::ComPtr<IDCompositionVisual> m_trailDcompVisual;
+    Microsoft::WRL::ComPtr<IDCompositionEffectGroup> m_trailEffectGroup;
     GpuSurfaceContext m_frontCtx;
     GpuSurfaceContext m_backCtx;
     Microsoft::WRL::ComPtr<IDCompositionSurface> m_trailDcompSurface;
     Microsoft::WRL::ComPtr<IDCompositionSurface> m_trailBackSurface;
     int m_trailDcompW = 0;
     int m_trailDcompH = 0;
-    Microsoft::WRL::ComPtr<IDCompositionTarget> m_toastDcompTarget;
     Microsoft::WRL::ComPtr<IDCompositionVisual> m_toastDcompVisual;
+    Microsoft::WRL::ComPtr<IDCompositionEffectGroup> m_toastEffectGroup;
     GpuSurfaceContext m_toastFrontCtx;
     GpuSurfaceContext m_toastBackCtx;
     Microsoft::WRL::ComPtr<IDCompositionSurface> m_toastDcompSurface;
@@ -337,10 +352,12 @@ private:
     int m_lastToastOriginY = -9999;
     int m_lastToastW = 0;
     int m_lastToastH = 0;
-    int m_toastWidth = 0;
-    int m_toastHeight = 0;
     float m_dpiScale = 1.0f;
     float m_textScale = 0.0f;
+
+    // F8: 增量绘制与局部脏矩形追踪
+    size_t m_lastDrawnPointCount = 0;
+    bool m_lastRecognizedState = false;
 
     bool m_isLightTheme = false;
     bool m_isDarkTheme = true;
@@ -354,13 +371,6 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_greyGlowBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_headCoreBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_outlineBrush;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_textBgBrush;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_themeBgBrush;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_textBorderBrush;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_textBrush;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_excessiveBgBrush;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_excessiveBorderBrush;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_excessiveDotBrush;
     Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_textFormat;
     Microsoft::WRL::ComPtr<ID2D1StrokeStyle> m_strokeStyle;

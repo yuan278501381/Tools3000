@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "gesture/GestureEngine.h"
+#include "gesture/GestureDispatchWorker.h"
 #include "gesture/GestureTrailOverlay.h"
 #include "gesture/GestureInputPolicy.h"
 #include "core/logger/Logger.h"
@@ -30,9 +31,11 @@ std::optional<GestureAction> lookupProfileAction(
     const std::optional<GestureProfile>& profile,
     const std::optional<GestureProfile>& fallback,
     const std::string& code) {
-    if (!profile || code.empty()) return std::nullopt;
-    if (auto action = profile->findAction(code)) return action;
-    if (fallback && profile->name() != "default") {
+    if (code.empty()) return std::nullopt;
+    if (profile) {
+        if (auto action = profile->findAction(code)) return action;
+    }
+    if (fallback && (!profile || profile->name() != "default")) {
         return fallback->findAction(code);
     }
     return std::nullopt;
@@ -77,6 +80,7 @@ GestureEngine::GestureEngine() {
 bool GestureEngine::start() {
     tools3000::core::TraceId::Scope scope;
     timeBeginPeriod(1);
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     if (!m_actionWorker.joinable()) {
         m_actionWorker = std::jthread(
@@ -91,15 +95,17 @@ bool GestureEngine::start() {
             [this](std::stop_token token) { watchdogWorkerLoop(token); });
     }
 
-    // 安装鼠标钩子
+    // 安装鼠标钩子与启动异步分发工作线程 (1000Hz 零阻塞无锁分发)
     auto& hook = MouseHook::instance();
-    hook.setEventCallback([this](const MouseEvent& event) -> bool {
-        return onMouseEvent(event);
-    });
+    // 生产环境严禁注册同步回调，彻底切断 WH_MOUSE_LL 钩子线程上的双重派发与互斥锁竞争
+    hook.setEventCallback(nullptr);
     hook.setFaultCallback([this]() { cancelActiveGesture(); });
+
+    GestureDispatchWorker::instance().start();
 
     if (!hook.install()) {
         LOG_ERROR("手势引擎启动失败: 无法安装鼠标钩子");
+        GestureDispatchWorker::instance().stop();
         m_watchdogWorker.request_stop();
         m_watchdogCv.notify_all();
         tools3000::core::joinWorkerWhilePumpingSentMessages(m_watchdogWorker);
@@ -130,7 +136,9 @@ bool GestureEngine::start() {
 
 void GestureEngine::stop() {
     uninstallForegroundWatch();
+    GestureDispatchWorker::instance().stop();
     auto& hook = MouseHook::instance();
+    hook.setIsTracking(false);
     hook.setFaultCallback(nullptr);
     hook.setEventCallback(nullptr);
     hook.uninstall();
@@ -461,6 +469,17 @@ bool GestureEngine::onMouseEvent(const MouseEvent& event) {
                     // 零延迟响应：不再在按下热路径进行同步全屏判定、黑名单查询和进程枚举，直接开始追踪
                     beginTracking(event);
                     return true;  // 拦截触发键按下, 进入手势追踪
+                } else if ((event.type == MouseEventType::WheelUp || event.type == MouseEventType::WheelDown) &&
+                           event.edgeZone != ScreenEdgeZone::None) {
+                    // 屏幕边缘独立滚轮手势 (如屏幕顶栏滚轮调节音量)
+                    m_gestureTraceId = tools3000::core::TraceId::begin();
+                    m_gestureModifiers = event.modifiers;
+                    m_gestureEdgeZone = event.edgeZone;
+                    m_activeTriggerDown = MouseEventType::Move;
+                    m_gestureStartWindow = event.foregroundWindow;
+                    m_previousForeground = event.foregroundWindow;
+                    m_gestureStartPt = event.position;
+                    return handleWheelGesture(event);
                 }
                 break;
 
@@ -562,6 +581,7 @@ GestureEngine::AsyncContextResult GestureEngine::resolveContextInternal(HWND ini
 }
 
 void GestureEngine::contextWorkerLoop(std::stop_token stopToken) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     while (!stopToken.stop_requested()) {
         ContextJob job;
         {
@@ -640,6 +660,10 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
     m_liveHeldLabel.clear();
     m_liveHadMatch = false;
     m_liveMatchTick = 0;
+    m_lastLiveEvalPt = { -1, -1 };
+    m_lastLiveEvalTime = m_trackingStartTime;
+    m_cachedLiveDirs.clear();
+    m_profileResolvedLocally = false;
     m_contextResolved.store(false, std::memory_order_release);
 
     HWND initialFg = event.foregroundWindow;
@@ -657,6 +681,7 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
     m_contextCv.notify_one();
 
     m_state = GestureState::Tracking;
+    MouseHook::instance().setIsTracking(true);
 
     // 开始轨迹可视化
     if (m_trailVisible.load()) {
@@ -671,7 +696,7 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
 
 void GestureEngine::updateTracking(const MouseEvent& event) {
     // 检查异步上下文解析是否就绪
-    if (m_contextResolved.load(std::memory_order_acquire)) {
+    if (!m_profileResolvedLocally && m_contextResolved.load(std::memory_order_acquire)) {
         AsyncContextResult res;
         {
             std::lock_guard lock(m_contextResultMutex);
@@ -686,6 +711,8 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
         }
         m_gestureStartWindow = res.targetWindow;
         m_activeProfile = res.profile;
+        m_profileResolvedLocally = true;
+        m_lastLiveCode.clear(); // 强制触发实时动作识别重算，杜绝单笔画手势预览常驻灰色
     }
 
     auto now = std::chrono::steady_clock::now();
@@ -700,10 +727,19 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
     }
 
     const bool showTrail = m_trailVisible.load();
-    std::vector<Direction> dirs;
-    if (showTrail || callback) {
-        dirs = m_recognizer.currentDirections();
+    const int evalDx = event.position.x - m_lastLiveEvalPt.x;
+    const int evalDy = event.position.y - m_lastLiveEvalPt.y;
+    const auto evalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastLiveEvalTime).count();
+    const bool needEval = (m_lastLiveEvalPt.x == -1) ||
+                          (evalDx * evalDx + evalDy * evalDy >= 36) ||
+                          (evalElapsedMs >= 25);
+
+    if (needEval && (showTrail || callback)) {
+        m_lastLiveEvalPt = { event.position.x, event.position.y };
+        m_lastLiveEvalTime = now;
+        m_cachedLiveDirs = m_recognizer.currentDirections();
     }
+    const std::vector<Direction>& dirs = m_cachedLiveDirs;
 
     if (showTrail) {
         auto& trail = GestureTrailOverlay::instance();
@@ -725,10 +761,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
                 std::string liveLabel;
                 if (!dirs.empty()) {
                     const std::string fullCode = formatFullGestureCode(m_gestureEdgeZone, m_gestureModifiers, m_activeTriggerDown, bareCode);
-                    std::optional<GestureAction> action;
-                    if (m_activeProfile) {
-                        action = lookupGestureAction(m_activeProfile, m_fallbackProfile, fullCode, bareCode);
-                    }
+                    std::optional<GestureAction> action = lookupGestureAction(m_activeProfile, m_fallbackProfile, fullCode, bareCode);
 
                     if (action) {
                         m_liveHadMatch = true;
@@ -791,10 +824,10 @@ void GestureEngine::endTracking(const MouseEvent& event) {
         return;
     }
 
-    // 等待异步上下文解析就绪 (最多等待 50ms)
+    // 等待异步上下文解析就绪 (最多等待 15ms，高负荷下依然极速完成并杜绝降级到错误 Profile)
     if (!m_contextResolved.load(std::memory_order_acquire)) {
         std::unique_lock lock(m_contextResultMutex);
-        m_contextResultCv.wait_for(lock, std::chrono::milliseconds(50), [&]() {
+        m_contextResultCv.wait_for(lock, std::chrono::milliseconds(15), [&]() {
             return m_contextResolved.load(std::memory_order_acquire);
         });
     }
@@ -1016,15 +1049,19 @@ void GestureEngine::executeActionInternal(
 }
 
 bool GestureEngine::handleWheelGesture(const MouseEvent& event) {
+    const bool isTracking = (m_state.load(std::memory_order_relaxed) != GestureState::Idle);
+
     // 等待异步上下文解析就绪 (最多等待 50ms)
-    if (!m_contextResolved.load(std::memory_order_acquire)) {
+    // 仅在手势追踪中才需等待异步上下文解析就绪；
+    // 在 Idle 状态下的独立边缘滚轮手势未派发异步上下文任务，跳过 50ms 盲等以杜绝连续滚动时的累积卡顿
+    if (isTracking && !m_contextResolved.load(std::memory_order_acquire)) {
         std::unique_lock lock(m_contextResultMutex);
         m_contextResultCv.wait_for(lock, std::chrono::milliseconds(50), [&]() {
             return m_contextResolved.load(std::memory_order_acquire);
         });
     }
 
-    if (m_contextResolved.load(std::memory_order_acquire)) {
+    if (isTracking && m_contextResolved.load(std::memory_order_acquire)) {
         AsyncContextResult res;
         {
             std::lock_guard lock(m_contextResultMutex);

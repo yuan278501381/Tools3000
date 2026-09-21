@@ -339,6 +339,9 @@ bool launchUnelevatedSuccessor(bool includeWindowPos) {
 // ─────────────────────────────────────────────────────────────────────────────
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
                     LPWSTR /*lpCmdLine*/, int /*nCmdShow*/) {
+    // 提升进程优先级为 HIGH_PRIORITY_CLASS，确保在高负荷系统下鼠标手势与全局热键调度不被饿死
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+
     // 快捷自启动注册/注销独立命令处理（专供安装包或运维脚本原子调用）
     if (hasCommandLineFlag(L"--register-autostart")) {
         CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);

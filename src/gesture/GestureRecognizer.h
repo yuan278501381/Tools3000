@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ─────────────────────────────────────────────────────────────────────────────
 // GestureRecognizer — 手势识别算法
 //
@@ -33,6 +33,33 @@ enum class Direction : uint8_t {
     DownLeft,   // ↙
     DownRight   // ↘
 };
+
+using DirectionCodeBits = uint64_t;
+
+/// 将最多 15 段方向序列高效打包为单个 64 位无符号整数
+/// [bit 0..3]: 段数 count (0~15)
+/// [bit 4..7]: 段 0 方向 (Direction 0~8)
+/// [bit 8..11]: 段 1 方向
+/// ...
+inline DirectionCodeBits packDirections(const std::vector<Direction>& dirs) noexcept {
+    if (dirs.empty()) return 0;
+    const size_t count = (std::min)(dirs.size(), size_t(15));
+    DirectionCodeBits bits = static_cast<DirectionCodeBits>(count & 0x0F);
+    for (size_t i = 0; i < count; ++i) {
+        bits |= (static_cast<DirectionCodeBits>(dirs[i]) & 0x0F) << (4 * (i + 1));
+    }
+    return bits;
+}
+
+inline std::vector<Direction> unpackDirections(DirectionCodeBits bits) {
+    std::vector<Direction> dirs;
+    const size_t count = bits & 0x0F;
+    dirs.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        dirs.push_back(static_cast<Direction>((bits >> (4 * (i + 1))) & 0x0F));
+    }
+    return dirs;
+}
 
 /// 方向 → 字符串编码
 inline std::string directionToCode(Direction dir) {
@@ -171,8 +198,11 @@ public:
     /// @return 识别结果，如果轨迹太短或无效返回 nullopt
     std::optional<GestureResult> finalize();
 
-    /// 获取当前已识别的方向序列（用于实时轨迹预览）
-    std::vector<Direction> currentDirections() const;
+    /// 获取当前已识别的方向序列（常引用返回，彻底消除 vector 堆分配拷贝）
+    const std::vector<Direction>& currentDirections() const;
+
+    /// 获取 64 位紧凑定长数值方向编码
+    DirectionCodeBits currentPackedDirections() const noexcept;
 
     /// 检测当前轨迹是否属于乱晃/原地打圈反悔取消行为
     bool isScribbleCanceled() const;
@@ -207,8 +237,10 @@ private:
     /// 处理累积的点，提取方向段
     void processPoints();
 
+    static constexpr size_t kMaxPoints = 4096;
+
     RecognizerConfig m_config;
-    std::vector<TrackPoint> m_points;              // 所有轨迹点
+    std::vector<TrackPoint> m_points;              // 所有轨迹点 (预分配 4096 点 0 堆扩容)
     std::vector<Direction> m_directions;           // 已识别的方向段序列
     std::vector<double> m_segmentLengths;          // 与 m_directions 对齐的段长
 
@@ -217,6 +249,12 @@ private:
     TrackPoint m_peakPoint{0, 0};                  // 当前段沿前进方向的最远极值点 (拐点)
     Direction m_currentDirection = Direction::None; // 当前段方向
     bool m_hasSegmentStart = false;
+
+    // 增量式方向计算缓存 (微步位移无需重新全量计算 RDP 与几何拟合)
+    mutable bool m_dirsDirty = true;
+    mutable std::vector<Direction> m_cachedDirections;
+    mutable DirectionCodeBits m_cachedPackedDirections{0};
+    mutable TrackPoint m_lastPeakPoint{-1, -1};
 };
 
 }  // namespace tools3000::gesture

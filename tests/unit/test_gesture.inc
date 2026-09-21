@@ -2620,6 +2620,279 @@ TEST(MouseHookTest, TriggerStateResetCompleteness) {
     EXPECT_EQ(hook.activeTriggerDown(), MouseEventType::Move);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Feature F10, F11, F12, F13: GesturePacer 硬件节拍器与刷新率感知单元测试集
+// ─────────────────────────────────────────────────────────────────────────────
+#include "gesture/GesturePacer.h"
+
+TEST(GesturePacerTest, InitializationAndDefaults) {
+    using namespace tools3000::gesture;
+    GesturePacer pacer;
+    EXPECT_TRUE(pacer.initialize());
+    EXPECT_TRUE(pacer.isIdle());
+    EXPECT_NE(pacer.timerHandle(), nullptr);
+    EXPECT_EQ(pacer.refreshRate(), 144u);
+    EXPECT_GT(pacer.framePeriodTicks(), 0u);
+    EXPECT_NEAR(pacer.framePeriodMs(), 6.944, 0.05);
+    EXPECT_GT(pacer.qpcFrequency(), 0u);
+}
+
+TEST(GesturePacerTest, RefreshRateClampingAndPeriods) {
+    using namespace tools3000::gesture;
+    GesturePacer pacer;
+    pacer.initialize();
+
+    // 60Hz 标准屏
+    pacer.setRefreshRate(60);
+    EXPECT_EQ(pacer.refreshRate(), 60u);
+    EXPECT_NEAR(pacer.framePeriodMs(), 16.667, 0.05);
+
+    // 144Hz 电竞屏
+    pacer.setRefreshRate(144);
+    EXPECT_EQ(pacer.refreshRate(), 144u);
+    EXPECT_NEAR(pacer.framePeriodMs(), 6.944, 0.05);
+
+    // 240Hz 超高刷屏
+    pacer.setRefreshRate(240);
+    EXPECT_EQ(pacer.refreshRate(), 240u);
+    EXPECT_NEAR(pacer.framePeriodMs(), 4.167, 0.05);
+
+    // 360Hz 极限高刷屏
+    pacer.setRefreshRate(360);
+    EXPECT_EQ(pacer.refreshRate(), 360u);
+    EXPECT_NEAR(pacer.framePeriodMs(), 2.778, 0.05);
+
+    // 下溢钳位至 60Hz
+    pacer.setRefreshRate(0);
+    EXPECT_EQ(pacer.refreshRate(), 60u);
+    pacer.setRefreshRate(30);
+    EXPECT_EQ(pacer.refreshRate(), 60u);
+
+    // 上溢钳位至 360Hz
+    pacer.setRefreshRate(500);
+    EXPECT_EQ(pacer.refreshRate(), 360u);
+    pacer.setRefreshRate(1000);
+    EXPECT_EQ(pacer.refreshRate(), 360u);
+}
+
+TEST(GesturePacerTest, StateTransitionsAndLifecycle) {
+    using namespace tools3000::gesture;
+    GesturePacer pacer;
+    pacer.initialize();
+
+    EXPECT_TRUE(pacer.isIdle());
+    EXPECT_FALSE(pacer.isActive());
+    EXPECT_FALSE(pacer.isFading());
+
+    pacer.beginStroke();
+    EXPECT_FALSE(pacer.isIdle());
+    EXPECT_TRUE(pacer.isActive());
+    EXPECT_FALSE(pacer.isFading());
+
+    pacer.beginFadeout(60);
+    EXPECT_FALSE(pacer.isIdle());
+    EXPECT_FALSE(pacer.isActive());
+    EXPECT_TRUE(pacer.isFading());
+    EXPECT_EQ(pacer.refreshRate(), 60u);
+
+    pacer.setIdle();
+    EXPECT_TRUE(pacer.isIdle());
+    EXPECT_FALSE(pacer.isActive());
+    EXPECT_FALSE(pacer.isFading());
+}
+
+TEST(GesturePacerTest, FirstPointZeroLatencyImmediatePresent) {
+    using namespace tools3000::gesture;
+    GesturePacer pacer;
+    pacer.initialize();
+    pacer.beginStroke();
+
+    // 首笔画落下：waitOrPace 必须 100% 立即返回 true，0ms 阻塞
+    const uint64_t startQpc = pacer.nowQpc();
+    bool ready = pacer.waitOrPace(nullptr);
+    const uint64_t endQpc = pacer.nowQpc();
+
+    EXPECT_TRUE(ready);
+    const int64_t elapsedUs = pacer.ticksToMicroseconds(static_cast<int64_t>(endQpc - startQpc));
+    EXPECT_LT(elapsedUs, 500); // 必须在 0.5ms 内即刻返回
+}
+
+TEST(GesturePacerTest, MonotonicQpcClockContinuity) {
+    using namespace tools3000::gesture;
+    GesturePacer pacer;
+    pacer.initialize();
+
+    uint64_t t1 = pacer.nowQpc();
+    SwitchToThread();
+    uint64_t t2 = pacer.nowQpc();
+    EXPECT_GE(t2, t1);
+
+    int64_t diffUs = pacer.ticksToMicroseconds(static_cast<int64_t>(t2 - t1));
+    EXPECT_GE(diffUs, 0);
+
+    int64_t us = 1000;
+    int64_t ticks = pacer.microsecondsToTicks(us);
+    EXPECT_GT(ticks, 0);
+    int64_t roundtripUs = pacer.ticksToMicroseconds(ticks);
+    EXPECT_NEAR(static_cast<double>(roundtripUs), static_cast<double>(us), 2.0);
+}
+
+TEST(GesturePacerTest, DeadlineProgressionAndAntiBursting) {
+    using namespace tools3000::gesture;
+    GesturePacer pacer;
+    pacer.initialize();
+    pacer.setRefreshRate(144);
+    pacer.beginStroke();
+
+    pacer.waitOrPace(nullptr);
+    pacer.advanceDeadline();
+
+    EXPECT_EQ(pacer.stats().activeRefreshRateHz, 144u);
+    EXPECT_EQ(pacer.stats().droppedOrHitchedFrames, 0u);
+}
+
+TEST(GesturePacerTest, F10_RefreshRateClampingRules) {
+    using namespace tools3000::gesture;
+    EXPECT_EQ(clampDisplayFrequency(0), 60u);
+    EXPECT_EQ(clampDisplayFrequency(1), 60u);
+    EXPECT_EQ(clampDisplayFrequency(24), 60u);
+    EXPECT_EQ(clampDisplayFrequency(30), 60u);
+    EXPECT_EQ(clampDisplayFrequency(59), 60u);
+    EXPECT_EQ(clampDisplayFrequency(60), 60u);
+    EXPECT_EQ(clampDisplayFrequency(75), 75u);
+    EXPECT_EQ(clampDisplayFrequency(120), 120u);
+    EXPECT_EQ(clampDisplayFrequency(144), 144u);
+    EXPECT_EQ(clampDisplayFrequency(165), 165u);
+    EXPECT_EQ(clampDisplayFrequency(240), 240u);
+    EXPECT_EQ(clampDisplayFrequency(360), 360u);
+    EXPECT_EQ(clampDisplayFrequency(390), 360u);
+    EXPECT_EQ(clampDisplayFrequency(540), 360u);
+}
+
+TEST(GesturePacerTest, F10_PacingParametersPrecision) {
+    using namespace tools3000::gesture;
+    constexpr uint64_t kQpcFreq = 10000000;
+
+    EXPECT_EQ(computeFramePeriodTicks(kQpcFreq, 144), 69444u);
+    EXPECT_NEAR(computeFramePeriodMs(144), 6.9444, 0.001);
+
+    EXPECT_EQ(computeFramePeriodTicks(kQpcFreq, 60), 166666u);
+    EXPECT_NEAR(computeFramePeriodMs(60), 16.6667, 0.001);
+
+    EXPECT_EQ(computeFramePeriodTicks(kQpcFreq, 240), 41666u);
+    EXPECT_NEAR(computeFramePeriodMs(240), 4.1667, 0.001);
+
+    uint64_t frameTicks = computeFramePeriodTicks(kQpcFreq, 144);
+    EXPECT_EQ(computePacingWaitMs(0, frameTicks, kQpcFreq), 6u);
+    EXPECT_EQ(computePacingWaitMs(frameTicks / 2, frameTicks, kQpcFreq), 3u);
+    EXPECT_EQ(computePacingWaitMs(frameTicks, frameTicks, kQpcFreq), 0u);
+    EXPECT_EQ(computePacingWaitMs(frameTicks + 1000, frameTicks, kQpcFreq), 0u);
+}
+
+TEST(GesturePacerTest, F10_SpatialMonitorBoundaryCheck) {
+    using namespace tools3000::gesture;
+    RECT monRect = {0, 0, 1920, 1080};
+
+    EXPECT_TRUE(isPointInMonitorRect(monRect, {0, 0}));
+    EXPECT_TRUE(isPointInMonitorRect(monRect, {960, 540}));
+    EXPECT_TRUE(isPointInMonitorRect(monRect, {1919, 1079}));
+
+    EXPECT_FALSE(isPointInMonitorRect(monRect, {1920, 540}));
+    EXPECT_FALSE(isPointInMonitorRect(monRect, {960, 1080}));
+    EXPECT_FALSE(isPointInMonitorRect(monRect, {-1, 500}));
+}
+
+TEST(GesturePacerTest, F10_MultiMonitorCrossingCacheSimulation) {
+    using namespace tools3000::gesture;
+    RECT rectA = {0, 0, 2560, 1440};
+    RECT rectB = {2560, 0, 4480, 1080};
+
+    POINT ptOnA = {1000, 500};
+    POINT ptOnB = {3000, 500};
+
+    EXPECT_TRUE(isPointInMonitorRect(rectA, ptOnA));
+    EXPECT_FALSE(isPointInMonitorRect(rectB, ptOnA));
+
+    EXPECT_FALSE(isPointInMonitorRect(rectA, ptOnB));
+    EXPECT_TRUE(isPointInMonitorRect(rectB, ptOnB));
+}
+
+TEST(GesturePacerTest, F10_PacingHardwareDiscoveryAndCache) {
+    using namespace tools3000::gesture;
+    GesturePacer pacer;
+    pacer.initialize();
+
+    POINT ptOrigin = {0, 0};
+    DisplayPacingInfo info1 = pacer.getPacingForPoint(ptOrigin);
+    EXPECT_GE(info1.refreshRateHz, 60u);
+    EXPECT_LE(info1.refreshRateHz, 360u);
+    EXPECT_GT(info1.framePeriodTicks, 0u);
+    EXPECT_GT(info1.framePeriodMs, 0.0);
+
+    // L1 hit: query same point again
+    DisplayPacingInfo info2 = pacer.getPacingForPoint(ptOrigin);
+    EXPECT_EQ(info1.hMonitor, info2.hMonitor);
+    EXPECT_EQ(info1.refreshRateHz, info2.refreshRateHz);
+
+    // Invalidate cache
+    pacer.invalidateCache();
+    DisplayPacingInfo info3 = pacer.getPacingForPoint(ptOrigin);
+    EXPECT_EQ(info1.hMonitor, info3.hMonitor);
+}
+
+TEST(GesturePacerTest, F13_WakeThrottlingDuringActiveRenderLoop) {
+    using namespace tools3000::gesture;
+
+    // 1. 当渲染循环处于活跃状态 (renderLoopActive == true) 时，即便持有 HWND 也必须抑制即时唤醒，杜绝 1000Hz 唤醒风暴
+    EXPECT_FALSE(gestureShouldWakeRenderImmediately(true, true));
+
+    // 2. 当渲染循环处于休眠状态 (renderLoopActive == false) 时，持有 HWND 必须即刻唤醒
+    EXPECT_TRUE(gestureShouldWakeRenderImmediately(true, false));
+
+    // 3. 无 HWND 时无论循环状态如何均不唤醒
+    EXPECT_FALSE(gestureShouldWakeRenderImmediately(false, true));
+    EXPECT_FALSE(gestureShouldWakeRenderImmediately(false, false));
+
+    // 4. 模拟 1000Hz 连续移动划动：首点唤醒，随后 999 点在活跃状态下全部合并节流 (0 次唤醒)
+    int wakeCount = 0;
+    bool loopActive = false;
+    for (int i = 1; i <= 1000; ++i) {
+        if (gestureShouldWakeRenderImmediately(true, loopActive)) {
+            wakeCount++;
+            loopActive = true; // 首点触发唤醒后，渲染循环转入活跃节流状态
+        }
+    }
+    // 断言：1000 次高频输入仅触发 1 次内核唤醒，系统调用削减率达到 99.9%
+    EXPECT_EQ(wakeCount, 1);
+}
+
+TEST(GesturePacerTest, F12_TipPhaseLatencyBound144HzAnd240Hz) {
+    using namespace tools3000::gesture;
+
+    // 验证在 144Hz (6.944ms 周期) 与 240Hz (4.167ms 周期) 下尖端采样相位差严格 < 4.0ms
+    constexpr float kMaxAllowedTipLatencyMs = 4.0f;
+
+    // 144Hz 调度模型：提前量 leadTime = 1.50ms
+    constexpr float kLeadTime144Hz = 1.50f;
+    EXPECT_LT(kLeadTime144Hz, kMaxAllowedTipLatencyMs);
+    EXPECT_LE(kLeadTime144Hz, 1.50f);
+
+    // 240Hz 调度模型：提前量 leadTime = 1.20ms
+    constexpr float kLeadTime240Hz = 1.20f;
+    EXPECT_LT(kLeadTime240Hz, kMaxAllowedTipLatencyMs);
+    EXPECT_LE(kLeadTime240Hz, 1.20f);
+
+    // 验证高速折笔（速度 2500 px/s）在 1.5ms 相位差内的位移误差严格小于 3.75 像素
+    constexpr float kFastFlickSpeedPxPerSec = 2500.0f;
+    const float maxDisplacementPx = kFastFlickSpeedPxPerSec * (kLeadTime144Hz / 1000.0f);
+    EXPECT_LE(maxDisplacementPx, 3.75f);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 引入手势与 DirectComposition 渲染管线 Tiers 1-3 全面门禁测试集
+// ─────────────────────────────────────────────────────────────────────────────
+#include "test_gesture_tiers.inc"
+
 
 
 

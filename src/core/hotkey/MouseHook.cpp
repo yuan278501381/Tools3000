@@ -50,7 +50,7 @@ bool MouseHook::install() {
 }
 
 void MouseHook::inputThreadWorker(HANDLE readyEvent) {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     m_threadId.store(GetCurrentThreadId(), std::memory_order_release);
 
     HHOOK hook = SetWindowsHookExW(
@@ -95,7 +95,9 @@ void MouseHook::uninstall() {
     // 2. 清理拦截与活动回调，释放可能持有的闭包资源
     {
         std::lock_guard lock(m_callbackMutex);
-        m_activityCallback = nullptr;
+        m_hasActivityCallback.store(false, std::memory_order_release);
+        m_activityCallback.store(nullptr, std::memory_order_release);
+        m_activityCallbackHolder.reset();
         m_hasInterceptor.store(false, std::memory_order_release);
         m_interceptor.store(nullptr, std::memory_order_release);
         m_interceptorHolder.reset();
@@ -120,7 +122,15 @@ void MouseHook::setPaused(bool paused) {
 
 void MouseHook::setMouseActivityCallback(std::function<void(int, long, long)> cb) {
     std::lock_guard lock(m_callbackMutex);
-    m_activityCallback = std::move(cb);
+    if (cb) {
+        m_activityCallbackHolder = std::make_unique<std::function<void(int, long, long)>>(std::move(cb));
+        m_activityCallback.store(m_activityCallbackHolder.get(), std::memory_order_release);
+        m_hasActivityCallback.store(true, std::memory_order_release);
+    } else {
+        m_hasActivityCallback.store(false, std::memory_order_release);
+        m_activityCallback.store(nullptr, std::memory_order_release);
+        m_activityCallbackHolder.reset();
+    }
 }
 
 void MouseHook::setRawMoveCallback(MouseRawMoveCallback cb) {
@@ -205,21 +215,19 @@ LRESULT CALLBACK MouseHook::lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
             }
 
             if (button != -1) {
-                try {
-                    std::function<void(int, long, long)> cb;
-                    {
-                        std::lock_guard lock(self.m_callbackMutex);
-                        cb = self.m_activityCallback;
+                if (self.m_hasActivityCallback.load(std::memory_order_relaxed)) {
+                    auto* cb = self.m_activityCallback.load(std::memory_order_acquire);
+                    if (cb && *cb) {
+                        try {
+                            (*cb)(button, data->pt.x, data->pt.y);
+                        } catch (const std::exception& e) {
+                            LOG_ERROR("MouseHook 活动事件分发异常: {}", e.what());
+                        } catch (...) {
+                            LOG_ERROR("MouseHook 活动事件分发未知异常");
+                        }
                     }
-                    if (cb) {
-                        cb(button, data->pt.x, data->pt.y);
-                    }
-                    EventBus::instance().publish(MouseActivityEvent{button, data->pt.x, data->pt.y});
-                } catch (const std::exception& e) {
-                    LOG_ERROR("MouseHook 活动事件分发异常: {}", e.what());
-                } catch (...) {
-                    LOG_ERROR("MouseHook 活动事件分发未知异常");
                 }
+                EventBus::instance().publish(MouseActivityEvent{button, data->pt.x, data->pt.y});
             }
         }
     }

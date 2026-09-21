@@ -46,7 +46,10 @@ using TrailRenderCallback = std::function<void(const std::vector<TrackPoint>& po
                                                 const std::vector<Direction>& directions)>;
 using PauseChangedCallback = std::function<bool(bool paused)>;
 
+class GestureDispatchWorker;
+
 class GestureEngine {
+    friend class GestureDispatchWorker;
 public:
     static GestureEngine& instance();
 
@@ -209,6 +212,10 @@ private:
     std::string m_liveHeldLabel;
     bool m_liveHadMatch = false;
     DWORD m_liveMatchTick = 0;
+    POINT m_lastLiveEvalPt{-1, -1};
+    std::chrono::steady_clock::time_point m_lastLiveEvalTime{};
+    std::vector<Direction> m_cachedLiveDirs;
+    bool m_profileResolvedLocally = false;
     bool m_wheelExecutedDuringTracking = false; // 按住触发键期间是否执行过滚轮手势
     std::chrono::steady_clock::time_point m_lastDesktopSwitchTime{}; // 虚拟桌面切换节流时间戳
     PauseChangedCallback m_pauseChangedCallback;

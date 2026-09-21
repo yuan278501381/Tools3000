@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ─────────────────────────────────────────────────────────────────────────────
 // MouseHook — 低级鼠标钩子 (接入核心独立输入线程与无锁 SPSC 环形队列)
 //
@@ -78,6 +78,18 @@ namespace GestureTriggerMask {
     static constexpr uint32_t AllTriggers = 0xFFFFFFFFu;
 }
 
+/// 原始输入数据包 (POD, 24 bytes, 0 heap allocations, trivially copyable)
+struct RawInputPacket {
+    uint32_t message = 0;    // WM_MOUSEMOVE, WM_RBUTTONDOWN, etc.
+    int32_t x = 0;           // 物理光标 X (绝对坐标)
+    int32_t y = 0;           // 物理光标 Y (绝对坐标)
+    uint32_t mouseData = 0;  // 滚轮 delta 或 X 键信息
+    uint64_t qpcTime = 0;    // 采样时的 QPC 时间戳 (纳秒级或 QPC 原始计数)
+};
+static_assert(sizeof(RawInputPacket) == 24, "RawInputPacket must be exactly 24 bytes POD");
+static_assert(std::is_trivially_copyable_v<RawInputPacket>, "RawInputPacket must be trivially copyable");
+static_assert(std::is_standard_layout_v<RawInputPacket>, "RawInputPacket must be standard layout");
+
 /// 鼠标事件数据（从钩子回调中采集）
 struct MouseEvent {
     MouseEventType type;
@@ -137,6 +149,8 @@ public:
     /// 获取经过当前掩码过滤校验的有效屏幕边缘区域（未开启的边缘一律返回 ScreenEdgeZone::None）
     ScreenEdgeZone getActiveScreenEdgeZone(POINT pt, MouseEventType type = MouseEventType::Move) const;
 
+    /// 从无锁环形队列批量获取原始数据包
+    std::vector<RawInputPacket> drainRawPackets(size_t maxCount = 64);
     /// 从无锁环形队列批量获取待处理事件
     std::vector<MouseEvent> drainEvents(size_t maxCount = 64);
 
@@ -155,6 +169,32 @@ public:
 
     /// 核心输入总线原生底层分发入口 (由 core::MouseHook 调用)
     bool handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRUCT& data);
+
+    /// 获取底层无锁 SPSC 环形队列缓冲
+    tools3000::core::SpscRingBuffer<RawInputPacket, 4096>& rawRingBuffer() noexcept { return m_rawRingBuffer; }
+
+    /// 注册与通知后台异步分发工作线程唤醒事件
+    void setWorkerWakeEvent(HANDLE hEvent) noexcept { m_workerWakeEvent.store(hEvent, std::memory_order_release); }
+    void setWorkerActive(bool active) noexcept { m_workerActive.store(active, std::memory_order_release); }
+    void notifyWorker() noexcept {
+        HANDLE h = m_workerWakeEvent.load(std::memory_order_acquire);
+        if (h && !m_workerActive.load(std::memory_order_relaxed)) {
+            SetEvent(h);
+        }
+    }
+
+    /// 查询后台异步分发工作线程是否处于活跃就绪状态
+    bool isAsyncWorkerActive() const noexcept {
+        return m_workerWakeEvent.load(std::memory_order_relaxed) != nullptr;
+    }
+
+    /// 追踪状态原子标记
+    void setIsTracking(bool tracking) noexcept {
+        m_isTracking.store(tracking, std::memory_order_release);
+    }
+    bool isTracking() const noexcept {
+        return m_isTracking.load(std::memory_order_relaxed);
+    }
 
 private:
     MouseHook() = default;
@@ -177,11 +217,19 @@ private:
     ScreenEdgeZone m_cachedEdgeZone = ScreenEdgeZone::None;
     bool m_cachedIsTopEdge = false;
 
-    // 无锁单写单读环形队列缓冲 (Lock-Free SPSC Ring Buffer)
-    tools3000::core::SpscRingBuffer<MouseEvent, 2048> m_ringBuffer;
+    // 真正的无锁单写单读环形队列缓冲 (4096 槽位 POD 封装, 0 锁争用, 0 堆分配)
+    tools3000::core::SpscRingBuffer<RawInputPacket, 4096> m_rawRingBuffer;
 
-    // 直接回调模式
+    // 工作线程唤醒事件与活跃状态 (节流合并唤醒，杜绝 1000Hz 内核模式切换风暴)
+    std::atomic<HANDLE> m_workerWakeEvent{nullptr};
+    std::atomic<bool> m_workerActive{false};
+    std::atomic<bool> m_isTracking{false};
+
+    // 直接回调模式 (支持无锁极速原子派发)
     MouseEventCallback m_callback;
+    std::atomic<bool> m_hasCallback{false};
+    std::atomic<MouseEventCallback*> m_atomicCallback{nullptr};
+    std::unique_ptr<MouseEventCallback> m_callbackHolder;
     MouseHookFaultCallback m_faultCallback;
     std::mutex m_callbackMutex;
 };

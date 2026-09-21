@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // GestureRecognizer.cpp — 手势识别算法实现
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -262,7 +262,12 @@ bool GestureRecognizer::isAdvancing(Direction dir, const TrackPoint& peak, const
 }
 
 GestureRecognizer::GestureRecognizer(const RecognizerConfig& config)
-    : m_config(config) {}
+    : m_config(config) {
+    m_points.reserve(kMaxPoints);
+    m_directions.reserve(16);
+    m_segmentLengths.reserve(16);
+    m_cachedDirections.reserve(16);
+}
 
 void GestureRecognizer::reset() {
     m_points.clear();
@@ -272,6 +277,10 @@ void GestureRecognizer::reset() {
     m_hasSegmentStart = false;
     m_segmentStart = {0, 0};
     m_peakPoint = {0, 0};
+    m_dirsDirty = true;
+    m_cachedDirections.clear();
+    m_cachedPackedDirections = 0;
+    m_lastPeakPoint = {-1, -1};
 }
 
 void GestureRecognizer::addPoint(int x, int y) {
@@ -283,13 +292,18 @@ void GestureRecognizer::addPoint(int x, int y) {
         }
     }
 
-    m_points.push_back({x, y});
+    if (m_points.size() < kMaxPoints) {
+        m_points.push_back({x, y});
+    } else {
+        m_points.back() = {x, y};
+    }
 
     // 初始化段起点
     if (!m_hasSegmentStart) {
         m_segmentStart = {x, y};
         m_peakPoint = {x, y};
         m_hasSegmentStart = true;
+        m_dirsDirty = true;
         return;
     }
 
@@ -316,6 +330,7 @@ void GestureRecognizer::processPoints() {
         if (dir != Direction::None) {
             m_currentDirection = dir;
             m_peakPoint = current;
+            m_dirsDirty = true;
         }
         return;
     }
@@ -346,6 +361,7 @@ void GestureRecognizer::processPoints() {
             m_segmentStart = m_peakPoint;
             m_currentDirection = turnDir;
             m_peakPoint = current;
+            m_dirsDirty = true;
         }
     }
 }
@@ -412,14 +428,41 @@ std::optional<GestureResult> GestureRecognizer::finalize() {
     return result;
 }
 
-std::vector<Direction> GestureRecognizer::currentDirections() const {
+const std::vector<Direction>& GestureRecognizer::currentDirections() const {
+    if (!m_dirsDirty && m_lastPeakPoint.x != -1) {
+        const double delta = calculateDistance(m_lastPeakPoint.x, m_lastPeakPoint.y, m_peakPoint.x, m_peakPoint.y);
+        if (delta < 4.0) {
+            return m_cachedDirections;
+        }
+    }
+
     const double currentLen = calculateDistance(
         m_segmentStart.x, m_segmentStart.y, m_peakPoint.x, m_peakPoint.y);
     auto simplified = simplifySegments(
         segmentsFrom(m_directions, m_segmentLengths, m_currentDirection, currentLen));
-    const std::string rawCode = directionsToCode(simplified);
-    const std::string refined = refineCodeWithPath(rawCode, m_points, m_config.minSegmentDistance);
-    return (refined == rawCode) ? simplified : codeToDirections(refined);
+
+    // 仅在单段主轴方向且具备轨迹转折时进行细化，避免无谓的字符串双向编解码
+    if (simplified.size() == 1 && m_points.size() >= 3) {
+        const std::string rawCode = directionToCode(simplified[0]);
+        const std::string refined = refineCodeWithPath(rawCode, m_points, m_config.minSegmentDistance);
+        if (refined != rawCode) {
+            simplified = codeToDirections(refined);
+        }
+    }
+
+    const DirectionCodeBits newPacked = packDirections(simplified);
+    if (newPacked != m_cachedPackedDirections || m_dirsDirty) {
+        m_cachedPackedDirections = newPacked;
+        m_cachedDirections = std::move(simplified);
+    }
+    m_lastPeakPoint = m_peakPoint;
+    m_dirsDirty = false;
+    return m_cachedDirections;
+}
+
+DirectionCodeBits GestureRecognizer::currentPackedDirections() const noexcept {
+    currentDirections();
+    return m_cachedPackedDirections;
 }
 
 bool GestureRecognizer::isScribbleCanceled() const {

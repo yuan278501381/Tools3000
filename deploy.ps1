@@ -836,7 +836,7 @@ if (-not $SkipTests) {
         $LifecycleScript = Join-Path $BuildDir "verify_lifecycle.ps1"
     }
     if (Test-Path $LifecycleScript) {
-        Write-Log "🚀 正在执行全模块生命周期与防死锁自动化端到端审计 (verify_lifecycle.ps1)..." "INFO"
+        Write-Log "[GATE] 正在执行全模块生命周期与防死锁自动化端到端审计 (verify_lifecycle.ps1)..." "INFO"
         & pwsh.exe -File $LifecycleScript
         if ($LASTEXITCODE -ne 0) {
             throw "关键生命周期自动化端到端门禁未通过！退出码: $LASTEXITCODE"
@@ -846,7 +846,7 @@ if (-not $SkipTests) {
 
     $GestureE2EScript = Join-Path $ScriptDir "scripts\test_gesture_e2e.ps1"
     if (Test-Path $GestureE2EScript) {
-        Write-Log "🖱️ 正在执行鼠标手势操作系统级端到端划动与自愈自动化审计 (test_gesture_e2e.ps1)..." "INFO"
+        Write-Log "[GATE] 正在执行鼠标手势操作系统级端到端划动与自愈自动化审计 (test_gesture_e2e.ps1)..." "INFO"
         $TargetE2EExe = Join-Path $DeployDir "Tools3000.exe"
 
         & pwsh.exe -File $GestureE2EScript -ExePath $TargetE2EExe
@@ -856,9 +856,33 @@ if (-not $SkipTests) {
         Write-Log "鼠标手势操作系统级端到端门禁全部通过。" "SUCCESS"
     }
 
+    $Stress1000HzScript = Join-Path $ScriptDir "scripts\stress_gesture_1000hz.ps1"
+    if (Test-Path $Stress1000HzScript) {
+        Write-Log "[GATE] 正在执行 1000Hz 鼠标手势与 DirectComposition 极限高压压力测试门禁 (stress_gesture_1000hz.ps1)..." "INFO"
+        $TargetE2EExe = Join-Path $DeployDir "Tools3000.exe"
+
+        & pwsh.exe -File $Stress1000HzScript -ExePath $TargetE2EExe
+        if ($LASTEXITCODE -ne 0) {
+            throw "1000Hz 鼠标手势与 DirectComposition 压力测试门禁未通过！退出码: $LASTEXITCODE"
+        }
+        Write-Log "1000Hz 鼠标手势与 DirectComposition 压力测试门禁全部通过。" "SUCCESS"
+    }
+
+    $AdversarialStressScript = Join-Path $ScriptDir "scripts\adversarial_stress_gesture.ps1"
+    if (Test-Path $AdversarialStressScript) {
+        Write-Log "[GATE] 正在执行鼠标手势对抗性高并发与防死锁压力测试门禁 (adversarial_stress_gesture.ps1)..." "INFO"
+        $TargetE2EExe = Join-Path $DeployDir "Tools3000.exe"
+
+        & pwsh.exe -File $AdversarialStressScript -ExePath $TargetE2EExe
+        if ($LASTEXITCODE -ne 0) {
+            throw "鼠标手势对抗性高并发与防死锁压力测试门禁未通过！退出码: $LASTEXITCODE"
+        }
+        Write-Log "鼠标手势对抗性高并发与防死锁压力测试门禁全部通过。" "SUCCESS"
+    }
+
     $RecordingKeycastE2EScript = Join-Path $ScriptDir "scripts\test_recording_keycast_e2e.ps1"
     if (Test-Path $RecordingKeycastE2EScript) {
-        Write-Log "⌨️ 正在执行录屏按键回显操作系统级端到端自动化审计 (test_recording_keycast_e2e.ps1)..." "INFO"
+        Write-Log "[GATE] 正在执行录屏按键回显操作系统级端到端自动化审计 (test_recording_keycast_e2e.ps1)..." "INFO"
         $TargetE2EExe = Join-Path $DeployDir "Tools3000.exe"
 
         & pwsh.exe -File $RecordingKeycastE2EScript -ExePath $TargetE2EExe
