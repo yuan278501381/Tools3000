@@ -4367,7 +4367,15 @@ TEST(ClipboardUtilsTest, TrimWorkingSetZeroDamageClipboardIntegrity) {
     // 关键架构验证：证实物理内存修剪 (trimWorkingSet) 在交付后执行时，
     // 对系统剪贴板句柄与多格式数据具备 100% 零破坏保障
     cv::Mat testImage(80, 80, CV_8UC4, cv::Scalar(60, 120, 180, 255));
-    ASSERT_TRUE(tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage));
+    bool copyOk = false;
+    for (int retry = 0; retry < 15; ++retry) {
+        if (tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage)) {
+            copyOk = true;
+            break;
+        }
+        Sleep(20);
+    }
+    ASSERT_TRUE(copyOk);
 
     // 主动触发物理工作集修剪 (SetProcessWorkingSetSize 强行驱逐内存分页)
     tools3000::core::WinUtils::trimWorkingSet(true);
@@ -5926,7 +5934,15 @@ TEST(PinPasteCoordinatorTest, ExternalClipboardPrecedesHistory) {
 
     // 用户在外部（如浏览器）复制了一张新图片 (48x48)
     cv::Mat externalImg(48, 48, CV_8UC3, cv::Scalar(99, 99, 99));
-    ClipboardUtils::copyImageToClipboard(externalImg);
+    bool copied = false;
+    for (int r = 0; r < 10; ++r) {
+        if (ClipboardUtils::copyImageToClipboard(externalImg)) {
+            copied = true;
+            break;
+        }
+        Sleep(20);
+    }
+    ASSERT_TRUE(copied);
 
     auto& coord = PinPasteCoordinator::instance();
     coord.reset();

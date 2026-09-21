@@ -726,6 +726,78 @@ inline constexpr bool isPointInMonitorRect(const RECT& rc, POINT pt) noexcept {
     return pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 累积手势包围盒管线 (Cumulative Bounding Box Pipeline) 纯计算策略
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 计算手势笔画外扩脏矩形安全裕量 (包含笔画线宽、柔光外发光、头部发光晶体与抗锯齿余量)
+inline int computeTrailDirtyMargin(float lineWidth, float dpiScale) noexcept {
+    const float coreW = (std::max)(lineWidth * dpiScale, 4.0f);
+    return static_cast<int>(std::ceil(coreW * 2.5f + 16.0f * dpiScale)) + 8;
+}
+
+/// 合并并严格双向钳制累积手势脏矩形至虚拟表面边界
+inline RECT unionAndClampStrokeDirtyRect(const RECT& prevAccumulated, const RECT& currentBox, int surfaceW, int surfaceH) noexcept {
+    if (surfaceW <= 0 || surfaceH <= 0) {
+        return RECT{0, 0, (std::max)(1, surfaceW), (std::max)(1, surfaceH)};
+    }
+
+    const bool prevEmpty = IsRectEmpty(&prevAccumulated);
+    const bool currEmpty = IsRectEmpty(&currentBox);
+
+    RECT dirtyRect{ 0, 0, 0, 0 };
+    if (prevEmpty && currEmpty) {
+        dirtyRect = { 0, 0, 1, 1 };
+    } else if (prevEmpty) {
+        dirtyRect = currentBox;
+    } else if (currEmpty) {
+        dirtyRect = prevAccumulated;
+    } else {
+        UnionRect(&dirtyRect, &prevAccumulated, &currentBox);
+    }
+
+    // 严格双向钳制，数学级保证 0 <= left < right <= surfaceW 以及 0 <= top < bottom <= surfaceH
+    dirtyRect.left = (std::max)(0L, (std::min)(static_cast<LONG>(surfaceW - 1), dirtyRect.left));
+    dirtyRect.top = (std::max)(0L, (std::min)(static_cast<LONG>(surfaceH - 1), dirtyRect.top));
+    dirtyRect.right = (std::max)(static_cast<LONG>(dirtyRect.left + 1), (std::min)(static_cast<LONG>(surfaceW), dirtyRect.right));
+    dirtyRect.bottom = (std::max)(static_cast<LONG>(dirtyRect.top + 1), (std::min)(static_cast<LONG>(surfaceH), dirtyRect.bottom));
+    return dirtyRect;
+}
+
+/// 计算指定轨迹点集的几何外接包围盒 (含外扩安全裕量并严格双向钳制在虚拟表面边界内)
+template <typename PointType>
+inline RECT computeTrailPointsBoundingBox(
+    const std::vector<PointType>& points,
+    int originX,
+    int originY,
+    int surfaceW,
+    int surfaceH,
+    float lineWidth,
+    float dpiScale) noexcept {
+    if (points.empty() || surfaceW <= 0 || surfaceH <= 0) {
+        return RECT{0, 0, (std::max)(1, surfaceW), (std::max)(1, surfaceH)};
+    }
+
+    const int margin = computeTrailDirtyMargin(lineWidth, dpiScale);
+
+    int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+    for (size_t i = 0; i < points.size(); ++i) {
+        const int px = static_cast<int>(points[i].x) - originX;
+        const int py = static_cast<int>(points[i].y) - originY;
+        minX = (std::min)(minX, px);
+        minY = (std::min)(minY, py);
+        maxX = (std::max)(maxX, px);
+        maxY = (std::max)(maxY, py);
+    }
+
+    RECT r;
+    r.left = (std::max)(0L, (std::min)(static_cast<LONG>(surfaceW - 1), static_cast<LONG>(minX - margin)));
+    r.top = (std::max)(0L, (std::min)(static_cast<LONG>(surfaceH - 1), static_cast<LONG>(minY - margin)));
+    r.right = (std::max)(static_cast<LONG>(r.left + 1), (std::min)(static_cast<LONG>(surfaceW), static_cast<LONG>(maxX + margin + 1)));
+    r.bottom = (std::max)(static_cast<LONG>(r.top + 1), (std::min)(static_cast<LONG>(surfaceH), static_cast<LONG>(maxY + margin + 1)));
+    return r;
+}
+
 }  // namespace tools3000::gesture
 
 #endif  // TOOLS3000_GESTURE_GESTUREINPUTPOLICY_H

@@ -113,6 +113,17 @@ public:
     /// 渲染循环当前是否处于活跃节拍/呈现状态 (F13 审计断言)
     bool isRenderLoopActive() const noexcept { return m_renderLoopActive.load(std::memory_order_relaxed); }
 
+    /// 计算指定轨迹点集的外接脏矩形（含画笔线宽、柔光光晕与抗锯齿裕量）
+    RECT computeTrailDirtyRect(
+        const std::vector<TrailPoint>& points,
+        int originX,
+        int originY,
+        int surfaceW,
+        int surfaceH) const noexcept;
+
+    /// 获取累积手势脏矩形 (供测试与外部诊断断言)
+    RECT accumulatedStrokeDirtyRect() const noexcept { return m_accumulatedStrokeDirtyRect; }
+
 private:
     GestureTrailOverlay() = default;
     ~GestureTrailOverlay() = default;
@@ -178,15 +189,6 @@ private:
             surface.Reset();
         }
     };
-
-    /// 计算指定轨迹点集的外接脏矩形（含画笔线宽、柔光光晕与抗锯齿裕量）
-    RECT computeTrailDirtyRect(
-        const std::vector<TrailPoint>& points,
-        size_t startIdx,
-        int originX,
-        int originY,
-        int surfaceW,
-        int surfaceH) const noexcept;
 
     bool renderTrailToSurfaceLocked(
         GpuSurfaceContext& ctx,
@@ -334,9 +336,7 @@ private:
     Microsoft::WRL::ComPtr<IDCompositionVisual> m_trailDcompVisual;
     Microsoft::WRL::ComPtr<IDCompositionEffectGroup> m_trailEffectGroup;
     GpuSurfaceContext m_frontCtx;
-    GpuSurfaceContext m_backCtx;
     Microsoft::WRL::ComPtr<IDCompositionSurface> m_trailDcompSurface;
-    Microsoft::WRL::ComPtr<IDCompositionSurface> m_trailBackSurface;
     int m_trailDcompW = 0;
     int m_trailDcompH = 0;
     Microsoft::WRL::ComPtr<IDCompositionVisual> m_toastDcompVisual;
@@ -355,9 +355,8 @@ private:
     float m_dpiScale = 1.0f;
     float m_textScale = 0.0f;
 
-    // F8: 增量绘制与局部脏矩形追踪
-    size_t m_lastDrawnPointCount = 0;
-    bool m_lastRecognizedState = false;
+    // 累积手势包围盒 (Cumulative Bounding Box Pipeline)
+    RECT m_accumulatedStrokeDirtyRect{ 0, 0, 0, 0 };
 
     bool m_isLightTheme = false;
     bool m_isDarkTheme = true;

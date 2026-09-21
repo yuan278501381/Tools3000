@@ -2889,6 +2889,220 @@ TEST(GesturePacerTest, F12_TipPhaseLatencyBound144HzAnd240Hz) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 累积手势包围盒管线 (Cumulative Bounding Box Pipeline) 专项门禁测试集
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CumulativeBoundingBoxTest, MarginCalculationFormula) {
+    using namespace tools3000::gesture;
+
+    // 1. 基准 100% DPI (96 DPI): lineWidth = 3.0f -> coreW = max(3.0 * 1.0, 4.0) = 4.0f
+    // margin = ceil(4.0 * 2.5 + 16.0 * 1.0) + 8 = ceil(10.0 + 16.0) + 8 = 34
+    EXPECT_EQ(computeTrailDirtyMargin(3.0f, 1.0f), 34);
+
+    // 2. 高分屏 200% DPI: lineWidth = 3.0f -> coreW = max(3.0 * 2.0, 4.0) = 6.0f
+    // margin = ceil(6.0 * 2.5 + 16.0 * 2.0) + 8 = ceil(15.0 + 32.0) + 8 = 55
+    EXPECT_EQ(computeTrailDirtyMargin(3.0f, 2.0f), 55);
+
+    // 3. 粗线条 10.0f @ 1.0f DPI: coreW = 10.0f -> ceil(25.0 + 16.0) + 8 = 49
+    EXPECT_EQ(computeTrailDirtyMargin(10.0f, 1.0f), 49);
+
+    // 4. 极细线条 1.0f @ 1.0f DPI: coreW 钳制至 4.0f 下限 -> ceil(10.0 + 16.0) + 8 = 34
+    EXPECT_EQ(computeTrailDirtyMargin(1.0f, 1.0f), 34);
+}
+
+TEST(CumulativeBoundingBoxTest, MonotonicUnionPreventsGapsAndOrphanCrystals) {
+    using namespace tools3000::gesture;
+
+    constexpr int kSurfaceW = 1920;
+    constexpr int kSurfaceH = 1080;
+    const int margin = computeTrailDirtyMargin(3.0f, 1.0f); // 34
+
+    // 模拟用户上传截图中的真实轨迹断裂场景：
+    // Frame 1: 向右上连续划动，历史点 (100, 500) -> (200, 400) -> (300, 300)，尖端临时补点 (380, 240)
+    RECT frame1Box = {
+        (std::max)(0, 100 - margin),
+        (std::max)(0, 240 - margin),
+        (std::min)(kSurfaceW, 380 + margin + 1),
+        (std::min)(kSurfaceH, 500 + margin + 1)
+    };
+    RECT accumRect = frame1Box;
+
+    // Frame 2: 右上转折向下右划动，接收新点 (350, 260) -> (400, 320)，新尖端补点 (420, 350)
+    // 注意：旧点包含 (100, 500) 到 (420, 350)，当前帧包围盒为 [100, 240, 420, 500] + margin
+    RECT frame2Box = {
+        (std::max)(0, 100 - margin),
+        (std::max)(0, 240 - margin),
+        (std::min)(kSurfaceW, 420 + margin + 1),
+        (std::min)(kSurfaceH, 500 + margin + 1)
+    };
+
+    RECT dirtyUnion = unionAndClampStrokeDirtyRect(accumRect, frame2Box, kSurfaceW, kSurfaceH);
+
+    // 断言 1: Frame 2 累积脏矩形必须完整包含 Frame 1 的临时尖端 (380, 240)，确保上一帧头部圆球晶体被 100% 擦除
+    EXPECT_LE(dirtyUnion.left, 380 - margin);
+    EXPECT_GE(dirtyUnion.right, 380 + margin + 1);
+    EXPECT_LE(dirtyUnion.top, 240 - margin);
+    EXPECT_GE(dirtyUnion.bottom, 240 + margin + 1);
+
+    // 断言 2: Frame 2 累积脏矩形必须完整包含转折点 (300, 300)，彻底消灭 63px 断层真空切口
+    EXPECT_LE(dirtyUnion.left, 300 - margin);
+    EXPECT_GE(dirtyUnion.right, 300 + margin + 1);
+    EXPECT_LE(dirtyUnion.top, 300 - margin);
+    EXPECT_GE(dirtyUnion.bottom, 300 + margin + 1);
+
+    // 断言 3: 累积脏矩形保持单调包裹 (Monotonic Bounding)
+    EXPECT_LE(dirtyUnion.left, accumRect.left);
+    EXPECT_LE(dirtyUnion.top, accumRect.top);
+    EXPECT_GE(dirtyUnion.right, accumRect.right);
+    EXPECT_GE(dirtyUnion.bottom, accumRect.bottom);
+}
+
+TEST(CumulativeBoundingBoxTest, VirtualScreenBoundaryClamping) {
+    using namespace tools3000::gesture;
+
+    constexpr int kSurfaceW = 1920;
+    constexpr int kSurfaceH = 1080;
+
+    // 左上角局部越界点
+    RECT outTopLeft = {-50, -50, 100, 100};
+    RECT clampedTopLeft = unionAndClampStrokeDirtyRect(RECT{0, 0, 0, 0}, outTopLeft, kSurfaceW, kSurfaceH);
+    EXPECT_GE(clampedTopLeft.left, 0);
+    EXPECT_GE(clampedTopLeft.top, 0);
+    EXPECT_LE(clampedTopLeft.right, kSurfaceW);
+    EXPECT_LE(clampedTopLeft.bottom, kSurfaceH);
+    EXPECT_LT(clampedTopLeft.left, clampedTopLeft.right);
+    EXPECT_LT(clampedTopLeft.top, clampedTopLeft.bottom);
+
+    // 右下角局部越界点
+    RECT outBottomRight = {1850, 1000, 2100, 1200};
+    RECT clampedBottomRight = unionAndClampStrokeDirtyRect(RECT{0, 0, 0, 0}, outBottomRight, kSurfaceW, kSurfaceH);
+    EXPECT_GE(clampedBottomRight.left, 0);
+    EXPECT_GE(clampedBottomRight.top, 0);
+    EXPECT_LE(clampedBottomRight.right, kSurfaceW);
+    EXPECT_LE(clampedBottomRight.bottom, kSurfaceH);
+    EXPECT_LT(clampedBottomRight.left, clampedBottomRight.right);
+    EXPECT_LT(clampedBottomRight.top, clampedBottomRight.bottom);
+
+    // 极端场景 1: 完全处于右下角屏幕外的脏矩形 (left >= surfaceW, top >= surfaceH)
+    RECT extremeBottomRight = {2000, 1500, 2200, 1600};
+    RECT clampedExtremeBR = unionAndClampStrokeDirtyRect(RECT{0, 0, 0, 0}, extremeBottomRight, kSurfaceW, kSurfaceH);
+    EXPECT_GE(clampedExtremeBR.left, 0);
+    EXPECT_LT(clampedExtremeBR.left, clampedExtremeBR.right);
+    EXPECT_LE(clampedExtremeBR.right, kSurfaceW);
+    EXPECT_GE(clampedExtremeBR.top, 0);
+    EXPECT_LT(clampedExtremeBR.top, clampedExtremeBR.bottom);
+    EXPECT_LE(clampedExtremeBR.bottom, kSurfaceH);
+
+    // 极端场景 2: 完全处于左上角屏幕外的脏矩形 (right <= 0, bottom <= 0)
+    RECT extremeTopLeft = {-300, -200, -100, -50};
+    RECT clampedExtremeTL = unionAndClampStrokeDirtyRect(RECT{0, 0, 0, 0}, extremeTopLeft, kSurfaceW, kSurfaceH);
+    EXPECT_GE(clampedExtremeTL.left, 0);
+    EXPECT_LT(clampedExtremeTL.left, clampedExtremeTL.right);
+    EXPECT_LE(clampedExtremeTL.right, kSurfaceW);
+    EXPECT_GE(clampedExtremeTL.top, 0);
+    EXPECT_LT(clampedExtremeTL.top, clampedExtremeTL.bottom);
+    EXPECT_LE(clampedExtremeTL.bottom, kSurfaceH);
+}
+
+TEST(CumulativeBoundingBoxTest, EmptyRectAndSafetyGuarantees) {
+    using namespace tools3000::gesture;
+
+    constexpr int kSurfaceW = 1920;
+    constexpr int kSurfaceH = 1080;
+
+    RECT empty = {0, 0, 0, 0};
+    RECT normal = {100, 100, 200, 200};
+
+    // 与空矩形合并返回非空矩形本身
+    RECT res1 = unionAndClampStrokeDirtyRect(empty, normal, kSurfaceW, kSurfaceH);
+    EXPECT_EQ(res1.left, 100);
+    EXPECT_EQ(res1.top, 100);
+    EXPECT_EQ(res1.right, 200);
+    EXPECT_EQ(res1.bottom, 200);
+
+    // 两者均为空时，确保尺寸至少为 1 像素且在表面范围内
+    RECT res2 = unionAndClampStrokeDirtyRect(empty, empty, kSurfaceW, kSurfaceH);
+    EXPECT_GE(res2.left, 0);
+    EXPECT_LT(res2.left, res2.right);
+    EXPECT_LE(res2.right, kSurfaceW);
+    EXPECT_GE(res2.top, 0);
+    EXPECT_LT(res2.top, res2.bottom);
+    EXPECT_LE(res2.bottom, kSurfaceH);
+
+    // 非法表面尺寸 (<= 0) 降级保护
+    RECT resInvalid = unionAndClampStrokeDirtyRect(normal, normal, 0, -10);
+    EXPECT_GE(resInvalid.right - resInvalid.left, 1);
+    EXPECT_GE(resInvalid.bottom - resInvalid.top, 1);
+}
+
+TEST(CumulativeBoundingBoxTest, ComputeTrailPointsBoundingBoxCalculation) {
+    using namespace tools3000::gesture;
+
+    std::vector<POINT> pts = {{100, 100}, {150, 150}, {200, 200}};
+    RECT box = computeTrailPointsBoundingBox(pts, 0, 0, 1920, 1080, 3.0f, 1.0f);
+    const int margin = computeTrailDirtyMargin(3.0f, 1.0f);
+    EXPECT_EQ(box.left, 100 - margin);
+    EXPECT_EQ(box.top, 100 - margin);
+    EXPECT_EQ(box.right, 200 + margin + 1);
+    EXPECT_EQ(box.bottom, 200 + margin + 1);
+
+    // 空轨迹点安全返回全表面降级包围盒
+    std::vector<POINT> emptyPts;
+    RECT fallbackBox = computeTrailPointsBoundingBox(emptyPts, 0, 0, 1920, 1080, 3.0f, 1.0f);
+    EXPECT_EQ(fallbackBox.left, 0);
+    EXPECT_EQ(fallbackBox.top, 0);
+    EXPECT_EQ(fallbackBox.right, 1920);
+    EXPECT_EQ(fallbackBox.bottom, 1080);
+
+    // 极端场景 1: 所有轨迹点完全超出屏幕右下边界
+    std::vector<POINT> offscreenPtsBR = {{2500, 1500}, {2600, 1600}};
+    RECT offBoxBR = computeTrailPointsBoundingBox(offscreenPtsBR, 0, 0, 1920, 1080, 3.0f, 1.0f);
+    EXPECT_GE(offBoxBR.left, 0);
+    EXPECT_LT(offBoxBR.left, offBoxBR.right);
+    EXPECT_LE(offBoxBR.right, 1920);
+    EXPECT_GE(offBoxBR.top, 0);
+    EXPECT_LT(offBoxBR.top, offBoxBR.bottom);
+    EXPECT_LE(offBoxBR.bottom, 1080);
+
+    // 极端场景 2: 所有轨迹点完全超出屏幕左上边界
+    std::vector<POINT> offscreenPtsTL = {{-500, -300}, {-200, -100}};
+    RECT offBoxTL = computeTrailPointsBoundingBox(offscreenPtsTL, 0, 0, 1920, 1080, 3.0f, 1.0f);
+    EXPECT_GE(offBoxTL.left, 0);
+    EXPECT_LT(offBoxTL.left, offBoxTL.right);
+    EXPECT_LE(offBoxTL.right, 1920);
+    EXPECT_GE(offBoxTL.top, 0);
+    EXPECT_LT(offBoxTL.top, offBoxTL.bottom);
+    EXPECT_LE(offBoxTL.bottom, 1080);
+}
+
+TEST(CumulativeBoundingBoxTest, EndToEndStrokePointsUnionVerification) {
+    using namespace tools3000::gesture;
+
+    constexpr int kSurfaceW = 1920;
+    constexpr int kSurfaceH = 1080;
+
+    // 模拟从起点到拐折点再到终点的完整划动过程，断言累积矩形全程单调包裹
+    std::vector<POINT> f1 = {{100, 200}, {150, 180}, {220, 150}};
+    RECT b1 = computeTrailPointsBoundingBox(f1, 0, 0, kSurfaceW, kSurfaceH, 3.0f, 1.0f);
+    RECT acc = b1;
+
+    std::vector<POINT> f2 = {{100, 200}, {150, 180}, {220, 150}, {300, 250}, {350, 320}};
+    RECT b2 = computeTrailPointsBoundingBox(f2, 0, 0, kSurfaceW, kSurfaceH, 3.0f, 1.0f);
+    acc = unionAndClampStrokeDirtyRect(acc, b2, kSurfaceW, kSurfaceH);
+
+    // 累积矩形必须单调包含帧 1 与帧 2 的所有特征点
+    EXPECT_LE(acc.left, b1.left);
+    EXPECT_LE(acc.top, b1.top);
+    EXPECT_GE(acc.right, b1.right);
+    EXPECT_GE(acc.bottom, b1.bottom);
+
+    EXPECT_LE(acc.left, b2.left);
+    EXPECT_LE(acc.top, b2.top);
+    EXPECT_GE(acc.right, b2.right);
+    EXPECT_GE(acc.bottom, b2.bottom);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 引入手势与 DirectComposition 渲染管线 Tiers 1-3 全面门禁测试集
 // ─────────────────────────────────────────────────────────────────────────────
 #include "test_gesture_tiers.inc"

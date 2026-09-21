@@ -6,6 +6,34 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-09-21] 手势轨迹连续无断裂与累积包围盒架构重构 (Cumulative Bounding Box Pipeline)
+- **背景与痛点**：
+  在高速、高刷新率或连续折线手势划动过程中，右上转折处偶发宽达 63px 的物理断开空洞，并在屏幕表面遗留未擦除的孤儿发光能量晶体圆环；同时 `GestureTrailOverlay` 预分配了未曾使用的后台表面（`m_backCtx` / `m_trailBackSurface`），冗余占用近 30MB 物理显存。
+- **根因深度分析**：
+  1. **局部增量脏矩形索引跳跃脱节**：旧架构基于点索引切片局部增量脏矩形（`m_lastDrawnPointCount`）。上一帧绘制时临时补入了物理光标尖端 `cursorTip` 并更新了绘制点数，但该临时点未持久化入 `m_points`。下一帧重新切片时索引跳跃，导致相邻两帧的局部脏矩形失去几何重叠，产生了 63 像素的真空断层，在 DirectComposition 保留表面上暴露出透明切口。
+  2. **孤儿发光晶体残留**：由于局部脏矩形随手势推进不断前移，上一帧在手势尖端绘制的头部能量晶体圆环落在了后续帧脏矩形之外未被擦除，永久灼刻在屏幕上。
+  3. **冗余显存分配**：`preallocateTrailSurfacesLocked` 中分配了双缓冲 `newBack`（`m_backCtx`），但实际渲染始终向 `m_frontCtx` 单向提交，白白浪费了 30MB+ 物理显存。
+- **架构方案与单一事实源 (SSOT)**：
+  1. **累积手势包围盒管线 (Cumulative Bounding Box Pipeline)**：
+     - 彻底废黜脆弱的按点索引切片局部增量脏矩形，移除 `m_lastDrawnPointCount`、`m_lastRecognizedState` 等冗余切片状态变量；
+     - 引入 `m_accumulatedStrokeDirtyRect`：每次划动从第 0 点到最新点（包含 `cursorTip`）计算几何包围盒，并与上一帧累积矩形求并集（`UnionRect`），外扩裕量 `margin = ceil(coreW * 2.5f + 16.0f * m_dpiScale) + 8`，并严格钳制在虚拟表面物理边界内；
+     - 传入 `BeginDraw(&m_accumulatedStrokeDirtyRect)`，并在该累积区域内先执行 `Clear(0, 0, 0, 0)`，彻底消灭历史笔画重影与孤儿晶体；
+     - 一次性从第 0 点到最新点生成整条连续连贯的 Direct2D `PathGeometry`，保障数学级绝对 $C^1$ 连续平滑无断裂；
+     - 手势启动（`beginTrail`）、隐藏（`applyHideOverlayState`）、清空（`clearCanvasLocked`）与资源重置时安全复位 `m_accumulatedStrokeDirtyRect = { 0, 0, 0, 0 }`。
+  2. **显存减负与单表面架构**：
+     - 彻底剔除 `m_backCtx` 与 `m_trailBackSurface` 冗余显存分配，直接节省 30MB+ 物理显存。
+  3. **纯计算策略下沉与双向安全钳制**：
+     - 在 `GestureInputPolicy.h` 形式化沉淀 `computeTrailDirtyMargin`、`unionAndClampStrokeDirtyRect` 与 `computeTrailPointsBoundingBox` 纯计算模板函数；
+     - 修复极端越界坐标下脏矩形 `left >= surfaceW` 导致的逆序反转缺陷，实施严格双向数学级钳制，确保无论输入何种超界坐标，均恒满足 `0 <= left < right <= surfaceW` 与 `0 <= top < bottom <= surfaceH`；
+     - 修复 `beginTrail` 与首帧 `renderTrailToSurfaceLocked` 之间的 Direct2D 画刷与 RenderTarget 复用解耦，杜绝画刷空指针漏刷；
+     - 在 `tests/unit/test_gesture.inc` 中增加 `CumulativeBoundingBoxTest`（6 个专项测试），全面覆盖外扩裕量计算公式、单调并集防断层与孤儿晶体擦除、极端越界屏幕边界钳制、空矩形降级保护与端到端轨迹点集验证。
+- **验证结论**：
+  - 510 项原生单元测试 100% 全部通过；
+  - 前端 6 重质量门禁（`eslint`、`check-i18n.js`、`check-logger.js`、`check-css-variables.js`、`check-typography.js`、`check-trim-workingset.js`）及 120 项 Vitest 测试 100% 全部通过；
+  - `deploy.ps1 -Configuration Release -Quick` 自动化流水线（含 Tier 4 1000Hz 真实高压工作负载与并发对抗测试）100% PASS，成功构建并生成最新安装包。
+
+---
+
 ### [2026-09-18] 鼠标手势轨迹零延迟跟手调优门禁化
 - **背景与痛点**：
   对标 WGestures2 的极致跟手体验，此前在 `GestureTrailOverlay` 中引入了即时唤醒渲染、最高线程优先级（`THREAD_PRIORITY_HIGHEST`）及物理光标尖端原子同步插值技术。为防止后续重构引发性能退化，需将上述规则形式化为纯策略逻辑并建立防回退自动化单测。
