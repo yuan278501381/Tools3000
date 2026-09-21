@@ -463,9 +463,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
         return 1;
     }
 
-    // 同步用户语言设置到日志系统 (0 锁动态切换)
+    // 同步用户语言设置与日志保留天数到日志系统 (0 锁动态切换)
     tools3000::core::Logger::setLanguage(
         tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "auto")
+    );
+    tools3000::core::Logger::setRetentionDays(
+        tools3000::core::ConfigManager::instance().get<uint32_t>("/general/logRetentionDays", 7)
     );
 
     // ── 5b. 检测并应用安装器生成的初始模块开关 (initial_modules.json) ──

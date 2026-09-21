@@ -26,6 +26,7 @@ interface GeneralSettings {
   dataDirectory?: string;
   language: string;
   logLevel: string;
+  logRetentionDays?: number;
   theme: string;
   trayIconTheme?: string;
 }
@@ -58,6 +59,7 @@ export const GeneralPage: FC = () => {
     autoReleaseSettingsMemory: true,
     language: 'auto',
     logLevel: 'info',
+    logRetentionDays: 7,
     theme: 'dark',
     trayIconTheme: 'system',
   });
@@ -456,6 +458,21 @@ export const GeneralPage: FC = () => {
                 { value: 'info', label: 'Info' },
                 { value: 'warn', label: 'Warning' },
                 { value: 'error', label: 'Error' },
+              ]}
+            />
+          </SettingRow>
+
+          <SettingRow label={t('general.logRetentionDays')} description={t('general.logRetentionDaysDesc')}>
+            <Select
+              id="log-retention-days"
+              value={String(settings.logRetentionDays ?? 7)}
+              onChange={(v) => updateSetting('logRetentionDays', Number(v))}
+              options={[
+                { value: '3', label: t('general.retention3Days', '3 Days') },
+                { value: '7', label: t('general.retention7Days', '7 Days (Recommended)') },
+                { value: '14', label: t('general.retention14Days', '14 Days') },
+                { value: '30', label: t('general.retention30Days', '30 Days') },
+                { value: '0', label: t('general.retentionForever', 'Keep Forever') },
               ]}
             />
           </SettingRow>

@@ -1840,6 +1840,7 @@ void MessageBridge::registerBuiltinHandlers() {
             {"language", config.get<std::string>("/general/language", "auto")},
             {"fontFamily", config.get<std::string>("/general/fontFamily", "auto")},
             {"logLevel", config.get<std::string>("/general/logLevel", "info")},
+            {"logRetentionDays", config.get<uint32_t>("/general/logRetentionDays", 7)},
             {"theme", config.get<std::string>("/general/theme", "system")},
             {"accentColor", config.get<std::string>("/general/accentColor", "blue")},
             {"trayIconTheme", config.get<std::string>("/general/trayIconTheme", "system")},
@@ -1907,7 +1908,12 @@ void MessageBridge::registerBuiltinHandlers() {
                 !fontFamilies.contains(value.get<std::string>()))) {
                 return {{"success", false}, {"error", "invalid font family"}};
             }
-            if (!boolKeys.contains(key) && key != "theme" && key != "accentColor" && key != "logLevel" && key != "language" && key != "fontFamily" && key != "trayIconTheme") {
+            if (key == "logRetentionDays") {
+                if (!value.is_number_integer() || value.get<int64_t>() < 0 || value.get<int64_t>() > 3650) {
+                    return {{"success", false}, {"error", "invalid log retention days"}};
+                }
+            }
+            if (!boolKeys.contains(key) && key != "theme" && key != "accentColor" && key != "logLevel" && key != "language" && key != "fontFamily" && key != "trayIconTheme" && key != "logRetentionDays") {
                 return {{"success", false}, {"error", "unsupported setting: " + key}};
             }
         }
@@ -1927,6 +1933,9 @@ void MessageBridge::registerBuiltinHandlers() {
             Logger::setLanguage(params["language"].get<std::string>());
         }
         if (params.contains("logLevel")) applyLogLevel(params["logLevel"].get<std::string>());
+        if (params.contains("logRetentionDays")) {
+            Logger::setRetentionDays(params["logRetentionDays"].get<uint32_t>());
+        }
         if (params.contains("theme") || params.contains("accentColor") || params.contains("trayIconTheme")) {
             EventBus::instance().publish(ThemeChangedEvent{
                 config.get<std::string>("/general/theme", "system"),

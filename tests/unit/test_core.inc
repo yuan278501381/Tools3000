@@ -2479,3 +2479,552 @@ TEST(MouseFeedbackOverlayBaseTest, LifecycleAndSleepContract) {
     EXPECT_EQ(overlay.hwnd(), nullptr);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WideUniversalRotatingFileSink & Logger 日志管家体系单元测试集
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+void writeTestLogMsg(
+    const std::shared_ptr<tools3000::core::WideUniversalRotatingFileSink>& sink,
+    const std::string& text)
+{
+    spdlog::source_loc loc{"test.cpp", 1, "test"};
+    spdlog::details::log_msg msg(loc, "test", spdlog::level::info, text);
+    sink->log(msg);
+}
+
+void removeDirectorySafely(const std::filesystem::path& dir) {
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+}  // namespace
+
+TEST(WideUniversalRotatingFileSinkTest, CanonicalNameAndFullSharingMode) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_canonical";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 1024 * 1024;
+    cfg.enableCompression = false;
+    cfg.idleHandleTimeoutMs = 60000;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    EXPECT_EQ(sink->getActiveLogPath(), testDir / L"tools3000.log");
+
+    writeTestLogMsg(sink, "Canonical log test message 1");
+
+    // 验证活动文件在原地创建
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    // 验证全共享模式：外部句柄能以读、写、删权限并发打开，不被死锁阻断
+    HANDLE hShared = CreateFileW(
+        sink->getActiveLogPath().c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    EXPECT_NE(hShared, INVALID_HANDLE_VALUE);
+    if (hShared != INVALID_HANDLE_VALUE) {
+        CloseHandle(hShared);
+    }
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, SizeBasedRotationAndSequenceNumbering) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_size_rot";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 250; // 较小阈值触发滚动
+    cfg.enableCompression = false;
+    cfg.idleHandleTimeoutMs = 60000;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    sink->setSimulatedDayForTesting("2026-09-21");
+
+    // 写入第一批数据
+    std::string line1(150, 'A');
+    writeTestLogMsg(sink, line1);
+
+    // 写入第二批数据，累计超过 250 字节，触发滚动
+    std::string line2(150, 'B');
+    writeTestLogMsg(sink, line2);
+
+    // 验证滚动归档产物
+    const auto archive1 = testDir / L"tools3000_2026-09-21_001.log";
+    EXPECT_TRUE(std::filesystem::exists(archive1));
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    // 再次写入超过 250 字节，触发第二次滚动，序号递增至 002
+    std::string line3(150, 'C');
+    writeTestLogMsg(sink, line3);
+
+    const auto archive2 = testDir / L"tools3000_2026-09-21_002.log";
+    EXPECT_TRUE(std::filesystem::exists(archive2));
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, ChronologicalMidnightRotation) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_midnight";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 10 * 1024 * 1024;
+    cfg.enableCompression = false;
+    cfg.idleHandleTimeoutMs = 60000;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    sink->setSimulatedDayForTesting("2026-09-21");
+
+    writeTestLogMsg(sink, "Log entry on day 2026-09-21");
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    // 跨天时钟触发：将活跃日期切换为 2026-09-22
+    sink->setSimulatedDayForTesting("2026-09-22");
+    writeTestLogMsg(sink, "Log entry on day 2026-09-22 after midnight");
+
+    // 前一天的日志被安全归档为带 2026-09-21 日期的历史文件
+    const auto archive = testDir / L"tools3000_2026-09-21_001.log";
+    EXPECT_TRUE(std::filesystem::exists(archive));
+
+    // 当前活动日志文件依然是恒定的 tools3000.log
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+    EXPECT_EQ(sink->getActiveDay(), "2026-09-22");
+
+    // 当天再次强制滚动，序号重置为 001
+    sink->forceRotate();
+    const auto archiveNewDay = testDir / L"tools3000_2026-09-22_001.log";
+    EXPECT_TRUE(std::filesystem::exists(archiveNewDay));
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, IdleHandleAutoCloseAndReopen) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_idle";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 1024 * 1024;
+    cfg.idleHandleTimeoutMs = 150; // 150ms 空闲超时
+    cfg.enableCompression = false;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    writeTestLogMsg(sink, "Initial active log");
+
+    // 刚写入后句柄为打开状态
+    EXPECT_TRUE(sink->isFileHandleOpen());
+
+    // 等待空闲超时触发 (超时设为 150ms，至多等待 1000ms)
+    bool handleClosed = false;
+    for (int i = 0; i < 50; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (!sink->isFileHandleOpen()) {
+            handleClosed = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(handleClosed);
+
+    // 再次写入日志，秒级自动重新打开句柄并续写
+    writeTestLogMsg(sink, "Reopened log after idle release");
+    EXPECT_TRUE(sink->isFileHandleOpen());
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, ExternalDeletionSelfHealing) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_del_heal";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 1024 * 1024;
+    cfg.idleHandleTimeoutMs = 60000;
+    cfg.enableCompression = false;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    writeTestLogMsg(sink, "Log before external deletion");
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    // 模拟外部工具或用户强行删除当前日志文件
+    std::error_code ec;
+    std::filesystem::remove(sink->getActiveLogPath(), ec);
+    EXPECT_FALSE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    // 再次写入日志，槽体透明自动自愈在原地重建 tools3000.log，无任何崩溃或异常
+    EXPECT_NO_THROW({
+        writeTestLogMsg(sink, "Log after external deletion self healing");
+    });
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, ExternalRenameSelfHealing) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_rename_heal";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 1024 * 1024;
+    cfg.idleHandleTimeoutMs = 60000;
+    cfg.enableCompression = false;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    writeTestLogMsg(sink, "Log before external rename");
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    // 模拟外部程序将活动日志重命名移走
+    const auto movedPath = testDir / L"tools3000_moved.log";
+    std::error_code ec;
+    std::filesystem::rename(sink->getActiveLogPath(), movedPath, ec);
+    EXPECT_TRUE(std::filesystem::exists(movedPath));
+    EXPECT_FALSE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    // 再次写入日志，自动在原地脱钩并接续新建 tools3000.log
+    EXPECT_NO_THROW({
+        writeTestLogMsg(sink, "Log after external rename接续");
+    });
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+    EXPECT_TRUE(std::filesystem::exists(movedPath));
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, RetentionDaysPurge) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_retention";
+    removeDirectorySafely(testDir);
+    std::filesystem::create_directories(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.retentionDays = 3; // 保留 3 天
+    cfg.enableCompression = false;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    sink->setSimulatedDayForTesting("2026-09-21");
+
+    // 模拟创建历史归档文件
+    const auto oldFile1 = testDir / L"tools3000_2026-09-01_001.log"; // 20 天前
+    const auto oldFile2 = testDir / L"tools3000_2026-09-15_001.log"; // 6 天前
+    const auto freshFile = testDir / L"tools3000_2026-09-20_001.log"; // 1 天前
+
+    {
+        std::ofstream f1(oldFile1); f1 << "old 1";
+        std::ofstream f2(oldFile2); f2 << "old 2";
+        std::ofstream f3(freshFile); f3 << "fresh";
+    }
+
+    sink->triggerJanitorSync();
+
+    // 超过 3 天的历史归档被自动清理
+    EXPECT_FALSE(std::filesystem::exists(oldFile1));
+    EXPECT_FALSE(std::filesystem::exists(oldFile2));
+    // 1 天前的归档安全保留
+    EXPECT_TRUE(std::filesystem::exists(freshFile));
+
+    // 测试永久保留 (retentionDays = 0)
+    sink->setRetentionDays(0);
+    const auto foreverOld = testDir / L"tools3000_2026-08-01_001.log";
+    {
+        std::ofstream fo(foreverOld); fo << "forever";
+    }
+    sink->triggerJanitorSync();
+    EXPECT_TRUE(std::filesystem::exists(foreverOld));
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, MaxTotalSizeQuotaCascadePurge) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_quota";
+    removeDirectorySafely(testDir);
+    std::filesystem::create_directories(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.retentionDays = 30;
+    cfg.maxTotalSize = 25 * 1024; // 25KB 配额上限
+    cfg.enableCompression = false;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    sink->setSimulatedDayForTesting("2026-09-21");
+
+    // 创建 4 个 10KB 的历史归档 (总计 40KB > 25KB 配额)
+    const std::string payload(10 * 1024, 'X');
+    const auto f1 = testDir / L"tools3000_2026-09-18_001.log";
+    const auto f2 = testDir / L"tools3000_2026-09-19_001.log";
+    const auto f3 = testDir / L"tools3000_2026-09-20_001.log";
+    const auto f4 = testDir / L"tools3000_2026-09-21_001.log";
+
+    {
+        std::ofstream o1(f1); o1 << payload;
+        std::ofstream o2(f2); o2 << payload;
+        std::ofstream o3(f3); o3 << payload;
+        std::ofstream o4(f4); o4 << payload;
+    }
+
+    sink->triggerJanitorSync();
+
+    // 最老的文件 09-18 与 09-19 应被级联淘汰，确保剩余总容量 <= 25KB
+    EXPECT_FALSE(std::filesystem::exists(f1));
+    EXPECT_FALSE(std::filesystem::exists(f2));
+    EXPECT_TRUE(std::filesystem::exists(f3));
+    EXPECT_TRUE(std::filesystem::exists(f4));
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, AsyncGzipCompression) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_gzip";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 200;
+    cfg.enableCompression = true;
+    cfg.idleHandleTimeoutMs = 60000;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    sink->setSimulatedDayForTesting("2026-09-21");
+
+    writeTestLogMsg(sink, "Log entry to be compressed with gzip later.");
+    sink->forceRotate();
+
+    // 触发同步自净以立即执行压缩
+    sink->triggerJanitorSync();
+
+    const auto gzArchive = testDir / L"tools3000_2026-09-21_001.log.gz";
+    const auto rawArchive = testDir / L"tools3000_2026-09-21_001.log";
+
+    // 验证未压缩的 .log 已被删除，且生成了 .log.gz
+    EXPECT_TRUE(std::filesystem::exists(gzArchive));
+    EXPECT_FALSE(std::filesystem::exists(rawArchive));
+
+    // 验证 gzip 头部魔数 (0x1F, 0x8B)
+    std::ifstream gzIn(gzArchive, std::ios::binary);
+    ASSERT_TRUE(gzIn.is_open());
+    char magic[2] = {0};
+    gzIn.read(magic, 2);
+    EXPECT_EQ(static_cast<unsigned char>(magic[0]), 0x1F);
+    EXPECT_EQ(static_cast<unsigned char>(magic[1]), 0x8B);
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, MidnightRotationWhenEmptyDoesNotCorruptNextDayRoll) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_empty_midnight";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 500;
+    cfg.enableCompression = false;
+    cfg.idleHandleTimeoutMs = 60000;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    sink->setSimulatedDayForTesting("2026-09-21");
+    // 空文件，无日志写入
+
+    // 跨天变更至 2026-09-22
+    sink->setSimulatedDayForTesting("2026-09-22");
+
+    // 写入第 2 天第 1 条日志 (50 字节)
+    writeTestLogMsg(sink, "Day 2 first log entry");
+
+    // 写入第 2 天第 2 条日志 (50 字节)
+    writeTestLogMsg(sink, "Day 2 second log entry");
+
+    // 关键断言：绝对不能生成 2026-09-21 的伪归档 (因为 21 日并无任何日志)
+    EXPECT_FALSE(std::filesystem::exists(testDir / L"tools3000_2026-09-21_001.log"));
+    EXPECT_EQ(sink->getActiveDay(), "2026-09-22");
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, WorkerAutomaticMidnightChronologicalTrigger) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_worker_midnight";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 10 * 1024 * 1024;
+    cfg.enableCompression = false;
+    cfg.idleHandleTimeoutMs = 60000;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    sink->setSimulatedDayForTesting("2026-09-21");
+
+    writeTestLogMsg(sink, "Active day 2026-09-21 log entry");
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    // 模拟时钟跨过午夜零点，此时业务线程完全空闲 (没有任何新的 writeTestLogMsg 调用)
+    sink->setSimulatedDayForTesting("2026-09-22");
+
+    // 等待后台守护工作线程主动感知时钟变更并执行零点滚动归档 (至多 1500ms)
+    bool rotatedByWorker = false;
+    const auto expectedArchive = testDir / L"tools3000_2026-09-21_001.log";
+    for (int i = 0; i < 75; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (std::filesystem::exists(expectedArchive)) {
+            rotatedByWorker = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(rotatedByWorker);
+    EXPECT_EQ(sink->getActiveDay(), "2026-09-22");
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, MoveFileFailureFallbackCopyTruncate) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_sharing_fallback";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 100; // 小体积触发滚动
+    cfg.enableCompression = false;
+    cfg.idleHandleTimeoutMs = 60000;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    sink->setSimulatedDayForTesting("2026-09-21");
+
+    writeTestLogMsg(sink, "Log line before external lock");
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    // 模拟外部老旧程序以仅 FILE_SHARE_READ 打开活动日志 (不包含 FILE_SHARE_DELETE，将使 MoveFileEx 遭遇 ERROR_SHARING_VIOLATION)
+    HANDLE hExternalLocked = CreateFileW(
+        sink->getActiveLogPath().c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, // 缺少 FILE_SHARE_DELETE
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    EXPECT_NE(hExternalLocked, INVALID_HANDLE_VALUE);
+
+    // 此时写入超过 100 字节，触发滚动；MoveFileEx 将失败，槽体应自动降级为复制+截断，0 崩溃 0 丢日志
+    std::string largeLog(120, 'Z');
+    EXPECT_NO_THROW({
+        writeTestLogMsg(sink, largeLog);
+    });
+
+    if (hExternalLocked != INVALID_HANDLE_VALUE) {
+        CloseHandle(hExternalLocked);
+    }
+
+    // 验证归档文件成功通过 fallback 创建
+    const auto archive = testDir / L"tools3000_2026-09-21_001.log";
+    EXPECT_TRUE(std::filesystem::exists(archive));
+    EXPECT_TRUE(std::filesystem::exists(sink->getActiveLogPath()));
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(WideUniversalRotatingFileSinkTest, ConcurrentRotationAndCompressionStress) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_concurrent_comp";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::WideUniversalSinkConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000";
+    cfg.maxFileSize = 200;
+    cfg.enableCompression = true;
+    cfg.idleHandleTimeoutMs = 60000;
+
+    auto sink = std::make_shared<tools3000::core::WideUniversalRotatingFileSink>(cfg);
+    sink->setSimulatedDayForTesting("2026-09-21");
+
+    // 高频连续写入触发多次滚动与并发压缩
+    for (int i = 0; i < 8; ++i) {
+        std::string payload = "Concurrent stress test payload iteration " + std::to_string(i) + std::string(180, 'D');
+        writeTestLogMsg(sink, payload);
+    }
+
+    // 触发同步自净并等待后台压缩队列完全收敛
+    sink->triggerJanitorSync();
+
+    // 验证至少生成了 gzip 归档且没有任何崩溃或文件损毁
+    bool foundGz = false;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(testDir, ec)) {
+        const std::string fn = tools3000::core::WinUtils::wstringToUtf8(entry.path().filename().wstring());
+        if (fn.ends_with(".log.gz")) {
+            foundGz = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(foundGz);
+
+    sink.reset();
+    removeDirectorySafely(testDir);
+}
+
+TEST(LoggerTest, FullStackIntegrationAndDynamicRetention) {
+    const auto testDir = std::filesystem::temp_directory_path() / "t3k_log_test_fullstack";
+    removeDirectorySafely(testDir);
+
+    tools3000::core::LoggerConfig cfg;
+    cfg.logDir = testDir;
+    cfg.logFileName = "tools3000_test";
+    cfg.retentionDays = 14;
+    cfg.maxTotalSize = 10 * 1024 * 1024;
+    cfg.enableConsole = false;
+    cfg.enableMsvcSink = false;
+
+    tools3000::core::Logger::initialize(cfg);
+
+    EXPECT_EQ(tools3000::core::Logger::getRetentionDays(), 14u);
+    EXPECT_NE(tools3000::core::Logger::getFileSink(), nullptr);
+
+    // 动态热更保留天数
+    tools3000::core::Logger::setRetentionDays(30);
+    EXPECT_EQ(tools3000::core::Logger::getRetentionDays(), 30u);
+
+    LOG_INFO("FullStack test log entry");
+
+    tools3000::core::Logger::triggerJanitor();
+    tools3000::core::Logger::shutdown();
+
+    EXPECT_TRUE(std::filesystem::exists(testDir / L"tools3000_test.log"));
+
+    removeDirectorySafely(testDir);
+}
+
+

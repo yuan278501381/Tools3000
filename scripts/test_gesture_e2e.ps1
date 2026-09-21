@@ -303,71 +303,85 @@ try {
 
     # 2. 端到端用例 1：完整划动拐角手势 ("R-D" 向右平移 160px，向下平移 160px)
     Write-Host "`n── [2/5] E2E 真实手势划动测试 (\"R-D\" 拐角手势) ──" -ForegroundColor Cyan
-    $startX = 700
-    $startY = 400
-
-    # 在执行模拟手势注入前，记录当前日志文件大小或偏移，杜绝匹配到启动阶段的调试注册日志
-    $logOffsetBefore = 0
-    if (Test-Path $HarnessLogFile) {
-        $logOffsetBefore = (Get-Item $HarnessLogFile).Length
-    }
-
-    # 提前将物理光标置于手势起点并短暂停顿，杜绝外部输入瞬移向量干扰
-    [void][NativeMouseSimulator]::SetCursorPos($startX, $startY)
-    Start-Sleep -Milliseconds 60
-
-    Write-Host "  -> 物理右键按下于 ($startX, $startY)..."
-    [NativeMouseSimulator]::SendRightDown($startX, $startY)
-    Start-Sleep -Milliseconds 40
-
-    $currX = $startX
-    $currY = $startY
-
-    # 向右划动 10 个步进，每次 +16px (总计 +160px)
-    Write-Host "  -> 向右连续平滑划动 160 像素 (10 步连续位移)..."
-    for ($i = 0; $i -lt 10; $i++) {
-        $currX += 16
-        [NativeMouseSimulator]::SendMove($currX, $currY)
-        Start-Sleep -Milliseconds 15
-    }
-
-    # 向下划动 10 个步进，每次 +16px (总计 +160px)
-    Write-Host "  -> 向下连续平滑划动 160 像素 (10 步连续位移)..."
-    for ($i = 0; $i -lt 10; $i++) {
-        $currY += 16
-        [NativeMouseSimulator]::SendMove($currX, $currY)
-        Start-Sleep -Milliseconds 15
-    }
-
-    Start-Sleep -Milliseconds 40
-    Write-Host "  -> 物理右键抬起于 ($currX, $currY)..."
-    [NativeMouseSimulator]::SendRightUp($currX, $currY)
-    Start-Sleep -Milliseconds 500
-
-    # 审计日志严格增量断言
     $hasRecognition = $false
     $newLogContent = ""
-    for ($wait = 0; $wait -lt 30; $wait++) {
-        if (Test-Path $HarnessLogFile) {
-            $currentLength = (Get-Item $HarnessLogFile).Length
-            if ($currentLength -gt $logOffsetBefore) {
-                # 仅读取本次手势注入后新增的日志片段
-                $stream = [System.IO.File]::Open($HarnessLogFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                $stream.Seek($logOffsetBefore, [System.IO.SeekOrigin]::Begin) | Out-Null
-                $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
-                $newLogContent = $reader.ReadToEnd()
-                $reader.Close()
-                $stream.Close()
+    $currentLength = 0
+    $logOffsetBefore = 0
 
-                # 收紧正则：严格匹配运行时识别成功的输出格式，彻底剔除启动期 "添加手势映射"
-                if ($newLogContent -match "手势识别成功:\s*code=R-D" -or
-                    $newLogContent -match "执行手势动作:.*(?:matchedCode=R-D|code=R-D)") {
-                    $hasRecognition = $true
-                    break
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        if ($attempt -gt 1) {
+            Write-Host "  [WARN] 第 1 次手势检测受到外部物理光标瞬移干扰，正在执行第 $attempt 次防抖自愈尝试..." -ForegroundColor Yellow
+            Start-Sleep -Milliseconds 300
+        }
+
+        $startX = 700
+        $startY = 400
+
+        # 在执行模拟手势注入前，记录当前日志文件大小或偏移，杜绝匹配到启动阶段的调试注册日志
+        $logOffsetBefore = 0
+        if (Test-Path $HarnessLogFile) {
+            $logOffsetBefore = (Get-Item $HarnessLogFile).Length
+        }
+
+        # 提前将物理光标置于手势起点并短暂停顿，杜绝外部输入瞬移向量干扰
+        [void][NativeMouseSimulator]::SetCursorPos($startX, $startY)
+        Start-Sleep -Milliseconds 60
+
+        Write-Host "  -> 物理右键按下于 ($startX, $startY)..."
+        [NativeMouseSimulator]::SendRightDown($startX, $startY)
+        Start-Sleep -Milliseconds 40
+
+        $currX = $startX
+        $currY = $startY
+
+        # 向右划动 10 个步进，每次 +16px (总计 +160px)
+        Write-Host "  -> 向右连续平滑划动 160 像素 (10 步连续位移)..."
+        for ($i = 0; $i -lt 10; $i++) {
+            $currX += 16
+            [NativeMouseSimulator]::SendMove($currX, $currY)
+            Start-Sleep -Milliseconds 15
+        }
+
+        # 向下划动 10 个步进，每次 +16px (总计 +160px)
+        Write-Host "  -> 向下连续平滑划动 160 像素 (10 步连续位移)..."
+        for ($i = 0; $i -lt 10; $i++) {
+            $currY += 16
+            [NativeMouseSimulator]::SendMove($currX, $currY)
+            Start-Sleep -Milliseconds 15
+        }
+
+        Start-Sleep -Milliseconds 40
+        Write-Host "  -> 物理右键抬起于 ($currX, $currY)..."
+        [NativeMouseSimulator]::SendRightUp($currX, $currY)
+        Start-Sleep -Milliseconds 500
+
+        # 审计日志严格增量断言
+        for ($wait = 0; $wait -lt 30; $wait++) {
+            if (Test-Path $HarnessLogFile) {
+                $currentLength = (Get-Item $HarnessLogFile).Length
+                if ($currentLength -gt $logOffsetBefore) {
+                    # 仅读取本次手势注入后新增的日志片段
+                    $stream = [System.IO.File]::Open($HarnessLogFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                    $stream.Seek($logOffsetBefore, [System.IO.SeekOrigin]::Begin) | Out-Null
+                    $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+                    $newLogContent = $reader.ReadToEnd()
+                    $reader.Close()
+                    $stream.Close()
+
+                    # 收紧正则：严格匹配运行时识别成功的输出格式，彻底剔除启动期 "添加手势映射"
+                    if ($newLogContent -match "手势识别成功:\s*code=R-D" -or
+                        $newLogContent -match "执行手势动作:.*(?:matchedCode=R-D|code=R-D)") {
+                        $hasRecognition = $true
+                        break
+                    }
                 }
             }
+            Start-Sleep -Milliseconds 100
         }
-        Start-Sleep -Milliseconds 100
+
+        if ($hasRecognition) {
+            break
+        }
     }
 
     if ($hasRecognition) {

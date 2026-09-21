@@ -88,6 +88,8 @@
 #include "core/utils/DpiUtils.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
+#include "core/logger/Logger.h"
+#include "core/logger/WideUniversalRotatingFileSink.h"
 #include "core/utils/ElevationPolicy.h"
 #include "core/utils/PathOperations.h"
 #include "core/utils/ShellContextMenuService.h"

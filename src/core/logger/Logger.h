@@ -25,6 +25,8 @@
 #include <source_location>
 #include <spdlog/spdlog.h>
 
+#include "core/logger/WideUniversalRotatingFileSink.h"
+
 namespace tools3000::core {
 
 /// 日志语言类型 (0 锁原子无缝切换)
@@ -42,7 +44,11 @@ struct LoggerConfig {
     spdlog::level::level_enum consoleLevel = spdlog::level::info;   // 控制台日志级别
     spdlog::level::level_enum fileLevel    = spdlog::level::debug;  // 文件日志级别
     size_t maxFileSize  = 10 * 1024 * 1024;    // 单文件最大 10MB
-    size_t maxFileCount = 5;                   // 保留最多 5 个文件
+    size_t maxFileCount = 5;                   // 保留最多 5 个文件（向后兼容）
+    uint32_t retentionDays = 7;                // 历史归档保留天数（默认 7 天，0 为永久保留）
+    size_t maxTotalSize = 50 * 1024 * 1024;    // 历史归档总容量上限（默认 50MB）
+    uint32_t idleHandleTimeoutMs = 10000;      // 空闲句柄释放超时（毫秒，默认 10 秒；0 则禁用自动关闭）
+    bool enableCompression = true;             // 历史归档是否在后台异步 gzip 压缩
     bool enableConsole  = true;                // 是否启用控制台输出
     bool enableMsvcSink = true;                // 是否启用 MSVC Output 窗口
 };
@@ -66,6 +72,18 @@ public:
 
     /// 获取当前日志语言（0 锁原子读取，O(1) 亚微秒级耗时）
     static LogLanguage getLanguage();
+
+    /// 设置历史归档保留天数（0 表示永久保留）
+    static void setRetentionDays(uint32_t days);
+
+    /// 获取当前历史归档保留天数
+    static uint32_t getRetentionDays();
+
+    /// 触发立即执行一次历史日志自净与压缩
+    static void triggerJanitor();
+
+    /// 获取底层活动文件 Sink 实例
+    static std::shared_ptr<WideUniversalRotatingFileSink> getFileSink();
 
     Logger() = delete;
 };

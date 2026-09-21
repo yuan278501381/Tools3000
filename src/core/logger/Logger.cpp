@@ -3,134 +3,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "core/logger/Logger.h"
+#include "core/logger/WideUniversalRotatingFileSink.h"
 #include "core/utils/WinUtils.h"
 
-#include <spdlog/sinks/base_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/msvc_sink.h>
 #include <spdlog/async.h>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
-#include <limits>
+#include <memory>
 #include <mutex>
 #include <vector>
+#include <windows.h>
 
 namespace tools3000::core {
 
-namespace {
-
-// spdlog's default Windows vcpkg build uses narrow CRT filenames. Feeding it
-// a UTF-8 std::string makes _fsopen interpret those bytes as the active ANSI
-// code page. Keep the entire file path native-wide and write through Win32 so
-// usernames and directories outside the system code page remain lossless.
-class WideRotatingFileSink final : public spdlog::sinks::base_sink<std::mutex> {
-public:
-    WideRotatingFileSink(std::filesystem::path path, size_t maxFileSize, size_t maxFileCount)
-        : m_path(std::move(path)),
-          m_maxFileSize((std::max)(size_t{1}, maxFileSize)),
-          m_maxFileCount((std::max)(size_t{1}, maxFileCount)) {
-        open(false);
-    }
-
-    ~WideRotatingFileSink() override {
-        close();
-    }
-
-protected:
-    void sink_it_(const spdlog::details::log_msg& message) override {
-        spdlog::memory_buf_t formatted;
-        base_sink<std::mutex>::formatter_->format(message, formatted);
-        if (m_size > 0 && m_size + formatted.size() > m_maxFileSize) {
-            rotate();
-        }
-
-        size_t offset = 0;
-        while (offset < formatted.size()) {
-            const DWORD chunk = static_cast<DWORD>((std::min)(
-                formatted.size() - offset,
-                static_cast<size_t>((std::numeric_limits<DWORD>::max)())));
-            DWORD written = 0;
-            if (!WriteFile(m_file, formatted.data() + offset, chunk, &written, nullptr) || written == 0) {
-                throw spdlog::spdlog_ex(
-                    "WriteFile failed for Unicode log path, error=" + std::to_string(GetLastError()));
-            }
-            offset += written;
-            m_size += written;
-        }
-    }
-
-    void flush_() override {
-        if (m_file != INVALID_HANDLE_VALUE && !FlushFileBuffers(m_file)) {
-            throw spdlog::spdlog_ex(
-                "FlushFileBuffers failed for Unicode log path, error=" + std::to_string(GetLastError()));
-        }
-    }
-
-private:
-    std::filesystem::path rotatedPath(size_t index) const {
-        auto result = m_path;
-        result += L"." + std::to_wstring(index);
-        return result;
-    }
-
-    void open(bool truncate) {
-        const DWORD disposition = truncate ? CREATE_ALWAYS : OPEN_ALWAYS;
-        m_file = CreateFileW(
-            m_path.c_str(), FILE_APPEND_DATA,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr, disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (m_file == INVALID_HANDLE_VALUE) {
-            throw spdlog::spdlog_ex(
-                "CreateFileW failed for Unicode log path, error=" + std::to_string(GetLastError()));
-        }
-
-        LARGE_INTEGER size{};
-        if (!GetFileSizeEx(m_file, &size)) {
-            const DWORD error = GetLastError();
-            close();
-            throw spdlog::spdlog_ex(
-                "GetFileSizeEx failed for Unicode log path, error=" + std::to_string(error));
-        }
-        m_size = static_cast<size_t>((std::max)(LONGLONG{0}, size.QuadPart));
-    }
-
-    void close() noexcept {
-        if (m_file != INVALID_HANDLE_VALUE) {
-            CloseHandle(m_file);
-            m_file = INVALID_HANDLE_VALUE;
-        }
-    }
-
-    void rotate() {
-        close();
-        for (size_t index = m_maxFileCount; index > 0; --index) {
-            const auto source = index == 1 ? m_path : rotatedPath(index - 1);
-            const auto target = rotatedPath(index);
-            if (GetFileAttributesW(source.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
-            if (!MoveFileExW(source.c_str(), target.c_str(),
-                             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-                const DWORD error = GetLastError();
-                // Re-open the active file before propagating so subsequent
-                // logger error handling never owns a permanently closed sink.
-                open(false);
-                throw spdlog::spdlog_ex(
-                    "MoveFileExW failed while rotating Unicode log, error=" + std::to_string(error));
-            }
-        }
-        open(true);
-    }
-
-    std::filesystem::path m_path;
-    size_t m_maxFileSize = 0;
-    size_t m_maxFileCount = 0;
-    size_t m_size = 0;
-    HANDLE m_file = INVALID_HANDLE_VALUE;
-};
-
-}  // namespace
-
 static std::shared_ptr<spdlog::logger> s_logger;
+static std::shared_ptr<WideUniversalRotatingFileSink> s_universalFileSink;
+static std::atomic<uint8_t> s_logLanguage{static_cast<uint8_t>(LogLanguage::ZhCN)};
 
 void Logger::initialize(const LoggerConfig& config) {
     try {
@@ -148,22 +40,26 @@ void Logger::initialize(const LoggerConfig& config) {
             sinks.push_back(consoleSink);
         }
 
-        // Sink 2: 文件 (按大小滚动)
+        // Sink 2: 文件 (WideUniversalRotatingFileSink 双轮驱动与三维配额管理)
         const std::filesystem::path logDir = config.logDir.empty()
             ? WinUtils::getLogDirectory()
             : config.logDir;
 
         std::filesystem::create_directories(logDir);
 
-        const auto logFilePath = logDir / WinUtils::utf8ToWstring(config.logFileName + ".log");
-        auto fileSink = std::make_shared<WideRotatingFileSink>(
-            logFilePath,
-            config.maxFileSize,
-            config.maxFileCount
-        );
-        fileSink->set_level(config.fileLevel);
-        fileSink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [tid:%t] %v");
-        sinks.push_back(fileSink);
+        WideUniversalSinkConfig universalConfig;
+        universalConfig.logDir = logDir;
+        universalConfig.logFileName = config.logFileName;
+        universalConfig.maxFileSize = config.maxFileSize;
+        universalConfig.retentionDays = config.retentionDays;
+        universalConfig.maxTotalSize = config.maxTotalSize;
+        universalConfig.idleHandleTimeoutMs = config.idleHandleTimeoutMs;
+        universalConfig.enableCompression = config.enableCompression;
+
+        s_universalFileSink = std::make_shared<WideUniversalRotatingFileSink>(universalConfig);
+        s_universalFileSink->set_level(config.fileLevel);
+        s_universalFileSink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [tid:%t] %v");
+        sinks.push_back(s_universalFileSink);
 
         // Sink 3: MSVC 输出窗口 (仅 Debug 构建)
 #ifdef _DEBUG
@@ -201,7 +97,19 @@ void Logger::shutdown() {
         LOG_INFO("日志系统正在关闭...");
         s_logger->flush();
     }
+    s_logger.reset();
+    s_universalFileSink.reset();
     spdlog::shutdown();
+
+    // 关键防崩溃保护：spdlog::shutdown() 会将 default_logger_ 置空。
+    // 若后续模块（例如测试套件或静态对象析构）调用 spdlog::warn/info，
+    // 解引用空指针将引发 SEH 0xc0000005 崩溃。此处挂载一个轻量无状态的控制台 fallback logger。
+    try {
+        auto fallbackSink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        auto fallbackLogger = std::make_shared<spdlog::logger>("", std::move(fallbackSink));
+        spdlog::set_default_logger(fallbackLogger);
+    } catch (...) {
+    }
 }
 
 std::shared_ptr<spdlog::logger>& Logger::instance() {
@@ -215,10 +123,30 @@ void Logger::setLevel(spdlog::level::level_enum level) {
     }
 }
 
-#include <windows.h>
-#include <atomic>
+void Logger::setRetentionDays(uint32_t days) {
+    if (s_universalFileSink) {
+        s_universalFileSink->setRetentionDays(days);
+        s_universalFileSink->triggerJanitorSync();
+        LOG_INFO_L("日志保留天数已切换为: {} 天", "Log retention days switched to: {} days", days);
+    }
+}
 
-static std::atomic<uint8_t> s_logLanguage{static_cast<uint8_t>(LogLanguage::ZhCN)};
+uint32_t Logger::getRetentionDays() {
+    if (s_universalFileSink) {
+        return s_universalFileSink->getRetentionDays();
+    }
+    return 7;
+}
+
+void Logger::triggerJanitor() {
+    if (s_universalFileSink) {
+        s_universalFileSink->triggerJanitorSync();
+    }
+}
+
+std::shared_ptr<WideUniversalRotatingFileSink> Logger::getFileSink() {
+    return s_universalFileSink;
+}
 
 void Logger::setLanguage(const std::string& langCode) {
     if (langCode == "en-US" || langCode == "en") {
@@ -248,4 +176,3 @@ LogLanguage Logger::getLanguage() {
 }
 
 }  // namespace tools3000::core
-

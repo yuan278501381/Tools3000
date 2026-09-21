@@ -6,6 +6,41 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-09-21] 全生命周期日志存储管家体系与 WideUniversalRotatingFileSink 架构升级
+- **背景与痛点**：
+  原日志系统使用简单的按大小滚动（`WideRotatingFileSink`），存在活动日志名称频繁跳变（`tools3000.log.1`, `.2` 等破坏单一事实源）、跨天日志混杂、长时间独占文件句柄导致外部清理与锁定冲突、缺乏保留天数与总容量配额上限导致磁盘隐式膨胀，以及无后台压缩等问题。
+- **架构方案与单一事实源 (SSOT)**：
+  1. **恒定单一事实源 (Canonical Active Log)**：
+     - 当前正在写入的活动日志名称永远恒定为 `tools3000.log`（支持配置解耦多进程独立文件），任何第三方工具与排查人员只需监听该固定文件。
+     - 仅历史归档追加时间戳与自增序号：`{logFileName}_{YYYY-MM-DD}_{seq:03d}.log`（若压缩则追加 `.gz`）。
+  2. **双轮混合驱动滚动引擎 (Hybrid Dual-Wheel Rotation Engine)**：
+     - **体积轮**：活动日志达到 `maxFileSize`（默认 10MB）时，触发滚动归档；
+     - **时钟轮**：检测到跨过午夜 00:00:00 时立即触发跨天归档，次日归档序号原子重置为 `001`，彻底消灭跨天日志污染。
+  3. **句柄全共享治理与闲置租约自动释放 (Handle Governance & Auto-Lease Close)**：
+     - 底层 Win32 `CreateFileW` 强制声明全共享模式：`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`；
+     - 引入闲置超时自动释放机制：连续 10 秒无新日志写入，后台守护循环自动调用 `CloseHandle` 将活动日志文件句柄彻底释放为 0，允许用户外部随时查看、剪切或复制；下一次日志写入时原子就地重新打开（`OPEN_ALWAYS`）接续追加。
+  4. **自愈与零崩溃保障 (Resilience & Auto-Healing)**：
+     - 活动日志被外部重命名时，下一次写入自动脱钩并创建新的 `tools3000.log`；
+     - 活动日志被外部直接删除时，自动就地重新创建，全生命周期保障 0 崩溃。
+  5. **三维物理配额与后台异步压缩 (3D Quota & Async Janitor)**：
+     - **配额体系**：单文件体积上限（10MB）+ 保留天数上限（`retentionDays`，支持 3/7/14/30 天或 0 永久）+ 总容量上限（`maxTotalSize`，默认 50MB，超限按从旧到新级联清除）；
+     - **后台异步压缩**：历史归档自动由后台低优先级工作线程通过 zlib（`gzopen_w`）异步压缩为 `.log.gz`，压缩完成后原子替换并清除原始 `.log`，节省 90%+ 磁盘开销。
+  6. **全链路前后端闭环与 IPC 动态热更**：
+     - 前端 `GeneralPage.tsx` 高级设置区提供“日志保留天数”原生下拉框；
+     - IPC `general.updateSettings` 实时同步至 `ConfigManager`，并触发 `Logger::setRetentionDays()` 0 锁热更与即时自净。
+- **业务暗坑与防御控制点 (审计加固)**：
+  - **spdlog::shutdown() 空指针崩溃防御**：`Logger::shutdown()` 中若直接调用 `spdlog::shutdown()`，会将 spdlog 全局 registry 的 `default_logger_` 清空为 `nullptr`。在单元测试套件或复杂多模块析构顺序下，后续若有其他组件调用 `spdlog::warn/info`，解引用空指针将触发 SEH 0xc0000005 崩溃。防御机制：在 `Logger::shutdown()` 执行 `spdlog::shutdown()` 之后，自动补充安装一个无状态的轻量安全 fallback 控制台 logger，彻底消灭空指针解引用隐患。
+  - **空文件跨天时钟状态机脱节自愈**：原实现中若活动日志文件为空（`m_currentFileSize == 0`），跨天时既未执行 `rotateLocked` 也未能将 `m_activeFileDay` 推进至当前日期。导致次日首次写入后，第二条日志会将包含次日内容的 50 字节文件误作为前一日日志执行跨天滚动，生成前一日归档名。防御机制：无论当前文件大小是否为 0，一旦时钟跨天必须无条件同步更新 `m_activeFileDay = currentDay`。
+  - **后台 Worker 午夜主动轮转心跳**：桌面效率软件及守护进程可能闲置常驻数小时无日志输出。旧逻辑仅在被动日志写入时检测跨天，导致闲置跨夜后昨日日志迟迟无法归档与压缩。防御机制：在后台 `workerLoop()` 的 200ms 心跳循环中引入主动午夜时钟（00:00:00）比对逻辑，一旦跨天即刻主动触发轮转归档、gzip 压缩与配额自净，方便第三方外部抓取。
+  - **独立压缩互斥锁与写入 0 阻塞隔离**：慢速 gzip 压缩绝对不能持有 spdlog `base_sink::mutex_`。通过引入独立 `m_compressionMutex` 与 `std::atomic<bool> m_enableCompression`，彻底消除后台压缩线程与前台写入/自净之间的锁竞争，实现日志写入 0 阻塞。
+  - **外部读锁 MoveFileExW 共享冲突降级容错**：当外部工具（如只读文件查看器）未声明 `FILE_SHARE_DELETE` 读锁打开 `tools3000.log` 时，Win32 `MoveFileExW` 将返回 `ERROR_SHARING_VIOLATION`。防御机制：在此异常场景下自动降级为 `CopyFileW` 复制归档 + 原文件句柄 `SetEndOfFile(0)` 截断清零，保障归档永远成功且绝不丢失活动日志。
+  - **WriteFile 自愈重试后文件大小同步**：在 `writeLocked` 句柄重建重试成功后，原逻辑漏掉了 `m_currentFileSize += bytesWritten` 累加，导致文件大小记录失真。防御机制：在成功写入后严格维护当前文件大小计数。
+- **验证结论**：
+  - 14 项原生针对性日志单元测试（`WideUniversalRotatingFileSinkTest` 13 项 + `LoggerTest` 1 项，新增空文件跨天、Worker午夜主动触发、共享冲突降级复制截断、并发压缩高压测试）100% 全部通过；
+  - 全工程 524 项原生单元测试 100% 全部通过；
+  - 前端全套门禁（eslint、i18n 7 重门禁、logger 6 重门禁、CSS 变量、排版、内存修剪）及 120 项 Vitest 测试 100% 全部通过；
+  - DevOps 5 重端到端压力测试（生命周期、手势 E2E、1000Hz 极限压测、并发对抗、录屏按键回显）全部 PASS。
+
 ### [2026-09-21] 手势轨迹连续无断裂与累积包围盒架构重构 (Cumulative Bounding Box Pipeline)
 - **背景与痛点**：
   在高速、高刷新率或连续折线手势划动过程中，右上转折处偶发宽达 63px 的物理断开空洞，并在屏幕表面遗留未擦除的孤儿发光能量晶体圆环；同时 `GestureTrailOverlay` 预分配了未曾使用的后台表面（`m_backCtx` / `m_trailBackSurface`），冗余占用近 30MB 物理显存。

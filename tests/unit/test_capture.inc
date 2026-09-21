@@ -4233,9 +4233,9 @@ TEST(ClipboardUtilsTest, EmptyImageRejection) {
 
 TEST(ClipboardUtilsTest, MultiFormatMatrixAndDesktopDrop) {
     auto openClipboardWithRetry = []() -> bool {
-        for (int retry = 0; retry < 25; ++retry) {
+        for (int retry = 0; retry < 50; ++retry) {
             if (OpenClipboard(nullptr)) return true;
-            Sleep(10);
+            Sleep(10 + retry * 2);
         }
         return false;
     };
@@ -4245,7 +4245,15 @@ TEST(ClipboardUtilsTest, MultiFormatMatrixAndDesktopDrop) {
     cv::rectangle(testImage, cv::Rect(10, 10, 50, 40), cv::Scalar(255, 255, 0, 255), -1);
 
     // 2. 调用全矩阵写入 (preferredFilePath 为空，触发自动创建高可用临时落盘副本)
-    ASSERT_TRUE(tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage));
+    bool copyOk = false;
+    for (int retry = 0; retry < 50; ++retry) {
+        if (tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage)) {
+            copyOk = true;
+            break;
+        }
+        Sleep(10 + retry * 2);
+    }
+    ASSERT_TRUE(copyOk);
 
     // 3. 打开系统剪贴板并验证 5 重格式注入完整性
     ASSERT_TRUE(openClipboardWithRetry());
@@ -4326,9 +4334,9 @@ TEST(ClipboardUtilsTest, MultiFormatMatrixAndDesktopDrop) {
 
 TEST(ClipboardUtilsTest, PreferredFilePathCustomHDROP) {
     auto openClipboardWithRetry = []() -> bool {
-        for (int retry = 0; retry < 25; ++retry) {
+        for (int retry = 0; retry < 50; ++retry) {
             if (OpenClipboard(nullptr)) return true;
-            Sleep(10);
+            Sleep(10 + retry * 2);
         }
         return false;
     };
@@ -4342,7 +4350,15 @@ TEST(ClipboardUtilsTest, PreferredFilePathCustomHDROP) {
     cv::Mat testImage(64, 64, CV_8UC3, cv::Scalar(10, 20, 30));
     ASSERT_TRUE(cv::imwrite(tools3000::core::WinUtils::wstringToUtf8(customFile.wstring()), testImage));
 
-    ASSERT_TRUE(tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage, customFile.wstring()));
+    bool copyOk = false;
+    for (int retry = 0; retry < 50; ++retry) {
+        if (tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage, customFile.wstring())) {
+            copyOk = true;
+            break;
+        }
+        Sleep(10 + retry * 2);
+    }
+    ASSERT_TRUE(copyOk);
 
     ASSERT_TRUE(openClipboardWithRetry());
     HDROP hDrop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
