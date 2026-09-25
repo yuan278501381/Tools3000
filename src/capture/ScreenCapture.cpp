@@ -25,7 +25,6 @@
 #include "capture/ScrollCaptureOverlay.h"
 #include "capture/CaptureHistory.h"
 #include "capture/ShortcutHintOverlay.h"
-#include "gesture/GestureInputPolicy.h"
 #include "common/AtomicFile.h"
 
 #include <opencv2/opencv.hpp>
@@ -216,12 +215,9 @@ void ScreenCapture::shutdown() {
 void ScreenCapture::startCapture(const CaptureOptions& options) {
     if (options.autoBypassFullscreen) {
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::isWindowFullscreen(fg)) {
-            const std::wstring classWide = tools3000::core::WinUtils::getWindowClassName(fg);
-            if (tools3000::gesture::shouldAutoBypassFullscreenGestures(true, tools3000::gesture::isProductivityToolkitClassName(classWide))) {
-                LOG_INFO("前台处于全屏独占应用，自动免打扰跳过截图: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
-                return;
-            }
+        if (fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg)) {
+            LOG_INFO("前台处于全屏独占应用，自动免打扰跳过截图: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
+            return;
         }
     }
 

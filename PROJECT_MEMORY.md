@@ -6,6 +6,48 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-09-24] Tools3000 全景架构、并发安全与工程质量全维代码审计结项
+- **审计范围与团队组织**：
+  由 `teamwork_preview` 多智能体系统（编排器、3 名勘测员、2 名技术主审员、独立事后司法审计员）对 Tools3000 全工程（C++20 核心微内核、DirectComposition 覆盖层、React 18 / TS 微前端、常驻搜索服务、命名管道 IPC、DevOps 发版流水线）展开源码级全维深度审查与实机实测验证。
+- **核心数据与实测硬断言**：
+  1. **原生 C++20 单元测试**：`Tools3000Tests.exe` 全库 524 项测试 100% 全部真实通过（耗时 11.5s），0 崩溃，0 死锁，0 内存泄漏。
+  2. **前端 Vitest 单元测试**：18 个测试套件，120 项测试 100% 全部真实通过（耗时 6.19s）。
+  3. **前端 6 重质量门禁**：ESLint、i18n（1,834 键同构对齐）、Logger（720 条登记）、CSS Variables（146 变量 0 悬空）、Typography（思源黑体 500 Medium / 1.10MB 单文件）、trimWorkingSet（20 处调用点全冷路径）100% 通过。
+  4. **源码行覆盖率**：实测 37.82% (17,504 / 46,287 行)，严格高于并守住 32% 单向棘轮门禁。
+  5. **生产 UI 零 Emoji**：128 个生产文件 100% 遵守零 Unicode Emoji 规范，统一采用 16/20/24 栅格高保真 Lucide SVG 纯矢量体系。
+  6. **5 大已确认产品决策基线**：100% 遵从，0 虚假误报。
+- **架构纯洁度结论 (SRP / SSOT / 零反向依赖)**：
+  - **单一职责 (SRP)**：微内核基础设施职责纯粹，识别出 `CaptureInput.cpp` 与 `CaptureRenderer.cpp` 巨石类，已出具状态模式与渲染策略分发解耦方案。
+  - **单一事实源 (SSOT)**：前端 0 处网络裸写，所有 IPC 收敛至 `useBridge.ts`，前端 90 个 TS 模块为严格单向无环图（循环依赖数为 0）。
+  - **零反向依赖**：微内核 `src/core/` 对业务插件保持 0 反向依赖；识别出跨插件横向包含（`ScreenCapture.cpp` 等包含 `gesture/GestureInputPolicy.h` 的全屏判别逻辑），已出具下沉至 `src/core/utils/WinUtils` 的解耦方案。
+- **并发与系统资源治理**：
+  - 1000Hz 独立输入线程 + 24 字节 POD + SPSC 4096 环形无锁队列零阻塞分发；
+  - DirectComposition 全虚拟桌面累积包围盒硬件表面直通渲染；
+  - 20 处 `trimWorkingSet` 经扫描 100% 严守冷路径退场，热操作期间 0 污染；
+  - 发现 `CaptureRenderer` 调用 Direct2D `EndDraw()` 缺失 TDR 设备丢失（`D2DERR_RECREATE_TARGET`）检测，已给出自愈加固代码。
+- **IPC 协议与跨系统双保险圆角**：
+  - 命名管道采用 CSPRNG 动态 Token + 受限 SDDL DACL + 4 字节定长帧头防溢出防御；
+  - `UniversalRoundedCornersDualInsurance` 跨 Win10/Win11/Server/RDP 双保险无缝平滑裁切（DWM 硬件圆角 + Win32 内核级 `CreateRoundRectRgn`）。
+- **工件沉淀**：
+  - 全景审计总报告：[audit_comprehensive_report.md](file:///c:/repo/Tools3000/.agents/teamwork/orchestrator/audit_comprehensive_report.md)
+  - 独立事后司法审计报告：[handoff.md](file:///c:/repo/Tools3000/.agents/teamwork/teamwork_preview_victory_auditor_1/handoff.md)
+
+### [2026-09-24] Tools3000 全景系统架构蓝图与分层拓扑规范
+- **系统架构定位与物理拓扑模型**：
+  - **宿主进程 `Tools3000.exe`**：Win32 顶层事件泵（`KeyboardPipeline`）+ DirectComposition 硬件加速覆盖表面（`GestureTrailOverlay` / `KeycastOverlay` / `SpotlightOverlay` / `CaptureOverlay`）+ WebView2 微前端运行容器（设置中心 / 搜索前端 / 托盘菜单，支持 `autoReleaseSettingsMemory` 内存修剪）。
+  - **常驻服务进程 `Tools3000_Service.exe`**：严格遵循 `DEMAND_START` 生命周期契约，仅用户显式呼出搜索时按需启动；跨会话持续常驻，搭载 NTFS 磁盘 MFT 解析引擎（`MftParser`）、实时 USN 变更监听器（`FileIndexStore`）与拼音检索引擎。
+  - **跨进程命名管道通信**：`\\.\pipe\tools3000_search_ipc` 流式二进制/JSON 传输，支持 `SearchCancellation` 异步主动熔断与去重。
+- **DDD 领域驱动分层架构**：
+  - 表现层（React 18 / TypeScript SPA + 纯矢量 Lucide SVG + 7 重 i18n 防护矩阵）；
+  - 接口通信网关（`MessageBridge` 单飞去重 + `EventBus` 强类型发布订阅）；
+  - 核心领域服务（手势 1000Hz SPSC 无锁队列 + 累积包围盒；捕获 `MarkupHandleTransformer` 多态手柄；对话框智能增强 `DialogNavigator`；日志 `WideUniversalRotatingFileSink` 恒定单一事实源与双轮滚动）；
+  - 基础设施与 OS 层（Direct2D 1.1 / DirectWrite / Media Foundation / Win32 API / Task Scheduler 2.0 COM / MMCSS）。
+- **质量保障与单向棘轮门禁**：
+  - 前端 6 重质量门禁（ESLint, i18n 7重门禁, logger 6重门禁, CSS 变量, 排版, 内存修剪）；
+  - 原生 C++ 524 项单元测试 100% PASS；
+  - Section 7 DevOps 五重端到端与 1000Hz 极限高压压力测试流水线 100% 通过。
+- **权威蓝图工件**：详见 [system_architecture.md](file:///C:/Users/yuan2/.gemini/antigravity/brain/dd736e36-6896-4ca4-959a-9cda80b0f2a4/system_architecture.md)。
+
 ### [2026-09-21] 全生命周期日志存储管家体系与 WideUniversalRotatingFileSink 架构升级
 - **背景与痛点**：
   原日志系统使用简单的按大小滚动（`WideRotatingFileSink`），存在活动日志名称频繁跳变（`tools3000.log.1`, `.2` 等破坏单一事实源）、跨天日志混杂、长时间独占文件句柄导致外部清理与锁定冲突、缺乏保留天数与总容量配额上限导致磁盘隐式膨胀，以及无后台压缩等问题。
@@ -600,3 +642,32 @@
   - 前端 6 重门禁（多语言矩阵、双语日志、CSS 变量、排版底线、工作集修剪）：100% PASS；
   - 五重端到端与极限压力门禁：全绿通过；
   - 最终交付安装包：`Output\Tools3000-Setup.exe`（19,458,992 字节，SHA256: `FA302C89C6BA9EC4C20F303C1CB07D89917BF785700740C2AB965557F3C270E2`）。
+
+---
+
+### [2026-09-25] 架构纯洁度深度重构与世界级工程加固 (SRP / SSOT / 零反向依赖 / 零 Emoji / @container)
+- **背景与重构总则**：
+  响应用户核心指示：“类单一职责，单一事实源 杜绝反向依赖”，对全工程展开高维架构治理，落实 5 项世界级重构加固与零退化门禁，100% 保持既定产品决策基线。
+- **5 项世界级重构落地成果**：
+  1. **全屏独占判别下沉至 WinUtils，彻底切断跨业务模块反向依赖 (SRP / 依赖倒置)**：
+     - 原隐患：`ScreenCapture.cpp`、`SpotlightOverlayInputController.cpp`、`KeycastOverlay.cpp`、`main.cpp` 跨模块横向 `#include "gesture/GestureInputPolicy.h"`，形成反向依赖与架构耦合。
+     - 落地：在 `src/core/utils/WinUtils.h` / `WinUtils.cpp` 下沉全屏独占与生产力窗口白名单判别 `WinUtils::shouldBypassFullscreenInteractions`，重载支持 `const wchar_t*`、`std::wstring_view`、`const std::wstring&`、`bool` 与 `HWND`（杜绝指针转 bool 的重载决议陷阱）；
+     - 解耦：`ScreenCapture`、`Spotlight`、`Keycast`、`main.cpp` 移除对手势模块的直接引用，改由下沉基础设施库统一托管；
+     - 验证：新增 `WinUtilsTest.FullscreenBypassPolicyVerification` 防回退专项单元测试。
+  2. **Direct2D EndDraw() TDR 设备丢失自愈防御 (GPU 韧性治理)**：
+     - 原隐患：`CaptureRenderer.cpp` 中两处调用 `EndDraw()` 忽略返回值，未防御显卡驱动超时重置（TDR）引发的 `D2DERR_RECREATE_TARGET`、`DXGI_ERROR_DEVICE_REMOVED` 与 `DXGI_ERROR_DEVICE_RESET`。
+     - 落地：引入 `dxgi.h`，捕获 `EndDraw()` 的 `HRESULT`，检测到设备丢失时记录 WARN 日志并安全调用 `releaseWindowResources()`，确保下次绘制时平滑惰性自愈重建。
+  3. **门禁脚本与发版正则 100% 零 Emoji 纯文本规范化 (全域规范贯彻)**：
+     - 原隐患：`ui/scripts/` 中 5 个门禁脚本输出使用 Unicode Emoji；`scripts/release.ps1` 正则与标题硬编码 Unicode Emoji。
+     - 落地：5 个门禁脚本全面收敛至 `[OK]`, `[INFO]`, `[WARN]`, `[ERROR]`；`scripts/release.ps1` 提取正则升级为 `(?:\[业务角度\]|💼\s*业务角度)` 与 `(?:\[技术角度\]|🔧\s*技术角度)`，发布标题统一去除 Emoji。
+  4. **前端路由元数据单一事实源 (SSOT) 治理 (消灭多头维护)**：
+     - 原隐患：`ui/src/pages/registry.ts` 与 `ui/src/components/Sidebar.tsx` 分别硬编码全量路由列表与 Lucide 图标引用，存在配置多头维护风险。
+     - 落地：创建 `ui/src/config/routes.ts` 作为应用级单一事实源；`registry.ts` 纯粹作为统一投影契约透传；`Sidebar.tsx` 直接单向消费 `APP_ROUTES` 与 `ROUTE_MAP`，消灭 4 处冗余静态数组定义。
+  5. **模态弹窗现代容器查询 (@container) 适配 (解耦视口硬绑定)**：
+     - 原隐患：弹窗样式强耦合视口宽度的 `@media` 查询，未践行现代容器策略规范。
+     - 落地：在 `.uikit-modal` 与 `.onboarding__card` 上声明 `container-type: inline-size` 与独立容器名；在子组件内引入 `@container` 优先响应式断点并保留 `@media` 视口回退。
+- **全量门禁实机验证结果**：
+  - C++ 原生单元测试：**525/525 项 100% 全部通过**（执行耗时 19.8s）；
+  - 前端单元测试：**120/120 项 100% 全部通过**（18 个测试套件，执行耗时 9.4s）；
+  - 前端 6 重质量门禁（ESLint、多语言矩阵、双语日志、CSS 变量、排版底线、工作集修剪）：**100% 全部通过**；
+  - 架构拓扑：消灭全部跨业务模块横向依赖，路由 SSOT 落地，0 代码坏味道。

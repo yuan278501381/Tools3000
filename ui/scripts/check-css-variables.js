@@ -35,7 +35,7 @@ cssFiles.forEach(file => {
   }
 });
 
-console.log(`📊 共发现 ${definedVars.size} 个已声明的 CSS 变量。`);
+console.log(`[INFO] 共发现 ${definedVars.size} 个已声明的 CSS 变量。`);
 
 // 2. 扫描所有引用的 CSS 变量
 let hasError = false;
@@ -48,14 +48,14 @@ cssFiles.forEach(file => {
     const varName = match[1];
     const fallback = match[2];
     if (!definedVars.has(varName)) {
-      console.error(`❌ [未定义变量] ${relPath} 中使用了未声明变量: ${varName} (fallback: ${fallback || '无'})`);
+      console.error(`[ERROR] [未定义变量] ${relPath} 中使用了未声明变量: ${varName} (fallback: ${fallback || '无'})`);
       hasError = true;
     }
   }
 });
 
 if (!hasError) {
-  console.log('✅ 所有 CSS 变量均已正确声明，0 悬空变量引用！');
+  console.log('[OK] 所有 CSS 变量均已正确声明，0 悬空变量引用！');
 } else {
   process.exit(1);
 }

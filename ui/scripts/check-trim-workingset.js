@@ -78,7 +78,7 @@ const ALLOWED_COLD_PATH_PATTERNS = [
 let errorCount = 0;
 let checkedCallSites = 0;
 
-console.log('🔍 [Memory Hygiene Gate] 正在执行 trimWorkingSet() 冷路径合规性静态扫描...');
+console.log('[INFO] [Memory Hygiene Gate] 正在执行 trimWorkingSet() 冷路径合规性静态扫描...');
 
 for (const file of cppFiles) {
   // 排除 WinUtils.h 与 WinUtils.cpp 本身声明与实现
@@ -110,7 +110,7 @@ for (const file of cppFiles) {
       // 1. 检查是否命中了黑名单热路径
       const isHotPath = FORBIDDEN_HOT_PATH_PATTERNS.some(pat => pat.test(functionContext) || pat.test(line));
       if (isHotPath) {
-        console.error(`❌ [HotPath Violation] ${relativePath}:${lineNum} 严禁在热路径中调用 trimWorkingSet():`);
+        console.error(`[ERROR] [HotPath Violation] ${relativePath}:${lineNum} 严禁在热路径中调用 trimWorkingSet():`);
         console.error(`   上下文: ${functionContext}`);
         console.error(`   代码行: ${line.trim()}`);
         errorCount++;
@@ -120,15 +120,15 @@ for (const file of cppFiles) {
       // 2. 检查是否符合冷路径白名单
       const isAllowedColdPath = ALLOWED_COLD_PATH_PATTERNS.some(pat => pat.test(functionContext) || pat.test(relativePath));
       if (!isAllowedColdPath && functionContext) {
-        console.warn(`⚠️ [ColdPath Warning] ${relativePath}:${lineNum} 调用点函数 "${functionContext}" 未明确匹配标准冷路径语义命名 (hide/stop/cleanup/release/destroy 等)`);
+        console.warn(`[WARN] [ColdPath Warning] ${relativePath}:${lineNum} 调用点函数 "${functionContext}" 未明确匹配标准冷路径语义命名 (hide/stop/cleanup/release/destroy 等)`);
       }
     }
   });
 }
 
 if (errorCount > 0) {
-  console.error(`\n❌ trimWorkingSet 静态扫描失败，发现 ${errorCount} 处热路径违规调用！`);
+  console.error(`\n[ERROR] trimWorkingSet 静态扫描失败，发现 ${errorCount} 处热路径违规调用！`);
   process.exit(1);
 } else {
-  console.log(`✅ trimWorkingSet 内存修剪门禁审查通过！共校验 ${checkedCallSites} 处调用点，100% 符合生命周期冷路径规范，0 热路径污染。\n`);
+  console.log(`[OK] trimWorkingSet 内存修剪门禁审查通过！共校验 ${checkedCallSites} 处调用点，100% 符合生命周期冷路径规范，0 热路径污染。\n`);
 }

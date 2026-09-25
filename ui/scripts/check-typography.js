@@ -103,12 +103,12 @@ for (const file of allFiles) {
   });
 }
 
-console.log('🔍 正在执行 Tools3000 世界级排版体系与字号底线门禁审查...');
+console.log('[INFO] 正在执行 Tools3000 世界级排版体系与字号底线门禁审查...');
 if (errors.length > 0) {
-  console.error(`❌ 排版门禁发现 ${errors.length} 处违规:`);
+  console.error(`[ERROR] 排版门禁发现 ${errors.length} 处违规:`);
   errors.forEach(e => console.error('  - ' + e));
   process.exit(1);
 } else {
-  console.log(`✅ 排版门禁审查全部通过！全库 100% 遵循单一事实源字体栈与字号清晰度底线，0 宋体回退。`);
+  console.log(`[OK] 排版门禁审查全部通过！全库 100% 遵循单一事实源字体栈与字号清晰度底线，0 宋体回退。`);
   process.exit(0);
 }

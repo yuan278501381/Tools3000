@@ -3,7 +3,6 @@
 #include "core/utils/WinUtils.h"
 #include "core/events/EventBus.h"
 #include "core/mouse/MouseStreamCore.h"
-#include "gesture/GestureInputPolicy.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,12 +22,9 @@ void SpotlightOverlay::trigger(POINT pt, bool autoFetch) {
 
     if (m_settings.autoBypassFullscreen) {
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::isWindowFullscreen(fg)) {
-            const std::wstring classWide = tools3000::core::WinUtils::getWindowClassName(fg);
-            if (tools3000::gesture::shouldAutoBypassFullscreenGestures(true, tools3000::gesture::isProductivityToolkitClassName(classWide))) {
-                LOG_INFO("前台处于全屏独占应用，自动免打扰跳过鼠标聚光灯触发: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
-                return;
-            }
+        if (fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg)) {
+            LOG_INFO("前台处于全屏独占应用，自动免打扰跳过鼠标聚光灯触发: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
+            return;
         }
     }
 
@@ -193,11 +189,8 @@ void SpotlightOverlay::onMouseDown(int button, POINT pt) {
 
     if (m_settings.autoBypassFullscreen) {
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::isWindowFullscreen(fg)) {
-            const std::wstring classWide = tools3000::core::WinUtils::getWindowClassName(fg);
-            if (tools3000::gesture::shouldAutoBypassFullscreenGestures(true, tools3000::gesture::isProductivityToolkitClassName(classWide))) {
-                return;
-            }
+        if (fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg)) {
+            return;
         }
     }
 
@@ -306,10 +299,7 @@ void SpotlightOverlay::drainRawMovesLocked() {
     bool bypass = false;
     if (m_settings.autoBypassFullscreen && m_settings.mouseTrailEnabled) {
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::isWindowFullscreen(fg)) {
-            const std::wstring classWide = tools3000::core::WinUtils::getWindowClassName(fg);
-            bypass = tools3000::gesture::shouldAutoBypassFullscreenGestures(true, tools3000::gesture::isProductivityToolkitClassName(classWide));
-        }
+        bypass = fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg);
     }
 
     tools3000::core::MouseStreamCore::instance().drainBatch([this, bypass](const tools3000::core::MouseStreamPoint& pt) {
@@ -536,10 +526,7 @@ void SpotlightOverlay::onMouseMove(POINT pt) {
     bool bypass = false;
     if (m_settings.autoBypassFullscreen && m_settings.mouseTrailEnabled) {
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::isWindowFullscreen(fg)) {
-            const std::wstring classWide = tools3000::core::WinUtils::getWindowClassName(fg);
-            bypass = tools3000::gesture::shouldAutoBypassFullscreenGestures(true, tools3000::gesture::isProductivityToolkitClassName(classWide));
-        }
+        bypass = fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg);
     }
     processMouseMoveLocked(pt, bypass);
     wakeRenderThread();

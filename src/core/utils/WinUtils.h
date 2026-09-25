@@ -125,6 +125,18 @@ public:
     /// 自动排除桌面、任务栏等系统特殊窗口
     static bool isWindowFullscreen(HWND hwnd);
 
+    /// 判断窗口类名是否为生产力工具类（浏览器、资源管理器、IDE、CEF、Electron、Qt、UWP、Tools3000 UI 等）
+    static bool isProductivityToolkitClassName(std::wstring_view cls) noexcept;
+
+    /// 仅对真正的全屏独占（3D 游戏、视频播放器等）免打扰；IDE、浏览器、CEF、Qt、Tools3000 全屏不跳过
+    static bool shouldBypassFullscreenInteractions(bool isFullscreen, const wchar_t* cls) noexcept;
+    static bool shouldBypassFullscreenInteractions(bool isFullscreen, std::wstring_view cls) noexcept;
+    static bool shouldBypassFullscreenInteractions(bool isFullscreen, const std::wstring& cls) noexcept;
+    static bool shouldBypassFullscreenInteractions(bool isFullscreen, bool isProductivityClass) noexcept;
+
+    /// 重载：直接传入窗口句柄检测是否应避让全屏独占交互（包含全屏检测与类名白名单）
+    static bool shouldBypassFullscreenInteractions(HWND hwnd);
+
     /// 查询句柄对应进程是否拥有管理员提升权限
     static bool queryProcessElevated(HANDLE process);
 

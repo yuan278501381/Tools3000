@@ -29,7 +29,7 @@ Set-Location $ScriptDir
 . (Join-Path $PSScriptRoot "ReleaseArtifacts.ps1")
 
 Write-Host "=======================================================" -ForegroundColor Cyan
-Write-Host " 🚀 Tools3000 DevOps 一键全自动发版总控流水线" -ForegroundColor Cyan
+Write-Host " [INFO] Tools3000 DevOps 一键全自动发版总控流水线" -ForegroundColor Cyan
 Write-Host "=======================================================" -ForegroundColor Cyan
 
 # 1. 检查 Git 工作树与分支状态
@@ -108,9 +108,9 @@ function Generate-UserCentricReleaseNotes {
             continue
         }
 
-        # 尝试提取 "💼 业务角度" 中针对用户体感的描述清单
+        # 尝试提取 "[业务角度]" 中针对用户体感的描述清单
         $bizItems = [System.Collections.Generic.List[string]]::new()
-        if ($commitMsg -match '(?s)💼\s*业务角度[：:]\s*(.*?)(?=(?:\r?\n\s*(?:🔧|💻|⚙️|##)|\z))') {
+        if ($commitMsg -match '(?s)(?:\[业务角度\]|💼\s*业务角度)[：:]?\s*(.*?)(?=(?:\r?\n\s*(?:\[技术角度\]|🔧|💻|⚙️|##)|\z))') {
             $bizBlock = $Matches[1].Trim()
             $bizLines = $bizBlock -split '\r?\n'
             foreach ($bLine in $bizLines) {
@@ -127,8 +127,8 @@ function Generate-UserCentricReleaseNotes {
             }
         }
 
-        # 尝试提取 "🔧 技术角度" 中架构与底层实现的描述清单
-        if ($commitMsg -match '(?s)🔧\s*技术角度[：:]\s*(.*?)(?=(?:\r?\n\s*(?:💼|💻|⚙️|##)|\z))') {
+        # 尝试提取 "[技术角度]" 中架构与底层实现的描述清单
+        if ($commitMsg -match '(?s)(?:\[技术角度\]|🔧\s*技术角度)[：:]?\s*(.*?)(?=(?:\r?\n\s*(?:\[业务角度\]|💼|💻|⚙️|##)|\z))') {
             $techBlock = $Matches[1].Trim()
             $techLines = $techBlock -split '\r?\n'
             foreach ($tLine in $techLines) {
@@ -179,11 +179,11 @@ function Generate-UserCentricReleaseNotes {
     $sb.AppendLine() | Out-Null
     $sb.AppendLine("---") | Out-Null
     $sb.AppendLine() | Out-Null
-    $sb.AppendLine("## 🌟 本次重点更新与体验改进") | Out-Null
+    $sb.AppendLine("## 本次重点更新与体验改进") | Out-Null
     $sb.AppendLine() | Out-Null
 
     if ($features.Count -gt 0) {
-        $sb.AppendLine("### 🚀 业务与功能体验进化 (用户视角)") | Out-Null
+        $sb.AppendLine("### 业务与功能体验进化 (用户视角)") | Out-Null
         foreach ($f in $features) {
             $sb.AppendLine("- $f") | Out-Null
         }
@@ -191,7 +191,7 @@ function Generate-UserCentricReleaseNotes {
     }
 
     if ($fixes.Count -gt 0) {
-        $sb.AppendLine("### 🛠️ 痛点修复与体验优化") | Out-Null
+        $sb.AppendLine("### 痛点修复与体验优化") | Out-Null
         foreach ($fx in $fixes) {
             $sb.AppendLine("- $fx") | Out-Null
         }
@@ -199,7 +199,7 @@ function Generate-UserCentricReleaseNotes {
     }
 
     if ($technologies.Count -gt 0) {
-        $sb.AppendLine("### 🔧 架构演进与技术重构 (底层实现)") | Out-Null
+        $sb.AppendLine("### 架构演进与技术重构 (底层实现)") | Out-Null
         foreach ($tech in $technologies) {
             $sb.AppendLine("- $tech") | Out-Null
         }
@@ -207,7 +207,7 @@ function Generate-UserCentricReleaseNotes {
     }
 
     if ($improvements.Count -gt 0) {
-        $sb.AppendLine("### ⚡ 稳定性与底层演进") | Out-Null
+        $sb.AppendLine("### 稳定性与底层演进") | Out-Null
         foreach ($imp in $improvements) {
             $sb.AppendLine("- $imp") | Out-Null
         }
@@ -252,7 +252,7 @@ if ($LASTEXITCODE -ne 0) { throw "暂存版本与发布说明失败！" }
 $HasStaged = @(git diff --cached --name-only)
 if ($LASTEXITCODE -ne 0) { throw "无法检查待提交的发布文件！" }
 if ($HasStaged.Count -gt 0) {
-    git commit -m "chore(release): 升级项目版本至 $TargetTag 并同步官方发布日志与版本元数据`n`n💼 业务角度：`n- 发布 Tools3000 $TargetTag 官方正式版；`n- 同步生成以用户体感与痛点解决为视角的官方 Release Notes。`n`n🔧 技术角度：`n- 升级唯一事实源 VERSION 至 $TargetVersion；`n- 准备主分支发布与资产打包。"
+    git commit -m "chore(release): 升级项目版本至 $TargetTag 并同步官方发布日志与版本元数据`n`n[业务角度]`n- 发布 Tools3000 $TargetTag 官方正式版；`n- 同步生成以用户体感与痛点解决为视角的官方 Release Notes。`n`n[技术角度]`n- 升级唯一事实源 VERSION 至 $TargetVersion；`n- 准备主分支发布与资产打包。"
     if ($LASTEXITCODE -ne 0) { throw "提交版本元数据失败！" }
     Write-Host "[OK] 版本元数据已在当前分支提交" -ForegroundColor Green
 }
@@ -412,7 +412,7 @@ if (-not $LocalOnly) {
 }
 
 Write-Host "=======================================================" -ForegroundColor Green
-Write-Host " 🎉 恭喜！Tools3000 $TargetTag 全自动化发版流水线执行完毕！" -ForegroundColor Green
+Write-Host " [OK] 恭喜！Tools3000 $TargetTag 全自动化发版流水线执行完毕！" -ForegroundColor Green
 Write-Host " - 最新安装包: Output\Tools3000-Setup.exe" -ForegroundColor Green
 Write-Host " - 发布资产库: release_assets" -ForegroundColor Green
 Write-Host " - GitHub 发布页: https://github.com/yuan278501381/Tools3000/releases/tag/$TargetTag" -ForegroundColor Green

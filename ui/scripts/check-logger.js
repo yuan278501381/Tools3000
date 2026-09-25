@@ -27,7 +27,7 @@ function getFiles(dir, exts) {
 function checkI18nLogCatalogIntegrity() {
   const catalogPath = path.resolve('../src/core/logger/I18nLogCatalog.cpp');
   if (!fs.existsSync(catalogPath)) {
-    console.error(`❌ [Missing Catalog] 未找到日志多语言映射表: ${catalogPath}`);
+    console.error(`[ERROR] [Missing Catalog] 未找到日志多语言映射表: ${catalogPath}`);
     hasError = true;
     return new Set();
   }
@@ -48,7 +48,7 @@ function checkI18nLogCatalogIntegrity() {
 
       // 检查英文模板是否含有中文
       if (cjkRegex.test(enWithTrace)) {
-        console.error(`❌ [CJK in Catalog English Template Gate] I18nLogCatalog 英文模板包含汉字字符:`);
+        console.error(`[ERROR] [CJK in Catalog English Template Gate] I18nLogCatalog 英文模板包含汉字字符:`);
         console.error(`   中文 Key: "${rawKey}"`);
         console.error(`   英文模板: "${enWithTrace}"`);
         hasError = true;
@@ -58,13 +58,13 @@ function checkI18nLogCatalogIntegrity() {
       const zhPlaceholders = (zhWithTrace.match(/\{[^}]*\}/g) || []).length;
       const enPlaceholders = (enWithTrace.match(/\{[^}]*\}/g) || []).length;
       if (zhPlaceholders !== enPlaceholders) {
-        console.error(`❌ [Catalog Placeholder Parity Gate] I18nLogCatalog 占位符数量不一致:`);
+        console.error(`[ERROR] [Catalog Placeholder Parity Gate] I18nLogCatalog 占位符数量不一致:`);
         console.error(`   中文模板 (${zhPlaceholders}): "${zhWithTrace}"`);
         console.error(`   英文模板 (${enPlaceholders}): "${enWithTrace}"`);
         hasError = true;
       }
     } catch (e) {
-      console.error(`❌ [Catalog JSON Parse Error] 解析条目失败: ${match[0]}`);
+      console.error(`[ERROR] [Catalog JSON Parse Error] 解析条目失败: ${match[0]}`);
       hasError = true;
     }
   }
@@ -95,7 +95,7 @@ function checkCppLogCoverageAndParity(catalogKeys) {
         if (cjkRegex.test(raw)) {
           totalScannedLogs++;
           if (!catalogKeys.has(raw)) {
-            console.error(`❌ [Unregistered C++ Log Gate] 发现未在 I18nLogCatalog 中登记的中文日志: ${path.relative('../', file)}`);
+            console.error(`[ERROR] [Unregistered C++ Log Gate] 发现未在 I18nLogCatalog 中登记的中文日志: ${path.relative('../', file)}`);
             console.error(`   未收录模板: "${raw}"`);
             console.error(`   [Rule] 所有新增的 C++ 中文日志模板必须在 I18nLogCatalog.cpp 中注册英文映射，保障 100% 国际化！`);
             hasError = true;
@@ -116,14 +116,14 @@ function checkCppLogCoverageAndParity(catalogKeys) {
       const enPlaceholders = (enFmt.match(/\{[^}]*\}/g) || []).length;
 
       if (zhPlaceholders !== enPlaceholders) {
-        console.error(`❌ [Log_L Placeholder Mismatch Gate] 双语日志宏占位符数量不一致: ${path.relative('../', file)}`);
+        console.error(`[ERROR] [Log_L Placeholder Mismatch Gate] 双语日志宏占位符数量不一致: ${path.relative('../', file)}`);
         console.error(`   中文模板 (${zhPlaceholders}): ${zhFmt}`);
         console.error(`   英文模板 (${enPlaceholders}): ${enFmt}`);
         hasError = true;
       }
 
       if (cjkRegex.test(enFmt)) {
-        console.error(`❌ [CJK in Log_L English Template Gate] 双语日志宏英文模板包含汉字: ${path.relative('../', file)}`);
+        console.error(`[ERROR] [CJK in Log_L English Template Gate] 双语日志宏英文模板包含汉字: ${path.relative('../', file)}`);
         console.error(`   英文模板: ${enFmt}`);
         hasError = true;
       }
@@ -134,7 +134,7 @@ function checkCppLogCoverageAndParity(catalogKeys) {
     while ((match = logMacroRegex.exec(content)) !== null) {
       const args = match[2].trim();
       if (!args || args === '""' || args === "''") {
-        console.error(`❌ [Empty Log Gate] 发现空日志调用: ${path.relative('../', file)}`);
+        console.error(`[ERROR] [Empty Log Gate] 发现空日志调用: ${path.relative('../', file)}`);
         console.error(`   代码: "${match[0]}"`);
         hasError = true;
       }
@@ -156,7 +156,7 @@ function checkFrontendUserFacingLogs() {
     while ((match = toastRegex.exec(content)) !== null) {
       const param = match[1].trim();
       if (chineseRegex.test(param) && !param.includes('t(')) {
-        console.error(`❌ [Unlocalized Toast Gate] 发现未国际化的用户提示日志: ${path.relative('./', file)}`);
+        console.error(`[ERROR] [Unlocalized Toast Gate] 发现未国际化的用户提示日志: ${path.relative('./', file)}`);
         console.error(`   代码: "${match[0]}"`);
         console.error(`   [Rule] 所有用户感知层 Toast 与日志提示必须使用 t('namespace.key') 国际化！`);
         hasError = true;
@@ -165,16 +165,16 @@ function checkFrontendUserFacingLogs() {
   }
 }
 
-console.log('🔍 [Observability & Log Gate] 正在执行 Tools3000 全链路日志国际化、占位符对齐与 6 重鲁棒性防御门禁审查...');
+console.log('[INFO] [Observability & Log Gate] 正在执行 Tools3000 全链路日志国际化、占位符对齐与 6 重鲁棒性防御门禁审查...');
 const catalogKeys = checkI18nLogCatalogIntegrity();
 checkCppLogCoverageAndParity(catalogKeys);
 checkFrontendUserFacingLogs();
 
 if (hasError) {
-  console.error('\n❌ 日志国际化规范门禁审查失败！请修复上述未收录模板、占位符不匹配、英文汉字污染或未国际化 Toast 提示。');
+  console.error('\n[ERROR] 日志国际化规范门禁审查失败！请修复上述未收录模板、占位符不匹配、英文汉字污染或未国际化 Toast 提示。');
   process.exit(1);
 } else {
-  console.log('✅ 日志系统世界级 6 重国际化防御门禁全部通过！');
+  console.log('[OK] 日志系统世界级 6 重国际化防御门禁全部通过！');
   console.log(`   1. 全库 C++ 中文日志模板 100% 在 I18nLogCatalog 中收录注册 (共 ${catalogKeys.size} 条)`);
   console.log('   2. I18nLogCatalog 英文映射模板 100% 绝对 0 汉字污染');
   console.log('   3. I18nLogCatalog 中英文 {} 占位符 100% 精确 1:1 对齐');

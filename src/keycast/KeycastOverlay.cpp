@@ -1,4 +1,4 @@
-﻿#include "KeycastOverlay.h"
+#include "KeycastOverlay.h"
 #include "KeycastStyle.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
@@ -7,7 +7,6 @@
 #include "core/config/ConfigManager.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/hotkey/KeyboardHook.h"
-#include "gesture/GestureInputPolicy.h"
 #include <algorithm>
 #include <vector>
 #include <sstream>
@@ -738,7 +737,7 @@ void KeycastOverlay::pushKey(const std::vector<std::string>& tokens, const std::
                 (cls == L"TXGuiFoundation");
 
             if (!isAllowedOverlay) {
-                if (tools3000::gesture::shouldAutoBypassFullscreenGestures(true, tools3000::gesture::isProductivityToolkitClassName(classWide))) {
+                if (tools3000::core::WinUtils::shouldBypassFullscreenInteractions(true, classWide)) {
                     return;
                 }
             }

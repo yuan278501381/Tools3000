@@ -12,6 +12,7 @@
 #include <windows.h>
 #include "gesture/MouseHook.h"
 #include "core/utils/ThemeUtils.h"
+#include "core/utils/WinUtils.h"
 
 #include <algorithm>
 #include <cmath>
@@ -538,19 +539,15 @@ inline bool isTabbedBrowserClassName(std::wstring_view cls) noexcept {
 }
 
 /// CEF / Electron / Qt / UWP 等生产力宿主：即使无边框铺满屏幕，也不应按游戏全屏免打扰。
+/// （逻辑已下沉至微内核 WinUtils 保持单一事实源与跨模块复用）
 inline bool isProductivityToolkitClassName(std::wstring_view cls) noexcept {
-    if (isTabbedBrowserClassName(cls) || isTools3000UiClassName(cls)) return true;
-    if (cls == L"OrpheusBrowserHost" || cls == L"CefBrowserWindow" ||
-        cls == L"ApplicationFrameWindow") {
-        return true;
-    }
-    return classNameStartsWith(cls, L"Qt");
+    return tools3000::core::WinUtils::isProductivityToolkitClassName(cls);
 }
 
 /// 仅对真正的全屏独占（游戏/播放器）免打扰；IDE / 浏览器 / CEF / Qt 全屏继续手势。
 inline bool shouldAutoBypassFullscreenGestures(bool isFullscreen,
                                                bool isProductivityClass) noexcept {
-    return isFullscreen && !isProductivityClass;
+    return tools3000::core::WinUtils::shouldBypassFullscreenInteractions(isFullscreen, isProductivityClass);
 }
 
 /// Chromium / Electron 用 WS_EX_NOREDIRECTIONBITMAP 走 DirectComposition。

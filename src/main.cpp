@@ -73,7 +73,6 @@
 #include "ui/ToastOverlay.h"
 #include "ui/SpotlightOverlay.h"
 #include "ui/WebViewEnvironmentManager.h"
-#include "gesture/GestureInputPolicy.h"
 #include "core/remote/RemoteMasterEngine.h"
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
@@ -829,12 +828,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             }
             if (tools3000::core::ConfigManager::instance().get<bool>("/search/autoBypassFullscreen", true)) {
                 HWND fg = GetForegroundWindow();
-                if (fg && tools3000::core::WinUtils::isWindowFullscreen(fg)) {
-                    const std::wstring classWide = tools3000::core::WinUtils::getWindowClassName(fg);
-                    if (tools3000::gesture::shouldAutoBypassFullscreenGestures(true, tools3000::gesture::isProductivityToolkitClassName(classWide))) {
-                        LOG_INFO("前台处于全屏独占应用，自动免打扰跳过搜索窗口呼出: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
-                        return;
-                    }
+                if (fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg)) {
+                    LOG_INFO("前台处于全屏独占应用，自动免打扰跳过搜索窗口呼出: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
+                    return;
                 }
             }
             searchWnd.show(GetModuleHandleW(nullptr));

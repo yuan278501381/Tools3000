@@ -227,6 +227,12 @@
   min-width: 0;
 }
 
+@container uikit-modal (max-width: 500px) {
+  .gesture-action-config-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 540px) {
   .gesture-action-config-grid {
     grid-template-columns: 1fr;

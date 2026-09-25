@@ -815,6 +815,58 @@ bool WinUtils::isWindowFullscreen(HWND hwnd) {
             rcWindow.bottom >= mi.rcMonitor.bottom);
 }
 
+namespace {
+
+inline bool classNameStartsWith(std::wstring_view cls, std::wstring_view prefix) noexcept {
+    return cls.size() >= prefix.size() && cls.substr(0, prefix.size()) == prefix;
+}
+
+inline bool isTabbedBrowserClassName(std::wstring_view cls) noexcept {
+    return classNameStartsWith(cls, L"Chrome_WidgetWin") ||
+           cls == L"MozillaWindowClass" ||
+           cls == L"CabinetWClass";
+}
+
+inline bool isTools3000UiClassName(std::wstring_view cls) noexcept {
+    constexpr std::wstring_view kPrefix = L"Tools3000_";
+    return cls.size() >= kPrefix.size() && cls.substr(0, kPrefix.size()) == kPrefix;
+}
+
+} // namespace
+
+bool WinUtils::isProductivityToolkitClassName(std::wstring_view cls) noexcept {
+    if (isTabbedBrowserClassName(cls) || isTools3000UiClassName(cls)) return true;
+    if (cls == L"OrpheusBrowserHost" || cls == L"CefBrowserWindow" ||
+        cls == L"ApplicationFrameWindow") {
+        return true;
+    }
+    return classNameStartsWith(cls, L"Qt");
+}
+
+bool WinUtils::shouldBypassFullscreenInteractions(bool isFullscreen, const wchar_t* cls) noexcept {
+    return isFullscreen && !isProductivityToolkitClassName(cls ? cls : L"");
+}
+
+bool WinUtils::shouldBypassFullscreenInteractions(bool isFullscreen, std::wstring_view cls) noexcept {
+    return isFullscreen && !isProductivityToolkitClassName(cls);
+}
+
+bool WinUtils::shouldBypassFullscreenInteractions(bool isFullscreen, const std::wstring& cls) noexcept {
+    return isFullscreen && !isProductivityToolkitClassName(cls);
+}
+
+bool WinUtils::shouldBypassFullscreenInteractions(bool isFullscreen, bool isProductivityClass) noexcept {
+    return isFullscreen && !isProductivityClass;
+}
+
+bool WinUtils::shouldBypassFullscreenInteractions(HWND hwnd) {
+    if (!hwnd || !isWindowFullscreen(hwnd)) {
+        return false;
+    }
+    const std::wstring classWide = getWindowClassName(hwnd);
+    return shouldBypassFullscreenInteractions(true, classWide);
+}
+
 bool WinUtils::queryProcessElevated(HANDLE process) {
     if (!process) return false;
     HANDLE token = nullptr;

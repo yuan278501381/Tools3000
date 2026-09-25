@@ -7,69 +7,17 @@
  *   - 底部有版本信息和主题切换
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { type ReactNode, type FC } from 'react';
+import { type FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  BarChart3,
-  Mouse,
-  Camera,
-  FileText,
-  Settings,
-  Info,
-  MonitorUp,
-  History,
-  Boxes,
-  Search,
-  Bot,
-  Pipette,
-  ClipboardList,
-  FileCode2,
-  FolderSymlink,
-  Sparkles,
-  Keyboard,
-  Cast,
-} from 'lucide-react';
 import './Sidebar.css';
-import { type NavId } from '../pages/registry';
+import {
+  APP_ROUTES,
+  ROUTE_MAP,
+  type RouteItemConfig,
+  type NavId,
+} from '../config/routes';
 
 export type { NavId };
-
-interface NavItem {
-  id: NavId;
-  icon: ReactNode;
-  labelKey: string;
-  requiresPlugin?: 'gesture' | 'capture' | 'search' | 'dialogenhancer' | 'dialog_enhancer' | 'keycast' | 'spotlight' | 'remote_boost';
-}
-
-const SYSTEM_NAV_ITEMS: NavItem[] = [
-  { id: 'general', icon: <Settings size={20} strokeWidth={2.2} />, labelKey: 'nav.settings' },
-  { id: 'plugins', icon: <Boxes size={20} strokeWidth={2.2} />, labelKey: 'nav.plugins' },
-];
-
-const CORE_TOOL_NAV_ITEMS: NavItem[] = [
-  { id: 'search',  icon: <Search size={20} strokeWidth={2.2} />, labelKey: 'nav.search', requiresPlugin: 'search' },
-  { id: 'gesture', icon: <Mouse size={20} strokeWidth={2.2} />, labelKey: 'nav.gesture', requiresPlugin: 'gesture' },
-  { id: 'hotcorner', icon: <MonitorUp size={20} strokeWidth={2.2} />, labelKey: 'nav.hotcorner', requiresPlugin: 'gesture' },
-  { id: 'capture', icon: <Camera size={20} strokeWidth={2.2} />, labelKey: 'nav.capture', requiresPlugin: 'capture' },
-  { id: 'history', icon: <History size={20} strokeWidth={2.2} />, labelKey: 'nav.history', requiresPlugin: 'capture' },
-  { id: 'ocr',     icon: <FileText size={20} strokeWidth={2.2} />, labelKey: 'nav.ocr', requiresPlugin: 'capture' },
-  { id: 'keycast', icon: <Keyboard size={20} strokeWidth={2.2} />, labelKey: 'nav.keycast', requiresPlugin: 'keycast' },
-  { id: 'spotlight', icon: <Sparkles size={20} strokeWidth={2.2} />, labelKey: 'nav.spotlight', requiresPlugin: 'spotlight' },
-  { id: 'dialog_enhancer', icon: <FolderSymlink size={20} strokeWidth={2.2} />, labelKey: 'nav.dialog_enhancer', requiresPlugin: 'dialogenhancer' },
-  { id: 'remote_boost', icon: <Cast size={20} strokeWidth={2.2} />, labelKey: 'nav.remote_boost', requiresPlugin: 'remote_boost' },
-];
-
-const INSIGHT_NAV_ITEMS: NavItem[] = [
-  { id: 'stats', icon: <BarChart3 size={20} strokeWidth={2.2} />, labelKey: 'nav.stats' },
-  { id: 'about', icon: <Info size={20} strokeWidth={2.2} />, labelKey: 'nav.about' },
-];
-
-const EXTENSION_NAV_CONFIG: Record<string, { icon: ReactNode; labelKey: string }> = {
-  ai_assistant: { icon: <Bot size={20} strokeWidth={2.2} />, labelKey: 'nav.ai_assistant' },
-  color_picker: { icon: <Pipette size={20} strokeWidth={2.2} />, labelKey: 'nav.color_picker' },
-  clipboard_manager: { icon: <ClipboardList size={20} strokeWidth={2.2} />, labelKey: 'nav.clipboard_manager' },
-  markdown_preview: { icon: <FileCode2 size={20} strokeWidth={2.2} />, labelKey: 'nav.markdown_preview' },
-};
 
 export interface SidebarProps {
   activeNav: NavId;
@@ -86,7 +34,7 @@ export const Sidebar: FC<SidebarProps> = ({
 }) => {
   const { t } = useTranslation();
 
-  const isItemAvailable = (item: NavItem) => {
+  const isItemAvailable = (item: RouteItemConfig) => {
     if (!item.requiresPlugin) return true;
     if (!activePlugins) return false;
     if (item.requiresPlugin === 'dialogenhancer' || item.requiresPlugin === 'dialog_enhancer') {
@@ -95,10 +43,13 @@ export const Sidebar: FC<SidebarProps> = ({
     return activePlugins.has(item.requiresPlugin);
   };
 
-  const availableCoreTools = CORE_TOOL_NAV_ITEMS.filter(isItemAvailable);
+  const systemNavItems = APP_ROUTES.filter((r) => r.category === 'system');
+  const availableCoreTools = APP_ROUTES.filter((r) => r.category === 'core_tools').filter(isItemAvailable);
+  const insightNavItems = APP_ROUTES.filter((r) => r.category === 'insights');
 
-  const renderNavItem = (item: NavItem) => {
+  const renderNavItem = (item: RouteItemConfig) => {
     const unavailable = !isItemAvailable(item);
+    const IconComponent = item.icon;
     return (
       <button
         key={item.id}
@@ -110,7 +61,9 @@ export const Sidebar: FC<SidebarProps> = ({
         aria-current={activeNav === item.id ? 'page' : undefined}
       >
         <span className="sidebar__item-indicator" />
-        <span className="sidebar__item-icon">{item.icon}</span>
+        <span className="sidebar__item-icon">
+          <IconComponent size={20} strokeWidth={2.2} />
+        </span>
         <span className="sidebar__item-label">{t(item.labelKey as unknown as TemplateStringsArray)}</span>
       </button>
     );
@@ -121,7 +74,7 @@ export const Sidebar: FC<SidebarProps> = ({
       {/* ── 导航列表 ──────────────────────────────────────────────── */}
       <nav className="sidebar__nav">
         {/* 1. 系统总控组 */}
-        {SYSTEM_NAV_ITEMS.map(renderNavItem)}
+        {systemNavItems.map(renderNavItem)}
 
         {/* 分割线 1 (仅在有启用的核心工具时显示) */}
         {availableCoreTools.length > 0 && (
@@ -136,8 +89,9 @@ export const Sidebar: FC<SidebarProps> = ({
           <>
             <div className="sidebar__divider" role="separator" />
             {installedExtensionIds.map((extId) => {
-              const config = EXTENSION_NAV_CONFIG[extId];
-              if (!config) return null;
+              const route = ROUTE_MAP.get(extId);
+              if (!route) return null;
+              const IconComponent = route.icon;
               return (
                 <button
                   key={extId}
@@ -147,8 +101,10 @@ export const Sidebar: FC<SidebarProps> = ({
                   aria-current={activeNav === extId ? 'page' : undefined}
                 >
                   <span className="sidebar__item-indicator" />
-                  <span className="sidebar__item-icon">{config.icon}</span>
-                  <span className="sidebar__item-label">{t(config.labelKey as unknown as TemplateStringsArray)}</span>
+                  <span className="sidebar__item-icon">
+                    <IconComponent size={20} strokeWidth={2.2} />
+                  </span>
+                  <span className="sidebar__item-label">{t(route.labelKey as unknown as TemplateStringsArray)}</span>
                 </button>
               );
             })}
@@ -159,9 +115,10 @@ export const Sidebar: FC<SidebarProps> = ({
         <div className="sidebar__divider" role="separator" />
 
         {/* 4. 统计与关于 */}
-        {INSIGHT_NAV_ITEMS.map(renderNavItem)}
+        {insightNavItems.map(renderNavItem)}
       </nav>
     </aside>
   );
 };
+
 

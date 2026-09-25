@@ -3027,4 +3027,38 @@ TEST(LoggerTest, FullStackIntegrationAndDynamicRetention) {
     removeDirectorySafely(testDir);
 }
 
+TEST(WinUtilsTest, FullscreenBypassPolicyVerification) {
+    using tools3000::core::WinUtils;
+
+    // 生产力类名检测
+    EXPECT_TRUE(WinUtils::isProductivityToolkitClassName(L"Chrome_WidgetWin_1"));
+    EXPECT_TRUE(WinUtils::isProductivityToolkitClassName(L"MozillaWindowClass"));
+    EXPECT_TRUE(WinUtils::isProductivityToolkitClassName(L"CabinetWClass"));
+    EXPECT_TRUE(WinUtils::isProductivityToolkitClassName(L"Tools3000_SearchWindow"));
+    EXPECT_TRUE(WinUtils::isProductivityToolkitClassName(L"Tools3000_SettingsWindow"));
+    EXPECT_TRUE(WinUtils::isProductivityToolkitClassName(L"OrpheusBrowserHost"));
+    EXPECT_TRUE(WinUtils::isProductivityToolkitClassName(L"CefBrowserWindow"));
+    EXPECT_TRUE(WinUtils::isProductivityToolkitClassName(L"Qt51514QWindowIcon"));
+    EXPECT_TRUE(WinUtils::isProductivityToolkitClassName(L"ApplicationFrameWindow"));
+
+    // 独占游戏等非生产力类名
+    EXPECT_FALSE(WinUtils::isProductivityToolkitClassName(L"UnityWndClass"));
+    EXPECT_FALSE(WinUtils::isProductivityToolkitClassName(L"D3D11_GameWindow"));
+    EXPECT_FALSE(WinUtils::isProductivityToolkitClassName(L"UnrealWindow"));
+
+    // shouldBypassFullscreenInteractions 判定策略
+    EXPECT_TRUE(WinUtils::shouldBypassFullscreenInteractions(true, L"D3D11_GameWindow"));
+    EXPECT_FALSE(WinUtils::shouldBypassFullscreenInteractions(true, L"Chrome_WidgetWin_1"));
+    EXPECT_FALSE(WinUtils::shouldBypassFullscreenInteractions(true, L"Tools3000_SearchWindow"));
+    EXPECT_FALSE(WinUtils::shouldBypassFullscreenInteractions(false, L"D3D11_GameWindow"));
+
+    // bool 重载
+    EXPECT_TRUE(WinUtils::shouldBypassFullscreenInteractions(true, false));
+    EXPECT_FALSE(WinUtils::shouldBypassFullscreenInteractions(true, true));
+    EXPECT_FALSE(WinUtils::shouldBypassFullscreenInteractions(false, false));
+
+    // HWND 重载 nullptr 安全防御
+    EXPECT_FALSE(WinUtils::shouldBypassFullscreenInteractions(static_cast<HWND>(nullptr)));
+}
+
 

@@ -28,6 +28,8 @@
 
 /* ── 卡片容器 ─────────────────────────────────────────────────────────────── */
 .onboarding__card {
+  container-type: inline-size;
+  container-name: onboarding-card;
   position: relative;
   width: min(820px, 92vw);
   min-height: min(520px, 90vh);
@@ -467,7 +469,47 @@
   background: var(--bg-elevated);
 }
 
-/* ── 响应式 ───────────────────────────────────────────────────────────────── */
+/* ── 响应式 (容器查询与视口回退) ─────────────────────────────────────────── */
+@container onboarding-card (max-width: 780px) {
+  .onboarding__features {
+    max-width: 540px;
+  }
+  .onboarding__feature-card {
+    flex: 0 1 calc(33.333% - 10px);
+    max-width: 165px;
+  }
+  .onboarding__showcase-grid {
+    grid-template-columns: 1fr;
+    max-width: 480px;
+  }
+}
+
+@container onboarding-card (max-width: 560px) {
+  .onboarding__features {
+    max-width: 380px;
+  }
+  .onboarding__feature-card {
+    flex: 0 1 calc(50% - 10px);
+    max-width: 180px;
+  }
+  .onboarding__shortcuts {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container onboarding-card (max-width: 450px) {
+  .onboarding__card {
+    min-height: 420px;
+  }
+  .onboarding__feature-card {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+  .onboarding__step {
+    padding: 32px 16px 16px;
+  }
+}
+
 @media (max-width: 840px) {
   .onboarding__features {
     max-width: 540px;

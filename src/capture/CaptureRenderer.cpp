@@ -16,8 +16,10 @@
 #include <cmath>
 #include <utility>
 #include <opencv2/imgproc.hpp>
+#include <dxgi.h>
 
 #pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -3188,7 +3190,11 @@ void CaptureRenderer::render(CaptureState& state) {
                                      D2D1::RectF(0, 0, size.width, size.height), m_infoTextBrush.Get());
         }
         
-        m_renderTarget->EndDraw();
+        const HRESULT hr = m_renderTarget->EndDraw();
+        if (hr == D2DERR_RECREATE_TARGET || hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+            LOG_WARN("CaptureRenderer: EndDraw device lost (hr=0x{:08X}), releasing window resources", static_cast<uint32_t>(hr));
+            releaseWindowResources();
+        }
         return;
     }
 
@@ -3360,7 +3366,11 @@ void CaptureRenderer::render(CaptureState& state) {
     // 渲染微晶浮层数值反馈 (Toast)
     drawFloatingToast(state);
 
-    m_renderTarget->EndDraw();
+    const HRESULT hr = m_renderTarget->EndDraw();
+    if (hr == D2DERR_RECREATE_TARGET || hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+        LOG_WARN("CaptureRenderer: EndDraw device lost (hr=0x{:08X}), releasing window resources", static_cast<uint32_t>(hr));
+        releaseWindowResources();
+    }
 }
 
 void CaptureRenderer::drawOutlinedText(ID2D1RenderTarget* rt,

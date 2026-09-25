@@ -6,7 +6,7 @@ const baseLocale = 'en.json';
 const enPath = path.join(localesDir, baseLocale);
 
 if (!fs.existsSync(enPath)) {
-  console.error(`❌ [Fatal] 基准语言文件不存在: ${enPath}`);
+  console.error(`[ERROR] [Fatal] 基准语言文件不存在: ${enPath}`);
   process.exit(1);
 }
 
@@ -14,7 +14,7 @@ const enData = JSON.parse(fs.readFileSync(enPath, 'utf8'));
 
 // 动态发现 locales 目录下的所有语言包 (如 en.json, zh.json, zh-TW.json, ja.json, etc.)
 const localeFiles = fs.readdirSync(localesDir).filter(f => f.endsWith('.json'));
-console.log(`🌐 [Locale Matrix Discovery] 发现 ${localeFiles.length} 个语言包: [${localeFiles.join(', ')}]`);
+console.log(`[INFO] [Locale Matrix Discovery] 发现 ${localeFiles.length} 个语言包: [${localeFiles.join(', ')}]`);
 
 const allLocalesData = new Map();
 for (const file of localeFiles) {
@@ -22,7 +22,7 @@ for (const file of localeFiles) {
   try {
     allLocalesData.set(file, JSON.parse(fs.readFileSync(fullPath, 'utf8')));
   } catch (err) {
-    console.error(`❌ [Invalid JSON] 语言文件解析失败: ${file}`, err);
+    console.error(`[ERROR] [Invalid JSON] 语言文件解析失败: ${file}`, err);
     process.exit(1);
   }
 }
@@ -96,19 +96,19 @@ function checkLocaleMatrix(targetFile, targetData) {
 
       if (typeof baseVal === 'object' && baseVal !== null) {
         if (!targetVal || typeof targetVal !== 'object') {
-          console.error(`❌ [Missing Namespace Matrix] ${targetFile} 缺失对象命名空间: ${fullKey}`);
+          console.error(`[ERROR] [Missing Namespace Matrix] ${targetFile} 缺失对象命名空间: ${fullKey}`);
           hasError = true;
         } else {
           traverse(baseVal, targetVal, `${fullKey}.`);
         }
       } else {
         if (targetVal === undefined) {
-          console.error(`❌ [Missing Key Matrix] ${targetFile} 缺失翻译键位: ${fullKey}`);
+          console.error(`[ERROR] [Missing Key Matrix] ${targetFile} 缺失翻译键位: ${fullKey}`);
           hasError = true;
         } else if (typeof baseVal === 'string' && typeof targetVal === 'string') {
           // 防线 2：英文包绝对 0 汉字污染
           if (isEnglish && cjkRegex.test(targetVal)) {
-            console.error(`❌ [CJK in English Gate] en.json 存在非法汉字字符: [${fullKey}] -> "${targetVal}"`);
+            console.error(`[ERROR] [CJK in English Gate] en.json 存在非法汉字字符: [${fullKey}] -> "${targetVal}"`);
             hasError = true;
           }
 
@@ -116,7 +116,7 @@ function checkLocaleMatrix(targetFile, targetData) {
           const enVars = (baseVal.match(/\{\{([^}]+)\}\}/g) || []).sort();
           const targetVars = (targetVal.match(/\{\{([^}]+)\}\}/g) || []).sort();
           if (enVars.join(',') !== targetVars.join(',')) {
-            console.error(`❌ [Interpolation Parity Matrix] ${targetFile} 变量插值不一致: [${fullKey}]`);
+            console.error(`[ERROR] [Interpolation Parity Matrix] ${targetFile} 变量插值不一致: [${fullKey}]`);
             console.error(`   en.json 基准: "${baseVal}" (变量: [${enVars.join(', ')}])`);
             console.error(`   ${targetFile} 实际: "${targetVal}" (变量: [${targetVars.join(', ')}])`);
             hasError = true;
@@ -130,7 +130,7 @@ function checkLocaleMatrix(targetFile, targetData) {
               const words = stripped.split(/\s+/).filter(Boolean);
               const unrecognized = words.filter(w => !isAllowedPureEnglishToken(w));
               if (unrecognized.length > 0) {
-                console.error(`❌ [Translation Leak Matrix] ${targetFile} 疑似遗漏翻译 (纯英文未汉化): [${fullKey}]`);
+                console.error(`[ERROR] [Translation Leak Matrix] ${targetFile} 疑似遗漏翻译 (纯英文未汉化): [${fullKey}]`);
                 console.error(`   当前值: "${targetVal}"`);
                 console.error(`   基准值: "${baseVal}"`);
                 console.error(`   未识别非专业英文单词: [${unrecognized.join(', ')}]`);
@@ -146,7 +146,7 @@ function checkLocaleMatrix(targetFile, targetData) {
     if (targetObj && typeof targetObj === 'object') {
       for (const key in targetObj) {
         if (baseObj[key] === undefined) {
-          console.error(`❌ [Orphan Key Matrix] ${targetFile} 包含基准 en.json 中不存在的孤儿键位: ${prefix}${key}`);
+          console.error(`[ERROR] [Orphan Key Matrix] ${targetFile} 包含基准 en.json 中不存在的孤儿键位: ${prefix}${key}`);
           hasError = true;
         }
       }
@@ -173,7 +173,7 @@ function checkCodeReferences() {
       if (k.includes('.') && !k.startsWith('http') && !k.startsWith('tools3000_') && !k.startsWith('/') && !k.includes(' ')) {
         for (const [localeFile, localeData] of allLocalesData.entries()) {
           if (!hasJsonPath(localeData, k)) {
-            console.error(`❌ [Broken Key Reference Gate] 源码引用的键位在语言包 ${localeFile} 中缺失: ${path.relative('./', file)}`);
+            console.error(`[ERROR] [Broken Key Reference Gate] 源码引用的键位在语言包 ${localeFile} 中缺失: ${path.relative('./', file)}`);
             console.error(`   未定义的键: "${k}"`);
             hasError = true;
           }
@@ -187,7 +187,7 @@ function checkCodeReferences() {
       if (k.includes('.') && !k.startsWith('http') && !k.startsWith('tools3000_') && !k.includes(' ')) {
         for (const [localeFile, localeData] of allLocalesData.entries()) {
           if (!hasJsonPath(localeData, k)) {
-            console.error(`❌ [Broken t() Reference Gate] t() 调用的键位在语言包 ${localeFile} 中缺失: ${path.relative('./', file)}`);
+            console.error(`[ERROR] [Broken t() Reference Gate] t() 调用的键位在语言包 ${localeFile} 中缺失: ${path.relative('./', file)}`);
             console.error(`   未定义的键: "${k}"`);
             hasError = true;
           }
@@ -224,7 +224,7 @@ function checkSourceCodeFallbacksAndNakedChinese() {
       const key = match[1];
       const fallback = match[2];
       if (chineseRegex.test(fallback)) {
-        console.error(`❌ [Chinese Fallback Violation] ${path.relative('./', file)}:`);
+        console.error(`[ERROR] [Chinese Fallback Violation] ${path.relative('./', file)}:`);
         console.error(`   key: "${key}", fallback: "${fallback}"`);
         console.error(`   [Rule] 源码中的所有 fallback 必须为英文基准，非英文翻译请录入对应语言字典！`);
         hasError = true;
@@ -248,7 +248,7 @@ function checkSourceCodeFallbacksAndNakedChinese() {
       if (!chineseRegex.test(codeOnly)) return;
       if (allowedPatterns.some(p => p.test(codeOnly))) return;
 
-      console.error(`❌ [Zero-Naked-Chinese Gate] 发现未国际化的裸中文硬编码: ${path.relative('./', file)}:${idx + 1}`);
+      console.error(`[ERROR] [Zero-Naked-Chinese Gate] 发现未国际化的裸中文硬编码: ${path.relative('./', file)}:${idx + 1}`);
       console.error(`   代码行: "${rawLine.trim()}"`);
       console.error(`   [Rule] 严禁在源码或 JSX 中硬编码任何中文文本！必须 100% 接入 t('namespace.key', 'English fallback')`);
       hasError = true;
@@ -256,7 +256,7 @@ function checkSourceCodeFallbacksAndNakedChinese() {
   }
 }
 
-console.log('🔍 [i18n Gate] 正在执行 Tools3000 世界级可扩展 N 语言同构矩阵与全链路多语言防线审查...');
+console.log('[INFO] [i18n Gate] 正在执行 Tools3000 世界级可扩展 N 语言同构矩阵与全链路多语言防线审查...');
 
 // ── 防线 7：常量配置与预设 UI 实体 labelKey / nameKey 100% 国际化对齐防线 ──
 function checkPresetAndOptionEntityInternationalization() {
@@ -269,7 +269,7 @@ function checkPresetAndOptionEntityInternationalization() {
 
     let match;
     while ((match = presetPillRegex.exec(content)) !== null) {
-      console.error(`❌ [Missing labelKey Gate Violation] 发现未定义 labelKey 的裸预设/选项对象: ${path.relative('./', file)}`);
+      console.error(`[ERROR] [Missing labelKey Gate Violation] 发现未定义 labelKey 的裸预设/选项对象: ${path.relative('./', file)}`);
       console.error(`   匹配代码: "${match[0]}"`);
       console.error(`   [Rule] 所有向用户展示的预设或选项对象，必须包含 labelKey/nameKey 并经由 t() 进行多语言转换！`);
       hasError = true;
@@ -287,10 +287,10 @@ checkSourceCodeFallbacksAndNakedChinese();
 checkPresetAndOptionEntityInternationalization();
 
 if (hasError) {
-  console.error('\n❌ i18n 门禁审查失败！请修复上述键位缺失、英文泄漏、断裂引用、裸中文或裸配置 Label 问题。');
+  console.error('\n[ERROR] i18n 门禁审查失败！请修复上述键位缺失、英文泄漏、断裂引用、裸中文或裸配置 Label 问题。');
   process.exit(1);
 } else {
-  console.log('✅ i18n 世界级 7 重防护门禁全部通过！');
+  console.log('[OK] i18n 世界级 7 重防护门禁全部通过！');
   console.log('   1. 中英文字典 100% 同构双向对齐');
   console.log('   2. 英文包绝对 0 汉字污染');
   console.log('   3. 中文包 0 未翻译英文泄漏 (智能专有名词与混排合规)');
