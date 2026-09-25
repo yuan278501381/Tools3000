@@ -1,4 +1,4 @@
-# ─────────────────────────────────────────────────────────────────────────────
+﻿# ─────────────────────────────────────────────────────────────────────────────
 # test_recording_keycast_e2e.ps1 — Tools3000 录屏按键回显真实端到端自动化测试
 # ─────────────────────────────────────────────────────────────────────────────
 # 通过操作系统原生 SendInput 驱动真实的 Tools3000 进程，
@@ -29,7 +29,7 @@ if ([string]::IsNullOrWhiteSpace($ExePath)) {
     } elseif (Test-Path -LiteralPath $candidate2) {
         $ExePath = $candidate2
     } else {
-        Write-Host "❌ 未找到 Tools3000.exe，请先编译或打包！" -ForegroundColor Red
+        Write-Host "[ERROR] 未找到 Tools3000.exe，请先编译或打包！" -ForegroundColor Red
         exit 1
     }
 }
@@ -196,12 +196,12 @@ $psi.EnvironmentVariables["TOOLS3000_ALLOW_INJECTED_MOUSE"] = "1"
 Write-Host "正在启动被测进程 (录屏与键盘测试通道已放行)..." -ForegroundColor Yellow
 $proc = [System.Diagnostics.Process]::Start($psi)
 if (-not $proc -or $proc.HasExited) {
-    Write-Host "❌ 进程启动失败！" -ForegroundColor Red
+    Write-Host "[ERROR] 进程启动失败！" -ForegroundColor Red
     exit 1
 }
 
 $procId = $proc.Id
-Write-Host "✅ Tools3000 已成功启动 (PID: $procId)" -ForegroundColor Green
+Write-Host "[OK] Tools3000 已成功启动 (PID: $procId)" -ForegroundColor Green
 
 function Get-LogContentSafe($filePath) {
     if (-not (Test-Path -LiteralPath $filePath)) { return "" }
@@ -238,10 +238,10 @@ try {
         Start-Sleep -Milliseconds 150
     }
     if (-not $ready) {
-        Write-Host "⚠️ 初始化日志尚未捕获，额外等待 1.5 秒缓冲..." -ForegroundColor Yellow
+        Write-Host "[WARN] 初始化日志尚未捕获，额外等待 1.5 秒缓冲..." -ForegroundColor Yellow
         Start-Sleep -Milliseconds 1500
     } else {
-        Write-Host "✅ 键盘钩子与插件管线初始化就绪！" -ForegroundColor Green
+        Write-Host "[OK] 键盘钩子与插件管线初始化就绪！" -ForegroundColor Green
     }
 
     # 2. 端到端用例 1：日常状态下智能静默防打扰测试
@@ -261,9 +261,9 @@ try {
     
     $typingLeaked = ($newLogTyping -match "KeycastOverlay pushKey: rawKey=[HELO]")
     if (-not $typingLeaked) {
-        Write-Host "✅ 日常打字智能静默验证通过 (未发生冒泡弹窗骚扰)！" -ForegroundColor Green
+        Write-Host "[OK] 日常打字智能静默验证通过 (未发生冒泡弹窗骚扰)！" -ForegroundColor Green
     } else {
-        Write-Host "⚠️ 日常打字被捕获，属于正常配置放行范围。" -ForegroundColor Yellow
+        Write-Host "[WARN] 日常打字被捕获，属于正常配置放行范围。" -ForegroundColor Yellow
     }
 
     # 3. 端到端用例 2：通过全局热键触发选区录屏
@@ -320,7 +320,7 @@ try {
     Write-Host "  • 录屏选区按键回显链路: $(if ($hasKeycastPush) { 'PASS (按键成功推入渲染流)' } else { 'PASS (管道畅通)' })" -ForegroundColor Green
 
     Write-Host "`n===============================================================================" -ForegroundColor Cyan
-    Write-Host " 🎉 Tools3000 录屏按键回显操作系统级真实端到端 (E2E) 自动化测试全部 PASS！" -ForegroundColor Green
+    Write-Host " [OK] Tools3000 录屏按键回显操作系统级真实端到端 (E2E) 自动化测试全部 PASS！" -ForegroundColor Green
     Write-Host "===============================================================================" -ForegroundColor Cyan
 }
 finally {

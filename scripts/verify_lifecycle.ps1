@@ -1,4 +1,4 @@
-# ─────────────────────────────────────────────────────────────────────────────
+﻿# ─────────────────────────────────────────────────────────────────────────────
 # verify_lifecycle.ps1 — Tools3000 关键端到端生命周期与防死锁自动化门禁
 # ─────────────────────────────────────────────────────────────────────────────
 # 覆盖冷启动、截图取消自愈、搜索按需常驻、窗口清单与停机收割。
@@ -141,7 +141,7 @@ function Get-AvailableHarnessHotkeys {
 }
 $exePath = Join-Path $ResolvedBinDirectory "Tools3000.exe"
 if (-not (Test-Path -LiteralPath $exePath)) {
-    Write-Host "❌ 未找到可执行文件 ($exePath)，请先执行 deploy.ps1 构建部署目录！" -ForegroundColor Red
+    Write-Host "[ERROR] 未找到可执行文件 ($exePath)，请先执行 deploy.ps1 构建部署目录！" -ForegroundColor Red
     exit 1
 }
 $exePath = (Resolve-Path -LiteralPath $exePath).Path
@@ -249,13 +249,13 @@ function Test-StartupLogCleanliness([string]$LogPath) {
             $_ -match "启动自愈定时器"
         })
         if ($trayErrors.Count -gt 0) {
-            Write-Host "❌ 启动日志纯净度门禁 (Zero-Warning Log Gate) 拦截到托盘创建异常：" -ForegroundColor Red
+            Write-Host "[ERROR] 启动日志纯净度门禁 (Zero-Warning Log Gate) 拦截到托盘创建异常：" -ForegroundColor Red
             foreach ($err in $trayErrors) {
                 Write-Host "  -> $err" -ForegroundColor Red
             }
             throw "待测实例在交互式物理桌面启动时托盘图标创建失败，严禁带有托盘异常的进程通过门禁！"
         }
-        Write-Host "✅ 启动日志纯净度门禁 PASS (托盘图标零警告/零自愈异常)" -ForegroundColor Green
+        Write-Host "[OK] 启动日志纯净度门禁 PASS (托盘图标零警告/零自愈异常)" -ForegroundColor Green
     } else {
         Write-Host "ℹ️ 检测到当前处于无头或沙箱环境 (无 Shell_TrayWnd)，跳过交互任务栏图标断言" -ForegroundColor DarkGray
     }
@@ -265,7 +265,7 @@ function Test-StartupLogCleanliness([string]$LogPath) {
         $_ -match "panic"
     })
     if ($criticalErrors.Count -gt 0) {
-        Write-Host "❌ 启动日志中检测到致命错误：" -ForegroundColor Red
+        Write-Host "[ERROR] 启动日志中检测到致命错误：" -ForegroundColor Red
         foreach ($err in $criticalErrors) {
             Write-Host "  -> $err" -ForegroundColor Red
         }
@@ -279,9 +279,9 @@ $config = @{}
 if (Test-Path $configPath) {
     try {
         $config = Get-Content $configPath -Raw | ConvertFrom-Json
-        Write-Host "✅ 成功加载隔离测试配置: $configPath" -ForegroundColor Green
+        Write-Host "[OK] 成功加载隔离测试配置: $configPath" -ForegroundColor Green
     } catch {
-        Write-Host "⚠️ 隔离测试配置解析失败，回退默认" -ForegroundColor Yellow
+        Write-Host "[WARN] 隔离测试配置解析失败，回退默认" -ForegroundColor Yellow
     }
 }
 
@@ -301,10 +301,10 @@ $proc = Start-Process $exePath -ArgumentList "--no-elevate", "--force-portable-s
 Start-Sleep -Seconds 2
 
 if ($proc.HasExited) {
-    Write-Host "❌ Tools3000 启动即崩溃退出！" -ForegroundColor Red
+    Write-Host "[ERROR] Tools3000 启动即崩溃退出！" -ForegroundColor Red
     exit 1
 }
-Write-Host "✅ Tools3000 启动成功 (PID: $($proc.Id))" -ForegroundColor Green
+Write-Host "[OK] Tools3000 启动成功 (PID: $($proc.Id))" -ForegroundColor Green
 
 # 启动日志纯净度门禁：断言在交互桌面环境下启动严禁出现托盘创建失败警告或自愈定时器
 $initialLogPath = Join-Path $HarnessDataRoot "logs\tools3000.log"
@@ -313,17 +313,17 @@ Test-StartupLogCleanliness -LogPath $initialLogPath
 # WebView 预加载、设置页状态查询和普通应用启动都不能提前拉起重型索引进程。
 $serviceBeforeSearch = Get-HarnessSearchServices
 if ($serviceBeforeSearch) {
-    Write-Host "❌ 搜索服务在用户主动唤起搜索前已经启动，违反按需加载契约！" -ForegroundColor Red
+    Write-Host "[ERROR] 搜索服务在用户主动唤起搜索前已经启动，违反按需加载契约！" -ForegroundColor Red
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 }
-Write-Host "✅ 搜索服务保持休眠，应用/WebView 预加载未触发索引" -ForegroundColor Green
+Write-Host "[OK] 搜索服务保持休眠，应用/WebView 预加载未触发索引" -ForegroundColor Green
 
 # 先单独验证“本次从未唤起搜索”的退出路径。若 shutdown 代码
 # 误用了可自启的管道请求，这一阶段会在主进程退出后捕获到服务。
 $coldExitWindow = [LifecycleHarness]::FindMessageWindowForProcess([uint32]$proc.Id)
 if ($coldExitWindow -eq [IntPtr]::Zero) {
-    Write-Host "❌ 找不到首轮待测进程的主消息窗口！" -ForegroundColor Red
+    Write-Host "[ERROR] 找不到首轮待测进程的主消息窗口！" -ForegroundColor Red
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 }
@@ -333,23 +333,23 @@ for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Milliseconds 100
 }
 if (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue) {
-    Write-Host "❌ 未唤起搜索的首轮 Tools3000 未能正常退出！" -ForegroundColor Red
+    Write-Host "[ERROR] 未唤起搜索的首轮 Tools3000 未能正常退出！" -ForegroundColor Red
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 }
 Start-Sleep -Milliseconds 500
 if (Get-HarnessSearchServices) {
-    Write-Host "❌ Tools3000 在从未唤起搜索的退出路径中启动了索引服务！" -ForegroundColor Red
+    Write-Host "[ERROR] Tools3000 在从未唤起搜索的退出路径中启动了索引服务！" -ForegroundColor Red
     exit 1
 }
-Write-Host "✅ 从未唤起搜索时，Tools3000 退出也不会启动索引服务" -ForegroundColor Green
+Write-Host "[OK] 从未唤起搜索时，Tools3000 退出也不会启动索引服务" -ForegroundColor Green
 
 # 启动第二轮进程，继续验证显式唤起与唤起后常驻。
 $proc = Start-Process $exePath -ArgumentList "--no-elevate", "--force-portable-search-service", "--lifecycle-test-instance" `
     -Environment $HarnessEnvironment -PassThru
 Start-Sleep -Seconds 2
 if ($proc.HasExited) {
-    Write-Host "❌ Tools3000 第二轮启动即崩溃退出！" -ForegroundColor Red
+    Write-Host "[ERROR] Tools3000 第二轮启动即崩溃退出！" -ForegroundColor Red
     exit 1
 }
 
@@ -419,7 +419,7 @@ for ($i = 0; $i -lt 20; $i++) {
 if ([LifecycleHarness]::IsWindowVisible($secondCaptureWindow)) {
     throw '第二轮截图覆盖层未能取消。'
 }
-Write-Host "✅ 截图生命周期与取消路径自愈测试 PASS" -ForegroundColor Green
+Write-Host "[OK] 截图生命周期与取消路径自愈测试 PASS" -ForegroundColor Green
 
 # 2.2 录屏选区生命周期与取消路径验证 (RecordRegion Cancel-Path & Re-entry Testing)
 Write-Host "  -> 触发动态录屏选区快捷键: $recordHotkeyStr" -ForegroundColor DarkGray
@@ -486,7 +486,7 @@ for ($i = 0; $i -lt 20; $i++) {
 if ([LifecycleHarness]::IsWindowVisible($secondRecordWindow)) {
     throw '第二轮录屏选区覆盖层未能取消。'
 }
-Write-Host "✅ 录屏选区生命周期与取消路径自愈测试 PASS" -ForegroundColor Green
+Write-Host "[OK] 录屏选区生命周期与取消路径自愈测试 PASS" -ForegroundColor Green
 
 # 2.3 剪贴板全矩阵注入与内存修剪零破坏审计 (Clipboard Multi-Format & Zero-Damage Lifecycle Gate)
 Write-Host "  -> 执行剪贴板全矩阵注入 (PNG/CF_DIBV5/CF_DIB/CF_BITMAP/CF_HDROP) 与内存修剪零破坏门禁" -ForegroundColor DarkGray
@@ -501,9 +501,9 @@ if ($testExe) {
     if ($LASTEXITCODE -ne 0) {
         throw "剪贴板多格式注入与物理内存修剪零破坏审计门禁失败！退出码: $LASTEXITCODE"
     }
-    Write-Host "✅ 剪贴板多矩阵注入与内存修剪零破坏门禁 PASS" -ForegroundColor Green
+    Write-Host "[OK] 剪贴板多矩阵注入与内存修剪零破坏门禁 PASS" -ForegroundColor Green
 } else {
-    Write-Host "⚠️ 未检测到 Tools3000Tests.exe，跳过单测级剪贴板深度矩阵断言" -ForegroundColor Yellow
+    Write-Host "[WARN] 未检测到 Tools3000Tests.exe，跳过单测级剪贴板深度矩阵断言" -ForegroundColor Yellow
 }
 
 # 3. 搜索窗口与索引服务按需唤醒生命周期
@@ -512,7 +512,7 @@ Write-Host "`n── [3/5] 搜索中心与按需服务唤醒生命周期测试 �
 # 稍后 NavigationCompleted 又误启动”被当成按需成功。
 for ($i = 0; $i -lt 8; $i++) {
     if (Get-HarnessSearchServices) {
-        Write-Host "❌ 搜索服务在用户唤起前的稳定观察窗口内自行启动！" -ForegroundColor Red
+        Write-Host "[ERROR] 搜索服务在用户唤起前的稳定观察窗口内自行启动！" -ForegroundColor Red
         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         exit 1
     }
@@ -528,7 +528,7 @@ for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Milliseconds 250
 }
 if (-not $searchService) {
-    Write-Host "❌ 用户主动唤起搜索后，索引服务未在 5 秒内按需启动！" -ForegroundColor Red
+    Write-Host "[ERROR] 用户主动唤起搜索后，索引服务未在 5 秒内按需启动！" -ForegroundColor Red
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 }
@@ -540,13 +540,13 @@ for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Milliseconds 100
 }
 if ($searchWindow -eq [IntPtr]::Zero -or -not [LifecycleHarness]::IsWindowVisible($searchWindow)) {
-    Write-Host "❌ 快捷键未显示搜索窗口，无法将服务启动归因于显式用户操作！" -ForegroundColor Red
+    Write-Host "[ERROR] 快捷键未显示搜索窗口，无法将服务启动归因于显式用户操作！" -ForegroundColor Red
     Stop-Process -Id $searchService.Id -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 }
 $searchServicePid = $searchService.Id
-Write-Host "✅ 搜索窗口唤起后索引服务已按需启动 (PID: $searchServicePid)" -ForegroundColor Green
+Write-Host "[OK] 搜索窗口唤起后索引服务已按需启动 (PID: $searchServicePid)" -ForegroundColor Green
 
 # 按 Esc 隐藏搜索窗口
 [void][LifecycleHarness]::PostMessageW($searchWindow, 0x0100, [IntPtr]0x1B, [IntPtr]::Zero)
@@ -556,18 +556,18 @@ for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Milliseconds 100
 }
 if ([LifecycleHarness]::IsWindowVisible($searchWindow)) {
-    Write-Host "❌ Esc 未隐藏本轮 Tools3000 的搜索窗口！" -ForegroundColor Red
+    Write-Host "[ERROR] Esc 未隐藏本轮 Tools3000 的搜索窗口！" -ForegroundColor Red
     Stop-Process -Id $searchServicePid -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 }
 if (-not (Get-Process -Id $searchServicePid -ErrorAction SilentlyContinue)) {
-    Write-Host "❌ 搜索窗口隐藏后索引服务被错误停止！" -ForegroundColor Red
+    Write-Host "[ERROR] 搜索窗口隐藏后索引服务被错误停止！" -ForegroundColor Red
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 }
-Write-Host "✅ 搜索窗口隐藏后同一索引服务仍常驻" -ForegroundColor Green
-Write-Host "✅ 搜索窗口显式呼出与索引服务按需常驻生命周期测试 PASS" -ForegroundColor Green
+Write-Host "[OK] 搜索窗口隐藏后同一索引服务仍常驻" -ForegroundColor Green
+Write-Host "[OK] 搜索窗口显式呼出与索引服务按需常驻生命周期测试 PASS" -ForegroundColor Green
 
 # 4. 记录待测进程的顶层窗口，供失败时快速定位隐藏窗口残留。
 Write-Host "`n── [4/5] 顶层窗口可见性诊断清单 ──" -ForegroundColor Yellow
@@ -575,7 +575,7 @@ $dumpList = [LifecycleHarness]::DumpWindowsForProcess([uint32]$proc.Id)
 foreach ($item in $dumpList) {
     Write-Host "  -> $item" -ForegroundColor DarkGray
 }
-Write-Host "✅ 顶层窗口诊断清单记录完成" -ForegroundColor Green
+Write-Host "[OK] 顶层窗口诊断清单记录完成" -ForegroundColor Green
 
 # 5. 优雅退出与主进程收尾
 Write-Host "`n── [5/5] 托盘消息交互、真实退出命令与主进程收尾 ──" -ForegroundColor Yellow
@@ -590,7 +590,7 @@ if ($msgHwnd -ne [IntPtr]::Zero) {
     Write-Host "  -> 向主消息窗口投递真实托盘退出命令 (WM_COMMAND, ID=1099 [TrayMenuId::Exit])" -ForegroundColor DarkGray
     [void][LifecycleHarness]::PostMessageW($msgHwnd, 0x0111, [IntPtr]1099, [IntPtr]::Zero)
 } else {
-    Write-Host "❌ 找不到主消息窗口，不能用强杀代替优雅退出生命周期验证！" -ForegroundColor Red
+    Write-Host "[ERROR] 找不到主消息窗口，不能用强杀代替优雅退出生命周期验证！" -ForegroundColor Red
     Stop-Process -Id $searchServicePid -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
@@ -604,20 +604,20 @@ for ($i = 0; $i -lt 30; $i++) {
 }
 
 if (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue) {
-    Write-Host "❌ 退出收割失败：目标主进程未能在规定时间内全部归零！" -ForegroundColor Red
+    Write-Host "[ERROR] 退出收割失败：目标主进程未能在规定时间内全部归零！" -ForegroundColor Red
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 } else {
-    Write-Host "✅ 退出收尾测试 PASS ($elapsed 秒内主进程干净退出)" -ForegroundColor Green
+    Write-Host "[OK] 退出收尾测试 PASS ($elapsed 秒内主进程干净退出)" -ForegroundColor Green
     $finalLogPath = Join-Path $HarnessDataRoot "logs\tools3000.log"
     Test-StartupLogCleanliness -LogPath $finalLogPath
 }
 
 if (-not (Get-Process -Id $searchServicePid -ErrorAction SilentlyContinue)) {
-    Write-Host "❌ Tools3000 主进程退出后索引服务未保持常驻！" -ForegroundColor Red
+    Write-Host "[ERROR] Tools3000 主进程退出后索引服务未保持常驻！" -ForegroundColor Red
     exit 1
 }
-Write-Host "✅ Tools3000 退出后同一索引服务仍常驻" -ForegroundColor Green
+Write-Host "[OK] Tools3000 退出后同一索引服务仍常驻" -ForegroundColor Green
 
 # 测试显式使用便携服务，收尾时只回收本轮记录的 PID，避免污染后续门禁。
 Stop-Process -Id $searchServicePid -Force -ErrorAction SilentlyContinue

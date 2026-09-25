@@ -100,7 +100,7 @@ if (Test-Path "ui/package.json") {
     if ($SkipUI) {
         if (Test-Path -LiteralPath $DistIndex) {
             $SkipFrontend = $true
-            Write-Log "⚡ 已指定 -SkipUI，智能跳过前端构建并直接复用现有产物 ($DistIndex)" "SUCCESS"
+            Write-Log "[INFO] 已指定 -SkipUI，智能跳过前端构建并直接复用现有产物 ($DistIndex)" "SUCCESS"
         } else {
             Write-Log "已指定 -SkipUI 但前端产物不存在 ($DistIndex)，执行必要的前端构建..." "WARN"
         }
@@ -114,7 +114,7 @@ if (Test-Path "ui/package.json") {
         $NewerSources = @($UiSourceFiles | Where-Object { $_.LastWriteTime -gt $DistTime })
         if ($NewerSources.Count -eq 0) {
             $SkipFrontend = $true
-            Write-Log "⚡ 极速模式: 前端源码无变更，智能跳过前端构建并直接复用产物 ($DistIndex)" "SUCCESS"
+            Write-Log "[INFO] 极速模式: 前端源码无变更，智能跳过前端构建并直接复用产物 ($DistIndex)" "SUCCESS"
         } else {
             Write-Log "检测到 $($NewerSources.Count) 个前端源码文件有更新，重新执行前端构建..." "INFO"
         }
@@ -128,7 +128,7 @@ if (Test-Path "ui/package.json") {
                 npm ci --prefer-offline --no-audit
                 if ($LASTEXITCODE -ne 0) { throw "npm ci 失败，退出码: $LASTEXITCODE" }
             } else {
-                Write-Log "⚡ 极速模式: 复用本地 node_modules 依赖" "INFO"
+                Write-Log "[INFO] 极速模式: 复用本地 node_modules 依赖" "INFO"
             }
 
             foreach ($Command in @("lint", "i18n-check", "css-check", "typography-check", "trim-workingset-check", "test", "build")) {
@@ -268,7 +268,7 @@ if (-not (Test-Path -LiteralPath $VcpkgBootstrap)) {
 }
 $VcpkgExe = Join-Path $VcpkgRoot "vcpkg.exe"
 if ((Test-Path -LiteralPath $VcpkgExe) -and ($VcpkgHead -eq $VcpkgBaseline)) {
-    Write-Log "⚡ vcpkg.exe 已就绪且与基线 ($VcpkgBaseline) 一致，跳过重复 bootstrap。" "SUCCESS"
+    Write-Log "[INFO] vcpkg.exe 已就绪且与基线 ($VcpkgBaseline) 一致，跳过重复 bootstrap。" "SUCCESS"
 } else {
     Write-Log "已校验固定 vcpkg 源码，引导工具程序..."
     & $VcpkgBootstrap -disableMetrics
@@ -283,7 +283,7 @@ if (-not (Test-Path $BinaryCacheDir)) {
     New-Item -ItemType Directory -Path $BinaryCacheDir -Force | Out-Null
 }
 $env:VCPKG_DEFAULT_BINARY_CACHE = $BinaryCacheDir
-Write-Log "⚡ 已激活 Vcpkg 二进制归档加速缓存: $BinaryCacheDir" "SUCCESS"
+Write-Log "[INFO] 已激活 Vcpkg 二进制归档加速缓存: $BinaryCacheDir" "SUCCESS"
 
 $VcpkgToolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
 if (-not (Test-Path -LiteralPath $VcpkgToolchain)) {
@@ -324,7 +324,7 @@ if (-not (Get-Command "cmake" -ErrorAction SilentlyContinue) -or -not (Get-Comma
                 Import-Module $devShell
                 Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation `
                     -DevCmdArguments "-arch=$Arch -host_arch=x64" | Out-Null
-                Write-Log "✅ 成功挂载 VS $Arch 编译环境 ($vsPath)!"
+                Write-Log "[OK] 成功挂载 VS $Arch 编译环境 ($vsPath)!"
             }
         }
     }
@@ -341,7 +341,7 @@ if ($StaticAnalysis) {
     $CMakeExtraArgs += "-DTOOLS3000_ENABLE_MSVC_ANALYSIS=OFF"
 }
 if (Get-Command "sccache" -ErrorAction SilentlyContinue) {
-    Write-Log "⚡ 检测到 sccache 编译器缓存，自动启用 C/C++ 极速编译加速..." "SUCCESS"
+    Write-Log "[INFO] 检测到 sccache 编译器缓存，自动启用 C/C++ 极速编译加速..." "SUCCESS"
     $CMakeExtraArgs += "-DCMAKE_C_COMPILER_LAUNCHER=sccache"
     $CMakeExtraArgs += "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
 }

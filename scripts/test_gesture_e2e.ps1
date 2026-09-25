@@ -308,10 +308,11 @@ try {
     $currentLength = 0
     $logOffsetBefore = 0
 
-    for ($attempt = 1; $attempt -le 2; $attempt++) {
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
         if ($attempt -gt 1) {
-            Write-Host "  [WARN] 第 1 次手势检测受到外部物理光标瞬移干扰，正在执行第 $attempt 次防抖自愈尝试..." -ForegroundColor Yellow
-            Start-Sleep -Milliseconds 300
+            [NativeMouseSimulator]::SendRightUp(700, 400)
+            Write-Host "  [WARN] 第 $($attempt - 1) 次手势检测受到外部物理光标瞬移干扰，正在执行第 $attempt 次防抖自愈尝试..." -ForegroundColor Yellow
+            Start-Sleep -Milliseconds 400
         }
 
         $startX = 700
