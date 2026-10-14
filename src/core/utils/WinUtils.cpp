@@ -1352,7 +1352,7 @@ HANDLE WinUtils::createLowMemoryNotification() {
 }
 
 HWND WinUtils::createOverlayHelperOwner(HINSTANCE hInstance, const wchar_t* name) {
-    return CreateWindowExW(
+    HWND hwnd = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         L"STATIC",
         name ? name : L"Tools3000_OverlayHelperOwner",
@@ -1360,6 +1360,10 @@ HWND WinUtils::createOverlayHelperOwner(HINSTANCE hInstance, const wchar_t* name
         0, 0, 0, 0,
         nullptr, nullptr, hInstance, nullptr
     );
+    if (hwnd) {
+        SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
+    }
+    return hwnd;
 }
 
 void WinUtils::applyTaskbarSafeOverlayStyle(HWND hwnd, bool excludeFromCapture) {
@@ -1371,12 +1375,16 @@ void WinUtils::applyTaskbarSafeOverlayStyle(HWND hwnd, bool excludeFromCapture) 
     exStyle = (exStyle | required) & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
 
+    // 显式标记 NonRudeHWND 属性，阻止 explorer.exe (CRudeAppManager) 将全屏覆盖层误判为全屏独占应用并压低任务栏 Z 序
+    SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
+
     const DWM_WINDOW_CORNER_PREFERENCE noCorners = DWMWCP_DONOTROUND;
     DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
                           &noCorners, sizeof(noCorners));
     const BOOL disableTransitions = TRUE;
     DwmSetWindowAttribute(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED,
                           &disableTransitions, sizeof(disableTransitions));
+    (void)excludeFromCapture;
     allowWindowCapture(hwnd);
 }
 

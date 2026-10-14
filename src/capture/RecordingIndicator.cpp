@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // RecordingIndicator.cpp — 录制状态指示器实现
 //
 // 外观:
@@ -885,6 +885,7 @@ bool RecordingIndicator::createBorderWindow(HINSTANCE hInstance) {
     );
 
     if (!m_borderHwnd) return false;
+    SetPropW(m_borderHwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
 
     // 镂空内部区域，仅保留四周边缘，杜绝遮挡中间内容与光标操作
     HRGN outerRgn = nullptr;

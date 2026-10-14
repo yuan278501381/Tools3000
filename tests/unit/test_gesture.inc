@@ -3155,6 +3155,17 @@ TEST(GestureTrailOverlayTest, ExpandingDirtyRectAndZOrderTopmostRecovery) {
     ASSERT_TRUE(overlay.initialize(GetModuleHandleW(nullptr)));
     EXPECT_TRUE(overlay.isCompositorReady());
 
+    HWND hwnd = FindWindowW(L"Tools3000_GestureOverlay", nullptr);
+    ASSERT_NE(hwnd, nullptr);
+    EXPECT_NE(GetPropW(hwnd, L"NonRudeHWND"), nullptr);
+
+    RECT winRect{};
+    ASSERT_TRUE(GetWindowRect(hwnd, &winRect));
+    const int expectedW = computeFullscreenAvoidanceSpan(GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    const int expectedH = computeFullscreenAvoidanceSpan(GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    EXPECT_EQ(winRect.right - winRect.left, expectedW);
+    EXPECT_EQ(winRect.bottom - winRect.top, expectedH);
+
     // 模拟第一轮手势：从小包围盒扩展到大包围盒，验证 D2D1.1 DeviceContext 局部脏矩形渲染与淡出
     overlay.beginTrail();
     overlay.addPoint(120.0f, 120.0f);
@@ -3168,15 +3179,19 @@ TEST(GestureTrailOverlayTest, ExpandingDirtyRectAndZOrderTopmostRecovery) {
     EXPECT_TRUE(overlay.isVisible());
     overlay.endTrail("→ [前进]");
 
-    // 模拟输入投递前退让 Z 序
+    // 模拟输入投递前退让 Z 序（DirectComposition 模式下保持 TOPMOST + NonRudeHWND + 1px 避让，GDI 降级模式下退让 TOPMOST）
     overlay.yieldZOrderForInput();
-    HWND hwnd = FindWindowW(L"Tools3000_GestureTrail", nullptr);
-    if (hwnd && IsWindow(hwnd)) {
+    if (hwnd && IsWindow(hwnd) && !overlay.isCompositorReady()) {
         const LONG_PTR exStyleAfterYield = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         EXPECT_EQ(exStyleAfterYield & WS_EX_TOPMOST, 0);
     }
 
-    // 模拟立刻开启第二轮手势（在淡出期间或刚结束时）：验证 m_strokeResetPending 清理上一笔残留并恢复 HWND_TOPMOST
+    // 模拟在淡出可见期间被外部夺走 TOPMOST 后立刻开启第二轮手势：
+    // 验证 m_strokeResetPending 清理上一笔残留，且 m_zOrderRaiseRequested 在可见状态下无条件恢复 HWND_TOPMOST
+    if (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) {
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
     overlay.beginTrail();
     overlay.addPoint(200.0f, 200.0f);
     overlay.addPoint(260.0f, 240.0f);
@@ -3185,6 +3200,93 @@ TEST(GestureTrailOverlayTest, ExpandingDirtyRectAndZOrderTopmostRecovery) {
         const LONG_PTR exStyleDuringTrail = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         EXPECT_NE(exStyleDuringTrail & WS_EX_TOPMOST, 0);
     }
+    overlay.hide();
+    overlay.shutdown();
+}
+
+TEST(GestureTrailOverlayTest, TaskbarZOrderAndFullscreenAvoidanceProtection) {
+    using namespace tools3000::gesture;
+    // 1. 验证纯函数边界条件与全屏几何缩减策略 (vw - 1, vh - 1)
+    EXPECT_EQ(computeFullscreenAvoidanceSpan(3456), 3455);
+    EXPECT_EQ(computeFullscreenAvoidanceSpan(2160), 2159);
+    EXPECT_EQ(computeFullscreenAvoidanceSpan(1920), 1919);
+    EXPECT_EQ(computeFullscreenAvoidanceSpan(1080), 1079);
+    EXPECT_EQ(computeFullscreenAvoidanceSpan(2), 1);
+    EXPECT_EQ(computeFullscreenAvoidanceSpan(1), 1);
+    EXPECT_EQ(computeFullscreenAvoidanceSpan(0), 1);
+    EXPECT_EQ(computeFullscreenAvoidanceSpan(-100), 1);
+
+    // 2. 验证 WinUtils::createOverlayHelperOwner 与 applyTaskbarSafeOverlayStyle 自动注入 NonRudeHWND 属性
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    HWND testHwnd = tools3000::core::WinUtils::createOverlayHelperOwner(hInst, L"Tools3000_NonRudeTest");
+    ASSERT_NE(testHwnd, nullptr);
+    EXPECT_NE(GetPropW(testHwnd, L"NonRudeHWND"), nullptr);
+    tools3000::core::WinUtils::applyTaskbarSafeOverlayStyle(testHwnd);
+    EXPECT_NE(GetPropW(testHwnd, L"NonRudeHWND"), nullptr);
+    DestroyWindow(testHwnd);
+
+    // 3. 实机验证：兼容直接运行与沙盒桌面 (exebox-*) 跨桌面枚举 WinSta0\Default，
+    // 确保手势轨迹弹出并渲染期间，系统任务栏 (Shell_TrayWnd) 始终持有 WS_EX_TOPMOST 且 Z 序严格高于普通窗口
+    struct DesktopTrayProbe {
+        HWND trayHwnd = nullptr;
+        int trayZIndex = -1;
+        int firstNormalWindowZIndex = -1;
+        int currentIndex = 0;
+    };
+    auto probeDefaultDesktopTray = []() -> DesktopTrayProbe {
+        DesktopTrayProbe probe{};
+        auto enumProc = [](HWND hwnd, LPARAM lParam) -> BOOL {
+            auto* p = reinterpret_cast<DesktopTrayProbe*>(lParam);
+            if (!IsWindowVisible(hwnd)) return TRUE;
+            wchar_t cls[128] = {};
+            GetClassNameW(hwnd, cls, 128);
+            const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            const bool isTopmost = (exStyle & WS_EX_TOPMOST) != 0;
+            if ( std::wcscmp(cls, L"Shell_TrayWnd") == 0) {
+                p->trayHwnd = hwnd;
+                p->trayZIndex = p->currentIndex;
+            } else if (!isTopmost && p->firstNormalWindowZIndex < 0 &&
+                       (std::wcscmp(cls, L"CabinetWClass") == 0 ||
+                        std::wcscmp(cls, L"Chrome_WidgetWin_1") == 0 ||
+                        std::wcscmp(cls, L"ApplicationFrameWindow") == 0)) {
+                p->firstNormalWindowZIndex = p->currentIndex;
+            }
+            p->currentIndex++;
+            return TRUE;
+        };
+        HDESK hDefaultDesk = OpenDesktopW(L"Default", 0, FALSE, DESKTOP_READOBJECTS | DESKTOP_ENUMERATE);
+        if (hDefaultDesk) {
+            EnumDesktopWindows(hDefaultDesk, enumProc, reinterpret_cast<LPARAM>(&probe));
+            CloseDesktop(hDefaultDesk);
+        } else {
+            EnumWindows(enumProc, reinterpret_cast<LPARAM>(&probe));
+        }
+        return probe;
+    };
+
+    const DesktopTrayProbe initialProbe = probeDefaultDesktopTray();
+    const bool trayInitiallyTopmost = initialProbe.trayHwnd &&
+        ((GetWindowLongPtrW(initialProbe.trayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0);
+
+    auto& overlay = GestureTrailOverlay::instance();
+    ASSERT_TRUE(overlay.initialize(hInst));
+    overlay.beginTrail();
+    overlay.addPoint(300.0f, 300.0f);
+    overlay.addPoint(500.0f, 450.0f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    EXPECT_TRUE(overlay.isVisible());
+
+    if (trayInitiallyTopmost) {
+        const DesktopTrayProbe activeProbe = probeDefaultDesktopTray();
+        ASSERT_NE(activeProbe.trayHwnd, nullptr);
+        const LONG_PTR trayExStyleDuringGesture = GetWindowLongPtrW(activeProbe.trayHwnd, GWL_EXSTYLE);
+        EXPECT_NE(trayExStyleDuringGesture & WS_EX_TOPMOST, 0);
+        if (activeProbe.trayZIndex >= 0 && activeProbe.firstNormalWindowZIndex >= 0) {
+            EXPECT_LT(activeProbe.trayZIndex, activeProbe.firstNormalWindowZIndex);
+        }
+    }
+
+    overlay.endTrail("");
     overlay.hide();
     overlay.shutdown();
 }

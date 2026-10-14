@@ -311,6 +311,15 @@ inline bool gestureOverlayIsTaskbarSafe(LONG_PTR exStyle) noexcept {
            (exStyle & WS_EX_NOACTIVATE) != 0;
 }
 
+/// 全屏覆盖层几何避让跨度计算 (FocusAssistAvoidance & Taskbar Z-Order Protection)：
+/// 当无边框 WS_POPUP 覆盖层尺寸严格等于显示器物理边界 (rcWindow == rcMonitor, 如 3456x2160) 时，
+/// Windows Shell (explorer.exe CRudeAppManager) 会误判为全屏独占窗口，强制将任务栏 (Shell_TrayWnd)
+/// 降级至 Z 序最底层，导致最大化窗口下方的后台非最大化窗口底部越过任务栏显露出来。
+/// 主动缩减 1 像素 (vw - 1, vh - 1) 结合 NonRudeHWND 窗口属性，从物理几何与内核属性双重阻断全屏独占误判。
+inline constexpr int computeFullscreenAvoidanceSpan(int rawSpan) noexcept {
+    return rawSpan > 1 ? (rawSpan - 1) : 1;
+}
+
 /// 松手结果卡片必须真正画出来，淡出时钟才能走。否则动作已经执行，用户只看到空白。
 inline bool gestureFrameReadyToFade(bool trailPresented, bool toastRequired,
                                     bool toastPresented) noexcept {

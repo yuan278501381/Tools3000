@@ -110,6 +110,10 @@ bool CaptureOverlay::createOverlayWindow(HINSTANCE hInstance) {
         return false;
     }
 
+    // 显式注入 NonRudeHWND 属性，防止全屏截图覆盖层调用 SetForegroundWindow 时被 explorer.exe (CRudeAppManager)
+    // 误判为全屏独占应用而将系统任务栏 (Shell_TrayWnd) 压入 Z 序底层
+    SetPropW(m_hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
+
     // 默认全透明，事件穿透（直到开始截图）
     SetLayeredWindowAttributes(m_hwnd, 0, 0, LWA_ALPHA);
     

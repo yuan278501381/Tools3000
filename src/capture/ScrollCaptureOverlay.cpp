@@ -1,4 +1,4 @@
-﻿#include "ScrollCaptureOverlay.h"
+#include "ScrollCaptureOverlay.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/WinUtils.h"
@@ -31,8 +31,8 @@ bool ScrollCaptureOverlay::initialize() {
 
     int screenX = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int screenY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    int screenW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    int screenH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    int screenW = (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1);
+    int screenH = (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN) - 1);
 
     m_hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -44,6 +44,8 @@ bool ScrollCaptureOverlay::initialize() {
     );
 
     if (!m_hwnd) return false;
+
+    SetPropW(m_hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
 
     // Exclude the preview and progress chrome from the scroll-capture source.
     if (!tools3000::core::WinUtils::excludeWindowFromCapture(m_hwnd)) {

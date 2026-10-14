@@ -729,3 +729,19 @@
   - 架构拓扑：消灭全部跨业务模块横向依赖，路由 SSOT 落地，0 代码坏味道；
   - 交付安装包产物：`Output\Tools3000-Setup.exe`（19,479,693 字节，SHA256: `112E30F2D02DD70F6B8C3793E14B7C07816E0EC750942A196E6ADECC27405C2A`）；
   - 交付绿色便携包：`deploy_dist\`。
+
+---
+
+### [2026-10-14] 鼠标手势覆盖层触发 Windows Shell 全屏独占误判导致任务栏降级与后台窗口底部显露修复 (NonRudeHWND & 1px 几何避让双保险)
+- **现象与运行日志链路还原**：
+  - 用户在最大化前台窗口（`Antigravity`，底部位于工作区边界 `rcWork.bottom = 2088`）上方绘制鼠标手势时，屏幕底部任务栏区域（`y: 2088..2159`）突然显露出压在背后的非最大化资源管理器窗口（`CabinetWClass`）底部状态栏（`1 个项目 | 选中 1 个项目 14.9 MB`）。
+  - 结合实机运行日志 `%LOCALAPPDATA%\Tools3000\logs\tools3000.log` 与原始分辨率截图（`3456x2160`，150% DPI）交叉验证：每次划动手势时日志均记录 `[info] 手势轨迹已提交: points=1, 3456x2160, dcomp=true`。
+- **底层根因剖析 (Windows Shell CRudeAppManager 全屏独占探测机制)**：
+  1. `GestureTrailOverlay` 创建的 `Tools3000_GestureOverlay` 为 `WS_POPUP` 窗口，且尺寸被设为完整物理显示器尺寸 `3456x2160`（`rcWindow == rcMonitor`），在首帧渲染时通过 `SetWindowPos(m_hwnd, HWND_TOPMOST, ..., SWP_SHOWWINDOW)` 显示。
+  2. 当 Windows Shell（`explorer.exe` 内置的 `CRudeAppManager`）检测到可见 `WS_POPUP` 窗口矩形精确等于显示器边界 `rcMonitor` 且未携带 `NonRudeHWND` 窗口属性时，会将其判定为全屏独占应用（Rude Fullscreen Window），并自动将系统任务栏 `Shell_TrayWnd` 从 `TOPMOST` 层降级至 Z 序最底部以让位给全屏应用。
+  3. 由于 `Tools3000_GestureOverlay` 本身是全透明 DirectComposition 覆盖层，而前台最大化窗口 `Antigravity` 高度止步于工作区 `y = 2088`，当 `Shell_TrayWnd` 被系统降级至底层后，原本被任务栏遮挡在 `y: 2088..2159` 区域的后台非最大化资源管理器窗口底部便立即穿透显露出来。
+- **双保险终局修复方案**：
+  1. **1 像素全屏几何避让 (`computeFullscreenAvoidanceSpan`, `vw - 1, vh - 1`)**：在 `GestureInputPolicy.h` 中引入纯函数 `computeFullscreenAvoidanceSpan`，将 `GestureTrailOverlay`（`createOverlayWindow`、`fitSurface`、`handleDisplayChange`）与 `ScrollCaptureOverlay` 的覆盖层宽高由 `3456x2160` 主动缩减 1 像素至 `3455x2159`，从物理几何上彻底打破 `rcWindow == rcMonitor` 的全屏匹配条件。
+  2. **全域覆盖层窗口属性 `NonRudeHWND = TRUE` 显式标记**：在 `WinUtils::applyTaskbarSafeOverlayStyle`、`WinUtils::createOverlayHelperOwner`、`GestureTrailOverlay::createOverlayWindow`、`CaptureOverlay::createOverlayWindow`、`ScrollCaptureOverlay::initialize` 与 `RecordingIndicator::createBorderWindow` 中统一调用 `SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE))`，显式通知 `explorer.exe` (`CRudeAppManager`) 绝不将手势/截图/长截图/录屏覆盖层视为全屏独占窗口，即使在全屏截图 `SetForegroundWindow` 或多显示器跨屏边界场景下亦能 100% 保护 `Shell_TrayWnd` 稳居 `TOPMOST`。
+  3. **DirectComposition 淡出打断 Z 序恢复与脏矩形前置清理**：在 `GestureTrailOverlay::renderLoop` 中，当 `m_hwnd` 已处于可见态（如上一笔手势淡出期间被新笔划打断）时，无条件响应 `m_zOrderRaiseRequested` 恢复 `HWND_TOPMOST`；在 `GestureTrailOverlay::render()` 中将 `m_strokeResetPending` 表面擦除与透明度重置前置到 `m_points.empty()` 早退检查之前，杜绝打断淡出时残留旧笔划或提示框。
+  4. **跨桌面 (`WinSta0\Default`) 实机防回退门禁验证**：在 `GestureTrailOverlayTest.TaskbarZOrderAndFullscreenAvoidanceProtection` 中通过 `OpenDesktopW(L"Default", ...)` + `EnumDesktopWindows` 兼容沙盒与交互式桌面，实机断言手势渲染期间 `Shell_TrayWnd` 始终保持 `WS_EX_TOPMOST` 且 Z 序严格高于普通窗口。
