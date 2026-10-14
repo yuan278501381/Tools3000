@@ -248,7 +248,9 @@
     "hotkeysSessionCount": "仅录屏生效 {{count}} 项",
     "hotkeysInternalConflictsCount": "内部冲突 {{count}} 项",
     "hotkeysExternalConflictsCount": "外部冲突 {{count}} 项",
-    "hotkeysUnboundCount": "未绑定 {{count}} 项"
+    "hotkeysUnboundCount": "未绑定 {{count}} 项",
+    "openDataDirBtn": "打开数据目录",
+    "shortcutRecordSnapshot": "录屏时抓取视频帧快照"
   },
   "plugins": {
     "capabilities": "模块能力",
@@ -282,6 +284,8 @@
     "installed": "已就绪",
     "installSuccess": "扩展已成功安装！将在下次启动或立即重启后加载。",
     "installLocal": "导入本地插件包 (.zip / .dll)",
+    "marketPreviewNotice": "扩展「{{name}}」为官方精选预览，核心能力已随版本内置集成，无需单独下载安装",
+    "localInstallGuide": "已打开数据与扩展目录，请将本地扩展包放入后重启软件",
     "author": "开发者",
     "uninstall": "卸载",
     "uninstalling": "正在卸载...",
@@ -401,7 +405,9 @@
     "loadFailed": "无法加载截图历史",
     "clearFailed": "无法清空截图历史",
     "openFailed": "无法打开此截图",
-    "thumbnailAlt": "截图预览"
+    "thumbnailAlt": "截图预览",
+    "openFolder": "定位文件",
+    "pinImage": "贴到屏幕"
   },
   "recording": {
     "title": "录屏设置",
@@ -409,6 +415,8 @@
     "shortcutDesc": "开始/停止录屏的全局快捷键",
     "pauseShortcut": "暂停或继续录屏",
     "pauseShortcutDesc": "仅在正在录屏时占用系统热键。平时不拦截，避免抢走编辑器的 Ctrl+Shift+P 命令面板",
+    "snapshotShortcut": "录屏中抓拍快照",
+    "snapshotShortcutDesc": "仅在正在录屏时生效，一键将当前录屏画面静默保存为高清图片快照",
     "format": "录制格式",
     "formatDesc": "录屏输出的视频格式",
     "fps": "帧率",
@@ -956,7 +964,11 @@
     "topKey": "今日最高频",
     "lowHeat": "闲置 / 0",
     "highHeat": "极高频 (Peak)",
-    "times": "次"
+    "times": "次",
+    "clearToday": "重置今日",
+    "confirmClearToday": "确定要清零今日的按键与鼠标统计数据吗？",
+    "clearTodaySuccess": "今日统计数据已清零",
+    "clearTodayFailed": "重置今日统计失败"
   },
   "about": {
     "title": "关于 Tools3000",
@@ -1582,7 +1594,8 @@
     "enterProcessName": "请输入进程名 (如 game.exe)",
     "pinWorkspace": "固定为主工作区",
     "unpinWorkspace": "取消固定",
-    "fixedBadge": "固定默认"
+    "fixedBadge": "固定默认",
+    "browseFolder": "浏览选择"
   },
   "spotlight": {
     "title": "鼠标演示与特效",

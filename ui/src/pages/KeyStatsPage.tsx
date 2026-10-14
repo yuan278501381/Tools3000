@@ -1,9 +1,10 @@
-import { useEffect, useState, useMemo, type FC } from 'react';
-import { Card, SettingGroup, Badge } from '../components/UIKit';
+import { useEffect, useState, useMemo, useCallback, type FC } from 'react';
+import { Card, SettingGroup, Badge, Button } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { KeyboardHeatmap } from '../components/KeyboardHeatmap';
-import { LineChart as LineChartIcon, Flame, Trophy } from 'lucide-react';
+import { LineChart as LineChartIcon, Flame, Trophy, RefreshCw, RotateCcw } from 'lucide-react';
+import { toast } from 'sonner';
 import './KeyStatsPage.css';
 
 interface DailyStat {
@@ -266,6 +267,8 @@ export const KeyStatsPage: FC = () => {
   const [dailyStats, setDailyStats] = useState<DailyStat[]>([]);
   const [totalStats, setTotalStats] = useState<TotalStat>({ totalKeystrokes: 0 });
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const { t } = useTranslation();
 
   const chartData = useMemo(() => dailyStats.map(s => ({
@@ -282,30 +285,69 @@ export const KeyStatsPage: FC = () => {
     totalKeystrokes: totalStats.totalKeystrokes
   }), [totalStats]);
 
+  const applyStatsPayload = useCallback((historyMap: Record<string, HistoryStat> | undefined, total: TotalStat | undefined) => {
+    const history = historyMap && typeof historyMap === 'object' && !Array.isArray(historyMap)
+      ? historyMap
+      : {};
+    const daily = Object.entries(history).map(([date, data]) => ({
+      date,
+      keystrokes: safeCount(data?.totalKeys),
+      mouseClicks: safeCount(data?.leftClicks) + safeCount(data?.rightClicks),
+      mouseDistance: safeCount(data?.mouseDistance),
+      keyMap: normalizeKeyMap(data?.keyMap)
+    })).sort((a, b) => a.date.localeCompare(b.date));
+
+    setDailyStats(daily);
+    setTotalStats({ totalKeystrokes: safeCount(total?.totalKeystrokes) });
+  }, []);
+
   useEffect(() => {
     Promise.all([
       bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days: 7 }),
       bridgeRequest<TotalStat>('stats.getTotal')
     ]).then(([historyMap, total]) => {
-      const history = historyMap && typeof historyMap === 'object' && !Array.isArray(historyMap)
-        ? historyMap
-        : {};
-      const daily = Object.entries(history).map(([date, data]) => ({
-        date,
-        keystrokes: safeCount(data?.totalKeys),
-        mouseClicks: safeCount(data?.leftClicks) + safeCount(data?.rightClicks),
-        mouseDistance: safeCount(data?.mouseDistance),
-        keyMap: normalizeKeyMap(data?.keyMap)
-      })).sort((a, b) => a.date.localeCompare(b.date));
-
-      setDailyStats(daily);
-      setTotalStats({ totalKeystrokes: safeCount(total?.totalKeystrokes) });
+      applyStatsPayload(historyMap, total);
       setLoading(false);
     }).catch(err => {
       console.error('Failed to load stats:', err);
       setLoading(false);
     });
-  }, []);
+  }, [applyStatsPayload]);
+
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const [historyMap, total] = await Promise.all([
+        bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days: 7 }),
+        bridgeRequest<TotalStat>('stats.getTotal')
+      ]);
+      applyStatsPayload(historyMap, total);
+    } catch (err) {
+      console.error('Failed to refresh stats:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleClearToday = async () => {
+    if (clearing) return;
+    if (!window.confirm(t('stats.confirmClearToday'))) return;
+    setClearing(true);
+    try {
+      await bridgeRequest('stats.clearToday');
+      const [historyMap, total] = await Promise.all([
+        bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days: 7 }),
+        bridgeRequest<TotalStat>('stats.getTotal')
+      ]);
+      applyStatsPayload(historyMap, total);
+      toast.success(t('stats.clearTodaySuccess'));
+    } catch (err) {
+      toast.error(t('stats.clearTodayFailed'), { description: String(err) });
+    } finally {
+      setClearing(false);
+    }
+  };
 
   if (loading) {
     return <div style={{ padding: '2rem', opacity: 0.5 }}>{t('common.loading')}</div>;
@@ -313,6 +355,29 @@ export const KeyStatsPage: FC = () => {
 
   return (
     <div className="stats-page" style={{ animation: 'fadeIn 0.3s ease' }}>
+      <div className="stats-page__toolbar">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => void handleRefresh()}
+          disabled={refreshing || clearing}
+          title={t('common.refresh')}
+        >
+          <RefreshCw size={15} className={refreshing ? 'stats-page__spin' : ''} />
+          <span>{t('common.refresh')}</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => void handleClearToday()}
+          disabled={clearing || refreshing}
+          title={t('stats.clearToday')}
+        >
+          <RotateCcw size={15} />
+          <span>{t('stats.clearToday')}</span>
+        </Button>
+      </div>
+
       <SettingGroup title={t('stats.dailyTitle')} icon={<LineChartIcon size={20} strokeWidth={2.5} />}>
         <Card>
           <div style={{ height: '300px', width: '100%', marginTop: '16px' }}>
@@ -326,16 +391,28 @@ export const KeyStatsPage: FC = () => {
       </SettingGroup>
 
       <SettingGroup title={t('stats.totalOverview')} icon={<Trophy size={20} strokeWidth={2.5} />}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
           <Card>
             <div style={{ padding: '16px', textAlign: 'center' }}>
-              <div style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--primary)' }}>{totalOverview.totalKeystrokes.toLocaleString()}</div>
+              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--primary)' }}>
+                {totalOverview.totalKeystrokes.toLocaleString()}
+              </div>
               <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '8px' }}>{t('stats.allTimeKeys')}</div>
             </div>
           </Card>
           <Card>
             <div style={{ padding: '16px', textAlign: 'center' }}>
-              <div style={{ fontSize: '2rem', fontWeight: 700, color: '#34d399' }}>{todayStats.mouseClicks.toLocaleString()}</div>
+              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: '#a78bfa' }}>
+                {todayStats.keystrokes.toLocaleString()}
+              </div>
+              <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '8px' }}>{t('stats.totalKeys')}</div>
+            </div>
+          </Card>
+          <Card>
+            <div style={{ padding: '16px', textAlign: 'center' }}>
+              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: '#34d399' }}>
+                {todayStats.mouseClicks.toLocaleString()}
+              </div>
               <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '8px' }}>{t('stats.mouseClicks')}</div>
             </div>
           </Card>
@@ -344,7 +421,7 @@ export const KeyStatsPage: FC = () => {
               style={{ padding: '16px', textAlign: 'center' }}
               title={`${Math.round(todayStats.mouseDistance).toLocaleString()} ${t('stats.pixels', 'Pixels')}`}
             >
-              <div style={{ fontSize: '2rem', fontWeight: 700, color: '#60a5fa', display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: '4px' }}>
+              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: '#60a5fa', display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: '4px' }}>
                 <span>{(todayStats.mouseDistance * (0.0254 / 96)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
                 <span style={{ fontSize: '1.1rem', fontWeight: 600, opacity: 0.85 }}>m</span>
               </div>

@@ -1323,9 +1323,10 @@ void GestureEngine::loadFromConfig() {
     auto rulesJson = config.get<nlohmann::json>("/gesture/scopeRules");
     m_scopeRules.loadFromJson(rulesJson);
 
-    // 加载识别器参数
+    // 加载识别器参数（优先继承 /gesture/minSegmentDistance，避免被硬编码 14 覆盖）
     RecognizerConfig recognizerConfig;
-    recognizerConfig.minSegmentDistance = config.get<int>("/gesture/recognizer/minSegmentDistance", 14);
+    recognizerConfig.minSegmentDistance = config.get<int>(
+        "/gesture/recognizer/minSegmentDistance", m_minSegmentDistance.load());
     recognizerConfig.samplingInterval = config.get<int>("/gesture/recognizer/samplingInterval", 2);
     recognizerConfig.angleToleranceDeg = config.get<double>("/gesture/recognizer/angleTolerance", 22.5);
     recognizerConfig.enableScribbleCancel = config.get<bool>("/gesture/enableScribbleCancel", true);

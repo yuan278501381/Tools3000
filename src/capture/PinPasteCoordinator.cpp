@@ -12,12 +12,11 @@
 #include "core/utils/DpiUtils.h"
 #include <algorithm>
 #include <cwctype>
+#include <opencv2/imgproc.hpp>
 
 namespace tools3000::capture {
 
-namespace {
-
-bool parseHexColorLocal(const std::wstring& in, cv::Scalar& bgr) {
+bool PinPasteCoordinator::parseHexColor(const std::wstring& in, cv::Scalar& bgr, std::wstring& label) {
     size_t a = in.find_first_not_of(L" \t\r\n");
     size_t b = in.find_last_not_of(L" \t\r\n");
     if (a == std::wstring::npos) return false;
@@ -35,15 +34,205 @@ bool parseHexColorLocal(const std::wstring& in, cv::Scalar& bgr) {
     if (hex.size() == 3) { r = hv(hex[0]) * 17; g = hv(hex[1]) * 17; bl = hv(hex[2]) * 17; }
     else { r = hv(hex[0]) * 16 + hv(hex[1]); g = hv(hex[2]) * 16 + hv(hex[3]); bl = hv(hex[4]) * 16 + hv(hex[5]); }
     bgr = cv::Scalar(bl, g, r);
+    label = s;
     return true;
 }
 
-cv::Mat renderColorSwatchLocal(const cv::Scalar& bgr) {
+cv::Mat PinPasteCoordinator::renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label) {
     const int w = 180, h = 130;
-    return cv::Mat(h, w, CV_8UC3, bgr);
+    cv::Mat img(h, w, CV_8UC3, bgr);
+    double lum = 0.114 * bgr[0] + 0.587 * bgr[1] + 0.299 * bgr[2];
+    cv::Scalar tc = lum > 140 ? cv::Scalar(20, 20, 20) : cv::Scalar(240, 240, 240);
+    std::string lbl;
+    for (auto c : label) lbl.push_back(static_cast<char>(c));
+    cv::putText(img, lbl, cv::Point(14, h - 18), cv::FONT_HERSHEY_SIMPLEX, 0.7, tc, 1, cv::LINE_AA);
+    return img;
 }
 
-} // anonymous namespace
+cv::Mat PinPasteCoordinator::renderTextToImage(const std::wstring& text) {
+    size_t firstNonWs = text.find_first_not_of(L" \t\r\n");
+    if (firstNonWs == std::wstring::npos) {
+        return {};
+    }
+    // 剔除尾部纯空白与换行，避免卡片底部产生多余空行留白
+    size_t lastNonWs = text.find_last_not_of(L" \t\r\n");
+    std::wstring cleanText = (lastNonWs != std::wstring::npos) ? text.substr(0, lastNonWs + 1) : text;
+
+    HDC screen = GetDC(nullptr);
+    HDC memdc = CreateCompatibleDC(screen);
+
+    bool isCode = (cleanText.find(L'\n') != std::wstring::npos) ||
+                  (cleanText.find(L'{') != std::wstring::npos) ||
+                  (cleanText.find(L"def ") != std::wstring::npos) ||
+                  (cleanText.find(L"const ") != std::wstring::npos) ||
+                  (cleanText.find(L"function") != std::wstring::npos) ||
+                  (cleanText.find(L"#include") != std::wstring::npos) ||
+                  (cleanText.find(L"import ") != std::wstring::npos) ||
+                  (cleanText.find(L"class ") != std::wstring::npos);
+
+    bool hasCjk = false;
+    for (wchar_t ch : cleanText) {
+        if (ch >= 0x2E80) {
+            hasCjk = true;
+            break;
+        }
+    }
+
+    LPCWSTR fontFace = (isCode && !hasCjk) ? L"Cascadia Code" : L"Microsoft YaHei UI";
+    HFONT font = CreateFontW(-19, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFace);
+    HGDIOBJ oldFont = SelectObject(memdc, font);
+
+    const int headerH = 28;     // 顶部 Mac 窗口控制栏高度
+    const int padX = 18;        // 水平内边距
+    const int padY = 14;        // 垂直内边距
+    const int maxW = 720;
+    const UINT drawFlags = DT_WORDBREAK | DT_EDITCONTROL | DT_EXPANDTABS | DT_NOPREFIX;
+
+    RECT rc{0, 0, maxW, 0};
+    DrawTextW(memdc, cleanText.c_str(), -1, &rc, drawFlags | DT_CALCRECT);
+    int contentW = std::min<LONG>(rc.right, maxW);
+    int contentH = rc.bottom;
+
+    int w = std::clamp(contentW + padX * 2 + 10, 160, maxW + padX * 2 + 10);
+    int h = std::clamp(headerH + contentH + padY * 2, 64, 2400);
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;  // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(memdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    cv::Mat result;
+    if (dib && bits) {
+        HGDIOBJ oldBm = SelectObject(memdc, dib);
+
+        // 1. 卡片深邃背景 (#18181B - Zinc 900)
+        RECT full{0, 0, w, h};
+        HBRUSH bg = CreateSolidBrush(RGB(24, 24, 27));
+        FillRect(memdc, &full, bg);
+        DeleteObject(bg);
+
+        // 2. 顶部 Mac 红黄绿三色微圆点 (10px 直径)
+        HBRUSH redDot = CreateSolidBrush(RGB(255, 95, 86));
+        HBRUSH yellowDot = CreateSolidBrush(RGB(255, 189, 46));
+        HBRUSH greenDot = CreateSolidBrush(RGB(39, 201, 63));
+        HPEN nullPen = CreatePen(PS_NULL, 0, 0);
+        HGDIOBJ oldPen = SelectObject(memdc, nullPen);
+
+        SelectObject(memdc, redDot);
+        Ellipse(memdc, 14, 10, 24, 20);
+        SelectObject(memdc, yellowDot);
+        Ellipse(memdc, 30, 10, 40, 20);
+        SelectObject(memdc, greenDot);
+        Ellipse(memdc, 46, 10, 56, 20);
+
+        DeleteObject(redDot);
+        DeleteObject(yellowDot);
+        DeleteObject(greenDot);
+
+        // 3. 顶部微弱分割线 (#27272A)
+        HPEN divPen = CreatePen(PS_SOLID, 1, RGB(39, 39, 42));
+        SelectObject(memdc, divPen);
+        MoveToEx(memdc, 0, headerH, nullptr);
+        LineTo(memdc, w, headerH);
+        DeleteObject(divPen);
+
+        // 4. 外边框微高光 (#3F3F46)
+        HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(63, 63, 70));
+        SelectObject(memdc, borderPen);
+        MoveToEx(memdc, 0, 0, nullptr);
+        LineTo(memdc, w - 1, 0);
+        LineTo(memdc, w - 1, h - 1);
+        LineTo(memdc, 0, h - 1);
+        LineTo(memdc, 0, 0);
+        DeleteObject(borderPen);
+
+        SelectObject(memdc, oldPen);
+        DeleteObject(nullPen);
+
+        // 5. 文本与代码渲染
+        SetBkMode(memdc, TRANSPARENT);
+        SetTextColor(memdc, RGB(244, 244, 245));
+        RECT tr{padX, headerH + padY, w - padX, h - padY};
+        DrawTextW(memdc, cleanText.c_str(), -1, &tr, drawFlags);
+        GdiFlush();
+
+        cv::Mat bgra(h, w, CV_8UC4, bits);
+        cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+
+        SelectObject(memdc, oldBm);
+        DeleteObject(dib);
+    }
+
+    SelectObject(memdc, oldFont);
+    DeleteObject(font);
+    DeleteDC(memdc);
+    ReleaseDC(nullptr, screen);
+    return result;
+}
+
+namespace {
+
+void inspectClipboardTextAndPriority(std::wstring& outText, bool& outPreferTextOverImage) {
+    outText.clear();
+    outPreferTextOverImage = false;
+
+    bool opened = false;
+    for (int retry = 0; retry < 10; ++retry) {
+        if (OpenClipboard(nullptr)) {
+            opened = true;
+            break;
+        }
+        Sleep(5);
+    }
+    if (!opened) return;
+
+    const UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
+    const UINT formatPng = RegisterClipboardFormatW(L"PNG");
+    const bool hasPinMeta = (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta));
+
+    if (!hasPinMeta) {
+        for (UINT fmt = EnumClipboardFormats(0); fmt != 0; fmt = EnumClipboardFormats(fmt)) {
+            if (fmt == CF_UNICODETEXT || fmt == CF_TEXT || fmt == CF_OEMTEXT) {
+                outPreferTextOverImage = true;
+                break;
+            }
+            if ((formatPng != 0 && fmt == formatPng) ||
+                fmt == CF_DIBV5 || fmt == CF_DIB || fmt == CF_BITMAP) {
+                outPreferTextOverImage = false;
+                break;
+            }
+        }
+    }
+
+    if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+        if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+            if (auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
+                outText = p;
+                GlobalUnlock(h);
+            }
+        }
+    }
+    CloseClipboard();
+}
+
+cv::Mat renderClipboardTextOrColor(const std::wstring& clipText) {
+    if (clipText.empty()) return {};
+    cv::Scalar c;
+    std::wstring hexLabel;
+    if (PinPasteCoordinator::parseHexColor(clipText, c, hexLabel)) {
+        return PinPasteCoordinator::renderColorSwatch(c, hexLabel);
+    }
+    return PinPasteCoordinator::renderTextToImage(clipText);
+}
+
+} // namespace
 
 PinPasteCoordinator& PinPasteCoordinator::instance() {
     static PinPasteCoordinator coord;
@@ -79,39 +268,37 @@ void PinPasteCoordinator::setSessionTimeoutMs(int timeoutMs) {
 std::vector<PinPasteCandidate> PinPasteCoordinator::resolveCandidates([[maybe_unused]] DWORD currentSeq, int historyCount) {
     std::vector<PinPasteCandidate> candidates;
 
-    // 1. 读取系统剪贴板中的图像/元数据
+    // 1. 探测系统剪贴板中的文本与图像优先级（当富文本编辑器/Office 将 CF_UNICODETEXT 置于首位且附带预览位图时，优先转为文字贴图卡片）
+    std::wstring clipText;
+    bool preferTextOverImage = false;
+    inspectClipboardTextAndPriority(clipText, preferTextOverImage);
+
     Tools3000PinMetadata meta{};
-    cv::Mat clipImg = ClipboardUtils::readImageFromClipboard(&meta);
+    meta.magic = 0;
+    cv::Mat clipImg;
+    bool clipFromTextOrColor = false;
+
+    if (preferTextOverImage && !clipText.empty()) {
+        clipImg = renderClipboardTextOrColor(clipText);
+        clipFromTextOrColor = !clipImg.empty();
+    }
 
     if (clipImg.empty()) {
-        std::wstring clipText;
-        if (OpenClipboard(nullptr)) {
-            if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-                if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
-                    if (auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
-                        clipText = p;
-                        GlobalUnlock(h);
-                    }
-                }
-            }
-            CloseClipboard();
-        }
+        clipImg = ClipboardUtils::readImageFromClipboard(&meta);
+    }
 
-        if (!clipText.empty()) {
-            cv::Scalar c;
-            if (parseHexColorLocal(clipText, c)) {
-                clipImg = renderColorSwatchLocal(c);
-            }
-        }
+    if (clipImg.empty() && !clipText.empty()) {
+        clipImg = renderClipboardTextOrColor(clipText);
+        clipFromTextOrColor = !clipImg.empty();
     }
 
     // 2. 检查 CaptureHistory 中的条目
     auto& history = CaptureHistory::instance();
     const int count = (historyCount >= 0) ? historyCount : history.count();
 
-    // 检查剪贴板内容是否已在 CaptureHistory[0] 中匹配
+    // 检查剪贴板图像是否已在 CaptureHistory[0] 中匹配（文本/色卡生成的图像绝不与历史截图判重）
     bool clipboardMatchesHistory0 = false;
-    if (!clipImg.empty() && count > 0) {
+    if (!clipImg.empty() && !clipFromTextOrColor && count > 0) {
         auto latestOpt = history.get(0);
         if (latestOpt.has_value() && !latestOpt->image.empty()) {
             const auto& latest = *latestOpt;

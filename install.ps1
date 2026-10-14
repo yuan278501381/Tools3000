@@ -246,16 +246,6 @@ public class ShellIconCache {
             [ShellIconCache]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
         } catch { }
 
-        $Shortcuts = @(
-            "$env:ALLUSERSPROFILE\Microsoft\Windows\Start Menu\Programs\Tools3000\Tools3000.lnk",
-            "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Tools3000\Tools3000.lnk",
-            "$env:USERPROFILE\Desktop\Tools3000.lnk",
-            "$env:PUBLIC\Desktop\Tools3000.lnk"
-        )
-        foreach ($sc in $Shortcuts) {
-            if (Test-Path $sc) { (Get-Item $sc).LastWriteTime = Get-Date }
-        }
-
         if ($FlushIconCache) {
             $FlushScript = Join-Path $ScriptDir "scripts\flush_icon_cache.ps1"
             if (Test-Path $FlushScript) {

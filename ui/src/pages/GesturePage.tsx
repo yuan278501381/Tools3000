@@ -75,6 +75,8 @@ interface GestureState {
   triggerButton: string;
   trailVisible: boolean;
   autoBypassFullscreen?: boolean;
+  enableScribbleCancel?: boolean;
+  enableInFlightCompass?: boolean;
   targetMode?: 'underPointer' | 'foreground';
   initialTimeoutMs?: number;
   minSegmentDistance?: number;
@@ -195,6 +197,8 @@ export const GesturePage: FC = () => {
         setTriggerButton(state.triggerButton ?? 'right');
         setTrailVisible(state.trailVisible ?? true);
         setAutoBypassFullscreen(state.autoBypassFullscreen ?? true);
+        setScribbleCancel(state.enableScribbleCancel ?? true);
+        setInFlightCompass(state.enableInFlightCompass ?? true);
         setTargetMode(state.targetMode === 'foreground' ? 'foreground' : 'underPointer');
         setTrailColorMode(state.trailColorMode ?? 'auto');
         setTrailColor(state.trailColor ?? '#3B82F6');

@@ -6,13 +6,31 @@
   text-align: left;
   font: inherit;
   height: 100%;
+  container-type: inline-size;
+}
+
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
+}
+
+.history-spin {
+  animation: history-spin-anim 0.8s linear infinite;
+}
+
+@keyframes history-spin-anim {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .history-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: var(--spacing-md);
-  padding: var(--spacing-md) 0;
+  padding: var(--spacing-sm) 0 var(--spacing-md);
   overflow-y: auto;
   align-content: start;
 }
@@ -89,8 +107,15 @@
   padding: var(--spacing-sm) var(--spacing-md);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
   background: var(--bg-elevated);
+}
+
+.history-card-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .history-card-info .timestamp {
@@ -98,11 +123,26 @@
   color: var(--text-primary);
   font-weight: 500;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
 .history-card-info .dimensions {
   font-size: var(--text-xs, 0.84rem);
   color: var(--text-muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.history-card-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.history-locate-btn {
+  padding: 2px 6px;
+  min-height: 24px;
 }
 
 .empty-state {
@@ -118,31 +158,4 @@
   background: var(--card-bg);
   border: 1px dashed var(--card-border);
   border-radius: var(--radius-lg);
-}
-
-.danger-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(248, 113, 113, 0.12);
-  color: var(--danger);
-  border: 1px solid rgba(248, 113, 113, 0.25);
-  padding: 6px 14px;
-  border-radius: var(--radius-sm);
-  font-size: 0.84rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.danger-btn:hover:not(:disabled) {
-  background: var(--danger);
-  color: #ffffff;
-  border-color: var(--danger);
-  box-shadow: 0 2px 8px rgba(248, 113, 113, 0.35);
-}
-
-.danger-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }

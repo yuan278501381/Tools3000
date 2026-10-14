@@ -853,7 +853,7 @@ public:
         bridge.unregisterHandlersByPrefix("history.");
 
         auto& hotkeys = tools3000::core::HotkeyManager::instance();
-        for (const char* name : {"Screenshot", "Record", "Record Pause", "OCR", "Pin Toggle",
+        for (const char* name : {"Screenshot", "Record", "Record Pause", "Record Snapshot", "OCR", "Pin Toggle",
                                  "Pin Paste", "Pin Hide All", "Pin Arrange",
                                  "Mute System Audio", "Mute Microphone"}) {
             hotkeys.unregisterHotkey(name);

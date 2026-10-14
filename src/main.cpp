@@ -878,27 +878,49 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         : tools3000::core::HotkeyDef::fromString(translateText).value_or(translateFallback);
     tools3000::core::HotkeyManager::instance().registerHotkey("Translate Selection", translateHotkey, []() {
         std::string selected = tools3000::core::WinUtils::captureSelectedText();
-        // 移除首尾空白
-        selected.erase(0, selected.find_first_not_of(" \t\n\r"));
-        selected.erase(selected.find_last_not_of(" \t\n\r") + 1);
-
-        if (selected.empty()) {
+        const auto firstNotSpace = selected.find_first_not_of(" \t\n\r");
+        if (firstNotSpace == std::string::npos) {
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"请先划选文字或复制文本后再按 Alt+X"});
             return;
         }
+        const auto lastNotSpace = selected.find_last_not_of(" \t\n\r");
+        selected = selected.substr(firstNotSpace, lastNotSpace - firstNotSpace + 1);
+
+        std::wstring wideSelected = tools3000::core::WinUtils::utf8ToWstring(selected);
+        constexpr size_t kMaxTranslateChars = 1200;
+        if (wideSelected.size() > kMaxTranslateChars) {
+            size_t cutPos = kMaxTranslateChars;
+            if (cutPos > 0 && wideSelected[cutPos - 1] >= 0xD800 && wideSelected[cutPos - 1] <= 0xDBFF) {
+                --cutPos;
+            }
+            wideSelected.resize(cutPos);
+            selected = tools3000::core::WinUtils::wstringToUtf8(wideSelected);
+        }
+
+        size_t cjkCount = 0;
+        size_t latinCount = 0;
+        for (wchar_t ch : wideSelected) {
+            if ((ch >= 0x4E00 && ch <= 0x9FFF) || (ch >= 0x3400 && ch <= 0x4DBF)) {
+                ++cjkCount;
+            } else if ((ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z')) {
+                ++latinCount;
+            }
+        }
+        const char* targetLang = (cjkCount > 0 && cjkCount * 3 >= latinCount) ? "en" : "zh-CN";
 
         std::string encoded;
+        encoded.reserve(selected.size() * 3);
         for (unsigned char c : selected) {
             if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-                encoded += c;
+                encoded += static_cast<char>(c);
             } else {
                 char buf[4];
                 snprintf(buf, sizeof(buf), "%%%02X", c);
                 encoded += buf;
             }
         }
-        std::string url = "https://translate.google.com/?sl=auto&tl=zh-CN&op=translate&text=" + encoded;
-        ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        std::string url = std::string("https://translate.google.com/?sl=auto&tl=") + targetLang + "&op=translate&text=" + encoded;
+        tools3000::core::WinUtils::openUrl(tools3000::core::WinUtils::utf8ToWstring(url));
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"已触发划词翻译并打开翻译页面"});
     });
 

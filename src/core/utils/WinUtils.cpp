@@ -120,8 +120,7 @@ bool WinUtils::shouldTrimProcess(std::wstring_view exeName) {
     }
 
     // 严格排除全盘搜索常驻服务，保障 286MB 核心索引与 SQLite 内存页安全 (零堆内存分配比对)
-    if (equalsIgnoreCase(exeName, L"Tools3000_Service.exe") ||
-        equalsIgnoreCase(exeName, L"Tools3000_Service.exe")) {
+    if (equalsIgnoreCase(exeName, L"Tools3000_Service.exe")) {
         return false;
     }
 
@@ -1471,23 +1470,6 @@ void WinUtils::syncApplicationShortcuts() {
             std::error_code ec;
             if (std::filesystem::exists(toolsLnk, ec)) {
                 setShortcutAppUserModelId(toolsLnk.wstring(), aumid);
-            }
-
-            // 清理历史遗留的旧版 Tools3000 快捷方式
-            std::filesystem::path legacyLnk = (csidl == CSIDL_PROGRAMS || csidl == CSIDL_COMMON_PROGRAMS)
-                ? (baseDir / L"Tools3000" / L"Tools3000.lnk")
-                : (baseDir / L"Tools3000.lnk");
-
-            if (std::filesystem::exists(legacyLnk, ec)) {
-                std::filesystem::remove(legacyLnk, ec);
-            }
-
-            // 如果旧版开始菜单目录为空，则一并移除
-            if (csidl == CSIDL_PROGRAMS || csidl == CSIDL_COMMON_PROGRAMS) {
-                std::filesystem::path legacyDir = baseDir / L"Tools3000";
-                if (std::filesystem::exists(legacyDir, ec) && std::filesystem::is_empty(legacyDir, ec)) {
-                    std::filesystem::remove(legacyDir, ec);
-                }
             }
         }
     }

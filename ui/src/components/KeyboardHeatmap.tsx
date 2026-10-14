@@ -326,7 +326,8 @@ export const KeyboardHeatmap: FC<KeyboardHeatmapProps> = ({ keyMap }) => {
     tooltipPlacement: 'top' | 'bottom' = 'top'
   ) => {
     const { count, percentage, style } = getHeatData(keyDef);
-    const isPeak = topKey.count > 0 && topKey.label === keyDef.label;
+    const keyIdentity = keyDef.fullName || keyDef.label;
+    const isPeak = topKey.count > 0 && (topKey.fullName || topKey.label) === keyIdentity;
 
     // 是否处于键盘锁定激活态 (如 Caps 开启时高亮 Caps 键，Num 开启时高亮 Num 键)
     const isLockedOn =
@@ -336,7 +337,7 @@ export const KeyboardHeatmap: FC<KeyboardHeatmapProps> = ({ keyMap }) => {
 
     return (
       <div
-        key={keyDef.label}
+        key={keyIdentity}
         className={`keyboard-keycap ${customClass} ${count > 0 ? 'has-heat' : ''} ${isPeak ? 'is-peak' : ''} ${isLockedOn ? 'is-locked-on' : ''}`}
         style={{
           flex: keyDef.flex !== undefined ? `${keyDef.flex} 1 0%` : undefined,

@@ -3,12 +3,13 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Select, Button } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge } from '../components/UIKit';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import {
   FolderSymlink,
+  FolderOpen,
   Sparkles,
   History,
   Star,
@@ -142,15 +143,26 @@ export const DialogEnhancerPage: FC = () => {
     }
   };
 
-  const handleAddFavorite = async () => {
-    const path = newFavoriteInput.trim();
+  const handleAddFavorite = async (overridePath?: string) => {
+    const path = (overridePath ?? newFavoriteInput).trim();
     if (!path) return;
     try {
       await bridgeRequest('dialog.addFavorite', { path });
       setFavorites((prev) => [...prev.filter((p) => p !== path), path]);
-      setNewFavoriteInput('');
+      if (!overridePath) setNewFavoriteInput('');
     } catch {
       // 错误已由 bridgeRequest 自动拦截提示
+    }
+  };
+
+  const handleBrowseFavorite = async () => {
+    try {
+      const dir = await bridgeRequest<string | null>('capture.browseDirectory');
+      if (dir) {
+        await handleAddFavorite(dir);
+      }
+    } catch (error) {
+      toast.error(t('capture.browseFailed'), { description: String(error) });
     }
   };
 
@@ -304,9 +316,12 @@ export const DialogEnhancerPage: FC = () => {
               placeholder={t('dialog.enterPath')}
               value={newFavoriteInput}
               onChange={(e) => setNewFavoriteInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleAddFavorite()}
+              onKeyDown={(e) => e.key === 'Enter' && void handleAddFavorite()}
             />
-            <Button variant="primary" onClick={handleAddFavorite}>
+            <Button variant="ghost" onClick={() => void handleBrowseFavorite()} title={t('dialog.browseFolder')}>
+              <FolderOpen size={16} /> {t('dialog.browseFolder')}
+            </Button>
+            <Button variant="primary" onClick={() => void handleAddFavorite()}>
               <Plus size={16} /> {t('common.add')}
             </Button>
           </div>
@@ -321,12 +336,14 @@ export const DialogEnhancerPage: FC = () => {
                     <FolderHeart size={16} />
                   </div>
                   <div className="dialog-item-text" title={fav}>
-                    {fav}
+                    <CodeBadge>{fav}</CodeBadge>
                   </div>
                   <Button
                     variant="ghost"
                     size="sm"
                     className="dialog-btn-danger"
+                    title={t('common.delete')}
+                    aria-label={t('common.delete')}
                     onClick={() => handleRemoveFavorite(fav)}
                   >
                     <Trash2 size={14} />
@@ -355,13 +372,13 @@ export const DialogEnhancerPage: FC = () => {
               appMemories.map((item) => (
                 <div key={item.processName} className="dialog-memory-row">
                   <div className="dialog-memory-proc">
-                    <span className="dialog-proc-badge">{item.processName}</span>
+                    <CodeBadge className="dialog-proc-badge">{item.processName}</CodeBadge>
                     {item.isFixed && (
                       <span className="dialog-fixed-badge">{t('dialog.fixedBadge')}</span>
                     )}
                   </div>
                   <div className="dialog-memory-path" title={item.isFixed ? item.fixedWorkspace : item.lastPath}>
-                    {item.isFixed ? item.fixedWorkspace : item.lastPath}
+                    <CodeBadge>{item.isFixed ? item.fixedWorkspace : item.lastPath}</CodeBadge>
                   </div>
                   <div className="dialog-memory-time">{formatTime(item.lastUsedTimestamp)}</div>
                   <div className="dialog-memory-action" style={{ display: 'flex', gap: '0.25rem' }}>
@@ -369,6 +386,7 @@ export const DialogEnhancerPage: FC = () => {
                       variant="ghost"
                       size="sm"
                       title={item.isFixed ? t('dialog.unpinWorkspace') : t('dialog.pinWorkspace')}
+                      aria-label={item.isFixed ? t('dialog.unpinWorkspace') : t('dialog.pinWorkspace')}
                       onClick={() => handleTogglePinWorkspace(item)}
                     >
                       {item.isFixed ? <PinOff size={14} /> : <Pin size={14} />}
@@ -377,6 +395,8 @@ export const DialogEnhancerPage: FC = () => {
                       variant="ghost"
                       size="sm"
                       className="dialog-btn-danger"
+                      title={t('common.delete')}
+                      aria-label={t('common.delete')}
                       onClick={() => handleRemoveAppMemory(item.processName)}
                     >
                       <Trash2 size={14} />
@@ -409,10 +429,12 @@ export const DialogEnhancerPage: FC = () => {
           <div className="dialog-chips">
             {blacklist.map((proc) => (
               <div key={proc} className="dialog-chip">
-                <span>{proc}</span>
+                <CodeBadge>{proc}</CodeBadge>
                 <button
                   type="button"
                   className="dialog-chip-remove"
+                  title={t('common.delete')}
+                  aria-label={t('common.delete')}
                   onClick={() => handleRemoveBlacklist(proc)}
                 >
                   ×

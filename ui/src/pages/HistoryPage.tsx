@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Trash2, ExternalLink, Image as ImageIcon } from 'lucide-react';
+import { Trash2, ExternalLink, Image as ImageIcon, RefreshCw, FolderOpen } from 'lucide-react';
+import { Button, CodeBadge } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import './HistoryPage.css';
@@ -18,22 +19,35 @@ export default function HistoryPage() {
   const { t } = useTranslation();
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
-    let active = true;
     bridgeRequest<HistoryEntry[]>('history.getAll', { includeThumbnails: true })
       .then((data) => {
-        if (active) setEntries(Array.isArray(data) ? data : []);
+        setEntries(Array.isArray(data) ? data : []);
       })
       .catch((error) => {
         console.error('Failed to fetch history', error);
-        if (active) toast.error(t('history.loadFailed'));
+        toast.error(t('history.loadFailed'));
       })
       .finally(() => {
-        if (active) setLoading(false);
+        setLoading(false);
       });
-    return () => { active = false; };
-  }, [t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      const data = await bridgeRequest<HistoryEntry[]>('history.getAll', { includeThumbnails: true });
+      setEntries(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Failed to fetch history', error);
+      toast.error(t('history.loadFailed'));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const handleClear = async () => {
     if (window.confirm(t('history.confirmClear', 'Are you sure you want to clear all capture history?'))) {
@@ -56,17 +70,43 @@ export default function HistoryPage() {
     }
   };
 
+  const locateEntryFile = async (filePath: string) => {
+    if (!filePath) return;
+    try {
+      await bridgeRequest('system.openFolder', { path: filePath });
+    } catch (error) {
+      toast.error(t('history.openFailed'), { description: String(error) });
+    }
+  };
+
+  const getFileName = (filePath: string) => {
+    if (!filePath) return '';
+    const parts = filePath.split(/[\\/]/);
+    return parts[parts.length - 1] || filePath;
+  };
+
   return (
     <div className="page-container history-page">
-      <div className="page-header">
-        <div>
-          <h2>{t('history.title', 'Capture History')}</h2>
-          <p className="page-subtitle">{t('history.subtitle', 'View recent screenshots and recordings')}</p>
-        </div>
-        <button className="danger-btn" onClick={handleClear} disabled={entries.length === 0}>
-          <Trash2 size={16} />
-          {t('history.clearAll', 'Clear All')}
-        </button>
+      <div className="history-toolbar">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => void handleRefresh()}
+          disabled={loading || refreshing}
+          title={t('common.refresh')}
+        >
+          <RefreshCw size={15} className={refreshing ? 'history-spin' : ''} />
+          <span>{t('common.refresh')}</span>
+        </Button>
+        <Button
+          variant="danger"
+          size="sm"
+          onClick={handleClear}
+          disabled={entries.length === 0 || loading}
+        >
+          <Trash2 size={15} />
+          <span>{t('history.clearAll', 'Clear All')}</span>
+        </Button>
       </div>
 
       <div className="history-grid">
@@ -79,7 +119,20 @@ export default function HistoryPage() {
           </div>
         ) : (
           entries.map(entry => (
-            <button key={entry.index} type="button" className="history-card" onClick={() => openEntry(entry.index)}>
+            <div
+              key={entry.index}
+              role="button"
+              tabIndex={0}
+              className="history-card"
+              title={t('history.pinImage')}
+              onClick={() => void openEntry(entry.index)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  void openEntry(entry.index);
+                }
+              }}
+            >
               <div className="history-card-image">
                 {entry.base64 ? (
                   <img src={`data:image/png;base64,${entry.base64}`} alt={t('history.thumbnailAlt')} loading="lazy" />
@@ -91,10 +144,31 @@ export default function HistoryPage() {
                 </div>
               </div>
               <div className="history-card-info">
-                <span className="timestamp">{entry.timestamp.replace('T', ' ')}</span>
-                <span className="dimensions">{entry.width} × {entry.height}</span>
+                <div className="history-card-meta-row">
+                  <span className="timestamp">{entry.timestamp.replace('T', ' ')}</span>
+                  <span className="dimensions">{entry.width} × {entry.height}</span>
+                </div>
+                {entry.filePath && (
+                  <div
+                    className="history-card-file-row"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
+                    <CodeBadge title={entry.filePath}>{getFileName(entry.filePath)}</CodeBadge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="history-locate-btn"
+                      title={t('history.openFolder')}
+                      aria-label={t('history.openFolder')}
+                      onClick={() => void locateEntryFile(entry.filePath)}
+                    >
+                      <FolderOpen size={14} />
+                    </Button>
+                  </div>
+                )}
               </div>
-            </button>
+            </div>
           ))
         )}
       </div>

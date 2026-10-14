@@ -497,27 +497,40 @@ export const Select: FC<SelectProps> = ({
 
 /* ── Button ───────────────────────────────────────────────────────────────── */
 
-interface ButtonProps {
+interface ButtonProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'type' | 'onClick'> {
   children: ReactNode;
-  onClick?: () => void;
+  onClick?: (e?: React.MouseEvent<HTMLButtonElement>) => void;
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
   size?: 'sm' | 'md';
   disabled?: boolean;
   type?: 'button' | 'submit';
   title?: string;
+  ariaLabel?: string;
   className?: string;
   style?: CSSProperties;
 }
 
 export const Button: FC<ButtonProps> = ({
-  children, onClick, variant = 'primary', size = 'md', disabled = false, type = 'button', title, className = '', style,
+  children,
+  onClick,
+  variant = 'primary',
+  size = 'md',
+  disabled = false,
+  type = 'button',
+  title,
+  ariaLabel,
+  className = '',
+  style,
+  ...rest
 }) => (
   <button
+    {...rest}
     type={type}
     className={`uikit-btn uikit-btn--${variant} uikit-btn--${size} ${className}`}
     onClick={onClick}
     disabled={disabled}
     title={title}
+    aria-label={ariaLabel ?? rest['aria-label']}
     style={style}
   >
     {children}

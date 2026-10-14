@@ -117,6 +117,7 @@ public:
     // ── 识别器配置 ───────────────────────────────────────────────────────
 
     void setRecognizerConfig(const RecognizerConfig& config);
+    const RecognizerConfig& recognizerConfig() const { return m_recognizer.config(); }
 
     // ── 轨迹可视化 ──────────────────────────────────────────────────────
 

@@ -6,6 +6,61 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-10-14] 全链路功能缺陷修复与人类易用度深度优化 (/boost)
+- **核心用户反馈缺陷深度根治 (Gesture Trail 图层穿透露出底层窗体 & 复制文字按贴图失效)**：
+  1. **右键手势轨迹露出背后底层窗体根因与 D2D1.1 DeviceContext 零重分配架构重构 (`src/gesture/GestureTrailOverlay.h/.cpp`)**：
+     - **致命根因一（DirectComposition `IDXGISurface` 跨帧违规持有与 `CreateDxgiSurfaceRenderTarget` 局部视口锁死）**：
+       `GestureTrailOverlay` 使用全屏 `IDCompositionSurface` 并通过 `surface->BeginDraw(&dirtyRect, &dxgiSurf, &offset)` 执行局部脏矩形更新。旧实现将 `dxgiSurf` 与 `CreateDxgiSurfaceRenderTarget` 创建的 `ID2D1RenderTarget` 缓存在 `m_frontCtx` 中跨越 `EndDraw()` 持有，且仅靠 `ctx.dxgiSurface.Get() != dxgiSurf.Get()` 判断是否重建 RenderTarget。当手势从第 1 帧的微小脏矩形（如 `69x69`）扩展到后续帧的 `600x400` 时，`dcomp.dll` 复用了同一个 `CDxgiSurface` COM 包装器地址并重新绑定了更大尺寸的底层 WDDM 暂存纹理，导致指针相等判断失灵，`ctx.renderTarget` 仍锁死在第 1 帧的 `69x69` 裁剪视口。结果 `Clear(0,0,0,0)` 仅清空了左上角 `69x69`，而扩展出的 `600x400` 区域直接把刚被新打开软件遮挡并由 DWM 回收复用的后台旧窗口未初始化显存块（VRAM Tiles）原样合成到了 `HWND_TOPMOST` 手势层上，造成“右键滑轨迹时看到背后窗体露出一部分”。
+     - **致命根因二（DComp 图集纹理 `Clear()` 无裁剪越界与首次表面未清零）**：
+       `IDCompositionSurface::BeginDraw` 返回的是 `dcomp.dll` 内部子分配的共享图集纹理（带 `offset` 偏移），`ID2D1RenderTarget::Clear()` 在无 `PushAxisAlignedClip` 时忽略 `SetTransform` 直接擦除整张图集子纹理；且 `preallocateTrailSurfacesLocked` 首次分配全屏表面挂接至 Visual Tree 时未做初始透明清零。
+     - **致命根因三（`WH_MOUSE_LL` 钩子线程 `beginTrail` 锁竞争与 `HWND_NOTOPMOST` Z 序降级未恢复）**：
+       `beginTrail()` 在输入线程同步争抢 `m_renderMutex` 并调用 `clearCanvasLocked`；同时 `yieldZOrderForInput()` 将窗口降为 `HWND_NOTOPMOST` 后，`render()` 首次显示仅调用 `ShowWindow(SW_SHOWNOACTIVATE)` 未恢复 `HWND_TOPMOST`。
+     - **终局架构方案（兼顾 0 穿透残影与 1000Hz 极致跟手性能）**：
+       - 升级为 **D3D11 + `ID2D1Device` + `ID2D1DeviceContext` (D2D1.1)** 架构：`ID2D1DeviceContext` 与全套 `ID2D1SolidColorBrush` 随 D3D11 设备一次性创建并常驻复用，彻底消灭每帧重建 RenderTarget 与画刷开销；
+       - 每帧在 `surface->BeginDraw(&dirtyRect, &dxgiSurf, &offset)` 内通过轻量级 `CreateBitmapFromDxgiSurface` 封装当前帧纹理，`SetTarget(targetBitmap)` -> `SetTransform(Translation(offset.x - dirtyRect.left, offset.y - dirtyRect.top))` -> **`PushAxisAlignedClip(dirtyRect)`** -> `Clear(0,0,0,0)` -> 绘制轨迹 -> `PopAxisAlignedClip()` -> `EndDraw()` -> **`SetTarget(nullptr)` 立即释放 `dxgiSurf`**，100% 严守 DirectComposition 表面生命周期契约；
+       - `preallocateTrailSurfacesLocked` 创建表面后立即执行 `clearDcompSurfaceLocked(newFront.Get(), nullptr)` 全量透明初始化；
+       - `beginTrail()` 改为纯原子操作（置位 `m_strokeResetPending = true`），由渲染线程在下一帧统一擦除上一笔 `m_dirtySurfaceRect`，实现输入线程 **0 互斥锁等待、0 GPU 阻塞**；
+       - 窗口显隐时强制通过 `SetWindowPos(m_hwnd, HWND_TOPMOST, ..., SWP_SHOWWINDOW)` 恢复置顶 Z 序，并在 `overlayWndProc` 拦截 `WM_ERASEBKGND` 与 `WM_PAINT` 杜绝 GDI 背景闪烁。
+  2. **复制文字后按贴图不成功根因与 `PinPasteCoordinator` 文字/色块卡片单一事实源重构 (`src/capture/PinPasteCoordinator.h/.cpp`, `src/capture/PinWindow.cpp`, `src/capture/ClipboardUtils.cpp`, `src/capture/CaptureInput.cpp`)**：
+     - **致命根因一（`PinPasteCoordinator::resolveCandidates` 漏掉纯文本转图片分支）**：
+       貼图快捷键由 `PinPasteCoordinator::stepNext()` 统一调度。`resolveCandidates()` 在剪贴板无位图、仅有 `CF_UNICODETEXT` 时，只编写了 `if (parseHexColor(clipText, ...))` 分支，**完全缺失 `else` 文本渲染分支**。当用户复制普通文本（非 `#RRGGBB` 颜色码）按贴图时，`clipImg` 保持为空，若此时无历史截图则直接报错“当前没有可用的历史截图或剪贴板图像”，若有历史截图则错误贴出旧截图而忽略刚复制的文字。
+     - **致命根因二（`Tools3000PinMetadata::magic` 默认值导致未初始化坐标误判）**：
+       `Tools3000PinMetadata` 结构体默认构造将 `magic` 初始化为 `0x54333030`。`ClipboardUtils::readImageFromClipboard(outMeta)` 在剪贴板不含 `Tools3000_PinMetadata` 格式时未将 `outMeta->magic` 清零，导致外部复制图像被误判为带合法元数据的内部截图。
+     - **终局架构方案**：
+       - 将 `parseHexColor`、`renderColorSwatch` 与 `renderTextToImage` 提炼为 `PinPasteCoordinator` 静态公共方法（单一事实源 SSOT），`PinWindow` 与 `PinPasteCoordinator` 统一调用；
+       - 升级 `renderTextToImage`：支持 CJK 智能字体选择（含中文时自动选用 `Microsoft YaHei UI` 配合 `Cascadia Code`）、`DT_WORDBREAK | DT_EDITCONTROL | DT_EXPANDTABS | DT_NOPREFIX` 自动换行与 Tab 展开、尾部冗余换行修剪及高对比度极客暗色卡片渲染；
+       - 在 `resolveCandidates()` 补齐 `else { clipImg = renderTextToImage(clipText); }` 分支，并确保文字/色块生成的卡片不会被历史截图尺寸去重逻辑误吞；
+       - 在 `ClipboardUtils::readImageFromClipboard`、`PinPasteCoordinator` 与 `PinWindow` 中统一加入 `OpenClipboard` 有界重试（`10 x 5ms`），并在读取前将 `outMeta->magic` 显式清零；
+       - 修复截图标注文字编辑态下按 `Ctrl+V` 误调 `captureSelectedText()`（模拟按键覆盖剪贴板）的问题，改为直接读取剪贴板 `CF_UNICODETEXT`。
+- **C++20 后端核心健壮性与状态同步修复**：
+  1. **划词翻译 (`Alt+X` / `"Translate Selection"`) 安全与智能语种识别加固 (`src/main.cpp`)**：
+     - **纯空白文本 `std::string::npos` 越界崩溃防御**：原逻辑对全空格/换行字符串直接执行 `find_last_not_of - find_first_not_of + 1` 会产生 `npos` 越界；现先判断 `firstNonSpace == std::string::npos` 并安全退场。
+     - **UTF-16 代理对安全截断**：将最大翻译长度限制在 1200 个 `wchar_t` 以防超长 URL 被浏览器丢弃，并检查截断边界是否处于高代理项（`0xD800..0xDBFF`），防止截断产生非法半个 UTF-16 代理对。
+     - **中英双向目标语种自动路由**：统计选中文本中的 CJK 统一表意文字占比，中文占比 >= 20% 时自动翻译为英文 (`tl=en`)，否则自动翻译为简体中文 (`tl=zh-CN`)。
+     - **安全打开浏览器**：由裸调 `ShellExecuteA` 统一收敛至 `tools3000::core::WinUtils::openUrl`。
+  2. **手势识别引擎配置同步防覆盖修复 (`src/gesture/GestureEngine.h/.cpp`, `src/gesture/PluginEntry.cpp`)**：
+     - **问题根因**：`GestureEngine::loadConfigFromManager()`、`setEnableScribbleCancel()` 与 `setEnableInFlightCompass()` 在更新 `GestureRecognizer::Config` 时重新构造了默认结构体，导致 `minSegmentDistance` 被硬编码重置为 `14`，覆盖了用户自定义的 `minDistance` 阈值。
+     - **修复方案**：新增 `GestureEngine::recognizerConfig()` 读取当前识别器配置，在配置热重载与单项开关切换时完整保留已生效的 `minSegmentDistance`，并在 `gesture.getState` IPC 响应中补齐 `enableScribbleCancel` 与 `enableInFlightCompass` 字段。
+  3. **圆盘菜单默认项透传、录屏抓拍热键生命周期闭环与 `ConfigManager::initialize` 状态隔离 (`src/gesture/RadialMenuOverlay.h`, `src/capture/PluginEntry.cpp`, `src/core/config/ConfigManager.cpp`)**：
+     - 当配置文件尚未持久化 `/gesture/radialMenu/items` 时，通过 `RadialMenuOverlay::getItems()` 直接向前端返回内存默认 8 向扇区项，消除前端首次打开圆盘菜单设置列表为空的问题；
+     - 在 `CapturePlugin::shutdown()` 中补齐 `"Record Snapshot"` 热键注销，确保插件启停生命周期对称；
+     - 在 `ConfigManager::initialize()` 加载新配置文件前将内存 `m_config` 复位为空，防止跨目录重新初始化时残留上一次会话的内存对象。
+- **React 18 / TypeScript 微前端易用度、无障碍与暗坑治理**：
+  1. **基础组件 `Button` 属性透传修复 (`ui/src/components/UIKit.tsx`)**：
+     - 扩展 `React.ButtonHTMLAttributes<HTMLButtonElement>` 并显式绑定 `aria-label={ariaLabel ?? rest['aria-label']}`，修复图标按钮无障碍属性与原生事件属性丢失问题。
+  2. **键盘热力图左右修饰键去重与峰值高亮精准化 (`ui/src/components/KeyboardHeatmap.tsx`)**：
+     - 使用 `keyIdentity = keyDef.fullName || keyDef.label` 作为 React 列表 `key` 与按键匹配标识，彻底消除 `Shift`、`Ctrl`、`Alt`、`Win`、`Enter` 左右同标签键引发的 React duplicate key 控制台报错及双键同时误亮峰值问题。
+  3. **内置扩展详情页 (`markdown_preview` / `clipboard_manager`) 双语完整渲染 (`ui/src/pages/ExtensionPage.tsx`)**：
+     - 新增 `resolveText` 与 `resolvedFormats` 解析管线，修复中文环境下步骤标题/描述/触发条件及支持文件格式因缺失 `titleKey`/`conditionKey` 回退而显示空白的问题；采用 `enabledOverrides` 映射表按 `pluginId` 派生启用状态，满足 React Hooks 纯净度约束。
+  4. **高频页面人类易用度增强 (`CapturePage`, `HistoryPage`, `KeyStatsPage`, `DialogEnhancerPage`, `GeneralPage`, `PluginsPage`)**：
+     - **捕获与录像 (`CapturePage.tsx`)**：新增「录屏实时抓拍快捷键 (`Record Snapshot`)」可视化录制器；
+     - **历史记录 (`HistoryPage.tsx`)**：新增手动刷新按钮、文件名 `<CodeBadge />` 胶囊展示、「定位文件 (`system.openFolder`)」按钮及卡片键盘无障碍操作（`Enter`/`Space`）；
+     - **按键统计 (`KeyStatsPage.tsx`)**：新增顶部手动刷新与「重置今日统计 (`stats.clearToday`)」按钮、补齐「今日按键 (`stats.totalKeys`)」概览卡片，并全量启用 `tabular-nums` 等宽数字防抖；
+     - **文件对话框增强 (`DialogEnhancerPage.tsx`)**：常用路径新增原生文件夹浏览按钮 (`capture.browseDirectory`)，路径与进程名全量封装为 `<CodeBadge />`；
+     - **通用设置与插件市场 (`GeneralPage.tsx`, `PluginsPage.tsx`, `App.tsx`)**：新增数据目录 `<CodeBadge />` 展示与一键打开按钮、规范化 `zh-CN`/`en-US` 语言码、补齐 `Record Snapshot` 热键国际化映射，并为插件市场与本地导入提供即时反馈指引。
+  5. **挂载期 `useEffect` 依赖净化**：
+     - 移除 `CapturePage`、`HistoryPage`、`OcrPage`、`HotCornerPage` 初始化 IPC 请求 `useEffect` 依赖数组中的 `t`，防止语言切换时重复触发全量 IPC 拉取及测试环境死循环。
+
 ### [2026-09-24] Tools3000 全景架构、并发安全与工程质量全维代码审计结项
 - **审计范围与团队组织**：
   由 `teamwork_preview` 多智能体系统（编排器、3 名勘测员、2 名技术主审员、独立事后司法审计员）对 Tools3000 全工程（C++20 核心微内核、DirectComposition 覆盖层、React 18 / TS 微前端、常驻搜索服务、命名管道 IPC、DevOps 发版流水线）展开源码级全维深度审查与实机实测验证。

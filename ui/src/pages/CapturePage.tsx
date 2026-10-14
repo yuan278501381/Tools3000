@@ -90,6 +90,7 @@ export const CapturePage: FC = () => {
   const [screenshotHotkey, setScreenshotHotkey] = useState('Ctrl+Shift+A');
   const [recordHotkey, setRecordHotkey] = useState('Ctrl+Shift+R');
   const [recordPauseHotkey, setRecordPauseHotkey] = useState('Ctrl+Shift+P');
+  const [recordSnapshotHotkey, setRecordSnapshotHotkey] = useState('Ctrl+Shift+S');
 
   const getHotkey = (name: string) => hotkeys.find(h => h.name === name);
 
@@ -108,12 +109,14 @@ export const CapturePage: FC = () => {
       setScreenshotHotkey(hkList.find(item => item.name === 'Screenshot')?.shortcut ?? 'Ctrl+Shift+A');
       setRecordHotkey(hkList.find(item => item.name === 'Record')?.shortcut ?? 'Ctrl+Shift+R');
       setRecordPauseHotkey(hkList.find(item => item.name === 'Record Pause')?.shortcut ?? 'Ctrl+Shift+P');
+      setRecordSnapshotHotkey(hkList.find(item => item.name === 'Record Snapshot')?.shortcut ?? 'Ctrl+Shift+S');
       setAudioDevices(capabilities.audioDevices || []);
     }).catch((error) => {
       console.error(error);
       toast.error(t('capture.loadFailed'));
     }).finally(() => setLoading(false));
-  }, [t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const updateCapture = useCallback((key: keyof CaptureSettings, value: unknown) => {
     setCapture(prev => ({ ...prev, [key]: value }));
@@ -135,13 +138,14 @@ export const CapturePage: FC = () => {
       });
   }, [t]);
 
-  const rebindHotkey = async (name: 'Screenshot' | 'Record' | 'Record Pause', value: string) => {
+  const rebindHotkey = async (name: 'Screenshot' | 'Record' | 'Record Pause' | 'Record Snapshot', value: string) => {
     try {
       const result = await bridgeRequest<OperationResult>('hotkey.rebind', { name, hotkey: value });
       if (!result.success) throw new Error(result.error || t('hotkey.bindFailed'));
       if (name === 'Screenshot') setScreenshotHotkey(result.shortcut ?? value);
       else if (name === 'Record') setRecordHotkey(result.shortcut ?? value);
-      else setRecordPauseHotkey(result.shortcut ?? value);
+      else if (name === 'Record Pause') setRecordPauseHotkey(result.shortcut ?? value);
+      else setRecordSnapshotHotkey(result.shortcut ?? value);
 
       // 同步刷新全局热键状态以更新冲突徽章
       const refreshed = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
@@ -410,6 +414,21 @@ export const CapturePage: FC = () => {
               id="recording-pause-shortcut"
               value={recordPauseHotkey}
               onChange={(v) => void rebindHotkey('Record Pause', v)}
+            />
+          </SettingRow>
+          <SettingRow
+            label={
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>{t('recording.snapshotShortcut')}</span>
+                <HotkeyStatusBadge entry={getHotkey('Record Snapshot')} />
+              </div>
+            }
+            description={t('recording.snapshotShortcutDesc')}
+          >
+            <HotkeyRecorder
+              id="recording-snapshot-shortcut"
+              value={recordSnapshotHotkey}
+              onChange={(v) => void rebindHotkey('Record Snapshot', v)}
             />
           </SettingRow>
           <SettingRow label={t('recording.saveDir')} description={t('recording.saveDirDesc')}>

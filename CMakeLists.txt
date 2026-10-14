@@ -193,7 +193,7 @@ target_link_libraries(capture_objects PUBLIC Tools3000Core ${OpenCV_LIBS}
     shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 windowscodecs winhttp windowsapp Shcore imm32
 )
 
-# 2. gesture_objects (8 个源文件)
+# 2. gesture_objects (12 个源文件)
 set(GESTURE_OBJECT_SOURCES
     src/gesture/GestureRecognizer.cpp
     src/gesture/ScopeRule.cpp
@@ -203,6 +203,10 @@ set(GESTURE_OBJECT_SOURCES
     src/gesture/HotCornerEngine.cpp
     src/gesture/MouseHook.cpp
     src/gesture/GesturePacer.cpp
+    src/gesture/GestureEngine.cpp
+    src/gesture/GestureDispatchWorker.cpp
+    src/gesture/GestureTrailOverlay.cpp
+    src/gesture/RadialMenuOverlay.cpp
 )
 add_library(gesture_objects OBJECT ${GESTURE_OBJECT_SOURCES})
 target_include_directories(gesture_objects PUBLIC ${CMAKE_SOURCE_DIR}/src)
@@ -270,10 +274,6 @@ target_link_libraries(ui_objects PUBLIC Tools3000Core
 
 # ── 2. Plugin_Gesture (动态库) ────────────────────────────────────────────────
 set(GESTURE_OTHER_SOURCES
-    src/gesture/GestureEngine.cpp
-    src/gesture/GestureDispatchWorker.cpp
-    src/gesture/GestureTrailOverlay.cpp
-    src/gesture/RadialMenuOverlay.cpp
     src/gesture/PluginEntry.cpp
 )
 add_library(Plugin_Gesture SHARED ${GESTURE_OTHER_SOURCES} $<TARGET_OBJECTS:gesture_objects>)
@@ -469,7 +469,7 @@ if(BUILD_TESTING)
     if (MSVC)
         target_compile_options(Tools3000Tests PRIVATE /bigobj)
     endif()
-    target_link_libraries(Tools3000Tests PRIVATE Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 dwmapi d3d11 dxgi ole32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm
+    target_link_libraries(Tools3000Tests PRIVATE Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY} ${OpenCV_LIBS})
     add_test(NAME Tools3000.Unit COMMAND Tools3000Tests)

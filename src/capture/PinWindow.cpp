@@ -851,179 +851,19 @@ POINT PinWindow::calculateMagneticSnap(HWND currentHwnd, POINT targetPos, int cu
 // 剪贴板贴图（图像 / 文本 / 颜色 → 浮空贴图）
 // ─────────────────────────────────────────────────────────────────────────────
 
-// 剪贴板位图(HBITMAP) → BGR cv::Mat。用 GetDIBits 统一转 32 位, 兼容任意源格式。
-static cv::Mat hbitmapToMat(HBITMAP hbm) {
-    BITMAP bm{};
-    if (!GetObject(hbm, sizeof(bm), &bm)) return {};
-    int w = bm.bmWidth, h = std::abs(bm.bmHeight);
-    if (w <= 0 || h <= 0) return {};
-
-    BITMAPINFOHEADER bi{};
-    bi.biSize = sizeof(bi);
-    bi.biWidth = w;
-    bi.biHeight = -h;  // top-down
-    bi.biPlanes = 1;
-    bi.biBitCount = 32;
-    bi.biCompression = BI_RGB;
-
-    cv::Mat bgra(h, w, CV_8UC4);
-    HDC dc = GetDC(nullptr);
-    int got = GetDIBits(dc, hbm, 0, h, bgra.data, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS);
-    ReleaseDC(nullptr, dc);
-    if (got == 0) return {};
-
-    // GetDIBits 32 位 BI_RGB 不写 alpha, 直接丢弃 alpha 得到不透明 BGR
-    cv::Mat bgr;
-    cv::cvtColor(bgra, bgr, cv::COLOR_BGRA2BGR);
-    return bgr;
-}
-
-// 解析 #RGB / #RRGGBB 文本为 BGR 颜色
+// 解析 #RGB / #RRGGBB 文本为 BGR 颜色（委托至 PinPasteCoordinator 单一事实源）
 bool PinWindow::parseHexColor(const std::wstring& in, cv::Scalar& bgr, std::wstring& label) {
-    size_t a = in.find_first_not_of(L" \t\r\n");
-    size_t b = in.find_last_not_of(L" \t\r\n");
-    if (a == std::wstring::npos) return false;
-    std::wstring s = in.substr(a, b - a + 1);
-    if (s.size() < 4 || s[0] != L'#') return false;
-    std::wstring hex = s.substr(1);
-    if (hex.size() != 3 && hex.size() != 6) return false;
-    for (wchar_t c : hex) if (!std::iswxdigit(c)) return false;
-
-    auto hv = [](wchar_t c) -> int {
-        c = std::towlower(c);
-        return (c <= L'9') ? (c - L'0') : (c - L'a' + 10);
-    };
-    int r, g, bl;
-    if (hex.size() == 3) { r = hv(hex[0]) * 17; g = hv(hex[1]) * 17; bl = hv(hex[2]) * 17; }
-    else { r = hv(hex[0]) * 16 + hv(hex[1]); g = hv(hex[2]) * 16 + hv(hex[3]); bl = hv(hex[4]) * 16 + hv(hex[5]); }
-    bgr = cv::Scalar(bl, g, r);
-    label = s;
-    return true;
+    return PinPasteCoordinator::parseHexColor(in, bgr, label);
 }
 
-// 颜色 → 色卡贴图（色块 + 文字按亮度自动取黑/白以保证对比）
+// 颜色 → 色卡贴图（委托至 PinPasteCoordinator 单一事实源）
 cv::Mat PinWindow::renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label) {
-    const int w = 180, h = 130;
-    cv::Mat img(h, w, CV_8UC3, bgr);
-    double lum = 0.114 * bgr[0] + 0.587 * bgr[1] + 0.299 * bgr[2];
-    cv::Scalar tc = lum > 140 ? cv::Scalar(20, 20, 20) : cv::Scalar(240, 240, 240);
-    std::string lbl;
-    for(auto c : label) lbl.push_back((char)c);  // hex 为 ASCII，可安全窄化
-    cv::putText(img, lbl, cv::Point(14, h - 18), cv::FONT_HERSHEY_SIMPLEX, 0.7, tc, 1, cv::LINE_AA);
-    return img;
+    return PinPasteCoordinator::renderColorSwatch(bgr, label);
 }
 
-// 文本/代码 → Mac 极客风卡片贴图（含红黄绿三色窗口点、代码行号与深邃极客磨砂卡片）
+// 文本/代码 → Mac 极客风卡片贴图（委托至 PinPasteCoordinator 单一事实源）
 cv::Mat PinWindow::renderTextToImage(const std::wstring& text) {
-    HDC screen = GetDC(nullptr);
-    HDC memdc = CreateCompatibleDC(screen);
-
-    // 智能检测是否为代码块（包含换行、花括号、缩进、常见代码关键字）
-    bool isCode = (text.find(L'\n') != std::wstring::npos) ||
-                  (text.find(L'{') != std::wstring::npos) ||
-                  (text.find(L"def ") != std::wstring::npos) ||
-                  (text.find(L"const ") != std::wstring::npos) ||
-                  (text.find(L"function") != std::wstring::npos) ||
-                  (text.find(L"#include") != std::wstring::npos) ||
-                  (text.find(L"import ") != std::wstring::npos) ||
-                  (text.find(L"class ") != std::wstring::npos);
-
-    LPCWSTR fontFace = isCode ? L"Cascadia Code" : L"Segoe UI Variable Text";
-    HFONT font = CreateFontW(-19, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFace);
-    HGDIOBJ oldFont = SelectObject(memdc, font);
-
-    const int headerH = 28;     // 顶部 Mac 窗口控制栏高度
-    const int padX = 18;        // 水平内边距
-    const int padY = 14;        // 垂直内边距
-    const int maxW = 720;
-    
-    RECT rc{0, 0, maxW, 0};
-    DrawTextW(memdc, text.c_str(), -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
-    int contentW = std::min<LONG>(rc.right, maxW);
-    int contentH = rc.bottom;
-
-    int w = std::clamp(contentW + padX * 2 + 10, 160, maxW + padX * 2);
-    int h = std::clamp(headerH + contentH + padY * 2, 64, 2400);
-
-    BITMAPINFO bmi{};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h;  // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    void* bits = nullptr;
-    HBITMAP dib = CreateDIBSection(memdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    cv::Mat result;
-    if (dib && bits) {
-        HGDIOBJ oldBm = SelectObject(memdc, dib);
-        
-        // 1. 卡片深邃背景 (#18181B - Zinc 900)
-        RECT full{0, 0, w, h};
-        HBRUSH bg = CreateSolidBrush(RGB(24, 24, 27));
-        FillRect(memdc, &full, bg);
-        DeleteObject(bg);
-
-        // 2. 顶部 Mac 红黄绿三色微圆点 (10px 直径)
-        HBRUSH redDot = CreateSolidBrush(RGB(255, 95, 86));
-        HBRUSH yellowDot = CreateSolidBrush(RGB(255, 189, 46));
-        HBRUSH greenDot = CreateSolidBrush(RGB(39, 201, 63));
-        HPEN nullPen = CreatePen(PS_NULL, 0, 0);
-        HGDIOBJ oldPen = SelectObject(memdc, nullPen);
-
-        SelectObject(memdc, redDot);
-        Ellipse(memdc, 14, 10, 24, 20);
-        SelectObject(memdc, yellowDot);
-        Ellipse(memdc, 30, 10, 40, 20);
-        SelectObject(memdc, greenDot);
-        Ellipse(memdc, 46, 10, 56, 20);
-
-        DeleteObject(redDot);
-        DeleteObject(yellowDot);
-        DeleteObject(greenDot);
-
-        // 3. 顶部微弱分割线 (#27272A)
-        HPEN divPen = CreatePen(PS_SOLID, 1, RGB(39, 39, 42));
-        SelectObject(memdc, divPen);
-        MoveToEx(memdc, 0, headerH, nullptr);
-        LineTo(memdc, w, headerH);
-        DeleteObject(divPen);
-
-        // 4. 外边框微高光 (#3F3F46)
-        HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(63, 63, 70));
-        SelectObject(memdc, borderPen);
-        MoveToEx(memdc, 0, 0, nullptr);
-        LineTo(memdc, w - 1, 0);
-        LineTo(memdc, w - 1, h - 1);
-        LineTo(memdc, 0, h - 1);
-        LineTo(memdc, 0, 0);
-        DeleteObject(borderPen);
-
-        SelectObject(memdc, oldPen);
-        DeleteObject(nullPen);
-
-        // 5. 文本与代码渲染
-        SetBkMode(memdc, TRANSPARENT);
-        SetTextColor(memdc, RGB(244, 244, 245));
-        RECT tr{padX, headerH + padY, w - padX, h - padY};
-        DrawTextW(memdc, text.c_str(), -1, &tr, DT_WORDBREAK | DT_NOPREFIX);
-        GdiFlush();
-
-        cv::Mat bgra(h, w, CV_8UC4, bits);
-        cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);  // 独立内存输出
-
-        SelectObject(memdc, oldBm);
-        DeleteObject(dib);
-    }
-
-    SelectObject(memdc, oldFont);
-    DeleteObject(font);
-    DeleteDC(memdc);
-    ReleaseDC(nullptr, screen);
-    return result;
+    return PinPasteCoordinator::renderTextToImage(text);
 }
 
 POINT PinWindow::calculateSmartSpawnPosition(int imageWidth, int imageHeight, const POINT* fallbackCursor, const CaptureRegion* preferredRegion, int padX, int padY) {
@@ -1093,12 +933,34 @@ std::shared_ptr<PinWindow> PinWindow::createFromClipboard() {
     POINT pt;
     GetCursorPos(&pt);
 
-    Tools3000PinMetadata meta{};
-    cv::Mat img = ClipboardUtils::readImageFromClipboard(&meta);
     std::wstring text;
-
-    if (img.empty()) {
-        if (OpenClipboard(nullptr)) {
+    bool preferTextOverImage = false;
+    {
+        bool opened = false;
+        for (int retry = 0; retry < 10; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                opened = true;
+                break;
+            }
+            Sleep(5);
+        }
+        if (opened) {
+            const UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
+            const UINT formatPng = RegisterClipboardFormatW(L"PNG");
+            const bool hasPinMeta = (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta));
+            if (!hasPinMeta) {
+                for (UINT fmt = EnumClipboardFormats(0); fmt != 0; fmt = EnumClipboardFormats(fmt)) {
+                    if (fmt == CF_UNICODETEXT || fmt == CF_TEXT || fmt == CF_OEMTEXT) {
+                        preferTextOverImage = true;
+                        break;
+                    }
+                    if ((formatPng != 0 && fmt == formatPng) ||
+                        fmt == CF_DIBV5 || fmt == CF_DIB || fmt == CF_BITMAP) {
+                        preferTextOverImage = false;
+                        break;
+                    }
+                }
+            }
             if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
                 if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
                     if (auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
@@ -1109,13 +971,30 @@ std::shared_ptr<PinWindow> PinWindow::createFromClipboard() {
             }
             CloseClipboard();
         }
+    }
 
-        if (!text.empty()) {
-            cv::Scalar c;
-            std::wstring hexLabel;
-            if (parseHexColor(text, c, hexLabel)) img = renderColorSwatch(c, hexLabel);
-            else img = renderTextToImage(text);
-        }
+    Tools3000PinMetadata meta{};
+    meta.magic = 0;
+    cv::Mat img;
+
+    auto renderTextOrColor = [&](const std::wstring& s) -> cv::Mat {
+        if (s.empty()) return {};
+        cv::Scalar c;
+        std::wstring hexLabel;
+        if (parseHexColor(s, c, hexLabel)) return renderColorSwatch(c, hexLabel);
+        return renderTextToImage(s);
+    };
+
+    if (preferTextOverImage && !text.empty()) {
+        img = renderTextOrColor(text);
+    }
+
+    if (img.empty()) {
+        img = ClipboardUtils::readImageFromClipboard(&meta);
+    }
+
+    if (img.empty() && !text.empty()) {
+        img = renderTextOrColor(text);
     }
 
     if (img.empty()) {
@@ -1655,6 +1534,11 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             // V: 垂直镜像翻转
             if (wParam == 'V' && !ctrl) {
                 self->flip(false);
+                return 0;
+            }
+            // Ctrl+V: 当贴图窗口处于焦点时，直接将剪贴板内容（文字/色卡/图片）或历史贴出为新贴图
+            if (ctrl && !shift && wParam == 'V') {
+                PinWindow::pasteNextHistoryOrClipboard();
                 return 0;
             }
             // Ctrl+Shift+C: 复制全部文字 (世界级一键提取文字)

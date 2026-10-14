@@ -5,7 +5,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Select, Button } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { bridgeRequest } from '../hooks/useBridge';
@@ -88,6 +88,22 @@ export const GeneralPage: FC = () => {
     window.dispatchEvent(new CustomEvent('tools3000:accent-changed', { detail: id }));
   };
 
+  const applyLanguagePreference = useCallback((langValue?: string) => {
+    if (!langValue) return;
+    try {
+      localStorage.setItem('tools3000:language', langValue);
+    } catch (e) {
+      void e;
+    }
+    const targetLang = langValue === 'auto'
+      ? (navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en')
+      : (langValue.toLowerCase().startsWith('zh') ? 'zh' : 'en');
+    if (i18n.language !== targetLang) {
+      void i18n.changeLanguage(targetLang);
+    }
+    window.dispatchEvent(new CustomEvent('tools3000:language-changed', { detail: langValue }));
+  }, [i18n]);
+
   // 初始化获取设置
   useEffect(() => {
     let cancelled = false;
@@ -97,9 +113,11 @@ export const GeneralPage: FC = () => {
     ]).then(([res, hotkeyData]) => {
       if (cancelled) return;
       setSettings(prev => ({ ...prev, ...res }));
-      const lang = res.language;
-      if (lang && lang !== 'auto' && i18n.language !== lang) {
-        void i18n.changeLanguage(lang);
+      if (res.language && res.language !== 'auto') {
+        const targetLang = res.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+        if (i18n.language !== targetLang) {
+          void i18n.changeLanguage(targetLang);
+        }
       }
       setHotkeys(Array.isArray(hotkeyData) ? hotkeyData : []);
     })
@@ -147,15 +165,7 @@ export const GeneralPage: FC = () => {
 
     const applyLocalValue = (localValue: GeneralSettings[K]) => {
       if (key === 'language') {
-        const langValue = String(localValue);
-        try {
-          localStorage.setItem('tools3000:language', langValue);
-        } catch (e) {
-          void e;
-        }
-        if (langValue === 'auto') void i18n.changeLanguage(navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en');
-        else void i18n.changeLanguage(langValue.startsWith('zh') ? 'zh' : 'en');
-        window.dispatchEvent(new CustomEvent('tools3000:language-changed', { detail: langValue }));
+        applyLanguagePreference(String(localValue));
       } else if (key === 'theme') {
         window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: localValue }));
       }
@@ -170,7 +180,7 @@ export const GeneralPage: FC = () => {
       applyLocalValue(previous);
       toast.error(t('general.toastSaveFailed'), { description: String(error) });
     }
-  }, [i18n, settings, t]);
+  }, [applyLanguagePreference, settings, t]);
 
   const handleToggleRunAsAdmin = async (checked: boolean) => {
     if (isRestartingElevated) return;
@@ -227,10 +237,13 @@ export const GeneralPage: FC = () => {
       if (result.cancelled) return;
       if (!result.success) throw new Error(result.error || t('general.importFailed'));
       toast.success(t('general.importSuccess'));
-      const refreshed = await bridgeRequest<GeneralSettings>('general.getSettings');
+      const [refreshed, refreshedHotkeys] = await Promise.all([
+        bridgeRequest<GeneralSettings>('general.getSettings'),
+        bridgeRequest<HotkeyEntry[]>('hotkey.getAll').catch(() => []),
+      ]);
       setSettings(prev => ({ ...prev, ...refreshed }));
-      if (refreshed.language === 'auto') void i18n.changeLanguage(navigator.language);
-      else void i18n.changeLanguage(refreshed.language);
+      if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
+      applyLanguagePreference(refreshed.language);
       window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: refreshed.theme }));
     } catch (e) {
       toast.error(t('general.importFailed'), { description: String(e) });
@@ -243,11 +256,13 @@ export const GeneralPage: FC = () => {
       const result = await bridgeRequest<OperationResult>('config.reset');
       if (!result.success) throw new Error(result.error || t('general.resetFailed'));
       toast.success(t('general.resetSuccess'));
-      // 重新加载设置
-      const res = await bridgeRequest<GeneralSettings>('general.getSettings');
+      const [res, refreshedHotkeys] = await Promise.all([
+        bridgeRequest<GeneralSettings>('general.getSettings'),
+        bridgeRequest<HotkeyEntry[]>('hotkey.getAll').catch(() => []),
+      ]);
       setSettings(prev => ({ ...prev, ...res }));
-      if (res.language === 'auto') void i18n.changeLanguage(navigator.language);
-      else void i18n.changeLanguage(res.language);
+      if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
+      applyLanguagePreference(res.language);
       window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: res.theme }));
     } catch (e) {
       toast.error(t('general.resetFailed'), { description: String(e) });
@@ -273,6 +288,7 @@ export const GeneralPage: FC = () => {
     Screenshot: t('onboarding.shortcutCapture'),
     Record: t('onboarding.shortcutRecord'),
     'Record Pause': t('recording.pauseShortcut'),
+    'Record Snapshot': t('general.shortcutRecordSnapshot'),
     OCR: t('onboarding.shortcutOcr'),
     'Pause Gestures': t('onboarding.shortcutGesturePause'),
     'Toggle Search': t('search.title'),
@@ -547,6 +563,7 @@ export const GeneralPage: FC = () => {
               variant="ghost"
               className="general-page__recheck-btn"
               onClick={refreshHotkeys}
+              disabled={refreshingHotkeys}
               title={t('general.recheckShortcuts')}
             >
               <RefreshCw size={12} className={refreshingHotkeys ? 'general-page__spin' : ''} />
@@ -600,7 +617,7 @@ export const GeneralPage: FC = () => {
             description={t('general.portableModeDesc')}
             layout="vertical"
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '12px', marginTop: '6px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', width: '100%', gap: '12px', marginTop: '6px' }}>
               <span style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -626,9 +643,18 @@ export const GeneralPage: FC = () => {
                 )}
               </span>
               {settings.dataDirectory && (
-                <span style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }} title={settings.dataDirectory}>
-                  {settings.dataDirectory}
-                </span>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <CodeBadge title={settings.dataDirectory}>{settings.dataDirectory}</CodeBadge>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void bridgeRequest('system.openFolder', { path: settings.dataDirectory })}
+                    title={t('general.openDataDirBtn')}
+                  >
+                    <FolderOpen size={14} />
+                    <span>{t('general.openDataDirBtn')}</span>
+                  </Button>
+                </div>
               )}
             </div>
           </SettingRow>

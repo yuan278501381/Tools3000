@@ -355,21 +355,42 @@ bool MouseFeedbackOverlayBase::ensureDcompSurfaceLocked(int width, int height) {
         return true;
     }
 
-    releaseDcompSurfaceLocked();
-
+    Microsoft::WRL::ComPtr<IDCompositionSurface> newSurface;
     HRESULT hr = m_dcompDevice->CreateSurface(
         static_cast<UINT>(width),
         static_cast<UINT>(height),
         DXGI_FORMAT_B8G8R8A8_UNORM,
         DXGI_ALPHA_MODE_PREMULTIPLIED,
-        m_dcompSurface.GetAddressOf()
+        newSurface.GetAddressOf()
     );
 
-    if (FAILED(hr)) {
+    if (FAILED(hr) || !newSurface) {
         LOG_ERROR("MouseFeedbackOverlayBase: CreateSurface failed: w={}, h={}, hr=0x{:X}", width, height, hr);
         return false;
     }
 
+    // 预清零新分配的硬件表面，杜绝任何未初始化显存瓦片闪烁
+    if (m_d2dContext) {
+        POINT offset{};
+        Microsoft::WRL::ComPtr<IDXGISurface> dxgiSurf;
+        if (SUCCEEDED(newSurface->BeginDraw(nullptr, IID_PPV_ARGS(dxgiSurf.GetAddressOf()), &offset)) && dxgiSurf) {
+            D2D1_BITMAP_PROPERTIES1 bp = D2D1::BitmapProperties1(
+                D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            Microsoft::WRL::ComPtr<ID2D1Bitmap1> clearBmp;
+            if (SUCCEEDED(m_d2dContext->CreateBitmapFromDxgiSurface(dxgiSurf.Get(), &bp, clearBmp.GetAddressOf())) && clearBmp) {
+                m_d2dContext->SetTarget(clearBmp.Get());
+                m_d2dContext->BeginDraw();
+                m_d2dContext->Clear(D2D1::ColorF(0, 0, 0, 0.0f));
+                m_d2dContext->EndDraw();
+                m_d2dContext->SetTarget(nullptr);
+            }
+            dxgiSurf.Reset();
+            newSurface->EndDraw();
+        }
+    }
+
+    m_dcompSurface = std::move(newSurface);
     m_surfaceWidth = width;
     m_surfaceHeight = height;
 
@@ -379,7 +400,6 @@ bool MouseFeedbackOverlayBase::ensureDcompSurfaceLocked(int width, int height) {
         return false;
     }
 
-    m_dcompDevice->Commit();
     return true;
 }
 
