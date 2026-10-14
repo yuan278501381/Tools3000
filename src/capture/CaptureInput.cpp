@@ -3285,10 +3285,21 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             // 正在输入文字：支持 Ctrl+V 粘贴与其余按键交给 WM_CHAR；支持 Ctrl+C 提交并完成截图
             if (editingText) {
                 if (ctrl && (wParam == 'V' || wParam == 'v')) {
-                    std::string clipText = tools3000::core::WinUtils::captureSelectedText();
-                    if (!clipText.empty()) {
+                    std::wstring clipWstr;
+                    if (OpenClipboard(nullptr)) {
+                        if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+                            if (HANDLE hData = GetClipboardData(CF_UNICODETEXT)) {
+                                if (const wchar_t* pText = static_cast<const wchar_t*>(GlobalLock(hData))) {
+                                    clipWstr = pText;
+                                    GlobalUnlock(hData);
+                                }
+                            }
+                        }
+                        CloseClipboard();
+                    }
+                    if (!clipWstr.empty()) {
                         std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
-                        wstr.append(tools3000::core::WinUtils::utf8ToWstring(clipText));
+                        wstr.append(clipWstr);
                         m_state->activeElement->text = tools3000::core::WinUtils::wstringToUtf8(wstr);
                         m_state->activeElement->textRenderSize = cv::Size(0, 0);
                         m_renderer->markMarkupDirty();

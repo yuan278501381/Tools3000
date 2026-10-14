@@ -309,7 +309,15 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
 }
 
 cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
-    if (!OpenClipboard(nullptr)) {
+    bool opened = false;
+    for (int retry = 0; retry < 10; ++retry) {
+        if (OpenClipboard(nullptr)) {
+            opened = true;
+            break;
+        }
+        Sleep(5);
+    }
+    if (!opened) {
         return {};
     }
 
@@ -319,6 +327,7 @@ cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
 
     if (outMeta) {
         *outMeta = Tools3000PinMetadata{};
+        outMeta->magic = 0;
         UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
         if (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta)) {
             if (HANDLE h = GetClipboardData(formatPinMeta)) {
@@ -357,24 +366,52 @@ cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
         }
     }
 
-    // 2. 次选读取 CF_DIBV5（32位 BGRA，保留透明通道）
+    // 2. 次选读取 CF_DIBV5（32位 BGRA；若为 GDI 合成的全 0 Alpha 通道则自动转为不透明 BGR）
     if (result.empty() && IsClipboardFormatAvailable(CF_DIBV5)) {
         if (HANDLE h = GetClipboardData(CF_DIBV5)) {
-            if (auto* p5 = static_cast<const BITMAPV5HEADER*>(GlobalLock(h))) {
-                int w = p5->bV5Width;
-                int hImg = std::abs(p5->bV5Height);
-                if (w > 0 && hImg > 0 && p5->bV5BitCount == 32) {
-                    const uint8_t* bits = reinterpret_cast<const uint8_t*>(p5) + p5->bV5Size;
-                    cv::Mat bgra(hImg, w, CV_8UC4);
-                    int stride = w * 4;
-                    bool isTopDown = (p5->bV5Height < 0);
-                    for (int y = 0; y < hImg; ++y) {
-                        int srcY = isTopDown ? y : (hImg - 1 - y);
-                        memcpy(bgra.ptr(y), bits + srcY * stride, stride);
+            const size_t totalSize = GlobalSize(h);
+            if (totalSize >= sizeof(BITMAPV5HEADER)) {
+                if (auto* p5 = static_cast<const BITMAPV5HEADER*>(GlobalLock(h))) {
+                    int w = p5->bV5Width;
+                    int hImg = std::abs(p5->bV5Height);
+                    const size_t pixelBytes = (w > 0 && hImg > 0)
+                        ? (static_cast<size_t>(w) * static_cast<size_t>(hImg) * 4)
+                        : 0;
+                    size_t headerOffset = p5->bV5Size;
+                    if (p5->bV5Compression == BI_BITFIELDS &&
+                        p5->bV5Size == sizeof(BITMAPINFOHEADER) &&
+                        totalSize >= headerOffset + 12 + pixelBytes) {
+                        headerOffset += 12;
                     }
-                    result = bgra;
+                    if (w > 0 && hImg > 0 && p5->bV5BitCount == 32 &&
+                        totalSize >= headerOffset + pixelBytes) {
+                        const uint8_t* bits = reinterpret_cast<const uint8_t*>(p5) + headerOffset;
+                        cv::Mat bgra(hImg, w, CV_8UC4);
+                        int stride = w * 4;
+                        bool isTopDown = (p5->bV5Height < 0);
+                        bool hasNonZeroAlpha = false;
+                        for (int y = 0; y < hImg; ++y) {
+                            int srcY = isTopDown ? y : (hImg - 1 - y);
+                            const uint8_t* srcRow = bits + static_cast<size_t>(srcY) * stride;
+                            uint8_t* dstRow = bgra.ptr<uint8_t>(y);
+                            memcpy(dstRow, srcRow, stride);
+                            if (!hasNonZeroAlpha) {
+                                for (int x = 0; x < w; ++x) {
+                                    if (dstRow[x * 4 + 3] != 0) {
+                                        hasNonZeroAlpha = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (hasNonZeroAlpha) {
+                            result = bgra;
+                        } else {
+                            cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+                        }
+                    }
+                    GlobalUnlock(h);
                 }
-                GlobalUnlock(h);
             }
         }
     }

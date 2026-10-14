@@ -801,11 +801,6 @@ if ($SkipInstaller) {
         }
         & $ISCC @InnoArgs $InstallerScript
         if ($LASTEXITCODE -eq 0) {
-            if (Test-Path $TargetSetupFile) {
-                $now = Get-Date
-                (Get-Item $TargetSetupFile).CreationTime = $now
-                (Get-Item $TargetSetupFile).LastWriteTime = $now
-            }
             if ($HasSigningIdentity) {
                 $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
                 if ($SetupSignature.Status -ne "Valid") {

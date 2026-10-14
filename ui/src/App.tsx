@@ -189,8 +189,11 @@ function App() {
         if (typeof settings.accentColor === 'string' && settings.accentColor) {
           setAccent(settings.accentColor);
         }
-        if (settings.language && settings.language !== 'auto' && i18n.language !== settings.language) {
-          void i18n.changeLanguage(settings.language);
+        if (settings.language && settings.language !== 'auto') {
+          const targetLang = settings.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+          if (i18n.language !== targetLang) {
+            void i18n.changeLanguage(targetLang);
+          }
         }
       })
       .catch(console.error);

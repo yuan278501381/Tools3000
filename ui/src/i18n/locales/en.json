@@ -248,7 +248,9 @@
     "hotkeysSessionCount": "Recording Only {{count}} items",
     "hotkeysInternalConflictsCount": "Internal Conflicts {{count}} items",
     "hotkeysExternalConflictsCount": "External Conflicts {{count}} items",
-    "hotkeysUnboundCount": "Unbound {{count}} items"
+    "hotkeysUnboundCount": "Unbound {{count}} items",
+    "openDataDirBtn": "Open Data Folder",
+    "shortcutRecordSnapshot": "Capture video frame snapshot while recording"
   },
   "plugins": {
     "capabilities": "Module capabilities",
@@ -282,6 +284,8 @@
     "installed": "Installed",
     "installSuccess": "Extension installed! Restart Tools3000 to activate.",
     "installLocal": "Import Local Package (.zip / .dll)",
+    "marketPreviewNotice": "Extension \"{{name}}\" is an official preview; its core features are already built-in and need no separate download",
+    "localInstallGuide": "Opened data and extensions directory. Place your local extension package here and restart Tools3000",
     "author": "Author",
     "uninstall": "Uninstall",
     "uninstalling": "Uninstalling...",
@@ -401,7 +405,9 @@
     "loadFailed": "Could not load capture history",
     "clearFailed": "Could not clear capture history",
     "openFailed": "Could not open this capture",
-    "thumbnailAlt": "Screenshot preview"
+    "thumbnailAlt": "Screenshot preview",
+    "openFolder": "Locate File",
+    "pinImage": "Pin to Screen"
   },
   "recording": {
     "title": "Recording Settings",
@@ -409,6 +415,8 @@
     "shortcutDesc": "Global hotkey to start/stop screen recording",
     "pauseShortcut": "Pause or resume recording",
     "pauseShortcutDesc": "Only occupies the system hotkey while recording, so editor command palettes like Ctrl+Shift+P keep working",
+    "snapshotShortcut": "Recording Snapshot",
+    "snapshotShortcutDesc": "Active only while recording; instantly saves the current recording frame as a snapshot image",
     "format": "Recording Format",
     "formatDesc": "Output video format for screen recording",
     "fps": "Frame Rate",
@@ -956,7 +964,11 @@
     "topKey": "Top Key Today",
     "lowHeat": "Idle / 0",
     "highHeat": "Peak",
-    "times": "times"
+    "times": "times",
+    "clearToday": "Reset Today",
+    "confirmClearToday": "Are you sure you want to reset today's activity statistics?",
+    "clearTodaySuccess": "Today's statistics have been reset",
+    "clearTodayFailed": "Failed to reset today's statistics"
   },
   "about": {
     "title": "About Tools3000",
@@ -1582,7 +1594,8 @@
     "enterProcessName": "Enter process name (e.g. game.exe)",
     "pinWorkspace": "Pin as Default Workspace",
     "unpinWorkspace": "Unpin",
-    "fixedBadge": "Fixed Root"
+    "fixedBadge": "Fixed Root",
+    "browseFolder": "Browse"
   },
   "spotlight": {
     "title": "Mouse Presentation & FX",

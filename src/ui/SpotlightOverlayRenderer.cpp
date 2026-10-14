@@ -888,12 +888,12 @@ void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
         return;
     }
 
-    // 4. 同步定位并提交 DirectComposition 硬件视觉树 (0 CPU 软表面拷贝，显存直通)
+    // 4. 先提交 DirectComposition 硬件视觉树，再同步定位/显示窗口 (0 CPU 软表面拷贝，显存直通)
+    m_dcompDevice->Commit();
     SetWindowPos(m_hwnd, HWND_TOPMOST, bounds.x, bounds.y, bounds.w, bounds.h,
                  SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
     m_visible.store(true, std::memory_order_release);
     m_currentViewport = {bounds.x, bounds.y, bounds.w, bounds.h, bounds.isFullscreen};
-    m_dcompDevice->Commit();
 }
 
 }  // namespace tools3000::ui

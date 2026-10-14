@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ─────────────────────────────────────────────────────────────────────────────
 // RadialMenuOverlay — 原生呼出轮盘
 //
@@ -32,6 +32,7 @@ public:
 
     /// 注册菜单项 (按顺时针方向，从顶部开始)
     void setItems(const std::vector<RadialMenuItem>& items);
+    const std::vector<RadialMenuItem>& getItems() const { return m_items; }
 
     /// 在指定坐标中心显示轮盘
     void show(POINT centerPt);

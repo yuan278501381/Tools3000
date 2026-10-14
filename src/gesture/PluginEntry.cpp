@@ -425,10 +425,8 @@ public:
             engine.setTargetMode(targetMode);
             engine.setInitialTimeoutMs(initialTimeoutMs);
             engine.setMinSegmentDistance(minSegmentDistance);
-            tools3000::gesture::RecognizerConfig recConfig;
-            recConfig.minSegmentDistance = 14;
-            recConfig.samplingInterval = 2;
-            recConfig.angleToleranceDeg = 22.5;
+            tools3000::gesture::RecognizerConfig recConfig = engine.recognizerConfig();
+            recConfig.minSegmentDistance = engine.minSegmentDistance();
             recConfig.enableScribbleCancel = enableScribbleCancel;
             engine.setRecognizerConfig(recConfig);
             tools3000::gesture::GestureTrailOverlay::instance().reloadThemeColors();
@@ -441,6 +439,8 @@ public:
                 {"triggerButton", engine.triggerButton()},
                 {"trailVisible", engine.trailVisible()},
                 {"autoBypassFullscreen", engine.autoBypassFullscreen()},
+                {"enableScribbleCancel", enableScribbleCancel},
+                {"enableInFlightCompass", enableInFlightCompass},
                 {"targetMode", engine.targetMode()},
                 {"initialTimeoutMs", engine.initialTimeoutMs()},
                 {"minSegmentDistance", engine.minSegmentDistance()},
@@ -600,7 +600,13 @@ public:
         mb.registerHandler("radialmenu.getItems", [](const nlohmann::json&) -> nlohmann::json {
             LOG_DEBUG("IPC: radialmenu.getItems 查询轮盘菜单项");
             auto& config = tools3000::core::ConfigManager::instance();
-            auto items = config.get<nlohmann::json>("/gesture/radialMenu/items", nlohmann::json::array());
+            auto items = config.get<nlohmann::json>("/gesture/radialMenu/items");
+            if (!items.is_array()) {
+                items = nlohmann::json::array();
+                for (const auto& item : tools3000::gesture::RadialMenuOverlay::instance().getItems()) {
+                    items.push_back({{"label", item.label}, {"command", item.command}});
+                }
+            }
             return {{"items", items}};
         });
 

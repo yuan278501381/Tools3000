@@ -268,7 +268,7 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [] }) => {
   const installMarketPlugin = async (item: MarketplacePlugin) => {
     setInstallingId(item.id);
     try {
-      const result = await bridgeRequest<{ success: boolean; restartRequired?: boolean }>('plugins.install', { id: item.id });
+      const result = await bridgeRequest<{ success: boolean; restartRequired?: boolean; error?: string }>('plugins.install', { id: item.id });
       if (result?.success) {
         toast.success(t('plugins.installSuccess'), {
           action: {
@@ -279,6 +279,11 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [] }) => {
         setMarketplace((prev) => prev.map((p) => p.id === item.id ? { ...p, installed: true } : p));
         setActiveTab('installed');
         await refresh();
+      } else {
+        const displayName = i18n.language.startsWith('en') && item.nameEn ? item.nameEn : item.name;
+        toast.info(t('plugins.marketPreviewNotice', { name: displayName }), {
+          description: result?.error,
+        });
       }
     } catch (error) {
       toast.error(String(error));
@@ -287,8 +292,16 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [] }) => {
     }
   };
 
-  const handleInstallLocal = () => {
-    toast.info(t('plugins.installSuccess'), {
+  const handleInstallLocal = async () => {
+    try {
+      const settings = await bridgeRequest<{ dataDirectory?: string }>('general.getSettings').catch(() => ({ dataDirectory: undefined }));
+      if (settings?.dataDirectory) {
+        await bridgeRequest('system.openFolder', { path: settings.dataDirectory }).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+    toast.info(t('plugins.localInstallGuide'), {
       description: t('plugins.restartHint'),
       action: {
         label: t('plugins.restartNow'),

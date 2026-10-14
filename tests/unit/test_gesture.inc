@@ -3102,6 +3102,93 @@ TEST(CumulativeBoundingBoxTest, EndToEndStrokePointsUnionVerification) {
     EXPECT_GE(acc.bottom, b2.bottom);
 }
 
+#include "gesture/GestureEngine.h"
+#include "gesture/GestureTrailOverlay.h"
+#include "gesture/RadialMenuOverlay.h"
+
+TEST(GestureEngineRecognizerSyncTest, PreservesMinSegmentDistanceAcrossConfigReloadAndSetters) {
+    using namespace tools3000::gesture;
+    auto& config = tools3000::core::ConfigManager::instance();
+    const auto tempCfgDir = std::filesystem::temp_directory_path() /
+        (L"Tools3000GestureSyncCfg_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::create_directories(tempCfgDir, ec);
+    config.initialize(tempCfgDir, "config.json");
+
+    auto& engine = GestureEngine::instance();
+
+    const int prevMinDist = engine.minSegmentDistance();
+    const auto prevRecCfg = engine.recognizerConfig();
+
+    engine.setMinSegmentDistance(32);
+    EXPECT_EQ(engine.minSegmentDistance(), 32);
+    EXPECT_EQ(engine.recognizerConfig().minSegmentDistance, 32);
+
+    ASSERT_TRUE(config.set("/gesture/minSegmentDistance", 48));
+    engine.loadFromConfig();
+    EXPECT_EQ(engine.minSegmentDistance(), 48);
+    EXPECT_EQ(engine.recognizerConfig().minSegmentDistance, 48);
+
+    // Restore
+    config.set("/gesture/minSegmentDistance", prevMinDist);
+    engine.setMinSegmentDistance(prevMinDist);
+    engine.setRecognizerConfig(prevRecCfg);
+    config.shutdown();
+    std::filesystem::remove_all(tempCfgDir, ec);
+
+    auto& radial = RadialMenuOverlay::instance();
+    const auto prevItems = radial.getItems();
+    std::vector<RadialMenuItem> testItems = {
+        {"TestTop", "builtin:screenshot"},
+        {"TestRight", "builtin:search"}
+    };
+    radial.setItems(testItems);
+    ASSERT_EQ(radial.getItems().size(), 2u);
+    EXPECT_EQ(radial.getItems()[0].label, "TestTop");
+    EXPECT_EQ(radial.getItems()[1].command, "builtin:search");
+    radial.setItems(prevItems);
+}
+
+TEST(GestureTrailOverlayTest, ExpandingDirtyRectAndZOrderTopmostRecovery) {
+    using namespace tools3000::gesture;
+    auto& overlay = GestureTrailOverlay::instance();
+    ASSERT_TRUE(overlay.initialize(GetModuleHandleW(nullptr)));
+    EXPECT_TRUE(overlay.isCompositorReady());
+
+    // 模拟第一轮手势：从小包围盒扩展到大包围盒，验证 D2D1.1 DeviceContext 局部脏矩形渲染与淡出
+    overlay.beginTrail();
+    overlay.addPoint(120.0f, 120.0f);
+    overlay.addPoint(140.0f, 140.0f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    overlay.addPoint(380.0f, 260.0f);
+    overlay.setRecognized(true);
+    overlay.setLiveAction("→ [前进]");
+    overlay.addPoint(620.0f, 420.0f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    EXPECT_TRUE(overlay.isVisible());
+    overlay.endTrail("→ [前进]");
+
+    // 模拟输入投递前退让 Z 序
+    overlay.yieldZOrderForInput();
+    HWND hwnd = FindWindowW(L"Tools3000_GestureTrail", nullptr);
+    if (hwnd && IsWindow(hwnd)) {
+        const LONG_PTR exStyleAfterYield = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        EXPECT_EQ(exStyleAfterYield & WS_EX_TOPMOST, 0);
+    }
+
+    // 模拟立刻开启第二轮手势（在淡出期间或刚结束时）：验证 m_strokeResetPending 清理上一笔残留并恢复 HWND_TOPMOST
+    overlay.beginTrail();
+    overlay.addPoint(200.0f, 200.0f);
+    overlay.addPoint(260.0f, 240.0f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    if (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) {
+        const LONG_PTR exStyleDuringTrail = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        EXPECT_NE(exStyleDuringTrail & WS_EX_TOPMOST, 0);
+    }
+    overlay.hide();
+    overlay.shutdown();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 引入手势与 DirectComposition 渲染管线 Tiers 1-3 全面门禁测试集
 // ─────────────────────────────────────────────────────────────────────────────

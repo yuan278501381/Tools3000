@@ -5983,5 +5983,284 @@ TEST(PinPasteCoordinatorTest, ExternalClipboardPrecedesHistory) {
     clearClipboardSafely();
 }
 
+TEST(PinPasteCoordinatorTest, TextClipboardRendersGeekCardAndPrecedesHistory) {
+    using namespace tools3000::capture;
+    auto writeTextToClipboard = [](const std::wstring& text) -> bool {
+        for (int retry = 0; retry < 15; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+                HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+                if (!hMem) {
+                    CloseClipboard();
+                    return false;
+                }
+                void* dst = GlobalLock(hMem);
+                if (!dst) {
+                    GlobalFree(hMem);
+                    CloseClipboard();
+                    return false;
+                }
+                std::memcpy(dst, text.c_str(), bytes);
+                GlobalUnlock(hMem);
+                if (!SetClipboardData(CF_UNICODETEXT, hMem)) {
+                    GlobalFree(hMem);
+                    CloseClipboard();
+                    return false;
+                }
+                CloseClipboard();
+                return true;
+            }
+            Sleep(10);
+        }
+        return false;
+    };
+    auto clearClipboardSafely = []() {
+        for (int retry = 0; retry < 10; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                CloseClipboard();
+                break;
+            }
+            Sleep(5);
+        }
+    };
+
+    // 1. 直接验证 renderTextToImage 边界与多行中文渲染
+    EXPECT_TRUE(PinPasteCoordinator::renderTextToImage(L"").empty());
+    cv::Mat card = PinPasteCoordinator::renderTextToImage(L"复制文字后按贴图\nSecond line with\ttab\r\n");
+    ASSERT_FALSE(card.empty());
+    EXPECT_EQ(card.type(), CV_8UC3);
+    EXPECT_GE(card.cols, 180);
+    EXPECT_GE(card.rows, 56);
+
+    // 2. 截图历史为空时，复制纯文字按贴图必须成功贴出文字卡片
+    auto& history = CaptureHistory::instance();
+    history.clear();
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+
+    ASSERT_TRUE(writeTextToClipboard(L"Tools3000 极客文字贴图测试"));
+    auto decEmptyHistory = coord.stepNext();
+    ASSERT_TRUE(decEmptyHistory.has_value());
+    EXPECT_EQ(decEmptyHistory->reverseIndex, 0);
+    EXPECT_EQ(decEmptyHistory->totalCount, 1);
+    EXPECT_TRUE(decEmptyHistory->candidate.isFromClipboard);
+    EXPECT_EQ(decEmptyHistory->candidate.region.width, 0);
+    EXPECT_FALSE(decEmptyHistory->candidate.image.empty());
+
+    // 3. 即使截图历史最新一张尺寸恰好与文字卡片相同，剪贴板文字也绝不能被误判去重吞没
+    history.push(cv::Mat(decEmptyHistory->candidate.image.rows,
+                         decEmptyHistory->candidate.image.cols,
+                         CV_8UC3, cv::Scalar(42, 42, 42)),
+                 CaptureRegion{80, 90, decEmptyHistory->candidate.image.cols, decEmptyHistory->candidate.image.rows});
+    coord.reset();
+    ASSERT_TRUE(writeTextToClipboard(L"Tools3000 极客文字贴图测试"));
+
+    auto decWithHistory1 = coord.stepNext();
+    ASSERT_TRUE(decWithHistory1.has_value());
+    EXPECT_EQ(decWithHistory1->totalCount, 2);
+    EXPECT_EQ(decWithHistory1->reverseIndex, 0);
+    EXPECT_TRUE(decWithHistory1->candidate.isFromClipboard);
+
+    auto decWithHistory2 = coord.stepNext();
+    ASSERT_TRUE(decWithHistory2.has_value());
+    EXPECT_EQ(decWithHistory2->reverseIndex, 1);
+    EXPECT_FALSE(decWithHistory2->candidate.isFromClipboard);
+    EXPECT_GT(decWithHistory2->candidate.region.width, 0);
+
+    history.clear();
+    coord.reset();
+    clearClipboardSafely();
+}
+
+TEST(PinPasteCoordinatorTest, HexColorClipboardRendersColorSwatch) {
+    using namespace tools3000::capture;
+    cv::Scalar bgr{};
+    std::wstring label;
+    EXPECT_TRUE(PinPasteCoordinator::parseHexColor(L"  #3B82F6\r\n", bgr, label));
+    EXPECT_EQ(static_cast<int>(bgr[2]), 0x3B);
+    EXPECT_EQ(static_cast<int>(bgr[1]), 0x82);
+    EXPECT_EQ(static_cast<int>(bgr[0]), 0xF6);
+    EXPECT_EQ(label, L"#3B82F6");
+
+    EXPECT_TRUE(PinPasteCoordinator::parseHexColor(L"#f0a", bgr, label));
+    EXPECT_EQ(static_cast<int>(bgr[2]), 0xFF);
+    EXPECT_EQ(static_cast<int>(bgr[1]), 0x00);
+    EXPECT_EQ(static_cast<int>(bgr[0]), 0xAA);
+    EXPECT_EQ(label, L"#f0a");
+
+    EXPECT_FALSE(PinPasteCoordinator::parseHexColor(L"Hello World", bgr, label));
+    EXPECT_FALSE(PinPasteCoordinator::parseHexColor(L"#12345", bgr, label));
+
+    cv::Mat swatch = PinPasteCoordinator::renderColorSwatch(bgr, label);
+    ASSERT_FALSE(swatch.empty());
+    EXPECT_EQ(swatch.cols, 180);
+    EXPECT_EQ(swatch.rows, 130);
+    EXPECT_EQ(swatch.type(), CV_8UC3);
+}
+
+TEST(ClipboardUtilsTest, ReadImageWithoutPinMetadataZeroesMagic) {
+    using namespace tools3000::capture;
+    auto putRawDibWithoutMetadata = []() -> bool {
+        for (int retry = 0; retry < 15; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                BITMAPINFOHEADER bi{};
+                bi.biSize = sizeof(BITMAPINFOHEADER);
+                bi.biWidth = 8;
+                bi.biHeight = 8;
+                bi.biPlanes = 1;
+                bi.biBitCount = 32;
+                bi.biCompression = BI_RGB;
+                bi.biSizeImage = 8 * 8 * 4;
+
+                HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, sizeof(bi) + bi.biSizeImage);
+                if (!hMem) {
+                    CloseClipboard();
+                    return false;
+                }
+                auto* ptr = static_cast<uint8_t*>(GlobalLock(hMem));
+                if (!ptr) {
+                    GlobalFree(hMem);
+                    CloseClipboard();
+                    return false;
+                }
+                std::memcpy(ptr, &bi, sizeof(bi));
+                std::memset(ptr + sizeof(bi), 0x7F, bi.biSizeImage);
+                GlobalUnlock(hMem);
+                if (!SetClipboardData(CF_DIB, hMem)) {
+                    GlobalFree(hMem);
+                    CloseClipboard();
+                    return false;
+                }
+                CloseClipboard();
+                return true;
+            }
+            Sleep(10);
+        }
+        return false;
+    };
+
+    ASSERT_TRUE(putRawDibWithoutMetadata());
+    Tools3000PinMetadata meta{};
+    // 默认构造时 magic 为 0x54333030，当剪贴板中不含 Tools3000_PinMetadata 时必须被清零
+    ASSERT_EQ(meta.magic, 0x54333030u);
+    cv::Mat img = ClipboardUtils::readImageFromClipboard(&meta);
+    EXPECT_FALSE(img.empty());
+    EXPECT_EQ(meta.magic, 0u);
+
+    // 验证全 0 Alpha 通道的 32-bit BI_RGB CF_DIB 被系统合成为 CF_DIBV5 时，自动转为不透明 CV_8UC3
+    auto putZeroAlphaDib = []() -> bool {
+        for (int retry = 0; retry < 15; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                BITMAPINFOHEADER bi{};
+                bi.biSize = sizeof(BITMAPINFOHEADER);
+                bi.biWidth = 6;
+                bi.biHeight = 6;
+                bi.biPlanes = 1;
+                bi.biBitCount = 32;
+                bi.biCompression = BI_RGB;
+                bi.biSizeImage = 6 * 6 * 4;
+
+                HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, sizeof(bi) + bi.biSizeImage);
+                if (!hMem) {
+                    CloseClipboard();
+                    return false;
+                }
+                auto* ptr = static_cast<uint8_t*>(GlobalLock(hMem));
+                if (!ptr) {
+                    GlobalFree(hMem);
+                    CloseClipboard();
+                    return false;
+                }
+                std::memcpy(ptr, &bi, sizeof(bi));
+                uint8_t* px = ptr + sizeof(bi);
+                for (int i = 0; i < 6 * 6; ++i) {
+                    px[i * 4 + 0] = 0x20;
+                    px[i * 4 + 1] = 0x40;
+                    px[i * 4 + 2] = 0x80;
+                    px[i * 4 + 3] = 0x00; // GDI BI_RGB 未初始化的 0 Alpha
+                }
+                GlobalUnlock(hMem);
+                if (!SetClipboardData(CF_DIB, hMem)) {
+                    GlobalFree(hMem);
+                    CloseClipboard();
+                    return false;
+                }
+                CloseClipboard();
+                return true;
+            }
+            Sleep(10);
+        }
+        return false;
+    };
+
+    ASSERT_TRUE(putZeroAlphaDib());
+    cv::Mat opaqueImg = ClipboardUtils::readImageFromClipboard(nullptr);
+    ASSERT_FALSE(opaqueImg.empty());
+    EXPECT_EQ(opaqueImg.type(), CV_8UC3);
+    EXPECT_EQ(opaqueImg.at<cv::Vec3b>(0, 0), cv::Vec3b(0x20, 0x40, 0x80));
+
+    // 验证富文本/Office 复制场景（CF_UNICODETEXT 先于预览 CF_DIB 写入剪贴板）优先渲染为文字贴图卡片
+    auto putTextThenPreviewDib = [](const std::wstring& text) -> bool {
+        for (int retry = 0; retry < 15; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                const size_t textBytes = (text.size() + 1) * sizeof(wchar_t);
+                HGLOBAL hText = GlobalAlloc(GMEM_MOVEABLE, textBytes);
+                if (!hText) {
+                    CloseClipboard();
+                    return false;
+                }
+                void* dstText = GlobalLock(hText);
+                std::memcpy(dstText, text.c_str(), textBytes);
+                GlobalUnlock(hText);
+                SetClipboardData(CF_UNICODETEXT, hText);
+
+                BITMAPINFOHEADER bi{};
+                bi.biSize = sizeof(BITMAPINFOHEADER);
+                bi.biWidth = 4;
+                bi.biHeight = 4;
+                bi.biPlanes = 1;
+                bi.biBitCount = 32;
+                bi.biCompression = BI_RGB;
+                bi.biSizeImage = 4 * 4 * 4;
+                HGLOBAL hDib = GlobalAlloc(GMEM_MOVEABLE, sizeof(bi) + bi.biSizeImage);
+                if (hDib) {
+                    auto* ptr = static_cast<uint8_t*>(GlobalLock(hDib));
+                    std::memcpy(ptr, &bi, sizeof(bi));
+                    std::memset(ptr + sizeof(bi), 0xFF, bi.biSizeImage);
+                    GlobalUnlock(hDib);
+                    SetClipboardData(CF_DIB, hDib);
+                }
+                CloseClipboard();
+                return true;
+            }
+            Sleep(10);
+        }
+        return false;
+    };
+
+    CaptureHistory::instance().clear();
+    PinPasteCoordinator::instance().reset();
+    ASSERT_TRUE(putTextThenPreviewDib(L"Word/Excel 富文本复制文字优先贴图测试"));
+    auto richTextDecision = PinPasteCoordinator::instance().stepNext();
+    ASSERT_TRUE(richTextDecision.has_value());
+    EXPECT_GE(richTextDecision->candidate.image.cols, 160);
+    EXPECT_GE(richTextDecision->candidate.image.rows, 64);
+
+    for (int retry = 0; retry < 10; ++retry) {
+        if (OpenClipboard(nullptr)) {
+            EmptyClipboard();
+            CloseClipboard();
+            break;
+        }
+        Sleep(5);
+    }
+}
+
+
 
 

@@ -57,6 +57,7 @@ interface ExtensionGuideInfo {
     descEn: string;
   }[];
   supportedFormats?: string[];
+  supportedFormatsEn?: string[];
   supportedFormatKeys?: string[];
 }
 
@@ -156,6 +157,7 @@ const EXTENSION_GUIDES: Record<string, ExtensionGuideInfo> = {
       },
     ],
     supportedFormats: ['纯文本', '代码段落', '文章摘要', '多语言互译'],
+    supportedFormatsEn: ['Plain Text', 'Code Snippets', 'Article Summary', 'Multi-language Translation'],
   },
   color_picker: {
     triggerKey: 'Alt + C',
@@ -258,13 +260,23 @@ interface ExtensionPageProps {
 
 export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUninstall }) => {
   const { t, i18n } = useTranslation();
-  const [enabled, setEnabled] = useState(plugin?.enabled ?? true);
+  const [enabledOverrides, setEnabledOverrides] = useState<Record<string, boolean>>({});
+  const enabled = enabledOverrides[pluginId] ?? plugin?.enabled ?? true;
   const [saving, setSaving] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [showPlayground, setShowPlayground] = useState(false);
   const [demoCopied, setDemoCopied] = useState(false);
 
   const isZh = i18n.language.startsWith('zh');
+
+  const resolveText = useCallback((key?: string, zh?: string, en?: string) => {
+    const fallback = isZh ? (zh || en || '') : (en || zh || '');
+    if (key) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return t(key as any, { defaultValue: fallback });
+    }
+    return fallback;
+  }, [isZh, t]);
 
   const IconComponent = (pluginId in EXTENSION_ICONS)
     ? EXTENSION_ICONS[pluginId as keyof typeof EXTENSION_ICONS]
@@ -312,14 +324,23 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
     };
   }, [pluginId]);
 
+  const resolvedFormats = useMemo(() => {
+    if (guide.supportedFormatKeys && guide.supportedFormatKeys.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return guide.supportedFormatKeys.map((k) => t(k as any));
+    }
+    const list = isZh ? guide.supportedFormats : (guide.supportedFormatsEn || guide.supportedFormats);
+    return list && list.length > 0 ? list : ['.*'];
+  }, [guide, isZh, t]);
+
   const handleToggle = useCallback(async (next: boolean) => {
-    setEnabled(next);
+    setEnabledOverrides((prev) => ({ ...prev, [pluginId]: next }));
     setSaving(true);
     try {
       await bridgeRequest('plugins.setEnabled', { id: pluginId, enabled: next });
       toast.success(next ? t('plugins.enabledSaved') : t('plugins.disabledSaved'));
     } catch (err) {
-      setEnabled(!next);
+      setEnabledOverrides((prev) => ({ ...prev, [pluginId]: !next }));
       toast.error(t('plugins.saveFailed'), { description: String(err) });
     } finally {
       setSaving(false);
@@ -341,7 +362,7 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
   }, [pluginId, onUninstall, t]);
 
   const handleCopyDemoCode = useCallback(() => {
-    navigator.clipboard.writeText('```typescript\nimport { tools3000 } from "@tools3000/sdk";\n\n// 极速唤起 Markdown 渲染引擎\nconst preview = tools3000.preview("README.md");\n```');
+    void navigator.clipboard?.writeText('```typescript\nimport { tools3000 } from "@tools3000/sdk";\n\n// 极速唤起 Markdown 渲染引擎\nconst preview = tools3000.preview("README.md");\n```')?.catch(() => {});
     setDemoCopied(true);
     toast.success(t('extension.copySuccess'));
     setTimeout(() => setDemoCopied(false), 2000);
@@ -359,7 +380,7 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
         </div>
         <div className="extension-ready-text">
           <strong>{t('extension.installedReadyBanner')}</strong>
-          <span>{isZh ? guide.conditionZh : guide.conditionEn}</span>
+          <span>{resolveText(guide.conditionKey, guide.conditionZh, guide.conditionEn)}</span>
         </div>
         <Button
           variant="primary"
@@ -418,9 +439,9 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
             <div key={item.step} className="extension-step-card">
               <div className="extension-step-header">
                 <span className="extension-step-number">{item.step}</span>
-                <h4 className="extension-step-title">{isZh ? item.titleZh : item.titleEn}</h4>
+                <h4 className="extension-step-title">{resolveText(item.titleKey, item.titleZh, item.titleEn)}</h4>
               </div>
-              <p className="extension-step-desc">{isZh ? item.descZh : item.descEn}</p>
+              <p className="extension-step-desc">{resolveText(item.descKey, item.descZh, item.descEn)}</p>
               {item.kbd && item.kbd.length > 0 && (
                 <div className="extension-step-kbd-row">
                   {item.kbd.map((k, idx) => (
@@ -448,8 +469,8 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
               <div key={idx} className="extension-tip-item">
                 <div className="extension-tip-dot" />
                 <div>
-                  <strong className="extension-tip-title">{isZh ? tip.titleZh : tip.titleEn}:</strong>{' '}
-                  <span className="extension-tip-desc">{isZh ? tip.descZh : tip.descEn}</span>
+                  <strong className="extension-tip-title">{resolveText(tip.titleKey, tip.titleZh, tip.titleEn)}:</strong>{' '}
+                  <span className="extension-tip-desc">{resolveText(tip.descKey, tip.descZh, tip.descEn)}</span>
                 </div>
               </div>
             ))}
@@ -462,7 +483,7 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
           headerAction={<Compass size={16} className="text-primary" />}
         >
           <div className="extension-formats-wrap">
-            {(guide.supportedFormats || ['.*']).map((fmt) => (
+            {resolvedFormats.map((fmt) => (
               <span key={fmt} className="extension-fmt-tag">
                 <FileText size={12} />
                 {fmt}

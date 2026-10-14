@@ -78,6 +78,11 @@ public:
     /// 解析当前所有候选贴图列表（供单元测试与算法校验）
     std::vector<PinPasteCandidate> resolveCandidates(DWORD currentSeq, int historyCount);
 
+    /// 颜色与文本卡片生成单一事实源（供 PinWindow 及连续回溯会话调度器共享复用）
+    static bool parseHexColor(const std::wstring& s, cv::Scalar& bgr, std::wstring& label);
+    static cv::Mat renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label);
+    static cv::Mat renderTextToImage(const std::wstring& text);
+
 private:
     PinPasteCoordinator() = default;
     PinPasteCoordinator(const PinPasteCoordinator&) = delete;

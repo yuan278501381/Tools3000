@@ -81,7 +81,8 @@ export const HotCornerPage: FC = () => {
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const persistPatch = useCallback(async (patch: Record<string, unknown>) => {
     try {

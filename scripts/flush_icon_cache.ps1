@@ -7,21 +7,7 @@ Write-Host "=======================================================" -Foreground
 Write-Host " [Tools3000] 正在执行 Windows Shell 图标缓存深度刷新..." -ForegroundColor Cyan
 Write-Host "=======================================================" -ForegroundColor Cyan
 
-# 1. 深度清理桌面与开始菜单历史遗留快捷方式（防止旧图标数据库索引指向残留 .lnk）
-$LegacyShortcuts = @(
-    "$env:USERPROFILE\Desktop\Tools3000.lnk",
-    "$env:PUBLIC\Desktop\Tools3000.lnk",
-    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Tools3000\Tools3000.lnk",
-    "$env:ALLUSERSPROFILE\Microsoft\Windows\Start Menu\Programs\Tools3000\Tools3000.lnk"
-)
-foreach ($sc in $LegacyShortcuts) {
-    if (Test-Path $sc) {
-        Remove-Item -Force $sc -ErrorAction SilentlyContinue
-        Write-Host "已清理遗留快捷方式: $sc" -ForegroundColor Yellow
-    }
-}
-
-# 2. 注入快捷方式 AUMID 并刷新当前 Tools3000 快捷方式时间戳以通知 Shell 属性存储
+# 1. 注入快捷方式 AUMID 并通过原生 COM IPersistFile::Save 通知 Shell 属性存储
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $ExeCandidates = @(
     "C:\Program Files\Tools3000\Tools3000.exe",
@@ -33,19 +19,6 @@ foreach ($exe in $ExeCandidates) {
         Start-Process -FilePath $exe -ArgumentList "--update-shortcuts" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
         Write-Host "已通过 Tools3000 原生 COM 注入快捷方式 AUMID (Yy1.Tools3000): $exe" -ForegroundColor Green
         break
-    }
-}
-
-$CurrentShortcuts = @(
-    "$env:ALLUSERSPROFILE\Microsoft\Windows\Start Menu\Programs\Tools3000\Tools3000.lnk",
-    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Tools3000\Tools3000.lnk",
-    "$env:USERPROFILE\Desktop\Tools3000.lnk",
-    "$env:PUBLIC\Desktop\Tools3000.lnk"
-)
-foreach ($sc in $CurrentShortcuts) {
-    if (Test-Path $sc) {
-        (Get-Item $sc).LastWriteTime = Get-Date
-        Write-Host "已刷新快捷方式时间戳: $sc" -ForegroundColor Green
     }
 }
 

@@ -18,6 +18,7 @@
 
 #include <windows.h>
 #include <d2d1.h>
+#include <d2d1_1.h>
 #include <dwrite.h>
 #include <dcomp.h>
 #include <d3d11.h>
@@ -150,6 +151,8 @@ private:
     bool ensureCompositorLocked();
     /// 预分配全虚拟屏 DirectComposition 双缓冲硬件表面 (0 SetWindowPos, 0 CreateSurface)
     bool preallocateTrailSurfacesLocked(int width, int height);
+    /// 清空 DirectComposition 表面全部或指定脏矩形区域 (严格在 EndDraw 前释放 IDXGISurface)
+    bool clearDcompSurfaceLocked(IDCompositionSurface* surface, const RECT* pDirtyRect = nullptr);
     /// 响应系统显示器拓扑变更 (WM_DISPLAYCHANGE 冷路径)
     void handleDisplayChange();
     void releaseCompositorSurfacesLocked();
@@ -162,8 +165,6 @@ private:
 
     struct GpuSurfaceContext {
         Microsoft::WRL::ComPtr<IDCompositionSurface> surface;
-        Microsoft::WRL::ComPtr<IDXGISurface> dxgiSurface;
-        Microsoft::WRL::ComPtr<ID2D1RenderTarget> renderTarget;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lineBrush;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> glowBrush;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> outlineBrush;
@@ -174,7 +175,7 @@ private:
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> excDotBrush;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> flashBrush;
 
-        void reset() {
+        void resetBrushes() {
             flashBrush.Reset();
             excDotBrush.Reset();
             textBrush.Reset();
@@ -184,8 +185,10 @@ private:
             outlineBrush.Reset();
             glowBrush.Reset();
             lineBrush.Reset();
-            renderTarget.Reset();
-            dxgiSurface.Reset();
+        }
+
+        void reset() {
+            resetBrushes();
             surface.Reset();
         }
     };
@@ -318,6 +321,9 @@ private:
     uint64_t m_loggedPresentEpoch = 0;
 
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
+    Microsoft::WRL::ComPtr<ID2D1Factory1> m_d2dFactory1;
+    Microsoft::WRL::ComPtr<ID2D1Device> m_d2dDevice;
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext> m_d2dContext;
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_renderTarget;
     HDC m_memoryDC = nullptr;
     HBITMAP m_memoryBitmap = nullptr;
@@ -356,7 +362,9 @@ private:
     float m_textScale = 0.0f;
 
     // 累积手势包围盒 (Cumulative Bounding Box Pipeline)
+    std::atomic<bool> m_strokeResetPending{false};
     RECT m_accumulatedStrokeDirtyRect{ 0, 0, 0, 0 };
+    RECT m_dirtySurfaceRect{ 0, 0, 0, 0 };
 
     bool m_isLightTheme = false;
     bool m_isDarkTheme = true;

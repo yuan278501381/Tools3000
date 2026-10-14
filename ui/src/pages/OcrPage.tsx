@@ -60,7 +60,8 @@ export const OcrPage: FC = () => {
       console.error(error);
       toast.error(t('ocr.loadFailed'));
     }).finally(() => setLoading(false));
-  }, [t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const updateSetting = useCallback((key: keyof OcrSettings, value: unknown) => {
     setSettings(prev => ({ ...prev, [key]: value }));

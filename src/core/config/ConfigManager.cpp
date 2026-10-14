@@ -73,6 +73,10 @@ bool ConfigManager::initialize(const std::filesystem::path& configDir, const std
         return false;
     }
     m_configFilePath = configDir / filename;
+    {
+        std::lock_guard lock(m_mutex);
+        m_config = json();
+    }
 
     LOG_INFO("配置管理器初始化, 配置文件路径={}", m_configFilePath.string());
 
