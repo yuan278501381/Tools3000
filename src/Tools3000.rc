@@ -1,0 +1,8 @@
+#include "resource.h"
+
+// 应用程序图标（由 CMake 编译打包入 EXE）
+// 路径以本 .rc 文件 (src 目录) 为相对起点；ID 101 与 TrayIcon 中 MAKEINTRESOURCEW(101) 对应
+IDI_APP_ICON ICON "../resources/app.ico"
+IDI_TRAY_ICON ICON "../resources/tray.ico"
+IDI_TRAY_DARK_ICON ICON "../resources/tray_dark.ico"
+IDI_TRAY_COLOR_ICON ICON "../resources/tray_color.ico"

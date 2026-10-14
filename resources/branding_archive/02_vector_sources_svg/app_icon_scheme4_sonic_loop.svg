@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <!-- Tools3000 官方方案 4 完整应用图标: 莫比乌斯流体尾迹 e (带 Apple/Fluent 超椭圆电光紫渐变底座) -->
+  <defs>
+    <linearGradient id="appBgGrad4" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="55%" stop-color="#6366F1" />
+      <stop offset="100%" stop-color="#9333EA" />
+    </linearGradient>
+
+    <filter id="soft3DShadow4" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#0F172A" flood-opacity="0.32" />
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#1E1B4B" flood-opacity="0.18" />
+    </filter>
+
+    <linearGradient id="appSonicGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="50%" stop-color="#F8FAFC" />
+      <stop offset="100%" stop-color="#E2E8F0" />
+    </linearGradient>
+  </defs>
+
+  <rect x="24" y="24" width="464" height="464" rx="106" fill="url(#appBgGrad4)" stroke="rgba(255,255,255,0.35)" stroke-width="2.5" />
+
+  <g filter="url(#soft3DShadow4)">
+    <path
+      fill-rule="evenodd"
+      clip-rule="evenodd"
+      d="M245 75 C145 75, 75 155, 75 265 C75 365, 145 435, 250 435 C330 435, 395 385, 455 175 C405 310, 320 348, 250 348 C180 348, 148 298, 148 245 L385 245 C398 245, 405 200, 375 150 C342 98, 298 75, 245 75 Z M165 195 C175 145, 210 125, 248 125 C285 125, 320 145, 322 195 L165 195 Z"
+      fill="url(#appSonicGrad)" />
+  </g>
+</svg>

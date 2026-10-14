@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <!-- Tools3000 官方方案 1 完整应用图标: 超速滑翔光翼 E (带 Apple/Fluent 超椭圆晨曦渐变底座) -->
+  <defs>
+    <!-- 晨曦天空蓝 -> 极光紫对角线性渐变 -->
+    <linearGradient id="appBgGrad1" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#4F46E5" />
+      <stop offset="100%" stop-color="#7C3AED" />
+    </linearGradient>
+
+    <!-- 3D 浮雕柔和双层阴影 -->
+    <filter id="soft3DShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#0F172A" flood-opacity="0.32" />
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#1E1B4B" flood-opacity="0.18" />
+    </filter>
+
+    <linearGradient id="appFoldTop" x1="0%" y1="0%" x2="100%" y2="80%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="70%" stop-color="#F8FAFC" />
+      <stop offset="100%" stop-color="#E2E8F0" />
+    </linearGradient>
+    <linearGradient id="appFoldMid" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="75%" stop-color="#F1F5F9" />
+      <stop offset="100%" stop-color="#CBD5E1" />
+    </linearGradient>
+    <linearGradient id="appSpine" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#E2E8F0" />
+    </linearGradient>
+  </defs>
+
+  <!-- 1. 超椭圆底座 (Apple / Windows 11 Squircle n=4.5) -->
+  <rect x="24" y="24" width="464" height="464" rx="106" fill="url(#appBgGrad1)" stroke="rgba(255,255,255,0.35)" stroke-width="2.5" />
+
+  <!-- 2. 纯白立体滑翔 E -->
+  <g filter="url(#soft3DShadow)">
+    <!-- 底翼 -->
+    <path d="M175 330 C200 330, 310 330, 340 330 C375 330, 395 350, 370 380 C345 410, 305 425, 270 425 L145 425 C120 425, 105 405, 120 380 Z" fill="url(#appFoldTop)" />
+    <!-- 中翼 -->
+    <path d="M195 215 C225 215, 300 215, 335 215 C370 215, 385 235, 365 260 C345 285, 315 295, 280 295 L165 295 C145 295, 135 280, 145 260 Z" fill="url(#appFoldMid)" />
+    <!-- 倾斜主脊 -->
+    <path d="M205 95 C235 95, 260 95, 280 95 C250 180, 200 320, 145 425 L95 425 C85 425, 80 415, 85 400 C110 340, 160 200, 205 95 Z" fill="url(#appSpine)" />
+    <!-- 顶翼 -->
+    <path d="M205 95 C235 95, 350 95, 385 95 C425 95, 435 118, 400 152 C365 186, 310 195, 275 195 L185 195 C165 195, 155 180, 168 158 C180 138, 192 118, 205 95 Z" fill="url(#appFoldTop)" />
+  </g>
+</svg>

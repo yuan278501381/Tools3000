@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <!-- Tools3000 官方方案 4: 莫比乌斯流体尾迹 e (The Sonic Loop 'e') -->
+  <!-- 完美 1:1 还原渲染母版单线缎带流动回环与极速飞扬尾迹 -->
+  <defs>
+    <linearGradient id="sonicRibbonGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="45%" stop-color="#F8FAFC" />
+      <stop offset="75%" stop-color="#E2E8F0" />
+      <stop offset="100%" stop-color="#FFFFFF" />
+    </linearGradient>
+    <linearGradient id="innerLoopShadow" x1="30%" y1="20%" x2="70%" y2="80%">
+      <stop offset="0%" stop-color="#CBD5E1" />
+      <stop offset="100%" stop-color="#F1F5F9" />
+    </linearGradient>
+  </defs>
+
+  <g id="sonic-loop-e-master-group">
+    <!-- 外围流体缎带与飞扬穿梭尾迹 (一笔到底闭合曲线) -->
+    <path id="sonic-ribbon-body"
+      fill-rule="evenodd"
+      clip-rule="evenodd"
+      d="M245 75 
+         C145 75, 75 155, 75 265 
+         C75 365, 145 435, 250 435 
+         C330 435, 395 385, 455 175 
+         C405 310, 320 348, 250 348 
+         C180 348, 148 298, 148 245 
+         L385 245 
+         C398 245, 405 200, 375 150 
+         C342 98, 298 75, 245 75 
+         Z 
+         M165 195 
+         C175 145, 210 125, 248 125 
+         C285 125, 320 145, 322 195 
+         L165 195 
+         Z"
+      fill="url(#sonicRibbonGrad)" />
+  </g>
+</svg>
