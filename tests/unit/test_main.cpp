@@ -50,6 +50,7 @@
 #include "capture/HudAvoidanceEngine.h"
 #include "capture/PinSpawnCalculator.h"
 #include "capture/PinPasteCoordinator.h"
+#include "capture/PinInputController.h"
 #include "capture/CaptureHistory.h"
 #include "keycast/KeycastStyle.h"
 #include "keycast/KeycastOverlay.h"

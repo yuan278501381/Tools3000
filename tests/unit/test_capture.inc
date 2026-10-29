@@ -704,6 +704,398 @@ TEST(PinWindowTest, TransformAndBoundsCalculation) {
     EXPECT_TRUE(flippedV.at<uint8_t>(2, 0) == 10 && flippedV.at<uint8_t>(2, 1) == 20);
 }
 
+TEST(PinWindowTest, KeyboardShortcutsRotationFlipOpacityAndFocusPolicy) {
+    using namespace tools3000::capture;
+
+    // 1. 顺时针 90° 旋转快捷键: R / Ctrl+R / 数字 2 / 小键盘 2 / Ctrl+Right / Alt+Right
+    for (const auto& [key, ctrl, shift, alt] : std::vector<std::tuple<WPARAM, bool, bool, bool>>{
+             {'R', false, false, false},
+             {'R', true,  false, false},
+             {'2', false, false, false},
+             {VK_NUMPAD2, false, false, false},
+             {VK_RIGHT, true, false, false},
+             {VK_RIGHT, false, false, true},
+         }) {
+        auto d = PinInputController::resolveKeyDown(key, ctrl, shift, alt);
+        EXPECT_EQ(d.action, PinShortcutAction::RotateClockwise90);
+        EXPECT_EQ(d.rotateDegrees, 90);
+    }
+
+    // 2. 逆时针 90° 旋转快捷键: Shift+R / Ctrl+Shift+R / L / 数字 1 / 小键盘 1 / Ctrl+Left / Alt+Left
+    for (const auto& [key, ctrl, shift, alt] : std::vector<std::tuple<WPARAM, bool, bool, bool>>{
+             {'R', false, true, false},
+             {'R', true,  true, false},
+             {'L', false, false, false},
+             {'1', false, false, false},
+             {VK_NUMPAD1, false, false, false},
+             {VK_LEFT, true, false, false},
+             {VK_LEFT, false, false, true},
+         }) {
+        auto d = PinInputController::resolveKeyDown(key, ctrl, shift, alt);
+        EXPECT_EQ(d.action, PinShortcutAction::RotateCounterClockwise90);
+        EXPECT_EQ(d.rotateDegrees, 270);
+    }
+
+    // 3. 水平与垂直镜像翻转快捷键: H / 3 / 小键盘 3 与 V / 4 / 小键盘 4 (确保 Ctrl+V 仍为粘贴贴图而非翻转)
+    EXPECT_EQ(PinInputController::resolveKeyDown('H', false, false, false).action, PinShortcutAction::FlipHorizontal);
+    EXPECT_EQ(PinInputController::resolveKeyDown('3', false, false, false).action, PinShortcutAction::FlipHorizontal);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_NUMPAD3, false, false, false).action, PinShortcutAction::FlipHorizontal);
+
+    EXPECT_EQ(PinInputController::resolveKeyDown('V', false, false, false).action, PinShortcutAction::FlipVertical);
+    EXPECT_EQ(PinInputController::resolveKeyDown('4', false, false, false).action, PinShortcutAction::FlipVertical);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_NUMPAD4, false, false, false).action, PinShortcutAction::FlipVertical);
+    EXPECT_EQ(PinInputController::resolveKeyDown('V', true, false, false).action, PinShortcutAction::PasteHistoryOrClipboard);
+
+    // 4. 透明度快捷键: 5~9 / 小键盘 5~9 / [ / ] / 0
+    for (int digit = 5; digit <= 9; ++digit) {
+        auto dTop = PinInputController::resolveKeyDown(static_cast<WPARAM>('0' + digit), false, false, false);
+        EXPECT_EQ(dTop.action, PinShortcutAction::SetOpacity);
+        EXPECT_NEAR(dTop.opacityValue, static_cast<float>(digit) / 10.0f, 1e-5f);
+
+        auto dPad = PinInputController::resolveKeyDown(static_cast<WPARAM>(VK_NUMPAD0 + digit), false, false, false);
+        EXPECT_EQ(dPad.action, PinShortcutAction::SetOpacity);
+        EXPECT_NEAR(dPad.opacityValue, static_cast<float>(digit) / 10.0f, 1e-5f);
+    }
+    auto dDec = PinInputController::resolveKeyDown(VK_OEM_4, false, false, false);
+    EXPECT_EQ(dDec.action, PinShortcutAction::AdjustOpacity);
+    EXPECT_NEAR(dDec.opacityDelta, -0.1f, 1e-5f);
+
+    auto dInc = PinInputController::resolveKeyDown(VK_OEM_6, false, false, false);
+    EXPECT_EQ(dInc.action, PinShortcutAction::AdjustOpacity);
+    EXPECT_NEAR(dInc.opacityDelta, 0.1f, 1e-5f);
+
+    EXPECT_EQ(PinInputController::resolveKeyDown('0', false, false, false).action, PinShortcutAction::ResetScaleAndOpacity);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_NUMPAD0, false, false, false).action, PinShortcutAction::ResetScaleAndOpacity);
+
+    // 5. 方向键与 WASD 像素级微调 (普通 1px, Shift 加速 10px)
+    auto nudgeLeft = PinInputController::resolveKeyDown(VK_LEFT, false, false, false);
+    EXPECT_EQ(nudgeLeft.action, PinShortcutAction::Nudge);
+    EXPECT_EQ(nudgeLeft.nudgeDx, -1);
+    EXPECT_EQ(nudgeLeft.nudgeDy, 0);
+
+    auto nudgeRightFast = PinInputController::resolveKeyDown('D', false, true, false);
+    EXPECT_EQ(nudgeRightFast.action, PinShortcutAction::Nudge);
+    EXPECT_EQ(nudgeRightFast.nudgeDx, 10);
+    EXPECT_EQ(nudgeRightFast.nudgeDy, 0);
+
+    auto nudgeUp = PinInputController::resolveKeyDown('W', false, false, false);
+    EXPECT_EQ(nudgeUp.action, PinShortcutAction::Nudge);
+    EXPECT_EQ(nudgeUp.nudgeDx, 0);
+    EXPECT_EQ(nudgeUp.nudgeDy, -1);
+
+    auto nudgeDownFast = PinInputController::resolveKeyDown(VK_DOWN, false, true, false);
+    EXPECT_EQ(nudgeDownFast.action, PinShortcutAction::Nudge);
+    EXPECT_EQ(nudgeDownFast.nudgeDx, 0);
+    EXPECT_EQ(nudgeDownFast.nudgeDy, 10);
+
+    // 6. 其他核心快捷键覆盖: E / I / G / M / T / F4 / Alt+F4 / Delete / Ctrl+W / Esc / + / - / , / .
+    EXPECT_EQ(PinInputController::resolveKeyDown('E', false, false, false).action, PinShortcutAction::EditMarkup);
+    EXPECT_EQ(PinInputController::resolveKeyDown('I', false, false, false).action, PinShortcutAction::InvertColors);
+    EXPECT_EQ(PinInputController::resolveKeyDown('G', false, false, false).action, PinShortcutAction::ToggleGrayscale);
+    EXPECT_EQ(PinInputController::resolveKeyDown('M', false, false, false).action, PinShortcutAction::ToggleFold);
+    EXPECT_EQ(PinInputController::resolveKeyDown('T', false, false, false).action, PinShortcutAction::ToggleClickThrough);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_F4, false, false, false).action, PinShortcutAction::ToggleClickThrough);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_F4, false, false, true).action, PinShortcutAction::ClosePin);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_DELETE, false, false, false).action, PinShortcutAction::ClosePin);
+    EXPECT_EQ(PinInputController::resolveKeyDown('W', true, false, false).action, PinShortcutAction::ClosePin);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_ESCAPE, false, false, false).action, PinShortcutAction::EscapeOrClose);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_OEM_PLUS, false, false, false).action, PinShortcutAction::ZoomIn);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_OEM_MINUS, false, false, false).action, PinShortcutAction::ZoomOut);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_OEM_COMMA, false, false, false).action, PinShortcutAction::HistoryPrev);
+    EXPECT_EQ(PinInputController::resolveKeyDown(VK_OEM_PERIOD, false, false, false).action, PinShortcutAction::HistoryNext);
+    EXPECT_EQ(PinInputController::resolveKeyDown('C', true, false, false).action, PinShortcutAction::CopySelectedOrImage);
+    EXPECT_EQ(PinInputController::resolveKeyDown('C', true, true, false).action, PinShortcutAction::CopyAllText);
+    EXPECT_EQ(PinInputController::resolveKeyDown('T', true, false, false).action, PinShortcutAction::ExtractText);
+    EXPECT_EQ(PinInputController::resolveKeyDown('S', true, false, false).action, PinShortcutAction::SaveImage);
+    EXPECT_EQ(PinInputController::resolveKeyDown('Z', false, false, true).action, PinShortcutAction::None);
+
+    // 7. 角度归一化与实机矩阵旋转/翻转测试 (含负角度与灰度备份矩阵同步变换)
+    EXPECT_EQ(PinInputController::normalizeRightAngleDegrees(90), 90);
+    EXPECT_EQ(PinInputController::normalizeRightAngleDegrees(-90), 270);
+    EXPECT_EQ(PinInputController::normalizeRightAngleDegrees(180), 180);
+    EXPECT_EQ(PinInputController::normalizeRightAngleDegrees(-180), 180);
+    EXPECT_EQ(PinInputController::normalizeRightAngleDegrees(270), 270);
+    EXPECT_EQ(PinInputController::normalizeRightAngleDegrees(450), 90);
+    EXPECT_EQ(PinInputController::normalizeRightAngleDegrees(0), 0);
+    EXPECT_EQ(PinInputController::normalizeRightAngleDegrees(45), 0);
+
+    cv::Mat src = (cv::Mat_<uint8_t>(2, 3) << 1, 2, 3,
+                                              4, 5, 6);
+    cv::Mat backup = src.clone();
+    int w = src.cols;
+    int h = src.rows;
+
+    // 顺时针 90° -> 3x2
+    EXPECT_TRUE(PinInputController::applyRotation(src, backup, w, h, 90));
+    EXPECT_EQ(w, 2);
+    EXPECT_EQ(h, 3);
+    EXPECT_EQ(src.rows, 3);
+    EXPECT_EQ(src.cols, 2);
+    EXPECT_EQ(backup.rows, 3);
+    EXPECT_EQ(backup.cols, 2);
+    EXPECT_EQ(src.at<uint8_t>(0, 0), 4);
+    EXPECT_EQ(src.at<uint8_t>(0, 1), 1);
+
+    // 逆时针 90° (-90° / 270°) -> 还原回 2x3
+    EXPECT_TRUE(PinInputController::applyRotation(src, backup, w, h, -90));
+    EXPECT_EQ(w, 3);
+    EXPECT_EQ(h, 2);
+    EXPECT_EQ(src.at<uint8_t>(0, 0), 1);
+    EXPECT_EQ(src.at<uint8_t>(0, 2), 3);
+
+    // 180° 旋转 -> 宽高不变
+    EXPECT_TRUE(PinInputController::applyRotation(src, backup, w, h, 180));
+    EXPECT_EQ(w, 3);
+    EXPECT_EQ(h, 2);
+    EXPECT_EQ(src.at<uint8_t>(0, 0), 6);
+    EXPECT_EQ(backup.at<uint8_t>(0, 0), 6);
+
+    // 水平与垂直翻转
+    EXPECT_TRUE(PinInputController::applyFlip(src, backup, true));
+    EXPECT_EQ(src.at<uint8_t>(0, 0), 4);
+    EXPECT_TRUE(PinInputController::applyFlip(src, backup, false));
+    EXPECT_EQ(src.at<uint8_t>(0, 0), 1);
+
+    // 空矩阵与非法角度防御
+    cv::Mat emptyMat;
+    EXPECT_FALSE(PinInputController::applyRotation(emptyMat, backup, w, h, 90));
+    EXPECT_FALSE(PinInputController::applyRotation(src, backup, w, h, 45));
+    EXPECT_FALSE(PinInputController::applyFlip(emptyMat, backup, true));
+
+    // 8. 悬停自动获焦策略判定
+    EXPECT_TRUE(PinInputController::shouldAutoFocusOnHover(false, false, false));
+    EXPECT_FALSE(PinInputController::shouldAutoFocusOnHover(true, false, false));
+    EXPECT_FALSE(PinInputController::shouldAutoFocusOnHover(false, true, false));
+    EXPECT_FALSE(PinInputController::shouldAutoFocusOnHover(false, false, true));
+
+    // 9. 中心锚定旋转矩形计算与工作区防越界钳制
+    const RECT workArea{0, 0, 1920, 1080};
+    const RECT initStrip{200, 300, 600, 320}; // 400x20, 中心 (400, 310)
+    const RECT rotStrip = PinInputController::calculateRotatedWindowRect(initStrip, 20, 400, workArea);
+    EXPECT_EQ(rotStrip.left, 390);
+    EXPECT_EQ(rotStrip.top, 110);
+    EXPECT_EQ(rotStrip.right, 410);
+    EXPECT_EQ(rotStrip.bottom, 510);
+    // 再次旋转回 400x20 应 0 像素漂移精确还原
+    const RECT restoredStrip = PinInputController::calculateRotatedWindowRect(rotStrip, 400, 20, workArea);
+    EXPECT_EQ(restoredStrip.left, initStrip.left);
+    EXPECT_EQ(restoredStrip.top, initStrip.top);
+    EXPECT_EQ(restoredStrip.right, initStrip.right);
+    EXPECT_EQ(restoredStrip.bottom, initStrip.bottom);
+
+    // 靠近底边的宽贴图旋转为高贴图时自动防越界推回工作区内
+    const RECT nearBottom{500, 980, 900, 1060}; // 400x80 near bottom=1080
+    const RECT rotClamped = PinInputController::calculateRotatedWindowRect(nearBottom, 80, 400, workArea);
+    EXPECT_GE(rotClamped.top, workArea.top);
+    EXPECT_LE(rotClamped.bottom, workArea.bottom);
+    EXPECT_EQ(rotClamped.bottom - rotClamped.top, 400);
+
+    // 10. 窄窗口 (如 400x20 旋转为 20x400 或 80x400) 悬浮工具栏自适应布局与防裁切测试
+    for (const auto& [winW, winH] : std::vector<std::pair<float, float>>{
+             {400.0f, 200.0f},
+             {140.0f, 300.0f},
+             {80.0f,  400.0f},
+             {40.0f,  400.0f},
+             {20.0f,  400.0f},
+             {400.0f, 20.0f},
+         }) {
+        const auto tb = PinInputController::computeHoverToolbarLayout(winW, winH, 1.0f);
+        EXPECT_GE(tb.toolbarRect.left, 0.0f);
+        EXPECT_GE(tb.toolbarRect.top, 0.0f);
+        EXPECT_LE(tb.toolbarRect.right, winW + 0.01f);
+        EXPECT_LE(tb.toolbarRect.bottom, winH + 0.01f);
+        for (int i = 0; i < PinInteractionConstants::kHoverToolbarButtonCount; ++i) {
+            EXPECT_GT(tb.buttons[i].right - tb.buttons[i].left, 1.0f);
+            EXPECT_GT(tb.buttons[i].bottom - tb.buttons[i].top, 1.0f);
+            EXPECT_GE(tb.buttons[i].left, 0.0f);
+            EXPECT_GE(tb.buttons[i].top, 0.0f);
+            EXPECT_LE(tb.buttons[i].right, winW + 0.01f);
+            EXPECT_LE(tb.buttons[i].bottom, winH + 0.01f);
+        }
+    }
+
+    const auto normalTb = PinInputController::computeHoverToolbarLayout(400.0f, 200.0f, 1.0f);
+    EXPECT_EQ(normalTb.columns, 8);
+    EXPECT_EQ(normalTb.rows, 1);
+    const auto tipNormal = PinInputController::computeTooltipRect(
+        normalTb.toolbarRect, (normalTb.buttons[1].left + normalTb.buttons[1].right) * 0.5f, 400.0f, 200.0f, 1.0f);
+    EXPECT_GT(tipNormal.right - tipNormal.left, 40.0f);
+    EXPECT_LE(tipNormal.right, 400.0f);
+    EXPECT_LE(tipNormal.bottom, 200.0f);
+
+    const auto narrowTb = PinInputController::computeHoverToolbarLayout(80.0f, 400.0f, 1.0f);
+    EXPECT_LT(narrowTb.columns, 8);
+    EXPECT_GT(narrowTb.rows, 1);
+    const auto tipNarrow = PinInputController::computeTooltipRect(
+        narrowTb.toolbarRect, (narrowTb.buttons[1].left + narrowTb.buttons[1].right) * 0.5f, 80.0f, 400.0f, 1.0f);
+    EXPECT_GE(tipNarrow.left, 0.0f);
+    EXPECT_LE(tipNarrow.right, 80.0f);
+}
+
+TEST(PinWindowTest, LiveWindowKeyboardRotationFlipAndFoldIntegration) {
+    using namespace tools3000::capture;
+
+    std::array<wchar_t, 4096> executablePath{};
+    const DWORD length = GetModuleFileNameW(
+        nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
+    ASSERT_GT(length, 0u);
+    ASSERT_LT(length, executablePath.size());
+
+    const auto executableDir = std::filesystem::path(executablePath.data()).parent_path();
+    const auto pluginDllPath = executableDir.parent_path() / L"plugins" / executableDir.filename() / L"Plugin_Capture.dll";
+    ASSERT_TRUE(std::filesystem::exists(pluginDllPath));
+
+    HMODULE hMod = LoadLibraryExW(
+        pluginDllPath.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    ASSERT_NE(hMod, nullptr);
+
+    using CreatePluginFunc = tools3000::core::IPlugin* (*)();
+    const auto createPlugin = reinterpret_cast<CreatePluginFunc>(GetProcAddress(hMod, "CreatePlugin"));
+    ASSERT_NE(createPlugin, nullptr);
+    tools3000::core::IPlugin* capturePlugin = createPlugin();
+    ASSERT_NE(capturePlugin, nullptr);
+    ASSERT_TRUE(capturePlugin->initialize());
+
+    struct PluginCleanupGuard {
+        HMODULE mod = nullptr;
+        tools3000::core::IPlugin* plugin = nullptr;
+        ~PluginCleanupGuard() {
+            while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+                SendMessageW(existing, WM_KEYDOWN, VK_ESCAPE, 0);
+                if (IsWindow(existing)) DestroyWindow(existing);
+            }
+            if (plugin) plugin->shutdown();
+            if (mod) FreeLibrary(mod);
+        }
+    } cleanupGuard{hMod, capturePlugin};
+
+    while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+        SendMessageW(existing, WM_KEYDOWN, VK_ESCAPE, 0);
+        if (IsWindow(existing)) DestroyWindow(existing);
+    }
+
+    // 构造 120x60 非对称测试图像并写入临时 PNG，通过 capture.pinImageFile 创建真实 PinWindow
+    cv::Mat testImg(60, 120, CV_8UC3, cv::Scalar(40, 40, 40));
+    testImg.at<cv::Vec3b>(0, 0) = cv::Vec3b(0, 0, 255);
+    const auto tempPng = std::filesystem::temp_directory_path() /
+                         (L"tools3000_pin_rot_test_" + std::to_wstring(GetCurrentProcessId()) + L".png");
+    std::vector<uchar> pngBuf;
+    ASSERT_TRUE(cv::imencode(".png", testImg, pngBuf));
+    {
+        std::ofstream ofs(tempPng, std::ios::binary | std::ios::trunc);
+        ofs.write(reinterpret_cast<const char*>(pngBuf.data()), static_cast<std::streamsize>(pngBuf.size()));
+    }
+    struct TempFileGuard {
+        std::filesystem::path p;
+        ~TempFileGuard() {
+            std::error_code ec;
+            std::filesystem::remove(p, ec);
+        }
+    } tempGuard{tempPng};
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    nlohmann::json req = {
+        {"id", 101},
+        {"method", "capture.pinImageFile"},
+        {"params", {{"path", tools3000::core::WinUtils::wstringToUtf8(tempPng.wstring())}}}
+    };
+    const std::string resp = bridge.handleMessage(req.dump());
+    EXPECT_NE(resp.find("\"success\":true"), std::string::npos);
+
+    HWND pinHwnd = FindWindowW(L"Tools3000_PinWindow", nullptr);
+    ASSERT_NE(pinHwnd, nullptr);
+    ASSERT_TRUE(IsWindowVisible(pinHwnd));
+
+    RECT rcBefore{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcBefore));
+    EXPECT_EQ(rcBefore.right - rcBefore.left, 120);
+    EXPECT_EQ(rcBefore.bottom - rcBefore.top, 60);
+    const int centerXBefore = (rcBefore.left + rcBefore.right) / 2;
+    const int centerYBefore = (rcBefore.top + rcBefore.bottom) / 2;
+
+    // 1. 发送 WM_KEYDOWN 'R': 顺时针旋转 90° -> 60x120，且几何中心点保持不变
+    SendMessageW(pinHwnd, WM_KEYDOWN, 'R', 0);
+    RECT rcAfterR{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcAfterR));
+    EXPECT_EQ(rcAfterR.right - rcAfterR.left, 60);
+    EXPECT_EQ(rcAfterR.bottom - rcAfterR.top, 120);
+    EXPECT_EQ((rcAfterR.left + rcAfterR.right) / 2, centerXBefore);
+    EXPECT_EQ((rcAfterR.top + rcAfterR.bottom) / 2, centerYBefore);
+
+    // 2. 发送 WM_KEYDOWN '1': 逆时针旋转 90° -> 还原回 120x60 且精确回到原位
+    SendMessageW(pinHwnd, WM_KEYDOWN, '1', 0);
+    RECT rcAfter1{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcAfter1));
+    EXPECT_EQ(rcAfter1.right - rcAfter1.left, 120);
+    EXPECT_EQ(rcAfter1.bottom - rcAfter1.top, 60);
+    EXPECT_EQ(rcAfter1.left, rcBefore.left);
+    EXPECT_EQ(rcAfter1.top, rcBefore.top);
+
+    // 3. 发送 WM_KEYDOWN '2' (顺时针 90°) 与 'L' (逆时针 90°)
+    SendMessageW(pinHwnd, WM_KEYDOWN, '2', 0);
+    RECT rcAfter2{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcAfter2));
+    EXPECT_EQ(rcAfter2.right - rcAfter2.left, 60);
+    EXPECT_EQ(rcAfter2.bottom - rcAfter2.top, 120);
+
+    SendMessageW(pinHwnd, WM_KEYDOWN, 'L', 0);
+    RECT rcAfterL{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcAfterL));
+    EXPECT_EQ(rcAfterL.right - rcAfterL.left, 120);
+    EXPECT_EQ(rcAfterL.bottom - rcAfterL.top, 60);
+
+    // 4. 发送 WM_SYSKEYDOWN Alt+Right (顺时针 90°) 与 Alt+Left (逆时针 90°)
+    SendMessageW(pinHwnd, WM_SYSKEYDOWN, VK_RIGHT, 0);
+    RECT rcAfterAltRight{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcAfterAltRight));
+    EXPECT_EQ(rcAfterAltRight.right - rcAfterAltRight.left, 60);
+    EXPECT_EQ(rcAfterAltRight.bottom - rcAfterAltRight.top, 120);
+
+    SendMessageW(pinHwnd, WM_SYSKEYDOWN, VK_LEFT, 0);
+    RECT rcAfterAltLeft{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcAfterAltLeft));
+    EXPECT_EQ(rcAfterAltLeft.right - rcAfterAltLeft.left, 120);
+    EXPECT_EQ(rcAfterAltLeft.bottom - rcAfterAltLeft.top, 60);
+
+    // 5. 灰度模式 ('G') 下旋转 ('R') 再恢复彩色 ('G')
+    SendMessageW(pinHwnd, WM_KEYDOWN, 'G', 0);
+    SendMessageW(pinHwnd, WM_KEYDOWN, 'R', 0);
+    RECT rcGrayRot{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcGrayRot));
+    EXPECT_EQ(rcGrayRot.right - rcGrayRot.left, 60);
+    EXPECT_EQ(rcGrayRot.bottom - rcGrayRot.top, 120);
+    SendMessageW(pinHwnd, WM_KEYDOWN, 'G', 0);
+    SendMessageW(pinHwnd, WM_KEYDOWN, '1', 0);
+
+    // 6. 折叠态 ('M') 下旋转 ('R')：自动一步展开并切换为旋转后尺寸 60x120
+    SendMessageW(pinHwnd, WM_KEYDOWN, 'M', 0);
+    RECT rcFolded{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcFolded));
+    EXPECT_LT(rcFolded.bottom - rcFolded.top, 60);
+    SendMessageW(pinHwnd, WM_KEYDOWN, 'R', 0);
+    RECT rcUnfoldedRot{};
+    ASSERT_TRUE(GetWindowRect(pinHwnd, &rcUnfoldedRot));
+    EXPECT_EQ(rcUnfoldedRot.right - rcUnfoldedRot.left, 60);
+    EXPECT_EQ(rcUnfoldedRot.bottom - rcUnfoldedRot.top, 120);
+    SendMessageW(pinHwnd, WM_KEYDOWN, '1', 0);
+
+    // 7. 透明度快捷键 '5' (50%) 与 '0' (重置 100% 透明度 & 1:1 比例)
+    SendMessageW(pinHwnd, WM_KEYDOWN, '5', 0);
+    BYTE layeredAlpha = 0;
+    DWORD layeredFlags = 0;
+    ASSERT_TRUE(GetLayeredWindowAttributes(pinHwnd, nullptr, &layeredAlpha, &layeredFlags));
+    EXPECT_NEAR(static_cast<double>(layeredAlpha), 127.5, 2.0);
+
+    SendMessageW(pinHwnd, WM_KEYDOWN, '0', 0);
+    ASSERT_TRUE(GetLayeredWindowAttributes(pinHwnd, nullptr, &layeredAlpha, &layeredFlags));
+    EXPECT_EQ(layeredAlpha, 255);
+
+    // 8. 发送 VK_ESCAPE 关闭贴图窗口
+    SendMessageW(pinHwnd, WM_KEYDOWN, VK_ESCAPE, 0);
+    EXPECT_FALSE(IsWindow(pinHwnd));
+}
+
 // -----------------------------------------------------------------------------
 // 27. 剪贴板与字符编码转换测试套件
 // -----------------------------------------------------------------------------
@@ -1079,6 +1471,7 @@ TEST(CaptureVectorIconsTest, ComprehensiveVectorRendering) {
         CaptureIconId::ActionGrayscale,
         CaptureIconId::ActionResetScale,
         CaptureIconId::ActionFold,
+        CaptureIconId::ActionRotate,
         CaptureIconId::ActionResetNumber,
         CaptureIconId::ActionSnapshot,
         CaptureIconId::ActionOpenFolder,
@@ -6261,6 +6654,184 @@ TEST(ClipboardUtilsTest, ReadImageWithoutPinMetadataZeroesMagic) {
     }
 }
 
+TEST(CaptureLifecycleAndGhostWindowTest, ShortcutHintOverlayBottomLeftPositionAndMaximizedWindowStability) {
+    using namespace tools3000::capture;
+    const RECT workArea = { 0, 0, 1920, 1040 };
+    const int cardW = 240;
+    const int cardH = 260;
+    const int margin = static_cast<int>(ShortcutHintStyle::BaseScreenMargin * 1.0f);
 
+    // 1. 全屏/最大化窗口包络覆盖全部候选角时，绝不能跳变到左上角，必须稳定保持在默认左下角
+    const RECT maximizedWindow = { 0, 32, 1920, 1040 };
+    POINT posMax = ShortcutHintOverlay::computeOptimalPosition(cardW, cardH, workArea, 1.0f, { maximizedWindow });
+    EXPECT_EQ(posMax.x, workArea.left + margin);
+    EXPECT_EQ(posMax.y, workArea.bottom - cardH - margin);
+
+    // 2. 真实窗口显示时，初始位置位于当前屏幕工作区左下角
+    auto& hint = ShortcutHintOverlay::instance();
+    hint.hide();
+    POINT anchor{ 200, 200 };
+    HMONITOR mon = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{ sizeof(mi) };
+    ASSERT_TRUE(GetMonitorInfoW(mon, &mi));
+
+    hint.show(ShortcutHintContext::CaptureSelecting, anchor, {});
+    ASSERT_TRUE(hint.isVisible());
+    RECT bounds = hint.getBounds();
+    const LONG midX = mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left) / 2;
+    const LONG midY = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top) / 2;
+    EXPECT_LT(bounds.left, midX);
+    EXPECT_GT(bounds.bottom, midY);
+
+    // 3. 左下角局部工具栏碰撞避让到左上角后，重置回未选区态 (avoidRects = {}) 必须恢复至左下角
+    RECT bottomLeftObstacle{
+        mi.rcWork.left,
+        mi.rcWork.bottom - 360,
+        mi.rcWork.left + 420,
+        mi.rcWork.bottom
+    };
+    hint.show(ShortcutHintContext::CaptureSelected, anchor, { bottomLeftObstacle });
+    RECT avoidedBounds = hint.getBounds();
+    EXPECT_LT(avoidedBounds.top, midY);
+
+    hint.show(ShortcutHintContext::CaptureSelecting, anchor, {});
+    RECT restoredBounds = hint.getBounds();
+    EXPECT_LT(restoredBounds.left, midX);
+    EXPECT_GT(restoredBounds.bottom, midY);
+
+    // 4. 全屏/最大化窗口区域传入 updateAvoidance 时，保持左下角不跳变
+    RECT fullWorkAreaRect = mi.rcWork;
+    fullWorkAreaRect.top += 32;
+    hint.updateAvoidance({ fullWorkAreaRect });
+    RECT afterFullWindowAvoid = hint.getBounds();
+    EXPECT_EQ(afterFullWindowAvoid.left, restoredBounds.left);
+    EXPECT_EQ(afterFullWindowAvoid.top, restoredBounds.top);
+
+    // 5. 最大化窗口 / 左半屏窗口选区构建工具栏后，主工具栏自动向右避让左下角提示区，
+    //    确保将工具栏矩形传入 updateAvoidance 时，快捷键提示窗依然稳固驻留左下角，绝不误跳至左上角
+    {
+        CaptureState tbState;
+        tbState.mode = OverlayMode::Screenshot;
+        tbState.state = OverlayState::Selected;
+        tbState.dpiScale = 1.0f;
+        tbState.options.showShortcutHints = true;
+        const D2D1_SIZE_F surf = D2D1::SizeF(
+            static_cast<float>(mi.rcWork.right - mi.rcWork.left),
+            static_cast<float>(mi.rcWork.bottom - mi.rcWork.top));
+        D2D1_RECT_F maxSel = D2D1::RectF(0.0f, 0.0f, surf.width, surf.height);
+        rebuildCaptureToolbar(tbState, maxSel, surf);
+        EXPECT_GE(tbState.primaryToolbarRect.left, 340.0f);
+
+        RECT priRectScreen{
+            mi.rcWork.left + static_cast<LONG>(tbState.primaryToolbarRect.left),
+            mi.rcWork.top + static_cast<LONG>(tbState.primaryToolbarRect.top),
+            mi.rcWork.left + static_cast<LONG>(tbState.primaryToolbarRect.right),
+            mi.rcWork.top + static_cast<LONG>(tbState.primaryToolbarRect.bottom)
+        };
+        RECT sideRectScreen{
+            mi.rcWork.left + static_cast<LONG>(tbState.selectionSideRect.left),
+            mi.rcWork.top + static_cast<LONG>(tbState.selectionSideRect.top),
+            mi.rcWork.left + static_cast<LONG>(tbState.selectionSideRect.right),
+            mi.rcWork.top + static_cast<LONG>(tbState.selectionSideRect.bottom)
+        };
+        hint.updateAvoidance({ priRectScreen, sideRectScreen });
+        RECT afterToolbarAvoid = hint.getBounds();
+        EXPECT_EQ(afterToolbarAvoid.left, restoredBounds.left);
+        EXPECT_EQ(afterToolbarAvoid.top, restoredBounds.top);
+        EXPECT_GT(afterToolbarAvoid.bottom, midY);
+    }
+
+    hint.hide();
+    EXPECT_FALSE(hint.isVisible());
+}
+
+TEST(CaptureLifecycleAndGhostWindowTest, ShortcutHintOverlayNeverRemainsAfterCaptureExitOrCrossThreadHide) {
+    using namespace tools3000::capture;
+
+    auto& hint = ShortcutHintOverlay::instance();
+    hint.hide();
+    EXPECT_FALSE(hint.isVisible());
+
+    // 1. 验证跨线程调用 hide() 时（如后台线程回调）立即隐藏窗口并投递销毁消息，绝不残留幽灵窗口
+    hint.show(ShortcutHintContext::CaptureSelected);
+    ASSERT_TRUE(hint.isVisible());
+    ASSERT_NE(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+
+    std::thread worker([]() {
+        ShortcutHintOverlay::instance().hide();
+    });
+    worker.join();
+    EXPECT_FALSE(hint.isVisible());
+
+    MSG msg{};
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    EXPECT_FALSE(hint.isVisible());
+    EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+
+    // 2. 验证外部发送 WM_CLOSE 或直接 DestroyWindow 后，isVisible() 准确感知且重新 show() 自愈重建
+    hint.show(ShortcutHintContext::CaptureSelecting);
+    ASSERT_TRUE(hint.isVisible());
+    HWND hintHwnd = FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr);
+    ASSERT_NE(hintHwnd, nullptr);
+    SendMessageW(hintHwnd, WM_CLOSE, 0, 0);
+    EXPECT_FALSE(hint.isVisible());
+    EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+
+    hint.show(ShortcutHintContext::CaptureSelecting);
+    EXPECT_TRUE(hint.isVisible());
+    hint.hide();
+    EXPECT_FALSE(hint.isVisible());
+    EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+
+    // 3. 验证处于 Idle 态的 CaptureState 调用 transitionToRecordMode 绝不会意外弹出残留提示窗
+    {
+        CaptureState idleState;
+        idleState.state = OverlayState::Idle;
+        idleState.options.showShortcutHints = true;
+        transitionToRecordMode(idleState);
+        EXPECT_FALSE(hint.isVisible());
+    }
+
+    // 4. 验证 OwnerActiveChecker 守护契约与 150ms 定时器自愈机制：
+    //    (a) 当宿主已退出 (ownerActive == false) 时，任何迟到的 show(CaptureSelected) 调用必须被立即拒绝并隐藏；
+    //    (b) 当宿主在提示窗显示期间退场 (ownerActive 由 true 变为 false) 且未显式调用 hide() 时，
+    //        WM_TIMER 守护定时器必须在消息泵驱动下自动销毁残留的 Tools3000_ShortcutHintOverlay 窗口。
+    {
+        static std::atomic<bool> s_mockOwnerActive{false};
+        struct CheckerResetGuard {
+            ~CheckerResetGuard() {
+                ShortcutHintOverlay::instance().setOwnerActiveChecker(nullptr);
+                ShortcutHintOverlay::instance().hide();
+            }
+        } resetGuard;
+
+        hint.setOwnerActiveChecker([](ShortcutHintContext) -> bool {
+            return s_mockOwnerActive.load();
+        });
+
+        // (a) 宿主处于非活动态时迟到的 show(CaptureSelected) 调用绝不创建或残留窗口
+        s_mockOwnerActive.store(false);
+        hint.show(ShortcutHintContext::CaptureSelected, {200, 200}, {});
+        EXPECT_FALSE(hint.isVisible());
+        EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+
+        // (b) 宿主处于活动态时正常显示，随后宿主变为非活动态（模拟异常退场漏调 hide），
+        //     验证 WM_TIMER 守护自愈自动销毁提示窗
+        s_mockOwnerActive.store(true);
+        hint.show(ShortcutHintContext::CaptureSelected, {200, 200}, {});
+        ASSERT_TRUE(hint.isVisible());
+        HWND watchdogHwnd = FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr);
+        ASSERT_NE(watchdogHwnd, nullptr);
+
+        s_mockOwnerActive.store(false);
+        // 触发守护定时器消息 (kWatchdogTimerId = 1)
+        SendMessageW(watchdogHwnd, WM_TIMER, 1, 0);
+        EXPECT_FALSE(hint.isVisible());
+        EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+    }
+}
 
 

@@ -16,6 +16,7 @@
 #include "capture/CaptureHistory.h"
 #include "capture/PinSpawnCalculator.h"
 #include "capture/PinPasteCoordinator.h"
+#include "capture/PinInputController.h"
 #include "core/events/EventBus.h"
 #include "core/logger/Logger.h"
 #include "core/config/ConfigManager.h"
@@ -71,7 +72,8 @@ std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y)
         return nullptr;
     }
 
-    ShowWindow(pin->m_hwnd, SW_SHOWNOACTIVATE);
+    ShowWindow(pin->m_hwnd, SW_SHOW);
+    pin->focusWindow();
     pin->render();
 
     s_instances.push_back(pin);
@@ -176,6 +178,30 @@ PinWindow::~PinWindow() {
 // 属性
 // ─────────────────────────────────────────────────────────────────────────────
 
+void PinWindow::focusWindow() {
+    if (!m_hwnd || !IsWindow(m_hwnd) || m_clickThrough) return;
+    HWND fg = GetForegroundWindow();
+    if (fg != m_hwnd) {
+        DWORD fgTid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+        DWORD selfTid = GetCurrentThreadId();
+        bool attached = false;
+        if (fgTid != 0 && fgTid != selfTid) {
+            attached = AttachThreadInput(fgTid, selfTid, TRUE) != FALSE;
+        }
+        SetForegroundWindow(m_hwnd);
+        BringWindowToTop(m_hwnd);
+        if (attached) {
+            AttachThreadInput(fgTid, selfTid, FALSE);
+        }
+    }
+    SetActiveWindow(m_hwnd);
+    SetFocus(m_hwnd);
+    if (!m_focused) {
+        m_focused = true;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
 void PinWindow::applyLayeredOpacity() {
     if (!m_hwnd) return;
     BYTE alpha = static_cast<BYTE>(std::clamp(m_opacity * 255.0f, 10.0f, 255.0f));
@@ -216,40 +242,27 @@ void PinWindow::drawHoverToolbar() {
 
     const float dpiScale = tools3000::core::dpi::scaleForWindow(m_hwnd);
 
-    // 悬浮工具栏：折叠、反色、编辑、文字识别/复制、复制图片、保存、关闭 7 个高精度矢量按钮
-    float btnW = 26.0f * dpiScale;
-    float btnH = 24.0f * dpiScale;
-    float btnPad = 4.0f * dpiScale;
-    float tbWidth = btnW * 7.0f + btnPad * 8.0f;
-    float tbHeight = 32.0f * dpiScale;
-    float tbPadding = 8.0f * dpiScale;
-    float tx = size.width - tbWidth - tbPadding;
-    float ty = tbPadding;
-    
-    // 如果窗口太小，放在左上角
-    if (tx < 0) tx = tbPadding;
-    
-    m_toolbarRect = D2D1::RectF(tx, ty, tx + tbWidth, ty + tbHeight);
+    // 悬浮工具栏：折叠、旋转、反色、编辑、文字识别/复制、复制图片、保存、关闭 8 个高精度矢量按钮
+    // 自适应多行网格与紧凑缩放，保障窄贴图（如 400x20 旋转为 20x400 后）全部按钮仍在可视区内
+    const auto layout = PinInputController::computeHoverToolbarLayout(size.width, size.height, dpiScale);
+    m_toolbarRect = layout.toolbarRect;
+    m_btnFoldRect   = layout.buttons[0];
+    m_btnRotateRect = layout.buttons[1];
+    m_btnInvertRect = layout.buttons[2];
+    m_btnEditRect   = layout.buttons[3];
+    m_btnTextRect   = layout.buttons[4];
+    m_btnCopyRect   = layout.buttons[5];
+    m_btnSaveRect   = layout.buttons[6];
+    m_btnCloseRect  = layout.buttons[7];
     
     // 绘制磨砂玻璃背景
     FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), m_toolbarRect, 6.0f * dpiScale, true);
-    
-    // 布局按钮
-    float by = ty + (tbHeight - btnH) / 2.0f;
-    float curX = tx + btnPad;
-    
-    m_btnFoldRect = D2D1::RectF(curX, by, curX + btnW, by + btnH); curX += btnW + btnPad;
-    m_btnInvertRect = D2D1::RectF(curX, by, curX + btnW, by + btnH); curX += btnW + btnPad;
-    m_btnEditRect = D2D1::RectF(curX, by, curX + btnW, by + btnH); curX += btnW + btnPad;
-    m_btnTextRect = D2D1::RectF(curX, by, curX + btnW, by + btnH); curX += btnW + btnPad;
-    m_btnCopyRect = D2D1::RectF(curX, by, curX + btnW, by + btnH); curX += btnW + btnPad;
-    m_btnSaveRect = D2D1::RectF(curX, by, curX + btnW, by + btnH); curX += btnW + btnPad;
-    m_btnCloseRect = D2D1::RectF(curX, by, curX + btnW, by + btnH);
     
     ComPtr<ID2D1SolidColorBrush> textBrush;
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.9f * m_hoverAlpha), textBrush.GetAddressOf());
     
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnFoldRect, 4.0f * dpiScale, m_hoverFold, false, false, false, m_hoverAlpha, true);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnRotateRect, 4.0f * dpiScale, m_hoverRotate, false, false, false, m_hoverAlpha, true);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnInvertRect, 4.0f * dpiScale, m_hoverInvert, false, false, false, m_hoverAlpha, true);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnEditRect, 4.0f * dpiScale, m_hoverEdit, false, false, false, m_hoverAlpha, true);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnTextRect, 4.0f * dpiScale, m_hoverText, m_textSelectionMode, false, false, m_hoverAlpha, true);
@@ -261,29 +274,91 @@ void PinWindow::drawHoverToolbar() {
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ActionFold, m_btnFoldRect, textBrush.Get(), dpiScale);
 
-    // 2. Invert 图标 (Reicon: ActionInvert)
+    // 2. Rotate 图标 (Lucide: RotateCw)
+    CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
+        CaptureIconId::ActionRotate, m_btnRotateRect, textBrush.Get(), dpiScale);
+
+    // 3. Invert 图标 (Reicon: ActionInvert)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ActionInvert, m_btnInvertRect, textBrush.Get(), dpiScale);
 
-    // 3. Edit 图标 (Lucide: Pen)
+    // 4. Edit 图标 (Lucide: Pen)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ToolPen, m_btnEditRect, textBrush.Get(), dpiScale);
 
-    // 4. Text/OCR 图标 (Lucide: Type)
+    // 5. Text/OCR 图标 (Lucide: Type)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ToolText, m_btnTextRect, textBrush.Get(), dpiScale);
 
-    // 5. Copy 图标 (Lucide: Copy)
+    // 6. Copy 图标 (Lucide: Copy)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ActionCopy, m_btnCopyRect, textBrush.Get(), dpiScale);
     
-    // 6. Save 图标 (Lucide: Download)
+    // 7. Save 图标 (Lucide: Download)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ActionSave, m_btnSaveRect, textBrush.Get(), dpiScale);
     
-    // 7. Close 图标 (Lucide: X)
+    // 8. Close 图标 (Lucide: X)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ActionCancel, m_btnCloseRect, textBrush.Get(), dpiScale);
+
+    // 悬停微晶快捷键提示胶囊 (Tooltip Pill)
+    const bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
+    const wchar_t* tipText = nullptr;
+    float anchorX = 0.0f;
+    if (m_hoverFold) {
+        tipText = isZh ? L"折叠胶囊 (M)" : L"Fold Capsule (M)";
+        anchorX = (m_btnFoldRect.left + m_btnFoldRect.right) * 0.5f;
+    } else if (m_hoverRotate) {
+        tipText = isZh ? L"旋转 90° (R / 1·2)" : L"Rotate 90° (R / 1·2)";
+        anchorX = (m_btnRotateRect.left + m_btnRotateRect.right) * 0.5f;
+    } else if (m_hoverInvert) {
+        tipText = isZh ? L"色彩反转 (I)" : L"Invert Colors (I)";
+        anchorX = (m_btnInvertRect.left + m_btnInvertRect.right) * 0.5f;
+    } else if (m_hoverEdit) {
+        tipText = isZh ? L"二次标注 (E)" : L"Annotate (E)";
+        anchorX = (m_btnEditRect.left + m_btnEditRect.right) * 0.5f;
+    } else if (m_hoverText) {
+        tipText = isZh ? L"文字划选 (Alt)" : L"Select Text (Alt)";
+        anchorX = (m_btnTextRect.left + m_btnTextRect.right) * 0.5f;
+    } else if (m_hoverCopy) {
+        tipText = isZh ? L"复制贴图 (Ctrl+C)" : L"Copy Pin (Ctrl+C)";
+        anchorX = (m_btnCopyRect.left + m_btnCopyRect.right) * 0.5f;
+    } else if (m_hoverSave) {
+        tipText = isZh ? L"保存图片 (Ctrl+S)" : L"Save Image (Ctrl+S)";
+        anchorX = (m_btnSaveRect.left + m_btnSaveRect.right) * 0.5f;
+    } else if (m_hoverClose) {
+        tipText = isZh ? L"关闭贴图 (Esc)" : L"Close Pin (Esc)";
+        anchorX = (m_btnCloseRect.left + m_btnCloseRect.right) * 0.5f;
+    }
+
+    if (tipText) {
+        const D2D1_RECT_F tipRect = PinInputController::computeTooltipRect(
+            m_toolbarRect, anchorX, size.width, size.height, dpiScale);
+        if (tipRect.right > tipRect.left && tipRect.bottom > tipRect.top) {
+            Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory;
+            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                reinterpret_cast<IUnknown**>(dwriteFactory.GetAddressOf()));
+            if (dwriteFactory && textBrush) {
+                Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+                dwriteFactory->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+                    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                    11.0f * dpiScale, L"zh-cn", fmt.GetAddressOf());
+                if (!fmt) {
+                    dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr,
+                        DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                        11.0f * dpiScale, L"zh-cn", fmt.GetAddressOf());
+                }
+                if (fmt) {
+                    fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                    fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 4.0f * dpiScale, true);
+                    m_renderTarget->DrawText(tipText, static_cast<UINT32>(wcslen(tipText)), fmt.Get(),
+                                             tipRect, textBrush.Get());
+                }
+            }
+        }
+    }
 }
 
 void PinWindow::setOpacity(float opacity) {
@@ -434,14 +509,14 @@ static bool savePinnedImage(HWND owner, const cv::Mat& image) {
 }
 
 void PinWindow::setScale(float scale) {
-    m_scale = std::clamp(scale, 0.25f, 4.0f);
+    m_scale = std::clamp(scale, 0.1f, 5.0f);
     if (m_hwnd) {
         if (m_folded) {
             return;
         }
-        int w = static_cast<int>(m_origWidth * m_scale);
-        int h = static_cast<int>(m_origHeight * m_scale);
-        SetWindowPos(m_hwnd, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
+        int w = (std::max)(1, static_cast<int>(m_origWidth * m_scale));
+        int h = (std::max)(1, static_cast<int>(m_origHeight * m_scale));
+        SetWindowPos(m_hwnd, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
         if (m_renderTarget) {
             m_renderTarget->Resize(D2D1::SizeU(w, h));
@@ -452,34 +527,74 @@ void PinWindow::setScale(float scale) {
 
 void PinWindow::rotate(int angleDeg) {
     if (m_sourceImage.empty() || !m_hwnd) return;
-    if (angleDeg == 90) {
-        cv::rotate(m_sourceImage, m_sourceImage, cv::ROTATE_90_CLOCKWISE);
-        if (!m_colorBackup.empty()) {
-            cv::rotate(m_colorBackup, m_colorBackup, cv::ROTATE_90_CLOCKWISE);
-        }
-        std::swap(m_origWidth, m_origHeight);
-    } else if (angleDeg == 180) {
-        cv::rotate(m_sourceImage, m_sourceImage, cv::ROTATE_180);
-        if (!m_colorBackup.empty()) {
-            cv::rotate(m_colorBackup, m_colorBackup, cv::ROTATE_180);
-        }
-    } else if (angleDeg == 270 || angleDeg == -90) {
-        cv::rotate(m_sourceImage, m_sourceImage, cv::ROTATE_90_COUNTERCLOCKWISE);
-        if (!m_colorBackup.empty()) {
-            cv::rotate(m_colorBackup, m_colorBackup, cv::ROTATE_90_COUNTERCLOCKWISE);
-        }
-        std::swap(m_origWidth, m_origHeight);
+    if (PinInputController::normalizeRightAngleDegrees(angleDeg) == 0) return;
+
+    RECT baseRect{};
+    GetWindowRect(m_hwnd, &baseRect);
+    if (m_folded) {
+        const int prevW = (std::max)(1, static_cast<int>(m_origWidth * m_scale));
+        const int prevH = (std::max)(1, static_cast<int>(m_origHeight * m_scale));
+        baseRect.right = baseRect.left + prevW;
+        baseRect.bottom = baseRect.top + prevH;
+        m_folded = false;
     }
+
+    if (!PinInputController::applyRotation(m_sourceImage, m_colorBackup, m_origWidth, m_origHeight, angleDeg)) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        m_ocrBlocks.clear();
+        m_selectedBlockIndices.clear();
+        m_hoveredBlockIndex = -1;
+        m_ocrReady = false;
+    }
+    ensureOcrExecutedAsync();
+
+    const int w = (std::max)(1, static_cast<int>(m_origWidth * m_scale));
+    const int h = (std::max)(1, static_cast<int>(m_origHeight * m_scale));
+    HMONITOR mon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+    const RECT workArea = tools3000::core::dpi::workArea(mon);
+    const RECT targetRect = PinInputController::calculateRotatedWindowRect(baseRect, w, h, workArea);
+    m_unfoldedRect = targetRect;
+
+    SetWindowPos(m_hwnd, nullptr,
+                 targetRect.left, targetRect.top,
+                 w, h,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
     createRenderResources(m_sourceImage);
-    setScale(m_scale);
+    render();
 }
 
 void PinWindow::flip(bool horizontal) {
     if (m_sourceImage.empty() || !m_hwnd) return;
-    cv::flip(m_sourceImage, m_sourceImage, horizontal ? 1 : 0);
-    if (!m_colorBackup.empty()) {
-        cv::flip(m_colorBackup, m_colorBackup, horizontal ? 1 : 0);
+    if (!PinInputController::applyFlip(m_sourceImage, m_colorBackup, horizontal)) {
+        return;
     }
+    if (m_folded) {
+        m_folded = false;
+        RECT curRc{};
+        GetWindowRect(m_hwnd, &curRc);
+        const int w = (std::max)(1, static_cast<int>(m_origWidth * m_scale));
+        const int h = (std::max)(1, static_cast<int>(m_origHeight * m_scale));
+        HMONITOR mon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+        const RECT workArea = tools3000::core::dpi::workArea(mon);
+        int posX = curRc.left;
+        int posY = curRc.top;
+        if (posX + w > workArea.right) posX = (std::max)(static_cast<int>(workArea.left), static_cast<int>(workArea.right - w));
+        if (posY + h > workArea.bottom) posY = (std::max)(static_cast<int>(workArea.top), static_cast<int>(workArea.bottom - h));
+        m_unfoldedRect = RECT{posX, posY, posX + w, posY + h};
+        SetWindowPos(m_hwnd, nullptr, posX, posY, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        m_ocrBlocks.clear();
+        m_selectedBlockIndices.clear();
+        m_hoveredBlockIndex = -1;
+        m_ocrReady = false;
+    }
+    ensureOcrExecutedAsync();
     createRenderResources(m_sourceImage);
     render();
 }
@@ -559,18 +674,15 @@ void PinWindow::toggleFold() {
         m_folded = false;
         RECT curRc{};
         GetWindowRect(m_hwnd, &curRc);
-        int w = m_unfoldedRect.right - m_unfoldedRect.left;
-        int h = m_unfoldedRect.bottom - m_unfoldedRect.top;
-        if (w <= 0 || h <= 0) {
-            w = static_cast<int>(m_origWidth * m_scale);
-            h = static_cast<int>(m_origHeight * m_scale);
-        }
+        const int w = (std::max)(1, static_cast<int>(m_origWidth * m_scale));
+        const int h = (std::max)(1, static_cast<int>(m_origHeight * m_scale));
         HMONITOR mon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
         RECT workArea = tools3000::core::dpi::workArea(mon);
         int posX = curRc.left;
         int posY = curRc.top;
         if (posX + w > workArea.right) posX = (std::max)(static_cast<int>(workArea.left), static_cast<int>(workArea.right - w));
         if (posY + h > workArea.bottom) posY = (std::max)(static_cast<int>(workArea.top), static_cast<int>(workArea.bottom - h));
+        m_unfoldedRect = RECT{posX, posY, posX + w, posY + h};
         SetWindowPos(m_hwnd, nullptr, posX, posY, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
         if (m_renderTarget) {
             m_renderTarget->Resize(D2D1::SizeU(w, h));
@@ -590,8 +702,13 @@ void PinWindow::editMarkup() {
     std::weak_ptr<PinWindow> weakSelf = shared_from_this();
     CaptureOverlay::instance().startEditPinned(m_sourceImage, reg, [weakSelf](const cv::Mat& newImage) {
         if (auto self = weakSelf.lock()) {
-            self->updateImage(newImage);
-            ShowWindow(self->m_hwnd, SW_SHOW);
+            if (!newImage.empty()) {
+                self->updateImage(newImage);
+            }
+            if (self->m_hwnd && IsWindow(self->m_hwnd)) {
+                ShowWindow(self->m_hwnd, SW_SHOW);
+                self->focusWindow();
+            }
         }
     });
 }
@@ -1068,6 +1185,7 @@ bool PinWindow::initWindow(HINSTANCE hInstance, int x, int y, int w, int h) {
     if (!m_hwnd) return false;
 
     SetWindowLongPtrW(m_hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    SetPropW(m_hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
     SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
 
     return true;
@@ -1345,12 +1463,26 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
     auto* self = reinterpret_cast<PinWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 
     switch (msg) {
+        case WM_MOUSEACTIVATE: {
+            if (self) {
+                self->focusWindow();
+            }
+            return MA_ACTIVATE;
+        }
+
+        case WM_SYSCOMMAND: {
+            if ((wParam & 0xFFF0) == SC_KEYMENU || (wParam & 0xFFF0) == SC_CONTEXTHELP) {
+                return 0;
+            }
+            break;
+        }
+
         case WM_SETCURSOR: {
             if (self && !self->m_folded) {
                 // 1. 悬停在浮动复制微晶胶囊或悬浮工具栏按钮上：手型光标 IDC_HAND
-                if (self->m_hoverCopyFloating || self->m_hoverFold || self->m_hoverInvert ||
-                    self->m_hoverEdit || self->m_hoverText || self->m_hoverCopy ||
-                    self->m_hoverSave || self->m_hoverClose) {
+                if (self->m_hoverCopyFloating || self->m_hoverFold || self->m_hoverRotate ||
+                    self->m_hoverInvert || self->m_hoverEdit || self->m_hoverText ||
+                    self->m_hoverCopy || self->m_hoverSave || self->m_hoverClose) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
@@ -1371,6 +1503,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
         case WM_LBUTTONDOWN: {
             if (!self) break;
+            self->focusWindow();
             int clickX = GET_X_LPARAM(lParam);
             int clickY = GET_Y_LPARAM(lParam);
 
@@ -1383,6 +1516,11 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             if (!self->m_folded && self->m_hoverAlpha > 0.0f) {
                 if (self->m_hoverFold) {
                     self->toggleFold();
+                    return 0;
+                }
+                if (self->m_hoverRotate) {
+                    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    self->rotate(shift ? 270 : 90);
                     return 0;
                 }
                 if (self->m_hoverInvert) {
@@ -1421,7 +1559,6 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
             const bool canSelectText = alt || self->m_textSelectionMode;
             if (!self->m_folded && canSelectText) {
-                SetForegroundWindow(hwnd);
                 self->m_isSelectingText = true;
                 self->m_selectStart = {clickX, clickY};
                 self->m_selectEnd = {clickX, clickY};
@@ -1450,7 +1587,6 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 self->render();
             }
 
-            SetForegroundWindow(hwnd);  // 选中此贴图（取得键盘焦点，使其能响应 Esc）
             self->m_isDragging = true;
             self->m_dragOffset = {clickX, clickY};
             SetCapture(hwnd);
@@ -1467,162 +1603,139 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
 
+        case WM_SYSKEYDOWN:
         case WM_KEYDOWN: {
             if (!self) break;
             const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool alt = (msg == WM_SYSKEYDOWN) || ((GetKeyState(VK_MENU) & 0x8000) != 0);
 
-            // Esc / Ctrl+W: 优雅关闭当前贴图 (若有选中文本则先取消选区，若在划选模式则先退出划选模式)
-            if (wParam == VK_ESCAPE) {
-                if (!self->m_selectedBlockIndices.empty()) {
-                    self->m_selectedBlockIndices.clear();
-                    self->render();
+            const auto decision = PinInputController::resolveKeyDown(wParam, ctrl, shift, alt);
+            switch (decision.action) {
+                case PinShortcutAction::RotateClockwise90:
+                case PinShortcutAction::RotateCounterClockwise90:
+                    self->rotate(decision.rotateDegrees);
                     return 0;
-                }
-                if (self->m_textSelectionMode) {
-                    self->m_textSelectionMode = false;
-                    self->render();
+                case PinShortcutAction::FlipHorizontal:
+                    self->flip(true);
                     return 0;
-                }
-                self->close();
-                return 0;
-            }
-            if (ctrl && wParam == 'W') {
-                self->close();
-                return 0;
-            }
-            // E: 重新进入标注编辑模式
-            if (wParam == 'E' && !ctrl) {
-                self->editMarkup();
-                return 0;
-            }
-            // I: 色彩反转 (Invert colors)
-            if (wParam == 'I' && !ctrl) {
-                self->invertColors();
-                return 0;
-            }
-            // G: 灰度化切换 (Toggle grayscale)
-            if (wParam == 'G' && !ctrl) {
-                self->toggleGrayscale();
-                return 0;
-            }
-            // M: 折叠为微晶迷你胶囊 (Toggle fold capsule)
-            if (wParam == 'M' && !ctrl) {
-                self->toggleFold();
-                return 0;
-            }
-            // T 或 F4: 切换鼠标穿透 (Click-through / Ghost 模式)
-            if ((wParam == 'T' || wParam == VK_F4) && !ctrl && !shift) {
-                self->setClickThrough(!self->m_clickThrough);
-                return 0;
-            }
-            // 1~9: 快速设置透明度 10%~90%
-            if (wParam >= '1' && wParam <= '9' && !ctrl) {
-                self->setOpacity(static_cast<float>(wParam - '0') / 10.0f);
-                return 0;
-            }
-            // R / Shift+R: 顺时针 / 逆时针旋转 90 度
-            if (wParam == 'R' && !ctrl) {
-                self->rotate(shift ? 270 : 90);
-                return 0;
-            }
-            // H: 水平镜像翻转
-            if (wParam == 'H' && !ctrl) {
-                self->flip(true);
-                return 0;
-            }
-            // V: 垂直镜像翻转
-            if (wParam == 'V' && !ctrl) {
-                self->flip(false);
-                return 0;
-            }
-            // Ctrl+V: 当贴图窗口处于焦点时，直接将剪贴板内容（文字/色卡/图片）或历史贴出为新贴图
-            if (ctrl && !shift && wParam == 'V') {
-                PinWindow::pasteNextHistoryOrClipboard();
-                return 0;
-            }
-            // Ctrl+Shift+C: 复制全部文字 (世界级一键提取文字)
-            if (ctrl && shift && wParam == 'C') {
-                self->copyAllText();
-                return 0;
-            }
-            // Ctrl+C: 如果有选中文本，复制所选文字；否则复制原图到剪贴板
-            if (ctrl && !shift && wParam == 'C') {
-                if (!self->m_selectedBlockIndices.empty()) {
-                    self->copySelectedText();
+                case PinShortcutAction::FlipVertical:
+                    self->flip(false);
                     return 0;
-                }
-                copyImageToClipboard(self->m_sourceImage);
-                tools3000::core::EventBus::instance().publish(
-                    tools3000::core::ShowToastEvent{L"已复制贴图到剪贴板"});
-                return 0;
-            }
-            // Ctrl+T: 提取贴图文本 (OCR)
-            if (ctrl && wParam == 'T') {
-                self->extractText();
-                return 0;
-            }
-            // Ctrl+S: 保存贴图图片
-            if (ctrl && wParam == 'S') {
-                savePinnedImage(hwnd, self->m_sourceImage);
-                return 0;
-            }
-            // +/- 键: 缩放
-            if (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == '=') {
-                self->setScale(self->m_scale * 1.1f);
-                return 0;
-            }
-            if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT || wParam == '-') {
-                self->setScale(self->m_scale * 0.9f);
-                return 0;
-            }
-            // [/] 键: 透明度微调
-            if (wParam == VK_OEM_4) { // '['
-                self->setOpacity((std::max)(0.1f, self->m_opacity - 0.1f));
-                return 0;
-            }
-            if (wParam == VK_OEM_6) { // ']'
-                self->setOpacity((std::min)(1.0f, self->m_opacity + 0.1f));
-                return 0;
-            }
-            // 0 或 1: 恢复 100% 原始尺寸
-            if (wParam == '0' || wParam == VK_NUMPAD0) {
-                self->resetScale();
-                return 0;
-            }
-            // , / < 键: 获焦时光机上溯历史（更早前截图）
-            if (wParam == VK_OEM_COMMA && !ctrl) {
-                const int totalHist = CaptureHistory::instance().count();
-                if (totalHist > 1) {
-                    self->m_historyBrowseIndex = std::min(self->m_historyBrowseIndex + 1, totalHist - 1);
-                    auto entry = CaptureHistory::instance().get(self->m_historyBrowseIndex);
-                    if (entry.has_value() && !entry->image.empty()) {
-                        self->updateImage(entry->image);
-                        bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
-                        std::wstring msg = isZh
-                            ? std::format(L"[INFO] 历史贴图: 倒数第 {} 张 (共 {} 张)", self->m_historyBrowseIndex + 1, totalHist)
-                            : std::format(L"[INFO] Pin History: #{} from last (total {})", self->m_historyBrowseIndex + 1, totalHist);
-                        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{msg});
+                case PinShortcutAction::SetOpacity:
+                    self->setOpacity(decision.opacityValue);
+                    return 0;
+                case PinShortcutAction::AdjustOpacity:
+                    self->setOpacity(std::clamp(self->m_opacity + decision.opacityDelta,
+                                                PinInteractionConstants::kMinPinOpacity,
+                                                PinInteractionConstants::kMaxPinOpacity));
+                    return 0;
+                case PinShortcutAction::ResetScaleAndOpacity:
+                    self->resetScale();
+                    self->setOpacity(PinInteractionConstants::kMaxPinOpacity);
+                    return 0;
+                case PinShortcutAction::ZoomIn:
+                case PinShortcutAction::ZoomOut:
+                    self->setScale(self->m_scale * decision.scaleFactor);
+                    return 0;
+                case PinShortcutAction::Nudge: {
+                    RECT rc{};
+                    if (GetWindowRect(hwnd, &rc)) {
+                        SetWindowPos(hwnd, nullptr,
+                                     rc.left + decision.nudgeDx,
+                                     rc.top + decision.nudgeDy,
+                                     0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                     }
+                    return 0;
                 }
-                return 0;
-            }
-            // . / > 键: 获焦时光机回溯历史（更近期截图）
-            if (wParam == VK_OEM_PERIOD && !ctrl) {
-                const int totalHist = CaptureHistory::instance().count();
-                if (totalHist > 1 && self->m_historyBrowseIndex > 0) {
-                    self->m_historyBrowseIndex = std::max(0, self->m_historyBrowseIndex - 1);
-                    auto entry = CaptureHistory::instance().get(self->m_historyBrowseIndex);
-                    if (entry.has_value() && !entry->image.empty()) {
-                        self->updateImage(entry->image);
-                        bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
-                        std::wstring msg = isZh
-                            ? std::format(L"[INFO] 历史贴图: 倒数第 {} 张 (共 {} 张)", self->m_historyBrowseIndex + 1, totalHist)
-                            : std::format(L"[INFO] Pin History: #{} from last (total {})", self->m_historyBrowseIndex + 1, totalHist);
-                        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{msg});
+                case PinShortcutAction::EditMarkup:
+                    self->editMarkup();
+                    return 0;
+                case PinShortcutAction::InvertColors:
+                    self->invertColors();
+                    return 0;
+                case PinShortcutAction::ToggleGrayscale:
+                    self->toggleGrayscale();
+                    return 0;
+                case PinShortcutAction::ToggleFold:
+                    self->toggleFold();
+                    return 0;
+                case PinShortcutAction::ToggleClickThrough:
+                    self->setClickThrough(!self->m_clickThrough);
+                    return 0;
+                case PinShortcutAction::PasteHistoryOrClipboard:
+                    PinWindow::pasteNextHistoryOrClipboard();
+                    return 0;
+                case PinShortcutAction::CopyAllText:
+                    self->copyAllText();
+                    return 0;
+                case PinShortcutAction::CopySelectedOrImage:
+                    if (!self->m_selectedBlockIndices.empty()) {
+                        self->copySelectedText();
+                        return 0;
                     }
+                    copyImageToClipboard(self->m_sourceImage);
+                    tools3000::core::EventBus::instance().publish(
+                        tools3000::core::ShowToastEvent{L"已复制贴图到剪贴板"});
+                    return 0;
+                case PinShortcutAction::ExtractText:
+                    self->extractText();
+                    return 0;
+                case PinShortcutAction::SaveImage:
+                    savePinnedImage(hwnd, self->m_sourceImage);
+                    return 0;
+                case PinShortcutAction::HistoryPrev: {
+                    const int totalHist = CaptureHistory::instance().count();
+                    if (totalHist > 1) {
+                        self->m_historyBrowseIndex = std::min(self->m_historyBrowseIndex + 1, totalHist - 1);
+                        auto entry = CaptureHistory::instance().get(self->m_historyBrowseIndex);
+                        if (entry.has_value() && !entry->image.empty()) {
+                            self->updateImage(entry->image);
+                            bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
+                            std::wstring msg = isZh
+                                ? std::format(L"[INFO] 历史贴图: 倒数第 {} 张 (共 {} 张)", self->m_historyBrowseIndex + 1, totalHist)
+                                : std::format(L"[INFO] Pin History: #{} from last (total {})", self->m_historyBrowseIndex + 1, totalHist);
+                            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{msg});
+                        }
+                    }
+                    return 0;
                 }
-                return 0;
+                case PinShortcutAction::HistoryNext: {
+                    const int totalHist = CaptureHistory::instance().count();
+                    if (totalHist > 1 && self->m_historyBrowseIndex > 0) {
+                        self->m_historyBrowseIndex = std::max(0, self->m_historyBrowseIndex - 1);
+                        auto entry = CaptureHistory::instance().get(self->m_historyBrowseIndex);
+                        if (entry.has_value() && !entry->image.empty()) {
+                            self->updateImage(entry->image);
+                            bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
+                            std::wstring msg = isZh
+                                ? std::format(L"[INFO] 历史贴图: 倒数第 {} 张 (共 {} 张)", self->m_historyBrowseIndex + 1, totalHist)
+                                : std::format(L"[INFO] Pin History: #{} from last (total {})", self->m_historyBrowseIndex + 1, totalHist);
+                            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{msg});
+                        }
+                    }
+                    return 0;
+                }
+                case PinShortcutAction::EscapeOrClose:
+                    if (!self->m_selectedBlockIndices.empty()) {
+                        self->m_selectedBlockIndices.clear();
+                        self->render();
+                        return 0;
+                    }
+                    if (self->m_textSelectionMode) {
+                        self->m_textSelectionMode = false;
+                        self->render();
+                        return 0;
+                    }
+                    self->close();
+                    return 0;
+                case PinShortcutAction::ClosePin:
+                    self->close();
+                    return 0;
+                case PinShortcutAction::None:
+                default:
+                    if (alt) return 0;
+                    break;
             }
             break;
         }
@@ -1637,11 +1750,20 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, HOVER_DEFAULT };
                 TrackMouseEvent(&tme);
             }
+
+            // 悬停即获焦（当贴图尚未获焦、不处于鼠标穿透且截图遮罩未打开时），
+            // 保障无论是首次移入还是遮罩关闭后鼠标仍在贴图内移动，按键旋转/缩放/关闭均即时生效
+            const bool isActuallyFocused = self->m_focused && (GetFocus() == hwnd);
+            if (PinInputController::shouldAutoFocusOnHover(
+                    isActuallyFocused, self->m_clickThrough, CaptureOverlay::instance().isOverlayVisible())) {
+                self->focusWindow();
+            }
             
             if (self->m_folded) {
-                if (self->m_hoverFold || self->m_hoverInvert || self->m_hoverEdit ||
+                if (self->m_hoverFold || self->m_hoverRotate || self->m_hoverInvert || self->m_hoverEdit ||
                     self->m_hoverText || self->m_hoverCopy || self->m_hoverSave || self->m_hoverClose) {
                     self->m_hoverFold = false;
+                    self->m_hoverRotate = false;
                     self->m_hoverInvert = false;
                     self->m_hoverEdit = false;
                     self->m_hoverText = false;
@@ -1655,6 +1777,8 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 int y = HIWORD(lParam);
                 bool hoverFold = (x >= self->m_btnFoldRect.left && x <= self->m_btnFoldRect.right &&
                                   y >= self->m_btnFoldRect.top && y <= self->m_btnFoldRect.bottom);
+                bool hoverRotate = (x >= self->m_btnRotateRect.left && x <= self->m_btnRotateRect.right &&
+                                    y >= self->m_btnRotateRect.top && y <= self->m_btnRotateRect.bottom);
                 bool hoverInvert = (x >= self->m_btnInvertRect.left && x <= self->m_btnInvertRect.right &&
                                     y >= self->m_btnInvertRect.top && y <= self->m_btnInvertRect.bottom);
                 bool hoverEdit = (x >= self->m_btnEditRect.left && x <= self->m_btnEditRect.right &&
@@ -1671,11 +1795,13 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                                           x >= self->m_btnCopyFloatingRect.left && x <= self->m_btnCopyFloatingRect.right &&
                                           y >= self->m_btnCopyFloatingRect.top && y <= self->m_btnCopyFloatingRect.bottom);
                 
-                if (hoverFold != self->m_hoverFold || hoverInvert != self->m_hoverInvert ||
-                    hoverEdit != self->m_hoverEdit || hoverText != self->m_hoverText ||
-                    hoverCopy != self->m_hoverCopy || hoverSave != self->m_hoverSave ||
-                    hoverClose != self->m_hoverClose || hoverCopyFloating != self->m_hoverCopyFloating) {
+                if (hoverFold != self->m_hoverFold || hoverRotate != self->m_hoverRotate ||
+                    hoverInvert != self->m_hoverInvert || hoverEdit != self->m_hoverEdit ||
+                    hoverText != self->m_hoverText || hoverCopy != self->m_hoverCopy ||
+                    hoverSave != self->m_hoverSave || hoverClose != self->m_hoverClose ||
+                    hoverCopyFloating != self->m_hoverCopyFloating) {
                     self->m_hoverFold = hoverFold;
+                    self->m_hoverRotate = hoverRotate;
                     self->m_hoverInvert = hoverInvert;
                     self->m_hoverEdit = hoverEdit;
                     self->m_hoverText = hoverText;
@@ -1764,6 +1890,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             self->m_isHovering = false;
             self->m_hoverTime = GetTickCount64();
             self->m_hoverFold = false;
+            self->m_hoverRotate = false;
             self->m_hoverInvert = false;
             self->m_hoverEdit = false;
             self->m_hoverText = false;
@@ -1812,6 +1939,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         case WM_MBUTTONUP: {
             // 鼠标中键单击：快速恢复 1:1 原始物理像素尺寸
             if (self) {
+                self->focusWindow();
                 self->resetScale();
             }
             return 0;
@@ -1819,6 +1947,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
         case WM_MOUSEWHEEL: {
             if (!self) break;
+            self->focusWindow();
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
             const bool ctrl = (LOWORD(wParam) & MK_CONTROL) != 0 ||
                               ((GetKeyState(VK_CONTROL) & 0x8000) != 0);
@@ -1864,6 +1993,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         case WM_RBUTTONUP: {
             // 右键菜单
             if (!self) break;
+            self->focusWindow();
             HMENU menu = CreatePopupMenu();
             bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
             AppendMenuW(menu, MF_STRING, 16, isZh ? L"编辑 / 二次标注  (E / 双击)" : L"Edit / Annotate  (E / Double Click)");
@@ -1881,12 +2011,12 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             AppendMenuW(menu, MF_STRING, 10, isZh ? L"保存图片...  (Ctrl+S)" : L"Save Image...  (Ctrl+S)");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING, 15, isZh ? L"1:1 原始尺寸  (0 或鼠标中键)" : L"1:1 Original Scale  (0 or MButton)");
-            AppendMenuW(menu, MF_STRING, 11, isZh ? L"顺时针旋转 90°  (R)" : L"Rotate Right 90°  (R)");
-            AppendMenuW(menu, MF_STRING, 12, isZh ? L"逆时针旋转 90°  (Shift+R)" : L"Rotate Left 90°  (Shift+R)");
-            AppendMenuW(menu, MF_STRING, 13, isZh ? L"水平翻转  (H)" : L"Flip Horizontal  (H)");
-            AppendMenuW(menu, MF_STRING, 14, isZh ? L"垂直翻转  (V)" : L"Flip Vertical  (V)");
+            AppendMenuW(menu, MF_STRING, 11, isZh ? L"顺时针旋转 90°  (R / 数字 2)" : L"Rotate Right 90°  (R / Key 2)");
+            AppendMenuW(menu, MF_STRING, 12, isZh ? L"逆时针旋转 90°  (Shift+R / L / 数字 1)" : L"Rotate Left 90°  (Shift+R / L / Key 1)");
+            AppendMenuW(menu, MF_STRING, 13, isZh ? L"水平翻转  (H / 数字 3)" : L"Flip Horizontal  (H / Key 3)");
+            AppendMenuW(menu, MF_STRING, 14, isZh ? L"垂直翻转  (V / 数字 4)" : L"Flip Vertical  (V / Key 4)");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, MF_STRING, 2, isZh ? L"透明度 100%  (数字 0 或 Ctrl/Shift+滚轮)" : L"Opacity 100%  (Key 0 or Ctrl/Shift+Wheel)");
+            AppendMenuW(menu, MF_STRING, 2, isZh ? L"透明度 100%  (数字 0 或 [ / ])" : L"Opacity 100%  (Key 0 or [ / ])");
             AppendMenuW(menu, MF_STRING, 3, isZh ? L"透明度 75%  (数字 7)" : L"Opacity 75%  (Key 7)");
             AppendMenuW(menu, MF_STRING, 4, isZh ? L"透明度 50%  (数字 5)" : L"Opacity 50%  (Key 5)");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -1897,7 +2027,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             AppendMenuW(menu, MF_STRING, 8, isZh ? L"隐藏全部贴图  (Ctrl+Alt+Shift+H 显示)"
                                                : L"Hide All Pins  (Ctrl+Alt+Shift+H shows)");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, MF_STRING, 5, isZh ? L"关闭  (Esc / Ctrl+W)" : L"Close  (Esc / Ctrl+W)");
+            AppendMenuW(menu, MF_STRING, 5, isZh ? L"关闭  (Esc / Delete / Ctrl+W)" : L"Close  (Esc / Delete / Ctrl+W)");
             AppendMenuW(menu, MF_STRING, 6, isZh ? L"关闭全部贴图" : L"Close All Pins");
 
             POINT pt;

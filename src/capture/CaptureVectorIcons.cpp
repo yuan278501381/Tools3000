@@ -1,4 +1,4 @@
-﻿#include "capture/CaptureVectorIcons.h"
+#include "capture/CaptureVectorIcons.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -544,6 +544,31 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
                 rt->DrawLine(p(14, 10), p(14, 4), brush, stroke, roundStroke.Get());
             }
             rt->DrawLine(p(14, 10), p(21, 3), brush, stroke, roundStroke.Get());
+            break;
+        }
+
+        // ── 19.11b 旋转贴图 (Lucide: RotateCw / 顺时针环形箭头) ──────────────────────
+        case CaptureIconId::ActionRotate: {
+            auto arcPath = createPath({
+                p(19.5f, 8.5f), p(16.8f, 5.2f), p(12.0f, 4.0f),
+                p(6.8f, 5.5f),  p(4.2f, 9.8f),  p(4.5f, 15.0f),
+                p(7.8f, 18.8f), p(12.8f, 20.0f), p(17.8f, 18.0f), p(19.8f, 14.2f)
+            }, false);
+            if (arcPath) {
+                rt->DrawGeometry(arcPath.Get(), brush, stroke, roundStroke.Get());
+            } else {
+                rt->DrawLine(p(19.5f, 8.5f), p(12.0f, 4.0f), brush, stroke, roundStroke.Get());
+                rt->DrawLine(p(12.0f, 4.0f), p(4.5f, 12.0f), brush, stroke, roundStroke.Get());
+                rt->DrawLine(p(4.5f, 12.0f), p(12.0f, 20.0f), brush, stroke, roundStroke.Get());
+                rt->DrawLine(p(12.0f, 20.0f), p(19.5f, 14.5f), brush, stroke, roundStroke.Get());
+            }
+            auto arrowHead = createPath({ p(20.0f, 3.8f), p(20.0f, 9.0f), p(14.8f, 9.0f) }, false);
+            if (arrowHead) {
+                rt->DrawGeometry(arrowHead.Get(), brush, stroke, roundStroke.Get());
+            } else {
+                rt->DrawLine(p(20.0f, 3.8f), p(20.0f, 9.0f), brush, stroke, roundStroke.Get());
+                rt->DrawLine(p(20.0f, 9.0f), p(14.8f, 9.0f), brush, stroke, roundStroke.Get());
+            }
             break;
         }
 

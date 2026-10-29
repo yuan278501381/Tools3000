@@ -723,30 +723,43 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
     float labelW = textWidth + 18.0f * scale;
     float labelH = 28.0f * scale;
 
-    // 前置确保工具栏几何布局最新，为 HUD 智能躲避求解器提供精确的主/二级工具栏障碍物矩形
-    rebuildCaptureToolbar(state, rect, m_renderTarget->GetSize());
+    const auto overlayState = state.state.load();
+    const bool hasLockedSelection =
+        ((int)overlayState == (int)OverlayState::Selected ||
+         (int)overlayState == (int)OverlayState::Marking);
+    const auto surfaceSize = m_renderTarget->GetSize();
+
+    // 仅在选区已锁定（Selected/Marking）时构建工具栏几何布局并提供工具栏障碍物矩形；
+    // 在初始未选区（Selecting）悬停探测窗口预览阶段不构建工具栏，也不驱赶左下角快捷键 HUD。
+    if (hasLockedSelection) {
+        rebuildCaptureToolbar(state, rect, surfaceSize);
+    }
 
     std::vector<HudObstacle> obstacles;
-    if (state.primaryToolbarRect.right > state.primaryToolbarRect.left &&
-        state.primaryToolbarRect.bottom > state.primaryToolbarRect.top) {
-        obstacles.push_back({state.primaryToolbarRect, HudObstacleType::PrimaryToolbar, 2.5f});
-    }
-    if (!state.secondaryToolbarButtons.empty() &&
-        state.secondaryToolbarRect.right > state.secondaryToolbarRect.left &&
-        state.secondaryToolbarRect.bottom > state.secondaryToolbarRect.top) {
-        obstacles.push_back({state.secondaryToolbarRect, HudObstacleType::SecondaryToolbar, 2.0f});
-    }
-    if (!state.selectionSideButtons.empty() &&
-        state.selectionSideRect.right > state.selectionSideRect.left &&
-        state.selectionSideRect.bottom > state.selectionSideRect.top) {
-        obstacles.push_back({state.selectionSideRect, HudObstacleType::SecondaryToolbar, 2.0f});
+    if (hasLockedSelection) {
+        if (state.primaryToolbarRect.right > state.primaryToolbarRect.left &&
+            state.primaryToolbarRect.bottom > state.primaryToolbarRect.top) {
+            obstacles.push_back({state.primaryToolbarRect, HudObstacleType::PrimaryToolbar, 2.5f});
+        }
+        if (!state.secondaryToolbarButtons.empty() &&
+            state.secondaryToolbarRect.right > state.secondaryToolbarRect.left &&
+            state.secondaryToolbarRect.bottom > state.secondaryToolbarRect.top) {
+            obstacles.push_back({state.secondaryToolbarRect, HudObstacleType::SecondaryToolbar, 2.0f});
+        }
+        if (!state.selectionSideButtons.empty() &&
+            state.selectionSideRect.right > state.selectionSideRect.left &&
+            state.selectionSideRect.bottom > state.selectionSideRect.top) {
+            obstacles.push_back({state.selectionSideRect, HudObstacleType::SecondaryToolbar, 2.0f});
+        }
     }
     if (ShortcutHintOverlay::instance().isVisible()) {
         RECT hintRect = ShortcutHintOverlay::instance().getBounds();
         if (hintRect.right > hintRect.left && hintRect.bottom > hintRect.top) {
+            const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
             obstacles.push_back({
-                D2D1::RectF(static_cast<float>(hintRect.left), static_cast<float>(hintRect.top),
-                            static_cast<float>(hintRect.right), static_cast<float>(hintRect.bottom)),
+                D2D1::RectF(static_cast<float>(hintRect.left - vx), static_cast<float>(hintRect.top - vy),
+                            static_cast<float>(hintRect.right - vx), static_cast<float>(hintRect.bottom - vy)),
                 HudObstacleType::ActiveAnnotation,
                 2.0f
             });
@@ -830,18 +843,41 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
     hudCfg.avoidCursor = true;
 
     auto placement = HudAvoidanceEngine::solvePlacement(
-        rect, labelW, labelH, m_renderTarget->GetSize(), obstacles, hudCfg, scale, state.lastSizeHudEdge);
+        rect, labelW, labelH, surfaceSize, obstacles, hudCfg, scale, state.lastSizeHudEdge);
 
     state.lastSizeHudEdge = static_cast<int>(placement.edge);
     auto pillRect = placement.rect;
     state.sizeHudRect = pillRect;
 
-    if (ShortcutHintOverlay::instance().isVisible()) {
+    if (hasLockedSelection && ShortcutHintOverlay::instance().isVisible()) {
         const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
         const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         std::vector<RECT> avoidRects;
-        avoidRects.push_back({ static_cast<LONG>(rect.left + vx), static_cast<LONG>(rect.top + vy),
-                               static_cast<LONG>(rect.right + vx), static_cast<LONG>(rect.bottom + vy) });
+        const RECT selScreen{
+            static_cast<LONG>(rect.left + vx),
+            static_cast<LONG>(rect.top + vy),
+            static_cast<LONG>(rect.right + vx),
+            static_cast<LONG>(rect.bottom + vy)
+        };
+        MONITORINFO mi{sizeof(mi)};
+        const HMONITOR hMon = MonitorFromRect(&selScreen, MONITOR_DEFAULTTONEAREST);
+        RECT workArea{
+            vx, vy,
+            vx + static_cast<LONG>(surfaceSize.width),
+            vy + static_cast<LONG>(surfaceSize.height)
+        };
+        if (hMon && GetMonitorInfoW(hMon, &mi)) {
+            workArea = mi.rcWork;
+        }
+        const LONG monW = std::max<LONG>(1, workArea.right - workArea.left);
+        const LONG monH = std::max<LONG>(1, workArea.bottom - workArea.top);
+        const LONG selW = selScreen.right - selScreen.left;
+        const LONG selH = selScreen.bottom - selScreen.top;
+        const bool isLargeWindowOrScreenSelection =
+            (selW >= (monW * 55) / 100) || (selH >= (monH * 60) / 100);
+        if (!isLargeWindowOrScreenSelection) {
+            avoidRects.push_back(selScreen);
+        }
         if (state.primaryToolbarRect.right > state.primaryToolbarRect.left) {
             avoidRects.push_back({ static_cast<LONG>(state.primaryToolbarRect.left + vx), static_cast<LONG>(state.primaryToolbarRect.top + vy),
                                    static_cast<LONG>(state.primaryToolbarRect.right + vx), static_cast<LONG>(state.primaryToolbarRect.bottom + vy) });

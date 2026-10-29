@@ -46,6 +46,9 @@ public:
     RECT getBounds() const;
     std::vector<ShortcutHintItem> getItemsForContext(ShortcutHintContext context) const { return itemsFor(context); }
 
+    using OwnerActiveChecker = bool (*)(ShortcutHintContext context);
+    void setOwnerActiveChecker(OwnerActiveChecker checker) { m_ownerActiveChecker = checker; }
+
     /// 计算微晶操作提示卡片的最佳布局点位与几何避让 (供渲染与自动化测试调用)
     static POINT computeOptimalPosition(int width, int height, const RECT& workArea, float scale,
                                         const std::vector<RECT>& avoidRects);
@@ -65,6 +68,7 @@ private:
 
     bool createWindow();
     bool createResources(float scale);
+    bool checkOwnerActive(ShortcutHintContext context) const;
     std::vector<ShortcutHintItem> itemsFor(ShortcutHintContext context) const;
     float measureText(const std::wstring& text, IDWriteTextFormat* format) const;
     bool layout(const std::vector<ShortcutHintItem>& items, int workWidth, float scale,
@@ -78,6 +82,8 @@ private:
     HINSTANCE m_module = nullptr;
     ShortcutHintContext m_context = ShortcutHintContext::CaptureSelecting;
     bool m_hasContext = false;
+    bool m_observedOwnerActive = false;
+    OwnerActiveChecker m_ownerActiveChecker = nullptr;
     RECT m_workArea{};
     float m_scale = 1.0f;
     int m_width = 0;

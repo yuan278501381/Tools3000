@@ -113,10 +113,16 @@ public:
 
     /// 获取当前展示图像
     const cv::Mat& sourceImage() const { return m_sourceImage; }
-    /// 获取当前缩放比
+    /// 获取当前缩放比与不透明度
     float scale() const { return m_scale; }
+    float opacity() const { return m_opacity; }
     int origWidth() const { return m_origWidth; }
     int origHeight() const { return m_origHeight; }
+    HWND hwnd() const { return m_hwnd; }
+    bool isFocused() const { return m_focused; }
+
+    /// 激活并获取当前贴图窗口的键盘焦点（确保快捷键如旋转 R / 1 / 2 等即时生效）
+    void focusWindow();
 
     /// 设置鼠标穿透（点透）。开启后窗口忽略所有鼠标事件，透传到下层窗口。
     void setClickThrough(bool enable);
@@ -186,6 +192,7 @@ private:
     uint64_t m_hoverTime = 0;
     D2D1_RECT_F m_toolbarRect = {};
     D2D1_RECT_F m_btnFoldRect = {};
+    D2D1_RECT_F m_btnRotateRect = {};
     D2D1_RECT_F m_btnInvertRect = {};
     D2D1_RECT_F m_btnEditRect = {};
     D2D1_RECT_F m_btnTextRect = {};
@@ -193,6 +200,7 @@ private:
     D2D1_RECT_F m_btnSaveRect = {};
     D2D1_RECT_F m_btnCloseRect = {};
     bool m_hoverFold = false;
+    bool m_hoverRotate = false;
     bool m_hoverInvert = false;
     bool m_hoverEdit = false;
     bool m_hoverText = false;

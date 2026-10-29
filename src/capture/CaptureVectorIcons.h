@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #ifndef TOOLS3000_CAPTURE_CAPTUREVECTORICONS_H
 #define TOOLS3000_CAPTURE_CAPTUREVECTORICONS_H
 
@@ -47,6 +47,7 @@ enum class CaptureIconId {
     ActionGrayscale,
     ActionResetScale,
     ActionFold,
+    ActionRotate,
     ActionResetNumber,
     ActionSnapshot,
     ActionOpenFolder,

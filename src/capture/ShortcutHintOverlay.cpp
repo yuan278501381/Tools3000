@@ -4,6 +4,7 @@
 #include "capture/ShortcutHintStyle.h"
 
 #include "core/config/ConfigManager.h"
+#include "core/events/MainThreadDispatcher.h"
 #include "core/hotkey/HotkeyManager.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
@@ -19,6 +20,7 @@ namespace tools3000::capture {
 
 namespace {
 constexpr const wchar_t* WindowClass = L"Tools3000_ShortcutHintOverlay";
+constexpr UINT_PTR kWatchdogTimerId = 1;
 
 bool useChineseLabels() {
     const auto language = tools3000::core::ConfigManager::instance().get<std::string>(
@@ -59,8 +61,37 @@ ShortcutHintOverlay& ShortcutHintOverlay::instance() {
     return overlay;
 }
 
+bool ShortcutHintOverlay::checkOwnerActive(ShortcutHintContext context) const {
+    if (m_ownerActiveChecker) {
+        return m_ownerActiveChecker(context);
+    }
+    switch (context) {
+        case ShortcutHintContext::CaptureSelecting:
+        case ShortcutHintContext::CaptureDragging:
+        case ShortcutHintContext::CaptureSelected:
+        case ShortcutHintContext::CaptureMarking:
+        case ShortcutHintContext::CaptureMarkingNumber:
+        case ShortcutHintContext::CaptureEditingText:
+        case ShortcutHintContext::RecordSelecting: {
+            HWND captureHwnd = FindWindowW(L"Tools3000_CaptureOverlay", nullptr);
+            return captureHwnd != nullptr && IsWindowVisible(captureHwnd) != FALSE;
+        }
+        case ShortcutHintContext::ScrollCapture: {
+            HWND scrollHwnd = FindWindowW(L"Tools3000_ScrollCaptureOverlay", nullptr);
+            return scrollHwnd != nullptr && IsWindowVisible(scrollHwnd) != FALSE;
+        }
+        case ShortcutHintContext::Recording:
+        case ShortcutHintContext::RecordingPaused: {
+            HWND recHwnd = FindWindowW(L"Tools3000_RecordingIndicator", nullptr);
+            return recHwnd != nullptr && IsWindowVisible(recHwnd) != FALSE;
+        }
+        default:
+            return false;
+    }
+}
+
 bool ShortcutHintOverlay::isVisible() const {
-    return m_hwnd && IsWindowVisible(m_hwnd);
+    return m_hasContext && m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd);
 }
 
 RECT ShortcutHintOverlay::getBounds() const {
@@ -90,14 +121,16 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                                                 {L"Space", L"Hold to pan"}, {L"Esc", L"Cancel"}};
         case ShortcutHintContext::CaptureSelected:
             return zh
-                ? std::vector<ShortcutHintItem>{{L"Enter", L"完成并复制"}, {L"Ctrl+S", L"保存"},
-                                                {L"Ctrl+C", L"复制"}, {L"WASD", L"1px微调移动"},
-                                                {L"Shift+WASD", L"尺寸微调"}, {L"[ / ]", L"圆角调节"},
-                                                {L"R / A / T / N", L"标注工具"}, {L"Esc", L"取消"}}
-                : std::vector<ShortcutHintItem>{{L"Enter", L"Copy & finish"}, {L"Ctrl+S", L"Save"},
-                                                {L"Ctrl+C", L"Copy"}, {L"WASD", L"1px nudge"},
-                                                {L"Shift+WASD", L"Resize"}, {L"[ / ]", L"Corner radius"},
-                                                {L"R / A / T / N", L"Markup tools"}, {L"Esc", L"Cancel"}};
+                ? std::vector<ShortcutHintItem>{{L"Enter", L"完成并复制"}, {L"Ctrl+T", L"贴图置顶"},
+                                                {L"Ctrl+S", L"保存"}, {L"Ctrl+C", L"复制"},
+                                                {L"WASD", L"1px微调移动"}, {L"Shift+WASD", L"尺寸微调"},
+                                                {L"[ / ]", L"圆角调节"}, {L"R / A / T / N", L"标注工具"},
+                                                {L"Esc", L"取消"}}
+                : std::vector<ShortcutHintItem>{{L"Enter", L"Copy & finish"}, {L"Ctrl+T", L"Pin to screen"},
+                                                {L"Ctrl+S", L"Save"}, {L"Ctrl+C", L"Copy"},
+                                                {L"WASD", L"1px nudge"}, {L"Shift+WASD", L"Resize"},
+                                                {L"[ / ]", L"Corner radius"}, {L"R / A / T / N", L"Markup tools"},
+                                                {L"Esc", L"Cancel"}};
         case ShortcutHintContext::CaptureMarking:
             return zh
                 ? std::vector<ShortcutHintItem>{{L"滚轮 / Ctrl+滚轮", L"粗细 / 不透明度"}, {L"Shift", L"约束水平/垂直/45°"},
@@ -341,6 +374,7 @@ POINT ShortcutHintOverlay::computeOptimalPosition(int width, int height, const R
     };
 
     POINT bestPos = defaultPos;
+    long long defaultCollisionArea = 0;
     long long minCollisionArea = -1;
 
     for (size_t i = 0; i < candidates.size(); ++i) {
@@ -352,6 +386,10 @@ POINT ShortcutHintOverlay::computeOptimalPosition(int width, int height, const R
             if (avoid.right <= avoid.left || avoid.bottom <= avoid.top) continue;
             RECT paddedAvoid{avoid.left - 10, avoid.top - 10, avoid.right + 10, avoid.bottom + 10};
             collision += calcIntersectionArea(candRect, paddedAvoid);
+        }
+
+        if (i == 0) {
+            defaultCollisionArea = collision;
         }
 
         // 如果首选候选或某标准候选无任何碰撞，按标准优先级直接采纳并返回
@@ -405,11 +443,32 @@ POINT ShortcutHintOverlay::computeOptimalPosition(int width, int height, const R
         }
     }
 
+    // 若所有候选点均被大面积选区（如最大化窗口/全屏选区）覆盖且没有任何候选能将碰撞降低至少 50%，
+    // 严格锚定默认左下角，杜绝因标题栏几像素差异误跳至左上角。
+    if (defaultCollisionArea > 0 && minCollisionArea * 2 >= defaultCollisionArea) {
+        return defaultPos;
+    }
+
     return bestPos;
 }
 
 void ShortcutHintOverlay::updateAvoidance(const std::vector<RECT>& avoidRects) {
     if (!m_hwnd || !IsWindowVisible(m_hwnd)) return;
+    if (GetWindowThreadProcessId(m_hwnd, nullptr) != GetCurrentThreadId()) {
+        if (tools3000::core::MainThreadDispatcher::instance().isInitialized()) {
+            tools3000::core::MainThreadDispatcher::instance().post([avoidRects]() {
+                ShortcutHintOverlay::instance().updateAvoidance(avoidRects);
+            });
+        }
+        return;
+    }
+    const bool ownerActiveNow = checkOwnerActive(m_context);
+    if (!m_observedOwnerActive && ownerActiveNow) {
+        m_observedOwnerActive = true;
+    } else if ((m_ownerActiveChecker != nullptr || m_observedOwnerActive) && !ownerActiveNow) {
+        hide();
+        return;
+    }
     m_avoidRects = avoidRects;
     POINT pos = computeOptimalPosition(m_width, m_height, m_workArea, m_scale, m_avoidRects);
     RECT curRect{};
@@ -422,18 +481,27 @@ void ShortcutHintOverlay::updateAvoidance(const std::vector<RECT>& avoidRects) {
 
 void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
                               const std::vector<RECT>& avoidRects) {
+    if ((m_hwnd && IsWindow(m_hwnd) && GetWindowThreadProcessId(m_hwnd, nullptr) != GetCurrentThreadId()) ||
+        (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+         !tools3000::core::MainThreadDispatcher::instance().isOwnerThread())) {
+        tools3000::core::MainThreadDispatcher::instance().post([context, anchor, avoidRects]() {
+            ShortcutHintOverlay::instance().show(context, anchor, avoidRects);
+        });
+        return;
+    }
     if (!tools3000::core::ConfigManager::instance().get<bool>(
             "/capture/showShortcutHints", true)) {
         hide();
         return;
     }
-    m_avoidRects = avoidRects;
-    if (m_hasContext && m_context == context && isVisible()) {
-        updateAvoidance(avoidRects);
-        return;
-    }
     auto items = itemsFor(context);
     if (items.empty()) {
+        hide();
+        return;
+    }
+    const bool ownerActiveNow = checkOwnerActive(context);
+    if ((m_ownerActiveChecker != nullptr || (m_hasContext && m_context == context && m_observedOwnerActive)) &&
+        !ownerActiveNow) {
         hide();
         return;
     }
@@ -447,6 +515,16 @@ void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
 
     const UINT dpiX = tools3000::core::dpi::effectiveDpiForMonitor(monitor);
     const float scale = ShortcutHintStyle::scaleForDpi(dpiX);
+    m_avoidRects = avoidRects;
+    if (m_hasContext && m_context == context && isVisible() &&
+        std::abs(scale - m_scale) <= 0.01f) {
+        if (ownerActiveNow) m_observedOwnerActive = true;
+        updateAvoidance(avoidRects);
+        return;
+    }
+    if (m_hwnd && !IsWindow(m_hwnd)) {
+        m_hwnd = nullptr;
+    }
     if (!m_hwnd && !createWindow()) return;
     if (!m_renderTarget || std::abs(scale - m_scale) > 0.01f) {
         discardResources();
@@ -476,6 +554,8 @@ void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
     tools3000::core::accessibility::announceOverlay(m_hwnd, accessibleName);
     m_context = context;
     m_hasContext = true;
+    m_observedOwnerActive = ownerActiveNow;
+    SetTimer(m_hwnd, kWatchdogTimerId, 150, nullptr);
 }
 
 void ShortcutHintOverlay::render() {
@@ -629,12 +709,35 @@ void ShortcutHintOverlay::discardResources() {
 
 void ShortcutHintOverlay::hide() {
     m_hasContext = false;
+    m_observedOwnerActive = false;
+    m_avoidRects.clear();
+    if (m_hwnd) {
+        if (!IsWindow(m_hwnd)) {
+            m_hwnd = nullptr;
+        } else if (GetWindowThreadProcessId(m_hwnd, nullptr) != GetCurrentThreadId()) {
+            // 跨线程隐藏防护：Win32 DestroyWindow 仅允许创建窗口的线程调用，
+            // 工作线程调用时立即通过 ShowWindowAsync 隐藏视觉残留并投递异步销毁消息。
+            ShowWindowAsync(m_hwnd, SW_HIDE);
+            PostMessageW(m_hwnd, WM_APP + 1, 0, 0);
+            if (tools3000::core::MainThreadDispatcher::instance().isInitialized()) {
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    if (!ShortcutHintOverlay::instance().isVisible()) {
+                        ShortcutHintOverlay::instance().hide();
+                    }
+                });
+            }
+            return;
+        }
+    }
     m_items.clear();
     discardResources();
     if (m_hwnd) {
-        tools3000::core::accessibility::hideOverlay(m_hwnd);
-        DestroyWindow(m_hwnd);
+        HWND hwndToDestroy = m_hwnd;
         m_hwnd = nullptr;
+        KillTimer(hwndToDestroy, kWatchdogTimerId);
+        tools3000::core::accessibility::hideOverlay(hwndToDestroy);
+        ShowWindow(hwndToDestroy, SW_HIDE);
+        DestroyWindow(hwndToDestroy);
     }
     if (m_module) {
         UnregisterClassW(WindowClass, m_module);
@@ -677,6 +780,37 @@ LRESULT CALLBACK ShortcutHintOverlay::wndProc(
         overlay = static_cast<ShortcutHintOverlay*>(create->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(overlay));
     }
+    if (message == WM_APP + 1) {
+        if (overlay && !overlay->m_hasContext) {
+            overlay->hide();
+        }
+        return 0;
+    }
+    if (message == WM_TIMER && wParam == kWatchdogTimerId) {
+        if (!overlay || !overlay->m_hasContext) {
+            KillTimer(hwnd, kWatchdogTimerId);
+            if (overlay) overlay->hide();
+            return 0;
+        }
+        const bool ownerActiveNow = overlay->checkOwnerActive(overlay->m_context);
+        if (!overlay->m_observedOwnerActive && ownerActiveNow) {
+            overlay->m_observedOwnerActive = true;
+        } else if ((overlay->m_ownerActiveChecker != nullptr || overlay->m_observedOwnerActive) && !ownerActiveNow) {
+            overlay->hide();
+        }
+        return 0;
+    }
+    if (message == WM_CLOSE) {
+        if (overlay && overlay->m_hwnd == hwnd) {
+            overlay->hide();
+        } else {
+            KillTimer(hwnd, kWatchdogTimerId);
+            tools3000::core::accessibility::hideOverlay(hwnd);
+            ShowWindow(hwnd, SW_HIDE);
+            DestroyWindow(hwnd);
+        }
+        return 0;
+    }
     if (message == WM_GETOBJECT) {
         return tools3000::core::accessibility::respondToOverlayUiaGetObject(
             hwnd, wParam, lParam,
@@ -686,6 +820,11 @@ LRESULT CALLBACK ShortcutHintOverlay::wndProc(
                     : std::vector<tools3000::core::accessibility::OverlayUiaAction>{});
     }
     if (message == WM_NCDESTROY) {
+        if (overlay && overlay->m_hwnd == hwnd) {
+            overlay->m_hwnd = nullptr;
+            overlay->m_hasContext = false;
+            overlay->m_observedOwnerActive = false;
+        }
         tools3000::core::accessibility::disconnectOverlayUiaProvider(hwnd);
     }
     if (overlay && (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED ||
@@ -696,6 +835,11 @@ LRESULT CALLBACK ShortcutHintOverlay::wndProc(
     }
     if (overlay && overlay->m_hasContext &&
         (message == WM_DPICHANGED || message == WM_DISPLAYCHANGE)) {
+        if ((overlay->m_ownerActiveChecker != nullptr || overlay->m_observedOwnerActive) &&
+            !overlay->checkOwnerActive(overlay->m_context)) {
+            overlay->hide();
+            return 0;
+        }
         POINT anchor{
             (overlay->m_workArea.left + overlay->m_workArea.right) / 2,
             (overlay->m_workArea.top + overlay->m_workArea.bottom) / 2};

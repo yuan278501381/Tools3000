@@ -424,28 +424,47 @@ public:
         auto& mb = tools3000::core::MessageBridge::instance();
         auto& bus = tools3000::core::EventBus::instance();
 
+        auto runOnUiThread = [](tools3000::core::MainThreadDispatcher::Task task) {
+            auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
+            if (dispatcher.isInitialized()) {
+                dispatcher.post(std::move(task));
+            } else if (task) {
+                task();
+            }
+        };
+
         // 订阅 EventBus 上的托盘/快捷键触发事件
-        m_screenshotSubscription = bus.subscribe<tools3000::core::ActionTriggerScreenshotEvent>([](const tools3000::core::ActionTriggerScreenshotEvent&) {
-            g_ocrPending.store(false);
-            tools3000::capture::ScreenCapture::instance().startCapture(configuredCaptureOptions());
+        m_screenshotSubscription = bus.subscribe<tools3000::core::ActionTriggerScreenshotEvent>([runOnUiThread](const tools3000::core::ActionTriggerScreenshotEvent&) {
+            runOnUiThread([]() {
+                g_ocrPending.store(false);
+                tools3000::capture::ScreenCapture::instance().startCapture(configuredCaptureOptions());
+            });
         });
 
-        m_recordingSubscription = bus.subscribe<tools3000::core::ActionToggleRecordingEvent>([](const tools3000::core::ActionToggleRecordingEvent&) {
-            toggleRecording();
+        m_recordingSubscription = bus.subscribe<tools3000::core::ActionToggleRecordingEvent>([runOnUiThread](const tools3000::core::ActionToggleRecordingEvent&) {
+            runOnUiThread([]() {
+                toggleRecording();
+            });
         });
 
-        m_themeSubscription = bus.subscribe<tools3000::core::ThemeChangedEvent>([](const tools3000::core::ThemeChangedEvent&) {
-            tools3000::capture::CaptureOverlay::instance().reloadThemeColors();
+        m_themeSubscription = bus.subscribe<tools3000::core::ThemeChangedEvent>([runOnUiThread](const tools3000::core::ThemeChangedEvent&) {
+            runOnUiThread([]() {
+                tools3000::capture::CaptureOverlay::instance().reloadThemeColors();
+            });
         });
         
-        mb.registerHandler("capture.triggerScreenshot", [](const nlohmann::json&) -> nlohmann::json {
-            g_ocrPending.store(false);
-            tools3000::capture::ScreenCapture::instance().startCapture(configuredCaptureOptions());
+        mb.registerHandler("capture.triggerScreenshot", [runOnUiThread](const nlohmann::json&) -> nlohmann::json {
+            runOnUiThread([]() {
+                g_ocrPending.store(false);
+                tools3000::capture::ScreenCapture::instance().startCapture(configuredCaptureOptions());
+            });
             return {{"success", true}};
         });
 
-        mb.registerHandler("capture.toggleRecording", [](const nlohmann::json&) -> nlohmann::json {
-            toggleRecording();
+        mb.registerHandler("capture.toggleRecording", [runOnUiThread](const nlohmann::json&) -> nlohmann::json {
+            runOnUiThread([]() {
+                toggleRecording();
+            });
             return {{"success", true}};
         });
 
@@ -517,7 +536,7 @@ public:
             };
         });
 
-        mb.registerHandler("capture.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
+        mb.registerHandler("capture.updateSettings", [runOnUiThread](const nlohmann::json& params) -> nlohmann::json {
             static const std::unordered_set<std::string> formats = {"png", "jpg", "jpeg", "webp", "bmp"};
             static const std::unordered_set<std::string> themes = {
                 "studio_slate", "paper_chalk", "silk_mist", "midnight_graphite", "pure_minimal",
@@ -552,20 +571,22 @@ public:
                 {{"capture", params}}, "/capture");
             if (saved && params.contains("showShortcutHints")) {
                 const bool enabled = params.at("showShortcutHints").get<bool>();
-                tools3000::capture::CaptureOverlay::instance().setShortcutHintsEnabled(enabled);
-                if (!enabled) {
-                    ShortcutHintOverlay::instance().hide();
-                } else if (ScrollCapture::instance().isRunning()) {
-                    ShortcutHintOverlay::instance().show(ShortcutHintContext::ScrollCapture);
-                } else {
-                    const auto recordState = ScreenRecorder::instance().state();
-                    if (recordState == RecordState::Recording || recordState == RecordState::Paused) {
-                        ShortcutHintOverlay::instance().show(
-                            recordState == RecordState::Paused
-                                ? ShortcutHintContext::RecordingPaused
-                                : ShortcutHintContext::Recording);
+                runOnUiThread([enabled]() {
+                    tools3000::capture::CaptureOverlay::instance().setShortcutHintsEnabled(enabled);
+                    if (!enabled) {
+                        ShortcutHintOverlay::instance().hide();
+                    } else if (ScrollCapture::instance().isRunning()) {
+                        ShortcutHintOverlay::instance().show(ShortcutHintContext::ScrollCapture);
+                    } else {
+                        const auto recordState = ScreenRecorder::instance().state();
+                        if (recordState == RecordState::Recording || recordState == RecordState::Paused) {
+                            ShortcutHintOverlay::instance().show(
+                                recordState == RecordState::Paused
+                                    ? ShortcutHintContext::RecordingPaused
+                                    : ShortcutHintContext::Recording);
+                        }
                     }
-                }
+                });
             }
             return {{"success", saved}, {"error", saved ? "" : "failed to persist settings"}};
         });

@@ -428,8 +428,8 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
     const float spaceBelow = (surfaceSize.height - screenMargin) - (selectionRect.bottom + gap);
     const float spaceAbove = (selectionRect.top - gap) - screenMargin;
 
-    float priPanelX = std::clamp(selectionRect.left, screenMargin,
-                                 std::max(screenMargin, surfaceSize.width - priPanelW - screenMargin));
+    const float maxPriX = std::max(screenMargin, surfaceSize.width - priPanelW - screenMargin);
+    float priPanelX = std::clamp(selectionRect.left, screenMargin, maxPriX);
     float priPanelY = 0.0f;
 
     if (spaceBelow >= totalHeight) {
@@ -450,6 +450,21 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
             priPanelY = std::clamp(selectionRect.bottom + gap, screenMargin,
                                    std::max(screenMargin, surfaceSize.height - totalHeight - screenMargin));
         }
+    }
+
+    // 当主工具栏位于屏幕底部区域且左对齐会侵入左下角快捷键提示 HUD 驻留区时，
+    // 优先向选区右侧对齐或向右平移避让，确保左下角快捷键提示窗稳固驻留左下角不跳变。
+    const float hintSafeRight = 340.0f * scale;
+    const float hintSafeTop = surfaceSize.height - 320.0f * scale;
+    const bool alignedRightToAvoidHint =
+        state.options.showShortcutHints &&
+        (priPanelY + totalHeight > hintSafeTop) &&
+        (priPanelX < hintSafeRight) &&
+        (maxPriX > priPanelX);
+    if (alignedRightToAvoidHint) {
+        float preferredRightAlignedX = selectionRect.right - priPanelW;
+        float targetX = std::max(preferredRightAlignedX, std::min(hintSafeRight, maxPriX));
+        priPanelX = std::clamp(targetX, screenMargin, maxPriX);
     }
 
     state.primaryToolbarRect = D2D1::RectF(priPanelX, priPanelY, priPanelX + priPanelW, priPanelY + priPanelH);
@@ -482,10 +497,11 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
 
     // 填充二级属性栏按钮
     if (!secSpecs.empty()) {
-        float secPanelX = priPanelX;
-        if (secPanelX + secPanelW > surfaceSize.width - screenMargin) {
-            secPanelX = surfaceSize.width - secPanelW - screenMargin;
-        }
+        const float maxSecX = std::max(screenMargin, surfaceSize.width - secPanelW - screenMargin);
+        float secPanelX = alignedRightToAvoidHint
+            ? std::max(priPanelX, selectionRect.right - secPanelW)
+            : priPanelX;
+        secPanelX = std::clamp(secPanelX, screenMargin, maxSecX);
         float secPanelY = priPanelY + priPanelH + tierGap;
         state.secondaryToolbarRect = D2D1::RectF(secPanelX, secPanelY, secPanelX + secPanelW, secPanelY + secPanelH);
 
@@ -536,7 +552,8 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
         }
         // 如果左侧也超出屏幕，则紧贴选区内部右侧
         if (sideX < screenMargin) {
-            sideX = std::max(screenMargin, selectionRect.left + 8.0f * scale);
+            sideX = std::clamp(selectionRect.right - sideW - 8.0f * scale, screenMargin,
+                               std::max(screenMargin, surfaceSize.width - sideW - screenMargin));
         }
 
         // Y 轴垂直居中对齐选区
@@ -709,7 +726,7 @@ void transitionToRecordMode(CaptureState& state) {
     state.openSubmenu = SubmenuType::None;
     state.sliderPopup.type = SliderPopupType::None;
     state.toolbarLayoutValid = false;
-    if (state.options.showShortcutHints) {
+    if (state.options.showShortcutHints && state.state.load() != OverlayState::Idle) {
         ShortcutHintOverlay::instance().show(ShortcutHintContext::RecordSelecting);
     }
     const bool zh = tools3000::core::WinUtils::isSystemLanguageChinese();
