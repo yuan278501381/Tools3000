@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-accent="cyan">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tools3000 交互式配色实验室 (Live Theme Playground)</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <style>
+    /* ── 全局设计变量 ──────────────────────────────────────────────────────── */
+    :root {
+      /* 动态强调色（默认极光青） */
+      --primary: #06b6d4;
+      --primary-hover: #22d3ee;
+      --primary-dim: rgba(6, 182, 212, 0.16);
+      --primary-glow: rgba(6, 182, 212, 0.35);
+
+      /* 基础暗色表面 */
+      --bg-base: #0f1117;
+      --bg-surface: #171a23;
+      --bg-elevated: #1e2230;
+      --card-bg: #1e2230;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-hover: #252a3d;
+
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+
+      --input-bg: rgba(15, 17, 23, 0.6);
+      --input-border: rgba(255, 255, 255, 0.12);
+
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-full: 9999px;
+
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+
+      --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+      --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    [data-theme="light"] {
+      --bg-base: #f1f5f9;
+      --bg-surface: #ffffff;
+      --bg-elevated: #ffffff;
+      --card-bg: #ffffff;
+      --card-border: rgba(0, 0, 0, 0.08);
+      --card-hover: #f8fafc;
+
+      --text-primary: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #94a3b8;
+
+      --input-bg: #f8fafc;
+      --input-border: rgba(0, 0, 0, 0.12);
+
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.06);
+      --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.08);
+    }
+
+    /* ── 预设配色主题 ──────────────────────────────────────────────────────── */
+    [data-accent="violet"] {
+      --primary: #8b5cf6;
+      --primary-hover: #a78bfa;
+      --primary-dim: rgba(139, 92, 246, 0.16);
+      --primary-glow: rgba(139, 92, 246, 0.35);
+    }
+    [data-accent="cyan"] {
+      --primary: #06b6d4;
+      --primary-hover: #22d3ee;
+      --primary-dim: rgba(6, 182, 212, 0.16);
+      --primary-glow: rgba(6, 182, 212, 0.35);
+    }
+    [data-accent="amber"] {
+      --primary: #f59e0b;
+      --primary-hover: #fbbf24;
+      --primary-dim: rgba(245, 158, 11, 0.16);
+      --primary-glow: rgba(245, 158, 11, 0.35);
+    }
+    [data-accent="blue"] {
+      --primary: #2563eb;
+      --primary-hover: #3b82f6;
+      --primary-dim: rgba(37, 99, 235, 0.16);
+      --primary-glow: rgba(37, 99, 235, 0.35);
+    }
+    [data-accent="mint"] {
+      --primary: #10b981;
+      --primary-hover: #34d399;
+      --primary-dim: rgba(16, 185, 129, 0.16);
+      --primary-glow: rgba(16, 185, 129, 0.35);
+    }
+    [data-accent="coral"] {
+      --primary: #f43f5e;
+      --primary-hover: #fb7185;
+      --primary-dim: rgba(244, 63, 94, 0.16);
+      --primary-glow: rgba(244, 63, 94, 0.35);
+    }
+
+    /* ── 页面基底 ──────────────────────────────────────────────────────────── */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 24px;
+      transition: background-color var(--transition-normal), color var(--transition-normal);
+    }
+
+    /* ── 顶部控制台 (Theme Palette Bar) ────────────────────────────────────── */
+    .palette-header {
+      max-width: 1200px;
+      width: 100%;
+      margin: 0 auto 24px auto;
+      background: var(--bg-surface);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-lg);
+      padding: 20px 24px;
+      box-shadow: var(--shadow-md);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .palette-header__top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .palette-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .palette-brand__icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: var(--primary-dim);
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition-fast);
+      box-shadow: 0 0 12px var(--primary-glow);
+    }
+
+    .palette-brand__title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .palette-brand__desc {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+    }
+
+    .palette-swatches {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .swatch-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: var(--radius-sm);
+      border: 1.5px solid var(--card-border);
+      background: var(--card-bg);
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      user-select: none;
+    }
+
+    .swatch-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-sm);
+      border-color: var(--primary);
+    }
+
+    .swatch-btn.active {
+      border-color: var(--primary);
+      background: var(--primary-dim);
+      color: var(--primary);
+      font-weight: 600;
+      box-shadow: 0 0 0 1px var(--primary-glow);
+    }
+
+    .swatch-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      box-shadow: 0 0 6px currentColor;
+    }
+
+    .theme-mode-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--card-border);
+      background: var(--card-bg);
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .theme-mode-toggle:hover {
+      color: var(--text-primary);
+      border-color: var(--primary);
+    }
+
+    /* ── 主体双栏展示区 ────────────────────────────────────────────────────── */
+    .playground-grid {
+      max-width: 1200px;
+      width: 100%;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1.15fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 900px) {
+      .playground-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* ── 模拟窗口外框 ──────────────────────────────────────────────────────── */
+    .app-window {
+      background: var(--bg-surface);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .window-header {
+      height: 44px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+    }
+
+    .window-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .window-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--card-border);
+    }
+
+    .window-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .window-content {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* ── 侧边栏与主区模拟 ──────────────────────────────────────────────────── */
+    .sim-nav-tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--bg-base);
+      padding: 4px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--card-border);
+    }
+
+    .sim-nav-tab {
+      flex: 1;
+      padding: 7px 10px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .sim-nav-tab:hover {
+      color: var(--text-primary);
+    }
+
+    .sim-nav-tab.active {
+      background: var(--card-bg);
+      color: var(--primary);
+      font-weight: 600;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    /* ── 二级分类分段器 (Subtabs) ─────────────────────────────────────────── */
+    .sim-subtabs {
+      display: flex;
+      gap: 3px;
+      background: var(--bg-base);
+      padding: 3px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--card-border);
+    }
+
+    .sim-subtab {
+      flex: 1;
+      padding: 5px 6px;
+      font-size: 0.76rem;
+      font-weight: 500;
+      border-radius: 5px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+
+    .sim-subtab:hover {
+      color: var(--text-primary);
+    }
+
+    .sim-subtab.active {
+      background: var(--card-bg);
+      color: var(--primary);
+      font-weight: 600;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    }
+
+    /* ── 应用网格卡片 ──────────────────────────────────────────────────────── */
+    .sim-app-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .sim-app-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--card-border);
+      background: var(--card-bg);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      user-select: none;
+    }
+
+    .sim-app-item:hover {
+      border-color: var(--primary);
+      background: var(--card-hover);
+    }
+
+    .sim-app-item.selected {
+      border-color: var(--primary);
+      background: var(--primary-dim);
+      box-shadow: 0 0 0 1px var(--primary-glow);
+    }
+
+    .sim-app-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: var(--primary-dim);
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.9rem;
+      flex-shrink: 0;
+    }
+
+    .sim-app-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .sim-app-name {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sim-app-proc {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+
+    /* ── 策略卡片 (Strategy Action Cards) ─────────────────────────────────── */
+    .sim-strategy-cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .sim-strategy-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius-md);
+      border: 1.5px solid var(--card-border);
+      background: var(--card-bg);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      user-select: none;
+    }
+
+    .sim-strategy-card:hover {
+      border-color: var(--primary);
+    }
+
+    .sim-strategy-card.selected {
+      border-color: var(--primary);
+      background: var(--primary-dim);
+      box-shadow: 0 0 0 1px var(--primary-glow);
+    }
+
+    .sim-strategy-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--bg-base);
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.9rem;
+      flex-shrink: 0;
+    }
+
+    .sim-strategy-card.selected .sim-strategy-icon {
+      background: var(--primary);
+      color: #ffffff;
+    }
+
+    .sim-strategy-title {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .sim-strategy-desc {
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    /* ── 设置组件与按钮 ──────────────────────────────────────────────────── */
+    .sim-setting-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .sim-setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .sim-setting-title {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .sim-setting-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    /* ── 动态开关 Toggle ───────────────────────────────────────────────────── */
+    .sim-toggle {
+      width: 44px;
+      height: 24px;
+      border-radius: 12px;
+      background: var(--bg-base);
+      border: 1px solid var(--card-border);
+      position: relative;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .sim-toggle::after {
+      content: '';
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      top: 2px;
+      left: 2px;
+      transition: all var(--transition-fast);
+    }
+
+    .sim-toggle.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      box-shadow: 0 0 10px var(--primary-glow);
+    }
+
+    .sim-toggle.active::after {
+      left: 22px;
+      background: #ffffff;
+    }
+
+    /* ── 按钮组 ────────────────────────────────────────────────────────────── */
+    .sim-btn-group {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .sim-btn {
+      flex: 1;
+      padding: 9px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: none;
+      user-select: none;
+    }
+
+    .sim-btn-primary {
+      background: var(--primary);
+      color: #ffffff;
+      box-shadow: 0 2px 8px var(--primary-glow);
+    }
+
+    .sim-btn-primary:hover {
+      background: var(--primary-hover);
+      box-shadow: 0 4px 14px var(--primary-glow);
+      transform: translateY(-1px);
+    }
+
+    .sim-btn-secondary {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      border: 1px solid var(--card-border);
+    }
+
+    .sim-btn-secondary:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+
+    .sim-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: var(--radius-full);
+      font-size: 0.72rem;
+      font-weight: 600;
+      background: var(--primary-dim);
+      color: var(--primary);
+    }
+
+    /* ── 底部提示 ──────────────────────────────────────────────────────────── */
+    .palette-footer {
+      max-width: 1200px;
+      margin: 24px auto 0 auto;
+      text-align: center;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部配色选择中控台 -->
+  <header class="palette-header">
+    <div class="palette-header__top">
+      <div class="palette-brand">
+        <div class="palette-brand__icon">⚡</div>
+        <div>
+          <h1 class="palette-brand__title">Tools3000 交互式配色实验室</h1>
+          <p class="palette-brand__desc">点击下方任意色卡，实时体验 Tools3000 全局组件渲染效果</p>
+        </div>
+      </div>
+      <button class="theme-mode-toggle" id="mode-toggle-btn" onclick="toggleThemeMode()">
+        <span id="mode-icon">🌙</span>
+        <span id="mode-text">切换亮色/暗色</span>
+      </button>
+    </div>
+
+    <!-- 6 组精选色卡 -->
+    <div class="palette-swatches">
+      <button class="swatch-btn" data-color="cyan" onclick="setAccent('cyan')">
+        <span class="swatch-dot" style="color: #06b6d4; background: #06b6d4;"></span>
+        <span>🩵 极光青 (Arctic Cyan)</span>
+      </button>
+      <button class="swatch-btn" data-color="amber" onclick="setAccent('amber')">
+        <span class="swatch-dot" style="color: #f59e0b; background: #f59e0b;"></span>
+        <span>🌟 曜石暖金 (Solar Amber)</span>
+      </button>
+      <button class="swatch-btn" data-color="blue" onclick="setAccent('blue')">
+        <span class="swatch-dot" style="color: #2563eb; background: #2563eb;"></span>
+        <span>💙 深海钴蓝 (Cobalt Azure)</span>
+      </button>
+      <button class="swatch-btn" data-color="mint" onclick="setAccent('mint')">
+        <span class="swatch-dot" style="color: #10b981; background: #10b981;"></span>
+        <span>💚 薄荷翡翠 (Emerald Mint)</span>
+      </button>
+      <button class="swatch-btn" data-color="coral" onclick="setAccent('coral')">
+        <span class="swatch-dot" style="color: #f43f5e; background: #f43f5e;"></span>
+        <span>🌸 暮霞珊瑚 (Sunset Coral)</span>
+      </button>
+      <button class="swatch-btn" data-color="violet" onclick="setAccent('violet')">
+        <span class="swatch-dot" style="color: #8b5cf6; background: #8b5cf6;"></span>
+        <span>💜 经典魅紫 (Vibrant Violet)</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- 主体真实交互展示区 -->
+  <main class="playground-grid">
+
+    <!-- 窗口 1：目标应用与独立手势规则配置器 -->
+    <div class="app-window">
+      <div class="window-header">
+        <div class="window-dots">
+          <div class="window-dot" style="background: #ff5f56;"></div>
+          <div class="window-dot" style="background: #ffbd2e;"></div>
+          <div class="window-dot" style="background: #27c93f;"></div>
+        </div>
+        <div class="window-title">添加免打扰/独立手势目标</div>
+        <span class="sim-badge">实时响应</span>
+      </div>
+
+      <div class="window-content">
+        <!-- 一级模式分段 Tab -->
+        <div class="sim-nav-tabs">
+          <button class="sim-nav-tab" onclick="switchMainTab(this, 'running')">💻 当前运行应用 (8)</button>
+          <button class="sim-nav-tab active" onclick="switchMainTab(this, 'presets')">✨ 常用软件预设</button>
+          <button class="sim-nav-tab" onclick="switchMainTab(this, 'manual')">⚙️ 手动高级填写</button>
+        </div>
+
+        <!-- 二级分类分段器 (Subtabs) -->
+        <div class="sim-subtabs">
+          <button class="sim-subtab active" onclick="switchSubtab(this)">全部</button>
+          <button class="sim-subtab" onclick="switchSubtab(this)">🌐 浏览器</button>
+          <button class="sim-subtab" onclick="switchSubtab(this)">&lt;/&gt; 开发设计</button>
+          <button class="sim-subtab" onclick="switchSubtab(this)">📄 办公协作</button>
+          <button class="sim-subtab" onclick="switchSubtab(this)">🔧 系统工具</button>
+        </div>
+
+        <!-- 应用选择网格 -->
+        <div class="sim-app-grid">
+          <div class="sim-app-item selected" onclick="selectApp(this)">
+            <div class="sim-app-icon">🌐</div>
+            <div class="sim-app-info">
+              <span class="sim-app-name">Google Chrome</span>
+              <span class="sim-app-proc">chrome.exe</span>
+            </div>
+          </div>
+          <div class="sim-app-item" onclick="selectApp(this)">
+            <div class="sim-app-icon">&lt;/&gt;</div>
+            <div class="sim-app-info">
+              <span class="sim-app-name">VS Code</span>
+              <span class="sim-app-proc">Code.exe</span>
+            </div>
+          </div>
+          <div class="sim-app-item" onclick="selectApp(this)">
+            <div class="sim-app-icon">💬</div>
+            <div class="sim-app-info">
+              <span class="sim-app-name">微信</span>
+              <span class="sim-app-proc">WeChat.exe</span>
+            </div>
+          </div>
+          <div class="sim-app-item" onclick="selectApp(this)">
+            <div class="sim-app-icon">📁</div>
+            <div class="sim-app-info">
+              <span class="sim-app-name">文件资源管理器</span>
+              <span class="sim-app-proc">CabinetWClass</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 作用策略 Action Cards -->
+        <div style="font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-top: 4px;">作用策略 (Action Strategy)</div>
+        <div class="sim-strategy-cards">
+          <div class="sim-strategy-card selected" onclick="selectStrategy(this)">
+            <div class="sim-strategy-icon">✨</div>
+            <div>
+              <div class="sim-strategy-title">自定义独立手势</div>
+              <div class="sim-strategy-desc">覆盖或扩展全局手势</div>
+            </div>
+          </div>
+          <div class="sim-strategy-card" onclick="selectStrategy(this)">
+            <div class="sim-strategy-icon">🚫</div>
+            <div>
+              <div class="sim-strategy-title">禁用手势 (免打扰)</div>
+              <div class="sim-strategy-desc">在此应用中完全停用</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 按钮组 -->
+        <div class="sim-btn-group">
+          <button class="sim-btn sim-btn-secondary">取消</button>
+          <button class="sim-btn sim-btn-primary">添加并配置规则</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 窗口 2：系统全局设置与性能监控面板 -->
+    <div class="app-window">
+      <div class="window-header">
+        <div class="window-dots">
+          <div class="window-dot" style="background: #ff5f56;"></div>
+          <div class="window-dot" style="background: #ffbd2e;"></div>
+          <div class="window-dot" style="background: #27c93f;"></div>
+        </div>
+        <div class="window-title">全局设置与极客控制台</div>
+        <span class="sim-badge" id="current-theme-badge">Arctic Cyan</span>
+      </div>
+
+      <div class="window-content">
+        <!-- 设置卡片 1 -->
+        <div class="sim-setting-card">
+          <div class="sim-setting-row">
+            <div>
+              <div class="sim-setting-title">开机自启动与静默托管</div>
+              <div class="sim-setting-subtitle">Windows 登录后自动在托盘运行</div>
+            </div>
+            <div class="sim-toggle active" onclick="toggleSwitch(this)"></div>
+          </div>
+
+          <div class="sim-setting-row">
+            <div>
+              <div class="sim-setting-title">手势动态轨迹与发光特效</div>
+              <div class="sim-setting-subtitle">60 FPS 硬件加速轨迹流光渲染</div>
+            </div>
+            <div class="sim-toggle active" onclick="toggleSwitch(this)"></div>
+          </div>
+
+          <div class="sim-setting-row">
+            <div>
+              <div class="sim-setting-title">物理内存冷路径修剪 (Physical Trim)</div>
+              <div class="sim-setting-subtitle">任务结束后主动将驻留物理内存降至 25MB</div>
+            </div>
+            <div class="sim-toggle active" onclick="toggleSwitch(this)"></div>
+          </div>
+        </div>
+
+        <!-- 快捷键与组件展示 -->
+        <div class="sim-setting-card">
+          <div class="sim-setting-row">
+            <div>
+              <div class="sim-setting-title">全局全文检索快捷键</div>
+              <div class="sim-setting-subtitle">毫秒级召回全盘 2,000,000+ 文件</div>
+            </div>
+            <button class="sim-btn sim-btn-secondary" style="flex: 0 0 auto; padding: 5px 12px; font-family: monospace; font-size: 0.75rem;">
+              Alt + Space
+            </button>
+          </div>
+
+          <div class="sim-setting-row">
+            <div>
+              <div class="sim-setting-title">OCR 离线文本识别与贴图</div>
+              <div class="sim-setting-subtitle">Windows Native OCR 离线高精度引擎</div>
+            </div>
+            <span class="sim-badge">就绪 Ready</span>
+          </div>
+        </div>
+
+        <!-- 快速功能测试按钮 -->
+        <div class="sim-btn-group">
+          <button class="sim-btn sim-btn-primary" onclick="alert('⚡ 您选择的配色方案完美生效！')">
+            测试主操作按钮
+          </button>
+          <button class="sim-btn sim-btn-secondary" onclick="exportColorTokens()">
+            📋 导出当前配色 CSS
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <footer class="palette-footer">
+    Tools3000 桌面效率工具箱 &bull; 真实网页 DOM 渲染引擎 &bull; 毫秒级无缝动态着色
+  </footer>
+
+  <script>
+    // 配色切换逻辑
+    function setAccent(color) {
+      document.documentElement.setAttribute('data-accent', color);
+      document.querySelectorAll('.swatch-btn').forEach(btn => {
+        if (btn.getAttribute('data-color') === color) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+      const badge = document.getElementById('current-theme-badge');
+      const names = {
+        cyan: '🩵 Arctic Cyan (极光青)',
+        amber: '🌟 Solar Amber (曜石金)',
+        blue: '💙 Cobalt Azure (深海蓝)',
+        mint: '💚 Emerald Mint (薄荷绿)',
+        coral: '🌸 Sunset Coral (暮霞珊瑚)',
+        violet: '💜 Vibrant Violet (魅紫)'
+      };
+      if (badge) badge.textContent = names[color] || color;
+    }
+
+    // 亮暗色模式切换
+    function toggleThemeMode() {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      const icon = document.getElementById('mode-icon');
+      const text = document.getElementById('mode-text');
+      if (icon && text) {
+        icon.textContent = next === 'dark' ? '🌙' : '☀️';
+        text.textContent = next === 'dark' ? '深色模式' : '亮色模式';
+      }
+    }
+
+    // 交互组件事件绑定
+    function toggleSwitch(el) {
+      el.classList.toggle('active');
+    }
+
+    function switchMainTab(el, type) {
+      el.parentElement.querySelectorAll('.sim-nav-tab').forEach(b => b.classList.remove('active'));
+      el.classList.add('active');
+    }
+
+    function switchSubtab(el) {
+      el.parentElement.querySelectorAll('.sim-subtab').forEach(b => b.classList.remove('active'));
+      el.classList.add('active');
+    }
+
+    function selectApp(el) {
+      document.querySelectorAll('.sim-app-item').forEach(i => i.classList.remove('selected'));
+      el.classList.add('selected');
+    }
+
+    function selectStrategy(el) {
+      document.querySelectorAll('.sim-strategy-card').forEach(c => c.classList.remove('selected'));
+      el.classList.add('selected');
+    }
+
+    function exportColorTokens() {
+      const color = document.documentElement.getAttribute('data-accent') || 'cyan';
+      const styles = getComputedStyle(document.documentElement);
+      const primary = styles.getPropertyValue('--primary').trim();
+      navigator.clipboard.writeText(`/* Tools3000 ${color} theme */\n--primary: ${primary};`);
+      alert(`✅ 已将 [${color}] 主题变量复制到剪贴板！\n--primary: ${primary}`);
+    }
+
+    // 初始化激活状态
+    setAccent('cyan');
+  </script>
+</body>
+</html>

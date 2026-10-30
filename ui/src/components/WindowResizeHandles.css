@@ -1,0 +1,83 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WindowResizeHandles.css — 8 方向边缘拉伸控制器样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.window-resize-handles {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99999;
+}
+
+.resize-handle {
+  position: absolute;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 4 条边 */
+.resize-handle--top {
+  top: 0;
+  left: 8px;
+  right: 8px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.resize-handle--bottom {
+  bottom: 0;
+  left: 8px;
+  right: 8px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.resize-handle--left {
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.resize-handle--right {
+  top: 8px;
+  bottom: 8px;
+  right: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+/* 4 个拐角 */
+.resize-handle--top-left {
+  top: 0;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  cursor: nwse-resize;
+}
+
+.resize-handle--top-right {
+  top: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  cursor: nesw-resize;
+}
+
+.resize-handle--bottom-left {
+  bottom: 0;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  cursor: nesw-resize;
+}
+
+.resize-handle--bottom-right {
+  bottom: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  cursor: nwse-resize;
+}

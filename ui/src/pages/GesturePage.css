@@ -1,0 +1,1111 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * GesturePage.css — 手势设置页样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.gesture-page {
+  animation: fadeIn 0.3s ease;
+}
+
+/* ── 加载状态 ─────────────────────────────────────────────────────────────── */
+.page-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  gap: var(--spacing-md);
+  color: var(--text-muted);
+}
+
+.page-loading__spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--card-border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 运行状态 ─────────────────────────────────────────────────────────────── */
+.gesture-status {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-height: 38px;
+  margin-bottom: var(--spacing-sm);
+  padding: 8px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.gesture-status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.gesture-status--active .gesture-status__dot {
+  background: var(--success);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.45);
+}
+
+.gesture-status--paused .gesture-status__dot {
+  background: var(--warning);
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.45);
+}
+
+.gesture-status__text {
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.gesture-status__hotkey {
+  margin-left: auto;
+  padding: 3px 8px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs, 0.84rem);
+}
+
+/* ── 手势映射表 ───────────────────────────────────────────────────────────── */
+.gesture-table-container {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.gesture-table {
+  width: 100%;
+  min-width: min(580px, 100%);
+}
+
+.gesture-table__header {
+  display: flex;
+  align-items: center;
+  padding: var(--spacing-sm) 0;
+  border-bottom: 1px solid var(--card-border);
+  font-size: var(--text-sm, 0.86rem);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.gesture-table__row {
+  display: flex;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--card-border);
+  transition: background var(--transition-fast);
+  animation: fadeIn 0.25s ease both;
+  cursor: pointer;
+  user-select: none;
+}
+
+.gesture-table__row:hover {
+  background: var(--primary-dim);
+  border-radius: var(--radius-sm);
+}
+
+.gesture-table__row:last-child {
+  border-bottom: none;
+}
+
+.gesture-table__col {
+  font-size: 0.84rem;
+  box-sizing: border-box;
+  padding: 0 4px;
+}
+
+.gesture-table__col--gesture {
+  width: 90px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.gesture-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--primary-dim);
+  color: var(--primary);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  min-width: 44px;
+  cursor: default;
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+
+.gesture-arrow:hover {
+  transform: scale(1.06);
+  background: var(--primary-glow);
+}
+
+.gesture-table__col--action {
+  flex: 1 1 150px;
+  min-width: 140px;
+  color: var(--text-primary);
+  font-weight: 500;
+  overflow: hidden;
+}
+
+.gesture-action-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.gesture-action-desc {
+  font-size: 0.83rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.gesture-table__col--type {
+  width: 72px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.gesture-table__col--key {
+  min-width: 90px;
+  max-width: 135px;
+  flex: 0 1 120px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  overflow: hidden;
+}
+
+.gesture-table__col--actions {
+  width: 64px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+/* ── 行内图标按钮 ─────────────────────────────────────────────────────────── */
+.gesture-icon-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  opacity: 0;
+  transition: all var(--transition-fast);
+}
+
+.gesture-table__row:hover .gesture-icon-btn { opacity: 1; }
+
+.gesture-icon-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.gesture-icon-btn--danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* ── 卡片工具条 (添加/计数) ───────────────────────────────────────────────── */
+.gesture-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.gesture-toolbar__count {
+  font-size: 0.83rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ── 手势列表触发按键过滤标签 ─────────────────────────────────────────────── */
+.gesture-trigger-filter-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--input-bg);
+  padding: 2px 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--card-border);
+}
+
+.gesture-trigger-filter-tab {
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.gesture-trigger-filter-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.gesture-trigger-filter-tab.active {
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 1px 4px var(--primary-glow);
+}
+
+/* ── 表格行中触发来源微型徽章 ───────────────────────────────────────────── */
+.gesture-preview-with-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.gesture-trigger-mini-badge {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  line-height: 1.2;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+.gesture-trigger-mini-badge--right {
+  background: var(--input-bg);
+  color: var(--text-muted);
+  border: 1px solid var(--card-border);
+}
+
+.gesture-trigger-mini-badge--middle {
+  background: var(--primary-dim);
+  color: var(--primary);
+  border: 1px solid var(--primary-glow);
+}
+
+/* ── 轮盘菜单编辑器 ───────────────────────────────────────────────────────── */
+.gesture-radial-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+}
+
+.gesture-radial-toolbar__actions,
+.gesture-radial-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gesture-radial-list {
+  display: grid;
+  gap: 8px;
+}
+
+.gesture-radial-row {
+  display: grid;
+  grid-template-columns: 26px minmax(120px, 0.8fr) minmax(190px, 1.2fr) 100px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.gesture-radial-row .uikit-input,
+.gesture-radial-row .uikit-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.gesture-radial-row .gesture-icon-btn {
+  opacity: 1;
+}
+
+.gesture-radial-row .gesture-icon-btn:disabled {
+  opacity: 0.28;
+  cursor: not-allowed;
+}
+
+.gesture-radial-index {
+  color: var(--text-muted);
+  font: 600 0.78rem/1 'Consolas', monospace;
+  text-align: center;
+}
+
+/* ── 手势编码方向预览 ────────────────────────────────────────────────────── */
+.gesture-code-preview {
+  font-size: 1.4rem;
+  color: var(--primary);
+  min-height: 1.6rem;
+  letter-spacing: 0.1em;
+}
+
+.gesture-empty {
+  padding: var(--spacing-lg);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* ── 作用域规则 ───────────────────────────────────────────────────────────── */
+.scope-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-sm);
+}
+
+.scope-toolbar__count {
+  font-size: 0.83rem;
+  color: var(--text-muted);
+}
+
+.scope-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.scope-empty {
+  padding: var(--spacing-lg);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.scope-table { width: 100%; }
+
+.scope-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) 0;
+  border-bottom: 1px solid var(--card-border);
+  animation: fadeIn 0.25s ease both;
+}
+
+.scope-row:last-child { border-bottom: none; }
+
+.scope-row:hover:not(.scope-row--head) {
+  background: var(--primary-dim);
+  border-radius: var(--radius-sm);
+}
+
+.scope-row--head {
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.scope-col { font-size: 0.85rem; display: flex; align-items: center; gap: 6px; }
+.scope-col--check   { width: 28px; flex-shrink: 0; justify-content: center; }
+.scope-col--enabled { width: 64px; flex-shrink: 0; }
+.scope-col--name    { width: 130px; flex-shrink: 0; color: var(--text-primary); font-weight: 500; }
+.scope-col--target  { flex: 1; min-width: 0; }
+.scope-col--effect  { width: 130px; flex-shrink: 0; }
+.scope-col--actions { width: 70px; flex-shrink: 0; justify-content: flex-end; }
+
+/* enabled 列里的 Toggle 去掉默认的两端撑开布局 */
+.scope-col--enabled .uikit-toggle { min-height: auto; padding: 0; }
+
+.scope-target-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm, 0.86rem);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-matchmode {
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+}
+
+/* ── 箭头显示 ─────────────────────────────────────────────────────────────── */
+.gesture-arrow {
+  font-size: 1.3rem;
+  color: var(--primary-hover);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--primary-dim);
+  transition: all var(--transition-fast);
+}
+
+.gesture-table__row:hover .gesture-arrow {
+  background: var(--primary-glow);
+  transform: scale(1.1);
+}
+
+/* ── 键盘快捷键展示 ──────────────────────────────────────────────────────── */
+.gesture-kbd {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm, 0.86rem);
+  color: var(--text-secondary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.35;
+  text-align: center;
+}
+
+/* ── 手势轨迹色彩与外观设置 ────────────────────────────────────────────────── */
+.gesture-trail-subgroup {
+  margin-top: var(--spacing-sm);
+  padding: var(--spacing-md);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  animation: fadeIn 0.25s ease both;
+}
+
+.gesture-trail-mode-segmented {
+  display: inline-flex;
+  padding: 3px;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  gap: 4px;
+}
+
+.gesture-trail-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.83rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.gesture-trail-mode-btn:hover {
+  color: var(--text-primary);
+}
+
+.gesture-trail-mode-btn.active {
+  background: var(--primary);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.35);
+}
+
+.gesture-color-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+}
+
+.gesture-color-swatches {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gesture-color-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  outline: none;
+  padding: 0;
+}
+
+.gesture-color-swatch:hover {
+  transform: scale(1.18);
+}
+
+.gesture-color-swatch.active {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px var(--primary), 0 2px 8px rgba(0, 0, 0, 0.35);
+  transform: scale(1.2);
+}
+
+.gesture-custom-color-input-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+}
+
+.gesture-color-native-input {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background: transparent;
+  padding: 0;
+}
+
+.gesture-color-native-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.gesture-color-native-input::-webkit-color-swatch {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+.gesture-color-hex-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm, 0.86rem);
+  color: var(--text-secondary);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.gesture-trail-preview-card {
+  margin-top: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gesture-trail-preview-label {
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.gesture-trail-preview-svg {
+  width: 100%;
+  height: 52px;
+  overflow: visible;
+}
+
+/* ── 允许的触发方式三态模型 ───────────────────────────────────────────────── */
+.trigger-modes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-sm);
+  border-bottom: 1px solid var(--card-border);
+}
+
+.trigger-modes-header__texts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trigger-modes-header__title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.trigger-modes-header__desc {
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+}
+
+.trigger-modes-batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trigger-batch-btn {
+  padding: 4px 10px;
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.trigger-batch-btn:hover {
+  background: var(--primary-dim);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* ── 极简单行触发方式横向条 ──────────────────────────────────────────────── */
+.trigger-strip-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-sm);
+}
+
+.trigger-strip-label {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 1px;
+  min-width: 60px;
+}
+
+.trigger-strip-title {
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.trigger-strip-hint {
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.trigger-pills-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  flex: 1;
+}
+
+.trigger-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
+  letter-spacing: 0.015em;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.trigger-pill-btn--active {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.35);
+  font-weight: 600;
+}
+
+.trigger-pill-btn--active:hover {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: #10b981;
+  transform: translateY(-1px);
+}
+
+[data-theme="dark"] .trigger-pill-btn--active {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.15);
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.trigger-pill-btn--inactive {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border-color: var(--card-border);
+  opacity: 0.90;
+}
+
+.trigger-pill-btn--inactive:hover {
+  opacity: 1;
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+
+.trigger-pill-icon {
+  flex-shrink: 0;
+}
+
+/* ── 手势搜索与过滤 ───────────────────────────────────────────────────────── */
+.gesture-search-box {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 220px;
+}
+
+.gesture-search-icon {
+  position: absolute;
+  left: 8px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.gesture-search-input {
+  width: 100%;
+  padding: 4px 8px 4px 28px;
+  font-size: var(--text-sm, 0.86rem);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.gesture-search-input:focus {
+  border-color: var(--primary);
+}
+
+/* ── 列表列与交互定义 ───────────────────────────────────────────────────────────── */
+.gesture-table__col--gesture {
+  width: 90px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.gesture-table__col--switch {
+  width: 48px;
+  flex-shrink: 0;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gesture-handle-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gesture-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 36px;
+  color: var(--text-muted);
+  cursor: grab;
+  user-select: none;
+  opacity: 0.35;
+  transition: opacity var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+}
+
+.gesture-table__row:hover .gesture-drag-handle {
+  opacity: 0.85;
+}
+
+.gesture-drag-handle:hover {
+  opacity: 1;
+  color: var(--primary);
+  transform: scale(1.15);
+}
+
+.gesture-drag-handle:active {
+  cursor: grabbing;
+  transform: scale(0.95);
+}
+
+
+
+.gesture-table__row--dragging {
+  opacity: 0.45;
+  border: 1px dashed var(--primary) !important;
+  background: var(--primary-dim) !important;
+}
+
+.gesture-table__row--disabled {
+  opacity: 0.40;
+  filter: grayscale(1);
+  background: transparent !important;
+}
+
+.gesture-table__row--disabled .gesture-action-name {
+  color: var(--text-muted) !important;
+  text-decoration: line-through;
+  text-decoration-color: var(--text-muted);
+  opacity: 0.85;
+}
+
+.gesture-table__row--disabled .gesture-type-badge,
+.gesture-table__row--disabled .gesture-key-pill,
+.gesture-table__row--disabled .gesture-stroke-preview {
+  color: var(--text-muted) !important;
+  border-color: var(--card-border) !important;
+  background: var(--bg-elevated) !important;
+  box-shadow: none !important;
+  opacity: 0.75;
+}
+
+.gesture-action-name {
+  font-weight: 600;
+  font-size: 0.94rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+.gesture-action-desc {
+  display: block;
+  font-size: 0.83rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gesture-flags-list {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gesture-flag-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 5px;
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  border-radius: 3px;
+}
+
+.gesture-flag-badge--clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--transition-fast);
+}
+
+.gesture-flag-badge--clickable:hover {
+  transform: translateY(-1px) scale(1.06);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.gesture-flag-badge--instant.gesture-flag-badge--clickable:hover {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.28);
+}
+
+.gesture-flag-badge--silent.gesture-flag-badge--clickable:hover {
+  border-color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.28);
+}
+
+.gesture-flag-badge--instant {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.gesture-flag-badge--silent {
+  background: rgba(139, 92, 246, 0.15);
+  color: #8b5cf6;
+  border: 1px solid rgba(139, 92, 246, 0.35);
+}
+
+.gesture-flag-badge--normal {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  border: 1px solid var(--card-border);
+}
+
+/* ── 动作类型与按键详情直达按钮 ─────────────────────────────── */
+.gesture-type-badge-btn,
+.gesture-detail-badge-btn {
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  user-select: none;
+  box-shadow: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.gesture-type-badge-btn:focus,
+.gesture-type-badge-btn:focus-visible,
+.gesture-detail-badge-btn:focus,
+.gesture-detail-badge-btn:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.gesture-type-badge-btn {
+  transition: opacity var(--transition-fast);
+}
+
+.gesture-type-badge-btn:hover {
+  opacity: 0.82;
+}
+
+.gesture-detail-badge-btn .gesture-kbd {
+  transition: border-color var(--transition-fast), color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.gesture-detail-badge-btn:hover .gesture-kbd {
+  border-color: var(--primary);
+  color: var(--primary);
+  background-color: var(--primary-dim);
+}
+
+/* ── 特权窗口提示卡片 ─────────────────────────────────────────── */
+.gesture-admin-hint-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  margin-top: 4px;
+  transition: all var(--transition-fast);
+}
+
+.gesture-admin-hint-icon {
+  color: var(--primary);
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.gesture-admin-hint-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.gesture-admin-hint-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gesture-admin-badge {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: rgba(16, 185, 129, 0.15);
+  color: #10B981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.gesture-admin-hint-desc {
+  font-size: var(--text-sm, 0.86rem);
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+/* ── 手势微调数值输入框 ───────────────────────────────────────── */
+.gesture-number-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: var(--input-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 4px 10px;
+  gap: 6px;
+  transition: border-color var(--transition-fast);
+}
+
+.gesture-number-input-wrap:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-dim);
+}
+
+.gesture-number-input {
+  width: 72px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.gesture-number-input::-webkit-inner-spin-button,
+.gesture-number-input::-webkit-outer-spin-button {
+  opacity: 1;
+}
+
+.gesture-number-unit {
+  font-size: var(--text-sm, 0.86rem);
+  color: var(--text-muted);
+  user-select: none;
+}
+

@@ -1,0 +1,552 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * OnboardingModal.css — 首次引导弹窗样式
+ *
+ * BEM 命名: .onboarding / .onboarding__xxx / .onboarding__xxx--modifier
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* ── 全屏遮罩 ─────────────────────────────────────────────────────────────── */
+.onboarding {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: safe center;
+  justify-content: safe center;
+  padding: 16px;
+  overflow: auto;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: onboarding-overlay-in 0.4s ease;
+}
+
+@keyframes onboarding-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── 卡片容器 ─────────────────────────────────────────────────────────────── */
+.onboarding__card {
+  container-type: inline-size;
+  container-name: onboarding-card;
+  position: relative;
+  width: min(820px, 92vw);
+  min-height: min(520px, 90vh);
+  max-height: 94vh;
+  margin: auto;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--card-border);
+  border-radius: 20px;
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: onboarding-card-in 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes onboarding-card-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* ── 顶部渐变光效 ─────────────────────────────────────────────────────────── */
+.onboarding__glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 180px;
+  background: linear-gradient(
+    135deg,
+    rgba(139, 92, 246, 0.15) 0%,
+    rgba(59, 130, 246, 0.08) 50%,
+    rgba(52, 211, 153, 0.06) 100%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── 步骤内容区 ───────────────────────────────────────────────────────────── */
+.onboarding__body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+}
+
+.onboarding__step {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: safe center;
+  padding: 36px 32px 20px;
+  text-align: center;
+  transition: opacity 0.35s ease, transform 0.35s ease;
+  will-change: opacity, transform;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.onboarding__step::-webkit-scrollbar {
+  width: 6px;
+}
+
+.onboarding__step::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.onboarding__step::-webkit-scrollbar-thumb {
+  background: var(--card-border);
+  border-radius: 3px;
+}
+
+.onboarding__step::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.onboarding__step--active {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.onboarding__step--prev {
+  opacity: 0;
+  transform: translateX(-60px);
+  pointer-events: none;
+}
+
+.onboarding__step--next {
+  opacity: 0;
+  transform: translateX(60px);
+  pointer-events: none;
+}
+
+/* ── 标题 / 副标题 ────────────────────────────────────────────────────────── */
+.onboarding__title {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+}
+
+.onboarding__subtitle {
+  font-size: 0.92rem;
+  color: var(--text-muted);
+  margin-bottom: 28px;
+  line-height: 1.5;
+}
+
+/* ── 功能卡片矩阵 (7 大核心能力闭环) ────────────────────────────────────── */
+.onboarding__features {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 760px;
+}
+
+.onboarding__feature-card {
+  flex: 0 1 calc(25% - 10px);
+  min-width: 150px;
+  max-width: 172px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 10px 8px;
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  transition: all 0.25s ease;
+  text-align: center;
+}
+
+.onboarding__feature-card:hover {
+  border-color: var(--primary);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.12);
+}
+
+.onboarding__feature-icon {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--primary-dim);
+  color: var(--primary);
+}
+
+.onboarding__feature-name {
+  font-size: var(--text-sm, 0.88rem);
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.onboarding__feature-desc {
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ── 核心快捷键双列网格 ─────────────────────────────────────────────────── */
+.onboarding__shortcuts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  width: 100%;
+  max-width: 640px;
+}
+
+.onboarding__shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  transition: all 0.2s ease;
+}
+
+.onboarding__shortcut-row:hover {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.onboarding__shortcut-name {
+  font-size: var(--text-sm, 0.88rem);
+  font-weight: 550;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+}
+
+.onboarding__shortcut-kbd {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  color: var(--text-secondary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+/* ── 手势与屏幕演示双翼展厅 ──────────────────────────────────────────────── */
+.onboarding__showcase-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  width: 100%;
+  max-width: 680px;
+  text-align: left;
+}
+
+.onboarding__showcase-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.onboarding__showcase-col-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm, 0.88rem);
+  font-weight: 650;
+  color: var(--text-primary);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-light, rgba(255, 255, 255, 0.06));
+}
+
+.onboarding__showcase-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.onboarding__showcase-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.onboarding__showcase-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+.onboarding__showcase-tab--active {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border-color: var(--card-border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.onboarding__gestures {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.onboarding__gesture-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  transition: all 0.2s ease;
+}
+
+.onboarding__gesture-card:hover {
+  border-color: var(--primary);
+}
+
+.onboarding__gesture-arrow {
+  font-size: var(--text-sm, 0.88rem);
+  font-weight: 700;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--primary-dim);
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.onboarding__gesture-label {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
+  color: var(--text-primary);
+}
+
+.onboarding__spotlight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.onboarding__spotlight-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
+  color: var(--text-primary);
+}
+
+.onboarding__spotlight-icon-wrap {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+/* ── 完成页 ───────────────────────────────────────────────────────────────── */
+.onboarding__complete-icon {
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), #60a5fa);
+  color: #fff;
+  margin-bottom: 16px;
+  animation: onboarding-pulse 2s ease-in-out infinite;
+}
+
+@keyframes onboarding-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.3); }
+  50%      { box-shadow: 0 0 0 16px rgba(139, 92, 246, 0); }
+}
+
+/* ── 底部导航 ─────────────────────────────────────────────────────────────── */
+.onboarding__footer {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 28px 24px;
+  flex-shrink: 0;
+  min-height: 56px;
+  box-sizing: border-box;
+}
+
+.onboarding__dots {
+  display: flex;
+  gap: 8px;
+}
+
+.onboarding__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--card-border);
+  transition: all 0.3s ease;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+
+.onboarding__dot--active {
+  background: var(--primary);
+  width: 24px;
+  border-radius: 4px;
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.4);
+}
+
+.onboarding__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ── 跳过按钮 ─────────────────────────────────────────────────────────────── */
+.onboarding__skip {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  z-index: 2;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: all 0.2s ease;
+}
+
+.onboarding__skip:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+/* ── 响应式 (容器查询与视口回退) ─────────────────────────────────────────── */
+@container onboarding-card (max-width: 780px) {
+  .onboarding__features {
+    max-width: 540px;
+  }
+  .onboarding__feature-card {
+    flex: 0 1 calc(33.333% - 10px);
+    max-width: 165px;
+  }
+  .onboarding__showcase-grid {
+    grid-template-columns: 1fr;
+    max-width: 480px;
+  }
+}
+
+@container onboarding-card (max-width: 560px) {
+  .onboarding__features {
+    max-width: 380px;
+  }
+  .onboarding__feature-card {
+    flex: 0 1 calc(50% - 10px);
+    max-width: 180px;
+  }
+  .onboarding__shortcuts {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container onboarding-card (max-width: 450px) {
+  .onboarding__card {
+    min-height: 420px;
+  }
+  .onboarding__feature-card {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+  .onboarding__step {
+    padding: 32px 16px 16px;
+  }
+}
+
+@media (max-width: 840px) {
+  .onboarding__features {
+    max-width: 540px;
+  }
+  .onboarding__feature-card {
+    flex: 0 1 calc(33.333% - 10px);
+    max-width: 165px;
+  }
+  .onboarding__showcase-grid {
+    grid-template-columns: 1fr;
+    max-width: 480px;
+  }
+}
+
+@media (max-width: 600px) {
+  .onboarding__features {
+    max-width: 380px;
+  }
+  .onboarding__feature-card {
+    flex: 0 1 calc(50% - 10px);
+    max-width: 180px;
+  }
+  .onboarding__shortcuts {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .onboarding__card {
+    min-height: 420px;
+  }
+  .onboarding__feature-card {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+  .onboarding__step {
+    padding: 32px 16px 16px;
+  }
+}
+

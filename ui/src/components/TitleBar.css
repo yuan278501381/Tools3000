@@ -1,0 +1,422 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TitleBar.css — 一体化沉浸式无缝标题栏样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 38px;
+  width: 100%;
+  padding: 0 0 0 16px;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-app-region: drag;
+  z-index: 1000;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.titlebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: drag;
+  cursor: default;
+}
+
+.titlebar__logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+}
+
+.titlebar__title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.2px;
+}
+
+.titlebar__admin-badge {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.14);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  line-height: 1.3;
+}
+
+[data-theme='dark'] .titlebar__admin-badge {
+  background: rgba(59, 130, 246, 0.22);
+  color: #60a5fa;
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
+.titlebar__drag-region {
+  flex: 1;
+  height: 100%;
+  -webkit-app-region: drag;
+}
+
+/* ── 顶部微晶快捷工具矩阵 ────────────────────────────────────────── */
+.titlebar__quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 10px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar__popover-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.titlebar__pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 25px;
+  padding: 0 10px;
+  border-radius: 12.5px;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg, rgba(255, 255, 255, 0.04));
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+  font-weight: 550;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.18s ease;
+  user-select: none;
+}
+
+.titlebar__pill-btn:hover,
+.titlebar__pill-btn--active {
+  border-color: var(--primary);
+  background: var(--primary-dim, rgba(59, 130, 246, 0.10));
+  color: var(--text-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.titlebar__pill-icon {
+  color: var(--text-muted);
+  transition: color 0.15s ease;
+}
+
+.titlebar__pill-btn:hover .titlebar__pill-icon,
+.titlebar__pill-btn--active .titlebar__pill-icon {
+  color: var(--primary);
+}
+
+.titlebar__accent-preview-dot {
+  width: 7.5px;
+  height: 7.5px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+}
+
+.titlebar__pill-text {
+  line-height: 1;
+}
+
+.titlebar__pill-chevron {
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+}
+
+.titlebar__pill-btn--active .titlebar__pill-chevron {
+  transform: rotate(180deg);
+  color: var(--primary);
+}
+
+/* ── 多语言下拉菜单 ──────────────────────────────────────────────── */
+.titlebar__dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 184px;
+  width: max-content;
+  padding: 6px;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
+  z-index: 2000;
+  animation: popoverFadeIn 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.titlebar__dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+  font-weight: 550;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+
+.titlebar__dropdown-item:hover {
+  background: var(--bg-surface-hover, rgba(128, 128, 128, 0.10));
+  color: var(--text-primary);
+}
+
+.titlebar__dropdown-item.active {
+  background: var(--primary-dim, rgba(59, 130, 246, 0.12));
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.titlebar__dropdown-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.titlebar__dropdown-item-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.titlebar__dropdown-item.active .titlebar__dropdown-item-icon {
+  color: var(--primary);
+}
+
+.titlebar__dropdown-item-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 16px;
+  font-size: 0.83rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  border-radius: 3px;
+  background: var(--card-border, rgba(128, 128, 128, 0.14));
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.titlebar__dropdown-item.active .titlebar__dropdown-item-badge {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.titlebar__dropdown-item-title {
+  white-space: nowrap;
+}
+
+.titlebar__dropdown-item-check {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+/* ── 主题与调色板浮层面板 ────────────────────────────────────────── */
+.titlebar__theme-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 272px;
+  padding: 14px;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.28);
+  z-index: 2000;
+  animation: popoverFadeIn 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  box-sizing: border-box;
+}
+
+.titlebar__theme-popover-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  font-weight: 650;
+  margin-bottom: 11px;
+}
+
+.titlebar__theme-popover-icon {
+  color: var(--primary);
+}
+
+.titlebar__theme-modes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--card-bg, rgba(0, 0, 0, 0.05));
+  padding: 3px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--card-border);
+}
+
+.titlebar__theme-mode-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+  font-weight: 550;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  outline: none;
+  white-space: nowrap;
+}
+
+.titlebar__theme-mode-btn:hover {
+  color: var(--text-primary);
+}
+
+.titlebar__theme-mode-btn.active {
+  background: var(--bg-surface, #ffffff);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
+.titlebar__theme-divider {
+  height: 1px;
+  background: var(--card-border);
+  margin: 12px 0 10px 0;
+}
+
+.titlebar__accents-label {
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.titlebar__accents-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.titlebar__accent-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg, transparent);
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+  font-weight: 550;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+  box-sizing: border-box;
+}
+
+.titlebar__accent-btn:hover {
+  border-color: var(--primary);
+  color: var(--text-primary);
+  background: var(--bg-surface-hover, rgba(128, 128, 128, 0.08));
+}
+
+.titlebar__accent-btn.active {
+  border-color: var(--primary);
+  background: var(--primary-dim, rgba(59, 130, 246, 0.12));
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.titlebar__accent-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.titlebar__accent-name {
+  font-size: 0.83rem;
+  white-space: nowrap;
+}
+
+@keyframes popoverFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.titlebar__controls {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  outline: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  padding: 0;
+  margin: 0;
+}
+
+.titlebar__btn:hover {
+  background: rgba(128, 128, 128, 0.14);
+  color: var(--text-primary);
+}
+
+.titlebar__btn:active {
+  background: rgba(128, 128, 128, 0.22);
+}
+
+.titlebar__btn--close:hover {
+  background: #e81123 !important;
+  color: #ffffff !important;
+}
+
+.titlebar__btn--close:active {
+  background: #bf0f1d !important;
+  color: #ffffff !important;
+}

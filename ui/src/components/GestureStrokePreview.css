@@ -1,0 +1,116 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * GestureStrokePreview.css — WGestures 2 风格手势矢量微缩画板与鼠标光标动效样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.gesture-stroke-preview {
+  --path-length: 100px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  padding: 2px;
+  box-sizing: border-box;
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--transition-fast);
+  box-shadow: inset 0 0 2px rgba(0, 0, 0, 0.04);
+}
+
+.gesture-stroke-preview:hover {
+  border-color: var(--primary);
+  background: var(--bg-elevated);
+  box-shadow: 0 0 8px var(--primary-glow);
+  transform: translateY(-1px);
+}
+
+.gesture-stroke-preview__svg {
+  display: block;
+  overflow: visible;
+  width: 100%;
+  height: 100%;
+}
+
+/* 底层半透明基准轨道 */
+.gesture-stroke-preview__track {
+  fill: none;
+  stroke: var(--primary);
+  opacity: 0.20;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 顶层动态高亮手势线条 (清新青蓝 / 薄荷绿高亮) */
+.gesture-stroke-preview__stroke {
+  fill: none;
+  stroke: #06b6d4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 2px rgba(6, 182, 212, 0.4));
+}
+
+[data-theme="dark"] .gesture-stroke-preview__stroke {
+  stroke: #22d3ee;
+  filter: drop-shadow(0 0 3px rgba(34, 211, 238, 0.5));
+}
+
+/* 起点按键指示器 (WGestures 2 风格 ◐ 图标) */
+.gesture-stroke-preview__trigger-indicator circle {
+  fill: #ffffff;
+  stroke: #334155;
+  stroke-width: 0.9;
+}
+
+.gesture-stroke-preview__trigger-indicator path {
+  fill: #334155;
+}
+
+[data-theme="dark"] .gesture-stroke-preview__trigger-indicator circle {
+  fill: #1e293b;
+  stroke: #94a3b8;
+}
+
+[data-theme="dark"] .gesture-stroke-preview__trigger-indicator path {
+  fill: #38bdf8;
+}
+
+/* 移动的光标小箭头 */
+.gesture-stroke-preview__cursor {
+  opacity: 0;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+}
+
+.gesture-stroke-preview--animating .gesture-stroke-preview__cursor,
+.gesture-stroke-preview:hover .gesture-stroke-preview__cursor {
+  opacity: 1;
+}
+
+/* 线条运笔生长动画 */
+.gesture-stroke-preview--animating .gesture-stroke-preview__stroke,
+.gesture-stroke-preview:hover .gesture-stroke-preview__stroke {
+  animation: gestureLineDraw 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes gestureLineDraw {
+  0% {
+    stroke-dashoffset: var(--path-length, 100);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  75% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  90%, 100% {
+    stroke-dashoffset: 0;
+    opacity: 0.85;
+  }
+}

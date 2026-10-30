@@ -1,0 +1,244 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * HotkeyRecorder.css — 交互式快捷键录入器样式
+ *
+ * 设计参考: macOS 系统偏好键盘快捷键风格
+ *   - 胶囊式按键展示
+ *   - 录入模式脉冲高亮
+ *   - 支持 dark / light 主题
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* ── 容器包裹层 ─────────────────────────────────────────────────────────── */
+.hotkey-recorder-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 6px;
+  max-width: 100%;
+}
+
+/* ── 录制器主体按钮 ─────────────────────────────────────────────────────── */
+.hotkey-recorder {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--input-bg, rgba(0, 0, 0, 0.02));
+  border: 1px solid var(--input-border, rgba(0, 0, 0, 0.08));
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+  font-family: inherit;
+  transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  box-sizing: border-box;
+}
+
+[data-theme="dark"] .hotkey-recorder {
+  background: var(--input-bg, rgba(255, 255, 255, 0.03));
+  border-color: var(--input-border, rgba(255, 255, 255, 0.08));
+}
+
+.hotkey-recorder:hover {
+  background: var(--bg-surface-hover, rgba(0, 0, 0, 0.04));
+  border-color: var(--primary-hover, rgba(59, 130, 246, 0.35));
+}
+
+[data-theme="dark"] .hotkey-recorder:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--primary-hover, rgba(96, 165, 250, 0.35));
+}
+
+/* ── 录入中状态 ─────────────────────────────────────────────────────────── */
+.hotkey-recorder--recording {
+  background: var(--primary-dim, rgba(59, 130, 246, 0.06)) !important;
+  border-color: var(--primary, #3b82f6) !important;
+  box-shadow: 0 0 0 3px var(--primary-glow, rgba(59, 130, 246, 0.22)) !important;
+  animation: hotkey-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes hotkey-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px var(--primary-glow, rgba(59, 130, 246, 0.2));
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--primary-glow, rgba(59, 130, 246, 0.35));
+  }
+}
+
+/* ── 占位与提示文字 ─────────────────────────────────────────────────────── */
+.hotkey-recorder__placeholder {
+  font-size: 0.83rem;
+  color: var(--text-muted);
+  padding: 0 6px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.hotkey-recorder--recording .hotkey-recorder__placeholder {
+  color: var(--primary, #3b82f6);
+  font-weight: 600;
+}
+
+/* ── 键帽簇容器 ─────────────────────────────────────────────────────────── */
+.hotkey-recorder__keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: nowrap;
+}
+
+/* ── 世界级物理键帽 (<kbd>) ─────────────────────────────────────────────── */
+.hotkey-recorder__key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-bottom: 2px solid rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 600;
+  color: var(--text-primary, #1e293b);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  user-select: none;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+[data-theme="dark"] .hotkey-recorder__key {
+  background: #232328;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 2px solid rgba(0, 0, 0, 0.5);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  color: #f1f5f9;
+}
+
+/* 录制中动态按下的键帽动效 */
+.hotkey-recorder--recording .hotkey-recorder__key {
+  border-color: var(--primary, #3b82f6);
+  color: var(--primary, #3b82f6);
+  animation: hotkey-key-pop 0.16s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes hotkey-key-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.7) translateY(2px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* ── 加号连接符 ─────────────────────────────────────────────────────────── */
+.hotkey-recorder__separator {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  color: var(--text-muted, #94a3b8);
+  margin: 0 1px;
+  user-select: none;
+  opacity: 0.6;
+}
+
+/* ── 清除按钮 ───────────────────────────────────────────────────────────── */
+.hotkey-recorder__clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: var(--bg-surface-hover, rgba(0, 0, 0, 0.06));
+  color: var(--text-muted, #64748b);
+  font-size: var(--text-sm, 0.86rem);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.4;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+[data-theme="dark"] .hotkey-recorder__clear {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.hotkey-recorder-wrap:hover .hotkey-recorder__clear,
+.hotkey-recorder-wrap:focus-within .hotkey-recorder__clear {
+  opacity: 0.85;
+}
+
+.hotkey-recorder__clear:hover {
+  opacity: 1;
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444 !important;
+  transform: scale(1.12);
+}
+
+/* ── 不安全快捷键微晶气泡提示 ─────────────────────────────────────────── */
+.hotkey-recorder__tip {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm, 6px);
+  background: rgba(254, 243, 199, 0.95);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  color: #92400e;
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: hotkey-tip-appear 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="dark"] .hotkey-recorder__tip {
+  background: rgba(69, 26, 3, 0.9);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fde68a;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.hotkey-recorder__tip-icon {
+  flex-shrink: 0;
+  color: #d97706;
+}
+
+[data-theme="dark"] .hotkey-recorder__tip-icon {
+  color: #fbbf24;
+}
+
+@keyframes hotkey-tip-appear {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+

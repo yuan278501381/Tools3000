@@ -1,0 +1,317 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SpotlightPage.css — 寻找鼠标与演示特效视觉样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.spotlight-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  padding: 0 0 var(--spacing-xl) 0;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.spotlight-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-sm);
+}
+
+.spotlight-page__title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.spotlight-page__title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.spotlight-page__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.spotlight-page__prop-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  gap: 12px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.spotlight-page__prop-card:hover {
+  border-color: var(--primary-dim);
+  background: var(--card-hover);
+}
+
+.spotlight-page__prop-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.spotlight-page__prop-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.spotlight-page__prop-desc {
+  font-size: 0.83rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.spotlight-page__prop-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.spotlight-page__color-card {
+  gap: 14px;
+}
+
+.spotlight-page__capsule-wrap {
+  display: flex;
+  background: var(--input-bg);
+  padding: 3px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--input-border);
+  gap: 4px;
+}
+
+.spotlight-page__capsule-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.spotlight-page__capsule-btn:hover {
+  color: var(--text-primary);
+}
+
+.spotlight-page__capsule-btn.active {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--primary-dim);
+}
+
+.spotlight-page__capsule-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.2);
+}
+
+.spotlight-page__color-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.spotlight-page__restore-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  border: 1px solid var(--primary-dim);
+  background: var(--primary-dim);
+  color: var(--primary);
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.spotlight-page__restore-capsule:hover {
+  background: var(--primary);
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+}
+
+.spotlight-page__number-input {
+  width: 100%;
+  max-width: 140px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-family: inherit;
+  transition: border-color 0.15s ease;
+}
+
+.spotlight-page__number-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-dim);
+}
+
+.spotlight-page__color-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.spotlight-page__color-hex {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.spotlight-page__color-picker-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.spotlight-page__color-swatch {
+  width: 48px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.spotlight-page__color-swatch:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.spotlight-page__color-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.spotlight-page__style-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.spotlight-page__style-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  gap: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+}
+
+.spotlight-page__style-card:hover {
+  border-color: var(--primary-dim);
+  background: var(--card-hover);
+  transform: translateY(-1px);
+}
+
+.spotlight-page__style-card--active {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.spotlight-page__style-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.spotlight-page__style-card--active .spotlight-page__style-card-header {
+  color: var(--primary);
+}
+
+.spotlight-page__style-card-desc {
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 内嵌从属面板 (Nested Inset Sub-Panel) 打造世界级空间层次
+ * ───────────────────────────────────────────────────────────────────────────── */
+.spotlight-page__inset-panel {
+  margin-top: 14px;
+  padding: 16px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.spotlight-page__section-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.spotlight-page__section-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.spotlight-page__section-desc {
+  font-size: 0.83rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.spotlight-page__action-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: var(--spacing-md);
+}

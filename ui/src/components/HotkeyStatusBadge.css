@@ -1,0 +1,82 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * HotkeyStatusBadge.css — 世界级快捷键多状态微徽章体系
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.hotkey-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+/* State: 全局正常生效 */
+.hotkey-badge.badge-active {
+  background: rgba(16, 185, 129, 0.08);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+[data-theme="dark"] .hotkey-badge.badge-active {
+  background: rgba(16, 185, 129, 0.14);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+}
+
+/* State: 仅会话/录屏时生效 (条件触发) */
+.hotkey-badge.badge-session {
+  background: rgba(14, 165, 233, 0.08);
+  color: #0284c7;
+  border: 1px solid rgba(14, 165, 233, 0.2);
+}
+
+[data-theme="dark"] .hotkey-badge.badge-session {
+  background: rgba(56, 189, 248, 0.14);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+}
+
+/* State: 内部冲突 */
+.hotkey-badge.badge-warning {
+  background: rgba(245, 158, 11, 0.08);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+[data-theme="dark"] .hotkey-badge.badge-warning {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+/* State: 外部占用 */
+.hotkey-badge.badge-danger {
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+[data-theme="dark"] .hotkey-badge.badge-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+/* State: 未绑定 */
+.hotkey-badge.badge-disabled {
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--text-muted, #64748b);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="dark"] .hotkey-badge.badge-disabled {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted, #94a3b8);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}

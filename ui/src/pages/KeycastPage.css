@@ -1,0 +1,591 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * KeycastPage.css — 按键回显与屏幕演示视觉样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.keycast-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  padding: 0 0 var(--spacing-xl) 0;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.keycast-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-sm);
+}
+
+.keycast-page__title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.keycast-page__title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.keycast-page__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.keycast-page__prop-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  gap: 12px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.keycast-page__prop-card:hover {
+  border-color: var(--primary-dim);
+  background: var(--card-hover);
+}
+
+.keycast-page__prop-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.keycast-page__prop-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.keycast-page__prop-desc {
+  font-size: 0.83rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.keycast-page__prop-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.keycast-page__color-card {
+  gap: 14px;
+}
+
+.keycast-page__capsule-wrap {
+  display: flex;
+  background: var(--input-bg);
+  padding: 3px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--input-border);
+  gap: 4px;
+}
+
+.keycast-page__capsule-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.keycast-page__capsule-btn:hover {
+  color: var(--text-primary);
+}
+
+.keycast-page__capsule-btn.active {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--primary-dim);
+}
+
+.keycast-page__capsule-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.2);
+}
+
+.keycast-page__color-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.keycast-page__restore-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  border: 1px solid var(--primary-dim);
+  background: var(--primary-dim);
+  color: var(--primary);
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.keycast-page__restore-capsule:hover {
+  background: var(--primary);
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+}
+
+.keycast-page__number-input {
+  width: 100%;
+  max-width: 140px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-family: inherit;
+  transition: border-color 0.15s ease;
+}
+
+.keycast-page__number-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-dim);
+}
+
+.keycast-page__color-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.keycast-page__color-hex {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.keycast-page__color-picker-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.keycast-page__color-swatch {
+  width: 48px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.keycast-page__color-swatch:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.keycast-page__color-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.keycast-page__action-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: var(--spacing-md);
+}
+
+/* ── 拟真交互式虚拟显示器沙盘 (Interactive Virtual Screen Monitor) ──────── */
+.keycast-page__monitor-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 16px 12px;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-lg, 16px);
+  width: 100%;
+}
+
+.keycast-page__monitor-screen {
+  position: relative;
+  width: 100%;
+  max-width: 520px;
+  aspect-ratio: 16 / 9.5;
+  background: #0f172a;
+  border: 8px solid #1e293b;
+  border-bottom-width: 12px;
+  border-radius: 12px;
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+[data-theme="light"] .keycast-page__monitor-screen {
+  border-color: #334155;
+  box-shadow:
+    0 14px 36px rgba(0, 0, 0, 0.2),
+    0 0 0 1px rgba(255, 255, 255, 0.2) inset;
+}
+
+.keycast-page__monitor-cam {
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  z-index: 10;
+}
+
+.keycast-page__monitor-desktop {
+  flex: 1;
+  position: relative;
+  background: radial-gradient(circle at 50% 30%, rgba(59, 130, 246, 0.18) 0%, rgba(15, 23, 42, 0.95) 75%), #090d16;
+  overflow: hidden;
+}
+
+/* 5 大物理热区 */
+.keycast-page__monitor-hotspot {
+  position: absolute;
+  border: 1px dashed rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  outline: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 2;
+}
+
+.keycast-page__monitor-hotspot:hover {
+  border-color: var(--primary);
+  background: rgba(59, 130, 246, 0.12);
+  transform: scale(1.04);
+}
+
+.keycast-page__monitor-hotspot.pos-top_left {
+  top: 10px;
+  left: 10px;
+}
+
+.keycast-page__monitor-hotspot.pos-top_center {
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.keycast-page__monitor-hotspot.pos-top_center:hover {
+  transform: translateX(-50%) scale(1.04);
+}
+
+.keycast-page__monitor-hotspot.pos-top_right {
+  top: 10px;
+  right: 10px;
+}
+
+.keycast-page__monitor-hotspot.pos-bottom_left {
+  bottom: 28px;
+  left: 10px;
+}
+
+.keycast-page__monitor-hotspot.pos-bottom_center {
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.keycast-page__monitor-hotspot.pos-bottom_center:hover {
+  transform: translateX(-50%) scale(1.04);
+}
+
+.keycast-page__monitor-hotspot.pos-bottom_right {
+  bottom: 28px;
+  right: 10px;
+}
+
+.keycast-page__monitor-hotspot.active {
+  border: 1px solid var(--primary);
+  background: rgba(59, 130, 246, 0.22);
+  box-shadow: 0 0 16px var(--primary-dim, rgba(59, 130, 246, 0.4));
+}
+
+.keycast-page__monitor-hotspot-hint {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
+  color: rgba(255, 255, 255, 0.5);
+  transition: color 0.15s ease;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.keycast-page__monitor-hotspot:hover .keycast-page__monitor-hotspot-hint {
+  color: #ffffff;
+}
+
+/* 屏幕内部按键发光胶囊 */
+.keycast-page__monitor-capsule {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  animation: keycast-capsule-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes keycast-capsule-pop {
+  0% { transform: scale(0.8); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.keycast-page__monitor-capsule-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid var(--primary);
+  border-radius: 5px;
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.keycast-page__monitor-capsule-key.key-win {
+  background: rgba(59, 130, 246, 0.35);
+  border-color: rgba(96, 165, 250, 0.8);
+  color: #ffffff;
+}
+
+.keycast-page__monitor-capsule-plus {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* 底部虚拟任务栏 */
+.keycast-page__monitor-taskbar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 18px;
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(4px);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  z-index: 1;
+}
+
+.keycast-page__monitor-taskbar-start {
+  width: 8px;
+  height: 8px;
+  background: #38bdf8;
+  border-radius: 2px;
+}
+
+.keycast-page__monitor-taskbar-icons {
+  display: flex;
+  gap: 4px;
+}
+
+.keycast-page__monitor-taskbar-app {
+  width: 8px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 2px;
+}
+
+.keycast-page__monitor-taskbar-app.active {
+  background: var(--primary);
+}
+
+.keycast-page__monitor-taskbar-tray {
+  width: 14px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+/* 显示器支架与底座 */
+.keycast-page__monitor-stand {
+  width: 28px;
+  height: 16px;
+  background: linear-gradient(180deg, #334155 0%, #1e293b 100%);
+  border-radius: 2px 2px 0 0;
+  margin-top: -2px;
+}
+
+.keycast-page__monitor-base {
+  width: 110px;
+  height: 6px;
+  background: linear-gradient(90deg, #1e293b, #475569, #1e293b);
+  border-radius: 4px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* 底部快速切换药丸 */
+.keycast-page__monitor-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+  width: 100%;
+}
+
+.keycast-page__monitor-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 20px;
+  background: var(--bg-surface, var(--card-bg));
+  border: 1px solid var(--card-border);
+  color: var(--text-secondary);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  outline: none;
+}
+
+.keycast-page__monitor-pill:hover {
+  color: var(--text-primary);
+  border-color: var(--primary-dim);
+  background: var(--card-hover);
+  transform: translateY(-1px);
+}
+
+.keycast-page__monitor-pill.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--primary-dim);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.keycast-page__pos-check-icon {
+  color: var(--primary);
+  stroke-width: 3;
+}
+
+/* ── 按键过滤模式卡片组 ────────────────────────────────────────── */
+.keycast-page__filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.keycast-page__filter-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: left;
+}
+
+.keycast-page__filter-card:hover {
+  border-color: var(--primary-dim);
+  background: var(--card-hover);
+}
+
+.keycast-page__filter-card.active {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.keycast-page__filter-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.keycast-page__filter-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.keycast-page__filter-desc {
+  font-size: 0.83rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.keycast-page__filter-radio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--card-border);
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.keycast-page__filter-radio.active {
+  border-color: var(--primary);
+}
+
+.keycast-page__filter-radio-inner {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+}

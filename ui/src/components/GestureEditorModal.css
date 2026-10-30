@@ -1,0 +1,283 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * GestureEditorModal.css — 手势编辑器与高级执行特性世界级 UI 样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.gesture-editor-advanced-wrapper {
+  margin-top: 18px;
+  border-top: 1px solid var(--card-border);
+  padding-top: 12px;
+}
+
+.gesture-editor-advanced-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--card-border);
+  background: var(--input-bg);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+  font-family: inherit;
+}
+
+.gesture-editor-advanced-toggle:hover {
+  background: var(--primary-dim);
+  border-color: var(--primary);
+}
+
+.gesture-editor-advanced-toggle__left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.gesture-editor-advanced-toggle__icon {
+  color: var(--primary);
+}
+
+.gesture-editor-advanced-toggle__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.gesture-editor-advanced-badge {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 12px;
+  background: var(--primary-dim);
+  color: var(--primary);
+  border: 1px solid var(--primary-glow);
+}
+
+.gesture-editor-advanced-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* ── 高级特性场景卡片 ────────────────────────────────────────────────────── */
+.gesture-scenario-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.gesture-scenario-card:hover {
+  border-color: var(--primary);
+}
+
+.gesture-scenario-card--active {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.gesture-scenario-card--focused {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 12px var(--primary-glow);
+  animation: pulseCardHighlight 1.5s ease-out 1;
+}
+
+@keyframes pulseCardHighlight {
+  0% { transform: scale(0.98); box-shadow: 0 0 16px var(--primary); }
+  50% { transform: scale(1.02); box-shadow: 0 0 20px var(--primary-glow); }
+  100% { transform: scale(1); }
+}
+
+.gesture-scenario-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.gesture-scenario-card__main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex: 1;
+}
+
+.gesture-scenario-card__icon-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.gesture-scenario-card__icon-box--instant {
+  background: rgba(234, 179, 8, 0.14);
+  color: #eab308;
+  border: 1px solid rgba(234, 179, 8, 0.25);
+}
+
+.gesture-scenario-card__icon-box--silent {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.gesture-scenario-card__text-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.gesture-scenario-card__title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.gesture-scenario-card__desc {
+  font-size: var(--text-sm, 0.86rem);
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+/* 适用场景 Callout */
+.gesture-scenario-card__callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  border: 1px dashed var(--card-border);
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin-left: 44px;
+}
+
+.gesture-scenario-card__callout-icon {
+  color: var(--primary);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ── 手势智能冲突替换提示卡片 ────────────────────────────────────────────── */
+.gesture-conflict-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #d97706;
+  font-size: 0.83rem;
+  line-height: 1.45;
+  animation: fadeIn 0.2s ease-out;
+}
+
+[data-theme='dark'] .gesture-conflict-warning {
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+}
+
+.gesture-conflict-icon {
+  flex-shrink: 0;
+  color: #f59e0b;
+}
+
+/* ── 紧凑动作配置并排网格 ────────────────────────────────────────────── */
+.gesture-action-config-grid {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  position: relative;
+}
+
+.gesture-action-config-grid > div {
+  position: relative;
+}
+
+.gesture-action-config-grid > div:focus-within,
+.gesture-action-config-grid > div:has(.uikit-select-wrapper--open) {
+  z-index: 50;
+}
+
+.gesture-action-config-grid .uikit-select-wrapper {
+  width: 100%;
+  min-width: 0;
+}
+
+@container uikit-modal (max-width: 500px) {
+  .gesture-action-config-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 540px) {
+  .gesture-action-config-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── 替换所有相似手势轨迹配置卡片 ────────────────────────────────────────── */
+.gesture-replace-tracks-card {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  border: 1px solid var(--card-border);
+  transition: border-color var(--transition-fast);
+}
+
+.gesture-replace-tracks-card:hover {
+  border-color: var(--primary);
+}
+
+.gesture-replace-tracks-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.83rem;
+  flex-wrap: wrap;
+}
+
+.gesture-replace-tracks-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.gesture-replace-tracks-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.gesture-replace-tracks-subtitle {
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+}

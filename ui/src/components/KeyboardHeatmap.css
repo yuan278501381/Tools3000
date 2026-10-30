@@ -1,0 +1,590 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * KeyboardHeatmap.css — 工业级机械键盘热力图设计系统 (Dark / Light 双模支持)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --key-frame-bg: linear-gradient(180deg, rgba(22, 20, 32, 0.82) 0%, rgba(16, 14, 24, 0.92) 100%);
+  --key-frame-border: rgba(255, 255, 255, 0.09);
+  --key-frame-inset: inset 0 1px 1px rgba(255, 255, 255, 0.08), inset 0 -1px 2px rgba(0, 0, 0, 0.6);
+  --key-bg-idle: #242232;
+  --key-border-idle: rgba(255, 255, 255, 0.08);
+  --key-shadow-idle: 0 2px 0 #12101a, 0 3px 6px rgba(0, 0, 0, 0.35);
+  --key-text-idle: #cbd5e1;
+  --key-text-level1: #f3e8ff;
+  --key-subtext-level1: rgba(243, 232, 255, 0.75);
+  --key-text-level2: #ffffff;
+  --key-subtext-level2: rgba(255, 255, 255, 0.9);
+  --key-tooltip-bg: rgba(24, 22, 34, 0.96);
+  --key-tooltip-text: #f8fafc;
+  --key-legend-bg: rgba(255, 255, 255, 0.04);
+}
+
+[data-theme="light"] {
+  --key-frame-bg: linear-gradient(180deg, #f1f3f9 0%, #e5e8f0 100%);
+  --key-frame-border: rgba(0, 0, 0, 0.08);
+  --key-frame-inset: inset 0 1px 2px rgba(255, 255, 255, 0.9), inset 0 -1px 2px rgba(0, 0, 0, 0.05);
+  --key-bg-idle: #ffffff;
+  --key-border-idle: rgba(0, 0, 0, 0.12);
+  --key-shadow-idle: 0 2px 0 #d1d5db, 0 2px 4px rgba(0, 0, 0, 0.04);
+  --key-text-idle: #334155;
+  --key-text-level1: #581c87;
+  --key-subtext-level1: #7e22ce;
+  --key-text-level2: #3b0764;
+  --key-subtext-level2: #6b21a8;
+  --key-tooltip-bg: #ffffff;
+  --key-tooltip-text: #18181b;
+  --key-legend-bg: rgba(0, 0, 0, 0.03);
+}
+
+.keyboard-heatmap-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: visible;
+}
+
+/* 顶部布局切换控制栏 */
+.keyboard-heatmap__header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+
+.keyboard-heatmap__title-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.keyboard-heatmap__title-icon {
+  color: var(--primary);
+}
+
+.keyboard-layout-segmented {
+  display: inline-flex;
+  align-items: center;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.keyboard-layout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.keyboard-layout-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover, rgba(255, 255, 255, 0.04));
+}
+
+.keyboard-layout-btn.active {
+  background: var(--primary);
+  color: #ffffff;
+  box-shadow: 0 1px 3px var(--primary-glow);
+}
+
+/* 机械键盘精工盘体框架 (完全自适应父级容器，无任何溢出滚动条) */
+.keyboard-chassis {
+  display: flex;
+  flex-direction: row;
+  gap: clamp(6px, 1.2vw, 14px);
+  padding: clamp(10px, 1.5vw, 16px);
+  background: var(--key-frame-bg);
+  border: 1px solid var(--key-frame-border);
+  border-radius: var(--radius-lg);
+  user-select: none;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: var(--key-frame-inset), 0 8px 24px rgba(0, 0, 0, 0.1);
+  overflow: visible;
+  transition: max-width 0.25s cubic-bezier(0.16, 1, 0.3, 1), padding 0.2s ease;
+}
+
+.keyboard-chassis--104 {
+  width: 100%;
+  max-width: 100%;
+}
+
+.keyboard-chassis--87 {
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.keyboard-chassis--60 {
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+/* 键盘三大区域 Cluster 拓扑 */
+.keyboard-cluster {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.keyboard-cluster--main {
+  flex: 15 1 0%;
+}
+
+.keyboard-cluster--nav {
+  flex: 3 1 0%;
+}
+
+.keyboard-cluster--numpad {
+  flex: 4 1 0%;
+}
+
+/* 机械键盘 F 区与主打字区之间的标准下沉留白 */
+.keyboard-section-gap {
+  height: clamp(5px, 0.8vw, 8px);
+  flex-shrink: 0;
+}
+
+/* 方向键与编辑键之间的垂直弹性填充 */
+.keyboard-arrow-divider {
+  flex: 1 1 0%;
+  min-height: clamp(5px, 0.8vw, 8px);
+}
+
+/* 键盘行容器 */
+.keyboard-row {
+  display: flex;
+  gap: clamp(2px, 0.35vw, 4px);
+  width: 100%;
+  align-items: stretch;
+}
+
+.keyboard-alpha-block,
+.keyboard-edit-block,
+.keyboard-arrow-block {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(2px, 0.35vw, 4px);
+}
+
+.keyboard-gap {
+  min-width: 0;
+  height: clamp(22px, 2.8vw, 32px);
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 数字小键盘标准网格 */
+.keyboard-numpad-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(5, clamp(24px, 3.4vw, 36px));
+  gap: clamp(2px, 0.35vw, 4px);
+  width: 100%;
+}
+
+/* 小键盘状态指示灯面板 */
+.keyboard-numpad-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  height: clamp(22px, 2.8vw, 32px);
+  padding: 0 4px;
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--key-frame-border);
+  border-radius: 6px;
+  box-sizing: border-box;
+  gap: 2px;
+}
+
+[data-theme="light"] .keyboard-numpad-status {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+.numpad-led-badge {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: -0.02em;
+}
+
+.numpad-led-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #94a3b8;
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+
+.numpad-led-dot.active {
+  background: #10b981;
+  opacity: 1;
+  box-shadow: 0 0 6px #10b981;
+}
+
+/* 键帽本体 (PBT Double-Shot Tactile Aesthetic) */
+.keyboard-keycap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: clamp(24px, 3.4vw, 36px);
+  flex: 1 1 0%;
+  min-width: 0;
+  border-radius: clamp(4px, 0.5vw, 6px);
+  border-width: 1px;
+  border-style: solid;
+  font-family: var(--font-mono);
+  font-size: clamp(0.60rem, 0.8vw, 0.82rem);
+  font-weight: 600;
+  transition: transform 0.14s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.14s ease, border-color 0.14s ease;
+  cursor: pointer;
+  overflow: visible;
+  padding: 2px clamp(1px, 0.25vw, 2px);
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.keycap--f-row {
+  height: clamp(22px, 2.8vw, 32px);
+  font-size: clamp(0.55rem, 0.68vw, 0.70rem);
+  border-radius: clamp(3px, 0.4vw, 5px);
+}
+
+.keycap--nav-sys {
+  padding: 1px 1px;
+}
+
+.keycap--nav-sys .keyboard-keycap__label {
+  font-size: clamp(0.48rem, 0.58vw, 0.58rem) !important;
+  letter-spacing: -0.04em !important;
+  font-weight: 700;
+}
+
+.keycap--nav-edit .keyboard-keycap__label {
+  font-size: clamp(0.55rem, 0.68vw, 0.68rem);
+  letter-spacing: -0.02em;
+}
+
+.keycap--arrow {
+  font-size: clamp(0.68rem, 0.85vw, 0.86rem);
+}
+
+.keycap--numpad {
+  height: 100%;
+}
+
+.keyboard-keycap__label {
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.1;
+  max-width: 100%;
+}
+
+.keyboard-keycap__count-pill {
+  position: absolute;
+  right: 2px;
+  bottom: 1.5px;
+  font-size: clamp(6.5px, 0.75vw, 8px);
+  font-weight: 700;
+  font-family: var(--font-mono);
+  opacity: 0.9;
+  pointer-events: none;
+  line-height: 1;
+}
+
+.keyboard-keycap__crown {
+  position: absolute;
+  top: -8px;
+  right: -4px;
+  font-size: 12px;
+  animation: crownBob 2s infinite ease-in-out;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 4px rgba(245, 158, 11, 0.6));
+  z-index: 5;
+}
+
+@keyframes crownBob {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-2px) scale(1.15); }
+}
+
+/* 悬停弹性微升动效 */
+.keyboard-keycap:hover {
+  transform: translateY(-2.5px);
+  z-index: 20;
+  border-color: var(--primary) !important;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22), 0 0 10px var(--primary-glow) !important;
+}
+
+/* 浮动提示卡片 (Floating Tooltip Badge) */
+.keyboard-heatmap__tooltip {
+  visibility: hidden;
+  position: absolute;
+  left: 50%;
+  background: var(--key-tooltip-bg);
+  color: var(--key-tooltip-text);
+  padding: 6px 10px;
+  border-radius: 7px;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.16s ease, transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+  z-index: 60;
+  border: 1px solid var(--card-border);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 默认向上弹出 */
+.keyboard-heatmap__tooltip--top {
+  bottom: calc(100% + 7px);
+  transform: translateX(-50%) translateY(4px) scale(0.96);
+}
+
+/* 顶部两行按键智能向下翻转，防止被窗口外沿遮挡 */
+.keyboard-heatmap__tooltip--bottom {
+  top: calc(100% + 7px);
+  transform: translateX(-50%) translateY(-4px) scale(0.96);
+}
+
+.tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tooltip-key-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tooltip-badge-peak {
+  font-size: 12px;
+  background: linear-gradient(135deg, #f43f5e, #f59e0b);
+  color: #fff;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.tooltip-badge-lock {
+  font-size: 12px;
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  padding: 0 4px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.tooltip-body {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tooltip-count strong {
+  color: var(--primary);
+  font-size: 12px;
+}
+
+.tooltip-pct {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.keyboard-keycap:hover .keyboard-heatmap__tooltip--top {
+  visibility: visible;
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.keyboard-keycap:hover .keyboard-heatmap__tooltip--bottom {
+  visibility: visible;
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+/* ── 底部图例栏 ─────────────────────────────────────────────── */
+.keyboard-heatmap__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.keyboard-heatmap__legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.legend-spectrum {
+  width: 140px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--key-legend-bg);
+  border: 1px solid var(--card-border);
+  overflow: hidden;
+}
+
+.spectrum-bar {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, 
+    rgba(139, 92, 246, 0.2) 0%, 
+    rgba(147, 51, 234, 0.6) 35%, 
+    rgba(236, 72, 153, 0.85) 70%, 
+    #f59e0b 100%
+  );
+}
+
+/* ── 今日最高频高级质感微胶囊 (World-class Top Badge) ────────── */
+.keyboard-heatmap__top-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(239, 68, 68, 0.06) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  padding: 4px 12px 4px 6px;
+  border-radius: 24px;
+  font-size: 12px;
+  color: var(--text-primary);
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.08);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.keyboard-heatmap__top-badge:hover {
+  border-color: rgba(245, 158, 11, 0.45);
+  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.16);
+  transform: translateY(-1px);
+}
+
+.top-badge-icon-box {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.35);
+  flex-shrink: 0;
+}
+
+.top-badge-flame-icon {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+}
+
+.top-badge-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.top-badge-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.top-badge-key-name {
+  font-weight: 700;
+  font-size: 12px;
+  color: #f59e0b;
+}
+
+.top-badge-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-base);
+  padding: 1px 7px;
+  border-radius: 12px;
+  border: 1px solid var(--card-border);
+}
+
+.top-badge-count {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.top-badge-unit {
+  color: var(--text-muted);
+}
+
+.top-badge-divider {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.top-badge-pct {
+  font-weight: 600;
+  color: #f59e0b;
+  font-family: var(--font-mono);
+}
+
+.keyboard-heatmap__top-badge--idle {
+  background: var(--bg-elevated);
+  border-color: var(--card-border);
+  box-shadow: none;
+  opacity: 0.75;
+}
+
+.top-badge-icon-box--idle {
+  background: var(--bg-base);
+  color: var(--text-muted);
+  box-shadow: none;
+  border: 1px solid var(--card-border);
+}
