@@ -1,0 +1,195 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * DialogEnhancerPage.css — 对话框助手样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.dialog-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding-bottom: 2rem;
+}
+
+.dialog-page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 240px;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+
+.dialog-ribbon-options {
+  margin: 0 1rem 1rem;
+  padding: 0.25rem 0.9rem 0;
+  background: var(--bg-surface);
+  border-left: 3px solid var(--primary);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.dialog-ribbon-options--disabled {
+  opacity: 0.58;
+  border-left-color: var(--card-border);
+}
+
+.dialog-ribbon-options__title {
+  padding: 0.65rem 0.1rem 0.1rem;
+  color: var(--text-muted);
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.dialog-add-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.dialog-input {
+  flex: 1;
+  height: 36px;
+  padding: 0 0.85rem;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.dialog-input:focus {
+  border-color: var(--input-focus);
+  background: var(--bg-elevated);
+}
+
+.dialog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.dialog-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.85rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+}
+
+.dialog-item-icon {
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+}
+
+.dialog-item-text {
+  flex: 1;
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog-btn-danger:hover {
+  color: var(--danger) !important;
+}
+
+.dialog-empty {
+  padding: 1.25rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.dialog-memories-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.dialog-memory-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.6rem 0.85rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+}
+
+.dialog-proc-badge {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.83rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--primary-dim);
+  border: 1px solid var(--primary-glow);
+  border-radius: 6px;
+}
+
+.dialog-memory-path {
+  flex: 1;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog-memory-time {
+  font-size: 0.83rem;
+  color: var(--text-muted);
+}
+
+.dialog-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.dialog-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.65rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+}
+
+.dialog-chip-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 0.1rem;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.dialog-chip-remove:hover {
+  color: var(--danger);
+}
+
+.dialog-fixed-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.15rem 0.45rem;
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  color: var(--success);
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.25);
+  border-radius: 4px;
+}

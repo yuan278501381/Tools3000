@@ -1,0 +1,190 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SearchPage.css — 搜索设置与语法手册样式 (100% 对齐设计系统规范)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.search-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  max-width: 100%;
+}
+
+.search-page__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  animation: fadeIn var(--transition-normal);
+}
+
+/* 语法与正则手册表格 */
+.syntax-table-wrapper {
+  overflow-x: auto;
+  margin-top: var(--spacing-sm);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+}
+
+.syntax-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  line-height: 1.5;
+}
+
+.syntax-table th,
+.syntax-table td {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--card-border);
+  vertical-align: middle;
+}
+
+.syntax-table th {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.83rem;
+  letter-spacing: 0.02em;
+}
+
+.syntax-table tr:last-child td {
+  border-bottom: none;
+}
+
+.syntax-table tr:hover td {
+  background: var(--card-hover);
+}
+
+.syntax-table code {
+  display: inline-block;
+  background: var(--bg-elevated);
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--card-border);
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.syntax-hint-p {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  margin: 0 0 var(--spacing-md) 0;
+  line-height: 1.6;
+}
+
+.syntax-hint-p code {
+  display: inline-block;
+  background: var(--bg-elevated);
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--card-border);
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+}
+
+/* 服务监控卡片 */
+.service-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-xs) 0;
+}
+
+.service-status-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+}
+
+.status-indicator--online {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.status-indicator--offline {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.status-info {
+  flex: 1;
+}
+
+.status-title {
+  margin: 0 0 4px 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.status-desc {
+  margin: 0;
+  font-size: 0.83rem;
+  color: var(--text-secondary);
+}
+
+.service-details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--spacing-md);
+}
+
+@media (max-width: 768px) {
+  .service-details-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-md);
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+}
+
+.detail-label {
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.detail-value {
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.detail-value code {
+  background: var(--bg-surface);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--card-border);
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+}

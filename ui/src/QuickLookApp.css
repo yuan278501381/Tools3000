@@ -1,0 +1,662 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   QuickLookApp.css — Tools3000 极速预览浮窗现代化 Fluent 样式
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --ql-bg: rgba(22, 24, 30, 0.94);
+  --ql-header-bg: rgba(30, 34, 44, 0.7);
+  --ql-border: rgba(255, 255, 255, 0.08);
+  --ql-text-main: #f8fafc;
+  --ql-text-sub: #94a3b8;
+  --ql-text-muted: #64748b;
+  --ql-surface-btn: rgba(255, 255, 255, 0.06);
+  --ql-surface-btn-border: rgba(255, 255, 255, 0.12);
+  --ql-surface-btn-hover: rgba(255, 255, 255, 0.12);
+  --ql-footer-bg: rgba(18, 20, 26, 0.9);
+  --ql-code-bg: rgba(15, 17, 23, 0.75);
+}
+
+[data-theme="light"] {
+  --ql-bg: #ffffff;
+  --ql-header-bg: #f8f8fc;
+  --ql-border: rgba(0, 0, 0, 0.08);
+  --ql-text-main: #111118;
+  --ql-text-sub: #4b4b5e;
+  --ql-text-muted: #78788a;
+  --ql-surface-btn: rgba(0, 0, 0, 0.05);
+  --ql-surface-btn-border: rgba(0, 0, 0, 0.12);
+  --ql-surface-btn-hover: rgba(0, 0, 0, 0.09);
+  --ql-footer-bg: #f4f4f8;
+  --ql-code-bg: #f8f8fc;
+}
+
+html[data-surface="quicklook"],
+html[data-surface="quicklook"] body,
+html[data-surface="quicklook"] #root {
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.ql-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background: var(--ql-bg);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid var(--ql-border);
+  border-radius: 10px;
+  color: var(--ql-text-main);
+  font-family: var(--font-sans);
+  overflow: hidden;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.ql-empty-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ql-empty-state {
+  text-align: center;
+  max-width: 480px;
+  padding: 40px;
+}
+
+.ql-empty-icon {
+  font-size: 56px;
+  margin-bottom: 16px;
+  filter: drop-shadow(0 8px 24px rgba(59, 130, 246, 0.3));
+}
+
+.ql-empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ql-text-main);
+  margin-bottom: 8px;
+}
+
+.ql-empty-desc {
+  font-size: 13px;
+  color: var(--ql-text-sub);
+  line-height: 1.6;
+}
+
+/* ── 顶部栏 ─────────────────────────────────────────────────────────────── */
+.ql-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: var(--ql-header-bg);
+  border-bottom: 1px solid var(--ql-border);
+  min-height: 60px;
+  box-sizing: border-box;
+  cursor: move;
+}
+
+.ql-file-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ql-file-icon {
+  font-size: 28px;
+  flex-shrink: 0;
+}
+
+.ql-file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ql-file-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ql-file-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ql-text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ql-file-badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--primary-dim, rgba(59, 130, 246, 0.16));
+  color: var(--primary, #60a5fa);
+  border: 1px solid var(--primary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.ql-file-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ql-text-sub);
+}
+
+.ql-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+.ql-code-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--ql-surface-btn);
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--ql-surface-btn-border);
+}
+
+.ql-btn-sub {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  color: var(--ql-text-sub);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ql-btn-sub:hover {
+  background: var(--ql-surface-btn-hover);
+  color: var(--ql-text-main);
+}
+
+.ql-btn-sub.active {
+  background: var(--primary-dim);
+  color: var(--primary);
+}
+
+.ql-scale-text {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  color: var(--ql-text-sub);
+  padding: 0 4px;
+}
+
+.ql-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ql-btn-primary {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+}
+
+.ql-btn-primary:hover {
+  background: linear-gradient(135deg, #60a5fa, #3b82f6);
+  transform: translateY(-1px);
+}
+
+.ql-btn-secondary {
+  background: var(--ql-surface-btn);
+  color: var(--ql-text-main);
+  border: 1px solid var(--ql-surface-btn-border);
+}
+
+.ql-btn-secondary:hover {
+  background: var(--ql-surface-btn-hover);
+  color: var(--ql-text-main);
+}
+
+.ql-btn-close {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  padding: 6px 10px;
+}
+
+.ql-btn-close:hover {
+  background: rgba(239, 68, 68, 0.25);
+  color: #ffffff;
+}
+
+/* ── 主体内容区 ─────────────────────────────────────────────────────────── */
+.ql-main {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+  box-sizing: border-box;
+}
+
+/* ── Markdown 渲染 ──────────────────────────────────────────────────────── */
+.ql-markdown-view {
+  padding: 28px 40px;
+  user-select: text;
+  line-height: 1.7;
+}
+
+.ql-markdown-body {
+  color: var(--ql-text-main);
+}
+
+.ql-markdown-body h1,
+.ql-markdown-body h2,
+.ql-markdown-body h3,
+.ql-markdown-body h4 {
+  color: var(--ql-text-main);
+  margin-top: 24px;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.ql-markdown-body h1 {
+  font-size: 24px;
+  border-bottom: 1px solid var(--ql-border);
+  padding-bottom: 8px;
+}
+
+.ql-markdown-body h2 {
+  font-size: 20px;
+  border-bottom: 1px solid var(--ql-border);
+  padding-bottom: 6px;
+}
+
+.ql-markdown-body h3 { font-size: 17px; }
+.ql-markdown-body h4 { font-size: 15px; }
+
+.ql-markdown-body p {
+  color: var(--ql-text-main);
+  margin-bottom: 12px;
+}
+
+.ql-blockquote {
+  border-left: 4px solid #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+  padding: 10px 16px;
+  margin: 14px 0;
+  border-radius: 0 8px 8px 0;
+  color: var(--ql-text-sub);
+}
+
+.ql-hr {
+  border: none;
+  height: 1px;
+  background: var(--ql-border);
+  margin: 24px 0;
+}
+
+.ql-inline-code {
+  background: var(--ql-surface-btn);
+  color: #2563eb;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+:root .ql-inline-code {
+  color: #38bdf8;
+}
+
+[data-theme="light"] .ql-inline-code {
+  color: #0284c7;
+}
+
+.ql-code-block {
+  margin: 16px 0;
+  background: var(--ql-code-bg);
+  border: 1px solid var(--ql-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ql-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background: var(--ql-surface-btn);
+  border-bottom: 1px solid var(--ql-border);
+}
+
+.ql-code-lang {
+  font-size: 12px;
+  color: var(--ql-text-muted);
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
+.ql-code-copy-btn {
+  background: transparent;
+  border: 1px solid var(--ql-surface-btn-border);
+  color: var(--ql-text-sub);
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.ql-code-copy-btn:hover {
+  background: var(--ql-surface-btn-hover);
+  color: var(--ql-text-main);
+}
+
+.ql-code-block pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ql-text-main);
+}
+
+.ql-task-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  color: var(--ql-text-main);
+}
+
+/* ── 语法高亮 Token ──────────────────────────────────────────────────────── */
+.tok-comment { color: #64748b; font-style: italic; }
+.tok-string { color: #10b981; }
+.tok-keyword { color: #e11d48; font-weight: 600; }
+.tok-number { color: #d97706; }
+.tok-fn { color: #0284c7; }
+
+/* ── 代码视图 ────────────────────────────────────────────────────────────── */
+.ql-code-view {
+  display: flex;
+  height: 100%;
+  user-select: text;
+  font-family: var(--font-mono);
+}
+
+.ql-line-numbers {
+  padding: 16px 12px;
+  background: var(--ql-code-bg);
+  border-right: 1px solid var(--ql-border);
+  color: var(--ql-text-muted);
+  text-align: right;
+  user-select: none;
+  line-height: 1.6;
+}
+
+.ql-code-content {
+  flex: 1;
+  margin: 0;
+  padding: 16px 20px;
+  line-height: 1.6;
+  overflow: auto;
+  color: var(--ql-text-main);
+}
+
+.ql-code-content.wrap {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── 图片预览 ────────────────────────────────────────────────────────────── */
+.ql-image-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.ql-image-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-image: 
+    linear-gradient(45deg, rgba(128, 128, 128, 0.08) 25%, transparent 25%), 
+    linear-gradient(-45deg, rgba(128, 128, 128, 0.08) 25%, transparent 25%), 
+    linear-gradient(45deg, transparent 75%, rgba(128, 128, 128, 0.08) 75%), 
+    linear-gradient(-45deg, transparent 75%, rgba(128, 128, 128, 0.08) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  border-radius: 8px;
+  padding: 16px;
+  overflow: auto;
+}
+
+.ql-image-element {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  transition: transform 0.15s ease-out;
+  border-radius: 4px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+/* ── 媒体播放器 ──────────────────────────────────────────────────────────── */
+.ql-media-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 32px;
+  box-sizing: border-box;
+}
+
+.ql-video-player {
+  max-width: 100%;
+  max-height: 75vh;
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  outline: none;
+}
+
+.ql-audio-card {
+  text-align: center;
+  background: var(--ql-code-bg);
+  padding: 40px;
+  border-radius: 16px;
+  border: 1px solid var(--ql-border);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+}
+
+.ql-audio-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.ql-audio-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ql-text-main);
+  margin-bottom: 24px;
+}
+
+.ql-audio-player {
+  width: 360px;
+  outline: none;
+}
+
+/* ── 文件夹表格预览 ──────────────────────────────────────────────────────── */
+.ql-folder-view {
+  padding: 24px 32px;
+}
+
+.ql-folder-header {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ql-text-sub);
+  margin-bottom: 16px;
+}
+
+.ql-folder-table-container {
+  background: var(--ql-code-bg);
+  border-radius: 8px;
+  border: 1px solid var(--ql-border);
+  overflow: hidden;
+}
+
+.ql-folder-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.ql-folder-table th {
+  text-align: left;
+  padding: 10px 16px;
+  background: var(--ql-surface-btn);
+  color: var(--ql-text-muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--ql-border);
+}
+
+.ql-folder-table td {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--ql-border);
+  color: var(--ql-text-sub);
+}
+
+.ql-cell-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ql-text-main) !important;
+  font-weight: 500;
+}
+
+.ql-table-icon {
+  font-size: 16px;
+}
+
+/* ── 二进制 / 兜底卡片 ──────────────────────────────────────────────────── */
+.ql-binary-view {
+  padding: 32px;
+}
+
+.ql-binary-card {
+  text-align: center;
+  padding: 32px;
+}
+
+.ql-binary-icon {
+  font-size: 56px;
+  margin-bottom: 12px;
+}
+
+.ql-binary-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ql-text-main);
+  margin-bottom: 6px;
+}
+
+.ql-binary-meta {
+  font-size: 13px;
+  color: var(--ql-text-sub);
+  margin-bottom: 24px;
+}
+
+.ql-hex-dump {
+  text-align: left;
+  background: var(--ql-code-bg);
+  padding: 16px;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #0284c7;
+  max-width: 600px;
+  margin: 0 auto;
+  overflow-x: auto;
+  border: 1px solid var(--ql-border);
+}
+
+.ql-binary-hint {
+  font-size: 13px;
+  color: var(--ql-text-muted);
+}
+
+/* ── 底部状态栏 ─────────────────────────────────────────────────────────── */
+.ql-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 20px;
+  background: var(--ql-footer-bg);
+  border-top: 1px solid var(--ql-border);
+  font-size: 12px;
+  color: var(--ql-text-muted);
+  min-height: 36px;
+  box-sizing: border-box;
+}
+
+.ql-shortcut-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ql-shortcut-hint kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  background: var(--ql-surface-btn);
+  border: 1px solid var(--ql-surface-btn-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ql-text-sub);
+  box-sizing: border-box;
+}
+
+.ql-footer-status {
+  color: var(--ql-text-muted);
+}

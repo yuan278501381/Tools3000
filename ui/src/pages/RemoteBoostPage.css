@@ -1,0 +1,287 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * RemoteBoostPage.css — 远程协助主控单边增强设置页样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.remote-boost-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding-bottom: 2.5rem;
+  font-family: var(--font-sans);
+}
+
+/* ── 顶部 Hero 卡片 ──────────────────────────────────────────────────────── */
+
+.remote-boost-hero-card {
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+}
+
+.remote-boost-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.25rem 0;
+}
+
+.remote-boost-hero__info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.remote-boost-hero__title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.remote-boost-hero__icon {
+  color: var(--primary);
+}
+
+.remote-boost-hero__title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.remote-boost-hero__desc {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* ── 状态条 ──────────────────────────────────────────────────────────────── */
+
+.remote-boost-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--card-border);
+}
+
+.remote-boost-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.remote-boost-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.remote-boost-dot--active {
+  background-color: #10b981;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
+  animation: pulse-dot 2s infinite ease-in-out;
+}
+
+.remote-boost-dot--idle {
+  background-color: var(--text-muted);
+}
+
+@keyframes pulse-dot {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.8;
+  }
+}
+
+.remote-boost-status-text {
+  font-size: 0.85rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.remote-boost-status-text--active {
+  color: var(--text-primary);
+}
+
+.remote-boost-ime-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-full);
+}
+
+/* ── 直通按键胶囊清单 ────────────────────────────────────────────────────── */
+
+.remote-boost-tags-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.75rem;
+}
+
+.remote-boost-tags-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.remote-boost-key-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* ── 进程列表与输入 ──────────────────────────────────────────────────────── */
+
+.remote-boost-process-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+}
+
+.remote-boost-process-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.remote-boost-process-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.remote-boost-process-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.35rem;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+}
+
+.remote-boost-process-chip__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.remote-boost-process-chip__remove:hover {
+  color: var(--text-primary);
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.remote-boost-add-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.remote-boost-input {
+  flex: 1;
+  height: 34px;
+  padding: 0 0.75rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.remote-boost-input:focus {
+  border-color: var(--primary);
+}
+
+/* ── 急救操作栏 ──────────────────────────────────────────────────────────── */
+
+.remote-boost-flush-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  margin-top: 0.75rem;
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--primary);
+}
+
+.remote-boost-flush-desc {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.remote-boost-flush-icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.remote-boost-flush-btn {
+  flex-shrink: 0;
+}
+
+/* ── 底部栏 ──────────────────────────────────────────────────────────────── */
+
+.remote-boost-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 0.5rem;
+}
+
+.remote-boost-footer__status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.remote-boost-footer__check {
+  color: #10b981;
+}

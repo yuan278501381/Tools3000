@@ -1,0 +1,401 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * GestureDrawCanvas.css — 手势录制画板样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.gesture-draw-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  width: 100%;
+}
+
+/* ── 一体化手势录制控制舱 (Cockpit Bar) ─────────────────────────────────── */
+.gesture-cockpit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 10px;
+  padding: 6px 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
+}
+
+.gesture-cockpit-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.gesture-cockpit-label {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 2px;
+}
+
+/* 触发按键与位置感应微型指示徽章 (只读展示，不可点击) */
+.gesture-cockpit-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 500;
+  cursor: default;
+  user-select: none;
+  font-family: inherit;
+  transition: all var(--transition-fast);
+  opacity: 0.65;
+}
+
+.gesture-cockpit-badge.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 1px 6px var(--primary-glow);
+  opacity: 1;
+  transform: scale(1.02);
+}
+
+/* 修饰键感应徽章 (Ctrl / Shift / Alt 只读展示) */
+.gesture-modifier-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  cursor: default;
+  user-select: none;
+  transition: all var(--transition-fast);
+  opacity: 0.6;
+}
+
+.gesture-modifier-badge.active {
+  background: var(--primary-dim);
+  border-color: var(--primary);
+  color: var(--primary);
+  box-shadow: 0 0 8px var(--primary-glow);
+  opacity: 1;
+}
+
+.gesture-modifier-badge.is-key-pressed {
+  background: var(--primary) !important;
+  border-color: var(--primary) !important;
+  color: #ffffff !important;
+  opacity: 1 !important;
+  transform: scale(1.06);
+  box-shadow: 0 0 10px var(--primary-glow);
+}
+
+.gesture-draw-clear-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  color: var(--text-secondary);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  margin-left: auto;
+}
+
+.gesture-draw-clear-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--primary);
+}
+
+.gesture-draw-pad {
+  position: relative;
+  width: 100%;
+  height: 180px;
+  background: var(--bg-primary);
+  border: 2px dashed var(--card-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  cursor: crosshair;
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.gesture-draw-pad:hover {
+  border-color: var(--primary);
+  background: var(--bg-elevated);
+}
+
+.gesture-draw-pad.is-drawing {
+  border-color: var(--primary);
+  border-style: solid;
+  box-shadow: 0 0 16px rgba(124, 58, 237, 0.25);
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.gesture-draw-crosshair {
+  position: absolute;
+  inset: 0;
+  background-image: 
+    radial-gradient(circle at center, var(--card-border) 1px, transparent 1px);
+  background-size: 24px 24px;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.gesture-draw-watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--text-muted);
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.gesture-draw-watermark-icon-box {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  margin-bottom: 6px;
+  transition: transform var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.gesture-draw-pad:hover .gesture-draw-watermark-icon-box {
+  transform: scale(1.06) translateY(-2px);
+  border-color: var(--primary);
+  color: var(--primary-hover);
+}
+
+.gesture-draw-mouse-icon {
+  opacity: 0.85;
+}
+
+.gesture-draw-watermark-text {
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.gesture-draw-watermark-hint {
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+}
+
+.gesture-draw-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.gesture-stroke-glow {
+  stroke: var(--primary);
+  stroke-width: 9px;
+  stroke-opacity: 0.35;
+}
+
+.gesture-stroke-core {
+  stroke: var(--primary);
+  stroke-width: 4px;
+  stroke-opacity: 0.95;
+}
+
+.gesture-point-halo {
+  fill: var(--primary);
+  fill-opacity: 0.40;
+}
+
+.gesture-point-bead {
+  fill: var(--primary);
+  fill-opacity: 0.95;
+}
+
+.gesture-point-core {
+  fill: #ffffff;
+  fill-opacity: 0.95;
+}
+
+.gesture-draw-badge {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  animation: fadeIn 0.2s ease;
+  pointer-events: none;
+}
+
+.gesture-draw-badge-icon {
+  color: var(--success);
+}
+
+.gesture-draw-badge-arrows {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--primary);
+  letter-spacing: 0.05em;
+}
+
+.gesture-draw-badge-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* 常用预设手势栏 */
+.gesture-preset-tray {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding-top: var(--spacing-xs);
+  flex-wrap: wrap;
+}
+
+.gesture-preset-label {
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.gesture-preset-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.gesture-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs, 0.84rem);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.gesture-preset-chip:hover {
+  background: var(--bg-elevated);
+  border-color: var(--primary);
+  color: var(--text-primary);
+}
+
+.gesture-preset-chip.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.gesture-preset-arrows {
+  font-weight: bold;
+}
+
+/* ── 画板起笔边缘智能感应区指示 ────────────────────────────── */
+.gesture-edge-sensor-zone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: all var(--transition-fast);
+  z-index: 2;
+  opacity: 0.35;
+}
+
+.gesture-edge-sensor-zone--top {
+  top: 0;
+  height: 38px;
+  border-bottom: 1px dashed var(--card-border);
+  background: linear-gradient(180deg, rgba(139, 92, 246, 0.08) 0%, transparent 100%);
+}
+
+.gesture-edge-sensor-zone--bottom {
+  bottom: 0;
+  height: 38px;
+  border-top: 1px dashed var(--card-border);
+  background: linear-gradient(0deg, rgba(139, 92, 246, 0.08) 0%, transparent 100%);
+}
+
+.gesture-edge-sensor-tag {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.15);
+  transition: all var(--transition-fast);
+}
+
+.gesture-edge-sensor-zone.active {
+  opacity: 1;
+}
+
+.gesture-edge-sensor-zone--top.active {
+  border-bottom-color: var(--primary);
+  background: linear-gradient(180deg, rgba(139, 92, 246, 0.22) 0%, transparent 100%);
+}
+
+.gesture-edge-sensor-zone--bottom.active {
+  border-top-color: var(--primary);
+  background: linear-gradient(0deg, rgba(139, 92, 246, 0.22) 0%, transparent 100%);
+}
+
+.gesture-edge-sensor-zone.active .gesture-edge-sensor-tag {
+  color: #ffffff;
+  background: var(--primary);
+  box-shadow: 0 0 8px var(--primary-glow);
+}
+
+.gesture-draw-pad.edge-active-top {
+  border-top-color: var(--primary);
+}
+
+.gesture-draw-pad.edge-active-bottom {
+  border-bottom-color: var(--primary);
+}

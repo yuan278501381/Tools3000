@@ -1,0 +1,94 @@
+.gesture-guide {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  margin-top: var(--spacing-md);
+  margin-bottom: 0;
+  box-sizing: border-box;
+  transition: border-color var(--transition-fast);
+}
+
+.gesture-guide:hover {
+  border-color: rgba(139, 92, 246, 0.25);
+}
+
+.gesture-guide__info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.gesture-guide__title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.gesture-guide__desc {
+  font-size: 0.83rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.gesture-guide__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--primary-dim);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm, 0.86rem);
+  font-weight: 600;
+  color: var(--primary);
+  width: fit-content;
+  margin-top: var(--spacing-xs);
+}
+
+.gesture-guide__canvas {
+  width: 80px;
+  height: 80px;
+  background: var(--input-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.gesture-guide__path {
+  stroke-dasharray: 200;
+  stroke-dashoffset: 200;
+  animation: drawPath 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.gesture-guide__dot {
+  animation: moveDot 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  opacity: 0;
+}
+
+@keyframes drawPath {
+  0% { stroke-dashoffset: 200; opacity: 0; }
+  15% { opacity: 1; }
+  55% { stroke-dashoffset: 0; opacity: 1; }
+  80% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
+@keyframes moveDot {
+  0% { offset-distance: 0%; opacity: 0; }
+  15% { opacity: 1; }
+  55% { offset-distance: 100%; opacity: 1; }
+  80% { offset-distance: 100%; opacity: 1; }
+  100% { offset-distance: 100%; opacity: 0; }
+}

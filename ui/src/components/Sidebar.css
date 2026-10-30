@@ -1,0 +1,185 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Sidebar.css — 侧边栏样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.sidebar {
+  width: var(--sidebar-width);
+  height: 100%;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--card-border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+
+/* ── Logo ─────────────────────────────────────────────────────────────────── */
+.sidebar__logo {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-lg) var(--spacing-md);
+  padding-bottom: var(--spacing-md);
+}
+
+.sidebar__logo-icon {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  filter: none;
+}
+
+.sidebar__logo-icon img {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.sidebar__logo-text {
+  font-size: 1.1rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-hover) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: 0.02em;
+}
+
+.sidebar__admin-badge {
+  font-size: 0.83rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  line-height: 1.4;
+  margin-left: 2px;
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.sidebar__admin-badge--elevated {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.sidebar__admin-badge--normal {
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--card-border);
+}
+
+/* ── 导航区域 ─────────────────────────────────────────────────────────────── */
+.sidebar__nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--spacing-sm) var(--spacing-sm);
+  overflow-y: auto;
+}
+
+.sidebar__divider {
+  height: 1px;
+  background: var(--card-border);
+  margin: 6px 8px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.sidebar__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-family: inherit;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  position: relative;
+  text-align: left;
+  width: 100%;
+}
+
+.sidebar__item:hover {
+  background: var(--primary-dim);
+  color: var(--primary);
+}
+
+.sidebar__item:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.sidebar__item:disabled:hover {
+  background: transparent;
+}
+
+.sidebar__item--active {
+  background: var(--primary-dim);
+  color: var(--primary);
+  font-weight: 700;
+}
+
+/* 选中指示条 */
+.sidebar__item-indicator {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3.5px;
+  height: 0;
+  background: var(--primary);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  transition: height 0.32s var(--ease-spring), opacity 0.2s ease;
+}
+
+.sidebar__item--active .sidebar__item-indicator {
+  height: 65%;
+}
+
+.sidebar__item-icon {
+  font-size: 1.15rem;
+  width: 24px;
+  text-align: center;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar__item-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+/* ── 极窄屏幕或微型窗口响应式紧凑模式 ────────────────────────── */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 64px;
+  }
+  .sidebar__logo {
+    justify-content: center;
+    padding: var(--spacing-md) 0;
+  }
+  .sidebar__logo-text,
+  .sidebar__item-label {
+    display: none;
+  }
+  .sidebar__item {
+    justify-content: center;
+    padding: 10px 0;
+  }
+}
