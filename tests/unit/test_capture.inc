@@ -6834,4 +6834,156 @@ TEST(CaptureLifecycleAndGhostWindowTest, ShortcutHintOverlayNeverRemainsAfterCap
     }
 }
 
+TEST(CaptureLifecycleAndGhostWindowTest, ShortcutHintAndCaptureHudsDodgeCursorLoupeAndMaximizedWindow) {
+    using namespace tools3000::capture;
+
+    const RECT workArea = { 0, 0, 1920, 1040 };
+    const int cardW = 240;
+    const int cardH = 260;
+    const int margin = static_cast<int>(ShortcutHintStyle::BaseScreenMargin * 1.0f);
+
+    // 1. 当最大化窗口矩形与左下角光标/放大镜局部障碍物同时传入时，
+    //    全局窗口绝不能掩盖局部碰撞，HUD 必须立即避让左下角光标与放大镜
+    const RECT maximizedWindow = { 0, 32, 1920, 1040 };
+    const RECT bottomLeftCursorBox = { 60, 840, 164, 944 };
+    const RECT bottomLeftLoupeBox = { 136, 828, 352, 1014 };
+    POINT posDodged = ShortcutHintOverlay::computeOptimalPosition(
+        cardW, cardH, workArea, 1.0f,
+        { maximizedWindow, bottomLeftCursorBox, bottomLeftLoupeBox });
+    RECT dodgedCardRect{ posDodged.x, posDodged.y, posDodged.x + cardW, posDodged.y + cardH };
+    RECT interCursor{};
+    RECT interLoupe{};
+    EXPECT_FALSE(IntersectRect(&interCursor, &dodgedCardRect, &bottomLeftCursorBox));
+    EXPECT_FALSE(IntersectRect(&interLoupe, &dodgedCardRect, &bottomLeftLoupeBox));
+
+    // 当光标移至屏幕右上角，左下角无局部碰撞时，即使存在最大化窗口也必须平滑回归默认左下角
+    const RECT topRightCursorBox = { 1680, 120, 1784, 224 };
+    POINT posRestored = ShortcutHintOverlay::computeOptimalPosition(
+        cardW, cardH, workArea, 1.0f,
+        { maximizedWindow, topRightCursorBox });
+    EXPECT_EQ(posRestored.x, workArea.left + margin);
+    EXPECT_EQ(posRestored.y, workArea.bottom - cardH - margin);
+
+    // 2. 验证大面积非全屏局部选区（如占工作区 75%x77% 的左下角大选区 {0, 240, 1450, 1040}）绝不被误忽略，
+    //    HUD 必须逃逸至完全未受遮挡的右上角
+    const RECT largeBottomLeftSelection = { 0, 240, 1450, 1040 };
+    POINT posLargePartial = ShortcutHintOverlay::computeOptimalPosition(
+        cardW, cardH, workArea, 1.0f, { largeBottomLeftSelection });
+    RECT largePartialCard{ posLargePartial.x, posLargePartial.y, posLargePartial.x + cardW, posLargePartial.y + cardH };
+    RECT interLargePartial{};
+    EXPECT_FALSE(IntersectRect(&interLargePartial, &largePartialCard, &largeBottomLeftSelection));
+
+    // 3. 验证 globalObstacles 次级代价决胜：当顶部留有空隙的近似全屏窗口 {0, 150, 1920, 1040} 被归类为 globalObstacle，
+    //    且左侧（左下+左上）均被局部障碍物占据时，右上角因与 globalObstacle 重叠面积显著小于右下角而优先胜出
+    const RECT globalWithTopGap = { 0, 150, 1920, 1040 };
+    const RECT leftSideBarObstacle = { 0, 0, 320, 1040 };
+    POINT posGlobalTieBreak = ShortcutHintOverlay::computeOptimalPosition(
+        cardW, cardH, workArea, 1.0f, { globalWithTopGap, leftSideBarObstacle });
+    EXPECT_EQ(posGlobalTieBreak.x, workArea.right - cardW - margin);
+    EXPECT_EQ(posGlobalTieBreak.y, workArea.top + margin);
+
+    // 4. 验证 8 大标准锚点全被局部障碍物占据时，dynamicCandidates 选取距离默认左下角曼哈顿距离最近的零碰撞空隙
+    const std::vector<RECT> allEightAnchorsBlocked = {
+        { 0, 740, 300, 1040 },     // 1. 左下角
+        { 0, 0, 300, 300 },        // 2. 左上角
+        { 1620, 740, 1920, 1040 }, // 3. 右下角
+        { 1620, 0, 1920, 300 },    // 4. 右上角
+        { 800, 740, 1120, 1040 },  // 5. 底部居中
+        { 800, 0, 1120, 300 },     // 6. 顶部居中
+        { 0, 360, 300, 680 },      // 7. 左侧居中
+        { 1620, 360, 1920, 680 }   // 8. 右侧居中
+    };
+    POINT posDynamic = ShortcutHintOverlay::computeOptimalPosition(
+        cardW, cardH, workArea, 1.0f, allEightAnchorsBlocked);
+    RECT dynamicCard{ posDynamic.x, posDynamic.y, posDynamic.x + cardW, posDynamic.y + cardH };
+    for (const auto& blk : allEightAnchorsBlocked) {
+        RECT interBlk{};
+        EXPECT_FALSE(IntersectRect(&interBlk, &dynamicCard, &blk));
+    }
+    // 紧邻左下角障碍物右侧 (rx = 300 + 10 + 16 = 326, y = maxY) 的动态点位距默认左下角曼哈顿距离最短
+    EXPECT_EQ(posDynamic.y, workArea.bottom - cardH - margin);
+    EXPECT_LT(posDynamic.x, 450);
+
+    // 5. 验证选区放大镜包围盒 computeSelectionLoupeRect 单一事实源 (SSOT) 与屏幕右下边缘翻转
+    const D2D1_SIZE_F surf = D2D1::SizeF(1920.0f, 1080.0f);
+    D2D1_RECT_F loupeNormal = HudAvoidanceEngine::computeSelectionLoupeRect(200.0f, 200.0f, surf, 1.0f);
+    EXPECT_FLOAT_EQ(loupeNormal.left, 222.0f);
+    EXPECT_FLOAT_EQ(loupeNormal.top, 222.0f);
+    EXPECT_FLOAT_EQ(loupeNormal.right, 222.0f + 216.0f);
+    EXPECT_FLOAT_EQ(loupeNormal.bottom, 222.0f + 186.0f);
+
+    D2D1_RECT_F loupeBottomRight = HudAvoidanceEngine::computeSelectionLoupeRect(1880.0f, 1040.0f, surf, 1.0f);
+    EXPECT_LT(loupeBottomRight.right, 1880.0f);
+    EXPECT_LT(loupeBottomRight.bottom, 1040.0f);
+
+    // 6. 验证选区右侧余量充足容纳侧边栏（如右侧余量 70px >= sideW + 16px）时，selectionSideRect 保持在选区外侧右方而不提前内嵌遮挡选区
+    {
+        CaptureState sideState;
+        sideState.mode = OverlayMode::Screenshot;
+        sideState.state = OverlayState::Selected;
+        sideState.dpiScale = 1.0f;
+        D2D1_RECT_F wideSel = D2D1::RectF(10.0f, 100.0f, 1850.0f, 800.0f);
+        rebuildCaptureToolbar(sideState, wideSel, surf);
+        EXPECT_GT(sideState.selectionSideRect.left, wideSel.right);
+    }
+
+    // 7. 验证单参数上下文切换保留避让状态 & 临界迟滞防抖 (Hysteresis Anti-Jitter)
+    auto& hint = ShortcutHintOverlay::instance();
+    hint.hide();
+    POINT anchor{ 200, 200 };
+    HMONITOR mon = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{ sizeof(mi) };
+    ASSERT_TRUE(GetMonitorInfoW(mon, &mi));
+
+    RECT realBottomLeftObstacle{
+        mi.rcWork.left,
+        mi.rcWork.bottom - 380,
+        mi.rcWork.left + 440,
+        mi.rcWork.bottom
+    };
+    hint.show(ShortcutHintContext::CaptureSelecting, anchor, { realBottomLeftObstacle });
+    ASSERT_TRUE(hint.isVisible());
+    RECT selectingAvoided = hint.getBounds();
+    RECT interReal{};
+    EXPECT_FALSE(IntersectRect(&interReal, &selectingAvoided, &realBottomLeftObstacle));
+
+    // 单参数切换至 CaptureDragging / CaptureSelected 时保留避让状态
+    hint.show(ShortcutHintContext::CaptureDragging);
+    RECT draggingAvoided = hint.getBounds();
+    EXPECT_FALSE(IntersectRect(&interReal, &draggingAvoided, &realBottomLeftObstacle));
+
+    hint.show(ShortcutHintContext::CaptureSelected);
+    RECT selectedAvoided = hint.getBounds();
+    EXPECT_FALSE(IntersectRect(&interReal, &selectedAvoided, &realBottomLeftObstacle));
+
+    // 迟滞防抖验证：当障碍物刚退至默认左下角卡片边缘外侧 16px（超出 pad=10px 但仍在 28px 迟滞带内）时，
+    // 卡片保持在当前避让位不立即乒乓跳回左下角；当障碍物彻底远离后，立即平滑回归左下角
+    const int cardActualW = selectedAvoided.right - selectedAvoided.left;
+    const int cardActualH = selectedAvoided.bottom - selectedAvoided.top;
+    const int monMargin = static_cast<int>(ShortcutHintStyle::BaseScreenMargin * 1.0f);
+    RECT borderHysteresisObstacle{
+        mi.rcWork.left + monMargin + cardActualW + 16,
+        mi.rcWork.bottom - monMargin - cardActualH,
+        mi.rcWork.left + monMargin + cardActualW + 96,
+        mi.rcWork.bottom - monMargin
+    };
+    hint.updateAvoidance({ borderHysteresisObstacle });
+    RECT hystBounds = hint.getBounds();
+    EXPECT_EQ(hystBounds.top, selectedAvoided.top);
+
+    RECT farObstacle{
+        mi.rcWork.right - 200,
+        mi.rcWork.top + 40,
+        mi.rcWork.right - 80,
+        mi.rcWork.top + 160
+    };
+    hint.updateAvoidance({ farObstacle });
+    RECT restoredAfterFar = hint.getBounds();
+    const LONG midY = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top) / 2;
+    EXPECT_GT(restoredAfterFar.bottom, midY);
+
+    hint.hide();
+    EXPECT_FALSE(hint.isVisible());
+}
+
 

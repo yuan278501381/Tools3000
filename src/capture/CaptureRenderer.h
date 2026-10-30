@@ -57,9 +57,12 @@ private:
     void drawCrosshair(float x, float y, CaptureState* pState = nullptr);
     void drawVectorButtonIcon(const ToolbarButton& button, const D2D1_RECT_F& rect, ID2D1Brush* brush, float scale);
     void drawFloatingToast(const CaptureState& state);
+    void updateShortcutHintAvoidance(const CaptureState& state);
     void drawCornerRadiusHandleVisual(const D2D1_RECT_F& boxRect, float cornerRadius, float scale, bool isDragging, POINT dragStartPos, POINT currentCursor, float minDimension, int cornerIndex = -1);
 
     public:
+    /// 计算像素取色放大镜（Selection Loupe）在当前画布上的精确外接矩形（供 HUD 联动避让与单元测试复用）
+    static D2D1_RECT_F computeSelectionLoupeRect(float cx, float cy, D2D1_SIZE_F surfaceSize, float scale);
     /// 高精度 DirectWrite 文本度量助手 (基于 IDWriteTextLayout 严格度量，消除排版跑动与重叠)
     D2D1_SIZE_F measureText(const std::wstring& text, IDWriteTextFormat* format = nullptr, float maxWidth = 2048.0f, float maxHeight = 256.0f) const;
     bool sampleScreenColor(int x, int y, int& r, int& g, int& b, CaptureState& state) const;

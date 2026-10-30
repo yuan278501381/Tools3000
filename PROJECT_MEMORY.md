@@ -6,6 +6,44 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-10-30] 全链路 HUD 悬浮层与光标/放大镜/选区碰撞避让引擎 (Full-Lifecycle HUD & Cursor/Loupe Avoidance Engine)
+- **用户反馈与实机截图痛点**：
+  - 用户在屏幕左下角区域准备截图或拖拽选区时，左下角快捷键提示卡片 (`ShortcutHintOverlay`) 未能自动躲开鼠标光标与选区放大镜 (`Loupe HUD`)，导致左下角截图选区与放大镜视野被 HUD 严密遮挡；同时要求全面排查并根治全库同类悬浮层/HUD 遮挡鼠标或选区的问题。
+- **根因深度拆解（6 大核心缺陷）**：
+  1. **`Selecting` 态与 `drawSizeInfo` 早退导致避让断链 (`src/capture/CaptureRenderer.cpp`)**：
+     原 `ShortcutHintOverlay::instance().updateAvoidance(avoidRects)` 仅在 `CaptureRenderer::drawSizeInfo` 内部且仅当 `hasLockedSelection` (`Selected` / `Marking`) 为真时调用；在 `OverlayState::Selecting`（智能窗口探测悬停与鼠标拖拽划选阶段）以及选区宽高为 0 时完全不触发避让更新，导致用户在屏幕左下角寻点或拖拽选区时 HUD 纹丝不动。
+  2. **鼠标光标安全区与放大镜 (`loupeHudRect`) 从未纳入 `ShortcutHintOverlay` 避让集 (`src/capture/CaptureRenderer.cpp`, `src/capture/ShortcutHintOverlay.cpp`)**：
+     即使进入 `Selected` / `Marking` 状态，`avoidRects` 也仅包含工具栏与小选区，从未将当前鼠标光标安全包络（`±52px * scale`）或 `216x186 * scale` 的放大镜 (`loupeHudRect`) 传入 `ShortcutHintOverlay`。
+  3. **最大化/全屏窗口矩形在 `computeOptimalPosition` 中掩盖局部碰撞 (`src/capture/ShortcutHintOverlay.cpp`)**：
+     原 `ShortcutHintOverlay::computeOptimalPosition` 将所有 `avoidRects` 混算总碰撞面积，并用 `if (minCollisionArea * 2 >= defaultCollisionArea) return defaultPos;` 防止最大化窗口导致乱跳。但当 `avoidRects` 同时包含一个全屏/最大化窗口（面积约 `62,400 px²`）与左下角光标/放大镜局部障碍物（面积约 `10,000 px²`）时，由于其他候选角也与最大化窗口重叠（`62,400 * 2 >= 72,400`），该阈值直接吞掉了局部光标/放大镜碰撞，使 HUD 死锁在左下角拒不避让！
+  4. **单参数上下文切换 `ShortcutHintOverlay::show(context)` 清空已有避让集 (`src/capture/ShortcutHintOverlay.cpp`)**：
+     当状态在 `CaptureSelecting`、`CaptureDragging`、`CaptureSelected`、`CaptureMarking` 间通过单参数 `show(newContext)` 切换时，默认空参 `avoidRects = {}` 直接覆盖清空了上一帧的 `m_avoidRects`，引发 1 帧闪回左下角。
+  5. **截图内部多个微型 HUD（尺寸胶囊 `sizeHudRect`、窗口层级徽章 `hierarchyBadgeRect`、十字线坐标胶囊、二维码浮岛 `qrChipRect`）互不感知放大镜与光标 (`src/capture/CaptureRenderer.cpp`)**：
+     - `drawSizeInfo` 未将 `loupeHudRect`、动态圆形放大镜 (`MarkupTool::Magnifier`)、二级弹出菜单 (`openSubmenuRect` / `sliderPopup` / `dropdownMenu`) 纳入 `HudAvoidanceEngine` 障碍物列表，且在 `Selecting` 态仅当光标位于窗口左上角局部时才添加光标排斥区；
+     - `drawCrosshair` 坐标徽章仅做右/下屏幕边界翻转，未避让 `loupeHudRect` 与 `sizeHudRect`；
+     - 窗口层级提示胶囊 (`Tab 切换窗口层级`) 硬编码在选区左上角下方 `rect.top + 8`，与内部尺寸胶囊或光标重叠；
+     - `drawQrChip` 二维码胶囊固定在选区左下角内侧，未避让底部内缩工具栏、尺寸胶囊与光标。
+  6. **滚动长截图 (`ScrollCaptureOverlay`) 与录屏指示器 (`RecordingIndicator`) 缺乏 HUD 联动避让 (`src/capture/ScrollCaptureOverlay.cpp`, `src/capture/RecordingIndicator.cpp`)**：
+     - `ScrollCaptureOverlay` 右侧长图预览缩略图在超宽选区下 `thumbX = cRect.left - thumbWidth - margin` 会越出屏幕左边界（`< 0`），且未避让鼠标悬停，也未将选区与预览图同步给 `ShortcutHintOverlay`；
+     - `RecordingIndicator` 显示与拖拽移动时未将控制条矩形与录制区域同步至 `ShortcutHintOverlay`。
+- **终局架构修复方案**：
+  1. **`ShortcutHintOverlay` 局部/全局障碍物解耦 + 8 方位候选与曼哈顿距离择优 + 28px 迟滞防抖 + 45ms 实时物理光标追踪 (`src/capture/ShortcutHintOverlay.h/.cpp`)**：
+     - 在 `computeOptimalPosition` 中将 `avoidRects` 严格解耦为 **局部高优先级障碍物 (`localObstacles`)**（光标安全区、放大镜、工具栏、尺寸胶囊、非全屏选区）与 **全局背景障碍物 (`globalObstacles`)**（同时覆盖四角且 `minCorner * 2 >= maxCorner` 的全屏/最大化窗口）。只要左下角与任何 `localObstacles` 发生碰撞，立即零容忍触发避让；当局部碰撞解除后，即使存在最大化窗口也精准回归默认左下角；
+     - 候选位置扩展为 8 方位（左下、左上、右下、右上、底中、顶中、左中、右中）+ 局部障碍物四边动态滑移候选点，按 `(localCollision, globalCollision, candidateGroup, manhattanDistToBottomLeft)` 四元组字典序严格择优；
+     - 在 `syncPosition()` 中引入 **28px * scale 迟滞防抖带 (Hysteresis Anti-Jitter)**：当卡片已从默认左下角避让至备选锚点时，只有当默认左下角外扩迟滞带彻底脱离局部障碍物后才回归左下角，彻底消灭鼠标在边界微动时的乒乓跳闪；
+     - 在 `WM_TIMER`（升级为 `45ms` 周期）中内置实时物理光标追踪（当真实鼠标相对 `show()` 初始位置移动 `> 4px` 时自动注入 `±60px * scale` 光标安全框并重算位置），保证即使宿主处于静态等待态（如长截图滚动中、录屏中、选区静止态），鼠标移向 HUD 时也能毫秒级主动闪避，移开后自动归位；同时保持合成单元测试 100% 确定性。
+  2. **截图全阶段统一避让中枢与单一事实源 (`CaptureRenderer::updateShortcutHintAvoidance`, `HudAvoidanceEngine::computeSelectionLoupeRect`)**：
+     - 将 `HudAvoidanceEngine::computeSelectionLoupeRect` 确立为放大镜几何计算的唯一单一事实源（SSOT，`offset = 22px * scale`, `edgePad = 12px * scale`），`CaptureRenderer::computeSelectionLoupeRect` 直接委托调用；
+     - 在 `CaptureRenderer::updateShortcutHintAvoidance` 中：全阶段注入 `±72px * scale` 光标预判安全框、`loupeHudRect`、动态放大镜圆域、`sizeHudRect`、`sizeMenuRect`、`hierarchyBadgeRect`、`qrChipRect`、主副工具栏、侧边栏及子菜单/滑块弹窗；仅在主动拖拽 (`state.dragging`) 或已锁定选区 (`hasLockedSelection`) 时注入选区矩形（移除被动悬停探测窗口与 `70%` 粗粒度截断，完全交由 `computeOptimalPosition` 的四角 `globalObstacles` 分类器精准裁决）。
+  3. **截图内部全量微型 HUD 协同避让、绘制态工具栏幽灵半透明化与贴图浮层防遮挡 (`CaptureRenderer.cpp`, `CaptureToolbarLayout.cpp`, `PinWindow.cpp`)**：
+     - `drawSizeInfo` 将 `loupeHudRect`、动态放大镜、子菜单弹窗及全阶段光标安全框注入 `HudAvoidanceEngine`；`drawCrosshair`、`hierarchyBadgeRect`、`drawQrChip` 全量支持多象限/多角翻转避让；
+     - 当用户正在进行标注绘制 (`isMarking`)、选区拖拽缩放 (`isAdjustingSelection` / `isAdjustingCornerRadius`) 或图元操纵 (`isManipulating`) 且活动轨迹/光标靠近主工具栏、二级属性栏或侧边栏时，工具栏自动切入 `18%` 透明度幽灵穿透态 (`PushLayer` alpha `0.18f`) 并静默悬停提示，彻底消除全屏/大选区内嵌工具栏遮挡画布笔触的痛点；同时移除 `render()` 中冗余的二次 `drawDropdownMenu` 调用；
+     - `CaptureToolbarLayout` 侧边工具栏仅在右侧剩余空间不足容纳侧边栏本身 (`sideX + sideW > surfaceSize.width - screenMargin`) 时才翻转，`SelectionCornerRadius` 滑块弹窗在右侧空间不足时独立向左翻转 (`selectionSideRect.left - popW - 8 * scale`)，杜绝滑块弹窗覆盖侧边栏或侧边栏过早内嵌遮挡选区；
+     - `PinWindow` 在拖拽划选 OCR 文字 (`m_isSelectingText`) 期间自动隐藏顶部悬停工具栏，且「复制文字」浮动胶囊在悬停工具栏可见时自动向下避让 `toolbarRect`。
+  4. **长截图预览图屏幕钳制与录屏指示器全链路联动 (`ScrollCaptureOverlay`, `RecordingIndicator`, `PluginEntry`)**：
+     - `ScrollCaptureOverlay` 缩略图预览严格钳制在屏幕工作区内并在鼠标悬停时左右翻转避让，每帧将 `m_captureRect`、预览图矩形与实时光标同步至 `ShortcutHintOverlay`；
+     - `RecordingIndicator` 新增 `avoidanceRects()`，在显示、状态切换与拖拽移动时实时驱动 `ShortcutHintOverlay` 避让录制控制条与录制选区。
+
 ### [2026-10-29] 贴图窗口 (`PinWindow`) 键盘快捷键旋转失效根治与 `PinInputController` 策略分发单一事实源架构
 - **用户反馈痛点**：
   「贴图我记得之前某个版本有按键盘快捷键旋转的，现在没有了」：截图钉住或点击/悬浮贴图后，按下键盘旋转快捷键无法旋转贴图（或按数字键 `1`/`2` 贴图变成极低透明度近乎隐形）。

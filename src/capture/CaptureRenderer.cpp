@@ -751,6 +751,31 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
             state.selectionSideRect.bottom > state.selectionSideRect.top) {
             obstacles.push_back({state.selectionSideRect, HudObstacleType::SecondaryToolbar, 2.0f});
         }
+        if (state.openSubmenu != SubmenuType::None &&
+            state.openSubmenuRect.right > state.openSubmenuRect.left &&
+            state.openSubmenuRect.bottom > state.openSubmenuRect.top) {
+            obstacles.push_back({state.openSubmenuRect, HudObstacleType::SecondaryToolbar, 2.2f});
+        }
+        if (state.sliderPopup.type != SliderPopupType::None &&
+            state.sliderPopup.popupRect.right > state.sliderPopup.popupRect.left &&
+            state.sliderPopup.popupRect.bottom > state.sliderPopup.popupRect.top) {
+            obstacles.push_back({state.sliderPopup.popupRect, HudObstacleType::SecondaryToolbar, 2.2f});
+        }
+        if (state.dropdownMenu.type != DropdownType::None && !state.dropdownMenu.items.empty()) {
+            D2D1_RECT_F dmRect = state.dropdownMenu.items.front().rect;
+            for (const auto& item : state.dropdownMenu.items) {
+                dmRect.left = (std::min)(dmRect.left, item.rect.left);
+                dmRect.top = (std::min)(dmRect.top, item.rect.top);
+                dmRect.right = (std::max)(dmRect.right, item.rect.right);
+                dmRect.bottom = (std::max)(dmRect.bottom, item.rect.bottom);
+            }
+            obstacles.push_back({dmRect, HudObstacleType::SecondaryToolbar, 2.2f});
+        }
+        if (!state.detectedQrText.empty() &&
+            state.qrChipRect.right > state.qrChipRect.left &&
+            state.qrChipRect.bottom > state.qrChipRect.top) {
+            obstacles.push_back({state.qrChipRect, HudObstacleType::SecondaryToolbar, 2.0f});
+        }
     }
     if (ShortcutHintOverlay::instance().isVisible()) {
         RECT hintRect = ShortcutHintOverlay::instance().getBounds();
@@ -805,9 +830,27 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
         obstacles.push_back({D2D1::RectF(mx1 - pad, my1 - pad, mx2 + pad, my2 + pad), HudObstacleType::ActiveAnnotation, 2.2f});
     }
 
+    // 3.5. 预选/拖拽阶段像素取色放大镜（Loupe）与动态放大镜（Magnifier）几何避让
+    if (!hasLockedSelection || state.dragging) {
+        state.loupeHudRect = computeSelectionLoupeRect(
+            static_cast<float>(state.currentCursor.x),
+            static_cast<float>(state.currentCursor.y),
+            surfaceSize, scale);
+        obstacles.push_back({state.loupeHudRect, HudObstacleType::Cursor, 4.0f});
+    } else if (state.currentTool == MarkupTool::Magnifier && !state.isMarking && !state.isManipulating) {
+        const float magR = (static_cast<float>(state.dynamicMagnifierRadius) + 12.0f) * scale;
+        const float curFx = static_cast<float>(state.currentCursor.x);
+        const float curFy = static_cast<float>(state.currentCursor.y);
+        obstacles.push_back({
+            D2D1::RectF(curFx - magR, curFy - magR, curFx + magR, curFy + magR),
+            HudObstacleType::Cursor,
+            3.5f
+        });
+    }
+
     // 4. 光标避让策略：
     // 展开尺寸菜单时用户正在点击菜单选项，不主动躲避光标；
-    // 处于拖拽、调整选区、手柄操作、图元绘制或光标进入选区内部/靠近把手时，强力避让光标，彻底杜绝挡住鼠标或把手
+    // 处于预选探测(!hasLockedSelection)、拖拽、调整选区、手柄操作、图元绘制或光标进入选区内部/靠近把手时，强力避让光标
     const bool isInteracting = state.dragging || state.isMarking || state.isManipulating ||
                                state.isAdjustingSelection || state.isAdjustingCornerRadius;
     const float handleSafeR = 26.0f * scale;
@@ -829,7 +872,7 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
             static_cast<float>(state.currentCursor.y) - curSafeR,
             static_cast<float>(state.currentCursor.x) + curSafeR,
             static_cast<float>(state.currentCursor.y) + curSafeR);
-        if (isInteracting || nearAnyHandle || cursorInsideSelection) {
+        if (!hasLockedSelection || isInteracting || nearAnyHandle || cursorInsideSelection) {
             obstacles.push_back({cursorObstacle, HudObstacleType::Cursor, 3.0f});
         }
     }
@@ -848,52 +891,6 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
     state.lastSizeHudEdge = static_cast<int>(placement.edge);
     auto pillRect = placement.rect;
     state.sizeHudRect = pillRect;
-
-    if (hasLockedSelection && ShortcutHintOverlay::instance().isVisible()) {
-        const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        std::vector<RECT> avoidRects;
-        const RECT selScreen{
-            static_cast<LONG>(rect.left + vx),
-            static_cast<LONG>(rect.top + vy),
-            static_cast<LONG>(rect.right + vx),
-            static_cast<LONG>(rect.bottom + vy)
-        };
-        MONITORINFO mi{sizeof(mi)};
-        const HMONITOR hMon = MonitorFromRect(&selScreen, MONITOR_DEFAULTTONEAREST);
-        RECT workArea{
-            vx, vy,
-            vx + static_cast<LONG>(surfaceSize.width),
-            vy + static_cast<LONG>(surfaceSize.height)
-        };
-        if (hMon && GetMonitorInfoW(hMon, &mi)) {
-            workArea = mi.rcWork;
-        }
-        const LONG monW = std::max<LONG>(1, workArea.right - workArea.left);
-        const LONG monH = std::max<LONG>(1, workArea.bottom - workArea.top);
-        const LONG selW = selScreen.right - selScreen.left;
-        const LONG selH = selScreen.bottom - selScreen.top;
-        const bool isLargeWindowOrScreenSelection =
-            (selW >= (monW * 55) / 100) || (selH >= (monH * 60) / 100);
-        if (!isLargeWindowOrScreenSelection) {
-            avoidRects.push_back(selScreen);
-        }
-        if (state.primaryToolbarRect.right > state.primaryToolbarRect.left) {
-            avoidRects.push_back({ static_cast<LONG>(state.primaryToolbarRect.left + vx), static_cast<LONG>(state.primaryToolbarRect.top + vy),
-                                   static_cast<LONG>(state.primaryToolbarRect.right + vx), static_cast<LONG>(state.primaryToolbarRect.bottom + vy) });
-        }
-        if (state.secondaryToolbarRect.right > state.secondaryToolbarRect.left) {
-            avoidRects.push_back({ static_cast<LONG>(state.secondaryToolbarRect.left + vx), static_cast<LONG>(state.secondaryToolbarRect.top + vy),
-                                   static_cast<LONG>(state.secondaryToolbarRect.right + vx), static_cast<LONG>(state.secondaryToolbarRect.bottom + vy) });
-        }
-        if (state.selectionSideRect.right > state.selectionSideRect.left) {
-            avoidRects.push_back({ static_cast<LONG>(state.selectionSideRect.left + vx), static_cast<LONG>(state.selectionSideRect.top + vy),
-                                   static_cast<LONG>(state.selectionSideRect.right + vx), static_cast<LONG>(state.selectionSideRect.bottom + vy) });
-        }
-        avoidRects.push_back({ static_cast<LONG>(pillRect.left + vx), static_cast<LONG>(pillRect.top + vy),
-                               static_cast<LONG>(pillRect.right + vx), static_cast<LONG>(pillRect.bottom + vy) });
-        ShortcutHintOverlay::instance().updateAvoidance(avoidRects);
-    }
 
     float labelX = pillRect.left;
     float labelY = pillRect.top;
@@ -1057,7 +1054,38 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
     if (state.toolbarButtons.empty()) return;
 
     const float scale = std::clamp(state.dpiScale > 0.0f ? state.dpiScale : 1.0f, 1.0f, 5.0f);
-    
+    const bool isActiveDragInteraction =
+        state.isMarking || state.isAdjustingSelection || state.isAdjustingCornerRadius || state.isManipulating;
+    bool ghostFadeToolbar = false;
+    if (isActiveDragInteraction) {
+        const float pad = 28.0f * scale;
+        const float cx = static_cast<float>(state.currentCursor.x);
+        const float cy = static_cast<float>(state.currentCursor.y);
+        D2D1_RECT_F activeBox = D2D1::RectF(cx - pad, cy - pad, cx + pad, cy + pad);
+        if (state.isMarking) {
+            const float mx1 = (std::min)(static_cast<float>(state.markupStart.x), cx) - pad;
+            const float my1 = (std::min)(static_cast<float>(state.markupStart.y), cy) - pad;
+            const float mx2 = (std::max)(static_cast<float>(state.markupStart.x), cx) + pad;
+            const float my2 = (std::max)(static_cast<float>(state.markupStart.y), cy) + pad;
+            activeBox = D2D1::RectF(mx1, my1, mx2, my2);
+        }
+        if (HudAvoidanceEngine::rectsIntersect(activeBox, state.primaryToolbarRect) ||
+            (!state.secondaryToolbarButtons.empty() && HudAvoidanceEngine::rectsIntersect(activeBox, state.secondaryToolbarRect)) ||
+            (!state.selectionSideButtons.empty() && HudAvoidanceEngine::rectsIntersect(activeBox, state.selectionSideRect))) {
+            ghostFadeToolbar = true;
+        }
+    }
+
+    ComPtr<ID2D1Layer> ghostLayer;
+    bool pushedGhostLayer = false;
+    if (ghostFadeToolbar && SUCCEEDED(m_renderTarget->CreateLayer(nullptr, ghostLayer.GetAddressOf())) && ghostLayer) {
+        m_renderTarget->PushLayer(
+            D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                  D2D1::IdentityMatrix(), 0.18f),
+            ghostLayer.Get());
+        pushedGhostLayer = true;
+    }
+
     // 1. 绘制主工具栏浮岛卡片 (Squircle 11px 现代平滑连续圆角)
     drawGlassPanel(state.primaryToolbarRect, 11.0f * scale, false);
 
@@ -1452,12 +1480,16 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
         return false;
     };
 
-    if (state.openSubmenu == SubmenuType::None) {
+    if (state.openSubmenu == SubmenuType::None && !isActiveDragInteraction) {
         if (!showTooltip(state.toolbarButtons)) {
             if (!showTooltip(state.secondaryToolbarButtons)) {
                 showTooltip(state.selectionSideButtons);
             }
         }
+    }
+
+    if (pushedGhostLayer) {
+        m_renderTarget->PopLayer();
     }
 }
 
@@ -1683,8 +1715,10 @@ void CaptureRenderer::drawSliderPopup(CaptureState& state) {
     float popX = state.secondaryToolbarRect.left + 12.0f * scale;
     float popY = state.secondaryToolbarRect.bottom + 8.0f * scale;
 
+    auto sz = m_renderTarget->GetSize();
     if (state.sliderPopup.type == SliderPopupType::SelectionCornerRadius) {
-        if (state.selectionSideRect.left >= state.toolbarLayoutSelection.right) {
+        if (state.selectionSideRect.left >= state.toolbarLayoutSelection.right &&
+            state.selectionSideRect.right + 8.0f * scale + popW <= sz.width - 8.0f * scale) {
             popX = state.selectionSideRect.right + 8.0f * scale;
         } else {
             popX = state.selectionSideRect.left - popW - 8.0f * scale;
@@ -1692,7 +1726,6 @@ void CaptureRenderer::drawSliderPopup(CaptureState& state) {
         popY = state.selectionSideRect.top - 10.0f * scale;
     }
 
-    auto sz = m_renderTarget->GetSize();
     if (popY + popH > sz.height - 8.0f * scale) {
         popY = sz.height - popH - 8.0f * scale;
     }
@@ -2830,6 +2863,11 @@ void CaptureRenderer::drawDynamicMagnifier(CaptureState& state) {
     }
 }
 
+D2D1_RECT_F CaptureRenderer::computeSelectionLoupeRect(
+    float cx, float cy, D2D1_SIZE_F surfaceSize, float scale) {
+    return HudAvoidanceEngine::computeSelectionLoupeRect(cx, cy, surfaceSize, scale);
+}
+
 void CaptureRenderer::drawSelectionLoupe(float cx, float cy, CaptureState& state) {
     if (!m_renderTarget || !m_screenBitmap) return;
 
@@ -2848,17 +2886,12 @@ void CaptureRenderer::drawSelectionLoupe(float cx, float cy, CaptureState& state
     float loupeBoxH = gridCountY * zoom * scale; // 104px * scale (上半区开阔像素观察区)
     float panelH = 82.0f * scale;                // 82px * scale (下半区大号字体舒展排版，上下 104:82 黄金比例)
     const float totalH = loupeBoxH + panelH;
-    const float pad = 12.0f * scale;
 
     auto size = m_renderTarget->GetSize();
-
-    float lx = cx + 22.0f * scale;
-    float ly = cy + 22.0f * scale;
-
-    if (lx + loupeBoxW + pad > size.width) lx = cx - 22.0f * scale - loupeBoxW;
-    if (ly + totalH + pad > size.height) ly = cy - 22.0f * scale - totalH;
-    lx = std::clamp(lx, pad, std::max(pad, size.width - loupeBoxW - pad));
-    ly = std::clamp(ly, pad, std::max(pad, size.height - totalH - pad));
+    D2D1_RECT_F fullLoupeRect = computeSelectionLoupeRect(cx, cy, size, scale);
+    state.loupeHudRect = fullLoupeRect;
+    float lx = fullLoupeRect.left;
+    float ly = fullLoupeRect.top;
 
     D2D1_RECT_F dst = D2D1::RectF(lx, ly, lx + loupeBoxW, ly + loupeBoxH);
     
@@ -3070,14 +3103,50 @@ void CaptureRenderer::drawQrChip(const D2D1_RECT_F& selRect, CaptureState& state
         textW = metrics.width;
     }
 
+    auto surfaceSize = m_renderTarget->GetSize();
     float chipW = 24.0f * scale + textW + pad * 2;
-    float cx2 = selRect.right;
-    float cy1 = selRect.top - chipH - 6.0f * scale;
-    if (cy1 < 10.0f * scale) {
-        cy1 = selRect.top + 6.0f * scale; // 选区靠近屏幕顶端时移至内部
+    const float margin = 6.0f * scale;
+    const float cxRight = std::clamp(selRect.right - chipW, margin, (std::max)(margin, surfaceSize.width - chipW - margin));
+    const float cxLeft = std::clamp(selRect.left, margin, (std::max)(margin, surfaceSize.width - chipW - margin));
+
+    std::vector<D2D1_RECT_F> candidates = {
+        D2D1::RectF(cxRight, selRect.top - chipH - margin, cxRight + chipW, selRect.top - margin),
+        D2D1::RectF(cxRight, selRect.top + margin, cxRight + chipW, selRect.top + margin + chipH),
+        D2D1::RectF(cxLeft, selRect.bottom + margin, cxLeft + chipW, selRect.bottom + margin + chipH),
+        D2D1::RectF(cxLeft, selRect.top - chipH - margin, cxLeft + chipW, selRect.top - margin),
+        D2D1::RectF(cxRight, selRect.bottom - chipH - margin, cxRight + chipW, selRect.bottom - margin),
+    };
+
+    const bool isInteracting = state.dragging || state.isMarking || state.isManipulating ||
+                               state.isAdjustingSelection || state.isAdjustingCornerRadius;
+    const float curFx = static_cast<float>(state.currentCursor.x);
+    const float curFy = static_cast<float>(state.currentCursor.y);
+    const float curR = 28.0f * scale;
+    const D2D1_RECT_F cursorBox = D2D1::RectF(curFx - curR, curFy - curR, curFx + curR, curFy + curR);
+
+    auto rectsOverlap = [](const D2D1_RECT_F& a, const D2D1_RECT_F& b, float gap) -> bool {
+        if (b.right <= b.left || b.bottom <= b.top) return false;
+        return (a.left < b.right + gap && a.right > b.left - gap &&
+                a.top < b.bottom + gap && a.bottom > b.top - gap);
+    };
+
+    D2D1_RECT_F chosen = candidates.front();
+    if (chosen.top < margin) {
+        chosen = candidates[1];
     }
-    float cx1 = std::max(selRect.left, cx2 - chipW);
-    state.qrChipRect = D2D1::RectF(cx1, cy1, cx1 + chipW, cy1 + chipH);
+    for (const auto& cand : candidates) {
+        if (cand.top < margin || cand.bottom > surfaceSize.height - margin) continue;
+        bool collides = rectsOverlap(cand, state.sizeHudRect, 4.0f * scale) ||
+                        rectsOverlap(cand, state.primaryToolbarRect, 4.0f * scale) ||
+                        rectsOverlap(cand, state.secondaryToolbarRect, 4.0f * scale) ||
+                        rectsOverlap(cand, state.selectionSideRect, 4.0f * scale) ||
+                        (isInteracting && rectsOverlap(cand, cursorBox, 4.0f * scale));
+        if (!collides) {
+            chosen = cand;
+            break;
+        }
+    }
+    state.qrChipRect = chosen;
 
     // 绘制毛玻璃微胶囊底框与悬停高亮
     ComPtr<ID2D1SolidColorBrush> chipBg, chipBorder, iconBrush, textBrush;
@@ -3127,10 +3196,36 @@ void CaptureRenderer::drawCrosshair(float x, float y, CaptureState* pState) {
 
             float badgeW = static_cast<float>(hudText.size()) * 7.2f * scale + 24.0f * scale;
             float badgeH = 20.0f * scale;
-            float badgeX = x + 14.0f * scale;
-            float badgeY = y - badgeH - 8.0f * scale;
-            if (badgeY < 8.0f * scale) badgeY = y + 14.0f * scale;
-            if (badgeX + badgeW > size.width - 8.0f * scale) badgeX = x - badgeW - 14.0f * scale;
+            const float margin = 8.0f * scale;
+
+            auto rectsOverlap = [](const D2D1_RECT_F& a, const D2D1_RECT_F& b, float gap) -> bool {
+                if (b.right <= b.left || b.bottom <= b.top) return false;
+                return (a.left < b.right + gap && a.right > b.left - gap &&
+                        a.top < b.bottom + gap && a.bottom > b.top - gap);
+            };
+
+            const D2D1_POINT_2F quadOrigins[] = {
+                {x + 14.0f * scale, y - badgeH - 8.0f * scale},          // 1. 右上象限 (默认)
+                {x - badgeW - 14.0f * scale, y - badgeH - 8.0f * scale}, // 2. 左上象限
+                {x - badgeW - 14.0f * scale, y + 14.0f * scale},         // 3. 左下象限
+                {x + 14.0f * scale, y + 14.0f * scale},                  // 4. 右下象限
+            };
+
+            float badgeX = std::clamp(quadOrigins[0].x, margin, (std::max)(margin, size.width - badgeW - margin));
+            float badgeY = std::clamp(quadOrigins[0].y, margin, (std::max)(margin, size.height - badgeH - margin));
+            for (const auto& orig : quadOrigins) {
+                if (orig.x < margin || orig.x + badgeW > size.width - margin ||
+                    orig.y < margin || orig.y + badgeH > size.height - margin) {
+                    continue;
+                }
+                D2D1_RECT_F cand = D2D1::RectF(orig.x, orig.y, orig.x + badgeW, orig.y + badgeH);
+                if (!rectsOverlap(cand, pState->loupeHudRect, 6.0f * scale) &&
+                    !rectsOverlap(cand, pState->sizeHudRect, 6.0f * scale)) {
+                    badgeX = orig.x;
+                    badgeY = orig.y;
+                    break;
+                }
+            }
 
             auto badgeRect = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
             auto badgeRound = D2D1::RoundedRect(badgeRect, 5.0f * scale, 5.0f * scale);
@@ -3156,6 +3251,108 @@ void CaptureRenderer::drawCrosshair(float x, float y, CaptureState* pState) {
                 textBrush.Get());
         }
     }
+}
+
+void CaptureRenderer::updateShortcutHintAvoidance(const CaptureState& state) {
+    if (!ShortcutHintOverlay::instance().isVisible() || !m_renderTarget) return;
+
+    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const float scale = std::clamp(state.dpiScale > 0.0f ? state.dpiScale : 1.0f, 1.0f, 5.0f);
+    const auto surfaceSize = m_renderTarget->GetSize();
+
+    auto toScreenRect = [&](const D2D1_RECT_F& r) -> RECT {
+        return RECT{
+            static_cast<LONG>(std::lround(r.left)) + vx,
+            static_cast<LONG>(std::lround(r.top)) + vy,
+            static_cast<LONG>(std::lround(r.right)) + vx,
+            static_cast<LONG>(std::lround(r.bottom)) + vy
+        };
+    };
+    auto pushIfValid = [&](std::vector<RECT>& vec, const D2D1_RECT_F& r) {
+        if (r.right > r.left && r.bottom > r.top) {
+            vec.push_back(toScreenRect(r));
+        }
+    };
+
+    std::vector<RECT> avoidRects;
+    avoidRects.reserve(12);
+
+    // 1. 鼠标光标高优先级安全避让区（任何阶段只要鼠标靠近左下角快捷键卡片，提前 72px*scale 主动预判避让！）
+    if (state.currentCursor.x >= 0 && state.currentCursor.y >= 0) {
+        const LONG curScreenX = state.currentCursor.x + vx;
+        const LONG curScreenY = state.currentCursor.y + vy;
+        const LONG cursorPad = static_cast<LONG>(std::lround(72.0f * scale));
+        avoidRects.push_back(RECT{
+            curScreenX - cursorPad,
+            curScreenY - cursorPad,
+            curScreenX + cursorPad,
+            curScreenY + cursorPad
+        });
+    }
+
+    // 2. 像素取色放大镜（Selection Loupe）与动态放大镜（Dynamic Magnifier）
+    pushIfValid(avoidRects, state.loupeHudRect);
+    const auto overlayState = state.state.load();
+    const bool hasLockedSelection =
+        ((int)overlayState == (int)OverlayState::Selected ||
+         (int)overlayState == (int)OverlayState::Marking);
+    if (hasLockedSelection && state.currentTool == MarkupTool::Magnifier &&
+        !state.isMarking && !state.isManipulating) {
+        const float magR = (static_cast<float>(state.dynamicMagnifierRadius) + 14.0f) * scale;
+        const float curFx = static_cast<float>(state.currentCursor.x);
+        const float curFy = static_cast<float>(state.currentCursor.y);
+        pushIfValid(avoidRects, D2D1::RectF(curFx - magR, curFy - magR, curFx + magR, curFy + magR));
+    }
+
+    // 3. 尺寸胶囊、尺寸菜单、层级提示胶囊与二维码胶囊
+    pushIfValid(avoidRects, state.sizeHudRect);
+    if (state.isSizeMenuOpen) {
+        pushIfValid(avoidRects, state.sizeMenuRect);
+    }
+    pushIfValid(avoidRects, state.hierarchyBadgeRect);
+    if (!state.detectedQrText.empty()) {
+        pushIfValid(avoidRects, state.qrChipRect);
+    }
+
+    // 4. 主工具栏、二级属性栏、侧边悬浮栏及展开的二级弹窗/滑块/下拉菜单
+    if (hasLockedSelection) {
+        pushIfValid(avoidRects, state.primaryToolbarRect);
+        if (!state.secondaryToolbarButtons.empty()) {
+            pushIfValid(avoidRects, state.secondaryToolbarRect);
+        }
+        if (!state.selectionSideButtons.empty()) {
+            pushIfValid(avoidRects, state.selectionSideRect);
+        }
+        if (state.openSubmenu != SubmenuType::None) {
+            pushIfValid(avoidRects, state.openSubmenuRect);
+        }
+        if (state.sliderPopup.type != SliderPopupType::None) {
+            pushIfValid(avoidRects, state.sliderPopup.popupRect);
+        }
+        if (state.dropdownMenu.type != DropdownType::None && !state.dropdownMenu.items.empty()) {
+            D2D1_RECT_F dmRect = state.dropdownMenu.items.front().rect;
+            for (const auto& item : state.dropdownMenu.items) {
+                dmRect.left = (std::min)(dmRect.left, item.rect.left);
+                dmRect.top = (std::min)(dmRect.top, item.rect.top);
+                dmRect.right = (std::max)(dmRect.right, item.rect.right);
+                dmRect.bottom = (std::max)(dmRect.bottom, item.rect.bottom);
+            }
+            pushIfValid(avoidRects, dmRect);
+        }
+    }
+
+    // 5. 当前正在拖拽或已锁定的选区矩形（全屏/最大化选区由 computeOptimalPosition 四角分类为 globalObstacles，不发生误跳；
+    //    被动悬停探测窗口阶段不将窗口整体作为避让区，确保鼠标远离左下角时卡片稳固驻留左下角）
+    if (hasLockedSelection || state.dragging) {
+        float x1 = static_cast<float>(std::min(state.dragStart.x, state.dragEnd.x));
+        float y1 = static_cast<float>(std::min(state.dragStart.y, state.dragEnd.y));
+        float x2 = static_cast<float>(std::max(state.dragStart.x, state.dragEnd.x));
+        float y2 = static_cast<float>(std::max(state.dragStart.y, state.dragEnd.y));
+        pushIfValid(avoidRects, D2D1::RectF(x1, y1, x2, y2));
+    }
+
+    ShortcutHintOverlay::instance().updateAvoidance(avoidRects);
 }
 
 bool CaptureRenderer::sampleScreenColor(int x, int y, int& r, int& g, int& b, CaptureState& state) const {
@@ -3241,6 +3438,8 @@ void CaptureRenderer::render(CaptureState& state) {
                                    D2D1::RectF(0, 0, size.width, size.height));
     }
 
+    state.loupeHudRect = D2D1::RectF(0, 0, 0, 0);
+    state.hierarchyBadgeRect = D2D1::RectF(0, 0, 0, 0);
 
     if ((int)state.state.load() == (int)OverlayState::Selecting && state.dragging) {
         // 正在拖拽选区
@@ -3284,12 +3483,19 @@ void CaptureRenderer::render(CaptureState& state) {
         drawSmartAlignmentGuides(selRect, state);
         drawSelection(selRect, state);
         drawSizeInfo(selRect, state);
+        drawQrChip(selRect, state);
         drawToolbar(selRect, state);
         drawSizeMenu(state.sizeHudRect, state);
-        drawDropdownMenu(state);
     } else {
         // 空闲/选区前 — 全屏变暗 + 十字准星 + 窗口高亮
         auto size = m_renderTarget->GetSize();
+        float scale = (state.dpiScale > 0.0f) ? state.dpiScale : 1.0f;
+        state.loupeHudRect = computeSelectionLoupeRect(
+            static_cast<float>(state.currentCursor.x),
+            static_cast<float>(state.currentCursor.y),
+            size, scale);
+        state.sizeHudRect = D2D1::RectF(0, 0, 0, 0);
+
         m_renderTarget->FillRectangle(
             D2D1::RectF(0, 0, size.width, size.height), m_dimBrush.Get()
         );
@@ -3312,7 +3518,6 @@ void CaptureRenderer::render(CaptureState& state) {
                 );
             }
             
-            float scale = (state.dpiScale > 0.0f) ? state.dpiScale : 1.0f;
             float r = state.detectedWindowCornerRadius * scale;
             auto roundedWin = D2D1::RoundedRect(winRect, r, r);
 
@@ -3338,7 +3543,7 @@ void CaptureRenderer::render(CaptureState& state) {
             // 显示窗口尺寸与圆角提示
             drawSizeInfo(winRect, state);
 
-            // 动态渲染微晶层级提示徽章 (如 "[2/4] 控件: 搜索框 (680x42)")
+            // 动态渲染微晶层级提示徽章 (如 "[2/4] 控件: 搜索框 (680x42)")，自动躲避尺寸胶囊、取色放大镜与鼠标光标
             if (GetTickCount() < state.hierarchyBadgeFadeOutUntil && !state.hierarchyBadgeText.empty() && m_dwriteFactory && m_infoTextFormat) {
                 float badgeH = 26.0f * scale;
                 float padH = 12.0f * scale;
@@ -3354,10 +3559,49 @@ void CaptureRenderer::render(CaptureState& state) {
                     textW = m.width;
                 }
                 float badgeW = textW + padH * 2.0f;
-                float bx1 = winRect.left + (winRect.right - winRect.left - badgeW) * 0.5f;
-                float by1 = winRect.top - badgeH - 8.0f * scale;
-                if (by1 < 10.0f * scale) by1 = winRect.top + 8.0f * scale;
-                D2D1_RECT_F badgeRect = D2D1::RectF(bx1, by1, bx1 + badgeW, by1 + badgeH);
+                const float margin = 8.0f * scale;
+                const float centerBx = std::clamp(
+                    winRect.left + (winRect.right - winRect.left - badgeW) * 0.5f,
+                    margin, (std::max)(margin, size.width - badgeW - margin));
+                const float rightBx = std::clamp(
+                    winRect.right - badgeW,
+                    margin, (std::max)(margin, size.width - badgeW - margin));
+                const float afterHudBx = std::clamp(
+                    state.sizeHudRect.right + 10.0f * scale,
+                    margin, (std::max)(margin, size.width - badgeW - margin));
+                const float topOutY = winRect.top - badgeH - 8.0f * scale;
+                const float topInY = winRect.top + 8.0f * scale;
+                const float botOutY = winRect.bottom + 8.0f * scale;
+                const float botInY = winRect.bottom - badgeH - 8.0f * scale;
+
+                std::vector<D2D1_RECT_F> badgeCandidates = {
+                    D2D1::RectF(centerBx, topOutY >= margin ? topOutY : topInY, centerBx + badgeW, (topOutY >= margin ? topOutY : topInY) + badgeH),
+                    D2D1::RectF(afterHudBx, topOutY >= margin ? topOutY : topInY, afterHudBx + badgeW, (topOutY >= margin ? topOutY : topInY) + badgeH),
+                    D2D1::RectF(rightBx, topOutY >= margin ? topOutY : topInY, rightBx + badgeW, (topOutY >= margin ? topOutY : topInY) + badgeH),
+                    D2D1::RectF(centerBx, botOutY + badgeH <= size.height - margin ? botOutY : botInY, centerBx + badgeW, (botOutY + badgeH <= size.height - margin ? botOutY : botInY) + badgeH),
+                    D2D1::RectF(centerBx, topInY, centerBx + badgeW, topInY + badgeH),
+                };
+
+                const float curFx = static_cast<float>(state.currentCursor.x);
+                const float curFy = static_cast<float>(state.currentCursor.y);
+                const D2D1_RECT_F cursorBox = D2D1::RectF(curFx - 32.0f * scale, curFy - 32.0f * scale, curFx + 32.0f * scale, curFy + 32.0f * scale);
+                auto rectsOverlap = [](const D2D1_RECT_F& a, const D2D1_RECT_F& b, float gap) -> bool {
+                    if (b.right <= b.left || b.bottom <= b.top) return false;
+                    return (a.left < b.right + gap && a.right > b.left - gap &&
+                            a.top < b.bottom + gap && a.bottom > b.top - gap);
+                };
+
+                D2D1_RECT_F badgeRect = badgeCandidates.front();
+                for (const auto& cand : badgeCandidates) {
+                    if (cand.top < margin || cand.bottom > size.height - margin) continue;
+                    if (!rectsOverlap(cand, state.sizeHudRect, 6.0f * scale) &&
+                        !rectsOverlap(cand, state.loupeHudRect, 6.0f * scale) &&
+                        !rectsOverlap(cand, cursorBox, 4.0f * scale)) {
+                        badgeRect = cand;
+                        break;
+                    }
+                }
+                state.hierarchyBadgeRect = badgeRect;
 
                 if (m_infoBgBrush && m_borderBrush && m_infoTextBrush) {
                     DWORD now = GetTickCount();
@@ -3398,6 +3642,9 @@ void CaptureRenderer::render(CaptureState& state) {
         // 预选悬停时显示像素级取色放大镜（坐标 + RGB/HEX，按 C 复制）
         drawSelectionLoupe(static_cast<float>(state.currentCursor.x), static_cast<float>(state.currentCursor.y), state);
     }
+
+    // 全阶段实时同步左下角快捷键 HUD 几何避让（含 Selecting 悬停/拖拽与 Selected/Marking 标注阶段）
+    updateShortcutHintAvoidance(state);
 
     // 渲染微晶浮层数值反馈 (Toast)
     drawFloatingToast(state);

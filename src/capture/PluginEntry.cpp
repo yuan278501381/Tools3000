@@ -199,7 +199,9 @@ void configureRecorderStateCallback() {
                 ShortcutHintOverlay::instance().show(
                     state == RecordState::Paused
                         ? ShortcutHintContext::RecordingPaused
-                        : ShortcutHintContext::Recording);
+                        : ShortcutHintContext::Recording,
+                    {LONG_MIN, LONG_MIN},
+                    indicator.avoidanceRects());
             }
         });
     });
@@ -287,7 +289,8 @@ void startRecordingForRegion(const CaptureRegion& region, const RecordSetupOptio
         RecordingIndicator::instance().show();
         ShortcutHintOverlay::instance().show(
             ShortcutHintContext::Recording,
-            {region.x + region.width / 2, region.y + region.height / 2});
+            {region.x + region.width / 2, region.y + region.height / 2},
+            RecordingIndicator::instance().avoidanceRects());
     } else {
         tools3000::core::MessageBridge::instance().invokeHandler("keycast.setDockingRegion", {{"active", false}});
         const auto reason = ScreenRecorder::instance().stats().stopReason;
@@ -583,7 +586,9 @@ public:
                             ShortcutHintOverlay::instance().show(
                                 recordState == RecordState::Paused
                                     ? ShortcutHintContext::RecordingPaused
-                                    : ShortcutHintContext::Recording);
+                                    : ShortcutHintContext::Recording,
+                                {LONG_MIN, LONG_MIN},
+                                RecordingIndicator::instance().avoidanceRects());
                         }
                     }
                 });

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ─────────────────────────────────────────────────────────────────────────────
 // RecordingIndicator — 录制状态指示器（悬浮工具条）
 //
@@ -17,6 +17,7 @@
 #include <dwrite.h>
 #include <wrl/client.h>
 #include <string>
+#include <vector>
 #include <atomic>
 #include <functional>
 
@@ -53,6 +54,9 @@ public:
 
     /// 清除录制选区
     void clearRecordingRegion();
+
+    /// 获取录制状态条与录制选区避让矩形集合（供 ShortcutHintOverlay 碰撞避让）
+    std::vector<RECT> avoidanceRects() const;
 
     /// 显示录制完成快捷响应浮岛卡片（支持一键打开文件夹、一键复制文件）
     void showCompleted(const std::string& filePath, double durationSec);

@@ -75,6 +75,8 @@ private:
                 int& width, int& height);
     void render();
     void discardResources();
+    std::vector<RECT> effectiveAvoidRects() const;
+    void syncPosition();
     std::vector<tools3000::core::accessibility::OverlayUiaAction> accessibilityActions() const;
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
@@ -89,6 +91,9 @@ private:
     int m_width = 0;
     int m_height = 0;
     std::vector<RECT> m_avoidRects;
+    POINT m_initialCursorPos{LONG_MIN, LONG_MIN};
+    POINT m_trackedCursorPos{LONG_MIN, LONG_MIN};
+    bool m_hasTrackedCursor = false;
     std::vector<PositionedItem> m_items;
     D2D1_RECT_F m_cardRect = {};
 

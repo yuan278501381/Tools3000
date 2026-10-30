@@ -1354,6 +1354,7 @@ void PinWindow::render() {
 
             // 2. 选中块高亮
             float minSelY = size.height;
+            float maxSelY = 0.0f;
             float centerSelX = size.width / 2.0f;
             for (size_t idx : m_selectedBlockIndices) {
                 if (idx < m_ocrBlocks.size()) {
@@ -1365,6 +1366,9 @@ void PinWindow::render() {
                     if (r.top < minSelY) {
                         minSelY = r.top;
                         centerSelX = (r.left + r.right) / 2.0f;
+                    }
+                    if (r.bottom > maxSelY) {
+                        maxSelY = r.bottom;
                     }
                 }
             }
@@ -1380,15 +1384,27 @@ void PinWindow::render() {
                 if (selStrokeBrush) m_renderTarget->DrawRectangle(&selBox, selStrokeBrush.Get(), 1.0f * dpiScale);
             }
 
-            // 4. 浮动“复制文字”微晶胶囊
+            // 4. 浮动“复制文字”微晶胶囊（带顶部悬停工具栏重叠避让）
             if (!m_selectedBlockIndices.empty() && !m_isSelectingText) {
                 float pillW = 86.0f * dpiScale;
                 float pillH = 24.0f * dpiScale;
                 float pillX = std::clamp(centerSelX - pillW / 2.0f, 6.0f * dpiScale, size.width - pillW - 6.0f * dpiScale);
                 float pillY = minSelY - pillH - 6.0f * dpiScale;
                 if (pillY < 6.0f * dpiScale) {
-                    pillY = minSelY + 28.0f * dpiScale;
+                    pillY = (std::max)(minSelY + 28.0f * dpiScale, maxSelY + 6.0f * dpiScale);
                 }
+                if (m_hoverAlpha > 0.01f) {
+                    const auto tbLayout = PinInputController::computeHoverToolbarLayout(
+                        size.width, size.height, dpiScale);
+                    const D2D1_RECT_F tb = tbLayout.toolbarRect;
+                    const bool overlapsTb =
+                        (pillX < tb.right && pillX + pillW > tb.left &&
+                         pillY < tb.bottom && pillY + pillH > tb.top);
+                    if (overlapsTb) {
+                        pillY = (std::max)(maxSelY + 6.0f * dpiScale, tb.bottom + 6.0f * dpiScale);
+                    }
+                }
+                pillY = std::clamp(pillY, 6.0f * dpiScale, (std::max)(6.0f * dpiScale, size.height - pillH - 6.0f * dpiScale));
                 m_btnCopyFloatingRect = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
 
                 FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCopyFloatingRect, 4.0f * dpiScale,
@@ -1427,7 +1443,7 @@ void PinWindow::render() {
             }
         }
 
-        if (m_hoverAlpha > 0.01f) {
+        if (m_hoverAlpha > 0.01f && !m_isSelectingText) {
             drawHoverToolbar();
         }
 

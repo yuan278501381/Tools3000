@@ -313,6 +313,20 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
                  SWP_SHOWWINDOW);
 
     SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
+    if (options.showShortcutHints) {
+        const LONG pad = static_cast<LONG>(std::lround(52.0f * (m_state.dpiScale > 0.0f ? m_state.dpiScale : 1.0f)));
+        std::vector<RECT> initialAvoid = {
+            RECT{cursorScreen.x - pad, cursorScreen.y - pad, cursorScreen.x + pad, cursorScreen.y + pad}
+        };
+        ShortcutHintOverlay::instance().show(
+            mode == OverlayMode::RecordRegion
+                ? ShortcutHintContext::RecordSelecting
+                : ShortcutHintContext::CaptureSelecting,
+            cursorScreen,
+            initialAvoid);
+    } else {
+        ShortcutHintOverlay::instance().hide();
+    }
     RedrawWindow(m_hwnd, nullptr, nullptr,
                  RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     SetCapture(m_hwnd);
@@ -324,16 +338,6 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     tools3000::core::accessibility::announceOverlay(
         m_hwnd, L"截图选区。拖动鼠标选择区域；Enter 确认；Esc 取消。"
     );
-    if (options.showShortcutHints) {
-        ShortcutHintOverlay::instance().show(
-            mode == OverlayMode::RecordRegion
-                ? ShortcutHintContext::RecordSelecting
-                : ShortcutHintContext::CaptureSelecting,
-            cursorScreen,
-            {});
-    } else {
-        ShortcutHintOverlay::instance().hide();
-    }
     tools3000::core::PerformanceMonitor::instance().recordLatency(
         "screenshot", elapsedMilliseconds(totalStarted));
 }
@@ -589,6 +593,7 @@ void CaptureOverlay::setShortcutHintsEnabled(bool enabled) {
         context = ShortcutHintContext::CaptureSelected;
     }
     ShortcutHintOverlay::instance().show(context);
+    m_renderer.invalidate();
 }
 
 void CaptureOverlay::cleanupAfterDelivery() {

@@ -546,8 +546,8 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
 
         // 默认紧贴选区右侧
         float sideX = selectionRect.right + 8.0f * scale;
-        // 如果右侧空间不足以容纳侧边栏 + 滑块弹窗 (约 220px)，自动平滑翻转至选区左侧
-        if (sideX + sideW + 200.0f * scale > surfaceSize.width - screenMargin) {
+        // 如果右侧空间不足以容纳侧边栏本身，自动平滑翻转至选区左侧（圆角滑块弹窗由 drawSliderPopup 独立双向翻转避让）
+        if (sideX + sideW > surfaceSize.width - screenMargin) {
             sideX = selectionRect.left - sideW - 8.0f * scale;
         }
         // 如果左侧也超出屏幕，则紧贴选区内部右侧
