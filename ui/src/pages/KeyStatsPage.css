@@ -1,0 +1,133 @@
+.activity-chart {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  cursor: crosshair;
+  user-select: none;
+}
+
+.activity-chart__grid {
+  stroke: var(--card-border);
+  stroke-width: 1;
+  stroke-dasharray: 4 6;
+  opacity: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.activity-chart__axis {
+  fill: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  transition: fill 0.15s ease, font-weight 0.15s ease;
+}
+
+.activity-chart__axis--active {
+  fill: var(--text-primary);
+  font-weight: 600;
+}
+
+.activity-chart__area {
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.activity-chart__line {
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 4px 10px var(--primary-glow));
+  pointer-events: none;
+  transition: stroke 0.25s ease;
+}
+
+.activity-chart__guide {
+  stroke: var(--primary);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+  opacity: 0.45;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.activity-chart__point {
+  fill: var(--primary);
+  stroke: var(--bg-elevated);
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+  transition: r 0.15s cubic-bezier(0.16, 1, 0.3, 1), stroke-width 0.15s ease;
+}
+
+.activity-chart__point--hover {
+  fill: var(--primary);
+  stroke: #ffffff;
+  stroke-width: 2.5;
+}
+
+.activity-chart__point-halo {
+  fill: var(--primary);
+  opacity: 0.22;
+  transition: opacity 0.15s ease;
+}
+
+.activity-chart__point-active {
+  fill: var(--primary);
+  stroke: #ffffff;
+  stroke-width: 2.5;
+  filter: drop-shadow(0 2px 8px var(--primary-glow));
+}
+
+.activity-chart__tooltip-bg {
+  fill: var(--card-bg);
+  stroke: var(--card-border);
+  stroke-width: 1;
+  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.35));
+}
+
+[data-theme="light"] .activity-chart__tooltip-bg {
+  fill: #ffffff;
+  stroke: rgba(0, 0, 0, 0.1);
+  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.12));
+}
+
+.activity-chart__tooltip-date {
+  fill: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+}
+
+.activity-chart__tooltip-value {
+  fill: var(--primary);
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.stats-page__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stats-page__spin {
+  animation: stats-spin 0.8s linear infinite;
+}
+
+@keyframes stats-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.stats-page__counter {
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}

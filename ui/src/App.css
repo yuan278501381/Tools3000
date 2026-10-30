@@ -1,0 +1,95 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * App.css — 主布局样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+
+.app__body {
+  flex: 1;
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── 主内容区 ─────────────────────────────────────────────────────────────── */
+.app__main {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;  /* 防止 flex 子元素溢出 */
+  background: var(--bg-base);
+}
+
+/* ── 页面头部 ─────────────────────────────────────────────────────────────── */
+.app__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-lg) var(--spacing-xl);
+  padding-bottom: var(--spacing-md);
+  border-bottom: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+
+}
+
+.app__header-title {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.app__header-subtitle {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+.app__content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 20px 28px;
+  animation: fadeIn 0.12s ease-out;
+}
+
+.app__content > * {
+  max-width: 920px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ── 响应式适配 ───────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .app__content {
+    padding: var(--spacing-md);
+  }
+}
+
+/* 1080p @ 150% 等工作区高度不够「黄金 750」时，压缩页头留出滚动空间 */
+@media (max-height: 720px) {
+  .app__header {
+    padding: var(--spacing-md) var(--spacing-lg);
+    padding-bottom: var(--spacing-sm);
+  }
+  .app__header-title {
+    font-size: 1.15rem;
+  }
+  .app__content {
+    padding: var(--spacing-md) var(--spacing-lg);
+  }
+}

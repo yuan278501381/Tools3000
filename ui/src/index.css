@@ -1,0 +1,571 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Tools3000 设计系统 — 全局 CSS 变量 & 基础样式
+ *
+ * 采用方案 B: 单字重极简无损思源黑体架构 (1.10 MB 单文件 · 0 碎片 · 浑然一体现代字面)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500 700;
+  src: local('Source Han Sans SC'), local('Noto Sans SC'), local('Source Han Sans CN'),
+       url('./assets/fonts/noto-sans-sc-500.woff2') format('woff2');
+}
+
+/* ── CSS 变量 (暗色主题 = 默认) ──────────────────────────────────────────── */
+:root {
+  /* 主色调: 鲜活的紫色系 */
+  --primary: #8b5cf6;
+  --primary-hover: #a78bfa;
+  --primary-dim: rgba(139, 92, 246, 0.2);
+  --primary-glow: rgba(139, 92, 246, 0.4);
+
+  /* 语义色 */
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --info: #60a5fa;
+
+  /* 背景层级 */
+  --bg-base: #12111a;
+  --bg-surface: #191724;
+  --bg-elevated: #211e30;
+  --bg-overlay: rgba(0, 0, 0, 0.75);
+
+  /* 卡片层级 */
+  --card-bg: #1e1c2c;
+  --card-border: rgba(255, 255, 255, 0.08);
+  --card-hover: #262338;
+
+  /* 文本 (高清晰度对比度) */
+  --text-primary: #f8f8fc;
+  --text-secondary: #c4c4d6;
+  --text-muted: #9494aa;
+  --text-disabled: #555568;
+
+  /* 输入框 */
+  --input-bg: rgba(15, 15, 25, 0.6);
+  --input-border: rgba(255, 255, 255, 0.1);
+  --input-focus: var(--primary);
+
+  /* 滚动条 */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.15);
+  --scrollbar-hover: rgba(255, 255, 255, 0.25);
+
+  /* 间距 */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+
+  /* 圆角 */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+
+  /* 动画 & 物理弹簧曲线 */
+  --transition-fast: 150ms cubic-bezier(0.215, 0.61, 0.355, 1);
+  --transition-normal: 240ms cubic-bezier(0.215, 0.61, 0.355, 1);
+  --transition-slow: 360ms cubic-bezier(0.215, 0.61, 0.355, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* 物理高光边 (Specular Inset Line) */
+  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
+  /* 侧边栏 */
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 64px;
+
+  /* 字体栈: 方案 B 单字重无损思源黑体优先 (Noto Sans SC · 饱满现代几何大中宫) */
+  --font-sans: "Noto Sans SC", "Source Han Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "Cascadia Code", "Cascadia Mono", "Segoe UI Mono", "Consolas", "PingFang SC", "Microsoft YaHei UI", monospace;
+
+  /* ── 世界级排版令牌系统 (World-Class Typography Token System) ───────────── */
+  --text-xs: 0.84rem;     /* 11.8px ~ 12px - 微型徽章、微晶类名胶囊、按键角标 (严守字号底线) */
+  --text-sm: 0.88rem;     /* 12.3px ~ 12.5px - 辅助说明、次级描述 */
+  --text-base: 0.95rem;   /* 13.3px - 正文、选项标签、输入控件 */
+  --text-md: 1.05rem;     /* 14.7px - 卡片标题、Tab 标题 */
+  --text-lg: 1.20rem;     /* 16.8px - 模块/分组标题 */
+  --text-xl: 1.45rem;     /* 20.3px - 页面大标题 */
+
+  --font-normal: 500;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  /* 兼容与层级别名 (Foundational Token Aliases) */
+  --bg-primary: var(--bg-base);
+  --bg-secondary: var(--bg-surface);
+  --bg-tertiary: var(--bg-elevated);
+  --bg-surface-secondary: var(--bg-elevated);
+  --bg-surface-hover: var(--card-hover);
+  --border: var(--card-border);
+  --border-subtle: var(--card-border);
+  --border-dark: rgba(255, 255, 255, 0.15);
+  --border-light: rgba(255, 255, 255, 0.05);
+  --card-border-hover: rgba(255, 255, 255, 0.15);
+  --card-bg-hover: var(--card-hover);
+  --accent-dot-color: var(--primary);
+
+  /* Keyboard Heatmap (Dark Theme) */
+  --key-bg: rgba(255, 255, 255, 0.05);
+  --key-border: rgba(255, 255, 255, 0.1);
+  --key-hover-border: rgba(255, 255, 255, 0.5);
+  --key-hover-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  --key-text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  --key-tooltip-bg: rgba(30, 30, 30, 0.85);
+  --key-tooltip-text: #ffffff;
+}
+
+.surface-loading {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  color: var(--text-primary, CanvasText);
+  background: var(--bg-primary, Canvas);
+  font: 500 14px/1.5 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+/* ── 亮色主题 (毛玻璃化亮色) ────────────────────────────────────────────── */
+[data-theme="light"] {
+  --primary: #7c3aed;
+  --primary-hover: #6d28d9;
+  --primary-dim: rgba(124, 58, 237, 0.15);
+  --primary-glow: rgba(124, 58, 237, 0.25);
+
+  --bg-base: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-overlay: rgba(15, 23, 42, 0.4);
+
+  --card-bg: #ffffff;
+  --card-border: rgba(226, 232, 240, 0.9);
+  --card-hover: #f8fafc;
+
+  --text-primary: #111827;
+  --text-secondary: #374151;
+  --text-muted: #6b7280;
+  --text-disabled: #9ca3af;
+
+  --input-bg: #ffffff;
+  --input-border: rgba(203, 213, 225, 0.8);
+
+  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
+  --scrollbar-hover: rgba(0, 0, 0, 0.3);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03);
+  --shadow-lg: 0 12px 30px rgba(0, 0, 0, 0.08);
+  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+
+  /* 兼容与层级别名 (Foundational Token Aliases) */
+  --bg-primary: var(--bg-base);
+  --bg-secondary: var(--bg-surface);
+  --bg-tertiary: var(--bg-elevated);
+  --bg-surface-secondary: var(--bg-elevated);
+  --bg-surface-hover: var(--card-hover);
+  --border: var(--card-border);
+  --border-subtle: var(--card-border);
+  --border-dark: rgba(203, 213, 225, 0.9);
+  --border-light: rgba(241, 245, 249, 0.8);
+  --card-border-hover: rgba(139, 92, 246, 0.35);
+  --card-bg-hover: var(--card-hover);
+  --accent-dot-color: var(--primary);
+
+  /* Keyboard Heatmap (Light Theme) */
+  --key-bg: rgba(0, 0, 0, 0.04);
+  --key-border: rgba(0, 0, 0, 0.1);
+  --key-hover-border: rgba(0, 0, 0, 0.25);
+  --key-hover-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --key-text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8);
+  --key-tooltip-bg: rgba(255, 255, 255, 0.95);
+  --key-tooltip-text: #111827;
+}
+
+/* ── Tools3000 T-Ribbon 矢量标志主题自适应 (Theme Adaptive High-Contrast) ── */
+.logo-glyph--theme-adaptive {
+  color: #f8f9fb;
+}
+[data-theme="light"] .logo-glyph--theme-adaptive {
+  color: #1b1d23;
+}
+
+/* ── 强调色方案 (Theme Accent Colors) ────────────────────────────────────────── */
+[data-accent="violet"] {
+  --primary: #8b5cf6;
+  --primary-hover: #a78bfa;
+  --primary-dim: rgba(139, 92, 246, 0.18);
+  --primary-glow: rgba(139, 92, 246, 0.35);
+}
+[data-theme="light"][data-accent="violet"],
+[data-theme="light"] [data-accent="violet"] {
+  --primary: #7c3aed;
+  --primary-hover: #6d28d9;
+  --primary-dim: rgba(124, 58, 237, 0.15);
+  --primary-glow: rgba(124, 58, 237, 0.25);
+}
+
+[data-accent="cyan"] {
+  --primary: #06b6d4;
+  --primary-hover: #22d3ee;
+  --primary-dim: rgba(6, 182, 212, 0.18);
+  --primary-glow: rgba(6, 182, 212, 0.35);
+}
+[data-theme="light"][data-accent="cyan"],
+[data-theme="light"] [data-accent="cyan"] {
+  --primary: #0891b2;
+  --primary-hover: #0e7490;
+  --primary-dim: rgba(8, 145, 178, 0.15);
+  --primary-glow: rgba(8, 145, 178, 0.25);
+}
+
+[data-accent="amber"] {
+  --primary: #f59e0b;
+  --primary-hover: #fbbf24;
+  --primary-dim: rgba(245, 158, 11, 0.18);
+  --primary-glow: rgba(245, 158, 11, 0.35);
+}
+[data-theme="light"][data-accent="amber"],
+[data-theme="light"] [data-accent="amber"] {
+  --primary: #d97706;
+  --primary-hover: #b45309;
+  --primary-dim: rgba(217, 119, 6, 0.15);
+  --primary-glow: rgba(217, 119, 6, 0.25);
+}
+
+[data-accent="blue"] {
+  --primary: #3b82f6;
+  --primary-hover: #60a5fa;
+  --primary-dim: rgba(59, 130, 246, 0.18);
+  --primary-glow: rgba(59, 130, 246, 0.35);
+}
+[data-theme="light"][data-accent="blue"],
+[data-theme="light"] [data-accent="blue"] {
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-dim: rgba(37, 99, 235, 0.15);
+  --primary-glow: rgba(37, 99, 235, 0.25);
+}
+
+[data-accent="mint"] {
+  --primary: #10b981;
+  --primary-hover: #34d399;
+  --primary-dim: rgba(16, 185, 129, 0.18);
+  --primary-glow: rgba(16, 185, 129, 0.35);
+}
+[data-theme="light"][data-accent="mint"],
+[data-theme="light"] [data-accent="mint"] {
+  --primary: #059669;
+  --primary-hover: #047857;
+  --primary-dim: rgba(5, 150, 105, 0.15);
+  --primary-glow: rgba(5, 150, 105, 0.25);
+}
+
+[data-accent="coral"] {
+  --primary: #f43f5e;
+  --primary-hover: #fb7185;
+  --primary-dim: rgba(244, 63, 94, 0.18);
+  --primary-glow: rgba(244, 63, 94, 0.35);
+}
+[data-theme="light"][data-accent="coral"],
+[data-theme="light"] [data-accent="coral"] {
+  --primary: #e11d48;
+  --primary-hover: #be123c;
+  --primary-dim: rgba(225, 29, 72, 0.15);
+  --primary-glow: rgba(225, 29, 72, 0.25);
+}
+
+/* ── 全局重置 ────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  /* 14 CSS px（DIP）。Windows 150%/200% 由 WebView RasterizationScale 映射到物理像素，这里不要再乘 devicePixelRatio。 */
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-synthesis: weight style;
+  letter-spacing: -0.015em;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
+  /* ClearType 硬件加速次像素渲染优化 */
+  background-color: var(--bg-base);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(139, 92, 246, 0.08) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(52, 211, 153, 0.04) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(96, 165, 250, 0.06) 0px, transparent 50%);
+  color: var(--text-primary);
+  line-height: 1.5;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+[data-theme="dark"] body {
+  -webkit-text-stroke: 0.12px rgba(255, 255, 255, 0.12);
+}
+
+/* ── 全局原生控件字体继承 (Form Controls Universal Font Reset) ───────────── */
+button,
+input,
+optgroup,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+/* ── 全局 Portal、浮层与独立通知容器统领 (Portal & Toast System Overlord) ── */
+[data-sonner-toaster],
+[data-sonner-toast],
+[data-radix-popper-content-wrapper],
+.uikit-tooltip,
+.uikit-dropdown,
+.uikit-modal,
+.saved-toast-host,
+.saved-toast,
+.saved-toast__text {
+  font-family: var(--font-sans) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── 滚动条美化 ──────────────────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ── 无障碍基线 ──────────────────────────────────────────────────────────── */
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+:where(button, input, select, textarea, [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid var(--primary-hover) !important;
+  outline-offset: 2px !important;
+}
+
+input,
+textarea,
+.uikit-setting-row__desc,
+.uikit-card__subtitle {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  *, *::before, *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --card-border: CanvasText;
+    --input-border: CanvasText;
+    --text-primary: CanvasText;
+    --text-secondary: CanvasText;
+    --text-muted: GrayText;
+  }
+
+  body {
+    background: Canvas;
+  }
+
+  .uikit-card,
+  .uikit-input,
+  .uikit-select,
+  .uikit-btn,
+  .hotkey-recorder,
+  .sidebar__nav-item {
+    border: 1px solid CanvasText;
+    box-shadow: none;
+  }
+
+  .uikit-toggle__slider {
+    border: 1px solid CanvasText;
+  }
+
+  .uikit-toggle__switch input:checked + .uikit-toggle__slider,
+  .uikit-toggle__switch input:checked + .uikit-toggle__slider::after {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  :where(button, input, select, textarea, [role="button"], [tabindex]):focus-visible {
+    outline-color: Highlight !important;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 世界级全局通用排版类库 (Global Typography Classes)
+ * ───────────────────────────────────────────────────────────────────────────── */
+.type-page-title {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  line-height: var(--leading-tight);
+}
+
+.type-page-subtitle {
+  font-size: var(--text-sm);
+  font-weight: var(--font-normal);
+  color: var(--text-muted);
+  line-height: var(--leading-normal);
+}
+
+.type-section-title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  letter-spacing: -0.015em;
+  line-height: var(--leading-tight);
+}
+
+.type-card-title {
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.type-card-subtitle {
+  font-size: var(--text-sm);
+  font-weight: var(--font-normal);
+  color: var(--text-muted);
+  line-height: var(--leading-normal);
+}
+
+.type-label {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.type-body {
+  font-size: var(--text-base);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+}
+
+.type-desc {
+  font-size: var(--text-sm);
+  font-weight: var(--font-normal);
+  color: var(--text-muted);
+  line-height: var(--leading-normal);
+}
+
+.type-caption {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.type-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+code, kbd, samp, pre, tt, var {
+  font-family: var(--font-mono);
+}
