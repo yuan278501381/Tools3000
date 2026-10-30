@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // RecordingIndicator.cpp — 录制状态指示器实现
 //
 // 外观:
@@ -11,6 +11,7 @@
 #include "capture/CaptureVectorIcons.h"
 #include "capture/FloatingGlassBar.h"
 #include "capture/ScreenRecorder.h"
+#include "capture/ShortcutHintOverlay.h"
 #include "core/events/EventBus.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
@@ -72,6 +73,22 @@ void RecordingIndicator::clearRecordingRegion() {
     m_recordingRegion = {};
     destroyBorderWindow();
     destroyCountdownWindow();
+}
+
+std::vector<RECT> RecordingIndicator::avoidanceRects() const {
+    std::vector<RECT> rects;
+    if (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) {
+        RECT barRect{};
+        if (GetWindowRect(m_hwnd, &barRect) && barRect.right > barRect.left && barRect.bottom > barRect.top) {
+            rects.push_back(barRect);
+        }
+    }
+    if (m_hasRecordingRegion &&
+        m_recordingRegion.right > m_recordingRegion.left &&
+        m_recordingRegion.bottom > m_recordingRegion.top) {
+        rects.push_back(m_recordingRegion);
+    }
+    return rects;
 }
 
 void RecordingIndicator::shutdown() {
@@ -150,6 +167,8 @@ void RecordingIndicator::show() {
     if (m_hasRecordingRegion && m_hInstance) {
         createBorderWindow(m_hInstance);
     }
+
+    ShortcutHintOverlay::instance().updateAvoidance(avoidanceRects());
 
     m_blinkTick = GetTickCount();
     SetTimer(m_hwnd, RENDER_TIMER_ID, 100, nullptr);  // 10 Hz 电平刷新；闪烁仍按 500 ms 计算
@@ -679,6 +698,7 @@ LRESULT CALLBACK RecordingIndicator::indicatorWndProc(HWND hwnd, UINT msg, WPARA
                              cursor.x - self->m_dragOffset.x,
                              cursor.y - self->m_dragOffset.y,
                              0, 0, SWP_NOSIZE | SWP_NOZORDER);
+                ShortcutHintOverlay::instance().updateAvoidance(self->avoidanceRects());
                 return 0;
             }
 
@@ -885,6 +905,7 @@ bool RecordingIndicator::createBorderWindow(HINSTANCE hInstance) {
     );
 
     if (!m_borderHwnd) return false;
+    SetPropW(m_borderHwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
 
     // 镂空内部区域，仅保留四周边缘，杜绝遮挡中间内容与光标操作
     HRGN outerRgn = nullptr;

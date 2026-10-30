@@ -1,4 +1,5 @@
-﻿#include "ScrollCaptureOverlay.h"
+#include "ScrollCaptureOverlay.h"
+#include "capture/ShortcutHintOverlay.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/WinUtils.h"
@@ -31,8 +32,8 @@ bool ScrollCaptureOverlay::initialize() {
 
     int screenX = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int screenY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    int screenW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    int screenH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    int screenW = (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1);
+    int screenH = (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN) - 1);
 
     m_hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -44,6 +45,8 @@ bool ScrollCaptureOverlay::initialize() {
     );
 
     if (!m_hwnd) return false;
+
+    SetPropW(m_hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
 
     // Exclude the preview and progress chrome from the scroll-capture source.
     if (!tools3000::core::WinUtils::excludeWindowFromCapture(m_hwnd)) {
@@ -198,56 +201,97 @@ void ScrollCaptureOverlay::render() {
         m_renderTarget->FillRectangle(&cRect, m_brushFlash.Get());
     }
 
-    // Draw thumbnail preview on the right side of the capture rect
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (!m_preview.empty()) {
-        if (m_previewDirty) {
-            m_d2dBitmap.Reset();
-            m_previewDirty = false;
-        }
-        if (!m_d2dBitmap) {
-            D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
-                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
-            );
-            m_renderTarget->CreateBitmap(
-                D2D1::SizeU(m_preview.cols, m_preview.rows),
-                m_preview.data,
-                static_cast<UINT32>(m_preview.step),
-                &props,
-                &m_d2dBitmap
-            );
-        }
-
-        if (m_d2dBitmap) {
-            float thumbWidth = 200.0f * m_dpiScale;
-            float scale = thumbWidth / m_preview.cols;
-            float thumbHeight = m_preview.rows * scale;
-            
-            float thumbX = cRect.right + 20.0f * m_dpiScale;
-            if (thumbX + thumbWidth > width) {
-                thumbX = cRect.left - thumbWidth - 20.0f * m_dpiScale; // try left side
+    RECT thumbScreenRect{};
+    bool hasThumbRect = false;
+    {
+        // Draw thumbnail preview on the right/left side of the capture rect
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_preview.empty() && m_preview.cols > 0) {
+            if (m_previewDirty) {
+                m_d2dBitmap.Reset();
+                m_previewDirty = false;
             }
-            float thumbY = cRect.top;
+            if (!m_d2dBitmap) {
+                D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+                );
+                m_renderTarget->CreateBitmap(
+                    D2D1::SizeU(m_preview.cols, m_preview.rows),
+                    m_preview.data,
+                    static_cast<UINT32>(m_preview.step),
+                    &props,
+                    &m_d2dBitmap
+                );
+            }
 
-            D2D1_RECT_F tRect = D2D1::RectF(thumbX, thumbY, thumbX + thumbWidth, thumbY + thumbHeight);
-            
-            // Draw background for thumbnail
-            D2D1_ROUNDED_RECT rRect = D2D1::RoundedRect(
-                D2D1::RectF(tRect.left - 5.0f * m_dpiScale,
-                            tRect.top - 5.0f * m_dpiScale,
-                            tRect.right + 5.0f * m_dpiScale,
-                            tRect.bottom + 5.0f * m_dpiScale),
-                8.0f * m_dpiScale, 8.0f * m_dpiScale
-            );
-            m_renderTarget->FillRoundedRectangle(&rRect, m_brushBg.Get());
-            
-            // Draw the stitched image
-            m_renderTarget->DrawBitmap(m_d2dBitmap.Get(), &tRect);
-            
-            // Draw thumbnail border
-            m_renderTarget->DrawRoundedRectangle(
-                &rRect, m_brushBorder.Get(), 2.0f * m_dpiScale);
+            if (m_d2dBitmap) {
+                const float margin = 12.0f * m_dpiScale;
+                float thumbWidth = 200.0f * m_dpiScale;
+                float scale = thumbWidth / m_preview.cols;
+                float thumbHeight = (std::min)(static_cast<float>(height) - margin * 2.0f, m_preview.rows * scale);
+
+                const float rightCandidateX = cRect.right + 20.0f * m_dpiScale;
+                const float leftCandidateX = cRect.left - thumbWidth - 20.0f * m_dpiScale;
+                const bool rightFits = (rightCandidateX + thumbWidth + margin <= static_cast<float>(width));
+                const bool leftFits = (leftCandidateX >= margin);
+
+                float thumbX = rightFits ? rightCandidateX : (leftFits ? leftCandidateX : rightCandidateX);
+                float thumbY = std::clamp(cRect.top, margin, (std::max)(margin, static_cast<float>(height) - thumbHeight - margin));
+
+                POINT curScreen{};
+                if (GetCursorPos(&curScreen)) {
+                    const float curX = static_cast<float>(curScreen.x - screenX);
+                    const float curY = static_cast<float>(curScreen.y - screenY);
+                    const float pad = 24.0f * m_dpiScale;
+                    const bool cursorHitsThumb =
+                        (curX >= thumbX - pad && curX <= thumbX + thumbWidth + pad &&
+                         curY >= thumbY - pad && curY <= thumbY + thumbHeight + pad);
+                    if (cursorHitsThumb) {
+                        if (std::abs(thumbX - rightCandidateX) < 1.0f && leftFits) {
+                            thumbX = leftCandidateX;
+                        } else if (std::abs(thumbX - leftCandidateX) < 1.0f && rightFits) {
+                            thumbX = rightCandidateX;
+                        }
+                    }
+                }
+
+                thumbX = std::clamp(thumbX, margin, (std::max)(margin, static_cast<float>(width) - thumbWidth - margin));
+
+                D2D1_RECT_F tRect = D2D1::RectF(thumbX, thumbY, thumbX + thumbWidth, thumbY + thumbHeight);
+                D2D1_ROUNDED_RECT rRect = D2D1::RoundedRect(
+                    D2D1::RectF(tRect.left - 5.0f * m_dpiScale,
+                                tRect.top - 5.0f * m_dpiScale,
+                                tRect.right + 5.0f * m_dpiScale,
+                                tRect.bottom + 5.0f * m_dpiScale),
+                    8.0f * m_dpiScale, 8.0f * m_dpiScale
+                );
+                m_renderTarget->FillRoundedRectangle(&rRect, m_brushBg.Get());
+                m_renderTarget->DrawBitmap(m_d2dBitmap.Get(), &tRect);
+                m_renderTarget->DrawRoundedRectangle(&rRect, m_brushBorder.Get(), 2.0f * m_dpiScale);
+
+                thumbScreenRect = RECT{
+                    static_cast<LONG>(rRect.rect.left) + screenX,
+                    static_cast<LONG>(rRect.rect.top) + screenY,
+                    static_cast<LONG>(rRect.rect.right) + screenX,
+                    static_cast<LONG>(rRect.rect.bottom) + screenY
+                };
+                hasThumbRect = true;
+            }
         }
+    }
+
+    if (ShortcutHintOverlay::instance().isVisible()) {
+        std::vector<RECT> avoidRects;
+        avoidRects.push_back(m_captureRect);
+        if (hasThumbRect) {
+            avoidRects.push_back(thumbScreenRect);
+        }
+        POINT curScreen{};
+        if (GetCursorPos(&curScreen)) {
+            const LONG pad = static_cast<LONG>(std::lround(48.0f * m_dpiScale));
+            avoidRects.push_back(RECT{curScreen.x - pad, curScreen.y - pad, curScreen.x + pad, curScreen.y + pad});
+        }
+        ShortcutHintOverlay::instance().updateAvoidance(avoidRects);
     }
 
     m_renderTarget->EndDraw();

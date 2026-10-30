@@ -7,6 +7,8 @@
 #include "core/events/EventBus.h"
 #include "capture/CaptureHistory.h"
 #include "capture/ShortcutHintOverlay.h"
+#include "capture/ScrollCapture.h"
+#include "capture/ScreenRecorder.h"
 #include "capture/CaptureToolbarAccessibility.h"
 #include "core/stats/PerformanceMonitor.h"
 #include "core/utils/DpiUtils.h"
@@ -67,6 +69,26 @@ CaptureOverlay& CaptureOverlay::instance() {
 
 bool CaptureOverlay::initialize(HINSTANCE hInstance) {
     m_hInstance = hInstance;
+    ShortcutHintOverlay::instance().setOwnerActiveChecker([](ShortcutHintContext context) -> bool {
+        switch (context) {
+            case ShortcutHintContext::CaptureSelecting:
+            case ShortcutHintContext::CaptureDragging:
+            case ShortcutHintContext::CaptureSelected:
+            case ShortcutHintContext::CaptureMarking:
+            case ShortcutHintContext::CaptureMarkingNumber:
+            case ShortcutHintContext::CaptureEditingText:
+            case ShortcutHintContext::RecordSelecting:
+                return CaptureOverlay::instance().state() != OverlayState::Idle &&
+                       CaptureOverlay::instance().isOverlayVisible();
+            case ShortcutHintContext::ScrollCapture:
+                return ScrollCapture::instance().isRunning();
+            case ShortcutHintContext::Recording:
+            case ShortcutHintContext::RecordingPaused:
+                return ScreenRecorder::instance().state() != RecordState::Idle;
+            default:
+                return false;
+        }
+    });
     // 覆盖层是整个虚拟桌面大小。启动时创建一个隐藏的 layered D2D 窗口，
     // 在部分显卡/驱动上即使不可见也会持续触发表面合成，占满一个 CPU 核。
     // 这里只保存模块句柄，真正截图时再创建，用完立即释放。
@@ -74,6 +96,7 @@ bool CaptureOverlay::initialize(HINSTANCE hInstance) {
 }
 
 void CaptureOverlay::shutdown() {
+    ShortcutHintOverlay::instance().setOwnerActiveChecker(nullptr);
     ShortcutHintOverlay::instance().hide();
     const bool wasActive = m_state.state.load() != OverlayState::Idle;
     m_state.state = OverlayState::Idle;
@@ -90,7 +113,7 @@ void CaptureOverlay::shutdown() {
 
 bool CaptureOverlay::createOverlayWindow(HINSTANCE hInstance) {
     WNDCLASSEXW wc = {sizeof(wc)};
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = staticWndProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
@@ -109,6 +132,10 @@ bool CaptureOverlay::createOverlayWindow(HINSTANCE hInstance) {
         LOG_ERROR("截图覆盖层窗口创建失败");
         return false;
     }
+
+    // 显式注入 NonRudeHWND 属性，防止全屏截图覆盖层调用 SetForegroundWindow 时被 explorer.exe (CRudeAppManager)
+    // 误判为全屏独占应用而将系统任务栏 (Shell_TrayWnd) 压入 Z 序底层
+    SetPropW(m_hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
 
     // 默认全透明，事件穿透（直到开始截图）
     SetLayeredWindowAttributes(m_hwnd, 0, 0, LWA_ALPHA);
@@ -160,7 +187,11 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     tools3000::core::PerformanceMonitor::instance().recordLatency(
         "screenshot.window", elapsedMilliseconds(windowStarted));
 
+    m_editPinnedCallback = nullptr;
     m_state.state = OverlayState::Selecting;
+    m_state.dragStart = {0, 0};
+    m_state.dragEnd = {0, 0};
+    m_state.lastMousePos = m_state.currentCursor;
     m_state.dragging = false;
     m_state.isMarking = false;
     m_state.markupBaseReady = false;
@@ -168,12 +199,39 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     m_state.activeElement = nullptr;
     m_state.dragHandle = HitArea::None;
     m_state.isManipulating = false;
+    m_state.isAdjustingSelection = false;
+    m_state.isAdjustingCornerRadius = false;
+    m_state.detectedWindow = {0, 0, 0, 0};
+    m_state.detectedWindowCornerRadius = 0.0f;
+    m_state.detectedWindowHierarchy.clear();
+    m_state.detectedWindowHierarchyDescriptions.clear();
+    m_state.detectedWindowHierarchyIndex = 0;
+    m_state.animDetectedWindowRect = {0, 0, 0, 0};
+    m_state.targetDetectedWindowRect = {0, 0, 0, 0};
+    m_state.animVelocity = {0, 0, 0, 0};
+    m_state.isHierarchyAnimating = false;
+    m_state.hierarchyBadgeFadeOutUntil = 0;
+    m_state.hierarchyBadgeText.clear();
     m_state.toolbarButtons.clear();
+    m_state.secondaryToolbarButtons.clear();
+    m_state.selectionSideButtons.clear();
+    m_state.submenuButtons.clear();
+    m_state.primaryToolbarRect = {0, 0, 0, 0};
+    m_state.secondaryToolbarRect = {0, 0, 0, 0};
+    m_state.selectionSideRect = {0, 0, 0, 0};
+    m_state.sizeHudRect = {0, 0, 0, 0};
+    m_state.lastSizeHudEdge = -1;
+    m_state.isSizeMenuOpen = false;
+    m_state.openSubmenu = SubmenuType::None;
+    m_state.sliderPopup.type = SliderPopupType::None;
+    m_state.sliderPopup.isDragging = false;
+    m_state.dropdownMenu.type = DropdownType::None;
     m_state.toolbarLayoutValid = false;
     m_state.markup.clearAll();
     m_state.loupeToastUntil = 0;
     m_state.currentTool = MarkupTool::Rectangle;
     m_state.isMarkupToolActive = false;
+    m_state.historyMode = false;
     m_state.isFadingOut = false;
     m_state.fadeOutStart = 0;
 
@@ -255,6 +313,20 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
                  SWP_SHOWWINDOW);
 
     SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
+    if (options.showShortcutHints) {
+        const LONG pad = static_cast<LONG>(std::lround(52.0f * (m_state.dpiScale > 0.0f ? m_state.dpiScale : 1.0f)));
+        std::vector<RECT> initialAvoid = {
+            RECT{cursorScreen.x - pad, cursorScreen.y - pad, cursorScreen.x + pad, cursorScreen.y + pad}
+        };
+        ShortcutHintOverlay::instance().show(
+            mode == OverlayMode::RecordRegion
+                ? ShortcutHintContext::RecordSelecting
+                : ShortcutHintContext::CaptureSelecting,
+            cursorScreen,
+            initialAvoid);
+    } else {
+        ShortcutHintOverlay::instance().hide();
+    }
     RedrawWindow(m_hwnd, nullptr, nullptr,
                  RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     SetCapture(m_hwnd);
@@ -266,12 +338,6 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     tools3000::core::accessibility::announceOverlay(
         m_hwnd, L"截图选区。拖动鼠标选择区域；Enter 确认；Esc 取消。"
     );
-    if (options.showShortcutHints) {
-        ShortcutHintOverlay::instance().show(
-            mode == OverlayMode::RecordRegion
-                ? ShortcutHintContext::RecordSelecting
-                : ShortcutHintContext::CaptureSelecting);
-    }
     tools3000::core::PerformanceMonitor::instance().recordLatency(
         "screenshot", elapsedMilliseconds(totalStarted));
 }
@@ -283,6 +349,8 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
     POINT cursorScreen{};
     GetCursorPos(&cursorScreen);
     m_state.options = {};
+    m_state.options.showShortcutHints = tools3000::core::ConfigManager::instance().get<bool>(
+        "/capture/showShortcutHints", true);
     m_state.mode = OverlayMode::Screenshot;
     m_state.dpiScale = dpiScaleAt(cursorScreen);
     m_state.currentCursor = {
@@ -291,9 +359,11 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
 
     if (!m_hwnd && (!m_hInstance || !createOverlayWindow(m_hInstance))) {
         LOG_ERROR("无法启动贴图编辑: 覆盖层窗口初始化失败");
+        if (onFinished) onFinished(cv::Mat{});
         return;
     }
 
+    m_editPinnedCallback = std::move(onFinished);
     m_state.state = OverlayState::Selected;
     m_state.dragging = false;
     m_state.isMarking = false;
@@ -302,7 +372,29 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
     m_state.activeElement = nullptr;
     m_state.dragHandle = HitArea::None;
     m_state.isManipulating = false;
+    m_state.isAdjustingSelection = false;
+    m_state.isAdjustingCornerRadius = false;
+    m_state.detectedWindow = {0, 0, 0, 0};
+    m_state.detectedWindowHierarchy.clear();
+    m_state.detectedWindowHierarchyDescriptions.clear();
+    m_state.detectedWindowHierarchyIndex = 0;
+    m_state.animDetectedWindowRect = {0, 0, 0, 0};
+    m_state.targetDetectedWindowRect = {0, 0, 0, 0};
+    m_state.isHierarchyAnimating = false;
     m_state.toolbarButtons.clear();
+    m_state.secondaryToolbarButtons.clear();
+    m_state.selectionSideButtons.clear();
+    m_state.submenuButtons.clear();
+    m_state.primaryToolbarRect = {0, 0, 0, 0};
+    m_state.secondaryToolbarRect = {0, 0, 0, 0};
+    m_state.selectionSideRect = {0, 0, 0, 0};
+    m_state.sizeHudRect = {0, 0, 0, 0};
+    m_state.lastSizeHudEdge = -1;
+    m_state.openSubmenu = SubmenuType::None;
+    m_state.sliderPopup.type = SliderPopupType::None;
+    m_state.sliderPopup.isDragging = false;
+    m_state.dropdownMenu.type = DropdownType::None;
+    m_state.isSizeMenuOpen = false;
     m_state.toolbarLayoutValid = false;
     m_state.markup.clearAll();
     m_state.loupeToastUntil = 0;
@@ -354,13 +446,6 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
         return;
     }
 
-    // 设置回调
-    m_state.callback = [onFinished](const CaptureRegion&, const cv::Mat& markedImage, const CaptureCompletion&) {
-        if (onFinished && !markedImage.empty()) {
-            onFinished(markedImage);
-        }
-    };
-
     m_renderer.invalidate();
 
     SetWindowPos(m_hwnd, HWND_TOPMOST,
@@ -369,6 +454,12 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
                  GetSystemMetrics(SM_CXVIRTUALSCREEN),
                  GetSystemMetrics(SM_CYVIRTUALSCREEN),
                  SWP_SHOWWINDOW);
+
+    if (m_state.options.showShortcutHints) {
+        ShortcutHintOverlay::instance().show(ShortcutHintContext::CaptureSelected, cursorScreen, {});
+    } else {
+        ShortcutHintOverlay::instance().hide();
+    }
 
     SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
     RedrawWindow(m_hwnd, nullptr, nullptr,
@@ -382,8 +473,6 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
     tools3000::core::accessibility::announceOverlay(
         m_hwnd, L"截图标注。使用工具栏完成标注；Enter 确认；Esc 取消。"
     );
-
-    ShortcutHintOverlay::instance().show(ShortcutHintContext::CaptureSelected);
 }
 
 bool CaptureOverlay::freezeScreen() {
@@ -496,7 +585,7 @@ void CaptureOverlay::setShortcutHintsEnabled(bool enabled) {
         return;
     }
     const auto current = m_state.state.load();
-    if (current == OverlayState::Idle) return;
+    if (current == OverlayState::Idle || !isOverlayVisible()) return;
     ShortcutHintContext context = ShortcutHintContext::CaptureSelecting;
     if (m_state.mode == OverlayMode::RecordRegion) {
         context = ShortcutHintContext::RecordSelecting;
@@ -504,10 +593,22 @@ void CaptureOverlay::setShortcutHintsEnabled(bool enabled) {
         context = ShortcutHintContext::CaptureSelected;
     }
     ShortcutHintOverlay::instance().show(context);
+    m_renderer.invalidate();
 }
 
 void CaptureOverlay::cleanupAfterDelivery() {
+    m_state.dragging = false;
+    m_state.isMarking = false;
+    m_state.isManipulating = false;
+    m_state.isAdjustingSelection = false;
+    m_state.isAdjustingCornerRadius = false;
+    m_state.isHierarchyAnimating = false;
+    m_state.isFadingOut = false;
+    m_state.animDetectedWindowRect = {};
+    m_state.targetDetectedWindowRect = {};
+    m_state.animVelocity = {};
     if (m_hwnd) {
+        KillTimer(m_hwnd, 1);
         m_renderer.releaseWindowResources();
         HWND hwndToDestroy = m_hwnd;
         m_hwnd = nullptr;
@@ -515,6 +616,7 @@ void CaptureOverlay::cleanupAfterDelivery() {
     }
     m_state.markup.clearAll();
     m_state.detectedWindowHierarchy.clear();
+    m_state.detectedWindowHierarchyDescriptions.clear();
     m_state.detectedWindow = {};
     releaseFrozenSurface();
     if (m_closedCallback) m_closedCallback();
@@ -525,7 +627,15 @@ void CaptureOverlay::cleanupAfterDelivery() {
 
 void CaptureOverlay::realCancel() {
     ShortcutHintOverlay::instance().hide();
+    auto editPinnedCb = std::move(m_editPinnedCallback);
+    m_editPinnedCallback = nullptr;
     m_state.state = OverlayState::Idle;
+    m_state.dragging = false;
+    m_state.isMarking = false;
+    m_state.isManipulating = false;
+    m_state.isAdjustingSelection = false;
+    m_state.isAdjustingCornerRadius = false;
+    m_state.isFadingOut = false;
     ReleaseCapture();
     SetCursor(LoadCursor(nullptr, IDC_ARROW));
 
@@ -534,6 +644,10 @@ void CaptureOverlay::realCancel() {
         ShowWindow(m_hwnd, SW_HIDE);
     }
     cleanupAfterDelivery();
+    if (editPinnedCb) {
+        editPinnedCb(cv::Mat{});
+    }
+    ShortcutHintOverlay::instance().hide();
 }
 
 void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
@@ -577,6 +691,8 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     int offsetY = GetSystemMetrics(SM_YVIRTUALSCREEN);
     CaptureRegion region{x1 + offsetX, y1 + offsetY, w, h, m_state.cornerRadius};
 
+    auto editPinnedCb = std::move(m_editPinnedCallback);
+    m_editPinnedCallback = nullptr;
     auto cb = m_state.callback;
     auto rcb = m_state.recordCallback;
     auto mode = m_state.mode;
@@ -585,6 +701,12 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     // 确保录屏首帧不被遮挡，桌面视觉即刻恢复纯净交互。
     ShortcutHintOverlay::instance().hide();
     m_state.state = OverlayState::Idle;
+    m_state.dragging = false;
+    m_state.isMarking = false;
+    m_state.isManipulating = false;
+    m_state.isAdjustingSelection = false;
+    m_state.isAdjustingCornerRadius = false;
+    m_state.isFadingOut = false;
     ReleaseCapture();
     SetCursor(LoadCursor(nullptr, IDC_ARROW));
 
@@ -596,12 +718,18 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     // 阶段 2 (业务交付): 同步执行交付回调 (写入多矩阵剪贴板与保存磁盘)
     if (mode == OverlayMode::RecordRegion) {
         if (rcb) rcb(region, m_state.recordSetup);
-    } else {
+    } else if (!editPinnedCb) {
         if (cb) cb(region, cropped, completion);
     }
 
-    // 阶段 3 (冷路径清理与内存修剪): 业务数据交付彻底完成后，再安全销毁窗口、释放底图并执行 trimWorkingSet()
+    // 阶段 3 (冷路径清理与内存修剪): 业务数据交付彻底完成后，再安全销毁覆盖层窗口、释放底图并执行 trimWorkingSet()
     cleanupAfterDelivery();
+    if (editPinnedCb && !cropped.empty()) {
+        editPinnedCb(cropped);
+    }
+    if (mode != OverlayMode::RecordRegion) {
+        ShortcutHintOverlay::instance().hide();
+    }
 }
 
 LRESULT CALLBACK CaptureOverlay::staticWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -621,7 +749,7 @@ LRESULT CALLBACK CaptureOverlay::staticWndProc(HWND hwnd, UINT msg, WPARAM wPara
             return MA_ACTIVATE;
         }
         if (msg == WM_CLOSE) {
-            DestroyWindow(hwnd);
+            self->realCancel();
             return 0;
         }
         if (msg == WM_ACCESSIBILITY_INVOKE_TOOLBAR) {
@@ -637,10 +765,19 @@ LRESULT CALLBACK CaptureOverlay::staticWndProc(HWND hwnd, UINT msg, WPARAM wPara
                  toolbarUiaActions(hwnd, self->m_state));
         }
         if (msg == WM_NCDESTROY) {
+            if (self->m_hwnd == hwnd) {
+                self->m_hwnd = nullptr;
+            }
+            if (self->m_state.state.load() != OverlayState::Idle) {
+                self->m_state.state = OverlayState::Idle;
+                ShortcutHintOverlay::instance().hide();
+            }
             tools3000::core::accessibility::disconnectOverlayUiaProvider(hwnd);
         }
         if (msg == WM_PAINT) {
-            self->m_renderer.render(self->m_state);
+            if (self->m_state.state.load() != OverlayState::Idle) {
+                self->m_renderer.render(self->m_state);
+            }
             ValidateRect(hwnd, nullptr);
             return 0;
         }

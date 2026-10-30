@@ -4,6 +4,7 @@
 #include "capture/ShortcutHintStyle.h"
 
 #include "core/config/ConfigManager.h"
+#include "core/events/MainThreadDispatcher.h"
 #include "core/hotkey/HotkeyManager.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
@@ -11,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <tuple>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -19,6 +21,7 @@ namespace tools3000::capture {
 
 namespace {
 constexpr const wchar_t* WindowClass = L"Tools3000_ShortcutHintOverlay";
+constexpr UINT_PTR kWatchdogTimerId = 1;
 
 bool useChineseLabels() {
     const auto language = tools3000::core::ConfigManager::instance().get<std::string>(
@@ -59,8 +62,37 @@ ShortcutHintOverlay& ShortcutHintOverlay::instance() {
     return overlay;
 }
 
+bool ShortcutHintOverlay::checkOwnerActive(ShortcutHintContext context) const {
+    if (m_ownerActiveChecker) {
+        return m_ownerActiveChecker(context);
+    }
+    switch (context) {
+        case ShortcutHintContext::CaptureSelecting:
+        case ShortcutHintContext::CaptureDragging:
+        case ShortcutHintContext::CaptureSelected:
+        case ShortcutHintContext::CaptureMarking:
+        case ShortcutHintContext::CaptureMarkingNumber:
+        case ShortcutHintContext::CaptureEditingText:
+        case ShortcutHintContext::RecordSelecting: {
+            HWND captureHwnd = FindWindowW(L"Tools3000_CaptureOverlay", nullptr);
+            return captureHwnd != nullptr && IsWindowVisible(captureHwnd) != FALSE;
+        }
+        case ShortcutHintContext::ScrollCapture: {
+            HWND scrollHwnd = FindWindowW(L"Tools3000_ScrollCaptureOverlay", nullptr);
+            return scrollHwnd != nullptr && IsWindowVisible(scrollHwnd) != FALSE;
+        }
+        case ShortcutHintContext::Recording:
+        case ShortcutHintContext::RecordingPaused: {
+            HWND recHwnd = FindWindowW(L"Tools3000_RecordingIndicator", nullptr);
+            return recHwnd != nullptr && IsWindowVisible(recHwnd) != FALSE;
+        }
+        default:
+            return false;
+    }
+}
+
 bool ShortcutHintOverlay::isVisible() const {
-    return m_hwnd && IsWindowVisible(m_hwnd);
+    return m_hasContext && m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd);
 }
 
 RECT ShortcutHintOverlay::getBounds() const {
@@ -90,14 +122,16 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                                                 {L"Space", L"Hold to pan"}, {L"Esc", L"Cancel"}};
         case ShortcutHintContext::CaptureSelected:
             return zh
-                ? std::vector<ShortcutHintItem>{{L"Enter", L"完成并复制"}, {L"Ctrl+S", L"保存"},
-                                                {L"Ctrl+C", L"复制"}, {L"WASD", L"1px微调移动"},
-                                                {L"Shift+WASD", L"尺寸微调"}, {L"[ / ]", L"圆角调节"},
-                                                {L"R / A / T / N", L"标注工具"}, {L"Esc", L"取消"}}
-                : std::vector<ShortcutHintItem>{{L"Enter", L"Copy & finish"}, {L"Ctrl+S", L"Save"},
-                                                {L"Ctrl+C", L"Copy"}, {L"WASD", L"1px nudge"},
-                                                {L"Shift+WASD", L"Resize"}, {L"[ / ]", L"Corner radius"},
-                                                {L"R / A / T / N", L"Markup tools"}, {L"Esc", L"Cancel"}};
+                ? std::vector<ShortcutHintItem>{{L"Enter", L"完成并复制"}, {L"Ctrl+T", L"贴图置顶"},
+                                                {L"Ctrl+S", L"保存"}, {L"Ctrl+C", L"复制"},
+                                                {L"WASD", L"1px微调移动"}, {L"Shift+WASD", L"尺寸微调"},
+                                                {L"[ / ]", L"圆角调节"}, {L"R / A / T / N", L"标注工具"},
+                                                {L"Esc", L"取消"}}
+                : std::vector<ShortcutHintItem>{{L"Enter", L"Copy & finish"}, {L"Ctrl+T", L"Pin to screen"},
+                                                {L"Ctrl+S", L"Save"}, {L"Ctrl+C", L"Copy"},
+                                                {L"WASD", L"1px nudge"}, {L"Shift+WASD", L"Resize"},
+                                                {L"[ / ]", L"Corner radius"}, {L"R / A / T / N", L"Markup tools"},
+                                                {L"Esc", L"Cancel"}};
         case ShortcutHintContext::CaptureMarking:
             return zh
                 ? std::vector<ShortcutHintItem>{{L"滚轮 / Ctrl+滚轮", L"粗细 / 不透明度"}, {L"Shift", L"约束水平/垂直/45°"},
@@ -298,6 +332,7 @@ POINT ShortcutHintOverlay::computeOptimalPosition(int width, int height, const R
     const int workRight = static_cast<int>(workArea.right);
     const int workBottom = static_cast<int>(workArea.bottom);
     const int workWidth = workRight - workLeft;
+    const int workHeight = workBottom - workTop;
     const int minX = workLeft + margin;
     const int maxX = (std::max)(minX, workRight - width - margin);
     const int minY = workTop + margin;
@@ -312,21 +347,26 @@ POINT ShortcutHintOverlay::computeOptimalPosition(int width, int height, const R
         return defaultPos;
     }
 
-    // 候选布局点位：
+    // 候选布局点位（按视觉稳定度与路径最短排序）：
     // 1. 左下角 (默认最优)
-    // 2. 左上角
-    // 3. 右上角
-    // 4. 右下角
+    // 2. 左上角 (同侧垂直翻转)
+    // 3. 右下角 (同底边水平翻转)
+    // 4. 右上角 (对角翻转)
     // 5. 底部居中
     // 6. 顶部居中
+    // 7. 左侧居中
+    // 8. 右侧居中
     const int centerX = std::clamp(workLeft + std::max(margin, (workWidth - width) / 2), minX, maxX);
+    const int centerY = std::clamp(workTop + std::max(margin, (workHeight - height) / 2), minY, maxY);
     std::vector<POINT> candidates = {
         {minX, maxY},       // 1. 左下角 (默认最优)
         {minX, minY},       // 2. 左上角
-        {maxX, minY},       // 3. 右上角
-        {maxX, maxY},       // 4. 右下角
+        {maxX, maxY},       // 3. 右下角
+        {maxX, minY},       // 4. 右上角
         {centerX, maxY},    // 5. 底部居中
         {centerX, minY},    // 6. 顶部居中
+        {minX, centerY},    // 7. 左侧居中
+        {maxX, centerY},    // 8. 右侧居中
     };
 
     auto calcIntersectionArea = [](const RECT& r1, const RECT& r2) -> long long {
@@ -340,96 +380,258 @@ POINT ShortcutHintOverlay::computeOptimalPosition(int width, int height, const R
         return 0;
     };
 
-    POINT bestPos = defaultPos;
-    long long minCollisionArea = -1;
+    const int pad = std::max(8, static_cast<int>(std::lround(10.0f * safeScale)));
+    const RECT cornerBL{minX, maxY, minX + width, maxY + height};
+    const RECT cornerTL{minX, minY, minX + width, minY + height};
+    const RECT cornerBR{maxX, maxY, maxX + width, maxY + height};
+    const RECT cornerTR{maxX, minY, maxX + width, minY + height};
 
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        const auto& cand = candidates[i];
-        RECT candRect{cand.x, cand.y, cand.x + width, cand.y + height};
-
-        long long collision = 0;
-        for (const auto& avoid : avoidRects) {
-            if (avoid.right <= avoid.left || avoid.bottom <= avoid.top) continue;
-            RECT paddedAvoid{avoid.left - 10, avoid.top - 10, avoid.right + 10, avoid.bottom + 10};
-            collision += calcIntersectionArea(candRect, paddedAvoid);
-        }
-
-        // 如果首选候选或某标准候选无任何碰撞，按标准优先级直接采纳并返回
-        if (collision == 0) {
-            return cand;
-        }
-
-        if (minCollisionArea == -1 || collision < minCollisionArea) {
-            minCollisionArea = collision;
-            bestPos = cand;
-        }
-    }
-
-    // 动态探测障碍物四周邻接候选点（当 6 大标准锚点均存在碰撞时，在障碍物四周滑动探测零碰撞空隙）
-    std::vector<POINT> dynamicCandidates;
+    // 将障碍物分离为「局部可避让障碍物（光标安全区、放大镜、工具栏、中小型窗口等）」与「全域全屏/最大化背景选区」：
+    // 彻底解决最大化窗口选区与局部鼠标/放大镜/工具栏同时存在时，大矩形面积掩盖局部碰撞导致左下角不躲避的问题。
+    std::vector<RECT> localObstacles;
+    std::vector<RECT> globalObstacles;
+    localObstacles.reserve(avoidRects.size());
     for (const auto& avoid : avoidRects) {
         if (avoid.right <= avoid.left || avoid.bottom <= avoid.top) continue;
-        int rx = std::clamp(static_cast<int>(avoid.right + margin), minX, maxX);
-        dynamicCandidates.push_back({rx, maxY});
-        dynamicCandidates.push_back({rx, minY});
-
-        int lx = std::clamp(static_cast<int>(avoid.left - width - margin), minX, maxX);
-        dynamicCandidates.push_back({lx, maxY});
-        dynamicCandidates.push_back({lx, minY});
-
-        int by = std::clamp(static_cast<int>(avoid.bottom + margin), minY, maxY);
-        dynamicCandidates.push_back({minX, by});
-        dynamicCandidates.push_back({maxX, by});
-
-        int ty = std::clamp(static_cast<int>(avoid.top - height - margin), minY, maxY);
-        dynamicCandidates.push_back({minX, ty});
-        dynamicCandidates.push_back({maxX, ty});
+        RECT paddedAvoid{avoid.left - pad, avoid.top - pad, avoid.right + pad, avoid.bottom + pad};
+        const long long aBL = calcIntersectionArea(cornerBL, paddedAvoid);
+        const long long aTL = calcIntersectionArea(cornerTL, paddedAvoid);
+        const long long aBR = calcIntersectionArea(cornerBR, paddedAvoid);
+        const long long aTR = calcIntersectionArea(cornerTR, paddedAvoid);
+        const long long minCorner = std::min({aBL, aTL, aBR, aTR});
+        const long long maxCorner = std::max({aBL, aTL, aBR, aTR});
+        if (minCorner > 0 && minCorner * 2 >= maxCorner) {
+            globalObstacles.push_back(paddedAvoid);
+        } else {
+            localObstacles.push_back(paddedAvoid);
+        }
     }
 
-    for (const auto& cand : dynamicCandidates) {
-        RECT candRect{cand.x, cand.y, cand.x + width, cand.y + height};
-        long long collision = 0;
-        for (const auto& avoid : avoidRects) {
-            if (avoid.right <= avoid.left || avoid.bottom <= avoid.top) continue;
-            RECT paddedAvoid{avoid.left - 10, avoid.top - 10, avoid.right + 10, avoid.bottom + 10};
-            collision += calcIntersectionArea(candRect, paddedAvoid);
-        }
+    // 若仅存在覆盖全屏四角的全屏/最大化选区且无任何局部障碍物（光标/放大镜/工具栏未进入左下角），固守左下角避免无意义跳动
+    if (localObstacles.empty()) {
+        return defaultPos;
+    }
 
-        if (collision == 0) {
-            return cand;
+    auto computeLocalCollision = [&](const RECT& candRect) -> long long {
+        long long total = 0;
+        for (const auto& obs : localObstacles) {
+            total += calcIntersectionArea(candRect, obs);
         }
+        return total;
+    };
 
-        if (collision < minCollisionArea) {
-            minCollisionArea = collision;
+    auto computeGlobalCollision = [&](const RECT& candRect) -> long long {
+        long long total = 0;
+        for (const auto& obs : globalObstacles) {
+            total += calcIntersectionArea(candRect, obs);
+        }
+        return total;
+    };
+
+    const RECT defaultRect{defaultPos.x, defaultPos.y, defaultPos.x + width, defaultPos.y + height};
+    const long long defaultLocalCollision = computeLocalCollision(defaultRect);
+    if (defaultLocalCollision == 0) {
+        return defaultPos;
+    }
+
+    POINT bestPos = defaultPos;
+    long long bestLocalCollision = defaultLocalCollision;
+    long long bestGlobalCollision = computeGlobalCollision(defaultRect);
+    int bestGroup = 0;
+    long long bestMetric = 0;
+    bool hasAlternative = false;
+
+    auto considerCandidate = [&](const POINT& cand, int group, long long metric) {
+        const RECT candRect{cand.x, cand.y, cand.x + width, cand.y + height};
+        const long long localCol = computeLocalCollision(candRect);
+        const long long globalCol = computeGlobalCollision(candRect);
+        if (!hasAlternative ||
+            std::tie(localCol, globalCol, group, metric) <
+                std::tie(bestLocalCollision, bestGlobalCollision, bestGroup, bestMetric)) {
+            hasAlternative = true;
+            bestLocalCollision = localCol;
+            bestGlobalCollision = globalCol;
+            bestGroup = group;
+            bestMetric = metric;
             bestPos = cand;
         }
+    };
+
+    for (size_t i = 1; i < candidates.size(); ++i) {
+        considerCandidate(candidates[i], 0, static_cast<long long>(i));
+    }
+
+    // 若 8 大标准锚点均存在局部碰撞，动态探测局部障碍物四周邻接候选点，按碰撞面积与距左下角曼哈顿距离择优
+    if (bestLocalCollision > 0) {
+        std::vector<POINT> dynamicCandidates;
+        dynamicCandidates.reserve(localObstacles.size() * 8);
+        for (const auto& obs : localObstacles) {
+            int rx = std::clamp(static_cast<int>(obs.right + margin), minX, maxX);
+            dynamicCandidates.push_back({rx, maxY});
+            dynamicCandidates.push_back({rx, minY});
+
+            int lx = std::clamp(static_cast<int>(obs.left - width - margin), minX, maxX);
+            dynamicCandidates.push_back({lx, maxY});
+            dynamicCandidates.push_back({lx, minY});
+
+            int ty = std::clamp(static_cast<int>(obs.top - height - margin), minY, maxY);
+            dynamicCandidates.push_back({minX, ty});
+            dynamicCandidates.push_back({maxX, ty});
+
+            int by = std::clamp(static_cast<int>(obs.bottom + margin), minY, maxY);
+            dynamicCandidates.push_back({minX, by});
+            dynamicCandidates.push_back({maxX, by});
+        }
+
+        for (const auto& cand : dynamicCandidates) {
+            const long long manhattanDist =
+                static_cast<long long>(std::abs(cand.x - defaultPos.x)) +
+                static_cast<long long>(std::abs(cand.y - defaultPos.y));
+            considerCandidate(cand, 1, manhattanDist);
+        }
+    }
+
+    if (bestLocalCollision >= defaultLocalCollision) {
+        return defaultPos;
     }
 
     return bestPos;
 }
 
-void ShortcutHintOverlay::updateAvoidance(const std::vector<RECT>& avoidRects) {
-    if (!m_hwnd || !IsWindowVisible(m_hwnd)) return;
-    m_avoidRects = avoidRects;
-    POINT pos = computeOptimalPosition(m_width, m_height, m_workArea, m_scale, m_avoidRects);
+std::vector<RECT> ShortcutHintOverlay::effectiveAvoidRects() const {
+    std::vector<RECT> combined = m_avoidRects;
+    if (m_hasTrackedCursor && m_trackedCursorPos.x != LONG_MIN && m_trackedCursorPos.y != LONG_MIN) {
+        const int pad = std::max(44, static_cast<int>(std::lround(60.0f * m_scale)));
+        combined.push_back(RECT{
+            m_trackedCursorPos.x - pad,
+            m_trackedCursorPos.y - pad,
+            m_trackedCursorPos.x + pad,
+            m_trackedCursorPos.y + pad
+        });
+    }
+    return combined;
+}
+
+void ShortcutHintOverlay::syncPosition() {
+    if (!m_hwnd || !IsWindowVisible(m_hwnd) || m_width <= 0 || m_height <= 0) return;
+    const auto combined = effectiveAvoidRects();
+    POINT pos = computeOptimalPosition(m_width, m_height, m_workArea, m_scale, combined);
     RECT curRect{};
     GetWindowRect(m_hwnd, &curRect);
+
+    // 迟滞防抖 (Hysteresis Anti-Jitter)：
+    // 当卡片当前已从默认左下角避让至其他锚点，而新计算的 pos 准备跳回默认左下角时，
+    // 检查默认左下角外扩迟滞带 (24px * scale) 是否仍与局部障碍物相交；若仍在迟滞带内则维持当前避让位，彻底杜绝临界鼠标微动引发的乒乓跳闪。
+    const float safeScale = (m_scale > 0.0f) ? m_scale : 1.0f;
+    const int margin = static_cast<int>(ShortcutHintStyle::BaseScreenMargin * safeScale);
+    const int minX = static_cast<int>(m_workArea.left) + margin;
+    const int maxX = (std::max)(minX, static_cast<int>(m_workArea.right) - m_width - margin);
+    const int minY = static_cast<int>(m_workArea.top) + margin;
+    const int maxY = (std::max)(minY, static_cast<int>(m_workArea.bottom) - m_height - margin);
+    const POINT defaultPos{
+        std::clamp(static_cast<int>(m_workArea.left) + margin, minX, maxX),
+        std::clamp(static_cast<int>(m_workArea.bottom) - m_height - margin, minY, maxY)
+    };
+    const bool currentlyDisplaced = (curRect.left != defaultPos.x || curRect.top != defaultPos.y);
+    if (currentlyDisplaced && pos.x == defaultPos.x && pos.y == defaultPos.y && !combined.empty()) {
+        const int hystPad = std::max(20, static_cast<int>(std::lround(28.0f * safeScale)));
+        const RECT hystDefaultRect{
+            defaultPos.x - hystPad,
+            defaultPos.y - hystPad,
+            defaultPos.x + m_width + hystPad,
+            defaultPos.y + m_height + hystPad
+        };
+        const RECT cornerBL{minX, maxY, minX + m_width, maxY + m_height};
+        const RECT cornerTL{minX, minY, minX + m_width, minY + m_height};
+        const RECT cornerBR{maxX, maxY, maxX + m_width, maxY + m_height};
+        const RECT cornerTR{maxX, minY, maxX + m_width, minY + m_height};
+        auto areaOf = [](const RECT& a, const RECT& b) -> long long {
+            int l = (std::max)(a.left, b.left);
+            int t = (std::max)(a.top, b.top);
+            int r = (std::min)(a.right, b.right);
+            int bt = (std::min)(a.bottom, b.bottom);
+            return (l < r && t < bt) ? static_cast<long long>(r - l) * (bt - t) : 0;
+        };
+        bool stillNearLocalObstacle = false;
+        for (const auto& avoid : combined) {
+            if (avoid.right <= avoid.left || avoid.bottom <= avoid.top) continue;
+            const long long aBL = areaOf(cornerBL, avoid);
+            const long long aTL = areaOf(cornerTL, avoid);
+            const long long aBR = areaOf(cornerBR, avoid);
+            const long long aTR = areaOf(cornerTR, avoid);
+            const long long minC = std::min({aBL, aTL, aBR, aTR});
+            const long long maxC = std::max({aBL, aTL, aBR, aTR});
+            if (minC > 0 && minC * 2 >= maxC) continue; // 忽略全屏背景矩形
+            if (areaOf(hystDefaultRect, avoid) > 0) {
+                stillNearLocalObstacle = true;
+                break;
+            }
+        }
+        if (stillNearLocalObstacle) {
+            RECT stayRect{curRect.left, curRect.top, curRect.left + m_width, curRect.top + m_height};
+            bool stayClear = true;
+            for (const auto& avoid : combined) {
+                if (avoid.right <= avoid.left || avoid.bottom <= avoid.top) continue;
+                const long long aBL = areaOf(cornerBL, avoid);
+                const long long aTL = areaOf(cornerTL, avoid);
+                const long long aBR = areaOf(cornerBR, avoid);
+                const long long aTR = areaOf(cornerTR, avoid);
+                const long long minC = std::min({aBL, aTL, aBR, aTR});
+                const long long maxC = std::max({aBL, aTL, aBR, aTR});
+                if (minC > 0 && minC * 2 >= maxC) continue;
+                if (areaOf(stayRect, avoid) > 0) {
+                    stayClear = false;
+                    break;
+                }
+            }
+            if (stayClear) {
+                return;
+            }
+        }
+    }
+
     if (curRect.left != pos.x || curRect.top != pos.y) {
         SetWindowPos(m_hwnd, nullptr, pos.x, pos.y, 0, 0,
                      SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
     }
 }
 
-void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
-                              const std::vector<RECT>& avoidRects) {
-    if (!tools3000::core::ConfigManager::instance().get<bool>(
-            "/capture/showShortcutHints", true)) {
+void ShortcutHintOverlay::updateAvoidance(const std::vector<RECT>& avoidRects) {
+    if (!m_hwnd || !IsWindowVisible(m_hwnd)) return;
+    if (GetWindowThreadProcessId(m_hwnd, nullptr) != GetCurrentThreadId()) {
+        if (tools3000::core::MainThreadDispatcher::instance().isInitialized()) {
+            tools3000::core::MainThreadDispatcher::instance().post([avoidRects]() {
+                ShortcutHintOverlay::instance().updateAvoidance(avoidRects);
+            });
+        }
+        return;
+    }
+    const bool ownerActiveNow = checkOwnerActive(m_context);
+    if (!m_observedOwnerActive && ownerActiveNow) {
+        m_observedOwnerActive = true;
+    } else if ((m_ownerActiveChecker != nullptr || m_observedOwnerActive) && !ownerActiveNow) {
         hide();
         return;
     }
     m_avoidRects = avoidRects;
-    if (m_hasContext && m_context == context && isVisible()) {
-        updateAvoidance(avoidRects);
+    m_hasTrackedCursor = false;
+    GetCursorPos(&m_initialCursorPos);
+    syncPosition();
+}
+
+void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
+                              const std::vector<RECT>& avoidRects) {
+    if ((m_hwnd && IsWindow(m_hwnd) && GetWindowThreadProcessId(m_hwnd, nullptr) != GetCurrentThreadId()) ||
+        (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+         !tools3000::core::MainThreadDispatcher::instance().isOwnerThread())) {
+        tools3000::core::MainThreadDispatcher::instance().post([context, anchor, avoidRects]() {
+            ShortcutHintOverlay::instance().show(context, anchor, avoidRects);
+        });
+        return;
+    }
+    if (!tools3000::core::ConfigManager::instance().get<bool>(
+            "/capture/showShortcutHints", true)) {
+        hide();
         return;
     }
     auto items = itemsFor(context);
@@ -437,6 +639,14 @@ void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
         hide();
         return;
     }
+    const bool ownerActiveNow = checkOwnerActive(context);
+    if ((m_ownerActiveChecker != nullptr || (m_hasContext && m_context == context && m_observedOwnerActive)) &&
+        !ownerActiveNow) {
+        hide();
+        return;
+    }
+    const bool isContextSwitchOnly =
+        (anchor.x == LONG_MIN && anchor.y == LONG_MIN && avoidRects.empty() && m_hasContext && isVisible());
     if (anchor.x == LONG_MIN || anchor.y == LONG_MIN) {
         if (!GetCursorPos(&anchor)) anchor = {0, 0};
     }
@@ -447,6 +657,27 @@ void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
 
     const UINT dpiX = tools3000::core::dpi::effectiveDpiForMonitor(monitor);
     const float scale = ShortcutHintStyle::scaleForDpi(dpiX);
+    if (!isContextSwitchOnly) {
+        m_avoidRects = avoidRects;
+        m_hasTrackedCursor = false;
+        if (!GetCursorPos(&m_initialCursorPos)) {
+            m_initialCursorPos = {LONG_MIN, LONG_MIN};
+        }
+        m_trackedCursorPos = m_initialCursorPos;
+    }
+    if (m_hasContext && m_context == context && isVisible() &&
+        std::abs(scale - m_scale) <= 0.01f) {
+        if (ownerActiveNow) m_observedOwnerActive = true;
+        if (!isContextSwitchOnly) {
+            updateAvoidance(avoidRects);
+        } else {
+            syncPosition();
+        }
+        return;
+    }
+    if (m_hwnd && !IsWindow(m_hwnd)) {
+        m_hwnd = nullptr;
+    }
     if (!m_hwnd && !createWindow()) return;
     if (!m_renderTarget || std::abs(scale - m_scale) > 0.01f) {
         discardResources();
@@ -461,7 +692,7 @@ void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
         return;
     }
 
-    POINT pos = computeOptimalPosition(m_width, m_height, m_workArea, scale, m_avoidRects);
+    POINT pos = computeOptimalPosition(m_width, m_height, m_workArea, scale, effectiveAvoidRects());
     SetWindowPos(m_hwnd, HWND_TOPMOST, pos.x, pos.y, m_width, m_height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
     render();
@@ -476,6 +707,8 @@ void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
     tools3000::core::accessibility::announceOverlay(m_hwnd, accessibleName);
     m_context = context;
     m_hasContext = true;
+    m_observedOwnerActive = ownerActiveNow;
+    SetTimer(m_hwnd, kWatchdogTimerId, 45, nullptr);
 }
 
 void ShortcutHintOverlay::render() {
@@ -602,7 +835,7 @@ void ShortcutHintOverlay::render() {
 
     POINT source{0, 0};
     SIZE size{m_width, m_height};
-    POINT destination = computeOptimalPosition(m_width, m_height, m_workArea, m_scale, m_avoidRects);
+    POINT destination = computeOptimalPosition(m_width, m_height, m_workArea, m_scale, effectiveAvoidRects());
     BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
     UpdateLayeredWindow(m_hwnd, screen, &destination, &size, memory,
                         &source, 0, &blend, ULW_ALPHA);
@@ -629,12 +862,36 @@ void ShortcutHintOverlay::discardResources() {
 
 void ShortcutHintOverlay::hide() {
     m_hasContext = false;
+    m_observedOwnerActive = false;
+    m_hasTrackedCursor = false;
+    m_avoidRects.clear();
+    if (m_hwnd) {
+        if (!IsWindow(m_hwnd)) {
+            m_hwnd = nullptr;
+        } else if (GetWindowThreadProcessId(m_hwnd, nullptr) != GetCurrentThreadId()) {
+            // 跨线程隐藏防护：Win32 DestroyWindow 仅允许创建窗口的线程调用，
+            // 工作线程调用时立即通过 ShowWindowAsync 隐藏视觉残留并投递异步销毁消息。
+            ShowWindowAsync(m_hwnd, SW_HIDE);
+            PostMessageW(m_hwnd, WM_APP + 1, 0, 0);
+            if (tools3000::core::MainThreadDispatcher::instance().isInitialized()) {
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    if (!ShortcutHintOverlay::instance().isVisible()) {
+                        ShortcutHintOverlay::instance().hide();
+                    }
+                });
+            }
+            return;
+        }
+    }
     m_items.clear();
     discardResources();
     if (m_hwnd) {
-        tools3000::core::accessibility::hideOverlay(m_hwnd);
-        DestroyWindow(m_hwnd);
+        HWND hwndToDestroy = m_hwnd;
         m_hwnd = nullptr;
+        KillTimer(hwndToDestroy, kWatchdogTimerId);
+        tools3000::core::accessibility::hideOverlay(hwndToDestroy);
+        ShowWindow(hwndToDestroy, SW_HIDE);
+        DestroyWindow(hwndToDestroy);
     }
     if (m_module) {
         UnregisterClassW(WindowClass, m_module);
@@ -677,6 +934,53 @@ LRESULT CALLBACK ShortcutHintOverlay::wndProc(
         overlay = static_cast<ShortcutHintOverlay*>(create->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(overlay));
     }
+    if (message == WM_APP + 1) {
+        if (overlay && !overlay->m_hasContext) {
+            overlay->hide();
+        }
+        return 0;
+    }
+    if (message == WM_TIMER && wParam == kWatchdogTimerId) {
+        if (!overlay || !overlay->m_hasContext) {
+            KillTimer(hwnd, kWatchdogTimerId);
+            if (overlay) overlay->hide();
+            return 0;
+        }
+        const bool ownerActiveNow = overlay->checkOwnerActive(overlay->m_context);
+        if (!overlay->m_observedOwnerActive && ownerActiveNow) {
+            overlay->m_observedOwnerActive = true;
+        } else if ((overlay->m_ownerActiveChecker != nullptr || overlay->m_observedOwnerActive) && !ownerActiveNow) {
+            overlay->hide();
+            return 0;
+        }
+        POINT curPt{};
+        if (GetCursorPos(&curPt)) {
+            const bool movedSinceInit = (overlay->m_initialCursorPos.x == LONG_MIN) ||
+                (std::abs(curPt.x - overlay->m_initialCursorPos.x) > 4) ||
+                (std::abs(curPt.y - overlay->m_initialCursorPos.y) > 4);
+            if (movedSinceInit || overlay->m_hasTrackedCursor) {
+                if (!overlay->m_hasTrackedCursor ||
+                    std::abs(curPt.x - overlay->m_trackedCursorPos.x) > 2 ||
+                    std::abs(curPt.y - overlay->m_trackedCursorPos.y) > 2) {
+                    overlay->m_hasTrackedCursor = true;
+                    overlay->m_trackedCursorPos = curPt;
+                    overlay->syncPosition();
+                }
+            }
+        }
+        return 0;
+    }
+    if (message == WM_CLOSE) {
+        if (overlay && overlay->m_hwnd == hwnd) {
+            overlay->hide();
+        } else {
+            KillTimer(hwnd, kWatchdogTimerId);
+            tools3000::core::accessibility::hideOverlay(hwnd);
+            ShowWindow(hwnd, SW_HIDE);
+            DestroyWindow(hwnd);
+        }
+        return 0;
+    }
     if (message == WM_GETOBJECT) {
         return tools3000::core::accessibility::respondToOverlayUiaGetObject(
             hwnd, wParam, lParam,
@@ -686,6 +990,11 @@ LRESULT CALLBACK ShortcutHintOverlay::wndProc(
                     : std::vector<tools3000::core::accessibility::OverlayUiaAction>{});
     }
     if (message == WM_NCDESTROY) {
+        if (overlay && overlay->m_hwnd == hwnd) {
+            overlay->m_hwnd = nullptr;
+            overlay->m_hasContext = false;
+            overlay->m_observedOwnerActive = false;
+        }
         tools3000::core::accessibility::disconnectOverlayUiaProvider(hwnd);
     }
     if (overlay && (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED ||
@@ -696,6 +1005,11 @@ LRESULT CALLBACK ShortcutHintOverlay::wndProc(
     }
     if (overlay && overlay->m_hasContext &&
         (message == WM_DPICHANGED || message == WM_DISPLAYCHANGE)) {
+        if ((overlay->m_ownerActiveChecker != nullptr || overlay->m_observedOwnerActive) &&
+            !overlay->checkOwnerActive(overlay->m_context)) {
+            overlay->hide();
+            return 0;
+        }
         POINT anchor{
             (overlay->m_workArea.left + overlay->m_workArea.right) / 2,
             (overlay->m_workArea.top + overlay->m_workArea.bottom) / 2};

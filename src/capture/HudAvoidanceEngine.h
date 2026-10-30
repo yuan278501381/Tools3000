@@ -120,6 +120,13 @@ public:
         const D2D1_RECT_F& rect,
         D2D1_SIZE_F surfaceSize,
         float margin);
+
+    /// 计算选区像素放大镜 (Loupe HUD) 的屏幕包围盒（含屏幕右/下边缘自动翻转与钳制）
+    static D2D1_RECT_F computeSelectionLoupeRect(
+        float cx,
+        float cy,
+        D2D1_SIZE_F surfaceSize,
+        float scale = 1.0f);
 };
 
 } // namespace tools3000::capture

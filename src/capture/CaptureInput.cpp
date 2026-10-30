@@ -976,6 +976,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             if (m_state->activeElement) {
                 m_state->activeElement->fill = m_state->currentFillMode;
                 m_renderer->markMarkupDirty();
+                m_renderer->invalidate();
             }
             m_state->toolbarLayoutValid = false;
             break;
@@ -1396,11 +1397,16 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             ScrollCaptureOverlay::instance().show(capRect);
             ScrollCapture::instance().start(opts);
             if (ScrollCapture::instance().isRunning()) {
-                ShortcutHintOverlay::instance().show(
-                    ShortcutHintContext::ScrollCapture,
-                    {(capRect.left + capRect.right) / 2, (capRect.top + capRect.bottom) / 2});
+                if (m_state->options.showShortcutHints) {
+                    ShortcutHintOverlay::instance().show(
+                        ShortcutHintContext::ScrollCapture,
+                        {(capRect.left + capRect.right) / 2, (capRect.top + capRect.bottom) / 2});
+                }
                 tools3000::core::EventBus::instance().publish(
                     tools3000::core::ShowToastEvent{L"正在长截图，按 Esc 停止"});
+            } else {
+                ShortcutHintOverlay::instance().hide();
+                ScrollCaptureOverlay::instance().hide();
             }
             break;
         }
@@ -1514,6 +1520,7 @@ void CaptureInput::beginMarkup(POINT point) {
                                              m_state->currentTextOutline, m_state->currentTextOutlineColor);
         m_state->activeElement = elem;
         if (m_state->activeElement) {
+            m_state->activeElement->fill = m_state->currentFillMode;
             m_state->activeElement->isActive = true;
             m_state->activeElement->isEditing = true;
         }
@@ -1728,6 +1735,10 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
         auto* p = reinterpret_cast<SearchParam*>(lParam);
         if (hwnd == p->exclude || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
+        wchar_t cls[64] = {};
+        if (GetClassNameW(hwnd, cls, 64) > 0 && wcscmp(cls, L"Tools3000_ShortcutHintOverlay") == 0) {
+            return TRUE;
+        }
         RECT r;
         GetWindowRect(hwnd, &r);
         if (PtInRect(&r, p->pt)) {
@@ -1878,7 +1889,37 @@ D2D1_RECT_F CaptureInput::currentSelectionRect() const {
 }
 
 LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    
+    if (!this || !m_state || !m_renderer) {
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    // 当截图会话已结束处于 Idle 态时，严格拦截所有残留排队输入消息，
+    // 防止窗口隐藏/销毁过渡期排队的鼠标移动或点击重新进入选区态并残留在屏幕上弹出快捷键 HUD。
+    if (m_state->state.load() == OverlayState::Idle) {
+        if (msg == WM_TIMER && wParam == RENDER_TIMER_ID) {
+            KillTimer(hwnd, RENDER_TIMER_ID);
+            return 0;
+        }
+        switch (msg) {
+            case WM_SETCURSOR:
+            case WM_MOUSEMOVE:
+            case WM_LBUTTONDOWN:
+            case WM_LBUTTONUP:
+            case WM_LBUTTONDBLCLK:
+            case WM_RBUTTONDOWN:
+            case WM_RBUTTONUP:
+            case WM_MOUSEWHEEL:
+            case WM_KEYDOWN:
+            case WM_SYSKEYDOWN:
+            case WM_CHAR:
+            case WM_IME_STARTCOMPOSITION:
+            case WM_IME_COMPOSITION:
+            case WM_IME_ENDCOMPOSITION:
+                return 0;
+            default:
+                break;
+        }
+    }
 
     // 窗口过程兜底：渲染/标注路径含 OpenCV 分配、std::format 等可抛操作，异常绝不能逃逸到
     // Win32 派发层（否则 std::terminate 崩溃）。
@@ -2073,9 +2114,12 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
                 HitArea selHit = HitArea::None;
                 if (auto* button = hitTestToolbar(point)) {
-                    // 如果正在编辑文字且点击的不是选颜色按钮，退出编辑
+                    // 如果正在编辑文字且点击的不是文本属性设置按钮，退出编辑
                     if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text && m_state->activeElement->isEditing) {
                         if (button->command != ToolbarCommand::SelectColor &&
+                            button->command != ToolbarCommand::ChooseCustomColor &&
+                            button->command != ToolbarCommand::ToggleFill &&
+                            button->command != ToolbarCommand::CycleStrokeWidth &&
                             button->command != ToolbarCommand::ToggleTextOutline &&
                             button->command != ToolbarCommand::SelectTextOutlineColor) {
                             m_state->activeElement->isEditing = false;
@@ -2496,8 +2540,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_state->lastMousePos = m_state->currentCursor;
                 m_renderer->invalidate();
             } else {
-                if (((int)m_state->state.load() == (int)OverlayState::Idle ||
-                     (int)m_state->state.load() == (int)OverlayState::Selecting) && !m_state->dragging) {
+                if ((int)m_state->state.load() == (int)OverlayState::Selecting && !m_state->dragging) {
                     if (m_state->options.autoDetectWindow) {
                         POINT screenPt = m_state->currentCursor;
                         int offX = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -2639,24 +2682,48 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             int w = std::abs(m_state->dragEnd.x - m_state->dragStart.x);
             int h = std::abs(m_state->dragEnd.y - m_state->dragStart.y);
 
+            auto showSelectedShortcutHints = [&]() {
+                if (!m_state->options.showShortcutHints || m_state->state.load() == OverlayState::Idle) return;
+                const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                RECT sel = {
+                    std::min(m_state->dragStart.x, m_state->dragEnd.x) + vx,
+                    std::min(m_state->dragStart.y, m_state->dragEnd.y) + vy,
+                    std::max(m_state->dragStart.x, m_state->dragEnd.x) + vx,
+                    std::max(m_state->dragStart.y, m_state->dragEnd.y) + vy
+                };
+                MONITORINFO mi{sizeof(mi)};
+                const HMONITOR hMon = MonitorFromRect(&sel, MONITOR_DEFAULTTONEAREST);
+                RECT workArea{
+                    vx, vy,
+                    vx + GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                    vy + GetSystemMetrics(SM_CYVIRTUALSCREEN)
+                };
+                if (hMon && GetMonitorInfoW(hMon, &mi)) {
+                    workArea = mi.rcWork;
+                }
+                const LONG monW = std::max<LONG>(1, workArea.right - workArea.left);
+                const LONG monH = std::max<LONG>(1, workArea.bottom - workArea.top);
+                const bool isLargeWindowOrScreenSelection =
+                    (sel.right - sel.left) >= (monW * 55) / 100 ||
+                    (sel.bottom - sel.top) >= (monH * 60) / 100;
+                std::vector<RECT> initialAvoid;
+                if (!isLargeWindowOrScreenSelection) {
+                    initialAvoid.push_back(sel);
+                }
+                ShortcutHintOverlay::instance().show(
+                    m_state->mode == OverlayMode::RecordRegion
+                        ? ShortcutHintContext::RecordSelecting
+                        : ShortcutHintContext::CaptureSelected,
+                    {LONG_MIN, LONG_MIN},
+                    initialAvoid);
+            };
+
             if (w > 3 && h > 3) {
                 m_state->state = OverlayState::Selected;
                 m_state->isMarkupToolActive = false;
                 prepareMarkupBase();
-                if (m_state->options.showShortcutHints) {
-                    RECT sel = {
-                        std::min(m_state->dragStart.x, m_state->dragEnd.x),
-                        std::min(m_state->dragStart.y, m_state->dragEnd.y),
-                        std::max(m_state->dragStart.x, m_state->dragEnd.x),
-                        std::max(m_state->dragStart.y, m_state->dragEnd.y)
-                    };
-                    ShortcutHintOverlay::instance().show(
-                        m_state->mode == OverlayMode::RecordRegion
-                            ? ShortcutHintContext::RecordSelecting
-                            : ShortcutHintContext::CaptureSelected,
-                        {LONG_MIN, LONG_MIN},
-                        {sel});
-                }
+                showSelectedShortcutHints();
             } else {
                 // 拖拽太小，视为点击——吸附到检测的窗口
                 if (m_state->detectedWindow.right > m_state->detectedWindow.left &&
@@ -2673,20 +2740,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     m_state->state = OverlayState::Selected;
                     m_state->isMarkupToolActive = false;
                     prepareMarkupBase();
-                    if (m_state->options.showShortcutHints) {
-                        RECT sel = {
-                            std::min(m_state->dragStart.x, m_state->dragEnd.x),
-                            std::min(m_state->dragStart.y, m_state->dragEnd.y),
-                            std::max(m_state->dragStart.x, m_state->dragEnd.x),
-                            std::max(m_state->dragStart.y, m_state->dragEnd.y)
-                        };
-                        ShortcutHintOverlay::instance().show(
-                            m_state->mode == OverlayMode::RecordRegion
-                                ? ShortcutHintContext::RecordSelecting
-                                : ShortcutHintContext::CaptureSelected,
-                            {LONG_MIN, LONG_MIN},
-                            {sel});
-                    }
+                    showSelectedShortcutHints();
                 } else {
                     if (m_cancelCb) m_cancelCb();
                 }
@@ -2773,6 +2827,14 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_state->dragging = false;
                 m_state->state = OverlayState::Selecting;
                 m_renderer->invalidate();
+                if (m_state->options.showShortcutHints) {
+                    ShortcutHintOverlay::instance().show(
+                        m_state->mode == OverlayMode::RecordRegion
+                            ? ShortcutHintContext::RecordSelecting
+                            : ShortcutHintContext::CaptureSelecting,
+                        {LONG_MIN, LONG_MIN},
+                        {});
+                }
                 return 0;
             }
 
@@ -2814,13 +2876,19 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_state->isHierarchyAnimating = false;
                 m_state->animDetectedWindowRect = {};
                 m_state->targetDetectedWindowRect = {};
+                m_state->primaryToolbarRect = {};
+                m_state->secondaryToolbarRect = {};
+                m_state->selectionSideRect = {};
+                m_state->toolbarLayoutValid = false;
                 m_state->markup.clearAll();
                 m_renderer->invalidate();
                 if (m_state->options.showShortcutHints) {
                     ShortcutHintOverlay::instance().show(
                         m_state->mode == OverlayMode::RecordRegion
                             ? ShortcutHintContext::RecordSelecting
-                            : ShortcutHintContext::CaptureSelecting);
+                            : ShortcutHintContext::CaptureSelecting,
+                        {LONG_MIN, LONG_MIN},
+                        {});
                 }
                 return 0;
             }
@@ -3258,13 +3326,22 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     m_state->state = OverlayState::Selecting;
                     m_state->dragStart = {0, 0};
                     m_state->dragEnd = {0, 0};
+                    m_state->isHierarchyAnimating = false;
+                    m_state->animDetectedWindowRect = {};
+                    m_state->targetDetectedWindowRect = {};
+                    m_state->primaryToolbarRect = {};
+                    m_state->secondaryToolbarRect = {};
+                    m_state->selectionSideRect = {};
+                    m_state->toolbarLayoutValid = false;
                     m_state->markup.clearAll();
                     m_renderer->invalidate();
                     if (m_state->options.showShortcutHints) {
                         ShortcutHintOverlay::instance().show(
                             m_state->mode == OverlayMode::RecordRegion
                                 ? ShortcutHintContext::RecordSelecting
-                                : ShortcutHintContext::CaptureSelecting);
+                                : ShortcutHintContext::CaptureSelecting,
+                            {LONG_MIN, LONG_MIN},
+                            {});
                     }
                 } else {
                     ShortcutHintOverlay::instance().hide();
@@ -3328,11 +3405,13 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_state->toolbarLayoutValid = false;
                 prepareMarkupBase();
                 m_renderer->invalidate();
-                if (m_state->options.showShortcutHints) {
+                if (m_state->options.showShortcutHints && m_state->state.load() != OverlayState::Idle) {
                     ShortcutHintOverlay::instance().show(
                         m_state->mode == OverlayMode::RecordRegion
                             ? ShortcutHintContext::RecordSelecting
-                            : ShortcutHintContext::CaptureSelected);
+                            : ShortcutHintContext::CaptureSelected,
+                        {LONG_MIN, LONG_MIN},
+                        {});
                 }
                 return 0;
             }

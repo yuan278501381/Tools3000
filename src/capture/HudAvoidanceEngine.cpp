@@ -307,4 +307,37 @@ HudPlacementResult HudAvoidanceEngine::solvePlacement(
     return bestResult;
 }
 
+D2D1_RECT_F HudAvoidanceEngine::computeSelectionLoupeRect(
+    float cx,
+    float cy,
+    D2D1_SIZE_F surfaceSize,
+    float scale) {
+    const float safeScale = std::clamp(scale > 0.0f ? scale : 1.0f, 1.0f, 5.0f);
+    constexpr float zoom = 8.0f;
+    constexpr int gridCountX = 27;
+    constexpr int gridCountY = 13;
+    const float loupeW = gridCountX * zoom * safeScale; // 216px * scale
+    const float loupeBoxH = gridCountY * zoom * safeScale; // 104px * scale
+    const float panelH = 82.0f * safeScale;             // 82px * scale
+    const float loupeH = loupeBoxH + panelH;            // 186px * scale
+    const float offset = 22.0f * safeScale;
+    const float edgePad = 12.0f * safeScale;
+
+    float lx = cx + offset;
+    float ly = cy + offset;
+    if (surfaceSize.width > 0.0f && lx + loupeW + edgePad > surfaceSize.width) {
+        lx = cx - offset - loupeW;
+    }
+    if (surfaceSize.height > 0.0f && ly + loupeH + edgePad > surfaceSize.height) {
+        ly = cy - offset - loupeH;
+    }
+    if (surfaceSize.width > 0.0f) {
+        lx = std::clamp(lx, edgePad, (std::max)(edgePad, surfaceSize.width - loupeW - edgePad));
+    }
+    if (surfaceSize.height > 0.0f) {
+        ly = std::clamp(ly, edgePad, (std::max)(edgePad, surfaceSize.height - loupeH - edgePad));
+    }
+    return D2D1::RectF(lx, ly, lx + loupeW, ly + loupeH);
+}
+
 } // namespace tools3000::capture

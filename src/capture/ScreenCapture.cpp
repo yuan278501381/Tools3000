@@ -159,6 +159,7 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         tools3000::core::TraceId::Scope scope;
         ShortcutHintOverlay::instance().hide();
         tools3000::core::MainThreadDispatcher::instance().post([] {
+            ShortcutHintOverlay::instance().hide();
             ScrollCaptureOverlay::instance().hide();
         });
         if (!result.success || result.stitchedImage.empty()) {

@@ -301,6 +301,8 @@ public:
     bool isSizeMenuOpen = false;
     D2D1_RECT_F sizeHudRect{};
     D2D1_RECT_F sizeMenuRect{};
+    D2D1_RECT_F loupeHudRect{};
+    D2D1_RECT_F hierarchyBadgeRect{};
     int lastSizeHudEdge = -1; ///< 用于 HUD 自动躲避防抖动迟滞跟踪的上一次布局边缘
 
     // 多态微晶下拉菜单状态

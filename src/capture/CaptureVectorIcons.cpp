@@ -1,4 +1,4 @@
-﻿#include "capture/CaptureVectorIcons.h"
+#include "capture/CaptureVectorIcons.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -14,16 +14,17 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
     const float cy = (rect.top + rect.bottom) * 0.5f;
     const float btnW = rect.right - rect.left;
     const float btnH = rect.bottom - rect.top;
+    if (btnW <= 1.0f || btnH <= 1.0f) return;
 
-    // 基于标准 Lucide 24x24 视口网格系统 (原点在 12, 12)，等比缩放至当前按钮中心
-    const float s = std::min(btnW, btnH) / 24.0f * 0.68f;
-    const float stroke = std::max(1.8f, 2.0f * scale);
+    // 基于标准 Lucide 24x24 视口网格系统 (中心在 12, 12)，自适应等比缩放
+    const float s = (std::min)(btnW, btnH) / 24.0f * 0.72f;
+    // 线宽与图标实际视口尺寸成正比，防止窄按钮内线条粘连成黑块，同时保障高分屏锐利度
+    const float stroke = std::clamp(s * 2.05f, 1.35f * scale, 1.75f * scale);
 
     auto p = [&](float x, float y) -> D2D1_POINT_2F {
         return D2D1::Point2F(cx + (x - 12.0f) * s, cy + (y - 12.0f) * s);
     };
 
-    // 创建高质量圆角/圆头描边样式 (Round Join & Round Cap)，彻底抹除直角折点毛刺
     Microsoft::WRL::ComPtr<ID2D1StrokeStyle> roundStroke;
     if (factory) {
         D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
@@ -51,342 +52,409 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
         return geo;
     };
 
+    auto drawPolyline = [&](const std::vector<D2D1_POINT_2F>& pts, bool closed, float w = -1.0f) {
+        const float sw = (w > 0.0f) ? w : stroke;
+        auto geo = createPath(pts, closed);
+        if (geo) {
+            rt->DrawGeometry(geo.Get(), brush, sw, roundStroke.Get());
+        } else {
+            for (size_t i = 1; i < pts.size(); ++i) {
+                rt->DrawLine(pts[i - 1], pts[i], brush, sw, roundStroke.Get());
+            }
+            if (closed && pts.size() > 2) {
+                rt->DrawLine(pts.back(), pts.front(), brush, sw, roundStroke.Get());
+            }
+        }
+    };
+
+    auto drawCircularArc = [&](D2D1_POINT_2F centerPt, float radius, float startDeg, float sweepDeg, float w = -1.0f) {
+        const float sw = (w > 0.0f) ? w : stroke;
+        const float deg2rad = 3.1415926535f / 180.0f;
+        const float a0 = startDeg * deg2rad;
+        const float a1 = (startDeg + sweepDeg) * deg2rad;
+        const D2D1_POINT_2F startPt = D2D1::Point2F(centerPt.x + radius * std::cos(a0), centerPt.y + radius * std::sin(a0));
+        const D2D1_POINT_2F endPt = D2D1::Point2F(centerPt.x + radius * std::cos(a1), centerPt.y + radius * std::sin(a1));
+
+        if (factory) {
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+            if (SUCCEEDED(factory->CreatePathGeometry(geo.GetAddressOf()))) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(geo->Open(sink.GetAddressOf()))) {
+                    sink->BeginFigure(startPt, D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink->AddArc(D2D1::ArcSegment(
+                        endPt,
+                        D2D1::SizeF(radius, radius),
+                        0.0f,
+                        sweepDeg >= 0.0f ? D2D1_SWEEP_DIRECTION_CLOCKWISE : D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+                        std::fabs(sweepDeg) > 180.0f ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL
+                    ));
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    sink->Close();
+                    rt->DrawGeometry(geo.Get(), brush, sw, roundStroke.Get());
+                    return;
+                }
+            }
+        }
+        // Fallback: 16 段平滑折线近似
+        const int steps = 16;
+        D2D1_POINT_2F prev = startPt;
+        for (int i = 1; i <= steps; ++i) {
+            const float a = (startDeg + sweepDeg * (static_cast<float>(i) / steps)) * deg2rad;
+            const D2D1_POINT_2F cur = D2D1::Point2F(centerPt.x + radius * std::cos(a), centerPt.y + radius * std::sin(a));
+            rt->DrawLine(prev, cur, brush, sw, roundStroke.Get());
+            prev = cur;
+        }
+    };
+
     switch (iconId) {
-        // ── 1. 矩形工具 (Lucide: Square / rect x=3, y=3, w=18, h=18, rx=2) ───────────
+        // ── 1. 矩形工具 (Lucide: Square) ───────────────────────────────────────────
         case CaptureIconId::ToolRectangle: {
-            auto box = D2D1::RectF(cx - 8.5f * s, cy - 8.5f * s, cx + 8.5f * s, cy + 8.5f * s);
+            auto box = D2D1::RectF(cx - 8.2f * s, cy - 8.2f * s, cx + 8.2f * s, cy + 8.2f * s);
             rt->DrawRoundedRectangle(D2D1::RoundedRect(box, 2.5f * s, 2.5f * s), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 1.1 直线工具 (Reicon / Lucide: Slash / 45° 直线) ─────────────
+        // ── 1.1 直线工具 (带端点锚点的 45° 矢量线段) ─────────────────────────────────
         case CaptureIconId::ToolLine: {
-            rt->DrawLine(p(4, 20), p(20, 4), brush, stroke * 1.35f, roundStroke.Get());
+            rt->DrawLine(p(6.0f, 18.0f), p(18.0f, 6.0f), brush, stroke * 1.05f, roundStroke.Get());
+            rt->FillEllipse(D2D1::Ellipse(p(5.0f, 19.0f), 1.7f * s, 1.7f * s), brush);
+            rt->FillEllipse(D2D1::Ellipse(p(19.0f, 5.0f), 1.7f * s, 1.7f * s), brush);
             break;
         }
 
-        // ── 2. 椭圆工具 (Lucide: Circle / cx=12, cy=12, r=10) ────────────────────────
+        // ── 2. 椭圆工具 (Lucide: Circle) ────────────────────────────────────────────
         case CaptureIconId::ToolEllipse: {
-            auto ellipse = D2D1::Ellipse(D2D1::Point2F(cx, cy), 9.0f * s, 9.0f * s);
+            auto ellipse = D2D1::Ellipse(D2D1::Point2F(cx, cy), 8.5f * s, 8.5f * s);
             rt->DrawEllipse(ellipse, brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 3. 45° 标注箭头 (Lucide: ArrowUpRight / M7 7h10v10 + M7 17 17 7 顶级矢量设计) ──
+        // ── 3. 45° 标注箭头 (Lucide: ArrowUpRight) ──────────────────────────────────
         case CaptureIconId::ToolArrow: {
-            const float arrowStroke = std::max(1.8f, 2.0f * scale);
-            // 45° 斜向箭身
-            rt->DrawLine(p(7, 17), p(17, 7), brush, arrowStroke, roundStroke.Get());
-            // 优雅头部折角 (Round Join / Round Cap 黄金比例开角)
-            auto chevron = createPath({ p(8, 7), p(17, 7), p(17, 16) }, false);
-            if (chevron) {
-                rt->DrawGeometry(chevron.Get(), brush, arrowStroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(8, 7), p(17, 7), brush, arrowStroke, roundStroke.Get());
-                rt->DrawLine(p(17, 7), p(17, 16), brush, arrowStroke, roundStroke.Get());
-            }
+            rt->DrawLine(p(6.0f, 18.0f), p(17.8f, 6.2f), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(8.5f, 6.0f), p(18.0f, 6.0f), p(18.0f, 15.5f) }, false, stroke);
             break;
         }
 
         // ── 3.1 水平标准实心几何单向箭头 (Classic Solid Filled Triangle) ───────────
         case CaptureIconId::ToolArrowStandard: {
-            const float arrowStroke = std::max(1.8f, 2.0f * scale);
-            // 水平箭身连接至几何三角底边
-            rt->DrawLine(p(4, 12), p(14, 12), brush, arrowStroke, roundStroke.Get());
-            // 经典实心尖角头部
-            auto head = createPath({ p(20.5f, 12), p(13.5f, 7.5f), p(13.5f, 16.5f) }, true);
+            rt->DrawLine(p(4.0f, 12.0f), p(13.8f, 12.0f), brush, stroke, roundStroke.Get());
+            auto head = createPath({ p(20.5f, 12.0f), p(13.2f, 7.2f), p(13.2f, 16.8f) }, true);
             if (head) {
                 rt->FillGeometry(head.Get(), brush);
-                rt->DrawGeometry(head.Get(), brush, 1.0f * scale, roundStroke.Get());
+                rt->DrawGeometry(head.Get(), brush, 0.9f * scale, roundStroke.Get());
+            } else {
+                drawPolyline({ p(20.5f, 12.0f), p(13.2f, 7.2f), p(13.2f, 16.8f) }, true, stroke);
             }
             break;
         }
 
-        // ── 4. 水平细线开放箭头 (Lucide: ArrowRight / M5 12h14 + m12 5 7 7-7 7) ───────
+        // ── 4. 水平细线开放箭头 (Lucide: ArrowRight) ────────────────────────────────
         case CaptureIconId::ToolArrowThin: {
-            const float arrowStroke = std::max(1.8f, 2.0f * scale);
-            // 水平贯穿箭身
-            rt->DrawLine(p(4, 12), p(19, 12), brush, arrowStroke, roundStroke.Get());
-            // 极简细线开放折角
-            auto chevron = createPath({ p(13.5f, 6.5f), p(19, 12), p(13.5f, 17.5f) }, false);
-            if (chevron) {
-                rt->DrawGeometry(chevron.Get(), brush, arrowStroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(13.5f, 6.5f), p(19, 12), brush, arrowStroke, roundStroke.Get());
-                rt->DrawLine(p(19, 12), p(13.5f, 17.5f), brush, arrowStroke, roundStroke.Get());
-            }
+            rt->DrawLine(p(4.0f, 12.0f), p(19.2f, 12.0f), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(13.5f, 6.5f), p(19.5f, 12.0f), p(13.5f, 17.5f) }, false, stroke);
             break;
         }
 
         // ── 4.1 水平圆润科技机翼箭头 (Modern Swept Aerodynamic Wing) ────────────────
         case CaptureIconId::ToolArrowWing: {
-            const float arrowStroke = std::max(1.8f, 2.0f * scale);
-            // 箭身连接至内凹凹槽
-            rt->DrawLine(p(4, 12), p(15.5f, 12), brush, arrowStroke, roundStroke.Get());
-            // 科技流线机翼型四边形箭头 (Tip -> UpperWing -> Notch -> LowerWing)
-            auto wing = createPath({ p(20.5f, 12), p(13.0f, 6.5f), p(15.5f, 12), p(13.0f, 17.5f) }, true);
+            rt->DrawLine(p(4.0f, 12.0f), p(15.2f, 12.0f), brush, stroke, roundStroke.Get());
+            auto wing = createPath({ p(20.5f, 12.0f), p(12.8f, 6.5f), p(15.5f, 12.0f), p(12.8f, 17.5f) }, true);
             if (wing) {
                 rt->FillGeometry(wing.Get(), brush);
-                rt->DrawGeometry(wing.Get(), brush, 1.0f * scale, roundStroke.Get());
+                rt->DrawGeometry(wing.Get(), brush, 0.9f * scale, roundStroke.Get());
+            } else {
+                drawPolyline({ p(20.5f, 12.0f), p(12.8f, 6.5f), p(15.5f, 12.0f), p(12.8f, 17.5f) }, true, stroke);
             }
             break;
         }
 
-        // ── 5. 水平双向箭头 (Lucide: MoveHorizontal / 双向对称折角) ─────────────────
+        // ── 5. 水平双向箭头 (Lucide: MoveHorizontal) ────────────────────────────────
         case CaptureIconId::ToolArrowDouble: {
-            const float arrowStroke = std::max(1.8f, 2.0f * scale);
-            // 贯穿水平箭身
-            rt->DrawLine(p(5, 12), p(19, 12), brush, arrowStroke, roundStroke.Get());
-            // 左侧开放折角
-            auto leftChevron = createPath({ p(9.5f, 7.5f), p(4.5f, 12), p(9.5f, 16.5f) }, false);
-            if (leftChevron) {
-                rt->DrawGeometry(leftChevron.Get(), brush, arrowStroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(9.5f, 7.5f), p(4.5f, 12), brush, arrowStroke, roundStroke.Get());
-                rt->DrawLine(p(4.5f, 12), p(9.5f, 16.5f), brush, arrowStroke, roundStroke.Get());
-            }
-            // 右侧开放折角
-            auto rightChevron = createPath({ p(14.5f, 7.5f), p(19.5f, 12), p(14.5f, 16.5f) }, false);
-            if (rightChevron) {
-                rt->DrawGeometry(rightChevron.Get(), brush, arrowStroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(14.5f, 7.5f), p(19.5f, 12), brush, arrowStroke, roundStroke.Get());
-                rt->DrawLine(p(19.5f, 12), p(14.5f, 16.5f), brush, arrowStroke, roundStroke.Get());
-            }
+            rt->DrawLine(p(4.8f, 12.0f), p(19.2f, 12.0f), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(9.0f, 7.5f), p(4.5f, 12.0f), p(9.0f, 16.5f) }, false, stroke);
+            drawPolyline({ p(15.0f, 7.5f), p(19.5f, 12.0f), p(15.0f, 16.5f) }, false, stroke);
             break;
         }
 
-        // ── 6. 铅笔 / 画笔 (Lucide: Pencil / M17 3... + tip) ──────────────────────────
+        // ── 6. 铅笔 / 画笔 (Lucide: Pencil - 单闭合几何路径 + 流畅笔迹弧线) ──────────
         case CaptureIconId::ToolPen: {
-            rt->DrawLine(p(17, 3), p(21, 7), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(21, 7), p(7.5f, 20.5f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(7.5f, 20.5f), p(2, 22), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(2, 22), p(3.5f, 16.5f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(3.5f, 16.5f), p(17, 3), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(14, 6), p(18, 10), brush, stroke * 0.85f, roundStroke.Get());
+            drawPolyline({
+                p(15.8f, 3.4f),
+                p(19.6f, 7.2f),
+                p(7.8f, 19.0f),
+                p(3.2f, 20.2f),
+                p(4.4f, 15.6f)
+            }, true, stroke);
+            rt->DrawLine(p(13.2f, 6.0f), p(17.0f, 9.8f), brush, stroke * 0.9f, roundStroke.Get());
+            rt->DrawLine(p(11.8f, 19.8f), p(19.8f, 19.8f), brush, stroke * 0.95f, roundStroke.Get());
             break;
         }
 
-        // ── 7. 荧光笔 (Lucide: Highlighter) ─────────────────────────────────────────
+        // ── 7. 荧光笔 (Lucide: Highlighter - 对称马克笔身 + 楔形笔头 + 半透明荧光带) ─
         case CaptureIconId::ToolHighlight: {
-            rt->DrawLine(p(9, 11), p(3, 17), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(3, 17), p(3, 20), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(3, 20), p(12, 20), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(12, 20), p(15, 17), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(9, 11), p(15, 17), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(14, 4), p(20, 10), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(14, 4), p(11.4f, 6.6f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(20, 10), p(17.4f, 12.6f), brush, stroke, roundStroke.Get());
+            drawPolyline({
+                p(14.8f, 3.2f),
+                p(19.8f, 8.2f),
+                p(12.6f, 15.4f),
+                p(7.6f, 10.4f)
+            }, true, stroke);
+            drawPolyline({
+                p(7.6f, 10.4f),
+                p(5.2f, 14.8f),
+                p(8.2f, 16.8f),
+                p(12.6f, 15.4f)
+            }, false, stroke * 0.92f);
+            if (auto* solid = static_cast<ID2D1SolidColorBrush*>(brush)) {
+                D2D1_COLOR_F c = solid->GetColor();
+                c.a *= 0.35f;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bandBrush;
+                if (SUCCEEDED(rt->CreateSolidColorBrush(c, bandBrush.GetAddressOf())) && bandBrush) {
+                    auto swath = D2D1::RectF(p(3.6f, 18.4f).x, p(3.6f, 18.4f).y, p(20.4f, 21.2f).x, p(20.4f, 21.2f).y);
+                    rt->FillRoundedRectangle(D2D1::RoundedRect(swath, 1.4f * s, 1.4f * s), bandBrush.Get());
+                }
+            }
+            rt->DrawLine(p(4.0f, 20.2f), p(20.0f, 20.2f), brush, stroke * 1.05f, roundStroke.Get());
             break;
         }
 
-        // ── 8. 马赛克 (Lucide: Grid2x2 / 2x2 网格) ──────────────────────────────────
+        // ── 8. 马赛克 (3x3 现代像素棋盘格矩阵：充足负空间留白，绝不粘连) ─────────────
         case CaptureIconId::ToolMosaic: {
-            auto box = D2D1::RectF(cx - 8.5f * s, cy - 8.5f * s, cx + 8.5f * s, cy + 8.5f * s);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(box, 2.5f * s, 2.5f * s), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(12, 3.5f), p(12, 20.5f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(3.5f, 12), p(20.5f, 12), brush, stroke, roundStroke.Get());
-            // 左上与右下填充精美半透实心微格
-            auto tl = D2D1::RectF(cx - 8.0f * s, cy - 8.0f * s, cx - 0.5f * s, cy - 0.5f * s);
-            auto brBox = D2D1::RectF(cx + 0.5f * s, cy + 0.5f * s, cx + 8.0f * s, cy + 8.0f * s);
-            rt->FillRectangle(tl, brush);
-            rt->FillRectangle(brBox, brush);
+            auto box = D2D1::RectF(cx - 8.4f * s, cy - 8.4f * s, cx + 8.4f * s, cy + 8.4f * s);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(box, 2.4f * s, 2.4f * s), brush, stroke * 0.92f, roundStroke.Get());
+            const float cell = 4.2f * s;
+            const float startX = cx - 6.3f * s;
+            const float startY = cy - 6.3f * s;
+            for (int rIdx = 0; rIdx < 3; ++rIdx) {
+                for (int cIdx = 0; cIdx < 3; ++cIdx) {
+                    if ((rIdx + cIdx) % 2 == 0) {
+                        float lx = startX + cIdx * cell;
+                        float ty = startY + rIdx * cell;
+                        auto tile = D2D1::RectF(lx + 0.15f * s, ty + 0.15f * s, lx + cell - 0.15f * s, ty + cell - 0.15f * s);
+                        rt->FillRoundedRectangle(D2D1::RoundedRect(tile, 0.7f * s, 0.7f * s), brush);
+                    }
+                }
+            }
             break;
         }
 
-        // ── 8.5. 模糊滤镜 (Lucide: Droplet / 柔和水滴) ──────────────────────────────
+        // ── 8.5. 模糊滤镜 (Lucide: Droplet - 真贝塞尔曲线 + 圆弧水滴) ────────────────
         case CaptureIconId::ToolBlur: {
-            rt->DrawLine(p(12, 3), p(6.5f, 13), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(12, 3), p(17.5f, 13), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(6.5f, 13), p(8, 18), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(17.5f, 13), p(16, 18), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(8, 18), p(12, 21), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(16, 18), p(12, 21), brush, stroke, roundStroke.Get());
+            if (factory) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+                if (SUCCEEDED(factory->CreatePathGeometry(geo.GetAddressOf()))) {
+                    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(geo->Open(sink.GetAddressOf()))) {
+                        sink->BeginFigure(p(12.0f, 3.0f), D2D1_FIGURE_BEGIN_HOLLOW);
+                        sink->AddBezier(D2D1::BezierSegment(p(15.5f, 7.2f), p(18.5f, 10.8f), p(18.5f, 14.2f)));
+                        sink->AddArc(D2D1::ArcSegment(
+                            p(5.5f, 14.2f),
+                            D2D1::SizeF(6.5f * s, 6.5f * s),
+                            0.0f,
+                            D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                            D2D1_ARC_SIZE_SMALL
+                        ));
+                        sink->AddBezier(D2D1::BezierSegment(p(5.5f, 10.8f), p(8.5f, 7.2f), p(12.0f, 3.0f)));
+                        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                        sink->Close();
+                        rt->DrawGeometry(geo.Get(), brush, stroke, roundStroke.Get());
+                        // 水滴内侧柔光弧线
+                        drawCircularArc(p(12.0f, 14.2f), 3.6f * s, 105.0f, 65.0f, stroke * 0.8f);
+                        break;
+                    }
+                }
+            }
+            drawPolyline({ p(12.0f, 3.2f), p(18.0f, 13.5f), p(15.5f, 19.2f), p(12.0f, 20.5f), p(8.5f, 19.2f), p(6.0f, 13.5f) }, true, stroke);
             break;
         }
 
-        // ── 9. 文字 T (Lucide: Type / M12 4v16 + M4 7V5... + M9 20h6) ─────────────────
+        // ── 9. 文字 T (Lucide: Type - 经典衬线字体图标) ──────────────────────────────
         case CaptureIconId::ToolText: {
-            rt->DrawLine(p(12, 4), p(12, 20), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(4, 7), p(4, 5), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(4, 5), p(20, 5), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(20, 5), p(20, 7), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(9, 20), p(15, 20), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(4.5f, 7.5f), p(4.5f, 4.5f), p(19.5f, 4.5f), p(19.5f, 7.5f) }, false, stroke);
+            rt->DrawLine(p(12.0f, 4.5f), p(12.0f, 19.5f), brush, stroke, roundStroke.Get());
+            rt->DrawLine(p(8.5f, 19.5f), p(15.5f, 19.5f), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 10. 序号气泡 ① (Circle + Clean 1) ───────────────────────────────────────
+        // ── 10. 序号气泡 ① (Circle + Crisp Numeral 1) ───────────────────────────────
         case CaptureIconId::ToolNumber: {
-            auto ellipse = D2D1::Ellipse(D2D1::Point2F(cx, cy), 9.0f * s, 9.0f * s);
+            auto ellipse = D2D1::Ellipse(D2D1::Point2F(cx, cy), 8.6f * s, 8.6f * s);
             rt->DrawEllipse(ellipse, brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(10, 9), p(12, 7.5f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(12, 7.5f), p(12, 16.5f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(9.5f, 16.5f), p(14.5f, 16.5f), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(9.8f, 9.2f), p(12.2f, 7.4f), p(12.2f, 16.4f) }, false, stroke);
+            rt->DrawLine(p(9.6f, 16.4f), p(14.8f, 16.4f), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 11. 智能消除 (Lucide: Wand2 / 魔法棒 + 4 芒星) ──────────────────────────
+        // ── 11. 智能消除 (Lucide: WandSparkles - 分段镂空魔棒 + 实心四角星芒) ─────────
         case CaptureIconId::ToolInpaint: {
-            // 魔棒棒身
-            rt->DrawLine(p(3.5f, 20.5f), p(18.5f, 5.5f), brush, stroke * 1.6f, roundStroke.Get());
-            rt->DrawLine(p(13.5f, 8.5f), p(15.5f, 10.5f), brush, stroke * 0.8f, roundStroke.Get());
-            // 右上 4 芒星光斑
-            rt->DrawLine(p(19, 2), p(19, 6), brush, stroke * 0.9f, roundStroke.Get());
-            rt->DrawLine(p(17, 4), p(21, 4), brush, stroke * 0.9f, roundStroke.Get());
-            // 左上小星光
-            rt->DrawLine(p(7, 3), p(7, 5), brush, stroke * 0.75f, roundStroke.Get());
-            rt->DrawLine(p(6, 4), p(8, 4), brush, stroke * 0.75f, roundStroke.Get());
+            // 魔棒手柄与发光棒头分段留白，彻底消除单线横刺毛刺感
+            rt->DrawLine(p(3.8f, 20.2f), p(11.0f, 13.0f), brush, stroke * 1.12f, roundStroke.Get());
+            rt->DrawLine(p(13.2f, 10.8f), p(14.8f, 9.2f), brush, stroke * 1.12f, roundStroke.Get());
+            // 右上主四角星芒
+            auto star = createPath({
+                p(18.2f, 2.2f), p(19.1f, 4.9f), p(21.8f, 5.8f), p(19.1f, 6.7f),
+                p(18.2f, 9.4f), p(17.3f, 6.7f), p(14.6f, 5.8f), p(17.3f, 4.9f)
+            }, true);
+            if (star) {
+                rt->FillGeometry(star.Get(), brush);
+            } else {
+                rt->DrawLine(p(18.2f, 2.5f), p(18.2f, 9.0f), brush, stroke * 0.9f, roundStroke.Get());
+                rt->DrawLine(p(15.0f, 5.8f), p(21.5f, 5.8f), brush, stroke * 0.9f, roundStroke.Get());
+            }
+            // 左上副星光
+            rt->DrawLine(p(8.2f, 3.6f), p(8.2f, 7.4f), brush, stroke * 0.82f, roundStroke.Get());
+            rt->DrawLine(p(6.3f, 5.5f), p(10.1f, 5.5f), brush, stroke * 0.82f, roundStroke.Get());
+            // 右下副星光
+            rt->DrawLine(p(18.5f, 13.8f), p(18.5f, 17.6f), brush, stroke * 0.82f, roundStroke.Get());
+            rt->DrawLine(p(16.6f, 15.7f), p(20.4f, 15.7f), brush, stroke * 0.82f, roundStroke.Get());
             break;
         }
 
-        // ── 12. 撤销 (Lucide: Undo2 / M9 14 4 9l5-5 + M4 9h10.5a5.5...) ───────────────
+        // ── 12. 撤销 (Lucide: Undo2 - 真圆弧回折路径) ───────────────────────────────
         case CaptureIconId::ActionUndo: {
-            rt->DrawLine(p(9, 14), p(4, 9), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(4, 9), p(9, 4), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(4, 9), p(14.5f, 9), brush, stroke, roundStroke.Get());
-            // 右侧顺滑圆弧回折 (从 (14.5, 9) 弯至 (14.5, 20) 到 (11, 20))
-            rt->DrawLine(p(14.5f, 9), p(18.5f, 11), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(18.5f, 11), p(19.5f, 14.5f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(19.5f, 14.5f), p(18.5f, 18), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(18.5f, 18), p(14.5f, 20), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(14.5f, 20), p(10, 20), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(9.0f, 4.5f), p(4.0f, 9.5f), p(9.0f, 14.5f) }, false, stroke);
+            if (factory) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+                if (SUCCEEDED(factory->CreatePathGeometry(geo.GetAddressOf()))) {
+                    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(geo->Open(sink.GetAddressOf()))) {
+                        sink->BeginFigure(p(4.2f, 9.5f), D2D1_FIGURE_BEGIN_HOLLOW);
+                        sink->AddLine(p(14.2f, 9.5f));
+                        sink->AddArc(D2D1::ArcSegment(
+                            p(14.2f, 19.5f),
+                            D2D1::SizeF(5.0f * s, 5.0f * s),
+                            0.0f,
+                            D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                            D2D1_ARC_SIZE_SMALL
+                        ));
+                        sink->AddLine(p(9.5f, 19.5f));
+                        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                        sink->Close();
+                        rt->DrawGeometry(geo.Get(), brush, stroke, roundStroke.Get());
+                        break;
+                    }
+                }
+            }
+            rt->DrawLine(p(4.2f, 9.5f), p(14.2f, 9.5f), brush, stroke, roundStroke.Get());
+            drawCircularArc(p(14.2f, 14.5f), 5.0f * s, -90.0f, 180.0f, stroke);
+            rt->DrawLine(p(14.2f, 19.5f), p(9.5f, 19.5f), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 13. 重做 (Lucide: Redo2 / m15 14 5-5-5-5 + M20 9H9.5a5.5...) ──────────────
+        // ── 13. 重做 (Lucide: Redo2 - 真圆弧回折路径) ───────────────────────────────
         case CaptureIconId::ActionRedo: {
-            rt->DrawLine(p(15, 14), p(20, 9), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(20, 9), p(15, 4), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(20, 9), p(9.5f, 9), brush, stroke, roundStroke.Get());
-            // 左侧顺滑圆弧回折
-            rt->DrawLine(p(9.5f, 9), p(5.5f, 11), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(5.5f, 11), p(4.5f, 14.5f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(4.5f, 14.5f), p(5.5f, 18), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(5.5f, 18), p(9.5f, 20), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(9.5f, 20), p(14, 20), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(15.0f, 4.5f), p(20.0f, 9.5f), p(15.0f, 14.5f) }, false, stroke);
+            if (factory) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+                if (SUCCEEDED(factory->CreatePathGeometry(geo.GetAddressOf()))) {
+                    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(geo->Open(sink.GetAddressOf()))) {
+                        sink->BeginFigure(p(19.8f, 9.5f), D2D1_FIGURE_BEGIN_HOLLOW);
+                        sink->AddLine(p(9.8f, 9.5f));
+                        sink->AddArc(D2D1::ArcSegment(
+                            p(9.8f, 19.5f),
+                            D2D1::SizeF(5.0f * s, 5.0f * s),
+                            0.0f,
+                            D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+                            D2D1_ARC_SIZE_SMALL
+                        ));
+                        sink->AddLine(p(14.5f, 19.5f));
+                        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                        sink->Close();
+                        rt->DrawGeometry(geo.Get(), brush, stroke, roundStroke.Get());
+                        break;
+                    }
+                }
+            }
+            rt->DrawLine(p(19.8f, 9.5f), p(9.8f, 9.5f), brush, stroke, roundStroke.Get());
+            drawCircularArc(p(9.8f, 14.5f), 5.0f * s, -90.0f, -180.0f, stroke);
+            rt->DrawLine(p(9.8f, 19.5f), p(14.5f, 19.5f), brush, stroke, roundStroke.Get());
             break;
         }
 
         // ── 14. 清空 / 垃圾桶 (Lucide: Trash2) ───────────────────────────────────────
         case CaptureIconId::ActionClear: {
-            rt->DrawLine(p(3, 6), p(21, 6), brush, stroke, roundStroke.Get());
-            auto lid = createPath({ p(8, 6), p(8, 4), p(16, 4), p(16, 6) }, false);
-            if (lid) {
-                rt->DrawGeometry(lid.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(8, 6), p(8, 4), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(8, 4), p(16, 4), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(16, 4), p(16, 6), brush, stroke, roundStroke.Get());
-            }
-            auto bin = D2D1::RectF(cx - 6.5f * s, cy - 6.0f * s, cx + 6.5f * s, cy + 9.0f * s);
+            rt->DrawLine(p(3.5f, 6.2f), p(20.5f, 6.2f), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(8.5f, 6.2f), p(8.5f, 3.8f), p(15.5f, 3.8f), p(15.5f, 6.2f) }, false, stroke);
+            auto bin = D2D1::RectF(cx - 6.2f * s, cy - 5.8f * s, cx + 6.2f * s, cy + 8.5f * s);
             rt->DrawRoundedRectangle(D2D1::RoundedRect(bin, 2.0f * s, 2.0f * s), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(10, 10), p(10, 16), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(14, 10), p(14, 16), brush, stroke, roundStroke.Get());
+            rt->DrawLine(p(10.0f, 10.2f), p(10.0f, 16.2f), brush, stroke * 0.9f, roundStroke.Get());
+            rt->DrawLine(p(14.0f, 10.2f), p(14.0f, 16.2f), brush, stroke * 0.9f, roundStroke.Get());
             break;
         }
 
-        // ── 15. OCR 文本提取 (Lucide: ScanText / 四角对焦 + 3 道扫描文本线) ────────────
+        // ── 15. OCR 文本提取 (Lucide: ScanText - 四角扫描取景框 + 居中文本纹) ────────
         case CaptureIconId::ActionExtractText: {
-            // 四角对焦
-            auto c1 = createPath({ p(3, 8), p(3, 5), p(6, 5) }, false);
-            auto c2 = createPath({ p(18, 5), p(21, 5), p(21, 8) }, false);
-            auto c3 = createPath({ p(3, 16), p(3, 19), p(6, 19) }, false);
-            auto c4 = createPath({ p(18, 19), p(21, 19), p(21, 16) }, false);
-            if (c1 && c2 && c3 && c4) {
-                rt->DrawGeometry(c1.Get(), brush, stroke, roundStroke.Get());
-                rt->DrawGeometry(c2.Get(), brush, stroke, roundStroke.Get());
-                rt->DrawGeometry(c3.Get(), brush, stroke, roundStroke.Get());
-                rt->DrawGeometry(c4.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(3, 8), p(3, 5), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(3, 5), p(6, 5), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(18, 5), p(21, 5), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(21, 5), p(21, 8), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(3, 16), p(3, 19), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(3, 19), p(6, 19), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(18, 19), p(21, 19), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(21, 19), p(21, 16), brush, stroke, roundStroke.Get());
-            }
-
-            // 内部 3 条优雅排版横线
-            rt->DrawLine(p(7, 8), p(15, 8), brush, stroke * 0.9f, roundStroke.Get());
-            rt->DrawLine(p(7, 12), p(17, 12), brush, stroke * 0.9f, roundStroke.Get());
-            rt->DrawLine(p(7, 16), p(13, 16), brush, stroke * 0.9f, roundStroke.Get());
+            drawPolyline({ p(3.8f, 8.2f), p(3.8f, 4.2f), p(7.8f, 4.2f) }, false, stroke);
+            drawPolyline({ p(16.2f, 4.2f), p(20.2f, 4.2f), p(20.2f, 8.2f) }, false, stroke);
+            drawPolyline({ p(3.8f, 15.8f), p(3.8f, 19.8f), p(7.8f, 19.8f) }, false, stroke);
+            drawPolyline({ p(16.2f, 19.8f), p(20.2f, 19.8f), p(20.2f, 15.8f) }, false, stroke);
+            rt->DrawLine(p(7.5f, 8.8f), p(16.5f, 8.8f), brush, stroke * 0.92f, roundStroke.Get());
+            rt->DrawLine(p(7.5f, 12.0f), p(16.5f, 12.0f), brush, stroke * 0.92f, roundStroke.Get());
+            rt->DrawLine(p(7.5f, 15.2f), p(13.5f, 15.2f), brush, stroke * 0.92f, roundStroke.Get());
             break;
         }
 
-        // ── 16. 图钉 (Lucide: Pin) ──────────────────────────────────────────────────
+        // ── 16. 钉在桌面 (Lucide: Pin - 一体化图钉轮廓) ──────────────────────────────
         case CaptureIconId::ActionPinWindow: {
-            rt->DrawLine(p(12, 16), p(12, 22), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(5, 15), p(19, 15), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(7, 15), p(8.5f, 11), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(17, 15), p(15.5f, 11), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(8.5f, 11), p(8.5f, 6), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(15.5f, 11), p(15.5f, 6), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(7, 6), p(17, 6), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(9, 6), p(9, 3), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(15, 6), p(15, 3), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(9, 3), p(15, 3), brush, stroke, roundStroke.Get());
+            drawPolyline({
+                p(8.5f, 3.8f),
+                p(15.5f, 3.8f),
+                p(15.5f, 9.5f),
+                p(18.2f, 13.8f),
+                p(5.8f, 13.8f),
+                p(8.5f, 9.5f)
+            }, true, stroke);
+            rt->DrawLine(p(7.2f, 3.8f), p(16.8f, 3.8f), brush, stroke, roundStroke.Get());
+            rt->DrawLine(p(12.0f, 13.8f), p(12.0f, 20.8f), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 17. 长截图 (Lucide: ArrowDownToLine / 窗口 + 贯穿向下长箭头) ──────────────
+        // ── 17. 滚动长截图 (Lucide: ArrowDownToLine + 两侧页面轨) ────────────────────
         case CaptureIconId::ActionScrollCapture: {
-            rt->DrawLine(p(12, 3), p(12, 17), brush, stroke, roundStroke.Get());
-            auto head = createPath({ p(6.5f, 11.5f), p(12, 17), p(17.5f, 11.5f) }, false);
-            if (head) {
-                rt->DrawGeometry(head.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(6.5f, 11.5f), p(12, 17), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(17.5f, 11.5f), p(12, 17), brush, stroke, roundStroke.Get());
-            }
-            rt->DrawLine(p(5, 21), p(19, 21), brush, stroke, roundStroke.Get());
+            // 两侧虚化页面边轨
+            drawPolyline({ p(4.5f, 7.0f), p(4.5f, 4.0f), p(8.0f, 4.0f) }, false, stroke * 0.85f);
+            drawPolyline({ p(19.5f, 7.0f), p(19.5f, 4.0f), p(16.0f, 4.0f) }, false, stroke * 0.85f);
+            // 中心向下长箭头
+            rt->DrawLine(p(12.0f, 4.0f), p(12.0f, 16.5f), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(7.5f, 12.0f), p(12.0f, 16.5f), p(16.5f, 12.0f) }, false, stroke);
+            // 底部汇总基线
+            rt->DrawLine(p(5.0f, 20.2f), p(19.0f, 20.2f), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 18. 取消 (Lucide: X / M18 6 6 18 + m6 6 12 12) ───────────────────────────
+        // ── 18. 取消 (Lucide: X) ────────────────────────────────────────────────────
         case CaptureIconId::ActionCancel: {
-            rt->DrawLine(p(18, 6), p(6, 18), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(6, 6), p(18, 18), brush, stroke, roundStroke.Get());
+            rt->DrawLine(p(17.5f, 6.5f), p(6.5f, 17.5f), brush, stroke * 1.05f, roundStroke.Get());
+            rt->DrawLine(p(6.5f, 6.5f), p(17.5f, 17.5f), brush, stroke * 1.05f, roundStroke.Get());
             break;
         }
 
-        // ── 19. 确认 (Lucide: Check / M20 6 9 17l-5-5) ──────────────────────────────
+        // ── 19. 确认 (Lucide: Check) ────────────────────────────────────────────────
         case CaptureIconId::ActionConfirm: {
-            auto check = createPath({ p(4.5f, 12.0f), p(9.5f, 17.0f), p(19.5f, 7.0f) }, false);
-            if (check) {
-                rt->DrawGeometry(check.Get(), brush, stroke * 1.35f, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(4.5f, 12.0f), p(9.5f, 17.0f), brush, stroke * 1.35f, roundStroke.Get());
-                rt->DrawLine(p(9.5f, 17.0f), p(19.5f, 7.0f), brush, stroke * 1.35f, roundStroke.Get());
-            }
+            drawPolyline({ p(4.5f, 12.2f), p(9.5f, 17.2f), p(19.5f, 6.8f) }, false, stroke * 1.25f);
             break;
         }
 
-        // ── 19.0 录屏摄影机 (ReIcon / Lucide: Video / 经典 2px 矢量摄像机) ─────────
+        // ── 19.0 录屏摄影机 (Lucide: Video) ─────────────────────────────────────────
         case CaptureIconId::ActionRecordVideo: {
-            // 摄像机机身 (rounded rect x=2.5, y=6.5, w=12.5, h=11, rx=2.5)
-            auto body = D2D1::RectF(p(2.5f, 6.5f).x, p(2.5f, 6.5f).y, p(15.0f, 17.5f).x, p(15.0f, 17.5f).y);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(body, 2.5f * s, 2.5f * s), brush, stroke, roundStroke.Get());
-            // 摄像机出光镜头 (梯形投影镜头: (15, 10.5) -> (21.5, 7.5) -> (21.5, 16.5) -> (15, 13.5))
-            auto lensPath = createPath({p(15.0f, 10.5f), p(21.5f, 7.5f), p(21.5f, 16.5f), p(15.0f, 13.5f)}, true);
-            if (lensPath) {
-                rt->DrawGeometry(lensPath.Get(), brush, stroke, roundStroke.Get());
-            }
+            auto body = D2D1::RectF(p(2.8f, 6.5f).x, p(2.8f, 6.5f).y, p(15.0f, 17.5f).x, p(15.0f, 17.5f).y);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(body, 2.4f * s, 2.4f * s), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(15.0f, 10.2f), p(21.2f, 7.2f), p(21.2f, 16.8f), p(15.0f, 13.8f) }, true, stroke);
             break;
         }
 
-        // ── 19.1 录屏开始 (实心正红高亮圆) ──────────────────────────────────────────
+        // ── 19.1 录屏开始 (实心高亮圆) ──────────────────────────────────────────────
         case CaptureIconId::ActionRecordStart: {
             auto circle = D2D1::Ellipse(D2D1::Point2F(cx, cy), 6.5f * s, 6.5f * s);
             rt->FillEllipse(circle, brush);
             break;
         }
 
-        // ── 19.2 录屏暂停 (经典双竖线) ──────────────────────────────────────────────
+        // ── 19.2 录屏暂停 (圆角双竖线) ──────────────────────────────────────────────
         case CaptureIconId::ActionRecordPause: {
-            rt->DrawLine(p(9, 6), p(9, 18), brush, stroke * 1.6f);
-            rt->DrawLine(p(15, 6), p(15, 18), brush, stroke * 1.6f);
+            rt->DrawLine(p(9.0f, 6.2f), p(9.0f, 17.8f), brush, stroke * 1.45f, roundStroke.Get());
+            rt->DrawLine(p(15.0f, 6.2f), p(15.0f, 17.8f), brush, stroke * 1.45f, roundStroke.Get());
             break;
         }
 
@@ -397,203 +465,159 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
             break;
         }
 
-        // ── 19.4 麦克风 (Lucide: Mic) ───────────────────────────────────────────────
+        // ── 19.4 麦克风 (Lucide: Mic - 真圆弧 U 型拾音托架) ─────────────────────────
         case CaptureIconId::ActionToggleMic: {
-            auto micCap = D2D1::RectF(cx - 3.5f * s, cy - 8.0f * s, cx + 3.5f * s, cy + 2.0f * s);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(micCap, 3.5f * s, 3.5f * s), brush, stroke, roundStroke.Get());
-            // U 型托架
-            auto cradle = createPath({ p(6, 10), p(6, 12), p(12, 17), p(18, 12), p(18, 10) }, false);
-            if (cradle) {
-                rt->DrawGeometry(cradle.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(6, 10), p(6, 12), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(6, 12), p(12, 17), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(18, 12), p(12, 17), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(18, 10), p(18, 12), brush, stroke, roundStroke.Get());
-            }
-            // 立柱与底座
-            rt->DrawLine(p(12, 17), p(12, 21), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(8, 21), p(16, 21), brush, stroke, roundStroke.Get());
+            auto micCap = D2D1::RectF(cx - 3.2f * s, cy - 8.5f * s, cx + 3.2f * s, cy + 1.5f * s);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(micCap, 3.2f * s, 3.2f * s), brush, stroke, roundStroke.Get());
+            drawCircularArc(p(12.0f, 11.0f), 6.0f * s, 0.0f, 180.0f, stroke);
+            rt->DrawLine(p(12.0f, 17.0f), p(12.0f, 20.8f), brush, stroke, roundStroke.Get());
+            rt->DrawLine(p(8.2f, 20.8f), p(15.8f, 20.8f), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 19.5 扬声器 (Lucide: Volume2) ───────────────────────────────────────────
+        // ── 19.5 扬声器 (Lucide: Volume2 - 真圆弧声波) ──────────────────────────────
         case CaptureIconId::ActionToggleSpeaker: {
-            auto speaker = createPath({ p(4, 9), p(8, 9), p(13, 5), p(13, 19), p(8, 15), p(4, 15) }, true);
-            if (speaker) {
-                rt->DrawGeometry(speaker.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(4, 9), p(8, 9), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(8, 9), p(13, 5), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(13, 5), p(13, 19), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(13, 19), p(8, 15), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(8, 15), p(4, 15), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(4, 15), p(4, 9), brush, stroke, roundStroke.Get());
-            }
-            // 声波弧线
-            rt->DrawLine(p(16, 9), p(18, 12), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(18, 12), p(16, 15), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(19, 6), p(22, 12), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(22, 12), p(19, 18), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(3.8f, 9.2f), p(7.8f, 9.2f), p(12.8f, 5.0f), p(12.8f, 19.0f), p(7.8f, 14.8f), p(3.8f, 14.8f) }, true, stroke);
+            drawCircularArc(p(13.2f, 12.0f), 3.8f * s, -45.0f, 90.0f, stroke);
+            drawCircularArc(p(13.2f, 12.0f), 7.0f * s, -48.0f, 96.0f, stroke);
             break;
         }
 
-        // ── 19.6 复制 (Lucide: Copy) ────────────────────────────────────────────────
+        // ── 19.6 复制 (Lucide: Copy - 双层圆角卡片) ──────────────────────────────────
         case CaptureIconId::ActionCopy: {
-            // 后层矩形 (右上折线)
-            auto backBox = createPath({ p(8, 4), p(19, 4), p(19, 15) }, false);
-            if (backBox) {
-                rt->DrawGeometry(backBox.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(8, 4), p(19, 4), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(19, 4), p(19, 15), brush, stroke, roundStroke.Get());
+            auto frontBox = D2D1::RectF(p(4.0f, 8.2f).x, p(4.0f, 8.2f).y, p(15.8f, 20.0f).x, p(15.8f, 20.0f).y);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(frontBox, 2.2f * s, 2.2f * s), brush, stroke, roundStroke.Get());
+            if (factory) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+                if (SUCCEEDED(factory->CreatePathGeometry(geo.GetAddressOf()))) {
+                    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(geo->Open(sink.GetAddressOf()))) {
+                        sink->BeginFigure(p(8.2f, 5.5f), D2D1_FIGURE_BEGIN_HOLLOW);
+                        sink->AddLine(p(8.2f, 5.2f));
+                        sink->AddArc(D2D1::ArcSegment(p(10.2f, 3.8f), D2D1::SizeF(2.0f * s, 2.0f * s), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                        sink->AddLine(p(17.8f, 3.8f));
+                        sink->AddArc(D2D1::ArcSegment(p(20.0f, 6.0f), D2D1::SizeF(2.2f * s, 2.2f * s), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                        sink->AddLine(p(20.0f, 13.8f));
+                        sink->AddArc(D2D1::ArcSegment(p(18.5f, 15.8f), D2D1::SizeF(2.0f * s, 2.0f * s), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                        sink->Close();
+                        rt->DrawGeometry(geo.Get(), brush, stroke, roundStroke.Get());
+                        break;
+                    }
+                }
             }
-            // 前层圆角矩形
-            auto frontBox = D2D1::RectF(p(4, 8).x, p(4, 8).y, p(15, 19).x, p(15, 19).y);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(frontBox, 2.0f * s, 2.0f * s), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(8.5f, 5.5f), p(8.5f, 4.0f), p(20.0f, 4.0f), p(20.0f, 15.5f), p(18.5f, 15.5f) }, false, stroke);
             break;
         }
 
         // ── 19.7 保存 / 下载 (Lucide: Download) ─────────────────────────────────────
         case CaptureIconId::ActionSave: {
-            // 下箭头
-            rt->DrawLine(p(12, 4), p(12, 14.5f), brush, stroke, roundStroke.Get());
-            auto arrowHead = createPath({ p(7.5f, 10.0f), p(12.0f, 14.5f), p(16.5f, 10.0f) }, false);
-            if (arrowHead) {
-                rt->DrawGeometry(arrowHead.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(7.5f, 10.0f), p(12.0f, 14.5f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(16.5f, 10.0f), p(12.0f, 14.5f), brush, stroke, roundStroke.Get());
-            }
-            // 底部圆角托盘
-            auto tray = createPath({ p(4.5f, 16.5f), p(4.5f, 20.0f), p(19.5f, 20.0f), p(19.5f, 16.5f) }, false);
-            if (tray) {
-                rt->DrawGeometry(tray.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(4.5f, 16.5f), p(4.5f, 20.0f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(4.5f, 20.0f), p(19.5f, 20.0f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(19.5f, 20.0f), p(19.5f, 16.5f), brush, stroke, roundStroke.Get());
-            }
+            rt->DrawLine(p(12.0f, 4.0f), p(12.0f, 14.8f), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(7.5f, 10.2f), p(12.0f, 14.8f), p(16.5f, 10.2f) }, false, stroke);
+            drawPolyline({ p(4.5f, 15.8f), p(4.5f, 19.8f), p(19.5f, 19.8f), p(19.5f, 15.8f) }, false, stroke);
             break;
         }
 
-        // ── 19.8 反色 / 负片 (Reicon: Contrast / 半实心圆) ─────────────────────────
+        // ── 19.8 反色 / 负片 (Lucide: Contrast) ─────────────────────────────────────
         case CaptureIconId::ActionInvert: {
-            auto circle = D2D1::Ellipse(D2D1::Point2F(cx, cy), 9.0f * s, 9.0f * s);
+            auto circle = D2D1::Ellipse(D2D1::Point2F(cx, cy), 8.6f * s, 8.6f * s);
             rt->DrawEllipse(circle, brush, stroke, roundStroke.Get());
-            for (float dy = -7.0f; dy <= 7.0f; dy += 2.2f) {
-                float halfW = std::sqrt(std::max(0.0f, 9.0f * 9.0f - dy * dy)) * s;
-                rt->DrawLine(D2D1::Point2F(cx, cy + dy * s), D2D1::Point2F(cx + halfW, cy + dy * s), brush, stroke * 0.9f, roundStroke.Get());
+            if (factory) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> semi;
+                if (SUCCEEDED(factory->CreatePathGeometry(semi.GetAddressOf()))) {
+                    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(semi->Open(sink.GetAddressOf()))) {
+                        sink->BeginFigure(D2D1::Point2F(cx, cy - 8.4f * s), D2D1_FIGURE_BEGIN_FILLED);
+                        sink->AddArc(D2D1::ArcSegment(
+                            D2D1::Point2F(cx, cy + 8.4f * s),
+                            D2D1::SizeF(8.4f * s, 8.4f * s),
+                            0.0f,
+                            D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                            D2D1_ARC_SIZE_SMALL
+                        ));
+                        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                        sink->Close();
+                        rt->FillGeometry(semi.Get(), brush);
+                        break;
+                    }
+                }
             }
+            rt->DrawLine(D2D1::Point2F(cx, cy - 8.4f * s), D2D1::Point2F(cx, cy + 8.4f * s), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 19.9 灰度黑白 (Reicon: Layers / 双重单色阶) ─────────────────────────────
+        // ── 19.9 灰度黑白 (双色阶对半切片图标) ───────────────────────────────────────
         case CaptureIconId::ActionGrayscale: {
-            auto box = D2D1::RectF(cx - 8.5f * s, cy - 8.5f * s, cx + 8.5f * s, cy + 8.5f * s);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(box, 2.5f * s, 2.5f * s), brush, stroke, roundStroke.Get());
-            rt->DrawLine(D2D1::Point2F(cx, cy - 8.5f * s), D2D1::Point2F(cx, cy + 8.5f * s), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(12, 6), p(18, 12), brush, stroke * 0.8f, roundStroke.Get());
-            rt->DrawLine(p(12, 12), p(18, 18), brush, stroke * 0.8f, roundStroke.Get());
+            auto box = D2D1::RectF(cx - 8.2f * s, cy - 8.2f * s, cx + 8.2f * s, cy + 8.2f * s);
+            if (auto* solid = static_cast<ID2D1SolidColorBrush*>(brush)) {
+                D2D1_COLOR_F c = solid->GetColor();
+                c.a *= 0.36f;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> halfBrush;
+                if (SUCCEEDED(rt->CreateSolidColorBrush(c, halfBrush.GetAddressOf())) && halfBrush) {
+                    auto rightHalf = D2D1::RectF(cx, cy - 7.8f * s, cx + 7.8f * s, cy + 7.8f * s);
+                    rt->FillRoundedRectangle(D2D1::RoundedRect(rightHalf, 1.8f * s, 1.8f * s), halfBrush.Get());
+                }
+            }
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(box, 2.4f * s, 2.4f * s), brush, stroke, roundStroke.Get());
+            rt->DrawLine(D2D1::Point2F(cx, cy - 8.2f * s), D2D1::Point2F(cx, cy + 8.2f * s), brush, stroke * 0.92f, roundStroke.Get());
             break;
         }
 
-        // ── 19.10 1:1 原始尺寸 (Reicon: Scale / 四角定焦标) ─────────────────────────
+        // ── 19.10 1:1 原始尺寸 (四角定焦标 + 1) ─────────────────────────────────────
         case CaptureIconId::ActionResetScale: {
-            auto c1 = createPath({ p(4, 8), p(4, 4), p(8, 4) }, false);
-            auto c2 = createPath({ p(16, 4), p(20, 4), p(20, 8) }, false);
-            auto c3 = createPath({ p(4, 16), p(4, 20), p(8, 20) }, false);
-            auto c4 = createPath({ p(16, 20), p(20, 20), p(20, 16) }, false);
-            if (c1 && c2 && c3 && c4) {
-                rt->DrawGeometry(c1.Get(), brush, stroke, roundStroke.Get());
-                rt->DrawGeometry(c2.Get(), brush, stroke, roundStroke.Get());
-                rt->DrawGeometry(c3.Get(), brush, stroke, roundStroke.Get());
-                rt->DrawGeometry(c4.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(4, 8), p(4, 4), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(4, 4), p(8, 4), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(16, 4), p(20, 4), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(20, 4), p(20, 8), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(4, 16), p(4, 20), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(4, 20), p(8, 20), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(16, 20), p(20, 20), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(20, 20), p(20, 16), brush, stroke, roundStroke.Get());
-            }
-            rt->DrawLine(p(11, 10), p(12, 8.5f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(12, 8.5f), p(12, 15.5f), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(10, 15.5f), p(14, 15.5f), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(4.0f, 8.0f), p(4.0f, 4.0f), p(8.0f, 4.0f) }, false, stroke);
+            drawPolyline({ p(16.0f, 4.0f), p(20.0f, 4.0f), p(20.0f, 8.0f) }, false, stroke);
+            drawPolyline({ p(4.0f, 16.0f), p(4.0f, 20.0f), p(8.0f, 20.0f) }, false, stroke);
+            drawPolyline({ p(16.0f, 20.0f), p(20.0f, 20.0f), p(20.0f, 16.0f) }, false, stroke);
+            drawPolyline({ p(10.5f, 10.0f), p(12.0f, 8.5f), p(12.0f, 15.5f) }, false, stroke);
+            rt->DrawLine(p(10.0f, 15.5f), p(14.0f, 15.5f), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 19.11 折叠贴图 / 最小化微晶胶囊 (Reicon: Minimize2 / 折角双箭头) ────────
+        // ── 19.11 折叠贴图 / 最小化微晶胶囊 (Lucide: Minimize2) ──────────────────────
         case CaptureIconId::ActionFold: {
-            auto arrow1 = createPath({ p(4, 14), p(10, 14), p(10, 20) }, false);
-            if (arrow1) {
-                rt->DrawGeometry(arrow1.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(4, 14), p(10, 14), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(10, 14), p(10, 20), brush, stroke, roundStroke.Get());
-            }
-            rt->DrawLine(p(10, 14), p(3, 21), brush, stroke, roundStroke.Get());
-
-            auto arrow2 = createPath({ p(20, 10), p(14, 10), p(14, 4) }, false);
-            if (arrow2) {
-                rt->DrawGeometry(arrow2.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(20, 10), p(14, 10), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(14, 10), p(14, 4), brush, stroke, roundStroke.Get());
-            }
-            rt->DrawLine(p(14, 10), p(21, 3), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(4.0f, 14.0f), p(10.0f, 14.0f), p(10.0f, 20.0f) }, false, stroke);
+            rt->DrawLine(p(10.0f, 14.0f), p(3.5f, 20.5f), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(20.0f, 10.0f), p(14.0f, 10.0f), p(14.0f, 4.0f) }, false, stroke);
+            rt->DrawLine(p(14.0f, 10.0f), p(20.5f, 3.5f), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 19.12 重置序号 (Reicon: RefreshCw / 环形标 + 1) ────────────────────────
+        // ── 19.11b 旋转贴图 (Lucide: RotateCw - 真圆弧顺时针箭头) ────────────────────
+        case CaptureIconId::ActionRotate: {
+            drawCircularArc(D2D1::Point2F(cx, cy), 8.0f * s, 35.0f, 285.0f, stroke);
+            drawPolyline({ p(19.5f, 3.8f), p(19.5f, 9.0f), p(14.3f, 9.0f) }, false, stroke);
+            break;
+        }
+
+        // ── 19.12 重置序号 (环形旋转箭头 + 中心 1) ───────────────────────────────────
         case CaptureIconId::ActionResetNumber: {
-            auto circle = D2D1::Ellipse(D2D1::Point2F(cx, cy), 8.5f * s, 8.5f * s);
-            rt->DrawEllipse(circle, brush, stroke * 0.85f, roundStroke.Get());
-            rt->DrawLine(p(11, 9), p(12, 7.5f), brush, stroke * 1.1f, roundStroke.Get());
-            rt->DrawLine(p(12, 7.5f), p(12, 16.5f), brush, stroke * 1.1f, roundStroke.Get());
-            rt->DrawLine(p(9.5f, 16.5f), p(14.5f, 16.5f), brush, stroke * 1.1f, roundStroke.Get());
+            drawCircularArc(D2D1::Point2F(cx, cy), 8.4f * s, 30.0f, 290.0f, stroke * 0.9f);
+            drawPolyline({ p(19.5f, 4.0f), p(19.5f, 8.6f), p(14.9f, 8.6f) }, false, stroke * 0.9f);
+            drawPolyline({ p(10.4f, 9.8f), p(12.2f, 8.2f), p(12.2f, 15.8f) }, false, stroke * 0.95f);
+            rt->DrawLine(p(10.0f, 15.8f), p(14.4f, 15.8f), brush, stroke * 0.95f, roundStroke.Get());
             break;
         }
 
-        // ── 19.13 录屏高清快照 (Reicon: Camera / 相机抓拍) ─────────────────────────
+        // ── 19.13 录屏高清快照 (Lucide: Camera) ──────────────────────────────────────
         case CaptureIconId::ActionSnapshot: {
             auto body = D2D1::RectF(cx - 8.5f * s, cy - 4.5f * s, cx + 8.5f * s, cy + 7.5f * s);
             rt->DrawRoundedRectangle(D2D1::RoundedRect(body, 2.2f * s, 2.2f * s), brush, stroke, roundStroke.Get());
-            rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy + 1.5f * s), 3.8f * s, 3.8f * s), brush, stroke, roundStroke.Get());
-            auto notch = createPath({ p(8.5f, 6.0f), p(10.0f, 3.5f), p(14.0f, 3.5f), p(15.5f, 6.0f) }, false);
-            if (notch) {
-                rt->DrawGeometry(notch.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(8.5f, 6.0f), p(10.0f, 3.5f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(10.0f, 3.5f), p(14.0f, 3.5f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(14.0f, 3.5f), p(15.5f, 6.0f), brush, stroke, roundStroke.Get());
-            }
-            rt->DrawEllipse(D2D1::Ellipse(p(16.0f, 9.0f), 0.8f * s, 0.8f * s), brush, stroke, roundStroke.Get());
+            rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy + 1.5f * s), 3.6f * s, 3.6f * s), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(8.5f, 7.5f), p(10.0f, 4.8f), p(14.0f, 4.8f), p(15.5f, 7.5f) }, false, stroke);
             break;
         }
 
-        // ── 19.14 打开所在文件夹 (Reicon: Folder / 文件夹) ─────────────────────────
+        // ── 19.14 打开所在文件夹 (Lucide: Folder) ────────────────────────────────────
         case CaptureIconId::ActionOpenFolder: {
-            auto folderPath = createPath({ p(3.5f, 7.0f), p(8.5f, 7.0f), p(10.5f, 9.5f), p(20.5f, 9.5f), p(20.5f, 18.5f), p(3.5f, 18.5f) }, true);
-            if (folderPath) {
-                rt->DrawGeometry(folderPath.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(3.5f, 7.0f), p(8.5f, 7.0f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(8.5f, 7.0f), p(10.5f, 9.5f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(10.5f, 9.5f), p(20.5f, 9.5f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(20.5f, 9.5f), p(20.5f, 18.5f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(20.5f, 18.5f), p(3.5f, 18.5f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(3.5f, 18.5f), p(3.5f, 7.0f), brush, stroke, roundStroke.Get());
-            }
+            drawPolyline({ p(3.5f, 6.5f), p(9.0f, 6.5f), p(11.0f, 9.0f), p(20.5f, 9.0f), p(20.5f, 18.5f), p(3.5f, 18.5f) }, true, stroke);
             break;
         }
 
         // ── 20. 实线样式 ────────────────────────────────────────────────────────────
         case CaptureIconId::PropSolidLine: {
-            float lx1 = rect.left + 5.0f * scale;
-            float lx2 = rect.right - 5.0f * scale;
+            float lx1 = rect.left + 4.5f * scale;
+            float lx2 = rect.right - 4.5f * scale;
             rt->DrawLine(D2D1::Point2F(lx1, cy), D2D1::Point2F(lx2, cy), brush, stroke, roundStroke.Get());
             break;
         }
@@ -602,9 +626,9 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
         case CaptureIconId::PropDashedLine: {
             float lx1 = rect.left + 4.0f * scale;
             float lx2 = rect.right - 4.0f * scale;
-            float seg = 5.0f * scale, sp = 3.0f * scale;
+            float seg = 4.8f * scale, sp = 2.8f * scale;
             for (float sx = lx1; sx < lx2; sx += seg + sp) {
-                rt->DrawLine(D2D1::Point2F(sx, cy), D2D1::Point2F(std::min(lx2, sx + seg), cy), brush, stroke, roundStroke.Get());
+                rt->DrawLine(D2D1::Point2F(sx, cy), D2D1::Point2F((std::min)(lx2, sx + seg), cy), brush, stroke, roundStroke.Get());
             }
             break;
         }
@@ -613,9 +637,9 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
         case CaptureIconId::PropDottedLine: {
             float lx1 = rect.left + 4.0f * scale;
             float lx2 = rect.right - 4.0f * scale;
-            float seg = 1.8f * scale, sp = 2.6f * scale;
+            float seg = 1.6f * scale, sp = 2.6f * scale;
             for (float sx = lx1; sx < lx2; sx += seg + sp) {
-                rt->DrawLine(D2D1::Point2F(sx, cy), D2D1::Point2F(std::min(lx2, sx + seg), cy), brush, stroke, roundStroke.Get());
+                rt->DrawLine(D2D1::Point2F(sx, cy), D2D1::Point2F((std::min)(lx2, sx + seg), cy), brush, stroke, roundStroke.Get());
             }
             break;
         }
@@ -626,83 +650,86 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
             float lx2 = rect.right - 4.0f * scale;
             float sx = lx1;
             while (sx < lx2) {
-                rt->DrawLine(D2D1::Point2F(sx, cy), D2D1::Point2F(std::min(lx2, sx + 5.0f * scale), cy), brush, stroke, roundStroke.Get());
-                sx += 7.5f * scale;
+                rt->DrawLine(D2D1::Point2F(sx, cy), D2D1::Point2F((std::min)(lx2, sx + 4.8f * scale), cy), brush, stroke, roundStroke.Get());
+                sx += 7.2f * scale;
                 if (sx < lx2) {
-                    rt->DrawLine(D2D1::Point2F(sx, cy), D2D1::Point2F(std::min(lx2, sx + 1.8f * scale), cy), brush, stroke, roundStroke.Get());
-                    sx += 4.0f * scale;
+                    rt->DrawLine(D2D1::Point2F(sx, cy), D2D1::Point2F((std::min)(lx2, sx + 1.6f * scale), cy), brush, stroke, roundStroke.Get());
+                    sx += 3.8f * scale;
                 }
             }
             break;
         }
 
-        // ── 24. 线宽步进器图标 (三级递增阶梯横线) ──────────────────────────────────
+        // ── 24. 线宽步进器图标 (三级清晰递进横线，保持充足呼吸间距绝不粘连) ──────────
         case CaptureIconId::PropStrokeWidth: {
-            rt->DrawLine(p(4, 6), p(20, 6), brush, stroke * 0.7f, roundStroke.Get());
-            rt->DrawLine(p(4, 12), p(20, 12), brush, stroke * 1.15f, roundStroke.Get());
-            rt->DrawLine(p(4, 18), p(20, 18), brush, stroke * 1.75f, roundStroke.Get());
+            const float w1 = (std::max)(1.0f * scale, stroke * 0.62f);
+            const float w2 = (std::max)(1.4f * scale, stroke * 1.00f);
+            const float w3 = (std::max)(1.9f * scale, stroke * 1.42f);
+            rt->DrawLine(p(4.0f, 6.0f), p(20.0f, 6.0f), brush, w1, roundStroke.Get());
+            rt->DrawLine(p(4.0f, 12.0f), p(20.0f, 12.0f), brush, w2, roundStroke.Get());
+            rt->DrawLine(p(4.0f, 18.0f), p(20.0f, 18.0f), brush, w3, roundStroke.Get());
             break;
         }
 
-        // ── 25. 圆角步进器图标 (优雅 90° 圆弧切角) ──────────────────────────────────
+        // ── 25. 圆角步进器图标 (真 90° 圆弧切角 + 焦点圆点) ─────────────────────────
         case CaptureIconId::PropCornerRadius: {
-            auto cornerArc = createPath({ p(5, 19), p(5, 12), p(6.5f, 8.5f), p(8.5f, 6.5f), p(12, 5), p(19, 5) }, false);
-            if (cornerArc) {
-                rt->DrawGeometry(cornerArc.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(5, 19), p(5, 12), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(5, 12), p(6.5f, 8.5f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(6.5f, 8.5f), p(8.5f, 6.5f), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(8.5f, 6.5f), p(12, 5), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(12, 5), p(19, 5), brush, stroke, roundStroke.Get());
+            if (factory) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+                if (SUCCEEDED(factory->CreatePathGeometry(geo.GetAddressOf()))) {
+                    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(geo->Open(sink.GetAddressOf()))) {
+                        sink->BeginFigure(p(5.0f, 19.0f), D2D1_FIGURE_BEGIN_HOLLOW);
+                        sink->AddLine(p(5.0f, 12.0f));
+                        sink->AddArc(D2D1::ArcSegment(
+                            p(12.0f, 5.0f),
+                            D2D1::SizeF(7.0f * s, 7.0f * s),
+                            0.0f,
+                            D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                            D2D1_ARC_SIZE_SMALL
+                        ));
+                        sink->AddLine(p(19.0f, 5.0f));
+                        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                        sink->Close();
+                        rt->DrawGeometry(geo.Get(), brush, stroke, roundStroke.Get());
+                        rt->FillEllipse(D2D1::Ellipse(p(13.5f, 13.5f), 1.4f * s, 1.4f * s), brush);
+                        break;
+                    }
+                }
             }
+            drawPolyline({ p(5.0f, 19.0f), p(5.0f, 11.5f), p(7.0f, 7.0f), p(11.5f, 5.0f), p(19.0f, 5.0f) }, false, stroke);
             break;
         }
 
-        // ── 26. 描边模式 (空心框) ───────────────────────────────────────────────────
+        // ── 26. 描边模式 (双层微晶空心框) ───────────────────────────────────────────
         case CaptureIconId::PropFillOutline: {
             auto box = D2D1::RectF(cx - 7.5f * s, cy - 7.5f * s, cx + 7.5f * s, cy + 7.5f * s);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(box, 2.0f * s, 2.0f * s), brush, stroke, roundStroke.Get());
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(box, 2.2f * s, 2.2f * s), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 27. 实心填充模式 (实心框) ───────────────────────────────────────────────
+        // ── 27. 实心填充模式 (饱满圆角实心块) ───────────────────────────────────────
         case CaptureIconId::PropFillSolid: {
             auto box = D2D1::RectF(cx - 7.5f * s, cy - 7.5f * s, cx + 7.5f * s, cy + 7.5f * s);
-            rt->FillRoundedRectangle(D2D1::RoundedRect(box, 2.0f * s, 2.0f * s), brush);
+            rt->FillRoundedRectangle(D2D1::RoundedRect(box, 2.4f * s, 2.4f * s), brush);
             break;
         }
 
         // ── 28. 取色吸管 (Lucide: Pipette) ──────────────────────────────────────────
         case CaptureIconId::PropPipette: {
-            auto body = createPath({ p(19, 3), p(21, 5), p(12, 14), p(8, 18), p(3, 21), p(6, 16), p(10, 12), p(19, 3) }, true);
-            if (body) {
-                rt->DrawGeometry(body.Get(), brush, stroke, roundStroke.Get());
-            } else {
-                rt->DrawLine(p(19, 3), p(21, 5), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(21, 5), p(12, 14), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(19, 3), p(10, 12), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(10, 12), p(6, 16), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(6, 16), p(3, 21), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(3, 21), p(8, 18), brush, stroke, roundStroke.Get());
-                rt->DrawLine(p(8, 18), p(12, 14), brush, stroke, roundStroke.Get());
-            }
-            // 微液滴
-            auto drop = D2D1::Ellipse(p(2, 22), 1.0f * s, 1.0f * s);
-            rt->FillEllipse(drop, brush);
+            drawPolyline({ p(18.5f, 3.5f), p(20.5f, 5.5f), p(12.0f, 14.0f), p(8.0f, 18.0f), p(3.5f, 20.5f), p(6.0f, 16.0f), p(10.0f, 12.0f) }, true, stroke);
+            rt->DrawLine(p(13.5f, 6.5f), p(17.5f, 10.5f), brush, stroke, roundStroke.Get());
             break;
         }
 
         // ── 29. 调色板 (Lucide: Palette) ────────────────────────────────────────────
         case CaptureIconId::PropPalette: {
-            auto palBox = D2D1::RectF(cx - 8.0f * s, cy - 8.0f * s, cx + 8.0f * s, cy + 8.0f * s);
+            auto palBox = D2D1::RectF(cx - 8.2f * s, cy - 8.2f * s, cx + 8.2f * s, cy + 8.2f * s);
             rt->DrawRoundedRectangle(D2D1::RoundedRect(palBox, 5.0f * s, 5.0f * s), brush, stroke, roundStroke.Get());
-            // 4 色颜料微孔 (红、橙、绿、蓝)
             static const D2D1_COLOR_F palPigments[4] = {
-                D2D1::ColorF(0.96f, 0.25f, 0.37f, 1.0f), // 红
-                D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f), // 橙
-                D2D1::ColorF(0.06f, 0.73f, 0.51f, 1.0f), // 绿
-                D2D1::ColorF(0.23f, 0.51f, 0.96f, 1.0f), // 蓝
+                D2D1::ColorF(0.96f, 0.25f, 0.37f, 1.0f),
+                D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f),
+                D2D1::ColorF(0.06f, 0.73f, 0.51f, 1.0f),
+                D2D1::ColorF(0.23f, 0.51f, 0.96f, 1.0f),
             };
             const D2D1_POINT_2F holePts[4] = { p(8.5f, 8.5f), p(15.5f, 8.5f), p(8.5f, 15.5f), p(15.5f, 15.5f) };
             for (int i = 0; i < 4; ++i) {
@@ -717,22 +744,19 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
 
         // ── 29.1 全色域彩虹拾色环 (Full Spectrum Rainbow Ring) ─────────────────────
         case CaptureIconId::PropRainbowWheel: {
-            // 8 个饱满科技光谱色彩分段 (珊瑚红、曜石橙、明快黄、薄荷绿、青空蓝、科技蓝、紫罗兰、品红色)
             static const D2D1_COLOR_F spectrumColors[8] = {
-                D2D1::ColorF(0.96f, 0.25f, 0.37f, 1.0f), // #F43F5E 红
-                D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f), // #F59E0B 橙
-                D2D1::ColorF(0.92f, 0.70f, 0.03f, 1.0f), // #EAB308 黄
-                D2D1::ColorF(0.06f, 0.73f, 0.51f, 1.0f), // #10B981 绿
-                D2D1::ColorF(0.02f, 0.71f, 0.83f, 1.0f), // #06B6D4 青
-                D2D1::ColorF(0.23f, 0.51f, 0.96f, 1.0f), // #3B82F6 蓝
-                D2D1::ColorF(0.66f, 0.33f, 0.97f, 1.0f), // #A855F7 紫
-                D2D1::ColorF(0.93f, 0.28f, 0.60f, 1.0f)  // #EC4899 粉红
+                D2D1::ColorF(0.96f, 0.25f, 0.37f, 1.0f),
+                D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f),
+                D2D1::ColorF(0.92f, 0.70f, 0.03f, 1.0f),
+                D2D1::ColorF(0.06f, 0.73f, 0.51f, 1.0f),
+                D2D1::ColorF(0.02f, 0.71f, 0.83f, 1.0f),
+                D2D1::ColorF(0.23f, 0.51f, 0.96f, 1.0f),
+                D2D1::ColorF(0.66f, 0.33f, 0.97f, 1.0f),
+                D2D1::ColorF(0.93f, 0.28f, 0.60f, 1.0f)
             };
 
             const float ringR = 6.8f * s;
             const float dotR = 2.0f * s;
-
-            // 绘制 8 个环状环绕的饱满微晶色点
             for (int i = 0; i < 8; ++i) {
                 float angle = i * (3.14159265f / 4.0f) - 3.14159265f * 0.5f;
                 float dotX = cx + ringR * std::cos(angle);
@@ -743,10 +767,8 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
                     rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR), dotBrush.Get());
                 }
             }
-
-            // 中心微晶加号 (+)
             const float crossLen = 2.2f * s;
-            const float crossStroke = std::max(1.2f, 1.4f * scale);
+            const float crossStroke = (std::max)(1.1f * scale, stroke * 0.75f);
             rt->DrawLine(D2D1::Point2F(cx - crossLen, cy), D2D1::Point2F(cx + crossLen, cy), brush, crossStroke, roundStroke.Get());
             rt->DrawLine(D2D1::Point2F(cx, cy - crossLen), D2D1::Point2F(cx, cy + crossLen), brush, crossStroke, roundStroke.Get());
             break;
@@ -754,65 +776,103 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
 
         // ── 30. 二维码 (Lucide: QrCode) ─────────────────────────────────────────────
         case CaptureIconId::PropQrCode: {
-            // 定位框 1 (左上)
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(p(3, 3).x, p(3, 3).y, p(9, 9).x, p(9, 9).y), 1.0f * s, 1.0f * s), brush, stroke * 0.9f, roundStroke.Get());
-            rt->FillRectangle(D2D1::RectF(p(5, 5).x, p(5, 5).y, p(7, 7).x, p(7, 7).y), brush);
-            // 定位框 2 (右上)
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(p(15, 3).x, p(15, 3).y, p(21, 9).x, p(21, 9).y), 1.0f * s, 1.0f * s), brush, stroke * 0.9f, roundStroke.Get());
-            rt->FillRectangle(D2D1::RectF(p(17, 5).x, p(17, 5).y, p(19, 7).x, p(19, 7).y), brush);
-            // 定位框 3 (左下)
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(p(3, 15).x, p(3, 15).y, p(9, 21).x, p(9, 21).y), 1.0f * s, 1.0f * s), brush, stroke * 0.9f, roundStroke.Get());
-            rt->FillRectangle(D2D1::RectF(p(5, 17).x, p(5, 17).y, p(7, 19).x, p(7, 19).y), brush);
-            // 数据微像素
-            rt->FillRectangle(D2D1::RectF(p(15, 15).x, p(15, 15).y, p(17, 17).x, p(17, 17).y), brush);
-            rt->FillRectangle(D2D1::RectF(p(19, 15).x, p(19, 15).y, p(21, 17).x, p(21, 17).y), brush);
-            rt->FillRectangle(D2D1::RectF(p(15, 19).x, p(15, 19).y, p(17, 21).x, p(17, 21).y), brush);
-            rt->FillRectangle(D2D1::RectF(p(19, 19).x, p(19, 19).y, p(21, 21).x, p(21, 21).y), brush);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(p(3.5f, 3.5f).x, p(3.5f, 3.5f).y, p(9.5f, 9.5f).x, p(9.5f, 9.5f).y), 1.2f * s, 1.2f * s), brush, stroke * 0.9f, roundStroke.Get());
+            rt->FillRectangle(D2D1::RectF(p(5.5f, 5.5f).x, p(5.5f, 5.5f).y, p(7.5f, 7.5f).x, p(7.5f, 7.5f).y), brush);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(p(14.5f, 3.5f).x, p(14.5f, 3.5f).y, p(20.5f, 9.5f).x, p(20.5f, 9.5f).y), 1.2f * s, 1.2f * s), brush, stroke * 0.9f, roundStroke.Get());
+            rt->FillRectangle(D2D1::RectF(p(16.5f, 5.5f).x, p(16.5f, 5.5f).y, p(18.5f, 7.5f).x, p(18.5f, 7.5f).y), brush);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(p(3.5f, 14.5f).x, p(3.5f, 14.5f).y, p(9.5f, 20.5f).x, p(9.5f, 20.5f).y), 1.2f * s, 1.2f * s), brush, stroke * 0.9f, roundStroke.Get());
+            rt->FillRectangle(D2D1::RectF(p(5.5f, 16.5f).x, p(5.5f, 16.5f).y, p(7.5f, 18.5f).x, p(7.5f, 18.5f).y), brush);
+            rt->FillRectangle(D2D1::RectF(p(14.5f, 14.5f).x, p(14.5f, 14.5f).y, p(16.8f, 16.8f).x, p(16.8f, 16.8f).y), brush);
+            rt->FillRectangle(D2D1::RectF(p(18.2f, 14.5f).x, p(18.2f, 14.5f).y, p(20.5f, 16.8f).x, p(20.5f, 16.8f).y), brush);
+            rt->FillRectangle(D2D1::RectF(p(14.5f, 18.2f).x, p(14.5f, 18.2f).y, p(16.8f, 20.5f).x, p(16.8f, 20.5f).y), brush);
+            rt->FillRectangle(D2D1::RectF(p(18.2f, 18.2f).x, p(18.2f, 18.2f).y, p(20.5f, 20.5f).x, p(20.5f, 20.5f).y), brush);
             break;
         }
 
-        // ── 31. 美化外壳 (Sparkle Frame / CleanShot X Style) ─────────────────────────
+        // ── 31. 美化外壳 (macOS/Win11 精致窗口套壳 + 居中四角星芒，彻底杜绝边线碰撞) ─
         case CaptureIconId::ToolBeautyShell: {
-            // 外层柔和衬底画布
-            auto outerBox = D2D1::RectF(p(3, 4).x, p(3, 4).y, p(21, 20).x, p(21, 20).y);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(outerBox, 3.0f * s, 3.0f * s), brush, stroke * 0.9f, roundStroke.Get());
-            // 内层阴影截图画框
-            auto innerBox = D2D1::RectF(p(6, 7).x, p(6, 7).y, p(18, 17).x, p(18, 17).y);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(innerBox, 2.0f * s, 2.0f * s), brush, stroke, roundStroke.Get());
-            // 右上角微晶高光星光 (Sparkle)
-            rt->DrawLine(p(19, 1), p(19, 5), brush, stroke * 0.8f, roundStroke.Get());
-            rt->DrawLine(p(17, 3), p(21, 3), brush, stroke * 0.8f, roundStroke.Get());
+            auto outerBox = D2D1::RectF(p(3.0f, 4.2f).x, p(3.0f, 4.2f).y, p(21.0f, 19.8f).x, p(21.0f, 19.8f).y);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(outerBox, 2.6f * s, 2.6f * s), brush, stroke * 0.94f, roundStroke.Get());
+            rt->DrawLine(p(3.2f, 8.8f), p(20.8f, 8.8f), brush, stroke * 0.85f, roundStroke.Get());
+            const float dotR = (std::max)(0.85f * scale, stroke * 0.48f);
+            rt->FillEllipse(D2D1::Ellipse(p(6.4f, 6.5f), dotR, dotR), brush);
+            rt->FillEllipse(D2D1::Ellipse(p(9.4f, 6.5f), dotR, dotR), brush);
+            auto star = createPath({
+                p(12.0f, 10.6f), p(12.85f, 13.35f), p(15.6f, 14.2f), p(12.85f, 15.05f),
+                p(12.0f, 17.8f), p(11.15f, 15.05f), p(8.4f, 14.2f), p(11.15f, 13.35f)
+            }, true);
+            if (star) {
+                rt->FillGeometry(star.Get(), brush);
+            } else {
+                rt->DrawLine(p(12.0f, 11.2f), p(12.0f, 17.2f), brush, stroke * 0.9f, roundStroke.Get());
+                rt->DrawLine(p(9.0f, 14.2f), p(15.0f, 14.2f), brush, stroke * 0.9f, roundStroke.Get());
+            }
             break;
         }
 
         // ── 32. 锁定选区比例 (Aspect Ratio / Proportions) ───────────────────────────
         case CaptureIconId::PropAspectRatio: {
-            // 宽屏矩形画框 (16:9 比例微缩画框)
-            auto frameBox = D2D1::RectF(p(3, 6).x, p(3, 6).y, p(21, 18).x, p(21, 18).y);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(frameBox, 2.0f * s, 2.0f * s), brush, stroke, roundStroke.Get());
-            // 中心比例冒号 (:)
-            rt->FillEllipse(D2D1::Ellipse(p(12, 10), 1.0f * s, 1.0f * s), brush);
-            rt->FillEllipse(D2D1::Ellipse(p(12, 14), 1.0f * s, 1.0f * s), brush);
+            auto frameBox = D2D1::RectF(p(3.0f, 5.5f).x, p(3.0f, 5.5f).y, p(21.0f, 18.5f).x, p(21.0f, 18.5f).y);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(frameBox, 2.2f * s, 2.2f * s), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(6.5f, 11.5f), p(6.5f, 8.5f), p(9.5f, 8.5f) }, false, stroke * 0.9f);
+            drawPolyline({ p(17.5f, 12.5f), p(17.5f, 15.5f), p(14.5f, 15.5f) }, false, stroke * 0.9f);
             break;
         }
 
         // ── 33. 方角序号微晶胶囊 (Rounded Square Number Badge) ─────────────────────
         case CaptureIconId::PropNumberSquare: {
-            auto sqBox = D2D1::RectF(p(4, 4).x, p(4, 4).y, p(20, 20).x, p(20, 20).y);
+            auto sqBox = D2D1::RectF(p(3.8f, 3.8f).x, p(3.8f, 3.8f).y, p(20.2f, 20.2f).x, p(20.2f, 20.2f).y);
             rt->DrawRoundedRectangle(D2D1::RoundedRect(sqBox, 4.0f * s, 4.0f * s), brush, stroke, roundStroke.Get());
-            // 序号 1 骨架
-            rt->DrawLine(p(10, 9), p(12, 7), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(12, 7), p(12, 17), brush, stroke, roundStroke.Get());
-            rt->DrawLine(p(9, 17), p(15, 17), brush, stroke, roundStroke.Get());
+            drawPolyline({ p(9.8f, 9.2f), p(12.2f, 7.4f), p(12.2f, 16.4f) }, false, stroke);
+            rt->DrawLine(p(9.6f, 16.4f), p(14.8f, 16.4f), brush, stroke, roundStroke.Get());
             break;
         }
 
-        // ── 33. 文字描边 (Type T with Outline Halo) ──────────────────────────────
+        // ── 34. 文字描边 (清晰大号 A 字 + 底部描边指示横条，彻底告别双竖线 Π 歧义) ──
         case CaptureIconId::PropTextOutline: {
-            auto halo = D2D1::RectF(cx - 7.5f * s, cy - 7.5f * s, cx + 7.5f * s, cy + 7.5f * s);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(halo, 3.0f * s, 3.0f * s), brush, stroke * 0.75f, roundStroke.Get());
-            rt->DrawLine(p(12, 7.5f), p(12, 16.5f), brush, stroke * 1.2f, roundStroke.Get());
-            rt->DrawLine(p(7.5f, 7.5f), p(16.5f, 7.5f), brush, stroke * 1.2f, roundStroke.Get());
+            drawPolyline({ p(6.2f, 16.2f), p(12.0f, 4.2f), p(17.8f, 16.2f) }, false, stroke * 1.05f);
+            rt->DrawLine(p(8.2f, 12.4f), p(15.8f, 12.4f), brush, stroke * 0.95f, roundStroke.Get());
+            auto bar = D2D1::RectF(p(4.6f, 18.8f).x, p(4.6f, 18.8f).y, p(19.4f, 20.6f).x, p(19.4f, 20.6f).y);
+            rt->FillRoundedRectangle(D2D1::RoundedRect(bar, 0.9f * s, 0.9f * s), brush);
+            break;
+        }
+
+        // ── 35. 字号大小 (Typography Size: 大小双 T 对比标识) ───────────────────────
+        case CaptureIconId::PropFontSize: {
+            // 左侧大 T
+            rt->DrawLine(p(3.0f, 5.8f), p(13.2f, 5.8f), brush, stroke, roundStroke.Get());
+            rt->DrawLine(p(8.1f, 5.8f), p(8.1f, 18.6f), brush, stroke, roundStroke.Get());
+            // 右侧小 T
+            rt->DrawLine(p(13.8f, 11.2f), p(21.0f, 11.2f), brush, stroke * 0.9f, roundStroke.Get());
+            rt->DrawLine(p(17.4f, 11.2f), p(17.4f, 18.6f), brush, stroke * 0.9f, roundStroke.Get());
+            break;
+        }
+
+        // ── 36. 文字背景胶囊 (半透明圆角胶囊底板 + 居中清晰 A 字) ───────────────────
+        case CaptureIconId::PropTextBackground: {
+            auto pill = D2D1::RectF(p(3.0f, 4.4f).x, p(3.0f, 4.4f).y, p(21.0f, 19.6f).x, p(21.0f, 19.6f).y);
+            if (auto* solid = static_cast<ID2D1SolidColorBrush*>(brush)) {
+                D2D1_COLOR_F c = solid->GetColor();
+                c.a *= 0.22f;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fillBrush;
+                if (SUCCEEDED(rt->CreateSolidColorBrush(c, fillBrush.GetAddressOf())) && fillBrush) {
+                    rt->FillRoundedRectangle(D2D1::RoundedRect(pill, 4.0f * s, 4.0f * s), fillBrush.Get());
+                }
+            }
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(pill, 4.0f * s, 4.0f * s), brush, stroke * 0.92f, roundStroke.Get());
+            drawPolyline({ p(8.0f, 16.0f), p(12.0f, 7.6f), p(16.0f, 16.0f) }, false, stroke * 0.95f);
+            rt->DrawLine(p(9.3f, 13.4f), p(14.7f, 13.4f), brush, stroke * 0.88f, roundStroke.Get());
+            break;
+        }
+
+        // ── 37. 反选区域 (Invert Selection: 内实心框 + 外层四角选区) ─────────────────
+        case CaptureIconId::ActionInvertSelection: {
+            drawPolyline({ p(3.8f, 8.0f), p(3.8f, 3.8f), p(8.0f, 3.8f) }, false, stroke);
+            drawPolyline({ p(16.0f, 3.8f), p(20.2f, 3.8f), p(20.2f, 8.0f) }, false, stroke);
+            drawPolyline({ p(3.8f, 16.0f), p(3.8f, 20.2f), p(8.0f, 20.2f) }, false, stroke);
+            drawPolyline({ p(16.0f, 20.2f), p(20.2f, 20.2f), p(20.2f, 16.0f) }, false, stroke);
+            auto inner = D2D1::RectF(p(8.2f, 8.2f).x, p(8.2f, 8.2f).y, p(15.8f, 15.8f).x, p(15.8f, 15.8f).y);
+            rt->FillRoundedRectangle(D2D1::RoundedRect(inner, 1.5f * s, 1.5f * s), brush);
             break;
         }
 

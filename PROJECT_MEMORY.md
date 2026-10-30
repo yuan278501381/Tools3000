@@ -6,6 +6,95 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-10-30] 全链路 HUD 悬浮层与光标/放大镜/选区碰撞避让引擎 (Full-Lifecycle HUD & Cursor/Loupe Avoidance Engine)
+- **用户反馈与实机截图痛点**：
+  - 用户在屏幕左下角区域准备截图或拖拽选区时，左下角快捷键提示卡片 (`ShortcutHintOverlay`) 未能自动躲开鼠标光标与选区放大镜 (`Loupe HUD`)，导致左下角截图选区与放大镜视野被 HUD 严密遮挡；同时要求全面排查并根治全库同类悬浮层/HUD 遮挡鼠标或选区的问题。
+- **根因深度拆解（6 大核心缺陷）**：
+  1. **`Selecting` 态与 `drawSizeInfo` 早退导致避让断链 (`src/capture/CaptureRenderer.cpp`)**：
+     原 `ShortcutHintOverlay::instance().updateAvoidance(avoidRects)` 仅在 `CaptureRenderer::drawSizeInfo` 内部且仅当 `hasLockedSelection` (`Selected` / `Marking`) 为真时调用；在 `OverlayState::Selecting`（智能窗口探测悬停与鼠标拖拽划选阶段）以及选区宽高为 0 时完全不触发避让更新，导致用户在屏幕左下角寻点或拖拽选区时 HUD 纹丝不动。
+  2. **鼠标光标安全区与放大镜 (`loupeHudRect`) 从未纳入 `ShortcutHintOverlay` 避让集 (`src/capture/CaptureRenderer.cpp`, `src/capture/ShortcutHintOverlay.cpp`)**：
+     即使进入 `Selected` / `Marking` 状态，`avoidRects` 也仅包含工具栏与小选区，从未将当前鼠标光标安全包络（`±52px * scale`）或 `216x186 * scale` 的放大镜 (`loupeHudRect`) 传入 `ShortcutHintOverlay`。
+  3. **最大化/全屏窗口矩形在 `computeOptimalPosition` 中掩盖局部碰撞 (`src/capture/ShortcutHintOverlay.cpp`)**：
+     原 `ShortcutHintOverlay::computeOptimalPosition` 将所有 `avoidRects` 混算总碰撞面积，并用 `if (minCollisionArea * 2 >= defaultCollisionArea) return defaultPos;` 防止最大化窗口导致乱跳。但当 `avoidRects` 同时包含一个全屏/最大化窗口（面积约 `62,400 px²`）与左下角光标/放大镜局部障碍物（面积约 `10,000 px²`）时，由于其他候选角也与最大化窗口重叠（`62,400 * 2 >= 72,400`），该阈值直接吞掉了局部光标/放大镜碰撞，使 HUD 死锁在左下角拒不避让！
+  4. **单参数上下文切换 `ShortcutHintOverlay::show(context)` 清空已有避让集 (`src/capture/ShortcutHintOverlay.cpp`)**：
+     当状态在 `CaptureSelecting`、`CaptureDragging`、`CaptureSelected`、`CaptureMarking` 间通过单参数 `show(newContext)` 切换时，默认空参 `avoidRects = {}` 直接覆盖清空了上一帧的 `m_avoidRects`，引发 1 帧闪回左下角。
+  5. **截图内部多个微型 HUD（尺寸胶囊 `sizeHudRect`、窗口层级徽章 `hierarchyBadgeRect`、十字线坐标胶囊、二维码浮岛 `qrChipRect`）互不感知放大镜与光标 (`src/capture/CaptureRenderer.cpp`)**：
+     - `drawSizeInfo` 未将 `loupeHudRect`、动态圆形放大镜 (`MarkupTool::Magnifier`)、二级弹出菜单 (`openSubmenuRect` / `sliderPopup` / `dropdownMenu`) 纳入 `HudAvoidanceEngine` 障碍物列表，且在 `Selecting` 态仅当光标位于窗口左上角局部时才添加光标排斥区；
+     - `drawCrosshair` 坐标徽章仅做右/下屏幕边界翻转，未避让 `loupeHudRect` 与 `sizeHudRect`；
+     - 窗口层级提示胶囊 (`Tab 切换窗口层级`) 硬编码在选区左上角下方 `rect.top + 8`，与内部尺寸胶囊或光标重叠；
+     - `drawQrChip` 二维码胶囊固定在选区左下角内侧，未避让底部内缩工具栏、尺寸胶囊与光标。
+  6. **滚动长截图 (`ScrollCaptureOverlay`) 与录屏指示器 (`RecordingIndicator`) 缺乏 HUD 联动避让 (`src/capture/ScrollCaptureOverlay.cpp`, `src/capture/RecordingIndicator.cpp`)**：
+     - `ScrollCaptureOverlay` 右侧长图预览缩略图在超宽选区下 `thumbX = cRect.left - thumbWidth - margin` 会越出屏幕左边界（`< 0`），且未避让鼠标悬停，也未将选区与预览图同步给 `ShortcutHintOverlay`；
+     - `RecordingIndicator` 显示与拖拽移动时未将控制条矩形与录制区域同步至 `ShortcutHintOverlay`。
+- **终局架构修复方案**：
+  1. **`ShortcutHintOverlay` 局部/全局障碍物解耦 + 8 方位候选与曼哈顿距离择优 + 28px 迟滞防抖 + 45ms 实时物理光标追踪 (`src/capture/ShortcutHintOverlay.h/.cpp`)**：
+     - 在 `computeOptimalPosition` 中将 `avoidRects` 严格解耦为 **局部高优先级障碍物 (`localObstacles`)**（光标安全区、放大镜、工具栏、尺寸胶囊、非全屏选区）与 **全局背景障碍物 (`globalObstacles`)**（同时覆盖四角且 `minCorner * 2 >= maxCorner` 的全屏/最大化窗口）。只要左下角与任何 `localObstacles` 发生碰撞，立即零容忍触发避让；当局部碰撞解除后，即使存在最大化窗口也精准回归默认左下角；
+     - 候选位置扩展为 8 方位（左下、左上、右下、右上、底中、顶中、左中、右中）+ 局部障碍物四边动态滑移候选点，按 `(localCollision, globalCollision, candidateGroup, manhattanDistToBottomLeft)` 四元组字典序严格择优；
+     - 在 `syncPosition()` 中引入 **28px * scale 迟滞防抖带 (Hysteresis Anti-Jitter)**：当卡片已从默认左下角避让至备选锚点时，只有当默认左下角外扩迟滞带彻底脱离局部障碍物后才回归左下角，彻底消灭鼠标在边界微动时的乒乓跳闪；
+     - 在 `WM_TIMER`（升级为 `45ms` 周期）中内置实时物理光标追踪（当真实鼠标相对 `show()` 初始位置移动 `> 4px` 时自动注入 `±60px * scale` 光标安全框并重算位置），保证即使宿主处于静态等待态（如长截图滚动中、录屏中、选区静止态），鼠标移向 HUD 时也能毫秒级主动闪避，移开后自动归位；同时保持合成单元测试 100% 确定性。
+  2. **截图全阶段统一避让中枢与单一事实源 (`CaptureRenderer::updateShortcutHintAvoidance`, `HudAvoidanceEngine::computeSelectionLoupeRect`)**：
+     - 将 `HudAvoidanceEngine::computeSelectionLoupeRect` 确立为放大镜几何计算的唯一单一事实源（SSOT，`offset = 22px * scale`, `edgePad = 12px * scale`），`CaptureRenderer::computeSelectionLoupeRect` 直接委托调用；
+     - 在 `CaptureRenderer::updateShortcutHintAvoidance` 中：全阶段注入 `±72px * scale` 光标预判安全框、`loupeHudRect`、动态放大镜圆域、`sizeHudRect`、`sizeMenuRect`、`hierarchyBadgeRect`、`qrChipRect`、主副工具栏、侧边栏及子菜单/滑块弹窗；仅在主动拖拽 (`state.dragging`) 或已锁定选区 (`hasLockedSelection`) 时注入选区矩形（移除被动悬停探测窗口与 `70%` 粗粒度截断，完全交由 `computeOptimalPosition` 的四角 `globalObstacles` 分类器精准裁决）。
+  3. **截图内部全量微型 HUD 协同避让、绘制态工具栏幽灵半透明化与贴图浮层防遮挡 (`CaptureRenderer.cpp`, `CaptureToolbarLayout.cpp`, `PinWindow.cpp`)**：
+     - `drawSizeInfo` 将 `loupeHudRect`、动态放大镜、子菜单弹窗及全阶段光标安全框注入 `HudAvoidanceEngine`；`drawCrosshair`、`hierarchyBadgeRect`、`drawQrChip` 全量支持多象限/多角翻转避让；
+     - 当用户正在进行标注绘制 (`isMarking`)、选区拖拽缩放 (`isAdjustingSelection` / `isAdjustingCornerRadius`) 或图元操纵 (`isManipulating`) 且活动轨迹/光标靠近主工具栏、二级属性栏或侧边栏时，工具栏自动切入 `18%` 透明度幽灵穿透态 (`PushLayer` alpha `0.18f`) 并静默悬停提示，彻底消除全屏/大选区内嵌工具栏遮挡画布笔触的痛点；同时移除 `render()` 中冗余的二次 `drawDropdownMenu` 调用；
+     - `CaptureToolbarLayout` 侧边工具栏仅在右侧剩余空间不足容纳侧边栏本身 (`sideX + sideW > surfaceSize.width - screenMargin`) 时才翻转，`SelectionCornerRadius` 滑块弹窗在右侧空间不足时独立向左翻转 (`selectionSideRect.left - popW - 8 * scale`)，杜绝滑块弹窗覆盖侧边栏或侧边栏过早内嵌遮挡选区；
+     - `PinWindow` 在拖拽划选 OCR 文字 (`m_isSelectingText`) 期间自动隐藏顶部悬停工具栏，且「复制文字」浮动胶囊在悬停工具栏可见时自动向下避让 `toolbarRect`。
+  4. **长截图预览图屏幕钳制与录屏指示器全链路联动 (`ScrollCaptureOverlay`, `RecordingIndicator`, `PluginEntry`)**：
+     - `ScrollCaptureOverlay` 缩略图预览严格钳制在屏幕工作区内并在鼠标悬停时左右翻转避让，每帧将 `m_captureRect`、预览图矩形与实时光标同步至 `ShortcutHintOverlay`；
+     - `RecordingIndicator` 新增 `avoidanceRects()`，在显示、状态切换与拖拽移动时实时驱动 `ShortcutHintOverlay` 避让录制控制条与录制选区。
+
+### [2026-10-29] 贴图窗口 (`PinWindow`) 键盘快捷键旋转失效根治与 `PinInputController` 策略分发单一事实源架构
+- **用户反馈痛点**：
+  「贴图我记得之前某个版本有按键盘快捷键旋转的，现在没有了」：截图钉住或点击/悬浮贴图后，按下键盘旋转快捷键无法旋转贴图（或按数字键 `1`/`2` 贴图变成极低透明度近乎隐形）。
+- **根因深度拆解（4 大核心缺陷）**：
+  1. **贴图创建时 `SW_SHOWNOACTIVATE` 导致初始零键盘焦点 (`src/capture/PinWindow.cpp`)**：
+     `PinWindow::create()` 使用 `ShowWindow(pin->m_hwnd, SW_SHOWNOACTIVATE)` 显示窗口且从未调用 `SetForegroundWindow`/`SetFocus`。当用户从截图遮罩 (`CaptureOverlay`) 按钉住键生成贴图后，`CaptureOverlay` 销毁自身窗口导致线程焦点归零 (`GetFocus() == nullptr`)，新生成的贴图窗口处于失焦态 (`m_focused == false`)，此时按 `R`、`Shift+R`、`1`、`2`、`Esc` 等任何按键均不会投递到 `PinWindow::pinWndProc`。
+  2. **Win32 `WS_POPUP | WS_EX_TOOLWINDOW` 窗口点击/悬停未建立线程级键盘焦点 (`SetFocus`)**：
+     `PinWindow::pinWndProc` 缺失 `WM_MOUSEACTIVATE` 处理，且 `WM_LBUTTONDOWN` 仅调用 `SetForegroundWindow(hwnd)` 而未调用 `SetActiveWindow(hwnd)` 与 `SetFocus(hwnd)`。当 `Tools3000.exe` 进程已处于前台时，单独调用 `SetForegroundWindow` 不会将线程键盘焦点 (`GetFocus()`) 转移给无边框 `WS_POPUP` 工具窗口；此外，点击悬浮工具栏按钮、滚轮缩放、中键重置、右键菜单、二次标注返回 (`editMarkup`) 以及鼠标移入贴图均未转移键盘焦点。
+  3. **Snipaste / PixPin 标准贴图旋转翻转数字键 (`1`/`2`/`3`/`4`) 被透明度热键劫持**：
+     原 `WM_KEYDOWN` 中 `if (wParam >= '1' && wParam <= '9' && !ctrl)` 将数字键 `1`~`9` 全部映射为 `10%~90%` 透明度。用户遵循桌面贴图软件肌肉记忆按 `1`（逆时针旋转 90°）或 `2`（顺时针旋转 90°）时，贴图不但不旋转，反而骤变为 10% / 20% 透明度的半隐形状态；同时缺少 `L`、`Ctrl+R`、`Ctrl/Alt + Left/Right` 等常用旋转快捷键支持。
+  4. **旋转生命周期时序倒置与悬浮工具栏缺少旋转入口**：
+     - `PinWindow::rotate()` 先调用 `createRenderResources(m_sourceImage)`（内部通过 `GetClientRect` 读取窗口旧的未旋转宽高配置 D2D RenderTarget），后调用 `setScale()` 调整窗口尺寸，且在折叠胶囊态 (`m_folded`) 下旋转或旋转后未清理失效的旧方向 OCR 文本块 (`m_ocrBlocks`)；
+     - 贴图顶部悬浮微晶工具栏仅有 7 个按钮，缺少直观的「旋转 90°」矢量按钮与悬停快捷键提示胶囊。
+- **终局架构修复方案**：
+  1. **提炼 `PinInputController` 表驱动策略分发与几何变换中枢 (`src/capture/PinInputController.h/.cpp`)**：
+     - 将贴图按键解析 (`resolveKeyDown`)、正交角度归一化 (`normalizeRightAngleDegrees`)、源图像与灰度备份图像同步旋转/翻转 (`applyRotation` / `applyFlip`) 以及悬停自动获焦判定 (`shouldAutoFocusOnHover`) 收敛至 `PinInputController` 单一事实源 (SSOT)，消灭 `PinWindow::pinWndProc` 中冗长的 `if-else` 面条逻辑与魔术数字；
+     - 全面支持顺时针 90° 旋转（`R`、`Ctrl+R`、数字 `2`、小键盘 `2`、`Ctrl+Right`、`Alt+Right`）、逆时针 90° 旋转（`Shift+R`、`Ctrl+Shift+R`、`L`、数字 `1`、小键盘 `1`、`Ctrl+Left`、`Alt+Left`）、水平翻转（`H`、数字 `3`、小键盘 `3`）、垂直翻转（`V`、数字 `4`、小键盘 `4`）、透明度调节（`5`~`9`、`[`、`]`、`0`）及方向键/`WASD` 像素级微调移动（`1px` / `Shift` `10px`）。
+  2. **全链路键盘焦点闭环 (`PinWindow::focusWindow`)**：
+     - 实现跨线程安全输入挂接 (`AttachThreadInput`) + `SetForegroundWindow` + `SetActiveWindow` + `SetFocus` 的 `PinWindow::focusWindow()`；
+     - 在贴图创建 (`PinWindow::create`)、二次标注完成恢复 (`editMarkup`)、`WM_MOUSEACTIVATE`、`WM_LBUTTONDOWN`、`WM_RBUTTONUP`、`WM_MBUTTONUP`、`WM_MOUSEWHEEL` 及鼠标首次移入非穿透贴图 (`WM_MOUSEMOVE`) 时自动赋焦，并拦截 `SC_KEYMENU` 防止 `Alt` 键激活系统菜单抢焦。
+  3. **悬浮工具栏新增「旋转」矢量按钮与微晶快捷键提示胶囊 (`CaptureIconId::ActionRotate`, `drawHoverToolbar`)**：
+     - 在 `CaptureVectorIcons` 中新增 `CaptureIconId::ActionRotate`（高精度顺时针圆弧 + 箭头矢量图标）；
+     - 贴图悬浮工具栏扩展为 8 按钮布局（新增旋转按钮，支持左键顺时针 90°、`Shift+左键` 逆时针 90°），并在悬停任意工具栏按钮时于下方渲染微晶快捷键提示胶囊（如 `旋转 90° (R / 1·2)`）。
+  4. **旋转时序修正与 OCR 重同步**：
+     - 旋转/翻转处于折叠状态的贴图时自动展开；先执行 `SetWindowPos` 更新旋转后的物理窗口尺寸，再重建 Direct2D 位图资源，并清空旧方向 OCR 缓存块触发异步重识别。
+
+### [2026-10-22] 截图快捷键指引 HUD (`ShortcutHintOverlay`) 左下角锚定防挤压与全生命周期残留根治
+- **用户反馈两大核心痛点**：
+  1. 「截图的左边的弹窗初始位置应该是在左下角」：启动截图或选中左侧/中大型窗口时，左下角快捷键提示窗（`ShortcutHintOverlay`）被错误推挤到屏幕左上角；
+  2. 「还有有时候截图退出了，他都还在」：截图退场后，处于已选区状态（`ShortcutHintContext::CaptureSelected`）的快捷键提示窗偶发残留在屏幕左上角不消失。
+- **根因深度拆解（6 大架构与边界暗坑）**：
+  1. **底部主工具栏左对齐侵占左下角 HUD 领地 (`src/capture/CaptureToolbarLayout.cpp`)**：
+     当选区左边缘位于屏幕左侧（`selectionRect.left < 340 * scale`）且底部或内部主工具栏（宽约 `582px`）落在屏幕下方区域（`priPanelY + totalHeight > surfaceSize.height - 320 * scale`）时，`priPanelX` 默认左对齐 `selectionRect.left` 会直接覆盖左下角的 `ShortcutHintOverlay`，随后 `CaptureRenderer::drawSizeInfo` 将 `primaryToolbarRect` 作为避让障碍物传给 `ShortcutHintOverlay::updateAvoidance`，导致左下角提示窗被强行驱逐至左上角 `{minX, minY}`！
+  2. **多屏虚拟桌面分母失真与大窗口选区误避让 (`src/capture/CaptureRenderer.cpp`, `src/capture/CaptureInput.cpp`)**：
+     原大选区阈值（`85%`）使用全虚拟桌面宽高（`SM_CXVIRTUALSCREEN`）做分母，在双屏/多屏环境下单屏最大化窗口仅占虚拟桌面宽度的 `50%`，永远无法触发大选区免避让；且 `WM_LBUTTONUP` 锁定选区瞬间将整個选区无条件塞入 `avoidRects`，导致单屏左半屏分屏窗口（`50%~80%` 宽，`90%+` 高）直接把左下角提示窗挤到左上角。
+  3. **全宽选区侧边快捷栏回退位置反向 (`src/capture/CaptureToolbarLayout.cpp`)**：
+     当选区左右贴边导致 `selectionSideRect` 右外侧与左外侧均放不下时，代码注释写明“退回选区内部右侧边缘”，但实际实现写成了 `sideX = screenMargin`（即 `x = 8.0f` 屏幕最左侧），与左下角提示窗发生碰撞。
+  4. **跨线程窗口创建/销毁与事件总线线程逃逸 (`src/capture/ShortcutHintOverlay.cpp`, `src/capture/PluginEntry.cpp`)**：
+     Win32 `DestroyWindow` 仅允许创建 `m_hwnd` 的线程调用。若 `ShortcutHintOverlay::show()` 被非主线程（如后台 IPC、EventBus 或钩子回调）触发，或 `hide()` 从其他线程调用，`DestroyWindow` 会以 `ERROR_ACCESS_DENIED` 静默失败，导致分层窗口永久悬挂在桌面上。
+  5. **无守护自愈机制与非活动态误唤醒 (`src/capture/ShortcutHintOverlay.h/.cpp`, `src/capture/CaptureToolbarLayout.cpp`, `src/capture/CaptureInput.cpp`)**：
+     `ShortcutHintOverlay` 缺乏对宿主活动状态的周期性核验；`transitionToRecordMode` 与 `Ctrl+A` 未校验 `state != OverlayState::Idle` 即调用 `ShortcutHintOverlay::show()`。
+  6. **贴图二次编辑 (`startEditPinned`) 覆盖全局截图回调且取消不恢复贴图 (`src/capture/CaptureOverlay.h/.cpp`, `src/capture/PinWindow.cpp`)**：
+     `CaptureOverlay::startEditPinned` 直接覆写了 `m_state.callback`（导致后续正常截图误走贴图编辑回调），且按 `Esc` 取消贴图编辑时未回调通知 `PinWindow` 恢复隐藏的贴图窗口。
+- **终局架构修复方案**：
+  1. **工具栏左下角让位协同 (`rebuildCaptureToolbar`)**：当开启快捷键提示（`state.options.showShortcutHints`）且主/副工具栏落入屏幕左下角提示窗保护区（`priPanelY + totalHeight > surfaceSize.height - 320 * scale && priPanelX < 340 * scale`）时，优先将工具栏向选区右端对齐或向右平移至 `340 * scale` 右侧，从源头杜绝工具栏把左下角提示窗挤到左上角；同时修正全宽选区 `selectionSideRect` 回退位置至选区内部右侧。
+  2. **基于当前显示器工作区 (`rcWork`) 的智能避让阈值 (`CaptureRenderer::drawSizeInfo`, `CaptureInput::handleMessage`)**：按选区所在显示器的物理工作区（`MonitorFromRect`）计算尺寸占比，凡宽 `>= 55%` 或高 `>= 60%` 的大中型窗口/分屏选区均不把选区本体加入 `avoidRects`，保证 `ShortcutHintOverlay` 稳固锚定在左下角 `{minX, maxY}`。
+  3. **UI 主线程強制封送 + 依赖倒置 `OwnerActiveChecker` + 150ms `WM_TIMER` 自愈守护 (`ShortcutHintOverlay`, `CaptureOverlay`, `PluginEntry`)**：
+     - `ShortcutHintOverlay::show` / `updateAvoidance` / `hide` 及 `PluginEntry` 事件回调统一通过 `MainThreadDispatcher` 封送至主线程执行，跨线程 `hide()` 额外执行 `ShowWindowAsync(SW_HIDE)` 瞬时消隐；
+     - 引入无反向依赖的 `OwnerActiveChecker` 契约，在 `CaptureOverlay::initialize` 中注入宿主存活断言（校验 `CaptureOverlay::state() != Idle && isOverlayVisible()`、`ScrollCapture::isRunning()`、`ScreenRecorder::state() != Idle`），配合 150ms `WM_TIMER` 守护定时器：一旦检测到宿主已退场，无论是迟到的 `show()` 还是异常漏调 `hide()`，均在主线程自动隐藏并彻底 `DestroyWindow`。
+  4. **独立贴图编辑回调通道 (`m_editPinnedCallback`)**：解耦 `m_editPinnedCallback` 与全局 `m_state.callback`，并在 `realCancel()` 时回调空 `cv::Mat{}` 使 `PinWindow` 立即恢复显示原贴图。
+
 ### [2026-10-14] 全链路功能缺陷修复与人类易用度深度优化 (/boost)
 - **核心用户反馈缺陷深度根治 (Gesture Trail 图层穿透露出底层窗体 & 复制文字按贴图失效)**：
   1. **右键手势轨迹露出背后底层窗体根因与 D2D1.1 DeviceContext 零重分配架构重构 (`src/gesture/GestureTrailOverlay.h/.cpp`)**：
@@ -729,3 +818,95 @@
   - 架构拓扑：消灭全部跨业务模块横向依赖，路由 SSOT 落地，0 代码坏味道；
   - 交付安装包产物：`Output\Tools3000-Setup.exe`（19,479,693 字节，SHA256: `112E30F2D02DD70F6B8C3793E14B7C07816E0EC750942A196E6ADECC27405C2A`）；
   - 交付绿色便携包：`deploy_dist\`。
+
+---
+
+### [2026-10-14] 鼠标手势覆盖层触发 Windows Shell 全屏独占误判导致任务栏降级与后台窗口底部显露修复 (NonRudeHWND & 1px 几何避让双保险)
+- **现象与运行日志链路还原**：
+  - 用户在最大化前台窗口（`Antigravity`，底部位于工作区边界 `rcWork.bottom = 2088`）上方绘制鼠标手势时，屏幕底部任务栏区域（`y: 2088..2159`）突然显露出压在背后的非最大化资源管理器窗口（`CabinetWClass`）底部状态栏（`1 个项目 | 选中 1 个项目 14.9 MB`）。
+  - 结合实机运行日志 `%LOCALAPPDATA%\Tools3000\logs\tools3000.log` 与原始分辨率截图（`3456x2160`，150% DPI）交叉验证：每次划动手势时日志均记录 `[info] 手势轨迹已提交: points=1, 3456x2160, dcomp=true`。
+- **底层根因剖析 (Windows Shell CRudeAppManager 全屏独占探测机制)**：
+  1. `GestureTrailOverlay` 创建的 `Tools3000_GestureOverlay` 为 `WS_POPUP` 窗口，且尺寸被设为完整物理显示器尺寸 `3456x2160`（`rcWindow == rcMonitor`），在首帧渲染时通过 `SetWindowPos(m_hwnd, HWND_TOPMOST, ..., SWP_SHOWWINDOW)` 显示。
+  2. 当 Windows Shell（`explorer.exe` 内置的 `CRudeAppManager`）检测到可见 `WS_POPUP` 窗口矩形精确等于显示器边界 `rcMonitor` 且未携带 `NonRudeHWND` 窗口属性时，会将其判定为全屏独占应用（Rude Fullscreen Window），并自动将系统任务栏 `Shell_TrayWnd` 从 `TOPMOST` 层降级至 Z 序最底部以让位给全屏应用。
+  3. 由于 `Tools3000_GestureOverlay` 本身是全透明 DirectComposition 覆盖层，而前台最大化窗口 `Antigravity` 高度止步于工作区 `y = 2088`，当 `Shell_TrayWnd` 被系统降级至底层后，原本被任务栏遮挡在 `y: 2088..2159` 区域的后台非最大化资源管理器窗口底部便立即穿透显露出来。
+- **双保险终局修复方案**：
+  1. **1 像素全屏几何避让 (`computeFullscreenAvoidanceSpan`, `vw - 1, vh - 1`)**：在 `GestureInputPolicy.h` 中引入纯函数 `computeFullscreenAvoidanceSpan`，将 `GestureTrailOverlay`（`createOverlayWindow`、`fitSurface`、`handleDisplayChange`）与 `ScrollCaptureOverlay` 的覆盖层宽高由 `3456x2160` 主动缩减 1 像素至 `3455x2159`，从物理几何上彻底打破 `rcWindow == rcMonitor` 的全屏匹配条件。
+  2. **全域覆盖层窗口属性 `NonRudeHWND = TRUE` 显式标记**：在 `WinUtils::applyTaskbarSafeOverlayStyle`、`WinUtils::createOverlayHelperOwner`、`GestureTrailOverlay::createOverlayWindow`、`CaptureOverlay::createOverlayWindow`、`ScrollCaptureOverlay::initialize` 与 `RecordingIndicator::createBorderWindow` 中统一调用 `SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE))`，显式通知 `explorer.exe` (`CRudeAppManager`) 绝不将手势/截图/长截图/录屏覆盖层视为全屏独占窗口，即使在全屏截图 `SetForegroundWindow` 或多显示器跨屏边界场景下亦能 100% 保护 `Shell_TrayWnd` 稳居 `TOPMOST`。
+  3. **DirectComposition 淡出打断 Z 序恢复与脏矩形前置清理**：在 `GestureTrailOverlay::renderLoop` 中，当 `m_hwnd` 已处于可见态（如上一笔手势淡出期间被新笔划打断）时，无条件响应 `m_zOrderRaiseRequested` 恢复 `HWND_TOPMOST`；在 `GestureTrailOverlay::render()` 中将 `m_strokeResetPending` 表面擦除与透明度重置前置到 `m_points.empty()` 早退检查之前，杜绝打断淡出时残留旧笔划或提示框。
+  4. **跨桌面 (`WinSta0\Default`) 实机防回退门禁验证**：在 `GestureTrailOverlayTest.TaskbarZOrderAndFullscreenAvoidanceProtection` 中通过 `OpenDesktopW(L"Default", ...)` + `EnumDesktopWindows` 兼容沙盒与交互式桌面，实机断言手势渲染期间 `Shell_TrayWnd` 始终保持 `WS_EX_TOPMOST` 且 Z 序严格高于普通窗口。
+
+---
+
+### [2026-10-22] 截图快捷键 HUD (`ShortcutHintOverlay`) 初始左下角锚定与退出零残留根治
+- **现象与用户实机截图还原**：
+  - 用户反馈截图快捷键 HUD（`ShortcutHintContext::CaptureSelected`：`Enter 完成并复制`、`Ctrl+S 保存` 等）出现在屏幕左上角，且在退出截图后仍然残留在桌面上。
+- **底层根因剖析**：
+  1. **未选区窗口悬停预览与全屏/最大化窗口碰撞误判导致 HUD 跳往左上角**：
+     - `CaptureRenderer::drawSizeInfo` 在 `OverlayState::Selecting`（尚未锁定选区、仅随鼠标悬停预览窗口）时即每帧调用 `rebuildCaptureToolbar` 与 `ShortcutHintOverlay::instance().updateAvoidance(avoidRects)`，并将当前悬停的最大化/全屏窗口矩形 `rect` 直接塞入 `avoidRects`；
+     - 在 `ShortcutHintOverlay::computeOptimalPosition` 中，候选点 0 为左下角 `{minX, maxY}`，候选点 1 为左上角 `{minX, minY}`。当最大化窗口（如 `{0, 32, 1920, 1040}`）顶部预留标题栏或菜单栏使左上角碰撞面积哪怕比左下角少 1 像素时，算法即放弃默认左下角而跳变至左上角；
+     - 此外，`ShortcutHintOverlay::show` 的同上下文早退分支（`m_hasContext && m_context == context && m_visible`）位于 `m_workArea` 更新与 `updatePosition()` 之前，导致跨状态或重置 `avoidRects` 时未能回到左下角。
+  2. **截图退出过渡期残留排队鼠标消息在 `Idle` 态重新激活 `CaptureSelected` 导致 HUD 幽灵常驻**：
+     - `CaptureInput::handleMessage` 未在入口处拦截 `OverlayState::Idle` 状态下的排队鼠标/键盘消息：`WM_MOUSEMOVE` 显式允许 `state == OverlayState::Idle` 时探测窗口并填充 `m_state->detectedWindow`；`WM_LBUTTONDOWN` 在 `state == Idle` 时落入 `else` 分支设置 `m_state->dragging = true; m_state->state = OverlayState::Selecting`；紧随其后的 `WM_LBUTTONUP` 将微小位移判定为点击吸附窗口，将状态改为 `OverlayState::Selected` 并重新调用 `ShortcutHintOverlay::instance().show(ShortcutHintContext::CaptureSelected, ...)`，此时 `CaptureOverlay` 窗口已隐藏/销毁，导致 `ShortcutHintOverlay` 孤立残留在桌面上；
+     - 同时，`ShortcutHintOverlay::hide()` 在跨线程回调（如 `ScrollCapture` 后台线程结束回调）调用 `DestroyWindow(m_hwnd)` 时因 Win32 跨线程销毁限制失败，仅清除了 `m_visible` 标志而未真正隐藏/销毁物理 HWND。
+- **架构级根治方案**：
+  1. **左下角初始位置强锚定与全屏选区避让免疫**：
+     - `ShortcutHintOverlay::show()` 先解析最新光标/显示器 `m_workArea` 与 `m_avoidRects`，再执行同上下文检查并始终调用 `updatePosition()`；
+     - `ShortcutHintOverlay::computeOptimalPosition()` 记录默认左下角候选点 0 的碰撞面积 `defaultCollisionArea`，当大尺寸/最大化窗口覆盖所有候选位置且无任何候选点能减少 50% 以上碰撞面积时（`minCollisionArea * 2 >= defaultCollisionArea`），坚定保持在默认左下角 `{minX, maxY}`；
+     - `CaptureRenderer::drawSizeInfo()` 严格仅在 `hasLockedSelection`（`Selected` / `Marking`）状态下构建工具栏并调用 `updateAvoidance`，且当选区覆盖屏幕宽高 `>= 75%` 时仅将实际工具栏与尺寸胶囊纳入避让集，不将全屏选区本体作为排斥障碍。
+  2. **退出截图 100% 零残留与跨线程安全销毁**：
+     - `CaptureInput::handleMessage` 入口处严格拦截 `OverlayState::Idle` 状态下的所有输入与定时器消息，彻底阻断退出过渡期排队消息复活选区或重开 HUD；
+     - `ShortcutHintOverlay::isVisible()` 升级为实时校验物理窗口状态 `m_hasContext && m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)`；
+     - `ShortcutHintOverlay::hide()` 支持跨线程安全调用：非窗口所属线程调用时立即执行 `ShowWindowAsync(m_hwnd, SW_HIDE)` 并向所属线程投递 `WM_APP + 1`（`kMsgAsyncDestroy`）完成 `DestroyWindow`，同时在 `CaptureOverlay` 的 `realCancel`、`confirmSelection`、`WM_CLOSE`、`WM_NCDESTROY` 及 `ScrollCapture` 回调全路径兜底清理。
+  3. **防回退单元测试**：在 `tests/unit/test_capture.inc` 新增 `ShortcutHintOverlayBottomLeftPositionAndMaximizedWindowStability` 与 `ShortcutHintOverlayNeverRemainsAfterCaptureExitOrCrossThreadHide`。
+
+---
+
+### [2026-10-29] 贴图窗口 (`PinWindow`) 键盘快捷键旋转全链路恢复、中心锚定几何变换与窄贴图自适应工具栏架构升级 (`PinInputController` SSOT)
+- **现象与用户反馈还原**：
+  - 用户反馈贴图在历史版本中支持按键盘快捷键旋转，但当前版本按键旋转无响应或行为异常。
+- **底层根因剖析**：
+  1. **初始焦点缺失与 `WS_POPUP | WS_EX_TOOLWINDOW` 点击/悬停未赋焦**：
+     - `PinWindow::create()` 原先调用 `ShowWindow(pin->m_hwnd, SW_SHOWNOACTIVATE)`，在 `CaptureOverlay` 关闭后系统键盘焦点 `GetFocus()` 为 `nullptr`；
+     - `PinWindow::pinWndProc` 缺少 `WM_MOUSEACTIVATE` 且未在点击/滚轮/悬停时调用 `SetFocus(hwnd)`，导致按键消息无法路由至 `PinWindow`。
+  2. **数字键 `1`~`4` 被透明度逻辑抢占拦截**：
+     - 原 `WM_KEYDOWN` 中 `wParam >= '1' && wParam <= '9'` 排在旋转与翻转之前，用户按行业通用的 `1`（逆时针 90°）、`2`（顺时针 90°）、`3`（水平翻转）、`4`（垂直翻转）时被误当作设置 10%~40% 不透明度，且缺少 `L`、`Ctrl+R`、`Ctrl/Alt+Left/Right` 及小键盘数字键支持。
+  3. **正交旋转左上角硬固定 (`SWP_NOMOVE`) 与窄窗口悬浮工具栏越界裁切**：
+     - 旋转 90°/270° 时若固定左上角不变，长条贴图（如 `400x20` 旋转为 `20x400`）会发生大幅中心跳移并导致鼠标脱靶；
+     - 窄贴图宽度小于单行 8 按钮总宽（`244px * dpiScale`）时，悬浮工具栏右侧按钮（含旋转、复制、保存、关闭）直接超出窗口右边界被裁切；
+     - 折叠态 (`m_folded`) 下旋转或缩放存在双重 `SetWindowPos` 闪烁及旧 `m_unfoldedRect` 尺寸覆盖问题。
+- **架构级根治方案 (`PinInputController` 单一事实源)**：
+  1. **表驱动快捷键策略分发 (`PinInputController::resolveKeyDown`)**：
+     - 顺时针旋转 90°：`R`、`Ctrl+R`、`2`、`Numpad 2`、`Ctrl+Right`、`Alt+Right`；
+     - 逆时针旋转 90°：`Shift+R`、`Ctrl+Shift+R`、`L`、`1`、`Numpad 1`、`Ctrl+Left`、`Alt+Left`；
+     - 水平/垂直翻转：`H` / `3` / `Numpad 3`（水平）、`V` / `4` / `Numpad 4`（垂直，保留 `Ctrl+V` 为连续贴图）；
+     - 透明度与缩放微调：`5`~`9`（50%~90%）、`[` / `]`（±10%）、`0`（恢复 1:1 比例与 100% 不透明度）、方向键/`WASD`（1px / `Shift` 10px 微调）。
+  2. **全链路焦点保障 (`focusWindow` & `shouldAutoFocusOnHover`)**：
+     - `PinWindow::create()` 创建后即刻激活并赋予键盘焦点；
+     - `WM_MOUSEACTIVATE`、`WM_LBUTTONDOWN`、`WM_MBUTTONUP`、`WM_RBUTTONUP`、`WM_MOUSEWHEEL`、`WM_MOUSEMOVE`（当 `!isWindowFocused && !isClickThrough && !isOverlayVisible` 时）及 `CaptureOverlay` 二次标注退场后全链路保障 `PinWindow` 持有键盘焦点。
+  3. **中心锚定原地正交旋转 (`calculateRotatedWindowRect`) 与窄窗口多行自适应悬浮工具栏 (`computeHoverToolbarLayout`)**：
+     - 旋转时以当前贴图几何中心为锚点原地正交旋转并自动钳制在当前显示器工作区内，连续旋转 0 像素漂移；
+     - 悬浮工具栏新增第 8 个矢量按钮 `CaptureIconId::ActionRotate`（左键顺时针 90°、`Shift+左键` 逆时针 90°）与微晶提示胶囊，并在窄贴图下自动切换为 `4x2` / `2x4` / `1x8` 多行网格与等比紧凑缩放，保障 8 个按钮 100% 位于窗口可视区内。
+  4. **防回退回归测试**：在 `tests/unit/test_capture.inc` 新增 `PinWindowTest.KeyboardShortcutsRotationFlipOpacityAndFocusPolicy` 与实机窗口级 `PinWindowTest.LiveWindowKeyboardRotationFlipAndFoldIntegration`。
+
+---
+
+### [2026-10-30] 截图标注矢量图标全量重绘升级 (`CaptureVectorIcons`) 与背景感知自适应文字描边反色 (`resolveTextOutlineColor`) 架构根治
+- **现象与用户反馈还原**：
+  1. 截图底部工具栏与二级属性栏的标注图标粗糙难看：线宽/字号步进器图标因 `iconRect` 宽度仅 `12px * scale` 而线宽固定 `2.0f * scale`，导致三条横线粘连成一团实心黑块 (`■ 15`)；`Undo`/`Redo`/`Blur`/`Rotate`/`Mic`/`Speaker`/`CornerRadius` 等图标仅用折线段近似圆弧，呈现生硬多边形棱角；文字工具二级栏中“背景胶囊 (`ToggleFill`)”与“文字描边 (`ToggleTextOutline`)”外观高度雷同，且描边色彩（自动/黑/白）同样渲染为实心圆点，与字色色板混淆。
+  2. 文字自适应描边 (`MarkupColor::Auto()`) 在深色背景下自动反色错误（深色背景下描边也是深色）。
+- **底层根因剖析**：
+  1. **自适应描边仅计算字色亮度而忽略画布背景亮度**：
+     - 原 `renderSnipasteStyleText` (`src/capture/MarkupEngine.cpp`) 仅按文字自身颜色计算 `luminance = (0.299R + 0.587G + 0.114B) / 255`，当 `luminance > 0.45f` 时固定使用深色描边 `(15, 17, 23)`；
+     - 由于预设的珊瑚红 (`#F43F5E`, `luminance = 0.473`)、橙、黄、绿、蓝、白等 6 种主色亮度均 `> 0.45f`，导致用户在深色代码编辑器或深色壁纸背景下输入红/橙/黄/绿/蓝文字时，自适应描边恒定输出深黑描边 `(15, 17, 23)`，造成“深色背景配深色描边”的反差失效。
+  2. **矢量图标视口比例失衡与几何图元缺失**：
+     - `CaptureVectorIcons::renderIcon` 固定使用 `stroke = std::max(1.8f, 2.0f * scale)`，未随窄视口 (`btnW`/`btnH`) 比例缩放，且全部曲线均以短直线段拼接。
+- **架构级根治方案**：
+  1. **背景感知自适应文字描边 (`sampleCanvasRegionLuminance` / `computeAdaptiveTextOutlineColor` / `resolveTextOutlineColor`)**：
+    - 在 `MarkupEngine` 中新增画布 ROI 感知亮度采样 `sampleCanvasRegionLuminance(canvas, textRect)`，当文本框局部越出画布边界时自动夹紧至最近的局部边缘窗口采样，避免回退全图平均导致局部深浅背景误判；
+    - 极深色文字 (`textLum < 0.22f`，如极客黑) 恒定采用纯白高反差描边 `(255, 255, 255, 250)`；极亮白及高明度浅粉彩文字 (`textLum > 0.78f`) 恒定采用曜石黑描边 `(15, 17, 23, 250)`；
+    - 所有彩色及中等亮度文字（红/橙/黄/绿/蓝/紫等，`0.22f <= textLum <= 0.78f`）严格依据底层画布背景（或开启底衬胶囊后的混合背景）亮度自动反色：深色背景 (`bgLuminance < 0.50f`) 自动反色为纯白高光描边 `(255, 255, 255, 250)`，浅色背景 (`bgLuminance >= 0.50f`) 自动反色为曜石黑描边 `(15, 17, 23, 250)`，并将外扩描边笔触升级为 `std::max(3.4f, fontSize * 0.18f)`。
+  2. **Direct2D 原生圆弧/贝塞尔矢量图标体系 (`CaptureVectorIcons`)、像素级离屏渲染审计与二级栏视觉对齐**：
+    - 引入视口自适应比例线宽 `stroke = std::clamp(s * 2.05f, 1.35f * scale, 1.75f * scale)`，并采用原生 `D2D1::ArcSegment`、`D2D1::BezierSegment` 与闭合路径重绘全量 52 枚图标：精修 `ToolBeautyShell`（macOS/Win11 窗口框 + 中心四角星芒，消除右上角 `+` 与外框顶边碰撞）、`ToolInpaint`（双段式魔法棒 + 凹弧四角星芒，消除斜杆中部肉刺）、`ToolMosaic`（3x3 交替留白棋盘格）、`ActionGrayscale`（右半圆 36% 柔光填充 + 中轴线）、`ToolHighlight`（斜角荧光笔尖 + 35% 半透明荧光带）；
+    - 彻底解耦文本二级属性栏三枚图标语义：`PropFontSize`（大小双 `TT` 字号标识）、`PropTextBackground`（22% 柔光填充圆角胶囊 + 居中 `A`）、`PropTextOutline`（粗体 `A` + 底部描边横条），修复二级属性栏字号标签固定显示 `"18"` 的缺陷以实时同步 `activeElement->fontSize`，并在文本编辑态下点击字号/底衬胶囊/自定义选色时保持编辑焦点与新建文本 `fill` 状态继承；
+    - 统一三枚文字描边色环（自适应半黑半白环、曜石黑环、纯白环）按钮尺寸为 `20.0f` 等宽，修正 `drawButtonGroup` 分隔线位置使其严格居中于相邻按钮间距中点 `(prev.right + curr.left) * 0.5f`，并为浅色面板下的纯白色球与深色面板下的纯黑色球自动切换主题强调色激活光环。
+

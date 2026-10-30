@@ -31,6 +31,7 @@ public:
 
     OverlayState state() const { return m_state.state.load(); }
     OverlayMode mode() const { return m_state.mode; }
+    bool isOverlayVisible() const { return m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd); }
     void setShortcutHintsEnabled(bool enabled);
     void confirmCurrentSelection(CaptureCompletion completion = {CaptureCompletionAction::Copy}) {
         confirmSelection(std::move(completion));
@@ -52,6 +53,7 @@ private:
     CaptureRenderer m_renderer;
     CaptureInput m_input;
     std::function<void()> m_closedCallback;
+    std::function<void(const cv::Mat& newImage)> m_editPinnedCallback;
     HBITMAP m_frozenBitmap = nullptr;
 
     void realCancel();

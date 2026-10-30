@@ -436,7 +436,7 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
         }
 
         if (m_zOrderRaiseRequested.exchange(false, std::memory_order_acq_rel)) {
-            if (m_hwnd && IsWindow(m_hwnd)) {
+            if (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) {
                 SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             }
@@ -884,8 +884,8 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom,
     if (m_virtualW <= 0 || m_virtualH <= 0) {
         m_virtualX = GetSystemMetrics(SM_XVIRTUALSCREEN);
         m_virtualY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        m_virtualW = (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
-        m_virtualH = (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        m_virtualW = computeFullscreenAvoidanceSpan(GetSystemMetrics(SM_CXVIRTUALSCREEN));
+        m_virtualH = computeFullscreenAvoidanceSpan(GetSystemMetrics(SM_CYVIRTUALSCREEN));
         m_originX = m_virtualX;
         m_originY = m_virtualY;
         m_width = m_virtualW;
@@ -961,10 +961,14 @@ bool GestureTrailOverlay::createOverlayWindow(HINSTANCE hInstance) {
     wc.lpszClassName = OVERLAY_CLASS;
     RegisterClassExW(&wc);
 
+    // 遵循 FocusAssistAvoidance 与任务栏 Z 序防降级规范：
+    // 窗口宽高主动缩减 1 像素 (vw - 1, vh - 1)，物理打破 explorer.exe (CRudeAppManager)
+    // 与 SHQueryUserNotificationState 对 rcWindow == rcMonitor 全屏独占窗口的几何匹配，
+    // 杜绝手势轨迹弹出时系统将任务栏 (Shell_TrayWnd) 压入 Z 序底层而暴露最大化窗口背后的非最大化窗口。
     m_virtualX = GetSystemMetrics(SM_XVIRTUALSCREEN);
     m_virtualY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    m_virtualW = (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
-    m_virtualH = (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    m_virtualW = computeFullscreenAvoidanceSpan(GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    m_virtualH = computeFullscreenAvoidanceSpan(GetSystemMetrics(SM_CYVIRTUALSCREEN));
     m_originX = m_virtualX;
     m_originY = m_virtualY;
     m_width = m_virtualW;
@@ -978,6 +982,9 @@ bool GestureTrailOverlay::createOverlayWindow(HINSTANCE hInstance) {
         0, 0, 0, 0,
         nullptr, nullptr, hInstance, nullptr
     );
+    if (m_helperOwnerHwnd) {
+        SetPropW(m_helperOwnerHwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
+    }
 
     const DWORD layeredEx = static_cast<DWORD>(normalizeGestureOverlayExStyle(0));
 
@@ -1002,6 +1009,8 @@ bool GestureTrailOverlay::createOverlayWindow(HINSTANCE hInstance) {
     SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE,
                       normalizeGestureOverlayExStyle(
                           GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE)));
+    // 显式注入 NonRudeHWND 窗口属性，与 1px 几何缩减构成双保险，彻底阻止 Windows Shell 将手势层判定为全屏独占窗口
+    SetPropW(m_hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
     const DWM_WINDOW_CORNER_PREFERENCE noCorners = DWMWCP_DONOTROUND;
     DwmSetWindowAttribute(m_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
                           &noCorners, sizeof(noCorners));
@@ -1941,6 +1950,18 @@ bool GestureTrailOverlay::render() {
         applyThemeColorsLocked();
     }
 
+    if (m_compositorReady && m_frontCtx.surface && m_dcompDevice) {
+        if (m_strokeResetPending.exchange(false, std::memory_order_acq_rel)) {
+            if (m_dirtySurfaceRect.right > m_dirtySurfaceRect.left &&
+                m_dirtySurfaceRect.bottom > m_dirtySurfaceRect.top) {
+                clearDcompSurfaceLocked(m_frontCtx.surface.Get(), &m_dirtySurfaceRect);
+            }
+            m_dirtySurfaceRect = {0, 0, 0, 0};
+            m_accumulatedStrokeDirtyRect = {0, 0, 0, 0};
+            resetVisualOpacityLocked();
+        }
+    }
+
     std::vector<TrailPoint> points;
     std::string resultText;
     const bool isRecognized = m_isRecognized.load(std::memory_order_relaxed);
@@ -2001,15 +2022,6 @@ bool GestureTrailOverlay::render() {
         renderedOk = true;
         dcompUsed = true;
     } else if (m_compositorReady && m_frontCtx.surface && m_dcompDevice) {
-        if (m_strokeResetPending.exchange(false, std::memory_order_acq_rel)) {
-            if (m_dirtySurfaceRect.right > m_dirtySurfaceRect.left &&
-                m_dirtySurfaceRect.bottom > m_dirtySurfaceRect.top) {
-                clearDcompSurfaceLocked(m_frontCtx.surface.Get(), &m_dirtySurfaceRect);
-            }
-            m_dirtySurfaceRect = {0, 0, 0, 0};
-            m_accumulatedStrokeDirtyRect = {0, 0, 0, 0};
-            resetVisualOpacityLocked();
-        }
 
         // 累积手势包围盒管线 (Cumulative Bounding Box Pipeline)
         const RECT currentBox = computeTrailDirtyRect(
@@ -2226,8 +2238,8 @@ void GestureTrailOverlay::handleDisplayChange() {
     std::lock_guard lock(m_renderMutex);
     const int newVx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     const int newVy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    const int newVw = (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
-    const int newVh = (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    const int newVw = computeFullscreenAvoidanceSpan(GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    const int newVh = computeFullscreenAvoidanceSpan(GetSystemMetrics(SM_CYVIRTUALSCREEN));
 
     if (m_virtualX == newVx && m_virtualY == newVy &&
         m_virtualW == newVw && m_virtualH == newVh &&

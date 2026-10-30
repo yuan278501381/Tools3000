@@ -174,6 +174,7 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/HudAvoidanceEngine.cpp
     src/capture/PinSpawnCalculator.cpp
     src/capture/PinPasteCoordinator.cpp
+    src/capture/PinInputController.cpp
     src/capture/CaptureHistory.cpp
 )
 add_library(capture_objects OBJECT ${CAPTURE_OBJECT_SOURCES})
