@@ -887,3 +887,26 @@
      - 旋转时以当前贴图几何中心为锚点原地正交旋转并自动钳制在当前显示器工作区内，连续旋转 0 像素漂移；
      - 悬浮工具栏新增第 8 个矢量按钮 `CaptureIconId::ActionRotate`（左键顺时针 90°、`Shift+左键` 逆时针 90°）与微晶提示胶囊，并在窄贴图下自动切换为 `4x2` / `2x4` / `1x8` 多行网格与等比紧凑缩放，保障 8 个按钮 100% 位于窗口可视区内。
   4. **防回退回归测试**：在 `tests/unit/test_capture.inc` 新增 `PinWindowTest.KeyboardShortcutsRotationFlipOpacityAndFocusPolicy` 与实机窗口级 `PinWindowTest.LiveWindowKeyboardRotationFlipAndFoldIntegration`。
+
+---
+
+### [2026-10-30] 截图标注矢量图标全量重绘升级 (`CaptureVectorIcons`) 与背景感知自适应文字描边反色 (`resolveTextOutlineColor`) 架构根治
+- **现象与用户反馈还原**：
+  1. 截图底部工具栏与二级属性栏的标注图标粗糙难看：线宽/字号步进器图标因 `iconRect` 宽度仅 `12px * scale` 而线宽固定 `2.0f * scale`，导致三条横线粘连成一团实心黑块 (`■ 15`)；`Undo`/`Redo`/`Blur`/`Rotate`/`Mic`/`Speaker`/`CornerRadius` 等图标仅用折线段近似圆弧，呈现生硬多边形棱角；文字工具二级栏中“背景胶囊 (`ToggleFill`)”与“文字描边 (`ToggleTextOutline`)”外观高度雷同，且描边色彩（自动/黑/白）同样渲染为实心圆点，与字色色板混淆。
+  2. 文字自适应描边 (`MarkupColor::Auto()`) 在深色背景下自动反色错误（深色背景下描边也是深色）。
+- **底层根因剖析**：
+  1. **自适应描边仅计算字色亮度而忽略画布背景亮度**：
+     - 原 `renderSnipasteStyleText` (`src/capture/MarkupEngine.cpp`) 仅按文字自身颜色计算 `luminance = (0.299R + 0.587G + 0.114B) / 255`，当 `luminance > 0.45f` 时固定使用深色描边 `(15, 17, 23)`；
+     - 由于预设的珊瑚红 (`#F43F5E`, `luminance = 0.473`)、橙、黄、绿、蓝、白等 6 种主色亮度均 `> 0.45f`，导致用户在深色代码编辑器或深色壁纸背景下输入红/橙/黄/绿/蓝文字时，自适应描边恒定输出深黑描边 `(15, 17, 23)`，造成“深色背景配深色描边”的反差失效。
+  2. **矢量图标视口比例失衡与几何图元缺失**：
+     - `CaptureVectorIcons::renderIcon` 固定使用 `stroke = std::max(1.8f, 2.0f * scale)`，未随窄视口 (`btnW`/`btnH`) 比例缩放，且全部曲线均以短直线段拼接。
+- **架构级根治方案**：
+  1. **背景感知自适应文字描边 (`sampleCanvasRegionLuminance` / `computeAdaptiveTextOutlineColor` / `resolveTextOutlineColor`)**：
+    - 在 `MarkupEngine` 中新增画布 ROI 感知亮度采样 `sampleCanvasRegionLuminance(canvas, textRect)`，当文本框局部越出画布边界时自动夹紧至最近的局部边缘窗口采样，避免回退全图平均导致局部深浅背景误判；
+    - 极深色文字 (`textLum < 0.22f`，如极客黑) 恒定采用纯白高反差描边 `(255, 255, 255, 250)`；极亮白及高明度浅粉彩文字 (`textLum > 0.78f`) 恒定采用曜石黑描边 `(15, 17, 23, 250)`；
+    - 所有彩色及中等亮度文字（红/橙/黄/绿/蓝/紫等，`0.22f <= textLum <= 0.78f`）严格依据底层画布背景（或开启底衬胶囊后的混合背景）亮度自动反色：深色背景 (`bgLuminance < 0.50f`) 自动反色为纯白高光描边 `(255, 255, 255, 250)`，浅色背景 (`bgLuminance >= 0.50f`) 自动反色为曜石黑描边 `(15, 17, 23, 250)`，并将外扩描边笔触升级为 `std::max(3.4f, fontSize * 0.18f)`。
+  2. **Direct2D 原生圆弧/贝塞尔矢量图标体系 (`CaptureVectorIcons`)、像素级离屏渲染审计与二级栏视觉对齐**：
+    - 引入视口自适应比例线宽 `stroke = std::clamp(s * 2.05f, 1.35f * scale, 1.75f * scale)`，并采用原生 `D2D1::ArcSegment`、`D2D1::BezierSegment` 与闭合路径重绘全量 52 枚图标：精修 `ToolBeautyShell`（macOS/Win11 窗口框 + 中心四角星芒，消除右上角 `+` 与外框顶边碰撞）、`ToolInpaint`（双段式魔法棒 + 凹弧四角星芒，消除斜杆中部肉刺）、`ToolMosaic`（3x3 交替留白棋盘格）、`ActionGrayscale`（右半圆 36% 柔光填充 + 中轴线）、`ToolHighlight`（斜角荧光笔尖 + 35% 半透明荧光带）；
+    - 彻底解耦文本二级属性栏三枚图标语义：`PropFontSize`（大小双 `TT` 字号标识）、`PropTextBackground`（22% 柔光填充圆角胶囊 + 居中 `A`）、`PropTextOutline`（粗体 `A` + 底部描边横条），修复二级属性栏字号标签固定显示 `"18"` 的缺陷以实时同步 `activeElement->fontSize`，并在文本编辑态下点击字号/底衬胶囊/自定义选色时保持编辑焦点与新建文本 `fill` 状态继承；
+    - 统一三枚文字描边色环（自适应半黑半白环、曜石黑环、纯白环）按钮尺寸为 `20.0f` 等宽，修正 `drawButtonGroup` 分隔线位置使其严格居中于相邻按钮间距中点 `(prev.right + curr.left) * 0.5f`，并为浅色面板下的纯白色球与深色面板下的纯黑色球自动切换主题强调色激活光环。
+

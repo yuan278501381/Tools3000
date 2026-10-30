@@ -215,18 +215,18 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
             specs.push_back({ToolbarCommand::SelectTool, MarkupTool::Ellipse, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
             specs.push_back({ToolbarCommand::SelectTool, MarkupTool::Line, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
-            // 填充 Toggle（纯矢量图标，无生硬汉字）
-            specs.push_back({ToolbarCommand::ToggleFill, state.currentTool, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentFillMode, false, true, false});
+            // 填充 Toggle（纯矢量图标，无生硬汉字，与左侧子形状切换器通过微刻痕分隔）
+            specs.push_back({ToolbarCommand::ToggleFill, state.currentTool, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentFillMode, false, true, true});
 
             // 线条样式下拉
             specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, false});
 
             // 线宽
-            specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 36.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+            specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 42.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
             // 圆角（仅矩形支持）
             if (state.currentTool == MarkupTool::Rectangle) {
-                specs.push_back({ToolbarCommand::CycleElementCornerRadius, state.currentTool, {}, std::format(L"{}", static_cast<int>(state.currentElementCornerRadius)), 36.0f, static_cast<int>(state.currentElementCornerRadius), LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+                specs.push_back({ToolbarCommand::CycleElementCornerRadius, state.currentTool, {}, std::format(L"{}", static_cast<int>(state.currentElementCornerRadius)), 42.0f, static_cast<int>(state.currentElementCornerRadius), LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
             }
 
             // 调色板与任意选色
@@ -239,8 +239,8 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
             specs.push_back({ToolbarCommand::SelectTool, MarkupTool::Pen, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
             specs.push_back({ToolbarCommand::SelectTool, MarkupTool::Highlight, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
-            specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, false});
-            specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 36.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+            specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, true});
+            specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 42.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
             appendColorPalette(state.currentTool);
             break;
@@ -249,20 +249,26 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
         case MarkupTool::Arrow: {
             specs.push_back({ToolbarCommand::ToggleArrowStyleDropdown, MarkupTool::Arrow, {}, L"", 38.0f, 0, LineStyle::Solid, state.currentArrowStyle, false, true, true, false});
             specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, MarkupTool::Arrow, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, false});
-            specs.push_back({ToolbarCommand::CycleStrokeWidth, MarkupTool::Arrow, {}, std::format(L"{}", state.currentStrokeWidth), 36.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+            specs.push_back({ToolbarCommand::CycleStrokeWidth, MarkupTool::Arrow, {}, std::format(L"{}", state.currentStrokeWidth), 42.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
             appendColorPalette(state.currentTool);
             break;
         }
 
         case MarkupTool::Text: {
-            specs.push_back({ToolbarCommand::CycleStrokeWidth, MarkupTool::Text, {}, std::format(L"{}", state.currentStrokeWidth > 10 ? state.currentStrokeWidth : 18), 38.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+            const int cfgFontSize = std::clamp(
+                static_cast<int>(std::round(tools3000::core::ConfigManager::instance().get<double>("/capture/markup/text/fontSize", 18.0))),
+                10, 144);
+            const int displayFontSize = (state.activeElement && state.activeElement->tool == MarkupTool::Text && state.activeElement->fontSize > 0.0f)
+                ? std::clamp(static_cast<int>(std::round(state.activeElement->fontSize)), 10, 144)
+                : (state.currentStrokeWidth > 10 ? state.currentStrokeWidth : cfgFontSize);
+            specs.push_back({ToolbarCommand::CycleStrokeWidth, MarkupTool::Text, {}, std::format(L"{}", displayFontSize), 44.0f, displayFontSize, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
             specs.push_back({ToolbarCommand::ToggleFill, MarkupTool::Text, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentFillMode, false, true, false});
 
-            // 文字描边体系：微晶描边开关 + 描边色彩选项 (自适应反色/曜石黑/纯白)
-            specs.push_back({ToolbarCommand::ToggleTextOutline, MarkupTool::Text, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentTextOutline, false, true, false});
+            // 文字描边体系：微晶描边开关 + 描边色彩选项 (自适应反色/曜石黑/纯白)，与字号/底衬组通过微刻痕分隔
+            specs.push_back({ToolbarCommand::ToggleTextOutline, MarkupTool::Text, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentTextOutline, false, true, true});
             if (state.currentTextOutline) {
-                specs.push_back({ToolbarCommand::SelectTextOutlineColor, MarkupTool::Text, MarkupColor::Auto(), zh ? L"自" : L"Auto", 24.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentTextOutlineColor.isAuto(), false, true, false});
+                specs.push_back({ToolbarCommand::SelectTextOutlineColor, MarkupTool::Text, MarkupColor::Auto(), zh ? L"自" : L"Auto", 20.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentTextOutlineColor.isAuto(), false, true, false});
                 specs.push_back({ToolbarCommand::SelectTextOutlineColor, MarkupTool::Text, MarkupColor::Black(), L"", 20.0f, 1, LineStyle::Solid, ArrowStyle::Standard, !state.currentTextOutlineColor.isAuto() && state.currentTextOutlineColor == MarkupColor::Black(), false, true, false});
                 specs.push_back({ToolbarCommand::SelectTextOutlineColor, MarkupTool::Text, MarkupColor::White(), L"", 20.0f, 2, LineStyle::Solid, ArrowStyle::Standard, !state.currentTextOutlineColor.isAuto() && state.currentTextOutlineColor == MarkupColor::White(), false, true, false});
             }
@@ -274,7 +280,7 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
         case MarkupTool::Mosaic: {
             specs.push_back({ToolbarCommand::SelectMosaicType, MarkupTool::Mosaic, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
             specs.push_back({ToolbarCommand::SelectMosaicType, MarkupTool::Mosaic, {}, L"", 28.0f, 1, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
-            specs.push_back({ToolbarCommand::CycleStrokeWidth, MarkupTool::Mosaic, {}, std::format(L"{}", state.currentStrokeWidth * 3), 36.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+            specs.push_back({ToolbarCommand::CycleStrokeWidth, MarkupTool::Mosaic, {}, std::format(L"{}", state.currentStrokeWidth * 3), 44.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, true});
             break;
         }
 
@@ -283,8 +289,8 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
             specs.push_back({ToolbarCommand::SelectTool, MarkupTool::Ellipse, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
             specs.push_back({ToolbarCommand::SelectTool, MarkupTool::Line, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
-            specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, false});
-            specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 36.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+            specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, true});
+            specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 42.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
             appendColorPalette(state.currentTool);
             break;

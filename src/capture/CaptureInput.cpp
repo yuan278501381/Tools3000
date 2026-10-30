@@ -976,6 +976,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             if (m_state->activeElement) {
                 m_state->activeElement->fill = m_state->currentFillMode;
                 m_renderer->markMarkupDirty();
+                m_renderer->invalidate();
             }
             m_state->toolbarLayoutValid = false;
             break;
@@ -1519,6 +1520,7 @@ void CaptureInput::beginMarkup(POINT point) {
                                              m_state->currentTextOutline, m_state->currentTextOutlineColor);
         m_state->activeElement = elem;
         if (m_state->activeElement) {
+            m_state->activeElement->fill = m_state->currentFillMode;
             m_state->activeElement->isActive = true;
             m_state->activeElement->isEditing = true;
         }
@@ -2112,9 +2114,12 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
                 HitArea selHit = HitArea::None;
                 if (auto* button = hitTestToolbar(point)) {
-                    // 如果正在编辑文字且点击的不是选颜色按钮，退出编辑
+                    // 如果正在编辑文字且点击的不是文本属性设置按钮，退出编辑
                     if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text && m_state->activeElement->isEditing) {
                         if (button->command != ToolbarCommand::SelectColor &&
+                            button->command != ToolbarCommand::ChooseCustomColor &&
+                            button->command != ToolbarCommand::ToggleFill &&
+                            button->command != ToolbarCommand::CycleStrokeWidth &&
                             button->command != ToolbarCommand::ToggleTextOutline &&
                             button->command != ToolbarCommand::SelectTextOutlineColor) {
                             m_state->activeElement->isEditing = false;

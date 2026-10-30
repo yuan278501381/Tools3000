@@ -37,6 +37,82 @@
 #include <limits>
 #include <mutex>
 
+namespace tools3000::capture {
+
+float sampleCanvasRegionLuminance(const cv::Mat& canvas, const cv::Rect& roiRect) {
+    if (canvas.empty() || (canvas.channels() != 3 && canvas.channels() != 4)) {
+        return 0.50f;
+    }
+    const cv::Rect bounds(0, 0, canvas.cols, canvas.rows);
+    cv::Rect clipped = roiRect & bounds;
+    if (clipped.width <= 0 || clipped.height <= 0) {
+        if (roiRect.width > 0 && roiRect.height > 0) {
+            const int w = std::min(roiRect.width, canvas.cols);
+            const int h = std::min(roiRect.height, canvas.rows);
+            const int cx = std::clamp(roiRect.x, 0, std::max(0, canvas.cols - w));
+            const int cy = std::clamp(roiRect.y, 0, std::max(0, canvas.rows - h));
+            clipped = cv::Rect(cx, cy, w, h) & bounds;
+        }
+        if (clipped.width <= 0 || clipped.height <= 0) {
+            clipped = bounds;
+        }
+    }
+    const cv::Scalar meanVal = cv::mean(canvas(clipped));
+    const float b = static_cast<float>(meanVal[0]);
+    const float g = static_cast<float>(meanVal[1]);
+    const float r = static_cast<float>(meanVal[2]);
+    const float lum = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f;
+    return std::clamp(lum, 0.0f, 1.0f);
+}
+
+MarkupColor computeAdaptiveTextOutlineColor(const MarkupColor& textColor, float bgLuminance) {
+    const float textLum = (0.299f * static_cast<float>(textColor.r) +
+                           0.587f * static_cast<float>(textColor.g) +
+                           0.114f * static_cast<float>(textColor.b)) / 255.0f;
+    const MarkupColor darkOutline{15, 17, 23, 250};
+    const MarkupColor lightOutline{255, 255, 255, 250};
+
+    // 1. 极深色文字（如极客黑 #1E293B / 纯黑 #000000，亮度 < 0.22）：
+    //    若使用深色描边会导致描边与字芯完全融为一团黑影，且在深色背景上彻底不可见，因此恒定采用纯白高反差描边
+    if (textLum < 0.22f) {
+        return lightOutline;
+    }
+
+    // 2. 极亮浅色/纯白文字（如纯白 #FFFFFF 或高明度浅粉彩，亮度 > 0.78）：
+    //    若使用白色描边会导致文字边缘发胖糊化，且在浅色背景上不可见，因此恒定采用曜石黑高反差描边
+    if (textLum > 0.78f) {
+        return darkOutline;
+    }
+
+    // 3. 彩色及中等亮度文字（红/橙/黄/绿/蓝/紫等，0.22 <= textLum <= 0.78）：
+    //    严格基于底层背景亮度自动反色：深色背景 (bgLuminance < 0.50f) 配纯白高光描边，浅色背景配曜石黑沉稳描边
+    return (bgLuminance < 0.50f) ? lightOutline : darkOutline;
+}
+
+MarkupColor resolveTextOutlineColor(const MarkupColor& textColor,
+                                    const MarkupColor& outlineColor,
+                                    const cv::Mat& canvas,
+                                    const cv::Rect& textRect,
+                                    bool withBackdrop) {
+    if (!outlineColor.isAuto()) {
+        const uint8_t a = outlineColor.a > 0 ? outlineColor.a : 250;
+        return MarkupColor{outlineColor.r, outlineColor.g, outlineColor.b, a};
+    }
+
+    float bgLum = sampleCanvasRegionLuminance(canvas, textRect);
+    if (withBackdrop) {
+        const float textLum = (0.299f * static_cast<float>(textColor.r) +
+                               0.587f * static_cast<float>(textColor.g) +
+                               0.114f * static_cast<float>(textColor.b)) / 255.0f;
+        const float capsuleLum = (textLum > 0.45f) ? 0.08f : 0.96f;
+        const float capsuleAlpha = (textLum > 0.45f) ? (190.0f / 255.0f) : (200.0f / 255.0f);
+        bgLum = bgLum * (1.0f - capsuleAlpha) + capsuleLum * capsuleAlpha;
+    }
+    return computeAdaptiveTextOutlineColor(textColor, bgLum);
+}
+
+} // namespace tools3000::capture
+
 namespace {
     std::vector<cv::Point> generateSmoothSpline(const std::vector<cv::Point>& pts, int stepsPerSegment = 10) {
         if (pts.size() < 3) return pts;
@@ -235,14 +311,14 @@ namespace {
 
                 // 文字高精度外扩描边轮廓渲染 (先绘制外扩描边轮廓，再绘制内芯文字，确保高反差清晰度)
                 if (textOutline) {
-                    Gdiplus::Color strokeColor;
-                    if (outlineColor.isAuto()) {
-                        strokeColor = (luminance > 0.45f) ? Gdiplus::Color(250, 15, 17, 23) : Gdiplus::Color(250, 255, 255, 255);
-                    } else {
-                        BYTE a = outlineColor.a > 0 ? outlineColor.a : 250;
-                        strokeColor = Gdiplus::Color(a, outlineColor.r, outlineColor.g, outlineColor.b);
-                    }
-                    float strokeWidth = std::max(3.0f, fontSize * 0.16f);
+                    const tools3000::capture::MarkupColor textColor{rVal, gVal, bVal, 255};
+                    const tools3000::capture::MarkupColor resolvedOutline =
+                        tools3000::capture::resolveTextOutlineColor(
+                            textColor, outlineColor, canvas,
+                            cv::Rect(pt.x, pt.y, sz.width, sz.height), withBackdrop);
+                    const BYTE a = resolvedOutline.a > 0 ? resolvedOutline.a : 250;
+                    Gdiplus::Color strokeColor(a, resolvedOutline.r, resolvedOutline.g, resolvedOutline.b);
+                    float strokeWidth = std::max(3.4f, fontSize * 0.18f);
                     Gdiplus::Pen strokePen(strokeColor, strokeWidth);
                     strokePen.SetLineJoin(Gdiplus::LineJoinRound);
                     g.DrawPath(&strokePen, &textPath);

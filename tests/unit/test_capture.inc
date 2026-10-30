@@ -1411,7 +1411,7 @@ TEST(CaptureVectorIconsTest, ComprehensiveVectorRendering) {
     CaptureVectorIcons::renderIcon(nullptr, nullptr, CaptureIconId::ActionConfirm,
                                    D2D1::RectF(0, 0, 30, 30), nullptr, 1.0f);
 
-    // 创建 Direct2D 工厂与 WIC/D2D 离屏 RenderTarget 进行全图标渲染覆盖验证
+    // 创建 Direct2D 工厂与离屏 DIB RenderTarget 进行全图标像素级渲染质量与覆盖验证
     Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory;
     D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2dFactory.GetAddressOf());
     ASSERT_NE(d2dFactory, nullptr);
@@ -1420,21 +1420,41 @@ TEST(CaptureVectorIconsTest, ComprehensiveVectorRendering) {
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-        0, 0, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_FEATURE_LEVEL_DEFAULT);
+        96.0f, 96.0f, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_FEATURE_LEVEL_DEFAULT);
     HRESULT hr = d2dFactory->CreateDCRenderTarget(&props, dcRt.GetAddressOf());
     ASSERT_EQ(hr, S_OK);
     ASSERT_NE(dcRt, nullptr);
 
-    HDC hdc = GetDC(nullptr);
-    RECT rc{0, 0, 100, 100};
-    dcRt->BindDC(hdc, &rc);
+    const int sheetW = 960;
+    const int sheetH = 720;
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = sheetW;
+    bmi.bmiHeader.biHeight = -sheetH; // Top-down DIB
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* dibBits = nullptr;
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0);
+    ReleaseDC(nullptr, screenDc);
+    ASSERT_NE(memDc, nullptr);
+    ASSERT_NE(hBmp, nullptr);
+    ASSERT_NE(dibBits, nullptr);
+    HGDIOBJ oldBmp = SelectObject(memDc, hBmp);
+
+    RECT rc{0, 0, sheetW, sheetH};
+    ASSERT_EQ(dcRt->BindDC(memDc, &rc), S_OK);
     dcRt->BeginDraw();
+    dcRt->Clear(D2D1::ColorF(0.96f, 0.97f, 0.98f, 1.0f));
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> testBrush;
-    dcRt->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Blue), testBrush.GetAddressOf());
-    ASSERT_NE(testBrush, nullptr);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> darkBrush;
+    dcRt->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.13f, 0.17f, 0.94f), darkBrush.GetAddressOf());
+    ASSERT_NE(darkBrush, nullptr);
 
-    // 遍历所有枚举值进行 100% 渲染覆盖
+    // 遍历所有枚举值进行 100% 渲染覆盖与像素质量校验
     const std::vector<CaptureIconId> allIcons = {
         CaptureIconId::None,
         CaptureIconId::ToolRectangle,
@@ -1486,29 +1506,86 @@ TEST(CaptureVectorIconsTest, ComprehensiveVectorRendering) {
         CaptureIconId::PropPipette,
         CaptureIconId::PropPalette,
         CaptureIconId::PropRainbowWheel,
+        CaptureIconId::ActionRecordVideo,
         CaptureIconId::PropQrCode,
         CaptureIconId::ToolBeautyShell,
         CaptureIconId::PropAspectRatio,
         CaptureIconId::PropNumberSquare,
+        CaptureIconId::PropTextOutline,
+        CaptureIconId::PropFontSize,
+        CaptureIconId::PropTextBackground,
+        CaptureIconId::ActionInvertSelection,
     };
 
-    D2D1_RECT_F targetRect = D2D1::RectF(10.0f, 10.0f, 40.0f, 40.0f);
-    for (auto id : allIcons) {
-        CaptureVectorIcons::renderIcon(dcRt.Get(), d2dFactory.Get(), id, targetRect, testBrush.Get(), 1.0f);
-        CaptureVectorIcons::renderIcon(dcRt.Get(), d2dFactory.Get(), id, targetRect, testBrush.Get(), 2.0f);
+    const int cols = 10;
+    const float cellW = 92.0f;
+    const float cellH = 88.0f;
+    for (size_t i = 0; i < allIcons.size(); ++i) {
+        const auto id = allIcons[i];
+        const int col = static_cast<int>(i) % cols;
+        const int row = static_cast<int>(i) / cols;
+        const float ox = 16.0f + col * cellW;
+        const float oy = 14.0f + row * cellH;
+
+        // 1x 真实主工具栏尺寸 (30x30)
+        D2D1_RECT_F rect1x = D2D1::RectF(ox, oy, ox + 30.0f, oy + 30.0f);
+        FloatingGlassBar::drawButtonPill(dcRt.Get(), rect1x, 6.0f, false, false, false, false, 1.0f, false);
+        CaptureVectorIcons::renderIcon(dcRt.Get(), d2dFactory.Get(), id, rect1x, darkBrush.Get(), 1.0f);
+
+        // 2x 高分屏尺寸 (52x52)
+        D2D1_RECT_F rect2x = D2D1::RectF(ox + 34.0f, oy, ox + 86.0f, oy + 52.0f);
+        CaptureVectorIcons::renderIcon(dcRt.Get(), d2dFactory.Get(), id, rect2x, darkBrush.Get(), 1.8f);
+
+        // 无 factory 降级分支覆盖 (下方小格 24x24)
+        D2D1_RECT_F rectFallback = D2D1::RectF(ox, oy + 34.0f, ox + 24.0f, oy + 58.0f);
+        CaptureVectorIcons::renderIcon(dcRt.Get(), nullptr, id, rectFallback, darkBrush.Get(), 1.0f);
     }
 
-    // 验证 FloatingGlassBar 在实时 Direct2D 离屏上下文中的双层阴影、微晶渐变、药丸与双层微刻痕分隔线渲染
-    FloatingGlassBar::drawGlassPanel(dcRt.Get(), D2D1::RectF(10, 10, 150, 45), 11.0f, true);
-    FloatingGlassBar::drawGlassPanel(dcRt.Get(), D2D1::RectF(10, 10, 150, 45), 11.0f, false);
-    FloatingGlassBar::drawButtonPill(dcRt.Get(), D2D1::RectF(15, 15, 45, 40), 6.0f, true, true, false, false, 1.0f, true);
-    FloatingGlassBar::drawButtonPill(dcRt.Get(), D2D1::RectF(15, 15, 45, 40), 6.0f, false, false, true, false, 1.0f, false);
-    FloatingGlassBar::drawButtonPill(dcRt.Get(), D2D1::RectF(15, 15, 45, 40), 6.0f, false, false, false, true, 1.0f, true);
-    FloatingGlassBar::drawSeparator(dcRt.Get(), 50.0f, 15.0f, 40.0f, 1.0f, true);
-    FloatingGlassBar::drawSeparator(dcRt.Get(), 50.0f, 15.0f, 40.0f, 1.0f, false);
+    // 底部绘制深浅双模式 FloatingGlassBar 真实工具栏条示例
+    FloatingGlassBar::drawGlassPanel(dcRt.Get(), D2D1::RectF(16.0f, 560.0f, 460.0f, 600.0f), 10.0f, false);
+    FloatingGlassBar::drawGlassPanel(dcRt.Get(), D2D1::RectF(480.0f, 560.0f, 924.0f, 600.0f), 10.0f, true);
+    FloatingGlassBar::drawButtonPill(dcRt.Get(), D2D1::RectF(24.0f, 565.0f, 54.0f, 595.0f), 6.0f, true, false, false, false, 1.0f, false);
+    FloatingGlassBar::drawButtonPill(dcRt.Get(), D2D1::RectF(58.0f, 565.0f, 88.0f, 595.0f), 6.0f, false, true, false, false, 1.0f, false);
+    FloatingGlassBar::drawButtonPill(dcRt.Get(), D2D1::RectF(92.0f, 565.0f, 122.0f, 595.0f), 6.0f, false, false, true, false, 1.0f, false);
+    FloatingGlassBar::drawButtonPill(dcRt.Get(), D2D1::RectF(126.0f, 565.0f, 156.0f, 595.0f), 6.0f, false, false, false, true, 1.0f, false);
+    FloatingGlassBar::drawSeparator(dcRt.Get(), 164.0f, 568.0f, 592.0f, 1.0f, false);
+    FloatingGlassBar::drawSeparator(dcRt.Get(), 628.0f, 568.0f, 592.0f, 1.0f, true);
 
-    dcRt->EndDraw();
-    ReleaseDC(nullptr, hdc);
+    ASSERT_EQ(dcRt->EndDraw(), S_OK);
+    GdiFlush();
+
+    cv::Mat rendered(sheetH, sheetW, CV_8UC4, dibBits);
+    // 验证每个非 None 图标在 1x (30x30) 与 2x (52x52) 下均真实产出有效矢量笔画像素，且留有充足负空间（绝不糊成实心黑块）
+    for (size_t i = 0; i < allIcons.size(); ++i) {
+        const auto id = allIcons[i];
+        if (id == CaptureIconId::None) continue;
+        const int col = static_cast<int>(i) % cols;
+        const int row = static_cast<int>(i) / cols;
+        const int ox = 16 + col * static_cast<int>(cellW);
+        const int oy = 14 + row * static_cast<int>(cellH);
+
+        cv::Rect roi1x(ox + 4, oy + 4, 22, 22);
+        cv::Mat patch1x = rendered(roi1x);
+        int ink1x = 0;
+        for (int y = 0; y < patch1x.rows; ++y) {
+            for (int x = 0; x < patch1x.cols; ++x) {
+                const auto& px = patch1x.at<cv::Vec4b>(y, x);
+                if (px[0] < 215 || px[1] < 215 || px[2] < 215) {
+                    ++ink1x;
+                }
+            }
+        }
+        EXPECT_GT(ink1x, 8) << "Icon index " << i << " produced too few ink pixels at 1x";
+        EXPECT_LT(ink1x, patch1x.rows * patch1x.cols * 80 / 100) << "Icon index " << i << " flooded negative space at 1x";
+    }
+
+    if (std::getenv("TOOLS3000_DUMP_ICON_SHEET") != nullptr) {
+        cv::imwrite("build/icon_audit_sheet.png", rendered);
+    }
+
+    SelectObject(memDc, oldBmp);
+    DeleteObject(hBmp);
+    DeleteDC(memDc);
 }
 
 TEST(CaptureSliderPopupTest, SteplessSliderAndWheelInteraction) {
@@ -4331,6 +4408,90 @@ TEST(CaptureHudAndCursorAndOutlineTest, TextOutlineDataModelAndAutoColor) {
     cv::Mat comp = engine.getCompositeImage();
     EXPECT_FALSE(comp.empty());
     EXPECT_EQ(engine.elementCount(), 3u);
+
+    // 3. 验证背景亮度采样与自适应文字描边反色 (Auto 模式)
+    cv::Mat darkCanvas(160, 240, CV_8UC3, cv::Scalar(30, 28, 26)); // 深色编辑器背景 (亮度 ~ 0.11)
+    cv::Mat lightCanvas(160, 240, CV_8UC3, cv::Scalar(246, 248, 250)); // 浅色文档背景 (亮度 ~ 0.97)
+    EXPECT_LT(sampleCanvasRegionLuminance(darkCanvas, cv::Rect(10, 10, 100, 40)), 0.20f);
+    EXPECT_GT(sampleCanvasRegionLuminance(lightCanvas, cv::Rect(10, 10, 100, 40)), 0.85f);
+    // 越界与空画布安全兜底
+    EXPECT_NEAR(sampleCanvasRegionLuminance(cv::Mat(), cv::Rect(0, 0, 10, 10)), 0.50f, 0.01f);
+    EXPECT_LT(sampleCanvasRegionLuminance(darkCanvas, cv::Rect(-50, -50, 20, 20)), 0.20f);
+
+    // 彩色预设字色（红/橙/黄/绿/蓝/紫）在深色背景下必须自动反色为纯白描边 (255, 255, 255)，在浅色背景下反色为曜石黑描边 (15, 17, 23)
+    const std::vector<MarkupColor> chromaticPresets = {
+        MarkupColor::Red(),
+        MarkupColor::Orange(),
+        MarkupColor::Yellow(),
+        MarkupColor::Green(),
+        MarkupColor::Blue(),
+        MarkupColor::Purple(),
+    };
+    for (const auto& textCol : chromaticPresets) {
+        MarkupColor onDark = resolveTextOutlineColor(textCol, MarkupColor::Auto(), darkCanvas, cv::Rect(20, 20, 120, 36), false);
+        EXPECT_EQ(onDark.r, 255);
+        EXPECT_EQ(onDark.g, 255);
+        EXPECT_EQ(onDark.b, 255);
+
+        MarkupColor onLight = resolveTextOutlineColor(textCol, MarkupColor::Auto(), lightCanvas, cv::Rect(20, 20, 120, 36), false);
+        EXPECT_EQ(onLight.r, 15);
+        EXPECT_EQ(onLight.g, 17);
+        EXPECT_EQ(onLight.b, 23);
+    }
+
+    // 极深色文字 (Black) 无论在深色或浅色背景均保持纯白高反差描边；极亮白/高明度浅粉彩文字恒定保持曜石黑描边
+    EXPECT_EQ(computeAdaptiveTextOutlineColor(MarkupColor::Black(), 0.10f).r, 255);
+    EXPECT_EQ(computeAdaptiveTextOutlineColor(MarkupColor::Black(), 0.90f).r, 255);
+    EXPECT_EQ(computeAdaptiveTextOutlineColor(MarkupColor::White(), 0.10f).r, 15);
+    EXPECT_EQ(computeAdaptiveTextOutlineColor(MarkupColor::White(), 0.90f).r, 15);
+    const MarkupColor lightPastel{215, 225, 235, 255};
+    EXPECT_EQ(computeAdaptiveTextOutlineColor(lightPastel, 0.10f).r, 15);
+
+    // 边缘越界 ROI 局部夹紧采样验证：左半深色、右半亮白的分屏画布上，左侧负坐标越界文本框必须采样左侧局部深色边缘而非全图均值
+    {
+        cv::Mat splitCanvas(120, 240, CV_8UC3, cv::Scalar(245, 245, 245));
+        splitCanvas(cv::Rect(0, 0, 80, 120)).setTo(cv::Scalar(18, 20, 24));
+        const float clampedLeftLum = sampleCanvasRegionLuminance(splitCanvas, cv::Rect(-45, 20, 40, 30));
+        EXPECT_LT(clampedLeftLum, 0.20f);
+        MarkupColor edgeOutline = resolveTextOutlineColor(MarkupColor::Red(), MarkupColor::Auto(), splitCanvas, cv::Rect(-45, 20, 40, 30), false);
+        EXPECT_EQ(edgeOutline.r, 255);
+    }
+
+    // 4. 真实像素级验证：深色背景下绘制红色文字 "3223" (Auto 描边) 必须产生高亮度白色描边像素
+    {
+        MarkupEngine darkEngine;
+        darkEngine.setBaseImage(darkCanvas);
+        darkEngine.addText(cv::Point(20, 30), "3223", MarkupColor::Red(), 24.0f, true, MarkupColor::Auto());
+        cv::Mat renderedDark = darkEngine.getCompositeImage();
+        int whiteOutlinePixels = 0;
+        for (int y = 0; y < renderedDark.rows; ++y) {
+            for (int x = 0; x < renderedDark.cols; ++x) {
+                const auto& px = renderedDark.at<cv::Vec3b>(y, x);
+                if (px[0] > 210 && px[1] > 210 && px[2] > 210) {
+                    ++whiteOutlinePixels;
+                }
+            }
+        }
+        EXPECT_GT(whiteOutlinePixels, 20);
+    }
+
+    // 浅色背景下绘制红色文字 "3223" (Auto 描边) 必须产生曜石黑深色描边像素
+    {
+        MarkupEngine lightEngine;
+        lightEngine.setBaseImage(lightCanvas);
+        lightEngine.addText(cv::Point(20, 30), "3223", MarkupColor::Red(), 24.0f, true, MarkupColor::Auto());
+        cv::Mat renderedLight = lightEngine.getCompositeImage();
+        int darkOutlinePixels = 0;
+        for (int y = 0; y < renderedLight.rows; ++y) {
+            for (int x = 0; x < renderedLight.cols; ++x) {
+                const auto& px = renderedLight.at<cv::Vec3b>(y, x);
+                if (px[0] < 60 && px[1] < 60 && px[2] < 60) {
+                    ++darkOutlinePixels;
+                }
+            }
+        }
+        EXPECT_GT(darkOutlinePixels, 20);
+    }
 }
 
 TEST(CaptureHudAndCursorAndOutlineTest, TextOutlineToolbarLayoutAndCommandGeneration) {
@@ -4350,15 +4511,23 @@ TEST(CaptureHudAndCursorAndOutlineTest, TextOutlineToolbarLayoutAndCommandGenera
     rebuildCaptureToolbar(state, D2D1::RectF(100.0f, 100.0f, 800.0f, 600.0f), D2D1::SizeF(1920.0f, 1080.0f));
     ASSERT_FALSE(state.secondaryToolbarButtons.empty());
 
-    // 检查是否存在 ToggleTextOutline 按钮与 3 项描边色彩
+    // 检查是否存在 ToggleTextOutline 按钮（带前置分组分隔线）与 3 项等宽描边色彩圆环
     bool foundToggleOutline = false;
     int outlineColorCount = 0;
+    float firstOutlineBtnWidth = 0.0f;
     for (const auto& btn : state.secondaryToolbarButtons) {
         if (btn.command == ToolbarCommand::ToggleTextOutline) {
             foundToggleOutline = true;
+            EXPECT_TRUE(btn.isSeparatorBefore);
         }
         if (btn.command == ToolbarCommand::SelectTextOutlineColor) {
             outlineColorCount++;
+            const float w = btn.rect.right - btn.rect.left;
+            if (firstOutlineBtnWidth <= 0.0f) {
+                firstOutlineBtnWidth = w;
+            } else {
+                EXPECT_NEAR(w, firstOutlineBtnWidth, 0.01f);
+            }
             if (btn.color.isAuto()) {
                 EXPECT_TRUE(btn.boolParam); // isAuto active
             } else {
@@ -4368,6 +4537,16 @@ TEST(CaptureHudAndCursorAndOutlineTest, TextOutlineToolbarLayoutAndCommandGenera
     }
     EXPECT_TRUE(foundToggleOutline);
     EXPECT_EQ(outlineColorCount, 3); // 自适应、曜石黑、纯白
+
+    // 验证当激活的文字元素字号调整为 32px 时，二级属性栏字号按钮标签实时同步显示 "32"
+    cv::Mat dummy(200, 300, CV_8UC3, cv::Scalar(30, 30, 30));
+    state.markup.setBaseImage(dummy);
+    state.activeElement = state.markup.addText(cv::Point(20, 20), "Test", MarkupColor::Red(), 32.0f, true, MarkupColor::Auto());
+    state.toolbarLayoutValid = false;
+    rebuildCaptureToolbar(state, D2D1::RectF(100.0f, 100.0f, 800.0f, 600.0f), D2D1::SizeF(1920.0f, 1080.0f));
+    ASSERT_FALSE(state.secondaryToolbarButtons.empty());
+    EXPECT_EQ(state.secondaryToolbarButtons.front().command, ToolbarCommand::CycleStrokeWidth);
+    EXPECT_EQ(state.secondaryToolbarButtons.front().label, L"32");
 
     // 当关闭描边时，描边色彩微晶选项应自动隐藏收起
     state.currentTextOutline = false;

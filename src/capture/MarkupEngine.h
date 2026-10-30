@@ -99,6 +99,20 @@ struct MarkupColor {
     bool isAuto() const { return a == 0; }
 };
 
+/// 采样画布指定矩形区域的平均感知亮度 (0.0f ~ 1.0f，支持 BGR/BGRA，自动裁剪越界区域)
+float sampleCanvasRegionLuminance(const cv::Mat& canvas, const cv::Rect& roiRect);
+
+/// 根据文字颜色与背景亮度计算高反差自适应文字描边颜色 (Auto 模式)
+MarkupColor computeAdaptiveTextOutlineColor(const MarkupColor& textColor, float bgLuminance);
+
+/// 解析最终应用的文字描边颜色（支持显式指定描边色或 Auto 背景感知自适应反色）
+MarkupColor resolveTextOutlineColor(const MarkupColor& textColor,
+                                    const MarkupColor& outlineColor,
+                                    const cv::Mat& canvas,
+                                    const cv::Rect& textRect,
+                                    bool withBackdrop = false);
+
+
 enum class HitArea {
     None = -1,
     Body = 0,

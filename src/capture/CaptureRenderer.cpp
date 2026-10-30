@@ -953,15 +953,20 @@ void CaptureRenderer::drawSizeMenu(const D2D1_RECT_F& hudRect, CaptureState& sta
     auto menuRect = D2D1::RectF(menuX, menuY, menuX + menuW, menuY + menuH);
     state.sizeMenuRect = menuRect;
 
-    // 绘制纯白磨砂卡片 + 双层柔和阴影
+    // 绘制磨砂卡片 + 双层柔和阴影
     drawGlassPanel(menuRect, 8.0f * scale, false);
 
+    const bool isDark = tools3000::core::WinUtils::isSystemDarkMode();
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
+    const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
+
     ComPtr<ID2D1SolidColorBrush> primaryBrush, textBrush, subTextBrush, trackOffBrush, borderBrush, whiteBrush;
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 1.0f, 1.0f), primaryBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.95f), textBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.48f, 0.52f, 0.60f, 0.95f), subTextBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.88f, 0.92f, 1.0f), trackOffBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), borderBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 1.0f), primaryBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.92f, 0.94f, 0.96f, 0.95f) : D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.95f), textBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.62f, 0.66f, 0.74f, 0.95f) : D2D1::ColorF(0.48f, 0.52f, 0.60f, 0.95f), subTextBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.28f, 0.31f, 0.38f, 1.0f) : D2D1::ColorF(0.85f, 0.88f, 0.92f, 1.0f), trackOffBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), borderBrush.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), whiteBrush.GetAddressOf());
 
     // 1. 单选按钮：◉ px    ○ dp
@@ -1135,10 +1140,13 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
     m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.10f), separatorBrush.GetAddressOf());
 
     auto drawButtonGroup = [&](const std::vector<ToolbarButton>& btnList) {
-        for (const auto& button : btnList) {
-            // 绘制前置微刻痕细腻分隔线 (1px 双层微刻痕)
+        for (size_t idx = 0; idx < btnList.size(); ++idx) {
+            const auto& button = btnList[idx];
+            // 绘制前置微刻痕细腻分隔线 (1px 双层微刻痕，严格居中于相邻两枚按钮间距中点)
             if (button.isSeparatorBefore) {
-                float sepX = button.rect.left - 4.5f * scale;
+                float sepX = (idx > 0)
+                    ? (btnList[idx - 1].rect.right + button.rect.left) * 0.5f
+                    : (button.rect.left - 6.0f * scale);
                 float sepTop = button.rect.top + 5.0f * scale;
                 float sepBottom = button.rect.bottom - 5.0f * scale;
                 FloatingGlassBar::drawSeparator(m_renderTarget.Get(), sepX, sepTop, sepBottom, 1.0f, isDark);
@@ -1219,58 +1227,67 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                     swatch.GetAddressOf());
                 if (swatch) m_renderTarget->FillEllipse(colorCircle, swatch.Get());
 
-                // 白色色球增加 1px 浅灰色外边缘
-                if (button.color.r > 240 && button.color.g > 240 && button.color.b > 240) {
-                    m_renderTarget->DrawEllipse(colorCircle, separatorBrush.Get(), 1.0f);
+                const bool isNearWhiteSwatch = (button.color.r > 235 && button.color.g > 235 && button.color.b > 235);
+                const bool isNearBlackSwatch = (button.color.r < 45 && button.color.g < 45 && button.color.b < 45);
+                if ((isNearWhiteSwatch || (isDark && isNearBlackSwatch)) && separatorBrush) {
+                    m_renderTarget->DrawEllipse(colorCircle, separatorBrush.Get(), 1.0f * scale);
                 }
 
                 bool isActiveColor = (button.color.r == state.currentColor.r &&
                                      button.color.g == state.currentColor.g &&
                                      button.color.b == state.currentColor.b);
                 if (isActiveColor) {
-                    // 内部白色间隙隔离环 + 外部同色扩散光晕
+                    // 内部背景色隔离环 + 外部高反差扩散光晕（浅色面板上的纯白色球/深色面板上的纯黑色球自动切换为主题强调色光环）
                     auto innerRing = D2D1::Ellipse(D2D1::Point2F(cx, cy), r + 1.2f * scale, r + 1.2f * scale);
-                    ComPtr<ID2D1SolidColorBrush> whiteRing;
-                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), whiteRing.GetAddressOf());
-                    if (whiteRing) m_renderTarget->DrawEllipse(innerRing, whiteRing.Get(), 1.2f * scale);
+                    ComPtr<ID2D1SolidColorBrush> gapRing;
+                    m_renderTarget->CreateSolidColorBrush(
+                        isDark ? D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.95f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f),
+                        gapRing.GetAddressOf());
+                    if (gapRing) m_renderTarget->DrawEllipse(innerRing, gapRing.Get(), 1.2f * scale);
 
                     auto outerRing = D2D1::Ellipse(D2D1::Point2F(cx, cy), r + 2.8f * scale, r + 2.8f * scale);
-                    if (swatch) m_renderTarget->DrawEllipse(outerRing, swatch.Get(), 1.8f * scale);
+                    const bool useAccentRing = (!isDark && isNearWhiteSwatch) || (isDark && isNearBlackSwatch);
+                    auto* ringBrush = (useAccentRing && activeIconBrush) ? activeIconBrush.Get() : swatch.Get();
+                    if (ringBrush) m_renderTarget->DrawEllipse(outerRing, ringBrush, 1.8f * scale);
                 } else if (isHovered && hoverBrush) {
                     auto outerRing = D2D1::Ellipse(D2D1::Point2F(cx, cy), r + 2.2f * scale, r + 2.2f * scale);
                     m_renderTarget->DrawEllipse(outerRing, hoverBrush.Get(), 1.5f * scale);
                 }
             } else if (isOutlineColor) {
-                // 文字描边色板：支持自适应双色球、曜石黑、纯白
+                // 文字描边色板：采用统一尺寸空心圆环 (Hollow Ring Swatch) 视觉形态，与右侧实心字色圆点形成直觉级区分
                 float cx = (button.rect.left + button.rect.right) * 0.5f;
                 float cy = (button.rect.top + button.rect.bottom) * 0.5f;
-                float r = std::min(button.rect.right - button.rect.left, button.rect.bottom - button.rect.top) * 0.38f;
-                auto colorCircle = D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r);
+                float r = std::min({button.rect.right - button.rect.left, button.rect.bottom - button.rect.top, 20.0f * scale}) * 0.36f;
+                float ringStroke = std::max(2.2f * scale, r * 0.46f);
+                float midR = r - ringStroke * 0.35f;
+                auto ringEllipse = D2D1::Ellipse(D2D1::Point2F(cx, cy), midR, midR);
+                auto outerBorder = D2D1::Ellipse(D2D1::Point2F(cx, cy), midR + ringStroke * 0.5f, midR + ringStroke * 0.5f);
+                auto innerBorder = D2D1::Ellipse(D2D1::Point2F(cx, cy), std::max(1.0f, midR - ringStroke * 0.5f), std::max(1.0f, midR - ringStroke * 0.5f));
 
                 bool isActive = button.color.isAuto()
                     ? state.currentTextOutlineColor.isAuto()
                     : (!state.currentTextOutlineColor.isAuto() && button.color == state.currentTextOutlineColor);
 
                 if (button.color.isAuto()) {
-                    auto leftClip = D2D1::RectF(cx - r - 1.0f, cy - r - 1.0f, cx, cy + r + 1.0f);
-                    auto rightClip = D2D1::RectF(cx, cy - r - 1.0f, cx + r + 1.0f, cy + r + 1.0f);
+                    auto leftClip = D2D1::RectF(cx - r - 2.0f * scale, cy - r - 2.0f * scale, cx, cy + r + 2.0f * scale);
+                    auto rightClip = D2D1::RectF(cx, cy - r - 2.0f * scale, cx + r + 2.0f * scale, cy + r + 2.0f * scale);
 
                     ComPtr<ID2D1SolidColorBrush> blackBrush, whiteBrush;
-                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), blackBrush.GetAddressOf());
-                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.96f, 0.96f, 1.0f), whiteBrush.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.12f, 0.16f, 1.0f), blackBrush.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.98f, 1.0f, 1.0f), whiteBrush.GetAddressOf());
 
                     if (blackBrush && whiteBrush) {
                         m_renderTarget->PushAxisAlignedClip(leftClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                        m_renderTarget->FillEllipse(colorCircle, blackBrush.Get());
+                        m_renderTarget->DrawEllipse(ringEllipse, blackBrush.Get(), ringStroke);
                         m_renderTarget->PopAxisAlignedClip();
 
                         m_renderTarget->PushAxisAlignedClip(rightClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                        m_renderTarget->FillEllipse(colorCircle, whiteBrush.Get());
+                        m_renderTarget->DrawEllipse(ringEllipse, whiteBrush.Get(), ringStroke);
                         m_renderTarget->PopAxisAlignedClip();
                     }
                     if (separatorBrush) {
-                        m_renderTarget->DrawEllipse(colorCircle, separatorBrush.Get(), 1.0f);
-                        m_renderTarget->DrawLine(D2D1::Point2F(cx, cy - r), D2D1::Point2F(cx, cy + r), separatorBrush.Get(), 1.0f);
+                        m_renderTarget->DrawEllipse(outerBorder, separatorBrush.Get(), 0.9f * scale);
+                        m_renderTarget->DrawEllipse(innerBorder, separatorBrush.Get(), 0.9f * scale);
                     }
                 } else {
                     ComPtr<ID2D1SolidColorBrush> swatch;
@@ -1278,34 +1295,34 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                         D2D1::ColorF(button.color.r / 255.0f, button.color.g / 255.0f,
                                      button.color.b / 255.0f, 1.0f),
                         swatch.GetAddressOf());
-                    if (swatch) m_renderTarget->FillEllipse(colorCircle, swatch.Get());
-                    if (button.color.r > 240 && button.color.g > 240 && button.color.b > 240) {
-                        if (separatorBrush) m_renderTarget->DrawEllipse(colorCircle, separatorBrush.Get(), 1.0f);
+                    if (swatch) {
+                        m_renderTarget->DrawEllipse(ringEllipse, swatch.Get(), ringStroke);
+                    }
+                    if (separatorBrush) {
+                        m_renderTarget->DrawEllipse(outerBorder, separatorBrush.Get(), 0.9f * scale);
+                        m_renderTarget->DrawEllipse(innerBorder, separatorBrush.Get(), 0.9f * scale);
                     }
                 }
 
                 if (isActive) {
-                    auto innerRing = D2D1::Ellipse(D2D1::Point2F(cx, cy), r + 1.2f * scale, r + 1.2f * scale);
-                    ComPtr<ID2D1SolidColorBrush> whiteRing;
-                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), whiteRing.GetAddressOf());
-                    if (whiteRing) m_renderTarget->DrawEllipse(innerRing, whiteRing.Get(), 1.2f * scale);
-
-                    auto outerRing = D2D1::Ellipse(D2D1::Point2F(cx, cy), r + 2.8f * scale, r + 2.8f * scale);
+                    auto activeOuter = D2D1::Ellipse(D2D1::Point2F(cx, cy), r + 2.4f * scale, r + 2.4f * scale);
                     ComPtr<ID2D1SolidColorBrush> activeRingBrush;
                     m_renderTarget->CreateSolidColorBrush(
-                        button.color.isAuto() ? D2D1::ColorF(0.0f, 0.478f, 1.0f, 1.0f) :
-                        D2D1::ColorF(button.color.r / 255.0f, button.color.g / 255.0f, button.color.b / 255.0f, 1.0f),
+                        D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.95f),
                         activeRingBrush.GetAddressOf());
-                    if (activeRingBrush) m_renderTarget->DrawEllipse(outerRing, activeRingBrush.Get(), 1.8f * scale);
+                    if (activeRingBrush) m_renderTarget->DrawEllipse(activeOuter, activeRingBrush.Get(), 1.6f * scale);
                 } else if (isHovered && hoverBrush) {
-                    auto outerRing = D2D1::Ellipse(D2D1::Point2F(cx, cy), r + 2.2f * scale, r + 2.2f * scale);
-                    m_renderTarget->DrawEllipse(outerRing, hoverBrush.Get(), 1.5f * scale);
+                    auto hoverOuter = D2D1::Ellipse(D2D1::Point2F(cx, cy), r + 2.0f * scale, r + 2.0f * scale);
+                    m_renderTarget->DrawEllipse(hoverOuter, hoverBrush.Get(), 1.4f * scale);
                 }
             } else {
                 ComPtr<ID2D1SolidColorBrush> stepperBg;
                 if (isStepper) {
                     m_renderTarget->CreateSolidColorBrush(
-                        D2D1::ColorF(0.0f, 0.0f, 0.0f, isHovered ? 0.065f : 0.035f), stepperBg.GetAddressOf());
+                        isDark
+                            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, isHovered ? 0.10f : 0.055f)
+                            : D2D1::ColorF(0.0f, 0.0f, 0.0f, isHovered ? 0.065f : 0.035f),
+                        stepperBg.GetAddressOf());
                 }
 
                 auto* fillBrush = isConfirm ? (isHovered ? confirmHoverBrush.Get() : confirmBrush.Get())
@@ -1327,16 +1344,17 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                 drawVectorButtonIcon(button, button.rect, currentIconBrush, scale);
             }
 
-            // 如果带有下拉三角指示器，绘制极精致微型实心倒三角 (3.0x2.0px)
+            // 如果带有下拉指示器，绘制精致现代 V 型折角箭头 (Chevron)
             if (button.hasDropdown) {
-                float tx = button.rect.right - 5.0f * scale;
+                float tx = button.rect.right - 5.2f * scale;
                 float ty = (button.rect.top + button.rect.bottom) * 0.5f;
-                m_renderTarget->DrawLine(D2D1::Point2F(tx - 1.5f * scale, ty - 1.0f * scale),
-                                         D2D1::Point2F(tx + 1.5f * scale, ty - 1.0f * scale), iconBrush.Get(), 1.0f * scale);
-                m_renderTarget->DrawLine(D2D1::Point2F(tx - 1.5f * scale, ty - 1.0f * scale),
-                                         D2D1::Point2F(tx, ty + 1.2f * scale), iconBrush.Get(), 1.0f * scale);
-                m_renderTarget->DrawLine(D2D1::Point2F(tx + 1.5f * scale, ty - 1.0f * scale),
-                                         D2D1::Point2F(tx, ty + 1.2f * scale), iconBrush.Get(), 1.0f * scale);
+                auto* chevBrush = isActiveTool ? activeIconBrush.Get() : iconBrush.Get();
+                if (chevBrush) {
+                    m_renderTarget->DrawLine(D2D1::Point2F(tx - 2.0f * scale, ty - 0.8f * scale),
+                                             D2D1::Point2F(tx, ty + 1.2f * scale), chevBrush, 1.25f * scale);
+                    m_renderTarget->DrawLine(D2D1::Point2F(tx, ty + 1.2f * scale),
+                                             D2D1::Point2F(tx + 2.0f * scale, ty - 0.8f * scale), chevBrush, 1.25f * scale);
+                }
             }
         }
     };
@@ -1745,19 +1763,24 @@ void CaptureRenderer::drawSliderPopup(CaptureState& state) {
     // 1. 磨砂亚克力微浮岛
     drawGlassPanel(popRect, 10.0f * scale, false);
 
+    const bool isDark = tools3000::core::WinUtils::isSystemDarkMode();
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
+    const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
+
     ComPtr<ID2D1SolidColorBrush> titleBrush, badgeBg, badgeText, trackBg, trackFill, thumbBg, thumbBorder, thumbGlow, presetBg, presetActiveBg, presetText, presetActiveText;
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.95f), titleBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.05f), badgeBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 1.0f, 1.0f), badgeText.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), trackBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 1.0f, 0.95f), trackFill.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.92f, 0.94f, 0.96f, 0.95f) : D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.95f), titleBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.05f), badgeBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 1.0f), badgeText.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), trackBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.95f), trackFill.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), thumbBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 1.0f, 1.0f), thumbBorder.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 1.0f, 0.25f), thumbGlow.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.04f), presetBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 1.0f, 0.14f), presetActiveBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.28f, 0.35f, 0.95f), presetText.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 1.0f, 1.0f), presetActiveText.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 1.0f), thumbBorder.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.25f), thumbGlow.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.06f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.04f), presetBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, isDark ? 0.24f : 0.14f), presetActiveBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.84f, 0.87f, 0.92f, 0.95f) : D2D1::ColorF(0.25f, 0.28f, 0.35f, 0.95f), presetText.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 1.0f), presetActiveText.GetAddressOf());
 
     std::wstring title = (state.sliderPopup.type == SliderPopupType::SelectionCornerRadius)
         ? (state.beautyShell.enabled
@@ -2139,7 +2162,7 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::PropCornerRadius, rect, brush, scale);
             return;
         case ToolbarCommand::SideInvertSelection:
-            CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ToolArrowDouble, rect, brush, scale);
+            CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionInvertSelection, rect, brush, scale);
             return;
         case ToolbarCommand::SideResetSelection:
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionUndo, rect, brush, scale);
@@ -2193,10 +2216,11 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
             break;
         }
         case ToolbarCommand::ToggleFill: {
-            // 纯矢量填充/描边切换图标（居中方块）
-            CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
-                button.boolParam ? CaptureIconId::PropFillSolid : CaptureIconId::PropFillOutline,
-                rect, brush, scale);
+            // 文字工具下为“背景胶囊底衬”开关，采用专属胶囊标签图标；几何形状工具下为实心/空心切换图标
+            const auto fillIcon = (button.tool == MarkupTool::Text)
+                ? CaptureIconId::PropTextBackground
+                : (button.boolParam ? CaptureIconId::PropFillSolid : CaptureIconId::PropFillOutline);
+            CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), fillIcon, rect, brush, scale);
             return;
         }
         case ToolbarCommand::ToggleTextOutline: {
@@ -2243,13 +2267,16 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
             return;
         }
         case ToolbarCommand::CycleStrokeWidth: {
-            auto iconRect = D2D1::RectF(rect.left + 3.0f * scale, rect.top, rect.left + 15.0f * scale, rect.bottom);
-            CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::PropStrokeWidth, iconRect, brush, scale);
+            auto iconRect = D2D1::RectF(rect.left + 2.5f * scale, rect.top, rect.left + 20.5f * scale, rect.bottom);
+            const auto stepperIcon = (button.tool == MarkupTool::Text)
+                ? CaptureIconId::PropFontSize
+                : CaptureIconId::PropStrokeWidth;
+            CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), stepperIcon, iconRect, brush, scale);
             if (!button.label.empty() && m_infoTextFormat) {
                 TextFormatScope scope(m_infoTextFormat.Get(), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP);
                 m_renderTarget->DrawText(button.label.c_str(), static_cast<UINT32>(button.label.size()),
                     m_infoTextFormat.Get(),
-                    D2D1::RectF(rect.left + 17.0f * scale, rect.top, rect.right - 2.0f * scale, rect.bottom),
+                    D2D1::RectF(rect.left + 20.0f * scale, rect.top, rect.right - 2.0f * scale, rect.bottom),
                     brush);
             }
             return;
@@ -2259,13 +2286,13 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
             if (button.label.empty()) {
                 CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::PropCornerRadius, rect, brush, scale);
             } else {
-                auto iconRect = D2D1::RectF(rect.left + 3.0f * scale, rect.top, rect.left + 15.0f * scale, rect.bottom);
+                auto iconRect = D2D1::RectF(rect.left + 2.5f * scale, rect.top, rect.left + 20.5f * scale, rect.bottom);
                 CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::PropCornerRadius, iconRect, brush, scale);
                 if (m_infoTextFormat) {
                     TextFormatScope scope(m_infoTextFormat.Get(), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP);
                     m_renderTarget->DrawText(button.label.c_str(), static_cast<UINT32>(button.label.size()),
                         m_infoTextFormat.Get(),
-                        D2D1::RectF(rect.left + 17.0f * scale, rect.top, rect.right - 2.0f * scale, rect.bottom),
+                        D2D1::RectF(rect.left + 20.0f * scale, rect.top, rect.right - 2.0f * scale, rect.bottom),
                         brush);
                 }
             }

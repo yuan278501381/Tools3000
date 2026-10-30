@@ -69,6 +69,9 @@ enum class CaptureIconId {
     PropAspectRatio,
     PropNumberSquare,
     PropTextOutline,
+    PropFontSize,
+    PropTextBackground,
+    ActionInvertSelection,
 };
 
 class CaptureVectorIcons {
