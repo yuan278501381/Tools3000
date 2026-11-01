@@ -3061,4 +3061,298 @@ TEST(WinUtilsTest, FullscreenBypassPolicyVerification) {
     EXPECT_FALSE(WinUtils::shouldBypassFullscreenInteractions(static_cast<HWND>(nullptr)));
 }
 
+TEST(WinUtilsTest, SmartFullscreenSceneClassificationAndPolicyModes) {
+    using tools3000::core::WinUtils;
+    using Scene = WinUtils::FullscreenScene;
+    using Mode = WinUtils::FullscreenPolicyMode;
+
+    // 1. 策略模式字符串解析与序列化双向验证
+    EXPECT_EQ(WinUtils::parseFullscreenPolicyMode("smart"), Mode::Smart);
+    EXPECT_EQ(WinUtils::parseFullscreenPolicyMode("SMART"), Mode::Smart);
+    EXPECT_EQ(WinUtils::parseFullscreenPolicyMode("strict_all"), Mode::StrictAll);
+    EXPECT_EQ(WinUtils::parseFullscreenPolicyMode("strict"), Mode::StrictAll);
+    EXPECT_EQ(WinUtils::parseFullscreenPolicyMode("gesture_only"), Mode::GestureOnly);
+    EXPECT_EQ(WinUtils::parseFullscreenPolicyMode("off"), Mode::Off);
+    EXPECT_EQ(WinUtils::parseFullscreenPolicyMode("disabled"), Mode::Off);
+    EXPECT_EQ(WinUtils::parseFullscreenPolicyMode("unknown_invalid"), Mode::Smart);
+    EXPECT_EQ(WinUtils::parseFullscreenPolicyMode(""), Mode::Smart);
+
+    EXPECT_STREQ(WinUtils::fullscreenPolicyModeToString(Mode::Smart), "smart");
+    EXPECT_STREQ(WinUtils::fullscreenPolicyModeToString(Mode::StrictAll), "strict_all");
+    EXPECT_STREQ(WinUtils::fullscreenPolicyModeToString(Mode::GestureOnly), "gesture_only");
+    EXPECT_STREQ(WinUtils::fullscreenPolicyModeToString(Mode::Off), "off");
+
+    // 2. 影音播放器与常见 3D 游戏特征识别
+    EXPECT_TRUE(WinUtils::isMediaPlayerProcessOrClass(L"PotPlayerMini64.exe", L"PotPlayer64"));
+    EXPECT_TRUE(WinUtils::isMediaPlayerProcessOrClass(L"vlc.exe", L"Qt51514QWindowIcon"));
+    EXPECT_TRUE(WinUtils::isMediaPlayerProcessOrClass(L"mpv.exe", L"mpv"));
+    EXPECT_FALSE(WinUtils::isMediaPlayerProcessOrClass(L"dota2.exe", L"SDL_app"));
+
+    EXPECT_TRUE(WinUtils::isKnownGameProcessOrClass(
+        L"dota2.exe", L"SDL_app",
+        L"C:\\Program Files (x86)\\Steam\\steamapps\\common\\dota 2 beta\\game\\bin\\win64\\dota2.exe"));
+    EXPECT_TRUE(WinUtils::isKnownGameProcessOrClass(L"cs2.exe", L"SDL_app", L""));
+    EXPECT_TRUE(WinUtils::isKnownGameProcessOrClass(L"custom_indie.exe", L"UnityWndClass", L""));
+    EXPECT_TRUE(WinUtils::isKnownGameProcessOrClass(L"custom_ue5.exe", L"UnrealWindow", L""));
+    EXPECT_TRUE(WinUtils::isKnownGameProcessOrClass(
+        L"unknown_game.exe", L"Chrome_WidgetWin_1",
+        L"D:\\SteamLibrary\\steamapps\\common\\SomeGame\\unknown_game.exe"));
+    EXPECT_FALSE(WinUtils::isKnownGameProcessOrClass(
+        L"chrome.exe", L"Chrome_WidgetWin_1",
+        L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"));
+
+    // 远程桌面、虚拟机与 scrcpy 投屏不应误判为 3D 游戏
+    EXPECT_FALSE(WinUtils::isKnownGameProcessOrClass(L"mstsc.exe", L"TscShellContainerClass", L"C:\\Windows\\System32\\mstsc.exe"));
+    EXPECT_FALSE(WinUtils::isKnownGameProcessOrClass(L"ToDesk.exe", L"ToDesk_Remote", L""));
+    EXPECT_FALSE(WinUtils::isKnownGameProcessOrClass(L"vmware.exe", L"VMPlayerFrame", L""));
+    EXPECT_FALSE(WinUtils::isKnownGameProcessOrClass(L"scrcpy.exe", L"SDL_app", L"C:\\Tools\\scrcpy\\scrcpy.exe"));
+
+    // 3. 全屏场景四象限分类
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(false, L"dota2.exe", L"SDL_app"), Scene::None);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"Tools3000.exe", L"Tools3000_SearchWindow"), Scene::Productivity);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"explorer.exe", L"CabinetWClass"), Scene::Productivity);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"explorer.exe", L"Progman"), Scene::Productivity);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"scrcpy.exe", L"SDL_app"), Scene::Productivity);
+
+    // Dota 2 / CS2 / 原生 DirectX/Vulkan 全屏窗口 -> Game
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(
+        true, L"dota2.exe", L"SDL_app",
+        L"C:\\Program Files (x86)\\Steam\\steamapps\\common\\dota 2 beta\\game\\bin\\win64\\dota2.exe"),
+        Scene::Game);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"mygame.exe", L"D3D11_GameWindow"), Scene::Game);
+
+    // 播放器、浏览器全屏看视频及远程桌面/虚拟机全屏 -> MediaOrBrowser
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"PotPlayerMini64.exe", L"PotPlayer64"), Scene::MediaOrBrowser);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"chrome.exe", L"Chrome_WidgetWin_1"), Scene::MediaOrBrowser);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"firefox.exe", L"MozillaWindowClass"), Scene::MediaOrBrowser);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"mstsc.exe", L"TscShellContainerClass"), Scene::MediaOrBrowser);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"ToDesk.exe", L"ToDesk_Remote"), Scene::MediaOrBrowser);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"vmware.exe", L"VMUIFrame"), Scene::MediaOrBrowser);
+
+    // 4. 四种策略模式下的精细拦截矩阵验证
+    // (A) Smart 智能模式（默认）：打游戏停用快捷键+截图+手势；看电影保留快捷键+截图，仅停用手势与浮层
+    EXPECT_TRUE(WinUtils::shouldSuspendHotkeysForScene(Scene::Game, Mode::Smart));
+    EXPECT_TRUE(WinUtils::shouldSuspendGesturesForScene(Scene::Game, Mode::Smart));
+    EXPECT_TRUE(WinUtils::shouldBypassCaptureForScene(Scene::Game, Mode::Smart));
+    EXPECT_TRUE(WinUtils::shouldBypassOverlaysForScene(Scene::Game, Mode::Smart));
+
+    EXPECT_FALSE(WinUtils::shouldSuspendHotkeysForScene(Scene::MediaOrBrowser, Mode::Smart));
+    EXPECT_FALSE(WinUtils::shouldBypassCaptureForScene(Scene::MediaOrBrowser, Mode::Smart));
+    EXPECT_TRUE(WinUtils::shouldSuspendGesturesForScene(Scene::MediaOrBrowser, Mode::Smart));
+    EXPECT_TRUE(WinUtils::shouldBypassOverlaysForScene(Scene::MediaOrBrowser, Mode::Smart));
+
+    EXPECT_FALSE(WinUtils::shouldSuspendHotkeysForScene(Scene::Productivity, Mode::Smart));
+    EXPECT_FALSE(WinUtils::shouldSuspendGesturesForScene(Scene::Productivity, Mode::Smart));
+    EXPECT_FALSE(WinUtils::shouldSuspendHotkeysForScene(Scene::None, Mode::Smart));
+    EXPECT_FALSE(WinUtils::shouldSuspendGesturesForScene(Scene::None, Mode::Smart));
+
+    // (B) StrictAll 严格模式：全屏看电影与打游戏均停用全部快捷键、截图与手势
+    EXPECT_TRUE(WinUtils::shouldSuspendHotkeysForScene(Scene::MediaOrBrowser, Mode::StrictAll));
+    EXPECT_TRUE(WinUtils::shouldBypassCaptureForScene(Scene::MediaOrBrowser, Mode::StrictAll));
+    EXPECT_TRUE(WinUtils::shouldSuspendGesturesForScene(Scene::MediaOrBrowser, Mode::StrictAll));
+    EXPECT_TRUE(WinUtils::shouldSuspendHotkeysForScene(Scene::Game, Mode::StrictAll));
+
+    // (C) GestureOnly 仅手势静默模式：打游戏也保留全局快捷键与截图，仅停用手势与浮层
+    EXPECT_FALSE(WinUtils::shouldSuspendHotkeysForScene(Scene::Game, Mode::GestureOnly));
+    EXPECT_FALSE(WinUtils::shouldBypassCaptureForScene(Scene::Game, Mode::GestureOnly));
+    EXPECT_TRUE(WinUtils::shouldSuspendGesturesForScene(Scene::Game, Mode::GestureOnly));
+    EXPECT_TRUE(WinUtils::shouldBypassOverlaysForScene(Scene::Game, Mode::GestureOnly));
+
+    // (D) Off 关闭模式：任何全屏均不自动停用
+    EXPECT_FALSE(WinUtils::shouldSuspendHotkeysForScene(Scene::Game, Mode::Off));
+    EXPECT_FALSE(WinUtils::shouldSuspendGesturesForScene(Scene::Game, Mode::Off));
+    EXPECT_FALSE(WinUtils::shouldBypassCaptureForScene(Scene::Game, Mode::Off));
+    EXPECT_FALSE(WinUtils::shouldBypassOverlaysForScene(Scene::Game, Mode::Off));
+
+    WinUtils::setFullscreenPolicyMode(Mode::Smart);
+    EXPECT_EQ(WinUtils::getFullscreenPolicyMode(), Mode::Smart);
+}
+
+TEST(WinUtilsTest, RealWindowFullscreenDetectionAndWindowedGamePolicy) {
+    using WinUtils = tools3000::core::WinUtils;
+    using Scene = WinUtils::FullscreenScene;
+
+    WNDCLASSEXW wcex{sizeof(WNDCLASSEXW)};
+    wcex.lpfnWndProc = DefWindowProcW;
+    wcex.hInstance = GetModuleHandleW(nullptr);
+    wcex.lpszClassName = L"SDL_app";
+    RegisterClassExW(&wcex);
+
+    HMONITOR hMon = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    ASSERT_NE(hMon, nullptr);
+    MONITORINFO mi{sizeof(MONITORINFO)};
+    ASSERT_TRUE(GetMonitorInfoW(hMon, &mi));
+    const int monW = mi.rcMonitor.right - mi.rcMonitor.left;
+    const int monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+
+    // 1. 窗口化非游戏进程（即使类名为 SDL_app，尺寸 800x600）不应被误判为全屏或游戏场景
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"SDL_app", L"WindowedSDLApp", WS_POPUP,
+        mi.rcMonitor.left + 50, mi.rcMonitor.top + 50, 800, 600,
+        nullptr, nullptr, wcex.hInstance, nullptr);
+    ASSERT_NE(hwnd, nullptr);
+
+    // 隐藏态窗口绝不能判定为全屏
+    EXPECT_FALSE(WinUtils::isWindowFullscreen(hwnd));
+    EXPECT_EQ(WinUtils::classifyWindowScene(hwnd), Scene::None);
+
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    EXPECT_FALSE(WinUtils::isWindowFullscreen(hwnd));
+    EXPECT_EQ(WinUtils::classifyWindowScene(hwnd), Scene::None);
+
+    // 2. 覆盖显示器（含 1px Focus Assist 避让缩进 / 2px 容差内）应准确判定为全屏
+    SetWindowPos(hwnd, nullptr,
+                 mi.rcMonitor.left + 1, mi.rcMonitor.top + 1,
+                 monW - 2, monH - 2,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    EXPECT_TRUE(WinUtils::isWindowFullscreen(hwnd));
+    EXPECT_EQ(WinUtils::classifyWindowScene(hwnd), Scene::Game);
+
+    // 3. 鼠标穿透透明图层 (WS_EX_LAYERED | WS_EX_TRANSPARENT) 即使覆盖全屏也绝不误判为全屏独占应用
+    const LONG origEx = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    SetWindowLongW(hwnd, GWL_EXSTYLE, origEx | WS_EX_LAYERED | WS_EX_TRANSPARENT);
+    EXPECT_FALSE(WinUtils::isWindowFullscreen(hwnd));
+    SetWindowLongW(hwnd, GWL_EXSTYLE, origEx);
+
+    DestroyWindow(hwnd);
+}
+
+TEST(HotkeyManagerTest, FullscreenGameSilenceUnregistersAndRestoresHotkeys) {
+    auto& hotkeyMgr = tools3000::core::HotkeyManager::instance();
+    auto& kbHook = tools3000::core::KeyboardHook::instance();
+    auto& mouseHook = tools3000::core::MouseHook::instance();
+
+    WNDCLASSEXW wcex{sizeof(WNDCLASSEXW)};
+    wcex.lpfnWndProc = DefWindowProcW;
+    wcex.hInstance = GetModuleHandleW(nullptr);
+    wcex.lpszClassName = L"Tools3000_FullscreenHotkeyTestWnd";
+    RegisterClassExW(&wcex);
+    HWND hwnd = CreateWindowExW(
+        0, L"Tools3000_FullscreenHotkeyTestWnd", L"Test", WS_POPUP,
+        0, 0, 10, 10, nullptr, nullptr, wcex.hInstance, nullptr);
+    HWND probeHwnd = CreateWindowExW(
+        0, L"Tools3000_FullscreenHotkeyTestWnd", L"Probe", WS_POPUP,
+        0, 0, 10, 10, nullptr, nullptr, wcex.hInstance, nullptr);
+    ASSERT_NE(hwnd, nullptr);
+    ASSERT_NE(probeHwnd, nullptr);
+
+    hotkeyMgr.shutdown();
+    hotkeyMgr.initialize(hwnd);
+
+    const tools3000::core::HotkeyDef testDef{
+        tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Alt | tools3000::core::ModKey::Shift,
+        VK_F11};
+    const tools3000::core::HotkeyDef f1Def{tools3000::core::ModKey::None, VK_F1};
+    EXPECT_TRUE(hotkeyMgr.registerHotkey("FullscreenTestHotkey", testDef, []() {}));
+    EXPECT_TRUE(hotkeyMgr.registerHotkey("ScreenshotF1", f1Def, []() {}));
+    EXPECT_FALSE(hotkeyMgr.isFullscreenSuspended());
+
+    // 激活全屏游戏静默：Win32 热键与底层钩子单键 (F1) 必须真实从系统卸下，外部窗口可立即注册该热键
+    hotkeyMgr.setFullscreenSuspended(true);
+    EXPECT_TRUE(hotkeyMgr.isFullscreenSuspended());
+    EXPECT_TRUE(kbHook.isFullscreenSuspended());
+    EXPECT_FALSE(kbHook.hasHookHotkeys());
+
+    const UINT probeMods = static_cast<UINT>(testDef.modifiers) | MOD_NOREPEAT;
+    const BOOL probeClaimedDuringSuspense = RegisterHotKey(probeHwnd, 0x7777, probeMods, testDef.virtualKey);
+    EXPECT_TRUE(probeClaimedDuringSuspense);
+    if (probeClaimedDuringSuspense) {
+        UnregisterHotKey(probeHwnd, 0x7777);
+    }
+
+    for (const auto& entry : hotkeyMgr.getAllHotkeys()) {
+        if (entry.name == "FullscreenTestHotkey" || entry.name == "ScreenshotF1") {
+            EXPECT_FALSE(entry.conflict);
+            EXPECT_EQ(entry.conflictType, "none");
+            EXPECT_TRUE(entry.registered);
+        }
+    }
+
+    // 鼠标钩子全屏直通开关验证
+    mouseHook.setFullscreenSuspended(true);
+    EXPECT_TRUE(mouseHook.isFullscreenSuspended());
+    mouseHook.setFullscreenSuspended(false);
+    EXPECT_FALSE(mouseHook.isFullscreenSuspended());
+
+    // 在全屏静默期间动态注册或重绑定热键：应记录为挂起态而不强行占用 OS 热键，解除后自动注册生效
+    const tools3000::core::HotkeyDef dynamicDef{
+        tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Alt | tools3000::core::ModKey::Shift,
+        VK_F12};
+    hotkeyMgr.setFullscreenSuspended(true);
+    EXPECT_TRUE(hotkeyMgr.registerHotkey("DynamicWhileSuspended", dynamicDef, []() {}));
+    EXPECT_FALSE(hotkeyMgr.checkConflict(dynamicDef, "DynamicWhileSuspended").hasConflict);
+    EXPECT_TRUE(hotkeyMgr.isConflict(dynamicDef));
+
+    // 解除全屏游戏静默：所有已武装热键自动恢复注册
+    hotkeyMgr.setFullscreenSuspended(false);
+    EXPECT_FALSE(hotkeyMgr.isFullscreenSuspended());
+    EXPECT_FALSE(kbHook.isFullscreenSuspended());
+    for (const auto& entry : hotkeyMgr.getAllHotkeys()) {
+        if (entry.name == "FullscreenTestHotkey" ||
+            entry.name == "ScreenshotF1" ||
+            entry.name == "DynamicWhileSuspended") {
+            EXPECT_TRUE(entry.registered);
+            EXPECT_FALSE(entry.conflict);
+        }
+    }
+
+    hotkeyMgr.shutdown();
+    DestroyWindow(probeHwnd);
+    DestroyWindow(hwnd);
+}
+
+TEST(WinUtilsTest, MessageBridgeFullscreenModeSettingsValidation) {
+    const auto tempDir = std::filesystem::temp_directory_path() / "tools3000_fullscreen_mode_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    auto& config = tools3000::core::ConfigManager::instance();
+    ASSERT_TRUE(config.initialize(tempDir));
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    bridge.registerBuiltinHandlers();
+
+    // 1. 合法的 4 种全屏策略模式均可正常更新并同步至 WinUtils
+    for (const char* mode : {"strict_all", "gesture_only", "off", "smart"}) {
+        const nlohmann::json req = {
+            {"id", 9910},
+            {"method", "general.updateSettings"},
+            {"params", {{"fullscreenMode", mode}}}
+        };
+        const auto resp = nlohmann::json::parse(bridge.handleMessage(req.dump()));
+        ASSERT_TRUE(resp.contains("result"));
+        EXPECT_TRUE(resp["result"].value("success", false));
+        EXPECT_STREQ(
+            tools3000::core::WinUtils::fullscreenPolicyModeToString(
+                tools3000::core::WinUtils::getFullscreenPolicyMode()),
+            mode);
+    }
+
+    // 2. 非法枚举值或非字符串类型必须被拒绝并返回明确错误
+    const nlohmann::json badStrReq = {
+        {"id", 9911},
+        {"method", "general.updateSettings"},
+        {"params", {{"fullscreenMode", "invalid_mode_xyz"}}}
+    };
+    const auto badStrResp = nlohmann::json::parse(bridge.handleMessage(badStrReq.dump()));
+    ASSERT_TRUE(badStrResp.contains("result"));
+    EXPECT_FALSE(badStrResp["result"].value("success", true));
+    EXPECT_EQ(badStrResp["result"].value("error", ""), "invalid fullscreen mode");
+
+    const nlohmann::json badTypeReq = {
+        {"id", 9912},
+        {"method", "general.updateSettings"},
+        {"params", {{"fullscreenMode", 12345}}}
+    };
+    const auto badTypeResp = nlohmann::json::parse(bridge.handleMessage(badTypeReq.dump()));
+    ASSERT_TRUE(badTypeResp.contains("result"));
+    EXPECT_FALSE(badTypeResp["result"].value("success", true));
+    EXPECT_EQ(badTypeResp["result"].value("error", ""), "invalid fullscreen mode");
+
+    tools3000::core::WinUtils::setFullscreenPolicyMode(
+        tools3000::core::WinUtils::FullscreenPolicyMode::Smart);
+    config.shutdown();
+    std::filesystem::remove_all(tempDir, ec);
+}
+
+
 

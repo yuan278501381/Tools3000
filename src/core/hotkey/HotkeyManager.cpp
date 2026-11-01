@@ -370,6 +370,77 @@ bool HotkeyManager::isPaused() const {
     return m_paused.load(std::memory_order_relaxed);
 }
 
+void HotkeyManager::setFullscreenSuspended(bool suspended) {
+    const DWORD ownerThreadId = m_ownerThreadId.load(std::memory_order_acquire);
+    if (isForeignHotkeyThread(ownerThreadId)) {
+        dispatchToHotkeyThread(ownerThreadId, "setFullscreenSuspended",
+                               [this, suspended]() { setFullscreenSuspended(suspended); });
+        return;
+    }
+
+    KeyboardHook::instance().setFullscreenSuspended(suspended);
+
+    std::lock_guard lock(m_mutex);
+    const bool wasSuspended = m_fullscreenSuspended.exchange(suspended, std::memory_order_acq_rel);
+    if (wasSuspended == suspended) {
+        return;
+    }
+
+    if (suspended) {
+        for (auto& [name, entry] : m_hotkeys) {
+            if (entry.registered) {
+                if (entry.useHook) {
+                    KeyboardHook::instance().unregisterHookHotkey(entry.id);
+                } else if (m_hwnd) {
+                    UnregisterHotKey(m_hwnd, entry.id);
+                }
+                m_idToName.erase(entry.id);
+                entry.registered = false;
+                entry.useHook = false;
+                entry.suspendedByFullscreen = true;
+            }
+        }
+        LOG_INFO("全屏游戏免打扰已激活：全局快捷键已临时卸下并交还前台游戏");
+    } else {
+        for (auto& [name, entry] : m_hotkeys) {
+            if (!entry.armed || entry.def.virtualKey == 0) {
+                entry.suspendedByFullscreen = false;
+                continue;
+            }
+            if (entry.registered) {
+                entry.suspendedByFullscreen = false;
+                continue;
+            }
+            if (!entry.suspendedByFullscreen) {
+                continue;
+            }
+            entry.suspendedByFullscreen = false;
+            bool ok = false;
+            bool useHook = false;
+            if (m_hwnd && IsWindow(m_hwnd)) {
+                UINT mods = static_cast<UINT>(entry.def.modifiers) | MOD_NOREPEAT;
+                ok = (RegisterHotKey(m_hwnd, entry.id, mods, entry.def.virtualKey) != FALSE);
+            }
+            if (!ok && canFallbackToHook(entry.def)) {
+                KeyboardHook::instance().registerHookHotkey(entry.id, entry.def, name, entry.callback);
+                KeyboardHook::instance().install();
+                ok = true;
+                useHook = true;
+            }
+            entry.registered = ok;
+            entry.useHook = useHook;
+            if (ok) {
+                m_idToName[entry.id] = name;
+            }
+        }
+        LOG_INFO("全屏游戏免打扰已解除：全局快捷键已恢复占用");
+    }
+}
+
+bool HotkeyManager::isFullscreenSuspended() const {
+    return m_fullscreenSuspended.load(std::memory_order_acquire);
+}
+
 void HotkeyManager::initialize(HWND messageWindow) {
     m_hwnd = messageWindow;
     DWORD ownerThreadId = 0;
@@ -386,6 +457,8 @@ void HotkeyManager::shutdown() {
         return;
     }
     std::lock_guard lock(m_mutex);
+    m_fullscreenSuspended.store(false, std::memory_order_release);
+    KeyboardHook::instance().setFullscreenSuspended(false);
     for (const auto& [name, entry] : m_hotkeys) {
         if (entry.registered) {
             if (entry.useHook) {
@@ -437,8 +510,13 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
 
     int id = generateId();
     if (def.virtualKey == 0) {
-        m_hotkeys.emplace(name, HotkeyEntry{id, def, name, std::move(callback), false, true, false, "none", "", false});
+        m_hotkeys.emplace(name, HotkeyEntry{id, def, name, std::move(callback), false, true, false, "none", "", false, false});
         LOG_INFO("快捷键已禁用: name={}", name);
+        return true;
+    }
+
+    if (m_fullscreenSuspended.load(std::memory_order_relaxed)) {
+        m_hotkeys.emplace(name, HotkeyEntry{id, def, name, std::move(callback), false, true, false, "none", "", false, true});
         return true;
     }
 
@@ -460,7 +538,7 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
         LOG_INFO("快捷键由底层键盘钩子引擎接管注册成功: name={}, def={}", name, def.toString());
     }
 
-    HotkeyEntry entry{id, def, name, std::move(callback), registered, true, false, "none", "", useHook};
+    HotkeyEntry entry{id, def, name, std::move(callback), registered, true, false, "none", "", useHook, false};
     m_hotkeys[name] = std::move(entry);
 
     if (!registered) {
@@ -544,8 +622,18 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
         it->second.def = newDef;
         it->second.registered = false;
         it->second.useHook = false;
+        it->second.suspendedByFullscreen = false;
         LOG_INFO("快捷键重绑定成功（会话外不占用）: name={}, {} → {}",
                  name, oldDef.toString(), newDef.toString());
+        return true;
+    }
+
+    if (m_fullscreenSuspended.load(std::memory_order_relaxed)) {
+        it->second.def = newDef;
+        it->second.registered = false;
+        it->second.useHook = false;
+        it->second.suspendedByFullscreen = true;
+        LOG_INFO("快捷键重绑定成功: name={}, {} → {}", name, oldDef.toString(), newDef.toString());
         return true;
     }
 
@@ -593,6 +681,7 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
     it->second.def = newDef;
     it->second.registered = true;
     it->second.useHook = useHook;
+    it->second.suspendedByFullscreen = false;
     m_idToName[it->second.id] = name;
     return true;
 }
@@ -618,6 +707,7 @@ bool HotkeyManager::clearHotkey(const std::string& name) {
     it->second.def = {};
     it->second.registered = false;
     it->second.useHook = false;
+    it->second.suspendedByFullscreen = false;
     LOG_INFO("快捷键已禁用: name={}", name);
     return true;
 }
@@ -640,10 +730,12 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
     if (it->second.def.virtualKey == 0) {
         it->second.registered = false;
         it->second.useHook = false;
+        it->second.suspendedByFullscreen = false;
         return true;
     }
 
     if (!armed) {
+        it->second.suspendedByFullscreen = false;
         if (it->second.registered) {
             if (it->second.useHook) {
                 KeyboardHook::instance().unregisterHookHotkey(it->second.id);
@@ -655,6 +747,11 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
             it->second.useHook = false;
             LOG_INFO("快捷键已卸下，交还给前台应用: name={}, def={}", name, it->second.def.toString());
         }
+        return true;
+    }
+
+    if (m_fullscreenSuspended.load(std::memory_order_relaxed)) {
+        it->second.suspendedByFullscreen = true;
         return true;
     }
 
@@ -675,6 +772,7 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
 
     it->second.registered = ok;
     it->second.useHook = useHook;
+    it->second.suspendedByFullscreen = false;
     if (ok) {
         m_idToName[it->second.id] = name;
         LOG_INFO("快捷键已重新占用: name={}, def={}", name, it->second.def.toString());
@@ -688,7 +786,7 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
 bool HotkeyManager::isConflict(const HotkeyDef& def) const {
     std::lock_guard lock(m_mutex);
     for (const auto& [name, entry] : m_hotkeys) {
-        if (entry.registered && def.virtualKey != 0 && entry.def == def) return true;
+        if ((entry.registered || entry.suspendedByFullscreen) && def.virtualKey != 0 && entry.def == def) return true;
     }
     return false;
 }
@@ -741,7 +839,8 @@ HotkeyConflictInfo HotkeyManager::checkConflict(const HotkeyDef& def, const std:
 }
 
 void HotkeyManager::handleHotkeyMessage(WPARAM wParam) {
-    if (m_paused.load(std::memory_order_relaxed)) {
+    if (m_paused.load(std::memory_order_relaxed) ||
+        m_fullscreenSuspended.load(std::memory_order_relaxed)) {
         LOG_DEBUG("快捷键已暂停触发 (录制模式中)");
         return;
     }
@@ -788,6 +887,9 @@ std::vector<HotkeyEntry> HotkeyManager::getAllHotkeys() const {
 
     for (const auto& [name, entry] : m_hotkeys) {
         HotkeyEntry item = entry;
+        if (item.suspendedByFullscreen) {
+            item.registered = true;
+        }
         if (item.def.virtualKey == 0) {
             item.conflict = false;
             item.conflictType = "none";
@@ -806,7 +908,8 @@ std::vector<HotkeyEntry> HotkeyManager::getAllHotkeys() const {
                     }
                 }
                 item.conflictWith = "与插件/功能 [" + others + "] 冲突";
-            } else if (hotkeyLooksExternallyConflicted(
+            } else if (!item.suspendedByFullscreen &&
+                       hotkeyLooksExternallyConflicted(
                            item.def.virtualKey != 0, item.armed, item.registered)) {
                 // 外部冲突 (被其它第三方软件占用)
                 item.conflict = true;

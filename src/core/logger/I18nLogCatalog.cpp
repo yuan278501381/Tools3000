@@ -2917,6 +2917,14 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] GestureDispatchWorker: 退出排空捕获未知异常",
             "[{}] GestureDispatchWorker: unknown exception caught while flushing on exit"
         }},
+        {"全屏游戏免打扰已激活：全局快捷键已临时卸下并交还前台游戏", {
+            "[{}] 全屏游戏免打扰已激活：全局快捷键已临时卸下并交还前台游戏",
+            "[{}] Fullscreen game silence activated: global hotkeys temporarily unregistered and returned to foreground game"
+        }},
+        {"全屏游戏免打扰已解除：全局快捷键已恢复占用", {
+            "[{}] 全屏游戏免打扰已解除：全局快捷键已恢复占用",
+            "[{}] Fullscreen game silence deactivated: global hotkeys restored"
+        }},
     };
     return catalog;
 }

@@ -13,6 +13,7 @@
 #include "core/config/ConfigManager.h"
 #include "core/events/EventBus.h"
 #include "core/events/MainThreadDispatcher.h"
+#include "core/hotkey/MouseHook.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -365,6 +366,9 @@ void GestureEngine::setTrailVisible(bool visible) {
 
 void GestureEngine::setAutoBypassFullscreen(bool enable) {
     m_autoBypassFullscreen = enable;
+    if (!enable && tools3000::core::MouseHook::instance().isFullscreenSuspended()) {
+        tools3000::core::MouseHook::instance().setFullscreenSuspended(false);
+    }
     LOG_INFO("手势全屏自动免打扰状态: enable={}", enable);
 }
 
@@ -543,9 +547,8 @@ GestureEngine::AsyncContextResult GestureEngine::resolveContextInternal(HWND ini
     res.targetWindow = target;
 
     // 1. 全屏独占放行检查
-    if (m_autoBypassFullscreen.load() && target && tools3000::core::WinUtils::isWindowFullscreen(target)) {
-        const std::wstring classWide = tools3000::core::WinUtils::getWindowClassName(target);
-        if (shouldAutoBypassFullscreenGestures(true, isProductivityToolkitClassName(classWide))) {
+    if (m_autoBypassFullscreen.load() && target) {
+        if (tools3000::core::WinUtils::shouldSuspendGesturesForWindow(target)) {
             res.disabled = true;
             return res;
         }

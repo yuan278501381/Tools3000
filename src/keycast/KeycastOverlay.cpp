@@ -720,7 +720,7 @@ void KeycastOverlay::pushKey(const std::vector<std::string>& tokens, const std::
     // 录屏停靠模式下严禁触发全屏免打扰避让（录制全屏场景下正需要回显按键）
     if (!isDockedRecording && settings.autoBypassFullscreen) {
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::isWindowFullscreen(fg)) {
+        if (fg) {
             wchar_t classWide[256] = {0};
             GetClassNameW(fg, classWide, static_cast<int>(std::size(classWide)));
             std::wstring cls = classWide;
@@ -736,10 +736,8 @@ void KeycastOverlay::pushKey(const std::vector<std::string>& tokens, const std::
                 (cls == L"WeChatMainWndForPC") ||
                 (cls == L"TXGuiFoundation");
 
-            if (!isAllowedOverlay) {
-                if (tools3000::core::WinUtils::shouldBypassFullscreenInteractions(true, classWide)) {
-                    return;
-                }
+            if (!isAllowedOverlay && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg)) {
+                return;
             }
         }
     }

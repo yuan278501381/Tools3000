@@ -22,7 +22,7 @@ void SpotlightOverlay::trigger(POINT pt, bool autoFetch) {
 
     if (m_settings.autoBypassFullscreen) {
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg)) {
+        if (fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg)) {
             LOG_INFO("前台处于全屏独占应用，自动免打扰跳过鼠标聚光灯触发: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
             return;
         }
@@ -189,7 +189,7 @@ void SpotlightOverlay::onMouseDown(int button, POINT pt) {
 
     if (m_settings.autoBypassFullscreen) {
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg)) {
+        if (fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg)) {
             return;
         }
     }
@@ -299,7 +299,7 @@ void SpotlightOverlay::drainRawMovesLocked() {
     bool bypass = false;
     if (m_settings.autoBypassFullscreen && m_settings.mouseTrailEnabled) {
         HWND fg = GetForegroundWindow();
-        bypass = fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg);
+        bypass = fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg);
     }
 
     tools3000::core::MouseStreamCore::instance().drainBatch([this, bypass](const tools3000::core::MouseStreamPoint& pt) {
@@ -526,7 +526,7 @@ void SpotlightOverlay::onMouseMove(POINT pt) {
     bool bypass = false;
     if (m_settings.autoBypassFullscreen && m_settings.mouseTrailEnabled) {
         HWND fg = GetForegroundWindow();
-        bypass = fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg);
+        bypass = fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg);
     }
     processMouseMoveLocked(pt, bypass);
     wakeRenderThread();

@@ -216,7 +216,7 @@ void ScreenCapture::shutdown() {
 void ScreenCapture::startCapture(const CaptureOptions& options) {
     if (options.autoBypassFullscreen) {
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg)) {
+        if (fg && tools3000::core::WinUtils::shouldBypassCaptureForWindow(fg)) {
             LOG_INFO("前台处于全屏独占应用，自动免打扰跳过截图: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
             return;
         }

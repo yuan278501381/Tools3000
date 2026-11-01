@@ -21,6 +21,7 @@ interface GeneralSettings {
   minimizeToTray: boolean;
   checkUpdates: boolean;
   autoReleaseSettingsMemory?: boolean;
+  fullscreenMode?: string;
   showOnboarding?: boolean;
   isPortableMode?: boolean;
   dataDirectory?: string;
@@ -57,6 +58,7 @@ export const GeneralPage: FC = () => {
     minimizeToTray: true,
     checkUpdates: true,
     autoReleaseSettingsMemory: true,
+    fullscreenMode: 'smart',
     language: 'auto',
     logLevel: 'info',
     logRetentionDays: 7,
@@ -383,6 +385,19 @@ export const GeneralPage: FC = () => {
             checked={settings.autoReleaseSettingsMemory ?? true}
             onChange={(v) => updateSetting('autoReleaseSettingsMemory', v)}
           />
+          <SettingRow label={t('general.fullscreenMode')} description={t('general.fullscreenModeDesc')}>
+            <Select
+              id="fullscreenMode"
+              value={settings.fullscreenMode || 'smart'}
+              onChange={(v) => updateSetting('fullscreenMode', v)}
+              options={[
+                { value: 'smart', label: t('general.fullscreenModeSmart') },
+                { value: 'strict_all', label: t('general.fullscreenModeStrictAll') },
+                { value: 'gesture_only', label: t('general.fullscreenModeGestureOnly') },
+                { value: 'off', label: t('general.fullscreenModeOff') },
+              ]}
+            />
+          </SettingRow>
           <Toggle
             id="showOnboarding"
             label={t('general.showOnboarding')}

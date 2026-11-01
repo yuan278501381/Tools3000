@@ -82,6 +82,7 @@ static constexpr const wchar_t* MUTEX_NAME        = L"Global\\Tools3000_SingleIn
 static constexpr UINT WM_TOOLS3000_SHOW_SETTINGS  = WM_APP + 101;
 static constexpr UINT_PTR TIMER_ID_QUICKLOOK_REFRESH = 0x4551;
 static constexpr UINT_PTR TIMER_ID_PERFORMANCE_BASELINE = 0x4552;
+static constexpr UINT_PTR TIMER_ID_FULLSCREEN_GUARD = 0x4553;
 
 // ── 前向声明 ─────────────────────────────────────────────────────────────────
 LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -101,8 +102,53 @@ static UINT g_wmTaskbarCreated = 0;
 static std::optional<std::filesystem::path> g_performanceScenarioOutput;
 static std::atomic<bool> g_restartLaunchStarted{false};
 static HPOWERNOTIFY g_powerNotify = nullptr;
+static HWINEVENTHOOK g_fullscreenWinEventHook = nullptr;
 
 namespace {
+
+void syncForegroundFullscreenState() {
+    static HWND s_lastValidFg = nullptr;
+    HWND fg = GetForegroundWindow();
+    if (!fg && s_lastValidFg && IsWindow(s_lastValidFg) &&
+        IsWindowVisible(s_lastValidFg) && !IsIconic(s_lastValidFg)) {
+        fg = s_lastValidFg;
+    } else if (fg) {
+        s_lastValidFg = fg;
+    } else {
+        s_lastValidFg = nullptr;
+    }
+
+    const bool gestureBypassEnabled =
+        tools3000::core::ConfigManager::instance().get<bool>("/gesture/autoBypassFullscreen", true);
+    const bool suspendHotkeys =
+        fg && tools3000::core::WinUtils::shouldSuspendHotkeysForWindow(fg);
+    const bool suspendGestures =
+        gestureBypassEnabled && fg && tools3000::core::WinUtils::shouldSuspendGesturesForWindow(fg);
+
+    auto& hotkeyMgr = tools3000::core::HotkeyManager::instance();
+    if (hotkeyMgr.isFullscreenSuspended() != suspendHotkeys) {
+        hotkeyMgr.setFullscreenSuspended(suspendHotkeys);
+    }
+
+    auto& mouseHook = tools3000::core::MouseHook::instance();
+    if (mouseHook.isFullscreenSuspended() != suspendGestures) {
+        mouseHook.setFullscreenSuspended(suspendGestures);
+        if (suspendGestures) {
+            tools3000::core::EventBus::instance().publish(tools3000::core::CancelTransientUiEvent{});
+        }
+    }
+}
+
+void CALLBACK FullscreenGuardWinEventProc(
+    HWINEVENTHOOK /*hWinEventHook*/,
+    DWORD /*event*/,
+    HWND /*hwnd*/,
+    LONG /*idObject*/,
+    LONG /*idChild*/,
+    DWORD /*dwEventThread*/,
+    DWORD /*dwmsEventTime*/) {
+    syncForegroundFullscreenState();
+}
 
 bool writePerformanceBaselineSnapshot(const std::filesystem::path& outputPath) {
     std::error_code error;
@@ -812,7 +858,11 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         std::filesystem::path(exePath).parent_path() / L"plugins";
     pm.loadPlugins(pluginDir.string());
 
-    // 4. 全局快捷键注册
+    // 4. 全局快捷键注册与全屏智能免打扰策略初始化
+    tools3000::core::WinUtils::setFullscreenPolicyMode(
+        tools3000::core::WinUtils::parseFullscreenPolicyMode(
+            tools3000::core::ConfigManager::instance().get<std::string>(
+                "/general/fullscreenMode", "smart")));
     tools3000::core::HotkeyManager::instance().initialize(hwnd);
     if (pm.isEnabledAtLaunch("search")) {
         const tools3000::core::HotkeyDef searchFallback{tools3000::core::ModKey::Alt, VK_SPACE};
@@ -828,7 +878,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             }
             if (tools3000::core::ConfigManager::instance().get<bool>("/search/autoBypassFullscreen", true)) {
                 HWND fg = GetForegroundWindow();
-                if (fg && tools3000::core::WinUtils::shouldBypassFullscreenInteractions(fg)) {
+                if (fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg)) {
                     LOG_INFO("前台处于全屏独占应用，自动免打扰跳过搜索窗口呼出: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
                     return;
                 }
@@ -877,6 +927,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     const auto translateHotkey = translateText.empty() ? tools3000::core::HotkeyDef{}
         : tools3000::core::HotkeyDef::fromString(translateText).value_or(translateFallback);
     tools3000::core::HotkeyManager::instance().registerHotkey("Translate Selection", translateHotkey, []() {
+        HWND fg = GetForegroundWindow();
+        if (fg && tools3000::core::WinUtils::shouldSuspendHotkeysForWindow(fg)) {
+            return;
+        }
         std::string selected = tools3000::core::WinUtils::captureSelectedText();
         const auto firstNotSpace = selected.find_first_not_of(" \t\n\r");
         if (firstNotSpace == std::string::npos) {
@@ -1425,6 +1479,18 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     // 6. 初始化本次启动获准加载的插件
     pm.initializePlugins();
 
+    // 6.5. 启动前台窗口全屏/游戏感知守护（WinEventHook + 500ms 几何巡检双保险）
+    g_fullscreenWinEventHook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_MINIMIZEEND,
+        nullptr,
+        FullscreenGuardWinEventProc,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    SetTimer(hwnd, TIMER_ID_FULLSCREEN_GUARD, 500, nullptr);
+    syncForegroundFullscreenState();
+
     // 7. UI Overlay 初始化
     tools3000::ui::ToastOverlay::instance().initialize(GetModuleHandleW(nullptr));
 
@@ -1459,6 +1525,12 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 }
 
 void shutdownSubsystems() {
+    if (g_fullscreenWinEventHook) {
+        UnhookWinEvent(g_fullscreenWinEventHook);
+        g_fullscreenWinEventHook = nullptr;
+    }
+    tools3000::core::HotkeyManager::instance().setFullscreenSuspended(false);
+    tools3000::core::MouseHook::instance().setFullscreenSuspended(false);
     // Withdraw the user-visible entry point before any potentially blocking
     // plugin teardown. Even if a third-party worker is slow, Explorer cannot
     // retain a clickable-looking icon for an instance already shutting down.
@@ -1555,6 +1627,10 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             return 0;
         }
+        if (wParam == TIMER_ID_FULLSCREEN_GUARD) {
+            syncForegroundFullscreenState();
+            return 0;
+        }
         if (wParam == tools3000::tray::TrayIcon::TIMER_ID_TRAY_RETRY) {
             tools3000::tray::TrayIcon::instance().ensureCreated(hwnd);
             return 0;
@@ -1612,6 +1688,11 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
     if (msg == WM_CLOSE || msg == WM_DESTROY) {
         EndMenu();
+        KillTimer(hwnd, TIMER_ID_FULLSCREEN_GUARD);
+        if (g_fullscreenWinEventHook) {
+            UnhookWinEvent(g_fullscreenWinEventHook);
+            g_fullscreenWinEventHook = nullptr;
+        }
         if (g_powerNotify) {
             UnregisterSuspendResumeNotification(g_powerNotify);
             g_powerNotify = nullptr;

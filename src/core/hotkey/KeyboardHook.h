@@ -31,6 +31,10 @@ public:
     void setPaused(bool paused);
     bool isPaused() const;
 
+    /// 全屏游戏智能静默：进入游戏时挂起钩子快捷键与按键拦截，确保 F1 等按键 100% 透传给游戏
+    void setFullscreenSuspended(bool suspended);
+    bool isFullscreenSuspended() const;
+
     /// 注册由底层键盘钩子接管的快捷键 (针对 F1/F3 等系统抢占热键或单功能键)
     bool registerHookHotkey(int id, const HotkeyDef& def, const std::string& name, HotkeyCallback cb);
 
@@ -62,9 +66,11 @@ private:
 
     HHOOK m_hookHandle = nullptr;
     std::atomic<bool> m_paused{false};
+    std::atomic<bool> m_fullscreenSuspended{false};
     std::atomic<bool> m_recordingMode{false};
     std::atomic<uint8_t> m_filterMode{0}; // 0: smart_shortcuts, 1: all_keys, 2: shortcuts_only
     std::atomic<bool> m_includeFunctionKeys{false};
+    std::atomic<bool> m_keycastAutoBypassFullscreen{true};
     std::function<void(const std::string&)> m_keycastCallback;
     std::function<void(const KeycastKeyInfo&)> m_keycastKeyInfoCallback;
     std::function<bool(DWORD, WPARAM)> m_keyInterceptor;

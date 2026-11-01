@@ -79,6 +79,7 @@ struct HotkeyEntry {
     std::string conflictType = "none"; // "none" | "internal" | "external" | "unsafe"
     std::string conflictWith;   // 冲突关联说明
     bool useHook = false;       // 是否由底层键盘钩子接管
+    bool suspendedByFullscreen = false; // 是否因全屏游戏防打扰临时挂起卸下
 };
 
 class TOOLS3000CORE_API HotkeyManager {
@@ -130,6 +131,10 @@ public:
     void setPaused(bool paused);
     bool isPaused() const;
 
+    /// 全屏游戏智能静默：进入游戏时物理卸下 RegisterHotKey 与钩子热键（如将 F1 归还给 Dota 2），切出游戏后自动恢复
+    void setFullscreenSuspended(bool suspended);
+    bool isFullscreenSuspended() const;
+
 private:
     HotkeyManager() = default;
     HotkeyManager(const HotkeyManager&) = delete;
@@ -144,6 +149,7 @@ private:
     mutable std::mutex m_mutex;
     std::atomic<int> m_nextId{1};
     std::atomic<bool> m_paused{false};
+    std::atomic<bool> m_fullscreenSuspended{false};
 };
 
 }  // namespace tools3000::core

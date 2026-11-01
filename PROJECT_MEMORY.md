@@ -6,6 +6,40 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-01] 全屏游戏零干扰与媒体/生产力智能分流架构 (Smart Fullscreen & Game Silence Architecture)
+- **用户反馈与核心痛点**：
+  - 用户在全屏游玩《Dota 2》等游戏时，由于 `F1` 等按键既是游戏高频操作键（如选中英雄），又是 Tools3000 截图快捷键，且右键移动/释放技能会误触鼠标手势，导致每次打游戏途中不得不切回桌面手动退出 Tools3000；
+  - 但与此同时，用户在全屏观看电影（PotPlayer / VLC / 浏览器视频全屏）或全屏演示 PPT 时，又希望保留截图与快捷键可用。
+- **根因深度拆解（5 大核心缺陷）**：
+  1. **系统级 `RegisterHotKey` 与 `WH_KEYBOARD_LL` 在游戏全屏时持续劫持按键 (`src/core/hotkey/HotkeyManager.cpp`, `src/core/hotkey/KeyboardHook.cpp`)**：
+     Win32 `RegisterHotKey` 属于系统内核级热键表抢占，只要未物理调用 `UnregisterHotKey`，按下 `F1` 时 Windows 内核直接向 Tools3000 投递 `WM_HOTKEY` 并吞掉游戏的 `WM_KEYDOWN` 消息。即便在截图回调层忽略执行，游戏也永远收不到 `F1` 按键事件！
+  2. **一刀切布尔值 `ignoreFullscreen` 无法区分「游戏全屏」与「看电影/浏览器/PPT 全屏」 (`src/core/utils/WinUtils.cpp`)**：
+     旧版仅有 `bool isForegroundFullscreen()` 与单一开关，开启后看电影全屏也无法截图，关闭后打游戏被热键与手势频繁打断。
+  3. **DXGI / SDL2 / Source 2 引擎全屏窗口漏检 (`src/core/utils/WinUtils.cpp`)**：
+     Dota 2 (`SDL_app`)、Unity、Unreal 等游戏引擎在无边框全屏或独占全屏切换时，部分窗口仍保留 `WS_CAPTION` 样式位且 `!IsZoomed(hwnd)`，但其 `GetClientRect` 客户区已 100% 铺满显示器物理分辨率；旧版 `hasFramelessStyle` 严苛排除 `WS_CAPTION` 导致此类游戏全屏漏检。
+  4. **鼠标钩子 (`WH_MOUSE_LL`)、触发角 (`HotCornerEngine`)、按键回显 (`KeycastOverlay`) 与聚光灯 (`SpotlightOverlay`) 缺乏统一全屏退避**：
+     游戏全屏期间低级鼠标钩子仍在处理移动/右键事件，屏幕四角移鼠选视野（RTS/MOBA 边缘滚屏）易触发热区，浮层渲染易破坏 DXGI Flip Model 独立翻转模式。
+  5. **缺乏前台窗口切换实时感知与进程路径级游戏特征识别**：
+     缺少 `EVENT_SYSTEM_FOREGROUND` 实时钩子驱动热键动态装卸，且未识别 Steam (`steamapps\common`)、Epic Games 等游戏安装路径及主流游戏引擎窗口类名。
+- **世界级终局架构方案**：
+  1. **四维全屏场景智能感知引擎 (`FullscreenScene` & `FullscreenPolicyMode`, `src/core/utils/WinUtils.h/.cpp`)**：
+     - 将全屏状态精确划分为 4 类场景：`None`（非全屏）、`Productivity`（IDE/办公客户端/`scrcpy` 投屏/桌面资源管理器）、`MediaOrBrowser`（PotPlayer/VLC/mpv/MPC-HC/Kodi/PPT 放映/浏览器全屏视频，以及 MSTSC/ToDesk/向日葵/AnyDesk/VMware 等远程桌面与虚拟机全屏会话）、`Game`（Dota 2/CS2/LOL/Valorant/Steam/Epic 游戏目录、全屏 Source/Unity/Unreal/SDL/GLFW/CryEngine 窗口类及其它原生全屏游戏；窗口化状态下仅对已知游戏进程或游戏库目录且客户区 `>= 640x480` 的窗口激活，绝不因通用 `SDL_app`/`GLFW30` 类名误伤桌面工具）；
+     - 升级 `isWindowFullscreen(HWND)`：剔除隐藏窗口 (`!IsWindowVisible`) 与鼠标穿透透明图层 (`WS_EX_LAYERED | WS_EX_TRANSPARENT`)，兼容 `!IsZoomed(hwnd)` 且 `ClientToScreen` 客户区完整覆盖显示器（含 2px Focus Assist 避让与高分屏容差）的 DXGI/SDL2 游戏窗口；
+     - 提供 4 档可配置策略模式（默认 `Smart` 智能模式）：
+       - `Smart`（推荐·智能识别）：**游戏场景** -> 物理卸载全局热键 + 静默钩子热键/鼠标手势 + 停用截图/触发角/浮层（100% 归还 `F1` 与右键给游戏）；**影音/浏览器/远程桌面全屏** -> 停用鼠标手势与触发角防误触，但**完全保留 `F1` 截图、全局快捷键与 `RemoteMasterEngine` 沉浸直通**；
+       - `StrictAll`（全部全屏静默）：游戏与影音/远程全屏下一律停用所有全局快捷键、截图与鼠标手势（同时保持 `RemoteMasterEngine` 底层扫描码直通可用）；
+       - `GestureOnly`（仅停用手势）：全屏时仅停用鼠标手势与触发角，始终保留快捷键与截图；
+       - `Off`（从不自动停用）：全屏时保持所有功能激活。
+  2. **OS 级热键动态物理装卸、钩子精细分流与零误报冲突 (`HotkeyManager::setFullscreenSuspended`, `KeyboardHook`, `MouseHook`)**：
+     - 当进入需静默热键的场景时，`HotkeyManager::setFullscreenSuspended(true)` 立即遍历所有实际已注册 (`entry.registered == true`) 的热键调用 Win32 `UnregisterHotKey` 与 `KeyboardHook::unregisterHookHotkey`，标记 `entry.suspendedByFullscreen = true`（不污染原本存在外部冲突的未注册热键）；
+     - `KeyboardHook::lowLevelKeyboardProc` 在 `m_fullscreenSuspended` 期间挂起钩子热键与 `m_keyInterceptor`，但始终放行 `m_lowLevelKeyInterceptor`（保障全屏远程桌面 `RemoteMasterEngine` 正常工作）及录屏状态 (`m_recordingMode`) 下的被动按键回显；
+     - 当玩家 `Alt+Tab` 切回桌面、最小化或退出游戏时，`setFullscreenSuspended(false)` 毫秒级自动重新挂载所有挂起热键。
+  3. **事件钩子 + 800ms 守护定时器 + 配置变更即时同步 (`src/main.cpp`, `src/core/ipc/MessageBridge.cpp`)**：
+     - 挂载 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, ..., WINEVENT_OUTOFCONTEXT)` 与 `800ms` 守护定时器 `TIMER_ID_FULLSCREEN_GUARD`，在 DXGI 切屏瞬态 `GetForegroundWindow() == nullptr` 时保持上一有效窗口防抖，并联动 `/gesture/autoBypassFullscreen` 与 `general.updateSettings` 即时同步状态。
+  4. **全模块策略收口与 React 设置中心可视化配置 (`ScreenCapture`, `CapturePlugin::triggerOcrCapture`, `GestureEngine`, `HotCornerEngine`, `KeycastOverlay`, `SpotlightOverlayInputController`, `MessageBridge`, `GeneralPage.tsx`)**：
+     - 截图、OCR、录屏、搜索、手势、触发角、按键回显、聚光灯统一接入 `WinUtils::should*ForWindow` 策略网关；
+     - 在设置中心「通用设置 -> 全屏游戏与观影智能免打扰」提供直观的 4 模式下拉选择与场景行为说明，支持中英双语、配置导入导出与重置全链路联动。
+
 ### [2026-10-30] 全链路 HUD 悬浮层与光标/放大镜/选区碰撞避让引擎 (Full-Lifecycle HUD & Cursor/Loupe Avoidance Engine)
 - **用户反馈与实机截图痛点**：
   - 用户在屏幕左下角区域准备截图或拖拽选区时，左下角快捷键提示卡片 (`ShortcutHintOverlay`) 未能自动躲开鼠标光标与选区放大镜 (`Loupe HUD`)，导致左下角截图选区与放大镜视野被 HUD 严密遮挡；同时要求全面排查并根治全库同类悬浮层/HUD 遮挡鼠标或选区的问题。

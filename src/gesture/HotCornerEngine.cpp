@@ -1,4 +1,4 @@
-﻿#include "gesture/HotCornerEngine.h"
+#include "gesture/HotCornerEngine.h"
 #include "core/logger/Logger.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/utils/WinUtils.h"
@@ -123,13 +123,10 @@ void HotCornerEngine::workerThread(std::stop_token stop) {
                 // 检查全屏免打扰
                 if (m_autoBypassFullscreen.load()) {
                     HWND fg = GetForegroundWindow();
-                    if (fg && tools3000::core::WinUtils::isWindowFullscreen(fg)) {
-                        const std::wstring classWide = tools3000::core::WinUtils::getWindowClassName(fg);
-                        if (shouldAutoBypassFullscreenGestures(true, isProductivityToolkitClassName(classWide))) {
-                            LOG_TRACE("前台处于全屏独占，触发角自动静默: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
-                            triggered = true;
-                            continue;
-                        }
+                    if (fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg)) {
+                        LOG_TRACE("前台处于全屏独占，触发角自动静默: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
+                        triggered = true;
+                        continue;
                     }
                 }
 

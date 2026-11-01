@@ -219,6 +219,21 @@ std::wstring WinUtils::processNameFromPid(DWORD pid) {
     return result;
 }
 
+std::wstring WinUtils::processPathFromPid(DWORD pid) {
+    if (pid == 0) return {};
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) return {};
+
+    wchar_t path[2048] = {};
+    DWORD size = static_cast<DWORD>(std::size(path));
+    std::wstring result;
+    if (QueryFullProcessImageNameW(proc, 0, path, &size)) {
+        result.assign(path, size);
+    }
+    CloseHandle(proc);
+    return result;
+}
+
 std::optional<std::wstring> WinUtils::getForegroundProcessName() {
     HWND hwnd = GetForegroundWindow();
     if (!hwnd) return std::nullopt;
@@ -264,9 +279,17 @@ std::wstring WinUtils::utf8ToWstring(const std::string& str) {
 }
 
 std::string WinUtils::getProcessNameFromWindow(HWND hwnd) {
+    if (!hwnd) return {};
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     return wstringToUtf8(processNameFromPid(pid));
+}
+
+std::wstring WinUtils::getProcessPathFromWindow(HWND hwnd) {
+    if (!hwnd) return {};
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    return processPathFromPid(pid);
 }
 
 std::string WinUtils::base64Encode(const std::vector<uint8_t>& data) {
@@ -783,16 +806,19 @@ bool WinUtils::isWindowFullscreen(HWND hwnd) {
     HWND root = GetAncestor(hwnd, GA_ROOT);
     if (root) hwnd = root;
 
-    // 排除桌面和 Shell 窗口
-    if (hwnd == GetDesktopWindow() || hwnd == GetShellWindow()) return false;
-    std::wstring className = getWindowClassName(hwnd);
-    if (className == L"Progman" || className == L"WorkerW" || className == L"Shell_TrayWnd") {
+    // 排除桌面、Shell 窗口、隐藏窗口、最小化窗口与鼠标穿透层
+    if (hwnd == GetDesktopWindow() || hwnd == GetShellWindow() ||
+        !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+        return false;
+    }
+    const LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    if ((exStyle & (WS_EX_LAYERED | WS_EX_TRANSPARENT)) == (WS_EX_LAYERED | WS_EX_TRANSPARENT)) {
         return false;
     }
 
-    // 若具有标准标题栏（WS_CAPTION），说明是普通窗口或常规最大化窗口，非全屏独占模式
-    LONG style = GetWindowLongW(hwnd, GWL_STYLE);
-    if ((style & WS_CAPTION) == WS_CAPTION) {
+    std::wstring className = getWindowClassName(hwnd);
+    if (className == L"Progman" || className == L"WorkerW" ||
+        className == L"Shell_TrayWnd" || className == L"Shell_SecondaryTrayWnd") {
         return false;
     }
 
@@ -804,17 +830,42 @@ bool WinUtils::isWindowFullscreen(HWND hwnd) {
     mi.cbSize = sizeof(MONITORINFO);
     if (!GetMonitorInfoW(hMon, &mi)) return false;
 
+    // 允许 2px 容差，兼容 DWM Focus Assist 避让缩进 (vw-1, vh-1) 与高分屏 DPI 舍入误差
+    constexpr LONG kFullscreenTolerancePx = 2;
+
+    // 若具有标准标题栏（WS_CAPTION），常规最大化窗口 (IsZoomed) 非全屏；
+    // 但部分 DXGI / SDL2 全屏游戏保留了 WS_CAPTION 样式位且未处于最大化状态，其客户区覆盖整个物理显示器
+    LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+    if ((style & WS_CAPTION) == WS_CAPTION) {
+        if (IsZoomed(hwnd)) {
+            return false;
+        }
+        RECT rcClient{};
+        if (!GetClientRect(hwnd, &rcClient)) return false;
+        POINT ptTopLeft{rcClient.left, rcClient.top};
+        POINT ptBottomRight{rcClient.right, rcClient.bottom};
+        if (!ClientToScreen(hwnd, &ptTopLeft) || !ClientToScreen(hwnd, &ptBottomRight)) {
+            return false;
+        }
+        return (ptTopLeft.x <= mi.rcMonitor.left + kFullscreenTolerancePx &&
+                ptTopLeft.y <= mi.rcMonitor.top + kFullscreenTolerancePx &&
+                ptBottomRight.x >= mi.rcMonitor.right - kFullscreenTolerancePx &&
+                ptBottomRight.y >= mi.rcMonitor.bottom - kFullscreenTolerancePx);
+    }
+
     RECT rcWindow{};
     if (!GetWindowRect(hwnd, &rcWindow)) return false;
 
-    // 判定无边框窗口是否覆盖整个物理显示器区域
-    return (rcWindow.left <= mi.rcMonitor.left &&
-            rcWindow.top <= mi.rcMonitor.top &&
-            rcWindow.right >= mi.rcMonitor.right &&
-            rcWindow.bottom >= mi.rcMonitor.bottom);
+    // 判定无边框窗口是否覆盖整个物理显示器区域（含 2px 容差）
+    return (rcWindow.left <= mi.rcMonitor.left + kFullscreenTolerancePx &&
+            rcWindow.top <= mi.rcMonitor.top + kFullscreenTolerancePx &&
+            rcWindow.right >= mi.rcMonitor.right - kFullscreenTolerancePx &&
+            rcWindow.bottom >= mi.rcMonitor.bottom - kFullscreenTolerancePx);
 }
 
 namespace {
+
+std::atomic<int> g_fullscreenPolicyMode{static_cast<int>(FullscreenPolicyMode::Smart)};
 
 inline bool classNameStartsWith(std::wstring_view cls, std::wstring_view prefix) noexcept {
     return cls.size() >= prefix.size() && cls.substr(0, prefix.size()) == prefix;
@@ -826,9 +877,233 @@ inline bool isTabbedBrowserClassName(std::wstring_view cls) noexcept {
            cls == L"CabinetWClass";
 }
 
+inline bool isWebBrowserClassName(std::wstring_view cls) noexcept {
+    return classNameStartsWith(cls, L"Chrome_WidgetWin") ||
+           cls == L"MozillaWindowClass";
+}
+
 inline bool isTools3000UiClassName(std::wstring_view cls) noexcept {
     constexpr std::wstring_view kPrefix = L"Tools3000_";
     return cls.size() >= kPrefix.size() && cls.substr(0, kPrefix.size()) == kPrefix;
+}
+
+inline wchar_t asciiLowerWide(wchar_t ch) noexcept {
+    if (ch >= L'A' && ch <= L'Z') return static_cast<wchar_t>(ch - L'A' + L'a');
+    return ch;
+}
+
+inline char asciiLowerChar(char ch) noexcept {
+    if (ch >= 'A' && ch <= 'Z') return static_cast<char>(ch - 'A' + 'a');
+    return ch;
+}
+
+inline bool equalsIgnoreCaseAscii(std::wstring_view a, std::wstring_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (asciiLowerWide(a[i]) != asciiLowerWide(b[i])) return false;
+    }
+    return true;
+}
+
+inline bool equalsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (asciiLowerChar(a[i]) != asciiLowerChar(b[i])) return false;
+    }
+    return true;
+}
+
+inline bool endsWithIgnoreCaseAscii(std::wstring_view str, std::wstring_view suffix) noexcept {
+    if (str.size() < suffix.size()) return false;
+    return equalsIgnoreCaseAscii(str.substr(str.size() - suffix.size()), suffix);
+}
+
+inline bool containsIgnoreCaseNormalizedPath(std::wstring_view path, std::wstring_view needle) noexcept {
+    if (needle.empty() || path.size() < needle.size()) return false;
+    const size_t limit = path.size() - needle.size();
+    for (size_t i = 0; i <= limit; ++i) {
+        bool match = true;
+        for (size_t j = 0; j < needle.size(); ++j) {
+            wchar_t pc = asciiLowerWide(path[i + j]);
+            if (pc == L'/') pc = L'\\';
+            wchar_t nc = asciiLowerWide(needle[j]);
+            if (nc == L'/') nc = L'\\';
+            if (pc != nc) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+inline std::wstring_view extractFileNameView(std::wstring_view pathOrName) noexcept {
+    size_t pos = pathOrName.find_last_of(L"\\/");
+    return (pos == std::wstring_view::npos) ? pathOrName : pathOrName.substr(pos + 1);
+}
+
+inline bool isWebBrowserProcessName(std::wstring_view procFile) noexcept {
+    static constexpr std::wstring_view kBrowsers[] = {
+        L"chrome.exe", L"msedge.exe", L"firefox.exe", L"brave.exe",
+        L"opera.exe", L"vivaldi.exe", L"arc.exe", L"waterfox.exe",
+        L"librewolf.exe", L"zen.exe", L"thorium.exe", L"chromium.exe",
+        L"qqbrowser.exe", L"360chrome.exe", L"360se.exe", L"sogouexplorer.exe",
+        L"2345explorer.exe", L"liebao.exe", L"maxthon.exe", L"centbrowser.exe",
+        L"whale.exe", L"yandex.exe"
+    };
+    for (const auto& b : kBrowsers) {
+        if (equalsIgnoreCaseAscii(procFile, b)) return true;
+    }
+    return false;
+}
+
+inline bool isElectronOrIdeProductivityProcessName(std::wstring_view procFile) noexcept {
+    static constexpr std::wstring_view kProductivityApps[] = {
+        L"code.exe", L"cursor.exe", L"windsurf.exe", L"devenv.exe",
+        L"idea64.exe", L"clion64.exe", L"pycharm64.exe", L"webstorm64.exe",
+        L"goland64.exe", L"rider64.exe", L"rustrover64.exe", L"phpstorm64.exe",
+        L"datagrip64.exe", L"studio64.exe", L"sublime_text.exe", L"notepad++.exe",
+        L"obsidian.exe", L"notion.exe", L"logseq.exe", L"typora.exe",
+        L"feishu.exe", L"lark.exe", L"dingtalk.exe", L"wxwork.exe",
+        L"wechat.exe", L"weixin.exe", L"qq.exe", L"tim.exe",
+        L"slack.exe", L"teams.exe", L"zoom.exe", L"wemeetapp.exe",
+        L"winword.exe", L"excel.exe", L"onenote.exe", L"outlook.exe",
+        L"wps.exe", L"et.exe", L"photoshop.exe", L"illustrator.exe",
+        L"acad.exe", L"blender.exe", L"unity.exe", L"unrealeditor.exe",
+        L"ue4editor.exe", L"godot.exe", L"scrcpy.exe", L"explorer.exe", L"tools3000.exe"
+    };
+    for (const auto& app : kProductivityApps) {
+        if (equalsIgnoreCaseAscii(procFile, app)) return true;
+    }
+    return false;
+}
+
+inline bool isRemoteDesktopOrVmProcessOrClass(std::wstring_view processName,
+                                              std::wstring_view className) noexcept {
+    const std::wstring_view procFile = extractFileNameView(processName);
+    if (!procFile.empty()) {
+        static constexpr std::wstring_view kRemoteAndVmProcesses[] = {
+            L"mstsc.exe", L"msrdc.exe", L"todesk.exe", L"sunloginclient.exe",
+            L"anydesk.exe", L"rustdesk.exe", L"teamviewer.exe", L"vncviewer.exe",
+            L"tv_w32.exe", L"parsec.exe", L"parsecd.exe", L"moonlight.exe",
+            L"splashtop.exe", L"ultraviewer_desktop.exe",
+            L"vmware.exe", L"vmware-vmx.exe", L"vmware-remotemks.exe",
+            L"virtualboxvm.exe", L"vmconnect.exe"
+        };
+        for (const auto& rp : kRemoteAndVmProcesses) {
+            if (equalsIgnoreCaseAscii(procFile, rp)) return true;
+        }
+    }
+    if (!className.empty()) {
+        static constexpr std::wstring_view kRemoteAndVmClasses[] = {
+            L"TscShellContainerClass", L"TSSHELLWND", L"IHWindowClass", L"OPContainerClass",
+            L"SunloginMain", L"SunloginRemote", L"ToDesk_Main", L"ToDesk_Remote",
+            L"anydesk", L"RustDesk", L"TeamViewer"
+        };
+        for (const auto& rc : kRemoteAndVmClasses) {
+            if (equalsIgnoreCaseAscii(className, rc)) return true;
+        }
+    }
+    return false;
+}
+
+inline bool isNonGameLauncherOrUtilityProcessName(std::wstring_view procFile) noexcept {
+    if (isWebBrowserProcessName(procFile) ||
+        isElectronOrIdeProductivityProcessName(procFile) ||
+        isRemoteDesktopOrVmProcessOrClass(procFile, L"")) {
+        return true;
+    }
+    static constexpr std::wstring_view kLaunchersAndUtilities[] = {
+        L"steam.exe", L"steamwebhelper.exe", L"steamservice.exe", L"gameoverlayui.exe",
+        L"epicgameslauncher.exe", L"epicwebhelper.exe", L"unrealcefsubp.exe",
+        L"wegame.exe", L"tgp_daemon.exe", L"tgp_browser.exe",
+        L"battle.net.exe", L"agent.exe", L"galaxyclient.exe", L"galaxyclienthelper.exe",
+        L"eaapp.exe", L"eadesktop.exe", L"eabackgroundservice.exe",
+        L"upc.exe", L"ubisoftconnect.exe", L"uplaywebcore.exe",
+        L"riotclientservices.exe", L"riotclientux.exe", L"riotclientuxrender.exe",
+        L"leagueclient.exe", L"leagueclientux.exe", L"leagueclientuxrender.exe",
+        L"wallpaper32.exe", L"wallpaper64.exe", L"ui32.exe", L"webwallpaper32.exe",
+        L"losslessscaling.exe", L"obs64.exe", L"obs32.exe",
+        L"discord.exe", L"kook.exe", L"yy.exe", L"teamspeak3.exe",
+        L"msi afterburner.exe", L"rtss.exe", L"playnite.desktopapp.exe", L"playnite.fullscreenapp.exe"
+    };
+    for (const auto& util : kLaunchersAndUtilities) {
+        if (equalsIgnoreCaseAscii(procFile, util)) return true;
+    }
+    return false;
+}
+
+inline bool isExplicitCompetitiveOr3DGameProcessName(std::wstring_view procFile) noexcept {
+    static constexpr std::wstring_view kExplicitGames[] = {
+        L"dota2.exe", L"cs2.exe", L"csgo.exe", L"hl2.exe", L"deadlock.exe", L"project8.exe",
+        L"league of legends.exe", L"valorant.exe", L"valorant-win64-shipping.exe",
+        L"overwatch.exe", L"wow.exe", L"wowclassic.exe", L"diablo iv.exe", L"diablo iii64.exe",
+        L"hearthstone.exe", L"sc2_x64.exe", L"sc2.exe", L"war3.exe",
+        L"r5apex.exe", L"tslgame.exe", L"narakabladepoint.exe",
+        L"genshinimpact.exe", L"yuanshen.exe", L"starrail.exe", L"zenlesszonezero.exe", L"bh3.exe",
+        L"b1-win64-shipping.exe", L"eldenring.exe", L"sekiro.exe", L"darksoulsiii.exe", L"armoredcore6.exe",
+        L"cyberpunk2077.exe", L"witcher3.exe", L"bg3.exe", L"bg3_dx11.exe",
+        L"rdr2.exe", L"gtav.exe", L"gta5.exe", L"playgtav.exe",
+        L"monsterhunterworld.exe", L"monsterhunterrise.exe", L"monsterhunterwilds.exe",
+        L"re4.exe", L"re8.exe", L"streetfighter6.exe",
+        L"pathofexile_x64.exe", L"pathofexile.exe", L"pathofexilesteam.exe", L"pathofexile2.exe",
+        L"destiny2.exe", L"warframe.x64.exe", L"helldivers2.exe",
+        L"palworld-win64-shipping.exe", L"client-win64-shipping.exe", L"deltaforceclient-win64-shipping.exe",
+        L"fc24.exe", L"fc25.exe", L"nba2k24.exe", L"nba2k25.exe",
+        L"forzahorizon5.exe", L"forzahorizon4.exe", L"flightsimulator.exe",
+        L"minecraft.windows.exe", L"terraria.exe", L"stardew valley.exe",
+        L"factorio.exe", L"rimworldwin64.exe", L"dontstarve_steam_x64.exe",
+        L"hollow_knight.exe", L"hades.exe", L"hades2.exe", L"celeste.exe",
+        L"balatro.exe", L"slaythespire.exe", L"deadbydaylight-win64-shipping.exe",
+        L"rainbowsix.exe", L"rainbowsix_vulkan.exe", L"bf2042.exe", L"bfv.exe", L"bf1.exe",
+        L"cod.exe", L"ModernWarfare.exe", L"BlackOpsColdWar.exe"
+    };
+    for (const auto& game : kExplicitGames) {
+        if (equalsIgnoreCaseAscii(procFile, game)) return true;
+    }
+    if (endsWithIgnoreCaseAscii(procFile, L"-win64-shipping.exe") ||
+        endsWithIgnoreCaseAscii(procFile, L"-win32-shipping.exe")) {
+        return true;
+    }
+    return false;
+}
+
+inline bool isKnownGameEngineWindowClass(std::wstring_view cls) noexcept {
+    if (cls.empty()) return false;
+    static constexpr std::wstring_view kGameClasses[] = {
+        L"Valve001", L"Source2WndClass", L"SDL_app",
+        L"UnityWndClass", L"UnrealWindow", L"RiotWindowClass",
+        L"CryENGINE", L"GLFW30", L"LWJGL",
+        L"D3DWindow", L"Direct3DWindowClass", L"D3D11_GameWindow", L"D3D12_GameWindow",
+        L"grcWindow", L"CreationEngine", L"REEngine", L"AnvilNext", L"Prism3D"
+    };
+    for (const auto& gc : kGameClasses) {
+        if (equalsIgnoreCaseAscii(cls, gc)) return true;
+    }
+    return false;
+}
+
+inline bool isGameLibraryExecutablePath(std::wstring_view exePath) noexcept {
+    if (exePath.empty()) return false;
+    static constexpr std::wstring_view kGameLibraryMarkers[] = {
+        L"\\steamapps\\common\\",
+        L"\\epic games\\",
+        L"\\wegameapps\\",
+        L"\\riot games\\",
+        L"\\gog galaxy\\games\\",
+        L"\\xboxgames\\",
+        L"\\ea games\\",
+        L"\\origin games\\",
+        L"\\ubisoft game launcher\\games\\",
+        L"\\battle.net\\games\\"
+    };
+    for (const auto& marker : kGameLibraryMarkers) {
+        if (containsIgnoreCaseNormalizedPath(exePath, marker)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -864,6 +1139,295 @@ bool WinUtils::shouldBypassFullscreenInteractions(HWND hwnd) {
     }
     const std::wstring classWide = getWindowClassName(hwnd);
     return shouldBypassFullscreenInteractions(true, classWide);
+}
+
+FullscreenPolicyMode WinUtils::parseFullscreenPolicyMode(std::string_view modeStr) noexcept {
+    if (equalsIgnoreCaseAscii(modeStr, "strict_all") ||
+        equalsIgnoreCaseAscii(modeStr, "strict") ||
+        equalsIgnoreCaseAscii(modeStr, "all")) {
+        return FullscreenPolicyMode::StrictAll;
+    }
+    if (equalsIgnoreCaseAscii(modeStr, "gesture_only") ||
+        equalsIgnoreCaseAscii(modeStr, "gesture")) {
+        return FullscreenPolicyMode::GestureOnly;
+    }
+    if (equalsIgnoreCaseAscii(modeStr, "off") ||
+        equalsIgnoreCaseAscii(modeStr, "disabled") ||
+        equalsIgnoreCaseAscii(modeStr, "none") ||
+        equalsIgnoreCaseAscii(modeStr, "false")) {
+        return FullscreenPolicyMode::Off;
+    }
+    return FullscreenPolicyMode::Smart;
+}
+
+const char* WinUtils::fullscreenPolicyModeToString(FullscreenPolicyMode mode) noexcept {
+    switch (mode) {
+        case FullscreenPolicyMode::StrictAll:   return "strict_all";
+        case FullscreenPolicyMode::GestureOnly: return "gesture_only";
+        case FullscreenPolicyMode::Off:         return "off";
+        case FullscreenPolicyMode::Smart:
+        default:                                return "smart";
+    }
+}
+
+void WinUtils::setFullscreenPolicyMode(FullscreenPolicyMode mode) noexcept {
+    g_fullscreenPolicyMode.store(static_cast<int>(mode), std::memory_order_release);
+}
+
+FullscreenPolicyMode WinUtils::getFullscreenPolicyMode() noexcept {
+    return static_cast<FullscreenPolicyMode>(g_fullscreenPolicyMode.load(std::memory_order_acquire));
+}
+
+bool WinUtils::isMediaPlayerProcessOrClass(std::wstring_view processName,
+                                           std::wstring_view className) noexcept {
+    const std::wstring_view procFile = extractFileNameView(processName);
+    if (!procFile.empty()) {
+        static constexpr std::wstring_view kMediaProcesses[] = {
+            L"potplayermini64.exe", L"potplayermini.exe", L"potplayer64.exe", L"potplayer.exe",
+            L"vlc.exe", L"mpv.exe", L"mpvnet.exe", L"ffplay.exe",
+            L"mpc-hc.exe", L"mpc-hc64.exe", L"mpc-be.exe", L"mpc-be64.exe",
+            L"kmplayer.exe", L"kmplayer64.exe", L"smplayer.exe", L"gom.exe", L"gom64.exe",
+            L"wmplayer.exe", L"microsoft.media.player.exe", L"video.ui.exe",
+            L"bilibili.exe", L"qiyiclient.exe", L"qqlive.exe", L"youkudesktop.exe",
+            L"douyin.exe", L"baofeng.exe", L"xmp.exe", L"qqplayer.exe",
+            L"kodi.exe", L"plex.exe", L"plexhtpc.exe", L"jellyfinmediaplayer.exe", L"embytheater.exe",
+            L"cloudmusic.exe", L"qqmusic.exe", L"kugou.exe", L"kuwomusic.exe",
+            L"spotify.exe", L"foobar2000.exe", L"aimp.exe", L"musicbee.exe",
+            L"powerpnt.exe", L"wpp.exe"
+        };
+        for (const auto& mp : kMediaProcesses) {
+            if (equalsIgnoreCaseAscii(procFile, mp)) return true;
+        }
+    }
+
+    if (!className.empty()) {
+        static constexpr std::wstring_view kMediaClasses[] = {
+            L"PotPlayer", L"PotPlayer64", L"MediaPlayerClassicW",
+            L"mpv", L"VLC DirectX", L"WMPlayerApp", L"screenClass"
+        };
+        for (const auto& mc : kMediaClasses) {
+            if (equalsIgnoreCaseAscii(className, mc)) return true;
+        }
+    }
+    return false;
+}
+
+bool WinUtils::isKnownGameProcessOrClass(std::wstring_view processName,
+                                         std::wstring_view className,
+                                         std::wstring_view exePath) noexcept {
+    if (isTools3000UiClassName(className) ||
+        className == L"Progman" || className == L"WorkerW" ||
+        className == L"Shell_TrayWnd" || className == L"Shell_SecondaryTrayWnd" ||
+        className == L"CabinetWClass" || className == L"ExploreWClass") {
+        return false;
+    }
+
+    if (isMediaPlayerProcessOrClass(processName, className) ||
+        isRemoteDesktopOrVmProcessOrClass(processName, className)) {
+        return false;
+    }
+
+    const std::wstring_view procFile = extractFileNameView(
+        !processName.empty() ? processName : exePath);
+
+    if (!procFile.empty()) {
+        if (isExplicitCompetitiveOr3DGameProcessName(procFile)) {
+            return true;
+        }
+        if (isNonGameLauncherOrUtilityProcessName(procFile)) {
+            return false;
+        }
+    }
+
+    if (isKnownGameEngineWindowClass(className)) {
+        return true;
+    }
+
+    if (isGameLibraryExecutablePath(exePath)) {
+        return true;
+    }
+
+    return false;
+}
+
+FullscreenScene WinUtils::classifyFullscreenScene(bool isFullscreen,
+                                                  std::wstring_view processName,
+                                                  std::wstring_view className,
+                                                  std::wstring_view exePath) noexcept {
+    if (!isFullscreen) {
+        return FullscreenScene::None;
+    }
+
+    // 1. Tools3000 自身界面、桌面背景、任务栏与资源管理器全屏：归为生产力场景，绝不屏蔽热键与截图
+    if (isTools3000UiClassName(className) ||
+        className == L"Progman" || className == L"WorkerW" ||
+        className == L"Shell_TrayWnd" || className == L"Shell_SecondaryTrayWnd" ||
+        className == L"CabinetWClass" || className == L"ExploreWClass") {
+        return FullscreenScene::Productivity;
+    }
+
+    const std::wstring_view procFile = extractFileNameView(
+        !processName.empty() ? processName : exePath);
+
+    // 2. 专用影音播放器、幻灯片放映与远程桌面/虚拟机全屏会话
+    //    (PotPlayer / VLC / MPV / Bilibili / PowerPoint / MSTSC / ToDesk / 向日葵 / VMware 等)
+    if (isMediaPlayerProcessOrClass(procFile, className) ||
+        isRemoteDesktopOrVmProcessOrClass(procFile, className)) {
+        return FullscreenScene::MediaOrBrowser;
+    }
+
+    // 3. 已知游戏进程、游戏引擎窗口类名 (SDL_app / Valve001 / UnityWndClass / UnrealWindow) 或 Steam/Epic 游戏库目录
+    if (isKnownGameProcessOrClass(procFile, className, exePath)) {
+        return FullscreenScene::Game;
+    }
+
+    // 4. 生产力 IDE / 办公协作客户端 (VS Code / Cursor / Visual Studio / JetBrains / 微信 / 飞书 / scrcpy 等)
+    if (!procFile.empty() && isElectronOrIdeProductivityProcessName(procFile)) {
+        return FullscreenScene::Productivity;
+    }
+
+    // 5. 网页浏览器全屏 (Chrome / Edge / Firefox / Brave 等观看网页全屏电影或 F11 全屏浏览)
+    if ((!procFile.empty() && isWebBrowserProcessName(procFile)) ||
+        (procFile.empty() && isWebBrowserClassName(className))) {
+        return FullscreenScene::MediaOrBrowser;
+    }
+
+    // 6. 其它生产力工具类框架窗口 (Qt / CEF / UWP ApplicationFrameWindow 等)
+    if (isProductivityToolkitClassName(className)) {
+        return FullscreenScene::Productivity;
+    }
+
+    // 7. 其余未知的全屏独占非生产力窗口（如自研引擎全屏 3D 游戏）默认按游戏场景保护
+    return FullscreenScene::Game;
+}
+
+FullscreenScene WinUtils::classifyWindowScene(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return FullscreenScene::None;
+    HWND root = GetAncestor(hwnd, GA_ROOT);
+    if (root) hwnd = root;
+
+    if (hwnd == GetDesktopWindow() || hwnd == GetShellWindow() ||
+        !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+        return FullscreenScene::None;
+    }
+
+    const std::wstring className = getWindowClassName(hwnd);
+    if (className == L"Progman" || className == L"WorkerW" ||
+        className == L"Shell_TrayWnd" || className == L"Shell_SecondaryTrayWnd" ||
+        isTools3000UiClassName(className)) {
+        return FullscreenScene::None;
+    }
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    const std::wstring procName = processNameFromPid(pid);
+    const std::wstring procPath = processPathFromPid(pid);
+
+    if (isWindowFullscreen(hwnd)) {
+        return classifyFullscreenScene(true, procName, className, procPath);
+    }
+
+    // 针对明确已知的大型电竞/3D 游戏进程或安装于游戏库目录下的游戏，
+    // 即便玩家采用带边框窗口化运行，只要该游戏窗口处于前台活动态且客户区尺寸 >= 640x480，
+    // 同样识别为 Game 场景，自动让出 F1 等游戏高频按键并停用鼠标手势；
+    // 注意：非全屏状态下不单凭通用引擎类名（如 SDL_app / GLFW30）判定，避免误伤 scrcpy 或桌面开发工具。
+    const std::wstring_view procFile = extractFileNameView(
+        !procName.empty() ? std::wstring_view(procName) : std::wstring_view(procPath));
+    if (!isMediaPlayerProcessOrClass(procFile, className) &&
+        !isRemoteDesktopOrVmProcessOrClass(procFile, className) &&
+        !isNonGameLauncherOrUtilityProcessName(procFile) &&
+        (isExplicitCompetitiveOr3DGameProcessName(procFile) ||
+         isGameLibraryExecutablePath(procPath))) {
+        RECT rcClient{};
+        if (GetClientRect(hwnd, &rcClient)) {
+            const int w = rcClient.right - rcClient.left;
+            const int h = rcClient.bottom - rcClient.top;
+            if (w >= 640 && h >= 480) {
+                return FullscreenScene::Game;
+            }
+        }
+    }
+
+    return FullscreenScene::None;
+}
+
+bool WinUtils::shouldSuspendHotkeysForScene(FullscreenScene scene, FullscreenPolicyMode mode) noexcept {
+    switch (mode) {
+        case FullscreenPolicyMode::Off:
+        case FullscreenPolicyMode::GestureOnly:
+            return false;
+        case FullscreenPolicyMode::StrictAll:
+            return scene == FullscreenScene::Game || scene == FullscreenScene::MediaOrBrowser;
+        case FullscreenPolicyMode::Smart:
+        default:
+            // 智能模式：游戏内卸下 F1 等全局快捷键；全屏看电影/视频时保留截图、录屏、OCR 等快捷键可用
+            return scene == FullscreenScene::Game;
+    }
+}
+
+bool WinUtils::shouldSuspendGesturesForScene(FullscreenScene scene,
+                                             FullscreenPolicyMode mode,
+                                             std::wstring_view className) noexcept {
+    if (mode == FullscreenPolicyMode::Off) {
+        return false;
+    }
+    if (scene == FullscreenScene::Game) {
+        return true;
+    }
+    if (scene == FullscreenScene::MediaOrBrowser) {
+        if (mode == FullscreenPolicyMode::StrictAll) {
+            return true;
+        }
+        // Smart / GestureOnly 模式下：独立影音播放器全屏停用手势（保留原生右键菜单），浏览器全屏保留网页手势
+        return !isTabbedBrowserClassName(className);
+    }
+    return false;
+}
+
+bool WinUtils::shouldBypassCaptureForScene(FullscreenScene scene, FullscreenPolicyMode mode) noexcept {
+    switch (mode) {
+        case FullscreenPolicyMode::Off:
+        case FullscreenPolicyMode::GestureOnly:
+            return false;
+        case FullscreenPolicyMode::StrictAll:
+            return scene == FullscreenScene::Game || scene == FullscreenScene::MediaOrBrowser;
+        case FullscreenPolicyMode::Smart:
+        default:
+            // 智能模式：游戏全屏禁用截图防误触（F1 归还游戏），全屏看电影/视频时允许正常截图与录屏
+            return scene == FullscreenScene::Game;
+    }
+}
+
+bool WinUtils::shouldBypassOverlaysForScene(FullscreenScene scene, FullscreenPolicyMode mode) noexcept {
+    if (mode == FullscreenPolicyMode::Off) {
+        return false;
+    }
+    // 无论是打游戏还是全屏看电影，均自动静默屏幕四角触发角、按键回显与鼠标聚光灯水波纹
+    return scene == FullscreenScene::Game || scene == FullscreenScene::MediaOrBrowser;
+}
+
+bool WinUtils::shouldSuspendHotkeysForWindow(HWND hwnd, FullscreenPolicyMode mode) {
+    if (mode == FullscreenPolicyMode::Off) return false;
+    return shouldSuspendHotkeysForScene(classifyWindowScene(hwnd), mode);
+}
+
+bool WinUtils::shouldSuspendGesturesForWindow(HWND hwnd, FullscreenPolicyMode mode) {
+    if (mode == FullscreenPolicyMode::Off || !hwnd || !IsWindow(hwnd)) return false;
+    HWND root = GetAncestor(hwnd, GA_ROOT);
+    if (root) hwnd = root;
+    const FullscreenScene scene = classifyWindowScene(hwnd);
+    const std::wstring className = getWindowClassName(hwnd);
+    return shouldSuspendGesturesForScene(scene, mode, className);
+}
+
+bool WinUtils::shouldBypassCaptureForWindow(HWND hwnd, FullscreenPolicyMode mode) {
+    if (mode == FullscreenPolicyMode::Off) return false;
+    return shouldBypassCaptureForScene(classifyWindowScene(hwnd), mode);
+}
+
+bool WinUtils::shouldBypassOverlaysForWindow(HWND hwnd, FullscreenPolicyMode mode) {
+    if (mode == FullscreenPolicyMode::Off) return false;
+    return shouldBypassOverlaysForScene(classifyWindowScene(hwnd), mode);
 }
 
 bool WinUtils::queryProcessElevated(HANDLE process) {

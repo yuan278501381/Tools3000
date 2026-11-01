@@ -18,8 +18,27 @@
 
 namespace tools3000::core {
 
+/// 全屏场景智能分类枚举
+enum class FullscreenScene {
+    None = 0,           ///< 非全屏，且不属于前台活动大型游戏
+    Productivity = 1,   ///< 全屏生产力工具 / 系统桌面 / Tools3000 自身界面 (IDE、常规办公等)
+    MediaOrBrowser = 2, ///< 全屏影音播放 / 网页全屏视频 / 幻灯片演示 (PotPlayer、VLC、MPV、Bilibili、Chrome/Edge 视频等)
+    Game = 3            ///< 独占全屏游戏 / 无边框全屏游戏 / 已知电竞游戏 (Dota 2、CS2、LoL、Unity/Unreal/SDL/Steam 游戏等)
+};
+
+/// 全屏智能防打扰策略模式枚举
+enum class FullscreenPolicyMode {
+    Smart = 0,       ///< 智能场景分流 (推荐)：游戏全静默（卸下 F1 等快捷键 + 停用手势）；看电影/视频全屏保留截图录屏但静默边角与浮层
+    StrictAll = 1,   ///< 严格全屏静默：任何全屏（含电影与游戏）一律卸下全局热键并停用手势与截图
+    GestureOnly = 2, ///< 仅避让鼠标手势：全屏时仅停用鼠标手势与触发角，始终保留 F1 等全局热键与截图
+    Off = 3          ///< 关闭自动避让：全屏时不自动停用任何功能
+};
+
 class TOOLS3000CORE_API WinUtils {
 public:
+    using FullscreenScene = tools3000::core::FullscreenScene;
+    using FullscreenPolicyMode = tools3000::core::FullscreenPolicyMode;
+
     /// 获取可执行文件所在目录
     static std::filesystem::path getExeDirectory();
 
@@ -49,6 +68,9 @@ public:
     /// 由 PID 取得进程可执行文件名 (仅文件名, 如 "chrome.exe")。
     static std::wstring processNameFromPid(DWORD pid);
 
+    /// 由 PID 取得进程完整可执行文件路径 (如 "C:\\Program Files\\...\\dota2.exe")。
+    static std::wstring processPathFromPid(DWORD pid);
+
     /// 获取前台窗口的进程名
     static std::optional<std::wstring> getForegroundProcessName();
 
@@ -66,6 +88,9 @@ public:
 
     /// 获取窗口的进程名 (UTF-8)
     static std::string getProcessNameFromWindow(HWND hwnd);
+
+    /// 获取窗口所属进程的完整可执行文件路径 (宽字符)
+    static std::wstring getProcessPathFromWindow(HWND hwnd);
 
     /// Base64 编码
     static std::string base64Encode(const std::vector<uint8_t>& data);
@@ -136,6 +161,61 @@ public:
 
     /// 重载：直接传入窗口句柄检测是否应避让全屏独占交互（包含全屏检测与类名白名单）
     static bool shouldBypassFullscreenInteractions(HWND hwnd);
+
+    /// 解析全屏防打扰策略模式字符串 ("smart" | "strict_all" | "gesture_only" | "off")
+    static FullscreenPolicyMode parseFullscreenPolicyMode(std::string_view modeStr) noexcept;
+
+    /// 将全屏防打扰策略模式枚举序列化为字符串
+    static const char* fullscreenPolicyModeToString(FullscreenPolicyMode mode) noexcept;
+
+    /// 设置当前运行期全局全屏防打扰策略模式（无锁原子更新，供高频热路径零开销读取）
+    static void setFullscreenPolicyMode(FullscreenPolicyMode mode) noexcept;
+
+    /// 获取当前运行期全局全屏防打扰策略模式
+    static FullscreenPolicyMode getFullscreenPolicyMode() noexcept;
+
+    /// 判定进程名或窗口类名是否属于专用影音播放器或全屏幻灯片演示软件 (PotPlayer / VLC / MPV / MPC-HC / Bilibili / PowerPoint 放映等)
+    static bool isMediaPlayerProcessOrClass(std::wstring_view processName, std::wstring_view className) noexcept;
+
+    /// 判定进程名、窗口类名或可执行路径是否属于已知游戏或游戏引擎宿主 (Dota 2 / CS2 / LoL / Unity / Unreal / SDL / SteamApps 等)
+    static bool isKnownGameProcessOrClass(std::wstring_view processName,
+                                          std::wstring_view className,
+                                          std::wstring_view exePath = L"") noexcept;
+
+    /// 智能识别全屏窗口所属场景分类（纯函数，支持单元测试无窗口直接验证）
+    static FullscreenScene classifyFullscreenScene(bool isFullscreen,
+                                                   std::wstring_view processName,
+                                                   std::wstring_view className,
+                                                   std::wstring_view exePath = L"") noexcept;
+
+    /// 智能识别指定窗口句柄所属场景分类（综合全屏几何检测、进程名、窗口类名、安装路径及已知电竞游戏前台活动态）
+    static FullscreenScene classifyWindowScene(HWND hwnd);
+
+    /// 判定在指定场景与策略模式下是否应当挂起/临时卸载全局热键（如让出 Dota 2 的 F1 选英雄键）
+    static bool shouldSuspendHotkeysForScene(FullscreenScene scene, FullscreenPolicyMode mode) noexcept;
+
+    /// 判定在指定场景与策略模式下是否应当停用鼠标手势拦截（防止游戏内右键移动/压枪受阻或播放器右键菜单误触）
+    static bool shouldSuspendGesturesForScene(FullscreenScene scene,
+                                              FullscreenPolicyMode mode,
+                                              std::wstring_view className = L"") noexcept;
+
+    /// 判定在指定场景与策略模式下是否应当跳过截图/录屏/OCR 触发（游戏内静默，但 Smart 模式下看电影全屏允许截图）
+    static bool shouldBypassCaptureForScene(FullscreenScene scene, FullscreenPolicyMode mode) noexcept;
+
+    /// 判定在指定场景与策略模式下是否应当抑制屏幕触发角、按键回显与鼠标聚光灯特效（游戏与看电影全屏均免打扰）
+    static bool shouldBypassOverlaysForScene(FullscreenScene scene, FullscreenPolicyMode mode) noexcept;
+
+    /// 窗口句柄级便捷判定：当前窗口是否应当挂起全局热键
+    static bool shouldSuspendHotkeysForWindow(HWND hwnd, FullscreenPolicyMode mode = getFullscreenPolicyMode());
+
+    /// 窗口句柄级便捷判定：当前窗口是否应当停用鼠标手势
+    static bool shouldSuspendGesturesForWindow(HWND hwnd, FullscreenPolicyMode mode = getFullscreenPolicyMode());
+
+    /// 窗口句柄级便捷判定：当前窗口是否应当跳过截图/录屏
+    static bool shouldBypassCaptureForWindow(HWND hwnd, FullscreenPolicyMode mode = getFullscreenPolicyMode());
+
+    /// 窗口句柄级便捷判定：当前窗口是否应当抑制触发角与屏幕浮层特效
+    static bool shouldBypassOverlaysForWindow(HWND hwnd, FullscreenPolicyMode mode = getFullscreenPolicyMode());
 
     /// 查询句柄对应进程是否拥有管理员提升权限
     static bool queryProcessElevated(HANDLE process);

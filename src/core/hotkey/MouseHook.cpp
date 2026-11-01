@@ -120,6 +120,14 @@ void MouseHook::setPaused(bool paused) {
     m_paused.store(paused, std::memory_order_relaxed);
 }
 
+void MouseHook::setFullscreenSuspended(bool suspended) {
+    m_fullscreenSuspended.store(suspended, std::memory_order_relaxed);
+}
+
+bool MouseHook::isFullscreenSuspended() const {
+    return m_fullscreenSuspended.load(std::memory_order_relaxed);
+}
+
 void MouseHook::setMouseActivityCallback(std::function<void(int, long, long)> cb) {
     std::lock_guard lock(m_callbackMutex);
     if (cb) {
@@ -162,7 +170,9 @@ void MouseHook::setInterceptor(MouseHookRawCallback interceptor) {
 LRESULT CALLBACK MouseHook::lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     auto& self = MouseHook::instance();
 
-    if (nCode == HC_ACTION && !self.m_paused.load(std::memory_order_relaxed)) {
+    if (nCode == HC_ACTION &&
+        !self.m_paused.load(std::memory_order_relaxed) &&
+        !self.m_fullscreenSuspended.load(std::memory_order_relaxed)) {
         auto* data = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
         if (data) {
             // 严格过滤软件模拟注入脉冲 (SendInput / LLMHF_INJECTED)，彻底切断事件回路与钩子死锁；

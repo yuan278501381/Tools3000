@@ -25,6 +25,10 @@ public:
     void setPaused(bool paused);
     bool isPaused() const;
 
+    /// 全屏游戏/独立播放器智能静默：进入游戏或独立影音播放器时在底层钩子入口零开销直接放行
+    void setFullscreenSuspended(bool suspended);
+    bool isFullscreenSuspended() const;
+
     void setMouseActivityCallback(std::function<void(int button, long x, long y)> cb);
     void setRawMoveCallback(MouseRawMoveCallback cb);
     void setInterceptor(MouseHookRawCallback interceptor);
@@ -45,6 +49,7 @@ private:
     std::atomic<DWORD> m_threadId{0};
     std::jthread m_inputThread;
     std::atomic<bool> m_paused{false};
+    std::atomic<bool> m_fullscreenSuspended{false};
     std::atomic<bool> m_hasRawMoveCallback{false};
     std::atomic<MouseRawMoveCallback*> m_rawMoveCallback{nullptr};
     std::unique_ptr<MouseRawMoveCallback> m_rawMoveCallbackHolder;

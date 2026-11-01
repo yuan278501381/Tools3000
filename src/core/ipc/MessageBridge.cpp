@@ -10,6 +10,7 @@
 #include "core/utils/TraceId.h"
 #include "core/config/ConfigManager.h"
 #include "core/hotkey/HotkeyManager.h"
+#include "core/hotkey/MouseHook.h"
 #include "core/utils/WinUtils.h"
 #include "core/stats/StatsManager.h"
 #include "core/stats/PerformanceMonitor.h"
@@ -1272,6 +1273,29 @@ void releasePluginResourcesAndTrim() {
     tools3000::core::WinUtils::trimWorkingSet();
 }
 
+void syncFullscreenRuntimeState() {
+    HWND fg = GetForegroundWindow();
+    const bool gestureBypassEnabled =
+        ConfigManager::instance().get<bool>("/gesture/autoBypassFullscreen", true);
+    const bool suspendHotkeys =
+        fg && WinUtils::shouldSuspendHotkeysForWindow(fg);
+    const bool suspendGestures =
+        gestureBypassEnabled && fg && WinUtils::shouldSuspendGesturesForWindow(fg);
+
+    auto& hotkeyMgr = HotkeyManager::instance();
+    if (hotkeyMgr.isFullscreenSuspended() != suspendHotkeys) {
+        hotkeyMgr.setFullscreenSuspended(suspendHotkeys);
+    }
+
+    auto& mouseHook = MouseHook::instance();
+    if (mouseHook.isFullscreenSuspended() != suspendGestures) {
+        mouseHook.setFullscreenSuspended(suspendGestures);
+        if (suspendGestures) {
+            EventBus::instance().publish(CancelTransientUiEvent{});
+        }
+    }
+}
+
 }  // namespace
 
 void MessageBridge::registerBuiltinHandlers() {
@@ -1703,6 +1727,11 @@ void MessageBridge::registerBuiltinHandlers() {
             }
         }
         bool ok = ConfigManager::instance().importFrom(WinUtils::utf8ToWstring(path));
+        if (ok) {
+            WinUtils::setFullscreenPolicyMode(WinUtils::parseFullscreenPolicyMode(
+                ConfigManager::instance().get<std::string>("/general/fullscreenMode", "smart")));
+            syncFullscreenRuntimeState();
+        }
         return {{"success", ok}};
     });
     registerHandler("config.reset", [](const json&) -> json {
@@ -1712,7 +1741,11 @@ void MessageBridge::registerBuiltinHandlers() {
             return {{"success", false}, {"error", "failed to back up config"}};
         }
         const bool reset = ConfigManager::instance().reset();
-        if (reset) LOG_INFO("配置已重置为默认值");
+        if (reset) {
+            WinUtils::setFullscreenPolicyMode(FullscreenPolicyMode::Smart);
+            syncFullscreenRuntimeState();
+            LOG_INFO("配置已重置为默认值");
+        }
         return {{"success", reset}, {"error", reset ? "" : "failed to persist config"}};
     });
 
@@ -1826,6 +1859,9 @@ void MessageBridge::registerBuiltinHandlers() {
             // Migrate installations that predate the persisted /general/autoStart key.
             autoStart = getCachedAutoStart();
         }
+        const auto parsedFullscreenMode = WinUtils::parseFullscreenPolicyMode(
+            config.get<std::string>("/general/fullscreenMode", "smart"));
+        WinUtils::setFullscreenPolicyMode(parsedFullscreenMode);
         return {
             {"autoStart", autoStart},
             {"runAsAdmin", config.get<bool>("/general/runAsAdmin", true)},
@@ -1833,6 +1869,7 @@ void MessageBridge::registerBuiltinHandlers() {
             {"minimizeToTray", config.get<bool>("/general/minimizeToTray", true)},
             {"checkUpdates", config.get<bool>("/general/checkUpdates", true)},
             {"autoReleaseSettingsMemory", config.get<bool>("/general/autoReleaseSettingsMemory", true)},
+            {"fullscreenMode", WinUtils::fullscreenPolicyModeToString(parsedFullscreenMode)},
             {"keycastEnabled", config.get<bool>("/general/keycastEnabled", true)},
             {"showOnboarding", config.get<bool>("/general/showOnboarding", false)},
             {"isPortableMode", WinUtils::isPortableMode()},
@@ -1866,6 +1903,9 @@ void MessageBridge::registerBuiltinHandlers() {
         static const std::unordered_set<std::string> logLevels = {"trace", "debug", "info", "warn", "error"};
         static const std::unordered_set<std::string> fontFamilies = {
             "auto", "noto-sans-sc", "harmony-sans", "yahei", "pingfang", "system"
+        };
+        static const std::unordered_set<std::string> fullscreenModes = {
+            "smart", "strict_all", "gesture_only", "off"
         };
         static const std::unordered_set<std::string> readOnlyKeys = {
             "elevated", "isPortableMode", "dataDirectory"
@@ -1908,12 +1948,16 @@ void MessageBridge::registerBuiltinHandlers() {
                 !fontFamilies.contains(value.get<std::string>()))) {
                 return {{"success", false}, {"error", "invalid font family"}};
             }
+            if (key == "fullscreenMode" && (!value.is_string() ||
+                !fullscreenModes.contains(value.get<std::string>()))) {
+                return {{"success", false}, {"error", "invalid fullscreen mode"}};
+            }
             if (key == "logRetentionDays") {
                 if (!value.is_number_integer() || value.get<int64_t>() < 0 || value.get<int64_t>() > 3650) {
                     return {{"success", false}, {"error", "invalid log retention days"}};
                 }
             }
-            if (!boolKeys.contains(key) && key != "theme" && key != "accentColor" && key != "logLevel" && key != "language" && key != "fontFamily" && key != "trayIconTheme" && key != "logRetentionDays") {
+            if (!boolKeys.contains(key) && key != "theme" && key != "accentColor" && key != "logLevel" && key != "language" && key != "fontFamily" && key != "trayIconTheme" && key != "logRetentionDays" && key != "fullscreenMode") {
                 return {{"success", false}, {"error", "unsupported setting: " + key}};
             }
         }
@@ -1928,6 +1972,11 @@ void MessageBridge::registerBuiltinHandlers() {
         if (!saved) {
             if (params.contains("autoStart")) setAutoStart(previousAutoStart);
             return {{"success", false}, {"error", "failed to persist settings"}};
+        }
+        if (params.contains("fullscreenMode")) {
+            WinUtils::setFullscreenPolicyMode(
+                WinUtils::parseFullscreenPolicyMode(params["fullscreenMode"].get<std::string>()));
+            syncFullscreenRuntimeState();
         }
         if (params.contains("language")) {
             Logger::setLanguage(params["language"].get<std::string>());

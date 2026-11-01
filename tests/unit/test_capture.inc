@@ -4953,20 +4953,31 @@ TEST(ClipboardUtilsTest, TrimWorkingSetZeroDamageClipboardIntegrity) {
     };
 
     // 关键架构验证：证实物理内存修剪 (trimWorkingSet) 在交付后执行时，
-    // 对系统剪贴板句柄与多格式数据具备 100% 零破坏保障
+    // 对系统剪贴板句柄与多格式数据具备 100% 零破坏保障。
+    // 若宿主系统后台剪贴板服务 (如 Win+V 历史记录 / RDP / 虚拟机剪贴板同步) 在 40ms 修剪窗口内异步改写剪贴板序列号，则重做完整的 [写入 -> trimWorkingSet(true)] 闭环。
     cv::Mat testImage(80, 80, CV_8UC4, cv::Scalar(60, 120, 180, 255));
     bool copyOk = false;
-    for (int retry = 0; retry < 15; ++retry) {
-        if (tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage)) {
-            copyOk = true;
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        copyOk = false;
+        for (int retry = 0; retry < 15; ++retry) {
+            if (tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage)) {
+                copyOk = true;
+                break;
+            }
+            Sleep(20);
+        }
+        if (!copyOk) continue;
+
+        const DWORD seqBeforeTrim = GetClipboardSequenceNumber();
+        // 主动触发物理工作集修剪 (SetProcessWorkingSetSize 强行驱逐内存分页)
+        tools3000::core::WinUtils::trimWorkingSet(true);
+
+        if (GetClipboardSequenceNumber() == seqBeforeTrim && IsClipboardFormatAvailable(CF_HDROP)) {
             break;
         }
-        Sleep(20);
+        Sleep(25);
     }
     ASSERT_TRUE(copyOk);
-
-    // 主动触发物理工作集修剪 (SetProcessWorkingSetSize 强行驱逐内存分页)
-    tools3000::core::WinUtils::trimWorkingSet(true);
 
     // 验证修剪后剪贴板 5 重格式依然完整无损且可正常锁定读取
     ASSERT_TRUE(openClipboardWithRetry());

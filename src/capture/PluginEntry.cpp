@@ -310,9 +310,16 @@ void startRecordingForRegion(const CaptureRegion& region, const RecordSetupOptio
 void toggleRecording() {
     auto& recorder = ScreenRecorder::instance();
     if (recorder.state() == RecordState::Idle) {
+        const auto opts = configuredCaptureOptions();
+        if (opts.autoBypassFullscreen) {
+            HWND fg = GetForegroundWindow();
+            if (fg && tools3000::core::WinUtils::shouldBypassCaptureForWindow(fg)) {
+                return;
+            }
+        }
         auto& overlay = CaptureOverlay::instance();
         overlay.setRecordCallback(startRecordingForRegion);
-        overlay.startSelection(configuredCaptureOptions(), OverlayMode::RecordRegion);
+        overlay.startSelection(opts, OverlayMode::RecordRegion);
     } else {
         // Global hotkey and tray action are start/stop. Pause/resume remains an
         // explicit control on the always-visible recording indicator.
@@ -372,13 +379,19 @@ static void onCaptureCompletedForOcr(const tools3000::capture::CaptureResult& re
 
 
 static void triggerOcrCapture() {
+    auto opts = configuredCaptureOptions();
+    if (opts.autoBypassFullscreen) {
+        HWND fg = GetForegroundWindow();
+        if (fg && tools3000::core::WinUtils::shouldBypassCaptureForWindow(fg)) {
+            return;
+        }
+    }
     auto& ocr = tools3000::ocr::OcrEngine::instance();
     if (!ocr.isAvailable()) {
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"未找到 OCR 语言包"});
         return;
     }
     LOG_INFO("OCR Capture Triggered");
-    auto opts = configuredCaptureOptions();
     opts.copyToClipboard = false;
     opts.saveToFile = true;
     auto tempPath = tools3000::core::WinUtils::getAppDataDirectory() / L"temp";
