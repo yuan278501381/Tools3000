@@ -1,0 +1,223 @@
+name: 'Tools3000 CI & Release Pipeline'
+
+'on':
+  push:
+    branches:
+      - 'main'
+      - 'master'
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - 'main'
+      - 'master'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Manual Release Version (e.g. 1.2.0)'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-sign:
+    name: Build, Test, Sign & Release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-archives
+      SCCACHE_GHA_ENABLED: 'true'
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'ui/package-lock.json'
+
+      - name: Setup Inno Setup Compiler
+        run: |
+          choco install innosetup --yes --no-progress
+          Write-Host "Inno Setup installed successfully."
+        shell: pwsh
+
+      - name: Setup MSVC & CMake Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup sccache
+        uses: mozilla/sccache-action@v0.0.8
+
+      - name: Cache vcpkg Binary Artifacts
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: vcpkg-archives-${{ runner.os }}-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-archives-${{ runner.os }}-x64-
+
+      - name: Verify Product Version Matches Tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          pwsh -File .\scripts\verify-version.ps1 -Tag $env:GITHUB_REF_NAME
+        shell: pwsh
+
+      - name: Execute Full Deployment Pipeline (Build & Package)
+        run: |
+          $QuickArg = if ($env:GITHUB_REF -like "refs/tags/v*" -or $env:GITHUB_EVENT_NAME -eq "workflow_dispatch") { @() } else { @("-Quick") }
+          pwsh -File .\deploy.ps1 -Configuration Release @QuickArg -SkipTests
+        shell: pwsh
+
+      - name: Run C++ Native Unit Tests (Headless Adapted)
+        run: |
+          $TestExe = "build\bin\Release\Tools3000Tests.exe"
+          if (-not (Test-Path $TestExe)) { $TestExe = "build\bin\Tools3000Tests.exe" }
+          if (-not (Test-Path $TestExe)) { throw "Tools3000Tests.exe not found under build/bin!" }
+          Write-Host "Running native test suite: $TestExe" -ForegroundColor Cyan
+          & $TestExe --gtest_brief=1
+          if ($LASTEXITCODE -ne 0) { throw "Native unit tests failed with exit code $LASTEXITCODE" }
+        shell: pwsh
+
+      - name: Verify Setup Artifact Generated
+        id: verify-artifact
+        env:
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $SetupPath = "Output\Tools3000-Setup.exe"
+          if (-not (Test-Path $SetupPath)) {
+            throw "Installer artifact not found at: $SetupPath"
+          }
+          $SetupHash = (Get-FileHash -Path $SetupPath -Algorithm SHA256).Hash
+          Write-Host "Installer generated successfully: $SetupPath"
+          Write-Host "SHA256: $SetupHash"
+
+          # 计算发布标签 (Tag 推送、手动输入或自适应读取 VERSION 文件)
+          $VersionFromFile = if (Test-Path "VERSION") { (Get-Content "VERSION" -Raw).Trim() } else { "1.0.0" }
+          $Tag = if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $env:GITHUB_REF_NAME
+          } elseif ($env:INPUT_VERSION) {
+            "v$($env:INPUT_VERSION)"
+          } else {
+            "v$VersionFromFile"
+          }
+          pwsh -File .\scripts\verify-version.ps1 -Tag $Tag
+          Write-Host "Calculated Release Tag: $Tag" -ForegroundColor Green
+          "RELEASE_TAG=$Tag" >> $env:GITHUB_ENV
+
+          # 构建便携免安装 ZIP 产物供用户直接下载解压即用
+          $PortableZip = "Output\Tools3000-win-x64-portable.zip"
+          $VersionedPortableZip = "Output\Tools3000-$Tag-win-x64-portable.zip"
+          if (Test-Path "deploy_dist") {
+            Write-Host "Creating portable distribution archive: $PortableZip"
+            if (Test-Path $PortableZip) { Remove-Item -Force $PortableZip }
+            Compress-Archive -Path "deploy_dist\*" -DestinationPath $PortableZip -CompressionLevel Optimal
+            Copy-Item -LiteralPath $PortableZip -Destination $VersionedPortableZip -Force
+          }
+          Copy-Item -LiteralPath $SetupPath -Destination "Output\Tools3000-$Tag-Setup.exe" -Force
+        shell: pwsh
+
+      - name: Check Official Code Signing Configuration
+        id: signing-config
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          HAS_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+          HAS_ORG: ${{ secrets.SIGNPATH_ORGANIZATION_ID != '' }}
+        run: |
+          $Enabled = ($env:HAS_TOKEN -eq 'true' -and $env:HAS_ORG -eq 'true')
+          "enabled=$($Enabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Upload Unsigned Installer for SignPath
+        if: steps.signing-config.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        id: upload-unsigned-installer
+        with:
+          name: Tools3000-Setup-Unsigned
+          path: Output\Tools3000-Setup.exe
+          retention-days: 1
+
+      - name: Submit Code Signing Request to SignPath Foundation
+        if: steps.signing-config.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: 'tools3000'
+          signing-policy-slug: 'release-signing'
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: 'Output\Signed'
+
+      - name: Replace Installer with Official Signed Artifact
+        if: steps.signing-config.outputs.enabled == 'true'
+        run: |
+          $SignedFile = Get-ChildItem "Output\Signed\*.exe" -Recurse | Select-Object -First 1
+          if (-not $SignedFile) {
+            $SignedZip = Get-ChildItem "Output\Signed\*.zip" -Recurse | Select-Object -First 1
+            if ($SignedZip) {
+              Write-Host "Extracting signed zip archive: $($SignedZip.FullName)"
+              Expand-Archive -LiteralPath $SignedZip.FullName -DestinationPath "Output\Signed\unzipped" -Force
+              $SignedFile = Get-ChildItem "Output\Signed\unzipped\*.exe" -Recurse | Select-Object -First 1
+            }
+          }
+          if ($SignedFile) {
+            Copy-Item -Path $SignedFile.FullName -Destination "Output\Tools3000-Setup.exe" -Force
+            Copy-Item -Path $SignedFile.FullName -Destination "Output\Tools3000-$($env:RELEASE_TAG)-Setup.exe" -Force
+            Write-Host "Replaced installer with SignPath officially signed artifact: $($SignedFile.FullName)" -ForegroundColor Green
+          } else {
+            throw "SignPath signing request completed without producing a signed .exe installer!"
+          }
+        shell: pwsh
+
+      - name: Generate SHA256SUMS Manifest
+        run: |
+          $ChecksumLines = @()
+          Get-ChildItem -Path "Output" -Include "*.exe", "*.zip" -File | Sort-Object Name | ForEach-Object {
+            $H = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $ChecksumLines += "$H *$($_.Name)"
+          }
+          $Content = ($ChecksumLines -join "`r`n") + "`r`n"
+          [System.IO.File]::WriteAllText("Output\SHA256SUMS.txt", $Content, [System.Text.Encoding]::ASCII)
+          Write-Host "Generated SHA256SUMS.txt:"
+          Write-Host $Content
+        shell: pwsh
+
+      - name: Create GitHub Release and Upload Assets
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            Output/Tools3000-Setup.exe
+            Output/Tools3000-${{ env.RELEASE_TAG }}-Setup.exe
+            Output/Tools3000-win-x64-portable.zip
+            Output/Tools3000-${{ env.RELEASE_TAG }}-win-x64-portable.zip
+            Output/SHA256SUMS.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: false

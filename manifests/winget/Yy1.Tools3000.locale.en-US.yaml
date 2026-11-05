@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.9.0.schema.json
+
+PackageIdentifier: Yy1.Tools3000
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: Yy1 (yuan278501381)
+PublisherUrl: https://github.com/yuan278501381
+PublisherSupportUrl: https://github.com/yuan278501381/tools3000/issues
+Author: Yy1 (yuan278501381) & Tools3000 contributors
+PackageName: Tools3000
+PackageUrl: https://github.com/yuan278501381/tools3000
+License: MIT
+LicenseUrl: https://github.com/yuan278501381/tools3000/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors
+CopyrightUrl: https://github.com/yuan278501381/tools3000/blob/main/LICENSE
+ShortDescription: Ultra-lightweight and modern Windows productivity toolkit with global mouse gestures, screen recording, keycast overlays, and instant search.
+Description: |
+  Tools3000 (Tools3000) is a high-performance Windows desktop productivity toolkit engineered with modern C++20 and React:
+  - Global Mouse Gestures: Sub-millisecond stroke recognition with pure microcrystalline glow feedback;
+  - Screen Capture & Keycast Overlay: Lossless high-framerate area recording linked with real-time keystroke HUD;
+  - Instant File Search: Demand-start background Windows Service with sub-second NTFS USN journal indexing;
+  - Extreme Lightweight: Working set memory trimming on cold paths with zero redundant resource consumption.
+Tags:
+  - productivity
+  - gesture
+  - mouse-gesture
+  - screen-recorder
+  - keycast
+  - search
+  - efficiency
+  - tools
+ReleaseNotesUrl: https://github.com/yuan278501381/tools3000/releases/tag/v1.0.0
+ManifestType: locale
+ManifestVersion: 1.9.0

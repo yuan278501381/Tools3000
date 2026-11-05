@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+
+PackageIdentifier: Yy1.Tools3000
+PackageVersion: 1.0.0
+PackageLocale: zh-CN
+Publisher: Yy1 (yuan278501381)
+PublisherUrl: https://github.com/yuan278501381
+PublisherSupportUrl: https://github.com/yuan278501381/tools3000/issues
+Author: Yy1 (yuan278501381) & Tools3000 contributors
+PackageName: Tools3000
+PackageUrl: https://github.com/yuan278501381/tools3000
+License: MIT
+LicenseUrl: https://github.com/yuan278501381/tools3000/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors
+CopyrightUrl: https://github.com/yuan278501381/tools3000/blob/main/LICENSE
+ShortDescription: 极致轻量、现代化的 Windows 桌面效率工具箱，支持全局鼠标手势、高清录屏与按键回显、秒级文件索引搜索。
+Description: |
+  Tools3000 (Tools3000) 是一款基于现代 C++20 与 React 深度融合打造的高性能 Windows 桌面级效率工具箱：
+  - 毫秒级全局鼠标手势：智能识别连贯笔画与拐角，提供饱满纯净的微晶高光反馈，穿透灵敏不卡手；
+  - 屏幕录制与按键回显：高帧率无损选区录屏，实时次像素抗锯齿 Keycast 按键浮层联动；
+  - 秒级文件极速检索：按需唤醒常驻的 Windows 服务，支持 NTFS USN 日志秒级扫描全盘；
+  - 极限轻量与工作集修剪：冷路径物理内存归还，无冗余常驻开销。
+Moniker: tools3000
+Tags:
+  - productivity
+  - gesture
+  - mouse-gesture
+  - screen-recorder
+  - keycast
+  - search
+  - efficiency
+  - tools
+ReleaseNotesUrl: https://github.com/yuan278501381/tools3000/releases/tag/v1.0.0
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0
