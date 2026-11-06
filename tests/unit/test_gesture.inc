@@ -3397,6 +3397,18 @@ TEST(GestureAuditRegressionTest, A1_ExemptInteractiveOverlayClassesAndPointBypas
     EXPECT_FALSE(hook.handleRawMouseEvent(HC_ACTION, WM_RBUTTONDOWN, selfReinject));
     EXPECT_FALSE(hook.isTriggerButtonDown());
 
+    // 未开启 TOOLS3000_ALLOW_INJECTED_MOUSE 的正式版进程必须忽略携带 TEST_EXTRA_INFO 的外部测试注入事件
+    if (GetEnvironmentVariableW(L"TOOLS3000_ALLOW_INJECTED_MOUSE", nullptr, 0) == 0) {
+        MSLLHOOKSTRUCT externalTestInject{};
+        externalTestInject.pt = {500, 500};
+        externalTestInject.flags = LLMHF_INJECTED;
+        externalTestInject.dwExtraInfo = 0x54455354; // "TEST"
+        EXPECT_FALSE(hook.handleRawMouseEvent(HC_ACTION, WM_RBUTTONDOWN, externalTestInject));
+        EXPECT_FALSE(hook.isTriggerButtonDown());
+        EXPECT_FALSE(tools3000::core::MouseHook::instance().injectRawEventForTesting(
+            HC_ACTION, WM_RBUTTONDOWN, externalTestInject));
+    }
+
     MSLLHOOKSTRUCT wheel{};
     wheel.pt = {0, 0};
     // 即使在屏幕边缘，只要全局模态截图浮层可见，边缘滚轮也必须 100% 放行

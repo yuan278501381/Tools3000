@@ -324,7 +324,8 @@ bool decompressRawDeflate(
     size_t compSize,
     size_t uncompSize,
     std::string& out,
-    size_t maxAllowed = MaxSingleXmlUncompressedBytes
+    size_t maxAllowed,
+    const CancellationCheck& isCancelled
 ) {
     if (compSize == 0 || maxAllowed == 0) return false;
 
@@ -348,6 +349,11 @@ bool decompressRawDeflate(
     int ret = Z_OK;
 
     while (out.size() < targetCap) {
+        if (isCancelled && isCancelled()) {
+            inflateEnd(&strm);
+            out.clear();
+            return false;
+        }
         const size_t remain = targetCap - out.size();
         const size_t ask = (std::min)(chunk.size(), remain);
         strm.next_out = reinterpret_cast<Bytef*>(chunk.data());
@@ -586,7 +592,8 @@ bool ZipXmlExtractor::extractZipEntriesText(
                         cdHeader.compressedSize,
                         cdHeader.uncompressedSize,
                         uncompData,
-                        remainingBudget
+                        remainingBudget,
+                        isCancelled
                     );
                 }
 
@@ -647,7 +654,8 @@ bool ZipXmlExtractor::extractZipEntriesText(
                         availComp,
                         header.uncompressedSize,
                         uncompData,
-                        remainingBudget
+                        remainingBudget,
+                        isCancelled
                     );
                 }
             }
@@ -661,6 +669,10 @@ bool ZipXmlExtractor::extractZipEntriesText(
             // Advance to next PK\x03\x04 Local File Header when compressedSize was deferred to Data Descriptor
             size_t nextSig = zipSize;
             for (size_t scan = dataOffset; scan + sizeof(ZipLocalHeader) <= zipSize; ++scan) {
+                if (((scan - dataOffset) & 0x3FFFFu) == 0 && isCancelled && isCancelled()) {
+                    outExtractedText.clear();
+                    return false;
+                }
                 if (pZipData[scan] == 0x50u && pZipData[scan + 1] == 0x4Bu &&
                     pZipData[scan + 2] == 0x03u && pZipData[scan + 3] == 0x04u) {
                     nextSig = scan;

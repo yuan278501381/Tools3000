@@ -213,18 +213,14 @@ LRESULT CALLBACK MouseHook::lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
                 }
             } callGuard{self.m_activeHookCalls};
             // 严格过滤软件模拟注入脉冲 (SendInput / LLMHF_INJECTED)，彻底切断事件回路与钩子死锁；
-            // 仅在显式设置测试环境变量或携带专用 E2E 测试签名时放行，以支持真实的操作系统级端到端测试。
+            // 仅在当前进程显式开启 TOOLS3000_ALLOW_INJECTED_MOUSE 测试环境变量时放行（仍排除自身补发脉冲），
+            // 杜绝后台常驻正式版实例与自动化 E2E 沙箱进程争抢钩子或误触发桌面手势。
             if (data->flags & LLMHF_INJECTED) {
                 static const bool s_allowInjected = []() {
                     return GetEnvironmentVariableW(L"TOOLS3000_ALLOW_INJECTED_MOUSE", nullptr, 0) > 0;
                 }();
                 constexpr ULONG_PTR SELF_REINJECT_EXTRA_INFO = 0x54334B52; // "T3KR"
-                if (data->dwExtraInfo == SELF_REINJECT_EXTRA_INFO) {
-                    HHOOK h = self.m_hookHandle.load(std::memory_order_relaxed);
-                    return CallNextHookEx(h, nCode, wParam, lParam);
-                }
-                constexpr ULONG_PTR TEST_EXTRA_INFO = 0x54455354; // "TEST"
-                if (!s_allowInjected && data->dwExtraInfo != TEST_EXTRA_INFO) {
+                if (!s_allowInjected || data->dwExtraInfo == SELF_REINJECT_EXTRA_INFO) {
                     HHOOK h = self.m_hookHandle.load(std::memory_order_relaxed);
                     return CallNextHookEx(h, nCode, wParam, lParam);
                 }

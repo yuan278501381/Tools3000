@@ -511,7 +511,7 @@ void inspectClipboardTextAndPriority(std::wstring& outText, bool& outPreferTextO
     outPreferTextOverImage = false;
 
     bool opened = false;
-    for (int retry = 0; retry < 10; ++retry) {
+    for (int retry = 0; retry < 40; ++retry) {
         if (OpenClipboard(nullptr)) {
             opened = true;
             break;

@@ -530,8 +530,13 @@ nlohmann::json ProcessSearchQuery(
                 }
                 wQuery = StringToWString(queryUtf8);
             }
-            if (reqJson.contains("queryId") && reqJson["queryId"].is_number_unsigned()) {
-                queryId = reqJson["queryId"].get<uint64_t>();
+            if (const auto qidIt = reqJson.find("queryId"); qidIt != reqJson.end() && !qidIt->is_null()) {
+                if (qidIt->is_number_unsigned()) {
+                    queryId = qidIt->get<uint64_t>();
+                } else if (qidIt->is_number_integer()) {
+                    const auto v = qidIt->get<int64_t>();
+                    if (v > 0) queryId = static_cast<uint64_t>(v);
+                }
             }
             if (reqJson.contains("progressive") && reqJson["progressive"].is_boolean()) {
                 progressive = reqJson["progressive"].get<bool>();
@@ -1037,6 +1042,14 @@ nlohmann::json ProcessSearchQuery(
 
                     const auto& item = textCandidates[idx];
                     try {
+                        const auto fileStart = std::chrono::steady_clock::now();
+                        const auto perFileCancel = [&isCancelled, fileStart]() -> bool {
+                            if (isCancelled()) return true;
+                            const auto fileElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - fileStart).count();
+                            return fileElapsedMs >= tools3000::service::search_limits::PerFileContentExtractBudgetMs;
+                        };
+
                         std::vector<tools3000::service::content::ContentSnippet> snippets;
                         if (contentEngine.searchFile(
                                 item.fullPath,
@@ -1044,7 +1057,7 @@ nlohmann::json ProcessSearchQuery(
                                 plan.caseSensitive,
                                 snippets,
                                 3,
-                                isCancelled,
+                                perFileCancel,
                                 reqFilterPtr)) {
                             uint64_t finalSize = item.fileSize;
                             uint64_t finalCreation = item.creationTime;

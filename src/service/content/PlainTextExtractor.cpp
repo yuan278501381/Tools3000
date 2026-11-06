@@ -1008,6 +1008,9 @@ bool PlainTextExtractor::searchContentTerms(
             size_t lineStart = 0;
 
             for (size_t i = 0; i < wCount; ++i) {
+                if (((i & 0x3FFFFu) == 0) && isCancelled && isCancelled()) {
+                    return false;
+                }
                 const wchar_t ch = static_cast<wchar_t>(readUtf16Unit(body, i, isBe));
                 if (ch == L'\n' || i == wCount - 1) {
                     if (((lineNumber & 0x3FFu) == 0) && isCancelled && isCancelled()) {
@@ -1033,6 +1036,9 @@ bool PlainTextExtractor::searchContentTerms(
         } else {
             size_t lineStart = bomOffset;
             for (size_t i = bomOffset; i < mapSize; ++i) {
+                if ((((i - bomOffset) & 0x3FFFFu) == 0) && isCancelled && isCancelled()) {
+                    return false;
+                }
                 if (pData[i] == '\n' || i == mapSize - 1) {
                     if (((lineNumber & 0x3FFu) == 0) && isCancelled && isCancelled()) {
                         return false;

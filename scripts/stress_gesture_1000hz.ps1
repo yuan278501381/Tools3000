@@ -120,6 +120,14 @@ public static class HighCadenceMouseSimulator {
     [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
     public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
 
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+    public static extern int GetClassNameW(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
     [DllImport("user32.dll")]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
@@ -277,13 +285,22 @@ public static class HighCadenceMouseSimulator {
     }
 
     public static bool RequestProcessClose(int targetPid) {
-        IntPtr hwnd = FindWindow("Tools3000_MessageWindow", "Tools3000MessageWindow");
-        if (hwnd != IntPtr.Zero) {
+        IntPtr matchedHwnd = IntPtr.Zero;
+        EnumWindows((hWnd, lParam) => {
             uint pid;
-            GetWindowThreadProcessId(hwnd, out pid);
-            if (pid == (uint)targetPid || targetPid == 0) {
-                return PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            GetWindowThreadProcessId(hWnd, out pid);
+            if (targetPid == 0 || pid == (uint)targetPid) {
+                var cls = new System.Text.StringBuilder(256);
+                GetClassNameW(hWnd, cls, 256);
+                if (cls.ToString().IndexOf("MessageWindow", StringComparison.OrdinalIgnoreCase) >= 0) {
+                    matchedHwnd = hWnd;
+                    return false;
+                }
             }
+            return true;
+        }, IntPtr.Zero);
+        if (matchedHwnd != IntPtr.Zero) {
+            return PostMessage(matchedHwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
         }
         return false;
     }

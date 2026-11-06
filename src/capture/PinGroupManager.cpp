@@ -197,7 +197,9 @@ std::wstring PinGroupPalette::normalizeCustomName(std::wstring_view raw) {
     cleaned.reserve((std::min)(raw.size(), PinGroupConstants::kMaxCustomGroupNameChars));
     for (wchar_t ch : raw) {
         if (ch == L'\r' || ch == L'\n' || ch == L'\t') {
-            cleaned.push_back(L' ');
+            if (cleaned.empty() || cleaned.back() != L' ') {
+                cleaned.push_back(L' ');
+            }
         } else if (ch >= 0x20) {
             cleaned.push_back(ch);
         }
@@ -212,6 +214,21 @@ std::wstring PinGroupPalette::normalizeCustomName(std::wstring_view raw) {
         result.resize(PinGroupConstants::kMaxCustomGroupNameChars);
     }
     return result;
+}
+
+std::wstring PinGroupPalette::normalizeInlineRenameInput(int groupId, std::wstring_view raw) {
+    const int norm = normalizeGroupId(groupId);
+    if (norm == PinGroupConstants::kUngroupedId) {
+        return {};
+    }
+    std::wstring cleaned = normalizeCustomName(raw);
+    if (cleaned.empty()) {
+        return {};
+    }
+    if (cleaned == std::format(L"组 {}", norm) || cleaned == std::format(L"G{}", norm)) {
+        return {};
+    }
+    return cleaned;
 }
 
 const std::array<const char*, PinGroupConstants::kPaletteColorCount>& PinGroupPalette::presetPaletteHexes() noexcept {

@@ -432,6 +432,39 @@ TEST(ConfigManagerTest, PersistenceAndDefaultFallbacks) {
     std::filesystem::remove_all(temp, ec);
 }
 
+TEST(ConfigManagerCallbackLifecycleTest, NonZeroSentinelAndClearCallbacksBeforePluginFreeLibrary) {
+    auto& config = tools3000::core::ConfigManager::instance();
+    config.clearCallbacks();
+
+    // 空回调返回哨兵值 0，removeOnChange(0) 安全无副作用
+    EXPECT_EQ(config.onChange(nullptr), 0u);
+    config.removeOnChange(0);
+
+    // 有效回调 ID 恒非零，确保 `if (id != 0) removeOnChange(id)` 守卫绝不会漏注销首个回调
+    auto tokenA = std::make_shared<int>(42);
+    const size_t idA = config.onChange([tokenA](const std::string&) {});
+    EXPECT_NE(idA, 0u);
+    EXPECT_EQ(tokenA.use_count(), 2);
+    config.removeOnChange(idA);
+    EXPECT_EQ(tokenA.use_count(), 1);
+
+    // 模拟 PluginManager::shutdownPlugins() 在 FreeLibrary 前统一销毁残留跨 DLL 闭包
+    auto tokenB = std::make_shared<int>(99);
+    const size_t idB = config.onChange([tokenB](const std::string&) {});
+    EXPECT_NE(idB, 0u);
+    EXPECT_EQ(tokenB.use_count(), 2);
+    config.clearCallbacks();
+    EXPECT_EQ(tokenB.use_count(), 1);
+
+    auto& kbHook = tools3000::core::KeyboardHook::instance();
+    auto kbToken = std::make_shared<int>(7);
+    kbHook.setKeycastCallback([kbToken](const std::string&) {});
+    kbHook.setLowLevelKeyInterceptor([kbToken](const KBDLLHOOKSTRUCT&, WPARAM) { return false; });
+    EXPECT_EQ(kbToken.use_count(), 3);
+    kbHook.clearCallbacks();
+    EXPECT_EQ(kbToken.use_count(), 1);
+}
+
 // -----------------------------------------------------------------------------
 // 9. 进程间通信消息桥接测试套件
 // -----------------------------------------------------------------------------

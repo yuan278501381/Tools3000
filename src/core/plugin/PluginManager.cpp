@@ -426,10 +426,12 @@ void PluginManager::shutdownPlugins() {
     // FreeLibrary. Otherwise std::function destructors or in-flight low-level
     // hooks can jump into unloaded plugin code during process shutdown.
     KeyboardHook::instance().uninstall();
+    KeyboardHook::instance().clearCallbacks();
     MouseHook::instance().uninstall();
     MainThreadDispatcher::instance().drain();
     HotkeyManager::instance().shutdown();
     EventBus::instance().clearAll();
+    ConfigManager::instance().clearCallbacks();
     MessageBridge::instance().clearHandlers();
 
     const bool retainModules = MessageBridge::instance().hasQuarantinedHandlers();

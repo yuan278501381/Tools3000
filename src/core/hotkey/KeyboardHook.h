@@ -44,6 +44,9 @@ public:
     /// 清空所有钩子快捷键
     void clearHookHotkeys();
 
+    /// 清空所有跨模块回调闭包（供插件 DLL 卸载前安全释放）
+    void clearCallbacks();
+
     /// 查询是否存在已注册的钩子快捷键
     bool hasHookHotkeys() const;
 

@@ -6,6 +6,33 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-06] 屏幕顶部贴图分组导览栏 (`PinGroupBarOverlay`) 原位胶囊内联重命名架构 & 预设色 1-based 槽位修正
+- **用户实机诉求**：
+  用户展示屏幕顶部雪瓷白贴图分组导览栏（`全部 3 | ● 测试组1 · 2 | ● 组 2 · 1 | ...`），询问并期望能够直接在顶部导览栏上原地编辑分组名称。
+- **核心技术暗坑与终局架构 (`PinGroupBarOverlay.h/.cpp`, `PinGroupManager.h/.cpp`, `PinWindow.cpp`, `PluginEntry.cpp`)**：
+  1. **`UpdateLayeredWindow` 子控件不可见陷阱与 Owned 原生微浮窗融合方案**：
+     - *暗坑机理*：`PinGroupBarOverlay` 主窗体采用 `WS_EX_LAYERED | WS_EX_NOACTIVATE` 并通过 `UpdateLayeredWindow` 提交 32 位预乘 Alpha 位图，若直接在其下挂载 `WS_CHILD` Win32 `EDIT` 控件会 100% 被分层合成器忽略而不可见；若把 `EDIT` 直接建成顶层 `WS_POPUP`，又因缺少父窗口处理 `WM_CTLCOLOREDIT` 而无法控制背景色与像素级垂直居中；
+     - *架构解法*：采用以导览栏 `m_hwnd` 为 Owner 的无边框 `WS_POPUP | WS_CLIPCHILDREN` 纯白微浮窗 `m_editPopupHwnd`（响应 `WM_ERASEBKGND` 与 `WM_CTLCOLOREDIT`），内部垂直居中挂载子类化单行 `EDIT` 控件 `m_editControlHwnd`（同源 SemiBold 600 ClearType `HFONT`、`EM_SETLIMITTEXT(24)`）；编辑期间导览栏将该分组胶囊底板渲染为纯白内芯 + 分组宝石色双层发光描边 + 左侧圆点，将 `m_editPopupHwnd` 像素级内接于圆点右侧平坦区内，实现零割裂原生输入、中文 IME 候选框紧贴胶囊、`Enter`/失焦自动落盘同步四端（贴图胶囊、导览栏、托盘、设置页）及 `Esc` 无损取消。
+  2. **居中导览栏宽度跳变导致原地双击落空防御**：
+     - *暗坑机理*：首次单击未激活分组胶囊会触发 `setActiveGroupFilter(g)`，右侧动态展开 `改名` / `整理本组` / `移除分组` 胶囊，导致水平居中的导览栏总宽增加并左右平移 60~90px，使原地快速第二下点击偏离原胶囊局部矩形；
+     - *防御机制*：在 `PinGroupBarOverlay` 基于 `GetTickCount64()` 与屏幕物理坐标 `ClientToScreen` 记录最近一次分组点击（`m_lastGroupClickTick`、`m_lastGroupClickScreenPt`、`m_lastClickedGroupId`），在 `GetDoubleClickTime()` 与系统双击容差内无论导览栏居中重排平移多少像素均精准判定为对该组的双击并立即开启 `beginInlineRename(groupId)`；同时同步提供「选中分组右侧 `改名` 胶囊」「导览栏胶囊右键 `重命名本组...`」与「桌面贴图右键分组菜单 `重命名本组...`」全套入口。
+  3. **默认短名冗余清洗与 12 色预设槽位 1-based 对齐修复**：
+     - 在单一事实源 `PinGroupPalette::normalizeInlineRenameInput` 中统一收敛输入清洗：空白或等同默认短名（`组 N` / `GN`）自动归一化为空串以恢复默认动态多语言组名；
+     - 修复 `PinWindow.cpp` 与 `PluginEntry.cpp` 向 1-based 的 `PinGroupPalette::presetColorName(slot, zh)` 传入 0-based 循环下标 `idx` 导致第 1 槽位（科技蓝）名称回退显示为「默认」的错位问题；
+     - 对齐 `PinPasteCoordinator::inspectClipboardTextAndPriority` 的 `OpenClipboard` 退避窗口（由 `50ms` 提升至 `200ms`，与 `ClipboardUtils` 对齐），消除系统 `cbdhsvc` 剪贴板历史监听短暂持锁导致富文本优先检测提前放弃而回退为预览小位图的竞态。
+
+### [2026-11-06] 跨 DLL 边界 std::function 回调静态析构崩溃根治 & 低级输入钩子生产/测试沙箱物理隔离契约
+- **问题现象**：
+  1. 自动化生命周期门禁（`verify_lifecycle.ps1`）子进程在完成测试优雅退出（`WM_CLOSE`）的最终 CRT 静态析构阶段触发 `0xC0000005 ACCESS_VIOLATION`（位于 `Tools3000Core.dll` 的 `std::vector<std::pair<uint64_t, std::function<void(const std::string&)>>>::~vector`），在工作区根目录留下 `Tools3000_crash_*.txt/.dmp`；
+  2. 本机后台常驻运行正式版 `C:\Program Files\Tools3000\Tools3000.exe` 时，运行 `stress_gesture_1000hz.ps1` 压测会出现 Scenario 1 事件被抢占吞噬报错，并在桌面上误触发正式版的手势轨迹。
+- **核心暗坑机理与双保险根治标准**：
+  1. **回调 ID 零值哨兵陷阱与 `FreeLibrary` 前全量回调排空 (`ConfigManager`, `KeyboardHook`, `PluginManager`)**：
+     - *暗坑机理*：`ConfigManager::m_nextCallbackId` 原初始值为 `0`，导致首个调用 `onChange()` 的插件（`CapturePlugin`）拿到 `callbackId = 0`，随后在 `shutdown()` 中因 `if (m_configChangeId != 0)` 守卫跳过注销；同时 `PluginManager::shutdownPlugins()` 在调用 `FreeLibrary` 卸载插件 DLL 前清理了 `EventBus` 与 `MessageBridge`，却遗漏了 `ConfigManager` 与 `KeyboardHook` 的回调闭包，导致进程退出静态析构 `~ConfigManager()` 时跳转至已卸载 `Plugin_Capture.dll` 的 `_Delete_this` 虚表；
+     - *工程铁律*：所有可注销回调注册器统一将 `0` 保留为无效哨兵值、有效 ID 严格从 `1` 递增；`PluginManager::shutdownPlugins()` 必须在调用任何 `FreeLibrary` **之前**统一执行 `KeyboardHook::clearCallbacks()`、`EventBus::clearAll()`、`ConfigManager::clearCallbacks()` 与 `MessageBridge::clearHandlers()`（且在互斥锁外析构闭包），从框架层物理阻断跨模块 `std::function` 存活至静态析构期。
+  2. **全局低级钩子生产实例与 E2E 测试沙箱严格物理隔离 (`core::MouseHook`, `gesture::MouseHook`, `core::KeyboardHook`, `stress_gesture_1000hz.ps1`)**：
+     - *暗坑机理*：原低级钩子对 `LLMHF_INJECTED` / `LLKHF_INJECTED` 的过滤条件使用了逻辑或（只要携带 `TEST_EXTRA_INFO = 0x54455354` 即放行），导致未开启测试环境变量的后台正式版 `Tools3000.exe` 也会拦截并吞噬 E2E 脚本注入的测试鼠标/键盘脉冲，与被测沙箱实例争抢 `WM_RBUTTONDOWN`；
+     - *工程铁律*：未显式设置 `TOOLS3000_ALLOW_INJECTED_MOUSE=1` / `TOOLS3000_ALLOW_INJECTED_KEYBOARD=1` 的生产进程必须 100% 忽略并透传所有外部软件注入脉冲（含 `TEST_EXTRA_INFO`）；E2E 压测脚本关闭被测进程时必须使用 `EnumWindows` 按 `targetPid` 精确匹配 `MessageWindow`，禁止使用无 PID 区分的顶层 `FindWindow` 误命中常驻实例。
+
 ### [2026-11-05] 全文内容检索 (`content:`) 30s 卡死根因根治（时间片游标流式架构）& 32 组贴图自定义名称与宝石配色全链路持久化
 - **用户实机痛点与反馈**：
   1. **全文内容检索卡在等待界面超过 30 秒搜不出结果**：输入 `content:update owor` 时界面持续显示「深度文档内容检索中... 已扫描 30.7 秒」且 `Tools3000_Service.exe` 高 CPU 满载；
@@ -13,11 +40,12 @@
 - **全文检索 (`content:`) 6 重复合根因拆解与终局修复**：
   1. **请求上限放大陷阱 (`limit: 0 -> 10,000`) 与全量同步阻塞**：前端请求 `limit: 0` 被 `SearchPlugin.cpp` 与 `service/main.cpp` 强转为 `kMaxQueryResults = 10,000`，而全盘匹配稀疏词（如 `update` + `owor`）的文件仅约 20 个，永远无法触发提前终止，迫使服务端必须扫完 30 万候选文件才回传首帧 JSON；现引入 4 槽位 90s TTL `CachedContentCandidatePlan` 候选计划缓存与时间片游标流式分页（首拍预算 `~160ms`、续扫预算 `~320ms`，携带 `progressive`/`cursor`/`planId`/`hasMore`/`nextCursor`），前端 `useSearchEngine` 分批流式拉取追加上屏，首拍百毫秒级直接呈现活跃工作区命中项且续扫不打断键盘选中行。
   2. **构建/虚拟环境噪音淹没与 `dialogPriorities` 宽泛父目录提前截断 (`MftParser.cpp`, `PlainTextExtractor.h`)**：移除编译依赖文件 `.d` 的默认收录；在未显式指定对应路径词时剪枝 `.venv`、`site-packages`、`target/debug`、`CMakeFiles`、`WinSxS`、`EBWebView` 等噪音树；修复 `dialogPriorities` 匹配首个前缀 `C:\repo` 即 `break` 的缺陷，改为叠加匹配最高分 + 更长前缀深度奖励，确保深层活跃项目（如 `C:\repo\SBOTerminal`）优先于同级海量静态帮助库扫描。
-  3. **MFT 收集锁竞争与提取器热路径加速 (`ContentSearchEngine`, `PlainTextExtractor`, `PdfExtractor`)**：新增零锁 `AllowedExtensionSnapshot` 快照消除 269 万条 MFT 遍历对 `ContentSearchEngine` 全局 `shared_mutex` 的逐条读锁争用；ASCII 词条预检升级为 `std::memchr` (AVX2) 双向跳跃扫描；超过 `16KB` 的超长单行（如 `2.8MB` 单行 `.ch` XML）改用每个关键词局部 `±320` 字节窗口 UTF-8 解码，消灭整行百万宽字符分配；纯扫描件 PDF（含 `/Image` XObject 无文字流）跳过无效的慢速 STA COM `WindowsIFilter` 回退。
-  4. **窗口焦点切换防误杀 (`SearchApp.tsx`, `useSearchEngine.ts`)**：移除 `SearchApp` 中重复的 `window.focus -> refreshQuery()` 监听，并在 `refreshOnFocus` 中保护正在执行的重型内容检索不被失焦切窗掐断重扫。
+  3. **PDF 内容流单调前进守恒与单文件超时熔断 (`PdfExtractor.cpp`, `main.cpp`, `SearchRequestLimits.h`)**：实机 RIP 采样定位到 `PdfExtractor::parsePdfContentStream` 在遇到嵌套数组 `[[...]]`、PostScript 花括号 `{...}`、孤立分隔符 `)`/`>`/`]` 或内联位图 `BI...ID...EI` 时，因 `isPdfDelimiter` 终止操作符词法扫描导致 `pos == opStart` 原地 100% CPU 无限死循环并永久卡住 `w.join()`；现重构为 `arrayDepth` 嵌套括号追踪 + `skipPdfInlineImage` 内联位图跳过 + `pos == opStart` 强制单调递增，同时对 `harvestFontToUnicodeLinks` 间接字体字典查询做 `attemptedFontDictObjs` 去重消除 $O(\text{Pages} \times \text{FileSize})$ 重复扫描，并在服务工作线程外层挂载 `PerFileContentExtractBudgetMs = 350ms` 单文件提取硬预算熔断。
+  4. **MFT 收集锁竞争与提取器热路径加速 (`ContentSearchEngine`, `PlainTextExtractor`, `PdfExtractor`)**：新增零锁 `AllowedExtensionSnapshot` 快照消除 269 万条 MFT 遍历对 `ContentSearchEngine` 全局 `shared_mutex` 的逐条读锁争用；ASCII 词条预检升级为 `std::memchr` (AVX2) 双向跳跃扫描；超过 `16KB` 的超长单行（如 `2.8MB` 单行 `.ch` XML）改用每个关键词局部 `±320` 字节窗口 UTF-8 解码，消灭整行百万宽字符分配；纯扫描件 PDF（含 `/Image` XObject 无文字流）跳过无效的慢速 STA COM `WindowsIFilter` 回退。
+  5. **窗口焦点切换防误杀 (`SearchApp.tsx`, `useSearchEngine.ts`)**：移除 `SearchApp` 中重复的 `window.focus -> refreshQuery()` 监听，并在 `refreshOnFocus` 中保护正在执行的重型内容检索不被失焦切窗掐断重扫。
 - **贴图分组自定义名称与颜色单一事实源架构 (`PinGroupManager.h/.cpp`, `PinWindow`, `PinGroupBarOverlay`, `PluginEntry`, `TrayPinGroupPanel`, `PinGroupSettingsCard`)**：
-  1. **持久化单一事实源 (`PinGroupPalette`)**：下沉实现 `PinGroupManager.cpp`，绑定 `ConfigManager` `/capture/pinGroups` 自动加载、JSON 落盘与 `onChange` 同步，支持 `#RRGGBB`/`#RGB` 颜色归一化校验、24 字符组名裁剪及 `1..32` 组独立覆写与重置。
-  2. **四端实时同步闭环**：通过 `PinWindow::refreshAllVisualsAndGroupBar()` 与 `pin:groupsChanged` 事件（携带 `catalog` 与 `palettePresets`），打通主设置页「贴图分组与配色管理」卡片（12 色预设 + 自由取色器 + 组名编辑）、托盘内联 Bento 抽屉（免失焦组名输入与 12 色宝石圆点秒切）、桌面贴图窗口（左上角常驻自定义短组名微晶胶囊、聚焦发光框、折叠迷你胶囊自适应宽度、右键 12 色切换子菜单）以及屏幕顶部雪瓷白分组导览栏右键换色菜单。
+  1. **持久化单一事实源与纯叶子锁隔离 (`PinGroupPalette`)**：下沉实现 `PinGroupManager.cpp`，绑定 `ConfigManager` `/capture/pinGroups` 自动加载与 JSON 落盘；采用纯叶子锁隔离（持锁期间零外部调用）并将 `ConfigManager::onChange` / `removeOnChange` 对称托管至 `CapturePlugin::initialize()` / `shutdown()`，杜绝插件 DLL 动态卸载时的悬空回调与锁重入死锁。
+  2. **托盘独立 Bento 分区卡片与四端实时同步闭环**：在 `TrayApp.tsx` / `TrayPinGroupPanel.tsx` / `TrayApp.css` 中将「贴图与分组管理」从单次快捷动作列表独立抽离为专属微晶 Bento 卡片专区（收起态展示微晶图标井与分组宝石色点簇预览，展开态无缝舒展为分组筛选、组名编辑、12 色色板与全局贴图整理面板）；通过 `PinWindow::refreshAllVisualsAndGroupBar()` 与 `pin:groupsChanged` 事件打通主设置页「贴图分组与配色管理」卡片、托盘独立 Bento 专区、桌面贴图窗口（常驻自定义短组名胶囊/右键 12 色子菜单）与顶部雪瓷白分组导览栏四端秒级同步。
 
 ### [2026-11-05] 长截图后置编辑接入标准截图单一事实源 (SSOT) 全功能管线架构重构
 - **用户核心诉求与架构命题**：

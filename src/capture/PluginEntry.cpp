@@ -1361,10 +1361,10 @@ public:
                 const auto& presets = tools3000::capture::PinGroupPalette::presetPaletteHexes();
                 for (int idx = 0; idx < static_cast<int>(presets.size()); ++idx) {
                     palettePresetsJson.push_back({
-                        {"slot", idx},
+                        {"slot", idx + 1},
                         {"hex", std::string(presets[static_cast<size_t>(idx)])},
                         {"name", tools3000::core::WinUtils::wstringToUtf8(
-                            std::wstring(tools3000::capture::PinGroupPalette::presetColorName(idx, zh)))}
+                            std::wstring(tools3000::capture::PinGroupPalette::presetColorName(idx + 1, zh)))}
                     });
                 }
                 for (int g = 0; g <= tools3000::capture::PinGroupConstants::kMaxGroupId; ++g) {

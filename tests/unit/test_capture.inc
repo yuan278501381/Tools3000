@@ -10411,6 +10411,17 @@ TEST(LongImageSsotStudioTest, FullStandardToolbarTextMultiSequenceNumbersAndSmar
 
 TEST(PinGroupCustomizationTest, CustomNameAndColorNormalizationAndConfigPersistence) {
     using namespace tools3000::capture;
+    const auto tempCfgDir = std::filesystem::temp_directory_path() /
+        (L"Tools3000_PinGroupCfg_" + std::to_wstring(GetCurrentProcessId()));
+    ASSERT_TRUE(tools3000::core::ConfigManager::instance().initialize(tempCfgDir));
+    struct TempConfigDirGuard {
+        std::filesystem::path dir;
+        ~TempConfigDirGuard() {
+            tools3000::core::ConfigManager::instance().shutdown();
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } cfgGuard{tempCfgDir};
 
     struct PaletteResetGuard {
         ~PaletteResetGuard() {
@@ -10422,14 +10433,14 @@ TEST(PinGroupCustomizationTest, CustomNameAndColorNormalizationAndConfigPersiste
 
     EXPECT_EQ(PinGroupPalette::normalizeHexColor("#abc"), "#AABBCC");
     EXPECT_EQ(PinGroupPalette::normalizeHexColor("  0ea5e9 "), "#0EA5E9");
-    EXPECT_EQ(PinGroupPalette::normalizeHexColor("#12345"), "");
-    EXPECT_EQ(PinGroupPalette::normalizeHexColor("#GGGGGG"), "");
+    EXPECT_FALSE(PinGroupPalette::normalizeHexColor("#12345").has_value());
+    EXPECT_FALSE(PinGroupPalette::normalizeHexColor("#GGGGGG").has_value());
     EXPECT_FALSE(PinGroupPalette::setGroupColor(3, "not-a-color"));
 
     EXPECT_TRUE(PinGroupPalette::setGroupName(3, L"  UI 视觉走查\r\n对比组  "));
     EXPECT_EQ(PinGroupPalette::customName(3), L"UI 视觉走查 对比组");
     EXPECT_EQ(PinGroupPalette::shortLabel(3, true), L"UI 视觉走查 对比组");
-    EXPECT_NE(PinGroupPalette::fullLabel(3, true).find(L"#3"), std::wstring::npos);
+    EXPECT_NE(PinGroupPalette::fullLabel(3, true).find(L"第 3 组"), std::wstring::npos);
 
     const std::wstring thirtyChars(30, L'A');
     EXPECT_TRUE(PinGroupPalette::setGroupName(4, thirtyChars));
@@ -10451,4 +10462,18 @@ TEST(PinGroupCustomizationTest, CustomNameAndColorNormalizationAndConfigPersiste
     PinGroupPalette::resetGroupCustomization(3);
     EXPECT_FALSE(PinGroupPalette::hasCustomization(3));
     EXPECT_EQ(PinGroupPalette::accentHex(3), PinGroupPalette::defaultHex(3));
+
+    // 验证顶部导览栏原位内联重命名输入清洗契约：输入空白或等同默认短名 ("组 N" / "GN") 自动回退空串恢复默认
+    EXPECT_TRUE(PinGroupPalette::normalizeInlineRenameInput(0, L"测试组").empty());
+    EXPECT_TRUE(PinGroupPalette::normalizeInlineRenameInput(2, L"   \r\n\t  ").empty());
+    EXPECT_TRUE(PinGroupPalette::normalizeInlineRenameInput(2, L"  组 2  ").empty());
+    EXPECT_TRUE(PinGroupPalette::normalizeInlineRenameInput(2, L" G2 ").empty());
+    EXPECT_EQ(PinGroupPalette::normalizeInlineRenameInput(2, L"组 3"), L"组 3");
+    EXPECT_EQ(PinGroupPalette::normalizeInlineRenameInput(2, L"  前端参考图  "), L"前端参考图");
+
+    // 验证 1..12 预设色槽位名称 1-based 对齐无偏移（槽位 1 为科技蓝而非默认回退）
+    for (int slot = 1; slot <= PinGroupConstants::kPaletteColorCount; ++slot) {
+        EXPECT_NE(std::wstring(PinGroupPalette::presetColorName(slot, true)), L"默认");
+        EXPECT_NE(std::wstring(PinGroupPalette::presetColorName(slot, false)), L"Default");
+    }
 }

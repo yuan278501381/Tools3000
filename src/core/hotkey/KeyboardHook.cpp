@@ -135,6 +135,23 @@ void KeyboardHook::clearHookHotkeys() {
     m_hasHookHotkeys.store(false, std::memory_order_release);
 }
 
+void KeyboardHook::clearCallbacks() {
+    std::function<void(const std::string&)> keycastCb;
+    std::function<void(const KeycastKeyInfo&)> keycastInfoCb;
+    std::function<bool(DWORD, WPARAM)> keyInterceptor;
+    std::function<bool(const KBDLLHOOKSTRUCT&, WPARAM)> lowLevelInterceptor;
+    std::function<void(DWORD, WPARAM)> activityCb;
+    {
+        std::lock_guard lock(m_callbackMutex);
+        keycastCb = std::move(m_keycastCallback);
+        keycastInfoCb = std::move(m_keycastKeyInfoCallback);
+        keyInterceptor = std::move(m_keyInterceptor);
+        lowLevelInterceptor = std::move(m_lowLevelKeyInterceptor);
+        activityCb = std::move(m_activityCallback);
+    }
+    clearHookHotkeys();
+}
+
 bool KeyboardHook::hasHookHotkeys() const {
     return m_hasHookHotkeys.load(std::memory_order_relaxed);
 }
@@ -205,11 +222,11 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         try {
             auto* data = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
 
-            // 忽略非白名单的外部模拟注入按键，保障系统输入安全；受控测试通道支持放行
-            static const bool s_allowInjectedKeyboard = (GetEnvironmentVariableW(L"TOOLS3000_ALLOW_INJECTED_KEYBOARD", nullptr, 0) > 0);
-            const bool isTestInjection = (data->dwExtraInfo == 0x54455354); // "TEST"
-            const bool allowInjected = (isTestInjection || s_allowInjectedKeyboard);
-            if (!(data->flags & LLKHF_INJECTED) || allowInjected) {
+            // 忽略外部模拟注入按键，仅在当前进程显式开启受控测试环境变量时放行，
+            // 杜绝后台正式版进程被自动化 E2E 测试脚本误触发或抢占拦截。
+            static const bool s_allowInjectedKeyboard =
+                (GetEnvironmentVariableW(L"TOOLS3000_ALLOW_INJECTED_KEYBOARD", nullptr, 0) > 0);
+            if (!(data->flags & LLKHF_INJECTED) || s_allowInjectedKeyboard) {
                 const bool fullscreenSuspended = self.m_fullscreenSuspended.load(std::memory_order_relaxed);
 
                 if (!fullscreenSuspended) {

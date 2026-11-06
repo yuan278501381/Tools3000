@@ -122,6 +122,9 @@ bool DxfExtractor::searchContentTerms(
         bool isNextLineTextValue = false;
 
         for (size_t i = 0; i < mapSize; ++i) {
+            if (((i & 0x3FFFFu) == 0) && isCancelled && isCancelled()) {
+                return false;
+            }
             if (pData[i] == '\n' || i == mapSize - 1) {
                 if (((lineNumber & 0x3FFu) == 0) && isCancelled && isCancelled()) {
                     return false;

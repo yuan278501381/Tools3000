@@ -12,6 +12,7 @@ inline constexpr std::size_t ProgressiveFirstSliceMaxHits = 25;
 inline constexpr std::int64_t ProgressiveFirstSliceWithHitsMs = 160;
 inline constexpr std::int64_t ProgressiveFirstSliceEmptyBudgetMs = 750;
 inline constexpr std::int64_t ProgressiveNextSliceBudgetMs = 850;
+inline constexpr std::int64_t PerFileContentExtractBudgetMs = 350;
 inline constexpr std::size_t MaxDriveItems = 26;
 inline constexpr std::size_t MaxExcludeItems = 64;
 inline constexpr std::size_t MaxExcludeUtf8Bytes = 512;

@@ -2685,4 +2685,34 @@ TEST(ContentSearchProgressiveTest, LongSingleLineWindowDecodeNoisePruningAndSubf
     EXPECT_GT(candidates[0].priorityScore, candidates[1].priorityScore);
 }
 
+TEST(ContentSearchProgressiveTest, PdfExtractorAdvancesPastStrayDelimitersNestedArraysAndInlineImages) {
+    const std::string contentStream =
+        "BT /F1 12 Tf "
+        ") > ] { } "
+        "[ [ (ignored_nested) ] (UPDATE ) -120 (OWOR) ] TJ "
+        "BI /W 2 /H 2 /BPC 8 /CS /G ID )>]{}\r\nEI "
+        "( status_ok) Tj ET";
+
+    const std::string compressed = tools3000_content_search_test_helpers::compressZlibBytes(contentStream);
+    ASSERT_FALSE(compressed.empty());
+
+    std::string pdfDoc =
+        "%PDF-1.7\n"
+        "1 0 obj\n<< /Length " + std::to_string(compressed.size()) + " /Filter /FlateDecode >>\nstream\r\n";
+    pdfDoc.append(compressed);
+    pdfDoc.append("\r\nendstream\nendobj\n%%EOF\n");
+
+    std::wstring extracted;
+    ASSERT_TRUE(tools3000::service::content::PdfExtractor::extractPdfTextFromMemory(
+        reinterpret_cast<const uint8_t*>(pdfDoc.data()),
+        pdfDoc.size(),
+        extracted
+    ));
+    EXPECT_NE(extracted.find(L"UPDATE"), std::wstring::npos);
+    EXPECT_NE(extracted.find(L"OWOR"), std::wstring::npos);
+    EXPECT_NE(extracted.find(L"status_ok"), std::wstring::npos);
+    EXPECT_EQ(extracted.find(L"ignored_nested"), std::wstring::npos);
+}
+
+
 

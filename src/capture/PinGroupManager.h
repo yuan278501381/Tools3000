@@ -72,6 +72,9 @@ public:
     /// 规范化自定义分组名称（去除首尾空白与控制字符，截断至 kMaxCustomGroupNameChars）
     static std::wstring normalizeCustomName(std::wstring_view raw);
 
+    /// 规范化导览栏/内联重命名输入（空白或等同于默认短名 "组 N"/"GN" 时返回空串以恢复默认组名）
+    static std::wstring normalizeInlineRenameInput(int groupId, std::wstring_view raw);
+
     /// 内置 12 色高辨识度宝石色相环预设（供 UI 色板与右键快捷换色统一引用）
     static const std::array<const char*, PinGroupConstants::kPaletteColorCount>& presetPaletteHexes() noexcept;
     static const wchar_t* presetColorName(int slot, bool chinese) noexcept;

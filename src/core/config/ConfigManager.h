@@ -98,6 +98,9 @@ public:
     /// 取消注册变更回调
     void removeOnChange(size_t callbackId);
 
+    /// 清空所有变更回调（供插件卸载前统一释放跨 DLL std::function 闭包）
+    void clearCallbacks();
+
     // ── 导入/导出 ────────────────────────────────────────────────────────
 
     /// 导出配置到文件
@@ -137,7 +140,7 @@ private:
 
     // 变更通知
     std::vector<std::pair<size_t, ConfigChangeCallback>> m_callbacks;
-    std::atomic<size_t> m_nextCallbackId{0};
+    std::atomic<size_t> m_nextCallbackId{1};
 
     // 文件监控
     std::thread m_watchThread;

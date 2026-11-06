@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace tools3000::service::content {
@@ -270,10 +271,16 @@ bool readNextHexToken(std::string_view text, size_t& pos, std::vector<uint8_t>& 
     return false;
 }
 
-void parseToUnicodeCMap(std::string_view cmapText, PdfCMap& outCMap) {
+void parseToUnicodeCMap(
+    std::string_view cmapText,
+    PdfCMap& outCMap,
+    const CancellationCheck& isCancelled
+) {
     // 1. Parse beginbfchar ... endbfchar sections
     size_t searchPos = 0;
+    size_t iter = 0;
     while (true) {
+        if (((++iter & 0x3FFu) == 0) && isCancelled && isCancelled()) return;
         const size_t bfStart = cmapText.find("beginbfchar", searchPos);
         if (bfStart == std::string_view::npos) break;
         const size_t bfEnd = cmapText.find("endbfchar", bfStart + 11);
@@ -284,6 +291,7 @@ void parseToUnicodeCMap(std::string_view cmapText, PdfCMap& outCMap) {
         std::vector<uint8_t> srcBytes;
         std::vector<uint8_t> dstBytes;
         while (readNextHexToken(body, cursor, srcBytes)) {
+            if (((++iter & 0xFFFu) == 0) && isCancelled && isCancelled()) return;
             if (!readNextHexToken(body, cursor, dstBytes)) break;
             std::wstring target = decodeUtf16BeBytes(dstBytes.data(), dstBytes.size());
             outCMap.insertCode(srcBytes, std::move(target));
@@ -295,6 +303,7 @@ void parseToUnicodeCMap(std::string_view cmapText, PdfCMap& outCMap) {
     // 2. Parse beginbfrange ... endbfrange sections
     searchPos = 0;
     while (true) {
+        if (((++iter & 0x3FFu) == 0) && isCancelled && isCancelled()) return;
         const size_t brStart = cmapText.find("beginbfrange", searchPos);
         if (brStart == std::string_view::npos) break;
         const size_t brEnd = cmapText.find("endbfrange", brStart + 12);
@@ -305,6 +314,7 @@ void parseToUnicodeCMap(std::string_view cmapText, PdfCMap& outCMap) {
         std::vector<uint8_t> startBytes;
         std::vector<uint8_t> endBytes;
         while (readNextHexToken(body, cursor, startBytes)) {
+            if (((++iter & 0xFFFu) == 0) && isCancelled && isCancelled()) return;
             if (!readNextHexToken(body, cursor, endBytes)) break;
             if (startBytes.empty() || startBytes.size() != endBytes.size() || startBytes.size() > 4) {
                 continue;
@@ -446,7 +456,8 @@ bool inflateBufferWithWindowBits(
     size_t compLen,
     int windowBits,
     size_t maxOutBytes,
-    std::string& out
+    std::string& out,
+    const CancellationCheck& isCancelled
 ) {
     out.clear();
     if (!compData || compLen == 0 || maxOutBytes == 0) return false;
@@ -461,6 +472,11 @@ bool inflateBufferWithWindowBits(
     std::vector<char> chunk(32768);
     int ret = Z_OK;
     while (out.size() < maxOutBytes) {
+        if (isCancelled && isCancelled()) {
+            inflateEnd(&strm);
+            out.clear();
+            return false;
+        }
         const size_t remain = maxOutBytes - out.size();
         const size_t ask = (std::min)(chunk.size(), remain);
         strm.next_out = reinterpret_cast<Bytef*>(chunk.data());
@@ -708,6 +724,44 @@ std::wstring decodePdfStringToken(
     return decodeFallbackSingleBytePdfString(rawBytes);
 }
 
+size_t skipPdfInlineImage(std::string_view content, size_t afterBiPos) noexcept {
+    const size_t idSearchLimit = (std::min)(content.size(), afterBiPos + 4096);
+    size_t p = afterBiPos;
+    size_t dataStart = std::string_view::npos;
+    while (p + 2 <= idSearchLimit) {
+        const size_t cand = content.find("ID", p);
+        if (cand == std::string_view::npos || cand >= idSearchLimit) break;
+        const bool leftOk = (cand == 0) ||
+            isPdfWhitespace(static_cast<uint8_t>(content[cand - 1])) ||
+            isPdfDelimiter(static_cast<uint8_t>(content[cand - 1]));
+        const bool rightOk = (cand + 2 < content.size()) &&
+            isPdfWhitespace(static_cast<uint8_t>(content[cand + 2]));
+        if (leftOk && rightOk) {
+            dataStart = cand + 3;
+            break;
+        }
+        p = cand + 2;
+    }
+    if (dataStart == std::string_view::npos) {
+        return afterBiPos;
+    }
+
+    size_t q = dataStart;
+    while (q + 2 <= content.size()) {
+        const size_t eiPos = content.find("EI", q);
+        if (eiPos == std::string_view::npos) {
+            return content.size();
+        }
+        const bool leftWs = (eiPos > 0) && isPdfWhitespace(static_cast<uint8_t>(content[eiPos - 1]));
+        const bool rightBound = isPdfTokenBoundaryAt(content, eiPos + 2);
+        if (leftWs && rightBound) {
+            return eiPos + 2;
+        }
+        q = eiPos + 2;
+    }
+    return content.size();
+}
+
 void parsePdfContentStream(
     std::string_view content,
     const std::unordered_map<std::string, uint32_t>* scopedFontNameToCMapObj,
@@ -805,7 +859,11 @@ void parsePdfContentStream(
         if (ch == '[') {
             ++pos;
             lastArrayOperand.clear();
-            while (pos < content.size()) {
+            int arrayDepth = 1;
+            while (pos < content.size() && arrayDepth > 0) {
+                if (((++iterCount & 0xFFFu) == 0) && isCancelled && isCancelled()) {
+                    return;
+                }
                 const uint8_t ac = static_cast<uint8_t>(content[pos]);
                 if (isPdfWhitespace(ac)) {
                     ++pos;
@@ -815,25 +873,38 @@ void parsePdfContentStream(
                     while (pos < content.size() && content[pos] != '\n' && content[pos] != '\r') ++pos;
                     continue;
                 }
-                if (ac == ']') {
+                if (ac == '[') {
+                    ++arrayDepth;
                     ++pos;
-                    break;
+                    continue;
+                }
+                if (ac == ']') {
+                    --arrayDepth;
+                    ++pos;
+                    continue;
                 }
                 if (ac == '(') {
                     const auto rawBytes = readPdfLiteralStringBytes(content, pos);
-                    lastArrayOperand.push_back(ArrayElement{
-                        false, 0.0, decodePdfStringToken(rawBytes, false, activeCMap, fallbackCMap)
-                    });
+                    if (arrayDepth == 1) {
+                        lastArrayOperand.push_back(ArrayElement{
+                            false, 0.0, decodePdfStringToken(rawBytes, false, activeCMap, fallbackCMap)
+                        });
+                    }
                     continue;
                 }
                 if (ac == '<' && (pos + 1 >= content.size() || content[pos + 1] != '<')) {
                     const size_t close = content.find('>', pos + 1);
-                    if (close == std::string_view::npos) break;
+                    if (close == std::string_view::npos) {
+                        pos = content.size();
+                        break;
+                    }
                     const auto rawBytes = decodeHexBytes(content.substr(pos + 1, close - (pos + 1)));
                     pos = close + 1;
-                    lastArrayOperand.push_back(ArrayElement{
-                        false, 0.0, decodePdfStringToken(rawBytes, true, activeCMap, fallbackCMap)
-                    });
+                    if (arrayDepth == 1) {
+                        lastArrayOperand.push_back(ArrayElement{
+                            false, 0.0, decodePdfStringToken(rawBytes, true, activeCMap, fallbackCMap)
+                        });
+                    }
                     continue;
                 }
                 if (std::isdigit(ac) || ac == '-' || ac == '+' || ac == '.') {
@@ -842,10 +913,14 @@ void parsePdfContentStream(
                            (std::isdigit(static_cast<unsigned char>(content[pos])) || content[pos] == '.')) {
                         ++pos;
                     }
-                    std::string numStr(content.substr(numStart, pos - numStart));
-                    char* endPtr = nullptr;
-                    const double val = std::strtod(numStr.c_str(), &endPtr);
-                    lastArrayOperand.push_back(ArrayElement{true, val, {}});
+                    if (arrayDepth == 1) {
+                        std::string numStr(content.substr(numStart, pos - numStart));
+                        char* endPtr = nullptr;
+                        const double val = std::strtod(numStr.c_str(), &endPtr);
+                        if (endPtr != numStr.c_str()) {
+                            lastArrayOperand.push_back(ArrayElement{true, val, {}});
+                        }
+                    }
                     continue;
                 }
                 ++pos;
@@ -881,7 +956,17 @@ void parsePdfContentStream(
                 ++pos;
             }
         }
+        if (pos == opStart) {
+            // Stray/unmatched delimiter such as ')', single '>', ']', '{', '}': guarantee monotonic progress
+            ++pos;
+            continue;
+        }
         std::string_view op = content.substr(opStart, pos - opStart);
+        if (op == "BI") {
+            numStack.clear();
+            pos = skipPdfInlineImage(content, pos);
+            continue;
+        }
 
         if (op == "Tf") {
             if (!pendingName.empty()) {
@@ -1031,11 +1116,14 @@ void harvestFontToUnicodeLinks(
     std::unordered_map<uint32_t, std::unordered_map<std::string, uint32_t>>& ownerObjToFontMap,
     std::unordered_map<uint32_t, uint32_t>& streamObjToResourceOwnerObj,
     std::unordered_map<uint32_t, uint32_t>& resourceOwnerToFontDictObj,
-    std::unordered_map<std::string, uint32_t>& fallbackFontNameToFontObj
+    std::unordered_map<std::string, uint32_t>& fallbackFontNameToFontObj,
+    const CancellationCheck& isCancelled
 ) {
+    size_t iter = 0;
     // 1. Scan indirect Font objects containing "/ToUnicode M G R"
     size_t pos = 0;
     while (true) {
+        if (((++iter & 0x3FFu) == 0) && isCancelled && isCancelled()) return;
         const size_t tuPos = rawPdfOrObjStream.find("/ToUnicode", pos);
         if (tuPos == std::string_view::npos) break;
         if (isPdfTokenBoundaryAt(rawPdfOrObjStream, tuPos + 10)) {
@@ -1054,6 +1142,7 @@ void harvestFontToUnicodeLinks(
     // 2. Scan "/Font" resource dictionaries ("<< /F1 K 0 R >>" or indirect "/Font M 0 R")
     pos = 0;
     while (true) {
+        if (((++iter & 0x3FFu) == 0) && isCancelled && isCancelled()) return;
         const size_t fPos = rawPdfOrObjStream.find("/Font", pos);
         if (fPos == std::string_view::npos) break;
         if (isPdfTokenBoundaryAt(rawPdfOrObjStream, fPos + 5)) {
@@ -1084,12 +1173,16 @@ void harvestFontToUnicodeLinks(
     // 2b. If any "/Font M 0 R" pointed at a standalone dictionary object "M 0 obj << /F1 K 0 R >>",
     //     harvest that indirect font dictionary into ownerObjToFontMap[M].
     if (!resourceOwnerToFontDictObj.empty()) {
+        std::unordered_set<uint32_t> attemptedFontDictObjs;
         for (const auto& [resOwner, fontDictObj] : resourceOwnerToFontDictObj) {
             (void)resOwner;
+            if (isCancelled && isCancelled()) return;
+            if (!attemptedFontDictObjs.insert(fontDictObj).second) continue;
             if (ownerObjToFontMap.find(fontDictObj) != ownerObjToFontMap.end()) continue;
             const std::string needle = std::to_string(fontDictObj) + " 0 obj";
             size_t searchFrom = 0;
             while (searchFrom < rawPdfOrObjStream.size()) {
+                if (((++iter & 0x3FFu) == 0) && isCancelled && isCancelled()) return;
                 const size_t objPos = rawPdfOrObjStream.find(needle, searchFrom);
                 if (objPos == std::string_view::npos) break;
                 const bool leftBoundary =
@@ -1123,6 +1216,7 @@ void harvestFontToUnicodeLinks(
     // 3. Associate Page "/Contents" stream object IDs with their enclosing Page / "/Resources" owner
     pos = 0;
     while (true) {
+        if (((++iter & 0x3FFu) == 0) && isCancelled && isCancelled()) return;
         const size_t cPos = rawPdfOrObjStream.find("/Contents", pos);
         if (cPos == std::string_view::npos) break;
         if (isPdfTokenBoundaryAt(rawPdfOrObjStream, cPos + 9)) {
@@ -1236,7 +1330,8 @@ bool PdfExtractor::extractPdfTextFromMemory(
         ownerObjToFontMap,
         streamObjToResourceOwnerObj,
         resourceOwnerToFontDictObj,
-        fallbackFontNameToFontObj
+        fallbackFontNameToFontObj,
+        isCancelled
     );
 
     std::vector<DecodedStreamEntry> decodedStreams;
@@ -1366,8 +1461,8 @@ bool PdfExtractor::extractPdfTextFromMemory(
         std::string payload;
         if (hasFlate) {
             const uint8_t* rawStart = data + dataStart;
-            if (!inflateBufferWithWindowBits(rawStart, streamLen, MAX_WBITS, maxAllowed, payload) &&
-                !inflateBufferWithWindowBits(rawStart, streamLen, -MAX_WBITS, maxAllowed, payload)) {
+            if (!inflateBufferWithWindowBits(rawStart, streamLen, MAX_WBITS, maxAllowed, payload, isCancelled) &&
+                !inflateBufferWithWindowBits(rawStart, streamLen, -MAX_WBITS, maxAllowed, payload, isCancelled)) {
                 const uint8_t* compPtr = rawStart;
                 size_t compRemain = streamLen;
                 while (compRemain > 0 && isPdfWhitespace(*compPtr)) {
@@ -1375,8 +1470,8 @@ bool PdfExtractor::extractPdfTextFromMemory(
                     --compRemain;
                 }
                 if (compRemain > 0 && compRemain != streamLen) {
-                    if (!inflateBufferWithWindowBits(compPtr, compRemain, MAX_WBITS, maxAllowed, payload)) {
-                        inflateBufferWithWindowBits(compPtr, compRemain, -MAX_WBITS, maxAllowed, payload);
+                    if (!inflateBufferWithWindowBits(compPtr, compRemain, MAX_WBITS, maxAllowed, payload, isCancelled)) {
+                        inflateBufferWithWindowBits(compPtr, compRemain, -MAX_WBITS, maxAllowed, payload, isCancelled);
                     }
                 }
             }
@@ -1410,7 +1505,8 @@ bool PdfExtractor::extractPdfTextFromMemory(
                 ownerObjToFontMap,
                 streamObjToResourceOwnerObj,
                 resourceOwnerToFontDictObj,
-                fallbackFontNameToFontObj
+                fallbackFontNameToFontObj,
+                isCancelled
             );
         }
 
@@ -1432,7 +1528,7 @@ bool PdfExtractor::extractPdfTextFromMemory(
             return false;
         }
         PdfCMap cmap;
-        parseToUnicodeCMap(entry.payload, cmap);
+        parseToUnicodeCMap(entry.payload, cmap, isCancelled);
         if (!cmap.empty()) {
             mergedFallbackCMap.mergeFrom(cmap);
             if (entry.objId > 0) {

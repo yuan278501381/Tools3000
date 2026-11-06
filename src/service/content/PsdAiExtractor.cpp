@@ -87,8 +87,9 @@ bool PsdAiExtractor::extractPsdAiText(
     }
 
     size_t i = 0;
+    size_t iter = 0;
     while (i + 4 < dataSize) {
-        if ((i & 0xFFFFu) == 0 && isCancelled && isCancelled()) {
+        if (((++iter & 0xFFFFu) == 0) && isCancelled && isCancelled()) {
             outExtractedText.clear();
             return false;
         }

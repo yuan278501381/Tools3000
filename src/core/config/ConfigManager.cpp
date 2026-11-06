@@ -373,17 +373,39 @@ bool ConfigManager::reset() {
 }
 
 size_t ConfigManager::onChange(ConfigChangeCallback callback) {
+    if (!callback) return 0;
     size_t id = m_nextCallbackId.fetch_add(1);
+    if (id == 0) {
+        id = m_nextCallbackId.fetch_add(1);
+    }
     std::lock_guard lock(m_mutex);
     m_callbacks.emplace_back(id, std::move(callback));
     return id;
 }
 
 void ConfigManager::removeOnChange(size_t callbackId) {
-    std::lock_guard lock(m_mutex);
-    std::erase_if(m_callbacks, [callbackId](const auto& pair) {
-        return pair.first == callbackId;
-    });
+    if (callbackId == 0) return;
+    std::vector<std::pair<size_t, ConfigChangeCallback>> removed;
+    {
+        std::lock_guard lock(m_mutex);
+        auto it = m_callbacks.begin();
+        while (it != m_callbacks.end()) {
+            if (it->first == callbackId) {
+                removed.push_back(std::move(*it));
+                it = m_callbacks.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+}
+
+void ConfigManager::clearCallbacks() {
+    std::vector<std::pair<size_t, ConfigChangeCallback>> callbacks;
+    {
+        std::lock_guard lock(m_mutex);
+        callbacks.swap(m_callbacks);
+    }
 }
 
 void ConfigManager::notifyChange(const std::string& key) {

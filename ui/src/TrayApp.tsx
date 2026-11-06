@@ -672,13 +672,6 @@ export default function TrayApp() {
                 <kbd className="tray-menu__shortcut">{shortcuts.pinPaste}</kbd>
               )}
             </button>
-            <TrayPinGroupPanel
-              state={pinGroupState}
-              expanded={pinPanelExpanded}
-              disabled={busy}
-              onToggleExpand={() => setPinPanelExpanded((prev) => !prev)}
-              onControl={(payload) => void handlePinGroupControl(payload)}
-            />
           </>
         )}
 
@@ -714,6 +707,20 @@ export default function TrayApp() {
           </button>
         )}
       </div>
+
+      {/* 独立贴图与分组管理 Bento 专区 */}
+      {captureActive && (
+        <>
+          <div className="tray-menu__divider" role="separator" />
+          <TrayPinGroupPanel
+            state={pinGroupState}
+            expanded={pinPanelExpanded}
+            disabled={busy}
+            onToggleExpand={() => setPinPanelExpanded((prev) => !prev)}
+            onControl={(payload) => void handlePinGroupControl(payload)}
+          />
+        </>
+      )}
 
       <div className="tray-menu__divider" role="separator" />
 

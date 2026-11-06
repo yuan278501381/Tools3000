@@ -406,9 +406,9 @@ void PinWindow::broadcastGroupStateChanged() {
     const auto& presets = PinGroupPalette::presetPaletteHexes();
     for (int idx = 0; idx < static_cast<int>(presets.size()); ++idx) {
         palettePresetsJson.push_back({
-            {"slot", idx},
+            {"slot", idx + 1},
             {"hex", std::string(presets[static_cast<size_t>(idx)])},
-            {"name", tools3000::core::WinUtils::wstringToUtf8(std::wstring(PinGroupPalette::presetColorName(idx, zh)))}
+            {"name", tools3000::core::WinUtils::wstringToUtf8(std::wstring(PinGroupPalette::presetColorName(idx + 1, zh)))}
         });
     }
 
@@ -724,6 +724,7 @@ namespace PinGroupMenuCmd {
     inline constexpr int kArrangeCurrentGroup = 1300;
     inline constexpr int kDissolveCurrentGroup = 1301;
     inline constexpr int kCloseCurrentGroup = 1302;
+    inline constexpr int kRenameCurrentGroup = 1305;
     inline constexpr int kResetGroupMeta = 1400;
     inline constexpr int kSetColorPresetBase = 1400; // 1401..1412
 } // namespace PinGroupMenuCmd
@@ -815,12 +816,14 @@ static void populatePinGroupMenuItems(HMENU groupMenu, const PinWindow* self, bo
                 const bool checked = (curHex == presets[static_cast<size_t>(idx)]);
                 const std::wstring cLabel = std::format(
                     L"{}  ({})",
-                    PinGroupPalette::presetColorName(idx, isZh),
+                    PinGroupPalette::presetColorName(idx + 1, isZh),
                     tools3000::core::WinUtils::utf8ToWstring(std::string(presets[static_cast<size_t>(idx)])));
                 AppendMenuW(colorMenu, (checked ? MF_CHECKED : MF_UNCHECKED) | MF_STRING,
                             static_cast<UINT_PTR>(PinGroupMenuCmd::kSetColorPresetBase + 1 + idx), cLabel.c_str());
             }
             AppendMenuW(groupMenu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(groupMenu, MF_STRING, PinGroupMenuCmd::kRenameCurrentGroup,
+                        isZh ? L"重命名本组..." : L"Rename Current Group...");
             AppendMenuW(groupMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(colorMenu),
                         isZh ? L"切换本组颜色" : L"Set Group Color");
         }
@@ -875,6 +878,10 @@ static bool dispatchPinGroupMenuCommand(PinWindow* self, int cmd) {
     if (cmd == PinGroupMenuCmd::kResetGroupMeta && self->groupId() >= PinGroupConstants::kMinGroupId) {
         PinGroupPalette::resetGroupCustomization(self->groupId());
         PinWindow::refreshAllVisualsAndGroupBar();
+        return true;
+    }
+    if (cmd == PinGroupMenuCmd::kRenameCurrentGroup && self->groupId() >= PinGroupConstants::kMinGroupId) {
+        PinGroupBarOverlay::instance().beginInlineRename(self->groupId());
         return true;
     }
     const int presetCount = static_cast<int>(PinGroupPalette::presetPaletteHexes().size());

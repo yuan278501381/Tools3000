@@ -215,13 +215,12 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
         if (data.dwExtraInfo == kSelfReinjectMouseExtraInfo) {
             return false;
         }
-        // 生产环境严格过滤软件模拟注入脉冲 (SendInput)，防止内部补发脉冲导致递归死锁；
-        // 仅在显式设置测试环境变量或携带专用 E2E 测试签名时放行，以支持真实的操作系统级端到端测试。
+        // 生产环境严格过滤所有软件模拟注入脉冲 (SendInput)，仅在当前进程显式开启测试环境变量时放行，
+        // 彻底杜绝后台常驻正式版实例与自动化 E2E 沙箱进程争抢钩子或误触发桌面手势。
         static const bool s_allowInjected = []() {
             return GetEnvironmentVariableW(L"TOOLS3000_ALLOW_INJECTED_MOUSE", nullptr, 0) > 0;
         }();
-        constexpr ULONG_PTR TEST_EXTRA_INFO = 0x54455354; // "TEST"
-        if (!s_allowInjected && data.dwExtraInfo != TEST_EXTRA_INFO) {
+        if (!s_allowInjected) {
             return false;
         }
     }

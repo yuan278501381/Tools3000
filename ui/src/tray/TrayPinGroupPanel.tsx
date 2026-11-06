@@ -138,20 +138,34 @@ export function TrayPinGroupPanel({
         })
       : '';
 
+  const previewDots = (state.groups.length > 0 ? state.groups : editableCatalog).slice(0, 4);
+
   return (
-    <div className="tray-pin-section">
+    <div className={`tray-pin-section ${expanded ? 'tray-pin-section--expanded' : ''}`}>
       <button
         type="button"
         role="menuitem"
         aria-expanded={expanded}
-        className={`tray-menu__item ${expanded ? 'tray-menu__item--expanded' : ''}`}
+        className={`tray-pin-card__trigger ${expanded ? 'tray-pin-card__trigger--expanded' : ''}`}
         disabled={disabled}
         onClick={onToggleExpand}
       >
-        <Layers size={15} className="tray-menu__icon" aria-hidden="true" />
-        <span className="tray-menu__label">{t('tray.pinGroups', 'Pin Groups')}</span>
-        {summaryBadge && (
+        <span className="tray-pin-card__icon-wrap" aria-hidden="true">
+          <Layers size={13} className="tray-pin-card__icon" />
+        </span>
+        <span className="tray-pin-card__title">{t('tray.pinGroups', 'Pin Groups')}</span>
+        {summaryBadge ? (
           <span className="tray-pin-count-pill">{summaryBadge}</span>
+        ) : (
+          <span className="tray-pin-color-dots" aria-hidden="true">
+            {previewDots.map((grp) => (
+              <span
+                key={grp.id}
+                className="tray-pin-color-dots__dot"
+                style={{ backgroundColor: grp.colorHex }}
+              />
+            ))}
+          </span>
         )}
         <ChevronDown
           size={14}
