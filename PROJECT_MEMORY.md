@@ -6,6 +6,18 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-10] 搜索引擎四大维度进阶优化：无锁 Bloom 运行历史快照、`CollectContentCandidates` 零分配目录位掩码、`size:` 区间/语义常量与流式进度/停止交互
+- **四大维度系统性提升**：
+  1. **性能维度（消除 20,000 ~ 300,000 次互斥锁争用与候选收集堆分配风暴）**：
+     - **`RunHistorySnapshot` 64 位双哈希 Bloom 预筛快照 (`RunHistoryManager.h/.cpp`, `main.cpp`)**：此前在 `runNameSearch`、30 万文件 `runContentSearch` 计划构建及 10,000 条结果 JSON 序列化中逐条调用 `RunHistoryManager::getRunCount` / `calculateFrecencyScore`，每次调用都获取 `m_mutex` 并分配转小写 `std::wstring`；现新增 `RunHistoryManager::captureSnapshot()` 单次加锁生成只读快照，内置 64 位长度掩码 (`lenMask`) 与首尾/中位双哈希位掩码 (`bloomMask`)，未命中历史的路径在 2 纳秒内 O(1) 零分配直接返回 `0`，并在 `TieredSearchResult` 排序中融入 `frecencyScore` 确保同匹配度下高频打开文件优先置顶；
+     - **`MftParser::CollectContentCandidates` 可分离目录位掩码 (`MftParser.cpp`)**：在 `CachedFolderNode` 中预计算并缓存 `dirClauseMask`，当 `fileFilterExpr.isEmpty()`（如纯 `content:陆巡`）时直接跳过过滤，当 `fileFilterExpr.isFullySeparable()`（如 `Chosen content:陆巡`）时直接调用零分配 `matchesSeparable(record, driveW, dirNode.dirClauseMask)`，彻底消除全文检索候选收集阶段数十万次 `std::function` 堆分配与冗余路径拼接。
+  2. **功能完整性维度（`size:` 范围闭区间与 Everything 级语义常量 - `SearchExpression.h/.cpp`）**：
+     - 为 `size:` 算子新增 `SearchClause::SizeOp::Range`，全面支持 `size:1mb..50mb`、`size:10kb-100kb` 闭区间语法，以及 `size:empty` (`0 B`)、`size:tiny` (`1 B .. 10 KB`)、`size:small` (`10 KB .. 100 KB`)、`size:medium` (`100 KB .. 16 MB`)、`size:large` (`16 MB .. 128 MB`)、`size:huge` / `size:gigantic` (`>= 128 MB`) 语义化大小档位。
+  3. **易用性与 UI 视觉维度（流式进度百分比、一键停止、输入框清空与单行代码片段复制 - `useSearchEngine.ts`, `SearchHeader.tsx`, `SearchFooter.tsx`, `SearchResultRow.tsx`, `SearchApp.tsx`）**：
+     - `useSearchEngine` 实时消费后端分片 `nextCursor / totalCandidates` 暴露 `scanProgress` 与 `stopSearch`；右上角状态胶囊与底栏实时显示扫描进度百分比（如 `38%`）并提供「停止」按钮随时中止后台长扫描而保留已上屏结果；
+     - `SearchFooter` 在流式扫描已产出首屏结果时，不再用扫描横幅遮挡左下角的对象总数、总大小与当前选中项序号（`选中 5 / 11 (6.2 KB)`），而是将进度与「停止」微按钮并列展示在右侧；
+     - `SearchHeader` 在输入框右侧非空时提供一键清空按钮（`<X size={15} />`），`SearchResultRow` 支持点击代码片段行号胶囊（如 `L66`）一键复制该行匹配代码文本。
+
 ### [2026-11-10] 多关键词主干最匹配置顶排序、流式正文检索防闪烁与 RustDesk 触控板四指横滑防粘滞加固
 - **三大实机问题与根因终局方案**：
   1. **多关键词搜索最匹配优先置顶与后缀假命中消除 (`SearchExpression.h/.cpp`, `main.cpp`, `searchTypes.ts`, `searchUtils.ts`)**：

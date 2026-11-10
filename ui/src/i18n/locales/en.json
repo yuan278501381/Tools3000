@@ -1482,8 +1482,13 @@
     "menuCopyFile": "Copy File Object (Paste to Chat/Folder)",
     "copiedFile": "File copied to clipboard (ready to paste)",
     "menuQuickLook": "QuickLook Preview",
-    "syntaxExSize": "Filter by file size (supports kb / mb / gb and > < >= <=)",
-    "syntaxExDate": "Filter by modified date (today / yesterday / thisweek / 2026-09)"
+    "syntaxExSize": "Filter by file size (supports >10mb, 1mb..50mb range & empty/tiny/huge)",
+    "syntaxExDate": "Filter by modified date (today / yesterday / thisweek / 2026-09)",
+    "clearQuery": "Clear search query",
+    "stopScan": "Stop",
+    "stopScanTitle": "Stop active background content scan",
+    "copyLineTip": "Click to copy line {{line}} content",
+    "copiedLineToast": "Copied line {{line}} content to clipboard"
   },
   "searchPage": {
     "tabSettings": "Settings & Hotkey",

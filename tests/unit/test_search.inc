@@ -2895,6 +2895,75 @@ TEST(SearchExpressionTest, MultiKeywordStemMatchingAndBestMatchRanking) {
     EXPECT_LT(exprMulti.calculateRank(bothInStem), exprMulti.calculateRank(oneInStem));
 }
 
+#include "service/db/RunHistoryManager.h"
+
+TEST(SearchExpressionTest, SizeRangeAndSemanticPresets) {
+    FileRecord emptyFile{1, 0, L"empty.log", L"empty.log", L"empty.log", L"empty.log", false, 0, 0, 0, 0};
+    FileRecord smallFile{2, 0, L"small.log", L"small.log", L"small.log", L"small.log", false, 0, 25ULL * 1024, 0, 0};
+    FileRecord mediumFile{3, 0, L"medium.log", L"medium.log", L"medium.log", L"medium.log", false, 0, 5ULL * 1024 * 1024, 0, 0};
+    FileRecord hugeFile{4, 0, L"huge.iso", L"huge.iso", L"huge.iso", L"huge.iso", false, 0, 250ULL * 1024 * 1024, 0, 0};
+
+    auto exprRange = SearchExpression::parse(L"size:10kb..50kb");
+    EXPECT_FALSE(exprRange.matches(emptyFile, L'C', L"C:\\empty.log"));
+    EXPECT_TRUE(exprRange.matches(smallFile, L'C', L"C:\\small.log"));
+    EXPECT_FALSE(exprRange.matches(mediumFile, L'C', L"C:\\medium.log"));
+
+    auto exprDashRange = SearchExpression::parse(L"size:1mb-10mb");
+    EXPECT_FALSE(exprDashRange.matches(smallFile, L'C', L"C:\\small.log"));
+    EXPECT_TRUE(exprDashRange.matches(mediumFile, L'C', L"C:\\medium.log"));
+    EXPECT_FALSE(exprDashRange.matches(hugeFile, L'C', L"C:\\huge.iso"));
+
+    EXPECT_TRUE(SearchExpression::parse(L"size:empty").matches(emptyFile, L'C', L"C:\\empty.log"));
+    EXPECT_FALSE(SearchExpression::parse(L"size:empty").matches(smallFile, L'C', L"C:\\small.log"));
+    EXPECT_TRUE(SearchExpression::parse(L"size:small").matches(smallFile, L'C', L"C:\\small.log"));
+    EXPECT_TRUE(SearchExpression::parse(L"size:medium").matches(mediumFile, L'C', L"C:\\medium.log"));
+    EXPECT_TRUE(SearchExpression::parse(L"size:huge").matches(hugeFile, L'C', L"C:\\huge.iso"));
+}
+
+TEST(RunHistorySnapshotTest, LockFreeBloomPreFilterAndFrecencyLookup) {
+    auto& mgr = tools3000::service::db::RunHistoryManager::instance();
+    mgr.clear();
+
+    const auto emptySnap = mgr.captureSnapshot(1000000ULL);
+    EXPECT_TRUE(emptySnap.empty());
+    EXPECT_EQ(emptySnap.getRunCount(L"D:\\Chosen\\report.xlsx"), 0u);
+
+    mgr.recordRun(L"D:\\Chosen\\report.xlsx");
+    mgr.recordRun(L"D:\\Chosen\\report.xlsx");
+    mgr.recordRun(L"D:\\Chosen\\once.txt");
+
+    const auto snap = mgr.captureSnapshot();
+    EXPECT_FALSE(snap.empty());
+    EXPECT_EQ(snap.getRunCount(L"d:/chosen/report.xlsx"), 2u);
+    EXPECT_EQ(snap.getRunCount(L"D:\\Chosen\\once.txt"), 1u);
+    EXPECT_EQ(snap.getRunCount(L"D:\\Chosen\\never_opened_file.txt"), 0u);
+
+    const auto statsTwice = snap.lookup(L"D:\\Chosen\\report.xlsx");
+    const auto statsOnce = snap.lookup(L"D:\\Chosen\\once.txt");
+    EXPECT_GT(statsTwice.frecencyScore, statsOnce.frecencyScore);
+
+    mgr.clear();
+}
+
+TEST(WinUtilsNativeIconTest, ExtractsPerFileEmbeddedIconAndExtensionFallback) {
+    const std::string genericExeIcon = tools3000::core::WinUtils::getFileTypeIconBase64(L".exe", false);
+    EXPECT_EQ(genericExeIcon.rfind("data:image/png;base64,", 0), 0u);
+
+    wchar_t winDir[MAX_PATH] = {};
+    if (GetWindowsDirectoryW(winDir, MAX_PATH) > 0) {
+        std::filesystem::path explorerPath = std::filesystem::path(winDir) / L"explorer.exe";
+        if (std::filesystem::exists(explorerPath)) {
+            const std::string explorerIcon = tools3000::core::WinUtils::getFileTypeIconBase64(
+                L".exe",
+                false,
+                explorerPath.wstring());
+            EXPECT_EQ(explorerIcon.rfind("data:image/png;base64,", 0), 0u);
+            EXPECT_NE(explorerIcon, genericExeIcon);
+        }
+    }
+}
+
+
 
 
 

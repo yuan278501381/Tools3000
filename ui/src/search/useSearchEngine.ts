@@ -42,6 +42,8 @@ interface UseSearchEngineResult {
   searchElapsedMs: number;
   scanElapsedSeconds: number;
   lastColdScanDurationSec: number;
+  scanProgress: { scanned: number; total: number } | null;
+  stopSearch: () => void;
   clearResultCache: () => void;
   refreshQuery: () => void;
   refreshOnFocus: () => void;
@@ -104,6 +106,7 @@ export function useSearchEngine({
   const [totalIndexedFiles, setTotalIndexedFiles] = useState(0);
   const [searchElapsedMs, setSearchElapsedMs] = useState(0);
   const [scanElapsedSeconds, setScanElapsedSeconds] = useState(0);
+  const [scanProgress, setScanProgress] = useState<{ scanned: number; total: number } | null>(null);
   const [lastColdScanDurationSec, setLastColdScanDurationSec] = useState(() => {
     const saved = Number.parseFloat(localStorage.getItem('tools3000_last_cold_content_scan_sec') ?? '');
     return Number.isFinite(saved) ? Math.max(3, saved) : 14.5;
@@ -157,6 +160,18 @@ export function useSearchEngine({
     scanTimerRef.current = null;
   }, []);
 
+  const stopSearch = useCallback(() => {
+    requestSequenceRef.current += 1;
+    isRunningRef.current = false;
+    if (retryTimerRef.current !== null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    stopScanStopwatch();
+    setLoading(false);
+    setScanProgress(null);
+  }, [stopScanStopwatch]);
+
   const startScanStopwatch = useCallback((sequence: number) => {
     stopScanStopwatch();
     setScanElapsedSeconds(0);
@@ -203,6 +218,7 @@ export function useSearchEngine({
           results: [],
         });
         setLoading(false);
+        setScanProgress(null);
       });
       return;
     }
@@ -233,6 +249,7 @@ export function useSearchEngine({
           });
         });
         setLoading(false);
+        setScanProgress(null);
         return;
       }
 
@@ -276,6 +293,7 @@ export function useSearchEngine({
       if (cached && cacheKey) resultCacheRef.current.delete(cacheKey);
 
       isRunningRef.current = true;
+      setScanProgress(null);
       const loadingTimer = window.setTimeout(() => {
         if (sequence === requestSequenceRef.current) setLoading(true);
       }, 80);
@@ -461,10 +479,17 @@ export function useSearchEngine({
           }
 
           const nextCursor = typeof response.nextCursor === 'number' ? response.nextCursor : 0;
+          const totalCandidates = typeof response.totalCandidates === 'number' ? response.totalCandidates : 0;
           const hasMore =
             response.hasMore === true &&
             nextCursor > cursor &&
             accumulated.length < targetLimit;
+
+          if (hasMore && totalCandidates > 0) {
+            setScanProgress({ scanned: Math.min(nextCursor, totalCandidates), total: totalCandidates });
+          } else if (!hasMore) {
+            setScanProgress(null);
+          }
 
           const shouldCommitResults =
             addedInSlice > 0 ||
@@ -547,6 +572,7 @@ export function useSearchEngine({
           isRunningRef.current = false;
           stopScanStopwatch(sequence);
           setLoading(false);
+          setScanProgress(null);
         }
       }
     };
@@ -603,6 +629,8 @@ export function useSearchEngine({
     searchElapsedMs,
     scanElapsedSeconds,
     lastColdScanDurationSec,
+    scanProgress,
+    stopSearch,
     clearResultCache,
     refreshQuery,
     refreshOnFocus,

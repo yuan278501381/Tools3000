@@ -1468,10 +1468,15 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
 
     struct CachedFolderNode {
         bool pruned = false;
+        uint64_t dirClauseMask = 0;
         std::wstring fullDirPath;
         std::wstring lowerDirPath;
         double basePriority = 200.0;
     };
+
+    const bool hasFileFilter = !fileFilterExpr.isEmpty();
+    const bool filterHasSeparableGroups = hasFileFilter && fileFilterExpr.hasSeparablePathGroups();
+    const bool filterIsFullySeparable = hasFileFilter && fileFilterExpr.isFullySeparable();
 
     const bool isNonSystemDrive = (m_DriveLetter != 'C' && m_DriveLetter != 'c');
     const wchar_t driveW = static_cast<wchar_t>(m_DriveLetter);
@@ -1512,6 +1517,10 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
             if (!storedDir) break;
             const FileRecord dirRec = m_Store.view(*storedDir);
             if (!dirRec.fileName.empty() && dirRec.fileName != L".") {
+                if (filterHasSeparableGroups) {
+                    node.dirClauseMask |= fileFilterExpr.computeDirectorySegmentMask(
+                        dirRec.fileName, dirRec.pinyinInitials, dirRec.pinyinFull);
+                }
                 segments.push_back(dirRec.fileName);
                 const std::wstring segNorm = normalize(dirRec.fileName);
                 if (!explicitRecycle &&
@@ -1770,7 +1779,7 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
             }
 
             std::wstring builtFullPath;
-            auto getFullPath = [&]() -> std::wstring {
+            auto buildFullPathNow = [&]() -> std::wstring& {
                 if (builtFullPath.empty()) {
                     builtFullPath.reserve(dirNode.fullDirPath.size() + 1 + record.fileName.size());
                     builtFullPath += dirNode.fullDirPath;
@@ -1780,11 +1789,22 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                 return builtFullPath;
             };
 
-            if (!fileFilterExpr.matchesWithLazyPath(record, driveW, getFullPath)) {
-                continue;
+            if (hasFileFilter) {
+                if (filterIsFullySeparable) {
+                    if (!fileFilterExpr.matchesSeparable(record, driveW, dirNode.dirClauseMask)) {
+                        continue;
+                    }
+                } else {
+                    auto getFullPath = [&]() -> std::wstring {
+                        return buildFullPathNow();
+                    };
+                    if (!fileFilterExpr.matchesWithLazyPath(record, driveW, getFullPath)) {
+                        continue;
+                    }
+                }
             }
 
-            std::wstring finalPath = getFullPath();
+            std::wstring finalPath = std::move(buildFullPathNow());
             if (!lowerExcludes.empty()) {
                 const std::wstring lowerFileName = normalize(record.fileName);
                 bool excludedByName = false;

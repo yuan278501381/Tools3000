@@ -194,6 +194,43 @@ double RunHistoryManager::calculateFrecencyScore(const std::wstring& filename, u
     return static_cast<double>(rec.runCount) * 100.0 + recencyBonus;
 }
 
+RunHistorySnapshot RunHistoryManager::captureSnapshot(uint64_t currentFileTime) const {
+    RunHistorySnapshot snap;
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (m_records.empty()) {
+        return snap;
+    }
+
+    const uint64_t nowFt = (currentFileTime != 0) ? currentFileTime : getCurrentFileTime();
+    constexpr uint64_t FT_ONE_HOUR = 3600ULL * 10000000ULL;
+    constexpr uint64_t FT_ONE_DAY = 24ULL * FT_ONE_HOUR;
+
+    snap.entries.reserve(m_records.size());
+    for (const auto& [key, rec] : m_records) {
+        if (rec.runCount == 0) continue;
+        const uint64_t diff = (nowFt > rec.lastRunDate) ? (nowFt - rec.lastRunDate) : 0;
+        double recencyBonus = 20.0;
+        if (diff <= FT_ONE_HOUR * 4) {
+            recencyBonus = 1000.0;
+        } else if (diff <= FT_ONE_DAY) {
+            recencyBonus = 700.0;
+        } else if (diff <= FT_ONE_DAY * 7) {
+            recencyBonus = 400.0;
+        } else if (diff <= FT_ONE_DAY * 30) {
+            recencyBonus = 150.0;
+        }
+        const double score = static_cast<double>(rec.runCount) * 100.0 + recencyBonus;
+        snap.entries.emplace(key, RunEntryStats{rec.runCount, score});
+
+        uint64_t lenBit = 0;
+        uint64_t bloomBits = 0;
+        RunHistorySnapshot::computeBloomBits(key, lenBit, bloomBits);
+        snap.lenMask |= lenBit;
+        snap.bloomMask |= bloomBits;
+    }
+    return snap;
+}
+
 std::vector<RunRecord> RunHistoryManager::getTopRuns(size_t limit) const {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     std::vector<RunRecord> result;

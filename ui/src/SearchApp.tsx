@@ -43,6 +43,7 @@ import {
   buildSmartContentSearchQuery,
   getSortedResults,
   hasContentSyntaxInQuery,
+  resolveNativeIconRequest,
   stripContentSyntaxFromQuery,
 } from './search/searchUtils';
 import './SearchApp.css';
@@ -196,6 +197,8 @@ export default function SearchApp() {
     searchElapsedMs,
     scanElapsedSeconds,
     lastColdScanDurationSec,
+    scanProgress,
+    stopSearch,
     clearResultCache,
     refreshQuery,
     refreshOnFocus,
@@ -469,8 +472,9 @@ export default function SearchApp() {
     };
   }, [refreshQuery]);
 
-  const fetchNativeIcon = useCallback(async (ext: string, isDirectory: boolean) => {
-    const key = isDirectory ? '::dir::' : ext.toLowerCase();
+  const fetchNativeIcon = useCallback(async (ext: string, isDirectory: boolean, filePath?: string) => {
+    const normalizedPath = filePath ? filePath.replace(/\//g, '\\').toLowerCase() : '';
+    const key = isDirectory ? '::dir::' : (normalizedPath ? `path:${normalizedPath}` : ext.toLowerCase());
     if (Object.prototype.hasOwnProperty.call(nativeIconCacheRef.current, key)) {
       return nativeIconCacheRef.current[key] || undefined;
     }
@@ -480,6 +484,7 @@ export default function SearchApp() {
       const resp = await bridgeRequest<{ success: boolean; iconBase64?: string }>('search.getFileIcon', {
         ext: isDirectory ? '' : ext,
         isDirectory,
+        ...(filePath ? { path: filePath } : {}),
       });
       const iconVal = resp?.success && resp.iconBase64 ? resp.iconBase64 : '';
       nativeIconCacheRef.current[key] = iconVal;
@@ -497,18 +502,22 @@ export default function SearchApp() {
   const prefetchIcons = useCallback(async (list: SearchResult[]) => {
     if (iconStyle !== 'native') return;
     const missing = new Set<string>();
-    const items: Array<{ ext: string; isDirectory: boolean }> = [];
+    const items: Array<{ key: string; ext: string; isDirectory: boolean; path?: string }> = [];
     for (const item of list.slice(0, 100)) {
-      const dotIdx = item.name.lastIndexOf('.');
-      const ext = !item.isDirectory && dotIdx >= 0 ? item.name.slice(dotIdx).toLowerCase() : '';
-      const key = item.isDirectory ? '::dir::' : ext;
+      const spec = resolveNativeIconRequest(item);
+      const key = spec.cacheKey;
       if (
         !Object.prototype.hasOwnProperty.call(nativeIconCacheRef.current, key) &&
         !inFlightIconsRef.current.has(key) &&
         !missing.has(key)
       ) {
         missing.add(key);
-        items.push({ ext, isDirectory: item.isDirectory });
+        items.push({
+          key,
+          ext: spec.extension,
+          isDirectory: spec.isDirectory,
+          ...(spec.filePath ? { path: spec.filePath } : {}),
+        });
       }
     }
     if (items.length === 0) return;
@@ -1168,15 +1177,27 @@ export default function SearchApp() {
             {/* 全盘已索引总数与耗时统计胶囊 */}
             <div 
               className="search-stats-pill" 
-              title={t('search.statsPillTip', 'Indexed {{total}} files across all disks, latest search elapsed {{ms}}ms', { total: totalIndexedFiles ? totalIndexedFiles.toLocaleString() : '1,000,000+', ms: searchElapsedMs })}
+              title={
+                loading
+                  ? t('search.stopScanTitle', 'Stop active background content scan')
+                  : t('search.statsPillTip', 'Indexed {{total}} files across all disks, latest search elapsed {{ms}}ms', { total: totalIndexedFiles ? totalIndexedFiles.toLocaleString() : '1,000,000+', ms: searchElapsedMs })
+              }
+              onClick={loading ? stopSearch : undefined}
+              style={loading ? { cursor: 'pointer' } : undefined}
             >
               <span className={`search-stats-dot ${loading ? 'search-stats-dot--scanning' : ''}`} />
               {loading && sortedResults.length > 0 ? (
                 <span>
                   <strong>{sortedResults.length}+</strong> · {t('search.searchingElapsed', 'Searching... {{elapsed}}s', { elapsed: scanElapsedSeconds.toFixed(1) })}
+                  {scanProgress && scanProgress.total > 0 ? ` (${Math.min(99, Math.max(1, Math.round((scanProgress.scanned / scanProgress.total) * 100)))}%)` : ''}
                 </span>
               ) : loading && scanElapsedSeconds > 0 ? (
-                <span><strong>{t('search.searchingElapsed', 'Searching... {{elapsed}}s', { elapsed: scanElapsedSeconds.toFixed(1) })}</strong></span>
+                <span>
+                  <strong>
+                    {t('search.searchingElapsed', 'Searching... {{elapsed}}s', { elapsed: scanElapsedSeconds.toFixed(1) })}
+                    {scanProgress && scanProgress.total > 0 ? ` (${Math.min(99, Math.max(1, Math.round((scanProgress.scanned / scanProgress.total) * 100)))}%)` : ''}
+                  </strong>
+                </span>
               ) : sortedResults.length > 0 ? (
                 <span><strong>{sortedResults.length}</strong> / {t('search.statsFullDisk', 'Total {{total}} · {{ms}}ms', { total: totalIndexedFiles ? (totalIndexedFiles > 10000 ? (totalIndexedFiles / 10000).toFixed(1) + 'w' : totalIndexedFiles.toString()) : '--', ms: searchElapsedMs })}</span>
               ) : (
@@ -1356,6 +1377,8 @@ export default function SearchApp() {
           searchMode={searchMode}
           query={query}
           scanElapsedSeconds={scanElapsedSeconds}
+          scanProgress={scanProgress}
+          onStopSearch={stopSearch}
           isServiceStarting={isServiceStarting}
           isInitialIndexing={isInitialIndexing}
           sortedResults={sortedResults}

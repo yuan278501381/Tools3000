@@ -326,13 +326,25 @@ std::wstring WinUtils::toLower(std::wstring str) {
     return str;
 }
 
-std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension, bool isDirectory) {
+std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
+                                            bool isDirectory,
+                                            const std::wstring& filePath) {
     static std::unordered_map<std::wstring, std::string> s_iconCache;
     static std::mutex s_iconCacheMutex;
 
-    std::wstring key = isDirectory ? L"::dir::" : toLower(extension);
-    if (key.rfind(L".", 0) == 0) {
-        key = key.substr(1);
+    std::wstring normalizedExt = toLower(extension);
+    if (normalizedExt.rfind(L".", 0) == 0) {
+        normalizedExt = normalizedExt.substr(1);
+    }
+
+    const bool hasLocalFilePath = !filePath.empty() && filePath.rfind(L"\\\\", 0) != 0;
+    std::wstring key;
+    if (hasLocalFilePath) {
+        std::wstring normalizedPath = toLower(filePath);
+        std::replace(normalizedPath.begin(), normalizedPath.end(), L'/', L'\\');
+        key = L"path:" + normalizedPath;
+    } else {
+        key = isDirectory ? L"::dir::" : normalizedExt;
     }
 
     {
@@ -341,15 +353,56 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension, bool 
         if (it != s_iconCache.end()) return it->second;
     }
 
-    std::wstring fakePath = isDirectory ? L"folder" : (L"dummy." + key);
     SHFILEINFOW sfi{};
-    DWORD_PTR hr = SHGetFileInfoW(
-        fakePath.c_str(),
-        isDirectory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL,
-        &sfi,
-        sizeof(sfi),
-        SHGFI_USEFILEATTRIBUTES | SHGFI_ICON | SHGFI_SMALLICON
-    );
+    DWORD_PTR hr = 0;
+
+    // 1. 若提供了真实本地路径（如 .exe / .lnk / .ico / .cpl / .msc 等每个文件自带独立图标的实体），
+    //    直接对真实路径调用 SHGetFileInfoW（不带 SHGFI_USEFILEATTRIBUTES），提取其 Windows 资源管理器真实内嵌图标
+    if (hasLocalFilePath) {
+        const DWORD attrs = GetFileAttributesW(filePath.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES) {
+            hr = SHGetFileInfoW(
+                filePath.c_str(),
+                0,
+                &sfi,
+                sizeof(sfi),
+                SHGFI_ICON | SHGFI_LARGEICON
+            );
+            if (!hr || !sfi.hIcon) {
+                hr = SHGetFileInfoW(
+                    filePath.c_str(),
+                    0,
+                    &sfi,
+                    sizeof(sfi),
+                    SHGFI_ICON | SHGFI_SMALLICON
+                );
+            }
+        }
+    }
+
+    // 2. 按扩展名或目录属性提取 Windows 系统关联高清图标（支持 32x32 高分屏缩放并兼容 16x16 回退）
+    if (!hr || !sfi.hIcon) {
+        std::wstring fakePath = isDirectory
+            ? L"folder"
+            : (normalizedExt.empty() ? L"dummy" : (L"dummy." + normalizedExt));
+        const DWORD fakeAttrs = isDirectory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+        hr = SHGetFileInfoW(
+            fakePath.c_str(),
+            fakeAttrs,
+            &sfi,
+            sizeof(sfi),
+            SHGFI_USEFILEATTRIBUTES | SHGFI_ICON | SHGFI_LARGEICON
+        );
+        if (!hr || !sfi.hIcon) {
+            hr = SHGetFileInfoW(
+                fakePath.c_str(),
+                fakeAttrs,
+                &sfi,
+                sizeof(sfi),
+                SHGFI_USEFILEATTRIBUTES | SHGFI_ICON | SHGFI_SMALLICON
+            );
+        }
+    }
 
     if (!hr || !sfi.hIcon) {
         SHGetFileInfoW(
@@ -357,7 +410,7 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension, bool 
             FILE_ATTRIBUTE_NORMAL,
             &sfi,
             sizeof(sfi),
-            SHGFI_USEFILEATTRIBUTES | SHGFI_ICON | SHGFI_SMALLICON
+            SHGFI_USEFILEATTRIBUTES | SHGFI_ICON | SHGFI_LARGEICON
         );
     }
 
@@ -486,6 +539,9 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension, bool 
 
     {
         std::lock_guard<std::mutex> lock(s_iconCacheMutex);
+        if (s_iconCache.size() >= 4096) {
+            s_iconCache.clear();
+        }
         s_iconCache[key] = base64;
     }
     return base64;

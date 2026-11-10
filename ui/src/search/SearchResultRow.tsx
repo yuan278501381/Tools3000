@@ -6,6 +6,8 @@ import {
   type RefCallback,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
+import { bridgeRequest } from '../hooks/useBridge';
 import {
   AppWindow,
   File,
@@ -322,7 +324,25 @@ export const SearchResultRow = memo(function SearchResultRow({
           <div className="file-snippets-container">
             {result.snippets.map((snippet, snippetIndex) => (
               <div key={snippetIndex} className="file-snippet-row">
-                <span className="snippet-line-num">L{snippet.lineNumber}</span>
+                <button
+                  type="button"
+                  className="snippet-line-num"
+                  title={t('search.copyLineTip', 'Click to copy line {{line}} content', { line: snippet.lineNumber })}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const text = snippet.lineContent.trim();
+                    if (navigator.clipboard?.writeText) {
+                      void navigator.clipboard.writeText(text).catch(() => {
+                        void bridgeRequest('search.copyText', { text });
+                      });
+                    } else {
+                      void bridgeRequest('search.copyText', { text });
+                    }
+                    toast.success(t('search.copiedLineToast', 'Copied line {{line}} content to clipboard', { line: snippet.lineNumber }));
+                  }}
+                >
+                  L{snippet.lineNumber}
+                </button>
                 <span className="snippet-text">
                   {renderSnippetWithHighlight(snippet.lineContent, snippet.matchOffset, snippet.matchLength, queryKeywords)}
                 </span>

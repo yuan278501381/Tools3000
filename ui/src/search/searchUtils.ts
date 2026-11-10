@@ -64,6 +64,57 @@ export function getFileTypeBadge(name: string, isDirectory: boolean): { label: s
   return { label: `.${lowerExtension.slice(0, 5)}`, colorClass: 'badge-generic' };
 }
 
+/**
+ * 自带文件实例级独立内嵌图标的 Windows 扩展名集合：
+ * 这类文件在 Windows 资源管理器中每个文件显示各自内嵌的程序/快捷方式/光标图标，
+ * 必须以具体文件路径作为缓存键提取真实图标，而非共用单一的扩展名默认白框图标。
+ */
+const PER_INSTANCE_ICON_EXTENSIONS = new Set([
+  '.exe',
+  '.lnk',
+  '.ico',
+  '.cur',
+  '.ani',
+  '.scr',
+  '.cpl',
+  '.msc',
+  '.appref-ms',
+  '.url',
+]);
+
+export interface NativeIconRequestSpec {
+  cacheKey: string;
+  extension: string;
+  isDirectory: boolean;
+  filePath?: string;
+}
+
+export function resolveNativeIconRequest(item: SearchResult): NativeIconRequestSpec {
+  const dotIndex = item.name.lastIndexOf('.');
+  const extension = !item.isDirectory && dotIndex >= 0 ? item.name.slice(dotIndex).toLowerCase() : '';
+  if (item.isDirectory) {
+    return {
+      cacheKey: '::dir::',
+      extension: '',
+      isDirectory: true,
+    };
+  }
+  if (item.path && PER_INSTANCE_ICON_EXTENSIONS.has(extension)) {
+    const normalizedPath = item.path.replace(/\//g, '\\').toLowerCase();
+    return {
+      cacheKey: `path:${normalizedPath}`,
+      extension,
+      isDirectory: false,
+      filePath: item.path,
+    };
+  }
+  return {
+    cacheKey: extension,
+    extension,
+    isDirectory: false,
+  };
+}
+
 export function formatFileSize(bytes?: number, isDirectory?: boolean): string {
   if (isDirectory) return '';
   if (bytes === undefined || bytes === null || bytes === 0) return '0 B';

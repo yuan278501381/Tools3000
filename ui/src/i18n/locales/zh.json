@@ -1482,8 +1482,13 @@
     "menuCopyFile": "复制文件本身 (可粘贴至微信)",
     "copiedFile": "已复制文件到剪贴板（可直接粘贴至微信或文件夹）",
     "menuQuickLook": "快速预览内容",
-    "syntaxExSize": "按文件大小筛选 (支持 kb / mb / gb 与 > < >= <=)",
-    "syntaxExDate": "按修改日期筛选 (支持 today / yesterday / thisweek / 2026-09)"
+    "syntaxExSize": "按文件大小筛选 (支持 >10mb、1mb..50mb 区间及 empty/tiny/huge)",
+    "syntaxExDate": "按修改日期筛选 (支持 today / yesterday / thisweek / 2026-09)",
+    "clearQuery": "清空搜索词",
+    "stopScan": "停止",
+    "stopScanTitle": "立即停止当前后台流式检索",
+    "copyLineTip": "点击复制第 {{line}} 行内容",
+    "copiedLineToast": "已复制第 {{line}} 行内容到剪贴板"
   },
   "searchPage": {
     "tabSettings": "基础与热键",

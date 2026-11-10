@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Square } from 'lucide-react';
 import type { SearchMode, SearchResult } from './searchTypes';
 import { formatBytes, isEffectiveContentSearch } from './searchUtils';
 
@@ -10,6 +10,8 @@ export interface SearchFooterProps {
   searchMode?: SearchMode;
   query: string;
   scanElapsedSeconds: number;
+  scanProgress?: { scanned: number; total: number } | null;
+  onStopSearch?: () => void;
   isServiceStarting: boolean;
   isInitialIndexing: boolean;
   sortedResults: SearchResult[];
@@ -33,6 +35,8 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
   searchMode = 'name',
   query,
   scanElapsedSeconds,
+  scanProgress,
+  onStopSearch,
   isServiceStarting,
   isInitialIndexing,
   sortedResults,
@@ -57,10 +61,15 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
     searchMode,
   });
 
+  const progressPercent =
+    scanProgress && scanProgress.total > 0
+      ? Math.min(99, Math.max(1, Math.round((scanProgress.scanned / scanProgress.total) * 100)))
+      : null;
+
   return (
     <footer className="search-footer">
       <div className="search-footer-left">
-        {loading ? (
+        {loading && sortedResults.length === 0 ? (
           <div className="search-footer-stat-item search-footer-stat-item--scanning" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <RefreshCw size={11} className="spin-animation" style={{ color: 'var(--primary)' }} />
             <span>
@@ -68,8 +77,20 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
                 {isContentScan
                   ? t('search.contentSearchingFooter', 'Deep full-disk content search in progress... ({{elapsed}}s)', { elapsed: scanElapsedSeconds.toFixed(1) })
                   : t('search.nameSearchingFooter', 'Scanning full disk file index... ({{elapsed}}s)', { elapsed: scanElapsedSeconds.toFixed(1) })}
+                {progressPercent !== null ? ` · ${progressPercent}%` : ''}
               </strong>
             </span>
+            {onStopSearch && (
+              <button
+                type="button"
+                className="search-stop-scan-btn"
+                onClick={onStopSearch}
+                title={t('search.stopScanTitle', 'Stop active background content scan')}
+              >
+                <Square size={9} fill="currentColor" aria-hidden="true" />
+                <span>{t('search.stopScan', 'Stop')}</span>
+              </button>
+            )}
           </div>
         ) : (
           <>
@@ -81,7 +102,7 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
                 ) : isInitialIndexing ? (
                   <><strong>{t('search.initialIndexingTitle', 'Building and persisting full disk index...')}</strong></>
                 ) : sortedResults.length > 0 ? (
-                  <><strong>{sortedResults.length.toLocaleString()}</strong> {t('search.objectsCount', 'objects')}</>
+                  <><strong>{sortedResults.length.toLocaleString()}{loading ? '+' : ''}</strong> {t('search.objectsCount', 'objects')}</>
                 ) : (
                   <><strong>{totalIndexedFiles ? totalIndexedFiles.toLocaleString() : '--'}</strong> {t('search.objectsCount', 'objects')}</>
                 )}
@@ -127,14 +148,38 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
               </>
             )}
 
-            {/* 4. 引擎匹配耗时 */}
-            {searchElapsedMs !== undefined && searchElapsedMs >= 0 && sortedResults.length > 0 && (
+            {/* 4. 引擎匹配耗时或流式扫描进度 */}
+            {loading ? (
               <>
                 <span className="search-footer-stat-divider search-footer-stat-divider--timing" />
-                <div className="search-footer-stat-item search-footer-stat-sub search-footer-stat-timing" title={t('search.searchTimeTitle', 'MFT memory index match elapsed time')}>
-                  <span>{searchElapsedMs} ms</span>
+                <div className="search-footer-stat-item search-footer-stat-sub search-footer-stat-timing" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  <RefreshCw size={10} className="spin-animation" style={{ color: 'var(--primary)' }} />
+                  <span>
+                    {t('search.searchingElapsed', 'Searching... {{elapsed}}s', { elapsed: scanElapsedSeconds.toFixed(1) })}
+                    {progressPercent !== null ? ` (${progressPercent}%)` : ''}
+                  </span>
+                  {onStopSearch && (
+                    <button
+                      type="button"
+                      className="search-stop-scan-btn"
+                      onClick={onStopSearch}
+                      title={t('search.stopScanTitle', 'Stop active background content scan')}
+                    >
+                      <Square size={9} fill="currentColor" aria-hidden="true" />
+                      <span>{t('search.stopScan', 'Stop')}</span>
+                    </button>
+                  )}
                 </div>
               </>
+            ) : (
+              searchElapsedMs !== undefined && searchElapsedMs >= 0 && sortedResults.length > 0 && (
+                <>
+                  <span className="search-footer-stat-divider search-footer-stat-divider--timing" />
+                  <div className="search-footer-stat-item search-footer-stat-sub search-footer-stat-timing" title={t('search.searchTimeTitle', 'MFT memory index match elapsed time')}>
+                    <span>{searchElapsedMs} ms</span>
+                  </div>
+                </>
+              )
             )}
           </>
         )}
