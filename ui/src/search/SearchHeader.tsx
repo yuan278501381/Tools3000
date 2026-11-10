@@ -6,6 +6,7 @@ import {
   Move,
   SlidersHorizontal,
   HelpCircle,
+  X,
 } from 'lucide-react';
 import { bridgeRequest } from '../hooks/useBridge';
 import type { SearchMode } from './searchTypes';
@@ -115,6 +116,22 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         aria-activedescendant={hasSelectedResult ? `search-result-${selectedIndex}` : undefined}
         spellCheck={false}
       />
+
+      {localValue.length > 0 && (
+        <button
+          type="button"
+          className="search-clear-input-btn"
+          onClick={() => {
+            setLocalValue('');
+            onUpdateQuery('');
+            inputRef.current?.focus();
+          }}
+          title={t('search.clearQuery', 'Clear search query')}
+          aria-label={t('search.clearQuery', 'Clear search query')}
+        >
+          <X size={15} aria-hidden="true" />
+        </button>
+      )}
 
       {/* 零 CLS 几何锁定加载插槽：插槽恒定占据空间，加载图标仅淡入淡出，绝对不引起按钮任何横向位移 */}
       <div className="search-loading-slot" aria-hidden={!isLoading}>

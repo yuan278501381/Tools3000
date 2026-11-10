@@ -101,8 +101,10 @@ public:
     /// 宽字符串转小写
     static std::wstring toLower(std::wstring str);
 
-    /// 获取文件扩展名对应的 Windows 原生高清图标（自动重建 32 位 ARGB Alpha 通道彻底消灭黑边，并进行单例字典缓存）
-    static std::string getFileTypeIconBase64(const std::wstring& extension, bool isDirectory);
+    /// 获取文件扩展名或具体文件路径对应的 Windows 原生高清图标（自动重建 32 位 ARGB Alpha 通道彻底消灭黑边，并进行单例字典缓存）
+    static std::string getFileTypeIconBase64(const std::wstring& extension,
+                                             bool isDirectory,
+                                             const std::wstring& filePath = L"");
 
     /// 复制宽文本到剪贴板（支持剪贴板占用重试与异常内存释放保护）
     static bool copyToClipboard(const std::wstring& wtext, HWND owner = nullptr);

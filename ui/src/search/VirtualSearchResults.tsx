@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { DynamicRowLayout, isSelectedOutsideVirtualRange } from '../searchVirtualization';
 import { SearchResultRow } from './SearchResultRow';
+import { resolveNativeIconRequest } from './searchUtils';
 import type {
   ColumnLayout,
   SearchDensity,
@@ -24,7 +25,7 @@ export interface VirtualSearchResultsProps {
   density: SearchDensity;
   iconStyle?: SearchIconStyle;
   iconCache?: Record<string, string>;
-  onRequestIcon?: (ext: string, isDirectory: boolean) => void;
+  onRequestIcon?: (ext: string, isDirectory: boolean, filePath?: string) => void;
   columns: ColumnLayout;
   queryKeywords: string[];
   onHover: (index: number) => void;
@@ -222,10 +223,8 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
   }, []);
 
   const getIconBase64 = useCallback((item: SearchResult) => {
-    const dotIndex = item.name.lastIndexOf('.');
-    const extension = !item.isDirectory && dotIndex >= 0 ? item.name.slice(dotIndex).toLowerCase() : '';
-    const cacheKey = item.isDirectory ? '::dir::' : extension;
-    return iconCache[cacheKey] || undefined;
+    const spec = resolveNativeIconRequest(item);
+    return iconCache[spec.cacheKey] || (spec.extension ? iconCache[spec.extension] : undefined) || undefined;
   }, [iconCache]);
 
   useEffect(() => {
@@ -233,13 +232,15 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
     const requestedInPass = new Set<string>();
     const requestIfMissing = (item: SearchResult | undefined) => {
       if (!item) return;
-      const dotIndex = item.name.lastIndexOf('.');
-      const extension = !item.isDirectory && dotIndex >= 0 ? item.name.slice(dotIndex).toLowerCase() : '';
-      const cacheKey = item.isDirectory ? '::dir::' : extension;
-      if (requestedInPass.has(cacheKey)) return;
-      if (Object.prototype.hasOwnProperty.call(iconCache, cacheKey)) return;
-      requestedInPass.add(cacheKey);
-      onRequestIcon(extension, item.isDirectory);
+      const spec = resolveNativeIconRequest(item);
+      if (requestedInPass.has(spec.cacheKey)) return;
+      if (Object.prototype.hasOwnProperty.call(iconCache, spec.cacheKey)) return;
+      requestedInPass.add(spec.cacheKey);
+      if (spec.filePath) {
+        onRequestIcon(spec.extension, item.isDirectory, spec.filePath);
+      } else {
+        onRequestIcon(spec.extension, item.isDirectory);
+      }
     };
 
     for (let i = range.start; i < range.end && i < results.length; i += 1) {

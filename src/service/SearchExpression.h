@@ -65,7 +65,7 @@ enum class SearchFilterType {
 };
 
 struct SearchClause {
-    enum class SizeOp { Equal, Greater, GreaterEqual, Less, LessEqual };
+    enum class SizeOp { Equal, Greater, GreaterEqual, Less, LessEqual, Range };
 
     bool isNegated = false;
     SearchFilterType filterType = SearchFilterType::None;
@@ -81,6 +81,7 @@ struct SearchClause {
     wchar_t driveLetter = 0;
     SizeOp sizeOp = SizeOp::Equal;
     uint64_t sizeBytes = 0;
+    uint64_t sizeMaxBytes = UINT64_MAX;
     bool hasValidDateRange = false;
     uint64_t dateMinFileTime = 0;
     uint64_t dateMaxFileTime = UINT64_MAX;

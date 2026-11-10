@@ -521,6 +521,51 @@ SearchClause parseSingleToken(const RawQueryToken& rawTok, const SearchParseOpti
         clause.filterType = SearchFilterType::Size;
         std::wstring s = token.substr(5);
         stripOuterQuotes(s);
+        const auto parseSizeValue = [](const std::wstring& expr) -> uint64_t {
+            std::wstring clean = SearchExpression::normalize(expr);
+            if (clean == L"empty" || clean == L"0") return 0ULL;
+            if (clean == L"tiny") return 10ULL * 1024ULL;
+            if (clean == L"small") return 100ULL * 1024ULL;
+            if (clean == L"medium") return 1024ULL * 1024ULL;
+            if (clean == L"large") return 16ULL * 1024ULL * 1024ULL;
+            if (clean == L"huge" || clean == L"gigantic") return 128ULL * 1024ULL * 1024ULL;
+            double num = 0.0;
+            size_t idx = 0;
+            try {
+                num = std::stod(clean, &idx);
+            } catch (...) {
+                num = 0.0;
+            }
+            std::wstring unit = SearchExpression::normalize(clean.substr(idx));
+            uint64_t multiplier = 1ULL;
+            if (unit == L"kb" || unit == L"k") {
+                multiplier = 1024ULL;
+            } else if (unit == L"mb" || unit == L"m") {
+                multiplier = 1024ULL * 1024ULL;
+            } else if (unit == L"gb" || unit == L"g") {
+                multiplier = 1024ULL * 1024ULL * 1024ULL;
+            } else if (unit == L"tb" || unit == L"t") {
+                multiplier = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+            }
+            return static_cast<uint64_t>(num * static_cast<double>(multiplier));
+        };
+
+        const size_t rangeDots = s.find(L"..");
+        const size_t rangeDash = (rangeDots == std::wstring::npos && s.size() > 2 && s[0] != L'-')
+            ? s.find(L'-', 1)
+            : std::wstring::npos;
+        if (rangeDots != std::wstring::npos || rangeDash != std::wstring::npos) {
+            const size_t splitPos = (rangeDots != std::wstring::npos) ? rangeDots : rangeDash;
+            const size_t sepLen = (rangeDots != std::wstring::npos) ? 2 : 1;
+            clause.sizeOp = SearchClause::SizeOp::Range;
+            clause.sizeBytes = parseSizeValue(s.substr(0, splitPos));
+            clause.sizeMaxBytes = parseSizeValue(s.substr(splitPos + sepLen));
+            if (clause.sizeMaxBytes < clause.sizeBytes) {
+                std::swap(clause.sizeBytes, clause.sizeMaxBytes);
+            }
+            return clause;
+        }
+
         if (s.starts_with(L">=")) {
             clause.sizeOp = SearchClause::SizeOp::GreaterEqual;
             s = s.substr(2);
@@ -537,28 +582,45 @@ SearchClause parseSingleToken(const RawQueryToken& rawTok, const SearchParseOpti
             clause.sizeOp = SearchClause::SizeOp::Equal;
             s = s.substr(1);
         } else {
+            const std::wstring cleanPreset = SearchExpression::normalize(s);
+            if (cleanPreset == L"empty") {
+                clause.sizeOp = SearchClause::SizeOp::Equal;
+                clause.sizeBytes = 0ULL;
+                return clause;
+            }
+            if (cleanPreset == L"tiny") {
+                clause.sizeOp = SearchClause::SizeOp::Range;
+                clause.sizeBytes = 1ULL;
+                clause.sizeMaxBytes = 10ULL * 1024ULL;
+                return clause;
+            }
+            if (cleanPreset == L"small") {
+                clause.sizeOp = SearchClause::SizeOp::Range;
+                clause.sizeBytes = 10ULL * 1024ULL;
+                clause.sizeMaxBytes = 100ULL * 1024ULL;
+                return clause;
+            }
+            if (cleanPreset == L"medium") {
+                clause.sizeOp = SearchClause::SizeOp::Range;
+                clause.sizeBytes = 100ULL * 1024ULL;
+                clause.sizeMaxBytes = 16ULL * 1024ULL * 1024ULL;
+                return clause;
+            }
+            if (cleanPreset == L"large") {
+                clause.sizeOp = SearchClause::SizeOp::Range;
+                clause.sizeBytes = 16ULL * 1024ULL * 1024ULL;
+                clause.sizeMaxBytes = 128ULL * 1024ULL * 1024ULL;
+                return clause;
+            }
+            if (cleanPreset == L"huge" || cleanPreset == L"gigantic") {
+                clause.sizeOp = SearchClause::SizeOp::GreaterEqual;
+                clause.sizeBytes = 128ULL * 1024ULL * 1024ULL;
+                return clause;
+            }
             clause.sizeOp = SearchClause::SizeOp::Equal;
         }
 
-        double num = 0.0;
-        size_t idx = 0;
-        try {
-            num = std::stod(s, &idx);
-        } catch (...) {
-            num = 0.0;
-        }
-        std::wstring unit = SearchExpression::normalize(s.substr(idx));
-        uint64_t multiplier = 1;
-        if (unit == L"kb" || unit == L"k") {
-            multiplier = 1024ULL;
-        } else if (unit == L"mb" || unit == L"m") {
-            multiplier = 1024ULL * 1024ULL;
-        } else if (unit == L"gb" || unit == L"g") {
-            multiplier = 1024ULL * 1024ULL * 1024ULL;
-        } else if (unit == L"tb" || unit == L"t") {
-            multiplier = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
-        }
-        clause.sizeBytes = static_cast<uint64_t>(num * multiplier);
+        clause.sizeBytes = parseSizeValue(s);
         return clause;
     }
 
@@ -1424,6 +1486,9 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
                         break;
                     case SearchClause::SizeOp::LessEqual:
                         matched = (effectiveSize <= clause.sizeBytes);
+                        break;
+                    case SearchClause::SizeOp::Range:
+                        matched = (effectiveSize >= clause.sizeBytes && effectiveSize <= clause.sizeMaxBytes);
                         break;
                 }
             }

@@ -1005,7 +1005,11 @@ public:
         mb.registerHandler("search.getFileIcon", [](const nlohmann::json& params) -> nlohmann::json {
             std::string ext = params.value("ext", "");
             bool isDir = params.value("isDirectory", false);
-            std::string base64 = tools3000::core::WinUtils::getFileTypeIconBase64(tools3000::core::WinUtils::utf8ToWstring(ext), isDir);
+            std::string path = params.value("path", "");
+            std::string base64 = tools3000::core::WinUtils::getFileTypeIconBase64(
+                tools3000::core::WinUtils::utf8ToWstring(ext),
+                isDir,
+                tools3000::core::WinUtils::utf8ToWstring(path));
             return {{"success", true}, {"iconBase64", base64}};
         });
 
@@ -1015,9 +1019,16 @@ public:
                 for (const auto& item : params["items"]) {
                     std::string ext = item.value("ext", "");
                     bool isDir = item.value("isDirectory", false);
-                    std::string key = isDir ? "::dir::" : ext;
+                    std::string path = item.value("path", "");
+                    std::string key = item.value("key", "");
+                    if (key.empty()) {
+                        key = isDir ? "::dir::" : (!path.empty() ? ("path:" + tools3000::core::WinUtils::toLower(path)) : ext);
+                    }
                     if (!result.contains(key)) {
-                        result[key] = tools3000::core::WinUtils::getFileTypeIconBase64(tools3000::core::WinUtils::utf8ToWstring(ext), isDir);
+                        result[key] = tools3000::core::WinUtils::getFileTypeIconBase64(
+                            tools3000::core::WinUtils::utf8ToWstring(ext),
+                            isDir,
+                            tools3000::core::WinUtils::utf8ToWstring(path));
                     }
                 }
             }

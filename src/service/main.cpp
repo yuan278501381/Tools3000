@@ -841,19 +841,23 @@ nlohmann::json ProcessSearchQuery(
             }
             return 0;
         };
+        const auto historySnap = tools3000::service::db::RunHistoryManager::instance().captureSnapshot();
         struct TieredSearchResult {
             SearchResult result;
             uint8_t tier;
+            double frecencyScore = 0.0;
         };
         std::vector<TieredSearchResult> tieredResults;
         tieredResults.reserve(results.size());
         for (auto& item : results) {
             const uint8_t tier = static_cast<uint8_t>(classifyPathTier(item));
-            tieredResults.push_back({std::move(item), tier});
+            const double frecency = historySnap.empty() ? 0.0 : historySnap.lookup(item.fullPath).frecencyScore;
+            tieredResults.push_back({std::move(item), tier, frecency});
         }
         std::stable_sort(tieredResults.begin(), tieredResults.end(), [](const auto& a, const auto& b) {
             if (a.tier != b.tier) return a.tier < b.tier;
             if (a.result.matchRank != b.result.matchRank) return a.result.matchRank < b.result.matchRank;
+            if (a.frecencyScore != b.frecencyScore) return a.frecencyScore > b.frecencyScore;
             if (a.result.folderPriority != b.result.folderPriority) return a.result.folderPriority > b.result.folderPriority;
             if (a.result.lastWriteTime != b.result.lastWriteTime) return a.result.lastWriteTime > b.result.lastWriteTime;
             if (a.result.fileName.size() != b.result.fileName.size()) return a.result.fileName.size() < b.result.fileName.size();
@@ -867,6 +871,8 @@ nlohmann::json ProcessSearchQuery(
         }
         return results;
     };
+
+    const auto sharedHistorySnap = tools3000::service::db::RunHistoryManager::instance().captureSnapshot();
 
     struct ContentBatchOutcome {
         std::vector<nlohmann::json> items;
@@ -939,11 +945,9 @@ nlohmann::json ProcessSearchQuery(
                 return outcome;
             }
 
-            auto& runHistory = tools3000::service::db::RunHistoryManager::instance();
-            if (runHistory.size() > 0) {
-                const uint64_t nowFt = tools3000::service::db::RunHistoryManager::getCurrentFileTime();
+            if (!sharedHistorySnap.empty()) {
                 for (auto& item : *freshCandidates) {
-                    const double frecency = runHistory.calculateFrecencyScore(item.fullPath, nowFt);
+                    const double frecency = sharedHistorySnap.lookup(item.fullPath).frecencyScore;
                     if (frecency > 0.0) {
                         item.priorityScore += (std::min)(5000.0, frecency * 100.0);
                     }
@@ -1084,8 +1088,7 @@ nlohmann::json ProcessSearchQuery(
                                 });
                             }
 
-                            const uint32_t rc = tools3000::service::db::RunHistoryManager::instance().getRunCount(item.fullPath);
-                            const double fs = tools3000::service::db::RunHistoryManager::instance().calculateFrecencyScore(item.fullPath);
+                            const auto histStats = sharedHistorySnap.lookup(item.fullPath);
 
                             nlohmann::json itemJson = {
                                 {"name", WStringToString(item.fileName)},
@@ -1094,8 +1097,8 @@ nlohmann::json ProcessSearchQuery(
                                 {"size", finalSize},
                                 {"creationTime", finalCreation},
                                 {"lastWriteTime", finalWrite},
-                                {"runCount", rc},
-                                {"frecencyScore", fs},
+                                {"runCount", histStats.runCount},
+                                {"frecencyScore", histStats.frecencyScore},
                                 {"snippets", std::move(snippetsJson)}
                             };
 
@@ -1211,8 +1214,7 @@ nlohmann::json ProcessSearchQuery(
         for (const auto& result : nameMatches) {
             seenPaths.insert(makeDedupKey(result.fullPath));
             std::string p = WStringToString(result.fullPath);
-            uint32_t rc = tools3000::service::db::RunHistoryManager::instance().getRunCount(result.fullPath);
-            double fs = tools3000::service::db::RunHistoryManager::instance().calculateFrecencyScore(result.fullPath);
+            const auto histStats = sharedHistorySnap.lookup(result.fullPath);
             responseJson["results"].push_back({
                 {"name", WStringToString(result.fileName)},
                 {"path", std::move(p)},
@@ -1221,8 +1223,8 @@ nlohmann::json ProcessSearchQuery(
                 {"creationTime", result.creationTime},
                 {"lastWriteTime", result.lastWriteTime},
                 {"matchRank", result.matchRank},
-                {"runCount", rc},
-                {"frecencyScore", fs}
+                {"runCount", histStats.runCount},
+                {"frecencyScore", histStats.frecencyScore}
             });
         }
 
@@ -1237,8 +1239,7 @@ nlohmann::json ProcessSearchQuery(
         // Name-only fast mode
         auto nameMatches = runNameSearch(wQuery, requestedLimit);
         for (const auto& result : nameMatches) {
-            uint32_t rc = tools3000::service::db::RunHistoryManager::instance().getRunCount(result.fullPath);
-            double fs = tools3000::service::db::RunHistoryManager::instance().calculateFrecencyScore(result.fullPath);
+            const auto histStats = sharedHistorySnap.lookup(result.fullPath);
             responseJson["results"].push_back({
                 {"name", WStringToString(result.fileName)},
                 {"path", WStringToString(result.fullPath)},
@@ -1247,8 +1248,8 @@ nlohmann::json ProcessSearchQuery(
                 {"creationTime", result.creationTime},
                 {"lastWriteTime", result.lastWriteTime},
                 {"matchRank", result.matchRank},
-                {"runCount", rc},
-                {"frecencyScore", fs}
+                {"runCount", histStats.runCount},
+                {"frecencyScore", histStats.frecencyScore}
             });
         }
     }

@@ -240,5 +240,39 @@ describe('VirtualSearchResults', () => {
     expect(onRequestIcon).toHaveBeenCalledTimes(1);
     expect(onRequestIcon).toHaveBeenCalledWith('.pdf', false);
   });
+
+  it('requests per-file native icons with full paths for executables and shortcuts (.exe, .lnk)', () => {
+    const items: SearchResult[] = [
+      { name: 'Tools3000-Setup.exe', path: 'C:\\repo\\Tools3000\\Output\\Tools3000-Setup.exe', isDirectory: false },
+      { name: 'Tools3000Tests.exe', path: 'C:\\repo\\Tools3000\\build\\bin\\Release\\Tools3000Tests.exe', isDirectory: false },
+      { name: 'Tools3000.lnk', path: 'C:\\Users\\Public\\Desktop\\Tools3000.lnk', isDirectory: false },
+    ];
+    const onRequestIcon = vi.fn();
+    const iconCache: Record<string, string> = {
+      'path:c:\\repo\\tools3000\\output\\tools3000-setup.exe': 'data:image/png;base64,AAA',
+    };
+
+    render(
+      <VirtualSearchResults
+        {...props(items, 0)}
+        iconCache={iconCache}
+        onRequestIcon={onRequestIcon}
+      />,
+    );
+
+    expect(onRequestIcon).toHaveBeenCalledTimes(2);
+    expect(onRequestIcon).toHaveBeenNthCalledWith(
+      1,
+      '.exe',
+      false,
+      'C:\\repo\\Tools3000\\build\\bin\\Release\\Tools3000Tests.exe',
+    );
+    expect(onRequestIcon).toHaveBeenNthCalledWith(
+      2,
+      '.lnk',
+      false,
+      'C:\\Users\\Public\\Desktop\\Tools3000.lnk',
+    );
+  });
 });
 
