@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+
+PackageIdentifier: Yy1.Tools3000
+PackageVersion: 1.0.0
+InstallerLocale: zh-CN
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.17763.0
+InstallerType: inno
+Scope: machine
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: /VERYSILENT /NORESTART /ALLUSERS
+  SilentWithProgress: /SILENT /NORESTART /ALLUSERS
+UpgradeBehavior: install
+ReleaseDate: 2026-09-10
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/yuan278501381/tools3000/releases/download/v1.0.0/Tools3000-Setup.exe
+    InstallerSha256: 5072CC1FFAD912D784BFE0BF5CC44B0F55E2053F80869C1F5541DE596611FAE5
+    ProductCode: Tools3000_is1
+ManifestType: installer
+ManifestVersion: 1.9.0

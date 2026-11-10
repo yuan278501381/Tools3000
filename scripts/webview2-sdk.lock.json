@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "packageId": "Microsoft.Web.WebView2",
+  "feedBaseUrl": "https://api.nuget.org/v3-flatcontainer",
+  "versions": {
+    "1.0.4022.49": {
+      "packageSize": 9253281,
+      "sha256": "ee9de67e5bb9ef3a96c5689b2efc8188e2df160a0e79234c0404243782fde5fb",
+      "nugetCatalogSha512": "qmqiv847QdfwttVXi6dXOlKzAkJPkFWxPUYENUZSljiiwlrYTssu6x+VQhpQLunSiwuoW40ZysEH3gTCHKTFvQ=="
+    }
+  }
+}
