@@ -863,6 +863,16 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
     }
 
     m_hasPureExtensionGroup = false;
+    m_hasFolderOnlyFilter = false;
+    for (const auto& grp : m_orGroups) {
+        for (const auto& c : grp.clauses) {
+            if (!c.isNegated && c.filterType == SearchFilterType::FolderOnly) {
+                m_hasFolderOnlyFilter = true;
+                break;
+            }
+        }
+        if (m_hasFolderOnlyFilter) break;
+    }
     if (m_orGroups.size() >= 2) {
         for (const auto& grp : m_orGroups) {
             if (grp.clauses.empty()) continue;
@@ -1586,7 +1596,8 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
                                   bool pinyinEnabled, bool caseSensitive,
                                   bool hasPureExtensionGroup = false,
                                   uint64_t dirClauseMask = 0,
-                                  bool hasDirMask = false) {
+                                  bool hasDirMask = false,
+                                  bool allowDirectorySize = false) {
     bool matched = false;
     const bool stripExt = hasPureExtensionGroup && !record.isDirectory &&
                           !clause.hasWildcard && clause.pattern.find(L'.') == std::wstring::npos;
@@ -1777,11 +1788,11 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
             break;
 
         case SearchFilterType::Size:
-            if (record.isDirectory) {
+            if (record.isDirectory && !allowDirectorySize) {
                 matched = false;
             } else {
                 uint64_t effectiveSize = record.fileSize;
-                if (effectiveSize == 0) {
+                if (effectiveSize == 0 && !record.isDirectory) {
                     if (const WIN32_FILE_ATTRIBUTE_DATA* attr = getAttr()) {
                         if ((attr->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
                             effectiveSize = (static_cast<uint64_t>(attr->nFileSizeHigh) << 32) | attr->nFileSizeLow;
@@ -1978,7 +1989,8 @@ bool SearchExpression::matchesSeparable(const FileRecord& record, wchar_t driveL
         for (const auto& clause : group.clauses) {
             if (matchSingleClauseLazy(clause, record, driveLetter, getNoPath, getNoAttr,
                                       /*requiresFullPath=*/false, m_pinyinEnabled, m_caseSensitive,
-                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true)) {
+                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                      m_hasFolderOnlyFilter)) {
                 groupPassed = true;
                 break;
             }
@@ -2036,7 +2048,8 @@ SearchExpression::InMemoryMatchStatus SearchExpression::evaluateInMemoryWithDirM
                 for (const auto& clause : group.clauses) {
                     if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getNoAttr,
                                               /*requiresFullPath=*/false, m_pinyinEnabled, m_caseSensitive,
-                                              m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true)) {
+                                              m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                              m_hasFolderOnlyFilter)) {
                         groupPassed = true;
                         break;
                     }
@@ -2052,7 +2065,8 @@ SearchExpression::InMemoryMatchStatus SearchExpression::evaluateInMemoryWithDirM
         for (const auto& clause : group.clauses) {
             if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getNoAttr,
                                       m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true)) {
+                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                      m_hasFolderOnlyFilter)) {
                 groupPassed = true;
                 break;
             }
@@ -2086,7 +2100,8 @@ SearchExpression::InMemoryMatchStatus SearchExpression::evaluateInMemoryWithDirM
             }
             if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getNoAttr,
                                       m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true)) {
+                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                      m_hasFolderOnlyFilter)) {
                 groupPassed = true;
                 break;
             }
@@ -2175,7 +2190,8 @@ bool SearchExpression::matchesWithDirMask(const FileRecord& record, wchar_t driv
                 for (const auto& clause : group.clauses) {
                     if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                               /*requiresFullPath=*/false, m_pinyinEnabled, m_caseSensitive,
-                                              m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true)) {
+                                              m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                              m_hasFolderOnlyFilter)) {
                         groupPassed = true;
                         break;
                     }
@@ -2189,7 +2205,8 @@ bool SearchExpression::matchesWithDirMask(const FileRecord& record, wchar_t driv
         for (const auto& clause : group.clauses) {
             if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                       m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true)) {
+                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                      m_hasFolderOnlyFilter)) {
                 groupPassed = true;
                 break;
             }
@@ -2204,7 +2221,8 @@ bool SearchExpression::matchesWithDirMask(const FileRecord& record, wchar_t driv
             for (const auto& clause : group.clauses) {
                 if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                           m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                          m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true)) {
+                                          m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                          m_hasFolderOnlyFilter)) {
                     groupPassed = true;
                     break;
                 }
@@ -2269,7 +2287,7 @@ bool SearchExpression::matchesWithLazyPath(const FileRecord& record, wchar_t dri
         for (const auto& clause : group.clauses) {
             if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                       m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                      m_hasPureExtensionGroup)) {
+                                      m_hasPureExtensionGroup, 0, false, m_hasFolderOnlyFilter)) {
                 groupPassed = true;
                 break;
             }
@@ -2285,7 +2303,7 @@ bool SearchExpression::matchesWithLazyPath(const FileRecord& record, wchar_t dri
             for (const auto& clause : group.clauses) {
                 if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                           m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                          m_hasPureExtensionGroup)) {
+                                          m_hasPureExtensionGroup, 0, false, m_hasFolderOnlyFilter)) {
                     groupPassed = true;
                     break;
                 }

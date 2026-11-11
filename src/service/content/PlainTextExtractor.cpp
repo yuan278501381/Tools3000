@@ -959,24 +959,8 @@ bool PlainTextExtractor::searchContentTerms(
     outSnippets.clear();
     constexpr size_t MaxResidentRustSimdBytes = 16ULL * 1024ULL * 1024ULL;
     if (mapSize <= MaxResidentRustSimdBytes) {
-        std::vector<uint8_t> residentText;
-        bool inPageError = false;
-        if (!copyMappedViewSafe(pData, mapSize, residentText, inPageError, isCancelled) || inPageError) {
-            return false;
-        }
-
-        size_t bomOffset = 0;
-        const DetectedEncoding enc = detectEncoding(residentText.data(), residentText.size(), bomOffset);
-        if (enc == DetectedEncoding::UnknownBinary || bomOffset >= residentText.size()) {
-            return false;
-        }
-
-        const uint8_t* payloadPtr = residentText.data() + bomOffset;
-        const size_t payloadLen = residentText.size() - bomOffset;
-        if (!fastBytePreFilterTerms(payloadPtr, payloadLen, queryTerms, caseSensitive, enc)) {
-            return false;
-        }
-
+        // Prepare query byte variants OUTSIDE the SEH guard so zero C++/Rust RAII objects
+        // are constructed or destroyed inside `__try` (`/EHsc` zero-leak guarantee).
         std::vector<T3kUtf16Slice> u16Terms;
         std::vector<PreparedTermBytePatterns> preparedBytes;
         std::vector<T3kByteTermVariants> byteTermViews;
@@ -1006,6 +990,67 @@ bool PlainTextExtractor::searchContentTerms(
                 .variants_count = prep.isAscii ? 0 : prep.variantSlices.size()
             });
         }
+
+        // `P-05`: Zero-copy encoding detection & SIMD byte pre-filter directly on `pData`
+        // under SEH protection BEFORE allocating or copying up to 16 MB into `residentText`.
+        size_t bomOffset = 0;
+        DetectedEncoding enc = DetectedEncoding::UnknownBinary;
+        bool preFilterInPageError = false;
+        const bool preFilterPassed = runWithMappedViewGuard([&]() noexcept -> bool {
+            enc = detectEncoding(pData, mapSize, bomOffset);
+            if (enc == DetectedEncoding::UnknownBinary || bomOffset >= mapSize) {
+                return false;
+            }
+            if (enc == DetectedEncoding::Utf16Le || enc == DetectedEncoding::Utf16Be) {
+                return true;
+            }
+            const uint8_t* mappedPayload = pData + bomOffset;
+            const size_t mappedPayloadLen = mapSize - bomOffset;
+            if (mappedPayloadLen == 0) {
+                return false;
+            }
+            for (const auto& prep : preparedBytes) {
+                if (prep.isAscii) {
+                    const size_t hit = t3k_rs_find_ascii_pattern(
+                        mappedPayload,
+                        mappedPayloadLen,
+                        reinterpret_cast<const uint8_t*>(prep.asciiBytes.data()),
+                        prep.asciiBytes.size(),
+                        caseSensitive ? 1 : 0);
+                    if (hit == SIZE_MAX) {
+                        return false;
+                    }
+                } else {
+                    bool anyVariantMatched = false;
+                    for (const auto& slice : prep.variantSlices) {
+                        if (t3k_rs_find_exact_bytes(mappedPayload, mappedPayloadLen, slice.ptr, slice.len) != SIZE_MAX) {
+                            anyVariantMatched = true;
+                            break;
+                        }
+                    }
+                    if (!anyVariantMatched) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }, &preFilterInPageError);
+
+        if (!preFilterPassed || preFilterInPageError) {
+            return false;
+        }
+
+        std::vector<uint8_t> residentText;
+        bool inPageError = false;
+        if (!copyMappedViewSafe(pData, mapSize, residentText, inPageError, isCancelled) || inPageError) {
+            return false;
+        }
+        if (bomOffset >= residentText.size()) {
+            return false;
+        }
+
+        const uint8_t* payloadPtr = residentText.data() + bomOffset;
+        const size_t payloadLen = residentText.size() - bomOffset;
 
         const uint8_t matched = t3k_rs_scan_mapped_text(
             payloadPtr,

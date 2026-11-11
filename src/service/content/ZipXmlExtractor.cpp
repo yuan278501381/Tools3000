@@ -24,9 +24,11 @@ namespace tools3000::service::content {
 namespace {
 
 constexpr uint64_t MaxZipDocumentBytes = 100ULL * 1024ULL * 1024ULL;
+constexpr size_t MaxCentralDirectoryBytes = 16ULL * 1024ULL * 1024ULL;
 constexpr size_t MaxSingleXmlUncompressedBytes = 32ULL * 1024ULL * 1024ULL;
 constexpr size_t MaxDocUncompressedTotalBytes = 48ULL * 1024ULL * 1024ULL;
 constexpr size_t MaxDocExtractedChars = 15ULL * 1024ULL * 1024ULL;
+constexpr size_t MappedStreamChunkBytes = 64ULL * 1024ULL;
 
 #pragma pack(push, 1)
 struct ZipEocd {
@@ -319,25 +321,532 @@ std::wstring stripXmlTags(const std::string& xml) {
     return result;
 }
 
-bool decompressRawDeflate(
-    const uint8_t* compressed,
+std::wstring utf8ToWide(std::string_view utf8) {
+    if (utf8.empty()) return {};
+    const int wideLen = MultiByteToWideChar(
+        CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (wideLen <= 0) return {};
+    std::wstring result(static_cast<size_t>(wideLen), L'\0');
+    MultiByteToWideChar(
+        CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), result.data(), wideLen);
+    return result;
+}
+
+void appendXmlDecodedText(std::string_view raw, std::string& out) {
+    size_t i = 0;
+    while (i < raw.size()) {
+        if (raw[i] == '&') {
+            const size_t semi = raw.find(';', i + 1);
+            if (semi != std::string_view::npos && (semi - (i + 1)) <= 12) {
+                if (decodeXmlEntity(raw.substr(i + 1, semi - (i + 1)), out)) {
+                    i = semi + 1;
+                    continue;
+                }
+            }
+        }
+        out.push_back(raw[i]);
+        ++i;
+    }
+}
+
+struct XmlTagInfo {
+    std::string localLower;
+    bool isClosing = false;
+    bool isSelfClosing = false;
+    size_t attrStart = 0;
+    size_t closeBracket = std::string_view::npos;
+};
+
+bool parseXmlTagAt(std::string_view xml, size_t ltPos, XmlTagInfo& outTag) {
+    if (ltPos >= xml.size() || xml[ltPos] != '<') return false;
+    const size_t closeTag = xml.find('>', ltPos + 1);
+    if (closeTag == std::string_view::npos) return false;
+
+    size_t p = ltPos + 1;
+    while (p < closeTag && std::isspace(static_cast<unsigned char>(xml[p]))) ++p;
+    if (p >= closeTag || xml[p] == '!' || xml[p] == '?') return false;
+
+    outTag = XmlTagInfo{};
+    outTag.closeBracket = closeTag;
+    if (xml[p] == '/') {
+        outTag.isClosing = true;
+        ++p;
+        while (p < closeTag && std::isspace(static_cast<unsigned char>(xml[p]))) ++p;
+    }
+
+    size_t nameEnd = p;
+    while (nameEnd < closeTag &&
+           !std::isspace(static_cast<unsigned char>(xml[nameEnd])) &&
+           xml[nameEnd] != '/' && xml[nameEnd] != '>') {
+        ++nameEnd;
+    }
+    if (nameEnd == p) return false;
+
+    std::string_view fullName = xml.substr(p, nameEnd - p);
+    const size_t colonPos = fullName.rfind(':');
+    std::string_view localPart = (colonPos != std::string_view::npos)
+        ? fullName.substr(colonPos + 1)
+        : fullName;
+
+    outTag.localLower.reserve(localPart.size());
+    for (char c : localPart) {
+        outTag.localLower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    outTag.attrStart = nameEnd;
+
+    size_t back = closeTag;
+    while (back > nameEnd && std::isspace(static_cast<unsigned char>(xml[back - 1]))) {
+        --back;
+    }
+    if (!outTag.isClosing && back > nameEnd && xml[back - 1] == '/') {
+        outTag.isSelfClosing = true;
+    }
+    return true;
+}
+
+std::string_view extractXmlAttrValue(std::string_view xml, size_t attrStart, size_t closeBracket, std::string_view targetAttrLower) {
+    size_t p = attrStart;
+    while (p < closeBracket) {
+        while (p < closeBracket && (std::isspace(static_cast<unsigned char>(xml[p])) || xml[p] == '/')) ++p;
+        if (p >= closeBracket) break;
+
+        size_t nameStart = p;
+        while (p < closeBracket &&
+               !std::isspace(static_cast<unsigned char>(xml[p])) &&
+               xml[p] != '=' && xml[p] != '/' && xml[p] != '>') {
+            ++p;
+        }
+        std::string_view rawAttr = xml.substr(nameStart, p - nameStart);
+        const size_t colon = rawAttr.rfind(':');
+        if (colon != std::string_view::npos) {
+            rawAttr = rawAttr.substr(colon + 1);
+        }
+
+        while (p < closeBracket && std::isspace(static_cast<unsigned char>(xml[p]))) ++p;
+        if (p >= closeBracket || xml[p] != '=') continue;
+        ++p;
+        while (p < closeBracket && std::isspace(static_cast<unsigned char>(xml[p]))) ++p;
+        if (p >= closeBracket) break;
+
+        std::string_view val;
+        if (xml[p] == '"' || xml[p] == '\'') {
+            const char quote = xml[p++];
+            const size_t endQuote = xml.find(quote, p);
+            if (endQuote == std::string_view::npos || endQuote > closeBracket) break;
+            val = xml.substr(p, endQuote - p);
+            p = endQuote + 1;
+        } else {
+            const size_t valStart = p;
+            while (p < closeBracket && !std::isspace(static_cast<unsigned char>(xml[p])) && xml[p] != '/') ++p;
+            val = xml.substr(valStart, p - valStart);
+        }
+
+        if (rawAttr.size() == targetAttrLower.size()) {
+            bool eq = true;
+            for (size_t k = 0; k < rawAttr.size(); ++k) {
+                if (std::tolower(static_cast<unsigned char>(rawAttr[k])) != targetAttrLower[k]) {
+                    eq = false;
+                    break;
+                }
+            }
+            if (eq) return val;
+        }
+    }
+    return {};
+}
+
+// Extract concatenated <t>...</t> runs within an XML fragment while skipping phonetic <rPh>...</rPh> blocks.
+void extractSpreadsheetTextRuns(std::string_view fragment, std::string& outUtf8) {
+    size_t pos = 0;
+    bool inT = false;
+    int rPhDepth = 0;
+
+    while (pos < fragment.size()) {
+        const size_t lt = fragment.find('<', pos);
+        if (lt == std::string_view::npos) {
+            if (inT && rPhDepth == 0) {
+                appendXmlDecodedText(fragment.substr(pos), outUtf8);
+            }
+            break;
+        }
+        if (inT && rPhDepth == 0 && lt > pos) {
+            appendXmlDecodedText(fragment.substr(pos, lt - pos), outUtf8);
+        }
+
+        if (lt + 8 < fragment.size() && fragment.substr(lt, 9) == "<![CDATA[") {
+            const size_t closeCdata = fragment.find("]]>", lt + 9);
+            if (closeCdata != std::string_view::npos) {
+                if (inT && rPhDepth == 0) {
+                    outUtf8.append(fragment.data() + lt + 9, closeCdata - (lt + 9));
+                }
+                pos = closeCdata + 3;
+                continue;
+            }
+        }
+        if (lt + 3 < fragment.size() && fragment.substr(lt, 4) == "<!--") {
+            const size_t closeComment = fragment.find("-->", lt + 4);
+            pos = (closeComment != std::string_view::npos) ? (closeComment + 3) : fragment.size();
+            continue;
+        }
+
+        XmlTagInfo tag{};
+        if (!parseXmlTagAt(fragment, lt, tag)) {
+            pos = lt + 1;
+            continue;
+        }
+
+        if (tag.localLower == "rph") {
+            if (tag.isClosing) {
+                if (rPhDepth > 0) --rPhDepth;
+            } else if (!tag.isSelfClosing) {
+                ++rPhDepth;
+            }
+        } else if (tag.localLower == "t") {
+            if (tag.isClosing) {
+                inT = false;
+            } else if (!tag.isSelfClosing) {
+                inT = true;
+            }
+        }
+
+        pos = tag.closeBracket + 1;
+    }
+}
+
+void parseXlsxSharedStrings(
+    std::string_view xml,
+    std::vector<std::wstring>& outSharedStrings,
+    const CancellationCheck& isCancelled
+) {
+    size_t pos = 0;
+    std::string itemUtf8;
+    while (pos < xml.size()) {
+        if ((outSharedStrings.size() & 0x3FFu) == 0 && isCancelled && isCancelled()) {
+            return;
+        }
+        const size_t lt = xml.find('<', pos);
+        if (lt == std::string_view::npos) break;
+
+        if (lt + 3 < xml.size() && xml.substr(lt, 4) == "<!--") {
+            const size_t closeComment = xml.find("-->", lt + 4);
+            pos = (closeComment != std::string_view::npos) ? (closeComment + 3) : xml.size();
+            continue;
+        }
+
+        XmlTagInfo tag{};
+        if (!parseXmlTagAt(xml, lt, tag)) {
+            pos = lt + 1;
+            continue;
+        }
+
+        if (!tag.isClosing && tag.localLower == "si") {
+            if (tag.isSelfClosing) {
+                outSharedStrings.emplace_back();
+                pos = tag.closeBracket + 1;
+                continue;
+            }
+
+            // Locate matching </si>
+            size_t scan = tag.closeBracket + 1;
+            size_t siCloseStart = xml.size();
+            size_t siAfterClose = xml.size();
+            while (scan < xml.size()) {
+                const size_t innerLt = xml.find('<', scan);
+                if (innerLt == std::string_view::npos) break;
+                XmlTagInfo innerTag{};
+                if (parseXmlTagAt(xml, innerLt, innerTag) &&
+                    innerTag.isClosing && innerTag.localLower == "si") {
+                    siCloseStart = innerLt;
+                    siAfterClose = innerTag.closeBracket + 1;
+                    break;
+                }
+                scan = (innerTag.closeBracket != std::string_view::npos)
+                    ? (innerTag.closeBracket + 1)
+                    : (innerLt + 1);
+            }
+
+            itemUtf8.clear();
+            extractSpreadsheetTextRuns(
+                xml.substr(tag.closeBracket + 1, siCloseStart - (tag.closeBracket + 1)),
+                itemUtf8
+            );
+            outSharedStrings.push_back(utf8ToWide(itemUtf8));
+            pos = siAfterClose;
+            continue;
+        }
+
+        pos = tag.closeBracket + 1;
+    }
+}
+
+void extractSpreadsheetCellValueText(
+    std::string_view cellInnerXml,
+    std::string_view cellType,
+    const std::vector<std::wstring>& sharedStrings,
+    std::vector<uint8_t>& referencedShared,
+    std::wstring& outCellText
+) {
+    outCellText.clear();
+    if (cellType == "inlineStr") {
+        std::string utf8;
+        extractSpreadsheetTextRuns(cellInnerXml, utf8);
+        outCellText = utf8ToWide(utf8);
+        return;
+    }
+
+    // Extract <v>...</v> while skipping <f>...</f> formula source expressions
+    std::string vRawUtf8;
+    size_t pos = 0;
+    bool inV = false;
+    int fDepth = 0;
+    while (pos < cellInnerXml.size()) {
+        const size_t lt = cellInnerXml.find('<', pos);
+        if (lt == std::string_view::npos) {
+            if (inV && fDepth == 0) {
+                appendXmlDecodedText(cellInnerXml.substr(pos), vRawUtf8);
+            }
+            break;
+        }
+        if (inV && fDepth == 0 && lt > pos) {
+            appendXmlDecodedText(cellInnerXml.substr(pos, lt - pos), vRawUtf8);
+        }
+
+        XmlTagInfo tag{};
+        if (!parseXmlTagAt(cellInnerXml, lt, tag)) {
+            pos = lt + 1;
+            continue;
+        }
+
+        if (tag.localLower == "f") {
+            if (tag.isClosing) {
+                if (fDepth > 0) --fDepth;
+            } else if (!tag.isSelfClosing) {
+                ++fDepth;
+            }
+        } else if (tag.localLower == "v") {
+            if (tag.isClosing) {
+                inV = false;
+                break;
+            } else if (!tag.isSelfClosing) {
+                inV = true;
+            }
+        }
+        pos = tag.closeBracket + 1;
+    }
+
+    if (cellType == "s") {
+        // Shared string cell: resolve index against sharedStrings; NEVER emit the raw integer index!
+        size_t sStart = 0;
+        while (sStart < vRawUtf8.size() && std::isspace(static_cast<unsigned char>(vRawUtf8[sStart]))) ++sStart;
+        size_t sEnd = vRawUtf8.size();
+        while (sEnd > sStart && std::isspace(static_cast<unsigned char>(vRawUtf8[sEnd - 1]))) --sEnd;
+        if (sStart >= sEnd) return;
+
+        size_t idx = 0;
+        for (size_t k = sStart; k < sEnd; ++k) {
+            const char ch = vRawUtf8[k];
+            if (ch < '0' || ch > '9') return;
+            const size_t digit = static_cast<size_t>(ch - '0');
+            if (idx > (SIZE_MAX - digit) / 10u) return;
+            idx = idx * 10u + digit;
+        }
+        if (idx < sharedStrings.size()) {
+            referencedShared[idx] = 1;
+            outCellText = sharedStrings[idx];
+        }
+        return;
+    }
+
+    if (!vRawUtf8.empty()) {
+        outCellText = utf8ToWide(vRawUtf8);
+    } else {
+        std::string fallbackT;
+        extractSpreadsheetTextRuns(cellInnerXml, fallbackT);
+        if (!fallbackT.empty()) {
+            outCellText = utf8ToWide(fallbackT);
+        }
+    }
+}
+
+std::wstring extractXlsxWorksheetText(
+    std::string_view xml,
+    const std::vector<std::wstring>& sharedStrings,
+    std::vector<uint8_t>& referencedShared,
+    const CancellationCheck& isCancelled
+) {
+    std::wstring outSheet;
+    outSheet.reserve((std::min<size_t>)(xml.size() / 3, 256 * 1024));
+
+    size_t pos = 0;
+    size_t rowCounter = 0;
+    std::wstring rowBuffer;
+    std::wstring cellText;
+
+    while (pos < xml.size()) {
+        if ((rowCounter & 0xFFu) == 0 && isCancelled && isCancelled()) {
+            return {};
+        }
+        const size_t lt = xml.find('<', pos);
+        if (lt == std::string_view::npos) break;
+
+        if (lt + 3 < xml.size() && xml.substr(lt, 4) == "<!--") {
+            const size_t closeComment = xml.find("-->", lt + 4);
+            pos = (closeComment != std::string_view::npos) ? (closeComment + 3) : xml.size();
+            continue;
+        }
+
+        XmlTagInfo tag{};
+        if (!parseXmlTagAt(xml, lt, tag)) {
+            pos = lt + 1;
+            continue;
+        }
+
+        if (!tag.isClosing && tag.localLower == "row") {
+            ++rowCounter;
+            if (tag.isSelfClosing) {
+                pos = tag.closeBracket + 1;
+                continue;
+            }
+
+            // Scan cells inside this <row>...</row>
+            rowBuffer.clear();
+            size_t scan = tag.closeBracket + 1;
+            while (scan < xml.size()) {
+                const size_t cellLt = xml.find('<', scan);
+                if (cellLt == std::string_view::npos) {
+                    scan = xml.size();
+                    break;
+                }
+                XmlTagInfo innerTag{};
+                if (!parseXmlTagAt(xml, cellLt, innerTag)) {
+                    scan = cellLt + 1;
+                    continue;
+                }
+                if (innerTag.isClosing && innerTag.localLower == "row") {
+                    scan = innerTag.closeBracket + 1;
+                    break;
+                }
+                if (!innerTag.isClosing && innerTag.localLower == "c") {
+                    if (innerTag.isSelfClosing) {
+                        scan = innerTag.closeBracket + 1;
+                        continue;
+                    }
+                    const std::string_view cellType = extractXmlAttrValue(
+                        xml, innerTag.attrStart, innerTag.closeBracket, "t");
+
+                    // Find </c>
+                    size_t cScan = innerTag.closeBracket + 1;
+                    size_t cCloseStart = xml.size();
+                    size_t cAfterClose = xml.size();
+                    while (cScan < xml.size()) {
+                        const size_t subLt = xml.find('<', cScan);
+                        if (subLt == std::string_view::npos) break;
+                        XmlTagInfo subTag{};
+                        if (parseXmlTagAt(xml, subLt, subTag) &&
+                            subTag.isClosing && subTag.localLower == "c") {
+                            cCloseStart = subLt;
+                            cAfterClose = subTag.closeBracket + 1;
+                            break;
+                        }
+                        cScan = (subTag.closeBracket != std::string_view::npos)
+                            ? (subTag.closeBracket + 1)
+                            : (subLt + 1);
+                    }
+
+                    extractSpreadsheetCellValueText(
+                        xml.substr(innerTag.closeBracket + 1, cCloseStart - (innerTag.closeBracket + 1)),
+                        cellType,
+                        sharedStrings,
+                        referencedShared,
+                        cellText
+                    );
+
+                    // Trim trailing horizontal spaces on cell
+                    while (!cellText.empty() && (cellText.back() == L' ' || cellText.back() == L'\t')) {
+                        cellText.pop_back();
+                    }
+                    if (!cellText.empty()) {
+                        if (!rowBuffer.empty()) {
+                            rowBuffer.push_back(L'\t');
+                        }
+                        rowBuffer += cellText;
+                    }
+                    scan = cAfterClose;
+                    continue;
+                }
+
+                scan = innerTag.closeBracket + 1;
+            }
+
+            if (!rowBuffer.empty()) {
+                outSheet += rowBuffer;
+                if (outSheet.back() != L'\n') {
+                    outSheet.push_back(L'\n');
+                }
+                if (outSheet.size() >= MaxDocExtractedChars) {
+                    break;
+                }
+            }
+            pos = scan;
+            continue;
+        }
+
+        pos = tag.closeBracket + 1;
+    }
+
+    return outSheet;
+}
+
+bool copyMappedSliceToString(
+    const uint8_t* mappedSrc,
+    size_t byteCount,
+    std::string& out,
+    bool& outInPageError,
+    const CancellationCheck& isCancelled
+) {
+    out.clear();
+    outInPageError = false;
+    if (byteCount == 0) return true;
+    out.resize(byteCount);
+    size_t copied = 0;
+    while (copied < byteCount) {
+        if (isCancelled && isCancelled()) {
+            out.clear();
+            return false;
+        }
+        const size_t chunk = (std::min)(MappedStreamChunkBytes, byteCount - copied);
+        bool pageErr = false;
+        if (!safeMappedMemcpyEx(out.data() + copied, mappedSrc + copied, chunk, &pageErr)) {
+            outInPageError = pageErr;
+            out.clear();
+            return false;
+        }
+        copied += chunk;
+    }
+    return true;
+}
+
+// SEH-safe streaming raw deflate decompression directly from a memory-mapped region via 64KB chunks.
+bool decompressMappedRawDeflate(
+    const uint8_t* mappedCompressed,
     size_t compSize,
     size_t uncompSize,
     std::string& out,
     size_t maxAllowed,
-    const CancellationCheck& isCancelled
+    bool& outInPageError,
+    const CancellationCheck& isCancelled,
+    size_t* outConsumedCompressed = nullptr
 ) {
-    if (compSize == 0 || maxAllowed == 0) return false;
+    outInPageError = false;
+    if (outConsumedCompressed) *outConsumedCompressed = 0;
+    if (!mappedCompressed || compSize == 0 || maxAllowed == 0) return false;
 
     const size_t targetCap = (std::min)(MaxSingleXmlUncompressedBytes, maxAllowed);
     size_t initialCap = uncompSize > 0
         ? (std::min)(uncompSize, targetCap)
-        : (std::min)((std::max<size_t>)(compSize * 6, 4096), targetCap);
+        : (std::min)((std::max<size_t>)(compSize * 4, 4096), targetCap);
 
     z_stream strm{};
-    strm.next_in = const_cast<Bytef*>(compressed);
-    strm.avail_in = static_cast<uInt>((std::min<size_t>)(compSize, 0x7FFFFFFFu));
-
     if (inflateInit2(&strm, -MAX_WBITS) != Z_OK) {
         out.clear();
         return false;
@@ -345,7 +854,9 @@ bool decompressRawDeflate(
 
     out.clear();
     out.reserve(initialCap);
-    std::vector<char> chunk(32768);
+    std::vector<uint8_t> inChunk(MappedStreamChunkBytes);
+    std::vector<char> outChunk(32768);
+    size_t srcOffset = 0;
     int ret = Z_OK;
 
     while (out.size() < targetCap) {
@@ -354,15 +865,30 @@ bool decompressRawDeflate(
             out.clear();
             return false;
         }
+
+        if (strm.avail_in == 0 && srcOffset < compSize) {
+            const size_t toRead = (std::min)(inChunk.size(), compSize - srcOffset);
+            bool pageErr = false;
+            if (!safeMappedMemcpyEx(inChunk.data(), mappedCompressed + srcOffset, toRead, &pageErr)) {
+                outInPageError = pageErr;
+                inflateEnd(&strm);
+                out.clear();
+                return false;
+            }
+            srcOffset += toRead;
+            strm.next_in = inChunk.data();
+            strm.avail_in = static_cast<uInt>(toRead);
+        }
+
         const size_t remain = targetCap - out.size();
-        const size_t ask = (std::min)(chunk.size(), remain);
-        strm.next_out = reinterpret_cast<Bytef*>(chunk.data());
+        const size_t ask = (std::min)(outChunk.size(), remain);
+        strm.next_out = reinterpret_cast<Bytef*>(outChunk.data());
         strm.avail_out = static_cast<uInt>(ask);
 
         ret = inflate(&strm, Z_NO_FLUSH);
         const size_t got = ask - strm.avail_out;
         if (got > 0) {
-            out.append(chunk.data(), got);
+            out.append(outChunk.data(), got);
         }
         if (ret == Z_STREAM_END) {
             break;
@@ -374,13 +900,44 @@ bool decompressRawDeflate(
             }
             break;
         }
-        if (got == 0 && strm.avail_in == 0) {
+        if (got == 0 && strm.avail_in == 0 && srcOffset >= compSize) {
             break;
         }
     }
 
+    if (outConsumedCompressed) {
+        *outConsumedCompressed = srcOffset - static_cast<size_t>(strm.avail_in);
+    }
     inflateEnd(&strm);
     return !out.empty();
+}
+
+std::string normalizeZipEntryPath(std::string_view entryName) {
+    std::string lowerName;
+    lowerName.reserve(entryName.size());
+    for (char c : entryName) {
+        lowerName.push_back(c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    while (!lowerName.empty() && lowerName.front() == '/') {
+        lowerName.erase(lowerName.begin());
+    }
+    return lowerName;
+}
+
+bool isSpreadsheetExtension(std::wstring_view lowerExt) noexcept {
+    return lowerExt == L"xlsx" || lowerExt == L"xlsm" || lowerExt == L"xltx" || lowerExt == L"et";
+}
+
+bool isSpreadsheetSharedStringsEntry(std::string_view lowerName) noexcept {
+    return lowerName == "xl/sharedstrings.xml" ||
+           lowerName == "et/sharedstrings.xml" ||
+           lowerName.ends_with("/sharedstrings.xml");
+}
+
+bool isSpreadsheetWorksheetEntry(std::string_view lowerName) noexcept {
+    return ((lowerName.find("xl/worksheets/") != std::string_view::npos) ||
+            (lowerName.find("et/worksheets/") != std::string_view::npos)) &&
+           lowerName.ends_with(".xml");
 }
 
 bool isZipNoiseEntry(std::string_view lowerName) noexcept {
@@ -414,27 +971,21 @@ bool isZipNoiseEntry(std::string_view lowerName) noexcept {
            baseName == "tablestyles.xml";
 }
 
-bool isMatchingZipEntry(std::string_view entryName, std::wstring_view lowerExt) {
-    std::string lowerName;
-    lowerName.reserve(entryName.size());
-    for (char c : entryName) {
-        lowerName.push_back(c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-    }
-
+bool isMatchingNormalizedZipEntry(std::string_view lowerName, std::wstring_view lowerExt) noexcept {
     if (isZipNoiseEntry(lowerName)) {
         return false;
     }
 
     if (lowerExt == L"docx" || lowerExt == L"wps" || lowerExt == L"dotx" || lowerExt == L"docm") {
-        if (lowerName.find("word/") != std::string::npos || lowerName.find("wps/") != std::string::npos) {
+        if (lowerName.find("word/") != std::string_view::npos || lowerName.find("wps/") != std::string_view::npos) {
             return lowerName.ends_with(".xml");
         }
     } else if (lowerExt == L"xlsx" || lowerExt == L"et" || lowerExt == L"xlsm" || lowerExt == L"xltx") {
-        if (lowerName.find("xl/") != std::string::npos || lowerName.find("et/") != std::string::npos) {
+        if (lowerName.find("xl/") != std::string_view::npos || lowerName.find("et/") != std::string_view::npos) {
             return lowerName.ends_with(".xml");
         }
     } else if (lowerExt == L"pptx" || lowerExt == L"dps" || lowerExt == L"pptm" || lowerExt == L"potx") {
-        if (lowerName.find("ppt/") != std::string::npos || lowerName.find("dps/") != std::string::npos) {
+        if (lowerName.find("ppt/") != std::string_view::npos || lowerName.find("dps/") != std::string_view::npos) {
             return lowerName.ends_with(".xml");
         }
     } else if (lowerExt == L"epub") {
@@ -443,7 +994,7 @@ bool isMatchingZipEntry(std::string_view entryName, std::wstring_view lowerExt) 
                lowerName.ends_with(".htm") ||
                lowerName.ends_with(".opf");
     } else if (lowerExt == L"cdr") {
-        return lowerName.find("content/") != std::string::npos || lowerName == "metadata.xml";
+        return lowerName.find("content/") != std::string_view::npos || lowerName == "metadata.xml";
     } else if (lowerExt == L"xmind") {
         return lowerName == "content.json" || lowerName == "content.xml" || lowerName == "comments.xml";
     } else if (lowerExt == L"odt" || lowerExt == L"ods" || lowerExt == L"odp") {
@@ -460,6 +1011,14 @@ bool hasOle2CompoundHeader(const uint8_t* data, size_t size) noexcept {
     static constexpr uint8_t kOle2[8] = {0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1};
     return std::memcmp(header, kOle2, sizeof(kOle2)) == 0;
 }
+
+struct ZipTargetEntry {
+    std::string lowerName;
+    uint32_t localHeaderOffset = 0;
+    uint32_t compressedSize = 0;
+    uint32_t uncompressedSize = 0;
+    uint16_t compressionMethod = 0;
+};
 
 } // namespace
 
@@ -491,122 +1050,257 @@ bool ZipXmlExtractor::extractZipEntriesText(
     if (!pZipData || zipSize < sizeof(ZipLocalHeader)) return false;
 
     const std::wstring lowerExt = ContentFormatFilter::normalizeExt(extension);
+    const bool isSpreadsheet = isSpreadsheetExtension(lowerExt);
     size_t totalUncompressedBytes = 0;
 
-    auto appendDecodedEntry = [&](const std::string& uncompData) -> bool {
-        if (uncompData.empty()) return true;
-        totalUncompressedBytes += uncompData.size();
-        const std::wstring plain = stripXmlTags(uncompData);
-        if (!plain.empty()) {
-            if (outExtractedText.size() + plain.size() + 1 > MaxDocExtractedChars) {
-                const size_t allowedChars = MaxDocExtractedChars - outExtractedText.size();
-                if (allowedChars > 0) {
-                    outExtractedText.append(plain.data(), (std::min)(plain.size(), allowedChars));
-                }
-                return false;
+    auto appendPlainTextBlock = [&](const std::wstring& plain) -> bool {
+        if (plain.empty()) return true;
+        if (outExtractedText.size() + plain.size() + 1 > MaxDocExtractedChars) {
+            const size_t allowedChars = MaxDocExtractedChars - outExtractedText.size();
+            if (allowedChars > 0) {
+                outExtractedText.append(plain.data(), (std::min)(plain.size(), allowedChars));
             }
-            outExtractedText += plain;
-            if (outExtractedText.back() != L'\n') {
-                outExtractedText.push_back(L'\n');
-            }
+            return false;
+        }
+        outExtractedText += plain;
+        if (outExtractedText.back() != L'\n') {
+            outExtractedText.push_back(L'\n');
         }
         return true;
     };
 
-    // 1. Primary path: Central Directory traversal (handles streaming Data Descriptor entries accurately)
+    auto appendGenericXmlEntry = [&](const std::string& uncompData) -> bool {
+        if (uncompData.empty()) return true;
+        return appendPlainTextBlock(stripXmlTags(uncompData));
+    };
+
+    auto readEntryPayloadByCd = [&](const ZipTargetEntry& entry, std::string& outXml, bool& outPageErr) -> bool {
+        outXml.clear();
+        outPageErr = false;
+        if (totalUncompressedBytes >= MaxDocUncompressedTotalBytes ||
+            outExtractedText.size() >= MaxDocExtractedChars) {
+            return false;
+        }
+        const size_t remainingBudget = MaxDocUncompressedTotalBytes - totalUncompressedBytes;
+
+        if (static_cast<uint64_t>(entry.localHeaderOffset) + sizeof(ZipLocalHeader) > zipSize) {
+            return false;
+        }
+        ZipLocalHeader localHeader{};
+        if (!safeMappedMemcpyEx(&localHeader, pZipData + entry.localHeaderOffset, sizeof(ZipLocalHeader), &outPageErr)) {
+            return false;
+        }
+        if (localHeader.signature != 0x04034b50u) return false;
+
+        const uint64_t dataOffset64 =
+            static_cast<uint64_t>(entry.localHeaderOffset) + sizeof(ZipLocalHeader) +
+            static_cast<uint64_t>(localHeader.filenameLength) +
+            static_cast<uint64_t>(localHeader.extraFieldLength);
+        if (dataOffset64 + static_cast<uint64_t>(entry.compressedSize) > zipSize) {
+            return false;
+        }
+        const size_t dataOffset = static_cast<size_t>(dataOffset64);
+
+        if (entry.compressionMethod == 0) {
+            const size_t takeSize = (std::min)(static_cast<size_t>(entry.compressedSize), remainingBudget);
+            if (!copyMappedSliceToString(pZipData + dataOffset, takeSize, outXml, outPageErr, isCancelled)) {
+                return false;
+            }
+        } else if (entry.compressionMethod == 8) {
+            if (!decompressMappedRawDeflate(
+                    pZipData + dataOffset,
+                    entry.compressedSize,
+                    entry.uncompressedSize,
+                    outXml,
+                    remainingBudget,
+                    outPageErr,
+                    isCancelled)) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        totalUncompressedBytes += outXml.size();
+        return !outXml.empty();
+    };
+
+    // 1. Primary path: SEH-safe Central Directory tail slice + per-entry streaming decompression
     if (zipSize >= sizeof(ZipEocd)) {
+        const size_t tailSize = (std::min)(zipSize, static_cast<size_t>(65535 + sizeof(ZipEocd)));
+        const size_t tailStart = zipSize - tailSize;
+        std::vector<uint8_t> tailBuf(tailSize);
+        bool inPageError = false;
+        if (!safeMappedMemcpyEx(tailBuf.data(), pZipData + tailStart, tailSize, &inPageError) && inPageError) {
+            outExtractedText.clear();
+            return false;
+        }
+
         ZipEocd validEocd{};
         bool foundValidEocd = false;
-        const size_t maxSearch = (std::min)(zipSize, static_cast<size_t>(65535 + sizeof(ZipEocd)));
-        const size_t searchStart = zipSize - maxSearch;
-
-        for (size_t i = zipSize - sizeof(ZipEocd);; --i) {
-            if (pZipData[i] == 0x50u && pZipData[i + 1] == 0x4Bu &&
-                pZipData[i + 2] == 0x05u && pZipData[i + 3] == 0x06u) {
+        for (size_t rel = tailSize - sizeof(ZipEocd);; --rel) {
+            if (tailBuf[rel] == 0x50u && tailBuf[rel + 1] == 0x4Bu &&
+                tailBuf[rel + 2] == 0x05u && tailBuf[rel + 3] == 0x06u) {
                 ZipEocd cand{};
-                std::memcpy(&cand, pZipData + i, sizeof(ZipEocd));
+                std::memcpy(&cand, tailBuf.data() + rel, sizeof(ZipEocd));
+                const size_t absPos = tailStart + rel;
                 const uint64_t endWithComment =
-                    static_cast<uint64_t>(i) + sizeof(ZipEocd) + static_cast<uint64_t>(cand.commentLength);
+                    static_cast<uint64_t>(absPos) + sizeof(ZipEocd) + static_cast<uint64_t>(cand.commentLength);
                 const uint64_t cdEnd64 =
                     static_cast<uint64_t>(cand.cdOffset) + static_cast<uint64_t>(cand.cdSize);
-                if (endWithComment <= zipSize && cand.cdOffset < zipSize && cdEnd64 <= i) {
+                if (endWithComment <= zipSize && cand.cdOffset < zipSize &&
+                    cdEnd64 <= absPos && cand.cdSize <= MaxCentralDirectoryBytes) {
                     validEocd = cand;
                     foundValidEocd = true;
                     break;
                 }
             }
-            if (i <= searchStart) break;
+            if (rel == 0) break;
         }
 
-        if (foundValidEocd) {
-            size_t cdOffset = validEocd.cdOffset;
-            const size_t cdEnd = static_cast<size_t>(validEocd.cdOffset) + static_cast<size_t>(validEocd.cdSize);
-            while (cdOffset + sizeof(ZipCdHeader) <= cdEnd && cdOffset + sizeof(ZipCdHeader) <= zipSize) {
-                if (isCancelled && isCancelled()) {
+        if (foundValidEocd && validEocd.cdSize > 0) {
+            std::vector<uint8_t> cdBuf(validEocd.cdSize);
+            if (!safeMappedMemcpyEx(cdBuf.data(), pZipData + validEocd.cdOffset, validEocd.cdSize, &inPageError)) {
+                if (inPageError) {
                     outExtractedText.clear();
                     return false;
                 }
+            } else {
+                std::vector<ZipTargetEntry> targetEntries;
+                targetEntries.reserve(32);
 
-                ZipCdHeader cdHeader{};
-                std::memcpy(&cdHeader, pZipData + cdOffset, sizeof(ZipCdHeader));
-                if (cdHeader.signature != 0x02014b50u) break;
+                size_t relCd = 0;
+                while (relCd + sizeof(ZipCdHeader) <= cdBuf.size()) {
+                    if (isCancelled && isCancelled()) {
+                        outExtractedText.clear();
+                        return false;
+                    }
+                    ZipCdHeader cdHeader{};
+                    std::memcpy(&cdHeader, cdBuf.data() + relCd, sizeof(ZipCdHeader));
+                    if (cdHeader.signature != 0x02014b50u) break;
 
-                const size_t nameOffset = cdOffset + sizeof(ZipCdHeader);
-                if (nameOffset + cdHeader.filenameLength > zipSize) break;
+                    const size_t nameOffset = relCd + sizeof(ZipCdHeader);
+                    const size_t entryAdvance = sizeof(ZipCdHeader) +
+                                                static_cast<size_t>(cdHeader.filenameLength) +
+                                                static_cast<size_t>(cdHeader.extraFieldLength) +
+                                                static_cast<size_t>(cdHeader.commentLength);
+                    if (entryAdvance == 0 || relCd + entryAdvance > cdBuf.size() ||
+                        nameOffset + cdHeader.filenameLength > cdBuf.size()) {
+                        break;
+                    }
 
-                std::string filename(reinterpret_cast<const char*>(pZipData + nameOffset), cdHeader.filenameLength);
-                const size_t entryAdvance = sizeof(ZipCdHeader) +
-                                            static_cast<size_t>(cdHeader.filenameLength) +
-                                            static_cast<size_t>(cdHeader.extraFieldLength) +
-                                            static_cast<size_t>(cdHeader.commentLength);
-                if (entryAdvance == 0 || cdOffset + entryAdvance > zipSize) break;
-                cdOffset += entryAdvance;
-
-                if (!isMatchingZipEntry(filename, lowerExt)) continue;
-
-                if (totalUncompressedBytes >= MaxDocUncompressedTotalBytes ||
-                    outExtractedText.size() >= MaxDocExtractedChars) {
-                    break;
-                }
-                const size_t remainingBudget = MaxDocUncompressedTotalBytes - totalUncompressedBytes;
-
-                if (static_cast<uint64_t>(cdHeader.localHeaderOffset) + sizeof(ZipLocalHeader) > zipSize) continue;
-                ZipLocalHeader localHeader{};
-                std::memcpy(&localHeader, pZipData + cdHeader.localHeaderOffset, sizeof(ZipLocalHeader));
-                if (localHeader.signature != 0x04034b50u) continue;
-
-                const uint64_t dataOffset64 =
-                    static_cast<uint64_t>(cdHeader.localHeaderOffset) + sizeof(ZipLocalHeader) +
-                    static_cast<uint64_t>(localHeader.filenameLength) +
-                    static_cast<uint64_t>(localHeader.extraFieldLength);
-                if (dataOffset64 + static_cast<uint64_t>(cdHeader.compressedSize) > zipSize) continue;
-                const size_t dataOffset = static_cast<size_t>(dataOffset64);
-
-                std::string uncompData;
-                if (cdHeader.compressionMethod == 0) {
-                    const size_t takeSize = (std::min)(static_cast<size_t>(cdHeader.compressedSize), remainingBudget);
-                    uncompData.assign(reinterpret_cast<const char*>(pZipData + dataOffset), takeSize);
-                } else if (cdHeader.compressionMethod == 8) {
-                    decompressRawDeflate(
-                        pZipData + dataOffset,
-                        cdHeader.compressedSize,
-                        cdHeader.uncompressedSize,
-                        uncompData,
-                        remainingBudget,
-                        isCancelled
+                    std::string_view rawName(
+                        reinterpret_cast<const char*>(cdBuf.data() + nameOffset),
+                        cdHeader.filenameLength
                     );
+                    relCd += entryAdvance;
+
+                    std::string lowerName = normalizeZipEntryPath(rawName);
+                    if (!isMatchingNormalizedZipEntry(lowerName, lowerExt)) continue;
+
+                    targetEntries.push_back(ZipTargetEntry{
+                        .lowerName = std::move(lowerName),
+                        .localHeaderOffset = cdHeader.localHeaderOffset,
+                        .compressedSize = cdHeader.compressedSize,
+                        .uncompressedSize = cdHeader.uncompressedSize,
+                        .compressionMethod = cdHeader.compressionMethod
+                    });
                 }
 
-                if (!appendDecodedEntry(uncompData)) {
-                    break;
+                if (isSpreadsheet) {
+                    std::vector<std::wstring> sharedStrings;
+                    for (const auto& entry : targetEntries) {
+                        if (!isSpreadsheetSharedStringsEntry(entry.lowerName)) continue;
+                        std::string xml;
+                        bool pageErr = false;
+                        if (readEntryPayloadByCd(entry, xml, pageErr)) {
+                            parseXlsxSharedStrings(xml, sharedStrings, isCancelled);
+                        }
+                        if (pageErr || (isCancelled && isCancelled())) {
+                            outExtractedText.clear();
+                            return false;
+                        }
+                        break;
+                    }
+
+                    std::vector<uint8_t> referencedShared(sharedStrings.size(), 0);
+                    for (const auto& entry : targetEntries) {
+                        if (isSpreadsheetSharedStringsEntry(entry.lowerName) ||
+                            !isSpreadsheetWorksheetEntry(entry.lowerName)) {
+                            continue;
+                        }
+                        if (totalUncompressedBytes >= MaxDocUncompressedTotalBytes ||
+                            outExtractedText.size() >= MaxDocExtractedChars) {
+                            break;
+                        }
+                        std::string xml;
+                        bool pageErr = false;
+                        if (readEntryPayloadByCd(entry, xml, pageErr)) {
+                            const std::wstring sheetText = extractXlsxWorksheetText(
+                                xml, sharedStrings, referencedShared, isCancelled);
+                            if (!appendPlainTextBlock(sheetText)) break;
+                        }
+                        if (pageErr || (isCancelled && isCancelled())) {
+                            outExtractedText.clear();
+                            return false;
+                        }
+                    }
+
+                    for (const auto& entry : targetEntries) {
+                        if (isSpreadsheetSharedStringsEntry(entry.lowerName) ||
+                            isSpreadsheetWorksheetEntry(entry.lowerName)) {
+                            continue;
+                        }
+                        if (totalUncompressedBytes >= MaxDocUncompressedTotalBytes ||
+                            outExtractedText.size() >= MaxDocExtractedChars) {
+                            break;
+                        }
+                        std::string xml;
+                        bool pageErr = false;
+                        if (readEntryPayloadByCd(entry, xml, pageErr)) {
+                            if (!appendGenericXmlEntry(xml)) break;
+                        }
+                        if (pageErr || (isCancelled && isCancelled())) {
+                            outExtractedText.clear();
+                            return false;
+                        }
+                    }
+
+                    for (size_t i = 0; i < sharedStrings.size(); ++i) {
+                        if (!referencedShared[i] && !sharedStrings[i].empty()) {
+                            if (!appendPlainTextBlock(sharedStrings[i])) break;
+                        }
+                    }
+                } else {
+                    for (const auto& entry : targetEntries) {
+                        if (totalUncompressedBytes >= MaxDocUncompressedTotalBytes ||
+                            outExtractedText.size() >= MaxDocExtractedChars) {
+                            break;
+                        }
+                        std::string xml;
+                        bool pageErr = false;
+                        if (readEntryPayloadByCd(entry, xml, pageErr)) {
+                            if (!appendGenericXmlEntry(xml)) break;
+                        }
+                        if (pageErr || (isCancelled && isCancelled())) {
+                            outExtractedText.clear();
+                            return false;
+                        }
+                    }
                 }
+
+                if (!outExtractedText.empty()) return true;
             }
-            if (!outExtractedText.empty()) return true;
         }
     }
 
-    // 2. Fallback: Local Header scan for truncated or non-standard ZIP archives
+    // 2. Fallback: SEH-safe Local Header scan for truncated or non-standard ZIP archives
+    std::vector<std::wstring> fallbackSharedStrings;
+    std::vector<std::string> deferredWorksheets;
+    std::vector<std::string> deferredOtherXmls;
+
     size_t offset = 0;
+    std::vector<uint8_t> scanChunk(MappedStreamChunkBytes);
     while (offset + sizeof(ZipLocalHeader) <= zipSize) {
         if (isCancelled && isCancelled()) {
             outExtractedText.clear();
@@ -614,13 +1308,29 @@ bool ZipXmlExtractor::extractZipEntriesText(
         }
 
         ZipLocalHeader header{};
-        std::memcpy(&header, pZipData + offset, sizeof(ZipLocalHeader));
+        bool inPageError = false;
+        if (!safeMappedMemcpyEx(&header, pZipData + offset, sizeof(ZipLocalHeader), &inPageError)) {
+            if (inPageError) {
+                outExtractedText.clear();
+                return false;
+            }
+            break;
+        }
         if (header.signature != 0x04034b50u) break;
 
         const size_t nameOffset = offset + sizeof(ZipLocalHeader);
         if (nameOffset + header.filenameLength > zipSize) break;
 
-        std::string filename(reinterpret_cast<const char*>(pZipData + nameOffset), header.filenameLength);
+        std::string filename(header.filenameLength, '\0');
+        if (header.filenameLength > 0 &&
+            !safeMappedMemcpyEx(filename.data(), pZipData + nameOffset, header.filenameLength, &inPageError)) {
+            if (inPageError) {
+                outExtractedText.clear();
+                return false;
+            }
+            break;
+        }
+
         const size_t dataOffset = nameOffset +
                                   static_cast<size_t>(header.filenameLength) +
                                   static_cast<size_t>(header.extraFieldLength);
@@ -633,7 +1343,9 @@ bool ZipXmlExtractor::extractZipEntriesText(
             break;
         }
 
-        if (isMatchingZipEntry(filename, lowerExt)) {
+        const std::string lowerName = normalizeZipEntryPath(filename);
+        size_t consumedStreamComp = 0;
+        if (isMatchingNormalizedZipEntry(lowerName, lowerExt)) {
             if (totalUncompressedBytes >= MaxDocUncompressedTotalBytes ||
                 outExtractedText.size() >= MaxDocExtractedChars) {
                 break;
@@ -643,48 +1355,97 @@ bool ZipXmlExtractor::extractZipEntriesText(
             std::string uncompData;
             if (header.compressionMethod == 0 && header.compressedSize > 0) {
                 const size_t takeSize = (std::min)(static_cast<size_t>(header.compressedSize), remainingBudget);
-                uncompData.assign(reinterpret_cast<const char*>(pZipData + dataOffset), takeSize);
+                if (!copyMappedSliceToString(pZipData + dataOffset, takeSize, uncompData, inPageError, isCancelled) &&
+                    inPageError) {
+                    outExtractedText.clear();
+                    return false;
+                }
             } else if (header.compressionMethod == 8) {
                 const size_t availComp = hasStreamingDataDescriptor
                     ? (zipSize - dataOffset)
                     : static_cast<size_t>(header.compressedSize);
                 if (availComp > 0) {
-                    decompressRawDeflate(
-                        pZipData + dataOffset,
-                        availComp,
-                        header.uncompressedSize,
-                        uncompData,
-                        remainingBudget,
-                        isCancelled
-                    );
+                    if (!decompressMappedRawDeflate(
+                            pZipData + dataOffset,
+                            availComp,
+                            header.uncompressedSize,
+                            uncompData,
+                            remainingBudget,
+                            inPageError,
+                            isCancelled,
+                            &consumedStreamComp) && inPageError) {
+                        outExtractedText.clear();
+                        return false;
+                    }
                 }
             }
 
-            if (!appendDecodedEntry(uncompData)) {
-                break;
+            if (!uncompData.empty()) {
+                totalUncompressedBytes += uncompData.size();
+                if (isSpreadsheet) {
+                    if (isSpreadsheetSharedStringsEntry(lowerName)) {
+                        parseXlsxSharedStrings(uncompData, fallbackSharedStrings, isCancelled);
+                    } else if (isSpreadsheetWorksheetEntry(lowerName)) {
+                        deferredWorksheets.push_back(std::move(uncompData));
+                    } else {
+                        deferredOtherXmls.push_back(std::move(uncompData));
+                    }
+                } else {
+                    if (!appendGenericXmlEntry(uncompData)) {
+                        break;
+                    }
+                }
             }
         }
 
         if (hasStreamingDataDescriptor) {
-            // Advance to next PK\x03\x04 Local File Header when compressedSize was deferred to Data Descriptor
+            size_t searchFrom = dataOffset + consumedStreamComp;
             size_t nextSig = zipSize;
-            for (size_t scan = dataOffset; scan + sizeof(ZipLocalHeader) <= zipSize; ++scan) {
-                if (((scan - dataOffset) & 0x3FFFFu) == 0 && isCancelled && isCancelled()) {
+            while (searchFrom + sizeof(ZipLocalHeader) <= zipSize) {
+                if (isCancelled && isCancelled()) {
                     outExtractedText.clear();
                     return false;
                 }
-                if (pZipData[scan] == 0x50u && pZipData[scan + 1] == 0x4Bu &&
-                    pZipData[scan + 2] == 0x03u && pZipData[scan + 3] == 0x04u) {
-                    nextSig = scan;
-                    break;
+                const size_t avail = zipSize - searchFrom;
+                const size_t readLen = (std::min)(scanChunk.size(), avail);
+                if (!safeMappedMemcpyEx(scanChunk.data(), pZipData + searchFrom, readLen, &inPageError)) {
+                    outExtractedText.clear();
+                    return false;
                 }
+                bool found = false;
+                for (size_t s = 0; s + 4 <= readLen; ++s) {
+                    if (scanChunk[s] == 0x50u && scanChunk[s + 1] == 0x4Bu &&
+                        scanChunk[s + 2] == 0x03u && scanChunk[s + 3] == 0x04u) {
+                        nextSig = searchFrom + s;
+                        found = true;
+                        break;
+                    }
+                }
+                if (found || readLen <= 4) break;
+                searchFrom += readLen - 3;
             }
             if (nextSig >= zipSize) break;
             offset = nextSig;
         } else {
-            // 0-byte directory entries (e.g. "META-INF/", "word/") legitimately have compressedSize == 0
-            // with bit 3 clear; their next header starts directly at dataOffset.
             offset = dataOffset + static_cast<size_t>(header.compressedSize);
+        }
+    }
+
+    if (isSpreadsheet &&
+        (!fallbackSharedStrings.empty() || !deferredWorksheets.empty() || !deferredOtherXmls.empty())) {
+        std::vector<uint8_t> referencedShared(fallbackSharedStrings.size(), 0);
+        for (const auto& sheetXml : deferredWorksheets) {
+            const std::wstring sheetText = extractXlsxWorksheetText(
+                sheetXml, fallbackSharedStrings, referencedShared, isCancelled);
+            if (!appendPlainTextBlock(sheetText)) break;
+        }
+        for (const auto& otherXml : deferredOtherXmls) {
+            if (!appendGenericXmlEntry(otherXml)) break;
+        }
+        for (size_t i = 0; i < fallbackSharedStrings.size(); ++i) {
+            if (!referencedShared[i] && !fallbackSharedStrings[i].empty()) {
+                if (!appendPlainTextBlock(fallbackSharedStrings[i])) break;
+            }
         }
     }
 
@@ -792,13 +1553,8 @@ bool ZipXmlExtractor::searchContentTerms(
                 WindowsIFilterExtractor::extractViaBinaryTextScan(pData, mapSize, extractedAllText, isCancelled);
             }
         } else {
-            std::vector<uint8_t> residentZipBytes;
-            bool inPageError = false;
-            if (!copyMappedViewSafe(pData, mapSize, residentZipBytes, inPageError, isCancelled) || inPageError) {
-                return false;
-            }
-            if (!extractZipEntriesText(
-                    residentZipBytes.data(), residentZipBytes.size(), ext, extractedAllText, isCancelled)) {
+            // Stream directly from mapped Central Directory + target XML slices without copying 100MB archives
+            if (!extractZipEntriesText(pData, mapSize, ext, extractedAllText, isCancelled)) {
                 extractedAllText.clear();
             }
         }
