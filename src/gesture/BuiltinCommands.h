@@ -28,8 +28,8 @@ namespace tools3000::gesture {
 /// RFC 3986 标准 UTF-8 百分号编码（保留 A-Z a-z 0-9 - _ . ~，其余字节编码为 %XX）
 std::string urlEncodeUtf8(std::string_view utf8);
 
-/// 根据选中文本构造安全的网页搜索或直达 URL（自动识别 http/https 并对搜索词执行 URL 编码）
-std::wstring buildWebSearchUrl(std::wstring_view rawText);
+/// 根据选中文本与搜索引擎构造安全的网页搜索或直达 URL（自动识别 http/https 并对搜索词执行 URL 编码）
+std::wstring buildWebSearchUrl(std::wstring_view rawText, std::string_view engine = "");
 
 class BuiltinCommandDispatcher {
 public:

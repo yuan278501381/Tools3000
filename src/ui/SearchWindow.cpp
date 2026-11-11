@@ -654,6 +654,19 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
                              suggested->bottom - suggested->top,
                              SWP_NOZORDER | SWP_NOACTIVATE);
             }
+            RECT curRc{};
+            if (GetWindowRect(hwnd, &curRc)) {
+                const int curW = curRc.right - curRc.left;
+                const int curH = curRc.bottom - curRc.top;
+                if (curW > 0 && curH > 0) {
+                    const unsigned newDpi = HIWORD(wParam) > 0
+                        ? static_cast<unsigned>(HIWORD(wParam))
+                        : tools3000::core::dpi::effectiveDpiForWindow(hwnd);
+                    const float scale = tools3000::core::dpi::scaleForDpi(newDpi);
+                    const int radius = static_cast<int>(12 * scale);
+                    tools3000::core::WinUtils::applyUniversalRoundedCorners(hwnd, curW, curH, radius);
+                }
+            }
             if (inst.m_controller) {
                 syncWebViewDpi(inst.m_controller.Get(), hwnd);
             }

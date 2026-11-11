@@ -80,6 +80,19 @@ public:
     void setActive(bool active) noexcept;
     bool isActive() const noexcept;
 
+    /// 活跃订阅者引用计数（>0 时自动激活入队，归零且未显式 setActive(true) 时自动停用并排空）
+    void acquireSubscriber() noexcept;
+    void releaseSubscriber() noexcept;
+    uint32_t subscriberCount() const noexcept;
+
+    struct ScopedSubscriber {
+        MouseStreamCore& core;
+        explicit ScopedSubscriber(MouseStreamCore& c) noexcept : core(c) { core.acquireSubscriber(); }
+        ~ScopedSubscriber() noexcept { core.releaseSubscriber(); }
+        ScopedSubscriber(const ScopedSubscriber&) = delete;
+        ScopedSubscriber& operator=(const ScopedSubscriber&) = delete;
+    };
+
     /// 设置底层直接唤醒事件 (Win32 HANDLE，SetEvent 纯内核 wait-free，0 闭包开销)
     void setWakeEvent(HANDLE hEvent) noexcept;
     HANDLE wakeEvent() const noexcept;
@@ -114,7 +127,11 @@ private:
     tools3000::core::SpscRingBuffer<MouseStreamPoint, 2048> m_queue;
     MouseStreamThrottle m_throttle;
     std::atomic<DWORD> m_throttleIntervalMs{8};
-    std::atomic<bool> m_active{true};
+    std::atomic<bool> m_active{false};
+    std::atomic<bool> m_explicitActive{false};
+    std::atomic<uint32_t> m_subscriberCount{0};
+
+    void refreshActiveState() noexcept;
 
     // 纯无锁 wait-free 唤醒管道 (彻底杜绝 1000Hz 钩子线程获取互斥锁与回调悬挂释放)
     std::atomic<HANDLE> m_wakeEvent{nullptr};

@@ -38,7 +38,8 @@ inline bool computeSafeRibbonHorizontalPlacement(
     int& outMaxAvailableWidth
 ) noexcept {
     const float safeScale = dpiScale > 0.1f ? dpiScale : 1.0f;
-    const int leftBound = dlgRect.left + static_cast<int>(8.0f * safeScale);
+    // 预留左上角窗口图标 + “打开/另存为/Open/Save As”标题文字安全区 (112px * scale)，杜绝胶囊遮盖标题
+    const int leftBound = dlgRect.left + static_cast<int>(112.0f * safeScale);
     const int rightBound = dlgRect.right - static_cast<int>(145.0f * safeScale);
     outMaxAvailableWidth = rightBound - leftBound;
     if (outMaxAvailableWidth < static_cast<int>(64.0f * safeScale)) {

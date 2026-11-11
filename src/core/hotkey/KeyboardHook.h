@@ -35,6 +35,10 @@ public:
     void setFullscreenSuspended(bool suspended);
     bool isFullscreenSuspended() const;
 
+    /// 远程桌面主控智能让位：聚焦远控客户端时挂起本地钩子快捷键与普通按键拦截器（保留底层 RemoteMaster 急救与直通）
+    void setRemoteSuspended(bool suspended);
+    bool isRemoteSuspended() const;
+
     /// 注册由底层键盘钩子接管的快捷键 (针对 F1/F3 等系统抢占热键或单功能键)
     bool registerHookHotkey(int id, const HotkeyDef& def, const std::string& name, HotkeyCallback cb);
 
@@ -75,9 +79,13 @@ private:
     HHOOK m_hookHandle = nullptr;
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_fullscreenSuspended{false};
+    std::atomic<bool> m_remoteSuspended{false};
     std::atomic<bool> m_recordingMode{false};
     std::atomic<bool> m_captureOverlayVisible{false};
     std::atomic<bool> m_scrollCaptureOverlayVisible{false};
+    std::atomic<bool> m_realLCtrlDown{false};
+    std::atomic<bool> m_realRCtrlDown{false};
+    std::atomic<bool> m_syntheticAltGrCtrlDown{false};
     std::atomic<uint8_t> m_filterMode{0}; // 0: smart_shortcuts, 1: all_keys, 2: shortcuts_only
     std::atomic<bool> m_includeFunctionKeys{false};
     std::atomic<bool> m_keycastAutoBypassFullscreen{true};

@@ -95,6 +95,10 @@ private:
             if (params.contains("quickSwitch")) mgr.setQuickSwitchEnabled(params["quickSwitch"].get<bool>());
             if (params.contains("ribbonEnabled")) mgr.setRibbonEnabled(params["ribbonEnabled"].get<bool>());
             if (params.contains("ribbonPosition")) mgr.setRibbonPosition(params["ribbonPosition"].get<std::string>());
+            const bool reEnabledRibbon =
+                params.contains("ribbonEnabled") && params["ribbonEnabled"].is_boolean() &&
+                params["ribbonEnabled"].get<bool>();
+            DialogEngine::instance().refreshActiveDialogOverlay(reEnabledRibbon);
             return {{"success", true}};
         });
 

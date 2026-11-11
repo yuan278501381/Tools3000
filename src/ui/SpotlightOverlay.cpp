@@ -134,7 +134,13 @@ bool SpotlightOverlay::initialize(HINSTANCE hInstance) {
 
 void SpotlightOverlay::shutdown() {
     tools3000::core::MouseStreamCore::instance().setWakeEvent(nullptr);
-    tools3000::core::MouseStreamCore::instance().setActive(false);
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_streamSubscribed) {
+            tools3000::core::MouseStreamCore::instance().releaseSubscriber();
+            m_streamSubscribed = false;
+        }
+    }
     m_needMouseMove.store(false, std::memory_order_release);
 
     if (m_eventSub != 0) {
@@ -181,7 +187,13 @@ void SpotlightOverlay::updateNeedMouseMoveLocked() {
         m_animState != AnimState::Idle
     );
     m_needMouseMove.store(need, std::memory_order_release);
-    tools3000::core::MouseStreamCore::instance().setActive(need);
+    if (need && !m_streamSubscribed) {
+        tools3000::core::MouseStreamCore::instance().acquireSubscriber();
+        m_streamSubscribed = true;
+    } else if (!need && m_streamSubscribed) {
+        tools3000::core::MouseStreamCore::instance().releaseSubscriber();
+        m_streamSubscribed = false;
+    }
 }
 
 void SpotlightOverlay::updateSettings(const SpotlightSettings& settings) {

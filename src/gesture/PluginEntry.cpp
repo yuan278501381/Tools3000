@@ -11,7 +11,6 @@
 #include "gesture/MouseHook.h"
 #include "gesture/BuiltinCommands.h"
 #include "gesture/HotCornerEngine.h"
-#include "gesture/RadialMenuOverlay.h"
 #include "gesture/GestureTrailOverlay.h"
 #include "gesture/GestureInputPolicy.h"
 #include "Tools3000Version.h"
@@ -220,14 +219,6 @@ public:
                 tools3000::core::MessageBridge::instance().handleMessage(R"({"method":"capture.pasteAsPin"})");
             });
         });
-        dispatcher.registerHandler(BuiltinCommand::ShowRadialMenu, []() {
-            tools3000::core::MainThreadDispatcher::instance().post([]() {
-                LOG_INFO("GesturePlugin: 内置命令触发轮盘菜单");
-                POINT pt;
-                GetCursorPos(&pt);
-                tools3000::gesture::RadialMenuOverlay::instance().show(pt);
-            });
-        });
 
         // 状态变化回调
         auto& gestureEngine = tools3000::gesture::GestureEngine::instance();
@@ -264,24 +255,20 @@ public:
         });
         m_cancelSubscription = bus.subscribe<tools3000::core::CancelTransientUiEvent>([](const tools3000::core::CancelTransientUiEvent&) {
             tools3000::gesture::GestureEngine::instance().cancelActiveGesture();
-            tools3000::gesture::RadialMenuOverlay::instance().hide();
             tools3000::core::WinUtils::emergencyFlushInputState();
         });
         m_sessionSubscription = bus.subscribe<tools3000::core::SystemSessionChangedEvent>([](const tools3000::core::SystemSessionChangedEvent&) {
             tools3000::gesture::GestureEngine::instance().cancelActiveGesture();
             tools3000::gesture::MouseHook::instance().resetTriggerState();
-            tools3000::gesture::RadialMenuOverlay::instance().hide();
             tools3000::core::WinUtils::emergencyFlushInputState();
         });
         m_powerSubscription = bus.subscribe<tools3000::core::SystemPowerChangedEvent>([](const tools3000::core::SystemPowerChangedEvent&) {
             tools3000::gesture::GestureEngine::instance().cancelActiveGesture();
             tools3000::gesture::MouseHook::instance().resetTriggerState();
-            tools3000::gesture::RadialMenuOverlay::instance().hide();
             tools3000::core::WinUtils::emergencyFlushInputState();
         });
         m_themeSubscription = bus.subscribe<tools3000::core::ThemeChangedEvent>([](const tools3000::core::ThemeChangedEvent&) {
             tools3000::gesture::GestureTrailOverlay::instance().reloadThemeColors();
-            tools3000::gesture::RadialMenuOverlay::instance().reloadThemeColors();
         });
         
         mb.registerHandler("gesture.togglePause", [](const nlohmann::json&) -> nlohmann::json {
@@ -321,6 +308,7 @@ public:
                 {"trailColor", config.get<std::string>("/gesture/trailColor", "#3B82F6")},
                 {"trailWidth", config.get<float>("/gesture/trailWidth", 2.5f)},
                 {"trailOutlineWidth", config.get<float>("/gesture/trailOutlineWidth", 1.5f)},
+                {"webSearchEngine", config.get<std::string>("/gesture/webSearchEngine", "bing")},
                 {"elevated", tools3000::core::WinUtils::isCurrentProcessElevated()},
                 {"runAsAdmin", config.get<bool>("/general/runAsAdmin", true)}
             };
@@ -336,7 +324,7 @@ public:
                 "enabled", "paused", "triggerButton", "trailVisible", "autoBypassFullscreen",
                 "targetMode", "initialTimeoutMs", "minSegmentDistance",
                 "trailColorMode", "trailColor", "trailWidth", "trailOutlineWidth",
-                "enableScribbleCancel"
+                "enableScribbleCancel", "webSearchEngine"
             };
             for (const auto& [key, value] : params.items()) {
                 if (!allowed.contains(key)) {
@@ -354,7 +342,8 @@ public:
                 (params.contains("trailColorMode") && !params["trailColorMode"].is_string()) ||
                 (params.contains("trailColor") && !params["trailColor"].is_string()) ||
                 (params.contains("trailWidth") && !params["trailWidth"].is_number()) ||
-                (params.contains("trailOutlineWidth") && !params["trailOutlineWidth"].is_number())) {
+                (params.contains("trailOutlineWidth") && !params["trailOutlineWidth"].is_number()) ||
+                (params.contains("webSearchEngine") && !params["webSearchEngine"].is_string())) {
                 return {{"success", false}, {"error", "setting has invalid type"}};
             }
             if (params.contains("enabled") && params.contains("paused") &&
@@ -401,6 +390,13 @@ public:
             float trailOutlineWidth = clampTrailOutlineWidth(
                 params.value("trailOutlineWidth", config.get<float>("/gesture/trailOutlineWidth", 1.5f)));
             bool enableScribbleCancel = params.value("enableScribbleCancel", config.get<bool>("/gesture/enableScribbleCancel", true));
+            std::string webSearchEngine = params.value("webSearchEngine", config.get<std::string>("/gesture/webSearchEngine", "bing"));
+            std::transform(webSearchEngine.begin(), webSearchEngine.end(), webSearchEngine.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (webSearchEngine != "bing" && webSearchEngine != "google" &&
+                webSearchEngine != "baidu" && webSearchEngine != "duckduckgo") {
+                return {{"success", false}, {"error", "invalid webSearchEngine"}};
+            }
 
             nlohmann::json patch = {
                 {"paused", paused}, {"enabled", !paused},
@@ -413,7 +409,8 @@ public:
                 {"trailColorMode", trailColorMode},
                 {"trailColor", trailColor},
                 {"trailWidth", trailWidth},
-                {"trailOutlineWidth", trailOutlineWidth}
+                {"trailOutlineWidth", trailOutlineWidth},
+                {"webSearchEngine", webSearchEngine}
             };
             if (!config.mergePatch({{"gesture", patch}}, "/gesture")) {
                 return {{"success", false}, {"error", "failed to persist gesture settings"}};
@@ -445,7 +442,8 @@ public:
                 {"trailColorMode", trailColorMode},
                 {"trailColor", trailColor},
                 {"trailWidth", trailWidth},
-                {"trailOutlineWidth", trailOutlineWidth}
+                {"trailOutlineWidth", trailOutlineWidth},
+                {"webSearchEngine", webSearchEngine}
             };
         });
 
@@ -586,71 +584,6 @@ public:
             return updateHotCornerSettings(params);
         });
 
-        // 注册 RadialMenu 弹出接口
-        mb.registerHandler("gesture.showRadialMenu", [](const nlohmann::json&) -> nlohmann::json {
-            POINT pt;
-            GetCursorPos(&pt);
-            tools3000::core::MainThreadDispatcher::instance().post([pt]() {
-                tools3000::gesture::RadialMenuOverlay::instance().show(pt);
-            });
-            return {{"success", true}};
-        });
-
-        // radialmenu.getItems —— 返回菜单项列表
-        mb.registerHandler("radialmenu.getItems", [](const nlohmann::json&) -> nlohmann::json {
-            LOG_DEBUG("IPC: radialmenu.getItems 查询轮盘菜单项");
-            auto& config = tools3000::core::ConfigManager::instance();
-            auto items = config.get<nlohmann::json>("/gesture/radialMenu/items");
-            if (!items.is_array()) {
-                items = nlohmann::json::array();
-                for (const auto& item : tools3000::gesture::RadialMenuOverlay::instance().getItems()) {
-                    items.push_back({{"label", item.label}, {"command", item.command}});
-                }
-            }
-            return {{"items", items}};
-        });
-
-        // radialmenu.updateItems —— 更新菜单项
-        mb.registerHandler("radialmenu.updateItems", [](const nlohmann::json& params) -> nlohmann::json {
-            LOG_INFO("IPC: radialmenu.updateItems 更新轮盘菜单项");
-            auto& config = tools3000::core::ConfigManager::instance();
-
-            if (!params.contains("items") || !params["items"].is_array()) {
-                LOG_WARN("radialmenu.updateItems: 缺少 items 数组参数");
-                return {{"success", false}, {"error", "missing items array"}};
-            }
-
-            const auto& itemsJson = params["items"];
-            if (itemsJson.size() > 16) {
-                return {{"success", false}, {"error", "too many radial-menu items"}};
-            }
-            std::vector<tools3000::gesture::RadialMenuItem> items;
-            items.reserve(itemsJson.size());
-            for (const auto& ij : itemsJson) {
-                if (!ij.is_object() || !ij.contains("label") || !ij["label"].is_string() ||
-                    !ij.contains("command") || !ij["command"].is_string()) {
-                    return {{"success", false}, {"error", "invalid radial-menu item"}};
-                }
-                const auto label = ij["label"].get<std::string>();
-                const auto command = ij["command"].get<std::string>();
-                if (label.empty() || label.size() > 80 || command.size() > 256) {
-                    return {{"success", false}, {"error", "invalid radial-menu item length"}};
-                }
-                items.push_back({
-                    label,
-                    command
-                });
-            }
-
-            // 持久化到配置
-            if (!config.set("/gesture/radialMenu/items", itemsJson)) {
-                return {{"success", false}, {"error", "failed to persist radial-menu items"}};
-            }
-            tools3000::gesture::RadialMenuOverlay::instance().setItems(items);
-            LOG_INFO("radialmenu.updateItems: 已更新 {} 个菜单项", items.size());
-            return {{"success", true}, {"count", items.size()}};
-        });
-
         gestureEngine.loadFromConfig();
         
         // 加载 HotCorner 配置并启动
@@ -663,27 +596,6 @@ public:
         hce.setEnabled(config.get<bool>("/gesture/hotCorners/enabled", false));
         hce.setAutoBypassFullscreen(config.get<bool>("/gesture/hotCorners/autoBypassFullscreen", true));
         hce.setTriggerDelay(std::clamp(config.get<int>("/gesture/hotCorners/triggerDelay", 300), 100, 2000));
-
-        // 初始化 RadialMenu — 优先从配置加载，无配置时使用默认项
-        auto savedRadialItems = config.get<nlohmann::json>("/gesture/radialMenu/items", nlohmann::json());
-        if (savedRadialItems.is_array() && !savedRadialItems.empty()) {
-            std::vector<tools3000::gesture::RadialMenuItem> rItems;
-            rItems.reserve(savedRadialItems.size());
-            for (const auto& ij : savedRadialItems) {
-                rItems.push_back({ij.value("label", ""), ij.value("command", "")});
-            }
-            tools3000::gesture::RadialMenuOverlay::instance().setItems(rItems);
-            LOG_INFO("GesturePlugin: 从配置加载 {} 个轮盘菜单项", rItems.size());
-        } else {
-            std::vector<tools3000::gesture::RadialMenuItem> rItems = {
-                {"截图 (Top)", "capture"},
-                {"搜索 (Right)", "search"},
-                {"锁定 (Bottom)", "lock"},
-                {"贴图 (Left)", "pin"}
-            };
-            tools3000::gesture::RadialMenuOverlay::instance().setItems(rItems);
-            LOG_INFO("GesturePlugin: 使用默认轮盘菜单项, 数量={}", rItems.size());
-        }
 
         if (!gestureEngine.start()) {
             LOG_ERROR("GesturePlugin: 手势引擎启动失败");
@@ -700,7 +612,6 @@ public:
         auto& bridge = tools3000::core::MessageBridge::instance();
         bridge.unregisterHandlersByPrefix("gesture.");
         bridge.unregisterHandlersByPrefix("hotcorner.");
-        bridge.unregisterHandlersByPrefix("radialmenu.");
         tools3000::core::HotkeyManager::instance().unregisterHotkey("Pause Gestures");
         tools3000::core::EventBus::instance().unsubscribeAndWait(m_pauseSubscription);
         m_pauseSubscription = 0;
@@ -718,7 +629,6 @@ public:
         gestureEngine.stop();
         gestureEngine.setPauseChangedCallback(nullptr);
         tools3000::gesture::HotCornerEngine::instance().stop();
-        tools3000::gesture::RadialMenuOverlay::instance().shutdown();
         tools3000::gesture::BuiltinCommandDispatcher::instance().clearHandlers();
     }
 

@@ -1142,35 +1142,39 @@ TEST(GestureActionTest, KeyStrokeAndBuiltinCommands) {
     auto profRestored = GestureProfile::fromJson(profJson);
     EXPECT_EQ(profRestored.name(), "test_profile");
     // 5. 默认全局手势与桌面/任务栏预设工厂测试
+    const bool uiZh = tools3000::core::isUiLanguageChinese();
     auto defaultProf = GestureProfile::createDefaultGlobal();
     EXPECT_EQ(defaultProf.name(), "default");
     EXPECT_GE(defaultProf.getMappings().size(), 20u);
     EXPECT_TRUE(defaultProf.findAction("L").has_value());
-    EXPECT_EQ(defaultProf.findAction("L")->name, "后退");
+    EXPECT_EQ(defaultProf.findAction("L")->name, uiZh ? "后退" : "Back");
     EXPECT_EQ(defaultProf.findAction("L")->keyStroke.toString(), "Alt+Left");
     EXPECT_TRUE(defaultProf.findAction("R").has_value());
-    EXPECT_EQ(defaultProf.findAction("R")->name, "前进");
+    EXPECT_EQ(defaultProf.findAction("R")->name, uiZh ? "前进" : "Forward");
     EXPECT_EQ(defaultProf.findAction("R")->keyStroke.toString(), "Alt+Right");
     EXPECT_TRUE(defaultProf.findAction("Middle+L").has_value());
-    EXPECT_EQ(defaultProf.findAction("Middle+L")->name, "上一曲");
+    EXPECT_EQ(defaultProf.findAction("Middle+L")->name, uiZh ? "上一曲" : "Previous Track");
     EXPECT_EQ(defaultProf.findAction("Middle+L")->keyStroke.toString(), "MediaPrev");
     EXPECT_TRUE(defaultProf.findAction("Middle+R").has_value());
-    EXPECT_EQ(defaultProf.findAction("Middle+R")->name, "下一曲");
+    EXPECT_EQ(defaultProf.findAction("Middle+R")->name, uiZh ? "下一曲" : "Next Track");
     EXPECT_EQ(defaultProf.findAction("Middle+R")->keyStroke.toString(), "MediaNext");
     EXPECT_TRUE(defaultProf.findAction("R-D").has_value());
-    EXPECT_EQ(defaultProf.findAction("R-D")->name, "恢复关闭的标签页");
+    EXPECT_EQ(defaultProf.findAction("R-D")->name, uiZh ? "恢复关闭的标签页" : "Restore Closed Tab");
     EXPECT_EQ(defaultProf.findAction("R-D")->keyStroke.toString(), "Ctrl+Shift+T");
     EXPECT_TRUE(defaultProf.findAction("D-L").has_value());
-    EXPECT_EQ(defaultProf.findAction("D-L")->name, "关闭窗口");
+    EXPECT_EQ(defaultProf.findAction("D-L")->name, uiZh ? "关闭窗口" : "Close Window");
     EXPECT_EQ(defaultProf.findAction("D-L")->keyStroke.toString(), "Alt+F4");
     EXPECT_TRUE(defaultProf.findAction("D-R").has_value());
-    EXPECT_EQ(defaultProf.findAction("D-R")->name, "关闭标签页");
+    EXPECT_EQ(defaultProf.findAction("D-R")->name, uiZh ? "关闭标签页" : "Close Tab");
     EXPECT_EQ(defaultProf.findAction("D-R")->keyStroke.toString(), "Ctrl+W");
+    EXPECT_TRUE(defaultProf.findAction("D-R-D").has_value());
+    EXPECT_EQ(defaultProf.findAction("D-R-D")->type, ActionType::BuiltinCommand);
+    EXPECT_EQ(defaultProf.findAction("D-R-D")->builtinCmd, BuiltinCommand::TakeScreenshot);
     EXPECT_TRUE(defaultProf.findAction("WheelUp").has_value());
-    EXPECT_EQ(defaultProf.findAction("WheelUp")->name, "上一个虚拟桌面");
+    EXPECT_EQ(defaultProf.findAction("WheelUp")->name, uiZh ? "上一个虚拟桌面" : "Previous Virtual Desktop");
     EXPECT_EQ(defaultProf.findAction("WheelUp")->builtinCmd, BuiltinCommand::PrevVirtualDesktop);
     EXPECT_TRUE(defaultProf.findAction("WheelDown").has_value());
-    EXPECT_EQ(defaultProf.findAction("WheelDown")->name, "下一个虚拟桌面");
+    EXPECT_EQ(defaultProf.findAction("WheelDown")->name, uiZh ? "下一个虚拟桌面" : "Next Virtual Desktop");
     EXPECT_EQ(defaultProf.findAction("WheelDown")->builtinCmd, BuiltinCommand::NextVirtualDesktop);
     EXPECT_TRUE(defaultProf.findAction("wheelup").has_value());
     EXPECT_TRUE(defaultProf.findAction("WHEELDOWN").has_value());
@@ -3104,7 +3108,6 @@ TEST(CumulativeBoundingBoxTest, EndToEndStrokePointsUnionVerification) {
 
 #include "gesture/GestureEngine.h"
 #include "gesture/GestureTrailOverlay.h"
-#include "gesture/RadialMenuOverlay.h"
 
 TEST(GestureEngineRecognizerSyncTest, PreservesMinSegmentDistanceAcrossConfigReloadAndSetters) {
     using namespace tools3000::gesture;
@@ -3135,19 +3138,6 @@ TEST(GestureEngineRecognizerSyncTest, PreservesMinSegmentDistanceAcrossConfigRel
     engine.setRecognizerConfig(prevRecCfg);
     config.shutdown();
     std::filesystem::remove_all(tempCfgDir, ec);
-
-    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() && !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) { tools3000::core::MainThreadDispatcher::instance().shutdown(); }
-    auto& radial = RadialMenuOverlay::instance();
-    const auto prevItems = radial.getItems();
-    std::vector<RadialMenuItem> testItems = {
-        {"TestTop", "builtin:screenshot"},
-        {"TestRight", "builtin:search"}
-    };
-    radial.setItems(testItems);
-    ASSERT_EQ(radial.getItems().size(), 2u);
-    EXPECT_EQ(radial.getItems()[0].label, "TestTop");
-    EXPECT_EQ(radial.getItems()[1].command, "builtin:search");
-    radial.setItems(prevItems);
 }
 
 TEST(GestureTrailOverlayTest, ExpandingDirtyRectAndZOrderTopmostRecovery) {
@@ -3303,7 +3293,6 @@ TEST(GestureTrailOverlayTest, TaskbarZOrderAndFullscreenAvoidanceProtection) {
 // 专项审计根治防回退回归测试套件 (A1 / A2 / A3 / A6 / B1 / B2 / B5 / C5.2 / C7.3 / D3)
 // ─────────────────────────────────────────────────────────────────────────────
 #include "gesture/GestureEngine.h"
-#include "gesture/RadialMenuOverlay.h"
 
 namespace {
 
@@ -3364,8 +3353,8 @@ TEST(GestureAuditRegressionTest, A1_ExemptInteractiveOverlayClassesAndPointBypas
     EXPECT_TRUE(isGestureExemptInteractiveClassName(L"Tools3000_PinWindow"));
     EXPECT_TRUE(isGestureExemptInteractiveClassName(L"Tools3000_OcrResult"));
     EXPECT_TRUE(isGestureExemptInteractiveClassName(L"Tools3000_OcrResultWindow"));
-    EXPECT_TRUE(isGestureExemptInteractiveClassName(L"Tools3000_RadialMenu"));
-    EXPECT_TRUE(isGestureExemptInteractiveClassName(L"Tools3000_RadialMenuOverlay"));
+    EXPECT_FALSE(isGestureExemptInteractiveClassName(L"Tools3000_RadialMenu"));
+    EXPECT_FALSE(isGestureExemptInteractiveClassName(L"Tools3000_RadialMenuOverlay"));
     EXPECT_TRUE(isGestureExemptInteractiveClassName(L"Tools3000_DialogRibbon"));
     EXPECT_TRUE(isGestureExemptInteractiveClassName(L"Tools3000_DialogRibbonOverlay"));
 
@@ -3473,33 +3462,6 @@ TEST(GestureAuditRegressionTest, A2_D3_RadialMenuEdgeClampSectorLayoutAndLifecyc
             }
         }
     }
-
-    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() && !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) { tools3000::core::MainThreadDispatcher::instance().shutdown(); }
-    auto& radial = RadialMenuOverlay::instance();
-    const auto oldItems = radial.getItems();
-    std::vector<RadialMenuItem> tenItems;
-    for (int i = 0; i < 10; ++i) {
-        tenItems.push_back({"Action Item " + std::to_string(i + 1), "10"});
-    }
-    radial.setItems(tenItems);
-    radial.show({6, 6});
-    EXPECT_TRUE(radial.isVisible());
-    ASSERT_NE(radial.hwnd(), nullptr);
-
-    RECT winRc{};
-    ASSERT_TRUE(GetWindowRect(radial.hwnd(), &winRc));
-    const int winW = winRc.right - winRc.left;
-    EXPECT_EQ(radial.hitTestClientPoint({winW / 2, winW / 2}), -1);
-    EXPECT_EQ(radial.hitTestClientPoint({winW / 2, winW / 2 - 90}), 0);
-
-    // 外部点击应自动隐藏轮盘并放行该次外部点击
-    const POINT outsidePt{winRc.right + 120, winRc.bottom + 120};
-    EXPECT_FALSE(radial.handleGlobalMouseMessage(WM_LBUTTONDOWN, outsidePt));
-    pumpPendingThreadMessagesForGestureTest();
-    EXPECT_FALSE(radial.isVisible());
-
-    radial.hide();
-    radial.setItems(oldItems);
 }
 
 TEST(GestureAuditRegressionTest, A3_C73_PauseDoesNotDisablePluginAndSyncsTrayIcon) {
@@ -3793,8 +3755,11 @@ TEST(GestureAuditRegressionTest, C73_WebSearchRfc3986EncodingAndLayeredStylePres
     EXPECT_EQ(urlEncodeUtf8("C++"), "C%2B%2B");
     EXPECT_EQ(urlEncodeUtf8("C# & a=1 100%"), "C%23%20%26%20a%3D1%20100%25");
 
-    const std::wstring searchUrl = buildWebSearchUrl(L"  C++ & C# 100%  ");
-    EXPECT_EQ(searchUrl, L"https://www.baidu.com/s?wd=C%2B%2B%20%26%20C%23%20100%25");
+    const std::wstring baiduUrl = buildWebSearchUrl(L"  C++ & C# 100%  ", "baidu");
+    EXPECT_EQ(baiduUrl, L"https://www.baidu.com/s?wd=C%2B%2B%20%26%20C%23%20100%25");
+    EXPECT_EQ(buildWebSearchUrl(L"C++", "bing"), L"https://www.bing.com/search?q=C%2B%2B");
+    EXPECT_EQ(buildWebSearchUrl(L"C++", "google"), L"https://www.google.com/search?q=C%2B%2B");
+    EXPECT_EQ(buildWebSearchUrl(L"C++", "duckduckgo"), L"https://duckduckgo.com/?q=C%2B%2B");
 
     const std::wstring directUrl = buildWebSearchUrl(L"https://example.com/search?q=1&b=2");
     EXPECT_EQ(directUrl, L"https://example.com/search?q=1&b=2");
@@ -3852,35 +3817,6 @@ TEST(GestureAuditRegressionTest, LongEnglishToastAndRadialHoverOverlayRegression
     EXPECT_EQ(trail.currentResultTextForTesting(), longAction);
     trail.hide();
     trail.shutdown();
-
-    auto& radial = RadialMenuOverlay::instance();
-    const auto prevItems = radial.getItems();
-    std::vector<RadialMenuItem> items = {
-        {"Capture Fullscreen Workspace Snapshot", "0"},
-        {"Open Global Instant File Search", "1"},
-        {"Toggle Always On Top Window Pin", "2"},
-        {"Switch Virtual Desktop Right", "3"},
-        {"Minimize Active Application", "4"},
-        {"Restore Closed Browser Tab", "5"},
-        {"Launch Developer Terminal", "6"},
-        {"Trigger Offline Screen OCR", "7"},
-    };
-    radial.setItems(items);
-    radial.show({360, 360});
-    ASSERT_TRUE(radial.isVisible());
-    ASSERT_NE(radial.hwnd(), nullptr);
-
-    RECT rc{};
-    ASSERT_TRUE(GetWindowRect(radial.hwnd(), &rc));
-    const int w = rc.right - rc.left;
-    const POINT topSectorScreen{rc.left + w / 2, rc.top + w / 2 - 90};
-    const POINT rightSectorScreen{rc.left + w / 2 + 90, rc.top + w / 2};
-    EXPECT_FALSE(radial.handleGlobalMouseMessage(WM_MOUSEMOVE, topSectorScreen));
-    EXPECT_FALSE(radial.handleGlobalMouseMessage(WM_MOUSEMOVE, rightSectorScreen));
-    EXPECT_EQ(radial.hitTestClientPoint({w / 2 + 90, w / 2}), 2);
-
-    radial.hide();
-    radial.setItems(prevItems);
 }
 
 TEST(GestureAuditRegressionTest, EdgeTriggerMaskAllowsEdgeStrokesWhenGlobalButtonDisabled) {

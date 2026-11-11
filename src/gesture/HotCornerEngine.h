@@ -59,13 +59,17 @@ public:
     void setTriggerDelay(int ms) { m_triggerDelayMs.store(std::clamp(ms, 100, 5000)); }
     int triggerDelay() const { return std::clamp(m_triggerDelayMs.load(), 100, 5000); }
 
+    /// 多显示器共享拼接内角屏蔽开关（默认开启，防止跨屏横移光标在边缘接缝误触）
+    void setIgnoreSharedCorners(bool ignore) { m_ignoreSharedCorners.store(ignore); }
+    bool ignoreSharedCorners() const { return m_ignoreSharedCorners.load(); }
+
     /// 检测指定点是否属于某个触发角
     static HotCorner detectCorner(POINT pt);
 
     /// 检测指定角点是否紧邻另一块显示器的有效边界（多屏跨屏通道角）
     static bool isPassThroughCorner(POINT pt, HotCorner corner) noexcept;
 
-    /// 纯策略判定：当鼠标左右键按住拖拽/画手势，或截图覆盖层/径向轮盘处于激活态时，抑制触发角误触
+    /// 纯策略判定：当鼠标左右键按住拖拽/画手势，或截图覆盖层处于激活态时，抑制触发角误触
     static constexpr bool shouldSuppressTrigger(
         bool leftButtonDown,
         bool rightButtonDown,
@@ -86,8 +90,9 @@ private:
     void workerThread(std::stop_token stop);
 
     std::atomic<bool> m_running{false};
-    std::atomic<bool> m_enabled{true};
+    std::atomic<bool> m_enabled{false};
     std::atomic<bool> m_autoBypassFullscreen{true}; // 默认开启全屏免打扰
+    std::atomic<bool> m_ignoreSharedCorners{true};  // 默认屏蔽多屏拼接共享内角
     std::atomic<int> m_triggerDelayMs{300}; // 默认停留 300 毫秒触发
 
     std::jthread m_thread;
