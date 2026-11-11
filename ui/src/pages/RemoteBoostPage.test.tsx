@@ -67,18 +67,20 @@ describe('RemoteBoostPage', () => {
     cleanup();
   });
 
-  it('renders the RemoteBoostPage with default sections and titles', async () => {
+  it('renders the RemoteBoostPage with default sections, processes, and custom window classes', async () => {
     await act(async () => {
       render(<RemoteBoostPage />);
     });
 
-    expect(screen.getByText('Remote Assistant Host Boost')).toBeDefined();
+    expect(screen.getByText(/Unilateral enhancement on host PC/i)).toBeDefined();
     expect(screen.getByText('Immersive Remote Hotkey Tunnel')).toBeDefined();
     expect(screen.getByText('Modifier Key Emergency Flush')).toBeDefined();
     expect(screen.getByText('Smart Remote IME Sanitizer')).toBeDefined();
     expect(screen.getByText('ToDesk.exe')).toBeDefined();
     expect(screen.getByText('SunloginClient.exe')).toBeDefined();
     expect(screen.getByText('mstsc.exe')).toBeDefined();
+    expect(screen.getByText('TSSHELLWND')).toBeDefined();
+    expect(screen.getByText('SunloginMain')).toBeDefined();
     expect(screen.getByText('Ctrl+Alt+Backspace')).toBeDefined();
   });
 
@@ -108,13 +110,14 @@ describe('RemoteBoostPage', () => {
     expect(bridgeSpy).toHaveBeenCalledWith('remote.resetDefaults');
   });
 
-  it('can add and remove custom remote target processes', async () => {
+  it('can add and remove custom remote target processes and window classes', async () => {
     await act(async () => {
       render(<RemoteBoostPage />);
     });
 
     const input = screen.getByPlaceholderText('e.g., CustomRemote.exe');
-    const addBtn = screen.getByRole('button', { name: /Add/i });
+    const addBtn = input.parentElement?.querySelector('button') as HTMLButtonElement;
+    expect(addBtn).not.toBeNull();
 
     // Add new process
     await act(async () => {
@@ -134,6 +137,20 @@ describe('RemoteBoostPage', () => {
 
     expect(bridgeSpy).toHaveBeenCalledWith('remote.updateSettings', {
       targetProcesses: ['ToDesk.exe', 'SunloginClient.exe', 'CustomViewer.exe'],
+    });
+
+    // Add custom window class (C-03)
+    const classInput = screen.getByPlaceholderText('e.g., TSSHELLWND');
+    const addClassBtn = classInput.parentElement?.querySelector('button') as HTMLButtonElement;
+    expect(addClassBtn).not.toBeNull();
+
+    await act(async () => {
+      fireEvent.change(classInput, { target: { value: 'ParsecWindowClass' } });
+      fireEvent.click(addClassBtn);
+    });
+
+    expect(bridgeSpy).toHaveBeenCalledWith('remote.updateSettings', {
+      targetClasses: [...initialSettings.targetClasses, 'ParsecWindowClass'],
     });
   });
 
@@ -181,7 +198,7 @@ describe('RemoteBoostPage', () => {
     });
 
     const input = screen.getByPlaceholderText('e.g., CustomRemote.exe');
-    const addBtn = screen.getByRole('button', { name: /Add/i });
+    const addBtn = input.parentElement?.querySelector('button') as HTMLButtonElement;
 
     await act(async () => {
       fireEvent.change(input, { target: { value: 'BrokenClient.exe' } });

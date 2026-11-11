@@ -9,8 +9,8 @@
  *   - 全局开关 / 轨迹流光显示 / 游戏全屏免打扰
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useState, useEffect, useCallback, useMemo, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Badge, Select, Button, TextInput } from '../components/UIKit';
+import { useState, useEffect, useCallback, useMemo, useRef, type FC } from 'react';
+import { Card, Toggle, SettingRow, SettingGroup, Badge, Select, Button, ColorPickerInput, ConfirmModal, PageSkeleton } from '../components/UIKit';
 import { GestureEditorModal, type GestureSaveOptions } from '../components/GestureEditorModal';
 import { GestureStrokePreview } from '../components/GestureStrokePreview';
 import { GestureGuide } from '../components/GestureGuide';
@@ -29,9 +29,11 @@ import {
   BUILTIN_COMMAND_KEYS,
   TRIGGER_ITEM_DEFINITIONS,
   parseGestureCode,
+  matchesGestureCategory,
   simplifyDirections,
   upsertGestureMapping,
   type Direction,
+  type GestureFilterCategory,
   type GestureMapping,
   type GestureProfileData,
   type TriggerState,
@@ -45,9 +47,6 @@ import {
   Hand,
   Edit3,
   Trash2,
-  Compass,
-  ArrowUp,
-  ArrowDown,
   Globe,
   ShieldAlert,
   Monitor,
@@ -64,13 +63,11 @@ import {
   Zap,
   VolumeX,
   GripVertical,
+  PanelTop,
+  ChevronsUpDown,
+  Gamepad2,
 } from 'lucide-react';
 import './GesturePage.css';
-
-interface RadialMenuItem {
-  label: string;
-  command: string;
-}
 
 interface GestureState {
   enabled: boolean;
@@ -86,6 +83,7 @@ interface GestureState {
   trailColor?: string;
   trailWidth?: number;
   trailOutlineWidth?: number;
+  webSearchEngine?: string;
   elevated?: boolean;
 }
 
@@ -102,8 +100,6 @@ interface OperationResult {
   success: boolean;
   error?: string;
 }
-
-const MAX_RADIAL_ITEMS = 16;
 
 const DIRECTION_ALIAS_MAP: Record<string, Direction> = {
   U: 'U',
@@ -174,7 +170,9 @@ export const GesturePage: FC = () => {
   const [trailColor, setTrailColor] = useState('#3B82F6');
   const [trailWidth, setTrailWidth] = useState(2.5);
   const [trailOutlineWidth, setTrailOutlineWidth] = useState(1.5);
+  const [webSearchEngine, setWebSearchEngine] = useState('bing');
   const [elevated, setElevated] = useState(false);
+  const trailColorSeqRef = useRef(0);
   
   // Profiles & Rules
   const [profiles, setProfiles] = useState<Record<string, GestureProfileData>>({
@@ -191,17 +189,19 @@ export const GesturePage: FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
-  const [radialItems, setRadialItems] = useState<RadialMenuItem[]>([]);
-  const [radialDirty, setRadialDirty] = useState(false);
-  const [radialSaving, setRadialSaving] = useState(false);
   const [pauseHotkey, setPauseHotkey] = useState('Ctrl+Alt+Shift+W');
 
-  // Modal states
+  // Modal & Confirm states
   const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [appPickerDefaultDisabled, setAppPickerDefaultDisabled] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingMapping, setEditingMapping] = useState<GestureMapping | null>(null);
   const [editorFocusTarget, setEditorFocusTarget] = useState<'instant' | 'silent' | 'action_type' | 'action_detail' | 'hotkey' | 'lua' | 'builtin' | 'program' | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<
+    | { kind: 'target'; ruleId: string; name: string }
+    | { kind: 'mapping'; index: number; name: string; code: string }
+    | null
+  >(null);
 
   const getHotkey = (name: string) => hotkeys.find(h => h.name === name);
 
@@ -241,10 +241,10 @@ export const GesturePage: FC = () => {
       bridgeRequest<GestureState>('gesture.getState'),
       bridgeRequest<GestureProfileData[]>('gesture.getProfiles'),
       bridgeRequest<ScopeRule[]>('gesture.getScopeRules'),
-      bridgeRequest<{ items: RadialMenuItem[] }>('radialmenu.getItems'),
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
+      bridgeRequest<string>('config.get', { key: '/gesture/webSearchEngine' }, { silent: true }).catch(() => null),
     ])
-      .then(([state, profileList, ruleList, radialRes, hotkeyList]) => {
+      .then(([state, profileList, ruleList, hotkeyList, cfgEngine]) => {
         if (!isMounted) return;
         setEnabled(state.enabled);
         setTriggerButton(state.triggerButton ?? 'right');
@@ -259,6 +259,10 @@ export const GesturePage: FC = () => {
         setInitialTimeoutMs(state.initialTimeoutMs ?? 0);
         setMinSegmentDistance(state.minSegmentDistance ?? 24);
         setElevated(state.elevated ?? false);
+        const resolvedEngine =
+          (typeof state.webSearchEngine === 'string' && state.webSearchEngine.trim() !== '' ? state.webSearchEngine : null) ??
+          (typeof cfgEngine === 'string' && cfgEngine.trim() !== '' ? cfgEngine : 'bing');
+        setWebSearchEngine(resolvedEngine);
 
         const pMap: Record<string, GestureProfileData> = {};
         if (Array.isArray(profileList)) {
@@ -276,7 +280,6 @@ export const GesturePage: FC = () => {
         const rList = Array.isArray(ruleList) ? ruleList : [];
         setRules(rList);
 
-        if (radialRes?.items) setRadialItems(radialRes.items);
         const list = Array.isArray(hotkeyList) ? hotkeyList : [];
         setHotkeys(list);
         const pauseBinding = list.find((entry) => entry.name === 'Pause Gestures');
@@ -438,20 +441,7 @@ export const GesturePage: FC = () => {
   const handleDeleteTarget = (ruleId: string) => {
     const r = rules.find((x) => x.id === ruleId);
     if (!r) return;
-    if (!window.confirm(t('gesture.confirmRemoveTarget', 'Are you sure you want to remove the custom configuration for target 「{{name}}」?', { name: r.name || r.processName }))) return;
-
-    const nextRules = rules.filter((x) => x.id !== ruleId);
-    void persistRules(nextRules);
-
-    if (selectedTarget.id === `rule:${ruleId}`) {
-      setSelectedTarget({
-        id: 'global',
-        title: t('components.globalTitle', 'Global'),
-        subtitle: t('components.defaultGestureSubtitle', 'Default Gesture Config'),
-        kind: 'global',
-      });
-    }
-    toast.success(t('gesture.toastTargetRemoved', 'Target configuration removed'));
+    setConfirmDialog({ kind: 'target', ruleId, name: r.name || r.processName });
   };
 
   // ── 切换当前 Target 的作用策略 (自定义手势 <-> 禁用手势) ────────────────────
@@ -521,8 +511,33 @@ export const GesturePage: FC = () => {
   const handleDeleteMapping = (index: number) => {
     const m = currentMappings[index];
     if (!m) return;
-    if (!window.confirm(tr('gesture.deleteConfirm', { name: getLocalizedGestureName(m.action.name, t), code: m.gestureCode }))) return;
-    void persistMappings(currentMappings.filter((_, i) => i !== index));
+    setConfirmDialog({
+      kind: 'mapping',
+      index,
+      name: getLocalizedGestureName(m.action.name, t),
+      code: m.gestureCode,
+    });
+  };
+
+  const handleConfirmDialogExecute = async () => {
+    if (!confirmDialog) return;
+    const current = confirmDialog;
+    setConfirmDialog(null);
+    if (current.kind === 'target') {
+      const nextRules = rules.filter((x) => x.id !== current.ruleId);
+      await persistRules(nextRules);
+      if (selectedTarget.id === `rule:${current.ruleId}`) {
+        setSelectedTarget({
+          id: 'global',
+          title: t('components.globalTitle', 'Global'),
+          subtitle: t('components.defaultGestureSubtitle', 'Default Gesture Config'),
+          kind: 'global',
+        });
+      }
+      toast.success(t('gesture.toastTargetRemoved', 'Target configuration removed'));
+    } else {
+      await persistMappings(currentMappings.filter((_, i) => i !== current.index));
+    }
   };
 
   // ── 触发与全局配置变更 ──────────────────────────────────────────────────────
@@ -567,15 +582,18 @@ export const GesturePage: FC = () => {
   };
 
   const handleTrailColorChange = async (color: string) => {
+    const seq = ++trailColorSeqRef.current;
     const previous = trailColor;
     setTrailColor(color);
     try {
       const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { trailColor: color });
       if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
     } catch (err) {
-      setTrailColor(previous);
-      console.error('Failed to update trail color:', err);
-      toast.error(tr('gesture.saveFailed'), { description: String(err) });
+      if (trailColorSeqRef.current === seq) {
+        setTrailColor(previous);
+        console.error('Failed to update trail color:', err);
+        toast.error(tr('gesture.saveFailed'), { description: String(err) });
+      }
     }
   };
 
@@ -687,76 +705,44 @@ export const GesturePage: FC = () => {
     }
   };
 
-  // ── 轮盘菜单逻辑 ────────────────────────────────────────────────────────────
-  const radialCommandIndex = (command: string): number => {
-    const legacy: Record<string, number> = { capture: 10, search: 16, lock: 8, pin: 18, record: 11 };
-    if (command in legacy) return legacy[command];
-    const parsed = Number(command);
-    return Number.isInteger(parsed) && parsed >= 0 && parsed < BUILTIN_COMMAND_KEYS.length ? parsed : 10;
-  };
-
-  const updateRadialItem = (index: number, patch: Partial<RadialMenuItem>) => {
-    setRadialItems((items) =>
-      items.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
-    );
-    setRadialDirty(true);
-  };
-
-  const moveRadialItem = (index: number, direction: -1 | 1) => {
-    const target = index + direction;
-    if (target < 0 || target >= radialItems.length) return;
-    setRadialItems((items) => {
-      const next = [...items];
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-    setRadialDirty(true);
-  };
-
-  const removeRadialItem = (index: number) => {
-    setRadialItems((items) => items.filter((_, itemIndex) => itemIndex !== index));
-    setRadialDirty(true);
-  };
-
-  const addRadialItem = () => {
-    if (radialItems.length >= MAX_RADIAL_ITEMS) return;
-    setRadialItems((items) => [
-      ...items,
-      { label: tr('gesture.radialDefaultLabel', { count: items.length + 1 }), command: '10' },
-    ]);
-    setRadialDirty(true);
-  };
-
-  const saveRadialItems = async () => {
-    const normalized = radialItems.map((item) => ({ ...item, label: item.label.trim() }));
-    if (normalized.some((item) => !item.label)) {
-      toast.error(tr('gesture.radialLabelRequired'));
-      return;
-    }
-    setRadialSaving(true);
+  const handleWebSearchEngineChange = async (engine: string) => {
+    const previous = webSearchEngine;
+    setWebSearchEngine(engine);
     try {
-      const result = await bridgeRequest<OperationResult>('radialmenu.updateItems', { items: normalized });
-      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
-      setRadialItems(normalized);
-      setRadialDirty(false);
-      toast.success(tr('gesture.radialSaved'));
-    } catch (error) {
-      toast.error(tr('gesture.saveFailed'), { description: String(error) });
-    } finally {
-      setRadialSaving(false);
+      const direct = await bridgeRequest<OperationResult>('gesture.updateSettings', { webSearchEngine: engine }, { silent: true }).catch(() => null);
+      if (!direct?.success) {
+        await bridgeRequest('config.set', { key: '/gesture/webSearchEngine', value: engine });
+      }
+    } catch (err) {
+      setWebSearchEngine(previous);
+      toast.error(tr('gesture.saveFailed'), { description: String(err) });
     }
   };
 
-  const [triggerFilter, setTriggerFilter] = useState<'all' | 'right' | 'middle'>('all');
+  const [triggerFilter, setTriggerFilter] = useState<GestureFilterCategory>('all');
 
-  const rightCount = useMemo(() => currentMappings.filter((m) => !m.gestureCode.trim().toUpperCase().startsWith('MIDDLE+')).length, [currentMappings]);
-  const middleCount = useMemo(() => currentMappings.filter((m) => m.gestureCode.trim().toUpperCase().startsWith('MIDDLE+')).length, [currentMappings]);
+  const categoryCounts = useMemo(() => {
+    const counts: Record<GestureFilterCategory, number> = {
+      all: currentMappings.length,
+      right: 0,
+      middle: 0,
+      side: 0,
+      edge: 0,
+      wheel: 0,
+    };
+    for (const m of currentMappings) {
+      if (matchesGestureCategory(m.gestureCode, 'right')) counts.right += 1;
+      if (matchesGestureCategory(m.gestureCode, 'middle')) counts.middle += 1;
+      if (matchesGestureCategory(m.gestureCode, 'side')) counts.side += 1;
+      if (matchesGestureCategory(m.gestureCode, 'edge')) counts.edge += 1;
+      if (matchesGestureCategory(m.gestureCode, 'wheel')) counts.wheel += 1;
+    }
+    return counts;
+  }, [currentMappings]);
 
   const filteredMappings = useMemo(() => {
     return currentMappings.filter((m) => {
-      const isMiddle = m.gestureCode.trim().toUpperCase().startsWith('MIDDLE+');
-      if (triggerFilter === 'right' && isMiddle) return false;
-      if (triggerFilter === 'middle' && !isMiddle) return false;
+      if (!matchesGestureCategory(m.gestureCode, triggerFilter)) return false;
 
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
@@ -773,13 +759,66 @@ export const GesturePage: FC = () => {
     });
   }, [currentMappings, triggerFilter, searchQuery, t]);
 
-  if (loading) {
+  const renderTriggerMiniBadge = (gestureCode: string) => {
+    const parsed = parseGestureCode(gestureCode);
+    const isWheel = parsed.wheelDirection !== null;
+    if (parsed.edge !== 'none') {
+      const edgeShortMap = {
+        top: t('gesture.edgeShortTop', 'Top'),
+        bottom: t('gesture.edgeShortBottom', 'Bottom'),
+        left: t('gesture.edgeShortLeft', 'Left'),
+        right: t('gesture.edgeShortRight', 'Right'),
+      } as const;
+      const edgeLabel = edgeShortMap[parsed.edge];
+      return (
+        <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--edge">
+          {isWheel ? <ChevronsUpDown size={10} aria-hidden="true" /> : <PanelTop size={10} aria-hidden="true" />}
+          <span>{isWheel ? `${edgeLabel}·${t('gesture.wheelShort', 'Wheel')}` : edgeLabel}</span>
+        </span>
+      );
+    }
+    if (isWheel) {
+      return (
+        <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--wheel">
+          <ChevronsUpDown size={10} aria-hidden="true" />
+          <span>{t('gesture.wheelShort', 'Wheel')}</span>
+        </span>
+      );
+    }
+    if (parsed.triggerButton === 'x1' || parsed.triggerButton === 'x2') {
+      return (
+        <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--side">
+          <Gamepad2 size={10} aria-hidden="true" />
+          <span>{parsed.triggerButton === 'x1' ? t('gesture.side1Short', 'X1') : t('gesture.side2Short', 'X2')}</span>
+        </span>
+      );
+    }
+    if (parsed.triggerButton === 'middle') {
+      return (
+        <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--middle">
+          <Mouse size={10} aria-hidden="true" />
+          <span>{t('gesture.middleClickShort', 'Middle')}</span>
+        </span>
+      );
+    }
+    if (parsed.triggerButton === 'left') {
+      return (
+        <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--side">
+          <Mouse size={10} aria-hidden="true" />
+          <span>{t('gesture.leftClickShort', 'Left')}</span>
+        </span>
+      );
+    }
     return (
-      <div className="page-loading">
-        <div className="page-loading__spinner" />
-        <span>{tr('common.loading')}</span>
-      </div>
+      <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--right">
+        <Mouse size={10} aria-hidden="true" />
+        <span>{t('gesture.rightClickShort', 'Right')}</span>
+      </span>
     );
+  };
+
+  if (loading) {
+    return <PageSkeleton cards={2} rowsPerCard={4} />;
   }
 
   const renderTargetHeaderIcon = () => {
@@ -880,11 +919,12 @@ export const GesturePage: FC = () => {
                       ))}
                     </div>
                     <div className="gesture-custom-color-input-wrapper">
-                      <input
-                        type="color"
+                      <ColorPickerInput
                         className="gesture-color-native-input"
                         value={trailColor}
-                        onChange={(e) => void handleTrailColorChange(e.target.value)}
+                        ariaLabel={tr('gesture.trailCustomColor')}
+                        onPreview={(hex) => setTrailColor(hex)}
+                        onChange={(hex) => void handleTrailColorChange(hex)}
                       />
                       <span className="gesture-color-hex-label">{trailColor.toUpperCase()}</span>
                     </div>
@@ -1056,6 +1096,20 @@ export const GesturePage: FC = () => {
             </div>
           </SettingRow>
 
+          <SettingRow label={t('gesture.webSearchEngine', 'Web Search Engine')} description={t('gesture.webSearchEngineDesc', 'Default search engine opened when executing Web Search gesture action')}>
+            <Select
+              id="gesture-web-search-engine"
+              value={webSearchEngine}
+              onChange={(val) => void handleWebSearchEngineChange(val)}
+              options={[
+                { value: 'bing', label: 'Bing' },
+                { value: 'google', label: 'Google' },
+                { value: 'baidu', label: t('gesture.engineBaidu', 'Baidu') },
+                { value: 'duckduckgo', label: 'DuckDuckGo' },
+              ]}
+            />
+          </SettingRow>
+
           <GestureGuide />
         </Card>
       </SettingGroup>
@@ -1169,28 +1223,66 @@ export const GesturePage: FC = () => {
                         {' '}({filteredMappings.length}/{currentMappings.length})
                       </span>
 
-                      {/* 触发按键分类快速筛选 */}
-                      <div className="gesture-trigger-filter-tabs">
+                      {/* 触发来源五分类精准筛选 (U-11 纯矢量徽章) */}
+                      <div className="gesture-trigger-filter-tabs" role="tablist" aria-label={t('gesture.triggerModeStrip', 'Trigger Method')}>
                         <button
                           type="button"
+                          role="tab"
+                          aria-selected={triggerFilter === 'all'}
                           className={`gesture-trigger-filter-tab ${triggerFilter === 'all' ? 'active' : ''}`}
                           onClick={() => setTriggerFilter('all')}
                         >
-                          {t('common.all', 'All')} ({currentMappings.length})
+                          <span>{t('common.all', 'All')} ({categoryCounts.all})</span>
                         </button>
                         <button
                           type="button"
+                          role="tab"
+                          aria-selected={triggerFilter === 'right'}
                           className={`gesture-trigger-filter-tab ${triggerFilter === 'right' ? 'active' : ''}`}
                           onClick={() => setTriggerFilter('right')}
                         >
-                          ◐ {t('gesture.rightGestures', 'Right Click')} ({rightCount})
+                          <Mouse size={12} aria-hidden="true" />
+                          <span>{t('gesture.rightGestures', 'Right Click')} ({categoryCounts.right})</span>
                         </button>
                         <button
                           type="button"
+                          role="tab"
+                          aria-selected={triggerFilter === 'middle'}
                           className={`gesture-trigger-filter-tab ${triggerFilter === 'middle' ? 'active' : ''}`}
                           onClick={() => setTriggerFilter('middle')}
                         >
-                          ◓ {t('gesture.middleGestures', 'Middle Click')} ({middleCount})
+                          <Mouse size={12} aria-hidden="true" />
+                          <span>{t('gesture.middleGestures', 'Middle Click')} ({categoryCounts.middle})</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={triggerFilter === 'side'}
+                          className={`gesture-trigger-filter-tab ${triggerFilter === 'side' ? 'active' : ''}`}
+                          onClick={() => setTriggerFilter('side')}
+                        >
+                          <Gamepad2 size={12} aria-hidden="true" />
+                          <span>{t('gesture.sideGestures', 'Side Buttons')} ({categoryCounts.side})</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={triggerFilter === 'edge'}
+                          className={`gesture-trigger-filter-tab ${triggerFilter === 'edge' ? 'active' : ''}`}
+                          onClick={() => setTriggerFilter('edge')}
+                        >
+                          <PanelTop size={12} aria-hidden="true" />
+                          <span>{t('gesture.edgeGestures', 'Screen Edge')} ({categoryCounts.edge})</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={triggerFilter === 'wheel'}
+                          className={`gesture-trigger-filter-tab ${triggerFilter === 'wheel' ? 'active' : ''}`}
+                          onClick={() => setTriggerFilter('wheel')}
+                        >
+                          <ChevronsUpDown size={12} aria-hidden="true" />
+                          <span>{t('gesture.wheelGestures', 'Wheel')} ({categoryCounts.wheel})</span>
                         </button>
                       </div>
 
@@ -1268,15 +1360,7 @@ export const GesturePage: FC = () => {
                                 </div>
                                 <div className="gesture-preview-with-badge">
                                   <GestureStrokePreview code={m.gestureCode} width={56} height={34} />
-                                  <span
-                                    className={`gesture-trigger-mini-badge ${
-                                      m.gestureCode.trim().toUpperCase().startsWith('MIDDLE+')
-                                        ? 'gesture-trigger-mini-badge--middle'
-                                        : 'gesture-trigger-mini-badge--right'
-                                    }`}
-                                  >
-                                    {m.gestureCode.trim().toUpperCase().startsWith('MIDDLE+') ? `◓ ${t('gesture.middleClickShort', 'Middle')}` : `◐ ${t('gesture.rightClickShort', 'Right')}`}
-                                  </span>
+                                  {renderTriggerMiniBadge(m.gestureCode)}
                                 </div>
                               </div>
                             </span>
@@ -1419,64 +1503,6 @@ export const GesturePage: FC = () => {
         </div>
       </SettingGroup>
 
-      {/* ── 轮盘菜单 ──────────────────────────────────────────────── */}
-      <SettingGroup title={tr('gesture.radialMenu')} icon={<Compass size={20} strokeWidth={2.5} />}>
-        <Card>
-          <div className="gesture-radial-toolbar">
-            <span>{tr('gesture.radialHint')}</span>
-            <div className="gesture-radial-toolbar__actions">
-              <Button size="sm" variant="ghost" onClick={addRadialItem} disabled={radialItems.length >= MAX_RADIAL_ITEMS}>
-                {tr('common.add')}
-              </Button>
-              <Button
-                size="sm"
-                variant="primary"
-                onClick={() => void saveRadialItems()}
-                disabled={!radialDirty || radialSaving}
-              >
-                {radialSaving ? tr('common.saving') : tr('common.save')}
-              </Button>
-            </div>
-          </div>
-          <div className="gesture-radial-list">
-            {radialItems.length === 0 && (
-              <div className="gesture-empty">{tr('common.empty')}</div>
-            )}
-            {radialItems.map((item, i) => (
-              <div key={i} className="gesture-radial-row">
-                <span className="gesture-radial-index">{i + 1}</span>
-                <TextInput
-                  id={`radial-label-${i}`}
-                  value={item.label}
-                  onChange={(label) => updateRadialItem(i, { label })}
-                  placeholder={tr('gesture.radialLabelPlaceholder')}
-                />
-                <Select
-                  id={`radial-command-${i}`}
-                  value={String(radialCommandIndex(item.command))}
-                  onChange={(command) => updateRadialItem(i, { command })}
-                  options={BUILTIN_COMMAND_KEYS.map((key, commandIndex) => ({
-                    value: String(commandIndex),
-                    label: tr(key),
-                  }))}
-                />
-                <div className="gesture-radial-actions">
-                  <button className="gesture-icon-btn" disabled={i === 0} title={tr('common.moveUp')} onClick={() => moveRadialItem(i, -1)}>
-                    <ArrowUp size={15} />
-                  </button>
-                  <button className="gesture-icon-btn" disabled={i === radialItems.length - 1} title={tr('common.moveDown')} onClick={() => moveRadialItem(i, 1)}>
-                    <ArrowDown size={15} />
-                  </button>
-                  <button className="gesture-icon-btn gesture-icon-btn--danger" title={tr('common.delete')} onClick={() => removeRadialItem(i)}>
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </SettingGroup>
-
       {/* ── 弹窗组 ────────────────────────────────────────────────── */}
       {appPickerOpen && (
         <TargetAppPickerModal
@@ -1493,10 +1519,25 @@ export const GesturePage: FC = () => {
           initialFocusTarget={editorFocusTarget}
           existingMappings={currentMappings}
           existingCodes={currentMappings.map((m) => m.gestureCode)}
+          webSearchEngine={webSearchEngine}
+          onWebSearchEngineChange={(eng) => void handleWebSearchEngineChange(eng)}
           onSave={handleSaveMapping}
           onClose={() => setEditorOpen(false)}
         />
       )}
+
+      <ConfirmModal
+        open={confirmDialog !== null}
+        title={t('common.delete')}
+        description={
+          confirmDialog?.kind === 'target'
+            ? t('gesture.confirmRemoveTarget', 'Are you sure you want to remove the custom configuration for target 「{{name}}」?', { name: confirmDialog.name })
+            : tr('gesture.deleteConfirm', { name: confirmDialog?.name ?? '', code: confirmDialog?.code ?? '' })
+        }
+        confirmText={t('common.delete')}
+        onConfirm={handleConfirmDialogExecute}
+        onClose={() => setConfirmDialog(null)}
+      />
     </div>
   );
 };

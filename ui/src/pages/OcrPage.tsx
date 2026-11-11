@@ -7,7 +7,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Badge } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, Badge, Select, PageSkeleton } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { bridgeRequest } from '../hooks/useBridge';
@@ -50,8 +50,12 @@ export const OcrPage: FC = () => {
       bridgeRequest<OcrSettings>('ocr.getSettings'),
       bridgeRequest<{ available: boolean }>('ocr.getStatus'),
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
-    ]).then(([data, status, hotkeyList]) => {
-      setSettings(prev => ({ ...prev, ...data }));
+      bridgeRequest<string>('config.get', { key: '/ocr/language' }, { silent: true }).catch(() => null),
+    ]).then(([data, status, hotkeyList, cfgLang]) => {
+      const resolvedLanguage =
+        (typeof data?.language === 'string' && data.language.trim() !== '' ? data.language : null) ??
+        (typeof cfgLang === 'string' && cfgLang.trim() !== '' ? cfgLang : 'auto');
+      setSettings(prev => ({ ...prev, ...data, language: resolvedLanguage }));
       setAvailable(status.available);
       const list = Array.isArray(hotkeyList) ? hotkeyList : [];
       setHotkeys(list);
@@ -65,6 +69,19 @@ export const OcrPage: FC = () => {
 
   const updateSetting = useCallback((key: keyof OcrSettings, value: unknown) => {
     setSettings(prev => ({ ...prev, [key]: value }));
+    if (key === 'language') {
+      void (async () => {
+        try {
+          const direct = await bridgeRequest<OperationResult>('ocr.updateSettings', { language: value }, { silent: true }).catch(() => null);
+          if (!direct?.success) {
+            await bridgeRequest('config.set', { key: '/ocr/language', value });
+          }
+        } catch (error) {
+          toast.error(t('ocr.saveFailed'), { description: String(error) });
+        }
+      })();
+      return;
+    }
     bridgeRequest<OperationResult>('ocr.updateSettings', { [key]: value })
       .then(result => { if (!result.success) throw new Error(result.error || 'update failed'); })
       .catch(async (error) => {
@@ -88,7 +105,7 @@ export const OcrPage: FC = () => {
   };
 
   if (loading) {
-    return <div style={{ padding: '2rem', opacity: 0.5 }}>{t('common.loading')}</div>;
+    return <PageSkeleton cards={1} rowsPerCard={4} />;
   }
 
   return (
@@ -119,6 +136,22 @@ export const OcrPage: FC = () => {
                 variant={available ? 'success' : 'muted'}
               />
             </div>
+          </SettingRow>
+
+          <SettingRow label={t('ocr.language')} description={t('ocr.languageDesc')}>
+            <Select
+              id="ocr-language"
+              value={settings.language || 'auto'}
+              onChange={(val) => updateSetting('language', val)}
+              options={[
+                { value: 'auto', label: t('ocr.langAuto') },
+                { value: 'zh-Hans-CN', label: t('ocr.langZhHans') },
+                { value: 'zh-Hant-TW', label: t('ocr.langZhHant') },
+                { value: 'en-US', label: t('ocr.langEnUs') },
+                { value: 'ja-JP', label: t('ocr.langJaJp') },
+                { value: 'ko-KR', label: t('ocr.langKoKr') },
+              ]}
+            />
           </SettingRow>
 
           <Toggle

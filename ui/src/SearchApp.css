@@ -886,10 +886,10 @@ html[data-surface="search"] #root {
     font-size: 12.5px;
     color: var(--primary);
     font-weight: 650;
-    background: rgba(99, 102, 241, 0.08);
+    background: var(--primary-dim);
     padding: 2px 6px;
     border-radius: 4px;
-    border: 1px solid rgba(99, 102, 241, 0.18);
+    border: 1px solid color-mix(in srgb, var(--primary) 26%, transparent);
     letter-spacing: -0.01em;
 }
 
@@ -2205,8 +2205,12 @@ html[data-surface="search"] #root {
     gap: 8px;
     padding: 10px 12px;
     margin-bottom: 14px;
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.04) 100%);
-    border: 1px solid rgba(99, 102, 241, 0.22);
+    background: linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--primary) 12%, transparent) 0%,
+        color-mix(in srgb, var(--primary-hover) 5%, transparent) 100%
+    );
+    border: 1px solid color-mix(in srgb, var(--primary) 26%, transparent);
     border-radius: 8px;
 }
 
@@ -2260,14 +2264,14 @@ html[data-surface="search"] #root {
     color: #ffffff;
     font-weight: 600;
     border-radius: 6px;
-    box-shadow: 0 2px 6px rgba(99, 102, 241, 0.25);
+    box-shadow: 0 2px 6px var(--primary-glow);
 }
 
 .popover-rebuild-btn--top:hover:not(:disabled) {
-    background: var(--primary-hover, #4f46e5);
-    border-color: var(--primary-hover, #4f46e5);
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
     color: #ffffff;
-    box-shadow: 0 4px 10px rgba(99, 102, 241, 0.35);
+    box-shadow: 0 4px 10px var(--primary-glow);
 }
 
 .popover-rebuild-btn--loading {
@@ -2386,13 +2390,15 @@ html[data-surface="search"] #root {
     align-items: flex-end;
     justify-content: flex-end;
     cursor: nwse-resize;
+    color: var(--text-muted);
     z-index: 50;
-    opacity: 0.6;
-    transition: opacity 0.2s ease;
+    opacity: 0.65;
+    transition: opacity 0.2s ease, color 0.2s ease;
 }
 
 .search-resize-handle:hover {
     opacity: 1;
+    color: var(--primary);
 }
 
 /* ── 搜索中心无边框边缘拉伸控制器热区精细化校准 ──
@@ -3321,9 +3327,9 @@ html[data-surface="search"] #root {
 }
 
 .search-deep-scan-metric--elapsed {
-    background: rgba(139, 92, 246, 0.12);
+    background: var(--primary-dim);
     color: var(--primary);
-    border: 1px solid rgba(139, 92, 246, 0.25);
+    border: 1px solid color-mix(in srgb, var(--primary) 28%, transparent);
 }
 
 .search-deep-scan-metric--bench {
@@ -3349,7 +3355,7 @@ html[data-surface="search"] #root {
 
 .search-deep-scan-progress-bar {
     height: 100%;
-    background: linear-gradient(90deg, var(--primary) 0%, #38bdf8 100%);
+    background: linear-gradient(90deg, var(--primary) 0%, var(--primary-hover) 100%);
     border-radius: 999px;
     transition: width 0.2s linear;
     box-shadow: 0 0 8px var(--primary-glow);

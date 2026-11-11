@@ -45,7 +45,16 @@ export const SearchHistoryBar: React.FC<SearchHistoryBarProps> = ({
           <div
             key={idx}
             className="search-history-chip"
+            role="button"
+            tabIndex={0}
             onClick={() => onSelectHistoryItem(item.search)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onSelectHistoryItem(item.search);
+              }
+            }}
             title={t('search.searchCountTip', 'Search frequency: {{count}} times · Click to reuse', { count: item.searchCount })}
           >
             <Clock size={11} className="search-history-chip-icon" />

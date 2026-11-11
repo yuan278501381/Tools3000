@@ -68,9 +68,9 @@
   height: 180px;
   background: linear-gradient(
     135deg,
-    rgba(139, 92, 246, 0.15) 0%,
-    rgba(59, 130, 246, 0.08) 50%,
-    rgba(52, 211, 153, 0.06) 100%
+    color-mix(in srgb, var(--primary) 16%, transparent) 0%,
+    color-mix(in srgb, var(--primary-hover) 8%, transparent) 50%,
+    color-mix(in srgb, var(--success) 6%, transparent) 100%
   );
   pointer-events: none;
   z-index: 0;
@@ -180,7 +180,7 @@
 .onboarding__feature-card:hover {
   border-color: var(--primary);
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.12);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--primary) 18%, transparent);
 }
 
 .onboarding__feature-icon {
@@ -394,15 +394,15 @@
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary), #60a5fa);
+  background: linear-gradient(135deg, var(--primary), var(--primary-hover));
   color: #fff;
   margin-bottom: 16px;
   animation: onboarding-pulse 2s ease-in-out infinite;
 }
 
 @keyframes onboarding-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.3); }
-  50%      { box-shadow: 0 0 0 16px rgba(139, 92, 246, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 var(--primary-glow); }
+  50%      { box-shadow: 0 0 0 16px transparent; }
 }
 
 /* ── 底部导航 ─────────────────────────────────────────────────────────────── */
@@ -438,7 +438,7 @@
   background: var(--primary);
   width: 24px;
   border-radius: 4px;
-  box-shadow: 0 0 8px rgba(139, 92, 246, 0.4);
+  box-shadow: 0 0 8px var(--primary-glow);
 }
 
 .onboarding__actions {
