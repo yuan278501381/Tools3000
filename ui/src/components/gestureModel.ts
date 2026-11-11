@@ -226,6 +226,7 @@ export function assembleGestureCode(params: {
   else if (params.triggerButton === 'left' || params.isLeft) prefix += 'Left+';
 
   const bare = (params.bareCode || '').trim();
+  if (!bare) return '';
   if (bare.toUpperCase() === 'WHEELUP') return prefix + 'WheelUp';
   if (bare.toUpperCase() === 'WHEELDOWN') return prefix + 'WheelDown';
   return prefix + bare.toUpperCase();
