@@ -170,6 +170,9 @@ public:
     D2D1_RECT_F textButtonRect() const noexcept { return m_btnTextRect; }
     D2D1_RECT_F invertButtonRect() const noexcept { return m_btnInvertRect; }
     void forceHoverStateForTest(bool hovering);
+    void renderForTest() { render(); }
+    bool lastChromeIsDark() const noexcept { return m_lastChromeIsDark; }
+    bool lastToolbarIsDark() const noexcept { return m_lastToolbarIsDark; }
 
     /// 激活并获取当前贴图窗口的键盘焦点（确保快捷键如旋转 R / 1 / 2 等即时生效）
     void focusWindow();
@@ -318,6 +321,8 @@ private:
     POINT m_selectEnd{};
     D2D1_RECT_F m_btnCopyFloatingRect = {};
     bool m_hoverCopyFloating = false;
+    bool m_lastChromeIsDark = true;
+    bool m_lastToolbarIsDark = true;
     
     void updateHoverAnimation();
     void drawHoverToolbar();

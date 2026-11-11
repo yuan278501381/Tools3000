@@ -1215,21 +1215,22 @@ void PinWindow::drawHoverToolbar() {
     
     // 绘制磨砂玻璃背景（跟随动态明暗主题与自定义强调色）
     const auto pal = FloatingGlassBar::resolveThemePalette();
-    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), m_toolbarRect, 6.0f * dpiScale, true);
+    m_lastToolbarIsDark = pal.isDark;
+    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), m_toolbarRect, 6.0f * dpiScale, pal.isDark);
 
     ComPtr<ID2D1SolidColorBrush> textBrush;
     D2D1_COLOR_F iconColor = pal.textPrimary;
     iconColor.a *= m_hoverAlpha;
     m_renderTarget->CreateSolidColorBrush(iconColor, textBrush.GetAddressOf());
     
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnFoldRect, 4.0f * dpiScale, m_hoverFold, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnRotateRect, 4.0f * dpiScale, m_hoverRotate, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnInvertRect, 4.0f * dpiScale, m_hoverInvert, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnEditRect, 4.0f * dpiScale, m_hoverEdit, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnTextRect, 4.0f * dpiScale, m_hoverText, m_textSelectionMode, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCopyRect, 4.0f * dpiScale, m_hoverCopy, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnSaveRect, 4.0f * dpiScale, m_hoverSave, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCloseRect, 4.0f * dpiScale, m_hoverClose, false, true, false, m_hoverAlpha, true);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnFoldRect, 4.0f * dpiScale, m_hoverFold, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnRotateRect, 4.0f * dpiScale, m_hoverRotate, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnInvertRect, 4.0f * dpiScale, m_hoverInvert, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnEditRect, 4.0f * dpiScale, m_hoverEdit, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnTextRect, 4.0f * dpiScale, m_hoverText, m_textSelectionMode, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCopyRect, 4.0f * dpiScale, m_hoverCopy, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnSaveRect, 4.0f * dpiScale, m_hoverSave, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCloseRect, 4.0f * dpiScale, m_hoverClose, false, true, false, m_hoverAlpha, pal.isDark);
     
     // 1. Fold 图标 (Reicon: ActionFold)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
@@ -1315,7 +1316,7 @@ void PinWindow::drawHoverToolbar() {
                 : (baseTipRect.bottom - baseTipRect.top);
             const D2D1_RECT_F tipRect = D2D1::RectF(tipX, baseTipRect.top, tipX + tipW, baseTipRect.top + tipH);
 
-            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 4.0f * dpiScale, true);
+            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 4.0f * dpiScale, pal.isDark);
             const D2D1_RECT_F tipTextRect = D2D1::RectF(
                 tipRect.left + 6.0f * dpiScale,
                 tipRect.top,
@@ -2838,6 +2839,7 @@ void PinWindow::render() {
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
     const auto pal = FloatingGlassBar::resolveThemePalette();
+    m_lastChromeIsDark = pal.isDark;
     auto size = m_renderTarget->GetSize();
     if (m_folded) {
         const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
@@ -3057,8 +3059,9 @@ void PinWindow::render() {
                 pillY = std::clamp(pillY, 6.0f * dpiScale, maxPillY);
                 m_btnCopyFloatingRect = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
 
+                FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), m_btnCopyFloatingRect, 5.0f * dpiScale, pal.isDark);
                 FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCopyFloatingRect, 4.0f * dpiScale,
-                                                m_hoverCopyFloating, false, false, false, 0.95f, true);
+                                                m_hoverCopyFloating, false, false, false, 0.95f, pal.isDark);
 
                 ComPtr<ID2D1SolidColorBrush> pillTextBrush;
                 m_renderTarget->CreateSolidColorBrush(pal.textPrimary, pillTextBrush.GetAddressOf());
@@ -3133,10 +3136,10 @@ void PinWindow::render() {
                 if (!overlapsToolbar) {
                     m_btnGroupBadgeRect = candidate;
                     const float badgeAlpha = hasGroup ? 0.96f : (0.92f * m_hoverAlpha);
-                    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), candidate, 6.0f * dpiScale, true);
+                    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), candidate, 6.0f * dpiScale, pal.isDark);
                     if (m_hoverGroupBadge) {
                         FloatingGlassBar::drawButtonPill(
-                            m_renderTarget.Get(), candidate, 5.0f * dpiScale, true, false, false, false, badgeAlpha, true);
+                            m_renderTarget.Get(), candidate, 5.0f * dpiScale, true, false, false, false, badgeAlpha, pal.isDark);
                     }
                     if (hasGroup) {
                         ComPtr<ID2D1SolidColorBrush> dotBr, txtBr;

@@ -1322,8 +1322,15 @@ public:
                 if (params.value("triggerEnsureOcr", false)) {
                     pin->ensureOcrExecutedAsync();
                 }
+                if (params.contains("setTheme") && params["setTheme"].is_string()) {
+                    tools3000::core::ConfigManager::instance().set<std::string>(
+                        "/general/theme", params["setTheme"].get<std::string>());
+                }
                 if (params.contains("forceHover") && params["forceHover"].is_boolean()) {
                     pin->forceHoverStateForTest(params["forceHover"].get<bool>());
+                }
+                if (params.value("forceRender", false)) {
+                    pin->renderForTest();
                 }
                 if (params.contains("setScale") && params["setScale"].is_number()) {
                     pin->setScale(params["setScale"].get<float>());
@@ -1407,7 +1414,9 @@ public:
                     {"pressedToolbarBtn", pin->pressedToolbarBtn()},
                     {"isDragging", pin->isDragging()},
                     {"isInverted", pin->isInverted()},
-                    {"isFolded", pin->isFolded()}
+                    {"isFolded", pin->isFolded()},
+                    {"lastChromeIsDark", pin->lastChromeIsDark()},
+                    {"lastToolbarIsDark", pin->lastToolbarIsDark()}
                 };
             });
         });

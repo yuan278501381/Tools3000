@@ -11847,6 +11847,30 @@ TEST(PinWindowDragFirstAndZeroOcclusionTest, SmallPinZeroToolbarOcclusionAndDrag
         const auto afterOcrSelectState = invokeRpc(2113, "capture.inspectPinOcrState", nlohmann::json::object());
         EXPECT_EQ(afterOcrSelectState.value("selectedBlockCount", 0), 1);
 
+        // (5) V-01 防回退：切换浅色/深色主题并强制刷新 PinWindow 悬停工具栏与浮层胶囊，断言浅色绝不硬编码深黑底板
+        const std::string savedTheme = tools3000::core::ConfigManager::instance().get<std::string>("/general/theme", "dark");
+        const auto lightPinThemeState = invokeRpc(2114, "capture.inspectPinOcrState", {
+            {"setTheme", "light"},
+            {"forceHover", true},
+            {"forceRender", true}
+        });
+        ASSERT_TRUE(lightPinThemeState.value("success", false));
+        EXPECT_TRUE(lightPinThemeState.value("hoverToolbarVisible", false));
+        EXPECT_FALSE(lightPinThemeState.value("lastChromeIsDark", true));
+        EXPECT_FALSE(lightPinThemeState.value("lastToolbarIsDark", true));
+
+        const auto darkPinThemeState = invokeRpc(2115, "capture.inspectPinOcrState", {
+            {"setTheme", "dark"},
+            {"forceHover", true},
+            {"forceRender", true}
+        });
+        ASSERT_TRUE(darkPinThemeState.value("success", false));
+        EXPECT_TRUE(darkPinThemeState.value("hoverToolbarVisible", false));
+        EXPECT_TRUE(darkPinThemeState.value("lastChromeIsDark", false));
+        EXPECT_TRUE(darkPinThemeState.value("lastToolbarIsDark", false));
+
+        invokeRpc(2116, "capture.inspectPinOcrState", {{"setTheme", savedTheme}});
+
         SendMessageW(pinHwnd, WM_KEYDOWN, VK_DELETE, 0);
         EXPECT_FALSE(IsWindow(pinHwnd));
     }
@@ -12487,6 +12511,78 @@ TEST(FloatingGlassThemePaletteTest, FollowsLightDarkThemeAndCustomHexAccent) {
     EXPECT_TRUE(darkPal.isDark);
     EXPECT_LT(darkPal.panelBg.r, 0.20f);
     EXPECT_GT(darkPal.accent.g, darkPal.accent.r);
+
+    // 离屏 Direct2D 像素光栅化 + WCAG 2.1 相对亮度对比度强断言（彻底杜绝浅色模式下深黑底板+深黑字 ~1.02:1 隐形回归）
+    auto srgbToLinear = [](double c01) -> double {
+        return (c01 <= 0.04045) ? (c01 / 12.92) : std::pow((c01 + 0.055) / 1.055, 2.4);
+    };
+    auto relativeLuminance = [&](double r01, double g01, double b01) -> double {
+        return 0.2126 * srgbToLinear(r01) + 0.7152 * srgbToLinear(g01) + 0.0722 * srgbToLinear(b01);
+    };
+    auto wcagContrast = [&](const cv::Vec4b& bgBgra, const D2D1_COLOR_F& fg) -> double {
+        const double lBg = relativeLuminance(bgBgra[2] / 255.0, bgBgra[1] / 255.0, bgBgra[0] / 255.0);
+        const double lFg = relativeLuminance(fg.r, fg.g, fg.b);
+        const double lighter = (std::max)(lBg, lFg);
+        const double darker = (std::min)(lBg, lFg);
+        return (lighter + 0.05) / (darker + 0.05);
+    };
+
+    Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory;
+    ASSERT_EQ(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2dFactory.GetAddressOf()), S_OK);
+    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> dcRt;
+    const D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        96.0f, 96.0f, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_FEATURE_LEVEL_DEFAULT);
+    ASSERT_EQ(d2dFactory->CreateDCRenderTarget(&rtProps, dcRt.GetAddressOf()), S_OK);
+
+    const int w = 160;
+    const int h = 64;
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* dibBits = nullptr;
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0);
+    ReleaseDC(nullptr, screenDc);
+    ASSERT_NE(memDc, nullptr);
+    ASSERT_NE(hBmp, nullptr);
+    ASSERT_NE(dibBits, nullptr);
+    HGDIOBJ oldBmp = SelectObject(memDc, hBmp);
+    RECT bindRc{0, 0, w, h};
+    ASSERT_EQ(dcRt->BindDC(memDc, &bindRc), S_OK);
+
+    for (const char* themeMode : {"light", "dark"}) {
+        cfg.set<std::string>("/general/theme", themeMode);
+        const auto pal = FloatingGlassBar::resolveThemePalette();
+
+        dcRt->BeginDraw();
+        // 使用中性灰背景模拟任意底层贴图画面
+        dcRt->Clear(D2D1::ColorF(0.50f, 0.50f, 0.50f, 1.0f));
+        const D2D1_RECT_F panelRc = D2D1::RectF(8.0f, 8.0f, 152.0f, 56.0f);
+        const D2D1_RECT_F hoverBtnRc = D2D1::RectF(84.0f, 14.0f, 144.0f, 50.0f);
+        FloatingGlassBar::drawGlassPanel(dcRt.Get(), panelRc, 6.0f, pal.isDark);
+        FloatingGlassBar::drawButtonPill(dcRt.Get(), hoverBtnRc, 4.0f, true, false, false, false, 1.0f, pal.isDark);
+        ASSERT_EQ(dcRt->EndDraw(), S_OK);
+        GdiFlush();
+
+        const cv::Mat rendered(h, w, CV_8UC4, dibBits);
+        const cv::Vec4b panelCenterPx = rendered.at<cv::Vec4b>(32, 40);
+        const cv::Vec4b hoverBtnCenterPx = rendered.at<cv::Vec4b>(32, 114);
+
+        EXPECT_GE(wcagContrast(panelCenterPx, pal.textPrimary), 10.0) << "theme=" << themeMode;
+        EXPECT_GE(wcagContrast(hoverBtnCenterPx, pal.textPrimary), 7.0) << "theme=" << themeMode;
+    }
+
+    SelectObject(memDc, oldBmp);
+    DeleteObject(hBmp);
+    DeleteDC(memDc);
 
     std::filesystem::remove_all(tempCfgDir, cfgEc);
 }
