@@ -39,6 +39,11 @@ public:
     virtual const CaptureBackendInfo& info() const noexcept = 0;
     virtual bool initialize(const CaptureRegion& region, std::string& error) = 0;
     virtual bool capture(CaptureFrameView& frame, std::string& error) = 0;
+    /// Reads the last valid frame cached in GPU/CPU staging without waiting for a new desktop update.
+    virtual bool readLastValidFrame(CaptureFrameView& frame) noexcept {
+        (void)frame;
+        return false;
+    }
     /// Releases a mapped frame view. Must be called after every successful capture.
     virtual void releaseFrame() noexcept = 0;
     virtual void shutdown() noexcept = 0;

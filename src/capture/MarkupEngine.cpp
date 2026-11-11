@@ -1044,6 +1044,16 @@ void MarkupEngine::clearAll() {
     resetAllNumbers();
 }
 
+void MarkupEngine::resetSession() {
+    clearAll();
+    m_baseImage.release();
+    m_underlayCache.release();
+    m_filterRoiCache.clear();
+    m_elements.shrink_to_fit();
+    m_underlayElements.shrink_to_fit();
+    ++m_baseRevision;
+}
+
 bool MarkupEngine::clearElementsUndoable() {
     if (m_elements.empty()) {
         resetAllNumbers();

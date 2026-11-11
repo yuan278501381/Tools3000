@@ -506,8 +506,24 @@ void PinGroupBarOverlay::refresh(
 void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
 
-    POINT anchorPt{GetSystemMetrics(SM_CXSCREEN) / 2, 16};
-    HMONITOR mon = MonitorFromPoint(anchorPt, MONITOR_DEFAULTTOPRIMARY);
+    // 跟随当前活跃贴图或鼠标光标所在显示器工作区顶部居中锚定（告别死锁主屏）
+    HMONITOR mon = nullptr;
+    HWND fgHwnd = GetForegroundWindow();
+    if (auto latestPin = PinWindow::latestInstance();
+        latestPin && latestPin->isAlive() && latestPin->hwnd() &&
+        (latestPin->isFocused() || latestPin->hwnd() == fgHwnd)) {
+        mon = MonitorFromWindow(latestPin->hwnd(), MONITOR_DEFAULTTONEAREST);
+    }
+    if (!mon) {
+        POINT cursorPt{};
+        if (GetCursorPos(&cursorPt)) {
+            mon = MonitorFromPoint(cursorPt, MONITOR_DEFAULTTONEAREST);
+        }
+    }
+    if (!mon) {
+        POINT fallbackPt{GetSystemMetrics(SM_CXSCREEN) / 2, 16};
+        mon = MonitorFromPoint(fallbackPt, MONITOR_DEFAULTTOPRIMARY);
+    }
     const RECT work = tools3000::core::dpi::workArea(mon);
     const float scale = std::clamp(tools3000::core::dpi::scaleForMonitor(mon), 1.0f, 4.0f);
     m_dpiScale = scale;
