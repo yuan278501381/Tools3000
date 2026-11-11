@@ -732,10 +732,167 @@ void MarkupEngine::recalculateNextNumbers() noexcept {
     }
 }
 
+bool MarkupEngine::elementEquivalent(const MarkupElement& a, const MarkupElement& b) noexcept {
+    if (a.id != b.id ||
+        a.tool != b.tool ||
+        a.color != b.color ||
+        std::abs(a.thickness - b.thickness) > 1e-3f ||
+        a.lineStyle != b.lineStyle ||
+        a.fill != b.fill ||
+        std::abs(a.cornerRadius - b.cornerRadius) > 1e-3f ||
+        a.arrowStyle != b.arrowStyle ||
+        a.smoothCurve != b.smoothCurve ||
+        a.hasCustomCaps != b.hasCustomCaps ||
+        a.startCap != b.startCap ||
+        a.endCap != b.endCap ||
+        a.startPt != b.startPt ||
+        a.endPt != b.endPt ||
+        a.text != b.text ||
+        std::abs(a.fontSize - b.fontSize) > 1e-3f ||
+        a.textOutline != b.textOutline ||
+        a.textOutlineColor != b.textOutlineColor ||
+        std::abs(a.outlineThickness - b.outlineThickness) > 1e-3f ||
+        a.hasCustomOutline != b.hasCustomOutline ||
+        a.numberValue != b.numberValue ||
+        std::abs(a.dpiScale - b.dpiScale) > 1e-3f ||
+        a.numberShape != b.numberShape ||
+        a.numberFormat != b.numberFormat ||
+        a.hasLeaderArrow != b.hasLeaderArrow ||
+        a.mosaicBlockSize != b.mosaicBlockSize ||
+        std::abs(a.magnifierScale - b.magnifierScale) > 1e-3f ||
+        a.magnifierRadius != b.magnifierRadius ||
+        a.magnifierRadiusY != b.magnifierRadiusY ||
+        a.magnifierCalloutStyle != b.magnifierCalloutStyle ||
+        std::abs(a.spotlightDimAlpha - b.spotlightDimAlpha) > 1e-3f ||
+        a.spotlightEllipse != b.spotlightEllipse ||
+        a.spotlightShowBorder != b.spotlightShowBorder ||
+        a.watermarkText != b.watermarkText ||
+        std::abs(a.watermarkOpacity - b.watermarkOpacity) > 1e-3f ||
+        std::abs(a.watermarkAngle - b.watermarkAngle) > 1e-3f ||
+        a.watermarkSpacing != b.watermarkSpacing ||
+        a.inpaintRadius != b.inpaintRadius ||
+        a.penPoints.size() != b.penPoints.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < a.penPoints.size(); ++i) {
+        if (a.penPoints[i] != b.penPoints[i]) return false;
+    }
+    return true;
+}
+
+bool MarkupEngine::elementsEquivalent(const std::vector<MarkupElement>& a,
+                                      const std::vector<MarkupElement>& b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (!elementEquivalent(a[i], b[i])) return false;
+    }
+    return true;
+}
+
+MarkupEngine::MarkupSnapshot MarkupEngine::captureSnapshot() const {
+    MarkupSnapshot snap;
+    snap.elements.reserve(m_elements.size());
+    for (const auto& elem : m_elements) {
+        if (!elem) continue;
+        MarkupElement copy = *elem;
+        copy.isActive = false;
+        copy.isEditing = false;
+        snap.elements.push_back(std::move(copy));
+    }
+    snap.nextNumbers = m_nextNumbers;
+    return snap;
+}
+
+void MarkupEngine::pushUndoSnapshot() {
+    MarkupSnapshot cur = captureSnapshot();
+    if (!m_undoHistory.empty() &&
+        m_undoHistory.back().nextNumbers == cur.nextNumbers &&
+        elementsEquivalent(m_undoHistory.back().elements, cur.elements)) {
+        m_redoHistory.clear();
+        return;
+    }
+    if (m_undoHistory.size() >= kMaxUndoSteps) {
+        m_undoHistory.pop_front();
+    }
+    m_undoHistory.push_back(std::move(cur));
+    m_redoHistory.clear();
+}
+
+void MarkupEngine::commitUndoSnapshot(MarkupSnapshot&& beforeState) {
+    const MarkupSnapshot cur = captureSnapshot();
+    if (beforeState.nextNumbers == cur.nextNumbers &&
+        elementsEquivalent(beforeState.elements, cur.elements)) {
+        return;
+    }
+    if (m_undoHistory.size() >= kMaxUndoSteps) {
+        m_undoHistory.pop_front();
+    }
+    m_undoHistory.push_back(std::move(beforeState));
+    m_redoHistory.clear();
+}
+
+void MarkupEngine::restoreSnapshot(const MarkupSnapshot& snapshot) {
+    m_elements.clear();
+    m_elements.reserve(snapshot.elements.size());
+    uint32_t maxId = 0;
+    for (const auto& item : snapshot.elements) {
+        auto copy = std::make_unique<MarkupElement>(item);
+        copy->isActive = false;
+        copy->isEditing = false;
+        if (copy->id == 0) {
+            copy->id = g_elementIdCounter++;
+        }
+        maxId = (std::max)(maxId, copy->id);
+        m_elements.push_back(std::move(copy));
+    }
+    uint32_t curCounter = g_elementIdCounter.load(std::memory_order_relaxed);
+    while (curCounter <= maxId &&
+           !g_elementIdCounter.compare_exchange_weak(curCounter, maxId + 1, std::memory_order_relaxed)) {}
+
+    m_nextNumbers = snapshot.nextNumbers;
+    m_underlayCache.release();
+    m_underlayElements.clear();
+}
+
+std::vector<MarkupElement> MarkupEngine::exportElements() const {
+    return captureSnapshot().elements;
+}
+
+void MarkupEngine::importElements(const std::vector<MarkupElement>& elems) {
+    m_undoHistory.clear();
+    m_redoHistory.clear();
+    m_elements.clear();
+    m_elements.reserve(elems.size());
+
+    uint32_t maxId = 0;
+    for (const auto& src : elems) {
+        auto copy = std::make_unique<MarkupElement>(src);
+        copy->isActive = false;
+        copy->isEditing = false;
+        if (copy->id == 0) {
+            copy->id = g_elementIdCounter++;
+        }
+        maxId = (std::max)(maxId, copy->id);
+        m_elements.push_back(std::move(copy));
+    }
+    uint32_t curCounter = g_elementIdCounter.load(std::memory_order_relaxed);
+    while (curCounter <= maxId &&
+           !g_elementIdCounter.compare_exchange_weak(curCounter, maxId + 1, std::memory_order_relaxed)) {}
+
+    recalculateNextNumbers();
+    m_underlayCache.release();
+    m_underlayElements.clear();
+}
+
 void MarkupEngine::setBaseImage(const cv::Mat& image) {
     m_baseImage = image.clone();
     m_elements.clear();
-    m_undoStack.clear();
+    m_undoHistory.clear();
+    m_redoHistory.clear();
+    m_filterRoiCache.clear();
+    m_underlayCache.release();
+    m_underlayElements.clear();
+    ++m_baseRevision;
     resetAllNumbers();
     LOG_DEBUG("标注引擎: 设置底图 {}x{}", image.cols, image.rows);
 }
@@ -743,16 +900,86 @@ void MarkupEngine::setBaseImage(const cv::Mat& image) {
 void MarkupEngine::updateBaseImage(const cv::Mat& image) {
     // 仅替换底图，保留标注/撤销栈/序号状态（选区二次调整后重裁用）
     m_baseImage = image.clone();
+    m_filterRoiCache.clear();
+    m_underlayCache.release();
+    m_underlayElements.clear();
+    ++m_baseRevision;
 }
 
 void MarkupEngine::translateAll(int dx, int dy) {
     if (dx == 0 && dy == 0) return;
-    for (auto& e : m_elements) e->moveBy(dx, dy);
-    for (auto& e : m_undoStack) e->moveBy(dx, dy);  // 撤销栈一并平移，保证 redo 位置正确
+    for (auto& e : m_elements) {
+        if (e) e->moveBy(dx, dy);
+    }
+    for (auto& snap : m_undoHistory) {
+        for (auto& e : snap.elements) e.moveBy(dx, dy);
+    }
+    for (auto& snap : m_redoHistory) {
+        for (auto& e : snap.elements) e.moveBy(dx, dy);
+    }
+    m_filterRoiCache.clear();
+    m_underlayCache.release();
+    m_underlayElements.clear();
 }
 
 cv::Mat MarkupEngine::getCompositeImage(bool includeActiveHandles) const {
     if (m_baseImage.empty()) return {};
+    if (m_elements.empty()) return m_baseImage.clone();
+
+    auto isStageCForeground = [](MarkupTool t) noexcept {
+        return t != MarkupTool::Mosaic &&
+               t != MarkupTool::Blur &&
+               t != MarkupTool::Inpaint &&
+               t != MarkupTool::Spotlight;
+    };
+
+    const size_t total = m_elements.size();
+    if (total >= 2 && m_elements.back() && isStageCForeground(m_elements.back()->tool)) {
+        const size_t prefixCount = total - 1;
+        bool cacheHit = (!m_underlayCache.empty() &&
+                         m_underlayBaseRev == m_baseRevision &&
+                         m_underlayCache.size() == m_baseImage.size() &&
+                         m_underlayCache.type() == m_baseImage.type() &&
+                         m_underlayElements.size() == prefixCount);
+        if (cacheHit) {
+            for (size_t i = 0; i < prefixCount; ++i) {
+                if (!m_elements[i] || !elementEquivalent(*m_elements[i], m_underlayElements[i])) {
+                    cacheHit = false;
+                    break;
+                }
+            }
+        }
+
+        if (!cacheHit) {
+            cv::Mat prefixCanvas = m_baseImage.clone();
+            renderSubset(prefixCanvas, prefixCount, false);
+            m_underlayCache = prefixCanvas;
+            m_underlayBaseRev = m_baseRevision;
+            m_underlayElements.clear();
+            m_underlayElements.reserve(prefixCount);
+            for (size_t i = 0; i < prefixCount; ++i) {
+                if (m_elements[i]) {
+                    MarkupElement spec = *m_elements[i];
+                    spec.isActive = false;
+                    spec.isEditing = false;
+                    m_underlayElements.push_back(std::move(spec));
+                }
+            }
+        }
+
+        cv::Mat result = m_underlayCache.clone();
+        renderElement(result, *m_elements.back(), false);
+        if (includeActiveHandles) {
+            for (const auto& elem : m_elements) {
+                if (elem && elem->isActive) {
+                    if (const auto* handler = MarkupToolRegistry::instance().getHandler(elem->tool)) {
+                        handler->renderActiveHandles(result, *elem);
+                    }
+                }
+            }
+        }
+        return result;
+    }
 
     cv::Mat result = m_baseImage.clone();
     renderAll(result, includeActiveHandles);
@@ -764,70 +991,84 @@ cv::Mat MarkupEngine::getCompositeImage(bool includeActiveHandles) const {
 // ─────────────────────────────────────────────────────────────────────────────
 
 MarkupElement* MarkupEngine::addElement(std::unique_ptr<MarkupElement> element) {
-    m_undoStack.clear();  // 新增元素后清空重做栈
-    element->id = g_elementIdCounter++;
+    if (!element) return nullptr;
+    pushUndoSnapshot();
+    if (element->id == 0) {
+        element->id = g_elementIdCounter++;
+    }
     m_elements.push_back(std::move(element));
     return m_elements.back().get();
 }
 
 bool MarkupEngine::undo() {
-    if (m_elements.empty()) return false;
+    if (m_undoHistory.empty()) return false;
 
-    auto elem = std::move(m_elements.back());
-    m_elements.pop_back();
-    if (elem) {
-        elem->isActive = false;
-        elem->isEditing = false;
+    MarkupSnapshot current = captureSnapshot();
+    if (m_redoHistory.size() >= kMaxUndoSteps) {
+        m_redoHistory.pop_front();
     }
-    for (auto& existing : m_elements) {
-        if (existing) {
-            existing->isActive = false;
-            existing->isEditing = false;
-        }
-    }
-    m_undoStack.push_back(std::move(elem));
+    m_redoHistory.push_back(std::move(current));
 
-    // 重新按各序号制式独立校准计数器
-    recalculateNextNumbers();
+    MarkupSnapshot prev = std::move(m_undoHistory.back());
+    m_undoHistory.pop_back();
+    restoreSnapshot(prev);
 
     LOG_DEBUG("标注引擎: 撤销, 剩余元素数={}", m_elements.size());
     return true;
 }
 
 bool MarkupEngine::redo() {
-    if (m_undoStack.empty()) return false;
+    if (m_redoHistory.empty()) return false;
 
-    auto restored = std::move(m_undoStack.back());
-    m_undoStack.pop_back();
-    for (auto& existing : m_elements) {
-        if (existing) {
-            existing->isActive = false;
-            existing->isEditing = false;
-        }
+    MarkupSnapshot current = captureSnapshot();
+    if (m_undoHistory.size() >= kMaxUndoSteps) {
+        m_undoHistory.pop_front();
     }
-    if (restored) {
-        restored->isActive = false;
-        restored->isEditing = false;
-        if (restored->tool == MarkupTool::Number) {
-            const size_t slot = numberFormatSlot(restored->numberFormat);
-            m_nextNumbers[slot] = (std::max)(m_nextNumbers[slot], restored->numberValue + 1);
-        }
-        m_elements.push_back(std::move(restored));
-    }
+    m_undoHistory.push_back(std::move(current));
+
+    MarkupSnapshot next = std::move(m_redoHistory.back());
+    m_redoHistory.pop_back();
+    restoreSnapshot(next);
+
     LOG_DEBUG("标注引擎: 重做, 剩余元素数={}", m_elements.size());
     return true;
 }
 
 void MarkupEngine::clearAll() {
     m_elements.clear();
-    m_undoStack.clear();
+    m_undoHistory.clear();
+    m_redoHistory.clear();
+    m_filterRoiCache.clear();
+    m_underlayCache.release();
+    m_underlayElements.clear();
     resetAllNumbers();
 }
 
+bool MarkupEngine::clearElementsUndoable() {
+    if (m_elements.empty()) {
+        resetAllNumbers();
+        return false;
+    }
+    pushUndoSnapshot();
+    m_elements.clear();
+    m_underlayCache.release();
+    m_underlayElements.clear();
+    resetAllNumbers();
+    return true;
+}
+
 void MarkupEngine::removeElement(uint32_t id) {
+    const auto found = std::find_if(m_elements.begin(), m_elements.end(),
+        [id](const std::unique_ptr<MarkupElement>& e) { return e && e->id == id; });
+    if (found == m_elements.end()) return;
+
+    pushUndoSnapshot();
     m_elements.erase(std::remove_if(m_elements.begin(), m_elements.end(),
-        [id](const std::unique_ptr<MarkupElement>& e) { return e->id == id; }),
+        [id](const std::unique_ptr<MarkupElement>& e) { return e && e->id == id; }),
         m_elements.end());
+    m_filterRoiCache.erase(id);
+    m_underlayCache.release();
+    m_underlayElements.clear();
 
     recalculateNextNumbers();
 }
@@ -956,16 +1197,20 @@ MarkupElement* MarkupEngine::addText(cv::Point position, const std::string& text
 
 MarkupElement* MarkupEngine::drawNumberMark(cv::Point position, MarkupColor color, float dpiScale,
                                             NumberBadgeShape shape, NumberFormat format) {
+    const size_t slot = numberFormatSlot(format);
+    const int assigned = m_nextNumbers[slot];
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Number;
     elem->startPt = position;
     elem->endPt = position;
     elem->color = color;
-    elem->numberValue = m_nextNumbers[numberFormatSlot(format)]++;
+    elem->numberValue = assigned;
     elem->dpiScale = dpiScale;
     elem->numberShape = shape;
     elem->numberFormat = format;
-    return addElement(std::move(elem));
+    MarkupElement* added = addElement(std::move(elem));
+    m_nextNumbers[slot] = assigned + 1;
+    return added;
 }
 
 int MarkupEngine::addNumberMark(cv::Point position, MarkupColor color, float dpiScale,
@@ -4302,22 +4547,102 @@ const IMarkupToolHandler* MarkupToolRegistry::getHandler(MarkupTool tool) const 
     return nullptr;
 }
 
-void MarkupEngine::renderAll(cv::Mat& canvas, bool includeActiveHandles) const {
-    if (canvas.empty() || m_elements.empty()) return;
+namespace {
+
+uint64_t computeSampledRoiChecksum(const cv::Mat& canvas, const cv::Rect& sampleRect) noexcept {
+    if (canvas.empty() || sampleRect.width <= 0 || sampleRect.height <= 0) return 0;
+    uint64_t hash = 14695981039346656037ULL;
+    const int stepY = (std::max)(1, sampleRect.height / 16);
+    const int stepX = (std::max)(1, sampleRect.width / 16);
+    const int ch = canvas.channels();
+    for (int y = sampleRect.y; y < sampleRect.y + sampleRect.height; y += stepY) {
+        const uchar* row = canvas.ptr<uchar>(y);
+        for (int x = sampleRect.x; x < sampleRect.x + sampleRect.width; x += stepX) {
+            const uchar* px = row + static_cast<size_t>(x) * static_cast<size_t>(ch);
+            for (int c = 0; c < ch; ++c) {
+                hash ^= static_cast<uint64_t>(px[c]);
+                hash *= 1099511628211ULL;
+            }
+        }
+    }
+    return hash;
+}
+
+} // namespace
+
+void MarkupEngine::renderFilterElementCached(cv::Mat& canvas, const MarkupElement& elem) const {
+    const auto* handler = MarkupToolRegistry::instance().getHandler(elem.tool);
+    if (!handler || canvas.empty()) return;
+
+    const int x1 = (std::max)(0, (std::min)(elem.startPt.x, elem.endPt.x));
+    const int y1 = (std::max)(0, (std::min)(elem.startPt.y, elem.endPt.y));
+    const int x2 = (std::min)(canvas.cols, (std::max)(elem.startPt.x, elem.endPt.x));
+    const int y2 = (std::min)(canvas.rows, (std::max)(elem.startPt.y, elem.endPt.y));
+    if (x2 <= x1 || y2 <= y1) return;
+
+    const cv::Rect dstRoi(x1, y1, x2 - x1, y2 - y1);
+    const int paramVal = (elem.tool == MarkupTool::Inpaint) ? elem.inpaintRadius : elem.mosaicBlockSize;
+
+    cv::Rect sampleRoi = dstRoi;
+    if (elem.tool == MarkupTool::Inpaint) {
+        const double safeRadius = std::clamp(static_cast<double>(elem.inpaintRadius), 1.0, 32.0);
+        const int pad = (std::max)(16, static_cast<int>(std::ceil(safeRadius * 3.0)));
+        sampleRoi = cv::Rect(x1 - pad, y1 - pad, (x2 - x1) + pad * 2, (y2 - y1) + pad * 2) &
+                    cv::Rect(0, 0, canvas.cols, canvas.rows);
+    }
+
+    if (elem.id != 0) {
+        const uint64_t checksum = computeSampledRoiChecksum(canvas, sampleRoi);
+        auto it = m_filterRoiCache.find(elem.id);
+        if (it != m_filterRoiCache.end()) {
+            const auto& entry = it->second;
+            if (entry.tool == elem.tool &&
+                entry.dstRoi == dstRoi &&
+                entry.paramValue == paramVal &&
+                entry.channels == canvas.channels() &&
+                entry.inputChecksum == checksum &&
+                entry.resultPatch.size() == dstRoi.size() &&
+                entry.resultPatch.type() == canvas.type()) {
+                entry.resultPatch.copyTo(canvas(dstRoi));
+                return;
+            }
+        }
+
+        handler->render(canvas, elem);
+
+        if (m_filterRoiCache.size() > 64) {
+            m_filterRoiCache.clear();
+        }
+        FilterRoiCacheEntry updated;
+        updated.tool = elem.tool;
+        updated.dstRoi = dstRoi;
+        updated.paramValue = paramVal;
+        updated.channels = canvas.channels();
+        updated.inputChecksum = checksum;
+        updated.resultPatch = canvas(dstRoi).clone();
+        m_filterRoiCache[elem.id] = std::move(updated);
+        return;
+    }
+
+    handler->render(canvas, elem);
+}
+
+void MarkupEngine::renderSubset(cv::Mat& canvas, size_t count, bool includeActiveHandles) const {
+    if (canvas.empty() || m_elements.empty() || count == 0) return;
+    const size_t limit = (std::min)(count, m_elements.size());
 
     auto isBaseFilterTool = [](MarkupTool t) noexcept {
         return t == MarkupTool::Mosaic || t == MarkupTool::Blur || t == MarkupTool::Inpaint;
     };
 
     std::vector<const MarkupElement*> spotlights;
-    for (const auto& elem : m_elements) {
+    for (size_t i = 0; i < limit; ++i) {
+        const auto& elem = m_elements[i];
         if (!elem) continue;
         if (elem->tool == MarkupTool::Spotlight) {
             spotlights.push_back(elem.get());
         } else if (isBaseFilterTool(elem->tool)) {
-            if (const auto* handler = MarkupToolRegistry::instance().getHandler(elem->tool)) {
-                handler->render(canvas, *elem);
-            }
+            renderFilterElementCached(canvas, *elem);
         }
     }
 
@@ -4361,7 +4686,8 @@ void MarkupEngine::renderAll(cv::Mat& canvas, bool includeActiveHandles) const {
         cv::addWeighted(layerRoi, alpha, dstRoi, 1.0 - alpha, 0.0, dstRoi);
     };
 
-    for (const auto& elem : m_elements) {
+    for (size_t i = 0; i < limit; ++i) {
+        const auto& elem = m_elements[i];
         if (!elem || elem->tool == MarkupTool::Spotlight || isBaseFilterTool(elem->tool)) continue;
         if (const auto* handler = MarkupToolRegistry::instance().getHandler(elem->tool)) {
             renderWithColorOpacity(canvas, handler, *elem);
@@ -4369,7 +4695,8 @@ void MarkupEngine::renderAll(cv::Mat& canvas, bool includeActiveHandles) const {
     }
 
     if (includeActiveHandles) {
-        for (const auto& elem : m_elements) {
+        for (size_t i = 0; i < limit; ++i) {
+            const auto& elem = m_elements[i];
             if (elem && elem->isActive) {
                 if (const auto* handler = MarkupToolRegistry::instance().getHandler(elem->tool)) {
                     handler->renderActiveHandles(canvas, *elem);
@@ -4377,6 +4704,10 @@ void MarkupEngine::renderAll(cv::Mat& canvas, bool includeActiveHandles) const {
             }
         }
     }
+}
+
+void MarkupEngine::renderAll(cv::Mat& canvas, bool includeActiveHandles) const {
+    renderSubset(canvas, m_elements.size(), includeActiveHandles);
 }
 
 void MarkupEngine::renderElement(cv::Mat& canvas, const MarkupElement& element, bool includeActiveHandles) const {
@@ -4408,6 +4739,10 @@ void MarkupEngine::renderElement(cv::Mat& canvas, const MarkupElement& element, 
                 }
                 cv::addWeighted(layerRoi, alpha, dstRoi, 1.0 - alpha, 0.0, dstRoi);
             }
+        } else if (element.tool == MarkupTool::Mosaic ||
+                   element.tool == MarkupTool::Blur ||
+                   element.tool == MarkupTool::Inpaint) {
+            renderFilterElementCached(canvas, element);
         } else {
             handler->render(canvas, element);
         }

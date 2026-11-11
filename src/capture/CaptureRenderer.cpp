@@ -230,6 +230,10 @@ void CaptureRenderer::shutdown() {
 void CaptureRenderer::applyThemeColors() {
     if (!m_renderTarget) return;
 
+    const auto pal = FloatingGlassBar::resolveThemePalette();
+    m_renderTarget->CreateSolidColorBrush(pal.panelBg, m_infoBgBrush.ReleaseAndGetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.primaryText, m_infoTextBrush.ReleaseAndGetAddressOf());
+
     // 截图与录屏选区采用纯净零色偏白晶主线，杜绝彩色边框干扰被截画面原色判断
     m_renderTarget->CreateSolidColorBrush(
         D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f),
@@ -600,25 +604,31 @@ bool CaptureRenderer::updateScreenBitmap(const cv::Mat& image) {
     }
 
     if (!bgra.isContinuous()) bgra = bgra.clone();
+
+    // 单纹理快路径优先：屏幕宽高 <= safeMaxBmp（如双 2K/4K <= 16384）时直接单纹理创建 m_screenBitmap，
+    // 跳过 rebuildBitmapTiles，彻底消灭首帧双倍上传与常驻冗余 GPU 瓦片纹理；仅超限巨幕或失败时才启用瓦片流。
+    const UINT32 hwMaxSize = m_renderTarget->GetMaximumBitmapSize();
+    const UINT32 safeMaxBmp = (hwMaxSize > 0) ? (std::min)(hwMaxSize, 16384u) : 4096u;
+    if (static_cast<UINT32>(bgra.cols) <= safeMaxBmp &&
+        static_cast<UINT32>(bgra.rows) <= safeMaxBmp) {
+        const auto props = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode));
+        const HRESULT hr = m_renderTarget->CreateBitmap(
+            D2D1::SizeU(static_cast<UINT32>(bgra.cols), static_cast<UINT32>(bgra.rows)),
+            bgra.data, static_cast<UINT32>(bgra.step[0]), props, m_screenBitmap.GetAddressOf());
+        if (SUCCEEDED(hr) && m_screenBitmap) {
+            m_screenTiles.clear();
+            m_screenTilesW = bgra.cols;
+            m_screenTilesH = bgra.rows;
+            invalidate();
+            return true;
+        }
+        m_screenBitmap.Reset();
+    }
+
     if (!rebuildBitmapTiles(bgra, alphaMode, m_screenTiles, m_screenTilesW, m_screenTilesH)) {
         LOG_ERROR("截图底图上传 Direct2D 失败, hr=0x{:08X}", static_cast<unsigned>(E_FAIL));
         return false;
-    }
-
-    // 单纹理快路径严格遵守显卡真实 GetMaximumBitmapSize() 上限（8192px 上限显卡或多 4K 超宽屏自动走二维瓦片流）
-    const UINT32 hwMaxSize = m_renderTarget->GetMaximumBitmapSize();
-    const UINT32 safeMaxBmp = (hwMaxSize > 0) ? hwMaxSize : 4096u;
-    if (static_cast<UINT32>(bgra.cols) <= safeMaxBmp &&
-        static_cast<UINT32>(bgra.rows) <= safeMaxBmp) {
-        if (m_screenTiles.size() == 1) {
-            m_screenBitmap = m_screenTiles.front().bitmap;
-        } else {
-            const auto props = D2D1::BitmapProperties(
-                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode));
-            m_renderTarget->CreateBitmap(
-                D2D1::SizeU(static_cast<UINT32>(bgra.cols), static_cast<UINT32>(bgra.rows)),
-                bgra.data, static_cast<UINT32>(bgra.step[0]), props, m_screenBitmap.GetAddressOf());
-        }
     }
 
     invalidate();
@@ -1298,23 +1308,24 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
     const float pillRadius = 10.0f * scale;
     auto pillRounded = D2D1::RoundedRect(pillRect, pillRadius, pillRadius);
 
-    // 1. 统一复用温润雪瓷白微晶浮岛底板（与主工具栏材质、阴影、内高光环 100% 同宗同源）
+    // 1. 统一复用动态明暗主题微晶浮岛底板（雪瓷白 / 黑曜石微晶玻璃 + 动态强调色）
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     const bool activeState = isHovered || state.isSizeMenuOpen;
-    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), pillRect, pillRadius, false);
+    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), pillRect, pillRadius, pal.isDark);
 
     ComPtr<ID2D1SolidColorBrush> pillBorder, pillText, posTextBrush, accentBrush, dividerBrush, subPillBg, subPillBorder;
     m_renderTarget->CreateSolidColorBrush(
-        activeState ? CaptureHudPalette::kSizeHudHoverBorder : CaptureHudPalette::kSizeHudBorder,
+        activeState ? pal.accentBorder : pal.panelBorder,
         pillBorder.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, pillText.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSecondaryText, posTextBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipAccentText, accentBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudDivider, dividerBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.primaryText, pillText.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.secondaryText, posTextBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentText, accentBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.divider, dividerBrush.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(
-        activeState ? CaptureHudPalette::kChipHoverBg : CaptureHudPalette::kChipAccentBg,
+        activeState ? pal.hoverBg : pal.accentSoftBg,
         subPillBg.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(
-        activeState ? CaptureHudPalette::kChipHoverBorder : CaptureHudPalette::kChipAccentBorder,
+        pal.accentBorder,
         subPillBorder.GetAddressOf());
 
     if (activeState && pillBorder) {
@@ -1444,27 +1455,41 @@ void CaptureRenderer::drawSizeMenu(const D2D1_RECT_F& hudRect, CaptureState& sta
     state.sizeMenuRect = menuRect;
 
     const float menuRadius = 11.0f * scale;
-    // 1. 统一采用温润雪瓷白微晶卡片底板（彻底清退紫黑底与电光紫杂色）
-    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), menuRect, menuRadius, false);
+    const auto pal = FloatingGlassBar::resolveThemePalette();
+    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), menuRect, menuRadius, pal.isDark);
 
     ComPtr<ID2D1SolidColorBrush> dividerBrush;
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudDivider, dividerBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.divider, dividerBrush.GetAddressOf());
 
     ComPtr<ID2D1SolidColorBrush> segTrackBg, segTrackBorder, segActiveShadow, segActiveBg, segActiveBorder;
     ComPtr<ID2D1SolidColorBrush> primaryTextBrush, secondaryTextBrush, formulaTextBrush;
     ComPtr<ID2D1SolidColorBrush> rowHoverBg, switchOnBg, switchOffBg, knobShadowBrush, knobBrush;
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(241.0f / 255.0f, 245.0f / 255.0f, 249.0f / 255.0f, 0.98f), segTrackBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.08f), segTrackBorder.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.07f), segActiveShadow.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), segActiveBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.13f), segActiveBorder.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, primaryTextBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSecondaryText, secondaryTextBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(100.0f / 255.0f, 116.0f / 255.0f, 139.0f / 255.0f, 0.92f), formulaTextBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.045f), rowHoverBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(30.0f / 255.0f, 41.0f / 255.0f, 59.0f / 255.0f, 0.95f), switchOnBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(203.0f / 255.0f, 213.0f / 255.0f, 225.0f / 255.0f, 0.95f), switchOffBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.14f), knobShadowBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.06f)
+                   : D2D1::ColorF(241.0f / 255.0f, 245.0f / 255.0f, 249.0f / 255.0f, 0.98f),
+        segTrackBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.panelBorder, segTrackBorder.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.28f)
+                   : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.07f),
+        segActiveShadow.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(0.18f, 0.22f, 0.30f, 0.96f)
+                   : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f),
+        segActiveBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentBorder, segActiveBorder.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.primaryText, primaryTextBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.secondaryText, secondaryTextBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.mutedText, formulaTextBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.hoverBg, rowHoverBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accent, switchOnBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f)
+                   : D2D1::ColorF(203.0f / 255.0f, 213.0f / 255.0f, 225.0f / 255.0f, 0.95f),
+        switchOffBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.0f, 0.0f, 0.0f, pal.isDark ? 0.32f : 0.14f),
+        knobShadowBrush.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), knobBrush.GetAddressOf());
 
     const float curX = static_cast<float>(state.currentCursor.x);
@@ -1595,10 +1620,13 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
         pushedGhostLayer = true;
     }
 
+    const auto pal = FloatingGlassBar::resolveThemePalette();
+    const bool isDark = pal.isDark;
+
     // 1. 绘制主工具栏浮岛卡片 (12px 现代光学双环微晶圆角)
     drawGlassPanel(state.primaryToolbarRect, 12.0f * scale, false);
 
-    // 1b. 绘制主工具栏左侧 2x3 浅石板灰六点拖拽手柄 (PixPin 风格自由拖拽握把)
+    // 1b. 绘制主工具栏左侧 2x3 六点拖拽手柄 (PixPin 风格自由拖拽握把)
     if (state.toolbarGripRect.right > state.toolbarGripRect.left &&
         state.toolbarGripRect.bottom > state.toolbarGripRect.top) {
         const bool gripHovered = state.isDraggingToolbar ||
@@ -1607,9 +1635,10 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
              state.currentCursor.y >= state.toolbarGripRect.top &&
              state.currentCursor.y <= state.toolbarGripRect.bottom);
         ComPtr<ID2D1SolidColorBrush> gripDotBrush;
-        m_renderTarget->CreateSolidColorBrush(
-            gripHovered ? CaptureHudPalette::kGripDotHover : CaptureHudPalette::kGripDotIdle,
-            gripDotBrush.GetAddressOf());
+        const D2D1_COLOR_F gripColor = isDark
+            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, gripHovered ? 0.65f : 0.34f)
+            : (gripHovered ? CaptureHudPalette::kGripDotHover : CaptureHudPalette::kGripDotIdle);
+        m_renderTarget->CreateSolidColorBrush(gripColor, gripDotBrush.GetAddressOf());
         if (gripDotBrush) {
             const float gcx = (state.toolbarGripRect.left + state.toolbarGripRect.right) * 0.5f;
             const float gcy = (state.toolbarGripRect.top + state.toolbarGripRect.bottom) * 0.5f;
@@ -1631,10 +1660,6 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
         drawGlassPanel(state.secondaryToolbarRect, 11.0f * scale, false);
     }
 
-    // 截图与录屏工具栏家族统一采用温润雪瓷白亮色微晶模式 + 深石墨中性强调色（仅保留完成绿与录屏珊瑚红为主焦点）
-    const bool isDark = false;
-    const D2D1_COLOR_F graphiteAccent = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 1.0f);
-
     ComPtr<ID2D1SolidColorBrush> buttonBrush;
     ComPtr<ID2D1SolidColorBrush> activeBrush;
     ComPtr<ID2D1SolidColorBrush> activeBorderBrush;
@@ -1652,14 +1677,12 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
     ComPtr<ID2D1SolidColorBrush> secondaryActiveBrush;
     ComPtr<ID2D1SolidColorBrush> separatorBrush;
 
-    const D2D1_COLOR_F techBlueAccent = D2D1::ColorF(37.0f / 255.0f, 99.0f / 255.0f, 235.0f / 255.0f, 1.0f);
-
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f), buttonBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.055f), hoverBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(59.0f / 255.0f, 130.0f / 255.0f, 246.0f / 255.0f, 0.10f), activeBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(59.0f / 255.0f, 130.0f / 255.0f, 246.0f / 255.0f, 0.10f), secondaryActiveBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(59.0f / 255.0f, 130.0f / 255.0f, 246.0f / 255.0f, 0.22f), activeBorderBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(techBlueAccent, activeIconBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.hoverBg, hoverBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentSoftBg, activeBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentSoftBg, secondaryActiveBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentBorder, activeBorderBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentText, activeIconBrush.GetAddressOf());
 
     // 完成按钮：立体翡翠绿胶囊与内高光
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.72f, 0.45f, 0.96f), confirmBrush.GetAddressOf());
@@ -1667,13 +1690,16 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f), confirmHighlightBrush.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), confirmIconBrush.GetAddressOf());
 
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.94f, 0.26f, 0.26f, 0.12f), dangerHoverBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.22f, 0.26f, 1.0f), dangerIconBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.dangerSoftBg, dangerHoverBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.dangerText, dangerIconBrush.GetAddressOf());
 
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(30.0f / 255.0f, 41.0f / 255.0f, 59.0f / 255.0f, 0.94f), iconBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(30.0f / 255.0f, 41.0f / 255.0f, 59.0f / 255.0f, 0.28f), disabledIconBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, tipTextBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.11f), separatorBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.primaryText, iconBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f)
+               : D2D1::ColorF(30.0f / 255.0f, 41.0f / 255.0f, 59.0f / 255.0f, 0.28f),
+        disabledIconBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.primaryText, tipTextBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.divider, separatorBrush.GetAddressOf());
 
     auto drawButtonGroup = [&](const std::vector<ToolbarButton>& btnList) {
         for (size_t idx = 0; idx < btnList.size(); ++idx) {
@@ -2035,8 +2061,10 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.24f), sideShadowBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.72f), sideIdleBg.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.88f), sideHoverBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(14.0f / 255.0f, 165.0f / 255.0f, 233.0f / 255.0f, 0.96f), sideActiveBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(2.0f / 255.0f, 132.0f / 255.0f, 199.0f / 255.0f, 0.98f), sideActiveHoverBg.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.accent, sideActiveBg.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(
+            D2D1::ColorF(pal.accent.r * 0.88f, pal.accent.g * 0.88f, pal.accent.b * 0.88f, 0.99f),
+            sideActiveHoverBg.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f), sideRimBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f), sideIconBrush.GetAddressOf());
 
@@ -2166,13 +2194,19 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                                                 state.primaryToolbarRect,
                                                 isVerticalSideBar);
 
-            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 7.0f * scale, false);
+            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 7.0f * scale, isDark);
 
             ComPtr<ID2D1SolidColorBrush> textBrush, kbdBgBrush, kbdBorderBrush, kbdTextBrush;
-            m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, textBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutKeyBg, kbdBgBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutKeyBorder, kbdBorderBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutKeyText, kbdTextBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(pal.primaryText, textBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(
+                isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f) : CaptureHudPalette::kShortcutKeyBg,
+                kbdBgBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(
+                isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f) : CaptureHudPalette::kShortcutKeyBorder,
+                kbdBorderBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(
+                isDark ? pal.primaryText : CaptureHudPalette::kShortcutKeyText,
+                kbdTextBrush.GetAddressOf());
 
             float curLeft = tipRect.left + padX;
             if (m_infoTextFormat && textBrush) {
@@ -2282,6 +2316,7 @@ void CaptureRenderer::drawSubmenu(CaptureState& state) {
     if (state.openSubmenu == SubmenuType::None || !m_renderTarget) return;
 
     float scale = (state.dpiScale > 0.1f) ? state.dpiScale : 1.0f;
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     
     // 线条样式下拉菜单 (实线、长虚线、点虚线、点划线)
     if (state.openSubmenu == SubmenuType::LineStyle) {
@@ -2312,21 +2347,11 @@ void CaptureRenderer::drawSubmenu(CaptureState& state) {
         drawGlassPanel(menuRect, 9.0f * scale, false);
 
         ComPtr<ID2D1SolidColorBrush> itemHoverBg, itemActiveBg, textBrush, lineBrush, activeLineBrush;
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.045f),
-            itemHoverBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.085f),
-            itemActiveBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            CaptureHudPalette::kSecondaryText,
-            textBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(51.0f / 255.0f, 65.0f / 255.0f, 85.0f / 255.0f, 0.92f),
-            lineBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            CaptureHudPalette::kPrimaryText,
-            activeLineBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.hoverBg, itemHoverBg.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.accentSoftBg, itemActiveBg.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.secondaryText, textBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.secondaryText, lineBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.accentText, activeLineBrush.GetAddressOf());
 
         for (size_t i = 0; i < items.size(); ++i) {
             float iy = menuY + padY + i * (itemH + itemGap);
@@ -2409,21 +2434,11 @@ void CaptureRenderer::drawSubmenu(CaptureState& state) {
         drawGlassPanel(menuRect, 9.0f * scale, false);
 
         ComPtr<ID2D1SolidColorBrush> itemHoverBg, itemActiveBg, textBrush, lineBrush, activeLineBrush;
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.045f),
-            itemHoverBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.085f),
-            itemActiveBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            CaptureHudPalette::kSecondaryText,
-            textBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(51.0f / 255.0f, 65.0f / 255.0f, 85.0f / 255.0f, 0.92f),
-            lineBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            CaptureHudPalette::kPrimaryText,
-            activeLineBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.hoverBg, itemHoverBg.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.accentSoftBg, itemActiveBg.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.secondaryText, textBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.secondaryText, lineBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.accentText, activeLineBrush.GetAddressOf());
 
         for (size_t i = 0; i < items.size(); ++i) {
             float iy = menuY + padY + i * (itemH + itemGap);
@@ -2515,21 +2530,11 @@ void CaptureRenderer::drawSubmenu(CaptureState& state) {
         drawGlassPanel(menuRect, 9.0f * scale, false);
 
         ComPtr<ID2D1SolidColorBrush> itemHoverBg, itemActiveBg, textBrush, lineBrush, activeLineBrush;
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.045f),
-            itemHoverBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(59.0f / 255.0f, 130.0f / 255.0f, 246.0f / 255.0f, 0.10f),
-            itemActiveBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            CaptureHudPalette::kSecondaryText,
-            textBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(51.0f / 255.0f, 65.0f / 255.0f, 85.0f / 255.0f, 0.92f),
-            lineBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(37.0f / 255.0f, 99.0f / 255.0f, 235.0f / 255.0f, 1.0f),
-            activeLineBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.hoverBg, itemHoverBg.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.accentSoftBg, itemActiveBg.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.secondaryText, textBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.secondaryText, lineBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.accentText, activeLineBrush.GetAddressOf());
 
         const LineCapStyle currentCap = isStartMenu ? state.currentStartCap : state.currentEndCap;
 
@@ -2686,19 +2691,23 @@ void CaptureRenderer::drawSliderPopup(CaptureState& state) {
     const float popY = popRect.top;
     state.sliderPopup.popupRect = popRect;
 
-    // 1. 温润雪瓷白微晶浮岛
+    // 1. 动态主题微晶浮岛
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     drawGlassPanel(popRect, 10.0f * scale, false);
 
     ComPtr<ID2D1SolidColorBrush> titleBrush, badgeBg, badgeText, trackBg, trackFill, thumbBg, thumbBorder, thumbGlow, hintBrush;
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, titleBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipAccentBg, badgeBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipAccentText, badgeText.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(226.0f / 255.0f, 232.0f / 255.0f, 240.0f / 255.0f, 0.98f), trackBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(37.0f / 255.0f, 99.0f / 255.0f, 235.0f / 255.0f, 0.92f), trackFill.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.primaryText, titleBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentSoftBg, badgeBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentText, badgeText.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f)
+                   : D2D1::ColorF(226.0f / 255.0f, 232.0f / 255.0f, 240.0f / 255.0f, 0.98f),
+        trackBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accent, trackFill.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), thumbBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(37.0f / 255.0f, 99.0f / 255.0f, 235.0f / 255.0f, 0.96f), thumbBorder.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(37.0f / 255.0f, 99.0f / 255.0f, 235.0f / 255.0f, 0.14f), thumbGlow.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSecondaryText, hintBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accent, thumbBorder.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentSoftBg, thumbGlow.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.secondaryText, hintBrush.GetAddressOf());
 
     // 1. 顶部前置矢量微图标、标题与实时无级数值徽章（图标左边缘与下方滑轨严格垂直对齐）
     float topY = popY + 8.0f * scale;
@@ -2900,9 +2909,13 @@ void CaptureRenderer::drawBeautyShellPreview(const D2D1_RECT_F& rect, CaptureSta
             Microsoft::WRL::ComPtr<ID2D1Layer> layer;
             if (SUCCEEDED(m_renderTarget->CreateLayer(layer.GetAddressOf())) && layer) {
                 m_renderTarget->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clipGeo.Get()), layer.Get());
-                if (!state.isLongImageMode() && m_screenBitmap) {
-                    auto sz = m_renderTarget->GetSize();
-                    m_renderTarget->DrawBitmap(m_screenBitmap.Get(), D2D1::RectF(0, 0, sz.width, sz.height));
+                if (m_screenBitmap) {
+                    const auto bmpSz = m_screenBitmap->GetSize();
+                    const auto rtSz = m_renderTarget->GetSize();
+                    const D2D1_RECT_F dstR = state.isLongImageMode()
+                        ? D2D1::RectF(0.0f, 0.0f, bmpSz.width, bmpSz.height)
+                        : D2D1::RectF(0.0f, 0.0f, rtSz.width, rtSz.height);
+                    m_renderTarget->DrawBitmap(m_screenBitmap.Get(), dstR);
                 } else if (!m_screenTiles.empty() && m_screenTilesW > 0 && m_screenTilesH > 0) {
                     const D2D1_RECT_F fullSrcRect = D2D1::RectF(
                         0.0f, 0.0f, static_cast<float>(m_screenTilesW), static_cast<float>(m_screenTilesH));
@@ -2941,7 +2954,8 @@ void CaptureRenderer::drawDropdownMenu(CaptureState& state) {
     if (state.dropdownMenu.type == DropdownType::None || state.dropdownMenu.items.empty() || !m_renderTarget) return;
 
     const float scale = std::clamp(state.dpiScale > 0.0f ? state.dpiScale : 1.0f, 1.0f, 5.0f);
-    const bool isDark = false;
+    const auto pal = FloatingGlassBar::resolveThemePalette();
+    const bool isDark = pal.isDark;
 
     // 1. 响应式微晶双列排版框架：严格测量全项主标题与辅助描述的最大宽度
     float maxLabelW = 0.0f;
@@ -3027,13 +3041,13 @@ void CaptureRenderer::drawDropdownMenu(CaptureState& state) {
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush, hintBrush, checkBrush;
     m_renderTarget->CreateSolidColorBrush(
-        CaptureHudPalette::kPrimaryText,
+        pal.primaryText,
         textBrush.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(
-        CaptureHudPalette::kSecondaryText,
+        pal.secondaryText,
         hintBrush.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(
-        CaptureHudPalette::kPrimaryText,
+        pal.accentText,
         checkBrush.GetAddressOf());
 
     // 确保文本格式作用域隔离为左对齐、垂直居中、不自动换行
@@ -3652,7 +3666,7 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
 
 void CaptureRenderer::drawGlassPanel(const D2D1_RECT_F& rect, float radius, bool seeThrough) {
     (void)seeThrough;
-    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), rect, radius, false);
+    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), rect, radius, FloatingGlassBar::isEffectiveDarkMode());
 }
 
 void CaptureRenderer::drawFloatingToast(const CaptureState& state) {
@@ -3665,7 +3679,7 @@ void CaptureRenderer::drawFloatingToast(const CaptureState& state) {
     }
 
     const float scale = (state.dpiScale > 0.0f) ? state.dpiScale : 1.0f;
-    const bool isDark = false;
+    const bool isDark = FloatingGlassBar::isEffectiveDarkMode();
     IDWriteTextFormat* toastFmt = m_hudPrimaryFormat ? m_hudPrimaryFormat.Get() : m_infoTextFormat.Get();
     const std::wstring cleanMsg = std::wstring(
         tools3000::ui::ToastStyle::stripMachineStatusPrefix(state.loupeToastMessage));
@@ -5907,18 +5921,16 @@ void CaptureRenderer::drawQrChip(const D2D1_RECT_F& selRect, CaptureState& state
     }
     state.qrChipRect = chosen;
 
-    // 绘制温润雪瓷白二维码胶囊底板与细腻石板描边
+    // 绘制动态主题二维码胶囊底板与细腻描边
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     ComPtr<ID2D1SolidColorBrush> chipShadow, chipBg, chipBorder, iconBrush, textBrush;
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.09f, 0.16f, 0.09f), chipShadow.GetAddressOf());
-    if (state.isQrChipHovered) {
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudHoverBg, chipBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudHoverBorder, chipBorder.GetAddressOf());
-    } else {
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudBg, chipBg.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudBorder, chipBorder.GetAddressOf());
-    }
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipAccentText, iconBrush.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, textBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.06f, 0.09f, 0.16f, pal.isDark ? 0.24f : 0.09f), chipShadow.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.panelBg, chipBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        state.isQrChipHovered ? pal.accentBorder : pal.panelBorder, chipBorder.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentText, iconBrush.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.primaryText, textBrush.GetAddressOf());
 
     if (chipShadow) {
         auto shRect = D2D1::RectF(state.qrChipRect.left, state.qrChipRect.top + 1.5f * scale,
@@ -6004,11 +6016,13 @@ void CaptureRenderer::drawCrosshair(float x, float y, CaptureState* pState) {
             auto badgeRect = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
             auto badgeRound = D2D1::RoundedRect(badgeRect, 6.0f * scale, 6.0f * scale);
 
+            const auto pal = FloatingGlassBar::resolveThemePalette();
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush, bgBrush, borderBrush, textBrush, colorChipBrush;
-            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.09f, 0.16f, 0.09f), shadowBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudBg, bgBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudBorder, borderBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, textBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(
+                D2D1::ColorF(0.06f, 0.09f, 0.16f, pal.isDark ? 0.24f : 0.09f), shadowBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(pal.panelBg, bgBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(pal.panelBorder, borderBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(pal.primaryText, textBrush.GetAddressOf());
             m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f), colorChipBrush.GetAddressOf());
 
             if (shadowBrush) {
@@ -6319,17 +6333,18 @@ void CaptureRenderer::drawLongCanvasTopHeader(const D2D1_RECT_F& docSelRect, Cap
     const D2D1_RECT_F headerRect = D2D1::RectF(barLeft, barTop, barLeft + totalW, barTop + barH);
     state.longCanvas.topHeaderRect = headerRect;
 
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     drawGlassPanel(headerRect, 11.0f * scale, false);
 
     ComPtr<ID2D1SolidColorBrush> priText, secText, chipBg, chipHoverBg, chipBorder, accentText, disabledText, dividerBr;
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, priText.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSecondaryText, secText.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipAccentBg, chipBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipHoverBg, chipHoverBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipAccentBorder, chipBorder.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipAccentText, accentText.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.58f, 0.64f, 0.72f, 0.55f), disabledText.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudDivider, dividerBr.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.primaryText, priText.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.secondaryText, secText.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentSoftBg, chipBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.hoverBg, chipHoverBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentBorder, chipBorder.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentText, accentText.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.mutedText, disabledText.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.divider, dividerBr.GetAddressOf());
 
     float curX = barLeft + padX;
     const float midY = barTop + barH * 0.5f;
@@ -6446,13 +6461,15 @@ void CaptureRenderer::drawLongCanvasMinimap(const D2D1_RECT_F& docSelRect, Captu
         }
     }
 
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     ComPtr<ID2D1SolidColorBrush> panelBg, panelBorder, trimMaskBr, cropBarBr, viewFillBr, viewBorderBr;
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.11f, 0.16f, 0.86f), panelBg.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f), panelBorder.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.panelBg, panelBg.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.panelBorder, panelBorder.GetAddressOf());
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.03f, 0.05f, 0.09f, 0.72f), trimMaskBr.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.68f, 1.0f, 0.98f), cropBarBr.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f), viewFillBr.GetAddressOf());
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.92f), viewBorderBr.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accent, cropBarBr.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(pal.accentSoftBg, viewFillBr.GetAddressOf());
+    m_renderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.92f) : pal.accentText, viewBorderBr.GetAddressOf());
 
     const auto panelRound = D2D1::RoundedRect(panel, 11.0f * scale, 11.0f * scale);
     if (panelBg) m_renderTarget->FillRoundedRectangle(panelRound, panelBg.Get());
@@ -6583,8 +6600,23 @@ void CaptureRenderer::renderLongImageStudio(CaptureState& state) {
         D2D1::Matrix3x2F::Scale(z, z) * D2D1::Matrix3x2F::Translation(orig.x, orig.y);
     m_renderTarget->SetTransform(canvasXform);
 
-    // 2.1 绘制完整长图底图瓦片（僅对视口相交瓦片提交 DrawBitmap，60fps 零冗余开销）
-    if (!m_screenTiles.empty() && m_screenTilesW > 0 && m_screenTilesH > 0) {
+    // 2.1 绘制完整长图底图（单纹理快路径直绘可见视口，或超巨幕二维瓦片流裁剪）
+    if (m_screenBitmap) {
+        const auto bmpSz = m_screenBitmap->GetSize();
+        const auto visLt = state.screenToDoc(state.longCanvas.stageRect.left - 8.0f, state.longCanvas.stageRect.top - 8.0f);
+        const auto visRb = state.screenToDoc(state.longCanvas.stageRect.right + 8.0f, state.longCanvas.stageRect.bottom + 8.0f);
+        const D2D1_RECT_F visDoc = D2D1::RectF(
+            std::clamp(visLt.x, 0.0f, bmpSz.width),
+            std::clamp(visLt.y, 0.0f, bmpSz.height),
+            std::clamp(visRb.x, 0.0f, bmpSz.width),
+            std::clamp(visRb.y, 0.0f, bmpSz.height));
+        const auto interp = (std::abs(z - 1.0f) < 0.01f)
+            ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+            : D2D1_BITMAP_INTERPOLATION_MODE_LINEAR;
+        if (visDoc.right > visDoc.left && visDoc.bottom > visDoc.top) {
+            m_renderTarget->DrawBitmap(m_screenBitmap.Get(), visDoc, 1.0f, interp, visDoc);
+        }
+    } else if (!m_screenTiles.empty() && m_screenTilesW > 0 && m_screenTilesH > 0) {
         const auto visLt = state.screenToDoc(state.longCanvas.stageRect.left - 8.0f, state.longCanvas.stageRect.top - 8.0f);
         const auto visRb = state.screenToDoc(state.longCanvas.stageRect.right + 8.0f, state.longCanvas.stageRect.bottom + 8.0f);
         const D2D1_RECT_F visDoc = D2D1::RectF(
@@ -6781,6 +6813,7 @@ void CaptureRenderer::render(CaptureState& state) {
         }
     };
 
+    applyThemeColors();
     m_renderTarget->BeginDraw();
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
@@ -7098,14 +7131,17 @@ void CaptureRenderer::render(CaptureState& state) {
                         alphaMultiplier = static_cast<float>(remaining) / 300.0f;
                     }
 
+                    const auto pal = FloatingGlassBar::resolveThemePalette();
                     const float badgeRadius = 9.5f * scale;
                     ComPtr<ID2D1SolidColorBrush> badgeShadow, badgeBg, badgeBorder, badgeDot;
-                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.09f, 0.16f, 0.11f * alphaMultiplier), badgeShadow.GetAddressOf());
-                    D2D1_COLOR_F bgCol = CaptureHudPalette::kSizeHudBg;
+                    m_renderTarget->CreateSolidColorBrush(
+                        D2D1::ColorF(0.06f, 0.09f, 0.16f, (pal.isDark ? 0.28f : 0.11f) * alphaMultiplier),
+                        badgeShadow.GetAddressOf());
+                    D2D1_COLOR_F bgCol = pal.panelBg;
                     bgCol.a *= alphaMultiplier;
-                    D2D1_COLOR_F bdCol = CaptureHudPalette::kSizeHudBorder;
+                    D2D1_COLOR_F bdCol = pal.panelBorder;
                     bdCol.a *= alphaMultiplier;
-                    D2D1_COLOR_F dotCol = CaptureHudPalette::kShortcutDotAccent;
+                    D2D1_COLOR_F dotCol = pal.accent;
                     dotCol.a *= alphaMultiplier;
                     m_renderTarget->CreateSolidColorBrush(bgCol, badgeBg.GetAddressOf());
                     m_renderTarget->CreateSolidColorBrush(bdCol, badgeBorder.GetAddressOf());

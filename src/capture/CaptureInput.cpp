@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <windowsx.h>
 #include "capture/CaptureInput.h"
+#include "capture/CaptureOverlay.h"
 #include "capture/CaptureHistory.h"
 #include "capture/ClipboardUtils.h"
 #include "capture/PinWindow.h"
@@ -292,6 +293,26 @@ static ImageFormat formatForSavePath(const std::filesystem::path& path, DWORD fi
     }
 }
 
+
+static void pushCoalescedElementUndo(CaptureState& state, DWORD coalesceWindowMs = 450) {
+    if (!state.activeElement) return;
+    const DWORD now = GetTickCount();
+    const uint32_t id = state.activeElement->id;
+    if (id != 0 &&
+        state.lastCoalescedUndoElemId == id &&
+        (now - state.lastCoalescedUndoTick) <= coalesceWindowMs) {
+        state.lastCoalescedUndoTick = now;
+        return;
+    }
+    state.markup.pushUndoSnapshot();
+    state.lastCoalescedUndoElemId = id;
+    state.lastCoalescedUndoTick = now;
+}
+
+static void resetCoalescedUndo(CaptureState& state) noexcept {
+    state.lastCoalescedUndoElemId = 0;
+    state.lastCoalescedUndoTick = 0;
+}
 
 void CaptureInput::initialize(HWND hwnd, CaptureState& state, CaptureRenderer& renderer,
                               std::function<void()> cancelCb,
@@ -964,6 +985,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 m_state->markup.removeElement(m_state->activeElement->id);
             }
             m_state->activeElement = nullptr;
+            resetCoalescedUndo(*m_state);
+            m_renderer->markMarkupDirty();
         }
     }
 
@@ -987,6 +1010,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                     m_state->currentOutlineWidth = 2;
                 }
                 if (m_state->activeElement) {
+                    m_state->markup.pushUndoSnapshot();
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement->textOutlineColor = button.color;
                     m_state->activeElement->hasCustomOutline = true;
                     m_state->activeElement->textOutline = true;
@@ -1002,7 +1027,9 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 } else {
                     m_state->currentColor = button.color;
                 }
-                if (m_state->activeElement) {
+                if (m_state->activeElement && m_state->activeElement->color != button.color) {
+                    m_state->markup.pushUndoSnapshot();
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement->color = button.color;
                     m_renderer->markMarkupDirty();
                     m_renderer->invalidate();
@@ -1137,6 +1164,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                         m_state->currentOutlineWidth = 2;
                     }
                     if (m_state->activeElement) {
+                        m_state->markup.pushUndoSnapshot();
+                        resetCoalescedUndo(*m_state);
                         m_state->activeElement->textOutlineColor = m_state->customColor;
                         m_state->activeElement->hasCustomOutline = true;
                         m_state->activeElement->textOutline = true;
@@ -1151,7 +1180,9 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                     } else {
                         m_state->currentColor = m_state->customColor;
                     }
-                    if (m_state->activeElement) {
+                    if (m_state->activeElement && m_state->activeElement->color != m_state->customColor) {
+                        m_state->markup.pushUndoSnapshot();
+                        resetCoalescedUndo(*m_state);
                         m_state->activeElement->color = m_state->customColor;
                         m_renderer->markMarkupDirty();
                     }
@@ -1170,6 +1201,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             if (button.tool == MarkupTool::Magnifier || m_state->currentTool == MarkupTool::Magnifier) {
                 m_state->magnifierShowBadge = !m_state->magnifierShowBadge;
                 if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Magnifier) {
+                    m_state->markup.pushUndoSnapshot();
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement->fill = m_state->magnifierShowBadge;
                     m_renderer->markMarkupDirty();
                 }
@@ -1178,6 +1211,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 tools3000::core::ConfigManager::instance().set<bool>(
                     "/capture/markup/spotlightBorder", m_state->currentSpotlightBorder);
                 if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Spotlight) {
+                    m_state->markup.pushUndoSnapshot();
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement->spotlightShowBorder = m_state->currentSpotlightBorder;
                     m_renderer->markMarkupDirty();
                 }
@@ -1190,6 +1225,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                     }
                 }
                 if (m_state->activeElement) {
+                    m_state->markup.pushUndoSnapshot();
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement->fill = m_state->currentFillMode;
                     m_renderer->markMarkupDirty();
                 }
@@ -1214,6 +1251,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 tools3000::core::ConfigManager::instance().set<bool>(
                     "/capture/markup/text/outline", m_state->currentTextOutline);
                 if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
+                    m_state->markup.pushUndoSnapshot();
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement->textOutline = m_state->currentTextOutline;
                     if (m_state->currentTextOutline) {
                         m_state->activeElement->textOutlineColor = MarkupColor::Auto();
@@ -1229,8 +1268,12 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 if (m_state->isEditingOutlineColor) {
                     if (isTextTool) {
                         m_state->currentTextOutline = true;
-                        if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
+                        if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text &&
+                            !m_state->activeElement->textOutline) {
+                            m_state->markup.pushUndoSnapshot();
+                            resetCoalescedUndo(*m_state);
                             m_state->activeElement->textOutline = true;
+                            m_renderer->markMarkupDirty();
                         }
                     }
                     closeAllCapturePopups(*m_state, false);
@@ -1261,7 +1304,10 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 tools3000::core::ConfigManager::instance().set<std::string>(
                     "/capture/markup/text/outlineColor", "white");
             }
-            if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
+            if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text &&
+                m_state->activeElement->textOutlineColor != button.color) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 m_state->activeElement->textOutlineColor = button.color;
                 m_renderer->markMarkupDirty();
             }
@@ -1398,7 +1444,9 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
         case ToolbarCommand::SelectLineStyle:
             m_state->currentLineStyle = button.lineStyleParam;
             m_state->openSubmenu = SubmenuType::None;
-            if (m_state->activeElement) {
+            if (m_state->activeElement && m_state->activeElement->lineStyle != m_state->currentLineStyle) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 m_state->activeElement->lineStyle = m_state->currentLineStyle;
                 m_renderer->markMarkupDirty();
             }
@@ -1437,6 +1485,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             }
             m_state->openSubmenu = SubmenuType::None;
             if (m_state->activeElement) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 m_state->activeElement->arrowStyle = m_state->currentArrowStyle;
                 if (m_state->activeElement->hasCustomCaps) {
                     m_state->activeElement->startCap = m_state->currentStartCap;
@@ -1454,6 +1504,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 (m_state->activeElement->tool == MarkupTool::Line ||
                  m_state->activeElement->tool == MarkupTool::Arrow ||
                  m_state->activeElement->tool == MarkupTool::Pen)) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 m_state->activeElement->smoothCurve = m_state->currentSmoothCurve;
                 m_renderer->markMarkupDirty();
             }
@@ -1474,6 +1526,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 m_state->openSubmenu = SubmenuType::None;
             }
             if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Line) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 m_state->activeElement->hasCustomCaps = m_state->currentLineArrowEnabled;
                 m_state->activeElement->startCap = m_state->currentStartCap;
                 m_state->activeElement->endCap = m_state->currentEndCap;
@@ -1513,6 +1567,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             if (m_state->activeElement &&
                 (m_state->activeElement->tool == MarkupTool::Line ||
                  m_state->activeElement->tool == MarkupTool::Arrow)) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 m_state->activeElement->hasCustomCaps = true;
                 m_state->activeElement->startCap = m_state->currentStartCap;
                 m_state->activeElement->endCap = m_state->currentEndCap;
@@ -1540,6 +1596,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             }
             if (m_state->activeElement &&
                 (m_state->activeElement->tool == MarkupTool::Mosaic || m_state->activeElement->tool == MarkupTool::Blur)) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 m_state->activeElement->tool = (button.intParam == 1) ? MarkupTool::Blur : MarkupTool::Mosaic;
                 m_state->activeElement->mosaicBlockSize = (button.intParam == 1)
                     ? (std::max)(5, m_state->currentStrokeWidth * 3)
@@ -1677,6 +1735,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                     ? NumberBadgeShape::RoundedSquare
                     : NumberBadgeShape::Circle;
                 if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Magnifier) {
+                    m_state->markup.pushUndoSnapshot();
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement->numberShape = m_state->currentMagnifierShape;
                     m_renderer->markMarkupDirty();
                 }
@@ -1687,6 +1747,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                     m_state->currentNumberShape = NumberBadgeShape::Circle;
                 }
                 if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Number) {
+                    m_state->markup.pushUndoSnapshot();
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement->numberShape = m_state->currentNumberShape;
                     m_renderer->markMarkupDirty();
                 }
@@ -1716,7 +1778,10 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 m_state->sliderPopup.type = SliderPopupType::None;
             }
             if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Spotlight) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 m_state->activeElement->fill = m_state->currentSpotlightEllipse;
+                m_state->activeElement->spotlightEllipse = m_state->currentSpotlightEllipse;
                 m_renderer->markMarkupDirty();
             }
             m_state->toolbarLayoutValid = false;
@@ -1748,6 +1813,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
 
             m_state->dynamicMagnifierScale = nextScale;
             if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Magnifier) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 m_state->activeElement->magnifierScale = nextScale;
                 m_renderer->markMarkupDirty();
             }
@@ -1760,6 +1827,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             const float curDpi = m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f;
             const bool zh = tools3000::core::isUiLanguageChinese();
             if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Magnifier) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
                 auto* elem = m_state->activeElement;
                 const bool unsetEnd = !elem->hasLeaderArrow && elem->endPt.x == 0 && elem->endPt.y == 0 &&
                                       (elem->startPt.x != 0 || elem->startPt.y != 0);
@@ -1802,6 +1871,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Number) {
                 m_state->activeElement->isActive = false;
                 m_state->activeElement = nullptr;
+                m_renderer->markMarkupDirty();
             }
             m_state->markup.resetNumber(1, targetFmt);
             const bool zh = tools3000::core::isUiLanguageChinese();
@@ -1818,7 +1888,9 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
         case ToolbarCommand::Undo:
             m_state->activeElement = nullptr;
             m_state->isManipulating = false;
+            m_state->hasManipulateSnapshot = false;
             m_state->dragHandle = HitArea::None;
+            resetCoalescedUndo(*m_state);
             m_state->markup.undo();
             for (const auto& el : m_state->markup.elements()) {
                 if (el) {
@@ -1834,7 +1906,9 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
         case ToolbarCommand::Redo:
             m_state->activeElement = nullptr;
             m_state->isManipulating = false;
+            m_state->hasManipulateSnapshot = false;
             m_state->dragHandle = HitArea::None;
+            resetCoalescedUndo(*m_state);
             m_state->markup.redo();
             for (const auto& el : m_state->markup.elements()) {
                 if (el) {
@@ -1850,8 +1924,10 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
         case ToolbarCommand::Clear:
             m_state->activeElement = nullptr;
             m_state->isManipulating = false;
+            m_state->hasManipulateSnapshot = false;
             m_state->dragHandle = HitArea::None;
-            m_state->markup.clearAll();
+            resetCoalescedUndo(*m_state);
+            m_state->markup.clearElementsUndoable();
             m_renderer->markMarkupDirty();
             m_state->toolbarLayoutValid = false;
             prepareMarkupBase();
@@ -1932,7 +2008,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             if (m_state->isMarking) {
                 finishMarkup(m_state->currentCursor);
             }
-            if (m_state->isLongImageMode()) {
+            if (m_state->isLongImageMode() || CaptureOverlay::instance().isEditingPinned()) {
                 if (m_confirmCb) {
                     m_confirmCb({CaptureCompletionAction::Pin});
                 }
@@ -1947,17 +2023,25 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             if (w <= 0 || h <= 0) break;
             prepareMarkupBase();
 
+            cv::Mat cleanBase = cropMarkupBase(m_state->frozenScreen, cv::Rect(x1, y1, w, h));
+            std::vector<MarkupElement> initialElements = m_state->markup.exportElements();
             cv::Mat cropped;
             if (m_state->markup.elementCount() > 0) cropped = m_state->markup.getCompositeImage();
-            else cropped = cropMarkupBase(m_state->frozenScreen, cv::Rect(x1, y1, w, h));
+            else cropped = cleanBase;
             int origX = x1 + GetSystemMetrics(SM_XVIRTUALSCREEN);
             int origY = y1 + GetSystemMetrics(SM_YVIRTUALSCREEN);
             CaptureRegion reg{origX, origY, w, h, m_state->cornerRadius};
 
+            const bool bakedDecorations =
+                (m_state->beautyShell.enabled || m_state->cornerRadius > 0.5f) && !cropped.empty();
             if (m_state->beautyShell.enabled && !cropped.empty()) {
                 cropped = applyBeautyShell(cropped, m_state->beautyShell);
             } else if (m_state->cornerRadius > 0.5f && !cropped.empty()) {
                 cropped = applyRoundedCorners(cropped, m_state->cornerRadius);
+            }
+            if (bakedDecorations) {
+                cleanBase = cropped;
+                initialElements.clear();
             }
 
             int padX = (cropped.cols > reg.width && reg.width > 0) ? (cropped.cols - reg.width) / 2 : 0;
@@ -1973,8 +2057,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             // 先关闭截图覆盖层
             if (m_cancelCb) m_cancelCb();
 
-            // 精确原位贴图
-            PinWindow::create(cropped, spawnPos.x, spawnPos.y);
+            // 精确原位贴图（携带 1:1 无损底图与独立矢量图元，支持后续任意缩放态无损增删改）
+            PinWindow::create(cropped, spawnPos.x, spawnPos.y, 0.0f, {}, cleanBase, std::move(initialElements));
             break;
         }
 
@@ -2218,6 +2302,8 @@ void CaptureInput::beginMarkup(POINT point) {
             m_state->activeElement->textCaret = 0;
             m_state->activeElement->textSelAnchor = 0;
             m_state->activeElement->textLastCaretTick = GetTickCount();
+            m_state->lastCoalescedUndoElemId = m_state->activeElement->id;
+            m_state->lastCoalescedUndoTick = m_state->activeElement->textLastCaretTick;
             m_state->textPreferredCaretX = -1.0f;
             if (m_hwnd) SetTimer(m_hwnd, RENDER_TIMER_ID, 16, nullptr);
         }
@@ -2811,7 +2897,6 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             CaptureShortcutPolicy::cancelShiftTapCandidate(m_state->shiftTapCandidate);
             SetForegroundWindow(hwnd);
             SetFocus(hwnd);
-            m_renderer->markMarkupDirty();
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 
             if ((int)m_state->state.load() == (int)OverlayState::Selected || (int)m_state->state.load() == (int)OverlayState::Marking) {
@@ -2824,6 +2909,11 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         // 检测是否点击或拖拽滑动轨道
                         auto tr = m_state->sliderPopup.trackRect;
                         if (px >= tr.left - 8.0f && px <= tr.right + 8.0f && py >= tr.top - 12.0f && py <= tr.bottom + 12.0f) {
+                            if (m_state->activeElement &&
+                                m_state->sliderPopup.type != SliderPopupType::SelectionCornerRadius) {
+                                m_state->markup.pushUndoSnapshot();
+                                resetCoalescedUndo(*m_state);
+                            }
                             m_state->sliderPopup.isDragging = true;
                             float pct = std::clamp((px - tr.left) / (tr.right - tr.left), 0.0f, 1.0f);
                             int val = m_state->sliderPopup.minValue + static_cast<int>(std::round(pct * (m_state->sliderPopup.maxValue - m_state->sliderPopup.minValue)));
@@ -3052,6 +3142,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                                 m_state->markup.removeElement(m_state->activeElement->id);
                                 m_state->activeElement = nullptr;
                             }
+                            m_renderer->markMarkupDirty();
                             syncShortcutHintContext();
                         }
                     }
@@ -3186,6 +3277,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                             m_state->markup.removeElement(m_state->activeElement->id);
                             m_state->activeElement = nullptr;
                         }
+                        m_renderer->markMarkupDirty();
                         syncShortcutHintContext();
                     }
                     if (selHit == HitArea::CornerRadius) {
@@ -3255,6 +3347,9 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                                 (m_state->activeElement->isEditing && altDown && activeElemHit == HitArea::Body)) {
                                 // 点击外围聚焦虚线框环带（或按住 Alt 拖内部）：保持编辑态并平移整个文本框
                                 m_state->isSelectingText = false;
+                                m_state->manipulateStartSnapshot = m_state->markup.captureSnapshot();
+                                m_state->hasManipulateSnapshot = true;
+                                resetCoalescedUndo(*m_state);
                                 m_state->dragHandle = HitArea::TextMoveBorder;
                                 m_state->isManipulating = true;
                                 m_state->lastMousePos = point;
@@ -3265,6 +3360,9 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                             }
                             if (!m_state->activeElement->isEditing && activeElemHit == HitArea::Body) {
                                 m_state->isSelectingText = false;
+                                m_state->manipulateStartSnapshot = m_state->markup.captureSnapshot();
+                                m_state->hasManipulateSnapshot = true;
+                                resetCoalescedUndo(*m_state);
                                 m_state->textManipulateStart = point;
                                 m_state->dragHandle = HitArea::None;
                                 m_state->isManipulating = true;
@@ -3298,6 +3396,9 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
                         LOG_DEBUG("CaptureInput: active element handle selected hitArea={}, tool={}",
                                   static_cast<int>(activeElemHit), static_cast<int>(m_state->activeElement->tool));
+                        m_state->manipulateStartSnapshot = m_state->markup.captureSnapshot();
+                        m_state->hasManipulateSnapshot = true;
+                        resetCoalescedUndo(*m_state);
                         m_state->dragHandle = (activeElemHit == HitArea::Body) ? HitArea::None : activeElemHit;
                         m_state->isManipulating = true;
                         m_state->lastMousePos = point;
@@ -3425,12 +3526,16 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                             }
                         }
 
+                        m_state->manipulateStartSnapshot = m_state->markup.captureSnapshot();
+                        m_state->hasManipulateSnapshot = true;
+                        resetCoalescedUndo(*m_state);
                         m_state->dragHandle = (hit.area == HitArea::Body || hit.area == HitArea::TextMoveBorder)
                             ? HitArea::None
                             : hit.area;
                         m_state->isManipulating = true;
                         m_state->lastMousePos = point;
                         m_state->longCanvas.lastManipulateDocPt = m_state->screenToDoc(px, py);
+                        m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         updateHoverCursor(point);
                         return 0;
@@ -3450,6 +3555,8 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                             m_state->markup.removeElement(m_state->activeElement->id);
                         }
                         m_state->activeElement = nullptr;
+                        m_renderer->markMarkupDirty();
+                        m_renderer->invalidate();
                     }
 
                     // 若刚退出文本编辑态，仅提交并恢复就绪态，不立即连续落点新建第二个文本框
@@ -4022,7 +4129,6 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         case WM_LBUTTONUP: {
             if (!this) break;
-            m_renderer->markMarkupDirty();
 
             if (m_state->isLongImageMode() &&
                 m_state->longCanvas.dragMode != CaptureState::LongCanvasDragMode::None) {
@@ -4110,6 +4216,16 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         m_state->activeElement->textLastCaretTick = GetTickCount();
                         m_state->textPreferredCaretX = -1.0f;
                         SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
+                        m_renderer->markMarkupDirty();
+                    }
+                }
+                if (m_state->hasManipulateSnapshot) {
+                    m_state->hasManipulateSnapshot = false;
+                    if (!MarkupEngine::elementsEquivalent(
+                            m_state->manipulateStartSnapshot.elements,
+                            m_state->markup.exportElements())) {
+                        m_state->markup.commitUndoSnapshot(std::move(m_state->manipulateStartSnapshot));
+                        m_renderer->markMarkupDirty();
                     }
                 }
                 m_state->isManipulating = false;
@@ -4460,6 +4576,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             if (m_state->activeElement) {
                 m_state->activeElement->isActive = false;
                 m_state->activeElement = nullptr;
+                m_renderer->markMarkupDirty();
                 m_renderer->invalidate();
                 syncShortcutHintContext();
                 return 0;
@@ -4493,6 +4610,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_state->selectionSideRect = {};
                 m_state->toolbarLayoutValid = false;
                 m_state->markup.clearAll();
+                m_renderer->markMarkupDirty();
                 m_renderer->invalidate();
                 syncShortcutHintContext();
                 return 0;
@@ -4540,6 +4658,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                             std::wstring resultStr(bytes / sizeof(wchar_t), L'\0');
                             ImmGetCompositionStringW(hImc, GCS_RESULTSTR, &resultStr[0], bytes);
 
+                            pushCoalescedElementUndo(*m_state, 650);
                             std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
                             CaptureTextEditor::insertText(
                                 wstr,
@@ -4570,6 +4689,9 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 wchar_t ch = static_cast<wchar_t>(wParam);
                 if (ch == 0x08 || ch == 0x7F) { // Backspace / Ctrl+Backspace
                     std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
+                    if (!wstr.empty() || CaptureTextEditor::hasSelection(m_state->activeElement->textCaret, m_state->activeElement->textSelAnchor)) {
+                        pushCoalescedElementUndo(*m_state, 650);
+                    }
                     if (CaptureTextEditor::backspace(
                             wstr,
                             m_state->activeElement->textCaret,
@@ -4583,6 +4705,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     m_renderer->markMarkupDirty();
                     m_renderer->invalidate();
                 } else if (ch == 0x0D) { // Enter: 在当前光标处插入换行符（或替换选区为换行）
+                    pushCoalescedElementUndo(*m_state, 650);
                     std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
                     CaptureTextEditor::insertText(
                         wstr,
@@ -4602,6 +4725,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     m_renderer->invalidate();
                     syncShortcutHintContext();
                 } else if (ch >= 0x20 || ch == 0x09) {
+                    pushCoalescedElementUndo(*m_state, 650);
                     std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
                     CaptureTextEditor::insertText(
                         wstr,
@@ -4623,7 +4747,6 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         case WM_MOUSEWHEEL: {
             if (!this) break;
             CaptureShortcutPolicy::cancelShiftTapCandidate(m_state->shiftTapCandidate);
-            m_renderer->markMarkupDirty();
             short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
 
             // 1. 选区前/未拖拽状态：滚轮切换探测窗口层级 (子控件 <-> 父容器 <-> 顶级窗口 <-> 全屏)
@@ -4655,6 +4778,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 const int delta = (zDelta > 0) ? 1 : -1;
                 const bool ctrlDown = ((GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) != 0) ||
                                       ((GetKeyState(VK_CONTROL) & 0x8000) != 0);
+                pushCoalescedElementUndo(*m_state, 450);
                 adjustPaletteColorByWheel(*m_state, hoveredColorBtn->tool, delta, ctrlDown);
                 m_renderer->markMarkupDirty();
                 m_renderer->invalidate();
@@ -4678,6 +4802,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 }
                 m_state->activeElement = targetMag;
                 targetMag->isActive = true;
+                pushCoalescedElementUndo(*m_state, 450);
                 if (ctrlOrShiftWheel) {
                     const int stepPx = (std::max)(4, static_cast<int>(std::lround(6.0f * wheelDpi)));
                     const int minR = static_cast<int>(std::lround(24.0f * wheelDpi));
@@ -4770,6 +4895,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     float newRad = std::clamp(m_state->currentElementCornerRadius + static_cast<float>(delta * 2), 0.0f, 40.0f);
                     m_state->currentElementCornerRadius = newRad;
                     if (m_state->activeElement) {
+                        pushCoalescedElementUndo(*m_state, 450);
                         m_state->activeElement->cornerRadius = newRad;
                     }
                 } else if (m_state->sliderPopup.type == SliderPopupType::SpotlightDim ||
@@ -4780,6 +4906,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     m_state->currentSpotlightDimAlpha = static_cast<float>(newPct) / 100.0f;
                     tools3000::core::ConfigManager::instance().set<int>("/capture/markup/spotlightDim", newPct);
                     if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Spotlight) {
+                        pushCoalescedElementUndo(*m_state, 450);
                         m_state->activeElement->spotlightDimAlpha = m_state->currentSpotlightDimAlpha;
                     }
                 } else if (m_state->sliderPopup.type == SliderPopupType::OutlineWidth ||
@@ -4793,6 +4920,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         m_state->currentTextOutline = (newOutW > 0);
                     }
                     if (m_state->activeElement) {
+                        pushCoalescedElementUndo(*m_state, 450);
                         m_state->activeElement->outlineThickness = static_cast<float>(newOutW);
                         m_state->activeElement->hasCustomOutline = true;
                         m_state->activeElement->textOutline = (newOutW > 0);
@@ -4803,6 +4931,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 } else if (m_state->sliderPopup.type == SliderPopupType::TextFontSize || m_state->currentTool == MarkupTool::Text) {
                     const float curDpi = m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f;
                     if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
+                        pushCoalescedElementUndo(*m_state, 450);
                         const float newPhysSize = std::clamp(
                             m_state->activeElement->fontSize + static_cast<float>(delta * 2),
                             10.0f, 144.0f * curDpi);
@@ -4825,6 +4954,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     int newW = std::clamp(m_state->currentStrokeWidth + delta, 1, maxW);
                     m_state->currentStrokeWidth = newW;
                     if (m_state->activeElement) {
+                        pushCoalescedElementUndo(*m_state, 450);
                         m_state->activeElement->thickness = static_cast<float>(newW);
                         if (m_state->activeElement->tool == MarkupTool::Mosaic) {
                             m_state->activeElement->mosaicBlockSize = (std::max)(4, newW * 2);
@@ -4873,7 +5003,6 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         case WM_SYSKEYDOWN:
         case WM_KEYDOWN: {
             if (!this) break;
-            m_renderer->markMarkupDirty();
 
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -5029,6 +5158,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
                 case CaptureShortcutAction::NudgeSelectionOrElement:
                     if (m_state->activeElement) {
+                        pushCoalescedElementUndo(*m_state, 450);
                         m_state->activeElement->moveBy(decision.dx, decision.dy);
                         m_renderer->markMarkupDirty();
                     } else {
@@ -5072,6 +5202,8 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                             m_state->currentColor = MarkupColor(
                                 static_cast<uint8_t>(cr), static_cast<uint8_t>(cg), static_cast<uint8_t>(cb));
                             if (m_state->activeElement) {
+                                m_state->markup.pushUndoSnapshot();
+                                resetCoalescedUndo(*m_state);
                                 m_state->activeElement->color = m_state->currentColor;
                                 m_renderer->markMarkupDirty();
                             }
@@ -5107,6 +5239,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         ? m_state->activeElement->numberFormat
                         : m_state->currentNumberFormat;
                     if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Number) {
+                        pushCoalescedElementUndo(*m_state, 450);
                         m_state->activeElement->numberValue =
                             (std::max)(1, m_state->activeElement->numberValue + decision.intDelta);
                         m_renderer->markMarkupDirty();
@@ -5192,6 +5325,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text)) {
                         const float curDpi = m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f;
                         if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
+                            pushCoalescedElementUndo(*m_state, 450);
                             const float newPhysSize = std::clamp(
                                 m_state->activeElement->fontSize + static_cast<float>(decision.intDelta * 2),
                                 10.0f, 144.0f * curDpi);
@@ -5213,6 +5347,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     } else {
                         m_state->currentStrokeWidth = std::clamp(m_state->currentStrokeWidth + decision.intDelta, 1, 60);
                         if (m_state->activeElement) {
+                            pushCoalescedElementUndo(*m_state, 450);
                             const int val = m_state->currentStrokeWidth;
                             m_state->activeElement->thickness = static_cast<float>(val);
                             if (m_state->activeElement->tool == MarkupTool::Mosaic) {
@@ -5243,12 +5378,16 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Magnifier)) {
                         m_state->currentMagnifierColor = decision.color;
                         if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Magnifier) {
+                            m_state->markup.pushUndoSnapshot();
+                            resetCoalescedUndo(*m_state);
                             m_state->activeElement->color = decision.color;
                             m_renderer->markMarkupDirty();
                         }
                     } else {
                         m_state->currentColor = decision.color;
                         if (m_state->activeElement) {
+                            m_state->markup.pushUndoSnapshot();
+                            resetCoalescedUndo(*m_state);
                             m_state->activeElement->color = decision.color;
                             m_renderer->markMarkupDirty();
                         }
@@ -5353,6 +5492,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
                 case CaptureShortcutAction::DeleteSelectedElement:
                     if (m_state->activeElement) {
+                        resetCoalescedUndo(*m_state);
                         m_state->markup.removeElement(m_state->activeElement->id);
                         m_state->activeElement = nullptr;
                         m_renderer->markMarkupDirty();
@@ -5363,6 +5503,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     return 0;
 
                 case CaptureShortcutAction::UndoMarkup:
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement = nullptr;
                     m_state->isManipulating = false;
                     m_state->dragHandle = HitArea::None;
@@ -5379,6 +5520,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     return 0;
 
                 case CaptureShortcutAction::RedoMarkup:
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement = nullptr;
                     m_state->isManipulating = false;
                     m_state->dragHandle = HitArea::None;
@@ -5395,10 +5537,11 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     return 0;
 
                 case CaptureShortcutAction::ClearAllMarkup:
+                    resetCoalescedUndo(*m_state);
                     m_state->activeElement = nullptr;
                     m_state->isManipulating = false;
                     m_state->dragHandle = HitArea::None;
-                    m_state->markup.clearAll();
+                    m_state->markup.clearElementsUndoable();
                     m_renderer->markMarkupDirty();
                     m_state->toolbarLayoutValid = false;
                     m_renderer->invalidate();
@@ -5537,6 +5680,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     } else if (m_state->activeElement) {
                         m_state->activeElement->isActive = false;
                         m_state->activeElement = nullptr;
+                        m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         syncShortcutHintContext();
                     } else if (m_state->isMarkupToolActive) {
@@ -5564,6 +5708,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         m_state->selectionSideRect = {};
                         m_state->toolbarLayoutValid = false;
                         m_state->markup.clearAll();
+                        m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         syncShortcutHintContext();
                     } else {
@@ -5611,6 +5756,8 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         if (CaptureTextEditor::hasSelection(elem.textCaret, elem.textSelAnchor)) {
                             const std::wstring sub = CaptureTextEditor::selectedText(wstr, elem.textCaret, elem.textSelAnchor);
                             if (!sub.empty()) {
+                                m_state->markup.pushUndoSnapshot();
+                                resetCoalescedUndo(*m_state);
                                 tools3000::core::WinUtils::copyToClipboard(sub, hwnd);
                                 CaptureTextEditor::insertText(wstr, elem.textCaret, elem.textSelAnchor, L"");
                                 elem.text = tools3000::core::WinUtils::wstringToUtf8(wstr);
@@ -5641,6 +5788,8 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                             CloseClipboard();
                         }
                         if (!clipWstr.empty()) {
+                            m_state->markup.pushUndoSnapshot();
+                            resetCoalescedUndo(*m_state);
                             std::wstring normalized;
                             normalized.reserve(clipWstr.size());
                             for (size_t i = 0; i < clipWstr.size(); ++i) {
@@ -5712,6 +5861,9 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     }
 
                     if (wParam == VK_DELETE) {
+                        if (!wstr.empty() || CaptureTextEditor::hasSelection(elem.textCaret, elem.textSelAnchor)) {
+                            pushCoalescedElementUndo(*m_state, 650);
+                        }
                         if (CaptureTextEditor::deleteForward(wstr, elem.textCaret, elem.textSelAnchor, ctrl)) {
                             elem.text = tools3000::core::WinUtils::wstringToUtf8(wstr);
                             elem.textRenderSize = cv::Size(0, 0);
@@ -5871,7 +6023,12 @@ void CaptureInput::openDropdownMenu(DropdownType type, const D2D1_RECT_F& anchor
 void CaptureInput::commitDropdownSelection(DropdownType type, int id) {
     if (!m_state) return;
     tools3000::capture::commitDropdownSelection(*m_state, type, id);
-    if (m_renderer) m_renderer->invalidate();
+    if (m_renderer) {
+        if (type == DropdownType::MagnifierCalloutStyle && m_state->activeElement) {
+            m_renderer->markMarkupDirty();
+        }
+        m_renderer->invalidate();
+    }
 }
 
 } // namespace tools3000::capture

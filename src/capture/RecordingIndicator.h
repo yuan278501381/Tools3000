@@ -75,9 +75,16 @@ public:
     /// 获取录制状态条与录制选区避让矩形集合（供 ShortcutHintOverlay 碰撞避让）
     std::vector<RECT> avoidanceRects() const;
 
+    /// 显示后台异步保存/封装状态（SAVING... / 保存中...），屏蔽录制控制按钮防重入
+    void showSaving();
+    bool isSaving() const noexcept { return m_saving; }
+
     /// 显示录制完成快捷响应浮岛卡片（支持一键打开文件夹、一键复制文件）
     void showCompleted(const std::string& filePath, double durationSec);
     bool isCompleted() const { return m_completed; }
+
+    /// 响应全局明暗主题与强调色变更即时重绘
+    void reloadTheme();
 
     /// 判定当前是否应使用中文指示器文案（遵循 /general/language 配置与系统语言回退）
     static bool isChineseLanguagePreferred();
@@ -121,6 +128,7 @@ private:
     HINSTANCE m_hInstance = nullptr;
     int m_logicalWidth = 380;
     bool m_paused = false;
+    bool m_saving = false;
     bool m_completed = false;
     std::string m_completedFilePath;
     DWORD m_completedShowTick = 0;

@@ -173,8 +173,15 @@ public:
     void requestSnapshot();
     bool isSnapshotRequested() const { return m_snapshotRequested.load(); }
 
-    /// 停止录制
+    using AsyncStopCallback = std::function<void(const std::string& savedPath, const RecordStats& finalStats)>;
+
+    /// 停止录制（同步等待线程汇合与编码落盘，供后台收尾线程/插件停机/单测使用）
     std::string stopRecording();
+
+    /// 异步停止录制：立即发出停止信号并在后台收尾线程执行 join + finalizeEncoder + 原子落盘，零阻塞 UI 主线程
+    bool stopRecordingAsync(AsyncStopCallback onComplete = nullptr);
+    bool isStopping() const noexcept { return m_stopping.load(std::memory_order_acquire); }
+    void waitForAsyncStop();
 
     /// 当前状态
     RecordState state() const { return m_state.load(); }
@@ -202,7 +209,7 @@ private:
     };
 
     ScreenRecorder() = default;
-    ~ScreenRecorder() { reapFinishedSnapshots(true); }
+    ~ScreenRecorder() { waitForAsyncStop(); reapFinishedSnapshots(true); }
     ScreenRecorder(const ScreenRecorder&) = delete;
     ScreenRecorder& operator=(const ScreenRecorder&) = delete;
 
@@ -242,10 +249,14 @@ private:
     static std::string formatExtension(RecordFormat format);
 
     std::atomic<RecordState> m_state{RecordState::Idle};
+    std::atomic<bool> m_stopping{false};
     std::atomic<bool> m_finalizePending{false};
     std::atomic<bool> m_skipCountdown{false};
     std::atomic<bool> m_snapshotRequested{false};
     std::thread m_recordThread;
+    std::mutex m_stopThreadMutex;
+    std::thread m_stopThread;
+    std::string m_lastAsyncCompletedPath;
     RecordOptions m_options;
     RecordStats m_stats;
     RecordStateCallback m_stateCallback;

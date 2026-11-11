@@ -1,10 +1,128 @@
 #include "capture/FloatingGlassBar.h"
+#include "capture/CaptureHudPalette.h"
 #include "core/utils/ThemeUtils.h"
 #include <algorithm>
+#include <string>
 
 namespace tools3000::capture {
 
 using namespace Microsoft::WRL;
+
+bool FloatingGlassBar::isEffectiveDarkMode() noexcept {
+    const std::string theme = tools3000::core::ConfigManager::instance().get<std::string>(
+        "/general/theme", "system");
+    if (theme == "dark") return true;
+    if (theme == "light") return false;
+    return tools3000::core::WinUtils::isSystemDarkMode();
+}
+
+tools3000::core::AccentColorRGB FloatingGlassBar::effectiveAccentRGB() noexcept {
+    const std::string accent = tools3000::core::ConfigManager::instance().get<std::string>(
+        "/general/accentColor", "blue");
+    if (!accent.empty() && accent.front() == '#') {
+        return tools3000::core::parseHexColor(accent);
+    }
+    if (accent == "emerald") {
+        return tools3000::core::getAccentColorRGB("mint");
+    }
+    return tools3000::core::getAccentColorRGB(accent);
+}
+
+D2D1_COLOR_F FloatingGlassBar::effectiveAccentColor(float alpha) noexcept {
+    const auto rgb = effectiveAccentRGB();
+    return D2D1::ColorF(rgb.r, rgb.g, rgb.b, alpha);
+}
+
+FloatingGlassBar::ThemePalette FloatingGlassBar::resolveThemePalette() noexcept {
+    return resolveThemePalette(isEffectiveDarkMode());
+}
+
+FloatingGlassBar::ThemePalette FloatingGlassBar::resolveThemePalette(bool isDark) noexcept {
+    const auto rgb = effectiveAccentRGB();
+    ThemePalette p{};
+    p.isDark = isDark;
+    p.accent = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 1.0f);
+
+    if (isDark) {
+        p.accentSoftBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.24f);
+        p.accentHoverBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.34f);
+        p.accentBorder = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.58f);
+        // 暗色底上适度混入 35% 纯白，保障深蓝/深紫在黑曜石底板上高对比清晰可读
+        p.accentText = D2D1::ColorF(
+            std::min(1.0f, rgb.r * 0.65f + 0.35f),
+            std::min(1.0f, rgb.g * 0.65f + 0.35f),
+            std::min(1.0f, rgb.b * 0.65f + 0.35f),
+            0.98f);
+
+        p.panelBg = D2D1::ColorF(18.0f / 255.0f, 21.0f / 255.0f, 29.0f / 255.0f, 0.96f);
+        p.panelHoverBg = D2D1::ColorF(28.0f / 255.0f, 32.0f / 255.0f, 43.0f / 255.0f, 0.98f);
+        p.panelBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f);
+        p.panelHoverBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.26f);
+        p.panelInnerHighlight = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f);
+
+        p.primaryText = D2D1::ColorF(248.0f / 255.0f, 250.0f / 255.0f, 252.0f / 255.0f, 0.98f);
+        p.secondaryText = D2D1::ColorF(203.0f / 255.0f, 213.0f / 255.0f, 225.0f / 255.0f, 0.92f);
+        p.mutedText = D2D1::ColorF(148.0f / 255.0f, 163.0f / 255.0f, 184.0f / 255.0f, 0.88f);
+        p.divider = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f);
+        p.hoverBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.11f);
+
+        p.chipBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.09f);
+        p.chipHoverBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.15f);
+        p.chipBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f);
+        p.chipHoverBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f);
+        p.chipText = D2D1::ColorF(241.0f / 255.0f, 245.0f / 255.0f, 249.0f / 255.0f, 0.96f);
+
+        p.gripDotIdle = D2D1::ColorF(148.0f / 255.0f, 163.0f / 255.0f, 184.0f / 255.0f, 0.62f);
+        p.gripDotHover = D2D1::ColorF(248.0f / 255.0f, 250.0f / 255.0f, 252.0f / 255.0f, 0.92f);
+        p.toggleOnBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.95f);
+        p.toggleOffBg = D2D1::ColorF(71.0f / 255.0f, 85.0f / 255.0f, 105.0f / 255.0f, 0.88f);
+        p.pressBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f);
+        p.dangerSoftBg = D2D1::ColorF(239.0f / 255.0f, 68.0f / 255.0f, 68.0f / 255.0f, 0.24f);
+        p.dangerText = D2D1::ColorF(254.0f / 255.0f, 202.0f / 255.0f, 202.0f / 255.0f, 0.98f);
+    } else {
+        p.accentSoftBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.13f);
+        p.accentHoverBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.20f);
+        p.accentBorder = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.44f);
+        // 亮色雪瓷白底上适度收敛明度，保障琥珀金/极光青文字清晰锐利
+        p.accentText = D2D1::ColorF(
+            rgb.r * 0.78f,
+            rgb.g * 0.78f,
+            rgb.b * 0.78f,
+            0.98f);
+
+        p.panelBg = CaptureHudPalette::kPanelBg;
+        p.panelHoverBg = CaptureHudPalette::kSizeHudHoverBg;
+        p.panelBorder = CaptureHudPalette::kPanelOuterBorder;
+        p.panelHoverBorder = CaptureHudPalette::kSizeHudHoverBorder;
+        p.panelInnerHighlight = CaptureHudPalette::kPanelInnerHighlight;
+
+        p.primaryText = CaptureHudPalette::kPrimaryText;
+        p.secondaryText = CaptureHudPalette::kSecondaryText;
+        p.mutedText = CaptureHudPalette::kMutedText;
+        p.divider = CaptureHudPalette::kSizeHudDivider;
+        p.hoverBg = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.06f);
+        p.pressBg = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.12f);
+        p.dangerSoftBg = D2D1::ColorF(239.0f / 255.0f, 68.0f / 255.0f, 68.0f / 255.0f, 0.12f);
+        p.dangerText = D2D1::ColorF(185.0f / 255.0f, 28.0f / 255.0f, 28.0f / 255.0f, 0.98f);
+
+        p.chipBg = CaptureHudPalette::kChipAccentBg;
+        p.chipHoverBg = CaptureHudPalette::kChipHoverBg;
+        p.chipBorder = CaptureHudPalette::kChipAccentBorder;
+        p.chipHoverBorder = CaptureHudPalette::kChipHoverBorder;
+        p.chipText = CaptureHudPalette::kChipAccentText;
+
+        p.gripDotIdle = CaptureHudPalette::kGripDotIdle;
+        p.gripDotHover = CaptureHudPalette::kGripDotHover;
+        p.toggleOnBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.95f);
+        p.toggleOffBg = CaptureHudPalette::kToggleOffBg;
+    }
+    p.accentSubtle = p.accentSoftBg;
+    p.panelOuterBorder = p.panelBorder;
+    p.textPrimary = p.primaryText;
+    p.textSecondary = p.secondaryText;
+    p.textMuted = p.mutedText;
+    return p;
+}
 
 void FloatingGlassBar::drawGlassPanel(
     ID2D1RenderTarget* rt,
@@ -208,17 +326,11 @@ void FloatingGlassBar::drawButtonPill(
 
     if (isActive) {
         ComPtr<ID2D1SolidColorBrush> activeBg, activeBorder;
-        if (!isDark) {
-            // 雪瓷白微晶面板：统一采用沉稳深石墨灰微晶激活态，消除蓝/紫色偏杂乱感
-            rt->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.085f * alpha), activeBg.GetAddressOf());
-            rt->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.22f * alpha), activeBorder.GetAddressOf());
-        } else {
-            auto& cfg = tools3000::core::ConfigManager::instance();
-            const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-            const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
-            rt->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.24f * alpha), activeBg.GetAddressOf());
-            rt->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.55f * alpha), activeBorder.GetAddressOf());
-        }
+        const tools3000::core::AccentColorRGB themeRgb = effectiveAccentRGB();
+        const float bgAlpha = (isDark ? 0.24f : 0.13f) * alpha;
+        const float borderAlpha = (isDark ? 0.56f : 0.44f) * alpha;
+        rt->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, bgAlpha), activeBg.GetAddressOf());
+        rt->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, borderAlpha), activeBorder.GetAddressOf());
         if (activeBg) rt->FillRoundedRectangle(rr, activeBg.Get());
         if (activeBorder) rt->DrawRoundedRectangle(rr, activeBorder.Get(), 1.0f);
         return;
