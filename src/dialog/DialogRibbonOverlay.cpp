@@ -30,9 +30,10 @@ namespace tools3000::dialog {
 
 namespace {
 const wchar_t* const RIBBON_WINDOW_CLASS = L"Tools3000_DialogRibbonOverlay";
-constexpr UINT WM_RIBBON_UPDATE_POS = WM_USER + 101;
-constexpr UINT WM_RIBBON_ATTACH     = WM_USER + 102;
-constexpr UINT WM_RIBBON_HIDE       = WM_USER + 103;
+constexpr UINT WM_RIBBON_UPDATE_POS    = WM_USER + 101;
+constexpr UINT WM_RIBBON_ATTACH        = WM_USER + 102;
+constexpr UINT WM_RIBBON_HIDE          = WM_USER + 103;
+constexpr UINT WM_RIBBON_THEME_CHANGED = WM_USER + 104;
 
 bool isRibbonEnglishLocale() {
     return !tools3000::core::isUiLanguageChinese();
@@ -282,6 +283,13 @@ void DialogRibbonOverlay::updatePosition() {
     const HWND hwnd = getHwnd();
     if (hwnd && IsWindow(hwnd)) {
         PostMessageW(hwnd, WM_RIBBON_UPDATE_POS, 0, 0);
+    }
+}
+
+void DialogRibbonOverlay::onThemeChanged() {
+    const HWND hwnd = getHwnd();
+    if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_RIBBON_THEME_CHANGED, 0, 0);
     }
 }
 
@@ -840,9 +848,14 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
     }
 }
 
-bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
+bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark, const tools3000::core::AccentColorRGB& accent) {
     if (!m_renderTarget) return false;
-    if (m_brushesValid && m_brushesDarkTheme == isDark && m_bgBrush && m_textBrush && m_whiteBrush) {
+    const bool accentUnchanged =
+        std::abs(m_brushesAccent.r - accent.r) < 0.002f &&
+        std::abs(m_brushesAccent.g - accent.g) < 0.002f &&
+        std::abs(m_brushesAccent.b - accent.b) < 0.002f;
+    if (m_brushesValid && m_brushesDarkTheme == isDark && accentUnchanged &&
+        m_bgBrush && m_textBrush && m_whiteBrush && m_syncBgBrush) {
         return true;
     }
 
@@ -862,6 +875,10 @@ bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
 
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), m_whiteBrush.GetAddressOf());
 
+    const float borderR = (std::min)(1.0f, accent.r + (1.0f - accent.r) * 0.30f);
+    const float borderG = (std::min)(1.0f, accent.g + (1.0f - accent.g) * 0.30f);
+    const float borderB = (std::min)(1.0f, accent.b + (1.0f - accent.b) * 0.30f);
+
     if (isDark) {
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.13f, 0.17f, 0.93f), m_bgBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.13f), m_borderBrush.GetAddressOf());
@@ -869,8 +886,8 @@ bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.76f, 0.82f, 0.88f), m_textMutedBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.09f), m_highlightBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.15f), m_highlightBorderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.48f, 0.94f, 0.95f), m_syncBgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.68f, 1.0f, 0.40f), m_syncBorderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(accent.r, accent.g, accent.b, 0.95f), m_syncBgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(borderR, borderG, borderB, 0.45f), m_syncBorderBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.74f, 0.82f, 0.75f), m_chevronBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f), m_badgeBgBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.98f, 0.95f), m_badgeTextBrush.GetAddressOf());
@@ -882,8 +899,8 @@ bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.32f, 0.36f, 0.44f, 0.88f), m_textMutedBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.05f), m_highlightBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), m_highlightBorderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.44f, 0.90f, 0.95f), m_syncBgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.55f, 1.0f, 0.50f), m_syncBorderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(accent.r * 0.94f, accent.g * 0.94f, accent.b * 0.94f, 0.95f), m_syncBgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(borderR, borderG, borderB, 0.50f), m_syncBorderBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.44f, 0.52f, 0.75f), m_chevronBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.06f), m_badgeBgBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.22f, 0.28f, 0.92f), m_badgeTextBrush.GetAddressOf());
@@ -891,6 +908,7 @@ bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
     }
 
     m_brushesDarkTheme = isDark;
+    m_brushesAccent = accent;
     m_brushesValid = (m_bgBrush != nullptr && m_textBrush != nullptr && m_whiteBrush != nullptr);
     return m_brushesValid;
 }
@@ -959,8 +977,9 @@ void DialogRibbonOverlay::render() {
 
     ensureTextFormats(dpiScale);
 
-    const bool isDark = tools3000::core::WinUtils::isSystemDarkMode();
-    if (!ensureDeviceBrushes(isDark)) {
+    const bool isDark = tools3000::core::NativeThemePalette::isEffectiveDarkMode();
+    const auto accent = tools3000::core::NativeThemePalette::getEffectiveAccentColorRGB();
+    if (!ensureDeviceBrushes(isDark, accent)) {
         discardDeviceResources();
         return;
     }
@@ -1307,6 +1326,7 @@ void DialogRibbonOverlay::showRecentMenu(int screenX, int screenY, bool rightAli
         return;
     }
 
+    tools3000::core::WinUtils::applyNativeMenuTheme();
     HMENU hMenu = CreatePopupMenu();
     for (size_t i = 0; i < localRecentList.size(); ++i) {
         std::wstring itemText = tools3000::core::WinUtils::utf8ToWstring(localRecentList[i]);
@@ -1373,6 +1393,7 @@ void DialogRibbonOverlay::showFavoritesMenu(int screenX, int screenY, bool right
     }
 
     const bool isEn = isRibbonEnglishLocale();
+    tools3000::core::WinUtils::applyNativeMenuTheme();
     HMENU hMenu = CreatePopupMenu();
 
     const bool canOperateOnDialog = (localTargetDialog && IsWindow(localTargetDialog));
@@ -1488,6 +1509,20 @@ LRESULT CALLBACK DialogRibbonOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam
             case WM_RIBBON_ATTACH:
                 self->doAttachToDialog();
                 return 0;
+            case WM_RIBBON_THEME_CHANGED: {
+                self->m_brushesValid = false;
+                bool hasTarget = false;
+                {
+                    std::lock_guard lock(self->m_mutex);
+                    self->m_renderedWidth = 0;
+                    self->m_renderedHeight = 0;
+                    hasTarget = (self->m_targetDialog != nullptr);
+                }
+                if (hasTarget) {
+                    self->doUpdatePosition();
+                }
+                return 0;
+            }
             case WM_RIBBON_HIDE:
                 self->doHide();
                 return 0;

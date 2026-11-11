@@ -12,6 +12,7 @@
 #define TOOLS3000_CORE_UTILS_DWRITEFONTUTILS_H
 
 #include "core/config/ConfigManager.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
 
 #include <dwrite.h>
@@ -65,14 +66,6 @@ inline const wchar_t* resolveInstalledMonoFontFamily(IDWriteFactory* dwriteFacto
         }
     }
     return L"Consolas";
-}
-
-/// 统一判定原生浮层是否应使用简体中文文案（严格遵循 /general/language 配置与系统语言回退）
-inline bool isUiLanguageChinese() {
-    const std::string lang = ConfigManager::instance().get<std::string>("/general/language", "auto");
-    if (lang.rfind("zh", 0) == 0) return true;
-    if (lang.rfind("en", 0) == 0) return false;
-    return WinUtils::isSystemLanguageChinese();
 }
 
 }  // namespace tools3000::core

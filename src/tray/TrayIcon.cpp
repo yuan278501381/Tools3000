@@ -8,6 +8,7 @@
 #include "core/events/EventBus.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/ipc/MessageBridge.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
 #include "ui/TrayWindow.h"
 #include <format>
@@ -23,13 +24,7 @@
 namespace tools3000::tray {
 
 static bool isEnglishLocale() {
-    std::string lang = tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "auto");
-    if (lang == "en" || lang == "en-US") return true;
-    if (lang == "auto") {
-        LANGID langID = GetUserDefaultUILanguage();
-        if (PRIMARYLANGID(langID) == LANG_ENGLISH) return true;
-    }
-    return false;
+    return !tools3000::core::NativeThemePalette::isUiLanguageChinese();
 }
 
 static HICON loadThemeAppropriateIcon(UINT* outIconId = nullptr, HWND hwnd = nullptr) {
@@ -572,6 +567,7 @@ void TrayIcon::showContextMenu(int x, int y) {
 void TrayIcon::showNativeContextMenu(POINT pt) {
     m_lastRightClickMsg = 0;
     m_lastRightClickTick = 0;
+    tools3000::core::WinUtils::applyNativeMenuTheme();
     HMENU hMenu = CreatePopupMenu();
     if (!hMenu) return;
 

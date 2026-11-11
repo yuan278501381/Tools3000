@@ -49,32 +49,32 @@ void registerFileInteractionHandlers(MessageBridge& bridge,
         return {{"success", false}, {"error", pathError}};
     };
 
-    bridge.registerHandler(method("openFile"), [preferFilepathParameter, missingPath](const json& params) -> json {
+    auto openFileHandler = [preferFilepathParameter, missingPath](const json& params) -> json {
         const auto path = requestPath(params, preferFilepathParameter);
         if (path.empty()) return missingPath();
         return {{"success", WinUtils::openFile(WinUtils::utf8ToWstring(path))}};
-    });
-    bridge.registerHandler(method("openFolder"), [preferFilepathParameter, missingPath](const json& params) -> json {
+    };
+    auto openFolderHandler = [preferFilepathParameter, missingPath](const json& params) -> json {
         const auto path = requestPath(params, preferFilepathParameter);
         if (path.empty()) return missingPath();
         return {{"success", WinUtils::openFolderAndSelectItem(WinUtils::utf8ToWstring(path))}};
-    });
-    bridge.registerHandler(method("openFileAsAdmin"), [preferFilepathParameter, missingPath](const json& params) -> json {
+    };
+    auto openAsAdminHandler = [preferFilepathParameter, missingPath](const json& params) -> json {
         const auto path = requestPath(params, preferFilepathParameter);
         if (path.empty()) return missingPath();
         return {{"success", WinUtils::openFileAsAdmin(WinUtils::utf8ToWstring(path))}};
-    });
-    bridge.registerHandler(method("showFileProperties"), [preferFilepathParameter, missingPath](const json& params) -> json {
+    };
+    auto showPropertiesHandler = [preferFilepathParameter, missingPath](const json& params) -> json {
         const auto path = requestPath(params, preferFilepathParameter);
         if (path.empty()) return missingPath();
         return {{"success", WinUtils::showFileProperties(WinUtils::utf8ToWstring(path))}};
-    });
-    bridge.registerHandler(method("openWithNotepad"), [preferFilepathParameter, missingPath](const json& params) -> json {
+    };
+    auto openWithNotepadHandler = [preferFilepathParameter, missingPath](const json& params) -> json {
         const auto path = requestPath(params, preferFilepathParameter);
         if (path.empty()) return missingPath();
         return {{"success", WinUtils::openWithNotepad(WinUtils::utf8ToWstring(path))}};
-    });
-    bridge.registerHandler(method("copyFile"), [preferFilepathParameter, missingPath](const json& params) -> json {
+    };
+    auto copyFileHandler = [preferFilepathParameter, missingPath](const json& params) -> json {
         const auto path = requestPath(params, preferFilepathParameter);
         if (path.empty()) return missingPath();
         const std::wstring wpath = WinUtils::utf8ToWstring(path);
@@ -85,7 +85,18 @@ void registerFileInteractionHandlers(MessageBridge& bridge,
             ? (WinUtils::copyGifToClipboard(wpath) || WinUtils::copyFileToClipboard(wpath))
             : WinUtils::copyFileToClipboard(wpath);
         return {{"success", ok}};
-    });
+    };
+
+    bridge.registerAsyncHandler(method("openFile"), openFileHandler);
+    bridge.registerAsyncHandler(method("openFolder"), openFolderHandler);
+    bridge.registerAsyncHandler(method("openFileAsAdmin"), openAsAdminHandler);
+    bridge.registerAsyncHandler(method("showFileProperties"), showPropertiesHandler);
+    bridge.registerAsyncHandler(method("openWithNotepad"), openWithNotepadHandler);
+    bridge.registerAsyncHandler(method("copyFile"), copyFileHandler);
+    if (methodNamespace == "search" || methodNamespace == "system") {
+        bridge.registerAsyncHandler(method("openAsAdmin"), openAsAdminHandler);
+        bridge.registerAsyncHandler(method("showProperties"), showPropertiesHandler);
+    }
     bridge.registerHandler(method("renamePath"), renameRequest);
     bridge.registerHandler(method("showShellContextMenu"), [preferFilepathParameter, missingPath](const json& params) -> json {
         const auto path = requestPath(params, preferFilepathParameter);

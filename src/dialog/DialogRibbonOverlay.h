@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "core/utils/ThemeUtils.h"
+
 #include <string>
 #include <vector>
 #include <memory>
@@ -42,6 +44,7 @@ public:
     void attachToDialog(HWND dialogHwnd, const std::string& processName);
     void setCachedDialogFolder(HWND dialogHwnd, const std::string& folderPath);
     void updatePosition();
+    void onThemeChanged();
     void hide();
 
     static bool computeSafeHorizontalPlacement(const RECT& dlgRect, float dpiScale,
@@ -62,7 +65,7 @@ private:
     void doHide();
     void resetStateLocked();
     void discardDeviceResources();
-    bool ensureDeviceBrushes(bool isDark);
+    bool ensureDeviceBrushes(bool isDark, const tools3000::core::AccentColorRGB& accent);
     void render();
     void updateButtonsLayout(float dpiScale, int maxAvailableWidth = 0);
     bool hitTestButton(const RibbonButtonRect& btn, int x, int y, float dpiScale) const noexcept;
@@ -112,6 +115,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_dividerBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_whiteBrush;
     bool m_brushesDarkTheme{false};
+    tools3000::core::AccentColorRGB m_brushesAccent{0.23f, 0.51f, 0.96f};
     bool m_brushesValid{false};
 
     Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;

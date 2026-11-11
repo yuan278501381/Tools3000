@@ -188,6 +188,7 @@ private:
                                           bool isFromMoveEvent);
 
     void enqueueAction(GestureAction action, std::string traceId, HWND targetWindow = nullptr);
+    void enqueueCustomAction(std::string traceId, std::function<void()> task);
     void actionWorkerLoop(std::stop_token stopToken);
 
     /// 根据当前前台窗口查找适用的 Profile
@@ -290,6 +291,7 @@ private:
         GestureAction action;
         std::string traceId;
         HWND targetWindow = nullptr;
+        std::function<void()> customTask;
     };
     std::mutex m_actionMutex;
     std::condition_variable_any m_actionCv;
