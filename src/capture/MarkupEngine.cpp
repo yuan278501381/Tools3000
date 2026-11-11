@@ -230,7 +230,7 @@ namespace {
     }
     cv::Size measureSnipasteText(const std::wstring& text, int fontSize, bool /*isEditing*/ = false) {
         ensureGdiplusStartup();
-        const int safeFontSize = (std::max)(10, fontSize);
+        const int safeFontSize = (std::max)(12, fontSize);
         const auto [originX, originY] = tools3000::capture::CaptureTextEditor::computeTextOrigin(safeFontSize);
         const int padW = static_cast<int>(std::ceil(originX * 2.0f + 4.0f));
         const int padH = static_cast<int>(std::ceil(originY * 2.0f + 2.0f));
@@ -240,7 +240,7 @@ namespace {
             return cv::Size((std::max)(w, 24 + padW), (std::max)(h, safeFontSize + padH));
         }
 
-        Gdiplus::FontFamily fontFamily(L"Microsoft YaHei UI");
+        Gdiplus::FontFamily fontFamily(tools3000::capture::CaptureTextEditor::resolveMarkupFontFamilyName(false));
         const Gdiplus::FontFamily* activeFamily = &fontFamily;
         Gdiplus::FontFamily fallbackFamily(L"Segoe UI");
         if (!fontFamily.IsAvailable()) {
@@ -301,7 +301,7 @@ namespace {
             float luminance = (0.299f * rVal + 0.587f * gVal + 0.114f * bVal) / 255.0f;
 
             // 1. 文字绘制 (纯透明底衬 + 选区高亮 + 高对比描边 + 矢量文字填充)
-            Gdiplus::FontFamily fontFamily(L"Microsoft YaHei UI");
+            Gdiplus::FontFamily fontFamily(tools3000::capture::CaptureTextEditor::resolveMarkupFontFamilyName(false));
             const Gdiplus::FontFamily* activeFamily = &fontFamily;
             Gdiplus::FontFamily fallbackFamily(L"Segoe UI");
             if (!fontFamily.IsAvailable()) {
@@ -313,7 +313,7 @@ namespace {
             format.SetLineAlignment(Gdiplus::StringAlignmentNear);
             format.SetFormatFlags(format.GetFormatFlags() | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
 
-            const int safeFontSize = (std::max)(10, fontSize);
+            const int safeFontSize = (std::max)(12, fontSize);
             const auto [textX, textY] = tools3000::capture::CaptureTextEditor::computeTextOrigin(safeFontSize);
 
             Gdiplus::GraphicsPath boxPath;
@@ -398,11 +398,11 @@ namespace {
                 Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, rVal, gVal, bVal));
                 g.FillPath(&textBrush, &textPath);
             } else if (isEditing || isSelected) {
-                // 空文本编辑态：绘制提示占位文字
+                // 空文本编辑态：绘制提示占位文字（严格遵循字重 >= 500 Bold 与字号 >= 12px 排版红线）
                 const std::wstring placeholder = tools3000::core::isUiLanguageChinese()
                     ? L"点击输入文字..."
                     : L"Click to enter text...";
-                Gdiplus::Font placeholderFont(activeFamily, static_cast<Gdiplus::REAL>((std::max)(12.0f, safeFontSize * 0.88f)), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+                Gdiplus::Font placeholderFont(activeFamily, static_cast<Gdiplus::REAL>((std::max)(12.0f, safeFontSize * 0.88f)), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
                 Gdiplus::SolidBrush placeholderBrush(Gdiplus::Color(180, 148, 163, 184));
                 g.DrawString(placeholder.c_str(), -1, &placeholderFont, Gdiplus::PointF(textX + 2.0f, textY + 1.0f), &format, &placeholderBrush);
             }
@@ -445,16 +445,16 @@ namespace {
         const std::wstring numWStr = tools3000::capture::formatNumberBadgeLabel(number, format);
 
         const bool preferCjkFont = (format == tools3000::capture::NumberFormat::Chinese);
-        Gdiplus::FontFamily primaryFamily(preferCjkFont ? L"Microsoft YaHei UI" : L"Segoe UI");
+        Gdiplus::FontFamily primaryFamily(tools3000::capture::CaptureTextEditor::resolveMarkupFontFamilyName(!preferCjkFont));
         Gdiplus::FontFamily fallbackFamily(preferCjkFont ? L"Segoe UI" : L"Microsoft YaHei UI");
         const Gdiplus::FontFamily* activeFamily = primaryFamily.IsAvailable() ? &primaryFamily : &fallbackFamily;
 
         const std::size_t charLen = numWStr.size();
         float emSize = 16.0f * scale;
         if (preferCjkFont) {
-            emSize = ((charLen >= 3) ? 11.8f : (charLen == 2 ? 13.0f : 15.0f)) * scale;
+            emSize = ((charLen >= 3) ? 12.0f : (charLen == 2 ? 13.2f : 15.0f)) * scale;
         } else {
-            emSize = ((charLen >= 4) ? 11.2f : (charLen == 3 ? 12.2f : (charLen == 2 ? 13.8f : 16.0f))) * scale;
+            emSize = ((charLen >= 4) ? 12.0f : (charLen == 3 ? 12.5f : (charLen == 2 ? 13.8f : 16.0f))) * scale;
         }
 
         Gdiplus::GraphicsPath textPath;
@@ -467,9 +467,14 @@ namespace {
 
         float boxH = radius * 2.0f;
         float boxW = boxH;
-        if (shape == tools3000::capture::NumberBadgeShape::RoundedSquare && pathBounds.Width > 0.0f) {
-            // 圆角矩形模式下，多字符（如 VIII、十一、二十五）自动横向延展为精致微晶胶囊，绝不挤字
-            boxW = (std::max)(boxH, std::ceil(pathBounds.Width + 14.0f * scale));
+        if (pathBounds.Width > 0.0f) {
+            if (shape == tools3000::capture::NumberBadgeShape::RoundedSquare) {
+                // 圆角矩形模式下，多字符（如 VIII、十一、二十五）自动横向延展为精致微晶胶囊，绝不挤字
+                boxW = (std::max)(boxH, std::ceil(pathBounds.Width + 14.0f * scale));
+            } else if (charLen >= 4 || pathBounds.Width > boxH - 6.0f * scale) {
+                // 圆形徽章遇到 4 位及以上超宽序号（如 1000）自动升级为跑道形椭圆胶囊，保障 >= 12px 锐利不溢出
+                boxW = (std::max)(boxH, std::ceil(pathBounds.Width + 12.0f * scale));
+            }
         }
 
         const int pad = static_cast<int>(std::round(10.0f * scale));
@@ -4055,7 +4060,7 @@ public:
                 g.FillPath(&pillBg, &pillPath);
                 g.DrawPath(&pillBorder, &pillPath);
 
-                Gdiplus::FontFamily fam(L"Segoe UI");
+                Gdiplus::FontFamily fam(tools3000::capture::CaptureTextEditor::resolveMarkupFontFamilyName(true));
                 Gdiplus::FontFamily fallbackFam(L"Microsoft YaHei UI");
                 const Gdiplus::FontFamily* useFam = fam.IsAvailable() ? &fam : &fallbackFam;
                 Gdiplus::Font pillFont(useFam, 12.0f * dpi, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
@@ -4341,7 +4346,7 @@ public:
                 g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
                 g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
 
-                Gdiplus::FontFamily fontFamily(L"Microsoft YaHei UI");
+                Gdiplus::FontFamily fontFamily(tools3000::capture::CaptureTextEditor::resolveMarkupFontFamilyName(false));
                 const Gdiplus::FontFamily* activeFamily = &fontFamily;
                 Gdiplus::FontFamily fallbackFamily(L"Segoe UI");
                 if (!fontFamily.IsAvailable()) {
