@@ -122,6 +122,7 @@ private:
     std::atomic<uint32_t> m_retentionDays{7};
     std::atomic<size_t> m_maxTotalSize{50 * 1024 * 1024};
     std::atomic<uint32_t> m_idleHandleTimeoutMs{10000};
+    std::atomic<int64_t> m_lastWriteSteadyNs{0};
     std::atomic<bool> m_fileHandleOpen{false};
     std::atomic<bool> m_enableCompression{true};
 
@@ -133,6 +134,7 @@ private:
     bool m_stopWorker{false};
     std::vector<std::filesystem::path> m_compressionQueue;
     bool m_janitorPending{false};
+    bool m_wakeupPending{false};
 };
 
 /// 别名保持向后兼容
