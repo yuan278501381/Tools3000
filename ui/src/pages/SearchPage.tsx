@@ -7,6 +7,7 @@ import { Card, Toggle, SettingRow, SettingGroup, Button, Tabs, Select, PageSkele
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { CATEGORY_DEFS } from '../search/searchConstants';
+import { consumePendingDeepNavigation, type DeepNavigationPayload } from '../config/settingsSearchIndex';
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -42,7 +43,21 @@ interface ServiceStatus {
 
 export const SearchPage: FC = () => {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<'settings' | 'syntax' | 'regex' | 'status'>('settings');
+  const [activeTab, setActiveTab] = useState<'settings' | 'syntax' | 'regex' | 'status'>(
+    () => consumePendingDeepNavigation('search')?.tabId ?? 'settings',
+  );
+
+  useEffect(() => {
+    const onDeepNavigate = (e: Event) => {
+      const detail = (e as CustomEvent<DeepNavigationPayload>).detail;
+      if (detail?.navId === 'search' && detail.tabId) {
+        consumePendingDeepNavigation('search');
+        setActiveTab(detail.tabId);
+      }
+    };
+    window.addEventListener('tools3000:navigate-deep', onDeepNavigate);
+    return () => window.removeEventListener('tools3000:navigate-deep', onDeepNavigate);
+  }, []);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [settings, setSettings] = useState<SearchSettings>({
     hotkey: 'Alt+Space',

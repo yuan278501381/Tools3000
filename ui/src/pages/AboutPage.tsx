@@ -335,19 +335,19 @@ export const AboutPage: FC = () => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 <div>
                   <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfMemory')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600 }}>{((metrics.privateMemoryMB && metrics.privateMemoryMB > 0) ? metrics.privateMemoryMB : metrics.memoryMB).toFixed(1)} MB</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{((metrics.privateMemoryMB && metrics.privateMemoryMB > 0) ? metrics.privateMemoryMB : metrics.memoryMB).toFixed(1)} MB</div>
                 </div>
                 <div>
                   <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfWorkingSet')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600 }}>{metrics.memoryMB.toFixed(1)} MB</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{metrics.memoryMB.toFixed(1)} MB</div>
                 </div>
                 <div>
                   <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfCpu')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600 }}>{metrics.cpuPercent.toFixed(1)} %</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{metrics.cpuPercent.toFixed(1)} %</div>
                 </div>
                 <div>
                   <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfGestureLatency')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600 }}>{metrics.gestureLatencyMs.toFixed(1)} ms</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{metrics.gestureLatencyMs.toFixed(1)} ms</div>
                 </div>
               </div>
             </div>

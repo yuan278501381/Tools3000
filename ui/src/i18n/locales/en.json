@@ -416,7 +416,9 @@
     "pinGroupResetOne": "Restore default name and color",
     "loadFailed": "Could not load capture settings",
     "saveFailed": "Could not save this setting",
-    "browseFailed": "Could not open the folder picker"
+    "browseFailed": "Could not open the folder picker",
+    "openFolder": "Open Folder",
+    "openFolderFailed": "Could not open folder"
   },
   "history": {
     "title": "Capture History",
@@ -879,7 +881,7 @@
     "triggerMiddleDesc": "Hold wheel and drag · Best for media/music track controls",
     "guidePrompt": "Use an appropriate trigger mode to draw a gesture on the canvas, the symbol will be recognized below.",
     "guideNote1": "Pressing one or more keys to 'modify' the gesture creates a different gesture; keyboard keys (Ctrl / Alt / Shift) can also serve as modifiers",
-    "guideNote2": "Hold Right Mouse Button ◐ or Middle Wheel ◓ and drag directly on the canvas to record",
+    "guideNote2": "Hold Right Mouse Button or Middle Wheel and drag directly on the canvas to record",
     "replaceSimilarTracks": "Replace all similar gesture tracks",
     "replaceSimilarHint1": "Unifying similar gesture tracks into the same value helps reduce accidental triggers and improves performance",
     "replaceSimilarHint2": "If a target has multiple identical gestures, only the last one remains active",
@@ -1116,7 +1118,11 @@
     "kw_dialog_enhancer": "open save folder favorite recent jump",
     "kw_remote_boost": "rdp mstsc remote desktop sticky ime",
     "kw_stats": "heatmap click distance counter analytics",
-    "kw_about": "version update license author diagnostic"
+    "kw_about": "version update license author diagnostic",
+    "deepSettingsGroup": "Matching Settings",
+    "inactiveSectionTitle": "Disabled Modules",
+    "inactiveBadge": "Disabled",
+    "enableAndOpen": "Enable & Open"
   },
   "onboarding": {
     "welcomeTitle": "Welcome to Tools3000",

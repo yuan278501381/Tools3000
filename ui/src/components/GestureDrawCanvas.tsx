@@ -14,6 +14,7 @@
 import { useState, useRef, useCallback, useEffect, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RotateCcw, MousePointer, Check, Globe } from 'lucide-react';
+import { MouseButtonSvg, ScreenEdgeSvg } from './MouseButtonSvg';
 import {
   codeToArrows,
   parseGestureCode,
@@ -43,71 +44,6 @@ function pointsToSvgPath(points: Point[]): string {
   d += ` L ${last.x} ${last.y}`;
   return d;
 }
-
-/** 高精度鼠标按键纯矢量图标 */
-const MouseButtonGlyph: FC<{ button: TriggerButton }> = ({ button }) => (
-  <svg
-    width="13"
-    height="13"
-    viewBox="0 0 14 14"
-    fill="none"
-    aria-hidden="true"
-    className="gesture-cockpit-svg-icon"
-  >
-    <rect x="2.5" y="1.2" width="9" height="11.6" rx="4.5" stroke="currentColor" strokeWidth="1.25" />
-    <line x1="7" y1="1.5" x2="7" y2="6.2" stroke="currentColor" strokeWidth="1" strokeOpacity="0.55" />
-    {button === 'right' && (
-      <path d="M 7 1.5 A 4.3 4.3 0 0 1 11.3 5.8 L 11.3 6.4 L 7 6.4 Z" fill="currentColor" />
-    )}
-    {button === 'left' && (
-      <path d="M 7 1.5 A 4.3 4.3 0 0 0 2.7 5.8 L 2.7 6.4 L 7 6.4 Z" fill="currentColor" />
-    )}
-    {button === 'middle' && (
-      <rect x="6" y="2.3" width="2" height="4.2" rx="1" fill="currentColor" />
-    )}
-    {button === 'x1' && (
-      <rect x="1.1" y="7.2" width="2.2" height="2.8" rx="0.8" fill="currentColor" />
-    )}
-    {button === 'x2' && (
-      <rect x="1.1" y="4.0" width="2.2" height="2.8" rx="0.8" fill="currentColor" />
-    )}
-  </svg>
-);
-
-/** 高精度屏幕四边纯矢量图标 */
-const ScreenEdgeGlyph: FC<{ edge: Exclude<ScreenEdge, 'none'> }> = ({ edge }) => (
-  <svg
-    width="13"
-    height="13"
-    viewBox="0 0 14 14"
-    fill="none"
-    aria-hidden="true"
-    className="gesture-cockpit-svg-icon"
-  >
-    <rect
-      x="1.5"
-      y="2.2"
-      width="11"
-      height="9.6"
-      rx="2"
-      stroke="currentColor"
-      strokeWidth="1.2"
-      strokeOpacity="0.45"
-    />
-    {edge === 'top' && (
-      <line x1="2.5" y1="2.4" x2="11.5" y2="2.4" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-    )}
-    {edge === 'bottom' && (
-      <line x1="2.5" y1="11.6" x2="11.5" y2="11.6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-    )}
-    {edge === 'left' && (
-      <line x1="1.8" y1="3.4" x2="1.8" y2="10.6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-    )}
-    {edge === 'right' && (
-      <line x1="12.2" y1="3.4" x2="12.2" y2="10.6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-    )}
-  </svg>
-);
 
 interface PresetGestureItem {
   code: string;
@@ -601,7 +537,7 @@ export const GestureDrawCanvas: FC<Props> = ({
                     {opt.edge === 'none' ? (
                       <Globe size={13} strokeWidth={2.2} aria-hidden="true" />
                     ) : (
-                      <ScreenEdgeGlyph edge={opt.edge} />
+                      <ScreenEdgeSvg edge={opt.edge} size={13} className="gesture-cockpit-svg-icon" />
                     )}
                     <span>{label}</span>
                   </button>
@@ -646,7 +582,7 @@ export const GestureDrawCanvas: FC<Props> = ({
                   onClick={() => handleSelectTrigger(opt.button)}
                   title={tip}
                 >
-                  <MouseButtonGlyph button={opt.button} />
+                  <MouseButtonSvg button={opt.button} size={13} className="gesture-cockpit-svg-icon" />
                   <span>{label}</span>
                 </button>
               );
@@ -701,7 +637,7 @@ export const GestureDrawCanvas: FC<Props> = ({
             data-testid={`edge-sensor-${currentEdge}`}
           >
             <span className="gesture-edge-sensor-tag">
-              <ScreenEdgeGlyph edge={currentEdge} />
+              <ScreenEdgeSvg edge={currentEdge} size={13} />
               <span>{edgeSensorText}</span>
             </span>
           </div>

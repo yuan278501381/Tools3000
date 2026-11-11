@@ -20,6 +20,8 @@
   font-size: 12px;
   font-family: inherit;
   font-weight: 500;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
   transition: fill 0.15s ease, font-weight 0.15s ease;
 }
 
