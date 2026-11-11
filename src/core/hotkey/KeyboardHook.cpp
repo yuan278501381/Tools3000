@@ -393,7 +393,10 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
 
                 // 截图/长截图选区微调期间（如 WASD/方向键）不污染日常打字统计
                 if (!captureOverlayActive && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
-                    StatsManager::instance().recordKey(data->vkCode);
+                    const int statsVk = (data->vkCode == VK_RETURN && (data->flags & LLKHF_EXTENDED) != 0)
+                        ? 0x10D
+                        : static_cast<int>(data->vkCode);
+                    StatsManager::instance().recordKey(statsVk);
                 }
 
                 // --- 广义组合键回显与修饰键状态机 ---

@@ -2549,22 +2549,68 @@ void MessageBridge::registerBuiltinHandlers() {
         return selected ? json(WinUtils::wstringToUtf8(selected->wstring())) : json(nullptr);
     });
     registerAsyncHostHandler("capture.openSaveDirectory", [](const json& params) -> json {
-        std::string dirUtf8 = params.value("path", "");
+        auto trimWs = [](std::string s) {
+            while (!s.empty() && static_cast<unsigned char>(s.front()) <= 0x20) {
+                s.erase(s.begin());
+            }
+            while (!s.empty() && static_cast<unsigned char>(s.back()) <= 0x20) {
+                s.pop_back();
+            }
+            return s;
+        };
+
+        const std::string kind = params.value("kind", "capture");
+        std::string dirUtf8 = trimWs(params.value("path", ""));
+        auto& cfg = ConfigManager::instance();
         if (dirUtf8.empty()) {
-            dirUtf8 = ConfigManager::instance().get<std::string>("/capture/saveDirectory", "");
+            if (kind == "recording") {
+                dirUtf8 = trimWs(cfg.get<std::string>("/recording/saveDirectory", ""));
+                if (dirUtf8.empty()) {
+                    dirUtf8 = trimWs(cfg.get<std::string>("/recording/savePath", ""));
+                }
+            } else {
+                dirUtf8 = trimWs(cfg.get<std::string>("/capture/saveDirectory", ""));
+                if (dirUtf8.empty()) {
+                    dirUtf8 = trimWs(cfg.get<std::string>("/capture/savePath", ""));
+                }
+            }
         }
+
         std::filesystem::path targetDir;
         if (!dirUtf8.empty()) {
             targetDir = std::filesystem::path(WinUtils::utf8ToWstring(dirUtf8));
+        } else if (kind == "recording") {
+            targetDir = WinUtils::getAppDataDirectory() / L"Recordings";
         } else {
-            targetDir = WinUtils::getConfigDirectory() / L"Screenshots";
+            targetDir = WinUtils::getAppDataDirectory() / L"Screenshots";
         }
+
         std::error_code ec;
         std::filesystem::create_directories(targetDir, ec);
+        const std::string resolvedUtf8 = WinUtils::wstringToUtf8(targetDir.wstring());
+        if (ec && !std::filesystem::exists(targetDir, ec)) {
+            return {
+                {"success", false},
+                {"path", resolvedUtf8},
+                {"error", isUiLanguageChinese() ? "无法创建保存目录" : "Failed to create save directory"}
+            };
+        }
+
+        if (params.value("dryRun", false)) {
+            return {{"success", true}, {"path", resolvedUtf8}};
+        }
+
         const HINSTANCE hInst = ShellExecuteW(
             nullptr, L"open", targetDir.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         const bool ok = reinterpret_cast<INT_PTR>(hInst) > 32;
-        return {{"success", ok}, {"path", WinUtils::wstringToUtf8(targetDir.wstring())}};
+        if (!ok) {
+            return {
+                {"success", false},
+                {"path", resolvedUtf8},
+                {"error", isUiLanguageChinese() ? "无法打开保存目录" : "Failed to open save directory"}
+            };
+        }
+        return {{"success", true}, {"path", resolvedUtf8}};
     });
     registerSystemInteractionHandlers(*this);
     registerHostHandler("app.checkForUpdates", [](const json&) -> json {
