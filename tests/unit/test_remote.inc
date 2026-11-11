@@ -676,3 +676,53 @@ TEST(RemoteMasterTest, FlushModifiersNeverStealsFocusOrFiresInLocalWindow) {
     engine.resetDefaults();
 }
 
+TEST(RemoteMasterTest, RawInputClientBypassHotkeySuspendAndBareKeyRejection) {
+    auto& engine = tools3000::core::RemoteMasterEngine::instance();
+    auto& hotkeyMgr = tools3000::core::HotkeyManager::instance();
+    engine.resetDefaults();
+    engine.clearMockForeground();
+
+    // 1. 验证 Raw Input / 自有低级键盘钩子远控客户端识别精准度
+    EXPECT_TRUE(RemoteMasterEngine::isRawInputRemoteClient("parsec.exe"));
+    EXPECT_TRUE(RemoteMasterEngine::isRawInputRemoteClient("C:\\Program Files\\Parsec\\parsecd.exe"));
+    EXPECT_TRUE(RemoteMasterEngine::isRawInputRemoteClient("Moonlight.exe"));
+    EXPECT_TRUE(RemoteMasterEngine::isRawInputRemoteClient("vmware-remotemks.exe"));
+    EXPECT_TRUE(RemoteMasterEngine::isRawInputRemoteClient("VirtualBoxVM.exe"));
+    EXPECT_TRUE(RemoteMasterEngine::isRawInputRemoteClient("unknown.exe", L"SDL_app"));
+
+    EXPECT_FALSE(RemoteMasterEngine::isRawInputRemoteClient("mstsc.exe"));
+    EXPECT_FALSE(RemoteMasterEngine::isRawInputRemoteClient("ToDesk.exe"));
+    EXPECT_FALSE(RemoteMasterEngine::isRawInputRemoteClient("explorer.exe", L"CabinetWClass"));
+
+    // 2. 验证远控前台获焦/失焦联动 HotkeyManager 远控挂起标志位，且对 parsec.exe 不拦截伪造 Win 键消息
+    HWND dummyParsec = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x51001));
+    HWND dummyLocal = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x51002));
+    engine.setMockForeground(dummyParsec, true, "parsec.exe");
+    EXPECT_TRUE(engine.isRemoteForeground());
+    EXPECT_TRUE(hotkeyMgr.isRemoteSuspended());
+
+    KBDLLHOOKSTRUCT winKey{};
+    winKey.vkCode = VK_LWIN;
+    winKey.scanCode = 0x5B;
+    EXPECT_FALSE(engine.onLowLevelKeyboardEvent(winKey, WM_KEYDOWN));
+
+    engine.setMockForeground(dummyLocal, false, "explorer.exe");
+    EXPECT_FALSE(engine.isRemoteForeground());
+    EXPECT_FALSE(hotkeyMgr.isRemoteSuspended());
+
+    // 3. 验证 U-12: parseEmergencyShortcut 严禁无修饰键的裸单键配置，必须至少含一个修饰键
+    EXPECT_FALSE(RemoteMasterEngine::parseEmergencyShortcut("F12").valid);
+    EXPECT_FALSE(RemoteMasterEngine::parseEmergencyShortcut("Backspace").valid);
+    EXPECT_FALSE(RemoteMasterEngine::parseEmergencyShortcut("A").valid);
+    EXPECT_FALSE(RemoteMasterEngine::parseEmergencyShortcut("0x70").valid);
+    EXPECT_FALSE(RemoteMasterEngine::parseEmergencyShortcut("Escape").valid);
+
+    const auto withMod = RemoteMasterEngine::parseEmergencyShortcut("Ctrl+F12");
+    EXPECT_TRUE(withMod.valid);
+    EXPECT_TRUE(withMod.ctrl);
+    EXPECT_EQ(withMod.vk, static_cast<UINT>(VK_F12));
+
+    engine.clearMockForeground();
+    engine.resetDefaults();
+}
+

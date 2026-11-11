@@ -3846,3 +3846,41 @@ TEST(GestureAuditRegressionTest, EdgeTriggerMaskAllowsEdgeStrokesWhenGlobalButto
         MouseEventType::RightDown, TriggerMode::All, edgeOnlyMask, ScreenEdgeZone::Bottom));
 }
 
+TEST(GestureAuditRegressionTest, EdgeWheelTriggersAndDefaultGlobalScreenshotMapping) {
+    // 1. 验证 EdgeLeftWheel 与 EdgeRightWheel 独立位掩码正交无重叠
+    EXPECT_NE(GestureTriggerMask::EdgeLeftWheel, 0u);
+    EXPECT_NE(GestureTriggerMask::EdgeRightWheel, 0u);
+    EXPECT_EQ(GestureTriggerMask::EdgeLeftWheel & GestureTriggerMask::EdgeRightWheel, 0u);
+    EXPECT_NE(GestureTriggerMask::AllTriggers & GestureTriggerMask::EdgeLeftWheel, 0u);
+    EXPECT_NE(GestureTriggerMask::AllTriggers & GestureTriggerMask::EdgeRightWheel, 0u);
+
+    // 2. 验证左右边缘滚轮手势编码拼装与 Profile 三态触发键注册完整
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Left, 0, MouseEventType::RightDown, "WheelUp"),
+              "LeftEdge+WheelUp");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Left, 0, MouseEventType::RightDown, "WheelDown"),
+              "LeftEdge+WheelDown");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Right, 0, MouseEventType::RightDown, "WheelUp"),
+              "RightEdge+WheelUp");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Right, 0, MouseEventType::RightDown, "WheelDown"),
+              "RightEdge+WheelDown");
+
+    GestureProfile trigProfile("edge_wheel_check");
+    trigProfile.setAllTriggerStates(TriggerModeState::Enabled);
+    EXPECT_EQ(trigProfile.getTriggerState("edge_left_wheel"), TriggerModeState::Enabled);
+    EXPECT_EQ(trigProfile.getTriggerState("edge_right_wheel"), TriggerModeState::Enabled);
+
+    // 3. 验证默认全局 Profile 中 D-R-D 绑定内置屏幕截图命令且 WheelUp/WheelDown 绑定虚拟桌面切换
+    const GestureProfile globalProf = GestureProfile::createDefaultGlobal();
+    const auto drd = globalProf.findAction("D-R-D");
+    ASSERT_TRUE(drd.has_value());
+    EXPECT_EQ(drd->type, ActionType::BuiltinCommand);
+    EXPECT_EQ(drd->builtinCmd, BuiltinCommand::TakeScreenshot);
+
+    const auto wheelUp = globalProf.findAction("WheelUp");
+    const auto wheelDown = globalProf.findAction("WheelDown");
+    ASSERT_TRUE(wheelUp.has_value());
+    ASSERT_TRUE(wheelDown.has_value());
+    EXPECT_EQ(wheelUp->builtinCmd, BuiltinCommand::PrevVirtualDesktop);
+    EXPECT_EQ(wheelDown->builtinCmd, BuiltinCommand::NextVirtualDesktop);
+}
+
