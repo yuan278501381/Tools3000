@@ -972,7 +972,11 @@ void LuaEngine::bindFs(sol::table& easy) {
     sol::table t = easy.create_named("fs");
     t.set_function("exists", [this](const std::string& p) {
         requirePermission(m_lua->lua_state(), LuaPermission::Fs, "easy.fs");
-        return std::filesystem::exists(WinUtils::utf8ToWstring(p));
+        if (p.find('\0') != std::string::npos) {
+            return false;
+        }
+        std::error_code ec;
+        return std::filesystem::exists(WinUtils::utf8ToWstring(p), ec) && !ec;
     });
     t.set_function("readFile", [this](const std::string& p) -> std::string {
         requirePermission(m_lua->lua_state(), LuaPermission::Fs, "easy.fs");

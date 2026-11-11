@@ -699,6 +699,11 @@ ParsedEmergencyShortcut RemoteMasterEngine::parseEmergencyShortcut(const std::st
         } catch (...) {}
     }
 
+    if (res.valid && !(res.ctrl || res.alt || res.shift || res.win)) {
+        res.valid = false;
+        res.vk = 0;
+    }
+
     return res;
 }
 

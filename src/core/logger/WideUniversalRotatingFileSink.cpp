@@ -275,6 +275,9 @@ void WideUniversalRotatingFileSink::setIdleTimeoutMs(uint32_t timeoutMs) {
     m_idleHandleTimeoutMs.store(timeoutMs);
     std::lock_guard<std::mutex> lock(base_sink<std::mutex>::mutex_);
     m_config.idleHandleTimeoutMs = timeoutMs;
+    std::lock_guard<std::mutex> wlock(m_workerMutex);
+    m_wakeupPending = true;
+    m_cv.notify_one();
 }
 
 uint32_t WideUniversalRotatingFileSink::getIdleTimeoutMs() const {
@@ -323,8 +326,13 @@ std::string WideUniversalRotatingFileSink::getActiveDay() const {
 }
 
 void WideUniversalRotatingFileSink::setSimulatedDayForTesting(const std::string& dayStr) {
-    std::lock_guard<std::mutex> lock(m_stateMutex);
-    m_simulatedDay = dayStr;
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        m_simulatedDay = dayStr;
+    }
+    std::lock_guard<std::mutex> wlock(m_workerMutex);
+    m_wakeupPending = true;
+    m_cv.notify_one();
 }
 
 std::string WideUniversalRotatingFileSink::getCurrentDayString() const {
@@ -366,7 +374,7 @@ void WideUniversalRotatingFileSink::openHandleLocked(bool truncate) {
         return;
     }
 
-    m_fileHandleOpen.store(true);
+    const bool wasOpen = m_fileHandleOpen.exchange(true, std::memory_order_acq_rel);
     LARGE_INTEGER li{};
     if (GetFileSizeEx(m_file, &li)) {
         m_currentFileSize = static_cast<size_t>((std::max)(LONGLONG{0}, li.QuadPart));
@@ -374,6 +382,14 @@ void WideUniversalRotatingFileSink::openHandleLocked(bool truncate) {
         m_currentFileSize = 0;
     }
     m_lastWriteTime = std::chrono::steady_clock::now();
+    m_lastWriteSteadyNs.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(m_lastWriteTime.time_since_epoch()).count(),
+        std::memory_order_release);
+    if (!wasOpen) {
+        std::lock_guard<std::mutex> wlock(m_workerMutex);
+        m_wakeupPending = true;
+        m_cv.notify_one();
+    }
 }
 
 void WideUniversalRotatingFileSink::closeHandleLocked() noexcept {
@@ -535,6 +551,9 @@ void WideUniversalRotatingFileSink::sink_it_(const spdlog::details::log_msg& mes
             m_currentFileSize += written;
         }
         m_lastWriteTime = std::chrono::steady_clock::now();
+        m_lastWriteSteadyNs.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(m_lastWriteTime.time_since_epoch()).count(),
+            std::memory_order_release);
     }
 }
 
@@ -661,15 +680,37 @@ void WideUniversalRotatingFileSink::compressPendingFilesSync() {
 }
 
 void WideUniversalRotatingFileSink::workerLoop() {
+    const auto computeMsUntilNextMidnight = []() noexcept -> int64_t {
+        SYSTEMTIME st{};
+        GetLocalTime(&st);
+        const int64_t elapsedTodayMs =
+            ((static_cast<int64_t>(st.wHour) * 3600LL +
+              static_cast<int64_t>(st.wMinute) * 60LL +
+              static_cast<int64_t>(st.wSecond)) * 1000LL) +
+            static_cast<int64_t>(st.wMilliseconds);
+        constexpr int64_t kDayMs = 24LL * 3600LL * 1000LL;
+        return (std::max)(int64_t{1000}, (kDayMs - elapsedTodayMs) + 250LL);
+    };
+
     while (true) {
         std::vector<std::filesystem::path> toCompress;
         bool doJanitor = false;
-        const uint32_t idleMs = m_idleHandleTimeoutMs.load();
-        const auto waitMs = idleMs > 0 ? (std::min)(uint32_t{200}, (std::max)(uint32_t{25}, idleMs / 3)) : uint32_t{200};
+        const uint32_t idleMs = m_idleHandleTimeoutMs.load(std::memory_order_relaxed);
+        int64_t waitMs = computeMsUntilNextMidnight();
+        if (idleMs > 0 && m_fileHandleOpen.load(std::memory_order_acquire)) {
+            const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            const int64_t lastNs = m_lastWriteSteadyNs.load(std::memory_order_acquire);
+            const int64_t elapsedMs = (std::max)(int64_t{0}, (nowNs - lastNs) / 1000000LL);
+            const int64_t remainingIdleMs = elapsedMs >= static_cast<int64_t>(idleMs)
+                ? int64_t{1}
+                : (static_cast<int64_t>(idleMs) - elapsedMs + 5LL);
+            waitMs = (std::min)(waitMs, remainingIdleMs);
+        }
         {
             std::unique_lock<std::mutex> lock(m_workerMutex);
             m_cv.wait_for(lock, std::chrono::milliseconds(waitMs), [this] {
-                return m_stopWorker || !m_compressionQueue.empty() || m_janitorPending;
+                return m_stopWorker || !m_compressionQueue.empty() || m_janitorPending || m_wakeupPending;
             });
             if (m_stopWorker && m_compressionQueue.empty()) {
                 break;
@@ -677,6 +718,7 @@ void WideUniversalRotatingFileSink::workerLoop() {
             toCompress.swap(m_compressionQueue);
             doJanitor = m_janitorPending;
             m_janitorPending = false;
+            m_wakeupPending = false;
         }
 
         // 1. 在专用压缩互斥锁保护下执行后台耗时 gzip 压缩，0 影响写入线程性能，0 并发冲突
