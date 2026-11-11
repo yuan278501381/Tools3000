@@ -5,7 +5,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge, ConfirmModal, PageSkeleton } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
@@ -277,6 +277,8 @@ export const GeneralPage: FC = () => {
     }
   };
 
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+
   const handleImportConfig = async () => {
     try {
       const result = await bridgeRequest<OperationResult>('config.import');
@@ -294,13 +296,14 @@ export const GeneralPage: FC = () => {
       if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
       applyLanguagePreference(refreshed.language);
       applyLocalAppearance({ theme: refreshed.theme, accentColor: refreshed.accentColor });
+      void persistAppearanceToBackend({ theme: refreshed.theme, accentColor: refreshed.accentColor });
     } catch (e) {
       toast.error(t('general.importFailed'), { description: String(e) });
     }
   };
 
   const handleResetConfig = async () => {
-    if (!window.confirm(t('general.resetConfirmMsg'))) return;
+    setConfirmResetOpen(false);
     try {
       const result = await bridgeRequest<OperationResult>('config.reset');
       if (!result.success) throw new Error(result.error || t('general.resetFailed'));
@@ -316,6 +319,7 @@ export const GeneralPage: FC = () => {
       if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
       applyLanguagePreference(res.language);
       applyLocalAppearance({ theme: res.theme, accentColor: res.accentColor });
+      void persistAppearanceToBackend({ theme: res.theme, accentColor: res.accentColor });
     } catch (e) {
       toast.error(t('general.resetFailed'), { description: String(e) });
     }
@@ -392,7 +396,7 @@ export const GeneralPage: FC = () => {
   const unboundCount = hotkeys.filter(h => !h.shortcut).length;
 
   if (loading) {
-    return <div style={{ padding: '2rem', opacity: 0.5 }}>{t('common.loading')}</div>;
+    return <PageSkeleton cards={3} rowsPerCard={4} />;
   }
 
   return (
@@ -737,13 +741,22 @@ export const GeneralPage: FC = () => {
             </Button>
           </SettingRow>
           <SettingRow label={t('general.resetConfig')} description={t('general.resetConfigDesc')}>
-            <Button variant="danger" onClick={handleResetConfig}>
+            <Button variant="danger" onClick={() => setConfirmResetOpen(true)}>
               <RotateCcw size={16} />
               <span>{t('common.reset')}</span>
             </Button>
           </SettingRow>
         </Card>
       </SettingGroup>
+
+      <ConfirmModal
+        open={confirmResetOpen}
+        title={t('general.resetConfig')}
+        description={t('general.resetConfirmMsg')}
+        confirmText={t('common.reset')}
+        onConfirm={handleResetConfig}
+        onClose={() => setConfirmResetOpen(false)}
+      />
     </div>
   );
 };

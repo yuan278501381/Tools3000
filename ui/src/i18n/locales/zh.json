@@ -28,7 +28,8 @@
     "refresh": "刷新",
     "enable": "启用",
     "disable": "禁用",
-    "all": "全部"
+    "all": "全部",
+    "copy": "复制"
   },
   "nav": {
     "capture": "截图与录屏",
@@ -509,7 +510,15 @@
     "available": "已就绪",
     "unavailable": "需要安装语言包",
     "loadFailed": "无法加载 OCR 设置",
-    "saveFailed": "无法保存此 OCR 设置"
+    "saveFailed": "无法保存此 OCR 设置",
+    "language": "识别语种偏好",
+    "languageDesc": "选择离线 OCR 文字识别的目标语种或自动混合检测",
+    "langAuto": "自动检测（跟随系统与中英混排）",
+    "langZhHans": "简体中文 + 英文",
+    "langZhHant": "繁体中文 + 英文",
+    "langEnUs": "纯英文识别",
+    "langJaJp": "日语识别",
+    "langKoKr": "韩语识别"
   },
   "gesture": {
     "title": "鼠标手势设置",
@@ -821,7 +830,23 @@
         "name": "下拉最小化",
         "desc": "上边缘中间下拉最小化窗口"
       }
-    }
+    },
+    "triggerEdgeLeftWheel": "屏幕左边缘 + 滚轮",
+    "triggerEdgeRightWheel": "屏幕右边缘 + 滚轮",
+    "webSearchEngine": "手势划词默认搜索引擎",
+    "webSearchEngineDesc": "执行“搜索选中文字”手势动作时默认跳转的搜索引擎",
+    "engineBaidu": "百度搜索",
+    "sideGestures": "侧键手势",
+    "edgeGestures": "边缘手势",
+    "wheelGestures": "滚轮手势",
+    "edgeShortTop": "顶边",
+    "edgeShortBottom": "底边",
+    "edgeShortLeft": "左边",
+    "edgeShortRight": "右边",
+    "wheelShort": "滚轮",
+    "side1Short": "侧键后退",
+    "side2Short": "侧键前进",
+    "leftClickShort": "左键辅助"
   },
   "hotcorner": {
     "title": "屏幕触发角",
@@ -1591,7 +1616,14 @@
     "opNotDesc": "逻辑 非 (NOT)，排除包含特定词的文件",
     "opPhraseDesc": "双引号短语，精确匹配包含空格的完整文本",
     "opWildcardMulti": "通配符，匹配 0 个或多个任意字符",
-    "opWildcardSingle": "通配符，匹配 1 个任意字符"
+    "opWildcardSingle": "通配符，匹配 1 个任意字符",
+    "defaultCategoryTitle": "默认初始筛选分类",
+    "defaultCategoryDesc": "打开空白搜索框时默认激活的顶部分类筛选标签",
+    "serviceStandby": "按需待机中（首次呼出搜索毫秒级唤醒）",
+    "serviceStandbyDesc": "遵循零开机负担按需启动策略，首次呼出搜索时自动拉起，也可点击右侧立即唤醒引擎",
+    "serviceStandbyToast": "索引引擎当前处于按需待机状态，点击“立即唤醒引擎”即可立即拉起",
+    "serviceWoken": "NTFS 索引引擎已成功唤醒并就绪",
+    "wakeNow": "立即唤醒引擎"
   },
   "tray": {
     "brandName": "Tools3000",
@@ -1653,7 +1685,9 @@
     "pinResetGroupMeta": "恢复默认组名与颜色",
     "pinGroupColorLabel": "分组颜色",
     "pinShowAll": "显示全部",
-    "pinCloseAll": "关闭全部"
+    "pinCloseAll": "关闭全部",
+    "confirmCloseGroup": "确定关闭该分组内的全部贴图？",
+    "confirmCloseAll": "确定关闭桌面上的全部贴图？"
   },
   "dialog": {
     "title": "文件对话框智能助手",
@@ -1690,7 +1724,8 @@
     "pinWorkspace": "固定为主工作区",
     "unpinWorkspace": "取消固定",
     "fixedBadge": "固定默认",
-    "browseFolder": "浏览选择"
+    "browseFolder": "浏览选择",
+    "confirmClearMemories": "确定要清空所有应用已记住的历史目录记录吗？"
   },
   "spotlight": {
     "title": "鼠标演示与特效",
@@ -1870,7 +1905,11 @@
     "animSlide": "阻尼推入",
     "animPop": "弹性冒出",
     "animFade": "渐现",
-    "animNone": "静态"
+    "animNone": "静态",
+    "autoContrastBadge": "智能高对比度",
+    "autoContrastLabel": "智能高对比自适应文字色",
+    "restoreAutoContrastDesc": "当前为自定义颜色，点击恢复智能高对比度自适应配字",
+    "restoreAutoContrast": "智能高对比"
   },
   "quicklook": {
     "emptyTitle": "在资源管理器中选中文件并按空格键",
@@ -2168,6 +2207,9 @@
     "resetFailed": "重置默认配置失败",
     "processExists": "该进程已在目标列表中",
     "resetDefaults": "恢复默认配置",
-    "autoSaved": "已自动保存"
+    "autoSaved": "已自动保存",
+    "classExists": "该窗口类名已存在于列表中",
+    "targetClassesLabel": "受管远程控制窗口类名列表",
+    "addClassPlaceholder": "输入远程控制客户端窗口类名后按 Enter 添加..."
   }
 }

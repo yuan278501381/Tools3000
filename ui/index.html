@@ -8,6 +8,20 @@
     <link rel="icon" type="image/png" sizes="512x512" href="/Logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tools3000</title>
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem('tools3000:theme');
+          var accent = localStorage.getItem('tools3000:accent-color') || 'blue';
+          var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var theme = pref === 'light' || pref === 'dark' ? pref : (dark ? 'dark' : 'light');
+          var root = document.documentElement;
+          root.setAttribute('data-theme', theme);
+          root.setAttribute('data-accent', accent);
+          root.style.colorScheme = theme;
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -2,7 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Select, Modal, Tooltip, NumberInput } from './UIKit';
+import { Select, Modal, Tooltip, NumberInput, ColorPickerInput } from './UIKit';
 
 // Mock i18next
 vi.mock('react-i18next', () => ({
@@ -428,6 +428,58 @@ describe('UIKit - NumberInput', () => {
     expect(input.value).toBe('100');
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith(100);
+  });
+});
+
+describe('UIKit - ColorPickerInput (P-09)', () => {
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it('previews color immediately at 60FPS while throttling IPC onChange storm and flushing final color on pointerUp', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-15T12:00:00Z'));
+
+    const onPreview = vi.fn();
+    const onChange = vi.fn();
+
+    const { container } = render(
+      <ColorPickerInput
+        value="#6366f1"
+        throttleMs={150}
+        onPreview={onPreview}
+        onChange={onChange}
+        ariaLabel="Theme color"
+      />,
+    );
+
+    const input = container.querySelector('input[type="color"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+
+    // Rapid drag emits 4 consecutive change events within 30ms
+    act(() => {
+      fireEvent.change(input, { target: { value: '#111111' } });
+      vi.advanceTimersByTime(10);
+      fireEvent.change(input, { target: { value: '#222222' } });
+      vi.advanceTimersByTime(10);
+      fireEvent.change(input, { target: { value: '#333333' } });
+      vi.advanceTimersByTime(10);
+      fireEvent.change(input, { target: { value: '#444444' } });
+    });
+
+    // Local preview receives all 4 updates immediately, whereas IPC onChange only fired once on leading edge
+    expect(onPreview).toHaveBeenCalledTimes(4);
+    expect(onPreview).toHaveBeenLastCalledWith('#444444');
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith('#111111');
+
+    // Releasing pointer immediately flushes the latest pending hex without waiting for trailing timeout
+    act(() => {
+      fireEvent.pointerUp(input);
+    });
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenLastCalledWith('#444444');
   });
 });
 

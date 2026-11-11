@@ -84,5 +84,10 @@ describe('renderMarkdownToHtml', () => {
     expect(lines[1]).toContain('&lt;img onerror=1&gt;');
     expect(lines[2]).toContain('class="tok-keyword"');
   });
+
+  it('localizes fenced code block copy button label when copyLabelOverride is provided', () => {
+    const html = renderMarkdownToHtml('```ts\nconst ok = true;\n```', '复制');
+    expect(html).toContain('>复制</button>');
+  });
 });
 

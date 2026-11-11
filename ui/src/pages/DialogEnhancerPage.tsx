@@ -3,7 +3,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge, ConfirmModal, PageSkeleton } from '../components/UIKit';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -216,7 +216,10 @@ export const DialogEnhancerPage: FC = () => {
     }
   };
 
+  const [confirmClearMemoriesOpen, setConfirmClearMemoriesOpen] = useState(false);
+
   const handleClearAppMemories = async () => {
+    setConfirmClearMemoriesOpen(false);
     try {
       await bridgeRequest('dialog.clearAppMemories');
       setAppMemories([]);
@@ -255,7 +258,7 @@ export const DialogEnhancerPage: FC = () => {
   };
 
   if (loading) {
-    return <div className="dialog-page-loading">{t('common.loading')}</div>;
+    return <PageSkeleton cards={3} rowsPerCard={3} />;
   }
 
   return (
@@ -375,7 +378,7 @@ export const DialogEnhancerPage: FC = () => {
         <Card subtitle={t('dialog.appMemoriesDesc')}>
           {appMemories.length > 0 && (
             <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
-              <Button variant="ghost" size="sm" onClick={handleClearAppMemories}>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmClearMemoriesOpen(true)}>
                 <Trash2 size={14} /> {t('dialog.clearAllMemories')}
               </Button>
             </div>
@@ -459,6 +462,15 @@ export const DialogEnhancerPage: FC = () => {
           </div>
         </Card>
       </SettingGroup>
+
+      <ConfirmModal
+        open={confirmClearMemoriesOpen}
+        title={t('dialog.clearAllMemories')}
+        description={t('dialog.confirmClearMemories')}
+        confirmText={t('common.confirm')}
+        onConfirm={handleClearAppMemories}
+        onClose={() => setConfirmClearMemoriesOpen(false)}
+      />
     </div>
   );
 };
