@@ -14,6 +14,7 @@
 #define TOOLS3000_CAPTURE_PINWINDOW_H
 
 #include "capture/PinGroupManager.h"
+#include "capture/MarkupEngine.h"
 #include <windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
@@ -37,10 +38,12 @@ struct CaptureRegion;
 
 class PinWindow : public std::enable_shared_from_this<PinWindow> {
 public:
-    /// 创建一个新的贴图窗口（可选携带微晶卡片圆角与原始纯文本元数据）
+    /// 创建一个新的贴图窗口（可选携带微晶卡片圆角、原始纯文本元数据、1:1 无损底图与独立矢量图元列表）
     static std::shared_ptr<PinWindow> create(const cv::Mat& image, int x, int y,
                                              float cardCornerRadius = 0.0f,
-                                             std::wstring sourceText = {});
+                                             std::wstring sourceText = {},
+                                             const cv::Mat& cleanBaseImage = {},
+                                             std::vector<MarkupElement> markupElements = {});
 
     /// 将剪贴板内容（图像 / 文本 / #颜色）智能贴成浮空贴图
     static std::shared_ptr<PinWindow> createFromClipboard();
@@ -135,6 +138,14 @@ public:
 
     /// 更新贴图图像内容
     void updateImage(const cv::Mat& newImage, bool clearCardMetadata = true);
+
+    /// 在 1:1 原始物理像素空间无损应用二次标注底图与独立矢量列表，保持 m_origWidth/Height 与 m_scale 缩放倍率不变
+    void applyEditedMarkup(const cv::Mat& cleanBaseImage,
+                           const std::vector<MarkupElement>& elements,
+                           const cv::Mat& precomposited = {});
+
+    const cv::Mat& cleanBaseImage() const noexcept { return m_cleanBaseImage; }
+    const std::vector<MarkupElement>& markupElements() const noexcept { return m_markupElements; }
 
     /// 是否为生成式微晶字签/色卡签
     bool isGeneratedCard() const { return m_cardCornerRadius > 0.5f || !m_pinnedSourceText.empty(); }
@@ -315,6 +326,8 @@ private:
     void executeInteractiveButton(int btnId, int clientX, int clientY, bool shiftHeld);
 
     cv::Mat m_sourceImage;  // 原图副本，供"复制到剪贴板"
+    cv::Mat m_cleanBaseImage;  // 1:1 原始物理分辨率无损纯净底图（与矢量标注分离存储）
+    std::vector<MarkupElement> m_markupElements;  // 1:1 原始像素空间下的独立可二次编辑矢量列表
     float m_cardCornerRadius = 0.0f;       // 微晶字签/色卡签基准像素圆角 (0 = 普通直角截图)
     std::wstring m_pinnedSourceText;       // 微晶字签/色卡签原始纯文本，支持零误差一键复制
 

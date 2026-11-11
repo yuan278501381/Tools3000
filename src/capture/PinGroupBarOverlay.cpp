@@ -686,8 +686,9 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
         m_dcTarget->BeginDraw();
         m_dcTarget->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
+        const auto pal = FloatingGlassBar::resolveThemePalette();
         const D2D1_RECT_F panelRect = D2D1::RectF(panelLeft, panelTop, panelRight, panelBottom);
-        FloatingGlassBar::drawGlassPanel(m_dcTarget.Get(), panelRect, 11.0f * scale, false);
+        FloatingGlassBar::drawGlassPanel(m_dcTarget.Get(), panelRect, 11.0f * scale, pal.isDark);
 
         const D2D1_RECT_F contentClip = D2D1::RectF(
             panelLeft + 2.0f * scale, panelTop,
@@ -695,12 +696,13 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
         m_dcTarget->PushAxisAlignedClip(contentClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         ComPtr<ID2D1SolidColorBrush> primaryBrush, activeBgBrush, activeBorderBrush, hoverBgBrush, dangerHoverBrush, dangerTextBrush;
-        m_dcTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, primaryBrush.GetAddressOf());
-        m_dcTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.095f), activeBgBrush.GetAddressOf());
-        m_dcTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.24f), activeBorderBrush.GetAddressOf());
-        m_dcTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.055f), hoverBgBrush.GetAddressOf());
-        m_dcTarget->CreateSolidColorBrush(D2D1::ColorF(244.0f / 255.0f, 63.0f / 255.0f, 94.0f / 255.0f, 0.11f), dangerHoverBrush.GetAddressOf());
-        m_dcTarget->CreateSolidColorBrush(D2D1::ColorF(225.0f / 255.0f, 29.0f / 255.0f, 72.0f / 255.0f, 0.96f), dangerTextBrush.GetAddressOf());
+        m_dcTarget->CreateSolidColorBrush(pal.textPrimary, primaryBrush.GetAddressOf());
+        m_dcTarget->CreateSolidColorBrush(pal.accentSubtle, activeBgBrush.GetAddressOf());
+        m_dcTarget->CreateSolidColorBrush(pal.accentBorder, activeBorderBrush.GetAddressOf());
+        m_dcTarget->CreateSolidColorBrush(pal.hoverBg, hoverBgBrush.GetAddressOf());
+        m_dcTarget->CreateSolidColorBrush(D2D1::ColorF(244.0f / 255.0f, 63.0f / 255.0f, 94.0f / 255.0f, pal.isDark ? 0.18f : 0.11f), dangerHoverBrush.GetAddressOf());
+        m_dcTarget->CreateSolidColorBrush(pal.isDark ? D2D1::ColorF(1.0f, 0.42f, 0.52f, 0.98f)
+                                                     : D2D1::ColorF(225.0f / 255.0f, 29.0f / 255.0f, 72.0f / 255.0f, 0.96f), dangerTextBrush.GetAddressOf());
 
         for (size_t i = 0; i < m_chips.size(); ++i) {
             const auto& chip = m_chips[i];
@@ -708,7 +710,7 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
             if (chip.isSeparatorBefore && i > 0) {
                 const float sepX = (m_chips[i - 1].rect.right + chip.rect.left) * 0.5f;
                 FloatingGlassBar::drawSeparator(
-                    m_dcTarget.Get(), sepX, chip.rect.top + 4.0f * scale, chip.rect.bottom - 4.0f * scale, 1.0f, false);
+                    m_dcTarget.Get(), sepX, chip.rect.top + 4.0f * scale, chip.rect.bottom - 4.0f * scale, 1.0f, pal.isDark);
             }
 
             const bool hovered = (static_cast<int>(i) == m_hoveredChipIndex);
@@ -720,12 +722,15 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
             const auto chipRound = D2D1::RoundedRect(chip.rect, 7.0f * scale, 7.0f * scale);
 
             if (isEditingThisGroup) {
-                ComPtr<ID2D1SolidColorBrush> editWhiteBg, editGlowBorder, editCrispBorder;
+                ComPtr<ID2D1SolidColorBrush> editSurfaceBg, editGlowBorder, editCrispBorder;
                 D2D1_COLOR_F glowCol = chip.dotColor;
-                glowCol.a = 0.20f;
+                glowCol.a = pal.isDark ? 0.28f : 0.20f;
                 D2D1_COLOR_F bdCol = chip.dotColor;
                 bdCol.a = 0.90f;
-                m_dcTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), editWhiteBg.GetAddressOf());
+                m_dcTarget->CreateSolidColorBrush(
+                    pal.isDark ? D2D1::ColorF(30.0f / 255.0f, 35.0f / 255.0f, 46.0f / 255.0f, 1.0f)
+                               : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f),
+                    editSurfaceBg.GetAddressOf());
                 m_dcTarget->CreateSolidColorBrush(glowCol, editGlowBorder.GetAddressOf());
                 m_dcTarget->CreateSolidColorBrush(bdCol, editCrispBorder.GetAddressOf());
                 if (editGlowBorder) {
@@ -736,7 +741,7 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
                         D2D1::RoundedRect(outerRc, 8.0f * scale, 8.0f * scale),
                         editGlowBorder.Get(), 2.0f * scale);
                 }
-                if (editWhiteBg) m_dcTarget->FillRoundedRectangle(chipRound, editWhiteBg.Get());
+                if (editSurfaceBg) m_dcTarget->FillRoundedRectangle(chipRound, editSurfaceBg.Get());
                 if (editCrispBorder) m_dcTarget->DrawRoundedRectangle(chipRound, editCrispBorder.Get(), 1.4f * scale);
             } else if (chip.isActive) {
                 if (chip.hasDot) {
@@ -964,23 +969,28 @@ void PinGroupBarOverlay::handleGroupContextMenu(int groupId, POINT screenPt) {
 
 LRESULT CALLBACK PinGroupBarOverlay::editPopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto* self = reinterpret_cast<PinGroupBarOverlay*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    static HBRUSH s_darkEditBrush = CreateSolidBrush(RGB(30, 35, 46));
+    const bool isDark = FloatingGlassBar::isEffectiveDarkMode();
     switch (msg) {
         case WM_ERASEBKGND: {
             HDC hdc = reinterpret_cast<HDC>(wParam);
             if (hdc) {
                 RECT rc{};
                 GetClientRect(hwnd, &rc);
-                FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+                FillRect(hdc, &rc, isDark && s_darkEditBrush
+                                       ? s_darkEditBrush
+                                       : static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
             }
             return 1;
         }
         case WM_CTLCOLOREDIT: {
             HDC hdc = reinterpret_cast<HDC>(wParam);
             if (hdc) {
-                SetTextColor(hdc, RGB(15, 23, 42));
-                SetBkColor(hdc, RGB(255, 255, 255));
+                SetTextColor(hdc, isDark ? RGB(248, 250, 252) : RGB(15, 23, 42));
+                SetBkColor(hdc, isDark ? RGB(30, 35, 46) : RGB(255, 255, 255));
             }
-            return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
+            return reinterpret_cast<LRESULT>(
+                isDark && s_darkEditBrush ? s_darkEditBrush : static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
         }
         case WM_SETFOCUS: {
             if (self && self->m_editControlHwnd && IsWindow(self->m_editControlHwnd)) {

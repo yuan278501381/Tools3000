@@ -97,13 +97,24 @@ bool PinWindow::waitForPendingOcrWorkers(uint32_t timeoutMs) noexcept {
 
 std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
                                              float cardCornerRadius,
-                                             std::wstring sourceText) {
+                                             std::wstring sourceText,
+                                             const cv::Mat& cleanBaseImage,
+                                             std::vector<MarkupElement> markupElements) {
     if (image.empty()) return nullptr;
 
     auto pin = std::shared_ptr<PinWindow>(new PinWindow());
     pin->m_origWidth = image.cols;
     pin->m_origHeight = image.rows;
     pin->m_sourceImage = image.clone();  // 保存原图，供右键"复制到剪贴板"
+    if (!cleanBaseImage.empty() &&
+        cleanBaseImage.cols == image.cols &&
+        cleanBaseImage.rows == image.rows) {
+        pin->m_cleanBaseImage = cleanBaseImage.clone();
+        pin->m_markupElements = std::move(markupElements);
+    } else {
+        pin->m_cleanBaseImage = image.clone();
+        pin->m_markupElements.clear();
+    }
     pin->m_cardCornerRadius = (std::max)(0.0f, cardCornerRadius);
     pin->m_pinnedSourceText = std::move(sourceText);
     if (s_activeGroupFilter >= PinGroupConstants::kMinGroupId &&
@@ -174,6 +185,8 @@ void PinWindow::close() {
     releaseGraphicsResources();
     HWND hwndToDestroy = std::exchange(m_hwnd, nullptr);
     m_sourceImage.release();
+    m_cleanBaseImage.release();
+    m_markupElements.clear();
     if (hwndToDestroy && IsWindow(hwndToDestroy)) {
         DestroyWindow(hwndToDestroy);
     }
@@ -205,6 +218,8 @@ void PinWindow::closeAll() {
     for (auto& pin : targets) {
         if (pin) {
             pin->m_sourceImage.release();
+            pin->m_cleanBaseImage.release();
+            pin->m_markupElements.clear();
             pin->releaseGraphicsResources();
             HWND hwndToDestroy = std::exchange(pin->m_hwnd, nullptr);
             if (hwndToDestroy && IsWindow(hwndToDestroy)) {
@@ -746,6 +761,8 @@ size_t PinWindow::closeGroup(int groupId) {
     for (auto& pin : targets) {
         if (!pin) continue;
         pin->m_sourceImage.release();
+        pin->m_cleanBaseImage.release();
+        pin->m_markupElements.clear();
         pin->releaseGraphicsResources();
         HWND hwndToDestroy = std::exchange(pin->m_hwnd, nullptr);
         if (hwndToDestroy && IsWindow(hwndToDestroy)) {
@@ -1196,11 +1213,14 @@ void PinWindow::drawHoverToolbar() {
     m_btnSaveRect   = layout.buttons[6];
     m_btnCloseRect  = layout.buttons[7];
     
-    // 绘制磨砂玻璃背景
+    // 绘制磨砂玻璃背景（跟随动态明暗主题与自定义强调色）
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), m_toolbarRect, 6.0f * dpiScale, true);
-    
+
     ComPtr<ID2D1SolidColorBrush> textBrush;
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.9f * m_hoverAlpha), textBrush.GetAddressOf());
+    D2D1_COLOR_F iconColor = pal.textPrimary;
+    iconColor.a *= m_hoverAlpha;
+    m_renderTarget->CreateSolidColorBrush(iconColor, textBrush.GetAddressOf());
     
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnFoldRect, 4.0f * dpiScale, m_hoverFold, false, false, false, m_hoverAlpha, true);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnRotateRect, 4.0f * dpiScale, m_hoverRotate, false, false, false, m_hoverAlpha, true);
@@ -1627,8 +1647,35 @@ void PinWindow::rotate(int angleDeg) {
         m_folded = false;
     }
 
+    const int prevOrigW = m_origWidth;
+    const int prevOrigH = m_origHeight;
     if (!PinInputController::applyRotation(m_sourceImage, m_colorBackup, m_origWidth, m_origHeight, angleDeg)) {
         return;
+    }
+    if (!m_cleanBaseImage.empty()) {
+        cv::Mat dummyBackup;
+        int cleanW = m_cleanBaseImage.cols;
+        int cleanH = m_cleanBaseImage.rows;
+        PinInputController::applyRotation(m_cleanBaseImage, dummyBackup, cleanW, cleanH, angleDeg);
+    }
+    if (!m_markupElements.empty() && prevOrigW > 0 && prevOrigH > 0) {
+        const int normDeg = PinInputController::normalizeRightAngleDegrees(angleDeg);
+        auto rotPt = [&](cv::Point& pt) {
+            const int px = pt.x;
+            const int py = pt.y;
+            if (normDeg == 90) {
+                pt = {prevOrigH - 1 - py, px};
+            } else if (normDeg == 180) {
+                pt = {prevOrigW - 1 - px, prevOrigH - 1 - py};
+            } else if (normDeg == 270) {
+                pt = {py, prevOrigW - 1 - px};
+            }
+        };
+        for (auto& el : m_markupElements) {
+            rotPt(el.startPt);
+            rotPt(el.endPt);
+            for (auto& p : el.penPoints) rotPt(p);
+        }
     }
 
     {
@@ -1660,6 +1707,21 @@ void PinWindow::flip(bool horizontal) {
     if (m_sourceImage.empty() || !m_hwnd) return;
     if (!PinInputController::applyFlip(m_sourceImage, m_colorBackup, horizontal)) {
         return;
+    }
+    if (!m_cleanBaseImage.empty()) {
+        cv::Mat dummyBackup;
+        PinInputController::applyFlip(m_cleanBaseImage, dummyBackup, horizontal);
+    }
+    if (!m_markupElements.empty() && m_origWidth > 0 && m_origHeight > 0) {
+        auto flipPt = [&](cv::Point& pt) {
+            if (horizontal) pt.x = m_origWidth - 1 - pt.x;
+            else pt.y = m_origHeight - 1 - pt.y;
+        };
+        for (auto& el : m_markupElements) {
+            flipPt(el.startPt);
+            flipPt(el.endPt);
+            for (auto& p : el.penPoints) flipPt(p);
+        }
     }
     if (m_folded) {
         m_folded = false;
@@ -1788,24 +1850,37 @@ void PinWindow::toggleFold() {
 
 void PinWindow::editMarkup() {
     if (!m_hwnd || m_sourceImage.empty()) return;
-    
+
     RECT rc{};
     GetWindowRect(m_hwnd, &rc);
-    CaptureRegion reg{ rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top };
+    CaptureRegion reg{rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top};
+
+    const cv::Mat baseForEdit = (!m_cleanBaseImage.empty() &&
+                                 m_cleanBaseImage.cols == m_origWidth &&
+                                 m_cleanBaseImage.rows == m_origHeight)
+        ? m_cleanBaseImage
+        : m_sourceImage;
 
     ShowWindow(m_hwnd, SW_HIDE);
     std::weak_ptr<PinWindow> weakSelf = shared_from_this();
-    CaptureOverlay::instance().startEditPinned(m_sourceImage, reg, [weakSelf](const cv::Mat& newImage) {
-        if (auto self = weakSelf.lock()) {
-            if (!newImage.empty()) {
-                self->updateImage(newImage, false);
+    CaptureOverlay::instance().startEditPinnedMarkup(
+        baseForEdit,
+        m_markupElements,
+        reg,
+        [weakSelf](bool accepted,
+                   const cv::Mat& newCleanBase,
+                   const cv::Mat& compositedImage,
+                   std::vector<MarkupElement> updatedElements) {
+            if (auto self = weakSelf.lock()) {
+                if (accepted && !newCleanBase.empty()) {
+                    self->applyEditedMarkup(newCleanBase, updatedElements, compositedImage);
+                }
+                if (self->m_hwnd && IsWindow(self->m_hwnd)) {
+                    ShowWindow(self->m_hwnd, SW_SHOW);
+                    self->focusWindow();
+                }
             }
-            if (self->m_hwnd && IsWindow(self->m_hwnd)) {
-                ShowWindow(self->m_hwnd, SW_SHOW);
-                self->focusWindow();
-            }
-        }
-    });
+        });
 }
 
 static void cleanupOcrWorkingSet() {
@@ -2042,35 +2117,18 @@ void PinWindow::copySelectedText() {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         if (m_selectedBlockIndices.empty()) return;
 
-        std::vector<size_t> sorted = m_selectedBlockIndices;
-        std::sort(sorted.begin(), sorted.end(), [this](size_t a, size_t b) {
-            if (a >= m_ocrBlocks.size() || b >= m_ocrBlocks.size()) return a < b;
-            const auto& ba = m_ocrBlocks[a].origBox;
-            const auto& bb = m_ocrBlocks[b].origBox;
-            float avgH = (ba.height + bb.height) * 0.5f;
-            if (std::abs(ba.y - bb.y) > avgH * 0.45f) return ba.y < bb.y;
-            return ba.x < bb.x;
-        });
-
-        const PinOcrBlock* prevBlock = nullptr;
-        for (size_t idx : sorted) {
-            if (idx < m_ocrBlocks.size()) {
-                const auto& cur = m_ocrBlocks[idx];
-                if (prevBlock) {
-                    float avgH = (prevBlock->origBox.height + cur.origBox.height) * 0.5f;
-                    bool isSameLine = std::abs(prevBlock->origBox.y - cur.origBox.y) <= avgH * 0.45f;
-                    if (isSameLine) {
-                        if (!combined.empty() && combined.back() != ' ' && !cur.text.empty() && cur.text.front() != ' ') {
-                            combined += " ";
-                        }
-                    } else {
-                        combined += "\r\n";
-                    }
-                }
-                combined += cur.text;
-                prevBlock = &cur;
+        std::vector<tools3000::ocr::OcrResult> selectedBlocks;
+        selectedBlocks.reserve(m_selectedBlockIndices.size());
+        for (size_t idx : m_selectedBlockIndices) {
+            if (idx < m_ocrBlocks.size() && !m_ocrBlocks[idx].text.empty()) {
+                tools3000::ocr::OcrResult r;
+                r.text = m_ocrBlocks[idx].text;
+                r.confidence = 1.0f;
+                r.box = m_ocrBlocks[idx].origBox;
+                selectedBlocks.push_back(std::move(r));
             }
         }
+        combined = tools3000::ocr::OcrEngine::orderTextBlocksWithXYCut(selectedBlocks, "\r\n");
         m_selectedBlockIndices.clear();
     }
 
@@ -2100,35 +2158,18 @@ void PinWindow::copyAllText() {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         if (m_ocrReady && !m_ocrBlocks.empty()) {
             hasReadyBlocks = true;
-            std::vector<size_t> sorted(m_ocrBlocks.size());
-            for (size_t i = 0; i < m_ocrBlocks.size(); ++i) sorted[i] = i;
-            std::sort(sorted.begin(), sorted.end(), [this](size_t a, size_t b) {
-                const auto& ba = m_ocrBlocks[a].origBox;
-                const auto& bb = m_ocrBlocks[b].origBox;
-                float avgH = (ba.height + bb.height) * 0.5f;
-                if (std::abs(ba.y - bb.y) > avgH * 0.45f) return ba.y < bb.y;
-                return ba.x < bb.x;
-            });
-
-            const PinOcrBlock* prevBlock = nullptr;
-            for (size_t idx : sorted) {
-                if (idx < m_ocrBlocks.size()) {
-                    const auto& cur = m_ocrBlocks[idx];
-                    if (prevBlock) {
-                        float avgH = (prevBlock->origBox.height + cur.origBox.height) * 0.5f;
-                        bool isSameLine = std::abs(prevBlock->origBox.y - cur.origBox.y) <= avgH * 0.45f;
-                        if (isSameLine) {
-                            if (!combined.empty() && combined.back() != ' ' && !cur.text.empty() && cur.text.front() != ' ') {
-                                combined += " ";
-                            }
-                        } else {
-                            combined += "\r\n";
-                        }
-                    }
-                    combined += cur.text;
-                    prevBlock = &cur;
+            std::vector<tools3000::ocr::OcrResult> allBlocks;
+            allBlocks.reserve(m_ocrBlocks.size());
+            for (const auto& blk : m_ocrBlocks) {
+                if (!blk.text.empty()) {
+                    tools3000::ocr::OcrResult r;
+                    r.text = blk.text;
+                    r.confidence = 1.0f;
+                    r.box = blk.origBox;
+                    allBlocks.push_back(std::move(r));
                 }
             }
+            combined = tools3000::ocr::OcrEngine::orderTextBlocksWithXYCut(allBlocks, "\r\n");
         }
     }
 
@@ -2242,6 +2283,8 @@ void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {
         m_pinnedSourceText.clear();
     }
     m_sourceImage = newImage.clone();
+    m_cleanBaseImage = newImage.clone();
+    m_markupElements.clear();
     m_origWidth = newImage.cols;
     m_origHeight = newImage.rows;
 
@@ -2260,6 +2303,68 @@ void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {
     const int newH = (std::max)(1, static_cast<int>(m_origHeight * m_scale));
     if (!m_folded) {
         SetWindowPos(m_hwnd, nullptr, 0, 0, newW, newH, SWP_NOMOVE | SWP_NOZORDER);
+        updateWindowCornerRegion();
+    }
+
+    createRenderResources(m_sourceImage);
+    render();
+}
+
+void PinWindow::applyEditedMarkup(
+    const cv::Mat& cleanBaseImage,
+    const std::vector<MarkupElement>& elements,
+    const cv::Mat& precomposited) {
+    if (cleanBaseImage.empty() || !m_hwnd) return;
+
+    m_colorBackup.release();
+    m_grayscale = false;
+    m_inverted = false;
+    m_cleanBaseImage = cleanBaseImage.clone();
+    m_markupElements = elements;
+
+    cv::Mat composited;
+    if (!precomposited.empty() &&
+        precomposited.cols == m_cleanBaseImage.cols &&
+        precomposited.rows == m_cleanBaseImage.rows) {
+        composited = precomposited.clone();
+    } else if (m_markupElements.empty()) {
+        composited = m_cleanBaseImage.clone();
+    } else {
+        MarkupEngine engine;
+        cv::Mat baseBgr = m_cleanBaseImage;
+        if (baseBgr.channels() == 4) {
+            cv::cvtColor(baseBgr, baseBgr, cv::COLOR_BGRA2BGR);
+        } else if (baseBgr.channels() == 1) {
+            cv::cvtColor(baseBgr, baseBgr, cv::COLOR_GRAY2BGR);
+        }
+        engine.setBaseImage(baseBgr);
+        engine.importElements(m_markupElements);
+        composited = engine.getCompositeImage();
+    }
+    if (composited.empty()) {
+        composited = m_cleanBaseImage.clone();
+    }
+
+    m_sourceImage = std::move(composited);
+    m_origWidth = m_sourceImage.cols;
+    m_origHeight = m_sourceImage.rows;
+
+    if (m_pinnedSourceText.empty()) {
+        {
+            std::lock_guard<std::mutex> lock(m_ocrMutex);
+            m_ocrBlocks.clear();
+            m_selectedBlockIndices.clear();
+            m_hoveredBlockIndex = -1;
+            m_ocrReady = false;
+        }
+        invalidateOcrStateAndRefreshIfSelecting();
+    }
+
+    // 保持原始 1:1 m_origWidth/Height 与用户当前 m_scale 倍率恒定不变，彻底根除缩放平方膨胀与长图糊化
+    const int keepW = (std::max)(1, static_cast<int>(m_origWidth * m_scale));
+    const int keepH = (std::max)(1, static_cast<int>(m_origHeight * m_scale));
+    if (!m_folded) {
+        SetWindowPos(m_hwnd, nullptr, 0, 0, keepW, keepH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         updateWindowCornerRegion();
     }
 
@@ -2732,17 +2837,16 @@ void PinWindow::render() {
     m_renderTarget->BeginDraw();
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     auto size = m_renderTarget->GetSize();
     if (m_folded) {
         const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
         m_dpiScale = dpiScale;
-        auto& cfg = tools3000::core::ConfigManager::instance();
-        const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-        const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
+        const tools3000::core::AccentColorRGB themeRgb = FloatingGlassBar::effectiveAccentRGB();
 
         ComPtr<ID2D1SolidColorBrush> bgBrush, textBrush, accentBrush;
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.13f, 0.16f, 0.94f), bgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.98f, 0.95f), textBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.panelBg, bgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.textPrimary, textBrush.GetAddressOf());
         const D2D1_COLOR_F foldAccent = (m_groupId >= PinGroupConstants::kMinGroupId)
             ? PinGroupPalette::accentColor(m_groupId, 0.96f)
             : D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.95f);
@@ -2849,9 +2953,7 @@ void PinWindow::render() {
             std::lock_guard<std::mutex> lock(m_ocrMutex);
             const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
             m_dpiScale = dpiScale;
-            auto& cfg = tools3000::core::ConfigManager::instance();
-            const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-            const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
+            const tools3000::core::AccentColorRGB themeRgb = FloatingGlassBar::effectiveAccentRGB();
 
             ComPtr<ID2D1SolidColorBrush> hoverFillBrush, hoverStrokeBrush;
             ComPtr<ID2D1SolidColorBrush> selFillBrush, selStrokeBrush;
@@ -2959,7 +3061,7 @@ void PinWindow::render() {
                                                 m_hoverCopyFloating, false, false, false, 0.95f, true);
 
                 ComPtr<ID2D1SolidColorBrush> pillTextBrush;
-                m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f), pillTextBrush.GetAddressOf());
+                m_renderTarget->CreateSolidColorBrush(pal.textPrimary, pillTextBrush.GetAddressOf());
 
                 // 复制图标居左
                 auto iconRect = D2D1::RectF(pillX + 4.0f * dpiScale, pillY + 3.0f * dpiScale,
@@ -3040,8 +3142,9 @@ void PinWindow::render() {
                         ComPtr<ID2D1SolidColorBrush> dotBr, txtBr;
                         m_renderTarget->CreateSolidColorBrush(
                             PinGroupPalette::accentColor(m_groupId, badgeAlpha), dotBr.GetAddressOf());
-                        m_renderTarget->CreateSolidColorBrush(
-                            D2D1::ColorF(1.0f, 1.0f, 1.0f, badgeAlpha), txtBr.GetAddressOf());
+                        D2D1_COLOR_F badgeTxt = pal.textPrimary;
+                        badgeTxt.a *= badgeAlpha;
+                        m_renderTarget->CreateSolidColorBrush(badgeTxt, txtBr.GetAddressOf());
                         const float dotR = 3.8f * dpiScale;
                         const float dotCx = candidate.left + 8.0f * dpiScale + dotR;
                         const float dotCy = (candidate.top + candidate.bottom) * 0.5f;
@@ -3058,8 +3161,9 @@ void PinWindow::render() {
                         }
                     } else {
                         ComPtr<ID2D1SolidColorBrush> iconBr;
-                        m_renderTarget->CreateSolidColorBrush(
-                            D2D1::ColorF(1.0f, 1.0f, 1.0f, badgeAlpha), iconBr.GetAddressOf());
+                        D2D1_COLOR_F badgeIcon = pal.textPrimary;
+                        badgeIcon.a *= badgeAlpha;
+                        m_renderTarget->CreateSolidColorBrush(badgeIcon, iconBr.GetAddressOf());
                         if (iconBr) {
                             CaptureVectorIcons::renderIcon(
                                 m_renderTarget.Get(), m_d2dFactory.Get(),
@@ -3076,9 +3180,7 @@ void PinWindow::render() {
             : 0.0f;
         ComPtr<ID2D1SolidColorBrush> borderBrush;
         if (m_focused) {
-            auto& cfg = tools3000::core::ConfigManager::instance();
-            const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-            const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
+            const tools3000::core::AccentColorRGB themeRgb = FloatingGlassBar::effectiveAccentRGB();
             const D2D1_COLOR_F focusCol = (m_groupId >= PinGroupConstants::kMinGroupId)
                 ? PinGroupPalette::accentColor(m_groupId, 0.96f)
                 : D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.95f);

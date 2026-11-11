@@ -176,26 +176,39 @@ void configureRecorderStateCallback() {
             if (state == RecordState::Idle) {
                 ShortcutHintOverlay::instance().hide();
                 tools3000::core::MessageBridge::instance().invokeHandler("keycast.setDockingRegion", {{"active", false}});
+                if (ScreenRecorder::instance().isStopping()) {
+                    // 后台异步封装落盘正在进行中，保持灵动岛 SAVING 状态直至回调切回完成态
+                    return;
+                }
                 if (!stats.stopReason.empty() &&
                     ScreenRecorder::instance().needsFinalization()) {
-                    const auto path = ScreenRecorder::instance().stopRecording();
-                    if (!path.empty()) {
-                        indicator.showCompleted(path, stats.durationSec);
-                        const bool isWeChatLimit = stats.stopReason == "gif_wechat_limit";
-                        const bool diskFailure = stats.stopReason == "low_disk_space" ||
-                            stats.stopReason == "disk_space_query_failed";
-                        std::wstring toastMsg = isWeChatLimit
-                            ? (tools3000::core::WinUtils::isSystemLanguageChinese() ? L"GIF 已达 20MB 上限并自动保存" : L"GIF reached 20 MB limit and saved")
-                            : (diskFailure
-                                ? (tools3000::core::WinUtils::isSystemLanguageChinese() ? L"磁盘空间不足，已保存当前录屏" : L"Low disk space, recording saved")
-                                : (tools3000::core::WinUtils::isSystemLanguageChinese() ? L"录屏已停止并保存" : L"Recording stopped and saved"));
-                        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
-                    } else {
-                        indicator.hide();
-                        tools3000::core::EventBus::instance().publish(
-                            tools3000::core::ShowToastEvent{L"录屏已停止，未生成有效内容"});
-                    }
-                } else if (!indicator.isCompleted()) {
+                    indicator.showSaving();
+                    const std::string stopReason = stats.stopReason;
+                    const double fallbackDur = stats.durationSec;
+                    ScreenRecorder::instance().stopRecordingAsync(
+                        [stopReason, fallbackDur](const std::string& path, const RecordStats& finalStats) {
+                            tools3000::core::MainThreadDispatcher::instance().post(
+                                [path, stopReason, dur = (finalStats.durationSec > 0.0 ? finalStats.durationSec : fallbackDur)]() {
+                                    auto& ind = RecordingIndicator::instance();
+                                    if (!path.empty()) {
+                                        ind.showCompleted(path, dur);
+                                        const bool isWeChatLimit = stopReason == "gif_wechat_limit";
+                                        const bool diskFailure = stopReason == "low_disk_space" ||
+                                            stopReason == "disk_space_query_failed";
+                                        std::wstring toastMsg = isWeChatLimit
+                                            ? (tools3000::core::WinUtils::isSystemLanguageChinese() ? L"GIF 已达 20MB 上限并自动保存" : L"GIF reached 20 MB limit and saved")
+                                            : (diskFailure
+                                                ? (tools3000::core::WinUtils::isSystemLanguageChinese() ? L"磁盘空间不足，已保存当前录屏" : L"Low disk space, recording saved")
+                                                : (tools3000::core::WinUtils::isSystemLanguageChinese() ? L"录屏已停止并保存" : L"Recording stopped and saved"));
+                                        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
+                                    } else {
+                                        ind.hide();
+                                        tools3000::core::EventBus::instance().publish(
+                                            tools3000::core::ShowToastEvent{L"录屏已停止，未生成有效内容"});
+                                    }
+                                });
+                        });
+                } else if (!indicator.isCompleted() && !indicator.isSaving()) {
                     indicator.hide();
                 }
             }
@@ -214,21 +227,31 @@ void configureRecorderStateCallback() {
 }
 
 void stopRecordingWithFeedback() {
+    auto& recorder = ScreenRecorder::instance();
+    if (recorder.isStopping()) {
+        return;
+    }
     auto& indicator = RecordingIndicator::instance();
     ShortcutHintOverlay::instance().hide();
     tools3000::core::MessageBridge::instance().invokeHandler("keycast.setDockingRegion", {{"active", false}});
-    const double duration = ScreenRecorder::instance().stats().durationSec;
-    const auto path = ScreenRecorder::instance().stopRecording();
-    if (!path.empty()) {
-        LOG_INFO("录屏已保存: {}", path);
-        indicator.showCompleted(path, duration);
-        tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"录屏已保存"});
-    } else {
-        indicator.hide();
-        tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"录屏已停止，未生成有效内容"});
-    }
+    const double duration = recorder.stats().durationSec;
+    indicator.showSaving();
+    recorder.stopRecordingAsync([duration](const std::string& path, const RecordStats& finalStats) {
+        tools3000::core::MainThreadDispatcher::instance().post(
+            [path, dur = (finalStats.durationSec > 0.0 ? finalStats.durationSec : duration)]() {
+                auto& ind = RecordingIndicator::instance();
+                if (!path.empty()) {
+                    LOG_INFO("录屏已保存: {}", path);
+                    ind.showCompleted(path, dur);
+                    tools3000::core::EventBus::instance().publish(
+                        tools3000::core::ShowToastEvent{L"录屏已保存"});
+                } else {
+                    ind.hide();
+                    tools3000::core::EventBus::instance().publish(
+                        tools3000::core::ShowToastEvent{L"录屏已停止，未生成有效内容"});
+                }
+            });
+    });
 }
 
 bool toggleRecordingPauseWithFeedback() {
@@ -320,6 +343,9 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
 
 void toggleRecording() {
     auto& recorder = ScreenRecorder::instance();
+    if (recorder.isStopping()) {
+        return;
+    }
     if (recorder.state() == RecordState::Idle) {
         const auto opts = configuredCaptureOptions();
         if (opts.autoBypassFullscreen) {
@@ -635,18 +661,28 @@ public:
             });
         });
 
-        m_themeSubscription = bus.subscribe<tools3000::core::ThemeChangedEvent>([runOnUiThread](const tools3000::core::ThemeChangedEvent&) {
-            runOnUiThread([]() {
-                tools3000::capture::CaptureOverlay::instance().reloadThemeColors();
-            });
+        auto refreshCaptureAndOcrThemesOnUi = []() {
+            tools3000::capture::CaptureOverlay::instance().reloadThemeColors();
+            tools3000::capture::PinWindow::refreshAllVisualsAndGroupBar();
+            tools3000::capture::RecordingIndicator::instance().reloadTheme();
+            tools3000::capture::ScrollCaptureOverlay::instance().reloadTheme();
+            tools3000::capture::ShortcutHintOverlay::instance().reloadTheme();
+            tools3000::ocr::OcrResultWindow::instance().reloadTheme();
+        };
+
+        m_themeSubscription = bus.subscribe<tools3000::core::ThemeChangedEvent>([runOnUiThread, refreshCaptureAndOcrThemesOnUi](const tools3000::core::ThemeChangedEvent&) {
+            runOnUiThread(refreshCaptureAndOcrThemesOnUi);
         });
         PinGroupPalette::ensureLoadedFromConfig();
-        m_configChangeId = tools3000::core::ConfigManager::instance().onChange([runOnUiThread](const std::string& key) {
+        m_configChangeId = tools3000::core::ConfigManager::instance().onChange([runOnUiThread, refreshCaptureAndOcrThemesOnUi](const std::string& key) {
             if (key == "*" || key.starts_with("/capture/pinGroups")) {
                 PinGroupPalette::reloadFromConfig();
                 runOnUiThread([]() {
                     PinWindow::refreshAllVisualsAndGroupBar();
                 });
+            }
+            if (key == "*" || key == "/general/theme" || key == "/general/accentColor") {
+                runOnUiThread(refreshCaptureAndOcrThemesOnUi);
             }
         });
         
@@ -1006,6 +1042,9 @@ public:
         mb.registerHandler("ocr.selectResultRange", [callOnUiThread](const nlohmann::json& params) -> nlohmann::json {
             return callOnUiThread([params]() -> nlohmann::json {
                 auto& win = tools3000::ocr::OcrResultWindow::instance();
+                if (params.contains("setMergeParagraphs") && params["setMergeParagraphs"].is_boolean()) {
+                    win.setMergeParagraphs(params["setMergeParagraphs"].get<bool>());
+                }
                 if (params.value("clear", false)) {
                     win.clearSelection();
                 } else if (params.value("selectAll", false)) {
@@ -1021,6 +1060,20 @@ public:
                     };
                     win.setSelectionRange(anchor, caret);
                 }
+                std::string copiedWord;
+                if (params.contains("selectWordLine") && params.contains("selectWordOffset")) {
+                    copiedWord = win.selectAndCopyWordAt({
+                        params.value("selectWordLine", 0),
+                        static_cast<UINT32>((std::max)(0, params.value("selectWordOffset", 0)))
+                    });
+                }
+                if (params.contains("insertText") && params["insertText"].is_string()) {
+                    win.insertTextAtCaret(
+                        tools3000::core::WinUtils::utf8ToWstring(params["insertText"].get<std::string>()));
+                }
+                if (params.value("deleteBackward", false)) {
+                    win.deleteBackwardAtCaret();
+                }
                 if (params.value("copy", false)) {
                     win.copySelectionOrAll();
                 }
@@ -1029,6 +1082,10 @@ public:
                 const float cw = static_cast<float>((std::max)(1L, rc.right - rc.left));
                 return {
                     {"success", true},
+                    {"lineCount", static_cast<int>(win.lineCount())},
+                    {"mergeParagraphs", win.isMergeParagraphsEnabled()},
+                    {"currentText", win.currentTextUtf8()},
+                    {"copiedWord", copiedWord},
                     {"hasSelection", win.hasSelection()},
                     {"selectedText", win.selectedTextUtf8()},
                     {"scrollY", win.scrollY()},
@@ -1268,6 +1325,51 @@ public:
                 if (params.contains("forceHover") && params["forceHover"].is_boolean()) {
                     pin->forceHoverStateForTest(params["forceHover"].get<bool>());
                 }
+                if (params.contains("setScale") && params["setScale"].is_number()) {
+                    pin->setScale(params["setScale"].get<float>());
+                }
+                if (params.contains("applyEditedRects") && params["applyEditedRects"].is_array()) {
+                    const cv::Mat cleanBase = pin->cleanBaseImage().empty()
+                        ? pin->sourceImage().clone()
+                        : pin->cleanBaseImage().clone();
+                    tools3000::capture::MarkupEngine engine;
+                    engine.setBaseImage(cleanBase);
+                    if (params.value("appendExistingMarkup", true)) {
+                        engine.importElements(pin->markupElements());
+                    }
+                    for (const auto& item : params["applyEditedRects"]) {
+                        const int x1 = item.value("x1", 0);
+                        const int y1 = item.value("y1", 0);
+                        const int x2 = item.value("x2", 20);
+                        const int y2 = item.value("y2", 20);
+                        tools3000::capture::MarkupColor col{
+                            static_cast<uint8_t>(std::clamp(item.value("r", 239), 0, 255)),
+                            static_cast<uint8_t>(std::clamp(item.value("g", 68), 0, 255)),
+                            static_cast<uint8_t>(std::clamp(item.value("b", 68), 0, 255)),
+                            255
+                        };
+                        auto* rectElem = engine.drawRectangle(cv::Point(x1, y1), cv::Point(x2, y2), col, 2.0f);
+                        if (rectElem && item.value("fill", false)) {
+                            rectElem->fill = true;
+                        }
+                    }
+                    const cv::Mat precomp = engine.getCompositeImage(false);
+                    pin->applyEditedMarkup(cleanBase, engine.exportElements(), precomp);
+                }
+                RECT winRc{};
+                if (pin->hwnd()) GetWindowRect(pin->hwnd(), &winRc);
+                int sampleB = -1, sampleG = -1, sampleR = -1;
+                if (params.contains("sampleX") && params.contains("sampleY") && !pin->sourceImage().empty()) {
+                    const int sx = std::clamp(params.value("sampleX", 0), 0, pin->sourceImage().cols - 1);
+                    const int sy = std::clamp(params.value("sampleY", 0), 0, pin->sourceImage().rows - 1);
+                    const cv::Mat& srcImg = pin->sourceImage();
+                    if (srcImg.channels() >= 3) {
+                        const uint8_t* rowPtr = srcImg.ptr<uint8_t>(sy) + sx * srcImg.channels();
+                        sampleB = rowPtr[0];
+                        sampleG = rowPtr[1];
+                        sampleR = rowPtr[2];
+                    }
+                }
                 const auto tbRect = pin->hoverToolbarRect();
                 const auto txtRect = pin->textButtonRect();
                 const auto invRect = pin->invertButtonRect();
@@ -1281,6 +1383,17 @@ public:
                     {"globalOcrWorkers", tools3000::capture::PinWindow::globalActiveOcrWorkerCount()},
                     {"origWidth", pin->origWidth()},
                     {"origHeight", pin->origHeight()},
+                    {"scale", pin->scale()},
+                    {"cleanWidth", pin->cleanBaseImage().cols},
+                    {"cleanHeight", pin->cleanBaseImage().rows},
+                    {"sourceWidth", pin->sourceImage().cols},
+                    {"sourceHeight", pin->sourceImage().rows},
+                    {"markupCount", static_cast<int>(pin->markupElements().size())},
+                    {"windowWidth", static_cast<int>(winRc.right - winRc.left)},
+                    {"windowHeight", static_cast<int>(winRc.bottom - winRc.top)},
+                    {"sampleB", sampleB},
+                    {"sampleG", sampleG},
+                    {"sampleR", sampleR},
                     {"isGeneratedCard", pin->isGeneratedCard()},
                     {"groupId", pin->groupId()},
                     {"pinnedSourceText", tools3000::core::WinUtils::wstringToUtf8(pin->pinnedSourceText())},
@@ -1620,6 +1733,7 @@ public:
         }
         g_ocrRunning.store(false);
         ScrollCapture::instance().shutdown();
+        ScreenRecorder::instance().waitForAsyncStop();
         ScreenRecorder::instance().shutdown();
         ScreenRecorder::instance().setStateCallback(nullptr);
         ScreenCapture::instance().shutdown();

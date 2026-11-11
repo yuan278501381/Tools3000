@@ -394,6 +394,7 @@ bool ScreenRecorder::initialize() {
 }
 
 void ScreenRecorder::shutdown() {
+    waitForAsyncStop();
     stopRecording();
     reapFinishedSnapshots(true);
     LOG_INFO("屏幕录制引擎已关闭");
@@ -404,8 +405,9 @@ void ScreenRecorder::shutdown() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool ScreenRecorder::startRecording(const RecordOptions& options) {
+    waitForAsyncStop();
     std::lock_guard controlLock(m_controlMutex);
-    if (m_state != RecordState::Idle) {
+    if (m_state != RecordState::Idle || m_stopping.load(std::memory_order_acquire)) {
         LOG_WARN("已在录制中, 请先停止当前录制");
         return false;
     }
@@ -588,9 +590,86 @@ void ScreenRecorder::requestSnapshot() {
     }
 }
 
+void ScreenRecorder::waitForAsyncStop() {
+    std::thread workerToJoin;
+    {
+        std::lock_guard lock(m_stopThreadMutex);
+        if (m_stopThread.joinable() && std::this_thread::get_id() != m_stopThread.get_id()) {
+            workerToJoin = std::move(m_stopThread);
+        }
+    }
+    if (workerToJoin.joinable()) {
+        workerToJoin.join();
+    }
+}
+
+bool ScreenRecorder::stopRecordingAsync(AsyncStopCallback onComplete) {
+    bool expectedStopping = false;
+    if (!m_stopping.compare_exchange_strong(expectedStopping, true, std::memory_order_acq_rel)) {
+        LOG_INFO("ScreenRecorder::stopRecordingAsync ignored because finalization is already in progress");
+        return false;
+    }
+
+    if (m_state.load(std::memory_order_acquire) == RecordState::Idle &&
+        !m_finalizePending.load(std::memory_order_acquire) &&
+        !m_recordThread.joinable()) {
+        m_stopping.store(false, std::memory_order_release);
+        if (onComplete) {
+            onComplete({}, stats());
+        }
+        return false;
+    }
+
+    // 立即发出停止信号让录制循环在下一拍跳出，而耗时 join + 编码冲刷 + 原子重命名移交后台收尾线程
+    m_state.store(RecordState::Idle, std::memory_order_release);
+
+    waitForAsyncStop();
+    try {
+        std::lock_guard lock(m_stopThreadMutex);
+        m_stopThread = std::thread([this, cb = std::move(onComplete)]() mutable {
+            tools3000::core::TraceId::Scope traceScope;
+            std::string savedPath;
+            RecordStats finalStats{};
+            try {
+                savedPath = stopRecording();
+                finalStats = stats();
+            } catch (const std::exception& ex) {
+                LOG_ERROR("Async recording finalization failed: {}", ex.what());
+            } catch (...) {
+                LOG_ERROR("Async recording finalization encountered an unknown error");
+            }
+            m_lastAsyncCompletedPath = savedPath;
+            m_stopping.store(false, std::memory_order_release);
+            if (cb) {
+                cb(savedPath, finalStats);
+            }
+        });
+        return true;
+    } catch (const std::exception& ex) {
+        LOG_ERROR("Failed to spawn async recording stop worker: {}", ex.what());
+        m_stopping.store(false, std::memory_order_release);
+        const std::string fallbackPath = stopRecording();
+        if (onComplete) {
+            onComplete(fallbackPath, stats());
+        }
+        return true;
+    }
+}
+
 std::string ScreenRecorder::stopRecording() {
+    // 若由外部线程调用同步 stopRecording() 且已有异步收尾线程正在运行，等待其完成并返回结果
+    bool inAsyncStopThread = false;
+    {
+        std::lock_guard lock(m_stopThreadMutex);
+        inAsyncStopThread = (m_stopThread.joinable() && std::this_thread::get_id() == m_stopThread.get_id());
+    }
+    if (!inAsyncStopThread && m_stopping.load(std::memory_order_acquire)) {
+        waitForAsyncStop();
+        return m_lastAsyncCompletedPath;
+    }
+
     std::lock_guard controlLock(m_controlMutex);
-    if (m_state == RecordState::Idle && !m_recordThread.joinable()) return "";
+    if (m_state == RecordState::Idle && !m_recordThread.joinable() && !m_finalizePending.load()) return "";
 
     tools3000::core::TraceId::Scope scope;
     m_state = RecordState::Idle;

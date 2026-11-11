@@ -43,6 +43,7 @@ public:
               const std::vector<RECT>& avoidRects = {});
     void updateAvoidance(const std::vector<RECT>& avoidRects);
     void hide();
+    void reloadTheme();
     void shutdown() { hide(); }
     bool isVisible() const;
     RECT getBounds() const;

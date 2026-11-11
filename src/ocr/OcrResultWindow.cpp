@@ -1,15 +1,19 @@
 #include "OcrResultWindow.h"
 
+#include "OcrEngine.h"
 #include "OcrResultStyle.h"
+#include "core/config/ConfigManager.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/DWriteFontUtils.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cwctype>
 #include <iostream>
 #include <utility>
 
@@ -28,12 +32,113 @@ constexpr UINT CopyStateTimerId = 2;
 constexpr UINT FadeIntervalMs = 16;
 constexpr UINT FadeDurationMs = 150;
 constexpr UINT CopyStateDurationMs = 2000;
+constexpr float BaseShadowInset = 6.0f;
 constexpr float BaseIndexColWidth = 30.0f;
 constexpr float BaseRowPadX = 10.0f;
 constexpr float BaseRowPadY = 5.0f;
 constexpr float BaseRowGap = 4.0f;
 constexpr float BaseCopyIconAreaWidth = 26.0f;
 constexpr float BaseScrollbarReserveWidth = 12.0f;
+constexpr size_t MaxEditUndoDepth = 40;
+
+struct OcrThemePalette {
+    bool isDark = true;
+    D2D1_COLOR_F bg{};
+    D2D1_COLOR_F innerHighlight{};
+    D2D1_COLOR_F border{};
+    D2D1_COLOR_F text{};
+    D2D1_COLOR_F muted{};
+    D2D1_COLOR_F btn{};
+    D2D1_COLOR_F btnHover{};
+    D2D1_COLOR_F accent{};
+    D2D1_COLOR_F accentSubtle{};
+    D2D1_COLOR_F selection{};
+};
+
+OcrThemePalette resolveOcrThemePalette() {
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    const std::string themePref = cfg.get<std::string>("/general/theme", "system");
+    bool isDark = true;
+    if (themePref == "light") {
+        isDark = false;
+    } else if (themePref == "dark") {
+        isDark = true;
+    } else {
+        isDark = tools3000::core::WinUtils::isSystemDarkMode();
+    }
+
+    const std::string accentStr = cfg.get<std::string>("/general/accentColor", "blue");
+    const tools3000::core::AccentColorRGB rgb =
+        (!accentStr.empty() && accentStr.front() == '#')
+            ? tools3000::core::parseHexColor(accentStr)
+            : tools3000::core::getAccentColorRGB(accentStr == "emerald" ? "mint" : accentStr);
+    const float ar = rgb.r;
+    const float ag = rgb.g;
+    const float ab = rgb.b;
+
+    OcrThemePalette pal{};
+    pal.isDark = isDark;
+    pal.accent = D2D1::ColorF(ar, ag, ab, 1.0f);
+    if (isDark) {
+        pal.bg = D2D1::ColorF(15.0f / 255.0f, 18.0f / 255.0f, 25.0f / 255.0f, 0.96f);
+        pal.innerHighlight = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.09f);
+        pal.border = D2D1::ColorF(ar, ag, ab, 0.52f);
+        pal.text = D2D1::ColorF(248.0f / 255.0f, 250.0f / 255.0f, 252.0f / 255.0f, 1.0f);
+        pal.muted = D2D1::ColorF(148.0f / 255.0f, 163.0f / 255.0f, 184.0f / 255.0f, 0.92f);
+        pal.btn = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f);
+        pal.btnHover = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f);
+        pal.accentSubtle = D2D1::ColorF(ar, ag, ab, 0.22f);
+        pal.selection = D2D1::ColorF(ar, ag, ab, 0.38f);
+    } else {
+        pal.bg = D2D1::ColorF(250.0f / 255.0f, 251.0f / 255.0f, 253.0f / 255.0f, 0.97f);
+        pal.innerHighlight = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.92f);
+        pal.border = D2D1::ColorF(ar * 0.65f + 0.06f, ag * 0.65f + 0.09f, ab * 0.65f + 0.16f, 0.28f);
+        pal.text = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 1.0f);
+        pal.muted = D2D1::ColorF(100.0f / 255.0f, 116.0f / 255.0f, 139.0f / 255.0f, 0.95f);
+        pal.btn = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.055f);
+        pal.btnHover = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.115f);
+        pal.accentSubtle = D2D1::ColorF(ar, ag, ab, 0.14f);
+        pal.selection = D2D1::ColorF(ar, ag, ab, 0.24f);
+    }
+    return pal;
+}
+
+int classifyWordChar(wchar_t ch) noexcept {
+    if (std::iswspace(ch)) return 0;
+    if ((ch >= 0x4E00 && ch <= 0x9FFF) || (ch >= 0x3400 && ch <= 0x4DBF) ||
+        (ch >= 0x3040 && ch <= 0x30FF) || (ch >= 0xAC00 && ch <= 0xD7AF)) {
+        return 2; // CJK 字符流
+    }
+    if (std::iswalnum(ch) || ch == L'_' || ch == L'-' || ch == L'.' || ch == L'/') {
+        return 1; // 西文标识符/数字/路径词块
+    }
+    return 3; // 符号标点
+}
+
+std::wstring readClipboardWideText(HWND owner) {
+    if (!OpenClipboard(owner)) return {};
+    std::wstring out;
+    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+    if (hData) {
+        if (const auto* ptr = static_cast<const wchar_t*>(GlobalLock(hData))) {
+            out.assign(ptr);
+            GlobalUnlock(hData);
+        }
+    }
+    CloseClipboard();
+    // 归一化 CRLF -> LF
+    std::wstring clean;
+    clean.reserve(out.size());
+    for (size_t i = 0; i < out.size(); ++i) {
+        if (out[i] == L'\r') {
+            if (i + 1 < out.size() && out[i + 1] == L'\n') continue;
+            clean.push_back(L'\n');
+        } else {
+            clean.push_back(out[i]);
+        }
+    }
+    return clean;
+}
 
 bool contains(const D2D1_RECT_F& rect, POINT point) noexcept {
     return point.x >= rect.left && point.x <= rect.right &&
@@ -43,12 +148,12 @@ bool contains(const D2D1_RECT_F& rect, POINT point) noexcept {
 const wchar_t* footerHintText(bool chinese, bool compact) noexcept {
     if (chinese) {
         return compact
-            ? L"拖选文字 · 轻点复制行 · Esc 关闭"
-            : L"拖选文字 · 轻点复制行 · Ctrl+C/A · Esc";
+            ? L"双击选词复制 · 可直接编辑 · Esc"
+            : L"拖选/双击复制词 · 点击可微调 · Esc";
     }
     return compact
-        ? L"Drag select · Tap copy · Esc"
-        : L"Drag to select · Tap row to copy · Ctrl+C/A · Esc";
+        ? L"Dbl-click copy · Click edit · Esc"
+        : L"Drag/Dbl-click copy · Click to edit · Esc";
 }
 
 }  // namespace
@@ -58,7 +163,7 @@ bool OcrResultWindow::initialize() {
 
     m_instance = GetModuleHandleW(nullptr);
     WNDCLASSEXW windowClass{sizeof(windowClass)};
-    windowClass.style = CS_HREDRAW | CS_VREDRAW;
+    windowClass.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     windowClass.lpfnWndProc = wndProc;
     windowClass.hInstance = m_instance;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -103,8 +208,11 @@ void OcrResultWindow::cleanup() {
     }
     m_dwriteFactory.Reset();
     m_d2dFactory.Reset();
+    m_rawUnmergedText.clear();
+    m_rawUnmergedWide.clear();
     m_text.clear();
     m_wideText.clear();
+    m_editUndoStack.clear();
     clearSelection();
 }
 
@@ -194,16 +302,30 @@ bool OcrResultWindow::createTextResources(float scale) {
     return true;
 }
 
-void OcrResultWindow::discardDeviceResources() {
+void OcrResultWindow::resetColorBrushes() {
     m_brushBg.Reset();
+    m_brushInnerHighlight.Reset();
     m_brushText.Reset();
     m_brushMuted.Reset();
     m_brushBorder.Reset();
     m_brushBtn.Reset();
     m_brushBtnHover.Reset();
+    m_brushAccent.Reset();
+    m_brushAccentSubtle.Reset();
     m_brushSuccess.Reset();
     m_brushError.Reset();
     m_brushSelection.Reset();
+}
+
+void OcrResultWindow::reloadTheme() {
+    resetColorBrushes();
+    if (m_hwnd && IsWindowVisible(m_hwnd)) {
+        render();
+    }
+}
+
+void OcrResultWindow::discardDeviceResources() {
+    resetColorBrushes();
     for (auto& item : m_lines) item.layout.Reset();
     m_textLayout.Reset();
     m_textFormat.Reset();
@@ -322,7 +444,7 @@ void OcrResultWindow::rebuildTextLayout() {
         1.0f, width - padding * 2.0f - indexColWidth - rowPadX - rightReserved);
     const float viewportHeight = (std::max)(1.0f, height - header - footer);
 
-    // 按行切分并为每一行创建独立 IDWriteTextLayout，同时支持字符级拖选与轻点/图标复制单行
+    // 按行切分并为每一行创建独立 IDWriteTextLayout，同时支持字符级拖选与原地微调编辑
     size_t start = 0;
     float curY = 0.0f;
     while (start <= m_wideText.size()) {
@@ -332,7 +454,7 @@ void OcrResultWindow::rebuildTextLayout() {
             : m_wideText.substr(start, end - start);
         if (!lineStr.empty() && lineStr.back() == L'\r') lineStr.pop_back();
 
-        if (!lineStr.empty()) {
+        if (!lineStr.empty() || m_editedSinceModeSwitch) {
             LineItem item;
             item.text = lineStr;
             if (SUCCEEDED(m_dwriteFactory->CreateTextLayout(
@@ -368,6 +490,283 @@ void OcrResultWindow::rebuildTextLayout() {
     };
     clampPos(m_selAnchor);
     clampPos(m_selCaret);
+}
+
+void OcrResultWindow::syncFullTextFromLines() {
+    std::wstring joined;
+    for (size_t i = 0; i < m_lines.size(); ++i) {
+        if (i > 0) joined.push_back(L'\n');
+        joined += m_lines[i].text;
+    }
+    m_wideText = std::move(joined);
+    m_text = tools3000::core::WinUtils::wstringToUtf8(m_wideText);
+    if (!m_mergeParagraphs) {
+        m_rawUnmergedWide = m_wideText;
+        m_rawUnmergedText = m_text;
+    }
+}
+
+void OcrResultWindow::pushEditUndo() {
+    if (!m_editUndoStack.empty() && m_editUndoStack.back() == m_wideText) {
+        return;
+    }
+    if (m_editUndoStack.size() >= MaxEditUndoDepth) {
+        m_editUndoStack.erase(m_editUndoStack.begin());
+    }
+    m_editUndoStack.push_back(m_wideText);
+}
+
+bool OcrResultWindow::undoEdit() {
+    if (m_editUndoStack.empty()) return false;
+    m_wideText = std::move(m_editUndoStack.back());
+    m_editUndoStack.pop_back();
+    m_text = tools3000::core::WinUtils::wstringToUtf8(m_wideText);
+    if (!m_mergeParagraphs) {
+        m_rawUnmergedWide = m_wideText;
+        m_rawUnmergedText = m_text;
+    }
+    m_editedSinceModeSwitch = true;
+    rebuildTextLayout();
+    if (!m_lines.empty() && m_selCaret.isValid()) {
+        m_selCaret.line = std::clamp(m_selCaret.line, 0, static_cast<int>(m_lines.size()) - 1);
+        m_selCaret.offset = (std::min)(m_selCaret.offset, static_cast<UINT32>(m_lines[m_selCaret.line].text.size()));
+        m_selAnchor = m_selCaret;
+    }
+    if (m_hwnd && IsWindowVisible(m_hwnd)) render();
+    return true;
+}
+
+bool OcrResultWindow::deleteSelectionInternal() {
+    if (!hasSelection() || m_lines.empty()) return false;
+    TextPosition start = (m_selAnchor < m_selCaret) ? m_selAnchor : m_selCaret;
+    TextPosition end = (m_selAnchor < m_selCaret) ? m_selCaret : m_selAnchor;
+    const int maxLine = static_cast<int>(m_lines.size()) - 1;
+    start.line = std::clamp(start.line, 0, maxLine);
+    end.line = std::clamp(end.line, 0, maxLine);
+    start.offset = (std::min)(start.offset, static_cast<UINT32>(m_lines[start.line].text.size()));
+    end.offset = (std::min)(end.offset, static_cast<UINT32>(m_lines[end.line].text.size()));
+
+    if (start.line == end.line) {
+        m_lines[start.line].text.erase(start.offset, end.offset - start.offset);
+    } else {
+        const std::wstring tail = m_lines[end.line].text.substr(end.offset);
+        m_lines[start.line].text = m_lines[start.line].text.substr(0, start.offset) + tail;
+        m_lines.erase(m_lines.begin() + start.line + 1, m_lines.begin() + end.line + 1);
+    }
+    m_selAnchor = start;
+    m_selCaret = start;
+    m_hasCaret = true;
+    return true;
+}
+
+void OcrResultWindow::setMergeParagraphs(bool enabled) {
+    if (m_mergeParagraphs == enabled) return;
+    m_mergeParagraphs = enabled;
+    m_editedSinceModeSwitch = false;
+    m_editUndoStack.clear();
+    if (m_mergeParagraphs) {
+        m_wideText = OcrEngine::smartMergeParagraphs(m_rawUnmergedWide);
+        m_text = tools3000::core::WinUtils::wstringToUtf8(m_wideText);
+    } else {
+        m_wideText = m_rawUnmergedWide;
+        m_text = m_rawUnmergedText;
+    }
+    m_scrollY = 0.0f;
+    clearSelection();
+    rebuildTextLayout();
+    if (m_hwnd && IsWindowVisible(m_hwnd)) {
+        render();
+    }
+}
+
+std::string OcrResultWindow::selectAndCopyWordAt(TextPosition pos) {
+    if (m_lines.empty() || !pos.isValid()) return {};
+    const int lineIdx = std::clamp(pos.line, 0, static_cast<int>(m_lines.size()) - 1);
+    const std::wstring& lineStr = m_lines[lineIdx].text;
+    if (lineStr.empty()) return {};
+
+    size_t pivot = (std::min)(static_cast<size_t>(pos.offset), lineStr.size() - 1);
+    if (classifyWordChar(lineStr[pivot]) == 0 && pivot > 0 && classifyWordChar(lineStr[pivot - 1]) != 0) {
+        --pivot;
+    }
+    const int cls = classifyWordChar(lineStr[pivot]);
+    if (cls == 0) return {};
+
+    size_t wStart = pivot;
+    while (wStart > 0 && classifyWordChar(lineStr[wStart - 1]) == cls) {
+        --wStart;
+    }
+    size_t wEnd = pivot + 1;
+    while (wEnd < lineStr.size() && classifyWordChar(lineStr[wEnd]) == cls) {
+        ++wEnd;
+    }
+    // 剔除西文词块首尾多余句点
+    if (cls == 1) {
+        while (wStart < wEnd && lineStr[wStart] == L'.') ++wStart;
+        while (wEnd > wStart && lineStr[wEnd - 1] == L'.') --wEnd;
+        if (wStart >= wEnd) {
+            wStart = pivot;
+            wEnd = pivot + 1;
+        }
+    }
+
+    m_selAnchor = {lineIdx, static_cast<UINT32>(wStart)};
+    m_selCaret = {lineIdx, static_cast<UINT32>(wEnd)};
+    m_hasCaret = true;
+    m_isSelectingText = false;
+
+    const std::string wordUtf8 = selectedTextUtf8();
+    if (!wordUtf8.empty()) {
+        m_copySucceeded = tools3000::core::WinUtils::copyToClipboard(wordUtf8);
+        m_copiedLineIndex = -1;
+        m_copiedSelection = false;
+        m_copiedWord = true;
+        m_copiedTime = GetTickCount64();
+        if (m_hwnd) SetTimer(m_hwnd, CopyStateTimerId, CopyStateDurationMs, nullptr);
+    }
+    if (m_hwnd && IsWindowVisible(m_hwnd)) {
+        render();
+    }
+    return wordUtf8;
+}
+
+void OcrResultWindow::insertTextAtCaret(const std::wstring& text) {
+    if (text.empty()) return;
+    if (m_lines.empty()) {
+        m_lines.push_back(LineItem{L"", nullptr, 0.0f, 0.0f});
+        m_selAnchor = {0, 0};
+        m_selCaret = {0, 0};
+    }
+    if (!m_selCaret.isValid()) {
+        const int lastIdx = static_cast<int>(m_lines.size()) - 1;
+        m_selCaret = {lastIdx, static_cast<UINT32>(m_lines[lastIdx].text.size())};
+        m_selAnchor = m_selCaret;
+    }
+
+    pushEditUndo();
+    m_editedSinceModeSwitch = true;
+    deleteSelectionInternal();
+
+    int curLine = std::clamp(m_selCaret.line, 0, static_cast<int>(m_lines.size()) - 1);
+    UINT32 curOff = (std::min)(m_selCaret.offset, static_cast<UINT32>(m_lines[curLine].text.size()));
+
+    size_t segStart = 0;
+    while (segStart <= text.size()) {
+        const size_t nl = text.find(L'\n', segStart);
+        const std::wstring seg = (nl == std::wstring::npos)
+            ? text.substr(segStart)
+            : text.substr(segStart, nl - segStart);
+
+        if (!seg.empty()) {
+            m_lines[curLine].text.insert(curOff, seg);
+            curOff += static_cast<UINT32>(seg.size());
+        }
+        if (nl == std::wstring::npos) break;
+
+        const std::wstring remainder = m_lines[curLine].text.substr(curOff);
+        m_lines[curLine].text.erase(curOff);
+        LineItem nextItem;
+        nextItem.text = remainder;
+        m_lines.insert(m_lines.begin() + curLine + 1, std::move(nextItem));
+        ++curLine;
+        curOff = 0;
+        segStart = nl + 1;
+    }
+
+    m_selCaret = {curLine, curOff};
+    m_selAnchor = m_selCaret;
+    m_hasCaret = true;
+    syncFullTextFromLines();
+    rebuildTextLayout();
+    if (m_hwnd && IsWindowVisible(m_hwnd)) {
+        render();
+    }
+}
+
+void OcrResultWindow::deleteBackwardAtCaret() {
+    if (m_lines.empty() || !m_selCaret.isValid()) return;
+    if (hasSelection()) {
+        pushEditUndo();
+        m_editedSinceModeSwitch = true;
+        deleteSelectionInternal();
+        syncFullTextFromLines();
+        rebuildTextLayout();
+        if (m_hwnd && IsWindowVisible(m_hwnd)) render();
+        return;
+    }
+    int curLine = std::clamp(m_selCaret.line, 0, static_cast<int>(m_lines.size()) - 1);
+    UINT32 curOff = (std::min)(m_selCaret.offset, static_cast<UINT32>(m_lines[curLine].text.size()));
+    if (curOff > 0) {
+        pushEditUndo();
+        m_editedSinceModeSwitch = true;
+        UINT32 eraseCount = 1;
+        if (curOff >= 2) {
+            const wchar_t low = m_lines[curLine].text[curOff - 1];
+            const wchar_t high = m_lines[curLine].text[curOff - 2];
+            if (low >= 0xDC00 && low <= 0xDFFF && high >= 0xD800 && high <= 0xDBFF) {
+                eraseCount = 2;
+            }
+        }
+        m_lines[curLine].text.erase(curOff - eraseCount, eraseCount);
+        curOff -= eraseCount;
+    } else if (curLine > 0) {
+        pushEditUndo();
+        m_editedSinceModeSwitch = true;
+        const UINT32 prevLen = static_cast<UINT32>(m_lines[curLine - 1].text.size());
+        m_lines[curLine - 1].text += m_lines[curLine].text;
+        m_lines.erase(m_lines.begin() + curLine);
+        --curLine;
+        curOff = prevLen;
+    } else {
+        return;
+    }
+    m_selCaret = {curLine, curOff};
+    m_selAnchor = m_selCaret;
+    m_hasCaret = true;
+    syncFullTextFromLines();
+    rebuildTextLayout();
+    if (m_hwnd && IsWindowVisible(m_hwnd)) render();
+}
+
+void OcrResultWindow::deleteForwardAtCaret() {
+    if (m_lines.empty() || !m_selCaret.isValid()) return;
+    if (hasSelection()) {
+        pushEditUndo();
+        m_editedSinceModeSwitch = true;
+        deleteSelectionInternal();
+        syncFullTextFromLines();
+        rebuildTextLayout();
+        if (m_hwnd && IsWindowVisible(m_hwnd)) render();
+        return;
+    }
+    int curLine = std::clamp(m_selCaret.line, 0, static_cast<int>(m_lines.size()) - 1);
+    UINT32 curOff = (std::min)(m_selCaret.offset, static_cast<UINT32>(m_lines[curLine].text.size()));
+    if (curOff < m_lines[curLine].text.size()) {
+        pushEditUndo();
+        m_editedSinceModeSwitch = true;
+        UINT32 eraseCount = 1;
+        if (curOff + 1 < m_lines[curLine].text.size()) {
+            const wchar_t high = m_lines[curLine].text[curOff];
+            const wchar_t low = m_lines[curLine].text[curOff + 1];
+            if (high >= 0xD800 && high <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF) {
+                eraseCount = 2;
+            }
+        }
+        m_lines[curLine].text.erase(curOff, eraseCount);
+    } else if (curLine + 1 < static_cast<int>(m_lines.size())) {
+        pushEditUndo();
+        m_editedSinceModeSwitch = true;
+        m_lines[curLine].text += m_lines[curLine + 1].text;
+        m_lines.erase(m_lines.begin() + curLine + 1);
+    } else {
+        return;
+    }
+    m_selCaret = {curLine, curOff};
+    m_selAnchor = m_selCaret;
+    m_hasCaret = true;
+    syncFullTextFromLines();
+    rebuildTextLayout();
+    if (m_hwnd && IsWindowVisible(m_hwnd)) render();
 }
 
 bool OcrResultWindow::hasSelection() const noexcept {
@@ -432,6 +831,7 @@ void OcrResultWindow::selectAll() {
 void OcrResultWindow::clearSelection() {
     m_selAnchor = {};
     m_selCaret = {};
+    m_hasCaret = false;
     m_isSelectingText = false;
 }
 
@@ -442,6 +842,7 @@ void OcrResultWindow::copySelectionOrAll() {
         m_copySucceeded = tools3000::core::WinUtils::copyToClipboard(selUtf8);
         m_copiedLineIndex = -1;
         m_copiedSelection = true;
+        m_copiedWord = false;
         m_copiedTime = GetTickCount64();
         if (m_hwnd) SetTimer(m_hwnd, CopyStateTimerId, CopyStateDurationMs, nullptr);
         render();
@@ -570,24 +971,33 @@ void OcrResultWindow::showResult(const std::string& text) {
 
     if ((!m_hwnd || !IsWindow(m_hwnd)) && !initialize()) return;
 
-    m_text = text;
-    m_wideText = tools3000::core::WinUtils::utf8ToWstring(text);
+    m_rawUnmergedText = text;
+    m_rawUnmergedWide = tools3000::core::WinUtils::utf8ToWstring(text);
+    m_mergeParagraphs = false;
+    m_editedSinceModeSwitch = false;
+    m_editUndoStack.clear();
+    m_text = m_rawUnmergedText;
+    m_wideText = m_rawUnmergedWide;
     m_scrollY = 0.0f;
     m_maxScroll = 0.0f;
     m_totalContentHeight = 0.0f;
     m_copiedTime = 0;
     m_copySucceeded = false;
     m_copiedSelection = false;
+    m_copiedWord = false;
+    m_hoverMerge = false;
     m_hoverCopy = false;
     m_hoverClose = false;
     m_hoverScrollbar = false;
     m_draggingScrollbar = false;
     m_hoverLineCopyBtn = -1;
     m_pressedLineCopyBtn = -1;
+    m_pressedMergeBtn = false;
     m_pressedCopyBtn = false;
     m_pressedCloseBtn = false;
     m_hoverLineIndex = -1;
     m_copiedLineIndex = -1;
+    resetColorBrushes();
     clearSelection();
     m_showTime = GetTickCount64();
     m_currentAlpha = 0.0f;
@@ -606,6 +1016,7 @@ void OcrResultWindow::copyAll() {
     m_copySucceeded = tools3000::core::WinUtils::copyToClipboard(m_text);
     m_copiedLineIndex = -1;
     m_copiedSelection = false;
+    m_copiedWord = false;
     m_copiedTime = GetTickCount64();
     if (m_hwnd) SetTimer(m_hwnd, CopyStateTimerId, CopyStateDurationMs, nullptr);
     render();
@@ -618,6 +1029,7 @@ void OcrResultWindow::copyLine(int lineIndex) {
     m_copySucceeded = tools3000::core::WinUtils::copyToClipboard(utf8Line);
     m_copiedLineIndex = lineIndex;
     m_copiedSelection = false;
+    m_copiedWord = false;
     m_copiedTime = GetTickCount64();
     if (m_hwnd) SetTimer(m_hwnd, CopyStateTimerId, CopyStateDurationMs, nullptr);
     render();
@@ -632,14 +1044,18 @@ void OcrResultWindow::hide() {
     releaseSurface();
     m_lines.clear();
     m_textLayout.Reset();
+    m_rawUnmergedText.clear();
+    m_rawUnmergedWide.clear();
     m_text.clear();
     m_wideText.clear();
+    m_editUndoStack.clear();
     clearSelection();
     m_draggingScrollbar = false;
     tools3000::core::WinUtils::trimWorkingSet();
 }
 
 void OcrResultWindow::updateHover(POINT point) {
+    const bool hoverMerge = contains(m_btnMergeRect, point);
     const bool hoverCopy = contains(m_btnCopyRect, point);
     const bool hoverClose = contains(m_btnCloseRect, point);
 
@@ -662,10 +1078,12 @@ void OcrResultWindow::updateHover(POINT point) {
     int hoverLine = -1;
     int hoverCopyBtn = -1;
     bool inTextViewport = false;
+    bool overLineIndex = false;
     if (!hoverScrollbar &&
         point.x >= padding && point.x <= width - padding &&
         point.y >= header && point.y <= height - footer) {
         inTextViewport = true;
+        overLineIndex = (point.x < padding + BaseIndexColWidth * m_scale);
         const float relY = static_cast<float>(point.y) - header + m_scrollY;
         for (int i = 0; i < static_cast<int>(m_lines.size()); ++i) {
             if (relY >= m_lines[i].topY && relY <= m_lines[i].topY + m_lines[i].height) {
@@ -679,18 +1097,21 @@ void OcrResultWindow::updateHover(POINT point) {
     }
 
     const LPCWSTR cursorId =
-        (hoverCopy || hoverClose || hoverScrollbar || hoverCopyBtn >= 0)
+        (hoverMerge || hoverCopy || hoverClose || hoverScrollbar || hoverCopyBtn >= 0 ||
+         (overLineIndex && hoverLine >= 0))
             ? IDC_HAND
             : (inTextViewport && !m_lines.empty() ? IDC_IBEAM : IDC_ARROW);
     SetCursor(LoadCursorW(nullptr, cursorId));
 
-    if (hoverCopy == m_hoverCopy &&
+    if (hoverMerge == m_hoverMerge &&
+        hoverCopy == m_hoverCopy &&
         hoverClose == m_hoverClose &&
         hoverScrollbar == m_hoverScrollbar &&
         hoverLine == m_hoverLineIndex &&
         hoverCopyBtn == m_hoverLineCopyBtn) {
         return;
     }
+    m_hoverMerge = hoverMerge;
     m_hoverCopy = hoverCopy;
     m_hoverClose = hoverClose;
     m_hoverScrollbar = hoverScrollbar;
@@ -713,33 +1134,31 @@ void OcrResultWindow::render(int retryDepth) {
     RECT bindRect{0, 0, width, height};
     if (FAILED(m_renderTarget->BindDC(m_memoryDc, &bindRect))) return;
     if (!m_brushBg) {
+        const auto pal = resolveOcrThemePalette();
+        m_isDarkTheme = pal.isDark;
         const auto brush = [&](D2D1_COLOR_F color,
                                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>& output) {
             return SUCCEEDED(m_renderTarget->CreateSolidColorBrush(color, &output));
         };
-        if (!brush(D2D1::ColorF(0x0F1219, 0.98f), m_brushBg) ||
-            !brush(D2D1::ColorF(0xF8FAFC, 1.0f), m_brushText) ||
-            !brush(D2D1::ColorF(0x94A3B8, 0.92f), m_brushMuted) ||
-            !brush(D2D1::ColorF(0x6366F1, 0.65f), m_brushBorder) ||
-            !brush(D2D1::ColorF(0xFFFFFF, 0.08f), m_brushBtn) ||
-            !brush(D2D1::ColorF(0xFFFFFF, 0.16f), m_brushBtnHover) ||
+        if (!brush(pal.bg, m_brushBg) ||
+            !brush(pal.innerHighlight, m_brushInnerHighlight) ||
+            !brush(pal.text, m_brushText) ||
+            !brush(pal.muted, m_brushMuted) ||
+            !brush(pal.border, m_brushBorder) ||
+            !brush(pal.btn, m_brushBtn) ||
+            !brush(pal.btnHover, m_brushBtnHover) ||
+            !brush(pal.accent, m_brushAccent) ||
+            !brush(pal.accentSubtle, m_brushAccentSubtle) ||
             !brush(D2D1::ColorF(0x10B981, 0.88f), m_brushSuccess) ||
             !brush(D2D1::ColorF(0xEF4444, 0.88f), m_brushError) ||
-            !brush(D2D1::ColorF(0x3B82F6, 0.42f), m_brushSelection)) {
-            m_brushBg.Reset();
-            m_brushText.Reset();
-            m_brushMuted.Reset();
-            m_brushBorder.Reset();
-            m_brushBtn.Reset();
-            m_brushBtnHover.Reset();
-            m_brushSuccess.Reset();
-            m_brushError.Reset();
-            m_brushSelection.Reset();
+            !brush(pal.selection, m_brushSelection)) {
+            resetColorBrushes();
             return;
         }
     }
 
     const float scale = m_scale;
+    const float shadowInset = BaseShadowInset * scale;
     const float padding = OcrResultStyle::BasePadding * scale;
     const float header = OcrResultStyle::BaseHeaderHeight * scale;
     const float footer = OcrResultStyle::BaseFooterHeight * scale;
@@ -749,6 +1168,14 @@ void OcrResultWindow::render(int retryDepth) {
     const float copyWidth = OcrResultStyle::BaseButtonWidth * scale;
     const float closeWidth = OcrResultStyle::BaseCloseButtonWidth * scale;
     const float buttonGap = OcrResultStyle::BaseButtonGap * scale;
+    const bool chinese = tools3000::core::isUiLanguageChinese();
+
+    const float mergeBtnW = (chinese ? 94.0f : 104.0f) * scale;
+    const float mergeBtnH = 26.0f * scale;
+    const float mergeBtnTop = shadowInset + (std::max)(4.0f * scale, (header - shadowInset - mergeBtnH) * 0.5f);
+    m_btnMergeRect = D2D1::RectF(
+        width - padding - mergeBtnW, mergeBtnTop,
+        width - padding, mergeBtnTop + mergeBtnH);
 
     m_btnCloseRect = D2D1::RectF(
         width - padding - closeWidth, height - padding - buttonHeight,
@@ -760,19 +1187,64 @@ void OcrResultWindow::render(int retryDepth) {
 
     m_renderTarget->BeginDraw();
     m_renderTarget->Clear(D2D1::ColorF(0, 0.0f));
-    const auto card = D2D1::RoundedRect(
-        D2D1::RectF(border / 2.0f, border / 2.0f,
-                    width - border / 2.0f, height - border / 2.0f),
-        radius, radius);
+
+    // 1. 分层柔和投影（Dual-Layer Ambient & Key Soft Drop Shadow）
+    const D2D1_RECT_F cardRect = D2D1::RectF(
+        shadowInset, shadowInset,
+        (std::max)(shadowInset + 2.0f, static_cast<float>(width) - shadowInset),
+        (std::max)(shadowInset + 2.0f, static_cast<float>(height) - shadowInset));
+    {
+        struct ShadowLayer {
+            float dy;
+            float expand;
+            float alpha;
+        };
+        const float shadowScale = m_isDarkTheme ? 1.35f : 1.0f;
+        static constexpr ShadowLayer kLayers[] = {
+            {2.0f, 5.2f, 0.032f},
+            {1.6f, 3.6f, 0.052f},
+            {1.0f, 2.1f, 0.075f},
+            {0.5f, 0.9f, 0.095f},
+        };
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
+        if (SUCCEEDED(m_renderTarget->CreateSolidColorBrush(
+                D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f), &shadowBrush)) && shadowBrush) {
+            for (const auto& sl : kLayers) {
+                const float exp = sl.expand * scale;
+                const float dy = sl.dy * scale;
+                const D2D1_RECT_F sr = D2D1::RectF(
+                    cardRect.left - exp,
+                    cardRect.top - exp + dy,
+                    cardRect.right + exp,
+                    cardRect.bottom + exp + dy);
+                shadowBrush->SetOpacity(std::clamp(sl.alpha * shadowScale, 0.0f, 0.35f));
+                m_renderTarget->FillRoundedRectangle(
+                    D2D1::RoundedRect(sr, radius + exp, radius + exp), shadowBrush.Get());
+            }
+        }
+    }
+
+    // 2. 微晶玻璃卡片主体 + 内高光环 + 动态强调色细边
+    const auto card = D2D1::RoundedRect(cardRect, radius, radius);
     m_renderTarget->FillRoundedRectangle(&card, m_brushBg.Get());
+    if (m_brushInnerHighlight) {
+        const float inOff = 1.0f * scale;
+        const auto innerCard = D2D1::RoundedRect(
+            D2D1::RectF(cardRect.left + inOff, cardRect.top + inOff,
+                        cardRect.right - inOff, cardRect.bottom - inOff),
+            (std::max)(1.0f, radius - inOff), (std::max)(1.0f, radius - inOff));
+        m_renderTarget->DrawRoundedRectangle(&innerCard, m_brushInnerHighlight.Get(), 0.9f * scale);
+    }
     m_renderTarget->DrawRoundedRectangle(&card, m_brushBorder.Get(), border);
 
-    const bool chinese = tools3000::core::isUiLanguageChinese();
+    // 3. 顶栏标题与“合并段落”切换胶囊按钮
     std::wstring title = chinese
         ? (L"文字识别结果 (" + std::to_wstring(m_lines.size()) + L" 行)")
         : (L"Recognized Text (" + std::to_wstring(m_lines.size()) + L" lines)");
     if (m_copiedTime && m_copySucceeded) {
-        if (m_copiedLineIndex >= 0) {
+        if (m_copiedWord) {
+            title += chinese ? L"  ·  已复制词块" : L"  ·  Copied word";
+        } else if (m_copiedLineIndex >= 0) {
             title += chinese
                 ? (L"  ·  已复制第 " + std::to_wstring(m_copiedLineIndex + 1) + L" 行")
                 : (L"  ·  Copied line " + std::to_wstring(m_copiedLineIndex + 1));
@@ -780,10 +1252,48 @@ void OcrResultWindow::render(int retryDepth) {
             title += chinese ? L"  ·  已复制选中文字" : L"  ·  Copied selection";
         }
     }
+    const float titleRight = (std::max)(padding, m_btnMergeRect.left - 8.0f * scale);
     m_renderTarget->DrawTextW(
         title.c_str(), static_cast<UINT32>(title.size()), m_titleFormat.Get(),
-        D2D1::RectF(padding, 0.0f, (std::max)(padding, width - padding), header),
+        D2D1::RectF(padding, shadowInset, titleRight, header),
         m_brushText.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+    {
+        const float pillR = mergeBtnH * 0.5f;
+        const auto mergePill = D2D1::RoundedRect(m_btnMergeRect, pillR, pillR);
+        ID2D1SolidColorBrush* pillBg = m_mergeParagraphs
+            ? m_brushAccentSubtle.Get()
+            : (m_hoverMerge ? m_brushBtnHover.Get() : m_brushBtn.Get());
+        if (pillBg) m_renderTarget->FillRoundedRectangle(&mergePill, pillBg);
+        if (m_mergeParagraphs && m_brushAccent) {
+            m_renderTarget->DrawRoundedRectangle(&mergePill, m_brushAccent.Get(), 1.1f * scale);
+        }
+        float labelLeft = m_btnMergeRect.left;
+        if (m_mergeParagraphs && m_brushAccent) {
+            // 纯矢量勾选标记
+            const float ckX = m_btnMergeRect.left + 11.5f * scale;
+            const float ckY = (m_btnMergeRect.top + m_btnMergeRect.bottom) * 0.5f;
+            m_renderTarget->DrawLine(
+                D2D1::Point2F(ckX - 3.2f * scale, ckY + 0.2f * scale),
+                D2D1::Point2F(ckX - 0.8f * scale, ckY + 2.8f * scale),
+                m_brushAccent.Get(), 1.6f * scale);
+            m_renderTarget->DrawLine(
+                D2D1::Point2F(ckX - 0.8f * scale, ckY + 2.8f * scale),
+                D2D1::Point2F(ckX + 4.0f * scale, ckY - 2.6f * scale),
+                m_brushAccent.Get(), 1.6f * scale);
+            labelLeft += 14.0f * scale;
+        }
+        const std::wstring mergeLabel = chinese ? L"合并段落" : L"Merge Lines";
+        ID2D1SolidColorBrush* mergeFg = m_mergeParagraphs
+            ? (m_isDarkTheme ? m_brushText.Get() : m_brushAccent.Get())
+            : (m_hoverMerge ? m_brushText.Get() : m_brushMuted.Get());
+        m_renderTarget->DrawTextW(
+            mergeLabel.c_str(), static_cast<UINT32>(mergeLabel.size()),
+            m_hintFormat.Get(),
+            D2D1::RectF(labelLeft + (m_mergeParagraphs ? 4.0f * scale : 10.0f * scale),
+                        m_btnMergeRect.top, m_btnMergeRect.right - 6.0f * scale, m_btnMergeRect.bottom),
+            mergeFg, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
 
     if (!m_lines.empty()) {
         const D2D1_RECT_F viewport = D2D1::RectF(
@@ -800,6 +1310,7 @@ void OcrResultWindow::render(int retryDepth) {
         const bool activeSelection = hasSelection();
         const TextPosition selStart = (m_selAnchor < m_selCaret) ? m_selAnchor : m_selCaret;
         const TextPosition selEnd = (m_selAnchor < m_selCaret) ? m_selCaret : m_selAnchor;
+        const float baseBtnAlpha = m_isDarkTheme ? 0.08f : 0.055f;
 
         for (int i = 0; i < static_cast<int>(m_lines.size()); ++i) {
             const auto& item = m_lines[i];
@@ -817,12 +1328,13 @@ void OcrResultWindow::render(int retryDepth) {
             } else if (m_hoverLineIndex == i && !m_isSelectingText) {
                 m_renderTarget->FillRoundedRectangle(&roundedRow, m_brushBtn.Get());
             } else if (i % 2 == 1) {
-                m_brushBtn->SetOpacity(0.035f);
+                m_brushBtn->SetOpacity(0.42f);
                 m_renderTarget->FillRoundedRectangle(&roundedRow, m_brushBtn.Get());
-                m_brushBtn->SetOpacity(0.08f);
+                m_brushBtn->SetOpacity(1.0f);
+                (void)baseBtnAlpha;
             }
 
-            // 行号标签
+            // 行号标签（点击可快捷复制本行）
             wchar_t idxBuf[16]{};
             swprintf_s(idxBuf, L"%02d", i + 1);
             m_renderTarget->DrawTextW(
@@ -833,7 +1345,7 @@ void OcrResultWindow::render(int retryDepth) {
 
             const float textOriginY = rowTop + rowPadY;
 
-            // 字符级蓝色半透明选区高亮
+            // 字符级强调色半透明选区高亮
             if (activeSelection && item.layout && i >= selStart.line && i <= selEnd.line) {
                 const UINT32 subStart = (i == selStart.line) ? selStart.offset : 0u;
                 const UINT32 subEnd = (i == selEnd.line)
@@ -867,6 +1379,23 @@ void OcrResultWindow::render(int retryDepth) {
                     D2D1::Point2F(textOriginX, textOriginY),
                     item.layout.Get(), m_brushText.Get(),
                     D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+
+            // 文本微调编辑插入符（Caret）
+            if (m_hasCaret && !activeSelection && m_selCaret.line == i && item.layout && m_brushAccent) {
+                FLOAT cx = 0.0f;
+                FLOAT cy = 0.0f;
+                DWRITE_HIT_TEST_METRICS cm{};
+                const UINT32 safeOff = (std::min)(m_selCaret.offset, static_cast<UINT32>(item.text.size()));
+                if (SUCCEEDED(item.layout->HitTestTextPosition(safeOff, FALSE, &cx, &cy, &cm))) {
+                    const float lineX = textOriginX + cx;
+                    const float lineTop = textOriginY + cy + 1.0f * scale;
+                    const float lineH = (cm.height > 2.0f) ? cm.height : (OcrResultStyle::BaseBodyFont * scale * 1.35f);
+                    m_renderTarget->DrawLine(
+                        D2D1::Point2F(lineX, lineTop),
+                        D2D1::Point2F(lineX, lineTop + lineH - 2.0f * scale),
+                        m_brushAccent.Get(), 1.8f * scale);
+                }
             }
 
             // 行右侧精致矢量复制小图标按钮（悬停该行时清晰呈现）
@@ -916,11 +1445,13 @@ void OcrResultWindow::render(int retryDepth) {
 
     const float buttonRadius = 7.0f * scale;
     const bool hasSel = hasSelection();
-    ID2D1SolidColorBrush* copyBrush = m_hoverCopy ? m_brushBtnHover.Get() : m_brushBtn.Get();
+    ID2D1SolidColorBrush* copyBrush = m_hoverCopy ? m_brushBtnHover.Get() : m_brushAccentSubtle.Get();
     std::wstring copyLabel = hasSel
         ? (chinese ? L"复制选区" : L"Copy Selected")
         : (chinese ? L"复制全文" : L"Copy All");
-    if (m_copiedTime && m_copiedLineIndex < 0) {
+    bool isCopyFeedback = false;
+    if (m_copiedTime && m_copiedLineIndex < 0 && !m_copiedWord) {
+        isCopyFeedback = true;
         if (m_copySucceeded) {
             copyBrush = m_brushSuccess.Get();
             copyLabel = m_copiedSelection
@@ -936,11 +1467,22 @@ void OcrResultWindow::render(int retryDepth) {
     const auto closeButton = D2D1::RoundedRect(
         m_btnCloseRect, buttonRadius, buttonRadius);
     m_renderTarget->FillRoundedRectangle(&copyButton, copyBrush);
+    if (!isCopyFeedback && m_brushAccent) {
+        m_brushAccent->SetOpacity(m_hoverCopy ? 0.85f : 0.48f);
+        m_renderTarget->DrawRoundedRectangle(&copyButton, m_brushAccent.Get(), 1.0f * scale);
+        m_brushAccent->SetOpacity(1.0f);
+    }
     m_renderTarget->FillRoundedRectangle(
         &closeButton, m_hoverClose ? m_brushBtnHover.Get() : m_brushBtn.Get());
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> whiteTextBrush;
+    if (isCopyFeedback) {
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &whiteTextBrush);
+    }
     m_renderTarget->DrawTextW(
         copyLabel.c_str(), static_cast<UINT32>(copyLabel.size()),
-        m_buttonFormat.Get(), m_btnCopyRect, m_brushText.Get(),
+        m_buttonFormat.Get(), m_btnCopyRect,
+        (isCopyFeedback && whiteTextBrush) ? whiteTextBrush.Get() : m_brushText.Get(),
         D2D1_DRAW_TEXT_OPTIONS_CLIP);
     const std::wstring closeLabel = chinese ? L"关闭" : L"Close";
     m_renderTarget->DrawTextW(
@@ -1008,17 +1550,77 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
     }
 
     switch (message) {
+        case WM_GETMINMAXINFO: {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            if (mmi) {
+                const float safeScale = (self->m_scale > 0.0f) ? self->m_scale : 1.0f;
+                mmi->ptMinTrackSize.x = tools3000::core::dpi::scaleMetric(OcrResultStyle::BaseMinWidth, safeScale);
+                mmi->ptMinTrackSize.y = tools3000::core::dpi::scaleMetric(OcrResultStyle::BaseMinHeight, safeScale);
+            }
+            return 0;
+        }
         case WM_NCHITTEST: {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             ScreenToClient(hwnd, &point);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            const int cw = client.right - client.left;
+            const int ch = client.bottom - client.top;
+            const int grip = (std::max)(6, static_cast<int>(std::lround(8.0f * self->m_scale)));
+
+            const bool onLeft = (point.x < grip);
+            const bool onRight = (point.x >= cw - grip);
+            const bool onTop = (point.y < grip);
+            const bool onBottom = (point.y >= ch - grip);
+            if (onTop && onLeft) return HTTOPLEFT;
+            if (onTop && onRight) return HTTOPRIGHT;
+            if (onBottom && onLeft) return HTBOTTOMLEFT;
+            if (onBottom && onRight) return HTBOTTOMRIGHT;
+            if (onLeft) return HTLEFT;
+            if (onRight) return HTRIGHT;
+            if (onTop) return HTTOP;
+            if (onBottom) return HTBOTTOM;
+
+            if (contains(self->m_btnMergeRect, point)) {
+                return HTCLIENT;
+            }
             const float dragBottom = OcrResultStyle::BaseHeaderHeight * self->m_scale;
             return point.y < dragBottom ? HTCAPTION : HTCLIENT;
+        }
+        case WM_SIZE: {
+            if (!self->m_updatingPlacement && wParam != SIZE_MINIMIZED) {
+                self->rebuildTextLayout();
+                if (IsWindowVisible(hwnd)) {
+                    self->render();
+                }
+            }
+            return 0;
         }
         case WM_SETCURSOR: {
             if (LOWORD(lParam) == HTCLIENT) {
                 return TRUE;
             }
             return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+        case WM_LBUTTONDBLCLK: {
+            SetFocus(hwnd);
+            const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            const int clientW = client.right - client.left;
+            const int clientH = client.bottom - client.top;
+            const float padding = OcrResultStyle::BasePadding * self->m_scale;
+            const float header = OcrResultStyle::BaseHeaderHeight * self->m_scale;
+            const float footer = OcrResultStyle::BaseFooterHeight * self->m_scale;
+            if (point.x >= padding + BaseIndexColWidth * self->m_scale &&
+                point.x <= clientW - padding &&
+                point.y >= header && point.y <= clientH - footer &&
+                !self->m_lines.empty()) {
+                const TextPosition hitPos = self->hitTestTextPosition(point);
+                self->selectAndCopyWordAt(hitPos);
+                return 0;
+            }
+            return 0;
         }
         case WM_LBUTTONDOWN: {
             SetFocus(hwnd);
@@ -1027,6 +1629,13 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             GetClientRect(hwnd, &client);
             const int clientW = client.right - client.left;
             const int clientH = client.bottom - client.top;
+
+            // 0. 顶栏“合并段落”切换胶囊按钮
+            if (contains(self->m_btnMergeRect, point)) {
+                self->m_pressedMergeBtn = true;
+                SetCapture(hwnd);
+                return 0;
+            }
 
             // 1. 优先命中右侧滚动条轨道/滑块：彻底隔离滚动条交互，防止误触行复制
             D2D1_RECT_F trackRect{};
@@ -1063,7 +1672,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                 return 0;
             }
 
-            // 3. 行右侧单行复制小图标按钮
+            // 3. 行右侧单行复制小图标按钮或左侧行号快捷复制
             const float padding = OcrResultStyle::BasePadding * self->m_scale;
             const float header = OcrResultStyle::BaseHeaderHeight * self->m_scale;
             const float footer = OcrResultStyle::BaseFooterHeight * self->m_scale;
@@ -1074,7 +1683,8 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                 for (int i = 0; i < static_cast<int>(self->m_lines.size()); ++i) {
                     if (relY >= self->m_lines[i].topY &&
                         relY <= self->m_lines[i].topY + self->m_lines[i].height) {
-                        if (contains(self->computeLineCopyButtonRect(i, clientW), point)) {
+                        if (contains(self->computeLineCopyButtonRect(i, clientW), point) ||
+                            point.x < padding + BaseIndexColWidth * self->m_scale) {
                             self->m_pressedLineCopyBtn = i;
                             SetCapture(hwnd);
                             return 0;
@@ -1083,7 +1693,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                     }
                 }
 
-                // 4. 文本正文区：进入字符级划词选字（或轻点复制单行）
+                // 4. 文本正文区：定位微调编辑光标或进入字符级拖选
                 self->m_mouseDownPt = point;
                 self->m_hadSelectionOnMouseDown = self->hasSelection();
                 const TextPosition hitPos = self->hitTestTextPosition(point);
@@ -1093,6 +1703,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                     self->m_selAnchor = hitPos;
                     self->m_selCaret = hitPos;
                 }
+                self->m_hasCaret = true;
                 self->m_isSelectingText = true;
                 SetCapture(hwnd);
                 SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
@@ -1100,7 +1711,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                 return 0;
             }
 
-            if (self->hasSelection()) {
+            if (self->hasSelection() || self->m_hasCaret) {
                 self->clearSelection();
                 self->render();
             }
@@ -1159,6 +1770,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
         }
         case WM_MOUSELEAVE:
             self->m_trackingMouse = false;
+            self->m_hoverMerge = false;
             self->m_hoverCopy = false;
             self->m_hoverClose = false;
             self->m_hoverScrollbar = false;
@@ -1177,6 +1789,13 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                 return 0;
             }
 
+            if (self->m_pressedMergeBtn) {
+                self->m_pressedMergeBtn = false;
+                if (contains(self->m_btnMergeRect, point)) {
+                    self->setMergeParagraphs(!self->isMergeParagraphsEnabled());
+                }
+                return 0;
+            }
             if (self->m_pressedCopyBtn) {
                 self->m_pressedCopyBtn = false;
                 if (contains(self->m_btnCopyRect, point)) self->copySelectionOrAll();
@@ -1192,7 +1811,9 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                 self->m_pressedLineCopyBtn = -1;
                 RECT client{};
                 GetClientRect(hwnd, &client);
-                if (contains(self->computeLineCopyButtonRect(targetLine, client.right - client.left), point)) {
+                const float padding = OcrResultStyle::BasePadding * self->m_scale;
+                if (contains(self->computeLineCopyButtonRect(targetLine, client.right - client.left), point) ||
+                    point.x < padding + BaseIndexColWidth * self->m_scale) {
                     self->copyLine(targetLine);
                 }
                 return 0;
@@ -1201,39 +1822,8 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             if (self->m_isSelectingText) {
                 self->m_selCaret = self->hitTestTextPosition(point);
                 self->m_isSelectingText = false;
-                const float dx = static_cast<float>(point.x - self->m_mouseDownPt.x);
-                const float dy = static_cast<float>(point.y - self->m_mouseDownPt.y);
-                const float dragDist = std::hypot(dx, dy);
-
-                // 拖选文字（产生字符选区或拖拽距离 >= 4px）时保留选区高亮，绝不覆盖成整行复制
-                if (self->hasSelection() || dragDist >= 4.0f * self->m_scale) {
-                    self->render();
-                    return 0;
-                }
-
-                // 轻点（< 4px 且无字符跨度）：若按下前已有选区则清除选区，否则快捷复制当前行
-                if (self->m_hadSelectionOnMouseDown) {
-                    self->clearSelection();
-                    self->render();
-                    return 0;
-                }
-
-                RECT client{};
-                GetClientRect(hwnd, &client);
-                const float padding = OcrResultStyle::BasePadding * self->m_scale;
-                const float header = OcrResultStyle::BaseHeaderHeight * self->m_scale;
-                const float footer = OcrResultStyle::BaseFooterHeight * self->m_scale;
-                if (point.x >= padding && point.x <= (client.right - client.left) - padding &&
-                    point.y >= header && point.y <= (client.bottom - client.top) - footer) {
-                    const float relY = static_cast<float>(point.y) - header + self->m_scrollY;
-                    for (int i = 0; i < static_cast<int>(self->m_lines.size()); ++i) {
-                        if (relY >= self->m_lines[i].topY &&
-                            relY <= self->m_lines[i].topY + self->m_lines[i].height) {
-                            self->copyLine(i);
-                            break;
-                        }
-                    }
-                }
+                self->m_hasCaret = true;
+                self->render();
                 return 0;
             }
             return 0;
@@ -1241,6 +1831,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
         case WM_CAPTURECHANGED:
             self->m_draggingScrollbar = false;
             self->m_isSelectingText = false;
+            self->m_pressedMergeBtn = false;
             self->m_pressedCopyBtn = false;
             self->m_pressedCloseBtn = false;
             self->m_pressedLineCopyBtn = -1;
@@ -1254,10 +1845,23 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             self->render();
             return 0;
         }
+        case WM_CHAR: {
+            const wchar_t ch = static_cast<wchar_t>(wParam);
+            const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            if (!ctrl && ch >= 0x20 && ch != 0x7F && (self->m_hasCaret || self->hasSelection())) {
+                self->insertTextAtCaret(std::wstring(1, ch));
+                return 0;
+            }
+            return 0;
+        }
         case WM_KEYDOWN: {
             const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             if (wParam == VK_ESCAPE) {
                 if (self->hasSelection()) {
+                    self->m_selAnchor = self->m_selCaret;
+                    self->render();
+                } else if (self->m_hasCaret) {
                     self->clearSelection();
                     self->render();
                 } else {
@@ -1265,8 +1869,56 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                 }
             } else if (control && wParam == 'C') {
                 self->copySelectionOrAll();
+            } else if (control && wParam == 'X') {
+                if (self->hasSelection()) {
+                    self->copySelectionOrAll();
+                    self->deleteBackwardAtCaret();
+                }
+            } else if (control && wParam == 'V') {
+                const std::wstring clip = readClipboardWideText(hwnd);
+                if (!clip.empty()) {
+                    self->insertTextAtCaret(clip);
+                }
+            } else if (control && wParam == 'Z') {
+                self->undoEdit();
+            } else if (control && wParam == 'M') {
+                self->setMergeParagraphs(!self->isMergeParagraphsEnabled());
             } else if (control && wParam == 'A') {
                 self->selectAll();
+            } else if (!control && wParam == VK_BACK && (self->m_hasCaret || self->hasSelection())) {
+                self->deleteBackwardAtCaret();
+            } else if (!control && wParam == VK_DELETE && (self->m_hasCaret || self->hasSelection())) {
+                self->deleteForwardAtCaret();
+            } else if (!control && wParam == VK_RETURN && (self->m_hasCaret || self->hasSelection())) {
+                self->insertTextAtCaret(L"\n");
+            } else if (!control && (wParam == VK_LEFT || wParam == VK_RIGHT) &&
+                       self->m_selCaret.isValid() && !self->m_lines.empty()) {
+                TextPosition nextPos = self->m_selCaret;
+                nextPos.line = std::clamp(nextPos.line, 0, static_cast<int>(self->m_lines.size()) - 1);
+                nextPos.offset = (std::min)(nextPos.offset, static_cast<UINT32>(self->m_lines[nextPos.line].text.size()));
+                if (wParam == VK_LEFT) {
+                    if (!shift && self->hasSelection()) {
+                        nextPos = (self->m_selAnchor < self->m_selCaret) ? self->m_selAnchor : self->m_selCaret;
+                    } else if (nextPos.offset > 0) {
+                        --nextPos.offset;
+                    } else if (nextPos.line > 0) {
+                        --nextPos.line;
+                        nextPos.offset = static_cast<UINT32>(self->m_lines[nextPos.line].text.size());
+                    }
+                } else {
+                    if (!shift && self->hasSelection()) {
+                        nextPos = (self->m_selAnchor < self->m_selCaret) ? self->m_selCaret : self->m_selAnchor;
+                    } else if (nextPos.offset < self->m_lines[nextPos.line].text.size()) {
+                        ++nextPos.offset;
+                    } else if (nextPos.line + 1 < static_cast<int>(self->m_lines.size())) {
+                        ++nextPos.line;
+                        nextPos.offset = 0;
+                    }
+                }
+                self->m_selCaret = nextPos;
+                if (!shift) self->m_selAnchor = nextPos;
+                self->m_hasCaret = true;
+                self->render();
             } else {
                 const float viewport = (std::max)(
                     1.0f, static_cast<float>(self->m_surfaceHeight) -
@@ -1286,6 +1938,10 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             }
             return 0;
         }
+        case WM_SETTINGCHANGE:
+        case WM_THEMECHANGED:
+            self->reloadTheme();
+            return 0;
         case WM_TIMER:
             if (wParam == FadeTimerId) {
                 const float elapsed = static_cast<float>(
