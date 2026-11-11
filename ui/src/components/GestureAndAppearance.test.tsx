@@ -4,6 +4,8 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GestureStrokePreview } from './GestureStrokePreview';
 import { GestureDrawCanvas } from './GestureDrawCanvas';
+import { GestureEditorModal } from './GestureEditorModal';
+import { assembleGestureCode } from './gestureModel';
 import { GeneralPage } from '../pages/GeneralPage';
 import * as bridge from '../hooks/useBridge';
 
@@ -126,6 +128,82 @@ describe('U-06 GestureStrokePreview & GestureDrawCanvas Regression Suite', () =>
     expect(screen.getByTestId('edge-sensor-top')).toBeDefined();
     fireEvent.wheel(pad, { deltaY: 100 });
     expect(onChange).toHaveBeenLastCalledWith('TopEdge+WheelDown');
+
+    // 验证当外部传入无显式触发前缀的默认右键编码 (如 'D') 时，不被旧 triggerMode 污染为 Middle Click
+    rerender(<GestureDrawCanvas value="" onChange={onChange} />);
+    const middlePill = container.querySelector('[data-trigger-option="middle"]') as HTMLButtonElement;
+    const rightPill = container.querySelector('[data-trigger-option="right"]') as HTMLButtonElement;
+    fireEvent.click(middlePill);
+    expect(middlePill.getAttribute('aria-checked')).toBe('true');
+
+    rerender(<GestureDrawCanvas value="D" onChange={onChange} />);
+    expect(rightPill.getAttribute('aria-checked')).toBe('true');
+    expect(middlePill.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('keeps gestureCode empty without invalid-track errors when preselecting Top Edge + Middle Click in GestureEditorModal, then emits TopEdge+Middle+R on swipe', async () => {
+    expect(assembleGestureCode({ edge: 'top', triggerButton: 'middle', bareCode: '' })).toBe('');
+
+    vi.spyOn(bridge, 'bridgeRequest').mockResolvedValue({ success: true });
+    const onSave = vi.fn();
+    const onClose = vi.fn();
+
+    render(<GestureEditorModal onSave={onSave} onClose={onClose} />);
+
+    const topEdgePill = document.body.querySelector('[data-edge-option="top"]') as HTMLButtonElement;
+    const middlePill = document.body.querySelector('[data-trigger-option="middle"]') as HTMLButtonElement;
+    const pad = document.body.querySelector('.gesture-draw-pad') as HTMLDivElement;
+
+    expect(topEdgePill).not.toBeNull();
+    expect(middlePill).not.toBeNull();
+    expect(pad).not.toBeNull();
+
+    // Preselect Top Edge + Middle Click before drawing any stroke
+    fireEvent.click(topEdgePill);
+    fireEvent.click(middlePill);
+
+    expect(topEdgePill.getAttribute('aria-checked')).toBe('true');
+    expect(middlePill.getAttribute('aria-checked')).toBe('true');
+    expect(document.body.textContent ?? '').not.toContain('Invalid gesture track');
+    expect(document.body.textContent ?? '').not.toContain('gestureEditor.recognizedGesture');
+    expect(document.body.querySelector('.gesture-draw-badge')).toBeNull();
+
+    vi.spyOn(pad, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 400,
+      bottom: 240,
+      width: 400,
+      height: 240,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    // Swipe right on canvas -> emits 'TopEdge+Middle+R' cleanly
+    fireEvent.pointerDown(pad, { clientX: 60, clientY: 100, button: 1, pointerId: 11 });
+    fireEvent.pointerMove(pad, { clientX: 130, clientY: 100, button: 1, pointerId: 11 });
+    fireEvent.pointerMove(pad, { clientX: 210, clientY: 100, button: 1, pointerId: 11 });
+    fireEvent.pointerUp(pad, { clientX: 210, clientY: 100, button: 1, pointerId: 11 });
+
+    expect(document.body.textContent ?? '').toContain('gestureEditor.recognizedGesture');
+    expect(document.body.querySelector('.gesture-draw-badge')).not.toBeNull();
+
+    // Fill action name if empty and click Save to verify final persisted gestureCode
+    const inputs = Array.from(document.body.querySelectorAll<HTMLInputElement>('input'));
+    const nameInput = inputs[0];
+    if (nameInput && !nameInput.value.trim()) {
+      fireEvent.change(nameInput, { target: { value: 'Next Track' } });
+    }
+
+    const buttons = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'));
+    const saveBtn = buttons.find((b) => b.textContent?.includes('common.save'));
+    expect(saveBtn).toBeDefined();
+    expect(saveBtn?.disabled).toBe(false);
+    fireEvent.click(saveBtn!);
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0]?.[0]?.gestureCode).toBe('TOPEDGE+MIDDLE+R');
   });
 });
 
