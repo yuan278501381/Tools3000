@@ -10,6 +10,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "ocr/OcrEngine.h"
+#include "core/config/ConfigManager.h"
 #include "core/logger/Logger.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
@@ -130,12 +131,95 @@ wgi::SoftwareBitmap matToBitmap(const cv::Mat& src) {
     return bitmap;
 }
 
-/// 创建一个 OCR 引擎: 优先用户语言, 回退英文。
+/// 创建一个 OCR 引擎: 优先读取 /ocr/language 配置（支持 auto 及指定语种 tag，缺失对应语言包时平滑回退可用语种绝不崩溃）。
 wmo::OcrEngine createEngine() {
-    if (auto e = wmo::OcrEngine::TryCreateFromUserProfileLanguages()) return e;
+    std::string langPref;
+    try {
+        langPref = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/language", "auto");
+    } catch (...) {
+        langPref = "auto";
+    }
+
+    auto toLowerAscii = [](std::string s) {
+        for (char& ch : s) {
+            if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+        }
+        return s;
+    };
+
+    const std::string lowerPref = toLowerAscii(langPref);
+    if (!lowerPref.empty() && lowerPref != "auto" && lowerPref != "system") {
+        const std::wstring wideTag = tools3000::core::WinUtils::utf8ToWstring(langPref);
+        if (!wideTag.empty()) {
+            try {
+                wgl::Language requestedLang(wideTag);
+                if (wmo::OcrEngine::IsLanguageSupported(requestedLang)) {
+                    if (auto exact = wmo::OcrEngine::TryCreateFromLanguage(requestedLang)) {
+                        return exact;
+                    }
+                }
+            } catch (...) {
+                // Invalid or unsupported language tag; try prefix match among installed recognizer languages.
+            }
+
+            try {
+                const auto installed = wmo::OcrEngine::AvailableRecognizerLanguages();
+                std::string primaryPrefix = lowerPref;
+                if (const auto dashPos = primaryPrefix.find('-'); dashPos != std::string::npos) {
+                    // Preserve script subtags for Chinese (zh-hans vs zh-hant) while allowing region fallback.
+                    if (primaryPrefix.rfind("zh-hans", 0) == 0 || primaryPrefix == "zh-cn" || primaryPrefix == "zh-sg") {
+                        primaryPrefix = "zh-hans";
+                    } else if (primaryPrefix.rfind("zh-hant", 0) == 0 || primaryPrefix == "zh-tw" ||
+                               primaryPrefix == "zh-hk" || primaryPrefix == "zh-mo") {
+                        primaryPrefix = "zh-hant";
+                    } else {
+                        primaryPrefix = primaryPrefix.substr(0, dashPos);
+                    }
+                }
+
+                for (const auto& cand : installed) {
+                    const std::string candTag = toLowerAscii(tools3000::core::WinUtils::wstringToUtf8(cand.LanguageTag().c_str()));
+                    bool matched = (candTag == lowerPref) ||
+                                   (candTag.rfind(primaryPrefix + "-", 0) == 0) ||
+                                   (candTag == primaryPrefix);
+                    if (!matched && primaryPrefix == "zh-hans" && (candTag == "zh-cn" || candTag == "zh-sg")) {
+                        matched = true;
+                    }
+                    if (!matched && primaryPrefix == "zh-hant" &&
+                        (candTag == "zh-tw" || candTag == "zh-hk" || candTag == "zh-mo")) {
+                        matched = true;
+                    }
+                    if (matched) {
+                        if (auto fallbackMatch = wmo::OcrEngine::TryCreateFromLanguage(cand)) {
+                            return fallbackMatch;
+                        }
+                    }
+                }
+            } catch (...) {
+                // Ignore enumeration error and fall through to profile/available language fallback.
+            }
+
+            LOG_WARN("Requested OCR language '{}' is not installed on this machine; falling back to available OCR language",
+                     langPref);
+        }
+    }
+
+    try {
+        if (auto e = wmo::OcrEngine::TryCreateFromUserProfileLanguages()) return e;
+    } catch (...) {}
+
+    try {
+        const auto installed = wmo::OcrEngine::AvailableRecognizerLanguages();
+        for (const auto& cand : installed) {
+            if (auto firstAvail = wmo::OcrEngine::TryCreateFromLanguage(cand)) {
+                return firstAvail;
+            }
+        }
+    } catch (...) {}
+
     try {
         return wmo::OcrEngine::TryCreateFromLanguage(wgl::Language(L"en-US"));
-    } catch (winrt::hresult_error const&) {
+    } catch (...) {
         return nullptr;
     }
 }
