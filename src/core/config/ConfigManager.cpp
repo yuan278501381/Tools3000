@@ -62,7 +62,7 @@ ConfigManager& ConfigManager::instance() {
 bool ConfigManager::initialize(const std::filesystem::path& configDir, const std::string& filename) {
     TraceId::Scope scope;
 
-    if (m_watchRunning.load()) {
+    if (m_watchRunning.load() || m_flushRunning.load()) {
         shutdown();
     }
 
@@ -79,7 +79,13 @@ bool ConfigManager::initialize(const std::filesystem::path& configDir, const std
         m_lastLoadedFileSize = 0;
     }
     {
-        std::lock_guard lock(m_mutex);
+        std::lock_guard flushLock(m_flushMutex);
+        m_dirtySeq = 0;
+        m_flushedSeq = 0;
+        m_dirty = false;
+    }
+    {
+        std::unique_lock lock(m_mutex);
         m_config = json();
     }
 
@@ -87,9 +93,22 @@ bool ConfigManager::initialize(const std::filesystem::path& configDir, const std
 
     if (!load()) return false;
 
+    // 启动 200ms 脏合并异步刷盘线程
+    m_flushRunning.store(true, std::memory_order_release);
+    try {
+        m_flushThread = std::thread([this]() { flushWorkerLoop(); });
+    } catch (const std::exception& e) {
+        m_flushRunning.store(false, std::memory_order_release);
+        LOG_ERROR("无法启动配置监控线程: {}", e.what());
+        return false;
+    }
+
     // 启动文件监控线程
     m_watchStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!m_watchStopEvent) {
+        m_flushRunning.store(false, std::memory_order_release);
+        m_flushCv.notify_all();
+        if (m_flushThread.joinable()) m_flushThread.join();
         LOG_ERROR("无法创建配置监控停止事件: error={}", GetLastError());
         return false;
     }
@@ -100,6 +119,9 @@ bool ConfigManager::initialize(const std::filesystem::path& configDir, const std
         m_watchRunning = false;
         CloseHandle(m_watchStopEvent);
         m_watchStopEvent = nullptr;
+        m_flushRunning.store(false, std::memory_order_release);
+        m_flushCv.notify_all();
+        if (m_flushThread.joinable()) m_flushThread.join();
         LOG_ERROR("无法启动配置监控线程: {}", e.what());
         return false;
     }
@@ -107,11 +129,22 @@ bool ConfigManager::initialize(const std::filesystem::path& configDir, const std
 }
 
 void ConfigManager::shutdown() {
-    if (!m_watchRunning.load() && !m_watchThread.joinable()) {
+    if (!m_watchRunning.load() && !m_watchThread.joinable() &&
+        !m_flushRunning.load() && !m_flushThread.joinable()) {
+        if (hasPendingDirty()) {
+            (void)flushPendingDirty();
+        }
         return;
     }
 
     LOG_INFO("配置管理器正在关闭...");
+
+    // 停止后台合并刷盘线程
+    m_flushRunning.store(false, std::memory_order_release);
+    m_flushCv.notify_all();
+    if (m_flushThread.joinable()) {
+        m_flushThread.join();
+    }
 
     // 停止文件监控
     m_watchRunning = false;
@@ -126,7 +159,7 @@ void ConfigManager::shutdown() {
         m_watchStopEvent = nullptr;
     }
 
-    if (!save()) LOG_ERROR("配置管理器关闭时保存失败");
+    if (!flush()) LOG_ERROR("配置管理器关闭时保存失败");
 }
 
 bool ConfigManager::load(bool* changed) {
@@ -150,7 +183,7 @@ bool ConfigManager::load(bool* changed) {
     } catch (const std::exception& e) {
         bool hasValidConfig = false;
         {
-            std::lock_guard lock(m_mutex);
+            std::shared_lock lock(m_mutex);
             hasValidConfig = m_config.is_object();
         }
         if (hasValidConfig) {
@@ -192,7 +225,7 @@ bool ConfigManager::load(bool* changed) {
         }
     }
     {
-        std::lock_guard lock(m_mutex);
+        std::unique_lock lock(m_mutex);
         if (changed) *changed = m_config != loaded;
         m_config = std::move(loaded);
     }
@@ -203,7 +236,7 @@ bool ConfigManager::save() const {
     std::lock_guard ioLock(m_ioMutex);
     json snapshot;
     {
-        std::lock_guard lock(m_mutex);
+        std::shared_lock lock(m_mutex);
         snapshot = m_config;
     }
     return writeSnapshotLocked(snapshot);
@@ -213,6 +246,7 @@ bool ConfigManager::writeSnapshotLocked(const json& snapshot) const {
     try {
         const std::string payload = snapshot.dump(2);
         if (WinUtils::atomicWriteFileWithFlush(m_configFilePath.wstring(), payload)) {
+            m_diskWriteCount.fetch_add(1, std::memory_order_relaxed);
             std::error_code stampEc;
             const auto wt = std::filesystem::last_write_time(m_configFilePath, stampEc);
             if (!stampEc) {
@@ -234,26 +268,129 @@ bool ConfigManager::writeSnapshotLocked(const json& snapshot) const {
     return false;
 }
 
-bool ConfigManager::setJsonValue(const std::string& key, json value) {
-    json next;
+void ConfigManager::markDirtyAndScheduleFlush() {
+    if (!m_flushRunning.load(std::memory_order_acquire)) {
+        // 未启动后台合并线程时（如 shutdown 后独立调用），直接同步落盘保证零数据丢失
+        (void)save();
+        return;
+    }
     {
-        std::lock_guard ioLock(m_ioMutex);
-        {
-            std::lock_guard lock(m_mutex);
-            next = m_config;
+        std::lock_guard flushLock(m_flushMutex);
+        ++m_dirtySeq;
+        if (!m_dirty) {
+            m_dirty = true;
+            m_dirtyDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
         }
+    }
+    m_flushCv.notify_one();
+}
+
+bool ConfigManager::hasPendingDirty() const noexcept {
+    std::lock_guard flushLock(m_flushMutex);
+    return m_dirty || (m_flushedSeq < m_dirtySeq);
+}
+
+bool ConfigManager::flushPendingDirty() {
+    uint64_t targetSeq = 0;
+    {
+        std::lock_guard flushLock(m_flushMutex);
+        if (!m_dirty && m_flushedSeq >= m_dirtySeq) {
+            return true;
+        }
+        targetSeq = m_dirtySeq;
+    }
+
+    std::lock_guard ioLock(m_ioMutex);
+    uint64_t snapSeq = 0;
+    json snapshot;
+    {
+        std::lock_guard flushLock(m_flushMutex);
+        if (m_flushedSeq >= targetSeq && !m_dirty) {
+            return true;
+        }
+        snapSeq = m_dirtySeq;
+    }
+    {
+        std::shared_lock cfgLock(m_mutex);
+        snapshot = m_config;
+    }
+
+    const bool ok = writeSnapshotLocked(snapshot);
+    if (ok) {
+        std::lock_guard flushLock(m_flushMutex);
+        if (snapSeq > m_flushedSeq) {
+            m_flushedSeq = snapSeq;
+        }
+        if (m_flushedSeq >= m_dirtySeq) {
+            m_dirty = false;
+        }
+    }
+    return ok;
+}
+
+bool ConfigManager::flush() {
+    if (hasPendingDirty()) {
+        return flushPendingDirty();
+    }
+    std::lock_guard ioLock(m_ioMutex);
+    if (m_configFilePath.empty()) return false;
+    std::error_code ec;
+    if (std::filesystem::exists(m_configFilePath, ec) && !ec) {
+        return true;
+    }
+    json snapshot;
+    {
+        std::shared_lock cfgLock(m_mutex);
+        snapshot = m_config;
+    }
+    return writeSnapshotLocked(snapshot);
+}
+
+uint64_t ConfigManager::diskWriteCount() const noexcept {
+    return m_diskWriteCount.load(std::memory_order_relaxed);
+}
+
+void ConfigManager::flushWorkerLoop() {
+    for (;;) {
+        {
+            std::unique_lock flushLock(m_flushMutex);
+            m_flushCv.wait(flushLock, [this]() {
+                return !m_flushRunning.load(std::memory_order_acquire) || m_dirty;
+            });
+            if (!m_flushRunning.load(std::memory_order_acquire) && !m_dirty) {
+                break;
+            }
+            if (m_dirty && m_flushRunning.load(std::memory_order_acquire)) {
+                const auto deadline = m_dirtyDeadline;
+                m_flushCv.wait_until(flushLock, deadline, [this]() {
+                    return !m_flushRunning.load(std::memory_order_acquire);
+                });
+            }
+        }
+        (void)flushPendingDirty();
+        if (!m_flushRunning.load(std::memory_order_acquire)) {
+            break;
+        }
+    }
+}
+
+bool ConfigManager::setJsonValue(const std::string& key, json value) {
+    if (m_configFilePath.empty()) {
+        return false;
+    }
+    {
+        std::unique_lock lock(m_mutex);
         try {
-            next[json::json_pointer(key)] = std::move(value);
+            if (!m_config.is_object()) {
+                m_config = json::object();
+            }
+            m_config[json::json_pointer(key)] = std::move(value);
         } catch (const std::exception& e) {
             LOG_WARN("设置配置项失败: key={}, error={}", key, e.what());
             return false;
         }
-        if (!writeSnapshotLocked(next)) return false;
-        {
-            std::lock_guard lock(m_mutex);
-            m_config = std::move(next);
-        }
     }
+    markDirtyAndScheduleFlush();
     notifyChange(key);
     return true;
 }
@@ -263,41 +400,38 @@ bool ConfigManager::mergePatch(const json& patch, const std::string& notificatio
         LOG_WARN("配置合并失败: patch 根节点不是对象");
         return false;
     }
-    json next;
+    if (m_configFilePath.empty()) {
+        return false;
+    }
     {
-        std::lock_guard ioLock(m_ioMutex);
-        {
-            std::lock_guard lock(m_mutex);
-            next = m_config;
-        }
+        std::unique_lock lock(m_mutex);
         try {
+            if (!m_config.is_object()) {
+                m_config = json::object();
+            }
             std::string existingPipeToken;
             auto tokenPtr = json::json_pointer("/search/pipeToken");
-            if (next.contains(tokenPtr) && next[tokenPtr].is_string()) {
-                existingPipeToken = next[tokenPtr].get<std::string>();
+            if (m_config.contains(tokenPtr) && m_config[tokenPtr].is_string()) {
+                existingPipeToken = m_config[tokenPtr].get<std::string>();
             }
 
-            next.merge_patch(patch);
+            m_config.merge_patch(patch);
 
             if (!existingPipeToken.empty()) {
-                next["search"]["pipeToken"] = existingPipeToken;
+                m_config["search"]["pipeToken"] = existingPipeToken;
             }
         } catch (const std::exception& e) {
             LOG_WARN("配置合并失败: {}", e.what());
             return false;
         }
-        if (!writeSnapshotLocked(next)) return false;
-        {
-            std::lock_guard lock(m_mutex);
-            m_config = std::move(next);
-        }
     }
+    markDirtyAndScheduleFlush();
     notifyChange(notificationKey);
     return true;
 }
 
 bool ConfigManager::has(const std::string& key) const {
-    std::lock_guard lock(m_mutex);
+    std::shared_lock lock(m_mutex);
     try {
         auto ptr = json::json_pointer(key);
         return m_config.contains(ptr);
@@ -307,14 +441,12 @@ bool ConfigManager::has(const std::string& key) const {
 }
 
 bool ConfigManager::remove(const std::string& key) {
+    if (m_configFilePath.empty()) {
+        return false;
+    }
     bool changed = false;
-    json next;
     {
-        std::lock_guard ioLock(m_ioMutex);
-        {
-            std::lock_guard lock(m_mutex);
-            next = m_config;
-        }
+        std::unique_lock lock(m_mutex);
         try {
             const std::string normalizedKey =
                 (!key.empty() && key.front() != '/') ? ("/" + key) : key;
@@ -322,10 +454,10 @@ bool ConfigManager::remove(const std::string& key) {
             if (ptr.empty()) {
                 return false;
             }
-            if (next.contains(ptr)) {
+            if (m_config.contains(ptr)) {
                 auto parentPtr = ptr.parent_pointer();
                 const std::string& childToken = ptr.back();
-                auto& parentNode = next.at(parentPtr);
+                auto& parentNode = m_config.at(parentPtr);
                 if (parentNode.is_object()) {
                     changed = parentNode.erase(childToken) > 0;
                 } else if (parentNode.is_array()) {
@@ -347,19 +479,15 @@ bool ConfigManager::remove(const std::string& key) {
             LOG_WARN("删除配置项失败: key={}, error={}", key, e.what());
             return false;
         }
-        if (!changed) return true;
-        if (!writeSnapshotLocked(next)) return false;
-        {
-            std::lock_guard lock(m_mutex);
-            m_config = std::move(next);
-        }
     }
+    if (!changed) return true;
+    markDirtyAndScheduleFlush();
     notifyChange(key);
     return true;
 }
 
 std::string ConfigManager::toJsonString(int indent) const {
-    std::lock_guard lock(m_mutex);
+    std::shared_lock lock(m_mutex);
     return m_config.dump(indent);
 }
 
@@ -385,7 +513,7 @@ bool ConfigManager::reset() {
         json empty = json::object();
         std::string preservedPipeToken;
         {
-            std::lock_guard lock(m_mutex);
+            std::shared_lock lock(m_mutex);
             try {
                 auto tokenPtr = json::json_pointer("/search/pipeToken");
                 if (m_config.contains(tokenPtr) && m_config[tokenPtr].is_string()) {
@@ -398,8 +526,14 @@ bool ConfigManager::reset() {
         }
         if (!writeSnapshotLocked(empty)) return false;
         {
-            std::lock_guard lock(m_mutex);
+            std::unique_lock lock(m_mutex);
             m_config = std::move(empty);
+        }
+        {
+            std::lock_guard flushLock(m_flushMutex);
+            ++m_dirtySeq;
+            m_flushedSeq = m_dirtySeq;
+            m_dirty = false;
         }
     }
     notifyChange("*");
@@ -413,7 +547,7 @@ size_t ConfigManager::onChange(ConfigChangeCallback callback) {
     if (id == 0) {
         id = m_nextCallbackId.fetch_add(1);
     }
-    std::lock_guard lock(m_mutex);
+    std::lock_guard lock(m_callbackMutex);
     m_callbacks.emplace_back(id, std::move(callback));
     return id;
 }
@@ -422,7 +556,7 @@ void ConfigManager::removeOnChange(size_t callbackId) {
     if (callbackId == 0) return;
     std::vector<std::pair<size_t, ConfigChangeCallback>> removed;
     {
-        std::lock_guard lock(m_mutex);
+        std::lock_guard lock(m_callbackMutex);
         auto it = m_callbacks.begin();
         while (it != m_callbacks.end()) {
             if (it->first == callbackId) {
@@ -438,7 +572,7 @@ void ConfigManager::removeOnChange(size_t callbackId) {
 void ConfigManager::clearCallbacks() {
     std::vector<std::pair<size_t, ConfigChangeCallback>> callbacks;
     {
-        std::lock_guard lock(m_mutex);
+        std::lock_guard lock(m_callbackMutex);
         callbacks.swap(m_callbacks);
     }
 }
@@ -446,7 +580,7 @@ void ConfigManager::clearCallbacks() {
 void ConfigManager::notifyChange(const std::string& key) {
     std::vector<std::pair<size_t, ConfigChangeCallback>> callbacks;
     {
-        std::lock_guard lock(m_mutex);
+        std::lock_guard lock(m_callbackMutex);
         callbacks = m_callbacks;
     }
     for (const auto& [id, callback] : callbacks) {
@@ -469,7 +603,7 @@ bool ConfigManager::exportTo(const std::filesystem::path& filePath) const {
         const auto& safePath = *validatedPath;
         json snapshot;
         {
-            std::lock_guard lock(m_mutex);
+            std::shared_lock lock(m_mutex);
             snapshot = m_config;
         }
         auto tempPath = safePath;
@@ -632,7 +766,7 @@ void ConfigManager::watchFileChanges() {
                             }
                         }
                     }
-                    if (!selfTriggered) {
+                    if (!selfTriggered && !hasPendingDirty()) {
                         LOG_INFO("检测到配置文件变更, 正在热加载...");
                         bool changed = false;
                         if (load(&changed) && changed) notifyChange("*");
@@ -652,7 +786,8 @@ void ConfigManager::watchFileChanges() {
 }
 
 ConfigManager::~ConfigManager() {
-    if (m_watchRunning || m_watchThread.joinable()) {
+    if (m_watchRunning || m_watchThread.joinable() ||
+        m_flushRunning || m_flushThread.joinable() || hasPendingDirty()) {
         shutdown();
     }
 }

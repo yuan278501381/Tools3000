@@ -209,10 +209,12 @@ bool KeycastOverlay::init() {
     KeycastSettings loaded;
     loaded.enabled = cfg.get<bool>("/keycast/enabled", true);
     loaded.autoBypassFullscreen = cfg.get<bool>("/keycast/autoBypassFullscreen", true);
-    loaded.showKeyboard = cfg.get<bool>("/keycast/showKeyboard", true);
     loaded.filterMode = cfg.get<std::string>("/keycast/filterMode", "smart_shortcuts");
     loaded.includeFunctionKeys = cfg.get<bool>("/keycast/includeFunctionKeys", false);
     loaded.position = cfg.get<std::string>("/keycast/position", "top_left");
+    loaded.hasCustomPosition = cfg.get<bool>("/keycast/hasCustomPosition", false);
+    loaded.customX = cfg.get<int>("/keycast/customX", 0);
+    loaded.customY = cfg.get<int>("/keycast/customY", 0);
     loaded.mergeRecentKeys = cfg.get<bool>("/keycast/mergeRecentKeys", true);
     loaded.mergeTimeoutMs = cfg.get<int>("/keycast/mergeTimeoutMs", 1200);
     loaded.displayDurationMs = cfg.get<int>("/keycast/displayDurationMs", 2500);
@@ -222,7 +224,7 @@ bool KeycastOverlay::init() {
     loaded.backgroundColor = cfg.get<std::string>("/keycast/backgroundColor", "#1c1c22");
     loaded.modifierKeycapColor = cfg.get<std::string>("/keycast/modifierKeycapColor", "auto");
     loaded.modifierKeycapOpacity = cfg.get<int>("/keycast/modifierKeycapOpacity", 50);
-    loaded.modifierTextColor = cfg.get<std::string>("/keycast/modifierTextColor", "#000000");
+    loaded.modifierTextColor = cfg.get<std::string>("/keycast/modifierTextColor", "auto");
     loaded.firstKeyAnim = cfg.get<std::string>("/keycast/firstKeyAnim", "slide");
     loaded.subsequentKeyAnim = cfg.get<std::string>("/keycast/subsequentKeyAnim", "fade");
     loaded.rowCascadeAnim = cfg.get<bool>("/keycast/rowCascadeAnim", true);
@@ -283,7 +285,7 @@ KeycastSettings KeycastOverlay::sanitizeSettings(const KeycastSettings& raw) {
     if (s.textColor.empty()) s.textColor = "#ffffff";
     if (s.backgroundColor.empty()) s.backgroundColor = "#1c1c22";
     if (s.modifierKeycapColor.empty()) s.modifierKeycapColor = "auto";
-    if (s.modifierTextColor.empty()) s.modifierTextColor = "#000000";
+    if (s.modifierTextColor.empty()) s.modifierTextColor = "auto";
     return s;
 }
 
@@ -315,10 +317,12 @@ void KeycastOverlay::updateSettings(const KeycastSettings& settings) {
     auto& cfg = tools3000::core::ConfigManager::instance();
     cfg.set("/keycast/enabled", sanitized.enabled);
     cfg.set("/keycast/autoBypassFullscreen", sanitized.autoBypassFullscreen);
-    cfg.set("/keycast/showKeyboard", sanitized.showKeyboard);
     cfg.set("/keycast/filterMode", sanitized.filterMode);
     cfg.set("/keycast/includeFunctionKeys", sanitized.includeFunctionKeys);
     cfg.set("/keycast/position", sanitized.position);
+    cfg.set("/keycast/hasCustomPosition", sanitized.hasCustomPosition);
+    cfg.set("/keycast/customX", sanitized.customX);
+    cfg.set("/keycast/customY", sanitized.customY);
     cfg.set("/keycast/mergeRecentKeys", sanitized.mergeRecentKeys);
     cfg.set("/keycast/mergeTimeoutMs", sanitized.mergeTimeoutMs);
     cfg.set("/keycast/displayDurationMs", sanitized.displayDurationMs);
@@ -511,15 +515,20 @@ bool KeycastOverlay::createResourcesLocked(const KeycastSettings& settings) {
         textColor = parseColor(settings.textColor, 0.98f);
     }
 
-    // 3. 修饰键文字/图标颜色 (优先使用用户自定义配置，auto 时根据底座复合明暗智能自适应)
+    // 3. 修饰键文字/图标颜色 (优先使用用户自定义配置，auto 时按 WCAG 相对亮度最大化对比度)
     if (settings.modifierTextColor == "auto") {
-        float keycapAlpha = (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(settings.modifierKeycapOpacity) / 100.0f));
-        float effR = keycapAlpha * baseKeycapColor.r + (1.0f - keycapAlpha) * bgColor.r;
-        float effG = keycapAlpha * baseKeycapColor.g + (1.0f - keycapAlpha) * bgColor.g;
-        float effB = keycapAlpha * baseKeycapColor.b + (1.0f - keycapAlpha) * bgColor.b;
-        float effLum = 0.2126f * effR + 0.7152f * effG + 0.0722f * effB;
-        if (effLum >= 0.36f) {
-            modifierTextColor = D2D1::ColorF(0.08f, 0.08f, 0.12f, 0.95f);
+        auto toLinear = [](float c) noexcept -> float {
+            const float clamped = std::clamp(c, 0.0f, 1.0f);
+            return (clamped <= 0.04045f) ? (clamped / 12.92f) : std::pow((clamped + 0.055f) / 1.055f, 2.4f);
+        };
+        const float keycapAlpha = std::clamp(static_cast<float>(settings.modifierKeycapOpacity) / 100.0f, 0.0f, 1.0f);
+        const float effR = keycapAlpha * baseKeycapColor.r + (1.0f - keycapAlpha) * bgColor.r;
+        const float effG = keycapAlpha * baseKeycapColor.g + (1.0f - keycapAlpha) * bgColor.g;
+        const float effB = keycapAlpha * baseKeycapColor.b + (1.0f - keycapAlpha) * bgColor.b;
+        const float relLum = 0.2126f * toLinear(effR) + 0.7152f * toLinear(effG) + 0.0722f * toLinear(effB);
+        // WCAG 对比度拐点 (sqrt(1.05 * 0.05) - 0.05 ≈ 0.179，适度偏白保证半透明键帽清亮锐利)
+        if (relLum >= 0.24f) {
+            modifierTextColor = D2D1::ColorF(0.06f, 0.07f, 0.10f, 0.96f);
         } else {
             modifierTextColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f);
         }
@@ -724,25 +733,34 @@ bool KeycastOverlay::updatePlacement() {
     if (!m_hwnd) return false;
     if (m_updatingPlacement) return true;
     m_updatingPlacement = true;
-    const HMONITOR monitor = tools3000::core::dpi::activeMonitor();
-    const float newScale = tools3000::core::dpi::scaleForMonitor(monitor);
-    const RECT work = tools3000::core::dpi::workArea(monitor);
 
-    RECT bounds = work;
+    KeycastSettings settings = getSettings();
     bool docked = false;
+    RECT dockedBounds{};
     {
         std::lock_guard lock(m_mutex);
         if (m_hasDockingRegion && (m_dockingRegion.right - m_dockingRegion.left >= 100) &&
             (m_dockingRegion.bottom - m_dockingRegion.top >= 80)) {
-            bounds = m_dockingRegion;
+            dockedBounds = m_dockingRegion;
             docked = true;
         }
     }
 
+    HMONITOR monitor = nullptr;
+    if (!docked && settings.hasCustomPosition) {
+        POINT customPt{settings.customX, settings.customY};
+        monitor = MonitorFromPoint(customPt, MONITOR_DEFAULTTONEAREST);
+    }
+    if (!monitor) {
+        monitor = tools3000::core::dpi::activeMonitor();
+    }
+    const float newScale = tools3000::core::dpi::scaleForMonitor(monitor);
+    const RECT work = tools3000::core::dpi::workArea(monitor);
+    const RECT bounds = docked ? dockedBounds : work;
+
     const float targetW = static_cast<float>(bounds.right - bounds.left);
     const float targetH = static_cast<float>(bounds.bottom - bounds.top);
 
-    KeycastSettings settings = getSettings();
     const KeycastDynamicMetrics dyn = computeKeycastMetrics(settings.fontSize, newScale);
 
     int newWidth = 0;
@@ -766,6 +784,11 @@ bool KeycastOverlay::updatePlacement() {
         // 录屏选区停靠时居中置底
         x = bounds.left + ((bounds.right - bounds.left) - newWidth) / 2;
         y = bounds.bottom - newHeight - marginY;
+    } else if (settings.hasCustomPosition) {
+        const int maxX = (std::max)(static_cast<int>(bounds.left), static_cast<int>(bounds.right) - newWidth);
+        const int maxY = (std::max)(static_cast<int>(bounds.top), static_cast<int>(bounds.bottom) - newHeight);
+        x = std::clamp(settings.customX, static_cast<int>(bounds.left), maxX);
+        y = std::clamp(settings.customY, static_cast<int>(bounds.top), maxY);
     } else {
         if (settings.position == "top_left") {
             x = bounds.left + marginX;
@@ -836,7 +859,7 @@ void KeycastOverlay::pushKey(const std::vector<std::string>& tokens, const std::
 
     KeycastSettings settings = getSettings();
     // 录屏选区停靠模式拥有最高优先级（录屏工具栏显式开启回显），无视全局停用开关
-    if (!isDockedRecording && (!settings.enabled || !settings.showKeyboard)) return;
+    if (!isDockedRecording && !settings.enabled) return;
 
     // 截图与长截图浮层激活期间（非录屏态），自动清空并抑制新按键胶囊弹出，防止乱入截图画面
     if (!isDockedRecording && isCaptureOverlayVisible()) {
@@ -1611,19 +1634,191 @@ void KeycastOverlay::tickAnimation() {
 
 void KeycastOverlay::onAnimationCompleteAndHide() {
     if (m_hwnd) {
+        if (m_isDragging) {
+            m_isDragging = false;
+            ReleaseCapture();
+        }
+        if (m_interactiveHitTest) {
+            LONG_PTR exStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
+            m_interactiveHitTest = false;
+        }
         KillTimer(m_hwnd, ANIMATION_TIMER_ID);
         m_timerRunning = false;
         ShowWindow(m_hwnd, SW_HIDE);
     }
 }
 
+void KeycastOverlay::syncAltDragHitTestMode() {
+    if (!m_hwnd) return;
+    bool dockedNow = false;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        dockedNow = m_hasDockingRegion;
+    }
+    const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    const bool wantInteractive = !dockedNow && (m_isDragging || altDown);
+    if (wantInteractive != m_interactiveHitTest) {
+        LONG_PTR exStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+        if (wantInteractive) {
+            exStyle &= ~static_cast<LONG_PTR>(WS_EX_TRANSPARENT);
+        } else {
+            exStyle |= static_cast<LONG_PTR>(WS_EX_TRANSPARENT);
+        }
+        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, exStyle);
+        m_interactiveHitTest = wantInteractive;
+    }
+    if (m_isDragging) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const uint64_t now = GetTickCount64();
+        for (auto& row : m_rows) {
+            row.lastActiveTime = now;
+            row.isExiting = false;
+            row.opacity = 1.0f;
+        }
+    }
+}
+
+void KeycastOverlay::commitDraggedPosition(int finalX, int finalY) {
+    POINT centerPt{finalX + m_width / 2, finalY + m_height / 2};
+    HMONITOR mon = MonitorFromPoint(centerPt, MONITOR_DEFAULTTONEAREST);
+    const RECT work = tools3000::core::dpi::workArea(mon);
+    const int workW = (std::max)(1L, work.right - work.left);
+    const int workH = (std::max)(1L, work.bottom - work.top);
+    const int clampedX = std::clamp(finalX, static_cast<int>(work.left),
+                                    (std::max)(static_cast<int>(work.left), static_cast<int>(work.right) - m_width));
+    const int clampedY = std::clamp(finalY, static_cast<int>(work.top),
+                                    (std::max)(static_cast<int>(work.top), static_cast<int>(work.bottom) - m_height));
+
+    const float relX = static_cast<float>((clampedX + m_width / 2) - work.left) / static_cast<float>(workW);
+    const float relY = static_cast<float>((clampedY + m_height / 2) - work.top) / static_cast<float>(workH);
+    const bool isBottom = (relY >= 0.5f);
+    std::string nearestAnchor;
+    if (relX < 0.34f) {
+        nearestAnchor = isBottom ? "bottom_left" : "top_left";
+    } else if (relX > 0.66f) {
+        nearestAnchor = isBottom ? "bottom_right" : "top_right";
+    } else {
+        nearestAnchor = isBottom ? "bottom_center" : "top_center";
+    }
+
+    {
+        std::lock_guard<std::mutex> renderLock(m_renderMutex);
+        m_posX = clampedX;
+        m_posY = clampedY;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_settingsMutex);
+        m_settings.hasCustomPosition = true;
+        m_settings.customX = clampedX;
+        m_settings.customY = clampedY;
+        m_settings.position = nearestAnchor;
+    }
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    cfg.set("/keycast/hasCustomPosition", true);
+    cfg.set("/keycast/customX", clampedX);
+    cfg.set("/keycast/customY", clampedY);
+    cfg.set("/keycast/position", nearestAnchor);
+
+    if (m_hwnd) {
+        SetWindowPos(m_hwnd, HWND_TOPMOST, clampedX, clampedY, 0, 0,
+                     SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        render();
+    }
+}
+
 LRESULT CALLBACK KeycastOverlay::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_MOUSEACTIVATE) {
+        return MA_NOACTIVATE;
+    }
+
+    if (msg == WM_SETCURSOR) {
+        auto& self = KeycastOverlay::instance();
+        if (self.m_isDragging || self.m_interactiveHitTest) {
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            return TRUE;
+        }
+    }
+
+    if (msg == WM_LBUTTONDOWN) {
+        auto& self = KeycastOverlay::instance();
+        if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+            POINT pt{};
+            GetCursorPos(&pt);
+            self.m_isDragging = true;
+            self.m_dragStartCursor = pt;
+            {
+                std::lock_guard<std::mutex> renderLock(self.m_renderMutex);
+                self.m_dragStartPosX = self.m_posX;
+                self.m_dragStartPosY = self.m_posY;
+            }
+            SetCapture(hwnd);
+            return 0;
+        }
+    }
+
+    if (msg == WM_MOUSEMOVE) {
+        auto& self = KeycastOverlay::instance();
+        if (self.m_isDragging) {
+            POINT pt{};
+            if (GetCursorPos(&pt)) {
+                const int nextX = self.m_dragStartPosX + (pt.x - self.m_dragStartCursor.x);
+                const int nextY = self.m_dragStartPosY + (pt.y - self.m_dragStartCursor.y);
+                {
+                    std::lock_guard<std::mutex> renderLock(self.m_renderMutex);
+                    self.m_posX = nextX;
+                    self.m_posY = nextY;
+                }
+                SetWindowPos(hwnd, HWND_TOPMOST, nextX, nextY, 0, 0,
+                             SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            }
+            return 0;
+        }
+    }
+
+    if (msg == WM_LBUTTONUP) {
+        auto& self = KeycastOverlay::instance();
+        if (self.m_isDragging) {
+            self.m_isDragging = false;
+            ReleaseCapture();
+            int finalX = 0;
+            int finalY = 0;
+            {
+                std::lock_guard<std::mutex> renderLock(self.m_renderMutex);
+                finalX = self.m_posX;
+                finalY = self.m_posY;
+            }
+            self.commitDraggedPosition(finalX, finalY);
+            self.syncAltDragHitTestMode();
+            return 0;
+        }
+    }
+
+    if (msg == WM_CAPTURECHANGED) {
+        auto& self = KeycastOverlay::instance();
+        if (self.m_isDragging && reinterpret_cast<HWND>(lParam) != hwnd) {
+            self.m_isDragging = false;
+            int finalX = 0;
+            int finalY = 0;
+            {
+                std::lock_guard<std::mutex> renderLock(self.m_renderMutex);
+                finalX = self.m_posX;
+                finalY = self.m_posY;
+            }
+            self.commitDraggedPosition(finalX, finalY);
+            self.syncAltDragHitTestMode();
+        }
+        return 0;
+    }
+
     if (msg == START_ANIMATION_MESSAGE) {
         auto& self = KeycastOverlay::instance();
         if (!self.updatePlacement() || !self.createResources()) {
             LOG_ERROR("按键回显初始化失败: 无法创建渲染表面");
             return 0;
         }
+        self.syncAltDragHitTestMode();
         self.render();
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         if (!self.m_timerRunning) {
@@ -1644,6 +1839,7 @@ LRESULT CALLBACK KeycastOverlay::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
     if (msg == WM_TIMER && wParam == ANIMATION_TIMER_ID) {
         auto& self = KeycastOverlay::instance();
+        self.syncAltDragHitTestMode();
         self.tickAnimation();
 
         bool hasActiveRows = false;

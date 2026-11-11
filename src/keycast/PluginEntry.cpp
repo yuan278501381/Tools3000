@@ -17,13 +17,6 @@ namespace tools3000::keycast {
 
 namespace {
 
-HHOOK g_altGrObserverHook = nullptr;
-DWORD g_altGrObserverThreadId = 0;
-std::atomic<bool> g_realLCtrlDown{false};
-std::atomic<bool> g_realRCtrlDown{false};
-std::atomic<bool> g_syntheticAltGrCtrlDown{false};
-std::atomic<DWORD> g_lastNonModVk{0};
-std::atomic<DWORD> g_lastNonModScan{0};
 std::atomic<bool> g_pluginShuttingDown{false};
 
 bool isPrintableCharacterToken(const std::string& tok) noexcept {
@@ -62,95 +55,6 @@ std::string decodeAltGrCharacterOnUiThread(DWORD vkCode, DWORD scanCode, bool sh
     return tools3000::core::WinUtils::wstringToUtf8(ws);
 }
 
-LRESULT CALLBACK altGrKeyboardObserverProc(int nCode, WPARAM wParam, LPARAM lParam) noexcept {
-    if (nCode == HC_ACTION && lParam != 0) {
-        const auto* kbd = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
-        const bool isDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
-        const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
-        if (kbd->vkCode == VK_LCONTROL) {
-            // European keyboard layouts emit a synthetic Left-Ctrl with scanCode 0x21D (0x0200 prefix) before Right-Alt (AltGr).
-            const bool isSyntheticAltGr = (kbd->scanCode == 0x21D) || ((kbd->scanCode & 0xFF00u) == 0x0200u);
-            if (isSyntheticAltGr) {
-                if (isDown) g_syntheticAltGrCtrlDown.store(true, std::memory_order_relaxed);
-                else if (isUp) g_syntheticAltGrCtrlDown.store(false, std::memory_order_relaxed);
-            } else {
-                if (isDown) {
-                    g_realLCtrlDown.store(true, std::memory_order_relaxed);
-                } else if (isUp) {
-                    g_realLCtrlDown.store(false, std::memory_order_relaxed);
-                    g_syntheticAltGrCtrlDown.store(false, std::memory_order_relaxed);
-                }
-            }
-        } else if (kbd->vkCode == VK_RCONTROL) {
-            if (isDown) g_realRCtrlDown.store(true, std::memory_order_relaxed);
-            else if (isUp) g_realRCtrlDown.store(false, std::memory_order_relaxed);
-        } else if (kbd->vkCode == VK_RMENU && isUp) {
-            g_syntheticAltGrCtrlDown.store(false, std::memory_order_relaxed);
-        } else if (isDown &&
-                   kbd->vkCode != VK_CONTROL && kbd->vkCode != VK_MENU &&
-                   kbd->vkCode != VK_LMENU && kbd->vkCode != VK_RMENU &&
-                   kbd->vkCode != VK_SHIFT && kbd->vkCode != VK_LSHIFT &&
-                   kbd->vkCode != VK_RSHIFT && kbd->vkCode != VK_LWIN &&
-                   kbd->vkCode != VK_RWIN) {
-            g_lastNonModVk.store(kbd->vkCode, std::memory_order_relaxed);
-            g_lastNonModScan.store(kbd->scanCode, std::memory_order_relaxed);
-        }
-    }
-    return CallNextHookEx(nullptr, nCode, wParam, lParam);
-}
-
-void installAltGrObserver() {
-    auto installFn = []() {
-        if (!g_altGrObserverHook) {
-            g_altGrObserverHook = SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                altGrKeyboardObserverProc,
-                GetModuleHandleW(nullptr),
-                0);
-            g_altGrObserverThreadId = g_altGrObserverHook ? GetCurrentThreadId() : 0;
-        }
-    };
-    auto& disp = tools3000::core::MainThreadDispatcher::instance();
-    if (!disp.isInitialized() || disp.isOwnerThread()) {
-        installFn();
-    } else {
-        auto done = std::make_shared<std::promise<void>>();
-        auto fut = done->get_future();
-        if (disp.post([installFn, done]() {
-                installFn();
-                done->set_value();
-            })) {
-            fut.wait_for(std::chrono::milliseconds(500));
-        }
-    }
-}
-
-void uninstallAltGrObserver() {
-    auto uninstallFn = []() {
-        if (g_altGrObserverHook) {
-            UnhookWindowsHookEx(g_altGrObserverHook);
-            g_altGrObserverHook = nullptr;
-            g_altGrObserverThreadId = 0;
-        }
-    };
-    if (!g_altGrObserverHook) return;
-    if (GetCurrentThreadId() == g_altGrObserverThreadId) {
-        uninstallFn();
-        return;
-    }
-    auto& disp = tools3000::core::MainThreadDispatcher::instance();
-    if (disp.isInitialized()) {
-        auto done = std::make_shared<std::promise<void>>();
-        auto fut = done->get_future();
-        if (disp.post([uninstallFn, done]() {
-                uninstallFn();
-                done->set_value();
-            })) {
-            fut.wait_for(std::chrono::milliseconds(500));
-        }
-    }
-}
-
 } // namespace
 
 class KeycastPlugin : public tools3000::core::IPlugin {
@@ -162,9 +66,6 @@ public:
         LOG_INFO("Keycast Plugin initialize");
         
         g_pluginShuttingDown.store(false, std::memory_order_release);
-        g_realLCtrlDown.store(false, std::memory_order_relaxed);
-        g_realRCtrlDown.store(false, std::memory_order_relaxed);
-        g_syntheticAltGrCtrlDown.store(false, std::memory_order_relaxed);
 
         // Initialize Overlay UI
         if (!KeycastOverlay::instance().init()) {
@@ -172,8 +73,7 @@ public:
             return false;
         }
 
-        installAltGrObserver();
-
+        // 复用 core::KeyboardHook 单一底层钩子产出的 AltGr 状态机与扫描码，杜绝主线程重复挂载第二条 WH_KEYBOARD_LL
         tools3000::core::KeyboardHook::instance().setKeycastKeyInfoCallback([](const tools3000::core::KeycastKeyInfo& info) {
             if (g_pluginShuttingDown.load(std::memory_order_acquire)) {
                 return;
@@ -184,24 +84,9 @@ public:
                 }
                 return false;
             };
-            const bool hasCtrl = containsToken("Ctrl");
-            const bool hasAlt = containsToken("Alt");
             const bool hasShift = containsToken("Shift");
-            const bool hasWin = containsToken("Win");
 
-            if (!hasCtrl) {
-                g_syntheticAltGrCtrlDown.store(false, std::memory_order_relaxed);
-                g_realLCtrlDown.store(false, std::memory_order_relaxed);
-                g_realRCtrlDown.store(false, std::memory_order_relaxed);
-            }
-
-            const bool isPureAltGr =
-                hasCtrl && hasAlt && !hasWin &&
-                g_syntheticAltGrCtrlDown.load(std::memory_order_relaxed) &&
-                !g_realLCtrlDown.load(std::memory_order_relaxed) &&
-                !g_realRCtrlDown.load(std::memory_order_relaxed);
-
-            if (isPureAltGr) {
+            if (info.isPureAltGr) {
                 const std::string lastToken = info.tokens.empty() ? std::string{} : info.tokens.back();
                 const bool isModOnly = lastToken.empty() ||
                                        lastToken == "Ctrl" || lastToken == "Alt" ||
@@ -210,8 +95,8 @@ public:
                     return;
                 }
                 if (isPrintableCharacterToken(lastToken)) {
-                    const DWORD vk = g_lastNonModVk.load(std::memory_order_relaxed);
-                    const DWORD sc = g_lastNonModScan.load(std::memory_order_relaxed);
+                    const DWORD vk = info.vkCode;
+                    const DWORD sc = info.rawScanCode;
                     const bool shiftDown = hasShift;
                     auto& disp = tools3000::core::MainThreadDispatcher::instance();
                     if (disp.isInitialized()) {
@@ -253,10 +138,12 @@ public:
             return {
                 {"enabled", s.enabled},
                 {"autoBypassFullscreen", s.autoBypassFullscreen},
-                {"showKeyboard", s.showKeyboard},
                 {"filterMode", s.filterMode},
                 {"includeFunctionKeys", s.includeFunctionKeys},
                 {"position", s.position},
+                {"hasCustomPosition", s.hasCustomPosition},
+                {"customX", s.customX},
+                {"customY", s.customY},
                 {"mergeRecentKeys", s.mergeRecentKeys},
                 {"mergeTimeoutMs", s.mergeTimeoutMs},
                 {"onlyShortcuts", s.filterMode == "smart_shortcuts"},
@@ -275,7 +162,7 @@ public:
             };
         });
 
-                mb.registerHandler("keycast.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
+        mb.registerHandler("keycast.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
             if (!params.is_object() || params.empty()) {
                 return {{"success", false}, {"error", "no settings supplied"}};
             }
@@ -294,9 +181,6 @@ public:
             if (params.contains("autoBypassFullscreen") && params["autoBypassFullscreen"].is_boolean()) {
                 s.autoBypassFullscreen = params["autoBypassFullscreen"].get<bool>();
             }
-            if (params.contains("showKeyboard") && params["showKeyboard"].is_boolean()) {
-                s.showKeyboard = params["showKeyboard"].get<bool>();
-            }
             if (params.contains("filterMode") && params["filterMode"].is_string()) {
                 s.filterMode = params["filterMode"].get<std::string>();
             }
@@ -305,6 +189,19 @@ public:
             }
             if (params.contains("position") && params["position"].is_string()) {
                 s.position = params["position"].get<std::string>();
+                // 用户显式切换预设方位时自动复位自定义拖拽偏移
+                if (!params.contains("hasCustomPosition")) {
+                    s.hasCustomPosition = false;
+                }
+            }
+            if (params.contains("hasCustomPosition") && params["hasCustomPosition"].is_boolean()) {
+                s.hasCustomPosition = params["hasCustomPosition"].get<bool>();
+            }
+            if (params.contains("customX") && params["customX"].is_number_integer()) {
+                s.customX = params["customX"].get<int>();
+            }
+            if (params.contains("customY") && params["customY"].is_number_integer()) {
+                s.customY = params["customY"].get<int>();
             }
             if (params.contains("mergeRecentKeys") && params["mergeRecentKeys"].is_boolean()) {
                 s.mergeRecentKeys = params["mergeRecentKeys"].get<bool>();
@@ -398,7 +295,6 @@ public:
         tools3000::core::MessageBridge::instance().unregisterHandlersByPrefix("keycast.");
         tools3000::core::KeyboardHook::instance().setKeycastKeyInfoCallback(nullptr);
         tools3000::core::KeyboardHook::instance().setKeycastCallback(nullptr);
-        uninstallAltGrObserver();
         
         // Cleanup Overlay UI
         KeycastOverlay::instance().cleanup();

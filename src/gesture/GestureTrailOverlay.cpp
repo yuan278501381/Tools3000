@@ -558,16 +558,37 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                 } else {
                     const float fadeAlpha = gestureFadeAlpha(clockStarted, elapsed, holdMs, fadeMs);
                     m_fadeAlpha.store(fadeAlpha, std::memory_order_relaxed);
+                    const bool isSuccess = m_isRecognized.load(std::memory_order_relaxed);
 
                     if (m_compositorReady && m_dcompDevice && m_trailDcompVisual) {
-                        if (!clockStarted) {
-                            // 最后一帧固化：以 1.0f 完成轨迹与 Toast 卡片的最后一次物理光栅化
-                            m_fadeAlpha.store(1.0f, std::memory_order_relaxed);
-                            render();
-                            m_fadeStartTick = GetTickCount();
-                            m_fadeClockStarted.store(true, std::memory_order_release);
+                        static thread_local bool s_dcompPostPulseBaked = false;
+                        static thread_local uint64_t s_dcompBakedEpoch = 0;
+                        if (!clockStarted || s_dcompBakedEpoch != m_fadeEpoch) {
+                            s_dcompPostPulseBaked = false;
+                            s_dcompBakedEpoch = m_fadeEpoch;
+                        }
+
+                        const float pulse = gestureSuccessPulseIntensity(true, isSuccess, clockStarted, elapsed);
+                        if (!clockStarted || (isSuccess && elapsed < 190u)) {
+                            // 前 190ms 成功高光脉冲期：逐帧更新脉冲强度与硬件不透明度，保留流光收缩回落质感
+                            m_pulseIntensity.store(pulse, std::memory_order_relaxed);
+                            const bool presented = render();
+                            {
+                                std::lock_guard renderLock(m_renderMutex);
+                                applyVisualOpacityLocked(fadeAlpha);
+                            }
+                            if (!clockStarted && presented) {
+                                m_fadeStartTick = GetTickCount();
+                                m_fadeClockStarted.store(true, std::memory_order_release);
+                            }
+                            m_pacer.advanceDeadline();
                         } else {
-                            // 纯硬件淡出：0 CPU 重绘，0 GPU 绘制指令
+                            if (!s_dcompPostPulseBaked) {
+                                // 190ms 脉冲结束后固化一帧无脉冲底图，随后切入零重绘纯硬件 Opacity 淡出
+                                m_pulseIntensity.store(0.0f, std::memory_order_relaxed);
+                                render();
+                                s_dcompPostPulseBaked = true;
+                            }
                             {
                                 std::lock_guard renderLock(m_renderMutex);
                                 applyVisualOpacityLocked(fadeAlpha);
@@ -575,7 +596,6 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                             m_pacer.advanceDeadline();
                         }
                     } else {
-                        const bool isSuccess = m_isRecognized.load(std::memory_order_relaxed);
                         m_pulseIntensity.store(gestureSuccessPulseIntensity(true, isSuccess, clockStarted, elapsed), std::memory_order_relaxed);
                         const bool presented = render();
                         if (presented) {

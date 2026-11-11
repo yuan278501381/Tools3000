@@ -188,6 +188,16 @@ public:
     /// 判定进程名或窗口类名是否属于专用影音播放器或全屏幻灯片演示软件 (PotPlayer / VLC / MPV / MPC-HC / Bilibili / PowerPoint 放映等)
     static bool isMediaPlayerProcessOrClass(std::wstring_view processName, std::wstring_view className) noexcept;
 
+    /// 获取内置默认远程桌面与虚拟机客户端进程名白名单（单一事实源）
+    static std::vector<std::string> defaultRemoteTargetProcesses();
+
+    /// 获取内置默认远程桌面与虚拟机客户端窗口类名白名单（单一事实源）
+    static std::vector<std::string> defaultRemoteTargetClasses();
+
+    /// 判定进程名或窗口类名是否命中内置默认远程桌面/虚拟机客户端列表
+    static bool isDefaultRemoteDesktopOrVmProcessOrClass(std::wstring_view processName,
+                                                         std::wstring_view className) noexcept;
+
     /// 判定进程名、窗口类名或可执行路径是否属于已知游戏或游戏引擎宿主 (Dota 2 / CS2 / LoL / Unity / Unreal / SDL / SteamApps 等)
     static bool isKnownGameProcessOrClass(std::wstring_view processName,
                                           std::wstring_view className,
