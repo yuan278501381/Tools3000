@@ -63,6 +63,7 @@ private:
     void drawCornerRadiusHandleVisual(const D2D1_RECT_F& boxRect, float cornerRadius, float scale, bool isDragging, POINT dragStartPos, POINT currentCursor, float minDimension, int cornerIndex = -1);
 
     struct BitmapTile {
+        int xOffset = 0;
         int yOffset = 0;
         int width = 0;
         int height = 0;
@@ -70,6 +71,9 @@ private:
     };
 
     bool hasScreenContent() const noexcept { return m_screenBitmap != nullptr || !m_screenTiles.empty(); }
+    bool hasHistoryContent() const noexcept { return m_historyBitmap != nullptr || !m_historyTiles.empty(); }
+    void resolveMonitorBoundsInCanvas(float canvasX, float canvasY, D2D1_SIZE_F surfaceSize,
+                                      D2D1_RECT_F& outMonitorRect, D2D1_RECT_F& outWorkRect) const;
     bool rebuildBitmapTiles(const cv::Mat& bgra, D2D1_ALPHA_MODE alphaMode,
                             std::vector<BitmapTile>& tiles, int& outW, int& outH);
     void drawTiledRegion(const std::vector<BitmapTile>& tiles, int totalW, int totalH,
@@ -117,6 +121,9 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_screenBitmap;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_markupCacheBitmap;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_historyBitmap;
+    std::vector<BitmapTile> m_historyTiles;
+    int m_historyTilesW = 0;
+    int m_historyTilesH = 0;
     Microsoft::WRL::ComPtr<ID2D1Layer> m_markupClipLayer;
     std::vector<BitmapTile> m_screenTiles;
     int m_screenTilesW = 0;

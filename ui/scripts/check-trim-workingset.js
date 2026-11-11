@@ -3,8 +3,8 @@
  *
  * 架构规范准则:
  * 1. 遵循“冷路径退场修剪，热操作期间绝不修剪”原则。
- * 2. 严禁在 1000Hz 鼠标钩子、键盘连击流、60FPS 渲染/绘制循环、定时器高频 Tick 等热路径中调用 trimWorkingSet()。
- * 3. 必须严格限制在窗口隐藏 (hide/onHide)、任务完成 (cleanup/onStop)、资源释放 (release/destroy/suspend) 等生命周期冷路径。
+ * 2. 严禁在 1000Hz 鼠标钩子、键盘连击流、60FPS 渲染/绘制循环、定时器高频 Tick 及高频浮层 (*Overlay*) 帧/动画隐藏中调用 trimWorkingSet()。
+ * 3. 必须严格限制在重型任务完成 (cleanup/onStop/deliverCompletion)、组件销毁释放 (release/destroy/shutdown) 或低频独立窗口关闭等生命周期冷路径。
  */
 
 import fs from 'fs';
@@ -35,10 +35,12 @@ function walk(dir, filter, list = []) {
 
 const cppFiles = walk(srcDir, f => f.endsWith('.cpp') || f.endsWith('.h') || f.endsWith('.hpp'));
 
-// 黑名单热路径函数名/模式 (绝对禁止包含)
+// 黑名单热路径与高频瞬态浮层隐藏函数名/模式 (绝对禁止包含)
 const FORBIDDEN_HOT_PATH_PATTERNS = [
   /hook/i,
   /onMouseMove/i,
+  /onMouseClick/i,
+  /onMouseWheel/i,
   /onKeyDown/i,
   /onKeyUp/i,
   /onKey/i,
@@ -47,11 +49,31 @@ const FORBIDDEN_HOT_PATH_PATTERNS = [
   /paint/i,
   /frameLoop/i,
   /onTick/i,
+  /onTimer/i,
+  /stepAnimation/i,
+  /animate/i,
+  /updateOverlay/i,
+  /applyHideOverlayState/i,
+  /hideOverlay/i,
   /processPacket/i,
   /onFrame/i,
 ];
 
-// 白名单合法冷路径函数名/模式 (必须符合其一)
+// *Overlay* 浮层组件专属严格冷路径白名单 (禁止在普通 hide/onHide/fade 等高频显隐切换中触发缺页收缩)
+const ALLOWED_OVERLAY_LIFECYCLE_PATTERNS = [
+  /cleanup/i,
+  /release/i,
+  /destroy/i,
+  /shutdown/i,
+  /deactivate/i,
+  /stop/i,
+  /cancel/i,
+  /finish/i,
+  /deliver/i,
+  /~[A-Za-z0-9_]+/,
+];
+
+// 常规模块合法冷路径函数名/模式 (必须符合其一)
 const ALLOWED_COLD_PATH_PATTERNS = [
   /stop/i,
   /hide/i,
@@ -85,39 +107,54 @@ for (const file of cppFiles) {
   if (file.endsWith('WinUtils.h') || file.endsWith('WinUtils.cpp')) continue;
 
   const relativePath = path.relative(projectRoot, file);
+  const baseName = path.basename(file);
+  const isOverlayFile = /Overlay/i.test(baseName);
   const content = fs.readFileSync(file, 'utf8');
-  const lines = content.split('\n');
+  const lines = content.split(/\r?\n/);
 
   lines.forEach((line, index) => {
-    // 匹配调用 trimWorkingSet
-    if (line.includes('trimWorkingSet') && !line.trim().startsWith('//') && !line.trim().startsWith('*')) {
+    const trimmedLine = line.trim();
+    if (line.includes('trimWorkingSet') && !trimmedLine.startsWith('//') && !trimmedLine.startsWith('*')) {
       checkedCallSites++;
       const lineNum = index + 1;
 
       // 向上回溯分析所在函数签名
       let functionContext = '';
-      for (let i = index; i >= Math.max(0, index - 80); i--) {
-        const prevLine = lines[i].trim();
-        if (prevLine.endsWith(';')) continue;
-        // 粗略匹配函数定义头 (包含 void/bool/int/ClassName:: 等)
-        if (/^\s*(?:[A-Za-z0-9_:]+[\s*&]+)+[A-Za-z0-9_~:]+\s*\([^)]*\)\s*(?:const)?\s*\{?/.test(prevLine) ||
-            /^\s*[A-Za-z0-9_:]+\s*=\s*\[[^\]]*\]\s*\(/.test(prevLine)) {
+      for (let i = index; i >= Math.max(0, index - 100); i--) {
+        const rawPrevLine = lines[i];
+        const prevLine = rawPrevLine.trim();
+        if (prevLine.endsWith(';') || prevLine.endsWith(',')) continue;
+        if (/^\s*(?:[A-Za-z0-9_:]+[\s*&]+)+[A-Za-z0-9_~:]+\s*\([^)]*\)\s*(?:const|override|noexcept|\s)*\{?/.test(rawPrevLine) ||
+            /^[A-Za-z0-9_]+::~?[A-Za-z0-9_]+\s*\([^)]*\)\s*(?:noexcept|\s)*\{?/.test(rawPrevLine) ||
+            /^\s*[A-Za-z0-9_:]+\s*=\s*\[[^\]]*\]\s*\(/.test(rawPrevLine)) {
           functionContext = prevLine;
           break;
         }
       }
 
-      // 1. 检查是否命中了黑名单热路径
+      // 1. 检查是否命中了黑名单热路径或高频浮层状态隐藏路径
       const isHotPath = FORBIDDEN_HOT_PATH_PATTERNS.some(pat => pat.test(functionContext) || pat.test(line));
       if (isHotPath) {
-        console.error(`[ERROR] [HotPath Violation] ${relativePath}:${lineNum} 严禁在热路径中调用 trimWorkingSet():`);
-        console.error(`   上下文: ${functionContext}`);
-        console.error(`   代码行: ${line.trim()}`);
+        console.error(`[ERROR] [HotPath Violation] ${relativePath}:${lineNum} 严禁在热路径或高频浮层动画隐藏中调用 trimWorkingSet():`);
+        console.error(`   上下文: ${functionContext || '(未知函数上下文)'}`);
+        console.error(`   代码行: ${trimmedLine}`);
         errorCount++;
         return;
       }
 
-      // 2. 检查是否符合冷路径白名单
+      // 2. 针对 *Overlay* 浮层文件的严格冷路径守卫 (严禁在高频 hide / onHide / setVisible 中修剪物理工作集)
+      if (isOverlayFile) {
+        const isAllowedOverlayExit = ALLOWED_OVERLAY_LIFECYCLE_PATTERNS.some(pat => pat.test(functionContext));
+        if (!isAllowedOverlayExit) {
+          console.error(`[ERROR] [Overlay Hide Trim Violation] ${relativePath}:${lineNum} 浮层组件 (*Overlay*) 严禁在常规隐藏/帧切换函数中调用 trimWorkingSet()，仅允许在 cleanup/destroy/release/deliver 等重型退场路径调用:`);
+          console.error(`   上下文: ${functionContext || '(未知函数上下文)'}`);
+          console.error(`   代码行: ${trimmedLine}`);
+          errorCount++;
+          return;
+        }
+      }
+
+      // 3. 检查常规文件是否符合冷路径白名单
       const isAllowedColdPath = ALLOWED_COLD_PATH_PATTERNS.some(pat => pat.test(functionContext) || pat.test(relativePath));
       if (!isAllowedColdPath && functionContext) {
         console.warn(`[WARN] [ColdPath Warning] ${relativePath}:${lineNum} 调用点函数 "${functionContext}" 未明确匹配标准冷路径语义命名 (hide/stop/cleanup/release/destroy 等)`);
@@ -127,8 +164,8 @@ for (const file of cppFiles) {
 }
 
 if (errorCount > 0) {
-  console.error(`\n[ERROR] trimWorkingSet 静态扫描失败，发现 ${errorCount} 处热路径违规调用！`);
+  console.error(`\n[ERROR] trimWorkingSet 静态扫描失败，发现 ${errorCount} 处热路径或高频浮层隐藏违规调用！`);
   process.exit(1);
 } else {
-  console.log(`[OK] trimWorkingSet 内存修剪门禁审查通过！共校验 ${checkedCallSites} 处调用点，100% 符合生命周期冷路径规范，0 热路径污染。\n`);
+  console.log(`[OK] trimWorkingSet 内存修剪门禁审查通过！共校验 ${checkedCallSites} 处调用点，100% 符合生命周期冷路径规范，0 热路径与高频浮层污染。\n`);
 }

@@ -16,6 +16,14 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "VERSION must contain one stable SemVer value (for example 1.2.3): $Version"
 }
 
+$UiPackageJson = Join-Path $ProjectRoot "ui\package.json"
+if (Test-Path -LiteralPath $UiPackageJson) {
+    $Pkg = Get-Content -LiteralPath $UiPackageJson -Raw | ConvertFrom-Json
+    if ([string]$Pkg.version -ne $Version) {
+        throw "ui/package.json version ($($Pkg.version)) does not match root VERSION ($Version)"
+    }
+}
+
 if (-not [string]::IsNullOrWhiteSpace($Tag)) {
     if ($Tag -notmatch '^v\d+\.\d+\.\d+$') {
         throw "Release tag must use vMAJOR.MINOR.PATCH: $Tag"

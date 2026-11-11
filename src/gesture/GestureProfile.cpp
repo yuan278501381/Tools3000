@@ -332,10 +332,18 @@ nlohmann::json GestureProfile::toJson() const {
 }
 
 GestureProfile GestureProfile::fromJson(const nlohmann::json& j) {
-    GestureProfile profile(j.value("name", "default"));
+    if (!j.is_object()) {
+        return GestureProfile("default");
+    }
+    const std::string profName = (j.contains("name") && j["name"].is_string())
+        ? j["name"].get<std::string>()
+        : std::string("default");
+    GestureProfile profile(profName);
     if (j.contains("mappings") && j["mappings"].is_array()) {
         for (const auto& item : j["mappings"]) {
-            profile.addMapping(GestureMapping::fromJson(item));
+            if (item.is_object()) {
+                profile.addMapping(GestureMapping::fromJson(item));
+            }
         }
     }
 
@@ -343,6 +351,12 @@ GestureProfile GestureProfile::fromJson(const nlohmann::json& j) {
         for (const auto& [key, val] : j["triggerStates"].items()) {
             if (val.is_string()) {
                 profile.setTriggerState(key, triggerStateFromString(val.get<std::string>()));
+            } else if (val.is_number_integer()) {
+                const int clampedState = std::clamp(
+                    val.get<int>(),
+                    static_cast<int>(TriggerModeState::Default),
+                    static_cast<int>(TriggerModeState::Disabled));
+                profile.setTriggerState(key, static_cast<TriggerModeState>(clampedState));
             }
         }
     }

@@ -12036,10 +12036,86 @@ TEST(CaptureMarkupBorderAndFillTest, IndependentFillAndBorderColorAndWidthWorkAc
     EXPECT_EQ(outerPx[1], 40);
     EXPECT_EQ(outerPx[2], 40);
 
-    // 4. 验证放大镜连线样式下拉框精炼命名与零副标题认知减负
+    // 4. 验证放大镜连线样式默认值为虚线 (DashedDirect)，且下拉框首项默认激活、零副标题认知减负
+    EXPECT_EQ(state.currentMagnifierCalloutStyle, MagnifierCalloutStyle::DashedDirect);
+    auto* defaultMag = state.markup.addMagnifier(cv::Point(80, 80), 2.0f, 40);
+    ASSERT_NE(defaultMag, nullptr);
+    EXPECT_EQ(defaultMag->magnifierCalloutStyle, MagnifierCalloutStyle::DashedDirect);
+
     openDropdownMenu(state, DropdownType::MagnifierCalloutStyle, D2D1::RectF(150.0f, 520.0f, 206.0f, 552.0f));
     ASSERT_EQ(state.dropdownMenu.items.size(), 4u);
+    EXPECT_EQ(state.dropdownMenu.items[0].id, static_cast<int>(MagnifierCalloutStyle::DashedDirect));
+    EXPECT_TRUE(state.dropdownMenu.items[0].isSelected);
     for (const auto& item : state.dropdownMenu.items) {
         EXPECT_TRUE(item.hint.empty());
     }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-11 全量审计防回退回归测试 (MarkupEngine 边界与 OcrEngine STA 安全)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MarkupEngineRegressionTest, ZeroBlockMosaicAndLargeTiledWatermarkSafety) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base(1200, 1600, CV_8UC3, cv::Scalar(220, 225, 230));
+    engine.setBaseImage(base);
+
+    // 1. 极端 blockSize <= 0 马赛克图元绝不得引发死循环或除零崩溃
+    auto* zeroMosaic = engine.applyMosaic(cv::Point(40, 40), cv::Point(240, 200), 0);
+    ASSERT_NE(zeroMosaic, nullptr);
+    zeroMosaic->mosaicBlockSize = 0;
+
+    auto* negMosaic = engine.applyMosaic(cv::Point(260, 40), cv::Point(460, 200), -8);
+    ASSERT_NE(negMosaic, nullptr);
+    negMosaic->mosaicBlockSize = -8;
+
+    // 2. 大画布平铺旋转水印图元（验证单图块预渲染复用，毫秒级完成）
+    auto* wm = engine.addWatermark(cv::Point(0, 0), cv::Point(1600, 1200), "CONFIDENTIAL 2026", 0.18f, -30.0f);
+    ASSERT_NE(wm, nullptr);
+
+    cv::Mat composite;
+    EXPECT_NO_THROW({
+        composite = engine.getCompositeImage(false);
+    });
+    EXPECT_EQ(composite.cols, 1600);
+    EXPECT_EQ(composite.rows, 1200);
+}
+
+TEST(OcrEngineRegressionTest, HandlesMissingEmptyFilesAndStaThreadSafely) {
+    // 在 STA 线程下验证 WinRT OcrEngine 后台工作线程转发与异常捕获，绝不触发 RPC_E_CHANGED_MODE 崩溃
+    std::string missingResult = "not_empty";
+    std::string emptyFileResult = "not_empty";
+
+    const auto emptyImgPath = std::filesystem::temp_directory_path() /
+        (L"Tools3000_EmptyOcr_" + std::to_wstring(GetCurrentProcessId()) + L".png");
+    {
+        std::ofstream ofs(emptyImgPath, std::ios::binary | std::ios::trunc);
+    }
+    struct TempImgCleanup {
+        std::filesystem::path p;
+        ~TempImgCleanup() {
+            std::error_code ec;
+            std::filesystem::remove(p, ec);
+        }
+    } cleanup{emptyImgPath};
+
+    std::thread staWorker([&]() {
+        const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        EXPECT_NO_THROW({
+            auto& ocr = tools3000::ocr::OcrEngine::instance();
+            missingResult = ocr.recognizeImageFile("C:\\nonexistent_dir_t3k_audit\\missing.png");
+            emptyFileResult = ocr.recognizeImageFile(
+                tools3000::core::WinUtils::wstringToUtf8(emptyImgPath.wstring()));
+        });
+        if (SUCCEEDED(hr)) {
+            CoUninitialize();
+        }
+    });
+    staWorker.join();
+
+    EXPECT_TRUE(missingResult.empty());
+    EXPECT_TRUE(emptyFileResult.empty());
 }

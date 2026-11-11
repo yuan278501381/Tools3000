@@ -14,18 +14,24 @@ import { CodeBadge } from './UIKit';
 import './Sidebar.css';
 import {
   APP_ROUTES,
-  ROUTE_MAP,
+  resolveExtensionRoute,
   type RouteItemConfig,
   type NavId,
 } from '../config/routes';
 
 export type { NavId };
 
+export interface SidebarExtensionDescriptor {
+  id: string;
+  name?: string;
+}
+
 export interface SidebarProps {
   activeNav: NavId;
   onNavigate: (id: NavId) => void;
   activePlugins?: ReadonlySet<string>;
   installedExtensionIds?: string[];
+  installedExtensions?: ReadonlyArray<SidebarExtensionDescriptor>;
 }
 
 const SIDEBAR_KEYWORD_KEYS: Partial<Record<NavId, string>> = {
@@ -50,6 +56,7 @@ export const Sidebar: FC<SidebarProps> = ({
   onNavigate,
   activePlugins,
   installedExtensionIds = [],
+  installedExtensions,
 }) => {
   const { t } = useTranslation();
   const [filterQuery, setFilterQuery] = useState('');
@@ -118,13 +125,35 @@ export const Sidebar: FC<SidebarProps> = ({
   const systemNavItems = APP_ROUTES.filter((r) => r.category === 'system');
   const availableCoreTools = APP_ROUTES.filter((r) => r.category === 'core_tools').filter(isItemAvailable);
   const insightNavItems = APP_ROUTES.filter((r) => r.category === 'insights');
-  const extensionNavItems = useMemo(
-    () =>
-      installedExtensionIds
-        .map((extId) => ROUTE_MAP.get(extId))
-        .filter((route): route is RouteItemConfig => Boolean(route)),
-    [installedExtensionIds],
-  );
+  const extensionNavItems = useMemo(() => {
+    const nameMap = new Map<string, string>();
+    if (installedExtensions) {
+      for (const ext of installedExtensions) {
+        if (ext.id && ext.name) {
+          nameMap.set(ext.id, ext.name);
+        }
+      }
+    }
+    const ids = installedExtensions && installedExtensions.length > 0
+      ? installedExtensions.map((ext) => ext.id)
+      : installedExtensionIds;
+    const seen = new Set<string>();
+    const routes: RouteItemConfig[] = [];
+    for (const extId of ids) {
+      if (!extId || seen.has(extId)) continue;
+      seen.add(extId);
+      routes.push(resolveExtensionRoute(extId, nameMap.get(extId)));
+    }
+    return routes;
+  }, [installedExtensionIds, installedExtensions]);
+
+  const resolveRouteLabel = (route: RouteItemConfig) => {
+    if (route.fallbackLabel) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return String(t(route.labelKey as any, { defaultValue: route.fallbackLabel }));
+    }
+    return String(t(route.labelKey as unknown as TemplateStringsArray));
+  };
 
   const normalizedTokens = useMemo(
     () =>
@@ -141,7 +170,8 @@ export const Sidebar: FC<SidebarProps> = ({
     const kwKey = SIDEBAR_KEYWORD_KEYS[item.id];
     const haystack = [
       item.id,
-      String(t(item.labelKey as unknown as TemplateStringsArray)),
+      resolveRouteLabel(item),
+      item.fallbackLabel || '',
       String(t(item.subtitleKey as unknown as TemplateStringsArray)),
       kwKey ? String(t(kwKey as unknown as TemplateStringsArray)) : '',
     ]
@@ -282,7 +312,7 @@ export const Sidebar: FC<SidebarProps> = ({
                       <span className="sidebar__item-icon">
                         <IconComponent size={20} strokeWidth={2.2} />
                       </span>
-                      <span className="sidebar__item-label">{t(route.labelKey as unknown as TemplateStringsArray)}</span>
+                      <span className="sidebar__item-label">{resolveRouteLabel(route)}</span>
                     </button>
                   );
                 })}

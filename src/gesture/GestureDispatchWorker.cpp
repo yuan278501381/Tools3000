@@ -110,8 +110,9 @@ size_t GestureDispatchWorker::processBatch(size_t maxBatch) {
         MouseEvent ev{};
         ev.position = {pkt.x, pkt.y};
         ev.timestamp = std::chrono::steady_clock::now();
+        ev.downWasSuppressed = (pkt.message & kRawPacketDownSuppressedFlag) != 0;
 
-        switch (pkt.message) {
+        switch (pkt.message & kRawPacketMessageMask) {
             case WM_MOUSEMOVE: ev.type = MouseEventType::Move; break;
             case WM_RBUTTONDOWN: ev.type = MouseEventType::RightDown; break;
             case WM_RBUTTONUP: ev.type = MouseEventType::RightUp; break;

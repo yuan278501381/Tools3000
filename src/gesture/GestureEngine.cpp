@@ -16,8 +16,10 @@
 #include "core/hotkey/MouseHook.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 #include <timeapi.h>
@@ -27,20 +29,6 @@
 namespace tools3000::gesture {
 
 namespace {
-
-std::optional<GestureAction> lookupProfileAction(
-    const std::optional<GestureProfile>& profile,
-    const std::optional<GestureProfile>& fallback,
-    const std::string& code) {
-    if (code.empty()) return std::nullopt;
-    if (profile) {
-        if (auto action = profile->findAction(code)) return action;
-    }
-    if (fallback && (!profile || profile->name() != "default")) {
-        return fallback->findAction(code);
-    }
-    return std::nullopt;
-}
 
 std::optional<GestureMapping> lookupProfileMapping(
     const std::optional<GestureProfile>& profile,
@@ -81,15 +69,116 @@ std::optional<GestureMapping> lookupGestureMapping(
     return lookupProfileMapping(profile, fallback, *expanded);
 }
 
-std::optional<GestureAction> lookupGestureAction(
-    const std::optional<GestureProfile>& profile,
-    const std::optional<GestureProfile>& fallback,
-    const std::string& fullCode,
-    const std::string& bareCode) {
-    if (auto mapping = lookupGestureMapping(profile, fallback, fullCode, bareCode)) {
-        return mapping->action;
+RecognizerConfig sanitizeRecognizerConfig(RecognizerConfig cfg) noexcept {
+    cfg.minSegmentDistance = std::clamp(cfg.minSegmentDistance, 5, 200);
+    cfg.samplingInterval = std::clamp(cfg.samplingInterval, 1, 32);
+    if (!std::isfinite(cfg.angleToleranceDeg)) {
+        cfg.angleToleranceDeg = 22.5;
+    } else {
+        cfg.angleToleranceDeg = std::clamp(cfg.angleToleranceDeg, 5.0, 45.0);
     }
-    return std::nullopt;
+    cfg.maxDirections = std::clamp(cfg.maxDirections, 1, 15);
+    return cfg;
+}
+
+bool isRemoteOrVmClientWindow(HWND rootHwnd) {
+    if (!rootHwnd || !IsWindow(rootHwnd)) {
+        return false;
+    }
+    const std::string exeLower = tools3000::core::WinUtils::toLower(
+        tools3000::core::WinUtils::getProcessNameFromWindow(rootHwnd));
+    if (exeLower.empty()) {
+        return false;
+    }
+
+    // 专用远程桌面与虚拟机客户机视口宿主：窗口内右键须 0ms 原生直通远端系统
+    static constexpr std::string_view kDedicatedRemoteVmExes[] = {
+        "mstsc.exe",
+        "msrdc.exe",
+        "msrdcw.exe",
+        "vmware-vmx.exe",
+        "vmware-remotemks.exe",
+        "vmware-view.exe",
+        "virtualboxvm.exe",
+        "vmconnect.exe",
+        "parsec.exe",
+        "moonlight.exe",
+        "wfica32.exe",
+        "cdviewer.exe",
+        "qemu-system-x86_64.exe",
+        "qemu-system-aarch64.exe",
+    };
+    for (const auto candidate : kDedicatedRemoteVmExes) {
+        if (exeLower == candidate) {
+            return true;
+        }
+    }
+
+    // 综合管理控制台与远控客户端：最大化、全屏或占据显示器 >=85% 面积时视作沉浸会话窗口
+    static constexpr std::string_view kHybridRemoteVmExes[] = {
+        "vmware.exe",
+        "virtualbox.exe",
+        "anydesk.exe",
+        "teamviewer.exe",
+        "todesk.exe",
+        "sunloginclient.exe",
+    };
+    bool matchedHybrid = false;
+    for (const auto candidate : kHybridRemoteVmExes) {
+        if (exeLower == candidate) {
+            matchedHybrid = true;
+            break;
+        }
+    }
+    if (!matchedHybrid) {
+        return false;
+    }
+    if (IsZoomed(rootHwnd) || tools3000::core::WinUtils::isWindowFullscreen(rootHwnd)) {
+        return true;
+    }
+    RECT winRect{};
+    if (!GetWindowRect(rootHwnd, &winRect)) {
+        return false;
+    }
+    HMONITOR mon = MonitorFromWindow(rootHwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!mon || !GetMonitorInfoW(mon, &mi)) {
+        return false;
+    }
+    const int64_t winArea = static_cast<int64_t>((std::max)(0L, winRect.right - winRect.left)) *
+                            static_cast<int64_t>((std::max)(0L, winRect.bottom - winRect.top));
+    const int64_t monArea = static_cast<int64_t>((std::max)(1L, mi.rcMonitor.right - mi.rcMonitor.left)) *
+                            static_cast<int64_t>((std::max)(1L, mi.rcMonitor.bottom - mi.rcMonitor.top));
+    return winArea * 100 >= monArea * 85;
+}
+
+bool matchesConfiguredExceptionRule(HWND target) {
+    if (!target) {
+        return false;
+    }
+    auto exceptions = tools3000::core::ConfigManager::instance().get<nlohmann::json>(
+        "/gesture/exceptions", nlohmann::json::array());
+    if (!exceptions.is_array() || exceptions.empty()) {
+        return false;
+    }
+    const std::string exeName = tools3000::core::WinUtils::getProcessNameFromWindow(target);
+    const std::string className = tools3000::core::WinUtils::wstringToUtf8(
+        tools3000::core::WinUtils::getWindowClassName(target));
+    const auto normalizedExe = tools3000::core::WinUtils::toLower(exeName);
+    for (const auto& rule : exceptions) {
+        if (!rule.is_object()) continue;
+        const std::string ruleType = rule.value("type", "");
+        const std::string ruleValue = rule.value("value", "");
+        if (ruleType == "process" &&
+            normalizedExe == tools3000::core::WinUtils::toLower(ruleValue)) {
+            return true;
+        }
+        if (ruleType == "class" && className == ruleValue) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -109,7 +198,9 @@ GestureEngine::GestureEngine() {
 
 bool GestureEngine::start() {
     tools3000::core::TraceId::Scope scope;
-    timeBeginPeriod(1);
+    if (!m_timerPeriodActive) {
+        m_timerPeriodActive = (timeBeginPeriod(1) == TIMERR_NOERROR);
+    }
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     if (!m_actionWorker.joinable()) {
@@ -135,17 +226,32 @@ bool GestureEngine::start() {
 
     if (!hook.install()) {
         LOG_ERROR("手势引擎启动失败: 无法安装鼠标钩子");
+        hook.setBypassHook(false);
         GestureDispatchWorker::instance().stop();
-        m_watchdogWorker.request_stop();
-        m_watchdogCv.notify_all();
-        tools3000::core::joinWorkerWhilePumpingSentMessages(m_watchdogWorker);
-        m_actionWorker.request_stop();
-        m_actionCv.notify_all();
-        tools3000::core::joinWorkerWhilePumpingSentMessages(m_actionWorker);
+        if (m_watchdogWorker.joinable()) {
+            m_watchdogWorker.request_stop();
+            m_watchdogCv.notify_all();
+            tools3000::core::joinWorkerWhilePumpingSentMessages(m_watchdogWorker);
+        }
+        if (m_actionWorker.joinable()) {
+            m_actionWorker.request_stop();
+            m_actionCv.notify_all();
+            tools3000::core::joinWorkerWhilePumpingSentMessages(m_actionWorker);
+        }
+        if (m_contextWorker.joinable()) {
+            m_contextWorker.request_stop();
+            m_contextCv.notify_all();
+            tools3000::core::joinWorkerWhilePumpingSentMessages(m_contextWorker);
+        }
+        if (m_timerPeriodActive) {
+            timeEndPeriod(1);
+            m_timerPeriodActive = false;
+        }
         return false;
     }
     hook.setPaused(m_paused.load());
     syncTriggerMask();
+    refreshForegroundBypass();
     installForegroundWatch();
 
     // 初始化手势轨迹覆盖层
@@ -168,6 +274,7 @@ void GestureEngine::stop() {
     uninstallForegroundWatch();
     GestureDispatchWorker::instance().stop();
     auto& hook = MouseHook::instance();
+    hook.setBypassHook(false);
     hook.setIsTracking(false);
     hook.setFaultCallback(nullptr);
     hook.setEventCallback(nullptr);
@@ -193,20 +300,94 @@ void GestureEngine::stop() {
         std::lock_guard lock(m_actionMutex);
         m_actionQueue.clear();
     }
+    {
+        std::lock_guard lock(m_bypassEvalMutex);
+        m_lastBypassEvalHwnd = nullptr;
+        m_lastBypassEvalRect = {0, 0, 0, 0};
+    }
     GestureTrailOverlay::instance().shutdown();
     m_state = GestureState::Idle;
     {
         std::lock_guard lock(m_integrityWarnMutex);
         m_warnedIntegrityPids.clear();
     }
-    timeEndPeriod(1);
+    if (m_timerPeriodActive) {
+        timeEndPeriod(1);
+        m_timerPeriodActive = false;
+    }
     LOG_INFO("手势引擎已停止");
 }
 
 void CALLBACK GestureEngine::foregroundWinEventProc(
     HWINEVENTHOOK, DWORD event, HWND hwnd, LONG, LONG, DWORD, DWORD) {
     if (event != EVENT_SYSTEM_FOREGROUND || !hwnd) return;
-    instance().inspectForegroundIntegrity(hwnd);
+    auto& inst = instance();
+    inst.refreshForegroundBypass(hwnd);
+    inst.inspectForegroundIntegrity(hwnd);
+}
+
+void GestureEngine::refreshForegroundBypass(HWND fgHwnd) {
+    if (m_paused.load(std::memory_order_acquire) || m_recordingMode.load(std::memory_order_acquire)) {
+        MouseHook::instance().setBypassHook(false);
+        return;
+    }
+
+    HWND candidate = fgHwnd ? fgHwnd : GetForegroundWindow();
+    if (!candidate || !IsWindow(candidate)) {
+        MouseHook::instance().setBypassHook(false);
+        std::lock_guard lock(m_bypassEvalMutex);
+        m_lastBypassEvalHwnd = nullptr;
+        m_lastBypassEvalRect = {0, 0, 0, 0};
+        return;
+    }
+
+    HWND root = GetAncestor(candidate, GA_ROOT);
+    if (!root) {
+        root = candidate;
+    }
+
+    wchar_t cls[256] = {};
+    GetClassNameW(root, cls, 256);
+    if (isGesturePassThroughClassName(cls)) {
+        return;
+    }
+
+    bool bypass = false;
+    bool fullscreenBypass = false;
+
+    if (isGestureExemptInteractiveClassName(cls)) {
+        bypass = true;
+        fullscreenBypass = true;
+    } else {
+        if (m_autoBypassFullscreen.load(std::memory_order_acquire)) {
+            if (tools3000::core::WinUtils::shouldSuspendGesturesForWindow(root) ||
+                isRemoteOrVmClientWindow(root)) {
+                bypass = true;
+                fullscreenBypass = tools3000::core::WinUtils::isWindowFullscreen(root);
+            }
+        }
+        if (!bypass && matchesConfiguredExceptionRule(root)) {
+            bypass = true;
+        }
+        if (!bypass && !m_scopeRules.evaluate(root).has_value()) {
+            bypass = true;
+        }
+    }
+
+    RECT fgRect{0, 0, 0, 0};
+    const bool hasRect = (GetWindowRect(root, &fgRect) != FALSE) &&
+                         (fgRect.right > fgRect.left) &&
+                         (fgRect.bottom > fgRect.top);
+    const bool restrictToRect =
+        bypass && !fullscreenBypass && hasRect &&
+        (m_targetMode.load(std::memory_order_acquire) == GestureTargetMode::UnderPointer);
+
+    MouseHook::instance().setBypassState(bypass, restrictToRect, fgRect);
+    {
+        std::lock_guard lock(m_bypassEvalMutex);
+        m_lastBypassEvalHwnd = root;
+        m_lastBypassEvalRect = fgRect;
+    }
 }
 
 void GestureEngine::installForegroundWatch() {
@@ -221,6 +402,7 @@ void GestureEngine::installForegroundWatch() {
             return;
         }
         if (HWND fg = GetForegroundWindow()) {
+            refreshForegroundBypass(fg);
             inspectForegroundIntegrity(fg);
         }
     };
@@ -318,6 +500,7 @@ bool GestureEngine::setPaused(bool paused) {
         }
     }
     if (paused) {
+        MouseHook::instance().setBypassHook(false);
         {
             std::lock_guard lock(m_mutex);
             if (m_state.load(std::memory_order_relaxed) == GestureState::Tracking) {
@@ -327,6 +510,8 @@ bool GestureEngine::setPaused(bool paused) {
         // 深度释放手势全屏位图与 D2D 渲染资源
         GestureTrailOverlay::instance().hide();
         GestureTrailOverlay::instance().releaseD2DResources();
+    } else {
+        refreshForegroundBypass();
     }
     tools3000::core::EventBus::instance().publish(tools3000::core::GesturePauseChangedEvent{paused});
     LOG_INFO("手势引擎暂停状态: paused={}", paused);
@@ -337,12 +522,15 @@ void GestureEngine::setRecordingMode(bool recording) {
     m_recordingMode.store(recording, std::memory_order_release);
     MouseHook::instance().setPaused(recording || m_paused.load(std::memory_order_acquire));
     if (recording) {
+        MouseHook::instance().setBypassHook(false);
         std::lock_guard lock(m_mutex);
         if (m_state.load(std::memory_order_relaxed) == GestureState::Tracking) {
             cancelTracking();
         }
         GestureTrailOverlay::instance().hide();
         GestureTrailOverlay::instance().releaseD2DResources();
+    } else {
+        refreshForegroundBypass();
     }
     LOG_INFO("手势引擎录制模式更新: recording={}", recording);
 }
@@ -402,11 +590,13 @@ void GestureEngine::setAutoBypassFullscreen(bool enable) {
     if (!enable && tools3000::core::MouseHook::instance().isFullscreenSuspended()) {
         tools3000::core::MouseHook::instance().setFullscreenSuspended(false);
     }
+    refreshForegroundBypass();
     LOG_INFO("手势全屏自动免打扰状态: enable={}", enable);
 }
 
 void GestureEngine::setTargetMode(const std::string& mode) {
     m_targetMode.store(parseGestureTargetMode(mode), std::memory_order_release);
+    refreshForegroundBypass();
     LOG_INFO("手势目标窗口模式: {}", targetMode());
 }
 
@@ -470,7 +660,7 @@ bool GestureEngine::removeProfile(const std::string& name) {
 }
 
 void GestureEngine::setRecognizerConfig(const RecognizerConfig& config) {
-    m_recognizer.setConfig(config);
+    m_recognizer.setConfig(sanitizeRecognizerConfig(config));
 }
 
 void GestureEngine::setTrailCallback(TrailRenderCallback callback) {
@@ -589,36 +779,19 @@ GestureEngine::AsyncContextResult GestureEngine::resolveContextInternal(HWND ini
         return res;
     }
 
-    // 1. 全屏独占放行检查
+    // 1. 全屏独占与远控/虚拟机会话放行检查
     if (m_autoBypassFullscreen.load() && target) {
-        if (tools3000::core::WinUtils::shouldSuspendGesturesForWindow(target)) {
+        if (tools3000::core::WinUtils::shouldSuspendGesturesForWindow(target) ||
+            isRemoteOrVmClientWindow(target)) {
             res.disabled = true;
             return res;
         }
     }
 
     // 2. 黑名单例外规则检查
-    auto exceptions = tools3000::core::ConfigManager::instance().get<nlohmann::json>(
-        "/gesture/exceptions", nlohmann::json::array());
-    if (exceptions.is_array() && !exceptions.empty() && target) {
-        std::string exeName = tools3000::core::WinUtils::getProcessNameFromWindow(target);
-        std::string className = tools3000::core::WinUtils::wstringToUtf8(
-            tools3000::core::WinUtils::getWindowClassName(target));
-        const auto normalizedExe = tools3000::core::WinUtils::toLower(exeName);
-        for (const auto& rule : exceptions) {
-            if (!rule.is_object()) continue;
-            const std::string ruleType = rule.value("type", "");
-            const std::string ruleValue = rule.value("value", "");
-            if (ruleType == "process" &&
-                normalizedExe == tools3000::core::WinUtils::toLower(ruleValue)) {
-                res.disabled = true;
-                return res;
-            }
-            if (ruleType == "class" && className == ruleValue) {
-                res.disabled = true;
-                return res;
-            }
-        }
+    if (matchesConfiguredExceptionRule(target)) {
+        res.disabled = true;
+        return res;
     }
 
     // 3. 解析作用域 Profile
@@ -657,20 +830,113 @@ void GestureEngine::contextWorkerLoop(std::stop_token stopToken) {
     }
 }
 
+bool GestureEngine::checkMissedPhysicalReleaseLocked(
+    std::chrono::steady_clock::time_point now,
+    bool isFromMoveEvent) {
+    if (!MouseHook::instance().isInstalled() ||
+        m_state.load(std::memory_order_relaxed) != GestureState::Tracking) {
+        return false;
+    }
+    const int vk = physicalVkForTriggerDown(m_activeTriggerDown);
+    if (vk == 0) {
+        return false;
+    }
+    const bool asyncDown = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    if (asyncDown) {
+        m_observedPhysicalTriggerDown = true;
+        return false;
+    }
+
+    // 未吞没初始按下（如左键手势）或内核已将物理按下同步至异步按键表：asyncDown==0 直接证明物理已松手
+    if (!m_activeDownWasSuppressed || m_observedPhysicalTriggerDown) {
+        return true;
+    }
+
+    // WH_MOUSE_LL 吞没按下时，Windows 内核不更新 gafAsyncKeyState；
+    // 检测光标或前台窗口是否进入过 UIPI 高权限窗口盲区（钩子在盲区内收不到 WM_RBUTTONUP）
+    bool overHigherIntegrity = false;
+    POINT curPt{};
+    if (GetCursorPos(&curPt)) {
+        if (HWND hover = WindowFromPoint(curPt)) {
+            HWND hoverRoot = GetAncestor(hover, GA_ROOT);
+            if (!hoverRoot) hoverRoot = hover;
+            if (tools3000::core::WinUtils::isWindowHigherIntegrity(hoverRoot)) {
+                overHigherIntegrity = true;
+            }
+        }
+    }
+    if (!overHigherIntegrity) {
+        if (HWND fg = GetForegroundWindow()) {
+            HWND fgRoot = GetAncestor(fg, GA_ROOT);
+            if (!fgRoot) fgRoot = fg;
+            if (tools3000::core::WinUtils::isWindowHigherIntegrity(fgRoot)) {
+                overHigherIntegrity = true;
+            }
+        }
+    }
+    if (overHigherIntegrity) {
+        m_enteredHigherIntegrityDuringTracking = true;
+    }
+    if (m_enteredHigherIntegrityDuringTracking) {
+        const auto silentMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - m_lastHookEventTime).count();
+        if ((!isFromMoveEvent && silentMs >= 80) ||
+            (isFromMoveEvent && !overHigherIntegrity && silentMs >= 60)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void GestureEngine::watchdogWorkerLoop(std::stop_token stopToken) {
     while (!stopToken.stop_requested()) {
+        const bool trackingHint = (m_state.load(std::memory_order_relaxed) == GestureState::Tracking);
         {
             std::unique_lock lock(m_watchdogMutex);
-            m_watchdogCv.wait_for(lock, std::chrono::milliseconds(50), [&]() {
-                return stopToken.stop_requested();
-            });
+            m_watchdogCv.wait_for(
+                lock,
+                std::chrono::milliseconds(trackingHint ? 40 : 80),
+                [&]() { return stopToken.stop_requested(); });
         }
         if (stopToken.stop_requested()) break;
+
+        // 低频同步前台窗口全屏/禁用绕行原子标志（兜底窗口最大化切换全屏或 UIPI 漏发 WinEvent）
+        if (!m_paused.load(std::memory_order_relaxed) &&
+            !m_recordingMode.load(std::memory_order_relaxed) &&
+            m_state.load(std::memory_order_relaxed) == GestureState::Idle) {
+            HWND curFg = GetForegroundWindow();
+            HWND curRoot = curFg ? GetAncestor(curFg, GA_ROOT) : nullptr;
+            if (curFg && !curRoot) curRoot = curFg;
+            RECT curRect{0, 0, 0, 0};
+            if (curRoot) {
+                GetWindowRect(curRoot, &curRect);
+            }
+            bool needRefreshBypass = false;
+            {
+                std::lock_guard lock(m_bypassEvalMutex);
+                if (curRoot != m_lastBypassEvalHwnd ||
+                    curRect.left != m_lastBypassEvalRect.left ||
+                    curRect.top != m_lastBypassEvalRect.top ||
+                    curRect.right != m_lastBypassEvalRect.right ||
+                    curRect.bottom != m_lastBypassEvalRect.bottom) {
+                    needRefreshBypass = true;
+                }
+            }
+            if (needRefreshBypass) {
+                refreshForegroundBypass(curRoot);
+            }
+        }
 
         if (m_state.load(std::memory_order_relaxed) == GestureState::Tracking) {
             std::lock_guard lock(m_mutex);
             if (m_state.load(std::memory_order_relaxed) == GestureState::Tracking) {
                 const auto now = std::chrono::steady_clock::now();
+                if (checkMissedPhysicalReleaseLocked(now, false)) {
+                    LOG_DEBUG("Gesture watchdog detected missed physical button release across UIPI boundary; canceling frozen gesture");
+                    cancelTracking();
+                    continue;
+                }
+
                 const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now - m_trackingStartTime).count();
 
@@ -681,9 +947,11 @@ void GestureEngine::watchdogWorkerLoop(std::stop_token stopToken) {
                         elapsedMs,
                         m_initialTimeoutMs.load(std::memory_order_relaxed))) {
                     const MouseEventType trigger = m_activeTriggerDown;
+                    const bool downSuppressed = m_activeDownWasSuppressed;
+                    const bool hwPressed = MouseHook::instance().isHardwareButtonPressed(trigger);
                     LOG_DEBUG("Gesture initial stationary timeout reached ({}ms), restoring native button down", elapsedMs);
                     cancelTracking();
-                    reinjectTriggerDownOnly(trigger);
+                    reinjectTriggerDownOnly(trigger, downSuppressed, hwPressed);
                     continue;
                 }
 
@@ -699,10 +967,18 @@ void GestureEngine::watchdogWorkerLoop(std::stop_token stopToken) {
 void GestureEngine::beginTracking(const MouseEvent& event) {
     m_activeTriggerDown = event.type;
     m_activeTriggerUp = triggerUpFor(event.type);
+    m_activeDownWasSuppressed = (event.type != MouseEventType::LeftDown) && event.downWasSuppressed;
     m_wheelExecutedDuringTracking = false;
     m_instantExecutedDuringTracking = false;
     m_hasMovedBeyondThreshold = false;
+    m_gestureConsumed = false;
+    m_enteredHigherIntegrityDuringTracking = false;
+    const int trigVk = physicalVkForTriggerDown(event.type);
+    m_observedPhysicalTriggerDown =
+        (trigVk != 0 && MouseHook::instance().isInstalled() &&
+         (GetAsyncKeyState(trigVk) & 0x8000) != 0);
     m_trackingStartTime = std::chrono::steady_clock::now();
+    m_lastHookEventTime = m_trackingStartTime;
     m_trackingStartEventTimestamp = event.timestamp.time_since_epoch().count() > 0
         ? event.timestamp
         : m_trackingStartTime;
@@ -759,6 +1035,14 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
 }
 
 void GestureEngine::updateTracking(const MouseEvent& event) {
+    const auto now = std::chrono::steady_clock::now();
+    if (checkMissedPhysicalReleaseLocked(now, true)) {
+        LOG_DEBUG("Gesture move callback detected missed physical button release; canceling frozen gesture");
+        cancelTracking();
+        return;
+    }
+    m_lastHookEventTime = now;
+
     // 若本次追踪已通过 instantExecute 立即执行完毕，忽略松手前的所有后续移动
     if (m_instantExecutedDuringTracking) {
         return;
@@ -785,8 +1069,10 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
         if (res.disabled) {
             LOG_INFO("手势异步检测命中黑名单或全屏独占，取消手势并补发原按键");
             const MouseEventType trigger = m_activeTriggerDown;
+            const bool downSuppressed = m_activeDownWasSuppressed;
+            const bool hwPressed = MouseHook::instance().isHardwareButtonPressed(trigger);
             cancelTracking();
-            reinjectTriggerDownOnly(trigger);
+            reinjectTriggerDownOnly(trigger, downSuppressed, hwPressed);
             return;
         }
         m_gestureStartWindow = res.targetWindow;
@@ -795,7 +1081,6 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
         m_lastLiveCode.clear(); // 强制触发实时动作识别重算，杜绝单笔画手势预览常驻灰色
     }
 
-    const auto now = std::chrono::steady_clock::now();
     const auto wallElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_trackingStartTime).count();
     int64_t eventElapsed = 0;
     if (event.timestamp.time_since_epoch().count() > 0 &&
@@ -820,13 +1105,18 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
             elapsed,
             m_initialTimeoutMs.load(std::memory_order_relaxed))) {
         const MouseEventType trigger = m_activeTriggerDown;
+        const bool downSuppressed = m_activeDownWasSuppressed;
+        const bool hwPressed = MouseHook::instance().isHardwareButtonPressed(trigger);
         LOG_DEBUG("Gesture initial stationary timeout reached on move ({}ms), restoring native button down", elapsed);
         cancelTracking();
-        reinjectTriggerDownOnly(trigger);
+        reinjectTriggerDownOnly(trigger, downSuppressed, hwPressed);
         return;
     }
 
     m_recognizer.addPoint(event.position.x, event.position.y);
+    if (m_hasMovedBeyondThreshold && m_recognizer.isScribbleCanceled()) {
+        m_gestureConsumed = true;
+    }
 
     TrailRenderCallback callback;
     {
@@ -896,8 +1186,9 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
                     }
                     if (ctxRes.disabled) {
                         const MouseEventType trigger = m_activeTriggerDown;
+                        const bool downSuppressed = m_activeDownWasSuppressed;
                         cancelTracking();
-                        reinjectTriggerClick(trigger);
+                        reinjectTriggerClick(trigger, downSuppressed);
                         return;
                     }
                     m_gestureStartWindow = ctxRes.targetWindow;
@@ -905,8 +1196,9 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
                     m_profileResolvedLocally = true;
                     if (!m_activeProfile) {
                         const MouseEventType trigger = m_activeTriggerDown;
+                        const bool downSuppressed = m_activeDownWasSuppressed;
                         cancelTracking();
-                        reinjectTriggerClick(trigger);
+                        reinjectTriggerClick(trigger, downSuppressed);
                         return;
                     }
                     matchedMapping = lookupGestureMapping(m_activeProfile, m_fallbackProfile, fullCode, bareCode);
@@ -954,6 +1246,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
 
             if (matchedMapping && matchedMapping->instantExecute && !m_instantExecutedDuringTracking) {
                 m_instantExecutedDuringTracking = true;
+                m_gestureConsumed = true;
                 tools3000::core::TraceId::setCurrent(m_gestureTraceId);
                 LOG_INFO("Instant gesture executed during tracking: code={}, action={}",
                          bareCode, matchedMapping->action.name);
@@ -989,9 +1282,17 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
 void GestureEngine::endTracking(const MouseEvent& event) {
     MouseHook::instance().resetTriggerState();
 
-    if (m_instantExecutedDuringTracking) {
+    const MouseEventType triggerSnap = m_activeTriggerDown;
+    const bool downSuppressed = m_activeDownWasSuppressed;
+
+    auto clearTrackingSessionFields = [this]() {
+        m_wheelExecutedDuringTracking = false;
         m_instantExecutedDuringTracking = false;
         m_hasMovedBeyondThreshold = false;
+        m_gestureConsumed = false;
+        m_activeDownWasSuppressed = false;
+        m_observedPhysicalTriggerDown = false;
+        m_enteredHigherIntegrityDuringTracking = false;
         m_activeProfile.reset();
         m_fallbackProfile.reset();
         m_lastRecognizedDirections.clear();
@@ -1005,27 +1306,20 @@ void GestureEngine::endTracking(const MouseEvent& event) {
         m_activeTriggerUp = MouseEventType::Move;
         m_contextResolved.store(false, std::memory_order_release);
         m_contextEpoch.fetch_add(1, std::memory_order_relaxed);
+    };
+
+    if (m_instantExecutedDuringTracking) {
+        clearTrackingSessionFields();
         m_state = GestureState::Idle;
         LOG_DEBUG("Gesture tracking ended after instantExecute; release suppressed");
         return;
     }
 
     if (m_wheelExecutedDuringTracking) {
-        m_wheelExecutedDuringTracking = false;
         if (m_trailVisible.load()) {
             GestureTrailOverlay::instance().hide();
         }
-        m_activeProfile.reset();
-        m_fallbackProfile.reset();
-        m_lastRecognizedDirections.clear();
-        m_lastLiveCode.clear();
-        m_liveHeldLabel.clear();
-        m_liveHadMatch = false;
-        m_liveMatchTick = 0;
-        m_gestureStartWindow = nullptr;
-        m_previousForeground = nullptr;
-        m_contextResolved.store(false, std::memory_order_release);
-        m_contextEpoch.fetch_add(1, std::memory_order_relaxed);
+        clearTrackingSessionFields();
         m_state = GestureState::Idle;
         LOG_INFO("手势追踪结束: 滚轮手势已执行，成功抑制右键上下文菜单");
         return;
@@ -1053,10 +1347,14 @@ void GestureEngine::endTracking(const MouseEvent& event) {
             res = m_latestContextResult;
         }
         if (res.disabled) {
+            const bool wasConsumed = m_gestureConsumed;
             LOG_INFO("手势抬起检测到当前窗口在手势黑名单或全屏放行，还原为原生点击");
+            clearTrackingSessionFields();
             m_state = GestureState::Idle;
             if (m_trailVisible.load()) GestureTrailOverlay::instance().hide();
-            reinjectTriggerClick();
+            if (!wasConsumed && downSuppressed) {
+                reinjectTriggerClick(triggerSnap, downSuppressed);
+            }
             return;
         }
         m_gestureStartWindow = res.targetWindow;
@@ -1064,20 +1362,15 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     }
 
     auto activeProfileSnapshot = m_activeProfile;
-    m_activeProfile.reset();
-    m_fallbackProfile.reset();
-    m_lastRecognizedDirections.clear();
-    m_lastLiveCode.clear();
-    m_liveHeldLabel.clear();
-    m_liveHadMatch = false;
-    m_liveMatchTick = 0;
     HWND startWindow = m_gestureStartWindow;
     HWND previousForeground = m_previousForeground;
     const POINT startPt = m_gestureStartPt;
     const POINT endPt = { event.position.x, event.position.y };
     m_gestureEndPt = endPt;
-    m_gestureStartWindow = nullptr;
-    m_previousForeground = nullptr;
+    const uint8_t gestureModsSnap = m_gestureModifiers;
+    const ScreenEdgeZone edgeZoneSnap = m_gestureEdgeZone;
+    const bool movedBeyondThresholdSnap = m_hasMovedBeyondThreshold;
+    bool wasConsumed = m_gestureConsumed;
 
     // 恢复本次手势的 TraceId (按下/移动/抬起跨多次钩子回调, 期间可能被其它操作改写)
     tools3000::core::TraceId::setCurrent(m_gestureTraceId);
@@ -1085,33 +1378,48 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_trackingStartTime).count();
 
-    // 如果连续绘制超过 10 秒用户才松手：结束手势，红底 3 个大圆点闪现并平滑淡出，不执行任何动作
+    // 如果连续绘制超过 10 秒用户才松手：结束手势，红底 3 个大圆点闪现并平滑淡出，不执行任何动作，且已消费手势不回放点击
     if (elapsed >= 10000) {
         LOG_WARN("手势绘制超过 10 秒后松手结束 ({}ms)，红底调侃淡出", elapsed);
+        clearTrackingSessionFields();
         m_state = GestureState::Idle;
         if (m_trailVisible.load()) {
             GestureTrailOverlay::instance().setRecognized(false);
             GestureTrailOverlay::instance().endTrail("•••");
         }
-        reinjectTriggerClick();
         return;
     }
 
-    m_recognizer.addPoint(event.position.x, event.position.y);
+    const int endDx = event.position.x - startPt.x;
+    const int endDy = event.position.y - startPt.y;
+    const int minSegDist = m_minSegmentDistance.load(std::memory_order_relaxed);
+    const bool exceededThreshold = movedBeyondThresholdSnap ||
+                                   (endDx * endDx + endDy * endDy >= minSegDist * minSegDist);
 
+    m_recognizer.addPoint(event.position.x, event.position.y);
+    const bool scribbleCanceled = m_recognizer.isScribbleCanceled();
     auto result = m_recognizer.finalize();
+    if (scribbleCanceled || (exceededThreshold && (!result || !result->isValid()))) {
+        wasConsumed = true;
+    }
+
+    clearTrackingSessionFields();
 
     if (!result || !result->isValid()) {
-        // 轨迹太短 → 视为普通点击: 触发键按下已被吞掉, 这里补发一次点击, 让右键菜单正常弹出
         m_state = GestureState::Idle;
         if (m_trailVisible.load()) GestureTrailOverlay::instance().hide();
-        reinjectTriggerClick();
-        LOG_TRACE("手势追踪结束: 轨迹太短，还原为普通点击");
+        if (!wasConsumed && downSuppressed) {
+            // 轨迹未超过起始阈值且未涂抹取消：视为普通点击，补发被吞掉的触发键点击
+            reinjectTriggerClick(triggerSnap, downSuppressed);
+            LOG_TRACE("手势追踪结束: 轨迹太短，还原为普通点击");
+        } else {
+            LOG_DEBUG("Gesture canceled after exceeding threshold/scribble or pass-through trigger; context menu suppressed");
+        }
         return;
     }
 
     // 生成带边缘与修饰键前缀的手势编码 (如 "TopEdge+D"、"Middle+L"、"X1+R"、"Ctrl+L"、"Alt+D-R")
-    std::string fullCode = formatFullGestureCode(m_gestureEdgeZone, m_gestureModifiers, m_activeTriggerDown, result->code);
+    std::string fullCode = formatFullGestureCode(edgeZoneSnap, gestureModsSnap, triggerSnap, result->code);
     std::string bareCode = result->code;                                           // 无前缀的纯方向编码
 
     LOG_INFO("手势识别成功: code={}, fullCode={}, arrows={}, 点数={}, 距离={:.0f}px",
@@ -1120,10 +1428,12 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     // 查找适用的 Profile（优先使用异步预解析快照，若未命中则降级同步解析）
     auto profile = activeProfileSnapshot ? activeProfileSnapshot : resolveProfile(startWindow);
     if (!profile) {
-        // 手势在当前窗口被禁用 → 还原为普通点击
+        // 手势在当前窗口被禁用 → 仅在未消费且初始按下确被吞没时还原为普通点击
         m_state = GestureState::Idle;
         if (m_trailVisible.load()) GestureTrailOverlay::instance().endTrail();
-        reinjectTriggerClick();
+        if (!wasConsumed && downSuppressed) {
+            reinjectTriggerClick(triggerSnap, downSuppressed);
+        }
         LOG_DEBUG("手势在当前窗口被禁用");
         return;
     }
@@ -1158,8 +1468,6 @@ void GestureEngine::endTracking(const MouseEvent& event) {
         }
     }
 
-    m_activeTriggerDown = MouseEventType::Move;
-    m_activeTriggerUp = MouseEventType::Move;
     m_state = GestureState::Idle;
 }
 
@@ -1334,6 +1642,7 @@ bool GestureEngine::handleWheelGesture(const MouseEvent& event) {
     }
 
     m_wheelExecutedDuringTracking = true;
+    m_gestureConsumed = true;
 
     if (m_trailVisible.load()) {
         auto& trail = GestureTrailOverlay::instance();
@@ -1399,12 +1708,18 @@ void GestureEngine::actionWorkerLoop(std::stop_token stopToken) {
 
 // 把被吞掉的触发键点击补发出去 (注入事件会被 MouseHook 忽略, 不会再次触发手势)。
 // 用于"没有有效手势/未绑定动作/窗口禁用"时, 让右键(或中键)菜单等正常工作。
-void GestureEngine::reinjectTriggerDownOnly(MouseEventType trigger) {
+void GestureEngine::reinjectTriggerDownOnly(
+    MouseEventType trigger,
+    bool downWasSuppressed,
+    bool hardwareStillPressed) {
+    if (!downWasSuppressed || trigger == MouseEventType::LeftDown || trigger == MouseEventType::Move) {
+        return;
+    }
     if (m_suppressReinjectForTesting.load(std::memory_order_relaxed)) {
         return;
     }
     const std::string traceId = m_gestureTraceId;
-    auto injectDown = [trigger, traceId]() {
+    auto injectDown = [trigger, hardwareStillPressed, traceId]() {
         tools3000::core::TraceId::setCurrent(traceId);
         INPUT in[2] = {};
         in[0].type = INPUT_MOUSE;
@@ -1427,35 +1742,40 @@ void GestureEngine::reinjectTriggerDownOnly(MouseEventType trigger) {
             in[0].mi.mouseData = XBUTTON2;
             in[1].mi.dwFlags = MOUSEEVENTF_XUP;
             in[1].mi.mouseData = XBUTTON2;
-        } else if (trigger == MouseEventType::LeftDown) {
-            in[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-            in[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
         } else {
             return;
         }
         // 防孤立 DOWN 自愈：若异步派发执行时物理按键/触控板已抬起，必须原子配对发送 DOWN+UP，
         // 严禁遗留孤立 DOWN 导致 Windows 内核右键粘滞与精密触控板四指横滑手势失效
-        if (!MouseHook::instance().isHardwareButtonPressed(trigger)) {
+        const int vk = physicalVkForTriggerDown(trigger);
+        const bool asyncStillHeld = (vk != 0) && ((GetAsyncKeyState(vk) & 0x8000) != 0);
+        const bool stillHeld = hardwareStillPressed ||
+                               MouseHook::instance().isHardwareButtonPressed(trigger) ||
+                               asyncStillHeld;
+        if (!stillHeld) {
             SendInput(2, in, sizeof(INPUT));
             return;
         }
         SendInput(1, &in[0], sizeof(INPUT));
-        if (!MouseHook::instance().isHardwareButtonPressed(trigger)) {
-            SendInput(1, &in[1], sizeof(INPUT));
-        }
     };
     if (!tools3000::core::MainThreadDispatcher::instance().postDeferred(injectDown)) {
         injectDown();
     }
 }
 
-void GestureEngine::reinjectTriggerClick(MouseEventType triggerOverride) {
+void GestureEngine::reinjectTriggerClick(MouseEventType triggerOverride, bool downWasSuppressed) {
+    if (!downWasSuppressed) {
+        return;
+    }
     if (m_suppressReinjectForTesting.load(std::memory_order_relaxed)) {
         return;
     }
     const MouseEventType trigger = (triggerOverride != MouseEventType::Move)
         ? triggerOverride
         : m_activeTriggerDown;
+    if (trigger == MouseEventType::LeftDown || trigger == MouseEventType::Move) {
+        return;
+    }
     const std::string traceId = m_gestureTraceId;
     auto inject = [trigger, traceId]() {
         tools3000::core::TraceId::setCurrent(traceId);
@@ -1485,10 +1805,8 @@ void GestureEngine::reinjectTriggerClick(MouseEventType triggerOverride) {
             in[1].mi.dwFlags = MOUSEEVENTF_XUP;
             in[1].mi.mouseData = XBUTTON2;
             btnName = "侧键2";
-        } else if (trigger == MouseEventType::LeftDown) {
-            in[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-            in[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-            btnName = "左";
+        } else {
+            return;
         }
         LOG_TRACE("无手势, 补发{}键点击以还原正常操作", btnName);
         const UINT sent = SendInput(2, in, sizeof(INPUT));
@@ -1518,12 +1836,16 @@ void GestureEngine::cancelTracking() {
     MouseHook::instance().resetTriggerState();
     m_activeTriggerDown = MouseEventType::Move;
     m_activeTriggerUp = MouseEventType::Move;
+    m_activeDownWasSuppressed = false;
+    m_observedPhysicalTriggerDown = false;
+    m_enteredHigherIntegrityDuringTracking = false;
     m_gestureEdgeZone = ScreenEdgeZone::None;
     m_gestureModifiers = 0;
     m_recognizer.reset();
     m_wheelExecutedDuringTracking = false;
     m_instantExecutedDuringTracking = false;
     m_hasMovedBeyondThreshold = false;
+    m_gestureConsumed = false;
     m_activeProfile.reset();
     m_fallbackProfile.reset();
     m_lastRecognizedDirections.clear();
@@ -1623,14 +1945,16 @@ void GestureEngine::loadFromConfig() {
     auto rulesJson = config.get<nlohmann::json>("/gesture/scopeRules");
     m_scopeRules.loadFromJson(rulesJson);
 
-    // 加载识别器参数（优先继承 /gesture/minSegmentDistance，避免被硬编码 14 覆盖）
+    // 加载识别器参数（优先继承 /gesture/minSegmentDistance，并执行上下界 std::clamp 校验）
     RecognizerConfig recognizerConfig;
     recognizerConfig.minSegmentDistance = config.get<int>(
         "/gesture/recognizer/minSegmentDistance", m_minSegmentDistance.load());
     recognizerConfig.samplingInterval = config.get<int>("/gesture/recognizer/samplingInterval", 2);
     recognizerConfig.angleToleranceDeg = config.get<double>("/gesture/recognizer/angleTolerance", 22.5);
+    recognizerConfig.maxDirections = config.get<int>("/gesture/recognizer/maxDirections", 10);
     recognizerConfig.enableScribbleCancel = config.get<bool>("/gesture/enableScribbleCancel", true);
-    m_recognizer.setConfig(recognizerConfig);
+    setRecognizerConfig(recognizerConfig);
+    refreshForegroundBypass();
 }
 
 bool GestureEngine::saveToConfig() {
@@ -1655,6 +1979,7 @@ bool GestureEngine::saveToConfig() {
         }}
     }, "/gesture");
 
+    refreshForegroundBypass();
     if (saved) LOG_INFO("手势配置已保存");
     else LOG_ERROR("手势配置持久化失败");
     return saved;

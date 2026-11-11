@@ -131,6 +131,8 @@ struct GifPaletteOptimizer {
     uint8_t colorMap[32768]{};
     bool initialized = false;
     int frameCounter = 0;
+    bool reserveTransparent = false;
+    float cornerRadius = 0.0f;
 
     void updatePalette(const uint8_t* srcData, int width, int height, int stride, int bpp);
     void quantizeFrame(const uint8_t* srcData, int width, int height, int stride, int bpp,
@@ -263,6 +265,7 @@ private:
     void* m_audioSwrCtx = nullptr;   // SwrContext*
     void* m_audioPacket = nullptr;   // AVPacket*
     bool m_headerWritten = false;
+    bool m_hasEncodedVideoFrame = false;
     bool m_audioEncodingFailed = false;
     int64_t m_frameIndex = 0;
     int64_t m_audioFrameIndex = 0;

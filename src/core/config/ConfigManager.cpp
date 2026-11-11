@@ -74,6 +74,11 @@ bool ConfigManager::initialize(const std::filesystem::path& configDir, const std
     }
     m_configFilePath = configDir / filename;
     {
+        std::lock_guard ioLock(m_ioMutex);
+        m_hasFileStamp = false;
+        m_lastLoadedFileSize = 0;
+    }
+    {
         std::lock_guard lock(m_mutex);
         m_config = json();
     }
@@ -174,6 +179,18 @@ bool ConfigManager::load(bool* changed) {
     }
 
     if (shouldCreate && !writeSnapshotLocked(loaded)) return false;
+    if (!shouldCreate) {
+        std::error_code stampEc;
+        const auto wt = std::filesystem::last_write_time(m_configFilePath, stampEc);
+        if (!stampEc) {
+            const auto sz = std::filesystem::file_size(m_configFilePath, stampEc);
+            if (!stampEc) {
+                m_lastLoadedWriteTime = wt;
+                m_lastLoadedFileSize = sz;
+                m_hasFileStamp = true;
+            }
+        }
+    }
     {
         std::lock_guard lock(m_mutex);
         if (changed) *changed = m_config != loaded;
@@ -196,6 +213,16 @@ bool ConfigManager::writeSnapshotLocked(const json& snapshot) const {
     try {
         const std::string payload = snapshot.dump(2);
         if (WinUtils::atomicWriteFileWithFlush(m_configFilePath.wstring(), payload)) {
+            std::error_code stampEc;
+            const auto wt = std::filesystem::last_write_time(m_configFilePath, stampEc);
+            if (!stampEc) {
+                const auto sz = std::filesystem::file_size(m_configFilePath, stampEc);
+                if (!stampEc) {
+                    m_lastLoadedWriteTime = wt;
+                    m_lastLoadedFileSize = sz;
+                    m_hasFileStamp = true;
+                }
+            }
             LOG_TRACE("配置已通过硬件原子刷盘保存到文件: {}", m_configFilePath.string());
             return true;
         } else {
@@ -289,23 +316,31 @@ bool ConfigManager::remove(const std::string& key) {
             next = m_config;
         }
         try {
-            // nlohmann::json 不直接支持 erase with pointer，需要手动导航
-            // 这里简化处理：使用 JSON Patch
-            auto ptr = json::json_pointer(key);
+            const std::string normalizedKey =
+                (!key.empty() && key.front() != '/') ? ("/" + key) : key;
+            auto ptr = json::json_pointer(normalizedKey);
+            if (ptr.empty()) {
+                return false;
+            }
             if (next.contains(ptr)) {
-                // 从路径中提取父路径和键名
-                auto keyStr = key;
-                auto lastSlash = keyStr.rfind('/');
-                if (lastSlash != std::string::npos && lastSlash > 0) {
-                    auto parentPath = keyStr.substr(0, lastSlash);
-                    auto childKey = keyStr.substr(lastSlash + 1);
-                    auto parentPtr = json::json_pointer(parentPath);
-                    next.at(parentPtr).erase(childKey);
-                    changed = true;
-                } else if (lastSlash == 0) {
-                    // 根级别的 key
-                    auto childKey = keyStr.substr(1);
-                    changed = next.erase(childKey) > 0;
+                auto parentPtr = ptr.parent_pointer();
+                const std::string& childToken = ptr.back();
+                auto& parentNode = next.at(parentPtr);
+                if (parentNode.is_object()) {
+                    changed = parentNode.erase(childToken) > 0;
+                } else if (parentNode.is_array()) {
+                    const bool validIdx =
+                        !childToken.empty() &&
+                        (childToken == "0" || childToken.front() != '0') &&
+                        std::all_of(childToken.begin(), childToken.end(),
+                                    [](unsigned char c) { return c >= '0' && c <= '9'; });
+                    if (validIdx) {
+                        const size_t idx = std::stoull(childToken);
+                        if (idx < parentNode.size()) {
+                            parentNode.erase(parentNode.begin() + static_cast<std::ptrdiff_t>(idx));
+                            changed = true;
+                        }
+                    }
                 }
             }
         } catch (const std::exception& e) {
@@ -544,24 +579,64 @@ void ConfigManager::watchFileChanges() {
 
         if (waitResult == WAIT_OBJECT_0) {
             // 文件变更事件
-            if (GetOverlappedResult(hDir, &overlapped, &bytesReturned, FALSE) && bytesReturned > 0) {
+            if (GetOverlappedResult(hDir, &overlapped, &bytesReturned, FALSE)) {
                 bool configChanged = false;
-                auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buffer);
-                while (info) {
-                    std::wstring changedFile(info->FileName,
-                                             info->FileNameLength / sizeof(wchar_t));
-                    if (_wcsicmp(changedFile.c_str(), fileName.c_str()) == 0) configChanged = true;
-                    if (info->NextEntryOffset == 0) break;
-                    info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(
-                        reinterpret_cast<BYTE*>(info) + info->NextEntryOffset);
+                if (bytesReturned == 0) {
+                    // ReadDirectoryChangesW 通知缓冲区溢出，保守触发重检
+                    configChanged = true;
+                } else {
+                    constexpr size_t headerSize = offsetof(FILE_NOTIFY_INFORMATION, FileName);
+                    size_t offset = 0;
+                    while (offset < bytesReturned) {
+                        if (bytesReturned - offset < headerSize) {
+                            configChanged = true;
+                            break;
+                        }
+                        const auto* info = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(
+                            buffer + offset);
+                        const size_t maxNameBytes = bytesReturned - offset - headerSize;
+                        if (info->FileNameLength > maxNameBytes) {
+                            configChanged = true;
+                            break;
+                        }
+                        std::wstring changedFile(info->FileName,
+                                                 info->FileNameLength / sizeof(wchar_t));
+                        if (_wcsicmp(changedFile.c_str(), fileName.c_str()) == 0) {
+                            configChanged = true;
+                        }
+                        if (info->NextEntryOffset == 0) break;
+                        if (info->NextEntryOffset < headerSize ||
+                            info->NextEntryOffset > bytesReturned - offset ||
+                            (info->NextEntryOffset % alignof(DWORD)) != 0) {
+                            configChanged = true;
+                            break;
+                        }
+                        offset += info->NextEntryOffset;
+                    }
                 }
 
                 if (configChanged) {
                     // 可中断防抖：避免编辑器的多步替换产生中间状态，同时保证关闭迅速。
                     if (WaitForSingleObject(m_watchStopEvent, 150) == WAIT_OBJECT_0) break;
-                    LOG_INFO("检测到配置文件变更, 正在热加载...");
-                    bool changed = false;
-                    if (load(&changed) && changed) notifyChange("*");
+                    bool selfTriggered = false;
+                    {
+                        std::lock_guard ioLock(m_ioMutex);
+                        if (m_hasFileStamp) {
+                            std::error_code stampEc;
+                            const auto wt = std::filesystem::last_write_time(m_configFilePath, stampEc);
+                            if (!stampEc) {
+                                const auto sz = std::filesystem::file_size(m_configFilePath, stampEc);
+                                if (!stampEc && wt == m_lastLoadedWriteTime && sz == m_lastLoadedFileSize) {
+                                    selfTriggered = true;
+                                }
+                            }
+                        }
+                    }
+                    if (!selfTriggered) {
+                        LOG_INFO("检测到配置文件变更, 正在热加载...");
+                        bool changed = false;
+                        if (load(&changed) && changed) notifyChange("*");
+                    }
                 }
             }
         } else {

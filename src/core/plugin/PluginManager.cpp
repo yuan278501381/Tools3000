@@ -42,6 +42,20 @@ std::string pluginConfigKey(const std::string& id) {
     return "/plugins/" + id + "/enabled";
 }
 
+bool hasReparsePointAttribute(const std::filesystem::path& targetPath) noexcept {
+    if (targetPath.empty()) return false;
+    const DWORD attrs = GetFileAttributesW(targetPath.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+}
+
+bool isHostSignedForElevatedPluginGate() noexcept {
+    static const bool s_hostSigned = []() {
+        const auto exePath = WinUtils::getExePath();
+        return !exePath.empty() && WinUtils::hasValidAuthenticodeSignature(exePath);
+    }();
+    return s_hostSigned;
+}
+
 bool configuredEnabled(const std::string& id) {
     auto& config = ConfigManager::instance();
     if (id == "dialogenhancer" || id == "dialog_enhancer") {
@@ -173,6 +187,23 @@ bool PluginManager::loadPluginBinaryLocked(PluginInstance& inst) {
     }
     inst.error.clear();
     const std::wstring filename = inst.path.filename().wstring();
+
+    // 防御重解析点（符号链接 / 目录联接）劫持与运行期热加载 TOCTOU 替换
+    if (hasReparsePointAttribute(inst.path.parent_path()) || hasReparsePointAttribute(inst.path)) {
+        inst.error = "plugin path contains an untrusted reparse point";
+        LOG_ERROR("Rejected plugin DLL due to reparse point attribute: {}", inst.fileName);
+        return false;
+    }
+
+    // 提权宿主签名门禁：正式发版签名宿主以管理员运行时，外部插件 DLL 必须同样具备有效 Authenticode 签名；
+    // 本地未签名开发/测试构建不受影响。
+    if (tools3000::core::WinUtils::isProcessElevated() && isHostSignedForElevatedPluginGate()) {
+        if (!tools3000::core::WinUtils::hasValidAuthenticodeSignature(inst.path)) {
+            inst.error = "unsigned or untrusted plugin DLL rejected in elevated signed host";
+            LOG_ERROR("Rejected unsigned plugin DLL in elevated signed host: {}", inst.fileName);
+            return false;
+        }
+    }
 
     HMODULE hMod = LoadLibraryExW(
         inst.path.c_str(), nullptr,
@@ -306,15 +337,20 @@ bool PluginManager::loadPlugins(const std::string& directory) {
     }
     reconcilePluginConfigs();
     std::filesystem::path dirPath = tools3000::core::WinUtils::utf8ToWstring(directory);
-    
+
     // 如果是相对路径，则相对于 exe 所在目录
     if (dirPath.is_relative()) {
-        dirPath = tools3000::core::WinUtils::getExeDirectory().parent_path() / dirPath;
+        dirPath = tools3000::core::WinUtils::getExeDirectory() / dirPath;
     }
+    dirPath = dirPath.lexically_normal();
 
     std::error_code filesystemError;
     if (!std::filesystem::is_directory(dirPath, filesystemError)) {
         LOG_WARN("插件目录不存在: {}", directory);
+        return false;
+    }
+    if (hasReparsePointAttribute(dirPath)) {
+        LOG_ERROR("Rejected plugin directory with reparse point attribute: {}", directory);
         return false;
     }
 
@@ -325,6 +361,12 @@ bool PluginManager::loadPlugins(const std::string& directory) {
     const std::filesystem::directory_iterator end;
     for (; pluginIt != end && !filesystemError; pluginIt.increment(filesystemError)) {
         const auto& entry = *pluginIt;
+        if (entry.is_symlink(filesystemError) || hasReparsePointAttribute(entry.path())) {
+            filesystemError.clear();
+            LOG_WARN("Skipping plugin entry with reparse point attribute: {}",
+                     tools3000::core::WinUtils::wstringToUtf8(entry.path().filename().wstring()));
+            continue;
+        }
         if (entry.is_regular_file(filesystemError) && !filesystemError &&
             _wcsicmp(entry.path().extension().c_str(), L".dll") == 0) {
             std::wstring filename = entry.path().filename().wstring();
@@ -361,6 +403,12 @@ bool PluginManager::loadPlugins(const std::string& directory) {
 
         auto manifestPath = pluginPath;
         manifestPath.replace_extension(L".plugin.json");
+        if (hasReparsePointAttribute(manifestPath)) {
+            inst.error = "plugin manifest is an untrusted reparse point";
+            LOG_ERROR("Rejected plugin manifest with reparse point attribute: {}", inst.fileName);
+            m_plugins.push_back(std::move(inst));
+            continue;
+        }
         auto manifestResult = loadPluginManifest(manifestPath, inst.id, tools3000::version::String);
         if (!manifestResult) {
             inst.error = manifestResult.error;
@@ -430,13 +478,15 @@ void PluginManager::shutdownPlugins() {
     MouseHook::instance().uninstall();
     MainThreadDispatcher::instance().drain();
     HotkeyManager::instance().shutdown();
-    EventBus::instance().clearAll();
+    const bool eventBusDrained = EventBus::instance().clearAll();
     ConfigManager::instance().clearCallbacks();
     MessageBridge::instance().clearHandlers();
 
-    const bool retainModules = MessageBridge::instance().hasQuarantinedHandlers();
+    const bool retainModules = !eventBusDrained ||
+                               EventBus::instance().hasQuarantinedSubscriptions() ||
+                               MessageBridge::instance().hasQuarantinedHandlers();
     if (retainModules) {
-        LOG_CRITICAL("Quarantined IPC handlers detected during shutdown; skipping FreeLibrary to prevent unmapped code execution.");
+        LOG_CRITICAL("Quarantined callbacks or IPC handlers detected during shutdown; skipping FreeLibrary to prevent unmapped code execution.");
     }
     for (auto it = m_plugins.rbegin(); it != m_plugins.rend(); ++it) {
         if (!it->handle) continue;
@@ -456,7 +506,9 @@ std::vector<PluginStatus> PluginManager::getPluginStatuses() const {
     for (const auto& inst : m_plugins) {
         const bool desiredEnabled = configuredEnabled(inst.id);
         const bool isRunning = inst.initialized && desiredEnabled;
-        const bool restartRequired = inst.initialized ? false : (desiredEnabled != inst.enabledAtLaunch);
+        const bool restartRequired = desiredEnabled
+            ? (!inst.initialized && desiredEnabled != inst.enabledAtLaunch)
+            : inst.initialized;
         std::string state;
         if (!inst.error.empty()) state = "failed";
         else if (restartRequired) state = "pendingRestart";
@@ -544,7 +596,7 @@ bool PluginManager::setPluginEnabled(const std::string& id, bool enabled,
         return true;
     }
 
-    restartRequired = it->initialized ? false : (it->configuredEnabled != it->enabledAtLaunch);
+    restartRequired = enabled ? !it->initialized : it->initialized;
     return true;
 }
 

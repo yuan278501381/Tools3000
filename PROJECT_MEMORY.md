@@ -6,11 +6,36 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-11] 全仓 105/106 项深度审计收官、截图闪退日志根因与 4 重防御加固、安装包 -34.3% 极限瘦身与中英双语全功能视觉图集
+- **背景与锁定决策**：
+  - 基于全仓五路正交深度代码审计（共 106 项实锤问题），严格遵循项目负责人锁定决策 **`D-01`（保持 `CRIT-04` `src/ui/WebViewEnvironmentManager.cpp` 现有沙箱启动参数不动）**，完成其余 **105/106 项**问题 100% 根治，全量通过 C++ GoogleTest 6 大套件、Rust SIMD 单元测试、166 项 Vitest 前端测试及 5 大实机生命周期/压测门禁。
+- **截图闪退 (`09:20:45`) 日志还原与四层根治方案 (`CaptureOverlay.cpp`, `CrashHandler.h`, `main.cpp`, `deploy.ps1`)**：
+  1. **日志实证与三重叠加诱因**：
+     - **旧版安装目录残留 22 个重复第三方 DLL 与未打补丁二进制**：`%LOCALAPPDATA%\Tools3000\logs\tools3000.log` 显示 `09:20:45` 闪退进程 (`pid=13936`) 运行的是 `2026-11-10 23:20:52` 审计修复前的旧版 `C:\Program Files\Tools3000\Tools3000.exe`，且 `plugins\` 目录下重复打包了 `spdlog.dll`、`fmt.dll`、`opencv_core4.dll`、`opencv_imgproc4.dll` 等 22 个第三方动态库（插件通过 `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR` 加载时与主目录运行库产生潜在双份 CRT/静态区冲突），同时尚未包含 `CRIT-06` / `CRIT-07` 截图 ROI 越界与生命周期竞态修复；
+     - **每次按下 `F1` 触发冗余配置落盘与并发热加载竞态**：日志第 412~415 行记录在 `09:20:44.781` 与 `09:20:45.231` 连续两次触发 `检测到配置文件变更, 正在热加载...`——根因是 `CaptureOverlay::startSelection()` 每次呼出选区均无条件向 `config.json` 写入 `/recording/videoFormat`，触发后台 `ConfigWatcher` 文件变更线程在主线程初始化 Direct2D/DXGI 帧缓冲的同时并发重载配置并广播回调；
+     - **Win32 `WndProc` 异常跨越内核边界触发 `__fastfail` 且被 WebView2 Crashpad 劫持异常过滤器**：Windows x64 下 `CaptureOverlay::staticWndProc` 若有任何 C++ 异常穿透至 `user32!KiUserCallbackDispatcher` 将直接引发系统级静默强杀；同时后台 WebView2 预热初始化时 Chromium Crashpad 覆盖了宿主 `SetUnhandledExceptionFilter`，导致 `%LOCALAPPDATA%\Tools3000\crashdumps` 未能捕获 `.dmp` 文件。
+  2. **四层纵深防御加固**：
+     - **按需状态变更落盘**：`CaptureOverlay::startSelection()` 仅当 `/recording/videoFormat` 实际值变化时才调用 `ConfigManager::set` + `save()`，常规 `F1` 呼出实现 **0 磁盘写入、0 热加载并发扰动**；
+     - **`WndProc` 顶层异常防火墙**：在 `CaptureOverlay::staticWndProc` 外层包裹 `try-catch`，一旦捕获异常立即 `Logger::instance()->flush()` 落盘日志、`ValidateRect(hwnd, nullptr)` 阻断 `WM_PAINT` 死循环风暴并安全调用 `realCancel()` 退场，绝不让异常跨越 Win32 ABI 边界；
+     - **CrashHandler 后置重锚定与零堆 `std::set_terminate`**：在 `CrashHandler.h` 新增 `reinstallFilter()` 并在 `src/main.cpp` WebView2 后台预热完成后重新挂载顶层 SEH 过滤器，同时注册零堆分配 `std::set_terminate` 处理器确保未捕获 C++ 异常 100% 产出 MiniDump；
+     - **打包剔重与本机平滑升级**：`CMakeLists.txt` 与 `deploy.ps1` 彻底剥离 `gtest.dll`/`gmock.dll` 测试库与 `plugins\` 下全部重复第三方 DLL，标准安装包 `Tools3000-Setup.exe` 由 `29.84 MB` 缩减至 **`19.61 MB`（-34.3%）**，便携包缩减至 **`21.20 MB`**，并已将本机 `C:\Program Files\Tools3000\` 升级至洁净新版。
+- **中英双语 Snipaste/PixPin 级全模块 Bento 视觉图集与动态演示规范 (`docs/images/zh-CN/`, `docs/images/en-US/`, `README.md`, `README.en.md`)**：
+  - **商业合规零敏感词、100% 实机真实截图与功能真实性铁律**：
+    - **商业合规脱敏**：全仓文档、展示图、代码注释与单元测试严禁出现任何真实客户名称、商号缩写或内部私有路径，统一采用虚构演示实体（`226-星云科技` / `xykj`、`226-NebulaTech` / `nebula`）；
+    - **实机真实界面与原生系统窗口优先**：搜索中心、全文检索、QuickLook、104 键热力图与托盘控制中心统一采集自真实运行的生产构建前端（`deploy_dist/ui` + Windows 11 原生系统文件图标）；涉及 Windows 原生交互的场景（如 `scene_dialog_enhancer.png`）强制采用 Win32 `PrintWindow(PW_RENDERFULLCONTENT)` 抓取的真实 Windows 11 资源管理器与 `#32770` 另存为窗口截图并挂载 1:1 真实 `DialogRibbonOverlay` 微晶胶囊；托盘截图按 `.tray-menu` 实际 DOM 包围盒精确裁切视口，严禁底部留白；
+    - **100% 严守已交付功能边界**：严禁在宣传图与动图中超前描绘未上线或未默认启用的虚构控件（如录屏未提供录后时间轴裁剪器、手势模块未对外正式启用径向轮盘菜单；注：仓库中 `src/gesture/RadialMenuOverlay.h/.cpp` 与 `GesturePage.tsx` 相关配置块属于未绑定默认入口的历史遗留代码）。
+  - **极简 Bento 舞台与动态自解释优先准则**：面向最终用户的 README 视觉展示融合 **Snipaste（像素级十字准星放大取色、智能控件吸附、F1/F3 置顶贴图）** 与 **PixPin（清爽微晶浅色 Bento 卡片、左滚动选区 + 右实时生长拼接长图预览 + 首尾无损裁切）** 的视觉叙事精髓，构建全套 15×2 项中英双语展示资产：
+    - **搜索与秒看矩阵**：`search_demo.webp`（`Alt+Space` ~18.6ms 秒出真实图标结果 + 按 `Space` 原地弹出 `QuickLook` 预览动态演示）、`scene_file_search.png`（实机 `SearchApp` 百万文件跨目录拼音混搜 `xykj 架构`、Windows 11 原生图标、Frecency 置顶与完备语法胶囊）、`scene_content_search.png`（实机 `SearchApp` 结合 Rust SIMD 穿透 PDF/Word/代码正文与 `L14`/`L32`/`L66` 行号一键复制）、`scene_quicklook.png`（实机 `QuickLookApp` 语法高亮代码、Markdown 与高清大图免打开秒看）；
+    - **全局手势与演示矩阵**：`mouse_gesture_demo.webp`（左：右键流光 L 形轨迹秒关标签页；右：`instantExecute` 未松键瞬发切标签 + `edge_right_wheel` 屏幕边缘滚轮调音量动态演示，零虚构轮盘）、`spotlight_effects_demo.webp`（会议投屏双击 `Ctrl` 聚光灯跟随 + 天际蓝/琥珀橙分色点击水波纹 + 流光尾迹动态演示）；
+    - **全能截图、贴图、OCR 与录屏矩阵**：`scene_capture_precision.png`（零黑屏窗口/子控件智能吸附 + 12x 像素网格十字准星放大取色）、`scene_capture_markup.png`（10 大标注工具胶囊 + **默认精密虚线 (`DashedDirect`) 2.4x 正圆光学放大镜** + 自愈序号 + 隐私马赛克 + 雪瓷白双层工具栏）、`scene_pin_and_ocr.png`（左：32 组宝石贴图与半透穿透；右：贴图内直接拖选文字 + 独立 100% 离线 OCR 结果窗）、`scroll_capture_demo.webp`（左滚动选区 + 右实时生长长图预览 + 首尾无损裁切动态演示）、`screen_recording_demo.webp`（珊瑚红呼吸边框 + 选区外围 40px `RecordingIndicator` 雪瓷白微晶控制岛 + WASAPI 双路电平 + 悬停原地动作提示 + 停止后秒切翡翠绿 `已保存 / SAVED` 文件直达胶囊，100% 对齐实机引擎）；
+    - **按键回显、统计与对话框助手矩阵**：`scene_keycast_and_stats.png`（左：高对比微晶键帽 + 连续打字/拼音自动静默；右：实机 `KeyStatsPage` 完整无截断 104 键全键盘热力图与本地里程统计）、`scene_dialog_enhancer.png`（真实 Windows 11 资源管理器 + 真实 `#32770` 另存为窗口挂载 `DialogRibbonOverlay` 一键秒切目录），辅以微内核总览 `feature_modules.png` 与无底部空白的 `feature_tray.png`；
+  - **视觉克制与语种纯净准则**：对于「屏幕四角触发角」与「远程协助增强」这类无形人体工学/底层键鼠透传机制，保持零冗余截图、仅以精炼文字阐述；`README.md` (`zh-CN`) 与 `README.en.md` (`en-US`) 全量配图与动图 100% 双语独立渲染、目录 1:1 对称、零混用、零原生 Unicode Emoji。
+
 ### [2026-11-10] 搜索引擎四大维度进阶优化：无锁 Bloom 运行历史快照、`CollectContentCandidates` 零分配目录位掩码、`size:` 区间/语义常量与流式进度/停止交互
 - **四大维度系统性提升**：
   1. **性能维度（消除 20,000 ~ 300,000 次互斥锁争用与候选收集堆分配风暴）**：
      - **`RunHistorySnapshot` 64 位双哈希 Bloom 预筛快照 (`RunHistoryManager.h/.cpp`, `main.cpp`)**：此前在 `runNameSearch`、30 万文件 `runContentSearch` 计划构建及 10,000 条结果 JSON 序列化中逐条调用 `RunHistoryManager::getRunCount` / `calculateFrecencyScore`，每次调用都获取 `m_mutex` 并分配转小写 `std::wstring`；现新增 `RunHistoryManager::captureSnapshot()` 单次加锁生成只读快照，内置 64 位长度掩码 (`lenMask`) 与首尾/中位双哈希位掩码 (`bloomMask`)，未命中历史的路径在 2 纳秒内 O(1) 零分配直接返回 `0`，并在 `TieredSearchResult` 排序中融入 `frecencyScore` 确保同匹配度下高频打开文件优先置顶；
-     - **`MftParser::CollectContentCandidates` 可分离目录位掩码 (`MftParser.cpp`)**：在 `CachedFolderNode` 中预计算并缓存 `dirClauseMask`，当 `fileFilterExpr.isEmpty()`（如纯 `content:陆巡`）时直接跳过过滤，当 `fileFilterExpr.isFullySeparable()`（如 `Chosen content:陆巡`）时直接调用零分配 `matchesSeparable(record, driveW, dirNode.dirClauseMask)`，彻底消除全文检索候选收集阶段数十万次 `std::function` 堆分配与冗余路径拼接。
+     - **`MftParser::CollectContentCandidates` 可分离目录位掩码 (`MftParser.cpp`)**：在 `CachedFolderNode` 中预计算并缓存 `dirClauseMask`，当 `fileFilterExpr.isEmpty()`（如纯 `content:命名管道`）时直接跳过过滤，当 `fileFilterExpr.isFullySeparable()`（如 `Projects content:命名管道`）时直接调用零分配 `matchesSeparable(record, driveW, dirNode.dirClauseMask)`，彻底消除全文检索候选收集阶段数十万次 `std::function` 堆分配与冗余路径拼接。
   2. **功能完整性维度（`size:` 范围闭区间与 Everything 级语义常量 - `SearchExpression.h/.cpp`）**：
      - 为 `size:` 算子新增 `SearchClause::SizeOp::Range`，全面支持 `size:1mb..50mb`、`size:10kb-100kb` 闭区间语法，以及 `size:empty` (`0 B`)、`size:tiny` (`1 B .. 10 KB`)、`size:small` (`10 KB .. 100 KB`)、`size:medium` (`100 KB .. 16 MB`)、`size:large` (`16 MB .. 128 MB`)、`size:huge` / `size:gigantic` (`>= 128 MB`) 语义化大小档位。
   3. **易用性与 UI 视觉维度（流式进度百分比、一键停止、输入框清空与单行代码片段复制 - `useSearchEngine.ts`, `SearchHeader.tsx`, `SearchFooter.tsx`, `SearchResultRow.tsx`, `SearchApp.tsx`）**：
@@ -23,7 +48,7 @@
   1. **多关键词搜索最匹配优先置顶与后缀假命中消除 (`SearchExpression.h/.cpp`, `main.cpp`, `searchTypes.ts`, `searchUtils.ts`)**：
      - **纯后缀组 + 普通词主干隔离**：当查询同时包含纯后缀过滤组（如 `*.log *.txt`）与无点号普通关键词（如 `log`）时，`matchSingleClauseLazy` 先剥离文件扩展名仅在主文件名 (`stem`) 上匹配普通词，彻底杜绝 `20260806_1535.log` 因 `.log` 扩展名假命中关键词 `log` 霸榜首屏；
      - **多关键词分层匹配度 (`matchRank`) 全链路透传**：`SearchExpression::calculateRank` 基于主干命中词数计算分层相关性（`Rank 0` 精确相等 -> `Rank 1` 主干全词前缀命中 -> `Rank 2` 主干全词包含 -> `Rank 4~6` 主干部分词命中 -> `Rank 7` 仅目录命中），由 `Tools3000_Service` 写入 JSON `matchRank` 并由前端 `getSortedResults` 在同一质量分层内优先按 `matchRank` 升序置顶。
-  2. **流式正文检索 (`content:陆巡`) 列表零闪烁 (`useSearchEngine.ts`, `VirtualSearchResults.tsx`)**：
+  2. **流式正文检索 (`content:命名管道`) 列表零闪烁 (`useSearchEngine.ts`, `VirtualSearchResults.tsx`)**：
      - **根因**：此前每个 220ms 流式时间片无论是否新增命中均克隆 `accumulated.slice()` 触发 `setSnapshot`，且 `VirtualSearchResults` 在 `results` 引用变化时直接 `new DynamicRowLayout(results.length, 56)` 丢弃所有已测量的真实 DOM 行高（含代码片段 `snippets` 的行真实高度为 `100~150px`），导致每 220ms 列表各行先坍缩回 `56px` 重叠挤压、下一帧再被重建的 `ResizeObserver` 弹回 `130px`；
      - **修复**：`useSearchEngine` 仅在分片真实新增去重结果 (`addedInSlice > 0`) 或最终收尾 (`!hasMore`) 时提交快照；`VirtualSearchResults` 引入跨分片持久化的 `measuredHeightsRef`（按 `result.path` 缓存已测高度并在构建 `DynamicRowLayout` 时同步预填）、常驻 `ResizeObserver`、仅在查询词变更时重置 `scrollTop`，并包裹 `React.memo` 隔离 `scanElapsedSeconds` 高频计时重绘。
   3. **RustDesk 下精密触控板四指横滑失效与长按恢复根因 (`RemoteMasterEngine.cpp`, `MouseHook.h/.cpp`, `GestureEngine.cpp`)**：
@@ -34,7 +59,7 @@
 
 ### [2026-11-10] 275 万文件多词跨目录搜索极限加速：极大目录掩码反链预筛 (`maximalDirMasks`) 与零分配 `matchesSeparable` 热路径
 - **用户实机痛点反馈**：
-  - 用户在 275.6 万真实文件规模（C 盘 + D 盘）下搜索双词跨目录查询 `同心 账号密码`（目标文件 `D:\Chosen\226-苏州同心\账号密码.txt`）时，旧实现耗时达 **1,100ms+（1.1s+）**，触发前端 80ms 加载阈值并显示 `1+ · 检索中 0.4s` / `正在扫描文件索引...`。
+  - 用户在 275.6 万真实文件规模（C 盘 + D 盘）下搜索双词跨目录查询 `星云 部署手册`（目标文件 `D:\Projects\226-星云科技\部署手册.txt`）时，旧实现耗时达 **1,100ms+（1.1s+）**，触发前端 80ms 加载阈值并显示 `1+ · 检索中 0.4s` / `正在扫描文件索引...`。
 - **三大性能根因深度拆解 (`src/service/SearchExpression.h/.cpp`, `src/service/MftParser.cpp`)**：
   1. **多词查询强制全盘 275 万次 `buildFullPath` 字符串拼接与哈希回溯**：当查询包含 `>= 2` 个词时，`recomputePathRequirement` 置 `m_requiresFullPath = true`；旧版对每个在文件名上未同时命中所有词的文件（99.999% 的文件）都调用 `getFullPath()` 向上遍历父目录 FRN 哈希表并分配拼接完整路径 `std::wstring`。
   2. **`std::function<std::wstring()>` 隐式堆分配风暴**：`MftParser::Search` 的 `testCandidate` 将捕获 4 个引用变量（32 字节，超出 MSVC SBO 阈值）的 `getPath` lambda 传给 `const PathGetter&`（`std::function<std::wstring()>`），导致即便不调用 `getFullPath()`，全盘 275 万个文件每次调用仍触发 `operator new` / `operator delete` 堆锁争用。
@@ -47,11 +72,11 @@
      - 提供 `noexcept` 且无 `std::function`、无 `std::wstring` 局部变量、无堆分配的 `matchesSeparable(record, driveLetter, dirClauseMask)`；按逆序 `for (size_t g = m_orGroups.size(); g-- > 0;)` 优先校验用户后输入的具体文件名词。
   3. **树祖先单调不变式与极大目录掩码反链预筛 (`maximalDirMasks`)**：
      - Phase 1 仅扫描占全盘 ~8% 的目录记录 (`stored->isDirectory()`)，且仅对自身 `segMask != 0` 的极少数目录（全盘通常仅几个到几十个）调用 `getFastDirClauseMask` 合成真实 `fullMask`，构建去重反链 `maximalDirMasks`（剔除被其他掩码包含的子集）；
-     - Phase 2 对每个文件先在 `maximalDirMasks` 上执行零查表 `matchesSeparable` 预筛——在 `同心 账号密码` 下，99.998% 不含 `账号密码` 的文件直接 O(1) 淘汰（0 次父目录查找）；仅通过预筛的 ~30 个候选文件才按需惰性分配 `4096` 槽位 `FlatMaskSlot` 校验真实祖先目录掩码并计算 `getDirMeta`。
+     - Phase 2 对每个文件先在 `maximalDirMasks` 上执行零查表 `matchesSeparable` 预筛——在 `星云 部署手册` 下，99.998% 不含 `部署手册` 的文件直接 O(1) 淘汰（0 次父目录查找）；仅通过预筛的 ~30 个候选文件才按需惰性分配 `4096` 槽位 `FlatMaskSlot` 校验真实祖先目录掩码并计算 `getDirMeta`。
   4. **红队边界审计与 4 重防漏/防误/防死锁加固**：
-     - **跨目录拼音与中文混搜补齐**：`computeDirectorySegmentMask` 同步消费目录记录的 `pinyinInitials` 与 `pinyinFull`，确保 `sztx 账号密码` 可命中 `226-苏州同心\账号密码.txt`；
+     - **跨目录拼音与中文混搜补齐**：`computeDirectorySegmentMask` 同步消费目录记录的 `pinyinInitials` 与 `pinyinFull`，确保 `xykj 部署手册` 可命中 `226-星云科技\部署手册.txt`；
      - **取反排除目录严格隔离**：Phase 1 仅当 `(rawFullMask & negMask) == 0` 时才将目录掩码归并入 `maximalDirMasks`，防止命中 `!备份` 的排除目录污染乐观反链掩码集；
-     - **多子句 OR 组混合 `file:`/`folder:` 安全回退与紧凑 `|` 语法支持**：多子句 OR 组若混有 `FileOnly`/`FolderOnly` 路径词则自动回退至 `matchesWithDirMask` 逐子句校验，并支持非引号词元中紧凑 `|`（如 `苏州|无锡`）自动拆分为 OR 算子；
+     - **多子句 OR 组混合 `file:`/`folder:` 安全回退与紧凑 `|` 语法支持**：多子句 OR 组若混有 `FileOnly`/`FolderOnly` 路径词则自动回退至 `matchesWithDirMask` 逐子句校验，并支持非引号词元中紧凑 `|`（如 `星云|极光`）自动拆分为 OR 算子；
      - **互斥后缀通配符智能并集归并与 O(1) 尾缀直判 (`*.log *.txt` / `*.log;*.txt`)**：识别形如 `*.ext` 的纯后缀通配符与 `ext:` 算子，将空格分隔的多个互斥正向纯后缀词元自动归并入同一 OR 组 `(*.log | *.txt)`，同时将 `isPureSuffixWildcardPattern` 标记为纯文件名级断言 (`isClauseRecordLocalOnly`) 并以 O(1) 末尾切片比较替代通用通配符回溯；
      - **两阶段屏障异常安全守卫**：Phase 1 目录扫描包裹 `try / catch (...)`，物理杜绝异常逃逸导致 `barrierCv` 等待死锁。
 
@@ -170,7 +195,7 @@
   2. **贴图分组需全面支持管理组名称与颜色**：扩容至 32 组后，用户要求支持自定义每个贴图组的名称与颜色。
 - **全文检索 (`content:`) 6 重复合根因拆解与终局修复**：
   1. **请求上限放大陷阱 (`limit: 0 -> 10,000`) 与全量同步阻塞**：前端请求 `limit: 0` 被 `SearchPlugin.cpp` 与 `service/main.cpp` 强转为 `kMaxQueryResults = 10,000`，而全盘匹配稀疏词（如 `update` + `owor`）的文件仅约 20 个，永远无法触发提前终止，迫使服务端必须扫完 30 万候选文件才回传首帧 JSON；现引入 4 槽位 90s TTL `CachedContentCandidatePlan` 候选计划缓存与时间片游标流式分页（首拍预算 `~160ms`、续扫预算 `~320ms`，携带 `progressive`/`cursor`/`planId`/`hasMore`/`nextCursor`），前端 `useSearchEngine` 分批流式拉取追加上屏，首拍百毫秒级直接呈现活跃工作区命中项且续扫不打断键盘选中行。
-  2. **构建/虚拟环境噪音淹没与 `dialogPriorities` 宽泛父目录提前截断 (`MftParser.cpp`, `PlainTextExtractor.h`)**：移除编译依赖文件 `.d` 的默认收录；在未显式指定对应路径词时剪枝 `.venv`、`site-packages`、`target/debug`、`CMakeFiles`、`WinSxS`、`EBWebView` 等噪音树；修复 `dialogPriorities` 匹配首个前缀 `C:\repo` 即 `break` 的缺陷，改为叠加匹配最高分 + 更长前缀深度奖励，确保深层活跃项目（如 `C:\repo\SBOTerminal`）优先于同级海量静态帮助库扫描。
+  2. **构建/虚拟环境噪音淹没与 `dialogPriorities` 宽泛父目录提前截断 (`MftParser.cpp`, `PlainTextExtractor.h`)**：移除编译依赖文件 `.d` 的默认收录；在未显式指定对应路径词时剪枝 `.venv`、`site-packages`、`target/debug`、`CMakeFiles`、`WinSxS`、`EBWebView` 等噪音树；修复 `dialogPriorities` 匹配首个前缀 `C:\repo` 即 `break` 的缺陷，改为叠加匹配最高分 + 更长前缀深度奖励，确保深层活跃项目（如 `C:\repo\NebulaTerminal`）优先于同级海量静态帮助库扫描。
   3. **PDF 内容流单调前进守恒与单文件超时熔断 (`PdfExtractor.cpp`, `main.cpp`, `SearchRequestLimits.h`)**：实机 RIP 采样定位到 `PdfExtractor::parsePdfContentStream` 在遇到嵌套数组 `[[...]]`、PostScript 花括号 `{...}`、孤立分隔符 `)`/`>`/`]` 或内联位图 `BI...ID...EI` 时，因 `isPdfDelimiter` 终止操作符词法扫描导致 `pos == opStart` 原地 100% CPU 无限死循环并永久卡住 `w.join()`；现重构为 `arrayDepth` 嵌套括号追踪 + `skipPdfInlineImage` 内联位图跳过 + `pos == opStart` 强制单调递增，同时对 `harvestFontToUnicodeLinks` 间接字体字典查询做 `attemptedFontDictObjs` 去重消除 $O(\text{Pages} \times \text{FileSize})$ 重复扫描，并在服务工作线程外层挂载 `PerFileContentExtractBudgetMs = 350ms` 单文件提取硬预算熔断。
   4. **MFT 收集锁竞争与提取器热路径加速 (`ContentSearchEngine`, `PlainTextExtractor`, `PdfExtractor`)**：新增零锁 `AllowedExtensionSnapshot` 快照消除 269 万条 MFT 遍历对 `ContentSearchEngine` 全局 `shared_mutex` 的逐条读锁争用；ASCII 词条预检升级为 `std::memchr` (AVX2) 双向跳跃扫描；超过 `16KB` 的超长单行（如 `2.8MB` 单行 `.ch` XML）改用每个关键词局部 `±320` 字节窗口 UTF-8 解码，消灭整行百万宽字符分配；纯扫描件 PDF（含 `/Image` XObject 无文字流）跳过无效的慢速 STA COM `WindowsIFilter` 回退。
   5. **窗口焦点切换防误杀 (`SearchApp.tsx`, `useSearchEngine.ts`)**：移除 `SearchApp` 中重复的 `window.focus -> refreshQuery()` 监听，并在 `refreshOnFocus` 中保护正在执行的重型内容检索不被失焦切窗掐断重扫。
@@ -1382,10 +1407,10 @@
 - **背景与业务痛点**：
   用户反馈在 `Alt+Space` 搜索窗口中默认使用“按修改时间倒序（`修改时间 ↓`）”排序时：
   1. 许多临时目录文件与 Windows 自动生成的 `.lnk` 快捷方式（如 `C:\Users\...\AppData\Roaming\Microsoft\Windows\Recent\*.lnk`）因为每次打开文件都会刷新修改时间，长期霸占搜索结果最顶部；
-  2. 用户本地工作目录（如 `D:\Chosen\...`）有一份原始文件，随时间推进多次通过微信（`xwechat_files`）或 QQ（`Tencent Files`）发给不同客户，且本地原始文件还经历过版本号迭代（如 `V10001` -> `V10002`）。搜索时满屏都是微信/QQ聊天记录里的多份发送副本（如 `2026-09`、`2026-08`、`2025-06`），且聊天副本的落盘修改时间往往比本地原始文件更新，导致用户真正想找的本地原始文件被淹没在后面。
+  2. 用户本地工作目录（如 `D:\Projects\...`）有一份原始文件，随时间推进多次通过微信（`xwechat_files`）或 QQ（`Tencent Files`）发给不同协作方，且本地原始文件还经历过版本号迭代（如 `V10001` -> `V10002`）。搜索时满屏都是微信/QQ聊天记录里的多份发送副本（如 `2026-09`、`2026-08`、`2025-06`），且聊天副本的落盘修改时间往往比本地原始文件更新，导致用户真正想找的本地原始文件被淹没在后面。
 - **架构设计与世界级解决方案**：
   1. **六级路径语义质量分层（`SearchResultQualityTier`）+ 层内时间倒序**：
-     - **Tier 0 (`NormalUserFile`)**：用户正常业务工作目录（如 `D:\Chosen\...`、桌面、普通文档目录、代码仓库等）中的真实原始文件，永远排在第一梯队最顶部，梯队内部严格遵循用户所选排序（如 `修改时间 ↓`）；
+     - **Tier 0 (`NormalUserFile`)**：用户正常业务工作目录（如 `D:\Projects\...`、桌面、普通文档目录、代码仓库等）中的真实原始文件，永远排在第一梯队最顶部，梯队内部严格遵循用户所选排序（如 `修改时间 ↓`）；
      - **Tier 1 (`UniqueChatFile`)**：仅存在于微信/企微/QQ/钉钉/飞书聊天记录中（本地正常目录无同名或同源主干文件）的接收文件，且多个聊天副本仅保留最新的一份在 Tier 1；
      - **Tier 2 (`RedundantChatCopy`)**：聊天记录中已在 Tier 0 存在本地原始文件的发送副本，或同一文件跨多个月份发给不同客户的历史旧副本（如 `2026-08`、`2025-06`），自动沉降折叠至冗余聊天副本层；
      - **Tier 3 (`AppOrSystemData`)**：`AppData`、`ProgramData`、`Program Files`、`Windows` 等应用或系统支撑目录文件；
@@ -1404,13 +1429,13 @@
 - **背景与核心问题**：
   1. **真实 NTFS MFT 模式下 `size:` 过滤失效**：`FSCTL_ENUM_USN_DATA` 枚举的 `USN_RECORD_V2` 不含文件大小，导致内存索引中 `record.fileSize == 0`，使 `*.mp4 size:>10mb` 等查询在候选初筛阶段全部返回 `false`。
   2. **缺乏 Everything 风格 `dm:` 修改日期过滤，且 `sort:` 修饰词干扰后端匹配**：前端 `SearchApp.tsx` 支持 `sort:size`/`sort:date` 指令，但后端 `SearchExpression` 将 `sort:...` 误判为普通文件名关键词导致结果为空；同时组合查询（如 `解决 ext:pdf size:>10kb`）在 `calculateRank` 时拿整串含算子的查询字符串比对文件名，导致精确/前缀匹配权重退化。
-  3. **搜索右键菜单与快捷键细节瑕疵**：“复制所在目录路径 (`menuCopyParent`)”误调用了短标签提取函数 `extractParentFolder`（仅复制出 `Chosen` 或 `WeChat·2026-09` 而非完整目录路径）；图片“独立贴图置顶”菜单快捷键标为 `Ctrl+P`（与固定搜索窗口冲突），且缺少 `Ctrl+Shift+Enter` 管理员运行快捷键绑定。
+  3. **搜索右键菜单与快捷键细节瑕疵**：“复制所在目录路径 (`menuCopyParent`)”误调用了短标签提取函数 `extractParentFolder`（仅复制出 `Projects` 或 `WeChat·2026-09` 而非完整目录路径）；图片“独立贴图置顶”菜单快捷键标为 `Ctrl+P`（与固定搜索窗口冲突），且缺少 `Ctrl+Shift+Enter` 管理员运行快捷键绑定。
 - **架构方案与落地点**：
   1. **两阶段内存优先短路 + 按需单次 `GetFileAttributesExW` 元数据探测（`SearchExpression.h` / `SearchExpression.cpp`）**：
      - `matchesWithLazyPath` 严格分两阶段执行：Pass 1 优先执行纯内存文件名/扩展名/路径过滤组，纳秒级筛除 99.9% 无关记录；Pass 2 仅对通过内存初筛的记录执行 `Size` 与 `DateModified`（`dm:` / `datemodified:` / `date:`，支持 `today`、`yesterday`、`thisweek`、`thismonth`、`thisyear`、`last7days`、`last30days`、`YYYY`、`YYYY-MM`、`YYYY-MM-DD`、比较算子 `>`/`>=`/`<`/`<=` 及区间 `..`/`~`），当内存记录 `fileSize == 0` 或 `lastWriteTime == 0` 时按需单次调用 `GetFileAttributesExW` 并缓存；
      - 自动忽略 `sort:` / `orderby:` 排序指令 token，并单独提取纯净关键词 `m_rankingQuery` 用于 `calculateRank`，确保带过滤算子的组合查询依然享有精准的文件名前缀/完全匹配排序权重。
   2. **搜索上下文菜单与全局键盘管线修复（`searchUtils.ts` / `SearchContextMenu.tsx` / `useSearchKeyboard.ts`）**：
-     - 新增 `extractParentDirectoryPath` 提取完整父目录路径（如 `D:\Chosen\216-北京中源`），修复“复制所在目录路径”只复制短目录名的问题；
+     - 新增 `extractParentDirectoryPath` 提取完整父目录路径（如 `D:\Projects\216-北辰智造`），修复“复制所在目录路径”只复制短目录名的问题；
      - 将“独立贴图置顶”快捷键统一为 `Ctrl+T`，并绑定 `Ctrl+Shift+Enter` 直接以管理员身份运行选中的可执行程序或脚本（`.exe`/`.bat`/`.cmd`/`.ps1`/`.msi`/`.vbs`）。
   3. **QuickLook 快速预览交互升级（`QuickLookApp.tsx`）**：
      - 支持图片预览鼠标滚轮平滑缩放（`10% ~ 500%`）、双击 `100% / 200%` 快速切换、键盘 `+`/`=`/`-`/`0` 缩放，以及代码预览 `Ctrl + =`/`-`/`0` 字号调节（严格遵循 `12px` 字号底线）、`Alt+Z` 自动换行、`Ctrl+Enter` 定位所在目录与 `Ctrl+C` 复制路径。

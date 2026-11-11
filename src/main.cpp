@@ -139,6 +139,38 @@ void syncForegroundFullscreenState() {
             tools3000::core::EventBus::instance().publish(tools3000::core::CancelTransientUiEvent{});
         }
     }
+
+    tools3000::ui::SpotlightOverlay::instance().refreshFullscreenBypassState(fg);
+}
+
+std::string jsonStringOr(const nlohmann::json& obj, const char* key, std::string fallback = {}) {
+    if (!obj.is_object()) return fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end() || !it->is_string()) return fallback;
+    return it->get<std::string>();
+}
+
+int jsonIntOr(const nlohmann::json& obj, const char* key, int fallback = 0) {
+    if (!obj.is_object()) return fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end() || !it->is_number()) return fallback;
+    return it->get<int>();
+}
+
+bool jsonBoolOr(const nlohmann::json& obj, const char* key, bool fallback = false) {
+    if (!obj.is_object()) return fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end() || !it->is_boolean()) return fallback;
+    return it->get<bool>();
+}
+
+void releaseHostHotkeysAndMessageWindow(HWND& msgHwnd) {
+    tools3000::core::LuaEngine::instance().shutdown();
+    tools3000::core::HotkeyManager::instance().shutdown();
+    if (msgHwnd && IsWindow(msgHwnd)) {
+        DestroyWindow(msgHwnd);
+    }
+    msgHwnd = nullptr;
 }
 
 void CALLBACK FullscreenGuardWinEventProc(
@@ -280,18 +312,17 @@ std::wstring buildRestartParameters(bool includeWindowPos) {
 }
 
 bool launchElevatedSuccessor(bool includeWindowPos) {
-    wchar_t exePath[MAX_PATH];
-    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return false;
-
-    const std::filesystem::path dir = std::filesystem::path(exePath).parent_path();
-    const std::wstring dirStr = dir.wstring();
+    const std::filesystem::path exePathObj = tools3000::core::WinUtils::getExePath();
+    if (exePathObj.empty()) return false;
+    const std::wstring exePath = exePathObj.wstring();
+    const std::wstring dirStr = exePathObj.parent_path().wstring();
     const std::wstring params = buildRestartParameters(includeWindowPos);
 
     SHELLEXECUTEINFOW sei{};
     sei.cbSize = sizeof(sei);
     sei.fMask = SEE_MASK_NOCLOSEPROCESS;
     sei.lpVerb = L"runas";
-    sei.lpFile = exePath;
+    sei.lpFile = exePath.c_str();
     sei.lpParameters = params.c_str();
     sei.lpDirectory = dirStr.c_str();
     sei.nShow = SW_SHOWNORMAL;
@@ -303,11 +334,10 @@ bool launchElevatedSuccessor(bool includeWindowPos) {
 }
 
 bool launchSameIntegritySuccessor(bool includeWindowPos) {
-    wchar_t exePath[MAX_PATH];
-    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return false;
-
-    const std::filesystem::path dir = std::filesystem::path(exePath).parent_path();
-    const std::wstring dirStr = dir.wstring();
+    const std::filesystem::path exePathObj = tools3000::core::WinUtils::getExePath();
+    if (exePathObj.empty()) return false;
+    const std::wstring exePath = exePathObj.wstring();
+    const std::wstring dirStr = exePathObj.parent_path().wstring();
 
     std::wstring commandLine = L"\"";
     commandLine += exePath;
@@ -317,7 +347,7 @@ bool launchSameIntegritySuccessor(bool includeWindowPos) {
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(exePath, commandLine.data(), nullptr, nullptr, FALSE, 0,
+    if (!CreateProcessW(exePath.c_str(), commandLine.data(), nullptr, nullptr, FALSE, 0,
                         nullptr, dirStr.c_str(), &startup, &process)) {
         return false;
     }
@@ -327,11 +357,10 @@ bool launchSameIntegritySuccessor(bool includeWindowPos) {
 }
 
 bool launchUnelevatedSuccessor(bool includeWindowPos) {
-    wchar_t exePath[MAX_PATH];
-    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return false;
-
-    const std::filesystem::path dir = std::filesystem::path(exePath).parent_path();
-    const std::wstring dirStr = dir.wstring();
+    const std::filesystem::path exePathObj = tools3000::core::WinUtils::getExePath();
+    if (exePathObj.empty()) return false;
+    const std::wstring exePath = exePathObj.wstring();
+    const std::wstring dirStr = exePathObj.parent_path().wstring();
 
     // IPC normally arrives on the WebView UI apartment, but the bridge also
     // supports worker-thread callers. Make the launcher correct in both cases.
@@ -366,7 +395,7 @@ bool launchUnelevatedSuccessor(bool includeWindowPos) {
     directory.bstrVal = SysAllocString(dirStr.c_str());
     show.vt = VT_I4;
     show.lVal = SW_SHOWNORMAL;
-    const BSTR executable = SysAllocString(exePath);
+    const BSTR executable = SysAllocString(exePath.c_str());
     const HRESULT launchResult = executable && arguments.bstrVal && directory.bstrVal
         ? shell->ShellExecute(executable, arguments, directory, operation, show)
         : E_OUTOFMEMORY;
@@ -640,6 +669,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     // ── 9. 清理与退出 ────────────────────────────────────────────────────
     LOG_INFO("收到退出消息，准备清理");
     shutdownSubsystems();
+    releaseHostHotkeysAndMessageWindow(hwndMessage);
     releaseSingleInstanceMutex();
     CoUninitialize();
     return messageResult == -1 ? 1 : static_cast<int>(msg.wParam);
@@ -835,13 +865,9 @@ HWND createMessageWindow(HINSTANCE hInstance) {
 }
 
 void initializeSubsystems(HWND hwnd, bool preloadSettings) {
-    // 1. 托盘图标
+    // 1. 托盘图标（内部管理并安全退订 GesturePauseChangedEvent 与 ThemeChangedEvent）
     auto& tray = tools3000::tray::TrayIcon::instance();
     tray.create(hwnd);
-
-    tools3000::core::EventBus::instance().subscribe<tools3000::core::ThemeChangedEvent>([](const tools3000::core::ThemeChangedEvent&) {
-        tools3000::tray::TrayIcon::instance().refreshThemeIcon();
-    });
 
     tray.onOpenSettings([]() { showSettingsWindow(); });
     tray.onExit([hwnd]() { PostMessageW(hwnd, WM_CLOSE, 0, 0); });
@@ -869,10 +895,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 
     // 3. 发现插件。这里只读取元数据与启停配置；实际初始化要等核心服务就绪。
     auto& pm = tools3000::core::PluginManager::instance();
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     const std::filesystem::path pluginDir =
-        std::filesystem::path(exePath).parent_path() / L"plugins";
+        tools3000::core::WinUtils::getExeDirectory() / L"plugins";
     pm.loadPlugins(pluginDir.string());
 
     // 4. 全局快捷键注册与全屏智能免打扰策略初始化
@@ -924,10 +948,12 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             });
         tools3000::core::MessageBridge::instance().registerHostHandler(
             "search.setWindowSize", [](const nlohmann::json& params) -> nlohmann::json {
-                if (params.contains("width") && params.contains("height")) {
-                    int w = params["width"].get<int>();
-                    int h = params["height"].get<int>();
-                    bool center = params.value("center", false);
+                if (params.is_object() &&
+                    params.contains("width") && params["width"].is_number() &&
+                    params.contains("height") && params["height"].is_number()) {
+                    const int w = params["width"].get<int>();
+                    const int h = params["height"].get<int>();
+                    const bool center = jsonBoolOr(params, "center", false);
                     tools3000::core::MainThreadDispatcher::instance().post([w, h, center]() {
                         tools3000::ui::SearchWindow::instance().setWindowSize(w, h, center);
                     });
@@ -938,11 +964,11 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         tools3000::core::MessageBridge::instance().registerHostHandler(
             "search.quickLook",
             [](const nlohmann::json& params) -> nlohmann::json {
-                std::string pathUtf8 = params.value("path", "");
+                const std::string pathUtf8 = jsonStringOr(params, "path");
                 if (pathUtf8.empty()) {
                     return {{"success", false}, {"error", "missing path"}};
                 }
-                const bool toggle = params.value("toggle", true);
+                const bool toggle = jsonBoolOr(params, "toggle", true);
                 const std::wstring wpath = tools3000::ui::normalizePreviewFilePath(
                     tools3000::core::WinUtils::utf8ToWstring(pathUtf8));
                 tools3000::core::MainThreadDispatcher::instance().post([wpath, toggle]() {
@@ -1031,7 +1057,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 
     // 注册 QuickLook 快速预览 IPC 处理器
     tools3000::core::MessageBridge::instance().registerHostHandler("quicklook.open", [](const nlohmann::json& params) -> nlohmann::json {
-        std::string pathUtf8 = params.value("path", "");
+        std::string pathUtf8 = jsonStringOr(params, "path");
         if (pathUtf8.empty()) pathUtf8 = tools3000::core::WinUtils::wstringToUtf8(tools3000::ui::QuickLookWindow::instance().currentFilePath());
         if (!pathUtf8.empty()) {
             tools3000::core::WinUtils::openFile(tools3000::core::WinUtils::utf8ToWstring(pathUtf8));
@@ -1042,7 +1068,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         return {{"success", true}};
     });
     tools3000::core::MessageBridge::instance().registerHostHandler("quicklook.showInFolder", [](const nlohmann::json& params) -> nlohmann::json {
-        std::string pathUtf8 = params.value("path", "");
+        std::string pathUtf8 = jsonStringOr(params, "path");
         if (pathUtf8.empty()) pathUtf8 = tools3000::core::WinUtils::wstringToUtf8(tools3000::ui::QuickLookWindow::instance().currentFilePath());
         if (!pathUtf8.empty()) {
             tools3000::core::WinUtils::openFolderAndSelectItem(tools3000::core::WinUtils::utf8ToWstring(pathUtf8));
@@ -1053,7 +1079,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         return {{"success", true}};
     });
     tools3000::core::MessageBridge::instance().registerHostHandler("quicklook.copyPath", [](const nlohmann::json& params) -> nlohmann::json {
-        std::string pathUtf8 = params.value("path", "");
+        std::string pathUtf8 = jsonStringOr(params, "path");
         if (pathUtf8.empty()) pathUtf8 = tools3000::core::WinUtils::wstringToUtf8(tools3000::ui::QuickLookWindow::instance().currentFilePath());
         tools3000::core::WinUtils::copyToClipboard(pathUtf8);
         return {{"success", true}};
@@ -1075,20 +1101,14 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         return {{"success", true}};
     });
     tools3000::core::MessageBridge::instance().registerHostHandler("quicklook.stepSelection", [](const nlohmann::json& params) -> nlohmann::json {
-        const int delta = params.value("delta", 1) < 0 ? -1 : 1;
+        const int delta = jsonIntOr(params, "delta", 1) < 0 ? -1 : 1;
         tools3000::core::MainThreadDispatcher::instance().post([delta]() {
             auto& searchWin = tools3000::ui::SearchWindow::instance();
             if (searchWin.isVisible()) {
                 searchWin.stepQuickLookSelection(delta);
                 return;
             }
-            auto& ql = tools3000::ui::QuickLookWindow::instance();
-            const std::wstring cur = ql.currentFilePath();
-            if (cur.empty()) return;
-            const std::wstring nextPath = tools3000::ui::resolveSiblingPreviewPath(cur, delta);
-            if (!nextPath.empty() && _wcsicmp(nextPath.c_str(), cur.c_str()) != 0) {
-                ql.previewFile(nextPath);
-            }
+            tools3000::ui::QuickLookWindow::instance().stepSiblingAsync(delta);
         });
         return {{"success", true}};
     });
@@ -1118,7 +1138,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     tools3000::core::MessageBridge::instance().markMethodAsync("app.exportLogs");
     tools3000::core::MessageBridge::instance().registerHostHandler("app.exportLogs", [](const nlohmann::json& params) -> nlohmann::json {
         std::optional<std::filesystem::path> savePath;
-        const auto supplied = params.value("path", "");
+        const std::string supplied = jsonStringOr(params, "path");
         if (!supplied.empty()) {
             savePath = tools3000::core::WinUtils::utf8ToWstring(supplied);
         } else {
@@ -1157,11 +1177,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                     dialog->SetFileName(defaultName);
                     dialog->SetTitle(L"导出 Tools3000 诊断日志");
 
-                    HWND ownerHwnd = tools3000::ui::SettingsWindow::instance().hwnd();
-                    if (!ownerHwnd || !IsWindow(ownerHwnd) || !IsWindowVisible(ownerHwnd)) {
-                        ownerHwnd = nullptr;
-                    }
-                    if (SUCCEEDED(dialog->Show(ownerHwnd))) {
+                    // 后台 STA 工作线程严禁将主 UI 线程窗口作为模态 owner 硬挂接，防止跨线程输入队列互锁
+                    if (SUCCEEDED(dialog->Show(nullptr))) {
                         Microsoft::WRL::ComPtr<IShellItem> item;
                         if (SUCCEEDED(dialog->GetResult(&item)) && item) {
                             PWSTR rawPath = nullptr;
@@ -1355,21 +1372,21 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     });
 
     tools3000::core::MessageBridge::instance().registerHostHandler("window.startResize", [](const nlohmann::json& params) -> nlohmann::json {
-        std::string edge = params.value("edge", "");
+        const std::string edge = jsonStringOr(params, "edge");
         tools3000::ui::SettingsWindow::instance().startResize(edge);
         return {{"success", true}};
     });
 
     tools3000::core::MessageBridge::instance().registerHostHandler("window.showSystemMenu", [](const nlohmann::json& params) -> nlohmann::json {
-        int screenX = params.value("screenX", -1);
-        int screenY = params.value("screenY", -1);
+        const int screenX = jsonIntOr(params, "screenX", -1);
+        const int screenY = jsonIntOr(params, "screenY", -1);
         tools3000::ui::SettingsWindow::instance().showSystemMenu(screenX, screenY);
         return {{"success", true}};
     });
 
     // 注册托盘菜单 IPC 处理函数
     tools3000::core::MessageBridge::instance().registerHostHandler("tray.action", [hwnd](const nlohmann::json& params) -> nlohmann::json {
-        std::string action = params.value("action", "");
+        const std::string action = jsonStringOr(params, "action");
         
         // 执行前先隐藏托盘菜单
         tools3000::ui::TrayWindow::instance().hide();
@@ -1387,7 +1404,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         } else if (action == "pauseGesture") {
             tools3000::core::EventBus::instance().publish(tools3000::core::ActionToggleGesturePauseEvent{});
         } else if (action == "emergencyFlush") {
-            tools3000::core::RemoteMasterEngine::instance().flushModifiers();
+            tools3000::core::RemoteMasterEngine::instance().flushModifiers(nullptr, true);
             return {{"success", true}};
         } else if (action == "restartElevated") {
             tools3000::core::ConfigManager::instance().set<bool>("/general/runAsAdmin", true);
@@ -1423,8 +1440,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     });
 
     tools3000::core::MessageBridge::instance().registerHostHandler("tray.resize", [](const nlohmann::json& params) -> nlohmann::json {
-        int width = params.value("width", 0);
-        int height = params.value("height", 0);
+        const int width = jsonIntOr(params, "width", 0);
+        const int height = jsonIntOr(params, "height", 0);
         if (width > 0 && height > 0) {
             tools3000::ui::TrayWindow::instance().setContentSize(width, height);
             return {{"success", true}};
@@ -1569,7 +1586,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     });
 
     tools3000::core::MessageBridge::instance().registerHostHandler("remote.emergencyFlush", [](const nlohmann::json&) -> nlohmann::json {
-        tools3000::core::RemoteMasterEngine::instance().flushModifiers();
+        tools3000::core::RemoteMasterEngine::instance().flushModifiers(nullptr, true);
         return {{"success", true}};
     });
 
@@ -1605,13 +1622,13 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 const bool onlyAlt = altDown && !ctrlDown && !shiftDown && !winDown;
                 if (onlyAlt) {
                     if (tools3000::ui::QuickLookWindow::instance().isVisible()) {
-                        tools3000::core::MainThreadDispatcher::instance().post([]() {
+                        tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
                             tools3000::ui::QuickLookWindow::instance().hide();
                         });
                         return true;
                     }
                     if (tools3000::ui::SearchWindow::instance().isVisible()) {
-                        tools3000::core::MainThreadDispatcher::instance().post([]() {
+                        tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
                             tools3000::ui::SearchWindow::instance().triggerQuickLookForSelection();
                         });
                         return true;
@@ -1636,13 +1653,13 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                             // 焦点位于 QuickLook DOM（非跨源 PDF iframe）：交由前端区分 <video>/<audio>/按钮与普通关闭
                             return false;
                         }
-                        tools3000::core::MainThreadDispatcher::instance().post([]() {
+                        tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
                             tools3000::ui::QuickLookWindow::instance().hide();
                         });
                         return true;
                     }
                     if (tools3000::core::WinUtils::isForegroundExplorerReadyForQuickLook()) {
-                        tools3000::core::MainThreadDispatcher::instance().post([]() {
+                        tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
                             if (auto sel = tools3000::core::WinUtils::getSelectedExplorerFile(); sel.has_value()) {
                                 tools3000::ui::QuickLookWindow::instance().show(*sel);
                             }
@@ -1656,12 +1673,14 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         // 2. ESC：先收 QuickLook；再通知手势/轮盘取消追踪，但不吞掉按键
         if (vkCode == VK_ESCAPE) {
             if (tools3000::ui::QuickLookWindow::instance().isVisible()) {
-                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
                     tools3000::ui::QuickLookWindow::instance().hide();
                 });
                 return true;
             }
-            tools3000::core::EventBus::instance().publish(tools3000::core::CancelTransientUiEvent{});
+            tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
+                tools3000::core::EventBus::instance().publish(tools3000::core::CancelTransientUiEvent{});
+            });
         }
 
         // 3. 方向键联动：在搜索窗口或资源管理器中切换选中项时，QuickLook 自动刷新预览内容；
@@ -1679,17 +1698,12 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                                              (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
                         if ((altDown || ctrlDown) && !winDown) {
                             const int delta = (vkCode == VK_UP) ? -1 : 1;
-                            tools3000::core::MainThreadDispatcher::instance().post([delta]() {
+                            tools3000::core::MainThreadDispatcher::instance().postDeferred([delta]() {
                                 auto& searchWin = tools3000::ui::SearchWindow::instance();
                                 if (searchWin.isVisible()) {
                                     searchWin.stepQuickLookSelection(delta);
                                 } else {
-                                    auto& ql = tools3000::ui::QuickLookWindow::instance();
-                                    const std::wstring cur = ql.currentFilePath();
-                                    const std::wstring nextPath = tools3000::ui::resolveSiblingPreviewPath(cur, delta);
-                                    if (!nextPath.empty() && _wcsicmp(nextPath.c_str(), cur.c_str()) != 0) {
-                                        ql.previewFile(nextPath);
-                                    }
+                                    tools3000::ui::QuickLookWindow::instance().stepSiblingAsync(delta);
                                 }
                             });
                             return true;
@@ -1759,6 +1773,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 
     // 9. 更新检查严格在后台执行，并由内部频率限制保护启动性能。
     tools3000::core::UpdateChecker::instance().checkAsync(false);
+
+    // 重新锚定宿主崩溃处理器，防止 WebView2 Crashpad 在预热期间覆盖全局异常过滤器
+    tools3000::core::CrashHandler::reinstallFilter();
 }
 
 void shutdownSubsystems() {
@@ -1780,7 +1797,9 @@ void shutdownSubsystems() {
     tools3000::ui::TrayWindow::instance().destroy();
     tools3000::core::KeyboardHook::instance().uninstall();
     tools3000::core::MouseHook::instance().uninstall();
+    tools3000::core::LuaEngine::instance().shutdown();
     tools3000::core::PluginManager::instance().shutdownPlugins();
+    tools3000::core::HotkeyManager::instance().shutdown();
     tools3000::core::ShellContextMenuService::instance().shutdown();
     tools3000::ui::ToastOverlay::instance().shutdown();
     tools3000::ui::SpotlightOverlay::instance().shutdown();
@@ -1942,6 +1961,9 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             g_powerNotify = nullptr;
         }
         WTSUnRegisterSessionNotification(hwnd);
+        // 幂等预释放全局系统热键与 Lua 热键，防止重启交接期间旧消息窗口继续占用 RegisterHotKey
+        tools3000::core::LuaEngine::instance().shutdown();
+        tools3000::core::HotkeyManager::instance().shutdown();
         tools3000::core::WinUtils::emergencyFlushInputState();
         PostQuitMessage(0);
         return 0;

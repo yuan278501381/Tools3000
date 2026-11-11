@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <iostream>
 #include <cwctype>
+#include <unordered_set>
 
 #define BUF_LEN 65536
 
@@ -206,15 +207,73 @@ uint64_t MftParser::getApproximateIndexBytes() const {
     return m_Store.approximateBytes();
 }
 
+bool MftParser::queryFrnDiskMetadata(
+    uint64_t frn,
+    const std::wstring& fallbackPath,
+    uint64_t& outFileSize,
+    uint64_t& outCreationTime,
+    uint64_t& outLastWriteTime
+) const noexcept {
+    if (m_hVolume != INVALID_HANDLE_VALUE && !m_IsFallbackDirectoryWalk && frn != 0) {
+        FILE_ID_DESCRIPTOR desc{};
+        desc.dwSize = sizeof(desc);
+        desc.Type = FileIdType;
+        desc.FileId.QuadPart = static_cast<LONGLONG>(frn);
+        HANDLE hFile = OpenFileById(
+            m_hVolume,
+            &desc,
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+        );
+        if (hFile != INVALID_HANDLE_VALUE) {
+            BY_HANDLE_FILE_INFORMATION info{};
+            const BOOL ok = GetFileInformationByHandle(hFile, &info);
+            CloseHandle(hFile);
+            if (ok) {
+                const bool isDir = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                outFileSize = isDir
+                    ? 0ULL
+                    : ((static_cast<uint64_t>(info.nFileSizeHigh) << 32) |
+                       static_cast<uint64_t>(info.nFileSizeLow));
+                outCreationTime = fileTimeToUint64(info.ftCreationTime);
+                outLastWriteTime = fileTimeToUint64(info.ftLastWriteTime);
+                return true;
+            }
+        }
+    }
+    if (!fallbackPath.empty()) {
+        WIN32_FILE_ATTRIBUTE_DATA attr{};
+        if (GetFileAttributesExW(fallbackPath.c_str(), GetFileExInfoStandard, &attr)) {
+            const bool isDir = (attr.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            outFileSize = isDir
+                ? 0ULL
+                : ((static_cast<uint64_t>(attr.nFileSizeHigh) << 32) |
+                   static_cast<uint64_t>(attr.nFileSizeLow));
+            outCreationTime = fileTimeToUint64(attr.ftCreationTime);
+            outLastWriteTime = fileTimeToUint64(attr.ftLastWriteTime);
+            return true;
+        }
+    }
+    return false;
+}
+
 void MftParser::UsnListenerLoop() {
+    constexpr DWORD kDataModifyReasons =
+        USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND | USN_REASON_DATA_TRUNCATION;
+
     READ_USN_JOURNAL_DATA_V0 rujd = {0};
-    const uint64_t initialUsn = m_CurrentUsn.load(std::memory_order_acquire);
-    rujd.StartUsn = (initialUsn != 0) ? initialUsn : m_UsnJournalData.NextUsn;
+    {
+        std::lock_guard<std::mutex> usnLock(m_UsnMutex);
+        const uint64_t initialUsn = m_CurrentUsn.load(std::memory_order_acquire);
+        rujd.StartUsn = (initialUsn != 0) ? static_cast<USN>(initialUsn) : m_UsnJournalData.NextUsn;
+        rujd.UsnJournalID = m_UsnJournalData.UsnJournalID;
+    }
     rujd.ReasonMask = 0xFFFFFFFF; // All reasons
     rujd.ReturnOnlyOnClose = FALSE;
     rujd.Timeout = 0;
     rujd.BytesToWaitFor = 0;
-    rujd.UsnJournalID = m_UsnJournalData.UsnJournalID;
 
     std::vector<BYTE> buffer(BUF_LEN);
     DWORD bytesReturned = 0;
@@ -224,9 +283,12 @@ void MftParser::UsnListenerLoop() {
             const DWORD err = GetLastError();
             if (err == ERROR_JOURNAL_ENTRY_DELETED || err == ERROR_JOURNAL_NOT_ACTIVE) {
                 if (QueryUsnJournal()) {
-                    rujd.UsnJournalID = m_UsnJournalData.UsnJournalID;
-                    rujd.StartUsn = m_UsnJournalData.NextUsn;
-                    m_CurrentUsn.store(rujd.StartUsn, std::memory_order_release);
+                    {
+                        std::lock_guard<std::mutex> usnLock(m_UsnMutex);
+                        rujd.UsnJournalID = m_UsnJournalData.UsnJournalID;
+                        rujd.StartUsn = m_UsnJournalData.NextUsn;
+                    }
+                    m_CurrentUsn.store(static_cast<uint64_t>(rujd.StartUsn), std::memory_order_release);
                     EnumerateFiles();
                 }
             }
@@ -236,7 +298,8 @@ void MftParser::UsnListenerLoop() {
 
         if (bytesReturned >= sizeof(USN)) {
             rujd.StartUsn = *reinterpret_cast<const USN*>(buffer.data());
-            m_CurrentUsn.store(rujd.StartUsn, std::memory_order_release);
+            m_CurrentUsn.store(static_cast<uint64_t>(rujd.StartUsn), std::memory_order_release);
+            std::lock_guard<std::mutex> usnLock(m_UsnMutex);
             m_UsnJournalData.NextUsn = rujd.StartUsn;
         }
 
@@ -249,62 +312,142 @@ void MftParser::UsnListenerLoop() {
         const BYTE* pRecordBytes = buffer.data() + sizeof(USN);
 
         if (dwRetBytes > 0) {
-            std::unique_lock lock(m_MapMutex);
-            bool changed = false;
-            tools3000::service::ParsedUsnRecord parsed{};
+            std::vector<std::pair<uint64_t, std::wstring>> pendingStatRefresh;
+            std::unordered_set<uint64_t> queuedFrns;
+            std::unordered_set<uint64_t> deletedInBatch;
+            const bool needPathFallback = (m_hVolume == INVALID_HANDLE_VALUE || m_IsFallbackDirectoryWalk);
 
-            while (dwRetBytes > 0 && tools3000::service::parseUsnRecord(pRecordBytes, dwRetBytes, parsed)) {
-                if (parsed.isValid) {
-                    if (parsed.reason & USN_REASON_FILE_DELETE) {
-                        changed = m_Store.erase(parsed.fileReferenceNumber) || changed;
-                    } else if ((parsed.reason & USN_REASON_FILE_CREATE) ||
-                               (parsed.reason & USN_REASON_RENAME_NEW_NAME)) {
-                        if (!parsed.fileName.empty()) {
-                            FileRecordInit record;
-                            record.fileReferenceNumber = parsed.fileReferenceNumber;
-                            record.parentFileReferenceNumber = parsed.parentFileReferenceNumber;
-                            record.isDirectory = (parsed.fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-                            record.fileAttributes = parsed.fileAttributes;
-                            record.lastWriteTime = parsed.timeStamp;
-                            record.fileName = std::wstring(parsed.fileName);
+            {
+                std::unique_lock lock(m_MapMutex);
+                bool changed = false;
+                tools3000::service::ParsedUsnRecord parsed{};
 
-                            m_Store.upsert(record);
-                            changed = true;
-                        }
-                    } else if (parsed.reason & USN_REASON_BASIC_INFO_CHANGE) {
-                        const auto* existing = m_Store.find(parsed.fileReferenceNumber);
-                        if (existing) {
-                            FileRecord oldRec = m_Store.view(*existing);
-                            FileRecordInit record;
-                            record.fileReferenceNumber = parsed.fileReferenceNumber;
-                            record.parentFileReferenceNumber = oldRec.parentFileReferenceNumber;
-                            record.isDirectory = oldRec.isDirectory;
-                            record.fileAttributes = parsed.fileAttributes;
-                            record.fileSize = oldRec.fileSize;
-                            record.creationTime = oldRec.creationTime;
-                            record.lastWriteTime = parsed.timeStamp ? parsed.timeStamp : oldRec.lastWriteTime;
-                            record.fileName = std::wstring(oldRec.fileName);
+                while (dwRetBytes > 0 && tools3000::service::parseUsnRecord(pRecordBytes, dwRetBytes, parsed)) {
+                    if (parsed.isValid) {
+                        const uint64_t frn = parsed.fileReferenceNumber;
+                        if (parsed.reason & USN_REASON_FILE_DELETE) {
+                            changed = m_Store.erase(frn) || changed;
+                            deletedInBatch.insert(frn);
+                        } else if ((parsed.reason & USN_REASON_FILE_CREATE) ||
+                                   (parsed.reason & USN_REASON_RENAME_NEW_NAME)) {
+                            deletedInBatch.erase(frn);
+                            if (!parsed.fileName.empty()) {
+                                const bool isDir = (parsed.fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                                FileRecordInit record;
+                                record.fileReferenceNumber = frn;
+                                record.parentFileReferenceNumber = parsed.parentFileReferenceNumber;
+                                record.isDirectory = isDir;
+                                record.fileAttributes = parsed.fileAttributes;
+                                record.lastWriteTime = parsed.timeStamp;
+                                record.fileName = std::wstring(parsed.fileName);
 
-                            m_Store.upsert(record);
-                            changed = true;
+                                // `MED-15`: Never blindly zero out `fileSize` / `creationTime` on rename
+                                // (`USN_REASON_RENAME_NEW_NAME`) or follow-up close events on an existing FRN.
+                                const auto* existing = m_Store.find(frn);
+                                if (existing != nullptr) {
+                                    const FileRecord oldRec = m_Store.view(*existing);
+                                    if (!isDir) {
+                                        record.fileSize = oldRec.fileSize;
+                                    }
+                                    record.creationTime = oldRec.creationTime;
+                                    if (record.lastWriteTime == 0) {
+                                        record.lastWriteTime = oldRec.lastWriteTime;
+                                    }
+                                }
+
+                                m_Store.upsert(record);
+                                changed = true;
+
+                                if (!isDir &&
+                                    ((parsed.reason & USN_REASON_RENAME_NEW_NAME) != 0 ||
+                                     (parsed.reason & USN_REASON_CLOSE) != 0 ||
+                                     (parsed.reason & kDataModifyReasons) != 0 ||
+                                     record.fileSize == 0) &&
+                                    queuedFrns.insert(frn).second) {
+                                    pendingStatRefresh.emplace_back(
+                                        frn,
+                                        needPathFallback ? buildFullPath(frn) : std::wstring{});
+                                }
+                            }
+                        } else if ((parsed.reason & USN_REASON_BASIC_INFO_CHANGE) ||
+                                   ((parsed.reason & USN_REASON_CLOSE) && (parsed.reason & kDataModifyReasons)) ||
+                                   (parsed.reason & kDataModifyReasons)) {
+                            const auto* existing = m_Store.find(frn);
+                            if (existing != nullptr) {
+                                const FileRecord oldRec = m_Store.view(*existing);
+                                FileRecordInit record;
+                                record.fileReferenceNumber = frn;
+                                record.parentFileReferenceNumber = oldRec.parentFileReferenceNumber;
+                                record.isDirectory = oldRec.isDirectory;
+                                record.fileAttributes = parsed.fileAttributes ? parsed.fileAttributes : oldRec.fileAttributes;
+                                record.fileSize = oldRec.fileSize;
+                                record.creationTime = oldRec.creationTime;
+                                record.lastWriteTime = parsed.timeStamp ? parsed.timeStamp : oldRec.lastWriteTime;
+                                record.fileName = std::wstring(oldRec.fileName);
+
+                                m_Store.upsert(record);
+                                changed = true;
+
+                                if (!oldRec.isDirectory &&
+                                    ((parsed.reason & USN_REASON_CLOSE) != 0 ||
+                                     (parsed.reason & kDataModifyReasons) != 0) &&
+                                    queuedFrns.insert(frn).second) {
+                                    pendingStatRefresh.emplace_back(
+                                        frn,
+                                        needPathFallback ? buildFullPath(frn) : std::wstring{});
+                                }
+                            }
                         }
                     }
+
+                    if (parsed.recordLength == 0 || parsed.recordLength > dwRetBytes) {
+                        break;
+                    }
+                    dwRetBytes -= parsed.recordLength;
+                    pRecordBytes += parsed.recordLength;
                 }
 
-                if (parsed.recordLength == 0 || parsed.recordLength > dwRetBytes) {
-                    break;
+                if (changed) {
+                    m_Store.compactIfSparse();
+                    m_IndexGeneration.fetch_add(1, std::memory_order_release);
+                    std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
+                    m_CachedQuery.clear();
+                    m_CachedCandidates.clear();
+                    m_CachedExcludePatterns.clear();
                 }
-                dwRetBytes -= parsed.recordLength;
-                pRecordBytes += parsed.recordLength;
             }
 
-            if (changed) {
-                m_Store.compactIfSparse();
-                m_IndexGeneration.fetch_add(1, std::memory_order_release);
-                std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
-                m_CachedQuery.clear();
-                m_CachedCandidates.clear();
-                m_CachedExcludePatterns.clear();
+            // Refresh `fileSize`, `creationTime`, and `lastWriteTime` OUTSIDE `m_MapMutex` (`MED-15`)
+            // so `size:` and `dm:` queries immediately see updated metadata after writes/renames.
+            if (!pendingStatRefresh.empty()) {
+                struct RefreshedMeta {
+                    uint64_t frn = 0;
+                    uint64_t fileSize = 0;
+                    uint64_t creationTime = 0;
+                    uint64_t lastWriteTime = 0;
+                };
+                std::vector<RefreshedMeta> refreshed;
+                refreshed.reserve(pendingStatRefresh.size());
+                for (const auto& [frn, fallbackPath] : pendingStatRefresh) {
+                    if (deletedInBatch.find(frn) != deletedInBatch.end()) continue;
+                    uint64_t fSize = 0;
+                    uint64_t cTime = 0;
+                    uint64_t mTime = 0;
+                    if (queryFrnDiskMetadata(frn, fallbackPath, fSize, cTime, mTime)) {
+                        refreshed.push_back(RefreshedMeta{frn, fSize, cTime, mTime});
+                    }
+                }
+                if (!refreshed.empty()) {
+                    std::unique_lock statLock(m_MapMutex);
+                    for (const auto& item : refreshed) {
+                        m_Store.updateMetadata(item.frn, item.fileSize, item.creationTime, item.lastWriteTime);
+                    }
+                    m_IndexGeneration.fetch_add(1, std::memory_order_release);
+                    std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
+                    m_CachedQuery.clear();
+                    m_CachedCandidates.clear();
+                    m_CachedExcludePatterns.clear();
+                }
             }
         }
         Sleep(50); // Prevent 100% CPU on fast changes
@@ -330,6 +473,7 @@ void MftParser::StopListening() {
 
 bool MftParser::Initialize(char driveLetter) {
     resetStopRequest();
+    m_InitialScanDone.store(false, std::memory_order_release);
     m_DriveLetter = driveLetter;
     m_VolumeSerial = getVolumeSerialNumber();
     m_Initialized = true;
@@ -376,8 +520,9 @@ bool MftParser::Initialize(char driveLetter) {
 }
 
 bool MftParser::QueryUsnJournal() {
-    DWORD br;
-    if (!DeviceIoControl(m_hVolume, FSCTL_QUERY_USN_JOURNAL, NULL, 0, &m_UsnJournalData, sizeof(m_UsnJournalData), &br, NULL)) {
+    DWORD br = 0;
+    USN_JOURNAL_DATA_V0 localData{};
+    if (!DeviceIoControl(m_hVolume, FSCTL_QUERY_USN_JOURNAL, NULL, 0, &localData, sizeof(localData), &br, NULL)) {
         // Try creating it
         CREATE_USN_JOURNAL_DATA cujd;
         cujd.MaximumSize = 0; // default
@@ -386,10 +531,12 @@ bool MftParser::QueryUsnJournal() {
             return false;
         }
         // Try query again
-        if (!DeviceIoControl(m_hVolume, FSCTL_QUERY_USN_JOURNAL, NULL, 0, &m_UsnJournalData, sizeof(m_UsnJournalData), &br, NULL)) {
+        if (!DeviceIoControl(m_hVolume, FSCTL_QUERY_USN_JOURNAL, NULL, 0, &localData, sizeof(localData), &br, NULL)) {
             return false;
         }
     }
+    std::lock_guard<std::mutex> usnLock(m_UsnMutex);
+    m_UsnJournalData = localData;
     return true;
 }
 
@@ -487,21 +634,30 @@ void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
 
 void MftParser::EnumerateFiles() {
     if (m_StopRequested.load(std::memory_order_acquire)) return;
+    m_InitialScanDone.store(false, std::memory_order_release);
     {
         std::unique_lock lock(m_MapMutex);
         m_Store.clear();
     }
     if (m_IsFallbackDirectoryWalk || m_hVolume == INVALID_HANDLE_VALUE) {
         EnumerateFilesViaDirectoryWalk(m_DriveLetter);
+        if (!m_StopRequested.load(std::memory_order_acquire)) {
+            m_InitialScanDone.store(true, std::memory_order_release);
+        }
         return;
     }
 
     spdlog::info("Starting MFT enumeration...");
     QueryUsnJournal();
+    USN enumHighUsn = 0;
+    {
+        std::lock_guard<std::mutex> usnLock(m_UsnMutex);
+        enumHighUsn = m_UsnJournalData.NextUsn;
+    }
     MFT_ENUM_DATA_V0 med;
     med.StartFileReferenceNumber = 0;
     med.LowUsn = 0;
-    med.HighUsn = m_UsnJournalData.NextUsn;
+    med.HighUsn = enumHighUsn;
 
     std::vector<BYTE> buffer(BUF_LEN);
     DWORD bytesReturned = 0;
@@ -540,19 +696,31 @@ void MftParser::EnumerateFiles() {
         }
         med.StartFileReferenceNumber = *pUsn;
     }
+
+    size_t storeCount = 0;
+    uint64_t storeBytes = 0;
+    const bool completedFullScan = !m_StopRequested.load(std::memory_order_acquire);
     {
         std::unique_lock lock(m_MapMutex);
         // Names repeat heavily across a volume, so interning pays for itself
         // during enumeration; afterwards only a trickle of USN updates arrives
         // and the lookup table is no longer worth its footprint.
         m_Store.releaseBuildScratch();
+        // `MED-14`: Read `m_Store.size()` and `m_Store.approximateBytes()` strictly BEFORE
+        // releasing `m_MapMutex` so concurrent USN listener / snapshot readers never race.
+        storeCount = m_Store.size();
+        storeBytes = m_Store.approximateBytes();
+        if (completedFullScan) {
+            m_InitialScanDone.store(true, std::memory_order_release);
+        }
     }
-    m_CurrentUsn.store(m_UsnJournalData.NextUsn, std::memory_order_release);
+    if (completedFullScan) {
+        m_CurrentUsn.store(static_cast<uint64_t>(enumHighUsn), std::memory_order_release);
+    }
     m_IndexGeneration.fetch_add(1, std::memory_order_release);
-    const uint64_t storeBytes = m_Store.approximateBytes();
     spdlog::info("Drive {}: MFT enumeration completed. Indexed {} files ({} MB records+names, {} B/file)",
-                 m_DriveLetter, m_Store.size(), storeBytes / (1024 * 1024),
-                 m_Store.size() ? storeBytes / m_Store.size() : 0);
+                 m_DriveLetter, storeCount, storeBytes / (1024 * 1024),
+                 storeCount ? storeBytes / storeCount : 0);
 }
 
 std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit,
@@ -679,6 +847,10 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         return static_cast<size_t>(x) & kFlatMaskCacheMask;
     };
 
+    // `LOW-07`: Allow deep directory ancestor chains up to 512 levels with explicit cycle
+    // detection so deeply nested folders (>64 levels) never escape blacklist/exclusion rules.
+    constexpr size_t kMaxAncestorChainDepth = 512;
+
     auto getFastDirClauseMask = [&](DWORDLONG parentFrn,
                                     DWORDLONG& lastMaskParentFrn,
                                     uint64_t& lastDirMask,
@@ -702,12 +874,12 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             return lastDirMask;
         }
 
-        DWORDLONG chain[64];
+        DWORDLONG chain[kMaxAncestorChainDepth];
         size_t chainLen = 0;
         DWORDLONG cur = parentFrn;
         uint64_t baseMask = rootClauseMask;
 
-        while (cur != 0 && chainLen < 64) {
+        while (cur != 0 && chainLen < kMaxAncestorChainDepth) {
             const size_t s = hashFrnSlot(cur);
             if (maskCache[s].frn == cur) {
                 baseMask = maskCache[s].mask;
@@ -719,14 +891,18 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 break;
             }
             const FileRecord dirRec = m_Store.view(*node);
+            const DWORDLONG nextParent = dirRec.parentFileReferenceNumber;
             if (dirRec.fileName.empty() || dirRec.fileName == L"." ||
-                dirRec.parentFileReferenceNumber == cur || dirRec.parentFileReferenceNumber == 0) {
+                nextParent == cur || nextParent == 0) {
                 if (dirRec.fileName.empty() || dirRec.fileName == L".") {
                     --chainLen;
                 }
                 break;
             }
-            cur = dirRec.parentFileReferenceNumber;
+            if (std::find(chain, chain + chainLen, nextParent) != (chain + chainLen)) {
+                break;
+            }
+            cur = nextParent;
         }
 
         for (size_t idx = chainLen; idx > 0; --idx) {
@@ -760,14 +936,14 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             return lastDirMeta;
         }
 
-        DWORDLONG chain[64];
+        DWORDLONG chain[kMaxAncestorChainDepth];
         size_t chainLen = 0;
         DWORDLONG cur = parentFrn;
         DirScanMeta baseMeta{};
         baseMeta.clauseMask = rootClauseMask;
         baseMeta.folderPriority = baseDrivePriority;
 
-        while (cur != 0 && chainLen < 64) {
+        while (cur != 0 && chainLen < kMaxAncestorChainDepth) {
             auto cachedIt = dirCache.find(cur);
             if (cachedIt != dirCache.end()) {
                 baseMeta = cachedIt->second;
@@ -779,14 +955,18 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 break;
             }
             const FileRecord dirRec = m_Store.view(*node);
+            const DWORDLONG nextParent = dirRec.parentFileReferenceNumber;
             if (dirRec.fileName.empty() || dirRec.fileName == L"." ||
-                dirRec.parentFileReferenceNumber == cur || dirRec.parentFileReferenceNumber == 0) {
+                nextParent == cur || nextParent == 0) {
                 if (dirRec.fileName.empty() || dirRec.fileName == L".") {
                     --chainLen;
                 }
                 break;
             }
-            cur = dirRec.parentFileReferenceNumber;
+            if (std::find(chain, chain + chainLen, nextParent) != (chain + chainLen)) {
+                break;
+            }
+            cur = nextParent;
         }
 
         for (size_t idx = chainLen; idx > 0; --idx) {
@@ -1045,6 +1225,10 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
     std::vector<RankedCandidate> ranked;
     std::vector<HydratedStat> hydratedStats;
 
+    // `HIGH-14`: Check cancellation at high frequency (every 64 items for regex queries,
+    // every 256 items otherwise) so `m_MapMutex` shared lock is promptly released.
+    const size_t cancelMask = expr.hasRegexClause() ? 0x3Fu : 0xFFu;
+
     if (canNarrow) {
         std::vector<DWORDLONG> filtered;
         filtered.reserve(std::min<size_t>(candidates.size(), 65536));
@@ -1058,15 +1242,18 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         DirScanMeta lastDirMeta{};
         size_t checked = 0;
         for (const auto id : candidates) {
-            if (((checked++ & 0x3FFu) == 0) && isCancelled && isCancelled()) return results;
+            if (((checked++ & cancelMask) == 0) && isCancelled && isCancelled()) return results;
             const auto* stored = m_Store.find(id);
             if (!stored) continue;
-            const FileRecord record = m_Store.view(*stored);
-            const uint64_t dirMask = getFastDirClauseMask(record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
-            int fPriority = 0;
-            if (testCandidate(id, record, dirMask, lastParentFrn, lastDirMeta, localDirCache, hydratedStats, fPriority)) {
-                filtered.push_back(id);
-                ranked.push_back({id, record, expr.calculateRank(record), fPriority});
+            try {
+                const FileRecord record = m_Store.view(*stored);
+                const uint64_t dirMask = getFastDirClauseMask(record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
+                int fPriority = 0;
+                if (testCandidate(id, record, dirMask, lastParentFrn, lastDirMeta, localDirCache, hydratedStats, fPriority)) {
+                    filtered.push_back(id);
+                    ranked.push_back({id, record, expr.calculateRank(record), fPriority});
+                }
+            } catch (...) {
             }
         }
         candidates = std::move(filtered);
@@ -1114,6 +1301,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                     try {
                         auto& localMasks = threadDirMasks[t];
                         for (size_t i = startIdx; i < endIdx; ++i) {
+                            if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) break;
                             const auto* stored = m_Store.at(i);
                             if (!stored || !stored->isDirectory()) continue;
                             const FileRecord dirRec = m_Store.view(*stored);
@@ -1181,40 +1369,43 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                     }
                 }
 
-                auto& localCand = threadCandidates[t];
-                auto& localRank = threadRanked[t];
-                auto& localStat = threadHydrated[t];
-                localCand.reserve(256);
-                localRank.reserve(256);
-                std::unordered_map<DWORDLONG, DirScanMeta> localDirCache;
-                localDirCache.reserve(64);
-                DWORDLONG lastParentFrn = UINT64_MAX;
-                DirScanMeta lastDirMeta{};
+                try {
+                    auto& localCand = threadCandidates[t];
+                    auto& localRank = threadRanked[t];
+                    auto& localStat = threadHydrated[t];
+                    localCand.reserve(256);
+                    localRank.reserve(256);
+                    std::unordered_map<DWORDLONG, DirScanMeta> localDirCache;
+                    localDirCache.reserve(64);
+                    DWORDLONG lastParentFrn = UINT64_MAX;
+                    DirScanMeta lastDirMeta{};
 
-                for (size_t i = startIdx; i < endIdx; ++i) {
-                    if (((i - startIdx) & 0x3FFu) == 0 && isCancelled && isCancelled()) break;
-                    const auto* stored = m_Store.at(i);
-                    if (!stored) continue;
-                    const FileRecord record = m_Store.view(*stored);
-                    if (useOptimisticDirPreFilter) {
-                        bool possible = false;
-                        for (size_t m = 0; m < maximalDirMaskCount; ++m) {
-                            if (expr.matchesSeparable(record, driveW, maximalDirMasks[m])) {
-                                possible = true;
-                                break;
+                    for (size_t i = startIdx; i < endIdx; ++i) {
+                        if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) break;
+                        const auto* stored = m_Store.at(i);
+                        if (!stored) continue;
+                        const FileRecord record = m_Store.view(*stored);
+                        if (useOptimisticDirPreFilter) {
+                            bool possible = false;
+                            for (size_t m = 0; m < maximalDirMaskCount; ++m) {
+                                if (expr.matchesSeparable(record, driveW, maximalDirMasks[m])) {
+                                    possible = true;
+                                    break;
+                                }
+                            }
+                            if (!possible) {
+                                continue;
                             }
                         }
-                        if (!possible) {
-                            continue;
+                        DWORDLONG id = record.fileReferenceNumber;
+                        const uint64_t dirMask = getFastDirClauseMask(record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
+                        int fPriority = 0;
+                        if (testCandidate(id, record, dirMask, lastParentFrn, lastDirMeta, localDirCache, localStat, fPriority)) {
+                            localCand.push_back(id);
+                            localRank.push_back({id, record, expr.calculateRank(record), fPriority});
                         }
                     }
-                    DWORDLONG id = record.fileReferenceNumber;
-                    const uint64_t dirMask = getFastDirClauseMask(record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
-                    int fPriority = 0;
-                    if (testCandidate(id, record, dirMask, lastParentFrn, lastDirMeta, localDirCache, localStat, fPriority)) {
-                        localCand.push_back(id);
-                        localRank.push_back({id, record, expr.calculateRank(record), fPriority});
-                    }
+                } catch (...) {
                 }
             });
         }
@@ -1251,7 +1442,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         if (folderPriority <= 10) return 3;  // .lnk / .url Shortcut
         if (folderPriority <= 20) return 2;  // AppData / ProgramData
         if (folderPriority <= 80) return 1;  // WeChat / QQ / IM Chat History
-        return 0;                            // Normal User Directory (D:\Chosen, Desktop, Documents, etc.)
+        return 0;                            // Normal User Directory (D:\Projects, Desktop, Documents, etc.)
     };
     const auto compareRank = [&expr, &toSemanticTier](const auto& a, const auto& b) {
         const int tierA = toSemanticTier(a.folderPriority);
@@ -1511,8 +1702,13 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
         bool hasLowValueSeg = false;
         bool hasSecondaryArtifactSeg = false;
 
+        DWORDLONG visited[512];
+        size_t visitedLen = 0;
         DWORDLONG cur = parentFrn;
-        for (size_t depth = 0; depth < 128; ++depth) {
+        for (size_t depth = 0; depth < 512; ++depth) {
+            if (visitedLen < 512) {
+                visited[visitedLen++] = cur;
+            }
             const auto* storedDir = m_Store.find(cur);
             if (!storedDir) break;
             const FileRecord dirRec = m_Store.view(*storedDir);
@@ -1608,6 +1804,10 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                 }
             }
             if (dirRec.parentFileReferenceNumber == cur || dirRec.parentFileReferenceNumber == 0) {
+                break;
+            }
+            if (std::find(visited, visited + visitedLen, dirRec.parentFileReferenceNumber) !=
+                (visited + visitedLen)) {
                 break;
             }
             cur = dirRec.parentFileReferenceNumber;
@@ -1739,93 +1939,98 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
     std::vector<std::thread> workers;
     workers.reserve(numThreads > 1 ? numThreads : 0);
 
+    const size_t cancelMask = fileFilterExpr.hasRegexClause() ? 0x3Fu : 0xFFu;
+
     auto scanRange = [&](unsigned int bucketIdx, size_t startIdx, size_t endIdx) {
-        auto& localOut = threadBuckets[bucketIdx];
-        localOut.reserve((std::min<size_t>)((endIdx - startIdx) / 32 + 64, 16384));
-        std::unordered_map<DWORDLONG, CachedFolderNode> localFolderCache;
-        localFolderCache.reserve(2048);
+        try {
+            auto& localOut = threadBuckets[bucketIdx];
+            localOut.reserve((std::min<size_t>)((endIdx - startIdx) / 32 + 64, 16384));
+            std::unordered_map<DWORDLONG, CachedFolderNode> localFolderCache;
+            localFolderCache.reserve(2048);
 
-        for (size_t i = startIdx; i < endIdx; ++i) {
-            if (((i - startIdx) & 0x3FFu) == 0 && isCancelled && isCancelled()) {
-                break;
-            }
-            const auto* stored = m_Store.at(i);
-            if (!stored) continue;
-            const FileRecord record = m_Store.view(*stored);
-            if (record.isDirectory) continue;
-
-            if (options.excludeOpts.excludeHidden && (record.fileAttributes & FILE_ATTRIBUTE_HIDDEN)) continue;
-            if (options.excludeOpts.excludeSystem && (record.fileAttributes & FILE_ATTRIBUTE_SYSTEM)) continue;
-            if (record.fileSize > MaxContentCandidateBytes) continue;
-
-            const std::wstring_view normName = record.normalizedName;
-            if (normName.size() >= 2 && normName[0] == L'~' && normName[1] == L'$') {
-                continue;
-            }
-
-            const size_t dotPos = record.fileName.rfind(L'.');
-            if (dotPos == std::wstring_view::npos || dotPos + 1 >= record.fileName.size()) {
-                continue;
-            }
-            const std::wstring_view extView = record.fileName.substr(dotPos + 1);
-            if (!allowedExts.contains(extView)) {
-                continue;
-            }
-
-            const CachedFolderNode& dirNode = resolveFolderNode(
-                record.parentFileReferenceNumber, localFolderCache);
-            if (dirNode.pruned) {
-                continue;
-            }
-
-            std::wstring builtFullPath;
-            auto buildFullPathNow = [&]() -> std::wstring& {
-                if (builtFullPath.empty()) {
-                    builtFullPath.reserve(dirNode.fullDirPath.size() + 1 + record.fileName.size());
-                    builtFullPath += dirNode.fullDirPath;
-                    builtFullPath.push_back(L'\\');
-                    builtFullPath += record.fileName;
+            for (size_t i = startIdx; i < endIdx; ++i) {
+                if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) {
+                    break;
                 }
-                return builtFullPath;
-            };
+                const auto* stored = m_Store.at(i);
+                if (!stored) continue;
+                const FileRecord record = m_Store.view(*stored);
+                if (record.isDirectory) continue;
 
-            if (hasFileFilter) {
-                if (filterIsFullySeparable) {
-                    if (!fileFilterExpr.matchesSeparable(record, driveW, dirNode.dirClauseMask)) {
-                        continue;
-                    }
-                } else {
-                    auto getFullPath = [&]() -> std::wstring {
-                        return buildFullPathNow();
-                    };
-                    if (!fileFilterExpr.matchesWithLazyPath(record, driveW, getFullPath)) {
-                        continue;
-                    }
+                if (options.excludeOpts.excludeHidden && (record.fileAttributes & FILE_ATTRIBUTE_HIDDEN)) continue;
+                if (options.excludeOpts.excludeSystem && (record.fileAttributes & FILE_ATTRIBUTE_SYSTEM)) continue;
+                if (record.fileSize > MaxContentCandidateBytes) continue;
+
+                const std::wstring_view normName = record.normalizedName;
+                if (normName.size() >= 2 && normName[0] == L'~' && normName[1] == L'$') {
+                    continue;
                 }
-            }
 
-            std::wstring finalPath = std::move(buildFullPathNow());
-            if (!lowerExcludes.empty()) {
-                const std::wstring lowerFileName = normalize(record.fileName);
-                bool excludedByName = false;
-                for (const auto& exPat : lowerExcludes) {
-                    if (lowerFileName.find(exPat) != std::wstring::npos) {
-                        excludedByName = true;
-                        break;
+                const size_t dotPos = record.fileName.rfind(L'.');
+                if (dotPos == std::wstring_view::npos || dotPos + 1 >= record.fileName.size()) {
+                    continue;
+                }
+                const std::wstring_view extView = record.fileName.substr(dotPos + 1);
+                if (!allowedExts.contains(extView)) {
+                    continue;
+                }
+
+                const CachedFolderNode& dirNode = resolveFolderNode(
+                    record.parentFileReferenceNumber, localFolderCache);
+                if (dirNode.pruned) {
+                    continue;
+                }
+
+                std::wstring builtFullPath;
+                auto buildFullPathNow = [&]() -> std::wstring& {
+                    if (builtFullPath.empty()) {
+                        builtFullPath.reserve(dirNode.fullDirPath.size() + 1 + record.fileName.size());
+                        builtFullPath += dirNode.fullDirPath;
+                        builtFullPath.push_back(L'\\');
+                        builtFullPath += record.fileName;
+                    }
+                    return builtFullPath;
+                };
+
+                if (hasFileFilter) {
+                    if (filterIsFullySeparable) {
+                        if (!fileFilterExpr.matchesSeparable(record, driveW, dirNode.dirClauseMask)) {
+                            continue;
+                        }
+                    } else {
+                        auto getFullPath = [&]() -> std::wstring {
+                            return buildFullPathNow();
+                        };
+                        if (!fileFilterExpr.matchesWithLazyPath(record, driveW, getFullPath)) {
+                            continue;
+                        }
                     }
                 }
-                if (excludedByName) continue;
-            }
 
-            const double extOffset = computeExtensionSignalOffset(extView, normName, explicitLock);
-            localOut.push_back(ContentCandidate{
-                .fileName = std::wstring(record.fileName),
-                .fullPath = std::move(finalPath),
-                .fileSize = record.fileSize,
-                .creationTime = record.creationTime,
-                .lastWriteTime = record.lastWriteTime,
-                .priorityScore = (std::max)(1.0, dirNode.basePriority + extOffset)
-            });
+                std::wstring finalPath = std::move(buildFullPathNow());
+                if (!lowerExcludes.empty()) {
+                    const std::wstring lowerFileName = normalize(record.fileName);
+                    bool excludedByName = false;
+                    for (const auto& exPat : lowerExcludes) {
+                        if (lowerFileName.find(exPat) != std::wstring::npos) {
+                            excludedByName = true;
+                            break;
+                        }
+                    }
+                    if (excludedByName) continue;
+                }
+
+                const double extOffset = computeExtensionSignalOffset(extView, normName, explicitLock);
+                localOut.push_back(ContentCandidate{
+                    .fileName = std::wstring(record.fileName),
+                    .fullPath = std::move(finalPath),
+                    .fileSize = record.fileSize,
+                    .creationTime = record.creationTime,
+                    .lastWriteTime = record.lastWriteTime,
+                    .priorityScore = (std::max)(1.0, dirNode.basePriority + extOffset)
+                });
+            }
+        } catch (...) {
         }
     };
 
@@ -1879,8 +2084,13 @@ std::wstring MftParser::buildFullPath(DWORDLONG fileReferenceNumber) const {
 
     std::vector<std::wstring_view> parts;
     parts.reserve(16);
+    DWORDLONG visited[512];
+    size_t visitedLen = 0;
     DWORDLONG current = fileReferenceNumber;
     for (size_t depth = 0; depth < 512; ++depth) {
+        if (visitedLen < 512) {
+            visited[visitedLen++] = current;
+        }
         const auto* node = m_Store.find(current);
         if (!node) break;
         const FileRecord rec = m_Store.view(*node);
@@ -1888,6 +2098,10 @@ std::wstring MftParser::buildFullPath(DWORDLONG fileReferenceNumber) const {
             parts.push_back(rec.fileName);
         }
         if (rec.parentFileReferenceNumber == current || rec.parentFileReferenceNumber == 0) break;
+        if (std::find(visited, visited + visitedLen, rec.parentFileReferenceNumber) !=
+            (visited + visitedLen)) {
+            break;
+        }
         current = rec.parentFileReferenceNumber;
     }
     if (parts.empty()) return L"";
@@ -1905,7 +2119,11 @@ std::wstring MftParser::buildFullPath(DWORDLONG fileReferenceNumber) const {
 
 uint64_t MftParser::getCurrentUsn() const {
     const uint64_t cur = m_CurrentUsn.load(std::memory_order_acquire);
-    return (cur != 0) ? cur : m_UsnJournalData.NextUsn;
+    if (cur != 0) {
+        return cur;
+    }
+    std::lock_guard<std::mutex> usnLock(m_UsnMutex);
+    return static_cast<uint64_t>(m_UsnJournalData.NextUsn);
 }
 
 uint32_t MftParser::getVolumeSerialNumber() const {
@@ -1940,26 +2158,32 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
     }
     if (!next) return false;
 
-    std::unique_lock lock(m_MapMutex);
-    m_Store.clear();
-    m_Store.reserve(expectedRecords);
+    {
+        std::unique_lock lock(m_MapMutex);
+        m_Store.clear();
+        m_Store.reserve(expectedRecords);
 
-    FileRecordInit scratch;
-    while (true) {
-        scratch.fileName.clear();
-        scratch.fileReferenceNumber = 0;
-        scratch.parentFileReferenceNumber = 0;
-        scratch.isDirectory = false;
-        scratch.fileAttributes = 0;
-        scratch.fileSize = 0;
-        scratch.creationTime = 0;
-        scratch.lastWriteTime = 0;
-        if (!next(scratch)) break;
-        m_Store.upsert(scratch);
+        FileRecordInit scratch;
+        while (true) {
+            scratch.fileName.clear();
+            scratch.fileReferenceNumber = 0;
+            scratch.parentFileReferenceNumber = 0;
+            scratch.isDirectory = false;
+            scratch.fileAttributes = 0;
+            scratch.fileSize = 0;
+            scratch.creationTime = 0;
+            scratch.lastWriteTime = 0;
+            if (!next(scratch)) break;
+            m_Store.upsert(scratch);
+        }
+        m_Store.releaseBuildScratch();
+        m_InitialScanDone.store(true, std::memory_order_release);
     }
-    m_Store.releaseBuildScratch();
 
-    m_UsnJournalData.NextUsn = lastUsn;
+    {
+        std::lock_guard<std::mutex> usnLock(m_UsnMutex);
+        m_UsnJournalData.NextUsn = static_cast<USN>(lastUsn);
+    }
     m_CurrentUsn.store(lastUsn, std::memory_order_release);
     m_IndexGeneration.fetch_add(1, std::memory_order_release);
     return true;
@@ -1986,10 +2210,23 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
         return false;
     }
 
+    constexpr DWORD kDataModifyReasons =
+        USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND | USN_REASON_DATA_TRUNCATION;
+
+    USN lowestValidUsn = 0;
+    USN nextUsn = 0;
+    DWORDLONG usnJournalId = 0;
+    {
+        std::lock_guard<std::mutex> usnLock(m_UsnMutex);
+        lowestValidUsn = m_UsnJournalData.LowestValidUsn;
+        nextUsn = m_UsnJournalData.NextUsn;
+        usnJournalId = m_UsnJournalData.UsnJournalID;
+    }
+
     const auto startUsn = static_cast<USN>(fromUsn);
-    if (fromUsn == 0 || startUsn < m_UsnJournalData.LowestValidUsn || startUsn > m_UsnJournalData.NextUsn) {
+    if (fromUsn == 0 || startUsn < lowestValidUsn || startUsn > nextUsn) {
         spdlog::warn("USN journal on drive {} is out of range (fromUsn: {}, lowest: {}, next: {}), triggering full rebuild",
-                     m_DriveLetter, fromUsn, m_UsnJournalData.LowestValidUsn, m_UsnJournalData.NextUsn);
+                     m_DriveLetter, fromUsn, lowestValidUsn, nextUsn);
         EnumerateFiles();
         m_RescannedDuringCatchUp.store(true, std::memory_order_release);
         return true;
@@ -2001,19 +2238,26 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
     rujd.ReturnOnlyOnClose = FALSE;
     rujd.Timeout = 0;
     rujd.BytesToWaitFor = 0;
-    rujd.UsnJournalID = m_UsnJournalData.UsnJournalID;
+    rujd.UsnJournalID = usnJournalId;
 
     std::vector<BYTE> buffer(BUF_LEN);
     DWORD bytesReturned = 0;
     bool anyChanged = false;
+    std::vector<std::pair<uint64_t, std::wstring>> pendingStatRefresh;
+    std::unordered_set<uint64_t> queuedFrns;
+    std::unordered_set<uint64_t> deletedInCatchUp;
+    const bool needPathFallback = (m_hVolume == INVALID_HANDLE_VALUE || m_IsFallbackDirectoryWalk);
 
     while (DeviceIoControl(m_hVolume, FSCTL_READ_USN_JOURNAL, &rujd, sizeof(rujd), buffer.data(), BUF_LEN, &bytesReturned, NULL)) {
         if (bytesReturned < sizeof(USN)) break;
 
         USN* pNextUsn = reinterpret_cast<USN*>(buffer.data());
         rujd.StartUsn = *pNextUsn;
-        m_CurrentUsn.store(rujd.StartUsn, std::memory_order_release);
-        m_UsnJournalData.NextUsn = rujd.StartUsn;
+        m_CurrentUsn.store(static_cast<uint64_t>(rujd.StartUsn), std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> usnLock(m_UsnMutex);
+            m_UsnJournalData.NextUsn = rujd.StartUsn;
+        }
 
         if (bytesReturned == sizeof(USN)) break;
 
@@ -2025,31 +2269,62 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
             tools3000::service::ParsedUsnRecord parsed{};
             while (dwRetBytes > 0 && tools3000::service::parseUsnRecord(pRecordBytes, dwRetBytes, parsed)) {
                 if (parsed.isValid) {
+                    const uint64_t frn = parsed.fileReferenceNumber;
                     if (parsed.reason & USN_REASON_FILE_DELETE) {
-                        anyChanged = m_Store.erase(parsed.fileReferenceNumber) || anyChanged;
+                        anyChanged = m_Store.erase(frn) || anyChanged;
+                        deletedInCatchUp.insert(frn);
                     } else if ((parsed.reason & USN_REASON_FILE_CREATE) ||
                                (parsed.reason & USN_REASON_RENAME_NEW_NAME)) {
+                        deletedInCatchUp.erase(frn);
                         if (!parsed.fileName.empty()) {
+                            const bool isDir = (parsed.fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
                             FileRecordInit record;
-                            record.fileReferenceNumber = parsed.fileReferenceNumber;
+                            record.fileReferenceNumber = frn;
                             record.parentFileReferenceNumber = parsed.parentFileReferenceNumber;
-                            record.isDirectory = (parsed.fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                            record.isDirectory = isDir;
                             record.fileAttributes = parsed.fileAttributes;
                             record.lastWriteTime = parsed.timeStamp;
                             record.fileName = std::wstring(parsed.fileName);
 
+                            // `MED-15`: Preserve existing `fileSize` and `creationTime` across renames
+                            // and queue lock-free metadata refresh for modified/renamed files.
+                            const auto* existing = m_Store.find(frn);
+                            if (existing != nullptr) {
+                                const FileRecord oldRec = m_Store.view(*existing);
+                                if (!isDir) {
+                                    record.fileSize = oldRec.fileSize;
+                                }
+                                record.creationTime = oldRec.creationTime;
+                                if (record.lastWriteTime == 0) {
+                                    record.lastWriteTime = oldRec.lastWriteTime;
+                                }
+                            }
+
                             m_Store.upsert(record);
                             anyChanged = true;
+
+                            if (!isDir &&
+                                ((parsed.reason & USN_REASON_RENAME_NEW_NAME) != 0 ||
+                                 (parsed.reason & USN_REASON_CLOSE) != 0 ||
+                                 (parsed.reason & kDataModifyReasons) != 0 ||
+                                 record.fileSize == 0) &&
+                                queuedFrns.insert(frn).second) {
+                                pendingStatRefresh.emplace_back(
+                                    frn,
+                                    needPathFallback ? buildFullPath(frn) : std::wstring{});
+                            }
                         }
-                    } else if (parsed.reason & USN_REASON_BASIC_INFO_CHANGE) {
-                        const auto* existing = m_Store.find(parsed.fileReferenceNumber);
-                        if (existing) {
-                            FileRecord oldRec = m_Store.view(*existing);
+                    } else if ((parsed.reason & USN_REASON_BASIC_INFO_CHANGE) ||
+                               ((parsed.reason & USN_REASON_CLOSE) && (parsed.reason & kDataModifyReasons)) ||
+                               (parsed.reason & kDataModifyReasons)) {
+                        const auto* existing = m_Store.find(frn);
+                        if (existing != nullptr) {
+                            const FileRecord oldRec = m_Store.view(*existing);
                             FileRecordInit record;
-                            record.fileReferenceNumber = parsed.fileReferenceNumber;
+                            record.fileReferenceNumber = frn;
                             record.parentFileReferenceNumber = oldRec.parentFileReferenceNumber;
                             record.isDirectory = oldRec.isDirectory;
-                            record.fileAttributes = parsed.fileAttributes;
+                            record.fileAttributes = parsed.fileAttributes ? parsed.fileAttributes : oldRec.fileAttributes;
                             record.fileSize = oldRec.fileSize;
                             record.creationTime = oldRec.creationTime;
                             record.lastWriteTime = parsed.timeStamp ? parsed.timeStamp : oldRec.lastWriteTime;
@@ -2057,6 +2332,15 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
 
                             m_Store.upsert(record);
                             anyChanged = true;
+
+                            if (!oldRec.isDirectory &&
+                                ((parsed.reason & USN_REASON_CLOSE) != 0 ||
+                                 (parsed.reason & kDataModifyReasons) != 0) &&
+                                queuedFrns.insert(frn).second) {
+                                pendingStatRefresh.emplace_back(
+                                    frn,
+                                    needPathFallback ? buildFullPath(frn) : std::wstring{});
+                            }
                         }
                     }
                 }
@@ -2076,6 +2360,34 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
         EnumerateFiles();
         m_RescannedDuringCatchUp.store(true, std::memory_order_release);
         return true;
+    }
+
+    // Refresh disk metadata OUTSIDE `m_MapMutex` (`MED-15`).
+    if (!pendingStatRefresh.empty()) {
+        struct RefreshedMeta {
+            uint64_t frn = 0;
+            uint64_t fileSize = 0;
+            uint64_t creationTime = 0;
+            uint64_t lastWriteTime = 0;
+        };
+        std::vector<RefreshedMeta> refreshed;
+        refreshed.reserve(pendingStatRefresh.size());
+        for (const auto& [frn, fallbackPath] : pendingStatRefresh) {
+            if (deletedInCatchUp.find(frn) != deletedInCatchUp.end()) continue;
+            uint64_t fSize = 0;
+            uint64_t cTime = 0;
+            uint64_t mTime = 0;
+            if (queryFrnDiskMetadata(frn, fallbackPath, fSize, cTime, mTime)) {
+                refreshed.push_back(RefreshedMeta{frn, fSize, cTime, mTime});
+            }
+        }
+        if (!refreshed.empty()) {
+            std::unique_lock statLock(m_MapMutex);
+            for (const auto& item : refreshed) {
+                m_Store.updateMetadata(item.frn, item.fileSize, item.creationTime, item.lastWriteTime);
+            }
+            anyChanged = true;
+        }
     }
 
     if (anyChanged) {

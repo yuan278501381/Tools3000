@@ -5,6 +5,7 @@
 #endif
 #include <windows.h>
 #include <zlib.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cwctype>
@@ -61,8 +62,8 @@ inline FileCacheStamp queryFileCacheStampByPath(const std::wstring& filePath) no
 // Zero work occurs until an explicit user content search parses a rich document.
 class ContentTextCache {
 public:
-    static constexpr size_t MaxSingleRawTextBytes = 4ULL * 1024ULL * 1024ULL;
-    static constexpr size_t MaxTotalCompressedBytes = 48ULL * 1024ULL * 1024ULL;
+    static constexpr size_t MaxSingleRawTextBytes = 16ULL * 1024ULL * 1024ULL;
+    static constexpr size_t MaxTotalCompressedBytes = 64ULL * 1024ULL * 1024ULL;
     static constexpr size_t MaxCachedEntries = 16384;
 
     static ContentTextCache& instance() {
@@ -76,11 +77,31 @@ public:
         uint64_t lastWriteTime,
         std::wstring& outText
     ) {
+        bool isTruncated = false;
+        if (!tryGetWithTruncation(fullPath, fileSize, lastWriteTime, outText, isTruncated)) {
+            return false;
+        }
+        if (isTruncated) {
+            outText.clear();
+            return false;
+        }
+        return true;
+    }
+
+    bool tryGetWithTruncation(
+        const std::wstring& fullPath,
+        uint64_t fileSize,
+        uint64_t lastWriteTime,
+        std::wstring& outText,
+        bool& outIsTruncated
+    ) {
+        outIsTruncated = false;
         const std::wstring key = normalizePathKey(fullPath);
         if (key.empty()) return false;
 
         std::vector<uint8_t> compressedCopy;
         size_t rawCharCount = 0;
+        bool truncatedFlag = false;
         {
             std::lock_guard lock(m_mutex);
             const auto it = m_index.find(key);
@@ -101,10 +122,12 @@ public:
             m_lru.splice(m_lru.begin(), m_lru, it->second);
             compressedCopy = entry.compressedBytes;
             rawCharCount = entry.rawCharCount;
+            truncatedFlag = entry.isTruncated;
         }
 
         if (rawCharCount == 0) {
             outText.clear();
+            outIsTruncated = truncatedFlag;
             m_hitCount.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
@@ -130,6 +153,7 @@ public:
         }
 
         outText = std::move(restored);
+        outIsTruncated = truncatedFlag;
         m_hitCount.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
@@ -143,19 +167,27 @@ public:
         const std::wstring key = normalizePathKey(fullPath);
         if (key.empty()) return;
 
-        std::vector<uint8_t> compressed;
-        if (!rawText.empty()) {
-            const size_t rawBytes = rawText.size() * sizeof(wchar_t);
-            if (rawBytes > MaxSingleRawTextBytes) {
-                return;
+        bool isTruncated = false;
+        std::wstring_view sliceToStore = rawText;
+        const size_t maxChars = MaxSingleRawTextBytes / sizeof(wchar_t);
+        if (sliceToStore.size() > maxChars) {
+            size_t cut = maxChars;
+            if (cut > 0 && sliceToStore[cut - 1] >= 0xD800 && sliceToStore[cut - 1] <= 0xDBFF) {
+                --cut;
             }
+            sliceToStore = sliceToStore.substr(0, cut);
+            isTruncated = true;
+        }
 
+        std::vector<uint8_t> compressed;
+        if (!sliceToStore.empty()) {
+            const size_t rawBytes = sliceToStore.size() * sizeof(wchar_t);
             uLongf bound = compressBound(static_cast<uLong>(rawBytes));
             compressed.resize(bound);
             const int zrc = compress2(
                 compressed.data(),
                 &bound,
-                reinterpret_cast<const Bytef*>(rawText.data()),
+                reinterpret_cast<const Bytef*>(sliceToStore.data()),
                 static_cast<uLong>(rawBytes),
                 Z_BEST_SPEED
             );
@@ -188,7 +220,8 @@ public:
             .key = key,
             .fileSize = fileSize,
             .lastWriteTime = lastWriteTime,
-            .rawCharCount = rawText.size(),
+            .rawCharCount = sliceToStore.size(),
+            .isTruncated = isTruncated,
             .compressedBytes = std::move(compressed)
         });
         m_index[key] = m_lru.begin();
@@ -227,6 +260,7 @@ private:
         uint64_t fileSize = 0;
         uint64_t lastWriteTime = 0;
         size_t rawCharCount = 0;
+        bool isTruncated = false;
         std::vector<uint8_t> compressedBytes;
     };
 

@@ -10,6 +10,8 @@
 #include <chrono>
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <limits>
 #include <mutex>
 
 namespace tools3000::capture {
@@ -95,14 +97,39 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
     // 2. 在进入系统剪贴板全局锁之前预先完成 PNG 编码、像素色彩转换与 CF_HDROP 临时文件落盘，
     // 将 OpenClipboard 临界区耗时从数十毫秒缩短至亚毫秒级，彻底消除剪贴板锁竞争与重复编码开销。
     std::vector<uint8_t> pngBytes;
-    if (!cv::imencode(".png", image, pngBytes) || pngBytes.empty()) {
-        LOG_WARN("ClipboardUtils: image buffer is empty, aborting clipboard write");
-        return false;
+    try {
+        if (!cv::imencode(".png", image, pngBytes)) {
+            pngBytes.clear();
+        }
+    } catch (const cv::Exception& e) {
+        LOG_ERROR("ClipboardUtils: PNG encode threw OpenCV exception: {}", e.what());
+        pngBytes.clear();
     }
+
+    // 使用 64 位无符号整数计算未压缩 DIB 尺寸，防止超长图/超大图触发 32 位有符号整数溢出 (-2GB 负向堆越界写)
+    constexpr uint64_t kMaxUncompressedDibBytes = 512ULL * 1024ULL * 1024ULL; // 512 MiB 物理内存安全上限
+    const uint64_t w64 = static_cast<uint64_t>(image.cols);
+    const uint64_t h64 = static_cast<uint64_t>(image.rows);
+    const uint64_t rowBytes24 = w64 * 3ULL;
+    const uint64_t stride24 = (rowBytes24 + 3ULL) & ~3ULL; // 4 字节边界对齐
+    const uint64_t dibImageBytes64 = (h64 > 0 && stride24 <= (std::numeric_limits<uint64_t>::max)() / h64)
+        ? (stride24 * h64)
+        : (std::numeric_limits<uint64_t>::max)();
+    const uint64_t stride32 = w64 * 4ULL;
+    const uint64_t dib5ImageBytes64 = (h64 > 0 && stride32 <= (std::numeric_limits<uint64_t>::max)() / h64)
+        ? (stride32 * h64)
+        : (std::numeric_limits<uint64_t>::max)();
+
+    const bool allowDib24 = (dibImageBytes64 > 0 &&
+                             dibImageBytes64 <= kMaxUncompressedDibBytes &&
+                             dibImageBytes64 <= static_cast<uint64_t>((std::numeric_limits<DWORD>::max)()));
+    const bool allowDib32 = (dib5ImageBytes64 > 0 &&
+                             dib5ImageBytes64 <= kMaxUncompressedDibBytes &&
+                             dib5ImageBytes64 <= static_cast<uint64_t>((std::numeric_limits<DWORD>::max)()));
 
     std::wstring dropFilePath = preferredFilePath;
     std::error_code ec;
-    if (dropFilePath.empty() || !std::filesystem::exists(dropFilePath, ec)) {
+    if (!pngBytes.empty() && (dropFilePath.empty() || !std::filesystem::exists(dropFilePath, ec))) {
         // 若外部未显式持久化文件，自动在应用临时目录输出高可用截图副本 (宽字符时间戳原生写盘，杜绝中文路径乱码)
         auto tempDir = tools3000::core::WinUtils::getAppDataDirectory() / L"temp";
         std::filesystem::create_directories(tempDir, ec);
@@ -136,29 +163,54 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
     }
 
     cv::Mat bgrMat;
-    if (image.channels() == 4) {
-        // 对于带透明通道的截图 (圆角/阴影/外壳)，合并不透明纯白底消除黑边
-        cv::Mat bg(image.size(), CV_8UC3, cv::Scalar(255, 255, 255));
-        for (int y = 0; y < image.rows; ++y) {
-            const auto* srcPtr = image.ptr<cv::Vec4b>(y);
-            auto* dstPtr = bg.ptr<cv::Vec3b>(y);
-            for (int x = 0; x < image.cols; ++x) {
-                const float alpha = srcPtr[x][3] / 255.0f;
-                dstPtr[x][0] = static_cast<uint8_t>(srcPtr[x][0] * alpha + 255.0f * (1.0f - alpha));
-                dstPtr[x][1] = static_cast<uint8_t>(srcPtr[x][1] * alpha + 255.0f * (1.0f - alpha));
-                dstPtr[x][2] = static_cast<uint8_t>(srcPtr[x][2] * alpha + 255.0f * (1.0f - alpha));
+    if (allowDib24) {
+        try {
+            if (image.channels() == 4) {
+                // 对于带透明通道的截图 (圆角/阴影/外壳)，合并不透明纯白底消除黑边
+                cv::Mat bg(image.size(), CV_8UC3, cv::Scalar(255, 255, 255));
+                for (int y = 0; y < image.rows; ++y) {
+                    const auto* srcPtr = reinterpret_cast<const cv::Vec4b*>(
+                        image.data + static_cast<size_t>(y) * image.step[0]);
+                    auto* dstPtr = reinterpret_cast<cv::Vec3b*>(
+                        bg.data + static_cast<size_t>(y) * bg.step[0]);
+                    for (int x = 0; x < image.cols; ++x) {
+                        const float alpha = srcPtr[x][3] / 255.0f;
+                        dstPtr[x][0] = static_cast<uint8_t>(srcPtr[x][0] * alpha + 255.0f * (1.0f - alpha));
+                        dstPtr[x][1] = static_cast<uint8_t>(srcPtr[x][1] * alpha + 255.0f * (1.0f - alpha));
+                        dstPtr[x][2] = static_cast<uint8_t>(srcPtr[x][2] * alpha + 255.0f * (1.0f - alpha));
+                    }
+                }
+                bgrMat = bg;
+            } else if (image.channels() == 3) {
+                bgrMat = image;
+            } else if (image.channels() == 1) {
+                cv::cvtColor(image, bgrMat, cv::COLOR_GRAY2BGR);
             }
+        } catch (const cv::Exception& e) {
+            LOG_WARN("ClipboardUtils: BGR conversion skipped due to OpenCV exception: {}", e.what());
+            bgrMat.release();
         }
-        bgrMat = bg;
-    } else {
-        bgrMat = image.isContinuous() ? image : image.clone();
     }
 
     cv::Mat bgraMat;
-    if (image.channels() == 4) {
-        bgraMat = image.isContinuous() ? image : image.clone();
-    } else {
-        cv::cvtColor(image, bgraMat, cv::COLOR_BGR2BGRA);
+    if (allowDib32) {
+        try {
+            if (image.channels() == 4) {
+                bgraMat = image;
+            } else if (image.channels() == 3) {
+                cv::cvtColor(image, bgraMat, cv::COLOR_BGR2BGRA);
+            } else if (image.channels() == 1) {
+                cv::cvtColor(image, bgraMat, cv::COLOR_GRAY2BGRA);
+            }
+        } catch (const cv::Exception& e) {
+            LOG_WARN("ClipboardUtils: BGRA conversion skipped due to OpenCV exception: {}", e.what());
+            bgraMat.release();
+        }
+    }
+
+    if (pngBytes.empty() && bgrMat.empty() && bgraMat.empty()) {
+        LOG_WARN("ClipboardUtils: image buffer is empty, aborting clipboard write");
+        return false;
     }
 
     // 3. 剪贴板锁定：针对系统剪贴板监听器 (如 Win+V 剪贴板历史、微信、Office) 瞬时占用的有界退避重试 (最大约 380ms)
@@ -215,66 +267,68 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
 
     // 5. 格式 2 & 3: 写入标准底向上 CF_DIB (24位 BGR) 与 CF_BITMAP (HBITMAP)
     // 优先写入 24 位白底合并 DIB：确保微信、Office Word 等 Win32 应用粘贴时作为无损图片展示，消除透明黑底失真
-    BITMAPINFOHEADER bi{};
-    bi.biSize = sizeof(BITMAPINFOHEADER);
-    bi.biWidth = image.cols;
-    bi.biHeight = image.rows; // 正数 = 规范底向上 (Bottom-Up)
-    bi.biPlanes = 1;
-    bi.biBitCount = 24;
-    bi.biCompression = BI_RGB;
-    const int rowBytes24 = image.cols * 3;
-    const int stride24 = (rowBytes24 + 3) & ~3; // 4 字节边界对齐
-    bi.biSizeImage = stride24 * image.rows;
+    if (allowDib24 && !bgrMat.empty()) {
+        BITMAPINFOHEADER bi{};
+        bi.biSize = sizeof(BITMAPINFOHEADER);
+        bi.biWidth = bgrMat.cols;
+        bi.biHeight = bgrMat.rows; // 正数 = 规范底向上 (Bottom-Up)
+        bi.biPlanes = 1;
+        bi.biBitCount = 24;
+        bi.biCompression = BI_RGB;
+        bi.biSizeImage = static_cast<DWORD>(dibImageBytes64);
 
-    const size_t totalSizeDib = sizeof(BITMAPINFOHEADER) + bi.biSizeImage;
-    HGLOBAL hGlobalDib = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, totalSizeDib);
-    if (hGlobalDib) {
-        auto* pMemDib = static_cast<uint8_t*>(GlobalLock(hGlobalDib));
-        if (pMemDib) {
-            memcpy(pMemDib, &bi, sizeof(bi));
-            for (int y = 0; y < bgrMat.rows; ++y) {
-                const int srcY = bgrMat.rows - 1 - y;
-                memcpy(pMemDib + sizeof(bi) + y * stride24, bgrMat.ptr(srcY), rowBytes24);
-            }
+        const size_t totalSizeDib = sizeof(BITMAPINFOHEADER) + static_cast<size_t>(dibImageBytes64);
+        HGLOBAL hGlobalDib = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, totalSizeDib);
+        if (hGlobalDib) {
+            auto* pMemDib = static_cast<uint8_t*>(GlobalLock(hGlobalDib));
+            if (pMemDib) {
+                memcpy(pMemDib, &bi, sizeof(bi));
+                const int h = bgrMat.rows;
+                for (int y = 0; y < h; ++y) {
+                    const uint8_t* srcRow = bgrMat.data + static_cast<size_t>(h - 1 - y) * bgrMat.step[0];
+                    uint8_t* dstRow = pMemDib + sizeof(bi) + static_cast<size_t>(y) * static_cast<size_t>(stride24);
+                    memcpy(dstRow, srcRow, static_cast<size_t>(rowBytes24));
+                }
 
-            // CF_BITMAP (HBITMAP)
-            HDC screenDc = GetDC(nullptr);
-            if (screenDc) {
-                HBITMAP hBmp = CreateDIBitmap(
-                    screenDc,
-                    &bi,
-                    CBM_INIT,
-                    pMemDib + sizeof(bi),
-                    reinterpret_cast<const BITMAPINFO*>(&bi),
-                    DIB_RGB_COLORS
-                );
-                ReleaseDC(nullptr, screenDc);
-                if (hBmp) {
-                    if (SetClipboardData(CF_BITMAP, hBmp)) {
-                        bmpSet = true;
-                    } else {
-                        DeleteObject(hBmp);
+                // CF_BITMAP (HBITMAP)
+                HDC screenDc = GetDC(nullptr);
+                if (screenDc) {
+                    HBITMAP hBmp = CreateDIBitmap(
+                        screenDc,
+                        &bi,
+                        CBM_INIT,
+                        pMemDib + sizeof(bi),
+                        reinterpret_cast<const BITMAPINFO*>(&bi),
+                        DIB_RGB_COLORS
+                    );
+                    ReleaseDC(nullptr, screenDc);
+                    if (hBmp) {
+                        if (SetClipboardData(CF_BITMAP, hBmp)) {
+                            bmpSet = true;
+                        } else {
+                            DeleteObject(hBmp);
+                        }
                     }
                 }
-            }
 
-            GlobalUnlock(hGlobalDib);
-            if (SetClipboardData(CF_DIB, hGlobalDib)) {
-                dibSet = true;
+                GlobalUnlock(hGlobalDib);
+                if (SetClipboardData(CF_DIB, hGlobalDib)) {
+                    dibSet = true;
+                } else {
+                    GlobalFree(hGlobalDib);
+                }
             } else {
                 GlobalFree(hGlobalDib);
             }
-        } else {
-            GlobalFree(hGlobalDib);
         }
     }
 
     // 6. 格式 4: 写入 CF_DIBV5 (BITMAPV5HEADER 32位 BGRA 带 Alpha，支持现代图形软件)
-    {
+    if (allowDib32 && !bgraMat.empty()) {
         BITMAPV5HEADER bi5{};
         bi5.bV5Size = sizeof(BITMAPV5HEADER);
-        bi5.bV5Width = image.cols;
-        bi5.bV5Height = image.rows; // 正数 = 规范底向上 (Bottom-Up)
+        bi5.bV5Width = bgraMat.cols;
+        bi5.bV5Height = bgraMat.rows; // 正数 = 规范底向上 (Bottom-Up)
         bi5.bV5Planes = 1;
         bi5.bV5BitCount = 32;
         bi5.bV5Compression = BI_BITFIELDS;
@@ -284,19 +338,19 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
         bi5.bV5AlphaMask = 0xFF000000;
         bi5.bV5CSType    = LCS_sRGB;
         bi5.bV5Intent    = LCS_GM_IMAGES;
+        bi5.bV5SizeImage = static_cast<DWORD>(dib5ImageBytes64);
 
-        const int stride32 = image.cols * 4;
-        bi5.bV5SizeImage = stride32 * image.rows;
-        const size_t totalSize5 = sizeof(BITMAPV5HEADER) + bi5.bV5SizeImage;
-
+        const size_t totalSize5 = sizeof(BITMAPV5HEADER) + static_cast<size_t>(dib5ImageBytes64);
         HGLOBAL hGlobal5 = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, totalSize5);
         if (hGlobal5) {
             auto* pMem5 = static_cast<uint8_t*>(GlobalLock(hGlobal5));
             if (pMem5) {
                 memcpy(pMem5, &bi5, sizeof(bi5));
-                for (int y = 0; y < bgraMat.rows; ++y) {
-                    const int srcY = bgraMat.rows - 1 - y;
-                    memcpy(pMem5 + sizeof(bi5) + y * stride32, bgraMat.ptr(srcY), stride32);
+                const int h = bgraMat.rows;
+                for (int y = 0; y < h; ++y) {
+                    const uint8_t* srcRow = bgraMat.data + static_cast<size_t>(h - 1 - y) * bgraMat.step[0];
+                    uint8_t* dstRow = pMem5 + sizeof(bi5) + static_cast<size_t>(y) * static_cast<size_t>(stride32);
+                    memcpy(dstRow, srcRow, static_cast<size_t>(stride32));
                 }
 
                 GlobalUnlock(hGlobal5);
@@ -341,8 +395,11 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
             }
         }
     }
+    (void)dropSet;
 
-    if (!pngSet || !bmpSet || !dibSet || !dib5Set || !dropSet) {
+    // 只要 PNG 或 CF_DIBV5 / CF_DIB / CF_BITMAP 任一核心图像格式成功写入剪贴板即视为成功，
+    // 杜绝超大图跳过未压缩 DIB 或 CreateDIBitmap 单项失败连坐导致整体报错
+    if (!pngSet && !dib5Set && !dibSet && !bmpSet) {
         return false;
     }
 
@@ -458,47 +515,58 @@ cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
     }
 
     // 2. 次选读取 CF_DIBV5（32位 BGRA；若为 GDI 合成的全 0 Alpha 通道则自动转为不透明 BGR）
+    constexpr uint64_t kMaxReadDibBytes = 512ULL * 1024ULL * 1024ULL;
     if (result.empty() && IsClipboardFormatAvailable(CF_DIBV5)) {
         if (HANDLE h = GetClipboardData(CF_DIBV5)) {
             const size_t totalSize = GlobalSize(h);
             if (totalSize >= sizeof(BITMAPV5HEADER)) {
                 if (auto* p5 = static_cast<const BITMAPV5HEADER*>(GlobalLock(h))) {
-                    int w = p5->bV5Width;
-                    int hImg = std::abs(p5->bV5Height);
-                    const size_t pixelBytes = (w > 0 && hImg > 0)
-                        ? (static_cast<size_t>(w) * static_cast<size_t>(hImg) * 4)
-                        : 0;
+                    const int64_t w64 = p5->bV5Width;
+                    const int64_t hRaw = static_cast<int64_t>(p5->bV5Height);
+                    const int64_t h64 = hRaw < 0 ? -hRaw : hRaw;
+                    const uint64_t stride64 = (w64 > 0) ? (static_cast<uint64_t>(w64) * 4ULL) : 0ULL;
+                    const uint64_t pixelBytes64 = (w64 > 0 && h64 > 0 && stride64 <= kMaxReadDibBytes / static_cast<uint64_t>(h64))
+                        ? (stride64 * static_cast<uint64_t>(h64))
+                        : 0ULL;
                     size_t headerOffset = p5->bV5Size;
                     if (p5->bV5Compression == BI_BITFIELDS &&
                         p5->bV5Size == sizeof(BITMAPINFOHEADER) &&
-                        totalSize >= headerOffset + 12 + pixelBytes) {
+                        pixelBytes64 > 0 &&
+                        totalSize >= headerOffset + 12 + static_cast<size_t>(pixelBytes64)) {
                         headerOffset += 12;
                     }
-                    if (w > 0 && hImg > 0 && p5->bV5BitCount == 32 &&
-                        totalSize >= headerOffset + pixelBytes) {
-                        const uint8_t* bits = reinterpret_cast<const uint8_t*>(p5) + headerOffset;
-                        cv::Mat bgra(hImg, w, CV_8UC4);
-                        int stride = w * 4;
-                        bool isTopDown = (p5->bV5Height < 0);
-                        bool hasNonZeroAlpha = false;
-                        for (int y = 0; y < hImg; ++y) {
-                            int srcY = isTopDown ? y : (hImg - 1 - y);
-                            const uint8_t* srcRow = bits + static_cast<size_t>(srcY) * stride;
-                            uint8_t* dstRow = bgra.ptr<uint8_t>(y);
-                            memcpy(dstRow, srcRow, stride);
-                            if (!hasNonZeroAlpha) {
-                                for (int x = 0; x < w; ++x) {
-                                    if (dstRow[x * 4 + 3] != 0) {
-                                        hasNonZeroAlpha = true;
-                                        break;
+                    if (pixelBytes64 > 0 && p5->bV5BitCount == 32 &&
+                        headerOffset <= totalSize &&
+                        static_cast<size_t>(pixelBytes64) <= totalSize - headerOffset) {
+                        try {
+                            const int w = static_cast<int>(w64);
+                            const int hImg = static_cast<int>(h64);
+                            const size_t stride = static_cast<size_t>(stride64);
+                            const uint8_t* bits = reinterpret_cast<const uint8_t*>(p5) + headerOffset;
+                            cv::Mat bgra(hImg, w, CV_8UC4);
+                            const bool isTopDown = (p5->bV5Height < 0);
+                            bool hasNonZeroAlpha = false;
+                            for (int y = 0; y < hImg; ++y) {
+                                const int srcY = isTopDown ? y : (hImg - 1 - y);
+                                const uint8_t* srcRow = bits + static_cast<size_t>(srcY) * stride;
+                                uint8_t* dstRow = bgra.data + static_cast<size_t>(y) * bgra.step[0];
+                                memcpy(dstRow, srcRow, stride);
+                                if (!hasNonZeroAlpha) {
+                                    for (int x = 0; x < w; ++x) {
+                                        if (dstRow[static_cast<size_t>(x) * 4ULL + 3ULL] != 0) {
+                                            hasNonZeroAlpha = true;
+                                            break;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        if (hasNonZeroAlpha) {
-                            result = bgra;
-                        } else {
-                            cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+                            if (hasNonZeroAlpha) {
+                                result = bgra;
+                            } else {
+                                cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+                            }
+                        } catch (const cv::Exception&) {
+                            result.release();
                         }
                     }
                     GlobalUnlock(h);
@@ -512,22 +580,30 @@ cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
         if (HBITMAP hbm = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP))) {
             BITMAP bm{};
             if (GetObject(hbm, sizeof(bm), &bm)) {
-                int w = bm.bmWidth;
-                int hImg = std::abs(bm.bmHeight);
-                if (w > 0 && hImg > 0) {
-                    BITMAPINFOHEADER bi{};
-                    bi.biSize = sizeof(bi);
-                    bi.biWidth = w;
-                    bi.biHeight = -hImg; // top-down
-                    bi.biPlanes = 1;
-                    bi.biBitCount = 32;
-                    bi.biCompression = BI_RGB;
-                    cv::Mat bgra(hImg, w, CV_8UC4);
-                    HDC dc = GetDC(nullptr);
-                    int got = GetDIBits(dc, hbm, 0, hImg, bgra.data, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS);
-                    ReleaseDC(nullptr, dc);
-                    if (got > 0) {
-                        cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+                const int64_t w64 = bm.bmWidth;
+                const int64_t hRaw = static_cast<int64_t>(bm.bmHeight);
+                const int64_t h64 = hRaw < 0 ? -hRaw : hRaw;
+                if (w64 > 0 && h64 > 0 &&
+                    static_cast<uint64_t>(w64) * static_cast<uint64_t>(h64) * 4ULL <= kMaxReadDibBytes) {
+                    try {
+                        const int w = static_cast<int>(w64);
+                        const int hImg = static_cast<int>(h64);
+                        BITMAPINFOHEADER bi{};
+                        bi.biSize = sizeof(bi);
+                        bi.biWidth = w;
+                        bi.biHeight = -hImg; // top-down
+                        bi.biPlanes = 1;
+                        bi.biBitCount = 32;
+                        bi.biCompression = BI_RGB;
+                        cv::Mat bgra(hImg, w, CV_8UC4);
+                        HDC dc = GetDC(nullptr);
+                        int got = dc ? GetDIBits(dc, hbm, 0, hImg, bgra.data, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS) : 0;
+                        if (dc) ReleaseDC(nullptr, dc);
+                        if (got > 0) {
+                            cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+                        }
+                    } catch (const cv::Exception&) {
+                        result.release();
                     }
                 }
             }

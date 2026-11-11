@@ -42,11 +42,17 @@ public:
     /// 隐藏轮盘
     void hide();
 
+    /// 插件卸载/退出时彻底销毁轮盘窗口、辅助宿主窗口与 Direct2D/GDI 资源
+    void shutdown();
+
     /// 是否正在显示 (原子无锁读取，供全局低级鼠标钩子与触发角安全查询)
     bool isVisible() const noexcept { return m_visible.load(std::memory_order_acquire); }
 
     /// 当前悬停扇区索引 (-1 表示中心取消区或未命中扇区)
-    int hoverIndex() const noexcept { return m_hoverIndex; }
+    int hoverIndex() const noexcept { return m_hoverIndex.load(std::memory_order_acquire); }
+
+    /// 获取当前轮盘中心屏幕坐标 (线程安全快照)
+    POINT centerPoint() const noexcept;
 
     /// 获取轮盘窗口句柄 (供测试与窗口识别使用)
     HWND hwnd() const noexcept { return m_hwnd; }
@@ -68,10 +74,11 @@ private:
     RadialMenuOverlay& operator=(const RadialMenuOverlay&) = delete;
 
     void registerWindowClass();
-    bool createResources();
-    void discardResources();
+    bool createResourcesLocked();
+    void discardResourcesLocked();
+    void deleteBitmapLocked() noexcept;
     void render();
-    void updateLayeredWindow(HDC screenDc, HDC memoryDc);
+    void updateLayeredWindowLocked(HDC screenDc, HDC memoryDc, float popScale);
 
     int hitTest(POINT pt, bool clampOuterRing = false) const noexcept;
     void confirmSelectionAtClientPoint(POINT clientPt);
@@ -81,6 +88,7 @@ private:
     LRESULT handleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 private:
+    mutable std::mutex m_stateMutex;
     HWND m_hwnd = nullptr;
     HWND m_helperOwnerHwnd = nullptr;
     HWND m_initialForegroundHwnd = nullptr;
@@ -88,17 +96,17 @@ private:
     POINT m_centerPt = {0, 0};
     std::atomic<int> m_windowLeft{0};
     std::atomic<int> m_windowTop{0};
-    int m_hoverIndex = -1;
-    bool m_sawButtonDown = false;
+    std::atomic<int> m_hoverIndex{-1};
+    std::atomic<bool> m_sawButtonDown{false};
 
     std::atomic<int> m_radiusOuter{150};
-    int m_radiusInner = 40;
+    std::atomic<int> m_radiusInner{40};
     std::atomic<int> m_windowSize{400};
-    float m_dpiScale = 1.0f;
+    std::atomic<float> m_dpiScale{1.0f};
 
     // 动画状态
     UINT_PTR m_timerId = 0;
-    DWORD m_showStartTime = 0;
+    std::atomic<DWORD> m_showStartTime{0};
     float m_popScale = 0.0f;           // 当前的弹出缩放比例 (0.0 -> 1.0)
     std::vector<float> m_hoverRadii;   // 每个扇区的额外半径扩展量，用于悬停平滑动画
     DWORD m_lastTickTime = 0;          // 上一帧时间，用于平滑更新

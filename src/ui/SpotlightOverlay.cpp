@@ -5,6 +5,7 @@
 #include "core/utils/WinUtils.h"
 #include "core/utils/UiThreadJoin.h"
 #include "core/events/EventBus.h"
+#include "core/events/MainThreadDispatcher.h"
 
 #include <algorithm>
 #include <cmath>
@@ -125,6 +126,7 @@ bool SpotlightOverlay::initialize(HINSTANCE hInstance) {
         std::lock_guard lock(m_mutex);
         updateNeedMouseMoveLocked();
     }
+    refreshFullscreenBypassState(GetForegroundWindow());
 
     LOG_INFO("鼠标演示与特效 Overlay 初始化完成 (基于通用 MouseFeedbackOverlayBase 硬件加速管线)");
     return true;
@@ -136,12 +138,40 @@ void SpotlightOverlay::shutdown() {
     m_needMouseMove.store(false, std::memory_order_release);
 
     if (m_eventSub != 0) {
-        tools3000::core::EventBus::instance().unsubscribe(m_eventSub);
+        tools3000::core::EventBus::instance().unsubscribeAndWait(m_eventSub);
         m_eventSub = 0;
     }
 
     shutdownBase();
     LOG_INFO("SpotlightOverlay: 独立专用渲染管线与硬件上下文已注销");
+}
+
+void SpotlightOverlay::refreshFullscreenBypassState(HWND fg) {
+    if (!fg) {
+        fg = GetForegroundWindow();
+    }
+    const uintptr_t fgKey = reinterpret_cast<uintptr_t>(fg);
+    const bool bypass = fg && IsWindow(fg) && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg);
+    m_fullscreenOverlayBypass.store(bypass, std::memory_order_release);
+    m_cachedForegroundHwnd.store(fgKey, std::memory_order_release);
+}
+
+bool SpotlightOverlay::isFullscreenBypassActiveFast() noexcept {
+    HWND fg = GetForegroundWindow();
+    if (!fg) {
+        return false;
+    }
+    const uintptr_t fgKey = reinterpret_cast<uintptr_t>(fg);
+    if (m_cachedForegroundHwnd.load(std::memory_order_acquire) != fgKey) {
+        auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
+        if (dispatcher.isInitialized() && !m_fgProbePending.exchange(true, std::memory_order_acq_rel)) {
+            dispatcher.postDeferred([this]() {
+                m_fgProbePending.store(false, std::memory_order_release);
+                refreshFullscreenBypassState(GetForegroundWindow());
+            });
+        }
+    }
+    return m_fullscreenOverlayBypass.load(std::memory_order_acquire);
 }
 
 void SpotlightOverlay::updateNeedMouseMoveLocked() {

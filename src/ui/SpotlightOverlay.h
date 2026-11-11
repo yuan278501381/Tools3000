@@ -80,6 +80,7 @@ public:
 
     void wakeRenderThread();
     void hideNow();
+    void refreshFullscreenBypassState(HWND fg = nullptr);
 
     D2D1_COLOR_F parseColor(const std::string& hexStr, float alpha) const;
     static D2D1_COLOR_F hslToRgb(float h, float s, float l, float alpha);
@@ -170,8 +171,9 @@ protected:
     bool isOverlayIdle() const override {
         if (m_visible.load(std::memory_order_relaxed)) return false;
         if (m_hideRequested.load(std::memory_order_relaxed)) return false;
-        if (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) return false;
-        if (m_dcompSurface != nullptr) return false;
+        const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
+        if (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) return false;
+        if (m_hasDcompSurface.load(std::memory_order_acquire)) return false;
         return !isActive();
     }
 
@@ -183,8 +185,13 @@ private:
     void drainRawMovesLocked();
     void processMouseMoveLocked(POINT pt, bool bypass = false);
     void updateNeedMouseMoveLocked();
+    bool isFullscreenBypassActiveFast() noexcept;
 
     std::atomic<bool> m_needMouseMove{false};
+    std::atomic_flag m_rawMovePushSpin = ATOMIC_FLAG_INIT;
+    std::atomic<bool> m_fullscreenOverlayBypass{false};
+    std::atomic<uintptr_t> m_cachedForegroundHwnd{0};
+    std::atomic<bool> m_fgProbePending{false};
 
     SpotlightSettings m_settings;
     mutable std::recursive_mutex m_mutex;

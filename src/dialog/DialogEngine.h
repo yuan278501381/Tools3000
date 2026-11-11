@@ -67,6 +67,8 @@ private:
     std::thread m_hookThread;             // 专用钩子线程
     std::atomic<DWORD> m_hookThreadId{0}; // 钩子线程 tid，用于 PostThreadMessage
     std::atomic<bool> m_hookReady{false}; // 钩子注册完毕信号
+    std::mutex m_hookStartupMutex;
+    std::condition_variable m_hookStartupCv;
 
     struct DialogSession {
         HWND hwnd{nullptr};
@@ -76,6 +78,7 @@ private:
         RECT cancelButtonRect{};
         RECT dialogRect{};
         RECT shellViewRect{};
+        float dpiScale{1.0f};
         DWORD processId{0};
         int dialogType{0};
         std::string processName;
@@ -91,6 +94,8 @@ private:
         bool isInstaller{false};
         bool restoreAttempted{false};
         bool selectionChanged{false};
+        bool escapeObserved{false};
+        bool enterObserved{false};
         bool confirmed{false};
         bool cancelled{false};
         bool closeRequested{false};

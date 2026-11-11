@@ -60,6 +60,10 @@ std::unique_ptr<ICaptureBackend> createMemoryCaptureBackend(CapturePixelFormat f
 using CaptureBackendFactory = std::function<std::unique_ptr<ICaptureBackend>()>;
 void setCaptureBackendFactoryForTesting(CaptureBackendFactory factory);
 
+/// Returns true when the interactive input desktop is temporarily inaccessible
+/// (e.g. during a UAC elevation prompt or Win+L lock screen transition).
+bool isDesktopTemporarilyInaccessible() noexcept;
+
 }  // namespace tools3000::capture
 
 #endif  // TOOLS3000_CAPTURE_CAPTUREBACKEND_H

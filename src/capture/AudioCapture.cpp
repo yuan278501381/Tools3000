@@ -93,7 +93,18 @@ struct Endpoint {
     std::vector<float> converted;
     std::vector<std::uint8_t> silence;
     std::size_t readOffset = 0;
+    std::array<float, AudioCapture::Channels> lastSample{0.0f, 0.0f};
+    bool primed = false;
+    bool inUnderrun = true;
     bool active = false;
+
+    void resetBufferState() noexcept {
+        fifo.clear();
+        readOffset = 0;
+        lastSample = {0.0f, 0.0f};
+        primed = false;
+        inUnderrun = true;
+    }
 
     void close() noexcept {
         if (client) client->Stop();
@@ -108,6 +119,9 @@ struct Endpoint {
         converted.clear();
         silence.clear();
         readOffset = 0;
+        lastSample = {0.0f, 0.0f};
+        primed = false;
+        inUnderrun = true;
         active = false;
     }
 };
@@ -128,7 +142,10 @@ struct AudioCapture::Impl {
     Endpoint system;
     Endpoint microphone;
     std::jthread worker;
+    HANDLE wakeEvent = nullptr;
     std::atomic<bool> paused{false};
+    std::atomic<std::uint64_t> syncResetEpoch{0};
+    std::atomic<std::int64_t> requestedSyncQpc{0};
     std::atomic<float> systemVolume{1.0f};
     std::atomic<float> microphoneVolume{1.0f};
     std::atomic<bool> systemMuted{false};
@@ -141,6 +158,20 @@ struct AudioCapture::Impl {
     std::mutex startupMutex;
     std::condition_variable startupCv;
     bool startupComplete = false;
+
+    static std::int64_t queryQpc() noexcept {
+        LARGE_INTEGER counter{};
+        QueryPerformanceCounter(&counter);
+        return counter.QuadPart;
+    }
+
+    static std::int64_t queryQpcFreq() noexcept {
+        static const std::int64_t freq = []() {
+            LARGE_INTEGER f{};
+            return (QueryPerformanceFrequency(&f) && f.QuadPart > 0) ? f.QuadPart : 10'000'000LL;
+        }();
+        return freq;
+    }
 
     ~Impl() { stop(); }
 
@@ -364,29 +395,120 @@ struct AudioCapture::Impl {
                  label, delaySeconds, error);
     }
 
-    float consume(Endpoint& endpoint, std::size_t sampleIndex) {
-        const std::size_t index = endpoint.readOffset + sampleIndex;
-        return endpoint.active && index < endpoint.fifo.size() ? endpoint.fifo[index] : 0.0f;
-    }
+    static constexpr int FadeFrames = 48; // 1.0 ms @ 48 kHz anti-click micro-ramp
+    static constexpr std::size_t PrimingSamples =
+        static_cast<std::size_t>(MixBlockFrames) * Channels * 2; // 20 ms jitter absorption cushion
 
-    void consumeBlock(Endpoint& endpoint) {
-        const std::size_t samples = static_cast<std::size_t>(MixBlockFrames) * Channels;
-        endpoint.readOffset = std::min(endpoint.readOffset + samples, endpoint.fifo.size());
+    void extractEndpointBlock(Endpoint& endpoint, float gain,
+                              std::array<float, MixBlockFrames * Channels>& outSamples,
+                              float& outPeak) {
+        outSamples.fill(0.0f);
+        outPeak = 0.0f;
+        if (!endpoint.active) {
+            if (std::abs(endpoint.lastSample[0]) > 1e-6f || std::abs(endpoint.lastSample[1]) > 1e-6f) {
+                for (int frameIdx = 0; frameIdx < FadeFrames; ++frameIdx) {
+                    const float w = 1.0f - static_cast<float>(frameIdx + 1) / static_cast<float>(FadeFrames);
+                    for (int ch = 0; ch < Channels; ++ch) {
+                        const float s = endpoint.lastSample[ch] * w * gain;
+                        outSamples[static_cast<std::size_t>(frameIdx * Channels + ch)] = s;
+                        outPeak = (std::max)(outPeak, std::abs(s));
+                    }
+                }
+                endpoint.lastSample = {0.0f, 0.0f};
+            }
+            endpoint.inUnderrun = true;
+            endpoint.primed = false;
+            return;
+        }
+
+        const std::size_t available = endpoint.fifo.size() - endpoint.readOffset;
+        const std::size_t blockSamples = static_cast<std::size_t>(MixBlockFrames) * Channels;
+
+        if (!endpoint.primed) {
+            if (available >= PrimingSamples) {
+                endpoint.primed = true;
+            } else {
+                // Cushioning initial packets against 10ms poll jitter; output silence smoothly.
+                endpoint.inUnderrun = true;
+                return;
+            }
+        }
+
+        if (available < blockSamples) {
+            // Underrun: consume remaining samples if any, then smoothly fade out from last sample to 0
+            // to eliminate hard zero-step clicks/pops.
+            const int availFrames = static_cast<int>(available / Channels);
+            const bool fadingIn = endpoint.inUnderrun;
+            for (int frameIdx = 0; frameIdx < availFrames; ++frameIdx) {
+                const float fadeIn = (fadingIn && frameIdx < FadeFrames)
+                    ? (static_cast<float>(frameIdx + 1) / static_cast<float>(FadeFrames))
+                    : 1.0f;
+                for (int ch = 0; ch < Channels; ++ch) {
+                    const float raw = endpoint.fifo[endpoint.readOffset + static_cast<std::size_t>(frameIdx * Channels + ch)] * fadeIn;
+                    endpoint.lastSample[ch] = raw;
+                    const float s = raw * gain;
+                    outSamples[static_cast<std::size_t>(frameIdx * Channels + ch)] = s;
+                    outPeak = (std::max)(outPeak, std::abs(s));
+                }
+            }
+            const int remainFrames = MixBlockFrames - availFrames;
+            const int rampFrames = (std::min)(FadeFrames, remainFrames);
+            if (std::abs(endpoint.lastSample[0]) > 1e-6f || std::abs(endpoint.lastSample[1]) > 1e-6f) {
+                for (int r = 0; r < rampFrames; ++r) {
+                    const float w = 1.0f - static_cast<float>(r + 1) / static_cast<float>(rampFrames);
+                    const int dstFrame = availFrames + r;
+                    for (int ch = 0; ch < Channels; ++ch) {
+                        const float s = endpoint.lastSample[ch] * w * gain;
+                        outSamples[static_cast<std::size_t>(dstFrame * Channels + ch)] = s;
+                        outPeak = (std::max)(outPeak, std::abs(s));
+                    }
+                }
+            }
+            endpoint.lastSample = {0.0f, 0.0f};
+            endpoint.readOffset = endpoint.fifo.size();
+            endpoint.fifo.clear();
+            endpoint.readOffset = 0;
+            endpoint.primed = false;
+            endpoint.inUnderrun = true;
+            return;
+        }
+
+        const bool applyFadeIn = endpoint.inUnderrun;
+        for (int frameIdx = 0; frameIdx < MixBlockFrames; ++frameIdx) {
+            const float fade = (applyFadeIn && frameIdx < FadeFrames)
+                ? (static_cast<float>(frameIdx + 1) / static_cast<float>(FadeFrames))
+                : 1.0f;
+            for (int ch = 0; ch < Channels; ++ch) {
+                const std::size_t idx = endpoint.readOffset + static_cast<std::size_t>(frameIdx * Channels + ch);
+                const float raw = endpoint.fifo[idx] * fade;
+                endpoint.lastSample[ch] = raw;
+                const float s = raw * gain;
+                outSamples[static_cast<std::size_t>(frameIdx * Channels + ch)] = s;
+                outPeak = (std::max)(outPeak, std::abs(s));
+            }
+        }
+        endpoint.inUnderrun = false;
+
+        endpoint.readOffset += blockSamples;
         if (endpoint.readOffset > MaxQueuedSamples / 4) {
             endpoint.fifo.erase(endpoint.fifo.begin(), endpoint.fifo.begin() +
                                 static_cast<std::ptrdiff_t>(endpoint.readOffset));
             endpoint.readOffset = 0;
         }
-        const std::size_t available = endpoint.fifo.size() - endpoint.readOffset;
-        if (available > MaxQueuedSamples) {
-            const std::size_t dropped = available - MaxQueuedSamples;
-            endpoint.readOffset += dropped - dropped % Channels;
+        const std::size_t remaining = endpoint.fifo.size() - endpoint.readOffset;
+        if (remaining > MaxQueuedSamples) {
+            const std::size_t dropped = remaining - MaxQueuedSamples;
+            const std::size_t alignedDrop = dropped - dropped % Channels;
+            endpoint.readOffset += alignedDrop;
+            endpoint.inUnderrun = true; // trigger micro fade-in across discontinuity
             std::lock_guard lock(statusMutex);
-            captureStatus.droppedFrames += dropped / Channels;
+            captureStatus.droppedFrames += alignedDrop / Channels;
         }
     }
 
     void mixBlock() {
+        std::array<float, MixBlockFrames * Channels> sysBlock{};
+        std::array<float, MixBlockFrames * Channels> micBlock{};
         std::array<float, MixBlockFrames * Channels> block{};
         float systemPeak = 0.0f;
         float microphonePeak = 0.0f;
@@ -395,17 +517,15 @@ struct AudioCapture::Impl {
             ? 0.0f : systemVolume.load(std::memory_order_relaxed);
         const float microphoneGain = microphoneMuted.load(std::memory_order_relaxed)
             ? 0.0f : microphoneVolume.load(std::memory_order_relaxed);
+
+        extractEndpointBlock(system, systemGain, sysBlock, systemPeak);
+        extractEndpointBlock(microphone, microphoneGain, micBlock, microphonePeak);
+
         for (std::size_t index = 0; index < block.size(); ++index) {
-            const float systemSample = consume(system, index) * systemGain;
-            const float microphoneSample = consume(microphone, index) * microphoneGain;
-            const float mixed = std::clamp(systemSample + microphoneSample, -1.0f, 1.0f);
+            const float mixed = std::clamp(sysBlock[index] + micBlock[index], -1.0f, 1.0f);
             block[index] = mixed;
-            systemPeak = std::max(systemPeak, std::abs(systemSample));
-            microphonePeak = std::max(microphonePeak, std::abs(microphoneSample));
             mixedPeak = std::max(mixedPeak, std::abs(mixed));
         }
-        consumeBlock(system);
-        consumeBlock(microphone);
 
         std::lock_guard lock(outputMutex);
         output.insert(output.end(), block.begin(), block.end());
@@ -471,18 +591,30 @@ struct AudioCapture::Impl {
         }
         startupCv.notify_all();
 
-        auto nextMix = std::chrono::steady_clock::now();
+        const std::int64_t qpcFreq = queryQpcFreq();
+        std::uint64_t observedSyncEpoch = syncResetEpoch.load(std::memory_order_acquire);
+        std::int64_t syncOriginQpc = queryQpc();
+        std::uint64_t totalMixedFrames = 0;
+
         while (!stopToken.stop_requested()) {
-            std::array<HANDLE, 2> events{};
+            std::array<HANDLE, 3> events{};
             DWORD count = 0;
-            if (system.active) events[count++] = system.event;
-            if (microphone.active) events[count++] = microphone.event;
-            const auto now = std::chrono::steady_clock::now();
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::max(nextMix - now, std::chrono::steady_clock::duration::zero()));
-            const DWORD timeout = static_cast<DWORD>(std::clamp<long long>(remaining.count(), 1, 10));
+            if (wakeEvent) events[count++] = wakeEvent;
+            if (system.active && system.event) events[count++] = system.event;
+            if (microphone.active && microphone.event) events[count++] = microphone.event;
+
+            const std::int64_t nowBeforeWaitQpc = queryQpc();
+            const std::int64_t nextBlockQpc = syncOriginQpc +
+                static_cast<std::int64_t>((static_cast<double>(totalMixedFrames + MixBlockFrames) *
+                                           static_cast<double>(qpcFreq)) /
+                                          static_cast<double>(SampleRate));
+            const std::int64_t remainTicks = (std::max)(0LL, nextBlockQpc - nowBeforeWaitQpc);
+            const long long remainMs = (remainTicks * 1000LL) / qpcFreq;
+            const DWORD timeout = static_cast<DWORD>(std::clamp<long long>(remainMs, 1, 10));
+
             if (count > 0) WaitForMultipleObjects(count, events.data(), FALSE, timeout);
             else std::this_thread::sleep_for(std::chrono::milliseconds(timeout));
+
             drainEndpoint(system, systemError);
             drainEndpoint(microphone, microphoneError);
             const auto reconnectNow = Clock::now();
@@ -502,25 +634,69 @@ struct AudioCapture::Impl {
             }
             updateStatus(systemError, microphoneError);
 
-            if (paused.load(std::memory_order_relaxed)) {
-                system.fifo.clear(); system.readOffset = 0;
-                microphone.fifo.clear(); microphone.readOffset = 0;
+            const std::uint64_t latestEpoch = syncResetEpoch.load(std::memory_order_acquire);
+            if (latestEpoch != observedSyncEpoch) {
+                observedSyncEpoch = latestEpoch;
+                system.resetBufferState();
+                microphone.resetBufferState();
+                {
+                    std::lock_guard outLock(outputMutex);
+                    output.clear();
+                    outputOffset = 0;
+                }
+                {
+                    std::lock_guard statusLock(statusMutex);
+                    captureStatus.droppedFrames = 0;
+                    captureStatus.systemPeak = 0.0f;
+                    captureStatus.microphonePeak = 0.0f;
+                    captureStatus.mixedPeak = 0.0f;
+                }
+                const std::int64_t reqQpc = requestedSyncQpc.load(std::memory_order_acquire);
+                syncOriginQpc = (reqQpc > 0) ? reqQpc : queryQpc();
+                totalMixedFrames = 0;
+            }
+
+            if (paused.load(std::memory_order_acquire)) {
+                system.resetBufferState();
+                microphone.resetBufferState();
                 {
                     std::lock_guard statusLock(statusMutex);
                     captureStatus.systemPeak = 0.0f;
                     captureStatus.microphonePeak = 0.0f;
                     captureStatus.mixedPeak = 0.0f;
                 }
-                nextMix = std::chrono::steady_clock::now();
+                syncOriginQpc = queryQpc();
+                totalMixedFrames = 0;
                 continue;
             }
-            const auto afterDrain = std::chrono::steady_clock::now();
-            int catchup = 0;
-            while (afterDrain >= nextMix && catchup++ < 5) {
+
+            // Compute exact target audio frames elapsed since QPC zero-origin so that
+            // endpoint reconnect delays are padded with exact silence instead of drifting A/V sync.
+            const std::int64_t afterDrainQpc = queryQpc();
+            const std::int64_t elapsedQpc = (std::max)(0LL, afterDrainQpc - syncOriginQpc);
+            const std::uint64_t expectedFrames = static_cast<std::uint64_t>(
+                (static_cast<double>(elapsedQpc) * static_cast<double>(SampleRate)) /
+                static_cast<double>(qpcFreq));
+
+            constexpr std::uint64_t MaxCatchupBlocks = 200; // up to 2.0s exact silence pad per stall
+            std::uint64_t blocksMixedNow = 0;
+            while (totalMixedFrames + static_cast<std::uint64_t>(MixBlockFrames) <= expectedFrames &&
+                   blocksMixedNow < MaxCatchupBlocks) {
                 mixBlock();
-                nextMix += std::chrono::milliseconds(10);
+                totalMixedFrames += static_cast<std::uint64_t>(MixBlockFrames);
+                ++blocksMixedNow;
             }
-            if (catchup >= 5) nextMix = afterDrain + std::chrono::milliseconds(10);
+            if (totalMixedFrames + static_cast<std::uint64_t>(MixBlockFrames) <= expectedFrames) {
+                const std::uint64_t skippedFrames = expectedFrames - totalMixedFrames;
+                const std::uint64_t alignedSkipped =
+                    (skippedFrames / static_cast<std::uint64_t>(MixBlockFrames)) *
+                    static_cast<std::uint64_t>(MixBlockFrames);
+                if (alignedSkipped > 0) {
+                    totalMixedFrames += alignedSkipped;
+                    std::lock_guard statusLock(statusMutex);
+                    captureStatus.droppedFrames += alignedSkipped;
+                }
+            }
         }
         system.close();
         microphone.close();
@@ -530,7 +706,12 @@ struct AudioCapture::Impl {
     void stop() noexcept {
         if (worker.joinable()) {
             worker.request_stop();
+            if (wakeEvent) SetEvent(wakeEvent);
             worker.join();
+        }
+        if (wakeEvent) {
+            CloseHandle(wakeEvent);
+            wakeEvent = nullptr;
         }
     }
 };
@@ -541,7 +722,10 @@ AudioCapture::~AudioCapture() = default;
 bool AudioCapture::start(const AudioCaptureOptions& options) {
     stop();
     m_impl->options = options;
-    m_impl->paused = false;
+    m_impl->paused.store(false, std::memory_order_relaxed);
+    m_impl->syncResetEpoch.store(0, std::memory_order_relaxed);
+    m_impl->requestedSyncQpc.store(0, std::memory_order_relaxed);
+    m_impl->wakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     m_impl->systemVolume.store(std::clamp(options.systemVolume, 0.0f, 2.0f),
                                std::memory_order_relaxed);
     m_impl->microphoneVolume.store(std::clamp(options.microphoneVolume, 0.0f, 2.0f),
@@ -579,11 +763,33 @@ bool AudioCapture::start(const AudioCaptureOptions& options) {
 void AudioCapture::stop() noexcept { m_impl->stop(); }
 
 void AudioCapture::setPaused(bool paused) {
-    m_impl->paused.store(paused, std::memory_order_relaxed);
+    m_impl->paused.store(paused, std::memory_order_release);
     if (paused) {
         std::lock_guard lock(m_impl->outputMutex);
         m_impl->output.clear();
         m_impl->outputOffset = 0;
+    }
+    if (m_impl->wakeEvent) {
+        SetEvent(m_impl->wakeEvent);
+    }
+}
+
+void AudioCapture::resetAndResumeForSyncStart() {
+    const std::int64_t nowQpc = Impl::queryQpc();
+    {
+        std::lock_guard lock(m_impl->outputMutex);
+        m_impl->output.clear();
+        m_impl->outputOffset = 0;
+    }
+    {
+        std::lock_guard statusLock(m_impl->statusMutex);
+        m_impl->captureStatus.droppedFrames = 0;
+    }
+    m_impl->requestedSyncQpc.store(nowQpc, std::memory_order_release);
+    m_impl->syncResetEpoch.fetch_add(1, std::memory_order_acq_rel);
+    m_impl->paused.store(false, std::memory_order_release);
+    if (m_impl->wakeEvent) {
+        SetEvent(m_impl->wakeEvent);
     }
 }
 

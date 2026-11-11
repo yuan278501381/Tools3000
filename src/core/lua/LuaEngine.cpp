@@ -37,7 +37,33 @@ namespace tools3000::core {
 
 namespace {
 
-// ── 键盘: 解析并发送组合键 (如 "Ctrl+Shift+T", "Ctrl+-", "Ctrl+=") ──────────
+// ── 键盘: 解析并发送组合键 (如 "Ctrl+Shift+T", "Ctrl+-", "Ctrl+=", "Ctrl++", "+") ──
+bool isExtendedVirtualKey(WORD vk) noexcept {
+    switch (vk) {
+        case VK_UP:
+        case VK_DOWN:
+        case VK_LEFT:
+        case VK_RIGHT:
+        case VK_INSERT:
+        case VK_DELETE:
+        case VK_HOME:
+        case VK_END:
+        case VK_PRIOR:
+        case VK_NEXT:
+        case VK_LWIN:
+        case VK_RWIN:
+        case VK_RMENU:
+        case VK_RCONTROL:
+        case VK_APPS:
+        case VK_SNAPSHOT:
+        case VK_DIVIDE:
+        case VK_NUMLOCK:
+            return true;
+        default:
+            return false;
+    }
+}
+
 WORD virtualKeyFromToken(const std::string& tok) {
     static const std::unordered_map<std::string, WORD> kMap = {
         {"F1", VK_F1}, {"F2", VK_F2}, {"F3", VK_F3}, {"F4", VK_F4}, {"F5", VK_F5},
@@ -51,8 +77,9 @@ WORD virtualKeyFromToken(const std::string& tok) {
         {"LEFT", VK_LEFT}, {"RIGHT", VK_RIGHT}, {"UP", VK_UP}, {"DOWN", VK_DOWN},
         {"PAGEUP", VK_PRIOR}, {"PGUP", VK_PRIOR}, {"PAGEDOWN", VK_NEXT}, {"PGDN", VK_NEXT},
         {"INSERT", VK_INSERT}, {"INS", VK_INSERT}, {"PRINTSCREEN", VK_SNAPSHOT},
+        {"LWIN", VK_LWIN}, {"RWIN", VK_RWIN},
         {"-", VK_OEM_MINUS}, {"MINUS", VK_OEM_MINUS},
-        {"=", VK_OEM_PLUS}, {"PLUS", VK_OEM_PLUS}, {"EQUAL", VK_OEM_PLUS},
+        {"+", VK_OEM_PLUS}, {"=", VK_OEM_PLUS}, {"PLUS", VK_OEM_PLUS}, {"EQUAL", VK_OEM_PLUS},
         {",", VK_OEM_COMMA}, {"COMMA", VK_OEM_COMMA},
         {".", VK_OEM_PERIOD}, {"PERIOD", VK_OEM_PERIOD},
         {"/", VK_OEM_2}, {"SLASH", VK_OEM_2},
@@ -80,22 +107,66 @@ WORD virtualKeyFromToken(const std::string& tok) {
     return 0;
 }
 
+std::vector<std::string> splitKeyComboTokens(const std::string& combo) {
+    auto trimToken = [](const std::string& raw) -> std::string {
+        const size_t b = raw.find_first_not_of(" \t");
+        if (b == std::string::npos) return {};
+        const size_t e = raw.find_last_not_of(" \t");
+        return raw.substr(b, e - b + 1);
+    };
+
+    const std::string trimmed = trimToken(combo);
+    if (trimmed.empty()) return {};
+    if (trimmed == "+" || trimmed == "\\+") return {"+"};
+
+    std::vector<std::string> tokens;
+    std::string current;
+    for (size_t i = 0; i < trimmed.size(); ++i) {
+        const char ch = trimmed[i];
+        if (ch == '\\' && i + 1 < trimmed.size() && trimmed[i + 1] == '+') {
+            current.push_back('+');
+            ++i;
+            continue;
+        }
+        if (ch == '+') {
+            std::string tok = trimToken(current);
+            current.clear();
+            if (!tok.empty()) {
+                tokens.push_back(std::move(tok));
+            } else {
+                // 连续 '+'（如 "Ctrl++"）或前导 '+' 表示主键自身为 '+'
+                tokens.push_back("+");
+            }
+            continue;
+        }
+        current.push_back(ch);
+    }
+    std::string tail = trimToken(current);
+    if (!tail.empty()) {
+        tokens.push_back(std::move(tail));
+    }
+    return tokens;
+}
+
 void sendKeys(const std::string& combo) {
+    constexpr uint8_t kLuaModCtrl  = 1 << 0;
+    constexpr uint8_t kLuaModAlt   = 1 << 1;
+    constexpr uint8_t kLuaModShift = 1 << 2;
+    constexpr uint8_t kLuaModLWin  = 1 << 3;
+    constexpr uint8_t kLuaModRWin  = 1 << 4;
+
     uint8_t mods = 0;
     WORD vk = 0;
-    std::stringstream ss(combo);
-    std::string tok;
-    while (std::getline(ss, tok, '+')) {
-        // trim
-        size_t b = tok.find_first_not_of(" \t");
-        size_t e = tok.find_last_not_of(" \t");
-        if (b == std::string::npos) continue;
-        tok = tok.substr(b, e - b + 1);
-        std::string low = WinUtils::toLower(tok);
-        if (low == "ctrl" || low == "control") mods |= MOD_CONTROL;
-        else if (low == "alt") mods |= MOD_ALT;
-        else if (low == "shift") mods |= MOD_SHIFT;
-        else if (low == "win" || low == "super" || low == "meta") mods |= MOD_WIN;
+    const auto tokens = splitKeyComboTokens(combo);
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        const std::string& tok = tokens[i];
+        const std::string low = WinUtils::toLower(tok);
+        const bool isLast = (i + 1 == tokens.size());
+        if (!isLast && (low == "ctrl" || low == "control")) mods |= kLuaModCtrl;
+        else if (!isLast && low == "alt") mods |= kLuaModAlt;
+        else if (!isLast && low == "shift") mods |= kLuaModShift;
+        else if (!isLast && (low == "win" || low == "lwin" || low == "super" || low == "meta")) mods |= kLuaModLWin;
+        else if (!isLast && low == "rwin") mods |= kLuaModRWin;
         else vk = virtualKeyFromToken(tok);
     }
     if (vk == 0) {
@@ -108,11 +179,16 @@ void sendKeys(const std::string& combo) {
         INPUT in{};
         in.type = INPUT_KEYBOARD;
         in.ki.wVk = k;
-        in.ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
+        in.ki.dwFlags = (up ? KEYEVENTF_KEYUP : 0) |
+                        (isExtendedVirtualKey(k) ? KEYEVENTF_EXTENDEDKEY : 0);
         inputs.push_back(in);
     };
-    static constexpr std::array<std::pair<uint8_t, WORD>, 4> kMods = {{
-        {MOD_CONTROL, VK_CONTROL}, {MOD_ALT, VK_MENU}, {MOD_SHIFT, VK_SHIFT}, {MOD_WIN, VK_LWIN},
+    static constexpr std::array<std::pair<uint8_t, WORD>, 5> kMods = {{
+        {kLuaModCtrl, VK_CONTROL},
+        {kLuaModAlt, VK_MENU},
+        {kLuaModShift, VK_SHIFT},
+        {kLuaModLWin, VK_LWIN},
+        {kLuaModRWin, VK_RWIN},
     }};
     for (auto [m, k] : kMods) if (mods & m) push(k, false);
     push(vk, false);
@@ -121,18 +197,154 @@ void sendKeys(const std::string& combo) {
     SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
 }
 
-// ── 剪贴板读取 (UTF-8) ────────────────────────────────────────────────────────
+// ── 剪贴板读取 (UTF-8，带 GlobalSize 边界保护) ────────────────────────────────
 std::string clipboardGetText() {
     if (!OpenClipboard(nullptr)) return {};
     std::string result;
     if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
-        if (auto* wptr = static_cast<const wchar_t*>(GlobalLock(h))) {
-            result = WinUtils::wstringToUtf8(wptr);
-            GlobalUnlock(h);
+        const SIZE_T byteSize = GlobalSize(h);
+        const size_t maxChars = byteSize / sizeof(wchar_t);
+        if (maxChars > 0) {
+            if (const auto* wptr = static_cast<const wchar_t*>(GlobalLock(h))) {
+                const size_t len = wcsnlen(wptr, maxChars);
+                result = WinUtils::wstringToUtf8(std::wstring(wptr, len));
+                GlobalUnlock(h);
+            }
         }
     }
     CloseClipboard();
     return result;
+}
+
+// ── 原生轻量输入对话框 (DialogBoxIndirectParamW 内存模板，零剪贴板触碰) ──────
+struct LuaInputBoxContext {
+    std::wstring prompt;
+    std::wstring result;
+    bool accepted = false;
+};
+
+constexpr WORD kIdInputPrompt = 1001;
+constexpr WORD kIdInputEdit   = 1002;
+
+INT_PTR CALLBACK luaInputBoxDlgProc(HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(hwndDlg, GWLP_USERDATA, lParam);
+            auto* ctx = reinterpret_cast<LuaInputBoxContext*>(lParam);
+            SetWindowPos(hwndDlg, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            if (ctx) {
+                SetDlgItemTextW(hwndDlg, kIdInputPrompt, ctx->prompt.c_str());
+            }
+            HWND editHwnd = GetDlgItem(hwndDlg, kIdInputEdit);
+            if (editHwnd) {
+                SendMessageW(editHwnd, EM_SETLIMITTEXT, 4096, 0);
+                SetFocus(editHwnd);
+                return FALSE;
+            }
+            return TRUE;
+        }
+        case WM_COMMAND: {
+            const WORD cmdId = LOWORD(wParam);
+            if (cmdId == IDOK) {
+                auto* ctx = reinterpret_cast<LuaInputBoxContext*>(
+                    GetWindowLongPtrW(hwndDlg, GWLP_USERDATA));
+                if (ctx) {
+                    HWND editHwnd = GetDlgItem(hwndDlg, kIdInputEdit);
+                    const int len = editHwnd ? GetWindowTextLengthW(editHwnd) : 0;
+                    if (len > 0) {
+                        std::wstring buf(static_cast<size_t>(len) + 1, L'\0');
+                        const int copied = GetWindowTextW(editHwnd, buf.data(), len + 1);
+                        buf.resize(copied > 0 ? static_cast<size_t>(copied) : 0);
+                        ctx->result = std::move(buf);
+                    }
+                    ctx->accepted = true;
+                }
+                EndDialog(hwndDlg, IDOK);
+                return TRUE;
+            }
+            if (cmdId == IDCANCEL) {
+                EndDialog(hwndDlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_CLOSE:
+            EndDialog(hwndDlg, IDCANCEL);
+            return TRUE;
+        default:
+            break;
+    }
+    return FALSE;
+}
+
+std::string showWin32InputBoxDialog(const std::string& promptUtf8) {
+    struct DialogBuffer {
+        std::vector<BYTE> bytes;
+        void alignDword() {
+            while ((bytes.size() & 3u) != 0u) bytes.push_back(0);
+        }
+        void appendRaw(const void* data, size_t size) {
+            const auto* p = static_cast<const BYTE*>(data);
+            bytes.insert(bytes.end(), p, p + size);
+        }
+        void appendWord(WORD v) { appendRaw(&v, sizeof(v)); }
+        void appendWString(const wchar_t* s) {
+            const size_t count = (s ? wcslen(s) : 0) + 1;
+            appendRaw(s ? s : L"", count * sizeof(wchar_t));
+        }
+        void addControl(DWORD style, short x, short y, short cx, short cy,
+                        WORD id, WORD classAtom, const wchar_t* caption) {
+            alignDword();
+            DLGITEMTEMPLATE item{};
+            item.style = style | WS_CHILD | WS_VISIBLE;
+            item.dwExtendedStyle = 0;
+            item.x = x;
+            item.y = y;
+            item.cx = cx;
+            item.cy = cy;
+            item.id = id;
+            appendRaw(&item, sizeof(item));
+            appendWord(0xFFFF);
+            appendWord(classAtom);
+            appendWString(caption);
+            appendWord(0);  // 无附加创建数据
+        }
+    } tpl;
+
+    tpl.bytes.reserve(512);
+    DLGTEMPLATE dlg{};
+    dlg.style = DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dlg.dwExtendedStyle = WS_EX_TOPMOST;
+    dlg.cdit = 4;
+    dlg.x = 0;
+    dlg.y = 0;
+    dlg.cx = 236;
+    dlg.cy = 92;
+    tpl.appendRaw(&dlg, sizeof(dlg));
+    tpl.appendWord(0);  // menu
+    tpl.appendWord(0);  // class
+    tpl.appendWString(L"Tools3000");
+    tpl.appendWord(9);  // font size
+    tpl.appendWString(L"Segoe UI");
+
+    // 0x0082 = Static, 0x0081 = Edit, 0x0080 = Button
+    tpl.addControl(SS_LEFT, 10, 10, 216, 24, kIdInputPrompt, 0x0082, L"");
+    tpl.addControl(WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 10, 38, 216, 16, kIdInputEdit, 0x0081, L"");
+    tpl.addControl(WS_TABSTOP | BS_DEFPUSHBUTTON, 116, 64, 52, 16, IDOK, 0x0080, L"OK");
+    tpl.addControl(WS_TABSTOP | BS_PUSHBUTTON, 174, 64, 52, 16, IDCANCEL, 0x0080, L"Cancel");
+
+    LuaInputBoxContext ctx;
+    ctx.prompt = promptUtf8.empty() ? L"Please enter a value:" : WinUtils::utf8ToWstring(promptUtf8);
+    const INT_PTR ret = DialogBoxIndirectParamW(
+        GetModuleHandleW(nullptr),
+        reinterpret_cast<LPCDLGTEMPLATEW>(tpl.bytes.data()),
+        nullptr,
+        &luaInputBoxDlgProc,
+        reinterpret_cast<LPARAM>(&ctx));
+    if (ret == IDOK && ctx.accepted) {
+        return WinUtils::wstringToUtf8(ctx.result);
+    }
+    return {};
 }
 
 // ── 目标窗口: 显式句柄或默认前台窗口 ──────────────────────────────────────────
@@ -280,7 +492,12 @@ LuaEngine& LuaEngine::instance() {
 }
 
 bool LuaEngine::initialize() {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
+    if (m_executing) {
+        LOG_WARN("Rejected LuaEngine::initialize while a script is actively executing.");
+        return false;
+    }
+    m_shutdownPending = false;
     try {
         m_lua = std::make_unique<sol::state>();
         // 沙箱: 仅开放安全标准库; 不开放 io / debug / package (杜绝 C-DLL 动态载入攻击)
@@ -342,7 +559,16 @@ static void luaTimeoutHook(lua_State* L, lua_Debug*) {
 }  // namespace
 
 void LuaEngine::shutdown() {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
+    if (m_executing) {
+        m_shutdownPending = true;
+        if (!m_execCv.wait_for(lock, std::chrono::milliseconds(500),
+                               [this] { return !m_executing; })) {
+            LOG_WARN("LuaEngine shutdown deferred VM teardown until modal script unwinds.");
+            return;
+        }
+    }
+    m_shutdownPending = false;
     m_lua.reset();
     LOG_INFO("Lua 脚本引擎已关闭");
 }
@@ -389,9 +615,39 @@ bool LuaEngine::executeScript(const std::string& script,
                               LuaPermission permissions,
                               std::chrono::milliseconds timeout,
                               std::atomic<bool>* cancelToken) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return runProtected([&] { return m_lua->safe_script(script, sol::script_pass_on_error); },
-                        "executeScript", permissions, timeout, cancelToken);
+    std::unique_lock<std::mutex> lock(m_mutex);
+    if (m_shutdownPending) {
+        return false;
+    }
+    if (m_executing) {
+        if (m_modalDepth.load(std::memory_order_acquire) > 0) {
+            LOG_WARN("[Lua] Another script is waiting on a modal dialog; skipping re-entrant execution.");
+            return false;
+        }
+        const auto waitBudget = timeout.count() > 0 ? timeout : std::chrono::milliseconds(5000);
+        if (!m_execCv.wait_for(lock, waitBudget, [this] { return !m_executing || m_shutdownPending; }) ||
+            m_shutdownPending) {
+            LOG_WARN("[Lua] Timed out or shutting down while waiting for previous script execution.");
+            return false;
+        }
+    }
+    if (!m_lua) {
+        LOG_ERROR("[Lua] Engine not initialized; cannot run executeScript");
+        return false;
+    }
+
+    m_executing = true;
+    const bool ok = runProtected(
+        [&] { return m_lua->safe_script(script, sol::script_pass_on_error); },
+        "executeScript", permissions, timeout, cancelToken);
+    m_executing = false;
+    if (m_shutdownPending) {
+        m_shutdownPending = false;
+        m_lua.reset();
+    }
+    lock.unlock();
+    m_execCv.notify_all();
+    return ok;
 }
 
 bool LuaEngine::authorizeAndExecute(const std::string& script,
@@ -445,24 +701,24 @@ bool LuaEngine::authorizeAndExecute(const std::string& script,
 }
 
 bool LuaEngine::isScriptAuthorized(const std::string& scriptId, LuaPermission requiredPerms) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_authMutex);
     auto it = m_authorizedScripts.find(scriptId);
     if (it == m_authorizedScripts.end()) return false;
     return hasPermission(it->second, requiredPerms);
 }
 
 void LuaEngine::grantPermissions(const std::string& scriptId, LuaPermission perms) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_authMutex);
     m_authorizedScripts[scriptId] = m_authorizedScripts[scriptId] | perms;
 }
 
 void LuaEngine::revokePermissions(const std::string& scriptId) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_authMutex);
     m_authorizedScripts.erase(scriptId);
 }
 
 void LuaEngine::revokeAllPermissions() {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_authMutex);
     m_authorizedScripts.clear();
 }
 
@@ -561,13 +817,20 @@ void LuaEngine::bindKeyboard(sol::table& easy) {
     });
     t.set_function("keyDown", [this](int vk) {
         requirePermission(m_lua->lua_state(), LuaPermission::Keyboard, "easy.keyboard");
-        INPUT in{}; in.type = INPUT_KEYBOARD; in.ki.wVk = static_cast<WORD>(vk);
+        const WORD wvk = static_cast<WORD>(vk);
+        INPUT in{};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = wvk;
+        in.ki.dwFlags = isExtendedVirtualKey(wvk) ? KEYEVENTF_EXTENDEDKEY : 0;
         SendInput(1, &in, sizeof(INPUT));
     });
     t.set_function("keyUp", [this](int vk) {
         requirePermission(m_lua->lua_state(), LuaPermission::Keyboard, "easy.keyboard");
-        INPUT in{}; in.type = INPUT_KEYBOARD; in.ki.wVk = static_cast<WORD>(vk);
-        in.ki.dwFlags = KEYEVENTF_KEYUP;
+        const WORD wvk = static_cast<WORD>(vk);
+        INPUT in{};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = wvk;
+        in.ki.dwFlags = KEYEVENTF_KEYUP | (isExtendedVirtualKey(wvk) ? KEYEVENTF_EXTENDEDKEY : 0);
         SendInput(1, &in, sizeof(INPUT));
     });
 }
@@ -748,10 +1011,35 @@ void LuaEngine::bindHttp(sol::table& easy) {
 
 void LuaEngine::bindUi(sol::table& easy) {
     sol::table t = easy.create_named("ui");
-    auto box = [](const std::string& msg, const std::string& title, UINT flags) {
+    auto runModal = [this](auto&& modalFn) {
         ScopedGuardTimerPause pauseGuard;
-        return MessageBoxW(nullptr, WinUtils::utf8ToWstring(msg).c_str(),
-                           WinUtils::utf8ToWstring(title).c_str(), flags | MB_TOPMOST);
+        struct ScopedModalUnlock {
+            std::mutex& mtx;
+            std::atomic<uint32_t>& depth;
+            ScopedModalUnlock(std::mutex& m, std::atomic<uint32_t>& d) noexcept : mtx(m), depth(d) {
+                depth.fetch_add(1, std::memory_order_release);
+                mtx.unlock();
+            }
+            ~ScopedModalUnlock() noexcept {
+                mtx.lock();
+                depth.fetch_sub(1, std::memory_order_release);
+            }
+        };
+        auto ret = [&]() {
+            ScopedModalUnlock unlockGuard(m_mutex, m_modalDepth);
+            return modalFn();
+        }();
+        if (m_shutdownPending && m_lua) {
+            luaL_error(m_lua->lua_state(), "Lua engine is shutting down");
+        }
+        return ret;
+    };
+    auto box = [runModal](const std::string& msg, const std::string& title, UINT flags) {
+        const std::wstring wmsg = WinUtils::utf8ToWstring(msg);
+        const std::wstring wtitle = WinUtils::utf8ToWstring(title);
+        return runModal([&]() {
+            return MessageBoxW(nullptr, wmsg.c_str(), wtitle.c_str(), flags | MB_TOPMOST);
+        });
     };
     t.set_function("toast", [this, box](const std::string& msg) {
         requirePermission(m_lua->lua_state(), LuaPermission::Ui, "easy.ui");
@@ -765,11 +1053,11 @@ void LuaEngine::bindUi(sol::table& easy) {
         requirePermission(m_lua->lua_state(), LuaPermission::Ui, "easy.ui");
         return box(msg, "Tools3000", MB_YESNO | MB_ICONQUESTION) == IDYES;
     });
-    // inputBox: 严格双重校验 Ui 弹窗与 Clipboard 剪贴板权限
-    t.set_function("inputBox", [this](const std::string& /*prompt*/) {
+    // inputBox: 使用真实轻量 Win32 内存模板输入对话框，仅需 Ui 弹窗权限，绝不暗中读取剪贴板
+    t.set_function("inputBox", [this, runModal](sol::optional<std::string> prompt) {
         requirePermission(m_lua->lua_state(), LuaPermission::Ui, "easy.ui");
-        requirePermission(m_lua->lua_state(), LuaPermission::Clipboard, "easy.clipboard");
-        return clipboardGetText();
+        const std::string text = prompt.value_or("");
+        return runModal([&]() { return showWin32InputBoxDialog(text); });
     });
 }
 

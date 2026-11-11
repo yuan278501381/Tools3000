@@ -123,8 +123,10 @@ public:
     /// @return true 表示消费并拦截按键，阻止本地 Windows Shell 接收
     bool onLowLevelKeyboardEvent(const KBDLLHOOKSTRUCT& data, WPARAM wParam);
 
-    /// 执行全量 8 组修饰键及鼠标按键释放冲刷
-    void flushModifiers(HWND targetHwnd = nullptr);
+    /// 执行全量 8 组修饰键及按需鼠标按键释放冲刷
+    /// @param targetHwnd 指定目标远控窗口；为空则自动定位当前或最近活跃远控窗口
+    /// @param manualRescue 为 true 表示由设置页/托盘菜单手动触发急救，不因当前前台为宿主窗口而跳过
+    void flushModifiers(HWND targetHwnd = nullptr, bool manualRescue = false);
 
     /// 测试用：模拟前台窗口状态切换
     void setMockForeground(HWND hwnd, bool isRemote, const std::string& processName = "");
@@ -199,11 +201,14 @@ private:
 
     std::atomic<bool> m_isRemoteForeground{false};
     std::atomic<HWND> m_activeRemoteHwnd{nullptr};
+    std::atomic<HWND> m_lastRemoteHwnd{nullptr};
+    std::atomic<HWND> m_pendingProbeHwnd{nullptr};
     HWND m_lastActiveRemoteHwnd = nullptr;
     std::string m_activeRemoteProcess;
 
     // 输入法智能脱敏状态
     std::atomic<bool> m_imeSanitized{false};
+    bool m_imeClosedViaControl = false;
     HKL m_savedHkl = nullptr;
 
     // 沉浸热键直通状态机

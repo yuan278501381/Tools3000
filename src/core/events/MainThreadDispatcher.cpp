@@ -21,29 +21,42 @@ MainThreadDispatcher& MainThreadDispatcher::instance() {
 }
 
 void MainThreadDispatcher::initialize(HWND messageWindow) {
-    if (!m_impl) m_impl = new Impl();
-    {
-        std::lock_guard lock(m_impl->mutex);
-        m_impl->tasks.clear();
+    Impl* impl = m_impl.load(std::memory_order_acquire);
+    if (!impl) {
+        auto* candidate = new Impl();
+        Impl* expected = nullptr;
+        if (!m_impl.compare_exchange_strong(expected, candidate, std::memory_order_acq_rel)) {
+            delete candidate;
+            impl = expected;
+        } else {
+            impl = candidate;
+        }
     }
-    m_impl->ownerThread.store(GetCurrentThreadId(), std::memory_order_release);
-    m_impl->window.store(messageWindow, std::memory_order_release);
+    {
+        std::lock_guard lock(impl->mutex);
+        impl->tasks.clear();
+        impl->ownerThread.store(GetCurrentThreadId(), std::memory_order_release);
+        impl->window.store(messageWindow, std::memory_order_release);
+    }
 }
 
 void MainThreadDispatcher::shutdown() {
-    if (!m_impl) return;
-    m_impl->window.store(nullptr, std::memory_order_release);
-    m_impl->ownerThread.store(0, std::memory_order_release);
-    std::lock_guard lock(m_impl->mutex);
-    m_impl->tasks.clear();
+    Impl* impl = m_impl.load(std::memory_order_acquire);
+    if (!impl) return;
+    std::lock_guard lock(impl->mutex);
+    impl->window.store(nullptr, std::memory_order_release);
+    impl->ownerThread.store(0, std::memory_order_release);
+    impl->tasks.clear();
 }
 
 bool MainThreadDispatcher::isOwnerThread() const {
-    return m_impl && m_impl->ownerThread.load(std::memory_order_acquire) == GetCurrentThreadId();
+    Impl* impl = m_impl.load(std::memory_order_acquire);
+    return impl && impl->ownerThread.load(std::memory_order_acquire) == GetCurrentThreadId();
 }
 
 bool MainThreadDispatcher::isInitialized() const {
-    return m_impl && m_impl->ownerThread.load(std::memory_order_acquire) != 0;
+    Impl* impl = m_impl.load(std::memory_order_acquire);
+    return impl && impl->ownerThread.load(std::memory_order_acquire) != 0;
 }
 
 bool MainThreadDispatcher::post(Task task) {
@@ -57,16 +70,18 @@ bool MainThreadDispatcher::post(Task task) {
 
 bool MainThreadDispatcher::postDeferred(Task task) {
     if (!task) return false;
-    if (!m_impl) return false;
+    Impl* impl = m_impl.load(std::memory_order_acquire);
+    if (!impl) return false;
 
-    const HWND window = m_impl->window.load(std::memory_order_acquire);
-    if (!window) return false;
+    if (!impl->window.load(std::memory_order_acquire)) return false;
     {
-        std::lock_guard lock(m_impl->mutex);
-        if (!m_impl->window.load(std::memory_order_relaxed)) return false;
-        m_impl->tasks.push_back(std::move(task));
-        if (!PostMessageW(window, MessageId, 0, 0)) {
-            m_impl->tasks.pop_back();
+        std::lock_guard lock(impl->mutex);
+        const HWND lockedWindow = impl->window.load(std::memory_order_relaxed);
+        if (!lockedWindow) return false;
+        const bool needWakeup = impl->tasks.empty();
+        impl->tasks.push_back(std::move(task));
+        if (needWakeup && !PostMessageW(lockedWindow, MessageId, 0, 0)) {
+            impl->tasks.pop_back();
             LOG_ERROR("MainThreadDispatcher: PostMessageW failed, error={}", GetLastError());
             return false;
         }
@@ -75,11 +90,12 @@ bool MainThreadDispatcher::postDeferred(Task task) {
 }
 
 void MainThreadDispatcher::drain() {
-    if (!m_impl || !isOwnerThread()) return;
+    Impl* impl = m_impl.load(std::memory_order_acquire);
+    if (!impl || !isOwnerThread()) return;
     std::deque<Task> tasks;
     {
-        std::lock_guard lock(m_impl->mutex);
-        tasks.swap(m_impl->tasks);
+        std::lock_guard lock(impl->mutex);
+        tasks.swap(impl->tasks);
     }
     for (auto& task : tasks) {
         try {

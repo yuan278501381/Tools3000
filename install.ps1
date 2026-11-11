@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Tools3000 官方 CLI 安装管理工具 (Official CLI Installer & Lifecycle Manager)
 
@@ -39,6 +39,21 @@ if (-not (Test-Path $SetupExe) -and (Test-Path (Join-Path $ScriptDir "Output\Too
     $SetupExe = Join-Path $ScriptDir "Output\Tools3000-Setup.exe"
 }
 $DeployDistExe = Join-Path $ScriptDir "deploy_dist\Tools3000.exe"
+
+function Format-InnoSetupArgument {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$FlagName,
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+    if ($Value -match '[\r\n\0"]') {
+        throw "安装参数 $FlagName 包含非法控制字符或双引号: $Value"
+    }
+    # 按 Win32 CommandLineToArgvW 规则转义闭合引号前的末尾反斜杠，彻底阻断引号吞噬与参数注入
+    $Escaped = [regex]::Replace($Value, '(\\+)$', '$1$1')
+    return "$FlagName=""$Escaped"""
+}
 
 function Write-CliLog ($Message, $Level = "INFO") {
     $TimeStamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
@@ -194,8 +209,17 @@ $InstallArgs += "/CLOSEAPPLICATIONS"
 $InstallArgs += "/FORCECLOSEAPPLICATIONS"
 
 if ($Dir) {
-    $InstallArgs += "/DIR=""$Dir"""
-    Write-CliLog "自定义安装目录: $Dir" "INFO"
+    $InvalidChars = [System.IO.Path]::GetInvalidPathChars()
+    if ($Dir.IndexOfAny($InvalidChars) -ge 0 -or $Dir.Contains('"')) {
+        Write-CliLog "自定义安装目录包含非法路径字符: $Dir" "ERROR"
+        exit 1
+    }
+    $NormalizedDir = [System.IO.Path]::GetFullPath($Dir)
+    if ($NormalizedDir.Length -gt 3) {
+        $NormalizedDir = $NormalizedDir.TrimEnd('\', '/')
+    }
+    $InstallArgs += Format-InnoSetupArgument -FlagName "/DIR" -Value $NormalizedDir
+    Write-CliLog "自定义安装目录: $NormalizedDir" "INFO"
 }
 
 $tasks = @()
@@ -206,16 +230,16 @@ if ($DesktopIcon) {
 $hasExistingAutoStart = (Get-ScheduledTask -TaskPath "\Tools3000\" -TaskName "Autorun for $env:USERNAME" -ErrorAction SilentlyContinue) -or
                         (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Tools3000" -ErrorAction SilentlyContinue)
 
-if ($AutoStart -or ($hasExistingAutoStart -and $DesktopIcon)) {
+if ($AutoStart -or $hasExistingAutoStart) {
     $tasks += "autostart"
 }
 
 if ($tasks.Count -gt 0) {
-    $InstallArgs += "/TASKS=""$($tasks -join ',')"""
+    $InstallArgs += Format-InnoSetupArgument -FlagName "/TASKS" -Value ($tasks -join ',')
 }
 
 $LogFilePath = Join-Path $ScriptDir "deploy_logs\install_cli_$TraceID.log"
-$InstallArgs += "/LOG=""$LogFilePath"""
+$InstallArgs += Format-InnoSetupArgument -FlagName "/LOG" -Value $LogFilePath
 
 Write-CliLog "启动安装进程: $SetupExe" "INFO"
 Write-CliLog "参数: $($InstallArgs -join ' ')" "INFO"

@@ -1,12 +1,11 @@
+#pragma once
 // Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors.
 // All rights reserved. | MIT License
-
-#pragma once
+//
+// C++ FFI declarations for the Rust SIMD content search & linear-time regex kernel (`tools3000_content_rs`).
 
 #include <cstddef>
 #include <cstdint>
-
-namespace tools3000::service::content {
 
 extern "C" {
 
@@ -28,6 +27,8 @@ struct T3kByteTermVariants {
     size_t variants_count;
 };
 
+struct T3kRegexHandle;
+
 using T3kCancelCheckFn = uint8_t (*)(const void* ctx);
 using T3kFallbackDecodeLineFn = size_t (*)(
     const void* ctx,
@@ -40,8 +41,8 @@ using T3kFallbackDecodeLineFn = size_t (*)(
 using T3kEmitSnippetFn = void (*)(
     void* ctx,
     uint32_t line_number,
-    const uint16_t* line_ptr,
-    size_t line_len,
+    const uint16_t* content_ptr,
+    size_t content_len,
     uint32_t match_offset,
     uint32_t match_length
 );
@@ -97,6 +98,19 @@ uint8_t t3k_rs_scan_mapped_text(
     void* emit_ctx
 );
 
-} // extern "C"
+T3kRegexHandle* t3k_rs_regex_compile(
+    const uint16_t* pat_ptr,
+    size_t pat_len,
+    uint8_t case_sensitive,
+    uint32_t* out_status
+);
 
-} // namespace tools3000::service::content
+void t3k_rs_regex_free(T3kRegexHandle* handle);
+
+uint8_t t3k_rs_regex_is_match(
+    const T3kRegexHandle* handle,
+    const uint16_t* text_ptr,
+    size_t text_len
+);
+
+} // extern "C"

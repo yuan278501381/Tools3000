@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -505,54 +506,155 @@ public:
     ~AutomaticCaptureBackend() override { shutdown(); }
 
     const CaptureBackendInfo& info() const noexcept override {
-        return m_active ? m_active->info() : m_unavailableInfo;
+        if (m_active) return m_active->info();
+        if (!m_fallbackBuffer.empty()) return m_secureDesktopInfo;
+        return m_unavailableInfo;
     }
 
     bool initialize(const CaptureRegion& region, std::string& error) override {
         shutdown();
+        if (!region.isValid() || region.width > 32768 || region.height > 32768) {
+            error = "invalid capture region";
+            return false;
+        }
         m_region = region;
+        m_preferAccelerated = true;
+
         auto accelerated = std::make_unique<DesktopDuplicationBackend>();
         std::string acceleratedError;
         if (accelerated->initialize(region, acceleratedError)) {
             m_active = std::move(accelerated);
             return true;
         }
+
         LOG_WARN("DXGI 捕获不可用，回退 GDI: {}", acceleratedError);
-        return switchToGdi(error);
+        m_lastDxgiRetryTickMs = GetTickCount64();
+        if (switchToGdi(error)) {
+            return true;
+        }
+
+        // UAC / Win+L 安全桌面期间启动捕获：初始化纯黑占位帧以保持会话存活，待桌面恢复后自动接入 DXGI/GDI
+        if (isDesktopTemporarilyInaccessible() && ensureFallbackBuffer()) {
+            error.clear();
+            LOG_WARN("AutomaticCaptureBackend: input desktop inaccessible during init, starting with placeholder frame");
+            return true;
+        }
+        return false;
     }
 
     bool capture(CaptureFrameView& frame, std::string& error) override {
-        if (!m_active) {
-            error = "no capture backend is active";
-            return false;
-        }
-        if (m_active->capture(frame, error)) return true;
-        if (!m_active->info().accelerated) return false;
+        m_needsActiveRelease = false;
+        const std::uint64_t nowTick = GetTickCount64();
 
-        const std::string acceleratedError = error;
-        m_active->releaseFrame();
-        m_active->shutdown();
-        m_active.reset();
-
-        std::string fallbackError;
-        if (!switchToGdi(fallbackError)) {
-            error = acceleratedError + "; GDI fallback failed: " + fallbackError;
-            return false;
+        // 在 GDI 降级或安全桌面占位运行期间，每隔 3.5 秒检测输入桌面恢复并自动尝试切回高性能 DXGI 硬件捕获
+        const bool runningAccelerated = (m_active && m_active->info().accelerated);
+        if (m_preferAccelerated && !runningAccelerated &&
+            (nowTick - m_lastDxgiRetryTickMs) >= 3500ULL &&
+            !isDesktopTemporarilyInaccessible()) {
+            m_lastDxgiRetryTickMs = nowTick;
+            auto recovered = std::make_unique<DesktopDuplicationBackend>();
+            std::string retryError;
+            if (recovered->initialize(m_region, retryError)) {
+                CaptureFrameView probeFrame{};
+                if (recovered->capture(probeFrame, retryError)) {
+                    if (m_active) {
+                        m_active->releaseFrame();
+                        m_active->shutdown();
+                    }
+                    m_active = std::move(recovered);
+                    m_needsActiveRelease = true;
+                    frame = probeFrame;
+                    snapshotFallbackFrame(frame, nowTick, true);
+                    LOG_INFO("AutomaticCaptureBackend: desktop recovered, switched back to DXGI Desktop Duplication");
+                    return true;
+                }
+                recovered->releaseFrame();
+                recovered->shutdown();
+            }
         }
-        LOG_WARN("DXGI 捕获运行时失败，已切换 GDI: {}", acceleratedError);
-        return m_active->capture(frame, error);
+
+        if (!m_active && !isDesktopTemporarilyInaccessible()) {
+            std::string gdiErr;
+            switchToGdi(gdiErr);
+        }
+
+        if (m_active && m_active->capture(frame, error)) {
+            m_needsActiveRelease = true;
+            snapshotFallbackFrame(frame, nowTick, false);
+            return true;
+        }
+
+        const std::string primaryError = error;
+        const bool wasAccelerated = (m_active && m_active->info().accelerated);
+        if (wasAccelerated) {
+            m_active->releaseFrame();
+            m_active->shutdown();
+            m_active.reset();
+            m_lastDxgiRetryTickMs = nowTick;
+
+            std::string fallbackError;
+            if (switchToGdi(fallbackError) && m_active->capture(frame, error)) {
+                m_needsActiveRelease = true;
+                LOG_WARN("DXGI 捕获运行时失败，已切换 GDI: {}", primaryError);
+                snapshotFallbackFrame(frame, nowTick, true);
+                return true;
+            }
+            error = primaryError + (fallbackError.empty() ? "" : ("; GDI fallback failed: " + fallbackError));
+        } else if (m_active && !isDesktopTemporarilyInaccessible()) {
+            // 刚从安全桌面切回正常桌面时，旧屏幕 HDC 可能失效，自动刷新一次 GDI 上下文重试
+            m_active->releaseFrame();
+            m_active->shutdown();
+            m_active.reset();
+            std::string reopenErr;
+            if (switchToGdi(reopenErr) && m_active->capture(frame, error)) {
+                m_needsActiveRelease = true;
+                snapshotFallbackFrame(frame, nowTick, true);
+                return true;
+            }
+        }
+
+        // UAC 弹窗、Win+L 锁屏或显示模式瞬态切换期间：输出最近有效帧（若尚无有效帧则输出纯黑占位帧），绝不断流报错
+        if ((isDesktopTemporarilyInaccessible() || wasAccelerated || m_hasValidCachedFrame) &&
+            serveFallbackFrame(frame)) {
+            if (!m_loggedSecureDesktopHold) {
+                m_loggedSecureDesktopHold = true;
+                LOG_WARN("AutomaticCaptureBackend: desktop temporarily inaccessible ({}), holding last valid/black frame",
+                         primaryError);
+            }
+            error.clear();
+            return true;
+        }
+
+        if (error.empty()) {
+            error = primaryError.empty() ? "no capture backend is active" : primaryError;
+        }
+        return false;
     }
 
     void releaseFrame() noexcept override {
-        if (m_active) m_active->releaseFrame();
+        if (m_needsActiveRelease && m_active) {
+            m_active->releaseFrame();
+        }
+        m_needsActiveRelease = false;
     }
 
     void shutdown() noexcept override {
         if (m_active) {
-            m_active->releaseFrame();
+            if (m_needsActiveRelease) {
+                m_active->releaseFrame();
+            }
             m_active->shutdown();
             m_active.reset();
         }
+        m_needsActiveRelease = false;
+        m_fallbackBuffer.clear();
+        m_fallbackBuffer.shrink_to_fit();
+        m_fallbackStride = 0;
+        m_fallbackFormat = CapturePixelFormat::Bgr24;
+        m_hasValidCachedFrame = false;
+        m_lastSnapshotTickMs = 0;
+        m_lastDxgiRetryTickMs = 0;
+        m_loggedSecureDesktopHold = false;
         m_region = {};
     }
 
@@ -564,11 +666,86 @@ private:
         return true;
     }
 
+    bool ensureFallbackBuffer(CapturePixelFormat fmt = CapturePixelFormat::Bgr24) {
+        if (!m_region.isValid() || m_region.width <= 0 || m_region.height <= 0 ||
+            m_region.width > 32768 || m_region.height > 32768) {
+            return false;
+        }
+        const int bpp = (fmt == CapturePixelFormat::Bgra32) ? 4 : 3;
+        const int stride = (m_region.width * bpp + 3) & ~3;
+        const std::size_t bytes = static_cast<std::size_t>(stride) * static_cast<std::size_t>(m_region.height);
+        if (bytes == 0 || bytes > (256ULL * 1024ULL * 1024ULL)) {
+            return false;
+        }
+        if (m_fallbackBuffer.size() != bytes || m_fallbackStride != stride || m_fallbackFormat != fmt) {
+            m_fallbackBuffer.assign(bytes, 0);
+            if (fmt == CapturePixelFormat::Bgra32) {
+                for (int y = 0; y < m_region.height; ++y) {
+                    std::uint8_t* row = m_fallbackBuffer.data() + static_cast<std::size_t>(y) * stride;
+                    for (int x = 0; x < m_region.width; ++x) {
+                        row[x * 4 + 3] = 0xFF;
+                    }
+                }
+            }
+            m_fallbackStride = stride;
+            m_fallbackFormat = fmt;
+        }
+        return true;
+    }
+
+    void snapshotFallbackFrame(const CaptureFrameView& src, std::uint64_t nowTick, bool force) {
+        m_loggedSecureDesktopHold = false;
+        if (!src.data || src.width != m_region.width || src.height != m_region.height || src.stride <= 0) {
+            return;
+        }
+        if (!force && m_hasValidCachedFrame && (nowTick - m_lastSnapshotTickMs) < 500ULL) {
+            return;
+        }
+        if (!ensureFallbackBuffer(src.format)) {
+            return;
+        }
+        const int bpp = (src.format == CapturePixelFormat::Bgra32) ? 4 : 3;
+        const std::size_t rowBytes = static_cast<std::size_t>(src.width) * static_cast<std::size_t>(bpp);
+        for (int y = 0; y < src.height; ++y) {
+            std::memcpy(
+                m_fallbackBuffer.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(m_fallbackStride),
+                src.data + static_cast<std::size_t>(y) * static_cast<std::size_t>(src.stride),
+                rowBytes);
+        }
+        m_hasValidCachedFrame = true;
+        m_lastSnapshotTickMs = nowTick;
+    }
+
+    bool serveFallbackFrame(CaptureFrameView& outFrame) {
+        const CapturePixelFormat targetFmt = m_hasValidCachedFrame ? m_fallbackFormat : CapturePixelFormat::Bgr24;
+        if (!ensureFallbackBuffer(targetFmt) || m_fallbackBuffer.empty()) {
+            return false;
+        }
+        outFrame.data = m_fallbackBuffer.data();
+        outFrame.stride = m_fallbackStride;
+        outFrame.width = m_region.width;
+        outFrame.height = m_region.height;
+        outFrame.format = m_fallbackFormat;
+        return true;
+    }
+
     CaptureBackendInfo m_unavailableInfo{
         "unavailable", "No capture backend", false, false, "not initialized"
     };
+    CaptureBackendInfo m_secureDesktopInfo{
+        "secure-desktop-hold", "Secure Desktop Hold", true, false, {}
+    };
     CaptureRegion m_region;
     std::unique_ptr<ICaptureBackend> m_active;
+    bool m_preferAccelerated = true;
+    bool m_needsActiveRelease = false;
+    bool m_hasValidCachedFrame = false;
+    bool m_loggedSecureDesktopHold = false;
+    std::uint64_t m_lastSnapshotTickMs = 0;
+    std::uint64_t m_lastDxgiRetryTickMs = 0;
+    int m_fallbackStride = 0;
+    CapturePixelFormat m_fallbackFormat = CapturePixelFormat::Bgr24;
+    std::vector<std::uint8_t> m_fallbackBuffer;
 };
 
 class MemoryCaptureBackend final : public ICaptureBackend {
@@ -687,6 +864,15 @@ std::unique_ptr<ICaptureBackend> createMemoryCaptureBackend(CapturePixelFormat f
 
 void setCaptureBackendFactoryForTesting(CaptureBackendFactory factory) {
     s_testBackendFactory = std::move(factory);
+}
+
+bool isDesktopTemporarilyInaccessible() noexcept {
+    HDESK inputDesk = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    if (!inputDesk) {
+        return true;
+    }
+    CloseDesktop(inputDesk);
+    return false;
 }
 
 std::unique_ptr<ICaptureBackend> createCaptureBackend() {

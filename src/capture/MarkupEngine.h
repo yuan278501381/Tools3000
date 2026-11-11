@@ -75,7 +75,7 @@ enum class ArrowStyle {
 enum class MagnifierCalloutStyle {
     TangentFrustum = 0, // 学术双外切线 (CVPR / Nature: 源取景细框 + 中心微十字 + 两条外切展开细线，中间 100% 透明)
     ElbowLeader = 1,    // 工程 135° 折线 (Nature / Cell 图谱: 源取景细框 + 中心微十字 + 45°斜线转水平折线)
-    DashedDirect = 2,   // ISO 精密虚线 (ISO 128 工程制图: 精密虚线取景框 + 中心微十字 + 细虚线直连)
+    DashedDirect = 2,   // ISO 精密虚线 (默认方案: 精密虚线取景框 + 中心微十字 + 细虚线直连)
     CenterPointer = 3,  // 单轴直指中心 (极简指针: 无源外框，单根细线 + 微箭头直指被放大中心靶点)
     COUNT = 4
 };
@@ -203,7 +203,7 @@ struct MarkupElement {
     float magnifierScale = 2.0f;
     int magnifierRadius = 60;
     int magnifierRadiusY = 0; // <= 0 时自动跟随 magnifierRadius 保持正圆
-    MagnifierCalloutStyle magnifierCalloutStyle = MagnifierCalloutStyle::TangentFrustum;
+    MagnifierCalloutStyle magnifierCalloutStyle = MagnifierCalloutStyle::DashedDirect;
 
     int effectiveMagnifierRx() const noexcept {
         return (std::max)(20, magnifierRadius);

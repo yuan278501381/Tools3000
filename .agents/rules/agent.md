@@ -103,6 +103,7 @@ trigger: always_on
 3. **QuickLook 媒体预览格式占位 (QuickLook Format Placeholders)**：QuickLook 允许在视频、音频与 PDF 的内嵌预览功能尚未完全就绪时，先行声明并识别这些文件格式。此行为属于已确认的产品演进范畴，非阻断发布的缺陷。
 4. **搜索服务生命周期契约 (Search Service Lifecycle Contract)**：搜索服务生命周期严格遵循 `DEMAND_START`（按需启动）。Tools3000 主程序启动、后台隐藏 WebView 预载、设置页状态轮询、窗口获焦及 Tools3000 主程序退出均绝不允许启动搜索服务。只有当用户产生显式呼出搜索的操作时才允许启动该服务。搜索服务一旦启动，将在本次 Windows 会话中跨搜索窗口隐藏与 Tools3000 主程序退出而持续常驻，直至 Windows 关机/重启或管理员手动终止；下一次 Windows 开机绝不得自启动搜索服务。
 5. **Lua 脚本可信本地自动化定位 (Trusted Local Lua Automation)**：Lua 引擎定位为宿主授予的可信本地自动化扩展通道，直接与宿主 API/IPC 交互，非防范恶意外代码的隔离沙箱环境。
+6. **WebView2 宿主进程环境启动标志 (`WebViewEnvironmentManager.cpp` Sandbox Flags)**：2026-11-11 项目负责人明确确认保留 `WebViewEnvironmentManager.cpp` 中现有的 `--no-sandbox`、`--allow-no-sandbox-job` 与 `--disable-features=RendererCodeIntegrity` 启动标志不动，以确保管理员令牌与嵌套 Job Object 生命周期绑定下的跨环境兼容性。
 
 ---
 

@@ -15,6 +15,7 @@ deploy_schemes/
 deploy_symbols/
 deploy_logs/
 release_assets/
+src/service/rust_content/target/
 
 # 二进制目标与中间符号 (Binary Targets & Debug Symbols)
 *.exe
@@ -29,6 +30,8 @@ release_assets/
 *.dylib
 *.so
 *.a
+*.rlib
+*.rmeta
 
 # ==============================================================================
 # 2. CMake / MSBuild / 编译器工程缓存与配置

@@ -361,7 +361,7 @@ public:
     int dynamicMagnifierRadius = 64;
     float dynamicMagnifierScale = 2.0f;
     bool magnifierCalloutMode = true; // 默认启用引出式旁路详图放大，避免遮挡原位周围上下文
-    MagnifierCalloutStyle currentMagnifierCalloutStyle = MagnifierCalloutStyle::TangentFrustum;
+    MagnifierCalloutStyle currentMagnifierCalloutStyle = MagnifierCalloutStyle::DashedDirect;
     bool magnifierShowBadge = true;
     NumberBadgeShape currentMagnifierShape = NumberBadgeShape::Circle;
     MarkupColor currentMagnifierColor = MarkupColor::White();
@@ -374,6 +374,7 @@ public:
     bool colorFormatHex = true;
     bool shiftTapCandidate = false; // 纯单按释放 Shift (Tap-Only) 切换颜色格式状态位
     bool showTimestamp = false;
+    DWORD overlayShowTick = 0;      // 覆盖层激活起始毫秒计时戳（与 showTimestamp 布尔开关物理分离）
     float cornerRadius = 0.0f; // 选区圆角半径 (0, 8, 12, 16, 24)
     float detectedWindowCornerRadius = 10.0f; // 现代 Windows 11 窗口圆角高亮半径
     DWORD fadeOutStart = 0;

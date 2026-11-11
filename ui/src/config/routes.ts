@@ -25,6 +25,7 @@ import {
   Sparkles,
   Keyboard,
   Cast,
+  Puzzle,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -58,6 +59,7 @@ export interface RouteItemConfig {
   subtitleKey: string;   // 对应副标题国际化 key
   category: NavCategory;
   icon: LucideIcon;
+  fallbackLabel?: string;
   requiresPlugin?: 'gesture' | 'capture' | 'search' | 'dialogenhancer' | 'dialog_enhancer' | 'keycast' | 'spotlight' | 'remote_boost';
 }
 
@@ -90,6 +92,21 @@ export const APP_ROUTES: readonly RouteItemConfig[] = [
 ];
 
 export const ROUTE_MAP = new Map<string, RouteItemConfig>(APP_ROUTES.map(r => [r.id, r]));
+
+export function resolveExtensionRoute(id: string, fallbackLabel?: string): RouteItemConfig {
+  const builtin = ROUTE_MAP.get(id);
+  if (builtin) {
+    return fallbackLabel && !builtin.fallbackLabel ? { ...builtin, fallbackLabel } : builtin;
+  }
+  return {
+    id,
+    labelKey: `nav.${id}`,
+    subtitleKey: `navSubtitle.${id}`,
+    category: 'extension',
+    icon: Puzzle,
+    fallbackLabel: fallbackLabel || id,
+  };
+}
 
 export function getRouteMetadata(id: string): { titleKey: string; subtitleKey: string } {
   const item = ROUTE_MAP.get(id);

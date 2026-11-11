@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Tools3000 CI/CD 自动化部署脚本 (Idempotent Deployment Script)
 
@@ -528,31 +528,31 @@ if (Test-Path $ExePath) {
     Write-Log "已复制文件索引服务: $TargetServiceName"
     Copy-Item $ServicePath -Destination (Join-Path $StagingDir "Tools3000_Service.exe") -Force
     
-    # 复制所有同一目录下的运行库 DLL 文件 (排除 gtest, gmock 等测试库)
-    $DllFiles = Get-ChildItem -Path $ExeDir -Filter "*.dll" | Where-Object {
-        $_.Name -notlike "gtest*.dll" -and $_.Name -notlike "gmock*.dll"
+    # 复制所有同一目录下的运行库 DLL 文件 (显式排除 *gtest*.dll, *gmock*.dll 与 Plugin_*.dll)
+    $DllFiles = Get-ChildItem -Path $ExeDir -Filter "*.dll" -File | Where-Object {
+        $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll" -and $_.Name -notlike "Plugin_*.dll"
     }
     foreach ($dll in $DllFiles) {
         Copy-Item $dll.FullName -Destination $StagingDir
     }
-    Write-Log "已复制生产运行库 DLL 文件 (已排除测试库 gtest)"
+    Write-Log "已复制生产运行库 DLL 文件 (已排除测试库 *gtest*/*gmock* 与插件本体)"
     
-    # 复制插件目录 (仅复制插件 DLL 与 plugin.json，严禁复制 pdb 及重复三方库)
+    # 复制插件目录 (严格仅复制 Plugin_*.dll 与 *.plugin.json，严禁复制 pdb 及重复三方库)
     $PluginsDir = Join-Path $BuildDir "bin\plugins\$Configuration"
     if (Test-Path $PluginsDir) {
         $TargetPluginsDir = Join-Path $StagingDir "plugins"
         New-Item -ItemType Directory -Path $TargetPluginsDir -ErrorAction SilentlyContinue | Out-Null
-        $PluginFiles = Get-ChildItem -Path $PluginsDir | Where-Object {
+        $PluginFiles = Get-ChildItem -Path $PluginsDir -File | Where-Object {
             $_.Name -like "Plugin_*.dll" -or $_.Name -like "*.plugin.json"
         }
         foreach ($pf in $PluginFiles) {
             Copy-Item $pf.FullName -Destination $TargetPluginsDir
         }
-        Write-Log "已复制纯净插件集合 (plugins/)，无冗余 DLL 与 PDB"
+        Write-Log "已复制纯净插件集合 (plugins/)，仅含 Plugin_*.dll 与 *.plugin.json"
 
-        # 补充收集插件所需但主程序未直接引用的第三方运行库 (如 opencv_photo4.dll 等) 到根运行目录
-        $PluginDependencyDlls = Get-ChildItem -Path $PluginsDir -Filter "*.dll" | Where-Object {
-            $_.Name -notlike "Plugin_*.dll" -and $_.Name -notlike "gtest*.dll" -and $_.Name -notlike "gmock*.dll"
+        # 补充收集插件所需但主程序未直接引用的第三方运行库 (如 opencv_photo4.dll 等) 到根运行目录 (唯一保留一份)
+        $PluginDependencyDlls = Get-ChildItem -Path $PluginsDir -Filter "*.dll" -File | Where-Object {
+            $_.Name -notlike "Plugin_*.dll" -and $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll"
         }
         foreach ($pDll in $PluginDependencyDlls) {
             $destFile = Join-Path $StagingDir $pDll.Name
@@ -691,13 +691,34 @@ foreach ($Artifact in $RequiredArtifacts) {
 
 $SignScript = Join-Path $ScriptDir "scripts\sign-artifacts.ps1"
 if (-not (Test-Path -LiteralPath $SignScript)) { throw "缺少签名脚本: $SignScript" }
+$HasSigningIdentity = (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1)) -or
+                      (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_PFX))
 $OwnedArtifacts = @(
     (Join-Path $StagingDir $MainExeArtifact),
     (Join-Path $StagingDir $ServiceExeArtifact),
     (Join-Path $StagingDir "Tools3000Core.dll")
 ) + @(Get-ChildItem -LiteralPath (Join-Path $StagingDir "plugins") -Filter "Plugin_*.dll" -File |
     Select-Object -ExpandProperty FullName)
-& $SignScript -Paths $OwnedArtifacts -Required:$RequireSigning
+
+$FirstPassSignTargets = [System.Collections.Generic.List[string]]::new()
+foreach ($item in $OwnedArtifacts) {
+    if (-not $FirstPassSignTargets.Contains($item)) {
+        $FirstPassSignTargets.Add($item)
+    }
+}
+if ($HasSigningIdentity) {
+    # 本地存在签名证书时，对暂存发布区内全部尚未具备有效官方签名的 .exe/.dll 一并完成第一轮签名
+    $AllDistBinaries = Get-ChildItem -LiteralPath $StagingDir -Include "*.exe", "*.dll" -Recurse -File
+    foreach ($bin in $AllDistBinaries) {
+        if (-not $FirstPassSignTargets.Contains($bin.FullName)) {
+            $existingSig = Get-AuthenticodeSignature -LiteralPath $bin.FullName -ErrorAction SilentlyContinue
+            if (-not $existingSig -or $existingSig.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+                $FirstPassSignTargets.Add($bin.FullName)
+            }
+        }
+    }
+}
+& $SignScript -Paths $FirstPassSignTargets.ToArray() -Required:$RequireSigning
 
 # ------------------------------------------------------------------------------
 # 6. 优雅关闭及原子交换 (Atomic Swap)
@@ -756,19 +777,45 @@ if (Test-Path $DeployDir) {
         Rename-Item -Path $StagingDir -NewName "deploy_dist"
         Write-Log "旧版本已安全备份到: deploy_dist_backup"
     } else {
-        # 若 Windows 锁住父级目录名，则执行安全原子覆盖
-        Write-Log "目录重命名受阻，执行原子文件集快速覆盖..." "WARN"
+        # 若 Windows 锁住父级目录名，则执行安全原子覆盖并主动清理历史遗留测试库与重复第三方 DLL
+        Write-Log "目录重命名受阻，执行原子文件集快速覆盖与残留去污..." "WARN"
         Copy-Item -Path "$StagingDir\*" -Destination $DeployDir -Recurse -Force
         Remove-Item -Recurse -Force $StagingDir -ErrorAction SilentlyContinue
     }
 } else {
     Rename-Item -Path $StagingDir -NewName "deploy_dist"
 }
-Write-Log "新版本秒级切换上线完成。" "SUCCESS"
+
+# 终局瘦身去污守卫：确保 deploy_dist 根目录无测试库/插件本体，且 deploy_dist/plugins 严格仅保留 Plugin_*.dll 与 *.plugin.json
+Get-ChildItem -LiteralPath $DeployDir -File -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name -like "*gtest*.dll" -or $_.Name -like "*gmock*.dll" -or $_.Name -like "Plugin_*.dll" -or $_.Name -like "Tools3000Tests*" -or $_.Extension -ieq ".pdb"
+} | Remove-Item -Force -ErrorAction SilentlyContinue
+
+$DeployPluginsDir = Join-Path $DeployDir "plugins"
+if (Test-Path -LiteralPath $DeployPluginsDir) {
+    Get-ChildItem -LiteralPath $DeployPluginsDir -File -ErrorAction SilentlyContinue | Where-Object {
+        ($_.Extension -ieq ".dll" -and $_.Name -notlike "Plugin_*.dll") -or $_.Extension -ieq ".pdb"
+    } | Remove-Item -Force -ErrorAction SilentlyContinue
+}
+Write-Log "新版本秒级切换上线完成，发布目录已完成瘦身去污校验。" "SUCCESS"
 
 # ------------------------------------------------------------------------------
-# 7. 生成 Windows 安装程序 (Inno Setup)
+# 7. 生成绿色便携包与 Windows 安装程序 (先内层签名 -> 打包便携 ZIP & Setup.exe -> 外层签名)
 # ------------------------------------------------------------------------------
+$OutputInstallerDir = Join-Path $ScriptDir "Output"
+if (-not (Test-Path -LiteralPath $OutputInstallerDir)) {
+    New-Item -ItemType Directory -Path $OutputInstallerDir -Force | Out-Null
+}
+if (-not $SkipInstaller) {
+    $PortableArchivePath = Join-Path $OutputInstallerDir "Tools3000-win-$Arch-portable.zip"
+    if (Test-Path -LiteralPath $PortableArchivePath) {
+        Remove-Item -Force -LiteralPath $PortableArchivePath -ErrorAction SilentlyContinue
+    }
+    Write-Log "正在基于已完成第一轮签名的纯净 deploy_dist 生成便携包: $PortableArchivePath..."
+    Compress-Archive -Path (Join-Path $DeployDir "*") -DestinationPath $PortableArchivePath -CompressionLevel Optimal -Force
+    Write-Log "绿色便携包已生成: $PortableArchivePath" "SUCCESS"
+}
+
 Write-Log "检查是否可以生成安装程序 (Inno Setup)..."
 $InnoSetupDirs = @(
     "C:\Program Files (x86)\Inno Setup 6",
@@ -804,12 +851,12 @@ if ($SkipInstaller) {
         $InnoArgs = @(
             "/DTools3000Version=$ProjectVersion",
             "/DTools3000Architecture=$Arch",
-            "/DTools3000SetupBaseFilename=$SetupBaseName"
+            "/DTools3000SetupBaseFilename=$SetupBaseName",
+            "/DDeployDir=$DeployDir"
         )
         if ($Quick) {
             $InnoArgs += "/DCompressionLevel=lzma2/fast"
         }
-        $HasSigningIdentity = $env:TOOLS3000_SIGNING_CERT_SHA1 -or $env:TOOLS3000_SIGNING_PFX
         if ($HasSigningIdentity) {
             $InnoArgs += "/DTools3000SignedBuild=1"
             $InnoArgs += "/Stools3000=pwsh.exe -NoProfile -ExecutionPolicy Bypass -File `$q$SignScript`$q -Required -Paths `$q`$f`$q"
@@ -818,8 +865,13 @@ if ($SkipInstaller) {
         if ($LASTEXITCODE -eq 0) {
             if ($HasSigningIdentity) {
                 $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
-                if ($SetupSignature.Status -ne "Valid") {
-                    throw "Inno Setup 生成的安装包签名验证失败: $($SetupSignature.Status)"
+                if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or -not $SetupSignature.TimeStamperCertificate) {
+                    Write-Log "正在对生成的安装包执行外层 Authenticode 签名与时间戳加固: $TargetSetupFile"
+                    & $SignScript -Paths $TargetSetupFile -Required:$true
+                }
+                $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
+                if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or -not $SetupSignature.TimeStamperCertificate) {
+                    throw "Inno Setup 生成的安装包外层签名或时间戳验证失败: $($SetupSignature.Status)"
                 }
             } else {
                 & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning

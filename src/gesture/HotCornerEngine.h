@@ -11,7 +11,10 @@
 #define TOOLS3000_GESTURE_HOTCORNER_ENGINE_H
 
 #include <windows.h>
+#include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <cstdlib>
 #include <thread>
 #include <mutex>
 #include <string>
@@ -52,12 +55,15 @@ public:
     void setAutoBypassFullscreen(bool enable) { m_autoBypassFullscreen.store(enable); }
     bool autoBypassFullscreen() const { return m_autoBypassFullscreen.load(); }
 
-    /// 设置触发延迟（毫秒）
-    void setTriggerDelay(int ms) { m_triggerDelayMs.store(ms); }
-    int triggerDelay() const { return m_triggerDelayMs.load(); }
+    /// 设置触发延迟（毫秒，上下界钳制 100~5000ms）
+    void setTriggerDelay(int ms) { m_triggerDelayMs.store(std::clamp(ms, 100, 5000)); }
+    int triggerDelay() const { return std::clamp(m_triggerDelayMs.load(), 100, 5000); }
 
     /// 检测指定点是否属于某个触发角
     static HotCorner detectCorner(POINT pt);
+
+    /// 检测指定角点是否紧邻另一块显示器的有效边界（多屏跨屏通道角）
+    static bool isPassThroughCorner(POINT pt, HotCorner corner) noexcept;
 
     /// 纯策略判定：当鼠标左右键按住拖拽/画手势，或截图覆盖层/径向轮盘处于激活态时，抑制触发角误触
     static constexpr bool shouldSuppressTrigger(
@@ -89,6 +95,8 @@ private:
     static constexpr size_t CORNER_COUNT = 4;
     std::string m_actions[CORNER_COUNT]; // 对应 TopLeft, TopRight, BottomLeft, BottomRight
     mutable std::mutex m_mutex;
+    std::mutex m_waitMutex;
+    std::condition_variable m_cv;
 };
 
 } // namespace tools3000::gesture

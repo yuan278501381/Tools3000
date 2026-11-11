@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <functional>
 
+struct T3kRegexHandle;
+
 // A resolved, read-only view of one indexed file.
 //
 // The index keeps names in a StringArena rather than in per-record wstrings, so
@@ -74,6 +76,8 @@ struct SearchClause {
     std::wstring pinyinPattern;   // normalized and stripped of apostrophes (e.g. tong'xi -> tongxi)
     std::vector<std::wstring> extList; // for ext:jpg;png
     std::optional<std::wregex> regexObj;
+    std::shared_ptr<T3kRegexHandle> linearRegex;
+    bool regexInvalid = false;
     bool hasWildcard = false;
     bool isAsciiOnly = false;
     bool isCaselessPattern = false;
@@ -118,6 +122,7 @@ public:
     bool isEmpty() const { return m_orGroups.empty(); }
     bool requiresFullPath() const { return m_requiresFullPath; }
     bool hasContentFilter() const { return m_hasContentFilter; }
+    bool hasRegexClause() const noexcept { return m_hasRegexClause; }
     bool isPinyinEnabled() const { return m_pinyinEnabled; }
     bool isCaseSensitive() const { return m_caseSensitive; }
     const std::wstring& getContentQuery() const { return m_contentQuery; }
@@ -167,6 +172,7 @@ private:
     std::vector<SearchOrGroup> m_orGroups;
     bool m_requiresFullPath = false;
     bool m_hasContentFilter = false;
+    bool m_hasRegexClause = false;
     bool m_hasPureExtensionGroup = false;
     bool m_isAsciiQuery = false;
     bool m_pinyinEnabled = true;

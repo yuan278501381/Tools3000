@@ -345,7 +345,16 @@ HotkeyManager& HotkeyManager::instance() {
 }
 
 bool HotkeyManager::canFallbackToHook(const HotkeyDef& def) {
-    return def.isSafe();
+    if (!def.isSafe()) return false;
+    // 1. 单功能键 (F1~F24、PrintScreen、多媒体控制键等) 经常被 Explorer / 系统保留
+    if (isSingleFunctionKey(def)) return true;
+    // 2. Windows 窗口系统菜单保留键 Alt+Space (如 QuickLook / 搜索呼出)
+    if (def.modifiers == ModKey::Alt && def.virtualKey == VK_SPACE) return true;
+    // 3. Windows 内核调试器保留键 F12 或带 Win 键的系统级保留快捷键
+    if (def.virtualKey == VK_F12) return true;
+    if ((static_cast<UINT>(def.modifiers) & static_cast<UINT>(ModKey::Win)) != 0) return true;
+    // 常规修饰键组合 (如 Ctrl+Shift+A 等) 在 RegisterHotKey 被外部程序占用时如实报告冲突，不静默劫持
+    return false;
 }
 
 bool HotkeyManager::isSingleFunctionKey(const HotkeyDef& def) {
@@ -636,7 +645,20 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
         LOG_INFO("快捷键由底层键盘钩子引擎接管注册成功: name={}, def={}", name, def.toString());
     }
 
-    HotkeyEntry entry{id, def, name, std::move(callback), registered, true, false, "none", "", useHook, false, false};
+    HotkeyEntry entry{
+        id,
+        def,
+        name,
+        std::move(callback),
+        registered,
+        true,
+        !registered,
+        registered ? "none" : "external",
+        registered ? "" : "已被第三方软件或系统快捷键占用",
+        useHook,
+        false,
+        false
+    };
     m_hotkeys[name] = std::move(entry);
 
     if (!registered) {
@@ -957,8 +979,8 @@ HotkeyConflictInfo HotkeyManager::checkConflict(const HotkeyDef& def, const std:
         }
     }
 
-    // 2. 针对单功能键（F1~F24、PrintScreen 等），底层键盘钩子具备 100% 抢占与兜底能力，无外部冲突
-    if (isSingleFunctionKey(def)) {
+    // 2. 针对系统保留特殊键（单功能键 F1~F24、Alt+Space、Win+* 等），底层键盘钩子合法兜底，不误报外部冲突
+    if (canFallbackToHook(def)) {
         return {false, "none", ""};
     }
 

@@ -83,7 +83,7 @@ public:
 
     /// 颜色与微晶字签生成单一事实源（供 PinWindow 及连续回溯会话调度器共享复用）
     static bool parseHexColor(const std::wstring& s, cv::Scalar& bgr, std::wstring& label);
-    static cv::Mat renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label);
+    static cv::Mat renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label, float dpiScaleOverride = 1.0f);
     static cv::Mat renderTextToImage(const std::wstring& text, float dpiScaleOverride = 0.0f);
 
 private:

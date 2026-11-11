@@ -14,7 +14,7 @@ import { useState, useCallback, useRef, useEffect, type FC, type KeyboardEvent a
 import { useTranslation } from 'react-i18next';
 import { X, AlertCircle } from 'lucide-react';
 import { useControlA11y } from './ControlA11yContext';
-import { bridgeRequest } from '../hooks/useBridge';
+import { acquireHotkeyPause, releaseHotkeyPause } from '../utils/hotkeyPauseCoordinator';
 import './HotkeyRecorder.css';
 
 /** 修饰键集合 */
@@ -108,8 +108,23 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
   const [warningTip, setWarningTip] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const recordingRef = useRef(false);
+  const holdsPauseLockRef = useRef(false);
   const pendingRef = useRef<string | null>(null);
   const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const lockHotkeyPause = useCallback(() => {
+    if (!holdsPauseLockRef.current) {
+      holdsPauseLockRef.current = true;
+      acquireHotkeyPause();
+    }
+  }, []);
+
+  const unlockHotkeyPause = useCallback(() => {
+    if (holdsPauseLockRef.current) {
+      holdsPauseLockRef.current = false;
+      releaseHotkeyPause();
+    }
+  }, []);
 
   const clearWarning = useCallback(() => {
     if (warningTimerRef.current) {
@@ -126,25 +141,21 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
     setActiveKeys([]);
     pendingRef.current = null;
     clearWarning();
-    bridgeRequest('hotkey.setPaused', { paused: true }).catch(() => {});
-  }, [clearWarning]);
+    lockHotkeyPause();
+  }, [clearWarning, lockHotkeyPause]);
 
   // ── 退出录入模式 (不保存) ─────────────────────────────────────────────────
   const cancelRecording = useCallback(() => {
-    const wasRecording = recordingRef.current;
     recordingRef.current = false;
     setRecording(false);
     setActiveKeys([]);
     pendingRef.current = null;
     clearWarning();
-    if (wasRecording) {
-      bridgeRequest('hotkey.setPaused', { paused: false }).catch(() => {});
-    }
-  }, [clearWarning]);
+    unlockHotkeyPause();
+  }, [clearWarning, unlockHotkeyPause]);
 
   // ── 确认录入结果 ──────────────────────────────────────────────────────────
   const confirmRecording = useCallback((hotkeyStr: string) => {
-    const wasRecording = recordingRef.current;
     recordingRef.current = false;
     setRecording(false);
     setActiveKeys([]);
@@ -153,21 +164,17 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
       onChange(hotkeyStr);
     }
     pendingRef.current = null;
-    if (wasRecording) {
-      bridgeRequest('hotkey.setPaused', { paused: false }).catch(() => {});
-    }
-  }, [clearWarning, onChange, value]);
+    unlockHotkeyPause();
+  }, [clearWarning, onChange, unlockHotkeyPause, value]);
 
-  // 组件卸载时若仍处于录入状态则确保恢复全局热键
+  // 组件卸载时若仍处于录入状态则确保恢复全局热键引用计数
   useEffect(() => {
     return () => {
       clearWarning();
-      if (recordingRef.current) {
-        recordingRef.current = false;
-        bridgeRequest('hotkey.setPaused', { paused: false }).catch(() => {});
-      }
+      recordingRef.current = false;
+      unlockHotkeyPause();
     };
-  }, [clearWarning]);
+  }, [clearWarning, unlockHotkeyPause]);
 
   // ── 键盘事件监听 ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -193,7 +200,7 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
         setActiveKeys([]);
         pendingRef.current = null;
         clearWarning();
-        bridgeRequest('hotkey.setPaused', { paused: false }).catch(() => {});
+        unlockHotkeyPause();
         return;
       }
 
@@ -252,7 +259,7 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
     };
-  }, [recording, cancelRecording, confirmRecording, onChange, clearWarning]);
+  }, [recording, cancelRecording, confirmRecording, onChange, clearWarning, unlockHotkeyPause]);
 
   // ── 点击外部退出录入 ──────────────────────────────────────────────────────
   useEffect(() => {

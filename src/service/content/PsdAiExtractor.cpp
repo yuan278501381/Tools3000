@@ -161,7 +161,7 @@ bool PsdAiExtractor::searchContentTerms(
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
         OPEN_EXISTING,
-        FILE_FLAG_SEQUENTIAL_SCAN,
+        FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT,
         nullptr
     );
     if (hFile == INVALID_HANDLE_VALUE) return false;
@@ -173,13 +173,31 @@ bool PsdAiExtractor::searchContentTerms(
         }
     } fileCloser{hFile};
 
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    if (GetFileType(hFile) != FILE_TYPE_DISK || !GetFileInformationByHandle(hFile, &fileInfo) ||
+        (fileInfo.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return false;
+    }
+
     const FileCacheStamp stamp = queryFileCacheStampByHandle(hFile);
     if (!stamp.valid || stamp.fileSize == 0 || stamp.fileSize > MaxPsdAiFileBytes) {
         return false;
     }
 
     std::wstring extractedAllText;
-    if (!ContentTextCache::instance().tryGet(filePath, stamp.fileSize, stamp.lastWriteTime, extractedAllText)) {
+    bool cacheTruncated = false;
+    bool cacheHit = ContentTextCache::instance().tryGetWithTruncation(
+        filePath, stamp.fileSize, stamp.lastWriteTime, extractedAllText, cacheTruncated);
+    if (cacheHit && cacheTruncated) {
+        if (matchDocumentTextAndBuildSnippets(
+                extractedAllText, queryTerms, caseSensitive, outSnippets, maxSnippetsPerFile, isCancelled)) {
+            return true;
+        }
+        cacheHit = false;
+        extractedAllText.clear();
+    }
+
+    if (!cacheHit) {
         const size_t mapSize = static_cast<size_t>(stamp.fileSize);
         HANDLE hMapping = CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
         if (!hMapping) {
@@ -199,10 +217,13 @@ bool PsdAiExtractor::searchContentTerms(
             }
         } viewGuard{pData};
 
-        const bool guardOk = runWithMappedViewGuard([&]() -> bool {
-            return extractPsdAiText(pData, mapSize, extractedAllText, isCancelled);
-        });
-        if (!guardOk) {
+        std::vector<uint8_t> residentBytes;
+        bool inPageError = false;
+        if (!copyMappedViewSafe(pData, mapSize, residentBytes, inPageError, isCancelled) || inPageError) {
+            return false;
+        }
+
+        if (!extractPsdAiText(residentBytes.data(), residentBytes.size(), extractedAllText, isCancelled)) {
             extractedAllText.clear();
         }
         if (isCancelled && isCancelled()) {

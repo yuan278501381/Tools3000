@@ -29,7 +29,7 @@ Tools3000 每一个功能模块均源自对真实高频桌面痛点的深度打�
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │ [01] 文件与内容搜索  -> Alt+Space 毫秒级呼出，275万文件秒查、拼音混搜与全文穿透 │
-│ [02] 全局鼠标手势    -> 右键/滚轮/屏幕边缘一划即达，径向轮盘与即时触发行云流水  │
+│ [02] 全局鼠标手势    -> 右键/滚轮/屏幕边缘一划即达，流光轨迹与即时触发行云流水  │
 │ [03] 屏幕四角触发角  -> 光标盲甩屏幕四角，秒切桌面、锁屏息屏、多任务视图调度    │
 │ [04] 全能截图与录屏  -> 零黑屏定格、PixPin级标注、长截图无损裁切、32组贴图与OCR │
 │ [05] 按键回显与统计  -> 微晶键帽实时投影，长句打字智能静默，全天本地按键热力图  │
@@ -39,6 +39,19 @@ Tools3000 每一个功能模块均源自对真实高频桌面痛点的深度打�
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+<table>
+  <tr>
+    <td width="75%" align="center" valign="middle">
+      <img src="docs/images/zh-CN/feature_modules.png" alt="Tools3000 微内核功能模块矩阵" width="100%" /><br />
+      <sub>微内核动态模块管理中心：原生插件按需启停、ABI 能力标签与系统权限透明审计</sub>
+    </td>
+    <td width="25%" align="center" valign="middle">
+      <img src="docs/images/zh-CN/feature_tray.png" alt="Tools3000 Bento 系统托盘快捷中心" width="100%" /><br />
+      <sub>Bento 微晶系统托盘面板：高频能力秒级触发与贴图分组管理</sub>
+    </td>
+  </tr>
+</table>
+
 ---
 
 ## 用户真实体感与核心场景深度解析 (Feature Deep Dive)
@@ -47,10 +60,29 @@ Tools3000 每一个功能模块均源自对真实高频桌面痛点的深度打�
 > **“在百万级文件与海量项目仓库中找一份半年前的文档或某行配置，按下快捷键敲入关键词或拼音缩写，结果眨眼即出，零闪烁、零卡顿。”**
 
 <p align="center">
-  <img src="docs/images/zh-CN/search_demo.webp" alt="Tools3000 本地文件极速搜索动效演示" width="100%" />
+  <img src="docs/images/zh-CN/search_demo.webp" alt="Tools3000 毫秒级极速搜索与 Space 空格秒看动态演示" width="100%" /><br />
+  <sub>毫秒级检索 + 空格秒看动态演示：敲入关键词或拼音缩写（<code>xykj 架构</code>）21ms 秒出真实图标结果，轻按 <code>Space</code> 原地弹出 QuickLook 预览</sub>
 </p>
 
-- **百万级文件毫秒响应与跨目录秒搜**：随时按下 `Alt + Space` 立即唤起搜索中心。基于底层 NTFS MFT 元数据直读、USN 实时增量日志与**可分离目录 64 位位掩码 + 极大反链预筛算法**，在 275 万真实文件规模下，即便输入多词跨目录查询（如 `同心 账号密码` 或拼音混搜 `sztx 账号密码`），耗时亦稳定在 **20~27 毫秒**以内；
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/zh-CN/scene_file_search.png" alt="Tools3000 全盘百万文件秒搜、拼音混搜与 Frecency 智能置顶" width="100%" /><br />
+      <sub>全盘百万文件秒搜：跨目录拼音首字母混搜、Windows 原生真实图标与高频打开（Frecency）自动置顶</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/zh-CN/scene_content_search.png" alt="Tools3000 Rust SIMD 文档内容深度检索" width="100%" /><br />
+      <sub>Rust SIMD 正文穿透检索（<code>content:</code>）：Word / Excel / PPT / PDF / CAD / 代码零闪烁流式上屏与行号一键复制</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/zh-CN/scene_quicklook.png" alt="Tools3000 QuickLook 空格全息预览" width="100%" /><br />
+  <sub>QuickLook 空格全息预览：选中任意结果轻按 <code>Space</code> 空格键，免启动笨重软件瞬时预览语法高亮代码、Markdown、4K 大图与 PDF</sub>
+</p>
+
+- **百万级文件毫秒响应与跨目录秒搜**：随时按下 `Alt + Space` 立即唤起搜索中心。基于底层 NTFS MFT 元数据直读、USN 实时增量日志与**可分离目录 64 位位掩码 + 极大反链预筛算法**，在 275 万真实文件规模下，即便输入多词跨目录查询（如 `星云 部署手册` 或拼音混搜 `xykj 部署手册`），耗时亦稳定在 **20~27 毫秒**以内；
 - **最匹配优先置顶与无锁 Bloom Frecency 加权**：多关键词与多扩展名并集（如 `*.log *.txt log`）自动隔离扩展名假命中，按文件名主干（Stem）命中度分层置顶，并结合 64 位双哈希 Bloom 运行历史快照将高频打开的文件智能排在最前；
 - **Windows 资源管理器原生真实图标还原**：针对 `.exe`、`.lnk`、`.ico`、`.cur`、`.ani`、`.scr`、`.cpl`、`.msc` 等自带实例图标的文件直接提取其真实内嵌高清图标，普通文档提取系统关联图标，视觉认知与 Windows 资源管理器 100% 零落差；
 - **C++ SEH + Rust SIMD 深度正文穿透检索**：内置零外网依赖的 Rust SIMD 文本检索引擎（`tools3000_content_rs`），结合 MSVC `__try/__except` 页错误保护，直接穿透检索 Word、Excel、PowerPoint、PDF、AutoCAD DXF 及各类代码源文件。采用 220ms 时间片流式上屏，首屏命中 ~160ms 即刻呈现，跨分片锁定行高**彻底杜绝列表闪烁**，支持实时百分比进度显示、一键停止后台扫描以及点击代码行号胶囊（如 `L66`）**单行代码一键复制**；
@@ -63,11 +95,12 @@ Tools3000 每一个功能模块均源自对真实高频桌面痛点的深度打�
 > **“每天查阅海量技术文档与多窗口办公，手腕再也不用频繁跨越整块屏幕去瞄准细小的‘后退’或‘关闭’按钮。”**
 
 <p align="center">
-  <img src="docs/images/zh-CN/settings_gesture.png" alt="Tools3000 鼠标手势配置与作用域规则" width="100%" />
+  <img src="docs/images/zh-CN/mouse_gesture_demo.webp" alt="Tools3000 全局鼠标手势流光轨迹、不松手即刻触发与屏幕边缘滚轮动态演示" width="100%" /><br />
+  <sub>全局鼠标手势动态演示：右键一划（<code>↓ →</code>）秒关标签页，支持不松手即刻触发（<code>instantExecute</code>）与右边缘滚轮秒调系统音量</sub>
 </p>
 
 - **右键/中键轨迹、滚轮联动与屏幕边缘滑动**：按住鼠标右键（或中键）轻轻一划即可执行后退、前进、关闭标签页、恢复标签页、窗口置顶等操作；支持在桌面或任务栏边缘滑动滚轮调节系统音量或切换虚拟桌面；
-- **8~16 扇区单行径向轮盘与飞行罗盘**：支持呼出高质感 Direct2D 径向轮盘菜单，松手即触发；支持轨迹绘制中实时浮现方向罗盘提示；
+- **实时方向动作提示与抗抖动轨迹引擎**：轨迹绘制期间实时浮现当前识别方向序列与即将触发的动作名称，松手即刻精准执行，移回原位或按左键/Esc 可随时无损取消；
 - **极客级立即执行 (`instantExecute`) 与静默模式 (`silentToast`)**：针对看图翻页、连续调音等高频动作，支持轨迹达标的微秒级刹那立即触发而无需等待松开按键；支持静默执行不弹提示浮层；
 - **应用作用域规则与全屏自动免打扰**：可按进程名或窗口类名定制专属手势配置集，在全屏 3D 游戏、观影或截图/贴图交互浮层打开期间自动退避放行。
 
@@ -83,11 +116,42 @@ Tools3000 每一个功能模块均源自对真实高频桌面痛点的深度打�
 ---
 
 ### 4. 全能截图、长截图、贴图与高清录屏 (Screen Capture, Scroll Capture, Pin & Recording)
-> **“零黑屏窗口磁吸定格、对标 PixPin/Figma 的精细标注体系、Smartisan 式长截图首尾无损裁切工作台，以及 32 组宝石贴图与防盲录高清录屏。”**
+> **“零黑屏窗口磁吸与像素级取色、一步到位的专业标注体系（默认虚线引出光学放大镜）、实时拼接预览与首尾无损裁切长截图，以及 32 组置顶贴图、100% 离线 OCR 与自带键鼠回显的高清录屏。”**
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/zh-CN/scene_capture_precision.png" alt="Tools3000 零黑屏智能控件吸附与像素级十字准星放大取色" width="100%" /><br />
+      <sub>截图更精准：自动识别窗口与子控件层级，十字准星放大镜逐像素对齐并一键复制 HEX / RGB 色值</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/zh-CN/scene_capture_markup.png" alt="Tools3000 一步到位原图标注与默认虚线引出正圆光学放大镜" width="100%" /><br />
+      <sub>标注一步到位：默认虚线引出正圆光学放大镜、自愈步骤序号、隐私马赛克与雪瓷白双层工具栏</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/zh-CN/scene_pin_and_ocr.png" alt="Tools3000 贴图随手钉 32 组归档与纯本地离线文字一键识别" width="100%" /><br />
+  <sub>贴图随手钉与文字一键识别：图像/文本/色卡置顶对照（支持 32 组宝石配色归档），贴图内直接拖选文字或打开独立离线 OCR 窗口一键复制</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/zh-CN/scroll_capture_demo.webp" alt="Tools3000 长截图自动滚动拼接右侧实时预览与首尾无损裁切动态演示" width="100%" /><br />
+      <sub>长截图动态演示：框选后滚动自动无缝拼接，右侧实时预览整张长图，首尾冗余横幅一键无损裁除（随时往回拖恢复）</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/zh-CN/screen_recording_demo.webp" alt="Tools3000 高清录屏选区外悬浮控制条、实时音量峰值与停录已保存胶囊动态演示" width="100%" /><br />
+      <sub>高清录屏动态演示：60 FPS MP4 / 2-Pass GIF 开箱即用，选区外悬浮控制条内置双路实时音量峰值、键鼠回显与停录一键复制/打开目录</sub>
+    </td>
+  </tr>
+</table>
 
 - **DirectX 零黑屏定格与精细标注系统**：
   - **智能窗口探测与圆角美学**：按下 `F1` 瞬间零黑屏定格屏幕，自动磁吸窗口边界并支持滚轮穿透子窗口；内置 **Figma 式平时隐形、近场平滑渐显 (`smoothstep`) 圆角手柄**与 Direct2D 高分屏抗锯齿曲率光标；
-  - **正圆/椭圆局部放大镜与 4 种引出线**：支持创建默认正圆或自由拉伸为横纵椭圆的局部放大镜（内部画面严格光学等比放大零畸变），提供**双切线 (`Tangent`)、折线 (`Elbow`)、虚线 (`Dashed`)、单线 (`Single`)** 四种专业引出线样式；
+  - **正圆/椭圆局部放大镜与 4 种引出线**：支持创建默认正圆或自由拉伸为横纵椭圆的局部放大镜（内部画面严格光学等比放大零畸变），默认采用清爽透气的**精密虚线 (`Dashed`)** 方案，并支持一键切换**双切线 (`Tangent`)、折线 (`Elbow`)、单线 (`Single`)** 四种专业引出线样式；
   - **6 种箭头样式、平滑曲线与双通道边框填充**：提供标准箭头、细线箭头、燕尾箭头、双向箭头、**立体箭头 (`CampaignMarch`)**、**路线箭头 (`MarchDoubleTrack`)**，支持折线与平滑贝塞尔曲线一键切换及首尾独立 **10 种端点样式**；矩形、椭圆、箭头与文字全面支持**「填充色 + 独立边框色 + `0~12px` 边框粗细」双通道融合控制**（支持悬停滚轮微调边框粗细或按住 `Alt` 点击色板秒改边框色）；
   - **微晶胶囊字签与自愈序号**：文字工具提供纯白微晶圆角底衬与自动反差描边；步骤序号标注支持删除中间步骤后自动向前递补重排自愈；内置美化分享外壳（5 大主题背景 + 可调留白与圆角）。
 - **Smartisan 式滚动长截图首尾无损裁切与 Minimap 精修工作台**：
@@ -97,29 +161,21 @@ Tools3000 每一个功能模块均源自对真实高频桌面痛点的深度打�
   - 支持将截图、剪贴板图像或文本一键钉在桌面顶层（`F3`），支持多达 **32 个自定义贴图分组**（12 色宝石色相环、顶部雪瓷白分组导览栏、托盘 Bento 抽屉一键归组与 `Ctrl+1..9` / `Alt+1..9` 快捷键筛选）；
   - 内置离线 Windows OCR 引擎，支持在贴图或独立 OCR 窗口中跨行拖选文字、`Ctrl+A`/`Ctrl+C` 复制，全程 100% 离线零云端上传。
 - **镂空呼吸边框高清录屏与 2-Pass GIF**：
-  - 录制区域外围呈现镂空呼吸微光边框与自动避让悬浮控制条，彻底告别盲录焦虑；支持系统声音/麦克风独立静音切换、视频帧快照抓取、防断电损坏分片封装以及高保真 2-Pass 调色板 GIF 导出。
+  - 录制区域外围呈现镂空呼吸微光边框与选区外 40px 自动避让悬浮控制条（`RecordingIndicator`），彻底告别盲录焦虑；支持系统声音/麦克风独立静音切换与实时音量峰值条、录制中抓拍快照、防断电损坏分片封装、高保真 2-Pass 调色板 GIF 导出，以及停录原地弹出「已保存」胶囊（一键打开目录或复制视频文件）。
 
 ---
 
 ### 5. 按键回显与本地统计 (Keycast & Keystroke Analytics)
 > **“录制教学视频或投屏演示时，屏幕角落浮现清透微晶键帽；日常连续打字时自动静默隐身，并提供 100% 本地的全天击键热力大盘。”**
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <img src="docs/images/settings_shortcuts.png" alt="Tools3000 快捷键调配" width="100%" /><br />
-      <sub>全局快捷键可视化调配与冲突健康度检测</sub>
-    </td>
-    <td width="50%" align="center">
-      <img src="docs/images/settings_statistics.png" alt="Tools3000 本地输入统计" width="100%" /><br />
-      <sub>本地按键热力图与活动趋势看板（100% 本地留存）</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/images/zh-CN/scene_keycast_and_stats.png" alt="Tools3000 智能微晶按键回显与纯本地全键盘热力图看板" width="100%" /><br />
+  <sub>智能按键回显与纯本地统计大盘：投屏/录课时浮现高对比磨砂键帽（<code>Ctrl + C ×3</code>）且普通打字自动静默；右侧全尺寸键盘热力图 100% 留存本地磁盘</sub>
+</p>
 
 - **DirectWrite 真实字宽测量与高对比微晶键帽**：实时渲染半透明微晶键帽与独立高对比度连击角标（如 `Ctrl + C ×3`），长组合键自适应宽度绝不截断；
 - **智能上档符号折叠与打字静默**：`Shift + 8` 自动折叠为 `*`；在智能快捷键模式下，连续打字与拼音输入自动静默，仅在按下真实功能组合键时精准呈现；
-- **纯本地键鼠统计大盘**：记录今日按键数、鼠标点击数、鼠标移动里程与全键盘热力分布，支持一键清零今日统计，所有数据 100% 留存本地 SQLite 数据库。
+- **纯本地键鼠统计大盘**：记录今日按键数、鼠标点击数、鼠标移动里程与 104/87/60 键键盘热力分布，支持一键重置今日统计，所有数据 100% 原子化留存本地磁盘，零网络上传。
 
 ---
 
@@ -127,7 +183,8 @@ Tools3000 每一个功能模块均源自对真实高频桌面痛点的深度打�
 > **“在会议室大屏投屏或线上会议共享桌面时，双击两下 Ctrl 瞬间聚拢全场视线。”**
 
 <p align="center">
-  <img src="docs/images/zh-CN/spotlight_effects_demo.webp" alt="Tools3000 鼠标演示聚光灯、水波纹与流光轨迹" width="100%" />
+  <img src="docs/images/zh-CN/spotlight_effects_demo.webp" alt="Tools3000 鼠标演示聚光灯、水波纹与流光轨迹实战演示" width="100%" /><br />
+  <sub>会议投屏演示实况：双击 <code>Ctrl</code> 唤起平滑跟随聚光灯，配合左右中键分色点击水波纹与指针流光尾迹</sub>
 </p>
 
 - **双击 Ctrl / 晃动鼠标唤起聚光灯**：背景柔和压暗，聚光灯紧密跟随光标，支持自定义超时自动淡出；
@@ -139,7 +196,12 @@ Tools3000 每一个功能模块均源自对真实高频桌面痛点的深度打�
 ### 7. 文件对话框助手 (File Dialog Enhancer)
 > **“在软件中点击‘打开’或‘另存为’时，一键秒切到旁边资源管理器正在浏览的文件夹，彻底告别层层翻找。”**
 
-- **顶部微晶导览胶囊条**：当标准文件对话框（`#32770`）弹出时，顶部自动贴合悬浮微晶导览胶囊（自动锚定安全区间避让标题栏最小化/关闭按钮），点击即可瞬间跳转到当前打开的 Explorer 目录或常用收藏路径；
+<p align="center">
+  <img src="docs/images/zh-CN/scene_dialog_enhancer.png" alt="Tools3000 文件对话框顶部微晶导览条实战场景" width="100%" /><br />
+  <sub>Windows 原生打开/另存为对话框（<code>#32770</code>）实战：右上角自动贴合微晶导览条，一键同步后台 Explorer 活动目录与收藏工作区</sub>
+</p>
+
+- **顶部微晶导览胶囊条**：当标准文件对话框（`#32770`）弹出时，顶部自动贴合悬浮微晶导览胶囊（自动锚定安全区间避让标题栏最小化/关闭按钮），点击即可瞬间跳转到当前打开的 Explorer 目录或常用工作区收藏；
 - **应用级独立路径记忆**：为 VS Code、浏览器、Photoshop 等不同宿主进程分别记忆最近访问目录，互不串台。
 
 ---
@@ -203,13 +265,13 @@ flowchart TB
         SearchUI["极速搜索浮窗 SearchWindow · React 19 / WebView2"]
         Tray["Bento 托盘控制中心 TrayWindow · React 19 / WebView2"]
         QuickLook["极速空格预览 QuickLookWindow · 无边框原生视口"]
-        Overlays["截图 / 长截图暗房 / 32组贴图 / 聚光灯 / 轮盘 / 清透冰晶 Toast · Direct2D & DirectComposition"]
+        Overlays["截图 / 长截图暗房 / 32组贴图 / 聚光灯 / 清透冰晶 Toast · Direct2D & DirectComposition"]
     end
 
     subgraph Plugins["独立原生动态插件 DLL 矩阵"]
         Search["Plugin_Search · 全盘毫秒检索与流式全文提取"]
         Capture["Plugin_Capture · 零黑屏截图 / 录屏 / 离线 OCR"]
-        Gesture["Plugin_Gesture · 鼠标手势 / 轮盘 / 屏幕触发角"]
+        Gesture["Plugin_Gesture · 鼠标手势 / 边缘滚轮 / 屏幕触发角"]
         Keycast["Plugin_Keycast · 微秒级键帽回显与击键统计"]
         Dialog["Plugin_DialogEnhancer · 文件对话框微晶导览"]
     end
@@ -229,7 +291,7 @@ flowchart TB
 2. **1000Hz 零锁输入管线与键盘加速器治理 (`KeyboardPipeline`)**：基于 `WH_KEYBOARD_LL`、`WH_MOUSE_LL`、Raw Input 与原始字节对齐 `SpscRingBuffer` 实现微秒级分发；通过原子浮层可见标志彻底消灭钩子内 `FindWindowW` 内核锁查询；全宿主窗口挂载 `KeyboardPipeline` 拦截 `SC_KEYMENU`/`WM_HELP` 并静默录制态全局热键；
 3. **Direct2D / DirectComposition 硬件合成与设备丢失自愈**：全量原生浮层与贴图窗口内置 `D2DERR_RECREATE_TARGET` 与 `DXGI_ERROR_ACCESS_LOST` 自动重建机制；跨系统圆角双保险管线（`applyUniversalRoundedCorners`）在 Windows 11、Windows 10、Windows Server 2019/2022/2025 及 RDP 远程桌面下均呈现平滑无黑框圆角；
 4. **单字重极简无损思源黑体排版体系**：内嵌仅 `1.10MB` 单文件 `Noto Sans SC 500 Medium` 并优先复用本地 `Source Han Sans SC`，0 系统字体目录写入、0 卸载残留，配合字号（`>= 12px`）与字重（`>= 500`）自动化 CI 门禁，保障高分屏与普通屏 ClearType 次像素字字锐利；
-5. **严密的自动化质量门禁**：内置 **640 项** C++ GoogleTest 单元测试、**157 项**前端 Vitest 测试以及 7 重 i18n 双语同构门禁、6 重日志 TraceID 门禁、CSS 变量门禁、排版门禁与 `trimWorkingSet` 冷路径门禁。
+5. **严密的自动化质量门禁与极简体积**：标准安装程序精简至 **`19.6 MB`**（插件零重复第三方依赖库），内置 **640+ 项** C++ GoogleTest 单元测试断言、**166 项**前端 Vitest 测试以及 7 重 i18n 双语同构门禁、6 重日志 TraceID 门禁、CSS 变量门禁、排版门禁与 `trimWorkingSet` 冷路径门禁。
 
 ---
 

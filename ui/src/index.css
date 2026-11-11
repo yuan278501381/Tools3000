@@ -136,7 +136,10 @@
   place-items: center;
   color: var(--text-primary, CanvasText);
   background: var(--bg-primary, Canvas);
-  font: 500 14px/1.5 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.5;
 }
 
 /* ── 亮色主题 (毛玻璃化亮色) ────────────────────────────────────────────── */

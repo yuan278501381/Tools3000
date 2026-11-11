@@ -61,8 +61,8 @@ public:
     /// 关闭日志系统（刷写缓冲区）
     static void shutdown();
 
-    /// 获取底层 spdlog logger 实例
-    static std::shared_ptr<spdlog::logger>& instance();
+    /// 获取底层 spdlog logger 实例（线程安全按值返回强引用，杜绝与 shutdown 并发竞态）
+    static std::shared_ptr<spdlog::logger> instance();
 
     /// 设置全局日志级别
     static void setLevel(spdlog::level::level_enum level);
@@ -100,12 +100,12 @@ public:
 
 #define LOG_DISPATCH_FMT(lvl, rawFmt, ...)                                                  \
     do {                                                                                    \
-        if (tools3000::core::Logger::instance()) {                                               \
+        if (auto tools3000LoggerInst_ = tools3000::core::Logger::instance()) {              \
             const char* locFmt = tools3000::core::getLocalizedLogFormatWithTrace(rawFmt, tools3000::core::Logger::getLanguage()); \
             if (locFmt) {                                                                   \
-                tools3000::core::Logger::instance()->lvl(fmt::runtime(locFmt), tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->lvl(fmt::runtime(locFmt), tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             } else {                                                                        \
-                tools3000::core::Logger::instance()->lvl("[{}] " rawFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->lvl("[{}] " rawFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             }                                                                               \
         }                                                                                   \
     } while (0)
@@ -121,66 +121,66 @@ public:
 // 国际化双语动态跟随宏 (自动随语言设置切换为中文/英文输出，100% 兼容 fmt12 编译期检查与零额外开销)
 #define LOG_TRACE_L(zhFmt, enFmt, ...)                                                      \
     do {                                                                                    \
-        if (tools3000::core::Logger::instance()) {                                               \
+        if (auto tools3000LoggerInst_ = tools3000::core::Logger::instance()) {              \
             if (tools3000::core::Logger::getLanguage() == tools3000::core::LogLanguage::EnUS) {      \
-                tools3000::core::Logger::instance()->trace("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->trace("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             } else {                                                                        \
-                tools3000::core::Logger::instance()->trace("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->trace("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             }                                                                               \
         }                                                                                   \
     } while (0)
 
 #define LOG_DEBUG_L(zhFmt, enFmt, ...)                                                      \
     do {                                                                                    \
-        if (tools3000::core::Logger::instance()) {                                               \
+        if (auto tools3000LoggerInst_ = tools3000::core::Logger::instance()) {              \
             if (tools3000::core::Logger::getLanguage() == tools3000::core::LogLanguage::EnUS) {      \
-                tools3000::core::Logger::instance()->debug("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->debug("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             } else {                                                                        \
-                tools3000::core::Logger::instance()->debug("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->debug("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             }                                                                               \
         }                                                                                   \
     } while (0)
 
 #define LOG_INFO_L(zhFmt, enFmt, ...)                                                       \
     do {                                                                                    \
-        if (tools3000::core::Logger::instance()) {                                               \
+        if (auto tools3000LoggerInst_ = tools3000::core::Logger::instance()) {              \
             if (tools3000::core::Logger::getLanguage() == tools3000::core::LogLanguage::EnUS) {      \
-                tools3000::core::Logger::instance()->info("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->info("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             } else {                                                                        \
-                tools3000::core::Logger::instance()->info("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->info("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             }                                                                               \
         }                                                                                   \
     } while (0)
 
 #define LOG_WARN_L(zhFmt, enFmt, ...)                                                       \
     do {                                                                                    \
-        if (tools3000::core::Logger::instance()) {                                               \
+        if (auto tools3000LoggerInst_ = tools3000::core::Logger::instance()) {              \
             if (tools3000::core::Logger::getLanguage() == tools3000::core::LogLanguage::EnUS) {      \
-                tools3000::core::Logger::instance()->warn("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->warn("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             } else {                                                                        \
-                tools3000::core::Logger::instance()->warn("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->warn("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             }                                                                               \
         }                                                                                   \
     } while (0)
 
 #define LOG_ERROR_L(zhFmt, enFmt, ...)                                                      \
     do {                                                                                    \
-        if (tools3000::core::Logger::instance()) {                                               \
+        if (auto tools3000LoggerInst_ = tools3000::core::Logger::instance()) {              \
             if (tools3000::core::Logger::getLanguage() == tools3000::core::LogLanguage::EnUS) {      \
-                tools3000::core::Logger::instance()->error("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->error("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             } else {                                                                        \
-                tools3000::core::Logger::instance()->error("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->error("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             }                                                                               \
         }                                                                                   \
     } while (0)
 
 #define LOG_CRITICAL_L(zhFmt, enFmt, ...)                                                   \
     do {                                                                                    \
-        if (tools3000::core::Logger::instance()) {                                               \
+        if (auto tools3000LoggerInst_ = tools3000::core::Logger::instance()) {              \
             if (tools3000::core::Logger::getLanguage() == tools3000::core::LogLanguage::EnUS) {      \
-                tools3000::core::Logger::instance()->critical("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->critical("[{}] " enFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             } else {                                                                        \
-                tools3000::core::Logger::instance()->critical("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
+                tools3000LoggerInst_->critical("[{}] " zhFmt, tools3000::core::TraceId::current(), ##__VA_ARGS__); \
             }                                                                               \
         }                                                                                   \
     } while (0)

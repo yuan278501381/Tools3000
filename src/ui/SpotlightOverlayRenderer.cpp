@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
+#include <random>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d2d1.lib")
@@ -739,11 +739,13 @@ void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> empBrush;
             m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(baseC.r, baseC.g, baseC.b, alpha), empBrush.GetAddressOf());
             if (empBrush) {
+                thread_local std::mt19937 empRng{std::random_device{}()};
+                std::uniform_int_distribution<int> jitterDist(-4, 3);
                 for (const auto& sp : rip.sparklets) {
                     float ex = cx + sp.vx * ease * (rip.maxRadius / 26.0f);
                     float ey = cy + sp.vy * ease * (rip.maxRadius / 26.0f);
-                    float mx = (cx + ex) * 0.5f + static_cast<float>((rand() % 8) - 4) * viewScale;
-                    float my = (cy + ey) * 0.5f + static_cast<float>((rand() % 8) - 4) * viewScale;
+                    float mx = (cx + ex) * 0.5f + static_cast<float>(jitterDist(empRng)) * viewScale;
+                    float my = (cy + ey) * 0.5f + static_cast<float>(jitterDist(empRng)) * viewScale;
                     m_d2dContext->DrawLine(D2D1::Point2F(cx, cy), D2D1::Point2F(mx, my), empBrush.Get(), 1.2f * viewScale);
                     m_d2dContext->DrawLine(D2D1::Point2F(mx, my), D2D1::Point2F(ex, ey), empBrush.Get(), 1.2f * viewScale);
                 }

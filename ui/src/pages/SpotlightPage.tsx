@@ -251,8 +251,8 @@ export const SpotlightPage: FC = () => {
     try {
       if (key === 'enabled') {
         await Promise.all([
-          bridgeRequest('plugins.setEnabled', { id: 'spotlight', enabled: Boolean(value) }).catch(() => {}),
-          bridgeRequest('spotlight.updateSettings', { [key]: value }).catch(() => {}),
+          bridgeRequest('plugins.setEnabled', { id: 'spotlight', enabled: Boolean(value) }),
+          bridgeRequest('spotlight.updateSettings', { [key]: value }),
         ]);
       } else {
         await bridgeRequest('spotlight.updateSettings', { [key]: value });
@@ -352,10 +352,21 @@ export const SpotlightPage: FC = () => {
           <div className="spotlight-page__style-grid">
             {/* 1. 向心引力折叠 (默认推荐) */}
             <div
+              role="button"
+              tabIndex={0}
+              aria-pressed={settings.spotlightAnimStyle === 'inward_gravity'}
               className={`spotlight-page__style-card ${settings.spotlightAnimStyle === 'inward_gravity' ? 'spotlight-page__style-card--active' : ''}`}
               onClick={async () => {
                 await saveSetting('spotlightAnimStyle', 'inward_gravity');
                 void bridgeRequest('spotlight.trigger').catch(() => {});
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  void saveSetting('spotlightAnimStyle', 'inward_gravity').then(() => {
+                    void bridgeRequest('spotlight.trigger').catch(() => {});
+                  });
+                }
               }}
             >
               <div className="spotlight-page__style-card-header">
@@ -367,10 +378,21 @@ export const SpotlightPage: FC = () => {
 
             {/* 2. 科技声纳雷达 */}
             <div
+              role="button"
+              tabIndex={0}
+              aria-pressed={settings.spotlightAnimStyle === 'tactical_sonar'}
               className={`spotlight-page__style-card ${settings.spotlightAnimStyle === 'tactical_sonar' ? 'spotlight-page__style-card--active' : ''}`}
               onClick={async () => {
                 await saveSetting('spotlightAnimStyle', 'tactical_sonar');
                 void bridgeRequest('spotlight.trigger').catch(() => {});
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  void saveSetting('spotlightAnimStyle', 'tactical_sonar').then(() => {
+                    void bridgeRequest('spotlight.trigger').catch(() => {});
+                  });
+                }
               }}
             >
               <div className="spotlight-page__style-card-header">
@@ -382,10 +404,21 @@ export const SpotlightPage: FC = () => {
 
             {/* 3. 极简极光涟漪 */}
             <div
+              role="button"
+              tabIndex={0}
+              aria-pressed={settings.spotlightAnimStyle === 'aurora_ripple'}
               className={`spotlight-page__style-card ${settings.spotlightAnimStyle === 'aurora_ripple' ? 'spotlight-page__style-card--active' : ''}`}
               onClick={async () => {
                 await saveSetting('spotlightAnimStyle', 'aurora_ripple');
                 void bridgeRequest('spotlight.trigger').catch(() => {});
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  void saveSetting('spotlightAnimStyle', 'aurora_ripple').then(() => {
+                    void bridgeRequest('spotlight.trigger').catch(() => {});
+                  });
+                }
               }}
             >
               <div className="spotlight-page__style-card-header">
@@ -521,7 +554,11 @@ export const SpotlightPage: FC = () => {
                   {/* 1. 星芒微粒迸发 (默认) */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'sparkle_burst' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'sparkle_burst'}
                     onClick={() => saveSetting('clickRippleStyle', 'sparkle_burst')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'sparkle_burst'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Sparkles size={16} />
@@ -533,7 +570,11 @@ export const SpotlightPage: FC = () => {
                   {/* 2. 流体光圈冲击波 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'ripple_ring' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'ripple_ring'}
                     onClick={() => saveSetting('clickRippleStyle', 'ripple_ring')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'ripple_ring'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Waves size={16} />
@@ -545,7 +586,11 @@ export const SpotlightPage: FC = () => {
                   {/* 3. 精密雷达靶心 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'target_pulse' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'target_pulse'}
                     onClick={() => saveSetting('clickRippleStyle', 'target_pulse')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'target_pulse'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Crosshair size={16} />
@@ -557,7 +602,11 @@ export const SpotlightPage: FC = () => {
                   {/* 4. 柔光微晕气泡 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'soft_glow' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'soft_glow'}
                     onClick={() => saveSetting('clickRippleStyle', 'soft_glow')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'soft_glow'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <CircleDot size={16} />
@@ -569,7 +618,11 @@ export const SpotlightPage: FC = () => {
                   {/* 5. 超新星微爆发 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'supernova' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'supernova'}
                     onClick={() => saveSetting('clickRippleStyle', 'supernova')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'supernova'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Flame size={16} />
@@ -581,7 +634,11 @@ export const SpotlightPage: FC = () => {
                   {/* 6. 电磁脉冲放电 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'emp_discharge' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'emp_discharge'}
                     onClick={() => saveSetting('clickRippleStyle', 'emp_discharge')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'emp_discharge'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Zap size={16} />
@@ -593,7 +650,11 @@ export const SpotlightPage: FC = () => {
                   {/* 7. 宣纸墨滴晕染 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'ink_droplet' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'ink_droplet'}
                     onClick={() => saveSetting('clickRippleStyle', 'ink_droplet')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'ink_droplet'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Droplets size={16} />
@@ -605,7 +666,11 @@ export const SpotlightPage: FC = () => {
                   {/* 8. 六边形蜂巢锁定 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'hexagon_lock' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'hexagon_lock'}
                     onClick={() => saveSetting('clickRippleStyle', 'hexagon_lock')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'hexagon_lock'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Shield size={16} />
@@ -617,7 +682,11 @@ export const SpotlightPage: FC = () => {
                   {/* 9. 微气泡轻破 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'bubble_pop' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'bubble_pop'}
                     onClick={() => saveSetting('clickRippleStyle', 'bubble_pop')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'bubble_pop'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Circle size={16} />
@@ -629,7 +698,11 @@ export const SpotlightPage: FC = () => {
                   {/* 10. macOS 弹性光圈 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'mac_zoom' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.clickRippleStyle === 'mac_zoom'}
                     onClick={() => saveSetting('clickRippleStyle', 'mac_zoom')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('clickRippleStyle', 'mac_zoom'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <ZoomIn size={16} />
@@ -707,7 +780,11 @@ export const SpotlightPage: FC = () => {
                   {/* 1. 彩色声纳微环 (默认) */}
                   <div
                     className={`spotlight-page__style-card ${settings.mouseTrailStyle === 'sonar_pulses' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.mouseTrailStyle === 'sonar_pulses'}
                     onClick={() => saveSetting('mouseTrailStyle', 'sonar_pulses')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('mouseTrailStyle', 'sonar_pulses'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <CircleDot size={16} />
@@ -719,7 +796,11 @@ export const SpotlightPage: FC = () => {
                   {/* 2. 七彩星尘光球 */}
                   <div
                     className={`spotlight-page__style-card ${settings.mouseTrailStyle === 'stardust_orbs' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.mouseTrailStyle === 'stardust_orbs'}
                     onClick={() => saveSetting('mouseTrailStyle', 'stardust_orbs')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('mouseTrailStyle', 'stardust_orbs'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Sparkles size={16} />
@@ -731,7 +812,11 @@ export const SpotlightPage: FC = () => {
                   {/* 3. 量子引力微子 */}
                   <div
                     className={`spotlight-page__style-card ${settings.mouseTrailStyle === 'quantum_lens' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.mouseTrailStyle === 'quantum_lens'}
                     onClick={() => saveSetting('mouseTrailStyle', 'quantum_lens')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('mouseTrailStyle', 'quantum_lens'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Atom size={16} />
@@ -743,7 +828,11 @@ export const SpotlightPage: FC = () => {
                   {/* 4. 特斯拉电弧微流 */}
                   <div
                     className={`spotlight-page__style-card ${settings.mouseTrailStyle === 'tesla_arc' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.mouseTrailStyle === 'tesla_arc'}
                     onClick={() => saveSetting('mouseTrailStyle', 'tesla_arc')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('mouseTrailStyle', 'tesla_arc'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Zap size={16} />
@@ -755,7 +844,11 @@ export const SpotlightPage: FC = () => {
                   {/* 5. 宣纸水墨烟云 */}
                   <div
                     className={`spotlight-page__style-card ${settings.mouseTrailStyle === 'zen_ink' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.mouseTrailStyle === 'zen_ink'}
                     onClick={() => saveSetting('mouseTrailStyle', 'zen_ink')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('mouseTrailStyle', 'zen_ink'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <PenTool size={16} />
@@ -767,7 +860,11 @@ export const SpotlightPage: FC = () => {
                   {/* 6. CAD 矢量标尺 */}
                   <div
                     className={`spotlight-page__style-card ${settings.mouseTrailStyle === 'blueprint_grid' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.mouseTrailStyle === 'blueprint_grid'}
                     onClick={() => saveSetting('mouseTrailStyle', 'blueprint_grid')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('mouseTrailStyle', 'blueprint_grid'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Compass size={16} />
@@ -779,7 +876,11 @@ export const SpotlightPage: FC = () => {
                   {/* 7. 晨露微气泡 */}
                   <div
                     className={`spotlight-page__style-card ${settings.mouseTrailStyle === 'morning_dew' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.mouseTrailStyle === 'morning_dew'}
                     onClick={() => saveSetting('mouseTrailStyle', 'morning_dew')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('mouseTrailStyle', 'morning_dew'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Droplets size={16} />
@@ -791,7 +892,11 @@ export const SpotlightPage: FC = () => {
                   {/* 8. 极光流体丝带 */}
                   <div
                     className={`spotlight-page__style-card ${settings.mouseTrailStyle === 'aurora_ribbon' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.mouseTrailStyle === 'aurora_ribbon'}
                     onClick={() => saveSetting('mouseTrailStyle', 'aurora_ribbon')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('mouseTrailStyle', 'aurora_ribbon'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Waves size={16} />
@@ -803,7 +908,11 @@ export const SpotlightPage: FC = () => {
                   {/* 9. 经典彗星流光 */}
                   <div
                     className={`spotlight-page__style-card ${settings.mouseTrailStyle === 'classic_comet' ? 'spotlight-page__style-card--active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={settings.mouseTrailStyle === 'classic_comet'}
                     onClick={() => saveSetting('mouseTrailStyle', 'classic_comet')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveSetting('mouseTrailStyle', 'classic_comet'); } }}
                   >
                     <div className="spotlight-page__style-card-header">
                       <Flame size={16} />

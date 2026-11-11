@@ -165,7 +165,7 @@ describe('Semantic Quality Tiering & Original-File-First Deduplication', () => {
         creationTime: 8000,
       },
       {
-        path: 'D:\\Chosen\\解决高级总账科目规则更改时科目报错_字段中的无效值.txt',
+        path: 'D:\\Projects\\解决高级总账科目规则更改时科目报错_字段中的无效值.txt',
         name: '解决高级总账科目规则更改时科目报错_字段中的无效值.txt',
         isDirectory: false,
         size: 8500,
@@ -185,20 +185,20 @@ describe('Semantic Quality Tiering & Original-File-First Deduplication', () => {
         name: '自动添加TEMP文件夹Everyone完全控制权限（服务器执行解决打印不传递）.rar',
         isDirectory: false,
         size: 28160,
-        lastWriteTime: 6000, // 同一微信文件在更早月份发给其他客户的历史冗余副本
+        lastWriteTime: 6000, // 同一微信文件在更早月份发给其他协作方的历史冗余副本
         creationTime: 6000,
       },
       {
-        path: 'D:\\Chosen\\解决：第三方系统调用SAP时产生重复数据V10002_MESID2.ch',
-        name: '解决：第三方系统调用SAP时产生重复数据V10002_MESID2.ch',
+        path: 'D:\\Projects\\解决：第三方系统调用接口时产生重复数据V10002_MESID2.ch',
+        name: '解决：第三方系统调用接口时产生重复数据V10002_MESID2.ch',
         isDirectory: false,
         size: 184500,
         lastWriteTime: 6500, // 本地原始文件已迭代到 V10002
         creationTime: 6500,
       },
       {
-        path: 'C:\\Users\\yuan2\\AppData\\Roaming\\Tencent\\xwechat\\xwechat_files\\wxid_xxx\\msg\\file\\2025-06\\解决：第三方系统调用SAP时产生重复数据V10001_MESID2.ch',
-        name: '解决：第三方系统调用SAP时产生重复数据V10001_MESID2.ch',
+        path: 'C:\\Users\\yuan2\\AppData\\Roaming\\Tencent\\xwechat\\xwechat_files\\wxid_xxx\\msg\\file\\2025-06\\解决：第三方系统调用接口时产生重复数据V10001_MESID2.ch',
+        name: '解决：第三方系统调用接口时产生重复数据V10001_MESID2.ch',
         isDirectory: false,
         size: 184320,
         lastWriteTime: 6800, // 微信里旧版本 V10001 副本（即便修改时间较新，也因本地存在同源 V10002 原始文件而沉降到冗余聊天副本层）
@@ -208,9 +208,9 @@ describe('Semantic Quality Tiering & Original-File-First Deduplication', () => {
 
     const sorted = getSortedResults(items, 'modified', 'desc', 'filesFirst', false, true);
 
-    // Tier 0: D:\Chosen 下的两份本地原始文件必须排在最前面（内部按修改时间倒序：7000 > 6500）
-    expect(sorted[0].path).toBe('D:\\Chosen\\解决高级总账科目规则更改时科目报错_字段中的无效值.txt');
-    expect(sorted[1].path).toBe('D:\\Chosen\\解决：第三方系统调用SAP时产生重复数据V10002_MESID2.ch');
+    // Tier 0: D:\Projects 下的两份本地原始文件必须排在最前面（内部按修改时间倒序：7000 > 6500）
+    expect(sorted[0].path).toBe('D:\\Projects\\解决高级总账科目规则更改时科目报错_字段中的无效值.txt');
+    expect(sorted[1].path).toBe('D:\\Projects\\解决：第三方系统调用接口时产生重复数据V10002_MESID2.ch');
 
     // Tier 1: 仅存在于微信中的唯一最新文件排在原始文件之后（且文件名含 TEMP 未被误判为 Temp 目录）
     expect(sorted[2].path).toBe(
@@ -222,7 +222,7 @@ describe('Semantic Quality Tiering & Original-File-First Deduplication', () => {
       'C:\\Users\\yuan2\\AppData\\Roaming\\Tencent\\xwechat\\xwechat_files\\wxid_xxx\\msg\\file\\2026-09\\解决高级总账科目规则更改时科目报错_字段中的无效值.txt'
     );
     expect(sorted[4].path).toBe(
-      'C:\\Users\\yuan2\\AppData\\Roaming\\Tencent\\xwechat\\xwechat_files\\wxid_xxx\\msg\\file\\2025-06\\解决：第三方系统调用SAP时产生重复数据V10001_MESID2.ch'
+      'C:\\Users\\yuan2\\AppData\\Roaming\\Tencent\\xwechat\\xwechat_files\\wxid_xxx\\msg\\file\\2025-06\\解决：第三方系统调用接口时产生重复数据V10001_MESID2.ch'
     );
     expect(sorted[5].path).toBe(
       'D:\\Documents\\xwechat_files\\wxid_xxx\\msg\\file\\2026-08\\自动添加TEMP文件夹Everyone完全控制权限（服务器执行解决打印不传递）.rar'
@@ -240,7 +240,7 @@ describe('Semantic Quality Tiering & Original-File-First Deduplication', () => {
     expect(extractParentDirectoryPath(wechatPath)).toBe(
       'C:\\Users\\yuan2\\AppData\\Roaming\\Tencent\\xwechat\\xwechat_files\\wxid_xxx\\msg\\file\\2026-09'
     );
-    expect(extractParentDirectoryPath('D:\\Chosen\\216-北京中源\\账号密码.txt')).toBe('D:\\Chosen\\216-北京中源');
+    expect(extractParentDirectoryPath('D:\\Projects\\216-北辰智造\\部署手册.txt')).toBe('D:\\Projects\\216-北辰智造');
     expect(extractParentDirectoryPath('D:\\root_file.txt')).toBe('D:\\');
   });
 });

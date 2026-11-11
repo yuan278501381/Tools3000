@@ -29,7 +29,7 @@ Every feature module in Tools3000 is crafted around genuine high-frequency deskt
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │ [01] File & Content Search -> Alt+Space instant lookup, 2.75M files & SIMD text │
-│ [02] Global Mouse Gestures -> Right-click/wheel/edge swipes & radial menu       │
+│ [02] Global Mouse Gestures -> Right-click/wheel/edge swipes & instant triggers  │
 │ [03] Screen Hot Corners    -> Blind-flick to 4 corners: desktop, lock & task view│
 │ [04] Capture & Recording   -> Zero-blackout, PixPin markup, scroll crop, 32 pins│
 │ [05] Keycast & Analytics   -> Glassmorphic keycaps, typing mute & local heatmap │
@@ -39,6 +39,19 @@ Every feature module in Tools3000 is crafted around genuine high-frequency deskt
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+<table>
+  <tr>
+    <td width="75%" align="center" valign="middle">
+      <img src="docs/images/en-US/feature_modules.png" alt="Tools3000 Microkernel Feature Modules" width="100%" /><br />
+      <sub>Microkernel Module Hub: on-demand native plugin toggles, ABI capability tags, and transparent system access audit</sub>
+    </td>
+    <td width="25%" align="center" valign="middle">
+      <img src="docs/images/en-US/feature_tray.png" alt="Tools3000 Bento System Tray Quick Menu" width="100%" /><br />
+      <sub>Bento Glass System Tray Hub: instant feature toggles & pin drawer controls</sub>
+    </td>
+  </tr>
+</table>
+
 ---
 
 ## User-Centric Scenarios & Feature Deep Dive
@@ -47,11 +60,30 @@ Every feature module in Tools3000 is crafted around genuine high-frequency deskt
 > **"Looking for a 6-month-old document or a buried configuration line across 2.75M+ files? Press `Alt + Space` and type keywords or initials—results appear in a blink with zero flicker."**
 
 <p align="center">
-  <img src="docs/images/zh-CN/search_demo.webp" alt="Tools3000 Instant File Search Demo" width="100%" />
+  <img src="docs/images/en-US/search_demo.webp" alt="Tools3000 Instant NTFS Search & Space QuickLook Live Demo" width="100%" /><br />
+  <sub>Instant Search + Space QuickLook Demo: query 2.75M NTFS records (<code>nebula spec</code>) in ~21ms with authentic icons, then tap <code>Space</code> for zero-wait in-place preview</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/scene_file_search.png" alt="Tools3000 Sub-Millisecond File Search, Explorer Icons & Frecency Boost" width="100%" /><br />
+      <sub>Sub-Millisecond File Search: cross-folder stem matching, authentic Windows Explorer icons & lock-free Frecency top-ranking</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/scene_content_search.png" alt="Tools3000 Rust SIMD Deep Content Search" width="100%" /><br />
+      <sub>Rust SIMD Deep Content Search (<code>content:</code>): penetrates Word, Excel, PPT, PDF, CAD & code with zero flicker and 1-click line copy</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/en-US/scene_quicklook.png" alt="Tools3000 QuickLook Space Instant Preview" width="100%" /><br />
+  <sub>QuickLook Space Preview: press <code>Space</code> on any result to preview syntax-highlighted code, rendered Markdown, 4K images, and PDFs in place</sub>
 </p>
 
 - **Sub-Millisecond NTFS Lookup Across Millions of Files**: Press `Alt + Space` anytime to summon the Search Center. Powered by direct NTFS MFT reading, real-time USN Journal incremental updates, and **separable 64-bit directory bitmasks + giant posting-list pre-filtering**, multi-keyword cross-directory queries across 2.75M real files complete in **20~27 ms**;
-- **Best-Match Priority & Lock-Free Bloom Frecency Ranking**: Multi-keyword and multi-extension union queries (e.g., `*.log *.txt log`) isolate extension-only false hits, prioritize filename stem coverage, and integrate a lock-free 64-bit dual-hash Bloom `RunHistorySnapshot` to boost frequently opened files (`[Opened N times]`) to the top;
+- **Best-Match Priority & Lock-Free Bloom Frecency Ranking**: Multi-keyword and multi-extension union queries (e.g., `*.log *.txt log`) isolate extension-only false hits, prioritize filename stem coverage, and integrate a lock-free 64-bit dual-hash Bloom `RunHistorySnapshot` to boost frequently opened files (`[N runs]`) to the top;
 - **Authentic Windows Explorer Native Icons**: Extracts real per-instance embedded icons for `.exe`, `.lnk`, `.ico`, `.cur`, `.ani`, `.scr`, `.cpl`, and `.msc` files alongside high-DPI system file association icons—matching Windows Explorer 100% and minimizing visual cognitive load;
 - **C++ SEH + Rust SIMD Deep Document Content Search (`content:`)**: Built-in zero-dependency Rust SIMD full-text engine (`tools3000_content_rs`) protected by MSVC `__try/__except` page-fault guards penetrates Word, Excel, PowerPoint, PDF (`ToUnicode` CMaps), AutoCAD DXF, and source code files. Streams hits in 220ms time-slices (~160ms first paint) with locked row heights for **zero list flicker**, real-time percentage progress, 1-click `[Stop]`, and 1-click line badge (`L66`) code copy;
 - **Everything-Grade Query Syntax**: Supports wildcards (`*.pdf`), multi-extension unions (`*.log *.txt` or `ext:jpg;png`), closed-range and semantic size filters (`size:1mb..50mb`, `size:empty`, `size:tiny`, `size:small`, `size:medium`, `size:large`, `size:huge`), date modified filters (`dm:today`, `dm:thisweek`, `dm:2026-10`), logical exclusions (`!node_modules`), and regular expressions (`regex:`);
@@ -63,11 +95,12 @@ Every feature module in Tools3000 is crafted around genuine high-frequency deskt
 > **"Browsing technical docs and juggling windows all day? Never fling your wrist across the entire monitor just to click a tiny Back or Close button."**
 
 <p align="center">
-  <img src="docs/images/zh-CN/settings_gesture.png" alt="Tools3000 Mouse Gestures & App Scopes" width="100%" />
+  <img src="docs/images/en-US/mouse_gesture_demo.webp" alt="Tools3000 Global Mouse Gestures Luminous Trail, Instant Execute & Edge Wheel Demo" width="100%" /><br />
+  <sub>Global Mouse Gestures Demo: swipe right-click Down-Right (<code>↓ →</code>) to close tab, paired with release-free <code>instantExecute</code> and right-edge wheel volume control</sub>
 </p>
 
 - **Right/Middle-Button Strokes, Wheel & Screen-Edge Actions**: Hold the right (or middle) mouse button and flick to go back, go forward, close tab, restore tab, or pin a window on top; scroll along screen edges or taskbar to adjust system volume or switch virtual desktops;
-- **8~16 Sector Radial Menu & Flight Compass**: Summon a hardware-accelerated Direct2D radial wheel menu and release to trigger, or display a real-time directional compass HUD while drawing;
+- **Live Directional Action HUD & Anti-Jitter Recognizer**: Displays the recognized directional sequence and matched action label in real time while drawing, with instant cancellation via left-click or `Esc`;
 - **Instant Execution (`instantExecute`) & Silent Mode (`silentToast`)**: Trigger high-frequency actions (such as image paging or volume stepping) the microsecond a gesture threshold is met without waiting for button release;
 - **Per-Application Scopes & Fullscreen Auto-Bypass**: Customize gesture rules by process name or window class, automatically yielding during fullscreen 3D games, movies, or active capture/pin overlays.
 
@@ -83,11 +116,42 @@ Every feature module in Tools3000 is crafted around genuine high-frequency deskt
 ---
 
 ### 4. Screen Capture, Long Scroll Capture, Pinning & HD Recording
-> **"Zero-blackout window snapping, PixPin/Figma-grade annotations, Smartisan-style lossless scroll-capture cropping, 32 gemstone pin groups, and glow-bordered HD recording."**
+> **"Zero-blackout UI element snapping & pixel color picker, 1-step rich annotations (with default dashed-lead optical magnifier), live side-by-side scroll stitching with lossless head/tail cropping, 32 gemstone pin groups, 100% offline OCR, and HD recording with built-in keycast."**
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/scene_capture_precision.png" alt="Tools3000 Zero-Blackout UI Element Snapping & Pixel Loupe Color Picker" width="100%" /><br />
+      <sub>Capture with Precision: auto-detects windows & child UI controls with pixel-grid crosshair loupe and 1-key HEX / RGB copy</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/scene_capture_markup.png" alt="Tools3000 1-Step Rich Annotation & Default Dashed Optical Magnifier" width="100%" /><br />
+      <sub>Annotate in One Step: default dashed-lead 2.4x optical magnifier, self-healing steps, privacy mosaic & porcelain dual toolbar</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/en-US/scene_pin_and_ocr.png" alt="Tools3000 Pin It Anywhere 32 Groups & 100% Offline 1-Click OCR" width="100%" /><br />
+  <sub>Pin It Anywhere & 1-Click Offline OCR: pin images, text, or color swatches across 32 gemstone groups, and drag-select text directly inside pins or via the offline OCR window</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/scroll_capture_demo.webp" alt="Tools3000 Live Scrolling Capture Side Preview & Lossless Head/Tail Crop Demo" width="100%" /><br />
+      <sub>Scrolling Capture Demo: scroll to stitch seamlessly with a live growing side preview, and trim redundant headers or footers losslessly in 1 click</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/screen_recording_demo.webp" alt="Tools3000 HD Screen Recording Floating Control Bar, Live Audio Meters & Saved Island Demo" width="100%" /><br />
+      <sub>Screen Recording Demo: 60 FPS MP4 & 2-Pass GIF out of the box with external floating control bar, live dual audio meters, built-in keycast, and 1-click post-stop Copy/Open</sub>
+    </td>
+  </tr>
+</table>
 
 - **DirectX Zero-Blackout Capture & PixPin/Figma-Grade Annotation System**:
   - **Smart Window Snapping & Corner Aesthetics**: Press `F1` to freeze the screen with zero blackout, auto-snapping window bounds and penetrating child controls with the mouse wheel; features **Figma-style proximity-fade (`smoothstep`) corner radius handles** and high-DPI anti-aliased curvature cursors;
-  - **Circular/Elliptical Magnifier & 4 Callout Lead Styles**: Create circular or freely stretched elliptical magnifiers (with distortion-free optical zoom inside) paired with **Double-Tangent (`Tangent`), Elbow (`Elbow`), Dashed (`Dashed`), or Single-Line (`Single`)** callout leads;
+  - **Circular/Elliptical Magnifier & 4 Callout Lead Styles**: Create circular or freely stretched elliptical magnifiers (with distortion-free optical zoom inside) defaulting to the clean **Dashed (`Dashed`)** callout lead, with 1-click switching across **Dashed (`Dashed`), Double-Tangent (`Tangent`), Elbow (`Elbow`), and Single-Line (`Single`)** styles;
   - **6 Arrow Styles, Smooth Curves & Dual-Channel Fill/Stroke**: Includes standard, thin, swallowtail, bidirectional, **3D Campaign (`CampaignMarch`)**, and **Double-Track (`MarchDoubleTrack`)** arrows, 1-click polyline/Bezier curve toggling, **10 independent start/end cap styles**, and **dual-channel Fill + independent Stroke (`0~12px`)** control across rectangles, ellipses, arrows, and text;
   - **Glass Capsule Text Labels & Self-Healing Step Badges**: High-contrast glass text backing and numbered step badges (`1, 2, 3`) that automatically renumber when a middle step is deleted, plus a 5-theme Share Beautifier frame.
 - **Smartisan-Style Long Scroll Capture & Lossless Head/Tail Crop Studio**:
@@ -97,29 +161,21 @@ Every feature module in Tools3000 is crafted around genuine high-frequency deskt
   - Pin screenshots, clipboard images, or text on top of your desktop (`F3`) with up to **32 custom pin groups** (12-hue gemstone palette, porcelain-white top group bar, Bento tray drawer grouping, and `Ctrl+1..9` / `Alt+1..9` group filtering);
   - Built-in offline Windows OCR engine lets you drag-select text across lines in any pin or OCR window and copy with `Ctrl+A`/`Ctrl+C`—100% offline with zero cloud uploads.
 - **Hollow Breathing-Border HD Recording & 2-Pass GIF**:
-  - Displays a hollow breathing border and auto-avoiding floating control bar around the recording region; supports independent system audio/mic mute, frame snapshots, power-loss safe fragmented MP4 muxing, and high-fidelity 2-Pass adaptive palette GIF export.
+  - Displays a hollow breathing border and external 40px auto-avoiding floating control bar (`RecordingIndicator`) around the recording region; supports independent system audio/mic mute with live peak meters, in-recording frame snapshots, power-loss safe fragmented MP4 muxing, high-fidelity 2-Pass adaptive palette GIF export, and an in-place post-stop `SAVED` capsule for 1-click folder open or clipboard copy.
 
 ---
 
 ### 5. Keycast & Local Keystroke Analytics
 > **"Recording tutorials or presenting live? Crisp glassmorphic keycaps float in the corner while continuous typing stays silent, backed by a 100% local daily keystroke heatmap."**
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <img src="docs/images/settings_shortcuts.png" alt="Tools3000 Global Hotkey Management" width="100%" /><br />
-      <sub>Visual global hotkey configuration & real-time conflict health check</sub>
-    </td>
-    <td width="50%" align="center">
-      <img src="docs/images/settings_statistics.png" alt="Tools3000 Local Input Statistics" width="100%" /><br />
-      <sub>Local keyboard heatmap & activity trend dashboard (100% local SQLite storage)</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/images/en-US/scene_keycast_and_stats.png" alt="Tools3000 Smart Keycast Overlay & 100% Local Keystroke Heatmap" width="100%" /><br />
+  <sub>Smart Keycast & 100% Local Keystroke Heatmap: crisp frosted-glass shortcut keycaps (<code>Ctrl + C ×3</code>) with automatic prose mute, paired with a full-layout local keyboard heatmap</sub>
+</p>
 
 - **DirectWrite Exact Glyph Measurement & High-Contrast Keycaps**: Renders translucent glass keycaps with high-contrast combo counters (`Ctrl + C x3`) and adaptive widths that never truncate long shortcuts;
 - **Smart Shift-Symbol Folding & Typing Silence**: `Shift + 8` folds cleanly into `*`; in Smart Shortcut mode, continuous prose and IME typing stay silent while functional modifier shortcuts appear immediately;
-- **100% Local Keyboard & Mouse Analytics**: Tracks daily keystrokes, mouse clicks, cursor travel distance, and full-keyboard heatmap distributions locally in SQLite with 1-click daily reset.
+- **100% Local Keyboard & Mouse Analytics**: Tracks daily keystrokes, mouse clicks, cursor travel distance, and 104/87/60-key heatmap distributions atomically on local disk with 1-click daily reset and zero cloud uploads.
 
 ---
 
@@ -127,7 +183,8 @@ Every feature module in Tools3000 is crafted around genuine high-frequency deskt
 > **"Sharing your screen in a conference room or online meeting? Double-tap `Ctrl` to center everyone's attention on your cursor."**
 
 <p align="center">
-  <img src="docs/images/zh-CN/spotlight_effects_demo.webp" alt="Tools3000 Spotlight, Ripples and Cursor Trail" width="100%" />
+  <img src="docs/images/en-US/spotlight_effects_demo.webp" alt="Tools3000 Spotlight, Ripples and Cursor Trail Live Demo" width="100%" /><br />
+  <sub>Live screen-sharing spotlight: double-tap <code>Ctrl</code> to summon a smooth cursor spotlight paired with color-coded click ripples and luminous trail</sub>
 </p>
 
 - **Double-Tap Ctrl / Shake Mouse Spotlight**: Softly dims the background while a smooth spotlight follows your cursor, with configurable auto-fade timeout;
@@ -138,6 +195,11 @@ Every feature module in Tools3000 is crafted around genuine high-frequency deskt
 
 ### 7. File Dialog Enhancer
 > **"When clicking Open or Save As in any app, jump in one click to the folder currently open in File Explorer."**
+
+<p align="center">
+  <img src="docs/images/en-US/scene_dialog_enhancer.png" alt="Tools3000 File Dialog Top Glass Ribbon Live Scene" width="100%" /><br />
+  <sub>Live Windows Save As dialog (<code>#32770</code>): top-right glass navigation ribbon syncs open Explorer folders and favorite workspaces in 1 click</sub>
+</p>
 
 - **Top Glass Navigation Capsule Bar**: Automatically attaches a floating glass bar to standard Windows file dialogs (`#32770`) while avoiding titlebar caption buttons, letting you jump to open Explorer folders or favorites in one click;
 - **Per-Application Path Memory**: Remembers recent directories independently for VS Code, browsers, Photoshop, and other host processes without crosstalk.
@@ -203,13 +265,13 @@ flowchart TB
         SearchUI["SearchWindow · React 19 / WebView2"]
         Tray["Bento TrayWindow · React 19 / WebView2"]
         QuickLook["QuickLookWindow · Borderless Native Viewport"]
-        Overlays["Capture / Scroll Darkroom / 32-Group Pins / Spotlight / Radial / Ice Toast · Direct2D & DirectComposition"]
+        Overlays["Capture / Scroll Darkroom / 32-Group Pins / Spotlight / Ice Toast · Direct2D & DirectComposition"]
     end
 
     subgraph Plugins["Native Dynamic Plugin DLL Matrix"]
         Search["Plugin_Search · Instant Index & Streaming Content Search"]
         Capture["Plugin_Capture · Zero-Blackout Capture / Recording / Offline OCR"]
-        Gesture["Plugin_Gesture · Mouse Gestures / Radial Menu / Hot Corners"]
+        Gesture["Plugin_Gesture · Mouse Gestures / Edge Wheel / Hot Corners"]
         Keycast["Plugin_Keycast · Microsecond Keycap Overlay & Analytics"]
         Dialog["Plugin_DialogEnhancer · File Dialog Glass Navigation"]
     end
@@ -229,7 +291,7 @@ flowchart TB
 2. **1000Hz Lock-Free Input Pipeline & Accelerator Governance (`KeyboardPipeline`)**: Microsecond input dispatch via `WH_KEYBOARD_LL`, `WH_MOUSE_LL`, Raw Input, and cache-aligned `SpscRingBuffer`; atomic overlay visibility flags eliminate `FindWindowW` kernel locks inside hooks; `KeyboardPipeline` blocks `SC_KEYMENU`/`WM_HELP` and silences global hotkeys during shortcut recording;
 3. **Direct2D / DirectComposition Hardware Composition & Self-Healing**: Automatic recovery from `D2DERR_RECREATE_TARGET` and `DXGI_ERROR_ACCESS_LOST`; Universal Rounded Corners Dual Insurance (`applyUniversalRoundedCorners`) guarantees crisp rounded corners across Windows 11, Windows 10, Windows Server 2019/2022/2025, and RDP sessions;
 4. **Single-Weight Lossless Noto Sans SC Typography**: Embeds a single `1.10MB` `Noto Sans SC 500 Medium` font file with `local('Source Han Sans SC')` reuse—zero system font directory pollution, zero uninstall residue, and automated CI gates enforcing font size (`>= 12px`) and weight (`>= 500`);
-5. **Rigorous Automated Quality Gates**: Guarded by **640** C++ GoogleTest unit tests, **157** frontend Vitest unit tests, a 7-stage bilingual i18n parity gate, a 6-stage `TraceId` logger gate, CSS variable checks, typography checks, and `trimWorkingSet` cold-path checks.
+5. **Rigorous Automated Quality Gates & Compact Footprint**: Standard installer slimmed down to **`19.6 MB`** (zero duplicate third-party DLLs in plugins), guarded by **640+** C++ GoogleTest assertions, **166** frontend Vitest unit tests, a 7-stage bilingual i18n parity gate, a 6-stage `TraceId` logger gate, CSS variable checks, typography checks, and `trimWorkingSet` cold-path checks.
 
 ---
 

@@ -27,6 +27,11 @@ const pendingRequests = new Map<number, {
   timeoutId: ReturnType<typeof setTimeout>;
 }>();
 const eventListeners = new Map<string, Set<MessageHandler>>();
+const DEFAULT_IPC_TIMEOUT_MS = 10_000;
+const STANDARD_SEARCH_TIMEOUT_MS = 20_000;
+const LONG_RUNNING_TIMEOUT_MS = 5 * 60_000;
+const HEAVY_SEARCH_TIMEOUT_MS = 30 * 60_000;
+
 const LONG_RUNNING_METHODS = new Set([
   'config.export',
   'config.import',
@@ -36,8 +41,42 @@ const LONG_RUNNING_METHODS = new Set([
   'app.checkForUpdates',
   'plugins.selectExtensionFile',
   'system.pickForegroundWindow',
+  'search.warmup',
 ]);
-const SEARCH_METHODS = new Set(['search.query', 'search.rebuildIndex', 'search.sync', 'search.warmup']);
+
+const HEAVY_SEARCH_METHODS = new Set([
+  'search.rebuildIndex',
+  'search.sync',
+  'search.export',
+  'search.exportCsv',
+  'search.exportResults',
+]);
+
+/**
+ * 按 IPC 方法语义分级计算超时预算：
+ * 仅对重型索引重建/同步/导出开放 30 分钟长预算，深度全文检索开放 5 分钟预算；
+ * 常规 search.query / search.getStatus / search.getHistory 等恢复 20s 快速失败，杜绝挂死 30 分钟。
+ */
+export function resolveBridgeTimeoutMs(method: string, params: Record<string, unknown> = {}): number {
+  if (HEAVY_SEARCH_METHODS.has(method)) {
+    return HEAVY_SEARCH_TIMEOUT_MS;
+  }
+  if (
+    method === 'search.query' &&
+    (params.mode === 'content' ||
+      params.searchContent === true ||
+      (typeof params.query === 'string' && /(?:^|\s)content:/i.test(params.query)))
+  ) {
+    return LONG_RUNNING_TIMEOUT_MS;
+  }
+  if (LONG_RUNNING_METHODS.has(method)) {
+    return LONG_RUNNING_TIMEOUT_MS;
+  }
+  if (method.startsWith('search.')) {
+    return STANDARD_SEARCH_TIMEOUT_MS;
+  }
+  return DEFAULT_IPC_TIMEOUT_MS;
+}
 
 // 全局消息监听（只注册一次）
 let initialized = false;
@@ -142,12 +181,7 @@ function executeBridgeRequest<T = unknown>(
     if (nextId >= Number.MAX_SAFE_INTEGER) nextId = 1;
     while (pendingRequests.has(nextId)) nextId += 1;
     const id = nextId++;
-    // 搜索请求与长任务允许超长生命周期容限（30分钟），避免海量文件深度内容扫描被提前误杀；普通 IPC 仍保持快速失败。
-    const timeoutMs = (SEARCH_METHODS.has(method) || method.startsWith('search.'))
-      ? 30 * 60_000
-      : LONG_RUNNING_METHODS.has(method)
-        ? 5 * 60_000
-        : 10_000;
+    const timeoutMs = resolveBridgeTimeoutMs(method, params);
     const timeoutId = setTimeout(() => {
       if (pendingRequests.delete(id)) {
         const error = new Error(`Bridge request timeout: ${method}`);

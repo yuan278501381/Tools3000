@@ -264,7 +264,12 @@ void toggleMicrophoneMuteWithFeedback() {
         tools3000::core::ShowToastEvent{muted ? L"麦克风已静音" : L"麦克风已恢复"});
 }
 
-void startRecordingForRegion(const CaptureRegion& region, const RecordSetupOptions& setup) {
+void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOptions& setup) {
+    // 录屏开始前统一将选区宽高对齐偶像素 (>= 2)，消除编码器偶像素裁切导致的与外部呼吸红框/Keycast 停靠区 1px 偏差
+    CaptureRegion region = rawRegion;
+    if (region.width > 1) region.width &= ~1;
+    if (region.height > 1) region.height &= ~1;
+
     configureRecorderStateCallback();
     auto options = configuredRecordOptions(region);
     options.format = setup.format;
@@ -1607,25 +1612,31 @@ public:
         }
         m_themeSubscription = 0;
 
+        // 阶段 1: 先取消并等待(join)所有后台异步 OCR、长截图、录屏与捕获工作线程彻底合并，
+        // 确保不会再有残留后台线程向 MainThreadDispatcher 投递 UI 回调
         g_ocrPending.store(false);
         if (g_ocrWorker.joinable()) {
             tools3000::core::joinWorkerWhilePumpingSentMessages(g_ocrWorker, 3000);
         }
         g_ocrRunning.store(false);
+        ScrollCapture::instance().shutdown();
+        ScreenRecorder::instance().shutdown();
+        ScreenRecorder::instance().setStateCallback(nullptr);
+        ScreenCapture::instance().shutdown();
+        ScreenCapture::instance().setCallback(nullptr);
         PinWindow::closeAll();
         PinWindow::waitForPendingOcrWorkers(5000);
+
+        // 阶段 2: 所有后台任务线程已 100% 停止，最后排空(drain) UI 主线程回调队列并销毁全部 UI 宿主单例
         tools3000::core::MainThreadDispatcher::instance().drain();
+        ScrollCaptureOverlay::instance().hide();
         PinGroupBarOverlay::instance().shutdown();
         RecordingIndicator::instance().onPause(nullptr);
         RecordingIndicator::instance().onStop(nullptr);
         RecordingIndicator::instance().onSystemAudioMute(nullptr);
         RecordingIndicator::instance().onMicrophoneMute(nullptr);
         RecordingIndicator::instance().shutdown();
-        ScreenRecorder::instance().shutdown();
-        ScreenRecorder::instance().setStateCallback(nullptr);
         ShortcutHintOverlay::instance().shutdown();
-        ScreenCapture::instance().shutdown();
-        ScreenCapture::instance().setCallback(nullptr);
         tools3000::ocr::OcrResultWindow::instance().cleanup();
         tools3000::ocr::OcrEngine::instance().shutdown();
         shutdownMarkupTextRenderer();

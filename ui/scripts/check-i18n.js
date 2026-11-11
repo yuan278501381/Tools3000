@@ -40,7 +40,8 @@ const ALLOWED_TECH_TOKENS = new Set([
   'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'zip', 'rar', '7z', 'tar', 'gz',
   'cpp', 'c', 'h', 'hpp', 'js', 'ts', 'tsx', 'py', 'rs', 'go', 'java', 'lua', 'cmd', 'bat', 'ps1',
   'ssd', 'hdd', 'ram', 'cpu', 'gpu', 'mb', 'gb', 'kb', 'bytes', 'b', 'ms', 'fps', 'px', 'rem',
-  'mit', 'license', 'github', 'ok', 'id', 'rgb', 'hex', 'rgba', 'hsl', 'dps', 'wps', 'cad', 'qr'
+  'mit', 'license', 'github', 'ok', 'id', 'rgb', 'hex', 'rgba', 'hsl', 'cmyk', 'dps', 'wps', 'cad', 'qr',
+  'markdown', 'katex', 'mathjax'
 ]);
 
 function isAllowedPureEnglishToken(str) {
@@ -159,7 +160,7 @@ function checkLocaleMatrix(targetFile, targetData) {
 // ── 防线 5：全库源码静态键位引用对所有已注册语言包严格存在性校验 ──
 function checkCodeReferences() {
   const files = getFiles(path.resolve('./src'), ['.ts', '.tsx']);
-  const keyRefRegex = /(?:labelKey|descKey|titleKey|extKey|nameKey|subKey|tipKey|headerKey)\s*:\s*['"]([a-zA-Z0-9_.-]+)['"]/g;
+  const keyRefRegex = /(?:labelKey|descKey|titleKey|conditionKey|extKey|nameKey|subKey|tipKey|headerKey)\s*:\s*['"]([a-zA-Z0-9_.-]+)['"]/g;
   const tCallRegex = /(?<![a-zA-Z0-9_$])t\(\s*['"]([a-zA-Z0-9_.-]+)['"]/g;
 
   for (const file of files) {
@@ -207,11 +208,7 @@ function checkSourceCodeFallbacksAndNakedChinese() {
     /startsWith\(['"`]内容:['"`]\)/,
     /CONTENT_PREFIXES/,
     /localeCompare/,
-    /Chinese/,
-    /titleZh:/,
-    /descZh:/,
-    /conditionZh:/,
-    /supportedFormats:/
+    /Chinese/
   ];
 
   for (const file of files) {
@@ -277,6 +274,39 @@ function checkPresetAndOptionEntityInternationalization() {
   }
 }
 
+// ── 防线 8：根目录 VERSION 与前端 package.json / package-lock.json 版本单一事实源一致性防线 ──
+function checkVersionSingleSourceOfTruth() {
+  const rootVersionPath = path.resolve('../VERSION');
+  const pkgPath = path.resolve('./package.json');
+  const pkgLockPath = path.resolve('./package-lock.json');
+
+  if (!fs.existsSync(rootVersionPath)) {
+    console.error(`[ERROR] [Version SSOT Gate] 根目录 VERSION 文件不存在: ${rootVersionPath}`);
+    hasError = true;
+    return;
+  }
+
+  const rootVersion = fs.readFileSync(rootVersionPath, 'utf8').trim();
+  const pkgData = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  if (pkgData.version !== rootVersion) {
+    console.error(`[ERROR] [Version SSOT Gate] ui/package.json 版本号 (${pkgData.version}) 与根目录 VERSION (${rootVersion}) 不一致！`);
+    hasError = true;
+  }
+
+  if (fs.existsSync(pkgLockPath)) {
+    const pkgLockData = JSON.parse(fs.readFileSync(pkgLockPath, 'utf8'));
+    if (pkgLockData.version !== rootVersion) {
+      console.error(`[ERROR] [Version SSOT Gate] ui/package-lock.json 顶层版本号 (${pkgLockData.version}) 与根目录 VERSION (${rootVersion}) 不一致！`);
+      hasError = true;
+    }
+    const rootPkgEntryVer = pkgLockData.packages && pkgLockData.packages[''] ? pkgLockData.packages[''].version : undefined;
+    if (rootPkgEntryVer !== undefined && rootPkgEntryVer !== rootVersion) {
+      console.error(`[ERROR] [Version SSOT Gate] ui/package-lock.json packages[""] 版本号 (${rootPkgEntryVer}) 与根目录 VERSION (${rootVersion}) 不一致！`);
+      hasError = true;
+    }
+  }
+}
+
 // 对所有已注册的语言包执行矩阵比对
 for (const [file, data] of allLocalesData.entries()) {
   checkLocaleMatrix(file, data);
@@ -285,12 +315,13 @@ for (const [file, data] of allLocalesData.entries()) {
 checkCodeReferences();
 checkSourceCodeFallbacksAndNakedChinese();
 checkPresetAndOptionEntityInternationalization();
+checkVersionSingleSourceOfTruth();
 
 if (hasError) {
-  console.error('\n[ERROR] i18n 门禁审查失败！请修复上述键位缺失、英文泄漏、断裂引用、裸中文或裸配置 Label 问题。');
+  console.error('\n[ERROR] i18n 与版本同源门禁审查失败！请修复上述键位缺失、英文泄漏、断裂引用、裸中文、裸配置 Label 或版本号失步问题。');
   process.exit(1);
 } else {
-  console.log('[OK] i18n 世界级 7 重防护门禁全部通过！');
+  console.log('[OK] i18n 世界级防护门禁与版本单一事实源校验全部通过！');
   console.log('   1. 中英文字典 100% 同构双向对齐');
   console.log('   2. 英文包绝对 0 汉字污染');
   console.log('   3. 中文包 0 未翻译英文泄漏 (智能专有名词与混排合规)');
@@ -298,4 +329,5 @@ if (hasError) {
   console.log('   5. 全库源码所有 labelKey/t() 引用 100% 在字典中真实存在');
   console.log('   6. 全库源码 0 裸中文硬编码与 100% 英文 Fallback');
   console.log('   7. 全库 UI 预设与选项实体 100% 接入 labelKey/nameKey 国际化管线');
+  console.log('   8. 根目录 VERSION 与 ui/package.json (及 package-lock.json) 版本 100% 单一事实源一致');
 }

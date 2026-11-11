@@ -467,11 +467,11 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
                 <div className="plugin-card__footer">
                   <div className="plugin-card__footer-status">
                     <span>{plugin.active ? t('plugins.resourceActive') : t('plugins.resourceInactive')}</span>
-                    {onNavigate && plugin.enabled && plugin.active && PLUGIN_NAV_MAP[plugin.id] && (
+                    {onNavigate && plugin.enabled && plugin.active && (PLUGIN_NAV_MAP[plugin.id] || !CORE_PLUGIN_IDS.has(plugin.id)) && (
                       <Button
                         variant="secondary"
                         size="sm"
-                        onClick={() => onNavigate(PLUGIN_NAV_MAP[plugin.id])}
+                        onClick={() => onNavigate(PLUGIN_NAV_MAP[plugin.id] ?? plugin.id)}
                         title={t('plugins.configure')}
                       >
                         <SlidersHorizontal size={13} />

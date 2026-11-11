@@ -85,6 +85,9 @@ public:
     /// 更新配置
     void updateSettings(const KeycastSettings& settings);
 
+    /// 边界归一化与防御性夹紧（消除非法反序列化负值/越界配置）
+    static KeycastSettings sanitizeSettings(const KeycastSettings& raw);
+
     /// 恢复默认配置
     void resetDefaults();
 
@@ -110,20 +113,34 @@ private:
 
     bool createResources();
     void discardResources();
+    bool createResourcesLocked(const KeycastSettings& settings);
+    void discardResourcesLocked();
+    void applySettings(const KeycastSettings& settings);
+    float calculateItemWidthLocked(const KeycastItem& item, float dpiScale, const KeycastSettings& settings) const;
     bool updatePlacement();
     void render();
     void tickAnimation();
     void onAnimationCompleteAndHide();
-    void drawKeycapCapsule(const KeycastItem& item, float x, float y, float alpha, float dpiScale);
+    void drawKeycapCapsule(const KeycastItem& item, float x, float y, float alpha, float dpiScale, const KeycastSettings& settings);
     void drawWindowsLogo(const D2D1_RECT_F& rect, float alpha);
 
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     HWND m_hwnd = nullptr;
     HWND m_helperOwnerHwnd = nullptr;
+    DWORD m_uiThreadId = 0;
     KeycastSettings m_settings;
     mutable std::mutex m_settingsMutex;
+    mutable std::mutex m_renderMutex;
+    std::atomic<bool> m_needRecreateResources{false};
+    std::atomic<float> m_atomicDpiScale{1.0f};
+    std::atomic<int> m_atomicOverlayWidth{720};
     std::string m_lastAccentColor;
+
+    mutable std::mutex m_fgBypassCacheMutex;
+    HWND m_cachedFgHwnd = nullptr;
+    uint64_t m_cachedFgTick = 0;
+    bool m_cachedFgBypass = false;
 
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_renderTarget;

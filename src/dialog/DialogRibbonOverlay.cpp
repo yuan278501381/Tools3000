@@ -66,7 +66,10 @@ DialogRibbonOverlay::~DialogRibbonOverlay() {
 }
 
 bool DialogRibbonOverlay::init() {
-    if (m_hwnd && IsWindow(m_hwnd)) return true;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_hwnd && IsWindow(m_hwnd)) return true;
+    }
 
     // 严禁在无 Win32 消息循环的后台工作线程中就地创建 HWND。
     // 若当前不在 UI 主线程且 MainThreadDispatcher 已初始化，必须调度回 UI 主线程建窗。
@@ -93,7 +96,7 @@ bool DialogRibbonOverlay::init() {
     );
     ensureTextFormats(m_dpiScale);
 
-    m_hwnd = CreateWindowExW(
+    HWND createdHwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
         RIBBON_WINDOW_CLASS,
         L"Tools3000 Dialog Ribbon",
@@ -102,9 +105,14 @@ bool DialogRibbonOverlay::init() {
         nullptr, nullptr, GetModuleHandleW(nullptr), this
     );
 
-    if (!m_hwnd) {
+    if (!createdHwnd) {
         LOG_ERROR("创建 DialogRibbonOverlay 窗口失败");
         return false;
+    }
+
+    {
+        std::lock_guard lock(m_mutex);
+        m_hwnd = createdHwnd;
     }
 
     HDC screenDC = GetDC(nullptr);
@@ -112,6 +120,24 @@ bool DialogRibbonOverlay::init() {
     ReleaseDC(nullptr, screenDC);
 
     return true;
+}
+
+void DialogRibbonOverlay::discardDeviceResources() {
+    m_bgBrush.Reset();
+    m_borderBrush.Reset();
+    m_textBrush.Reset();
+    m_textMutedBrush.Reset();
+    m_highlightBrush.Reset();
+    m_highlightBorderBrush.Reset();
+    m_syncBgBrush.Reset();
+    m_syncBorderBrush.Reset();
+    m_chevronBrush.Reset();
+    m_badgeBgBrush.Reset();
+    m_badgeTextBrush.Reset();
+    m_dividerBrush.Reset();
+    m_whiteBrush.Reset();
+    m_brushesValid = false;
+    m_renderTarget.Reset();
 }
 
 void DialogRibbonOverlay::cleanup() {
@@ -122,9 +148,18 @@ void DialogRibbonOverlay::cleanup() {
         });
         return;
     }
-    if (m_hwnd && IsWindow(m_hwnd)) {
-        DestroyWindow(m_hwnd);
+
+    HWND hwndToDestroy = nullptr;
+    {
+        std::lock_guard lock(m_mutex);
+        hwndToDestroy = m_hwnd;
         m_hwnd = nullptr;
+        m_dismissedDialog = nullptr;
+        resetStateLocked();
+    }
+
+    if (hwndToDestroy && IsWindow(hwndToDestroy)) {
+        DestroyWindow(hwndToDestroy);
     }
     if (m_memDC) {
         if (m_oldBitmap) {
@@ -138,7 +173,7 @@ void DialogRibbonOverlay::cleanup() {
         DeleteDC(m_memDC);
         m_memDC = nullptr;
     }
-    m_renderTarget.Reset();
+    discardDeviceResources();
     m_textFormat.Reset();
     m_boldFormat.Reset();
     m_badgeFormat.Reset();
@@ -147,6 +182,51 @@ void DialogRibbonOverlay::cleanup() {
 
     // 触发冷路径物理内存修剪
     tools3000::core::WinUtils::trimWorkingSet();
+}
+
+void DialogRibbonOverlay::setCachedDialogFolder(HWND dialogHwnd, const std::string& folderPath) {
+    if (!dialogHwnd) return;
+    std::lock_guard lock(m_mutex);
+    if (m_targetDialog == nullptr || m_targetDialog == dialogHwnd) {
+        m_cachedDialogFolder = folderPath;
+    }
+}
+
+void DialogRibbonOverlay::attachValidatedOnUiThread(HWND dialogHwnd,
+                                                    DWORD processId,
+                                                    const std::string& processName) {
+    if (!dialogHwnd || !IsWindow(dialogHwnd) || processId == 0) return;
+    if (!PathMemoryManager::instance().isRibbonEnabled()) return;
+
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_dismissedDialog == dialogHwnd) {
+            return;
+        }
+    }
+
+    HWND hwnd = getHwnd();
+    if (!hwnd || !IsWindow(hwnd)) {
+        if (!init()) return;
+        hwnd = getHwnd();
+    }
+
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_targetDialog != dialogHwnd) {
+            m_cachedDialogFolder.clear();
+        }
+        m_targetDialog = dialogHwnd;
+        m_targetProcessId = processId;
+        m_targetProcess = processName;
+    }
+
+    // 主动请求后台刷新一次活动 Explorer 路径快照（0ms 非阻塞）
+    ExplorerTracker::instance().requestRefresh();
+
+    if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_RIBBON_ATTACH, 0, 0);
+    }
 }
 
 void DialogRibbonOverlay::attachToDialog(HWND dialogHwnd, const std::string& processName) {
@@ -159,48 +239,56 @@ void DialogRibbonOverlay::attachToDialog(HWND dialogHwnd, const std::string& pro
         return;
     }
 
-    // 防御门禁：必须是有效的文件/文件夹对话框，严禁附着于文件传输进度条或属性页
-    if (!DialogNavigator::isFileDialog(dialogHwnd)) {
-        return;
-    }
-
     DWORD processId = 0;
     GetWindowThreadProcessId(dialogHwnd, &processId);
     if (processId == 0) return;
 
-    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
-        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
-        tools3000::core::MainThreadDispatcher::instance().post([this, dialogHwnd, processName]() {
-            attachToDialog(dialogHwnd, processName);
+    auto& disp = tools3000::core::MainThreadDispatcher::instance();
+    if (disp.isInitialized() && disp.isOwnerThread()) {
+        // 严禁在主 UI 线程直接调用跨进程 DialogNavigator::isFileDialog！
+        // 投递至专用后台 MTA 工作线程完成结构验证与初始目录探测后再调度回主线程附着。
+        DialogNavigator::instance().postAsyncTask([this, dialogHwnd, processId, processName]() {
+            if (!IsWindow(dialogHwnd) || !DialogNavigator::isFileDialog(dialogHwnd)) {
+                return;
+            }
+            const std::string folder = DialogNavigator::getCurrentDialogFolder(dialogHwnd);
+            tools3000::core::MainThreadDispatcher::instance().post(
+                [this, dialogHwnd, processId, processName, folder]() {
+                    attachValidatedOnUiThread(dialogHwnd, processId, processName);
+                    if (!folder.empty()) {
+                        setCachedDialogFolder(dialogHwnd, folder);
+                    }
+                });
         });
         return;
     }
 
-    if (!m_hwnd || !IsWindow(m_hwnd)) {
-        if (!init()) return;
+    // 当前已在后台线程：直接执行验证，避免主线程再次做跨进程探测
+    if (!DialogNavigator::isFileDialog(dialogHwnd)) {
+        return;
     }
 
-    {
-        std::lock_guard lock(m_mutex);
-        m_targetDialog = dialogHwnd;
-        m_targetProcessId = processId;
-        m_targetProcess = processName;
+    if (disp.isInitialized()) {
+        disp.post([this, dialogHwnd, processId, processName]() {
+            attachValidatedOnUiThread(dialogHwnd, processId, processName);
+        });
+        return;
     }
 
-    if (m_hwnd && IsWindow(m_hwnd)) {
-        PostMessageW(m_hwnd, WM_RIBBON_ATTACH, 0, 0);
-    }
+    attachValidatedOnUiThread(dialogHwnd, processId, processName);
 }
 
 void DialogRibbonOverlay::updatePosition() {
-    if (m_hwnd && IsWindow(m_hwnd)) {
-        PostMessageW(m_hwnd, WM_RIBBON_UPDATE_POS, 0, 0);
+    const HWND hwnd = getHwnd();
+    if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_RIBBON_UPDATE_POS, 0, 0);
     }
 }
 
 void DialogRibbonOverlay::hide() {
-    if (m_hwnd && IsWindow(m_hwnd)) {
-        PostMessageW(m_hwnd, WM_RIBBON_HIDE, 0, 0);
+    const HWND hwnd = getHwnd();
+    if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_RIBBON_HIDE, 0, 0);
     }
 }
 
@@ -217,17 +305,23 @@ void DialogRibbonOverlay::doAttachToDialog() {
 }
 
 void DialogRibbonOverlay::doHide() {
-    std::lock_guard lock(m_mutex);
-    doHideLocked();
+    HWND hwnd = nullptr;
+    {
+        std::lock_guard lock(m_mutex);
+        hwnd = m_hwnd;
+        resetStateLocked();
+    }
+    // 严格在释放 m_mutex 之后再调用同步 Win32 ShowWindow，杜绝同步窗口消息重入死锁
+    if (hwnd && IsWindow(hwnd)) {
+        ShowWindow(hwnd, SW_HIDE);
+    }
 }
 
-void DialogRibbonOverlay::doHideLocked() {
-    if (m_hwnd && IsWindow(m_hwnd)) {
-        ShowWindow(m_hwnd, SW_HIDE);
-    }
+void DialogRibbonOverlay::resetStateLocked() {
     m_targetDialog = nullptr;
     m_targetProcessId = 0;
     m_targetProcess.clear();
+    m_cachedDialogFolder.clear();
     m_activeExplorerPath.clear();
     m_buttons.clear();
     m_renderedWidth = 0;
@@ -249,110 +343,145 @@ bool DialogRibbonOverlay::computeSafeHorizontalPlacement(
 }
 
 bool DialogRibbonOverlay::doUpdatePosition() {
-    std::lock_guard lock(m_mutex);
+    HWND hwnd = nullptr;
+    HWND targetDialog = nullptr;
+    HWND dismissedDialog = nullptr;
+    DWORD targetProcessId = 0;
+    std::string targetProcess;
+    bool menuOpen = false;
+    bool needFullRebuild = false;
+    float oldDpiScale = 1.0f;
+    bool oldEnglishLocale = false;
+    int oldMaxAvailableWidth = 0;
+
+    {
+        std::lock_guard lock(m_mutex);
+        hwnd = m_hwnd;
+        targetDialog = m_targetDialog;
+        dismissedDialog = m_dismissedDialog;
+        targetProcessId = m_targetProcessId;
+        targetProcess = m_targetProcess;
+        menuOpen = m_menuOpen;
+        needFullRebuild = m_buttons.empty() || m_renderedWidth <= 0;
+        oldDpiScale = m_dpiScale;
+        oldEnglishLocale = m_isEnglishLocale;
+        oldMaxAvailableWidth = m_lastMaxAvailableWidth;
+    }
+
     try {
-        if (!m_targetDialog || !IsWindow(m_targetDialog) || !m_hwnd ||
-            m_targetProcessId == 0) {
-            doHideLocked();
+        if (!targetDialog || targetDialog == dismissedDialog || !IsWindow(targetDialog) ||
+            !hwnd || !IsWindow(hwnd) || targetProcessId == 0) {
+            doHide();
             return false;
         }
 
         wchar_t className[64]{};
         DWORD currentProcessId = 0;
-        GetWindowThreadProcessId(m_targetDialog, &currentProcessId);
-        if (currentProcessId != m_targetProcessId ||
-            GetClassNameW(m_targetDialog, className, static_cast<int>(std::size(className))) <= 0 ||
+        GetWindowThreadProcessId(targetDialog, &currentProcessId);
+        if (currentProcessId != targetProcessId ||
+            GetClassNameW(targetDialog, className, static_cast<int>(std::size(className))) <= 0 ||
             wcscmp(className, L"#32770") != 0) {
             // HWND values can be reused after a dialog is destroyed. PID plus
             // dialog class validation prevents following the replacement window.
-            doHideLocked();
+            doHide();
             return false;
         }
 
-        const bool needFullRebuild = m_buttons.empty() || m_renderedWidth <= 0;
-        if (needFullRebuild) {
+        if (needFullRebuild && !targetProcess.empty()) {
             const std::string currentProcess =
-                tools3000::core::WinUtils::getProcessNameFromWindow(m_targetDialog);
-            if (!m_targetProcess.empty() &&
-                (currentProcess.empty() ||
-                 _stricmp(currentProcess.c_str(), m_targetProcess.c_str()) != 0)) {
-                doHideLocked();
-                return false;
-            }
-
-            // 动态验证目标对话框是否仍为合法的文件对话框，杜绝 HWND 复用为非文件弹窗
-            if (!DialogNavigator::isFileDialog(m_targetDialog)) {
-                doHideLocked();
+                tools3000::core::WinUtils::getProcessNameFromWindow(targetDialog);
+            if (currentProcess.empty() ||
+                _stricmp(currentProcess.c_str(), targetProcess.c_str()) != 0) {
+                doHide();
                 return false;
             }
         }
 
         // 如果下拉菜单正在弹出交互中，始终保持展示
-        if (m_menuOpen) {
+        if (menuOpen) {
             return true;
         }
 
-        // 1. 检查目标对话框是否最小化或已被隐藏
-        if (IsIconic(m_targetDialog) || !IsWindowVisible(m_targetDialog)) {
-            if (IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_HIDE);
+        // 1. 检查目标对话框是否最小化或已被隐藏（全部在锁外调用 ShowWindow）
+        if (IsIconic(targetDialog) || !IsWindowVisible(targetDialog)) {
+            if (IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_HIDE);
             return false;
         }
 
         // 2. 前台归属硬校验：胶囊只属于文件对话框本身。
-        // 切回同一 EXE 的主窗口（如 VS Code 主编辑器）或其他窗口时必须立刻隐藏，
-        // 绝不能把“同进程”误当作“同一个文件对话框”。
         const HWND foreground = GetForegroundWindow();
         const HWND foregroundRoot = foreground ? GetAncestor(foreground, GA_ROOT) : nullptr;
-        if (foreground != m_hwnd && foreground != m_targetDialog &&
-            foregroundRoot != m_targetDialog) {
-            if (IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_HIDE);
+        if (foreground != hwnd && foreground != targetDialog &&
+            foregroundRoot != targetDialog) {
+            if (IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_HIDE);
             return false;
         }
 
-        RECT dlgRect;
-        if (!GetWindowRect(m_targetDialog, &dlgRect)) {
-            doHideLocked();
+        RECT dlgRect{};
+        if (!GetWindowRect(targetDialog, &dlgRect)) {
+            doHide();
             return false;
         }
 
-        const float newDpiScale = tools3000::core::dpi::scaleForWindow(m_targetDialog);
-        const bool dpiChanged = std::abs(newDpiScale - m_dpiScale) > 0.001f;
-        const bool langChanged = (isRibbonEnglishLocale() != m_isEnglishLocale);
-        m_dpiScale = newDpiScale;
+        const float newDpiScale =
+            std::clamp(tools3000::core::dpi::scaleForWindow(targetDialog), 0.75f, 4.0f);
+        const bool dpiChanged = std::abs(newDpiScale - oldDpiScale) > 0.001f;
+        const bool langChanged = (isRibbonEnglishLocale() != oldEnglishLocale);
 
         int probePosX = 0;
         int maxAvailableWidth = 0;
-        std::string posConfig = PathMemoryManager::instance().getRibbonPosition();
-        computeSafeHorizontalPlacement(dlgRect, m_dpiScale, 64, posConfig, probePosX, maxAvailableWidth);
-        if (maxAvailableWidth < static_cast<int>(64.0f * m_dpiScale)) {
-            if (IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_HIDE);
+        const std::string posConfig = PathMemoryManager::instance().getRibbonPosition();
+        computeSafeHorizontalPlacement(dlgRect, newDpiScale, 64, posConfig, probePosX, maxAvailableWidth);
+        if (maxAvailableWidth < static_cast<int>(64.0f * newDpiScale)) {
+            if (IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_HIDE);
             return false;
         }
 
-        const bool availChanged = std::abs(maxAvailableWidth - m_lastMaxAvailableWidth) > 1;
+        const bool availChanged = std::abs(maxAvailableWidth - oldMaxAvailableWidth) > 1;
         const bool layoutRebuilt = needFullRebuild || dpiChanged || langChanged || availChanged;
-        if (layoutRebuilt) {
-            m_lastMaxAvailableWidth = maxAvailableWidth;
-            updateButtonsLayout(m_dpiScale, maxAvailableWidth);
+
+        int winWidth = 0;
+        int winHeight = 0;
+        int posX = 0;
+        int posY = 0;
+        bool needRender = false;
+
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_targetDialog != targetDialog) {
+                return false;
+            }
+            m_dpiScale = newDpiScale;
+            if (layoutRebuilt) {
+                m_lastMaxAvailableWidth = maxAvailableWidth;
+                updateButtonsLayout(newDpiScale, maxAvailableWidth);
+            }
+
+            if (m_buttons.empty() ||
+                !computeSafeHorizontalPlacement(dlgRect, newDpiScale, m_width, posConfig, posX, maxAvailableWidth)) {
+                winWidth = 0;
+            } else {
+                posY = dlgRect.top + static_cast<int>(std::round(5.0f * newDpiScale));
+                m_posX = posX;
+                m_posY = posY;
+                winWidth = m_width;
+                winHeight = m_height;
+                needRender = layoutRebuilt || m_renderedWidth != m_width || m_renderedHeight != m_height;
+            }
         }
 
-        int posX = 0;
-        if (m_buttons.empty() ||
-            !computeSafeHorizontalPlacement(dlgRect, m_dpiScale, m_width, posConfig, posX, maxAvailableWidth)) {
-            if (IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_HIDE);
+        // 严格在释放 m_mutex 之后再调用同步 SetWindowPos / render / ShowWindow
+        if (winWidth <= 0 || winHeight <= 0) {
+            if (IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_HIDE);
             return false;
         }
-        const int posY = dlgRect.top + static_cast<int>(5.0f * m_dpiScale);
-        m_posX = posX;
-        m_posY = posY;
 
-        SetWindowPos(m_hwnd, HWND_TOPMOST, posX, posY, m_width, m_height,
-                     SWP_NOACTIVATE);
-        if (layoutRebuilt || m_renderedWidth != m_width || m_renderedHeight != m_height) {
+        SetWindowPos(hwnd, HWND_TOPMOST, posX, posY, winWidth, winHeight, SWP_NOACTIVATE);
+        if (needRender) {
             render();
         }
-        if (!IsWindowVisible(m_hwnd)) {
-            ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+        if (!IsWindowVisible(hwnd)) {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
         return true;
     } catch (const std::exception& e) {
@@ -360,7 +489,7 @@ bool DialogRibbonOverlay::doUpdatePosition() {
     } catch (...) {
         LOG_WARN("doUpdatePosition 未知异常");
     }
-    doHideLocked();
+    doHide();
     return false;
 }
 
@@ -478,6 +607,21 @@ void DialogRibbonOverlay::drawChevron(ID2D1RenderTarget* rt, ID2D1Brush* brush, 
     );
 }
 
+void DialogRibbonOverlay::drawCloseIcon(ID2D1RenderTarget* rt, ID2D1Brush* brush, float centerX, float centerY, float size, float strokeWidth) {
+    if (!rt || !brush) return;
+    const float half = size * 0.5f;
+    rt->DrawLine(
+        D2D1::Point2F(centerX - half, centerY - half),
+        D2D1::Point2F(centerX + half, centerY + half),
+        brush, strokeWidth, nullptr
+    );
+    rt->DrawLine(
+        D2D1::Point2F(centerX + half, centerY - half),
+        D2D1::Point2F(centerX - half, centerY + half),
+        brush, strokeWidth, nullptr
+    );
+}
+
 void DialogRibbonOverlay::drawBadge(ID2D1RenderTarget* rt, ID2D1Brush* bgBrush, ID2D1Brush* textBrush, float x, float y, float w, float h, int count) {
     if (!rt || !bgBrush || !textBrush || !m_badgeFormat) return;
     D2D1_RECT_F badgeRect = D2D1::RectF(x, y, x + w, y + h);
@@ -494,8 +638,9 @@ void DialogRibbonOverlay::drawBadge(ID2D1RenderTarget* rt, ID2D1Brush* bgBrush, 
 }
 
 void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWidth) {
+    const float safeScale = std::clamp(dpiScale, 0.75f, 4.0f);
     m_buttons.clear();
-    ensureTextFormats(dpiScale);
+    ensureTextFormats(safeScale);
 
     try {
         m_activeExplorerPath = ExplorerTracker::instance().getActiveExplorerPath();
@@ -506,7 +651,7 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
     auto measureWithFormat = [&](const std::wstring& wText, IDWriteTextFormat* format) -> float {
         if (wText.empty()) return 0.0f;
         if (!format || !m_dwriteFactory) {
-            return static_cast<float>(wText.length()) * 8.0f * dpiScale;
+            return static_cast<float>(wText.length()) * 8.0f * safeScale;
         }
         ComPtr<IDWriteTextLayout> layout;
         HRESULT hr = m_dwriteFactory->CreateTextLayout(
@@ -519,7 +664,7 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
             layout->GetMetrics(&metrics);
             return std::ceil(metrics.widthIncludingTrailingWhitespace);
         }
-        return static_cast<float>(wText.length()) * 8.0f * dpiScale;
+        return static_cast<float>(wText.length()) * 8.0f * safeScale;
     };
 
     auto measureText = [&](const std::string& utf8Text, bool isBold) -> float {
@@ -527,13 +672,14 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
         return measureWithFormat(wText, isBold ? m_boldFormat.Get() : m_textFormat.Get());
     };
 
-    m_height = static_cast<int>(32.0f * dpiScale);
-    const float paddingX = 6.0f * dpiScale;
-    const float btnH = 24.0f * dpiScale;
+    m_height = static_cast<int>(std::round(32.0f * safeScale));
+    const float paddingX = 6.0f * safeScale;
+    const float btnH = 24.0f * safeScale;
     const float btnY = (static_cast<float>(m_height) - btnH) * 0.5f;
-    const float syncDividerGap = 10.0f * dpiScale;
-    const float interButtonGap = 4.0f * dpiScale;
-    const float minSyncWidth = 68.0f * dpiScale;
+    const float syncDividerGap = 10.0f * safeScale;
+    const float interButtonGap = 4.0f * safeScale;
+    const float minSyncWidth = 68.0f * safeScale;
+    const float closeW = 22.0f * safeScale;
 
     bool hasSync = false;
     std::string syncLabel;
@@ -546,8 +692,8 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
         }
         if (folderName.empty()) folderName = m_activeExplorerPath;
         syncLabel = folderName;
-        const float syncTextW = measureText(syncLabel, true) + 2.0f * dpiScale;
-        syncNaturalW = std::clamp(syncTextW + 33.0f * dpiScale, minSyncWidth, 185.0f * dpiScale);
+        const float syncTextW = measureText(syncLabel, true) + 2.0f * safeScale;
+        syncNaturalW = std::clamp(syncTextW + 33.0f * safeScale, minSyncWidth, 185.0f * safeScale);
         hasSync = true;
     }
 
@@ -560,39 +706,44 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
     try {
         auto recentList = PathMemoryManager::instance().getRecentPaths(5);
         recentCount = static_cast<int>(recentList.size());
-        recentTextW = measureText(recentLabel, false) + 2.0f * dpiScale;
+        recentTextW = measureText(recentLabel, false) + 2.0f * safeScale;
         const float badgeDigitsW = measureWithFormat(std::to_wstring(recentCount), m_badgeFormat.Get());
-        recentBadgeW = (std::max)(16.0f * dpiScale, badgeDigitsW + 8.0f * dpiScale);
-        recentW = recentTextW + recentBadgeW + 41.0f * dpiScale;
+        recentBadgeW = (std::max)(16.0f * safeScale, badgeDigitsW + 8.0f * safeScale);
+        recentW = recentTextW + recentBadgeW + 41.0f * safeScale;
         hasRecent = true;
     } catch (...) {
         hasRecent = false;
     }
 
     const std::string favLabel = m_isEnglishLocale ? "Workspaces" : "工作区";
-    const float favTextW = measureText(favLabel, false) + 2.0f * dpiScale;
-    const float favW = favTextW + 38.0f * dpiScale;
+    const float favTextW = measureText(favLabel, false) + 2.0f * safeScale;
+    const float favW = favTextW + 38.0f * safeScale;
     bool hasFav = true;
+    bool hasClose = true;
 
     float syncFinalW = syncNaturalW;
     auto calcTotalWidth = [&]() -> float {
         float w = paddingX;
-        int count = 0;
+        int primaryCount = 0;
         if (hasSync) {
             w += syncFinalW;
-            if (hasRecent || hasFav) w += syncDividerGap;
-            ++count;
+            if (hasRecent || hasFav || hasClose) w += syncDividerGap;
+            ++primaryCount;
         }
         if (hasRecent) {
             w += recentW;
-            if (hasFav) w += interButtonGap;
-            ++count;
+            if (hasFav || hasClose) w += interButtonGap;
+            ++primaryCount;
         }
         if (hasFav) {
             w += favW;
-            ++count;
+            if (hasClose) w += interButtonGap;
+            ++primaryCount;
         }
-        if (count == 0) return 0.0f;
+        if (primaryCount == 0) return 0.0f;
+        if (hasClose) {
+            w += closeW;
+        }
         return w + paddingX;
     };
 
@@ -613,6 +764,10 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
             hasRecent = false;
             total = calcTotalWidth();
         }
+        if (total > maxW && hasClose) {
+            hasClose = false;
+            total = calcTotalWidth();
+        }
         if (total > maxW && hasFav) {
             hasFav = false;
         }
@@ -627,10 +782,10 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
             m_activeExplorerPath,
             0,
             false,
-            (std::max)(0.0f, syncFinalW - 33.0f * dpiScale),
+            (std::max)(0.0f, syncFinalW - 33.0f * safeScale),
             0.0f
         });
-        currentX += syncFinalW + ((hasRecent || hasFav) ? syncDividerGap : 0.0f);
+        currentX += syncFinalW + ((hasRecent || hasFav || hasClose) ? syncDividerGap : 0.0f);
     }
 
     if (hasRecent) {
@@ -644,7 +799,7 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
             recentTextW,
             recentBadgeW
         });
-        currentX += recentW + (hasFav ? interButtonGap : 0.0f);
+        currentX += recentW + ((hasFav || hasClose) ? interButtonGap : 0.0f);
     }
 
     if (hasFav) {
@@ -658,7 +813,21 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
             favTextW,
             0.0f
         });
-        currentX += favW;
+        currentX += favW + (hasClose ? interButtonGap : 0.0f);
+    }
+
+    if (hasClose && !m_buttons.empty()) {
+        m_buttons.push_back({
+            RibbonButtonRect::Type::Close,
+            D2D1::RectF(currentX, btnY, currentX + closeW, btnY + btnH),
+            "",
+            "",
+            0,
+            false,
+            0.0f,
+            0.0f
+        });
+        currentX += closeW;
     }
 
     if (m_buttons.empty()) {
@@ -671,10 +840,84 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
     }
 }
 
-void DialogRibbonOverlay::render() {
-    if (!m_hwnd || !m_memDC || m_width <= 0 || m_height <= 0) return;
+bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
+    if (!m_renderTarget) return false;
+    if (m_brushesValid && m_brushesDarkTheme == isDark && m_bgBrush && m_textBrush && m_whiteBrush) {
+        return true;
+    }
 
-    if (m_memBitmap && (m_renderedWidth != m_width || m_renderedHeight != m_height)) {
+    m_bgBrush.Reset();
+    m_borderBrush.Reset();
+    m_textBrush.Reset();
+    m_textMutedBrush.Reset();
+    m_highlightBrush.Reset();
+    m_highlightBorderBrush.Reset();
+    m_syncBgBrush.Reset();
+    m_syncBorderBrush.Reset();
+    m_chevronBrush.Reset();
+    m_badgeBgBrush.Reset();
+    m_badgeTextBrush.Reset();
+    m_dividerBrush.Reset();
+    m_whiteBrush.Reset();
+
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), m_whiteBrush.GetAddressOf());
+
+    if (isDark) {
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.13f, 0.17f, 0.93f), m_bgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.13f), m_borderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.97f, 0.98f, 0.96f), m_textBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.76f, 0.82f, 0.88f), m_textMutedBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.09f), m_highlightBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.15f), m_highlightBorderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.48f, 0.94f, 0.95f), m_syncBgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.68f, 1.0f, 0.40f), m_syncBorderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.74f, 0.82f, 0.75f), m_chevronBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f), m_badgeBgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.98f, 0.95f), m_badgeTextBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f), m_dividerBrush.GetAddressOf());
+    } else {
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.965f, 0.975f, 0.985f, 0.96f), m_bgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.09f), m_borderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.12f, 0.16f, 0.95f), m_textBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.32f, 0.36f, 0.44f, 0.88f), m_textMutedBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.05f), m_highlightBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), m_highlightBorderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.44f, 0.90f, 0.95f), m_syncBgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.55f, 1.0f, 0.50f), m_syncBorderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.44f, 0.52f, 0.75f), m_chevronBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.06f), m_badgeBgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.22f, 0.28f, 0.92f), m_badgeTextBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.09f), m_dividerBrush.GetAddressOf());
+    }
+
+    m_brushesDarkTheme = isDark;
+    m_brushesValid = (m_bgBrush != nullptr && m_textBrush != nullptr && m_whiteBrush != nullptr);
+    return m_brushesValid;
+}
+
+void DialogRibbonOverlay::render() {
+    HWND hwnd = nullptr;
+    int width = 0;
+    int height = 0;
+    int posX = 0;
+    int posY = 0;
+    float dpiScale = 1.0f;
+    std::vector<RibbonButtonRect> buttons;
+
+    {
+        std::lock_guard lock(m_mutex);
+        hwnd = m_hwnd;
+        width = m_width;
+        height = m_height;
+        posX = m_posX;
+        posY = m_posY;
+        dpiScale = m_dpiScale;
+        buttons = m_buttons;
+    }
+
+    if (!hwnd || !m_memDC || width <= 0 || height <= 0) return;
+
+    if (m_memBitmap && (m_renderedWidth != width || m_renderedHeight != height)) {
         if (m_oldBitmap) {
             SelectObject(m_memDC, m_oldBitmap);
             m_oldBitmap = nullptr;
@@ -687,17 +930,16 @@ void DialogRibbonOverlay::render() {
         HDC screenDC = GetDC(nullptr);
         BITMAPINFO bmi = {};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = m_width;
-        bmi.bmiHeader.biHeight = -m_height;
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height;
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
         void* bits = nullptr;
         m_memBitmap = CreateDIBSection(screenDC, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
         ReleaseDC(nullptr, screenDC);
+        if (!m_memBitmap) return;
         m_oldBitmap = static_cast<HBITMAP>(SelectObject(m_memDC, m_memBitmap));
-        m_renderedWidth = m_width;
-        m_renderedHeight = m_height;
     }
 
     if (!m_renderTarget && m_d2dFactory) {
@@ -709,146 +951,106 @@ void DialogRibbonOverlay::render() {
         );
         if (SUCCEEDED(m_d2dFactory->CreateDCRenderTarget(&rtProps, m_renderTarget.GetAddressOf())) && m_renderTarget) {
             m_renderTarget->SetDpi(96.0f, 96.0f);
+            m_brushesValid = false;
         }
     }
 
     if (!m_renderTarget) return;
 
-    ensureTextFormats(m_dpiScale);
+    ensureTextFormats(dpiScale);
 
-    RECT rc = {0, 0, m_width, m_height};
-    m_renderTarget->BindDC(m_memDC, &rc);
+    const bool isDark = tools3000::core::WinUtils::isSystemDarkMode();
+    if (!ensureDeviceBrushes(isDark)) {
+        discardDeviceResources();
+        return;
+    }
+
+    RECT rc = {0, 0, width, height};
+    if (FAILED(m_renderTarget->BindDC(m_memDC, &rc))) {
+        discardDeviceResources();
+        return;
+    }
+
     m_renderTarget->BeginDraw();
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
-    // 自适应系统深浅色主题检测
-    bool isDark = tools3000::core::WinUtils::isSystemDarkMode();
-
-    ComPtr<ID2D1SolidColorBrush> bgBrush;
-    ComPtr<ID2D1SolidColorBrush> borderBrush;
-    ComPtr<ID2D1SolidColorBrush> textBrush;
-    ComPtr<ID2D1SolidColorBrush> textMutedBrush;
-    ComPtr<ID2D1SolidColorBrush> highlightBrush;
-    ComPtr<ID2D1SolidColorBrush> highlightBorderBrush;
-    ComPtr<ID2D1SolidColorBrush> syncBgBrush;
-    ComPtr<ID2D1SolidColorBrush> syncBorderBrush;
-    ComPtr<ID2D1SolidColorBrush> chevronBrush;
-    ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
-    ComPtr<ID2D1SolidColorBrush> badgeTextBrush;
-    ComPtr<ID2D1SolidColorBrush> dividerBrush;
-    ComPtr<ID2D1SolidColorBrush> whiteBrush;
-
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), whiteBrush.GetAddressOf());
-
-    if (isDark) {
-        // 深色亚克力模式
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.13f, 0.17f, 0.93f), bgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.13f), borderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.97f, 0.98f, 0.96f), textBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.76f, 0.82f, 0.88f), textMutedBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.09f), highlightBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.15f), highlightBorderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.48f, 0.94f, 0.95f), syncBgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.68f, 1.0f, 0.40f), syncBorderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.74f, 0.82f, 0.75f), chevronBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f), badgeBgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.98f, 0.95f), badgeTextBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f), dividerBrush.GetAddressOf());
-    } else {
-        // 浅色白雾磨砂模式（与浅色文件对话框 100% 浑然天成）
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.965f, 0.975f, 0.985f, 0.96f), bgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.09f), borderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.12f, 0.16f, 0.95f), textBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.32f, 0.36f, 0.44f, 0.88f), textMutedBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.05f), highlightBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), highlightBorderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.44f, 0.90f, 0.95f), syncBgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.55f, 1.0f, 0.50f), syncBorderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.44f, 0.52f, 0.75f), chevronBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.06f), badgeBgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.22f, 0.28f, 0.92f), badgeTextBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.09f), dividerBrush.GetAddressOf());
-    }
-
     // 绘制主体全圆角微晶磨砂胶囊 (Full Pill Capsule)，内缩半线宽防 DIB 四边切平
-    const float inset = 0.5f * m_dpiScale;
-    const float capsuleRadius = (std::max)(0.0f, (static_cast<float>(m_height) * 0.5f) - inset);
+    const float inset = 0.5f * dpiScale;
+    const float capsuleRadius = (std::max)(0.0f, (static_cast<float>(height) * 0.5f) - inset);
     D2D1_ROUNDED_RECT mainRRect = D2D1::RoundedRect(
-        D2D1::RectF(inset, inset, static_cast<float>(m_width) - inset, static_cast<float>(m_height) - inset),
+        D2D1::RectF(inset, inset, static_cast<float>(width) - inset, static_cast<float>(height) - inset),
         capsuleRadius, capsuleRadius
     );
 
-    if (bgBrush) m_renderTarget->FillRoundedRectangle(&mainRRect, bgBrush.Get());
-    if (borderBrush) m_renderTarget->DrawRoundedRectangle(&mainRRect, borderBrush.Get(), 1.0f * m_dpiScale);
+    if (m_bgBrush) m_renderTarget->FillRoundedRectangle(&mainRRect, m_bgBrush.Get());
+    if (m_borderBrush) m_renderTarget->DrawRoundedRectangle(&mainRRect, m_borderBrush.Get(), 1.0f * dpiScale);
 
     // 绘制各个按钮与微交互
-    for (size_t i = 0; i < m_buttons.size(); ++i) {
-        const auto& btn = m_buttons[i];
+    for (size_t i = 0; i < buttons.size(); ++i) {
+        const auto& btn = buttons[i];
         float btnRadius = (btn.rect.bottom - btn.rect.top) * 0.5f;
         D2D1_ROUNDED_RECT btnRRect = D2D1::RoundedRect(btn.rect, btnRadius, btnRadius);
 
-        if (btn.type == RibbonButtonRect::Type::ExplorerSync && syncBgBrush) {
+        if (btn.type == RibbonButtonRect::Type::ExplorerSync && m_syncBgBrush) {
             // 1. 同步路径主胶囊
-            syncBgBrush->SetOpacity(btn.hovered ? 1.0f : 0.92f);
-            m_renderTarget->FillRoundedRectangle(&btnRRect, syncBgBrush.Get());
-            if (syncBorderBrush) {
-                m_renderTarget->DrawRoundedRectangle(&btnRRect, syncBorderBrush.Get(), 1.0f * m_dpiScale);
+            m_syncBgBrush->SetOpacity(btn.hovered ? 1.0f : 0.92f);
+            m_renderTarget->FillRoundedRectangle(&btnRRect, m_syncBgBrush.Get());
+            if (m_syncBorderBrush) {
+                m_renderTarget->DrawRoundedRectangle(&btnRRect, m_syncBorderBrush.Get(), 1.0f * dpiScale);
             }
 
             // 矢量文件夹图标 (纯白)
-            float iconSize = 12.0f * m_dpiScale;
-            float iconX = btn.rect.left + 8.0f * m_dpiScale;
+            float iconSize = 12.0f * dpiScale;
+            float iconX = btn.rect.left + 8.0f * dpiScale;
             float iconY = (btn.rect.top + btn.rect.bottom - iconSize) * 0.5f;
-            drawFolderIcon(m_renderTarget.Get(), whiteBrush.Get(), iconX, iconY, iconSize, 1.2f * m_dpiScale);
+            drawFolderIcon(m_renderTarget.Get(), m_whiteBrush.Get(), iconX, iconY, iconSize, 1.2f * dpiScale);
 
             // 单行省略号截断渲染目录名
             std::wstring wText = tools3000::core::WinUtils::utf8ToWstring(btn.text);
-            if (whiteBrush && m_boldFormat) {
+            if (m_whiteBrush && m_boldFormat) {
                 D2D1_RECT_F textRect = D2D1::RectF(
-                    iconX + iconSize + 5.0f * m_dpiScale, btn.rect.top,
-                    btn.rect.right - 8.0f * m_dpiScale, btn.rect.bottom
+                    iconX + iconSize + 5.0f * dpiScale, btn.rect.top,
+                    btn.rect.right - 8.0f * dpiScale, btn.rect.bottom
                 );
                 m_boldFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                 m_boldFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 m_renderTarget->DrawText(
                     wText.c_str(), static_cast<UINT32>(wText.length()),
-                    m_boldFormat.Get(), textRect, whiteBrush.Get()
+                    m_boldFormat.Get(), textRect, m_whiteBrush.Get()
                 );
             }
 
             // 在同步胶囊右侧绘制垂直微晶分割线（仅当右侧还有其他胶囊时绘制）
-            if (dividerBrush && (i + 1 < m_buttons.size())) {
-                float divX = btn.rect.right + 5.0f * m_dpiScale;
-                float divY1 = (static_cast<float>(m_height) - 14.0f * m_dpiScale) * 0.5f;
-                float divY2 = divY1 + 14.0f * m_dpiScale;
+            if (m_dividerBrush && (i + 1 < buttons.size())) {
+                float divX = btn.rect.right + 5.0f * dpiScale;
+                float divY1 = (static_cast<float>(height) - 14.0f * dpiScale) * 0.5f;
+                float divY2 = divY1 + 14.0f * dpiScale;
                 m_renderTarget->DrawLine(
                     D2D1::Point2F(divX, divY1),
                     D2D1::Point2F(divX, divY2),
-                    dividerBrush.Get(), 1.0f * m_dpiScale
+                    m_dividerBrush.Get(), 1.0f * dpiScale
                 );
             }
         } else if (btn.type == RibbonButtonRect::Type::Recent) {
             // 2. 最近使用项 (时钟图标 + 文字 + 独立数字徽章 + Chevron)
-            if (btn.hovered && highlightBrush) {
-                m_renderTarget->FillRoundedRectangle(&btnRRect, highlightBrush.Get());
-                if (highlightBorderBrush) {
-                    m_renderTarget->DrawRoundedRectangle(&btnRRect, highlightBorderBrush.Get(), 1.0f * m_dpiScale);
+            if (btn.hovered && m_highlightBrush) {
+                m_renderTarget->FillRoundedRectangle(&btnRRect, m_highlightBrush.Get());
+                if (m_highlightBorderBrush) {
+                    m_renderTarget->DrawRoundedRectangle(&btnRRect, m_highlightBorderBrush.Get(), 1.0f * dpiScale);
                 }
             }
 
-            auto activeTextBrush = btn.hovered ? textBrush.Get() : textMutedBrush.Get();
-            auto activeChevronBrush = btn.hovered ? textBrush.Get() : chevronBrush.Get();
+            auto activeTextBrush = btn.hovered ? m_textBrush.Get() : m_textMutedBrush.Get();
+            auto activeChevronBrush = btn.hovered ? m_textBrush.Get() : m_chevronBrush.Get();
 
-            // 矢量时钟图标
-            float iconSize = 11.5f * m_dpiScale;
-            float iconX = btn.rect.left + 7.0f * m_dpiScale;
+            float iconSize = 11.5f * dpiScale;
+            float iconX = btn.rect.left + 7.0f * dpiScale;
             float iconY = (btn.rect.top + btn.rect.bottom - iconSize) * 0.5f;
-            drawClockIcon(m_renderTarget.Get(), activeTextBrush, iconX, iconY, iconSize, 1.15f * m_dpiScale);
+            drawClockIcon(m_renderTarget.Get(), activeTextBrush, iconX, iconY, iconSize, 1.15f * dpiScale);
 
-            // 动态实测文本宽度 ("最近" / "Recent")
             std::wstring wText = tools3000::core::WinUtils::utf8ToWstring(btn.text);
-            float textLeft = iconX + iconSize + 4.5f * m_dpiScale;
-            float textW = btn.textWidth > 0.0f ? btn.textWidth : (36.0f * m_dpiScale);
+            float textLeft = iconX + iconSize + 4.5f * dpiScale;
+            float textW = btn.textWidth > 0.0f ? btn.textWidth : (36.0f * dpiScale);
             if (activeTextBrush && m_textFormat) {
                 D2D1_RECT_F textRect = D2D1::RectF(textLeft, btn.rect.top, textLeft + textW, btn.rect.bottom);
                 m_textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -859,43 +1061,39 @@ void DialogRibbonOverlay::render() {
                 );
             }
 
-            // 独立数字微晶气泡
-            float badgeW = btn.badgeWidth > 0.0f ? btn.badgeWidth : (16.0f * m_dpiScale);
-            float badgeH = 14.0f * m_dpiScale;
-            float badgeX = textLeft + textW + 3.0f * m_dpiScale;
+            float badgeW = btn.badgeWidth > 0.0f ? btn.badgeWidth : (16.0f * dpiScale);
+            float badgeH = 14.0f * dpiScale;
+            float badgeX = textLeft + textW + 3.0f * dpiScale;
             float badgeY = (btn.rect.top + btn.rect.bottom - badgeH) * 0.5f;
-            drawBadge(m_renderTarget.Get(), badgeBgBrush.Get(), badgeTextBrush.Get(), badgeX, badgeY, badgeW, badgeH, btn.badgeCount);
+            drawBadge(m_renderTarget.Get(), m_badgeBgBrush.Get(), m_badgeTextBrush.Get(), badgeX, badgeY, badgeW, badgeH, btn.badgeCount);
 
-            // 矢量微型 ChevronDown 箭头
-            float chevronCenterX = btn.rect.right - 7.5f * m_dpiScale;
+            float chevronCenterX = btn.rect.right - 7.5f * dpiScale;
             float chevronCenterY = (btn.rect.top + btn.rect.bottom) * 0.5f;
             drawChevron(
                 m_renderTarget.Get(), activeChevronBrush,
                 chevronCenterX, chevronCenterY,
-                5.5f * m_dpiScale, 1.2f * m_dpiScale
+                5.5f * dpiScale, 1.2f * dpiScale
             );
         } else if (btn.type == RibbonButtonRect::Type::Favorites) {
             // 3. 工作区收藏项 (书签图标 + 文字 + Chevron)
-            if (btn.hovered && highlightBrush) {
-                m_renderTarget->FillRoundedRectangle(&btnRRect, highlightBrush.Get());
-                if (highlightBorderBrush) {
-                    m_renderTarget->DrawRoundedRectangle(&btnRRect, highlightBorderBrush.Get(), 1.0f * m_dpiScale);
+            if (btn.hovered && m_highlightBrush) {
+                m_renderTarget->FillRoundedRectangle(&btnRRect, m_highlightBrush.Get());
+                if (m_highlightBorderBrush) {
+                    m_renderTarget->DrawRoundedRectangle(&btnRRect, m_highlightBorderBrush.Get(), 1.0f * dpiScale);
                 }
             }
 
-            auto activeTextBrush = btn.hovered ? textBrush.Get() : textMutedBrush.Get();
-            auto activeChevronBrush = btn.hovered ? textBrush.Get() : chevronBrush.Get();
+            auto activeTextBrush = btn.hovered ? m_textBrush.Get() : m_textMutedBrush.Get();
+            auto activeChevronBrush = btn.hovered ? m_textBrush.Get() : m_chevronBrush.Get();
 
-            // 矢量书签图标
-            float iconSize = 11.0f * m_dpiScale;
-            float iconX = btn.rect.left + 7.0f * m_dpiScale;
+            float iconSize = 11.0f * dpiScale;
+            float iconX = btn.rect.left + 7.0f * dpiScale;
             float iconY = (btn.rect.top + btn.rect.bottom - iconSize) * 0.5f;
-            drawBookmarkIcon(m_renderTarget.Get(), activeTextBrush, iconX, iconY, iconSize, 1.15f * m_dpiScale);
+            drawBookmarkIcon(m_renderTarget.Get(), activeTextBrush, iconX, iconY, iconSize, 1.15f * dpiScale);
 
-            // 动态实测文本宽度 ("工作区" / "Workspaces")
             std::wstring wText = tools3000::core::WinUtils::utf8ToWstring(btn.text);
-            float textLeft = iconX + iconSize + 4.5f * m_dpiScale;
-            float textW = btn.textWidth > 0.0f ? btn.textWidth : (48.0f * m_dpiScale);
+            float textLeft = iconX + iconSize + 4.5f * dpiScale;
+            float textW = btn.textWidth > 0.0f ? btn.textWidth : (48.0f * dpiScale);
             if (activeTextBrush && m_textFormat) {
                 D2D1_RECT_F textRect = D2D1::RectF(textLeft, btn.rect.top, textLeft + textW, btn.rect.bottom);
                 m_textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -906,50 +1104,97 @@ void DialogRibbonOverlay::render() {
                 );
             }
 
-            // 矢量微型 ChevronDown 箭头
-            float chevronCenterX = btn.rect.right - 7.5f * m_dpiScale;
+            float chevronCenterX = btn.rect.right - 7.5f * dpiScale;
             float chevronCenterY = (btn.rect.top + btn.rect.bottom) * 0.5f;
             drawChevron(
                 m_renderTarget.Get(), activeChevronBrush,
                 chevronCenterX, chevronCenterY,
-                5.5f * m_dpiScale, 1.2f * m_dpiScale
+                5.5f * dpiScale, 1.2f * dpiScale
             );
+        } else if (btn.type == RibbonButtonRect::Type::Close) {
+            // 4. 关闭胶囊按钮 [X]（纯矢量交叉线，尺寸与命中热区均严格乘 m_dpiScale）
+            if (btn.hovered && m_highlightBrush) {
+                m_renderTarget->FillRoundedRectangle(&btnRRect, m_highlightBrush.Get());
+                if (m_highlightBorderBrush) {
+                    m_renderTarget->DrawRoundedRectangle(&btnRRect, m_highlightBorderBrush.Get(), 1.0f * dpiScale);
+                }
+            }
+            auto closeIconBrush = btn.hovered ? m_textBrush.Get() : m_chevronBrush.Get();
+            const float cx = (btn.rect.left + btn.rect.right) * 0.5f;
+            const float cy = (btn.rect.top + btn.rect.bottom) * 0.5f;
+            drawCloseIcon(m_renderTarget.Get(), closeIconBrush, cx, cy, 7.0f * dpiScale, 1.25f * dpiScale);
         }
     }
 
-    m_renderTarget->EndDraw();
+    const HRESULT endHr = m_renderTarget->EndDraw();
+    if (endHr == D2DERR_RECREATE_TARGET || FAILED(endHr)) {
+        LOG_WARN("DialogRibbonOverlay: EndDraw returned 0x{:X}, resetting D2D target and brushes for auto-recovery",
+                 static_cast<unsigned>(endHr));
+        discardDeviceResources();
+        {
+            std::lock_guard lock(m_mutex);
+            m_renderedWidth = 0;
+            m_renderedHeight = 0;
+        }
+        if (IsWindow(hwnd)) {
+            PostMessageW(hwnd, WM_RIBBON_UPDATE_POS, 0, 0);
+        }
+        return;
+    }
+
+    {
+        std::lock_guard lock(m_mutex);
+        m_renderedWidth = width;
+        m_renderedHeight = height;
+    }
 
     // 提交分层窗口
     HDC screenDC = GetDC(nullptr);
     POINT ptSrc = {0, 0};
-    POINT ptDst = {m_posX, m_posY};
+    POINT ptDst = {posX, posY};
     if (ptDst.x == 0 && ptDst.y == 0) {
         RECT winRect{};
-        if (GetWindowRect(m_hwnd, &winRect)) {
+        if (GetWindowRect(hwnd, &winRect)) {
             ptDst = {winRect.left, winRect.top};
         }
     }
-    SIZE size = {m_width, m_height};
+    SIZE size = {width, height};
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
 
-    UpdateLayeredWindow(m_hwnd, screenDC, &ptDst, &size, m_memDC, &ptSrc, 0, &blend, ULW_ALPHA);
+    UpdateLayeredWindow(hwnd, screenDC, &ptDst, &size, m_memDC, &ptSrc, 0, &blend, ULW_ALPHA);
     ReleaseDC(nullptr, screenDC);
 }
 
+bool DialogRibbonOverlay::hitTestButton(const RibbonButtonRect& btn,
+                                        int x,
+                                        int y,
+                                        float dpiScale) const noexcept {
+    const float safeScale = std::clamp(dpiScale, 0.75f, 4.0f);
+    const float padX = (btn.type == RibbonButtonRect::Type::Close) ? (2.0f * safeScale) : 0.0f;
+    const float padY = 2.0f * safeScale;
+    const float fx = static_cast<float>(x);
+    const float fy = static_cast<float>(y);
+    return fx >= (btn.rect.left - padX) && fx <= (btn.rect.right + padX) &&
+           fy >= (btn.rect.top - padY) && fy <= (btn.rect.bottom + padY);
+}
+
 void DialogRibbonOverlay::onMouseMove(int x, int y) {
-    if (!m_trackingMouse) {
-        TRACKMOUSEEVENT tme = {sizeof(TRACKMOUSEEVENT), TME_LEAVE, m_hwnd, 0};
+    HWND hwnd = getHwnd();
+    if (!m_trackingMouse && hwnd && IsWindow(hwnd)) {
+        TRACKMOUSEEVENT tme = {sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0};
         TrackMouseEvent(&tme);
         m_trackingMouse = true;
     }
 
     bool needRepaint = false;
-    for (auto& btn : m_buttons) {
-        bool inside = (x >= btn.rect.left && x <= btn.rect.right &&
-                       y >= btn.rect.top && y <= btn.rect.bottom);
-        if (btn.hovered != inside) {
-            btn.hovered = inside;
-            needRepaint = true;
+    {
+        std::lock_guard lock(m_mutex);
+        for (auto& btn : m_buttons) {
+            const bool inside = hitTestButton(btn, x, y, m_dpiScale);
+            if (btn.hovered != inside) {
+                btn.hovered = inside;
+                needRepaint = true;
+            }
         }
     }
 
@@ -961,141 +1206,265 @@ void DialogRibbonOverlay::onMouseMove(int x, int y) {
 void DialogRibbonOverlay::onMouseLeave() {
     m_trackingMouse = false;
     bool needRepaint = false;
-    for (auto& btn : m_buttons) {
-        if (btn.hovered) {
-            btn.hovered = false;
-            needRepaint = true;
+    {
+        std::lock_guard lock(m_mutex);
+        for (auto& btn : m_buttons) {
+            if (btn.hovered) {
+                btn.hovered = false;
+                needRepaint = true;
+            }
         }
     }
     if (needRepaint) render();
 }
 
 void DialogRibbonOverlay::onLButtonDown(int x, int y) {
-    for (const auto& btn : m_buttons) {
-        if (x >= btn.rect.left && x <= btn.rect.right &&
-            y >= btn.rect.top && y <= btn.rect.bottom) {
-            const RibbonButtonRect clickedBtn = btn;
-            const std::string posConfig = PathMemoryManager::instance().getRibbonPosition();
-            const bool rightAlign = (posConfig != "top-center") ||
-                                    (clickedBtn.rect.right > static_cast<float>(m_width) * 0.55f);
-            const int localAnchorX = rightAlign
-                ? static_cast<int>(std::round(clickedBtn.rect.right))
-                : static_cast<int>(std::round(clickedBtn.rect.left));
-            const int localAnchorY = m_height + static_cast<int>(std::round(4.0f * m_dpiScale));
-            POINT screenPt = {localAnchorX, localAnchorY};
-            ClientToScreen(m_hwnd, &screenPt);
+    RibbonButtonRect clickedBtn{};
+    bool hit = false;
+    HWND hwnd = nullptr;
+    HWND targetDialog = nullptr;
+    int width = 0;
+    int height = 0;
+    float dpiScale = 1.0f;
 
-            if (clickedBtn.type == RibbonButtonRect::Type::ExplorerSync) {
-                const HWND targetDialog = getTargetDialog();
-                if (!clickedBtn.extraData.empty() && targetDialog) {
-                    DialogNavigator::instance().navigateToFolder(targetDialog, clickedBtn.extraData);
-                    {
-                        std::lock_guard lock(m_mutex);
-                        m_renderedWidth = 0;
-                    }
-                    doUpdatePosition();
-                }
-            } else if (clickedBtn.type == RibbonButtonRect::Type::Recent) {
-                showRecentMenu(screenPt.x, screenPt.y, rightAlign);
-            } else if (clickedBtn.type == RibbonButtonRect::Type::Favorites) {
-                showFavoritesMenu(screenPt.x, screenPt.y, rightAlign);
+    {
+        std::lock_guard lock(m_mutex);
+        hwnd = m_hwnd;
+        targetDialog = m_targetDialog;
+        width = m_width;
+        height = m_height;
+        dpiScale = m_dpiScale;
+        for (const auto& btn : m_buttons) {
+            if (hitTestButton(btn, x, y, dpiScale)) {
+                clickedBtn = btn;
+                hit = true;
+                break;
             }
-            break;
         }
+        if (hit && clickedBtn.type == RibbonButtonRect::Type::Close && targetDialog) {
+            m_dismissedDialog = targetDialog;
+        }
+    }
+
+    if (!hit) return;
+
+    if (clickedBtn.type == RibbonButtonRect::Type::Close) {
+        doHide();
+        return;
+    }
+
+    const std::string posConfig = PathMemoryManager::instance().getRibbonPosition();
+    const bool rightAlign = (posConfig != "top-center") ||
+                            (clickedBtn.rect.right > static_cast<float>(width) * 0.55f);
+    const int localAnchorX = rightAlign
+        ? static_cast<int>(std::round(clickedBtn.rect.right))
+        : static_cast<int>(std::round(clickedBtn.rect.left));
+    const int localAnchorY = height + static_cast<int>(std::round(4.0f * dpiScale));
+    POINT screenPt = {localAnchorX, localAnchorY};
+    if (hwnd && IsWindow(hwnd)) {
+        ClientToScreen(hwnd, &screenPt);
+    }
+
+    if (clickedBtn.type == RibbonButtonRect::Type::ExplorerSync) {
+        if (!clickedBtn.extraData.empty() && targetDialog && IsWindow(targetDialog)) {
+            const std::string navPath = clickedBtn.extraData;
+            DialogNavigator::instance().navigateToFolderAsync(
+                targetDialog,
+                navPath,
+                [this, targetDialog, navPath](bool ok) {
+                    if (ok) {
+                        setCachedDialogFolder(targetDialog, navPath);
+                    }
+                    updatePosition();
+                });
+        }
+    } else if (clickedBtn.type == RibbonButtonRect::Type::Recent) {
+        showRecentMenu(screenPt.x, screenPt.y, rightAlign);
+    } else if (clickedBtn.type == RibbonButtonRect::Type::Favorites) {
+        showFavoritesMenu(screenPt.x, screenPt.y, rightAlign);
     }
 }
 
 void DialogRibbonOverlay::showRecentMenu(int screenX, int screenY, bool rightAlign) {
-    auto recentList = PathMemoryManager::instance().getRecentPaths(10);
-    if (recentList.empty()) return;
+    // 1. 弹出模态菜单前完整拷贝路径列表与目标快照到栈上局部变量，
+    //    彻底免疫 TrackPopupMenu 消息循环期间异步 doHide() 清空成员变量导致的越界崩溃
+    const std::vector<std::string> localRecentList = PathMemoryManager::instance().getRecentPaths(10);
+    if (localRecentList.empty()) return;
+
+    HWND localHwnd = nullptr;
+    HWND localTargetDialog = nullptr;
+    DWORD localTargetPid = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        localHwnd = m_hwnd;
+        localTargetDialog = m_targetDialog;
+        localTargetPid = m_targetProcessId;
+        m_menuOpen = true;
+    }
+    if (!localHwnd || !IsWindow(localHwnd)) {
+        std::lock_guard lock(m_mutex);
+        m_menuOpen = false;
+        return;
+    }
 
     HMENU hMenu = CreatePopupMenu();
-    for (size_t i = 0; i < recentList.size(); ++i) {
-        std::wstring itemText = tools3000::core::WinUtils::utf8ToWstring(recentList[i]);
+    for (size_t i = 0; i < localRecentList.size(); ++i) {
+        std::wstring itemText = tools3000::core::WinUtils::utf8ToWstring(localRecentList[i]);
         AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(1000 + i), itemText.c_str());
     }
 
-    m_menuOpen = true;
-    SetForegroundWindow(m_hwnd);
+    SetForegroundWindow(localHwnd);
     const UINT alignFlags = (rightAlign ? TPM_RIGHTALIGN : TPM_LEFTALIGN) |
                             TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY;
-    int cmd = TrackPopupMenu(
+    const int cmd = TrackPopupMenu(
         hMenu, alignFlags,
-        screenX, screenY, 0, m_hwnd, nullptr
+        screenX, screenY, 0, localHwnd, nullptr
     );
     DestroyMenu(hMenu);
-    m_menuOpen = false;
 
-    if (cmd >= 1000 && static_cast<size_t>(cmd - 1000) < recentList.size()) {
-        std::string chosenPath = recentList[cmd - 1000];
-        const HWND targetDialog = getTargetDialog();
-        if (targetDialog) {
-            DialogNavigator::instance().navigateToFolder(targetDialog, chosenPath);
-            {
-                std::lock_guard lock(m_mutex);
-                m_renderedWidth = 0;
-            }
-            doUpdatePosition();
+    {
+        std::lock_guard lock(m_mutex);
+        m_menuOpen = false;
+    }
+
+    if (cmd >= 1000 && static_cast<size_t>(cmd - 1000) < localRecentList.size()) {
+        const std::string chosenPath = localRecentList[static_cast<size_t>(cmd - 1000)];
+        DWORD currentPid = 0;
+        if (localTargetDialog && IsWindow(localTargetDialog)) {
+            GetWindowThreadProcessId(localTargetDialog, &currentPid);
         }
+        if (localTargetDialog && currentPid != 0 && currentPid == localTargetPid) {
+            DialogNavigator::instance().navigateToFolderAsync(
+                localTargetDialog,
+                chosenPath,
+                [this, localTargetDialog, chosenPath](bool ok) {
+                    if (ok) {
+                        setCachedDialogFolder(localTargetDialog, chosenPath);
+                    }
+                    updatePosition();
+                });
+        }
+    } else {
+        updatePosition();
     }
 }
 
 void DialogRibbonOverlay::showFavoritesMenu(int screenX, int screenY, bool rightAlign) {
-    auto favList = PathMemoryManager::instance().getFavorites();
-    const HWND targetDialog = getTargetDialog();
-    const std::string curFolder = targetDialog ? DialogNavigator::getCurrentDialogFolder(targetDialog) : "";
-    const bool isEn = isRibbonEnglishLocale();
+    // 1. 栈上局部快照：零跨进程 UIA 调用，零模态重入越界风险
+    const std::vector<std::string> localFavList = PathMemoryManager::instance().getFavorites();
+    HWND localHwnd = nullptr;
+    HWND localTargetDialog = nullptr;
+    DWORD localTargetPid = 0;
+    std::string localTargetProcess;
+    std::string localCurFolder;
+    {
+        std::lock_guard lock(m_mutex);
+        localHwnd = m_hwnd;
+        localTargetDialog = m_targetDialog;
+        localTargetPid = m_targetProcessId;
+        localTargetProcess = m_targetProcess;
+        localCurFolder = m_cachedDialogFolder;
+        m_menuOpen = true;
+    }
+    if (!localHwnd || !IsWindow(localHwnd)) {
+        std::lock_guard lock(m_mutex);
+        m_menuOpen = false;
+        return;
+    }
 
+    const bool isEn = isRibbonEnglishLocale();
     HMENU hMenu = CreatePopupMenu();
-    if (!curFolder.empty()) {
-        const std::wstring wFolder = tools3000::core::WinUtils::utf8ToWstring(curFolder);
-        std::wstring addFavText = isEn
-            ? (L"[+] Add Current Folder to Workspaces (" + wFolder + L")")
-            : (L"[+] 将当前目录加入常用工作区 (" + wFolder + L")");
+
+    const bool canOperateOnDialog = (localTargetDialog && IsWindow(localTargetDialog));
+    if (canOperateOnDialog) {
+        const std::wstring folderSuffix = localCurFolder.empty()
+            ? std::wstring{}
+            : (L" (" + tools3000::core::WinUtils::utf8ToWstring(localCurFolder) + L")");
+        const std::wstring addFavText = isEn
+            ? (L"[+] Add Current Folder to Workspaces" + folderSuffix)
+            : (L"[+] 将当前目录加入常用工作区" + folderSuffix);
         AppendMenuW(hMenu, MF_STRING, 2901, addFavText.c_str());
 
-        if (!m_targetProcess.empty()) {
-            const std::wstring wProc = tools3000::core::WinUtils::utf8ToWstring(m_targetProcess);
-            std::wstring lockText = isEn
+        if (!localTargetProcess.empty()) {
+            const std::wstring wProc = tools3000::core::WinUtils::utf8ToWstring(localTargetProcess);
+            const std::wstring lockText = isEn
                 ? (L"[*] Pin Folder for Current App (" + wProc + L")")
                 : (L"[*] 为当前软件 (" + wProc + L") 固定此目录");
             AppendMenuW(hMenu, MF_STRING, 2902, lockText.c_str());
         }
-        if (!favList.empty()) {
+        if (!localFavList.empty()) {
             AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
         }
     }
 
-    for (size_t i = 0; i < favList.size(); ++i) {
-        std::wstring itemText = tools3000::core::WinUtils::utf8ToWstring(favList[i]);
+    for (size_t i = 0; i < localFavList.size(); ++i) {
+        std::wstring itemText = tools3000::core::WinUtils::utf8ToWstring(localFavList[i]);
         AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(2000 + i), itemText.c_str());
     }
 
-    m_menuOpen = true;
-    SetForegroundWindow(m_hwnd);
+    SetForegroundWindow(localHwnd);
     const UINT alignFlags = (rightAlign ? TPM_RIGHTALIGN : TPM_LEFTALIGN) |
                             TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY;
-    int cmd = TrackPopupMenu(
+    const int cmd = TrackPopupMenu(
         hMenu, alignFlags,
-        screenX, screenY, 0, m_hwnd, nullptr
+        screenX, screenY, 0, localHwnd, nullptr
     );
     DestroyMenu(hMenu);
-    m_menuOpen = false;
 
-    if (cmd == 2901 && !curFolder.empty()) {
-        PathMemoryManager::instance().addFavorite(curFolder);
-    } else if (cmd == 2902 && !curFolder.empty() && !m_targetProcess.empty()) {
-        PathMemoryManager::instance().setAppFixedWorkspace(m_targetProcess, curFolder, true);
-    } else if (cmd >= 2000 && static_cast<size_t>(cmd - 2000) < favList.size()) {
-        std::string chosenPath = favList[cmd - 2000];
-        if (targetDialog) {
-            DialogNavigator::instance().navigateToFolder(targetDialog, chosenPath);
-            {
-                std::lock_guard lock(m_mutex);
-                m_renderedWidth = 0;
-            }
-            doUpdatePosition();
+    {
+        std::lock_guard lock(m_mutex);
+        m_menuOpen = false;
+    }
+
+    auto resolveFolderAndRun = [this, localTargetDialog, localTargetPid, localCurFolder](
+                                   std::function<void(const std::string&)> action) {
+        if (!localCurFolder.empty()) {
+            action(localCurFolder);
+            return;
         }
+        DialogNavigator::instance().postAsyncTask(
+            [this, localTargetDialog, localTargetPid, cb = std::move(action)]() {
+                DWORD pid = 0;
+                if (!localTargetDialog || !IsWindow(localTargetDialog)) return;
+                GetWindowThreadProcessId(localTargetDialog, &pid);
+                if (pid == 0 || pid != localTargetPid) return;
+                const std::string resolved = DialogNavigator::getCurrentDialogFolder(localTargetDialog);
+                if (!resolved.empty()) {
+                    setCachedDialogFolder(localTargetDialog, resolved);
+                    cb(resolved);
+                }
+            });
+    };
+
+    if (cmd == 2901) {
+        resolveFolderAndRun([](const std::string& folder) {
+            PathMemoryManager::instance().addFavorite(folder);
+        });
+        updatePosition();
+    } else if (cmd == 2902 && !localTargetProcess.empty()) {
+        resolveFolderAndRun([localTargetProcess](const std::string& folder) {
+            PathMemoryManager::instance().setAppFixedWorkspace(localTargetProcess, folder, true);
+        });
+        updatePosition();
+    } else if (cmd >= 2000 && static_cast<size_t>(cmd - 2000) < localFavList.size()) {
+        const std::string chosenPath = localFavList[static_cast<size_t>(cmd - 2000)];
+        DWORD currentPid = 0;
+        if (localTargetDialog && IsWindow(localTargetDialog)) {
+            GetWindowThreadProcessId(localTargetDialog, &currentPid);
+        }
+        if (localTargetDialog && currentPid != 0 && currentPid == localTargetPid) {
+            DialogNavigator::instance().navigateToFolderAsync(
+                localTargetDialog,
+                chosenPath,
+                [this, localTargetDialog, chosenPath](bool ok) {
+                    if (ok) {
+                        setCachedDialogFolder(localTargetDialog, chosenPath);
+                    }
+                    updatePosition();
+                });
+        }
+    } else {
+        updatePosition();
     }
 }
 
@@ -1113,6 +1482,7 @@ LRESULT CALLBACK DialogRibbonOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam
         switch (msg) {
             case WM_RIBBON_UPDATE_POS:
             case WM_TIMER:
+            case WM_DPICHANGED:
                 self->doUpdatePosition();
                 return 0;
             case WM_RIBBON_ATTACH:

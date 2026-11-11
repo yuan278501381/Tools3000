@@ -3587,3 +3587,172 @@ TEST(CoreKeyboardHookTest, CaptureAndScrollOverlayVisibilityAtomicBypass) {
     EXPECT_FALSE(kbHook.isAnyCaptureOverlayVisible());
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-11 全量审计防回退回归测试 (AtomicFile / SpscRingBuffer / ShellContextMenu)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(AtomicFileSecurityTest, RejectsDirectoryJunctionAndWritesNormalFilesSafely) {
+    const auto baseDir = std::filesystem::temp_directory_path() /
+        (L"Tools3000_AtomicFileAudit_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+         std::to_wstring(GetTickCount64()));
+    const auto safeDir = baseDir / L"safe_dir";
+    const auto realTargetDir = baseDir / L"real_target";
+    const auto junctionDir = baseDir / L"junction_link";
+
+    std::error_code ec;
+    std::filesystem::remove_all(baseDir, ec);
+    std::filesystem::create_directories(safeDir, ec);
+    std::filesystem::create_directories(realTargetDir, ec);
+
+    struct SandboxCleanup {
+        std::filesystem::path junction;
+        std::filesystem::path root;
+        ~SandboxCleanup() {
+            // 先解除目录联接，防止递归删除跟随重解析点
+            RemoveDirectoryW(junction.c_str());
+            std::error_code err;
+            std::filesystem::remove_all(root, err);
+        }
+    } cleanup{junctionDir, baseDir};
+
+    // 1. 常规安全路径原子落盘验证
+    const std::wstring safeFile = (safeDir / L"config.json").wstring();
+    EXPECT_FALSE(tools3000::common::pathContainsReparsePoint(safeFile));
+    ASSERT_TRUE(tools3000::common::atomicWriteFileWithFlush(safeFile, "{\"ok\":true}"));
+    {
+        std::ifstream ifs(std::filesystem::path(safeFile), std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        EXPECT_EQ(content, "{\"ok\":true}");
+    }
+
+    // 2. 构造真实 NTFS 目录联接 (mklink /J 无需管理员权限)
+    const std::wstring cmdLine = L"cmd.exe /d /s /c \"mklink /J \"" + junctionDir.wstring() +
+                                 L"\" \"" + realTargetDir.wstring() + L"\" >nul 2>&1\"";
+    STARTUPINFOW si{sizeof(si)};
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    std::wstring mutableCmd = cmdLine;
+    bool junctionCreated = false;
+    if (CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 5000);
+        DWORD exitCode = 1;
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        const DWORD attrs = GetFileAttributesW(junctionDir.c_str());
+        junctionCreated = (exitCode == 0) && (attrs != INVALID_FILE_ATTRIBUTES) &&
+                          ((attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
+    }
+
+    if (junctionCreated) {
+        const std::wstring hijackedFile = (junctionDir / L"hijacked.json").wstring();
+        EXPECT_TRUE(tools3000::common::pathContainsReparsePoint(hijackedFile));
+        EXPECT_FALSE(tools3000::common::atomicWriteFileWithFlush(hijackedFile, "{\"pwned\":true}"));
+        EXPECT_FALSE(std::filesystem::exists(realTargetDir / L"hijacked.json", ec));
+    }
+}
+
+TEST(SpscRingBufferConcurrencyTest, ConcurrentOverflowAndPopNoTear) {
+    struct CheckedSample {
+        uint64_t seq;
+        uint64_t checksum;
+    };
+    constexpr uint64_t kMagic = 0x9E3779B97F4A7C15ULL;
+    tools3000::core::SpscRingBuffer<CheckedSample, 64> ring;
+
+    // 1. 验证满载时 try_push 不覆写旧样本
+    for (uint64_t i = 0; i < 64; ++i) {
+        EXPECT_TRUE(ring.try_push(CheckedSample{i, i ^ kMagic}));
+    }
+    EXPECT_FALSE(ring.try_push(CheckedSample{999, 999 ^ kMagic}));
+    ring.clear();
+    EXPECT_TRUE(ring.empty());
+
+    // 2. 多线程高频并发溢出覆盖与消费：验证零数据撕裂且序号严格单调递增
+    std::atomic<bool> producerDone{false};
+    constexpr uint64_t kTotalItems = 20000;
+
+    std::thread producer([&]() {
+        for (uint64_t i = 1; i <= kTotalItems; ++i) {
+            ring.push(CheckedSample{i, i ^ kMagic});
+        }
+        producerDone.store(true, std::memory_order_release);
+    });
+
+    uint64_t lastSeq = 0;
+    size_t poppedCount = 0;
+    std::thread consumer([&]() {
+        CheckedSample item{};
+        while (!producerDone.load(std::memory_order_acquire) || !ring.empty()) {
+            if (ring.pop(item)) {
+                EXPECT_EQ(item.checksum, item.seq ^ kMagic);
+                EXPECT_GT(item.seq, lastSeq);
+                lastSeq = item.seq;
+                ++poppedCount;
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    producer.join();
+    consumer.join();
+    EXPECT_GT(poppedCount, 0u);
+    EXPECT_EQ(lastSeq, kTotalItems);
+    EXPECT_TRUE(ring.empty());
+}
+
+TEST(ShellContextMenuRegressionTest, BindSystemDirectoryAndServiceLifecycle) {
+    const HRESULT hrOle = OleInitialize(nullptr);
+    struct OleGuard {
+        bool needUninit;
+        ~OleGuard() {
+            if (needUninit) OleUninitialize();
+        }
+    } oleGuard{SUCCEEDED(hrOle)};
+
+    wchar_t winDir[MAX_PATH]{};
+    ASSERT_GT(GetWindowsDirectoryW(winDir, MAX_PATH), 0u);
+
+    PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(winDir);
+    ASSERT_NE(pidl, nullptr);
+
+    IShellFolder* parentFolder = nullptr;
+    PCUITEMID_CHILD child = nullptr;
+    const HRESULT hrBind = SHBindToParent(pidl, IID_IShellFolder, reinterpret_cast<void**>(&parentFolder), &child);
+    EXPECT_TRUE(SUCCEEDED(hrBind));
+
+    IContextMenu* contextMenu = nullptr;
+    if (SUCCEEDED(hrBind) && parentFolder && child) {
+        parentFolder->GetUIObjectOf(nullptr, 1, &child, IID_IContextMenu, nullptr, reinterpret_cast<void**>(&contextMenu));
+    }
+    if (!contextMenu && parentFolder && child) {
+        DEFCONTEXTMENU dcm{};
+        dcm.psf = parentFolder;
+        dcm.cidl = 1;
+        dcm.apidl = &child;
+        SHCreateDefaultContextMenu(&dcm, IID_IContextMenu, reinterpret_cast<void**>(&contextMenu));
+    }
+    if (contextMenu) {
+        HMENU hMenu = CreatePopupMenu();
+        ASSERT_NE(hMenu, nullptr);
+        const HRESULT hrQuery = contextMenu->QueryContextMenu(hMenu, 0, 1, 0x7FFF, CMF_DEFAULTONLY);
+        EXPECT_TRUE(SUCCEEDED(hrQuery));
+        EXPECT_GE(GetMenuItemCount(hMenu), 0);
+        DestroyMenu(hMenu);
+        contextMenu->Release();
+    }
+    if (parentFolder) {
+        parentFolder->Release();
+    }
+    ILFree(pidl);
+
+    // 验证宿主 ShellContextMenuService 空路径拦截与幂等优雅停机
+    auto& menuSvc = tools3000::core::ShellContextMenuService::instance();
+    EXPECT_FALSE(menuSvc.showAsync(L""));
+    menuSvc.shutdown();
+    menuSvc.shutdown();
+}

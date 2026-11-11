@@ -78,9 +78,13 @@ namespace GestureTriggerMask {
     static constexpr uint32_t AllTriggers = 0xFFFFFFFFu;
 }
 
+/// 原始输入数据包高 1 位标志：标识该按下事件在低级钩子中是否被实际拦截吞没
+inline constexpr uint32_t kRawPacketDownSuppressedFlag = 0x80000000u;
+inline constexpr uint32_t kRawPacketMessageMask        = 0x7FFFFFFFu;
+
 /// 原始输入数据包 (POD, 24 bytes, 0 heap allocations, trivially copyable)
 struct RawInputPacket {
-    uint32_t message = 0;    // WM_MOUSEMOVE, WM_RBUTTONDOWN, etc.
+    uint32_t message = 0;    // WM_MOUSEMOVE, WM_RBUTTONDOWN, etc. (bit 31 = kRawPacketDownSuppressedFlag)
     int32_t x = 0;           // 物理光标 X (绝对坐标)
     int32_t y = 0;           // 物理光标 Y (绝对坐标)
     uint32_t mouseData = 0;  // 滚轮 delta 或 X 键信息
@@ -99,6 +103,7 @@ struct MouseEvent {
     uint8_t modifiers = 0;                                        // 修饰键状态 (MOUSE_MOD_CTRL | MOUSE_MOD_ALT | MOUSE_MOD_SHIFT)
     ScreenEdgeZone edgeZone = ScreenEdgeZone::None;               // 屏幕边缘区域
     bool isTopEdge = false;                                       // 兼容保留字段
+    bool downWasSuppressed = true;                                // 初始按下事件是否被低级钩子拦截吞没
 };
 
 /// 鼠标事件回调，返回 true 表示拦截此事件不传递给下层
@@ -130,6 +135,37 @@ public:
     /// 暂停/恢复钩子处理（钩子仍安装，但不分发事件）
     void setPaused(bool paused);
     bool isPaused() const { return m_paused.load(std::memory_order_relaxed); }
+
+    /// 前台全屏游戏 / 远控虚拟机 / ScopeRule::Disable 0ms 无锁原子原生放行控制
+    void setBypassState(bool bypass, bool restrictToRect = false, RECT bypassRect = {}) noexcept {
+        if (bypass && restrictToRect) {
+            m_bypassLeft.store(bypassRect.left, std::memory_order_relaxed);
+            m_bypassTop.store(bypassRect.top, std::memory_order_relaxed);
+            m_bypassRight.store(bypassRect.right, std::memory_order_relaxed);
+            m_bypassBottom.store(bypassRect.bottom, std::memory_order_relaxed);
+            m_bypassUseRect.store(true, std::memory_order_release);
+        } else {
+            m_bypassUseRect.store(false, std::memory_order_release);
+        }
+        m_bypassHook.store(bypass, std::memory_order_release);
+    }
+    void setBypassHook(bool bypass) noexcept {
+        setBypassState(bypass, false, {});
+    }
+    bool isBypassHook() const noexcept { return m_bypassHook.load(std::memory_order_acquire); }
+    bool shouldBypassAtPoint(POINT pt) const noexcept {
+        if (!m_bypassHook.load(std::memory_order_acquire)) {
+            return false;
+        }
+        if (!m_bypassUseRect.load(std::memory_order_acquire)) {
+            return true;
+        }
+        const int left = m_bypassLeft.load(std::memory_order_relaxed);
+        const int top = m_bypassTop.load(std::memory_order_relaxed);
+        const int right = m_bypassRight.load(std::memory_order_relaxed);
+        const int bottom = m_bypassBottom.load(std::memory_order_relaxed);
+        return pt.x >= left && pt.x < right && pt.y >= top && pt.y < bottom;
+    }
 
     /// 设置事件回调（由 GestureEngine 设置）
     void setEventCallback(MouseEventCallback callback);
@@ -220,6 +256,12 @@ private:
 
     std::atomic<bool> m_installed{false};
     std::atomic<bool> m_paused{false};
+    std::atomic<bool> m_bypassHook{false};
+    std::atomic<bool> m_bypassUseRect{false};
+    std::atomic<int> m_bypassLeft{0};
+    std::atomic<int> m_bypassTop{0};
+    std::atomic<int> m_bypassRight{0};
+    std::atomic<int> m_bypassBottom{0};
     std::atomic<bool> m_triggerButtonDown{false};
     std::atomic<uint32_t> m_hardwareButtonMask{0};
     std::atomic<TriggerMode> m_configuredTriggerMode{TriggerMode::RightOnly};

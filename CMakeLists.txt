@@ -499,7 +499,7 @@ if(BUILD_TESTING)
     find_package(GTest CONFIG REQUIRED)
 
     add_executable(Tools3000Tests
-        tests/unit/test_main.cpp
+        tests/unit/test_main.cpp src/ocr/OcrEngine.cpp
         $<TARGET_OBJECTS:capture_objects>
         $<TARGET_OBJECTS:gesture_objects>
         $<TARGET_OBJECTS:service_objects>
@@ -516,7 +516,7 @@ if(BUILD_TESTING)
     if (MSVC)
         target_compile_options(Tools3000Tests PRIVATE /bigobj)
     endif()
-    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm ntdll userenv ws2_32 dbghelp
+    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm windowsapp ntdll userenv ws2_32 dbghelp
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY} ${OpenCV_LIBS})
     add_dependencies(Tools3000Tests tools3000_content_rs_target Plugin_Gesture Plugin_Capture Plugin_Keycast Plugin_Search Plugin_DialogEnhancer)

@@ -773,8 +773,19 @@ MarkupElement* MarkupEngine::addElement(std::unique_ptr<MarkupElement> element) 
 bool MarkupEngine::undo() {
     if (m_elements.empty()) return false;
 
-    m_undoStack.push_back(std::move(m_elements.back()));
+    auto elem = std::move(m_elements.back());
     m_elements.pop_back();
+    if (elem) {
+        elem->isActive = false;
+        elem->isEditing = false;
+    }
+    for (auto& existing : m_elements) {
+        if (existing) {
+            existing->isActive = false;
+            existing->isEditing = false;
+        }
+    }
+    m_undoStack.push_back(std::move(elem));
 
     // 重新按各序号制式独立校准计数器
     recalculateNextNumbers();
@@ -787,12 +798,22 @@ bool MarkupEngine::redo() {
     if (m_undoStack.empty()) return false;
 
     auto restored = std::move(m_undoStack.back());
-    if (restored->tool == MarkupTool::Number) {
-        const size_t slot = numberFormatSlot(restored->numberFormat);
-        m_nextNumbers[slot] = (std::max)(m_nextNumbers[slot], restored->numberValue + 1);
-    }
-    m_elements.push_back(std::move(restored));
     m_undoStack.pop_back();
+    for (auto& existing : m_elements) {
+        if (existing) {
+            existing->isActive = false;
+            existing->isEditing = false;
+        }
+    }
+    if (restored) {
+        restored->isActive = false;
+        restored->isEditing = false;
+        if (restored->tool == MarkupTool::Number) {
+            const size_t slot = numberFormatSlot(restored->numberFormat);
+            m_nextNumbers[slot] = (std::max)(m_nextNumbers[slot], restored->numberValue + 1);
+        }
+        m_elements.push_back(std::move(restored));
+    }
     LOG_DEBUG("标注引擎: 重做, 剩余元素数={}", m_elements.size());
     return true;
 }
@@ -899,6 +920,7 @@ MarkupElement* MarkupEngine::drawHighlight(cv::Point p1, cv::Point p2, MarkupCol
 }
 
 MarkupElement* MarkupEngine::applyMosaic(cv::Point p1, cv::Point p2, int blockSize) {
+    blockSize = (std::max)(2, blockSize);
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Mosaic;
     elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
@@ -993,6 +1015,7 @@ MarkupElement* MarkupEngine::addWatermark(cv::Point p1, cv::Point p2, const std:
 }
 
 MarkupElement* MarkupEngine::applyInpaint(cv::Point p1, cv::Point p2, int radius) {
+    radius = std::clamp(radius, 1, 32);
     auto elem = std::make_unique<MarkupElement>();
     elem->tool = MarkupTool::Inpaint;
     elem->startPt = cv::Point((std::min)(p1.x, p2.x), (std::min)(p1.y, p2.y));
@@ -2742,7 +2765,7 @@ public:
         x1 = (std::max)(0, x1); y1 = (std::max)(0, y1);
         x2 = (std::min)(canvas.cols, x2); y2 = (std::min)(canvas.rows, y2);
 
-        int bs = element.mosaicBlockSize;
+        const int bs = (std::max)(2, element.mosaicBlockSize);
         for (int yy = y1; yy < y2; yy += bs) {
             for (int xx = x1; xx < x2; xx += bs) {
                 int bw = (std::min)(bs, x2 - xx);
@@ -3359,9 +3382,9 @@ public:
 
         // 2. 学术期刊级多模态引出式详图系统 (Multi-Style Journal & Engineering Callout Loupe)：
         // 支持 4 种可选样式：
-        //   - TangentFrustum (默认): 源取景框 + 中心微十字 + 双外切展开细线 (CVPR / IEEE / Nature 经典局部放大)
+        //   - DashedDirect (默认):  ISO 128 精密虚线取景框 + 中心微十字 + 虚线直连
+        //   - TangentFrustum:       源取景框 + 中心微十字 + 双外切展开细线 (CVPR / IEEE / Nature 经典局部放大)
         //   - ElbowLeader:          源取景框 + 中心微十字 + 135度工程折线引出 (Nature / Cell 解剖图)
-        //   - DashedDirect:         ISO 128 精密虚线取景框 + 中心微十字 + 虚线直连
         //   - CenterPointer:        单根流光细线 + 微燕尾箭头直指被放大正中心靶点
         const double calloutDist = std::hypot(static_cast<double>(lensCenter.x - srcCenter.x),
                                               static_cast<double>(lensCenter.y - srcCenter.y));
@@ -3564,7 +3587,7 @@ public:
                                 g.DrawLine(&linePen, pSrcEdge, pLensEdge);
                             }
                         } else {
-                            // 默认 TangentFrustum：学术期刊双外切展开线（两侧精密外切细线 + 中间 100% 透明零色块污染）
+                            // TangentFrustum：学术期刊双外切展开线（两侧精密外切细线 + 中间 100% 透明零色块污染）
                             drawSourceApertureBox(false);
                             if (d > lensEdgeDist + 2.0f * sqrtDpi) {
                                 const float nx = -leaderUy;
@@ -4099,46 +4122,99 @@ public:
         }
 
         int baseline = 0;
-        double fontScale = 0.6;
-        cv::Size textSz = cv::getTextSize(element.watermarkText, cv::FONT_HERSHEY_SIMPLEX,
-                                           fontScale, 1, &baseline);
+        const double fontScale = 0.6;
+        const cv::Size textSz = cv::getTextSize(
+            element.watermarkText, cv::FONT_HERSHEY_SIMPLEX, fontScale, 1, &baseline);
+        if (textSz.width <= 0 || textSz.height <= 0) return;
 
-        int diag = static_cast<int>(std::sqrt(roiW * roiW + roiH * roiH)) + textSz.width;
-        cv::Mat wmCanvas(diag * 2, diag * 2, canvas.type(), cv::Scalar(0, 0, 0, 0));
+        // 仅在紧凑单印章缓冲 (几十 KB) 上渲染并旋转水印文字，再按网格周期平铺混合至目标 ROI，
+        // 彻底杜绝 (roiW^2 + roiH^2) 32 位整数溢出与超长图 10GB 巨型旋转矩阵 OOM
+        const int stampW = std::clamp(textSz.width + 12, 8, 2048);
+        const int stampH = std::clamp(textSz.height + baseline + 12, 8, 1024);
+        cv::Mat stampSrc(stampH, stampW, CV_8UC4, cv::Scalar(0, 0, 0, 0));
+        cv::putText(stampSrc, element.watermarkText, cv::Point(6, 6 + textSz.height),
+                    cv::FONT_HERSHEY_SIMPLEX, fontScale, cv::Scalar(200, 200, 200, 255), 1, cv::LINE_AA);
 
-        int spacing = std::max(element.watermarkSpacing, textSz.width + 20);
-        int vSpacing = textSz.height + spacing / 2;
-        cv::Scalar wmColor(200, 200, 200);
+        const double angleRad = static_cast<double>(element.watermarkAngle) * (3.14159265358979323846 / 180.0);
+        const double absCos = std::abs(std::cos(angleRad));
+        const double absSin = std::abs(std::sin(angleRad));
+        const int rotW = (std::max)(8, static_cast<int>(std::ceil(stampW * absCos + stampH * absSin)) + 4);
+        const int rotH = (std::max)(8, static_cast<int>(std::ceil(stampW * absSin + stampH * absCos)) + 4);
 
-        for (int y = 0; y < wmCanvas.rows; y += vSpacing) {
-            for (int x = 0; x < wmCanvas.cols; x += spacing) {
-                cv::putText(wmCanvas, element.watermarkText, cv::Point(x, y + textSz.height),
-                            cv::FONT_HERSHEY_SIMPLEX, fontScale, wmColor, 1, cv::LINE_AA);
+        const cv::Point2f srcCenter(static_cast<float>(stampW) * 0.5f, static_cast<float>(stampH) * 0.5f);
+        cv::Mat rotMat = cv::getRotationMatrix2D(srcCenter, element.watermarkAngle, 1.0);
+        rotMat.at<double>(0, 2) += static_cast<double>(rotW) * 0.5 - static_cast<double>(srcCenter.x);
+        rotMat.at<double>(1, 2) += static_cast<double>(rotH) * 0.5 - static_cast<double>(srcCenter.y);
+
+        cv::Mat stampRot;
+        cv::warpAffine(stampSrc, stampRot, rotMat, cv::Size(rotW, rotH),
+                       cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0, 0));
+
+        const int spacing = (std::max)(element.watermarkSpacing, textSz.width + 20);
+        const int vSpacing = (std::max)(16, textSz.height + spacing / 2);
+        const float wmOpacity = std::clamp(element.watermarkOpacity, 0.0f, 1.0f);
+        if (wmOpacity <= 0.001f) return;
+
+        const double cosA = std::cos(-angleRad);
+        const double sinA = std::sin(-angleRad);
+        const double halfRoiW = static_cast<double>(roiW) * 0.5;
+        const double halfRoiH = static_cast<double>(roiH) * 0.5;
+        const double maxRadius = std::hypot(halfRoiW + rotW, halfRoiH + rotH);
+        const int maxGridX = static_cast<int>(std::ceil(maxRadius / static_cast<double>(spacing))) + 1;
+        const int maxGridY = static_cast<int>(std::ceil(maxRadius / static_cast<double>(vSpacing))) + 1;
+
+        for (int gy = -maxGridY; gy <= maxGridY; ++gy) {
+            const double py = static_cast<double>(gy) * static_cast<double>(vSpacing);
+            for (int gx = -maxGridX; gx <= maxGridX; ++gx) {
+                const double px = static_cast<double>(gx) * static_cast<double>(spacing);
+                const int cx = static_cast<int>(std::lround(halfRoiW + px * cosA - py * sinA));
+                const int cy = static_cast<int>(std::lround(halfRoiH + px * sinA + py * cosA));
+                const int drawX = cx - rotW / 2;
+                const int drawY = cy - rotH / 2;
+                if (drawX + rotW <= 0 || drawY + rotH <= 0 || drawX >= roiW || drawY >= roiH) {
+                    continue;
+                }
+                const int sx0 = (std::max)(0, -drawX);
+                const int sy0 = (std::max)(0, -drawY);
+                const int sx1 = (std::min)(rotW, roiW - drawX);
+                const int sy1 = (std::min)(rotH, roiH - drawY);
+                for (int sy = sy0; sy < sy1; ++sy) {
+                    const int canvasY = y1 + drawY + sy;
+                    const auto* srcRow = stampRot.ptr<cv::Vec4b>(sy);
+                    if (canvas.channels() == 4) {
+                        auto* dstRow = canvas.ptr<cv::Vec4b>(canvasY);
+                        for (int sx = sx0; sx < sx1; ++sx) {
+                            const uint8_t a = srcRow[sx][3];
+                            if (a == 0) continue;
+                            const float alpha = (static_cast<float>(a) / 255.0f) * wmOpacity;
+                            auto& pxDst = dstRow[x1 + drawX + sx];
+                            pxDst[0] = static_cast<uchar>(srcRow[sx][0] * alpha + pxDst[0] * (1.0f - alpha));
+                            pxDst[1] = static_cast<uchar>(srcRow[sx][1] * alpha + pxDst[1] * (1.0f - alpha));
+                            pxDst[2] = static_cast<uchar>(srcRow[sx][2] * alpha + pxDst[2] * (1.0f - alpha));
+                        }
+                    } else if (canvas.channels() == 3) {
+                        auto* dstRow = canvas.ptr<cv::Vec3b>(canvasY);
+                        for (int sx = sx0; sx < sx1; ++sx) {
+                            const uint8_t a = srcRow[sx][3];
+                            if (a == 0) continue;
+                            const float alpha = (static_cast<float>(a) / 255.0f) * wmOpacity;
+                            auto& pxDst = dstRow[x1 + drawX + sx];
+                            pxDst[0] = static_cast<uchar>(srcRow[sx][0] * alpha + pxDst[0] * (1.0f - alpha));
+                            pxDst[1] = static_cast<uchar>(srcRow[sx][1] * alpha + pxDst[1] * (1.0f - alpha));
+                            pxDst[2] = static_cast<uchar>(srcRow[sx][2] * alpha + pxDst[2] * (1.0f - alpha));
+                        }
+                    }
+                }
             }
         }
-
-        cv::Point2f wmCenter(static_cast<float>(wmCanvas.cols) / 2.0f, static_cast<float>(wmCanvas.rows) / 2.0f);
-        cv::Mat rotMat = cv::getRotationMatrix2D(wmCenter, element.watermarkAngle, 1.0);
-        cv::Mat wmRotated;
-        cv::warpAffine(wmCanvas, wmRotated, rotMat, wmCanvas.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT);
-
-        int cropX = wmRotated.cols / 2 - roiW / 2;
-        int cropY = wmRotated.rows / 2 - roiH / 2;
-        cropX = std::max(0, std::min(cropX, wmRotated.cols - roiW));
-        cropY = std::max(0, std::min(cropY, wmRotated.rows - roiH));
-        cv::Mat wmCrop = wmRotated(cv::Rect(cropX, cropY, roiW, roiH));
-
-        cv::Rect dstRoi(x1, y1, roiW, roiH);
-        cv::Mat canvasRoi = canvas(dstRoi);
-        double wmAlpha = static_cast<double>(element.watermarkOpacity);
-        cv::addWeighted(wmCrop, wmAlpha, canvasRoi, 1.0, 0, canvasRoi);
     }
 };
 
 class InpaintHandler : public DefaultBoxHandler {
 public:
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
-        LOG_DEBUG("标注引擎: 渲染智能消除 radius={}", element.inpaintRadius);
+        const double safeRadius = std::clamp(static_cast<double>(element.inpaintRadius), 1.0, 32.0);
+        LOG_DEBUG("标注引擎: 渲染智能消除 radius={}", static_cast<int>(safeRadius));
 
         int x1 = std::min(element.startPt.x, element.endPt.x);
         int y1 = std::min(element.startPt.y, element.endPt.y);
@@ -4149,7 +4225,7 @@ public:
         if (x2 <= x1 || y2 <= y1) return;
 
         // 仅在目标选区外扩邻域子块 (Local Padded ROI) 上执行 TELEA 图像修复，避免全屏大图转换与全图扫描开销
-        const int pad = std::max(16, static_cast<int>(std::ceil(element.inpaintRadius * 3.0f)));
+        const int pad = std::max(16, static_cast<int>(std::ceil(safeRadius * 3.0)));
         const int rx1 = std::max(0, x1 - pad);
         const int ry1 = std::max(0, y1 - pad);
         const int rx2 = std::min(canvas.cols, x2 + pad);
@@ -4157,27 +4233,35 @@ public:
         const cv::Rect subRect(rx1, ry1, rx2 - rx1, ry2 - ry1);
         const cv::Rect innerRect(x1 - rx1, y1 - ry1, x2 - x1, y2 - y1);
 
-        cv::Mat subCanvas = canvas(subRect);
-        cv::Mat mask = cv::Mat::zeros(subCanvas.size(), CV_8UC1);
-        cv::rectangle(mask, innerRect, cv::Scalar(255), cv::FILLED);
+        try {
+            cv::Mat subCanvas = canvas(subRect);
+            cv::Mat mask = cv::Mat::zeros(subCanvas.size(), CV_8UC1);
+            cv::rectangle(mask, innerRect, cv::Scalar(255), cv::FILLED);
 
-        cv::Mat bgr;
-        if (subCanvas.channels() == 4) {
-            cv::cvtColor(subCanvas, bgr, cv::COLOR_BGRA2BGR);
-        } else {
-            bgr = subCanvas;
-        }
+            cv::Mat bgr;
+            if (subCanvas.channels() == 4) {
+                cv::cvtColor(subCanvas, bgr, cv::COLOR_BGRA2BGR);
+            } else if (subCanvas.channels() == 3) {
+                bgr = subCanvas;
+            } else if (subCanvas.channels() == 1) {
+                cv::cvtColor(subCanvas, bgr, cv::COLOR_GRAY2BGR);
+            } else {
+                return;
+            }
 
-        cv::Mat result;
-        cv::inpaint(bgr, mask, result, element.inpaintRadius, cv::INPAINT_TELEA);
+            cv::Mat result;
+            cv::inpaint(bgr, mask, result, safeRadius, cv::INPAINT_TELEA);
 
-        cv::Rect dstRoi(x1, y1, x2 - x1, y2 - y1);
-        if (canvas.channels() == 4) {
-            cv::Mat result4;
-            cv::cvtColor(result(innerRect), result4, cv::COLOR_BGR2BGRA);
-            result4.copyTo(canvas(dstRoi));
-        } else {
-            result(innerRect).copyTo(canvas(dstRoi));
+            cv::Rect dstRoi(x1, y1, x2 - x1, y2 - y1);
+            if (canvas.channels() == 4) {
+                cv::Mat result4;
+                cv::cvtColor(result(innerRect), result4, cv::COLOR_BGR2BGRA);
+                result4.copyTo(canvas(dstRoi));
+            } else if (canvas.channels() == 3) {
+                result(innerRect).copyTo(canvas(dstRoi));
+            }
+        } catch (const cv::Exception& e) {
+            LOG_WARN("MarkupEngine: OpenCV inpaint skipped due to exception: {}", e.what());
         }
     }
 };

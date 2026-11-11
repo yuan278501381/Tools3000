@@ -45,6 +45,8 @@ public:
         LOG_INFO("关闭文件对话框增强插件 (DialogEnhancerPlugin)");
         unregisterIpcHandlers();
         DialogEngine::instance().stop();
+        DialogNavigator::instance().shutdownAsyncWorker();
+        ExplorerTracker::instance().shutdown();
     }
 
 private:

@@ -14,7 +14,9 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <functional>
 #include <unordered_map>
@@ -59,7 +61,7 @@ public:
     void recreate();
 
     /// 查询托盘图标是否已成功挂载
-    bool isCreated() const { return m_created; }
+    bool isCreated() const { return m_created.load(std::memory_order_acquire); }
 
     /// 销毁托盘图标
     void destroy();
@@ -76,13 +78,13 @@ public:
 
     /// 同步手势暂停状态（用于菜单勾选和提示文字）
     void setGesturePaused(bool paused);
-    bool isGesturePaused() const { return m_gesturePaused; }
+    bool isGesturePaused() const { return m_gesturePaused.load(std::memory_order_acquire); }
 
     /// 确保已订阅手势暂停事件总线（幂等）
     void ensureEventSubscriptions();
 
     /// 获取当前提示文本（用于状态断言）
-    std::wstring tooltip() const { return m_nid.szTip; }
+    std::wstring tooltip() const;
 
     /// 根据当前 Windows 任务栏深浅主题热刷新托盘图标
     void refreshThemeIcon();
@@ -117,17 +119,20 @@ public:
 
 private:
     TrayIcon();
+    ~TrayIcon();
     TrayIcon(const TrayIcon&) = delete;
     TrayIcon& operator=(const TrayIcon&) = delete;
 
+    mutable std::recursive_mutex m_mutex;
     NOTIFYICONDATAW m_nid{};
     HWND m_hwnd = nullptr;
     HICON m_icon = nullptr;
     UINT m_currentIconId = 0;
     uint64_t m_lastThemeRefreshTick = 0;
     uint64_t m_gesturePauseSubId = 0;
-    bool m_created = false;
-    bool m_gesturePaused = false;
+    uint64_t m_themeChangedSubId = 0;
+    std::atomic<bool> m_created{false};
+    std::atomic<bool> m_gesturePaused{false};
     UINT m_lastRightClickMsg = 0;
     uint64_t m_lastRightClickTick = 0;
     std::unordered_map<TrayMenuId, TrayEventCallback> m_callbacks;

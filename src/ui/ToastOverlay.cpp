@@ -154,14 +154,15 @@ void ToastOverlay::shutdown() {
 }
 
 void ToastOverlay::setEnabled(bool enabled) {
-    m_enabled = enabled;
-    if (!enabled && m_hwnd) {
+    m_enabled.store(enabled, std::memory_order_release);
+    if (!enabled && m_hwnd.load(std::memory_order_acquire)) {
         hideNow();
     }
 }
 
 void ToastOverlay::hideNow() {
-    if (!m_hwnd) return;
+    const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
+    if (!hwnd) return;
     if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
         !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
         tools3000::core::MainThreadDispatcher::instance().post([this]() {
@@ -169,10 +170,10 @@ void ToastOverlay::hideNow() {
         });
         return;
     }
-    KillTimer(m_hwnd, TIMER_ID);
-    KillTimer(m_hwnd, FADE_IN_TIMER_ID);
-    ShowWindow(m_hwnd, SW_HIDE);
-    tools3000::core::accessibility::hideOverlay(m_hwnd);
+    KillTimer(hwnd, TIMER_ID);
+    KillTimer(hwnd, FADE_IN_TIMER_ID);
+    ShowWindow(hwnd, SW_HIDE);
+    tools3000::core::accessibility::hideOverlay(hwnd);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_opacity = 0.0f;
@@ -182,11 +183,11 @@ void ToastOverlay::hideNow() {
 }
 
 bool ToastOverlay::isEnabled() const {
-    return m_enabled;
+    return m_enabled.load(std::memory_order_acquire);
 }
 
 void ToastOverlay::showToast(const std::string& text) {
-    if (!m_enabled || text.empty()) return;
+    if (!m_enabled.load(std::memory_order_acquire) || text.empty()) return;
 
     const std::wstring cleanWide = std::wstring(
         ToastStyle::stripMachineStatusPrefix(tools3000::core::WinUtils::utf8ToWstring(text)));
@@ -201,8 +202,10 @@ void ToastOverlay::showToast(const std::string& text) {
         return;
     }
 
-    if (!m_hwnd) return;
+    const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
+    if (!hwnd) return;
 
+    bool startFadeIn = false;
     {
         std::lock_guard lock(m_mutex);
         m_displayText = cleanText;
@@ -214,31 +217,32 @@ void ToastOverlay::showToast(const std::string& text) {
             m_animScale = 0.94f;
             m_fadingIn = true;
         }
+        startFadeIn = m_fadingIn;
     }
 
     updatePlacement();
 
-    KillTimer(m_hwnd, TIMER_ID);
-    KillTimer(m_hwnd, FADE_IN_TIMER_ID);
+    KillTimer(hwnd, TIMER_ID);
+    KillTimer(hwnd, FADE_IN_TIMER_ID);
 
     // 截图或长截图采集期间主动静默全局 Toast，彻底杜绝通知浮层侵入截取画面
     HWND captureOverlay = FindWindowW(L"Tools3000_CaptureOverlay", nullptr);
     HWND scrollOverlay = FindWindowW(L"Tools3000_ScrollCaptureOverlay", nullptr);
     if ((captureOverlay && IsWindowVisible(captureOverlay)) ||
         (scrollOverlay && IsWindowVisible(scrollOverlay))) {
-        ShowWindow(m_hwnd, SW_HIDE);
+        ShowWindow(hwnd, SW_HIDE);
         return;
     }
 
     render();  // Replace retained layered-window pixels before showing again.
-    ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
-    tools3000::core::accessibility::announceOverlay(m_hwnd, cleanWide);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    tools3000::core::accessibility::announceOverlay(hwnd, cleanWide);
     
-    if (m_fadingIn) {
-        SetTimer(m_hwnd, FADE_IN_TIMER_ID, FADE_INTERVAL_MS, nullptr);
+    if (startFadeIn) {
+        SetTimer(hwnd, FADE_IN_TIMER_ID, FADE_INTERVAL_MS, nullptr);
     } else {
         render();
-        SetTimer(m_hwnd, TIMER_ID, HIDE_TIMEOUT_MS, nullptr);
+        SetTimer(hwnd, TIMER_ID, HIDE_TIMEOUT_MS, nullptr);
     }
 }
 

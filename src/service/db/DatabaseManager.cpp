@@ -1,4 +1,5 @@
 #include "DatabaseManager.h"
+#include "common/AtomicFile.h"
 #include "../MftParser.h"
 #include "../SafeMappedRead.h"
 #include <shlobj.h>
@@ -146,22 +147,62 @@ bool DatabaseManager::saveSnapshot(const std::vector<MftParser*>& parsers) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_dbPath.empty() || parsers.empty()) return false;
 
+    // `MED-14`: Never persist a partial/in-progress index snapshot before every active
+    // volume parser has finished its initial full scan (or loaded a valid snapshot).
+    bool hasValidParser = false;
+    for (const auto* parser : parsers) {
+        if (!parser) continue;
+        hasValidParser = true;
+        if (!parser->isInitialScanDone()) {
+            return false;
+        }
+    }
+    if (!hasValidParser) return false;
+
+    // Reparse-point defense (`CRIT-05`): verify parent chain and target file are non-reparse.
+    const size_t lastSlash = m_dbPath.find_last_of(L"\\/");
+    if (lastSlash != std::wstring::npos) {
+        const std::wstring parentDir = m_dbPath.substr(0, lastSlash);
+        if (!parentDir.empty() && !tools3000::common::ensureDirectorySafeNoReparse(parentDir)) {
+            return false;
+        }
+    }
+    if (tools3000::common::pathContainsReparsePoint(m_dbPath)) {
+        return false;
+    }
+
     static std::atomic<uint64_t> s_tmpSequence{0};
     const uint64_t seq = s_tmpSequence.fetch_add(1, std::memory_order_relaxed) + 1;
     const std::wstring tmpPath = m_dbPath + L"." + std::to_wstring(GetCurrentProcessId()) +
                                  L"_" + std::to_wstring(GetTickCount64()) +
                                  L"_" + std::to_wstring(seq) + L".tmp";
+    if (tools3000::common::pathContainsReparsePoint(tmpPath)) {
+        return false;
+    }
     HANDLE hFile = CreateFileW(
         tmpPath.c_str(),
         GENERIC_WRITE,
         0,
         nullptr,
         CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT,
         nullptr
     );
 
     if (hFile == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    if (GetFileType(hFile) != FILE_TYPE_DISK) {
+        CloseHandle(hFile);
+        DeleteFileW(tmpPath.c_str());
+        return false;
+    }
+    BY_HANDLE_FILE_INFORMATION tmpInfo{};
+    if (!GetFileInformationByHandle(hFile, &tmpInfo) ||
+        (tmpInfo.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (tmpInfo.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        CloseHandle(hFile);
+        DeleteFileW(tmpPath.c_str());
         return false;
     }
 

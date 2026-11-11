@@ -119,22 +119,22 @@ TEST(SearchExpressionTest, EverythingSyntaxParsing) {
     FileRecord spaceFile{8, 0, L"test main.cpp", L"test main.cpp", L"test main.cpp", L"test main.cpp", false};
     EXPECT_TRUE(exprQuote.matches(spaceFile, L'C', L"C:\\test main.cpp"));
 
-    // 8. 跨目录与文件名联合搜索及跨层级通配符 (*中源*账号密码* 与 中源 账号密码)
-    FileRecord nestedPassFile{9, 0, L"账号密码.txt", L"账号密码.txt", L"zhmm.txt", L"zhanghaomima.txt", false};
-    std::wstring nestedPassPath = L"D:\\Chosen\\216-北京中源\\账号密码.txt";
+    // 8. 跨目录与文件名联合搜索及跨层级通配符 (*智造*部署手册* 与 智造 部署手册)
+    FileRecord nestedPassFile{9, 0, L"部署手册.txt", L"部署手册.txt", L"bssc.txt", L"bushushouce.txt", false};
+    std::wstring nestedPassPath = L"D:\\Projects\\216-北辰智造\\部署手册.txt";
 
-    // 通配符跨目录搜索: *中源*账号密码*
-    auto exprWildcardPath = SearchExpression::parse(L"*中源*账号密码*");
+    // 通配符跨目录搜索: *智造*部署手册*
+    auto exprWildcardPath = SearchExpression::parse(L"*智造*部署手册*");
     EXPECT_TRUE(exprWildcardPath.matches(nestedPassFile, L'D', nestedPassPath));
     EXPECT_FALSE(exprWildcardPath.matches(txtFile, L'C', L"C:\\readme.txt"));
 
-    // 多关键词空格组合跨目录搜索: 中源 账号密码
-    auto exprMultiTerms = SearchExpression::parse(L"中源 账号密码");
+    // 多关键词空格组合跨目录搜索: 智造 部署手册
+    auto exprMultiTerms = SearchExpression::parse(L"智造 部署手册");
     EXPECT_TRUE(exprMultiTerms.matches(nestedPassFile, L'D', nestedPassPath));
     EXPECT_FALSE(exprMultiTerms.matches(txtFile, L'C', L"C:\\readme.txt"));
 
-    // 拼音与目录联合匹配: 中源 zhmm
-    auto exprPinyinDir = SearchExpression::parse(L"中源 zhmm");
+    // 拼音与目录联合匹配: 智造 bssc
+    auto exprPinyinDir = SearchExpression::parse(L"智造 bssc");
     EXPECT_TRUE(exprPinyinDir.matches(nestedPassFile, L'D', nestedPassPath));
 
     // 9. 用户真实连字符文件名检索: 019-get_Bom_Lev
@@ -143,7 +143,7 @@ TEST(SearchExpressionTest, EverythingSyntaxParsing) {
     // 10. 盘符与根目录前缀搜索 (c:\, c:\ readme, c:\logs\ *.log)
     auto exprRoot = SearchExpression::parse(L"c:\\");
     EXPECT_TRUE(exprRoot.matches(txtFile, L'C', L"C:\\readme.txt"));
-    EXPECT_FALSE(exprRoot.matches(bomFile, L'D', L"D:\\Chosen\\019.txt"));
+    EXPECT_FALSE(exprRoot.matches(bomFile, L'D', L"D:\\Projects\\019.txt"));
 
     auto exprRootTerms = SearchExpression::parse(L"c:\\ readme");
     EXPECT_TRUE(exprRootTerms.matches(txtFile, L'C', L"C:\\readme.txt"));
@@ -328,10 +328,10 @@ TEST(ContentSearchTest, ExtractorEngines) {
     EXPECT_TRUE(expr3.hasContentFilter());
     EXPECT_EQ(tools3000::core::WinUtils::wstringToUtf8(expr3.getContentQuery()), "工程图纸");
 
-    // 验证多关键词全文穿透检索 (如 content:同心 账号密码，后续词不会被误判为文件名过滤)
-    auto exprMultiContent = SearchExpression::parse(L"content:同心 账号密码");
+    // 验证多关键词全文穿透检索 (如 content:星云 部署手册，后续词不会被误判为文件名过滤)
+    auto exprMultiContent = SearchExpression::parse(L"content:星云 部署手册");
     EXPECT_TRUE(exprMultiContent.hasContentFilter());
-    EXPECT_EQ(tools3000::core::WinUtils::wstringToUtf8(exprMultiContent.getContentQuery()), "同心 账号密码");
+    EXPECT_EQ(tools3000::core::WinUtils::wstringToUtf8(exprMultiContent.getContentQuery()), "星云 部署手册");
     FileRecord recMulti;
     recMulti.fileName = L"备忘录.txt";
     recMulti.normalizedName = L"备忘录.txt";
@@ -394,7 +394,7 @@ TEST(ContentSearchTest, ExtractorEngines) {
     std::wstring testSqlFile = std::wstring(tempPath) + L"tools3000_test_bom.sql";
     {
         std::ofstream ofs(testSqlFile, std::ios::binary);
-        ofs << "/* SAP B1 BOM 物料清单控制 */\n";
+        ofs << "/* 核心物料拓扑结构控制 */\n";
         ofs << "SELECT T0.ItemCode, T0.ItemName FROM OITT T0 WHERE T0.TreeType = 'A';\n";
     }
 
@@ -451,8 +451,8 @@ TEST(ContentSearchTest, ExtractorEngines) {
     std::wstring testGbkFile = std::wstring(tempPath) + L"tools3000_test_gbk.txt";
     {
         std::ofstream ofs(testGbkFile, std::ios::binary);
-        // GBK 编码的中文字符串："北京中源技术中心：开发账号密码"
-        std::wstring wText = L"北京中源技术中心：开发账号密码";
+        // GBK 编码的中文字符串："北辰智造研发中心：开发部署手册"
+        std::wstring wText = L"北辰智造研发中心：开发部署手册";
         UINT cp = IsValidCodePage(936) ? 936 : (IsValidCodePage(54936) ? 54936 : CP_ACP);
         int len = WideCharToMultiByte(cp, 0, wText.c_str(), static_cast<int>(wText.size()), nullptr, 0, nullptr, nullptr);
         std::string gbkText(len, '\0');
@@ -464,12 +464,12 @@ TEST(ContentSearchTest, ExtractorEngines) {
     }
 
     snippets.clear();
-    bool gbkFound = engine.searchFile(testGbkFile, L"账号密码", false, snippets);
+    bool gbkFound = engine.searchFile(testGbkFile, L"部署手册", false, snippets);
     EXPECT_TRUE(gbkFound);
     EXPECT_FALSE(snippets.empty());
     if (!snippets.empty()) {
-        EXPECT_NE(snippets[0].lineContent.find(L"北京中源技术中心"), std::wstring::npos);
-        EXPECT_NE(snippets[0].lineContent.find(L"账号密码"), std::wstring::npos);
+        EXPECT_NE(snippets[0].lineContent.find(L"北辰智造研发中心"), std::wstring::npos);
+        EXPECT_NE(snippets[0].lineContent.find(L"部署手册"), std::wstring::npos);
     }
     DeleteFileW(testGbkFile.c_str());
 
@@ -601,8 +601,8 @@ TEST(RunHistoryTest, PersistenceAndFrecencyCalculation) {
     runMgr.clear();
     EXPECT_EQ(runMgr.size(), 0u);
 
-    const std::wstring testFile1 = L"D:\\Chosen\\216-北京中源\\账号密码.txt";
-    const std::wstring testFile2 = L"D:\\Chosen\\999-SQL\\SAP_RW.txt";
+    const std::wstring testFile1 = L"D:\\Projects\\216-北辰智造\\部署手册.txt";
+    const std::wstring testFile2 = L"D:\\Projects\\999-SQL\\API_GW.txt";
 
     runMgr.recordRun(testFile1);
     EXPECT_EQ(runMgr.getRunCount(testFile1), 1u);
@@ -647,7 +647,7 @@ TEST(SearchHistoryTest, PersistenceAndDeduplication) {
     searchMgr.clear();
     EXPECT_EQ(searchMgr.size(), 0u);
 
-    const std::wstring q1 = L"*中源*账号密码*";
+    const std::wstring q1 = L"*智造*部署手册*";
     const std::wstring q2 = L"ext:docx 订单";
     const std::wstring quotedQuery = L"\"exact, phrase\"\n第二行";
 
@@ -757,19 +757,19 @@ TEST(MftParserTest, IncrementalTypingMultiWordCrossPathSearch) {
     auto parser = std::make_unique<MftParser>();
     std::vector<FileRecordInit> mockRecords;
 
-    // 构造目录: 226-苏州同心 (id = 100)
+    // 构造目录: 226-星云科技 (id = 100)
     FileRecordInit dirRec{};
     dirRec.fileReferenceNumber = 100;
     dirRec.parentFileReferenceNumber = 0;
-    dirRec.fileName = L"226-苏州同心";
+    dirRec.fileName = L"226-星云科技";
     dirRec.isDirectory = true;
     mockRecords.push_back(std::move(dirRec));
 
-    // 构造文件: 账号密码.txt (id = 101, parent = 100)
+    // 构造文件: 部署手册.txt (id = 101, parent = 100)
     FileRecordInit fileRec{};
     fileRec.fileReferenceNumber = 101;
     fileRec.parentFileReferenceNumber = 100;
-    fileRec.fileName = L"账号密码.txt";
+    fileRec.fileName = L"部署手册.txt";
     fileRec.isDirectory = false;
     fileRec.fileSize = 1024;
     mockRecords.push_back(std::move(fileRec));
@@ -777,19 +777,19 @@ TEST(MftParserTest, IncrementalTypingMultiWordCrossPathSearch) {
     EXPECT_TRUE(parser->importSnapshot(std::move(mockRecords), 123456ULL, 0x11223344));
 
     // 模拟连续打字:
-    // 1. 用户先搜 "同" (单字仅匹配文件名/目录名，此时 账号密码.txt 仅在目录命中，缓存被填入)
-    auto res1 = parser->Search(L"同");
+    // 1. 用户先搜 "星" (单字仅匹配文件名/目录名，此时 部署手册.txt 仅在目录命中，缓存被填入)
+    auto res1 = parser->Search(L"星");
     EXPECT_GE(res1.size(), 1u);
 
-    // 2. 用户接着打 "同心" (缩小缓存)
-    auto res2 = parser->Search(L"同心");
+    // 2. 用户接着打 "星云" (缩小缓存)
+    auto res2 = parser->Search(L"星云");
     EXPECT_GE(res2.size(), 1u);
 
-    // 3. 用户追加空格与第二个词 "同心 账号密码" (多词全路径匹配，必须绕开单字文件名缓存，正确命中 账号密码.txt)
-    auto res3 = parser->Search(L"同心 账号密码");
+    // 3. 用户追加空格与第二个词 "星云 部署手册" (多词全路径匹配，必须绕开单字文件名缓存，正确命中 部署手册.txt)
+    auto res3 = parser->Search(L"星云 部署手册");
     ASSERT_EQ(res3.size(), 1u);
-    EXPECT_EQ(res3[0].fileName, L"账号密码.txt");
-    EXPECT_NE(res3[0].fullPath.find(L"226-苏州同心"), std::wstring::npos);
+    EXPECT_EQ(res3[0].fileName, L"部署手册.txt");
+    EXPECT_NE(res3[0].fullPath.find(L"226-星云科技"), std::wstring::npos);
 }
 
 TEST(MftParserTest, SeparableDirMaskPinyinNegationAndMixedOrGroup) {
@@ -799,14 +799,14 @@ TEST(MftParserTest, SeparableDirMaskPinyinNegationAndMixedOrGroup) {
     FileRecordInit dirRec{};
     dirRec.fileReferenceNumber = 100;
     dirRec.parentFileReferenceNumber = 0;
-    dirRec.fileName = L"226-苏州同心";
+    dirRec.fileName = L"226-星云科技";
     dirRec.isDirectory = true;
     mockRecords.push_back(std::move(dirRec));
 
     FileRecordInit fileRec{};
     fileRec.fileReferenceNumber = 101;
     fileRec.parentFileReferenceNumber = 100;
-    fileRec.fileName = L"账号密码.txt";
+    fileRec.fileName = L"部署手册.txt";
     fileRec.isDirectory = false;
     fileRec.fileSize = 1024;
     mockRecords.push_back(std::move(fileRec));
@@ -821,48 +821,48 @@ TEST(MftParserTest, SeparableDirMaskPinyinNegationAndMixedOrGroup) {
     FileRecordInit backupFile{};
     backupFile.fileReferenceNumber = 103;
     backupFile.parentFileReferenceNumber = 102;
-    backupFile.fileName = L"账号密码_旧.txt";
+    backupFile.fileName = L"部署手册_旧.txt";
     backupFile.isDirectory = false;
     backupFile.fileSize = 512;
     mockRecords.push_back(std::move(backupFile));
 
     EXPECT_TRUE(parser->importSnapshot(std::move(mockRecords), 123456ULL, 0x11223344));
 
-    // 1. 取反目录词过滤: "同心 账号密码 !备份" 应排除 "历史备份" 子目录下的文件
-    auto resNegDir = parser->Search(L"同心 账号密码 !备份");
+    // 1. 取反目录词过滤: "星云 部署手册 !备份" 应排除 "历史备份" 子目录下的文件
+    auto resNegDir = parser->Search(L"星云 部署手册 !备份");
     ASSERT_EQ(resNegDir.size(), 1u);
-    EXPECT_EQ(resNegDir[0].fileName, L"账号密码.txt");
+    EXPECT_EQ(resNegDir[0].fileName, L"部署手册.txt");
 
-    // 2. 取反文件名词过滤: "同心 账号密码 !旧" 应排除 "账号密码_旧.txt"
-    auto resNegFile = parser->Search(L"同心 账号密码 !旧");
+    // 2. 取反文件名词过滤: "星云 部署手册 !旧" 应排除 "部署手册_旧.txt"
+    auto resNegFile = parser->Search(L"星云 部署手册 !旧");
     ASSERT_EQ(resNegFile.size(), 1u);
-    EXPECT_EQ(resNegFile[0].fileName, L"账号密码.txt");
+    EXPECT_EQ(resNegFile[0].fileName, L"部署手册.txt");
 
-    // 3. 跨目录拼音首字母 + 中文混合搜索: "sztx 账号密码 !备份" 与 "同心 zhmm !备份"
-    auto resPinyinDir = parser->Search(L"sztx 账号密码 !备份");
+    // 3. 跨目录拼音首字母 + 中文混合搜索: "xykj 部署手册 !备份" 与 "星云 bssc !备份"
+    auto resPinyinDir = parser->Search(L"xykj 部署手册 !备份");
     ASSERT_EQ(resPinyinDir.size(), 1u);
-    EXPECT_EQ(resPinyinDir[0].fileName, L"账号密码.txt");
+    EXPECT_EQ(resPinyinDir[0].fileName, L"部署手册.txt");
 
-    auto resPinyinFile = parser->Search(L"同心 zhmm !备份");
+    auto resPinyinFile = parser->Search(L"星云 bssc !备份");
     ASSERT_EQ(resPinyinFile.size(), 1u);
-    EXPECT_EQ(resPinyinFile[0].fileName, L"账号密码.txt");
+    EXPECT_EQ(resPinyinFile[0].fileName, L"部署手册.txt");
 
-    // 4. 混合多子句 OR 组 (含 folder: 与普通词): "folder:不存在|苏州 账号密码 !备份"
-    auto resMixedOr = parser->Search(L"folder:不存在|苏州 账号密码 !备份");
+    // 4. 混合多子句 OR 组 (含 folder: 与普通词): "folder:不存在|星云 部署手册 !备份"
+    auto resMixedOr = parser->Search(L"folder:不存在|星云 部署手册 !备份");
     ASSERT_EQ(resMixedOr.size(), 1u);
-    EXPECT_EQ(resMixedOr[0].fileName, L"账号密码.txt");
+    EXPECT_EQ(resMixedOr[0].fileName, L"部署手册.txt");
 
-    // 5. 多后缀通配符智能并集: "*.log *.txt"、"*.log;*.txt" 与 "同心 *.log *.txt !备份 !旧"
+    // 5. 多后缀通配符智能并集: "*.log *.txt"、"*.log;*.txt" 与 "星云 *.log *.txt !备份 !旧"
     auto exprMultiWildcard = SearchExpression::parse(L"*.log *.txt");
     EXPECT_FALSE(exprMultiWildcard.requiresFullPath());
     EXPECT_TRUE(exprMultiWildcard.isFullySeparable());
     auto resMultiExt = parser->Search(L"*.log *.txt !备份 !旧");
     ASSERT_EQ(resMultiExt.size(), 1u);
-    EXPECT_EQ(resMultiExt[0].fileName, L"账号密码.txt");
+    EXPECT_EQ(resMultiExt[0].fileName, L"部署手册.txt");
 
-    auto resSemiExt = parser->Search(L"同心 *.log;*.txt !备份 !旧");
+    auto resSemiExt = parser->Search(L"星云 *.log;*.txt !备份 !旧");
     ASSERT_EQ(resSemiExt.size(), 1u);
-    EXPECT_EQ(resSemiExt[0].fileName, L"账号密码.txt");
+    EXPECT_EQ(resSemiExt[0].fileName, L"部署手册.txt");
 }
 
 TEST(PipeProtocolTest, HeaderRoundTripsPayloadSize) {
@@ -1270,7 +1270,7 @@ TEST(UsnParserTest, ParseRecordV2) {
 }
 
 TEST(UsnParserTest, ParseRecordV3) {
-    const std::wstring fileName = L"中源 账号密码.txt";
+    const std::wstring fileName = L"智造 部署手册.txt";
     const DWORD nameByteLen = static_cast<DWORD>(fileName.size() * sizeof(wchar_t));
     DWORD recordLen = static_cast<DWORD>(sizeof(USN_RECORD_V3) + nameByteLen);
     recordLen = (recordLen + 7) & ~7;
@@ -1298,7 +1298,7 @@ TEST(UsnParserTest, ParseRecordV3) {
     EXPECT_EQ(parsed.reason, USN_REASON_FILE_DELETE | USN_REASON_CLOSE);
     EXPECT_EQ(parsed.fileAttributes, FILE_ATTRIBUTE_NORMAL);
     EXPECT_EQ(parsed.timeStamp, 133456789111111111ULL);
-    EXPECT_EQ(parsed.fileName, L"中源 账号密码.txt");
+    EXPECT_EQ(parsed.fileName, L"智造 部署手册.txt");
     EXPECT_EQ(parsed.recordLength, recordLen);
 }
 
@@ -1421,7 +1421,7 @@ TEST(MftParserHydrationTest, RecycleBinRejectionAndGhostPruning) {
     FileRecordInit deletedFile{};
     deletedFile.fileReferenceNumber = 1003;
     deletedFile.parentFileReferenceNumber = 1002;
-    deletedFile.fileName = L"中源 账号密码.txt";
+    deletedFile.fileName = L"智造 部署手册.txt";
     deletedFile.isDirectory = false;
     deletedFile.fileAttributes = FILE_ATTRIBUTE_NORMAL;
     records.push_back(std::move(deletedFile));
@@ -1429,26 +1429,26 @@ TEST(MftParserHydrationTest, RecycleBinRejectionAndGhostPruning) {
     FileRecordInit normalFile{};
     normalFile.fileReferenceNumber = 1004;
     normalFile.parentFileReferenceNumber = 0;
-    normalFile.fileName = L"正常 账号密码.txt";
+    normalFile.fileName = L"正常 部署手册.txt";
     normalFile.isDirectory = false;
     normalFile.fileAttributes = FILE_ATTRIBUTE_NORMAL;
     records.push_back(std::move(normalFile));
 
     EXPECT_TRUE(parser.importSnapshot(std::move(records), 1000, parser.getVolumeSerialNumber()));
 
-    // 1. 普通搜索：回收站内的中源账号密码绝不返回，正常文件正常返回
-    auto resNormal = parser.Search(L"账号密码");
+    // 1. 普通搜索：回收站内的智造部署手册绝不返回，正常文件正常返回
+    auto resNormal = parser.Search(L"部署手册");
     ASSERT_EQ(resNormal.size(), 1u);
-    EXPECT_EQ(resNormal[0].fileName, L"正常 账号密码.txt");
+    EXPECT_EQ(resNormal[0].fileName, L"正常 部署手册.txt");
 
-    // 2. 搜索中源账号密码：命中但因为在回收站中，必须返回 0
-    auto resDeleted = parser.Search(L"中源 账号密码");
+    // 2. 搜索智造部署手册：命中但因为在回收站中，必须返回 0
+    auto resDeleted = parser.Search(L"智造 部署手册");
     EXPECT_EQ(resDeleted.size(), 0u);
 
     // 3. 显式搜索包含 recycle 关键字时允许呈现
-    auto resExplicit = parser.Search(L"中源 recycle");
+    auto resExplicit = parser.Search(L"智造 recycle");
     EXPECT_EQ(resExplicit.size(), 1u);
-    EXPECT_EQ(resExplicit[0].fileName, L"中源 账号密码.txt");
+    EXPECT_EQ(resExplicit[0].fileName, L"智造 部署手册.txt");
 }
 
 TEST(MftParserHydrationTest, CaseInsensitiveExcludePatterns) {
@@ -1498,14 +1498,14 @@ TEST(MftParserHydrationTest, RecycleBinRejectionUnconditionalEvenWhenValidationD
     FileRecordInit deletedFile{};
     deletedFile.fileReferenceNumber = 3002;
     deletedFile.parentFileReferenceNumber = 3001;
-    deletedFile.fileName = L"中源 账号密码.txt";
+    deletedFile.fileName = L"智造 部署手册.txt";
     deletedFile.isDirectory = false;
     deletedFile.fileAttributes = FILE_ATTRIBUTE_NORMAL;
     records.push_back(std::move(deletedFile));
 
     EXPECT_TRUE(parser.importSnapshot(std::move(records), 1000, parser.getVolumeSerialNumber()));
 
-    auto res = parser.Search(L"中源 账号密码");
+    auto res = parser.Search(L"智造 部署手册");
     EXPECT_EQ(res.size(), 0u);
 }
 
@@ -1540,8 +1540,8 @@ TEST(MftParserHydrationTest, SmartPathTieringPrioritizesOriginalOverChatAndTempA
         records.push_back(std::move(f));
     };
 
-    // 1. 普通用户工作目录：C:\Chosen\解决高级总账科目规则报错.txt (writeTime = 5000)
-    addDir(4001, 0, L"Chosen");
+    // 1. 普通用户工作目录：C:\Projects\解决高级总账科目规则报错.txt (writeTime = 5000)
+    addDir(4001, 0, L"Projects");
     addFile(4002, 4001, L"解决高级总账科目规则报错.txt", 5000);
 
     // 2. 微信聊天文件目录：C:\Documents\xwechat_files\wxid_1\msg\file\2026-09\解决高级总账科目规则报错.txt (writeTime = 8000, 比原始件更新)
@@ -1568,9 +1568,9 @@ TEST(MftParserHydrationTest, SmartPathTieringPrioritizesOriginalOverChatAndTempA
 
     auto res = parser.Search(L"解决", 100);
     // Recent 下的自动影子 .lnk 默认被过滤，剩余 4 条按语义分层排序：
-    // [0] Chosen 普通用户目录原始文件 -> [1] xwechat_files 聊天副本 -> [2] Desktop 普通 .lnk -> [3] Temp 临时目录文件
+    // [0] Projects 普通用户目录原始文件 -> [1] xwechat_files 聊天副本 -> [2] Desktop 普通 .lnk -> [3] Temp 临时目录文件
     ASSERT_EQ(res.size(), 4u);
-    EXPECT_NE(res[0].fullPath.find(L"\\Chosen\\"), std::wstring::npos);
+    EXPECT_NE(res[0].fullPath.find(L"\\Projects\\"), std::wstring::npos);
     EXPECT_NE(res[1].fullPath.find(L"\\xwechat_files\\"), std::wstring::npos);
     EXPECT_NE(res[2].fullPath.find(L"解决快捷方式.lnk"), std::wstring::npos);
     EXPECT_NE(res[3].fullPath.find(L"\\Temp\\"), std::wstring::npos);
@@ -1587,7 +1587,7 @@ TEST(SearchExpressionTest, LazyDiskSizeAndDateModifiedFilterAndRanking) {
     FileRecord containPdf{3, 0, L"客户解决方案.pdf", L"客户解决方案.pdf", L"khjjfa.pdf", L"kehujiejuefangan.pdf", false, 0, 20480};
 
     auto exprCombo = SearchExpression::parse(L"解决 ext:pdf size:>10kb sort:size");
-    EXPECT_TRUE(exprCombo.matches(exactPdf, L'D', L"D:\\Chosen\\解决.pdf"));
+    EXPECT_TRUE(exprCombo.matches(exactPdf, L'D', L"D:\\Projects\\解决.pdf"));
     EXPECT_EQ(exprCombo.calculateRank(exactPdf), 1);   // "解决.pdf" starts with "解决"
     EXPECT_EQ(exprCombo.calculateRank(prefixPdf), 1);  // "解决方案汇报.pdf" starts with "解决"
     EXPECT_EQ(exprCombo.calculateRank(containPdf), 4); // "客户解决方案.pdf" contains "解决"
@@ -1609,12 +1609,12 @@ TEST(SearchExpressionTest, LazyDiskSizeAndDateModifiedFilterAndRanking) {
     FileRecord sepFile = prefixPdf;
     sepFile.lastWriteTime = uliSep.QuadPart;
 
-    EXPECT_TRUE(SearchExpression::parse(L"解决 dm:2026-09").matches(sepFile, L'D', L"D:\\Chosen\\解决方案汇报.pdf"));
-    EXPECT_TRUE(SearchExpression::parse(L"解决 dm:2026-09-18").matches(sepFile, L'D', L"D:\\Chosen\\解决方案汇报.pdf"));
-    EXPECT_TRUE(SearchExpression::parse(L"解决 dm:>=2026-09-01").matches(sepFile, L'D', L"D:\\Chosen\\解决方案汇报.pdf"));
-    EXPECT_TRUE(SearchExpression::parse(L"解决 dm:2026-09-01..2026-09-30").matches(sepFile, L'D', L"D:\\Chosen\\解决方案汇报.pdf"));
-    EXPECT_FALSE(SearchExpression::parse(L"解决 dm:2026-08").matches(sepFile, L'D', L"D:\\Chosen\\解决方案汇报.pdf"));
-    EXPECT_FALSE(SearchExpression::parse(L"解决 dm:<2026-09-01").matches(sepFile, L'D', L"D:\\Chosen\\解决方案汇报.pdf"));
+    EXPECT_TRUE(SearchExpression::parse(L"解决 dm:2026-09").matches(sepFile, L'D', L"D:\\Projects\\解决方案汇报.pdf"));
+    EXPECT_TRUE(SearchExpression::parse(L"解决 dm:2026-09-18").matches(sepFile, L'D', L"D:\\Projects\\解决方案汇报.pdf"));
+    EXPECT_TRUE(SearchExpression::parse(L"解决 dm:>=2026-09-01").matches(sepFile, L'D', L"D:\\Projects\\解决方案汇报.pdf"));
+    EXPECT_TRUE(SearchExpression::parse(L"解决 dm:2026-09-01..2026-09-30").matches(sepFile, L'D', L"D:\\Projects\\解决方案汇报.pdf"));
+    EXPECT_FALSE(SearchExpression::parse(L"解决 dm:2026-08").matches(sepFile, L'D', L"D:\\Projects\\解决方案汇报.pdf"));
+    EXPECT_FALSE(SearchExpression::parse(L"解决 dm:<2026-09-01").matches(sepFile, L'D', L"D:\\Projects\\解决方案汇报.pdf"));
 
     // 3. 验证真实磁盘文件在 MFT 内存记录 fileSize == 0 / lastWriteTime == 0 时的按需 GetFileAttributesExW 探测
     wchar_t tempDir[MAX_PATH] = {0};
@@ -2726,10 +2726,10 @@ TEST(ContentSearchProgressiveTest, LongSingleLineWindowDecodeNoisePruningAndSubf
     };
 
     addDir(7001, 0, L"repo");
-    addDir(7002, 7001, L"SAPB1Help");
+    addDir(7002, 7001, L"StaticApiDocs");
     addFile(7003, 7002, L"OWOR.htm", 8192, 133500000000000000ULL);
 
-    addDir(7010, 7001, L"SBOTerminal");
+    addDir(7010, 7001, L"NebulaTerminal");
     addFile(7011, 7010, L"wo_sync.sql", 4096, 133500000000000000ULL);
 
     addDir(7020, 7010, L".venv");
@@ -2746,15 +2746,15 @@ TEST(ContentSearchProgressiveTest, LongSingleLineWindowDecodeNoisePruningAndSubf
     ContentCandidateOptions candOpts{};
     candOpts.dialogPriorities = {
         {L"C:\\repo", 6.0},
-        {L"C:\\repo\\SBOTerminal", 18.0},
+        {L"C:\\repo\\NebulaTerminal", 18.0},
     };
 
     const auto filterExpr = SearchExpression::parse(L"content:update owor");
     const auto candidates = parser.CollectContentCandidates(filterExpr, candOpts);
 
     ASSERT_EQ(candidates.size(), 2u);
-    EXPECT_NE(candidates[0].fullPath.find(L"SBOTerminal\\wo_sync.sql"), std::wstring::npos);
-    EXPECT_NE(candidates[1].fullPath.find(L"SAPB1Help\\OWOR.htm"), std::wstring::npos);
+    EXPECT_NE(candidates[0].fullPath.find(L"NebulaTerminal\\wo_sync.sql"), std::wstring::npos);
+    EXPECT_NE(candidates[1].fullPath.find(L"StaticApiDocs\\OWOR.htm"), std::wstring::npos);
     EXPECT_GT(candidates[0].priorityScore, candidates[1].priorityScore);
 }
 
@@ -2832,12 +2832,12 @@ TEST(SearchExpressionTest, SeparableDirectoryMaskMultiTermSearchPerformanceAndAc
     std::vector<FileRecordInit> records;
     records.reserve(50010);
 
-    // 根下两个主目录：Chosen (FRN 10) 与 Workspace (FRN 20)
-    records.push_back(FileRecordInit{10, 5, L"Chosen", true, FILE_ATTRIBUTE_DIRECTORY, 0, 0, 0});
-    records.push_back(FileRecordInit{11, 10, L"226-苏州同心", true, FILE_ATTRIBUTE_DIRECTORY, 0, 0, 0});
-    records.push_back(FileRecordInit{12, 11, L"账号密码.txt", false, FILE_ATTRIBUTE_ARCHIVE, 295, 100, 200});
+    // 根下两个主目录：Projects (FRN 10) 与 Workspace (FRN 20)
+    records.push_back(FileRecordInit{10, 5, L"Projects", true, FILE_ATTRIBUTE_DIRECTORY, 0, 0, 0});
+    records.push_back(FileRecordInit{11, 10, L"226-星云科技", true, FILE_ATTRIBUTE_DIRECTORY, 0, 0, 0});
+    records.push_back(FileRecordInit{12, 11, L"部署手册.txt", false, FILE_ATTRIBUTE_ARCHIVE, 295, 100, 200});
     records.push_back(FileRecordInit{13, 11, L".git", true, FILE_ATTRIBUTE_DIRECTORY, 0, 0, 0});
-    records.push_back(FileRecordInit{14, 13, L"账号密码_git_noise.txt", false, FILE_ATTRIBUTE_ARCHIVE, 128, 100, 200});
+    records.push_back(FileRecordInit{14, 13, L"部署手册_git_noise.txt", false, FILE_ATTRIBUTE_ARCHIVE, 128, 100, 200});
 
     // 构造 50,000 个深层目录与普通文件噪声，验证多词跨目录查询在零路径分配下的极速过滤
     records.push_back(FileRecordInit{20, 5, L"Workspace", true, FILE_ATTRIBUTE_DIRECTORY, 0, 0, 0});
@@ -2858,13 +2858,13 @@ TEST(SearchExpressionTest, SeparableDirectoryMaskMultiTermSearchPerformanceAndAc
     const auto start = std::chrono::steady_clock::now();
     SearchExcludeOptions excludeOpts;
     excludeOpts.patterns = {L".git", L"node_modules"};
-    const auto results = parser.Search(L"同心 账号密码", 100, excludeOpts);
+    const auto results = parser.Search(L"星云 部署手册", 100, excludeOpts);
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
 
     ASSERT_EQ(results.size(), 1u);
-    EXPECT_EQ(results[0].fileName, L"账号密码.txt");
-    EXPECT_EQ(results[0].fullPath, L"D:\\Chosen\\226-苏州同心\\账号密码.txt");
+    EXPECT_EQ(results[0].fileName, L"部署手册.txt");
+    EXPECT_EQ(results[0].fullPath, L"D:\\Projects\\226-星云科技\\部署手册.txt");
     EXPECT_LT(elapsedMs, 100);
 }
 
@@ -2889,9 +2889,9 @@ TEST(SearchExpressionTest, MultiKeywordStemMatchingAndBestMatchRanking) {
     EXPECT_EQ(exprExtAndKeyword.calculateRank(noiseLog), 7);
 
     // 2. 验证多关键词主干全词命中优于单主干词+目录词命中
-    FileRecord bothInStem{10, 0, L"同心账号密码汇总.txt", L"同心账号密码汇总.txt", L"txzhmmhz.txt", L"tongxinzhanghaomimahuizong.txt", false};
-    FileRecord oneInStem{11, 0, L"账号密码.txt", L"账号密码.txt", L"zhmm.txt", L"zhanghaomima.txt", false};
-    auto exprMulti = SearchExpression::parse(L"同心 账号密码");
+    FileRecord bothInStem{10, 0, L"星云部署手册汇总.txt", L"星云部署手册汇总.txt", L"xybsschz.txt", L"xingyunbushushoucehuizong.txt", false};
+    FileRecord oneInStem{11, 0, L"部署手册.txt", L"部署手册.txt", L"bssc.txt", L"bushushouce.txt", false};
+    auto exprMulti = SearchExpression::parse(L"星云 部署手册");
     EXPECT_LT(exprMulti.calculateRank(bothInStem), exprMulti.calculateRank(oneInStem));
 }
 
@@ -2926,20 +2926,20 @@ TEST(RunHistorySnapshotTest, LockFreeBloomPreFilterAndFrecencyLookup) {
 
     const auto emptySnap = mgr.captureSnapshot(1000000ULL);
     EXPECT_TRUE(emptySnap.empty());
-    EXPECT_EQ(emptySnap.getRunCount(L"D:\\Chosen\\report.xlsx"), 0u);
+    EXPECT_EQ(emptySnap.getRunCount(L"D:\\Projects\\report.xlsx"), 0u);
 
-    mgr.recordRun(L"D:\\Chosen\\report.xlsx");
-    mgr.recordRun(L"D:\\Chosen\\report.xlsx");
-    mgr.recordRun(L"D:\\Chosen\\once.txt");
+    mgr.recordRun(L"D:\\Projects\\report.xlsx");
+    mgr.recordRun(L"D:\\Projects\\report.xlsx");
+    mgr.recordRun(L"D:\\Projects\\once.txt");
 
     const auto snap = mgr.captureSnapshot();
     EXPECT_FALSE(snap.empty());
-    EXPECT_EQ(snap.getRunCount(L"d:/chosen/report.xlsx"), 2u);
-    EXPECT_EQ(snap.getRunCount(L"D:\\Chosen\\once.txt"), 1u);
-    EXPECT_EQ(snap.getRunCount(L"D:\\Chosen\\never_opened_file.txt"), 0u);
+    EXPECT_EQ(snap.getRunCount(L"d:/projects/report.xlsx"), 2u);
+    EXPECT_EQ(snap.getRunCount(L"D:\\Projects\\once.txt"), 1u);
+    EXPECT_EQ(snap.getRunCount(L"D:\\Projects\\never_opened_file.txt"), 0u);
 
-    const auto statsTwice = snap.lookup(L"D:\\Chosen\\report.xlsx");
-    const auto statsOnce = snap.lookup(L"D:\\Chosen\\once.txt");
+    const auto statsTwice = snap.lookup(L"D:\\Projects\\report.xlsx");
+    const auto statsOnce = snap.lookup(L"D:\\Projects\\once.txt");
     EXPECT_GT(statsTwice.frecencyScore, statsOnce.frecencyScore);
 
     mgr.clear();
@@ -2969,3 +2969,122 @@ TEST(WinUtilsNativeIconTest, ExtractsPerFileEmbeddedIconAndExtensionFallback) {
 
 
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-11 全量审计防回退回归测试 (SearchCancellation / PipeClientAuth / LinearRegex / PdfExtractor)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(SearchCancellationRegressionTest, ServerEpochImmuneToClockRollbackAndHugeQueryId) {
+    tools3000::service::query::QueryEpochTracker tracker;
+    tracker.reset();
+
+    // 即使客户端曾发送接近 UINT64_MAX 的异常时间戳 queryId，服务端世代依然单调递增不锁死
+    EXPECT_TRUE(tracker.observe(UINT64_MAX - 5));
+    const uint64_t epoch1 = tracker.issueServerEpoch(true);
+    EXPECT_EQ(epoch1, 1u);
+    EXPECT_FALSE(tracker.isServerEpochStale(epoch1));
+
+    // 模拟客户端时钟回拨后新请求到达：服务端世代递增为 2，旧查询立即判定过期
+    const uint64_t epoch2 = tracker.issueServerEpoch(true);
+    EXPECT_EQ(epoch2, 2u);
+    EXPECT_TRUE(tracker.isServerEpochStale(epoch1));
+    EXPECT_FALSE(tracker.isServerEpochStale(epoch2));
+
+    // 未跟踪请求 (tracked=false) 返回 0 且永不报过期
+    EXPECT_EQ(tracker.issueServerEpoch(false), 0u);
+    EXPECT_FALSE(tracker.isServerEpochStale(0u));
+
+    // cancelAll 同步推进服务端世代，使当前进行中的 epoch2 立即中止
+    tracker.cancelAll();
+    EXPECT_TRUE(tracker.isServerEpochStale(epoch2));
+}
+
+TEST(PipeClientAuthIsolationTest, BlocksOtherUserProfilesForStandardUsers) {
+    using tools3000::service::pipe_auth::PipeClientAuthSession;
+    using tools3000::service::pipe_auth::isPathAllowedForClient;
+
+    // 1. 未授权会话一律拒绝
+    PipeClientAuthSession unauth;
+    unauth.authorized = false;
+    EXPECT_FALSE(isPathAllowedForClient(L"C:\\Windows\\notepad.exe", unauth));
+
+    // 2. 标准非管理员用户 Alice：允许自身目录、Public 共享目录与其他非用户盘符，严禁窥探其他本地账户目录
+    PipeClientAuthSession alice;
+    alice.authorized = true;
+    alice.isAdmin = false;
+    alice.usersRootPrefix = L"c:\\users\\";
+    alice.userProfilePrefix = L"c:\\users\\alice\\";
+
+    EXPECT_TRUE(isPathAllowedForClient(L"C:\\Users\\Alice\\Documents\\budget_2026.xlsx", alice));
+    EXPECT_TRUE(isPathAllowedForClient(L"c:/users/ALICE/Desktop/todo.md", alice));
+    EXPECT_TRUE(isPathAllowedForClient(L"C:\\Users\\Public\\Downloads\\installer.msi", alice));
+    EXPECT_TRUE(isPathAllowedForClient(L"C:\\Users\\Default\\NTUSER.DAT", alice));
+    EXPECT_TRUE(isPathAllowedForClient(L"D:\\Projects\\Tools3000\\CMakeLists.txt", alice));
+    EXPECT_TRUE(isPathAllowedForClient(L"C:\\Program Files\\Tools3000\\Tools3000.exe", alice));
+
+    EXPECT_FALSE(isPathAllowedForClient(L"C:\\Users\\Bob\\Documents\\payroll_secret.xlsx", alice));
+    EXPECT_FALSE(isPathAllowedForClient(L"c:/users/bob/AppData/Local/token.json", alice));
+    EXPECT_FALSE(isPathAllowedForClient(L"C:\\Users\\Administrator\\.ssh\\id_ed25519", alice));
+    // 防御前缀碰撞：Alice2 不是 Alice
+    EXPECT_FALSE(isPathAllowedForClient(L"C:\\Users\\Alice2\\notes.txt", alice));
+
+    // 3. 管理员会话允许全盘检索
+    PipeClientAuthSession admin;
+    admin.authorized = true;
+    admin.isAdmin = true;
+    admin.usersRootPrefix = L"c:\\users\\";
+    admin.userProfilePrefix = L"c:\\users\\admin\\";
+    EXPECT_TRUE(isPathAllowedForClient(L"C:\\Users\\Bob\\Documents\\payroll_secret.xlsx", admin));
+}
+
+TEST(SearchExpressionLinearRegexTest, ResistsCatastrophicBacktrackingWithoutThrowing) {
+    // 构造经典 ReDoS 灾难性回溯表达式与恶意近似匹配文件名 (64 个 'a' + '!')
+    const std::wstring evilName = std::wstring(64, L'a') + L"!";
+    FileRecord evilRec{1, 0, evilName, evilName, evilName, evilName, false, 0, 128, 0, 0};
+
+    const auto start = std::chrono::steady_clock::now();
+    auto redosExpr = SearchExpression::parse(L"regex:(a+)+$");
+    const bool matched = redosExpr.matches(evilRec, L'C', L"C:\\Temp\\" + evilName);
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    EXPECT_FALSE(matched);
+    EXPECT_LT(elapsedMs, 100);
+
+    // 验证正常正则匹配与畸形正则零异常容错
+    FileRecord reportRec{2, 0, L"Report_2026.pdf", L"report_2026.pdf", L"report_2026.pdf", L"report_2026.pdf", false};
+    auto validRegex = SearchExpression::parse(L"regex:^report_[0-9]+\\.pdf$");
+    EXPECT_TRUE(validRegex.matches(reportRec, L'D', L"D:\\Docs\\Report_2026.pdf"));
+
+    EXPECT_NO_THROW({
+        auto invalidRegex = SearchExpression::parse(L"regex:([unclosed_group");
+        EXPECT_FALSE(invalidRegex.matches(reportRec, L'D', L"D:\\Docs\\Report_2026.pdf"));
+    });
+}
+
+TEST(PdfExtractorSafetyTest, HandlesMalformedPredictorOverflowAndHugeBfRangeSafely) {
+    using namespace tools3000_content_search_test_helpers;
+
+    // 构造畸形超大 Columns PNG Predictor 与 4GB 跨度 bfrange CMap，验证无整数溢出或 OOM 崩溃
+    const std::string hugeCmap = compressZlibBytes(
+        "begincmap\n1 beginbfrange\n<00000000> <ffffffff> <0041>\nendbfrange\nendcmap\n");
+    const std::string dummyPayload = compressZlibBytes("BT /F1 12 Tf <00000001> Tj ET");
+
+    std::string craftedPdf = "%PDF-1.7\n";
+    craftedPdf += "1 0 obj\n<< /Type /Font /Subtype /Type0 /ToUnicode 2 0 R >>\nendobj\n";
+    craftedPdf += "2 0 obj\n<< /Filter /FlateDecode /Length " + std::to_string(hugeCmap.size()) + " >>\nstream\n";
+    craftedPdf.append(hugeCmap);
+    craftedPdf += "\nendstream\nendobj\n";
+    craftedPdf += "3 0 obj\n<< /Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 1073741824 /Colors 4 /BitsPerComponent 8 >> /Length " +
+                  std::to_string(dummyPayload.size()) + " >>\nstream\n";
+    craftedPdf.append(dummyPayload);
+    craftedPdf += "\nendstream\nendobj\n%%EOF\n";
+
+    std::wstring outText;
+    EXPECT_NO_THROW({
+        (void)tools3000::service::content::PdfExtractor::extractPdfTextFromMemory(
+            reinterpret_cast<const uint8_t*>(craftedPdf.data()),
+            craftedPdf.size(),
+            outText);
+    });
+}

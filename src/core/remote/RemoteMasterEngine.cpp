@@ -15,9 +15,34 @@
 
 #pragma comment(lib, "imm32.lib")
 
+#ifndef IMC_SETOPENSTATUS
+#define IMC_SETOPENSTATUS 0x0006
+#endif
+
 namespace tools3000::core {
 
 namespace {
+
+HKL findInstalledEnglishKeyboardLayout() noexcept {
+    const int count = GetKeyboardLayoutList(0, nullptr);
+    if (count <= 0) return nullptr;
+    std::vector<HKL> layouts(static_cast<size_t>(count), nullptr);
+    const int fetched = GetKeyboardLayoutList(count, layouts.data());
+    if (fetched <= 0) return nullptr;
+
+    HKL fallbackEnglish = nullptr;
+    for (int i = 0; i < fetched; ++i) {
+        const HKL hkl = layouts[static_cast<size_t>(i)];
+        const LANGID langId = LOWORD(HandleToUlong(hkl));
+        if (langId == MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US)) {
+            return hkl;
+        }
+        if (!fallbackEnglish && PRIMARYLANGID(langId) == LANG_ENGLISH) {
+            fallbackEnglish = hkl;
+        }
+    }
+    return fallbackEnglish;
+}
 
 std::string toLowerAscii(std::string_view s) {
     std::string result;
@@ -172,6 +197,7 @@ bool RemoteMasterEngine::initialize() {
     HWND prevHwnd = m_activeRemoteHwnd.exchange(isRemote ? curFg : nullptr, std::memory_order_relaxed);
 
     if (isRemote) {
+        m_lastRemoteHwnd.store(curFg, std::memory_order_release);
         {
             std::lock_guard lock(m_mutex);
             m_activeRemoteProcess = procName;
@@ -206,6 +232,8 @@ void RemoteMasterEngine::shutdown() {
         wasImeSanitized = m_imeSanitized.load(std::memory_order_relaxed);
         m_isRemoteForeground.store(false, std::memory_order_relaxed);
         m_activeRemoteHwnd.store(nullptr, std::memory_order_relaxed);
+        m_lastRemoteHwnd.store(nullptr, std::memory_order_relaxed);
+        m_pendingProbeHwnd.store(nullptr, std::memory_order_relaxed);
         m_activeRemoteProcess.clear();
         m_cachedForegroundHwnd = nullptr;
         m_cachedIsRemote = false;
@@ -265,6 +293,8 @@ void RemoteMasterEngine::resetDefaults() {
         m_cachedIsRemote = false;
         m_cachedProcessName.clear();
         m_lastActiveRemoteHwnd = nullptr;
+        m_lastRemoteHwnd.store(nullptr, std::memory_order_relaxed);
+        m_pendingProbeHwnd.store(nullptr, std::memory_order_relaxed);
         persisted = m_settings;
     }
     saveSettings(persisted);
@@ -358,6 +388,9 @@ void RemoteMasterEngine::setMockForeground(HWND hwnd, bool isRemote, const std::
     m_mockActive.store(true, std::memory_order_release);
     m_isRemoteForeground.store(isRemote, std::memory_order_relaxed);
     m_activeRemoteHwnd.store(isRemote ? hwnd : nullptr, std::memory_order_relaxed);
+    if (isRemote && hwnd) {
+        m_lastRemoteHwnd.store(hwnd, std::memory_order_release);
+    }
     if (isRemote) {
         onRemoteForegroundGained(hwnd);
     } else {
@@ -381,6 +414,7 @@ void RemoteMasterEngine::clearMockForeground() {
     }
     m_isRemoteForeground.store(false, std::memory_order_relaxed);
     m_activeRemoteHwnd.store(nullptr, std::memory_order_relaxed);
+    m_lastRemoteHwnd.store(nullptr, std::memory_order_relaxed);
 }
 
 bool RemoteMasterEngine::isRemoteProcessOrClass(
@@ -674,14 +708,23 @@ void RemoteMasterEngine::onRemoteForegroundGained(HWND hwnd) {
         }
     }
 
-    // 切换至纯美式英文 (00000409)，仅非阻塞投递给目标远控窗口，绝不污染 Tools3000 本地进程自身
-    // 严禁传入 KLF_ACTIVATE，否则 Windows 将在本地 UI 线程激活该布局并广播 WM_INPUTLANGCHANGE 导致 UIPI 互锁假死
-    HKL hklEng = LoadKeyboardLayoutW(L"00000409", 0);
-    if (!hklEng) {
-        hklEng = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04090409));
+    // 优先切换至用户系统已安装的英文键盘布局，避免在纯中文系统上强行 LoadKeyboardLayoutW("00000409") 污染语言栏；
+    // 若系统未安装独立英文键盘布局，则通过默认 IME 窗口非阻塞关闭中文转换状态。
+    const HKL hklEng = findInstalledEnglishKeyboardLayout();
+    bool closedImeViaControl = false;
+    if (hwnd && IsWindow(hwnd)) {
+        if (hklEng) {
+            PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklEng));
+        }
+        HWND imeWnd = ImmGetDefaultIMEWnd(hwnd);
+        if (imeWnd && IsWindow(imeWnd)) {
+            PostMessageW(imeWnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0);
+            closedImeViaControl = (hklEng == nullptr);
+        }
     }
-    if (hwnd && IsWindow(hwnd) && hklEng) {
-        PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklEng));
+    {
+        std::lock_guard lock(m_mutex);
+        m_imeClosedViaControl = closedImeViaControl;
     }
     m_imeSanitized.store(true, std::memory_order_relaxed);
     LOG_INFO("[RemoteMaster] IME Sanitizer: Switched input layout to pure US English (0409)");
@@ -702,14 +745,33 @@ void RemoteMasterEngine::onRemoteForegroundLost(HWND hwnd) {
     if (!m_imeSanitized.load(std::memory_order_relaxed)) return;
 
     HKL hklToRestore = nullptr;
+    bool reopenIme = false;
     {
         std::lock_guard lock(m_mutex);
         hklToRestore = m_savedHkl;
         m_savedHkl = nullptr;
+        reopenIme = m_imeClosedViaControl;
+        m_imeClosedViaControl = false;
     }
 
-    if (hklToRestore && hwnd && IsWindow(hwnd)) {
-        PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklToRestore));
+    auto restoreLayoutForWindow = [&](HWND targetWnd) {
+        if (!targetWnd || !IsWindow(targetWnd)) return;
+        if (hklToRestore) {
+            PostMessageW(targetWnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklToRestore));
+        }
+        if (reopenIme && hklToRestore &&
+            PRIMARYLANGID(LOWORD(HandleToUlong(hklToRestore))) != LANG_ENGLISH) {
+            HWND imeWnd = ImmGetDefaultIMEWnd(targetWnd);
+            if (imeWnd && IsWindow(imeWnd)) {
+                PostMessageW(imeWnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 1);
+            }
+        }
+    };
+
+    restoreLayoutForWindow(hwnd);
+    const HWND currentFg = GetForegroundWindow();
+    if (currentFg && currentFg != hwnd) {
+        restoreLayoutForWindow(currentFg);
     }
     m_imeSanitized.store(false, std::memory_order_relaxed);
     LOG_INFO("[RemoteMaster] IME Sanitizer: Restored previous input layout");
@@ -736,14 +798,14 @@ void RemoteMasterEngine::postKeyToTarget(HWND fg, UINT msg, DWORD vk, DWORD scan
     PostMessageW(target, msg, vk, lParam);
 }
 
-void RemoteMasterEngine::flushModifiers(HWND targetHwnd) {
+void RemoteMasterEngine::flushModifiers(HWND targetHwnd, bool manualRescue) {
     // 1. 无条件复位连击状态机，防止时间戳残留
     m_winKeyDown.store(false, std::memory_order_relaxed);
     m_lastRightCtrlUpTime.store(0, std::memory_order_relaxed);
     m_otherKeyPressedSinceRightCtrl.store(false, std::memory_order_relaxed);
 
     if (m_mockActive.load(std::memory_order_acquire)) {
-        if (!m_mockIsRemote.load(std::memory_order_relaxed)) {
+        if (!manualRescue && !m_mockIsRemote.load(std::memory_order_relaxed)) {
             LOG_DEBUG("[RemoteMaster] 无有效远控目标窗口，安全跳过急救冲刷");
             return;
         }
@@ -753,16 +815,37 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd) {
         return;
     }
 
-    // 仅当前台窗口本就是活跃远控会话窗口时才执行冲刷，绝不回退后台历史窗口、绝不调用 SetForegroundWindow 抢夺焦点
-    HWND fg = GetForegroundWindow();
-    HWND activeRemote = m_activeRemoteHwnd.load(std::memory_order_relaxed);
-    bool fgIsRemote = fg && IsWindow(fg) &&
-                      ((activeRemote && fg == activeRemote) || checkWindowIsRemote(fg));
-    if (!fgIsRemote || (targetHwnd && targetHwnd != fg)) {
-        LOG_DEBUG("[RemoteMaster] 无有效远控目标窗口，安全跳过急救冲刷");
-        return;
+    HWND target = nullptr;
+    if (manualRescue) {
+        // 手动急救（来自设置页或托盘右键菜单）：当前前台窗口必然为宿主 UI，不得因此直接 return；
+        // 冲刷本机物理修饰键，同时对仍存活的活跃或最近远控窗口投递释放消息，不抢夺焦点。
+        HWND candidate = targetHwnd ? targetHwnd : m_activeRemoteHwnd.load(std::memory_order_relaxed);
+        if (!candidate || !IsWindow(candidate)) {
+            candidate = m_lastRemoteHwnd.load(std::memory_order_acquire);
+        }
+        if (candidate && IsWindow(candidate)) {
+            DWORD candPid = 0;
+            GetWindowThreadProcessId(candidate, &candPid);
+            if (candPid != 0 && candPid != GetCurrentProcessId()) {
+                target = candidate;
+            }
+        }
+    } else {
+        // 自动/快捷键急救：仅当前台窗口本就是活跃远控会话窗口时才执行冲刷，绝不回退后台历史窗口、绝不调用 SetForegroundWindow 抢夺焦点
+        HWND fg = GetForegroundWindow();
+        HWND activeRemote = m_activeRemoteHwnd.load(std::memory_order_relaxed);
+        bool fgIsRemote = fg && IsWindow(fg) &&
+                          ((activeRemote && fg == activeRemote) || checkWindowIsRemote(fg));
+        if (!fgIsRemote || (targetHwnd && targetHwnd != fg)) {
+            LOG_DEBUG("[RemoteMaster] 无有效远控目标窗口，安全跳过急救冲刷");
+            return;
+        }
+        target = fg;
     }
-    HWND target = fg;
+
+    const bool leftDown   = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    const bool rightDown  = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+    const bool middleDown = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
 
     // 注入中立 VK_F24 脉冲，彻底中和后续释放 Alt (VK_LMENU/VK_RMENU) 触发的 SC_KEYMENU 菜单模态死锁
     INPUT neutral[2]{};
@@ -773,13 +856,23 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd) {
     neutral[1].ki.dwFlags = KEYEVENTF_KEYUP;
     SendInput(2, neutral, sizeof(INPUT));
 
-    // 1. 原子化 SendInput 发送 11 组 KEYUP 与 MOUSEUP 硬件脉冲
-    auto inputs = buildEmergencyFlushInputs();
-    if (!inputs.empty()) {
-        SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+    // 1. 原子化 SendInput 发送 8 组修饰键 KEYUP 及实际处于物理按下态的鼠标键释放脉冲（杜绝未按右键时误弹右键菜单）
+    auto allInputs = buildEmergencyFlushInputs();
+    std::vector<INPUT> activeInputs;
+    activeInputs.reserve(allInputs.size());
+    for (const auto& inp : allInputs) {
+        if (inp.type == INPUT_MOUSE) {
+            if ((inp.mi.dwFlags & MOUSEEVENTF_LEFTUP) != 0 && !leftDown) continue;
+            if ((inp.mi.dwFlags & MOUSEEVENTF_RIGHTUP) != 0 && !rightDown) continue;
+            if ((inp.mi.dwFlags & MOUSEEVENTF_MIDDLEUP) != 0 && !middleDown) continue;
+        }
+        activeInputs.push_back(inp);
+    }
+    if (!activeInputs.empty()) {
+        SendInput(static_cast<UINT>(activeInputs.size()), activeInputs.data(), sizeof(INPUT));
     }
 
-    // 2. 向前台远控画布精准直投 8 组修饰键的 WM_KEYUP / WM_SYSKEYUP
+    // 2. 向目标远控画布精准直投 8 组修饰键的 WM_KEYUP / WM_SYSKEYUP
     if (target && IsWindow(target)) {
         HWND canvas = target;
         DWORD threadId = GetWindowThreadProcessId(target, nullptr);
@@ -815,23 +908,25 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd) {
             }
         }
 
-        // 鼠标按键弹起直投（基于当前鼠标屏幕物理坐标精准映射至客户区坐标，避免 (0,0) 误点击）
-        POINT pt{0, 0};
-        GetCursorPos(&pt);
-        POINT ptCanvas = pt;
-        ScreenToClient(canvas, &ptCanvas);
-        LPARAM lpCanvas = MAKELPARAM(ptCanvas.x, ptCanvas.y);
+        // 仅当鼠标按键真实处于物理按下态时才投递弹起消息，彻底杜绝无故触发上下文右键菜单
+        if (leftDown || rightDown || middleDown) {
+            POINT pt{0, 0};
+            GetCursorPos(&pt);
+            POINT ptCanvas = pt;
+            ScreenToClient(canvas, &ptCanvas);
+            LPARAM lpCanvas = MAKELPARAM(ptCanvas.x, ptCanvas.y);
 
-        PostMessageW(canvas, WM_LBUTTONUP, 0, lpCanvas);
-        PostMessageW(canvas, WM_RBUTTONUP, 0, lpCanvas);
-        PostMessageW(canvas, WM_MBUTTONUP, 0, lpCanvas);
-        if (canvas != target) {
-            POINT ptTarget = pt;
-            ScreenToClient(target, &ptTarget);
-            LPARAM lpTarget = MAKELPARAM(ptTarget.x, ptTarget.y);
-            PostMessageW(target, WM_LBUTTONUP, 0, lpTarget);
-            PostMessageW(target, WM_RBUTTONUP, 0, lpTarget);
-            PostMessageW(target, WM_MBUTTONUP, 0, lpTarget);
+            if (leftDown)   PostMessageW(canvas, WM_LBUTTONUP, 0, lpCanvas);
+            if (rightDown)  PostMessageW(canvas, WM_RBUTTONUP, 0, lpCanvas);
+            if (middleDown) PostMessageW(canvas, WM_MBUTTONUP, 0, lpCanvas);
+            if (canvas != target) {
+                POINT ptTarget = pt;
+                ScreenToClient(target, &ptTarget);
+                LPARAM lpTarget = MAKELPARAM(ptTarget.x, ptTarget.y);
+                if (leftDown)   PostMessageW(target, WM_LBUTTONUP, 0, lpTarget);
+                if (rightDown)  PostMessageW(target, WM_RBUTTONUP, 0, lpTarget);
+                if (middleDown) PostMessageW(target, WM_MBUTTONUP, 0, lpTarget);
+            }
         }
     }
 
@@ -872,14 +967,14 @@ bool RemoteMasterEngine::onLowLevelKeyboardEvent(const KBDLLHOOKSTRUCT& data, WP
                         bool otherKey = m_otherKeyPressedSinceRightCtrl.load(std::memory_order_relaxed);
 
                         if (last > 0 && (now - last) <= 400 && !otherKey) {
-                            // 异步任务投递至主线程调度器，绝不在低级钩子回调中同步阻塞执行急救与 SendInput
+                            // 异步任务投递至主线程下一轮消息循环，绝不在 WH_KEYBOARD_LL 栈帧内同步直调业务闭包与 SendInput
                             auto target = m_activeRemoteHwnd.load(std::memory_order_relaxed);
                             if (tools3000::core::MainThreadDispatcher::instance().isInitialized()) {
-                                tools3000::core::MainThreadDispatcher::instance().post([this, target]() {
-                                    flushModifiers(target);
+                                tools3000::core::MainThreadDispatcher::instance().postDeferred([this, target]() {
+                                    flushModifiers(target, false);
                                 });
-                            } else {
-                                flushModifiers(target);
+                            } else if (mockActive) {
+                                flushModifiers(target, false);
                             }
                             m_lastRightCtrlUpTime.store(0, std::memory_order_relaxed);
                             m_otherKeyPressedSinceRightCtrl.store(false, std::memory_order_relaxed);
@@ -916,11 +1011,11 @@ bool RemoteMasterEngine::onLowLevelKeyboardEvent(const KBDLLHOOKSTRUCT& data, WP
                     hasWin == targetShortcut.win) {
                     auto target = m_activeRemoteHwnd.load(std::memory_order_relaxed);
                     if (tools3000::core::MainThreadDispatcher::instance().isInitialized()) {
-                        tools3000::core::MainThreadDispatcher::instance().post([this, target]() {
-                            flushModifiers(target);
+                        tools3000::core::MainThreadDispatcher::instance().postDeferred([this, target]() {
+                            flushModifiers(target, false);
                         });
-                    } else {
-                        flushModifiers(target);
+                    } else if (mockActive) {
+                        flushModifiers(target, false);
                     }
                     return true; // 拦截并消费急救按键
                 }
@@ -947,9 +1042,52 @@ bool RemoteMasterEngine::onLowLevelKeyboardEvent(const KBDLLHOOKSTRUCT& data, WP
                          : m_activeRemoteHwnd.load(std::memory_order_relaxed);
     if (!mockActive) {
         HWND actualFg = GetForegroundWindow();
-        if (!actualFg || (fg && actualFg != fg && !checkWindowIsRemote(actualFg))) {
+        if (!actualFg) {
             m_isRemoteForeground.store(false, std::memory_order_relaxed);
             m_winKeyDown.store(false, std::memory_order_relaxed);
+            return false;
+        }
+        if (actualFg != fg) {
+            // 严禁在 WH_KEYBOARD_LL 内同步加锁执行 checkWindowIsRemote / OpenProcess；
+            // 先立即保守复位远控前台标志，再异步投递到主线程下一轮消息循环探测新窗口并更新原子缓存。
+            m_isRemoteForeground.store(false, std::memory_order_relaxed);
+            m_winKeyDown.store(false, std::memory_order_relaxed);
+            if (m_pendingProbeHwnd.exchange(actualFg, std::memory_order_acq_rel) != actualFg &&
+                tools3000::core::MainThreadDispatcher::instance().isInitialized()) {
+                tools3000::core::MainThreadDispatcher::instance().postDeferred([this, actualFg]() {
+                    HWND expected = actualFg;
+                    m_pendingProbeHwnd.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+                    if (m_mockActive.load(std::memory_order_acquire) ||
+                        !m_enabledAtomic.load(std::memory_order_acquire)) {
+                        return;
+                    }
+                    const HWND curFg = GetForegroundWindow();
+                    if (!curFg) return;
+                    std::string procName;
+                    const bool remote = checkWindowIsRemote(curFg, &procName);
+                    const bool prevRemote = m_isRemoteForeground.exchange(remote, std::memory_order_relaxed);
+                    const HWND prevHwnd = m_activeRemoteHwnd.exchange(remote ? curFg : nullptr, std::memory_order_relaxed);
+                    if (remote) {
+                        m_lastRemoteHwnd.store(curFg, std::memory_order_release);
+                        {
+                            std::lock_guard lock(m_mutex);
+                            m_activeRemoteProcess = procName;
+                            m_lastActiveRemoteHwnd = curFg;
+                        }
+                        if (!prevRemote || prevHwnd != curFg) {
+                            onRemoteForegroundGained(curFg);
+                        }
+                    } else {
+                        {
+                            std::lock_guard lock(m_mutex);
+                            m_activeRemoteProcess.clear();
+                        }
+                        if (prevRemote) {
+                            onRemoteForegroundLost(prevHwnd);
+                        }
+                    }
+                });
+            }
             return false;
         }
         fg = actualFg;
@@ -1066,6 +1204,7 @@ void CALLBACK RemoteMasterEngine::winEventProc(
     HWND prevHwnd = engine.m_activeRemoteHwnd.exchange(isRemote ? hwnd : nullptr, std::memory_order_relaxed);
 
     if (isRemote) {
+        engine.m_lastRemoteHwnd.store(hwnd, std::memory_order_release);
         {
             std::lock_guard lock(engine.m_mutex);
             engine.m_activeRemoteProcess = procName;

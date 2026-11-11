@@ -1816,35 +1816,41 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
         }
 
         case ToolbarCommand::Undo:
-            if (m_state->activeElement) {
-                m_state->activeElement->isActive = false;
-                m_state->activeElement->isEditing = false;
-                m_state->activeElement = nullptr;
-            }
+            m_state->activeElement = nullptr;
+            m_state->isManipulating = false;
+            m_state->dragHandle = HitArea::None;
             m_state->markup.undo();
+            for (const auto& el : m_state->markup.elements()) {
+                if (el) {
+                    el->isActive = false;
+                    el->isEditing = false;
+                }
+            }
             m_renderer->markMarkupDirty();
             m_state->toolbarLayoutValid = false;
             m_renderer->invalidate();
             break;
 
         case ToolbarCommand::Redo:
-            if (m_state->activeElement) {
-                m_state->activeElement->isActive = false;
-                m_state->activeElement->isEditing = false;
-                m_state->activeElement = nullptr;
-            }
+            m_state->activeElement = nullptr;
+            m_state->isManipulating = false;
+            m_state->dragHandle = HitArea::None;
             m_state->markup.redo();
+            for (const auto& el : m_state->markup.elements()) {
+                if (el) {
+                    el->isActive = false;
+                    el->isEditing = false;
+                }
+            }
             m_renderer->markMarkupDirty();
             m_state->toolbarLayoutValid = false;
             m_renderer->invalidate();
             break;
 
         case ToolbarCommand::Clear:
-            if (m_state->activeElement) {
-                m_state->activeElement->isActive = false;
-                m_state->activeElement->isEditing = false;
-                m_state->activeElement = nullptr;
-            }
+            m_state->activeElement = nullptr;
+            m_state->isManipulating = false;
+            m_state->dragHandle = HitArea::None;
             m_state->markup.clearAll();
             m_renderer->markMarkupDirty();
             m_state->toolbarLayoutValid = false;
@@ -4795,17 +4801,23 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         }
                     }
                 } else if (m_state->sliderPopup.type == SliderPopupType::TextFontSize || m_state->currentTool == MarkupTool::Text) {
-                    float curSize = (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text)
-                        ? m_state->activeElement->fontSize
-                        : static_cast<float>(tools3000::core::ConfigManager::instance().get<double>("/capture/markup/text/fontSize", 18.0));
-                    float newSize = std::clamp(curSize + static_cast<float>(delta * 2), 10.0f, 144.0f);
-                    if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
-                        m_state->activeElement->fontSize = newSize;
-                        m_state->activeElement->textRenderSize = cv::Size(0, 0);
-                    }
                     const float curDpi = m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f;
-                    tools3000::core::ConfigManager::instance().set<double>(
-                        "/capture/markup/text/fontSize", static_cast<double>(newSize) / curDpi);
+                    if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
+                        const float newPhysSize = std::clamp(
+                            m_state->activeElement->fontSize + static_cast<float>(delta * 2),
+                            10.0f, 144.0f * curDpi);
+                        m_state->activeElement->fontSize = newPhysSize;
+                        m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                        tools3000::core::ConfigManager::instance().set<double>(
+                            "/capture/markup/text/fontSize",
+                            std::clamp(static_cast<double>(newPhysSize / curDpi), 10.0, 144.0));
+                    } else {
+                        const float curLogical = static_cast<float>(
+                            tools3000::core::ConfigManager::instance().get<double>("/capture/markup/text/fontSize", 18.0));
+                        const float newLogical = std::clamp(curLogical + static_cast<float>(delta * 2), 10.0f, 144.0f);
+                        tools3000::core::ConfigManager::instance().set<double>(
+                            "/capture/markup/text/fontSize", static_cast<double>(newLogical));
+                    }
                 } else {
                     const int maxW = (m_state->sliderPopup.type == SliderPopupType::MosaicBlockSize ||
                                       m_state->currentTool == MarkupTool::Mosaic ||
@@ -5178,19 +5190,26 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 case CaptureShortcutAction::AdjustStrokeWidth: {
                     if (m_state->currentTool == MarkupTool::Text ||
                         (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text)) {
-                        const float curSize = (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text)
-                            ? m_state->activeElement->fontSize
-                            : static_cast<float>(tools3000::core::ConfigManager::instance().get<double>(
-                                  "/capture/markup/text/fontSize", 18.0));
-                        const float newSize = std::clamp(curSize + static_cast<float>(decision.intDelta * 2), 10.0f, 144.0f);
+                        const float curDpi = m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f;
                         if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
-                            m_state->activeElement->fontSize = newSize;
+                            const float newPhysSize = std::clamp(
+                                m_state->activeElement->fontSize + static_cast<float>(decision.intDelta * 2),
+                                10.0f, 144.0f * curDpi);
+                            m_state->activeElement->fontSize = newPhysSize;
                             m_state->activeElement->textRenderSize = cv::Size(0, 0);
                             m_renderer->markMarkupDirty();
+                            tools3000::core::ConfigManager::instance().set<double>(
+                                "/capture/markup/text/fontSize",
+                                std::clamp(static_cast<double>(newPhysSize / curDpi), 10.0, 144.0));
+                        } else {
+                            const float curLogical = static_cast<float>(
+                                tools3000::core::ConfigManager::instance().get<double>(
+                                    "/capture/markup/text/fontSize", 18.0));
+                            const float newLogical = std::clamp(
+                                curLogical + static_cast<float>(decision.intDelta * 2), 10.0f, 144.0f);
+                            tools3000::core::ConfigManager::instance().set<double>(
+                                "/capture/markup/text/fontSize", static_cast<double>(newLogical));
                         }
-                        const float curDpi = m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f;
-                        tools3000::core::ConfigManager::instance().set<double>(
-                            "/capture/markup/text/fontSize", static_cast<double>(newSize) / curDpi);
                     } else {
                         m_state->currentStrokeWidth = std::clamp(m_state->currentStrokeWidth + decision.intDelta, 1, 60);
                         if (m_state->activeElement) {
@@ -5345,7 +5364,15 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
                 case CaptureShortcutAction::UndoMarkup:
                     m_state->activeElement = nullptr;
+                    m_state->isManipulating = false;
+                    m_state->dragHandle = HitArea::None;
                     m_state->markup.undo();
+                    for (const auto& el : m_state->markup.elements()) {
+                        if (el) {
+                            el->isActive = false;
+                            el->isEditing = false;
+                        }
+                    }
                     m_renderer->markMarkupDirty();
                     m_state->toolbarLayoutValid = false;
                     m_renderer->invalidate();
@@ -5353,7 +5380,15 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
                 case CaptureShortcutAction::RedoMarkup:
                     m_state->activeElement = nullptr;
+                    m_state->isManipulating = false;
+                    m_state->dragHandle = HitArea::None;
                     m_state->markup.redo();
+                    for (const auto& el : m_state->markup.elements()) {
+                        if (el) {
+                            el->isActive = false;
+                            el->isEditing = false;
+                        }
+                    }
                     m_renderer->markMarkupDirty();
                     m_state->toolbarLayoutValid = false;
                     m_renderer->invalidate();
@@ -5361,6 +5396,8 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
                 case CaptureShortcutAction::ClearAllMarkup:
                     m_state->activeElement = nullptr;
+                    m_state->isManipulating = false;
+                    m_state->dragHandle = HitArea::None;
                     m_state->markup.clearAll();
                     m_renderer->markMarkupDirty();
                     m_state->toolbarLayoutValid = false;

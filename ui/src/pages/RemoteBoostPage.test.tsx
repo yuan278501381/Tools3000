@@ -159,4 +159,37 @@ describe('RemoteBoostPage', () => {
       expect(screen.getByText('ENG 0409 Active')).toBeDefined();
     });
   });
+
+  it('rolls back UI state when remote.updateSettings fails and allows unbinding emergencyShortcut to empty string', async () => {
+    await act(async () => {
+      render(<RemoteBoostPage />);
+    });
+
+    // Unbind emergency shortcut -> must persist '' rather than resetting to hardcoded default
+    const clearBtn = screen.getByLabelText('Clear hotkey binding');
+    await act(async () => {
+      fireEvent.click(clearBtn);
+    });
+    expect(bridgeSpy).toHaveBeenCalledWith('remote.updateSettings', { emergencyShortcut: '' });
+
+    // Simulate backend failure on adding process and verify rollback
+    bridgeSpy.mockImplementation(async (method: string) => {
+      if (method === 'remote.updateSettings') {
+        throw new Error('IPC write rejected');
+      }
+      return null;
+    });
+
+    const input = screen.getByPlaceholderText('e.g., CustomRemote.exe');
+    const addBtn = screen.getByRole('button', { name: /Add/i });
+
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'BrokenClient.exe' } });
+      fireEvent.click(addBtn);
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('BrokenClient.exe')).toBeNull();
+    });
+  });
 });

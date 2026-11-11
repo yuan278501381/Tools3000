@@ -28,20 +28,54 @@ std::shared_ptr<EventBus::Subscription> EventBus::detach(SubscriptionId id) {
     return removed;
 }
 
-void EventBus::retire(const std::shared_ptr<Subscription>& subscription, bool wait) {
-    if (!subscription) return;
+bool EventBus::retire(const std::shared_ptr<Subscription>& subscription, bool wait) {
+    if (!subscription) return true;
+
+    std::function<void(const std::any&)> releasedHandler;
+    const DWORD currentTid = GetCurrentThreadId();
+
     std::unique_lock lock(subscription->stateMutex);
     subscription->accepting = false;
+
+    const size_t selfCalls = static_cast<size_t>(std::count(
+        subscription->activeThreadIds.begin(),
+        subscription->activeThreadIds.end(),
+        currentTid));
+
     if (wait) {
         using namespace std::chrono_literals;
-        const bool finished = subscription->idle.wait_for(lock, 2000ms, [&subscription]() {
-            return subscription->activeCalls == 0;
+        const bool finished = subscription->idle.wait_for(lock, 2000ms, [&subscription, selfCalls]() {
+            return subscription->activeCalls <= selfCalls;
         });
         if (!finished) {
+            // 超时仍有外部在途调用：严禁置空 subscription->handler，保留闭包存活以防止 UB/UAF
+            m_hasQuarantinedSubscriptions.store(true, std::memory_order_release);
             LOG_WARN("EventBus: 取消订阅超时，可能存在未完成的在途调用, id={}", subscription->id);
+            return false;
         }
-        subscription->handler = nullptr;
+        if (subscription->activeCalls == 0) {
+            releasedHandler = std::move(subscription->handler);
+            subscription->clearHandlerOnIdle = false;
+            lock.unlock();
+            return true;
+        }
+        // 同线程自退订：不阻塞等自身栈帧，交由最外层 publish 退出时安全释放
+        subscription->clearHandlerOnIdle = true;
+        return false;
     }
+
+    if (subscription->activeCalls == 0) {
+        releasedHandler = std::move(subscription->handler);
+        subscription->clearHandlerOnIdle = false;
+        lock.unlock();
+        return true;
+    }
+    subscription->clearHandlerOnIdle = true;
+    return false;
+}
+
+bool EventBus::hasQuarantinedSubscriptions() const noexcept {
+    return m_hasQuarantinedSubscriptions.load(std::memory_order_acquire);
 }
 
 void EventBus::unsubscribe(SubscriptionId id) {
@@ -50,12 +84,13 @@ void EventBus::unsubscribe(SubscriptionId id) {
     LOG_TRACE("EventBus: 取消订阅, subId={}", id);
 }
 
-void EventBus::unsubscribeAndWait(SubscriptionId id) {
-    retire(detach(id), true);
+bool EventBus::unsubscribeAndWait(SubscriptionId id) {
+    const bool drained = retire(detach(id), true);
     LOG_TRACE("EventBus: 同步取消订阅, subId={}", id);
+    return drained;
 }
 
-void EventBus::clearAll() {
+bool EventBus::clearAll() {
     // Subscriber destructors can own RAII subscriptions which call back into
     // EventBus::unsubscribe(). Destroy them after releasing m_mutex.
     std::vector<std::shared_ptr<Subscription>> subscribers;
@@ -68,10 +103,19 @@ void EventBus::clearAll() {
         m_subscribers.clear();
         idToType.swap(m_idToType);
     }
-    for (const auto& subscription : subscribers) retire(subscription, true);
+    bool allDrained = true;
+    for (const auto& subscription : subscribers) {
+        if (!retire(subscription, true)) {
+            allDrained = false;
+        }
+    }
+    if (!allDrained) {
+        m_hasQuarantinedSubscriptions.store(true, std::memory_order_release);
+    }
     subscribers.clear();
     idToType.clear();
     LOG_INFO("EventBus: 清除所有订阅");
+    return allDrained;
 }
 
 } // namespace tools3000::core

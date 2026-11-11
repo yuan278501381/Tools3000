@@ -306,6 +306,15 @@ private:
         D2D1_RECT_F rect{};
     };
 
+    struct LayeredDibCache {
+        HDC memDc = nullptr;
+        HBITMAP dib = nullptr;
+        HGDIOBJ oldBmp = nullptr;
+        void* bits = nullptr;
+        int width = 0;
+        int height = 0;
+    };
+
     ScrollCaptureOverlay() = default;
     ~ScrollCaptureOverlay() { hide(); }
 
@@ -313,6 +322,10 @@ private:
     static LRESULT CALLBACK controlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     bool createResources();
+    static bool ensureLayeredDib(HDC screenDc, int width, int height, LayeredDibCache& cache) noexcept;
+    static void releaseLayeredDib(LayeredDibCache& cache) noexcept;
+    void handleMainTargetDeviceLost() noexcept;
+    void handleControlTargetDeviceLost() noexcept;
     float measureTextWidth(const std::wstring& text, IDWriteTextFormat* fmt) const;
     ScrollControlBarLayoutSnapshot rebuildLayout(
         int workWidth, const std::wstring& statusText, const std::wstring& metricsStr, bool isPausedOrHold);
@@ -400,6 +413,8 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_ctrlDangerHoverBg;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_ctrlDangerIconBrush;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_d2dBitmap;
+    LayeredDibCache m_overlayDibCache{};
+    LayeredDibCache m_controlDibCache{};
 };
 
 } // namespace tools3000::capture

@@ -1,12 +1,13 @@
-name: 'Tools3000 CI & Release Pipeline'
+name: 'Tools3000 CI & Manual Release Pipeline'
 
+# 权威发版源约定 (D-03):
+# 正式版本以本地 scripts/release.ps1 权威签名构建与发布为准。
+# 严禁监听 push.tags 自动触发云端打包上传，彻底杜绝本地 git push --tags 后被云端未签名构建覆盖正式版资产。
 'on':
   push:
     branches:
       - 'main'
       - 'master'
-    tags:
-      - 'v*'
   pull_request:
     branches:
       - 'main'
@@ -19,20 +20,31 @@ name: 'Tools3000 CI & Release Pipeline'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Manual Release Version (e.g. 1.2.0)'
+        description: 'Manual Release Version (e.g. 1.2.0, leave empty to read VERSION)'
         required: false
         default: ''
+        type: string
+      publish_release:
+        description: 'Publish GitHub Release assets (manual fallback only)'
+        required: false
+        default: false
+        type: boolean
+      overwrite_existing:
+        description: 'Allow overwriting an existing GitHub Release (keep false to protect local signed assets)'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
 
 jobs:
-  build-and-sign:
-    name: Build, Test, Sign & Release
+  build-and-verify:
+    name: Build, Test & Verify (Manual Release Optional)
     runs-on: windows-latest
     permissions:
       contents: write
@@ -58,7 +70,7 @@ jobs:
       - name: Setup Inno Setup Compiler
         run: |
           choco install innosetup --yes --no-progress
-          Write-Host "Inno Setup installed successfully."
+          Write-Host "[OK] Inno Setup installed successfully."
         shell: pwsh
 
       - name: Setup MSVC & CMake Developer Command Prompt
@@ -77,18 +89,40 @@ jobs:
           restore-keys: |
             vcpkg-archives-${{ runner.os }}-x64-
 
-      - name: Verify Product Version Matches Tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Resolve and Verify Product Version
+        id: resolve-version
         env:
-          GITHUB_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          pwsh -File .\scripts\verify-version.ps1 -Tag $env:GITHUB_REF_NAME
+          $VersionFromFile = if (Test-Path "VERSION") { (Get-Content "VERSION" -Raw).Trim() } else { throw "Missing VERSION file" }
+          $TargetVer = if (-not [string]::IsNullOrWhiteSpace($env:INPUT_VERSION)) { $env:INPUT_VERSION.Trim().TrimStart('v') } else { $VersionFromFile }
+          $Tag = "v$TargetVer"
+          pwsh -File .\scripts\verify-version.ps1 -Tag $Tag
+          Write-Host "[OK] Verified Release Tag: $Tag (Version: $TargetVer)" -ForegroundColor Green
+          "RELEASE_TAG=$Tag" >> $env:GITHUB_ENV
+          "RELEASE_VERSION=$TargetVer" >> $env:GITHUB_ENV
         shell: pwsh
 
-      - name: Execute Full Deployment Pipeline (Build & Package)
+      - name: Check Existing GitHub Release Protection Gate
+        id: release-gate
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERWRITE_EXISTING: ${{ inputs.overwrite_existing }}
         run: |
-          $QuickArg = if ($env:GITHUB_REF -like "refs/tags/v*" -or $env:GITHUB_EVENT_NAME -eq "workflow_dispatch") { @() } else { @("-Quick") }
-          pwsh -File .\deploy.ps1 -Configuration Release @QuickArg -SkipTests
+          $Exists = $false
+          gh release view $env:RELEASE_TAG 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { $Exists = $true }
+          if ($Exists -and $env:OVERWRITE_EXISTING -ne 'true') {
+            throw "[ERROR] GitHub Release $($env:RELEASE_TAG) already exists (published by authoritative local release pipeline). Refusing to overwrite without overwrite_existing=true."
+          }
+          "allow_upload=true" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Build Frontend, C++ Core & Stage deploy_dist (Pre-Installer)
+        run: |
+          $QuickArg = if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") { @() } else { @("-Quick") }
+          pwsh -File .\deploy.ps1 -Configuration Release @QuickArg -SkipTests -SkipInstaller
         shell: pwsh
 
       - name: Run C++ Native Unit Tests (Headless Adapted)
@@ -96,54 +130,14 @@ jobs:
           $TestExe = "build\bin\Release\Tools3000Tests.exe"
           if (-not (Test-Path $TestExe)) { $TestExe = "build\bin\Tools3000Tests.exe" }
           if (-not (Test-Path $TestExe)) { throw "Tools3000Tests.exe not found under build/bin!" }
-          Write-Host "Running native test suite: $TestExe" -ForegroundColor Cyan
+          Write-Host "[INFO] Running native test suite: $TestExe" -ForegroundColor Cyan
           & $TestExe --gtest_brief=1
           if ($LASTEXITCODE -ne 0) { throw "Native unit tests failed with exit code $LASTEXITCODE" }
         shell: pwsh
 
-      - name: Verify Setup Artifact Generated
-        id: verify-artifact
-        env:
-          GITHUB_REF: ${{ github.ref }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          $SetupPath = "Output\Tools3000-Setup.exe"
-          if (-not (Test-Path $SetupPath)) {
-            throw "Installer artifact not found at: $SetupPath"
-          }
-          $SetupHash = (Get-FileHash -Path $SetupPath -Algorithm SHA256).Hash
-          Write-Host "Installer generated successfully: $SetupPath"
-          Write-Host "SHA256: $SetupHash"
-
-          # 计算发布标签 (Tag 推送、手动输入或自适应读取 VERSION 文件)
-          $VersionFromFile = if (Test-Path "VERSION") { (Get-Content "VERSION" -Raw).Trim() } else { "1.0.0" }
-          $Tag = if ($env:GITHUB_REF -like "refs/tags/v*") {
-            $env:GITHUB_REF_NAME
-          } elseif ($env:INPUT_VERSION) {
-            "v$($env:INPUT_VERSION)"
-          } else {
-            "v$VersionFromFile"
-          }
-          pwsh -File .\scripts\verify-version.ps1 -Tag $Tag
-          Write-Host "Calculated Release Tag: $Tag" -ForegroundColor Green
-          "RELEASE_TAG=$Tag" >> $env:GITHUB_ENV
-
-          # 构建便携免安装 ZIP 产物供用户直接下载解压即用
-          $PortableZip = "Output\Tools3000-win-x64-portable.zip"
-          $VersionedPortableZip = "Output\Tools3000-$Tag-win-x64-portable.zip"
-          if (Test-Path "deploy_dist") {
-            Write-Host "Creating portable distribution archive: $PortableZip"
-            if (Test-Path $PortableZip) { Remove-Item -Force $PortableZip }
-            Compress-Archive -Path "deploy_dist\*" -DestinationPath $PortableZip -CompressionLevel Optimal
-            Copy-Item -LiteralPath $PortableZip -Destination $VersionedPortableZip -Force
-          }
-          Copy-Item -LiteralPath $SetupPath -Destination "Output\Tools3000-$Tag-Setup.exe" -Force
-        shell: pwsh
-
-      - name: Check Official Code Signing Configuration
+      - name: Check Cloud Code Signing Configuration
         id: signing-config
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch'
         env:
           HAS_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
           HAS_ORG: ${{ secrets.SIGNPATH_ORGANIZATION_ID != '' }}
@@ -152,7 +146,98 @@ jobs:
           "enabled=$($Enabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
         shell: pwsh
 
-      - name: Upload Unsigned Installer for SignPath
+      # 第一轮签名：若启用云端签名，先对 deploy_dist 内的 .exe/.dll 二进制签名，再制作便携 ZIP 与 Setup.exe
+      - name: Package Unsigned Inner Binaries for First-Pass SignPath Signing
+        if: steps.signing-config.outputs.enabled == 'true'
+        run: |
+          $InnerStage = "Output\UnsignedInner"
+          if (Test-Path $InnerStage) { Remove-Item -Recurse -Force $InnerStage }
+          New-Item -ItemType Directory -Path "$InnerStage\plugins" -Force | Out-Null
+          Get-ChildItem -Path "deploy_dist" -File | Where-Object {
+            $_.Extension -in @(".exe", ".dll") -and
+            (Get-AuthenticodeSignature -LiteralPath $_.FullName).Status -ne "Valid"
+          } | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $InnerStage $_.Name) -Force
+          }
+          Get-ChildItem -Path "deploy_dist\plugins\Plugin_*.dll" -File | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path "$InnerStage\plugins" $_.Name) -Force
+          }
+          Compress-Archive -Path "$InnerStage\*" -DestinationPath "Output\Tools3000-InnerBinaries-Unsigned.zip" -Force
+        shell: pwsh
+
+      - name: Upload Unsigned Inner Binaries for SignPath
+        if: steps.signing-config.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        id: upload-unsigned-inner
+        with:
+          name: Tools3000-InnerBinaries-Unsigned
+          path: Output\Tools3000-InnerBinaries-Unsigned.zip
+          retention-days: 1
+
+      - name: Submit First-Pass Inner Binary Signing Request to SignPath
+        if: steps.signing-config.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: 'tools3000'
+          signing-policy-slug: 'release-signing'
+          github-artifact-id: ${{ steps.upload-unsigned-inner.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: 'Output\SignedInner'
+
+      - name: Apply Signed Inner Binaries Back to deploy_dist
+        if: steps.signing-config.outputs.enabled == 'true'
+        run: |
+          $SignedZip = Get-ChildItem "Output\SignedInner\*.zip" -Recurse | Select-Object -First 1
+          $ExtractDir = "Output\SignedInner\extracted"
+          if ($SignedZip) {
+            Expand-Archive -LiteralPath $SignedZip.FullName -DestinationPath $ExtractDir -Force
+          } else {
+            $ExtractDir = "Output\SignedInner"
+          }
+          Get-ChildItem -Path $ExtractDir -File | Where-Object { $_.Extension -in @(".exe", ".dll") } | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path "deploy_dist" $_.Name) -Force
+          }
+          if (Test-Path "$ExtractDir\plugins") {
+            Get-ChildItem -Path "$ExtractDir\plugins\Plugin_*.dll" -File | ForEach-Object {
+              Copy-Item -LiteralPath $_.FullName -Destination (Join-Path "deploy_dist\plugins" $_.Name) -Force
+            }
+          }
+          Write-Host "[OK] Applied first-pass signed binaries into deploy_dist." -ForegroundColor Green
+        shell: pwsh
+
+      # 打包阶段：在 deploy_dist 完成内层签名后，构建便携 ZIP 与 Inno Setup 安装包
+      - name: Build Portable Archive and Inno Setup Installer
+        run: |
+          if (-not (Test-Path "Output")) { New-Item -ItemType Directory -Path "Output" -Force | Out-Null }
+          $Tag = $env:RELEASE_TAG
+          $Ver = $env:RELEASE_VERSION
+          $PortableZip = "Output\Tools3000-win-x64-portable.zip"
+          $VersionedPortableZip = "Output\Tools3000-$Tag-win-x64-portable.zip"
+          if (Test-Path $PortableZip) { Remove-Item -Force $PortableZip }
+          Compress-Archive -Path "deploy_dist\*" -DestinationPath $PortableZip -CompressionLevel Optimal -Force
+          Copy-Item -LiteralPath $PortableZip -Destination $VersionedPortableZip -Force
+
+          $ISCC = if (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue) {
+            (Get-Command "ISCC.exe").Source
+          } else {
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path -LiteralPath $ISCC)) { throw "ISCC.exe not found!" }
+
+          $CompressionArg = if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") { "/DCompressionLevel=lzma2/ultra64" } else { "/DCompressionLevel=lzma2/fast" }
+          & $ISCC "/DTools3000Version=$Ver" "/DTools3000Architecture=x64" "/DTools3000SetupBaseFilename=Tools3000-Setup" "/DDeployDir=deploy_dist" $CompressionArg "installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC compilation failed with exit code $LASTEXITCODE" }
+
+          $SetupPath = "Output\Tools3000-Setup.exe"
+          if (-not (Test-Path -LiteralPath $SetupPath)) { throw "Installer artifact not found at: $SetupPath" }
+          Copy-Item -LiteralPath $SetupPath -Destination "Output\Tools3000-$Tag-Setup.exe" -Force
+          Write-Host "[OK] Portable ZIP and Setup.exe built successfully." -ForegroundColor Green
+        shell: pwsh
+
+      # 第二轮签名：对生成的 Tools3000-Setup.exe 进行外层签名
+      - name: Upload Unsigned Outer Installer for SignPath
         if: steps.signing-config.outputs.enabled == 'true'
         uses: actions/upload-artifact@v4
         id: upload-unsigned-installer
@@ -161,7 +246,7 @@ jobs:
           path: Output\Tools3000-Setup.exe
           retention-days: 1
 
-      - name: Submit Code Signing Request to SignPath Foundation
+      - name: Submit Outer Installer Signing Request to SignPath
         if: steps.signing-config.outputs.enabled == 'true'
         uses: signpath/github-action-submit-signing-request@v2
         with:
@@ -171,53 +256,63 @@ jobs:
           signing-policy-slug: 'release-signing'
           github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
           wait-for-completion: true
-          output-artifact-directory: 'Output\Signed'
+          output-artifact-directory: 'Output\SignedOuter'
 
-      - name: Replace Installer with Official Signed Artifact
+      - name: Replace Outer Installer with Official Signed Artifact
         if: steps.signing-config.outputs.enabled == 'true'
         run: |
-          $SignedFile = Get-ChildItem "Output\Signed\*.exe" -Recurse | Select-Object -First 1
+          $SignedFile = Get-ChildItem "Output\SignedOuter\*.exe" -Recurse | Select-Object -First 1
           if (-not $SignedFile) {
-            $SignedZip = Get-ChildItem "Output\Signed\*.zip" -Recurse | Select-Object -First 1
+            $SignedZip = Get-ChildItem "Output\SignedOuter\*.zip" -Recurse | Select-Object -First 1
             if ($SignedZip) {
-              Write-Host "Extracting signed zip archive: $($SignedZip.FullName)"
-              Expand-Archive -LiteralPath $SignedZip.FullName -DestinationPath "Output\Signed\unzipped" -Force
-              $SignedFile = Get-ChildItem "Output\Signed\unzipped\*.exe" -Recurse | Select-Object -First 1
+              Expand-Archive -LiteralPath $SignedZip.FullName -DestinationPath "Output\SignedOuter\unzipped" -Force
+              $SignedFile = Get-ChildItem "Output\SignedOuter\unzipped\*.exe" -Recurse | Select-Object -First 1
             }
           }
           if ($SignedFile) {
             Copy-Item -Path $SignedFile.FullName -Destination "Output\Tools3000-Setup.exe" -Force
             Copy-Item -Path $SignedFile.FullName -Destination "Output\Tools3000-$($env:RELEASE_TAG)-Setup.exe" -Force
-            Write-Host "Replaced installer with SignPath officially signed artifact: $($SignedFile.FullName)" -ForegroundColor Green
+            Write-Host "[OK] Replaced outer installer with signed artifact: $($SignedFile.FullName)" -ForegroundColor Green
           } else {
-            throw "SignPath signing request completed without producing a signed .exe installer!"
+            throw "SignPath outer signing request completed without producing a signed .exe installer!"
           }
         shell: pwsh
 
       - name: Generate SHA256SUMS Manifest
         run: |
+          $ReleaseArtifacts = @(
+            "Output\Tools3000-Setup.exe",
+            "Output\Tools3000-$($env:RELEASE_TAG)-Setup.exe",
+            "Output\Tools3000-win-x64-portable.zip",
+            "Output\Tools3000-$($env:RELEASE_TAG)-win-x64-portable.zip"
+          )
           $ChecksumLines = @()
-          Get-ChildItem -Path "Output" -Include "*.exe", "*.zip" -File | Sort-Object Name | ForEach-Object {
-            $H = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            $ChecksumLines += "$H *$($_.Name)"
+          foreach ($File in ($ReleaseArtifacts | Sort-Object)) {
+            if (Test-Path -LiteralPath $File) {
+              $Item = Get-Item -LiteralPath $File
+              $H = (Get-FileHash -LiteralPath $Item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $ChecksumLines += "$H *$($Item.Name)"
+            }
           }
           $Content = ($ChecksumLines -join "`r`n") + "`r`n"
           [System.IO.File]::WriteAllText("Output\SHA256SUMS.txt", $Content, [System.Text.Encoding]::ASCII)
-          Write-Host "Generated SHA256SUMS.txt:"
+          Write-Host "[OK] Generated SHA256SUMS.txt:"
           Write-Host $Content
         shell: pwsh
 
-      - name: Create GitHub Release and Upload Assets
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+      - name: Create GitHub Release and Upload Assets (Manual Dispatch Only)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true && steps.release-gate.outputs.allow_upload == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          name: Tools3000 ${{ env.RELEASE_TAG }}
           files: |
             Output/Tools3000-Setup.exe
             Output/Tools3000-${{ env.RELEASE_TAG }}-Setup.exe
             Output/Tools3000-win-x64-portable.zip
             Output/Tools3000-${{ env.RELEASE_TAG }}-win-x64-portable.zip
             Output/SHA256SUMS.txt
+          fail_on_unmatched_files: true
           generate_release_notes: true
           draft: false
           prerelease: false

@@ -224,4 +224,21 @@ describe('Sidebar Component', () => {
 
     modal.remove();
   });
+
+  it('renders custom third-party extensions and navigates to their extension ID', () => {
+    render(
+      <Sidebar
+        activeNav="general"
+        onNavigate={onNavigateMock}
+        activePlugins={new Set(['gesture'])}
+        installedExtensionIds={['third_party_translator']}
+        installedExtensions={[{ id: 'third_party_translator', name: 'Deep Translator' }]}
+      />
+    );
+
+    const extBtn = document.getElementById('nav-third_party_translator');
+    expect(extBtn).toBeTruthy();
+    fireEvent.click(extBtn!);
+    expect(onNavigateMock).toHaveBeenCalledWith('third_party_translator');
+  });
 });

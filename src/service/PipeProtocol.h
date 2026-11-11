@@ -2,13 +2,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // PipeProtocol — 搜索服务命名管道分帧协议
 //
-// 管道此前使用 PIPE_TYPE_MESSAGE 搭配固定 256KB 缓冲区。一旦搜索结果超过
-// 缓冲区，ReadFile 会返回 ERROR_MORE_DATA，客户端将其当作彻底失败并丢弃
-// 已经读到的数据；更糟的是残留在管道里的字节从未被读走，服务端随后的写入
-// 失败并断开连接，接下来的请求只能重连甚至重新拉起服务。
-//
-// 现在改为字节流搭配 4 字节小端长度前缀：任意大小的响应都能分块完整传输，
+// 字节流搭配 4 字节小端长度前缀：任意大小的响应都能分块完整传输，
 // 且帧边界由长度显式给出，不再依赖内核缓冲区大小。
+// 单次客户端 JSON 请求包上限收紧至 1 MB，阻断超大恶意帧内存耗尽攻击。
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef TOOLS3000_SERVICE_PIPEPROTOCOL_H
@@ -26,11 +22,11 @@ namespace tools3000::service::pipe {
 /// 长度前缀占用的字节数。
 inline constexpr std::size_t HeaderSize = 4;
 
-/// 单帧净荷上限。损坏或伪造的长度前缀不会导致巨量分配。
+/// 单帧响应净荷上限。损坏或伪造的长度前缀不会导致巨量分配。
 inline constexpr std::uint32_t MaxFrameBytes = 64u * 1024u * 1024u;
 
-/// 请求帧上限。请求只是一段查询 JSON，远小于响应。
-inline constexpr std::uint32_t MaxRequestBytes = 64u * 1024u;
+/// 单次客户端 JSON 请求帧上限（1 MB）。
+inline constexpr std::uint32_t MaxRequestBytes = 1024u * 1024u;
 
 /// Windows named pipes are byte streams; a single ReadFile/WriteFile is not a
 /// frame operation. Keep the completion loops beside the framing contract so

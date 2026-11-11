@@ -261,6 +261,8 @@ void RecordingIndicator::setPaused(bool paused) {
 }
 
 void RecordingIndicator::setRecordingRegion(int x, int y, int width, int height, float cornerRadius) {
+    if (width > 1) width &= ~1;
+    if (height > 1) height &= ~1;
     m_recordingRegion = { x, y, x + width, y + height };
     m_recordingCornerRadius = (std::max)(0.0f, cornerRadius);
     m_hasRecordingRegion = (width > 0 && height > 0);

@@ -241,6 +241,10 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
                 ? state.activeElement->magnifierCalloutStyle
                 : state.currentMagnifierCalloutStyle;
             state.dropdownMenu.items = {
+                { static_cast<int>(MagnifierCalloutStyle::DashedDirect),
+                  isZh ? L"虚线" : L"Dashed",
+                  L"",
+                  curStyle == MagnifierCalloutStyle::DashedDirect },
                 { static_cast<int>(MagnifierCalloutStyle::TangentFrustum),
                   isZh ? L"双切线" : L"Tangent",
                   L"",
@@ -249,10 +253,6 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
                   isZh ? L"折线" : L"Elbow",
                   L"",
                   curStyle == MagnifierCalloutStyle::ElbowLeader },
-                { static_cast<int>(MagnifierCalloutStyle::DashedDirect),
-                  isZh ? L"虚线" : L"Dashed",
-                  L"",
-                  curStyle == MagnifierCalloutStyle::DashedDirect },
                 { static_cast<int>(MagnifierCalloutStyle::CenterPointer),
                   isZh ? L"单线" : L"Single",
                   L"",

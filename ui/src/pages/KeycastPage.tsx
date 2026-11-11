@@ -444,8 +444,15 @@ export const KeycastPage: FC = () => {
                 key={mode.id}
                 className={`keycast-page__filter-card ${isSelected ? 'active' : ''}`}
                 onClick={() => saveSetting('filterMode', mode.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    saveSetting('filterMode', mode.id);
+                  }
+                }}
                 role="button"
                 tabIndex={0}
+                aria-pressed={isSelected}
               >
                 <div className="keycast-page__filter-header">
                   <span className="keycast-page__filter-title">{t(mode.titleKey as unknown as TemplateStringsArray)}</span>

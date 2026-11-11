@@ -39,7 +39,10 @@ public:
     using FullscreenScene = tools3000::core::FullscreenScene;
     using FullscreenPolicyMode = tools3000::core::FullscreenPolicyMode;
 
-    /// 获取可执行文件所在目录
+    /// 获取当前可执行文件完整路径（动态扩容支持超 MAX_PATH 长路径）
+    static std::filesystem::path getExePath();
+
+    /// 获取可执行文件所在目录（动态扩容支持超 MAX_PATH 长路径）
     static std::filesystem::path getExeDirectory();
 
     /// 判断是否处于绿色便携模式 (Portable Mode)
@@ -224,6 +227,12 @@ public:
 
     /// 查询当前主进程是否拥有管理员提升权限
     static bool isCurrentProcessElevated();
+
+    /// 查询当前主进程是否拥有管理员提升权限（语义别名）
+    static bool isProcessElevated();
+
+    /// 离线快速校验目标二进制文件是否具备有效的 Authenticode 数字签名
+    static bool hasValidAuthenticodeSignature(const std::filesystem::path& filePath);
 
     struct WindowProcessQuery {
         bool queryLimitedOk = false;

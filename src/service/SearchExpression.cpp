@@ -1,6 +1,8 @@
 #include "SearchExpression.h"
 #include "SearchRequestLimits.h"
 #include "content/ContentSearchEngine.h"
+#include "content/RustContentKernel.h"
+#include <userenv.h>
 #include <algorithm>
 #include <cwctype>
 #include <sstream>
@@ -467,15 +469,44 @@ SearchClause parseSingleToken(const RawQueryToken& rawTok, const SearchParseOpti
         if (token.size() > tools3000::service::search_limits::MaxRegexCharacters) {
             clause.rawPattern = token;
             clause.regexObj = std::nullopt;
+            clause.linearRegex.reset();
+            clause.regexInvalid = true;
             return clause;
         }
-        try {
-            const auto regexFlags = options.caseSensitive
-                ? std::regex::optimize
-                : (std::regex::icase | std::regex::optimize);
-            clause.regexObj = std::wregex(token, regexFlags);
-        } catch (...) {
-            clause.regexObj = std::nullopt;
+        // Primary (`HIGH-14`): compile into Rust linear-time O(N) Thompson NFA engine
+        // (`t3k_rs_regex_compile`), immune to catastrophic backtracking ReDoS and stack overflow.
+        uint32_t compileStatus = 0;
+        if (!token.empty()) {
+            T3kRegexHandle* rawHandle = t3k_rs_regex_compile(
+                reinterpret_cast<const uint16_t*>(token.data()),
+                token.size(),
+                options.caseSensitive ? 1u : 0u,
+                &compileStatus);
+            if (rawHandle != nullptr) {
+                clause.linearRegex = std::shared_ptr<T3kRegexHandle>(
+                    rawHandle,
+                    [](T3kRegexHandle* h) noexcept {
+                        if (h != nullptr) {
+                            t3k_rs_regex_free(h);
+                        }
+                    });
+            }
+        }
+        if (!clause.linearRegex) {
+            if (!token.empty() && compileStatus == 0) {
+                clause.regexObj = std::nullopt;
+                clause.regexInvalid = true;
+            } else {
+                try {
+                    const auto regexFlags = options.caseSensitive
+                        ? std::regex::optimize
+                        : (std::regex::icase | std::regex::optimize);
+                    clause.regexObj = std::wregex(token, regexFlags);
+                } catch (...) {
+                    clause.regexObj = std::nullopt;
+                    clause.regexInvalid = true;
+                }
+            }
         }
         clause.rawPattern = token;
         return clause;
@@ -650,12 +681,42 @@ SearchClause parseSingleToken(const RawQueryToken& rawTok, const SearchParseOpti
 
 static std::wstring expandEnvStrings(const std::wstring& input) {
     if (input.find(L'%') == std::wstring::npos) return input;
+
+    // If the current thread is impersonating a pipe client user (`MED-13`), expand
+    // against that user's environment block rather than the `LocalSystem` process block.
+    HANDLE hThreadToken = nullptr;
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY | TOKEN_DUPLICATE, TRUE, &hThreadToken) ||
+        OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &hThreadToken)) {
+        constexpr DWORD kMaxExpanded = 4096;
+        std::vector<wchar_t> userBuf(kMaxExpanded, L'\0');
+        const BOOL ok = ExpandEnvironmentStringsForUserW(
+            hThreadToken, input.c_str(), userBuf.data(), kMaxExpanded);
+        CloseHandle(hThreadToken);
+        if (ok) {
+            userBuf.back() = L'\0';
+            std::wstring userExpanded(userBuf.data());
+            if (!userExpanded.empty()) {
+                return userExpanded;
+            }
+        }
+    }
+
     DWORD needed = ExpandEnvironmentStringsW(input.c_str(), nullptr, 0);
     if (needed == 0) return input;
     std::wstring expanded(needed, L'\0');
     DWORD result = ExpandEnvironmentStringsW(input.c_str(), &expanded[0], needed);
     if (result == 0 || result > needed) return input;
     expanded.resize(result - 1);
+
+    // Guard against `LocalSystem` expanding `%APPDATA%` / `%USERPROFILE%` into `systemprofile`
+    // when no user token is bound (`MED-13`).
+    const std::wstring lowerExpanded = SearchExpression::normalize(expanded);
+    if (lowerExpanded.find(L"\\system32\\config\\systemprofile") != std::wstring::npos) {
+        const std::wstring lowerInput = SearchExpression::normalize(input);
+        if (lowerInput.find(L"systemprofile") == std::wstring::npos) {
+            return input;
+        }
+    }
     return expanded;
 }
 
@@ -743,11 +804,15 @@ bool isClauseRecordLocalOnly(const SearchClause& clause, bool requiresFullPath) 
 
 void SearchExpression::recomputePathRequirement(const SearchParseOptions& options) {
     m_requiresFullPath = options.matchPath;
+    m_hasRegexClause = false;
     size_t nonContentNameGroupCount = 0;
 
     for (auto& group : m_orGroups) {
         bool groupHasNonContentName = false;
         for (auto& clause : group.clauses) {
+            if (clause.filterType == SearchFilterType::Regex) {
+                m_hasRegexClause = true;
+            }
             clause.hasPathSeparator =
                 (clause.rawPattern.find(L'\\') != std::wstring::npos) ||
                 (clause.rawPattern.find(L'/') != std::wstring::npos);
@@ -1020,7 +1085,7 @@ SearchExpression SearchExpression::parse(const std::wstring& query, const Search
         } else if (inContentMode && clause.filterType == SearchFilterType::None && !clause.isNegated &&
                    (awaitingContentOperand ||
                     (token.find(L'\\') == std::wstring::npos && !clause.hasWildcard))) {
-            // Absorb plain non-operator words following content: (e.g. "content: 合同", "content:同心 账号密码")
+            // Absorb plain non-operator words following content: (e.g. "content: 架构", "content:星云 部署手册")
             appendContentTerm(token);
             clause.rawPattern = token;
             clause.pattern = normalize(token);
@@ -1421,12 +1486,30 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
             break;
 
         case SearchFilterType::Regex:
-            if (clause.regexObj.has_value()) {
-                matched = std::regex_search(record.fileName.begin(), record.fileName.end(),
-                                            clause.regexObj.value());
+            if (clause.linearRegex) {
+                matched = t3k_rs_regex_is_match(
+                    clause.linearRegex.get(),
+                    reinterpret_cast<const uint16_t*>(record.fileName.data()),
+                    record.fileName.size());
                 if (!matched && requiresFullPath) {
                     const std::wstring slashPath = normalizePathSeparators(getPath());
-                    matched = std::regex_search(slashPath, clause.regexObj.value());
+                    matched = t3k_rs_regex_is_match(
+                        clause.linearRegex.get(),
+                        reinterpret_cast<const uint16_t*>(slashPath.data()),
+                        slashPath.size());
+                }
+            } else if (!clause.regexInvalid && clause.regexObj.has_value()) {
+                try {
+                    matched = std::regex_search(record.fileName.begin(), record.fileName.end(),
+                                                clause.regexObj.value());
+                    if (!matched && requiresFullPath) {
+                        const std::wstring slashPath = normalizePathSeparators(getPath());
+                        matched = std::regex_search(slashPath, clause.regexObj.value());
+                    }
+                } catch (const std::regex_error&) {
+                    matched = false;
+                } catch (...) {
+                    matched = false;
                 }
             }
             break;
@@ -1617,8 +1700,7 @@ bool SearchExpression::matchesSeparable(const FileRecord& record, wchar_t driveL
     auto getNoAttr = []() noexcept -> const WIN32_FILE_ATTRIBUTE_DATA* { return nullptr; };
 
     for (size_t g = m_orGroups.size(); g-- > 0;) {
-        const uint64_t bit = (1ULL << g);
-        if ((dirSatisfiedMask & bit) != 0) {
+        if (g < 64 && ((dirSatisfiedMask >> g) & 1ULL) != 0) {
             continue;
         }
         const auto& group = m_orGroups[g];

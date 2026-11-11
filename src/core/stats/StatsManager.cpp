@@ -1,6 +1,7 @@
 #include "core/stats/StatsManager.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
+#include <algorithm>
 #include <fstream>
 #include <filesystem>
 #include <chrono>
@@ -62,42 +63,64 @@ std::string StatsManager::getCurrentDateStr() const {
 }
 
 void StatsManager::initialize() {
+    std::lock_guard lifecycleLock(m_lifecycleMutex);
     {
         std::lock_guard lock(m_mutex);
-        if (m_initialized) return;
+        if (m_initialized.load(std::memory_order_acquire)) return;
         m_currentDate = getCurrentDateStr();
         loadFromFile();
         m_dirty = false;
         m_lastSaveTick = GetTickCount64();
-        m_initialized = true;
+        m_initialized.store(true, std::memory_order_release);
     }
-    m_flushRunning = true;
-    m_flushThread = std::thread([this]() { flushLoop(); });
+    if (m_flushThread.joinable()) {
+        m_flushRunning.store(false, std::memory_order_release);
+        m_flushCv.notify_all();
+        m_flushThread.join();
+    }
+    m_flushRunning.store(true, std::memory_order_release);
+    try {
+        m_flushThread = std::thread([this]() { flushLoop(); });
+    } catch (const std::exception& e) {
+        m_flushRunning.store(false, std::memory_order_release);
+        LOG_ERROR("Failed to start stats flush thread: {}", e.what());
+    }
     LOG_INFO("按键统计管理器初始化成功, 日期={}", m_currentDate);
 }
 
 void StatsManager::shutdown() {
-    if (!m_initialized) return;
-    m_flushRunning = false;
+    std::lock_guard lifecycleLock(m_lifecycleMutex);
+    if (!m_initialized.load(std::memory_order_acquire) && !m_flushThread.joinable()) return;
+    m_flushRunning.store(false, std::memory_order_release);
     m_flushCv.notify_all();
     if (m_flushThread.joinable()) m_flushThread.join();
-    flushPending(true);
-    m_initialized = false;
+    if (m_initialized.load(std::memory_order_acquire)) {
+        flushPending(true);
+        std::lock_guard lock(m_mutex);
+        m_initialized.store(false, std::memory_order_release);
+    }
     LOG_INFO("按键统计管理器已关闭");
 }
 
 void StatsManager::loadFromFile() {
+    std::error_code ec;
     const auto dir = WinUtils::getAppDataDirectory() / L"stats";
-    std::filesystem::create_directories(dir);
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        LOG_ERROR("Failed to create stats directory: {}", ec.message());
+        m_historyData = nlohmann::json::object();
+        return;
+    }
     const auto path = dir / L"stats.json";
     const auto legacyPath = WinUtils::getExeDirectory() / L"data" / L"stats.json";
-    if (!std::filesystem::exists(path) && std::filesystem::exists(legacyPath)) {
-        std::error_code ec;
+    if (!std::filesystem::exists(path, ec) && std::filesystem::exists(legacyPath, ec)) {
+        ec.clear();
         std::filesystem::copy_file(legacyPath, path,
                                    std::filesystem::copy_options::skip_existing, ec);
         if (ec) LOG_WARN("迁移旧统计文件失败: {}", ec.message());
     }
-    if (!std::filesystem::exists(path)) {
+    ec.clear();
+    if (!std::filesystem::exists(path, ec) || ec) {
         m_historyData = nlohmann::json::object();
         return;
     }
@@ -114,9 +137,14 @@ void StatsManager::loadFromFile() {
     }
 }
 
-void StatsManager::saveToFile() {
+bool StatsManager::saveToFile() {
+    std::error_code ec;
     auto dir = WinUtils::getAppDataDirectory() / L"stats";
-    std::filesystem::create_directories(dir);
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        LOG_ERROR("保存统计数据失败: {}", ec.message());
+        return false;
+    }
     auto path = dir / L"stats.json";
     auto tempPath = dir / L"stats.json.tmp";
     
@@ -130,22 +158,27 @@ void StatsManager::saveToFile() {
         ofs.close();
         if (!MoveFileExW(tempPath.c_str(), path.c_str(),
                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            throw std::runtime_error("替换统计文件失败, error=" + std::to_string(GetLastError()));
+            const DWORD moveErr = GetLastError();
+            std::error_code rmEc;
+            std::filesystem::remove(tempPath, rmEc);
+            throw std::runtime_error("替换统计文件失败, error=" + std::to_string(moveErr));
         }
         m_dirty = false;
+        return true;
     } catch (const std::exception& e) {
         LOG_ERROR("保存统计数据失败: {}", e.what());
+        return false;
     }
 }
 
 void StatsManager::checkDateRollover() {
     std::string today = getCurrentDateStr();
     if (today != m_currentDate) {
+        m_historyData[m_currentDate] = m_todayStats.toJson();
+        bool prevSaved = true;
         // 保存昨天的数据（若有变更）
         if (m_dirty) {
-            saveToFile();
-        } else {
-            m_historyData[m_currentDate] = m_todayStats.toJson();
+            prevSaved = saveToFile();
         }
         m_currentDate = today;
         m_todayStats = DailyStats(); // 新的一天重置内存
@@ -153,7 +186,7 @@ void StatsManager::checkDateRollover() {
         if (m_historyData.contains(m_currentDate)) {
             m_todayStats = DailyStats::fromJson(m_historyData[m_currentDate]);
         }
-        m_dirty = false;
+        m_dirty = !prevSaved;
     }
 }
 
@@ -189,6 +222,7 @@ DailyStats StatsManager::getTodayStats() {
 }
 
 nlohmann::json StatsManager::getHistory(int days) {
+    days = std::clamp(days, 1, 3660);
     flushPending(false);
     std::lock_guard lock(m_mutex);
     checkDateRollover();

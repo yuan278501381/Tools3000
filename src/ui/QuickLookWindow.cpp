@@ -2,9 +2,11 @@
 #include "ui/SearchWindow.h"
 #include "ui/KeyboardPipeline.h"
 #include "core/config/ConfigManager.h"
+#include "core/events/MainThreadDispatcher.h"
 #include "core/logger/Logger.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/utils/DpiUtils.h"
+#include "core/utils/UiThreadJoin.h"
 #include "core/utils/WinUtils.h"
 #include "core/utils/TextFilePreviewDecoder.h"
 #include "ui/WebViewEnvironmentManager.h"
@@ -19,6 +21,7 @@
 #include <windowsx.h>
 #include "../resource.h"
 #include <nlohmann/json.hpp>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -110,9 +113,8 @@ std::string formatTimePoint(std::filesystem::file_time_type ftime) {
     }
 }
 
-std::string detectFileType(const std::filesystem::path& p) {
-    std::error_code ec;
-    if (std::filesystem::is_directory(p, ec)) return "folder";
+std::string detectFileTypeByExtension(const std::filesystem::path& p, bool isDir) {
+    if (isDir) return "folder";
     std::string ext = tools3000::core::WinUtils::toLower(p.extension().string());
     if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
 
@@ -137,6 +139,65 @@ std::string detectFileType(const std::filesystem::path& p) {
     return "binary";
 }
 
+std::string formatWin32FileTime(const FILETIME& ft) {
+    SYSTEMTIME utc{};
+    SYSTEMTIME local{};
+    if (!FileTimeToSystemTime(&ft, &utc) || !SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local)) {
+        return "-";
+    }
+    char buf[64] = {0};
+    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u:%02u",
+                  local.wYear, local.wMonth, local.wDay,
+                  local.wHour, local.wMinute, local.wSecond);
+    return buf;
+}
+
+json generateFastInitialPreviewPayload(const std::wstring& filePath, bool& outNeedsAsyncDeepLoad) {
+    outNeedsAsyncDeepLoad = false;
+    WIN32_FILE_ATTRIBUTE_DATA attrData{};
+    if (!GetFileAttributesExW(filePath.c_str(), GetFileExInfoStandard, &attrData)) {
+        return {
+            {"exists", false},
+            {"path", tools3000::core::WinUtils::wstringToUtf8(filePath)},
+            {"error", "file not found"}
+        };
+    }
+
+    const std::filesystem::path p(filePath);
+    const bool isDir = (attrData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    std::string ext = isDir ? "" : tools3000::core::WinUtils::toLower(p.extension().string());
+    if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
+    const std::string type = detectFileTypeByExtension(p, isDir);
+
+    uintmax_t sizeBytes = 0;
+    if (!isDir) {
+        sizeBytes = (static_cast<uintmax_t>(attrData.nFileSizeHigh) << 32) |
+                    static_cast<uintmax_t>(attrData.nFileSizeLow);
+    }
+
+    json payload = {
+        {"exists", true},
+        {"path", tools3000::core::WinUtils::wstringToUtf8(filePath)},
+        {"name", tools3000::core::WinUtils::wstringToUtf8(p.filename().wstring())},
+        {"extension", ext},
+        {"type", type},
+        {"isDirectory", isDir},
+        {"size", sizeBytes},
+        {"formattedSize", isDir ? (isQuickLookEnglishLocale() ? "Folder" : "文件夹") : formatFileSize(sizeBytes)},
+        {"modified", formatWin32FileTime(attrData.ftLastWriteTime)}
+    };
+
+    if (isDir) {
+        payload["folderChildren"] = json::array();
+        outNeedsAsyncDeepLoad = true;
+    } else if (type == "markdown" || type == "code" || type == "binary") {
+        payload["content"] = "";
+        outNeedsAsyncDeepLoad = true;
+    }
+
+    return payload;
+}
+
 json generateFilePreviewPayload(const std::wstring& filePath) {
     std::error_code ec;
     std::filesystem::path p(filePath);
@@ -151,7 +212,7 @@ json generateFilePreviewPayload(const std::wstring& filePath) {
     bool isDir = std::filesystem::is_directory(p, ec);
     std::string ext = isDir ? "" : tools3000::core::WinUtils::toLower(p.extension().string());
     if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
-    std::string type = detectFileType(p);
+    std::string type = detectFileTypeByExtension(p, isDir);
 
     uintmax_t sizeBytes = 0;
     if (!isDir) {
@@ -230,6 +291,165 @@ json generateFilePreviewPayload(const std::wstring& filePath) {
 QuickLookWindow& QuickLookWindow::instance() {
     static QuickLookWindow inst;
     return inst;
+}
+
+QuickLookWindow::~QuickLookWindow() {
+    shutdownAsyncWorker();
+}
+
+void QuickLookWindow::ensureAsyncWorkerStarted() {
+    if (m_asyncWorker.joinable()) {
+        return;
+    }
+    m_asyncWorker = std::jthread([this](std::stop_token st) {
+        asyncWorkerLoop(st);
+    });
+}
+
+void QuickLookWindow::shutdownAsyncWorker() {
+    {
+        std::lock_guard lock(m_asyncMutex);
+        m_hasAsyncPreviewTask = false;
+        m_hasAsyncStepTask = false;
+    }
+    if (m_asyncWorker.joinable()) {
+        m_asyncWorker.request_stop();
+        m_asyncCv.notify_all();
+        tools3000::core::joinWorkerWhilePumpingSentMessages(m_asyncWorker, 3000);
+    }
+}
+
+void QuickLookWindow::asyncWorkerLoop(std::stop_token st) {
+    while (!st.stop_requested()) {
+        std::wstring previewPath;
+        uint64_t previewReqId = 0;
+        uint64_t previewGen = 0;
+        bool deepDecode = false;
+        bool runPreview = false;
+
+        std::wstring stepBase;
+        int stepDelta = 0;
+        uint64_t stepGen = 0;
+        bool runStep = false;
+
+        {
+            std::unique_lock lock(m_asyncMutex);
+            m_asyncCv.wait(lock, st, [this]() {
+                return m_hasAsyncStepTask || m_hasAsyncPreviewTask;
+            });
+            if (st.stop_requested()) {
+                break;
+            }
+            if (m_hasAsyncStepTask) {
+                stepBase = std::move(m_asyncStepBase);
+                stepDelta = m_asyncStepDelta;
+                stepGen = m_asyncStepGen;
+                m_hasAsyncStepTask = false;
+                runStep = true;
+            } else if (m_hasAsyncPreviewTask) {
+                previewPath = std::move(m_asyncPreviewPath);
+                previewReqId = m_asyncPreviewReqId;
+                previewGen = m_asyncPreviewGen;
+                deepDecode = m_asyncDeepDecode;
+                m_hasAsyncPreviewTask = false;
+                runPreview = true;
+            }
+        }
+
+        if (runStep) {
+            const std::wstring nextPath = resolveSiblingPreviewPath(stepBase, stepDelta);
+            if (!st.stop_requested() && !nextPath.empty() &&
+                _wcsicmp(nextPath.c_str(), stepBase.c_str()) != 0) {
+                tools3000::core::MainThreadDispatcher::instance().postDeferred(
+                    [this, stepBase, nextPath, stepGen]() {
+                        if (stepGen != m_generation.load() || !isVisible()) {
+                            return;
+                        }
+                        if (_wcsicmp(m_currentFilePath.c_str(), stepBase.c_str()) == 0) {
+                            previewFile(nextPath);
+                        }
+                    });
+            }
+            continue;
+        }
+
+        if (runPreview) {
+            if (deepDecode) {
+                json fullPayload = generateFilePreviewPayload(previewPath);
+                if (st.stop_requested() || previewGen != m_generation.load() ||
+                    previewReqId != m_previewRequestId.load()) {
+                    continue;
+                }
+                const std::string dumped =
+                    fullPayload.dump(-1, ' ', false, json::error_handler_t::replace);
+                const std::string fileType = fullPayload.value("type", "");
+                const bool exists = fullPayload.value("exists", false);
+                const bool hasDataUri = fullPayload.contains("dataUri");
+                const uintmax_t sz = fullPayload.value("size", static_cast<uintmax_t>(0));
+
+                tools3000::core::MainThreadDispatcher::instance().postDeferred(
+                    [this, previewPath, previewReqId, previewGen, dumped, fileType, exists, hasDataUri, sz]() {
+                        if (previewGen != m_generation.load() ||
+                            previewReqId != m_previewRequestId.load() ||
+                            !m_visible.load() || !m_webView || !m_webViewReady) {
+                            return;
+                        }
+                        json payload = json::parse(dumped, nullptr, false);
+                        if (payload.is_discarded()) {
+                            return;
+                        }
+                        m_currentIsPdfPreview.store(exists && fileType == "pdf", std::memory_order_release);
+                        const bool needsMediaMapping =
+                            exists &&
+                            (fileType == "video" || fileType == "audio" || fileType == "pdf" ||
+                             (fileType == "image" && !hasDataUri));
+                        if (needsMediaMapping) {
+                            std::error_code ec;
+                            const std::filesystem::path p(previewPath);
+                            const std::wstring parentDir = p.parent_path().wstring();
+                            if (!parentDir.empty() && std::filesystem::exists(parentDir, ec)) {
+                                updateMediaHostMapping(parentDir);
+                                const std::string encodedName = encodeUriPathSegment(
+                                    tools3000::core::WinUtils::wstringToUtf8(p.filename().wstring()));
+                                const uint64_t rev = ++m_mediaUrlRevision;
+                                payload["mediaUrl"] =
+                                    std::string("https://quicklook-media.tools3000.local/") +
+                                    encodedName + "?s=" + std::to_string(sz) +
+                                    "&v=" + std::to_string(rev);
+                            }
+                        } else {
+                            clearMediaHostMapping();
+                        }
+                        std::string envelope =
+                            R"({"type":"event","event":"quicklook.fileChanged","data":)" +
+                            payload.dump(-1, ' ', false, json::error_handler_t::replace) + "}";
+                        std::wstring wMsg = tools3000::core::WinUtils::utf8ToWstring(envelope);
+                        m_webView->PostWebMessageAsString(wMsg.c_str());
+                    });
+            }
+
+            if (!st.stop_requested() && previewGen == m_generation.load() &&
+                previewReqId == m_previewRequestId.load()) {
+                warmDirectorySiblingsCache(previewPath);
+            }
+        }
+    }
+}
+
+void QuickLookWindow::stepSiblingAsync(int delta) {
+    if (delta == 0) return;
+    const std::wstring cur = m_currentFilePath;
+    if (cur.empty()) return;
+
+    ensureAsyncWorkerStarted();
+    {
+        std::lock_guard lock(m_asyncMutex);
+        m_asyncStepBase = cur;
+        m_asyncStepDelta = delta;
+        m_asyncStepGen = m_generation.load();
+        m_hasAsyncStepTask = true;
+    }
+    m_asyncCv.notify_one();
 }
 
 void QuickLookWindow::show(const std::wstring& filePath, HINSTANCE hInstance) {
@@ -312,9 +532,12 @@ void QuickLookWindow::previewFile(const std::wstring& filePath) {
     m_pendingFilePath = normalizedPath;
     m_showTimeTick = GetTickCount64();
     m_visible = true;
+    const uint64_t requestId = ++m_previewRequestId;
+    const uint64_t generation = m_generation.load();
 
     if (m_webView && m_webViewReady) {
-        json payload = generateFilePreviewPayload(normalizedPath);
+        bool needsAsyncDeepLoad = false;
+        json payload = generateFastInitialPreviewPayload(normalizedPath, needsAsyncDeepLoad);
         const std::string fileType = payload.value("type", "");
         const bool exists = payload.value("exists", false);
         m_currentIsPdfPreview.store(exists && fileType == "pdf", std::memory_order_release);
@@ -323,10 +546,9 @@ void QuickLookWindow::previewFile(const std::wstring& filePath) {
             (fileType == "video" || fileType == "audio" || fileType == "pdf" ||
              (fileType == "image" && !payload.contains("dataUri")));
         if (needsMediaMapping) {
-            std::error_code ec;
             const std::filesystem::path p(normalizedPath);
             const std::wstring parentDir = p.parent_path().wstring();
-            if (!parentDir.empty() && std::filesystem::exists(parentDir, ec)) {
+            if (!parentDir.empty()) {
                 updateMediaHostMapping(parentDir);
                 const std::string encodedName = encodeUriPathSegment(
                     tools3000::core::WinUtils::wstringToUtf8(p.filename().wstring()));
@@ -339,16 +561,36 @@ void QuickLookWindow::previewFile(const std::wstring& filePath) {
         } else {
             clearMediaHostMapping();
         }
-        // 使用 error_handler_t::replace 防御任何极端残余非 UTF-8 字节，彻底杜绝 json::type_error.316 异常
+        // 首帧 0ms 立即推送当前选中文件元数据或流媒体地址，杜绝磁盘 I/O 阻塞主 UI 线程
         std::string envelope = R"({"type":"event","event":"quicklook.fileChanged","data":)" +
                                payload.dump(-1, ' ', false, json::error_handler_t::replace) + "}";
         std::wstring wMsg = tools3000::core::WinUtils::utf8ToWstring(envelope);
         m_webView->PostWebMessageAsString(wMsg.c_str());
+
+        if (exists) {
+            ensureAsyncWorkerStarted();
+            {
+                std::lock_guard lock(m_asyncMutex);
+                m_asyncPreviewPath = normalizedPath;
+                m_asyncPreviewReqId = requestId;
+                m_asyncPreviewGen = generation;
+                m_asyncDeepDecode = needsAsyncDeepLoad;
+                m_hasAsyncPreviewTask = true;
+            }
+            m_asyncCv.notify_one();
+        }
     }
 }
 
 void QuickLookWindow::hide() {
+    ++m_previewRequestId;
+    m_currentFilePath.clear();
+    m_pendingFilePath.clear();
     m_currentIsPdfPreview.store(false, std::memory_order_release);
+    if (m_webView && m_webViewReady) {
+        m_webView->PostWebMessageAsJson(
+            LR"({"type":"event","event":"quicklook.fileChanged","data":null})");
+    }
     if (m_hwnd) {
         clearMediaHostMapping();
         ShowWindow(m_hwnd, SW_HIDE);
@@ -371,6 +613,10 @@ bool QuickLookWindow::isVisible() const {
 
 void QuickLookWindow::destroy() {
     ++m_generation;
+    ++m_previewRequestId;
+    shutdownAsyncWorker();
+    m_currentFilePath.clear();
+    m_pendingFilePath.clear();
     m_currentIsPdfPreview.store(false, std::memory_order_release);
     clearMediaHostMapping();
     if (m_controller) {

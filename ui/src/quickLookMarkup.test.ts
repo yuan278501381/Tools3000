@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { highlightCode, renderMarkdownToHtml } from './quickLookMarkup';
+import {
+  MAX_HIGHLIGHT_LINE_LENGTH,
+  highlightCode,
+  highlightSingleCodeLine,
+  renderMarkdownToHtml,
+  renderSimpleMarkdown,
+} from './quickLookMarkup';
 
 describe('highlightCode', () => {
   it('escapes executable HTML before adding highlighting markup', () => {
@@ -50,6 +56,33 @@ describe('renderMarkdownToHtml', () => {
 
     expect(html).toContain('$&amp; and $$ and $&#39;');
     expect(html).not.toContain('__QUICKLOOK_CODE_BLOCK_');
+    expect(html).not.toContain('TOOLS3000_CODE_BLOCK');
+  });
+
+  it('protects C/C++ pointer asterisks and HTML inside inline backtick code spans from emphasis corruption', () => {
+    const html = renderSimpleMarkdown('Dereference `int *a = *b;` and `<script>` while keeping *italic* and **bold**.');
+
+    expect(html).toContain('<code class="ql-inline-code">int *a = *b;</code>');
+    expect(html).toContain('<code class="ql-inline-code">&lt;script&gt;</code>');
+    expect(html).toContain('<em>italic</em>');
+    expect(html).toContain('<strong>bold</strong>');
+    expect(html).not.toContain('int <em>a = </em>b;');
+    expect(html).not.toContain('TOOLS3000_INLINE_CODE');
+  });
+
+  it('bypasses regex tokenization for oversized single lines (> 4096 chars) while escaping HTML safely', () => {
+    const hugeMinifiedLine = `const payload = "${'x'.repeat(MAX_HIGHLIGHT_LINE_LENGTH + 128)}<img onerror=1>";`;
+    const singleHtml = highlightSingleCodeLine(hugeMinifiedLine);
+    expect(singleHtml).not.toContain('tok-keyword');
+    expect(singleHtml).toContain('&lt;img onerror=1&gt;');
+
+    const mixedHtml = highlightCode(`const normal = 1;\n${hugeMinifiedLine}\nreturn normal;`);
+    const lines = mixedHtml.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain('class="tok-keyword"');
+    expect(lines[1]).not.toContain('class="tok-keyword"');
+    expect(lines[1]).toContain('&lt;img onerror=1&gt;');
+    expect(lines[2]).toContain('class="tok-keyword"');
   });
 });
 
