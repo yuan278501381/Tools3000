@@ -13,6 +13,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type FC } from 'reac
 import { Card, Toggle, SettingRow, SettingGroup, Badge, Select, Button, ColorPickerInput, ConfirmModal, PageSkeleton } from '../components/UIKit';
 import { GestureEditorModal, type GestureSaveOptions } from '../components/GestureEditorModal';
 import { GestureStrokePreview } from '../components/GestureStrokePreview';
+import { MouseButtonSvg, ScreenEdgeSvg, TriggerItemSvg } from '../components/MouseButtonSvg';
 import { GestureGuide } from '../components/GestureGuide';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import {
@@ -63,9 +64,6 @@ import {
   Zap,
   VolumeX,
   GripVertical,
-  PanelTop,
-  ChevronsUpDown,
-  Gamepad2,
 } from 'lucide-react';
 import './GesturePage.css';
 
@@ -772,7 +770,7 @@ export const GesturePage: FC = () => {
       const edgeLabel = edgeShortMap[parsed.edge];
       return (
         <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--edge">
-          {isWheel ? <ChevronsUpDown size={10} aria-hidden="true" /> : <PanelTop size={10} aria-hidden="true" />}
+          <ScreenEdgeSvg edge={parsed.edge} withWheel={isWheel} size={11} />
           <span>{isWheel ? `${edgeLabel}·${t('gesture.wheelShort', 'Wheel')}` : edgeLabel}</span>
         </span>
       );
@@ -780,7 +778,7 @@ export const GesturePage: FC = () => {
     if (isWheel) {
       return (
         <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--wheel">
-          <ChevronsUpDown size={10} aria-hidden="true" />
+          <MouseButtonSvg button="wheel" size={11} />
           <span>{t('gesture.wheelShort', 'Wheel')}</span>
         </span>
       );
@@ -788,7 +786,7 @@ export const GesturePage: FC = () => {
     if (parsed.triggerButton === 'x1' || parsed.triggerButton === 'x2') {
       return (
         <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--side">
-          <Gamepad2 size={10} aria-hidden="true" />
+          <MouseButtonSvg button={parsed.triggerButton} size={11} />
           <span>{parsed.triggerButton === 'x1' ? t('gesture.side1Short', 'X1') : t('gesture.side2Short', 'X2')}</span>
         </span>
       );
@@ -796,7 +794,7 @@ export const GesturePage: FC = () => {
     if (parsed.triggerButton === 'middle') {
       return (
         <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--middle">
-          <Mouse size={10} aria-hidden="true" />
+          <MouseButtonSvg button="middle" size={11} />
           <span>{t('gesture.middleClickShort', 'Middle')}</span>
         </span>
       );
@@ -804,14 +802,14 @@ export const GesturePage: FC = () => {
     if (parsed.triggerButton === 'left') {
       return (
         <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--side">
-          <Mouse size={10} aria-hidden="true" />
+          <MouseButtonSvg button="left" size={11} />
           <span>{t('gesture.leftClickShort', 'Left')}</span>
         </span>
       );
     }
     return (
       <span className="gesture-trigger-mini-badge gesture-trigger-mini-badge--right">
-        <Mouse size={10} aria-hidden="true" />
+        <MouseButtonSvg button="right" size={11} />
         <span>{t('gesture.rightClickShort', 'Right')}</span>
       </span>
     );
@@ -1207,6 +1205,7 @@ export const GesturePage: FC = () => {
                           onClick={() => void handleSetTriggerState(item.key, isEffectiveEnabled ? 'disabled' : 'enabled')}
                         >
                           {isEffectiveEnabled ? <CheckCircle2 size={12} className="trigger-pill-icon" /> : null}
+                          <TriggerItemSvg triggerKey={item.key} size={13} />
                           <span>{itemName}</span>
                         </button>
                       );
@@ -1241,7 +1240,7 @@ export const GesturePage: FC = () => {
                           className={`gesture-trigger-filter-tab ${triggerFilter === 'right' ? 'active' : ''}`}
                           onClick={() => setTriggerFilter('right')}
                         >
-                          <Mouse size={12} aria-hidden="true" />
+                          <MouseButtonSvg button="right" size={13} />
                           <span>{t('gesture.rightGestures', 'Right Click')} ({categoryCounts.right})</span>
                         </button>
                         <button
@@ -1251,7 +1250,7 @@ export const GesturePage: FC = () => {
                           className={`gesture-trigger-filter-tab ${triggerFilter === 'middle' ? 'active' : ''}`}
                           onClick={() => setTriggerFilter('middle')}
                         >
-                          <Mouse size={12} aria-hidden="true" />
+                          <MouseButtonSvg button="middle" size={13} />
                           <span>{t('gesture.middleGestures', 'Middle Click')} ({categoryCounts.middle})</span>
                         </button>
                         <button
@@ -1261,7 +1260,7 @@ export const GesturePage: FC = () => {
                           className={`gesture-trigger-filter-tab ${triggerFilter === 'side' ? 'active' : ''}`}
                           onClick={() => setTriggerFilter('side')}
                         >
-                          <Gamepad2 size={12} aria-hidden="true" />
+                          <MouseButtonSvg button="side" size={13} />
                           <span>{t('gesture.sideGestures', 'Side Buttons')} ({categoryCounts.side})</span>
                         </button>
                         <button
@@ -1271,7 +1270,7 @@ export const GesturePage: FC = () => {
                           className={`gesture-trigger-filter-tab ${triggerFilter === 'edge' ? 'active' : ''}`}
                           onClick={() => setTriggerFilter('edge')}
                         >
-                          <PanelTop size={12} aria-hidden="true" />
+                          <ScreenEdgeSvg edge="all" size={13} />
                           <span>{t('gesture.edgeGestures', 'Screen Edge')} ({categoryCounts.edge})</span>
                         </button>
                         <button
@@ -1281,7 +1280,7 @@ export const GesturePage: FC = () => {
                           className={`gesture-trigger-filter-tab ${triggerFilter === 'wheel' ? 'active' : ''}`}
                           onClick={() => setTriggerFilter('wheel')}
                         >
-                          <ChevronsUpDown size={12} aria-hidden="true" />
+                          <MouseButtonSvg button="wheel" size={13} />
                           <span>{t('gesture.wheelGestures', 'Wheel')} ({categoryCounts.wheel})</span>
                         </button>
                       </div>

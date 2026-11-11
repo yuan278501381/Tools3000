@@ -43,7 +43,7 @@ const normalizeKeyMap = (value: unknown): Record<number, number> => {
   return Object.fromEntries(
     Object.entries(value)
       .map(([key, count]) => [Number(key), safeCount(count)] as const)
-      .filter(([key]) => Number.isInteger(key) && key >= 0 && key <= 255)
+      .filter(([key]) => Number.isInteger(key) && key >= 0 && key <= 511)
   );
 };
 
@@ -436,7 +436,7 @@ export const KeyStatsPage: FC = () => {
       </SettingGroup>
 
       <div style={{ textAlign: 'center', marginTop: '2rem' }}>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+        <p className="stats-page__counter" style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
           {t('stats.allTimeKeysSummary')}: <Badge text={totalStats.totalKeystrokes.toLocaleString() + ' ' + t('stats.times')} variant="primary" />
         </p>
       </div>

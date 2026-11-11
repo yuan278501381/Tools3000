@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState, type FC } from 'react';
 import { Button } from './UIKit';
+import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import {
   Search, Camera, Mouse, Sparkles, FolderSymlink,
@@ -24,12 +25,74 @@ interface Props {
 
 const TOTAL_STEPS = 4;
 
+interface OnboardingHotkeyMap {
+  search: string;
+  capture: string;
+  record: string;
+  ocr: string;
+  remoteFlush: string;
+}
+
+const DEFAULT_ONBOARDING_HOTKEYS: OnboardingHotkeyMap = {
+  search: 'Alt + Space',
+  capture: 'F1',
+  record: 'Ctrl + Shift + R',
+  ocr: 'Ctrl + Shift + O',
+  remoteFlush: 'Ctrl + Alt + Backspace',
+};
+
+const formatDisplayHotkey = (raw: string | undefined, fallback: string): string => {
+  if (typeof raw !== 'string') return fallback;
+  const trimmed = raw.trim();
+  if (!trimmed) return fallback;
+  return trimmed
+    .split('+')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' + ');
+};
+
 export const OnboardingModal: FC<Props> = ({ onComplete }) => {
   const { t } = useTranslation();
   const [step, setStep] = useState(0);
   const [showcaseTab, setShowcaseTab] = useState<'spotlight' | 'remote'>('spotlight');
+  const [liveHotkeys, setLiveHotkeys] = useState<OnboardingHotkeyMap>(DEFAULT_ONBOARDING_HOTKEYS);
   const cardRef = useRef<HTMLDivElement>(null);
   const titleRefs = useRef<Array<HTMLHeadingElement | null>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.allSettled([
+      bridgeRequest<Array<{ name?: string; shortcut?: string }>>('hotkey.getAll', undefined, { silent: true }),
+      bridgeRequest<{ emergencyShortcut?: string }>('remote.getSettings', undefined, { silent: true }),
+    ]).then(([hkResult, remoteResult]) => {
+      if (cancelled) return;
+      const entries = hkResult.status === 'fulfilled' && Array.isArray(hkResult.value)
+        ? hkResult.value
+        : [];
+      const findShortcut = (...names: string[]) => {
+        const lowerNames = names.map((n) => n.toLowerCase());
+        const hit = entries.find((item) => item?.name && lowerNames.includes(item.name.toLowerCase()));
+        return hit?.shortcut;
+      };
+      const remoteCfg = remoteResult.status === 'fulfilled' && remoteResult.value && typeof remoteResult.value === 'object'
+        ? remoteResult.value
+        : null;
+      const flushRaw = remoteCfg?.emergencyShortcut
+        || findShortcut('Remote Emergency Flush', 'Emergency Flush', 'Remote Flush');
+
+      setLiveHotkeys((prev) => ({
+        search: formatDisplayHotkey(findShortcut('Toggle Search', 'Search'), prev.search),
+        capture: formatDisplayHotkey(findShortcut('Screenshot', 'Capture'), prev.capture),
+        record: formatDisplayHotkey(findShortcut('Record', 'Screen Record'), prev.record),
+        ocr: formatDisplayHotkey(findShortcut('OCR', 'Text OCR'), prev.ocr),
+        remoteFlush: formatDisplayHotkey(flushRaw, prev.remoteFlush),
+      }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     titleRefs.current[step]?.focus();
@@ -210,21 +273,21 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
                   <Search size={14} style={{ color: 'var(--primary)', marginRight: 6 }} />
                   {t('onboarding.shortcutSearch')}
                 </span>
-                <kbd className="onboarding__shortcut-kbd">Alt + Space</kbd>
+                <kbd className="onboarding__shortcut-kbd">{liveHotkeys.search}</kbd>
               </div>
               <div className="onboarding__shortcut-row">
                 <span className="onboarding__shortcut-name">
                   <Camera size={14} style={{ color: 'var(--success, #34d399)', marginRight: 6 }} />
                   {t('onboarding.shortcutCapture')}
                 </span>
-                <kbd className="onboarding__shortcut-kbd">F1</kbd>
+                <kbd className="onboarding__shortcut-kbd">{liveHotkeys.capture}</kbd>
               </div>
               <div className="onboarding__shortcut-row">
                 <span className="onboarding__shortcut-name">
                   <Zap size={14} style={{ color: '#fbbf24', marginRight: 6 }} />
                   {t('onboarding.shortcutRecord')}
                 </span>
-                <kbd className="onboarding__shortcut-kbd">Ctrl + Shift + R</kbd>
+                <kbd className="onboarding__shortcut-kbd">{liveHotkeys.record}</kbd>
               </div>
               <div className="onboarding__shortcut-row">
                 <span className="onboarding__shortcut-name">
@@ -238,14 +301,14 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
                   <Sparkles size={14} style={{ color: '#ec4899', marginRight: 6 }} />
                   {t('onboarding.shortcutOcr')}
                 </span>
-                <kbd className="onboarding__shortcut-kbd">Ctrl + Shift + O</kbd>
+                <kbd className="onboarding__shortcut-kbd">{liveHotkeys.ocr}</kbd>
               </div>
               <div className="onboarding__shortcut-row">
                 <span className="onboarding__shortcut-name">
                   <Cast size={14} style={{ color: '#818cf8', marginRight: 6 }} />
                   {t('onboarding.shortcutRemoteFlush')}
                 </span>
-                <kbd className="onboarding__shortcut-kbd">Ctrl + Alt + Backspace</kbd>
+                <kbd className="onboarding__shortcut-kbd">{liveHotkeys.remoteFlush}</kbd>
               </div>
             </div>
           </div>

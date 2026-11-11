@@ -632,13 +632,6 @@
   line-height: 1.5;
 }
 
-.uikit-input--hotkey {
-  cursor: pointer;
-  text-align: center;
-  letter-spacing: 0.04em;
-  font-weight: 600;
-}
-
 /* ── Modal ────────────────────────────────────────────────────────────────── */
 .uikit-modal__overlay {
   position: fixed;
