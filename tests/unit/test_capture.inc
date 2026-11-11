@@ -8895,6 +8895,148 @@ TEST(CapturePluginIntegrationTest, HistoryCopySaveAsOcrSelectionAndDpiChangedPla
 
         invokeRpc(745, "ocr.closeResultWindow", nlohmann::json::object());
     }
+
+    // 6. U-02: 非 1.0x 缩放态 (2.0x 放大与 0.35x 缩小) 二次标注绝不触发窗口平方暴涨或底图永久糊化
+    {
+        cv::Mat pinImg(100, 200, CV_8UC3, cv::Scalar(180, 95, 45));
+        const auto pinPng = std::filesystem::temp_directory_path() /
+                            (L"tools3000_pin_reedit_" + std::to_wstring(GetCurrentProcessId()) + L".png");
+        std::vector<uchar> buf;
+        ASSERT_TRUE(cv::imencode(".png", pinImg, buf));
+        {
+            std::ofstream ofs(pinPng, std::ios::binary | std::ios::trunc);
+            ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+        }
+        ASSERT_TRUE(invokeRpc(801, "capture.pinImageFile", {
+            {"path", tools3000::core::WinUtils::wstringToUtf8(pinPng.wstring())}
+        }).value("success", false));
+
+        // 缩放到 2.0x 并记录窗口尺寸，随后执行第一次二次标注（绘制实心红框）
+        const auto scaled2x = invokeRpc(802, "capture.inspectPinOcrState", {{"setScale", 2.0f}});
+        ASSERT_TRUE(scaled2x.value("success", false));
+        EXPECT_EQ(scaled2x.value("origWidth", 0), 200);
+        EXPECT_EQ(scaled2x.value("origHeight", 0), 100);
+        EXPECT_NEAR(scaled2x.value("scale", 0.0f), 2.0f, 0.001f);
+        const int winW2x = scaled2x.value("windowWidth", 0);
+        const int winH2x = scaled2x.value("windowHeight", 0);
+
+        const auto afterEdit1 = invokeRpc(803, "capture.inspectPinOcrState", {
+            {"applyEditedRects", nlohmann::json::array({
+                {{"x1", 10}, {"y1", 10}, {"x2", 60}, {"y2", 50}, {"r", 230}, {"g", 40}, {"b", 40}, {"fill", true}}
+            })},
+            {"sampleX", 30},
+            {"sampleY", 30}
+        });
+        ASSERT_TRUE(afterEdit1.value("success", false));
+        EXPECT_EQ(afterEdit1.value("origWidth", 0), 200);
+        EXPECT_EQ(afterEdit1.value("origHeight", 0), 100);
+        EXPECT_EQ(afterEdit1.value("cleanWidth", 0), 200);
+        EXPECT_EQ(afterEdit1.value("cleanHeight", 0), 100);
+        EXPECT_NEAR(afterEdit1.value("scale", 0.0f), 2.0f, 0.001f);
+        EXPECT_EQ(afterEdit1.value("windowWidth", 0), winW2x);
+        EXPECT_EQ(afterEdit1.value("windowHeight", 0), winH2x);
+        EXPECT_EQ(afterEdit1.value("markupCount", 0), 1);
+        EXPECT_EQ(afterEdit1.value("sampleR", 0), 230);
+
+        // 再缩放到 0.35x (长图缩略态) 并执行第二次增量二次标注：绝不坍缩成 0.12x，未标注区底图 100% 原始像素零糊化
+        const auto scaledSmall = invokeRpc(804, "capture.inspectPinOcrState", {{"setScale", 0.35f}});
+        const int winWSmall = scaledSmall.value("windowWidth", 0);
+        const int winHSmall = scaledSmall.value("windowHeight", 0);
+
+        const auto afterEdit2 = invokeRpc(805, "capture.inspectPinOcrState", {
+            {"appendExistingMarkup", true},
+            {"applyEditedRects", nlohmann::json::array({
+                {{"x1", 90}, {"y1", 20}, {"x2", 140}, {"y2", 70}, {"r", 40}, {"g", 210}, {"b", 90}, {"fill", true}}
+            })},
+            {"sampleX", 185},
+            {"sampleY", 85}
+        });
+        ASSERT_TRUE(afterEdit2.value("success", false));
+        EXPECT_EQ(afterEdit2.value("origWidth", 0), 200);
+        EXPECT_EQ(afterEdit2.value("origHeight", 0), 100);
+        EXPECT_EQ(afterEdit2.value("sourceWidth", 0), 200);
+        EXPECT_EQ(afterEdit2.value("sourceHeight", 0), 100);
+        EXPECT_NEAR(afterEdit2.value("scale", 0.0f), 0.35f, 0.001f);
+        EXPECT_EQ(afterEdit2.value("windowWidth", 0), winWSmall);
+        EXPECT_EQ(afterEdit2.value("windowHeight", 0), winHSmall);
+        EXPECT_EQ(afterEdit2.value("markupCount", 0), 2);
+        EXPECT_EQ(afterEdit2.value("sampleB", 0), 180);
+        EXPECT_EQ(afterEdit2.value("sampleG", 0), 95);
+        EXPECT_EQ(afterEdit2.value("sampleR", 0), 45);
+
+        if (HWND pinHwnd = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+            SendMessageW(pinHwnd, WM_KEYDOWN, VK_ESCAPE, 0);
+        }
+        std::error_code ec;
+        std::filesystem::remove(pinPng, ec);
+    }
+
+    // 7. U-03 + V-01: OcrResultWindow 智能合并段落切换、双击选词复制、原地微调编辑、八向缩放热区与最小宽高约束
+    {
+        const std::string rawOcr =
+            "Deep learning models require\n"
+            "careful latency tuning.\n"
+            "\n"
+            "Second paragraph stays distinct.";
+        const auto opened = invokeRpc(810, "ocr.openResultWindow", {{"text", rawOcr}});
+        ASSERT_TRUE(opened.value("success", false));
+        EXPECT_EQ(opened.value("lineCount", 0), 3);
+
+        HWND ocrHwnd = FindWindowW(L"Tools3000_OcrResult", nullptr);
+        ASSERT_NE(ocrHwnd, nullptr);
+
+        // 开启智能合并段落：前两行自动合并为 1 行，非空显示行数由 3 降为 2
+        const auto mergedState = invokeRpc(811, "ocr.selectResultRange", {{"setMergeParagraphs", true}});
+        EXPECT_TRUE(mergedState.value("mergeParagraphs", false));
+        EXPECT_EQ(mergedState.value("lineCount", 0), 2);
+        EXPECT_NE(mergedState.value("currentText", "").find("Deep learning models require careful latency tuning."),
+                  std::string::npos);
+
+        // 关闭智能合并段落：无损还原回原始 3 行
+        const auto unmergedState = invokeRpc(812, "ocr.selectResultRange", {{"setMergeParagraphs", false}});
+        EXPECT_FALSE(unmergedState.value("mergeParagraphs", true));
+        EXPECT_EQ(unmergedState.value("lineCount", 0), 3);
+
+        // 双击选词复制：选中第 0 行 offset 6 处的单词 "learning"
+        const auto wordCopied = invokeRpc(813, "ocr.selectResultRange", {
+            {"selectWordLine", 0},
+            {"selectWordOffset", 6}
+        });
+        EXPECT_EQ(wordCopied.value("copiedWord", ""), "learning");
+        EXPECT_EQ(wordCopied.value("selectedText", ""), "learning");
+
+        // 原地微调编辑：将选中的 "learning" 替换为 "vision"
+        const auto edited = invokeRpc(814, "ocr.selectResultRange", {
+            {"insertText", "vision"}
+        });
+        EXPECT_NE(edited.value("currentText", "").find("Deep vision models require"), std::string::npos);
+
+        // V-01: 验证 WM_GETMINMAXINFO 严格消费并生效 BaseMinWidth / BaseMinHeight 最小尺寸约束
+        const UINT dpi = GetDpiForWindow(ocrHwnd);
+        const float scale = tools3000::core::dpi::scaleForDpi(dpi);
+        MINMAXINFO mmi{};
+        SendMessageW(ocrHwnd, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&mmi));
+        EXPECT_EQ(mmi.ptMinTrackSize.x,
+                  tools3000::core::dpi::scaleMetric(tools3000::ocr::OcrResultStyle::BaseMinWidth, scale));
+        EXPECT_EQ(mmi.ptMinTrackSize.y,
+                  tools3000::core::dpi::scaleMetric(tools3000::ocr::OcrResultStyle::BaseMinHeight, scale));
+
+        // V-01: 验证 WM_NCHITTEST 八向边缘与四角拖拽缩放命中
+        RECT winRc{};
+        ASSERT_TRUE(GetWindowRect(ocrHwnd, &winRc));
+        const int inset = tools3000::core::dpi::scaleMetric(6, scale) + 2;
+        const int midX = (winRc.left + winRc.right) / 2;
+        const int midY = (winRc.top + winRc.bottom) / 2;
+
+        EXPECT_EQ(SendMessageW(ocrHwnd, WM_NCHITTEST, 0, MAKELPARAM(winRc.left + inset, winRc.top + inset)), HTTOPLEFT);
+        EXPECT_EQ(SendMessageW(ocrHwnd, WM_NCHITTEST, 0, MAKELPARAM(winRc.right - inset, winRc.bottom - inset)), HTBOTTOMRIGHT);
+        EXPECT_EQ(SendMessageW(ocrHwnd, WM_NCHITTEST, 0, MAKELPARAM(winRc.left + inset, midY)), HTLEFT);
+        EXPECT_EQ(SendMessageW(ocrHwnd, WM_NCHITTEST, 0, MAKELPARAM(winRc.right - inset, midY)), HTRIGHT);
+        EXPECT_EQ(SendMessageW(ocrHwnd, WM_NCHITTEST, 0, MAKELPARAM(midX, winRc.top + inset)), HTTOP);
+        EXPECT_EQ(SendMessageW(ocrHwnd, WM_NCHITTEST, 0, MAKELPARAM(midX, winRc.bottom - inset)), HTBOTTOM);
+
+        invokeRpc(815, "ocr.closeResultWindow", nlohmann::json::object());
+    }
     std::filesystem::remove_all(tempCfgDir, cfgEc);
 }
 
@@ -12118,4 +12260,233 @@ TEST(OcrEngineRegressionTest, HandlesMissingEmptyFilesAndStaThreadSafely) {
 
     EXPECT_TRUE(missingResult.empty());
     EXPECT_TRUE(emptyFileResult.empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Batch 1 (P-03 / U-01 / U-02 / U-03 / V-01) 专项防回退回归测试
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MarkupEngineUndoRedoTransactionTest, FullVectorSnapshotTransactionsAndFilterRoiCache) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base(240, 320, CV_8UC3, cv::Scalar(36, 42, 50));
+    engine.setBaseImage(base);
+
+    EXPECT_FALSE(engine.canUndo());
+    EXPECT_FALSE(engine.canRedo());
+
+    // Step 1: 新增矩形与两个序号徽章 (#1, #2)
+    auto* rect = engine.drawRectangle(cv::Point(20, 20), cv::Point(100, 80), MarkupColor::Red(), 2.0f);
+    ASSERT_NE(rect, nullptr);
+    const uint32_t rectId = rect->id;
+
+    auto* num1 = engine.drawNumberMark(cv::Point(140, 50), MarkupColor::Green(), 1.0f);
+    auto* num2 = engine.drawNumberMark(cv::Point(190, 50), MarkupColor::Green(), 1.0f);
+    ASSERT_NE(num1, nullptr);
+    ASSERT_NE(num2, nullptr);
+    const uint32_t num2Id = num2->id;
+    EXPECT_EQ(engine.currentNumber(NumberFormat::Arabic), 3);
+    EXPECT_EQ(engine.elementCount(), 3u);
+
+    // Step 2: 修改已有矩形样式 (红框空心 -> 蓝底实心 + 线宽 5) 前压入事务快照
+    engine.pushUndoSnapshot();
+    rect = engine.getElementById(rectId);
+    ASSERT_NE(rect, nullptr);
+    rect->color = MarkupColor::Blue();
+    rect->fill = true;
+    rect->thickness = 5.0f;
+
+    // 验证零位移点击绝不污染撤销栈或清空重做栈：先做一次 undo/redo 预检，再测零位移 commitUndoSnapshot
+    ASSERT_TRUE(engine.undo());
+    EXPECT_FALSE(engine.getElementById(rectId)->fill);
+    EXPECT_EQ(engine.getElementById(rectId)->color.r, MarkupColor::Red().r);
+    ASSERT_TRUE(engine.redo());
+    EXPECT_TRUE(engine.getElementById(rectId)->fill);
+    EXPECT_EQ(engine.getElementById(rectId)->color.b, MarkupColor::Blue().b);
+
+    {
+        auto noOpSnap = engine.captureSnapshot();
+        // 未发生任何实质几何/样式变更
+        engine.commitUndoSnapshot(std::move(noOpSnap));
+    }
+
+    // Step 3: 选中拖拽平移矩形 (+30, +20)，通过 commitUndoSnapshot 提交有效位移事务
+    {
+        auto beforeMove = engine.captureSnapshot();
+        rect = engine.getElementById(rectId);
+        ASSERT_NE(rect, nullptr);
+        rect->startPt += cv::Point(30, 20);
+        rect->endPt += cv::Point(30, 20);
+        engine.commitUndoSnapshot(std::move(beforeMove));
+    }
+    EXPECT_EQ(engine.getElementById(rectId)->startPt, cv::Point(50, 40));
+
+    // Step 4: 删除序号徽章 #2 前压入事务快照，删除后待标序号回退至 2
+    engine.pushUndoSnapshot();
+    engine.removeElement(num2Id);
+    EXPECT_EQ(engine.elementCount(), 2u);
+    EXPECT_EQ(engine.currentNumber(NumberFormat::Arabic), 2);
+
+    // Step 5: 点击 Clear 清空全部标注（可撤销）
+    ASSERT_TRUE(engine.clearElementsUndoable());
+    EXPECT_EQ(engine.elementCount(), 0u);
+    EXPECT_EQ(engine.currentNumber(NumberFormat::Arabic), 1);
+
+    // 逆序逐步 Ctrl+Z 100% 无损恢复：
+    // Undo Clear -> 恢复 2 个元素 (平移后的蓝底矩形 + #1)
+    ASSERT_TRUE(engine.undo());
+    EXPECT_EQ(engine.elementCount(), 2u);
+    EXPECT_EQ(engine.currentNumber(NumberFormat::Arabic), 2);
+    ASSERT_NE(engine.getElementById(rectId), nullptr);
+    EXPECT_EQ(engine.getElementById(rectId)->startPt, cv::Point(50, 40));
+    EXPECT_TRUE(engine.getElementById(rectId)->fill);
+
+    // Undo Delete #2 -> 恢复 3 个元素，待标序号恢复为 3
+    ASSERT_TRUE(engine.undo());
+    EXPECT_EQ(engine.elementCount(), 3u);
+    EXPECT_NE(engine.getElementById(num2Id), nullptr);
+    EXPECT_EQ(engine.currentNumber(NumberFormat::Arabic), 3);
+
+    // Undo Move -> 矩形回到 (20, 20)-(100, 80)，仍保持蓝底填充
+    ASSERT_TRUE(engine.undo());
+    EXPECT_EQ(engine.getElementById(rectId)->startPt, cv::Point(20, 20));
+    EXPECT_TRUE(engine.getElementById(rectId)->fill);
+    EXPECT_EQ(engine.getElementById(rectId)->color.b, MarkupColor::Blue().b);
+
+    // Undo Style Change -> 矩形恢复为初始红线空心 (thickness = 2.0f)
+    ASSERT_TRUE(engine.undo());
+    EXPECT_FALSE(engine.getElementById(rectId)->fill);
+    EXPECT_FLOAT_EQ(engine.getElementById(rectId)->thickness, 2.0f);
+    EXPECT_EQ(engine.getElementById(rectId)->color.r, MarkupColor::Red().r);
+
+    // 正向逐步 Ctrl+Y 100% 无损重做回 Clear 态，再撤销回非空态验证滤镜局部 ROI 缓存与静态底图缓存一致性
+    ASSERT_TRUE(engine.redo()); // 重做样式修改
+    ASSERT_TRUE(engine.redo()); // 重做拖拽平移
+    ASSERT_TRUE(engine.redo()); // 重做删除 #2
+    ASSERT_TRUE(engine.redo()); // 重做 Clear 清空
+    EXPECT_EQ(engine.elementCount(), 0u);
+    EXPECT_FALSE(engine.canRedo());
+
+    ASSERT_TRUE(engine.undo()); // 恢复至 2 个元素
+    // P-03: 添加马赛克与高斯模糊图元并顶层拖拽新图元，验证多次合成（命中 ROI 缓存与静态底层缓存）像素严格一致
+    cv::Mat gradientBase(240, 320, CV_8UC3);
+    for (int y = 0; y < gradientBase.rows; ++y) {
+        for (int x = 0; x < gradientBase.cols; ++x) {
+            gradientBase.at<cv::Vec3b>(y, x) = cv::Vec3b(
+                static_cast<uint8_t>((x * 3) & 0xFF),
+                static_cast<uint8_t>((y * 5) & 0xFF),
+                static_cast<uint8_t>(((x + y) * 2) & 0xFF));
+        }
+    }
+    engine.setBaseImage(gradientBase);
+    engine.applyMosaic(cv::Point(30, 100), cv::Point(130, 190), 12);
+    engine.applyBlur(cv::Point(150, 100), cv::Point(250, 190), 15);
+    auto* topArrow = engine.drawArrow(cv::Point(40, 210), cv::Point(220, 210), MarkupColor::Yellow(), 3.0f);
+    ASSERT_NE(topArrow, nullptr);
+    topArrow->isActive = true;
+
+    const cv::Mat pass1 = engine.getCompositeImage(false).clone();
+    const cv::Mat pass2 = engine.getCompositeImage(false).clone();
+    EXPECT_EQ(cv::norm(pass1, pass2, cv::NORM_INF), 0.0);
+}
+
+TEST(OcrXYCutAndSmartMergeTest, SeparatesTwoColumnsWithoutCrossLineInterleaving) {
+    using namespace tools3000::ocr;
+
+    // 构造典型学术双栏 / IDE 分屏版式：
+    // 顶部通栏大标题 (x: 60..620, y: 20..48)
+    // 左栏 3 行 (x: 40..280, y: 90, 122, 154)
+    // 右栏 3 行 (x: 380..640, y: 92, 124, 156，其中第 2 行包含双列表格大间距字段)
+    std::vector<OcrWordToken> tokens = {
+        {L"Multi-Column", 60.0f, 20.0f, 220.0f, 26.0f},
+        {L"Architecture", 300.0f, 20.0f, 240.0f, 26.0f},
+
+        // 故意交错左栏与右栏词块输入顺序，检验 XY-Cut 垂直走廊切分鲁棒性
+        {L"LeftLine1", 40.0f, 90.0f, 110.0f, 20.0f},
+        {L"RightLine1", 380.0f, 92.0f, 120.0f, 20.0f},
+        {L"Alpha", 160.0f, 90.0f, 70.0f, 20.0f},
+        {L"Omega", 512.0f, 92.0f, 80.0f, 20.0f},
+
+        {L"LeftLine2", 40.0f, 122.0f, 110.0f, 20.0f},
+        {L"Metric", 380.0f, 124.0f, 72.0f, 20.0f},
+        {L"0.42ms", 545.0f, 124.0f, 85.0f, 20.0f}, // 间距 93px >> 1.8 * avgH(20)=36px -> 自动以 \t 制表符对齐
+
+        {L"LeftLine3", 40.0f, 154.0f, 110.0f, 20.0f},
+        {L"RightLine3", 380.0f, 156.0f, 120.0f, 20.0f},
+    };
+
+    const auto lines = OcrEngine::assembleLinesWithXYCut(tokens, 1.0f, 0, 700, 240);
+    ASSERT_EQ(lines.size(), 7u);
+
+    // 1. 顶部通栏标题最先输出
+    EXPECT_EQ(lines[0].text, "Multi-Column Architecture");
+    // 2. 完整读完左栏第 1~3 行，绝不混入右栏词块
+    EXPECT_EQ(lines[1].text, "LeftLine1 Alpha");
+    EXPECT_EQ(lines[2].text, "LeftLine2");
+    EXPECT_EQ(lines[3].text, "LeftLine3");
+    // 3. 接着完整读完右栏第 1~3 行，且大间距表格列使用 \t 分隔
+    EXPECT_EQ(lines[4].text, "RightLine1 Omega");
+    EXPECT_EQ(lines[5].text, "Metric\t0.42ms");
+    EXPECT_EQ(lines[6].text, "RightLine3");
+
+    // 验证贴图文字块复用的 orderTextBlocksWithXYCut 同样遵循分栏阅读序
+    std::vector<OcrResult> unorderedBlocks = {
+        lines[4], lines[1], lines[6], lines[0], lines[2], lines[5], lines[3]
+    };
+    const std::string orderedText = OcrEngine::orderTextBlocksWithXYCut(unorderedBlocks, "\n");
+    EXPECT_EQ(orderedText,
+              "Multi-Column Architecture\n"
+              "LeftLine1 Alpha\n"
+              "LeftLine2\n"
+              "LeftLine3\n"
+              "RightLine1 Omega\n"
+              "Metric\t0.42ms\n"
+              "RightLine3");
+
+    // 验证智能合并段落换行：连字符断词修复 + 中英文软换行合并 + 列表/空行保留
+    const std::string rawWrapped =
+        "This is an inter-\n"
+        "national standard for\n"
+        "modern OCR engines.\n"
+        "\n"
+        "中文第一行因版面较窄被强行截断\n"
+        "第二行自动无缝衔接为完整句子。\n"
+        "- Keep bullet list item 1\n"
+        "- Keep bullet list item 2";
+    const std::string merged = OcrEngine::smartMergeParagraphsUtf8(rawWrapped);
+    EXPECT_NE(merged.find("international standard for modern OCR engines."), std::string::npos);
+    EXPECT_NE(merged.find("中文第一行因版面较窄被强行截断第二行自动无缝衔接为完整句子。"), std::string::npos);
+    EXPECT_NE(merged.find("\n- Keep bullet list item 1\n- Keep bullet list item 2"), std::string::npos);
+}
+
+TEST(FloatingGlassThemePaletteTest, FollowsLightDarkThemeAndCustomHexAccent) {
+    using namespace tools3000::capture;
+    const auto tempCfgDir = std::filesystem::temp_directory_path() /
+                            (L"tools3000_glass_theme_cfg_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code cfgEc;
+    std::filesystem::remove_all(tempCfgDir, cfgEc);
+    std::filesystem::create_directories(tempCfgDir, cfgEc);
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tempCfgDir));
+
+    cfg.set<std::string>("/general/theme", "light");
+    cfg.set<std::string>("/general/accentColor", "#FF5733");
+    EXPECT_FALSE(FloatingGlassBar::isEffectiveDarkMode());
+    const auto lightPal = FloatingGlassBar::resolveThemePalette();
+    EXPECT_FALSE(lightPal.isDark);
+    EXPECT_GT(lightPal.panelBg.r, 0.90f);
+    EXPECT_NEAR(lightPal.accent.r, 255.0f / 255.0f, 0.01f);
+    EXPECT_NEAR(lightPal.accent.g, 87.0f / 255.0f, 0.01f);
+    EXPECT_NEAR(lightPal.accent.b, 51.0f / 255.0f, 0.01f);
+
+    cfg.set<std::string>("/general/theme", "dark");
+    cfg.set<std::string>("/general/accentColor", "emerald");
+    EXPECT_TRUE(FloatingGlassBar::isEffectiveDarkMode());
+    const auto darkPal = FloatingGlassBar::resolveThemePalette();
+    EXPECT_TRUE(darkPal.isDark);
+    EXPECT_LT(darkPal.panelBg.r, 0.20f);
+    EXPECT_GT(darkPal.accent.g, darkPal.accent.r);
+
+    std::filesystem::remove_all(tempCfgDir, cfgEc);
 }
