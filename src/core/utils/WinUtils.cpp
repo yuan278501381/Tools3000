@@ -1245,29 +1245,55 @@ inline bool isElectronOrIdeProductivityProcessName(std::wstring_view procFile) n
     return false;
 }
 
+inline constexpr std::wstring_view kCanonicalRemoteProcessesW[] = {
+    L"ToDesk.exe",
+    L"SunloginClient.exe",
+    L"AnyDesk.exe",
+    L"RustDesk.exe",
+    L"mstsc.exe",
+    L"msrdc.exe",
+    L"msrdcw.exe",
+    L"TeamViewer.exe",
+    L"vncviewer.exe",
+    L"tv_w32.exe",
+    L"parsec.exe",
+    L"parsecd.exe",
+    L"Splashtop.exe",
+    L"UltraViewer_Desktop.exe",
+    L"vmware.exe",
+    L"vmware-vmx.exe",
+    L"vmware-remotemks.exe",
+    L"VirtualBoxVM.exe",
+    L"vmconnect.exe",
+    L"uuremote.exe",
+    L"GameViewer.exe",
+    L"Moonlight.exe"
+};
+
+inline constexpr std::wstring_view kCanonicalRemoteClassesW[] = {
+    L"TscShellContainerClass",
+    L"TSSHELLWND",
+    L"IHWindowClass",
+    L"OPContainerClass",
+    L"SunloginMain",
+    L"SunloginRemote",
+    L"ToDesk_Main",
+    L"ToDesk_Remote",
+    L"anydesk",
+    L"RustDesk",
+    L"TeamViewer"
+};
+
 inline bool isRemoteDesktopOrVmProcessOrClass(std::wstring_view processName,
                                               std::wstring_view className) noexcept {
     const std::wstring_view procFile = extractFileNameView(processName);
     if (!procFile.empty()) {
-        static constexpr std::wstring_view kRemoteAndVmProcesses[] = {
-            L"mstsc.exe", L"msrdc.exe", L"todesk.exe", L"sunloginclient.exe",
-            L"anydesk.exe", L"rustdesk.exe", L"teamviewer.exe", L"vncviewer.exe",
-            L"tv_w32.exe", L"parsec.exe", L"parsecd.exe", L"moonlight.exe",
-            L"splashtop.exe", L"ultraviewer_desktop.exe",
-            L"vmware.exe", L"vmware-vmx.exe", L"vmware-remotemks.exe",
-            L"virtualboxvm.exe", L"vmconnect.exe"
-        };
-        for (const auto& rp : kRemoteAndVmProcesses) {
+        for (const auto& rp : kCanonicalRemoteProcessesW) {
             if (equalsIgnoreCaseAscii(procFile, rp)) return true;
         }
     }
     if (!className.empty()) {
-        static constexpr std::wstring_view kRemoteAndVmClasses[] = {
-            L"TscShellContainerClass", L"TSSHELLWND", L"IHWindowClass", L"OPContainerClass",
-            L"SunloginMain", L"SunloginRemote", L"ToDesk_Main", L"ToDesk_Remote",
-            L"anydesk", L"RustDesk", L"TeamViewer"
-        };
-        for (const auto& rc : kRemoteAndVmClasses) {
+        for (const auto& rc : kCanonicalRemoteClassesW) {
             if (equalsIgnoreCaseAscii(className, rc)) return true;
         }
     }
@@ -1442,6 +1468,29 @@ void WinUtils::setFullscreenPolicyMode(FullscreenPolicyMode mode) noexcept {
 
 FullscreenPolicyMode WinUtils::getFullscreenPolicyMode() noexcept {
     return static_cast<FullscreenPolicyMode>(g_fullscreenPolicyMode.load(std::memory_order_acquire));
+}
+
+std::vector<std::string> WinUtils::defaultRemoteTargetProcesses() {
+    std::vector<std::string> out;
+    out.reserve(std::size(kCanonicalRemoteProcessesW));
+    for (const auto& w : kCanonicalRemoteProcessesW) {
+        out.push_back(wstringToUtf8(std::wstring(w)));
+    }
+    return out;
+}
+
+std::vector<std::string> WinUtils::defaultRemoteTargetClasses() {
+    std::vector<std::string> out;
+    out.reserve(std::size(kCanonicalRemoteClassesW));
+    for (const auto& w : kCanonicalRemoteClassesW) {
+        out.push_back(wstringToUtf8(std::wstring(w)));
+    }
+    return out;
+}
+
+bool WinUtils::isDefaultRemoteDesktopOrVmProcessOrClass(std::wstring_view processName,
+                                                        std::wstring_view className) noexcept {
+    return isRemoteDesktopOrVmProcessOrClass(processName, className);
 }
 
 bool WinUtils::isMediaPlayerProcessOrClass(std::wstring_view processName,
@@ -2482,6 +2531,28 @@ bool WinUtils::setShortcutAppUserModelId(const std::wstring& shortcutPath, const
 
 void WinUtils::syncApplicationShortcuts() {
     const std::wstring aumid = L"Yy1.Tools3000";
+    wchar_t exePathBuf[MAX_PATH]{};
+    const DWORD exeLen = GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+    const std::wstring currentExePath(exePathBuf, exeLen);
+
+    auto updateShortcutMetadata = [&](const std::filesystem::path& lnkPath, bool refreshIcon) {
+        setShortcutAppUserModelId(lnkPath.wstring(), aumid);
+        if (refreshIcon && !currentExePath.empty()) {
+            IShellLinkW* psl = nullptr;
+            if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&psl))) && psl) {
+                IPersistFile* ppf = nullptr;
+                if (SUCCEEDED(psl->QueryInterface(IID_PPV_ARGS(&ppf))) && ppf) {
+                    if (SUCCEEDED(ppf->Load(lnkPath.c_str(), STGM_READWRITE))) {
+                        psl->SetIconLocation(currentExePath.c_str(), 0);
+                        ppf->Save(lnkPath.c_str(), TRUE);
+                    }
+                    ppf->Release();
+                }
+                psl->Release();
+            }
+            SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, lnkPath.c_str(), nullptr);
+        }
+    };
 
     // 1. 获取用户及公共目录下的开始菜单与桌面路径
     const int csidls[] = {
@@ -2496,15 +2567,27 @@ void WinUtils::syncApplicationShortcuts() {
         if (SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, folderPath))) {
             const std::filesystem::path baseDir(folderPath);
 
-            // 针对当前 Tools3000 快捷方式注入 AUMID
+            // 针对当前 Tools3000 快捷方式注入 AUMID 并同步图标
             std::filesystem::path toolsLnk = (csidl == CSIDL_PROGRAMS || csidl == CSIDL_COMMON_PROGRAMS)
                 ? (baseDir / L"Tools3000" / L"Tools3000.lnk")
                 : (baseDir / L"Tools3000.lnk");
 
             std::error_code ec;
             if (std::filesystem::exists(toolsLnk, ec)) {
-                setShortcutAppUserModelId(toolsLnk.wstring(), aumid);
+                updateShortcutMetadata(toolsLnk, true);
             }
+        }
+    }
+
+    // 2. 同步刷新用户已固定在任务栏上的 Tools3000.lnk 快捷方式图标
+    wchar_t appDataPath[MAX_PATH]{};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, appDataPath))) {
+        const std::filesystem::path pinnedTaskBarLnk =
+            std::filesystem::path(appDataPath) / L"Microsoft" / L"Internet Explorer" /
+            L"Quick Launch" / L"User Pinned" / L"TaskBar" / L"Tools3000.lnk";
+        std::error_code ec;
+        if (std::filesystem::exists(pinnedTaskBarLnk, ec) && !ec) {
+            updateShortcutMetadata(pinnedTaskBarLnk, true);
         }
     }
 

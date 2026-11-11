@@ -496,13 +496,11 @@ inline bool isGestureExemptInteractiveClassName(std::wstring_view cls) noexcept 
            cls == L"Tools3000_PinWindow" ||
            cls == L"Tools3000_OcrResult" ||
            cls == L"Tools3000_OcrResultWindow" ||
-           cls == L"Tools3000_RadialMenu" ||
-           cls == L"Tools3000_RadialMenuOverlay" ||
            cls == L"Tools3000_DialogRibbon" ||
            cls == L"Tools3000_DialogRibbonOverlay";
 }
 
-/// 检查是否存在全局模态交互浮层处于可见状态（如全屏截图、长截图穿透框、径向轮盘）
+/// 检查是否存在全局模态交互浮层处于可见状态（如全屏截图、长截图穿透框）
 inline bool isGestureGlobalModalOverlayVisible() noexcept {
     auto visibleByClass = [](const wchar_t* clsName) noexcept -> bool {
         HWND hwnd = nullptr;
@@ -512,9 +510,7 @@ inline bool isGestureGlobalModalOverlayVisible() noexcept {
         return false;
     };
     return visibleByClass(L"Tools3000_CaptureOverlay") ||
-           visibleByClass(L"Tools3000_ScrollCaptureOverlay") ||
-           visibleByClass(L"Tools3000_RadialMenu") ||
-           visibleByClass(L"Tools3000_RadialMenuOverlay");
+           visibleByClass(L"Tools3000_ScrollCaptureOverlay");
 }
 
 /// 检查指定物理坐标处是否命中自身交互浮层或全局模态浮层

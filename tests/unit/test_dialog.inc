@@ -517,7 +517,7 @@ TEST(DialogEventAndLayoutPolicyTest, WinEventFilterPreservesChildInvokedAndBlock
 
 TEST(DialogEventAndLayoutPolicyTest, RibbonSafeHorizontalPlacementProtectsCaptionButtons) {
     for (float scale : {1.0f, 1.5f}) {
-        const int leftSafeOffset = static_cast<int>(8.0f * scale);
+        const int leftSafeOffset = static_cast<int>(112.0f * scale);
         const int rightSafeOffset = static_cast<int>(145.0f * scale);
 
         RECT wideDlg{100, 100, 100 + static_cast<int>(800 * scale), 600};
@@ -534,7 +534,7 @@ TEST(DialogEventAndLayoutPolicyTest, RibbonSafeHorizontalPlacementProtectsCaptio
         EXPECT_GE(posX, wideDlg.left + leftSafeOffset);
         EXPECT_LE(posX + wideRibbonW, wideDlg.right - rightSafeOffset);
 
-        RECT compactDlg{200, 150, 200 + static_cast<int>(260 * scale), 500};
+        RECT compactDlg{200, 150, 200 + static_cast<int>(360 * scale), 500};
         const int compactRibbonW = static_cast<int>(90 * scale);
         EXPECT_TRUE(tools3000::dialog::computeSafeRibbonHorizontalPlacement(
             compactDlg, scale, compactRibbonW, "top-center", posX, maxAvail));
@@ -544,7 +544,7 @@ TEST(DialogEventAndLayoutPolicyTest, RibbonSafeHorizontalPlacementProtectsCaptio
         EXPECT_FALSE(tools3000::dialog::computeSafeRibbonHorizontalPlacement(
             compactDlg, scale, wideRibbonW, "top-right", posX, maxAvail));
 
-        RECT tinyDlg{0, 0, static_cast<int>(180 * scale), 300};
+        RECT tinyDlg{0, 0, static_cast<int>(280 * scale), 300};
         EXPECT_FALSE(tools3000::dialog::computeSafeRibbonHorizontalPlacement(
             tinyDlg, scale, static_cast<int>(64 * scale), "top-right", posX, maxAvail));
     }

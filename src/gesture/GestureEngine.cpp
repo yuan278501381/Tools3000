@@ -2087,6 +2087,8 @@ uint32_t GestureEngine::computeTriggerMask() const {
 
     if (isTriggerEnabled("edge_top_wheel", false))      mask |= GestureTriggerMask::EdgeTopWheel;
     if (isTriggerEnabled("edge_bottom_wheel", false))   mask |= GestureTriggerMask::EdgeBottomWheel;
+    if (isTriggerEnabled("edge_left_wheel", false))     mask |= GestureTriggerMask::EdgeLeftWheel;
+    if (isTriggerEnabled("edge_right_wheel", false))    mask |= GestureTriggerMask::EdgeRightWheel;
 
     if (isTriggerEnabled("edge_top_right", false))      mask |= GestureTriggerMask::EdgeTopRight;
     if (isTriggerEnabled("edge_top_middle", false))     mask |= GestureTriggerMask::EdgeTopMiddle;

@@ -106,8 +106,8 @@ chinesesimplified.CompSearch=超级文件检索 (Search) — 全盘秒级索引�
 english.CompSearch=Fast File Search (Search) — Instant disk indexing & launcher
 chinesesimplified.CompCapture=截图贴图与录屏 (Capture) — 智能贴图、长截图、拾色器与高清录屏
 english.CompCapture=Screenshot, Pin & Recording (Capture) — Smart pin, OCR & HD recording
-chinesesimplified.CompGesture=鼠标手势与触发角 (Gesture) — 右键手势轨迹、屏幕四角触发与轮盘菜单
-english.CompGesture=Mouse Gestures & Hot Corners (Gesture) — Trailing gestures, hot corners & radial menu
+chinesesimplified.CompGesture=鼠标手势与触发角 (Gesture) — 右键手势轨迹、屏幕四角触发与边缘滚轮
+english.CompGesture=Mouse Gestures & Hot Corners (Gesture) — Trailing gestures, hot corners & edge wheel
 chinesesimplified.CompKeycast=按键回显 (Keycast) — 屏幕实时按键显示、机械键帽动效
 english.CompKeycast=Keycast Overlay (Keycast) — Real-time keystroke visualization
 chinesesimplified.CompDialog=文件对话框增强 (Dialog Enhancer) — 常用目录快速跳转、历史路径记忆
@@ -123,9 +123,9 @@ Name: "compact"; Description: "{cm:TypeCompact}"
 Name: "custom"; Description: "{cm:TypeCustom}"; Flags: iscustom
 
 [Components]
-Name: "search"; Description: "{cm:CompSearch}"; Types: full
-Name: "capture"; Description: "{cm:CompCapture}"; Types: full
-Name: "gesture"; Description: "{cm:CompGesture}"; Types: full
+Name: "search"; Description: "{cm:CompSearch}"; Types: full compact
+Name: "capture"; Description: "{cm:CompCapture}"; Types: full compact
+Name: "gesture"; Description: "{cm:CompGesture}"; Types: full compact
 Name: "keycast"; Description: "{cm:CompKeycast}"; Types: full
 Name: "dialogenhancer"; Description: "{cm:CompDialog}"; Types: full
 Name: "spotlight"; Description: "{cm:CompSpotlight}"; Types: full
@@ -802,7 +802,7 @@ begin
   begin
     TaskName := 'Tools3000\Autorun for ' + InteractiveUser;
     if Exec(ExpandConstant('{sys}\schtasks.exe'),
-      '/create /tn "' + TaskName + '" /tr "\"' + TargetExe + '\" --autostart" /sc onlogon /ru "' + InteractiveUser + '" /rl highest /f',
+      '/create /tn "' + TaskName + '" /tr "\"' + TargetExe + '\" --silent" /sc onlogon /ru "' + InteractiveUser + '" /rl highest /f',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
     begin
       Log('Registered AutoStart task for original interactive user: ' + InteractiveUser);
@@ -870,6 +870,50 @@ begin
     Log(Format('ConfigureSearchServiceStartDacl: sc.exe sdset exited with code %d', [ResultCode]));
 end;
 
+function HasCommandLinePrefix(const Prefix: String): Boolean;
+var
+  I: Integer;
+  LowerPrefix, ArgLower: String;
+begin
+  Result := False;
+  LowerPrefix := Lowercase(Prefix);
+  for I := 1 to ParamCount do
+  begin
+    ArgLower := Lowercase(ParamStr(I));
+    if Pos(LowerPrefix, ArgLower) = 1 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+function UserConfigAlreadyExists(): Boolean;
+var
+  InteractiveUser, UsersRoot: String;
+begin
+  if FileExists(ExpandConstant('{userappdata}\Tools3000\config\config.json')) or
+     FileExists(ExpandConstant('{localappdata}\Tools3000\config\config.json')) then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  InteractiveUser := GetInteractiveUserHint();
+  if InteractiveUser <> '' then
+  begin
+    UsersRoot := ExpandConstant('{sd}\Users\') + InteractiveUser + '\AppData\';
+    if FileExists(UsersRoot + 'Roaming\Tools3000\config\config.json') or
+       FileExists(UsersRoot + 'Local\Tools3000\config\config.json') then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+
+  Result := False;
+end;
+
 procedure SyncInitialModuleConfig();
 var
   AppDir, InitialModulesPath: String;
@@ -879,6 +923,15 @@ var
 begin
   AppDir := ExpandConstant('{app}');
   InitialModulesPath := AppDir + '\initial_modules.json';
+
+  if WizardSilent() and UserConfigAlreadyExists() and
+     (not HasCommandLinePrefix('/components=')) and
+     (not HasCommandLinePrefix('/type=')) then
+  begin
+    DeleteFile(InitialModulesPath);
+    Log('SyncInitialModuleConfig: Existing user config detected during silent upgrade without explicit /COMPONENTS or /TYPE; skipped module reset.');
+    Exit;
+  end;
 
   SearchSel := WizardIsComponentSelected('search');
   CaptureSel := WizardIsComponentSelected('capture');

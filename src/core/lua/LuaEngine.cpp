@@ -19,6 +19,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "core/lua/LuaEngine.h"
+#include "core/events/EventBus.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 #include "Tools3000Version.h"
@@ -1041,13 +1042,14 @@ void LuaEngine::bindUi(sol::table& easy) {
             return MessageBoxW(nullptr, wmsg.c_str(), wtitle.c_str(), flags | MB_TOPMOST);
         });
     };
-    t.set_function("toast", [this, box](const std::string& msg) {
+    t.set_function("toast", [this](const std::string& msg) {
         requirePermission(m_lua->lua_state(), LuaPermission::Ui, "easy.ui");
-        box(msg, "Tools3000", MB_OK | MB_ICONINFORMATION);
+        EventBus::instance().publish(ShowToastEvent{WinUtils::utf8ToWstring(msg)});
     });
-    t.set_function("notify", [this, box](const std::string& title, const std::string& msg) {
+    t.set_function("notify", [this](const std::string& title, const std::string& msg) {
         requirePermission(m_lua->lua_state(), LuaPermission::Ui, "easy.ui");
-        box(msg, title, MB_OK | MB_ICONINFORMATION);
+        const std::string combined = title.empty() ? msg : (title + ": " + msg);
+        EventBus::instance().publish(ShowToastEvent{WinUtils::utf8ToWstring(combined)});
     });
     t.set_function("confirm", [this, box](const std::string& msg) {
         requirePermission(m_lua->lua_state(), LuaPermission::Ui, "easy.ui");

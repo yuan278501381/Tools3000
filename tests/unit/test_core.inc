@@ -390,6 +390,7 @@ TEST(ConfigManagerTest, PersistenceAndDefaultFallbacks) {
     EXPECT_EQ(config.get<std::string>("/general/theme", ""), "dark");
     EXPECT_TRUE(config.remove("/capture/format"));
     EXPECT_FALSE(config.has("/capture/format"));
+    EXPECT_TRUE(config.flush());
 
     {
         std::ifstream file(temp / "config.json");
@@ -2356,6 +2357,7 @@ TEST(MouseStreamThrottleTest, ThrottleIntervalAndReset) {
 
 TEST(MouseStreamCoreTest, BasicPushDrainAndBatching) {
     auto& core = tools3000::core::MouseStreamCore::instance();
+    tools3000::core::MouseStreamCore::ScopedSubscriber sub(core);
     core.clear();
     core.resetThrottle();
     EXPECT_TRUE(core.empty());
@@ -2396,6 +2398,7 @@ TEST(MouseStreamCoreTest, BasicPushDrainAndBatching) {
 
 TEST(MouseStreamCoreTest, HighThroughputProducerConsumerStress) {
     auto& core = tools3000::core::MouseStreamCore::instance();
+    tools3000::core::MouseStreamCore::ScopedSubscriber sub(core);
     core.clear();
     core.resetThrottle();
 

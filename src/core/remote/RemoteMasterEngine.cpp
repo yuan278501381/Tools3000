@@ -1,7 +1,9 @@
 #include "core/remote/RemoteMasterEngine.h"
 #include "core/config/ConfigManager.h"
+#include "core/hotkey/HotkeyManager.h"
 #include "core/logger/Logger.h"
 #include "core/events/EventBus.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/ipc/MessageBridge.h"
@@ -182,17 +184,20 @@ bool RemoteMasterEngine::initialize() {
     const bool mockActive = m_mockActive.load(std::memory_order_acquire);
     HWND curFg = mockActive ? m_mockHwnd.load(std::memory_order_relaxed) : GetForegroundWindow();
     bool isRemote = false;
+    bool isRawInput = false;
     std::string procName;
     if (curFg) {
         if (mockActive) {
             isRemote = m_mockIsRemote.load(std::memory_order_relaxed);
             std::lock_guard lock(m_mutex);
             procName = m_mockProcessName;
+            isRawInput = isRawInputRemoteClient(procName);
         } else {
-            isRemote = checkWindowIsRemote(curFg, &procName);
+            isRemote = checkWindowIsRemote(curFg, &procName, &isRawInput);
         }
     }
 
+    m_activeRemoteIsRawInput.store(isRemote && isRawInput, std::memory_order_relaxed);
     bool prevIsRemote = m_isRemoteForeground.exchange(isRemote, std::memory_order_relaxed);
     HWND prevHwnd = m_activeRemoteHwnd.exchange(isRemote ? curFg : nullptr, std::memory_order_relaxed);
 
@@ -224,27 +229,33 @@ void RemoteMasterEngine::shutdown() {
     HWINEVENTHOOK hook = nullptr;
     HWND activeHwnd = nullptr;
     bool wasImeSanitized = false;
+    bool wasRemoteFg = false;
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
         hook = m_foregroundHook;
         m_foregroundHook = nullptr;
         activeHwnd = m_activeRemoteHwnd.load(std::memory_order_relaxed);
         wasImeSanitized = m_imeSanitized.load(std::memory_order_relaxed);
+        wasRemoteFg = m_isRemoteForeground.load(std::memory_order_relaxed);
         m_isRemoteForeground.store(false, std::memory_order_relaxed);
+        m_activeRemoteIsRawInput.store(false, std::memory_order_relaxed);
         m_activeRemoteHwnd.store(nullptr, std::memory_order_relaxed);
         m_lastRemoteHwnd.store(nullptr, std::memory_order_relaxed);
         m_pendingProbeHwnd.store(nullptr, std::memory_order_relaxed);
         m_activeRemoteProcess.clear();
         m_cachedForegroundHwnd = nullptr;
         m_cachedIsRemote = false;
+        m_cachedIsRawInput = false;
         m_cachedProcessName.clear();
     }
 
     if (hook) {
         UnhookWinEvent(hook);
     }
-    if (wasImeSanitized) {
+    if (wasImeSanitized || wasRemoteFg) {
         onRemoteForegroundLost(activeHwnd);
+    } else {
+        HotkeyManager::instance().setRemoteSuspended(false);
     }
 
     // 冷路径退场释放内存
@@ -268,17 +279,55 @@ void RemoteMasterEngine::updateSettings(const RemoteMasterSettings& settings) {
         updateParsedEmergencyShortcut();
         m_cachedForegroundHwnd = nullptr;
         m_cachedIsRemote = false;
+        m_cachedIsRawInput = false;
         m_cachedProcessName.clear();
         persisted = m_settings;
     }
     saveSettings(persisted);
     if (!persisted.enabled) {
-        m_isRemoteForeground.store(false, std::memory_order_relaxed);
-        m_activeRemoteHwnd.store(nullptr, std::memory_order_relaxed);
+        const HWND prevActive = m_activeRemoteHwnd.exchange(nullptr, std::memory_order_relaxed);
+        const bool wasRemote = m_isRemoteForeground.exchange(false, std::memory_order_relaxed);
+        m_activeRemoteIsRawInput.store(false, std::memory_order_relaxed);
         m_winKeyDown.store(false, std::memory_order_relaxed);
-    }
-    if (becameDisabled && m_imeSanitized.load(std::memory_order_relaxed)) {
-        onRemoteForegroundLost(m_activeRemoteHwnd.load(std::memory_order_relaxed));
+        if (wasRemote || m_imeSanitized.load(std::memory_order_relaxed)) {
+            onRemoteForegroundLost(prevActive);
+        } else {
+            HotkeyManager::instance().setRemoteSuspended(false);
+        }
+    } else {
+        if (becameDisabled && m_imeSanitized.load(std::memory_order_relaxed)) {
+            onRemoteForegroundLost(m_activeRemoteHwnd.load(std::memory_order_relaxed));
+        }
+        // 热加载刷新当前前台窗口匹配状态（支持用户在设置中增删 targetClasses / targetProcesses 后无需来回切窗即刻生效）
+        if (!m_mockActive.load(std::memory_order_acquire)) {
+            if (HWND curFg = GetForegroundWindow()) {
+                std::string procName;
+                bool rawInput = false;
+                const bool isRemote = checkWindowIsRemote(curFg, &procName, &rawInput);
+                m_activeRemoteIsRawInput.store(isRemote && rawInput, std::memory_order_relaxed);
+                const bool prevRemote = m_isRemoteForeground.exchange(isRemote, std::memory_order_relaxed);
+                const HWND prevHwnd = m_activeRemoteHwnd.exchange(isRemote ? curFg : nullptr, std::memory_order_relaxed);
+                if (isRemote) {
+                    m_lastRemoteHwnd.store(curFg, std::memory_order_release);
+                    {
+                        std::lock_guard lock(m_mutex);
+                        m_activeRemoteProcess = procName;
+                        m_lastActiveRemoteHwnd = curFg;
+                    }
+                    if (!prevRemote || prevHwnd != curFg) {
+                        onRemoteForegroundGained(curFg);
+                    }
+                } else {
+                    {
+                        std::lock_guard lock(m_mutex);
+                        m_activeRemoteProcess.clear();
+                    }
+                    if (prevRemote) {
+                        onRemoteForegroundLost(prevHwnd);
+                    }
+                }
+            }
+        }
     }
     LOG_INFO("[RemoteMaster] Settings updated");
 }
@@ -291,6 +340,7 @@ void RemoteMasterEngine::resetDefaults() {
         updateParsedEmergencyShortcut();
         m_cachedForegroundHwnd = nullptr;
         m_cachedIsRemote = false;
+        m_cachedIsRawInput = false;
         m_cachedProcessName.clear();
         m_lastActiveRemoteHwnd = nullptr;
         m_lastRemoteHwnd.store(nullptr, std::memory_order_relaxed);
@@ -298,9 +348,13 @@ void RemoteMasterEngine::resetDefaults() {
         persisted = m_settings;
     }
     saveSettings(persisted);
-    if (m_imeSanitized.load(std::memory_order_relaxed)) {
+    if (m_imeSanitized.load(std::memory_order_relaxed) ||
+        m_isRemoteForeground.load(std::memory_order_relaxed)) {
         onRemoteForegroundLost(m_activeRemoteHwnd.load(std::memory_order_relaxed));
+    } else {
+        HotkeyManager::instance().setRemoteSuspended(false);
     }
+    m_activeRemoteIsRawInput.store(false, std::memory_order_relaxed);
     m_winKeyDown.store(false, std::memory_order_relaxed);
     m_lastRightCtrlUpTime.store(0, std::memory_order_relaxed);
     m_otherKeyPressedSinceRightCtrl.store(false, std::memory_order_relaxed);
@@ -311,6 +365,15 @@ void RemoteMasterEngine::loadSettings() {
     auto j = ConfigManager::instance().get<nlohmann::json>("/remote_boost", nlohmann::json::object());
     if (j.is_object() && !j.empty()) {
         m_settings = RemoteMasterSettings::fromJson(j);
+    }
+    if (ConfigManager::instance().has("/remote/targetClasses")) {
+        const auto legacyClasses = ConfigManager::instance().get<nlohmann::json>("/remote/targetClasses", nlohmann::json::array());
+        if (legacyClasses.is_array() && (!j.is_object() || !j.contains("targetClasses"))) {
+            m_settings.targetClasses.clear();
+            for (const auto& item : legacyClasses) {
+                if (item.is_string()) m_settings.targetClasses.push_back(item.get<std::string>());
+            }
+        }
     }
     if (ConfigManager::instance().has("/plugins/remote_boost/enabled")) {
         m_settings.enabled = ConfigManager::instance().get<bool>("/plugins/remote_boost/enabled", m_settings.enabled);
@@ -387,6 +450,8 @@ void RemoteMasterEngine::setMockForeground(HWND hwnd, bool isRemote, const std::
     m_mockIsRemote.store(isRemote, std::memory_order_relaxed);
     m_mockActive.store(true, std::memory_order_release);
     m_isRemoteForeground.store(isRemote, std::memory_order_relaxed);
+    m_activeRemoteIsRawInput.store(isRemote && isRawInputRemoteClient(processName),
+                                   std::memory_order_relaxed);
     m_activeRemoteHwnd.store(isRemote ? hwnd : nullptr, std::memory_order_relaxed);
     if (isRemote && hwnd) {
         m_lastRemoteHwnd.store(hwnd, std::memory_order_release);
@@ -404,6 +469,8 @@ void RemoteMasterEngine::clearMockForeground() {
     const HWND prevMockHwnd = m_mockHwnd.load(std::memory_order_relaxed);
     if (wasMockRemote) {
         onRemoteForegroundLost(prevMockHwnd);
+    } else {
+        HotkeyManager::instance().setRemoteSuspended(false);
     }
     m_mockActive.store(false, std::memory_order_release);
     m_mockHwnd.store(nullptr, std::memory_order_relaxed);
@@ -413,6 +480,7 @@ void RemoteMasterEngine::clearMockForeground() {
         m_mockProcessName.clear();
     }
     m_isRemoteForeground.store(false, std::memory_order_relaxed);
+    m_activeRemoteIsRawInput.store(false, std::memory_order_relaxed);
     m_activeRemoteHwnd.store(nullptr, std::memory_order_relaxed);
     m_lastRemoteHwnd.store(nullptr, std::memory_order_relaxed);
 }
@@ -462,6 +530,41 @@ bool RemoteMasterEngine::isRemoteProcessOrClass(
         }
     }
 
+    return false;
+}
+
+bool RemoteMasterEngine::isRawInputRemoteClient(
+    std::string_view processName,
+    std::wstring_view className
+) noexcept {
+    std::string pLower = toLowerAscii(processName);
+    const size_t slash = pLower.find_last_of("\\/");
+    if (slash != std::string::npos) {
+        pLower = pLower.substr(slash + 1);
+    }
+
+    static constexpr std::string_view kRawInputProcs[] = {
+        "parsec.exe", "parsecd.exe",
+        "moonlight.exe",
+        "vmware.exe", "vmware-vmx.exe", "vmware-remotemks.exe",
+        "virtualboxvm.exe",
+        "gameviewer.exe",
+        "uuremote.exe",
+        "parsec", "moonlight", "vmware", "virtualboxvm", "gameviewer", "uuremote"
+    };
+    for (const auto& candidate : kRawInputProcs) {
+        if (pLower == candidate) {
+            return true;
+        }
+    }
+
+    if (!className.empty()) {
+        const std::wstring cLower = toLowerWide(className);
+        if (cLower == L"sdl_app" || cLower.find(L"mksWindow") != std::wstring::npos ||
+            cLower.find(L"mkswindow") != std::wstring::npos) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -618,7 +721,7 @@ LPARAM RemoteMasterEngine::makeKeyLParam(
     return lp;
 }
 
-bool RemoteMasterEngine::checkWindowIsRemote(HWND hwnd, std::string* outProcessName) {
+bool RemoteMasterEngine::checkWindowIsRemote(HWND hwnd, std::string* outProcessName, bool* outIsRawInput) {
     if (!hwnd || !IsWindow(hwnd)) return false;
 
     // 快速命中缓存
@@ -626,6 +729,7 @@ bool RemoteMasterEngine::checkWindowIsRemote(HWND hwnd, std::string* outProcessN
         std::lock_guard lock(m_mutex);
         if (hwnd == m_cachedForegroundHwnd) {
             if (outProcessName) *outProcessName = m_cachedProcessName;
+            if (outIsRawInput) *outIsRawInput = m_cachedIsRawInput;
             return m_cachedIsRemote;
         }
     }
@@ -636,6 +740,7 @@ bool RemoteMasterEngine::checkWindowIsRemote(HWND hwnd, std::string* outProcessN
         std::lock_guard lock(m_mutex);
         m_cachedForegroundHwnd = hwnd;
         m_cachedIsRemote = false;
+        m_cachedIsRawInput = false;
         m_cachedProcessName.clear();
         return false;
     }
@@ -675,14 +780,18 @@ bool RemoteMasterEngine::checkWindowIsRemote(HWND hwnd, std::string* outProcessN
         procUtf8 = wstringToUtf8(classBuf);
     }
 
+    const bool rawInputClient = matched && isRawInputRemoteClient(procUtf8, classBuf);
+
     {
         std::lock_guard lock(m_mutex);
         m_cachedForegroundHwnd = hwnd;
         m_cachedIsRemote = matched;
+        m_cachedIsRawInput = rawInputClient;
         m_cachedProcessName = procUtf8;
     }
 
     if (outProcessName) *outProcessName = procUtf8;
+    if (outIsRawInput) *outIsRawInput = rawInputClient;
     return matched;
 }
 
@@ -693,6 +802,9 @@ void RemoteMasterEngine::onRemoteForegroundGained(HWND hwnd) {
     m_winKeyDown.store(false, std::memory_order_relaxed);
     m_lastRightCtrlUpTime.store(0, std::memory_order_relaxed);
     m_otherKeyPressedSinceRightCtrl.store(false, std::memory_order_relaxed);
+
+    // 临时让出本地全局热键（如 F1/F3/Alt+Space/QuickLook），确保按键无截胡送达远端主机
+    HotkeyManager::instance().setRemoteSuspended(true);
 
     if (!m_imeSanitizerAtomic.load(std::memory_order_acquire)) return;
 
@@ -731,14 +843,18 @@ void RemoteMasterEngine::onRemoteForegroundGained(HWND hwnd) {
 }
 
 void RemoteMasterEngine::onRemoteForegroundLost(HWND hwnd) {
+    // 恢复本地全局热键占用
+    HotkeyManager::instance().setRemoteSuspended(false);
+
     // 关键状态重置：离开远控前台时，必须无条件复位 Win 键与右 Ctrl 状态机
     // 若离开前台时 Win 键处于按下态，主动向原远控窗口派发 KEYUP，消除远端 Win 键卡死粘滞隐患
     if (m_winKeyDown.exchange(false, std::memory_order_relaxed)) {
-        if (hwnd && IsWindow(hwnd)) {
+        if (hwnd && IsWindow(hwnd) && !m_activeRemoteIsRawInput.load(std::memory_order_relaxed)) {
             LPARAM lp = makeKeyLParam(0x5B, true, true, false);
             PostMessageW(hwnd, WM_KEYUP, VK_LWIN, lp);
         }
     }
+    m_activeRemoteIsRawInput.store(false, std::memory_order_relaxed);
     m_lastRightCtrlUpTime.store(0, std::memory_order_relaxed);
     m_otherKeyPressedSinceRightCtrl.store(false, std::memory_order_relaxed);
 
@@ -810,7 +926,10 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd, bool manualRescue) {
             return;
         }
         // 单测 Mock 远控前台模式：完成状态机复位并发布通知，避免调用真实硬件 SendInput 干扰开发环境
-        EventBus::instance().publish(ShowToastEvent{ L"已释放卡住的修饰键与鼠标按键" });
+        EventBus::instance().publish(ShowToastEvent{
+            isUiLanguageChinese() ? L"已释放卡住的修饰键与鼠标按键"
+                                  : L"Released stuck modifier keys and mouse buttons"
+        });
         LOG_INFO("[RemoteMaster] [Mock] Emergency flush executed: state reset completed");
         return;
     }
@@ -936,7 +1055,10 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd, bool manualRescue) {
     m_otherKeyPressedSinceRightCtrl.store(false, std::memory_order_relaxed);
 
     // 4. 触发全局轻量通知反馈
-    EventBus::instance().publish(ShowToastEvent{ L"已释放卡住的修饰键与鼠标按键" });
+    EventBus::instance().publish(ShowToastEvent{
+        isUiLanguageChinese() ? L"已释放卡住的修饰键与鼠标按键"
+                              : L"Released stuck modifier keys and mouse buttons"
+    });
     LOG_INFO("[RemoteMaster] Emergency flush executed: 8 modifier keys and 3 mouse buttons released");
 }
 
@@ -1064,7 +1186,9 @@ bool RemoteMasterEngine::onLowLevelKeyboardEvent(const KBDLLHOOKSTRUCT& data, WP
                     const HWND curFg = GetForegroundWindow();
                     if (!curFg) return;
                     std::string procName;
-                    const bool remote = checkWindowIsRemote(curFg, &procName);
+                    bool rawInput = false;
+                    const bool remote = checkWindowIsRemote(curFg, &procName, &rawInput);
+                    m_activeRemoteIsRawInput.store(remote && rawInput, std::memory_order_relaxed);
                     const bool prevRemote = m_isRemoteForeground.exchange(remote, std::memory_order_relaxed);
                     const HWND prevHwnd = m_activeRemoteHwnd.exchange(remote ? curFg : nullptr, std::memory_order_relaxed);
                     if (remote) {
@@ -1095,6 +1219,13 @@ bool RemoteMasterEngine::onLowLevelKeyboardEvent(const KBDLLHOOKSTRUCT& data, WP
         fg = GetForegroundWindow();
     }
     if (!fg) return false;
+
+    // Parsec / Moonlight / VMware / VirtualBox 等客户端使用底层 Raw Input 或自有 WH_KEYBOARD_LL 钩子捕获系统组合键；
+    // 若在此处拦截钩子链并改发窗口队列 PostMessageW，会导致其原生钩子与 Raw Input 被截断，引发 Alt+Tab / Win 死键。
+    if (m_activeRemoteIsRawInput.load(std::memory_order_relaxed)) {
+        m_winKeyDown.store(false, std::memory_order_relaxed);
+        return false;
+    }
 
     // 1. Win 键单独按下与弹起 (VK_LWIN / VK_RWIN)
     if (vk == VK_LWIN || vk == VK_RWIN) {
@@ -1198,8 +1329,10 @@ void CALLBACK RemoteMasterEngine::winEventProc(
     if (!engine.m_enabledAtomic.load(std::memory_order_acquire)) return;
 
     std::string procName;
-    bool isRemote = engine.checkWindowIsRemote(hwnd, &procName);
+    bool rawInput = false;
+    bool isRemote = engine.checkWindowIsRemote(hwnd, &procName, &rawInput);
 
+    engine.m_activeRemoteIsRawInput.store(isRemote && rawInput, std::memory_order_relaxed);
     bool prevIsRemote = engine.m_isRemoteForeground.exchange(isRemote, std::memory_order_relaxed);
     HWND prevHwnd = engine.m_activeRemoteHwnd.exchange(isRemote ? hwnd : nullptr, std::memory_order_relaxed);
 
