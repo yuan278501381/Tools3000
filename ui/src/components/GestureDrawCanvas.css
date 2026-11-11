@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * GestureDrawCanvas.css — 手势录制画板样式
+ * GestureDrawCanvas.css — 手势录制画板与显式区域胶囊控制舱样式
  * ───────────────────────────────────────────────────────────────────────────── */
 
 .gesture-draw-container {
@@ -12,13 +12,19 @@
 /* ── 一体化手势录制控制舱 (Cockpit Bar) ─────────────────────────────────── */
 .gesture-cockpit-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 10px;
-  padding: 6px 10px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
   background: var(--input-bg);
   border: 1px solid var(--card-border);
   border-radius: var(--radius-md);
+}
+
+.gesture-cockpit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
   flex-wrap: wrap;
 }
 
@@ -32,13 +38,61 @@
 .gesture-cockpit-label {
   font-size: var(--text-xs, 0.84rem);
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin-right: 2px;
 }
 
-/* 触发按键与位置感应微型指示徽章 (只读展示，不可点击) */
+.gesture-cockpit-svg-icon {
+  flex-shrink: 0;
+}
+
+/* ── 显式触发区域分段胶囊选择器 (Global / Top / Bottom / Left / Right) ──── */
+.gesture-zone-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
+}
+
+.gesture-zone-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--transition-fast);
+}
+
+.gesture-zone-pill:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.gesture-zone-pill.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2px 8px var(--primary-glow);
+}
+
+/* 触发鼠标按键胶囊按钮 (支持硬件感应高亮与手动点击切换) */
 .gesture-cockpit-badge {
   display: inline-flex;
   align-items: center;
@@ -48,13 +102,21 @@
   border: 1px solid var(--card-border);
   background: var(--bg-primary);
   color: var(--text-muted);
-  font-size: var(--text-sm, 0.86rem);
+  font-size: var(--text-xs, 0.84rem);
   font-weight: 500;
-  cursor: default;
+  line-height: 1.4;
+  cursor: pointer;
   user-select: none;
   font-family: inherit;
   transition: all var(--transition-fast);
-  opacity: 0.65;
+  opacity: 0.78;
+}
+
+.gesture-cockpit-badge:hover {
+  opacity: 1;
+  color: var(--text-primary);
+  border-color: var(--primary);
+  background: var(--bg-elevated);
 }
 
 .gesture-cockpit-badge.active {
@@ -64,10 +126,9 @@
   font-weight: 600;
   box-shadow: 0 1px 6px var(--primary-glow);
   opacity: 1;
-  transform: scale(1.02);
 }
 
-/* 修饰键感应徽章 (Ctrl / Shift / Alt 只读展示) */
+/* 修饰键感应徽章 (Ctrl / Shift / Alt 实时侦测展示) */
 .gesture-modifier-badge {
   display: inline-flex;
   align-items: center;
@@ -81,10 +142,11 @@
   font-family: var(--font-mono);
   font-size: var(--text-xs, 0.84rem);
   font-weight: 600;
+  line-height: 1.4;
   cursor: default;
   user-select: none;
   transition: all var(--transition-fast);
-  opacity: 0.6;
+  opacity: 0.65;
 }
 
 .gesture-modifier-badge.active {
@@ -100,7 +162,7 @@
   border-color: var(--primary) !important;
   color: #ffffff !important;
   opacity: 1 !important;
-  transform: scale(1.06);
+  transform: scale(1.05);
   box-shadow: 0 0 10px var(--primary-glow);
 }
 
@@ -108,13 +170,14 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
   border: 1px solid var(--card-border);
   color: var(--text-secondary);
   font-size: var(--text-xs, 0.84rem);
   font-weight: 500;
+  line-height: 1.4;
   cursor: pointer;
   transition: all var(--transition-fast);
   margin-left: auto;
@@ -148,14 +211,14 @@
 .gesture-draw-pad.is-drawing {
   border-color: var(--primary);
   border-style: solid;
-  box-shadow: 0 0 16px rgba(124, 58, 237, 0.25);
-  background: rgba(15, 23, 42, 0.6);
+  box-shadow: 0 0 16px var(--primary-glow);
+  background: var(--bg-elevated);
 }
 
 .gesture-draw-crosshair {
   position: absolute;
   inset: 0;
-  background-image: 
+  background-image:
     radial-gradient(circle at center, var(--card-border) 1px, transparent 1px);
   background-size: 24px 24px;
   opacity: 0.45;
@@ -170,6 +233,8 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
+  padding: 0 24px;
+  text-align: center;
   color: var(--text-muted);
   pointer-events: none;
   transition: opacity 0.2s ease;
@@ -185,7 +250,7 @@
   align-items: center;
   justify-content: center;
   color: var(--primary);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-sm);
   margin-bottom: 6px;
   transition: transform var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
@@ -201,13 +266,16 @@
 }
 
 .gesture-draw-watermark-text {
-  font-size: 0.84rem;
-  font-weight: 500;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.45;
   color: var(--text-secondary);
 }
 
 .gesture-draw-watermark-hint {
   font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  line-height: 1.45;
   color: var(--text-muted);
 }
 
@@ -217,6 +285,7 @@
   width: 100%;
   height: 100%;
   pointer-events: none;
+  z-index: 3;
 }
 
 .gesture-stroke-glow {
@@ -257,9 +326,10 @@
   background: var(--bg-elevated);
   border: 1px solid var(--primary);
   border-radius: var(--radius-md);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-md);
   animation: fadeIn 0.2s ease;
   pointer-events: none;
+  z-index: 4;
 }
 
 .gesture-draw-badge-icon {
@@ -267,16 +337,18 @@
 }
 
 .gesture-draw-badge-arrows {
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   font-weight: 700;
+  line-height: 1.4;
   color: var(--primary);
   letter-spacing: 0.05em;
 }
 
 .gesture-draw-badge-code {
   font-family: var(--font-mono);
-  font-size: var(--text-sm, 0.86rem);
+  font-size: var(--text-sm, 0.88rem);
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-secondary);
 }
 
@@ -291,8 +363,9 @@
 
 .gesture-preset-label {
   font-size: var(--text-xs, 0.84rem);
-  color: var(--text-muted);
   font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 .gesture-preset-chips {
@@ -311,6 +384,8 @@
   border: 1px solid var(--card-border);
   border-radius: var(--radius-sm);
   font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  line-height: 1.4;
   color: var(--text-secondary);
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -330,72 +405,94 @@
 }
 
 .gesture-preset-arrows {
-  font-weight: bold;
+  font-weight: 700;
 }
 
-/* ── 画板起笔边缘智能感应区指示 ────────────────────────────── */
+/* ── 显式边缘录制模式下的四向高对比度虚线感应带 ────────────────────────── */
 .gesture-edge-sensor-zone {
   position: absolute;
-  left: 0;
-  right: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   pointer-events: none;
   transition: all var(--transition-fast);
   z-index: 2;
-  opacity: 0.35;
 }
 
 .gesture-edge-sensor-zone--top {
   top: 0;
-  height: 38px;
-  border-bottom: 1px dashed var(--card-border);
-  background: linear-gradient(180deg, rgba(139, 92, 246, 0.08) 0%, transparent 100%);
+  left: 0;
+  right: 0;
+  height: 40px;
+  border-bottom: 2px dashed var(--primary);
+  background: linear-gradient(180deg, var(--primary-dim) 0%, transparent 100%);
 }
 
 .gesture-edge-sensor-zone--bottom {
   bottom: 0;
-  height: 38px;
-  border-top: 1px dashed var(--card-border);
-  background: linear-gradient(0deg, rgba(139, 92, 246, 0.08) 0%, transparent 100%);
+  left: 0;
+  right: 0;
+  height: 40px;
+  border-top: 2px dashed var(--primary);
+  background: linear-gradient(0deg, var(--primary-dim) 0%, transparent 100%);
+}
+
+.gesture-edge-sensor-zone--left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 68px;
+  border-right: 2px dashed var(--primary);
+  background: linear-gradient(90deg, var(--primary-dim) 0%, transparent 100%);
+}
+
+.gesture-edge-sensor-zone--right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 68px;
+  border-left: 2px dashed var(--primary);
+  background: linear-gradient(270deg, var(--primary-dim) 0%, transparent 100%);
 }
 
 .gesture-edge-sensor-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: var(--text-xs, 0.84rem);
   font-weight: 600;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.15);
-  transition: all var(--transition-fast);
-}
-
-.gesture-edge-sensor-zone.active {
-  opacity: 1;
-}
-
-.gesture-edge-sensor-zone--top.active {
-  border-bottom-color: var(--primary);
-  background: linear-gradient(180deg, rgba(139, 92, 246, 0.22) 0%, transparent 100%);
-}
-
-.gesture-edge-sensor-zone--bottom.active {
-  border-top-color: var(--primary);
-  background: linear-gradient(0deg, rgba(139, 92, 246, 0.22) 0%, transparent 100%);
-}
-
-.gesture-edge-sensor-zone.active .gesture-edge-sensor-tag {
+  line-height: 1.4;
   color: #ffffff;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
   background: var(--primary);
-  box-shadow: 0 0 8px var(--primary-glow);
+  box-shadow: 0 2px 8px var(--primary-glow);
+}
+
+.gesture-edge-sensor-zone--left .gesture-edge-sensor-tag,
+.gesture-edge-sensor-zone--right .gesture-edge-sensor-tag {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  padding: 8px 3px;
 }
 
 .gesture-draw-pad.edge-active-top {
+  border-top-style: solid;
   border-top-color: var(--primary);
 }
 
 .gesture-draw-pad.edge-active-bottom {
+  border-bottom-style: solid;
   border-bottom-color: var(--primary);
+}
+
+.gesture-draw-pad.edge-active-left {
+  border-left-style: solid;
+  border-left-color: var(--primary);
+}
+
+.gesture-draw-pad.edge-active-right {
+  border-right-style: solid;
+  border-right-color: var(--primary);
 }
