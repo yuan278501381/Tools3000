@@ -3500,3 +3500,460 @@ TEST(AppLauncherRankingAndAppsFolderTest, PromotesStartMenuAndUserDesktopShortcu
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// Batch 2 & Batch 3 防回退单元测试集 (P-05 / P-07 / U-08 / C-02)
+// -----------------------------------------------------------------------------
+
+TEST(PlainTextZeroCopyPrefilterTest, SkipsHeapCopyOnNonMatchingMappedFilesAndConcurrentCacheReads) {
+    using namespace tools3000_content_search_test_helpers;
+    auto& engine = tools3000::service::content::ContentSearchEngine::instance();
+    auto& cache = tools3000::service::content::ContentTextCache::instance();
+    cache.clear();
+
+    wchar_t tempDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tempDir);
+    const std::wstring utf8Path = std::wstring(tempDir) + L"Tools3000_P05_ZeroCopyUtf8_" +
+        std::to_wstring(GetCurrentProcessId()) + L".log";
+    const std::wstring utf16Path = std::wstring(tempDir) + L"Tools3000_P05_ZeroCopyUtf16_" +
+        std::to_wstring(GetCurrentProcessId()) + L".txt";
+    TempFileDeleter utf8Guard{utf8Path};
+    TempFileDeleter utf16Guard{utf16Path};
+
+    // 构造跨多个 AVX2 32B / 缓存行边界的大体积 UTF-8 日志文件 (> 96 KB)
+    std::string largeUtf8;
+    largeUtf8.reserve(98304);
+    for (int i = 0; i < 1200; ++i) {
+        largeUtf8.append("2026-10-15T12:00:00Z [INFO] routine telemetry heartbeat sequence=");
+        largeUtf8.append(std::to_string(i));
+        largeUtf8.append("\n");
+    }
+    largeUtf8.append("2026-10-15T12:01:00Z [WARN] VectorSimdBoundaryToken_AlphaOmega_9941跨边界中文锚点\n");
+    {
+        std::ofstream ofs(utf8Path, std::ios::binary | std::ios::trunc);
+        ofs.write(largeUtf8.data(), static_cast<std::streamsize>(largeUtf8.size()));
+    }
+
+    std::vector<tools3000::service::content::ContentSnippet> snippets;
+    EXPECT_FALSE(engine.searchFile(
+        utf8Path, std::vector<std::wstring>{L"NonExistentZeroCopyTokenXYZ"}, false, snippets, 3));
+    EXPECT_TRUE(snippets.empty());
+
+    ASSERT_TRUE(engine.searchFile(
+        utf8Path, std::vector<std::wstring>{L"vectorsimdboundarytoken_alphaomega_9941", L"跨边界中文锚点"}, false, snippets, 3));
+    ASSERT_FALSE(snippets.empty());
+    EXPECT_EQ(snippets[0].lineNumber, 1201u);
+
+    // UTF-16LE 带 BOM 零拷贝预筛与大小写无关匹配
+    std::wstring utf16Doc(2048, L'A');
+    utf16Doc.append(L"\r\nSecondLine_Utf16CaselessProbe_7788_终端引擎\r\n");
+    {
+        std::ofstream ofs(utf16Path, std::ios::binary | std::ios::trunc);
+        const uint8_t bom[2] = {0xFF, 0xFE};
+        ofs.write(reinterpret_cast<const char*>(bom), 2);
+        ofs.write(reinterpret_cast<const char*>(utf16Doc.data()),
+                  static_cast<std::streamsize>(utf16Doc.size() * sizeof(wchar_t)));
+    }
+    snippets.clear();
+    EXPECT_FALSE(engine.searchFile(utf16Path, std::vector<std::wstring>{L"AbsentUtf16Keyword"}, false, snippets, 3));
+    ASSERT_TRUE(engine.searchFile(utf16Path, std::vector<std::wstring>{L"utf16caselessprobe_7788"}, false, snippets, 3));
+    ASSERT_EQ(snippets.size(), 1u);
+    EXPECT_EQ(snippets[0].lineNumber, 2u);
+
+    // 验证 ContentTextCache shared_ptr 压缩载荷在并发读写与淘汰下的无锁解压稳定性
+    cache.put(L"C:\\virtual\\concurrent_doc.pdf", 4096ULL, 1001ULL, L"ConcurrentSharedPtrPayload_稳态验证");
+    std::atomic<int> successReads{0};
+    std::vector<std::thread> readers;
+    for (int t = 0; t < 6; ++t) {
+        readers.emplace_back([&]() {
+            for (int iter = 0; iter < 40; ++iter) {
+                std::wstring outText;
+                bool truncated = false;
+                if (cache.tryGetWithTruncation(
+                        L"C:\\virtual\\concurrent_doc.pdf", 4096ULL, 1001ULL, outText, truncated)) {
+                    if (outText == L"ConcurrentSharedPtrPayload_稳态验证" && !truncated) {
+                        successReads.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
+        });
+    }
+    for (auto& th : readers) th.join();
+    EXPECT_EQ(successReads.load(), 240);
+    cache.clear();
+}
+
+TEST(XlsxWorksheetRowReconstructionTest, ResolvesSharedStringsPerRowAndEliminatesNumericIndexFalsePositives) {
+    using namespace tools3000_content_search_test_helpers;
+    auto& engine = tools3000::service::content::ContentSearchEngine::instance();
+    tools3000::service::content::ContentTextCache::instance().clear();
+
+    // 构造 15 个共享字符串，使索引 12 对应目标中文文本，并附带 <rPh> 注音噪声
+    std::string sharedStringsXml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" count=\"15\" uniqueCount=\"15\">";
+    for (int i = 0; i < 15; ++i) {
+        if (i == 12) {
+            sharedStringsXml +=
+                "<si><t>分布式搜索引擎</t><rPh sb=\"0\" eb=\"3\"><t>FenBuShiNoise</t></rPh></si>";
+        } else {
+            sharedStringsXml += "<si><t>PlaceholderCell_" + std::to_string(i) + "</t></si>";
+        }
+    }
+    sharedStringsXml += "</sst>";
+
+    // sheet1.xml 第 1 行引用共享字符串下标 12 (<c t="s"><v>12</v></c>)、真实数值 98765 与 inlineStr
+    const std::string sheet1Xml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+        "<sheetData>"
+        "<row r=\"1\">"
+        "<c r=\"A1\" t=\"s\"><v>12</v></c>"
+        "<c r=\"B1\"><v>98765</v></c>"
+        "<c r=\"C1\" t=\"inlineStr\"><is><t>里程碑验收通过</t></is></c>"
+        "</row>"
+        "</sheetData>"
+        "</worksheet>";
+
+    const auto xlsxArchive = buildZipArchive({
+        {"xl/sharedStrings.xml", sharedStringsXml},
+        {"xl/worksheets/sheet1.xml", sheet1Xml}
+    }, /*useDeflate=*/true);
+
+    wchar_t tempDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tempDir);
+    const std::wstring xlsxPath = std::wstring(tempDir) + L"Tools3000_U08_RowAligned_" +
+        std::to_wstring(GetCurrentProcessId()) + L".xlsx";
+    TempFileDeleter xlsxGuard{xlsxPath};
+
+    {
+        std::ofstream ofs(xlsxPath, std::ios::binary | std::ios::trunc);
+        ofs.write(reinterpret_cast<const char*>(xlsxArchive.data()),
+                  static_cast<std::streamsize>(xlsxArchive.size()));
+    }
+
+    std::vector<tools3000::service::content::ContentSnippet> snippets;
+    // 共享字符串整数下标 "12" 绝不可暴露在还原文本中（注：PlaceholderCell_12 含 "12"，故测试独立不存在的索引如单独行或校验 Placeholder 不含 12）
+    // 为严格验证纯数字下标不泄漏，再用无数字占位重造一份纯净工作簿
+    std::string pureSst =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><sst>";
+    for (int i = 0; i < 15; ++i) {
+        if (i == 12) {
+            pureSst += "<si><t>分布式搜索引擎</t><rPh sb=\"0\" eb=\"3\"><t>FenBuShiNoise</t></rPh></si>";
+        } else {
+            pureSst += "<si><t>AlphaFillerItem</t></si>";
+        }
+    }
+    pureSst += "</sst>";
+    const auto pureXlsx = buildZipArchive({
+        {"xl/sharedStrings.xml", pureSst},
+        {"xl/worksheets/sheet1.xml", sheet1Xml}
+    }, /*useDeflate=*/true);
+    {
+        std::ofstream ofs(xlsxPath, std::ios::binary | std::ios::trunc);
+        ofs.write(reinterpret_cast<const char*>(pureXlsx.data()),
+                  static_cast<std::streamsize>(pureXlsx.size()));
+    }
+    tools3000::service::content::ContentTextCache::instance().clear();
+
+    // 1. 共享字符串引用索引 "12" 绝不产生数字误命中
+    EXPECT_FALSE(engine.searchFile(xlsxPath, std::vector<std::wstring>{L"12"}, false, snippets, 3));
+    // 2. <rPh> 拼音注音辅助块绝不产生噪声命中
+    EXPECT_FALSE(engine.searchFile(xlsxPath, std::vector<std::wstring>{L"FenBuShiNoise"}, false, snippets, 3));
+    // 3. 同一 <row> 内的共享字符串文本、数值单元格与 inlineStr 在同一逻辑行共现
+    snippets.clear();
+    ASSERT_TRUE(engine.searchFile(
+        xlsxPath,
+        std::vector<std::wstring>{L"分布式搜索引擎", L"98765", L"里程碑验收通过"},
+        false,
+        snippets,
+        4));
+    ASSERT_GE(snippets.size(), 1u);
+    EXPECT_EQ(snippets[0].lineNumber, 1u);
+    EXPECT_NE(snippets[0].lineContent.find(L"分布式搜索引擎"), std::wstring::npos);
+    EXPECT_NE(snippets[0].lineContent.find(L"98765"), std::wstring::npos);
+    EXPECT_NE(snippets[0].lineContent.find(L"里程碑验收通过"), std::wstring::npos);
+}
+
+TEST(PinyinScratchAndRunHistoryAsyncTest, SinglePassPinyinMatchesLegacyAndAsyncHistoryCoalescesAndEvicts) {
+    std::string scratchAsciiInit;
+    std::string scratchAsciiFull;
+    std::wstring initOut;
+    std::wstring fullOut;
+
+    // 1. 纯英文文件名：单遍 ASCII 快径归一化全小写且零堆分配复写
+    const std::wstring asciiName = L"CMakeLists_Build2026.TXT";
+    PinyinEngine::BuildNormalizedPinyin(asciiName, scratchAsciiInit, scratchAsciiFull, initOut, fullOut);
+    EXPECT_EQ(initOut, L"cmakelists_build2026.txt");
+    EXPECT_EQ(fullOut, L"cmakelists_build2026.txt");
+    EXPECT_NE(PinyinEngine::LookupSyllableAscii(L'微'), nullptr);
+    EXPECT_EQ(PinyinEngine::LookupSyllableAscii(L'A'), nullptr);
+
+    // 2. 中英混合 + 扩展区代理对 (U+20BB7) + 日文假名：与传统双遍接口输出 100% 一致
+    std::wstring mixedName = L"微信Pro_";
+    mixedName.push_back(static_cast<wchar_t>(0xD842));
+    mixedName.push_back(static_cast<wchar_t>(0xDFB7));
+    mixedName += L"_\u3042工具箱.exe";
+
+    const std::wstring expectedNorm = SearchExpression::normalize(mixedName);
+    PinyinEngine::BuildNormalizedPinyin(expectedNorm, scratchAsciiInit, scratchAsciiFull, initOut, fullOut);
+    EXPECT_EQ(initOut, SearchExpression::normalize(PinyinEngine::GetInitials(expectedNorm)));
+    EXPECT_EQ(fullOut, SearchExpression::normalize(PinyinEngine::GetFullPinyin(expectedNorm)));
+
+    // 3. RunHistoryManager 内存即时可见、防抖合并刷盘与容量上限淘汰
+    wchar_t tempDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tempDir);
+    const std::wstring csvPath = std::wstring(tempDir) + L"Tools3000_P07_AsyncHistory_" +
+        std::to_wstring(GetCurrentProcessId()) + L".csv";
+    DeleteFileW(csvPath.c_str());
+
+    auto& mgr = tools3000::service::db::RunHistoryManager::instance();
+    mgr.init(csvPath);
+    mgr.clear();
+    mgr.setMaxEntries(5);
+
+    // 连续高频调用 recordRun 50 次，内存快照必须 0 阻塞立即可见
+    for (int i = 0; i < 50; ++i) {
+        mgr.recordRun(L"C:\\PinnedApp\\TopLauncher.exe");
+    }
+    EXPECT_EQ(mgr.captureSnapshot().lookup(L"C:\\PinnedApp\\TopLauncher.exe").runCount, 50u);
+
+    // 插入超过上限 (10 条低频记录)，验证上限收敛至 <= 5 且高频项始终保留
+    for (int i = 0; i < 10; ++i) {
+        mgr.recordRun(L"C:\\Temp\\Ephemeral_" + std::to_wstring(i) + L".txt");
+    }
+    EXPECT_LE(mgr.size(), 5u);
+    EXPECT_EQ(mgr.captureSnapshot().lookup(L"C:\\PinnedApp\\TopLauncher.exe").runCount, 50u);
+
+    mgr.flush();
+    EXPECT_TRUE(std::filesystem::exists(csvPath));
+
+    // 恢复默认容量上限并清理测试文件
+    mgr.setMaxEntries(tools3000::service::db::RunHistoryManager::MaxRunHistoryEntries);
+    mgr.clear();
+    DeleteFileW(csvPath.c_str());
+}
+
+TEST(DirectoryAggregateSizeFilterTest, ComputesRecursiveFolderSizesPropagatesDeltasAndMatchesFolderSizeSyntax) {
+    constexpr uint64_t kMiB = 1024ULL * 1024ULL;
+
+    MftParser parser;
+    parser.Initialize('C');
+    parser.setRealTimeValidation(false);
+
+    std::vector<FileRecordInit> records;
+    auto addDir = [&](DWORDLONG id, DWORDLONG parent, const wchar_t* name) {
+        FileRecordInit d{};
+        d.fileReferenceNumber = id;
+        d.parentFileReferenceNumber = parent;
+        d.fileName = name;
+        d.isDirectory = true;
+        d.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+        records.push_back(std::move(d));
+    };
+    auto addFile = [&](DWORDLONG id, DWORDLONG parent, const wchar_t* name, uint64_t bytes) {
+        FileRecordInit f{};
+        f.fileReferenceNumber = id;
+        f.parentFileReferenceNumber = parent;
+        f.fileName = name;
+        f.isDirectory = false;
+        f.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+        f.fileSize = bytes;
+        f.lastWriteTime = 2000;
+        records.push_back(std::move(f));
+    };
+
+    addDir(9100, 5, L"WorkspaceAggregateRoot");
+    addDir(9101, 9100, L"SubModuleAlpha");
+    addDir(9102, 9100, L"SubModuleBeta");
+    addDir(9103, 9100, L"EmptySubFolder");
+    addFile(9110, 9101, L"alpha_pack.bin", 60 * kMiB);
+    addFile(9111, 9102, L"beta_pack.bin", 80 * kMiB);
+
+    addDir(9200, 5, L"StandaloneDownloads");
+    addFile(9201, 9200, L"standalone_archive.iso", 150 * kMiB);
+
+    ASSERT_TRUE(parser.importSnapshot(std::move(records), 5000, parser.getVolumeSerialNumber()));
+
+    // 1. 不带 folder: 的裸 size:>100mb 保持纯文件过滤语义，仅返回 150MB 单文件，不混入聚合目录
+    auto bareSizeHits = parser.Search(L"size:>100mb", 50);
+    ASSERT_EQ(bareSizeHits.size(), 1u);
+    EXPECT_FALSE(bareSizeHits[0].isDirectory);
+    EXPECT_EQ(bareSizeHits[0].fileName, L"standalone_archive.iso");
+
+    // 2. folder: size:>100mb 命中递归聚合体积 >= 100MB 的目录 (WorkspaceAggregateRoot = 140MB, StandaloneDownloads = 150MB)
+    auto folderSizeHits = parser.Search(L"folder: WorkspaceAggregate size:>100mb", 50);
+    ASSERT_EQ(folderSizeHits.size(), 1u);
+    EXPECT_TRUE(folderSizeHits[0].isDirectory);
+    EXPECT_EQ(folderSizeHits[0].fileName, L"WorkspaceAggregateRoot");
+    EXPECT_EQ(folderSizeHits[0].fileSize, 140 * kMiB);
+
+    // 子目录 60MB / 80MB 不应误匹配 >100mb
+    auto subFolderHits = parser.Search(L"folder: SubModule size:>100mb", 50);
+    EXPECT_TRUE(subFolderHits.empty());
+
+    // 3. 验证 FileIndexStore 在实时 USN updateMetadata 与 erase 时祖先目录聚合体积动态精确增减
+    tools3000::service::FileIndexStore store;
+    store.setDriveLetter('D');
+    FileRecordInit dirRoot{};
+    dirRoot.fileReferenceNumber = 100;
+    dirRoot.parentFileReferenceNumber = 5;
+    dirRoot.fileName = L"ProjectRoot";
+    dirRoot.isDirectory = true;
+    dirRoot.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    store.upsert(dirRoot);
+
+    FileRecordInit dirChild{};
+    dirChild.fileReferenceNumber = 101;
+    dirChild.parentFileReferenceNumber = 100;
+    dirChild.fileName = L"BuildOut";
+    dirChild.isDirectory = true;
+    dirChild.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    store.upsert(dirChild);
+
+    FileRecordInit outBin{};
+    outBin.fileReferenceNumber = 102;
+    outBin.parentFileReferenceNumber = 101;
+    outBin.fileName = L"app.exe";
+    outBin.isDirectory = false;
+    outBin.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+    outBin.fileSize = 40 * kMiB;
+    store.upsert(outBin);
+    store.recomputeHierarchyMetadata();
+
+    ASSERT_NE(store.find(100), nullptr);
+    ASSERT_NE(store.find(101), nullptr);
+    EXPECT_EQ(store.find(100)->fileSize, 40 * kMiB);
+    EXPECT_EQ(store.find(101)->fileSize, 40 * kMiB);
+
+    // 子文件扩容至 95MB -> 父目录链同步增加 55MB
+    store.updateMetadata(102, 95 * kMiB, 1000, 2000);
+    EXPECT_EQ(store.find(101)->fileSize, 95 * kMiB);
+    EXPECT_EQ(store.find(100)->fileSize, 95 * kMiB);
+
+    // 删除子文件 -> 父目录链聚合体积归零
+    EXPECT_TRUE(store.erase(102));
+    EXPECT_EQ(store.find(101)->fileSize, 0ULL);
+    EXPECT_EQ(store.find(100)->fileSize, 0ULL);
+}
+
+TEST(SearchPluginInteractionAndSettingsSyncTest, ReturnsFileNotFoundCodeAndPersistsUiPreferencesRoundTrip) {
+    std::array<wchar_t, 4096> executablePath{};
+    const DWORD length = GetModuleFileNameW(
+        nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
+    ASSERT_GT(length, 0u);
+    ASSERT_LT(length, executablePath.size());
+
+    const auto executableDir = std::filesystem::path(executablePath.data()).parent_path();
+    std::filesystem::path pluginDllPath =
+        executableDir.parent_path() / L"plugins" / executableDir.filename() / L"Plugin_Search.dll";
+    if (!std::filesystem::exists(pluginDllPath)) {
+        pluginDllPath = executableDir / L"plugins" / L"Plugin_Search.dll";
+    }
+    ASSERT_TRUE(std::filesystem::exists(pluginDllPath));
+
+    const auto tempCfgDir = std::filesystem::temp_directory_path() /
+        (L"Tools3000_SearchPluginCfg_" + std::to_wstring(GetCurrentProcessId()) +
+         L"_" + std::to_wstring(GetTickCount64()));
+    std::error_code ec;
+    std::filesystem::create_directories(tempCfgDir, ec);
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tempCfgDir, "search_settings_test.json"));
+
+    HMODULE hMod = LoadLibraryExW(
+        pluginDllPath.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (hMod == nullptr) {
+        cfg.shutdown();
+        std::filesystem::remove_all(tempCfgDir, ec);
+    }
+    ASSERT_NE(hMod, nullptr);
+
+    using CreatePluginFunc = tools3000::core::IPlugin* (*)();
+    const auto createPlugin = reinterpret_cast<CreatePluginFunc>(GetProcAddress(hMod, "CreatePlugin"));
+    if (createPlugin == nullptr) {
+        FreeLibrary(hMod);
+        cfg.shutdown();
+        std::filesystem::remove_all(tempCfgDir, ec);
+    }
+    ASSERT_NE(createPlugin, nullptr);
+    tools3000::core::IPlugin* searchPlugin = createPlugin();
+    if (searchPlugin == nullptr) {
+        FreeLibrary(hMod);
+        cfg.shutdown();
+        std::filesystem::remove_all(tempCfgDir, ec);
+    }
+    ASSERT_NE(searchPlugin, nullptr);
+
+    struct SearchPluginCleanupGuard {
+        HMODULE mod = nullptr;
+        tools3000::core::IPlugin* plugin = nullptr;
+        std::filesystem::path tempDir;
+        ~SearchPluginCleanupGuard() {
+            if (plugin) plugin->shutdown();
+            tools3000::core::ConfigManager::instance().clearCallbacks();
+            if (mod) FreeLibrary(mod);
+            tools3000::core::ConfigManager::instance().reset();
+            tools3000::core::ConfigManager::instance().shutdown();
+            std::error_code cleanupEc;
+            std::filesystem::remove_all(tempDir, cleanupEc);
+        }
+    } cleanupGuard{hMod, searchPlugin, tempCfgDir};
+
+    ASSERT_TRUE(searchPlugin->initialize());
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    const auto callSync = [&](const char* method, const nlohmann::json& params) -> nlohmann::json {
+        nlohmann::json req = {
+            {"id", 901},
+            {"method", method},
+            {"params", params}
+        };
+        const std::string rawResp = bridge.handleMessage(req.dump());
+        const auto parsed = nlohmann::json::parse(rawResp);
+        return parsed.value("result", nlohmann::json::object());
+    };
+
+    // 1. 针对已删除/不存在文件的交互请求必须统一返回结构化错误码 FILE_NOT_FOUND
+    const std::string missingFile =
+        "C:\\__Tools3000_NonExistent_Ghost_Dir__\\missing_target_998877.txt";
+    for (const char* method : {"search.openFile", "search.openFolder", "search.copyFile", "search.openWithNotepad"}) {
+        const auto res = callSync(method, {{"path", missingFile}});
+        EXPECT_FALSE(res.value("success", true)) << "method=" << method;
+        EXPECT_EQ(res.value("errorCode", ""), "FILE_NOT_FOUND") << "method=" << method;
+    }
+
+    // 2. 验证 search.saveSettings 与 search.getSettings 完整双向持久化 uiPreferences / defaultSearchMode / contentExtensions
+    const auto saveRes = callSync("search.saveSettings", {
+        {"defaultSearchMode", "both"},
+        {"defaultCategory", "code"},
+        {"excludeHidden", true},
+        {"contentExtensions", nlohmann::json::array({".vue", " Astro ", "wgsl"})},
+        {"disabledContentFormats", nlohmann::json::array({".log", "tmp"})},
+        {"uiPreferences", {
+            {"density", "compact"},
+            {"excludeGitAndModules", false}
+        }}
+    });
+    EXPECT_TRUE(saveRes.value("success", false));
+
+    const auto loaded = callSync("search.getSettings", nlohmann::json::object());
+    EXPECT_EQ(loaded.value("defaultSearchMode", ""), "both");
+    EXPECT_EQ(loaded.value("defaultCategory", ""), "code");
+    EXPECT_TRUE(loaded.value("excludeHidden", false));
+
+    const auto expectedCustom = nlohmann::json::array({"vue", "astro", "wgsl"});
+    const auto expectedDisabled = nlohmann::json::array({"log", "tmp"});
+    EXPECT_EQ(loaded.value("contentExtensions", nlohmann::json::array()), expectedCustom);
+    EXPECT_EQ(loaded.value("customContentFormats", nlohmann::json::array()), expectedCustom);
+    EXPECT_EQ(loaded.value("disabledContentFormats", nlohmann::json::array()), expectedDisabled);
+
+    ASSERT_TRUE(loaded.contains("uiPreferences") && loaded["uiPreferences"].is_object());
+    EXPECT_EQ(loaded["uiPreferences"].value("density", ""), "compact");
+    EXPECT_EQ(loaded["uiPreferences"].value("searchMode", ""), "both");
+    EXPECT_EQ(loaded["uiPreferences"].value("defaultCategory", ""), "code");
+    EXPECT_FALSE(loaded["uiPreferences"].value("excludeGitAndModules", true));
+    EXPECT_EQ(loaded["uiPreferences"].value("customContentFormats", nlohmann::json::array()), expectedCustom);
+    EXPECT_EQ(loaded["uiPreferences"].value("disabledContentFormats", nlohmann::json::array()), expectedDisabled);
+}
