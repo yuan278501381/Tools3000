@@ -15,18 +15,21 @@
 #include "capture/ScreenCapture.h"
 
 #include <opencv2/core.hpp>
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <string>
 #include <chrono>
 #include <optional>
+#include <vector>
 
 namespace tools3000::capture {
 
 /// 历史记录条目
 struct HistoryEntry {
     uint64_t id = 0;                   // 单调递增稳定 ID（防止并发推入导致位置索引漂移误删）
-    cv::Mat image;                     // 截图图像（带标注的最终版本）
+    cv::Mat image;                     // 截图图像（按需从 compressedPng 无损解码还原）
+    std::vector<uint8_t> compressedPng;// PNG 压缩字节缓存（常驻内存，替代未压缩全尺寸原图）
     cv::Mat thumbnail;                 // 缩略图（宽度 160px，用于预览）
     CaptureRegion region;              // 截取区域
     std::string timestamp;             // ISO 8601 时间戳
@@ -48,12 +51,18 @@ public:
     void push(const cv::Mat& image, const CaptureRegion& region,
               const std::string& filePath = "");
 
-    /// 获取指定索引的历史记录（0 = 最新）
-    /// @return 指针（可能为 null）
+    /// 获取指定索引的历史记录（0 = 最新，自动按需无损解码原图）
     std::optional<HistoryEntry> get(int index) const;
 
-    /// 按稳定条目 ID 获取历史记录（防并发位移）
+    /// 按稳定条目 ID 获取历史记录（防并发位移，自动按需无损解码原图）
     std::optional<HistoryEntry> getById(uint64_t id) const;
+
+    /// 轻量获取指定索引或 ID 的缩略图（零原图解码开销）
+    std::optional<cv::Mat> getThumbnail(int index) const;
+    std::optional<cv::Mat> getThumbnailById(uint64_t id) const;
+
+    /// 当前常驻内存总字节数（缩略图 + PNG 压缩流）
+    size_t totalMemoryBytes() const noexcept;
 
     /// 当前历史记录数量
     int count() const;

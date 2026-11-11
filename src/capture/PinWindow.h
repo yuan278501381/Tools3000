@@ -173,6 +173,17 @@ public:
     void renderForTest() { render(); }
     bool lastChromeIsDark() const noexcept { return m_lastChromeIsDark; }
     bool lastToolbarIsDark() const noexcept { return m_lastToolbarIsDark; }
+    bool lastRenderedPixelGrid() const noexcept { return m_lastRenderedPixelGrid; }
+    bool lastRenderedOcrBadge() const noexcept { return m_lastRenderedOcrBadge; }
+    std::wstring activeHudBadgeText() const;
+    std::wstring hudBadgeTextForTest() const {
+        if (m_hudBadgeText.empty() || GetTickCount64() >= m_hudBadgeUntilTick) return {};
+        return m_hudBadgeText;
+    }
+    void setOcrInFlightForTest(bool inFlight) noexcept {
+        m_ocrInFlightVersion.store(inFlight ? 1ULL : 0ULL, std::memory_order_release);
+        if (inFlight) m_ocrReady.store(false, std::memory_order_release);
+    }
 
     /// 激活并获取当前贴图窗口的键盘焦点（确保快捷键如旋转 R / 1 / 2 等即时生效）
     void focusWindow();
@@ -323,7 +334,12 @@ private:
     bool m_hoverCopyFloating = false;
     bool m_lastChromeIsDark = true;
     bool m_lastToolbarIsDark = true;
-    
+    bool m_lastRenderedPixelGrid = false;
+    bool m_lastRenderedOcrBadge = false;
+    std::wstring m_hudBadgeText;
+    uint64_t m_hudBadgeUntilTick = 0;
+
+    void showTransientHudBadge(std::wstring text, uint32_t durationMs = 800);
     void updateHoverAnimation();
     void drawHoverToolbar();
     void clearHoverToolbarRects() noexcept;

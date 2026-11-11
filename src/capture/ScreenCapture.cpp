@@ -18,6 +18,7 @@
 #include "core/stats/PerformanceMonitor.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/config/ConfigManager.h"
 #include "ocr/OcrEngine.h"
 #include "ocr/OcrResultWindow.h"
@@ -48,10 +49,7 @@ void releaseScrollCaptureWorkingSet() {
 }
 
 bool useChineseCaptureToast() {
-    const auto language = tools3000::core::ConfigManager::instance().get<std::string>(
-        "/general/language", "auto");
-    return language == "zh-CN" ||
-           (language == "auto" && tools3000::core::WinUtils::isSystemLanguageChinese());
+    return tools3000::core::isUiLanguageChinese();
 }
 } // namespace
 
@@ -186,16 +184,21 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
 
     overlay.setOcrCallback([this]([[maybe_unused]] const CaptureRegion& region, const cv::Mat& cropped) {
         if (cropped.empty()) return;
+        const bool isZh = useChineseCaptureToast();
         if (m_ocrRunning.exchange(true)) {
-            tools3000::core::EventBus::instance().publish(
-                tools3000::core::ShowToastEvent{L"OCR 正在识别，请稍候"});
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                isZh ? L"OCR 正在识别，请稍候" : L"OCR recognition in progress, please wait"});
             return;
         }
         
         const bool showResultWindow = tools3000::core::ConfigManager::instance().get<bool>(
             "/ocr/showResultWindow", true);
         if (showResultWindow) {
-            tools3000::ocr::OcrResultWindow::instance().showResult("识别中... (Recognizing...)");
+            tools3000::ocr::OcrResultWindow::instance().showResult(
+                isZh ? "正在识别..." : "Recognizing...");
+        } else {
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                isZh ? L"正在识别..." : L"Recognizing..."});
         }
 
         // OCR(WinRT .get()) 放后台线程: 避免在主 STA 线程阻塞/冻结 UI; 全程 try/catch 兜底。
@@ -204,6 +207,7 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         if (m_ocrWorker.joinable()) m_ocrWorker.join();
         m_ocrWorker = std::jthread([this, img = std::move(img), traceId]() {
             tools3000::core::TraceId::setCurrent(traceId);
+            const bool zh = useChineseCaptureToast();
             std::string displayText;
             try {
                 auto results = tools3000::ocr::OcrEngine::instance().extractText(img);
@@ -217,14 +221,14 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                     displayText = std::move(fullText);
                 } else {
                     LOG_WARN("OCR 未提取到文字");
-                    displayText = "未识别到文字 (No text recognized)";
+                    displayText = zh ? "未识别到文字" : "No text recognized";
                 }
             } catch (const std::exception& e) {
                 LOG_ERROR("OCR(覆盖层) 异常: {}", e.what());
-                displayText = "识别失败 (Recognition failed)";
+                displayText = zh ? "识别失败" : "Recognition failed";
             } catch (...) {
                 LOG_ERROR("OCR(覆盖层) 未知异常");
-                displayText = "识别失败 (Unknown error)";
+                displayText = zh ? "识别失败" : "Recognition failed";
             }
             m_ocrRunning.store(false);
             if (tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true)) {
@@ -232,8 +236,11 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                     tools3000::ocr::OcrResultWindow::instance().showResult(text);
                 });
             } else {
-                tools3000::core::EventBus::instance().publish(
-                    tools3000::core::ShowToastEvent{L"OCR 识别完成"});
+                const bool copied = tools3000::core::ConfigManager::instance().get<bool>("/ocr/copyResult", true);
+                tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                    copied
+                        ? (zh ? L"OCR 识别完成并已复制" : L"OCR completed and copied")
+                        : (zh ? L"OCR 识别完成" : L"OCR completed")});
                 tools3000::core::WinUtils::trimWorkingSet();
             }
         });
@@ -249,12 +256,16 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
             ScrollCaptureOverlay::instance().hide();
         });
         if (result.cancelled || result.action == ScrollFinishAction::Cancelled) {
+            releaseScrollCaptureWorkingSet();
             return;
         }
         if (!result.success || result.stitchedImage.empty()) {
             LOG_ERROR("长截图失败: {}", result.errorMessage);
-            tools3000::core::EventBus::instance().publish(
-                tools3000::core::ShowToastEvent{L"长截图失败，请重试"});
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                useChineseCaptureToast()
+                    ? L"长截图失败，请重试"
+                    : L"Scrolling capture failed, please retry"});
+            releaseScrollCaptureWorkingSet();
             return;
         }
 
@@ -268,6 +279,7 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                     stitchedCopy, frames,
                     [this](const cv::Mat& editedImg, ScrollFinishAction finalAction, int outFrames) {
                         if (finalAction == ScrollFinishAction::Cancelled || editedImg.empty()) {
+                            releaseScrollCaptureWorkingSet();
                             return;
                         }
                         finishScrollCaptureDelivery(editedImg, static_cast<int>(finalAction), outFrames);
@@ -288,8 +300,10 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
 
 void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int finishActionCode, int frameCount) {
     if (finalImage.empty()) {
+        releaseScrollCaptureWorkingSet();
         return;
     }
+    const bool isZh = useChineseCaptureToast();
     const auto action = static_cast<ScrollFinishAction>(finishActionCode);
     const bool forceCopy = (action == ScrollFinishAction::Copy);
     const bool shouldCopy = forceCopy || m_activeOptions.copyToClipboard;
@@ -347,9 +361,12 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
                     pin->setScale(initialScale);
                 }
             }
+            releaseScrollCaptureWorkingSet();
         });
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            copied ? L"长截图已贴图并复制" : L"长截图已贴图"});
+            copied
+                ? (isZh ? L"长截图已贴图并复制" : L"Long screenshot pinned and copied")
+                : (isZh ? L"长截图已贴图" : L"Long screenshot pinned")});
         LOG_INFO("长截图已保存，共 {} 帧", frameCount);
         return;
     }
@@ -392,10 +409,11 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
                 auto encoded = encodeImage(imgToSave, chosenFmt, quality);
                 if (!encoded.empty()) {
                     saveToFile(encoded, tools3000::core::WinUtils::wstringToUtf8(selected.wstring()), chosenFmt);
-                    tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{L"长截图已保存"});
+                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                        useChineseCaptureToast() ? L"长截图已保存" : L"Long screenshot saved"});
                 }
             }
+            releaseScrollCaptureWorkingSet();
         });
         LOG_INFO("长截图已保存，共 {} 帧", frameCount);
         return;
@@ -403,8 +421,10 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
 
     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
         savedPath.empty()
-            ? (copied ? L"长截图已复制到剪贴板" : L"长截图已完成")
-            : L"长截图已保存"});
+            ? (copied
+                ? (isZh ? L"长截图已复制到剪贴板" : L"Long screenshot copied to clipboard")
+                : (isZh ? L"长截图已完成" : L"Long screenshot completed"))
+            : (isZh ? L"长截图已保存" : L"Long screenshot saved")});
     LOG_INFO("长截图已保存，共 {} 帧", frameCount);
     releaseScrollCaptureWorkingSet();
 }
@@ -470,7 +490,7 @@ CaptureResult ScreenCapture::captureWindow(HWND hwnd, const CaptureOptions& opti
     tools3000::core::TraceId::Scope scope;
 
     if (!hwnd || !IsWindow(hwnd)) {
-        return { false, "", {}, 0, 0, "无效的窗口句柄" };
+        return { false, "", {}, 0, 0, useChineseCaptureToast() ? "无效的窗口句柄" : "Invalid window handle" };
     }
 
     RECT rc;
@@ -493,7 +513,7 @@ CaptureResult ScreenCapture::captureRegion(const CaptureRegion& region, const Ca
     CaptureResult result;
 
     if (!region.isValid() || region.width > 32768 || region.height > 32768) {
-        result.errorMessage = "无效的截图区域";
+        result.errorMessage = useChineseCaptureToast() ? "无效的截图区域" : "Invalid capture region";
         LOG_ERROR("截图失败: {}", result.errorMessage);
         return result;
     }
@@ -505,7 +525,7 @@ CaptureResult ScreenCapture::captureRegion(const CaptureRegion& region, const Ca
     auto image = captureScreen(region);
     captureTimer.stop();
     if (!image || image->empty()) {
-        result.errorMessage = "屏幕截图失败";
+        result.errorMessage = useChineseCaptureToast() ? "屏幕截图失败" : "Screen capture failed";
         LOG_ERROR("截图失败: {}", result.errorMessage);
         return result;
     }

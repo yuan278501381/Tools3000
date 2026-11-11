@@ -134,6 +134,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_headerBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_accentBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_sheenBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_scratchBrush;
 };
 
 }  // namespace tools3000::capture

@@ -1720,10 +1720,14 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             int next = (cur + 1) % static_cast<int>(AspectRatioPreset::COUNT);
             m_state->aspectRatio = static_cast<AspectRatioPreset>(next);
             enforceAspectRatioOnCurrentSelection();
-            static const wchar_t* ratioNames[] = { L"自由比例", L"16:9 宽屏", L"4:3 标清", L"1:1 正方形", L"黄金比例 (1.618:1)" };
-            std::wstring rname = (next >= 0 && next < 5) ? ratioNames[next] : L"自由比例";
+            const bool zh = tools3000::core::isUiLanguageChinese();
+            static const wchar_t* ratioNamesZh[] = { L"自由比例", L"16:9 宽屏", L"4:3 标清", L"1:1 正方形", L"黄金比例 (1.618:1)" };
+            static const wchar_t* ratioNamesEn[] = { L"Free", L"16:9 Widescreen", L"4:3 Standard", L"1:1 Square", L"Golden Ratio (1.618:1)" };
+            const wchar_t* rname = (next >= 0 && next < 5)
+                ? (zh ? ratioNamesZh[next] : ratioNamesEn[next])
+                : (zh ? L"自由比例" : L"Free");
             m_state->loupeToastUntil = GetTickCount() + 1500;
-            m_state->loupeToastMessage = L"选区比例: " + rname;
+            m_state->loupeToastMessage = (zh ? L"选区比例: " : L"Aspect Ratio: ") + std::wstring(rname);
             m_state->toolbarLayoutValid = false;
             m_renderer->invalidate();
             break;
@@ -2737,22 +2741,23 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
                     hierarchy.push_back(rc);
 
                     // 生成层级微晶徽章友好描述
+                    const bool isZh = tools3000::core::isUiLanguageChinese();
                     wchar_t className[64] = {};
                     GetClassNameW(curr, className, 64);
                     wchar_t title[64] = {};
                     GetWindowTextW(curr, title, 64);
-                    std::wstring typeName = L"控件";
+                    std::wstring typeName = isZh ? L"控件" : L"Control";
                     std::wstring cls = className;
                     for (auto& ch : cls) ch = towlower(ch);
-                    if (cls.find(L"button") != std::wstring::npos) typeName = L"按钮";
-                    else if (cls.find(L"edit") != std::wstring::npos) typeName = L"输入框";
-                    else if (cls.find(L"static") != std::wstring::npos) typeName = L"文本";
-                    else if (cls.find(L"combo") != std::wstring::npos) typeName = L"下拉框";
-                    else if (cls.find(L"list") != std::wstring::npos) typeName = L"列表";
-                    else if (cls.find(L"tree") != std::wstring::npos) typeName = L"树形控件";
-                    else if (cls.find(L"tab") != std::wstring::npos) typeName = L"选项卡";
-                    else if (cls.find(L"toolbar") != std::wstring::npos) typeName = L"工具栏";
-                    else if (GetParent(curr) == nullptr || curr == hTop) typeName = L"窗口";
+                    if (cls.find(L"button") != std::wstring::npos) typeName = isZh ? L"按钮" : L"Button";
+                    else if (cls.find(L"edit") != std::wstring::npos) typeName = isZh ? L"输入框" : L"Input";
+                    else if (cls.find(L"static") != std::wstring::npos) typeName = isZh ? L"文本" : L"Label";
+                    else if (cls.find(L"combo") != std::wstring::npos) typeName = isZh ? L"下拉框" : L"ComboBox";
+                    else if (cls.find(L"list") != std::wstring::npos) typeName = isZh ? L"列表" : L"List";
+                    else if (cls.find(L"tree") != std::wstring::npos) typeName = isZh ? L"树形控件" : L"TreeView";
+                    else if (cls.find(L"tab") != std::wstring::npos) typeName = isZh ? L"选项卡" : L"Tab";
+                    else if (cls.find(L"toolbar") != std::wstring::npos) typeName = isZh ? L"工具栏" : L"Toolbar";
+                    else if (GetParent(curr) == nullptr || curr == hTop) typeName = isZh ? L"窗口" : L"Window";
 
                     int w = rc.right - rc.left;
                     int h = rc.bottom - rc.top;
@@ -2771,6 +2776,7 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
     }
 
     // 4. 追加当前光标所在的单屏全屏区域
+    const bool isZh = tools3000::core::isUiLanguageChinese();
     HMONITOR hMon = MonitorFromPoint(cursorPos, MONITOR_DEFAULTTONEAREST);
     if (hMon) {
         MONITORINFO mi{sizeof(mi)};
@@ -2791,7 +2797,10 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
             }
             if (!exists) {
                 hierarchy.push_back(monRc);
-                hierarchyDescriptions.push_back(L"屏幕 (" + std::to_wstring(monRc.right - monRc.left) + L"x" + std::to_wstring(monRc.bottom - monRc.top) + L")");
+                hierarchyDescriptions.push_back(
+                    (isZh ? L"屏幕 (" : L"Display (") +
+                    std::to_wstring(monRc.right - monRc.left) + L"x" +
+                    std::to_wstring(monRc.bottom - monRc.top) + L")");
             }
         }
     }
@@ -2800,7 +2809,10 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
     if (hierarchy.empty()) {
         RECT fullRc{0, 0, GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)};
         hierarchy.push_back(fullRc);
-        hierarchyDescriptions.push_back(L"全屏 (" + std::to_wstring(fullRc.right - fullRc.left) + L"x" + std::to_wstring(fullRc.bottom - fullRc.top) + L")");
+        hierarchyDescriptions.push_back(
+            (isZh ? L"全屏 (" : L"Full Screen (") +
+            std::to_wstring(fullRc.right - fullRc.left) + L"x" +
+            std::to_wstring(fullRc.bottom - fullRc.top) + L")");
     }
 
     if (m_state) {
@@ -3257,8 +3269,10 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     if (px >= m_state->qrChipRect.left && px <= m_state->qrChipRect.right &&
                         py >= m_state->qrChipRect.top && py <= m_state->qrChipRect.bottom) {
                         tools3000::core::WinUtils::copyToClipboard(tools3000::core::WinUtils::utf8ToWstring(m_state->detectedQrText), hwnd);
-                        tools3000::core::EventBus::instance().publish(
-                            tools3000::core::ShowToastEvent{L"已复制二维码内容到剪贴板"});
+                        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                            tools3000::core::isUiLanguageChinese()
+                                ? L"已复制二维码内容到剪贴板"
+                                : L"Copied QR code content to clipboard"});
                         return 0;
                     }
                 }
@@ -3637,6 +3651,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             const float newScale = tools3000::core::dpi::scaleForDpi(dpiX);
             if (std::abs(newScale - m_state->dpiScale) >= 0.01f) {
                 m_state->dpiScale = newScale;
+                m_state->toolbarLayoutValid = false;
                 if (!m_renderer->updateDpiScale(newScale)) {
                     LOG_WARN("截图覆盖层 DPI 文本资源更新失败: dpi={}", dpiX);
                 }
@@ -4204,6 +4219,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     if (!m_state->activeElement->isEditing && m_state->dragHandle == HitArea::None && moveDist <= 4.0) {
                         // 原地点击非编辑态文本框：进入编辑态并将光标精准定位到点击字缝
                         m_state->activeElement->isEditing = true;
+                        m_state->textEditEnteredTick = GetTickCount();
                         const cv::Point local = toMarkupPoint(releasePt);
                         const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
                         const auto layout = CaptureTextEditor::buildLayout(
@@ -4384,7 +4400,14 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
                     case DoubleClickIntent::EditOrSelectMarkupElement: {
                         auto enterTextWordSelection = [&](MarkupElement& elem) {
+                            const bool wasAlreadyEditing = elem.isEditing;
+                            const DWORD nowTick = GetTickCount();
+                            const bool justEnteredFromFirstClick =
+                                wasAlreadyEditing &&
+                                m_state->textEditEnteredTick != 0 &&
+                                (nowTick - m_state->textEditEnteredTick) <= GetDoubleClickTime();
                             elem.isEditing = true;
+                            m_state->textEditEnteredTick = 0;
                             m_state->isSelectingText = false;
                             m_state->isManipulating = false;
                             const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(elem.text);
@@ -4392,14 +4415,20 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                             const float relX = static_cast<float>(local.x - elem.startPt.x);
                             const float relY = static_cast<float>(local.y - elem.startPt.y);
                             const size_t hitIdx = CaptureTextEditor::hitTestCaretIndex(layout, wstr, relX, relY);
-                            const auto [curS, curE] = CaptureTextEditor::normalizedRange(wstr, elem.textCaret, elem.textSelAnchor);
-                            if (curE > curS && !(curS == 0 && curE == wstr.size())) {
-                                // 已选中单个词块时再次双击：平滑升级为全选当前文本框全文
-                                CaptureTextEditor::selectAll(wstr, elem.textCaret, elem.textSelAnchor);
+                            if (!wasAlreadyEditing || justEnteredFromFirstClick) {
+                                // 首次双击非编辑态文本框进入编辑：按鼠标点击落点精准定位插入光标，不整词选中、不跳末尾
+                                elem.textCaret = hitIdx;
+                                elem.textSelAnchor = hitIdx;
                             } else {
-                                CaptureTextEditor::selectWordAt(wstr, hitIdx, elem.textCaret, elem.textSelAnchor);
+                                const auto [curS, curE] = CaptureTextEditor::normalizedRange(wstr, elem.textCaret, elem.textSelAnchor);
+                                if (curE > curS && !(curS == 0 && curE == wstr.size())) {
+                                    // 已选中单个词块时再次双击：平滑升级为全选当前文本框全文
+                                    CaptureTextEditor::selectAll(wstr, elem.textCaret, elem.textSelAnchor);
+                                } else {
+                                    CaptureTextEditor::selectWordAt(wstr, hitIdx, elem.textCaret, elem.textSelAnchor);
+                                }
                             }
-                            elem.textLastCaretTick = GetTickCount();
+                            elem.textLastCaretTick = nowTick;
                             m_state->textPreferredCaretX = -1.0f;
                             SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                             syncShortcutHintContext();
@@ -5170,7 +5199,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     return 0;
 
                 case CaptureShortcutAction::ResizeSelectionByKey:
-                    adjustSelection(HitArea::RB, decision.dx, decision.dy);
+                    adjustSelection(decision.resizeHandle, decision.dx, decision.dy);
                     prepareMarkupBase();
                     m_state->toolbarLayoutValid = false;
                     m_renderer->invalidate();

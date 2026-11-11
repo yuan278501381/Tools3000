@@ -1043,12 +1043,18 @@ void OcrResultWindow::hide() {
     ShowWindow(m_hwnd, SW_HIDE);
     releaseSurface();
     m_lines.clear();
+    m_lines.shrink_to_fit();
     m_textLayout.Reset();
     m_rawUnmergedText.clear();
+    m_rawUnmergedText.shrink_to_fit();
     m_rawUnmergedWide.clear();
+    m_rawUnmergedWide.shrink_to_fit();
     m_text.clear();
+    m_text.shrink_to_fit();
     m_wideText.clear();
+    m_wideText.shrink_to_fit();
     m_editUndoStack.clear();
+    m_editUndoStack.shrink_to_fit();
     clearSelection();
     m_draggingScrollbar = false;
     tools3000::core::WinUtils::trimWorkingSet();

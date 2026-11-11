@@ -190,21 +190,22 @@ void configureRecorderStateCallback() {
                             tools3000::core::MainThreadDispatcher::instance().post(
                                 [path, stopReason, dur = (finalStats.durationSec > 0.0 ? finalStats.durationSec : fallbackDur)]() {
                                     auto& ind = RecordingIndicator::instance();
+                                    const bool isZh = tools3000::core::isUiLanguageChinese();
                                     if (!path.empty()) {
                                         ind.showCompleted(path, dur);
                                         const bool isWeChatLimit = stopReason == "gif_wechat_limit";
                                         const bool diskFailure = stopReason == "low_disk_space" ||
                                             stopReason == "disk_space_query_failed";
                                         std::wstring toastMsg = isWeChatLimit
-                                            ? (tools3000::core::WinUtils::isSystemLanguageChinese() ? L"GIF 已达 20MB 上限并自动保存" : L"GIF reached 20 MB limit and saved")
+                                            ? (isZh ? L"GIF 已达 20MB 上限并自动保存" : L"GIF reached 20 MB limit and saved")
                                             : (diskFailure
-                                                ? (tools3000::core::WinUtils::isSystemLanguageChinese() ? L"磁盘空间不足，已保存当前录屏" : L"Low disk space, recording saved")
-                                                : (tools3000::core::WinUtils::isSystemLanguageChinese() ? L"录屏已停止并保存" : L"Recording stopped and saved"));
+                                                ? (isZh ? L"磁盘空间不足，已保存当前录屏" : L"Low disk space, recording saved")
+                                                : (isZh ? L"录屏已停止并保存" : L"Recording stopped and saved"));
                                         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
                                     } else {
                                         ind.hide();
-                                        tools3000::core::EventBus::instance().publish(
-                                            tools3000::core::ShowToastEvent{L"录屏已停止，未生成有效内容"});
+                                        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                                            isZh ? L"录屏已停止，未生成有效内容" : L"Recording stopped, no content saved"});
                                     }
                                 });
                         });
@@ -240,15 +241,16 @@ void stopRecordingWithFeedback() {
         tools3000::core::MainThreadDispatcher::instance().post(
             [path, dur = (finalStats.durationSec > 0.0 ? finalStats.durationSec : duration)]() {
                 auto& ind = RecordingIndicator::instance();
+                const bool isZh = tools3000::core::isUiLanguageChinese();
                 if (!path.empty()) {
                     LOG_INFO("录屏已保存: {}", path);
                     ind.showCompleted(path, dur);
                     tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{L"录屏已保存"});
+                        tools3000::core::ShowToastEvent{isZh ? L"录屏已保存" : L"Recording saved"});
                 } else {
                     ind.hide();
-                    tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{L"录屏已停止，未生成有效内容"});
+                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                        isZh ? L"录屏已停止，未生成有效内容" : L"Recording stopped, no content saved"});
                 }
             });
     });
@@ -256,16 +258,17 @@ void stopRecordingWithFeedback() {
 
 bool toggleRecordingPauseWithFeedback() {
     auto& recorder = ScreenRecorder::instance();
+    const bool isZh = tools3000::core::isUiLanguageChinese();
     if (recorder.state() == RecordState::Recording) {
         recorder.pauseRecording();
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"录屏已暂停"});
+            tools3000::core::ShowToastEvent{isZh ? L"录屏已暂停" : L"Recording paused"});
         return true;
     }
     if (recorder.state() == RecordState::Paused) {
         recorder.resumeRecording();
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"录屏已继续"});
+            tools3000::core::ShowToastEvent{isZh ? L"录屏已继续" : L"Recording resumed"});
         return true;
     }
     return false;
@@ -275,16 +278,22 @@ void toggleSystemAudioMuteWithFeedback() {
     auto& recorder = ScreenRecorder::instance();
     if (!recorder.toggleSystemAudioMuted()) return;
     const auto muted = recorder.stats().systemAudioMuted;
-    tools3000::core::EventBus::instance().publish(
-        tools3000::core::ShowToastEvent{muted ? L"系统声音已静音" : L"系统声音已恢复"});
+    const bool isZh = tools3000::core::isUiLanguageChinese();
+    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+        muted
+            ? (isZh ? L"系统声音已静音" : L"System audio muted")
+            : (isZh ? L"系统声音已恢复" : L"System audio unmuted")});
 }
 
 void toggleMicrophoneMuteWithFeedback() {
     auto& recorder = ScreenRecorder::instance();
     if (!recorder.toggleMicrophoneMuted()) return;
     const auto muted = recorder.stats().microphoneMuted;
-    tools3000::core::EventBus::instance().publish(
-        tools3000::core::ShowToastEvent{muted ? L"麦克风已静音" : L"麦克风已恢复"});
+    const bool isZh = tools3000::core::isUiLanguageChinese();
+    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+        muted
+            ? (isZh ? L"麦克风已静音" : L"Microphone muted")
+            : (isZh ? L"麦克风已恢复" : L"Microphone unmuted")});
 }
 
 void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOptions& setup) {
@@ -328,14 +337,15 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
     } else {
         tools3000::core::MessageBridge::instance().invokeHandler("keycast.setDockingRegion", {{"active", false}});
         const auto reason = ScreenRecorder::instance().stats().stopReason;
-        const auto message = reason == "output_directory_unavailable" ||
-                reason == "output_directory_not_writable"
-            ? L"无法写入录屏保存目录"
+        const bool isZh = tools3000::core::isUiLanguageChinese();
+        const wchar_t* message = (reason == "output_directory_unavailable" ||
+                                  reason == "output_directory_not_writable")
+            ? (isZh ? L"无法写入录屏保存目录" : L"Cannot write to recording output directory")
             : reason == "insufficient_disk_space"
-                ? L"剩余空间不足，无法开始录屏"
+                ? (isZh ? L"剩余空间不足，无法开始录屏" : L"Insufficient disk space to start recording")
                 : reason == "disk_space_query_failed"
-                    ? L"无法检查保存目录的剩余空间"
-                    : L"无法开始录屏，请查看日志";
+                    ? (isZh ? L"无法检查保存目录的剩余空间" : L"Failed to check available disk space")
+                    : (isZh ? L"无法开始录屏，请查看日志" : L"Failed to start recording, check logs");
         tools3000::core::EventBus::instance().publish(
             tools3000::core::ShowToastEvent{message});
     }
@@ -444,23 +454,29 @@ static void releaseOcrTransientMemory() {
 
 static void startMemoryOcrTask(const cv::Mat& capturedImage) {
     if (capturedImage.empty()) return;
+    const bool isZh = tools3000::core::isUiLanguageChinese();
     if (g_ocrRunning.exchange(true)) {
-        tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"OCR 正在识别，请稍候"});
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            isZh ? L"OCR 正在识别，请稍候" : L"OCR recognition in progress, please wait"});
         return;
     }
 
     const bool showResultWindow = tools3000::core::ConfigManager::instance().get<bool>(
         "/ocr/showResultWindow", true);
     if (showResultWindow) {
-        tools3000::core::MainThreadDispatcher::instance().post([]() {
-            tools3000::ocr::OcrResultWindow::instance().showResult("识别中... (Recognizing...)");
+        tools3000::core::MainThreadDispatcher::instance().post([isZh]() {
+            tools3000::ocr::OcrResultWindow::instance().showResult(
+                isZh ? "正在识别..." : "Recognizing...");
         });
+    } else {
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            isZh ? L"正在识别..." : L"Recognizing..."});
     }
 
     cv::Mat img = capturedImage.clone();
     if (g_ocrWorker.joinable()) g_ocrWorker.join();
     g_ocrWorker = std::jthread([img = std::move(img)]() {
+        const bool zh = tools3000::core::isUiLanguageChinese();
         try {
             auto results = tools3000::ocr::OcrEngine::instance().extractText(img);
             std::string fullText;
@@ -469,13 +485,13 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage) {
             }
             if (fullText.empty()) {
                 if (tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true)) {
-                    tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::core::MainThreadDispatcher::instance().post([zh]() {
                         tools3000::ocr::OcrResultWindow::instance().showResult(
-                            "未识别到文字 (No text recognized)");
+                            zh ? "未识别到文字" : "No text recognized");
                     });
                 } else {
-                    tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{L"未识别到文字"});
+                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                        zh ? L"未识别到文字" : L"No text recognized"});
                 }
             } else {
                 const bool copy = tools3000::core::ConfigManager::instance().get<bool>("/ocr/copyResult", true);
@@ -489,16 +505,20 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage) {
                     });
                 } else {
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                        copy ? L"文字已复制到剪贴板" : L"文字识别完成"});
+                        copy
+                            ? (zh ? L"文字已复制到剪贴板" : L"Text copied to clipboard")
+                            : (zh ? L"文字识别完成" : L"Text recognition completed")});
                     releaseOcrTransientMemory();
                 }
             }
         } catch (const std::exception& e) {
             LOG_ERROR("OCR 后台线程异常: {}", e.what());
-            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"OCR 识别失败"});
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                zh ? L"OCR 识别失败" : L"OCR recognition failed"});
         } catch (...) {
             LOG_ERROR("OCR 后台线程未知异常");
-            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"OCR 识别失败"});
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                zh ? L"OCR 识别失败" : L"OCR recognition failed"});
         }
         g_ocrRunning.store(false);
     });
@@ -508,20 +528,27 @@ static void onCaptureCompletedForOcr(const tools3000::capture::CaptureResult& re
     if (!g_ocrPending.exchange(false)) return;
     if (!result.success || result.filePath.empty()) return;
 
+    const bool isZh = tools3000::core::isUiLanguageChinese();
     std::string path = result.filePath;
     if (g_ocrRunning.exchange(true)) {
         std::error_code ec;
         std::filesystem::remove(path, ec);
-        tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"OCR 正在识别，请稍候"});
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            isZh ? L"OCR 正在识别，请稍候" : L"OCR recognition in progress, please wait"});
         return;
+    }
+    if (!tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true)) {
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            isZh ? L"正在识别..." : L"Recognizing..."});
     }
     if (g_ocrWorker.joinable()) g_ocrWorker.join();
     g_ocrWorker = std::jthread([path]() {
+        const bool zh = tools3000::core::isUiLanguageChinese();
         try {
             std::string text = tools3000::ocr::OcrEngine::instance().recognizeImageFile(path);
             if (text.empty()) {
-                tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"未识别到文字"});
+                tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                    zh ? L"未识别到文字" : L"No text recognized"});
             } else {
                 const bool copy = tools3000::core::ConfigManager::instance().get<bool>("/ocr/copyResult", true);
                 const bool showResult = tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true);
@@ -532,15 +559,19 @@ static void onCaptureCompletedForOcr(const tools3000::capture::CaptureResult& re
                     });
                 } else {
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                        copy ? L"文字已复制到剪贴板" : L"文字识别完成"});
+                        copy
+                            ? (zh ? L"文字已复制到剪贴板" : L"Text copied to clipboard")
+                            : (zh ? L"文字识别完成" : L"Text recognition completed")});
                 }
             }
         } catch (const std::exception& e) {
             LOG_ERROR("OCR 后台线程异常: {}", e.what());
-            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"OCR 识别失败"});
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                zh ? L"OCR 识别失败" : L"OCR recognition failed"});
         } catch (...) {
             LOG_ERROR("OCR 后台线程未知异常");
-            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"OCR 识别失败"});
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                zh ? L"OCR 识别失败" : L"OCR recognition failed"});
         }
         std::error_code ec;
         std::filesystem::remove(path, ec);
@@ -559,7 +590,9 @@ static void triggerOcrCapture() {
     }
     auto& ocr = tools3000::ocr::OcrEngine::instance();
     if (!ocr.isAvailable()) {
-        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"未找到 OCR 语言包"});
+        const bool isZh = tools3000::core::isUiLanguageChinese();
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            isZh ? L"未找到 OCR 语言包" : L"No OCR language pack installed"});
         return;
     }
     LOG_INFO("OCR Capture Triggered");
@@ -992,7 +1025,7 @@ public:
             auto& config = tools3000::core::ConfigManager::instance();
             return {
                 {"engine", "windows"},
-                {"language", "system"},
+                {"language", config.get<std::string>("/ocr/language", "auto")},
                 {"copyResult", config.get<bool>("/ocr/copyResult", true)},
                 {"showResultWindow", config.get<bool>("/ocr/showResultWindow", true)}
             };
@@ -1001,8 +1034,15 @@ public:
         mb.registerHandler("ocr.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
             if (!params.is_object() || params.empty()) return {{"success", false}, {"error", "no settings supplied"}};
             for (const auto& [key, value] : params.items()) {
-                if ((key != "copyResult" && key != "showResultWindow") || !value.is_boolean())
+                if (key == "copyResult" || key == "showResultWindow") {
+                    if (!value.is_boolean())
+                        return {{"success", false}, {"error", "invalid boolean OCR setting: " + key}};
+                } else if (key == "language") {
+                    if (!value.is_string() || value.get<std::string>().empty())
+                        return {{"success", false}, {"error", "invalid OCR language"}};
+                } else {
                     return {{"success", false}, {"error", "unsupported OCR setting: " + key}};
+                }
             }
             const bool saved = tools3000::core::ConfigManager::instance().mergePatch(
                 {{"ocr", params}}, "/ocr");
@@ -1329,11 +1369,17 @@ public:
                 if (params.contains("forceHover") && params["forceHover"].is_boolean()) {
                     pin->forceHoverStateForTest(params["forceHover"].get<bool>());
                 }
-                if (params.value("forceRender", false)) {
-                    pin->renderForTest();
-                }
                 if (params.contains("setScale") && params["setScale"].is_number()) {
                     pin->setScale(params["setScale"].get<float>());
+                }
+                if (params.contains("setOpacity") && params["setOpacity"].is_number()) {
+                    pin->setOpacity(params["setOpacity"].get<float>());
+                }
+                if (params.contains("setOcrInFlight") && params["setOcrInFlight"].is_boolean()) {
+                    pin->setOcrInFlightForTest(params["setOcrInFlight"].get<bool>());
+                }
+                if (params.value("forceRender", false)) {
+                    pin->renderForTest();
                 }
                 if (params.contains("applyEditedRects") && params["applyEditedRects"].is_array()) {
                     const cv::Mat cleanBase = pin->cleanBaseImage().empty()
@@ -1415,8 +1461,12 @@ public:
                     {"isDragging", pin->isDragging()},
                     {"isInverted", pin->isInverted()},
                     {"isFolded", pin->isFolded()},
+                    {"opacity", pin->opacity()},
                     {"lastChromeIsDark", pin->lastChromeIsDark()},
-                    {"lastToolbarIsDark", pin->lastToolbarIsDark()}
+                    {"lastToolbarIsDark", pin->lastToolbarIsDark()},
+                    {"lastRenderedPixelGrid", pin->lastRenderedPixelGrid()},
+                    {"lastRenderedOcrBadge", pin->lastRenderedOcrBadge()},
+                    {"activeHudBadgeText", tools3000::core::WinUtils::wstringToUtf8(pin->activeHudBadgeText())}
                 };
             });
         });
@@ -1612,12 +1662,12 @@ public:
             auto& hist = tools3000::capture::CaptureHistory::instance();
             for (auto& metadata : result) {
                 const uint64_t id = metadata.value("id", static_cast<uint64_t>(0));
-                const auto entry = (id > 0)
-                    ? hist.getById(id)
-                    : hist.get(metadata.value("index", -1));
-                if (!entry || entry->thumbnail.empty()) continue;
+                const auto thumb = (id > 0)
+                    ? hist.getThumbnailById(id)
+                    : hist.getThumbnail(metadata.value("index", -1));
+                if (!thumb || thumb->empty()) continue;
                 std::vector<uint8_t> buffer;
-                if (cv::imencode(".png", entry->thumbnail, buffer)) {
+                if (cv::imencode(".png", *thumb, buffer)) {
                     metadata["base64"] = tools3000::core::WinUtils::base64Encode(buffer);
                 }
             }
@@ -1629,11 +1679,11 @@ public:
             const int index = params.value("index", -1);
             if (id == 0 && index < 0) return {{"success", false}};
             auto& hist = tools3000::capture::CaptureHistory::instance();
-            const auto entry = (id > 0) ? hist.getById(id) : hist.get(index);
-            if (!entry || entry->thumbnail.empty()) return {{"success", false}};
+            const auto thumb = (id > 0) ? hist.getThumbnailById(id) : hist.getThumbnail(index);
+            if (!thumb || thumb->empty()) return {{"success", false}};
             
             std::vector<uint8_t> buffer;
-            cv::imencode(".png", entry->thumbnail, buffer);
+            cv::imencode(".png", *thumb, buffer);
             std::string base64 = tools3000::core::WinUtils::base64Encode(buffer);
             return {{"success", true}, {"base64", base64}};
         });

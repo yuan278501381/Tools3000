@@ -383,6 +383,9 @@ public:
     /// 硬重置清除所有标注与撤销/重做栈（用于新选区会话初始化或取消选区）
     void clearAll();
 
+    /// 退出截图会话时彻底释放底图矩阵、底层合成缓存与滤镜 ROI 缓存（冷路径内存回收）
+    void resetSession();
+
     /// 可撤销地清空当前所有标注（用于工具栏 Clear 按钮与清空快捷键，支持 Ctrl+Z 一键恢复）
     bool clearElementsUndoable();
 
