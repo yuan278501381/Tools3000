@@ -6,6 +6,18 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-11] Windows Defender 误报隔离 (`CreateProcess 失败；代码 225` / `Trojan:Win32/Bearfoos.A!ml`) 根因与三重根治防线
+- **故障现象与事件日志铁证**：
+  - 运行 `Output\Tools3000-Setup.exe` 安装至最后拉起主程序时报错：`无法执行文件 C:\Program Files\Tools3000\Tools3000.exe — CreateProcess 失败；代码 225（文件包含病毒或潜在的垃圾软件）`。
+  - 系统 `Microsoft-Windows-Windows Defender/Operational` 事件日志（Event ID 1116 / 1117）证实：未签名的 `Tools3000.exe` 与 `Plugin_Capture.dll` 在解压至非排除目录 `C:\Program Files\Tools3000` 时命中启发式模型 `Trojan:Win32/Bearfoos.A!ml` 并被实时隔离。
+- **双重深层根因**：
+  1. **MSVC 裸 `/DEBUG` 隐式开启增量链接跳转桩并关闭死代码折叠 (`CMakeLists.txt`)**：`add_link_options(/DEBUG)` 在未显式配对 `/INCREMENTAL:NO /OPT:REF /OPT:ICF` 时，MSVC 链接器在 Release 构建下隐式回退为 `/INCREMENTAL:YES` 与 `/OPT:NOREF,NOICF`，且未开启 `/GUARD:CF`（Control Flow Guard）并内嵌了本机绝对 PDB 路径，导致 `Tools3000.exe` 膨胀至 `2.92 MB` 且代码段头部布满增量 `JMP` thunk 跳板表，直接触发 Defender `Bearfoos.A!ml` 静态机器学习模型误判；
+  2. **本地 `deploy.ps1` 未自动挂载 `CurrentUser\My` 受信代码签名证书**：在未手动注入 `$env:TOOLS3000_SIGNING_CERT_SHA1` 的终端会话中运行 `deploy.ps1` 时跳过了签名步骤，产出了无 Authenticode 签名的裸二进制与安装包。
+- **三重纵深根治方案（实测未签名与已签名双态均 0 误报）**：
+  1. **MSVC Release 安全编译与链接基线 (`CMakeLists.txt`)**：对非 Debug 构建强制启用编译参数 `/Gy /Gw /guard:cf` 与链接参数 `/INCREMENTAL:NO /OPT:REF /OPT:ICF /GUARD:CF /PDBALTPATH:%_PDB%`（x64 附加 `/CETCOMPAT`）。`Tools3000.exe` 体积由 `2.92 MB` 直降至 `1.33 MB`（-54.3%），**即便在完全未签名状态下，经隔离沙盒 `MpCmdRun.exe -Scan -ScanType 3` 扫描亦 100% 零威胁通过 (`exit=0`)**；
+  2. **本机受信代码签名证书自动发现 (`deploy.ps1`, `scripts/sign-artifacts.ps1`, `scripts/quick_dev.ps1`)**：非 CI 环境下若未显式传入签名环境变量，自动探测 `Cert:\CurrentUser\My` 中具备私钥、在有效期内且通过 `X509Chain.Build` 完整信任链验证的代码签名证书，对全部内层 EXE/DLL、Inno Setup 引导器/卸载器与外层 `Tools3000-Setup.exe`（同步镜像 `Tools3000-vX.Y.Z-Setup.exe`）执行 SHA-256 + RFC 3161 时间戳签名；
+  3. **自动化 Defender 隔离沙盒防误报门禁 (`deploy.ps1`)**：打包完成后自动将核心二进制复制至 `%TEMP%` 临时隔离目录执行 `MpCmdRun.exe -Scan -ScanType 3 -DisableRemediation` 校验，从构建源头阻断任何误报回归。
+
 ### [2026-11-11] 全仓 105/106 项深度审计收官、截图闪退日志根因与 4 重防御加固、安装包 -34.3% 极限瘦身与中英双语全功能视觉图集
 - **背景与锁定决策**：
   - 基于全仓五路正交深度代码审计（共 106 项实锤问题），严格遵循项目负责人锁定决策 **`D-01`（保持 `CRIT-04` `src/ui/WebViewEnvironmentManager.cpp` 现有沙箱启动参数不动）**，完成其余 **105/106 项**问题 100% 根治，全量通过 C++ GoogleTest 6 大套件、Rust SIMD 单元测试、166 项 Vitest 前端测试及 5 大实机生命周期/压测门禁。

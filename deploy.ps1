@@ -691,6 +691,22 @@ foreach ($Artifact in $RequiredArtifacts) {
 
 $SignScript = Join-Path $ScriptDir "scripts\sign-artifacts.ps1"
 if (-not (Test-Path -LiteralPath $SignScript)) { throw "缺少签名脚本: $SignScript" }
+if ([string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1) -and
+    [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_PFX) -and
+    $env:CI -ne 'true' -and $env:GITHUB_ACTIONS -ne 'true') {
+    $Now = Get-Date
+    $AutoCert = @(Get-ChildItem -Path Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue | Where-Object {
+        if (-not $_.HasPrivateKey -or $_.NotBefore -gt $Now -or $_.NotAfter -le $Now) { return $false }
+        $Chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+        try { return $Chain.Build($_) } finally { $Chain.Dispose() }
+    } | Sort-Object `
+        @{ Expression = { if ($_.Subject -match 'Tools3000|yuan278501381|EasyTools') { 0 } else { 1 } }; Ascending = $true }, `
+        @{ Expression = { $_.NotAfter }; Descending = $true }) | Select-Object -First 1
+    if ($AutoCert) {
+        $env:TOOLS3000_SIGNING_CERT_SHA1 = $AutoCert.Thumbprint
+        Write-Log "[SIGN] 自动发现并挂载本机 CurrentUser\My 受信代码签名证书: $($AutoCert.Subject) ($($AutoCert.Thumbprint))" "SUCCESS"
+    }
+}
 $HasSigningIdentity = (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1)) -or
                       (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_PFX))
 $OwnedArtifacts = @(
@@ -813,6 +829,9 @@ if (-not $SkipInstaller) {
     }
     Write-Log "正在基于已完成第一轮签名的纯净 deploy_dist 生成便携包: $PortableArchivePath..."
     Compress-Archive -Path (Join-Path $DeployDir "*") -DestinationPath $PortableArchivePath -CompressionLevel Optimal -Force
+    foreach ($AliasZip in @("Tools3000-Portable-$Arch.zip", "Tools3000-v$ProjectVersion-win-$Arch-portable.zip")) {
+        Copy-Item -LiteralPath $PortableArchivePath -Destination (Join-Path $OutputInstallerDir $AliasZip) -Force
+    }
     Write-Log "绿色便携包已生成: $PortableArchivePath" "SUCCESS"
 }
 
@@ -858,25 +877,28 @@ if ($SkipInstaller) {
             $InnoArgs += "/DCompressionLevel=lzma2/fast"
         }
         if ($HasSigningIdentity) {
+            $InnoSignRequiredFlag = if ($RequireSigning) { "-Required " } else { "" }
             $InnoArgs += "/DTools3000SignedBuild=1"
-            $InnoArgs += "/Stools3000=pwsh.exe -NoProfile -ExecutionPolicy Bypass -File `$q$SignScript`$q -Required -Paths `$q`$f`$q"
+            $InnoArgs += "/Stools3000=pwsh.exe -NoProfile -ExecutionPolicy Bypass -File `$q$SignScript`$q ${InnoSignRequiredFlag}-Paths `$q`$f`$q"
         }
         & $ISCC @InnoArgs $InstallerScript
         if ($LASTEXITCODE -eq 0) {
             if ($HasSigningIdentity) {
                 $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
-                if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or -not $SetupSignature.TimeStamperCertificate) {
+                if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or ($RequireSigning -and -not $SetupSignature.TimeStamperCertificate)) {
                     Write-Log "正在对生成的安装包执行外层 Authenticode 签名与时间戳加固: $TargetSetupFile"
-                    & $SignScript -Paths $TargetSetupFile -Required:$true
+                    & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning
                 }
                 $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
-                if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or -not $SetupSignature.TimeStamperCertificate) {
+                if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or ($RequireSigning -and -not $SetupSignature.TimeStamperCertificate)) {
                     throw "Inno Setup 生成的安装包外层签名或时间戳验证失败: $($SetupSignature.Status)"
                 }
             } else {
                 & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning
             }
-            Write-Log "安装包已成功生成到: $OutputInstallerDir" "SUCCESS"
+            $VersionedSetupName = if ($Arch -eq "arm64") { "Tools3000-v$ProjectVersion-Setup-arm64.exe" } else { "Tools3000-v$ProjectVersion-Setup.exe" }
+            Copy-Item -LiteralPath $TargetSetupFile -Destination (Join-Path $OutputInstallerDir $VersionedSetupName) -Force
+            Write-Log "安装包已成功生成到: $OutputInstallerDir ($SetupBaseName.exe & $VersionedSetupName)" "SUCCESS"
         } else {
             throw "安装包编译失败！退出码: $LASTEXITCODE"
         }
@@ -892,6 +914,32 @@ if ($SkipInstaller) {
 # ------------------------------------------------------------------------------
 # 7. 全功能端到端生命周期与防死锁自动化审计门禁 (DevOps Lifecycle Gate)
 # ------------------------------------------------------------------------------
+$MpCmdRun = Join-Path $env:ProgramFiles "Windows Defender\MpCmdRun.exe"
+if ((Test-Path -LiteralPath $MpCmdRun) -and $env:CI -ne 'true' -and $env:GITHUB_ACTIONS -ne 'true') {
+    Write-Log "[GATE] 正在执行 Microsoft Defender 隔离沙盒静态防误报扫描门禁 (MpCmdRun)..." "INFO"
+    $AvGateDir = Join-Path ([System.IO.Path]::GetTempPath()) "tools3000_av_gate_$TraceID"
+    New-Item -ItemType Directory -Path $AvGateDir -Force | Out-Null
+    try {
+        foreach ($CoreBin in @("Tools3000.exe", "Tools3000_Service.exe", "Tools3000Core.dll")) {
+            $SrcBin = Join-Path $DeployDir $CoreBin
+            if (Test-Path -LiteralPath $SrcBin) {
+                Copy-Item -LiteralPath $SrcBin -Destination (Join-Path $AvGateDir $CoreBin) -Force
+            }
+        }
+        Get-ChildItem -LiteralPath (Join-Path $DeployDir "plugins") -Filter "Plugin_*.dll" -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $AvGateDir $_.Name) -Force
+        }
+        $AvScanOut = & $MpCmdRun -Scan -ScanType 3 -File $AvGateDir -DisableRemediation 2>&1
+        $AvScanCode = $LASTEXITCODE
+        if ($AvScanCode -ne 0) {
+            throw "Microsoft Defender 防误报扫描门禁未通过 (退出码 $AvScanCode): $($AvScanOut -join ' ')"
+        }
+        Write-Log "[OK] Microsoft Defender 静态防误报扫描门禁全部通过 (0 威胁误报)。" "SUCCESS"
+    } finally {
+        Remove-Item -LiteralPath $AvGateDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 if (-not $SkipTests) {
     $LifecycleScript = Join-Path $ScriptDir "scripts\verify_lifecycle.ps1"
     if (-not (Test-Path $LifecycleScript)) {

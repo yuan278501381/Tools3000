@@ -88,7 +88,22 @@ if(MSVC)
         /utf-8 /W4 /WX- /permissive- /Zc:__cplusplus /MP /Z7
         /external:W0 /external:anglebrackets
     )
-    add_link_options(/DEBUG)
+    add_compile_options(
+        $<$<NOT:$<CONFIG:Debug>>:/Gy>
+        $<$<NOT:$<CONFIG:Debug>>:/Gw>
+        $<$<NOT:$<CONFIG:Debug>>:/guard:cf>
+    )
+    add_link_options(
+        /DEBUG
+        $<$<NOT:$<CONFIG:Debug>>:/INCREMENTAL:NO>
+        $<$<NOT:$<CONFIG:Debug>>:/OPT:REF>
+        $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>
+        $<$<NOT:$<CONFIG:Debug>>:/GUARD:CF>
+        $<$<NOT:$<CONFIG:Debug>>:/PDBALTPATH:%_PDB%>
+    )
+    if(NOT ("${CMAKE_GENERATOR_PLATFORM}" STREQUAL "ARM64" OR "${VCPKG_TARGET_TRIPLET}" MATCHES "^arm64" OR "${CMAKE_SYSTEM_PROCESSOR}" MATCHES "^(ARM64|aarch64|arm64)$"))
+        add_link_options($<$<NOT:$<CONFIG:Debug>>:/CETCOMPAT>)
+    endif()
     add_compile_definitions(
         UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
     )

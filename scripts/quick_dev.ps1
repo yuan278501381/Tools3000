@@ -100,6 +100,19 @@ if (Test-Path "build\bin\plugins\Release") {
     }
 }
 
+$signScript = Join-Path $PSScriptRoot "sign-artifacts.ps1"
+if (Test-Path -LiteralPath $signScript) {
+    $ownedToSign = @(
+        (Join-Path $distDir "Tools3000.exe"),
+        (Join-Path $distDir "Tools3000_Service.exe"),
+        (Join-Path $distDir "Tools3000Core.dll")
+    ) + @(Get-ChildItem -Path $pluginsDist -Filter "Plugin_*.dll" -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+    $existingToSign = @($ownedToSign | Where-Object { Test-Path -LiteralPath $_ })
+    if ($existingToSign.Count -gt 0) {
+        & $signScript -Paths $existingToSign
+    }
+}
+
 $sw.Stop()
 Write-Host "[OK] [增量编译就绪] 耗时: $($sw.ElapsedMilliseconds) ms" -ForegroundColor Green
 
