@@ -71,11 +71,12 @@ HydrateResult hydrateResultProperties(SearchResult& result, bool allowRecycleBin
         return HydrateResult::Valid;
     }
 
+    const uint64_t preservedDirSize = result.fileSize;
     result.isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     result.creationTime = fileTimeToUint64(data.ftCreationTime);
     result.lastWriteTime = fileTimeToUint64(data.ftLastWriteTime);
     result.fileSize = result.isDirectory
-        ? 0
+        ? preservedDirSize
         : (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
     return HydrateResult::Valid;
 }
@@ -866,6 +867,10 @@ void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
     rootPath += L":\\";
 
     uint64_t nextId = 1;
+    {
+        std::unique_lock lock(m_MapMutex);
+        m_Store.reserve(65536);
+    }
     std::vector<std::pair<std::wstring, uint64_t>> dirsToScan;
     dirsToScan.reserve(8192);
     dirsToScan.push_back({rootPath, 0});
@@ -973,6 +978,30 @@ void MftParser::EnumerateFiles() {
     }
 
     spdlog::info("Starting MFT enumeration...");
+    {
+        NTFS_VOLUME_DATA_BUFFER ntfsVolData{};
+        DWORD volBytesReturned = 0;
+        size_t estimatedRecords = 131072;
+        if (DeviceIoControl(
+                m_hVolume,
+                FSCTL_GET_NTFS_VOLUME_DATA,
+                nullptr,
+                0,
+                &ntfsVolData,
+                sizeof(ntfsVolData),
+                &volBytesReturned,
+                nullptr) &&
+            ntfsVolData.BytesPerFileRecordSegment > 0 &&
+            ntfsVolData.MftValidDataLength.QuadPart > 0) {
+            const uint64_t rawSlots =
+                static_cast<uint64_t>(ntfsVolData.MftValidDataLength.QuadPart) /
+                static_cast<uint64_t>(ntfsVolData.BytesPerFileRecordSegment);
+            estimatedRecords = static_cast<size_t>(
+                std::clamp<uint64_t>(rawSlots, 65536ULL, 8000000ULL));
+        }
+        std::unique_lock lock(m_MapMutex);
+        m_Store.reserve(estimatedRecords);
+    }
     QueryUsnJournal();
     USN enumHighUsn = 0;
     {
@@ -987,6 +1016,8 @@ void MftParser::EnumerateFiles() {
     std::vector<BYTE> buffer(BUF_LEN);
     DWORD bytesReturned = 0;
     int count = 0;
+    FileRecordInit reusableRecord;
+    reusableRecord.fileName.reserve(128);
 
     while (!m_StopRequested.load(std::memory_order_acquire) &&
            DeviceIoControl(m_hVolume, FSCTL_ENUM_USN_DATA, &med, sizeof(med), buffer.data(), BUF_LEN, &bytesReturned, NULL)) {
@@ -1001,15 +1032,16 @@ void MftParser::EnumerateFiles() {
                dwRetBytes > 0 &&
                tools3000::service::parseUsnRecord(pRecordBytes, dwRetBytes, parsed)) {
             if (parsed.isValid && !parsed.fileName.empty()) {
-                FileRecordInit record;
-                record.fileReferenceNumber = parsed.fileReferenceNumber;
-                record.parentFileReferenceNumber = parsed.parentFileReferenceNumber;
-                record.isDirectory = (parsed.fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-                record.fileAttributes = parsed.fileAttributes;
-                record.lastWriteTime = parsed.timeStamp;
-                record.fileName = std::wstring(parsed.fileName);
+                reusableRecord.fileReferenceNumber = parsed.fileReferenceNumber;
+                reusableRecord.parentFileReferenceNumber = parsed.parentFileReferenceNumber;
+                reusableRecord.isDirectory = (parsed.fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                reusableRecord.fileAttributes = parsed.fileAttributes;
+                reusableRecord.fileSize = 0;
+                reusableRecord.creationTime = 0;
+                reusableRecord.lastWriteTime = parsed.timeStamp;
+                reusableRecord.fileName.assign(parsed.fileName.data(), parsed.fileName.size());
 
-                m_Store.upsert(record);
+                m_Store.upsert(reusableRecord);
                 count++;
             }
 

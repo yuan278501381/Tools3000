@@ -13,7 +13,9 @@
 #include <vector>
 #include <future>
 #include <mutex>
+#include <shared_mutex>
 #include <string_view>
+#include <dbt.h>
 #include <sddl.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -45,7 +47,8 @@ SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
 HANDLE                g_ServiceStopEvent = INVALID_HANDLE_VALUE;
 std::atomic<bool>     g_IsRunning{false};
 
-std::vector<std::unique_ptr<MftParser>> g_MftParsers;
+std::shared_mutex g_ParsersMutex;
+std::vector<std::shared_ptr<MftParser>> g_MftParsers;
 
 // 所有会触碰 MftParser 的后台工作都由服务拥有。服务退出时先请求停止并 join，
 // 再销毁解析器，禁止任何 detached worker 越过对象生命周期。
@@ -55,6 +58,11 @@ std::jthread g_SnapshotJob;
 std::atomic<bool> g_RebuildInProgress{false};
 std::atomic<bool> g_SnapshotInProgress{false};
 std::atomic<int> g_InitialIndexWorkers{0};
+std::atomic<int> g_DynamicIndexWorkers{0};
+std::mutex g_DynamicWorkerThreadsMutex;
+std::vector<std::thread> g_DynamicWorkerThreads;
+std::atomic<HWND> g_HotplugWindow{nullptr};
+std::atomic<DWORD> g_KnownDriveMask{0};
 std::atomic<bool> g_AcceptBackgroundJobs{true};
 // The per-user pipe is published before expensive volume work. Until this flag
 // flips, workers return an explicit initializing response and never touch the
@@ -427,10 +435,241 @@ bool configurePipeEndpoint(DWORD argc, wchar_t** argv) {
     return true;
 }
 
+std::vector<std::shared_ptr<MftParser>> snapshotParsers() {
+    std::shared_lock<std::shared_mutex> lock(g_ParsersMutex);
+    return g_MftParsers;
+}
+
+std::vector<MftParser*> toRawParserPointers(const std::vector<std::shared_ptr<MftParser>>& owners) {
+    std::vector<MftParser*> raw;
+    raw.reserve(owners.size());
+    for (const auto& p : owners) {
+        if (p) raw.push_back(p.get());
+    }
+    return raw;
+}
+
+bool mountDynamicVolumeAsync(char driveLetter) {
+    if (!std::isalpha(static_cast<unsigned char>(driveLetter))) return false;
+    const char upperDrive = static_cast<char>(std::toupper(static_cast<unsigned char>(driveLetter)));
+    if (!g_IsRunning.load(std::memory_order_acquire) ||
+        !g_AcceptBackgroundJobs.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    const DWORD logicalMask = GetLogicalDrives();
+    if (!(logicalMask & (1u << (upperDrive - 'A')))) {
+        return false;
+    }
+
+    const std::wstring root{static_cast<wchar_t>(upperDrive), L':', L'\\'};
+    const UINT driveType = GetDriveTypeW(root.c_str());
+    if (driveType != DRIVE_FIXED &&
+        driveType != DRIVE_REMOVABLE &&
+        driveType != DRIVE_REMOTE &&
+        driveType != DRIVE_RAMDISK) {
+        return false;
+    }
+
+    {
+        std::shared_lock<std::shared_mutex> lock(g_ParsersMutex);
+        for (const auto& existing : g_MftParsers) {
+            if (existing && std::toupper(static_cast<unsigned char>(existing->getDriveLetter())) == upperDrive) {
+                return false;
+            }
+        }
+    }
+
+    auto parser = std::make_shared<MftParser>();
+    parser->setRealTimeValidation(true);
+    if (!parser->Initialize(upperDrive)) {
+        return false;
+    }
+
+    {
+        std::unique_lock<std::shared_mutex> lock(g_ParsersMutex);
+        if (!g_IsRunning.load(std::memory_order_acquire) ||
+            !g_AcceptBackgroundJobs.load(std::memory_order_acquire)) {
+            return false;
+        }
+        for (const auto& existing : g_MftParsers) {
+            if (existing && std::toupper(static_cast<unsigned char>(existing->getDriveLetter())) == upperDrive) {
+                return false;
+            }
+        }
+        g_MftParsers.push_back(parser);
+    }
+
+    g_DynamicIndexWorkers.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::lock_guard<std::mutex> workerLock(g_DynamicWorkerThreadsMutex);
+        g_DynamicWorkerThreads.emplace_back([parser, upperDrive]() {
+            try {
+                parser->EnumerateFiles();
+                if (g_IsRunning.load(std::memory_order_acquire) &&
+                    g_AcceptBackgroundJobs.load(std::memory_order_acquire)) {
+                    parser->StartListening();
+                }
+                invalidateContentPlanCache();
+                spdlog::info("Dynamically indexed volume {}:", upperDrive);
+            } catch (const std::exception& e) {
+                spdlog::error("Dynamic indexing failed on drive {}: {}", upperDrive, e.what());
+            } catch (...) {
+                spdlog::error("Dynamic indexing failed on drive {} with unknown exception", upperDrive);
+            }
+            g_DynamicIndexWorkers.fetch_sub(1, std::memory_order_acq_rel);
+        });
+    }
+    return true;
+}
+
+size_t ensureRequestedDrivesMounted(const std::vector<char>& drives) {
+    size_t mounted = 0;
+    for (char d : drives) {
+        if (mountDynamicVolumeAsync(d)) {
+            ++mounted;
+        }
+    }
+    return mounted;
+}
+
+size_t pruneRemovedVolumes() {
+    const DWORD currentMask = GetLogicalDrives();
+    std::vector<std::shared_ptr<MftParser>> removed;
+    {
+        std::unique_lock<std::shared_mutex> lock(g_ParsersMutex);
+        auto it = g_MftParsers.begin();
+        while (it != g_MftParsers.end()) {
+            const char d = (*it)
+                ? static_cast<char>(std::toupper(static_cast<unsigned char>((*it)->getDriveLetter())))
+                : '\0';
+            if (d >= 'A' && d <= 'Z' && (currentMask & (1u << (d - 'A'))) == 0) {
+                removed.push_back(std::move(*it));
+                it = g_MftParsers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    for (auto& parser : removed) {
+        if (parser) {
+            spdlog::info("Pruning unplugged volume {}: from active index", parser->getDriveLetter());
+            parser->requestStop();
+            parser->StopListening();
+        }
+    }
+    if (!removed.empty()) {
+        invalidateContentPlanCache();
+    }
+    return removed.size();
+}
+
+void handleDeviceHotplugChange() {
+    if (!g_IsRunning.load(std::memory_order_acquire) ||
+        !g_AcceptBackgroundJobs.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    pruneRemovedVolumes();
+
+    const DWORD currentMask = GetLogicalDrives();
+    const DWORD prevMask = g_KnownDriveMask.exchange(currentMask, std::memory_order_acq_rel);
+    const DWORD addedMask = currentMask & ~prevMask;
+    if (addedMask == 0) return;
+
+    for (char drive = 'A'; drive <= 'Z'; ++drive) {
+        if (!(addedMask & (1u << (drive - 'A')))) continue;
+        const std::wstring root{static_cast<wchar_t>(drive), L':', L'\\'};
+        const UINT driveType = GetDriveTypeW(root.c_str());
+        if (driveType != DRIVE_REMOVABLE && driveType != DRIVE_FIXED) continue;
+
+        wchar_t fsName[MAX_PATH] = {};
+        if (GetVolumeInformationW(root.c_str(), nullptr, 0, nullptr, nullptr, nullptr,
+                                  fsName, static_cast<DWORD>(std::size(fsName))) &&
+            _wcsicmp(fsName, L"NTFS") == 0) {
+            spdlog::info("Detected hotplugged NTFS volume {}:, starting MFT index", drive);
+            mountDynamicVolumeAsync(drive);
+        }
+    }
+}
+
+LRESULT CALLBACK HotplugSinkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    constexpr UINT_PTR kDebounceTimerId = 1;
+    switch (msg) {
+        case WM_DEVICECHANGE:
+            if (wParam == DBT_DEVICEARRIVAL ||
+                wParam == DBT_DEVICEREMOVECOMPLETE ||
+                wParam == DBT_DEVNODES_CHANGED) {
+                SetTimer(hwnd, kDebounceTimerId, 250, nullptr);
+            }
+            return TRUE;
+        case WM_TIMER:
+            if (wParam == kDebounceTimerId) {
+                KillTimer(hwnd, kDebounceTimerId);
+                handleDeviceHotplugChange();
+                return 0;
+            }
+            break;
+        case WM_CLOSE:
+            KillTimer(hwnd, kDebounceTimerId);
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+void DeviceHotplugWatcherThread() {
+    const HINSTANCE hInst = GetModuleHandleW(nullptr);
+    constexpr const wchar_t* kClassName = L"Tools3000_ServiceHotplugSink";
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = HotplugSinkWndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = kClassName;
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        kClassName,
+        L"",
+        WS_POPUP,
+        0, 0, 0, 0,
+        nullptr,
+        nullptr,
+        hInst,
+        nullptr);
+    if (!hwnd) {
+        return;
+    }
+
+    g_HotplugWindow.store(hwnd, std::memory_order_release);
+    if (!g_IsRunning.load(std::memory_order_acquire)) {
+        g_HotplugWindow.store(nullptr, std::memory_order_release);
+        DestroyWindow(hwnd);
+        return;
+    }
+
+    MSG msg{};
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    g_HotplugWindow.store(nullptr, std::memory_order_release);
+}
+
 void stopBackgroundJobs() {
     g_AcceptBackgroundJobs.store(false, std::memory_order_release);
     invalidateContentPlanCache();
-    for (auto& parser : g_MftParsers) parser->requestStop();
+    for (auto& parser : snapshotParsers()) {
+        if (parser) parser->requestStop();
+    }
 
     std::jthread rebuild;
     std::jthread snapshot;
@@ -441,11 +680,17 @@ void stopBackgroundJobs() {
         rebuild = std::move(g_RebuildJob);
         snapshot = std::move(g_SnapshotJob);
     }
-    // jthread 的析构在当前作用域末尾完成 join。此时不持有任务锁，避免工作线程
-    // 在收尾路径更新状态时形成锁反转。
+    std::vector<std::thread> dynamicWorkers;
+    {
+        std::lock_guard<std::mutex> workerLock(g_DynamicWorkerThreadsMutex);
+        dynamicWorkers = std::move(g_DynamicWorkerThreads);
+    }
+    for (auto& w : dynamicWorkers) {
+        if (w.joinable()) w.join();
+    }
 }
 
-void scheduleSnapshot(std::vector<MftParser*> parsers, std::string_view reason) {
+void scheduleSnapshot(std::vector<std::shared_ptr<MftParser>> parsers, std::string_view reason) {
     if (!g_AcceptBackgroundJobs.load(std::memory_order_acquire) || parsers.empty()) return;
     std::lock_guard lock(g_BackgroundJobMutex);
     if (g_SnapshotInProgress.exchange(true, std::memory_order_acq_rel)) return;
@@ -453,13 +698,15 @@ void scheduleSnapshot(std::vector<MftParser*> parsers, std::string_view reason) 
 
     g_SnapshotJob = std::jthread(
         [parsers = std::move(parsers), reason = std::string(reason)](std::stop_token stop) {
-            // 等待初始索引真正完成，而不是猜测固定 5 秒；慢盘和网络盘不会再保存半份快照。
-            while (!stop.stop_requested() && g_InitialIndexWorkers.load(std::memory_order_acquire) > 0) {
+            while (!stop.stop_requested() &&
+                   (g_InitialIndexWorkers.load(std::memory_order_acquire) > 0 ||
+                    g_DynamicIndexWorkers.load(std::memory_order_acquire) > 0)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
             try {
                 if (!stop.stop_requested()) {
-                    const bool ok = tools3000::service::db::DatabaseManager::instance().saveSnapshot(parsers);
+                    const auto rawParsers = toRawParserPointers(parsers);
+                    const bool ok = tools3000::service::db::DatabaseManager::instance().saveSnapshot(rawParsers);
                     spdlog::info("{} database snapshot {}", reason, ok ? "saved" : "failed");
                 }
             } catch (const std::exception& e) {
@@ -482,16 +729,16 @@ bool scheduleRebuild() {
 
     invalidateContentPlanCache();
     tools3000::service::launcher::AppsFolderCatalog::instance().invalidate();
-    std::vector<MftParser*> parsers;
-    parsers.reserve(g_MftParsers.size());
-    for (auto& parser : g_MftParsers) {
-        parser->resetStopRequest();
-        parsers.push_back(parser.get());
+    pruneRemovedVolumes();
+    auto parsers = snapshotParsers();
+    for (auto& parser : parsers) {
+        if (parser) parser->resetStopRequest();
     }
     g_RebuildJob = std::jthread([parsers = std::move(parsers)](std::stop_token stop) {
         std::vector<std::thread> workers;
         workers.reserve(parsers.size());
-        for (auto* parser : parsers) {
+        for (const auto& parser : parsers) {
+            if (!parser) continue;
             parser->StopListening();
             workers.emplace_back([parser, stop]() {
                 if (stop.stop_requested()) return;
@@ -509,7 +756,8 @@ bool scheduleRebuild() {
         invalidateContentPlanCache();
         try {
             if (!stop.stop_requested()) {
-                tools3000::service::db::DatabaseManager::instance().saveSnapshot(parsers);
+                const auto rawParsers = toRawParserPointers(parsers);
+                tools3000::service::db::DatabaseManager::instance().saveSnapshot(rawParsers);
             }
         } catch (const std::exception& e) {
             spdlog::error("Rebuild snapshot failed: {}", e.what());
@@ -527,6 +775,9 @@ bool scheduleRebuild() {
 void RequestServiceShutdown() {
     if (!g_IsRunning.exchange(false)) return;
     if (g_ServiceStopEvent != INVALID_HANDLE_VALUE) SetEvent(g_ServiceStopEvent);
+    if (HWND hotplugHwnd = g_HotplugWindow.exchange(nullptr, std::memory_order_acq_rel)) {
+        PostMessageW(hotplugHwnd, WM_CLOSE, 0, 0);
+    }
 
     g_PipePokeJob = std::jthread([](std::stop_token stop) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
@@ -667,8 +918,10 @@ nlohmann::json ProcessSearchQuery(
                             {"alreadyRunning", !started && g_RebuildInProgress.load()}};
                 }
                 if (act == "catchup" || act == "sync") {
+                    pruneRemovedVolumes();
                     bool anyUpdated = false;
-                    for (auto& parser : g_MftParsers) {
+                    for (const auto& parser : snapshotParsers()) {
+                        if (!parser) continue;
                         uint64_t lastUsn = parser->getCurrentUsn();
                         if (parser->catchUpUsnJournal(lastUsn)) {
                             anyUpdated = true;
@@ -679,6 +932,23 @@ nlohmann::json ProcessSearchQuery(
                         tools3000::service::launcher::AppsFolderCatalog::instance().invalidate();
                     }
                     return {{"success", true}, {"synced", true}, {"updated", anyUpdated}};
+                }
+                if (act == "syncVolumes") {
+                    pruneRemovedVolumes();
+                    std::vector<char> requested;
+                    if (reqJson.contains("drives") && reqJson["drives"].is_array()) {
+                        for (const auto& d : reqJson["drives"]) {
+                            if (d.is_string()) {
+                                const std::string s = d.get<std::string>();
+                                if (!s.empty() && std::isalpha(static_cast<unsigned char>(s[0]))) {
+                                    requested.push_back(static_cast<char>(
+                                        std::toupper(static_cast<unsigned char>(s[0]))));
+                                }
+                            }
+                        }
+                    }
+                    const size_t mounted = ensureRequestedDrivesMounted(requested);
+                    return {{"success", true}, {"mounted", mounted}};
                 }
                 if (act == "recordRun") {
                     if (reqJson.contains("path") && reqJson["path"].is_string()) {
@@ -754,29 +1024,46 @@ nlohmann::json ProcessSearchQuery(
                     auto stats = tools3000::service::db::DatabaseManager::instance().getStats();
                     const bool searchIndexReady = g_SearchIndexReady.load(std::memory_order_acquire);
                     uint64_t totalMemRecords = 0;
+                    uint32_t indexedVolumes = 0;
+                    uint32_t totalVolumes = 0;
                     if (searchIndexReady) {
-                        for (const auto& p : g_MftParsers) {
-                            if (p) totalMemRecords += p->getFileCount();
+                        const auto parsers = snapshotParsers();
+                        totalVolumes = static_cast<uint32_t>(parsers.size());
+                        for (const auto& p : parsers) {
+                            if (!p) continue;
+                            totalMemRecords += p->getFileCount();
+                            if (p->isInitialScanDone()) {
+                                ++indexedVolumes;
+                            }
                         }
                     }
                     const uint64_t effectiveRecords = totalMemRecords > 0 ? totalMemRecords : stats.totalRecords;
+                    const uint32_t effectiveVolumes = totalVolumes > 0 ? totalVolumes : stats.volumeCount;
                     const int initialWorkers = g_InitialIndexWorkers.load(std::memory_order_acquire);
+                    const int dynamicWorkers = g_DynamicIndexWorkers.load(std::memory_order_acquire);
                     const bool rebuildInProgress = g_RebuildInProgress.load(std::memory_order_acquire);
                     const bool snapshotInProgress = g_SnapshotInProgress.load(std::memory_order_acquire);
 
-                    // 只要内存中已解析出文件记录 (totalMemRecords > 0) 且初始扫描线程完成，系统就 100% 具备全速搜索能力。
-                    // 快照落盘 (snapshotInProgress) 属于后台纯异步任务，绝不阻塞前端即时搜索！
-                    const bool isIndexing = (initialWorkers > 0 || rebuildInProgress || !searchIndexReady) && (totalMemRecords == 0);
+                    // 只有当所有已注册卷均完成初始扫描且无在途重建/扫描工作线程时，indexing 才转为 false (`U-08`)。
+                    // 快照落盘 (snapshotInProgress) 属于后台纯异步任务，绝不阻塞前端即时搜索。
+                    const bool isIndexing = !searchIndexReady ||
+                                            initialWorkers > 0 ||
+                                            dynamicWorkers > 0 ||
+                                            rebuildInProgress ||
+                                            (indexedVolumes < totalVolumes);
                     return {
                         {"success", true},
                         {"dbPath", WStringToString(stats.dbPath)},
                         {"dbSize", stats.fileSize},
                         {"timestamp", stats.timestamp},
                         {"totalRecords", effectiveRecords},
-                        {"volumeCount", stats.volumeCount},
+                        {"volumeCount", effectiveVolumes},
+                        {"indexedVolumes", indexedVolumes},
+                        {"totalVolumes", totalVolumes},
                         {"exists", stats.exists || totalMemRecords > 0},
                         {"indexing", isIndexing},
                         {"initialWorkers", initialWorkers},
+                        {"dynamicWorkers", dynamicWorkers},
                         {"rebuildInProgress", rebuildInProgress},
                         {"snapshotInProgress", snapshotInProgress},
                         {"runHistoryCount", tools3000::service::db::RunHistoryManager::instance().size()},
@@ -784,8 +1071,8 @@ nlohmann::json ProcessSearchQuery(
                     };
                 }
                 if (act == "saveSnapshot") {
-                    std::vector<MftParser*> allParsers;
-                    for (auto& p : g_MftParsers) allParsers.push_back(p.get());
+                    const auto owners = snapshotParsers();
+                    const auto allParsers = toRawParserPointers(owners);
                     bool ok = tools3000::service::db::DatabaseManager::instance().saveSnapshot(allParsers);
                     return {{"success", ok}};
                 }
@@ -979,6 +1266,10 @@ nlohmann::json ProcessSearchQuery(
         return epochTracker.isServerEpochStale(serverEpoch);
     };
 
+    if (!enabledDrives.empty()) {
+        ensureRequestedDrivesMounted(enabledDrives);
+    }
+
     auto isDriveEnabled = [&](char driveLetter) {
         if (enabledDrives.empty()) return true;
         for (char d : enabledDrives) {
@@ -987,9 +1278,10 @@ nlohmann::json ProcessSearchQuery(
         return false;
     };
 
+    const auto currentParsers = snapshotParsers();
     size_t totalIndexedFiles = 0;
-    for (const auto& parser : g_MftParsers) {
-        if (isDriveEnabled(parser->getDriveLetter())) {
+    for (const auto& parser : currentParsers) {
+        if (parser && isDriveEnabled(parser->getDriveLetter())) {
             totalIndexedFiles += parser->getFileCount();
         }
     }
@@ -1065,11 +1357,12 @@ nlohmann::json ProcessSearchQuery(
                   static_cast<size_t>(tools3000::service::search_limits::MaxResults),
                   (std::max)(maxCount * 4, static_cast<size_t>(512)));
 
-        std::vector<MftParser*> activeParsers;
-        activeParsers.reserve(g_MftParsers.size());
-        for (auto& parser : g_MftParsers) {
-            if (isDriveEnabled(parser->getDriveLetter())) {
-                activeParsers.push_back(parser.get());
+        const auto parserOwners = snapshotParsers();
+        std::vector<std::shared_ptr<MftParser>> activeParsers;
+        activeParsers.reserve(parserOwners.size());
+        for (const auto& parser : parserOwners) {
+            if (parser && isDriveEnabled(parser->getDriveLetter())) {
+                activeParsers.push_back(parser);
             }
         }
 
@@ -1189,8 +1482,8 @@ nlohmann::json ProcessSearchQuery(
             }
 
             auto freshCandidates = std::make_shared<std::vector<ContentCandidate>>();
-            for (auto& parser : g_MftParsers) {
-                if (!isDriveEnabled(parser->getDriveLetter())) continue;
+            for (const auto& parser : snapshotParsers()) {
+                if (!parser || !isDriveEnabled(parser->getDriveLetter())) continue;
                 if (isCancelled()) return outcome;
                 auto volumeCandidates = parser->CollectContentCandidates(
                     plan.fileFilterExpr, candidateOpts, isCancelled);
@@ -1922,14 +2215,18 @@ void IPCServerThread() {
     // never initialized globally under `LocalSystem` in user-writable directories.
     tools3000::service::db::DatabaseManager::instance().init();
 
-    // 扫描所有本地驱动器
+    g_AcceptBackgroundJobs.store(true, std::memory_order_release);
+
+    // 扫描所有本地固定驱动器（启动期严格仅索引 DRIVE_FIXED，热插拔与非固定卷走运行期动态接入）
     const DWORD driveMask = GetLogicalDrives();
+    g_KnownDriveMask.store(driveMask, std::memory_order_release);
+    std::vector<std::shared_ptr<MftParser>> initialParsers;
     for (char drive = 'A'; drive <= 'Z' && g_IsRunning.load(); ++drive) {
         if (!(driveMask & (1u << (drive - 'A')))) continue;
         const std::wstring root{static_cast<wchar_t>(drive), L':', L'\\'};
         UINT driveType = GetDriveTypeW(root.c_str());
         // 后台服务只自动索引本地固定卷。远程盘/可移动盘可能离线、休眠或在目录枚举
-        // 中无限期阻塞，不能拖慢登录和服务关停；后续应由显式的按需索引入口接入。
+        // 中无限期阻塞，不能拖慢登录和服务关停；后续由 WM_DEVICECHANGE 热插拔与按需索引接入。
         if (driveType != DRIVE_FIXED) {
             if (driveType == DRIVE_REMOTE || driveType == DRIVE_REMOVABLE) {
                 spdlog::info("Skipping non-fixed drive {}: during automatic indexing", drive);
@@ -1937,16 +2234,20 @@ void IPCServerThread() {
             continue;
         }
 
-        auto parser = std::make_unique<MftParser>();
+        auto parser = std::make_shared<MftParser>();
         parser->setRealTimeValidation(true);
         if (parser->Initialize(drive)) {
-            g_MftParsers.push_back(std::move(parser));
+            initialParsers.push_back(std::move(parser));
         }
     }
 
+    {
+        std::unique_lock<std::shared_mutex> lock(g_ParsersMutex);
+        g_MftParsers = initialParsers;
+    }
+
     // 尝试从 Tools3000.db 二进制快照秒级冷启动 (< 30ms)
-    std::vector<MftParser*> rawParsers;
-    for (auto& p : g_MftParsers) rawParsers.push_back(p.get());
+    std::vector<MftParser*> rawParsers = toRawParserPointers(initialParsers);
 
     bool snapshotLoaded = tools3000::service::db::DatabaseManager::instance().loadSnapshot(rawParsers);
     std::vector<std::thread> indexThreads;
@@ -1955,18 +2256,19 @@ void IPCServerThread() {
         spdlog::info("Successfully loaded database snapshot from Tools3000.db, checking volume readiness...");
         bool anyMissing = false;
         bool anyCatchUpRescanned = false;
-        for (auto* pRaw : rawParsers) {
-            if (pRaw->consumeRescannedDuringCatchUp()) {
+        for (const auto& pShared : initialParsers) {
+            if (!pShared) continue;
+            if (pShared->consumeRescannedDuringCatchUp()) {
                 anyCatchUpRescanned = true;
             }
-            if (pRaw->getFileCount() == 0) {
+            if (pShared->getFileCount() == 0) {
                 anyMissing = true;
-                char drive = pRaw->getDriveLetter();
+                char drive = pShared->getDriveLetter();
                 g_InitialIndexWorkers.fetch_add(1, std::memory_order_relaxed);
-                indexThreads.emplace_back([pRaw, drive]() {
+                indexThreads.emplace_back([pShared, drive]() {
                     try {
-                        pRaw->EnumerateFiles();
-                        if (g_IsRunning.load(std::memory_order_acquire)) pRaw->StartListening();
+                        pShared->EnumerateFiles();
+                        if (g_IsRunning.load(std::memory_order_acquire)) pShared->StartListening();
                         spdlog::info("Indexed drive {}: (volume was unpopulated in snapshot)", drive);
                     } catch (const std::exception& e) {
                         spdlog::error("Initial indexing failed on drive {}: {}", drive, e.what());
@@ -1976,21 +2278,22 @@ void IPCServerThread() {
                     g_InitialIndexWorkers.fetch_sub(1, std::memory_order_release);
                 });
             } else {
-                pRaw->StartListening();
+                pShared->StartListening();
             }
         }
         if (anyMissing || anyCatchUpRescanned) {
-            scheduleSnapshot(rawParsers, anyCatchUpRescanned ? "USN catchup rescan" : "Updated complete");
+            scheduleSnapshot(initialParsers, anyCatchUpRescanned ? "USN catchup rescan" : "Updated complete");
         }
     } else {
         spdlog::info("No valid database snapshot found, performing full MFT scan and building initial index...");
-        for (auto* pRaw : rawParsers) {
-            char drive = pRaw->getDriveLetter();
+        for (const auto& pShared : initialParsers) {
+            if (!pShared) continue;
+            char drive = pShared->getDriveLetter();
             g_InitialIndexWorkers.fetch_add(1, std::memory_order_relaxed);
-            indexThreads.emplace_back([pRaw, drive]() {
+            indexThreads.emplace_back([pShared, drive]() {
                 try {
-                    pRaw->EnumerateFiles();
-                    if (g_IsRunning.load(std::memory_order_acquire)) pRaw->StartListening();
+                    pShared->EnumerateFiles();
+                    if (g_IsRunning.load(std::memory_order_acquire)) pShared->StartListening();
                     spdlog::info("Indexed drive {}:", drive);
                 } catch (const std::exception& e) {
                     spdlog::error("Initial indexing failed on drive {}: {}", drive, e.what());
@@ -2001,15 +2304,23 @@ void IPCServerThread() {
             });
         }
         // 初始全量索引完成后在后台异步保存快照
-        scheduleSnapshot(rawParsers, "Initial");
+        scheduleSnapshot(initialParsers, "Initial");
     }
-    spdlog::info("Search index launched for {} volume(s)", g_MftParsers.size());
+    spdlog::info("Search index launched for {} volume(s)", initialParsers.size());
     g_SearchIndexReady.store(true, std::memory_order_release);
+
+    std::thread hotplugThread(DeviceHotplugWatcherThread);
 
     for (auto& w : pipeWorkers) {
         if (w.joinable()) w.join();
     }
     g_SearchIndexReady.store(false, std::memory_order_release);
+    if (HWND hotplugHwnd = g_HotplugWindow.exchange(nullptr, std::memory_order_acq_rel)) {
+        PostMessageW(hotplugHwnd, WM_CLOSE, 0, 0);
+    }
+    if (hotplugThread.joinable()) {
+        hotplugThread.join();
+    }
     if (g_PipePokeJob.joinable()) {
         g_PipePokeJob.request_stop();
         g_PipePokeJob.join();
@@ -2018,8 +2329,15 @@ void IPCServerThread() {
     for (auto& t : indexThreads) {
         if (t.joinable()) t.join();
     }
-    for (auto& parser : g_MftParsers) parser->StopListening();
-    g_MftParsers.clear();
+    std::vector<std::shared_ptr<MftParser>> remainingParsers;
+    {
+        std::unique_lock<std::shared_mutex> lock(g_ParsersMutex);
+        remainingParsers = std::move(g_MftParsers);
+        g_MftParsers.clear();
+    }
+    for (auto& parser : remainingParsers) {
+        if (parser) parser->StopListening();
+    }
     tools3000::service::launcher::AppsFolderCatalog::instance().invalidate();
     tools3000::service::QueryThreadPool::instance().shutdown();
     if (compatPipeDescriptor) LocalFree(compatPipeDescriptor);

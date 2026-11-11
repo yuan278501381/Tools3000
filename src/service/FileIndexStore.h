@@ -140,7 +140,17 @@ public:
     // Drops dead records when they exceed a quarter of `m_records`.
     void compactIfSparse();
 
-    void releaseBuildScratch() { m_arena.releaseInterner(); }
+    void releaseBuildScratch() {
+        m_arena.releaseInterner();
+        m_pinyinAsciiInitialsScratch.clear();
+        m_pinyinAsciiInitialsScratch.shrink_to_fit();
+        m_pinyinAsciiFullScratch.clear();
+        m_pinyinAsciiFullScratch.shrink_to_fit();
+        m_pinyinWideInitialsScratch.clear();
+        m_pinyinWideInitialsScratch.shrink_to_fit();
+        m_pinyinWideFullScratch.clear();
+        m_pinyinWideFullScratch.shrink_to_fit();
+    }
 
     uint64_t approximateBytes() const noexcept;
 
@@ -162,6 +172,7 @@ private:
     uint32_t allocatePinyinSlot(const PinyinEntry& entry);
     void releasePinyinSlot(uint32_t& slot) noexcept;
     void applyIncrementalTier(StoredFileRecord& record, std::wstring_view nameView) noexcept;
+    void propagateAncestorsSizeChange(uint64_t startParentFrn, uint64_t oldSize, uint64_t newSize) noexcept;
     static uint64_t mixKey(uint64_t frn) noexcept;
 
     StringArena m_arena;
@@ -169,6 +180,10 @@ private:
     std::vector<PinyinEntry> m_pinyin{PinyinEntry{}};  // index 0 == "no pinyin"
     std::vector<uint32_t> m_freePinyinSlots;
     std::vector<uint32_t> m_slots;
+    std::string m_pinyinAsciiInitialsScratch;
+    std::string m_pinyinAsciiFullScratch;
+    std::wstring m_pinyinWideInitialsScratch;
+    std::wstring m_pinyinWideFullScratch;
     size_t m_liveCount = 0;
     size_t m_tombstones = 0;
     char m_driveLetter = 'C';

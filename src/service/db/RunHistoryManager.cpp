@@ -126,11 +126,150 @@ RunHistoryManager& RunHistoryManager::instance() {
 RunHistoryManager::RunHistoryManager() = default;
 
 RunHistoryManager::~RunHistoryManager() {
+    stopFlushWorker();
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (m_isDirty) {
+    if (m_isDirty && !m_csvPath.empty()) {
         save();
     }
     closeImpersonationTokenUnlocked();
+}
+
+void RunHistoryManager::stopFlushWorker() noexcept {
+    std::thread workerToJoin;
+    {
+        std::lock_guard<std::mutex> fLock(m_flushMutex);
+        m_stopFlushWorker = true;
+        m_flushPending = false;
+        m_flushCv.notify_all();
+        if (m_flushThread.joinable()) {
+            workerToJoin = std::move(m_flushThread);
+        }
+    }
+    if (workerToJoin.joinable()) {
+        if (workerToJoin.get_id() == std::this_thread::get_id()) {
+            workerToJoin.detach();
+        } else {
+            workerToJoin.join();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> fLock(m_flushMutex);
+        m_flushWorkerRunning = false;
+        m_stopFlushWorker = false;
+    }
+}
+
+void RunHistoryManager::scheduleAsyncFlush() {
+    std::thread staleFinishedThread;
+    {
+        std::lock_guard<std::mutex> fLock(m_flushMutex);
+        const auto now = std::chrono::steady_clock::now();
+        if (!m_flushPending) {
+            m_firstDirtyTick = now;
+            m_flushPending = true;
+        }
+        m_lastDirtyTick = now;
+
+        if (m_flushWorkerRunning) {
+            m_flushCv.notify_one();
+            return;
+        }
+
+        if (m_flushThread.joinable()) {
+            staleFinishedThread = std::move(m_flushThread);
+        }
+        m_stopFlushWorker = false;
+        m_flushWorkerRunning = true;
+        m_flushThread = std::thread(&RunHistoryManager::asyncFlushWorkerLoop, this);
+    }
+    if (staleFinishedThread.joinable()) {
+        staleFinishedThread.join();
+    }
+}
+
+void RunHistoryManager::asyncFlushWorkerLoop() {
+    const auto debounceDur = std::chrono::milliseconds(FlushDebounceMs);
+    const auto maxDelayDur = std::chrono::milliseconds(MaxFlushDelayMs);
+
+    while (true) {
+        {
+            std::unique_lock<std::mutex> fLock(m_flushMutex);
+            if (m_stopFlushWorker || !m_flushPending) {
+                m_flushWorkerRunning = false;
+                return;
+            }
+            const auto deadline = (std::min)(
+                m_lastDirtyTick + debounceDur,
+                m_firstDirtyTick + maxDelayDur
+            );
+            const auto now = std::chrono::steady_clock::now();
+            if (now < deadline) {
+                m_flushCv.wait_until(fLock, deadline, [this]() {
+                    return m_stopFlushWorker;
+                });
+                continue;
+            }
+            if (m_stopFlushWorker) {
+                m_flushWorkerRunning = false;
+                return;
+            }
+            m_flushPending = false;
+        }
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_mutex);
+            if (m_isDirty && !m_csvPath.empty()) {
+                save();
+            }
+        }
+    }
+}
+
+void RunHistoryManager::evictOverflowUnlocked(uint64_t nowFt) {
+    const size_t cap = (std::max<size_t>)(1, m_maxEntries);
+    if (m_records.size() <= cap) {
+        return;
+    }
+
+    constexpr uint64_t FT_ONE_HOUR = 3600ULL * 10000000ULL;
+    constexpr uint64_t FT_ONE_DAY = 24ULL * FT_ONE_HOUR;
+    auto scoreOf = [&](const RunRecord& rec) noexcept -> double {
+        const uint64_t diff = (nowFt > rec.lastRunDate) ? (nowFt - rec.lastRunDate) : 0;
+        double bonus = 20.0;
+        if (diff <= FT_ONE_HOUR * 4) bonus = 1000.0;
+        else if (diff <= FT_ONE_DAY) bonus = 700.0;
+        else if (diff <= FT_ONE_DAY * 7) bonus = 400.0;
+        else if (diff <= FT_ONE_DAY * 30) bonus = 150.0;
+        return static_cast<double>(rec.runCount) * 100.0 + bonus;
+    };
+
+    while (m_records.size() > cap) {
+        auto worstIt = m_records.begin();
+        double worstScore = scoreOf(worstIt->second);
+        for (auto it = std::next(m_records.begin()); it != m_records.end(); ++it) {
+            const double sc = scoreOf(it->second);
+            if (sc < worstScore ||
+                (sc == worstScore && it->second.lastRunDate < worstIt->second.lastRunDate)) {
+                worstIt = it;
+                worstScore = sc;
+            }
+        }
+        m_records.erase(worstIt);
+    }
+}
+
+void RunHistoryManager::setMaxEntries(size_t maxEntries) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_maxEntries = (std::max<size_t>)(1, maxEntries);
+    if (m_records.size() > m_maxEntries) {
+        evictOverflowUnlocked(getCurrentFileTime());
+        m_isDirty = true;
+    }
+}
+
+size_t RunHistoryManager::maxEntries() const {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    return m_maxEntries;
 }
 
 void RunHistoryManager::closeImpersonationTokenUnlocked() noexcept {
@@ -160,6 +299,7 @@ std::wstring RunHistoryManager::getNormalizedKey(const std::wstring& path) const
 }
 
 void RunHistoryManager::init(const std::wstring& customCsvPath) {
+    stopFlushWorker();
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (m_isDirty && !m_csvPath.empty()) {
         save();
@@ -178,6 +318,7 @@ void RunHistoryManager::init(const std::wstring& customCsvPath) {
 }
 
 void RunHistoryManager::initForSid(const std::wstring& sid) {
+    stopFlushWorker();
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (m_isDirty && !m_csvPath.empty()) {
         save();
@@ -197,6 +338,7 @@ bool RunHistoryManager::bindClientUserContext(
     bool isSameUserProcessSid,
     const std::wstring& clientSid
 ) {
+    stopFlushWorker();
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
     const bool hasKernelToken = (clientToken != nullptr && clientToken != INVALID_HANDLE_VALUE);
@@ -271,24 +413,34 @@ bool RunHistoryManager::bindClientUserContext(
 void RunHistoryManager::recordRun(const std::wstring& filename) {
     if (filename.empty()) return;
 
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    std::wstring key = getNormalizedKey(filename);
-    uint64_t nowFt = getCurrentFileTime();
+    bool shouldSchedule = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        std::wstring key = getNormalizedKey(filename);
+        uint64_t nowFt = getCurrentFileTime();
 
-    auto it = m_records.find(key);
-    if (it != m_records.end()) {
-        it->second.runCount++;
-        it->second.lastRunDate = nowFt;
-        it->second.filename = filename; // 更新保留最新大小写
-    } else {
-        m_records[key] = RunRecord{
-            .filename = filename,
-            .runCount = 1,
-            .lastRunDate = nowFt
-        };
+        auto it = m_records.find(key);
+        if (it != m_records.end()) {
+            it->second.runCount++;
+            it->second.lastRunDate = nowFt;
+            it->second.filename = filename; // 更新保留最新大小写
+        } else {
+            m_records[key] = RunRecord{
+                .filename = filename,
+                .runCount = 1,
+                .lastRunDate = nowFt
+            };
+            if (m_records.size() > m_maxEntries) {
+                evictOverflowUnlocked(nowFt);
+            }
+        }
+        m_isDirty = true;
+        shouldSchedule = !m_csvPath.empty();
     }
-    m_isDirty = true;
-    save();
+
+    if (shouldSchedule) {
+        scheduleAsyncFlush();
+    }
 }
 
 uint32_t RunHistoryManager::getRunCount(const std::wstring& filename) const {
@@ -500,8 +652,20 @@ bool RunHistoryManager::load() {
         }
     }
 
+    if (m_records.size() > m_maxEntries) {
+        evictOverflowUnlocked(getCurrentFileTime());
+    }
     m_isDirty = false;
     return true;
+}
+
+bool RunHistoryManager::flush() {
+    stopFlushWorker();
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_isDirty) {
+        return true;
+    }
+    return save();
 }
 
 bool RunHistoryManager::save() {
@@ -544,6 +708,7 @@ bool RunHistoryManager::save() {
 }
 
 void RunHistoryManager::clear() {
+    stopFlushWorker();
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_records.clear();
     m_isDirty = true;

@@ -44,21 +44,327 @@ fn find_u16_subslice(haystack: &[u16], needle: &[u16]) -> Option<usize> {
     let first = needle[0];
     let last = needle[nlen - 1];
     let end = hlen - nlen + 1;
-    for i in 0..end {
-        if haystack[i] == first
-            && haystack[i + nlen - 1] == last
-            && (nlen <= 2 || haystack.get(i + 1..i + nlen - 1) == needle.get(1..nlen - 1))
-        {
-            return Some(i);
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use core::arch::x86_64::*;
+        let ptr = haystack.as_ptr();
+        let v_first = _mm_set1_epi16(first as i16);
+        let v_last = _mm_set1_epi16(last as i16);
+        let mut i = 0usize;
+        while i + 8 <= end {
+            let c_first = _mm_loadu_si128(ptr.add(i) as *const __m128i);
+            let m_first = _mm_cmpeq_epi16(c_first, v_first);
+            let mut mask = if nlen == 1 {
+                _mm_movemask_epi8(m_first) as u32
+            } else {
+                let c_last = _mm_loadu_si128(ptr.add(i + nlen - 1) as *const __m128i);
+                let m_last = _mm_cmpeq_epi16(c_last, v_last);
+                _mm_movemask_epi8(_mm_and_si128(m_first, m_last)) as u32
+            };
+            while mask != 0 {
+                let lane = (mask.trailing_zeros() >> 1) as usize;
+                let pos = i + lane;
+                if nlen <= 2 || haystack.get(pos + 1..pos + nlen - 1) == needle.get(1..nlen - 1) {
+                    return Some(pos);
+                }
+                mask &= !(0x3u32 << (lane * 2));
+            }
+            i += 8;
+        }
+        for idx in i..end {
+            if haystack[idx] == first
+                && haystack[idx + nlen - 1] == last
+                && (nlen <= 2 || haystack.get(idx + 1..idx + nlen - 1) == needle.get(1..nlen - 1))
+            {
+                return Some(idx);
+            }
+        }
+        return None;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use core::arch::aarch64::*;
+        let ptr = haystack.as_ptr();
+        let v_first = vdupq_n_u16(first);
+        let v_last = vdupq_n_u16(last);
+        let mut i = 0usize;
+        while i + 8 <= end {
+            let c_first = vld1q_u16(ptr.add(i));
+            let m_first = vceqq_u16(c_first, v_first);
+            let m_combined = if nlen == 1 {
+                m_first
+            } else {
+                let c_last = vld1q_u16(ptr.add(i + nlen - 1));
+                vandq_u16(m_first, vceqq_u16(c_last, v_last))
+            };
+            if vmaxvq_u16(m_combined) != 0 {
+                let narrowed = vshrn_n_u16(m_combined, 8);
+                let mut byte_mask = vget_lane_u64(vreinterpret_u64_u8(narrowed), 0);
+                while byte_mask != 0 {
+                    let lane = (byte_mask.trailing_zeros() >> 3) as usize;
+                    let pos = i + lane;
+                    if nlen <= 2 || haystack.get(pos + 1..pos + nlen - 1) == needle.get(1..nlen - 1)
+                    {
+                        return Some(pos);
+                    }
+                    byte_mask &= !(0xFFu64 << (lane * 8));
+                }
+            }
+            i += 8;
+        }
+        for idx in i..end {
+            if haystack[idx] == first
+                && haystack[idx + nlen - 1] == last
+                && (nlen <= 2 || haystack.get(idx + 1..idx + nlen - 1) == needle.get(1..nlen - 1))
+            {
+                return Some(idx);
+            }
+        }
+        return None;
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        for i in 0..end {
+            if haystack[i] == first
+                && haystack[i + nlen - 1] == last
+                && (nlen <= 2 || haystack.get(i + 1..i + nlen - 1) == needle.get(1..nlen - 1))
+            {
+                return Some(i);
+            }
+        }
+        None
+    }
+}
+
+#[inline(always)]
+fn ascii_u16_upper_pair(folded: u16) -> u16 {
+    if (b'a' as u16..=b'z' as u16).contains(&folded) {
+        folded - 32
+    } else {
+        folded
+    }
+}
+
+#[inline(always)]
+fn verify_u16_caseless_at(haystack: &[u16], needle_folded: &[u16], pos: usize) -> bool {
+    for j in 0..needle_folded.len() {
+        let hc = haystack[pos + j];
+        let nc = needle_folded[j];
+        if hc == nc {
+            continue;
+        }
+        if hc < 128 {
+            let folded_hc = if (b'A' as u16..=b'Z' as u16).contains(&hc) {
+                hc + 32
+            } else {
+                hc
+            };
+            if folded_hc != nc {
+                return false;
+            }
+        } else if fold_u16_case(hc) != nc {
+            return false;
         }
     }
-    None
+    true
+}
+
+#[inline]
+fn find_u16_ascii_caseless_simd(haystack: &[u16], needle_folded: &[u16]) -> Option<usize> {
+    let nlen = needle_folded.len();
+    let hlen = haystack.len();
+    if nlen == 0 || hlen < nlen {
+        return None;
+    }
+    let first_lo = needle_folded[0];
+    let first_hi = ascii_u16_upper_pair(first_lo);
+    let last_lo = needle_folded[nlen - 1];
+    let last_hi = ascii_u16_upper_pair(last_lo);
+    let end = hlen - nlen + 1;
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use core::arch::x86_64::*;
+        let ptr = haystack.as_ptr();
+        let v_f_lo = _mm_set1_epi16(first_lo as i16);
+        let v_f_hi = _mm_set1_epi16(first_hi as i16);
+        let v_l_lo = _mm_set1_epi16(last_lo as i16);
+        let v_l_hi = _mm_set1_epi16(last_hi as i16);
+        // Any u16 >= 0x0100 has non-zero high byte; mask 0xFF00 detects extended code units (e.g. Kelvin 0x212A)
+        let v_hi_byte_mask = _mm_set1_epi16(-256i16);
+        let v_zero = _mm_setzero_si128();
+        let mut i = 0usize;
+
+        while i + 8 <= end {
+            let c_first = _mm_loadu_si128(ptr.add(i) as *const __m128i);
+            let ext_first = _mm_cmpeq_epi16(_mm_and_si128(c_first, v_hi_byte_mask), v_zero);
+            // ext_first is 0xFFFF where c_first < 0x0100, 0x0000 where c_first >= 0x0100
+            let non_bmp_ascii_first = _mm_andnot_si128(ext_first, _mm_set1_epi16(-1));
+            let m_first = _mm_or_si128(
+                _mm_or_si128(
+                    _mm_cmpeq_epi16(c_first, v_f_lo),
+                    _mm_cmpeq_epi16(c_first, v_f_hi),
+                ),
+                non_bmp_ascii_first,
+            );
+            let mut mask = if nlen == 1 {
+                _mm_movemask_epi8(m_first) as u32
+            } else {
+                let c_last = _mm_loadu_si128(ptr.add(i + nlen - 1) as *const __m128i);
+                let ext_last = _mm_cmpeq_epi16(_mm_and_si128(c_last, v_hi_byte_mask), v_zero);
+                let non_bmp_ascii_last = _mm_andnot_si128(ext_last, _mm_set1_epi16(-1));
+                let m_last = _mm_or_si128(
+                    _mm_or_si128(
+                        _mm_cmpeq_epi16(c_last, v_l_lo),
+                        _mm_cmpeq_epi16(c_last, v_l_hi),
+                    ),
+                    non_bmp_ascii_last,
+                );
+                _mm_movemask_epi8(_mm_and_si128(m_first, m_last)) as u32
+            };
+            while mask != 0 {
+                let lane = (mask.trailing_zeros() >> 1) as usize;
+                let pos = i + lane;
+                // Quick reject CJK characters (0x3000..=0x9FFF) before full verify
+                let h0 = haystack[pos];
+                if (h0 == first_lo
+                    || h0 == first_hi
+                    || (h0 >= 0x0100 && !(0x3000..=0x9FFF).contains(&h0)))
+                    && verify_u16_caseless_at(haystack, needle_folded, pos)
+                {
+                    return Some(pos);
+                }
+                mask &= !(0x3u32 << (lane * 2));
+            }
+            i += 8;
+        }
+        for idx in i..end {
+            let h0 = haystack[idx];
+            if (h0 == first_lo
+                || h0 == first_hi
+                || (h0 >= 0x0100 && !(0x3000..=0x9FFF).contains(&h0)))
+                && verify_u16_caseless_at(haystack, needle_folded, idx)
+            {
+                return Some(idx);
+            }
+        }
+        return None;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use core::arch::aarch64::*;
+        let ptr = haystack.as_ptr();
+        let v_f_lo = vdupq_n_u16(first_lo);
+        let v_f_hi = vdupq_n_u16(first_hi);
+        let v_l_lo = vdupq_n_u16(last_lo);
+        let v_l_hi = vdupq_n_u16(last_hi);
+        let v_u8_max = vdupq_n_u16(0x00FF);
+        let mut i = 0usize;
+
+        while i + 8 <= end {
+            let c_first = vld1q_u16(ptr.add(i));
+            let m_first = vorrq_u16(
+                vorrq_u16(vceqq_u16(c_first, v_f_lo), vceqq_u16(c_first, v_f_hi)),
+                vcgtq_u16(c_first, v_u8_max),
+            );
+            let m_combined = if nlen == 1 {
+                m_first
+            } else {
+                let c_last = vld1q_u16(ptr.add(i + nlen - 1));
+                let m_last = vorrq_u16(
+                    vorrq_u16(vceqq_u16(c_last, v_l_lo), vceqq_u16(c_last, v_l_hi)),
+                    vcgtq_u16(c_last, v_u8_max),
+                );
+                vandq_u16(m_first, m_last)
+            };
+            if vmaxvq_u16(m_combined) != 0 {
+                let narrowed = vshrn_n_u16(m_combined, 8);
+                let mut byte_mask = vget_lane_u64(vreinterpret_u64_u8(narrowed), 0);
+                while byte_mask != 0 {
+                    let lane = (byte_mask.trailing_zeros() >> 3) as usize;
+                    let pos = i + lane;
+                    let h0 = haystack[pos];
+                    if (h0 == first_lo
+                        || h0 == first_hi
+                        || (h0 >= 0x0100 && !(0x3000..=0x9FFF).contains(&h0)))
+                        && verify_u16_caseless_at(haystack, needle_folded, pos)
+                    {
+                        return Some(pos);
+                    }
+                    byte_mask &= !(0xFFu64 << (lane * 8));
+                }
+            }
+            i += 8;
+        }
+        for idx in i..end {
+            let h0 = haystack[idx];
+            if (h0 == first_lo
+                || h0 == first_hi
+                || (h0 >= 0x0100 && !(0x3000..=0x9FFF).contains(&h0)))
+                && verify_u16_caseless_at(haystack, needle_folded, idx)
+            {
+                return Some(idx);
+            }
+        }
+        return None;
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        for idx in 0..end {
+            let h0 = haystack[idx];
+            if (h0 == first_lo
+                || h0 == first_hi
+                || (h0 >= 0x0100 && !(0x3000..=0x9FFF).contains(&h0)))
+                && verify_u16_caseless_at(haystack, needle_folded, idx)
+            {
+                return Some(idx);
+            }
+        }
+        None
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum TermFastMode {
+    ExactCodeUnits,
+    AsciiAndCjkCaseless,
+    GeneralUnicodeFold,
+}
+
+#[inline]
+fn classify_folded_term_mode(folded_term: &[u16], case_sensitive: bool) -> TermFastMode {
+    if case_sensitive {
+        return TermFastMode::ExactCodeUnits;
+    }
+    let mut has_ascii_alpha = false;
+    for &ch in folded_term {
+        if (0x3000..=0x9FFF).contains(&ch) {
+            continue;
+        }
+        if ch < 0x80 {
+            if (b'a' as u16..=b'z' as u16).contains(&ch) {
+                has_ascii_alpha = true;
+            }
+            continue;
+        }
+        return TermFastMode::GeneralUnicodeFold;
+    }
+    if has_ascii_alpha {
+        TermFastMode::AsciiAndCjkCaseless
+    } else {
+        TermFastMode::ExactCodeUnits
+    }
 }
 
 pub struct RustMultiTermMatcher {
-    case_sensitive: bool,
     max_snippets: usize,
     terms: Vec<Vec<u16>>,
+    term_modes: Vec<TermFastMode>,
     term_matched: Vec<bool>,
     matched_term_count: usize,
     primary_snippets: Vec<BuiltSnippet>,
@@ -69,21 +375,25 @@ pub struct RustMultiTermMatcher {
 impl RustMultiTermMatcher {
     pub fn new(raw_terms: &[&[u16]], case_sensitive: bool, max_snippets_per_file: usize) -> Self {
         let mut terms = Vec::with_capacity(raw_terms.len());
+        let mut term_modes = Vec::with_capacity(raw_terms.len());
         for &t in raw_terms {
             if t.is_empty() {
                 continue;
             }
-            if case_sensitive {
-                terms.push(t.to_vec());
+            let normalized: Vec<u16> = if case_sensitive {
+                t.to_vec()
             } else {
-                terms.push(t.iter().map(|&c| fold_u16_case(c)).collect());
-            }
+                t.iter().map(|&c| fold_u16_case(c)).collect()
+            };
+            let mode = classify_folded_term_mode(&normalized, case_sensitive);
+            terms.push(normalized);
+            term_modes.push(mode);
         }
         let term_count = terms.len();
         Self {
-            case_sensitive,
             max_snippets: max_snippets_per_file.max(1),
             terms,
+            term_modes,
             term_matched: vec![false; term_count],
             matched_term_count: 0,
             primary_snippets: Vec::with_capacity(max_snippets_per_file.max(1)),
@@ -126,22 +436,30 @@ impl RustMultiTermMatcher {
             return;
         }
         let clean_view = &raw_line[..trimmed_len];
-
-        let haystack: &[u16] = if self.case_sensitive {
-            clean_view
-        } else {
-            self.reusable_fold_buf.clear();
-            self.reusable_fold_buf
-                .extend(clean_view.iter().map(|&c| fold_u16_case(c)));
-            &self.reusable_fold_buf
-        };
+        let mut folded_ready = false;
 
         let mut first_hit_pos: Option<usize> = None;
         let mut first_hit_len: usize = 0;
         let mut line_matched_unseen = false;
 
         for (idx, needle) in self.terms.iter().enumerate() {
-            if let Some(pos) = find_u16_subslice(haystack, needle) {
+            let hit = match self.term_modes[idx] {
+                TermFastMode::ExactCodeUnits => find_u16_subslice(clean_view, needle),
+                TermFastMode::AsciiAndCjkCaseless => {
+                    find_u16_ascii_caseless_simd(clean_view, needle)
+                }
+                TermFastMode::GeneralUnicodeFold => {
+                    if !folded_ready {
+                        self.reusable_fold_buf.clear();
+                        self.reusable_fold_buf
+                            .extend(clean_view.iter().map(|&c| fold_u16_case(c)));
+                        folded_ready = true;
+                    }
+                    find_u16_subslice(&self.reusable_fold_buf, needle)
+                }
+            };
+
+            if let Some(pos) = hit {
                 if !self.term_matched[idx] {
                     self.term_matched[idx] = true;
                     self.matched_term_count += 1;
