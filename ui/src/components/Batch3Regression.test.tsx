@@ -4,11 +4,12 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as bridge from '../hooks/useBridge';
 import HistoryPage from '../pages/HistoryPage';
+import { CapturePage } from '../pages/CapturePage';
 import { Sidebar } from './Sidebar';
 import { OnboardingModal } from './OnboardingModal';
 import { KeyboardHeatmap } from './KeyboardHeatmap';
 import { TargetAppPickerModal } from './TargetAppPickerModal';
-import { consumePendingDeepNavigation } from '../config/settingsSearchIndex';
+import { DEEP_SETTINGS_INDEX, consumePendingDeepNavigation } from '../config/settingsSearchIndex';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -291,5 +292,90 @@ describe('Batch 3 Regression Suite (P-10 / U-12 / V-08 / C-05)', () => {
       windowClass: '',
       effect: 2,
     });
+  });
+
+  it('[U-12] CapturePage keeps Open Folder buttons clickable under empty default saveDirectory and dispatches capture.openSaveDirectory with kind', async () => {
+    bridgeSpy.mockImplementation(async (method: string) => {
+      if (method === 'capture.getSettings') {
+        return {
+          format: 'png',
+          quality: 90,
+          saveToFile: true,
+          saveDirectory: '',
+          copyToClipboard: true,
+          includeCursor: false,
+          showCrosshair: false,
+          autoDetectWindow: true,
+          showShortcutHints: true,
+          autoBypassFullscreen: true,
+        };
+      }
+      if (method === 'recording.getSettings') {
+        return {
+          format: 'mp4_h264',
+          fps: 30,
+          bitrateMbps: 8,
+          saveDirectory: '',
+          captureSystemAudio: false,
+          captureMicrophone: false,
+          systemAudioDeviceId: '',
+          microphoneDeviceId: '',
+          systemAudioVolume: 100,
+          microphoneVolume: 100,
+          countdownSeconds: 3,
+        };
+      }
+      if (method === 'hotkey.getAll') {
+        return [];
+      }
+      if (method === 'recording.getCapabilities') {
+        return { audioDevices: [] };
+      }
+      if (method === 'capture.pinGroupControl') {
+        return { groups: [] };
+      }
+      return { success: true };
+    });
+
+    const { container } = render(<CapturePage />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const captureOpenBtn = container.querySelector<HTMLButtonElement>('#open-capture-save-dir');
+    const recordingOpenBtn = container.querySelector<HTMLButtonElement>('#open-recording-save-dir');
+    expect(captureOpenBtn).not.toBeNull();
+    expect(recordingOpenBtn).not.toBeNull();
+    expect(captureOpenBtn?.disabled).toBe(false);
+    expect(recordingOpenBtn?.disabled).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(captureOpenBtn!);
+      await Promise.resolve();
+    });
+    expect(bridgeSpy).toHaveBeenCalledWith('capture.openSaveDirectory', {
+      path: '',
+      kind: 'capture',
+    });
+
+    await act(async () => {
+      fireEvent.click(recordingOpenBtn!);
+      await Promise.resolve();
+    });
+    expect(bridgeSpy).toHaveBeenCalledWith('capture.openSaveDirectory', {
+      path: '',
+      kind: 'recording',
+    });
+  });
+
+  it('[C-01 / U-12] DEEP_SETTINGS_INDEX contains no retired gst-radial dead link and exposes gst-websearch', () => {
+    expect(DEEP_SETTINGS_INDEX.some((entry) => entry.id === 'gst-radial')).toBe(false);
+    expect(DEEP_SETTINGS_INDEX.some((entry) => entry.labelKey === 'gesture.radialMenu')).toBe(false);
+    expect(
+      DEEP_SETTINGS_INDEX.some(
+        (entry) => entry.id === 'gst-websearch' && entry.labelKey === 'gesture.webSearchEngine',
+      ),
+    ).toBe(true);
   });
 });

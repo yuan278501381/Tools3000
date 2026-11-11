@@ -232,11 +232,15 @@ export const CapturePage: FC = () => {
     }
   };
 
-  const handleOpenSaveFolder = async (dirPath?: string) => {
-    const trimmed = dirPath?.trim();
-    if (!trimmed) return;
+  const handleOpenSaveFolder = async (dirPath: string | undefined, kind: 'capture' | 'recording') => {
     try {
-      await bridgeRequest('system.openFolder', { path: trimmed });
+      const res = await bridgeRequest<{ success?: boolean; error?: string }>('capture.openSaveDirectory', {
+        path: dirPath?.trim() || '',
+        kind,
+      });
+      if (!res?.success) {
+        throw new Error(res?.error || t('capture.openFolderFailed'));
+      }
     } catch (error) {
       toast.error(t('capture.openFolderFailed'), { description: String(error) });
     }
@@ -354,10 +358,10 @@ export const CapturePage: FC = () => {
                 </div>
                 <Button variant="ghost" onClick={handleBrowseDir}>{t('capture.browse')}</Button>
                 <Button
+                  id="open-capture-save-dir"
                   variant="ghost"
-                  disabled={!capture.saveDirectory?.trim()}
                   title={t('capture.openFolder')}
-                  onClick={() => void handleOpenSaveFolder(capture.saveDirectory)}
+                  onClick={() => void handleOpenSaveFolder(capture.saveDirectory, 'capture')}
                 >
                   <FolderOpen size={14} aria-hidden="true" />
                   <span>{t('capture.openFolder')}</span>
@@ -527,10 +531,10 @@ export const CapturePage: FC = () => {
               <TextInput id="recordSaveDir" value={recording.saveDirectory || ''} readOnly onChange={() => {}} />
               <Button variant="ghost" onClick={handleBrowseRecordingDir}>{t('capture.browse')}</Button>
               <Button
+                id="open-recording-save-dir"
                 variant="ghost"
-                disabled={!recording.saveDirectory?.trim()}
                 title={t('capture.openFolder')}
-                onClick={() => void handleOpenSaveFolder(recording.saveDirectory)}
+                onClick={() => void handleOpenSaveFolder(recording.saveDirectory, 'recording')}
               >
                 <FolderOpen size={14} aria-hidden="true" />
                 <span>{t('capture.openFolder')}</span>
