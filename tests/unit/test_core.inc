@@ -3924,3 +3924,157 @@ TEST(FileInteractionAsyncHandlersTest, DispatchesFileOperationsOffCallerThread) 
         EXPECT_EQ(parsed["result"].value("error", ""), "path is required") << methodSuffix;
     }
 }
+
+TEST(ConfigManagerBatch2RegressionTest, CoalescesRapidWritesIntoAsyncAtomicFlush) {
+    const auto tempDir = std::filesystem::temp_directory_path() / "t3k_cfg_batch2_coalesce";
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    std::filesystem::create_directories(tempDir, ec);
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    cfg.shutdown();
+    ASSERT_TRUE(cfg.initialize(tempDir, "config.json"));
+
+    const uint64_t writesBefore = cfg.diskWriteCount();
+    for (int i = 0; i < 50; ++i) {
+        ASSERT_TRUE(cfg.set("/perf/counter", i));
+    }
+
+    // 内存态必须 0ms 即刻可读最新值，且 200ms 合并窗口内物理写盘次数远小于 50 次
+    EXPECT_EQ(cfg.get<int>("/perf/counter", -1), 49);
+    const uint64_t writesBeforeFlush = cfg.diskWriteCount() - writesBefore;
+    EXPECT_LE(writesBeforeFlush, 3u);
+
+    ASSERT_TRUE(cfg.flush());
+    const uint64_t totalWrites = cfg.diskWriteCount() - writesBefore;
+    EXPECT_GE(totalWrites, 1u);
+    EXPECT_LE(totalWrites, 4u);
+
+    // 验证磁盘 config.json 原子持久化结果一致
+    std::ifstream in(tempDir / "config.json", std::ios::binary);
+    ASSERT_TRUE(in.is_open());
+    const auto persisted = nlohmann::json::parse(in, nullptr, false);
+    ASSERT_FALSE(persisted.is_discarded());
+    EXPECT_EQ(persisted.value(nlohmann::json::json_pointer("/perf/counter"), -1), 49);
+    in.close();
+
+    cfg.shutdown();
+    std::filesystem::remove_all(tempDir, ec);
+}
+
+TEST(MessageBridgeBatch2RegressionTest, FastHeaderExtractAndRawHandlerZeroReparse) {
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    bridge.registerRawHandler("audit.raw.echo", [](const nlohmann::json& params) -> std::string {
+        const std::string tag = params.value("tag", "");
+        return std::string(R"({"rawDirect":true,"tag":)") + nlohmann::json(tag).dump() + "}";
+    });
+    bridge.registerAsyncRawHandler("audit.raw.asyncEcho", [](const nlohmann::json& params) -> std::string {
+        const int count = params.value("count", 0);
+        return std::string(R"({"asyncDirect":true,"count":)") + std::to_string(count) + "}";
+    });
+
+    struct Guard {
+        tools3000::core::MessageBridge& mb;
+        ~Guard() {
+            mb.unregisterHandlersByPrefix("audit.raw");
+        }
+    } guard{bridge};
+
+    // 1. 含转义引号与前置嵌套对象参数的快速头部解析与同步 Raw 直通（严防误取嵌套对象中的 id/method）
+    const std::string syncReq =
+        R"({"nested":{"fake":"\"method\":\"wrong.route\"","id":999},"id":1024,"method":"audit.raw.echo","params":{"tag":"hello\\world\"ok"}})";
+    const std::string syncRespStr = bridge.handleMessage(syncReq);
+    const auto syncResp = nlohmann::json::parse(syncRespStr);
+    EXPECT_EQ(syncResp["id"].get<int>(), 1024);
+    EXPECT_TRUE(syncResp["result"].value("rawDirect", false));
+    EXPECT_EQ(syncResp["result"].value("tag", ""), "hello\\world\"ok");
+
+    // 2. 异步 Raw 直通：前置嵌套干扰 + 零主线程全量 parse 并在工作线程直接拼装预序列化 JSON
+    std::promise<std::string> asyncPromise;
+    auto asyncFuture = asyncPromise.get_future();
+    const std::string asyncReq =
+        R"({"nested":{"id":888,"method":"wrong.route"},"id":2048,"method":"audit.raw.asyncEcho","params":{"count":77,"extra":"{\"method\":\"fake\"}"}})";
+    bridge.handleMessageAsync(asyncReq, [&asyncPromise](std::string resp) {
+        asyncPromise.set_value(std::move(resp));
+    });
+    ASSERT_EQ(asyncFuture.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    const auto asyncResp = nlohmann::json::parse(asyncFuture.get());
+    EXPECT_EQ(asyncResp["id"].get<int>(), 2048);
+    EXPECT_TRUE(asyncResp["result"].value("asyncDirect", false));
+    EXPECT_EQ(asyncResp["result"].value("count", 0), 77);
+}
+
+TEST(MouseStreamCoreBatch2RegressionTest, DefaultDormantAndScopedSubscriberRefCount) {
+    auto& core = tools3000::core::MouseStreamCore::instance();
+    core.setActive(false);
+    while (core.subscriberCount() > 0) {
+        core.releaseSubscriber();
+    }
+    core.clear();
+
+    // 无订阅者且未显式激活时保持休眠，1000Hz 移动点零入队
+    EXPECT_FALSE(core.isActive());
+    core.pushRawMove(120, 240);
+    EXPECT_TRUE(core.empty());
+
+    {
+        tools3000::core::MouseStreamCore::ScopedSubscriber sub1(core);
+        EXPECT_EQ(core.subscriberCount(), 1u);
+        EXPECT_TRUE(core.isActive());
+        core.pushRawMove(300, 400);
+        EXPECT_FALSE(core.empty());
+
+        {
+            tools3000::core::MouseStreamCore::ScopedSubscriber sub2(core);
+            EXPECT_EQ(core.subscriberCount(), 2u);
+            EXPECT_TRUE(core.isActive());
+        }
+
+        // sub2 析构后 sub1 仍存活，保持激活状态
+        EXPECT_EQ(core.subscriberCount(), 1u);
+        EXPECT_TRUE(core.isActive());
+    }
+
+    // 全部订阅者析构后自动停用并清空残留采样点
+    EXPECT_EQ(core.subscriberCount(), 0u);
+    EXPECT_FALSE(core.isActive());
+    EXPECT_TRUE(core.empty());
+}
+
+TEST(LuaEngineBatch3RegressionTest, NonBlockingToastAndErrorCodeSafeExists) {
+    auto& lua = tools3000::core::LuaEngine::instance();
+    ASSERT_TRUE(lua.initialize());
+
+    std::atomic<int> toastPublished{0};
+    std::wstring capturedToastMsg;
+    std::mutex msgMutex;
+    const auto subId = tools3000::core::EventBus::instance().subscribe<tools3000::core::ShowToastEvent>(
+        [&](const tools3000::core::ShowToastEvent& ev) {
+            {
+                std::lock_guard<std::mutex> lk(msgMutex);
+                capturedToastMsg = ev.message;
+            }
+            toastPublished.fetch_add(1, std::memory_order_relaxed);
+        });
+
+    const bool okToast = lua.executeScript(
+        R"(easy.ui.toast("Batch3NonBlockingToast"))",
+        tools3000::core::LuaPermission::All);
+    EXPECT_TRUE(okToast);
+    EXPECT_GE(toastPublished.load(std::memory_order_relaxed), 1);
+    {
+        std::lock_guard<std::mutex> lk(msgMutex);
+        EXPECT_EQ(capturedToastMsg, L"Batch3NonBlockingToast");
+    }
+    tools3000::core::EventBus::instance().unsubscribeAndWait(subId);
+
+    // 验证 easy.fs.exists 针对非法设备路径与含空字节路径安全返回 false 且不抛未捕获异常
+    const bool okFs = lua.executeScript(
+        R"(
+            assert(easy.fs.exists("\\\\?\\GLOBALROOT\\Device\\InvalidNonExistentVolume999\\x") == false)
+            assert(easy.fs.exists("Z:\\*invalid*path?|<>\\test.txt") == false)
+            assert(easy.fs.exists("bad\0embedded") == false)
+        )",
+        tools3000::core::LuaPermission::All);
+    EXPECT_TRUE(okFs);
+}
