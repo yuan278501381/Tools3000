@@ -328,9 +328,7 @@ export const GestureDrawCanvas: FC<Props> = ({
   const currentShift = parsed.hasShift || liveKeys.shift;
   const currentAlt = parsed.hasAlt || liveKeys.alt;
   const currentEdge: ScreenEdge = value ? parsed.edge : edgeMode;
-  const currentTrigger: TriggerButton = value
-    ? (parsed.hasExplicitTrigger ? parsed.triggerButton : triggerMode)
-    : triggerMode;
+  const currentTrigger: TriggerButton = value ? parsed.triggerButton : triggerMode;
 
   // 监听物理键盘修饰键实时按下/松开
   useEffect(() => {
