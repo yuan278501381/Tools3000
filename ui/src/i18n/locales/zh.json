@@ -416,7 +416,9 @@
     "pinGroupResetOne": "恢复此组默认名称与颜色",
     "loadFailed": "无法加载截图设置",
     "saveFailed": "无法保存此设置",
-    "browseFailed": "无法打开文件夹选择器"
+    "browseFailed": "无法打开文件夹选择器",
+    "openFolder": "打开文件夹",
+    "openFolderFailed": "无法打开保存文件夹"
   },
   "history": {
     "title": "截图历史",
@@ -879,7 +881,7 @@
     "triggerMiddleDesc": "按住滚轮滑动 · 切歌/多媒体专属",
     "guidePrompt": "使用一种合适的触发方式，在屏幕/画板上画出手势，对应的符号会显示在下方。",
     "guideNote1": "按下一个或多个键 \"修饰\" 绘制中的手势，会使之成为不同手势；键盘按键 (Ctrl / Alt / Shift) 也可以作为修饰键",
-    "guideNote2": "触发方式 ◐ (鼠标右键) 或 ◓ (鼠标中键/滚轮) 直接在画板上滑动即可实时录制",
+    "guideNote2": "按住鼠标右键或滚轮中键直接在画板上滑动即可实时录制",
     "replaceSimilarTracks": "替换所有相似手势轨迹",
     "replaceSimilarHint1": "将相似手势轨迹统一为相同值，有助于减少误操作并提升性能",
     "replaceSimilarHint2": "如果一个目标有多个相同手势，则只有最后一个有效",
@@ -1116,7 +1118,11 @@
     "kw_dialog_enhancer": "文件对话框 打开 保存 常用路径 文件夹跳转",
     "kw_remote_boost": "远程桌面 远程协助 粘滞 输入法 防卡键",
     "kw_stats": "按键统计 热力图 点击数 鼠标里程",
-    "kw_about": "关于 版本 检查更新 开源协议 诊断日志"
+    "kw_about": "关于 版本 检查更新 开源协议 诊断日志",
+    "deepSettingsGroup": "匹配的设置项",
+    "inactiveSectionTitle": "未启用的功能模块",
+    "inactiveBadge": "未启用",
+    "enableAndOpen": "一键启用并打开"
   },
   "onboarding": {
     "welcomeTitle": "欢迎使用 Tools3000",

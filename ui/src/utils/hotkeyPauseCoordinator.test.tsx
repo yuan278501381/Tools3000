@@ -10,7 +10,6 @@ import {
   resetHotkeyPauseCoordinatorForTest,
 } from './hotkeyPauseCoordinator';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
-import { HotkeyInput } from '../components/UIKit';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -57,35 +56,36 @@ describe('hotkeyPauseCoordinator & Recorder handoff', () => {
     expect(bridgeSpy).toHaveBeenLastCalledWith('hotkey.setPaused', { paused: false });
   });
 
-  it('coordinates pause lock seamlessly when switching focus from HotkeyRecorder to HotkeyInput', async () => {
+  it('coordinates pause lock seamlessly when switching focus between two HotkeyRecorder controls', async () => {
     const onChangeA = vi.fn();
     const onChangeB = vi.fn();
 
     const { container } = render(
       <div>
         <HotkeyRecorder id="recorder-a" value="Alt+Space" onChange={onChangeA} />
-        <HotkeyInput id="input-b" value="F1" onChange={onChangeB} />
+        <HotkeyRecorder id="recorder-b" value="F1" onChange={onChangeB} />
       </div>,
     );
 
-    const recorderBtn = container.querySelector('.hotkey-recorder') as HTMLButtonElement;
-    const hotkeyInputEl = container.querySelector('.uikit-input--hotkey') as HTMLInputElement;
-    expect(recorderBtn).not.toBeNull();
-    expect(hotkeyInputEl).not.toBeNull();
+    const recorders = container.querySelectorAll<HTMLButtonElement>('.hotkey-recorder');
+    const recorderA = recorders[0];
+    const recorderB = recorders[1];
+    expect(recorderA).toBeDefined();
+    expect(recorderB).toBeDefined();
 
-    // Start recording in HotkeyRecorder, then flush effect timer so document mousedown listener is armed
+    // Start recording in HotkeyRecorder A, then flush effect timer so document mousedown listener is armed
     await act(async () => {
-      fireEvent.click(recorderBtn);
+      fireEvent.click(recorderA);
     });
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
     expect(bridgeSpy).toHaveBeenCalledWith('hotkey.setPaused', { paused: true });
 
-    // Directly focus HotkeyInput while HotkeyRecorder closes via outside mousedown
+    // Directly click HotkeyRecorder B while HotkeyRecorder A closes via outside mousedown
     await act(async () => {
-      fireEvent.mouseDown(hotkeyInputEl, { bubbles: true });
-      hotkeyInputEl.focus();
+      fireEvent.mouseDown(recorderB, { bubbles: true });
+      fireEvent.click(recorderB);
       await Promise.resolve();
     });
 
@@ -95,9 +95,9 @@ describe('hotkeyPauseCoordinator & Recorder handoff', () => {
     expect(unpauseCallsDuringSwitch).toHaveLength(0);
     expect(getHotkeyPauseRefCount()).toBe(1);
 
-    // Blur HotkeyInput to release the last lock
+    // Press Escape on Recorder B to cancel recording and release the last lock
     await act(async () => {
-      hotkeyInputEl.blur();
+      fireEvent.keyDown(window, { key: 'Escape' });
       await Promise.resolve();
     });
 

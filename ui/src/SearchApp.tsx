@@ -551,12 +551,19 @@ export default function SearchApp() {
     const onSyncEvt = () => {
       syncRemoteSettings(true);
     };
+    const onVisibilitySync = () => {
+      if (!document.hidden) {
+        syncRemoteSettings(true);
+      }
+    };
     window.addEventListener('tools3000:focusSearch', onSyncEvt);
     window.addEventListener('focus', onSyncEvt);
+    document.addEventListener('visibilitychange', onVisibilitySync);
     return () => {
       active = false;
       window.removeEventListener('tools3000:focusSearch', onSyncEvt);
       window.removeEventListener('focus', onSyncEvt);
+      document.removeEventListener('visibilitychange', onVisibilitySync);
     };
   }, [refreshQuery]);
 

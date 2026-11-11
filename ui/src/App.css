@@ -73,6 +73,14 @@
   margin-right: auto;
 }
 
+.app__deep-highlight {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+  background: var(--primary-dim);
+  transition: outline-color 0.3s ease, background-color 0.3s ease;
+}
+
 /* ── 响应式适配 ───────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   .app__content {
