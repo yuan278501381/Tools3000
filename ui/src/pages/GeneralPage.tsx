@@ -8,7 +8,15 @@ import { useState, useEffect, useCallback, type FC } from 'react';
 import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
-import { bridgeRequest } from '../hooks/useBridge';
+import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
+import {
+  applyLocalAppearance,
+  isAccentColor,
+  isThemePreference,
+  persistAppearanceToBackend,
+  readStoredAccent,
+  readStoredTheme,
+} from '../hooks/useAppearance';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { Settings, Zap, Globe, Database, Keyboard, Download, Upload, RotateCcw, RefreshCw, CheckCircle2, AlertTriangle, AlertOctagon, FolderOpen, Disc, MinusCircle, Package, HardDrive } from 'lucide-react';
@@ -29,6 +37,7 @@ interface GeneralSettings {
   logLevel: string;
   logRetentionDays?: number;
   theme: string;
+  accentColor?: string;
   trayIconTheme?: string;
 }
 
@@ -62,33 +71,40 @@ export const GeneralPage: FC = () => {
     language: 'auto',
     logLevel: 'info',
     logRetentionDays: 7,
-    theme: 'dark',
+    theme: readStoredTheme('dark'),
+    accentColor: readStoredAccent('blue'),
     trayIconTheme: 'system',
   });
   const [loading, setLoading] = useState(true);
   const [refreshingHotkeys, setRefreshingHotkeys] = useState(false);
   const [isRestartingElevated, setIsRestartingElevated] = useState(false);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
-  const [accent, setAccent] = useState<string>(() => {
-    try {
-      return localStorage.getItem('tools3000:accent-color') || 'blue';
-    } catch {
-      return 'blue';
-    }
-  });
+  const [accent, setAccent] = useState<string>(() => readStoredAccent('blue'));
 
   const { t, i18n } = useTranslation();
 
-  const handleAccentChange = (id: string) => {
+  const handleAccentChange = useCallback(async (id: string) => {
+    if (!isAccentColor(id)) return;
+    const previousAccent = accent;
     setAccent(id);
+    setSettings(prev => ({ ...prev, accentColor: id }));
+    applyLocalAppearance({ accentColor: id });
+
     try {
-      localStorage.setItem('tools3000:accent-color', id);
-    } catch (e) {
-      void e;
+      const result = await persistAppearanceToBackend({
+        theme: settings.theme,
+        accentColor: id,
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || t('general.toastSaveFailed'));
+      }
+    } catch (error) {
+      setAccent(curr => (curr === id ? previousAccent : curr));
+      setSettings(prev => (prev.accentColor === id ? { ...prev, accentColor: previousAccent } : prev));
+      applyLocalAppearance({ accentColor: previousAccent });
+      toast.error(t('general.toastSaveFailed'), { description: String(error) });
     }
-    bridgeRequest<{ success: boolean }>('general.updateSettings', { accentColor: id }).catch(console.error);
-    window.dispatchEvent(new CustomEvent('tools3000:accent-changed', { detail: id }));
-  };
+  }, [accent, settings.theme, t]);
 
   const applyLanguagePreference = useCallback((langValue?: string) => {
     if (!langValue) return;
@@ -115,6 +131,13 @@ export const GeneralPage: FC = () => {
     ]).then(([res, hotkeyData]) => {
       if (cancelled) return;
       setSettings(prev => ({ ...prev, ...res }));
+      if (isAccentColor(res.accentColor)) {
+        setAccent(res.accentColor);
+      }
+      applyLocalAppearance(
+        { theme: res.theme, accentColor: res.accentColor },
+        { dispatchEvents: false },
+      );
       if (res.language && res.language !== 'auto') {
         const targetLang = res.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
         if (i18n.language !== targetLang) {
@@ -136,11 +159,23 @@ export const GeneralPage: FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 监听顶栏或全局发出的语言、主题与强调色变更事件，保持页面双向数据同步
+  // 监听后端 appearance:changed 事件与顶栏发出的语言/主题/强调色变更，保持页面双向数据同步
+  useBridgeEvent('appearance:changed', (data: unknown) => {
+    if (!data || typeof data !== 'object') return;
+    const payload = data as { theme?: unknown; accentColor?: unknown };
+    if (isThemePreference(payload.theme)) {
+      setSettings(prev => ({ ...prev, theme: payload.theme as string }));
+    }
+    if (isAccentColor(payload.accentColor)) {
+      setAccent(payload.accentColor);
+      setSettings(prev => ({ ...prev, accentColor: payload.accentColor as string }));
+    }
+  });
+
   useEffect(() => {
     const handleThemeEvent = (e: Event) => {
       const pref = (e as CustomEvent<string>).detail;
-      if (pref) setSettings(prev => ({ ...prev, theme: pref }));
+      if (isThemePreference(pref)) setSettings(prev => ({ ...prev, theme: pref }));
     };
     const handleLangEvent = (e: Event) => {
       const lang = (e as CustomEvent<string>).detail;
@@ -148,7 +183,10 @@ export const GeneralPage: FC = () => {
     };
     const handleAccentEvent = (e: Event) => {
       const newAccent = (e as CustomEvent<string>).detail;
-      if (newAccent) setAccent(newAccent);
+      if (isAccentColor(newAccent)) {
+        setAccent(newAccent);
+        setSettings(prev => ({ ...prev, accentColor: newAccent }));
+      }
     };
     window.addEventListener('tools3000:theme-changed', handleThemeEvent);
     window.addEventListener('tools3000:language-changed', handleLangEvent);
@@ -169,20 +207,22 @@ export const GeneralPage: FC = () => {
       if (key === 'language') {
         applyLanguagePreference(String(localValue));
       } else if (key === 'theme') {
-        window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: localValue }));
+        applyLocalAppearance({ theme: localValue });
       }
     };
     applyLocalValue(value);
 
     try {
-      const result = await bridgeRequest<OperationResult>('general.updateSettings', { [key]: value });
-      if (!result.success) throw new Error(result.error || t('general.toastSaveFailed'));
+      const result = key === 'theme'
+        ? await persistAppearanceToBackend({ theme: value, accentColor: accent })
+        : await bridgeRequest<OperationResult>('general.updateSettings', { [key]: value });
+      if (!result?.success) throw new Error(result?.error || t('general.toastSaveFailed'));
     } catch (error) {
       setSettings(prev => prev[key] === value ? { ...prev, [key]: previous } : prev);
       applyLocalValue(previous);
       toast.error(t('general.toastSaveFailed'), { description: String(error) });
     }
-  }, [applyLanguagePreference, settings, t]);
+  }, [accent, applyLanguagePreference, settings, t]);
 
   const handleToggleRunAsAdmin = async (checked: boolean) => {
     if (isRestartingElevated) return;
@@ -248,9 +288,12 @@ export const GeneralPage: FC = () => {
         bridgeRequest<HotkeyEntry[]>('hotkey.getAll').catch(() => []),
       ]);
       setSettings(prev => ({ ...prev, ...refreshed }));
+      if (isAccentColor(refreshed.accentColor)) {
+        setAccent(refreshed.accentColor);
+      }
       if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
       applyLanguagePreference(refreshed.language);
-      window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: refreshed.theme }));
+      applyLocalAppearance({ theme: refreshed.theme, accentColor: refreshed.accentColor });
     } catch (e) {
       toast.error(t('general.importFailed'), { description: String(e) });
     }
@@ -267,9 +310,12 @@ export const GeneralPage: FC = () => {
         bridgeRequest<HotkeyEntry[]>('hotkey.getAll').catch(() => []),
       ]);
       setSettings(prev => ({ ...prev, ...res }));
+      if (isAccentColor(res.accentColor)) {
+        setAccent(res.accentColor);
+      }
       if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
       applyLanguagePreference(res.language);
-      window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: res.theme }));
+      applyLocalAppearance({ theme: res.theme, accentColor: res.accentColor });
     } catch (e) {
       toast.error(t('general.resetFailed'), { description: String(e) });
     }
@@ -462,6 +508,7 @@ export const GeneralPage: FC = () => {
                   <button
                     key={preset.id}
                     type="button"
+                    aria-pressed={isSelected}
                     className={`general-accent-btn ${isSelected ? 'active' : ''}`}
                     onClick={() => handleAccentChange(preset.id)}
                     style={{ '--accent-dot-color': preset.color } as React.CSSProperties}
