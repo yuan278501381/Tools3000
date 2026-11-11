@@ -12,6 +12,7 @@
 #include "common/AtomicFile.h"
 #include "core/logger/Logger.h"
 #include "core/stats/PerformanceMonitor.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
 #include "core/events/EventBus.h"
@@ -261,76 +262,206 @@ void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int h
     const bool useTransparency = reserveTransparent;
     const int maxOpaqueSlots = useTransparency ? 255 : 256;
 
+    const int sampleStep = (static_cast<int64_t>(width) * static_cast<int64_t>(height) <= 65536LL) ? 1 : 2;
     std::vector<uint32_t> hist(32768, 0);
-    for (int y = 0; y < height; y += 2) {
-        const uint8_t* row = srcData + static_cast<std::size_t>(y) * stride;
-        for (int x = 0; x < width; x += 2) {
-            if (useTransparency && isOutsideRoundedCorner(x, y, width, height, cornerRadius)) {
-                continue;
+    if (srcData && width > 0 && height > 0) {
+        for (int y = 0; y < height; y += sampleStep) {
+            const uint8_t* row = srcData + static_cast<std::size_t>(y) * stride;
+            for (int x = 0; x < width; x += sampleStep) {
+                if (useTransparency && isOutsideRoundedCorner(x, y, width, height, cornerRadius)) {
+                    continue;
+                }
+                const uint8_t* px = row + static_cast<std::size_t>(x) * bpp;
+                if (useTransparency && bpp == 4 && px[3] < 128) {
+                    continue;
+                }
+                const int r5 = px[2] >> 3;
+                const int g5 = px[1] >> 3;
+                const int b5 = px[0] >> 3;
+                hist[(r5 << 10) | (g5 << 5) | b5]++;
             }
-            const uint8_t* px = row + static_cast<std::size_t>(x) * bpp;
-            if (useTransparency && bpp == 4 && px[3] < 128) {
-                continue;
-            }
-            int r5 = px[2] >> 3;
-            int g5 = px[1] >> 3;
-            int b5 = px[0] >> 3;
-            hist[(r5 << 10) | (g5 << 5) | b5]++;
         }
     }
 
-    std::vector<std::pair<uint32_t, int>> sortedColors;
-    sortedColors.reserve(32768);
-    for (int i = 0; i < 32768; ++i) {
-        if (hist[i] > 0) {
-            sortedColors.emplace_back(hist[i], i);
+    struct ColorSample {
+        uint8_t r;
+        uint8_t g;
+        uint8_t b;
+        uint32_t count;
+    };
+    std::vector<ColorSample> activeColors;
+    activeColors.reserve(4096);
+    for (int c15 = 0; c15 < 32768; ++c15) {
+        if (hist[c15] == 0) continue;
+        const int r5 = (c15 >> 10) & 0x1F;
+        const int g5 = (c15 >> 5) & 0x1F;
+        const int b5 = c15 & 0x1F;
+        activeColors.push_back({
+            static_cast<uint8_t>((r5 << 3) | (r5 >> 2)),
+            static_cast<uint8_t>((g5 << 3) | (g5 >> 2)),
+            static_cast<uint8_t>((b5 << 3) | (b5 >> 2)),
+            hist[c15]
+        });
+    }
+
+    int numColors = 0;
+    if (static_cast<int>(activeColors.size()) <= maxOpaqueSlots) {
+        std::sort(activeColors.begin(), activeColors.end(),
+                  [](const ColorSample& a, const ColorSample& b) { return a.count > b.count; });
+        numColors = static_cast<int>(activeColors.size());
+        for (int i = 0; i < numColors; ++i) {
+            paletteR[i] = activeColors[i].r;
+            paletteG[i] = activeColors[i].g;
+            paletteB[i] = activeColors[i].b;
+            palette[i] = (0xFFU << 24) |
+                         (static_cast<uint32_t>(paletteR[i]) << 16) |
+                         (static_cast<uint32_t>(paletteG[i]) << 8) |
+                         static_cast<uint32_t>(paletteB[i]);
+        }
+    } else {
+        // 3D RGB Median-Cut adaptive color quantization: preserves smooth gradients and UI nuances
+        struct ColorBox {
+            std::size_t begin = 0;
+            std::size_t end = 0;
+            uint64_t totalCount = 0;
+            uint8_t minR = 255, maxR = 0;
+            uint8_t minG = 255, maxG = 0;
+            uint8_t minB = 255, maxB = 0;
+        };
+
+        auto recomputeBox = [&](ColorBox& box) {
+            box.totalCount = 0;
+            box.minR = box.minG = box.minB = 255;
+            box.maxR = box.maxG = box.maxB = 0;
+            for (std::size_t i = box.begin; i < box.end; ++i) {
+                const auto& c = activeColors[i];
+                box.totalCount += c.count;
+                if (c.r < box.minR) box.minR = c.r;
+                if (c.r > box.maxR) box.maxR = c.r;
+                if (c.g < box.minG) box.minG = c.g;
+                if (c.g > box.maxG) box.maxG = c.g;
+                if (c.b < box.minB) box.minB = c.b;
+                if (c.b > box.maxB) box.maxB = c.b;
+            }
+        };
+
+        std::vector<ColorBox> boxes;
+        boxes.reserve(static_cast<std::size_t>(maxOpaqueSlots));
+        ColorBox root{0, activeColors.size()};
+        recomputeBox(root);
+        boxes.push_back(root);
+
+        while (static_cast<int>(boxes.size()) < maxOpaqueSlots) {
+            int bestIdx = -1;
+            double bestScore = 0.0;
+            for (std::size_t i = 0; i < boxes.size(); ++i) {
+                const auto& b = boxes[i];
+                if (b.end - b.begin <= 1) continue;
+                const double spanR = static_cast<double>(b.maxR - b.minR);
+                const double spanG = static_cast<double>(b.maxG - b.minG) * 1.15;
+                const double spanB = static_cast<double>(b.maxB - b.minB) * 0.90;
+                const double maxSpan = (std::max)({spanR, spanG, spanB});
+                if (maxSpan <= 0.0) continue;
+                const double weight = std::log2(2.0 + static_cast<double>(b.totalCount));
+                const double score = maxSpan * weight;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIdx = static_cast<int>(i);
+                }
+            }
+            if (bestIdx < 0) break;
+
+            ColorBox target = boxes[static_cast<std::size_t>(bestIdx)];
+            const int rangeR = target.maxR - target.minR;
+            const int rangeG = target.maxG - target.minG;
+            const int rangeB = target.maxB - target.minB;
+            if (rangeG >= rangeR && rangeG >= rangeB) {
+                std::sort(activeColors.begin() + static_cast<std::ptrdiff_t>(target.begin),
+                          activeColors.begin() + static_cast<std::ptrdiff_t>(target.end),
+                          [](const ColorSample& a, const ColorSample& b) { return a.g < b.g; });
+            } else if (rangeR >= rangeB) {
+                std::sort(activeColors.begin() + static_cast<std::ptrdiff_t>(target.begin),
+                          activeColors.begin() + static_cast<std::ptrdiff_t>(target.end),
+                          [](const ColorSample& a, const ColorSample& b) { return a.r < b.r; });
+            } else {
+                std::sort(activeColors.begin() + static_cast<std::ptrdiff_t>(target.begin),
+                          activeColors.begin() + static_cast<std::ptrdiff_t>(target.end),
+                          [](const ColorSample& a, const ColorSample& b) { return a.b < b.b; });
+            }
+
+            const uint64_t halfCount = target.totalCount / 2;
+            uint64_t accum = 0;
+            std::size_t split = target.begin + 1;
+            for (std::size_t i = target.begin; i + 1 < target.end; ++i) {
+                accum += activeColors[i].count;
+                if (accum >= halfCount) {
+                    split = i + 1;
+                    break;
+                }
+            }
+            ColorBox leftBox{target.begin, split};
+            ColorBox rightBox{split, target.end};
+            recomputeBox(leftBox);
+            recomputeBox(rightBox);
+            boxes[static_cast<std::size_t>(bestIdx)] = leftBox;
+            boxes.push_back(rightBox);
+        }
+
+        numColors = (std::min)(maxOpaqueSlots, static_cast<int>(boxes.size()));
+        for (int i = 0; i < numColors; ++i) {
+            const auto& b = boxes[static_cast<std::size_t>(i)];
+            uint64_t sumR = 0, sumG = 0, sumB = 0, total = 0;
+            for (std::size_t k = b.begin; k < b.end; ++k) {
+                const uint64_t w = activeColors[k].count;
+                sumR += static_cast<uint64_t>(activeColors[k].r) * w;
+                sumG += static_cast<uint64_t>(activeColors[k].g) * w;
+                sumB += static_cast<uint64_t>(activeColors[k].b) * w;
+                total += w;
+            }
+            const uint8_t cr = total > 0 ? static_cast<uint8_t>((sumR + total / 2) / total) : 0;
+            const uint8_t cg = total > 0 ? static_cast<uint8_t>((sumG + total / 2) / total) : 0;
+            const uint8_t cb = total > 0 ? static_cast<uint8_t>((sumB + total / 2) / total) : 0;
+            paletteR[i] = cr;
+            paletteG[i] = cg;
+            paletteB[i] = cb;
+            palette[i] = (0xFFU << 24) |
+                         (static_cast<uint32_t>(cr) << 16) |
+                         (static_cast<uint32_t>(cg) << 8) |
+                         static_cast<uint32_t>(cb);
         }
     }
-    std::sort(sortedColors.begin(), sortedColors.end(),
-              [](const auto& a, const auto& b) { return a.first > b.first; });
 
-    int numColors = (std::min)(maxOpaqueSlots, static_cast<int>(sortedColors.size()));
-    struct Rgb { uint8_t r, g, b; };
-    std::vector<Rgb> paletteRgb(256, {0, 0, 0});
-
-    for (int i = 0; i < numColors; ++i) {
-        int c15 = sortedColors[i].second;
-        int r5 = (c15 >> 10) & 0x1F;
-        int g5 = (c15 >> 5) & 0x1F;
-        int b5 = c15 & 0x1F;
-        int r = (r5 << 3) | (r5 >> 2);
-        int g = (g5 << 3) | (g5 >> 2);
-        int b = (b5 << 3) | (b5 >> 2);
-        paletteRgb[i] = { static_cast<uint8_t>(r), static_cast<uint8_t>(g), static_cast<uint8_t>(b) };
-        palette[i] = (0xFFU << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
-    }
-    int remain = maxOpaqueSlots - numColors;
+    const int remain = maxOpaqueSlots - numColors;
     for (int i = numColors; i < maxOpaqueSlots; ++i) {
-        uint8_t v = (remain > 1) ? static_cast<uint8_t>(((i - numColors) * 255) / (remain - 1)) : 0;
-        paletteRgb[i] = { v, v, v };
+        const uint8_t v = (remain > 1) ? static_cast<uint8_t>(((i - numColors) * 255) / (remain - 1)) : 0;
+        paletteR[i] = v;
+        paletteG[i] = v;
+        paletteB[i] = v;
         palette[i] = (0xFFU << 24) | (static_cast<uint32_t>(v) << 16) | (static_cast<uint32_t>(v) << 8) | static_cast<uint32_t>(v);
     }
     if (useTransparency) {
-        paletteRgb[255] = { 0, 0, 0 };
+        paletteR[255] = 0;
+        paletteG[255] = 0;
+        paletteB[255] = 0;
         palette[255] = 0x00000000U; // Reserved transparent color index for GIF Graphic Control Extension
     }
 
-    int searchCount = (numColors > 0) ? numColors : maxOpaqueSlots;
+    validColorCount = (numColors > 0) ? numColors : maxOpaqueSlots;
     for (int c15 = 0; c15 < 32768; ++c15) {
-        int r5 = (c15 >> 10) & 0x1F;
-        int g5 = (c15 >> 5) & 0x1F;
-        int b5 = c15 & 0x1F;
-        int r = (r5 << 3) | (r5 >> 2);
-        int g = (g5 << 3) | (g5 >> 2);
-        int b = (b5 << 3) | (b5 >> 2);
+        const int r5 = (c15 >> 10) & 0x1F;
+        const int g5 = (c15 >> 5) & 0x1F;
+        const int b5 = c15 & 0x1F;
+        const int r = (r5 << 3) | (r5 >> 2);
+        const int g = (g5 << 3) | (g5 >> 2);
+        const int b = (b5 << 3) | (b5 >> 2);
 
         int bestIdx = 0;
         int bestDist = (std::numeric_limits<int>::max)();
-        for (int i = 0; i < searchCount; ++i) {
-            int dr = r - paletteRgb[i].r;
-            int dg = g - paletteRgb[i].g;
-            int db = b - paletteRgb[i].b;
-            int dist = dr * dr + dg * dg + db * db;
+        for (int i = 0; i < validColorCount; ++i) {
+            const int dr = r - paletteR[i];
+            const int dg = g - paletteG[i];
+            const int db = b - paletteB[i];
+            const int dist = dr * dr * 3 + dg * dg * 4 + db * db * 2;
             if (dist < bestDist) {
                 bestDist = dist;
                 bestIdx = i;
@@ -343,8 +474,11 @@ void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int h
 }
 
 void GifPaletteOptimizer::quantizeFrame(const uint8_t* srcData, int width, int height, int stride, int bpp,
-                   uint8_t* dstData, int dstLinesize, uint32_t* dstPalette) {
-    if (!initialized || (++frameCounter % 30 == 0)) {
+                                        uint8_t* dstData, int dstLinesize, uint32_t* dstPalette) {
+    if (!srcData || !dstData || width <= 0 || height <= 0) return;
+
+    const bool refreshPalette = !initialized || (++frameCounter % 30 == 0);
+    if (refreshPalette) {
         updatePalette(srcData, width, height, stride, bpp);
     }
     if (dstPalette) {
@@ -353,11 +487,127 @@ void GifPaletteOptimizer::quantizeFrame(const uint8_t* srcData, int width, int h
 
     const bool useTransparency = reserveTransparent;
     const bool checkCorners = useTransparency && (cornerRadius > 0.5f);
+    const bool useDiff = enableFrameDiff && useTransparency;
+    const std::size_t compactBgrBytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3ULL;
 
-    for (int y = 0; y < height; ++y) {
+    bool hasPrevFrame = useDiff &&
+                        (prevWidth == width) &&
+                        (prevHeight == height) &&
+                        (prevFrameBgr.size() == compactBgrBytes) &&
+                        (frameCounter % 90 != 0);
+
+    int dirtyL = 0;
+    int dirtyT = 0;
+    int dirtyR = width;
+    int dirtyB = height;
+
+    if (useDiff) {
+        if (!hasPrevFrame) {
+            prevFrameBgr.resize(compactBgrBytes);
+            prevWidth = width;
+            prevHeight = height;
+            for (int y = 0; y < height; ++y) {
+                const uint8_t* srcRow = srcData + static_cast<std::size_t>(y) * stride;
+                uint8_t* histRow = prevFrameBgr.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 3ULL;
+                for (int x = 0; x < width; ++x) {
+                    const uint8_t* px = srcRow + static_cast<std::size_t>(x) * bpp;
+                    histRow[x * 3 + 0] = px[0];
+                    histRow[x * 3 + 1] = px[1];
+                    histRow[x * 3 + 2] = px[2];
+                }
+            }
+        } else {
+            dirtyL = width;
+            dirtyT = height;
+            dirtyR = 0;
+            dirtyB = 0;
+            for (int y = 0; y < height; ++y) {
+                const uint8_t* srcRow = srcData + static_cast<std::size_t>(y) * stride;
+                const uint8_t* histRow = prevFrameBgr.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 3ULL;
+                for (int x = 0; x < width; ++x) {
+                    if (checkCorners && isOutsideRoundedCorner(x, y, width, height, cornerRadius)) {
+                        continue;
+                    }
+                    const uint8_t* px = srcRow + static_cast<std::size_t>(x) * bpp;
+                    if (bpp == 4 && px[3] < 128) {
+                        continue;
+                    }
+                    const int db = std::abs(static_cast<int>(px[0]) - static_cast<int>(histRow[x * 3 + 0]));
+                    const int dg = std::abs(static_cast<int>(px[1]) - static_cast<int>(histRow[x * 3 + 1]));
+                    const int dr = std::abs(static_cast<int>(px[2]) - static_cast<int>(histRow[x * 3 + 2]));
+                    if (db > 2 || dg > 2 || dr > 2) {
+                        if (x < dirtyL) dirtyL = x;
+                        if (x + 1 > dirtyR) dirtyR = x + 1;
+                        if (y < dirtyT) dirtyT = y;
+                        if (y + 1 > dirtyB) dirtyB = y + 1;
+                    }
+                }
+            }
+            if (dirtyL >= dirtyR || dirtyT >= dirtyB) {
+                lastDirtyLeft = 0;
+                lastDirtyTop = 0;
+                lastDirtyRight = 0;
+                lastDirtyBottom = 0;
+                for (int y = 0; y < height; ++y) {
+                    std::memset(dstData + static_cast<std::size_t>(y) * dstLinesize, 255, static_cast<std::size_t>(width));
+                }
+                return;
+            }
+        }
+    } else if (!prevFrameBgr.empty()) {
+        resetFrameHistory();
+    }
+
+    lastDirtyLeft = dirtyL;
+    lastDirtyTop = dirtyT;
+    lastDirtyRight = dirtyR;
+    lastDirtyBottom = dirtyB;
+
+    if (hasPrevFrame) {
+        for (int y = 0; y < dirtyT; ++y) {
+            std::memset(dstData + static_cast<std::size_t>(y) * dstLinesize, 255, static_cast<std::size_t>(width));
+        }
+        for (int y = dirtyB; y < height; ++y) {
+            std::memset(dstData + static_cast<std::size_t>(y) * dstLinesize, 255, static_cast<std::size_t>(width));
+        }
+    }
+
+    // Sierra-2-4A lightweight error diffusion dithering (exact zero error on solid colors; eliminates gradient banding)
+    const std::size_t errStride = static_cast<std::size_t>(width) + 2ULL;
+    std::vector<int16_t> errCurR, errCurG, errCurB;
+    std::vector<int16_t> errNextR, errNextG, errNextB;
+    if (enableDithering) {
+        errCurR.assign(errStride, 0);
+        errCurG.assign(errStride, 0);
+        errCurB.assign(errStride, 0);
+        errNextR.assign(errStride, 0);
+        errNextG.assign(errStride, 0);
+        errNextB.assign(errStride, 0);
+    }
+
+    for (int y = dirtyT; y < dirtyB; ++y) {
         const uint8_t* srcRow = srcData + static_cast<std::size_t>(y) * stride;
         uint8_t* dstRow = dstData + static_cast<std::size_t>(y) * dstLinesize;
-        for (int x = 0; x < width; ++x) {
+        uint8_t* histRow = hasPrevFrame
+            ? (prevFrameBgr.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 3ULL)
+            : nullptr;
+
+        if (hasPrevFrame) {
+            if (dirtyL > 0) {
+                std::memset(dstRow, 255, static_cast<std::size_t>(dirtyL));
+            }
+            if (dirtyR < width) {
+                std::memset(dstRow + dirtyR, 255, static_cast<std::size_t>(width - dirtyR));
+            }
+        }
+
+        if (enableDithering) {
+            std::fill(errNextR.begin(), errNextR.end(), int16_t{0});
+            std::fill(errNextG.begin(), errNextG.end(), int16_t{0});
+            std::fill(errNextB.begin(), errNextB.end(), int16_t{0});
+        }
+
+        for (int x = dirtyL; x < dirtyR; ++x) {
             if (checkCorners && isOutsideRoundedCorner(x, y, width, height, cornerRadius)) {
                 dstRow[x] = 255;
                 continue;
@@ -367,8 +617,59 @@ void GifPaletteOptimizer::quantizeFrame(const uint8_t* srcData, int width, int h
                 dstRow[x] = 255;
                 continue;
             }
-            int c15 = ((px[2] >> 3) << 10) | ((px[1] >> 3) << 5) | (px[0] >> 3);
-            dstRow[x] = colorMap[c15];
+            if (histRow) {
+                const int db = std::abs(static_cast<int>(px[0]) - static_cast<int>(histRow[x * 3 + 0]));
+                const int dg = std::abs(static_cast<int>(px[1]) - static_cast<int>(histRow[x * 3 + 1]));
+                const int dr = std::abs(static_cast<int>(px[2]) - static_cast<int>(histRow[x * 3 + 2]));
+                if (db <= 2 && dg <= 2 && dr <= 2) {
+                    dstRow[x] = 255;
+                    continue;
+                }
+                histRow[x * 3 + 0] = px[0];
+                histRow[x * 3 + 1] = px[1];
+                histRow[x * 3 + 2] = px[2];
+            }
+
+            int r = px[2];
+            int g = px[1];
+            int b = px[0];
+            if (enableDithering) {
+                const std::size_t ex = static_cast<std::size_t>(x) + 1ULL;
+                r = std::clamp(r + std::clamp<int>(errCurR[ex], -20, 20), 0, 255);
+                g = std::clamp(g + std::clamp<int>(errCurG[ex], -20, 20), 0, 255);
+                b = std::clamp(b + std::clamp<int>(errCurB[ex], -20, 20), 0, 255);
+            }
+
+            const int c15 = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+            const uint8_t idx = colorMap[c15];
+            dstRow[x] = idx;
+
+            if (enableDithering) {
+                const int er = r - static_cast<int>(paletteR[idx]);
+                const int eg = g - static_cast<int>(paletteG[idx]);
+                const int eb = b - static_cast<int>(paletteB[idx]);
+                if ((er | eg | eb) != 0) {
+                    const std::size_t ex = static_cast<std::size_t>(x) + 1ULL;
+                    // Sierra-2-4A: 2/4 right, 1/4 bottom-left, 1/4 bottom
+                    errCurR[ex + 1] = static_cast<int16_t>(errCurR[ex + 1] + (er >> 1));
+                    errCurG[ex + 1] = static_cast<int16_t>(errCurG[ex + 1] + (eg >> 1));
+                    errCurB[ex + 1] = static_cast<int16_t>(errCurB[ex + 1] + (eb >> 1));
+
+                    errNextR[ex - 1] = static_cast<int16_t>(errNextR[ex - 1] + (er >> 2));
+                    errNextG[ex - 1] = static_cast<int16_t>(errNextG[ex - 1] + (eg >> 2));
+                    errNextB[ex - 1] = static_cast<int16_t>(errNextB[ex - 1] + (eb >> 2));
+
+                    errNextR[ex] = static_cast<int16_t>(errNextR[ex] + (er >> 2));
+                    errNextG[ex] = static_cast<int16_t>(errNextG[ex] + (eg >> 2));
+                    errNextB[ex] = static_cast<int16_t>(errNextB[ex] + (eb >> 2));
+                }
+            }
+        }
+
+        if (enableDithering) {
+            errCurR.swap(errNextR);
+            errCurG.swap(errNextG);
+            errCurB.swap(errNextB);
         }
     }
 }
@@ -1582,7 +1883,7 @@ void ScreenRecorder::dispatchSnapshotSave(
         auto deliverToClipboard = [snapshot, fullPathW, savedOk]() {
             ClipboardUtils::copyImageToClipboard(snapshot, savedOk ? fullPathW : std::wstring{});
 
-            const bool isZh = tools3000::core::WinUtils::isSystemLanguageChinese();
+            const bool isZh = tools3000::core::isUiLanguageChinese();
             if (savedOk) {
                 tools3000::core::EventBus::instance().publish(
                     tools3000::core::ShowToastEvent{isZh ? L"已保存录屏截图并复制到剪贴板" : L"Frame saved and copied to clipboard"});
@@ -1627,7 +1928,8 @@ bool ScreenRecorder::captureAndEncodeFrame() {
                     if (!m_gifOptimizer) {
                         m_gifOptimizer = std::make_unique<GifPaletteOptimizer>();
                     }
-                    m_gifOptimizer->reserveTransparent = (m_options.cornerRadius > 0.5f);
+                    m_gifOptimizer->reserveTransparent = true;
+                    m_gifOptimizer->enableFrameDiff = true;
                     m_gifOptimizer->cornerRadius = m_options.cornerRadius;
                     if (av_frame_make_writable(frame) < 0) return false;
                     m_gifOptimizer->quantizeFrame(
@@ -1710,7 +2012,8 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         if (!m_gifOptimizer) {
             m_gifOptimizer = std::make_unique<GifPaletteOptimizer>();
         }
-        m_gifOptimizer->reserveTransparent = (m_options.cornerRadius > 0.5f);
+        m_gifOptimizer->reserveTransparent = true;
+        m_gifOptimizer->enableFrameDiff = true;
         m_gifOptimizer->cornerRadius = m_options.cornerRadius;
         if (av_frame_make_writable(frame) < 0) return false;
         int bpp = captured.format == CapturePixelFormat::Bgra32 ? 4 : 3;

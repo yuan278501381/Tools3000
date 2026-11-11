@@ -392,6 +392,34 @@ public:
         return true;
     }
 
+    bool readLastValidFrame(CaptureFrameView& frame) noexcept override {
+        if (!m_context || !m_stagingTexture || m_region.width <= 0 || m_region.height <= 0) {
+            return false;
+        }
+        bool anyHasFrame = false;
+        for (const auto& out : m_outputs) {
+            if (out.hasFrame) {
+                anyHasFrame = true;
+                break;
+            }
+        }
+        if (!anyHasFrame) {
+            return false;
+        }
+        releaseFrame();
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(m_context->Map(m_stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &mapped)) || !mapped.pData) {
+            return false;
+        }
+        m_mapped = true;
+        frame = {
+            static_cast<std::uint8_t*>(mapped.pData),
+            static_cast<int>(mapped.RowPitch), m_region.width, m_region.height,
+            CapturePixelFormat::Bgra32
+        };
+        return true;
+    }
+
     void releaseFrame() noexcept override {
         if (m_mapped && m_context && m_stagingTexture) {
             m_context->Unmap(m_stagingTexture.Get(), 0);
@@ -580,13 +608,23 @@ public:
 
         if (m_active && m_active->capture(frame, error)) {
             m_needsActiveRelease = true;
-            snapshotFallbackFrame(frame, nowTick, false);
+            m_loggedSecureDesktopHold = false;
+            // Healthy DXGI Desktop Duplication keeps its composite staging texture on the backend;
+            // avoid copying 33MB every 500ms during healthy recording and only snapshot on demand
+            // if GDI is active or right before an accelerated fallback transition.
+            if (!m_active->info().accelerated) {
+                snapshotFallbackFrame(frame, nowTick, false);
+            }
             return true;
         }
 
         const std::string primaryError = error;
         const bool wasAccelerated = (m_active && m_active->info().accelerated);
         if (wasAccelerated) {
+            CaptureFrameView lastValidFrame{};
+            if (m_active->readLastValidFrame(lastValidFrame)) {
+                snapshotFallbackFrame(lastValidFrame, nowTick, true);
+            }
             m_active->releaseFrame();
             m_active->shutdown();
             m_active.reset();

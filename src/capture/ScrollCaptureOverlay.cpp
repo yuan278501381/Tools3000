@@ -403,6 +403,13 @@ void ScrollCaptureOverlay::hide() {
         std::lock_guard<std::mutex> lock(m_controlRectMutex);
         m_controlScreenRect = {};
     }
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_preview.release();
+        m_previewDirty = false;
+        m_d2dBitmap.Reset();
+        m_frameCount = 0;
+    }
     m_hoveredBtn = ControlButtonId::None;
     m_pressedBtn = ControlButtonId::None;
     m_trackingMouseLeave = false;
@@ -863,8 +870,12 @@ void ScrollCaptureOverlay::render() {
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
     const auto runtimeState = ScrollCapture::instance().runtimeState();
-    if (runtimeState == ScrollRuntimeState::HoldAtBottom) {
-        m_brushBorder->SetColor(D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f)); // 触底驻留琥珀金
+    const uint64_t nowOverlayTick = GetTickCount64();
+    const uint64_t tooFastOverlayTick = ScrollCapture::instance().lastScrollTooFastTickMs();
+    const bool overlayScrollTooFast =
+        (tooFastOverlayTick > 0 && nowOverlayTick >= tooFastOverlayTick && (nowOverlayTick - tooFastOverlayTick) < 1800);
+    if (overlayScrollTooFast || runtimeState == ScrollRuntimeState::HoldAtBottom) {
+        m_brushBorder->SetColor(D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f)); // 琥珀金预警 / 触底驻留
     } else if (runtimeState == ScrollRuntimeState::PausedManual) {
         m_brushBorder->SetColor(D2D1::ColorF(0.22f, 0.74f, 0.97f, 1.0f)); // 手动接管天青蓝
     } else {
@@ -1010,14 +1021,21 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
     D2D1_COLOR_F dotColor = D2D1::ColorF(0.13f, 0.80f, 0.42f, 1.0f);
     int pulseStep = 20;
     std::wstring statusText;
-    if (state == ScrollRuntimeState::HoldAtBottom) {
+    const uint64_t nowBarTick = GetTickCount64();
+    const uint64_t tooFastTick = ScrollCapture::instance().lastScrollTooFastTickMs();
+    const bool isScrollTooFast =
+        (tooFastTick > 0 && nowBarTick >= tooFastTick && (nowBarTick - tooFastTick) < 1800);
+    if (isScrollTooFast) {
+        dotColor = D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f);
+        statusText = m_isChinese ? L"滚动过快 · 请放慢滚轮" : L"Scroll slower · Overlap lost";
+    } else if (state == ScrollRuntimeState::HoldAtBottom) {
         dotColor = D2D1::ColorF(0.98f, 0.65f, 0.10f, 1.0f);
         statusText = m_isChinese ? L"已停滚 · 回车裁切/完成" : L"Stopped · Enter to trim";
     } else if (state == ScrollRuntimeState::PausedManual) {
         dotColor = D2D1::ColorF(0.24f, 0.75f, 0.98f, 1.0f);
         statusText = m_isChinese ? L"已暂停 · 回车裁切/完成" : L"Paused · Enter to trim";
     } else {
-        const float pulse = 0.65f + 0.35f * std::sin(static_cast<float>(GetTickCount64() % 1200) / 1200.0f * 6.28318f);
+        const float pulse = 0.65f + 0.35f * std::sin(static_cast<float>(nowBarTick % 1200) / 1200.0f * 6.28318f);
         pulseStep = static_cast<int>(std::lround(pulse * 12.0f));
         dotColor = D2D1::ColorF(0.13f, 0.82f, 0.44f, static_cast<float>(pulseStep) / 12.0f);
         statusText = m_isChinese ? L"正在自动滚动采集" : L"Auto scrolling";

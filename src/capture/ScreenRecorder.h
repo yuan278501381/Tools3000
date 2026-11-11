@@ -125,14 +125,38 @@ struct RecordingCapabilities {
     RecordingGpuProbe gpuEncoding;
 };
 
-/// GIF 调色板优化器 (PaletteGen 统计聚类 + PaletteUse 快速量化查表)
+/// GIF 调色板优化器 (Median-Cut 自适应调色板 + Sierra-2-4A 轻量误差扩散抖动 + 帧间透明差分包围盒)
 struct GifPaletteOptimizer {
     uint32_t palette[256]{};
+    uint8_t paletteR[256]{};
+    uint8_t paletteG[256]{};
+    uint8_t paletteB[256]{};
     uint8_t colorMap[32768]{};
     bool initialized = false;
     int frameCounter = 0;
+    int validColorCount = 256;
     bool reserveTransparent = false;
+    bool enableDithering = true;
+    bool enableFrameDiff = false;
     float cornerRadius = 0.0f;
+
+    std::vector<uint8_t> prevFrameBgr;
+    int prevWidth = 0;
+    int prevHeight = 0;
+    int lastDirtyLeft = 0;
+    int lastDirtyTop = 0;
+    int lastDirtyRight = 0;
+    int lastDirtyBottom = 0;
+
+    void resetFrameHistory() noexcept {
+        prevFrameBgr.clear();
+        prevWidth = 0;
+        prevHeight = 0;
+        lastDirtyLeft = 0;
+        lastDirtyTop = 0;
+        lastDirtyRight = 0;
+        lastDirtyBottom = 0;
+    }
 
     void updatePalette(const uint8_t* srcData, int width, int height, int stride, int bpp);
     void quantizeFrame(const uint8_t* srcData, int width, int height, int stride, int bpp,
