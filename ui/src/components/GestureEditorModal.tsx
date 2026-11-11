@@ -249,6 +249,7 @@ export const GestureEditorModal: FC<Props> = ({
 
   const handleTriggerChange = (targetTrigger: import('./gestureModel').TriggerButton) => {
     const parsed = parseGestureCode(draft.gestureCode);
+    if (!parsed.bareCode) return;
     const newCode = assembleGestureCode({
       edge: parsed.edge,
       triggerButton: targetTrigger,
@@ -262,6 +263,7 @@ export const GestureEditorModal: FC<Props> = ({
 
   const handleEdgeChange = (targetEdge: import('./gestureModel').ScreenEdge) => {
     const parsed = parseGestureCode(draft.gestureCode);
+    if (!parsed.bareCode) return;
     const newCode = assembleGestureCode({
       edge: targetEdge,
       triggerButton: parsed.triggerButton,
