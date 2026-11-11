@@ -286,6 +286,7 @@ uint64_t FileIndexStore::mixKey(uint64_t frn) noexcept {
 
 void FileIndexStore::reserve(size_t records) {
     m_records.reserve(records);
+    m_pinyin.reserve((std::max<size_t>)(256, records / 12));
     rehash(records * 2);
 }
 
@@ -461,6 +462,54 @@ void FileIndexStore::applyIncrementalTier(StoredFileRecord& record, std::wstring
     record.flags |= StoredFileRecord::FlagTierComputed;
 }
 
+void FileIndexStore::propagateAncestorsSizeChange(
+    uint64_t startParentFrn,
+    uint64_t oldSize,
+    uint64_t newSize
+) noexcept {
+    if (oldSize == newSize || startParentFrn == 0) {
+        return;
+    }
+    const bool isIncrease = (newSize > oldSize);
+    const uint64_t delta = isIncrease ? (newSize - oldSize) : (oldSize - newSize);
+
+    constexpr size_t kMaxChainDepth = 512;
+    uint32_t visited[kMaxChainDepth];
+    size_t visitedLen = 0;
+
+    uint64_t curFrn = startParentFrn;
+    while (curFrn != 0 && visitedLen < kMaxChainDepth) {
+        const size_t probe = findProbeIndex(curFrn);
+        if (probe == kNoSlotIndex) break;
+        const uint32_t recIdx = m_slots[probe];
+        bool cycle = false;
+        for (size_t k = 0; k < visitedLen; ++k) {
+            if (visited[k] == recIdx) {
+                cycle = true;
+                break;
+            }
+        }
+        if (cycle) break;
+        visited[visitedLen++] = recIdx;
+
+        auto& dirRec = m_records[recIdx];
+        if (dirRec.isDeleted() || !dirRec.isDirectory()) break;
+
+        if (isIncrease) {
+            dirRec.fileSize = (UINT64_MAX - dirRec.fileSize < delta)
+                ? UINT64_MAX
+                : (dirRec.fileSize + delta);
+        } else {
+            dirRec.fileSize = (dirRec.fileSize > delta)
+                ? (dirRec.fileSize - delta)
+                : 0;
+        }
+
+        if (dirRec.parentFrn == 0 || dirRec.parentFrn == dirRec.frn) break;
+        curFrn = dirRec.parentFrn;
+    }
+}
+
 void FileIndexStore::upsert(const FileRecordInit& init, bool metadataHydrated) {
     if (init.fileReferenceNumber == EmptyKey) return;
     if (m_slots.empty()) rehash(1024);
@@ -487,7 +536,9 @@ void FileIndexStore::upsert(const FileRecordInit& init, bool metadataHydrated) {
         auto& existing = m_records[existingRecSlot];
         if (existing.nameLength == nameLen &&
             m_arena.view(existing.nameOffset, existing.nameLength) == nameView) {
-            const bool parentChanged = (existing.parentFrn != init.parentFileReferenceNumber);
+            const uint64_t oldParentFrn = existing.parentFrn;
+            const uint64_t oldSize = existing.fileSize;
+            const bool parentChanged = (oldParentFrn != init.parentFileReferenceNumber);
             const bool dirFlagChanged = (existing.isDirectory() != init.isDirectory);
             const uint8_t preservedHydrated =
                 static_cast<uint8_t>(existing.flags & StoredFileRecord::FlagMetadataHydrated);
@@ -495,15 +546,33 @@ void FileIndexStore::upsert(const FileRecordInit& init, bool metadataHydrated) {
                 (!parentChanged && !dirFlagChanged)
                     ? static_cast<uint8_t>(existing.flags & StoredFileRecord::FlagTierComputed)
                     : 0u;
+
             existing.parentFrn = init.parentFileReferenceNumber;
-            existing.fileSize = init.fileSize;
+            if (init.isDirectory && !dirFlagChanged && init.fileSize == 0) {
+                // Preserve aggregated descendant size for directories across USN metadata updates.
+                existing.fileSize = oldSize;
+            } else {
+                existing.fileSize = init.fileSize;
+            }
             existing.creationTime = init.creationTime;
             existing.lastWriteTime = init.lastWriteTime;
             existing.attributes = init.fileAttributes;
             existing.flags = static_cast<uint8_t>(newFlags | preservedHydrated | preservedTier);
+
+            if (!init.isDirectory && !dirFlagChanged) {
+                if (parentChanged) {
+                    propagateAncestorsSizeChange(oldParentFrn, oldSize, 0);
+                    propagateAncestorsSizeChange(existing.parentFrn, 0, existing.fileSize);
+                } else if (oldSize != existing.fileSize) {
+                    propagateAncestorsSizeChange(existing.parentFrn, oldSize, existing.fileSize);
+                }
+            }
+
             if (parentChanged || dirFlagChanged || !existing.isTierComputed()) {
                 applyIncrementalTier(existing, nameView);
                 if (existing.isDirectory() && (parentChanged || dirFlagChanged)) {
+                    recomputeHierarchyMetadata();
+                } else if (dirFlagChanged) {
                     recomputeHierarchyMetadata();
                 }
             }
@@ -523,17 +592,30 @@ void FileIndexStore::upsert(const FileRecordInit& init, bool metadataHydrated) {
 
     PinyinEntry newPinyin{};
     if (hasChinese) {
-        const std::wstring initials = SearchExpression::normalize(PinyinEngine::GetInitials(init.fileName));
-        const std::wstring full = SearchExpression::normalize(PinyinEngine::GetFullPinyin(init.fileName));
-        newPinyin.initialsLength = static_cast<uint16_t>(std::min<size_t>(initials.size(), 0xFFFF));
-        newPinyin.fullLength = static_cast<uint16_t>(std::min<size_t>(full.size(), 0xFFFF));
-        newPinyin.initialsOffset = m_arena.intern(std::wstring_view{initials}.substr(0, newPinyin.initialsLength));
-        newPinyin.fullOffset = m_arena.intern(std::wstring_view{full}.substr(0, newPinyin.fullLength));
+        PinyinEngine::BuildNormalizedPinyin(
+            nameView,
+            m_pinyinAsciiInitialsScratch,
+            m_pinyinAsciiFullScratch,
+            m_pinyinWideInitialsScratch,
+            m_pinyinWideFullScratch
+        );
+        newPinyin.initialsLength = static_cast<uint16_t>(
+            std::min<size_t>(m_pinyinWideInitialsScratch.size(), 0xFFFF));
+        newPinyin.fullLength = static_cast<uint16_t>(
+            std::min<size_t>(m_pinyinWideFullScratch.size(), 0xFFFF));
+        newPinyin.initialsOffset = m_arena.intern(
+            std::wstring_view{m_pinyinWideInitialsScratch}.substr(0, newPinyin.initialsLength));
+        newPinyin.fullOffset = m_arena.intern(
+            std::wstring_view{m_pinyinWideFullScratch}.substr(0, newPinyin.fullLength));
     }
 
     if (hasExistingLive) {
         auto& existing = m_records[existingRecSlot];
         const bool wasDirectory = existing.isDirectory();
+        const uint64_t oldParentFrn = existing.parentFrn;
+        const uint64_t oldSize = existing.fileSize;
+        const bool parentChanged = (oldParentFrn != init.parentFileReferenceNumber);
+        const bool dirFlagChanged = (wasDirectory != init.isDirectory);
         const uint8_t preservedHydrated =
             static_cast<uint8_t>(existing.flags & StoredFileRecord::FlagMetadataHydrated);
 
@@ -551,7 +633,11 @@ void FileIndexStore::upsert(const FileRecordInit& init, bool metadataHydrated) {
         }
 
         existing.parentFrn = init.parentFileReferenceNumber;
-        existing.fileSize = init.fileSize;
+        if (init.isDirectory && !dirFlagChanged && init.fileSize == 0) {
+            existing.fileSize = oldSize;
+        } else {
+            existing.fileSize = init.fileSize;
+        }
         existing.creationTime = init.creationTime;
         existing.lastWriteTime = init.lastWriteTime;
         existing.attributes = init.fileAttributes;
@@ -559,6 +645,16 @@ void FileIndexStore::upsert(const FileRecordInit& init, bool metadataHydrated) {
         existing.nameOffset = m_arena.intern(nameView);
         existing.pinyinSlot = updatedPinyinSlot;
         existing.flags = static_cast<uint8_t>(newFlags | preservedHydrated);
+
+        if (!init.isDirectory && !dirFlagChanged) {
+            if (parentChanged) {
+                propagateAncestorsSizeChange(oldParentFrn, oldSize, 0);
+                propagateAncestorsSizeChange(existing.parentFrn, 0, existing.fileSize);
+            } else if (oldSize != existing.fileSize) {
+                propagateAncestorsSizeChange(existing.parentFrn, oldSize, existing.fileSize);
+            }
+        }
+
         applyIncrementalTier(existing, nameView);
         if (wasDirectory || existing.isDirectory()) {
             recomputeHierarchyMetadata();
@@ -584,6 +680,10 @@ void FileIndexStore::upsert(const FileRecordInit& init, bool metadataHydrated) {
     m_records.push_back(record);
     insertNewSlot(init.fileReferenceNumber, static_cast<uint32_t>(m_records.size() - 1));
     ++m_liveCount;
+
+    if (!record.isDirectory() && record.fileSize > 0) {
+        propagateAncestorsSizeChange(record.parentFrn, 0, record.fileSize);
+    }
 }
 
 bool FileIndexStore::updateMetadata(uint64_t frn, uint64_t fileSize,
@@ -594,7 +694,12 @@ bool FileIndexStore::updateMetadata(uint64_t frn, uint64_t fileSize,
     auto& record = m_records[m_slots[probe]];
     if (record.isDeleted()) return false;
 
-    record.fileSize = fileSize;
+    if (!record.isDirectory()) {
+        if (record.fileSize != fileSize) {
+            propagateAncestorsSizeChange(record.parentFrn, record.fileSize, fileSize);
+            record.fileSize = fileSize;
+        }
+    }
     if (creationTime != 0) record.creationTime = creationTime;
     if (lastWriteTime != 0) record.lastWriteTime = lastWriteTime;
     record.flags |= StoredFileRecord::FlagMetadataHydrated;
@@ -608,6 +713,9 @@ bool FileIndexStore::erase(uint64_t frn) {
     auto& record = m_records[m_slots[probe]];
     if (record.isDeleted()) return false;
 
+    if (record.fileSize > 0) {
+        propagateAncestorsSizeChange(record.parentFrn, record.fileSize, 0);
+    }
     if (record.pinyinSlot != 0) {
         releasePinyinSlot(record.pinyinSlot);
     }
@@ -632,6 +740,9 @@ void FileIndexStore::recomputeHierarchyMetadata() {
     for (auto& rec : m_records) {
         if (!rec.isDeleted()) {
             rec.flags = static_cast<uint8_t>(rec.flags & ~StoredFileRecord::FlagTierComputed);
+            if (rec.isDirectory()) {
+                rec.fileSize = 0;
+            }
         }
     }
 
@@ -705,7 +816,7 @@ void FileIndexStore::recomputeHierarchyMetadata() {
         }
     }
 
-    // Pass 2: O(1) evaluation of all live file records from their already-computed parent directory.
+    // Pass 2: O(1) evaluation of all live file records + bottom-up directory aggregate size roll-up.
     uint64_t cachedParentFrn = UINT64_MAX;
     uint8_t cachedParentClass = 0;
     uint8_t cachedParentState = 0;
@@ -760,6 +871,10 @@ void FileIndexStore::recomputeHierarchyMetadata() {
             rec.pathTier,
             rec.folderPriority);
         rec.flags |= StoredFileRecord::FlagTierComputed;
+
+        if (rec.fileSize > 0) {
+            propagateAncestorsSizeChange(rec.parentFrn, 0, rec.fileSize);
+        }
     }
 }
 
