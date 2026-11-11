@@ -29,6 +29,8 @@
 #include "core/utils/Export.h"
 #include "core/logger/Logger.h"
 
+#include <windows.h>
+#include <algorithm>
 #include <any>
 #include <atomic>
 #include <condition_variable>
@@ -195,7 +197,11 @@ public:
     void unsubscribe(SubscriptionId id);
 
     /// 取消订阅并等待正在执行的回调结束。插件卸载前必须使用此接口。
-    void unsubscribeAndWait(SubscriptionId id);
+    /// @return true 表示回调已完全排空；false 表示存在超时未退出的外部调用或同线程自退订栈帧
+    bool unsubscribeAndWait(SubscriptionId id);
+
+    /// 是否存在超时未能排空的残留订阅回调（存在时宿主卸载插件必须跳过 FreeLibrary 防 UAF）
+    bool hasQuarantinedSubscriptions() const noexcept;
 
     /// 发布事件（同步分发给所有订阅者）
     template <typename TEvent>
@@ -212,27 +218,44 @@ public:
         LOG_TRACE("EventBus: 发布事件 [{}], 订阅者数={}", typeid(TEvent).name(), subscribersCopy.size());
 
         std::any wrappedEvent = event;
+        const DWORD currentTid = GetCurrentThreadId();
         for (const auto& sub : subscribersCopy) {
-            bool acquired = false;
+            std::function<void(const std::any&)> fn;
             {
                 std::lock_guard lock(sub->stateMutex);
                 if (sub->accepting && sub->handler) {
                     ++sub->activeCalls;
-                    acquired = true;
+                    sub->activeThreadIds.push_back(currentTid);
+                    fn = sub->handler;
                 }
             }
-            if (!acquired) continue;
-            try {
-                sub->handler(wrappedEvent);
-            } catch (...) {
-                std::lock_guard lock(sub->stateMutex);
-                if (--sub->activeCalls == 0) sub->idle.notify_all();
-                throw;
-            }
-            {
-                std::lock_guard lock(sub->stateMutex);
-                if (--sub->activeCalls == 0) sub->idle.notify_all();
-            }
+            if (!fn) continue;
+
+            struct ActiveCallScope {
+                Subscription* subscription;
+                DWORD threadId;
+                ~ActiveCallScope() {
+                    std::function<void(const std::any&)> deferredRelease;
+                    {
+                        std::lock_guard lock(subscription->stateMutex);
+                        auto it = std::find(subscription->activeThreadIds.begin(),
+                                            subscription->activeThreadIds.end(),
+                                            threadId);
+                        if (it != subscription->activeThreadIds.end()) {
+                            subscription->activeThreadIds.erase(it);
+                        }
+                        if (--subscription->activeCalls == 0) {
+                            if (!subscription->accepting && subscription->clearHandlerOnIdle) {
+                                deferredRelease = std::move(subscription->handler);
+                                subscription->clearHandlerOnIdle = false;
+                            }
+                            subscription->idle.notify_all();
+                        }
+                    }
+                }
+            } activeGuard{sub.get(), currentTid};
+
+            fn(wrappedEvent);
         }
     }
 
@@ -245,8 +268,9 @@ public:
         return (it != m_subscribers.end()) ? it->second.size() : 0;
     }
 
-    /// 移除所有订阅
-    void clearAll();
+    /// 移除所有订阅并等待排空
+    /// @return true 表示所有订阅回调均干净排空
+    bool clearAll();
 
 private:
     EventBus() = default;
@@ -258,17 +282,20 @@ private:
         std::function<void(const std::any&)> handler;
         std::mutex stateMutex;
         std::condition_variable idle;
+        std::vector<DWORD> activeThreadIds;
         size_t activeCalls = 0;
         bool accepting = true;
+        bool clearHandlerOnIdle = false;
     };
 
     std::shared_ptr<Subscription> detach(SubscriptionId id);
-    static void retire(const std::shared_ptr<Subscription>& subscription, bool wait);
+    bool retire(const std::shared_ptr<Subscription>& subscription, bool wait);
 
     mutable std::mutex m_mutex;
     std::unordered_map<std::type_index, std::vector<std::shared_ptr<Subscription>>> m_subscribers;
     std::unordered_map<SubscriptionId, std::type_index> m_idToType;
     std::atomic<SubscriptionId> m_nextId{1};
+    std::atomic<bool> m_hasQuarantinedSubscriptions{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,7 +309,7 @@ public:
 
     ~ScopedSubscription() {
         if (m_id != 0) {
-            EventBus::instance().unsubscribe(m_id);
+            EventBus::instance().unsubscribeAndWait(m_id);
         }
     }
 
@@ -290,7 +317,7 @@ public:
     ScopedSubscription(ScopedSubscription&& other) noexcept : m_id(other.m_id) { other.m_id = 0; }
     ScopedSubscription& operator=(ScopedSubscription&& other) noexcept {
         if (this != &other) {
-            if (m_id != 0) EventBus::instance().unsubscribe(m_id);
+            if (m_id != 0) EventBus::instance().unsubscribeAndWait(m_id);
             m_id = other.m_id;
             other.m_id = 0;
         }

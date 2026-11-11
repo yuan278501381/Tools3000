@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, type FC } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Bot,
@@ -35,29 +35,23 @@ const EXTENSION_ICONS = {
 interface ExtensionGuideInfo {
   triggerKey: string;
   triggerKeyArray: string[];
-  conditionZh?: string;
-  conditionKey?: string;
+  conditionKey: string;
   conditionEn: string;
   steps: {
     step: number;
-    titleZh?: string;
-    titleKey?: string;
+    titleKey: string;
     titleEn: string;
-    descZh?: string;
-    descKey?: string;
+    descKey: string;
     descEn: string;
     kbd?: string[];
   }[];
   proTips: {
-    titleZh?: string;
-    titleKey?: string;
+    titleKey: string;
     titleEn: string;
-    descZh?: string;
-    descKey?: string;
+    descKey: string;
     descEn: string;
   }[];
   supportedFormats?: string[];
-  supportedFormatsEn?: string[];
   supportedFormatKeys?: string[];
 }
 
@@ -65,49 +59,49 @@ const EXTENSION_GUIDES: Record<string, ExtensionGuideInfo> = {
   markdown_preview: {
     triggerKey: 'Space',
     triggerKeyArray: ['Space'],
-    conditionZh: '在资源管理器、桌面或文件对话框中单选任意 .md、代码或文本文件',
+    conditionKey: 'extGuide.mdCondition',
     conditionEn: 'Select any .md, code, or text file in File Explorer or Desktop',
     steps: [
       {
         step: 1,
         titleKey: 'extGuide.stepQuickLook1Title',
         titleEn: 'Select Target File',
-        descZh: '在 Windows 文件资源管理器中鼠标单击选中任意 Markdown 或代码文件。',
+        descKey: 'extGuide.mdStep1Desc',
         descEn: 'Click once to highlight any Markdown or source code file in Explorer.',
       },
       {
         step: 2,
         titleKey: 'extGuide.stepQuickLook2Title',
         titleEn: 'Press Spacebar',
-        descZh: '轻按键盘空格键 Space，无需双击打开笨重编辑器。',
+        descKey: 'extGuide.mdStep2Desc',
         descEn: 'Press Spacebar once without double clicking heavy editors.',
         kbd: ['Space'],
       },
       {
         step: 3,
-        titleZh: '极速悬浮预览',
+        titleKey: 'extGuide.mdStep3Title',
         titleEn: 'Instant QuickLook',
-        descZh: '即刻唤起 Fluent 玻璃拟态预览浮层，支持代码高亮与 LaTeX 公式渲染。',
+        descKey: 'extGuide.mdStep3Desc',
         descEn: 'Instant floating QuickLook preview with code highlighting & LaTeX.',
       },
     ],
     proTips: [
       {
-        titleZh: '快速关闭',
+        titleKey: 'extGuide.mdTip1Title',
         titleEn: 'Fast Close',
-        descZh: '再次轻按 Space 或按 Esc 键即可毫秒级关闭预览浮层。',
+        descKey: 'extGuide.mdTip1Desc',
         descEn: 'Press Space or Esc again to dismiss the preview instantly.',
       },
       {
-        titleZh: '一键复制与打开',
+        titleKey: 'extGuide.mdTip2Title',
         titleEn: 'Copy & Open in Editor',
-        descZh: '预览窗右上角提供“一键复制代码”与“在默认编辑器中打开”快捷按钮。',
+        descKey: 'extGuide.mdTip2Desc',
         descEn: 'Quickly copy rendered content or open in your default IDE from top bar.',
       },
       {
-        titleZh: '数学公式与表格',
+        titleKey: 'extGuide.mdTip3Title',
         titleEn: 'Math & Tables Support',
-        descZh: '原生支持 KaTeX / MathJax 公式渲染 ($E=mc^2$) 及 GitHub 风格 Markdown 表格。',
+        descKey: 'extGuide.mdTip3Desc',
         descEn: 'Full support for GitHub flavored markdown, KaTeX math and formatted tables.',
       },
     ],
@@ -116,89 +110,93 @@ const EXTENSION_GUIDES: Record<string, ExtensionGuideInfo> = {
   ai_assistant: {
     triggerKey: 'Alt + X',
     triggerKeyArray: ['Alt', 'X'],
-    conditionZh: '在任意软件界面划选文字后按下快捷键，或随时全局唤出',
+    conditionKey: 'extGuide.aiCondition',
     conditionEn: 'Select text anywhere or press shortcut to trigger globally',
     steps: [
       {
         step: 1,
-        titleZh: '划选文字或直接呼出',
+        titleKey: 'extGuide.aiStep1Title',
         titleEn: 'Select Text or Global Call',
-        descZh: '选中屏幕上任意需要翻译、重构或润色的文字段落。',
+        descKey: 'extGuide.aiStep1Desc',
         descEn: 'Highlight any text to translate, rewrite, or ask questions.',
       },
       {
         step: 2,
-        titleZh: '按下触发快捷键',
+        titleKey: 'extGuide.aiStep2Title',
         titleEn: 'Press Activation Hotkey',
-        descZh: '按下 Alt + X 快捷键，随光标位置即刻弹出 AI 交互悬浮窗。',
+        descKey: 'extGuide.aiStep2Desc',
         descEn: 'Press Alt + X to pop up the intelligent AI dialogue box.',
         kbd: ['Alt', 'X'],
       },
       {
         step: 3,
-        titleZh: '获得流式解答',
+        titleKey: 'extGuide.aiStep3Title',
         titleEn: 'Get Instant Answers',
-        descZh: '支持一键中英互译、代码重构、要点提炼或自由提问。',
+        descKey: 'extGuide.aiStep3Desc',
         descEn: 'Enjoy stream generation, translation, code refactor and smart answers.',
       },
     ],
     proTips: [
       {
-        titleZh: '上下文智能感知',
+        titleKey: 'extGuide.aiTip1Title',
         titleEn: 'Context Awareness',
-        descZh: '若选中文本为代码，AI 将自动识别编程语言并提供优化建议。',
+        descKey: 'extGuide.aiTip1Desc',
         descEn: 'Automatically detects code snippets and provides tailored reviews.',
       },
       {
-        titleZh: '快捷模板切换',
+        titleKey: 'extGuide.aiTip2Title',
         titleEn: 'Prompt Templates',
-        descZh: '按 Tab 键可在“翻译”、“润色”、“解释”、“总结”等常用 Prompt 间快速切换。',
+        descKey: 'extGuide.aiTip2Desc',
         descEn: 'Press Tab to cycle between preset prompt templates quickly.',
       },
     ],
-    supportedFormats: ['纯文本', '代码段落', '文章摘要', '多语言互译'],
-    supportedFormatsEn: ['Plain Text', 'Code Snippets', 'Article Summary', 'Multi-language Translation'],
+    supportedFormatKeys: [
+      'extGuide.formatPlainText',
+      'extGuide.formatCodeSnippet',
+      'extGuide.formatArticleSummary',
+      'extGuide.formatMultiLangTranslation',
+    ],
   },
   color_picker: {
     triggerKey: 'Alt + C',
     triggerKeyArray: ['Alt', 'C'],
-    conditionZh: '屏幕任意位置像素级取色（支持多显示器与不同 DPI）',
+    conditionKey: 'extGuide.colorCondition',
     conditionEn: 'Pixel precision color picking anywhere on screen (Multi-DPI ready)',
     steps: [
       {
         step: 1,
-        titleZh: '唤起微距放大镜',
+        titleKey: 'extGuide.colorStep1Title',
         titleEn: 'Activate Magnifier',
-        descZh: '按下 Alt + C 快捷键，鼠标光标即刻变为 8x 像素级微距十字放大镜。',
+        descKey: 'extGuide.colorStep1Desc',
         descEn: 'Press Alt + C to turn cursor into an 8x pixel magnifier.',
         kbd: ['Alt', 'C'],
       },
       {
         step: 2,
-        titleZh: '精准锁定像素',
+        titleKey: 'extGuide.colorStep2Title',
         titleEn: 'Lock Pixel',
-        descZh: '移动鼠标对准目标颜色，亦可用键盘方向键 ↑↓←→ 进行 1 像素级微调。',
+        descKey: 'extGuide.colorStep2Desc',
         descEn: 'Hover over target pixel; use arrow keys for 1-pixel precision nudging.',
       },
       {
         step: 3,
-        titleZh: '单击自动复制',
+        titleKey: 'extGuide.colorStep3Title',
         titleEn: 'Click to Copy',
-        descZh: '鼠标左键单击即刻复制 HEX 色值，并同步更新到历史调色板中。',
+        descKey: 'extGuide.colorStep3Desc',
         descEn: 'Click left button to copy HEX code and record to your color palette.',
       },
     ],
     proTips: [
       {
-        titleZh: '切换色彩格式',
+        titleKey: 'extGuide.colorTip1Title',
         titleEn: 'Color Spaces',
-        descZh: '取色过程中轻按 Space 键可循环切换 HEX、RGB、HSL、CMYK 等输出格式。',
+        descKey: 'extGuide.colorTip1Desc',
         descEn: 'Press Space to toggle between HEX, RGB, HSL and CMYK output formats.',
       },
       {
-        titleZh: '滚轮缩放倍率',
+        titleKey: 'extGuide.colorTip2Title',
         titleEn: 'Zoom Factor',
-        descZh: '滚动鼠标滚轮可在 2x ~ 16x 放大倍率间自由平滑缩放。',
+        descKey: 'extGuide.colorTip2Desc',
         descEn: 'Scroll mouse wheel to smoothly adjust magnification between 2x and 16x.',
       },
     ],
@@ -207,14 +205,14 @@ const EXTENSION_GUIDES: Record<string, ExtensionGuideInfo> = {
   clipboard_manager: {
     triggerKey: 'Alt + V',
     triggerKeyArray: ['Alt', 'V'],
-    conditionZh: '在任何文本输入区域或编辑窗口快速唤出历史剪贴板',
+    conditionKey: 'extGuide.clipCondition',
     conditionEn: 'Call clipboard history panel in any text input field or active window',
     steps: [
       {
         step: 1,
-        titleZh: '常规复制内容',
+        titleKey: 'extGuide.clipStep0Title',
         titleEn: 'Copy As Usual',
-        descZh: '使用 Ctrl + C 正常复制文字、代码、链接或截图图片。',
+        descKey: 'extGuide.clipStep0Desc',
         descEn: 'Copy text, code, URLs, or screenshots using Ctrl + C as usual.',
         kbd: ['Ctrl', 'C'],
       },
@@ -259,24 +257,42 @@ interface ExtensionPageProps {
 }
 
 export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUninstall }) => {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [enabledOverrides, setEnabledOverrides] = useState<Record<string, boolean>>({});
   const enabled = enabledOverrides[pluginId] ?? plugin?.enabled ?? true;
   const [saving, setSaving] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [showPlayground, setShowPlayground] = useState(false);
   const [demoCopied, setDemoCopied] = useState(false);
+  const modalCloseBtnRef = useRef<HTMLButtonElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
-  const isZh = i18n.language.startsWith('zh');
+  useEffect(() => {
+    if (!showPlayground) return;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusTimer = window.setTimeout(() => {
+      modalCloseBtnRef.current?.focus();
+    }, 0);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowPlayground(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener('keydown', handleKeyDown);
+      if (previousFocusRef.current && document.contains(previousFocusRef.current)) {
+        previousFocusRef.current.focus();
+      }
+    };
+  }, [showPlayground]);
 
-  const resolveText = useCallback((key?: string, zh?: string, en?: string) => {
-    const fallback = isZh ? (zh || en || '') : (en || zh || '');
-    if (key) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return t(key as any, { defaultValue: fallback });
-    }
-    return fallback;
-  }, [isZh, t]);
+  const resolveText = useCallback((key: string, enFallback: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return t(key as any, { defaultValue: enFallback });
+  }, [t]);
 
   const IconComponent = (pluginId in EXTENSION_ICONS)
     ? EXTENSION_ICONS[pluginId as keyof typeof EXTENSION_ICONS]
@@ -329,9 +345,8 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return guide.supportedFormatKeys.map((k) => t(k as any));
     }
-    const list = isZh ? guide.supportedFormats : (guide.supportedFormatsEn || guide.supportedFormats);
-    return list && list.length > 0 ? list : ['.*'];
-  }, [guide, isZh, t]);
+    return guide.supportedFormats && guide.supportedFormats.length > 0 ? guide.supportedFormats : ['.*'];
+  }, [guide, t]);
 
   const handleToggle = useCallback(async (next: boolean) => {
     setEnabledOverrides((prev) => ({ ...prev, [pluginId]: next }));
@@ -362,7 +377,8 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
   }, [pluginId, onUninstall, t]);
 
   const handleCopyDemoCode = useCallback(() => {
-    void navigator.clipboard?.writeText('```typescript\nimport { tools3000 } from "@tools3000/sdk";\n\n// 极速唤起 Markdown 渲染引擎\nconst preview = tools3000.preview("README.md");\n```')?.catch(() => {});
+    const commentText = t('extGuide.mdDemoCodeComment', 'Summon the instant Markdown rendering engine');
+    void navigator.clipboard?.writeText(`\`\`\`typescript\nimport { tools3000 } from "@tools3000/sdk";\n\n// ${commentText}\nconst preview = tools3000.preview("README.md");\n\`\`\``)?.catch(() => {});
     setDemoCopied(true);
     toast.success(t('extension.copySuccess'));
     setTimeout(() => setDemoCopied(false), 2000);
@@ -380,7 +396,7 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
         </div>
         <div className="extension-ready-text">
           <strong>{t('extension.installedReadyBanner')}</strong>
-          <span>{resolveText(guide.conditionKey, guide.conditionZh, guide.conditionEn)}</span>
+          <span>{resolveText(guide.conditionKey, guide.conditionEn)}</span>
         </div>
         <Button
           variant="primary"
@@ -439,9 +455,9 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
             <div key={item.step} className="extension-step-card">
               <div className="extension-step-header">
                 <span className="extension-step-number">{item.step}</span>
-                <h4 className="extension-step-title">{resolveText(item.titleKey, item.titleZh, item.titleEn)}</h4>
+                <h4 className="extension-step-title">{resolveText(item.titleKey, item.titleEn)}</h4>
               </div>
-              <p className="extension-step-desc">{resolveText(item.descKey, item.descZh, item.descEn)}</p>
+              <p className="extension-step-desc">{resolveText(item.descKey, item.descEn)}</p>
               {item.kbd && item.kbd.length > 0 && (
                 <div className="extension-step-kbd-row">
                   {item.kbd.map((k, idx) => (
@@ -469,8 +485,8 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
               <div key={idx} className="extension-tip-item">
                 <div className="extension-tip-dot" />
                 <div>
-                  <strong className="extension-tip-title">{resolveText(tip.titleKey, tip.titleZh, tip.titleEn)}:</strong>{' '}
-                  <span className="extension-tip-desc">{resolveText(tip.descKey, tip.descZh, tip.descEn)}</span>
+                  <strong className="extension-tip-title">{resolveText(tip.titleKey, tip.titleEn)}:</strong>{' '}
+                  <span className="extension-tip-desc">{resolveText(tip.descKey, tip.descEn)}</span>
                 </div>
               </div>
             ))}
@@ -558,13 +574,20 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
       {/* ── 内置交互式演练沙箱 (Live Playground Modal) ────────────────── */}
       {showPlayground && (
         <div className="extension-modal-backdrop" onClick={() => setShowPlayground(false)}>
-          <div className="extension-modal-container" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="extension-modal-container"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="extension-playground-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="extension-modal-header">
               <div className="extension-modal-title-box">
                 <IconComponent size={20} className="text-primary" />
-                <h3>{plugin?.name || pluginId} - {t('extension.liveDemo')}</h3>
+                <h3 id="extension-playground-modal-title">{plugin?.name || pluginId} - {t('extension.liveDemo')}</h3>
               </div>
               <button
+                ref={modalCloseBtnRef}
                 type="button"
                 className="extension-modal-close"
                 onClick={() => setShowPlayground(false)}
@@ -688,9 +711,7 @@ console.log("${t('extension.mdReadyLog', 'Markdown preview engine is ready!')}")
                     </div>
                     <div className="playground-ai-msg bot">
                       <span>
-                        {isZh
-                          ? t('extGuide.aiResponse', 'Recommend calling WinUtils::trimWorkingSet() uniformly at lifecycle endpoints (cold paths) with lazy resource re-initialization.')
-                          : 'Recommended to trigger WinUtils::trimWorkingSet() strictly on lifecycle cold paths.'}
+                        {t('extGuide.aiResponse', 'Recommend calling WinUtils::trimWorkingSet() uniformly at lifecycle endpoints (cold paths) with lazy resource re-initialization.')}
                       </span>
                     </div>
                   </div>

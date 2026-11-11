@@ -115,6 +115,9 @@ public:
     bool consumeRescannedDuringCatchUp() noexcept {
         return m_RescannedDuringCatchUp.exchange(false, std::memory_order_acq_rel);
     }
+    bool isInitialScanDone() const noexcept {
+        return m_InitialScanDone.load(std::memory_order_acquire);
+    }
 
     char getDriveLetter() const { return m_DriveLetter; }
     UINT getDriveType() const { return m_DriveType; }
@@ -132,9 +135,11 @@ private:
     char m_DriveLetter = 0;
     UINT m_DriveType = DRIVE_UNKNOWN;
     HANDLE m_hVolume = INVALID_HANDLE_VALUE;
+    mutable std::mutex m_UsnMutex;
     USN_JOURNAL_DATA_V0 m_UsnJournalData{};
     std::atomic<uint64_t> m_CurrentUsn{0};
     std::atomic<bool> m_ValidateExistence{false};
+    std::atomic<bool> m_InitialScanDone{false};
 
     // Listener Thread
     std::atomic<bool> m_IsListening{false};
@@ -158,6 +163,13 @@ private:
     bool QueryUsnJournal();
     void EnumerateFilesViaDirectoryWalk(char driveLetter);
     std::wstring buildFullPath(DWORDLONG fileReferenceNumber) const;
+    bool queryFrnDiskMetadata(
+        uint64_t frn,
+        const std::wstring& fallbackPath,
+        uint64_t& outFileSize,
+        uint64_t& outCreationTime,
+        uint64_t& outLastWriteTime
+    ) const noexcept;
 
     bool m_IsFallbackDirectoryWalk{false};
     bool m_Initialized{false};

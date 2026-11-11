@@ -230,12 +230,48 @@ void applyVideoFrameCornerMask(uint8_t* data, int width, int height, int stride,
     applyCorner(width - intR, width, height - intR, height, width - r, height - r);
 }
 
+namespace {
+
+bool isOutsideRoundedCorner(int x, int y, int width, int height, float radius) noexcept {
+    if (radius <= 0.5f || width <= 0 || height <= 0) return false;
+    const float r = (std::min)({radius, static_cast<float>(width) * 0.5f, static_cast<float>(height) * 0.5f});
+    if (r <= 0.5f) return false;
+    const int intR = static_cast<int>(std::ceil(r));
+    float cx = -1.0f;
+    float cy = -1.0f;
+    if (x < intR && y < intR) {
+        cx = r; cy = r;
+    } else if (x >= width - intR && y < intR) {
+        cx = static_cast<float>(width) - r; cy = r;
+    } else if (x < intR && y >= height - intR) {
+        cx = r; cy = static_cast<float>(height) - r;
+    } else if (x >= width - intR && y >= height - intR) {
+        cx = static_cast<float>(width) - r; cy = static_cast<float>(height) - r;
+    } else {
+        return false;
+    }
+    const float dx = (static_cast<float>(x) + 0.5f) - cx;
+    const float dy = (static_cast<float>(y) + 0.5f) - cy;
+    return (dx * dx + dy * dy) > (r * r);
+}
+
+} // namespace
+
 void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int height, int stride, int bpp) {
+    const bool useTransparency = reserveTransparent;
+    const int maxOpaqueSlots = useTransparency ? 255 : 256;
+
     std::vector<uint32_t> hist(32768, 0);
     for (int y = 0; y < height; y += 2) {
-        const uint8_t* row = srcData + y * stride;
+        const uint8_t* row = srcData + static_cast<std::size_t>(y) * stride;
         for (int x = 0; x < width; x += 2) {
-            const uint8_t* px = row + x * bpp;
+            if (useTransparency && isOutsideRoundedCorner(x, y, width, height, cornerRadius)) {
+                continue;
+            }
+            const uint8_t* px = row + static_cast<std::size_t>(x) * bpp;
+            if (useTransparency && bpp == 4 && px[3] < 128) {
+                continue;
+            }
             int r5 = px[2] >> 3;
             int g5 = px[1] >> 3;
             int b5 = px[0] >> 3;
@@ -253,7 +289,7 @@ void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int h
     std::sort(sortedColors.begin(), sortedColors.end(),
               [](const auto& a, const auto& b) { return a.first > b.first; });
 
-    int numColors = std::min(256, static_cast<int>(sortedColors.size()));
+    int numColors = (std::min)(maxOpaqueSlots, static_cast<int>(sortedColors.size()));
     struct Rgb { uint8_t r, g, b; };
     std::vector<Rgb> paletteRgb(256, {0, 0, 0});
 
@@ -266,16 +302,20 @@ void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int h
         int g = (g5 << 3) | (g5 >> 2);
         int b = (b5 << 3) | (b5 >> 2);
         paletteRgb[i] = { static_cast<uint8_t>(r), static_cast<uint8_t>(g), static_cast<uint8_t>(b) };
-        palette[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+        palette[i] = (0xFFU << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
     }
-    int remain = 256 - numColors;
-    for (int i = numColors; i < 256; ++i) {
+    int remain = maxOpaqueSlots - numColors;
+    for (int i = numColors; i < maxOpaqueSlots; ++i) {
         uint8_t v = (remain > 1) ? static_cast<uint8_t>(((i - numColors) * 255) / (remain - 1)) : 0;
         paletteRgb[i] = { v, v, v };
-        palette[i] = (0xFF << 24) | (v << 16) | (v << 8) | v;
+        palette[i] = (0xFFU << 24) | (static_cast<uint32_t>(v) << 16) | (static_cast<uint32_t>(v) << 8) | static_cast<uint32_t>(v);
+    }
+    if (useTransparency) {
+        paletteRgb[255] = { 0, 0, 0 };
+        palette[255] = 0x00000000U; // Reserved transparent color index for GIF Graphic Control Extension
     }
 
-    int searchCount = (numColors > 0) ? numColors : 256;
+    int searchCount = (numColors > 0) ? numColors : maxOpaqueSlots;
     for (int c15 = 0; c15 < 32768; ++c15) {
         int r5 = (c15 >> 10) & 0x1F;
         int g5 = (c15 >> 5) & 0x1F;
@@ -285,7 +325,7 @@ void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int h
         int b = (b5 << 3) | (b5 >> 2);
 
         int bestIdx = 0;
-        int bestDist = std::numeric_limits<int>::max();
+        int bestDist = (std::numeric_limits<int>::max)();
         for (int i = 0; i < searchCount; ++i) {
             int dr = r - paletteRgb[i].r;
             int dg = g - paletteRgb[i].g;
@@ -311,11 +351,22 @@ void GifPaletteOptimizer::quantizeFrame(const uint8_t* srcData, int width, int h
         std::memcpy(dstPalette, palette, 256 * sizeof(uint32_t));
     }
 
+    const bool useTransparency = reserveTransparent;
+    const bool checkCorners = useTransparency && (cornerRadius > 0.5f);
+
     for (int y = 0; y < height; ++y) {
-        const uint8_t* srcRow = srcData + y * stride;
-        uint8_t* dstRow = dstData + y * dstLinesize;
+        const uint8_t* srcRow = srcData + static_cast<std::size_t>(y) * stride;
+        uint8_t* dstRow = dstData + static_cast<std::size_t>(y) * dstLinesize;
         for (int x = 0; x < width; ++x) {
-            const uint8_t* px = srcRow + x * bpp;
+            if (checkCorners && isOutsideRoundedCorner(x, y, width, height, cornerRadius)) {
+                dstRow[x] = 255;
+                continue;
+            }
+            const uint8_t* px = srcRow + static_cast<std::size_t>(x) * bpp;
+            if (useTransparency && bpp == 4 && px[3] < 128) {
+                dstRow[x] = 255;
+                continue;
+            }
             int c15 = ((px[2] >> 3) << 10) | ((px[1] >> 3) << 5) | (px[0] >> 3);
             dstRow[x] = colorMap[c15];
         }
@@ -377,6 +428,7 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
     m_frameIndex = 0;
     m_audioFrameIndex = 0;
     m_accountedDroppedAudioFrames = 0;
+    m_hasEncodedVideoFrame = false;
     m_audioEncodingFailed = false;
     m_lastFrameTimings = {};
     m_adaptiveFrameStep = 1;
@@ -448,6 +500,9 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
         };
         m_audioCapture.start(audioOptions);
         const auto audioStatus = m_audioCapture.status();
+        // Hold audio producer paused while encoder and capture backend initialize so zero stale
+        // samples accumulate before the first video frame is actually ready to be captured.
+        m_audioCapture.setPaused(true);
         m_options.captureSystemAudio = audioStatus.systemAudioActive;
         m_options.captureMicrophone = audioStatus.microphoneActive;
         std::lock_guard lock(m_statsMutex);
@@ -473,7 +528,6 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
     m_skipCountdown.store(false);
 
     const bool countingDown = m_options.countdownSeconds > 0;
-    if (countingDown) m_audioCapture.setPaused(true);
     {
         std::lock_guard lock(m_statsMutex);
         m_stats.countdownRemaining = countingDown ? m_options.countdownSeconds : 0;
@@ -517,7 +571,7 @@ void ScreenRecorder::pauseRecording() {
 void ScreenRecorder::resumeRecording() {
     std::lock_guard controlLock(m_controlMutex);
     if (m_state == RecordState::Paused) {
-        m_audioCapture.setPaused(false);
+        m_audioCapture.resetAndResumeForSyncStart();
         m_state = RecordState::Recording;
         LOG_INFO("屏幕录制已恢复");
         notifyState(RecordState::Recording);
@@ -645,10 +699,8 @@ void ScreenRecorder::recordingLoop() {
                     std::lock_guard lock(m_statsMutex);
                     m_stats.countdownRemaining = 0;
                 }
-                m_audioCapture.setPaused(false);
                 m_state = RecordState::Recording;
                 notifyState(RecordState::Recording);
-                nextFrameAt = clock::now();
             }
         }
         if (m_state != RecordState::Idle && !initializeCaptureResources()) {
@@ -658,6 +710,14 @@ void ScreenRecorder::recordingLoop() {
                 m_stats.stopReason = "capture_initialization_failed";
             }
             m_state = RecordState::Idle;
+        }
+        if (m_state != RecordState::Idle) {
+            m_audioFrameIndex = 0;
+            m_accountedDroppedAudioFrames = 0;
+            if (m_state == RecordState::Recording) {
+                m_audioCapture.resetAndResumeForSyncStart();
+            }
+            nextFrameAt = clock::now();
         }
         while (m_state != RecordState::Idle) {
             if (m_state == RecordState::Paused) {
@@ -1476,6 +1536,53 @@ bool ScreenRecorder::captureAndEncodeFrame() {
     CaptureFrameView captured;
     std::string captureError;
     if (!m_captureBackend->capture(captured, captureError)) {
+        if (isDesktopTemporarilyInaccessible()) {
+            // Secure desktop (UAC prompt / Win+L lock screen): keep constant-timeline encoding
+            // alive by reusing the last valid encoded frame (or encoding a solid black frame
+            // if the session started directly on a secure desktop).
+            const auto capturedAt = clock::now();
+            if (!m_hasEncodedVideoFrame) {
+                const std::size_t rowBytes = static_cast<std::size_t>(m_options.width) * 3ULL;
+                std::vector<uint8_t> blackBgr(rowBytes * static_cast<std::size_t>(m_options.height), 0);
+                if (m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8) {
+                    if (!m_gifOptimizer) {
+                        m_gifOptimizer = std::make_unique<GifPaletteOptimizer>();
+                    }
+                    m_gifOptimizer->reserveTransparent = (m_options.cornerRadius > 0.5f);
+                    m_gifOptimizer->cornerRadius = m_options.cornerRadius;
+                    if (av_frame_make_writable(frame) < 0) return false;
+                    m_gifOptimizer->quantizeFrame(
+                        blackBgr.data(), m_options.width, m_options.height,
+                        static_cast<int>(rowBytes), 3,
+                        frame->data[0], frame->linesize[0],
+                        reinterpret_cast<uint32_t*>(frame->data[1]));
+                } else {
+                    if (!ensureScaler(CapturePixelFormat::Bgr24)) return false;
+                    auto* swsCtx = static_cast<SwsContext*>(m_swsCtx);
+                    const uint8_t* srcSlice[] = { blackBgr.data() };
+                    int srcStride[] = { static_cast<int>(rowBytes) };
+                    if (av_frame_make_writable(frame) < 0 ||
+                        sws_scale(swsCtx, srcSlice, srcStride, 0, m_options.height,
+                                  frame->data, frame->linesize) <= 0) {
+                        return false;
+                    }
+                }
+                m_hasEncodedVideoFrame = true;
+            }
+            const auto convertedAt = clock::now();
+            frame->pts = m_frameIndex++;
+            if (avcodec_send_frame(codecCtx, frame) < 0) return false;
+            const bool written = writeAvailablePackets();
+            const auto encodedAt = clock::now();
+            const auto milliseconds = [](auto duration) {
+                return std::chrono::duration<double, std::milli>(duration).count();
+            };
+            m_lastFrameTimings.captureMs = milliseconds(capturedAt - pipelineStarted);
+            m_lastFrameTimings.conversionMs = milliseconds(convertedAt - capturedAt);
+            m_lastFrameTimings.encodeMs = milliseconds(encodedAt - convertedAt);
+            m_lastFrameTimings.totalMs = milliseconds(encodedAt - pipelineStarted);
+            return written;
+        }
         LOG_ERROR("录屏帧捕获失败: backend={}, error={}",
                   m_captureBackend->info().id, captureError);
         return false;
@@ -1498,18 +1605,34 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         {m_options.regionX, m_options.regionY, m_options.width, m_options.height},
         m_options.includeCursor, m_options.showClickEffects, m_options.showClickZoom);
 
-    if (m_options.cornerRadius > 0.5f) {
+    const bool isPal8Gif = (m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8);
+    if (m_options.cornerRadius > 0.5f && !isPal8Gif) {
         applyVideoFrameCornerMask(captured.data, m_options.width, m_options.height, captured.stride, captured.format, m_options.cornerRadius);
     }
 
     if (m_snapshotRequested.exchange(false)) {
-        dispatchSnapshotSave(captured.data, m_options.width, m_options.height, captured.stride, captured.format);
+        if (m_options.cornerRadius > 0.5f && isPal8Gif) {
+            const int bpp = (captured.format == CapturePixelFormat::Bgra32) ? 4 : 3;
+            const int snapStride = m_options.width * bpp;
+            std::vector<uint8_t> snapBuf(static_cast<std::size_t>(snapStride) * static_cast<std::size_t>(m_options.height));
+            for (int y = 0; y < m_options.height; ++y) {
+                std::memcpy(snapBuf.data() + static_cast<std::size_t>(y) * snapStride,
+                            captured.data + static_cast<std::size_t>(y) * captured.stride,
+                            static_cast<std::size_t>(snapStride));
+            }
+            applyVideoFrameCornerMask(snapBuf.data(), m_options.width, m_options.height, snapStride, captured.format, m_options.cornerRadius);
+            dispatchSnapshotSave(snapBuf.data(), m_options.width, m_options.height, snapStride, captured.format);
+        } else {
+            dispatchSnapshotSave(captured.data, m_options.width, m_options.height, captured.stride, captured.format);
+        }
     }
 
-    if (m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8) {
+    if (isPal8Gif) {
         if (!m_gifOptimizer) {
             m_gifOptimizer = std::make_unique<GifPaletteOptimizer>();
         }
+        m_gifOptimizer->reserveTransparent = (m_options.cornerRadius > 0.5f);
+        m_gifOptimizer->cornerRadius = m_options.cornerRadius;
         if (av_frame_make_writable(frame) < 0) return false;
         int bpp = captured.format == CapturePixelFormat::Bgra32 ? 4 : 3;
         m_gifOptimizer->quantizeFrame(
@@ -1538,6 +1661,9 @@ bool ScreenRecorder::captureAndEncodeFrame() {
     if (ret < 0) return false;
 
     const bool written = writeAvailablePackets();
+    if (written) {
+        m_hasEncodedVideoFrame = true;
+    }
     const auto encodedAt = clock::now();
     const auto milliseconds = [](auto duration) {
         return std::chrono::duration<double, std::milli>(duration).count();

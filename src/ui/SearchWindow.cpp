@@ -266,9 +266,13 @@ bool SearchWindow::isVisible() const {
 }
 
 void SearchWindow::destroy() {
+    ++m_generation;
     m_suspendController.abandon();
+    if (m_controller) {
+        m_controller->Close();
+        m_controller = nullptr;
+    }
     m_webView = nullptr;
-    m_controller = nullptr;
     m_environment = nullptr;
 
     const HWND hwnd = std::exchange(m_hwnd, nullptr);

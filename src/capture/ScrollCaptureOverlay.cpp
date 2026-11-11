@@ -280,6 +280,107 @@ void ScrollCaptureOverlay::unregisterTransientHotkeys() {
     m_hotkeysRegistered = false;
 }
 
+void ScrollCaptureOverlay::releaseLayeredDib(LayeredDibCache& cache) noexcept {
+    if (cache.memDc && cache.oldBmp) {
+        SelectObject(cache.memDc, cache.oldBmp);
+        cache.oldBmp = nullptr;
+    }
+    if (cache.dib) {
+        DeleteObject(cache.dib);
+        cache.dib = nullptr;
+    }
+    cache.bits = nullptr;
+    if (cache.memDc) {
+        DeleteDC(cache.memDc);
+        cache.memDc = nullptr;
+    }
+    cache.width = 0;
+    cache.height = 0;
+}
+
+bool ScrollCaptureOverlay::ensureLayeredDib(HDC screenDc, int width, int height, LayeredDibCache& cache) noexcept {
+    if (!screenDc || width <= 0 || height <= 0 || width > 32768 || height > 32768) {
+        return false;
+    }
+    const uint64_t totalBytes = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ULL;
+    if (totalBytes == 0 || totalBytes > (512ULL * 1024ULL * 1024ULL)) {
+        return false;
+    }
+
+    if (cache.memDc && cache.dib && cache.bits && cache.width == width && cache.height == height) {
+        std::memset(cache.bits, 0, static_cast<std::size_t>(totalBytes));
+        return true;
+    }
+
+    releaseLayeredDib(cache);
+
+    HDC memDc = CreateCompatibleDC(screenDc);
+    if (!memDc) {
+        return false;
+    }
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!dib || !bits) {
+        if (dib) DeleteObject(dib);
+        DeleteDC(memDc);
+        return false;
+    }
+
+    HGDIOBJ oldBmp = SelectObject(memDc, dib);
+    if (!oldBmp || oldBmp == HGDI_ERROR) {
+        DeleteObject(dib);
+        DeleteDC(memDc);
+        return false;
+    }
+
+    cache.memDc = memDc;
+    cache.dib = dib;
+    cache.oldBmp = oldBmp;
+    cache.bits = bits;
+    cache.width = width;
+    cache.height = height;
+    return true;
+}
+
+void ScrollCaptureOverlay::handleMainTargetDeviceLost() noexcept {
+    m_d2dBitmap.Reset();
+    m_brushFlash.Reset();
+    m_brushBorder.Reset();
+    m_brushBg.Reset();
+    m_renderTarget.Reset();
+    m_previewDirty = true;
+}
+
+void ScrollCaptureOverlay::handleControlTargetDeviceLost() noexcept {
+    m_ctrlPanelBg.Reset();
+    m_ctrlPanelBorder.Reset();
+    m_ctrlPanelInnerHighlight.Reset();
+    m_ctrlDividerBrush.Reset();
+    m_ctrlTextPrimary.Reset();
+    m_ctrlTextSecondary.Reset();
+    m_ctrlTextOnPrimary.Reset();
+    m_ctrlDotBrush.Reset();
+    m_ctrlBtnHoverBg.Reset();
+    m_ctrlBtnPressBg.Reset();
+    m_ctrlKeycapBg.Reset();
+    m_ctrlKeycapPrimaryBg.Reset();
+    m_ctrlAccentBg.Reset();
+    m_ctrlAccentHoverBg.Reset();
+    m_ctrlDangerHoverBg.Reset();
+    m_ctrlDangerIconBrush.Reset();
+    m_controlRenderTarget.Reset();
+    m_controlBarDirty = true;
+}
+
 void ScrollCaptureOverlay::hide() {
     if (m_overlayVisibleFlag) {
         m_overlayVisibleFlag = false;
@@ -307,36 +408,19 @@ void ScrollCaptureOverlay::hide() {
     m_layoutCacheValid = false;
     m_controlBarDirty = true;
 
-    m_ctrlPanelBg.Reset();
-    m_ctrlPanelBorder.Reset();
-    m_ctrlPanelInnerHighlight.Reset();
-    m_ctrlDividerBrush.Reset();
-    m_ctrlTextPrimary.Reset();
-    m_ctrlTextSecondary.Reset();
-    m_ctrlTextOnPrimary.Reset();
-    m_ctrlDotBrush.Reset();
-    m_ctrlBtnHoverBg.Reset();
-    m_ctrlBtnPressBg.Reset();
-    m_ctrlKeycapBg.Reset();
-    m_ctrlKeycapPrimaryBg.Reset();
-    m_ctrlAccentBg.Reset();
-    m_ctrlAccentHoverBg.Reset();
-    m_ctrlDangerHoverBg.Reset();
-    m_ctrlDangerIconBrush.Reset();
+    handleControlTargetDeviceLost();
     m_roundStrokeStyle.Reset();
 
-    m_brushFlash.Reset();
-    m_brushBorder.Reset();
-    m_brushBg.Reset();
-    m_d2dBitmap.Reset();
+    handleMainTargetDeviceLost();
     m_statusFormat.Reset();
     m_metricsFormat.Reset();
     m_btnLabelFormat.Reset();
     m_keycapFormat.Reset();
-    m_controlRenderTarget.Reset();
-    m_renderTarget.Reset();
     m_dwriteFactory.Reset();
     m_d2dFactory.Reset();
+
+    releaseLayeredDib(m_controlDibCache);
+    releaseLayeredDib(m_overlayDibCache);
 }
 
 bool ScrollCaptureOverlay::createResources() {
@@ -723,7 +807,8 @@ void ScrollCaptureOverlay::updatePreview(const cv::Mat& stitched, int frameCount
 }
 
 void ScrollCaptureOverlay::render() {
-    if (!m_hwnd || !m_renderTarget) return;
+    if (!m_hwnd) return;
+    if (!m_renderTarget && !createResources()) return;
 
     syncPauseHotkeyWithRuntimeState();
 
@@ -734,22 +819,18 @@ void ScrollCaptureOverlay::render() {
     if (width <= 0 || height <= 0) return;
 
     HDC hdcScreen = GetDC(nullptr);
-    HDC hdcMemory = CreateCompatibleDC(hdcScreen);
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    void* pBits = nullptr;
-    HBITMAP hbmp = CreateDIBSection(hdcScreen, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-    HBITMAP hbmpOld = static_cast<HBITMAP>(SelectObject(hdcMemory, hbmp));
+    if (!hdcScreen) return;
+    if (!ensureLayeredDib(hdcScreen, width, height, m_overlayDibCache)) {
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
 
     RECT bindRect = {0, 0, width, height};
-    m_renderTarget->BindDC(hdcMemory, &bindRect);
+    if (FAILED(m_renderTarget->BindDC(m_overlayDibCache.memDc, &bindRect))) {
+        handleMainTargetDeviceLost();
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
 
     m_renderTarget->BeginDraw();
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
@@ -867,16 +948,20 @@ void ScrollCaptureOverlay::render() {
         }
     }
 
-    m_renderTarget->EndDraw();
+    const HRESULT endHr = m_renderTarget->EndDraw();
+    if (endHr == D2DERR_RECREATE_TARGET || endHr == DXGI_ERROR_DEVICE_REMOVED || endHr == DXGI_ERROR_DEVICE_RESET) {
+        handleMainTargetDeviceLost();
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
 
-    POINT ptSrc = {0, 0};
-    SIZE size = {width, height};
-    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    UpdateLayeredWindow(m_hwnd, hdcScreen, nullptr, &size, hdcMemory, &ptSrc, 0, &blend, ULW_ALPHA);
+    if (SUCCEEDED(endHr)) {
+        POINT ptSrc = {0, 0};
+        SIZE size = {width, height};
+        BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(m_hwnd, hdcScreen, nullptr, &size, m_overlayDibCache.memDc, &ptSrc, 0, &blend, ULW_ALPHA);
+    }
 
-    SelectObject(hdcMemory, hbmpOld);
-    DeleteObject(hbmp);
-    DeleteDC(hdcMemory);
     ReleaseDC(nullptr, hdcScreen);
 
     m_lastThumbScreenRect = thumbScreenRect;
@@ -886,7 +971,8 @@ void ScrollCaptureOverlay::render() {
 }
 
 void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
-    if (!m_controlHwnd || !m_controlRenderTarget) return;
+    if (!m_controlHwnd) return;
+    if (!m_controlRenderTarget && !createResources()) return;
 
     const float s = m_dpiScale;
     const auto state = ScrollCapture::instance().runtimeState();
@@ -967,28 +1053,18 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
     if (width <= 0 || height <= 0) return;
 
     HDC hdcScreen = GetDC(nullptr);
-    HDC hdcMemory = CreateCompatibleDC(hdcScreen);
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    void* pBits = nullptr;
-    HBITMAP hbmp = CreateDIBSection(hdcScreen, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-    if (!hdcMemory || !hbmp || !pBits) {
-        if (hbmp) DeleteObject(hbmp);
-        if (hdcMemory) DeleteDC(hdcMemory);
+    if (!hdcScreen) return;
+    if (!ensureLayeredDib(hdcScreen, width, height, m_controlDibCache)) {
         ReleaseDC(nullptr, hdcScreen);
         return;
     }
-    HBITMAP hbmpOld = static_cast<HBITMAP>(SelectObject(hdcMemory, hbmp));
 
     RECT bindRect = {0, 0, width, height};
-    m_controlRenderTarget->BindDC(hdcMemory, &bindRect);
+    if (FAILED(m_controlRenderTarget->BindDC(m_controlDibCache.memDc, &bindRect))) {
+        handleControlTargetDeviceLost();
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
 
     m_controlRenderTarget->BeginDraw();
     m_controlRenderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
@@ -1137,11 +1213,15 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
     }
 
     const HRESULT endHr = m_controlRenderTarget->EndDraw();
-    if (SUCCEEDED(endHr)) {
+    if (endHr == D2DERR_RECREATE_TARGET ||
+        endHr == DXGI_ERROR_DEVICE_REMOVED ||
+        endHr == DXGI_ERROR_DEVICE_RESET) {
+        handleControlTargetDeviceLost();
+    } else if (SUCCEEDED(endHr)) {
         POINT ptSrc = {0, 0};
         SIZE size = {width, height};
         BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-        UpdateLayeredWindow(m_controlHwnd, hdcScreen, nullptr, &size, hdcMemory, &ptSrc, 0, &blend, ULW_ALPHA);
+        UpdateLayeredWindow(m_controlHwnd, hdcScreen, nullptr, &size, m_controlDibCache.memDc, &ptSrc, 0, &blend, ULW_ALPHA);
         m_controlBarDirty = false;
         m_lastRenderedState = state;
         m_lastRenderedWorkWidth = workWidth;
@@ -1152,9 +1232,6 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
         m_lastRenderedMetrics = metricsStr;
     }
 
-    SelectObject(hdcMemory, hbmpOld);
-    DeleteObject(hbmp);
-    DeleteDC(hdcMemory);
     ReleaseDC(nullptr, hdcScreen);
 }
 

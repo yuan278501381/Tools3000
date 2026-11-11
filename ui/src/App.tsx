@@ -21,6 +21,7 @@ import { SavedToast } from './components/SavedToast';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { getPageMetadata, PAGE_DEFINITIONS } from './pages/registry';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
+import { useAppearance } from './hooks/useAppearance';
 import { shouldShowOnboarding } from './onboardingGate';
 import { Toaster } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -60,8 +61,21 @@ const getInitialActivePluginIds = (): string[] | null => {
   return null;
 };
 
+function readStoredThemePreference(): ThemePreference {
+  try {
+    const raw = localStorage.getItem('tools3000:theme');
+    if (raw === 'light' || raw === 'dark' || raw === 'system') {
+      return raw;
+    }
+  } catch {
+    // 忽略本地存储读取异常
+  }
+  return 'system';
+}
+
 function App() {
-  const { t, i18n } = useTranslation();
+  useAppearance();
+  const { t } = useTranslation();
   const [activePluginIds, setActivePluginIds] = useState<string[] | null>(() => getInitialActivePluginIds());
   const [activeNav, setActiveNav] = useState<NavId>(() => {
     try {
@@ -90,7 +104,7 @@ function App() {
     window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 
   const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme());
-  const [themePreference, setThemePreference] = useState<ThemePreference>('system');
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => readStoredThemePreference());
   const [accent, setAccent] = useState<string>(() => {
     try {
       return localStorage.getItem('tools3000:accent-color') || 'blue';
@@ -177,9 +191,9 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    bridgeRequest<{ theme?: string; language?: string; accentColor?: string; elevated?: boolean }>('general.getSettings')
+    bridgeRequest<{ theme?: string; accentColor?: string; elevated?: boolean }>('general.getSettings')
       .then((settings) => {
-        if (cancelled) return;
+        if (cancelled || !settings) return;
         if (typeof settings.elevated === 'boolean') {
           setIsElevated(settings.elevated);
         }
@@ -189,18 +203,21 @@ function App() {
         if (typeof settings.accentColor === 'string' && settings.accentColor) {
           setAccent(settings.accentColor);
         }
-        if (settings.language && settings.language !== 'auto') {
-          const targetLang = settings.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
-          if (i18n.language !== targetLang) {
-            void i18n.changeLanguage(targetLang);
-          }
-        }
       })
       .catch(console.error);
     return () => { cancelled = true; };
-    // 见 GeneralPage：不能把 i18n 放进依赖，否则 changeLanguage 会形成 IPC 风暴。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useBridgeEvent('appearance:changed', (data: unknown) => {
+    if (!data || typeof data !== 'object') return;
+    const payload = data as { theme?: unknown; accentColor?: unknown };
+    if (payload.theme === 'light' || payload.theme === 'dark' || payload.theme === 'system') {
+      setThemePreference(payload.theme);
+    }
+    if (typeof payload.accentColor === 'string' && payload.accentColor) {
+      setAccent(payload.accentColor);
+    }
+  });
 
   // 检查是否需要显示首次引导（综合判定首次运行或用户在通用设置中显式手动开启）
   useEffect(() => {
@@ -228,7 +245,7 @@ function App() {
     bridgeRequest('general.updateSettings', { showOnboarding: false }, { silent: true }).catch(console.error);
   }, []);
 
-  // 监听系统主题变化；只在“跟随系统”时影响最终主题。
+  // 监听系统主题变化；只在“跟随系统”时影响 Toaster 等组件状态，DOM 同步由 useAppearance 统一负责。
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = (e: MediaQueryListEvent) => {
@@ -237,15 +254,6 @@ function App() {
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
-
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-  }, [theme]);
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-accent', accent);
-  }, [accent]);
 
   useEffect(() => {
     if (showOnboarding) return;
@@ -264,40 +272,69 @@ function App() {
       const newAccent = (event as CustomEvent<string>).detail;
       if (newAccent) {
         setAccent(newAccent);
-        try {
-          localStorage.setItem('tools3000:accent-color', newAccent);
-        } catch (e) {
-          void e;
-        }
+      }
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'tools3000:theme' && (event.newValue === 'system' || event.newValue === 'dark' || event.newValue === 'light')) {
+        setThemePreference(event.newValue);
+      }
+      if (event.key === 'tools3000:accent-color' && event.newValue) {
+        setAccent(event.newValue);
       }
     };
     window.addEventListener('tools3000:theme-changed', handlePreference);
     window.addEventListener('tools3000:accent-changed', handleAccent);
+    window.addEventListener('storage', handleStorage);
     return () => {
       window.removeEventListener('tools3000:theme-changed', handlePreference);
       window.removeEventListener('tools3000:accent-changed', handleAccent);
+      window.removeEventListener('storage', handleStorage);
     };
   }, []);
 
-  const standardPluginIds = new Set(['gesture', 'capture', 'search', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost', 'remote']);
-  const installedExtensionIds = plugins
-    .filter((p) => !standardPluginIds.has(p.id) && p.enabled && p.active)
-    .map((p) => p.id);
+  const installedExtensions = useMemo(() => {
+    const standardPluginIds = new Set([
+      'gesture',
+      'capture',
+      'search',
+      'keycast',
+      'spotlight',
+      'dialogenhancer',
+      'dialog_enhancer',
+      'remote_boost',
+      'remote',
+    ]);
+    return plugins.filter((p) => !standardPluginIds.has(p.id) && p.enabled && p.active);
+  }, [plugins]);
+
+  const installedExtensionIds = useMemo(
+    () => installedExtensions.map((p) => p.id),
+    [installedExtensions],
+  );
 
   // 检查目标页面是否所属插件已启用。若未启用则阻断渲染并触发回退，节省 WebView2 物理内存
   const isNavActive = useCallback((navId: NavId): boolean => {
     const pageDef = PAGE_DEFINITIONS.find((p) => p.id === navId);
-    if (pageDef?.requiresPlugin) {
-      if (pageDef.requiresPlugin === 'dialogenhancer' || pageDef.requiresPlugin === 'dialog_enhancer') {
-        return activePlugins.has('dialogenhancer') || activePlugins.has('dialog_enhancer');
+    if (pageDef) {
+      if (pageDef.requiresPlugin) {
+        if (pageDef.requiresPlugin === 'dialogenhancer' || pageDef.requiresPlugin === 'dialog_enhancer') {
+          return activePlugins.has('dialogenhancer') || activePlugins.has('dialog_enhancer');
+        }
+        return activePlugins.has(pageDef.requiresPlugin);
       }
-      return activePlugins.has(pageDef.requiresPlugin);
+      if (pageDef.category === 'extension') {
+        if (plugins.length === 0 && activePluginIds) {
+          return activePluginIds.includes(navId);
+        }
+        return installedExtensionIds.includes(navId);
+      }
+      return true;
     }
-    if (pageDef?.category === 'extension') {
-      return installedExtensionIds.includes(navId);
+    if (plugins.length === 0 && activePluginIds) {
+      return activePluginIds.includes(navId);
     }
-    return true;
-  }, [activePlugins, installedExtensionIds]);
+    return installedExtensionIds.includes(navId);
+  }, [activePlugins, activePluginIds, installedExtensionIds, plugins.length]);
 
   // 当插件状态变更或初次加载完毕时，若当前页面已被停用，自动优雅回退到通用设置
   useEffect(() => {
@@ -308,6 +345,19 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [activeNav, isNavActive, handleNavSelect]);
+
+  const renderExtensionView = (extId: string) => (
+    <ExtensionPage
+      pluginId={extId}
+      plugin={plugins.find((p) => p.id === extId)}
+      onUninstall={() => {
+        handleNavSelect('plugins');
+        void bridgeRequest<PluginStatus[]>('plugins.getAll').then((items) =>
+          setPlugins(Array.isArray(items) ? items : [])
+        );
+      }}
+    />
+  );
 
   // 渲染当前页面：未启用页面的组件绝不挂载到 DOM 中，以阻断资源预载并释放内存
   const renderPage = () => {
@@ -333,21 +383,17 @@ function App() {
       case 'color_picker':
       case 'clipboard_manager':
       case 'markdown_preview':
-        return (
-          <ExtensionPage
-            pluginId={activeNav}
-            plugin={plugins.find((p) => p.id === activeNav)}
-            onUninstall={() => {
-              handleNavSelect('plugins');
-              void bridgeRequest<PluginStatus[]>('plugins.getAll').then((items) =>
-                setPlugins(Array.isArray(items) ? items : [])
-              );
-            }}
-          />
-        );
-      default:          return <KeyStatsPage />;
+        return renderExtensionView(activeNav);
+      default:
+        if (installedExtensionIds.includes(activeNav) || activePluginIds?.includes(activeNav)) {
+          return renderExtensionView(activeNav);
+        }
+        return <GeneralPage />;
     }
   };
+
+  const activePluginMeta = plugins.find((p) => p.id === activeNav);
+  const pageMeta = getPageMetadata(activeNav);
 
   return (
     <div className="app">
@@ -356,6 +402,11 @@ function App() {
         themePreference={themePreference}
         onSelectThemePreference={(pref) => {
           setThemePreference(pref);
+          try {
+            localStorage.setItem('tools3000:theme', pref);
+          } catch (e) {
+            void e;
+          }
           bridgeRequest<{ success: boolean }>('general.updateSettings', { theme: pref }).catch(console.error);
           window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: pref }));
         }}
@@ -377,16 +428,21 @@ function App() {
           onNavigate={handleNavSelect}
           activePlugins={activePlugins}
           installedExtensionIds={installedExtensionIds}
+          installedExtensions={installedExtensions}
         />
         <main className="app__main" aria-labelledby="app-page-title">
           <Toaster position="bottom-right" theme={theme} richColors expand={true} />
           {/* ── 页面头部 ────────────────────────────────────── */}
           <header className="app__header">
             <div className="app__header-text">
-              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-              <h1 id="app-page-title" ref={pageTitleRef} tabIndex={-1} className="app__header-title">{t(getPageMetadata(activeNav).titleKey as any)}</h1>
-              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-              <p className="app__header-subtitle">{t(getPageMetadata(activeNav).subtitleKey as any)}</p>
+              <h1 id="app-page-title" ref={pageTitleRef} tabIndex={-1} className="app__header-title">
+                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                {activePluginMeta ? t(pageMeta.titleKey as any, { defaultValue: activePluginMeta.name }) : t(pageMeta.titleKey as any)}
+              </h1>
+              <p className="app__header-subtitle">
+                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                {activePluginMeta ? t(pageMeta.subtitleKey as any, { defaultValue: activePluginMeta.fileName }) : t(pageMeta.subtitleKey as any)}
+              </p>
             </div>
           </header>
 

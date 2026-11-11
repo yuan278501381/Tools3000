@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronUp, Check, X } from 'lucide-react';
 import { ControlA11yContext, useControlA11y } from './ControlA11yContext';
+import { acquireHotkeyPause, releaseHotkeyPause } from '../utils/hotkeyPauseCoordinator';
 import './UIKit.css';
 
 /* ── Card ─────────────────────────────────────────────────────────────────── */
@@ -606,9 +607,40 @@ interface HotkeyInputProps {
 
 export const HotkeyInput: FC<HotkeyInputProps> = ({ id, value, onChange, placeholder }) => {
   const { t } = useTranslation();
+  const holdsPauseLockRef = useRef(false);
+
+  const lockPause = useCallback(() => {
+    if (!holdsPauseLockRef.current) {
+      holdsPauseLockRef.current = true;
+      acquireHotkeyPause();
+    }
+  }, []);
+
+  const unlockPause = useCallback(() => {
+    if (holdsPauseLockRef.current) {
+      holdsPauseLockRef.current = false;
+      releaseHotkeyPause();
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      unlockPause();
+    };
+  }, [unlockPause]);
+
   const onKeyDown = useCallback((e: ReactKeyboardEvent<HTMLInputElement>) => {
     e.preventDefault();
+    e.stopPropagation();
     const k = e.key;
+    if (k === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      e.currentTarget.blur();
+      return;
+    }
+    if (k === 'Backspace' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      onChange('');
+      return;
+    }
     if (k === 'Control' || k === 'Alt' || k === 'Shift' || k === 'Meta') return;
 
     const mods: string[] = [];
@@ -629,6 +661,8 @@ export const HotkeyInput: FC<HotkeyInputProps> = ({ id, value, onChange, placeho
       value={value}
       placeholder={placeholder ?? t('hotkey.pressKeys')}
       readOnly
+      onFocus={lockPause}
+      onBlur={unlockPause}
       onKeyDown={onKeyDown}
     />
   );
@@ -714,7 +748,7 @@ export const Modal: FC<ModalProps> = ({ open, title, onClose, children, footer }
       >
         <div className="uikit-modal__header">
           <h3 id={titleId} className="uikit-modal__title">{title}</h3>
-          <button className="uikit-modal__close" onClick={onClose} aria-label={t('common.close')}>
+          <button type="button" className="uikit-modal__close" onClick={onClose} aria-label={t('common.close')}>
             <X size={16} strokeWidth={2.2} />
           </button>
         </div>

@@ -486,13 +486,15 @@ export default function SearchApp() {
         isDirectory,
         ...(filePath ? { path: filePath } : {}),
       });
-      const iconVal = resp?.success && resp.iconBase64 ? resp.iconBase64 : '';
+      if (!resp?.success) {
+        return undefined;
+      }
+      const iconVal = resp.iconBase64 || '';
       nativeIconCacheRef.current[key] = iconVal;
       setNativeIconCache(prev => (prev[key] === iconVal ? prev : { ...prev, [key]: iconVal }));
       return iconVal || undefined;
     } catch {
-      nativeIconCacheRef.current[key] = '';
-      setNativeIconCache(prev => (Object.prototype.hasOwnProperty.call(prev, key) ? prev : { ...prev, [key]: '' }));
+      // IPC 异常或超时时不写入永久空串负缓存，允许后续滚动或重绘时重试
     } finally {
       inFlightIconsRef.current.delete(key);
     }
@@ -500,7 +502,7 @@ export default function SearchApp() {
   }, []);
 
   const prefetchIcons = useCallback(async (list: SearchResult[]) => {
-    if (iconStyle !== 'native') return;
+    if (iconStyle !== 'native' || list.length === 0) return;
     const missing = new Set<string>();
     const items: Array<{ key: string; ext: string; isDirectory: boolean; path?: string }> = [];
     for (const item of list.slice(0, 100)) {
@@ -523,30 +525,28 @@ export default function SearchApp() {
     if (items.length === 0) return;
     missing.forEach(k => inFlightIconsRef.current.add(k));
     try {
-      const resp = await bridgeRequest<{ success: boolean; icons: Record<string, string> }>('search.batchGetIcons', { items });
-      const returned = resp?.success && resp.icons ? resp.icons : {};
+      const resp = await bridgeRequest<{ success: boolean; icons?: Record<string, string> }>('search.batchGetIcons', { items });
+      if (!resp?.success || !resp.icons) {
+        return;
+      }
+      const returned = resp.icons;
       const patch: Record<string, string> = {};
       for (const key of missing) {
-        const val = returned[key] || '';
-        nativeIconCacheRef.current[key] = val;
-        patch[key] = val;
+        if (Object.prototype.hasOwnProperty.call(returned, key)) {
+          const val = returned[key] || '';
+          nativeIconCacheRef.current[key] = val;
+          patch[key] = val;
+        }
       }
-      setNativeIconCache(prev => ({ ...prev, ...patch }));
+      if (Object.keys(patch).length > 0) {
+        setNativeIconCache(prev => ({ ...prev, ...patch }));
+      }
     } catch {
-      // Allow retry on transient IPC error
+      // Allow retry on transient IPC error without poisoning negative cache
     } finally {
       missing.forEach(k => inFlightIconsRef.current.delete(k));
     }
   }, [iconStyle]);
-
-  useEffect(() => {
-    if (results.length > 0) {
-      const timer = window.setTimeout(() => {
-        void prefetchIcons(results);
-      }, 0);
-      return () => window.clearTimeout(timer);
-    }
-  }, [prefetchIcons, results]);
 
   const changeIconStyle = (newStyle: SearchIconStyle) => {
     setIconStyle(newStyle);
@@ -870,6 +870,21 @@ export default function SearchApp() {
   const sortedResults = useMemo(() => {
     return getSortedResults(snapshot.results, sortField, sortDirection, fileFolderPriority, groupByType, smartPathPriority);
   }, [snapshot.results, sortField, sortDirection, fileFolderPriority, groupByType, smartPathPriority]);
+
+  useEffect(() => {
+    if (sortedResults.length === 0) return;
+    const timer = window.setTimeout(() => {
+      const headSlice = sortedResults.slice(0, 60);
+      if (selectedIndex >= 50) {
+        const winStart = Math.max(60, selectedIndex - 20);
+        const winSlice = sortedResults.slice(winStart, winStart + 40);
+        void prefetchIcons([...headSlice, ...winSlice]);
+      } else {
+        void prefetchIcons(sortedResults.slice(0, 100));
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [prefetchIcons, sortedResults, selectedIndex]);
 
   const totalResultSize = useMemo(() => {
     return sortedResults.reduce((acc, item) => acc + (item.isDirectory ? 0 : (Number(item.size) || 0)), 0);

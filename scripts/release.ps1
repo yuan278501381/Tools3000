@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Tools3000 世界级全自动发版流水线 (DevOps Master Release Pipeline)
 .DESCRIPTION
@@ -13,7 +13,8 @@ param(
     [ValidateSet("Patch", "Minor", "Major")]
     [string]$Bump = "Patch",
     [string]$Version = "",
-    [string]$Title = "",
+    [Alias("Title")]
+    [string]$ReleaseTitle = "",
     [string]$NextFeatureBranch = "",
     [switch]$LocalOnly = $false,             # 仅本地演练发版 (不推送到远端 Git，不发布 GitHub Release)
     [switch]$SkipGitHubPublish = $false      # 推送 Git 标签但跳过 GitHub Release 网页发布
@@ -38,6 +39,7 @@ if ($LASTEXITCODE -ne 0) { throw "无法读取当前 Git 分支，退出码: $LA
 if ([string]::IsNullOrWhiteSpace($CurrentBranch)) {
     throw "无法获取当前 Git 分支，请检查 Git 环境！"
 }
+$OriginalBranch = $CurrentBranch
 
 $DirtyFiles = @(git status --porcelain --untracked-files=all)
 if ($LASTEXITCODE -ne 0) { throw "无法读取 Git 工作树状态，退出码: $LASTEXITCODE" }
@@ -110,7 +112,7 @@ function Generate-UserCentricReleaseNotes {
 
         # 尝试提取 "[业务角度]" 中针对用户体感的描述清单
         $bizItems = [System.Collections.Generic.List[string]]::new()
-        if ($commitMsg -match '(?s)(?:\[业务角度\]|💼\s*业务角度)[：:]?\s*(.*?)(?=(?:\r?\n\s*(?:\[技术角度\]|🔧|💻|⚙️|##)|\z))') {
+        if ($commitMsg -match '(?s)(?:\[业务角度\]|\uD83D\uDCBC\s*业务角度)[：:]?\s*(.*?)(?=(?:\r?\n\s*(?:\[技术角度\]|\uD83D\uDD27|\uD83D\uDCBB|\u2699|##)|\z))') {
             $bizBlock = $Matches[1].Trim()
             $bizLines = $bizBlock -split '\r?\n'
             foreach ($bLine in $bizLines) {
@@ -128,7 +130,7 @@ function Generate-UserCentricReleaseNotes {
         }
 
         # 尝试提取 "[技术角度]" 中架构与底层实现的描述清单
-        if ($commitMsg -match '(?s)(?:\[技术角度\]|🔧\s*技术角度)[：:]?\s*(.*?)(?=(?:\r?\n\s*(?:\[业务角度\]|💼|💻|⚙️|##)|\z))') {
+        if ($commitMsg -match '(?s)(?:\[技术角度\]|\uD83D\uDD27\s*技术角度)[：:]?\s*(.*?)(?=(?:\r?\n\s*(?:\[业务角度\]|\uD83D\uDCBC|\uD83D\uDCBB|\u2699|##)|\z))') {
             $techBlock = $Matches[1].Trim()
             $techLines = $techBlock -split '\r?\n'
             foreach ($tLine in $techLines) {
@@ -175,7 +177,7 @@ function Generate-UserCentricReleaseNotes {
     $sb = [System.Text.StringBuilder]::new()
     $sb.AppendLine("# Tools3000 $TargetTag 官方正式版发布说明") | Out-Null
     $sb.AppendLine() | Out-Null
-    $sb.AppendLine("欢迎体验 **Tools3000 $TargetTag**！本次更新专注于解决日常使用中的体感痛点，全面重构了截图与录屏全链路、大幅升级标注与离线 OCR 能力，并从底层彻底根治系统启动与高并发渲染的稳定性隐患。") | Out-Null
+    $sb.AppendLine("欢迎使用 **Tools3000 $TargetTag** 官方正式版。以下为本次版本的核心功能演进、问题修复与底层架构改进摘要。") | Out-Null
     $sb.AppendLine() | Out-Null
     $sb.AppendLine("---") | Out-Null
     $sb.AppendLine() | Out-Null
@@ -242,29 +244,75 @@ if (-not (Test-Path $NotesFile)) {
     Write-Host "[INFO] 使用已存在的 Release Notes: $NotesFile" -ForegroundColor Cyan
 }
 
-# 4. 更新 VERSION 文件
+# 4. 更新 VERSION 单一事实源，并同步更新 ui/package.json 与 ui/package-lock.json
 Set-Content -Path $VersionFile -Value $TargetVersion -NoNewline -Encoding utf8
 Write-Host "[OK] VERSION 已更新为: $TargetVersion" -ForegroundColor Green
 
-# 5. 在开发分支提交版本升级 commit
-git add VERSION docs/RELEASE_NOTES_$TargetTag.md CHANGELOG.md
+$UiPackageJsonPath = Join-Path $ScriptDir "ui\package.json"
+if (Test-Path -LiteralPath $UiPackageJsonPath) {
+    $pkgRaw = [System.IO.File]::ReadAllText($UiPackageJsonPath, [System.Text.Encoding]::UTF8)
+    $pkgUpdated = [regex]::Replace($pkgRaw, '("version"\s*:\s*")[^"]+(")', "`${1}$TargetVersion`${2}", [System.Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromSeconds(2))
+    # 仅替换顶层第一个 "version" 字段
+    $firstMatch = [regex]::Match($pkgRaw, '"version"\s*:\s*"[^"]+"')
+    if ($firstMatch.Success) {
+        $pkgUpdated = $pkgRaw.Substring(0, $firstMatch.Index) + "`"version`": `"$TargetVersion`"" + $pkgRaw.Substring($firstMatch.Index + $firstMatch.Length)
+        [System.IO.File]::WriteAllText($UiPackageJsonPath, $pkgUpdated, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "[OK] ui/package.json version 已同步为: $TargetVersion" -ForegroundColor Green
+    }
+}
+
+$UiPackageLockPath = Join-Path $ScriptDir "ui\package-lock.json"
+if (Test-Path -LiteralPath $UiPackageLockPath) {
+    $lockRaw = [System.IO.File]::ReadAllText($UiPackageLockPath, [System.Text.Encoding]::UTF8)
+    $lockObj = $lockRaw | ConvertFrom-Json
+    $lockUpdated = $lockRaw
+    # 精准替换顶层与 packages[""] 下的两个根版本号，零扰动保留原始缩进格式
+    $lockMatches = [regex]::Matches($lockRaw, '(?m)^(\s{2,6}"version"\s*:\s*")[^"]+(")')
+    if ($lockMatches.Count -ge 1) {
+        $indicesToReplace = @()
+        for ($mi = 0; $mi -lt [Math]::Min(2, $lockMatches.Count); $mi++) {
+            $m = $lockMatches[$mi]
+            if ($m.Index -lt 600) {
+                $indicesToReplace += $m
+            }
+        }
+        for ($ri = $indicesToReplace.Count - 1; $ri -ge 0; $ri--) {
+            $m = $indicesToReplace[$ri]
+            $replacement = $m.Groups[1].Value + $TargetVersion + $m.Groups[2].Value
+            $lockUpdated = $lockUpdated.Substring(0, $m.Index) + $replacement + $lockUpdated.Substring($m.Index + $m.Length)
+        }
+        [System.IO.File]::WriteAllText($UiPackageLockPath, $lockUpdated, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "[OK] ui/package-lock.json 顶层 version 已同步为: $TargetVersion" -ForegroundColor Green
+    }
+}
+
+# 5. 提交版本升级 commit
+$FilesToStage = @("VERSION", "docs/RELEASE_NOTES_$TargetTag.md")
+if (Test-Path -LiteralPath (Join-Path $ScriptDir "CHANGELOG.md")) { $FilesToStage += "CHANGELOG.md" }
+if (Test-Path -LiteralPath $UiPackageJsonPath) { $FilesToStage += "ui/package.json" }
+if (Test-Path -LiteralPath $UiPackageLockPath) { $FilesToStage += "ui/package-lock.json" }
+git add -- @FilesToStage
 if ($LASTEXITCODE -ne 0) { throw "暂存版本与发布说明失败！" }
 $HasStaged = @(git diff --cached --name-only)
 if ($LASTEXITCODE -ne 0) { throw "无法检查待提交的发布文件！" }
 if ($HasStaged.Count -gt 0) {
-    git commit -m "chore(release): 升级项目版本至 $TargetTag 并同步官方发布日志与版本元数据`n`n[业务角度]`n- 发布 Tools3000 $TargetTag 官方正式版；`n- 同步生成以用户体感与痛点解决为视角的官方 Release Notes。`n`n[技术角度]`n- 升级唯一事实源 VERSION 至 $TargetVersion；`n- 准备主分支发布与资产打包。"
+    git commit -m "chore(release): 升级项目版本至 $TargetTag 并同步官方发布日志与版本元数据`n`n[业务角度]`n- 发布 Tools3000 $TargetTag 官方正式版；`n- 同步生成以用户体感与痛点解决为视角的官方 Release Notes。`n`n[技术角度]`n- 升级唯一事实源 VERSION 与前端包元数据至 $TargetVersion；`n- 准备主分支本地权威签名发布与资产打包。"
     if ($LASTEXITCODE -ne 0) { throw "提交版本元数据失败！" }
     Write-Host "[OK] 版本元数据已在当前分支提交" -ForegroundColor Green
 }
 
-# 6. 切换至 main 分支并执行非快进合并
-Write-Host "[GIT] 切换至 main 分支并执行 --no-ff 显式合并..." -ForegroundColor Cyan
-git checkout main
-if ($LASTEXITCODE -ne 0) { throw "切换至 main 分支失败！" }
+# 6. 合并至 main 分支 (若当前不在 main 分支则执行 --no-ff 显式合并)
+if ($OriginalBranch -ne "main") {
+    Write-Host "[GIT] 切换至 main 分支并执行 --no-ff 显式合并..." -ForegroundColor Cyan
+    git checkout main
+    if ($LASTEXITCODE -ne 0) { throw "切换至 main 分支失败！" }
 
-git merge --no-ff $CurrentBranch -m "merge($CurrentBranch): 合并 $CurrentBranch 分支至 main 分支，发布 $TargetTag 正式版"
-if ($LASTEXITCODE -ne 0) { throw "合并至 main 分支失败！" }
-Write-Host "[OK] main 分支已成功完成显式非快进合并" -ForegroundColor Green
+    git merge --no-ff $OriginalBranch -m "merge($OriginalBranch): 合并 $OriginalBranch 分支至 main 分支，发布 $TargetTag 正式版"
+    if ($LASTEXITCODE -ne 0) { throw "合并至 main 分支失败！" }
+    Write-Host "[OK] main 分支已成功完成显式非快进合并" -ForegroundColor Green
+} else {
+    Write-Host "[GIT] 当前已在 main 分支，直接进入洁净构建与本地权威签名流程..." -ForegroundColor Cyan
+}
 
 # 7. 全量清理并执行本地编译构建与生命周期端到端门禁
 Write-Host "[BUILD] 执行全量编译构建与生命周期测试门禁..." -ForegroundColor Cyan
@@ -275,21 +323,16 @@ foreach ($ArtifactDirectory in @("Output", "deploy_dist", "ui\dist", "release_as
 & pwsh -ExecutionPolicy Bypass -File .\deploy.ps1 -RequireSigning
 if ($LASTEXITCODE -ne 0) { throw "构建部署门禁失败，终止发版！" }
 
-$MainExe = if (Test-Path "deploy_dist\Tools3000.exe") { "deploy_dist\Tools3000.exe" } else { "deploy_dist\Tools3000.exe" }
-$ServiceExe = if (Test-Path "deploy_dist\Tools3000_Service.exe") { "deploy_dist\Tools3000_Service.exe" } else { "deploy_dist\Tools3000_Service.exe" }
 $SignedReleaseInputs = @(
-    $MainExe,
-    $ServiceExe,
-    "deploy_dist\Tools3000Core.dll",
     "Output\Tools3000-Setup.exe"
-) + @(Get-ChildItem "deploy_dist\plugins\Plugin_*.dll" -File | Select-Object -ExpandProperty FullName)
+) + @(Get-ChildItem "deploy_dist" -Include "*.exe", "*.dll" -Recurse -File | Select-Object -ExpandProperty FullName)
 foreach ($SignedInput in $SignedReleaseInputs) {
     $Signature = Get-AuthenticodeSignature -LiteralPath $SignedInput
     if ($Signature.Status -ne "Valid") {
         throw "正式发布签名验证失败: $SignedInput ($($Signature.Status))"
     }
 }
-Write-Host "[OK] 自有二进制与安装包 Authenticode 签名验证通过" -ForegroundColor Green
+Write-Host "[OK] deploy_dist 全部可执行文件/动态库及外层安装包 Authenticode 签名验证通过" -ForegroundColor Green
 
 # 8. EXE 二进制版本强校验门禁
 $BuiltExe = if (Test-Path "deploy_dist\Tools3000.exe") { "deploy_dist\Tools3000.exe" } else { "deploy_dist\Tools3000.exe" }
@@ -314,9 +357,14 @@ Copy-Item $SetupExe $TargetSetup
 $TargetGenericSetup = "$ReleaseDir\Tools3000-Setup.exe"
 Copy-Item $SetupExe $TargetGenericSetup
 
+$PrebuiltPortableZip = "Output\Tools3000-win-x64-portable.zip"
 $TargetZip = "$ReleaseDir\Tools3000-$TargetTag-win-x64-portable.zip"
-Compress-Archive -Path (Join-Path $ScriptDir "deploy_dist\*") `
-    -DestinationPath $TargetZip -CompressionLevel Optimal
+if (Test-Path -LiteralPath $PrebuiltPortableZip) {
+    Copy-Item -LiteralPath $PrebuiltPortableZip -Destination $TargetZip -Force
+} else {
+    Compress-Archive -Path (Join-Path $ScriptDir "deploy_dist\*") `
+        -DestinationPath $TargetZip -CompressionLevel Optimal
+}
 
 $Checksums = @()
 Get-ChildItem -Path $ReleaseDir -File | ForEach-Object {
@@ -371,10 +419,10 @@ if (-not $LocalOnly -and -not $SkipGitHubPublish) {
     if ($ReleaseExists) {
         throw "GitHub Release $TargetTag 已存在；正式发布资产不可覆盖。"
     } else {
-        $ActualTitle = if (-not [string]::IsNullOrWhiteSpace($Title)) {
-            $Title
+        $ActualTitle = if (-not [string]::IsNullOrWhiteSpace($ReleaseTitle)) {
+            $ReleaseTitle
         } else {
-            "Tools3000 $TargetTag - 全场景 Windows 极客级系统效率工具箱正式发布"
+            "Tools3000 $TargetTag"
         }
         gh release create $TargetTag $TargetSetup $TargetGenericSetup $TargetZip $ChecksumFile --title $ActualTitle --notes-file $NotesFile --latest
         if ($LASTEXITCODE -ne 0) { throw "创建 GitHub Release 失败！" }
@@ -384,37 +432,47 @@ if (-not $LocalOnly -and -not $SkipGitHubPublish) {
     Write-Host "[INFO] [LocalOnly] 跳过 GitHub Release 官方发布" -ForegroundColor Yellow
 }
 
-# 12. 检出后续特性分支
-if ([string]::IsNullOrWhiteSpace($NextFeatureBranch)) {
-    $NextFeatureBranch = $CurrentBranch
-    if ($NextFeatureBranch -eq "main" -or $NextFeatureBranch -eq "dev") {
-        $NextFeatureBranch = "feature/optimize-capture-and-recording"
+# 12. 恢复原开发分支或检出显式指定的下一阶段特性分支 (严禁硬编码历史废弃分支)
+$FinalBranch = "main"
+if (-not [string]::IsNullOrWhiteSpace($NextFeatureBranch)) {
+    $FinalBranch = $NextFeatureBranch
+    Write-Host "[GIT] 切换至指定的下一阶段特性分支: $FinalBranch" -ForegroundColor Cyan
+    git show-ref --verify --quiet "refs/heads/$FinalBranch"
+    $NextFeatureBranchExists = $LASTEXITCODE -eq 0
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) {
+        throw "检查后续分支 $FinalBranch 失败！"
     }
-}
-Write-Host "[GIT] 切换至下一阶段特性分支: $NextFeatureBranch" -ForegroundColor Cyan
-git show-ref --verify --quiet "refs/heads/$NextFeatureBranch"
-$NextFeatureBranchExists = $LASTEXITCODE -eq 0
-if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) {
-    throw "检查后续分支 $NextFeatureBranch 失败！"
-}
-if ($NextFeatureBranchExists) {
-    git checkout $NextFeatureBranch
-    if ($LASTEXITCODE -ne 0) { throw "切换至已有分支 $NextFeatureBranch 失败！" }
-    git merge main
-    if ($LASTEXITCODE -ne 0) { throw "将 main 合并至已有分支 $NextFeatureBranch 失败！" }
+    if ($NextFeatureBranchExists) {
+        git checkout $FinalBranch
+        if ($LASTEXITCODE -ne 0) { throw "切换至已有分支 $FinalBranch 失败！" }
+        git merge main
+        if ($LASTEXITCODE -ne 0) { throw "将 main 合并至已有分支 $FinalBranch 失败！" }
+    } else {
+        git checkout -b $FinalBranch main
+        if ($LASTEXITCODE -ne 0) { throw "创建后续分支 $FinalBranch 失败！" }
+    }
+    if (-not $LocalOnly) {
+        git push origin -u $FinalBranch
+        if ($LASTEXITCODE -ne 0) { throw "推送后续分支 $FinalBranch 失败！" }
+    }
+} elseif ($OriginalBranch -ne "main") {
+    $FinalBranch = $OriginalBranch
+    $ActiveBranchNow = (git branch --show-current).Trim()
+    if ($ActiveBranchNow -ne $OriginalBranch) {
+        Write-Host "[GIT] 切回发版前所在分支并同步 main: $OriginalBranch" -ForegroundColor Cyan
+        git checkout $OriginalBranch
+        if ($LASTEXITCODE -ne 0) { throw "切回原分支 $OriginalBranch 失败！" }
+        git merge main
+        if ($LASTEXITCODE -ne 0) { throw "将 main 同步回原分支 $OriginalBranch 失败！" }
+    }
 } else {
-    git checkout -b $NextFeatureBranch main
-    if ($LASTEXITCODE -ne 0) { throw "创建后续分支 $NextFeatureBranch 失败！" }
-}
-if (-not $LocalOnly) {
-    git push origin -u $NextFeatureBranch
-    if ($LASTEXITCODE -ne 0) { throw "推送后续分支 $NextFeatureBranch 失败！" }
+    $FinalBranch = (git branch --show-current).Trim()
 }
 
 Write-Host "=======================================================" -ForegroundColor Green
-Write-Host " [OK] 恭喜！Tools3000 $TargetTag 全自动化发版流水线执行完毕！" -ForegroundColor Green
+Write-Host " [OK] Tools3000 $TargetTag 本地权威自动化发版流水线执行完毕！" -ForegroundColor Green
 Write-Host " - 最新安装包: Output\Tools3000-Setup.exe" -ForegroundColor Green
 Write-Host " - 发布资产库: release_assets" -ForegroundColor Green
 Write-Host " - GitHub 发布页: https://github.com/yuan278501381/Tools3000/releases/tag/$TargetTag" -ForegroundColor Green
-Write-Host " - 当前所在分支: $NextFeatureBranch" -ForegroundColor Green
+Write-Host " - 当前所在分支: $FinalBranch" -ForegroundColor Green
 Write-Host "=======================================================" -ForegroundColor Green

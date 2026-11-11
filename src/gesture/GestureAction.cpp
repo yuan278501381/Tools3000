@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <format>
@@ -801,26 +802,67 @@ nlohmann::json GestureAction::toJson() const {
 
 GestureAction GestureAction::fromJson(const nlohmann::json& j) {
     GestureAction action;
-    action.type = static_cast<ActionType>(j.value("type", 0));
-    action.name = j.value("name", "");
-    action.description = j.value("description", "");
+    action.type = ActionType::SendKeys;
+    action.builtinCmd = BuiltinCommand::CloseWindow;
+    if (!j.is_object()) {
+        return action;
+    }
+
+    int rawType = 0;
+    if (j.contains("type") && j["type"].is_number_integer()) {
+        rawType = j["type"].get<int>();
+    }
+    rawType = std::clamp(
+        rawType,
+        static_cast<int>(ActionType::SendKeys),
+        static_cast<int>(ActionType::RunProgram));
+    action.type = static_cast<ActionType>(rawType);
+
+    if (j.contains("name") && j["name"].is_string()) {
+        action.name = j["name"].get<std::string>();
+    }
+    if (j.contains("description") && j["description"].is_string()) {
+        action.description = j["description"].get<std::string>();
+    }
 
     switch (action.type) {
         case ActionType::SendKeys:
-            action.keyStroke = KeyStroke::fromString(j.value("keyStroke", ""));
-            break;
-        case ActionType::LuaScript:
-            action.luaScript = j.value("luaScript", "");
-            if (j.contains("permissions") && j["permissions"].is_array()) {
-                action.requestedPermissions = j["permissions"].get<std::vector<std::string>>();
+            if (j.contains("keyStroke") && j["keyStroke"].is_string()) {
+                action.keyStroke = KeyStroke::fromString(j["keyStroke"].get<std::string>());
             }
             break;
-        case ActionType::BuiltinCommand:
-            action.builtinCmd = static_cast<BuiltinCommand>(j.value("builtinCmd", 0));
+        case ActionType::LuaScript:
+            if (j.contains("luaScript") && j["luaScript"].is_string()) {
+                action.luaScript = j["luaScript"].get<std::string>();
+            }
+            if (j.contains("permissions") && j["permissions"].is_array()) {
+                action.requestedPermissions.clear();
+                for (const auto& perm : j["permissions"]) {
+                    if (perm.is_string()) {
+                        action.requestedPermissions.push_back(perm.get<std::string>());
+                    }
+                }
+            }
             break;
+        case ActionType::BuiltinCommand: {
+            int rawCmd = 0;
+            if (j.contains("builtinCmd") && j["builtinCmd"].is_number_integer()) {
+                rawCmd = j["builtinCmd"].get<int>();
+            }
+            rawCmd = std::clamp(
+                rawCmd,
+                static_cast<int>(BuiltinCommand::CloseWindow),
+                static_cast<int>(kMaxBuiltinCommand));
+            action.builtinCmd = static_cast<BuiltinCommand>(rawCmd);
+            break;
+        }
         case ActionType::RunProgram:
-            action.programPath = j.value("programPath", "");
-            action.programArgs = j.value("programArgs", "");
+            if (j.contains("programPath") && j["programPath"].is_string()) {
+                action.programPath = j["programPath"].get<std::string>();
+            }
+            if (j.contains("programArgs") && j["programArgs"].is_string()) {
+                action.programArgs = j["programArgs"].get<std::string>();
+            }
             break;
     }
     return action;
@@ -839,12 +881,25 @@ nlohmann::json GestureMapping::toJson() const {
 
 GestureMapping GestureMapping::fromJson(const nlohmann::json& j) {
     GestureMapping mapping;
-    mapping.id = j.value("id", "");
-    mapping.enabled = j.value("enabled", true);
-    mapping.instantExecute = j.value("instantExecute", false);
-    mapping.silentToast = j.value("silentToast", false);
-    mapping.gestureCode = j.value("gestureCode", "");
-    if (j.contains("action")) {
+    if (!j.is_object()) {
+        return mapping;
+    }
+    if (j.contains("id") && j["id"].is_string()) {
+        mapping.id = j["id"].get<std::string>();
+    }
+    if (j.contains("enabled") && j["enabled"].is_boolean()) {
+        mapping.enabled = j["enabled"].get<bool>();
+    }
+    if (j.contains("instantExecute") && j["instantExecute"].is_boolean()) {
+        mapping.instantExecute = j["instantExecute"].get<bool>();
+    }
+    if (j.contains("silentToast") && j["silentToast"].is_boolean()) {
+        mapping.silentToast = j["silentToast"].get<bool>();
+    }
+    if (j.contains("gestureCode") && j["gestureCode"].is_string()) {
+        mapping.gestureCode = j["gestureCode"].get<std::string>();
+    }
+    if (j.contains("action") && j["action"].is_object()) {
         mapping.action = GestureAction::fromJson(j["action"]);
     }
     return mapping;

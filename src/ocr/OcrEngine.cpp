@@ -25,13 +25,17 @@
 
 #include <unknwn.h>
 #include <windows.h>
+#include <objidl.h>
 #include <MemoryBuffer.h>
 
 #include <algorithm>
 #include <cfloat>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
+#include <thread>
 
 namespace tools3000::ocr {
 
@@ -42,16 +46,53 @@ namespace wgl = winrt::Windows::Globalization;
 
 namespace {
 
-/// 确保当前线程已进入 COM/WinRT 公寓 (OCR 可能在工作线程上被调用)。
+/// 检测当前线程是否已绑定在单线程单元 (STA / MainSTA)，以防直接调用 WinRT IAsyncOperation::get() 触发 hresult_illegal_method_call。
+bool isCurrentThreadSta() noexcept {
+    APTTYPE aptType = APTTYPE_CURRENT;
+    APTTYPEQUALIFIER aptQualifier = APTTYPEQUALIFIER_NONE;
+    if (FAILED(CoGetApartmentType(&aptType, &aptQualifier))) {
+        return false;
+    }
+    return aptType == APTTYPE_STA || aptType == APTTYPE_MAINSTA;
+}
+
+/// 确保当前线程已进入 COM/WinRT 多线程公寓 (MTA)。
 void ensureApartment() {
+    if (isCurrentThreadSta()) {
+        return;
+    }
     static thread_local bool inited = false;
     if (inited) return;
     inited = true;
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
     } catch (winrt::hresult_error const&) {
-        // 线程已用其它模型初始化亦可正常调用 OCR，忽略。
+        // 线程已初始化为 MTA，忽略。
     }
+}
+
+/// 若调用方处于 STA 线程，自动派发至独立后台 MTA 线程同步执行，彻底防止 WinRT .get() 抛异常或消息泵死锁。
+template <typename Fn>
+auto runInMtaSafe(Fn&& fn) -> decltype(fn()) {
+    using Ret = decltype(fn());
+    if (!isCurrentThreadSta()) {
+        ensureApartment();
+        return fn();
+    }
+    const std::string parentTrace = tools3000::core::TraceId::current();
+    std::packaged_task<Ret()> task([func = std::forward<Fn>(fn), parentTrace]() mutable -> Ret {
+        if (!parentTrace.empty()) {
+            tools3000::core::TraceId::Scope inherited(parentTrace);
+            ensureApartment();
+            return func();
+        }
+        ensureApartment();
+        return func();
+    });
+    std::future<Ret> fut = task.get_future();
+    std::thread worker(std::move(task));
+    worker.join();
+    return fut.get();
 }
 
 /// cv::Mat → SoftwareBitmap(Bgra8)。失败返回 nullptr。
@@ -97,12 +138,16 @@ wmo::OcrEngine createEngine() {
 }
 
 bool isCjkOrFullwidth(wchar_t ch) noexcept {
-    return (ch >= 0x2E80 && ch <= 0x9FFF) ||
-           (ch >= 0xAC00 && ch <= 0xD7AF) ||
-           (ch >= 0xF900 && ch <= 0xFAFF) ||
-           (ch >= 0xFE30 && ch <= 0xFE4F) ||
-           (ch >= 0xFF00 && ch <= 0xFFEF) ||
-           (ch >= 0x3000 && ch <= 0x303F);
+    return (ch >= 0x3400 && ch <= 0x4DBF) || // CJK Unified Ideographs Extension A
+           (ch >= 0x4E00 && ch <= 0x9FFF) || // CJK Unified Ideographs
+           (ch >= 0x2E80 && ch <= 0x2FDF) || // CJK Radicals Supplement & Kangxi Radicals
+           (ch >= 0x3000 && ch <= 0x33FF) || // CJK Symbols/Punctuation, Hiragana, Katakana, Bopomofo, Compatibility
+           (ch >= 0xAC00 && ch <= 0xD7AF) || // Hangul Syllables
+           (ch >= 0xF900 && ch <= 0xFAFF) || // CJK Compatibility Ideographs
+           (ch >= 0xFE10 && ch <= 0xFE6F) || // Vertical Forms, CJK Compatibility Forms & Small Form Variants
+           (ch >= 0xFF00 && ch <= 0xFFEF) || // Halfwidth and Fullwidth Forms
+           (ch >= 0xD840 && ch <= 0xD884) || // UTF-16 High Surrogates for Plane 2/3 CJK Extensions
+           (ch >= 0xDC00 && ch <= 0xDFFF);   // UTF-16 Low Surrogates
 }
 
 bool isTightConnectorLeft(wchar_t ch) noexcept {
@@ -140,8 +185,9 @@ OcrEngine& OcrEngine::instance() {
 
 bool OcrEngine::initialize() {
     try {
-        ensureApartment();
-        m_available = static_cast<bool>(createEngine());
+        m_available = runInMtaSafe([]() -> bool {
+            return static_cast<bool>(createEngine());
+        });
         if (m_available) {
             LOG_INFO("OCR 引擎已就绪 (Windows.Media.Ocr)");
         } else {
@@ -160,11 +206,17 @@ void OcrEngine::shutdown() {
 
 std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image) {
     tools3000::core::TraceId::Scope scope;
-    std::vector<OcrResult> results;
     if (image.empty()) {
         LOG_WARN("OCR 输入图像为空");
-        return results;
+        return {};
     }
+    if (isCurrentThreadSta()) {
+        return runInMtaSafe([&image]() -> std::vector<OcrResult> {
+            return OcrEngine::instance().extractText(image);
+        });
+    }
+
+    std::vector<OcrResult> results;
 
     try {
         ensureApartment();
@@ -383,15 +435,30 @@ std::string OcrEngine::recognizeToText(const cv::Mat& image) {
 }
 
 std::string OcrEngine::recognizeImageFile(const std::string& utf8Path) {
+    constexpr std::uintmax_t kMaxOcrImageFileBytes = 64ULL * 1024ULL * 1024ULL; // 64 MiB 安全上限
     cv::Mat img;
     try {
-        // OpenCV imread 需要本地编码路径; 用宽字符读文件再解码以支持非 ASCII 路径。
-        std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(utf8Path);
-        std::ifstream f(wpath.c_str(), std::ios::binary);
+        // OpenCV imread 需要本地编码路径; 用宽字符校验文件体积后一次性高速读取解码以支持非 ASCII 路径。
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(utf8Path);
+        std::error_code ec;
+        const std::filesystem::path fsPath(wpath);
+        if (!std::filesystem::is_regular_file(fsPath, ec) || ec) {
+            LOG_WARN("OCR: 无法加载图片 {}", utf8Path);
+            return {};
+        }
+        const std::uintmax_t fileBytes = std::filesystem::file_size(fsPath, ec);
+        if (ec || fileBytes == 0 || fileBytes > kMaxOcrImageFileBytes) {
+            LOG_WARN("OCR image file skipped due to invalid or oversized file size: bytes={}",
+                     ec ? 0ULL : static_cast<unsigned long long>(fileBytes));
+            return {};
+        }
+        std::ifstream f(fsPath, std::ios::binary);
         if (f) {
-            std::vector<uint8_t> buf((std::istreambuf_iterator<char>(f)),
-                                     std::istreambuf_iterator<char>());
-            if (!buf.empty()) img = cv::imdecode(buf, cv::IMREAD_COLOR);
+            std::vector<uint8_t> buf(static_cast<size_t>(fileBytes));
+            f.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+            if (static_cast<size_t>(f.gcount()) == buf.size() && !buf.empty()) {
+                img = cv::imdecode(buf, cv::IMREAD_COLOR);
+            }
         }
     } catch (const std::exception& e) {
         LOG_ERROR("OCR 读取图片失败: {} ({})", utf8Path, e.what());

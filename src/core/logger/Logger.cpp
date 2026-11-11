@@ -20,11 +20,16 @@
 
 namespace tools3000::core {
 
-static std::shared_ptr<spdlog::logger> s_logger;
-static std::shared_ptr<WideUniversalRotatingFileSink> s_universalFileSink;
+static std::atomic<std::shared_ptr<spdlog::logger>> s_logger;
+static std::atomic<std::shared_ptr<WideUniversalRotatingFileSink>> s_universalFileSink;
 static std::atomic<uint8_t> s_logLanguage{static_cast<uint8_t>(LogLanguage::ZhCN)};
+static std::mutex& lifecycleMutex() {
+    static auto* mtx = new std::mutex();
+    return *mtx;
+}
 
 void Logger::initialize(const LoggerConfig& config) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex());
     try {
         // ── 初始化异步线程池 ─────────────────────────────────────────────
         spdlog::init_thread_pool(8192, 1);  // 队列大小 8192, 1 个后台线程
@@ -45,7 +50,8 @@ void Logger::initialize(const LoggerConfig& config) {
             ? WinUtils::getLogDirectory()
             : config.logDir;
 
-        std::filesystem::create_directories(logDir);
+        std::error_code dirEc;
+        std::filesystem::create_directories(logDir, dirEc);
 
         WideUniversalSinkConfig universalConfig;
         universalConfig.logDir = logDir;
@@ -56,10 +62,11 @@ void Logger::initialize(const LoggerConfig& config) {
         universalConfig.idleHandleTimeoutMs = config.idleHandleTimeoutMs;
         universalConfig.enableCompression = config.enableCompression;
 
-        s_universalFileSink = std::make_shared<WideUniversalRotatingFileSink>(universalConfig);
-        s_universalFileSink->set_level(config.fileLevel);
-        s_universalFileSink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [tid:%t] %v");
-        sinks.push_back(s_universalFileSink);
+        auto fileSink = std::make_shared<WideUniversalRotatingFileSink>(universalConfig);
+        fileSink->set_level(config.fileLevel);
+        fileSink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [tid:%t] %v");
+        sinks.push_back(fileSink);
+        s_universalFileSink.store(fileSink, std::memory_order_release);
 
         // Sink 3: MSVC 输出窗口 (仅 Debug 构建)
 #ifdef _DEBUG
@@ -71,59 +78,78 @@ void Logger::initialize(const LoggerConfig& config) {
 #endif
 
         // ── 创建异步 Logger ─────────────────────────────────────────────
-        s_logger = std::make_shared<spdlog::async_logger>(
+        auto newLogger = std::make_shared<spdlog::async_logger>(
             "tools3000",
             sinks.begin(), sinks.end(),
             spdlog::thread_pool(),
             spdlog::async_overflow_policy::block
         );
-        s_logger->set_level(spdlog::level::trace);  // 总开关: 允许所有级别，由各 Sink 过滤
-        s_logger->flush_on(spdlog::level::info);   // INFO 及以上立即刷盘
+        newLogger->set_level(spdlog::level::trace);  // 总开关: 允许所有级别，由各 Sink 过滤
+        newLogger->flush_on(spdlog::level::info);    // INFO 及以上立即刷盘
         spdlog::flush_every(std::chrono::seconds(1));
 
-        spdlog::register_logger(s_logger);
-        spdlog::set_default_logger(s_logger);
+        spdlog::drop("tools3000");
+        spdlog::register_logger(newLogger);
+        spdlog::set_default_logger(newLogger);
+        s_logger.store(newLogger, std::memory_order_release);
 
         LOG_INFO("日志系统初始化完成, 日志目录={}", WinUtils::wstringToUtf8(logDir.wstring()));
 
     } catch (const spdlog::spdlog_ex& ex) {
         // 日志系统初始化失败时，用 OutputDebugString 输出错误
         OutputDebugStringA(("Logger initialization failed: " + std::string(ex.what()) + "\n").c_str());
+    } catch (const std::exception& ex) {
+        OutputDebugStringA(("Logger initialization std::exception: " + std::string(ex.what()) + "\n").c_str());
     }
 }
 
 void Logger::shutdown() {
-    if (s_logger) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex());
+    auto activeLogger = s_logger.load(std::memory_order_acquire);
+    if (activeLogger) {
         LOG_INFO("日志系统正在关闭...");
-        s_logger->flush();
+        activeLogger->flush();
     }
-    s_logger.reset();
-    s_universalFileSink.reset();
+
+    // 先切换为一个轻量无状态的控制台/空安保 fallback logger，彻底杜绝残余后台线程在退出期并发写日志触发 UAF 或空指针解引用
+    std::shared_ptr<spdlog::logger> fallbackLogger;
+    try {
+        auto fallbackSink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        fallbackLogger = std::make_shared<spdlog::logger>("", std::move(fallbackSink));
+    } catch (...) {
+    }
+
+    s_logger.store(nullptr, std::memory_order_release);
+    s_universalFileSink.store(nullptr, std::memory_order_release);
+    activeLogger.reset();
+
     spdlog::shutdown();
 
     // 关键防崩溃保护：spdlog::shutdown() 会将 default_logger_ 置空。
     // 若后续模块（例如测试套件或静态对象析构）调用 spdlog::warn/info，
     // 解引用空指针将引发 SEH 0xc0000005 崩溃。此处挂载一个轻量无状态的控制台 fallback logger。
-    try {
-        auto fallbackSink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-        auto fallbackLogger = std::make_shared<spdlog::logger>("", std::move(fallbackSink));
-        spdlog::set_default_logger(fallbackLogger);
-    } catch (...) {
+    if (fallbackLogger) {
+        try {
+            spdlog::set_default_logger(fallbackLogger);
+        } catch (...) {
+        }
     }
 }
 
-std::shared_ptr<spdlog::logger>& Logger::instance() {
-    return s_logger;
+std::shared_ptr<spdlog::logger> Logger::instance() {
+    return s_logger.load(std::memory_order_acquire);
 }
 
 void Logger::setLevel(spdlog::level::level_enum level) {
-    if (s_universalFileSink) {
-        s_universalFileSink->set_level(level);
+    auto fileSink = s_universalFileSink.load(std::memory_order_acquire);
+    if (fileSink) {
+        fileSink->set_level(level);
     }
-    if (s_logger) {
-        s_logger->set_level(level);
-        for (auto& sink : s_logger->sinks()) {
-            if (sink && sink != s_universalFileSink && sink->level() > level) {
+    auto logger = s_logger.load(std::memory_order_acquire);
+    if (logger) {
+        logger->set_level(level);
+        for (auto& sink : logger->sinks()) {
+            if (sink && sink != fileSink && sink->level() > level) {
                 sink->set_level(level);
             }
         }
@@ -132,28 +158,28 @@ void Logger::setLevel(spdlog::level::level_enum level) {
 }
 
 void Logger::setRetentionDays(uint32_t days) {
-    if (s_universalFileSink) {
-        s_universalFileSink->setRetentionDays(days);
-        s_universalFileSink->triggerJanitorSync();
+    if (auto fileSink = s_universalFileSink.load(std::memory_order_acquire)) {
+        fileSink->setRetentionDays(days);
+        fileSink->triggerJanitorSync();
         LOG_INFO_L("日志保留天数已切换为: {} 天", "Log retention days switched to: {} days", days);
     }
 }
 
 uint32_t Logger::getRetentionDays() {
-    if (s_universalFileSink) {
-        return s_universalFileSink->getRetentionDays();
+    if (auto fileSink = s_universalFileSink.load(std::memory_order_acquire)) {
+        return fileSink->getRetentionDays();
     }
     return 7;
 }
 
 void Logger::triggerJanitor() {
-    if (s_universalFileSink) {
-        s_universalFileSink->triggerJanitorSync();
+    if (auto fileSink = s_universalFileSink.load(std::memory_order_acquire)) {
+        fileSink->triggerJanitorSync();
     }
 }
 
 std::shared_ptr<WideUniversalRotatingFileSink> Logger::getFileSink() {
-    return s_universalFileSink;
+    return s_universalFileSink.load(std::memory_order_acquire);
 }
 
 void Logger::setLanguage(const std::string& langCode) {

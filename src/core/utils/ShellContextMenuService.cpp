@@ -1,9 +1,10 @@
 #include "core/utils/ShellContextMenuService.h"
+#include "core/events/MainThreadDispatcher.h"
+#include "core/utils/UiThreadJoin.h"
 #include "core/utils/WinUtils.h"
 #include "core/logger/Logger.h"
 
 #include <chrono>
-#include <future>
 #include <ole2.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -66,13 +67,18 @@ void handleFallbackCommand(UINT cmd, const std::wstring& path, HWND owner) {
         }
         case CMD_FALLBACK_COPY_PATH:
             if (OpenClipboard(safeOwner)) {
-                EmptyClipboard();
-                const size_t bytes = (path.size() + 1) * sizeof(wchar_t);
-                if (HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
-                    if (void* ptr = GlobalLock(hMem)) {
-                        memcpy(ptr, path.c_str(), bytes);
-                        GlobalUnlock(hMem);
-                        SetClipboardData(CF_UNICODETEXT, hMem);
+                if (EmptyClipboard()) {
+                    const size_t bytes = (path.size() + 1) * sizeof(wchar_t);
+                    if (HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+                        if (void* ptr = GlobalLock(hMem)) {
+                            memcpy(ptr, path.c_str(), bytes);
+                            GlobalUnlock(hMem);
+                            if (!SetClipboardData(CF_UNICODETEXT, hMem)) {
+                                GlobalFree(hMem);
+                            }
+                        } else {
+                            GlobalFree(hMem);
+                        }
                     }
                 }
                 CloseClipboard();
@@ -168,7 +174,11 @@ void ShellContextMenuService::shutdown() {
     m_queueCv.notify_all();
 
     if (m_thread.joinable()) {
-        m_thread.join();
+        if (MainThreadDispatcher::instance().isOwnerThread()) {
+            joinWorkerWhilePumpingSentMessages(m_thread, 3000);
+        } else {
+            m_thread.join();
+        }
     }
     m_busy.store(false, std::memory_order_release);
 }
@@ -226,51 +236,30 @@ void ShellContextMenuService::processRequest(const MenuRequest& req) {
     };
 
     HWND helper = m_helperWindow.load(std::memory_order_acquire);
-    DWORD attachedThreadId = 0;
+    if (!helper || !IsWindow(helper)) {
+        clearActive();
+        return;
+    }
+
+    PIDLIST_ABSOLUTE itemId = nullptr;
+    IShellFolder* parent = nullptr;
+    IContextMenu* contextMenu = nullptr;
+    IContextMenu2* cm2 = nullptr;
+    IContextMenu3* cm3 = nullptr;
+    HMENU shellMenu = nullptr;
     HMENU fallbackMenu = nullptr;
     bool isFallback = false;
 
-    struct ShellQuerySession {
-        std::mutex mutex;
-        std::condition_variable cv;
-        std::wstring targetPath;
-        HWND ownerHwnd = nullptr;
-        bool extendedVerbs = false;
-
-        bool queryDone = false;
-        bool querySuccess = false;
-        bool abandoned = false;
-        bool commandDispatched = false;
-        UINT selectedCommand = 0;
-        HWND invokeOwnerHwnd = nullptr;
-        bool invokeDone = false;
-
-        HMENU menu = nullptr;
-        IContextMenu2* menu2 = nullptr;
-        IContextMenu3* menu3 = nullptr;
-    };
-
-    std::shared_ptr<ShellQuerySession> session;
-
-    const auto cleanup = [&]() {
-        if (attachedThreadId) {
-            AttachThreadInput(GetCurrentThreadId(), attachedThreadId, FALSE);
-            attachedThreadId = 0;
-        }
+    const auto cleanup = [&]() noexcept {
         t_contextMenu3 = nullptr;
         t_contextMenu2 = nullptr;
-        if (fallbackMenu) {
-            DestroyMenu(fallbackMenu);
-            fallbackMenu = nullptr;
-        }
-        if (session) {
-            std::lock_guard lock(session->mutex);
-            if (!session->commandDispatched) {
-                session->abandoned = true;
-                session->commandDispatched = true;
-                session->cv.notify_all();
-            }
-        }
+        if (cm3) { cm3->Release(); cm3 = nullptr; }
+        if (cm2) { cm2->Release(); cm2 = nullptr; }
+        if (contextMenu) { contextMenu->Release(); contextMenu = nullptr; }
+        if (parent) { parent->Release(); parent = nullptr; }
+        if (itemId) { ILFree(itemId); itemId = nullptr; }
+        if (shellMenu) { DestroyMenu(shellMenu); shellMenu = nullptr; }
+        if (fallbackMenu) { DestroyMenu(fallbackMenu); fallbackMenu = nullptr; }
         clearActive();
     };
 
@@ -283,213 +272,87 @@ void ShellContextMenuService::processRequest(const MenuRequest& req) {
             GetCursorPos(&cursor);
         }
 
-        if (helper && IsWindow(helper)) {
-            SetWindowPos(helper, HWND_TOPMOST, cursor.x, cursor.y, 1, 1, SWP_SHOWWINDOW);
-        }
+        SetWindowPos(helper, HWND_TOPMOST, cursor.x, cursor.y, 1, 1, SWP_SHOWWINDOW | SWP_NOACTIVATE);
 
         LOG_INFO("ShellContextMenuService: 开始解析路径 PIDL, path={}", WinUtils::wstringToUtf8(req.path));
 
-        // ── 300ms 熔断保护：纯堆态 shared_ptr 会话隔离，杜绝 detach 后栈帧与 HMENU 悬挂释放 (UAF) ──
-        session = std::make_shared<ShellQuerySession>();
-        session->targetPath = req.path;
-        session->ownerHwnd = helper ? helper : searchWindow;
-        session->extendedVerbs = req.extendedVerbs;
-
-        std::thread queryWorker([session]() {
-            const HRESULT oleSub = OleInitialize(nullptr);
-            PIDLIST_ABSOLUTE itemId = nullptr;
-            IShellFolder* parent = nullptr;
-            IContextMenu* contextMenu = nullptr;
-            IContextMenu2* cm2 = nullptr;
-            IContextMenu3* cm3 = nullptr;
-            HMENU workerMenu = CreatePopupMenu();
-
-            auto releaseWorkerResources = [&]() {
-                if (cm3) { cm3->Release(); cm3 = nullptr; }
-                if (cm2) { cm2->Release(); cm2 = nullptr; }
-                if (contextMenu) { contextMenu->Release(); contextMenu = nullptr; }
-                if (parent) { parent->Release(); parent = nullptr; }
-                if (itemId) { ILFree(itemId); itemId = nullptr; }
-                if (workerMenu) { DestroyMenu(workerMenu); workerMenu = nullptr; }
-            };
-
-            try {
-                itemId = ILCreateFromPathW(session->targetPath.c_str());
-                if (itemId) {
-                    PCUITEMID_CHILD child = nullptr;
-                    HRESULT hrBind = SHBindToParent(itemId, IID_IShellFolder, reinterpret_cast<void**>(&parent), &child);
-                    if (SUCCEEDED(hrBind) && parent && child) {
-                        parent->GetUIObjectOf(session->ownerHwnd, 1, &child, IID_IContextMenu, nullptr, reinterpret_cast<void**>(&contextMenu));
-                    }
-                    if (!contextMenu && parent && child) {
-                        DEFCONTEXTMENU dcm{};
-                        dcm.hwnd = session->ownerHwnd;
-                        dcm.psf = parent;
-                        dcm.cidl = 1;
-                        dcm.apidl = &child;
-                        SHCreateDefaultContextMenu(&dcm, IID_IContextMenu, reinterpret_cast<void**>(&contextMenu));
-                    }
-                }
-
-                if (!contextMenu && itemId) {
-                    IShellFolder* desktop = nullptr;
-                    if (SUCCEEDED(SHGetDesktopFolder(&desktop)) && desktop) {
-                        PCUITEMID_CHILD pidlArray[1] = { itemId };
-                        desktop->GetUIObjectOf(session->ownerHwnd, 1, pidlArray, IID_IContextMenu, nullptr, reinterpret_cast<void**>(&contextMenu));
-                        desktop->Release();
-                    }
-                }
-
-                bool ok = false;
-                if (contextMenu && workerMenu) {
-                    UINT menuFlags = CMF_NORMAL | CMF_CANRENAME;
-                    if (session->extendedVerbs) menuFlags |= CMF_EXTENDEDVERBS;
-
-                    contextMenu->QueryInterface(IID_IContextMenu2, reinterpret_cast<void**>(&cm2));
-                    contextMenu->QueryInterface(IID_IContextMenu3, reinterpret_cast<void**>(&cm3));
-
-                    HRESULT hrQuery = contextMenu->QueryContextMenu(workerMenu, 0, 1, 0x7FFF, menuFlags);
-                    if (SUCCEEDED(hrQuery) && GetMenuItemCount(workerMenu) > 0) {
-                        ok = true;
-                    }
-                }
-
-                UINT cmdToInvoke = 0;
-                HWND invokeOwner = nullptr;
-                {
-                    std::unique_lock lock(session->mutex);
-                    session->queryDone = true;
-                    if (!session->abandoned && ok) {
-                        session->querySuccess = true;
-                        session->menu = workerMenu;
-                        session->menu2 = cm2;
-                        session->menu3 = cm3;
-                        session->cv.notify_all();
-
-                        // 保持本 STA 套间存活，等待主菜单线程完成 TrackPopupMenuEx 并回传选中项
-                        session->cv.wait(lock, [&session]() {
-                            return session->commandDispatched || session->abandoned;
-                        });
-                        if (!session->abandoned) {
-                            cmdToInvoke = session->selectedCommand;
-                            invokeOwner = session->invokeOwnerHwnd;
-                        }
-                        session->menu = nullptr;
-                        session->menu2 = nullptr;
-                        session->menu3 = nullptr;
-                    } else {
-                        session->cv.notify_all();
-                    }
-                }
-
-                if (cmdToInvoke >= 1 && contextMenu) {
-                    CMINVOKECOMMANDINFOEX info{};
-                    info.cbSize = sizeof(info);
-                    info.fMask = CMIC_MASK_UNICODE | (session->extendedVerbs ? CMIC_MASK_SHIFT_DOWN : 0);
-                    info.hwnd = invokeOwner ? invokeOwner : GetDesktopWindow();
-                    info.lpVerb = reinterpret_cast<LPCSTR>(MAKEINTRESOURCEA(cmdToInvoke - 1));
-                    info.lpVerbW = reinterpret_cast<LPCWSTR>(MAKEINTRESOURCEW(cmdToInvoke - 1));
-                    info.nShow = SW_SHOWNORMAL;
-                    contextMenu->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&info));
-
-                    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
-                    while (std::chrono::steady_clock::now() < until) {
-                        MSG postMsg;
-                        if (PeekMessageW(&postMsg, nullptr, 0, 0, PM_REMOVE)) {
-                            TranslateMessage(&postMsg);
-                            DispatchMessageW(&postMsg);
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                    }
-                }
-            } catch (...) {
+        // 100% 在本专属 STA 线程与自有隐藏宿主窗口 helper 上闭环完成绑定、查询、弹窗与命令调用，
+        // 严禁跨套间裸传 IContextMenu2/3 或向主 UI 线程同步 SendMessageW。
+        itemId = ILCreateFromPathW(req.path.c_str());
+        if (itemId) {
+            PCUITEMID_CHILD child = nullptr;
+            const HRESULT hrBind = SHBindToParent(
+                itemId, IID_IShellFolder, reinterpret_cast<void**>(&parent), &child);
+            if (SUCCEEDED(hrBind) && parent && child) {
+                parent->GetUIObjectOf(helper, 1, &child, IID_IContextMenu, nullptr,
+                                      reinterpret_cast<void**>(&contextMenu));
             }
-
-            {
-                std::lock_guard lock(session->mutex);
-                session->queryDone = true;
-                session->invokeDone = true;
-                session->menu = nullptr;
-                session->menu2 = nullptr;
-                session->menu3 = nullptr;
-                session->cv.notify_all();
-            }
-            releaseWorkerResources();
-            if (SUCCEEDED(oleSub)) OleUninitialize();
-        });
-
-        HMENU activeMenu = nullptr;
-        {
-            std::unique_lock lock(session->mutex);
-            if (!session->cv.wait_for(lock, std::chrono::milliseconds(300), [&session]() {
-                    return session->queryDone;
-                })) {
-                session->abandoned = true;
-                session->commandDispatched = true;
-                session->cv.notify_all();
-                LOG_WARN("ShellContextMenuService: 检测到第三方 Shell 扩展执行超时 (300ms 熔断)，自动触发原生自愈降级菜单！");
-            } else if (session->querySuccess && session->menu && GetMenuItemCount(session->menu) > 0) {
-                activeMenu = session->menu;
-                t_contextMenu2 = session->menu2;
-                t_contextMenu3 = session->menu3;
-            } else {
-                session->abandoned = true;
-                session->commandDispatched = true;
-                session->cv.notify_all();
+            if (!contextMenu && parent && child) {
+                DEFCONTEXTMENU dcm{};
+                dcm.hwnd = helper;
+                dcm.psf = parent;
+                dcm.cidl = 1;
+                dcm.apidl = &child;
+                SHCreateDefaultContextMenu(&dcm, IID_IContextMenu,
+                                           reinterpret_cast<void**>(&contextMenu));
             }
         }
 
-        if (!activeMenu) {
-            if (queryWorker.joinable()) {
-                bool finished = false;
-                {
-                    std::lock_guard lock(session->mutex);
-                    finished = session->invokeDone;
-                }
-                if (finished) {
-                    queryWorker.join();
-                } else {
-                    queryWorker.detach();
+        if (!contextMenu && itemId) {
+            IShellFolder* desktop = nullptr;
+            if (SUCCEEDED(SHGetDesktopFolder(&desktop)) && desktop) {
+                PCUITEMID_CHILD pidlArray[1] = {itemId};
+                desktop->GetUIObjectOf(helper, 1, pidlArray, IID_IContextMenu, nullptr,
+                                       reinterpret_cast<void**>(&contextMenu));
+                desktop->Release();
+            }
+        }
+
+        HMENU activeMenu = nullptr;
+        if (contextMenu && !m_stopping.load(std::memory_order_acquire)) {
+            shellMenu = CreatePopupMenu();
+            if (shellMenu) {
+                UINT menuFlags = CMF_NORMAL | CMF_CANRENAME;
+                if (req.extendedVerbs) menuFlags |= CMF_EXTENDEDVERBS;
+
+                contextMenu->QueryInterface(IID_IContextMenu2, reinterpret_cast<void**>(&cm2));
+                contextMenu->QueryInterface(IID_IContextMenu3, reinterpret_cast<void**>(&cm3));
+
+                const HRESULT hrQuery =
+                    contextMenu->QueryContextMenu(shellMenu, 0, 1, 0x7FFF, menuFlags);
+                if (SUCCEEDED(hrQuery) && GetMenuItemCount(shellMenu) > 0) {
+                    activeMenu = shellMenu;
+                    t_contextMenu2 = cm2;
+                    t_contextMenu3 = cm3;
                 }
             }
+        }
+
+        if (!activeMenu && !m_stopping.load(std::memory_order_acquire)) {
             isFallback = true;
-            DWORD attrs = GetFileAttributesW(req.path.c_str());
-            bool isDir = (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY));
+            const DWORD attrs = GetFileAttributesW(req.path.c_str());
+            const bool isDir =
+                (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY));
             fallbackMenu = createFallbackMenu(req.path, isDir);
             activeMenu = fallbackMenu;
         }
 
-        if (!activeMenu) {
-            if (queryWorker.joinable()) queryWorker.detach();
+        if (!activeMenu || m_stopping.load(std::memory_order_acquire)) {
             cleanup();
             return;
         }
 
-        // 1. 彻底打断并释放 Chromium / WebView2 鼠标捕获
+        // 仅使用异步 PostMessageW 通知搜索窗口释放捕获，杜绝跨线程 SendMessageW 互锁
         ReleaseCapture();
         if (searchWindow && IsWindow(searchWindow)) {
-            SendMessageW(searchWindow, WM_CANCELMODE, 0, 0);
-            EnumChildWindows(searchWindow, [](HWND childHwnd, LPARAM) -> BOOL {
-                SendMessageW(childHwnd, WM_CANCELMODE, 0, 0);
-                return TRUE;
-            }, 0);
+            PostMessageW(searchWindow, WM_CANCELMODE, 0, 0);
         }
 
-        HWND foreground = GetForegroundWindow();
-        DWORD foregroundTid = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
-        if (foregroundTid && foregroundTid != GetCurrentThreadId()) {
-            if (AttachThreadInput(GetCurrentThreadId(), foregroundTid, TRUE)) {
-                attachedThreadId = foregroundTid;
-            }
-        }
+        // 微软 KB139412 标准模式：弹出前置顶激活本 STA 线程自有的 helper 窗口
+        SetWindowPos(helper, HWND_TOPMOST, cursor.x, cursor.y, 1, 1, SWP_SHOWWINDOW);
+        SetForegroundWindow(helper);
 
-        // 2. 微软 KB139412 标准模式：弹出前置顶激活 helper
-        if (helper) {
-            SetWindowPos(helper, HWND_TOPMOST, cursor.x, cursor.y, 1, 1, SWP_SHOWWINDOW);
-            SetForegroundWindow(helper);
-        }
-
-        MSG msg;
+        MSG msg{};
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
@@ -498,56 +361,48 @@ void ShellContextMenuService::processRequest(const MenuRequest& req) {
         LOG_INFO("ShellContextMenuService: 即将弹出原生菜单, path={}, x={}, y={}, isFallback={}",
                  WinUtils::wstringToUtf8(req.path), cursor.x, cursor.y, isFallback);
         const UINT command = TrackPopupMenuEx(
-            activeMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_VERPOSANIMATION,
-            cursor.x, cursor.y, helper ? helper : GetForegroundWindow(), nullptr);
+            activeMenu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN |
+                TPM_VERPOSANIMATION,
+            cursor.x, cursor.y, helper, nullptr);
         LOG_INFO("ShellContextMenuService: 原生菜单已关闭, command={}", command);
 
-        // 先摘除当前线程上的 IContextMenu2/3 弱指针，再通知 STA 工作线程销毁或执行命令
         t_contextMenu3 = nullptr;
         t_contextMenu2 = nullptr;
 
-        // 3. 微软 KB139412 标准模式：调用后立即投递 WM_NULL 刷新 Windows 上下文切换状态
-        if (helper) {
-            PostMessageW(helper, WM_NULL, 0, 0);
-        }
+        PostMessageW(helper, WM_NULL, 0, 0);
 
-        const HWND stableOwner = (searchWindow && IsWindow(searchWindow)) ? searchWindow : GetDesktopWindow();
-        if (isFallback) {
-            if (command >= 1 && !m_stopping.load(std::memory_order_acquire)) {
-                handleFallbackCommand(command, req.path, stableOwner);
-            }
-        } else {
-            bool invokeFinishedInTime = false;
-            {
-                std::unique_lock lock(session->mutex);
-                session->selectedCommand = (!m_stopping.load(std::memory_order_acquire)) ? command : 0;
-                session->invokeOwnerHwnd = stableOwner;
-                session->commandDispatched = true;
-                session->cv.notify_all();
-                invokeFinishedInTime = session->cv.wait_for(
-                    lock, std::chrono::milliseconds(1500), [&session]() { return session->invokeDone; });
-            }
-            if (queryWorker.joinable()) {
-                if (invokeFinishedInTime) {
-                    queryWorker.join();
-                } else {
-                    queryWorker.detach();
+        if (command >= 1 && !m_stopping.load(std::memory_order_acquire)) {
+            if (isFallback) {
+                handleFallbackCommand(command, req.path, helper);
+            } else if (contextMenu) {
+                CMINVOKECOMMANDINFOEX info{};
+                info.cbSize = sizeof(info);
+                info.fMask = CMIC_MASK_UNICODE | (req.extendedVerbs ? CMIC_MASK_SHIFT_DOWN : 0);
+                info.hwnd = helper;
+                info.lpVerb = reinterpret_cast<LPCSTR>(MAKEINTRESOURCEA(command - 1));
+                info.lpVerbW = reinterpret_cast<LPCWSTR>(MAKEINTRESOURCEW(command - 1));
+                info.nShow = SW_SHOWNORMAL;
+                contextMenu->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&info));
+
+                const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(120);
+                while (!m_stopping.load(std::memory_order_acquire) &&
+                       std::chrono::steady_clock::now() < until) {
+                    MSG postMsg{};
+                    while (PeekMessageW(&postMsg, nullptr, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&postMsg);
+                        DispatchMessageW(&postMsg);
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
             }
         }
 
         if (!m_stopping.load(std::memory_order_acquire) && searchWindow && IsWindow(searchWindow)) {
             SetForegroundWindow(searchWindow);
-            SetFocus(searchWindow);
         }
         cleanup();
     } catch (...) {
-        if (session) {
-            std::lock_guard lock(session->mutex);
-            session->abandoned = true;
-            session->commandDispatched = true;
-            session->cv.notify_all();
-        }
         LOG_WARN("ShellContextMenuService: 捕获第三方 Shell 扩展异常，已安全隔离防御");
         cleanup();
     }

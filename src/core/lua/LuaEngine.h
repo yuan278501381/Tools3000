@@ -19,10 +19,15 @@
 #include "core/utils/Export.h"
 
 #include <sol/sol.hpp>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace tools3000::core {
 
@@ -131,7 +136,12 @@ private:
     void bindUrl(sol::table& easy);
 
     std::unique_ptr<sol::state> m_lua;
-    std::mutex m_mutex;  // 串行化所有脚本执行与权限授权
+    std::mutex m_mutex;  // 保护虚拟机生命周期与脚本执行协调
+    std::condition_variable m_execCv;
+    bool m_executing = false;
+    bool m_shutdownPending = false;
+    std::atomic<uint32_t> m_modalDepth{0};
+    mutable std::mutex m_authMutex;  // 独立保护授权表，防止模态框期间阻塞查询
     std::unordered_map<std::string, LuaPermission> m_authorizedScripts;
 };
 

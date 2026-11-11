@@ -17,7 +17,9 @@
 #include "core/stats/PerformanceMonitor.h"
 #include "core/update/UpdateChecker.h"
 #include "core/events/EventBus.h"
+#include "core/events/MainThreadDispatcher.h"
 #include "core/remote/RemoteMasterEngine.h"
+#include "core/utils/UiThreadJoin.h"
 #include "Tools3000Version.h"
 #include <algorithm>
 #include <atomic>
@@ -44,20 +46,6 @@ constexpr size_t MaxBridgeMessageBytes = 1024 * 1024;
 
 std::string bridgeErrorResponse(int id, int code, std::string_view message) {
     return json{{"id", id}, {"error", {{"code", code}, {"message", std::string(message)}}}}.dump();
-}
-
-HWND findCurrentProcessSettingsWindow() noexcept {
-    const DWORD selfPid = GetCurrentProcessId();
-    for (HWND candidate = FindWindowExW(nullptr, nullptr, L"Tools3000_SettingsWindow", nullptr);
-         candidate != nullptr;
-         candidate = FindWindowExW(nullptr, candidate, L"Tools3000_SettingsWindow", nullptr)) {
-        DWORD pid = 0;
-        GetWindowThreadProcessId(candidate, &pid);
-        if (pid == selfPid && IsWindowVisible(candidate)) {
-            return candidate;
-        }
-    }
-    return nullptr;
 }
 
 std::optional<std::filesystem::path> choosePath(bool save, bool folder = false) {
@@ -96,8 +84,9 @@ std::optional<std::filesystem::path> choosePath(bool save, bool folder = false) 
     }
 
     std::optional<std::filesystem::path> result;
-    const HWND owner = findCurrentProcessSettingsWindow();
-    hr = dialog->Show(owner && IsWindow(owner) ? owner : nullptr);
+    // HIGH-03: 严禁在后台 STA 线程池中将主 UI 线程窗口句柄作为模态 owner 硬挂接，
+    // 否则 Win32 隐式跨线程输入队列耦合（AttachThreadInput）极易引发互锁死锁。
+    hr = dialog->Show(nullptr);
     if (SUCCEEDED(hr)) {
         IShellItem* item = nullptr;
         if (SUCCEEDED(dialog->GetResult(&item)) && item) {
@@ -935,6 +924,7 @@ struct MessageBridge::WorkerPool {
     struct Job {
         std::string message;
         std::shared_ptr<Completion> completion;
+        std::function<void()> internalTask;
         std::chrono::steady_clock::duration timeout = DefaultAsyncJobTimeout;
     };
 
@@ -998,15 +988,25 @@ MessageBridge::WorkerPool& MessageBridge::ensureWorkerPool() {
                     workerState->timeout = job.timeout;
                     workerState->completion = job.completion;
                 }
-                std::string response = MessageBridge::instance().handleMessage(job.message);
-                WorkerPool::respondOnce(job.completion, std::move(response), "worker");
+                if (job.internalTask) {
+                    try {
+                        job.internalTask();
+                    } catch (const std::exception& e) {
+                        LOG_ERROR("Internal async worker task exception: {}", e.what());
+                    } catch (...) {
+                        LOG_ERROR("Internal async worker task unknown exception");
+                    }
+                } else {
+                    std::string response = MessageBridge::instance().handleMessage(job.message);
+                    WorkerPool::respondOnce(job.completion, std::move(response), "worker");
+                }
                 {
                     std::lock_guard lock(pool->mutex);
                     workerState->active = false;
                     workerState->timedOut = false;
                     workerState->completion.reset();
                 }
-                pool->watchdogCv.notify_one();
+                pool->watchdogCv.notify_all();
             }
         });
     }
@@ -1103,32 +1103,76 @@ void MessageBridge::shutdownWorkerPool() {
             "shutdown queue");
     }
 
+    // CRIT-03: 有界排空等待最高 3000ms 让在途工作线程自然完成并 join()；
+    // 若在主 UI 线程则泵送已发送跨线程消息与 MainThreadDispatcher 队列防止 AB-BA 死锁，仅当极端超时仍卡死时才降级 detach()。
+    constexpr DWORD ShutdownDrainBudgetMs = 3000;
+    const bool onUiThread = MainThreadDispatcher::instance().isOwnerThread();
+    if (!onUiThread) {
+        std::unique_lock lock(pool->mutex);
+        pool->watchdogCv.wait_for(
+            lock, std::chrono::milliseconds(ShutdownDrainBudgetMs), [pool] {
+                return std::none_of(pool->workerStates.begin(), pool->workerStates.end(),
+                                    [](const auto& s) { return s->active; });
+            });
+    }
+
+    const ULONGLONG deadlineTick = GetTickCount64() + ShutdownDrainBudgetMs;
     bool leakedForStalledWorkers = false;
     for (size_t i = 0; i < pool->threads.size(); ++i) {
         auto& thread = pool->threads[i];
         if (!thread.joinable()) continue;
 
-        std::shared_ptr<WorkerPool::Completion> activeCompletion;
-        {
-            std::lock_guard lock(pool->mutex);
-            if (pool->workerStates[i]->active) {
-                activeCompletion = pool->workerStates[i]->completion;
+        bool joinedCleanly = false;
+        if (onUiThread) {
+            MainThreadDispatcher::instance().drain();
+            const ULONGLONG nowTick = GetTickCount64();
+            const DWORD remainingMs = nowTick < deadlineTick
+                ? static_cast<DWORD>(deadlineTick - nowTick)
+                : 0;
+            if (remainingMs > 0) {
+                joinedCleanly = joinWorkerWhilePumpingSentMessages(thread, remainingMs);
+            } else {
+                HANDLE hThread = static_cast<HANDLE>(thread.native_handle());
+                if (!hThread || WaitForSingleObject(hThread, 0) == WAIT_OBJECT_0) {
+                    thread.join();
+                    joinedCleanly = true;
+                } else {
+                    thread.detach();
+                    joinedCleanly = false;
+                }
+            }
+        } else {
+            HANDLE hThread = static_cast<HANDLE>(thread.native_handle());
+            const ULONGLONG nowTick = GetTickCount64();
+            const DWORD remainingMs = nowTick < deadlineTick
+                ? static_cast<DWORD>(deadlineTick - nowTick)
+                : 0;
+            if (!hThread || WaitForSingleObject(hThread, std::min<DWORD>(remainingMs, 50)) == WAIT_OBJECT_0) {
+                thread.join();
+                joinedCleanly = true;
+            } else {
+                thread.detach();
+                joinedCleanly = false;
             }
         }
-        if (activeCompletion) {
-            const int id = activeCompletion->id;
-            WorkerPool::respondOnce(
-                activeCompletion,
-                bridgeErrorResponse(id, -32000, "Bridge shut down while handler was running"),
-                "shutdown active worker");
-            // Standard C++ cannot safely terminate a handler executing inside
-            // a third-party DLL. Detach it and intentionally retain the pool
-            // state so a late return cannot access freed memory.
-            thread.detach();
+
+        if (!joinedCleanly) {
+            std::shared_ptr<WorkerPool::Completion> activeCompletion;
+            {
+                std::lock_guard lock(pool->mutex);
+                if (pool->workerStates[i]->active) {
+                    activeCompletion = pool->workerStates[i]->completion;
+                }
+            }
+            if (activeCompletion) {
+                const int id = activeCompletion->id;
+                WorkerPool::respondOnce(
+                    activeCompletion,
+                    bridgeErrorResponse(id, -32000, "Bridge shut down while handler was running"),
+                    "shutdown active worker");
+            }
             leakedForStalledWorkers = true;
             g_hasQuarantinedHandlers.store(true, std::memory_order_release);
-        } else {
-            thread.join();
         }
     }
 
@@ -1196,7 +1240,7 @@ void MessageBridge::handleMessageAsync(const std::string& messageJson, AsyncResp
                 pool.jobs.pop_front();
             }
             const auto timeout = asyncJobTimeoutForMethod(method);
-            pool.jobs.push_back(WorkerPool::Job{messageJson, completion, timeout});
+            pool.jobs.push_back(WorkerPool::Job{messageJson, completion, {}, timeout});
         }
     }
     if (rejected) {
@@ -1488,12 +1532,24 @@ void MessageBridge::registerBuiltinHandlers() {
         markMethodAsync(method);
     }
 
-    // 后台异步预热开机自启状态原子缓存，确保后续查询耗时降至 <1µs 并杜绝主线程卡顿
+    // 后台异步预热开机自启状态原子缓存：投递至受管 WorkerPool 执行，杜绝裸 detach 线程逃逸生命周期管控
     static std::once_flag s_warmupOnce;
-    std::call_once(s_warmupOnce, []() {
-        std::thread([]() {
-            getCachedAutoStart(true);
-        }).detach();
+    std::call_once(s_warmupOnce, [this]() {
+        auto& pool = ensureWorkerPool();
+        bool enqueued = false;
+        {
+            std::lock_guard lock(pool.mutex);
+            if (!pool.stopping) {
+                WorkerPool::Job warmupJob;
+                warmupJob.internalTask = []() { getCachedAutoStart(true); };
+                warmupJob.timeout = DefaultAsyncJobTimeout;
+                pool.jobs.push_back(std::move(warmupJob));
+                enqueued = true;
+            }
+        }
+        if (enqueued) {
+            pool.cv.notify_one();
+        }
     });
 
     registerHandler("plugins.getAll", [](const json&) -> json {
@@ -1640,13 +1696,13 @@ void MessageBridge::registerBuiltinHandlers() {
             std::string error;
             const bool success = PluginManager::instance().setPluginEnabled(
                 normalizedId, enabled, restartRequired, error);
-            MessageBridge::instance().pushEvent("dialog:configChanged", {{"enabled", enabled}});
-            MessageBridge::instance().pushEvent("plugins:changed", {{"id", normalizedId}, {"enabled", enabled}});
             if (success) {
+                MessageBridge::instance().pushEvent("dialog:configChanged", {{"enabled", enabled}});
+                MessageBridge::instance().pushEvent("plugins:changed", {{"id", normalizedId}, {"enabled", enabled}});
                 releasePluginResourcesAndTrim();
             }
             return {
-                {"success", true},
+                {"success", success},
                 {"restartRequired", restartRequired},
                 {"error", error}
             };
@@ -1665,13 +1721,13 @@ void MessageBridge::registerBuiltinHandlers() {
             std::string error;
             const bool success = PluginManager::instance().setPluginEnabled(
                 id, enabled, restartRequired, error);
-            MessageBridge::instance().pushEvent("keycast:configChanged", {{"enabled", enabled}});
-            MessageBridge::instance().pushEvent("plugins:changed", {{"id", "keycast"}, {"enabled", enabled}});
             if (success) {
+                MessageBridge::instance().pushEvent("keycast:configChanged", {{"enabled", enabled}});
+                MessageBridge::instance().pushEvent("plugins:changed", {{"id", "keycast"}, {"enabled", enabled}});
                 releasePluginResourcesAndTrim();
             }
             return {
-                {"success", true},
+                {"success", success},
                 {"restartRequired", restartRequired},
                 {"error", error}
             };
@@ -1688,14 +1744,14 @@ void MessageBridge::registerBuiltinHandlers() {
             std::string error;
             const bool success = PluginManager::instance().setPluginEnabled(
                 id, enabled, restartRequired, error);
-            MessageBridge::instance().pushEvent("gesture.stateChanged", {{"enabled", enabled}, {"paused", !enabled}});
-            MessageBridge::instance().pushEvent("gesture:stateChanged", {{"enabled", enabled}, {"paused", !enabled}});
-            MessageBridge::instance().pushEvent("plugins:changed", {{"id", "gesture"}, {"enabled", enabled}});
             if (success) {
+                MessageBridge::instance().pushEvent("gesture.stateChanged", {{"enabled", enabled}, {"paused", !enabled}});
+                MessageBridge::instance().pushEvent("gesture:stateChanged", {{"enabled", enabled}, {"paused", !enabled}});
+                MessageBridge::instance().pushEvent("plugins:changed", {{"id", "gesture"}, {"enabled", enabled}});
                 releasePluginResourcesAndTrim();
             }
             return {
-                {"success", true},
+                {"success", success},
                 {"restartRequired", restartRequired},
                 {"error", error}
             };
@@ -2097,6 +2153,7 @@ void MessageBridge::registerBuiltinHandlers() {
         }
         auto& config = ConfigManager::instance();
         const bool previousAutoStart = config.get<bool>("/general/autoStart", false);
+        json sanitizedPatch = json::object();
         for (const auto& [key, value] : params.items()) {
             if (readOnlyKeys.contains(key)) {
                 continue;
@@ -2136,41 +2193,45 @@ void MessageBridge::registerBuiltinHandlers() {
             if (!boolKeys.contains(key) && key != "theme" && key != "accentColor" && key != "logLevel" && key != "language" && key != "fontFamily" && key != "trayIconTheme" && key != "logRetentionDays" && key != "fullscreenMode") {
                 return {{"success", false}, {"error", "unsupported setting: " + key}};
             }
+            sanitizedPatch[key] = value;
         }
-        if (params.contains("autoStart") && !setAutoStart(params["autoStart"].get<bool>())) {
+        if (sanitizedPatch.empty()) {
+            return {{"success", true}};
+        }
+        if (sanitizedPatch.contains("autoStart") && !setAutoStart(sanitizedPatch["autoStart"].get<bool>())) {
             return {{"success", false}, {"error", "failed to update auto-start"}};
         }
-        if (params.contains("showOnboarding")) {
-            const bool showOb = params["showOnboarding"].get<bool>();
+        if (sanitizedPatch.contains("showOnboarding")) {
+            const bool showOb = sanitizedPatch["showOnboarding"].get<bool>();
             config.set<bool>("/app/onboardingCompleted", !showOb);
         }
-        const bool saved = config.mergePatch({{"general", params}}, "/general");
+        const bool saved = config.mergePatch({{"general", sanitizedPatch}}, "/general");
         if (!saved) {
-            if (params.contains("autoStart")) setAutoStart(previousAutoStart);
+            if (sanitizedPatch.contains("autoStart")) setAutoStart(previousAutoStart);
             return {{"success", false}, {"error", "failed to persist settings"}};
         }
-        if (params.contains("fullscreenMode")) {
+        if (sanitizedPatch.contains("fullscreenMode")) {
             WinUtils::setFullscreenPolicyMode(
-                WinUtils::parseFullscreenPolicyMode(params["fullscreenMode"].get<std::string>()));
+                WinUtils::parseFullscreenPolicyMode(sanitizedPatch["fullscreenMode"].get<std::string>()));
             syncFullscreenRuntimeState();
         }
-        if (params.contains("language")) {
-            Logger::setLanguage(params["language"].get<std::string>());
+        if (sanitizedPatch.contains("language")) {
+            Logger::setLanguage(sanitizedPatch["language"].get<std::string>());
         }
-        if (params.contains("logLevel")) applyLogLevel(params["logLevel"].get<std::string>());
-        if (params.contains("logRetentionDays")) {
-            Logger::setRetentionDays(params["logRetentionDays"].get<uint32_t>());
+        if (sanitizedPatch.contains("logLevel")) applyLogLevel(sanitizedPatch["logLevel"].get<std::string>());
+        if (sanitizedPatch.contains("logRetentionDays")) {
+            Logger::setRetentionDays(sanitizedPatch["logRetentionDays"].get<uint32_t>());
         }
-        if (params.contains("theme") || params.contains("accentColor") || params.contains("trayIconTheme")) {
+        if (sanitizedPatch.contains("theme") || sanitizedPatch.contains("accentColor") || sanitizedPatch.contains("trayIconTheme")) {
             EventBus::instance().publish(ThemeChangedEvent{
                 config.get<std::string>("/general/theme", "system"),
                 config.get<std::string>("/general/accentColor", "blue"),
                 config.get<std::string>("/general/trayIconTheme", "system")
             });
         }
-        if (params.contains("theme") || params.contains("accentColor") ||
-            params.contains("trayIconTheme") || params.contains("language") ||
-            params.contains("fontFamily")) {
+        if (sanitizedPatch.contains("theme") || sanitizedPatch.contains("accentColor") ||
+            sanitizedPatch.contains("trayIconTheme") || sanitizedPatch.contains("language") ||
+            sanitizedPatch.contains("fontFamily")) {
             MessageBridge::instance().pushEvent("appearance:changed", {
                 {"theme", config.get<std::string>("/general/theme", "system")},
                 {"accentColor", config.get<std::string>("/general/accentColor", "blue")},
@@ -2192,22 +2253,30 @@ void MessageBridge::registerBuiltinHandlers() {
     });
     // ── 应用系统信息 ─────────────────────────────────────────────────────
     registerHostHandler("app.getSystemInfo", [](const json&) -> json {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        
-        MEMORYSTATUSEX memInfo;
+        SYSTEM_INFO si{};
+        GetNativeSystemInfo(&si);
+
+        MEMORYSTATUSEX memInfo{};
         memInfo.dwLength = sizeof(memInfo);
         GlobalMemoryStatusEx(&memInfo);
 
         std::string arch = "x64";
-        if (si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64) {
+        USHORT processMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+        USHORT nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+        if (IsWow64Process2(GetCurrentProcess(), &processMachine, &nativeMachine) &&
+            nativeMachine != IMAGE_FILE_MACHINE_UNKNOWN) {
+            if (nativeMachine == IMAGE_FILE_MACHINE_ARM64) {
+                arch = "ARM64";
+            } else if (nativeMachine == IMAGE_FILE_MACHINE_AMD64) {
+                arch = "x64";
+            } else if (nativeMachine == IMAGE_FILE_MACHINE_I386) {
+                arch = "x86";
+            }
+        } else if (si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64) {
             arch = "ARM64";
         } else if (si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL) {
             arch = "x86";
         }
-
-        OSVERSIONINFOEXW osvi{};
-        osvi.dwOSVersionInfoSize = sizeof(osvi);
 
         return {
             {"version", UpdateChecker::CurrentVersion},

@@ -7,15 +7,15 @@
  */
 
 #include "DialogNavigator.h"
+#include "core/events/MainThreadDispatcher.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 
-#include <commdlg.h>
-#include <dlgs.h>
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <uiautomation.h>
 #include <algorithm>
+#include <future>
 #include <vector>
 #include <thread>
 #include <chrono>
@@ -38,13 +38,19 @@ DialogNavigator& DialogNavigator::instance() {
     return s_instance;
 }
 
+DialogNavigator::~DialogNavigator() {
+    shutdownAsyncWorker();
+}
+
 // ============================================================
 // 内部工具命名空间
 // ============================================================
 namespace {
 
+constexpr UINT kCrossProcessTimeoutMs = 150;
+
 bool sendMessageWithTimeout(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
-                            LRESULT& result, UINT timeoutMs = 250) {
+                            LRESULT& result, UINT timeoutMs = kCrossProcessTimeoutMs) {
     DWORD_PTR rawResult = 0;
     if (!hwnd || !SendMessageTimeoutW(hwnd, message, wParam, lParam,
                                       SMTO_ABORTIFHUNG | SMTO_BLOCK,
@@ -56,17 +62,97 @@ bool sendMessageWithTimeout(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     return true;
 }
 
-std::wstring getWindowTextWithTimeout(HWND hwnd, size_t maxChars = MAX_PATH * 2) {
+std::wstring getWindowTextWithTimeout(HWND hwnd, size_t maxChars = MAX_PATH * 2,
+                                      UINT timeoutMs = kCrossProcessTimeoutMs) {
     if (!hwnd || maxChars < 2) return {};
     std::wstring value(maxChars, L'\0');
     LRESULT copied = 0;
     if (!sendMessageWithTimeout(hwnd, WM_GETTEXT, static_cast<WPARAM>(maxChars),
-                                reinterpret_cast<LPARAM>(value.data()), copied)) {
+                                reinterpret_cast<LPARAM>(value.data()), copied, timeoutMs)) {
         return {};
     }
     if (copied <= 0) return {};
-    value.resize(std::min<size_t>(static_cast<size_t>(copied), maxChars - 1));
+    value.resize((std::min)(static_cast<size_t>(copied), maxChars - 1));
     return value;
+}
+
+bool isRemoteUncPath(const std::wstring& path) noexcept {
+    if (path.size() < 3) return false;
+    if ((path[0] == L'\\' || path[0] == L'/') && (path[1] == L'\\' || path[1] == L'/')) {
+        // Local extended path prefixes "\\?\C:\" or "\\.\" are local kernel objects, not SMB UNC.
+        if (path[2] == L'.') return false;
+        if (path[2] == L'?') {
+            if (path.size() >= 6 && std::iswalpha(path[4]) && path[5] == L':') {
+                return false;
+            }
+            return true;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool hasPlausibleUncShareSyntax(const std::wstring& path) noexcept {
+    if (!isRemoteUncPath(path)) return false;
+    size_t pos = 2;
+    if (path.rfind(L"\\\\?\\UNC\\", 0) == 0 || path.rfind(L"\\\\?\\unc\\", 0) == 0) {
+        pos = 8;
+    }
+    const size_t slash = path.find_first_of(L"\\/", pos);
+    if (slash == std::wstring::npos || slash == pos || slash + 1 >= path.size()) {
+        return false;
+    }
+    return path[slash + 1] != L'\\' && path[slash + 1] != L'/';
+}
+
+// 被动探测专用：本地路径直接查属性（微秒级），远程 UNC 路径绝不发起可能阻塞 20~45s 的同步 SMB I/O
+bool isDirectoryFastNonBlocking(const std::wstring& candidate) noexcept {
+    if (candidate.empty()) return false;
+    if (isRemoteUncPath(candidate)) {
+        return hasPlausibleUncShareSyntax(candidate);
+    }
+    const DWORD attributes = GetFileAttributesW(candidate.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+bool isPathExistingFastNonBlocking(const std::wstring& candidate) noexcept {
+    if (candidate.empty()) return false;
+    if (isRemoteUncPath(candidate)) {
+        return hasPlausibleUncShareSyntax(candidate);
+    }
+    return GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+// 主动导航前目录校验：本地路径直接验证，远程 UNC 使用带 200ms 超时的异步探测，严防离线 SMB 挂死工作线程
+bool verifyNavigableDirectoryBounded(const std::wstring& candidate) {
+    if (candidate.empty()) return false;
+    if (!isRemoteUncPath(candidate)) {
+        const DWORD attrs = GetFileAttributesW(candidate.c_str());
+        return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    }
+    if (!hasPlausibleUncShareSyntax(candidate)) {
+        return false;
+    }
+    const auto& disp = tools3000::core::MainThreadDispatcher::instance();
+    if (disp.isInitialized() && disp.isOwnerThread()) {
+        return false;
+    }
+    auto state = std::make_shared<std::promise<DWORD>>();
+    auto fut = state->get_future();
+    std::thread([candidate, state]() noexcept {
+        const DWORD attrs = GetFileAttributesW(candidate.c_str());
+        try {
+            state->set_value(attrs);
+        } catch (...) {
+        }
+    }).detach();
+    if (fut.wait_for(std::chrono::milliseconds(200)) != std::future_status::ready) {
+        LOG_WARN("DialogNavigator: UNC path attribute probe timed out (>200ms), skipping offline share");
+        return false;
+    }
+    const DWORD attrs = fut.get();
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
 bool isVisibleAddressControl(HWND hwnd) {
@@ -106,12 +192,6 @@ std::wstring sanitizeShellText(std::wstring value) {
 
 std::wstring extractExistingDirectory(const std::wstring& shellText) {
     const std::wstring text = sanitizeShellText(shellText);
-    auto isDirectory = [](const std::wstring& candidate) {
-        const DWORD attributes = GetFileAttributesW(candidate.c_str());
-        return attributes != INVALID_FILE_ATTRIBUTES &&
-               (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    };
-
     for (size_t index = 0; index + 2 < text.size(); ++index) {
         const bool driveRoot = iswalpha(text[index]) && text[index + 1] == L':' &&
                                (text[index + 2] == L'\\' || text[index + 2] == L'/');
@@ -119,7 +199,7 @@ std::wstring extractExistingDirectory(const std::wstring& shellText) {
                              index + 3 < text.size();
         if (!driveRoot && !uncRoot) continue;
         std::wstring candidate = text.substr(index);
-        if (isDirectory(candidate)) return candidate;
+        if (isDirectoryFastNonBlocking(candidate)) return candidate;
     }
     return {};
 }
@@ -130,18 +210,18 @@ bool isTargetForeground(HWND dialogHwnd) {
            (foreground && GetAncestor(foreground, GA_ROOT) == dialogHwnd);
 }
 
-bool ensureTargetForeground(HWND dialogHwnd) {
+bool ensureTargetForeground(HWND dialogHwnd, uint64_t navEpoch = 0) {
     if (isTargetForeground(dialogHwnd)) return true;
     SetForegroundWindow(dialogHwnd);
     for (int retry = 0; retry < 10; ++retry) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (!DialogNavigator::instance().waitInterruptibleMs(10, navEpoch)) return false;
         if (isTargetForeground(dialogHwnd)) return true;
     }
     return false;
 }
 
-bool sendKeyChord(HWND dialogHwnd, WORD modifier, WORD key) {
-    if (!ensureTargetForeground(dialogHwnd)) return false;
+bool sendKeyChord(HWND dialogHwnd, WORD modifier, WORD key, uint64_t navEpoch = 0) {
+    if (!ensureTargetForeground(dialogHwnd, navEpoch)) return false;
     INPUT input[4]{};
     UINT count = 0;
     if (modifier != 0) {
@@ -317,8 +397,8 @@ BOOL CALLBACK EnumFileDialogChildren(HWND hwnd, LPARAM lParam) {
             ctx->cancelButtonHwnd = hwnd;
         }
 
-        wchar_t btnText[64] = {0};
-        if (GetWindowTextW(hwnd, btnText, 64) > 0) {
+        const std::wstring btnText = getWindowTextWithTimeout(hwnd, 64);
+        if (!btnText.empty()) {
             std::wstring_view bv(btnText);
             if (bv.find(L"上一步") != std::wstring_view::npos ||
                 bv.find(L"Back") != std::wstring_view::npos ||
@@ -331,8 +411,8 @@ BOOL CALLBACK EnumFileDialogChildren(HWND hwnd, LPARAM lParam) {
             }
         }
     } else if (wcscmp(className, L"Static") == 0) {
-        wchar_t text[128] = {0};
-        if (GetWindowTextW(hwnd, text, 128) > 0) {
+        const std::wstring text = getWindowTextWithTimeout(hwnd, 128);
+        if (!text.empty()) {
             std::wstring_view sv(text);
             if (sv.find(L"正在复制") != std::wstring_view::npos ||
                 sv.find(L"正在移动") != std::wstring_view::npos ||
@@ -381,8 +461,7 @@ bool DialogNavigator::isProgressOrTransferDialog(HWND hwnd) {
     }
 
     // 3. 标题排查：多语言文件传输/操作进度关键词
-    wchar_t title[256] = {0};
-    GetWindowTextW(hwnd, title, 256);
+    const std::wstring title = getWindowTextWithTimeout(hwnd, 256);
     std::wstring_view tv(title);
 
     static constexpr std::wstring_view kProgressTitleKeywords[] = {
@@ -434,8 +513,8 @@ bool DialogNavigator::isProgressOrTransferDialog(HWND hwnd) {
             return TRUE;
         }
 
-        wchar_t text[128] = {0};
-        if (GetWindowTextW(child, text, 128) > 0) {
+        const std::wstring text = getWindowTextWithTimeout(child, 128);
+        if (!text.empty()) {
             std::wstring_view sv(text);
             if (sv.find(L"正在复制") != std::wstring_view::npos ||
                 sv.find(L"正在移动") != std::wstring_view::npos ||
@@ -521,8 +600,8 @@ bool DialogNavigator::isInstallerOrWizard(HWND dialogHwnd) {
 
     // 3. 检查窗口标题与顶层 Owner 标题（安装向导多语言关键词）
     auto checkTitle = [](HWND hwnd) -> bool {
-        wchar_t title[256] = {0};
-        if (GetWindowTextW(hwnd, title, 256) > 0) {
+        const std::wstring title = getWindowTextWithTimeout(hwnd, 256);
+        if (!title.empty()) {
             std::wstring_view tv(title);
             static constexpr std::wstring_view kWizardTitleKeywords[] = {
                 L"安装向导", L"设置向导", L"更新向导", L"升级向导", L"卸载向导",
@@ -562,8 +641,8 @@ bool DialogNavigator::isInstallerOrWizard(HWND dialogHwnd) {
                 *reinterpret_cast<bool*>(lParam) = true;
                 return FALSE;
             }
-            wchar_t text[64] = {0};
-            if (GetWindowTextW(child, text, 64) > 0) {
+            const std::wstring text = getWindowTextWithTimeout(child, 64);
+            if (!text.empty()) {
                 std::wstring_view sv(text);
                 if (sv.find(L"上一步") != std::wstring_view::npos ||
                     sv.find(L"Back") != std::wstring_view::npos ||
@@ -645,8 +724,7 @@ bool DialogNavigator::isFileDialog(HWND hwnd, bool allowCurrentProcess) {
     }
 
     // 3. 标题排查：Windows 资源管理器属性对话框多语言标题后缀排除
-    wchar_t title[256] = {0};
-    GetWindowTextW(hwnd, title, 256);
+    const std::wstring title = getWindowTextWithTimeout(hwnd, 256);
     std::wstring_view tv(title);
     static constexpr std::wstring_view kPropertySuffixes[] = {
         L" 属性", L"属性",
@@ -1004,18 +1082,149 @@ std::string uiaGetSelectedShellChild(HWND dialogHwnd, const std::string& current
     const std::filesystem::path parent(
         tools3000::core::WinUtils::utf8ToWstring(currentFolder));
     const std::filesystem::path candidate = (parent / itemName).lexically_normal();
-    const DWORD attributes = GetFileAttributesW(candidate.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES) return {};
+    if (!isPathExistingFastNonBlocking(candidate.native())) return {};
     return tools3000::core::WinUtils::wstringToUtf8(candidate.native());
 }
 
 } // namespace
 
+void DialogNavigator::startAsyncWorker() {
+    std::lock_guard lock(m_asyncMutex);
+    if (m_asyncRunning.load(std::memory_order_acquire)) {
+        return;
+    }
+    m_asyncRunning.store(true, std::memory_order_release);
+    if (m_asyncWorker.joinable()) {
+        m_asyncWorker.join();
+    }
+    m_asyncWorker = std::thread([this]() noexcept {
+        asyncWorkerLoop();
+    });
+}
+
+void DialogNavigator::cancelPendingNavigation() {
+    m_navCancelEpoch.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::lock_guard lock(m_asyncMutex);
+        m_asyncQueue.clear();
+    }
+    m_asyncCv.notify_all();
+}
+
+void DialogNavigator::shutdownAsyncWorker() {
+    const bool wasRunning = m_asyncRunning.exchange(false, std::memory_order_acq_rel);
+    m_navCancelEpoch.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::lock_guard lock(m_asyncMutex);
+        m_asyncQueue.clear();
+    }
+    m_asyncCv.notify_all();
+    if (m_asyncWorker.joinable() && m_asyncWorker.get_id() != std::this_thread::get_id()) {
+        m_asyncWorker.join();
+    } else if (!wasRunning && m_asyncWorker.joinable() &&
+               m_asyncWorker.get_id() != std::this_thread::get_id()) {
+        m_asyncWorker.join();
+    }
+}
+
+bool DialogNavigator::waitInterruptibleMs(uint32_t ms, uint64_t expectedNavEpoch) const {
+    if (ms == 0) return true;
+    const uint64_t startEpoch = m_navCancelEpoch.load(std::memory_order_acquire);
+    std::unique_lock lock(m_asyncMutex);
+    const bool interrupted = m_asyncCv.wait_for(
+        lock,
+        std::chrono::milliseconds(ms),
+        [this, expectedNavEpoch, startEpoch]() {
+            if (expectedNavEpoch != 0) {
+                return !m_asyncRunning.load(std::memory_order_acquire) ||
+                       m_navCancelEpoch.load(std::memory_order_acquire) != expectedNavEpoch;
+            }
+            return m_navCancelEpoch.load(std::memory_order_acquire) != startEpoch;
+        });
+    return !interrupted;
+}
+
+void DialogNavigator::postAsyncTask(std::function<void()> task) {
+    if (!task) return;
+    startAsyncWorker();
+    {
+        std::lock_guard lock(m_asyncMutex);
+        if (!m_asyncRunning.load(std::memory_order_acquire)) return;
+        if (m_asyncQueue.size() >= 16) {
+            m_asyncQueue.pop_front();
+        }
+        m_asyncQueue.push_back(std::move(task));
+    }
+    m_asyncCv.notify_one();
+}
+
+void DialogNavigator::navigateToFolderAsync(HWND dialogHwnd,
+                                            const std::string& folderPath,
+                                            std::function<void(bool)> onComplete) {
+    if (!dialogHwnd || folderPath.empty()) {
+        if (onComplete) onComplete(false);
+        return;
+    }
+    startAsyncWorker();
+    const uint64_t epoch = m_navCancelEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+    {
+        std::lock_guard lock(m_asyncMutex);
+        if (!m_asyncRunning.load(std::memory_order_acquire)) {
+            if (onComplete) onComplete(false);
+            return;
+        }
+        // 新导航请求自动替换尚未执行的陈旧排队项，杜绝连续点击堆积阻塞
+        m_asyncQueue.clear();
+        m_asyncQueue.push_back(
+            [this, dialogHwnd, folderPath, epoch, cb = std::move(onComplete)]() mutable {
+                if (m_navCancelEpoch.load(std::memory_order_acquire) != epoch ||
+                    !m_asyncRunning.load(std::memory_order_acquire)) {
+                    if (cb) cb(false);
+                    return;
+                }
+                const bool ok = navigateToFolderInternal(dialogHwnd, folderPath, epoch);
+                if (cb) cb(ok);
+            });
+    }
+    m_asyncCv.notify_all();
+}
+
+void DialogNavigator::asyncWorkerLoop() {
+    // 预初始化专用 MTA COM 公寓与线程级 UIAutomation 实例
+    (void)getUIA();
+
+    while (m_asyncRunning.load(std::memory_order_acquire)) {
+        std::function<void()> task;
+        {
+            std::unique_lock lock(m_asyncMutex);
+            m_asyncCv.wait(lock, [this]() {
+                return !m_asyncRunning.load(std::memory_order_acquire) || !m_asyncQueue.empty();
+            });
+            if (!m_asyncRunning.load(std::memory_order_acquire)) {
+                break;
+            }
+            if (!m_asyncQueue.empty()) {
+                task = std::move(m_asyncQueue.front());
+                m_asyncQueue.pop_front();
+            }
+        }
+        if (task) {
+            try {
+                task();
+            } catch (const std::exception& ex) {
+                LOG_WARN("DialogNavigator: async worker task exception: {}", ex.what());
+            } catch (...) {
+                LOG_WARN("DialogNavigator: async worker task unknown exception");
+            }
+        }
+    }
+}
+
 // Modern IFileDialog: UIA 地址栏导航核心。
 // Windows Shell 为地址编辑框暴露稳定、非本地化的 AutomationId 41477；
 // 底部文件名框是 1152，搜索框是 SearchEditBox。只有同时通过 ID、类型、
 // 窗口归属和几何校验的控件才允许写入。
-bool DialogNavigator::uiaNavigate(HWND dialogHwnd, const std::wstring& wPath) {
+bool DialogNavigator::uiaNavigate(HWND dialogHwnd, const std::wstring& wPath, uint64_t navEpoch) {
     RECT dialogRect{};
     if (!GetWindowRect(dialogHwnd, &dialogRect)) return false;
     const LONG dialogWidth = dialogRect.right - dialogRect.left;
@@ -1043,16 +1252,21 @@ bool DialogNavigator::uiaNavigate(HWND dialogHwnd, const std::wstring& wPath) {
         if (!isSafeAddressHwnd(editHwnd)) return false;
         LRESULT ignored = 0;
         if (!sendMessageWithTimeout(editHwnd, WM_SETTEXT, 0,
-                                    reinterpret_cast<LPARAM>(wPath.c_str()), ignored, 250)) {
+                                    reinterpret_cast<LPARAM>(wPath.c_str()),
+                                    ignored, kCrossProcessTimeoutMs)) {
             return false;
         }
         const LPARAM keyDown = 1 | (static_cast<LPARAM>(MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC)) << 16);
         const LPARAM keyUp = keyDown | (static_cast<LPARAM>(1) << 30) | (static_cast<LPARAM>(1) << 31);
-        if (!sendMessageWithTimeout(editHwnd, WM_KEYDOWN, VK_RETURN, keyDown, ignored, 250) ||
-            !sendMessageWithTimeout(editHwnd, WM_KEYUP, VK_RETURN, keyUp, ignored, 250)) {
+        if (!sendMessageWithTimeout(editHwnd, WM_KEYDOWN, VK_RETURN, keyDown,
+                                    ignored, kCrossProcessTimeoutMs) ||
+            !sendMessageWithTimeout(editHwnd, WM_KEYUP, VK_RETURN, keyUp,
+                                    ignored, kCrossProcessTimeoutMs)) {
             return false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(180));
+        if (!DialogNavigator::instance().waitInterruptibleMs(180, navEpoch)) {
+            return false;
+        }
         if (!IsWindow(dialogHwnd)) {
             LOG_ERROR("UIA: 地址栏回车后对话框意外关闭");
             return false;
@@ -1066,6 +1280,10 @@ bool DialogNavigator::uiaNavigate(HWND dialogHwnd, const std::wstring& wPath) {
     // Shell 地址 Edit 的控件 ID；底部输入框 1152 在入口处即被排除。
     struct AddressSearch { HWND result; } addressSearch{};
     for (int retry = 0; retry < 20 && !addressSearch.result && IsWindow(dialogHwnd); ++retry) {
+        if (navEpoch != 0 &&
+            DialogNavigator::instance().m_navCancelEpoch.load(std::memory_order_acquire) != navEpoch) {
+            return false;
+        }
         EnumChildWindows(dialogHwnd, [](HWND child, LPARAM parameter) -> BOOL {
             auto* search = reinterpret_cast<AddressSearch*>(parameter);
             if (GetDlgCtrlID(child) != 41477) return TRUE;
@@ -1077,7 +1295,11 @@ bool DialogNavigator::uiaNavigate(HWND dialogHwnd, const std::wstring& wPath) {
             }
             return TRUE;
         }, reinterpret_cast<LPARAM>(&addressSearch));
-        if (!addressSearch.result) std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        if (!addressSearch.result) {
+            if (!DialogNavigator::instance().waitInterruptibleMs(25, navEpoch)) {
+                return false;
+            }
+        }
     }
     if (addressSearch.result && submitNativeAddress(addressSearch.result, "native id=41477")) {
         return true;
@@ -1186,11 +1408,13 @@ bool DialogNavigator::uiaNavigate(HWND dialogHwnd, const std::wstring& wPath) {
         };
 
         for (const auto& activator : activators) {
-            if (!sendKeyChord(dialogHwnd, activator.modifier, activator.key)) {
+            if (!sendKeyChord(dialogHwnd, activator.modifier, activator.key, navEpoch)) {
                 LOG_WARN("DialogNavigator: UIA {} could not be sent to target dialog", activator.name);
                 continue;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(90));
+            if (!DialogNavigator::instance().waitInterruptibleMs(90, navEpoch)) {
+                return false;
+            }
             if (!IsWindow(dialogHwnd) || !isTargetForeground(dialogHwnd)) return false;
 
             ComPtr<IUIAutomationElement> focusedElem;
@@ -1226,30 +1450,26 @@ std::string DialogNavigator::getCurrentDialogFolder(HWND dialogHwnd) {
         // FolderPicker (如 SHBrowseForFolder 带 BIF_EDITBOX): 安全读取 Edit 内容
         HWND edit = findPathEditControl(dialogHwnd);
         if (edit) {
-            std::wstring text = getWindowTextWithTimeout(edit, MAX_PATH);
-            if (!text.empty()) {
-                DWORD attr = GetFileAttributesW(text.c_str());
-                if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-                    return tools3000::core::WinUtils::wstringToUtf8(text);
-                }
+            std::wstring text = getWindowTextWithTimeout(edit, MAX_PATH * 2, kCrossProcessTimeoutMs);
+            if (!text.empty() && isDirectoryFastNonBlocking(text)) {
+                return tools3000::core::WinUtils::wstringToUtf8(text);
             }
         }
     }
 
     // 严禁发送 CDM_GETFOLDERPATH (WM_USER+102)！因其跨进程传递裸指针且缺乏 OS 编组，会导致目标进程内存非法访问 (0xC0000005) 崩溃！
-    // 降级方案：枚举子窗口文字寻找已存在的物理目录绝对路径（基于 User32 WM_GETTEXT 安全内核级跨进程编组）
+    // 降级方案：枚举子窗口文字寻找已存在的物理目录绝对路径（基于带 150ms 超时的 WM_GETTEXT 安全内核级跨进程编组）
     std::string foundPath;
     EnumChildWindows(dialogHwnd, [](HWND hwnd, LPARAM lParam) -> BOOL {
         auto* outStr = reinterpret_cast<std::string*>(lParam);
-        wchar_t buf[MAX_PATH * 2] = {0};
-        GetWindowTextW(hwnd, buf, MAX_PATH * 2);
-        std::wstring text = buf;
-        if (text.size() >= 3 && iswalpha(text[0]) && text[1] == L':' && text[2] == L'\\') {
-            DWORD attr = GetFileAttributesW(text.c_str());
-            if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-                *outStr = tools3000::core::WinUtils::wstringToUtf8(text);
-                return FALSE;
-            }
+        const std::wstring text = getWindowTextWithTimeout(hwnd, MAX_PATH * 2, kCrossProcessTimeoutMs);
+        const bool isDrivePath =
+            (text.size() >= 3 && iswalpha(text[0]) && text[1] == L':' &&
+             (text[2] == L'\\' || text[2] == L'/'));
+        const bool isUncPath = isRemoteUncPath(text);
+        if ((isDrivePath || isUncPath) && isDirectoryFastNonBlocking(text)) {
+            *outStr = tools3000::core::WinUtils::wstringToUtf8(text);
+            return FALSE;
         }
         return TRUE;
     }, reinterpret_cast<LPARAM>(&foundPath));
@@ -1270,16 +1490,15 @@ std::string DialogNavigator::getSelectedPath(HWND dialogHwnd) {
         std::string fileName = uiaGetFileNameText(dialogHwnd, &fileNameControlFound);
         if (!fileName.empty()) {
             std::wstring wFileName = tools3000::core::WinUtils::utf8ToWstring(fileName);
-            if (GetFileAttributesW(wFileName.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            if (isPathExistingFastNonBlocking(wFileName)) {
                 return fileName;
             }
             std::string curFolder = getCurrentDialogFolder(dialogHwnd);
             if (!curFolder.empty()) {
                 const std::filesystem::path cand =
                     std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(curFolder)) /
-                    tools3000::core::WinUtils::utf8ToWstring(fileName);
-                std::error_code ec;
-                if (std::filesystem::exists(cand, ec)) {
+                    wFileName;
+                if (isPathExistingFastNonBlocking(cand.native())) {
                     return tools3000::core::WinUtils::wstringToUtf8(cand.native());
                 }
             }
@@ -1299,9 +1518,9 @@ std::string DialogNavigator::getSelectedPath(HWND dialogHwnd) {
     // 安全方式：读取输入控件文本
     HWND editHwnd = findPathEditControl(dialogHwnd);
     if (editHwnd && IsWindow(editHwnd)) {
-        std::wstring editStr = getWindowTextWithTimeout(editHwnd, MAX_PATH);
+        std::wstring editStr = getWindowTextWithTimeout(editHwnd, MAX_PATH * 2, kCrossProcessTimeoutMs);
         if (!editStr.empty()) {
-            if (GetFileAttributesW(editStr.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            if (isPathExistingFastNonBlocking(editStr)) {
                 return tools3000::core::WinUtils::wstringToUtf8(editStr);
             }
             std::string curFolder = getCurrentDialogFolder(dialogHwnd);
@@ -1309,8 +1528,7 @@ std::string DialogNavigator::getSelectedPath(HWND dialogHwnd) {
                 const std::filesystem::path cand =
                     std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(curFolder)) /
                     editStr;
-                std::error_code ec;
-                if (std::filesystem::exists(cand, ec)) {
+                if (isPathExistingFastNonBlocking(cand.native())) {
                     return tools3000::core::WinUtils::wstringToUtf8(cand.native());
                 }
             }
@@ -1323,12 +1541,17 @@ std::string DialogNavigator::getSelectedPath(HWND dialogHwnd) {
 // navigateToFolder — Modern UIAutomation + Legacy 安全多模
 // ============================================================
 bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folderPath) {
+    return navigateToFolderInternal(dialogHwnd, folderPath, 0);
+}
+
+bool DialogNavigator::navigateToFolderInternal(HWND dialogHwnd,
+                                               const std::string& folderPath,
+                                               uint64_t navEpoch) {
     if (!dialogHwnd || !IsWindow(dialogHwnd) || folderPath.empty()) return false;
 
     std::wstring wPath = tools3000::core::WinUtils::utf8ToWstring(folderPath);
     if (wPath.empty()) return false;
-    DWORD attrs = GetFileAttributesW(wPath.c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+    if (!verifyNavigableDirectoryBounded(wPath)) {
         LOG_WARN("DialogNavigator: reject navigating to non-directory or non-existent path: {}", folderPath);
         return false;
     }
@@ -1340,7 +1563,7 @@ bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folde
 
     if (dtype == DialogType::Modern) {
         // Modern: UIAutomation 地址栏导航（唯一可靠方案）
-        bool ok = uiaNavigate(dialogHwnd, wPath);
+        bool ok = uiaNavigate(dialogHwnd, wPath, navEpoch);
         if (!ok) {
             LOG_WARN("DialogNavigator: UIA modern navigation failed for {}", folderPath);
         }
@@ -1361,7 +1584,7 @@ bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folde
         DWORD_PTR ignored = 0;
         if (!SendMessageTimeoutW(editHwnd, WM_SETTEXT, 0,
                                  reinterpret_cast<LPARAM>(wPath.c_str()),
-                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored)) {
+                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored)) {
             return false;
         }
         HWND parent = GetParent(editHwnd);
@@ -1369,7 +1592,7 @@ bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folde
             SendMessageTimeoutW(parent, WM_COMMAND,
                                 MAKEWPARAM(GetDlgCtrlID(editHwnd), EN_CHANGE),
                                 reinterpret_cast<LPARAM>(editHwnd),
-                                SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored);
         }
         LOG_INFO("DialogNavigator: FolderPicker directory updated safely via WM_SETTEXT without VK_RETURN: {}", folderPath);
         return true;
@@ -1386,7 +1609,7 @@ bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folde
         DWORD_PTR ignored = 0;
         if (!SendMessageTimeoutW(editHwnd, WM_SETTEXT, 0,
                                  reinterpret_cast<LPARAM>(wPath.c_str()),
-                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored)) {
+                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored)) {
             return false;
         }
         HWND parent = GetParent(editHwnd);
@@ -1394,26 +1617,33 @@ bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folde
             SendMessageTimeoutW(parent, WM_COMMAND,
                                 MAKEWPARAM(GetDlgCtrlID(editHwnd), EN_CHANGE),
                                 reinterpret_cast<LPARAM>(editHwnd),
-                                SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored);
         }
         LOG_INFO("DialogNavigator: installer directory updated safely via WM_SETTEXT without VK_RETURN: {}", folderPath);
         return true;
     }
 
-    // Legacy OPENFILENAME 标准对话框导航流程
+    // Legacy OPENFILENAME 标准对话框导航流程：
+    // 使用跨进程有效的 WM_GETTEXTLENGTH + WM_GETTEXT 备份外部子 Edit 控件中的默认保存文件名，
+    // 严禁用跨进程对子控件无效的 GetWindowTextW（否则会读出空串清空“另存为”默认文件名）。
     std::wstring wPathDir = wPath;
     if (wPathDir.back() != L'\\' && wPathDir.back() != L'/') wPathDir.push_back(L'\\');
 
-    const int oldLength = GetWindowTextLengthW(editHwnd);
-    std::wstring oldText(static_cast<size_t>(std::max(0, oldLength)), L'\0');
-    if (oldLength > 0) {
-        GetWindowTextW(editHwnd, oldText.data(), oldLength + 1);
+    LRESULT rawOldLen = 0;
+    size_t reserveChars = MAX_PATH * 2;
+    if (sendMessageWithTimeout(editHwnd, WM_GETTEXTLENGTH, 0, 0, rawOldLen, kCrossProcessTimeoutMs) &&
+        rawOldLen >= 0) {
+        reserveChars = (std::min)(static_cast<size_t>(rawOldLen) + 2, static_cast<size_t>(32768));
     }
+    const std::wstring oldText =
+        (rawOldLen > 0)
+            ? getWindowTextWithTimeout(editHwnd, reserveChars, kCrossProcessTimeoutMs)
+            : std::wstring{};
 
     DWORD_PTR ignored = 0;
     if (!SendMessageTimeoutW(editHwnd, WM_SETTEXT, 0,
                              reinterpret_cast<LPARAM>(wPathDir.c_str()),
-                             SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored)) {
+                             SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored)) {
         return false;
     }
     HWND parent = GetParent(editHwnd);
@@ -1421,23 +1651,33 @@ bool DialogNavigator::navigateToFolder(HWND dialogHwnd, const std::string& folde
         SendMessageTimeoutW(parent, WM_COMMAND,
                             MAKEWPARAM(GetDlgCtrlID(editHwnd), EN_CHANGE),
                             reinterpret_cast<LPARAM>(editHwnd),
-                            SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
+                            SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored);
     }
 
     SendMessageTimeoutW(editHwnd, WM_KEYDOWN, VK_RETURN, 0x001C0001,
-                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
+                        SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored);
     SendMessageTimeoutW(editHwnd, WM_KEYUP, VK_RETURN, 0xC01C0001,
-                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
+                        SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    if (!waitInterruptibleMs(80, navEpoch)) {
+        return false;
+    }
     if (!IsWindow(dialogHwnd)) {
         LOG_ERROR("DialogNavigator: dialog closed unexpectedly after navigation: {}", folderPath);
         return false;
     }
 
-    SendMessageTimeoutW(editHwnd, WM_SETTEXT, 0,
-                        reinterpret_cast<LPARAM>(oldText.c_str()),
-                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored);
+    if (IsWindow(editHwnd)) {
+        SendMessageTimeoutW(editHwnd, WM_SETTEXT, 0,
+                            reinterpret_cast<LPARAM>(oldText.c_str()),
+                            SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored);
+        if (parent && IsWindow(parent)) {
+            SendMessageTimeoutW(parent, WM_COMMAND,
+                                MAKEWPARAM(GetDlgCtrlID(editHwnd), EN_CHANGE),
+                                reinterpret_cast<LPARAM>(editHwnd),
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK, kCrossProcessTimeoutMs, &ignored);
+        }
+    }
     LOG_INFO("DialogNavigator: legacy navigation completed: {}", folderPath);
     return true;
 }

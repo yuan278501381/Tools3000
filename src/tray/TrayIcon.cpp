@@ -6,6 +6,7 @@
 #include "core/logger/Logger.h"
 #include "core/config/ConfigManager.h"
 #include "core/events/EventBus.h"
+#include "core/events/MainThreadDispatcher.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/utils/WinUtils.h"
 #include "ui/TrayWindow.h"
@@ -126,6 +127,19 @@ TrayIcon::TrayIcon() {
     ensureEventSubscriptions();
 }
 
+TrayIcon::~TrayIcon() {
+    uint64_t gestureSub = 0;
+    uint64_t themeSub = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        gestureSub = std::exchange(m_gesturePauseSubId, 0);
+        themeSub = std::exchange(m_themeChangedSubId, 0);
+    }
+    auto& bus = tools3000::core::EventBus::instance();
+    if (gestureSub != 0) bus.unsubscribeAndWait(gestureSub);
+    if (themeSub != 0) bus.unsubscribeAndWait(themeSub);
+}
+
 TrayIcon& TrayIcon::instance() {
     static TrayIcon inst;
     inst.ensureEventSubscriptions();
@@ -133,6 +147,7 @@ TrayIcon& TrayIcon::instance() {
 }
 
 void TrayIcon::ensureEventSubscriptions() {
+    std::lock_guard lock(m_mutex);
     auto& bus = tools3000::core::EventBus::instance();
     if (m_gesturePauseSubId == 0 ||
         bus.subscriberCount<tools3000::core::GesturePauseChangedEvent>() == 0) {
@@ -141,16 +156,37 @@ void TrayIcon::ensureEventSubscriptions() {
                 setGesturePaused(ev.paused);
             });
     }
+    if (m_themeChangedSubId == 0 ||
+        bus.subscriberCount<tools3000::core::ThemeChangedEvent>() == 0) {
+        m_themeChangedSubId = bus.subscribe<tools3000::core::ThemeChangedEvent>(
+            [this](const tools3000::core::ThemeChangedEvent&) {
+                refreshThemeIcon();
+            });
+    }
+}
+
+std::wstring TrayIcon::tooltip() const {
+    std::lock_guard lock(m_mutex);
+    return m_nid.szTip;
 }
 
 void TrayIcon::refreshThemeIcon() {
+    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().postDeferred([this]() {
+            refreshThemeIcon();
+        });
+        return;
+    }
+
+    std::lock_guard lock(m_mutex);
     if (!m_hwnd) return;
     UINT targetId = 0;
     HICON newIcon = loadThemeAppropriateIcon(&targetId, m_hwnd);
     if (newIcon && (newIcon != m_icon || targetId != m_currentIconId)) {
         m_icon = newIcon;
         m_currentIconId = targetId;
-        if (m_created) {
+        if (m_created.load(std::memory_order_acquire)) {
             m_nid.hIcon = m_icon;
             m_nid.uFlags = NIF_ICON;
             if (!Shell_NotifyIconW(NIM_MODIFY, &m_nid)) {
@@ -163,9 +199,10 @@ void TrayIcon::refreshThemeIcon() {
 
 bool TrayIcon::create(HWND hwnd, HICON icon) {
     ensureEventSubscriptions();
+    std::lock_guard lock(m_mutex);
     if (hwnd) m_hwnd = hwnd;
     if (icon) m_icon = icon;
-    m_created = false;
+    m_created.store(false, std::memory_order_release);
 
     ZeroMemory(&m_nid, sizeof(m_nid));
     m_nid.cbSize = sizeof(NOTIFYICONDATAW);
@@ -184,7 +221,7 @@ bool TrayIcon::create(HWND hwnd, HICON icon) {
     }
     m_nid.hIcon = m_icon;
 
-    if (m_gesturePaused) {
+    if (m_gesturePaused.load(std::memory_order_acquire)) {
         wcsncpy_s(m_nid.szTip, isEnglishLocale() ? L"Tools3000 - Gesture Paused" : L"Tools3000 — 手势已暂停", _TRUNCATE);
     } else {
         wcsncpy_s(m_nid.szTip, isEnglishLocale() ? L"Tools3000 - Desktop Utility" : L"Tools3000 — 桌面效率工具", _TRUNCATE);
@@ -224,7 +261,7 @@ bool TrayIcon::create(HWND hwnd, HICON icon) {
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, TIMER_ID_TRAY_RETRY);
     }
-    m_created = true;
+    m_created.store(true, std::memory_order_release);
     NOTIFYICONDATAW nidVer = m_nid;
     nidVer.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &nidVer);
@@ -233,27 +270,53 @@ bool TrayIcon::create(HWND hwnd, HICON icon) {
 }
 
 bool TrayIcon::ensureCreated(HWND hwnd) {
-    if (m_created) return true;
+    std::lock_guard lock(m_mutex);
+    if (m_created.load(std::memory_order_acquire)) return true;
     return create(hwnd ? hwnd : m_hwnd, m_icon);
 }
 
 void TrayIcon::recreate() {
-    m_created = false;
+    std::lock_guard lock(m_mutex);
+    m_created.store(false, std::memory_order_release);
     create(m_hwnd, m_icon);
 }
 
 void TrayIcon::destroy() {
-    EndMenu();
-    if (m_hwnd && IsWindow(m_hwnd)) {
-        KillTimer(m_hwnd, TIMER_ID_TRAY_RETRY);
+    uint64_t gestureSub = 0;
+    uint64_t themeSub = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        gestureSub = std::exchange(m_gesturePauseSubId, 0);
+        themeSub = std::exchange(m_themeChangedSubId, 0);
     }
-    Shell_NotifyIconW(NIM_DELETE, &m_nid);
-    m_created = false;
+    auto& bus = tools3000::core::EventBus::instance();
+    if (gestureSub != 0) bus.unsubscribeAndWait(gestureSub);
+    if (themeSub != 0) bus.unsubscribeAndWait(themeSub);
+
+    EndMenu();
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            KillTimer(m_hwnd, TIMER_ID_TRAY_RETRY);
+        }
+        Shell_NotifyIconW(NIM_DELETE, &m_nid);
+        m_created.store(false, std::memory_order_release);
+    }
     LOG_INFO("系统托盘图标已销毁");
 }
 
 void TrayIcon::showNotification(const std::wstring& title, const std::wstring& message,
                                  DWORD iconType, UINT timeoutMs) {
+    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().postDeferred(
+            [this, title, message, iconType, timeoutMs]() {
+                showNotification(title, message, iconType, timeoutMs);
+            });
+        return;
+    }
+
+    std::lock_guard lock(m_mutex);
     NOTIFYICONDATAW nid = m_nid;
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = iconType;
@@ -261,14 +324,26 @@ void TrayIcon::showNotification(const std::wstring& title, const std::wstring& m
     wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
     wcsncpy_s(nid.szInfo, message.c_str(), _TRUNCATE);
 
-    if (m_created && m_hwnd) {
+    if (m_created.load(std::memory_order_acquire) && m_hwnd) {
         Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 }
 
 void TrayIcon::setIcon(HICON icon) {
-    m_nid.hIcon = icon;
-    if (m_created && m_hwnd) {
+    {
+        std::lock_guard lock(m_mutex);
+        m_nid.hIcon = icon;
+    }
+    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().postDeferred([this, icon]() {
+            setIcon(icon);
+        });
+        return;
+    }
+
+    std::lock_guard lock(m_mutex);
+    if (m_created.load(std::memory_order_acquire) && m_hwnd) {
         NOTIFYICONDATAW nid = m_nid;
         nid.uFlags = NIF_ICON;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -276,8 +351,20 @@ void TrayIcon::setIcon(HICON icon) {
 }
 
 void TrayIcon::setTooltip(const std::wstring& tooltip) {
-    wcsncpy_s(m_nid.szTip, tooltip.c_str(), _TRUNCATE);
-    if (m_created && m_hwnd) {
+    {
+        std::lock_guard lock(m_mutex);
+        wcsncpy_s(m_nid.szTip, tooltip.c_str(), _TRUNCATE);
+    }
+    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().postDeferred([this, tooltip]() {
+            setTooltip(tooltip);
+        });
+        return;
+    }
+
+    std::lock_guard lock(m_mutex);
+    if (m_created.load(std::memory_order_acquire) && m_hwnd) {
         NOTIFYICONDATAW nid = m_nid;
         nid.uFlags = NIF_TIP;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -285,7 +372,7 @@ void TrayIcon::setTooltip(const std::wstring& tooltip) {
 }
 
 void TrayIcon::setGesturePaused(bool paused) {
-    m_gesturePaused = paused;
+    m_gesturePaused.store(paused, std::memory_order_release);
     if (isEnglishLocale()) {
         setTooltip(paused ? L"Tools3000 - Gesture Paused" : L"Tools3000 - Desktop Utility");
     } else {
@@ -294,13 +381,20 @@ void TrayIcon::setGesturePaused(bool paused) {
 }
 
 bool TrayIcon::isCursorOnTrayIcon() const {
-    if (!m_hwnd || !m_created) return false;
+    HWND hwnd = nullptr;
+    UINT uId = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_hwnd || !m_created.load(std::memory_order_acquire)) return false;
+        hwnd = m_hwnd;
+        uId = m_nid.uID;
+    }
     POINT pt{};
     if (!GetCursorPos(&pt)) return false;
     NOTIFYICONIDENTIFIER nidId{};
     nidId.cbSize = sizeof(NOTIFYICONIDENTIFIER);
-    nidId.hWnd = m_hwnd;
-    nidId.uID = m_nid.uID;
+    nidId.hWnd = hwnd;
+    nidId.uID = uId;
     RECT rc{};
     if (SUCCEEDED(Shell_NotifyIconGetRect(&nidId, &rc))) {
         // 留出 12px 容差边界，确保在现代高分屏 (High-DPI) 与边缘快速点击时精准捕获
@@ -425,13 +519,20 @@ void TrayIcon::showContextMenu(int x, int y) {
 
     if (!validCoords) {
         bool resolved = false;
+        HWND hwnd = nullptr;
+        UINT uId = 0;
+        {
+            std::lock_guard lock(m_mutex);
+            hwnd = m_hwnd;
+            uId = m_nid.uID;
+        }
         // 优先自适应定位在系统托盘图标矩形中心
-        if (m_hwnd) {
+        if (hwnd) {
             RECT rc{};
             NOTIFYICONIDENTIFIER nidId{};
             nidId.cbSize = sizeof(NOTIFYICONIDENTIFIER);
-            nidId.hWnd = m_hwnd;
-            nidId.uID = m_nid.uID;
+            nidId.hWnd = hwnd;
+            nidId.uID = uId;
             if (SUCCEEDED(Shell_NotifyIconGetRect(&nidId, &rc))) {
                 POINT iconCenter{ (rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2 };
                 if (MonitorFromPoint(iconCenter, MONITOR_DEFAULTTONULL) != nullptr) {
@@ -564,9 +665,14 @@ void TrayIcon::showNativeContextMenu(POINT pt) {
     AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(TrayMenuId::Search), isEn ? L"File Search" : L"文件搜索");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(TrayMenuId::PauseGesture),
-                m_gesturePaused ? (isEn ? L"Resume Gesture" : L"恢复手势") : (isEn ? L"Pause Gesture" : L"暂停手势"));
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(TrayMenuId::RestartElevated), isEn ? L"Restart as Administrator" : L"以管理员身份重启");
+                m_gesturePaused.load(std::memory_order_acquire)
+                    ? (isEn ? L"Resume Gesture" : L"恢复手势")
+                    : (isEn ? L"Pause Gesture" : L"暂停手势"));
+    if (!tools3000::core::WinUtils::isProcessElevated()) {
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(TrayMenuId::RestartElevated),
+                    isEn ? L"Restart as Administrator" : L"以管理员身份重启");
+    }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(TrayMenuId::Exit), isEn ? L"Exit Tools3000" : L"退出 Tools3000");
 

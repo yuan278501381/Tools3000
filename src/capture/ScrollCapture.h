@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <thread>
 #include <memory>
+#include <mutex>
 #include <filesystem>
 
 #include "capture/CaptureBackend.h"
@@ -141,6 +142,7 @@ public:
 
     /// 查询运行状态与实时尺寸统计
     bool isRunning() const { return m_running.load(std::memory_order_acquire); }
+    bool isAutoScrolling() const { return m_autoScrolling.load(std::memory_order_acquire); }
     ScrollRuntimeState runtimeState() const { return m_runtimeState.load(std::memory_order_acquire); }
     int currentFrameCount() const { return m_frameCount.load(std::memory_order_acquire); }
     SIZE stitchedDimensions() const;
@@ -148,6 +150,7 @@ public:
 private:
     ScrollCapture() = default;
     ~ScrollCapture() {
+        m_autoScrolling = false;
         m_running = false;
         if (m_scrollThread.joinable()) m_scrollThread.join();
     }
@@ -167,6 +170,7 @@ private:
     void appendFrame(const cv::Mat& frame, const ScrollFrameTransition* precomputed = nullptr);
     int lastSegmentRows() const;
     void trimLastSegmentBottomRows(int trimRows, std::size_t rowBytes);
+    void featherSpilledBoundary(const cv::Mat& fullCurrFrame, int currOffset, std::size_t rowBytes);
     cv::Mat buildStitchedImage() const;
     cv::Mat buildRecentPreview(int maxRows) const;
     void deliverCompletion(const std::string& error = {});
@@ -179,7 +183,10 @@ private:
         int rows = 0;
     };
 
+    mutable std::recursive_mutex m_captureMutex;
     std::atomic<bool> m_running{false};
+    std::atomic<bool> m_autoScrolling{false};
+    std::atomic<bool> m_workerInLoop{false};
     std::atomic<ScrollRuntimeState> m_runtimeState{ScrollRuntimeState::Idle};
     std::atomic<ScrollFinishAction> m_finishAction{ScrollFinishAction::Confirm};
     std::atomic<bool> m_resumeNudgeCursor{false};

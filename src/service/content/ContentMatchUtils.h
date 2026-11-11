@@ -267,8 +267,12 @@ private:
 
 inline uint8_t rustCancelBridgeCallback(const void* ctx) noexcept {
     if (!ctx) return 0;
-    const auto* cancelFn = static_cast<const CancellationCheck*>(ctx);
-    return (*cancelFn && (*cancelFn)()) ? 1 : 0;
+    try {
+        const auto* cancelFn = static_cast<const CancellationCheck*>(ctx);
+        return (*cancelFn && (*cancelFn)()) ? 1 : 0;
+    } catch (...) {
+        return 1;
+    }
 }
 
 inline void rustEmitSnippetBridgeCallback(
@@ -278,15 +282,19 @@ inline void rustEmitSnippetBridgeCallback(
     size_t lineLen,
     uint32_t matchOffset,
     uint32_t matchLength
-) {
+) noexcept {
     if (!ctx || !linePtr || lineLen == 0) return;
-    auto* outSnippets = static_cast<std::vector<ContentSnippet>*>(ctx);
-    outSnippets->push_back(ContentSnippet{
-        .lineNumber = lineNumber,
-        .lineContent = std::wstring(reinterpret_cast<const wchar_t*>(linePtr), lineLen),
-        .matchOffset = matchOffset,
-        .matchLength = matchLength
-    });
+    try {
+        auto* outSnippets = static_cast<std::vector<ContentSnippet>*>(ctx);
+        outSnippets->push_back(ContentSnippet{
+            .lineNumber = lineNumber,
+            .lineContent = std::wstring(reinterpret_cast<const wchar_t*>(linePtr), lineLen),
+            .matchOffset = matchOffset,
+            .matchLength = matchLength
+        });
+    } catch (...) {
+        // Never allow C++ allocation or callback exceptions to unwind into Rust frames.
+    }
 }
 
 inline bool matchDocumentTextAndBuildSnippets(

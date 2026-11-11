@@ -1565,3 +1565,77 @@ TEST(QuickLookNavigationTest, HandlesLargeDirectoryOver4096EntriesAndInternalVir
 
 // 单元测试主入口 (Google Test 初始化与执行)
 // -----------------------------------------------------------------------------
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-11 全量审计防回退回归测试 (KeycastOverlay 锁序与边界 / TrayIcon 生命周期)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(KeycastOverlayRegressionTest, OnThemeChangedNoSelfDeadlockAndSanitizeNegativeDurations) {
+    using tools3000::keycast::KeycastOverlay;
+    using tools3000::keycast::KeycastSettings;
+
+    KeycastSettings dirty;
+    dirty.mergeTimeoutMs = -1500;
+    dirty.displayDurationMs = -500;
+    dirty.fontSize = -24;
+    dirty.opacity = 999;
+    dirty.modifierKeycapOpacity = -50;
+    dirty.position = "invalid_corner";
+    dirty.filterMode = "invalid_mode";
+
+    const KeycastSettings clean = KeycastOverlay::sanitizeSettings(dirty);
+    EXPECT_GT(clean.mergeTimeoutMs, 0);
+    EXPECT_GT(clean.displayDurationMs, 0);
+    EXPECT_GE(clean.fontSize, 12);
+    EXPECT_LE(clean.opacity, 100);
+    EXPECT_GE(clean.modifierKeycapOpacity, 0);
+    EXPECT_NE(clean.position, "invalid_corner");
+    EXPECT_NE(clean.filterMode, "invalid_mode");
+
+    auto& overlay = KeycastOverlay::instance();
+    EXPECT_NO_THROW({
+        overlay.updateSettings(dirty);
+        overlay.onThemeChanged();
+        overlay.resetDefaults();
+    });
+}
+
+TEST(TrayLifecycleRegressionTest, NotifyIconProbeAndSafeRepeatedDestroy) {
+    WNDCLASSEXW wc{sizeof(wc)};
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Tools3000_TrayAuditRegressionWnd";
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(
+        0, L"Tools3000_TrayAuditRegressionWnd", L"TrayAudit",
+        WS_POPUP, 0, 0, 16, 16, nullptr, nullptr, wc.hInstance, nullptr);
+    ASSERT_NE(hwnd, nullptr);
+
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(NOTIFYICONDATAW);
+    nid.hWnd = hwnd;
+    nid.uID = 77;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_USER + 100;
+    nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcscpy_s(nid.szTip, L"Tools3000 Tray Regression");
+
+    BOOL added = Shell_NotifyIconW(NIM_ADD, &nid);
+    if (!added) {
+        nid.cbSize = NOTIFYICONDATAW_V3_SIZE;
+        added = Shell_NotifyIconW(NIM_ADD, &nid);
+    }
+    if (added) {
+        EXPECT_TRUE(Shell_NotifyIconW(NIM_DELETE, &nid));
+    }
+    DestroyWindow(hwnd);
+
+    // 验证宿主 TrayIcon 单例重复 destroy 幂等安全无异常
+    auto& tray = tools3000::tray::TrayIcon::instance();
+    EXPECT_NO_THROW({
+        tray.destroy();
+        tray.destroy();
+    });
+}

@@ -94,6 +94,7 @@ void MouseHook::resetTriggerState() noexcept {
     m_triggerButtonDown.store(false, std::memory_order_release);
     m_activeTriggerDown.store(MouseEventType::Move, std::memory_order_release);
     m_isTracking.store(false, std::memory_order_release);
+    m_hardwareButtonMask.store(0, std::memory_order_release);
     m_cachedForegroundWindow = nullptr;
     m_cachedModifiers = 0;
     m_cachedEdgeZone = ScreenEdgeZone::None;
@@ -118,7 +119,8 @@ std::vector<MouseEvent> MouseHook::drainEvents(size_t maxCount) {
         MouseEvent ev{};
         ev.position = {pkt.x, pkt.y};
         ev.timestamp = std::chrono::steady_clock::now();
-        switch (pkt.message) {
+        ev.downWasSuppressed = (pkt.message & kRawPacketDownSuppressedFlag) != 0;
+        switch (pkt.message & kRawPacketMessageMask) {
             case WM_MOUSEMOVE: ev.type = MouseEventType::Move; break;
             case WM_RBUTTONDOWN: ev.type = MouseEventType::RightDown; break;
             case WM_RBUTTONUP: ev.type = MouseEventType::RightUp; break;
@@ -276,25 +278,33 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
         return false;
     }
 
-    // 1. 仅在非空转移动（或当前处于手势触发键按下/轨迹追踪期）时组装并推入环形队列，彻底消除平时 1000Hz 鼠标移动引起的后台线程无效唤醒
-    const bool needEnqueue = (wParam != WM_MOUSEMOVE) ||
-                             m_triggerButtonDown.load(std::memory_order_relaxed) ||
-                             m_isTracking.load(std::memory_order_relaxed);
-    if (needEnqueue) {
-        LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
-        const RawInputPacket packet{
-            static_cast<uint32_t>(wParam),
-            static_cast<int32_t>(data.pt.x),
-            static_cast<int32_t>(data.pt.y),
-            static_cast<uint32_t>(data.mouseData),
-            static_cast<uint64_t>(qpc.QuadPart)
-        };
-        m_rawRingBuffer.push(packet);
-        notifyWorker();
+    // 0c. HIGH-26: 当前前台窗口命中全屏独占游戏、远控/虚拟机客户端或 ScopeRule::Disable 禁用名单时，
+    // O(1) 读取无锁原子标志直接 CallNextHookEx 0ms 原生放行，绝不吞掉物理右键按下，也绝不入队绘制轨迹
+    const bool triggerDownBefore = m_triggerButtonDown.load(std::memory_order_relaxed);
+    const bool trackingBefore = m_isTracking.load(std::memory_order_relaxed);
+    if (!triggerDownBefore && !trackingBefore && shouldBypassAtPoint(data.pt)) {
+        if (wParam == WM_MOUSEMOVE) {
+            static POINT s_bypassLastPt = { -1, -1 };
+            if (s_bypassLastPt.x != -1 && s_bypassLastPt.y != -1) {
+                const double dx = data.pt.x - s_bypassLastPt.x;
+                const double dy = data.pt.y - s_bypassLastPt.y;
+                const double dist = std::sqrt(dx * dx + dy * dy);
+                if (dist > 0) {
+                    tools3000::core::StatsManager::instance().recordMouseDistance(dist);
+                }
+            }
+            s_bypassLastPt = data.pt;
+        } else if (wParam == WM_LBUTTONDOWN) {
+            tools3000::core::StatsManager::instance().recordLeftClick();
+        } else if (wParam == WM_RBUTTONDOWN) {
+            tools3000::core::StatsManager::instance().recordRightClick();
+        } else if (wParam == WM_MOUSEWHEEL) {
+            tools3000::core::StatsManager::instance().recordScroll();
+        }
+        return false;
     }
 
-    // 3. 纯原子无锁状态机判定拦截策略 (完全消除所有互斥锁与 Win32 同步系统调用)
+    // 1. 纯原子无锁状态机判定拦截策略 (完全消除所有互斥锁与 Win32 同步系统调用)
     const bool gestureEnabled = !m_paused.load(std::memory_order_relaxed);
     bool shouldCapture = false;
     bool wasTriggerDown = false;
@@ -433,13 +443,37 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
             break;
     }
 
-    // 4. 同步测试回调支持：仅在异步工作线程未激活 (即独立单元测试环境) 且显式注册了测试 Mock 回调时，才执行同步测试派发
+    // 2. 仅在非空转移动（或当前处于手势触发键按下/轨迹追踪期）时组装并推入环形队列，
+    // 并在 bit 31 精确记录本次按下事件是否被低级钩子拦截吞没 (downWasSuppressed)
+    const bool needEnqueue = (wParam != WM_MOUSEMOVE) ||
+                             triggerDownBefore ||
+                             trackingBefore ||
+                             m_triggerButtonDown.load(std::memory_order_relaxed) ||
+                             m_isTracking.load(std::memory_order_relaxed);
+    if (needEnqueue) {
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+        const uint32_t encodedMsg = static_cast<uint32_t>(wParam) |
+            (shouldCapture ? kRawPacketDownSuppressedFlag : 0u);
+        const RawInputPacket packet{
+            encodedMsg,
+            static_cast<int32_t>(data.pt.x),
+            static_cast<int32_t>(data.pt.y),
+            static_cast<uint32_t>(data.mouseData),
+            static_cast<uint64_t>(qpc.QuadPart)
+        };
+        m_rawRingBuffer.push(packet);
+        notifyWorker();
+    }
+
+    // 3. 同步测试回调支持：仅在异步工作线程未激活 (即独立单元测试环境) 且显式注册了测试 Mock 回调时，才执行同步测试派发
     if (!isAsyncWorkerActive() && m_hasCallback.load(std::memory_order_relaxed)) {
         auto* cb = m_atomicCallback.load(std::memory_order_acquire);
         if (cb && *cb) {
             MouseEvent ev{};
             ev.position = data.pt;
             ev.timestamp = std::chrono::steady_clock::now();
+            ev.downWasSuppressed = shouldCapture;
             bool shouldDispatch = true;
             switch (wParam) {
                 case WM_MOUSEMOVE: ev.type = MouseEventType::Move; break;
@@ -516,6 +550,9 @@ bool MouseHook::injectEventForTesting(const MouseEvent& event) {
         case MouseEventType::X2Up: pkt.message = WM_XBUTTONUP; pkt.mouseData = static_cast<uint32_t>(MAKELONG(0, XBUTTON2)); m_hardwareButtonMask.fetch_and(~(1u << 3), std::memory_order_release); break;
         case MouseEventType::WheelUp: pkt.message = WM_MOUSEWHEEL; pkt.mouseData = static_cast<uint32_t>(MAKELONG(0, 120)); break;
         case MouseEventType::WheelDown: pkt.message = WM_MOUSEWHEEL; pkt.mouseData = static_cast<uint32_t>(MAKELONG(0, static_cast<WORD>(-120))); break;
+    }
+    if (event.downWasSuppressed && event.type != MouseEventType::LeftDown) {
+        pkt.message |= kRawPacketDownSuppressedFlag;
     }
     m_rawRingBuffer.push(pkt);
     notifyWorker();

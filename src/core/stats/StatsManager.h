@@ -53,11 +53,12 @@ private:
 
     std::string getCurrentDateStr() const;
     void loadFromFile();
-    void saveToFile();
+    bool saveToFile();
     void checkDateRollover(); // 检查是否跨天并清空内存或保存上一天
     void flushPending(bool forceSave);
     void flushLoop();
 
+    std::mutex m_lifecycleMutex;
     std::mutex m_mutex;
     std::string m_currentDate;
     DailyStats m_todayStats;

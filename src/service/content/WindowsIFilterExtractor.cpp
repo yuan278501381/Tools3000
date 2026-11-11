@@ -28,6 +28,7 @@ constexpr size_t MaxBinaryFallbackScanBytes = 64ULL * 1024ULL * 1024ULL;
 constexpr size_t MaxExtractedTotalChars = 15ULL * 1024ULL * 1024ULL;
 constexpr ULONG IFilterChunkReadChars = 16384;
 constexpr size_t CancelCheckByteStride = 65536;
+constexpr ULONGLONG MaxIFilterExtractDurationMs = 15000ULL;
 
 using PfnLoadIFilter = HRESULT (STDAPICALLTYPE*)(PCWSTR pwcsPath, IUnknown* pUnkOuter, void** ppIUnk);
 using PfnBindIFilterFromStream = HRESULT (STDAPICALLTYPE*)(IStream* pStm, IUnknown* pUnkOuter, void** ppIUnk);
@@ -52,6 +53,74 @@ const QueryDllFunctions& resolveQueryDllFunctions() noexcept {
         }
     });
     return s_fns;
+}
+
+// Pure-POD SEH wrappers around third-party in-proc COM IFilter calls so neither hardware faults
+// nor rogue in-proc filters crash Tools3000_Service, with zero C++ RAII objects inside `__try`.
+HRESULT sehBindIFilterFromStream(
+    PfnBindIFilterFromStream fn,
+    IStream* pStm,
+    void** ppFilter
+) noexcept {
+    if (!fn || !pStm || !ppFilter) return E_INVALIDARG;
+    *ppFilter = nullptr;
+    __try {
+        return fn(pStm, nullptr, ppFilter);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *ppFilter = nullptr;
+        return E_FAIL;
+    }
+}
+
+HRESULT sehLoadIFilterByPath(
+    PfnLoadIFilter fn,
+    PCWSTR path,
+    void** ppFilter
+) noexcept {
+    if (!fn || !path || !ppFilter) return E_INVALIDARG;
+    *ppFilter = nullptr;
+    __try {
+        return fn(path, nullptr, ppFilter);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *ppFilter = nullptr;
+        return E_FAIL;
+    }
+}
+
+HRESULT sehIFilterInit(IFilter* pFilter, ULONG grfFlags, ULONG* pdwFlags) noexcept {
+    if (!pFilter || !pdwFlags) return E_INVALIDARG;
+    __try {
+        return pFilter->Init(grfFlags, 0, nullptr, pdwFlags);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return E_FAIL;
+    }
+}
+
+HRESULT sehIFilterGetChunk(IFilter* pFilter, STAT_CHUNK* pStat) noexcept {
+    if (!pFilter || !pStat) return E_INVALIDARG;
+    __try {
+        return pFilter->GetChunk(pStat);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return E_FAIL;
+    }
+}
+
+HRESULT sehIFilterGetText(IFilter* pFilter, ULONG* pcwcBuffer, WCHAR* awcBuffer) noexcept {
+    if (!pFilter || !pcwcBuffer || !awcBuffer) return E_INVALIDARG;
+    __try {
+        return pFilter->GetText(pcwcBuffer, awcBuffer);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *pcwcBuffer = 0;
+        return E_FAIL;
+    }
+}
+
+void sehSafeReleaseUnknown(IUnknown* ptr) noexcept {
+    if (!ptr) return;
+    __try {
+        ptr->Release();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
 }
 
 struct ScopedComApartment {
@@ -80,18 +149,114 @@ std::wstring extractLeafFileName(std::wstring_view path) {
     return std::wstring(path.substr(sep + 1));
 }
 
+bool isDeadlineExpired(ULONGLONG deadlineTick) noexcept {
+    return deadlineTick != 0 && GetTickCount64() >= deadlineTick;
+}
+
+// Opens a regular, non-reparse disk file while pinning its directory link (never sets FILE_SHARE_DELETE)
+// and preferring read-only share (no FILE_SHARE_WRITE) to prevent TOCTOU content replacement.
+HANDLE openPinnedNonReparseFileForIFilter(const std::wstring& filePath, uint64_t& outFileSize) noexcept {
+    outFileSize = 0;
+    if (filePath.empty()) return INVALID_HANDLE_VALUE;
+
+    constexpr DWORD kFlags = FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT;
+    HANDLE hFile = CreateFileW(
+        filePath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        kFlags,
+        nullptr
+    );
+    if (hFile == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION) {
+        // If actively held open by an editor (e.g. Word/Excel), allow FILE_SHARE_WRITE so live documents
+        // remain searchable, while still omitting FILE_SHARE_DELETE so the file node cannot be swapped/renamed.
+        hFile = CreateFileW(
+            filePath.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_EXISTING,
+            kFlags,
+            nullptr
+        );
+    }
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return INVALID_HANDLE_VALUE;
+    }
+
+    if (GetFileType(hFile) != FILE_TYPE_DISK) {
+        CloseHandle(hFile);
+        return INVALID_HANDLE_VALUE;
+    }
+
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!GetFileInformationByHandle(hFile, &info) ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        CloseHandle(hFile);
+        return INVALID_HANDLE_VALUE;
+    }
+
+    const uint64_t size = (static_cast<uint64_t>(info.nFileSizeHigh) << 32) |
+                          static_cast<uint64_t>(info.nFileSizeLow);
+    if (size == 0 || size > MaxIFilterFileBytes) {
+        CloseHandle(hFile);
+        return INVALID_HANDLE_VALUE;
+    }
+
+    outFileSize = size;
+    return hFile;
+}
+
+bool verifyPathMatchesHandleIdentity(HANDLE hExpected, const std::wstring& localPath) noexcept {
+    BY_HANDLE_FILE_INFORMATION expectedInfo{};
+    if (!GetFileInformationByHandle(hExpected, &expectedInfo) ||
+        (expectedInfo.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return false;
+    }
+
+    HANDLE hProbe = CreateFileW(
+        localPath.c_str(),
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr
+    );
+    if (hProbe == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    BY_HANDLE_FILE_INFORMATION probeInfo{};
+    const BOOL ok = GetFileInformationByHandle(hProbe, &probeInfo);
+    CloseHandle(hProbe);
+    if (!ok) return false;
+    if ((probeInfo.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return false;
+    }
+
+    return probeInfo.dwVolumeSerialNumber == expectedInfo.dwVolumeSerialNumber &&
+           probeInfo.nFileIndexHigh == expectedInfo.nFileIndexHigh &&
+           probeInfo.nFileIndexLow == expectedInfo.nFileIndexLow;
+}
+
 class MemoryViewReadStream final : public IStream {
 public:
     MemoryViewReadStream(
         const uint8_t* data,
         size_t size,
         std::wstring leafName,
-        const CancellationCheck* isCancelled
+        const CancellationCheck* isCancelled,
+        ULONGLONG deadlineTick
     ) noexcept
         : m_data(data)
         , m_size(size)
         , m_leafName(std::move(leafName))
-        , m_isCancelled(isCancelled) {}
+        , m_isCancelled(isCancelled)
+        , m_deadlineTick(deadlineTick) {}
+
+    bool hadInPageError() const noexcept { return m_inPageError.load(std::memory_order_acquire); }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override {
         if (!ppvObject) return E_POINTER;
@@ -122,7 +287,11 @@ public:
         if (pcbRead) *pcbRead = 0;
         if (cb == 0) return S_OK;
         if (!pv) return STG_E_INVALIDPOINTER;
-        if (m_isCancelled && (*m_isCancelled) && (*m_isCancelled)()) {
+        if (m_inPageError.load(std::memory_order_acquire)) {
+            return STG_E_READFAULT;
+        }
+        if ((m_isCancelled && (*m_isCancelled) && (*m_isCancelled)()) ||
+            isDeadlineExpired(m_deadlineTick)) {
             return E_ABORT;
         }
         if (!m_data || m_pos >= m_size) {
@@ -131,7 +300,11 @@ public:
 
         const size_t avail = m_size - m_pos;
         const size_t toRead = (std::min)(static_cast<size_t>(cb), avail);
-        if (!safeMappedMemcpy(pv, m_data + m_pos, toRead)) {
+        bool pageErr = false;
+        if (!safeMappedMemcpyEx(pv, m_data + m_pos, toRead, &pageErr)) {
+            if (pageErr) {
+                m_inPageError.store(true, std::memory_order_release);
+            }
             return STG_E_READFAULT;
         }
 
@@ -197,7 +370,7 @@ public:
         pstatstg->grfMode = STGM_READ | STGM_SHARE_DENY_NONE;
         if ((grfStatFlag & STATFLAG_NONAME) == 0 && !m_leafName.empty()) {
             const size_t byteLen = (m_leafName.size() + 1) * sizeof(wchar_t);
-            auto* nameCopy = static_cast< OLECHAR* >(CoTaskMemAlloc(byteLen));
+            auto* nameCopy = static_cast<OLECHAR*>(CoTaskMemAlloc(byteLen));
             if (!nameCopy) return E_OUTOFMEMORY;
             std::memcpy(nameCopy, m_leafName.c_str(), byteLen);
             pstatstg->pwcsName = nameCopy;
@@ -207,7 +380,8 @@ public:
 
     HRESULT STDMETHODCALLTYPE Clone(IStream** ppstm) override {
         if (!ppstm) return STG_E_INVALIDPOINTER;
-        auto* copy = new (std::nothrow) MemoryViewReadStream(m_data, m_size, m_leafName, m_isCancelled);
+        auto* copy = new (std::nothrow) MemoryViewReadStream(
+            m_data, m_size, m_leafName, m_isCancelled, m_deadlineTick);
         if (!copy) {
             *ppstm = nullptr;
             return E_OUTOFMEMORY;
@@ -226,6 +400,169 @@ private:
     size_t m_pos = 0;
     std::wstring m_leafName;
     const CancellationCheck* m_isCancelled = nullptr;
+    ULONGLONG m_deadlineTick = 0;
+    std::atomic<bool> m_inPageError{false};
+};
+
+// Direct IStream wrapper over an already-verified Win32 file handle so stream-capable IFilters
+// still bind without reopening the filesystem path even when CreateFileMapping/MapViewOfFile fails.
+class FileHandleReadStream final : public IStream {
+public:
+    FileHandleReadStream(
+        HANDLE hFile,
+        uint64_t size,
+        std::wstring leafName,
+        const CancellationCheck* isCancelled,
+        ULONGLONG deadlineTick
+    ) noexcept
+        : m_hFile(hFile)
+        , m_size(size)
+        , m_leafName(std::move(leafName))
+        , m_isCancelled(isCancelled)
+        , m_deadlineTick(deadlineTick) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override {
+        if (!ppvObject) return E_POINTER;
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, IID_ISequentialStream) ||
+            IsEqualIID(riid, IID_IStream)) {
+            *ppvObject = static_cast<IStream*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppvObject = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return m_refCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG next = m_refCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
+        if (next == 0) {
+            delete this;
+        }
+        return next;
+    }
+
+    HRESULT STDMETHODCALLTYPE Read(void* pv, ULONG cb, ULONG* pcbRead) override {
+        if (pcbRead) *pcbRead = 0;
+        if (cb == 0) return S_OK;
+        if (!pv) return STG_E_INVALIDPOINTER;
+        if ((m_isCancelled && (*m_isCancelled) && (*m_isCancelled)()) ||
+            isDeadlineExpired(m_deadlineTick)) {
+            return E_ABORT;
+        }
+        if (!m_hFile || m_hFile == INVALID_HANDLE_VALUE || m_pos >= m_size) {
+            return S_FALSE;
+        }
+
+        const uint64_t avail = m_size - m_pos;
+        const DWORD toRead = static_cast<DWORD>((std::min<uint64_t>)(static_cast<uint64_t>(cb), avail));
+        LARGE_INTEGER seekTarget{};
+        seekTarget.QuadPart = static_cast<LONGLONG>(m_pos);
+        if (!SetFilePointerEx(m_hFile, seekTarget, nullptr, FILE_BEGIN)) {
+            return STG_E_READFAULT;
+        }
+
+        DWORD bytesRead = 0;
+        if (!ReadFile(m_hFile, pv, toRead, &bytesRead, nullptr)) {
+            return STG_E_READFAULT;
+        }
+        m_pos += bytesRead;
+        if (pcbRead) *pcbRead = bytesRead;
+        return (bytesRead == cb) ? S_OK : S_FALSE;
+    }
+
+    HRESULT STDMETHODCALLTYPE Write(const void*, ULONG, ULONG* pcbWritten) override {
+        if (pcbWritten) *pcbWritten = 0;
+        return STG_E_ACCESSDENIED;
+    }
+
+    HRESULT STDMETHODCALLTYPE Seek(
+        LARGE_INTEGER dlibMove,
+        DWORD dwOrigin,
+        ULARGE_INTEGER* plibNewPosition
+    ) override {
+        int64_t base = 0;
+        switch (dwOrigin) {
+            case STREAM_SEEK_SET:
+                base = 0;
+                break;
+            case STREAM_SEEK_CUR:
+                base = static_cast<int64_t>(m_pos);
+                break;
+            case STREAM_SEEK_END:
+                base = static_cast<int64_t>(m_size);
+                break;
+            default:
+                return STG_E_INVALIDFUNCTION;
+        }
+
+        const int64_t target = base + dlibMove.QuadPart;
+        if (target < 0) {
+            return STG_E_INVALIDFUNCTION;
+        }
+        m_pos = (std::min<uint64_t>)(static_cast<uint64_t>(target), m_size);
+        if (plibNewPosition) {
+            plibNewPosition->QuadPart = m_pos;
+        }
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetSize(ULARGE_INTEGER) override { return STG_E_ACCESSDENIED; }
+    HRESULT STDMETHODCALLTYPE CopyTo(IStream*, ULARGE_INTEGER, ULARGE_INTEGER*, ULARGE_INTEGER*) override {
+        return E_NOTIMPL;
+    }
+    HRESULT STDMETHODCALLTYPE Commit(DWORD) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE Revert() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE LockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override {
+        return STG_E_INVALIDFUNCTION;
+    }
+    HRESULT STDMETHODCALLTYPE UnlockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override {
+        return STG_E_INVALIDFUNCTION;
+    }
+
+    HRESULT STDMETHODCALLTYPE Stat(STATSTG* pstatstg, DWORD grfStatFlag) override {
+        if (!pstatstg) return STG_E_INVALIDPOINTER;
+        std::memset(pstatstg, 0, sizeof(*pstatstg));
+        pstatstg->type = STGTY_STREAM;
+        pstatstg->cbSize.QuadPart = m_size;
+        pstatstg->grfMode = STGM_READ | STGM_SHARE_DENY_NONE;
+        if ((grfStatFlag & STATFLAG_NONAME) == 0 && !m_leafName.empty()) {
+            const size_t byteLen = (m_leafName.size() + 1) * sizeof(wchar_t);
+            auto* nameCopy = static_cast<OLECHAR*>(CoTaskMemAlloc(byteLen));
+            if (!nameCopy) return E_OUTOFMEMORY;
+            std::memcpy(nameCopy, m_leafName.c_str(), byteLen);
+            pstatstg->pwcsName = nameCopy;
+        }
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE Clone(IStream** ppstm) override {
+        if (!ppstm) return STG_E_INVALIDPOINTER;
+        auto* copy = new (std::nothrow) FileHandleReadStream(
+            m_hFile, m_size, m_leafName, m_isCancelled, m_deadlineTick);
+        if (!copy) {
+            *ppstm = nullptr;
+            return E_OUTOFMEMORY;
+        }
+        copy->m_pos = m_pos;
+        *ppstm = copy;
+        return S_OK;
+    }
+
+private:
+    ~FileHandleReadStream() = default;
+
+    std::atomic<ULONG> m_refCount{1};
+    HANDLE m_hFile = INVALID_HANDLE_VALUE;
+    uint64_t m_size = 0;
+    uint64_t m_pos = 0;
+    std::wstring m_leafName;
+    const CancellationCheck* m_isCancelled = nullptr;
+    ULONGLONG m_deadlineTick = 0;
 };
 
 bool hasAnyReadableChar(std::wstring_view text) noexcept {
@@ -240,17 +577,17 @@ bool hasAnyReadableChar(std::wstring_view text) noexcept {
 bool drainInitializedIFilter(
     IFilter* pFilter,
     std::wstring& outText,
-    const CancellationCheck& isCancelled
+    const CancellationCheck& isCancelled,
+    ULONGLONG deadlineTick
 ) {
     ULONG initFlags = 0;
-    const HRESULT hrInit = pFilter->Init(
+    const HRESULT hrInit = sehIFilterInit(
+        pFilter,
         IFILTER_INIT_CANON_PARAGRAPHS |
         IFILTER_INIT_HARD_LINE_BREAKS |
         IFILTER_INIT_CANON_HYPHENS |
         IFILTER_INIT_CANON_SPACES |
         IFILTER_INIT_APPLY_INDEX_ATTRIBUTES,
-        0,
-        nullptr,
         &initFlags
     );
     if (FAILED(hrInit)) {
@@ -258,14 +595,19 @@ bool drainInitializedIFilter(
     }
 
     std::vector<wchar_t> chunkBuffer(IFilterChunkReadChars);
+    size_t chunkCount = 0;
     while (outText.size() < MaxExtractedTotalChars) {
-        if (isCancelled && isCancelled()) {
+        if ((isCancelled && isCancelled()) || isDeadlineExpired(deadlineTick)) {
             outText.clear();
             return false;
         }
+        if (++chunkCount > 262144u) {
+            // Guard against buggy third-party IFilters spinning infinite non-advancing chunks.
+            break;
+        }
 
         STAT_CHUNK chunk{};
-        const HRESULT hrChunk = pFilter->GetChunk(&chunk);
+        const HRESULT hrChunk = sehIFilterGetChunk(pFilter, &chunk);
         if (hrChunk == FILTER_E_END_OF_CHUNKS) {
             break;
         }
@@ -284,14 +626,18 @@ bool drainInitializedIFilter(
             outText.push_back(L'\n');
         }
 
+        size_t textReadsInChunk = 0;
         while (outText.size() < MaxExtractedTotalChars) {
-            if (isCancelled && isCancelled()) {
+            if ((isCancelled && isCancelled()) || isDeadlineExpired(deadlineTick)) {
                 outText.clear();
                 return false;
             }
+            if (++textReadsInChunk > 65536u) {
+                break;
+            }
 
             ULONG cwc = static_cast<ULONG>(chunkBuffer.size());
-            const HRESULT hrText = pFilter->GetText(&cwc, chunkBuffer.data());
+            const HRESULT hrText = sehIFilterGetText(pFilter, &cwc, chunkBuffer.data());
             if (FAILED(hrText) || cwc == 0) {
                 break;
             }
@@ -321,6 +667,7 @@ bool drainInitializedIFilter(
 bool resolveVerifiedLocalPathFromHandle(HANDLE hFile, std::wstring& outCanonicalLocalPath) {
     outCanonicalLocalPath.clear();
     if (!hFile || hFile == INVALID_HANDLE_VALUE) return false;
+    if (GetFileType(hFile) != FILE_TYPE_DISK) return false;
 
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(hFile, &info)) {
@@ -354,6 +701,9 @@ bool resolveVerifiedLocalPathFromHandle(HANDLE hFile, std::wstring& outCanonical
     }
     if (finalPath.starts_with(L"\\\\?\\") && finalPath.size() >= 6 && finalPath[5] == L':') {
         finalPath.erase(0, 4);
+    }
+    if (!verifyPathMatchesHandleIdentity(hFile, finalPath)) {
+        return false;
     }
     outCanonicalLocalPath = std::move(finalPath);
     return !outCanonicalLocalPath.empty();
@@ -593,82 +943,125 @@ bool WindowsIFilterExtractor::extractViaSystemIFilterFromHandle(
         return false;
     }
 
+    BY_HANDLE_FILE_INFORMATION handleInfo{};
+    if (GetFileType(hFile) != FILE_TYPE_DISK ||
+        !GetFileInformationByHandle(hFile, &handleInfo) ||
+        (handleInfo.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return false;
+    }
+    const uint64_t handleFileSize = (static_cast<uint64_t>(handleInfo.nFileSizeHigh) << 32) |
+                                    static_cast<uint64_t>(handleInfo.nFileSizeLow);
+    if (handleFileSize == 0 || handleFileSize > MaxIFilterFileBytes) {
+        return false;
+    }
+
     const QueryDllFunctions& fns = resolveQueryDllFunctions();
     if (!fns.bindIFilterFromStream && !fns.loadIFilter) {
         return false;
     }
 
-    ScopedComApartment comGuard;
+    try {
+        ScopedComApartment comGuard;
+        const ULONGLONG deadlineTick = GetTickCount64() + MaxIFilterExtractDurationMs;
+        bool encounteredInPageError = false;
 
-    // 1. Prefer stream-bound IFilter over our already-opened read-only mapped view:
-    //    never opens any file path or activates path-based COM monikers.
-    if (fns.bindIFilterFromStream && mappedData && mappedSize > 0) {
-        auto* stream = new (std::nothrow) MemoryViewReadStream(
-            mappedData,
-            mappedSize,
-            extractLeafFileName(fileHintPath),
-            &isCancelled
-        );
-        if (stream) {
-            struct StreamReleaser {
-                IStream* ptr;
-                ~StreamReleaser() {
-                    if (ptr) ptr->Release();
-                }
-            } streamGuard{stream};
+        // 1. Primary path: bind IFilter directly to an in-memory or handle-backed IStream
+        //    (invokes IPersistStream::Load without reopening any filesystem path).
+        if (fns.bindIFilterFromStream) {
+            IStream* stream = nullptr;
+            MemoryViewReadStream* memStream = nullptr;
+            if (mappedData && mappedSize > 0) {
+                memStream = new (std::nothrow) MemoryViewReadStream(
+                    mappedData,
+                    mappedSize,
+                    extractLeafFileName(fileHintPath),
+                    &isCancelled,
+                    deadlineTick
+                );
+                stream = memStream;
+            } else {
+                stream = new (std::nothrow) FileHandleReadStream(
+                    hFile,
+                    handleFileSize,
+                    extractLeafFileName(fileHintPath),
+                    &isCancelled,
+                    deadlineTick
+                );
+            }
 
-            IFilter* pFilter = nullptr;
-            const HRESULT hrBind = fns.bindIFilterFromStream(
-                stream,
-                nullptr,
-                reinterpret_cast<void**>(&pFilter)
-            );
-            if (SUCCEEDED(hrBind) && pFilter) {
-                struct FilterReleaser {
-                    IFilter* ptr;
-                    ~FilterReleaser() {
-                        if (ptr) ptr->Release();
+            if (stream) {
+                struct StreamReleaser {
+                    IStream* ptr;
+                    ~StreamReleaser() {
+                        sehSafeReleaseUnknown(ptr);
                     }
-                } filterGuard{pFilter};
+                } streamGuard{stream};
 
-                if (drainInitializedIFilter(pFilter, outText, isCancelled)) {
-                    return true;
+                IFilter* pFilter = nullptr;
+                const HRESULT hrBind = sehBindIFilterFromStream(
+                    fns.bindIFilterFromStream,
+                    stream,
+                    reinterpret_cast<void**>(&pFilter)
+                );
+                if (memStream && memStream->hadInPageError()) {
+                    encounteredInPageError = true;
                 }
-                outText.clear();
+                if (SUCCEEDED(hrBind) && pFilter) {
+                    struct FilterReleaser {
+                        IFilter* ptr;
+                        ~FilterReleaser() {
+                            sehSafeReleaseUnknown(ptr);
+                        }
+                    } filterGuard{pFilter};
+
+                    if (!encounteredInPageError &&
+                        drainInitializedIFilter(pFilter, outText, isCancelled, deadlineTick)) {
+                        return true;
+                    }
+                    if (memStream && memStream->hadInPageError()) {
+                        encounteredInPageError = true;
+                    }
+                    outText.clear();
+                }
             }
         }
-    }
 
-    if (isCancelled && isCancelled()) {
+        if (encounteredInPageError || (isCancelled && isCancelled()) || isDeadlineExpired(deadlineTick)) {
+            outText.clear();
+            return false;
+        }
+
+        // 2. Fallback for IPersistFile-only IFilters: hFile stays open without FILE_SHARE_DELETE
+        //    (and without FILE_SHARE_WRITE unless already open in an editor), pinning the inode and
+        //    verifying file identity before and after LoadIFilter.
+        if (fns.loadIFilter) {
+            std::wstring verifiedLocalPath;
+            if (resolveVerifiedLocalPathFromHandle(hFile, verifiedLocalPath)) {
+                IFilter* pFilter = nullptr;
+                const HRESULT hrLoad = sehLoadIFilterByPath(
+                    fns.loadIFilter,
+                    verifiedLocalPath.c_str(),
+                    reinterpret_cast<void**>(&pFilter)
+                );
+                if (SUCCEEDED(hrLoad) && pFilter) {
+                    struct FilterReleaser {
+                        IFilter* ptr;
+                        ~FilterReleaser() {
+                            sehSafeReleaseUnknown(ptr);
+                        }
+                    } filterGuard{pFilter};
+
+                    if (verifyPathMatchesHandleIdentity(hFile, verifiedLocalPath) &&
+                        drainInitializedIFilter(pFilter, outText, isCancelled, deadlineTick)) {
+                        return true;
+                    }
+                    outText.clear();
+                }
+            }
+        }
+    } catch (...) {
         outText.clear();
         return false;
-    }
-
-    // 2. Fallback for IPersistFile-only IFilters: hFile has ALREADY passed GENERIC_READ
-    //    ACL verification under client impersonation. Resolve canonical local path from hFile.
-    if (fns.loadIFilter) {
-        std::wstring verifiedLocalPath;
-        if (resolveVerifiedLocalPathFromHandle(hFile, verifiedLocalPath)) {
-            IFilter* pFilter = nullptr;
-            const HRESULT hrLoad = fns.loadIFilter(
-                verifiedLocalPath.c_str(),
-                nullptr,
-                reinterpret_cast<void**>(&pFilter)
-            );
-            if (SUCCEEDED(hrLoad) && pFilter) {
-                struct FilterReleaser {
-                    IFilter* ptr;
-                    ~FilterReleaser() {
-                        if (ptr) ptr->Release();
-                    }
-                } filterGuard{pFilter};
-
-                if (drainInitializedIFilter(pFilter, outText, isCancelled)) {
-                    return true;
-                }
-                outText.clear();
-            }
-        }
     }
 
     return false;
@@ -682,15 +1075,8 @@ bool WindowsIFilterExtractor::extractViaSystemIFilter(
     outText.clear();
     if (isCancelled && isCancelled()) return false;
 
-    HANDLE hFile = CreateFileW(
-        filePath.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_FLAG_SEQUENTIAL_SCAN,
-        nullptr
-    );
+    uint64_t fileSize = 0;
+    HANDLE hFile = openPinnedNonReparseFileForIFilter(filePath, fileSize);
     if (hFile == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -701,13 +1087,7 @@ bool WindowsIFilterExtractor::extractViaSystemIFilter(
         }
     } fileCloser{hFile};
 
-    LARGE_INTEGER fileSize{};
-    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart <= 0 ||
-        static_cast<uint64_t>(fileSize.QuadPart) > MaxIFilterFileBytes) {
-        return false;
-    }
-
-    const size_t mapSize = static_cast<size_t>(fileSize.QuadPart);
+    const size_t mapSize = static_cast<size_t>(fileSize);
     HANDLE hMapping = CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
     if (!hMapping) {
         return extractViaSystemIFilterFromHandle(hFile, filePath, nullptr, 0, outText, isCancelled);
@@ -731,32 +1111,31 @@ bool WindowsIFilterExtractor::extractViaBinaryTextScan(
     std::wstring& outText,
     const CancellationCheck& isCancelled
 ) {
+    outText.clear();
     if (!data || size == 0) return false;
     const size_t scanLen = (std::min)(size, MaxBinaryFallbackScanBytes);
 
-    const bool ok = runWithMappedViewGuard([&]() -> bool {
-        scanUtf16LePhase(data, scanLen, 0, outText, isCancelled);
-        if (isCancelled && isCancelled()) {
-            outText.clear();
-            return false;
-        }
+    std::vector<uint8_t> residentBytes;
+    bool inPageError = false;
+    if (!copyMappedViewSafe(data, scanLen, residentBytes, inPageError, isCancelled) || inPageError) {
+        return false;
+    }
 
-        // BIFF8 / variable-prefix records in .xls/.doc may align UTF-16LE strings on odd byte offsets
-        scanUtf16LePhase(data, scanLen, 1, outText, isCancelled);
-        if (isCancelled && isCancelled()) {
-            outText.clear();
-            return false;
-        }
+    scanUtf16LePhase(residentBytes.data(), residentBytes.size(), 0, outText, isCancelled);
+    if (isCancelled && isCancelled()) {
+        outText.clear();
+        return false;
+    }
 
-        scanAnsiAndGbkRuns(data, scanLen, outText, isCancelled);
-        if (isCancelled && isCancelled()) {
-            outText.clear();
-            return false;
-        }
-        return true;
-    });
+    // BIFF8 / variable-prefix records in .xls/.doc may align UTF-16LE strings on odd byte offsets
+    scanUtf16LePhase(residentBytes.data(), residentBytes.size(), 1, outText, isCancelled);
+    if (isCancelled && isCancelled()) {
+        outText.clear();
+        return false;
+    }
 
-    if (!ok) {
+    scanAnsiAndGbkRuns(residentBytes.data(), residentBytes.size(), outText, isCancelled);
+    if (isCancelled && isCancelled()) {
         outText.clear();
         return false;
     }
@@ -773,15 +1152,8 @@ bool WindowsIFilterExtractor::extractDocumentText(
     outText.clear();
     if (isCancelled && isCancelled()) return false;
 
-    HANDLE hFile = CreateFileW(
-        filePath.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_FLAG_SEQUENTIAL_SCAN,
-        nullptr
-    );
+    uint64_t fileSize = 0;
+    HANDLE hFile = openPinnedNonReparseFileForIFilter(filePath, fileSize);
     if (hFile == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -793,13 +1165,7 @@ bool WindowsIFilterExtractor::extractDocumentText(
         }
     } fileCloser{hFile};
 
-    LARGE_INTEGER fileSize{};
-    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart <= 0 ||
-        static_cast<uint64_t>(fileSize.QuadPart) > MaxIFilterFileBytes) {
-        return false;
-    }
-
-    const size_t mapSize = static_cast<size_t>(fileSize.QuadPart);
+    const size_t mapSize = static_cast<size_t>(fileSize);
     HANDLE hMapping = CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
     if (!hMapping) {
         return extractViaSystemIFilterFromHandle(hFile, filePath, nullptr, 0, outText, isCancelled);
@@ -861,17 +1227,10 @@ bool WindowsIFilterExtractor::searchContentTerms(
         return false;
     }
 
-    // Open GENERIC_READ handle FIRST so NTFS ACLs are enforced under client impersonation
-    // BEFORE consulting ContentTextCache.
-    HANDLE hFile = CreateFileW(
-        filePath.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_FLAG_SEQUENTIAL_SCAN,
-        nullptr
-    );
+    // Open pinned GENERIC_READ handle FIRST so NTFS ACLs and reparse checks are enforced under
+    // client impersonation BEFORE consulting ContentTextCache.
+    uint64_t verifiedSize = 0;
+    HANDLE hFile = openPinnedNonReparseFileForIFilter(filePath, verifiedSize);
     if (hFile == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -889,7 +1248,19 @@ bool WindowsIFilterExtractor::searchContentTerms(
     }
 
     std::wstring extractedText;
-    if (!ContentTextCache::instance().tryGet(filePath, stamp.fileSize, stamp.lastWriteTime, extractedText)) {
+    bool cacheTruncated = false;
+    bool cacheHit = ContentTextCache::instance().tryGetWithTruncation(
+        filePath, stamp.fileSize, stamp.lastWriteTime, extractedText, cacheTruncated);
+    if (cacheHit && cacheTruncated) {
+        if (matchDocumentTextAndBuildSnippets(
+                extractedText, queryTerms, caseSensitive, outSnippets, maxSnippetsPerFile, isCancelled)) {
+            return true;
+        }
+        cacheHit = false;
+        extractedText.clear();
+    }
+
+    if (!cacheHit) {
         std::wstring lowerExt;
         const size_t dotPos = filePath.rfind(L'.');
         if (dotPos != std::wstring::npos) {

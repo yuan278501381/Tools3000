@@ -13,11 +13,11 @@
 
 #include <windows.h>
 #include <dbghelp.h>
-#include <string>
+#include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <filesystem>
-#include <chrono>
-#include <format>
-#include <cstdio>
+#include <system_error>
 
 #pragma comment(lib, "dbghelp.lib")
 
@@ -25,12 +25,43 @@ namespace tools3000::core {
 
 class CrashHandler {
 public:
-    /// 安装崩溃处理器
+    /// 安装崩溃处理器（启动期预先格式化并缓存转储目录至静态定长缓冲区）
     /// @param dumpDir MiniDump 文件输出目录
     static void install(const std::filesystem::path& dumpDir) {
-        s_dumpDir = dumpDir;
-        std::filesystem::create_directories(dumpDir);
+        std::error_code ec;
+        std::filesystem::create_directories(dumpDir, ec);
+
+        const std::wstring dirStr = dumpDir.wstring();
+        size_t copyLen = dirStr.size();
+        while (copyLen > 0 && (dirStr[copyLen - 1] == L'\\' || dirStr[copyLen - 1] == L'/')) {
+            --copyLen;
+        }
+        // 预留至少 64 个宽字符给 "\Tools3000_crash_YYYYMMDD_HHMMSS_pid.dmp\0"
+        constexpr size_t kMaxDirChars = MAX_PATH > 68 ? (MAX_PATH - 68) : 0;
+        if (copyLen > kMaxDirChars) {
+            copyLen = kMaxDirChars;
+        }
+        for (size_t i = 0; i < copyLen; ++i) {
+            s_dumpDir[i] = dirStr[i];
+        }
+        s_dumpDir[copyLen] = L'\0';
+
         s_previousFilter = SetUnhandledExceptionFilter(exceptionFilter);
+        std::set_terminate(terminateHandler);
+    }
+
+    /// 重新锚定全局异常过滤器（防止 WebView2 / 第三方运行时覆盖宿主崩溃处理器）
+    static void reinstallFilter() noexcept {
+        if (s_dumpDir[0] != L'\0') {
+            LPTOP_LEVEL_EXCEPTION_FILTER prev = SetUnhandledExceptionFilter(exceptionFilter);
+            if (prev != exceptionFilter) {
+                s_previousFilter = prev;
+            }
+        }
+    }
+
+    static void initialize(const std::filesystem::path& dumpDir) {
+        install(dumpDir);
     }
 
     /// 卸载崩溃处理器
@@ -40,21 +71,98 @@ public:
     }
 
 private:
-    static LONG WINAPI exceptionFilter(EXCEPTION_POINTERS* exceptionInfo) {
-        // 生成带时间戳的 dump 文件名
-        auto now = std::chrono::system_clock::now();
-        auto timeT = std::chrono::system_clock::to_time_t(now);
-        std::tm tm{};
-        localtime_s(&tm, &timeT);
+    static void appendStr(wchar_t* dst, size_t cap, size_t& pos, const wchar_t* src) noexcept {
+        if (!dst || cap == 0 || !src) return;
+        while (*src != L'\0' && pos + 1 < cap) {
+            dst[pos++] = *src++;
+        }
+        dst[pos] = L'\0';
+    }
 
-        auto fileName = std::format(L"Tools3000_crash_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.dmp",
-                                    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                                    tm.tm_hour, tm.tm_min, tm.tm_sec);
+    static void appendUintFixed(wchar_t* dst, size_t cap, size_t& pos, uint32_t val, size_t width) noexcept {
+        if (!dst || cap == 0) return;
+        wchar_t tmp[16]{};
+        for (size_t i = 0; i < width && i < 15; ++i) {
+            tmp[width - 1 - i] = static_cast<wchar_t>(L'0' + (val % 10u));
+            val /= 10u;
+        }
+        tmp[width < 15 ? width : 15] = L'\0';
+        appendStr(dst, cap, pos, tmp);
+    }
 
-        auto dumpPath = s_dumpDir / fileName;
+    static void appendUintDec(wchar_t* dst, size_t cap, size_t& pos, uint64_t val) noexcept {
+        if (!dst || cap == 0) return;
+        wchar_t rev[24]{};
+        size_t len = 0;
+        do {
+            rev[len++] = static_cast<wchar_t>(L'0' + (val % 10u));
+            val /= 10u;
+        } while (val != 0 && len < 22);
+        while (len > 0 && pos + 1 < cap) {
+            dst[pos++] = rev[--len];
+        }
+        dst[pos] = L'\0';
+    }
+
+    static void appendHex(wchar_t* dst, size_t cap, size_t& pos, uint64_t val, size_t hexDigits) noexcept {
+        if (!dst || cap == 0) return;
+        static constexpr wchar_t kHex[] = L"0123456789ABCDEF";
+        for (size_t i = 0; i < hexDigits && pos + 1 < cap; ++i) {
+            const size_t shift = (hexDigits - 1 - i) * 4;
+            const uint64_t nibble = (shift < 64) ? ((val >> shift) & 0xFu) : 0u;
+            dst[pos++] = kHex[nibble];
+        }
+        dst[pos] = L'\0';
+    }
+
+    /// 取得包含地址 addr 的模块路径到调用方提供的定长缓冲区（零堆分配）
+    static void queryModuleOfAddress(const void* addr, wchar_t* outBuf, size_t outCap) noexcept {
+        if (!outBuf || outCap == 0) return;
+        outBuf[0] = L'\0';
+        if (!addr) return;
+        HMODULE hmod = nullptr;
+        if (GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(addr), &hmod) && hmod) {
+            const DWORD n = GetModuleFileNameW(hmod, outBuf, static_cast<DWORD>(outCap));
+            if (n == 0 || n >= outCap) {
+                outBuf[outCap - 1] = L'\0';
+            }
+        }
+    }
+
+    static LONG WINAPI exceptionFilter(EXCEPTION_POINTERS* exceptionInfo) noexcept {
+        // 防止并发崩溃线程或重入异常踩踏静态零堆缓冲区
+        if (InterlockedCompareExchange(&s_activeCrashLock, 1, 0) != 0) {
+            return EXCEPTION_EXECUTE_HANDLER;
+        }
+
+        SYSTEMTIME st{};
+        GetLocalTime(&st);
+
+        size_t basePos = 0;
+        s_dumpPathBuf[0] = L'\0';
+        if (s_dumpDir[0] != L'\0') {
+            appendStr(s_dumpPathBuf, MAX_PATH, basePos, s_dumpDir);
+            appendStr(s_dumpPathBuf, MAX_PATH, basePos, L"\\");
+        }
+        appendStr(s_dumpPathBuf, MAX_PATH, basePos, L"Tools3000_crash_");
+        appendUintFixed(s_dumpPathBuf, MAX_PATH, basePos, st.wYear, 4);
+        appendUintFixed(s_dumpPathBuf, MAX_PATH, basePos, st.wMonth, 2);
+        appendUintFixed(s_dumpPathBuf, MAX_PATH, basePos, st.wDay, 2);
+        appendStr(s_dumpPathBuf, MAX_PATH, basePos, L"_");
+        appendUintFixed(s_dumpPathBuf, MAX_PATH, basePos, st.wHour, 2);
+        appendUintFixed(s_dumpPathBuf, MAX_PATH, basePos, st.wMinute, 2);
+        appendUintFixed(s_dumpPathBuf, MAX_PATH, basePos, st.wSecond, 2);
+
+        size_t txtPos = 0;
+        s_txtPathBuf[0] = L'\0';
+        appendStr(s_txtPathBuf, MAX_PATH, txtPos, s_dumpPathBuf);
+        appendStr(s_txtPathBuf, MAX_PATH, txtPos, L".txt");
+        appendStr(s_dumpPathBuf, MAX_PATH, basePos, L".dmp");
 
         HANDLE hFile = CreateFileW(
-            dumpPath.wstring().c_str(),
+            s_dumpPathBuf,
             GENERIC_WRITE,
             0,
             nullptr,
@@ -69,7 +177,6 @@ private:
             mdei.ExceptionPointers = exceptionInfo;
             mdei.ClientPointers = FALSE;
 
-            // 写入 MiniDump（包含线程、模块、句柄信息）
             MiniDumpWriteDump(
                 GetCurrentProcess(),
                 GetCurrentProcessId(),
@@ -87,86 +194,122 @@ private:
             CloseHandle(hFile);
         }
 
-        // 同时写一份可读的崩溃摘要 (.txt): 异常码 + 故障模块 + (C++ 异常)抛出模块。
-        // 用裸 Win32 写入, 不分配堆内存, 即使堆损坏也能落盘。
-        writeCrashReport(dumpPath, exceptionInfo);
+        // 零堆分配、零大栈帧写入可读崩溃摘要 (.txt)，不弹模态 MessageBoxW 防止堆损坏/UI 锁二次挂死
+        writeCrashReport(exceptionInfo);
 
-        // 弹窗通知用户
-        auto msg = std::format(
-            L"Tools3000 遇到了意外错误，已生成崩溃转储与报告：\n\n{}\n\n请将该文件夹中的 .dmp 与 .txt 发送给开发者。",
-            dumpPath.wstring()
-        );
-        MessageBoxW(nullptr, msg.c_str(), L"Tools3000 崩溃报告", MB_OK | MB_ICONERROR);
-
+        InterlockedExchange(&s_activeCrashLock, 0);
         return EXCEPTION_EXECUTE_HANDLER;
     }
 
-    /// 取得包含地址 addr 的模块文件名 (失败返回空串)
-    static std::wstring moduleOfAddress(const void* addr) {
-        HMODULE hmod = nullptr;
-        if (GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(addr), &hmod) && hmod) {
-            wchar_t path[MAX_PATH] = {};
-            if (GetModuleFileNameW(hmod, path, MAX_PATH)) return path;
-        }
-        return {};
-    }
-
-    /// 写一份可读崩溃摘要到 <dump>.txt (裸 Win32, 不分配堆)
-    static void writeCrashReport(const std::filesystem::path& dumpPath, EXCEPTION_POINTERS* ep) {
-        auto txtPath = std::filesystem::path(dumpPath).replace_extension(L".txt");
-
-        const DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
-        const void* addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
-        std::wstring faultMod = moduleOfAddress(addr);
+    /// 写一份可读崩溃摘要到 <dump>.txt（纯静态缓冲 + 裸 Win32 WriteFile，绝对 0 堆分配、0 大栈数组）
+    static void writeCrashReport(EXCEPTION_POINTERS* ep) noexcept {
+        const DWORD code = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionCode : 0;
+        const void* addr = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+        queryModuleOfAddress(addr, s_faultModBuf, MAX_PATH);
 
         const wchar_t* meaning = L"(其它)";
         switch (code) {
-            case 0xC0000005: meaning = L"ACCESS_VIOLATION (空指针/野指针)"; break;
-            case 0xC0000374: meaning = L"HEAP_CORRUPTION (堆损坏)"; break;
-            case 0xC00000FD: meaning = L"STACK_OVERFLOW (栈溢出/无限递归)"; break;
-            case 0xE06D7363: meaning = L"C++ EXCEPTION (未捕获的 throw)"; break;
-            case 0xC0000409: meaning = L"STACK_BUFFER_OVERRUN / __fastfail"; break;
+            case 0xC0000005u: meaning = L"ACCESS_VIOLATION (空指针/野指针)"; break;
+            case 0xC0000374u: meaning = L"HEAP_CORRUPTION (堆损坏)"; break;
+            case 0xC00000FDu: meaning = L"STACK_OVERFLOW (栈溢出/无限递归)"; break;
+            case 0xE06D7363u: meaning = L"C++ EXCEPTION (未捕获的 throw)"; break;
+            case 0xC0000409u: meaning = L"STACK_BUFFER_OVERRUN / __fastfail"; break;
             default: break;
         }
 
-        // 对 C++ 异常: ExceptionInformation[3] = 抛出异常的模块基址
-        std::wstring throwMod;
-        if (code == 0xE06D7363 && ep->ExceptionRecord->NumberParameters >= 4) {
-            auto base = reinterpret_cast<const void*>(ep->ExceptionRecord->ExceptionInformation[3]);
-            throwMod = moduleOfAddress(base);
+        s_throwModBuf[0] = L'\0';
+        if (code == 0xE06D7363u && ep && ep->ExceptionRecord && ep->ExceptionRecord->NumberParameters >= 4) {
+            const auto* base = reinterpret_cast<const void*>(ep->ExceptionRecord->ExceptionInformation[3]);
+            queryModuleOfAddress(base, s_throwModBuf, MAX_PATH);
         }
 
-        wchar_t buf[2048];
-        int n = swprintf_s(buf, L"Tools3000 崩溃报告\r\n"
-            L"========================================\r\n"
-            L"线程 ID      : %lu\r\n"
-            L"异常代码     : 0x%08X  %s\r\n"
-            L"故障地址     : 0x%p\r\n"
-            L"故障模块     : %s\r\n"
-            L"抛出模块     : %s\r\n"
-            L"转储文件     : %s\r\n"
-            L"========================================\r\n"
-            L"提示: 若“抛出模块”为 msvcp140/Tools3000 等, 多为未捕获的 C++ 异常;\r\n"
-            L"请连同同目录的 tools3000.log(尤其崩溃前几秒) 一并发给开发者。\r\n",
-            GetCurrentThreadId(), code, meaning, addr,
-            faultMod.empty() ? L"(未知)" : faultMod.c_str(),
-            throwMod.empty() ? L"(不适用/未知)" : throwMod.c_str(),
-            dumpPath.wstring().c_str());
+        size_t pos = 0;
+        s_reportBuf[0] = L'\0';
+        appendStr(s_reportBuf, kReportBufChars, pos,
+                  L"Tools3000 崩溃报告\r\n"
+                  L"========================================\r\n"
+                  L"线程 ID      : ");
+        appendUintDec(s_reportBuf, kReportBufChars, pos, GetCurrentThreadId());
+        appendStr(s_reportBuf, kReportBufChars, pos, L"\r\n异常代码     : 0x");
+        appendHex(s_reportBuf, kReportBufChars, pos, code, 8);
+        appendStr(s_reportBuf, kReportBufChars, pos, L"  ");
+        appendStr(s_reportBuf, kReportBufChars, pos, meaning);
+        appendStr(s_reportBuf, kReportBufChars, pos, L"\r\n故障地址     : 0x");
+        appendHex(s_reportBuf, kReportBufChars, pos, reinterpret_cast<uintptr_t>(addr), sizeof(void*) * 2);
+        appendStr(s_reportBuf, kReportBufChars, pos, L"\r\n故障模块     : ");
+        appendStr(s_reportBuf, kReportBufChars, pos, s_faultModBuf[0] ? s_faultModBuf : L"(未知)");
+        appendStr(s_reportBuf, kReportBufChars, pos, L"\r\n抛出模块     : ");
+        appendStr(s_reportBuf, kReportBufChars, pos, s_throwModBuf[0] ? s_throwModBuf : L"(不适用/未知)");
+        appendStr(s_reportBuf, kReportBufChars, pos, L"\r\n转储文件     : ");
+        appendStr(s_reportBuf, kReportBufChars, pos, s_dumpPathBuf);
+        appendStr(s_reportBuf, kReportBufChars, pos,
+                  L"\r\n========================================\r\n"
+                  L"提示: 若“抛出模块”为 msvcp140/Tools3000 等, 多为未捕获的 C++ 异常;\r\n"
+                  L"请连同同目录的 tools3000.log(尤其崩溃前几秒) 一并发给开发者。\r\n");
 
-        HANDLE h = CreateFileW(txtPath.wstring().c_str(), GENERIC_WRITE, 0, nullptr,
+        HANDLE h = CreateFileW(s_txtPathBuf, GENERIC_WRITE, 0, nullptr,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h != INVALID_HANDLE_VALUE) {
-            if (n > 0) {
+            if (pos > 0) {
                 DWORD written = 0;
-                WriteFile(h, buf, static_cast<DWORD>(n * sizeof(wchar_t)), &written, nullptr);
+                WriteFile(h, s_reportBuf, static_cast<DWORD>(pos * sizeof(wchar_t)), &written, nullptr);
             }
             CloseHandle(h);
         }
     }
 
-    static inline std::filesystem::path s_dumpDir;
+    static void terminateHandler() noexcept {
+        if (InterlockedCompareExchange(&s_activeCrashLock, 1, 0) == 0) {
+            SYSTEMTIME st{};
+            GetLocalTime(&st);
+            size_t txtPos = 0;
+            s_txtPathBuf[0] = L'\0';
+            if (s_dumpDir[0] != L'\0') {
+                appendStr(s_txtPathBuf, MAX_PATH, txtPos, s_dumpDir);
+                appendStr(s_txtPathBuf, MAX_PATH, txtPos, L"\\");
+            }
+            appendStr(s_txtPathBuf, MAX_PATH, txtPos, L"Tools3000_terminate_");
+            appendUintFixed(s_txtPathBuf, MAX_PATH, txtPos, st.wYear, 4);
+            appendUintFixed(s_txtPathBuf, MAX_PATH, txtPos, st.wMonth, 2);
+            appendUintFixed(s_txtPathBuf, MAX_PATH, txtPos, st.wDay, 2);
+            appendStr(s_txtPathBuf, MAX_PATH, txtPos, L"_");
+            appendUintFixed(s_txtPathBuf, MAX_PATH, txtPos, st.wHour, 2);
+            appendUintFixed(s_txtPathBuf, MAX_PATH, txtPos, st.wMinute, 2);
+            appendUintFixed(s_txtPathBuf, MAX_PATH, txtPos, st.wSecond, 2);
+            appendStr(s_txtPathBuf, MAX_PATH, txtPos, L".txt");
+
+            size_t pos = 0;
+            s_reportBuf[0] = L'\0';
+            appendStr(s_reportBuf, kReportBufChars, pos,
+                      L"Tools3000 std::terminate 报告\r\n"
+                      L"========================================\r\n"
+                      L"线程 ID      : ");
+            appendUintDec(s_reportBuf, kReportBufChars, pos, GetCurrentThreadId());
+            appendStr(s_reportBuf, kReportBufChars, pos,
+                      L"\r\n原因         : std::terminate() triggered (noexcept boundary or joinable std::thread destruction)\r\n");
+
+            HANDLE h = CreateFileW(s_txtPathBuf, GENERIC_WRITE, 0, nullptr,
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                if (pos > 0) {
+                    DWORD written = 0;
+                    WriteFile(h, s_reportBuf, static_cast<DWORD>(pos * sizeof(wchar_t)), &written, nullptr);
+                }
+                CloseHandle(h);
+            }
+            InterlockedExchange(&s_activeCrashLock, 0);
+        }
+        std::abort();
+    }
+
+    static constexpr size_t kReportBufChars = 2048;
+    static inline wchar_t s_dumpDir[MAX_PATH]{};
+    static inline wchar_t s_dumpPathBuf[MAX_PATH]{};
+    static inline wchar_t s_txtPathBuf[MAX_PATH]{};
+    static inline wchar_t s_faultModBuf[MAX_PATH]{};
+    static inline wchar_t s_throwModBuf[MAX_PATH]{};
+    static inline wchar_t s_reportBuf[kReportBufChars]{};
+    static inline volatile LONG s_activeCrashLock = 0;
     static inline LPTOP_LEVEL_EXCEPTION_FILTER s_previousFilter = nullptr;
 };
 

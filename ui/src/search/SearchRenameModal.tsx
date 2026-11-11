@@ -46,6 +46,20 @@ export const SearchRenameModal: React.FC<SearchRenameModalProps> = ({
     }
   }, [renameTarget.result, renameTarget.visible, resolvedInputRef]);
 
+  useEffect(() => {
+    if (!renameTarget.visible) return;
+    const handleWindowKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleWindowKeyDown);
+    return () => window.removeEventListener('keydown', handleWindowKeyDown);
+  }, [renameTarget.visible, onClose]);
+
   if (!renameTarget.visible || !renameTarget.result) {
     return null;
   }
@@ -56,10 +70,13 @@ export const SearchRenameModal: React.FC<SearchRenameModalProps> = ({
     <div className="search-modal-overlay" onClick={onClose}>
       <div
         className="search-rename-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="search-rename-modal-title"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="search-rename-header">
-          <div className="search-rename-title">
+          <div className="search-rename-title" id="search-rename-modal-title">
             <Pencil size={15} className="search-rename-icon" />
             <span>{t('search.renameTitle', 'Rename')} {res.isDirectory ? t('search.folderLabel', 'Folder') : t('search.fileLabel', 'File')}</span>
           </div>
@@ -67,6 +84,7 @@ export const SearchRenameModal: React.FC<SearchRenameModalProps> = ({
             type="button"
             className="search-rename-close"
             onClick={onClose}
+            aria-label={t('common.close', 'Close')}
           >
             <X size={14} />
           </button>

@@ -320,14 +320,15 @@ void parseToUnicodeCMap(
                 continue;
             }
 
-            uint32_t startCode = 0;
-            uint32_t endCode = 0;
+            uint64_t startCode = 0;
+            uint64_t endCode = 0;
             for (size_t k = 0; k < startBytes.size(); ++k) {
-                startCode = (startCode << 8) | startBytes[k];
-                endCode = (endCode << 8) | endBytes[k];
+                startCode = (startCode << 8) | static_cast<uint64_t>(startBytes[k]);
+                endCode = (endCode << 8) | static_cast<uint64_t>(endBytes[k]);
             }
             if (endCode < startCode) continue;
-            const uint32_t count = (std::min)(endCode - startCode + 1u, MaxBfRangeSpan);
+            const uint64_t span = endCode - startCode + 1ULL;
+            const uint32_t count = static_cast<uint32_t>((std::min<uint64_t>)(span, MaxBfRangeSpan));
 
             while (cursor < body.size() && isPdfWhitespace(static_cast<uint8_t>(body[cursor]))) {
                 ++cursor;
@@ -347,7 +348,7 @@ void parseToUnicodeCMap(
                     std::vector<uint8_t> itemDst;
                     if (!readNextHexToken(body, cursor, itemDst)) break;
 
-                    const uint32_t curCode = startCode + offset;
+                    const uint64_t curCode = startCode + static_cast<uint64_t>(offset);
                     std::vector<uint8_t> codeVec(startBytes.size());
                     for (size_t bIdx = 0; bIdx < startBytes.size(); ++bIdx) {
                         const size_t shift = (startBytes.size() - 1 - bIdx) * 8;
@@ -364,7 +365,7 @@ void parseToUnicodeCMap(
                 if (baseStr.empty()) continue;
 
                 for (uint32_t offset = 0; offset < count; ++offset) {
-                    const uint32_t curCode = startCode + offset;
+                    const uint64_t curCode = startCode + static_cast<uint64_t>(offset);
                     std::vector<uint8_t> codeVec(startBytes.size());
                     for (size_t bIdx = 0; bIdx < startBytes.size(); ++bIdx) {
                         const size_t shift = (startBytes.size() - 1 - bIdx) * 8;
@@ -400,10 +401,19 @@ std::string undoPngPredictor(
     if (columns <= 0) columns = 1;
     if (colors <= 0) colors = 1;
     if (bitsPerComponent <= 0) bitsPerComponent = 8;
+    if (columns > (1024 * 1024) || colors > 64 || bitsPerComponent > 32) {
+        return raw;
+    }
 
-    const size_t bpp = static_cast<size_t>((std::max)(1, (colors * bitsPerComponent + 7) / 8));
-    const size_t rowBytes = static_cast<size_t>((columns * colors * bitsPerComponent + 7) / 8);
-    if (rowBytes == 0 || rowBytes > 1024 * 1024) return raw;
+    const uint64_t cols64 = static_cast<uint64_t>(columns);
+    const uint64_t colors64 = static_cast<uint64_t>(colors);
+    const uint64_t bpc64 = static_cast<uint64_t>(bitsPerComponent);
+    const uint64_t bpp64 = (std::max<uint64_t>)(1ULL, (colors64 * bpc64 + 7ULL) / 8ULL);
+    const uint64_t rowBytes64 = (cols64 * colors64 * bpc64 + 7ULL) / 8ULL;
+    if (rowBytes64 == 0 || rowBytes64 > 1024ULL * 1024ULL) return raw;
+
+    const size_t bpp = static_cast<size_t>(bpp64);
+    const size_t rowBytes = static_cast<size_t>(rowBytes64);
     const size_t stride = rowBytes + 1;
     if (raw.size() < stride) return raw;
 
@@ -1631,7 +1641,7 @@ bool PdfExtractor::searchContentTerms(
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
         OPEN_EXISTING,
-        FILE_FLAG_SEQUENTIAL_SCAN,
+        FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT,
         nullptr
     );
     if (hFile == INVALID_HANDLE_VALUE) {
@@ -1645,13 +1655,31 @@ bool PdfExtractor::searchContentTerms(
         }
     } fileCloser{hFile};
 
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    if (GetFileType(hFile) != FILE_TYPE_DISK || !GetFileInformationByHandle(hFile, &fileInfo) ||
+        (fileInfo.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return false;
+    }
+
     const FileCacheStamp stamp = queryFileCacheStampByHandle(hFile);
     if (!stamp.valid || stamp.fileSize == 0 || stamp.fileSize > MaxPdfFileBytes) {
         return false;
     }
 
     std::wstring extractedText;
-    if (!ContentTextCache::instance().tryGet(filePath, stamp.fileSize, stamp.lastWriteTime, extractedText)) {
+    bool cacheTruncated = false;
+    bool cacheHit = ContentTextCache::instance().tryGetWithTruncation(
+        filePath, stamp.fileSize, stamp.lastWriteTime, extractedText, cacheTruncated);
+    if (cacheHit && cacheTruncated) {
+        if (matchDocumentTextAndBuildSnippets(
+                extractedText, queryTerms, caseSensitive, outSnippets, maxSnippetsPerFile, isCancelled)) {
+            return true;
+        }
+        cacheHit = false;
+        extractedText.clear();
+    }
+
+    if (!cacheHit) {
         const size_t mapSize = static_cast<size_t>(stamp.fileSize);
         HANDLE hMapping = CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
         bool extracted = false;
@@ -1667,28 +1695,50 @@ bool PdfExtractor::searchContentTerms(
                     }
                 } viewGuard{pData};
 
-                extracted = runWithMappedViewGuard([&]() -> bool {
-                    return extractPdfTextFromMemory(pData, mapSize, extractedText, isCancelled);
-                });
+                // Copy mapped view bytes under pure-POD SEH (`copyMappedViewSafe`) so zero C++/zlib RAII
+                // destructors live inside `__try`, and immediately abort on `EXCEPTION_IN_PAGE_ERROR`
+                // without ever performing an unguarded secondary scan on `pData`.
+                std::vector<uint8_t> residentPdfBytes;
+                bool inPageError = false;
+                if (!copyMappedViewSafe(pData, mapSize, residentPdfBytes, inPageError, isCancelled) || inPageError) {
+                    return false;
+                }
+
+                extracted = extractPdfTextFromMemory(
+                    residentPdfBytes.data(), residentPdfBytes.size(), extractedText, isCancelled);
                 if (!extracted) {
                     extractedText.clear();
                 }
 
-                const auto needsSystemPdfFilterFallback = [&]() noexcept -> bool {
+                bool shouldRunSystemFilterFallback = false;
+                const bool fallbackCheckOk = runWithMappedViewGuard([&]() noexcept -> bool {
                     if (extracted && !extractedText.empty()) return false;
-                    const std::string_view rawView(reinterpret_cast<const char*>(pData), mapSize);
-                    if (rawView.substr(0, (std::min<size_t>)(1024, mapSize)).find("%PDF-") == std::string_view::npos) {
+                    const std::string_view rawView(
+                        reinterpret_cast<const char*>(residentPdfBytes.data()), residentPdfBytes.size());
+                    if (rawView.substr(0, (std::min<size_t>)(1024, rawView.size())).find("%PDF-") ==
+                        std::string_view::npos) {
                         return true;
                     }
                     return rawView.find("/Encrypt") != std::string_view::npos ||
                            rawView.find("/LZWDecode") != std::string_view::npos ||
                            rawView.find("/ASCII85Decode") != std::string_view::npos ||
                            rawView.find("/ASCIIHexDecode") != std::string_view::npos;
-                };
-                if (!(isCancelled && isCancelled()) && needsSystemPdfFilterFallback()) {
-                    // Secondary fallback: delegate to Windows system PDF IFilter over our already-opened view/handle
+                }, &inPageError);
+                if (inPageError) {
+                    return false;
+                }
+                shouldRunSystemFilterFallback = fallbackCheckOk;
+
+                if (!(isCancelled && isCancelled()) && shouldRunSystemFilterFallback) {
+                    // Secondary fallback: delegate to Windows system PDF IFilter over our already-copied buffer
                     extracted = WindowsIFilterExtractor::extractViaSystemIFilterFromHandle(
-                        hFile, filePath, pData, mapSize, extractedText, isCancelled);
+                        hFile,
+                        filePath,
+                        residentPdfBytes.data(),
+                        residentPdfBytes.size(),
+                        extractedText,
+                        isCancelled
+                    );
                 }
             } else {
                 extracted = WindowsIFilterExtractor::extractViaSystemIFilterFromHandle(

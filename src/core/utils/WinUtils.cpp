@@ -8,6 +8,8 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <wincrypt.h>
+#include <softpub.h>
+#include <wintrust.h>
 #include <shlobj.h>
 #include <shldisp.h>
 #include <exdisp.h>
@@ -31,13 +33,68 @@
 #include <string_view>
 
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "wintrust.lib")
 
 namespace tools3000::core {
 
+namespace {
+
+bool ensureGdiplusStarted() noexcept {
+    struct GdiplusProcessGuard {
+        ULONG_PTR token = 0;
+        bool initialized = false;
+        GdiplusProcessGuard() noexcept {
+            Gdiplus::GdiplusStartupInput input;
+            if (Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok) {
+                initialized = true;
+            }
+        }
+    };
+    static const GdiplusProcessGuard s_guard;
+    return s_guard.initialized;
+}
+
+struct ScopedStaComGuard {
+    bool needUninit = false;
+    ScopedStaComGuard() noexcept {
+        const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        if (hr == S_OK || hr == S_FALSE) {
+            needUninit = true;
+        }
+    }
+    ~ScopedStaComGuard() noexcept {
+        if (needUninit) {
+            CoUninitialize();
+        }
+    }
+    ScopedStaComGuard(const ScopedStaComGuard&) = delete;
+    ScopedStaComGuard& operator=(const ScopedStaComGuard&) = delete;
+};
+
+}  // namespace
+
+std::filesystem::path WinUtils::getExePath() {
+    std::vector<wchar_t> buffer(MAX_PATH, L'\0');
+    while (buffer.size() <= 32768) {
+        SetLastError(ERROR_SUCCESS);
+        const DWORD copied = GetModuleFileNameW(
+            nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (copied == 0) {
+            return {};
+        }
+        if (copied < buffer.size() - 1 && GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+            return std::filesystem::path(std::wstring(buffer.data(), copied));
+        }
+        if (buffer.size() >= 32768) {
+            return std::filesystem::path(std::wstring(buffer.data(), copied));
+        }
+        buffer.resize(buffer.size() * 2, L'\0');
+    }
+    return {};
+}
+
 std::filesystem::path WinUtils::getExeDirectory() {
-    wchar_t path[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    return std::filesystem::path(path).parent_path();
+    return getExePath().parent_path();
 }
 
 bool WinUtils::isPortableMode() {
@@ -93,13 +150,15 @@ std::filesystem::path WinUtils::getAppDataDirectory() {
 
 std::filesystem::path WinUtils::getLogDirectory() {
     auto dir = getAppDataDirectory() / L"logs";
-    std::filesystem::create_directories(dir);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
     return dir;
 }
 
 std::filesystem::path WinUtils::getConfigDirectory() {
     auto dir = getAppDataDirectory() / L"config";
-    std::filesystem::create_directories(dir);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
     return dir;
 }
 
@@ -353,6 +412,7 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
         if (it != s_iconCache.end()) return it->second;
     }
 
+    ScopedStaComGuard comGuard;
     SHFILEINFOW sfi{};
     DWORD_PTR hr = 0;
 
@@ -478,51 +538,54 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
                         DeleteDC(hdcMask);
                     }
 
-                    // 通过 GDI+ 导出为 32 位透明 PNG
-                    ULONG_PTR gdiplusToken = 0;
-                    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-                    if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) == Gdiplus::Ok) {
-                        {
-                            Gdiplus::Bitmap gdiBmp(width, height, width * 4, PixelFormat32bppARGB, static_cast<BYTE*>(pBits));
-                            if (gdiBmp.GetLastStatus() == Gdiplus::Ok) {
-                                CLSID pngClsid{};
-                                UINT num = 0, size = 0;
-                                Gdiplus::GetImageEncodersSize(&num, &size);
-                                if (size > 0) {
-                                    auto pCodecsBuf = std::make_unique<uint8_t[]>(size);
-                                    auto* pCodecs = reinterpret_cast<Gdiplus::ImageCodecInfo*>(pCodecsBuf.get());
-                                    if (Gdiplus::GetImageEncoders(num, size, pCodecs) == Gdiplus::Ok) {
-                                        for (UINT j = 0; j < num; ++j) {
-                                            if (wcscmp(pCodecs[j].MimeType, L"image/png") == 0) {
-                                                pngClsid = pCodecs[j].Clsid;
-                                                break;
-                                            }
+                    // 通过进程级单例 GDI+ 导出为 32 位透明 PNG（避免多线程并发 GdiplusStartup/Shutdown 互踩）
+                    if (ensureGdiplusStarted()) {
+                        Gdiplus::Bitmap gdiBmp(width, height, width * 4, PixelFormat32bppARGB, static_cast<BYTE*>(pBits));
+                        if (gdiBmp.GetLastStatus() == Gdiplus::Ok) {
+                            CLSID pngClsid{};
+                            UINT num = 0, size = 0;
+                            Gdiplus::GetImageEncodersSize(&num, &size);
+                            if (size > 0) {
+                                auto pCodecsBuf = std::make_unique<uint8_t[]>(size);
+                                auto* pCodecs = reinterpret_cast<Gdiplus::ImageCodecInfo*>(pCodecsBuf.get());
+                                if (Gdiplus::GetImageEncoders(num, size, pCodecs) == Gdiplus::Ok) {
+                                    for (UINT j = 0; j < num; ++j) {
+                                        if (wcscmp(pCodecs[j].MimeType, L"image/png") == 0) {
+                                            pngClsid = pCodecs[j].Clsid;
+                                            break;
                                         }
-                                    }
-                                }
-
-                                if (pngClsid != CLSID{}) {
-                                    IStream* pStream = nullptr;
-                                    if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &pStream)) && pStream) {
-                                        if (gdiBmp.Save(pStream, &pngClsid, nullptr) == Gdiplus::Ok) {
-                                            HGLOBAL hMem = nullptr;
-                                            if (SUCCEEDED(GetHGlobalFromStream(pStream, &hMem)) && hMem) {
-                                                const SIZE_T memSize = GlobalSize(hMem);
-                                                const void* pData = GlobalLock(hMem);
-                                                if (pData && memSize > 0) {
-                                                    std::vector<uint8_t> buffer(static_cast<const uint8_t*>(pData),
-                                                                                static_cast<const uint8_t*>(pData) + memSize);
-                                                    GlobalUnlock(hMem);
-                                                    base64 = "data:image/png;base64," + base64Encode(buffer);
-                                                }
-                                            }
-                                        }
-                                        pStream->Release();
                                     }
                                 }
                             }
+
+                            if (pngClsid != CLSID{}) {
+                                IStream* pStream = nullptr;
+                                if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &pStream)) && pStream) {
+                                    if (gdiBmp.Save(pStream, &pngClsid, nullptr) == Gdiplus::Ok) {
+                                        STATSTG statstg{};
+                                        HGLOBAL hMem = nullptr;
+                                        if (SUCCEEDED(pStream->Stat(&statstg, STATFLAG_NONAME)) &&
+                                            statstg.cbSize.QuadPart > 0 &&
+                                            SUCCEEDED(GetHGlobalFromStream(pStream, &hMem)) && hMem) {
+                                            const SIZE_T allocSize = GlobalSize(hMem);
+                                            const SIZE_T streamBytes = static_cast<SIZE_T>(
+                                                std::min<ULONGLONG>(statstg.cbSize.QuadPart, allocSize));
+                                            const void* pData = GlobalLock(hMem);
+                                            if (pData && streamBytes > 0) {
+                                                std::vector<uint8_t> buffer(
+                                                    static_cast<const uint8_t*>(pData),
+                                                    static_cast<const uint8_t*>(pData) + streamBytes);
+                                                GlobalUnlock(hMem);
+                                                base64 = "data:image/png;base64," + base64Encode(buffer);
+                                            } else if (pData) {
+                                                GlobalUnlock(hMem);
+                                            }
+                                        }
+                                    }
+                                    pStream->Release();
+                                }
+                            }
                         }
-                        Gdiplus::GdiplusShutdown(gdiplusToken);
                     }
 
                     SelectObject(hdcMem, hOldBmp);
@@ -723,51 +786,46 @@ bool WinUtils::copyGifToClipboard(const std::wstring& filePath, HWND owner) {
     // 微信在 Windows 上粘贴时：检测到包含图像 DIB 且附带指向 .gif 文件的 CF_HDROP，
     // 会直接作为动态 GIF 动图在聊天会话中以可循环播放的富媒体发送，而不是静态图或普通文件。
     HGLOBAL hDibGlobal = nullptr;
-    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-    ULONG_PTR gdiplusToken = 0;
-    if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) == Gdiplus::Ok) {
-        {
-            Gdiplus::Bitmap gifBmp(filePath.c_str());
-            if (gifBmp.GetLastStatus() == Gdiplus::Ok && gifBmp.GetWidth() > 0 && gifBmp.GetHeight() > 0) {
-                int width = static_cast<int>(gifBmp.GetWidth());
-                int height = static_cast<int>(gifBmp.GetHeight());
-                Gdiplus::Rect gdiRect(0, 0, width, height);
-                Gdiplus::BitmapData bmpData{};
-                if (gifBmp.LockBits(&gdiRect, Gdiplus::ImageLockModeRead, PixelFormat24bppRGB, &bmpData) == Gdiplus::Ok) {
-                    BITMAPINFOHEADER bi{};
-                    bi.biSize = sizeof(bi);
-                    bi.biWidth = width;
-                    bi.biHeight = height; // 正数 = 规范底向上 (Bottom-Up DIB)
-                    bi.biPlanes = 1;
-                    bi.biBitCount = 24;
-                    bi.biCompression = BI_RGB;
-                    int rowBytes = width * 3;
-                    int stride = (rowBytes + 3) & ~3;
-                    bi.biSizeImage = stride * height;
+    if (ensureGdiplusStarted()) {
+        Gdiplus::Bitmap gifBmp(filePath.c_str());
+        if (gifBmp.GetLastStatus() == Gdiplus::Ok && gifBmp.GetWidth() > 0 && gifBmp.GetHeight() > 0) {
+            int width = static_cast<int>(gifBmp.GetWidth());
+            int height = static_cast<int>(gifBmp.GetHeight());
+            Gdiplus::Rect gdiRect(0, 0, width, height);
+            Gdiplus::BitmapData bmpData{};
+            if (gifBmp.LockBits(&gdiRect, Gdiplus::ImageLockModeRead, PixelFormat24bppRGB, &bmpData) == Gdiplus::Ok) {
+                BITMAPINFOHEADER bi{};
+                bi.biSize = sizeof(bi);
+                bi.biWidth = width;
+                bi.biHeight = height; // 正数 = 规范底向上 (Bottom-Up DIB)
+                bi.biPlanes = 1;
+                bi.biBitCount = 24;
+                bi.biCompression = BI_RGB;
+                int rowBytes = width * 3;
+                int stride = (rowBytes + 3) & ~3;
+                bi.biSizeImage = stride * height;
 
-                    size_t totalBytes = sizeof(BITMAPINFOHEADER) + bi.biSizeImage;
-                    hDibGlobal = GlobalAlloc(GMEM_MOVEABLE, totalBytes);
-                    if (hDibGlobal) {
-                        auto* pMem = static_cast<uint8_t*>(GlobalLock(hDibGlobal));
-                        if (pMem) {
-                            memcpy(pMem, &bi, sizeof(bi));
-                            uint8_t* pPixels = pMem + sizeof(bi);
-                            const auto* srcPtr = static_cast<const uint8_t*>(bmpData.Scan0);
-                            for (int y = 0; y < height; ++y) {
-                                int srcY = height - 1 - y;
-                                memcpy(pPixels + y * stride, srcPtr + srcY * bmpData.Stride, rowBytes);
-                            }
-                            GlobalUnlock(hDibGlobal);
-                        } else {
-                            GlobalFree(hDibGlobal);
-                            hDibGlobal = nullptr;
+                size_t totalBytes = sizeof(BITMAPINFOHEADER) + bi.biSizeImage;
+                hDibGlobal = GlobalAlloc(GMEM_MOVEABLE, totalBytes);
+                if (hDibGlobal) {
+                    auto* pMem = static_cast<uint8_t*>(GlobalLock(hDibGlobal));
+                    if (pMem) {
+                        memcpy(pMem, &bi, sizeof(bi));
+                        uint8_t* pPixels = pMem + sizeof(bi);
+                        const auto* srcPtr = static_cast<const uint8_t*>(bmpData.Scan0);
+                        for (int y = 0; y < height; ++y) {
+                            int srcY = height - 1 - y;
+                            memcpy(pPixels + y * stride, srcPtr + srcY * bmpData.Stride, rowBytes);
                         }
+                        GlobalUnlock(hDibGlobal);
+                    } else {
+                        GlobalFree(hDibGlobal);
+                        hDibGlobal = nullptr;
                     }
-                    gifBmp.UnlockBits(&bmpData);
                 }
+                gifBmp.UnlockBits(&bmpData);
             }
         }
-        Gdiplus::GdiplusShutdown(gdiplusToken);
     }
 
     // 4. 打开剪贴板并同时写入所有复合格式（提供临时 HWND_MESSAGE 宿主确保 EmptyClipboard 持有有效所有者）
@@ -828,6 +886,8 @@ bool WinUtils::copyGifToClipboard(const std::wstring& filePath, HWND owner) {
         } else {
             GlobalFree(hGifGlobal);
         }
+    } else if (hGifGlobal) {
+        GlobalFree(hGifGlobal);
     }
     if (hDibGlobal) {
         if (SetClipboardData(CF_DIB, hDibGlobal)) {
@@ -1804,17 +1864,23 @@ std::string WinUtils::captureSelectedText() {
         inputs.push_back(in);
     };
 
-    // 若用户通过组合热键（如 Ctrl+Alt+C / Alt+Shift+*）触发划词，先抬起冲突修饰键，确保目标窗口收到纯净 Ctrl+C
-    static constexpr WORD kConflictMods[] = {
-        VK_LMENU, VK_RMENU, VK_MENU,
-        VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
-        VK_LWIN, VK_RWIN
-    };
-    for (WORD mod : kConflictMods) {
-        if ((GetAsyncKeyState(mod) & 0x8000) != 0) {
-            appendKey(mod, KEYEVENTF_KEYUP);
-        }
+    // 若用户通过组合热键（如 Ctrl+Alt+C / Alt+Shift+*）触发划词，先抬起冲突修饰键，确保目标窗口收到纯净 Ctrl+C。
+    // 仅当 Alt 实际处于按下态时，才先行注入无害掩护键 VK_F24 脉冲再释放 Alt，杜绝误激活菜单栏 (SC_KEYMENU) 吞掉 Ctrl+C。
+    const bool lAltDown = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0;
+    const bool rAltDown = (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
+    const bool altDown = lAltDown || rAltDown || ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0);
+    if (altDown) {
+        appendKey(VK_F24, 0);
+        appendKey(VK_F24, KEYEVENTF_KEYUP);
+        if (lAltDown) appendKey(VK_LMENU, KEYEVENTF_KEYUP);
+        if (rAltDown) appendKey(VK_RMENU, KEYEVENTF_KEYUP | KEYEVENTF_EXTENDEDKEY);
+        appendKey(VK_MENU, KEYEVENTF_KEYUP);
     }
+    if ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) appendKey(VK_LSHIFT, KEYEVENTF_KEYUP);
+    if ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0) appendKey(VK_RSHIFT, KEYEVENTF_KEYUP);
+    if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) appendKey(VK_SHIFT, KEYEVENTF_KEYUP);
+    if ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) appendKey(VK_LWIN, KEYEVENTF_KEYUP | KEYEVENTF_EXTENDEDKEY);
+    if ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0) appendKey(VK_RWIN, KEYEVENTF_KEYUP | KEYEVENTF_EXTENDEDKEY);
 
     const bool ctrlAlreadyDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
     if (!ctrlAlreadyDown) {
@@ -1848,11 +1914,13 @@ std::string WinUtils::captureSelectedText() {
             } guard;
             HANDLE hData = GetClipboardData(CF_UNICODETEXT);
             if (hData) {
-                auto* pszText = static_cast<const wchar_t*>(GlobalLock(hData));
+                const SIZE_T maxChars = GlobalSize(hData) / sizeof(wchar_t);
+                auto* pszText = (maxChars > 0) ? static_cast<const wchar_t*>(GlobalLock(hData)) : nullptr;
                 if (pszText) {
-                    std::string newText = wstringToUtf8(pszText);
+                    const size_t safeLen = wcsnlen(pszText, maxChars);
+                    std::wstring safeWide(pszText, safeLen);
                     GlobalUnlock(hData);
-                    return newText;
+                    return wstringToUtf8(safeWide);
                 }
             }
             return {};
@@ -2319,6 +2387,39 @@ void WinUtils::emergencyFlushInputState() noexcept {
     if (!inputs.empty()) {
         SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
     }
+}
+
+bool WinUtils::isProcessElevated() {
+    return isCurrentProcessElevated();
+}
+
+bool WinUtils::hasValidAuthenticodeSignature(const std::filesystem::path& filePath) {
+    if (filePath.empty()) return false;
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(filePath, ec) || ec) return false;
+
+    const std::wstring widePath = filePath.wstring();
+    WINTRUST_FILE_INFO fileInfo{};
+    fileInfo.cbStruct = sizeof(fileInfo);
+    fileInfo.pcwszFilePath = widePath.c_str();
+
+    GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    WINTRUST_DATA trustData{};
+    trustData.cbStruct = sizeof(trustData);
+    trustData.dwUIChoice = WTD_UI_NONE;
+    trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+    trustData.dwUnionChoice = WTD_CHOICE_FILE;
+    trustData.pFile = &fileInfo;
+    trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+    trustData.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
+
+    const LONG status = WinVerifyTrust(
+        static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &trustData);
+
+    trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &trustData);
+
+    return status == ERROR_SUCCESS;
 }
 
 }  // namespace tools3000::core

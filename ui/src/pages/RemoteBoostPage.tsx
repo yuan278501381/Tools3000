@@ -157,8 +157,8 @@ export const RemoteBoostPage: FC = () => {
     try {
       if (typeof patch.enabled === 'boolean') {
         await Promise.all([
-          bridgeRequest('plugins.setEnabled', { id: 'remote_boost', enabled: patch.enabled }).catch(() => {}),
-          bridgeRequest('remote.updateSettings', patch as Record<string, unknown>).catch(() => {}),
+          bridgeRequest('plugins.setEnabled', { id: 'remote_boost', enabled: patch.enabled }),
+          bridgeRequest('remote.updateSettings', patch as Record<string, unknown>),
         ]);
       } else {
         await bridgeRequest('remote.updateSettings', patch as Record<string, unknown>);
@@ -413,7 +413,7 @@ export const RemoteBoostPage: FC = () => {
             <HotkeyRecorder
               id="remote-emergency-shortcut"
               value={settings.emergencyShortcut}
-              onChange={(val) => void updateSettings({ emergencyShortcut: val || 'Ctrl+Alt+Backspace' })}
+              onChange={(val) => void updateSettings({ emergencyShortcut: val })}
             />
           </SettingRow>
 

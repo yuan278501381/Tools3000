@@ -105,8 +105,11 @@ public:
     /// 重新根据全局配置与主题加载画笔颜色
     void reloadThemeColors();
 
-    /// 设置样式
+    /// 设置样式 (线程安全：内部持 m_renderMutex 并执行上下界 clamp 校验)
     void setStyle(const TrailStyle& style);
+
+    /// 设置 DPI 缩放系数 (线程安全：内部持 m_renderMutex 重建文本格式)
+    void setDpiScale(float dpiScale);
 
     /// 是否正在显示
     bool isVisible() const { return m_visible.load(std::memory_order_relaxed); }
@@ -274,6 +277,7 @@ private:
     HINSTANCE m_hInstance = nullptr;
     HWND m_helperOwnerHwnd = nullptr;
     HWND m_hwnd = nullptr;
+    bool m_timerPeriodActive = false;
     TrailStyle m_style;
     std::atomic<bool> m_visible{false};
     std::atomic<bool> m_fading{false};

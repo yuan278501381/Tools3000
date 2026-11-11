@@ -1,11 +1,11 @@
-param(
+﻿param(
     [switch]$NoRun
 )
 
 $ErrorActionPreference = "Stop"
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-Write-Host "⚡ [Tools3000 Rapid Dev] 正在准备极速增量编译..." -ForegroundColor Cyan
+Write-Host "[INFO] [Tools3000 Rapid Dev] 正在准备极速增量编译..." -ForegroundColor Cyan
 
 # 寻找 CMake 路径
 $cmakeExe = "cmake.exe"
@@ -37,7 +37,7 @@ if ($running) {
     }
     $remaining = Get-Process -Name "Tools3000*", "Tools3000*" -ErrorAction SilentlyContinue
     if ($remaining) {
-        Write-Host "❌ 无法终止旧的 Tools3000 进程 ($($remaining.Name))，文件句柄仍被占用！" -ForegroundColor Red
+        Write-Host "[ERROR] 无法终止旧的 Tools3000 进程 ($($remaining.Name))，文件句柄仍被占用！" -ForegroundColor Red
         exit 1
     }
     # 额外微量缓冲以保证 Windows 内核解除 EXE/DLL Section 映射
@@ -47,11 +47,11 @@ if ($running) {
 # 2. 增量编译 C++ (仅编译修改的模块，毫秒级)
 & $cmakeExe --build build --config Release --parallel 16
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ 增量编译失败！" -ForegroundColor Red
+    Write-Host "[ERROR] 增量编译失败！" -ForegroundColor Red
     exit 1
 }
 
-# 3. 快速同步二进制到 deploy_dist (0.1秒)
+# 3. 快速同步二进制到 deploy_dist (严格剔除 gtest/gmock 与 plugins 重复第三方 DLL)
 $distDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\deploy_dist"))
 if (-not (Test-Path $distDir)) {
     New-Item -ItemType Directory -Path $distDir -Force | Out-Null
@@ -61,23 +61,50 @@ if (-not (Test-Path $pluginsDist)) {
     New-Item -ItemType Directory -Path $pluginsDist -Force | Out-Null
 }
 
-$primaryExe = if (Test-Path "build\bin\Release\Tools3000.exe") { "Tools3000.exe" } else { "Tools3000.exe" }
-$primaryService = if (Test-Path "build\bin\Release\Tools3000_Service.exe") { "Tools3000_Service.exe" } else { "Tools3000_Service.exe" }
+Copy-Item "build\bin\Release\Tools3000.exe" (Join-Path $distDir "Tools3000.exe") -Force
+Copy-Item "build\bin\Release\Tools3000_Service.exe" (Join-Path $distDir "Tools3000_Service.exe") -Force
 
-Copy-Item "build\bin\Release\$primaryExe" (Join-Path $distDir "Tools3000.exe") -Force
-Copy-Item "build\bin\Release\$primaryExe" (Join-Path $distDir "Tools3000.exe") -Force
-Copy-Item "build\bin\Release\$primaryService" (Join-Path $distDir "Tools3000_Service.exe") -Force
-Copy-Item "build\bin\Release\$primaryService" (Join-Path $distDir "Tools3000_Service.exe") -Force
-Copy-Item "build\bin\Release\Tools3000Core.dll" (Join-Path $distDir "Tools3000Core.dll") -Force
+# 复制主程序根目录运行所需 DLL (排除测试库与插件本体)
+Get-ChildItem -Path "build\bin\Release" -Filter "*.dll" -File -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll" -and $_.Name -notlike "Plugin_*.dll"
+} | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $distDir $_.Name) -Force
+}
+
+# 主动清理根目录可能残留的测试库或误拷入的插件 DLL
+Get-ChildItem -Path $distDir -File -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name -like "*gtest*.dll" -or $_.Name -like "*gmock*.dll" -or $_.Name -like "Plugin_*.dll" -or $_.Name -like "Tools3000Tests*"
+} | Remove-Item -Force -ErrorAction SilentlyContinue
+
 if (Test-Path "build\bin\plugins\Release") {
-    Copy-Item "build\bin\plugins\Release\*.dll" $pluginsDist -Force
+    # 主动清理 deploy_dist/plugins/ 下历史残留的非 Plugin_*.dll 重复第三方运行库与调试符号
+    Get-ChildItem -Path $pluginsDist -File -ErrorAction SilentlyContinue | Where-Object {
+        ($_.Extension -ieq ".dll" -and $_.Name -notlike "Plugin_*.dll") -or $_.Extension -ieq ".pdb"
+    } | Remove-Item -Force -ErrorAction SilentlyContinue
+
+    # 严格仅复制 Plugin_*.dll 与 *.plugin.json 至 plugins/ 目录
+    Get-ChildItem -Path "build\bin\plugins\Release" -File | Where-Object {
+        $_.Name -like "Plugin_*.dll" -or $_.Name -like "*.plugin.json"
+    } | ForEach-Object {
+        Copy-Item $_.FullName (Join-Path $pluginsDist $_.Name) -Force
+    }
+
+    # 补充插件依赖但主程序未直接引用的第三方运行库至主程序根目录 (唯一保留一份)
+    Get-ChildItem -Path "build\bin\plugins\Release" -Filter "*.dll" -File | Where-Object {
+        $_.Name -notlike "Plugin_*.dll" -and $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll"
+    } | ForEach-Object {
+        $rootDest = Join-Path $distDir $_.Name
+        if (-not (Test-Path $rootDest)) {
+            Copy-Item $_.FullName $rootDest -Force
+        }
+    }
 }
 
 $sw.Stop()
-Write-Host "✅ [增量编译就绪] 耗时: $($sw.ElapsedMilliseconds) ms" -ForegroundColor Green
+Write-Host "[OK] [增量编译就绪] 耗时: $($sw.ElapsedMilliseconds) ms" -ForegroundColor Green
 
 if (-not $NoRun) {
-    Write-Host "🚀 正在启动 Tools3000 桌面客户端..." -ForegroundColor Yellow
+    Write-Host "[INFO] 正在启动 Tools3000 桌面客户端..." -ForegroundColor Yellow
     Start-Process -FilePath (Join-Path $distDir "Tools3000.exe") -WorkingDirectory $distDir
 }
 

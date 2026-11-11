@@ -141,6 +141,9 @@ public:
     /// 同步全生命周期触发掩码到底层鼠标钩子
     void syncTriggerMask();
 
+    /// 刷新当前前台窗口的 0ms 无锁绕行标志 (全屏游戏 / 远控虚拟机 / ScopeRule::Disable)
+    void refreshForegroundBypass(HWND fgHwnd = nullptr);
+
     /// 根据当前 Profile 状态表计算综合触发掩码
     uint32_t computeTriggerMask() const;
 
@@ -173,9 +176,16 @@ private:
         POINT endPt);
 
     /// 把被吞掉的触发键点击补发出去 (无有效手势时还原右键/中键的正常点击)
-    void reinjectTriggerClick(MouseEventType triggerOverride = MouseEventType::Move);
+    void reinjectTriggerClick(MouseEventType triggerOverride = MouseEventType::Move,
+                              bool downWasSuppressed = true);
     /// 起始静止超时专用：仅补发触发键按下事件（后续物理松手由钩子原样放行）
-    void reinjectTriggerDownOnly(MouseEventType trigger);
+    void reinjectTriggerDownOnly(MouseEventType trigger,
+                                 bool downWasSuppressed = true,
+                                 bool hardwareStillPressed = false);
+
+    /// 检测跨 UIPI 高权限窗口或钩子盲区下的物理按键释放 (调用方须持有 m_mutex)
+    bool checkMissedPhysicalReleaseLocked(std::chrono::steady_clock::time_point now,
+                                          bool isFromMoveEvent);
 
     void enqueueAction(GestureAction action, std::string traceId, HWND targetWindow = nullptr);
     void actionWorkerLoop(std::stop_token stopToken);
@@ -228,6 +238,12 @@ private:
     bool m_wheelExecutedDuringTracking = false;    // 按住触发键期间是否执行过滚轮手势
     bool m_instantExecutedDuringTracking = false;  // 按住触发键划动期间是否已触发 instantExecute
     bool m_hasMovedBeyondThreshold = false;        // 是否已移动跨过起始识别阈值
+    bool m_gestureConsumed = false;                // 本次手势是否已消费(instantExecute/滚轮/超阈值涂抹取消)，禁止松手回放右键
+    bool m_activeDownWasSuppressed = true;         // 本次触发按下是否实际被低级钩子吞没
+    bool m_observedPhysicalTriggerDown = false;    // 追踪期间 GetAsyncKeyState 是否曾观测到物理按下位
+    bool m_enteredHigherIntegrityDuringTracking = false; // 追踪期间是否曾踏入 UIPI 高完整性窗口盲区
+    bool m_timerPeriodActive = false;              // timeBeginPeriod(1) 激活计数对称守卫
+    std::chrono::steady_clock::time_point m_lastHookEventTime{};
     std::chrono::steady_clock::time_point m_trackingStartEventTimestamp{};
     std::atomic<bool> m_suppressReinjectForTesting{false};
     std::chrono::steady_clock::time_point m_lastDesktopSwitchTime{}; // 虚拟桌面切换节流时间戳
@@ -283,6 +299,9 @@ private:
     HWINEVENTHOOK m_foregroundHook = nullptr;
     std::mutex m_integrityWarnMutex;
     std::unordered_set<DWORD> m_warnedIntegrityPids;
+    std::mutex m_bypassEvalMutex;
+    HWND m_lastBypassEvalHwnd = nullptr;
+    RECT m_lastBypassEvalRect{0, 0, 0, 0};
 
     // 主动式防悬挂自愈看门狗
     std::mutex m_watchdogMutex;

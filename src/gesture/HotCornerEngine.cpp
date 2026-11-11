@@ -50,6 +50,7 @@ void HotCornerEngine::start() {
 void HotCornerEngine::stop() {
     if (m_running.exchange(false)) {
         m_thread.request_stop();
+        m_cv.notify_all();
         if (m_thread.joinable()) {
             tools3000::core::joinWorkerWhilePumpingSentMessages(m_thread, 3000);
         }
@@ -122,8 +123,61 @@ HotCorner HotCornerEngine::detectCorner(POINT pt) {
     return HotCorner::None;
 }
 
+bool HotCornerEngine::isPassThroughCorner(POINT pt, HotCorner corner) noexcept {
+    if (corner == HotCorner::None) {
+        return false;
+    }
+    const HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONULL);
+    if (!hMon) {
+        return false;
+    }
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(hMon, &mi)) {
+        return false;
+    }
+
+    POINT probes[3]{};
+    switch (corner) {
+        case HotCorner::TopLeft:
+            probes[0] = {mi.rcMonitor.left - 4, mi.rcMonitor.top + 1};
+            probes[1] = {mi.rcMonitor.left + 1, mi.rcMonitor.top - 4};
+            probes[2] = {mi.rcMonitor.left - 4, mi.rcMonitor.top - 4};
+            break;
+        case HotCorner::TopRight:
+            probes[0] = {mi.rcMonitor.right + 3, mi.rcMonitor.top + 1};
+            probes[1] = {mi.rcMonitor.right - 2, mi.rcMonitor.top - 4};
+            probes[2] = {mi.rcMonitor.right + 3, mi.rcMonitor.top - 4};
+            break;
+        case HotCorner::BottomLeft:
+            probes[0] = {mi.rcMonitor.left - 4, mi.rcMonitor.bottom - 2};
+            probes[1] = {mi.rcMonitor.left + 1, mi.rcMonitor.bottom + 3};
+            probes[2] = {mi.rcMonitor.left - 4, mi.rcMonitor.bottom + 3};
+            break;
+        case HotCorner::BottomRight:
+            probes[0] = {mi.rcMonitor.right + 3, mi.rcMonitor.bottom - 2};
+            probes[1] = {mi.rcMonitor.right - 2, mi.rcMonitor.bottom + 3};
+            probes[2] = {mi.rcMonitor.right + 3, mi.rcMonitor.bottom + 3};
+            break;
+        default:
+            return false;
+    }
+
+    for (const POINT& probe : probes) {
+        const HMONITOR neighbor = MonitorFromPoint(probe, MONITOR_DEFAULTTONULL);
+        if (neighbor != nullptr && neighbor != hMon) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void HotCornerEngine::workerThread(std::stop_token stop) {
     HotCorner currentCorner = HotCorner::None;
+    HMONITOR currentMonitor = nullptr;
+    POINT lastPt{0, 0};
+    POINT cornerAnchorPt{0, 0};
+    bool hasLastPt = false;
     auto cornerEnterTime = std::chrono::steady_clock::now();
     bool triggered = false; // 避免在同一个角落一直触发
 
@@ -132,41 +186,92 @@ void HotCornerEngine::workerThread(std::stop_token stop) {
     const auto cooldownDuration = std::chrono::milliseconds(1000); // 1秒冷却
 
     while (!stop.stop_requested() && m_running.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 20Hz 轮询，不占用 CPU
+        {
+            std::unique_lock<std::mutex> waitLock(m_waitMutex);
+            m_cv.wait_for(waitLock, std::chrono::milliseconds(50), [&]() {
+                return stop.stop_requested() || !m_running.load();
+            });
+        }
+        if (stop.stop_requested() || !m_running.load()) {
+            break;
+        }
 
         if (!m_enabled.load()) {
+            currentCorner = HotCorner::None;
+            currentMonitor = nullptr;
+            hasLastPt = false;
+            triggered = false;
             continue;
         }
 
         // A6: 拖拽窗口/文件、右键画手势、或截图/轮盘浮层可见时，立即重置角落驻留计时并跳过触发
         if (isInteractionBlockingHotCorner()) {
             currentCorner = HotCorner::None;
+            currentMonitor = nullptr;
+            hasLastPt = false;
             cornerEnterTime = std::chrono::steady_clock::now();
             triggered = false;
             continue;
         }
 
-        POINT pt;
+        POINT pt{};
         if (!GetCursorPos(&pt)) {
             continue;
         }
 
-        HotCorner detected = detectCorner(pt);
+        const HMONITOR curMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONULL);
+        const HotCorner detected = detectCorner(pt);
 
-        if (detected != currentCorner) {
-            // 角落改变
+        if (detected != currentCorner || curMonitor != currentMonitor) {
+            // 角落或所属物理显示器改变（如双屏横移从左屏 TopRight 跨入右屏 TopLeft）
             currentCorner = detected;
+            currentMonitor = curMonitor;
             cornerEnterTime = std::chrono::steady_clock::now();
+            cornerAnchorPt = pt;
+            lastPt = pt;
+            hasLastPt = true;
             triggered = false;
         } else if (currentCorner != HotCorner::None && !triggered) {
-            // 停留在角落
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - cornerEnterTime).count();
+            const auto now = std::chrono::steady_clock::now();
+            const bool passThrough = isPassThroughCorner(pt, currentCorner);
 
-            if (elapsed >= m_triggerDelayMs.load()) {
+            // 多显示器跨屏通道角防误触：若角点紧邻相邻显示器有效边界，必须要求光标完全静止停驻且无跨屏穿透位移
+            if (passThrough) {
+                if ((hasLastPt && (pt.x != lastPt.x || pt.y != lastPt.y)) ||
+                    std::abs(pt.x - cornerAnchorPt.x) > 1 ||
+                    std::abs(pt.y - cornerAnchorPt.y) > 1) {
+                    cornerEnterTime = now;
+                    cornerAnchorPt = pt;
+                    lastPt = pt;
+                    hasLastPt = true;
+                    continue;
+                }
+            }
+            lastPt = pt;
+            hasLastPt = true;
+
+            const int baseDelayMs = std::clamp(m_triggerDelayMs.load(), 100, 5000);
+            const int requiredDelayMs = passThrough ? (std::max)(baseDelayMs, 350) : baseDelayMs;
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - cornerEnterTime).count();
+
+            if (elapsed >= requiredDelayMs) {
+                if (passThrough) {
+                    POINT verifyPt{};
+                    if (!GetCursorPos(&verifyPt) ||
+                        verifyPt.x != pt.x || verifyPt.y != pt.y ||
+                        MonitorFromPoint(verifyPt, MONITOR_DEFAULTTONULL) != curMonitor) {
+                        cornerEnterTime = now;
+                        cornerAnchorPt = verifyPt;
+                        lastPt = verifyPt;
+                        continue;
+                    }
+                }
+
                 // 触发前二次确认未处于按键按住或浮层交互态
                 if (isInteractionBlockingHotCorner()) {
                     currentCorner = HotCorner::None;
+                    currentMonitor = nullptr;
+                    hasLastPt = false;
                     cornerEnterTime = now;
                     triggered = false;
                     continue;

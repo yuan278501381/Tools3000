@@ -612,29 +612,43 @@ void ScrollCapture::start(const ScrollCaptureOptions& options) {
     if (m_scrollThread.joinable()) m_scrollThread.join();
 
     tools3000::core::TraceId::Scope scope;
-    m_options = options;
-    clearStorage();
-    m_terminalError.clear();
-    m_lastFrame.release();
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+        m_options = options;
+        clearStorage();
+        m_terminalError.clear();
+        m_lastFrame.release();
+    }
     m_frameCount.store(0, std::memory_order_release);
     m_completionDelivered.store(false, std::memory_order_release);
     m_suppressCompletion.store(false, std::memory_order_release);
     m_finishAction.store(ScrollFinishAction::Confirm, std::memory_order_release);
     m_resumeNudgeCursor.store(false, std::memory_order_release);
+    const bool startAuto = (options.mode == ScrollMode::Auto);
+    m_autoScrolling.store(startAuto, std::memory_order_release);
+    m_workerInLoop.store(false, std::memory_order_release);
     m_runtimeState.store(
-        options.mode == ScrollMode::Auto ? ScrollRuntimeState::AutoScrolling : ScrollRuntimeState::PausedManual,
+        startAuto ? ScrollRuntimeState::AutoScrolling : ScrollRuntimeState::PausedManual,
         std::memory_order_release);
     m_running.store(true, std::memory_order_release);
 
-    m_captureBackend = createCaptureBackend();
     std::string captureError;
-    const CaptureRegion region{
-        options.captureRect.left, options.captureRect.top,
-        options.captureRect.right - options.captureRect.left,
-        options.captureRect.bottom - options.captureRect.top
-    };
-    if (!m_captureBackend || !m_captureBackend->initialize(region, captureError)) {
-        m_captureBackend.reset();
+    bool initOk = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+        m_captureBackend = createCaptureBackend();
+        const CaptureRegion region{
+            options.captureRect.left, options.captureRect.top,
+            options.captureRect.right - options.captureRect.left,
+            options.captureRect.bottom - options.captureRect.top
+        };
+        initOk = (m_captureBackend && m_captureBackend->initialize(region, captureError));
+        if (!initOk) {
+            m_captureBackend.reset();
+        }
+    }
+    if (!initOk) {
+        m_autoScrolling.store(false, std::memory_order_release);
         m_running.store(false, std::memory_order_release);
         m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
         LOG_ERROR("长截图捕获后端初始化失败: {}", captureError);
@@ -642,31 +656,47 @@ void ScrollCapture::start(const ScrollCaptureOptions& options) {
         return;
     }
 
-    if (options.mode == ScrollMode::Auto) {
+    if (startAuto) {
+        m_workerInLoop.store(true, std::memory_order_release);
         m_scrollThread = std::thread([this]() { autoScrollLoop(); });
     }
 
     LOG_INFO("长截图已启动: mode={}, scrollDelay={}ms, maxFrames={}",
-             options.mode == ScrollMode::Auto ? "Auto" : "Manual",
+             startAuto ? "Auto" : "Manual",
              options.scrollDelayMs, options.maxFrames);
 }
 
 void ScrollCapture::stop(ScrollFinishAction action) {
     m_finishAction.store(action, std::memory_order_release);
+    m_autoScrolling.store(false, std::memory_order_release);
     m_running.store(false, std::memory_order_release);
     if (m_scrollThread.joinable() && m_scrollThread.get_id() != std::this_thread::get_id()) {
         m_scrollThread.join();
     }
     m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
-    deliverCompletion(m_terminalError);
+    std::string err;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+        err = m_terminalError;
+    }
+    deliverCompletion(err);
 }
 
 void ScrollCapture::requestFinish(ScrollFinishAction action) {
     m_finishAction.store(action, std::memory_order_release);
+    m_autoScrolling.store(false, std::memory_order_release);
     m_running.store(false, std::memory_order_release);
-    if (!m_scrollThread.joinable()) {
+    if (!m_workerInLoop.load(std::memory_order_acquire)) {
+        if (m_scrollThread.joinable() && m_scrollThread.get_id() != std::this_thread::get_id()) {
+            m_scrollThread.join();
+        }
         m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
-        deliverCompletion(m_terminalError);
+        std::string err;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+            err = m_terminalError;
+        }
+        deliverCompletion(err);
     }
 }
 
@@ -680,12 +710,14 @@ void ScrollCapture::requestCancel() {
 
 void ScrollCapture::pause() {
     if (!m_running.load(std::memory_order_acquire)) return;
+    m_autoScrolling.store(false, std::memory_order_release);
     m_runtimeState.store(ScrollRuntimeState::PausedManual, std::memory_order_release);
 }
 
 void ScrollCapture::resume() {
     if (!m_running.load(std::memory_order_acquire)) return;
     m_resumeNudgeCursor.store(true, std::memory_order_release);
+    m_autoScrolling.store(true, std::memory_order_release);
     m_runtimeState.store(ScrollRuntimeState::AutoScrolling, std::memory_order_release);
 }
 
@@ -706,18 +738,23 @@ bool ScrollCapture::isPaused() const {
 
 void ScrollCapture::shutdown() {
     m_suppressCompletion.store(true, std::memory_order_release);
+    m_autoScrolling.store(false, std::memory_order_release);
     m_running.store(false, std::memory_order_release);
     if (m_scrollThread.joinable() && m_scrollThread.get_id() != std::this_thread::get_id()) {
         m_scrollThread.join();
     }
+    m_workerInLoop.store(false, std::memory_order_release);
     m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
-    m_progressCb = nullptr;
-    m_completionCb = nullptr;
-    clearStorage();
-    m_terminalError.clear();
-    m_lastFrame.release();
-    if (m_captureBackend) m_captureBackend->shutdown();
-    m_captureBackend.reset();
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+        m_progressCb = nullptr;
+        m_completionCb = nullptr;
+        clearStorage();
+        m_terminalError.clear();
+        m_lastFrame.release();
+        if (m_captureBackend) m_captureBackend->shutdown();
+        m_captureBackend.reset();
+    }
     m_frameCount.store(0, std::memory_order_release);
     tools3000::core::WinUtils::trimWorkingSet();
 }
@@ -728,9 +765,14 @@ void ScrollCapture::captureCurrentFrame() {
     auto frame = captureRegion(m_options.captureRect);
     if (!frame.empty()) {
         appendFrame(frame, nullptr);
-        if (!m_running.load(std::memory_order_acquire) && !m_terminalError.empty()) {
+        std::string fatalErr;
+        if (!m_running.load(std::memory_order_acquire)) {
+            std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+            fatalErr = m_terminalError;
+        }
+        if (!m_running.load(std::memory_order_acquire) && !fatalErr.empty()) {
             m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
-            deliverCompletion(m_terminalError);
+            deliverCompletion(fatalErr);
         }
     }
 }
@@ -771,17 +813,23 @@ void ScrollCapture::autoScrollLoop() {
         }
     };
 
+    auto snapshotLastFrame = [&]() -> cv::Mat {
+        std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+        return m_lastFrame.empty() ? cv::Mat{} : m_lastFrame.clone();
+    };
+
     // 捕获稳定停稳帧（Motion Settling Gate）：彻底消除浏览器/IDE 平滑滚动半途抓帧引发的模糊与漂移
     auto captureSettledFrame = [&](ScrollRuntimeState expectedState) -> cv::Mat {
         cv::Mat f1 = captureRegion(m_options.captureRect);
-        if (f1.empty() || isMemoryTestBackend || m_lastFrame.empty()) {
+        const cv::Mat lastRef = snapshotLastFrame();
+        if (f1.empty() || isMemoryTestBackend || lastRef.empty()) {
             return f1;
         }
 
         int roiX = 0, roiW = f1.cols;
         computeContentHorizROI(f1.cols, roiX, roiW);
         cv::Mat quickDiff;
-        cv::absdiff(m_lastFrame(cv::Rect(roiX, 0, roiW, f1.rows)),
+        cv::absdiff(lastRef(cv::Rect(roiX, 0, roiW, f1.rows)),
                     f1(cv::Rect(roiX, 0, roiW, f1.rows)), quickDiff);
         const cv::Scalar m0 = cv::mean(quickDiff);
         if ((m0[0] + m0[1] + m0[2]) / 3.0 < 1.2) {
@@ -890,10 +938,11 @@ void ScrollCapture::autoScrollLoop() {
                 cv::Mat frame = captureSettledFrame(state);
                 if (frame.empty()) continue;
 
-                if (m_lastFrame.empty()) {
+                const cv::Mat lastRef = snapshotLastFrame();
+                if (lastRef.empty()) {
                     appendFrame(frame, nullptr);
                 } else {
-                    const ScrollFrameTransition tr = analyzeFrameTransition(m_lastFrame, frame);
+                    const ScrollFrameTransition tr = analyzeFrameTransition(lastRef, frame);
                     if (tr.matched && !tr.isUnchanged && tr.scrollDelta >= 4) {
                         appendFrame(frame, &tr);
                     }
@@ -903,6 +952,7 @@ void ScrollCapture::autoScrollLoop() {
 
             // 分支 B：自动滚动采集态
             if (m_frameCount.load(std::memory_order_acquire) >= m_options.maxFrames) {
+                m_autoScrolling.store(false, std::memory_order_release);
                 if (m_options.interactiveHoldAtBottom) {
                     m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
                     continue;
@@ -929,6 +979,7 @@ void ScrollCapture::autoScrollLoop() {
 
                 if (!sendWheelUnits(-wheelUnits)) {
                     LOG_WARN("长截图滚轮输入失败: error={}", GetLastError());
+                    m_autoScrolling.store(false, std::memory_order_release);
                     if (m_options.interactiveHoldAtBottom) {
                         m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
                         continue;
@@ -946,12 +997,13 @@ void ScrollCapture::autoScrollLoop() {
             cv::Mat frame = captureSettledFrame(ScrollRuntimeState::AutoScrolling);
             if (frame.empty()) continue;
 
-            if (m_lastFrame.empty()) {
+            cv::Mat lastRef = snapshotLastFrame();
+            if (lastRef.empty()) {
                 appendFrame(frame, nullptr);
                 continue;
             }
 
-            ScrollFrameTransition tr = analyzeFrameTransition(m_lastFrame, frame);
+            ScrollFrameTransition tr = analyzeFrameTransition(lastRef, frame);
 
             // 若亚刻度剂量 (< 120) 遇到不响应高精度滚轮的传统 Win32 控件导致未动，自动回升至整格 120 重试
             if (tr.isUnchanged && !isMemoryTestBackend && wheelUnits < WHEEL_DELTA) {
@@ -960,8 +1012,9 @@ void ScrollCapture::autoScrollLoop() {
                 if (sendWheelUnits(-wheelUnits)) {
                     sleepInterruptible(m_options.scrollDelayMs, true, ScrollRuntimeState::AutoScrolling);
                     frame = captureSettledFrame(ScrollRuntimeState::AutoScrolling);
-                    if (!frame.empty()) {
-                        tr = analyzeFrameTransition(m_lastFrame, frame);
+                    lastRef = snapshotLastFrame();
+                    if (!frame.empty() && !lastRef.empty()) {
+                        tr = analyzeFrameTransition(lastRef, frame);
                     }
                 }
             }
@@ -974,8 +1027,9 @@ void ScrollCapture::autoScrollLoop() {
                     continue;
                 }
                 cv::Mat settledFrame = captureSettledFrame(ScrollRuntimeState::AutoScrolling);
-                if (!settledFrame.empty()) {
-                    ScrollFrameTransition settledTr = analyzeFrameTransition(m_lastFrame, settledFrame);
+                lastRef = snapshotLastFrame();
+                if (!settledFrame.empty() && !lastRef.empty()) {
+                    ScrollFrameTransition settledTr = analyzeFrameTransition(lastRef, settledFrame);
                     if (settledTr.matched && !settledTr.isUnchanged && settledTr.scrollDelta >= 3) {
                         frame = std::move(settledFrame);
                         tr = settledTr;
@@ -1002,8 +1056,9 @@ void ScrollCapture::autoScrollLoop() {
                         break;
                     }
                     cv::Mat recovered = captureSettledFrame(ScrollRuntimeState::AutoScrolling);
-                    if (recovered.empty()) break;
-                    ScrollFrameTransition recTr = analyzeFrameTransition(m_lastFrame, recovered);
+                    lastRef = snapshotLastFrame();
+                    if (recovered.empty() || lastRef.empty()) break;
+                    ScrollFrameTransition recTr = analyzeFrameTransition(lastRef, recovered);
                     if (recTr.matched && !recTr.isUnchanged && recTr.scrollDelta >= 3) {
                         frame = std::move(recovered);
                         tr = recTr;
@@ -1041,6 +1096,7 @@ void ScrollCapture::autoScrollLoop() {
                 const int requiredStagnantProbes = isMemoryTestBackend ? 1 : 2;
                 if (stagnantProbes >= requiredStagnantProbes) {
                     LOG_INFO("检测到滚动到底部, frame={}", m_frameCount.load());
+                    m_autoScrolling.store(false, std::memory_order_release);
                     if (m_options.interactiveHoldAtBottom) {
                         m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
                         stagnantProbes = 0;
@@ -1051,22 +1107,33 @@ void ScrollCapture::autoScrollLoop() {
             }
         }
 
+        m_autoScrolling.store(false, std::memory_order_release);
         m_running.store(false, std::memory_order_release);
         m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
         restoreCursorIfUntouched();
-        deliverCompletion(m_terminalError);
+        std::string err;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+            err = m_terminalError;
+        }
+        deliverCompletion(err);
+        m_workerInLoop.store(false, std::memory_order_release);
     } catch (const std::exception& e) {
+        m_autoScrolling.store(false, std::memory_order_release);
         m_running.store(false, std::memory_order_release);
         m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
         restoreCursorIfUntouched();
         LOG_ERROR("长截图线程异常, 已停止: {}", e.what());
         deliverCompletion(e.what());
+        m_workerInLoop.store(false, std::memory_order_release);
     } catch (...) {
+        m_autoScrolling.store(false, std::memory_order_release);
         m_running.store(false, std::memory_order_release);
         m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
         restoreCursorIfUntouched();
         LOG_ERROR("长截图线程未知异常, 已停止");
         deliverCompletion("未知错误");
+        m_workerInLoop.store(false, std::memory_order_release);
     }
 }
 
@@ -1104,11 +1171,49 @@ void ScrollCapture::trimLastSegmentBottomRows(int trimRows, std::size_t rowBytes
     }
 }
 
+void ScrollCapture::featherSpilledBoundary(const cv::Mat& fullCurrFrame, int currOffset, std::size_t rowBytes) {
+    constexpr int kFeatherRows = 3;
+    if (m_spilledSegments.empty() || m_spillPath.empty() ||
+        m_segmentType != CV_8UC3 || fullCurrFrame.empty() ||
+        fullCurrFrame.type() != CV_8UC3 ||
+        currOffset < kFeatherRows || currOffset > fullCurrFrame.rows ||
+        rowBytes == 0) {
+        return;
+    }
+
+    const auto& back = m_spilledSegments.back();
+    if (back.rows < kFeatherRows) return;
+
+    const std::uint64_t tailOffset =
+        back.offset + static_cast<std::uint64_t>(back.rows - kFeatherRows) * rowBytes;
+
+    std::fstream io(m_spillPath, std::ios::binary | std::ios::in | std::ios::out);
+    if (!io) return;
+
+    cv::Mat tail(kFeatherRows, fullCurrFrame.cols, CV_8UC3);
+    io.seekg(static_cast<std::streamoff>(tailOffset), std::ios::beg);
+    for (int row = 0; row < kFeatherRows; ++row) {
+        if (!scroll_storage::readExact(io, tail.ptr(row), rowBytes)) {
+            return;
+        }
+    }
+
+    featherSegmentBoundary(tail, fullCurrFrame, currOffset);
+
+    io.clear();
+    io.seekp(static_cast<std::streamoff>(tailOffset), std::ios::beg);
+    if (!io) return;
+    scroll_storage::writeMat(io, tail);
+    io.flush();
+}
+
 void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransition* precomputed) {
     if (frame.empty()) return;
 
     const std::size_t rowBytes = static_cast<std::size_t>(frame.cols) * frame.elemSize();
     if (rowBytes == 0) return;
+
+    std::unique_lock<std::recursive_mutex> lock(m_captureMutex);
 
     int offset = 0;
     int trimPrevRows = 0;
@@ -1143,7 +1248,12 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
 
     if (static_cast<std::size_t>(remaining) > (std::numeric_limits<std::size_t>::max)() / rowBytes) {
         m_terminalError = "长截图尺寸超出可表示范围";
-        m_running.store(false, std::memory_order_release);
+        m_autoScrolling.store(false, std::memory_order_release);
+        if (m_options.interactiveHoldAtBottom && m_frameCount.load(std::memory_order_acquire) > 0) {
+            m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
+        } else {
+            m_running.store(false, std::memory_order_release);
+        }
         return;
     }
 
@@ -1154,11 +1264,17 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
     if (m_options.maxOutputBytes > 0 &&
         (additionalBytes > m_options.maxOutputBytes ||
          effectiveCurrentBytes > m_options.maxOutputBytes - additionalBytes)) {
-        m_terminalError = "长截图已达到安全内存上限，已保留当前结果";
-        m_running.store(false, std::memory_order_release);
+        m_autoScrolling.store(false, std::memory_order_release);
         LOG_WARN("长截图达到字节预算: current={} MiB, next={} MiB, limit={} MiB",
                  effectiveCurrentBytes / (1024 * 1024), additionalBytes / (1024 * 1024),
                  m_options.maxOutputBytes / (1024 * 1024));
+        if (m_options.interactiveHoldAtBottom && m_frameCount.load(std::memory_order_acquire) > 0) {
+            // 交互式桌面长截图已采集有效帧：仅停止自动滚动并驻留，保持长截图会话有效等待用户点击完成/复制/保存
+            m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
+        } else {
+            m_terminalError = "长截图已达到安全内存上限，已保留当前结果";
+            m_running.store(false, std::memory_order_release);
+        }
         return;
     }
 
@@ -1173,7 +1289,12 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
     }
     if (segment.cols != expectedWidth || segment.type() != m_segmentType) {
         m_terminalError = "长截图帧格式发生变化，已安全停止";
-        m_running.store(false, std::memory_order_release);
+        m_autoScrolling.store(false, std::memory_order_release);
+        if (m_options.interactiveHoldAtBottom && m_frameCount.load(std::memory_order_acquire) > 0) {
+            m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
+        } else {
+            m_running.store(false, std::memory_order_release);
+        }
         return;
     }
 
@@ -1189,14 +1310,19 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
     if (mustSpill) {
         if (!spillResidentSegments()) {
             m_terminalError = "长截图临时存储不可用，已安全停止";
+            m_autoScrolling.store(false, std::memory_order_release);
             m_running.store(false, std::memory_order_release);
             return;
         }
         if (trimPrevRows > 0) {
             trimLastSegmentBottomRows(trimPrevRows, rowBytes);
         }
+        if (hasVerifiedMatch && !m_spilledSegments.empty()) {
+            featherSpilledBoundary(frame, offset, rowBytes);
+        }
         if (!appendSpilledSegment(segment)) {
             m_terminalError = "长截图临时存储不可用，已安全停止";
+            m_autoScrolling.store(false, std::memory_order_release);
             m_running.store(false, std::memory_order_release);
             return;
         }
@@ -1213,11 +1339,18 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
 
     m_segmentBytes += additionalBytes;
     m_totalRows.fetch_add(remaining, std::memory_order_acq_rel);
-    m_lastFrame = frame;
+    m_lastFrame = frame.clone();
     const int newCount = m_frameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
 
-    if (m_progressCb) {
-        m_progressCb(buildRecentPreview(std::max(frame.rows, frame.rows * 2)), newCount);
+    ScrollProgressCallback progressCb = m_progressCb;
+    cv::Mat recentPreview;
+    if (progressCb) {
+        recentPreview = buildRecentPreview((std::max)(frame.rows, frame.rows * 2));
+    }
+    lock.unlock();
+
+    if (progressCb) {
+        progressCb(recentPreview, newCount);
     }
 }
 
@@ -1290,6 +1423,7 @@ bool ScrollCapture::appendSpilledSegment(const cv::Mat& segment) {
 }
 
 void ScrollCapture::clearStorage() {
+    std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
     m_segments.clear();
     m_segmentBytes = 0;
     m_residentSegmentBytes = 0;
@@ -1307,6 +1441,7 @@ void ScrollCapture::clearStorage() {
 }
 
 cv::Mat ScrollCapture::buildStitchedImage() const {
+    std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
     if (m_segments.empty() && m_spilledSegments.empty()) return {};
     if (m_spilledSegments.empty()) {
         cv::Mat stitched;
@@ -1337,6 +1472,7 @@ cv::Mat ScrollCapture::buildStitchedImage() const {
 }
 
 cv::Mat ScrollCapture::buildRecentPreview(int maxRows) const {
+    std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
     if ((m_segments.empty() && m_spilledSegments.empty()) || maxRows <= 0) return {};
     if (!m_spilledSegments.empty()) {
         const int segWidth = m_segmentWidth.load(std::memory_order_acquire);
@@ -1390,24 +1526,29 @@ void ScrollCapture::deliverCompletion(const std::string& error) {
     result.cancelled = (result.action == ScrollFinishAction::Cancelled);
     result.errorMessage = error;
 
-    if (!result.cancelled && (!m_segments.empty() || !m_spilledSegments.empty())) {
-        result.stitchedImage = buildStitchedImage();
-    }
-    result.success = !result.cancelled && !result.stitchedImage.empty();
-    if (!result.cancelled && !result.success && result.errorMessage.empty()) {
-        result.errorMessage = result.frameCount == 0 ? "没有捕获到任何帧" : "图像拼接失败";
+    std::function<void(const ScrollCaptureResult&)> completionCb;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+        if (!result.cancelled && (!m_segments.empty() || !m_spilledSegments.empty())) {
+            result.stitchedImage = buildStitchedImage();
+        }
+        result.success = !result.cancelled && !result.stitchedImage.empty();
+        if (!result.cancelled && !result.success && result.errorMessage.empty()) {
+            result.errorMessage = result.frameCount == 0 ? "没有捕获到任何帧" : "图像拼接失败";
+        }
+        if (m_captureBackend) m_captureBackend->shutdown();
+        m_captureBackend.reset();
+        clearStorage();
+        m_terminalError.clear();
+        m_lastFrame.release();
+        completionCb = m_completionCb;
     }
 
-    if (m_captureBackend) m_captureBackend->shutdown();
-    m_captureBackend.reset();
-    if (m_completionCb) m_completionCb(result);
+    if (completionCb) completionCb(result);
     if (result.success) {
         LOG_INFO("长截图拼接完成: {}x{}, 帧数={}", result.stitchedImage.cols,
                  result.stitchedImage.rows, result.frameCount);
     }
-    clearStorage();
-    m_terminalError.clear();
-    m_lastFrame.release();
     tools3000::core::WinUtils::trimWorkingSet();
 }
 
@@ -1418,7 +1559,10 @@ void ScrollCapture::deliverCompletion(const std::string& error) {
 cv::Mat ScrollCapture::captureRegion(const RECT& rect) {
     const int w = rect.right - rect.left;
     const int h = rect.bottom - rect.top;
-    if (w <= 0 || h <= 0 || !m_captureBackend) return {};
+    if (w <= 0 || h <= 0) return {};
+
+    std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
+    if (!m_captureBackend) return {};
 
     CaptureFrameView captured;
     std::string error;

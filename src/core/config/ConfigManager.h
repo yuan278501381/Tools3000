@@ -146,6 +146,9 @@ private:
     std::thread m_watchThread;
     std::atomic<bool> m_watchRunning{false};
     HANDLE m_watchStopEvent = nullptr;
+    mutable std::filesystem::file_time_type m_lastLoadedWriteTime{};
+    mutable uintmax_t m_lastLoadedFileSize = 0;
+    mutable bool m_hasFileStamp = false;
 };
 
 }  // namespace tools3000::core

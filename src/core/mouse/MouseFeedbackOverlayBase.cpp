@@ -22,7 +22,7 @@ MouseFeedbackOverlayBase::~MouseFeedbackOverlayBase() {
 }
 
 bool MouseFeedbackOverlayBase::isCompositorReady() const noexcept {
-    return m_compositorReady;
+    return m_compositorReady.load(std::memory_order_acquire);
 }
 
 bool MouseFeedbackOverlayBase::isVisible() const noexcept {
@@ -30,7 +30,7 @@ bool MouseFeedbackOverlayBase::isVisible() const noexcept {
 }
 
 HWND MouseFeedbackOverlayBase::hwnd() const noexcept {
-    return m_hwnd;
+    return m_hwnd.load(std::memory_order_acquire);
 }
 
 void MouseFeedbackOverlayBase::wakeRender() noexcept {
@@ -329,7 +329,7 @@ bool MouseFeedbackOverlayBase::initCompositorLocked() {
         return false;
     }
 
-    m_compositorReady = true;
+    m_compositorReady.store(true, std::memory_order_release);
     onRecreateDeviceResources();
     return true;
 }
@@ -344,7 +344,7 @@ void MouseFeedbackOverlayBase::releaseCompositorLocked() {
     m_dcompTarget.Reset();
     m_dcompDevice.Reset();
     m_d3dDevice.Reset();
-    m_compositorReady = false;
+    m_compositorReady.store(false, std::memory_order_release);
 }
 
 bool MouseFeedbackOverlayBase::ensureDcompSurfaceLocked(int width, int height) {
@@ -396,10 +396,15 @@ bool MouseFeedbackOverlayBase::ensureDcompSurfaceLocked(int width, int height) {
 
     hr = m_dcompVisual->SetContent(m_dcompSurface.Get());
     if (FAILED(hr)) {
+        m_dcompSurface.Reset();
+        m_surfaceWidth = 0;
+        m_surfaceHeight = 0;
+        m_hasDcompSurface.store(false, std::memory_order_release);
         LOG_ERROR("MouseFeedbackOverlayBase: SetContent failed: hr=0x{:X}", hr);
         return false;
     }
 
+    m_hasDcompSurface.store(true, std::memory_order_release);
     return true;
 }
 
@@ -411,6 +416,7 @@ void MouseFeedbackOverlayBase::releaseDcompSurfaceLocked() {
         m_dcompDevice->Commit();
     }
     m_dcompSurface.Reset();
+    m_hasDcompSurface.store(false, std::memory_order_release);
     m_surfaceWidth = 0;
     m_surfaceHeight = 0;
 }
@@ -512,20 +518,13 @@ bool MouseFeedbackOverlayBase::endDrawAndCommitLocked() {
 }
 
 void MouseFeedbackOverlayBase::applyHideOverlayStateLocked() {
-    bool wasActiveOrVisible = m_visible.load(std::memory_order_relaxed) ||
-                              (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) ||
-                              (m_dcompSurface != nullptr);
-
-    if (m_hwnd && IsWindow(m_hwnd)) {
-        ShowWindow(m_hwnd, SW_HIDE);
+    const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
+    if (hwnd && IsWindow(hwnd)) {
+        ShowWindow(hwnd, SW_HIDE);
     }
     releaseDcompSurfaceLocked();
     m_visible.store(false, std::memory_order_release);
     m_currentViewport = MouseViewportRect{};
-
-    if (wasActiveOrVisible) {
-        tools3000::core::WinUtils::trimWorkingSet();
-    }
 }
 
 } // namespace tools3000::core

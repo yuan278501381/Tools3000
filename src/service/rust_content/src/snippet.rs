@@ -53,7 +53,8 @@ pub fn build_aligned_snippet(
     match_pos: usize,
     match_len: usize,
 ) -> Option<BuiltSnippet> {
-    if raw_line.is_empty() || match_len == 0 || match_pos + match_len > raw_line.len() {
+    let match_end = match_pos.checked_add(match_len)?;
+    if raw_line.is_empty() || match_len == 0 || match_end > raw_line.len() {
         return None;
     }
 
@@ -62,25 +63,34 @@ pub fn build_aligned_snippet(
         return None;
     }
 
-    let mut snippet_offset = match_pos as u32;
+    let mut snippet_offset = match_pos.min(u32::MAX as usize) as u32;
     if line.len() > MAX_SNIPPET_LINE_CHARS {
         let mut start = match_pos.saturating_sub(SNIPPET_CONTEXT_PADDING_CHARS);
         if start > 0 && start < line.len() && is_low_surrogate(line[start]) {
             start -= 1;
         }
 
-        let mut end = (match_pos + match_len + SNIPPET_CONTEXT_PADDING_CHARS).min(line.len());
+        let mut end = match_end
+            .saturating_add(SNIPPET_CONTEXT_PADDING_CHARS)
+            .min(line.len());
         if end < line.len() && end > 0 && is_high_surrogate(line[end - 1]) {
             end += 1;
         }
+        if start > end || end > line.len() {
+            return None;
+        }
 
-        let mut truncated = Vec::with_capacity((end - start) + 8);
+        let slice_part = line.get(start..end)?;
+        let mut truncated = Vec::with_capacity(slice_part.len().saturating_add(8));
         let dot = b'.' as u16;
         if start > 0 {
             truncated.extend_from_slice(&[dot, dot, dot]);
         }
-        snippet_offset = (truncated.len() + (match_pos - start)) as u32;
-        truncated.extend_from_slice(&line[start..end]);
+        snippet_offset = truncated
+            .len()
+            .saturating_add(match_pos.saturating_sub(start))
+            .min(u32::MAX as usize) as u32;
+        truncated.extend_from_slice(slice_part);
         if end < line.len() {
             truncated.extend_from_slice(&[dot, dot, dot]);
         }
@@ -91,6 +101,6 @@ pub fn build_aligned_snippet(
         line_number,
         line_content: line,
         match_offset: snippet_offset,
-        match_length: match_len as u32,
+        match_length: match_len.min(u32::MAX as usize) as u32,
     })
 }

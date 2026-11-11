@@ -33,8 +33,11 @@
 namespace {
 
 std::string g_searchPipe;
+std::string g_kernelServicePipe;
+std::string g_portableSidPipe;
 std::string g_searchPipeToken;
 std::wstring g_searchClientSid;
+bool g_forcePortableService = false;
 
 // 本进程是否亲手拉起过索引服务，用于启动期状态提示。
 static std::atomic<bool> g_serviceSpawnedByUs{false};
@@ -51,6 +54,48 @@ bool isPipePresentOrBusy(const std::string& pipeName, DWORD waitMs) noexcept {
         return true;
     }
     return tools3000::search::isPipeTransientBusyError(GetLastError());
+}
+
+std::string resolveActiveSearchPipe(DWORD primaryWaitMs) noexcept {
+    if (g_forcePortableService) {
+        return isPipePresentOrBusy(g_searchPipe, primaryWaitMs) ? g_searchPipe : std::string{};
+    }
+    if (isPipePresentOrBusy(g_kernelServicePipe, primaryWaitMs)) {
+        return g_kernelServicePipe;
+    }
+    if (isPipePresentOrBusy(g_portableSidPipe, 1)) {
+        return g_portableSidPipe;
+    }
+    if (isPipePresentOrBusy(g_searchPipe, 1)) {
+        return g_searchPipe;
+    }
+    return {};
+}
+
+bool isAnySearchPipeReady(DWORD primaryWaitMs) noexcept {
+    return !resolveActiveSearchPipe(primaryWaitMs).empty();
+}
+
+std::string expandClientUserEnvUtf8(const std::string& input, std::size_t maxUtf8Bytes) {
+    if (input.find('%') == std::string::npos) {
+        return input;
+    }
+    const std::wstring wideInput = tools3000::core::WinUtils::utf8ToWstring(input);
+    if (wideInput.empty()) {
+        return input;
+    }
+    constexpr DWORD kMaxExpandedChars = 4096;
+    std::vector<wchar_t> buffer(kMaxExpandedChars, L'\0');
+    const DWORD charsWritten = ExpandEnvironmentStringsW(wideInput.c_str(), buffer.data(), kMaxExpandedChars);
+    if (charsWritten == 0 || charsWritten > kMaxExpandedChars) {
+        return input;
+    }
+    const std::string expanded = tools3000::core::WinUtils::wstringToUtf8(
+        std::wstring(buffer.data(), static_cast<std::size_t>(charsWritten - 1)));
+    if (expanded.empty() || expanded.size() > maxUtf8Bytes) {
+        return input;
+    }
+    return expanded;
 }
 
 bool hasCommandLineFlag(std::wstring_view wanted) {
@@ -124,19 +169,31 @@ bool initializePipeEndpoint() {
         LOG_ERROR("SearchPlugin: 无法取得当前用户 SID，拒绝创建搜索 IPC 端点");
         return false;
     }
+    g_forcePortableService = hasCommandLineFlag(L"--force-portable-search-service");
+    g_kernelServicePipe = std::string(tools3000::service::pipe_endpoint::KernelAuthPipeName);
+    auto sidPipe = tools3000::service::pipe_endpoint::makeUserSidPipeName(*sid);
+    if (!sidPipe) {
+        LOG_ERROR("SearchPlugin: 无法取得当前用户 SID，拒绝创建搜索 IPC 端点");
+        return false;
+    }
+
     auto& config = tools3000::core::ConfigManager::instance();
     std::string token = config.get<std::string>("/search/pipeToken", "");
     if (!tools3000::service::pipe_endpoint::isValidToken(token)) {
         auto generated = generatePipeToken();
-        if (!generated || !config.set("/search/pipeToken", *generated)) {
+        if (!generated) {
             LOG_ERROR("SearchPlugin: 无法安全生成或保存搜索 IPC 端点令牌");
             return false;
         }
+        // Best-effort persist for isolated portable test harnesses; production
+        // kernel-authenticated & SID endpoints (`HIGH-10`) do not depend on `config.json`!
+        (void)config.set("/search/pipeToken", *generated);
         token = std::move(*generated);
     }
     auto pipe = tools3000::service::pipe_endpoint::makePipeName(token);
     if (!pipe) return false;
     g_searchClientSid = std::move(*sid);
+    g_portableSidPipe = std::move(*sidPipe);
     g_searchPipeToken = std::move(token);
     g_searchPipe = std::move(*pipe);
     return true;
@@ -305,8 +362,9 @@ ScmEndpointResult startScmServiceAndWait(DWORD& error) {
     }
 
     bool startExplicitlyFailed = !canStart;
+    bool spawnedInThisCall = false;
     auto action = tools3000::search::decideStartupAction(
-        isPipePresentOrBusy(g_searchPipe, 1),
+        isAnySearchPipeReady(1),
         toScmServiceState(status.dwCurrentState), startExplicitlyFailed);
     if (action == tools3000::search::StartupAction::UseEndpoint) return ScmEndpointResult::Ready;
     if (action == tools3000::search::StartupAction::StartScmService) {
@@ -326,7 +384,10 @@ ScmEndpointResult startScmServiceAndWait(DWORD& error) {
                     return ScmEndpointResult::Unavailable;
                 }
                 action = tools3000::search::decideStartupAction(
-                    false, toScmServiceState(status.dwCurrentState), false);
+                    isAnySearchPipeReady(1), toScmServiceState(status.dwCurrentState), false);
+                if (action == tools3000::search::StartupAction::UseEndpoint) {
+                    return ScmEndpointResult::Ready;
+                }
                 if (action == tools3000::search::StartupAction::WaitForScmEndpoint) {
                     // Continue into the bounded endpoint wait below.
                 } else {
@@ -342,6 +403,7 @@ ScmEndpointResult startScmServiceAndWait(DWORD& error) {
                     ? ScmEndpointResult::AllowPortableFallback : ScmEndpointResult::Unavailable;
             }
         } else {
+            spawnedInThisCall = true;
             g_serviceSpawnedByUs.store(true);
             g_serviceConfirmedReady.store(false, std::memory_order_relaxed);
         }
@@ -353,16 +415,46 @@ ScmEndpointResult startScmServiceAndWait(DWORD& error) {
         return ScmEndpointResult::Unavailable;
     }
 
-    const ULONGLONG hardDeadline = GetTickCount64() + 120'000; // 有界等待，避免后台桥接线程无限阻塞。
-    DWORD previousCheckpoint = 0;
-    ULONGLONG checkpointDeadline = hardDeadline;
+    // Fast-diagnose (`HIGH-10`): If the SCM service was already `SERVICE_RUNNING` prior to this
+    // call yet has not published any pipe, cap diagnostic wait at 2.5s instead of hanging 120s.
+    const ULONGLONG nowStart = GetTickCount64();
+    const bool alreadyRunningAtEntry =
+        !spawnedInThisCall && (status.dwCurrentState == SERVICE_RUNNING);
+    const ULONGLONG hardDeadline = nowStart + (alreadyRunningAtEntry ? 2'500ull : 30'000ull);
+    DWORD previousCheckpoint = status.dwCheckPoint;
+    ULONGLONG checkpointDeadline = nowStart + (alreadyRunningAtEntry ? 2'500ull : 10'000ull);
+    ULONGLONG runningWithoutPipeSince = (status.dwCurrentState == SERVICE_RUNNING) ? nowStart : 0;
     auto lastKnownState = toScmServiceState(status.dwCurrentState);
     while (GetTickCount64() < hardDeadline) {
         if (g_searchPluginShuttingDown.load(std::memory_order_relaxed)) {
             error = ERROR_OPERATION_ABORTED;
             return ScmEndpointResult::Unavailable;
         }
-        if (isPipePresentOrBusy(g_searchPipe, 100)) return ScmEndpointResult::Ready;
+        const std::string readyPipe = resolveActiveSearchPipe(100);
+        if (!readyPipe.empty()) {
+            // Quick probe: verify the pipe accepts open (or is legitimately busy with another worker)
+            // so ACL/handshake refusal fails fast rather than spinning until timeout (`HIGH-10`).
+            HANDLE probe = CreateFileA(
+                readyPipe.c_str(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                nullptr);
+            if (probe != INVALID_HANDLE_VALUE) {
+                CloseHandle(probe);
+                return ScmEndpointResult::Ready;
+            }
+            const DWORD probeErr = GetLastError();
+            if (tools3000::search::isPipeTransientBusyError(probeErr)) {
+                return ScmEndpointResult::Ready;
+            }
+            if (probeErr == ERROR_ACCESS_DENIED) {
+                error = ERROR_ACCESS_DENIED;
+                return ScmEndpointResult::Unavailable;
+            }
+        }
         if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
                                   reinterpret_cast<LPBYTE>(&status), sizeof(status), &bytesNeeded)) {
             error = GetLastError();
@@ -379,27 +471,37 @@ ScmEndpointResult startScmServiceAndWait(DWORD& error) {
             error = ERROR_SERVICE_CANNOT_ACCEPT_CTRL;
             return ScmEndpointResult::Unavailable;
         }
+        const ULONGLONG loopNow = GetTickCount64();
+        if (state == tools3000::search::ScmServiceState::Running) {
+            if (runningWithoutPipeSince == 0) {
+                runningWithoutPipeSince = loopNow;
+            } else if (loopNow - runningWithoutPipeSince >= 3'000ull) {
+                // `IPCServerThread` creates pipe listeners BEFORE indexing starts; if `Running`
+                // persists >3s without an endpoint, diagnose immediately instead of waiting 120s.
+                break;
+            }
+        }
         // SCM 的 checkpoint 有推进时，按照 WaitHint 延长当前阶段等待；没有推进
         // 则不能无限延长，防止损坏的服务永久占用客户端请求。
-        if (status.dwCheckPoint != previousCheckpoint) {
+        if (state == tools3000::search::ScmServiceState::StartPending &&
+            status.dwCheckPoint != previousCheckpoint) {
             previousCheckpoint = status.dwCheckPoint;
             const DWORD waitHint = (std::clamp)(status.dwWaitHint,
                                                 static_cast<DWORD>(1'000),
-                                                static_cast<DWORD>(30'000));
-            checkpointDeadline = (std::min)(hardDeadline, GetTickCount64() + waitHint * 2ull);
-        } else if (GetTickCount64() >= checkpointDeadline) {
+                                                static_cast<DWORD>(15'000));
+            checkpointDeadline = (std::min)(hardDeadline, loopNow + waitHint * 2ull);
+        } else if (loopNow >= checkpointDeadline) {
             error = ERROR_TIMEOUT;
             return ScmEndpointResult::Unavailable;
         }
         const DWORD sleepMs = (std::clamp)(status.dwWaitHint / 10,
-                                            static_cast<DWORD>(100),
-                                            static_cast<DWORD>(1'000));
+                                            static_cast<DWORD>(50),
+                                            static_cast<DWORD>(250));
         Sleep(sleepMs);
     }
     // Since the service publishes the authenticated pipe before indexing, a
-    // still-running SCM instance that never creates *this* tokenized endpoint
-    // is not merely slow. It belongs to a different user/session or was started
-    // with stale credentials; surface that boundary explicitly.
+    // still-running SCM instance that never creates an accessible endpoint
+    // belongs to an incompatible/stale deployment; surface that boundary fast.
     error = tools3000::search::isScmEndpointIdentityConflict(lastKnownState, false, true)
         ? ERROR_NOT_SUPPORTED : ERROR_TIMEOUT;
     return ScmEndpointResult::Unavailable;
@@ -407,7 +509,7 @@ ScmEndpointResult startScmServiceAndWait(DWORD& error) {
 
 static bool ensureSearchServiceRunning() {
     if (g_searchPipe.empty()) return false;
-    if (isPipePresentOrBusy(g_searchPipe, 100)) {
+    if (isAnySearchPipeReady(100)) {
         return true;
     }
 
@@ -416,11 +518,10 @@ static bool ensureSearchServiceRunning() {
     static std::mutex launchMutex;
     std::lock_guard<std::mutex> launchGuard(launchMutex);
 
-    // 进程内 mutex 只能串行当前插件实例；同一用户连续启动两个 Tools3000
-    // 进程时仍可能同时拉起服务。令牌已是每用户不可预测值，因此可安全地作为
-    // Local 命名 mutex 的组成部分，不暴露固定全局对象名给其他会话猜测。
-    const std::wstring launchMutexName = L"Local\\Tools3000SearchLaunch-" +
-        tools3000::core::WinUtils::utf8ToWstring(g_searchPipeToken);
+    const std::wstring launchMutexName = g_forcePortableService
+        ? (L"Local\\Tools3000SearchLaunch-" +
+           tools3000::core::WinUtils::utf8ToWstring(g_searchPipeToken))
+        : (L"Local\\Tools3000SearchLaunch-" + g_searchClientSid);
     HANDLE processLaunchMutex = CreateMutexW(nullptr, FALSE, launchMutexName.c_str());
     if (!processLaunchMutex) return false;
     struct LaunchMutexGuard {
@@ -438,7 +539,7 @@ static bool ensureSearchServiceRunning() {
     }
     processLaunchGuard.locked = true;
 
-    if (isPipePresentOrBusy(g_searchPipe, 100)) {
+    if (isAnySearchPipeReady(100)) {
         return true;
     }
 
@@ -468,6 +569,9 @@ static bool ensureSearchServiceRunning() {
         PROCESS_INFORMATION pi{};
         std::wstring cmd = L"\"" + serviceExe.wstring() + L"\" --pipe-token=" +
             tools3000::core::WinUtils::utf8ToWstring(g_searchPipeToken) + L" --client-sid=" + g_searchClientSid;
+        if (g_forcePortableService) {
+            cmd += L" --portable-isolated";
+        }
         if (CreateProcessW(serviceExe.c_str(), cmd.data(), nullptr, nullptr, FALSE,
                            CREATE_NO_WINDOW | DETACHED_PROCESS, nullptr, exeDir.c_str(), &si, &pi)) {
             g_serviceSpawnedByUs.store(true);
@@ -489,7 +593,7 @@ static bool ensureSearchServiceRunning() {
         return false;
     }
 
-    if (isPipePresentOrBusy(g_searchPipe, 3000)) return true;
+    if (isAnySearchPipeReady(3000)) return true;
     const DWORD pipeWaitError = GetLastError();
     SetLastError(pipeWaitError);
     return false;
@@ -506,13 +610,19 @@ std::optional<std::string> querySearchService(const std::string& query, DWORD& e
         return std::nullopt;
     }
     const bool mayStart = autoStart && g_searchWindowExplicitlyShown.load();
-    if (!isPipePresentOrBusy(g_searchPipe, mayStart ? 1000 : 1)) {
+    std::string activePipe = resolveActiveSearchPipe(mayStart ? 200 : 1);
+    if (activePipe.empty()) {
         if (!mayStart) {
             error = ERROR_SERVICE_NOT_ACTIVE;
             return std::nullopt;
         }
         if (!ensureSearchServiceRunning()) {
             error = GetLastError();
+            return std::nullopt;
+        }
+        activePipe = resolveActiveSearchPipe(1000);
+        if (activePipe.empty()) {
+            error = ERROR_FILE_NOT_FOUND;
             return std::nullopt;
         }
     }
@@ -522,12 +632,20 @@ std::optional<std::string> querySearchService(const std::string& query, DWORD& e
     HANDLE pipe = INVALID_HANDLE_VALUE;
     DWORD connectError = ERROR_SUCCESS;
     while (!g_searchPluginShuttingDown.load(std::memory_order_relaxed)) {
-        pipe = CreateFileA(g_searchPipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        pipe = CreateFileA(activePipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                            OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
         if (pipe != INVALID_HANDLE_VALUE) {
             break;
         }
         connectError = GetLastError();
+        if (connectError == ERROR_FILE_NOT_FOUND) {
+            const std::string refreshed = resolveActiveSearchPipe(50);
+            if (!refreshed.empty() && refreshed != activePipe) {
+                activePipe = refreshed;
+                continue;
+            }
+            break;
+        }
         if (connectError != ERROR_PIPE_BUSY) {
             break;
         }
@@ -536,7 +654,7 @@ std::optional<std::string> querySearchService(const std::string& query, DWORD& e
             break;
         }
         const DWORD waitSlice = static_cast<DWORD>((std::min<ULONGLONG>)(connectDeadline - now, 400));
-        if (!WaitNamedPipeA(g_searchPipe.c_str(), waitSlice)) {
+        if (!WaitNamedPipeA(activePipe.c_str(), waitSlice)) {
             const DWORD waitErr = GetLastError();
             if (!tools3000::search::isPipeTransientBusyError(waitErr)) {
                 connectError = waitErr;
@@ -672,6 +790,10 @@ public:
             if (query.size() > tools3000::service::search_limits::MaxQueryUtf8Bytes) {
                 return invalidSearchRequest("query exceeds 1024-byte limit");
             }
+            // Expand desktop user environment variables (`%APPDATA%`, `%LOCALAPPDATA%`,
+            // `%USERPROFILE%`, `%TEMP%`, etc.) on the interactive client before IPC (`MED-13`).
+            query = expandClientUserEnvUtf8(query, tools3000::service::search_limits::MaxQueryUtf8Bytes);
+
             if (!validStringArray(params, "drives", tools3000::service::search_limits::MaxDriveItems, 2) ||
                 !validStringArray(params, "excludes", tools3000::service::search_limits::MaxExcludeItems,
                                   tools3000::service::search_limits::MaxExcludeUtf8Bytes) ||
@@ -683,6 +805,15 @@ public:
             }
 
             nlohmann::json normalized = params;
+            if (normalized.contains("excludes") && normalized["excludes"].is_array()) {
+                for (auto& exItem : normalized["excludes"]) {
+                    if (exItem.is_string()) {
+                        exItem = expandClientUserEnvUtf8(
+                            exItem.get<std::string>(),
+                            tools3000::service::search_limits::MaxExcludeUtf8Bytes);
+                    }
+                }
+            }
             {
                 auto& cfg = tools3000::core::ConfigManager::instance();
                 if (!normalized.contains("pinyinEnabled") || !normalized["pinyinEnabled"].is_boolean()) {
@@ -859,7 +990,7 @@ public:
         // 说明用户要用搜索。需要拉起时走 search.warmup。
         mb.registerHandler("search.getServiceStatus", [](const nlohmann::json&) -> nlohmann::json {
             return {
-                {"available", !g_searchPipe.empty() && isPipePresentOrBusy(g_searchPipe, 1)}
+                {"available", !g_searchPipe.empty() && isAnySearchPipeReady(1)}
             };
         });
 
@@ -1036,7 +1167,9 @@ public:
         });
 
         mb.registerHandler("search.recordRun", [](const nlohmann::json& params) -> nlohmann::json {
-            std::string path = params.value("path", "");
+            std::string path = expandClientUserEnvUtf8(
+                params.value("path", ""),
+                tools3000::service::search_limits::MaxPathUtf8Bytes);
             if (path.empty()) return {{"success", false}};
             nlohmann::json req;
             req["action"] = "recordRun";

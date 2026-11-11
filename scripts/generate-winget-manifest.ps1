@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Tools3000 微软 WinGet (winget-pkgs) 官方清单一键生成与校验工具
 
@@ -172,18 +172,18 @@ ManifestVersion: 1.9.0
 [System.IO.File]::WriteAllText((Join-Path $OutputDir "Yy1.Tools3000.locale.zh-CN.yaml"), $ZhLocaleYaml, [System.Text.Encoding]::UTF8)
 [System.IO.File]::WriteAllText((Join-Path $OutputDir "Yy1.Tools3000.locale.en-US.yaml"), $EnLocaleYaml, [System.Text.Encoding]::UTF8)
 
-Write-Host "✅ 成功生成全套 WinGet 1.9.0 清单至: $OutputDir" -ForegroundColor Green
+Write-Host "[OK] 成功生成全套 WinGet 1.9.0 清单至: $OutputDir" -ForegroundColor Green
 
 if ($Validate) {
     if (Get-Command "winget" -ErrorAction SilentlyContinue) {
-        Write-Host "正在调用系统 winget 验证清单合法性..." -ForegroundColor Cyan
+        Write-Host "[INFO] 正在调用系统 winget 验证清单合法性..." -ForegroundColor Cyan
         & winget validate --manifest $OutputDir
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "🎉 微软 WinGet 规范校验 100% 通过！" -ForegroundColor Green
+            Write-Host "[OK] 微软 WinGet 规范校验 100% 通过！" -ForegroundColor Green
         } else {
             Write-Warning "WinGet 验证返回退出码: $LASTEXITCODE"
         }
     } else {
-        Write-Host "未检测到系统 winget 命令，跳过本地验证。" -ForegroundColor Yellow
+        Write-Host "[WARN] 未检测到系统 winget 命令，跳过本地验证。" -ForegroundColor Yellow
     }
 }

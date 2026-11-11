@@ -8,6 +8,9 @@
 #ifndef Tools3000SetupBaseFilename
   #define Tools3000SetupBaseFilename "Tools3000-Setup"
 #endif
+#ifndef DeployDir
+  #define DeployDir "deploy_dist"
+#endif
 #if Tools3000Architecture != "x64" && Tools3000Architecture != "arm64"
   #error Tools3000Architecture must be x64 or arm64
 #endif
@@ -133,15 +136,21 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "autostart"; Description: "{cm:AutoStartProgram}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; 核心可执行文件与全量动态链接库（显式配置 restartreplace 容错标记，即使极端占用下亦由系统在重启时替换，绝不弹出“拒绝访问”弹窗打断安装）
-Source: "deploy_dist\*.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "deploy_dist\plugins\*.dll"; DestDir: "{app}\plugins"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "deploy_dist\Tools3000.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "deploy_dist\Tools3000_Service.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
-; 其余全量资源与依赖文件（保持递归与 restartreplace 双保险，排除已明确声明的 DLL/EXE 避免二次拷贝冲突）
-Source: "deploy_dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace uninsrestartdelete; Excludes: "*.pdb,Tools3000Tests.*,*Preview.*,*Integration.*,*.flag,debug.flag,*.dll,Tools3000.exe,Tools3000_Service.exe"
+; 核心可执行文件与主程序根目录共享运行库（显式排除测试库 *gtest*/*gmock* 与插件本体 Plugin_*.dll）
+Source: "{#DeployDir}\*.dll"; DestDir: "{app}"; Excludes: "*gtest*.dll,*gmock*.dll,Plugin_*.dll"; Flags: ignoreversion restartreplace uninsrestartdelete
+; 插件目录严格仅打包 Plugin_*.dll 与 *.plugin.json（共享运行库统一复用 {app} 根目录唯一副本）
+Source: "{#DeployDir}\plugins\Plugin_*.dll"; DestDir: "{app}\plugins"; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#DeployDir}\plugins\*.plugin.json"; DestDir: "{app}\plugins"; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#DeployDir}\Tools3000.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#DeployDir}\Tools3000_Service.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+; 其余全量资源与依赖文件（保持递归与 restartreplace 双保险，排除已明确声明的 DLL/EXE/JSON 避免二次拷贝冲突，且绝不配置 ProgramData users-modify）
+Source: "{#DeployDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace uninsrestartdelete; Excludes: "*.pdb,Tools3000Tests.*,*Preview.*,*Integration.*,*.flag,debug.flag,*.dll,*.plugin.json,Tools3000.exe,Tools3000_Service.exe"
 
 [InstallDelete]
+Type: files; Name: "{app}\*gtest*.dll"
+Type: files; Name: "{app}\*gmock*.dll"
+Type: files; Name: "{app}\Plugin_*.dll"
+Type: files; Name: "{app}\Tools3000Tests.*"
 
 [UninstallDelete]
 Type: files; Name: "{autodesktop}\Tools3000.lnk"
@@ -170,7 +179,10 @@ Name: "{autodesktop}\Tools3000"; Filename: "{app}\Tools3000.exe"; Tasks: desktop
 Filename: "{sys}\sc.exe"; Parameters: "create Tools3000_SearchService binPath= ""{app}\Tools3000_Service.exe"" start= demand DisplayName= ""Tools3000 Search Service"""; Flags: runhidden waituntilterminated; StatusMsg: "{cm:InstallingService}"; Check: IsSearchServiceInstallNeeded
 Filename: "{sys}\sc.exe"; Parameters: "config Tools3000_SearchService binPath= ""{app}\Tools3000_Service.exe"" start= demand DisplayName= ""Tools3000 Search Service"""; Flags: runhidden waituntilterminated; Check: IsSearchServiceConfigNeeded
 Filename: "{sys}\sc.exe"; Parameters: "description Tools3000_SearchService ""Tools3000 本地文件快速搜索索引"""; Flags: runhidden waituntilterminated; Check: IsSearchComponentSelected
-Filename: "{app}\Tools3000.exe"; Description: "{cm:LaunchProgram,Tools3000}"; Flags: nowait postinstall skipifsilent
+; 授予本机交互式登录用户 (IU) 与已认证用户 (AU) 按需启动 (RP / SERVICE_START) 与查询状态 (LC) 权限，不开放配置篡改或删除权限
+Filename: "{sys}\sc.exe"; Parameters: "sdset Tools3000_SearchService ""D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWRPLOCRRC;;;AU)(A;;CCLCSWLOCRRC;;;SU)"""; Flags: runhidden waituntilterminated; Check: ServiceExists
+; 使用 runasoriginaluser 兼容多账户 UAC 提权场景，确保客户端运行在发起安装的交互桌面用户上下文中
+Filename: "{app}\Tools3000.exe"; Description: "{cm:LaunchProgram,Tools3000}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 
 [Code]
@@ -472,11 +484,29 @@ begin
   end;
 end;
 
+function GetInteractiveUserHint(): String;
+var
+  LogonUser: String;
+  SlashPos: Integer;
+begin
+  Result := '';
+  if RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI', 'LastLoggedOnSAMUser', LogonUser) or
+     RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI', 'LastLoggedOnUser', LogonUser) then
+  begin
+    SlashPos := Pos('\', LogonUser);
+    if SlashPos > 0 then
+      Delete(LogonUser, 1, SlashPos);
+    Result := Trim(LogonUser);
+  end;
+end;
+
 procedure CleanScheduledTasksAndRegistries();
 var
   TaskService, RootFolder, ToolsFolder, Tasks, TaskItem: Variant;
   I, Dummy: Integer;
   ComSuccess: Boolean;
+  InteractiveUser: String;
+  SubKeys: TArrayOfString;
 begin
   ComSuccess := False;
   try
@@ -505,10 +535,20 @@ begin
   if not ComSuccess then
   begin
     Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "Tools3000\Autorun for ' + GetUserNameString() + '" /f', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
+    InteractiveUser := GetInteractiveUserHint();
+    if (InteractiveUser <> '') and (CompareText(InteractiveUser, GetUserNameString()) <> 0) then
+      Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "Tools3000\Autorun for ' + InteractiveUser + '" /f', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
   end;
 
-  // 清除注册表当前用户自启动项 (HKCU Run)
+  // 清除当前用户及多账户 UAC 场景下所有已加载用户配置单元的自启动项 (HKCU / HKU Run)
   RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Tools3000');
+  if RegGetSubkeyNames(HKU, '', SubKeys) then
+  begin
+    for I := 0 to GetArrayLength(SubKeys) - 1 do
+    begin
+      RegDeleteValue(HKU, SubKeys[I] + '\Software\Microsoft\Windows\CurrentVersion\Run', 'Tools3000');
+    end;
+  end;
 end;
 
 procedure StopAndKillAllTools3000Processes();
@@ -727,12 +767,23 @@ end;
 function AutoStartTaskExists(): Boolean;
 var
   ResultCode: Integer;
+  InteractiveUser: String;
 begin
   // 检测当前用户专属规范任务 (Tools3000\Autorun for <User>)
   Result := Exec(ExpandConstant('{sys}\schtasks.exe'),
     '/query /tn "Tools3000\Autorun for ' + GetUserNameString() + '"', '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
   if Result then Exit;
+
+  // 兼容多账户 UAC 场景：检测物理登录用户的自启任务
+  InteractiveUser := GetInteractiveUserHint();
+  if (InteractiveUser <> '') and (CompareText(InteractiveUser, GetUserNameString()) <> 0) then
+  begin
+    Result := Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/query /tn "Tools3000\Autorun for ' + InteractiveUser + '"', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+    if Result then Exit;
+  end;
 
   // 检测注册表 Run 键 (HKCU Run 键)
   Result := RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Tools3000');
@@ -741,9 +792,23 @@ end;
 procedure CreateAutoStartTask();
 var
   ResultCode: Integer;
-  TargetExe: String;
+  TargetExe, InteractiveUser, TaskName: String;
 begin
   TargetExe := ExpandConstant('{app}\Tools3000.exe');
+  InteractiveUser := GetInteractiveUserHint();
+
+  // 若处于跨账户 UAC 提权上下文（管理员账户与桌面登录账户不同），为交互桌面用户精准注册登录触发任务并写入 Run 兜底
+  if (InteractiveUser <> '') and (CompareText(InteractiveUser, GetUserNameString()) <> 0) then
+  begin
+    TaskName := 'Tools3000\Autorun for ' + InteractiveUser;
+    if Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/create /tn "' + TaskName + '" /tr "\"' + TargetExe + '\" --autostart" /sc onlogon /ru "' + InteractiveUser + '" /rl highest /f',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+    begin
+      Log('Registered AutoStart task for original interactive user: ' + InteractiveUser);
+      Exit;
+    end;
+  end;
 
   // 直接委托原生注册，100% 保证安装包与软件设置页同源、同逻辑、同配置
   if Exec(TargetExe, '--register-autostart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
@@ -755,10 +820,54 @@ end;
 procedure RemoveAutoStartTask();
 var
   ResultCode: Integer;
+  InteractiveUser: String;
 begin
   if FileExists(ExpandConstant('{app}\Tools3000.exe')) then
     Exec(ExpandConstant('{app}\Tools3000.exe'), '--unregister-autostart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "Tools3000\Autorun for ' + GetUserNameString() + '" /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  InteractiveUser := GetInteractiveUserHint();
+  if (InteractiveUser <> '') and (CompareText(InteractiveUser, GetUserNameString()) <> 0) then
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "Tools3000\Autorun for ' + InteractiveUser + '" /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure PurgeLegacyDuplicatePluginDlls();
+var
+  PluginsDir, NameLower: String;
+  FindRec: TFindRec;
+begin
+  PluginsDir := ExpandConstant('{app}\plugins');
+  if not DirExists(PluginsDir) then Exit;
+  if FindFirst(PluginsDir + '\*.dll', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
+        begin
+          NameLower := Lowercase(FindRec.Name);
+          if Pos('plugin_', NameLower) <> 1 then
+          begin
+            if DeleteFile(PluginsDir + '\' + FindRec.Name) then
+              Log('PurgeLegacyDuplicatePluginDlls: Removed legacy duplicate DLL -> ' + FindRec.Name);
+          end;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+procedure ConfigureSearchServiceStartDacl();
+var
+  ResultCode: Integer;
+begin
+  if not ServiceExists() then Exit;
+  if Exec(ExpandConstant('{sys}\sc.exe'),
+    'sdset Tools3000_SearchService "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWRPLOCRRC;;;AU)(A;;CCLCSWLOCRRC;;;SU)"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+    Log('ConfigureSearchServiceStartDacl: Granted SERVICE_START (RP) and QUERY_STATUS (LC) to IU/AU.')
+  else
+    Log(Format('ConfigureSearchServiceStartDacl: sc.exe sdset exited with code %d', [ResultCode]));
 end;
 
 procedure SyncInitialModuleConfig();
@@ -833,6 +942,8 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    PurgeLegacyDuplicatePluginDlls();
+    ConfigureSearchServiceStartDacl();
     SyncInitialModuleConfig();
     UpdateShortcuts();
     if WizardIsTaskSelected('autostart') then
@@ -1060,17 +1171,31 @@ end;
 
 procedure DeleteSelectedPersonalData();
 var
-  LocalRoot, RoamingRoot, CommonRoot: String;
+  LocalRoot, RoamingRoot, CommonRoot, InteractiveUser, UsersRoot, OrigLocalRoot, OrigRoamingRoot: String;
 begin
   LocalRoot := ExpandConstant('{localappdata}\Tools3000');
   RoamingRoot := ExpandConstant('{userappdata}\Tools3000');
   CommonRoot := ExpandConstant('{commonappdata}\Tools3000');
+  OrigLocalRoot := '';
+  OrigRoamingRoot := '';
+  InteractiveUser := GetInteractiveUserHint();
+  if (InteractiveUser <> '') and (CompareText(InteractiveUser, GetUserNameString()) <> 0) then
+  begin
+    UsersRoot := ExtractFileDrive(ExpandConstant('{win}')) + '\Users\' + InteractiveUser + '\AppData';
+    if DirExists(UsersRoot) then
+    begin
+      OrigLocalRoot := UsersRoot + '\Local\Tools3000';
+      OrigRoamingRoot := UsersRoot + '\Roaming\Tools3000';
+    end;
+  end;
 
   if DeleteSettingsHistory and DeleteDiagnostics and DeleteCachesIndexes and DeleteCaptures then
   begin
     DelTree(LocalRoot, True, True, True);
     DelTree(RoamingRoot, True, True, True);
     DelTree(CommonRoot, True, True, True);
+    if OrigLocalRoot <> '' then DelTree(OrigLocalRoot, True, True, True);
+    if OrigRoamingRoot <> '' then DelTree(OrigRoamingRoot, True, True, True);
     Log('Deleted all selected Tools3000 personal data');
     Exit;
   end;
@@ -1081,12 +1206,27 @@ begin
     DelTree(LocalRoot + '\stats', True, True, True);
     DeleteFile(RoamingRoot + '\Run History.csv');
     DeleteFile(RoamingRoot + '\Search History.csv');
+    if OrigLocalRoot <> '' then
+    begin
+      DelTree(OrigLocalRoot + '\config', True, True, True);
+      DelTree(OrigLocalRoot + '\stats', True, True, True);
+    end;
+    if OrigRoamingRoot <> '' then
+    begin
+      DeleteFile(OrigRoamingRoot + '\Run History.csv');
+      DeleteFile(OrigRoamingRoot + '\Search History.csv');
+    end;
   end;
   if DeleteDiagnostics then
   begin
     DelTree(LocalRoot + '\logs', True, True, True);
     DelTree(LocalRoot + '\crashdumps', True, True, True);
     DelTree(CommonRoot + '\logs', True, True, True);
+    if OrigLocalRoot <> '' then
+    begin
+      DelTree(OrigLocalRoot + '\logs', True, True, True);
+      DelTree(OrigLocalRoot + '\crashdumps', True, True, True);
+    end;
   end;
   if DeleteCachesIndexes then
   begin
@@ -1094,15 +1234,30 @@ begin
     DelTree(LocalRoot + '\temp', True, True, True);
     DeleteFile(LocalRoot + '\Tools3000.db');
     DeleteFile(RoamingRoot + '\Tools3000.db');
+    if OrigLocalRoot <> '' then
+    begin
+      DelTree(OrigLocalRoot + '\webview2_data', True, True, True);
+      DelTree(OrigLocalRoot + '\temp', True, True, True);
+      DeleteFile(OrigLocalRoot + '\Tools3000.db');
+    end;
+    if OrigRoamingRoot <> '' then
+      DeleteFile(OrigRoamingRoot + '\Tools3000.db');
   end;
   if DeleteCaptures then
   begin
     DelTree(LocalRoot + '\Screenshots', True, True, True);
     DelTree(LocalRoot + '\Recordings', True, True, True);
+    if OrigLocalRoot <> '' then
+    begin
+      DelTree(OrigLocalRoot + '\Screenshots', True, True, True);
+      DelTree(OrigLocalRoot + '\Recordings', True, True, True);
+    end;
   end;
   RemoveDir(LocalRoot);
   RemoveDir(RoamingRoot);
   RemoveDir(CommonRoot);
+  if OrigLocalRoot <> '' then RemoveDir(OrigLocalRoot);
+  if OrigRoamingRoot <> '' then RemoveDir(OrigRoamingRoot);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

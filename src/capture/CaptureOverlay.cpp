@@ -273,6 +273,12 @@ void CaptureOverlay::loadUserMarkupPreferences(bool preserveSavedOutputFrame) {
     }
 
     m_state.magnifierCalloutMode = config.get<bool>("/capture/markup/magnifier/calloutMode", true);
+    const int savedCalloutStyle = std::clamp(
+        config.get<int>("/capture/markup/magnifier/calloutStyle",
+                        static_cast<int>(MagnifierCalloutStyle::DashedDirect)),
+        0,
+        static_cast<int>(MagnifierCalloutStyle::COUNT) - 1);
+    m_state.currentMagnifierCalloutStyle = static_cast<MagnifierCalloutStyle>(savedCalloutStyle);
     m_state.currentTextOutline = config.get<bool>("/capture/markup/text/outline", true);
     m_state.currentTextOutlineColor = MarkupColor::Auto();
 
@@ -339,8 +345,10 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     std::string recFmt = config.get<std::string>("/recording/format", "mp4_h264");
     std::string savedVideoFmt = config.get<std::string>("/recording/videoFormat", "");
     if (recFmt != "gif") {
-        savedVideoFmt = recFmt;
-        config.set<std::string>("/recording/videoFormat", savedVideoFmt);
+        if (savedVideoFmt != recFmt) {
+            savedVideoFmt = recFmt;
+            config.set<std::string>("/recording/videoFormat", savedVideoFmt);
+        }
     } else if (savedVideoFmt.empty() || savedVideoFmt == "gif") {
         savedVideoFmt = "mp4_h264";
     }
@@ -455,7 +463,7 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
     m_editLongImageCallback = nullptr;
     resetTransientOverlayState();
     m_state.state = OverlayState::Selected;
-    m_state.showTimestamp = GetTickCount();
+    m_state.overlayShowTick = GetTickCount();
     loadUserMarkupPreferences(false);
 
     const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -608,7 +616,7 @@ bool CaptureOverlay::startEditLongImage(
 
     m_state.frozenScreen = std::move(bgra);
     m_state.state = OverlayState::Selected;
-    m_state.showTimestamp = GetTickCount();
+    m_state.overlayShowTick = GetTickCount();
     m_state.lastMousePos = m_state.currentCursor;
     m_state.dragStart = {0, 0};
     m_state.dragEnd = {m_state.frozenScreen.cols, m_state.frozenScreen.rows};
@@ -970,46 +978,64 @@ LRESULT CALLBACK CaptureOverlay::staticWndProc(HWND hwnd, UINT msg, WPARAM wPara
     }
 
     if (self) {
-        if (msg == WM_MOUSEACTIVATE) {
-            SetForegroundWindow(hwnd);
-            SetFocus(hwnd);
-            return MA_ACTIVATE;
-        }
-        if (msg == WM_CLOSE) {
-            self->realCancel();
+        try {
+            if (msg == WM_MOUSEACTIVATE) {
+                SetForegroundWindow(hwnd);
+                SetFocus(hwnd);
+                return MA_ACTIVATE;
+            }
+            if (msg == WM_CLOSE) {
+                self->realCancel();
+                return 0;
+            }
+            if (msg == WM_ACCESSIBILITY_INVOKE_TOOLBAR) {
+                self->m_input.invokeToolbarButton(static_cast<std::size_t>(wParam));
+                return 0;
+            }
+            if (msg == WM_GETOBJECT) {
+                return tools3000::core::accessibility::respondToOverlayUiaGetObject(
+                    hwnd, wParam, lParam,
+                    {L"Tools3000.CaptureOverlay",
+                     L"Screenshot selection and annotation. Enter confirms. Escape cancels.",
+                     tools3000::core::accessibility::OverlayUiaRole::Pane, true},
+                     toolbarUiaActions(hwnd, self->m_state));
+            }
+            if (msg == WM_NCDESTROY) {
+                if (self->m_hwnd == hwnd) {
+                    self->m_hwnd = nullptr;
+                }
+                tools3000::core::KeyboardHook::instance().setCaptureOverlayVisible(false);
+                if (self->m_state.state.load() != OverlayState::Idle) {
+                    self->m_state.state = OverlayState::Idle;
+                    ShortcutHintOverlay::instance().hide();
+                }
+                tools3000::core::accessibility::disconnectOverlayUiaProvider(hwnd);
+            }
+            if (msg == WM_PAINT) {
+                if (self->m_state.state.load() != OverlayState::Idle) {
+                    self->m_renderer.render(self->m_state);
+                }
+                ValidateRect(hwnd, nullptr);
+                return 0;
+            }
+            return self->m_input.handleMessage(hwnd, msg, wParam, lParam);
+        } catch (const std::exception& ex) {
+            LOG_ERROR("CaptureOverlay::staticWndProc caught unhandled exception (msg={}): {}", msg, ex.what());
+            if (auto lg = tools3000::core::Logger::instance()) lg->flush();
+            if (msg == WM_PAINT) {
+                ValidateRect(hwnd, nullptr);
+            }
+            try { self->realCancel(); } catch (...) {}
+            return 0;
+        } catch (...) {
+            LOG_ERROR("CaptureOverlay::staticWndProc caught unknown exception (msg={})", msg);
+            if (auto lg = tools3000::core::Logger::instance()) lg->flush();
+            if (msg == WM_PAINT) {
+                ValidateRect(hwnd, nullptr);
+            }
+            try { self->realCancel(); } catch (...) {}
             return 0;
         }
-        if (msg == WM_ACCESSIBILITY_INVOKE_TOOLBAR) {
-            self->m_input.invokeToolbarButton(static_cast<std::size_t>(wParam));
-            return 0;
-        }
-        if (msg == WM_GETOBJECT) {
-            return tools3000::core::accessibility::respondToOverlayUiaGetObject(
-                hwnd, wParam, lParam,
-                {L"Tools3000.CaptureOverlay",
-                 L"Screenshot selection and annotation. Enter confirms. Escape cancels.",
-                 tools3000::core::accessibility::OverlayUiaRole::Pane, true},
-                 toolbarUiaActions(hwnd, self->m_state));
-        }
-        if (msg == WM_NCDESTROY) {
-            if (self->m_hwnd == hwnd) {
-                self->m_hwnd = nullptr;
-            }
-            tools3000::core::KeyboardHook::instance().setCaptureOverlayVisible(false);
-            if (self->m_state.state.load() != OverlayState::Idle) {
-                self->m_state.state = OverlayState::Idle;
-                ShortcutHintOverlay::instance().hide();
-            }
-            tools3000::core::accessibility::disconnectOverlayUiaProvider(hwnd);
-        }
-        if (msg == WM_PAINT) {
-            if (self->m_state.state.load() != OverlayState::Idle) {
-                self->m_renderer.render(self->m_state);
-            }
-            ValidateRect(hwnd, nullptr);
-            return 0;
-        }
-        return self->m_input.handleMessage(hwnd, msg, wParam, lParam);
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }

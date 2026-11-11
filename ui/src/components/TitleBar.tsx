@@ -43,9 +43,45 @@ export const TitleBar: FC<TitleBarProps> = ({
   const [isMaximized, setIsMaximized] = useState(false);
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const [isAutoLanguage, setIsAutoLanguage] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('tools3000:language');
+      return !stored || stored === 'auto';
+    } catch {
+      return false;
+    }
+  });
 
   const langRef = useRef<HTMLDivElement>(null);
   const themeRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const syncLangPreference = (rawPref?: string | null) => {
+      const pref = rawPref ?? (() => {
+        try {
+          return localStorage.getItem('tools3000:language');
+        } catch {
+          return null;
+        }
+      })();
+      setIsAutoLanguage(!pref || pref === 'auto');
+    };
+    const onLangChangedEvent = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      syncLangPreference(detail);
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'tools3000:language') {
+        syncLangPreference(e.newValue);
+      }
+    };
+    window.addEventListener('tools3000:language-changed', onLangChangedEvent);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('tools3000:language-changed', onLangChangedEvent);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
 
   // 初始化拉取当前窗口状态
   useEffect(() => {
@@ -114,6 +150,7 @@ export const TitleBar: FC<TitleBarProps> = ({
   // 切换语言
   const handleSelectLanguage = (langKey: 'auto' | 'zh-CN' | 'en-US') => {
     setLangMenuOpen(false);
+    setIsAutoLanguage(langKey === 'auto');
     try {
       localStorage.setItem('tools3000:language', langKey);
     } catch {
@@ -177,13 +214,9 @@ export const TitleBar: FC<TitleBarProps> = ({
 
   const currentAccent = ACCENT_PRESETS.find((p) => p.id === accent) || ACCENT_PRESETS[0];
 
-  const currentLangLabel = (() => {
-    const stored = localStorage.getItem('tools3000:language');
-    if (stored === 'zh-CN') return t('general.langZh');
-    if (stored === 'en-US') return t('general.langEn');
-    if (stored === 'auto') return t('general.langAuto');
-    return i18n.language.startsWith('zh') ? t('general.langZh') : t('general.langEn');
-  })();
+  const activeLanguage = (i18n.resolvedLanguage || i18n.language || 'en').toLowerCase();
+  const isZhLanguage = activeLanguage.startsWith('zh');
+  const currentLangLabel = isZhLanguage ? t('general.langZh') : t('general.langEn');
 
   const currentThemeLabel = (() => {
     if (themePreference === 'light') return t('general.themeLight');
@@ -237,40 +270,40 @@ export const TitleBar: FC<TitleBarProps> = ({
             <div className="titlebar__dropdown-menu" role="dialog" aria-label={t('general.language')}>
               <button
                 type="button"
-                className={`titlebar__dropdown-item ${localStorage.getItem('tools3000:language') === 'auto' || !localStorage.getItem('tools3000:language') ? 'active' : ''}`}
+                className={`titlebar__dropdown-item ${isAutoLanguage ? 'active' : ''}`}
                 onClick={() => handleSelectLanguage('auto')}
               >
                 <div className="titlebar__dropdown-item-left">
                   <Monitor size={14} strokeWidth={2.2} className="titlebar__dropdown-item-icon" />
                   <span className="titlebar__dropdown-item-title">{t('general.langAuto')}</span>
                 </div>
-                {(localStorage.getItem('tools3000:language') === 'auto' || !localStorage.getItem('tools3000:language')) && (
+                {isAutoLanguage && (
                   <Check size={13} strokeWidth={2.6} className="titlebar__dropdown-item-check" />
                 )}
               </button>
               <button
                 type="button"
-                className={`titlebar__dropdown-item ${localStorage.getItem('tools3000:language') === 'zh-CN' ? 'active' : ''}`}
+                className={`titlebar__dropdown-item ${!isAutoLanguage && isZhLanguage ? 'active' : ''}`}
                 onClick={() => handleSelectLanguage('zh-CN')}
               >
                 <div className="titlebar__dropdown-item-left">
                   <span className="titlebar__dropdown-item-badge">ZH</span>
                   <span className="titlebar__dropdown-item-title">{t('general.langZh')}</span>
                 </div>
-                {localStorage.getItem('tools3000:language') === 'zh-CN' && (
+                {!isAutoLanguage && isZhLanguage && (
                   <Check size={13} strokeWidth={2.6} className="titlebar__dropdown-item-check" />
                 )}
               </button>
               <button
                 type="button"
-                className={`titlebar__dropdown-item ${localStorage.getItem('tools3000:language') === 'en-US' ? 'active' : ''}`}
+                className={`titlebar__dropdown-item ${!isAutoLanguage && !isZhLanguage ? 'active' : ''}`}
                 onClick={() => handleSelectLanguage('en-US')}
               >
                 <div className="titlebar__dropdown-item-left">
                   <span className="titlebar__dropdown-item-badge">EN</span>
                   <span className="titlebar__dropdown-item-title">{t('general.langEn')}</span>
                 </div>
-                {localStorage.getItem('tools3000:language') === 'en-US' && (
+                {!isAutoLanguage && !isZhLanguage && (
                   <Check size={13} strokeWidth={2.6} className="titlebar__dropdown-item-check" />
                 )}
               </button>

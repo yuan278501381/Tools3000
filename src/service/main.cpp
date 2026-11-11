@@ -17,6 +17,7 @@
 #include <sddl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <userenv.h>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -61,7 +62,12 @@ std::jthread g_PipePokeJob;
 
 std::string g_SearchPipeName;
 std::wstring g_SearchClientSid;
+std::string g_CompatTokenPipeName;
+std::wstring g_CompatTokenClientSid;
+bool g_UseKernelServicePipeSddl = false;
+std::string g_IsolatedPortableToken;
 constexpr int NumPipeWorkers = 16;
+constexpr int NumCompatPipeWorkers = 4;
 
 namespace {
 
@@ -69,48 +75,97 @@ struct CachedContentCandidatePlan {
     uint64_t planId = 0;
     std::string signature;
     std::shared_ptr<const std::vector<ContentCandidate>> candidates;
+    size_t baseCursorOffset = 0;
     std::chrono::steady_clock::time_point createdAt{};
 };
 
+struct ProgressivePlanAnchorState {
+    uint64_t planId = 0;
+    std::string signature;
+    std::unordered_set<std::wstring> scannedNormPaths;
+    std::chrono::steady_clock::time_point updatedAt{};
+};
+
+struct CachedBothNameRemainder {
+    uint64_t planId = 0;
+    std::string signature;
+    std::vector<SearchResult> remainingNames;
+    size_t nextOffset = 0;
+    std::chrono::steady_clock::time_point updatedAt{};
+};
+
 constexpr size_t MaxCachedContentPlans = 4;
+constexpr size_t MaxPlanAnchorStates = 8;
 constexpr auto ContentPlanCacheTtl = std::chrono::seconds(90);
 constexpr size_t ProgressiveFollowupMaxBatchHits = 60;
 
 std::mutex g_ContentPlanCacheMutex;
 std::vector<CachedContentCandidatePlan> g_ContentPlanCache;
+std::vector<ProgressivePlanAnchorState> g_PlanAnchorStates;
+std::vector<CachedBothNameRemainder> g_BothNameRemainders;
 std::atomic<uint64_t> g_NextContentPlanId{1};
+
+std::wstring normalizeCandidatePathKey(std::wstring_view path) {
+    std::wstring norm;
+    norm.reserve(path.size());
+    for (wchar_t ch : path) {
+        norm.push_back(tools3000::service::pipe_auth::foldAsciiOrWideLower(ch));
+    }
+    return norm;
+}
 
 void invalidateContentPlanCache() {
     std::lock_guard<std::mutex> lock(g_ContentPlanCacheMutex);
+    // Clear cached candidate vectors so USN file additions/deletions take effect,
+    // while retaining `g_PlanAnchorStates` so in-flight progressive queries re-anchor
+    // cleanly without skipping or duplicating documents (`MED-16`).
     g_ContentPlanCache.clear();
 }
 
-std::shared_ptr<const std::vector<ContentCandidate>> lookupCachedContentPlan(
+std::optional<CachedContentCandidatePlan> lookupCachedContentPlan(
     uint64_t planId,
     std::string_view signature
 ) {
-    if (planId == 0) return nullptr;
+    if (planId == 0) return std::nullopt;
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(g_ContentPlanCacheMutex);
     for (auto it = g_ContentPlanCache.begin(); it != g_ContentPlanCache.end(); ++it) {
         if (it->planId == planId && it->signature == signature) {
             if (now - it->createdAt > ContentPlanCacheTtl) {
                 g_ContentPlanCache.erase(it);
-                return nullptr;
+                return std::nullopt;
             }
             auto hit = *it;
             hit.createdAt = now;
             g_ContentPlanCache.erase(it);
             g_ContentPlanCache.push_back(hit);
-            return hit.candidates;
+            return hit;
         }
     }
-    return nullptr;
+    return std::nullopt;
+}
+
+std::unordered_set<std::wstring> lookupPlanAnchorScannedPaths(
+    uint64_t requestedPlanId,
+    std::string_view signature
+) {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_ContentPlanCacheMutex);
+    for (const auto& state : g_PlanAnchorStates) {
+        if ((now - state.updatedAt) <= ContentPlanCacheTtl &&
+            state.planId == requestedPlanId &&
+            state.signature == signature) {
+            return state.scannedNormPaths;
+        }
+    }
+    return {};
 }
 
 uint64_t storeCachedContentPlan(
     std::string signature,
-    std::shared_ptr<const std::vector<ContentCandidate>> candidates
+    std::shared_ptr<const std::vector<ContentCandidate>> candidates,
+    size_t baseCursorOffset = 0,
+    std::unordered_set<std::wstring> inheritedScannedPaths = {}
 ) {
     const uint64_t id = g_NextContentPlanId.fetch_add(1, std::memory_order_relaxed);
     const auto now = std::chrono::steady_clock::now();
@@ -129,11 +184,160 @@ uint64_t storeCachedContentPlan(
     }
     g_ContentPlanCache.push_back(CachedContentCandidatePlan{
         id,
-        std::move(signature),
+        signature,
         std::move(candidates),
+        baseCursorOffset,
+        now
+    });
+
+    g_PlanAnchorStates.erase(
+        std::remove_if(
+            g_PlanAnchorStates.begin(),
+            g_PlanAnchorStates.end(),
+            [&](const ProgressivePlanAnchorState& s) {
+                return (now - s.updatedAt) > ContentPlanCacheTtl;
+            }),
+        g_PlanAnchorStates.end());
+    while (g_PlanAnchorStates.size() >= MaxPlanAnchorStates) {
+        g_PlanAnchorStates.erase(g_PlanAnchorStates.begin());
+    }
+    g_PlanAnchorStates.push_back(ProgressivePlanAnchorState{
+        id,
+        std::move(signature),
+        std::move(inheritedScannedPaths),
         now
     });
     return id;
+}
+
+void recordPlanScannedRange(
+    uint64_t planId,
+    const std::vector<ContentCandidate>& candidates,
+    size_t localStart,
+    size_t localEnd
+) {
+    if (planId == 0 || localStart >= localEnd || localStart >= candidates.size()) return;
+    const size_t clampedEnd = (std::min)(localEnd, candidates.size());
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_ContentPlanCacheMutex);
+    for (auto& state : g_PlanAnchorStates) {
+        if (state.planId == planId) {
+            for (size_t idx = localStart; idx < clampedEnd; ++idx) {
+                if (state.scannedNormPaths.size() < 350000) {
+                    state.scannedNormPaths.insert(normalizeCandidatePathKey(candidates[idx].fullPath));
+                }
+            }
+            state.updatedAt = now;
+            break;
+        }
+    }
+}
+
+void storeBothModeNameRemainder(
+    uint64_t planId,
+    std::string signature,
+    std::vector<SearchResult> remainingNames,
+    size_t nextOffset
+) {
+    if (planId == 0 || nextOffset >= remainingNames.size()) return;
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_ContentPlanCacheMutex);
+    g_BothNameRemainders.erase(
+        std::remove_if(
+            g_BothNameRemainders.begin(),
+            g_BothNameRemainders.end(),
+            [&](const CachedBothNameRemainder& item) {
+                return (now - item.updatedAt) > ContentPlanCacheTtl ||
+                       item.planId == planId ||
+                       item.signature == signature;
+            }),
+        g_BothNameRemainders.end());
+    while (g_BothNameRemainders.size() >= MaxCachedContentPlans) {
+        g_BothNameRemainders.erase(g_BothNameRemainders.begin());
+    }
+    g_BothNameRemainders.push_back(CachedBothNameRemainder{
+        planId,
+        std::move(signature),
+        std::move(remainingNames),
+        nextOffset,
+        now
+    });
+}
+
+void rebindBothModeNameRemainderPlanId(uint64_t oldPlanId, uint64_t newPlanId, std::string_view signature) {
+    if (oldPlanId == 0 || newPlanId == 0 || oldPlanId == newPlanId) return;
+    std::lock_guard<std::mutex> lock(g_ContentPlanCacheMutex);
+    for (auto& entry : g_BothNameRemainders) {
+        if (entry.planId == oldPlanId && entry.signature == signature) {
+            entry.planId = newPlanId;
+            entry.updatedAt = std::chrono::steady_clock::now();
+            break;
+        }
+    }
+}
+
+std::vector<SearchResult> consumeBothModeNameRemainder(
+    uint64_t planId,
+    std::string_view signature,
+    size_t maxCount,
+    bool& outHasMoreNames
+) {
+    outHasMoreNames = false;
+    std::vector<SearchResult> slice;
+    if (planId == 0) return slice;
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_ContentPlanCacheMutex);
+    for (auto it = g_BothNameRemainders.begin(); it != g_BothNameRemainders.end(); ++it) {
+        if ((it->planId == planId || it->signature == signature) && it->signature == signature) {
+            if ((now - it->updatedAt) > ContentPlanCacheTtl ||
+                it->nextOffset >= it->remainingNames.size()) {
+                g_BothNameRemainders.erase(it);
+                return slice;
+            }
+            const size_t avail = it->remainingNames.size() - it->nextOffset;
+            const size_t take = (std::min)(maxCount, avail);
+            slice.reserve(take);
+            for (size_t i = 0; i < take; ++i) {
+                slice.push_back(it->remainingNames[it->nextOffset + i]);
+            }
+            it->nextOffset += take;
+            it->updatedAt = now;
+            if (it->nextOffset < it->remainingNames.size()) {
+                outHasMoreNames = true;
+            } else {
+                g_BothNameRemainders.erase(it);
+            }
+            return slice;
+        }
+    }
+    return slice;
+}
+
+std::wstring expandQueryEnvForClient(
+    const std::wstring& input,
+    HANDLE hClientToken,
+    bool isSameUserProcessSid
+) {
+    if (input.find(L'%') == std::wstring::npos) {
+        return input;
+    }
+    constexpr DWORD kMaxExpandedChars = 4096;
+    std::vector<wchar_t> buf(kMaxExpandedChars, L'\0');
+    if (hClientToken != nullptr && hClientToken != INVALID_HANDLE_VALUE) {
+        if (ExpandEnvironmentStringsForUserW(hClientToken, input.c_str(), buf.data(), kMaxExpandedChars)) {
+            buf.back() = L'\0';
+            std::wstring expanded(buf.data());
+            if (!expanded.empty()) {
+                return expanded;
+            }
+        }
+    } else if (isSameUserProcessSid || !tools3000::service::pipe_auth::isCurrentProcessLocalSystem()) {
+        const DWORD n = ExpandEnvironmentStringsW(input.c_str(), buf.data(), kMaxExpandedChars);
+        if (n > 0 && n <= kMaxExpandedChars) {
+            return std::wstring(buf.data(), static_cast<size_t>(n - 1));
+        }
+    }
+    return input;
 }
 
 }  // namespace
@@ -143,26 +347,81 @@ std::string WStringToString(const std::wstring& wstr);
 bool configurePipeEndpoint(DWORD argc, wchar_t** argv) {
     std::string token;
     std::wstring sid;
+    bool isolatedPortable = false;
+    bool hasTokenArg = false;
+    bool hasSidArg = false;
+
     for (DWORD index = 0; index < argc; ++index) {
         const std::wstring_view arg = argv[index] ? argv[index] : L"";
         constexpr std::wstring_view tokenPrefix = L"--pipe-token=";
         constexpr std::wstring_view sidPrefix = L"--client-sid=";
         if (arg.starts_with(tokenPrefix)) {
+            hasTokenArg = true;
             token = WStringToString(std::wstring(arg.substr(tokenPrefix.size())));
         } else if (arg.starts_with(sidPrefix)) {
+            hasSidArg = true;
             sid = std::wstring(arg.substr(sidPrefix.size()));
+        } else if (arg == L"--portable-isolated") {
+            isolatedPortable = true;
         }
     }
+
     PSID parsedSid = nullptr;
-    const bool sidValid = !sid.empty() && ConvertStringSidToSidW(sid.c_str(), &parsedSid);
+    const bool sidValid = !sid.empty() && ConvertStringSidToSidW(sid.c_str(), &parsedSid) != FALSE;
     if (parsedSid) LocalFree(parsedSid);
-    const auto pipe = tools3000::service::pipe_endpoint::makePipeName(token);
-    if (!sidValid || !pipe) {
-        spdlog::error("Search service missing or invalid per-user IPC endpoint arguments");
+    const auto tokenPipe = tools3000::service::pipe_endpoint::makePipeName(token);
+
+    if ((hasSidArg && !sidValid) || (hasTokenArg && !tokenPipe)) {
+        spdlog::error("Search service received malformed per-user IPC endpoint arguments");
         return false;
     }
-    g_SearchPipeName = *pipe;
-    g_SearchClientSid = std::move(sid);
+
+    g_CompatTokenPipeName.clear();
+    g_CompatTokenClientSid.clear();
+
+    if (isolatedPortable) {
+        if (!sidValid || !tokenPipe) {
+            spdlog::error("Isolated portable search service requires valid --pipe-token and --client-sid");
+            return false;
+        }
+        g_UseKernelServicePipeSddl = false;
+        g_SearchPipeName = *tokenPipe;
+        g_SearchClientSid = std::move(sid);
+        return true;
+    }
+
+    if (tools3000::service::pipe_auth::isCurrentProcessLocalSystem()) {
+        // SCM LocalSystem mode: always publish the immutable kernel-authenticated pipe so
+        // resetting/importing `config.json` never breaks connectivity (`HIGH-10`).
+        g_UseKernelServicePipeSddl = true;
+        g_SearchPipeName = std::string(tools3000::service::pipe_endpoint::KernelAuthPipeName);
+        g_SearchClientSid.clear();
+        if (sidValid && tokenPipe) {
+            g_CompatTokenPipeName = *tokenPipe;
+            g_CompatTokenClientSid = std::move(sid);
+        }
+        return true;
+    }
+
+    // Standalone / portable user mode: derive deterministic per-SID endpoint from immutable Windows SID.
+    std::wstring effectiveSid = sidValid ? sid : tools3000::service::pipe_auth::queryCurrentProcessUserSidString();
+    PSID verifySelfSid = nullptr;
+    const bool effectiveSidOk = !effectiveSid.empty() &&
+                                ConvertStringSidToSidW(effectiveSid.c_str(), &verifySelfSid) != FALSE;
+    if (verifySelfSid) LocalFree(verifySelfSid);
+    const auto sidPipe = tools3000::service::pipe_endpoint::makeUserSidPipeName(effectiveSid);
+    if (!effectiveSidOk || !sidPipe) {
+        spdlog::error("Search service unable to resolve valid user SID endpoint");
+        return false;
+    }
+
+    g_UseKernelServicePipeSddl = false;
+    g_SearchPipeName = *sidPipe;
+    g_SearchClientSid = effectiveSid;
+    if (tokenPipe && *tokenPipe != g_SearchPipeName) {
+        g_CompatTokenPipeName = *tokenPipe;
+        g_CompatTokenClientSid = effectiveSid;
+    }
     return true;
 }
 
@@ -268,17 +527,23 @@ void RequestServiceShutdown() {
 
     g_PipePokeJob = std::jthread([](std::stop_token stop) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) {
-            HANDLE poke = CreateFileA(g_SearchPipeName.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+        const auto pokePipe = [](const std::string& name) -> bool {
+            if (name.empty()) return false;
+            HANDLE poke = CreateFileA(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
                                       nullptr, OPEN_EXISTING, 0, nullptr);
             if (poke == INVALID_HANDLE_VALUE) {
-                // 管道实例全部消失，说明工作线程已经退干净了。
-                if (GetLastError() == ERROR_FILE_NOT_FOUND) break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                continue;
+                return GetLastError() != ERROR_FILE_NOT_FOUND;
             }
             CloseHandle(poke);
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            return true;
+        };
+        while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) {
+            const bool mainAlive = pokePipe(g_SearchPipeName);
+            const bool compatAlive = pokePipe(g_CompatTokenPipeName);
+            if (!mainAlive && !compatAlive) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     });
 }
@@ -341,9 +606,14 @@ void InitLogger() {
 
 nlohmann::json ProcessSearchQuery(
     const std::wstring& rawInput,
-    HANDLE hClientToken = nullptr,
-    bool isSameUserProcessSid = false
+    const tools3000::service::pipe_auth::PipeClientAuthSession& authSession = {}
 ) {
+    const HANDLE hClientToken = authSession.clientToken;
+    const bool isSameUserProcessSid = authSession.isSameUserProcessSid;
+    const std::wstring effectiveClientSid = !authSession.clientSid.empty()
+        ? authSession.clientSid
+        : g_SearchClientSid;
+
     std::wstring wQuery;
     std::string searchMode = "name";
     std::vector<char> enabledDrives;
@@ -412,7 +682,11 @@ nlohmann::json ProcessSearchQuery(
                         if (pathUtf8.size() > tools3000::service::search_limits::MaxPathUtf8Bytes) {
                             return {{"success", false}, {"error", "path exceeds limit"}};
                         }
-                        std::wstring path = StringToWString(pathUtf8);
+                        std::wstring path = expandQueryEnvForClient(
+                            StringToWString(pathUtf8), hClientToken, isSameUserProcessSid);
+                        if (!tools3000::service::pipe_auth::isPathAllowedForClient(path, authSession)) {
+                            return {{"success", false}, {"error", "access denied"}};
+                        }
                         tools3000::service::db::RunHistoryManager::instance().recordRun(path);
                         return {{"success", true}};
                     }
@@ -528,7 +802,8 @@ nlohmann::json ProcessSearchQuery(
                 if (queryUtf8.size() > tools3000::service::search_limits::MaxQueryUtf8Bytes) {
                     return {{"results", nlohmann::json::array()}, {"error", "query exceeds 1024-byte limit"}};
                 }
-                wQuery = StringToWString(queryUtf8);
+                wQuery = expandQueryEnvForClient(
+                    StringToWString(queryUtf8), hClientToken, isSameUserProcessSid);
             }
             if (const auto qidIt = reqJson.find("queryId"); qidIt != reqJson.end() && !qidIt->is_null()) {
                 if (qidIt->is_number_unsigned()) {
@@ -591,7 +866,10 @@ nlohmann::json ProcessSearchQuery(
                     if (s.size() > tools3000::service::search_limits::MaxExcludeUtf8Bytes) {
                         return {{"results", nlohmann::json::array()}, {"error", "exclude pattern exceeds limit"}};
                     }
-                    if (!s.empty()) excludeOpts.patterns.push_back(StringToWString(s));
+                    if (!s.empty()) {
+                        excludeOpts.patterns.push_back(expandQueryEnvForClient(
+                            StringToWString(s), hClientToken, isSameUserProcessSid));
+                    }
                 }
             } else if (reqJson.contains("excludes") && !reqJson["excludes"].is_null()) {
                 return {{"results", nlohmann::json::array()}, {"error", "excludes must be an array"}};
@@ -666,7 +944,13 @@ nlohmann::json ProcessSearchQuery(
             if (reqJson.contains("dialogPriorities") && reqJson["dialogPriorities"].is_array()) {
                 for (const auto& item : reqJson["dialogPriorities"]) {
                     if (item.is_object() && item.contains("path") && item["path"].is_string()) {
-                        std::wstring wp = StringToWString(item["path"].get<std::string>());
+                        std::wstring wp = expandQueryEnvForClient(
+                            StringToWString(item["path"].get<std::string>()),
+                            hClientToken,
+                            isSameUserProcessSid);
+                        if (!tools3000::service::pipe_auth::isPathAllowedForClient(wp, authSession)) {
+                            continue;
+                        }
                         for (auto& c : wp) c = std::towlower(c);
                         double sc = item.value("score", 3000.0);
                         if (!wp.empty()) dialogPriorities.emplace_back(std::move(wp), sc);
@@ -680,13 +964,16 @@ nlohmann::json ProcessSearchQuery(
         if (utf8Input.size() > tools3000::service::search_limits::MaxQueryUtf8Bytes) {
             return {{"results", nlohmann::json::array()}, {"error", "query exceeds 1024-byte limit"}};
         }
-        wQuery = rawInput;
+        wQuery = expandQueryEnvForClient(rawInput, hClientToken, isSameUserProcessSid);
     }
     const auto overallStartTime = std::chrono::steady_clock::now();
 
+    // Monotonic server-side epoch (`MED-17`): immune to client clock rollback or huge `queryId`.
     auto& epochTracker = tools3000::service::query::sharedEpochTracker();
-    epochTracker.observe(queryId);
-    const auto isCancelled = [&epochTracker, queryId]() { return epochTracker.isStale(queryId); };
+    const uint64_t serverEpoch = epochTracker.issueServerEpoch(queryId);
+    const auto isCancelled = [&epochTracker, serverEpoch]() noexcept {
+        return epochTracker.isServerEpochStale(serverEpoch);
+    };
 
     auto isDriveEnabled = [&](char driveLetter) {
         if (enabledDrives.empty()) return true;
@@ -723,7 +1010,9 @@ nlohmann::json ProcessSearchQuery(
     auto buildContentPlanSignature = [&]() -> std::string {
         std::string sig;
         sig.reserve(256);
-        sig.append(WStringToString(g_SearchClientSid));
+        sig.append(WStringToString(effectiveClientSid));
+        sig.push_back(':');
+        sig.push_back(authSession.isAdmin ? '1' : '0');
         sig.push_back('\x1f');
         sig.append(searchMode);
         sig.push_back('\x1f');
@@ -755,21 +1044,29 @@ nlohmann::json ProcessSearchQuery(
     };
 
     auto runNameSearch = [&](const std::wstring& queryStr, size_t maxCount) -> std::vector<SearchResult> {
+        const size_t perVolumeCap = authSession.isAdmin
+            ? maxCount
+            : (std::min)(
+                  static_cast<size_t>(tools3000::service::search_limits::MaxResults),
+                  (std::max)(maxCount * 4, static_cast<size_t>(512)));
+
         std::vector<std::future<std::vector<SearchResult>>> futures;
         futures.reserve(g_MftParsers.size());
         for (auto& parser : g_MftParsers) {
             if (!isDriveEnabled(parser->getDriveLetter())) continue;
-            futures.push_back(std::async(std::launch::async, [&parser, &queryStr, &excludeOpts, &isCancelled, &parseOpts, maxCount]() {
-                return parser->Search(queryStr, static_cast<int>(maxCount), excludeOpts, isCancelled, parseOpts);
+            futures.push_back(std::async(std::launch::async, [&parser, &queryStr, &excludeOpts, &isCancelled, &parseOpts, perVolumeCap]() {
+                return parser->Search(queryStr, static_cast<int>(perVolumeCap), excludeOpts, isCancelled, parseOpts);
             }));
         }
 
         std::vector<SearchResult> results;
         for (auto& f : futures) {
             auto volumeResults = f.get();
-            results.insert(results.end(),
-                           std::make_move_iterator(volumeResults.begin()),
-                           std::make_move_iterator(volumeResults.end()));
+            for (auto& candidate : volumeResults) {
+                if (tools3000::service::pipe_auth::isPathAllowedForClient(candidate.fullPath, authSession)) {
+                    results.push_back(std::move(candidate));
+                }
+            }
         }
         const auto classifyPathTier = [](const SearchResult& r) -> int {
             std::wstring lowerPath;
@@ -894,15 +1191,22 @@ nlohmann::json ProcessSearchQuery(
         const std::string planSignature = progressive ? buildContentPlanSignature() : std::string{};
         std::shared_ptr<const std::vector<ContentCandidate>> candidatesPtr;
         uint64_t activePlanId = 0;
+        size_t planBaseOffset = 0;
 
         if (progressive && requestCursor > 0 && requestedPlanId != 0) {
-            candidatesPtr = lookupCachedContentPlan(requestedPlanId, planSignature);
-            if (candidatesPtr) {
-                activePlanId = requestedPlanId;
+            if (auto cachedPlan = lookupCachedContentPlan(requestedPlanId, planSignature)) {
+                candidatesPtr = std::move(cachedPlan->candidates);
+                activePlanId = cachedPlan->planId;
+                planBaseOffset = cachedPlan->baseCursorOffset;
             }
         }
 
         if (!candidatesPtr) {
+            const bool isMidFlightRebuild = (progressive && requestCursor > 0 && requestedPlanId != 0);
+            std::unordered_set<std::wstring> inheritedScanned = isMidFlightRebuild
+                ? lookupPlanAnchorScannedPaths(requestedPlanId, planSignature)
+                : std::unordered_set<std::wstring>{};
+
             ContentCandidateOptions candidateOpts;
             candidateOpts.excludeOpts = excludeOpts;
             candidateOpts.formatFilter = reqFilterPtr;
@@ -934,14 +1238,28 @@ nlohmann::json ProcessSearchQuery(
                 if (isCancelled()) return outcome;
                 auto volumeCandidates = parser->CollectContentCandidates(
                     plan.fileFilterExpr, candidateOpts, isCancelled);
-                freshCandidates->insert(
-                    freshCandidates->end(),
-                    std::make_move_iterator(volumeCandidates.begin()),
-                    std::make_move_iterator(volumeCandidates.end())
-                );
+                for (auto& cand : volumeCandidates) {
+                    if (!tools3000::service::pipe_auth::isPathAllowedForClient(cand.fullPath, authSession)) {
+                        continue;
+                    }
+                    if (!inheritedScanned.empty() &&
+                        inheritedScanned.find(normalizeCandidatePathKey(cand.fullPath)) != inheritedScanned.end()) {
+                        continue;
+                    }
+                    freshCandidates->push_back(std::move(cand));
+                }
             }
 
-            if (freshCandidates->empty() || isCancelled()) {
+            if (isCancelled()) {
+                return outcome;
+            }
+            if (freshCandidates->empty()) {
+                if (isMidFlightRebuild) {
+                    outcome.planId = requestedPlanId;
+                    outcome.nextCursor = requestCursor;
+                    outcome.totalCandidates = requestCursor;
+                    outcome.hasMore = false;
+                }
                 return outcome;
             }
 
@@ -972,18 +1290,29 @@ nlohmann::json ProcessSearchQuery(
 
             candidatesPtr = freshCandidates;
             if (progressive) {
-                activePlanId = storeCachedContentPlan(planSignature, candidatesPtr);
+                planBaseOffset = isMidFlightRebuild ? requestCursor : 0;
+                activePlanId = storeCachedContentPlan(
+                    planSignature,
+                    candidatesPtr,
+                    planBaseOffset,
+                    std::move(inheritedScanned));
+                if (isMidFlightRebuild) {
+                    rebindBothModeNameRemainderPlanId(requestedPlanId, activePlanId, planSignature);
+                }
             }
         }
 
         const auto& textCandidates = *candidatesPtr;
-        const size_t totalCandidates = textCandidates.size();
+        const size_t localTotal = textCandidates.size();
         outcome.planId = activePlanId;
-        outcome.totalCandidates = totalCandidates;
+        outcome.totalCandidates = planBaseOffset + localTotal;
 
-        const size_t startCursor = progressive ? (std::min)(requestCursor, totalCandidates) : 0;
-        if (startCursor >= totalCandidates || isCancelled()) {
-            outcome.nextCursor = totalCandidates;
+        const size_t rawRelCursor = (progressive && requestCursor > planBaseOffset)
+            ? (requestCursor - planBaseOffset)
+            : 0;
+        const size_t startCursor = progressive ? (std::min)(rawRelCursor, localTotal) : 0;
+        if (startCursor >= localTotal || isCancelled()) {
+            outcome.nextCursor = planBaseOffset + localTotal;
             outcome.hasMore = false;
             return outcome;
         }
@@ -1008,11 +1337,11 @@ nlohmann::json ProcessSearchQuery(
         for (unsigned int t = 0; t < numThreads; ++t) {
             workers.emplace_back([&, hClientToken, isSameUserProcessSid, reqFilterPtr]() {
                 tools3000::service::pipe_auth::ScopedContentReadImpersonation impGuard(
-                    hClientToken, isSameUserProcessSid, g_SearchClientSid);
+                    hClientToken, isSameUserProcessSid, effectiveClientSid);
                 if (!impGuard.isAuthorized()) {
                     spdlog::error(
                         "Refusing unauthenticated content search worker (sid={}, err={})",
-                        WStringToString(g_SearchClientSid),
+                        WStringToString(effectiveClientSid),
                         impGuard.lastError()
                     );
                     return;
@@ -1025,7 +1354,7 @@ nlohmann::json ProcessSearchQuery(
                         const auto sliceElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - sliceStart).count();
                         const size_t currentHits = matchCount.load(std::memory_order_relaxed);
-                        if (startCursor == 0) {
+                        if (requestCursor == 0 && planBaseOffset == 0) {
                             if (currentHits >= tools3000::service::search_limits::ProgressiveFirstSliceMaxHits ||
                                 (currentHits >= 1 && sliceElapsedMs >= tools3000::service::search_limits::ProgressiveFirstSliceWithHitsMs) ||
                                 sliceElapsedMs >= tools3000::service::search_limits::ProgressiveFirstSliceEmptyBudgetMs) {
@@ -1042,7 +1371,7 @@ nlohmann::json ProcessSearchQuery(
                     }
 
                     const size_t idx = nextIndex.fetch_add(1, std::memory_order_relaxed);
-                    if (idx >= totalCandidates) break;
+                    if (idx >= localTotal) break;
 
                     const auto& item = textCandidates[idx];
                     try {
@@ -1134,12 +1463,16 @@ nlohmann::json ProcessSearchQuery(
             outcome.items.push_back(std::move(entry.item));
         }
 
-        const size_t finalCursor = (std::min)(nextIndex.load(std::memory_order_relaxed), totalCandidates);
-        outcome.nextCursor = finalCursor;
+        const size_t localFinalCursor = (std::min)(nextIndex.load(std::memory_order_relaxed), localTotal);
+        if (progressive && activePlanId != 0 && localFinalCursor > startCursor) {
+            recordPlanScannedRange(activePlanId, textCandidates, startCursor, localFinalCursor);
+        }
+        outcome.nextCursor = planBaseOffset + localFinalCursor;
+        // `HIGH-15`: `hasMore` reflects whether unscanned content candidates remain;
+        // never clear `hasMore` merely because a slice reached `maxCount`.
         outcome.hasMore = progressive &&
                           !isCancelled() &&
-                          (outcome.items.size() < maxCount) &&
-                          (finalCursor < totalCandidates);
+                          (localFinalCursor < localTotal);
         return outcome;
     };
 
@@ -1186,20 +1519,10 @@ nlohmann::json ProcessSearchQuery(
             responseJson["totalCandidates"] = 0;
         }
     } else if (searchMode == "both") {
-        // Dual mode: 首拍并发跑文件名检索 + 内容首拍，后续续扫拍仅增量拉取内容检索结果
-        std::vector<SearchResult> nameMatches;
-        if (!progressive || requestCursor == 0) {
-            nameMatches = runNameSearch(wQuery, requestedLimit);
-        }
+        // Hybrid ("both") pagination state machine (`HIGH-15`):
+        // Independently tracks filename pagination completion and content scan cursor (`contentHasMore`)
+        // so abundant filename hits never starve or prematurely terminate document body scanning.
         ContentSearchPlan bothPlan = SearchExpression::buildContentPlan(wQuery, true, parseOpts);
-        ContentBatchOutcome contentOutcome;
-        const size_t remainingBudget = requestedLimit > nameMatches.size()
-            ? (requestedLimit - nameMatches.size())
-            : 0;
-        if (!bothPlan.contentTerms.empty() && remainingBudget > 0) {
-            contentOutcome = runContentSearch(bothPlan, remainingBudget);
-        }
-        attachProgressiveMetadata(contentOutcome);
 
         auto makeDedupKey = [](const std::wstring& path) {
             std::wstring norm;
@@ -1210,9 +1533,10 @@ nlohmann::json ProcessSearchQuery(
             return norm;
         };
 
-        std::unordered_set<std::wstring> seenPaths;
-        for (const auto& result : nameMatches) {
-            seenPaths.insert(makeDedupKey(result.fullPath));
+        auto appendNameResultJson = [&](const SearchResult& result, std::unordered_set<std::wstring>& seenPaths) {
+            if (!seenPaths.insert(makeDedupKey(result.fullPath)).second) {
+                return;
+            }
             std::string p = WStringToString(result.fullPath);
             const auto histStats = sharedHistorySnap.lookup(result.fullPath);
             responseJson["results"].push_back({
@@ -1226,14 +1550,128 @@ nlohmann::json ProcessSearchQuery(
                 {"runCount", histStats.runCount},
                 {"frecencyScore", histStats.frecencyScore}
             });
-        }
+        };
 
-        for (auto& item : contentOutcome.items) {
-            const std::string p = item["path"].get<std::string>();
-            const std::wstring wp = StringToWString(p);
-            if (seenPaths.insert(makeDedupKey(wp)).second) {
-                responseJson["results"].push_back(std::move(item));
+        std::unordered_set<std::wstring> seenPaths;
+
+        if (!progressive) {
+            auto nameMatches = runNameSearch(wQuery, requestedLimit);
+            for (const auto& result : nameMatches) {
+                appendNameResultJson(result, seenPaths);
             }
+            const size_t remainingBudget = requestedLimit > responseJson["results"].size()
+                ? (requestedLimit - responseJson["results"].size())
+                : 0;
+            if (!bothPlan.contentTerms.empty() && remainingBudget > 0) {
+                auto contentOutcome = runContentSearch(bothPlan, remainingBudget);
+                for (auto& item : contentOutcome.items) {
+                    const std::wstring wp = StringToWString(item["path"].get<std::string>());
+                    if (seenPaths.insert(makeDedupKey(wp)).second) {
+                        responseJson["results"].push_back(std::move(item));
+                        if (responseJson["results"].size() >= requestedLimit) break;
+                    }
+                }
+            }
+        } else if (requestCursor == 0 && requestedPlanId == 0) {
+            auto allNameMatches = runNameSearch(wQuery, requestedLimit);
+            if (bothPlan.contentTerms.empty()) {
+                for (const auto& result : allNameMatches) {
+                    appendNameResultJson(result, seenPaths);
+                }
+                ContentBatchOutcome emptyOutcome;
+                attachProgressiveMetadata(emptyOutcome);
+            } else {
+                // Reserve at least 25% of `requestedLimit` (>= 1 slot when `requestedLimit >= 2`)
+                // for first-slice content scanning so `nextCursor` advances and `hasMore` stays `true`
+                // whenever body candidates remain unscanned (`HIGH-15`).
+                size_t firstSliceNameCap = allNameMatches.size();
+                if (requestedLimit >= 4 && firstSliceNameCap > (requestedLimit * 3) / 4) {
+                    firstSliceNameCap = (requestedLimit * 3) / 4;
+                } else if (requestedLimit >= 2 && firstSliceNameCap >= requestedLimit) {
+                    firstSliceNameCap = requestedLimit - 1;
+                }
+
+                for (size_t i = 0; i < firstSliceNameCap; ++i) {
+                    appendNameResultJson(allNameMatches[i], seenPaths);
+                }
+
+                const size_t contentBudget = requestedLimit > responseJson["results"].size()
+                    ? (requestedLimit - responseJson["results"].size())
+                    : 1;
+                ContentBatchOutcome contentOutcome = runContentSearch(bothPlan, contentBudget);
+                for (auto& item : contentOutcome.items) {
+                    const std::wstring wp = StringToWString(item["path"].get<std::string>());
+                    if (seenPaths.insert(makeDedupKey(wp)).second) {
+                        responseJson["results"].push_back(std::move(item));
+                        if (responseJson["results"].size() >= requestedLimit) break;
+                    }
+                }
+
+                bool nameHasMore = (firstSliceNameCap < allNameMatches.size());
+                if (!contentOutcome.hasMore && nameHasMore) {
+                    // Content scan finished on the initial slice; immediately backfill deferred name matches.
+                    size_t idx = firstSliceNameCap;
+                    while (idx < allNameMatches.size() && responseJson["results"].size() < requestedLimit) {
+                        appendNameResultJson(allNameMatches[idx], seenPaths);
+                        ++idx;
+                    }
+                    nameHasMore = (idx < allNameMatches.size());
+                    firstSliceNameCap = idx;
+                }
+
+                if (nameHasMore && contentOutcome.planId != 0) {
+                    storeBothModeNameRemainder(
+                        contentOutcome.planId,
+                        buildContentPlanSignature(),
+                        std::move(allNameMatches),
+                        firstSliceNameCap);
+                }
+
+                const bool combinedHasMore = !isCancelled() && (contentOutcome.hasMore || (nameHasMore && contentOutcome.planId != 0));
+                if (combinedHasMore && contentOutcome.nextCursor == 0) {
+                    contentOutcome.nextCursor = 1;
+                }
+                contentOutcome.hasMore = combinedHasMore;
+                attachProgressiveMetadata(contentOutcome);
+            }
+        } else {
+            // Progressive continuation slice (`requestCursor > 0` or `requestedPlanId != 0`):
+            // advance content scan first, then drain any deferred filename remainder once content completes.
+            ContentBatchOutcome contentOutcome;
+            if (!bothPlan.contentTerms.empty()) {
+                contentOutcome = runContentSearch(bothPlan, requestedLimit);
+                for (auto& item : contentOutcome.items) {
+                    const std::wstring wp = StringToWString(item["path"].get<std::string>());
+                    if (seenPaths.insert(makeDedupKey(wp)).second) {
+                        responseJson["results"].push_back(std::move(item));
+                        if (responseJson["results"].size() >= requestedLimit) break;
+                    }
+                }
+            }
+
+            bool nameHasMore = false;
+            if (!contentOutcome.hasMore && responseJson["results"].size() < requestedLimit) {
+                const uint64_t lookupPlanId = contentOutcome.planId != 0 ? contentOutcome.planId : requestedPlanId;
+                const size_t remainSlots = requestedLimit - responseJson["results"].size();
+                auto deferredNames = consumeBothModeNameRemainder(
+                    lookupPlanId,
+                    buildContentPlanSignature(),
+                    remainSlots,
+                    nameHasMore);
+                for (const auto& result : deferredNames) {
+                    appendNameResultJson(result, seenPaths);
+                }
+                if (contentOutcome.planId == 0) {
+                    contentOutcome.planId = lookupPlanId;
+                }
+            }
+
+            const bool combinedHasMore = !isCancelled() && (contentOutcome.hasMore || nameHasMore);
+            if (combinedHasMore && contentOutcome.nextCursor <= requestCursor) {
+                contentOutcome.nextCursor = requestCursor + 1;
+            }
+            contentOutcome.hasMore = combinedHasMore;
+            attachProgressiveMetadata(contentOutcome);
         }
     } else {
         // Name-only fast mode
@@ -1346,7 +1784,12 @@ struct OverlappedIoTransfer {
 
 }  // namespace
 
-void PipeWorkerThread(PSECURITY_DESCRIPTOR pipeDescriptor, SECURITY_ATTRIBUTES* pipeSecurity) {
+void PipeWorkerThread(
+    std::string pipeName,
+    std::wstring pipeExpectedSid,
+    PSECURITY_DESCRIPTOR pipeDescriptor,
+    SECURITY_ATTRIBUTES* pipeSecurity
+) {
     namespace frame = tools3000::service::pipe;
 
     OverlappedIoTransfer transfer;
@@ -1358,7 +1801,7 @@ void PipeWorkerThread(PSECURITY_DESCRIPTOR pipeDescriptor, SECURITY_ATTRIBUTES* 
 
     while (g_IsRunning.load()) {
         HANDLE hPipe = CreateNamedPipeA(
-            g_SearchPipeName.c_str(),
+            pipeName.c_str(),
             PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
@@ -1399,7 +1842,9 @@ void PipeWorkerThread(PSECURITY_DESCRIPTOR pipeDescriptor, SECURITY_ATTRIBUTES* 
 
                 uint32_t requestBytes = 0;
                 if (!frame::decodeFrameHeader(header, requestBytes, frame::MaxRequestBytes)) {
-                    spdlog::warn("Pipe: invalid request frame header, disconnecting client");
+                    spdlog::warn("Pipe: invalid or oversized request frame header, disconnecting client");
+                    FlushFileBuffers(hPipe);
+                    DisconnectNamedPipe(hPipe);
                     break;
                 }
 
@@ -1410,20 +1855,42 @@ void PipeWorkerThread(PSECURITY_DESCRIPTOR pipeDescriptor, SECURITY_ATTRIBUTES* 
                 // so Windows kernel ImpersonateNamedPipeClient never hits ERROR_CANNOT_IMPERSONATE.
                 if (!clientAuthEvaluated) {
                     authSession = tools3000::service::pipe_auth::authenticatePipeClientAfterFirstRead(
-                        hPipe, g_SearchClientSid);
+                        hPipe, pipeExpectedSid);
                     clientAuthEvaluated = true;
-                    if (!authSession.authorized && !g_SearchClientSid.empty()) {
+                    if (!authSession.authorized) {
                         spdlog::warn(
-                            "Pipe: client auth did not produce impersonation token (err={}), content reads restricted",
+                            "Pipe: client authentication failed (err={}), disconnecting immediately",
                             authSession.lastError
                         );
+                        const std::string errBody =
+                            R"({"results":[],"available":false,"error":"unauthorized pipe client"})";
+                        const auto errHeader =
+                            frame::encodeFrameHeader(static_cast<uint32_t>(errBody.size()));
+                        transfer.writeExact(hPipe, errHeader.data(), errHeader.size(), 2000);
+                        transfer.writeExact(hPipe, errBody.data(), errBody.size(), 2000);
+                        FlushFileBuffers(hPipe);
+                        DisconnectNamedPipe(hPipe);
+                        break;
                     }
+
+                    // Bind per-user history stores under client impersonation (`CRIT-05`):
+                    // resolves `%LOCALAPPDATA%\Tools3000\service_user_data` using client token
+                    // so `LocalSystem` never writes into user-writable directories as SYSTEM.
+                    tools3000::service::db::RunHistoryManager::instance().bindClientUserContext(
+                        authSession.clientToken,
+                        authSession.isSameUserProcessSid,
+                        authSession.clientSid
+                    );
+                    tools3000::service::db::SearchHistoryManager::instance().bindClientUserContext(
+                        authSession.clientToken,
+                        authSession.isSameUserProcessSid,
+                        authSession.clientSid
+                    );
                 }
 
                 nlohmann::json responseJson = ProcessSearchQuery(
                     StringToWString(request),
-                    authSession.clientToken,
-                    authSession.isSameUserProcessSid
+                    authSession
                 );
                 const std::string response = responseJson.dump();
                 if (!frame::fitsInFrame(response.size())) {
@@ -1447,12 +1914,12 @@ void PipeWorkerThread(PSECURITY_DESCRIPTOR pipeDescriptor, SECURITY_ATTRIBUTES* 
 void IPCServerThread() {
     spdlog::info("IPC Server Thread started.");
 
-    // Build the DACL before creating any pipe instance. Publishing the endpoint
-    // early avoids SCM/portable duplicate starts, but it must remain private to
-    // the requesting SID even if later disk initialization is slow.
+    // Build restricted DACL + Medium Mandatory Integrity Label (`S:(ML;;NW;;;ME)`) before creating pipes.
     PSECURITY_DESCRIPTOR pipeDescriptor = nullptr;
     SECURITY_ATTRIBUTES pipeSecurity{sizeof(SECURITY_ATTRIBUTES), nullptr, FALSE};
-    const auto securitySddl = tools3000::service::pipe_endpoint::makeSecurityDescriptor(g_SearchClientSid);
+    const std::optional<std::wstring> securitySddl = g_UseKernelServicePipeSddl
+        ? std::optional<std::wstring>(tools3000::service::pipe_endpoint::makeKernelServiceSecurityDescriptor())
+        : tools3000::service::pipe_endpoint::makeSecurityDescriptor(g_SearchClientSid);
     if (!securitySddl || !ConvertStringSecurityDescriptorToSecurityDescriptorW(
             securitySddl->c_str(), SDDL_REVISION_1, &pipeDescriptor, nullptr)) {
         const DWORD securityError = GetLastError();
@@ -1463,21 +1930,44 @@ void IPCServerThread() {
     }
     pipeSecurity.lpSecurityDescriptor = pipeDescriptor;
 
-    std::vector<std::thread> pipeWorkers;
-    pipeWorkers.reserve(NumPipeWorkers);
-    for (int i = 0; i < NumPipeWorkers; ++i) {
-        pipeWorkers.emplace_back(PipeWorkerThread, pipeDescriptor, &pipeSecurity);
+    PSECURITY_DESCRIPTOR compatPipeDescriptor = nullptr;
+    SECURITY_ATTRIBUTES compatPipeSecurity{sizeof(SECURITY_ATTRIBUTES), nullptr, FALSE};
+    if (!g_CompatTokenPipeName.empty() && !g_CompatTokenClientSid.empty()) {
+        const auto compatSddl =
+            tools3000::service::pipe_endpoint::makeSecurityDescriptor(g_CompatTokenClientSid);
+        if (compatSddl && ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                compatSddl->c_str(), SDDL_REVISION_1, &compatPipeDescriptor, nullptr)) {
+            compatPipeSecurity.lpSecurityDescriptor = compatPipeDescriptor;
+        }
     }
-    spdlog::info("Launched {} restricted named pipe worker(s) before index initialization", NumPipeWorkers);
 
-    // 初始化历史与快照数据库管理器 (按客户端 SID 隔离, A11)
-    if (!g_SearchClientSid.empty()) {
-        tools3000::service::db::RunHistoryManager::instance().initForSid(g_SearchClientSid);
-        tools3000::service::db::SearchHistoryManager::instance().initForSid(g_SearchClientSid);
-    } else {
-        tools3000::service::db::RunHistoryManager::instance().init();
-        tools3000::service::db::SearchHistoryManager::instance().init();
+    std::vector<std::thread> pipeWorkers;
+    pipeWorkers.reserve(NumPipeWorkers + NumCompatPipeWorkers);
+    for (int i = 0; i < NumPipeWorkers; ++i) {
+        pipeWorkers.emplace_back(
+            PipeWorkerThread,
+            g_SearchPipeName,
+            g_SearchClientSid,
+            pipeDescriptor,
+            &pipeSecurity
+        );
     }
+    if (compatPipeDescriptor != nullptr) {
+        for (int i = 0; i < NumCompatPipeWorkers; ++i) {
+            pipeWorkers.emplace_back(
+                PipeWorkerThread,
+                g_CompatTokenPipeName,
+                g_CompatTokenClientSid,
+                compatPipeDescriptor,
+                &compatPipeSecurity
+            );
+        }
+    }
+    spdlog::info("Launched {} restricted named pipe worker(s) before index initialization", pipeWorkers.size());
+
+    // Note (`CRIT-05`): RunHistoryManager and SearchHistoryManager are bound per-connection
+    // under the authenticated low-privilege client token (`%LOCALAPPDATA%\Tools3000\service_user_data`),
+    // never initialized globally under `LocalSystem` in user-writable directories.
     tools3000::service::db::DatabaseManager::instance().init();
 
     // 扫描所有本地驱动器
@@ -1578,6 +2068,7 @@ void IPCServerThread() {
     }
     for (auto& parser : g_MftParsers) parser->StopListening();
     g_MftParsers.clear();
+    if (compatPipeDescriptor) LocalFree(compatPipeDescriptor);
     if (pipeDescriptor) LocalFree(pipeDescriptor);
     spdlog::info("IPC Server Thread stopped.");
 }
@@ -1674,7 +2165,39 @@ enum class SingleInstanceLockResult {
 
 static SingleInstanceLockResult AcquireSingleInstanceLock() {
     static HANDLE lock = nullptr;
-    lock = CreateMutexW(nullptr, TRUE, L"Local\\Tools3000_SearchService_Singleton");
+
+    // Isolated portable harness mode (`--portable-isolated`) uses a per-token mutex so
+    // isolated lifecycle verification harnesses can coexist with an installed SCM service.
+    bool isolatedPortable = false;
+    std::wstring isolatedToken;
+    int wideArgc = 0;
+    LPWSTR* wideArgv = CommandLineToArgvW(GetCommandLineW(), &wideArgc);
+    if (wideArgv) {
+        for (int i = 1; i < wideArgc; ++i) {
+            const std::wstring_view arg = wideArgv[i] ? wideArgv[i] : L"";
+            constexpr std::wstring_view tokenPrefix = L"--pipe-token=";
+            if (arg == L"--portable-isolated") {
+                isolatedPortable = true;
+            } else if (arg.starts_with(tokenPrefix)) {
+                isolatedToken = std::wstring(arg.substr(tokenPrefix.size()));
+            }
+        }
+        LocalFree(wideArgv);
+    }
+
+    if (isolatedPortable && !isolatedToken.empty()) {
+        const std::wstring mutexName = L"Local\\Tools3000_Service_Instance_" + isolatedToken;
+        lock = CreateMutexW(nullptr, TRUE, mutexName.c_str());
+    } else {
+        // Primary cross-session singleton lock (`HIGH-10`): `Global\Tools3000_Service_Instance`.
+        // Gracefully falls back to `Local\Tools3000_Service_Instance` on `ERROR_ACCESS_DENIED`
+        // for unprivileged debug/portable runs.
+        lock = CreateMutexW(nullptr, TRUE, L"Global\\Tools3000_Service_Instance");
+        if (!lock && GetLastError() == ERROR_ACCESS_DENIED) {
+            lock = CreateMutexW(nullptr, TRUE, L"Local\\Tools3000_Service_Instance");
+        }
+    }
+
     if (!lock) {
         spdlog::error("Unable to acquire search-service singleton mutex: {}", GetLastError());
         return SingleInstanceLockResult::Failed;

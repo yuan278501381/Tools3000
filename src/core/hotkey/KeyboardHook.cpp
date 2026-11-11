@@ -301,7 +301,7 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
 
                                 if (cbToFire) {
                                     LOG_DEBUG("底层键盘钩子快捷键触发: name={}", matchedName);
-                                    MainThreadDispatcher::instance().post([cb = std::move(cbToFire), matchedName]() {
+                                    MainThreadDispatcher::instance().postDeferred([cb = std::move(cbToFire), matchedName]() {
                                         TraceId::Scope scope;
                                         try {
                                             cb();

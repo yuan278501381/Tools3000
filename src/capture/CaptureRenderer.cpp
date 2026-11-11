@@ -309,6 +309,9 @@ void CaptureRenderer::releaseWindowResources() {
     m_minimapSrcW = 0;
     m_minimapSrcH = 0;
     m_historyBitmap.Reset();
+    m_historyTiles.clear();
+    m_historyTilesW = 0;
+    m_historyTilesH = 0;
     m_markupClipLayer.Reset();
     m_numberBadgeSmallFormat.Reset();
     m_numberBadgeMediumFormat.Reset();
@@ -320,6 +323,57 @@ void CaptureRenderer::releaseWindowResources() {
     m_textScale = 0.0f;
     m_renderTarget.Reset();
     m_hwnd = nullptr;
+}
+
+void CaptureRenderer::resolveMonitorBoundsInCanvas(float canvasX,
+                                                   float canvasY,
+                                                   D2D1_SIZE_F surfaceSize,
+                                                   D2D1_RECT_F& outMonitorRect,
+                                                   D2D1_RECT_F& outWorkRect) const {
+    outMonitorRect = D2D1::RectF(0.0f, 0.0f, surfaceSize.width, surfaceSize.height);
+    outWorkRect = outMonitorRect;
+    if (!m_hwnd || !IsWindow(m_hwnd) || surfaceSize.width <= 0.0f || surfaceSize.height <= 0.0f) {
+        return;
+    }
+
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    RECT winRc{};
+    if (GetWindowRect(m_hwnd, &winRc)) {
+        vx = winRc.left;
+        vy = winRc.top;
+    }
+
+    const POINT ptScreen{
+        vx + static_cast<LONG>(std::lround(canvasX)),
+        vy + static_cast<LONG>(std::lround(canvasY))
+    };
+    const HMONITOR hMon = MonitorFromPoint(ptScreen, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!hMon || !GetMonitorInfoW(hMon, &mi)) {
+        return;
+    }
+
+    const D2D1_RECT_F monInCanvas = D2D1::RectF(
+        (std::max)(0.0f, static_cast<float>(mi.rcMonitor.left - vx)),
+        (std::max)(0.0f, static_cast<float>(mi.rcMonitor.top - vy)),
+        (std::min)(surfaceSize.width, static_cast<float>(mi.rcMonitor.right - vx)),
+        (std::min)(surfaceSize.height, static_cast<float>(mi.rcMonitor.bottom - vy)));
+    if (monInCanvas.right > monInCanvas.left + 32.0f && monInCanvas.bottom > monInCanvas.top + 32.0f) {
+        outMonitorRect = monInCanvas;
+    }
+
+    const D2D1_RECT_F workInCanvas = D2D1::RectF(
+        (std::max)(0.0f, static_cast<float>(mi.rcWork.left - vx)),
+        (std::max)(0.0f, static_cast<float>(mi.rcWork.top - vy)),
+        (std::min)(surfaceSize.width, static_cast<float>(mi.rcWork.right - vx)),
+        (std::min)(surfaceSize.height, static_cast<float>(mi.rcWork.bottom - vy)));
+    if (workInCanvas.right > workInCanvas.left + 32.0f && workInCanvas.bottom > workInCanvas.top + 32.0f) {
+        outWorkRect = workInCanvas;
+    } else {
+        outWorkRect = outMonitorRect;
+    }
 }
 
 bool CaptureRenderer::createTextFormatsForScale(float scale) {
@@ -429,31 +483,33 @@ bool CaptureRenderer::rebuildBitmapTiles(const cv::Mat& bgra,
         return false;
     }
 
-    constexpr int kMaxTileHeight = 4096;
+    const UINT32 hwMaxSize = m_renderTarget->GetMaximumBitmapSize();
+    const int maxTileDim = static_cast<int>((std::max)(256u, (std::min)(hwMaxSize > 0 ? hwMaxSize : 4096u, 4096u)));
     const auto props = D2D1::BitmapProperties(
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode));
 
-    for (int y = 0; y < bgra.rows; y += kMaxTileHeight) {
-        const int sliceH = (std::min)(kMaxTileHeight, bgra.rows - y);
-        cv::Mat slice = bgra.rowRange(y, y + sliceH);
-        if (!slice.isContinuous()) {
-            slice = slice.clone();
+    for (int y = 0; y < bgra.rows; y += maxTileDim) {
+        const int sliceH = (std::min)(maxTileDim, bgra.rows - y);
+        for (int x = 0; x < bgra.cols; x += maxTileDim) {
+            const int sliceW = (std::min)(maxTileDim, bgra.cols - x);
+            const cv::Mat slice = bgra(cv::Rect(x, y, sliceW, sliceH));
+            BitmapTile tile;
+            tile.xOffset = x;
+            tile.yOffset = y;
+            tile.width = sliceW;
+            tile.height = sliceH;
+            const HRESULT hr = m_renderTarget->CreateBitmap(
+                D2D1::SizeU(static_cast<UINT32>(sliceW), static_cast<UINT32>(sliceH)),
+                slice.data,
+                static_cast<UINT32>(slice.step[0]),
+                props,
+                tile.bitmap.GetAddressOf());
+            if (FAILED(hr) || !tile.bitmap) {
+                tiles.clear();
+                return false;
+            }
+            tiles.push_back(std::move(tile));
         }
-        BitmapTile tile;
-        tile.yOffset = y;
-        tile.width = slice.cols;
-        tile.height = sliceH;
-        const HRESULT hr = m_renderTarget->CreateBitmap(
-            D2D1::SizeU(static_cast<UINT32>(slice.cols), static_cast<UINT32>(sliceH)),
-            slice.data,
-            static_cast<UINT32>(slice.step[0]),
-            props,
-            tile.bitmap.GetAddressOf());
-        if (FAILED(hr) || !tile.bitmap) {
-            tiles.clear();
-            return false;
-        }
-        tiles.push_back(std::move(tile));
     }
 
     outW = bgra.cols;
@@ -479,10 +535,9 @@ void CaptureRenderer::drawTiledRegion(const std::vector<BitmapTile>& tiles,
     const float scaleY = dstH / srcH;
     const float clampedSx0 = std::clamp(srcRect.left, 0.0f, static_cast<float>(totalW));
     const float clampedSx1 = std::clamp(srcRect.right, 0.0f, static_cast<float>(totalW));
-    if (clampedSx1 <= clampedSx0) return;
-
-    const float tileDstLeft = dstRect.left + (clampedSx0 - srcRect.left) * scaleX;
-    const float tileDstRight = dstRect.left + (clampedSx1 - srcRect.left) * scaleX;
+    const float clampedSy0 = std::clamp(srcRect.top, 0.0f, static_cast<float>(totalH));
+    const float clampedSy1 = std::clamp(srcRect.bottom, 0.0f, static_cast<float>(totalH));
+    if (clampedSx1 <= clampedSx0 || clampedSy1 <= clampedSy0) return;
 
     ComPtr<ID2D1DeviceContext> dc;
     if (highQualityCubic) {
@@ -490,18 +545,22 @@ void CaptureRenderer::drawTiledRegion(const std::vector<BitmapTile>& tiles,
     }
 
     for (const auto& tile : tiles) {
-        if (!tile.bitmap || tile.height <= 0) continue;
+        if (!tile.bitmap || tile.width <= 0 || tile.height <= 0) continue;
+        const float tx0 = static_cast<float>(tile.xOffset);
+        const float tx1 = static_cast<float>(tile.xOffset + tile.width);
         const float ty0 = static_cast<float>(tile.yOffset);
         const float ty1 = static_cast<float>(tile.yOffset + tile.height);
-        const float iy0 = (std::max)(srcRect.top, ty0);
-        const float iy1 = (std::min)(srcRect.bottom, ty1);
-        if (iy1 <= iy0) continue;
+        const float ix0 = (std::max)(clampedSx0, tx0);
+        const float ix1 = (std::min)(clampedSx1, tx1);
+        const float iy0 = (std::max)(clampedSy0, ty0);
+        const float iy1 = (std::min)(clampedSy1, ty1);
+        if (ix1 <= ix0 || iy1 <= iy0) continue;
 
-        const D2D1_RECT_F tileSrc = D2D1::RectF(clampedSx0, iy0 - ty0, clampedSx1, iy1 - ty0);
+        const D2D1_RECT_F tileSrc = D2D1::RectF(ix0 - tx0, iy0 - ty0, ix1 - tx0, iy1 - ty0);
         const D2D1_RECT_F tileDst = D2D1::RectF(
-            tileDstLeft,
+            dstRect.left + (ix0 - srcRect.left) * scaleX,
             dstRect.top + (iy0 - srcRect.top) * scaleY,
-            tileDstRight,
+            dstRect.left + (ix1 - srcRect.left) * scaleX,
             dstRect.top + (iy1 - srcRect.top) * scaleY);
 
         if (dc) {
@@ -546,8 +605,11 @@ bool CaptureRenderer::updateScreenBitmap(const cv::Mat& image) {
         return false;
     }
 
-    // 单屏常规尺寸同步创建/复用单纹理快路径（超过 16384px 的超长拼接图完全依赖 4096px 瓦片流，零溢出）
-    if (bgra.cols <= 16384 && bgra.rows <= 16384) {
+    // 单纹理快路径严格遵守显卡真实 GetMaximumBitmapSize() 上限（8192px 上限显卡或多 4K 超宽屏自动走二维瓦片流）
+    const UINT32 hwMaxSize = m_renderTarget->GetMaximumBitmapSize();
+    const UINT32 safeMaxBmp = (hwMaxSize > 0) ? hwMaxSize : 4096u;
+    if (static_cast<UINT32>(bgra.cols) <= safeMaxBmp &&
+        static_cast<UINT32>(bgra.rows) <= safeMaxBmp) {
         if (m_screenTiles.size() == 1) {
             m_screenBitmap = m_screenTiles.front().bitmap;
         } else {
@@ -933,10 +995,10 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
     int rawH = static_cast<int>(std::round(rect.bottom - rect.top));
     int posX = hasLockedSelection
         ? static_cast<int>(std::round(rect.left))
-        : static_cast<int>(state.currentCursor.x > 0 ? state.currentCursor.x : rect.left);
+        : static_cast<int>(state.currentCursor.x >= 0 ? state.currentCursor.x : rect.left);
     int posY = hasLockedSelection
         ? static_cast<int>(std::round(rect.top))
-        : static_cast<int>(state.currentCursor.y > 0 ? state.currentCursor.y : rect.top);
+        : static_cast<int>(state.currentCursor.y >= 0 ? state.currentCursor.y : rect.top);
 
     // 根据 px / dp 单位换算，将主数字与单位后缀拆分为独立排印层级
     const bool isDpMode = (state.sizeUnit == CaptureState::SizeUnit::DeviceIndependentPixel);
@@ -1127,12 +1189,26 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
         obstacles.push_back({D2D1::RectF(mx1 - pad, my1 - pad, mx2 + pad, my2 + pad), HudObstacleType::ActiveAnnotation, 2.2f});
     }
 
+    D2D1_RECT_F curMonRect{}, curWorkRect{};
+    resolveMonitorBoundsInCanvas(
+        static_cast<float>(state.currentCursor.x),
+        static_cast<float>(state.currentCursor.y),
+        surfaceSize, curMonRect, curWorkRect);
+    const D2D1_SIZE_F localWorkSize = D2D1::SizeF(
+        (std::max)(64.0f, curWorkRect.right - curWorkRect.left),
+        (std::max)(64.0f, curWorkRect.bottom - curWorkRect.top));
+
     // 3.5. 预选/拖拽阶段像素取色放大镜（Loupe）与动态放大镜（Magnifier）几何避让
     if (!hasLockedSelection || state.dragging) {
-        state.loupeHudRect = computeSelectionLoupeRect(
-            static_cast<float>(state.currentCursor.x),
-            static_cast<float>(state.currentCursor.y),
-            surfaceSize, scale);
+        const D2D1_RECT_F localLoupe = computeSelectionLoupeRect(
+            static_cast<float>(state.currentCursor.x) - curWorkRect.left,
+            static_cast<float>(state.currentCursor.y) - curWorkRect.top,
+            localWorkSize, scale);
+        state.loupeHudRect = D2D1::RectF(
+            localLoupe.left + curWorkRect.left,
+            localLoupe.top + curWorkRect.top,
+            localLoupe.right + curWorkRect.left,
+            localLoupe.bottom + curWorkRect.top);
         obstacles.push_back({state.loupeHudRect, HudObstacleType::Cursor, 4.0f});
     } else if (state.currentTool == MarkupTool::Magnifier && !state.isMarking && !state.isManipulating) {
         const float magR = (static_cast<float>(state.dynamicMagnifierRadius) + 12.0f) * scale;
@@ -1182,11 +1258,33 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
     hudCfg.allowInsideCandidates = true;
     hudCfg.avoidCursor = true;
 
+    const D2D1_RECT_F localAnchorRect = D2D1::RectF(
+        rect.left - curWorkRect.left,
+        rect.top - curWorkRect.top,
+        rect.right - curWorkRect.left,
+        rect.bottom - curWorkRect.top);
+    std::vector<HudObstacle> localObstacles;
+    localObstacles.reserve(obstacles.size());
+    for (const auto& obs : obstacles) {
+        localObstacles.push_back({
+            D2D1::RectF(obs.rect.left - curWorkRect.left,
+                        obs.rect.top - curWorkRect.top,
+                        obs.rect.right - curWorkRect.left,
+                        obs.rect.bottom - curWorkRect.top),
+            obs.type,
+            obs.weight
+        });
+    }
+
     auto placement = HudAvoidanceEngine::solvePlacement(
-        rect, labelW, labelH, surfaceSize, obstacles, hudCfg, scale, state.lastSizeHudEdge);
+        localAnchorRect, labelW, labelH, localWorkSize, localObstacles, hudCfg, scale, state.lastSizeHudEdge);
 
     state.lastSizeHudEdge = static_cast<int>(placement.edge);
-    auto pillRect = placement.rect;
+    auto pillRect = D2D1::RectF(
+        placement.rect.left + curWorkRect.left,
+        placement.rect.top + curWorkRect.top,
+        placement.rect.right + curWorkRect.left,
+        placement.rect.bottom + curWorkRect.top);
     state.sizeHudRect = pillRect;
 
     float labelX = pillRect.left;
@@ -2718,11 +2816,12 @@ static void getBeautyColors(BeautyBackgroundType type, D2D1_COLOR_F& c1, D2D1_CO
 void CaptureRenderer::drawBeautyShellPreview(const D2D1_RECT_F& rect, CaptureState& state) {
     if (!state.beautyShell.enabled || !m_renderTarget) return;
     const float scale = std::clamp(state.dpiScale > 0.0f ? state.dpiScale : 1.0f, 1.0f, 5.0f);
-    const float pad = state.beautyShell.padding * scale;
-    if (pad <= 2.0f) return;
+    const float geomScale = state.isLongImageMode() ? 1.0f : scale;
+    const float pad = state.beautyShell.padding * geomScale;
+    if (pad <= 2.0f * geomScale) return;
 
     D2D1_RECT_F shellRect = D2D1::RectF(rect.left - pad, rect.top - pad, rect.right + pad, rect.bottom + pad);
-    const float shellCornerR = (std::max)(12.0f * scale, (state.beautyShell.cornerRadius + 6.0f) * scale);
+    const float shellCornerR = (std::max)(12.0f * geomScale, (state.beautyShell.cornerRadius + 6.0f) * geomScale);
     auto roundedShell = D2D1::RoundedRect(shellRect, shellCornerR, shellCornerR);
 
     // 1. 绘制三色段高饱和网格渐变底板画布
@@ -2768,16 +2867,16 @@ void CaptureRenderer::drawBeautyShellPreview(const D2D1_RECT_F& rect, CaptureSta
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shellBorder;
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f), shellBorder.GetAddressOf());
     if (shellBorder) {
-        m_renderTarget->DrawRoundedRectangle(roundedShell, shellBorder.Get(), 1.2f * scale);
+        m_renderTarget->DrawRoundedRectangle(roundedShell, shellBorder.Get(), 1.2f * geomScale);
     }
 
     // 2. 渲染 10 层平滑指数衰减立体悬浮弥散阴影 (True Multi-Step Soft Elevation Shadow)
-    float r = state.beautyShell.cornerRadius * scale;
+    const float r = state.beautyShell.cornerRadius * geomScale;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.02f, 0.04f, 0.09f, 1.0f), shadowBrush.GetAddressOf());
     if (shadowBrush) {
-        const float maxSpread = std::min(pad * 0.78f, 26.0f * scale);
-        const float maxDropY = std::min(pad * 0.42f, 12.0f * scale);
+        const float maxSpread = (std::min)(pad * 0.78f, 26.0f * geomScale);
+        const float maxDropY = (std::min)(pad * 0.42f, 12.0f * geomScale);
         constexpr int kShadowSteps = 10;
         for (int i = kShadowSteps; i >= 1; --i) {
             const float t = static_cast<float>(i) / static_cast<float>(kShadowSteps);
@@ -2795,21 +2894,23 @@ void CaptureRenderer::drawBeautyShellPreview(const D2D1_RECT_F& rect, CaptureSta
 
     // 3. 将原图裁切为指定圆角后重新绘制于 rect 内部，并叠加双层微晶玻璃立体倒角
     if (hasScreenContent() && m_d2dFactory) {
-        const float radiusInCanvas = state.isLongImageMode() ? state.beautyShell.cornerRadius : r;
-        auto roundedClip = D2D1::RoundedRect(rect, radiusInCanvas, radiusInCanvas);
+        auto roundedClip = D2D1::RoundedRect(rect, r, r);
         Microsoft::WRL::ComPtr<ID2D1RoundedRectangleGeometry> clipGeo;
         if (SUCCEEDED(m_d2dFactory->CreateRoundedRectangleGeometry(roundedClip, clipGeo.GetAddressOf())) && clipGeo) {
             Microsoft::WRL::ComPtr<ID2D1Layer> layer;
             if (SUCCEEDED(m_renderTarget->CreateLayer(layer.GetAddressOf())) && layer) {
                 m_renderTarget->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clipGeo.Get()), layer.Get());
-                if (!m_screenTiles.empty() && m_screenTilesW > 0 && m_screenTilesH > 0) {
-                    const D2D1_RECT_F fullDocRect = D2D1::RectF(
-                        0.0f, 0.0f, static_cast<float>(m_screenTilesW), static_cast<float>(m_screenTilesH));
-                    drawTiledRegion(m_screenTiles, m_screenTilesW, m_screenTilesH,
-                                    fullDocRect, fullDocRect, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                } else if (m_screenBitmap) {
+                if (!state.isLongImageMode() && m_screenBitmap) {
                     auto sz = m_renderTarget->GetSize();
                     m_renderTarget->DrawBitmap(m_screenBitmap.Get(), D2D1::RectF(0, 0, sz.width, sz.height));
+                } else if (!m_screenTiles.empty() && m_screenTilesW > 0 && m_screenTilesH > 0) {
+                    const D2D1_RECT_F fullSrcRect = D2D1::RectF(
+                        0.0f, 0.0f, static_cast<float>(m_screenTilesW), static_cast<float>(m_screenTilesH));
+                    const D2D1_RECT_F fullDstRect = state.isLongImageMode()
+                        ? fullSrcRect
+                        : D2D1::RectF(0.0f, 0.0f, m_renderTarget->GetSize().width, m_renderTarget->GetSize().height);
+                    drawTiledRegion(m_screenTiles, m_screenTilesW, m_screenTilesH,
+                                    fullDstRect, fullSrcRect, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
                 }
                 m_renderTarget->PopLayer();
             }
@@ -2821,15 +2922,17 @@ void CaptureRenderer::drawBeautyShellPreview(const D2D1_RECT_F& rect, CaptureSta
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.45f), innerSpecBrush.GetAddressOf());
         if (outerRimBrush) {
             auto outerRing = D2D1::RoundedRect(
-                D2D1::RectF(rect.left - 0.5f * scale, rect.top - 0.5f * scale, rect.right + 0.5f * scale, rect.bottom + 0.5f * scale),
-                r + 0.5f * scale, r + 0.5f * scale);
-            m_renderTarget->DrawRoundedRectangle(outerRing, outerRimBrush.Get(), 1.0f * scale);
+                D2D1::RectF(rect.left - 0.5f * geomScale, rect.top - 0.5f * geomScale,
+                            rect.right + 0.5f * geomScale, rect.bottom + 0.5f * geomScale),
+                r + 0.5f * geomScale, r + 0.5f * geomScale);
+            m_renderTarget->DrawRoundedRectangle(outerRing, outerRimBrush.Get(), 1.0f * geomScale);
         }
         if (innerSpecBrush) {
             auto innerRing = D2D1::RoundedRect(
-                D2D1::RectF(rect.left + 0.6f * scale, rect.top + 0.6f * scale, rect.right - 0.6f * scale, rect.bottom - 0.6f * scale),
-                std::max(0.0f, r - 0.6f * scale), std::max(0.0f, r - 0.6f * scale));
-            m_renderTarget->DrawRoundedRectangle(innerRing, innerSpecBrush.Get(), 1.2f * scale);
+                D2D1::RectF(rect.left + 0.6f * geomScale, rect.top + 0.6f * geomScale,
+                            rect.right - 0.6f * geomScale, rect.bottom - 0.6f * geomScale),
+                (std::max)(0.0f, r - 0.6f * geomScale), (std::max)(0.0f, r - 0.6f * geomScale));
+            m_renderTarget->DrawRoundedRectangle(innerRing, innerSpecBrush.Get(), 1.2f * geomScale);
         }
     }
 }
@@ -3596,8 +3699,22 @@ void CaptureRenderer::drawFloatingToast(const CaptureState& state) {
     const float toastH = (std::max)(textH + padV * 2.0f, 40.0f * scale);
 
     const auto rtSize = m_renderTarget->GetSize();
-    const float left = (rtSize.width - toastW) * 0.5f;
-    float top = 34.0f * scale;
+    D2D1_RECT_F monRect{}, workRect{};
+    resolveMonitorBoundsInCanvas(
+        static_cast<float>(state.currentCursor.x),
+        static_cast<float>(state.currentCursor.y),
+        rtSize, monRect, workRect);
+    const D2D1_RECT_F hostRect =
+        (workRect.right - workRect.left >= toastW + 24.0f * scale &&
+         workRect.bottom - workRect.top >= toastH + 24.0f * scale)
+        ? workRect
+        : monRect;
+    const float margin = 12.0f * scale;
+    const float left = std::clamp(
+        hostRect.left + ((hostRect.right - hostRect.left) - toastW) * 0.5f,
+        hostRect.left + margin,
+        (std::max)(hostRect.left + margin, hostRect.right - toastW - margin));
+    float top = hostRect.top + 34.0f * scale;
 
     // 智能避让顶部尺寸胶囊、展开菜单与上移后的主/副工具栏，杜绝浮层 Toast 遮挡活动控件
     const bool hasSelNow = (state.state.load() == OverlayState::Selected ||
@@ -3621,10 +3738,15 @@ void CaptureRenderer::drawFloatingToast(const CaptureState& state) {
             if (state.sliderPopup.type != SliderPopupType::None) pushDownIfOverlaps(state.sliderPopup.popupRect);
             if (state.openSubmenu != SubmenuType::None) pushDownIfOverlaps(state.openSubmenuRect);
         }
-        if (top + toastH > rtSize.height * 0.68f) {
-            top = (std::max)(12.0f * scale, rtSize.height - toastH - 42.0f * scale);
+        const float hostH = hostRect.bottom - hostRect.top;
+        if (top + toastH > hostRect.top + hostH * 0.68f) {
+            top = (std::max)(hostRect.top + margin, hostRect.bottom - toastH - 42.0f * scale);
         }
     }
+    top = std::clamp(
+        top,
+        hostRect.top + margin,
+        (std::max)(hostRect.top + margin, hostRect.bottom - toastH - margin));
     const auto toastRect = D2D1::RectF(left, top, left + toastW, top + toastH);
     const float cornerRadius = 12.0f * scale;
 
@@ -3714,11 +3836,14 @@ void CaptureRenderer::drawMarkupPreview(const D2D1_RECT_F& selectionRect, Captur
             m_markupTilesH == bgra.rows) {
             bool updatedInPlace = true;
             for (auto& tile : m_markupCacheTiles) {
-                if (!tile.bitmap || tile.yOffset + tile.height > bgra.rows || tile.width != bgra.cols) {
+                if (!tile.bitmap ||
+                    tile.xOffset < 0 || tile.yOffset < 0 ||
+                    tile.xOffset + tile.width > bgra.cols ||
+                    tile.yOffset + tile.height > bgra.rows) {
                     updatedInPlace = false;
                     break;
                 }
-                cv::Mat slice = bgra.rowRange(tile.yOffset, tile.yOffset + tile.height);
+                cv::Mat slice = bgra(cv::Rect(tile.xOffset, tile.yOffset, tile.width, tile.height));
                 if (!slice.isContinuous()) slice = slice.clone();
                 if (FAILED(tile.bitmap->CopyFromMemory(nullptr, slice.data, static_cast<UINT32>(slice.step[0])))) {
                     updatedInPlace = false;
@@ -5067,7 +5192,7 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
                             m_renderTarget->DrawLine(pSrcEdge, pLensEdge, rimBrush.Get(), 1.35f * sqrtScale, ds);
                         }
                     } else {
-                        // TangentFrustum (默认): 学术双外切展开细线
+                        // TangentFrustum: 学术双外切展开细线
                         drawD2DSourceAperture(false);
                         if (dist > lensEdgeD + 2.0f * sqrtScale) {
                             const float nx = -uy;
@@ -5346,7 +5471,7 @@ D2D1_RECT_F CaptureRenderer::computeSelectionLoupeRect(
 }
 
 void CaptureRenderer::drawSelectionLoupe(float cx, float cy, CaptureState& state) {
-    if (!m_renderTarget || !m_screenBitmap) return;
+    if (!m_renderTarget || !hasScreenContent()) return;
 
     const bool zh = isCaptureUiChinese();
     int px = static_cast<int>(cx);
@@ -5367,7 +5492,36 @@ void CaptureRenderer::drawSelectionLoupe(float cx, float cy, CaptureState& state
     const float outerRadius = 12.0f * scale;
 
     auto size = m_renderTarget->GetSize();
-    D2D1_RECT_F fullLoupeRect = computeSelectionLoupeRect(cx, cy, size, scale);
+    D2D1_RECT_F monRect{}, workRect{};
+    resolveMonitorBoundsInCanvas(cx, cy, size, monRect, workRect);
+    const D2D1_RECT_F hostRect =
+        (workRect.right - workRect.left >= loupeBoxW + 16.0f * scale &&
+         workRect.bottom - workRect.top >= totalH + 16.0f * scale)
+        ? workRect
+        : monRect;
+    const D2D1_SIZE_F localHostSize = D2D1::SizeF(
+        (std::max)(loupeBoxW, hostRect.right - hostRect.left),
+        (std::max)(totalH, hostRect.bottom - hostRect.top));
+    D2D1_RECT_F localLoupeRect = computeSelectionLoupeRect(
+        cx - hostRect.left, cy - hostRect.top, localHostSize, scale);
+    D2D1_RECT_F fullLoupeRect = D2D1::RectF(
+        localLoupeRect.left + hostRect.left,
+        localLoupeRect.top + hostRect.top,
+        localLoupeRect.right + hostRect.left,
+        localLoupeRect.bottom + hostRect.top);
+    const float clampMargin = 8.0f * scale;
+    if (hostRect.right - hostRect.left > loupeBoxW + clampMargin * 2.0f) {
+        const float clampedL = std::clamp(
+            fullLoupeRect.left, hostRect.left + clampMargin, hostRect.right - loupeBoxW - clampMargin);
+        fullLoupeRect.left = clampedL;
+        fullLoupeRect.right = clampedL + loupeBoxW;
+    }
+    if (hostRect.bottom - hostRect.top > totalH + clampMargin * 2.0f) {
+        const float clampedT = std::clamp(
+            fullLoupeRect.top, hostRect.top + clampMargin, hostRect.bottom - totalH - clampMargin);
+        fullLoupeRect.top = clampedT;
+        fullLoupeRect.bottom = clampedT + totalH;
+    }
     state.loupeHudRect = fullLoupeRect;
     float lx = fullLoupeRect.left;
     float ly = fullLoupeRect.top;
@@ -5409,8 +5563,18 @@ void CaptureRenderer::drawSelectionLoupe(float cx, float cy, CaptureState& state
     float srcHalfY = gridCountY / 2.0f;
     D2D1_RECT_F src = D2D1::RectF(cx - srcHalfX, cy - srcHalfY, cx + srcHalfX, cy + srcHalfY);
 
-    m_renderTarget->DrawBitmap(m_screenBitmap.Get(), dst, 1.0f,
-        D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, src);
+    if (m_screenBitmap) {
+        m_renderTarget->DrawBitmap(m_screenBitmap.Get(), dst, 1.0f,
+            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, src);
+    } else if (!m_screenTiles.empty() && m_screenTilesW > 0 && m_screenTilesH > 0) {
+        ComPtr<ID2D1SolidColorBrush> oobBrush;
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f), oobBrush.GetAddressOf());
+        if (oobBrush) {
+            m_renderTarget->FillRectangle(dst, oobBrush.Get());
+        }
+        drawTiledRegion(m_screenTiles, m_screenTilesW, m_screenTilesH,
+                        dst, src, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, false);
+    }
 
     // 1. 细腻半透明像素网格线
     ComPtr<ID2D1SolidColorBrush> gridBrush;
@@ -5636,22 +5800,32 @@ void CaptureRenderer::drawSmartAlignmentGuides(const D2D1_RECT_F& selRect, Captu
 
     float cx = (selRect.left + selRect.right) * 0.5f;
     float cy = (selRect.top + selRect.bottom) * 0.5f;
-    float midScreenX = size.width * 0.5f;
-    float midScreenY = size.height * 0.5f;
+    D2D1_RECT_F monRect{}, workRect{};
+    resolveMonitorBoundsInCanvas(cx, cy, size, monRect, workRect);
+    const D2D1_RECT_F guideBounds =
+        (workRect.right > workRect.left && workRect.bottom > workRect.top) ? workRect : monRect;
+    float midScreenX = (guideBounds.left + guideBounds.right) * 0.5f;
+    float midScreenY = (guideBounds.top + guideBounds.bottom) * 0.5f;
 
-    // 1. 水平中线对齐 (50% Screen Y)
+    // 1. 水平中线对齐 (当前物理显示器工作区 50% Y)
     if (std::abs(cy - midScreenY) < 4.0f * scale) {
         float seg = 6.0f * scale, sp = 4.0f * scale;
-        for (float x = 0; x < size.width; x += seg + sp) {
-            m_renderTarget->DrawLine(D2D1::Point2F(x, midScreenY), D2D1::Point2F(std::min(size.width, x + seg), midScreenY), guideBrush.Get(), 1.0f * scale);
+        for (float x = guideBounds.left; x < guideBounds.right; x += seg + sp) {
+            m_renderTarget->DrawLine(
+                D2D1::Point2F(x, midScreenY),
+                D2D1::Point2F((std::min)(guideBounds.right, x + seg), midScreenY),
+                guideBrush.Get(), 1.0f * scale);
         }
     }
 
-    // 2. 垂直中线对齐 (50% Screen X)
+    // 2. 垂直中线对齐 (当前物理显示器工作区 50% X)
     if (std::abs(cx - midScreenX) < 4.0f * scale) {
         float seg = 6.0f * scale, sp = 4.0f * scale;
-        for (float y = 0; y < size.height; y += seg + sp) {
-            m_renderTarget->DrawLine(D2D1::Point2F(midScreenX, y), D2D1::Point2F(midScreenX, std::min(size.height, y + seg)), guideBrush.Get(), 1.0f * scale);
+        for (float y = guideBounds.top; y < guideBounds.bottom; y += seg + sp) {
+            m_renderTarget->DrawLine(
+                D2D1::Point2F(midScreenX, y),
+                D2D1::Point2F(midScreenX, (std::min)(guideBounds.bottom, y + seg)),
+                guideBrush.Get(), 1.0f * scale);
         }
     }
 }
@@ -5985,6 +6159,9 @@ bool CaptureRenderer::sampleScreenColor(int x, int y, int& r, int& g, int& b, Ca
 
 void CaptureRenderer::updateHistoryBitmap(CaptureState& state) {
     m_historyBitmap.Reset();
+    m_historyTiles.clear();
+    m_historyTilesW = 0;
+    m_historyTilesH = 0;
     auto entry = CaptureHistory::instance().get(state.historyIndex);
     if (entry && !entry->image.empty() && m_renderTarget) {
         cv::Mat bgra;
@@ -5992,15 +6169,43 @@ void CaptureRenderer::updateHistoryBitmap(CaptureState& state) {
             cv::cvtColor(entry->image, bgra, cv::COLOR_BGR2BGRA);
         } else if (entry->image.channels() == 4) {
             bgra = entry->image;
+        } else if (entry->image.channels() == 1) {
+            cv::cvtColor(entry->image, bgra, cv::COLOR_GRAY2BGRA);
         }
-        if (!bgra.empty()) {
-            D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+        if (!bgra.empty() && bgra.cols > 0 && bgra.rows > 0) {
+            const D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
                 D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
             );
-            m_renderTarget->CreateBitmap(
-                D2D1::SizeU(bgra.cols, bgra.rows),
-                bgra.data, bgra.cols * 4, props, m_historyBitmap.GetAddressOf()
-            );
+            const UINT32 hwMaxSize = m_renderTarget->GetMaximumBitmapSize();
+            const UINT32 safeMaxBmp = (hwMaxSize > 0) ? hwMaxSize : 4096u;
+            if (static_cast<UINT32>(bgra.cols) <= safeMaxBmp &&
+                static_cast<UINT32>(bgra.rows) <= safeMaxBmp) {
+                m_renderTarget->CreateBitmap(
+                    D2D1::SizeU(static_cast<UINT32>(bgra.cols), static_cast<UINT32>(bgra.rows)),
+                    bgra.data, static_cast<UINT32>(bgra.step[0]), props, m_historyBitmap.GetAddressOf()
+                );
+            }
+            if (!m_historyBitmap) {
+                if (!rebuildBitmapTiles(bgra, D2D1_ALPHA_MODE_PREMULTIPLIED,
+                                        m_historyTiles, m_historyTilesW, m_historyTilesH)) {
+                    const double scaleRatio = (std::min)(
+                        static_cast<double>(safeMaxBmp) / static_cast<double>(bgra.cols),
+                        static_cast<double>(safeMaxBmp) / static_cast<double>(bgra.rows));
+                    const int scaledW = (std::max)(1, static_cast<int>(std::floor(bgra.cols * scaleRatio)));
+                    const int scaledH = (std::max)(1, static_cast<int>(std::floor(bgra.rows * scaleRatio)));
+                    cv::Mat preview;
+                    try {
+                        cv::resize(bgra, preview, cv::Size(scaledW, scaledH), 0.0, 0.0, cv::INTER_AREA);
+                        if (!preview.empty()) {
+                            m_renderTarget->CreateBitmap(
+                                D2D1::SizeU(static_cast<UINT32>(preview.cols), static_cast<UINT32>(preview.rows)),
+                                preview.data, static_cast<UINT32>(preview.step[0]), props, m_historyBitmap.GetAddressOf()
+                            );
+                        }
+                    } catch (const cv::Exception&) {
+                    }
+                }
+            }
         }
     }
     m_needsRender = true;
@@ -6253,14 +6458,43 @@ void CaptureRenderer::drawLongCanvasMinimap(const D2D1_RECT_F& docSelRect, Captu
     if (panelBg) m_renderTarget->FillRoundedRectangle(panelRound, panelBg.Get());
     if (panelBorder) m_renderTarget->DrawRoundedRectangle(panelRound, panelBorder.Get(), 1.0f * scale);
 
-    if (m_minimapBitmap) {
-        m_renderTarget->DrawBitmap(m_minimapBitmap.Get(), imgRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-    }
-
     const int topRow = std::clamp(static_cast<int>(std::lround(docSelRect.top)), 0, state.longCanvas.docHeight);
     const int botRow = std::clamp(static_cast<int>(std::lround(docSelRect.bottom)), topRow, state.longCanvas.docHeight);
     const float mmCropTopY = ScrollCaptureEditorOverlay::mapImageRowToMinimapY(topRow, imgRect, state.longCanvas.docHeight);
     const float mmCropBotY = ScrollCaptureEditorOverlay::mapImageRowToMinimapY(botRow, imgRect, state.longCanvas.docHeight);
+
+    const float previewScale =
+        (imgRect.right - imgRect.left) / (std::max)(1.0f, static_cast<float>(state.longCanvas.docWidth));
+    const float maxMinimapCornerR =
+        0.5f * (std::min)(imgRect.right - imgRect.left, (std::max)(1.0f, mmCropBotY - mmCropTopY));
+    const float minimapCornerR =
+        std::clamp(state.effectiveCornerRadius() * previewScale, 0.0f, maxMinimapCornerR);
+
+    if (m_minimapBitmap) {
+        if (minimapCornerR > 0.5f && m_d2dFactory && mmCropBotY > mmCropTopY + 1.0f) {
+            // 先绘制全图压暗底衬，再以 previewScale 圆角裁剪高亮保留区，实现缩略图圆角所见即所得
+            m_renderTarget->DrawBitmap(m_minimapBitmap.Get(), imgRect, 0.28f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            const D2D1_RECT_F keptMinimapRect = D2D1::RectF(imgRect.left, mmCropTopY, imgRect.right, mmCropBotY);
+            ComPtr<ID2D1RoundedRectangleGeometry> mmClipGeo;
+            ComPtr<ID2D1Layer> mmLayer;
+            if (SUCCEEDED(m_d2dFactory->CreateRoundedRectangleGeometry(
+                    D2D1::RoundedRect(keptMinimapRect, minimapCornerR, minimapCornerR), mmClipGeo.GetAddressOf())) &&
+                mmClipGeo &&
+                SUCCEEDED(m_renderTarget->CreateLayer(mmLayer.GetAddressOf())) && mmLayer) {
+                m_renderTarget->PushLayer(
+                    D2D1::LayerParameters(keptMinimapRect, mmClipGeo.Get(),
+                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(),
+                        1.0f, nullptr, D2D1_LAYER_OPTIONS_NONE),
+                    mmLayer.Get());
+                m_renderTarget->DrawBitmap(m_minimapBitmap.Get(), imgRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                m_renderTarget->PopLayer();
+            } else {
+                m_renderTarget->DrawBitmap(m_minimapBitmap.Get(), imgRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            }
+        } else {
+            m_renderTarget->DrawBitmap(m_minimapBitmap.Get(), imgRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+    }
 
     // 缩略图上下被裁除区间压暗
     if (trimMaskBr) {
@@ -6561,13 +6795,52 @@ void CaptureRenderer::render(CaptureState& state) {
         const bool zh = isCaptureUiChinese();
         auto size = m_renderTarget->GetSize();
         m_renderTarget->FillRectangle(D2D1::RectF(0, 0, size.width, size.height), m_dimBrush.Get());
+
+        D2D1_RECT_F monRect{}, workRect{};
+        resolveMonitorBoundsInCanvas(
+            static_cast<float>(state.currentCursor.x),
+            static_cast<float>(state.currentCursor.y),
+            size, monRect, workRect);
+        const D2D1_RECT_F hostRect =
+            (workRect.right - workRect.left > 160.0f && workRect.bottom - workRect.top > 160.0f)
+            ? workRect
+            : monRect;
+        const float hostW = (std::max)(1.0f, hostRect.right - hostRect.left);
+        const float hostH = (std::max)(1.0f, hostRect.bottom - hostRect.top);
         
-        if (m_historyBitmap) {
-            auto bmpSize = m_historyBitmap->GetSize();
-            float x = (size.width - bmpSize.width) / 2.0f;
-            float y = (size.height - bmpSize.height) / 2.0f;
-            D2D1_RECT_F dstRect = D2D1::RectF(x, y, x + bmpSize.width, y + bmpSize.height);
-            m_renderTarget->DrawBitmap(m_historyBitmap.Get(), dstRect);
+        if (hasHistoryContent()) {
+            float srcW = 0.0f;
+            float srcH = 0.0f;
+            if (m_historyBitmap) {
+                auto bmpSize = m_historyBitmap->GetSize();
+                srcW = bmpSize.width;
+                srcH = bmpSize.height;
+            } else {
+                srcW = static_cast<float>(m_historyTilesW);
+                srcH = static_cast<float>(m_historyTilesH);
+            }
+
+            const float maxDispW = (std::max)(64.0f, hostW * 0.88f);
+            const float maxDispH = (std::max)(64.0f, hostH * 0.88f);
+            float fitScale = 1.0f;
+            if (srcW > maxDispW || srcH > maxDispH) {
+                fitScale = (std::min)(maxDispW / (std::max)(1.0f, srcW),
+                                      maxDispH / (std::max)(1.0f, srcH));
+            }
+            const float dispW = (std::max)(1.0f, srcW * fitScale);
+            const float dispH = (std::max)(1.0f, srcH * fitScale);
+            float x = hostRect.left + (hostW - dispW) * 0.5f;
+            float y = hostRect.top + (hostH - dispH) * 0.5f;
+            D2D1_RECT_F dstRect = D2D1::RectF(x, y, x + dispW, y + dispH);
+            if (m_historyBitmap) {
+                m_renderTarget->DrawBitmap(
+                    m_historyBitmap.Get(), dstRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else {
+                const D2D1_RECT_F fullSrc = D2D1::RectF(0.0f, 0.0f, srcW, srcH);
+                drawTiledRegion(
+                    m_historyTiles, m_historyTilesW, m_historyTilesH,
+                    dstRect, fullSrc, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, true);
+            }
             if (m_borderBrush) {
                 m_renderTarget->DrawRectangle(dstRect, m_borderBrush.Get(), 2.0f * scale);
             }
@@ -6579,10 +6852,11 @@ void CaptureRenderer::render(CaptureState& state) {
             const float pillW = (std::max)(160.0f * scale, textW + 28.0f * scale);
             const float pillH = 28.0f * scale;
             const float margin = 8.0f * scale;
-            const float pillX = std::clamp(x, margin, (std::max)(margin, size.width - pillW - margin));
+            const float pillX = std::clamp(
+                x, hostRect.left + margin, (std::max)(hostRect.left + margin, hostRect.right - pillW - margin));
             float pillY = y - pillH - 8.0f * scale;
-            if (pillY < margin) {
-                pillY = (std::min)(y + 8.0f * scale, (std::max)(margin, size.height - pillH - margin));
+            if (pillY < hostRect.top + margin) {
+                pillY = (std::min)(y + 8.0f * scale, (std::max)(hostRect.top + margin, hostRect.bottom - pillH - margin));
             }
             const D2D1_RECT_F pillRect = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
             drawGlassPanel(pillRect, 7.0f * scale, false);
@@ -6597,7 +6871,7 @@ void CaptureRenderer::render(CaptureState& state) {
             if (m_infoTextFormat && m_infoTextBrush) {
                 TextFormatScope scope(m_infoTextFormat.Get(), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP);
                 m_renderTarget->DrawText(info.c_str(), static_cast<UINT32>(info.size()), m_infoTextFormat.Get(),
-                                         D2D1::RectF(0, 0, size.width, size.height), m_infoTextBrush.Get());
+                                         hostRect, m_infoTextBrush.Get());
             }
         }
         
@@ -6605,11 +6879,18 @@ void CaptureRenderer::render(CaptureState& state) {
         return;
     }
 
-    // 绘制冻结的屏幕
+    // 绘制冻结的屏幕（单纹理快路径或超宽多 4K / 8192 上限显卡二维瓦片回退）
     if (m_screenBitmap) {
         auto size = m_renderTarget->GetSize();
         m_renderTarget->DrawBitmap(m_screenBitmap.Get(),
                                    D2D1::RectF(0, 0, size.width, size.height));
+    } else if (!m_screenTiles.empty() && m_screenTilesW > 0 && m_screenTilesH > 0) {
+        auto size = m_renderTarget->GetSize();
+        const D2D1_RECT_F fullDst = D2D1::RectF(0.0f, 0.0f, size.width, size.height);
+        const D2D1_RECT_F fullSrc = D2D1::RectF(
+            0.0f, 0.0f, static_cast<float>(m_screenTilesW), static_cast<float>(m_screenTilesH));
+        drawTiledRegion(m_screenTiles, m_screenTilesW, m_screenTilesH,
+                        fullDst, fullSrc, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
     state.loupeHudRect = D2D1::RectF(0, 0, 0, 0);
@@ -6664,10 +6945,29 @@ void CaptureRenderer::render(CaptureState& state) {
         // 空闲/选区前 — 全屏变暗 + 十字准星 + 窗口高亮
         auto size = m_renderTarget->GetSize();
         float scale = (state.dpiScale > 0.0f) ? state.dpiScale : 1.0f;
-        state.loupeHudRect = computeSelectionLoupeRect(
-            static_cast<float>(state.currentCursor.x),
-            static_cast<float>(state.currentCursor.y),
-            size, scale);
+        {
+            const float curFx = static_cast<float>(state.currentCursor.x);
+            const float curFy = static_cast<float>(state.currentCursor.y);
+            D2D1_RECT_F monRect{}, workRect{};
+            resolveMonitorBoundsInCanvas(curFx, curFy, size, monRect, workRect);
+            const float loupeW = 216.0f * scale;
+            const float loupeH = 186.0f * scale;
+            const D2D1_RECT_F hostRect =
+                (workRect.right - workRect.left >= loupeW + 16.0f * scale &&
+                 workRect.bottom - workRect.top >= loupeH + 16.0f * scale)
+                ? workRect
+                : monRect;
+            const D2D1_SIZE_F localHostSize = D2D1::SizeF(
+                (std::max)(loupeW, hostRect.right - hostRect.left),
+                (std::max)(loupeH, hostRect.bottom - hostRect.top));
+            const D2D1_RECT_F localRect = computeSelectionLoupeRect(
+                curFx - hostRect.left, curFy - hostRect.top, localHostSize, scale);
+            state.loupeHudRect = D2D1::RectF(
+                localRect.left + hostRect.left,
+                localRect.top + hostRect.top,
+                localRect.right + hostRect.left,
+                localRect.bottom + hostRect.top);
+        }
         state.sizeHudRect = D2D1::RectF(0, 0, 0, 0);
 
         m_renderTarget->FillRectangle(
@@ -6696,7 +6996,7 @@ void CaptureRenderer::render(CaptureState& state) {
             auto roundedWin = D2D1::RoundedRect(winRect, r, r);
 
             // 窗口区域采用圆角几何裁剪透出原始画面（去掉变暗效果）
-            if (m_screenBitmap && m_d2dFactory) {
+            if (hasScreenContent() && m_d2dFactory) {
                 ComPtr<ID2D1RoundedRectangleGeometry> geo;
                 if (SUCCEEDED(m_d2dFactory->CreateRoundedRectangleGeometry(roundedWin, geo.GetAddressOf())) && geo) {
                     ComPtr<ID2D1Layer> layer;
@@ -6706,8 +7006,13 @@ void CaptureRenderer::render(CaptureState& state) {
                                 D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(),
                                 1.0f, nullptr, D2D1_LAYER_OPTIONS_NONE),
                             layer.Get());
-                        m_renderTarget->DrawBitmap(m_screenBitmap.Get(), winRect, 1.0f,
-                            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &winRect);
+                        if (m_screenBitmap) {
+                            m_renderTarget->DrawBitmap(m_screenBitmap.Get(), winRect, 1.0f,
+                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &winRect);
+                        } else if (!m_screenTiles.empty() && m_screenTilesW > 0 && m_screenTilesH > 0) {
+                            drawTiledRegion(m_screenTiles, m_screenTilesW, m_screenTilesH,
+                                            winRect, winRect, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                        }
                         m_renderTarget->PopLayer();
                     }
                 }

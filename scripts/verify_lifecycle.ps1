@@ -257,7 +257,7 @@ function Test-StartupLogCleanliness([string]$LogPath) {
         }
         Write-Host "[OK] 启动日志纯净度门禁 PASS (托盘图标零警告/零自愈异常)" -ForegroundColor Green
     } else {
-        Write-Host "ℹ️ 检测到当前处于无头或沙箱环境 (无 Shell_TrayWnd)，跳过交互任务栏图标断言" -ForegroundColor DarkGray
+        Write-Host "[INFO] 检测到当前处于无头或沙箱环境 (无 Shell_TrayWnd)，跳过交互任务栏图标断言" -ForegroundColor DarkGray
     }
 
     $criticalErrors = @($logLines | Where-Object {

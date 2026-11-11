@@ -173,4 +173,67 @@ describe('QuickLookApp Usability & Media Pipeline', () => {
     expect(codeLines[3].querySelector('.tok-keyword')?.textContent).toBe('const');
     expect(screen.getByText('· 4 lines')).toBeDefined();
   });
+
+  it('stops playback and releases media handles when receiving null payload or hidden visibility', async () => {
+    const pauseSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+    const loadSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+
+    render(<QuickLookApp />);
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        path: 'C:\\Videos\\clip.mp4',
+        name: 'clip.mp4',
+        extension: 'mp4',
+        type: 'video',
+        isDirectory: false,
+        size: 1024000,
+        formattedSize: '1.0 MB',
+        modified: '2026-10-15 12:30:00',
+        mediaUrl: 'https://quicklook-media.tools3000.local/clip.mp4',
+      });
+    });
+
+    const video = document.querySelector('video.ql-video-player') as HTMLVideoElement;
+    expect(video).not.toBeNull();
+
+    await act(async () => {
+      fileChangedHandler?.(null);
+    });
+
+    expect(pauseSpy).toHaveBeenCalled();
+    expect(loadSpy).toHaveBeenCalled();
+    expect(document.querySelector('video.ql-video-player')).toBeNull();
+  });
+
+  it('virtualizes large code previews so only a bounded slice of lines is mounted in the DOM', async () => {
+    render(<QuickLookApp />);
+
+    const totalLines = 3000;
+    const largeContent = Array.from({ length: totalLines }, (_, idx) => `const row_${idx + 1} = ${idx + 1};`).join('\n');
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        path: 'C:\\repo\\huge_trace.ts',
+        name: 'huge_trace.ts',
+        extension: 'ts',
+        type: 'code',
+        isDirectory: false,
+        size: largeContent.length,
+        formattedSize: '72.0 KB',
+        modified: '2026-10-15 13:00:00',
+        content: largeContent,
+        encoding: 'UTF-8',
+        truncated: false,
+      });
+    });
+
+    const mountedLines = document.querySelectorAll('.ql-code-line');
+    expect(mountedLines.length).toBeGreaterThan(0);
+    expect(mountedLines.length).toBeLessThan(250);
+    expect(mountedLines[0].getAttribute('data-line')).toBe('1');
+    expect(screen.getByText('· 3000 lines')).toBeDefined();
+  });
 });

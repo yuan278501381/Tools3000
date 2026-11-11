@@ -341,9 +341,10 @@ export const GesturePage: FC = () => {
 
   const handleSetTriggerState = async (triggerKey: string, nextState: TriggerState) => {
     const profName = getCurrentProfileName();
+    const prevProf = profiles[profName] ?? { name: profName, mappings: [], triggerStates: {} };
     const nextStates = { ...currentTriggerStates, [triggerKey]: nextState };
     const updatedProf: GestureProfileData = {
-      ...(profiles[profName] ?? { name: profName, mappings: [] }),
+      ...prevProf,
       triggerStates: nextStates,
     };
     setProfiles((prev) => ({ ...prev, [profName]: updatedProf }));
@@ -354,8 +355,9 @@ export const GesturePage: FC = () => {
         trigger: triggerKey,
         state: nextState,
       });
-      if (!result.success) throw new Error(result.error || 'Failed to update trigger state');
+      if (!result || !result.success) throw new Error(result?.error || 'Failed to update trigger state');
     } catch (err) {
+      setProfiles((prev) => ({ ...prev, [profName]: prevProf }));
       console.error('Failed to set trigger state:', err);
       toast.error(t('gesture.toastChangeTriggerFailed', 'Failed to update trigger mode'), { description: String(err) });
     }
@@ -552,47 +554,55 @@ export const GesturePage: FC = () => {
   };
 
   const handleToggleTrailColorMode = async (mode: 'auto' | 'custom') => {
+    const previous = trailColorMode;
     setTrailColorMode(mode);
     try {
       const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { trailColorMode: mode });
-      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
     } catch (err) {
+      setTrailColorMode(previous);
       console.error('Failed to update trail color mode:', err);
       toast.error(tr('gesture.saveFailed'), { description: String(err) });
     }
   };
 
   const handleTrailColorChange = async (color: string) => {
+    const previous = trailColor;
     setTrailColor(color);
     try {
       const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { trailColor: color });
-      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
     } catch (err) {
+      setTrailColor(previous);
       console.error('Failed to update trail color:', err);
       toast.error(tr('gesture.saveFailed'), { description: String(err) });
     }
   };
 
   const handleTrailWidthChange = async (widthStr: string) => {
+    const previous = trailWidth;
     const w = parseFloat(widthStr) || 4.0;
     setTrailWidth(w);
     try {
       const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { trailWidth: w });
-      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
     } catch (err) {
+      setTrailWidth(previous);
       console.error('Failed to update trail width:', err);
       toast.error(tr('gesture.saveFailed'), { description: String(err) });
     }
   };
 
   const handleTrailOutlineWidthChange = async (widthStr: string) => {
+    const previous = trailOutlineWidth;
     const w = parseFloat(widthStr);
     const outline = Number.isFinite(w) ? w : 2.5;
     setTrailOutlineWidth(outline);
     try {
       const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { trailOutlineWidth: outline });
-      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
     } catch (err) {
+      setTrailOutlineWidth(previous);
       console.error('Failed to update trail outline width:', err);
       toast.error(tr('gesture.saveFailed'), { description: String(err) });
     }
@@ -602,7 +612,7 @@ export const GesturePage: FC = () => {
     setAutoBypassFullscreen(checked);
     try {
       const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { autoBypassFullscreen: checked });
-      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
     } catch (err) {
       setAutoBypassFullscreen(!checked);
       console.error('Failed to update gesture autoBypassFullscreen state:', err);
@@ -611,24 +621,28 @@ export const GesturePage: FC = () => {
   };
 
   const handleInitialTimeoutChange = async (val: number) => {
+    const previous = initialTimeoutMs;
     const clamped = val <= 0 ? 0 : Math.max(100, Math.min(3000, Math.round(val)));
     setInitialTimeoutMs(clamped);
     try {
       const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { initialTimeoutMs: clamped });
-      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
     } catch (err) {
+      setInitialTimeoutMs(previous);
       console.error('Failed to update gesture initialTimeoutMs:', err);
       toast.error(tr('gesture.saveFailed'), { description: String(err) });
     }
   };
 
   const handleMinSegmentDistanceChange = async (val: number) => {
+    const previous = minSegmentDistance;
     const clamped = Math.max(5, Math.min(100, Math.round(val)));
     setMinSegmentDistance(clamped);
     try {
       const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { minSegmentDistance: clamped });
-      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
     } catch (err) {
+      setMinSegmentDistance(previous);
       console.error('Failed to update gesture minSegmentDistance:', err);
       toast.error(tr('gesture.saveFailed'), { description: String(err) });
     }

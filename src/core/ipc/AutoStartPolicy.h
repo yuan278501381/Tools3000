@@ -58,10 +58,34 @@ inline bool isTestMode() {
 
 /// 判断可执行文件是否处于开发编译目录（防止日常开发构建覆盖正式安装版开机自启）
 inline bool isDevelopmentBinary(const std::filesystem::path& exePath) {
-    std::wstring pathStr = normalizeExecutablePath(exePath.wstring());
-    return pathStr.find(L"\\build\\") != std::wstring::npos ||
-           pathStr.find(L"\\out\\") != std::wstring::npos ||
-           pathStr.find(L"\\cmake-build-") != std::wstring::npos;
+    if (exePath.empty()) return false;
+
+    std::error_code ec;
+    std::filesystem::path probeDir = exePath.parent_path();
+    for (int depth = 0; depth < 5 && !probeDir.empty(); ++depth) {
+        if (std::filesystem::exists(probeDir / L"CMakeCache.txt", ec) ||
+            std::filesystem::exists(probeDir / L"CTestTestfile.cmake", ec) ||
+            std::filesystem::exists(probeDir / L"cmake_install.cmake", ec) ||
+            std::filesystem::is_directory(probeDir / L"CMakeFiles", ec)) {
+            return true;
+        }
+        const auto parent = probeDir.parent_path();
+        if (parent == probeDir) break;
+        probeDir = parent;
+    }
+
+    // 磁盘上真实存在但周边无任何 CMake 构建标志文件，判定为正式版/便携版（防止用户名含 build/out 误伤）
+    if (std::filesystem::exists(exePath, ec) && !ec) {
+        return false;
+    }
+
+    // 针对尚未落盘的合成测试路径，仅匹配多级确定性构建目录拓扑特征
+    const std::wstring pathStr = normalizeExecutablePath(exePath.wstring());
+    return pathStr.find(L"\\build\\bin\\") != std::wstring::npos ||
+           pathStr.find(L"\\out\\build\\") != std::wstring::npos ||
+           pathStr.find(L"\\cmake-build-") != std::wstring::npos ||
+           pathStr.find(L"\\build-x64\\") != std::wstring::npos ||
+           pathStr.find(L"\\build-arm64\\") != std::wstring::npos;
 }
 
 /// 判断可执行文件是否为非生产环境二进制 (单元测试套件或临时开发产物)

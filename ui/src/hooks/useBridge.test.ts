@@ -2,7 +2,7 @@
 
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { bridgeRequest, useBridge } from './useBridge';
+import { bridgeRequest, resolveBridgeTimeoutMs, useBridge } from './useBridge';
 
 describe('useBridge Single-Flight Deduplication', () => {
   it('deduplicates concurrent in-flight requests for general.getSettings', async () => {
@@ -86,6 +86,42 @@ describe('useBridge Single-Flight Deduplication', () => {
       expect(settled).toBe(true);
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toContain('Bridge request timeout: app.exportLogs');
+    } finally {
+      delete window.chrome;
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses bounded 20s timeout for routine search.* calls while keeping long timeout for heavy index tasks', async () => {
+    expect(resolveBridgeTimeoutMs('search.query', { query: 'foo.txt' })).toBe(20_000);
+    expect(resolveBridgeTimeoutMs('search.getStatus')).toBe(20_000);
+    expect(resolveBridgeTimeoutMs('search.getHistory')).toBe(20_000);
+    expect(resolveBridgeTimeoutMs('search.query', { query: 'content:needle' })).toBe(5 * 60_000);
+    expect(resolveBridgeTimeoutMs('search.rebuildIndex')).toBe(30 * 60_000);
+    expect(resolveBridgeTimeoutMs('search.exportCsv')).toBe(30 * 60_000);
+
+    vi.useFakeTimers();
+    window.chrome = {
+      webview: {
+        postMessage: vi.fn(),
+        addEventListener: vi.fn(),
+      },
+    };
+
+    try {
+      let settled = false;
+      const promise = bridgeRequest('search.query', { query: 'readme' }).finally(() => {
+        settled = true;
+      });
+      const caught = promise.catch((err: unknown) => err);
+
+      await vi.advanceTimersByTimeAsync(19_000);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      const err = await caught;
+      expect(settled).toBe(true);
+      expect((err as Error).message).toContain('Bridge request timeout: search.query');
     } finally {
       delete window.chrome;
       vi.useRealTimers();

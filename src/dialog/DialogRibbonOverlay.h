@@ -20,7 +20,7 @@
 namespace tools3000::dialog {
 
 struct RibbonButtonRect {
-    enum class Type { ExplorerSync, Recent, Favorites };
+    enum class Type { ExplorerSync, Recent, Favorites, Close };
     Type type;
     D2D1_RECT_F rect;
     std::string text;
@@ -38,8 +38,9 @@ public:
     bool init();
     void cleanup();
 
-    // 绑定并展示在指定文件对话框顶部
+    // 绑定并展示在指定文件对话框顶部（支持从任意后台线程安全调用，零主线程跨进程阻塞）
     void attachToDialog(HWND dialogHwnd, const std::string& processName);
+    void setCachedDialogFolder(HWND dialogHwnd, const std::string& folderPath);
     void updatePosition();
     void hide();
 
@@ -55,12 +56,16 @@ private:
     ~DialogRibbonOverlay();
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    void attachValidatedOnUiThread(HWND dialogHwnd, DWORD processId, const std::string& processName);
     bool doUpdatePosition();
     void doAttachToDialog();
     void doHide();
-    void doHideLocked();
+    void resetStateLocked();
+    void discardDeviceResources();
+    bool ensureDeviceBrushes(bool isDark);
     void render();
     void updateButtonsLayout(float dpiScale, int maxAvailableWidth = 0);
+    bool hitTestButton(const RibbonButtonRect& btn, int x, int y, float dpiScale) const noexcept;
     void onLButtonDown(int x, int y);
     void onMouseMove(int x, int y);
     void onMouseLeave();
@@ -71,12 +76,15 @@ private:
     void drawClockIcon(ID2D1RenderTarget* rt, ID2D1Brush* brush, float x, float y, float size, float strokeWidth);
     void drawBookmarkIcon(ID2D1RenderTarget* rt, ID2D1Brush* brush, float x, float y, float size, float strokeWidth);
     void drawChevron(ID2D1RenderTarget* rt, ID2D1Brush* brush, float centerX, float centerY, float size, float strokeWidth);
+    void drawCloseIcon(ID2D1RenderTarget* rt, ID2D1Brush* brush, float centerX, float centerY, float size, float strokeWidth);
     void drawBadge(ID2D1RenderTarget* rt, ID2D1Brush* bgBrush, ID2D1Brush* textBrush, float x, float y, float w, float h, int count);
 
     HWND m_hwnd{nullptr};
     HWND m_targetDialog{nullptr};
+    HWND m_dismissedDialog{nullptr};
     DWORD m_targetProcessId{0};
     std::string m_targetProcess;
+    std::string m_cachedDialogFolder;
     std::string m_activeExplorerPath;
 
     int m_width{360};
@@ -90,6 +98,22 @@ private:
 
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_renderTarget;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_bgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_borderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_textBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_textMutedBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_highlightBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_highlightBorderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_syncBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_syncBorderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_chevronBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_badgeBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_badgeTextBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_dividerBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_whiteBrush;
+    bool m_brushesDarkTheme{false};
+    bool m_brushesValid{false};
+
     Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_textFormat;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_boldFormat;

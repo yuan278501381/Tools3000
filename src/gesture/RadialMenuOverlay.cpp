@@ -37,17 +37,33 @@ RadialMenuOverlay::RadialMenuOverlay() {
 }
 
 RadialMenuOverlay::~RadialMenuOverlay() {
-    hide();
-    discardResources();
-    if (m_hBitmap) {
-        DeleteObject(m_hBitmap);
+    if (m_timerId && m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, TIMER_ID_ANIMATION);
+        m_timerId = 0;
     }
-    if (m_hwnd) {
+    m_visible.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        discardResourcesLocked();
+        deleteBitmapLocked();
+        m_d2dFactory.Reset();
+        m_dwriteFactory.Reset();
+    }
+    if (m_hwnd && IsWindow(m_hwnd) &&
+        GetWindowThreadProcessId(m_hwnd, nullptr) == GetCurrentThreadId()) {
         DestroyWindow(m_hwnd);
     }
-    if (m_helperOwnerHwnd) {
+    m_hwnd = nullptr;
+    if (m_helperOwnerHwnd && IsWindow(m_helperOwnerHwnd) &&
+        GetWindowThreadProcessId(m_helperOwnerHwnd, nullptr) == GetCurrentThreadId()) {
         DestroyWindow(m_helperOwnerHwnd);
     }
+    m_helperOwnerHwnd = nullptr;
+}
+
+POINT RadialMenuOverlay::centerPoint() const noexcept {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    return m_centerPt;
 }
 
 void RadialMenuOverlay::registerWindowClass() {
@@ -69,15 +85,12 @@ void RadialMenuOverlay::setItems(const std::vector<RadialMenuItem>& items) {
     }
 
     auto syncUiState = [this, newCount = items.size(), countChanged = (prevCount != items.size())]() {
+        std::lock_guard<std::mutex> stateLock(m_stateMutex);
         m_hoverRadii.assign(newCount, 0.0f);
         if (countChanged) {
             // 扇区密度改变时重建字号与表面规格
-            discardResources();
-            if (m_hBitmap) {
-                DeleteObject(m_hBitmap);
-                m_hBitmap = nullptr;
-                m_bits = nullptr;
-            }
+            discardResourcesLocked();
+            deleteBitmapLocked();
         }
     };
 
@@ -115,19 +128,6 @@ void RadialMenuOverlay::show(POINT centerPt) {
         tools3000::core::dpi::effectiveDpiForMonitor(hMon),
         currentItemCount);
     const int newWindowSize = metrics.windowSize;
-    if (std::abs(newScale - m_dpiScale) >= 0.01f || newWindowSize != m_windowSize.load(std::memory_order_relaxed)) {
-        discardResources();
-        if (m_hBitmap) {
-            DeleteObject(m_hBitmap);
-            m_hBitmap = nullptr;
-            m_bits = nullptr;
-        }
-        m_dpiScale = newScale;
-        m_windowSize.store(newWindowSize, std::memory_order_relaxed);
-    }
-    m_radiusOuter.store(metrics.outerRadius, std::memory_order_relaxed);
-    m_radiusInner = metrics.innerRadius;
-    m_centerPt = centerPt;
 
     // 计算显示器工作区并钳制窗口原点，防止靠近屏幕四边弹出时轮盘被裁剪
     RECT workArea = {
@@ -140,18 +140,35 @@ void RadialMenuOverlay::show(POINT centerPt) {
             workArea = mi.rcWork;
         }
     }
-    const int edgeMargin = tools3000::core::dpi::scaleMetric(RadialMenuStyle::BaseScreenEdgeMargin, m_dpiScale);
+    const int edgeMargin = tools3000::core::dpi::scaleMetric(RadialMenuStyle::BaseScreenEdgeMargin, newScale);
     const POINT origin = RadialMenuStyle::clampWindowOrigin(centerPt, newWindowSize, workArea, edgeMargin);
     m_windowLeft.store(origin.x, std::memory_order_release);
     m_windowTop.store(origin.y, std::memory_order_release);
 
-    m_initialForegroundHwnd = GetForegroundWindow();
-    m_sawButtonDown = false;
-    m_hoverIndex = -1;
-    m_popScale = 0.25f;
-    m_showStartTime = GetTickCount();
-    m_lastTickTime = m_showStartTime;
-    m_hoverRadii.assign(currentItemCount, 0.0f);
+    const HWND initialFg = GetForegroundWindow();
+    const DWORD nowTick = GetTickCount();
+    m_sawButtonDown.store(false, std::memory_order_release);
+    m_hoverIndex.store(-1, std::memory_order_release);
+    m_showStartTime.store(nowTick, std::memory_order_release);
+    m_radiusOuter.store(metrics.outerRadius, std::memory_order_release);
+    m_radiusInner.store(metrics.innerRadius, std::memory_order_release);
+
+    {
+        std::lock_guard<std::mutex> stateLock(m_stateMutex);
+        const float prevScale = m_dpiScale.load(std::memory_order_relaxed);
+        if (std::abs(newScale - prevScale) >= 0.01f ||
+            newWindowSize != m_windowSize.load(std::memory_order_relaxed)) {
+            discardResourcesLocked();
+            deleteBitmapLocked();
+            m_dpiScale.store(newScale, std::memory_order_release);
+            m_windowSize.store(newWindowSize, std::memory_order_release);
+        }
+        m_centerPt = centerPt;
+        m_initialForegroundHwnd = initialFg;
+        m_popScale = 0.25f;
+        m_lastTickTime = nowTick;
+        m_hoverRadii.assign(currentItemCount, 0.0f);
+    }
 
     if (!m_hwnd) {
         HINSTANCE hInst = GetModuleHandle(nullptr);
@@ -171,7 +188,12 @@ void RadialMenuOverlay::show(POINT centerPt) {
         }
     }
 
-    if (!m_hwnd || !createResources()) {
+    bool resourcesReady = false;
+    if (m_hwnd) {
+        std::lock_guard<std::mutex> stateLock(m_stateMutex);
+        resourcesReady = createResourcesLocked();
+    }
+    if (!m_hwnd || !resourcesReady) {
         LOG_ERROR("手势轮盘高 DPI 渲染资源创建失败");
         return;
     }
@@ -180,7 +202,7 @@ void RadialMenuOverlay::show(POINT centerPt) {
     POINT curPt{};
     if (GetCursorPos(&curPt)) {
         const POINT localPt{curPt.x - origin.x, curPt.y - origin.y};
-        m_hoverIndex = hitTest(localPt, /*clampOuterRing=*/true);
+        m_hoverIndex.store(hitTest(localPt, /*clampOuterRing=*/true), std::memory_order_release);
     }
 
     SetWindowPos(m_hwnd, HWND_TOPMOST,
@@ -214,14 +236,59 @@ void RadialMenuOverlay::hide() {
         if (m_hwnd) {
             ShowWindow(m_hwnd, SW_HIDE);
         }
-        m_hoverIndex = -1;
-        m_sawButtonDown = false;
+        m_hoverIndex.store(-1, std::memory_order_release);
+        m_sawButtonDown.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> stateLock(m_stateMutex);
+            m_initialForegroundHwnd = nullptr;
+            discardResourcesLocked();
+            deleteBitmapLocked();
+        }
+    }
+}
+
+void RadialMenuOverlay::shutdown() {
+    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().post([this]() {
+            shutdown();
+        });
+        return;
+    }
+
+    hide();
+
+    HWND hwndToDestroy = m_hwnd;
+    HWND helperToDestroy = m_helperOwnerHwnd;
+    if (m_timerId && hwndToDestroy && IsWindow(hwndToDestroy)) {
+        KillTimer(hwndToDestroy, TIMER_ID_ANIMATION);
+    }
+    m_timerId = 0;
+    m_hwnd = nullptr;
+    m_helperOwnerHwnd = nullptr;
+
+    {
+        std::lock_guard<std::mutex> stateLock(m_stateMutex);
         m_initialForegroundHwnd = nullptr;
-        discardResources();
-        if (m_hBitmap) {
-            DeleteObject(m_hBitmap);
-            m_hBitmap = nullptr;
-            m_bits = nullptr;
+        m_hoverRadii.clear();
+        discardResourcesLocked();
+        deleteBitmapLocked();
+        m_d2dFactory.Reset();
+        m_dwriteFactory.Reset();
+    }
+
+    if (hwndToDestroy && IsWindow(hwndToDestroy)) {
+        if (GetWindowThreadProcessId(hwndToDestroy, nullptr) == GetCurrentThreadId()) {
+            DestroyWindow(hwndToDestroy);
+        } else {
+            PostMessageW(hwndToDestroy, WM_CLOSE, 0, 0);
+        }
+    }
+    if (helperToDestroy && IsWindow(helperToDestroy)) {
+        if (GetWindowThreadProcessId(helperToDestroy, nullptr) == GetCurrentThreadId()) {
+            DestroyWindow(helperToDestroy);
+        } else {
+            PostMessageW(helperToDestroy, WM_CLOSE, 0, 0);
         }
     }
 }
@@ -235,7 +302,8 @@ bool RadialMenuOverlay::isPointInsideRing(POINT screenPt) const noexcept {
     const float cy = static_cast<float>(top) + winSize * 0.5f;
     const float dx = static_cast<float>(screenPt.x) - cx;
     const float dy = static_cast<float>(screenPt.y) - cy;
-    const float maxR = static_cast<float>(m_radiusOuter.load(std::memory_order_relaxed)) + 18.0f * m_dpiScale;
+    const float scale = m_dpiScale.load(std::memory_order_acquire);
+    const float maxR = static_cast<float>(m_radiusOuter.load(std::memory_order_relaxed)) + 18.0f * scale;
     return (dx * dx + dy * dy) <= (maxR * maxR);
 }
 
@@ -268,7 +336,7 @@ bool RadialMenuOverlay::handleGlobalMouseMessage(WPARAM message, POINT screenPt)
                 }
                 return false;
             }
-            m_sawButtonDown = true;
+            m_sawButtonDown.store(true, std::memory_order_release);
             if (m_hwnd && IsWindow(m_hwnd)) {
                 PostMessageW(m_hwnd, static_cast<UINT>(message), 0,
                              MAKELPARAM(static_cast<short>(clientPt.x), static_cast<short>(clientPt.y)));
@@ -279,9 +347,10 @@ bool RadialMenuOverlay::handleGlobalMouseMessage(WPARAM message, POINT screenPt)
         case WM_RBUTTONUP:
         case WM_MBUTTONUP: {
             const int sector = hitTest(clientPt, /*clampOuterRing=*/false);
-            const DWORD elapsedSinceShow = GetTickCount() - m_showStartTime;
+            const DWORD elapsedSinceShow = GetTickCount() - m_showStartTime.load(std::memory_order_acquire);
+            const bool sawDown = m_sawButtonDown.load(std::memory_order_acquire);
             // 若在轮盘内按下了鼠标，或者按住呼出后已划入某个扇区松手，或者呼出超过 180ms 后在中心取消区松手：确认或取消收起
-            if (m_sawButtonDown || (isPointInsideRing(screenPt) && (sector >= 0 || elapsedSinceShow >= 180)) ||
+            if (sawDown || (isPointInsideRing(screenPt) && (sector >= 0 || elapsedSinceShow >= 180)) ||
                 (!isPointInsideRing(screenPt) && sector >= 0 && elapsedSinceShow >= 120)) {
                 if (tools3000::core::MainThreadDispatcher::instance().isInitialized()) {
                     tools3000::core::MainThreadDispatcher::instance().post([this, clientPt]() {
@@ -299,11 +368,11 @@ bool RadialMenuOverlay::handleGlobalMouseMessage(WPARAM message, POINT screenPt)
     }
 }
 
-bool RadialMenuOverlay::createResources() {
+bool RadialMenuOverlay::createResourcesLocked() {
     if (!m_d2dFactory) {
         D2D1_FACTORY_OPTIONS options = {};
         if (FAILED(D2D1CreateFactory(
-                D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory1),
+                D2D1_FACTORY_TYPE_MULTI_THREADED, __uuidof(ID2D1Factory1),
                 &options, reinterpret_cast<void**>(m_d2dFactory.GetAddressOf())))) {
             return false;
         }
@@ -315,6 +384,7 @@ bool RadialMenuOverlay::createResources() {
     }
 
     const int winSize = m_windowSize.load(std::memory_order_relaxed);
+    const float scale = m_dpiScale.load(std::memory_order_acquire);
 
     if (!m_renderTarget) {
         D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
@@ -334,7 +404,7 @@ bool RadialMenuOverlay::createResources() {
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f), &m_borderBrush);
 
         const float fontSize = RadialMenuStyle::fontSizeForItems(
-            m_dpiScale, m_itemCount.load(std::memory_order_acquire));
+            scale, m_itemCount.load(std::memory_order_acquire));
         const wchar_t* fontFamily = tools3000::core::resolveInstalledUiFontFamily(m_dwriteFactory.Get());
         const wchar_t* localeName = tools3000::core::isUiLanguageChinese() ? L"zh-CN" : L"en-US";
         if (FAILED(m_dwriteFactory->CreateTextFormat(
@@ -369,7 +439,7 @@ bool RadialMenuOverlay::createResources() {
            m_borderBrush && m_textFormat && m_hBitmap && m_bits;
 }
 
-void RadialMenuOverlay::discardResources() {
+void RadialMenuOverlay::discardResourcesLocked() {
     m_renderTarget.Reset();
     m_bgBrush.Reset();
     m_hoverBrush.Reset();
@@ -379,11 +449,23 @@ void RadialMenuOverlay::discardResources() {
     m_textFormat.Reset();
 }
 
+void RadialMenuOverlay::deleteBitmapLocked() noexcept {
+    if (m_hBitmap) {
+        DeleteObject(m_hBitmap);
+        m_hBitmap = nullptr;
+        m_bits = nullptr;
+    }
+}
+
 void RadialMenuOverlay::render() {
     if (!m_hwnd) return;
-    if (!createResources()) return;
 
+    // 先在锁外获取菜单项快照，严格避免 m_stateMutex 与 m_itemsMutex 嵌套加锁
     const std::vector<RadialMenuItem> itemsSnapshot = getItems();
+
+    std::lock_guard<std::mutex> stateLock(m_stateMutex);
+    if (!m_hwnd) return;
+    if (!createResourcesLocked()) return;
 
     HDC hdcScreen = GetDC(nullptr);
     if (!hdcScreen) return;
@@ -396,6 +478,10 @@ void RadialMenuOverlay::render() {
 
     const int winSize = m_windowSize.load(std::memory_order_relaxed);
     const int baseOuterRadius = m_radiusOuter.load(std::memory_order_relaxed);
+    const int innerRadiusPx = m_radiusInner.load(std::memory_order_relaxed);
+    const int hoverIdx = m_hoverIndex.load(std::memory_order_acquire);
+    const float scale = m_dpiScale.load(std::memory_order_acquire);
+    const float popScale = m_popScale;
 
     RECT rc = {0, 0, winSize, winSize};
     m_renderTarget->BindDC(hdcMem, &rc);
@@ -405,22 +491,22 @@ void RadialMenuOverlay::render() {
     // 缩放矩阵 (出场动画)
     float cx = winSize / 2.0f;
     float cy = winSize / 2.0f;
-    m_renderTarget->SetTransform(D2D1::Matrix3x2F::Scale(m_popScale, m_popScale, D2D1::Point2F(cx, cy)));
+    m_renderTarget->SetTransform(D2D1::Matrix3x2F::Scale(popScale, popScale, D2D1::Point2F(cx, cy)));
 
     // 中心取消区域反馈（始终绘制非零 Alpha 底衬保证中心点击不穿透，悬停在中心时高亮淡红取消提示）
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> centerBrush;
-        const D2D1_COLOR_F centerColor = (m_hoverIndex == -1)
+        const D2D1_COLOR_F centerColor = (hoverIdx == -1)
             ? D2D1::ColorF(0.94f, 0.32f, 0.32f, 0.58f)
             : D2D1::ColorF(0.08f, 0.10f, 0.13f, 0.72f);
         if (SUCCEEDED(m_renderTarget->CreateSolidColorBrush(centerColor, &centerBrush)) && centerBrush) {
-            const float innerRadius = static_cast<float>(m_radiusInner);
+            const float innerRadius = static_cast<float>(innerRadiusPx);
             m_renderTarget->FillEllipse(
                 D2D1::Ellipse(D2D1::Point2F(cx, cy), innerRadius, innerRadius),
                 centerBrush.Get());
             m_renderTarget->DrawEllipse(
                 D2D1::Ellipse(D2D1::Point2F(cx, cy), innerRadius, innerRadius),
-                m_borderBrush.Get(), 1.2f * m_dpiScale);
+                m_borderBrush.Get(), 1.2f * scale);
         }
     }
 
@@ -429,7 +515,7 @@ void RadialMenuOverlay::render() {
     if (numItems > 0) {
         const float angleStep = 360.0f / static_cast<float>(numItems);
         const float offsetAngle = -90.0f - (angleStep / 2.0f);
-        const float innerRadius = static_cast<float>(m_radiusInner);
+        const float innerRadius = static_cast<float>(innerRadiusPx);
         const D2D1_ARC_SIZE arcSize = (angleStep > 180.0f) ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL;
 
         auto buildSectorGeometry = [&](int idx, float& outOuterR) -> Microsoft::WRL::ComPtr<ID2D1PathGeometry> {
@@ -462,26 +548,26 @@ void RadialMenuOverlay::render() {
 
         // 第一遍：绘制所有非悬停常规扇区
         for (int i = 0; i < numItems; ++i) {
-            if (i == m_hoverIndex) continue;
+            if (i == hoverIdx) continue;
             float outerR = 0.0f;
             auto geometry = buildSectorGeometry(i, outerR);
             if (!geometry) continue;
             m_renderTarget->FillGeometry(geometry.Get(), m_bgBrush.Get());
-            m_renderTarget->DrawGeometry(geometry.Get(), m_borderBrush.Get(), 1.5f * m_dpiScale);
+            m_renderTarget->DrawGeometry(geometry.Get(), m_borderBrush.Get(), 1.5f * scale);
         }
 
         // 第二遍：在最顶层绘制悬停放大扇区及完整闭合高亮亮框，防止顺时针相邻扇区压盖切边
-        if (m_hoverIndex >= 0 && m_hoverIndex < numItems) {
+        if (hoverIdx >= 0 && hoverIdx < numItems) {
             float hoverOuterR = 0.0f;
-            auto hoverGeometry = buildSectorGeometry(m_hoverIndex, hoverOuterR);
+            auto hoverGeometry = buildSectorGeometry(hoverIdx, hoverOuterR);
             if (hoverGeometry) {
                 m_renderTarget->FillGeometry(hoverGeometry.Get(), m_hoverBrush.Get());
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBorderBrush;
                 if (SUCCEEDED(m_renderTarget->CreateSolidColorBrush(
                         D2D1::ColorF(0.75f, 0.90f, 1.0f, 0.92f), &hoverBorderBrush)) && hoverBorderBrush) {
-                    m_renderTarget->DrawGeometry(hoverGeometry.Get(), hoverBorderBrush.Get(), 2.0f * m_dpiScale);
+                    m_renderTarget->DrawGeometry(hoverGeometry.Get(), hoverBorderBrush.Get(), 2.0f * scale);
                 } else {
-                    m_renderTarget->DrawGeometry(hoverGeometry.Get(), m_borderBrush.Get(), 2.0f * m_dpiScale);
+                    m_renderTarget->DrawGeometry(hoverGeometry.Get(), m_borderBrush.Get(), 2.0f * scale);
                 }
             }
         }
@@ -491,7 +577,7 @@ void RadialMenuOverlay::render() {
             const float hoverExtra = (i < static_cast<int>(m_hoverRadii.size())) ? m_hoverRadii[i] : 0.0f;
             const float outerR = static_cast<float>(baseOuterRadius) + hoverExtra;
             const D2D1_RECT_F textRect = RadialMenuStyle::computeSectorTextBox(
-                cx, cy, innerRadius, outerR, i, numItems, m_dpiScale);
+                cx, cy, innerRadius, outerR, i, numItems, scale);
 
             const std::wstring wLabel = tools3000::core::WinUtils::utf8ToWstring(itemsSnapshot[i].label);
             const float boxW = (std::max)(1.0f, textRect.right - textRect.left);
@@ -530,21 +616,21 @@ void RadialMenuOverlay::render() {
     }
 
     if (FAILED(m_renderTarget->EndDraw())) {
-        discardResources();
+        discardResourcesLocked();
         SelectObject(hdcMem, hOldBmp);
         DeleteDC(hdcMem);
         ReleaseDC(nullptr, hdcScreen);
         return;
     }
 
-    updateLayeredWindow(hdcScreen, hdcMem);
+    updateLayeredWindowLocked(hdcScreen, hdcMem, popScale);
 
     SelectObject(hdcMem, hOldBmp);
     DeleteDC(hdcMem);
     ReleaseDC(nullptr, hdcScreen);
 }
 
-void RadialMenuOverlay::updateLayeredWindow(HDC hdcScreen, HDC hdcMem) {
+void RadialMenuOverlay::updateLayeredWindowLocked(HDC hdcScreen, HDC hdcMem, float popScale) {
     if (!m_hwnd || !hdcScreen || !hdcMem || !m_hBitmap) return;
     const int winSize = m_windowSize.load(std::memory_order_relaxed);
     POINT ptSrc = {0, 0};
@@ -553,7 +639,7 @@ void RadialMenuOverlay::updateLayeredWindow(HDC hdcScreen, HDC hdcMem) {
         m_windowTop.load(std::memory_order_acquire)};
     SIZE size = {winSize, winSize};
 
-    BYTE alpha = static_cast<BYTE>(std::clamp(m_popScale * 255.0f, 0.0f, 255.0f));
+    BYTE alpha = static_cast<BYTE>(std::clamp(popScale * 255.0f, 0.0f, 255.0f));
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, alpha, AC_SRC_ALPHA};
 
     UpdateLayeredWindow(m_hwnd, hdcScreen, &ptDst, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
@@ -569,12 +655,13 @@ int RadialMenuOverlay::hitTest(POINT pt, bool clampOuterRing) const noexcept {
     const float dist = std::sqrt(dx * dx + dy * dy);
 
     // 内圆中心区视为取消区
-    if (dist <= static_cast<float>(m_radiusInner)) {
+    if (dist <= static_cast<float>(m_radiusInner.load(std::memory_order_acquire))) {
         return -1;
     }
 
     if (clampOuterRing) {
-        const float maxHoverRadius = static_cast<float>(m_radiusOuter.load(std::memory_order_relaxed)) + 28.0f * m_dpiScale;
+        const float scale = m_dpiScale.load(std::memory_order_acquire);
+        const float maxHoverRadius = static_cast<float>(m_radiusOuter.load(std::memory_order_relaxed)) + 28.0f * scale;
         if (dist > maxHoverRadius) {
             return -1;
         }
@@ -672,8 +759,13 @@ LRESULT RadialMenuOverlay::handleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam
                     return 0;
                 }
                 const HWND curFg = GetForegroundWindow();
-                if (m_initialForegroundHwnd && curFg &&
-                    curFg != m_initialForegroundHwnd &&
+                HWND initialFg = nullptr;
+                {
+                    std::lock_guard<std::mutex> stateLock(m_stateMutex);
+                    initialFg = m_initialForegroundHwnd;
+                }
+                if (initialFg && curFg &&
+                    curFg != initialFg &&
                     curFg != m_hwnd && curFg != m_helperOwnerHwnd) {
                     hide();
                     return 0;
@@ -681,8 +773,6 @@ LRESULT RadialMenuOverlay::handleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam
 
                 bool needsRender = false;
                 const DWORD now = GetTickCount();
-                const float dt = (std::min)(0.05f, (now - m_lastTickTime) / 1000.0f);
-                m_lastTickTime = now;
 
                 // 实时同步物理光标悬停扇区（即使未持有鼠标捕获也 100% 跟手）
                 POINT screenPt{};
@@ -695,37 +785,46 @@ LRESULT RadialMenuOverlay::handleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam
                         ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) ||
                         ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
                     const int polledHover = hitTest(localPt, /*clampOuterRing=*/!anyBtnHeld);
-                    if (polledHover != m_hoverIndex) {
-                        m_hoverIndex = polledHover;
+                    if (polledHover != m_hoverIndex.exchange(polledHover, std::memory_order_acq_rel)) {
                         needsRender = true;
                     }
                 }
 
-                // 1. 出场动画 (0.25 -> 1.0)
-                const float elapsedShow = (now - m_showStartTime) / 1000.0f;
-                if (elapsedShow < 0.2f) {
-                    const float progress = std::clamp(elapsedShow / 0.2f, 0.0f, 1.0f);
-                    m_popScale = easeOutBack(progress);
-                    needsRender = true;
-                } else if (m_popScale != 1.0f) {
-                    m_popScale = 1.0f;
-                    needsRender = true;
-                }
-
-                // 2. 悬停动画 (半径伸缩)
+                const int hoverIdx = m_hoverIndex.load(std::memory_order_acquire);
+                const float scale = m_dpiScale.load(std::memory_order_acquire);
+                const DWORD showStart = m_showStartTime.load(std::memory_order_acquire);
                 const size_t itemCount = m_itemCount.load(std::memory_order_acquire);
-                if (m_hoverRadii.size() != itemCount) {
-                    m_hoverRadii.assign(itemCount, 0.0f);
-                }
-                for (size_t i = 0; i < itemCount; ++i) {
-                    const float targetRadii = (static_cast<int>(i) == m_hoverIndex)
-                        ? 15.0f * m_dpiScale : 0.0f;
-                    if (std::abs(m_hoverRadii[i] - targetRadii) > 0.5f * m_dpiScale) {
-                        m_hoverRadii[i] += (targetRadii - m_hoverRadii[i]) * (std::min)(1.0f, 15.0f * dt);
+
+                {
+                    std::lock_guard<std::mutex> stateLock(m_stateMutex);
+                    const float dt = (std::min)(0.05f, (now - m_lastTickTime) / 1000.0f);
+                    m_lastTickTime = now;
+
+                    // 1. 出场动画 (0.25 -> 1.0)
+                    const float elapsedShow = (now - showStart) / 1000.0f;
+                    if (elapsedShow < 0.2f) {
+                        const float progress = std::clamp(elapsedShow / 0.2f, 0.0f, 1.0f);
+                        m_popScale = easeOutBack(progress);
                         needsRender = true;
-                    } else if (m_hoverRadii[i] != targetRadii) {
-                        m_hoverRadii[i] = targetRadii;
+                    } else if (m_popScale != 1.0f) {
+                        m_popScale = 1.0f;
                         needsRender = true;
+                    }
+
+                    // 2. 悬停动画 (半径伸缩)
+                    if (m_hoverRadii.size() != itemCount) {
+                        m_hoverRadii.assign(itemCount, 0.0f);
+                    }
+                    for (size_t i = 0; i < itemCount; ++i) {
+                        const float targetRadii = (static_cast<int>(i) == hoverIdx)
+                            ? 15.0f * scale : 0.0f;
+                        if (std::abs(m_hoverRadii[i] - targetRadii) > 0.5f * scale) {
+                            m_hoverRadii[i] += (targetRadii - m_hoverRadii[i]) * (std::min)(1.0f, 15.0f * dt);
+                            needsRender = true;
+                        } else if (m_hoverRadii[i] != targetRadii) {
+                            m_hoverRadii[i] = targetRadii;
+                            needsRender = true;
+                        }
                     }
                 }
 
@@ -740,8 +839,7 @@ LRESULT RadialMenuOverlay::handleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam
             pt.x = static_cast<short>(LOWORD(lParam));
             pt.y = static_cast<short>(HIWORD(lParam));
             const int newHover = hitTest(pt, /*clampOuterRing=*/false);
-            if (newHover != m_hoverIndex) {
-                m_hoverIndex = newHover;
+            if (newHover != m_hoverIndex.exchange(newHover, std::memory_order_acq_rel)) {
                 render();
             }
             return 0;
@@ -759,10 +857,9 @@ LRESULT RadialMenuOverlay::handleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam
                 hide();
                 return 0;
             }
-            m_sawButtonDown = true;
+            m_sawButtonDown.store(true, std::memory_order_release);
             const int newHover = hitTest(pt, /*clampOuterRing=*/false);
-            if (newHover != m_hoverIndex) {
-                m_hoverIndex = newHover;
+            if (newHover != m_hoverIndex.exchange(newHover, std::memory_order_acq_rel)) {
                 render();
             }
             return 0;
@@ -770,7 +867,7 @@ LRESULT RadialMenuOverlay::handleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam
         case WM_MBUTTONUP:
         case WM_LBUTTONUP:
         case WM_RBUTTONUP: {
-            int finalIndex = m_hoverIndex;
+            int finalIndex = m_hoverIndex.load(std::memory_order_acquire);
             if (lParam != 0) {
                 POINT pt;
                 pt.x = static_cast<short>(LOWORD(lParam));

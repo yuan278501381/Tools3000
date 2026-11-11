@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <optional>
 #include <string_view>
 #include <unordered_set>
@@ -382,12 +383,20 @@ public:
                 return {{"success", false}, {"error", "invalid targetMode"}};
             }
 
-            const int initialTimeoutMs = params.value("initialTimeoutMs", engine.initialTimeoutMs());
-            const int minSegmentDistance = params.value("minSegmentDistance", engine.minSegmentDistance());
+            const int rawInitialTimeoutMs = params.value("initialTimeoutMs", engine.initialTimeoutMs());
+            const int initialTimeoutMs = (rawInitialTimeoutMs <= 0)
+                ? 0
+                : std::clamp(rawInitialTimeoutMs, 100, 3000);
+            const int minSegmentDistance = std::clamp(
+                params.value("minSegmentDistance", engine.minSegmentDistance()), 5, 100);
 
             std::string trailColorMode = params.value("trailColorMode", config.get<std::string>("/gesture/trailColorMode", "auto"));
+            if (trailColorMode != "auto" && trailColorMode != "custom") {
+                return {{"success", false}, {"error", "invalid trailColorMode"}};
+            }
             std::string trailColor = params.value("trailColor", config.get<std::string>("/gesture/trailColor", "#3B82F6"));
-            float trailWidth = params.value("trailWidth", config.get<float>("/gesture/trailWidth", 2.5f));
+            float rawTrailWidth = params.value("trailWidth", config.get<float>("/gesture/trailWidth", 2.5f));
+            float trailWidth = std::isfinite(rawTrailWidth) ? std::clamp(rawTrailWidth, 1.0f, 24.0f) : 2.5f;
             float trailOutlineWidth = clampTrailOutlineWidth(
                 params.value("trailOutlineWidth", config.get<float>("/gesture/trailOutlineWidth", 1.5f)));
             bool enableScribbleCancel = params.value("enableScribbleCancel", config.get<bool>("/gesture/enableScribbleCancel", true));
@@ -540,8 +549,10 @@ public:
             engine.scopeRules().loadFromJson(rules);
             if (!engine.saveToConfig()) {
                 engine.scopeRules().loadFromJson(previous);
+                engine.refreshForegroundBypass();
                 return {{"success", false}, {"error", "failed to persist scope rules"}};
             }
+            engine.refreshForegroundBypass();
             return {{"success", true}};
         });
 
@@ -706,6 +717,7 @@ public:
         gestureEngine.stop();
         gestureEngine.setPauseChangedCallback(nullptr);
         tools3000::gesture::HotCornerEngine::instance().stop();
+        tools3000::gesture::RadialMenuOverlay::instance().shutdown();
         tools3000::gesture::BuiltinCommandDispatcher::instance().clearHandlers();
     }
 

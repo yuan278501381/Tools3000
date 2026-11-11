@@ -3,6 +3,7 @@
 #include "core/utils/Export.h"
 
 #include <windows.h>
+#include <atomic>
 #include <functional>
 
 namespace tools3000::core {
@@ -31,7 +32,7 @@ private:
     MainThreadDispatcher& operator=(const MainThreadDispatcher&) = delete;
 
     struct Impl;
-    Impl* m_impl = nullptr;
+    std::atomic<Impl*> m_impl{nullptr};
 };
 
 }  // namespace tools3000::core

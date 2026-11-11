@@ -410,7 +410,12 @@ void WideUniversalRotatingFileSink::rotateLocked() {
     std::filesystem::path archivePath;
 
     if (std::filesystem::exists(m_activePath, ec) && m_currentFileSize > 0) {
-        const std::string dateStr = m_activeFileDay.empty() ? getCurrentDayString() : m_activeFileDay;
+        std::string activeDaySnapshot;
+        {
+            std::lock_guard<std::mutex> stateLock(m_stateMutex);
+            activeDaySnapshot = m_activeFileDay;
+        }
+        const std::string dateStr = activeDaySnapshot.empty() ? getCurrentDayString() : activeDaySnapshot;
         const uint32_t seq = getNextSequenceForDateLocked(dateStr);
 
         char seqBuf[16];
@@ -451,7 +456,11 @@ void WideUniversalRotatingFileSink::rotateLocked() {
         }
     }
 
-    m_activeFileDay = getCurrentDayString();
+    const std::string newActiveDay = getCurrentDayString();
+    {
+        std::lock_guard<std::mutex> stateLock(m_stateMutex);
+        m_activeFileDay = newActiveDay;
+    }
     openHandleLocked(true);
     m_currentFileSize = 0;
 }
@@ -480,13 +489,20 @@ void WideUniversalRotatingFileSink::sink_it_(const spdlog::details::log_msg& mes
     // 2. 双轮驱动混合滚动引擎判定
     // (a) 时钟驱动：跨天自然日变更 (00:00:00)
     const std::string currentDay = getCurrentDayString();
-    if (!m_activeFileDay.empty() && currentDay != m_activeFileDay) {
+    std::string activeDaySnapshot;
+    {
+        std::lock_guard<std::mutex> stateLock(m_stateMutex);
+        activeDaySnapshot = m_activeFileDay;
+    }
+    if (!activeDaySnapshot.empty() && currentDay != activeDaySnapshot) {
         if (m_currentFileSize > 0) {
             rotateLocked();
         } else {
+            std::lock_guard<std::mutex> stateLock(m_stateMutex);
             m_activeFileDay = currentDay;
         }
-    } else if (m_activeFileDay.empty()) {
+    } else if (activeDaySnapshot.empty()) {
+        std::lock_guard<std::mutex> stateLock(m_stateMutex);
         m_activeFileDay = currentDay;
     }
     // (b) 体积驱动：当前体积 + 待写批次超出上限
@@ -695,10 +711,16 @@ void WideUniversalRotatingFileSink::workerLoop() {
         {
             const std::string curDay = getCurrentDayString();
             std::lock_guard<std::mutex> lock(base_sink<std::mutex>::mutex_);
-            if (!m_activeFileDay.empty() && curDay != m_activeFileDay) {
+            std::string activeDaySnapshot;
+            {
+                std::lock_guard<std::mutex> stateLock(m_stateMutex);
+                activeDaySnapshot = m_activeFileDay;
+            }
+            if (!activeDaySnapshot.empty() && curDay != activeDaySnapshot) {
                 if (m_currentFileSize > 0) {
                     rotateLocked();
                 } else {
+                    std::lock_guard<std::mutex> stateLock(m_stateMutex);
                     m_activeFileDay = curDay;
                 }
             }

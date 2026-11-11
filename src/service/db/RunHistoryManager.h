@@ -4,6 +4,7 @@
 #endif
 #include <windows.h>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
@@ -30,6 +31,23 @@ struct RunHistorySnapshot {
 
     bool empty() const noexcept { return entries.empty(); }
 
+    static wchar_t foldPathChar(wchar_t ch) noexcept {
+        if (ch == L'/') {
+            return L'\\';
+        }
+        if (ch < 0x80) {
+            return (ch >= L'A' && ch <= L'Z')
+                ? static_cast<wchar_t>(ch + (L'a' - L'A'))
+                : ch;
+        }
+        if (ch >= 0x3000 && ch <= 0x9FFF) {
+            return ch;
+        }
+        wchar_t folded = ch;
+        CharLowerBuffW(&folded, 1);
+        return folded;
+    }
+
     static void computeBloomBits(std::wstring_view path, uint64_t& outLenBit, uint64_t& outBloomBits) noexcept {
         const size_t n = path.size();
         outLenBit = 1ULL << (n & 63);
@@ -37,13 +55,8 @@ struct RunHistorySnapshot {
             outBloomBits = 1ULL;
             return;
         }
-        const auto foldChar = [](wchar_t ch) noexcept -> uint64_t {
-            if (ch == L'/') return static_cast<uint64_t>(L'\\');
-            if (ch >= L'A' && ch <= L'Z') return static_cast<uint64_t>(ch + (L'a' - L'A'));
-            return static_cast<uint64_t>(ch);
-        };
-        const uint64_t cLast = foldChar(path[n - 1]);
-        const uint64_t cMid = foldChar(path[n >= 6 ? (n - 6) : 0]);
+        const uint64_t cLast = static_cast<uint64_t>(foldPathChar(path[n - 1]));
+        const uint64_t cMid = static_cast<uint64_t>(foldPathChar(path[n >= 6 ? (n - 6) : 0]));
         const uint64_t b1 = 1ULL << (((n * 131ULL) ^ cLast) & 63ULL);
         const uint64_t b2 = 1ULL << (((n * 31ULL) ^ (cMid * 17ULL)) & 63ULL);
         outBloomBits = b1 | b2;
@@ -60,7 +73,7 @@ struct RunHistorySnapshot {
         std::wstring key;
         key.reserve(fullPath.size());
         for (wchar_t ch : fullPath) {
-            key.push_back(ch == L'/' ? L'\\' : static_cast<wchar_t>(std::towlower(ch)));
+            key.push_back(foldPathChar(ch));
         }
         auto it = entries.find(key);
         return (it != entries.end()) ? it->second : RunEntryStats{};
@@ -78,9 +91,17 @@ public:
     RunHistoryManager();
     ~RunHistoryManager();
 
-    // 初始化历史文件路径 (默认使用 %APPDATA%\Tools3000\Run History.csv 或当前执行目录)
+    // 初始化历史文件路径 (默认使用本地目录或测试指定路径)
     void init(const std::wstring& customCsvPath = L"");
     void initForSid(const std::wstring& sid);
+
+    // 绑定已通过命名管道内核鉴权的客户端令牌，定位并隔离至该客户端真实的
+    // %LOCALAPPDATA%\Tools3000\service_user_data\Run History.csv，并在客户端低权限令牌模拟上下文中读写。
+    bool bindClientUserContext(
+        HANDLE clientToken,
+        bool isSameUserProcessSid,
+        const std::wstring& clientSid
+    );
 
     // 记录运行/打开事件
     void recordRun(const std::wstring& filename);
@@ -112,9 +133,13 @@ public:
 
 private:
     std::wstring getNormalizedKey(const std::wstring& path) const;
+    void closeImpersonationTokenUnlocked() noexcept;
 
     mutable std::recursive_mutex m_mutex;
     std::wstring m_csvPath;
+    std::wstring m_boundClientSid;
+    HANDLE m_impersonationToken = nullptr;
+    bool m_requiresImpersonation = false;
     std::unordered_map<std::wstring, RunRecord> m_records;
     bool m_isDirty = false;
 };

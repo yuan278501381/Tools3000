@@ -28,7 +28,11 @@ export const SearchSyntaxModal: React.FC<SearchSyntaxModalProps> = ({
     : SYNTAX_EXAMPLES.filter(item => item.category === syntaxCat);
 
   return (
-    <div className="search-syntax-drawer">
+    <div
+      className="search-syntax-drawer"
+      role="dialog"
+      aria-label={t('search.syntaxHelpTitle', 'Advanced Search Syntax Quick Guide')}
+    >
       <div className="syntax-drawer-header">
         <div className="syntax-drawer-header-left">
           <div className="syntax-drawer-title">
@@ -54,6 +58,7 @@ export const SearchSyntaxModal: React.FC<SearchSyntaxModalProps> = ({
           onClick={onClose}
           type="button"
           title={t('search.closeSyntaxHelp', 'Close Syntax Guide (Esc / F1)')}
+          aria-label={t('search.closeSyntaxHelp', 'Close Syntax Guide (Esc / F1)')}
         >
           <X size={16} />
         </button>
@@ -63,7 +68,15 @@ export const SearchSyntaxModal: React.FC<SearchSyntaxModalProps> = ({
           <div
             key={idx}
             className={`syntax-example-item ${item.highlight ? 'syntax-example-item--highlight' : ''}`}
+            role="button"
+            tabIndex={0}
             onClick={() => onApplyExample(item.syntax)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onApplyExample(item.syntax);
+              }
+            }}
             title={t('search.clickToFill', 'Click to insert into search box')}
           >
             <div className="syntax-example-item-top">

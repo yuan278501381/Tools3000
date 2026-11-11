@@ -11,15 +11,15 @@ Welcome to **Tools3000 v1.0.0 Official Release**! Engineered with a native C++20
 ## 核心功能矩阵深度解构（按客户端导航顺序）
 
 ### 1. [01] 文件与全文搜索 (File & Content Search) — 275万文件秒查与正文穿透
-- **百万级文件毫秒响应与跨目录秒搜**：随时按下 `Alt + Space` 零延迟唤起搜索中心。基于底层 NTFS MFT 元数据直读、USN 实时增量日志与**可分离目录 64 位位掩码 (`FileRecord::dirMask`) + 极大反链预筛算法**，在 275 万真实文件规模下，跨目录多词查询与拼音首字母混搜（如 `sztx 账号密码`）耗时稳定在 **20~27 ms**；
+- **百万级文件毫秒响应与跨目录秒搜**：随时按下 `Alt + Space` 零延迟唤起搜索中心。基于底层 NTFS MFT 元数据直读、USN 实时增量日志与**可分离目录 64 位位掩码 (`FileRecord::dirMask`) + 极大反链预筛算法**，在 275 万真实文件规模下，跨目录多词查询与拼音首字母混搜（如 `xykj 部署手册`）耗时稳定在 **20~27 ms**；
 - **最匹配优先置顶与无锁 Bloom Frecency 加权**：多关键词与多扩展名并集（如 `*.log *.txt log`）自动隔离扩展名假命中，按文件名主干（Stem）命中覆盖度分层置顶，并结合 **64 位双哈希 Bloom 运行历史无锁快照 (`RunHistorySnapshot`)** 将高频打开的文件（`[打开 N 次]`）智能排在最前；
 - **Windows 资源管理器原生真实图标还原**：针对 `.exe`、`.lnk`、`.ico`、`.cur`、`.ani`、`.scr`、`.cpl`、`.msc` 等文件直接提取每个文件真实内嵌的 Windows 高清图标，普通文档提取系统关联图标，大幅降低视觉认知负荷；
 - **C++ SEH + Rust SIMD 深度正文穿透检索 (`content:`)**：内置零外网依赖的 Rust SIMD 检索引擎（`tools3000_content_rs`）与 MSVC `__try/__except` 页错误保护，直接穿透搜索 Word、Excel、PowerPoint、PDF（含 `ToUnicode` CMap）、AutoCAD DXF 及代码源文件。采用 220ms 时间片流式上屏，跨分片锁定行高**彻底杜绝列表闪烁**，支持实时扫描百分比、一键停止扫描及点击行号胶囊（如 `L66`）**单行代码一键复制**；
 - **完备高级语法与 QuickLook 空格预览**：支持 `*.log *.txt`、`ext:jpg;png`、`size:1mb..50mb`、`size:empty/tiny/small/medium/large/huge`、`dm:today/thisweek`、`!exclude` 与 `regex:`；选中任意结果按 `Space` 空格键即刻原地预览；严格遵循 `DEMAND_START` 按需启动契约。
 
-### 2. [02] 全局鼠标手势 (Global Mouse Gestures) — 轨迹、径向轮盘与即时触发
+### 2. [02] 全局鼠标手势 (Global Mouse Gestures) — 流光轨迹、边缘滚轮与即时触发
 - **右键/中键轨迹、滚轮联动与屏幕边缘滑动**：按住右键（或中键）一划即可执行后退、前进、关闭标签页、恢复标签页、窗口置顶等操作；支持在桌面或任务栏边缘滑动滚轮调节系统音量或切换虚拟桌面；
-- **8~16 扇区单行径向轮盘与立即执行 (`instantExecute`)**：支持呼出高质感 Direct2D 径向轮盘菜单与飞行方向罗盘；支持轨迹达标刹那微秒级立即触发而无需等待松开按键，以及应用级专属作用域规则与全屏游戏自动避让。
+- **实时方向提示与立即执行 (`instantExecute`)**：轨迹绘制期间实时呈现方向动作提示；支持轨迹达标刹那微秒级立即触发而无需等待松开按键，并提供应用级专属作用域规则与全屏游戏自动避让。
 
 ### 3. [03] 屏幕四角触发角 (Screen Hot Corners) — 零瞄准四角盲甩调度
 - **四角物理盲操作**：将光标推入屏幕四个角落即可一键显示桌面、打开多任务视图或立即锁屏息屏；

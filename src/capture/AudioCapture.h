@@ -55,6 +55,8 @@ public:
     bool start(const AudioCaptureOptions& options);
     void stop() noexcept;
     void setPaused(bool paused);
+    /// Flushes any pre-buffered/stale samples, aligns the mixer QPC clock to now, and unpauses atomically.
+    void resetAndResumeForSyncStart();
     void setVolumes(float systemVolume, float microphoneVolume);
     void setSystemMuted(bool muted);
     void setMicrophoneMuted(bool muted);

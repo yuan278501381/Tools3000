@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent, type UIEvent as ReactUIEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { 
   File, 
@@ -24,8 +24,13 @@ import {
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
 import { useAppearance } from './hooks/useAppearance';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
-import { countTextLines, highlightCodeLines, renderMarkdownToHtml } from './quickLookMarkup';
+import { countTextLines, highlightCodeLines, highlightSingleCodeLine, renderMarkdownToHtml, splitNormalizedLines } from './quickLookMarkup';
 import './QuickLookApp.css';
+
+const VIRTUAL_SCROLL_LINE_THRESHOLD = 120;
+const VIRTUAL_OVERSCAN_LINES = 30;
+const LAZY_LINE_TOKENIZE_THRESHOLD = 2000;
+const DEFAULT_CODE_VIEWPORT_HEIGHT = 640;
 
 interface FilePreviewData {
   exists: boolean;
@@ -60,25 +65,79 @@ export default function QuickLookApp() {
   const [imageScale, setImageScale] = useState(1);
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [pinnedFeedback, setPinnedFeedback] = useState(false);
+  const [codeScrollTop, setCodeScrollTop] = useState(0);
+  const [codeViewportHeight, setCodeViewportHeight] = useState(DEFAULT_CODE_VIEWPORT_HEIGHT);
   const contentRef = useRef<HTMLDivElement>(null);
+  const codeScrollRef = useRef<HTMLPreElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const copyTimerRef = useRef<number | null>(null);
   const pinTimerRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    return () => {
-      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
-      if (pinTimerRef.current !== null) window.clearTimeout(pinTimerRef.current);
+  // 立即停止音视频后台播放并清空媒体/PDF URL，促使 Chromium 立即释放底层磁盘文件锁
+  const releaseMediaHandles = useCallback(() => {
+    const detachMedia = (el: HTMLMediaElement | null) => {
+      if (!el) return;
+      try {
+        el.pause();
+      } catch {
+        // Ignore unimplemented pause in synthetic test environments
+      }
+      el.removeAttribute('src');
+      try {
+        el.load();
+      } catch {
+        // Ignore unimplemented load in synthetic test environments
+      }
     };
+    detachMedia(videoRef.current);
+    detachMedia(audioRef.current);
+    if (iframeRef.current) {
+      iframeRef.current.src = 'about:blank';
+    }
   }, []);
 
-  // 监听原生文件切换事件
+  const hidePreviewAndRelease = useCallback(() => {
+    releaseMediaHandles();
+    setData(null);
+    void bridgeRequest('quicklook.hide');
+  }, [releaseMediaHandles]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        releaseMediaHandles();
+        setData(null);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      if (pinTimerRef.current !== null) window.clearTimeout(pinTimerRef.current);
+      releaseMediaHandles();
+    };
+  }, [releaseMediaHandles]);
+
+  // 监听原生文件切换事件（收到 null 时彻底释放媒体句柄并清空预览状态）
   useBridgeEvent('quicklook.fileChanged', (payload: unknown) => {
+    releaseMediaHandles();
+    if (!payload) {
+      setData(null);
+      setCodeScrollTop(0);
+      return;
+    }
     setData(payload as FilePreviewData);
     setImageScale(1);
     setCopiedFeedback(false);
     setPinnedFeedback(false);
+    setCodeScrollTop(0);
     if (contentRef.current) {
       contentRef.current.scrollTop = 0;
+    }
+    if (codeScrollRef.current) {
+      codeScrollRef.current.scrollTop = 0;
     }
   });
 
@@ -119,7 +178,7 @@ export default function QuickLookApp() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        void bridgeRequest('quicklook.hide');
+        hidePreviewAndRelease();
         return;
       }
       const target = e.target as HTMLElement | null;
@@ -130,7 +189,7 @@ export default function QuickLookApp() {
       if (e.key === ' ' || e.code === 'Space') {
         if (isInteractiveTarget) return;
         e.preventDefault();
-        void bridgeRequest('quicklook.hide');
+        hidePreviewAndRelease();
         return;
       }
       if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.shiftKey) {
@@ -218,7 +277,7 @@ export default function QuickLookApp() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [data, handleCopyPath, handlePinImage]);
+  }, [data, handleCopyPath, handlePinImage, hidePreviewAndRelease]);
 
   const handleImageWheel = useCallback((e: ReactWheelEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -263,10 +322,66 @@ export default function QuickLookApp() {
     return countTextLines(data.content);
   }, [data]);
 
-  const highlightedCodeLines = useMemo(() => {
+  const rawCodeLines = useMemo(() => {
     if (data?.type !== 'code' || !data.content) return [];
-    return highlightCodeLines(data.content);
+    return splitNormalizedLines(data.content);
   }, [data]);
+
+  const eagerHighlightedCodeLines = useMemo(() => {
+    if (data?.type !== 'code' || !data.content) return [];
+    if (rawCodeLines.length > LAZY_LINE_TOKENIZE_THRESHOLD) return [];
+    return highlightCodeLines(data.content);
+  }, [data, rawCodeLines.length]);
+
+  const codeLineHeightPx = useMemo(() => Math.max(18, Math.round(fontSize * 1.6)), [fontSize]);
+  const isCodeVirtualized = rawCodeLines.length > VIRTUAL_SCROLL_LINE_THRESHOLD;
+
+  useEffect(() => {
+    if (data?.type !== 'code') return;
+    const measureViewport = () => {
+      const h = codeScrollRef.current?.clientHeight || contentRef.current?.clientHeight || 0;
+      if (h > 0) {
+        setCodeViewportHeight(h);
+      }
+    };
+    measureViewport();
+    window.addEventListener('resize', measureViewport);
+    return () => {
+      window.removeEventListener('resize', measureViewport);
+    };
+  }, [data?.type, data?.path]);
+
+  const handleCodeScroll = useCallback((e: ReactUIEvent<HTMLPreElement>) => {
+    const target = e.currentTarget;
+    setCodeScrollTop(target.scrollTop);
+    if (target.clientHeight > 0 && target.clientHeight !== codeViewportHeight) {
+      setCodeViewportHeight(target.clientHeight);
+    }
+  }, [codeViewportHeight]);
+
+  const virtualCodeSlice = useMemo(() => {
+    const total = rawCodeLines.length;
+    if (total === 0) {
+      return { startIndex: 0, endIndex: 0, topSpacerPx: 0, bottomSpacerPx: 0, items: [] as Array<{ lineNumber: number; html: string }> };
+    }
+    const startIndex = isCodeVirtualized
+      ? Math.max(0, Math.floor(codeScrollTop / codeLineHeightPx) - VIRTUAL_OVERSCAN_LINES)
+      : 0;
+    const endIndex = isCodeVirtualized
+      ? Math.min(total, Math.ceil((codeScrollTop + codeViewportHeight) / codeLineHeightPx) + VIRTUAL_OVERSCAN_LINES)
+      : total;
+    const topSpacerPx = isCodeVirtualized ? startIndex * codeLineHeightPx : 0;
+    const bottomSpacerPx = isCodeVirtualized ? Math.max(0, (total - endIndex) * codeLineHeightPx) : 0;
+
+    const items: Array<{ lineNumber: number; html: string }> = [];
+    for (let idx = startIndex; idx < endIndex; idx += 1) {
+      const html = eagerHighlightedCodeLines.length > 0
+        ? (eagerHighlightedCodeLines[idx] ?? '')
+        : highlightSingleCodeLine(rawCodeLines[idx] ?? '');
+      items.push({ lineNumber: idx + 1, html });
+    }
+    return { startIndex, endIndex, topSpacerPx, bottomSpacerPx, items };
+  }, [rawCodeLines, eagerHighlightedCodeLines, isCodeVirtualized, codeScrollTop, codeViewportHeight, codeLineHeightPx]);
 
   const renderedMarkdownHtml = useMemo(() => {
     if (data?.type !== 'markdown' || !data.content) return '';
@@ -451,7 +566,7 @@ export default function QuickLookApp() {
           <button
             type="button"
             className="ql-btn ql-btn-close"
-            onClick={() => bridgeRequest('quicklook.hide')}
+            onClick={hidePreviewAndRelease}
             title={t('quicklook.close', 'Close Preview (Esc / Space)')}
             aria-label={t('quicklook.close', 'Close Preview (Esc / Space)')}
           >
@@ -485,15 +600,33 @@ export default function QuickLookApp() {
         )}
 
         {data.type === 'code' && (
-          <div className="ql-code-view" style={{ fontSize: `${fontSize}px` }}>
-            <pre className={`ql-code-content ${codeWrap ? 'wrap' : ''}`}>
-              <code className="ql-code-grid">
-                {highlightedCodeLines.map((lineHtml, idx) => (
+          <div
+            className="ql-code-view"
+            style={{
+              fontSize: `${fontSize}px`,
+              ['--ql-code-line-height' as string]: `${codeLineHeightPx}px`,
+              ['--ql-gutter-width' as string]: rawCodeLines.length >= 100000 ? '68px' : rawCodeLines.length >= 10000 ? '58px' : '48px',
+            }}
+          >
+            <pre
+              ref={codeScrollRef}
+              onScroll={handleCodeScroll}
+              className={`ql-code-content ${codeWrap && !isCodeVirtualized ? 'wrap' : ''} ${isCodeVirtualized ? 'virtualized' : ''}`}
+            >
+              <code
+                className="ql-code-grid"
+                style={isCodeVirtualized ? {
+                  paddingTop: `${virtualCodeSlice.topSpacerPx}px`,
+                  paddingBottom: `${virtualCodeSlice.bottomSpacerPx}px`,
+                } : undefined}
+              >
+                {virtualCodeSlice.items.map((item) => (
                   <div
-                    key={idx}
+                    key={item.lineNumber}
                     className="ql-code-line"
+                    data-line={item.lineNumber}
                     dangerouslySetInnerHTML={{
-                      __html: lineHtml || '<br />',
+                      __html: item.html || '<br />',
                     }}
                   />
                 ))}
@@ -525,7 +658,7 @@ export default function QuickLookApp() {
         {data.type === 'video' && (
           <div className="ql-media-view">
             {resolvedMediaSrc ? (
-              <video key={resolvedMediaSrc} controls autoPlay src={resolvedMediaSrc} className="ql-video-player">
+              <video ref={videoRef} key={resolvedMediaSrc} controls autoPlay src={resolvedMediaSrc} className="ql-video-player">
                 <p>{t('quicklook.videoNotSupported', 'Your browser does not support this video format')}</p>
               </video>
             ) : (
@@ -543,7 +676,7 @@ export default function QuickLookApp() {
               <div className="ql-audio-icon"><Music size={36} /></div>
               <div className="ql-audio-title">{data.name}</div>
               {resolvedMediaSrc && (
-                <audio key={resolvedMediaSrc} controls autoPlay src={resolvedMediaSrc} className="ql-audio-player" />
+                <audio ref={audioRef} key={resolvedMediaSrc} controls autoPlay src={resolvedMediaSrc} className="ql-audio-player" />
               )}
             </div>
           </div>
@@ -553,6 +686,7 @@ export default function QuickLookApp() {
           <div className="ql-pdf-view">
             {data.mediaUrl ? (
               <iframe
+                ref={iframeRef}
                 key={data.mediaUrl}
                 className="ql-pdf-frame"
                 src={data.mediaUrl}

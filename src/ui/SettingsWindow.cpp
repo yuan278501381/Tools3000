@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <cmath>
 #include <utility>
+#include <nlohmann/json.hpp>
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -697,8 +698,8 @@ void SettingsWindow::navigateTo(const std::string& path) {
     }
     if (!m_webView || !m_webViewReady) return;
 
-    // 通过 JS 路由导航
-    std::string script = "window.location.hash = '" + path + "';";
+    // 通过 JS 路由导航（采用 JSON 字符串序列化安全转义引号、反斜杠与控制字符）
+    std::string script = "window.location.hash = " + nlohmann::json(path).dump() + ";";
     std::wstring wScript = tools3000::core::WinUtils::utf8ToWstring(script);
     m_webView->ExecuteScript(wScript.c_str(), nullptr);
 }

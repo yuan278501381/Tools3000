@@ -51,7 +51,7 @@ public:
 
     /// 颜色与文本卡片生成工具（供贴图渲染及连续回溯会话调度器复用）
     static bool parseHexColor(const std::wstring& s, cv::Scalar& bgr, std::wstring& label);
-    static cv::Mat renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label);
+    static cv::Mat renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label, float dpiScaleOverride = 1.0f);
     static cv::Mat renderTextToImage(const std::wstring& text);
 
     /// 根据图像大小与来源上下文，智能计算世界级最佳贴图生成坐标
@@ -292,8 +292,10 @@ private:
     std::atomic<uint64_t> m_ocrVersion{1};
     std::atomic<uint64_t> m_ocrInFlightVersion{0};
     std::atomic<uint64_t> m_ocrRunCount{0};
+    std::atomic<bool> m_extractTextInFlight{false};
     std::shared_ptr<std::atomic<uint32_t>> m_ocrActiveWorkers = std::make_shared<std::atomic<uint32_t>>(0);
     void invalidateOcrStateAndRefreshIfSelecting();
+    void releaseGraphicsResources() noexcept;
     std::vector<PinOcrBlock> m_ocrBlocks;
     mutable std::mutex m_ocrMutex;
     std::atomic<bool> m_ocrReady{false};
@@ -317,9 +319,17 @@ private:
     std::wstring m_pinnedSourceText;       // 微晶字签/色卡签原始纯文本，支持零误差一键复制
 
     // D2D & DirectWrite 缓存
+    struct PinBitmapTile {
+        int x = 0;
+        int y = 0;
+        int width = 0;
+        int height = 0;
+        Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;
+    };
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> m_renderTarget;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_bitmap;
+    std::vector<PinBitmapTile> m_bitmapTiles;
     Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_uiLeadTextFormat;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_uiCenterTextFormat;

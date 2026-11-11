@@ -9,7 +9,7 @@
  *   - IPC: hotcorner.getSettings / hotcorner.updateSettings
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useState, useEffect, useCallback, type FC } from 'react';
+import { useState, useEffect, useCallback, useRef, type FC } from 'react';
 import { Card, Toggle, SettingRow, SettingGroup, Select } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
@@ -64,17 +64,30 @@ export const HotCornerPage: FC = () => {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<HotCornerSettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
+  const committedDelayRef = useRef<number>(DEFAULT_SETTINGS.delay);
 
   // ── 加载设置 ────────────────────────────────────────────────────────────
   const reload = useCallback(async () => {
     const data = await bridgeRequest<HotCornerSettings>('hotcorner.getSettings');
-    setSettings(prev => ({ ...prev, ...data }));
+    setSettings(prev => {
+      const merged = { ...prev, ...data };
+      committedDelayRef.current = merged.delay;
+      return merged;
+    });
   }, []);
 
   useEffect(() => {
     let active = true;
     bridgeRequest<HotCornerSettings>('hotcorner.getSettings')
-      .then(data => { if (active) setSettings(prev => ({ ...prev, ...data })); })
+      .then(data => {
+        if (active) {
+          setSettings(prev => {
+            const merged = { ...prev, ...data };
+            committedDelayRef.current = merged.delay;
+            return merged;
+          });
+        }
+      })
       .catch(error => {
         console.error('Failed to load hot-corner settings:', error);
         if (active) toast.error(t('hotcorner.loadFailed'));
@@ -84,13 +97,18 @@ export const HotCornerPage: FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const persistPatch = useCallback(async (patch: Record<string, unknown>) => {
+  const persistPatch = useCallback(async (patch: Record<string, unknown>, rollbackSnapshot: HotCornerSettings) => {
     try {
       const result = await bridgeRequest<OperationResult>('hotcorner.updateSettings', patch);
-      if (!result.success) throw new Error(result.error || t('hotcorner.saveFailed'));
+      if (!result || !result.success) throw new Error(result?.error || t('hotcorner.saveFailed'));
+      if (typeof patch.delay === 'number') {
+        committedDelayRef.current = patch.delay;
+      }
     } catch (error) {
+      setSettings(rollbackSnapshot);
+      committedDelayRef.current = rollbackSnapshot.delay;
       toast.error(t('hotcorner.saveFailed'), { description: String(error) });
-      try { await reload(); } catch { /* keep the page usable */ }
+      try { await reload(); } catch { /* keep rolled-back local state usable */ }
     }
   }, [reload, t]);
 
@@ -98,23 +116,24 @@ export const HotCornerPage: FC = () => {
   const updateSetting = useCallback(<K extends keyof HotCornerSettings>(
     key: K, value: HotCornerSettings[K],
   ) => {
-    setSettings(prev => ({ ...prev, [key]: value }));
-    void persistPatch({ [key]: value });
-  }, [persistPatch]);
+    const snapshot = settings;
+    const next = { ...settings, [key]: value };
+    setSettings(next);
+    void persistPatch({ [key]: value }, snapshot);
+  }, [persistPatch, settings]);
 
   const updateCorner = useCallback((position: CornerPosition, commandIndex: number) => {
-    setSettings(prev => {
-      const next = {
-        ...prev,
-        corners: {
-          ...prev.corners,
-          [position]: { commandIndex },
-        },
-      };
-      void persistPatch({ corners: next.corners });
-      return next;
+    const snapshot = settings;
+    const nextCorners: Record<CornerPosition, CornerAction> = {
+      ...settings.corners,
+      [position]: { commandIndex },
+    };
+    setSettings({
+      ...settings,
+      corners: nextCorners,
     });
-  }, [persistPatch]);
+    void persistPatch({ corners: nextCorners }, snapshot);
+  }, [persistPatch, settings]);
 
   if (loading) {
     return <div style={{ padding: '2rem', opacity: 0.5 }}>{t('common.loading')}</div>;
@@ -224,8 +243,8 @@ export const HotCornerPage: FC = () => {
                 step={50}
                 value={settings.delay}
                 onChange={(e) => setSettings(prev => ({ ...prev, delay: parseInt(e.target.value) }))}
-                onPointerUp={() => void persistPatch({ delay: settings.delay })}
-                onKeyUp={() => void persistPatch({ delay: settings.delay })}
+                onPointerUp={() => void persistPatch({ delay: settings.delay }, { ...settings, delay: committedDelayRef.current })}
+                onKeyUp={() => void persistPatch({ delay: settings.delay }, { ...settings, delay: committedDelayRef.current })}
               />
               <span className="hotcorner-page__slider-value">{settings.delay}ms</span>
             </div>

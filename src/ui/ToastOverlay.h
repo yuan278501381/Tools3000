@@ -5,6 +5,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wrl/client.h>
+#include <atomic>
 #include <string>
 #include <mutex>
 #include <vector>
@@ -39,9 +40,9 @@ private:
     void updatePlacement();
     SIZE measureWindowSizeForText(const std::wstring& wText, int workAreaWidth);
 
-    HWND m_hwnd = nullptr;
+    std::atomic<HWND> m_hwnd{nullptr};
     HWND m_helperOwnerHwnd = nullptr;
-    bool m_enabled = true;
+    std::atomic<bool> m_enabled{true};
     float m_dpiScale = 1.0f;
     bool m_updatingPlacement = false;
     

@@ -24,6 +24,14 @@
 
 namespace tools3000::ui {
 
+inline constexpr size_t kMaxEnumeratedSiblings = 10000;
+
+struct QuickLookSiblingItem {
+    std::wstring fullPath;
+    std::wstring fileName;
+    bool isDir = false;
+};
+
 inline std::string encodeUriPathSegment(std::string_view utf8Name) {
     std::string out;
     out.reserve(utf8Name.size() * 3);
@@ -67,33 +75,22 @@ inline std::wstring normalizePreviewFilePath(std::wstring_view rawPath) {
     return trimmed;
 }
 
-inline std::wstring resolveSiblingPreviewPath(const std::wstring& currentFilePath, int delta) {
-    const std::wstring normalizedCurrent = normalizePreviewFilePath(currentFilePath);
-    if (normalizedCurrent.empty() || delta == 0) {
-        return {};
-    }
-
+inline std::vector<QuickLookSiblingItem> collectDirectorySiblings(
+    const std::filesystem::path& parentDir,
+    const std::wstring& ensureCurrentPath = {},
+    const std::wstring& ensureCurrentName = {}) {
     std::error_code ec;
-    const std::filesystem::path currentPath(normalizedCurrent);
-    const std::wstring currentName = currentPath.filename().wstring();
-    const std::filesystem::path parentDir = currentPath.parent_path();
-    if (currentName.empty() || parentDir.empty() ||
-        !std::filesystem::exists(parentDir, ec) || !std::filesystem::is_directory(parentDir, ec)) {
+    if (parentDir.empty() || !std::filesystem::exists(parentDir, ec) ||
+        !std::filesystem::is_directory(parentDir, ec)) {
         return {};
     }
-
-    struct SiblingItem {
-        std::wstring fullPath;
-        std::wstring fileName;
-        bool isDir = false;
-    };
 
     struct CachedDirectorySiblings {
         std::wstring parentLower;
         std::filesystem::file_time_type lastWriteTime{};
         bool hasWriteTime = false;
         bool complete = false;
-        std::vector<SiblingItem> items;
+        std::vector<QuickLookSiblingItem> items;
     };
 
     auto toLowerKey = [](std::wstring s) {
@@ -111,34 +108,25 @@ inline std::wstring resolveSiblingPreviewPath(const std::wstring& currentFilePat
     static std::mutex s_cacheMutex;
     static CachedDirectorySiblings s_cache;
 
-    auto findCurrentIndex = [](const std::vector<SiblingItem>& list, const std::wstring& targetName) -> int {
-        for (size_t i = 0; i < list.size(); ++i) {
-            if (_wcsicmp(list[i].fileName.c_str(), targetName.c_str()) == 0) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    };
-
     if (hasDirWriteTime) {
         std::lock_guard<std::mutex> lock(s_cacheMutex);
         if (s_cache.complete && s_cache.hasWriteTime &&
             s_cache.parentLower == parentLower && s_cache.lastWriteTime == dirWriteTime &&
             !s_cache.items.empty()) {
-            const int cachedIdx = findCurrentIndex(s_cache.items, currentName);
-            if (cachedIdx >= 0) {
-                const int total = static_cast<int>(s_cache.items.size());
-                const int step = (delta > 0) ? 1 : -1;
-                const int nextIdx = (cachedIdx + step + total) % total;
-                return s_cache.items[static_cast<size_t>(nextIdx)].fullPath;
+            if (ensureCurrentName.empty()) {
+                return s_cache.items;
+            }
+            for (const auto& item : s_cache.items) {
+                if (_wcsicmp(item.fileName.c_str(), ensureCurrentName.c_str()) == 0) {
+                    return s_cache.items;
+                }
             }
         }
     }
 
-    std::vector<SiblingItem> siblings;
-    constexpr size_t kMaxEnumeratedSiblings = 65536;
+    std::vector<QuickLookSiblingItem> siblings;
     bool hitCap = false;
-    bool sawCurrent = false;
+    bool sawCurrent = ensureCurrentName.empty();
     for (const auto& entry : std::filesystem::directory_iterator(
              parentDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
         if (ec) {
@@ -149,21 +137,25 @@ inline std::wstring resolveSiblingPreviewPath(const std::wstring& currentFilePat
         if (name.empty()) continue;
         const bool isDir = entry.is_directory(ec);
         ec.clear();
-        if (!sawCurrent && _wcsicmp(name.c_str(), currentName.c_str()) == 0) {
+        if (!sawCurrent && _wcsicmp(name.c_str(), ensureCurrentName.c_str()) == 0) {
             sawCurrent = true;
         }
-        siblings.push_back(SiblingItem{normalizePreviewFilePath(entry.path().wstring()), name, isDir});
+        siblings.push_back(QuickLookSiblingItem{
+            normalizePreviewFilePath(entry.path().wstring()), name, isDir});
         if (siblings.size() >= kMaxEnumeratedSiblings) {
             hitCap = true;
             break;
         }
     }
 
-    if (!sawCurrent && std::filesystem::exists(currentPath, ec)) {
-        ec.clear();
-        const bool curIsDir = std::filesystem::is_directory(currentPath, ec);
-        ec.clear();
-        siblings.push_back(SiblingItem{normalizedCurrent, currentName, curIsDir});
+    if (!sawCurrent && !ensureCurrentPath.empty()) {
+        const std::filesystem::path currentPath(ensureCurrentPath);
+        if (std::filesystem::exists(currentPath, ec)) {
+            ec.clear();
+            const bool curIsDir = std::filesystem::is_directory(currentPath, ec);
+            ec.clear();
+            siblings.push_back(QuickLookSiblingItem{ensureCurrentPath, ensureCurrentName, curIsDir});
+        }
     }
 
     if (siblings.empty()) {
@@ -171,7 +163,7 @@ inline std::wstring resolveSiblingPreviewPath(const std::wstring& currentFilePat
     }
 
     // 与 Windows 资源管理器默认顺序对齐：文件夹在前、文件在后，组内按 StrCmpLogicalW 自然排序
-    std::sort(siblings.begin(), siblings.end(), [](const SiblingItem& a, const SiblingItem& b) {
+    std::sort(siblings.begin(), siblings.end(), [](const QuickLookSiblingItem& a, const QuickLookSiblingItem& b) {
         if (a.isDir != b.isDir) {
             return a.isDir > b.isDir;
         }
@@ -182,27 +174,60 @@ inline std::wstring resolveSiblingPreviewPath(const std::wstring& currentFilePat
         return a.fullPath < b.fullPath;
     });
 
-    const int currentIdx = findCurrentIndex(siblings, currentName);
-    const std::wstring resolvedNext = [&]() -> std::wstring {
-        if (currentIdx < 0) {
-            return siblings.front().fullPath;
-        }
-        const int total = static_cast<int>(siblings.size());
-        const int step = (delta > 0) ? 1 : -1;
-        const int nextIdx = (currentIdx + step + total) % total;
-        return siblings[static_cast<size_t>(nextIdx)].fullPath;
-    }();
-
     if (!hitCap && hasDirWriteTime) {
         std::lock_guard<std::mutex> lock(s_cacheMutex);
         s_cache.parentLower = parentLower;
         s_cache.lastWriteTime = dirWriteTime;
         s_cache.hasWriteTime = true;
         s_cache.complete = true;
-        s_cache.items = std::move(siblings);
+        s_cache.items = siblings;
     }
 
-    return resolvedNext;
+    return siblings;
+}
+
+inline void warmDirectorySiblingsCache(const std::wstring& filePath) {
+    const std::wstring normalized = normalizePreviewFilePath(filePath);
+    if (normalized.empty()) return;
+    const std::filesystem::path p(normalized);
+    const std::filesystem::path parentDir = p.parent_path();
+    if (parentDir.empty()) return;
+    (void)collectDirectorySiblings(parentDir, normalized, p.filename().wstring());
+}
+
+inline std::wstring resolveSiblingPreviewPath(const std::wstring& currentFilePath, int delta) {
+    const std::wstring normalizedCurrent = normalizePreviewFilePath(currentFilePath);
+    if (normalizedCurrent.empty() || delta == 0) {
+        return {};
+    }
+
+    const std::filesystem::path currentPath(normalizedCurrent);
+    const std::wstring currentName = currentPath.filename().wstring();
+    const std::filesystem::path parentDir = currentPath.parent_path();
+    if (currentName.empty() || parentDir.empty()) {
+        return {};
+    }
+
+    const auto siblings = collectDirectorySiblings(parentDir, normalizedCurrent, currentName);
+    if (siblings.empty()) {
+        return {};
+    }
+
+    int currentIdx = -1;
+    for (size_t i = 0; i < siblings.size(); ++i) {
+        if (_wcsicmp(siblings[i].fileName.c_str(), currentName.c_str()) == 0) {
+            currentIdx = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (currentIdx < 0) {
+        return siblings.front().fullPath;
+    }
+    const int total = static_cast<int>(siblings.size());
+    const int step = (delta > 0) ? 1 : -1;
+    const int nextIdx = (currentIdx + step + total) % total;
+    return siblings[static_cast<size_t>(nextIdx)].fullPath;
 }
 
 } // namespace tools3000::ui

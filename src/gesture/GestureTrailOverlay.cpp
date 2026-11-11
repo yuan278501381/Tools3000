@@ -65,6 +65,27 @@ void ensurePremultipliedAlpha(void* bits, int width, int height, int pitch) noex
     }
 }
 
+TrailStyle sanitizeTrailStyle(TrailStyle style) noexcept {
+    style.lineWidth = std::isfinite(style.lineWidth)
+        ? std::clamp(style.lineWidth, 1.0f, 24.0f)
+        : 3.0f;
+    style.outlineWidth = clampTrailOutlineWidth(
+        std::isfinite(style.outlineWidth) ? style.outlineWidth : 2.5f);
+    style.startOpacity = std::isfinite(style.startOpacity)
+        ? std::clamp(style.startOpacity, 0.1f, 1.0f)
+        : 0.9f;
+    style.fadeHoldMs = std::isfinite(style.fadeHoldMs)
+        ? std::clamp(style.fadeHoldMs, 0.0f, 5000.0f)
+        : 150.0f;
+    style.fadeOutMs = std::isfinite(style.fadeOutMs)
+        ? std::clamp(style.fadeOutMs, 16.0f, 5000.0f)
+        : 180.0f;
+    style.resultFontSize = std::isfinite(style.resultFontSize)
+        ? std::clamp(style.resultFontSize, 12.0f, 96.0f)
+        : 24.0f;
+    return style;
+}
+
 }  // namespace
 
 static constexpr const wchar_t* OVERLAY_CLASS = L"Tools3000_GestureOverlay";
@@ -82,12 +103,19 @@ GestureTrailOverlay& GestureTrailOverlay::instance() {
 bool GestureTrailOverlay::initialize(HINSTANCE hInstance) {
     tools3000::core::TraceId::Scope scope;
     m_hInstance = hInstance;
-    timeBeginPeriod(1);
+    if (!m_timerPeriodActive) {
+        m_timerPeriodActive = (timeBeginPeriod(1) == TIMERR_NOERROR);
+    }
     m_pacer.initialize();
 
     m_wakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!m_wakeEvent) {
         LOG_ERROR("创建手势渲染唤醒事件失败");
+        m_pacer.shutdown();
+        if (m_timerPeriodActive) {
+            timeEndPeriod(1);
+            m_timerPeriodActive = false;
+        }
         return false;
     }
 
@@ -96,6 +124,11 @@ bool GestureTrailOverlay::initialize(HINSTANCE hInstance) {
         LOG_ERROR("创建手势渲染同步事件失败");
         CloseHandle(m_wakeEvent);
         m_wakeEvent = nullptr;
+        m_pacer.shutdown();
+        if (m_timerPeriodActive) {
+            timeEndPeriod(1);
+            m_timerPeriodActive = false;
+        }
         return false;
     }
 
@@ -117,10 +150,23 @@ bool GestureTrailOverlay::initialize(HINSTANCE hInstance) {
 }
 
 void GestureTrailOverlay::setStyle(const TrailStyle& style) {
-    m_style = style;
+    {
+        std::lock_guard lock(m_renderMutex);
+        m_style = sanitizeTrailStyle(style);
+        m_textScale = 0.0f;
+        if (m_dwriteFactory) updateTextFormat(m_dpiScale);
+    }
+    reloadThemeColors();
+}
+
+void GestureTrailOverlay::setDpiScale(float dpiScale) {
+    std::lock_guard lock(m_renderMutex);
+    const float clamped = std::isfinite(dpiScale)
+        ? std::clamp(dpiScale, 0.5f, 4.0f)
+        : 1.0f;
+    m_dpiScale = clamped;
     m_textScale = 0.0f;
     if (m_dwriteFactory) updateTextFormat(m_dpiScale);
-    reloadThemeColors();
 }
 
 void GestureTrailOverlay::reloadThemeColors() {
@@ -136,9 +182,13 @@ void GestureTrailOverlay::applyThemeColorsLocked() {
     auto& cfg = tools3000::core::ConfigManager::instance();
     const std::string colorMode = cfg.get<std::string>("/gesture/trailColorMode", "auto");
     const std::string customHex = cfg.get<std::string>("/gesture/trailColor", "#3B82F6");
-    m_style.lineWidth = cfg.get<float>("/gesture/trailWidth", 2.5f);
+    const float rawTrailWidth = cfg.get<float>("/gesture/trailWidth", 2.5f);
+    m_style.lineWidth = std::isfinite(rawTrailWidth)
+        ? std::clamp(rawTrailWidth, 1.0f, 24.0f)
+        : 2.5f;
+    const float rawOutlineWidth = cfg.get<float>("/gesture/trailOutlineWidth", 1.5f);
     m_style.outlineWidth = clampTrailOutlineWidth(
-        cfg.get<float>("/gesture/trailOutlineWidth", 1.5f));
+        std::isfinite(rawOutlineWidth) ? rawOutlineWidth : 1.5f);
 
     const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
     const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
@@ -227,7 +277,10 @@ void GestureTrailOverlay::shutdown() {
     releaseD2DResources();
     m_visible.store(false);
     m_pacer.shutdown();
-    timeEndPeriod(1);
+    if (m_timerPeriodActive) {
+        timeEndPeriod(1);
+        m_timerPeriodActive = false;
+    }
     LOG_DEBUG("手势轨迹覆盖层已关闭");
 }
 
@@ -475,8 +528,13 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                 m_fadeClockStarted.store(false, std::memory_order_relaxed);
                 fading = false;
             } else {
-                const DWORD holdMs = static_cast<DWORD>(m_style.fadeHoldMs);
-                const DWORD fadeMs = static_cast<DWORD>(m_style.fadeOutMs);
+                DWORD holdMs = 150;
+                DWORD fadeMs = 180;
+                {
+                    std::lock_guard renderLock(m_renderMutex);
+                    holdMs = static_cast<DWORD>(std::clamp(m_style.fadeHoldMs, 0.0f, 5000.0f));
+                    fadeMs = static_cast<DWORD>(std::clamp(m_style.fadeOutMs, 16.0f, 5000.0f));
+                }
                 const bool clockStarted = m_fadeClockStarted.load(std::memory_order_relaxed);
                 const DWORD elapsed = clockStarted ? (GetTickCount() - m_fadeStartTick) : 0;
                 if (gestureFadeShouldFinish(clockStarted, elapsed, holdMs, fadeMs)) {

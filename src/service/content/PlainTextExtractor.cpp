@@ -206,25 +206,31 @@ size_t rustFallbackDecodeLineCallback(
     uint32_t encodingRaw,
     uint16_t* outU16Ptr,
     size_t outU16Cap
-) {
+) noexcept {
     if (!bytesPtr || bytesLen == 0 || !outU16Ptr || outU16Cap == 0) return 0;
-    const char* data = reinterpret_cast<const char*>(bytesPtr);
-    const int inLen = static_cast<int>(bytesLen);
-    const int capLen = static_cast<int>(outU16Cap);
-    wchar_t* outW = reinterpret_cast<wchar_t*>(outU16Ptr);
+    try {
+        constexpr size_t kMaxWin32Int = 0x7FFFFFFFu;
+        if (bytesLen > kMaxWin32Int) return 0;
+        const char* data = reinterpret_cast<const char*>(bytesPtr);
+        const int inLen = static_cast<int>(bytesLen);
+        const int capLen = static_cast<int>((std::min)(outU16Cap, kMaxWin32Int));
+        wchar_t* outW = reinterpret_cast<wchar_t*>(outU16Ptr);
 
-    if (encodingRaw == 1 || encodingRaw == 5) {
-        const int written = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, data, inLen, outW, capLen);
+        if (encodingRaw == 1 || encodingRaw == 5) {
+            const int written = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, data, inLen, outW, capLen);
+            if (written > 0) return static_cast<size_t>(written);
+        }
+
+        const UINT gbkCp = getGbkCodePage();
+        int written = MultiByteToWideChar(gbkCp, 0, data, inLen, outW, capLen);
         if (written > 0) return static_cast<size_t>(written);
-    }
 
-    const UINT gbkCp = getGbkCodePage();
-    int written = MultiByteToWideChar(gbkCp, 0, data, inLen, outW, capLen);
-    if (written > 0) return static_cast<size_t>(written);
-
-    if (CP_ACP != gbkCp) {
-        written = MultiByteToWideChar(CP_ACP, 0, data, inLen, outW, capLen);
-        if (written > 0) return static_cast<size_t>(written);
+        if (CP_ACP != gbkCp) {
+            written = MultiByteToWideChar(CP_ACP, 0, data, inLen, outW, capLen);
+            if (written > 0) return static_cast<size_t>(written);
+        }
+    } catch (...) {
+        return 0;
     }
     return 0;
 }
@@ -844,7 +850,7 @@ bool PlainTextExtractor::searchContentTerms(
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
         OPEN_EXISTING,
-        FILE_FLAG_SEQUENTIAL_SCAN,
+        FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT,
         nullptr
     );
     if (hFile == INVALID_HANDLE_VALUE) return false;
@@ -856,6 +862,12 @@ bool PlainTextExtractor::searchContentTerms(
         }
     } fileCloser{hFile};
 
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    if (GetFileType(hFile) != FILE_TYPE_DISK || !GetFileInformationByHandle(hFile, &fileInfo) ||
+        (fileInfo.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return false;
+    }
+
     const FileCacheStamp stamp = queryFileCacheStampByHandle(hFile);
     if (!stamp.valid || stamp.fileSize == 0 || stamp.fileSize > MaxPlainTextFileBytes) {
         return false;
@@ -864,10 +876,19 @@ bool PlainTextExtractor::searchContentTerms(
     // Fast cache check for .rtf rich text documents before memory-mapping
     if (lowerExt == L"rtf") {
         std::wstring cachedRtf;
-        if (ContentTextCache::instance().tryGet(filePath, stamp.fileSize, stamp.lastWriteTime, cachedRtf)) {
-            if (cachedRtf.empty()) return false;
-            return matchDocumentTextAndBuildSnippets(
-                cachedRtf, queryTerms, caseSensitive, outSnippets, maxSnippetsPerFile, isCancelled);
+        bool cacheTruncated = false;
+        if (ContentTextCache::instance().tryGetWithTruncation(
+                filePath, stamp.fileSize, stamp.lastWriteTime, cachedRtf, cacheTruncated)) {
+            if (!cacheTruncated) {
+                if (cachedRtf.empty()) return false;
+                return matchDocumentTextAndBuildSnippets(
+                    cachedRtf, queryTerms, caseSensitive, outSnippets, maxSnippetsPerFile, isCancelled);
+            }
+            if (!cachedRtf.empty() &&
+                matchDocumentTextAndBuildSnippets(
+                    cachedRtf, queryTerms, caseSensitive, outSnippets, maxSnippetsPerFile, isCancelled)) {
+                return true;
+            }
         }
     }
 
@@ -886,28 +907,42 @@ bool PlainTextExtractor::searchContentTerms(
         }
     } viewGuard{pData};
 
-    bool isRtf = (lowerExt == L"rtf");
-    if (!isRtf) {
-        const bool headerOk = runWithMappedViewGuard([&]() -> bool {
-            isRtf = hasRtfHeader(pData, mapSize);
-            return true;
-        });
-        if (!headerOk) return false;
+    uint8_t headerSample[8192]{};
+    const size_t headerSampleLen = (std::min)(mapSize, sizeof(headerSample));
+    bool headerInPageError = false;
+    if (!safeMappedMemcpyEx(headerSample, pData, headerSampleLen, &headerInPageError) || headerInPageError) {
+        return false;
     }
+
+    bool isRtf = (lowerExt == L"rtf") || hasRtfHeader(headerSample, headerSampleLen);
 
     // Rich Text Format (.rtf or "{\rtf" signature) branch
     if (isRtf) {
         std::wstring rtfText;
-        if (lowerExt != L"rtf" &&
-            ContentTextCache::instance().tryGet(filePath, stamp.fileSize, stamp.lastWriteTime, rtfText)) {
-            if (rtfText.empty()) return false;
-            return matchDocumentTextAndBuildSnippets(
-                rtfText, queryTerms, caseSensitive, outSnippets, maxSnippetsPerFile, isCancelled);
+        if (lowerExt != L"rtf") {
+            bool cacheTruncated = false;
+            if (ContentTextCache::instance().tryGetWithTruncation(
+                    filePath, stamp.fileSize, stamp.lastWriteTime, rtfText, cacheTruncated)) {
+                if (!cacheTruncated) {
+                    if (rtfText.empty()) return false;
+                    return matchDocumentTextAndBuildSnippets(
+                        rtfText, queryTerms, caseSensitive, outSnippets, maxSnippetsPerFile, isCancelled);
+                }
+                if (!rtfText.empty() &&
+                    matchDocumentTextAndBuildSnippets(
+                        rtfText, queryTerms, caseSensitive, outSnippets, maxSnippetsPerFile, isCancelled)) {
+                    return true;
+                }
+                rtfText.clear();
+            }
         }
-        const bool rtfGuardOk = runWithMappedViewGuard([&]() -> bool {
-            return extractRtfFromMemory(pData, mapSize, rtfText, isCancelled);
-        });
-        if (!rtfGuardOk) {
+
+        std::vector<uint8_t> residentRtf;
+        bool inPageError = false;
+        if (!copyMappedViewSafe(pData, mapSize, residentRtf, inPageError, isCancelled) || inPageError) {
+            return false;
+        }
+        if (!extractRtfFromMemory(residentRtf.data(), residentRtf.size(), rtfText, isCancelled)) {
             rtfText.clear();
         }
         if (isCancelled && isCancelled()) {
@@ -922,51 +957,59 @@ bool PlainTextExtractor::searchContentTerms(
     }
 
     outSnippets.clear();
-    std::vector<T3kUtf16Slice> u16Terms;
-    std::vector<PreparedTermBytePatterns> preparedBytes;
-    std::vector<T3kByteTermVariants> byteTermViews;
-    u16Terms.reserve(queryTerms.size());
-    preparedBytes.reserve(queryTerms.size());
-    byteTermViews.reserve(queryTerms.size());
-
-    for (const auto& t : queryTerms) {
-        if (t.empty()) continue;
-        u16Terms.push_back(T3kUtf16Slice{
-            reinterpret_cast<const uint16_t*>(t.data()),
-            t.size()
-        });
-        PreparedTermBytePatterns prep;
-        buildPreparedTermBytePatterns(t, caseSensitive, prep);
-        preparedBytes.push_back(std::move(prep));
-    }
-    if (u16Terms.empty()) {
-        return false;
-    }
-    for (const auto& prep : preparedBytes) {
-        byteTermViews.push_back(T3kByteTermVariants{
-            .is_ascii = prep.isAscii ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0),
-            .ascii_ptr = prep.isAscii ? reinterpret_cast<const uint8_t*>(prep.asciiBytes.data()) : nullptr,
-            .ascii_len = prep.isAscii ? prep.asciiBytes.size() : 0,
-            .variants_ptr = prep.isAscii ? nullptr : prep.variantSlices.data(),
-            .variants_count = prep.isAscii ? 0 : prep.variantSlices.size()
-        });
-    }
-
-    bool rustMatched = false;
-    const bool textScanOk = runWithMappedViewGuard([&]() -> bool {
-        size_t bomOffset = 0;
-        const DetectedEncoding enc = detectEncoding(pData, mapSize, bomOffset);
-        if (enc == DetectedEncoding::UnknownBinary || bomOffset >= mapSize) {
+    constexpr size_t MaxResidentRustSimdBytes = 16ULL * 1024ULL * 1024ULL;
+    if (mapSize <= MaxResidentRustSimdBytes) {
+        std::vector<uint8_t> residentText;
+        bool inPageError = false;
+        if (!copyMappedViewSafe(pData, mapSize, residentText, inPageError, isCancelled) || inPageError) {
             return false;
         }
 
-        if (!fastBytePreFilterTerms(pData + bomOffset, mapSize - bomOffset, queryTerms, caseSensitive, enc)) {
+        size_t bomOffset = 0;
+        const DetectedEncoding enc = detectEncoding(residentText.data(), residentText.size(), bomOffset);
+        if (enc == DetectedEncoding::UnknownBinary || bomOffset >= residentText.size()) {
             return false;
+        }
+
+        const uint8_t* payloadPtr = residentText.data() + bomOffset;
+        const size_t payloadLen = residentText.size() - bomOffset;
+        if (!fastBytePreFilterTerms(payloadPtr, payloadLen, queryTerms, caseSensitive, enc)) {
+            return false;
+        }
+
+        std::vector<T3kUtf16Slice> u16Terms;
+        std::vector<PreparedTermBytePatterns> preparedBytes;
+        std::vector<T3kByteTermVariants> byteTermViews;
+        u16Terms.reserve(queryTerms.size());
+        preparedBytes.reserve(queryTerms.size());
+        byteTermViews.reserve(queryTerms.size());
+
+        for (const auto& t : queryTerms) {
+            if (t.empty()) continue;
+            u16Terms.push_back(T3kUtf16Slice{
+                reinterpret_cast<const uint16_t*>(t.data()),
+                t.size()
+            });
+            PreparedTermBytePatterns prep;
+            buildPreparedTermBytePatterns(t, caseSensitive, prep);
+            preparedBytes.push_back(std::move(prep));
+        }
+        if (u16Terms.empty()) {
+            return false;
+        }
+        for (const auto& prep : preparedBytes) {
+            byteTermViews.push_back(T3kByteTermVariants{
+                .is_ascii = prep.isAscii ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0),
+                .ascii_ptr = prep.isAscii ? reinterpret_cast<const uint8_t*>(prep.asciiBytes.data()) : nullptr,
+                .ascii_len = prep.isAscii ? prep.asciiBytes.size() : 0,
+                .variants_ptr = prep.isAscii ? nullptr : prep.variantSlices.data(),
+                .variants_count = prep.isAscii ? 0 : prep.variantSlices.size()
+            });
         }
 
         const uint8_t matched = t3k_rs_scan_mapped_text(
-            pData + bomOffset,
-            mapSize - bomOffset,
+            payloadPtr,
+            payloadLen,
             static_cast<uint32_t>(enc),
             u16Terms.data(),
             byteTermViews.data(),
@@ -980,16 +1023,130 @@ bool PlainTextExtractor::searchContentTerms(
             &rustEmitSnippetBridgeCallback,
             &outSnippets
         );
-        rustMatched = (matched != 0);
-        return true;
-    });
+        if (!matched) {
+            outSnippets.clear();
+            return false;
+        }
+        return !outSnippets.empty();
+    }
 
-    if (!textScanOk || !rustMatched) {
-        outSnippets.clear();
+    // Streaming chunked path for large plain-text files (> 16 MB up to 100 MB):
+    // copies 4 MB slices under pure-POD SEH so zero RAII objects live inside `__try`.
+    size_t bomOffset = 0;
+    const DetectedEncoding enc = detectEncoding(headerSample, headerSampleLen, bomOffset);
+    if (enc == DetectedEncoding::UnknownBinary || bomOffset >= mapSize) {
         return false;
     }
 
-    return !outSnippets.empty();
+    constexpr size_t StreamChunkBytes = 4ULL * 1024ULL * 1024ULL;
+    constexpr size_t MaxSingleStreamLineUnits = 1024ULL * 1024ULL;
+    std::vector<uint8_t> chunkBuf(StreamChunkBytes);
+    uint32_t lineNumber = 1;
+    size_t offset = bomOffset;
+    bool stopEarly = false;
+
+    if (enc == DetectedEncoding::Utf16Le || enc == DetectedEncoding::Utf16Be) {
+        std::wstring carryU16;
+        while (offset + 1 < mapSize && !stopEarly) {
+            if (isCancelled && isCancelled()) {
+                outSnippets.clear();
+                return false;
+            }
+            size_t chunkLen = (std::min)(mapSize - offset, chunkBuf.size());
+            chunkLen &= ~static_cast<size_t>(1u);
+            if (chunkLen == 0) break;
+
+            bool inPageError = false;
+            if (!safeMappedMemcpyEx(chunkBuf.data(), pData + offset, chunkLen, &inPageError) || inPageError) {
+                outSnippets.clear();
+                return false;
+            }
+
+            for (size_t i = 0; i + 1 < chunkLen; i += 2) {
+                const uint16_t cu = (enc == DetectedEncoding::Utf16Le)
+                    ? (static_cast<uint16_t>(chunkBuf[i]) | (static_cast<uint16_t>(chunkBuf[i + 1]) << 8))
+                    : ((static_cast<uint16_t>(chunkBuf[i]) << 8) | static_cast<uint16_t>(chunkBuf[i + 1]));
+                if (cu == 0x000Au) {
+                    if (!carryU16.empty() && carryU16.back() == L'\r') {
+                        carryU16.pop_back();
+                    }
+                    matcher.processLine(lineNumber++, carryU16);
+                    carryU16.clear();
+                    if (matcher.canStopEarly()) {
+                        stopEarly = true;
+                        break;
+                    }
+                } else if (carryU16.size() < MaxSingleStreamLineUnits) {
+                    carryU16.push_back(static_cast<wchar_t>(cu));
+                }
+            }
+            offset += chunkLen;
+        }
+        if (!stopEarly && !carryU16.empty()) {
+            if (carryU16.back() == L'\r') carryU16.pop_back();
+            matcher.processLine(lineNumber++, carryU16);
+        }
+    } else {
+        std::string carryBytes;
+        while (offset < mapSize && !stopEarly) {
+            if (isCancelled && isCancelled()) {
+                outSnippets.clear();
+                return false;
+            }
+            const size_t chunkLen = (std::min)(mapSize - offset, chunkBuf.size());
+            bool inPageError = false;
+            if (!safeMappedMemcpyEx(chunkBuf.data(), pData + offset, chunkLen, &inPageError) || inPageError) {
+                outSnippets.clear();
+                return false;
+            }
+
+            size_t lineStart = 0;
+            for (size_t i = 0; i < chunkLen; ++i) {
+                if (chunkBuf[i] == '\n') {
+                    size_t segLen = i - lineStart;
+                    std::wstring decoded;
+                    if (carryBytes.empty()) {
+                        if (segLen > 0 && chunkBuf[lineStart + segLen - 1] == '\r') {
+                            --segLen;
+                        }
+                        decoded = decodeLine(reinterpret_cast<const char*>(chunkBuf.data() + lineStart), segLen, enc);
+                    } else {
+                        if (carryBytes.size() < MaxSingleStreamLineUnits) {
+                            const size_t appendLen = (std::min)(segLen, MaxSingleStreamLineUnits - carryBytes.size());
+                            carryBytes.append(reinterpret_cast<const char*>(chunkBuf.data() + lineStart), appendLen);
+                        }
+                        if (!carryBytes.empty() && carryBytes.back() == '\r') {
+                            carryBytes.pop_back();
+                        }
+                        decoded = decodeLine(carryBytes.data(), carryBytes.size(), enc);
+                        carryBytes.clear();
+                    }
+                    matcher.processLine(lineNumber++, decoded);
+                    lineStart = i + 1;
+                    if (matcher.canStopEarly()) {
+                        stopEarly = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!stopEarly && lineStart < chunkLen) {
+                const size_t rem = chunkLen - lineStart;
+                if (carryBytes.size() < MaxSingleStreamLineUnits) {
+                    const size_t appendLen = (std::min)(rem, MaxSingleStreamLineUnits - carryBytes.size());
+                    carryBytes.append(reinterpret_cast<const char*>(chunkBuf.data() + lineStart), appendLen);
+                }
+            }
+            offset += chunkLen;
+        }
+        if (!stopEarly && !carryBytes.empty()) {
+            if (carryBytes.back() == '\r') carryBytes.pop_back();
+            const std::wstring decoded = decodeLine(carryBytes.data(), carryBytes.size(), enc);
+            matcher.processLine(lineNumber++, decoded);
+        }
+    }
+
+    return matcher.finalize(outSnippets);
 }
 
 } // namespace tools3000::service::content

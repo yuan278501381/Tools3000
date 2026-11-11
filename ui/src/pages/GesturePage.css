@@ -364,7 +364,10 @@
 
 .gesture-radial-index {
   color: var(--text-muted);
-  font: 600 0.78rem/1 'Consolas', monospace;
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.2;
   text-align: center;
 }
 

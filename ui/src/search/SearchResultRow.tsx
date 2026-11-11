@@ -331,14 +331,22 @@ export const SearchResultRow = memo(function SearchResultRow({
                   onClick={(e) => {
                     e.stopPropagation();
                     const text = snippet.lineContent.trim();
-                    if (navigator.clipboard?.writeText) {
-                      void navigator.clipboard.writeText(text).catch(() => {
-                        void bridgeRequest('search.copyText', { text });
-                      });
-                    } else {
-                      void bridgeRequest('search.copyText', { text });
-                    }
-                    toast.success(t('search.copiedLineToast', 'Copied line {{line}} content to clipboard', { line: snippet.lineNumber }));
+                    void (async () => {
+                      try {
+                        if (navigator.clipboard?.writeText) {
+                          try {
+                            await navigator.clipboard.writeText(text);
+                          } catch {
+                            await bridgeRequest('system.copyText', { text });
+                          }
+                        } else {
+                          await bridgeRequest('system.copyText', { text });
+                        }
+                        toast.success(t('search.copiedLineToast', 'Copied line {{line}} content to clipboard', { line: snippet.lineNumber }));
+                      } catch {
+                        toast.error(t('search.copyFailed', 'Failed to copy text to clipboard'));
+                      }
+                    })();
                   }}
                 >
                   L{snippet.lineNumber}

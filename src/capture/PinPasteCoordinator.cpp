@@ -29,6 +29,10 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 float queryActiveMonitorScale() {
+    wchar_t testMode[8]{};
+    if (GetEnvironmentVariableW(L"TOOLS3000_TEST_MODE", testMode, 8) > 0 && testMode[0] == L'1') {
+        return 1.0f;
+    }
     POINT pt{};
     if (GetCursorPos(&pt)) {
         HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
@@ -217,9 +221,12 @@ bool PinPasteCoordinator::parseHexColor(const std::wstring& in, cv::Scalar& bgr,
     return true;
 }
 
-cv::Mat PinPasteCoordinator::renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label) {
-    const int w = 180;
-    const int h = 130;
+cv::Mat PinPasteCoordinator::renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label, float dpiScaleOverride) {
+    const float s = (dpiScaleOverride > 0.05f)
+        ? std::clamp(dpiScaleOverride, 1.0f, 3.5f)
+        : queryActiveMonitorScale();
+    const int w = (std::max)(1, static_cast<int>(std::lround(180.0f * s)));
+    const int h = (std::max)(1, static_cast<int>(std::lround(130.0f * s)));
     const int bVal = std::clamp(static_cast<int>( std::lround(bgr[0]) ), 0, 255);
     const int gVal = std::clamp(static_cast<int>( std::lround(bgr[1]) ), 0, 255);
     const int rVal = std::clamp(static_cast<int>( std::lround(bgr[2]) ), 0, 255);
@@ -236,7 +243,7 @@ cv::Mat PinPasteCoordinator::renderColorSwatch(const cv::Scalar& bgr, const std:
     const bool rendered = renderD2DBitmapToMat(w, h, [&](ID2D1DCRenderTarget* rt, [[maybe_unused]] ID2D1Factory* factory) {
         const float fw = static_cast<float>(w);
         const float fh = static_cast<float>(h);
-        const float footerTop = 82.0f;
+        const float footerTop = std::round(82.0f * s);
 
         // 1. 纯净瓷白微晶底座
         ComPtr<ID2D1SolidColorBrush> baseBrush, swatchBrush, dividerBrush, borderBrush, dotRingBrush, hexBrush, subBrush;
@@ -251,12 +258,12 @@ cv::Mat PinPasteCoordinator::renderColorSwatch(const cv::Scalar& bgr, const std:
         const D2D1_RECT_F fullRc = D2D1::RectF(0.0f, 0.0f, fw, fh);
         if (baseBrush) rt->FillRectangle(fullRc, baseBrush.Get());
         if (swatchBrush) rt->FillRectangle(D2D1::RectF(0.0f, 0.0f, fw, footerTop), swatchBrush.Get());
-        if (dividerBrush) rt->DrawLine(D2D1::Point2F(0.0f, footerTop), D2D1::Point2F(fw, footerTop), dividerBrush.Get(), 1.0f);
+        if (dividerBrush) rt->DrawLine(D2D1::Point2F(0.0f, footerTop), D2D1::Point2F(fw, footerTop), dividerBrush.Get(), 1.0f * s);
 
         // 2. 底座左侧精致双环色珠 + 右侧 HEX / RGB 双行等宽铭牌
-        const D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(20.0f, footerTop + 24.0f), 7.0f, 7.0f);
+        const D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(20.0f * s, footerTop + 24.0f * s), 7.0f * s, 7.0f * s);
         if (swatchBrush) rt->FillEllipse(dot, swatchBrush.Get());
-        if (dotRingBrush) rt->DrawEllipse(dot, dotRingBrush.Get(), 1.4f);
+        if (dotRingBrush) rt->DrawEllipse(dot, dotRingBrush.Get(), 1.4f * s);
 
         if (dwFactory) {
             const wchar_t* monoFont = tools3000::core::resolveInstalledMonoFontFamily(dwFactory.Get());
@@ -264,24 +271,24 @@ cv::Mat PinPasteCoordinator::renderColorSwatch(const cv::Scalar& bgr, const std:
             if (SUCCEEDED(dwFactory->CreateTextFormat(
                     monoFont, nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                    13.5f, L"en-US", hexFmt.GetAddressOf())) && hexFmt) {
+                    13.5f * s, L"en-US", hexFmt.GetAddressOf())) && hexFmt) {
                 hexFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 hexFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 if (hexBrush) {
                     rt->DrawTextW(upperHex.c_str(), static_cast<UINT32>(upperHex.size()),
-                                  hexFmt.Get(), D2D1::RectF(35.0f, footerTop + 5.0f, fw - 10.0f, footerTop + 25.0f),
+                                  hexFmt.Get(), D2D1::RectF(35.0f * s, footerTop + 5.0f * s, fw - 10.0f * s, footerTop + 25.0f * s),
                                   hexBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
                 }
             }
             if (SUCCEEDED(dwFactory->CreateTextFormat(
                     monoFont, nullptr, DWRITE_FONT_WEIGHT_MEDIUM,
                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                    11.0f, L"en-US", subFmt.GetAddressOf())) && subFmt) {
+                    11.0f * s, L"en-US", subFmt.GetAddressOf())) && subFmt) {
                 subFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 if (subBrush) {
                     rt->DrawTextW(rgbSub.c_str(), static_cast<UINT32>(rgbSub.size()),
-                                  subFmt.Get(), D2D1::RectF(35.0f, footerTop + 25.0f, fw - 8.0f, fh - 5.0f),
+                                  subFmt.Get(), D2D1::RectF(35.0f * s, footerTop + 25.0f * s, fw - 8.0f * s, fh - 5.0f * s),
                                   subBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
                 }
             }
@@ -289,9 +296,11 @@ cv::Mat PinPasteCoordinator::renderColorSwatch(const cv::Scalar& bgr, const std:
 
         // 3. 10px 同心圆角云母浅灰细边
         if (borderBrush) {
+            const float inset = 0.75f * s;
+            const float radius = 9.25f * s;
             const D2D1_ROUNDED_RECT innerBorder = D2D1::RoundedRect(
-                D2D1::RectF(0.75f, 0.75f, fw - 0.75f, fh - 0.75f), 9.25f, 9.25f);
-            rt->DrawRoundedRectangle(innerBorder, borderBrush.Get(), 1.2f);
+                D2D1::RectF(inset, inset, fw - inset, fh - inset), radius, radius);
+            rt->DrawRoundedRectangle(innerBorder, borderBrush.Get(), 1.2f * s);
         }
     }, result);
 
@@ -531,18 +540,18 @@ cv::Mat renderClipboardTextOrColor(const std::wstring& clipText, float& outCorne
     outCleanSource.clear();
     if (clipText.empty()) return {};
 
+    const float scale = queryActiveMonitorScale();
     cv::Scalar c;
     std::wstring hexLabel;
     if (PinPasteCoordinator::parseHexColor(clipText, c, hexLabel)) {
-        cv::Mat swatch = PinPasteCoordinator::renderColorSwatch(c, hexLabel);
+        cv::Mat swatch = PinPasteCoordinator::renderColorSwatch(c, hexLabel, scale);
         if (!swatch.empty()) {
-            outCornerRadius = 10.0f;
+            outCornerRadius = 10.0f * scale;
             outCleanSource = hexLabel;
         }
         return swatch;
     }
 
-    const float scale = queryActiveMonitorScale();
     cv::Mat note = PinPasteCoordinator::renderTextToImage(clipText, scale);
     if (!note.empty()) {
         outCornerRadius = 10.0f * scale;

@@ -40,7 +40,9 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
+#include <d2d1_1.h>
 #include <dwmapi.h>
 #include <shobjidl.h>
 #include <windowsx.h>
@@ -147,6 +149,16 @@ std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
     return pin;
 }
 
+void PinWindow::releaseGraphicsResources() noexcept {
+    m_bitmapTiles.clear();
+    m_bitmap.Reset();
+    m_renderTarget.Reset();
+    m_uiLeadTextFormat.Reset();
+    m_uiCenterTextFormat.Reset();
+    m_dwriteFactory.Reset();
+    m_d2dFactory.Reset();
+}
+
 void PinWindow::close() {
     // 保活: 下面的 erase 会丢弃 s_instances 中指向自身的最后一个 shared_ptr，
     // 若不先持有自身引用，this 会在本函数执行途中被析构 (use-after-free)。
@@ -159,18 +171,12 @@ void PinWindow::close() {
     }
 
     const int closedGroup = m_groupId;
-    m_bitmap.Reset();
-    m_renderTarget.Reset();
-    m_uiLeadTextFormat.Reset();
-    m_uiCenterTextFormat.Reset();
-    m_dwriteFactory.Reset();
-    m_d2dFactory.Reset();
-    if (m_hwnd) {
-        HWND hwndToDestroy = m_hwnd;
-        m_hwnd = nullptr;
+    releaseGraphicsResources();
+    HWND hwndToDestroy = std::exchange(m_hwnd, nullptr);
+    m_sourceImage.release();
+    if (hwndToDestroy && IsWindow(hwndToDestroy)) {
         DestroyWindow(hwndToDestroy);
     }
-    m_sourceImage.release();
     // 从全局列表移除已失效的实例
     s_instances.erase(
         std::remove_if(s_instances.begin(), s_instances.end(),
@@ -194,18 +200,14 @@ void PinWindow::close() {
 }
 
 void PinWindow::closeAll() {
-    for (auto& pin : s_instances) {
+    std::vector<std::shared_ptr<PinWindow>> targets = std::move(s_instances);
+    s_instances.clear();
+    for (auto& pin : targets) {
         if (pin) {
             pin->m_sourceImage.release();
-            pin->m_bitmap.Reset();
-            pin->m_renderTarget.Reset();
-            pin->m_uiLeadTextFormat.Reset();
-            pin->m_uiCenterTextFormat.Reset();
-            pin->m_dwriteFactory.Reset();
-            pin->m_d2dFactory.Reset();
-            if (pin->m_hwnd) {
-                HWND hwndToDestroy = pin->m_hwnd;
-                pin->m_hwnd = nullptr;
+            pin->releaseGraphicsResources();
+            HWND hwndToDestroy = std::exchange(pin->m_hwnd, nullptr);
+            if (hwndToDestroy && IsWindow(hwndToDestroy)) {
                 DestroyWindow(hwndToDestroy);
             }
         }
@@ -730,17 +732,28 @@ size_t PinWindow::closeGroup(int groupId) {
     if (norm == PinGroupConstants::kUngroupedId) return 0;
     s_createdGroups[static_cast<size_t>(norm)] = false;
 
-    size_t closedCount = 0;
-    for (auto& pin : s_instances) {
+    // 先拷贝匹配目标分组的窗口局部快照，再逐个销毁窗口，
+    // 防止 DestroyWindow 同步触发 WM_NCDESTROY 修改 s_instances 引发迭代器失效与 UAF
+    std::vector<std::shared_ptr<PinWindow>> targets;
+    targets.reserve(s_instances.size());
+    for (const auto& pin : s_instances) {
         if (pin && pin->isAlive() && pin->m_groupId == norm) {
-            pin->m_sourceImage.release();
-            if (pin->m_hwnd) {
-                DestroyWindow(pin->m_hwnd);
-                pin->m_hwnd = nullptr;
-            }
-            ++closedCount;
+            targets.push_back(pin);
         }
     }
+
+    size_t closedCount = 0;
+    for (auto& pin : targets) {
+        if (!pin) continue;
+        pin->m_sourceImage.release();
+        pin->releaseGraphicsResources();
+        HWND hwndToDestroy = std::exchange(pin->m_hwnd, nullptr);
+        if (hwndToDestroy && IsWindow(hwndToDestroy)) {
+            DestroyWindow(hwndToDestroy);
+        }
+        ++closedCount;
+    }
+
     s_instances.erase(
         std::remove_if(s_instances.begin(), s_instances.end(),
                        [](const auto& p) { return !p || !p->isAlive(); }),
@@ -959,9 +972,10 @@ void PinWindow::showGroupPopupMenu(POINT screenPt) {
 }
 
 PinWindow::~PinWindow() {
-    if (m_hwnd) {
-        DestroyWindow(m_hwnd);
-        m_hwnd = nullptr;
+    releaseGraphicsResources();
+    HWND hwndToDestroy = std::exchange(m_hwnd, nullptr);
+    if (hwndToDestroy && IsWindow(hwndToDestroy)) {
+        DestroyWindow(hwndToDestroy);
     }
 }
 
@@ -2137,7 +2151,23 @@ void PinWindow::extractText() {
             tools3000::core::ShowToastEvent{isZh ? L"已复制贴图文字" : L"Copied note text"});
         return;
     }
-    if (s_ocrShuttingDown.load(std::memory_order_acquire) || m_sourceImage.empty()) return;
+    if (s_ocrShuttingDown.load(std::memory_order_acquire) || !isAlive() || m_sourceImage.empty()) return;
+
+    // 单窗口 OCR 进行中防重入守卫，杜绝连按重复拉起多线程识别
+    bool expectedInFlight = false;
+    if (!m_extractTextInFlight.compare_exchange_strong(expectedInFlight, true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    std::weak_ptr<PinWindow> weakSelf;
+    try {
+        weakSelf = shared_from_this();
+    } catch (const std::bad_weak_ptr&) {
+        m_extractTextInFlight.store(false, std::memory_order_release);
+        return;
+    }
+
+    const uint64_t expectedVersion = m_ocrVersion.load(std::memory_order_acquire);
     cv::Mat imgCopy = m_sourceImage.clone();
     auto activeWorkers = m_ocrActiveWorkers;
     if (activeWorkers) {
@@ -2146,19 +2176,27 @@ void PinWindow::extractText() {
     s_globalActiveOcrWorkers.fetch_add(1, std::memory_order_acq_rel);
 
     try {
-        std::thread([imgCopy, activeWorkers]() {
+        std::thread([imgCopy, activeWorkers, weakSelf, expectedVersion]() {
             struct ExtractWorkerGuard {
                 std::shared_ptr<std::atomic<uint32_t>> workers;
+                std::weak_ptr<PinWindow> owner;
                 ~ExtractWorkerGuard() {
+                    if (auto pin = owner.lock()) {
+                        pin->m_extractTextInFlight.store(false, std::memory_order_release);
+                    }
                     cleanupOcrWorkingSet();
                     if (workers) {
                         workers->fetch_sub(1, std::memory_order_acq_rel);
                     }
                     s_globalActiveOcrWorkers.fetch_sub(1, std::memory_order_acq_rel);
                 }
-            } workerGuard{activeWorkers};
+            } workerGuard{activeWorkers, weakSelf};
 
             if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
+                return;
+            }
+            if (auto pin = weakSelf.lock(); !pin || !pin->isAlive() ||
+                pin->m_ocrVersion.load(std::memory_order_acquire) != expectedVersion) {
                 return;
             }
             tools3000::core::TraceId::Scope traceScope;
@@ -2166,8 +2204,13 @@ void PinWindow::extractText() {
             if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
                 return;
             }
-            tools3000::core::MainThreadDispatcher::instance().post([text]() {
+            tools3000::core::MainThreadDispatcher::instance().post([text, weakSelf, expectedVersion]() {
                 if (s_ocrShuttingDown.load(std::memory_order_acquire)) return;
+                auto pin = weakSelf.lock();
+                if (!pin || !pin->isAlive() ||
+                    pin->m_ocrVersion.load(std::memory_order_acquire) != expectedVersion) {
+                    return;
+                }
                 bool isZh = tools3000::core::isUiLanguageChinese();
                 if (!text.empty()) {
                     std::wstring wtext = tools3000::core::WinUtils::utf8ToWstring(text);
@@ -2181,6 +2224,7 @@ void PinWindow::extractText() {
             });
         }).detach();
     } catch (...) {
+        m_extractTextInFlight.store(false, std::memory_order_release);
         if (activeWorkers) {
             activeWorkers->fetch_sub(1, std::memory_order_acq_rel);
         }
@@ -2281,8 +2325,8 @@ bool PinWindow::parseHexColor(const std::wstring& in, cv::Scalar& bgr, std::wstr
 }
 
 // 颜色 → 色卡贴图（委托至 PinPasteCoordinator 单一事实源）
-cv::Mat PinWindow::renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label) {
-    return PinPasteCoordinator::renderColorSwatch(bgr, label);
+cv::Mat PinWindow::renderColorSwatch(const cv::Scalar& bgr, const std::wstring& label, float dpiScaleOverride) {
+    return PinPasteCoordinator::renderColorSwatch(bgr, label, dpiScaleOverride);
 }
 
 // 文本/代码 → Mac 极客风卡片贴图（委托至 PinPasteCoordinator 单一事实源）
@@ -2412,10 +2456,10 @@ std::shared_ptr<PinWindow> PinWindow::createFromClipboard() {
         cv::Scalar c;
         std::wstring hexLabel;
         if (parseHexColor(s, c, hexLabel)) {
-            cv::Mat swatch = renderColorSwatch(c, hexLabel);
+            cv::Mat swatch = renderColorSwatch(c, hexLabel, monScale);
             if (!swatch.empty()) {
                 generatedFromCard = true;
-                cardCornerRadius = 10.0f;
+                cardCornerRadius = 10.0f * monScale;
                 cardSourceText = hexLabel;
             }
             return swatch;
@@ -2569,28 +2613,41 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
             D2D1_RENDER_TARGET_TYPE_DEFAULT,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
         );
+        // DXGI 硬件交换链单边上限为 16384；若超长贴图窗口超过硬件交换链上限则钳制后备缓冲或回退软件渲染目标
+        constexpr UINT kSafeInitMaxRtDim = 16384u;
         auto hwndProps = D2D1::HwndRenderTargetProperties(
-            m_hwnd, D2D1::SizeU(targetW, targetH),
+            m_hwnd,
+            D2D1::SizeU((std::min)(targetW, kSafeInitMaxRtDim), (std::min)(targetH, kSafeInitMaxRtDim)),
             D2D1_PRESENT_OPTIONS_IMMEDIATELY
         );
 
         hr = m_d2dFactory->CreateHwndRenderTarget(rtProps, hwndProps, m_renderTarget.GetAddressOf());
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) {
+            auto swProps = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            hr = m_d2dFactory->CreateHwndRenderTarget(swProps, hwndProps, m_renderTarget.GetAddressOf());
+            if (FAILED(hr)) return false;
+        }
 
         // 禁用 D2D 的自动 DPI 缩放
         m_renderTarget->SetDpi(96.0f, 96.0f);
     } else {
-        m_renderTarget->Resize(D2D1::SizeU(targetW, targetH));
+        const UINT32 maxRt = (std::max)(256u, m_renderTarget->GetMaximumBitmapSize());
+        m_renderTarget->Resize(D2D1::SizeU((std::min)(targetW, maxRt), (std::min)(targetH, maxRt)));
     }
 
-    // 转为 BGRA 并创建 D2D Bitmap
+    // 转为 BGRA 并构建单块或二维分块 D2D Bitmap 列表（支持 >16384px 超长截图贴图）
     cv::Mat bgra;
     if (image.channels() == 3) {
         cv::cvtColor(image, bgra, cv::COLOR_BGR2BGRA);
+    } else if (image.channels() == 1) {
+        cv::cvtColor(image, bgra, cv::COLOR_GRAY2BGRA);
     } else if (image.channels() == 4) {
         bgra = image.clone();
         for (int r = 0; r < bgra.rows; ++r) {
-            auto* p = bgra.ptr<cv::Vec4b>(r);
+            auto* p = reinterpret_cast<cv::Vec4b*>(bgra.data + static_cast<size_t>(r) * bgra.step[0]);
             for (int c = 0; c < bgra.cols; ++c) {
                 const uchar a = p[c][3];
                 if (a == 0) {
@@ -2606,25 +2663,71 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
         return false;
     }
 
+    if (!bgra.isContinuous()) {
+        bgra = bgra.clone();
+    }
+
     D2D1_BITMAP_PROPERTIES bitmapProps = D2D1::BitmapProperties(
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
     );
 
     m_bitmap.Reset();
-    hr = m_renderTarget->CreateBitmap(
-        D2D1::SizeU(bgra.cols, bgra.rows),
-        bgra.data, bgra.cols * 4,
-        bitmapProps, m_bitmap.GetAddressOf()
-    );
+    m_bitmapTiles.clear();
 
-    return SUCCEEDED(hr);
+    const UINT32 maxBmp = (std::max)(256u, m_renderTarget->GetMaximumBitmapSize());
+    if (static_cast<UINT32>(bgra.cols) <= maxBmp && static_cast<UINT32>(bgra.rows) <= maxBmp) {
+        hr = m_renderTarget->CreateBitmap(
+            D2D1::SizeU(static_cast<UINT32>(bgra.cols), static_cast<UINT32>(bgra.rows)),
+            bgra.data,
+            static_cast<UINT32>(bgra.step[0]),
+            bitmapProps,
+            m_bitmap.GetAddressOf()
+        );
+        if (SUCCEEDED(hr) && m_bitmap) {
+            return true;
+        }
+        m_bitmap.Reset();
+    }
+
+    // 超出硬件最大单张纹理尺寸（如 >16384px 长截图或 8192px 显卡），自动切分为二维 ID2D1Bitmap 瓦片网格
+    const int tileStep = static_cast<int>((std::min)(maxBmp, 4096u));
+    for (int ty = 0; ty < bgra.rows; ty += tileStep) {
+        const int th = (std::min)(tileStep, bgra.rows - ty);
+        for (int tx = 0; tx < bgra.cols; tx += tileStep) {
+            const int tw = (std::min)(tileStep, bgra.cols - tx);
+            cv::Mat sub = bgra(cv::Rect(tx, ty, tw, th));
+            if (!sub.isContinuous()) {
+                sub = sub.clone();
+            }
+            PinBitmapTile tile;
+            tile.x = tx;
+            tile.y = ty;
+            tile.width = tw;
+            tile.height = th;
+            hr = m_renderTarget->CreateBitmap(
+                D2D1::SizeU(static_cast<UINT32>(tw), static_cast<UINT32>(th)),
+                sub.data,
+                static_cast<UINT32>(sub.step[0]),
+                bitmapProps,
+                tile.bitmap.GetAddressOf()
+            );
+            if (FAILED(hr) || !tile.bitmap) {
+                m_bitmapTiles.clear();
+                return false;
+            }
+            m_bitmapTiles.push_back(std::move(tile));
+        }
+    }
+
+    return !m_bitmapTiles.empty();
 }
 
 void PinWindow::render() {
-    if ((!m_renderTarget || !m_bitmap) && !m_sourceImage.empty() && m_hwnd && IsWindow(m_hwnd)) {
+    if ((!m_renderTarget || (!m_bitmap && m_bitmapTiles.empty())) &&
+        !m_sourceImage.empty() && m_hwnd && IsWindow(m_hwnd)) {
         createRenderResources(m_sourceImage);
     }
-    if (!m_renderTarget || !m_bitmap) return;
+    if (!m_renderTarget || (!m_bitmap && m_bitmapTiles.empty())) return;
 
     m_renderTarget->BeginDraw();
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
@@ -2674,8 +2777,72 @@ void PinWindow::render() {
                 D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
     } else {
-        m_renderTarget->DrawBitmap(m_bitmap.Get(),
-                                   D2D1::RectF(0, 0, size.width, size.height));
+        // 利用 Direct2D SetTransform 硬件矩阵直接缩放绘制源纹理（或二维瓦片），
+        // 避免高倍放大 (5.0x) 时分配超限重采样位图，并按视口可见范围裁剪绘制超长截图瓦片
+        const float sx = (m_origWidth > 0) ? (size.width / static_cast<float>(m_origWidth)) : 1.0f;
+        const float sy = (m_origHeight > 0) ? (size.height / static_cast<float>(m_origHeight)) : 1.0f;
+        D2D1_MATRIX_3X2_F prevTransform = D2D1::Matrix3x2F::Identity();
+        m_renderTarget->GetTransform(&prevTransform);
+        m_renderTarget->SetTransform(D2D1::Matrix3x2F::Scale(sx, sy) * prevTransform);
+
+        ComPtr<ID2D1DeviceContext> dc;
+        m_renderTarget.As(&dc);
+        const bool highQualityZoom = (std::abs(sx - 1.0f) > 0.01f || std::abs(sy - 1.0f) > 0.01f);
+        const D2D1_INTERPOLATION_MODE dcInterp = highQualityZoom
+            ? D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC
+            : D2D1_INTERPOLATION_MODE_LINEAR;
+        const D2D1_BITMAP_INTERPOLATION_MODE rtInterp = D2D1_BITMAP_INTERPOLATION_MODE_LINEAR;
+
+        if (m_bitmap) {
+            const D2D1_RECT_F srcSpaceRect = D2D1::RectF(
+                0.0f, 0.0f,
+                static_cast<float>((std::max)(1, m_origWidth)),
+                static_cast<float>((std::max)(1, m_origHeight)));
+            if (dc) {
+                dc->DrawBitmap(m_bitmap.Get(), &srcSpaceRect, 1.0f, dcInterp, nullptr, nullptr);
+            } else {
+                m_renderTarget->DrawBitmap(m_bitmap.Get(), srcSpaceRect, 1.0f, rtInterp);
+            }
+        } else {
+            // 计算当前显示器屏幕可见区域映射回源图像空间的裁剪边界，仅提交可见瓦片
+            float visLeft = 0.0f;
+            float visTop = 0.0f;
+            float visRight = static_cast<float>((std::max)(1, m_origWidth));
+            float visBottom = static_cast<float>((std::max)(1, m_origHeight));
+            if (m_hwnd && sx > 0.0001f && sy > 0.0001f) {
+                RECT winRc{};
+                if (GetWindowRect(m_hwnd, &winRc)) {
+                    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                    const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                    const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+                    if (vw > 0 && vh > 0) {
+                        visLeft = (std::max)(0.0f, static_cast<float>(vx - winRc.left) / sx - 64.0f);
+                        visTop = (std::max)(0.0f, static_cast<float>(vy - winRc.top) / sy - 64.0f);
+                        visRight = (std::min)(visRight, static_cast<float>(vx + vw - winRc.left) / sx + 64.0f);
+                        visBottom = (std::min)(visBottom, static_cast<float>(vy + vh - winRc.top) / sy + 64.0f);
+                    }
+                }
+            }
+
+            for (const auto& tile : m_bitmapTiles) {
+                if (!tile.bitmap || tile.width <= 0 || tile.height <= 0) continue;
+                const float tx0 = static_cast<float>(tile.x);
+                const float ty0 = static_cast<float>(tile.y);
+                const float tx1 = static_cast<float>(tile.x + tile.width);
+                const float ty1 = static_cast<float>(tile.y + tile.height);
+                if (tx1 <= visLeft || ty1 <= visTop || tx0 >= visRight || ty0 >= visBottom) {
+                    continue;
+                }
+                const D2D1_RECT_F tileDst = D2D1::RectF(tx0, ty0, tx1, ty1);
+                if (dc) {
+                    dc->DrawBitmap(tile.bitmap.Get(), &tileDst, 1.0f, dcInterp, nullptr, nullptr);
+                } else {
+                    m_renderTarget->DrawBitmap(tile.bitmap.Get(), tileDst, 1.0f, rtInterp);
+                }
+            }
+        }
+        m_renderTarget->SetTransform(prevTransform);
 
         // 渲染划选与悬停的文字高亮块 (Live Text Selection Overlay)
         if (m_ocrReady) {
@@ -2953,6 +3120,7 @@ void PinWindow::render() {
         hrEnd == DXGI_ERROR_DEVICE_RESET) {
         m_renderTarget.Reset();
         m_bitmap.Reset();
+        m_bitmapTiles.clear();
         if (m_hwnd && IsWindow(m_hwnd)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -3573,17 +3741,31 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     float relX = (cursor.x - rc.left) / static_cast<float>((std::max)(1L, rc.right - rc.left));
                     float relY = (cursor.y - rc.top) / static_cast<float>((std::max)(1L, rc.bottom - rc.top));
 
-                    int newW = (std::max)(1, static_cast<int>(self->m_origWidth * newScale));
-                    int newH = (std::max)(1, static_cast<int>(self->m_origHeight * newScale));
+                    constexpr int64_t kMaxSafeWindowDim = 32000;
+                    const int64_t scaledW64 = std::clamp(
+                        static_cast<int64_t>(std::llround(static_cast<double>(self->m_origWidth) * newScale)),
+                        int64_t{1}, kMaxSafeWindowDim);
+                    const int64_t scaledH64 = std::clamp(
+                        static_cast<int64_t>(std::llround(static_cast<double>(self->m_origHeight) * newScale)),
+                        int64_t{1}, kMaxSafeWindowDim);
+                    int newW = static_cast<int>(scaledW64);
+                    int newH = static_cast<int>(scaledH64);
 
-                    int newLeft = cursor.x - static_cast<int>(newW * relX);
-                    int newTop = cursor.y - static_cast<int>(newH * relY);
+                    int newLeft = cursor.x - static_cast<int>(std::llround(static_cast<double>(newW) * relX));
+                    int newTop = cursor.y - static_cast<int>(std::llround(static_cast<double>(newH) * relY));
 
                     self->m_scale = newScale;
                     SetWindowPos(hwnd, nullptr, newLeft, newTop, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
                     self->updateWindowCornerRegion();
                     if (self->m_renderTarget) {
-                        self->m_renderTarget->Resize(D2D1::SizeU(newW, newH));
+                        RECT clientRc{};
+                        GetClientRect(hwnd, &clientRc);
+                        const UINT32 maxRt = (std::max)(256u, self->m_renderTarget->GetMaximumBitmapSize());
+                        const UINT32 rtW = (std::min)(
+                            static_cast<UINT32>((std::max)(1L, clientRc.right - clientRc.left)), maxRt);
+                        const UINT32 rtH = (std::min)(
+                            static_cast<UINT32>((std::max)(1L, clientRc.bottom - clientRc.top)), maxRt);
+                        self->m_renderTarget->Resize(D2D1::SizeU(rtW, rtH));
                     }
                     self->render();
                 }
@@ -3727,18 +3909,15 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
         case WM_NCDESTROY: {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            if (self && self->m_hwnd == hwnd) {
-                self->m_hwnd = nullptr;
-                self->m_bitmap.Reset();
-                self->m_renderTarget.Reset();
-                self->m_uiLeadTextFormat.Reset();
-                self->m_uiCenterTextFormat.Reset();
-                self->m_dwriteFactory.Reset();
-                self->m_d2dFactory.Reset();
+            if (self) {
+                if (self->m_hwnd == hwnd) {
+                    self->m_hwnd = nullptr;
+                }
+                self->releaseGraphicsResources();
                 self->m_sourceImage.release();
                 s_instances.erase(
                     std::remove_if(s_instances.begin(), s_instances.end(),
-                                   [](const auto& p) { return !p || !p->isAlive(); }),
+                                   [self](const auto& p) { return !p || p.get() == self || !p->isAlive(); }),
                     s_instances.end());
             }
             break;

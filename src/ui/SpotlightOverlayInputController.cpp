@@ -2,11 +2,13 @@
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 #include "core/events/EventBus.h"
+#include "core/events/MainThreadDispatcher.h"
+#include "core/hotkey/KeyboardHook.h"
 #include "core/mouse/MouseStreamCore.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
+#include <random>
 #include <mmsystem.h>
 
 #pragma comment(lib, "winmm.lib")
@@ -16,10 +18,23 @@ namespace {
 constexpr int ANIM_INTERVAL_MS = 16;
 
 bool isCaptureOverlayVisible() noexcept {
+    if (tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible()) {
+        return true;
+    }
     HWND captureHwnd = FindWindowW(L"Tools3000_CaptureOverlay", nullptr);
     if (captureHwnd && IsWindowVisible(captureHwnd)) return true;
     HWND scrollHwnd = FindWindowW(L"Tools3000_ScrollCaptureOverlay", nullptr);
     return scrollHwnd && IsWindowVisible(scrollHwnd);
+}
+
+bool isCaptureOverlayVisibleFast() noexcept {
+    return tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible();
+}
+
+int randomIntInclusive(int minVal, int maxVal) {
+    thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<int> dist(minVal, maxVal);
+    return dist(rng);
 }
 }  // namespace
 
@@ -33,8 +48,13 @@ void SpotlightOverlay::trigger(POINT pt, bool autoFetch) {
     }
 
     if (m_settings.autoBypassFullscreen) {
+        auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
         HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg)) {
+        if (dispatcher.isInitialized() && dispatcher.isOwnerThread() && fg &&
+            m_cachedForegroundHwnd.load(std::memory_order_acquire) != reinterpret_cast<uintptr_t>(fg)) {
+            refreshFullscreenBypassState(fg);
+        }
+        if (fg && isFullscreenBypassActiveFast()) {
             LOG_INFO("前台处于全屏独占应用，自动免打扰跳过鼠标聚光灯触发: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
             return;
         }
@@ -61,9 +81,10 @@ void SpotlightOverlay::trigger(POINT pt, bool autoFetch) {
 void SpotlightOverlay::dismiss() {
     std::lock_guard lock(m_mutex);
     if (m_animState == AnimState::Idle) {
+        const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
         if (m_visible.load(std::memory_order_relaxed) ||
-            (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) ||
-            (m_dcompSurface != nullptr)) {
+            (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) ||
+            m_hasDcompSurface.load(std::memory_order_acquire)) {
             hideNow();
         }
         return;
@@ -89,10 +110,11 @@ void SpotlightOverlay::onKeyboardEvent(DWORD vkCode, WPARAM wParam) {
     if (isDown) {
         if (vkCode == VK_ESCAPE) {
             m_ctrlState = CtrlDoubleTapState::Idle;
+            const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
             if (m_animState != AnimState::Idle ||
                 m_visible.load(std::memory_order_relaxed) ||
-                (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) ||
-                (m_dcompSurface != nullptr)) {
+                (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) ||
+                m_hasDcompSurface.load(std::memory_order_acquire)) {
                 hideNow();
             }
             return;
@@ -126,11 +148,16 @@ void SpotlightOverlay::onKeyboardEvent(DWORD vkCode, WPARAM wParam) {
             if (m_ctrlState == CtrlDoubleTapState::WaitingSecond) {
                 auto upToDownGap = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_firstCtrlUpTime).count();
                 if (upToDownGap >= 30 && upToDownGap <= 380) {
-                    // 🎉 完美命中「双击 Ctrl」闭环！
+                    // 命中「双击 Ctrl」闭环：异步投递至下一轮消息循环执行，严禁阻塞 WH_KEYBOARD_LL 栈帧
                     m_ctrlState = CtrlDoubleTapState::Idle;
                     m_firstCtrlDownTime = {};
                     m_firstCtrlUpTime = {};
-                    trigger();
+                    auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
+                    if (dispatcher.isInitialized()) {
+                        dispatcher.postDeferred([this]() { trigger(); });
+                    } else {
+                        trigger();
+                    }
                     return;
                 } else {
                     // 超出连击时间窗，转为新的第 1 次按下
@@ -190,28 +217,26 @@ void SpotlightOverlay::onMouseDown(int button, POINT pt) {
         return;
     }
 
+    const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
     if (m_animState == AnimState::Idle &&
         (m_visible.load(std::memory_order_relaxed) ||
-         (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) ||
-         (m_dcompSurface != nullptr))) {
+         (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) ||
+         m_hasDcompSurface.load(std::memory_order_acquire))) {
         hideNow();
         return;
     }
 
     if (!m_settings.enabled || !m_settings.clickRippleEnabled) return;
 
-    // 截图或长截图浮层激活期间，自动抑制点击水波纹并清空残影，防止乱入截图画面
-    if (isCaptureOverlayVisible()) {
+    // 截图或长截图浮层激活期间，自动抑制点击水波纹并清空残影，防止乱入截图画面（使用零阻塞原子位，杜绝 WH_MOUSE_LL 内 FindWindowW）
+    if (isCaptureOverlayVisibleFast()) {
         m_ripples.clear();
         m_trail.clear();
         return;
     }
 
-    if (m_settings.autoBypassFullscreen) {
-        HWND fg = GetForegroundWindow();
-        if (fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg)) {
-            return;
-        }
+    if (m_settings.autoBypassFullscreen && isFullscreenBypassActiveFast()) {
+        return;
     }
 
     std::string color = m_settings.leftClickColor;
@@ -313,13 +338,17 @@ void SpotlightOverlay::onHookMouseMove(int x, int y) {
     if (!m_needMouseMove.load(std::memory_order_relaxed)) {
         return;
     }
+    while (m_rawMovePushSpin.test_and_set(std::memory_order_acquire)) {
+        YieldProcessor();
+    }
     tools3000::core::MouseStreamCore::instance().pushRawMove(x, y);
+    m_rawMovePushSpin.clear(std::memory_order_release);
 }
 
 void SpotlightOverlay::drainRawMovesLocked() {
     if (tools3000::core::MouseStreamCore::instance().empty()) return;
 
-    const bool captureActive = isCaptureOverlayVisible();
+    const bool captureActive = isCaptureOverlayVisibleFast();
     if (captureActive) {
         m_ripples.clear();
         m_trail.clear();
@@ -327,8 +356,7 @@ void SpotlightOverlay::drainRawMovesLocked() {
 
     bool bypass = captureActive;
     if (!bypass && m_settings.autoBypassFullscreen && m_settings.mouseTrailEnabled) {
-        HWND fg = GetForegroundWindow();
-        bypass = fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg);
+        bypass = isFullscreenBypassActiveFast();
     }
 
     tools3000::core::MouseStreamCore::instance().drainBatch([this, bypass](const tools3000::core::MouseStreamPoint& pt) {
@@ -462,7 +490,7 @@ void SpotlightOverlay::processMouseMoveLocked(POINT pt, bool bypass) {
                 p.durationMs = 220.0f;
                 p.color = m_settings.spotlightColor;
                 p.hue = m_trailHue;
-                p.extra = static_cast<float>((rand() % 14) - 7) * dpiScale;
+                p.extra = static_cast<float>(randomIntInclusive(-7, 6)) * dpiScale;
                 m_trail.push_back(p);
             } else if (style == "zen_ink") {
                 m_trailHue = std::fmod(m_trailHue + 8.0f, 360.0f);
@@ -557,15 +585,14 @@ void SpotlightOverlay::processMouseMoveLocked(POINT pt, bool bypass) {
 
 void SpotlightOverlay::onMouseMove(POINT pt) {
     std::lock_guard lock(m_mutex);
-    const bool captureActive = isCaptureOverlayVisible();
+    const bool captureActive = isCaptureOverlayVisibleFast();
     if (captureActive) {
         m_ripples.clear();
         m_trail.clear();
     }
     bool bypass = captureActive;
     if (!bypass && m_settings.autoBypassFullscreen && m_settings.mouseTrailEnabled) {
-        HWND fg = GetForegroundWindow();
-        bypass = fg && tools3000::core::WinUtils::shouldBypassOverlaysForWindow(fg);
+        bypass = isFullscreenBypassActiveFast();
     }
     processMouseMoveLocked(pt, bypass);
     wakeRenderThread();
@@ -686,9 +713,10 @@ void SpotlightOverlay::tickAnimation() {
         // 4. 判断是否全部活动已结束
         if (m_animState == AnimState::Idle && m_ripples.empty() && m_trail.empty()) {
             // 只要当前窗口可见、处于显示状态或硬件表面尚未释放，立即触发退场隐藏
+            const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
             if (m_visible.load(std::memory_order_acquire) ||
-                (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) ||
-                (m_dcompSurface != nullptr)) {
+                (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) ||
+                m_hasDcompSurface.load(std::memory_order_acquire)) {
                 shouldHide = true;
             }
         } else {

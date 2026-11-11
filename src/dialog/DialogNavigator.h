@@ -8,7 +8,14 @@
 
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <windows.h>
 
 namespace tools3000::dialog {
@@ -27,6 +34,22 @@ public:
 
     // 尝试将目标文件对话框导航至指定文件夹路径（全球化通用、零语言依赖、杜绝误选）
     bool navigateToFolder(HWND dialogHwnd, const std::string& folderPath);
+
+    // 异步投递目录导航至专用后台 MTA 工作线程（自动取消同窗口堆积的旧导航请求，严禁阻塞主 UI 线程）
+    void navigateToFolderAsync(HWND dialogHwnd,
+                               const std::string& folderPath,
+                               std::function<void(bool)> onComplete = {});
+
+    // 异步投递通用后台探测任务至专用 MTA 工作线程
+    void postAsyncTask(std::function<void()> task);
+
+    // 启动/取消/停止专用后台 MTA 工作线程
+    void startAsyncWorker();
+    void cancelPendingNavigation();
+    void shutdownAsyncWorker();
+
+    // 可被取消纪元或引擎停机毫秒级中断的等待（替代硬 sleep_for）
+    bool waitInterruptibleMs(uint32_t ms, uint64_t expectedNavEpoch = 0) const;
 
     // 检查某个窗口句柄是否为有效的文件打开/保存/文件夹选择对话框
     static bool isFileDialog(HWND hwnd, bool allowCurrentProcess = false);
@@ -63,7 +86,10 @@ public:
 
 private:
     DialogNavigator() = default;
-    ~DialogNavigator() = default;
+    ~DialogNavigator();
+
+    void asyncWorkerLoop();
+    bool navigateToFolderInternal(HWND dialogHwnd, const std::string& folderPath, uint64_t navEpoch);
 
     // UIAutomation: 读取地址栏当前路径 (Modern IFileDialog)
     static std::string uiaGetAddressBarPath(HWND dialogHwnd);
@@ -72,7 +98,14 @@ private:
     static std::string uiaGetFileNameText(HWND dialogHwnd, bool* controlFound = nullptr);
 
     // UIAutomation: 将路径写入地址栏并导航 (Modern IFileDialog)
-    static bool uiaNavigate(HWND dialogHwnd, const std::wstring& wPath);
+    static bool uiaNavigate(HWND dialogHwnd, const std::wstring& wPath, uint64_t navEpoch = 0);
+
+    mutable std::mutex m_asyncMutex;
+    mutable std::condition_variable m_asyncCv;
+    std::thread m_asyncWorker;
+    std::deque<std::function<void()>> m_asyncQueue;
+    std::atomic<bool> m_asyncRunning{false};
+    std::atomic<uint64_t> m_navCancelEpoch{1};
 };
 
 } // namespace tools3000::dialog

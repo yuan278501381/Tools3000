@@ -93,7 +93,7 @@ protected:
 
     /// 成员变量
     HINSTANCE m_hInstance = nullptr;
-    HWND m_hwnd = nullptr;
+    std::atomic<HWND> m_hwnd{nullptr};
     HWND m_helperOwnerHwnd = nullptr;
     std::wstring m_windowClassName;
     std::wstring m_helperOwnerName;
@@ -123,7 +123,8 @@ protected:
 
     int m_surfaceWidth = 0;
     int m_surfaceHeight = 0;
-    bool m_compositorReady = false;
+    std::atomic<bool> m_compositorReady{false};
+    std::atomic<bool> m_hasDcompSurface{false};
     MouseViewportRect m_currentViewport;
 
     mutable std::mutex m_baseMutex;
