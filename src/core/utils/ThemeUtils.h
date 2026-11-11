@@ -1,6 +1,10 @@
 #pragma once
 
+#include "core/config/ConfigManager.h"
+#include "core/utils/WinUtils.h"
+
 #include <string>
+#include <string_view>
 
 namespace tools3000::core {
 
@@ -49,6 +53,60 @@ inline AccentColorRGB parseHexColor(const std::string& hex) noexcept {
         };
     }
     return { 0.231f, 0.510f, 0.965f };
+}
+
+/**
+ * 校验字符串是否为合法的 #RRGGBB 十六进制颜色格式
+ */
+inline bool isValidHexColor(std::string_view hex) noexcept {
+    if (hex.size() != 7u || hex.front() != '#') {
+        return false;
+    }
+    for (size_t i = 1u; i < 7u; ++i) {
+        const char ch = hex[i];
+        const bool ok = (ch >= '0' && ch <= '9') ||
+                        (ch >= 'a' && ch <= 'f') ||
+                        (ch >= 'A' && ch <= 'F');
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/**
+ * 原生窗口与 Direct2D 浮层主题/强调色/界面语言单一事实源 (Header-Only)
+ */
+struct NativeThemePalette {
+    /// 结合 /general/theme ("system" | "dark" | "light") 与系统主题判定当前有效深色态
+    static bool isEffectiveDarkMode() {
+        const std::string theme = ConfigManager::instance().get<std::string>("/general/theme", "system");
+        if (theme == "dark") return true;
+        if (theme == "light") return false;
+        return WinUtils::isSystemDarkMode();
+    }
+
+    /// 结合 /general/accentColor (预设标识或自定义 #RRGGBB) 解析当前有效强调色 RGB
+    static AccentColorRGB getEffectiveAccentColorRGB() {
+        const std::string accent = ConfigManager::instance().get<std::string>("/general/accentColor", "blue");
+        if (!accent.empty() && accent.front() == '#') {
+            return parseHexColor(accent);
+        }
+        return getAccentColorRGB(accent);
+    }
+
+    /// 结合 /general/language 与系统语言判定原生界面是否应使用中文文案
+    static bool isUiLanguageChinese() {
+        const std::string lang = ConfigManager::instance().get<std::string>("/general/language", "auto");
+        if (lang.rfind("zh", 0) == 0 || lang.rfind("ZH", 0) == 0) return true;
+        if (lang.empty() || lang == "auto" || lang == "system") {
+            return WinUtils::isSystemLanguageChinese();
+        }
+        return false;
+    }
+};
+
+/// 统一判定原生浮层是否应使用简体中文文案（委托至 NativeThemePalette 单一事实源）
+inline bool isUiLanguageChinese() {
+    return NativeThemePalette::isUiLanguageChinese();
 }
 
 }  // namespace tools3000::core

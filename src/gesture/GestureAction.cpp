@@ -562,8 +562,39 @@ void executeStagedDesktopSwitch(bool next) noexcept {
 
 // ── KeyStroke::send ──────────────────────────────────────────────────────────
 
-void KeyStroke::send(void* targetWindowPtr) const {
-    if (virtualKey == 0) {
+namespace {
+
+bool hasConflictingPhysicalModifiers(uint8_t targetMods) noexcept {
+    if (!(targetMods & MOD_CONTROL) && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+        return true;
+    }
+    if (!(targetMods & MOD_ALT) && (GetAsyncKeyState(VK_MENU) & 0x8000)) {
+        return true;
+    }
+    if (!(targetMods & MOD_SHIFT) && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
+        return true;
+    }
+    if (!(targetMods & MOD_WIN) &&
+        ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000))) {
+        return true;
+    }
+    return false;
+}
+
+void waitForPhysicalModifiersReleaseBounded(uint8_t targetMods, DWORD maxWaitMs = 120) noexcept {
+    if (!hasConflictingPhysicalModifiers(targetMods)) {
+        return;
+    }
+    constexpr DWORD kPollSliceMs = 4;
+    const DWORD startTick = GetTickCount();
+    while (hasConflictingPhysicalModifiers(targetMods) &&
+           (GetTickCount() - startTick) < maxWaitMs) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kPollSliceMs));
+    }
+}
+
+void sendKeyStrokeWorkerImpl(const KeyStroke& ks, void* targetWindowPtr) {
+    if (ks.virtualKey == 0) {
         LOG_WARN("KeyStroke::send 被调用但 virtualKey 为空, 跳过");
         return;
     }
@@ -571,12 +602,12 @@ void KeyStroke::send(void* targetWindowPtr) const {
     HWND targetHwnd = asLiveWindow(static_cast<HWND>(targetWindowPtr));
     if (isGesturePassThroughWindow(targetHwnd)) {
         LOG_WARN("拒绝向手势覆盖层注入按键: keys={}, target={}",
-                 toString(), describeWindow(targetHwnd));
+                 ks.toString(), describeWindow(targetHwnd));
         targetHwnd = nullptr;
     }
 
     HWND fgBefore = GetForegroundWindow();
-    if (!isGlobalAction(modifiers, virtualKey) && !targetHwnd) {
+    if (!isGlobalAction(ks.modifiers, ks.virtualKey) && !targetHwnd) {
         POINT pt{};
         GetCursorPos(&pt);
         targetHwnd = static_cast<HWND>(resolveGestureKeyTarget(
@@ -584,35 +615,37 @@ void KeyStroke::send(void* targetWindowPtr) const {
     }
 
     LOG_INFO("手势按键注入: keys={}, target={}, fg={}",
-             toString(), describeWindow(targetHwnd), describeWindow(fgBefore));
+             ks.toString(), describeWindow(targetHwnd), describeWindow(fgBefore));
 
-    if (!isGlobalAction(modifiers, virtualKey) && !targetHwnd) {
+    if (!isGlobalAction(ks.modifiers, ks.virtualKey) && !targetHwnd) {
         LOG_WARN("无外部目标窗口，放弃按键注入: keys={}, fg={}",
-                 toString(), describeWindow(fgBefore));
+                 ks.toString(), describeWindow(fgBefore));
         return;
     }
 
-    uint8_t sendMods = modifiers;
-    uint16_t sendVk = virtualKey;
+    uint8_t sendMods = ks.modifiers;
+    uint16_t sendVk = ks.virtualKey;
     const std::wstring targetCls = windowClassName(targetHwnd);
     const bool isShellTarget = isSystemDesktopOrShellWindow(targetCls) ||
                                (targetHwnd && resolveCloseableWindow(targetHwnd) == nullptr);
 
     // 严禁向 Windows 桌面、任务栏或系统外壳注入关闭按键 (Alt+F4 / Ctrl+W)
-    if (!isGlobalAction(modifiers, virtualKey) && targetHwnd && isShellTarget) {
-        if (keyStrokeShouldPostClose(modifiers, virtualKey) || keyStrokeIsCtrlW(modifiers, virtualKey)) {
+    if (!isGlobalAction(ks.modifiers, ks.virtualKey) && targetHwnd && isShellTarget) {
+        if (keyStrokeShouldPostClose(ks.modifiers, ks.virtualKey) ||
+            keyStrokeIsCtrlW(ks.modifiers, ks.virtualKey)) {
             LOG_WARN("目标为 Windows 桌面或系统外壳，拦截关窗动作，放弃按键注入: keys={}, target={}",
-                     toString(), describeWindow(targetHwnd));
+                     ks.toString(), describeWindow(targetHwnd));
             return;
         }
     }
 
-    bool closing = !isGlobalAction(modifiers, virtualKey) && targetHwnd &&
-        keyStrokeShouldCloseWindow(modifiers, virtualKey, targetCls);
+    bool closing = !isGlobalAction(ks.modifiers, ks.virtualKey) && targetHwnd &&
+        keyStrokeShouldCloseWindow(ks.modifiers, ks.virtualKey, targetCls);
     if (closing) {
         HWND closeTarget = resolveCloseableWindow(targetHwnd);
         if (closeTarget) {
-            std::string exe = tools3000::core::WinUtils::toLower(tools3000::core::WinUtils::getProcessNameFromWindow(closeTarget));
+            std::string exe = tools3000::core::WinUtils::toLower(
+                tools3000::core::WinUtils::getProcessNameFromWindow(closeTarget));
             if (exe == "explorer.exe") {
                 std::wstring cls = tools3000::core::WinUtils::getWindowClassName(closeTarget);
                 if (cls != L"CabinetWClass") {
@@ -640,10 +673,10 @@ void KeyStroke::send(void* targetWindowPtr) const {
         } else {
             closing = false;
         }
-    } else if (!isGlobalAction(modifiers, virtualKey) && targetHwnd &&
+    } else if (!isGlobalAction(ks.modifiers, ks.virtualKey) && targetHwnd &&
                tools3000::core::WinUtils::isWindowHigherIntegrity(targetHwnd)) {
         LOG_WARN("目标窗口完整性更高，按键注入可能被 UIPI 拦截: keys={}, target={}",
-                 toString(), describeWindow(targetHwnd));
+                 ks.toString(), describeWindow(targetHwnd));
     }
 
     // 非全局键先把输入焦点切到目标窗口，再原子发送。切不过则放弃，避免 Ctrl+W 打进前台的设置页。
@@ -655,10 +688,13 @@ void KeyStroke::send(void* targetWindowPtr) const {
                 return;
             }
             LOG_WARN("未能激活目标窗口，放弃注入: keys={}, target={}, fg={}",
-                     toString(), describeWindow(targetHwnd), describeWindow(GetForegroundWindow()));
+                     ks.toString(), describeWindow(targetHwnd), describeWindow(GetForegroundWindow()));
             return;
         }
     }
+
+    // 在后台线程有界轮询等待冲突物理修饰键自然释放，严禁在 UI 主线程 sleep 阻塞消息泵
+    waitForPhysicalModifiersReleaseBounded(sendMods, 120);
 
     // 注入前先确保无残留的粘滞修饰键干扰
     ensureAllModifiersReleased(false);
@@ -718,6 +754,40 @@ void KeyStroke::send(void* targetWindowPtr) const {
                  inputs.size(), sent, GetLastError());
         ensureAllModifiersReleased(false);
     }
+}
+
+}  // namespace
+
+void KeyStroke::send(void* targetWindowPtr) const {
+    if (virtualKey == 0) {
+        LOG_WARN("KeyStroke::send 被调用但 virtualKey 为空, 跳过");
+        return;
+    }
+
+    // 防阻塞守护：若调用方意外处于 UI 主线程，异步移交后台线程完成修饰键释放轮询与 SendInput，
+    // 100% 杜绝在 UI 主线程执行 sleep_for 阻塞消息泵。
+    const auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
+    if (dispatcher.isInitialized() && dispatcher.isOwnerThread()) {
+        const KeyStroke copy = *this;
+        const std::string traceId = tools3000::core::TraceId::current();
+        std::thread([copy, targetWindowPtr, traceId]() {
+            if (!traceId.empty()) {
+                tools3000::core::TraceId::setCurrent(traceId);
+            }
+            try {
+                sendKeyStrokeWorkerImpl(copy, targetWindowPtr);
+            } catch (const std::exception& e) {
+                LOG_ERROR("Background KeyStroke::send failed: keys={}, error={}",
+                          copy.toString(), e.what());
+            } catch (...) {
+                LOG_ERROR("Background KeyStroke::send unknown exception: keys={}",
+                          copy.toString());
+            }
+        }).detach();
+        return;
+    }
+
+    sendKeyStrokeWorkerImpl(*this, targetWindowPtr);
 }
 
 // ── GestureAction::execute ───────────────────────────────────────────────────

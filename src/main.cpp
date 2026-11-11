@@ -105,6 +105,7 @@ static std::optional<std::filesystem::path> g_performanceScenarioOutput;
 static std::atomic<bool> g_restartLaunchStarted{false};
 static HPOWERNOTIFY g_powerNotify = nullptr;
 static HWINEVENTHOOK g_fullscreenWinEventHook = nullptr;
+static tools3000::core::SubscriptionId g_hostThemeSubId = 0;
 
 namespace {
 
@@ -539,6 +540,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
         return 1;
     }
 
+    // 同步 Win32 原生弹出菜单 (CreatePopupMenu / uxtheme) 明暗主题模式，消除深色下惨白右键菜单
+    tools3000::core::WinUtils::applyNativeMenuTheme();
+
     // 同步用户语言设置与日志保留天数到日志系统 (0 锁动态切换)
     tools3000::core::Logger::setLanguage(
         tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "auto")
@@ -865,6 +869,11 @@ HWND createMessageWindow(HINSTANCE hInstance) {
 }
 
 void initializeSubsystems(HWND hwnd, bool preloadSettings) {
+    g_hostThemeSubId = tools3000::core::EventBus::instance().subscribe<tools3000::core::ThemeChangedEvent>(
+        [](const tools3000::core::ThemeChangedEvent& ev) {
+            tools3000::core::WinUtils::applyNativeMenuTheme(ev.theme);
+        });
+
     // 1. 托盘图标（内部管理并安全退订 GesturePauseChangedEvent 与 ThemeChangedEvent）
     auto& tray = tools3000::tray::TrayIcon::instance();
     tray.create(hwnd);
@@ -1779,6 +1788,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 }
 
 void shutdownSubsystems() {
+    if (g_hostThemeSubId != 0) {
+        tools3000::core::EventBus::instance().unsubscribeAndWait(g_hostThemeSubId);
+        g_hostThemeSubId = 0;
+    }
     if (g_fullscreenWinEventHook) {
         UnhookWinEvent(g_fullscreenWinEventHook);
         g_fullscreenWinEventHook = nullptr;
@@ -1919,7 +1932,17 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 
     if (msg == WM_SETTINGCHANGE || msg == WM_THEMECHANGED) {
+        tools3000::core::WinUtils::applyNativeMenuTheme();
         tools3000::tray::TrayIcon::instance().refreshThemeIcon();
+        auto& cfg = tools3000::core::ConfigManager::instance();
+        const std::string configuredTheme = cfg.get<std::string>("/general/theme", "system");
+        if (configuredTheme == "system") {
+            tools3000::core::EventBus::instance().publish(tools3000::core::ThemeChangedEvent{
+                configuredTheme,
+                cfg.get<std::string>("/general/accentColor", "blue"),
+                cfg.get<std::string>("/general/trayIconTheme", "system")
+            });
+        }
         return 0;
     }
 

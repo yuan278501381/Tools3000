@@ -281,6 +281,7 @@ public:
         });
         m_themeSubscription = bus.subscribe<tools3000::core::ThemeChangedEvent>([](const tools3000::core::ThemeChangedEvent&) {
             tools3000::gesture::GestureTrailOverlay::instance().reloadThemeColors();
+            tools3000::gesture::RadialMenuOverlay::instance().reloadThemeColors();
         });
         
         mb.registerHandler("gesture.togglePause", [](const nlohmann::json&) -> nlohmann::json {

@@ -12,6 +12,7 @@
 #include "core/hotkey/HotkeyManager.h"
 #include "core/hotkey/MouseHook.h"
 #include "core/hotkey/KeyboardHook.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
 #include "core/stats/StatsManager.h"
 #include "core/stats/PerformanceMonitor.h"
@@ -671,6 +672,7 @@ void syncRuntimeSettingsFromConfig(const char* source) {
     const std::string trayIconTheme = config.get<std::string>("/general/trayIconTheme", "system");
     const std::string fontFamily = config.get<std::string>("/general/fontFamily", "auto");
 
+    tools3000::core::WinUtils::applyNativeMenuTheme(theme);
     tools3000::core::EventBus::instance().publish(tools3000::core::ThemeChangedEvent{
         theme,
         accentColor,
@@ -723,7 +725,17 @@ void MessageBridge::registerHandler(const std::string& method, MessageHandler ha
     registerHandlerImpl(method, std::move(handler), false);
 }
 
+void MessageBridge::registerAsyncHandler(const std::string& method, MessageHandler handler) {
+    markMethodAsync(method);
+    registerHandlerImpl(method, std::move(handler), false);
+}
+
 void MessageBridge::registerHostHandler(const std::string& method, MessageHandler handler) {
+    registerHandlerImpl(method, std::move(handler), true);
+}
+
+void MessageBridge::registerAsyncHostHandler(const std::string& method, MessageHandler handler) {
+    markMethodAsync(method);
     registerHandlerImpl(method, std::move(handler), true);
 }
 
@@ -901,7 +913,11 @@ std::chrono::steady_clock::duration asyncJobTimeoutForMethod(std::string_view me
         method == "autoStart.set" ||
         method == "general.updateSettings" ||
         method == "app.restartElevated" ||
-        method == "app.restartDemoted") {
+        method == "app.restartDemoted" ||
+        method == "search.openFileAsAdmin" ||
+        method == "system.openFileAsAdmin" ||
+        method == "search.openAsAdmin" ||
+        method == "system.openAsAdmin") {
         return InteractiveAsyncJobTimeout;
     }
     return DefaultAsyncJobTimeout;
@@ -2167,7 +2183,10 @@ void MessageBridge::registerBuiltinHandlers() {
             if (key == "trayIconTheme" && (!value.is_string() || !trayIconThemes.contains(value.get<std::string>()))) {
                 return {{"success", false}, {"error", "invalid tray icon theme"}};
             }
-            if (key == "accentColor" && (!value.is_string() || !accents.contains(value.get<std::string>()))) {
+            if (key == "accentColor" &&
+                (!value.is_string() ||
+                 (!accents.contains(value.get<std::string>()) &&
+                  !isValidHexColor(value.get<std::string>())))) {
                 return {{"success", false}, {"error", "invalid accent color"}};
             }
             if (key == "logLevel" && (!value.is_string() || !logLevels.contains(value.get<std::string>()))) {
@@ -2223,8 +2242,10 @@ void MessageBridge::registerBuiltinHandlers() {
             Logger::setRetentionDays(sanitizedPatch["logRetentionDays"].get<uint32_t>());
         }
         if (sanitizedPatch.contains("theme") || sanitizedPatch.contains("accentColor") || sanitizedPatch.contains("trayIconTheme")) {
+            const std::string effectiveTheme = config.get<std::string>("/general/theme", "system");
+            WinUtils::applyNativeMenuTheme(effectiveTheme);
             EventBus::instance().publish(ThemeChangedEvent{
-                config.get<std::string>("/general/theme", "system"),
+                effectiveTheme,
                 config.get<std::string>("/general/accentColor", "blue"),
                 config.get<std::string>("/general/trayIconTheme", "system")
             });

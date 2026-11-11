@@ -11,7 +11,9 @@
 #include "core/logger/Logger.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/config/ConfigManager.h"
+#include "core/events/EventBus.h"
 #include "DialogEngine.h"
+#include "DialogRibbonOverlay.h"
 #include "PathMemoryManager.h"
 #include "ExplorerTracker.h"
 #include "DialogNavigator.h"
@@ -37,12 +39,21 @@ public:
             }
         }
 
+        m_themeSubId = tools3000::core::EventBus::instance().subscribe<tools3000::core::ThemeChangedEvent>(
+            [](const tools3000::core::ThemeChangedEvent&) {
+                DialogRibbonOverlay::instance().onThemeChanged();
+            });
+
         registerIpcHandlers();
         return true;
     }
 
     void shutdown() override {
         LOG_INFO("关闭文件对话框增强插件 (DialogEnhancerPlugin)");
+        if (m_themeSubId != 0) {
+            tools3000::core::EventBus::instance().unsubscribeAndWait(m_themeSubId);
+            m_themeSubId = 0;
+        }
         unregisterIpcHandlers();
         DialogEngine::instance().stop();
         DialogNavigator::instance().shutdownAsyncWorker();
@@ -191,6 +202,8 @@ private:
         auto& bridge = tools3000::core::MessageBridge::instance();
         bridge.unregisterHandlersByPrefix("dialog.");
     }
+
+    tools3000::core::SubscriptionId m_themeSubId = 0;
 };
 
 extern "C" __declspec(dllexport) tools3000::core::IPlugin* CreatePlugin() {
