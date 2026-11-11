@@ -6,6 +6,7 @@
 #include "core/ipc/MessageBridge.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/DWriteFontUtils.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
 #include "core/events/MainThreadDispatcher.h"
 #include <cmath>
@@ -245,6 +246,22 @@ void RadialMenuOverlay::hide() {
             deleteBitmapLocked();
         }
     }
+}
+
+void RadialMenuOverlay::reloadThemeColors() {
+    if (!m_visible.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().post([this]() {
+            if (m_visible.load(std::memory_order_acquire)) {
+                render();
+            }
+        });
+        return;
+    }
+    render();
 }
 
 void RadialMenuOverlay::shutdown() {
@@ -488,6 +505,27 @@ void RadialMenuOverlay::render() {
     m_renderTarget->BeginDraw();
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
+    const bool isDark = tools3000::core::NativeThemePalette::isEffectiveDarkMode();
+    const auto accent = tools3000::core::NativeThemePalette::getEffectiveAccentColorRGB();
+    if (m_bgBrush) {
+        m_bgBrush->SetColor(isDark
+            ? D2D1::ColorF(0.08f, 0.10f, 0.13f, 0.88f)
+            : D2D1::ColorF(0.97f, 0.98f, 0.99f, 0.94f));
+    }
+    if (m_hoverBrush) {
+        m_hoverBrush->SetColor(D2D1::ColorF(accent.r, accent.g, accent.b, 0.96f));
+    }
+    if (m_textBrush) {
+        m_textBrush->SetColor(isDark
+            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f)
+            : D2D1::ColorF(0.09f, 0.11f, 0.16f, 0.98f));
+    }
+    if (m_borderBrush) {
+        m_borderBrush->SetColor(isDark
+            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f)
+            : D2D1::ColorF(0.10f, 0.12f, 0.18f, 0.16f));
+    }
+
     // 缩放矩阵 (出场动画)
     float cx = winSize / 2.0f;
     float cy = winSize / 2.0f;
@@ -498,7 +536,9 @@ void RadialMenuOverlay::render() {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> centerBrush;
         const D2D1_COLOR_F centerColor = (hoverIdx == -1)
             ? D2D1::ColorF(0.94f, 0.32f, 0.32f, 0.58f)
-            : D2D1::ColorF(0.08f, 0.10f, 0.13f, 0.72f);
+            : (isDark
+                ? D2D1::ColorF(0.08f, 0.10f, 0.13f, 0.72f)
+                : D2D1::ColorF(0.94f, 0.96f, 0.99f, 0.86f));
         if (SUCCEEDED(m_renderTarget->CreateSolidColorBrush(centerColor, &centerBrush)) && centerBrush) {
             const float innerRadius = static_cast<float>(innerRadiusPx);
             m_renderTarget->FillEllipse(
@@ -572,8 +612,14 @@ void RadialMenuOverlay::render() {
             }
         }
 
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverTextBrush;
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &hoverTextBrush);
+
         // 第三遍：在所有扇区几何之上绘制单行省略号裁剪文本
         for (int i = 0; i < numItems; ++i) {
+            ID2D1Brush* activeTextBrush = (i == hoverIdx && hoverTextBrush)
+                ? static_cast<ID2D1Brush*>(hoverTextBrush.Get())
+                : static_cast<ID2D1Brush*>(m_textBrush.Get());
             const float hoverExtra = (i < static_cast<int>(m_hoverRadii.size())) ? m_hoverRadii[i] : 0.0f;
             const float outerR = static_cast<float>(baseOuterRadius) + hoverExtra;
             const D2D1_RECT_F textRect = RadialMenuStyle::computeSectorTextBox(
@@ -601,7 +647,7 @@ void RadialMenuOverlay::render() {
                 m_renderTarget->DrawTextLayout(
                     D2D1::Point2F(textRect.left, textRect.top),
                     textLayout.Get(),
-                    m_textBrush.Get(),
+                    activeTextBrush,
                     D2D1_DRAW_TEXT_OPTIONS_CLIP);
             } else {
                 m_renderTarget->DrawTextW(
@@ -609,7 +655,7 @@ void RadialMenuOverlay::render() {
                     static_cast<UINT32>(wLabel.length()),
                     m_textFormat.Get(),
                     textRect,
-                    m_textBrush.Get(),
+                    activeTextBrush,
                     D2D1_DRAW_TEXT_OPTIONS_CLIP);
             }
         }

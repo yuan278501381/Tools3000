@@ -109,6 +109,12 @@ public:
                                              bool isDirectory,
                                              const std::wstring& filePath = L"");
 
+    /// 清空文件类型图标内存缓存（仅供单元测试隔离验证）
+    static void clearFileTypeIconCacheForTesting();
+
+    /// 查询当前文件类型图标缓存条目数（仅供单元测试验证静态后缀共享命中率）
+    static size_t getFileTypeIconCacheSizeForTesting();
+
     /// 复制宽文本到剪贴板（支持剪贴板占用重试与异常内存释放保护）
     static bool copyToClipboard(const std::wstring& wtext, HWND owner = nullptr);
 
@@ -296,6 +302,10 @@ public:
 
     /// 判断 Windows 应用是否为深色模式 (AppsUseLightTheme, 0: Dark, 1: Light)
     static bool isSystemDarkMode();
+
+    /// 同步进程级 Win32 原生弹出菜单 (CreatePopupMenu / TrackPopupMenuEx) 明暗主题
+    /// themeMode: "system" / "dark" / "light"；为空时读取 /general/theme 配置
+    static void applyNativeMenuTheme(std::string_view themeMode = "");
 
     /// 获取/初始化进程级 Job Object (带 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
     static HANDLE getProcessJobObject();

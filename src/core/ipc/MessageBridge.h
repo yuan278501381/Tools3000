@@ -46,9 +46,15 @@ public:
     /// @param method 方法名 (如 "gesture.getProfiles", "config.get")
     void registerHandler(const std::string& method, MessageHandler handler);
 
+    /// 注册后台异步执行的消息处理器（自动标记为异步方法并投递到受管线程池，绝不阻塞 UI 主线程）
+    void registerAsyncHandler(const std::string& method, MessageHandler handler);
+
     /// 注册宿主（Tools3000.exe / Tools3000Core.dll）内置消息处理器。
     /// 按插件前缀注销时（unregisterHandlersByPrefix）将保留宿主处理器，仅在进程退出 clearHandlers() 时释放。
     void registerHostHandler(const std::string& method, MessageHandler handler);
+
+    /// 注册宿主内置后台异步消息处理器。
+    void registerAsyncHostHandler(const std::string& method, MessageHandler handler);
 
     /// 注销一个处理器，并等待已经进入该处理器的调用结束。
     void unregisterHandler(const std::string& method);

@@ -3756,3 +3756,168 @@ TEST(ShellContextMenuRegressionTest, BindSystemDirectoryAndServiceLifecycle) {
     menuSvc.shutdown();
     menuSvc.shutdown();
 }
+
+// -----------------------------------------------------------------------------
+// Batch 1 (V-01 & P-04): NativeThemePalette 与零磁盘共享图标缓存回归测试
+// -----------------------------------------------------------------------------
+TEST(ThemeUtilsNativePaletteTest, EffectiveThemeAccentAndUiLanguageSingleSourceOfTruth) {
+    using tools3000::core::ConfigManager;
+    using tools3000::core::NativeThemePalette;
+    using tools3000::core::WinUtils;
+
+    auto& cfg = ConfigManager::instance();
+    const std::string savedSnapshot = cfg.toJsonString(2);
+    struct ConfigRestoreGuard {
+        ConfigManager& mgr;
+        std::string snapshot;
+        ~ConfigRestoreGuard() {
+            mgr.fromJsonString(snapshot);
+        }
+    } restoreGuard{cfg, savedSnapshot};
+
+    // 1. 明暗主题单一事实源判定
+    ASSERT_TRUE(cfg.set("/general/theme", std::string("dark")));
+    EXPECT_TRUE(NativeThemePalette::isEffectiveDarkMode());
+
+    ASSERT_TRUE(cfg.set("/general/theme", std::string("light")));
+    EXPECT_FALSE(NativeThemePalette::isEffectiveDarkMode());
+
+    ASSERT_TRUE(cfg.set("/general/theme", std::string("system")));
+    EXPECT_EQ(NativeThemePalette::isEffectiveDarkMode(), WinUtils::isSystemDarkMode());
+
+    // 2. 动态强调色解析（预设枚举 + 自定义 #RRGGBB + 非法值回退）
+    ASSERT_TRUE(cfg.set("/general/accentColor", std::string("violet")));
+    const auto violet = NativeThemePalette::getEffectiveAccentColorRGB();
+    const auto expectedViolet = tools3000::core::getAccentColorRGB("violet");
+    EXPECT_FLOAT_EQ(violet.r, expectedViolet.r);
+    EXPECT_FLOAT_EQ(violet.g, expectedViolet.g);
+    EXPECT_FLOAT_EQ(violet.b, expectedViolet.b);
+
+    ASSERT_TRUE(cfg.set("/general/accentColor", std::string("#FF5500")));
+    const auto customHex = NativeThemePalette::getEffectiveAccentColorRGB();
+    EXPECT_NEAR(customHex.r, 1.0f, 1e-4f);
+    EXPECT_NEAR(customHex.g, 85.0f / 255.0f, 1e-4f);
+    EXPECT_NEAR(customHex.b, 0.0f, 1e-4f);
+
+    ASSERT_TRUE(cfg.set("/general/accentColor", std::string("invalid-accent-token")));
+    const auto fallbackBlue = NativeThemePalette::getEffectiveAccentColorRGB();
+    const auto expectedBlue = tools3000::core::getAccentColorRGB("blue");
+    EXPECT_FLOAT_EQ(fallbackBlue.r, expectedBlue.r);
+    EXPECT_FLOAT_EQ(fallbackBlue.g, expectedBlue.g);
+    EXPECT_FLOAT_EQ(fallbackBlue.b, expectedBlue.b);
+
+    // 3. UI 语言判定单一事实源
+    ASSERT_TRUE(cfg.set("/general/language", std::string("zh-CN")));
+    EXPECT_TRUE(NativeThemePalette::isUiLanguageChinese());
+    EXPECT_TRUE(tools3000::core::isUiLanguageChinese());
+
+    ASSERT_TRUE(cfg.set("/general/language", std::string("zh-TW")));
+    EXPECT_TRUE(NativeThemePalette::isUiLanguageChinese());
+
+    ASSERT_TRUE(cfg.set("/general/language", std::string("en-US")));
+    EXPECT_FALSE(NativeThemePalette::isUiLanguageChinese());
+    EXPECT_FALSE(tools3000::core::isUiLanguageChinese());
+
+    ASSERT_TRUE(cfg.set("/general/language", std::string("auto")));
+    EXPECT_EQ(NativeThemePalette::isUiLanguageChinese(), WinUtils::isSystemLanguageChinese());
+
+    // 4. Win32 原生菜单暗色策略动态加载幂等无崩溃验证
+    WinUtils::applyNativeMenuTheme("dark");
+    WinUtils::applyNativeMenuTheme("light");
+    WinUtils::applyNativeMenuTheme("system");
+    WinUtils::applyNativeMenuTheme();
+}
+
+TEST(WinUtilsFileTypeIconCacheTest, StaticExtensionZeroDiskSharedCacheHitRate) {
+    using tools3000::core::WinUtils;
+
+    WinUtils::clearFileTypeIconCacheForTesting();
+    EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 0u);
+
+    // 静态扩展名 (.txt): 同时验证三参数标准调用与首参传入完整路径的自适应提取，零物理磁盘 I/O + 共享缓存 100% 命中
+    const std::string txtA = WinUtils::getFileTypeIconBase64(
+        L".txt", false, L"Z:\\__t3k_nonexistent_volume_a__\\doc_alpha.txt");
+    const std::string txtB = WinUtils::getFileTypeIconBase64(
+        L"TXT", false, L"Y:\\__t3k_nonexistent_volume_b__\\DOC_BETA.TXT");
+    const std::string txtC = WinUtils::getFileTypeIconBase64(
+        L"X:\\__t3k_nonexistent_volume_c__\\nested\\doc_gamma.Txt", false);
+
+    EXPECT_TRUE(txtA.starts_with("data:image/png;base64,"));
+    EXPECT_GT(txtA.size(), 64u);
+    EXPECT_EQ(txtA, txtB);
+    EXPECT_EQ(txtA, txtC);
+    EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 1u);
+
+    // 另一种静态扩展名 (.cpp): 仅新增 1 条共享缓存
+    const std::string cppA = WinUtils::getFileTypeIconBase64(
+        L".cpp", false, L"Z:\\__t3k_nonexistent_volume_a__\\engine.cpp");
+    const std::string cppB = WinUtils::getFileTypeIconBase64(
+        L".CPP", false, L"W:\\__t3k_nonexistent_volume_d__\\ENGINE.CPP");
+    EXPECT_TRUE(cppA.starts_with("data:image/png;base64,"));
+    EXPECT_EQ(cppA, cppB);
+    EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 2u);
+
+    // 目录类型图标: 跨路径共享单条 ::dir:: 缓存
+    const std::string dirA = WinUtils::getFileTypeIconBase64(
+        L"", true, L"Z:\\__t3k_nonexistent_folder_1__");
+    const std::string dirB = WinUtils::getFileTypeIconBase64(
+        L"Z:\\__t3k_nonexistent_folder_2__", true);
+    EXPECT_TRUE(dirA.starts_with("data:image/png;base64,"));
+    EXPECT_EQ(dirA, dirB);
+    EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 3u);
+
+    // 动态实例图标后缀 (.exe): 按规范化文件路径独立缓存，避免不同可执行文件串用图标
+    wchar_t sysDir[MAX_PATH]{};
+    const UINT sysLen = GetSystemDirectoryW(sysDir, MAX_PATH);
+    if (sysLen > 0 && sysLen < MAX_PATH) {
+        const std::wstring cmdExe = std::filesystem::path(sysDir) / L"cmd.exe";
+        const std::wstring notepadExe = std::filesystem::path(sysDir) / L"notepad.exe";
+        if (std::filesystem::exists(cmdExe) && std::filesystem::exists(notepadExe)) {
+            const std::string iconCmd = WinUtils::getFileTypeIconBase64(L".exe", false, cmdExe);
+            const std::string iconNotepad = WinUtils::getFileTypeIconBase64(L".exe", false, notepadExe);
+            EXPECT_TRUE(iconCmd.starts_with("data:image/png;base64,"));
+            EXPECT_TRUE(iconNotepad.starts_with("data:image/png;base64,"));
+            EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 5u);
+        }
+    }
+}
+
+TEST(FileInteractionAsyncHandlersTest, DispatchesFileOperationsOffCallerThread) {
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    tools3000::core::registerFileInteractionHandlers(
+        bridge, "audit.asyncfile", "path is required");
+
+    struct UnregisterGuard {
+        tools3000::core::MessageBridge& mb;
+        ~UnregisterGuard() {
+            EXPECT_EQ(mb.unregisterHandlersByPrefix("audit.asyncfile"), 8u);
+        }
+    } guard{bridge};
+
+    const DWORD callerTid = GetCurrentThreadId();
+    for (const char* methodSuffix : {
+             "openFile", "openFolder", "openFileAsAdmin",
+             "showFileProperties", "openWithNotepad", "copyFile"}) {
+        std::promise<std::pair<DWORD, std::string>> donePromise;
+        auto doneFuture = donePromise.get_future();
+
+        const nlohmann::json req = {
+            {"id", 901},
+            {"method", std::string("audit.asyncfile.") + methodSuffix},
+            {"params", nlohmann::json::object()}
+        };
+        bridge.handleMessageAsync(req.dump(), [&donePromise](const std::string& resp) {
+            donePromise.set_value({GetCurrentThreadId(), resp});
+        });
+
+        ASSERT_EQ(doneFuture.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+            << methodSuffix;
+        const auto [workerTid, rawResp] = doneFuture.get();
+        EXPECT_NE(workerTid, callerTid) << methodSuffix;
+
+        const auto parsed = nlohmann::json::parse(rawResp);
+        ASSERT_TRUE(parsed.contains("result")) << rawResp;
+        EXPECT_FALSE(parsed["result"].value("success", true)) << methodSuffix;
+        EXPECT_EQ(parsed["result"].value("error", ""), "path is required") << methodSuffix;
+    }
+}

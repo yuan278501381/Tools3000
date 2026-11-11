@@ -3,6 +3,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "core/utils/WinUtils.h"
+#include "core/config/ConfigManager.h"
+#include "core/events/MainThreadDispatcher.h"
 #include "core/logger/Logger.h"
 
 #include <windows.h>
@@ -19,6 +21,8 @@
 #include <tlhelp32.h>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <propsys.h>
 #include <propkey.h>
 #include <propvarutil.h>
@@ -385,44 +389,108 @@ std::wstring WinUtils::toLower(std::wstring str) {
     return str;
 }
 
+namespace {
+
+std::unordered_map<std::wstring, std::string>& fileTypeIconCache() {
+    static std::unordered_map<std::wstring, std::string> s_cache;
+    return s_cache;
+}
+
+std::mutex& fileTypeIconCacheMutex() {
+    static std::mutex s_mutex;
+    return s_mutex;
+}
+
+bool isDynamicInstanceIconExtension(std::wstring_view normalizedExt) noexcept {
+    return normalizedExt == L"exe" ||
+           normalizedExt == L"lnk" ||
+           normalizedExt == L"ico" ||
+           normalizedExt == L"cur" ||
+           normalizedExt == L"ani" ||
+           normalizedExt == L"scr" ||
+           normalizedExt == L"msc" ||
+           normalizedExt == L"cpl" ||
+           normalizedExt == L"appref-ms" ||
+           normalizedExt == L"url";
+}
+
+} // namespace
+
+void WinUtils::clearFileTypeIconCacheForTesting() {
+    std::lock_guard<std::mutex> lock(fileTypeIconCacheMutex());
+    fileTypeIconCache().clear();
+}
+
+size_t WinUtils::getFileTypeIconCacheSizeForTesting() {
+    std::lock_guard<std::mutex> lock(fileTypeIconCacheMutex());
+    return fileTypeIconCache().size();
+}
+
 std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
                                             bool isDirectory,
                                             const std::wstring& filePath) {
-    static std::unordered_map<std::wstring, std::string> s_iconCache;
-    static std::mutex s_iconCacheMutex;
+    std::wstring effectiveFilePath = filePath;
+    std::wstring rawExt = extension;
+    if (!isDirectory &&
+        (rawExt.find(L'\\') != std::wstring::npos || rawExt.find(L'/') != std::wstring::npos)) {
+        if (effectiveFilePath.empty()) {
+            effectiveFilePath = rawExt;
+        }
+        rawExt = std::filesystem::path(rawExt).extension().wstring();
+    } else if (!isDirectory && rawExt.size() > 1 && rawExt.front() != L'.') {
+        const size_t lastDot = rawExt.rfind(L'.');
+        if (lastDot != std::wstring::npos && lastDot > 0) {
+            rawExt = rawExt.substr(lastDot);
+        }
+    }
 
-    std::wstring normalizedExt = toLower(extension);
+    std::wstring normalizedExt = toLower(rawExt);
     if (normalizedExt.rfind(L".", 0) == 0) {
         normalizedExt = normalizedExt.substr(1);
     }
+    if (normalizedExt.empty() && !isDirectory && !effectiveFilePath.empty()) {
+        std::wstring extFromPath =
+            toLower(std::filesystem::path(effectiveFilePath).extension().wstring());
+        if (extFromPath.rfind(L".", 0) == 0) {
+            extFromPath = extFromPath.substr(1);
+        }
+        normalizedExt = std::move(extFromPath);
+    }
 
-    const bool hasLocalFilePath = !filePath.empty() && filePath.rfind(L"\\\\", 0) != 0;
+    const bool hasLocalFilePath =
+        !effectiveFilePath.empty() && effectiveFilePath.rfind(L"\\\\", 0) != 0;
+    const bool useInstanceIcon =
+        !isDirectory && hasLocalFilePath && isDynamicInstanceIconExtension(normalizedExt);
+
     std::wstring key;
-    if (hasLocalFilePath) {
-        std::wstring normalizedPath = toLower(filePath);
+    if (isDirectory) {
+        key = L"::dir::";
+    } else if (useInstanceIcon) {
+        std::wstring normalizedPath = toLower(effectiveFilePath);
         std::replace(normalizedPath.begin(), normalizedPath.end(), L'/', L'\\');
         key = L"path:" + normalizedPath;
     } else {
-        key = isDirectory ? L"::dir::" : normalizedExt;
+        key = L"ext:" + normalizedExt;
     }
 
     {
-        std::lock_guard<std::mutex> lock(s_iconCacheMutex);
-        auto it = s_iconCache.find(key);
-        if (it != s_iconCache.end()) return it->second;
+        std::lock_guard<std::mutex> lock(fileTypeIconCacheMutex());
+        auto& cache = fileTypeIconCache();
+        auto it = cache.find(key);
+        if (it != cache.end()) return it->second;
     }
 
     ScopedStaComGuard comGuard;
     SHFILEINFOW sfi{};
     DWORD_PTR hr = 0;
 
-    // 1. 若提供了真实本地路径（如 .exe / .lnk / .ico / .cpl / .msc 等每个文件自带独立图标的实体），
-    //    直接对真实路径调用 SHGetFileInfoW（不带 SHGFI_USEFILEATTRIBUTES），提取其 Windows 资源管理器真实内嵌图标
-    if (hasLocalFilePath) {
-        const DWORD attrs = GetFileAttributesW(filePath.c_str());
+    // 1. 仅对自带实例级自定义图标的动态后缀（.exe/.lnk/.ico/.cur/.ani/.scr/.msc/.cpl/.appref-ms/.url）
+    //    访问真实本地路径提取内嵌图标；其余所有静态后缀与普通目录 100% 走内存虚拟属性零磁盘 I/O 提取。
+    if (useInstanceIcon) {
+        const DWORD attrs = GetFileAttributesW(effectiveFilePath.c_str());
         if (attrs != INVALID_FILE_ATTRIBUTES) {
             hr = SHGetFileInfoW(
-                filePath.c_str(),
+                effectiveFilePath.c_str(),
                 0,
                 &sfi,
                 sizeof(sfi),
@@ -430,7 +498,7 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
             );
             if (!hr || !sfi.hIcon) {
                 hr = SHGetFileInfoW(
-                    filePath.c_str(),
+                    effectiveFilePath.c_str(),
                     0,
                     &sfi,
                     sizeof(sfi),
@@ -440,7 +508,7 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
         }
     }
 
-    // 2. 按扩展名或目录属性提取 Windows 系统关联高清图标（支持 32x32 高分屏缩放并兼容 16x16 回退）
+    // 2. 按静态扩展名或目录属性零物理磁盘 I/O 提取 Windows 系统关联高清图标
     if (!hr || !sfi.hIcon) {
         std::wstring fakePath = isDirectory
             ? L"folder"
@@ -502,40 +570,50 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
                 HBITMAP hDIB = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &pBits, nullptr, 0);
                 if (hDIB && pBits) {
                     HGDIOBJ hOldBmp = SelectObject(hdcMem, hDIB);
-                    memset(pBits, 0, width * height * 4);
+                    memset(pBits, 0, static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
 
                     // 使用 Windows 底层权威 DrawIconEx 渲染合成
                     DrawIconEx(hdcMem, 0, 0, sfi.hIcon, width, height, 0, nullptr, DI_NORMAL);
 
                     uint32_t* pixels = static_cast<uint32_t*>(pBits);
+                    const int totalPixels = width * height;
                     bool hasValidAlpha = false;
 
-                    for (int i = 0; i < width * height; ++i) {
-                        if ((pixels[i] & 0xFF000000) != 0) {
+                    for (int i = 0; i < totalPixels; ++i) {
+                        if ((pixels[i] & 0xFF000000u) != 0) {
                             hasValidAlpha = true;
                             break;
                         }
                     }
 
-                    // 如果原图标是传统的 1-bit / 24-bit 掩码图标（Alpha 全为 0），利用 hbmMask 智能重建真实 Alpha 通道，彻底消灭黑边
+                    // 如果原图标是传统的 1-bit / 24-bit 掩码图标（Alpha 全为 0），
+                    // 通过单次 GetDIBits 批量读取掩码缓冲重建真实 Alpha 通道（消灭 256+ 次逐像素 GetPixel 系统调用）
                     if (!hasValidAlpha && iconInfo.hbmMask) {
-                        HDC hdcMask = CreateCompatibleDC(hdcScreen);
-                        HGDIOBJ hOldMask = SelectObject(hdcMask, iconInfo.hbmMask);
+                        BITMAP maskBm{};
+                        const int maskHeight =
+                            (GetObjectW(iconInfo.hbmMask, sizeof(maskBm), &maskBm) && maskBm.bmHeight >= height)
+                                ? maskBm.bmHeight
+                                : height;
+                        BITMAPINFO maskBi{};
+                        maskBi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                        maskBi.bmiHeader.biWidth = width;
+                        maskBi.bmiHeader.biHeight = -maskHeight; // Top-down，首部 height 行即 AND 掩码平面
+                        maskBi.bmiHeader.biPlanes = 1;
+                        maskBi.bmiHeader.biBitCount = 32;
+                        maskBi.bmiHeader.biCompression = BI_RGB;
 
-                        for (int y = 0; y < height; ++y) {
-                            for (int x = 0; x < width; ++x) {
-                                COLORREF maskColor = GetPixel(hdcMask, x, y);
-                                int idx = y * width + x;
-                                if (maskColor == 0x00FFFFFF) {
-                                    pixels[idx] = 0x00000000; // 掩码白色 = 完全透明
+                        std::vector<uint32_t> maskPixels(
+                            static_cast<size_t>(width) * static_cast<size_t>(maskHeight), 0u);
+                        if (GetDIBits(hdcScreen, iconInfo.hbmMask, 0, static_cast<UINT>(maskHeight),
+                                      maskPixels.data(), &maskBi, DIB_RGB_COLORS) > 0) {
+                            for (int i = 0; i < totalPixels; ++i) {
+                                if ((maskPixels[static_cast<size_t>(i)] & 0x00FFFFFFu) == 0x00FFFFFFu) {
+                                    pixels[i] = 0x00000000u; // 掩码白色 = 完全透明
                                 } else {
-                                    pixels[idx] |= 0xFF000000; // 掩码黑色 = 完全不透明
+                                    pixels[i] |= 0xFF000000u; // 掩码黑色 = 完全不透明
                                 }
                             }
                         }
-
-                        SelectObject(hdcMask, hOldMask);
-                        DeleteDC(hdcMask);
                     }
 
                     // 通过进程级单例 GDI+ 导出为 32 位透明 PNG（避免多线程并发 GdiplusStartup/Shutdown 互踩）
@@ -601,11 +679,12 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
     }
 
     {
-        std::lock_guard<std::mutex> lock(s_iconCacheMutex);
-        if (s_iconCache.size() >= 4096) {
-            s_iconCache.clear();
+        std::lock_guard<std::mutex> lock(fileTypeIconCacheMutex());
+        auto& cache = fileTypeIconCache();
+        if (cache.size() >= 4096) {
+            cache.clear();
         }
-        s_iconCache[key] = base64;
+        cache[key] = base64;
     }
     return base64;
 }
@@ -1974,58 +2053,110 @@ std::vector<WinUtils::SystemDriveInfo> WinUtils::getSystemDrives() {
 
 bool WinUtils::openFolderAndSelectItem(const std::wstring& filePath) {
     if (filePath.empty()) return false;
-    const DWORD attributes = GetFileAttributesW(filePath.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES) {
-        LOG_WARN("WinUtils: openFolder target no longer exists: {}", wstringToUtf8(filePath));
-        return false;
-    }
 
-    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-        const auto result = reinterpret_cast<INT_PTR>(
-            ShellExecuteW(nullptr, L"open", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-        if (result > 32) return true;
-        LOG_WARN("WinUtils: failed to open directory, shellCode={}, path={}",
-                 result, wstringToUtf8(filePath));
-        return false;
-    }
+    struct LocateTaskState {
+        std::wstring targetPath;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool finished = false;
+        bool success = false;
+    };
 
-    // 采用独立 STA 线程执行 COM Shell API，彻底避免调用方线程处于 MTA 导致的 RPC_E_WRONG_THREAD 失败
-    bool shellSuccess = false;
-    HRESULT parseResult = E_FAIL;
-    HRESULT selectResult = E_FAIL;
-    std::thread staThread([&]() {
-        const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-        PIDLIST_ABSOLUTE itemId = nullptr;
-        parseResult = SHParseDisplayName(filePath.c_str(), nullptr, &itemId, 0, nullptr);
-        if (SUCCEEDED(parseResult) && itemId) {
-            selectResult = SHOpenFolderAndSelectItems(itemId, 0, nullptr, 0);
-            CoTaskMemFree(itemId);
-            if (SUCCEEDED(selectResult)) {
-                shellSuccess = true;
+    auto state = std::make_shared<LocateTaskState>();
+    state->targetPath = filePath;
+
+    // 全部磁盘属性探测、COM STA 定位及三级降级均封装在共享堆状态的独立 STA 线程内执行，
+    // 禁止在调用方为 UI 主线程时无限同步阻塞，且超时 detach 后零栈引用悬垂风险。
+    std::thread staThread([state]() {
+        const std::wstring& path = state->targetPath;
+        bool located = false;
+
+        const DWORD attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            LOG_WARN("WinUtils: openFolder target no longer exists: {}", wstringToUtf8(path));
+        } else if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            const auto result = reinterpret_cast<INT_PTR>(
+                ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+            if (result > 32) {
+                located = true;
+            } else {
+                LOG_WARN("WinUtils: failed to open directory, shellCode={}, path={}",
+                         result, wstringToUtf8(path));
+            }
+        } else {
+            HRESULT parseResult = E_FAIL;
+            HRESULT selectResult = E_FAIL;
+            const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            PIDLIST_ABSOLUTE itemId = nullptr;
+            parseResult = SHParseDisplayName(path.c_str(), nullptr, &itemId, 0, nullptr);
+            if (SUCCEEDED(parseResult) && itemId) {
+                selectResult = SHOpenFolderAndSelectItems(itemId, 0, nullptr, 0);
+                CoTaskMemFree(itemId);
+                if (SUCCEEDED(selectResult)) {
+                    located = true;
+                }
+            }
+            if (SUCCEEDED(comResult)) CoUninitialize();
+
+            if (!located) {
+                const std::wstring arguments = L"/select,\"" + path + L"\"";
+                const auto explorerResult = reinterpret_cast<INT_PTR>(
+                    ShellExecuteW(nullptr, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL));
+                if (explorerResult > 32) {
+                    located = true;
+                } else {
+                    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+                    if (!parent.empty()) {
+                        const auto parentResult = reinterpret_cast<INT_PTR>(
+                            ShellExecuteW(nullptr, L"open", parent.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+                        if (parentResult > 32) {
+                            located = true;
+                        }
+                    }
+                    if (!located) {
+                        LOG_WARN("WinUtils: failed to locate item, parseHr=0x{:08X}, selectHr=0x{:08X}, shellCode={}, path={}",
+                                 static_cast<unsigned>(parseResult), static_cast<unsigned>(selectResult), explorerResult,
+                                 wstringToUtf8(path));
+                    }
+                }
             }
         }
-        if (SUCCEEDED(comResult)) CoUninitialize();
+
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->success = located;
+            state->finished = true;
+        }
+        state->cv.notify_all();
     });
-    if (staThread.joinable()) staThread.join();
-    if (shellSuccess) return true;
 
-    // 二级降级容灾：通过 explorer.exe /select 启动并定位目标项
-    const std::wstring arguments = L"/select,\"" + filePath + L"\"";
-    const auto explorerResult = reinterpret_cast<INT_PTR>(
-        ShellExecuteW(nullptr, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL));
-    if (explorerResult > 32) return true;
+    const bool onUiThread = MainThreadDispatcher::instance().isOwnerThread();
+    const auto waitBudget = onUiThread
+        ? std::chrono::milliseconds(180)
+        : std::chrono::milliseconds(2500);
 
-    // 三级降级容灾：打开父文件夹
-    const std::filesystem::path parent = std::filesystem::path(filePath).parent_path();
-    if (!parent.empty()) {
-        const auto parentResult = reinterpret_cast<INT_PTR>(
-            ShellExecuteW(nullptr, L"open", parent.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-        if (parentResult > 32) return true;
+    bool completedInTime = false;
+    bool ok = false;
+    {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        completedInTime = state->cv.wait_for(lock, waitBudget, [&state]() { return state->finished; });
+        if (completedInTime) {
+            ok = state->success;
+        }
     }
-    LOG_WARN("WinUtils: failed to locate item, parseHr=0x{:08X}, selectHr=0x{:08X}, shellCode={}, path={}",
-             static_cast<unsigned>(parseResult), static_cast<unsigned>(selectResult), explorerResult,
-             wstringToUtf8(filePath));
-    return false;
+
+    if (completedInTime) {
+        if (staThread.joinable()) staThread.join();
+        return ok;
+    }
+
+    // 慢速机械盘唤醒或离线 SMB 网络盘超时：立即脱离等待，由后台 STA 线程完成剩余定位，严禁冻结消息泵
+    if (staThread.joinable()) {
+        staThread.detach();
+    }
+    LOG_WARN("WinUtils: openFolderAndSelectItem exceeded {}ms wait budget on {} thread; detached background STA worker for {}",
+             waitBudget.count(), onUiThread ? "UI" : "worker", wstringToUtf8(filePath));
+    return true;
 }
 
 bool WinUtils::openFile(const std::wstring& filePath) {
@@ -2164,6 +2295,48 @@ bool WinUtils::isSystemDarkMode() {
         return (data == 0);
     }
     return isSystemTaskbarDark();
+}
+
+void WinUtils::applyNativeMenuTheme(std::string_view themeMode) {
+    std::string resolvedMode(themeMode);
+    if (resolvedMode.empty()) {
+        resolvedMode = ConfigManager::instance().get<std::string>("/general/theme", "system");
+    }
+
+    // uxtheme.dll undocumented PreferredAppMode enum (Windows 10 1903+ / Windows 11):
+    // Default = 0, AllowDark = 1, ForceDark = 2, ForceLight = 3
+    int preferredAppMode = 1; // AllowDark
+    if (resolvedMode == "dark") {
+        preferredAppMode = 2; // ForceDark
+    } else if (resolvedMode == "light") {
+        preferredAppMode = 3; // ForceLight
+    }
+
+    using PFN_SetPreferredAppMode = int(WINAPI*)(int);
+    using PFN_FlushMenuThemes = void(WINAPI*)();
+
+    static PFN_SetPreferredAppMode s_setPreferredAppMode = nullptr;
+    static PFN_FlushMenuThemes s_flushMenuThemes = nullptr;
+    static std::once_flag s_uxthemeResolveOnce;
+    std::call_once(s_uxthemeResolveOnce, []() {
+        HMODULE hUxtheme = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!hUxtheme) {
+            hUxtheme = GetModuleHandleW(L"uxtheme.dll");
+        }
+        if (hUxtheme) {
+            s_setPreferredAppMode = reinterpret_cast<PFN_SetPreferredAppMode>(
+                GetProcAddress(hUxtheme, MAKEINTRESOURCEA(135)));
+            s_flushMenuThemes = reinterpret_cast<PFN_FlushMenuThemes>(
+                GetProcAddress(hUxtheme, MAKEINTRESOURCEA(136)));
+        }
+    });
+
+    if (s_setPreferredAppMode) {
+        s_setPreferredAppMode(preferredAppMode);
+    }
+    if (s_flushMenuThemes) {
+        s_flushMenuThemes();
+    }
 }
 
 HANDLE WinUtils::getProcessJobObject() {

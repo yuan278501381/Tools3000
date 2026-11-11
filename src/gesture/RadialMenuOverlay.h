@@ -42,6 +42,9 @@ public:
     /// 隐藏轮盘
     void hide();
 
+    /// 响应全局主题或强调色动态切换
+    void reloadThemeColors();
+
     /// 插件卸载/退出时彻底销毁轮盘窗口、辅助宿主窗口与 Direct2D/GDI 资源
     void shutdown();
 
