@@ -214,6 +214,7 @@ private:
     bool m_hasContentFilter = false;
     bool m_hasRegexClause = false;
     bool m_hasPureExtensionGroup = false;
+    bool m_hasFolderOnlyFilter = false;
     bool m_isAsciiQuery = false;
     bool m_pinyinEnabled = true;
     bool m_caseSensitive = false;
