@@ -10,6 +10,8 @@
 $env:TOOLS3000_SIGNING_CERT_SHA1 = "40位证书SHA-1指纹"
 ```
 
+在非 CI 的本地开发/打包环境中，若未显式设置 `TOOLS3000_SIGNING_CERT_SHA1` 或 `TOOLS3000_SIGNING_PFX`，`deploy.ps1` 与 `scripts/sign-artifacts.ps1` 会自动探测 `Cert:\CurrentUser\My` 中具备私钥、在有效期内且通过本机 `X509Chain` 信任链校验的代码签名证书并自动完成内层二进制、Inno Setup 引导器/卸载器与外层安装包的签名。
+
 CI 也可使用 PFX：
 
 ```powershell

@@ -214,9 +214,11 @@ jobs:
           $Tag = $env:RELEASE_TAG
           $Ver = $env:RELEASE_VERSION
           $PortableZip = "Output\Tools3000-win-x64-portable.zip"
+          $GenericPortableZip = "Output\Tools3000-Portable-x64.zip"
           $VersionedPortableZip = "Output\Tools3000-$Tag-win-x64-portable.zip"
           if (Test-Path $PortableZip) { Remove-Item -Force $PortableZip }
           Compress-Archive -Path "deploy_dist\*" -DestinationPath $PortableZip -CompressionLevel Optimal -Force
+          Copy-Item -LiteralPath $PortableZip -Destination $GenericPortableZip -Force
           Copy-Item -LiteralPath $PortableZip -Destination $VersionedPortableZip -Force
 
           $ISCC = if (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue) {
@@ -283,6 +285,7 @@ jobs:
           $ReleaseArtifacts = @(
             "Output\Tools3000-Setup.exe",
             "Output\Tools3000-$($env:RELEASE_TAG)-Setup.exe",
+            "Output\Tools3000-Portable-x64.zip",
             "Output\Tools3000-win-x64-portable.zip",
             "Output\Tools3000-$($env:RELEASE_TAG)-win-x64-portable.zip"
           )
@@ -309,6 +312,7 @@ jobs:
           files: |
             Output/Tools3000-Setup.exe
             Output/Tools3000-${{ env.RELEASE_TAG }}-Setup.exe
+            Output/Tools3000-Portable-x64.zip
             Output/Tools3000-win-x64-portable.zip
             Output/Tools3000-${{ env.RELEASE_TAG }}-win-x64-portable.zip
             Output/SHA256SUMS.txt

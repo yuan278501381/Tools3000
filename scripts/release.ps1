@@ -359,12 +359,14 @@ Copy-Item $SetupExe $TargetGenericSetup
 
 $PrebuiltPortableZip = "Output\Tools3000-win-x64-portable.zip"
 $TargetZip = "$ReleaseDir\Tools3000-$TargetTag-win-x64-portable.zip"
+$TargetGenericZip = "$ReleaseDir\Tools3000-Portable-x64.zip"
 if (Test-Path -LiteralPath $PrebuiltPortableZip) {
     Copy-Item -LiteralPath $PrebuiltPortableZip -Destination $TargetZip -Force
 } else {
     Compress-Archive -Path (Join-Path $ScriptDir "deploy_dist\*") `
         -DestinationPath $TargetZip -CompressionLevel Optimal
 }
+Copy-Item -LiteralPath $TargetZip -Destination $TargetGenericZip -Force
 
 $Checksums = @()
 Get-ChildItem -Path $ReleaseDir -File | ForEach-Object {
@@ -424,7 +426,7 @@ if (-not $LocalOnly -and -not $SkipGitHubPublish) {
         } else {
             "Tools3000 $TargetTag"
         }
-        gh release create $TargetTag $TargetSetup $TargetGenericSetup $TargetZip $ChecksumFile --title $ActualTitle --notes-file $NotesFile --latest
+        gh release create $TargetTag $TargetSetup $TargetGenericSetup $TargetZip $TargetGenericZip $ChecksumFile --title $ActualTitle --notes-file $NotesFile --latest
         if ($LASTEXITCODE -ne 0) { throw "创建 GitHub Release 失败！" }
     }
     Write-Host "[OK] GitHub Release 发布成功！" -ForegroundColor Green
