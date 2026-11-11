@@ -92,10 +92,9 @@ export default function SearchApp() {
     return saved !== null ? parseInt(saved, 10) : 0;
   });
 
-  const changeMaxResultLimit = (limit: number) => {
-    setMaxResultLimit(limit);
-    localStorage.setItem('tools3000_search_max_results', String(limit));
-  };
+  const [defaultCategory, setDefaultCategory] = useState<string>(() => {
+    return localStorage.getItem('tools3000_search_default_category') || 'all';
+  });
 
   const [excludeGitAndModules, setExcludeGitAndModules] = useState<boolean>(() => {
     return localStorage.getItem('tools3000_search_exclude_dev') !== 'false';
@@ -108,9 +107,34 @@ export default function SearchApp() {
   const [searchMode, setSearchMode] = useState<SearchMode>(() => {
     return (localStorage.getItem('tools3000_search_default_mode') as SearchMode) || 'name';
   });
+
+  const persistUiPreferencesPatch = useCallback((patch: Record<string, unknown>) => {
+    void bridgeRequest<{ value?: unknown }>('config.get', { pointer: '/search/uiPreferences' })
+      .then((res) => {
+        const prevObj = res && typeof res === 'object' && 'value' in res && res.value && typeof res.value === 'object'
+          ? (res.value as Record<string, unknown>)
+          : (res && typeof res === 'object' && !('value' in res) ? (res as Record<string, unknown>) : {});
+        return bridgeRequest('config.set', {
+          pointer: '/search/uiPreferences',
+          value: { ...prevObj, ...patch },
+        });
+      })
+      .catch(() => {
+        void bridgeRequest('config.set', { pointer: '/search/uiPreferences', value: patch }).catch(() => undefined);
+      });
+  }, []);
+
+  const changeMaxResultLimit = (limit: number) => {
+    setMaxResultLimit(limit);
+    localStorage.setItem('tools3000_search_max_results', String(limit));
+    void bridgeRequest('search.saveSettings', { maxResults: limit }).catch(() => undefined);
+    persistUiPreferencesPatch({ maxResultLimit: limit });
+  };
+
   const changeSearchMode = (mode: SearchMode) => {
     setSearchMode(mode);
     localStorage.setItem('tools3000_search_default_mode', mode);
+    persistUiPreferencesPatch({ searchMode: mode });
   };
 
   const [disabledContentFormats, setDisabledContentFormats] = useState<string[]>(() => {
@@ -156,6 +180,9 @@ export default function SearchApp() {
       return 'content';
     }
     const trimmed = query.trimStart().toLowerCase();
+    if (!trimmed) {
+      return defaultCategory || 'all';
+    }
     if (trimmed.startsWith('folder:') || trimmed.startsWith('dir:')) {
       return 'folder';
     }
@@ -178,7 +205,7 @@ export default function SearchApp() {
       return 'code';
     }
     return 'all';
-  }, [query]);
+  }, [defaultCategory, query]);
 
   const {
     snapshot,
@@ -434,15 +461,26 @@ export default function SearchApp() {
   const nativeIconCacheRef = useRef<Record<string, string>>({});
   const inFlightIconsRef = useRef<Set<string>>(new Set());
   const searchSettingsSigRef = useRef<string | null>(null);
+  const lastRemoteSyncTickRef = useRef(0);
 
   useEffect(() => {
     let active = true;
     const syncRemoteSettings = (triggerRefreshOnDiff: boolean) => {
+      const now = Date.now();
+      if (triggerRefreshOnDiff && now - lastRemoteSyncTickRef.current < 500) {
+        return;
+      }
+      lastRemoteSyncTickRef.current = now;
+
       bridgeRequest<{
         iconStyle?: SearchIconStyle;
         pinyinEnabled?: boolean;
         matchPath?: boolean;
         caseSensitive?: boolean;
+        defaultCategory?: string;
+        maxResults?: number;
+        excludeHidden?: boolean;
+        enabledDrives?: string;
       }>('search.getSettings')
         .then((res) => {
           if (!active || !res) return;
@@ -450,11 +488,61 @@ export default function SearchApp() {
             setIconStyle(res.iconStyle);
             localStorage.setItem('tools3000_search_icon_style', res.iconStyle);
           }
+          if (typeof res.defaultCategory === 'string' && res.defaultCategory) {
+            setDefaultCategory(res.defaultCategory);
+            localStorage.setItem('tools3000_search_default_category', res.defaultCategory);
+          }
+          if (typeof res.excludeHidden === 'boolean') {
+            setExcludeHidden(res.excludeHidden);
+            localStorage.setItem('tools3000_search_exclude_hidden', String(res.excludeHidden));
+          }
+          if (typeof res.enabledDrives === 'string' && res.enabledDrives.trim()) {
+            const parsedDrives = res.enabledDrives.split(',').map(s => s.trim()).filter(Boolean);
+            if (parsedDrives.length > 0) {
+              setEnabledDrives(parsedDrives);
+              localStorage.setItem('tools3000_search_enabled_drives', JSON.stringify(parsedDrives));
+            }
+          }
           const nextSig = `${Boolean(res.pinyinEnabled ?? true)}:${Boolean(res.matchPath ?? false)}:${Boolean(res.caseSensitive ?? false)}`;
           const prevSig = searchSettingsSigRef.current;
           searchSettingsSigRef.current = nextSig;
           if (triggerRefreshOnDiff && prevSig !== null && prevSig !== nextSig) {
             refreshQuery();
+          }
+        })
+        .catch(() => undefined);
+
+      bridgeRequest<{ value?: unknown }>('config.get', { pointer: '/search/uiPreferences' })
+        .then((raw) => {
+          if (!active || !raw || typeof raw !== 'object') return;
+          const prefs = ('value' in raw && raw.value && typeof raw.value === 'object'
+            ? raw.value
+            : raw) as Record<string, unknown>;
+          if (prefs.searchMode === 'name' || prefs.searchMode === 'both' || prefs.searchMode === 'content') {
+            setSearchMode(prefs.searchMode);
+            localStorage.setItem('tools3000_search_default_mode', prefs.searchMode);
+          }
+          if (typeof prefs.maxResultLimit === 'number' && Number.isFinite(prefs.maxResultLimit)) {
+            setMaxResultLimit(prefs.maxResultLimit);
+            localStorage.setItem('tools3000_search_max_results', String(prefs.maxResultLimit));
+          }
+          if (typeof prefs.excludeGitAndModules === 'boolean') {
+            setExcludeGitAndModules(prefs.excludeGitAndModules);
+            localStorage.setItem('tools3000_search_exclude_dev', String(prefs.excludeGitAndModules));
+          }
+          if (Array.isArray(prefs.disabledContentFormats)) {
+            const clean = prefs.disabledContentFormats.filter((x): x is string => typeof x === 'string');
+            setDisabledContentFormats(clean);
+            localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(clean));
+          }
+          if (Array.isArray(prefs.customContentFormats)) {
+            const clean = prefs.customContentFormats.filter((x): x is string => typeof x === 'string');
+            setCustomContentFormats(clean);
+            localStorage.setItem('tools3000_search_custom_formats', JSON.stringify(clean));
+          }
+          if (prefs.density === 'compact' || prefs.density === 'standard' || prefs.density === 'comfortable') {
+            setDensity(prefs.density);
+            localStorage.setItem('tools3000_search_density', prefs.density);
           }
         })
         .catch(() => undefined);
@@ -633,6 +721,7 @@ export default function SearchApp() {
         next = [...prev, cleanExt].filter(Boolean);
       }
       localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(next));
+      persistUiPreferencesPatch({ disabledContentFormats: next });
       clearResultCache();
       if (next.includes(cleanExt)) {
         startTransition(() => {
@@ -658,6 +747,7 @@ export default function SearchApp() {
         }
       }
       localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(next));
+      persistUiPreferencesPatch({ disabledContentFormats: next });
       clearResultCache();
       if (!enableAll) {
         const catExtSet = new Set(cat.extensions.map(e => e.toLowerCase()));
@@ -685,11 +775,13 @@ export default function SearchApp() {
         if (!next.includes(p)) next.push(p);
       }
       localStorage.setItem('tools3000_search_custom_formats', JSON.stringify(next));
+      persistUiPreferencesPatch({ customContentFormats: next });
       return next;
     });
     setDisabledContentFormats(prev => {
       const next = prev.filter(e => !parts.includes(e));
       localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(next));
+      persistUiPreferencesPatch({ disabledContentFormats: next });
       return next;
     });
     clearResultCache();
@@ -702,11 +794,13 @@ export default function SearchApp() {
     setCustomContentFormats(prev => {
       const next = prev.filter(e => e !== cleanExt);
       localStorage.setItem('tools3000_search_custom_formats', JSON.stringify(next));
+      persistUiPreferencesPatch({ customContentFormats: next });
       return next;
     });
     setDisabledContentFormats(prev => {
       const next = prev.filter(e => e !== cleanExt);
       localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(next));
+      persistUiPreferencesPatch({ disabledContentFormats: next });
       return next;
     });
     clearResultCache();
@@ -718,6 +812,7 @@ export default function SearchApp() {
     localStorage.removeItem('tools3000_search_disabled_formats');
     localStorage.removeItem('tools3000_search_disabled_content_formats');
     localStorage.removeItem('tools3000_search_custom_formats');
+    persistUiPreferencesPatch({ disabledContentFormats: [], customContentFormats: [] });
     toast.success(t('search.customExtResetToast', 'Content search format configuration reset to default'));
   };
 
@@ -781,26 +876,60 @@ export default function SearchApp() {
   const changeDensity = (newDensity: SearchDensity) => {
     setDensity(newDensity);
     localStorage.setItem('tools3000_search_density', newDensity);
+    persistUiPreferencesPatch({ density: newDensity });
     inputRef.current?.focus();
   };
 
+  const userTypedSinceShowRef = useRef(false);
+  const pendingSelectTimersRef = useRef<number[]>([]);
+
+  const cancelPendingSelectTimers = useCallback(() => {
+    userTypedSinceShowRef.current = true;
+    for (const tid of pendingSelectTimersRef.current) {
+      window.clearTimeout(tid);
+    }
+    pendingSelectTimersRef.current = [];
+  }, []);
+
   useEffect(() => {
-    const doFocus = () => {
+    const scheduleInitialFocusAndSelect = () => {
+      for (const tid of pendingSelectTimersRef.current) {
+        window.clearTimeout(tid);
+      }
+      pendingSelectTimersRef.current = [];
+      userTypedSinceShowRef.current = false;
+
       if (inputRef.current) {
         inputRef.current.focus({ preventScroll: true });
         inputRef.current.select();
       }
+
+      const delays = [30, 100, 250, 500];
+      for (const delay of delays) {
+        const tid = window.setTimeout(() => {
+          if (userTypedSinceShowRef.current) return;
+          if (inputRef.current) {
+            inputRef.current.focus({ preventScroll: true });
+            inputRef.current.select();
+          }
+        }, delay);
+        pendingSelectTimersRef.current.push(tid);
+      }
     };
-    doFocus();
-    const t1 = setTimeout(doFocus, 30);
-    const t2 = setTimeout(doFocus, 100);
-    const t3 = setTimeout(doFocus, 250);
-    const t4 = setTimeout(doFocus, 500);
+
+    scheduleInitialFocusAndSelect();
 
     const onFocusEvt = () => {
-      doFocus();
+      scheduleInitialFocusAndSelect();
     };
     window.addEventListener('tools3000:focusSearch', onFocusEvt);
+
+    const onEarlyKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Alt' && e.key !== 'Control' && e.key !== 'Shift' && e.key !== 'Meta') {
+        cancelPendingSelectTimers();
+      }
+    };
+    window.addEventListener('keydown', onEarlyKeyDown, true);
 
     const handleGlobalClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
@@ -812,15 +941,16 @@ export default function SearchApp() {
     window.addEventListener('pointerdown', handleGlobalClick);
 
     return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-      clearTimeout(t4);
+      for (const tid of pendingSelectTimersRef.current) {
+        window.clearTimeout(tid);
+      }
+      pendingSelectTimersRef.current = [];
       window.removeEventListener('tools3000:focusSearch', onFocusEvt);
+      window.removeEventListener('keydown', onEarlyKeyDown, true);
       window.removeEventListener('click', handleGlobalClick);
       window.removeEventListener('pointerdown', handleGlobalClick);
     };
-  }, []);
+  }, [cancelPendingSelectTimers]);
 
   const handleSetFileFolderPriority = (priority: FileFolderPriority) => {
     setFileFolderPriority(priority);
@@ -1001,6 +1131,17 @@ export default function SearchApp() {
     inputRef.current?.focus();
   }, [query, updateQuery, setResults, setSelectedIndex]);
 
+  const changeDefaultCategory = useCallback((catId: string) => {
+    setDefaultCategory(catId);
+    localStorage.setItem('tools3000_search_default_category', catId);
+    void bridgeRequest('search.saveSettings', { defaultCategory: catId }).catch(() => undefined);
+    persistUiPreferencesPatch({ defaultCategory: catId });
+    const matched = categories.find(c => c.id === catId);
+    if (matched && !query.trim()) {
+      selectCategory(matched);
+    }
+  }, [categories, persistUiPreferencesPatch, query, selectCategory]);
+
   const applySyntaxExample = (syntax: string) => {
     updateQuery(syntax);
     setShowSyntaxHelp(false);
@@ -1033,6 +1174,7 @@ export default function SearchApp() {
     renameTarget,
     setRenameTarget,
     renameInputRef,
+    searchInputRef: inputRef,
     setResults,
     query,
     sortedResults,
@@ -1171,6 +1313,7 @@ export default function SearchApp() {
           hasSelectedResult={!!sortedResults[selectedIndex]}
           selectedIndex={selectedIndex}
           setIsComposing={setIsComposing}
+          onUserTypingActivity={cancelPendingSelectTimers}
         />
 
         <div className="search-categories-bar">
@@ -1273,12 +1416,17 @@ export default function SearchApp() {
         {/* ── 视图与搜索偏好设置弹窗 ── */}
         <SearchViewSettingsModal
           visible={showViewSettings}
-          onClose={() => setShowViewSettings(false)}
+          onClose={() => {
+            setShowViewSettings(false);
+            window.setTimeout(() => inputRef.current?.focus(), 0);
+          }}
           popoverRef={viewSettingsRef}
           isRebuilding={isRebuilding}
           onRebuildIndex={rebuildIndex}
           searchMode={searchMode}
           onChangeSearchMode={changeSearchMode}
+          defaultCategory={defaultCategory}
+          onChangeDefaultCategory={changeDefaultCategory}
           density={density}
           onChangeDensity={changeDensity}
           iconStyle={iconStyle}
@@ -1301,11 +1449,16 @@ export default function SearchApp() {
           onSetExcludeGitAndModules={(val) => {
             setExcludeGitAndModules(val);
             localStorage.setItem('tools3000_search_exclude_dev', String(val));
+            const patterns = val ? '$Recycle.Bin,System Volume Information,node_modules,.git,__pycache__' : '$Recycle.Bin,System Volume Information';
+            void bridgeRequest('search.saveSettings', { excludePatterns: patterns }).catch(() => undefined);
+            persistUiPreferencesPatch({ excludeGitAndModules: val });
           }}
           excludeHidden={excludeHidden}
           onSetExcludeHidden={(val) => {
             setExcludeHidden(val);
             localStorage.setItem('tools3000_search_exclude_hidden', String(val));
+            void bridgeRequest('search.saveSettings', { excludeHidden: val }).catch(() => undefined);
+            persistUiPreferencesPatch({ excludeHidden: val });
           }}
           disabledContentFormats={disabledContentFormats}
           onToggleContentFormat={toggleContentFormat}
@@ -1322,13 +1475,54 @@ export default function SearchApp() {
           onResetAllViewPreferences={() => {
             resetColumns();
             resetContentFormats();
+            setSearchMode('name');
+            setDefaultCategory('all');
             setDensity('standard');
             setIconStyle('native');
             setMaxResultLimit(0);
+            setExcludeGitAndModules(true);
+            setExcludeHidden(false);
+            setSortField('modified');
+            setSortDirection('desc');
+            setFileFolderPriority('filesFirst');
+            setGroupByType(false);
+            setSmartPathPriority(true);
+            const allLetters = systemDrives.map((d) => d.letter);
+            if (allLetters.length > 0) {
+              setEnabledDrives(allLetters);
+              localStorage.setItem('tools3000_search_enabled_drives', JSON.stringify(allLetters));
+            }
+            localStorage.removeItem('tools3000_search_default_mode');
+            localStorage.removeItem('tools3000_search_default_category');
             localStorage.removeItem('tools3000_search_density');
             localStorage.removeItem('tools3000_search_icon_style');
-            void bridgeRequest('search.saveSettings', { iconStyle: 'native' }).catch(() => {});
             localStorage.removeItem('tools3000_search_max_results');
+            localStorage.removeItem('tools3000_search_exclude_dev');
+            localStorage.removeItem('tools3000_search_exclude_hidden');
+            localStorage.removeItem('tools3000_search_sort_field');
+            localStorage.removeItem('tools3000_search_sort_dir');
+            localStorage.removeItem('tools3000_search_folder_priority');
+            localStorage.removeItem('tools3000_search_sort_folders_first');
+            localStorage.removeItem('tools3000_search_sort_group_type');
+            localStorage.removeItem('tools3000_search_smart_path_priority');
+            void bridgeRequest('search.saveSettings', {
+              iconStyle: 'native',
+              defaultCategory: 'all',
+              maxResults: 0,
+              excludeHidden: false,
+              excludePatterns: '$Recycle.Bin,System Volume Information,node_modules,.git,__pycache__',
+              enabledDrives: allLetters.join(','),
+            }).catch(() => {});
+            persistUiPreferencesPatch({
+              searchMode: 'name',
+              defaultCategory: 'all',
+              density: 'standard',
+              maxResultLimit: 0,
+              excludeGitAndModules: true,
+              excludeHidden: false,
+              disabledContentFormats: [],
+              customContentFormats: [],
+            });
             toast.success(t('search.toastResetAllPref', 'All view and search preferences reset to defaults'));
           }}
         />
@@ -1416,7 +1610,10 @@ export default function SearchApp() {
 
         <SearchContextMenu
           contextMenu={contextMenu}
-          onClose={() => setContextMenu({ visible: false, x: 0, y: 0 })}
+          onClose={() => {
+            setContextMenu({ visible: false, x: 0, y: 0 });
+            window.setTimeout(() => inputRef.current?.focus(), 0);
+          }}
           onOpen={(res) => void openResult(res)}
           onOpenFolder={(res) => void openFolderResult(res)}
           onEditWithNotepad={(res) => void openWithNotepad(res)}
@@ -1432,7 +1629,10 @@ export default function SearchApp() {
 
         <SearchRenameModal
           renameTarget={renameTarget}
-          onClose={() => setRenameTarget({ visible: false, newName: '' })}
+          onClose={() => {
+            setRenameTarget({ visible: false, newName: '' });
+            window.setTimeout(() => inputRef.current?.focus(), 0);
+          }}
           inputRef={renameInputRef}
           onChangeName={(name) => setRenameTarget(prev => ({ ...prev, newName: name }))}
           onConfirm={() => void confirmRename()}
@@ -1444,9 +1644,9 @@ export default function SearchApp() {
           title={t('search.dragResizeTooltip', 'Drag to resize window')}
           aria-label={t('search.resizeAria', 'Drag to resize window')}
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <line x1="8" y1="2" x2="2" y2="8" stroke="rgba(255,255,255,0.4)" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="8" y1="5.5" x2="5.5" y2="8" stroke="rgba(255,255,255,0.4)" strokeWidth="1.5" strokeLinecap="round" />
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+            <line x1="8" y1="2" x2="2" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <line x1="8" y1="5.5" x2="5.5" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </div>
 

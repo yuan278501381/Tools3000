@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent, type UIEvent as ReactUIEvent } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent, type UIEvent as ReactUIEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { 
   File, 
@@ -63,10 +63,13 @@ export default function QuickLookApp() {
   const [codeWrap, setCodeWrap] = useState(true);
   const [fontSize, setFontSize] = useState(13);
   const [imageScale, setImageScale] = useState(1);
+  const [imagePan, setImagePan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [pinnedFeedback, setPinnedFeedback] = useState(false);
   const [codeScrollTop, setCodeScrollTop] = useState(0);
   const [codeViewportHeight, setCodeViewportHeight] = useState(DEFAULT_CODE_VIEWPORT_HEIGHT);
+  const [codeViewportWidth, setCodeViewportWidth] = useState(860);
   const contentRef = useRef<HTMLDivElement>(null);
   const codeScrollRef = useRef<HTMLPreElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -74,6 +77,13 @@ export default function QuickLookApp() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const copyTimerRef = useRef<number | null>(null);
   const pinTimerRef = useRef<number | null>(null);
+  const imageDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
 
   // 立即停止音视频后台播放并清空媒体/PDF URL，促使 Chromium 立即释放底层磁盘文件锁
   const releaseMediaHandles = useCallback(() => {
@@ -123,6 +133,9 @@ export default function QuickLookApp() {
   // 监听原生文件切换事件（收到 null 时彻底释放媒体句柄并清空预览状态）
   useBridgeEvent('quicklook.fileChanged', (payload: unknown) => {
     releaseMediaHandles();
+    imageDragRef.current = null;
+    setIsDraggingImage(false);
+    setImagePan({ x: 0, y: 0 });
     if (!payload) {
       setData(null);
       setCodeScrollTop(0);
@@ -251,10 +264,15 @@ export default function QuickLookApp() {
           setImageScale(prev => Math.min(5, Number((prev + 0.25).toFixed(2))));
         } else if (e.key === '-' || e.key === '_') {
           e.preventDefault();
-          setImageScale(prev => Math.max(0.1, Number((prev - 0.25).toFixed(2))));
+          setImageScale(prev => {
+            const next = Math.max(0.1, Number((prev - 0.25).toFixed(2)));
+            if (next <= 1) setImagePan({ x: 0, y: 0 });
+            return next;
+          });
         } else if (e.key === '0') {
           e.preventDefault();
           setImageScale(1);
+          setImagePan({ x: 0, y: 0 });
         }
       } else if (data?.type === 'code') {
         if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
@@ -282,11 +300,61 @@ export default function QuickLookApp() {
   const handleImageWheel = useCallback((e: ReactWheelEvent<HTMLDivElement>) => {
     e.preventDefault();
     const delta = e.deltaY < 0 ? 0.15 : -0.15;
-    setImageScale(prev => Math.min(5, Math.max(0.1, Number((prev + delta).toFixed(2)))));
+    setImageScale(prev => {
+      const next = Math.min(5, Math.max(0.1, Number((prev + delta).toFixed(2))));
+      if (next <= 1) setImagePan({ x: 0, y: 0 });
+      return next;
+    });
   }, []);
 
   const handleImageDoubleClick = useCallback(() => {
-    setImageScale(prev => (Math.abs(prev - 1) < 0.05 ? 2 : 1));
+    setImageScale(prev => {
+      const next = Math.abs(prev - 1) < 0.05 ? 2 : 1;
+      if (next <= 1) setImagePan({ x: 0, y: 0 });
+      return next;
+    });
+  }, []);
+
+  const handleImagePointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || imageScale <= 1) return;
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      // Synthetic pointer events in tests may not register active pointerId
+    }
+    imageDragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: imagePan.x,
+      originY: imagePan.y,
+    };
+    setIsDraggingImage(true);
+  }, [imagePan.x, imagePan.y, imageScale]);
+
+  const handleImagePointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = imageDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    setImagePan({
+      x: Math.round(drag.originX + dx),
+      y: Math.round(drag.originY + dy),
+    });
+  }, []);
+
+  const handleImagePointerEnd = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = imageDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    try {
+      e.currentTarget.releasePointerCapture?.(e.pointerId);
+    } catch {
+      // ignore
+    }
+    imageDragRef.current = null;
+    setIsDraggingImage(false);
   }, []);
 
   const fileIcon = useMemo(() => {
@@ -340,8 +408,12 @@ export default function QuickLookApp() {
     if (data?.type !== 'code') return;
     const measureViewport = () => {
       const h = codeScrollRef.current?.clientHeight || contentRef.current?.clientHeight || 0;
+      const w = codeScrollRef.current?.clientWidth || contentRef.current?.clientWidth || 0;
       if (h > 0) {
         setCodeViewportHeight(h);
+      }
+      if (w > 0) {
+        setCodeViewportWidth(w);
       }
     };
     measureViewport();
@@ -357,21 +429,68 @@ export default function QuickLookApp() {
     if (target.clientHeight > 0 && target.clientHeight !== codeViewportHeight) {
       setCodeViewportHeight(target.clientHeight);
     }
-  }, [codeViewportHeight]);
+    if (target.clientWidth > 0 && target.clientWidth !== codeViewportWidth) {
+      setCodeViewportWidth(target.clientWidth);
+    }
+  }, [codeViewportHeight, codeViewportWidth]);
+
+  const wrappedLineOffsets = useMemo(() => {
+    if (!isCodeVirtualized || !codeWrap || rawCodeLines.length === 0) {
+      return null;
+    }
+    const gutterPx = rawCodeLines.length >= 100000 ? 68 : rawCodeLines.length >= 10000 ? 58 : 48;
+    const usableWidthPx = Math.max(180, codeViewportWidth - gutterPx - 36);
+    const avgCharWidthPx = Math.max(6.5, fontSize * 0.6);
+    const charsPerRow = Math.max(20, Math.floor(usableWidthPx / avgCharWidthPx));
+    const offsets = new Int32Array(rawCodeLines.length + 1);
+    let acc = 0;
+    for (let i = 0; i < rawCodeLines.length; i += 1) {
+      const len = rawCodeLines[i]?.length ?? 0;
+      const rows = Math.max(1, Math.ceil(Math.max(1, len) / charsPerRow));
+      acc += rows * codeLineHeightPx;
+      offsets[i + 1] = acc;
+    }
+    return offsets;
+  }, [isCodeVirtualized, codeWrap, rawCodeLines, codeViewportWidth, fontSize, codeLineHeightPx]);
 
   const virtualCodeSlice = useMemo(() => {
     const total = rawCodeLines.length;
     if (total === 0) {
       return { startIndex: 0, endIndex: 0, topSpacerPx: 0, bottomSpacerPx: 0, items: [] as Array<{ lineNumber: number; html: string }> };
     }
-    const startIndex = isCodeVirtualized
-      ? Math.max(0, Math.floor(codeScrollTop / codeLineHeightPx) - VIRTUAL_OVERSCAN_LINES)
-      : 0;
-    const endIndex = isCodeVirtualized
-      ? Math.min(total, Math.ceil((codeScrollTop + codeViewportHeight) / codeLineHeightPx) + VIRTUAL_OVERSCAN_LINES)
-      : total;
-    const topSpacerPx = isCodeVirtualized ? startIndex * codeLineHeightPx : 0;
-    const bottomSpacerPx = isCodeVirtualized ? Math.max(0, (total - endIndex) * codeLineHeightPx) : 0;
+    let startIndex = 0;
+    let endIndex = total;
+    let topSpacerPx = 0;
+    let bottomSpacerPx = 0;
+
+    if (isCodeVirtualized) {
+      if (wrappedLineOffsets) {
+        const findLineAtOffset = (targetPx: number) => {
+          let lo = 0;
+          let hi = total;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (wrappedLineOffsets[mid + 1] <= targetPx) {
+              lo = mid + 1;
+            } else {
+              hi = mid;
+            }
+          }
+          return Math.min(total - 1, lo);
+        };
+        const firstVisible = findLineAtOffset(Math.max(0, codeScrollTop));
+        const lastVisible = findLineAtOffset(Math.max(0, codeScrollTop + codeViewportHeight));
+        startIndex = Math.max(0, firstVisible - VIRTUAL_OVERSCAN_LINES);
+        endIndex = Math.min(total, lastVisible + 1 + VIRTUAL_OVERSCAN_LINES);
+        topSpacerPx = wrappedLineOffsets[startIndex];
+        bottomSpacerPx = Math.max(0, wrappedLineOffsets[total] - wrappedLineOffsets[endIndex]);
+      } else {
+        startIndex = Math.max(0, Math.floor(codeScrollTop / codeLineHeightPx) - VIRTUAL_OVERSCAN_LINES);
+        endIndex = Math.min(total, Math.ceil((codeScrollTop + codeViewportHeight) / codeLineHeightPx) + VIRTUAL_OVERSCAN_LINES);
+        topSpacerPx = startIndex * codeLineHeightPx;
+        bottomSpacerPx = Math.max(0, (total - endIndex) * codeLineHeightPx);
+      }
+    }
 
     const items: Array<{ lineNumber: number; html: string }> = [];
     for (let idx = startIndex; idx < endIndex; idx += 1) {
@@ -381,14 +500,15 @@ export default function QuickLookApp() {
       items.push({ lineNumber: idx + 1, html });
     }
     return { startIndex, endIndex, topSpacerPx, bottomSpacerPx, items };
-  }, [rawCodeLines, eagerHighlightedCodeLines, isCodeVirtualized, codeScrollTop, codeViewportHeight, codeLineHeightPx]);
+  }, [rawCodeLines, eagerHighlightedCodeLines, isCodeVirtualized, wrappedLineOffsets, codeScrollTop, codeViewportHeight, codeLineHeightPx]);
+
+  const copyText = t('common.copy', 'Copy');
+  const copiedText = t('quicklook.copied', 'Copied');
 
   const renderedMarkdownHtml = useMemo(() => {
     if (data?.type !== 'markdown' || !data.content) return '';
-    return renderMarkdownToHtml(data.content);
-  }, [data]);
-
-  const copiedText = t('quicklook.copied', 'Copied');
+    return renderMarkdownToHtml(data.content, copyText);
+  }, [data, copyText]);
 
   const handleMarkdownClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('.ql-code-copy-btn');
@@ -397,7 +517,7 @@ export default function QuickLookApp() {
     try {
       void navigator.clipboard.writeText(decodeURIComponent(encodedCode));
       if (button.dataset.copying !== '1') {
-        const prevText = button.textContent || 'Copy';
+        const prevText = button.textContent || copyText;
         button.dataset.copying = '1';
         button.textContent = copiedText;
         window.setTimeout(() => {
@@ -410,7 +530,7 @@ export default function QuickLookApp() {
     } catch {
       // Malformed attributes are ignored; generated values are URI-encoded.
     }
-  }, [copiedText]);
+  }, [copiedText, copyText]);
 
   const handleHeaderMouseDown = useCallback((event: ReactMouseEvent<HTMLElement>) => {
     if (event.button !== 0) return;
@@ -496,7 +616,11 @@ export default function QuickLookApp() {
               <button
                 type="button"
                 className="ql-btn-sub"
-                onClick={() => setImageScale(Math.max(0.1, Number((imageScale - 0.25).toFixed(2))))}
+                onClick={() => {
+                  const next = Math.max(0.1, Number((imageScale - 0.25).toFixed(2)));
+                  setImageScale(next);
+                  if (next <= 1) setImagePan({ x: 0, y: 0 });
+                }}
                 title={t('quicklook.zoomOut', 'Zoom Out')}
                 aria-label={t('quicklook.zoomOut', 'Zoom Out')}
               >
@@ -515,7 +639,10 @@ export default function QuickLookApp() {
               <button
                 type="button"
                 className="ql-btn-sub"
-                onClick={() => setImageScale(1)}
+                onClick={() => {
+                  setImageScale(1);
+                  setImagePan({ x: 0, y: 0 });
+                }}
                 title={t('quicklook.resetZoom', 'Reset')}
                 aria-label={t('quicklook.resetZoom', 'Reset')}
               >
@@ -611,7 +738,7 @@ export default function QuickLookApp() {
             <pre
               ref={codeScrollRef}
               onScroll={handleCodeScroll}
-              className={`ql-code-content ${codeWrap && !isCodeVirtualized ? 'wrap' : ''} ${isCodeVirtualized ? 'virtualized' : ''}`}
+              className={`ql-code-content ${codeWrap ? 'wrap' : ''} ${isCodeVirtualized ? 'virtualized' : ''}`}
             >
               <code
                 className="ql-code-grid"
@@ -637,9 +764,13 @@ export default function QuickLookApp() {
 
         {data.type === 'image' && (
           <div
-            className="ql-image-view"
+            className={`ql-image-view ${imageScale > 1 ? 'ql-image-view--zoomed' : ''} ${isDraggingImage ? 'ql-image-view--dragging' : ''}`}
             onWheel={handleImageWheel}
             onDoubleClick={handleImageDoubleClick}
+            onPointerDown={handleImagePointerDown}
+            onPointerMove={handleImagePointerMove}
+            onPointerUp={handleImagePointerEnd}
+            onPointerCancel={handleImagePointerEnd}
           >
             <div className="ql-image-canvas">
               {resolvedImageSrc && (
@@ -647,8 +778,9 @@ export default function QuickLookApp() {
                   key={resolvedImageSrc}
                   src={resolvedImageSrc}
                   alt={data.name}
-                  style={{ transform: `scale(${imageScale})` }}
-                  className="ql-image-element"
+                  draggable={false}
+                  style={{ transform: `translate3d(${imagePan.x}px, ${imagePan.y}px, 0) scale(${imageScale})` }}
+                  className={`ql-image-element ${isDraggingImage ? 'ql-image-element--dragging' : ''}`}
                 />
               )}
             </div>

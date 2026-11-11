@@ -27,6 +27,8 @@ export const TRIGGER_ITEM_DEFINITIONS: TriggerItemDef[] = [
   { key: 'edge_right_slide', name: 'Right Screen Edge + Mouse Slide', nameKey: 'gesture.triggerEdgeRightSlide', category: 'edge', iconType: 'edge_slide' },
   { key: 'edge_top_wheel', name: 'Top Screen Edge + Wheel', nameKey: 'gesture.triggerEdgeTopWheel', category: 'edge', iconType: 'edge_wheel' },
   { key: 'edge_bottom_wheel', name: 'Bottom Screen Edge + Wheel', nameKey: 'gesture.triggerEdgeBottomWheel', category: 'edge', iconType: 'edge_wheel' },
+  { key: 'edge_left_wheel', name: 'Left Screen Edge + Wheel', nameKey: 'gesture.triggerEdgeLeftWheel', category: 'edge', iconType: 'edge_wheel' },
+  { key: 'edge_right_wheel', name: 'Right Screen Edge + Wheel', nameKey: 'gesture.triggerEdgeRightWheel', category: 'edge', iconType: 'edge_wheel' },
 ];
 
 export interface GestureMapping {
@@ -355,6 +357,36 @@ export function parseGesturePreview(
     wheelDirection: parsed.wheelDirection ?? null,
     segments: parseDirectionSegments(parsed.bareCode),
   };
+}
+
+export type GestureFilterCategory = 'all' | 'right' | 'middle' | 'side' | 'edge' | 'wheel';
+
+/**
+ * 精准匹配手势编码所属的五分类筛选标签 (U-11):
+ * - right: 纯全局右键 (无边缘前缀、非滚轮、触发键为 right)
+ * - middle: 中键轨迹手势 (非滚轮、触发键为 middle)
+ * - side: 侧键 1/2 手势 (非滚轮、触发键为 x1 或 x2)
+ * - edge: 任意屏幕四边手势 (含边缘滑动与边缘滚轮)
+ * - wheel: 任意滚轮手势 (含按键+滚轮与边缘+滚轮)
+ */
+export function matchesGestureCategory(code: string, category: GestureFilterCategory): boolean {
+  if (category === 'all') return true;
+  const parsed = parseGestureCode(code);
+  const isWheel = parsed.wheelDirection !== null;
+  switch (category) {
+    case 'right':
+      return parsed.edge === 'none' && !isWheel && parsed.triggerButton === 'right';
+    case 'middle':
+      return !isWheel && parsed.triggerButton === 'middle';
+    case 'side':
+      return !isWheel && (parsed.triggerButton === 'x1' || parsed.triggerButton === 'x2');
+    case 'edge':
+      return parsed.edge !== 'none';
+    case 'wheel':
+      return isWheel;
+    default:
+      return true;
+  }
 }
 
 export const GESTURE_CODE_PATTERN = /^((TopEdge|BottomEdge|LeftEdge|RightEdge|Right|RButton|Middle|X1|X2|Side1|Side2|XButton1|XButton2|Left|Ctrl|Alt|Shift)\+)*([UDLR]{1,3}(-[UDLR]{1,3})*|WheelUp|WheelDown)$/i;

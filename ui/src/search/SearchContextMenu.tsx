@@ -78,6 +78,42 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
     }
   }, [contextMenu.visible, contextMenu.x, contextMenu.y]);
 
+  React.useEffect(() => {
+    if (!contextMenu.visible || !menuRef.current) return;
+    const items = Array.from(
+      menuRef.current.querySelectorAll<HTMLButtonElement>('.search-context-menu-item:not(:disabled)')
+    );
+    items[0]?.focus({ preventScroll: true });
+  }, [contextMenu.visible, contextMenu.result]);
+
+  const handleMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!menuRef.current) return;
+    const items = Array.from(
+      menuRef.current.querySelectorAll<HTMLButtonElement>('.search-context-menu-item:not(:disabled)')
+    );
+    if (items.length === 0) return;
+    const activeIdx = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      e.stopPropagation();
+      const next = activeIdx < 0 ? 0 : (activeIdx + 1) % items.length;
+      items[next]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      e.stopPropagation();
+      const next = activeIdx <= 0 ? items.length - 1 : activeIdx - 1;
+      items[next]?.focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      e.stopPropagation();
+      items[0]?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      e.stopPropagation();
+      items[items.length - 1]?.focus();
+    }
+  };
+
   if (!contextMenu.visible || !contextMenu.result) {
     return null;
   }
@@ -87,8 +123,10 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
   return (
     <div
       ref={menuRef}
+      role="menu"
       className="search-context-menu"
       style={{ left: adjustedPos.x, top: adjustedPos.y }}
+      onKeyDown={handleMenuKeyDown}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
