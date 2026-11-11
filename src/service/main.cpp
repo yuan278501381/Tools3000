@@ -26,6 +26,8 @@
 #include <unordered_set>
 #include <nlohmann/json.hpp>
 #include "MftParser.h"
+#include "QueryThreadPool.h"
+#include "AppLauncherCatalog.h"
 #include "PipeProtocol.h"
 #include "PipeEndpoint.h"
 #include "PipeClientAuth.h"
@@ -479,6 +481,7 @@ bool scheduleRebuild() {
     if (g_RebuildJob.joinable()) g_RebuildJob.join();
 
     invalidateContentPlanCache();
+    tools3000::service::launcher::AppsFolderCatalog::instance().invalidate();
     std::vector<MftParser*> parsers;
     parsers.reserve(g_MftParsers.size());
     for (auto& parser : g_MftParsers) {
@@ -673,6 +676,7 @@ nlohmann::json ProcessSearchQuery(
                     }
                     if (anyUpdated) {
                         invalidateContentPlanCache();
+                        tools3000::service::launcher::AppsFolderCatalog::instance().invalidate();
                     }
                     return {{"success", true}, {"synced", true}, {"updated", anyUpdated}};
                 }
@@ -1043,6 +1047,17 @@ nlohmann::json ProcessSearchQuery(
         return sig;
     };
 
+    const auto sharedHistorySnap = tools3000::service::db::RunHistoryManager::instance().captureSnapshot();
+
+    const char systemDriveLetter = []() noexcept -> char {
+        wchar_t winDir[MAX_PATH]{};
+        const UINT len = GetSystemWindowsDirectoryW(winDir, MAX_PATH);
+        if (len >= 2 && winDir[1] == L':' && std::iswalpha(winDir[0])) {
+            return static_cast<char>(std::toupper(static_cast<unsigned char>(winDir[0])));
+        }
+        return 'C';
+    }();
+
     auto runNameSearch = [&](const std::wstring& queryStr, size_t maxCount) -> std::vector<SearchResult> {
         const size_t perVolumeCap = authSession.isAdmin
             ? maxCount
@@ -1050,126 +1065,67 @@ nlohmann::json ProcessSearchQuery(
                   static_cast<size_t>(tools3000::service::search_limits::MaxResults),
                   (std::max)(maxCount * 4, static_cast<size_t>(512)));
 
-        std::vector<std::future<std::vector<SearchResult>>> futures;
-        futures.reserve(g_MftParsers.size());
+        std::vector<MftParser*> activeParsers;
+        activeParsers.reserve(g_MftParsers.size());
         for (auto& parser : g_MftParsers) {
-            if (!isDriveEnabled(parser->getDriveLetter())) continue;
-            futures.push_back(std::async(std::launch::async, [&parser, &queryStr, &excludeOpts, &isCancelled, &parseOpts, perVolumeCap]() {
-                return parser->Search(queryStr, static_cast<int>(perVolumeCap), excludeOpts, isCancelled, parseOpts);
-            }));
+            if (isDriveEnabled(parser->getDriveLetter())) {
+                activeParsers.push_back(parser.get());
+            }
+        }
+
+        std::vector<std::vector<SearchResult>> perVolumeResults(activeParsers.size());
+        if (activeParsers.size() == 1) {
+            perVolumeResults[0] = activeParsers[0]->Search(
+                queryStr, static_cast<int>(perVolumeCap), excludeOpts, isCancelled, parseOpts);
+        } else if (activeParsers.size() > 1) {
+            tools3000::service::QueryThreadPool::instance().parallelFor(
+                activeParsers.size(),
+                [&](size_t i) {
+                    if (isCancelled()) return;
+                    perVolumeResults[i] = activeParsers[i]->Search(
+                        queryStr, static_cast<int>(perVolumeCap), excludeOpts, isCancelled, parseOpts);
+                });
         }
 
         std::vector<SearchResult> results;
-        for (auto& f : futures) {
-            auto volumeResults = f.get();
+        std::unordered_set<std::wstring> existingLauncherStems;
+        for (auto& volumeResults : perVolumeResults) {
             for (auto& candidate : volumeResults) {
-                if (tools3000::service::pipe_auth::isPathAllowedForClient(candidate.fullPath, authSession)) {
-                    results.push_back(std::move(candidate));
+                if (!tools3000::service::pipe_auth::isPathAllowedForClient(candidate.fullPath, authSession)) {
+                    continue;
                 }
+                if (tools3000::service::launcher::resolveResultPathTier(candidate) ==
+                    tools3000::service::kPathTierAppLauncher) {
+                    existingLauncherStems.insert(
+                        tools3000::service::launcher::extractLauncherStemLower(candidate.fileName, true));
+                }
+                results.push_back(std::move(candidate));
             }
         }
-        const auto classifyPathTier = [](const SearchResult& r) -> int {
-            std::wstring lowerPath;
-            lowerPath.reserve(r.fullPath.size());
-            for (wchar_t c : r.fullPath) lowerPath.push_back(c == L'/' ? L'\\' : static_cast<wchar_t>(std::towlower(c)));
-            const size_t lastSlash = lowerPath.rfind(L'\\');
-            const std::wstring_view dirPart = (lastSlash != std::wstring::npos)
-                ? std::wstring_view(lowerPath).substr(0, lastSlash + 1)
-                : std::wstring_view{};
-            const std::wstring_view namePart = (lastSlash != std::wstring::npos)
-                ? std::wstring_view(lowerPath).substr(lastSlash + 1)
-                : std::wstring_view(lowerPath);
-            if (!r.isDirectory) {
-                if (namePart.rfind(L"~$", 0) == 0 ||
-                    (namePart.size() > 4 && (namePart.substr(namePart.size() - 4) == L".tmp" ||
-                                             namePart.substr(namePart.size() - 4) == L".bak")) ||
-                    (namePart.size() > 5 && (namePart.substr(namePart.size() - 5) == L".temp" ||
-                                             namePart.substr(namePart.size() - 5) == L".part")) ||
-                    (namePart.size() > 11 && namePart.substr(namePart.size() - 11) == L".crdownload")) {
-                    return 4;
-                }
+
+        if (!isCancelled() && !isExplicitContent && isDriveEnabled(systemDriveLetter)) {
+            const SearchExpression localExpr = (queryStr == wQuery)
+                ? expr
+                : SearchExpression::parse(queryStr, parseOpts);
+            auto uwpMatches = tools3000::service::launcher::AppsFolderCatalog::instance().queryMatchingApps(
+                localExpr,
+                excludeOpts,
+                existingLauncherStems,
+                hClientToken,
+                isSameUserProcessSid,
+                effectiveClientSid,
+                (std::min)(maxCount, static_cast<size_t>(64)));
+            for (auto& appItem : uwpMatches) {
+                results.push_back(std::move(appItem));
             }
-            if (dirPart.find(L"\\temp\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\tmp\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\cache\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\caches\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\inetcache\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\webcache\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\gpucache\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\code cache\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\shadercache\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\recent\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\prefetch\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\$recycle.bin\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\node_modules\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\.git\\") != std::wstring_view::npos) {
-                return 4;
-            }
-            if (!r.isDirectory &&
-                ((namePart.size() > 4 && (namePart.substr(namePart.size() - 4) == L".lnk" ||
-                                          namePart.substr(namePart.size() - 4) == L".url")) ||
-                 (namePart.size() > 9 && namePart.substr(namePart.size() - 9) == L".desklink"))) {
-                return 3;
-            }
-            if (dirPart.find(L"\\xwechat_files\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\xwechat\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\wechat files\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\tencent files\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\nt_qq\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\wxwork\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\wecom\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\dingtalk\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\feishu\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\lark\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\telegram desktop\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\filestorage\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\msg\\file\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\file_recv\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\filerecv\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\msgattach\\") != std::wstring_view::npos) {
-                return 1;
-            }
-            if (dirPart.find(L"\\appdata\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\programdata\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\program files\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\program files (x86)\\") != std::wstring_view::npos ||
-                dirPart.find(L"\\windows\\") != std::wstring_view::npos) {
-                return 2;
-            }
-            return 0;
-        };
-        const auto historySnap = tools3000::service::db::RunHistoryManager::instance().captureSnapshot();
-        struct TieredSearchResult {
-            SearchResult result;
-            uint8_t tier;
-            double frecencyScore = 0.0;
-        };
-        std::vector<TieredSearchResult> tieredResults;
-        tieredResults.reserve(results.size());
-        for (auto& item : results) {
-            const uint8_t tier = static_cast<uint8_t>(classifyPathTier(item));
-            const double frecency = historySnap.empty() ? 0.0 : historySnap.lookup(item.fullPath).frecencyScore;
-            tieredResults.push_back({std::move(item), tier, frecency});
         }
-        std::stable_sort(tieredResults.begin(), tieredResults.end(), [](const auto& a, const auto& b) {
-            if (a.tier != b.tier) return a.tier < b.tier;
-            if (a.result.matchRank != b.result.matchRank) return a.result.matchRank < b.result.matchRank;
-            if (a.frecencyScore != b.frecencyScore) return a.frecencyScore > b.frecencyScore;
-            if (a.result.folderPriority != b.result.folderPriority) return a.result.folderPriority > b.result.folderPriority;
-            if (a.result.lastWriteTime != b.result.lastWriteTime) return a.result.lastWriteTime > b.result.lastWriteTime;
-            if (a.result.fileName.size() != b.result.fileName.size()) return a.result.fileName.size() < b.result.fileName.size();
-            return _wcsicmp(a.result.fileName.c_str(), b.result.fileName.c_str()) < 0;
-        });
-        const size_t finalCount = (std::min)(tieredResults.size(), maxCount);
-        results.clear();
-        results.reserve(finalCount);
-        for (size_t i = 0; i < finalCount; ++i) {
-            results.push_back(std::move(tieredResults[i].result));
+
+        tools3000::service::launcher::sortLauncherAwareResults(results, sharedHistorySnap);
+        if (results.size() > maxCount) {
+            results.resize(maxCount);
         }
         return results;
     };
-
-    const auto sharedHistorySnap = tools3000::service::db::RunHistoryManager::instance().captureSnapshot();
 
     struct ContentBatchOutcome {
         std::vector<nlohmann::json> items;
@@ -1328,14 +1284,15 @@ nlohmann::json ProcessSearchQuery(
         std::atomic<size_t> matchCount{0};
         std::atomic<bool> sliceBudgetReached{false};
 
-        const unsigned int numThreads = (std::max)(2u, (std::min)(16u, std::thread::hardware_concurrency()));
-        std::vector<std::thread> workers;
-        workers.reserve(numThreads);
+        const size_t numWorkers = static_cast<size_t>(
+            (std::max)(2u, (std::min)(16u, std::thread::hardware_concurrency())));
         std::atomic<size_t> nextIndex{startCursor};
         const auto sliceStart = std::chrono::steady_clock::now();
 
-        for (unsigned int t = 0; t < numThreads; ++t) {
-            workers.emplace_back([&, hClientToken, isSameUserProcessSid, reqFilterPtr]() {
+        tools3000::service::QueryThreadPool::instance().parallelFor(
+            numWorkers,
+            [&, hClientToken, isSameUserProcessSid, reqFilterPtr](size_t workerSlot) {
+                (void)workerSlot;
                 tools3000::service::pipe_auth::ScopedContentReadImpersonation impGuard(
                     hClientToken, isSameUserProcessSid, effectiveClientSid);
                 if (!impGuard.isAuthorized()) {
@@ -1444,11 +1401,6 @@ nlohmann::json ProcessSearchQuery(
                     }
                 }
             });
-        }
-
-        for (auto& w : workers) {
-            if (w.joinable()) w.join();
-        }
 
         std::sort(
             indexedResults.begin(),
@@ -2068,6 +2020,8 @@ void IPCServerThread() {
     }
     for (auto& parser : g_MftParsers) parser->StopListening();
     g_MftParsers.clear();
+    tools3000::service::launcher::AppsFolderCatalog::instance().invalidate();
+    tools3000::service::QueryThreadPool::instance().shutdown();
     if (compatPipeDescriptor) LocalFree(compatPipeDescriptor);
     if (pipeDescriptor) LocalFree(pipeDescriptor);
     spdlog::info("IPC Server Thread stopped.");

@@ -1,8 +1,10 @@
 #include "MftParser.h"
 #include "PinyinEngine.h"
+#include "QueryThreadPool.h"
 #include "content/ContentSearchEngine.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <iostream>
 #include <cwctype>
@@ -185,9 +187,180 @@ bool parseUsnRecord(const BYTE* pBytes, DWORD remainingBytes, ParsedUsnRecord& o
     return true;
 }
 
+QueryThreadPool& QueryThreadPool::instance() {
+    static QueryThreadPool pool;
+    return pool;
+}
+
+QueryThreadPool::QueryThreadPool() {
+    const unsigned int hw = std::thread::hardware_concurrency();
+    m_workerCount = (hw <= 2)
+        ? static_cast<size_t>((std::max)(1u, hw))
+        : static_cast<size_t>((std::min)(hw, 16u));
+}
+
+QueryThreadPool::~QueryThreadPool() {
+    shutdown();
+}
+
+void QueryThreadPool::ensureStarted() {
+    std::lock_guard<std::mutex> lk(m_mutex);
+    if (m_started || m_stopping) {
+        return;
+    }
+    m_started = true;
+    m_workers.reserve(m_workerCount);
+    for (size_t i = 0; i < m_workerCount; ++i) {
+        m_workers.emplace_back(&QueryThreadPool::workerLoop, this);
+    }
+}
+
+void QueryThreadPool::shutdown() noexcept {
+    std::vector<std::thread> toJoin;
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        if (!m_started && m_workers.empty()) {
+            return;
+        }
+        m_stopping = true;
+        toJoin.swap(m_workers);
+        m_started = false;
+    }
+    m_workCv.notify_all();
+    for (auto& w : toJoin) {
+        if (w.joinable() && w.get_id() != std::this_thread::get_id()) {
+            w.join();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        m_stopping = false;
+    }
+}
+
+void QueryThreadPool::finishOneItem(const std::shared_ptr<JobBatch>& batch) noexcept {
+    if (batch->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        std::lock_guard<std::mutex> doneLk(batch->doneMutex);
+        batch->doneCv.notify_all();
+    }
+}
+
+bool QueryThreadPool::stealOneTask() {
+    std::shared_ptr<JobBatch> picked;
+    size_t idx = 0;
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        while (!m_batches.empty()) {
+            auto& front = m_batches.front();
+            const size_t cand = front->nextIndex.fetch_add(1, std::memory_order_relaxed);
+            if (cand < front->count) {
+                picked = front;
+                idx = cand;
+                if (cand + 1 >= front->count) {
+                    m_batches.pop_front();
+                }
+                break;
+            }
+            m_batches.pop_front();
+        }
+    }
+    if (!picked) {
+        return false;
+    }
+    try {
+        picked->fn(idx);
+    } catch (...) {
+    }
+    finishOneItem(picked);
+    return true;
+}
+
+void QueryThreadPool::workerLoop() {
+    while (true) {
+        if (stealOneTask()) {
+            continue;
+        }
+        std::unique_lock<std::mutex> lk(m_mutex);
+        m_workCv.wait(lk, [this]() {
+            return m_stopping || !m_batches.empty();
+        });
+        if (m_stopping && m_batches.empty()) {
+            return;
+        }
+    }
+}
+
+void QueryThreadPool::parallelFor(size_t taskCount, const std::function<void(size_t)>& fn) {
+    if (taskCount == 0 || !fn) {
+        return;
+    }
+    if (taskCount == 1 || m_workerCount <= 1) {
+        for (size_t i = 0; i < taskCount; ++i) {
+            fn(i);
+        }
+        return;
+    }
+
+    ensureStarted();
+
+    auto batch = std::make_shared<JobBatch>();
+    batch->count = taskCount;
+    batch->remaining.store(taskCount, std::memory_order_relaxed);
+    batch->fn = fn;
+
+    {
+        std::unique_lock<std::mutex> lk(m_mutex);
+        if (m_stopping || m_workers.empty()) {
+            lk.unlock();
+            for (size_t i = 0; i < taskCount; ++i) {
+                fn(i);
+            }
+            return;
+        }
+        m_batches.push_back(batch);
+    }
+
+    const size_t wakeCount = (std::min)(taskCount - 1, m_workerCount);
+    if (wakeCount >= m_workerCount) {
+        m_workCv.notify_all();
+    } else {
+        for (size_t i = 0; i < wakeCount; ++i) {
+            m_workCv.notify_one();
+        }
+    }
+
+    // Caller participates immediately and steals queued tasks while waiting,
+    // guaranteeing forward progress even under nested `parallelFor` invocations.
+    while (true) {
+        const size_t myIdx = batch->nextIndex.fetch_add(1, std::memory_order_relaxed);
+        if (myIdx >= taskCount) {
+            break;
+        }
+        try {
+            batch->fn(myIdx);
+        } catch (...) {
+        }
+        finishOneItem(batch);
+    }
+
+    while (batch->remaining.load(std::memory_order_acquire) > 0) {
+        if (stealOneTask()) {
+            continue;
+        }
+        std::unique_lock<std::mutex> doneLk(batch->doneMutex);
+        if (batch->remaining.load(std::memory_order_acquire) == 0) {
+            break;
+        }
+        batch->doneCv.wait_for(doneLk, std::chrono::microseconds(250), [&batch]() {
+            return batch->remaining.load(std::memory_order_acquire) == 0;
+        });
+    }
+}
+
 }  // namespace tools3000::service
 
 MftParser::MftParser() : m_DriveLetter('C'), m_hVolume(INVALID_HANDLE_VALUE) {
+    m_Store.setDriveLetter('C');
 }
 
 MftParser::~MftParser() {
@@ -454,17 +627,162 @@ void MftParser::UsnListenerLoop() {
     }
 }
 
+void MftParser::BackgroundHydrateLoop() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+
+    auto shouldAbort = [this]() noexcept {
+        return m_StopHydration.load(std::memory_order_acquire) ||
+               m_StopRequested.load(std::memory_order_acquire) ||
+               !m_IsListening.load(std::memory_order_acquire) ||
+               m_hVolume == INVALID_HANDLE_VALUE;
+    };
+    if (shouldAbort()) {
+        return;
+    }
+
+    std::vector<uint64_t> parentDirFrns;
+    bool hydrateDriveRoot = false;
+    {
+        std::shared_lock readLock(m_MapMutex);
+        std::unordered_set<uint64_t> seenParents;
+        seenParents.reserve(8192);
+        const size_t totalSlots = m_Store.slotCount();
+        for (size_t i = 0; i < totalSlots; ++i) {
+            if ((i & 0x3FFFu) == 0 && shouldAbort()) {
+                return;
+            }
+            const auto* rec = m_Store.at(i);
+            if (!rec || rec->isDirectory() || rec->isMetadataHydrated()) {
+                continue;
+            }
+            if (rec->parentFrn == 0) {
+                hydrateDriveRoot = true;
+            } else if (seenParents.insert(rec->parentFrn).second) {
+                parentDirFrns.push_back(rec->parentFrn);
+            }
+        }
+    }
+
+    if (parentDirFrns.empty() && !hydrateDriveRoot) {
+        return;
+    }
+
+    struct HydratedBatchItem {
+        uint64_t frn = 0;
+        uint64_t fileSize = 0;
+        uint64_t creationTime = 0;
+        uint64_t lastWriteTime = 0;
+    };
+    constexpr size_t kFlushBatchThreshold = 4096;
+    std::vector<HydratedBatchItem> batch;
+    batch.reserve(kFlushBatchThreshold + 256);
+    std::vector<BYTE> dirBuffer(65536);
+
+    auto flushHydratedBatch = [&]() {
+        if (batch.empty() || shouldAbort()) {
+            batch.clear();
+            return;
+        }
+        {
+            std::unique_lock writeLock(m_MapMutex);
+            for (const auto& item : batch) {
+                m_Store.updateMetadata(item.frn, item.fileSize, item.creationTime, item.lastWriteTime);
+            }
+            m_IndexGeneration.fetch_add(1, std::memory_order_release);
+        }
+        batch.clear();
+    };
+
+    auto scanDirectoryHandle = [&](HANDLE hDir) {
+        FILE_INFO_BY_HANDLE_CLASS infoClass = FileIdBothDirectoryRestartInfo;
+        while (!shouldAbort() &&
+               GetFileInformationByHandleEx(hDir, infoClass, dirBuffer.data(), static_cast<DWORD>(dirBuffer.size()))) {
+            infoClass = FileIdBothDirectoryInfo;
+            const BYTE* cursor = dirBuffer.data();
+            while (cursor != nullptr) {
+                const auto* entry = reinterpret_cast<const FILE_ID_BOTH_DIR_INFO*>(cursor);
+                const bool isDir = (entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                const uint64_t fileId = static_cast<uint64_t>(entry->FileId.QuadPart);
+                if (!isDir && fileId != 0) {
+                    batch.push_back(HydratedBatchItem{
+                        fileId,
+                        static_cast<uint64_t>(entry->EndOfFile.QuadPart),
+                        static_cast<uint64_t>(entry->CreationTime.QuadPart),
+                        static_cast<uint64_t>(entry->LastWriteTime.QuadPart),
+                    });
+                }
+                if (entry->NextEntryOffset == 0) {
+                    break;
+                }
+                cursor += entry->NextEntryOffset;
+            }
+            if (batch.size() >= kFlushBatchThreshold) {
+                flushHydratedBatch();
+            }
+        }
+    };
+
+    if (hydrateDriveRoot && !shouldAbort()) {
+        const std::wstring rootDir{static_cast<wchar_t>(m_DriveLetter), L':', L'\\'};
+        HANDLE hRoot = CreateFileW(
+            rootDir.c_str(),
+            FILE_LIST_DIRECTORY | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            nullptr);
+        if (hRoot != INVALID_HANDLE_VALUE) {
+            scanDirectoryHandle(hRoot);
+            CloseHandle(hRoot);
+        }
+    }
+
+    for (size_t idx = 0; idx < parentDirFrns.size(); ++idx) {
+        if (shouldAbort()) {
+            return;
+        }
+        FILE_ID_DESCRIPTOR desc{};
+        desc.dwSize = sizeof(desc);
+        desc.Type = FileIdType;
+        desc.FileId.QuadPart = static_cast<LONGLONG>(parentDirFrns[idx]);
+        HANDLE hDir = OpenFileById(
+            m_hVolume,
+            &desc,
+            FILE_LIST_DIRECTORY | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        if (hDir != INVALID_HANDLE_VALUE) {
+            scanDirectoryHandle(hDir);
+            CloseHandle(hDir);
+        }
+        if ((idx & 0x3Fu) == 0x3Fu) {
+            SwitchToThread();
+        }
+    }
+
+    flushHydratedBatch();
+}
+
 void MftParser::StartListening() {
     if (m_IsFallbackDirectoryWalk || m_hVolume == INVALID_HANDLE_VALUE) {
         return;
     }
     StopListening();
-    m_IsListening = true;
+    m_StopHydration.store(false, std::memory_order_release);
+    m_IsListening.store(true, std::memory_order_release);
     m_ListenerThread = std::make_unique<std::thread>(&MftParser::UsnListenerLoop, this);
+    m_HydrationThread = std::make_unique<std::thread>(&MftParser::BackgroundHydrateLoop, this);
 }
 
 void MftParser::StopListening() {
-    m_IsListening = false;
+    m_IsListening.store(false, std::memory_order_release);
+    m_StopHydration.store(true, std::memory_order_release);
+    if (m_HydrationThread && m_HydrationThread->joinable()) {
+        m_HydrationThread->join();
+    }
+    m_HydrationThread.reset();
     if (m_ListenerThread && m_ListenerThread->joinable()) {
         m_ListenerThread->join();
     }
@@ -475,6 +793,7 @@ bool MftParser::Initialize(char driveLetter) {
     resetStopRequest();
     m_InitialScanDone.store(false, std::memory_order_release);
     m_DriveLetter = driveLetter;
+    m_Store.setDriveLetter(driveLetter);
     m_VolumeSerial = getVolumeSerialNumber();
     m_Initialized = true;
     const std::wstring root{static_cast<wchar_t>(driveLetter), L':', L'\\'};
@@ -559,7 +878,7 @@ void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
         if (batch.empty()) return;
         std::unique_lock lock(m_MapMutex);
         for (const auto& item : batch) {
-            m_Store.upsert(item);
+            m_Store.upsert(item, /*metadataHydrated=*/true);
         }
         batch.clear();
         m_IndexGeneration.fetch_add(1, std::memory_order_release);
@@ -629,6 +948,11 @@ void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
     }
 
     flushBatch();
+    {
+        std::unique_lock lock(m_MapMutex);
+        m_Store.recomputeHierarchyMetadata();
+        m_Store.releaseBuildScratch();
+    }
     spdlog::info("Directory walk enumeration completed. Indexed {} files on drive {}:", count, driveLetter);
 }
 
@@ -638,6 +962,7 @@ void MftParser::EnumerateFiles() {
     {
         std::unique_lock lock(m_MapMutex);
         m_Store.clear();
+        m_Store.setDriveLetter(m_DriveLetter);
     }
     if (m_IsFallbackDirectoryWalk || m_hVolume == INVALID_HANDLE_VALUE) {
         EnumerateFilesViaDirectoryWalk(m_DriveLetter);
@@ -702,6 +1027,8 @@ void MftParser::EnumerateFiles() {
     const bool completedFullScan = !m_StopRequested.load(std::memory_order_acquire);
     {
         std::unique_lock lock(m_MapMutex);
+        // Precompute full directory hierarchy & pathTier bitfields once after out-of-order MFT scan (`P-02`).
+        m_Store.recomputeHierarchyMetadata();
         // Names repeat heavily across a volume, so interning pays for itself
         // during enumeration; afterwards only a trickle of USN updates arrives
         // and the lookup table is no longer worth its footprint.
@@ -727,8 +1054,9 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                                            const SearchExcludeOptions& excludeOpts,
                                            const CancellationCheck& isCancelled,
                                            const SearchParseOptions& parseOpts) {
+    m_LastSearchPathBuildCount.store(0, std::memory_order_relaxed);
     std::vector<SearchResult> results;
-    if (query.empty() || (isCancelled && isCancelled())) return results;
+    if (query.empty() || limit <= 0 || (isCancelled && isCancelled())) return results;
 
     const std::wstring lowerQuery = normalize(query);
     const std::wstring cacheQueryKey = parseOpts.caseSensitive ? query : lowerQuery;
@@ -745,17 +1073,6 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         uint64_t fileSize = 0;
         uint64_t creationTime = 0;
         uint64_t lastWriteTime = 0;
-    };
-
-    auto endsWithAsciiLower = [](std::wstring_view s, std::wstring_view lowerSuffix) noexcept -> bool {
-        if (s.size() <= lowerSuffix.size()) return false;
-        const size_t offset = s.size() - lowerSuffix.size();
-        for (size_t i = 0; i < lowerSuffix.size(); ++i) {
-            wchar_t ch = s[offset + i];
-            if (ch >= L'A' && ch <= L'Z') ch = static_cast<wchar_t>(ch - L'A' + L'a');
-            if (ch != lowerSuffix[i]) return false;
-        }
-        return true;
     };
 
     auto eqAsciiLower = [](std::wstring_view s, std::wstring_view lowerLit) noexcept -> bool {
@@ -806,23 +1123,11 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         lowerExcludePatterns.push_back(std::move(lp));
     }
 
-    enum DirMetaFlags : uint8_t {
-        kDirFlagRecycleBin       = 1u << 0,
-        kDirFlagRecentDir        = 1u << 1,
-        kDirFlagContentSysPruned = 1u << 2,
-        kDirFlagExcludedPattern  = 1u << 3,
-        kDirFlagBottomPriority   = 1u << 4,
-        kDirFlagChatHistory      = 1u << 5,
-        kDirFlagLowAppPriority   = 1u << 6,
-        kDirFlagDevWorkspace     = 1u << 7,
-    };
-
-    struct DirScanMeta {
-        uint64_t clauseMask = 0;
+    struct DirExcludeCacheMeta {
+        bool excluded = false;
+        uint8_t dirClassFlags = 0;
+        uint8_t dirStateBits = 0;
         int32_t folderPriority = 200;
-        uint16_t depth = 0;
-        uint8_t flags = 0;
-        uint8_t specialKind = 0; // bit0..1: 1=windows, 2=office; bit7(0x80): desktop/documents/downloads
     };
 
     const wchar_t driveW = static_cast<wchar_t>(m_DriveLetter);
@@ -922,38 +1227,36 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         return baseMask;
     };
 
-    auto getDirMeta = [&](DWORDLONG parentFrn,
-                          DWORDLONG& lastParentFrn,
-                          DirScanMeta& lastDirMeta,
-                          std::unordered_map<DWORDLONG, DirScanMeta>& dirCache) -> const DirScanMeta& {
-        if (parentFrn == lastParentFrn) {
-            return lastDirMeta;
+    auto isAncestorExcludedByPattern = [&](DWORDLONG parentFrn,
+                                           DWORDLONG& lastExParentFrn,
+                                           bool& lastExResult,
+                                           std::unordered_map<DWORDLONG, bool>& exCache) -> bool {
+        if (lowerExcludePatterns.empty() || parentFrn == 0) {
+            return false;
         }
-        auto it = dirCache.find(parentFrn);
-        if (it != dirCache.end()) {
-            lastParentFrn = parentFrn;
-            lastDirMeta = it->second;
-            return lastDirMeta;
+        if (parentFrn == lastExParentFrn) {
+            return lastExResult;
+        }
+        auto it = exCache.find(parentFrn);
+        if (it != exCache.end()) {
+            lastExParentFrn = parentFrn;
+            lastExResult = it->second;
+            return lastExResult;
         }
 
         DWORDLONG chain[kMaxAncestorChainDepth];
         size_t chainLen = 0;
         DWORDLONG cur = parentFrn;
-        DirScanMeta baseMeta{};
-        baseMeta.clauseMask = rootClauseMask;
-        baseMeta.folderPriority = baseDrivePriority;
-
+        bool excluded = false;
         while (cur != 0 && chainLen < kMaxAncestorChainDepth) {
-            auto cachedIt = dirCache.find(cur);
-            if (cachedIt != dirCache.end()) {
-                baseMeta = cachedIt->second;
+            auto cIt = exCache.find(cur);
+            if (cIt != exCache.end()) {
+                excluded = cIt->second;
                 break;
             }
             chain[chainLen++] = cur;
             const auto* node = m_Store.find(cur);
-            if (!node) {
-                break;
-            }
+            if (!node) break;
             const FileRecord dirRec = m_Store.view(*node);
             const DWORDLONG nextParent = dirRec.parentFileReferenceNumber;
             if (dirRec.fileName.empty() || dirRec.fileName == L"." ||
@@ -971,213 +1274,173 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
 
         for (size_t idx = chainLen; idx > 0; --idx) {
             const DWORDLONG stepFrn = chain[idx - 1];
-            const auto* node = m_Store.find(stepFrn);
-            if (node) {
-                const FileRecord dirRec = m_Store.view(*node);
-                const std::wstring_view name = dirRec.fileName;
-                if (!name.empty() && name != L".") {
-                    baseMeta.clauseMask |= expr.computeDirectorySegmentMask(
-                        name, dirRec.pinyinInitials, dirRec.pinyinFull);
-                    if (baseMeta.depth < 60000) {
-                        baseMeta.depth++;
-                    }
-                    const uint8_t parentSpecial = static_cast<uint8_t>(baseMeta.specialKind & 0x03u);
-                    baseMeta.specialKind = static_cast<uint8_t>(baseMeta.specialKind & 0x80u);
-                    if (eqAsciiLower(name, L"windows")) {
-                        baseMeta.specialKind |= 1u;
-                    } else if (eqAsciiLower(name, L"office")) {
-                        baseMeta.specialKind |= 2u;
-                    }
-
-                    if (eqAsciiLower(name, L"$recycle.bin")) {
-                        baseMeta.flags |= (kDirFlagRecycleBin | kDirFlagContentSysPruned | kDirFlagBottomPriority);
-                    } else if (eqAsciiLower(name, L"recent") && (parentSpecial == 1u || parentSpecial == 2u)) {
-                        baseMeta.flags |= (kDirFlagRecentDir | kDirFlagBottomPriority);
-                    } else if ((eqAsciiLower(name, L"winsxs") || eqAsciiLower(name, L"system32")) && parentSpecial == 1u) {
-                        baseMeta.flags |= kDirFlagContentSysPruned;
-                    }
-
-                    if (!lowerExcludePatterns.empty() && (baseMeta.flags & kDirFlagExcludedPattern) == 0) {
-                        for (const auto& lp : lowerExcludePatterns) {
-                            if (lp.find(L'\\') == std::wstring::npos && lp.find(L'/') == std::wstring::npos) {
-                                if (containsLower(name, lp)) {
-                                    baseMeta.flags |= kDirFlagExcludedPattern;
-                                    break;
-                                }
+            if (!excluded) {
+                const auto* node = m_Store.find(stepFrn);
+                if (node) {
+                    const FileRecord dirRec = m_Store.view(*node);
+                    for (const auto& lp : lowerExcludePatterns) {
+                        if (lp.find(L'\\') == std::wstring::npos && lp.find(L'/') == std::wstring::npos) {
+                            if (containsLower(dirRec.fileName, lp)) {
+                                excluded = true;
+                                break;
                             }
                         }
                     }
-
-                    if ((baseMeta.flags & kDirFlagBottomPriority) == 0) {
-                        if (eqAsciiLower(name, L"npm-cache") || eqAsciiLower(name, L"pip") ||
-                            eqAsciiLower(name, L"go-build") || eqAsciiLower(name, L".gradle") ||
-                            eqAsciiLower(name, L"temp") || eqAsciiLower(name, L"tmp") ||
-                            eqAsciiLower(name, L"cache") || eqAsciiLower(name, L"caches") ||
-                            eqAsciiLower(name, L"inetcache") || eqAsciiLower(name, L"webcache") ||
-                            eqAsciiLower(name, L"gpucache") || eqAsciiLower(name, L"code cache") ||
-                            eqAsciiLower(name, L"shadercache") || eqAsciiLower(name, L"recent") ||
-                            eqAsciiLower(name, L"prefetch") || eqAsciiLower(name, L"winsxs") ||
-                            eqAsciiLower(name, L"windows") || eqAsciiLower(name, L"$recycle.bin") ||
-                            eqAsciiLower(name, L"node_modules") || eqAsciiLower(name, L".git") ||
-                            eqAsciiLower(name, L"cefcache") || eqAsciiLower(name, L"crashpad") ||
-                            eqAsciiLower(name, L"coverage_report") || eqAsciiLower(name, L"__pycache__") ||
-                            eqAsciiLower(name, L".vs")) {
-                            baseMeta.flags |= kDirFlagBottomPriority;
-                        } else if (eqAsciiLower(name, L"xwechat_files") || eqAsciiLower(name, L"xwechat") ||
-                                   eqAsciiLower(name, L"wechat files") || eqAsciiLower(name, L"tencent files") ||
-                                   eqAsciiLower(name, L"nt_qq") || eqAsciiLower(name, L"wxwork") ||
-                                   eqAsciiLower(name, L"wecom") || eqAsciiLower(name, L"dingtalk") ||
-                                   eqAsciiLower(name, L"feishu") || eqAsciiLower(name, L"lark") ||
-                                   eqAsciiLower(name, L"telegram desktop") || eqAsciiLower(name, L"filestorage") ||
-                                   eqAsciiLower(name, L"file_recv") || eqAsciiLower(name, L"filerecv") ||
-                                   eqAsciiLower(name, L"msgattach")) {
-                            baseMeta.flags |= kDirFlagChatHistory;
-                        } else if (eqAsciiLower(name, L"appdata") || eqAsciiLower(name, L"program files") ||
-                                   eqAsciiLower(name, L"programdata") || eqAsciiLower(name, L"program files (x86)")) {
-                            baseMeta.flags |= kDirFlagLowAppPriority;
-                        } else if (eqAsciiLower(name, L"desktop") || eqAsciiLower(name, L"documents") ||
-                                   eqAsciiLower(name, L"downloads")) {
-                            baseMeta.specialKind |= 0x80u;
-                        } else if (eqAsciiLower(name, L"repo") || eqAsciiLower(name, L"repos") ||
-                                   eqAsciiLower(name, L"workspace") || eqAsciiLower(name, L"projects") ||
-                                   eqAsciiLower(name, L"code") || eqAsciiLower(name, L"src") ||
-                                   eqAsciiLower(name, L"source") || eqAsciiLower(name, L"dev") ||
-                                   eqAsciiLower(name, L"github")) {
-                            baseMeta.flags |= kDirFlagDevWorkspace;
-                        }
-                    }
                 }
             }
-
-            int32_t prio = baseDrivePriority;
-            if ((baseMeta.flags & kDirFlagBottomPriority) != 0) {
-                prio = 1;
-            } else if ((baseMeta.flags & kDirFlagChatHistory) != 0) {
-                prio = 80;
-            } else {
-                if ((baseMeta.flags & kDirFlagLowAppPriority) != 0) {
-                    prio = (std::min)(prio, 20);
-                } else if ((baseMeta.specialKind & 0x80u) != 0) {
-                    prio = (std::max)(prio, 2000);
-                }
-                if ((baseMeta.flags & kDirFlagDevWorkspace) != 0 && prio > 20) {
-                    prio = (std::max)(prio, 3500);
-                }
-                if (prio > 20 && baseMeta.depth >= 1 && baseMeta.depth <= 3) {
-                    prio += static_cast<int32_t>((4 - baseMeta.depth) * 300);
-                }
-            }
-            baseMeta.folderPriority = prio;
-            dirCache.emplace(stepFrn, baseMeta);
-            if (idx == 1) {
-                lastParentFrn = parentFrn;
-                lastDirMeta = baseMeta;
-            }
+            exCache.emplace(stepFrn, excluded);
         }
-        if (chainLen == 0) {
-            dirCache.emplace(parentFrn, baseMeta);
-            lastParentFrn = parentFrn;
-            lastDirMeta = baseMeta;
-        }
-        return lastDirMeta;
+        lastExParentFrn = parentFrn;
+        lastExResult = excluded;
+        return excluded;
     };
 
-    auto resolveCandidatePriority = [&endsWithAsciiLower](const DirScanMeta& dirMeta, const FileRecord& fileRec) noexcept -> int {
-        const std::wstring_view normName = fileRec.fileName;
-        if (!fileRec.isDirectory && !normName.empty()) {
-            if (normName.rfind(L"~$", 0) == 0 ||
-                endsWithAsciiLower(normName, L".tmp") ||
-                endsWithAsciiLower(normName, L".bak") ||
-                endsWithAsciiLower(normName, L".temp") ||
-                endsWithAsciiLower(normName, L".part") ||
-                endsWithAsciiLower(normName, L".crdownload")) {
-                return 1;
-            }
-            if (endsWithAsciiLower(normName, L".lnk") ||
-                endsWithAsciiLower(normName, L".url") ||
-                endsWithAsciiLower(normName, L".desklink")) {
-                return (dirMeta.flags & kDirFlagBottomPriority) != 0 ? 1 : 10;
+    auto resolveFallbackTier = [&](const tools3000::service::StoredFileRecord& stored,
+                                   const FileRecord& record,
+                                   uint8_t& outDirClassFlags,
+                                   uint8_t& outPathTier,
+                                   int& outPriority) {
+        if (stored.isTierComputed()) {
+            outDirClassFlags = stored.dirClassFlags;
+            outPathTier = stored.pathTier;
+            outPriority = stored.folderPriority;
+            return;
+        }
+        // Fallback when an incremental orphan node has not yet had hierarchy metadata computed.
+        uint8_t parentClassFlags = 0;
+        uint8_t parentStateBits = 0;
+        int32_t parentPriority = baseDrivePriority;
+        if (record.parentFileReferenceNumber != 0) {
+            const auto* pNode = m_Store.find(record.parentFileReferenceNumber);
+            if (pNode != nullptr) {
+                parentClassFlags = pNode->dirClassFlags;
+                parentStateBits = pNode->dirStateBits;
+                parentPriority = pNode->folderPriority;
             }
         }
-        if (fileRec.parentFileReferenceNumber == 0) {
-            return 200;
-        }
-        return dirMeta.folderPriority;
+        outDirClassFlags = parentClassFlags;
+        int32_t computedPrio = parentPriority;
+        tools3000::service::computeLeafTierAndPriority(
+            record.fileName,
+            record.isDirectory,
+            record.parentFileReferenceNumber,
+            parentClassFlags,
+            parentStateBits,
+            parentPriority,
+            outPathTier,
+            computedPrio);
+        outPriority = computedPrio;
+    };
+
+    enum class CandidateEvalResult : uint8_t {
+        Rejected = 0,
+        MatchedInMemory = 1,
+        NeedsLockFreeStat = 2,
+    };
+
+    struct RankedCandidate {
+        DWORDLONG id = 0;
+        FileRecord record;
+        int rank = 7;
+        int folderPriority = 200;
+        uint8_t pathTier = tools3000::service::kPathTierPrimaryUser;
+    };
+
+    struct PendingStatCandidate {
+        DWORDLONG id = 0;
+        uint64_t dirMask = 0;
+        std::wstring fileName;
+        std::wstring normalizedName;
+        std::wstring pinyinInitials;
+        std::wstring pinyinFull;
+        std::wstring fullPath;
+        bool isDirectory = false;
+        uint32_t fileAttributes = 0;
+        uint64_t fileSize = 0;
+        uint64_t creationTime = 0;
+        uint64_t lastWriteTime = 0;
+        int folderPriority = 200;
+        uint8_t pathTier = tools3000::service::kPathTierPrimaryUser;
     };
 
     auto testCandidate = [&](DWORDLONG id,
+                             const tools3000::service::StoredFileRecord& stored,
                              const FileRecord& record,
                              uint64_t dirClauseMask,
-                             DWORDLONG& lastParentFrn,
-                             DirScanMeta& lastDirMeta,
-                             std::unordered_map<DWORDLONG, DirScanMeta>& localDirCache,
-                             std::vector<HydratedStat>& statOut,
-                             int& outPriority) {
-        if (excludeOpts.excludeHidden && (record.fileAttributes & FILE_ATTRIBUTE_HIDDEN)) return false;
-        if (excludeOpts.excludeSystem && (record.fileAttributes & FILE_ATTRIBUTE_SYSTEM)) return false;
+                             DWORDLONG& lastExParentFrn,
+                             bool& lastExResult,
+                             std::unordered_map<DWORDLONG, bool>& localExCache,
+                             std::wstring& outBuiltPath,
+                             int& outPriority,
+                             uint8_t& outPathTier) -> CandidateEvalResult {
+        if (excludeOpts.excludeHidden && (record.fileAttributes & FILE_ATTRIBUTE_HIDDEN)) {
+            return CandidateEvalResult::Rejected;
+        }
+        if (excludeOpts.excludeSystem && (record.fileAttributes & FILE_ATTRIBUTE_SYSTEM)) {
+            return CandidateEvalResult::Rejected;
+        }
 
-        // 1. 若为全文内容搜索模式，提前剪枝目录与不支持的二进制/媒体格式
+        // 1. Prune directories and unsupported extensions early for content queries.
         if (expr.hasContentFilter()) {
-            if (record.isDirectory) return false;
-            size_t dotPos = record.fileName.rfind(L'.');
-            if (dotPos == std::wstring::npos) return false;
-            std::wstring_view ext = std::wstring_view(record.fileName).substr(dotPos + 1);
+            if (record.isDirectory) return CandidateEvalResult::Rejected;
+            const size_t dotPos = record.fileName.rfind(L'.');
+            if (dotPos == std::wstring::npos) return CandidateEvalResult::Rejected;
+            const std::wstring_view ext = std::wstring_view(record.fileName).substr(dotPos + 1);
             if (!searchAllowedExts.contains(ext)) {
-                return false;
+                return CandidateEvalResult::Rejected;
             }
         }
 
-        std::wstring lazyPath;
         bool hasLazyPath = false;
         auto getPath = [&]() -> const std::wstring& {
             if (!hasLazyPath) {
-                lazyPath = buildFullPath(id);
+                outBuiltPath = buildFullPath(id);
                 hasLazyPath = true;
             }
-            return lazyPath;
+            return outBuiltPath;
         };
 
-        // 2. 先执行可分离目录掩码加速的纯内存表达式比对 (99.99% 非匹配文件在此立即返回 false，0 次触发 getDirMeta / 0 次堆分配)
+        // 2. Lock-free in-memory evaluation (`P-02` & `U-05`): ZERO disk I/O under `m_MapMutex`,
+        // and slash path fragments (`A\B\C`) short-circuit via ancestor bitmask + leaf prefix.
+        SearchExpression::InMemoryMatchStatus matchStatus = SearchExpression::InMemoryMatchStatus::Matched;
         if (expr.isFullySeparable()) {
             if (!expr.matchesSeparable(record, driveW, dirClauseMask)) {
-                return false;
+                return CandidateEvalResult::Rejected;
             }
         } else {
-            SearchExpression::StatHydrateCallback onStat;
-            if (record.fileSize == 0 && record.lastWriteTime == 0 && expr.requiresFullPath()) {
-                onStat = [&statOut](uint64_t frn, uint64_t fSize, uint64_t cTime, uint64_t mTime) {
-                    if (statOut.size() < 32768) {
-                        statOut.push_back(HydratedStat{frn, fSize, cTime, mTime});
-                    }
-                };
-            }
-            if (!expr.matchesWithDirMask(record, driveW, dirClauseMask, getPath, onStat)) {
-                return false;
+            matchStatus = expr.evaluateInMemoryWithDirMask(
+                record, driveW, dirClauseMask, stored.isMetadataHydrated(), getPath);
+            if (matchStatus == SearchExpression::InMemoryMatchStatus::Rejected) {
+                return CandidateEvalResult::Rejected;
             }
         }
 
-        // 3. 仅对极少数真正命中搜索表达式的候选文件，计算完整目录元数据 (RecycleBin / Recent / 排除规则 / 优先级)
-        const DirScanMeta& dirMeta = getDirMeta(record.parentFileReferenceNumber, lastParentFrn, lastDirMeta, localDirCache);
-        if (expr.hasContentFilter() && (dirMeta.flags & kDirFlagContentSysPruned) != 0) {
-            return false;
+        // 3. Consume precomputed `dirClassFlags`, `pathTier`, and `folderPriority` in O(1) (`P-02`).
+        uint8_t dirClassFlags = 0;
+        resolveFallbackTier(stored, record, dirClassFlags, outPathTier, outPriority);
+
+        if (expr.hasContentFilter() &&
+            (dirClassFlags & tools3000::service::kDirClassContentSysPruned) != 0) {
+            return CandidateEvalResult::Rejected;
         }
         if (!queryExplicitRecycle) {
-            if ((dirMeta.flags & kDirFlagRecycleBin) != 0 ||
+            if ((dirClassFlags & tools3000::service::kDirClassRecycleBin) != 0 ||
                 (record.isDirectory && eqAsciiLower(record.fileName, L"$recycle.bin"))) {
-                return false;
+                return CandidateEvalResult::Rejected;
             }
         }
-        if (!queryExplicitRecent && (dirMeta.flags & kDirFlagRecentDir) != 0) {
-            return false;
+        if (!queryExplicitRecent &&
+            (dirClassFlags & tools3000::service::kDirClassRecentDir) != 0) {
+            return CandidateEvalResult::Rejected;
         }
         if (!lowerExcludePatterns.empty()) {
-            if ((dirMeta.flags & kDirFlagExcludedPattern) != 0) {
-                return false;
+            if (isAncestorExcludedByPattern(record.parentFileReferenceNumber, lastExParentFrn, lastExResult, localExCache)) {
+                return CandidateEvalResult::Rejected;
             }
             if (allExcludePatternsSingleSegment) {
                 for (const auto& lowerPat : lowerExcludePatterns) {
                     if (containsLower(record.fileName, lowerPat)) {
-                        return false;
+                        return CandidateEvalResult::Rejected;
                     }
                 }
             } else {
@@ -1186,14 +1449,24 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 for (const auto& lowerPat : lowerExcludePatterns) {
                     if (lowerP.find(lowerPat) != std::wstring::npos ||
                         containsLower(record.fileName, lowerPat)) {
-                        return false;
+                        return CandidateEvalResult::Rejected;
                     }
                 }
             }
         }
 
-        outPriority = resolveCandidatePriority(dirMeta, record);
-        return true;
+        if (matchStatus == SearchExpression::InMemoryMatchStatus::NeedsDiskStat) {
+            (void)getPath();
+            return CandidateEvalResult::NeedsLockFreeStat;
+        }
+        return CandidateEvalResult::MatchedInMemory;
+    };
+
+    auto effectiveSingleDriveTier = [](uint8_t rawTier, int rank) noexcept -> uint8_t {
+        if (rawTier == tools3000::service::kPathTierAppLauncher && rank >= 7) {
+            return tools3000::service::kPathTierGenericShortcut;
+        }
+        return rawTier;
     };
 
     std::vector<DWORDLONG> candidates;
@@ -1214,20 +1487,47 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         }
     }
 
-    // FileRecord is a view over the arena, so copying one is a handful of
-    // pointers and never allocates.
-    struct RankedCandidate {
-        DWORDLONG id;
-        FileRecord record;
-        int rank;
-        int folderPriority;
-    };
     std::vector<RankedCandidate> ranked;
+    std::vector<PendingStatCandidate> pendingStatCandidates;
     std::vector<HydratedStat> hydratedStats;
 
     // `HIGH-14`: Check cancellation at high frequency (every 64 items for regex queries,
     // every 256 items otherwise) so `m_MapMutex` shared lock is promptly released.
     const size_t cancelMask = expr.hasRegexClause() ? 0x3Fu : 0xFFu;
+
+    auto appendPendingStat = [](std::vector<PendingStatCandidate>& vec,
+                                DWORDLONG id,
+                                uint64_t dirMask,
+                                const FileRecord& record,
+                                std::wstring&& fullPath,
+                                int fPriority,
+                                uint8_t pTier) {
+        if (vec.size() >= 65536) {
+            return;
+        }
+        const bool sameInitials = (record.pinyinInitials.data() == record.fileName.data());
+        const bool sameFull = (record.pinyinFull.data() == record.fileName.data());
+        PendingStatCandidate item;
+        item.id = id;
+        item.dirMask = dirMask;
+        item.fileName = std::wstring(record.fileName);
+        item.normalizedName = std::wstring(record.normalizedName);
+        if (!sameInitials) {
+            item.pinyinInitials = std::wstring(record.pinyinInitials);
+        }
+        if (!sameFull) {
+            item.pinyinFull = std::wstring(record.pinyinFull);
+        }
+        item.fullPath = std::move(fullPath);
+        item.isDirectory = record.isDirectory;
+        item.fileAttributes = record.fileAttributes;
+        item.fileSize = record.fileSize;
+        item.creationTime = record.creationTime;
+        item.lastWriteTime = record.lastWriteTime;
+        item.folderPriority = fPriority;
+        item.pathTier = pTier;
+        vec.push_back(std::move(item));
+    };
 
     if (canNarrow) {
         std::vector<DWORDLONG> filtered;
@@ -1236,10 +1536,10 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         std::vector<FlatMaskSlot> flatMaskCache;
         DWORDLONG lastMaskParentFrn = UINT64_MAX;
         uint64_t lastDirClauseMask = 0;
-        std::unordered_map<DWORDLONG, DirScanMeta> localDirCache;
-        localDirCache.reserve(64);
-        DWORDLONG lastParentFrn = UINT64_MAX;
-        DirScanMeta lastDirMeta{};
+        std::unordered_map<DWORDLONG, bool> localExCache;
+        DWORDLONG lastExParentFrn = UINT64_MAX;
+        bool lastExResult = false;
+        std::wstring scratchPath;
         size_t checked = 0;
         for (const auto id : candidates) {
             if (((checked++ & cancelMask) == 0) && isCancelled && isCancelled()) return results;
@@ -1247,11 +1547,19 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             if (!stored) continue;
             try {
                 const FileRecord record = m_Store.view(*stored);
-                const uint64_t dirMask = getFastDirClauseMask(record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
+                const uint64_t dirMask = getFastDirClauseMask(
+                    record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
                 int fPriority = 0;
-                if (testCandidate(id, record, dirMask, lastParentFrn, lastDirMeta, localDirCache, hydratedStats, fPriority)) {
+                uint8_t pTier = tools3000::service::kPathTierPrimaryUser;
+                scratchPath.clear();
+                const CandidateEvalResult eval = testCandidate(
+                    id, *stored, record, dirMask, lastExParentFrn, lastExResult, localExCache, scratchPath, fPriority, pTier);
+                if (eval == CandidateEvalResult::MatchedInMemory) {
                     filtered.push_back(id);
-                    ranked.push_back({id, record, expr.calculateRank(record), fPriority});
+                    const int rnk = expr.calculateRank(record);
+                    ranked.push_back({id, record, rnk, fPriority, effectiveSingleDriveTier(pTier, rnk)});
+                } else if (eval == CandidateEvalResult::NeedsLockFreeStat) {
+                    appendPendingStat(pendingStatCandidates, id, dirMask, record, std::move(scratchPath), fPriority, pTier);
                 }
             } catch (...) {
             }
@@ -1260,15 +1568,10 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
     } else {
         const size_t totalRecords = m_Store.slotCount();
         const unsigned int hwThreads = std::thread::hardware_concurrency();
-        // 针对单核/双核弱虚拟机自适应调优：当硬件核心数为 1 或 2 时，使用 1~2 线程，杜绝上下文切换风暴
         unsigned int numThreads = (hwThreads <= 2) ? (std::max)(1u, hwThreads) : (std::min)(hwThreads, 16u);
         if (totalRecords < 10000) numThreads = 1;
 
-        std::vector<std::vector<DWORDLONG>> threadCandidates(numThreads);
-        std::vector<std::vector<RankedCandidate>> threadRanked(numThreads);
-        std::vector<std::vector<HydratedStat>> threadHydrated(numThreads);
-
-        size_t chunkSize = (totalRecords + numThreads - 1) / numThreads;
+        const size_t chunkSize = (totalRecords + numThreads - 1) / numThreads;
         unsigned int activeThreads = 0;
         for (unsigned int t = 0; t < numThreads; ++t) {
             if (t * chunkSize < totalRecords) {
@@ -1276,178 +1579,170 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             }
         }
 
+        std::vector<std::vector<DWORDLONG>> threadCandidates(activeThreads);
+        std::vector<std::vector<RankedCandidate>> threadRanked(activeThreads);
+        std::vector<std::vector<PendingStatCandidate>> threadPendingStat(activeThreads);
+        std::vector<std::vector<FlatMaskSlot>> threadFlatMaskCaches(activeThreads);
+
         const bool useOptimisticDirPreFilter = expr.isFullySeparable() && hasSeparableClauses;
         const uint64_t negMask = expr.getNegatedSeparableGroupMask();
-        std::vector<std::vector<uint64_t>> threadDirMasks(activeThreads);
         uint64_t maximalDirMasks[8] = {rootClauseMask & ~negMask};
         size_t maximalDirMaskCount = 1;
-        std::mutex barrierMutex;
-        std::condition_variable barrierCv;
-        unsigned int barrierArrived = 0;
 
-        std::vector<std::thread> workers;
-        workers.reserve(activeThreads);
-
-        for (unsigned int t = 0; t < activeThreads; ++t) {
-            size_t startIdx = t * chunkSize;
-            size_t endIdx = std::min(startIdx + chunkSize, totalRecords);
-
-            workers.emplace_back([&, t, startIdx, endIdx]() {
-                std::vector<FlatMaskSlot> flatMaskCache;
+        // Pass 1 (optional): compute directory mask antichain across pooled workers without barriers.
+        if (useOptimisticDirPreFilter && activeThreads > 0) {
+            std::vector<std::vector<uint64_t>> threadDirMasks(activeThreads);
+            tools3000::service::QueryThreadPool::instance().parallelFor(activeThreads, [&](size_t t) {
+                const size_t startIdx = t * chunkSize;
+                const size_t endIdx = (std::min)(startIdx + chunkSize, totalRecords);
+                auto& flatMaskCache = threadFlatMaskCaches[t];
                 DWORDLONG lastMaskParentFrn = UINT64_MAX;
                 uint64_t lastDirClauseMask = 0;
-
-                if (useOptimisticDirPreFilter) {
-                    try {
-                        auto& localMasks = threadDirMasks[t];
-                        for (size_t i = startIdx; i < endIdx; ++i) {
-                            if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) break;
-                            const auto* stored = m_Store.at(i);
-                            if (!stored || !stored->isDirectory()) continue;
-                            const FileRecord dirRec = m_Store.view(*stored);
-                            if (dirRec.fileName.empty() || dirRec.fileName == L".") continue;
-                            const uint64_t segMask = expr.computeDirectorySegmentMask(
-                                dirRec.fileName, dirRec.pinyinInitials, dirRec.pinyinFull);
-                            if (segMask != 0) {
-                                const uint64_t parentMask = getFastDirClauseMask(
-                                    dirRec.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
-                                const uint64_t rawFullMask = parentMask | segMask;
-                                if ((rawFullMask & negMask) == 0 && rawFullMask != 0 &&
-                                    std::find(localMasks.begin(), localMasks.end(), rawFullMask) == localMasks.end()) {
-                                    localMasks.push_back(rawFullMask);
-                                }
-                            }
-                        }
-                    } catch (...) {
-                    }
-                    {
-                        std::unique_lock<std::mutex> lk(barrierMutex);
-                        if (++barrierArrived == activeThreads) {
-                            std::vector<uint64_t> allMasks;
-                            if ((rootClauseMask & negMask) == 0) {
-                                allMasks.push_back(rootClauseMask);
-                            }
-                            for (const auto& tm : threadDirMasks) {
-                                for (uint64_t m : tm) {
-                                    if (std::find(allMasks.begin(), allMasks.end(), m) == allMasks.end()) {
-                                        allMasks.push_back(m);
-                                    }
-                                }
-                            }
-                            std::vector<uint64_t> antichain;
-                            for (size_t i = 0; i < allMasks.size(); ++i) {
-                                bool dominated = false;
-                                for (size_t j = 0; j < allMasks.size(); ++j) {
-                                    if (i != j && (allMasks[i] & allMasks[j]) == allMasks[i] &&
-                                        allMasks[i] != allMasks[j]) {
-                                        dominated = true;
-                                        break;
-                                    }
-                                }
-                                if (!dominated) {
-                                    antichain.push_back(allMasks[i]);
-                                }
-                            }
-                            if (antichain.empty()) {
-                                maximalDirMasks[0] = rootClauseMask & ~negMask;
-                                maximalDirMaskCount = 1;
-                            } else if (antichain.size() <= 8) {
-                                maximalDirMaskCount = antichain.size();
-                                for (size_t k = 0; k < maximalDirMaskCount; ++k) {
-                                    maximalDirMasks[k] = antichain[k];
-                                }
-                            } else {
-                                uint64_t unionMask = 0;
-                                for (uint64_t m : antichain) unionMask |= m;
-                                maximalDirMasks[0] = unionMask;
-                                maximalDirMaskCount = 1;
-                            }
-                            barrierCv.notify_all();
-                        } else {
-                            barrierCv.wait(lk, [&]() { return barrierArrived == activeThreads; });
+                auto& localMasks = threadDirMasks[t];
+                for (size_t i = startIdx; i < endIdx; ++i) {
+                    if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) break;
+                    const auto* stored = m_Store.at(i);
+                    if (!stored || !stored->isDirectory()) continue;
+                    const FileRecord dirRec = m_Store.view(*stored);
+                    if (dirRec.fileName.empty() || dirRec.fileName == L".") continue;
+                    const uint64_t segMask = expr.computeDirectorySegmentMask(
+                        dirRec.fileName, dirRec.pinyinInitials, dirRec.pinyinFull);
+                    if (segMask != 0) {
+                        const uint64_t parentMask = getFastDirClauseMask(
+                            dirRec.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
+                        const uint64_t rawFullMask = parentMask | segMask;
+                        if ((rawFullMask & negMask) == 0 && rawFullMask != 0 &&
+                            std::find(localMasks.begin(), localMasks.end(), rawFullMask) == localMasks.end()) {
+                            localMasks.push_back(rawFullMask);
                         }
                     }
                 }
+            });
 
-                try {
-                    auto& localCand = threadCandidates[t];
-                    auto& localRank = threadRanked[t];
-                    auto& localStat = threadHydrated[t];
-                    localCand.reserve(256);
-                    localRank.reserve(256);
-                    std::unordered_map<DWORDLONG, DirScanMeta> localDirCache;
-                    localDirCache.reserve(64);
-                    DWORDLONG lastParentFrn = UINT64_MAX;
-                    DirScanMeta lastDirMeta{};
+            if (isCancelled && isCancelled()) return results;
 
-                    for (size_t i = startIdx; i < endIdx; ++i) {
-                        if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) break;
-                        const auto* stored = m_Store.at(i);
-                        if (!stored) continue;
-                        const FileRecord record = m_Store.view(*stored);
-                        if (useOptimisticDirPreFilter) {
-                            bool possible = false;
-                            for (size_t m = 0; m < maximalDirMaskCount; ++m) {
-                                if (expr.matchesSeparable(record, driveW, maximalDirMasks[m])) {
-                                    possible = true;
-                                    break;
-                                }
-                            }
-                            if (!possible) {
-                                continue;
+            std::vector<uint64_t> allMasks;
+            if ((rootClauseMask & negMask) == 0) {
+                allMasks.push_back(rootClauseMask);
+            }
+            for (const auto& tm : threadDirMasks) {
+                for (uint64_t m : tm) {
+                    if (std::find(allMasks.begin(), allMasks.end(), m) == allMasks.end()) {
+                        allMasks.push_back(m);
+                    }
+                }
+            }
+            std::vector<uint64_t> antichain;
+            for (size_t i = 0; i < allMasks.size(); ++i) {
+                bool dominated = false;
+                for (size_t j = 0; j < allMasks.size(); ++j) {
+                    if (i != j && (allMasks[i] & allMasks[j]) == allMasks[i] &&
+                        allMasks[i] != allMasks[j]) {
+                        dominated = true;
+                        break;
+                    }
+                }
+                if (!dominated) {
+                    antichain.push_back(allMasks[i]);
+                }
+            }
+            if (antichain.empty()) {
+                maximalDirMasks[0] = rootClauseMask & ~negMask;
+                maximalDirMaskCount = 1;
+            } else if (antichain.size() <= 8) {
+                maximalDirMaskCount = antichain.size();
+                for (size_t k = 0; k < maximalDirMaskCount; ++k) {
+                    maximalDirMasks[k] = antichain[k];
+                }
+            } else {
+                uint64_t unionMask = 0;
+                for (uint64_t m : antichain) unionMask |= m;
+                maximalDirMasks[0] = unionMask;
+                maximalDirMaskCount = 1;
+            }
+        }
+
+        // Pass 2: scan index shards across reusable `QueryThreadPool` (`P-02`).
+        if (activeThreads > 0) {
+            tools3000::service::QueryThreadPool::instance().parallelFor(activeThreads, [&](size_t t) {
+                const size_t startIdx = t * chunkSize;
+                const size_t endIdx = (std::min)(startIdx + chunkSize, totalRecords);
+                auto& flatMaskCache = threadFlatMaskCaches[t];
+                DWORDLONG lastMaskParentFrn = UINT64_MAX;
+                uint64_t lastDirClauseMask = 0;
+                auto& localCand = threadCandidates[t];
+                auto& localRank = threadRanked[t];
+                auto& localPendingStat = threadPendingStat[t];
+                localCand.reserve(256);
+                localRank.reserve(256);
+                std::unordered_map<DWORDLONG, bool> localExCache;
+                DWORDLONG lastExParentFrn = UINT64_MAX;
+                bool lastExResult = false;
+                std::wstring scratchPath;
+
+                for (size_t i = startIdx; i < endIdx; ++i) {
+                    if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) break;
+                    const auto* stored = m_Store.at(i);
+                    if (!stored) continue;
+                    const FileRecord record = m_Store.view(*stored);
+                    if (useOptimisticDirPreFilter) {
+                        bool possible = false;
+                        for (size_t m = 0; m < maximalDirMaskCount; ++m) {
+                            if (expr.matchesSeparable(record, driveW, maximalDirMasks[m])) {
+                                possible = true;
+                                break;
                             }
                         }
-                        DWORDLONG id = record.fileReferenceNumber;
-                        const uint64_t dirMask = getFastDirClauseMask(record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
-                        int fPriority = 0;
-                        if (testCandidate(id, record, dirMask, lastParentFrn, lastDirMeta, localDirCache, localStat, fPriority)) {
-                            localCand.push_back(id);
-                            localRank.push_back({id, record, expr.calculateRank(record), fPriority});
+                        if (!possible) {
+                            continue;
                         }
                     }
-                } catch (...) {
+                    const DWORDLONG id = record.fileReferenceNumber;
+                    const uint64_t dirMask = getFastDirClauseMask(
+                        record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
+                    int fPriority = 0;
+                    uint8_t pTier = tools3000::service::kPathTierPrimaryUser;
+                    scratchPath.clear();
+                    const CandidateEvalResult eval = testCandidate(
+                        id, *stored, record, dirMask, lastExParentFrn, lastExResult, localExCache, scratchPath, fPriority, pTier);
+                    if (eval == CandidateEvalResult::MatchedInMemory) {
+                        localCand.push_back(id);
+                        const int rnk = expr.calculateRank(record);
+                        localRank.push_back({id, record, rnk, fPriority, effectiveSingleDriveTier(pTier, rnk)});
+                    } else if (eval == CandidateEvalResult::NeedsLockFreeStat) {
+                        appendPendingStat(localPendingStat, id, dirMask, record, std::move(scratchPath), fPriority, pTier);
+                    }
                 }
             });
         }
 
-        for (auto& w : workers) {
-            if (w.joinable()) w.join();
-        }
         if (isCancelled && isCancelled()) return results;
 
         size_t totalFound = 0;
-        size_t totalHydrated = 0;
-        for (unsigned int t = 0; t < numThreads; ++t) {
+        size_t totalPendingStat = 0;
+        for (unsigned int t = 0; t < activeThreads; ++t) {
             totalFound += threadCandidates[t].size();
-            totalHydrated += threadHydrated[t].size();
+            totalPendingStat += threadPendingStat[t].size();
         }
 
         candidates.reserve(totalFound);
         ranked.reserve(totalFound);
-        hydratedStats.reserve(totalHydrated);
-        for (unsigned int t = 0; t < numThreads; ++t) {
+        pendingStatCandidates.reserve(totalPendingStat);
+        for (unsigned int t = 0; t < activeThreads; ++t) {
             candidates.insert(candidates.end(),
                               std::make_move_iterator(threadCandidates[t].begin()),
                               std::make_move_iterator(threadCandidates[t].end()));
             ranked.insert(ranked.end(),
                           std::make_move_iterator(threadRanked[t].begin()),
                           std::make_move_iterator(threadRanked[t].end()));
-            hydratedStats.insert(hydratedStats.end(),
-                                 threadHydrated[t].begin(),
-                                 threadHydrated[t].end());
+            pendingStatCandidates.insert(pendingStatCandidates.end(),
+                                         std::make_move_iterator(threadPendingStat[t].begin()),
+                                         std::make_move_iterator(threadPendingStat[t].end()));
         }
     }
-    const auto toSemanticTier = [](int folderPriority) noexcept -> int {
-        if (folderPriority <= 1) return 4;   // Temp / Cache / System Build
-        if (folderPriority <= 10) return 3;  // .lnk / .url Shortcut
-        if (folderPriority <= 20) return 2;  // AppData / ProgramData
-        if (folderPriority <= 80) return 1;  // WeChat / QQ / IM Chat History
-        return 0;                            // Normal User Directory (D:\Projects, Desktop, Documents, etc.)
-    };
-    const auto compareRank = [&expr, &toSemanticTier](const auto& a, const auto& b) {
-        const int tierA = toSemanticTier(a.folderPriority);
-        const int tierB = toSemanticTier(b.folderPriority);
-        if (tierA != tierB) return tierA < tierB;
+
+    const auto compareRank = [&expr](const auto& a, const auto& b) {
+        if (a.pathTier != b.pathTier) return a.pathTier < b.pathTier;
         if (a.rank != b.rank) return a.rank < b.rank;
         if (expr.hasContentFilter()) {
             if (a.folderPriority != b.folderPriority) return a.folderPriority > b.folderPriority;
@@ -1465,54 +1760,215 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         if (cmp != 0) return cmp < 0;
         return a.record.fileName < b.record.fileName;
     };
-    if (isCancelled && isCancelled()) return results;
-    const size_t resultCount = std::min(ranked.size(), static_cast<size_t>(limit));
-    if (resultCount < ranked.size()) {
-        std::partial_sort(ranked.begin(), ranked.begin() + resultCount, ranked.end(), compareRank);
-    } else {
-        std::sort(ranked.begin(), ranked.end(), compareRank);
-    }
 
-    {
-        std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
-        if (!expr.requiresFullPath() &&
-            cacheQueryKey.find_first_of(L"*?|/\\: \t\r\n") == std::wstring::npos) {
-            m_CachedQuery = cacheQueryKey;
-            m_CachedCandidates = std::move(candidates);
-            m_CachedGeneration = generation;
-            m_CachedExcludeHidden = excludeOpts.excludeHidden;
-            m_CachedExcludeSystem = excludeOpts.excludeSystem;
-            m_CachedExcludePatterns = excludeOpts.patterns;
-            m_CachedParseOptions = parseOpts;
+    std::vector<DWORDLONG> resultIds;
+
+    if (pendingStatCandidates.empty()) {
+        if (isCancelled && isCancelled()) return results;
+        const size_t resultCount = std::min(ranked.size(), static_cast<size_t>(limit));
+        if (resultCount < ranked.size()) {
+            std::partial_sort(ranked.begin(), ranked.begin() + resultCount, ranked.end(), compareRank);
         } else {
+            std::sort(ranked.begin(), ranked.end(), compareRank);
+        }
+
+        {
+            std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
+            if (!expr.requiresFullPath() &&
+                cacheQueryKey.find_first_of(L"*?|/\\: \t\r\n") == std::wstring::npos) {
+                m_CachedQuery = cacheQueryKey;
+                m_CachedCandidates = std::move(candidates);
+                m_CachedGeneration = generation;
+                m_CachedExcludeHidden = excludeOpts.excludeHidden;
+                m_CachedExcludeSystem = excludeOpts.excludeSystem;
+                m_CachedExcludePatterns = excludeOpts.patterns;
+                m_CachedParseOptions = parseOpts;
+            } else {
+                m_CachedQuery.clear();
+                m_CachedCandidates.clear();
+                m_CachedExcludePatterns.clear();
+            }
+        }
+
+        results.reserve(resultCount);
+        resultIds.reserve(resultCount);
+        for (size_t i = 0; i < resultCount; ++i) {
+            const auto& candidate = ranked[i];
+            results.push_back(SearchResult{
+                std::wstring(candidate.record.fileName),
+                buildFullPath(candidate.id),
+                candidate.record.isDirectory,
+                candidate.record.fileSize,
+                candidate.record.creationTime,
+                candidate.record.lastWriteTime,
+                candidate.rank,
+                candidate.folderPriority,
+                candidate.pathTier,
+            });
+            resultIds.push_back(candidate.id);
+        }
+
+        // Never hold the index lock across filesystem I/O.
+        lock.unlock();
+    } else {
+        // Materialize in-memory matches before unlocking `m_MapMutex`, then resolve
+        // unhydrated `size:` / `dm:` candidates in parallel strictly OUTSIDE `m_MapMutex` (`P-02`).
+        struct OwnedRankedItem {
+            DWORDLONG id = 0;
+            std::wstring fileName;
+            std::wstring fullPath;
+            bool isDirectory = false;
+            uint64_t fileSize = 0;
+            uint64_t creationTime = 0;
+            uint64_t lastWriteTime = 0;
+            int rank = 7;
+            int folderPriority = 200;
+            uint8_t pathTier = tools3000::service::kPathTierPrimaryUser;
+        };
+
+        std::vector<OwnedRankedItem> ownedRanked;
+        ownedRanked.reserve(ranked.size() + pendingStatCandidates.size());
+        for (const auto& r : ranked) {
+            ownedRanked.push_back(OwnedRankedItem{
+                r.id,
+                std::wstring(r.record.fileName),
+                buildFullPath(r.id),
+                r.record.isDirectory,
+                r.record.fileSize,
+                r.record.creationTime,
+                r.record.lastWriteTime,
+                r.rank,
+                r.folderPriority,
+                r.pathTier,
+            });
+        }
+        {
+            std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
             m_CachedQuery.clear();
             m_CachedCandidates.clear();
             m_CachedExcludePatterns.clear();
         }
-    }
 
-    results.reserve(resultCount);
-    std::vector<DWORDLONG> resultIds;
-    resultIds.reserve(resultCount);
+        // Release `m_MapMutex` BEFORE any disk stat calls so `UsnListenerLoop` never blocks!
+        lock.unlock();
 
-    for (size_t i = 0; i < resultCount; ++i) {
-        const auto& candidate = ranked[i];
-        results.push_back({
-            std::wstring(candidate.record.fileName),
-            buildFullPath(candidate.id),
-            candidate.record.isDirectory,
-            candidate.record.fileSize,
-            candidate.record.creationTime,
-            candidate.record.lastWriteTime,
-            candidate.rank,
-            candidate.folderPriority
+        if (isCancelled && isCancelled()) return results;
+
+        const size_t pendingCount = pendingStatCandidates.size();
+        const size_t statBatchSize = 64;
+        const size_t numStatBatches = (pendingCount + statBatchSize - 1) / statBatchSize;
+        std::vector<std::vector<OwnedRankedItem>> batchMatched(numStatBatches);
+        std::vector<std::vector<HydratedStat>> batchHydrated(numStatBatches);
+
+        tools3000::service::QueryThreadPool::instance().parallelFor(numStatBatches, [&](size_t bIdx) {
+            const size_t start = bIdx * statBatchSize;
+            const size_t end = (std::min)(start + statBatchSize, pendingCount);
+            auto& localHits = batchMatched[bIdx];
+            auto& localStats = batchHydrated[bIdx];
+            for (size_t k = start; k < end; ++k) {
+                if (isCancelled && isCancelled()) break;
+                auto& item = pendingStatCandidates[k];
+                uint64_t fSize = item.fileSize;
+                uint64_t cTime = item.creationTime;
+                uint64_t mTime = item.lastWriteTime;
+                const bool statOk = queryFrnDiskMetadata(item.id, item.fullPath, fSize, cTime, mTime);
+                if (statOk) {
+                    item.fileSize = fSize;
+                    item.creationTime = cTime;
+                    item.lastWriteTime = mTime;
+                    localStats.push_back(HydratedStat{item.id, fSize, cTime, mTime});
+                } else if (isRealTimeValidationEnabled()) {
+                    continue;
+                }
+
+                FileRecord viewRec{};
+                viewRec.fileReferenceNumber = item.id;
+                viewRec.fileName = item.fileName;
+                viewRec.normalizedName = item.normalizedName;
+                viewRec.pinyinInitials = item.pinyinInitials.empty()
+                    ? std::wstring_view(item.fileName)
+                    : std::wstring_view(item.pinyinInitials);
+                viewRec.pinyinFull = item.pinyinFull.empty()
+                    ? std::wstring_view(item.fileName)
+                    : std::wstring_view(item.pinyinFull);
+                viewRec.isDirectory = item.isDirectory;
+                viewRec.fileAttributes = item.fileAttributes;
+                viewRec.fileSize = item.fileSize;
+                viewRec.creationTime = item.creationTime;
+                viewRec.lastWriteTime = item.lastWriteTime;
+
+                const auto status = expr.evaluateInMemoryWithDirMask(
+                    viewRec, driveW, item.dirMask, /*isMetadataHydrated=*/true,
+                    [&item]() { return item.fullPath; });
+                if (status == SearchExpression::InMemoryMatchStatus::Matched) {
+                    const int rnk = expr.calculateRank(viewRec);
+                    localHits.push_back(OwnedRankedItem{
+                        item.id,
+                        std::move(item.fileName),
+                        std::move(item.fullPath),
+                        item.isDirectory,
+                        item.fileSize,
+                        item.creationTime,
+                        item.lastWriteTime,
+                        rnk,
+                        item.folderPriority,
+                        effectiveSingleDriveTier(item.pathTier, rnk),
+                    });
+                }
+            }
         });
-        resultIds.push_back(candidate.id);
-    }
 
-    // Never hold the index lock across filesystem I/O. The result owns its
-    // strings and can safely be enriched after concurrent USN updates resume.
-    lock.unlock();
+        if (isCancelled && isCancelled()) return results;
+
+        for (size_t bIdx = 0; bIdx < numStatBatches; ++bIdx) {
+            ownedRanked.insert(ownedRanked.end(),
+                               std::make_move_iterator(batchMatched[bIdx].begin()),
+                               std::make_move_iterator(batchMatched[bIdx].end()));
+            hydratedStats.insert(hydratedStats.end(),
+                                 batchHydrated[bIdx].begin(),
+                                 batchHydrated[bIdx].end());
+        }
+
+        const auto compareOwned = [&expr](const OwnedRankedItem& a, const OwnedRankedItem& b) {
+            if (a.pathTier != b.pathTier) return a.pathTier < b.pathTier;
+            if (a.rank != b.rank) return a.rank < b.rank;
+            if (expr.hasContentFilter()) {
+                if (a.folderPriority != b.folderPriority) return a.folderPriority > b.folderPriority;
+                return a.lastWriteTime > b.lastWriteTime;
+            }
+            if (a.folderPriority != b.folderPriority) return a.folderPriority > b.folderPriority;
+            if (a.lastWriteTime != b.lastWriteTime) return a.lastWriteTime > b.lastWriteTime;
+            if (a.fileName.size() != b.fileName.size()) return a.fileName.size() < b.fileName.size();
+            const int cmp = _wcsnicmp(a.fileName.data(), b.fileName.data(), a.fileName.size());
+            if (cmp != 0) return cmp < 0;
+            return a.fileName < b.fileName;
+        };
+
+        const size_t resultCount = std::min(ownedRanked.size(), static_cast<size_t>(limit));
+        if (resultCount < ownedRanked.size()) {
+            std::partial_sort(ownedRanked.begin(), ownedRanked.begin() + resultCount, ownedRanked.end(), compareOwned);
+        } else {
+            std::sort(ownedRanked.begin(), ownedRanked.end(), compareOwned);
+        }
+
+        results.reserve(resultCount);
+        resultIds.reserve(resultCount);
+        for (size_t i = 0; i < resultCount; ++i) {
+            auto& item = ownedRanked[i];
+            results.push_back(SearchResult{
+                std::move(item.fileName),
+                std::move(item.fullPath),
+                item.isDirectory,
+                item.fileSize,
+                item.creationTime,
+                item.lastWriteTime,
+                item.rank,
+                item.folderPriority,
+                item.pathTier,
+            });
+            resultIds.push_back(item.id);
+        }
+    }
 
     std::vector<SearchResult> validatedResults;
     validatedResults.reserve(results.size());
@@ -1671,6 +2127,9 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
 
     const bool isNonSystemDrive = (m_DriveLetter != 'C' && m_DriveLetter != 'c');
     const wchar_t driveW = static_cast<wchar_t>(m_DriveLetter);
+    const uint64_t rootContentClauseMask = filterHasSeparableGroups
+        ? fileFilterExpr.computeDirectorySegmentMask(std::wstring_view(&driveW, 1))
+        : 0ULL;
 
     auto resolveFolderNode = [&](DWORDLONG parentFrn,
                                  std::unordered_map<DWORDLONG, CachedFolderNode>& folderCache) -> const CachedFolderNode& {
@@ -1680,6 +2139,7 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
         }
 
         CachedFolderNode node;
+        node.dirClauseMask = rootContentClauseMask;
         if (parentFrn == 0) {
             node.fullDirPath = {driveW, L':'};
             node.lowerDirPath = {static_cast<wchar_t>(std::towlower(driveW)), L':'};
@@ -1934,16 +2394,35 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
         numThreads = 1;
     }
 
-    std::vector<std::vector<ContentCandidate>> threadBuckets(numThreads);
     const size_t chunkSize = (totalSlots + numThreads - 1) / numThreads;
-    std::vector<std::thread> workers;
-    workers.reserve(numThreads > 1 ? numThreads : 0);
+    unsigned int activeBuckets = 0;
+    for (unsigned int t = 0; t < numThreads; ++t) {
+        if (t * chunkSize < totalSlots) {
+            ++activeBuckets;
+        }
+    }
+
+    struct DeferredContentStatItem {
+        uint64_t frn = 0;
+        uint64_t dirMask = 0;
+        std::wstring fileName;
+        std::wstring normalizedName;
+        std::wstring pinyinInitials;
+        std::wstring pinyinFull;
+        std::wstring fullPath;
+        uint32_t fileAttributes = 0;
+        ContentCandidate candidate;
+    };
+
+    std::vector<std::vector<ContentCandidate>> threadBuckets(activeBuckets);
+    std::vector<std::vector<DeferredContentStatItem>> threadDeferredStats(activeBuckets);
 
     const size_t cancelMask = fileFilterExpr.hasRegexClause() ? 0x3Fu : 0xFFu;
 
-    auto scanRange = [&](unsigned int bucketIdx, size_t startIdx, size_t endIdx) {
+    auto scanRange = [&](size_t bucketIdx, size_t startIdx, size_t endIdx) {
         try {
             auto& localOut = threadBuckets[bucketIdx];
+            auto& localDeferred = threadDeferredStats[bucketIdx];
             localOut.reserve((std::min<size_t>)((endIdx - startIdx) / 32 + 64, 16384));
             std::unordered_map<DWORDLONG, CachedFolderNode> localFolderCache;
             localFolderCache.reserve(2048);
@@ -1992,6 +2471,7 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                     return builtFullPath;
                 };
 
+                bool needsDeferredStat = false;
                 if (hasFileFilter) {
                     if (filterIsFullySeparable) {
                         if (!fileFilterExpr.matchesSeparable(record, driveW, dirNode.dirClauseMask)) {
@@ -2001,8 +2481,13 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                         auto getFullPath = [&]() -> std::wstring {
                             return buildFullPathNow();
                         };
-                        if (!fileFilterExpr.matchesWithLazyPath(record, driveW, getFullPath)) {
+                        const auto status = fileFilterExpr.evaluateInMemoryWithDirMask(
+                            record, driveW, dirNode.dirClauseMask, stored->isMetadataHydrated(), getFullPath);
+                        if (status == SearchExpression::InMemoryMatchStatus::Rejected) {
                             continue;
+                        }
+                        if (status == SearchExpression::InMemoryMatchStatus::NeedsDiskStat) {
+                            needsDeferredStat = true;
                         }
                     }
                 }
@@ -2021,47 +2506,104 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                 }
 
                 const double extOffset = computeExtensionSignalOffset(extView, normName, explicitLock);
-                localOut.push_back(ContentCandidate{
+                ContentCandidate cand{
                     .fileName = std::wstring(record.fileName),
                     .fullPath = std::move(finalPath),
                     .fileSize = record.fileSize,
                     .creationTime = record.creationTime,
                     .lastWriteTime = record.lastWriteTime,
                     .priorityScore = (std::max)(1.0, dirNode.basePriority + extOffset)
-                });
+                };
+
+                if (needsDeferredStat) {
+                    if (localDeferred.size() < 32768) {
+                        const bool sameInit = (record.pinyinInitials.data() == record.fileName.data());
+                        const bool sameFull = (record.pinyinFull.data() == record.fileName.data());
+                        localDeferred.push_back(DeferredContentStatItem{
+                            record.fileReferenceNumber,
+                            dirNode.dirClauseMask,
+                            cand.fileName,
+                            std::wstring(record.normalizedName),
+                            sameInit ? std::wstring{} : std::wstring(record.pinyinInitials),
+                            sameFull ? std::wstring{} : std::wstring(record.pinyinFull),
+                            cand.fullPath,
+                            record.fileAttributes,
+                            std::move(cand),
+                        });
+                    }
+                } else {
+                    localOut.push_back(std::move(cand));
+                }
             }
         } catch (...) {
         }
     };
 
-    if (numThreads == 1) {
-        scanRange(0, 0, totalSlots);
-    } else {
-        for (unsigned int t = 0; t < numThreads; ++t) {
+    if (activeBuckets > 0) {
+        tools3000::service::QueryThreadPool::instance().parallelFor(activeBuckets, [&](size_t t) {
             const size_t startIdx = t * chunkSize;
             const size_t endIdx = (std::min)(startIdx + chunkSize, totalSlots);
-            if (startIdx >= endIdx) break;
-            workers.emplace_back(scanRange, t, startIdx, endIdx);
-        }
-        for (auto& w : workers) {
-            if (w.joinable()) w.join();
-        }
+            scanRange(t, startIdx, endIdx);
+        });
     }
 
     lock.unlock();
     if (isCancelled && isCancelled()) return collected;
 
     size_t totalFound = 0;
-    for (const auto& b : threadBuckets) {
-        totalFound += b.size();
+    size_t totalDeferred = 0;
+    for (size_t b = 0; b < activeBuckets; ++b) {
+        totalFound += threadBuckets[b].size();
+        totalDeferred += threadDeferredStats[b].size();
     }
-    collected.reserve(totalFound);
+    collected.reserve(totalFound + totalDeferred);
     for (auto& b : threadBuckets) {
         collected.insert(
             collected.end(),
             std::make_move_iterator(b.begin()),
             std::make_move_iterator(b.end())
         );
+    }
+
+    if (totalDeferred > 0) {
+        for (auto& db : threadDeferredStats) {
+            for (auto& dItem : db) {
+                if (isCancelled && isCancelled()) return {};
+                uint64_t fSize = dItem.candidate.fileSize;
+                uint64_t cTime = dItem.candidate.creationTime;
+                uint64_t mTime = dItem.candidate.lastWriteTime;
+                if (queryFrnDiskMetadata(dItem.frn, dItem.fullPath, fSize, cTime, mTime)) {
+                    dItem.candidate.fileSize = fSize;
+                    dItem.candidate.creationTime = cTime;
+                    dItem.candidate.lastWriteTime = mTime;
+                }
+                if (dItem.candidate.fileSize > MaxContentCandidateBytes) {
+                    continue;
+                }
+                FileRecord recView{};
+                recView.fileReferenceNumber = dItem.frn;
+                recView.fileName = dItem.fileName;
+                recView.normalizedName = dItem.normalizedName;
+                recView.pinyinInitials = dItem.pinyinInitials.empty()
+                    ? std::wstring_view(dItem.fileName)
+                    : std::wstring_view(dItem.pinyinInitials);
+                recView.pinyinFull = dItem.pinyinFull.empty()
+                    ? std::wstring_view(dItem.fileName)
+                    : std::wstring_view(dItem.pinyinFull);
+                recView.isDirectory = false;
+                recView.fileAttributes = dItem.fileAttributes;
+                recView.fileSize = dItem.candidate.fileSize;
+                recView.creationTime = dItem.candidate.creationTime;
+                recView.lastWriteTime = dItem.candidate.lastWriteTime;
+
+                if (fileFilterExpr.evaluateInMemoryWithDirMask(
+                        recView, driveW, dItem.dirMask, /*isMetadataHydrated=*/true,
+                        [&dItem]() { return dItem.fullPath; }) ==
+                    SearchExpression::InMemoryMatchStatus::Matched) {
+                    collected.push_back(std::move(dItem.candidate));
+                }
+            }
+        }
     }
 
     auto comparePriority = [](const ContentCandidate& a, const ContentCandidate& b) {
@@ -2079,6 +2621,7 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
 }
 
 std::wstring MftParser::buildFullPath(DWORDLONG fileReferenceNumber) const {
+    m_LastSearchPathBuildCount.fetch_add(1, std::memory_order_relaxed);
     const auto* stored = m_Store.find(fileReferenceNumber);
     if (!stored) return L"";
 
@@ -2161,6 +2704,7 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
     {
         std::unique_lock lock(m_MapMutex);
         m_Store.clear();
+        m_Store.setDriveLetter(m_DriveLetter ? m_DriveLetter : 'C');
         m_Store.reserve(expectedRecords);
 
         FileRecordInit scratch;
@@ -2176,6 +2720,7 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
             if (!next(scratch)) break;
             m_Store.upsert(scratch);
         }
+        m_Store.recomputeHierarchyMetadata();
         m_Store.releaseBuildScratch();
         m_InitialScanDone.store(true, std::memory_order_release);
     }
