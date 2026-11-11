@@ -5,7 +5,7 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useId, useRef, type FC, type ReactNode, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ChevronUp, Check, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Check, X, AlertTriangle, Loader2 } from 'lucide-react';
 import { ControlA11yContext, useControlA11y } from './ControlA11yContext';
 import { acquireHotkeyPause, releaseHotkeyPause } from '../utils/hotkeyPauseCoordinator';
 import './UIKit.css';
@@ -1135,6 +1135,248 @@ export const Tooltip: FC<TooltipProps> = ({
     </span>
   );
 };
+
+/* ── ColorPickerInput (P-09 60FPS 即时预览 + 150ms 节流防写盘风暴拾色器) ──────── */
+
+export interface ColorPickerInputProps {
+  id?: string;
+  value: string;
+  /** 60FPS 本地即时预览回调（仅更新本地 UI 状态，不发 IPC） */
+  onPreview?: (hex: string) => void;
+  /** 节流与松手/失焦最终提交回调（用于持久化 IPC） */
+  onChange: (hex: string) => void;
+  throttleMs?: number;
+  disabled?: boolean;
+  className?: string;
+  ariaLabel?: string;
+  title?: string;
+}
+
+export const ColorPickerInput: FC<ColorPickerInputProps> = ({
+  id,
+  value,
+  onPreview,
+  onChange,
+  throttleMs = 150,
+  disabled = false,
+  className = '',
+  ariaLabel,
+  title,
+}) => {
+  const [activeDraft, setActiveDraft] = useState<string | null>(null);
+  const lastEmitAtRef = useRef<number>(0);
+  const pendingHexRef = useRef<string | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const onChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  const flushPending = useCallback(() => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (pendingHexRef.current !== null) {
+      const finalHex = pendingHexRef.current;
+      pendingHexRef.current = null;
+      lastEmitAtRef.current = Date.now();
+      onChangeRef.current(finalHex);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      if (pendingHexRef.current !== null) {
+        const finalHex = pendingHexRef.current;
+        pendingHexRef.current = null;
+        onChangeRef.current(finalHex);
+      }
+    };
+  }, []);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const nextHex = e.target.value;
+    setActiveDraft(nextHex);
+    onPreview?.(nextHex);
+
+    if (throttleMs <= 0) {
+      onChange(nextHex);
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - lastEmitAtRef.current;
+    if (elapsed >= throttleMs && timerRef.current === null) {
+      lastEmitAtRef.current = now;
+      pendingHexRef.current = null;
+      onChange(nextHex);
+    } else {
+      pendingHexRef.current = nextHex;
+      if (timerRef.current === null) {
+        const remaining = Math.max(16, throttleMs - elapsed);
+        timerRef.current = window.setTimeout(() => {
+          timerRef.current = null;
+          if (pendingHexRef.current !== null) {
+            const committed = pendingHexRef.current;
+            pendingHexRef.current = null;
+            lastEmitAtRef.current = Date.now();
+            onChangeRef.current(committed);
+          }
+        }, remaining);
+      }
+    }
+  };
+
+  const handleComplete = () => {
+    flushPending();
+    setActiveDraft(null);
+  };
+
+  const normalizedValue = /^#[0-9a-fA-F]{6}$/.test(activeDraft ?? value)
+    ? (activeDraft ?? value)
+    : '#6366f1';
+
+  return (
+    <input
+      id={id}
+      type="color"
+      className={className}
+      value={normalizedValue}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      title={title}
+      onChange={handleInputChange}
+      onBlur={handleComplete}
+      onPointerUp={handleComplete}
+    />
+  );
+};
+
+/* ── ConfirmModal (V-04 非阻塞微晶二次确认弹窗，替代原生阻塞式 window.confirm) ── */
+
+export interface ConfirmModalProps {
+  open: boolean;
+  title: string;
+  description: ReactNode;
+  confirmText?: string;
+  cancelText?: string;
+  variant?: 'danger' | 'primary';
+  loading?: boolean;
+  onConfirm: () => void | Promise<void>;
+  onClose: () => void;
+}
+
+export const ConfirmModal: FC<ConfirmModalProps> = ({
+  open,
+  title,
+  description,
+  confirmText,
+  cancelText,
+  variant = 'danger',
+  loading = false,
+  onConfirm,
+  onClose,
+}) => {
+  const { t } = useTranslation();
+  const [submitting, setSubmitting] = useState(false);
+  const isBusy = loading || submitting;
+
+  const handleConfirm = async () => {
+    if (isBusy) return;
+    try {
+      setSubmitting(true);
+      await onConfirm();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      title={title}
+      onClose={() => {
+        if (!isBusy) onClose();
+      }}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={isBusy}>
+            {cancelText ?? t('common.cancel', 'Cancel')}
+          </Button>
+          <Button
+            variant={variant === 'danger' ? 'danger' : 'primary'}
+            onClick={() => void handleConfirm()}
+            disabled={isBusy}
+          >
+            {isBusy && <Loader2 size={14} className="uikit-spin-icon" aria-hidden="true" />}
+            <span>{confirmText ?? t('common.confirm', 'Confirm')}</span>
+          </Button>
+        </>
+      }
+    >
+      <div className="uikit-confirm-modal__content">
+        <div
+          className={`uikit-confirm-modal__icon uikit-confirm-modal__icon--${variant}`}
+          aria-hidden="true"
+        >
+          <AlertTriangle size={20} strokeWidth={2.2} />
+        </div>
+        <div className="uikit-confirm-modal__desc">{description}</div>
+      </div>
+    </Modal>
+  );
+};
+
+/* ── PageSkeleton (V-04 统一页面微晶流光骨架屏) ─────────────────────────────── */
+
+export interface PageSkeletonProps {
+  cards?: number;
+  rowsPerCard?: number;
+  className?: string;
+}
+
+export const PageSkeleton: FC<PageSkeletonProps> = ({
+  cards = 2,
+  rowsPerCard = 3,
+  className = '',
+}) => {
+  const { t } = useTranslation();
+  return (
+    <div
+      className={`uikit-page-skeleton ${className}`.trim()}
+      role="status"
+      aria-live="polite"
+      aria-label={t('common.loading', 'Loading...')}
+    >
+      {Array.from({ length: cards }).map((_, cardIdx) => (
+        <div key={cardIdx} className="uikit-page-skeleton__card">
+          <div className="uikit-page-skeleton__header">
+            <div className="uikit-page-skeleton__bar uikit-page-skeleton__bar--title" />
+            <div className="uikit-page-skeleton__bar uikit-page-skeleton__bar--subtitle" />
+          </div>
+          <div className="uikit-page-skeleton__rows">
+            {Array.from({ length: rowsPerCard }).map((__, rowIdx) => (
+              <div key={rowIdx} className="uikit-page-skeleton__row">
+                <div className="uikit-page-skeleton__row-text">
+                  <div className="uikit-page-skeleton__bar uikit-page-skeleton__bar--label" />
+                  <div className="uikit-page-skeleton__bar uikit-page-skeleton__bar--desc" />
+                </div>
+                <div className="uikit-page-skeleton__pill" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 
 
 

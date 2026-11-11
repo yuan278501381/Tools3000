@@ -501,9 +501,15 @@ html[data-surface="quicklook"] #root {
   white-space: pre;
 }
 
-.ql-code-content.virtualized .ql-code-line {
+.ql-code-content.virtualized:not(.wrap) .ql-code-line {
   height: var(--ql-code-line-height);
   overflow: hidden;
+}
+
+.ql-code-content.virtualized.wrap .ql-code-line {
+  height: auto;
+  min-height: var(--ql-code-line-height);
+  overflow: visible;
 }
 
 .ql-code-line::before {
@@ -531,17 +537,25 @@ html[data-surface="quicklook"] #root {
 /* ── 图片预览 ────────────────────────────────────────────────────────────── */
 .ql-image-view {
   display: flex;
-  align-items: center;
-  justify-content: center;
   flex: 1;
   min-height: 0;
   padding: 24px;
   box-sizing: border-box;
+  overflow: auto;
+}
+
+.ql-image-view--zoomed {
+  cursor: grab;
+}
+
+.ql-image-view--dragging {
+  cursor: grabbing;
 }
 
 .ql-image-canvas {
-  max-width: 100%;
-  max-height: 100%;
+  margin: auto;
+  min-width: min-content;
+  min-height: min-content;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -554,16 +568,22 @@ html[data-surface="quicklook"] #root {
   background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
   border-radius: 8px;
   padding: 16px;
-  overflow: auto;
 }
 
 .ql-image-element {
   max-width: 100%;
   max-height: 70vh;
   object-fit: contain;
+  transform-origin: center center;
   transition: transform 0.15s ease-out;
   border-radius: 4px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.ql-image-element--dragging {
+  transition: none;
 }
 
 /* ── 媒体与 PDF 预览器 ───────────────────────────────────────────────────── */

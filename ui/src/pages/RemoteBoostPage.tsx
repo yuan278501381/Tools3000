@@ -9,7 +9,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Button, CodeBadge } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, Button, CodeBadge, PageSkeleton } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
@@ -92,7 +92,9 @@ export const RemoteBoostPage: FC = () => {
     imeSanitized: false,
     activeProcess: '',
   });
+  const [loading, setLoading] = useState(true);
   const [newProcessInput, setNewProcessInput] = useState('');
+  const [newClassInput, setNewClassInput] = useState('');
   const [flushing, setFlushing] = useState(false);
 
   // 加载后台真实配置与状态
@@ -100,7 +102,12 @@ export const RemoteBoostPage: FC = () => {
     bridgeRequest<RemoteMasterSettings>('remote.getSettings')
       .then((res) => {
         if (res && typeof res.enabled === 'boolean') {
-          setSettings(res);
+          setSettings((prev) => ({
+            ...prev,
+            ...res,
+            targetProcesses: Array.isArray(res.targetProcesses) ? res.targetProcesses : prev.targetProcesses,
+            targetClasses: Array.isArray(res.targetClasses) ? res.targetClasses : prev.targetClasses,
+          }));
         }
       })
       .catch(() => {
@@ -120,7 +127,8 @@ export const RemoteBoostPage: FC = () => {
           }
           setSettings((prev) => ({ ...prev, enabled: effectiveEnabled }));
         });
-      });
+      })
+      .finally(() => setLoading(false));
 
     bridgeRequest<RemoteState>('remote.getState')
       .then((res) => {
@@ -221,18 +229,36 @@ export const RemoteBoostPage: FC = () => {
     void updateSettings({ targetProcesses: nextList });
   };
 
+  // 添加自定义远控窗口类名
+  const handleAddClass = () => {
+    const cls = newClassInput.trim();
+    if (!cls) return;
+    if (settings.targetClasses.some((c) => c.toLowerCase() === cls.toLowerCase())) {
+      toast.info(t('remoteBoost.classExists', 'Window class already in target list'));
+      return;
+    }
+    const nextList = [...settings.targetClasses, cls];
+    void updateSettings({ targetClasses: nextList });
+    setNewClassInput('');
+  };
+
+  // 移除远控窗口类名
+  const handleRemoveClass = (target: string) => {
+    const nextList = settings.targetClasses.filter((c) => c !== target);
+    void updateSettings({ targetClasses: nextList });
+  };
+
+  if (loading) {
+    return <PageSkeleton cards={3} rowsPerCard={3} />;
+  }
+
   return (
     <div className="remote-boost-page">
       {/* ── 顶部总控卡片与前台感知状态条 ────────────────────────────────────── */}
       <Card className="remote-boost-hero-card">
         <div className="remote-boost-hero">
-          <div className="remote-boost-hero__info">
-            <div className="remote-boost-hero__title-row">
-              <Cast size={22} className="remote-boost-hero__icon" />
-              <h2 className="remote-boost-hero__title">
-                {t('remoteBoost.masterTitle', 'Remote Assistant Host Boost')}
-              </h2>
-            </div>
+          <div className="remote-boost-hero__info" style={{ flexDirection: 'row', alignItems: 'flex-start', gap: '12px' }}>
+            <Cast size={20} className="remote-boost-hero__icon" style={{ marginTop: 2, flexShrink: 0 }} />
             <p className="remote-boost-hero__desc">
               {t(
                 'remoteBoost.masterDesc',
@@ -358,6 +384,49 @@ export const RemoteBoostPage: FC = () => {
                 }}
               />
               <Button variant="secondary" size="sm" onClick={handleAddProcess}>
+                <Plus size={14} />
+                <span>{t('common.add', 'Add')}</span>
+              </Button>
+            </div>
+          </div>
+
+          {/* 支持的远控窗口类名列表 (C-03 开放编辑) */}
+          <div className="remote-boost-process-section">
+            <div className="remote-boost-process-header">
+              <span className="remote-boost-tags-label">
+                {t('remoteBoost.targetClassesLabel', 'Target Remote Window Classes:')}
+              </span>
+            </div>
+
+            <div className="remote-boost-process-tags">
+              {settings.targetClasses.map((cls) => (
+                <span key={cls} className="remote-boost-process-chip">
+                  <CodeBadge variant="muted">{cls}</CodeBadge>
+                  <button
+                    type="button"
+                    className="remote-boost-process-chip__remove"
+                    title={t('common.delete', 'Delete')}
+                    aria-label={`${t('common.delete', 'Delete')} ${cls}`}
+                    onClick={() => handleRemoveClass(cls)}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+
+            <div className="remote-boost-add-row">
+              <input
+                type="text"
+                className="remote-boost-input"
+                placeholder={t('remoteBoost.addClassPlaceholder', 'e.g., TSSHELLWND')}
+                value={newClassInput}
+                onChange={(e) => setNewClassInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleAddClass();
+                }}
+              />
+              <Button variant="secondary" size="sm" onClick={handleAddClass}>
                 <Plus size={14} />
                 <span>{t('common.add', 'Add')}</span>
               </Button>

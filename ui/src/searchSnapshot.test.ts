@@ -7,8 +7,8 @@ describe('parseQueryKeywords', () => {
     expect(parseQueryKeywords('apple banana orange')).toEqual(['apple', 'banana', 'orange']);
   });
 
-  it('strips syntax prefixes like content:, ext:, folder:', () => {
-    expect(parseQueryKeywords('content:budget ext:pdf')).toEqual(['budget', 'pdf']);
+  it('extracts value-bearing prefixes (content:, folder:) while omitting filter-only operators (ext:, dm:, size:)', () => {
+    expect(parseQueryKeywords('content:budget ext:pdf dm:today size:>1mb')).toEqual(['budget']);
     expect(parseQueryKeywords('内容:报告 folder:work')).toEqual(['报告', 'work']);
   });
 
@@ -16,8 +16,8 @@ describe('parseQueryKeywords', () => {
     expect(parseQueryKeywords('*.docx "financial report"')).toEqual(['.docx', 'financial', 'report']);
   });
 
-  it('strips leading exclamation mark for negation', () => {
-    expect(parseQueryKeywords('report !draft')).toEqual(['report', 'draft']);
+  it('excludes negated !terms and !"quoted phrases" from highlight keywords', () => {
+    expect(parseQueryKeywords('report !draft !"old copy"')).toEqual(['report']);
   });
 
   it('deduplicates keywords and ignores empty strings', () => {
@@ -26,10 +26,10 @@ describe('parseQueryKeywords', () => {
     expect(parseQueryKeywords('   ')).toEqual([]);
   });
 
-  it('handles drive letters and absolute paths gracefully', () => {
-    expect(parseQueryKeywords('C:\\Projects\\Tools3000')).toEqual(['\\Projects\\Tools3000']);
+  it('skips scope-only drive letters, absolute paths, and path: filter operators', () => {
+    expect(parseQueryKeywords('C:\\Projects\\Tools3000 main.cpp')).toEqual(['main.cpp']);
     expect(parseQueryKeywords('D:')).toEqual([]);
-    expect(parseQueryKeywords('path:C:\\Windows')).toEqual(['C:\\Windows']);
+    expect(parseQueryKeywords('path:C:\\Windows kernel')).toEqual(['kernel']);
   });
 });
 

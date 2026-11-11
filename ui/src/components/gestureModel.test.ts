@@ -6,6 +6,7 @@ import {
   parseGestureCode,
   parseDirectionSegments,
   parseGesturePreview,
+  matchesGestureCategory,
   assembleGestureCode,
   GESTURE_CODE_PATTERN,
   simplifyDirections,
@@ -305,6 +306,25 @@ describe('parseDirectionSegments and parseGesturePreview (U-06 regression)', () 
     expect(parseDirectionSegments('R-BOGUS-D')).toEqual(['R', 'D']);
     expect(parseGesturePreview('InvalidGesture').segments).toEqual([]);
     expect(parseGesturePreview('InvalidGesture').wheelDirection).toBeNull();
+  });
+
+  it('supports LeftEdge/RightEdge wheel gestures and classifies all 5 trigger categories accurately (U-11)', () => {
+    expect(GESTURE_CODE_PATTERN.test('LeftEdge+WheelUp')).toBe(true);
+    expect(GESTURE_CODE_PATTERN.test('RightEdge+WheelDown')).toBe(true);
+    expect(assembleGestureCode({ edge: 'left', bareCode: 'WheelUp' })).toBe('LeftEdge+WheelUp');
+    expect(assembleGestureCode({ edge: 'right', bareCode: 'WheelDown' })).toBe('RightEdge+WheelDown');
+
+    expect(matchesGestureCategory('R', 'right')).toBe(true);
+    expect(matchesGestureCategory('R', 'middle')).toBe(false);
+    expect(matchesGestureCategory('Middle+L', 'middle')).toBe(true);
+    expect(matchesGestureCategory('X1+L', 'side')).toBe(true);
+    expect(matchesGestureCategory('X2+R', 'side')).toBe(true);
+    expect(matchesGestureCategory('X1+L', 'right')).toBe(false);
+    expect(matchesGestureCategory('TopEdge+D', 'edge')).toBe(true);
+    expect(matchesGestureCategory('TopEdge+D', 'right')).toBe(false);
+    expect(matchesGestureCategory('LeftEdge+WheelUp', 'edge')).toBe(true);
+    expect(matchesGestureCategory('LeftEdge+WheelUp', 'wheel')).toBe(true);
+    expect(matchesGestureCategory('LeftEdge+WheelUp', 'right')).toBe(false);
   });
 });
 

@@ -3,9 +3,10 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Button, Tabs, type TabItem, CodeBadge } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, Button, Tabs, Select, PageSkeleton, type TabItem, CodeBadge } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
+import { CATEGORY_DEFS } from '../search/searchConstants';
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -17,7 +18,7 @@ import {
   CheckCircle2,
   FolderSearch,
   Sparkles,
-  HelpCircle,
+  Zap,
   Play,
   RotateCw
 } from 'lucide-react';
@@ -57,34 +58,53 @@ export const SearchPage: FC = () => {
     available: false,
     pipeName: '\\\\.\\pipe\\Tools3000SearchPipe',
   });
+  const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
+  const [waking, setWaking] = useState(false);
 
   const getHotkey = (name: string) => hotkeys.find(h => h.name === name);
 
-  const loadData = () => {
-    bridgeRequest<SearchSettings>('search.getSettings')
-      .then(res => setSettings(prev => ({ ...prev, ...res })))
-      .catch(console.error);
-
-    bridgeRequest<HotkeyEntry[]>('hotkey.getAll')
-      .then(res => setHotkeys(Array.isArray(res) ? res : []))
-      .catch(console.error);
-
-    bridgeRequest<ServiceStatus>('search.getServiceStatus')
-      .then(res => {
-        if (res && typeof res === 'object') {
-          setServiceStatus(prev => ({ ...prev, ...res }));
-        }
-      })
-      .catch(console.error);
-  };
-
   useEffect(() => {
-    loadData();
+    let cancelled = false;
+    void Promise.allSettled([
+      bridgeRequest<SearchSettings>('search.getSettings')
+        .then(res => {
+          if (!cancelled && res && typeof res === 'object') {
+            setSettings(prev => ({ ...prev, ...res }));
+          }
+        })
+        .catch(() => undefined),
+      bridgeRequest<HotkeyEntry[]>('hotkey.getAll')
+        .then(res => {
+          if (!cancelled) {
+            setHotkeys(Array.isArray(res) ? res : []);
+          }
+        })
+        .catch(() => undefined),
+      bridgeRequest<ServiceStatus>('search.getServiceStatus')
+        .then(res => {
+          if (!cancelled && res && typeof res === 'object') {
+            setServiceStatus(prev => ({ ...prev, ...res }));
+          }
+        })
+        .catch(() => undefined),
+    ]).then(() => {
+      if (!cancelled) {
+        setLoading(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const saveSetting = async <K extends keyof SearchSettings>(key: K, value: SearchSettings[K]) => {
     setSettings(prev => ({ ...prev, [key]: value }));
+    if (key === 'defaultCategory') {
+      localStorage.setItem('tools3000_search_default_category', String(value));
+    } else if (key === 'iconStyle' && value) {
+      localStorage.setItem('tools3000_search_icon_style', String(value));
+    }
     try {
       await bridgeRequest('search.saveSettings', { [key]: value });
     } catch {
@@ -111,6 +131,7 @@ export const SearchPage: FC = () => {
   };
 
   const checkService = async () => {
+    if (checking) return;
     setChecking(true);
     try {
       const res = await bridgeRequest<ServiceStatus>('search.getServiceStatus');
@@ -120,18 +141,50 @@ export const SearchPage: FC = () => {
       if (res?.available) {
         toast.success(t('searchPage.serviceOk', 'Index daemon connected via local named pipe'));
       } else {
+        toast.info(t('searchPage.serviceStandbyToast', 'Engine is in on-demand standby; click Wake Engine Now to start immediately'));
+      }
+    } catch {
+      toast.info(t('searchPage.serviceStandbyToast', 'Engine is in on-demand standby; click Wake Engine Now to start immediately'));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const wakeService = async () => {
+    if (waking) return;
+    setWaking(true);
+    try {
+      await bridgeRequest('search.windowShown').catch(() => undefined);
+      const warmRes = await bridgeRequest<ServiceStatus>('search.warmup');
+      const statusRes = await bridgeRequest<ServiceStatus>('search.getServiceStatus').catch(() => warmRes);
+      const effective = statusRes && typeof statusRes === 'object' ? statusRes : warmRes;
+      if (effective && typeof effective === 'object') {
+        setServiceStatus(prev => ({ ...prev, ...effective }));
+      }
+      if (effective?.available) {
+        toast.success(t('searchPage.serviceWoken', 'Indexing engine woken and ready'));
+      } else {
         toast.error(t('searchPage.serviceDown', 'Index service not responding, check administrator privileges'));
       }
     } catch {
       toast.error(t('searchPage.serviceDown', 'Index service not responding, check administrator privileges'));
     } finally {
-      setChecking(false);
+      setWaking(false);
     }
   };
 
   const launchSearch = () => {
     void bridgeRequest('search.toggle').catch(console.error);
   };
+
+  const categoryOptions = CATEGORY_DEFS.map(def => ({
+    value: def.id,
+    label: t(def.labelKey, def.defaultLabel),
+  }));
+
+  if (loading) {
+    return <PageSkeleton cards={2} rowsPerCard={4} />;
+  }
 
   const tabs: TabItem<'settings' | 'syntax' | 'regex' | 'status'>[] = [
     { id: 'settings', label: t('searchPage.tabSettings', 'Settings & Hotkey'), icon: <Search size={16} /> },
@@ -197,6 +250,18 @@ export const SearchPage: FC = () => {
 
           <SettingGroup title={t('searchPage.searchBehavior', 'Preferences & Behavior')} icon={<FolderSearch size={18} />}>
             <Card>
+              <SettingRow
+                label={t('searchPage.defaultCategoryTitle', 'Default Filter Category')}
+                description={t('searchPage.defaultCategoryDesc', 'Initial category pill activated when opening a blank search session')}
+              >
+                <Select
+                  id="search-default-category"
+                  value={settings.defaultCategory || 'all'}
+                  onChange={v => void saveSetting('defaultCategory', v)}
+                  options={categoryOptions}
+                />
+              </SettingRow>
+
               <SettingRow
                 label={t('searchPage.pinyinTitle', 'Smart Pinyin Search')}
                 description={t('searchPage.pinyinDesc', 'Supports Chinese Pinyin initials (e.g. wx for WeChat) and full pinyin')}
@@ -479,23 +544,37 @@ export const SearchPage: FC = () => {
           <Card title={t('searchPage.serviceMonitor', 'NTFS MFT Engine Monitor')}>
             <div className="service-status-card">
               <div className="service-status-header">
-                <div className={`status-indicator ${serviceStatus.available ? 'status-indicator--online' : 'status-indicator--offline'}`}>
-                  {serviceStatus.available ? <CheckCircle2 size={24} /> : <HelpCircle size={24} />}
+                <div className={`status-indicator ${serviceStatus.available ? 'status-indicator--online' : 'status-indicator--standby'}`}>
+                  {serviceStatus.available ? <CheckCircle2 size={24} aria-hidden="true" /> : <Sparkles size={24} aria-hidden="true" />}
                 </div>
                 <div className="status-info">
                   <h3 className="status-title">
-                    {serviceStatus.available ? t('searchPage.serviceRunning', 'Indexing Engine Running (Local Named Pipe)') : t('searchPage.serviceStopped', 'Indexing Engine Disconnected')}
+                    {serviceStatus.available
+                      ? t('searchPage.serviceRunning', 'Indexing Engine Running (Local Named Pipe)')
+                      : t('searchPage.serviceStandby', 'On-Demand Standby (Instant Wake on First Search)')}
                   </h3>
                   <p className="status-desc">
                     {serviceStatus.available
                       ? t('searchPage.serviceRunningDesc', 'NTFS MFT tree and USN journal monitoring are mounted and ready')
-                      : t('searchPage.serviceStoppedDesc', 'Attempting background auto-start; or click below to retry')}
+                      : t('searchPage.serviceStandbyDesc', 'Follows zero-boot-overhead DEMAND_START policy; wakes automatically on first search or click Wake Engine Now.')}
                   </p>
                 </div>
-                <Button variant="ghost" onClick={checkService} disabled={checking}>
-                  <RotateCw size={14} className={checking ? 'animate-spin' : ''} style={{ marginRight: 6 }} />
-                  {t('searchPage.checkNow', 'Check Now')}
-                </Button>
+                <div className="service-status-actions">
+                  {!serviceStatus.available && (
+                    <Button variant="primary" onClick={() => void wakeService()} disabled={waking || checking}>
+                      {waking ? (
+                        <RotateCw size={14} className="uikit-spin-icon" style={{ marginRight: 6 }} aria-hidden="true" />
+                      ) : (
+                        <Zap size={14} style={{ marginRight: 6 }} aria-hidden="true" />
+                      )}
+                      {t('searchPage.wakeNow', 'Wake Engine Now')}
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={() => void checkService()} disabled={checking || waking}>
+                    <RotateCw size={14} className={checking ? 'uikit-spin-icon' : ''} style={{ marginRight: 6 }} aria-hidden="true" />
+                    {t('searchPage.checkNow', 'Check Now')}
+                  </Button>
+                </div>
               </div>
 
               <div className="service-details-grid">

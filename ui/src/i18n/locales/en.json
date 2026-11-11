@@ -28,7 +28,8 @@
     "refresh": "Refresh",
     "enable": "Enable",
     "disable": "Disable",
-    "all": "All"
+    "all": "All",
+    "copy": "Copy"
   },
   "nav": {
     "capture": "Screen Capture",
@@ -509,7 +510,15 @@
     "available": "Ready",
     "unavailable": "Language pack required",
     "loadFailed": "Could not load OCR settings",
-    "saveFailed": "Could not save this OCR setting"
+    "saveFailed": "Could not save this OCR setting",
+    "language": "Recognition Language",
+    "languageDesc": "Select target OCR language pack or auto-detect mixed text",
+    "langAuto": "Auto Detect (System / Mixed)",
+    "langZhHans": "Simplified Chinese + English",
+    "langZhHant": "Traditional Chinese + English",
+    "langEnUs": "English (en-US)",
+    "langJaJp": "Japanese",
+    "langKoKr": "Korean"
   },
   "gesture": {
     "title": "Mouse Gesture Settings",
@@ -821,7 +830,23 @@
         "name": "Pull Down Minimize",
         "desc": "Top-middle pull down to minimize window"
       }
-    }
+    },
+    "triggerEdgeLeftWheel": "Left Screen Edge + Wheel",
+    "triggerEdgeRightWheel": "Right Screen Edge + Wheel",
+    "webSearchEngine": "Web Search Engine",
+    "webSearchEngineDesc": "Target search engine used when executing the Web Search Selected Text gesture command",
+    "engineBaidu": "Baidu",
+    "sideGestures": "Side Buttons",
+    "edgeGestures": "Screen Edges",
+    "wheelGestures": "Wheel Gestures",
+    "edgeShortTop": "Top Edge",
+    "edgeShortBottom": "Bottom Edge",
+    "edgeShortLeft": "Left Edge",
+    "edgeShortRight": "Right Edge",
+    "wheelShort": "Wheel",
+    "side1Short": "Side X1",
+    "side2Short": "Side X2",
+    "leftClickShort": "Left Btn"
   },
   "hotcorner": {
     "title": "Hot Corners",
@@ -1591,7 +1616,14 @@
     "opNotDesc": "Logical NOT, excludes files containing specific word",
     "opPhraseDesc": "Quoted phrase, strictly matches exact text with spaces",
     "opWildcardMulti": "Wildcard, matches 0 or more characters",
-    "opWildcardSingle": "Wildcard, matches 1 character"
+    "opWildcardSingle": "Wildcard, matches 1 character",
+    "defaultCategoryTitle": "Default Filter Category",
+    "defaultCategoryDesc": "Initial category pill activated when opening a blank search session",
+    "serviceStandby": "On-Demand Standby (Instant Wake on First Search)",
+    "serviceStandbyDesc": "Follows zero-boot-overhead DEMAND_START policy; wakes automatically on first search or click Wake Engine Now.",
+    "serviceStandbyToast": "Engine is in on-demand standby; click Wake Engine Now to start immediately",
+    "serviceWoken": "Indexing engine woken and ready",
+    "wakeNow": "Wake Engine Now"
   },
   "tray": {
     "brandName": "Tools3000",
@@ -1653,7 +1685,9 @@
     "pinResetGroupMeta": "Reset group name & color",
     "pinGroupColorLabel": "Group Color",
     "pinShowAll": "Show All",
-    "pinCloseAll": "Close All"
+    "pinCloseAll": "Close All",
+    "confirmCloseGroup": "Close all pins in this group?",
+    "confirmCloseAll": "Close all desktop pins?"
   },
   "dialog": {
     "title": "File Dialog Enhancer",
@@ -1690,7 +1724,8 @@
     "pinWorkspace": "Pin as Default Workspace",
     "unpinWorkspace": "Unpin",
     "fixedBadge": "Fixed Root",
-    "browseFolder": "Browse"
+    "browseFolder": "Browse",
+    "confirmClearMemories": "Clear all remembered recent folder records across applications?"
   },
   "spotlight": {
     "title": "Mouse Presentation & FX",
@@ -1870,7 +1905,11 @@
     "animSlide": "Damped Slide",
     "animPop": "Elastic Pop",
     "animFade": "Fade In",
-    "animNone": "Static"
+    "animNone": "Static",
+    "autoContrastBadge": "Smart High-Contrast",
+    "autoContrastLabel": "Smart high-contrast adaptive text color",
+    "restoreAutoContrastDesc": "Custom color active — click to restore smart high-contrast adaptive color",
+    "restoreAutoContrast": "Smart Contrast"
   },
   "quicklook": {
     "emptyTitle": "Select a file in File Explorer and press Space",
@@ -2168,6 +2207,9 @@
     "resetFailed": "Failed to reset settings",
     "processExists": "Process already in target list",
     "resetDefaults": "Reset Defaults",
-    "autoSaved": "Auto saved"
+    "autoSaved": "Auto saved",
+    "classExists": "This window class is already in the list",
+    "targetClassesLabel": "Custom Remote Window Classes",
+    "addClassPlaceholder": "Enter Win32 window class name and press Enter..."
   }
 }

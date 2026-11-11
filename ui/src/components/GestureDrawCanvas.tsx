@@ -166,8 +166,8 @@ const TOPEDGE_PRESET_GESTURES: PresetGestureItem[] = [
   { code: 'TopEdge+D', labelKey: 'gesture.actions.taskView.name', defaultLabel: 'Task View / Desktop' },
   { code: 'TopEdge+L', labelKey: 'gesture.actions.prevVirtualDesktop.name', defaultLabel: 'Previous Virtual Desktop' },
   { code: 'TopEdge+R', labelKey: 'gesture.actions.nextVirtualDesktop.name', defaultLabel: 'Next Virtual Desktop' },
-  { code: 'TopEdge+Left+D', labelKey: 'gesture.actions.pullDownClose.name', defaultLabel: 'Left Pull Down Close' },
-  { code: 'TopEdge+Middle+D', labelKey: 'gesture.actions.pullDownMinimize.name', defaultLabel: 'Middle Pull Down Minimize' },
+  { code: 'TopEdge+WheelUp', labelKey: 'gesture.actions.prevVirtualDesktop.name', defaultLabel: 'Previous Virtual Desktop' },
+  { code: 'TopEdge+WheelDown', labelKey: 'gesture.actions.nextVirtualDesktop.name', defaultLabel: 'Next Virtual Desktop' },
 ];
 
 const BOTTOMEDGE_PRESET_GESTURES: PresetGestureItem[] = [
@@ -182,14 +182,16 @@ const LEFTEDGE_PRESET_GESTURES: PresetGestureItem[] = [
   { code: 'LeftEdge+R', labelKey: 'gesture.actions.back.name', defaultLabel: 'Back' },
   { code: 'LeftEdge+U', labelKey: 'gesture.actions.volumeUp.name', defaultLabel: 'Volume Up' },
   { code: 'LeftEdge+D', labelKey: 'gesture.actions.volumeDown.name', defaultLabel: 'Volume Down' },
-  { code: 'LeftEdge+D-R', labelKey: 'gesture.actions.showDesktop.name', defaultLabel: 'Show Desktop' },
+  { code: 'LeftEdge+WheelUp', labelKey: 'gesture.actions.volumeUp.name', defaultLabel: 'Volume Up' },
+  { code: 'LeftEdge+WheelDown', labelKey: 'gesture.actions.volumeDown.name', defaultLabel: 'Volume Down' },
 ];
 
 const RIGHTEDGE_PRESET_GESTURES: PresetGestureItem[] = [
   { code: 'RightEdge+L', labelKey: 'gesture.actions.forward.name', defaultLabel: 'Forward' },
   { code: 'RightEdge+U', labelKey: 'gesture.actions.volumeUp.name', defaultLabel: 'Volume Up' },
   { code: 'RightEdge+D', labelKey: 'gesture.actions.volumeDown.name', defaultLabel: 'Volume Down' },
-  { code: 'RightEdge+D-L', labelKey: 'gesture.actions.showDesktop.name', defaultLabel: 'Show Desktop' },
+  { code: 'RightEdge+WheelUp', labelKey: 'gesture.actions.prevVirtualDesktop.name', defaultLabel: 'Previous Virtual Desktop' },
+  { code: 'RightEdge+WheelDown', labelKey: 'gesture.actions.nextVirtualDesktop.name', defaultLabel: 'Next Virtual Desktop' },
 ];
 
 interface ZoneOption {
@@ -482,7 +484,7 @@ export const GestureDrawCanvas: FC<Props> = ({
     if (!hasButtonsOrModifiers && currentEdge === 'none') return;
     e.preventDefault();
     const wheelBare = e.deltaY < 0 ? 'WheelUp' : 'WheelDown';
-    let wheelTrigger: TriggerButton = currentTrigger;
+    let wheelTrigger: TriggerButton = currentEdge !== 'none' && e.buttons === 0 ? 'right' : currentTrigger;
     if ((e.buttons & 4) !== 0) wheelTrigger = 'middle';
     else if ((e.buttons & 2) !== 0) wheelTrigger = 'right';
     else if ((e.buttons & 8) !== 0) wheelTrigger = 'x1';

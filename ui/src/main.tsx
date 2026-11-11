@@ -51,6 +51,14 @@ const isTray = window.location.search.includes('tray=1');
 const isQuickLook = window.location.pathname === '/quicklook' || window.location.hash.includes('/quicklook') || window.location.search.includes('quicklook=1');
 
 try {
+  const storedTheme = localStorage.getItem('tools3000:theme');
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const resolvedTheme = storedTheme === 'light' || storedTheme === 'dark'
+    ? storedTheme
+    : (prefersDark ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', resolvedTheme);
+  document.documentElement.style.colorScheme = resolvedTheme;
+
   const initialAccent = localStorage.getItem('tools3000:accent-color') || 'blue';
   document.documentElement.setAttribute('data-accent', initialAccent);
 } catch (e) {

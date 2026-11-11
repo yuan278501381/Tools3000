@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, type FC } from 'react';
-import { Card, SettingGroup, Badge, Button } from '../components/UIKit';
+import { Card, SettingGroup, Badge, Button, ConfirmModal, PageSkeleton } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { KeyboardHeatmap } from '../components/KeyboardHeatmap';
@@ -330,9 +330,11 @@ export const KeyStatsPage: FC = () => {
     }
   };
 
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+
   const handleClearToday = async () => {
     if (clearing) return;
-    if (!window.confirm(t('stats.confirmClearToday'))) return;
+    setConfirmClearOpen(false);
     setClearing(true);
     try {
       await bridgeRequest('stats.clearToday');
@@ -350,7 +352,7 @@ export const KeyStatsPage: FC = () => {
   };
 
   if (loading) {
-    return <div style={{ padding: '2rem', opacity: 0.5 }}>{t('common.loading')}</div>;
+    return <PageSkeleton cards={2} rowsPerCard={2} />;
   }
 
   return (
@@ -369,7 +371,7 @@ export const KeyStatsPage: FC = () => {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => void handleClearToday()}
+          onClick={() => setConfirmClearOpen(true)}
           disabled={clearing || refreshing}
           title={t('stats.clearToday')}
         >
@@ -402,7 +404,7 @@ export const KeyStatsPage: FC = () => {
           </Card>
           <Card>
             <div style={{ padding: '16px', textAlign: 'center' }}>
-              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: '#a78bfa' }}>
+              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--primary-hover)' }}>
                 {todayStats.keystrokes.toLocaleString()}
               </div>
               <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '8px' }}>{t('stats.totalKeys')}</div>
@@ -410,7 +412,7 @@ export const KeyStatsPage: FC = () => {
           </Card>
           <Card>
             <div style={{ padding: '16px', textAlign: 'center' }}>
-              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: '#34d399' }}>
+              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--success)' }}>
                 {todayStats.mouseClicks.toLocaleString()}
               </div>
               <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '8px' }}>{t('stats.mouseClicks')}</div>
@@ -421,7 +423,7 @@ export const KeyStatsPage: FC = () => {
               style={{ padding: '16px', textAlign: 'center' }}
               title={`${Math.round(todayStats.mouseDistance).toLocaleString()} ${t('stats.pixels', 'Pixels')}`}
             >
-              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: '#60a5fa', display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: '4px' }}>
+              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--info)', display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: '4px' }}>
                 <span>{(todayStats.mouseDistance * (0.0254 / 96)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
                 <span style={{ fontSize: '1.1rem', fontWeight: 600, opacity: 0.85 }}>m</span>
               </div>
@@ -438,6 +440,16 @@ export const KeyStatsPage: FC = () => {
           {t('stats.allTimeKeysSummary')}: <Badge text={totalStats.totalKeystrokes.toLocaleString() + ' ' + t('stats.times')} variant="primary" />
         </p>
       </div>
+
+      <ConfirmModal
+        open={confirmClearOpen}
+        title={t('stats.clearToday')}
+        description={t('stats.confirmClearToday')}
+        confirmText={t('common.confirm')}
+        loading={clearing}
+        onConfirm={handleClearToday}
+        onClose={() => setConfirmClearOpen(false)}
+      />
     </div>
   );
 };
