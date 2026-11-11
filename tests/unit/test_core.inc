@@ -4078,3 +4078,102 @@ TEST(LuaEngineBatch3RegressionTest, NonBlockingToastAndErrorCodeSafeExists) {
         tools3000::core::LuaPermission::All);
     EXPECT_TRUE(okFs);
 }
+
+TEST(StatsManagerNumpadEnterTest, TracksExtendedNumpadEnter0x10DSeparatelyAndRoundTripsJson) {
+    // 1. 验证 DailyStats JSON 序列化往返对 0x0D (13) 与 0x10D (269) 均无损保留
+    tools3000::core::DailyStats sample;
+    sample.totalKeys = 15;
+    sample.keyMap[VK_RETURN] = 9;
+    sample.keyMap[0x10D] = 6;
+    const auto dumped = sample.toJson();
+    const auto restored = tools3000::core::DailyStats::fromJson(dumped);
+    EXPECT_EQ(restored.totalKeys, 15u);
+    ASSERT_TRUE(restored.keyMap.contains(VK_RETURN));
+    ASSERT_TRUE(restored.keyMap.contains(0x10D));
+    EXPECT_EQ(restored.keyMap.at(VK_RETURN), 9u);
+    EXPECT_EQ(restored.keyMap.at(0x10D), 6u);
+
+    // 2. 验证 StatsManager 无锁环形计数槽 (512 容量) 对 0x0D 与 0x10D 独立累加互不丢弃
+    auto& stats = tools3000::core::StatsManager::instance();
+    stats.initialize();
+    const auto before = stats.getTodayStats();
+    const uint64_t baseMainEnter = before.keyMap.contains(VK_RETURN) ? before.keyMap.at(VK_RETURN) : 0ULL;
+    const uint64_t baseNumpadEnter = before.keyMap.contains(0x10D) ? before.keyMap.at(0x10D) : 0ULL;
+
+    stats.recordKey(VK_RETURN);
+    stats.recordKey(VK_RETURN);
+    stats.recordKey(0x10D);
+    stats.recordKey(0x10D);
+    stats.recordKey(0x10D);
+
+    const auto after = stats.getTodayStats();
+    ASSERT_TRUE(after.keyMap.contains(VK_RETURN));
+    ASSERT_TRUE(after.keyMap.contains(0x10D));
+    EXPECT_EQ(after.keyMap.at(VK_RETURN), baseMainEnter + 2ULL);
+    EXPECT_EQ(after.keyMap.at(0x10D), baseNumpadEnter + 3ULL);
+    stats.shutdown();
+}
+
+TEST(MessageBridgeOpenSaveDirTest, ResolvesAppDataDefaultAndKindFallbacks) {
+    const auto tempCfgDir = std::filesystem::temp_directory_path() / "t3k_cfg_opensavedir_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tempCfgDir, ec);
+    std::filesystem::create_directories(tempCfgDir, ec);
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    cfg.shutdown();
+    ASSERT_TRUE(cfg.initialize(tempCfgDir, "config.json"));
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    if (!bridge.hasHandler("capture.openSaveDirectory")) {
+        bridge.registerBuiltinHandlers();
+    }
+    const auto expectedScreenshots =
+        tools3000::core::WinUtils::wstringToUtf8((tools3000::core::WinUtils::getAppDataDirectory() / L"Screenshots").wstring());
+    const auto expectedRecordings =
+        tools3000::core::WinUtils::wstringToUtf8((tools3000::core::WinUtils::getAppDataDirectory() / L"Recordings").wstring());
+
+    // 1. 默认空路径：kind="capture" 回退 AppData/Screenshots，kind="recording" 回退 AppData/Recordings
+    const auto capDefault = bridge.invokeHandler("capture.openSaveDirectory", {
+        {"path", ""},
+        {"kind", "capture"},
+        {"dryRun", true}
+    });
+    EXPECT_TRUE(capDefault.value("success", false));
+    EXPECT_EQ(capDefault.value("path", ""), expectedScreenshots);
+
+    const auto recDefault = bridge.invokeHandler("capture.openSaveDirectory", {
+        {"path", "   "},
+        {"kind", "recording"},
+        {"dryRun", true}
+    });
+    EXPECT_TRUE(recDefault.value("success", false));
+    EXPECT_EQ(recDefault.value("path", ""), expectedRecordings);
+
+    // 2. 配置了兼容字段 /capture/savePath 与 /recording/saveDirectory 时优先按顺序读取
+    const auto customCapDir = tempCfgDir / "CustomShots";
+    const auto customRecDir = tempCfgDir / "CustomRecs";
+    ASSERT_TRUE(cfg.set("/capture/savePath", tools3000::core::WinUtils::wstringToUtf8(customCapDir.wstring())));
+    ASSERT_TRUE(cfg.set("/recording/saveDirectory", tools3000::core::WinUtils::wstringToUtf8(customRecDir.wstring())));
+
+    const auto capCustom = bridge.invokeHandler("capture.openSaveDirectory", {
+        {"path", ""},
+        {"kind", "capture"},
+        {"dryRun", true}
+    });
+    EXPECT_TRUE(capCustom.value("success", false));
+    EXPECT_EQ(capCustom.value("path", ""), tools3000::core::WinUtils::wstringToUtf8(customCapDir.wstring()));
+    EXPECT_TRUE(std::filesystem::exists(customCapDir));
+
+    const auto recCustom = bridge.invokeHandler("capture.openSaveDirectory", {
+        {"path", ""},
+        {"kind", "recording"},
+        {"dryRun", true}
+    });
+    EXPECT_TRUE(recCustom.value("success", false));
+    EXPECT_EQ(recCustom.value("path", ""), tools3000::core::WinUtils::wstringToUtf8(customRecDir.wstring()));
+    EXPECT_TRUE(std::filesystem::exists(customRecDir));
+
+    cfg.shutdown();
+    std::filesystem::remove_all(tempCfgDir, ec);
+}
