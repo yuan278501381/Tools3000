@@ -2,8 +2,9 @@ import { useCallback, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { bridgeRequest, useBridgeEvent } from './useBridge';
 
-type Theme = 'light' | 'dark';
-type ThemePreference = Theme | 'system';
+export type Theme = 'light' | 'dark';
+export type ThemePreference = Theme | 'system';
+export type AccentColorId = 'blue' | 'cyan' | 'amber' | 'mint' | 'coral' | 'violet';
 
 interface AppearancePayload {
   theme?: unknown;
@@ -11,10 +12,29 @@ interface AppearancePayload {
   language?: unknown;
 }
 
-const APPEARANCE_CHANNEL_NAME = 'tools3000_appearance';
+interface AppearanceUpdateResult {
+  success?: boolean;
+  error?: string;
+}
 
-const isThemePreference = (val: unknown): val is ThemePreference =>
+const APPEARANCE_CHANNEL_NAME = 'tools3000_appearance';
+const VALID_ACCENT_COLORS = new Set<string>(['blue', 'cyan', 'amber', 'mint', 'coral', 'violet']);
+
+export const isThemePreference = (val: unknown): val is ThemePreference =>
   val === 'light' || val === 'dark' || val === 'system';
+
+export const isAccentColor = (val: unknown): val is AccentColorId =>
+  typeof val === 'string' && VALID_ACCENT_COLORS.has(val);
+
+export const normalizeThemePreference = (
+  val: unknown,
+  fallback: ThemePreference = 'system',
+): ThemePreference => (isThemePreference(val) ? val : fallback);
+
+export const normalizeAccentColor = (
+  val: unknown,
+  fallback: AccentColorId = 'blue',
+): AccentColorId => (isAccentColor(val) ? val : fallback);
 
 const systemTheme = (): Theme =>
   window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -26,7 +46,31 @@ const applyTheme = (preference: ThemePreference) => {
 };
 
 const applyAccent = (accent: string) => {
-  document.documentElement.setAttribute('data-accent', accent || 'blue');
+  const normalized = normalizeAccentColor(accent, 'blue');
+  document.documentElement.setAttribute('data-accent', normalized);
+};
+
+export const readStoredTheme = (fallback: ThemePreference = 'system'): ThemePreference => {
+  try {
+    const raw = localStorage.getItem('tools3000:theme');
+    if (isThemePreference(raw)) return raw;
+  } catch (e) {
+    void e;
+  }
+  return fallback;
+};
+
+export const readStoredAccent = (fallback: AccentColorId = 'blue'): AccentColorId => {
+  try {
+    const raw = localStorage.getItem('tools3000:accent-color');
+    if (isAccentColor(raw)) return raw;
+  } catch (e) {
+    void e;
+  }
+  const domAccent = typeof document !== 'undefined'
+    ? document.documentElement.getAttribute('data-accent')
+    : null;
+  return normalizeAccentColor(domAccent, fallback);
 };
 
 const persistSharedAppearance = (payload: AppearancePayload) => {
@@ -34,7 +78,7 @@ const persistSharedAppearance = (payload: AppearancePayload) => {
     if (isThemePreference(payload.theme)) {
       localStorage.setItem('tools3000:theme', payload.theme);
     }
-    if (typeof payload.accentColor === 'string' && payload.accentColor) {
+    if (isAccentColor(payload.accentColor)) {
       localStorage.setItem('tools3000:accent-color', payload.accentColor);
     }
     if (typeof payload.language === 'string' && payload.language) {
@@ -55,16 +99,85 @@ const persistSharedAppearance = (payload: AppearancePayload) => {
   }
 };
 
+/**
+ * 立即同步本地存储、DOM (data-theme / colorScheme / data-accent) 与跨组件/跨窗口事件。
+ */
+export function applyLocalAppearance(
+  patch: { theme?: unknown; accentColor?: unknown },
+  options: { dispatchEvents?: boolean } = {},
+): { theme: ThemePreference; accentColor: AccentColorId } {
+  const dispatchEvents = options.dispatchEvents ?? true;
+  const hasValidTheme = isThemePreference(patch.theme);
+  const hasValidAccent = isAccentColor(patch.accentColor);
+
+  const effectiveTheme = hasValidTheme ? (patch.theme as ThemePreference) : readStoredTheme('system');
+  const effectiveAccent = hasValidAccent ? (patch.accentColor as AccentColorId) : readStoredAccent('blue');
+
+  if (hasValidTheme) {
+    applyTheme(effectiveTheme);
+  }
+  if (hasValidAccent) {
+    applyAccent(effectiveAccent);
+  }
+
+  persistSharedAppearance({
+    ...(hasValidTheme ? { theme: effectiveTheme } : {}),
+    ...(hasValidAccent ? { accentColor: effectiveAccent } : {}),
+  });
+
+  if (dispatchEvents && typeof window !== 'undefined') {
+    if (hasValidTheme) {
+      window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: effectiveTheme }));
+    }
+    if (hasValidAccent) {
+      window.dispatchEvent(new CustomEvent('tools3000:accent-changed', { detail: effectiveAccent }));
+    }
+  }
+
+  return { theme: effectiveTheme, accentColor: effectiveAccent };
+}
+
+/**
+ * 可靠地将最新成对的 { theme, accentColor } 提交至 C++ ConfigManager，
+ * 确保后端发布的 ThemeChangedEvent 与 appearance:changed 始终同步携带最新双字段。
+ */
+export async function persistAppearanceToBackend(patch: {
+  theme?: unknown;
+  accentColor?: unknown;
+}): Promise<AppearanceUpdateResult> {
+  const theme = isThemePreference(patch.theme)
+    ? patch.theme
+    : readStoredTheme('system');
+  const accentColor = isAccentColor(patch.accentColor)
+    ? patch.accentColor
+    : readStoredAccent('blue');
+
+  return bridgeRequest<AppearanceUpdateResult>('general.updateSettings', {
+    theme,
+    accentColor,
+  });
+}
+
 /** Keep auxiliary WebView surfaces aligned with the shared app appearance & typography. */
 export function useAppearance() {
   const { i18n } = useTranslation();
   const preferenceRef = useRef<ThemePreference>('system');
+  const langPrefRef = useRef<string>('');
   const lastAppliedSigRef = useRef<string>('');
   const lastBroadcastSigRef = useRef<string>('');
   const lastWakeFetchRef = useRef<number>(0);
 
+  const refreshAppliedSignature = useCallback(() => {
+    const currentAccent = normalizeAccentColor(
+      document.documentElement.getAttribute('data-accent'),
+      'blue',
+    );
+    lastAppliedSigRef.current = `${preferenceRef.current}|${currentAccent}|${langPrefRef.current}`;
+  }, []);
+
   const syncLanguage = useCallback((lang?: unknown) => {
     if (typeof lang !== 'string' || !lang) return;
+    langPrefRef.current = lang;
     const lower = lang.toLowerCase();
     const targetLang = lower === 'auto'
       ? (navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en')
@@ -76,28 +189,40 @@ export function useAppearance() {
 
   const applyPayload = useCallback((payload: AppearancePayload, broadcast = false) => {
     const nextTheme = isThemePreference(payload.theme) ? payload.theme : preferenceRef.current;
-    const currentAccent = document.documentElement.getAttribute('data-accent') || 'blue';
-    const nextAccent = (typeof payload.accentColor === 'string' && payload.accentColor)
+    const currentAccent = normalizeAccentColor(
+      document.documentElement.getAttribute('data-accent'),
+      'blue',
+    );
+    const nextAccent = isAccentColor(payload.accentColor)
       ? payload.accentColor
       : currentAccent;
-    const nextLang = (typeof payload.language === 'string' && payload.language) ? payload.language : '';
+    const nextLang = (typeof payload.language === 'string' && payload.language)
+      ? payload.language
+      : langPrefRef.current;
     const sig = `${nextTheme}|${nextAccent}|${nextLang}`;
 
-    if (sig !== lastAppliedSigRef.current) {
-      lastAppliedSigRef.current = sig;
+    const domThemeAttr = document.documentElement.getAttribute('data-theme');
+    const domAccentAttr = document.documentElement.getAttribute('data-accent');
+    const expectedDomTheme = nextTheme === 'system' ? systemTheme() : nextTheme;
+    const domOutOfSync = domThemeAttr !== expectedDomTheme || domAccentAttr !== nextAccent;
+
+    if (sig !== lastAppliedSigRef.current || domOutOfSync) {
       if (isThemePreference(payload.theme)) {
         preferenceRef.current = payload.theme;
-        applyTheme(payload.theme);
       }
-      if (typeof payload.accentColor === 'string' && payload.accentColor) {
-        applyAccent(payload.accentColor);
-      }
+      applyTheme(preferenceRef.current);
+      applyAccent(nextAccent);
       syncLanguage(payload.language);
+      lastAppliedSigRef.current = sig;
     }
 
     if (broadcast && sig !== lastBroadcastSigRef.current) {
       lastBroadcastSigRef.current = sig;
-      persistSharedAppearance(payload);
+      persistSharedAppearance({
+        theme: nextTheme,
+        accentColor: nextAccent,
+        ...(nextLang ? { language: nextLang } : {}),
+      });
     }
   }, [syncLanguage]);
 
@@ -127,23 +252,33 @@ export function useAppearance() {
   useLayoutEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const onSystemThemeChanged = () => {
-      if (preferenceRef.current === 'system') applyTheme('system');
+      if (preferenceRef.current === 'system') {
+        applyTheme('system');
+        refreshAppliedSignature();
+      }
     };
 
     const syncFromLocalStorage = () => {
+      let storedAccent: AccentColorId = 'blue';
       try {
         const storedTheme = localStorage.getItem('tools3000:theme');
         if (isThemePreference(storedTheme)) {
           preferenceRef.current = storedTheme;
         }
-        const storedAccent = localStorage.getItem('tools3000:accent-color');
-        if (storedAccent) applyAccent(storedAccent);
+        const rawAccent = localStorage.getItem('tools3000:accent-color');
+        if (isAccentColor(rawAccent)) {
+          storedAccent = rawAccent;
+        } else {
+          storedAccent = readStoredAccent('blue');
+        }
         const storedLang = localStorage.getItem('tools3000:language');
         if (storedLang) syncLanguage(storedLang);
       } catch (e) {
         void e;
       }
+      applyAccent(storedAccent);
       applyTheme(preferenceRef.current);
+      refreshAppliedSignature();
     };
 
     syncFromLocalStorage();
@@ -167,31 +302,36 @@ export function useAppearance() {
       if (e.key === 'tools3000:theme' && isThemePreference(e.newValue)) {
         preferenceRef.current = e.newValue;
         applyTheme(e.newValue);
+        refreshAppliedSignature();
       }
-      if (e.key === 'tools3000:accent-color' && e.newValue) {
+      if (e.key === 'tools3000:accent-color' && isAccentColor(e.newValue)) {
         applyAccent(e.newValue);
+        refreshAppliedSignature();
       }
       if (e.key === 'tools3000:language' && e.newValue) {
         syncLanguage(e.newValue);
+        refreshAppliedSignature();
       }
     };
 
     const onAccentChanged = (e: Event) => {
       const customEvent = e as CustomEvent<string>;
-      const newAccent = customEvent.detail || localStorage.getItem('tools3000:accent-color');
-      if (newAccent) {
-        applyAccent(newAccent);
-        persistSharedAppearance({ accentColor: newAccent });
+      const candidate = customEvent.detail || localStorage.getItem('tools3000:accent-color');
+      if (isAccentColor(candidate)) {
+        applyAccent(candidate);
+        refreshAppliedSignature();
+        persistSharedAppearance({ accentColor: candidate });
       }
     };
 
     const onThemeChanged = (e: Event) => {
       const customEvent = e as CustomEvent<ThemePreference>;
-      const newTheme = customEvent.detail || (localStorage.getItem('tools3000:theme') as ThemePreference);
-      if (isThemePreference(newTheme)) {
-        preferenceRef.current = newTheme;
-        applyTheme(newTheme);
-        persistSharedAppearance({ theme: newTheme });
+      const candidate = customEvent.detail || localStorage.getItem('tools3000:theme');
+      if (isThemePreference(candidate)) {
+        preferenceRef.current = candidate;
+        applyTheme(candidate);
+        refreshAppliedSignature();
+        persistSharedAppearance({ theme: candidate });
       }
     };
 
@@ -200,6 +340,7 @@ export function useAppearance() {
       const newLang = customEvent.detail || localStorage.getItem('tools3000:language');
       if (newLang) {
         syncLanguage(newLang);
+        refreshAppliedSignature();
         persistSharedAppearance({ language: newLang });
       }
     };
@@ -236,5 +377,5 @@ export function useAppearance() {
         channel.close();
       }
     };
-  }, [applyPayload, refreshFromBridge, syncLanguage]);
+  }, [applyPayload, refreshAppliedSignature, refreshFromBridge, syncLanguage]);
 }

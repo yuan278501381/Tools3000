@@ -21,7 +21,17 @@ import { SavedToast } from './components/SavedToast';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { getPageMetadata, PAGE_DEFINITIONS } from './pages/registry';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
-import { useAppearance } from './hooks/useAppearance';
+import {
+  applyLocalAppearance,
+  isAccentColor,
+  isThemePreference,
+  persistAppearanceToBackend,
+  readStoredAccent,
+  readStoredTheme,
+  useAppearance,
+  type Theme,
+  type ThemePreference,
+} from './hooks/useAppearance';
 import { shouldShowOnboarding } from './onboardingGate';
 import { Toaster } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -43,9 +53,6 @@ const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then(
 const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((module) => ({ default: module.RemoteBoostPage })));
 const ExtensionPage = lazy(() => import('./pages/ExtensionPage').then((module) => ({ default: module.ExtensionPage })));
 
-type Theme = 'dark' | 'light';
-type ThemePreference = Theme | 'system';
-
 const getInitialActivePluginIds = (): string[] | null => {
   try {
     const raw = localStorage.getItem('tools3000:active-plugins');
@@ -60,18 +67,6 @@ const getInitialActivePluginIds = (): string[] | null => {
   }
   return null;
 };
-
-function readStoredThemePreference(): ThemePreference {
-  try {
-    const raw = localStorage.getItem('tools3000:theme');
-    if (raw === 'light' || raw === 'dark' || raw === 'system') {
-      return raw;
-    }
-  } catch {
-    // 忽略本地存储读取异常
-  }
-  return 'system';
-}
 
 function App() {
   useAppearance();
@@ -104,14 +99,8 @@ function App() {
     window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 
   const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme());
-  const [themePreference, setThemePreference] = useState<ThemePreference>(() => readStoredThemePreference());
-  const [accent, setAccent] = useState<string>(() => {
-    try {
-      return localStorage.getItem('tools3000:accent-color') || 'blue';
-    } catch {
-      return 'blue';
-    }
-  });
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => readStoredTheme('system'));
+  const [accent, setAccent] = useState<string>(() => readStoredAccent('blue'));
   const theme: Theme = themePreference === 'system' ? systemTheme : themePreference;
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
@@ -197,12 +186,16 @@ function App() {
         if (typeof settings.elevated === 'boolean') {
           setIsElevated(settings.elevated);
         }
-        if (settings.theme === 'light' || settings.theme === 'dark' || settings.theme === 'system') {
+        if (isThemePreference(settings.theme)) {
           setThemePreference(settings.theme);
         }
-        if (typeof settings.accentColor === 'string' && settings.accentColor) {
+        if (isAccentColor(settings.accentColor)) {
           setAccent(settings.accentColor);
         }
+        applyLocalAppearance(
+          { theme: settings.theme, accentColor: settings.accentColor },
+          { dispatchEvents: false },
+        );
       })
       .catch(console.error);
     return () => { cancelled = true; };
@@ -211,10 +204,10 @@ function App() {
   useBridgeEvent('appearance:changed', (data: unknown) => {
     if (!data || typeof data !== 'object') return;
     const payload = data as { theme?: unknown; accentColor?: unknown };
-    if (payload.theme === 'light' || payload.theme === 'dark' || payload.theme === 'system') {
+    if (isThemePreference(payload.theme)) {
       setThemePreference(payload.theme);
     }
-    if (typeof payload.accentColor === 'string' && payload.accentColor) {
+    if (isAccentColor(payload.accentColor)) {
       setAccent(payload.accentColor);
     }
   });
@@ -402,24 +395,14 @@ function App() {
         themePreference={themePreference}
         onSelectThemePreference={(pref) => {
           setThemePreference(pref);
-          try {
-            localStorage.setItem('tools3000:theme', pref);
-          } catch (e) {
-            void e;
-          }
-          bridgeRequest<{ success: boolean }>('general.updateSettings', { theme: pref }).catch(console.error);
-          window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: pref }));
+          applyLocalAppearance({ theme: pref });
+          persistAppearanceToBackend({ theme: pref, accentColor: accent }).catch(console.error);
         }}
         accent={accent}
         onSelectAccent={(newAccent) => {
           setAccent(newAccent);
-          try {
-            localStorage.setItem('tools3000:accent-color', newAccent);
-          } catch (e) {
-            void e;
-          }
-          bridgeRequest<{ success: boolean }>('general.updateSettings', { accentColor: newAccent }).catch(console.error);
-          window.dispatchEvent(new CustomEvent('tools3000:accent-changed', { detail: newAccent }));
+          applyLocalAppearance({ accentColor: newAccent });
+          persistAppearanceToBackend({ theme: themePreference, accentColor: newAccent }).catch(console.error);
         }}
       />
       <div className="app__body">
