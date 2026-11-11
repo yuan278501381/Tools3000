@@ -18,6 +18,16 @@ interface HistoryEntry {
 
 const AUTO_REFRESH_THROTTLE_MS = 1500;
 
+const computeEntryMatchKey = (entry: HistoryEntry): string =>
+  typeof entry.id === 'number' && entry.id > 0
+    ? `id:${entry.id}`
+    : `meta:${entry.timestamp}|${entry.width}x${entry.height}|${entry.filePath}`;
+
+const computeHistorySignature = (list: HistoryEntry[]): string =>
+  list
+    .map((entry) => `${computeEntryMatchKey(entry)}@${entry.index}`)
+    .join(';;');
+
 export default function HistoryPage() {
   const { t: rawT } = useTranslation();
   const t = rawT as unknown as (key: string, defaultValue?: string) => string;
@@ -27,6 +37,14 @@ export default function HistoryPage() {
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [busyActionKey, setBusyActionKey] = useState<string | null>(null);
   const lastAutoRefreshAtRef = useRef(0);
+  const entriesRef = useRef<HistoryEntry[]>([]);
+  const lastSignatureRef = useRef<string>('');
+
+  const commitEntries = useCallback((next: HistoryEntry[]) => {
+    entriesRef.current = next;
+    lastSignatureRef.current = computeHistorySignature(next);
+    setEntries(next);
+  }, []);
 
   const silentRefresh = useCallback(async () => {
     const now = Date.now();
@@ -35,18 +53,58 @@ export default function HistoryPage() {
     }
     lastAutoRefreshAtRef.current = now;
     try {
-      const data = await bridgeRequest<HistoryEntry[]>('history.getAll', { includeThumbnails: true });
-      setEntries(Array.isArray(data) ? data : []);
+      const metaRaw = await bridgeRequest<HistoryEntry[]>('history.getAll', { includeThumbnails: false });
+      const metaList = Array.isArray(metaRaw) ? metaRaw : [];
+      const nextSig = computeHistorySignature(metaList);
+      if (nextSig === lastSignatureRef.current) {
+        return;
+      }
+
+      const cachedBase64Map = new Map<string, string>();
+      for (const existing of entriesRef.current) {
+        if (existing.base64) {
+          cachedBase64Map.set(computeEntryMatchKey(existing), existing.base64);
+        }
+      }
+
+      const hydrated = await Promise.all(
+        metaList.map(async (item) => {
+          if (item.base64) {
+            return item;
+          }
+          const cached = cachedBase64Map.get(computeEntryMatchKey(item));
+          if (cached) {
+            return { ...item, base64: cached };
+          }
+          try {
+            const payload = typeof item.id === 'number' && item.id > 0
+              ? { id: item.id, index: item.index }
+              : { index: item.index };
+            const thumbRes = await bridgeRequest<{ success?: boolean; base64?: string }>(
+              'history.getThumbnail',
+              payload,
+              { silent: true },
+            );
+            if (thumbRes?.base64) {
+              return { ...item, base64: thumbRes.base64 };
+            }
+          } catch {
+            // 单图拉取容错降级占位图
+          }
+          return item;
+        }),
+      );
+      commitEntries(hydrated);
     } catch {
       // 窗口获焦自动同步静默容错，避免干扰用户操作
     }
-  }, []);
+  }, [commitEntries]);
 
   useEffect(() => {
     lastAutoRefreshAtRef.current = Date.now();
     bridgeRequest<HistoryEntry[]>('history.getAll', { includeThumbnails: true })
       .then((data) => {
-        setEntries(Array.isArray(data) ? data : []);
+        commitEntries(Array.isArray(data) ? data : []);
       })
       .catch((error) => {
         console.error('Failed to fetch history', error);
@@ -92,7 +150,7 @@ export default function HistoryPage() {
     try {
       const data = await bridgeRequest<HistoryEntry[]>('history.getAll', { includeThumbnails: true });
       lastAutoRefreshAtRef.current = Date.now();
-      setEntries(Array.isArray(data) ? data : []);
+      commitEntries(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Failed to fetch history', error);
       toast.error(t('history.loadFailed'));
@@ -105,7 +163,7 @@ export default function HistoryPage() {
     try {
       const result = await bridgeRequest<{ success: boolean; error?: string }>('history.clear', {});
       if (!result.success) throw new Error(result.error || t('history.clearFailed'));
-      setEntries([]);
+      commitEntries([]);
       setConfirmingClear(false);
     } catch (error) {
       toast.error(t('history.clearFailed'), { description: String(error) });
@@ -126,11 +184,10 @@ export default function HistoryPage() {
       if (!result?.success) {
         throw new Error(result?.error || t('history.deleteFailed', 'Failed to delete capture'));
       }
-      setEntries((prev) =>
-        prev
-          .filter((item) => (hasStableId ? item.id !== entry.id : item.index !== entry.index))
-          .map((item, idx) => ({ ...item, index: idx })),
-      );
+      const nextEntries = entriesRef.current
+        .filter((item) => (hasStableId ? item.id !== entry.id : item.index !== entry.index))
+        .map((item, idx) => ({ ...item, index: idx }));
+      commitEntries(nextEntries);
       toast.success(t('history.deleteSuccess', 'Capture removed from history'));
     } catch (error) {
       toast.error(t('history.deleteFailed', 'Failed to delete capture'), { description: String(error) });
@@ -289,7 +346,7 @@ export default function HistoryPage() {
             >
               <div className="history-card-image">
                 {entry.base64 ? (
-                  <img src={`data:image/png;base64,${entry.base64}`} alt={t('history.thumbnailAlt')} loading="lazy" />
+                  <img src={`data:image/png;base64,${entry.base64}`} alt={t('history.thumbnailAlt')} loading="lazy" decoding="async" />
                 ) : (
                   <div className="placeholder"><ImageIcon size={24} aria-hidden="true" /></div>
                 )}

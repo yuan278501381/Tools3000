@@ -7,7 +7,6 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronUp, Check, X, AlertTriangle, Loader2 } from 'lucide-react';
 import { ControlA11yContext, useControlA11y } from './ControlA11yContext';
-import { acquireHotkeyPause, releaseHotkeyPause } from '../utils/hotkeyPauseCoordinator';
 import './UIKit.css';
 
 /* ── Card ─────────────────────────────────────────────────────────────────── */
@@ -585,85 +584,6 @@ export const TextInput: FC<TextInputProps> = ({
       readOnly={readOnly}
       {...accessibility}
       onChange={(e) => onChange(e.target.value)}
-    />
-  );
-};
-
-/* ── HotkeyInput — 按下组合键自动捕获 (输出如 "Ctrl+Shift+T") ──────────────── */
-
-const KEY_NAME_MAP: Record<string, string> = {
-  ArrowLeft: 'Left', ArrowRight: 'Right', ArrowUp: 'Up', ArrowDown: 'Down',
-  ' ': 'Space', Escape: 'Escape', Enter: 'Enter', Tab: 'Tab',
-  Delete: 'Delete', Backspace: 'Backspace', Home: 'Home', End: 'End',
-  PageUp: 'PageUp', PageDown: 'PageDown', Insert: 'Insert',
-};
-
-interface HotkeyInputProps {
-  id?: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-}
-
-export const HotkeyInput: FC<HotkeyInputProps> = ({ id, value, onChange, placeholder }) => {
-  const { t } = useTranslation();
-  const holdsPauseLockRef = useRef(false);
-
-  const lockPause = useCallback(() => {
-    if (!holdsPauseLockRef.current) {
-      holdsPauseLockRef.current = true;
-      acquireHotkeyPause();
-    }
-  }, []);
-
-  const unlockPause = useCallback(() => {
-    if (holdsPauseLockRef.current) {
-      holdsPauseLockRef.current = false;
-      releaseHotkeyPause();
-    }
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      unlockPause();
-    };
-  }, [unlockPause]);
-
-  const onKeyDown = useCallback((e: ReactKeyboardEvent<HTMLInputElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const k = e.key;
-    if (k === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
-      e.currentTarget.blur();
-      return;
-    }
-    if (k === 'Backspace' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
-      onChange('');
-      return;
-    }
-    if (k === 'Control' || k === 'Alt' || k === 'Shift' || k === 'Meta') return;
-
-    const mods: string[] = [];
-    if (e.ctrlKey) mods.push('Ctrl');
-    if (e.altKey) mods.push('Alt');
-    if (e.shiftKey) mods.push('Shift');
-    if (e.metaKey) mods.push('Win');
-
-    const main = KEY_NAME_MAP[k] ?? (k.length === 1 ? k.toUpperCase() : k);
-    onChange([...mods, main].join('+'));
-  }, [onChange]);
-
-  return (
-    <input
-      id={id}
-      type="text"
-      className="uikit-input uikit-input--hotkey"
-      value={value}
-      placeholder={placeholder ?? t('hotkey.pressKeys')}
-      readOnly
-      onFocus={lockPause}
-      onBlur={unlockPause}
-      onKeyDown={onKeyDown}
     />
   );
 };

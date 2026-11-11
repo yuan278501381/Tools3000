@@ -6,10 +6,11 @@ export type Theme = 'light' | 'dark';
 export type ThemePreference = Theme | 'system';
 export type AccentColorId = 'blue' | 'cyan' | 'amber' | 'mint' | 'coral' | 'violet';
 
-interface AppearancePayload {
+export interface AppearancePayload {
   theme?: unknown;
   accentColor?: unknown;
   language?: unknown;
+  elevated?: boolean;
 }
 
 interface AppearanceUpdateResult {
@@ -159,13 +160,17 @@ export async function persistAppearanceToBackend(patch: {
 }
 
 /** Keep auxiliary WebView surfaces aligned with the shared app appearance & typography. */
-export function useAppearance() {
+export function useAppearance(onSettingsHydrated?: (settings: AppearancePayload) => void) {
   const { i18n } = useTranslation();
   const preferenceRef = useRef<ThemePreference>('system');
   const langPrefRef = useRef<string>('');
   const lastAppliedSigRef = useRef<string>('');
   const lastBroadcastSigRef = useRef<string>('');
   const lastWakeFetchRef = useRef<number>(0);
+  const onHydratedRef = useRef(onSettingsHydrated);
+  useLayoutEffect(() => {
+    onHydratedRef.current = onSettingsHydrated;
+  }, [onSettingsHydrated]);
 
   const refreshAppliedSignature = useCallback(() => {
     const currentAccent = normalizeAccentColor(
@@ -231,6 +236,7 @@ export function useAppearance() {
       .then((settings) => {
         if (!settings || typeof settings !== 'object') return;
         applyPayload(settings, true);
+        onHydratedRef.current?.(settings);
       })
       .catch(() => {
         // Cached or system appearance remains active as fallback.

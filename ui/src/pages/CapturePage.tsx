@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback, type FC } from 'react';
 import { Card, Toggle, SettingRow, SettingGroup, TextInput, Select, Button } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
-import { Camera, Video, Palette } from 'lucide-react';
+import { Camera, Video, Palette, FolderOpen } from 'lucide-react';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { toast } from 'sonner';
@@ -232,6 +232,16 @@ export const CapturePage: FC = () => {
     }
   };
 
+  const handleOpenSaveFolder = async (dirPath?: string) => {
+    const trimmed = dirPath?.trim();
+    if (!trimmed) return;
+    try {
+      await bridgeRequest('system.openFolder', { path: trimmed });
+    } catch (error) {
+      toast.error(t('capture.openFolderFailed'), { description: String(error) });
+    }
+  };
+
   const handleTryCapture = async () => {
     try {
       const result = await bridgeRequest<OperationResult>('capture.triggerScreenshot');
@@ -333,7 +343,7 @@ export const CapturePage: FC = () => {
           />
           {capture.saveToFile && (
             <SettingRow label={t('capture.saveDir')} description={t('capture.saveDirDesc')}>
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <div>
                   <TextInput
                     id="saveDir"
@@ -343,6 +353,15 @@ export const CapturePage: FC = () => {
                   />
                 </div>
                 <Button variant="ghost" onClick={handleBrowseDir}>{t('capture.browse')}</Button>
+                <Button
+                  variant="ghost"
+                  disabled={!capture.saveDirectory?.trim()}
+                  title={t('capture.openFolder')}
+                  onClick={() => void handleOpenSaveFolder(capture.saveDirectory)}
+                >
+                  <FolderOpen size={14} aria-hidden="true" />
+                  <span>{t('capture.openFolder')}</span>
+                </Button>
               </div>
             </SettingRow>
           )}
@@ -504,9 +523,18 @@ export const CapturePage: FC = () => {
             />
           </SettingRow>
           <SettingRow label={t('recording.saveDir')} description={t('recording.saveDirDesc')}>
-            <div style={{ display: 'flex', gap: '8px' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
               <TextInput id="recordSaveDir" value={recording.saveDirectory || ''} readOnly onChange={() => {}} />
               <Button variant="ghost" onClick={handleBrowseRecordingDir}>{t('capture.browse')}</Button>
+              <Button
+                variant="ghost"
+                disabled={!recording.saveDirectory?.trim()}
+                title={t('capture.openFolder')}
+                onClick={() => void handleOpenSaveFolder(recording.saveDirectory)}
+              >
+                <FolderOpen size={14} aria-hidden="true" />
+                <span>{t('capture.openFolder')}</span>
+              </Button>
             </div>
           </SettingRow>
           <SettingRow label={t('recording.format')} description={t('recording.formatDesc')}>

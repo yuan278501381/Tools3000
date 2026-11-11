@@ -20,6 +20,7 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { SavedToast } from './components/SavedToast';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { getPageMetadata, PAGE_DEFINITIONS } from './pages/registry';
+import { consumePendingDeepNavigation, type DeepNavigationPayload } from './config/settingsSearchIndex';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
 import {
   applyLocalAppearance,
@@ -29,6 +30,7 @@ import {
   readStoredAccent,
   readStoredTheme,
   useAppearance,
+  type AppearancePayload,
   type Theme,
   type ThemePreference,
 } from './hooks/useAppearance';
@@ -69,8 +71,8 @@ const getInitialActivePluginIds = (): string[] | null => {
 };
 
 function App() {
-  useAppearance();
   const { t } = useTranslation();
+  const [isElevated, setIsElevated] = useState(false);
   const [activePluginIds, setActivePluginIds] = useState<string[] | null>(() => getInitialActivePluginIds());
   const [activeNav, setActiveNav] = useState<NavId>(() => {
     try {
@@ -105,6 +107,7 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
   const pageTitleRef = useRef<HTMLHeadingElement>(null);
+  const contentContainerRef = useRef<HTMLDivElement>(null);
 
   const handleNavSelect = useCallback((nav: NavId) => {
     setActiveNav(nav);
@@ -176,30 +179,19 @@ function App() {
     return new Set(['gesture', 'capture', 'search', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost']);
   }, [plugins, activePluginIds]);
 
-  const [isElevated, setIsElevated] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    bridgeRequest<{ theme?: string; accentColor?: string; elevated?: boolean }>('general.getSettings')
-      .then((settings) => {
-        if (cancelled || !settings) return;
-        if (typeof settings.elevated === 'boolean') {
-          setIsElevated(settings.elevated);
-        }
-        if (isThemePreference(settings.theme)) {
-          setThemePreference(settings.theme);
-        }
-        if (isAccentColor(settings.accentColor)) {
-          setAccent(settings.accentColor);
-        }
-        applyLocalAppearance(
-          { theme: settings.theme, accentColor: settings.accentColor },
-          { dispatchEvents: false },
-        );
-      })
-      .catch(console.error);
-    return () => { cancelled = true; };
+  const handleAppearanceHydrated = useCallback((settings: AppearancePayload) => {
+    if (typeof settings.elevated === 'boolean') {
+      setIsElevated(settings.elevated);
+    }
+    if (isThemePreference(settings.theme)) {
+      setThemePreference(settings.theme);
+    }
+    if (isAccentColor(settings.accentColor)) {
+      setAccent(settings.accentColor);
+    }
   }, []);
+
+  useAppearance(handleAppearanceHydrated);
 
   useBridgeEvent('appearance:changed', (data: unknown) => {
     if (!data || typeof data !== 'object') return;
@@ -253,6 +245,48 @@ function App() {
     const frame = requestAnimationFrame(() => pageTitleRef.current?.focus());
     return () => cancelAnimationFrame(frame);
   }, [activeNav, showOnboarding]);
+
+  useEffect(() => {
+    let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const locateTargetInContent = (targetText: string, attempt = 0) => {
+      const container = contentContainerRef.current;
+      const needle = targetText.trim().toLowerCase();
+      if (!container || !needle) return;
+      const candidates = Array.from(
+        container.querySelectorAll<HTMLElement>('.uikit-setting-row, .uikit-setting-group, .uikit-card'),
+      );
+      const matched = candidates.find((el) => (el.textContent || '').toLowerCase().includes(needle));
+      if (matched) {
+        matched.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+        matched.classList.add('app__deep-highlight');
+        highlightTimer = setTimeout(() => {
+          matched.classList.remove('app__deep-highlight');
+        }, 1600);
+      } else if (attempt < 6) {
+        pollTimer = setTimeout(() => locateTargetInContent(targetText, attempt + 1), 80);
+      }
+    };
+
+    const pending = activeNav !== 'search' ? consumePendingDeepNavigation(activeNav) : null;
+    if (pending?.targetText) {
+      pollTimer = setTimeout(() => locateTargetInContent(pending.targetText!), 60);
+    }
+
+    const onDeepNav = (e: Event) => {
+      const detail = (e as CustomEvent<DeepNavigationPayload>).detail;
+      if (detail?.targetText && detail.navId === activeNav) {
+        pollTimer = setTimeout(() => locateTargetInContent(detail.targetText!), 60);
+      }
+    };
+    window.addEventListener('tools3000:navigate-deep', onDeepNav);
+    return () => {
+      window.removeEventListener('tools3000:navigate-deep', onDeepNav);
+      if (highlightTimer) clearTimeout(highlightTimer);
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [activeNav]);
 
   useEffect(() => {
     const handlePreference = (event: Event) => {
@@ -430,7 +464,7 @@ function App() {
           </header>
 
           {/* ── 页面内容 ────────────────────────────────────── */}
-          <div className="app__content" key={activeNav}>
+          <div className="app__content" ref={contentContainerRef} key={activeNav}>
             <Suspense fallback={<div role="status" aria-live="polite" className="surface-loading">{t('common.loading')}</div>}>
               {renderPage()}
             </Suspense>
