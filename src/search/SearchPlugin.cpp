@@ -1137,6 +1137,10 @@ public:
             std::string ext = params.value("ext", "");
             bool isDir = params.value("isDirectory", false);
             std::string path = params.value("path", "");
+            if (ext.empty() && !isDir && path.size() >= 6 &&
+                _strnicmp(path.c_str(), "shell:", 6) == 0) {
+                ext = ".exe";
+            }
             std::string base64 = tools3000::core::WinUtils::getFileTypeIconBase64(
                 tools3000::core::WinUtils::utf8ToWstring(ext),
                 isDir,
@@ -1154,6 +1158,10 @@ public:
                     std::string key = item.value("key", "");
                     if (key.empty()) {
                         key = isDir ? "::dir::" : (!path.empty() ? ("path:" + tools3000::core::WinUtils::toLower(path)) : ext);
+                    }
+                    if (ext.empty() && !isDir && path.size() >= 6 &&
+                        _strnicmp(path.c_str(), "shell:", 6) == 0) {
+                        ext = ".exe";
                     }
                     if (!result.contains(key)) {
                         result[key] = tools3000::core::WinUtils::getFileTypeIconBase64(

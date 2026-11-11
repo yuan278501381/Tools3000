@@ -4,14 +4,57 @@
 #include "core/events/MainThreadDispatcher.h"
 #include "core/ipc/FileInteractionHandlers.h"
 #include "core/ipc/MessageBridge.h"
+#include "core/utils/WinUtils.h"
 
 #include <windows.h>
+#include <shellapi.h>
 #include <algorithm>
+#include <cwctype>
+#include <string>
+#include <string_view>
 
 namespace tools3000::search {
 using tools3000::core::json;
 
 namespace {
+
+bool startsWithAsciiIgnoreCase(std::wstring_view text, std::wstring_view lowerPrefix) noexcept {
+    if (text.size() < lowerPrefix.size()) return false;
+    for (size_t i = 0; i < lowerPrefix.size(); ++i) {
+        const wchar_t ch = (text[i] == L'/')
+            ? L'\\'
+            : ((text[i] >= L'A' && text[i] <= L'Z') ? static_cast<wchar_t>(text[i] + 32) : text[i]);
+        if (ch != lowerPrefix[i]) return false;
+    }
+    return true;
+}
+
+bool isSafeAppsFolderUri(std::wstring_view wpath) noexcept {
+    if (!startsWithAsciiIgnoreCase(wpath, L"shell:appsfolder")) {
+        return false;
+    }
+    if (wpath.size() > 16 && wpath[16] != L'\\' && wpath[16] != L'/') {
+        return false;
+    }
+    for (wchar_t ch : wpath) {
+        if (ch < 0x20) return false;
+    }
+    return true;
+}
+
+bool executeShellAppsUri(const std::wstring& uri, const wchar_t* verb) noexcept {
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_FLAG_NO_UI;
+    sei.lpVerb = verb;
+    sei.lpFile = uri.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    return ShellExecuteExW(&sei) != FALSE;
+}
+
+std::string extractSearchRequestPath(const json& params) {
+    return params.value("filepath", params.value("path", ""));
+}
 
 HWND currentProcessSearchWindow() {
     const DWORD currentProcessId = GetCurrentProcessId();
@@ -29,6 +72,38 @@ HWND currentProcessSearchWindow() {
 
 void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
     tools3000::core::registerFileInteractionHandlers(bridge, "search", "path is empty", true);
+
+    bridge.registerHandler("search.openFile", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isSafeAppsFolderUri(wpath)) {
+            return {{"success", executeShellAppsUri(wpath, nullptr)}};
+        }
+        return {{"success", tools3000::core::WinUtils::openFile(wpath)}};
+    });
+
+    bridge.registerHandler("search.openFileAsAdmin", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isSafeAppsFolderUri(wpath)) {
+            const bool ok = executeShellAppsUri(wpath, L"runas") || executeShellAppsUri(wpath, nullptr);
+            return {{"success", ok}};
+        }
+        return {{"success", tools3000::core::WinUtils::openFileAsAdmin(wpath)}};
+    });
+
+    bridge.registerHandler("search.openFolder", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isSafeAppsFolderUri(wpath)) {
+            const std::wstring appsFolderRoot = L"shell:AppsFolder";
+            return {{"success", executeShellAppsUri(appsFolderRoot, L"open")}};
+        }
+        return {{"success", tools3000::core::WinUtils::openFolderAndSelectItem(wpath)}};
+    });
 
     bridge.registerHandler("search.startDrag", [](const json&) -> json {
         const HWND hwnd = currentProcessSearchWindow();

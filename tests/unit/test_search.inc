@@ -3088,3 +3088,415 @@ TEST(PdfExtractorSafetyTest, HandlesMalformedPredictorOverflowAndHugeBfRangeSafe
             outText);
     });
 }
+
+#include "service/QueryThreadPool.h"
+#include "service/AppLauncherCatalog.h"
+
+TEST(FileIndexStoreOptimizationTest, SingleSlotOpenAddressingTombstoneRehashAndPinyinSlotReuse) {
+    tools3000::service::FileIndexStore store;
+    store.setDriveLetter('C');
+    store.reserve(32);
+
+    // 1. 保留 16 个常驻文件
+    for (uint64_t frn = 1; frn <= 16; ++frn) {
+        FileRecordInit steady{};
+        steady.fileReferenceNumber = frn;
+        steady.parentFileReferenceNumber = 0;
+        steady.fileName = L"steady_file_" + std::to_wstring(frn) + L".txt";
+        steady.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+        store.upsert(steady, true);
+    }
+    ASSERT_EQ(store.size(), 16u);
+
+    // 2. 高频临时文件增删风暴：8000 次插入不同 FRN 后立即删除
+    // 修复前 rehash 盲目按 m_slots.size() * 2 扩容会导致哈希表无限翻倍膨胀；
+    // 修复后 rehash 基于 m_liveCount 重建并清零 m_tombstones，容量始终收敛在极小常数级。
+    for (uint64_t churn = 1000; churn < 9000; ++churn) {
+        FileRecordInit temp{};
+        temp.fileReferenceNumber = churn;
+        temp.parentFileReferenceNumber = 0;
+        temp.fileName = L"temp_build_" + std::to_wstring(churn) + L".tmp";
+        temp.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+        store.upsert(temp, true);
+        ASSERT_NE(store.find(churn), nullptr);
+        ASSERT_TRUE(store.erase(churn));
+        ASSERT_EQ(store.find(churn), nullptr);
+    }
+    // 即使在调用 compactIfSparse 之前，纯靠 insertNewSlot 触发的 rehash 也绝不翻倍膨胀（固定停在初始地板 1024，旧版会膨胀至 >200 万）
+    EXPECT_EQ(store.hashCapacity(), 1024u);
+    store.compactIfSparse();
+
+    EXPECT_EQ(store.size(), 16u);
+    EXPECT_EQ(store.tombstoneCount(), 0u);
+    EXPECT_EQ(store.hashCapacity(), 1024u);
+    for (uint64_t frn = 1; frn <= 16; ++frn) {
+        const auto* rec = store.find(frn);
+        ASSERT_NE(rec, nullptr);
+        EXPECT_EQ(store.view(*rec).fileName, L"steady_file_" + std::to_wstring(frn) + L".txt");
+    }
+
+    // 3. 中文文件重命名原地复用与回收 pinyinSlot
+    FileRecordInit cjkInit{};
+    cjkInit.fileReferenceNumber = 50001ULL;
+    cjkInit.parentFileReferenceNumber = 0;
+    cjkInit.fileName = L"季度财务分析_初稿.xlsx";
+    cjkInit.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+    store.upsert(cjkInit, true);
+
+    const auto* cjkRec = store.find(50001ULL);
+    ASSERT_NE(cjkRec, nullptr);
+    const uint32_t initialPinyinSlot = cjkRec->pinyinSlot;
+    ASSERT_GT(initialPinyinSlot, 0u);
+    const size_t baselinePinyinEntries = store.pinyinEntryCount();
+
+    // 连续 50 次中文改中文重命名，必须 100% 原地复用同一 pinyinSlot，m_pinyin 绝不增长
+    for (int ver = 1; ver <= 50; ++ver) {
+        cjkInit.fileName = L"季度财务分析_修订版" + std::to_wstring(ver) + L".xlsx";
+        store.upsert(cjkInit, true);
+    }
+    cjkRec = store.find(50001ULL);
+    ASSERT_NE(cjkRec, nullptr);
+    EXPECT_EQ(cjkRec->pinyinSlot, initialPinyinSlot);
+    EXPECT_EQ(store.pinyinEntryCount(), baselinePinyinEntries);
+    EXPECT_NE(store.view(*cjkRec).pinyinInitials.find(L"jdcwfx"), std::wstring::npos);
+
+    // 由中文改名为纯英文：必须清空旧 pinyinSlot 并回收进空闲链表，视图回退指向纯英文文件名且不含旧中文拼音
+    cjkInit.fileName = L"quarterly_financial_report.xlsx";
+    store.upsert(cjkInit, true);
+    cjkRec = store.find(50001ULL);
+    ASSERT_NE(cjkRec, nullptr);
+    EXPECT_EQ(cjkRec->pinyinSlot, 0u);
+    EXPECT_EQ(store.view(*cjkRec).pinyinInitials, L"quarterly_financial_report.xlsx");
+    EXPECT_EQ(store.view(*cjkRec).pinyinInitials.find(L"jdcwfx"), std::wstring::npos);
+    EXPECT_GE(store.freePinyinSlotCount(), 1u);
+
+    // 新增另一个中文文件：必须直接复用回收槽位，m_pinyin 总数零增长
+    FileRecordInit nextCjk{};
+    nextCjk.fileReferenceNumber = 50002ULL;
+    nextCjk.parentFileReferenceNumber = 0;
+    nextCjk.fileName = L"新项目架构设计.docx";
+    nextCjk.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+    store.upsert(nextCjk, true);
+    const auto* nextRec = store.find(50002ULL);
+    ASSERT_NE(nextRec, nullptr);
+    EXPECT_EQ(nextRec->pinyinSlot, initialPinyinSlot);
+    EXPECT_EQ(store.pinyinEntryCount(), baselinePinyinEntries);
+}
+
+TEST(SlashPathFragmentSeparableTest, DecomposesDirectorySegmentsAndAvoidsFullVolumePathBuild) {
+    MftParser parser;
+    parser.Initialize('C');
+    parser.setRealTimeValidation(false);
+
+    std::vector<FileRecordInit> records;
+    auto addDir = [&](DWORDLONG id, DWORDLONG parent, const wchar_t* name) {
+        FileRecordInit d{};
+        d.fileReferenceNumber = id;
+        d.parentFileReferenceNumber = parent;
+        d.fileName = name;
+        d.isDirectory = true;
+        d.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+        records.push_back(std::move(d));
+    };
+    auto addFile = [&](DWORDLONG id, DWORDLONG parent, const wchar_t* name) {
+        FileRecordInit f{};
+        f.fileReferenceNumber = id;
+        f.parentFileReferenceNumber = parent;
+        f.fileName = name;
+        f.isDirectory = false;
+        f.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+        f.fileSize = 2048;
+        f.lastWriteTime = 133500000000000000ULL;
+        records.push_back(std::move(f));
+    };
+
+    // 构建真实目录树与 4000 个干扰文件
+    addDir(100, 0, L"Repo");
+    addDir(101, 100, L"src");
+    addDir(102, 101, L"service");
+    addDir(103, 101, L"ui");
+    addDir(104, 100, L"docs");
+    addDir(105, 104, L"service");
+
+    addFile(201, 102, L"main.cpp");       // 目标：C:\Repo\src\service\main.cpp
+    addFile(202, 103, L"main.cpp");       // 同文件名不同父目录：C:\Repo\src\ui\main.cpp
+    addFile(203, 105, L"readme.md");      // 同父目录名不同文件名：C:\Repo\docs\service\readme.md
+
+    for (DWORDLONG d = 0; d < 40; ++d) {
+        const DWORDLONG dirId = 1000 + d;
+        const std::wstring dirName = L"pkg_" + std::to_wstring(d);
+        addDir(dirId, 100, dirName.c_str());
+        for (DWORDLONG f = 0; f < 100; ++f) {
+            FileRecordInit noise{};
+            noise.fileReferenceNumber = 10000 + d * 100 + f;
+            noise.parentFileReferenceNumber = dirId;
+            noise.fileName = L"module_" + std::to_wstring(f) + L".cpp";
+            noise.isDirectory = false;
+            noise.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+            noise.fileSize = 512;
+            noise.lastWriteTime = 133400000000000000ULL;
+            records.push_back(std::move(noise));
+        }
+    }
+
+    ASSERT_TRUE(parser.importSnapshot(std::move(records), 2000, parser.getVolumeSerialNumber()));
+
+    // 1. 反斜杠路径片段查询：必须仅对同时通过祖先目录位掩码 + 末段文件名快筛的候选调用 buildFullPath
+    auto backslashHits = parser.Search(L"service\\main.cpp", 50);
+    ASSERT_EQ(backslashHits.size(), 1u);
+    EXPECT_EQ(backslashHits[0].fullPath, L"C:\\Repo\\src\\service\\main.cpp");
+    EXPECT_LE(parser.getLastSearchPathBuildCount(), 4u);
+
+    // 2. 正斜杠路径片段查询
+    auto forwardSlashHits = parser.Search(L"src/service/main.cpp", 50);
+    ASSERT_EQ(forwardSlashHits.size(), 1u);
+    EXPECT_EQ(forwardSlashHits[0].fullPath, L"C:\\Repo\\src\\service\\main.cpp");
+    EXPECT_LE(parser.getLastSearchPathBuildCount(), 4u);
+
+    // 3. 带通配符的斜杠路径片段
+    auto wildcardSlashHits = parser.Search(L"*\\service\\*.cpp", 50);
+    ASSERT_EQ(wildcardSlashHits.size(), 1u);
+    EXPECT_EQ(wildcardSlashHits[0].fullPath, L"C:\\Repo\\src\\service\\main.cpp");
+    EXPECT_LE(parser.getLastSearchPathBuildCount(), 4u);
+
+    // 4. parent: 精确父目录预筛
+    auto parentHits = parser.Search(L"parent:C:\\Repo\\src\\service", 50);
+    ASSERT_EQ(parentHits.size(), 1u);
+    EXPECT_EQ(parentHits[0].fullPath, L"C:\\Repo\\src\\service\\main.cpp");
+    EXPECT_LE(parser.getLastSearchPathBuildCount(), 4u);
+
+    // 5. 取反斜杠子句：搜 main.cpp !service\main.cpp 仅保留 ui\main.cpp
+    auto negatedSlashHits = parser.Search(L"main.cpp !service\\main.cpp", 50);
+    ASSERT_EQ(negatedSlashHits.size(), 1u);
+    EXPECT_EQ(negatedSlashHits[0].fullPath, L"C:\\Repo\\src\\ui\\main.cpp");
+}
+
+TEST(LockFreeStatAndThreadPoolTest, HydratesSizeAndDateOutsideLockAndSupportsNestedParallelFor) {
+    // 1. 验证全局查询线程池支持嵌套 parallelFor 且无死锁
+    std::atomic<uint64_t> nestedSum{0};
+    tools3000::service::QueryThreadPool::instance().parallelFor(8, [&](size_t) {
+        tools3000::service::QueryThreadPool::instance().parallelFor(32, [&](size_t) {
+            nestedSum.fetch_add(1, std::memory_order_relaxed);
+        });
+    });
+    EXPECT_EQ(nestedSum.load(), 8u * 32u);
+
+    // 2. 验证未水合记录在查询 size: / dm: 时于锁外完成元数据水合并原子写回
+    wchar_t tempDirBuf[MAX_PATH]{};
+    ASSERT_GT(GetTempPathW(MAX_PATH, tempDirBuf), 0u);
+    std::filesystem::path probeDir = std::filesystem::path(tempDirBuf) / L"t3k_p02_stat_probe_dir";
+    std::error_code ec;
+    std::filesystem::remove_all(probeDir, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(probeDir, ec));
+
+    const std::filesystem::path bigFile = probeDir / L"t3k_stat_probe_big.bin";
+    const std::filesystem::path smallFile = probeDir / L"t3k_stat_probe_small.bin";
+    {
+        HANDLE hBig = CreateFileW(bigFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        ASSERT_NE(hBig, INVALID_HANDLE_VALUE);
+        std::vector<char> payload(32 * 1024, 'A');
+        DWORD written = 0;
+        ASSERT_TRUE(WriteFile(hBig, payload.data(), static_cast<DWORD>(payload.size()), &written, nullptr));
+        CloseHandle(hBig);
+
+        HANDLE hSmall = CreateFileW(smallFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        ASSERT_NE(hSmall, INVALID_HANDLE_VALUE);
+        DWORD smallWritten = 0;
+        ASSERT_TRUE(WriteFile(hSmall, payload.data(), 512, &smallWritten, nullptr));
+        CloseHandle(hSmall);
+    }
+
+    const std::wstring absDir = std::filesystem::absolute(probeDir).wstring();
+    ASSERT_GE(absDir.size(), 3u);
+    const char driveLetter = static_cast<char>(std::toupper(static_cast<unsigned char>(absDir[0])));
+
+    MftParser parser;
+    parser.Initialize(driveLetter);
+    parser.setRealTimeValidation(false);
+
+    std::vector<FileRecordInit> records;
+    DWORDLONG parentFrn = 0;
+    DWORDLONG nextFrn = 500;
+    size_t pos = 3;
+    while (pos < absDir.size()) {
+        size_t slash = absDir.find_first_of(L"\\/", pos);
+        std::wstring seg = (slash == std::wstring::npos) ? absDir.substr(pos) : absDir.substr(pos, slash - pos);
+        if (!seg.empty()) {
+            FileRecordInit d{};
+            d.fileReferenceNumber = nextFrn;
+            d.parentFileReferenceNumber = parentFrn;
+            d.fileName = seg;
+            d.isDirectory = true;
+            d.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+            records.push_back(std::move(d));
+            parentFrn = nextFrn++;
+        }
+        if (slash == std::wstring::npos) break;
+        pos = slash + 1;
+    }
+
+    // 刻意令 fileSize = 0, lastWriteTime = 0 模拟刚从 MFT 扫出、尚未水合的记录
+    FileRecordInit bigRec{};
+    bigRec.fileReferenceNumber = 9001;
+    bigRec.parentFileReferenceNumber = parentFrn;
+    bigRec.fileName = L"t3k_stat_probe_big.bin";
+    bigRec.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+    records.push_back(bigRec);
+
+    FileRecordInit smallRec{};
+    smallRec.fileReferenceNumber = 9002;
+    smallRec.parentFileReferenceNumber = parentFrn;
+    smallRec.fileName = L"t3k_stat_probe_small.bin";
+    smallRec.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+    records.push_back(smallRec);
+
+    ASSERT_TRUE(parser.importSnapshot(std::move(records), 3000, parser.getVolumeSerialNumber()));
+
+    auto hits = parser.Search(L"t3k_stat_probe size:>16kb dm:today", 50);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0].fileName, L"t3k_stat_probe_big.bin");
+    EXPECT_EQ(hits[0].fileSize, 32768ULL);
+    EXPECT_GT(hits[0].lastWriteTime, 0ULL);
+
+    // 删除底层物理文件后再次执行同一过滤（setRealTimeValidation(false)），验证大小和时间已原子回填至内存索引
+    std::filesystem::remove_all(probeDir, ec);
+    auto cachedHits = parser.Search(L"t3k_stat_probe size:>16kb dm:today", 50);
+    ASSERT_EQ(cachedHits.size(), 1u);
+    EXPECT_EQ(cachedHits[0].fileSize, 32768ULL);
+}
+
+TEST(AppLauncherRankingAndAppsFolderTest, PromotesStartMenuAndUserDesktopShortcutsFrecencyAndEnumeratesAppsFolder) {
+    MftParser parser;
+    parser.Initialize('C');
+    parser.setRealTimeValidation(false);
+
+    std::vector<FileRecordInit> records;
+    auto addDir = [&](DWORDLONG id, DWORDLONG parent, const wchar_t* name) {
+        FileRecordInit d{};
+        d.fileReferenceNumber = id;
+        d.parentFileReferenceNumber = parent;
+        d.fileName = name;
+        d.isDirectory = true;
+        d.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+        records.push_back(std::move(d));
+    };
+    auto addFile = [&](DWORDLONG id, DWORDLONG parent, const wchar_t* name, uint64_t writeTime) {
+        FileRecordInit f{};
+        f.fileReferenceNumber = id;
+        f.parentFileReferenceNumber = parent;
+        f.fileName = name;
+        f.isDirectory = false;
+        f.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+        f.fileSize = 1024;
+        f.lastWriteTime = writeTime;
+        records.push_back(std::move(f));
+    };
+
+    // 1. 公共开始菜单应用快捷方式：C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StudioApp.lnk
+    addDir(7001, 0, L"ProgramData");
+    addDir(7002, 7001, L"Microsoft");
+    addDir(7003, 7002, L"Windows");
+    addDir(7004, 7003, L"Start Menu");
+    addDir(7005, 7004, L"Programs");
+    addFile(7006, 7005, L"StudioApp.lnk", 1000);
+
+    // 2. 用户桌面应用快捷方式：C:\Users\Alice\Desktop\StudioAppDesktop.lnk
+    addDir(7010, 0, L"Users");
+    addDir(7011, 7010, L"Alice");
+    addDir(7012, 7011, L"Desktop");
+    addFile(7013, 7012, L"StudioAppDesktop.lnk", 1100);
+
+    // 3. 普通工作区文档：C:\Projects\StudioAppSpec.md (时间更新，但位于普通用户层 tier = 1)
+    addDir(7020, 0, L"Projects");
+    addFile(7021, 7020, L"StudioAppSpec.md", 5000);
+
+    // 4. Program Files 可执行程序：C:\Program Files\VendorSuite\StudioAppCli.exe (系统应用层 tier = 3)
+    addDir(7030, 0, L"Program Files");
+    addDir(7031, 7030, L"VendorSuite");
+    addFile(7032, 7031, L"StudioAppCli.exe", 6000);
+
+    // 5. 非用户目录普通 .lnk：C:\Archive\StudioAppOld.lnk (普通快捷方式层 tier = 4)
+    addDir(7040, 0, L"Archive");
+    addFile(7041, 7040, L"StudioAppOld.lnk", 8000);
+
+    // 6. Recent 最近文档影子快捷方式：C:\Users\Alice\AppData\Roaming\Microsoft\Windows\Recent\StudioAppSpec.md.lnk
+    addDir(7050, 7011, L"AppData");
+    addDir(7051, 7050, L"Roaming");
+    addDir(7052, 7051, L"Microsoft");
+    addDir(7053, 7052, L"Windows");
+    addDir(7054, 7053, L"Recent");
+    addFile(7055, 7054, L"StudioAppSpec.md.lnk", 9999);
+
+    ASSERT_TRUE(parser.importSnapshot(std::move(records), 4000, parser.getVolumeSerialNumber()));
+
+    auto results = parser.Search(L"StudioApp", 50);
+    // Recent 影子 .lnk 被默认过滤，剩余 5 条
+    ASSERT_EQ(results.size(), 5u);
+    EXPECT_EQ(results[0].pathTier, tools3000::service::kPathTierAppLauncher);
+    EXPECT_EQ(results[1].pathTier, tools3000::service::kPathTierAppLauncher);
+    // StudioApp.lnk 为精确主干匹配 (rank=0)，StudioAppDesktop.lnk 为前缀匹配 (rank=2)
+    EXPECT_EQ(results[0].fileName, L"StudioApp.lnk");
+    EXPECT_EQ(results[1].fileName, L"StudioAppDesktop.lnk");
+    EXPECT_EQ(results[2].fileName, L"StudioAppSpec.md");
+    EXPECT_EQ(results[3].fileName, L"StudioAppCli.exe");
+    EXPECT_EQ(results[4].fileName, L"StudioAppOld.lnk");
+
+    // 验证高 frecencyScore 常点目标跨普通层/系统层置顶
+    wchar_t tempPath[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tempPath);
+    const std::wstring tempCsv = std::wstring(tempPath) + L"Tools3000_U04_Launcher_Test.csv";
+    DeleteFileW(tempCsv.c_str());
+
+    auto& runMgr = tools3000::service::db::RunHistoryManager::instance();
+    runMgr.init(tempCsv);
+    runMgr.clear();
+    // 模拟用户高频点击普通层文档 StudioAppSpec.md（frecency >= 1200），验证跨普通层直接置顶到榜首
+    runMgr.recordRun(L"C:\\Projects\\StudioAppSpec.md");
+    runMgr.recordRun(L"C:\\Projects\\StudioAppSpec.md");
+    const auto historySnap = runMgr.captureSnapshot();
+
+    tools3000::service::launcher::sortLauncherAwareResults(results, historySnap);
+    EXPECT_EQ(results[0].fileName, L"StudioAppSpec.md");
+    EXPECT_EQ(results[1].fileName, L"StudioApp.lnk");
+    EXPECT_EQ(results[2].fileName, L"StudioAppDesktop.lnk");
+
+    // 模拟用户更高频点击系统层可执行文件 StudioAppCli.exe（原本 tier=3），验证跨系统层跃升至第 1 位
+    runMgr.recordRun(L"C:\\Program Files\\VendorSuite\\StudioAppCli.exe");
+    runMgr.recordRun(L"C:\\Program Files\\VendorSuite\\StudioAppCli.exe");
+    runMgr.recordRun(L"C:\\Program Files\\VendorSuite\\StudioAppCli.exe");
+    const auto cliSnap = runMgr.captureSnapshot();
+    tools3000::service::launcher::sortLauncherAwareResults(results, cliSnap);
+    EXPECT_EQ(results[0].fileName, L"StudioAppCli.exe");
+    EXPECT_EQ(results[1].fileName, L"StudioAppSpec.md");
+    EXPECT_EQ(results[2].fileName, L"StudioApp.lnk");
+
+    runMgr.clear();
+    DeleteFileW(tempCsv.c_str());
+
+    // 验证 FOLDERID_AppsFolder 枚举现代 UWP / 系统应用与同名去重
+    auto& catalog = tools3000::service::launcher::AppsFolderCatalog::instance();
+    catalog.invalidate();
+    const auto apps = catalog.getSnapshot(nullptr, true, L"__unit_test_sid__");
+    EXPECT_FALSE(apps.empty());
+    if (!apps.empty()) {
+        EXPECT_TRUE(tools3000::service::launcher::isVirtualShellUri(apps.front().shellUri));
+
+        const auto& sample = apps.front();
+        const SearchExpression appExpr = SearchExpression::parse(sample.displayName);
+        SearchExcludeOptions noExcludes;
+        std::unordered_set<std::wstring> emptyStems;
+        const auto matchedApps = catalog.queryMatchingApps(
+            appExpr, noExcludes, emptyStems, nullptr, true, L"__unit_test_sid__", 16);
+        EXPECT_FALSE(matchedApps.empty());
+
+        // 当同名开始菜单快捷方式已存在时，AppsFolder 自动去重不重复产出
+        std::unordered_set<std::wstring> existingStems{sample.normalizedStem};
+        const auto dedupedApps = catalog.queryMatchingApps(
+            appExpr, noExcludes, existingStems, nullptr, true, L"__unit_test_sid__", 16);
+        for (const auto& item : dedupedApps) {
+            EXPECT_NE(
+                tools3000::service::launcher::extractLauncherStemLower(item.fileName, false),
+                sample.normalizedStem);
+        }
+    }
+}
