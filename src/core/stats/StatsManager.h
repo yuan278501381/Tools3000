@@ -71,7 +71,9 @@ private:
     bool m_dirty = false;
 
     // 系统低级钩子只做无锁原子累加；合并、跨日和磁盘 I/O 由后台线程处理。
-    std::array<std::atomic<uint64_t>, 256> m_pendingKeys{};
+    // 容量 512 覆盖标准 VK (0x00..0xFF) 与扩展合成键码（如小键盘回车 0x10D）。
+    static constexpr size_t kTrackedKeySlotCount = 512;
+    std::array<std::atomic<uint64_t>, kTrackedKeySlotCount> m_pendingKeys{};
     std::atomic<uint64_t> m_pendingTotalKeys{0};
     std::atomic<uint64_t> m_pendingLeftClicks{0};
     std::atomic<uint64_t> m_pendingRightClicks{0};

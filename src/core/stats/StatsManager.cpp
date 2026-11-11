@@ -36,7 +36,7 @@ DailyStats DailyStats::fromJson(const nlohmann::json& j) {
         for (auto& [k, v] : j["keyMap"].items()) {
             try {
                 const int key = std::stoi(k);
-                if (key >= 0 && key <= 255 && v.is_number_unsigned()) {
+                if (key >= 0 && key <= 511 && v.is_number_unsigned()) {
                     stats.keyMap[key] = v.get<uint64_t>();
                 }
             } catch (...) {
