@@ -12586,3 +12586,413 @@ TEST(FloatingGlassThemePaletteTest, FollowsLightDarkThemeAndCustomHexAccent) {
 
     std::filesystem::remove_all(tempCfgDir, cfgEc);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Batch 2 & Batch 3 回归门禁测试集 (P-06, U-10, V-05, V-07, V-08)
+// ─────────────────────────────────────────────────────────────────────────────
+#include "capture/CaptureHistory.h"
+#include "capture/CaptureShortcutPolicy.h"
+#include "capture/CaptureToolbarAccessibility.h"
+#include "capture/CaptureTextEditor.h"
+#include "capture/ScreenRecorder.h"
+#include "capture/PinWindow.h"
+#include "ocr/OcrEngine.h"
+
+TEST(CaptureBatch2MemoryHygieneTest, MarkupResetSessionAndCompressedHistoryLosslessRoundTrip) {
+    using namespace tools3000::capture;
+
+    // 1. 验证 MarkupEngine::resetSession 彻底释放底图矩阵、底层合成缓存与滤镜 ROI 缓存
+    MarkupEngine engine;
+    cv::Mat baseImg(480, 640, CV_8UC4, cv::Scalar(36, 48, 64, 255));
+    cv::rectangle(baseImg, cv::Rect(80, 60, 240, 180), cv::Scalar(180, 210, 90, 255), -1);
+    engine.setBaseImage(baseImg);
+    ASSERT_TRUE(engine.hasBaseImage());
+
+    auto rectElem = std::make_unique<MarkupElement>();
+    rectElem->tool = MarkupTool::Rectangle;
+    rectElem->startPt = cv::Point(40, 40);
+    rectElem->endPt = cv::Point(220, 160);
+    engine.addElement(std::move(rectElem));
+
+    auto mosaicElem = std::make_unique<MarkupElement>();
+    mosaicElem->tool = MarkupTool::Mosaic;
+    mosaicElem->startPt = cv::Point(70, 50);
+    mosaicElem->endPt = cv::Point(200, 150);
+    engine.addElement(std::move(mosaicElem));
+
+    cv::Mat composited = engine.getCompositeImage(false);
+    ASSERT_EQ(composited.cols, 640);
+    ASSERT_EQ(composited.rows, 480);
+    EXPECT_TRUE(engine.canUndo());
+
+    engine.resetSession();
+    EXPECT_FALSE(engine.hasBaseImage());
+    EXPECT_EQ(engine.baseWidth(), 0);
+    EXPECT_EQ(engine.baseHeight(), 0);
+    EXPECT_FALSE(engine.canUndo());
+    EXPECT_FALSE(engine.canRedo());
+    EXPECT_TRUE(engine.exportElements().empty());
+
+    // 2. 验证 CaptureHistory PNG 压缩常驻 + 按需 100% 无损解码还原 + 轻量缩略图接口
+    auto& history = CaptureHistory::instance();
+    history.clear();
+    EXPECT_EQ(history.totalMemoryBytes(), 0u);
+
+    cv::Mat richCapture(480, 640, CV_8UC4);
+    for (int y = 0; y < richCapture.rows; ++y) {
+        auto* row = richCapture.ptr<cv::Vec4b>(y);
+        for (int x = 0; x < richCapture.cols; ++x) {
+            row[x] = cv::Vec4b(
+                static_cast<uint8_t>((x * 255) / richCapture.cols),
+                static_cast<uint8_t>((y * 255) / richCapture.rows),
+                static_cast<uint8_t>(((x + y) / 4) & 0xFF),
+                255);
+        }
+    }
+    cv::rectangle(richCapture, cv::Rect(120, 90, 260, 160), cv::Scalar(24, 128, 240, 255), 3);
+
+    const size_t rawUncompressedBytes = static_cast<size_t>(richCapture.total() * richCapture.elemSize());
+    history.push(richCapture, CaptureRegion{10, 20, 640, 480});
+
+    EXPECT_EQ(history.count(), 1);
+    EXPECT_GT(history.totalMemoryBytes(), 0u);
+    EXPECT_LT(history.totalMemoryBytes(), rawUncompressedBytes / 2u);
+
+    const auto thumbOpt = history.getThumbnail(0);
+    ASSERT_TRUE(thumbOpt.has_value());
+    EXPECT_FALSE(thumbOpt->empty());
+    EXPECT_LE(thumbOpt->cols, 160);
+    EXPECT_GT(thumbOpt->rows, 0);
+
+    const auto entryOpt = history.get(0);
+    ASSERT_TRUE(entryOpt.has_value());
+    ASSERT_EQ(entryOpt->image.size(), richCapture.size());
+    ASSERT_EQ(entryOpt->image.type(), richCapture.type());
+    EXPECT_DOUBLE_EQ(cv::norm(entryOpt->image, richCapture, cv::NORM_INF), 0.0);
+
+    const auto thumbByIdOpt = history.getThumbnailById(entryOpt->id);
+    ASSERT_TRUE(thumbByIdOpt.has_value());
+    EXPECT_EQ(thumbByIdOpt->size(), thumbOpt->size());
+
+    history.clear();
+    EXPECT_EQ(history.totalMemoryBytes(), 0u);
+}
+
+TEST(CaptureBatch2InteractionUpgradeTest, FourEdgeKeyboardResizeAndPinHudGridAndGifDiffAndOcrLangFallback) {
+    using namespace tools3000::capture;
+
+    // 1. 验证选区四边独立键盘微调扩缩 (Alt+方向键调左/上边, Shift+方向键调右/下边)
+    CaptureKeyContext keyCtx{};
+    keyCtx.mode = OverlayMode::Screenshot;
+    keyCtx.overlayState = OverlayState::Selected;
+    keyCtx.hasActiveElement = false;
+
+    const auto leftFine = CaptureShortcutPolicy::resolveKeyDown(keyCtx, VK_LEFT, false, false, true);
+    EXPECT_EQ(leftFine.action, CaptureShortcutAction::ResizeSelectionByKey);
+    EXPECT_EQ(leftFine.resizeHandle, HitArea::L);
+    EXPECT_EQ(leftFine.dx, -1);
+    EXPECT_EQ(leftFine.dy, 0);
+
+    const auto topFast = CaptureShortcutPolicy::resolveKeyDown(keyCtx, VK_UP, false, true, true);
+    EXPECT_EQ(topFast.action, CaptureShortcutAction::ResizeSelectionByKey);
+    EXPECT_EQ(topFast.resizeHandle, HitArea::T);
+    EXPECT_EQ(topFast.dx, 0);
+    EXPECT_EQ(topFast.dy, -10);
+
+    const auto rightFine = CaptureShortcutPolicy::resolveKeyDown(keyCtx, VK_RIGHT, false, true, false);
+    EXPECT_EQ(rightFine.action, CaptureShortcutAction::ResizeSelectionByKey);
+    EXPECT_EQ(rightFine.resizeHandle, HitArea::R);
+    EXPECT_EQ(rightFine.dx, 1);
+    EXPECT_EQ(rightFine.dy, 0);
+
+    const auto bottomFast = CaptureShortcutPolicy::resolveKeyDown(keyCtx, VK_DOWN, true, true, false);
+    EXPECT_EQ(bottomFast.action, CaptureShortcutAction::ResizeSelectionByKey);
+    EXPECT_EQ(bottomFast.resizeHandle, HitArea::B);
+    EXPECT_EQ(bottomFast.dx, 0);
+    EXPECT_EQ(bottomFast.dy, 10);
+
+    // 2. 验证真实 PinWindow (Plugin_Capture.dll) 高倍像素网格线 (>= 300%)、HUD 胶囊与 OCR 脉冲状态角标
+    {
+        std::array<wchar_t, 4096> executablePath{};
+        const DWORD exeLen = GetModuleFileNameW(
+            nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
+        ASSERT_GT(exeLen, 0u);
+        const auto executableDir = std::filesystem::path(executablePath.data()).parent_path();
+        const auto pluginDllPath = executableDir.parent_path() / L"plugins" / executableDir.filename() / L"Plugin_Capture.dll";
+        ASSERT_TRUE(std::filesystem::exists(pluginDllPath));
+
+        HMODULE hMod = LoadLibraryExW(
+            pluginDllPath.c_str(), nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        ASSERT_NE(hMod, nullptr);
+
+        using CreatePluginFunc = tools3000::core::IPlugin* (*)();
+        const auto createPlugin = reinterpret_cast<CreatePluginFunc>(GetProcAddress(hMod, "CreatePlugin"));
+        ASSERT_NE(createPlugin, nullptr);
+        tools3000::core::IPlugin* capturePlugin = createPlugin();
+        ASSERT_NE(capturePlugin, nullptr);
+        ASSERT_TRUE(capturePlugin->initialize());
+
+        struct PluginCleanupGuard {
+            HMODULE mod = nullptr;
+            tools3000::core::IPlugin* plugin = nullptr;
+            std::filesystem::path pngPath;
+            ~PluginCleanupGuard() {
+                while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+                    SendMessageW(existing, WM_KEYDOWN, VK_ESCAPE, 0);
+                    if (IsWindow(existing)) DestroyWindow(existing);
+                }
+                if (plugin) plugin->shutdown();
+                if (mod) FreeLibrary(mod);
+                std::error_code ec;
+                if (!pngPath.empty()) std::filesystem::remove(pngPath, ec);
+            }
+        };
+
+        const auto tempPng = std::filesystem::temp_directory_path() /
+                             (L"tools3000_pin_batch2_hud_" + std::to_wstring(GetCurrentProcessId()) + L".png");
+        PluginCleanupGuard cleanupGuard{hMod, capturePlugin, tempPng};
+
+        while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+            SendMessageW(existing, WM_KEYDOWN, VK_ESCAPE, 0);
+            if (IsWindow(existing)) DestroyWindow(existing);
+        }
+
+        cv::Mat pinImg(48, 48, CV_8UC3, cv::Scalar(48, 96, 160));
+        std::vector<uchar> pngBuf;
+        ASSERT_TRUE(cv::imencode(".png", pinImg, pngBuf));
+        {
+            std::ofstream ofs(tempPng, std::ios::binary | std::ios::trunc);
+            ofs.write(reinterpret_cast<const char*>(pngBuf.data()), static_cast<std::streamsize>(pngBuf.size()));
+        }
+
+        nlohmann::json req = {
+            {"id", 2048},
+            {"method", "capture.pinImageFile"},
+            {"params", {{"path", tools3000::core::WinUtils::wstringToUtf8(tempPng.wstring())}}}
+        };
+        const std::string resp = tools3000::core::MessageBridge::instance().handleMessage(req.dump());
+        ASSERT_NE(resp.find("\"success\":true"), std::string::npos);
+
+        HWND pinHwnd = FindWindowW(L"Tools3000_PinWindow", nullptr);
+        ASSERT_NE(pinHwnd, nullptr);
+
+        auto inspectPin = [&](int reqId, const nlohmann::json& params) -> nlohmann::json {
+            nlohmann::json rpcReq = {
+                {"id", reqId},
+                {"method", "capture.inspectPinOcrState"},
+                {"params", params}
+            };
+            const std::string raw = tools3000::core::MessageBridge::instance().handleMessage(rpcReq.dump());
+            const auto parsed = nlohmann::json::parse(raw, nullptr, false);
+            return parsed.contains("result") ? parsed["result"] : parsed;
+        };
+
+        const auto initState = inspectPin(2049, {{"forceRender", true}});
+        ASSERT_TRUE(initState.value("success", false));
+        EXPECT_FALSE(initState.value("lastRenderedPixelGrid", true));
+        EXPECT_FALSE(initState.value("lastRenderedOcrBadge", true));
+
+        // 连续滚轮放大 12 档 (1.1^12 ~= 3.14x >= 3.0x)，激活高倍像素网格线与百分比 HUD 胶囊
+        for (int step = 0; step < 12; ++step) {
+            SendMessageW(pinHwnd, WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), 0);
+        }
+        const auto zoomState = inspectPin(2050, {{"forceRender", true}});
+        ASSERT_TRUE(zoomState.value("success", false));
+        EXPECT_GE(zoomState.value("scale", 0.0f), 3.0f);
+        EXPECT_TRUE(zoomState.value("lastRenderedPixelGrid", false));
+        EXPECT_EQ(zoomState.value("activeHudBadgeText", std::string{}), "314%");
+
+        // Ctrl + 滚轮微调不透明度 (100% -> 95%)，激活不透明度百分比 HUD 胶囊
+        SendMessageW(pinHwnd, WM_MOUSEWHEEL, MAKEWPARAM(MK_CONTROL, -WHEEL_DELTA), 0);
+        const auto opacityState = inspectPin(2051, nlohmann::json::object());
+        ASSERT_TRUE(opacityState.value("success", false));
+        EXPECT_NEAR(opacityState.value("opacity", 1.0f), 0.95f, 0.01f);
+        EXPECT_EQ(opacityState.value("activeHudBadgeText", std::string{}), "95%");
+
+        // 模拟异步 OCR 识别进行中，验证脉冲状态角标绘制
+        const auto ocrState = inspectPin(2052, {{"setOcrInFlight", true}, {"forceRender", true}});
+        ASSERT_TRUE(ocrState.value("success", false));
+        EXPECT_TRUE(ocrState.value("lastRenderedOcrBadge", false));
+        (void)inspectPin(2053, {{"setOcrInFlight", false}});
+    }
+
+    // 3. 验证 GIF Median-Cut 调色板、Sierra-2-4A 抖动与帧间透明差分包围盒收敛
+    const int gifW = 128;
+    const int gifH = 96;
+    cv::Mat frame1(gifH, gifW, CV_8UC4);
+    for (int y = 0; y < gifH; ++y) {
+        auto* row = frame1.ptr<cv::Vec4b>(y);
+        for (int x = 0; x < gifW; ++x) {
+            row[x] = cv::Vec4b(
+                static_cast<uint8_t>((x * 220) / gifW),
+                static_cast<uint8_t>((y * 220) / gifH),
+                120,
+                255);
+        }
+    }
+    cv::Mat frame2 = frame1.clone();
+    cv::rectangle(frame2, cv::Rect(32, 24, 16, 16), cv::Scalar(20, 240, 250, 255), -1);
+
+    GifPaletteOptimizer gifOpt;
+    gifOpt.reserveTransparent = true;
+    gifOpt.enableDithering = true;
+    gifOpt.enableFrameDiff = true;
+
+    std::vector<uint8_t> indices1(static_cast<size_t>(gifW * gifH), 0);
+    std::vector<uint8_t> indices2(static_cast<size_t>(gifW * gifH), 0);
+    std::vector<uint8_t> indices3(static_cast<size_t>(gifW * gifH), 0);
+    std::array<uint32_t, 256> pal{};
+
+    gifOpt.quantizeFrame(frame1.data, gifW, gifH, static_cast<int>(frame1.step), 4,
+                         indices1.data(), gifW, pal.data());
+    EXPECT_TRUE(gifOpt.initialized);
+    EXPECT_EQ(pal[255], 0x00000000U);
+    EXPECT_EQ(gifOpt.lastDirtyLeft, 0);
+    EXPECT_EQ(gifOpt.lastDirtyTop, 0);
+    EXPECT_EQ(gifOpt.lastDirtyRight, gifW);
+    EXPECT_EQ(gifOpt.lastDirtyBottom, gifH);
+
+    gifOpt.quantizeFrame(frame2.data, gifW, gifH, static_cast<int>(frame2.step), 4,
+                         indices2.data(), gifW, pal.data());
+    EXPECT_EQ(gifOpt.lastDirtyLeft, 32);
+    EXPECT_EQ(gifOpt.lastDirtyTop, 24);
+    EXPECT_EQ(gifOpt.lastDirtyRight, 48);
+    EXPECT_EQ(gifOpt.lastDirtyBottom, 40);
+    EXPECT_EQ(indices2[0], 255u);
+    EXPECT_EQ(indices2[static_cast<size_t>((gifH - 1) * gifW + (gifW - 1))], 255u);
+    EXPECT_NE(indices2[static_cast<size_t>(30 * gifW + 38)], 255u);
+
+    // 完全静止的连续帧应将脏区收敛为空并全帧输出透明色索引 255
+    gifOpt.quantizeFrame(frame2.data, gifW, gifH, static_cast<int>(frame2.step), 4,
+                         indices3.data(), gifW, pal.data());
+    EXPECT_EQ(gifOpt.lastDirtyLeft, 0);
+    EXPECT_EQ(gifOpt.lastDirtyRight, 0);
+    EXPECT_EQ(indices3[static_cast<size_t>(30 * gifW + 38)], 255u);
+
+    // 4. 验证 OcrEngine 多语言配置与非法 BCP-47 语言标签平滑回退零崩溃
+    const auto tempCfgDir = std::filesystem::temp_directory_path() /
+                            (L"tools3000_ocr_lang_cfg_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code cfgEc;
+    std::filesystem::remove_all(tempCfgDir, cfgEc);
+    std::filesystem::create_directories(tempCfgDir, cfgEc);
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tempCfgDir));
+    const std::string prevOcrLang = cfg.get<std::string>("/ocr/language", "auto");
+    cv::Mat ocrSample(40, 120, CV_8UC4, cv::Scalar(255, 255, 255, 255));
+    for (const char* langTag : {"auto", "en-US", "zz-Invalid-999"}) {
+        cfg.set<std::string>("/ocr/language", langTag);
+        EXPECT_EQ(cfg.get<std::string>("/ocr/language", "auto"), std::string(langTag));
+        EXPECT_NO_THROW({
+            const auto res = tools3000::ocr::OcrEngine::instance().extractText(ocrSample);
+            (void)res;
+        });
+    }
+    cfg.set<std::string>("/ocr/language", prevOcrLang);
+    std::filesystem::remove_all(tempCfgDir, cfgEc);
+}
+
+TEST(CaptureBatch3TypographyAndBilingualGateTest, AccessibleEnglishLabelsAndMarkupFontFloor) {
+    using namespace tools3000::capture;
+
+    auto containsCjk = [](const std::wstring& s) -> bool {
+        for (wchar_t ch : s) {
+            if (ch >= 0x4E00 && ch <= 0x9FFF) return true;
+        }
+        return false;
+    };
+
+    // 1. 验证英文模式下所有标注工具与工具栏按钮无障碍名称 100% 零汉字泄漏
+    const MarkupTool allTools[] = {
+        MarkupTool::Rectangle, MarkupTool::Line, MarkupTool::Arrow, MarkupTool::Ellipse,
+        MarkupTool::Pen, MarkupTool::Highlight, MarkupTool::Mosaic, MarkupTool::Text,
+        MarkupTool::Number, MarkupTool::Magnifier, MarkupTool::Spotlight, MarkupTool::Watermark,
+        MarkupTool::Inpaint, MarkupTool::Blur
+    };
+    for (MarkupTool tool : allTools) {
+        ToolbarButton btn{};
+        btn.command = ToolbarCommand::SelectTool;
+        btn.tool = tool;
+        const std::wstring enName = toolbarButtonAccessibleName(btn, false);
+        EXPECT_FALSE(enName.empty());
+        EXPECT_FALSE(containsCjk(enName)) << "CJK leaked in SelectTool";
+    }
+
+    const ToolbarCommand sampleCommands[] = {
+        ToolbarCommand::Undo, ToolbarCommand::Redo, ToolbarCommand::Clear,
+        ToolbarCommand::ExtractText, ToolbarCommand::PinWindow, ToolbarCommand::ScrollCapture,
+        ToolbarCommand::StartRecord, ToolbarCommand::ToggleBeautyShell, ToolbarCommand::Copy,
+        ToolbarCommand::Confirm, ToolbarCommand::Cancel
+    };
+    for (ToolbarCommand cmd : sampleCommands) {
+        ToolbarButton btn{};
+        btn.command = cmd;
+        const std::wstring enName = toolbarButtonAccessibleName(btn, false);
+        EXPECT_FALSE(enName.empty());
+        EXPECT_FALSE(containsCjk(enName));
+    }
+
+    const auto tempCfgDir = std::filesystem::temp_directory_path() /
+                            (L"tools3000_bilingual_cfg_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code cfgEc;
+    std::filesystem::remove_all(tempCfgDir, cfgEc);
+    std::filesystem::create_directories(tempCfgDir, cfgEc);
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tempCfgDir));
+    const std::string prevUiLang = cfg.get<std::string>("/general/language", "auto");
+    cfg.set<std::string>("/general/language", "en-US");
+    {
+        ToolbarButton pinBtn{};
+        pinBtn.command = ToolbarCommand::PinWindow;
+        const std::wstring resolvedName = toolbarButtonAccessibleName(pinBtn);
+        EXPECT_EQ(resolvedName, L"Pin to Screen");
+        EXPECT_FALSE(containsCjk(resolvedName));
+    }
+    cfg.set<std::string>("/general/language", prevUiLang);
+    std::filesystem::remove_all(tempCfgDir, cfgEc);
+
+    // 2. 验证截图标注排版字体回退栈 (SSOT) 与 12px / Bold(>=500) 底线保障
+    const wchar_t* cjkFont = CaptureTextEditor::resolveMarkupFontFamilyName(false);
+    const wchar_t* latinFont = CaptureTextEditor::resolveMarkupFontFamilyName(true);
+    ASSERT_NE(cjkFont, nullptr);
+    ASSERT_NE(latinFont, nullptr);
+    EXPECT_GT(std::wcslen(cjkFont), 0u);
+    EXPECT_GT(std::wcslen(latinFont), 0u);
+
+    const auto layoutClamped = CaptureTextEditor::buildLayout(L"Typography 12px", 8);
+    const auto layoutFloor = CaptureTextEditor::buildLayout(L"Typography 12px", 12);
+    EXPECT_FLOAT_EQ(layoutClamped.glyphHeight, layoutFloor.glyphHeight);
+    EXPECT_FLOAT_EQ(layoutClamped.lineStep, layoutFloor.lineStep);
+    EXPECT_FLOAT_EQ(CaptureTextEditor::computeOutlineStrokeWidth(6),
+                    CaptureTextEditor::computeOutlineStrokeWidth(12));
+
+    // 3. 验证空文本编辑态粗体占位符与 4 位超宽序号徽章 (>=12px + 跑道胶囊延展) 合成正常
+    MarkupEngine engine;
+    cv::Mat baseCanvas(120, 240, CV_8UC4, cv::Scalar(42, 46, 54, 255));
+    engine.setBaseImage(baseCanvas);
+
+    auto emptyTextElem = std::make_unique<MarkupElement>();
+    emptyTextElem->tool = MarkupTool::Text;
+    emptyTextElem->startPt = cv::Point(20, 20);
+    emptyTextElem->endPt = cv::Point(140, 56);
+    emptyTextElem->text.clear();
+    emptyTextElem->fontSize = 9.0f; // 验证低于 12px 输入自动钳制到 >= 12px
+    emptyTextElem->isEditing = true;
+    engine.addElement(std::move(emptyTextElem));
+
+    auto wideBadgeElem = std::make_unique<MarkupElement>();
+    wideBadgeElem->tool = MarkupTool::Number;
+    wideBadgeElem->startPt = cv::Point(80, 84);
+    wideBadgeElem->endPt = cv::Point(80, 84);
+    wideBadgeElem->numberValue = 1024;
+    wideBadgeElem->numberShape = NumberBadgeShape::Circle;
+    wideBadgeElem->thickness = 2.0f;
+    engine.addElement(std::move(wideBadgeElem));
+
+    const cv::Mat rendered = engine.getCompositeImage(true);
+    ASSERT_EQ(rendered.cols, 240);
+    ASSERT_EQ(rendered.rows, 120);
+    EXPECT_GT(cv::norm(rendered, baseCanvas, cv::NORM_INF), 0.0);
+    engine.resetSession();
+}
+
