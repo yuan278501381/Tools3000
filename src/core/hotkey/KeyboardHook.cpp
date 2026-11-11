@@ -95,6 +95,25 @@ bool KeyboardHook::isFullscreenSuspended() const {
     return m_fullscreenSuspended.load(std::memory_order_relaxed);
 }
 
+void KeyboardHook::setRemoteSuspended(bool suspended) {
+    m_remoteSuspended.store(suspended, std::memory_order_relaxed);
+    if (suspended) {
+        {
+            std::lock_guard lock(m_callbackMutex);
+            m_pendingModifierVk = 0;
+            m_comboTriggered = false;
+        }
+        {
+            std::lock_guard hookLock(m_hookHotkeyMutex);
+            m_pressedHookVks.clear();
+        }
+    }
+}
+
+bool KeyboardHook::isRemoteSuspended() const {
+    return m_remoteSuspended.load(std::memory_order_relaxed);
+}
+
 void KeyboardHook::setCaptureOverlayVisible(bool visible) noexcept {
     m_captureOverlayVisible.store(visible, std::memory_order_release);
 }
@@ -227,9 +246,38 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             static const bool s_allowInjectedKeyboard =
                 (GetEnvironmentVariableW(L"TOOLS3000_ALLOW_INJECTED_KEYBOARD", nullptr, 0) > 0);
             if (!(data->flags & LLKHF_INJECTED) || s_allowInjectedKeyboard) {
-                const bool fullscreenSuspended = self.m_fullscreenSuspended.load(std::memory_order_relaxed);
+                // 统一维护欧洲键盘布局 AltGr 合成 Left-Ctrl (scanCode 0x21D / 0x02xx) 状态机，
+                // 消除 Keycast 插件在主线程重复安装第二条 WH_KEYBOARD_LL 的系统钩子开销。
+                {
+                    const bool evDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+                    const bool evUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
+                    if (data->vkCode == VK_LCONTROL) {
+                        const bool isSyntheticAltGr =
+                            (data->scanCode == 0x21Du) || ((data->scanCode & 0xFF00u) == 0x0200u);
+                        if (isSyntheticAltGr) {
+                            if (evDown) self.m_syntheticAltGrCtrlDown.store(true, std::memory_order_relaxed);
+                            else if (evUp) self.m_syntheticAltGrCtrlDown.store(false, std::memory_order_relaxed);
+                        } else {
+                            if (evDown) {
+                                self.m_realLCtrlDown.store(true, std::memory_order_relaxed);
+                            } else if (evUp) {
+                                self.m_realLCtrlDown.store(false, std::memory_order_relaxed);
+                                self.m_syntheticAltGrCtrlDown.store(false, std::memory_order_relaxed);
+                            }
+                        }
+                    } else if (data->vkCode == VK_RCONTROL) {
+                        if (evDown) self.m_realRCtrlDown.store(true, std::memory_order_relaxed);
+                        else if (evUp) self.m_realRCtrlDown.store(false, std::memory_order_relaxed);
+                    } else if (data->vkCode == VK_RMENU && evUp) {
+                        self.m_syntheticAltGrCtrlDown.store(false, std::memory_order_relaxed);
+                    }
+                }
 
-                if (!fullscreenSuspended) {
+                const bool fullscreenSuspended = self.m_fullscreenSuspended.load(std::memory_order_relaxed);
+                const bool remoteSuspended = self.m_remoteSuspended.load(std::memory_order_relaxed);
+                const bool localHotkeysSuspended = fullscreenSuspended || remoteSuspended;
+
+                if (!localHotkeysSuspended) {
                     // 优先执行键盘活动监听器（例如鼠标聚光灯双击 Ctrl 与退场检测）
                     std::function<void(DWORD, WPARAM)> actCallback;
                     {
@@ -241,7 +289,7 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     }
                 }
 
-                // 优先执行底层原始按键拦截器（例如 RemoteMaster 硬件扫描码级沉浸直通，全屏远程桌面下仍需生效）
+                // 优先执行底层原始按键拦截器（例如 RemoteMaster 硬件扫描码级沉浸直通与急救快捷键，全屏/远程桌面下仍需生效）
                 std::function<bool(const KBDLLHOOKSTRUCT&, WPARAM)> lowLevelInterceptor;
                 {
                     std::lock_guard lock(self.m_callbackMutex);
@@ -251,7 +299,7 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     return 1; // 消费并拦截按键
                 }
 
-                if (!fullscreenSuspended) {
+                if (!localHotkeysSuspended) {
                     // --- 工业级双引擎底层键盘钩子兜底按键状态机 ---
                     if (self.m_hasHookHotkeys.load(std::memory_order_relaxed)) {
                         const DWORD vk = data->vkCode;
@@ -405,6 +453,12 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                                 scanCode |= 0xE000;
                             }
 
+                            if (!hasCtrl) {
+                                self.m_syntheticAltGrCtrlDown.store(false, std::memory_order_relaxed);
+                                self.m_realLCtrlDown.store(false, std::memory_order_relaxed);
+                                self.m_realRCtrlDown.store(false, std::memory_order_relaxed);
+                            }
+
                             // 权威按键意图裁决与 Shift 折叠
                             KeycastKeyInfo info = KeyTranslator::resolveKeycastEvent(
                                 vk,
@@ -416,6 +470,13 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                                 filterMode,
                                 includeFunctionKeys
                             );
+                            info.vkCode = vk;
+                            info.rawScanCode = data->scanCode;
+                            info.isPureAltGr =
+                                hasCtrl && hasAlt && !hasWin &&
+                                self.m_syntheticAltGrCtrlDown.load(std::memory_order_relaxed) &&
+                                !self.m_realLCtrlDown.load(std::memory_order_relaxed) &&
+                                !self.m_realRCtrlDown.load(std::memory_order_relaxed);
 
                             if (info.shouldDisplay) {
                                 if (keycastKeyInfoCallback) {

@@ -227,6 +227,7 @@ private:
     std::vector<TrailParticle> m_trail;
     float m_trailHue = 195.0f; // 七彩色相累加器
     size_t m_eventSub = 0;
+    bool m_streamSubscribed = false;
 };
 
 } // namespace tools3000::ui

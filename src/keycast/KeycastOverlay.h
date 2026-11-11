@@ -17,10 +17,12 @@ namespace tools3000::keycast {
 struct KeycastSettings {
     bool enabled = true;
     bool autoBypassFullscreen = true;
-    bool showKeyboard = true;
     std::string filterMode = "smart_shortcuts";
     bool includeFunctionKeys = false; // "smart_shortcuts", "with_single_modifiers", "all_keys"
     std::string position = "top_left";         // "top_left", "top_center", "top_right", "bottom_left", "bottom_center", "bottom_right"
+    bool hasCustomPosition = false;            // Alt + 左键拖拽定位持久化开关
+    int customX = 0;                           // 自定义屏幕 X 坐标
+    int customY = 0;                           // 自定义屏幕 Y 坐标
     bool mergeRecentKeys = true;
     int mergeTimeoutMs = 1200; // 同排连击合并间隔 (ms)
     int displayDurationMs = 2500;
@@ -30,7 +32,7 @@ struct KeycastSettings {
     std::string backgroundColor = "#1c1c22";
     std::string modifierKeycapColor = "auto"; // "auto" (跟随主题色) 或 HEX 颜色
     int modifierKeycapOpacity = 50;            // 0~100 修饰键底色不透明度 (默认 50% 高雅微晶)
-    std::string modifierTextColor = "#000000"; // 默认纯黑实体文字与徽标，呈现顶级键帽反差质感
+    std::string modifierTextColor = "auto";    // 默认智能高对比度自适应，彻底杜绝深灰底黑字隐形
 
     // ── 物理微动效自由配置体系 (World-Class Motion Presets & Custom Combos) ──
     std::string firstKeyAnim = "slide";      // "slide" (阻尼滑入), "pop" (气泡冒出), "fade" (渐现), "none" (无动效)
@@ -121,6 +123,8 @@ private:
     void render();
     void tickAnimation();
     void onAnimationCompleteAndHide();
+    void syncAltDragHitTestMode();
+    void commitDraggedPosition(int finalX, int finalY);
     void drawKeycapCapsule(const KeycastItem& item, float x, float y, float alpha, float dpiScale, const KeycastSettings& settings);
     void drawWindowsLogo(const D2D1_RECT_F& rect, float alpha);
 
@@ -136,6 +140,11 @@ private:
     std::atomic<float> m_atomicDpiScale{1.0f};
     std::atomic<int> m_atomicOverlayWidth{720};
     std::string m_lastAccentColor;
+    bool m_interactiveHitTest = false;
+    bool m_isDragging = false;
+    POINT m_dragStartCursor{};
+    int m_dragStartPosX = 0;
+    int m_dragStartPosY = 0;
 
     mutable std::mutex m_fgBypassCacheMutex;
     HWND m_cachedFgHwnd = nullptr;

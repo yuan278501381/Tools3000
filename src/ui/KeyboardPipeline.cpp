@@ -80,12 +80,13 @@ void KeyboardPipeline::applyWebKeyboardPolicy(ICoreWebView2Controller* controlle
                     return S_OK;
                 }
 
-                // 2. 非录制状态：屏蔽不需要的 Chromium 浏览器默认行为（打印、查找、下载、历史记录等）
+                // 2. 非录制状态：屏蔽不需要的 Chromium 浏览器默认行为（打印、下载、历史记录、关闭标签等），
+                //    同时将 Ctrl+F 放行至前端 DOM 以驱动自定义页内搜索（原生查找框已由 AreBrowserAcceleratorKeysEnabled(FALSE) 禁用）
                 if (isKeyDown) {
                     if (ctrlDown && !altDown && !shiftDown) {
                         switch (vKey) {
-                            case 'P': case 'F': case 'U': case 'J':
-                            case 'H': case 'O': case 'S':
+                            case 'P': case 'U': case 'J':
+                            case 'H': case 'O': case 'S': case 'W':
                                 args->put_Handled(TRUE);
                                 return S_OK;
                             case 'R':
