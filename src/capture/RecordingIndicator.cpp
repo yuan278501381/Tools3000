@@ -304,6 +304,7 @@ void RecordingIndicator::shutdown() {
 }
 
 void RecordingIndicator::show() {
+    m_saving = false;
     m_completed = false;
     m_completedFilePath.clear();
     m_completedShowTick = 0;
@@ -409,6 +410,7 @@ void RecordingIndicator::hide() {
     destroyBorderWindow();
     destroyCountdownWindow();
     m_hasRecordingRegion = false;
+    m_saving = false;
     m_completed = false;
     m_completedFilePath.clear();
     m_completedShowTick = 0;
@@ -432,10 +434,87 @@ void RecordingIndicator::hide() {
     LOG_DEBUG("录制指示器已隐藏");
 }
 
+void RecordingIndicator::showSaving() {
+    destroyBorderWindow();
+    destroyCountdownWindow();
+    m_hasRecordingRegion = false;
+    m_saving = true;
+    m_completed = false;
+    m_countingDown = false;
+    m_hoverStop = false;
+    m_hoverPause = false;
+    m_hoverSnapshot = false;
+    m_hoverSysAudio = false;
+    m_hoverMic = false;
+
+    const bool isZh = isChineseLanguagePreferred();
+    const std::wstring statusStr = isZh ? L"保存中..." : L"SAVING...";
+    const std::wstring timeStr = formatDuration(m_duration);
+    const std::wstring detailStr = isZh ? L"正在封装落盘" : L"Finalizing file";
+    const int desiredW = std::max(
+        268,
+        static_cast<int>(std::ceil(38.0f + measureLogicalTextWidth(statusStr) + 12.0f +
+                                   measureLogicalTextWidth(timeStr) + 22.0f +
+                                   measureLogicalTextWidth(detailStr) + 20.0f)));
+
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    const HMONITOR monitor = m_hwnd && IsWindow(m_hwnd)
+        ? MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST)
+        : MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    m_dpiScale = indicatorDpiScale(monitor);
+    m_logicalWidth = desiredW;
+
+    if (!m_hwnd) {
+        if (!m_hInstance || !createWindow(m_hInstance) || !createRenderResources()) {
+            return;
+        }
+    }
+
+    MONITORINFO monitorInfo{sizeof(monitorInfo)};
+    GetMonitorInfoW(monitor, &monitorInfo);
+    const int width = scaledIndicatorMetric(m_logicalWidth, m_dpiScale);
+    const int height = scaledIndicatorMetric(INDICATOR_HEIGHT, m_dpiScale);
+
+    RECT curRect{};
+    int x = 0;
+    int y = 0;
+    if (IsWindowVisible(m_hwnd) && GetWindowRect(m_hwnd, &curRect) && curRect.right > curRect.left) {
+        const int centerX = (curRect.left + curRect.right) / 2;
+        x = std::clamp(centerX - width / 2,
+                       static_cast<int>(monitorInfo.rcWork.left),
+                       static_cast<int>(std::max<LONG>(monitorInfo.rcWork.left, monitorInfo.rcWork.right - width)));
+        y = curRect.top;
+    } else {
+        x = monitorInfo.rcWork.left + ((monitorInfo.rcWork.right - monitorInfo.rcWork.left) - width) / 2;
+        y = monitorInfo.rcWork.top + scaledIndicatorMetric(16, m_dpiScale);
+    }
+
+    SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    tools3000::core::WinUtils::applyUniversalRoundedCorners(
+        m_hwnd, width, height, scaledIndicatorMetric(INDICATOR_CORNER_RADIUS, m_dpiScale));
+    if (m_renderTarget) {
+        m_renderTarget->Resize(D2D1::SizeU(static_cast<UINT32>(width), static_cast<UINT32>(height)));
+    }
+    m_blinkTick = GetTickCount();
+    SetTimer(m_hwnd, RENDER_TIMER_ID, 80, nullptr);
+    render();
+}
+
+void RecordingIndicator::reloadTheme() {
+    if (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+    if (m_countdownHwnd && IsWindow(m_countdownHwnd) && IsWindowVisible(m_countdownHwnd)) {
+        InvalidateRect(m_countdownHwnd, nullptr, FALSE);
+    }
+}
+
 void RecordingIndicator::showCompleted(const std::string& filePath, double durationSec) {
     destroyBorderWindow();
     destroyCountdownWindow();
     m_hasRecordingRegion = false;
+    m_saving = false;
     m_completed = true;
     m_completedFilePath = filePath;
     m_duration = durationSec;
@@ -626,7 +705,7 @@ void RecordingIndicator::render() {
     std::wstring frameStr;
     RecordingIndicatorLayout barLayout{};
 
-    if (!m_completed) {
+    if (!m_completed && !m_saving) {
         recText = m_countingDown ? L"READY" : (m_paused ? L"PAUSED" : L"REC");
         timeStr = m_countingDown
             ? std::to_wstring(std::max(1, m_countdownRemaining))
@@ -660,15 +739,17 @@ void RecordingIndicator::render() {
     }
 
     m_renderTarget->BeginDraw();
+    m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
     m_renderTarget->SetTransform(D2D1::Matrix3x2F::Scale(m_dpiScale, m_dpiScale));
 
-    // 统一采用温润雪瓷白微晶底板（与截图主工具栏 100% 视觉同源，高对比清晰护眼）
-    const bool isDark = false;
+    // 动态跟随应用明暗主题（雪瓷白 / 黑曜石微晶玻璃）与用户自定义强调色
+    const auto pal = FloatingGlassBar::resolveThemePalette();
+    const bool isDark = pal.isDark;
     if (m_textBrush) {
-        m_textBrush->SetColor(CaptureHudPalette::kPrimaryText);
+        m_textBrush->SetColor(pal.textPrimary);
     }
     if (m_subTextBrush) {
-        m_subTextBrush->SetColor(CaptureHudPalette::kSecondaryText);
+        m_subTextBrush->SetColor(pal.textSecondary);
     }
     IDWriteTextFormat* secondaryFormat = m_subTextFormat ? m_subTextFormat.Get() : m_textFormat.Get();
     ID2D1SolidColorBrush* secondaryBrush = m_subTextBrush ? m_subTextBrush.Get() : m_textBrush.Get();
@@ -682,7 +763,51 @@ void RecordingIndicator::render() {
                                     D2D1::RectF(0, 0, size.width, size.height),
                                     static_cast<float>(INDICATOR_CORNER_RADIUS), isDark);
 
-    if (m_completed) {
+    if (m_saving) {
+        const float phase = static_cast<float>((GetTickCount() - m_blinkTick) % 900) / 900.0f;
+        const float pulse = 0.55f + 0.45f * std::sin(phase * 6.2831853f);
+        ComPtr<ID2D1SolidColorBrush> saveAuraBrush, saveDotBrush;
+        D2D1_COLOR_F auraCol = pal.accent;
+        auraCol.a = 0.16f + 0.18f * pulse;
+        D2D1_COLOR_F dotCol = pal.accent;
+        dotCol.a = 0.85f + 0.15f * pulse;
+        m_renderTarget->CreateSolidColorBrush(auraCol, saveAuraBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(dotCol, saveDotBrush.GetAddressOf());
+        if (saveAuraBrush) {
+            m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(18.0f, size.height * 0.5f), 8.5f, 8.5f), saveAuraBrush.Get());
+        }
+        if (saveDotBrush) {
+            m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(18.0f, size.height * 0.5f), 4.5f, 4.5f), saveDotBrush.Get());
+        }
+
+        const std::wstring savingLabel = isZh ? L"保存中..." : L"SAVING...";
+        const float labelW = measureLogicalTextWidth(savingLabel) + 6.0f;
+        m_renderTarget->DrawText(
+            savingLabel.c_str(), static_cast<UINT32>(savingLabel.size()),
+            m_textFormat.Get(),
+            D2D1::RectF(31.0f, 0.0f, 31.0f + labelW, size.height),
+            m_textBrush.Get());
+
+        const std::wstring savingTime = formatDuration(m_duration);
+        const float timeLeft = 31.0f + labelW + 6.0f;
+        const float timeW = measureLogicalTextWidth(savingTime) + 6.0f;
+        m_renderTarget->DrawText(
+            savingTime.c_str(), static_cast<UINT32>(savingTime.size()),
+            m_textFormat.Get(),
+            D2D1::RectF(timeLeft, 0.0f, timeLeft + timeW, size.height),
+            m_textBrush.Get());
+
+        const float sepX = timeLeft + timeW + 6.0f;
+        FloatingGlassBar::drawSeparator(m_renderTarget.Get(), sepX, 11.0f, size.height - 11.0f, 1.0f, isDark);
+
+        const std::wstring detailLabel = isZh ? L"正在封装落盘" : L"Finalizing file";
+        m_renderTarget->DrawText(
+            detailLabel.c_str(), static_cast<UINT32>(detailLabel.size()),
+            secondaryFormat,
+            D2D1::RectF(sepX + 8.0f, 0.0f, (std::max)(sepX + 16.0f, size.width - 10.0f), size.height),
+            secondaryBrush,
+            D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else if (m_completed) {
         // 完成态：翡翠绿指示圆点 + 柔光辐射
         ComPtr<ID2D1SolidColorBrush> doneAuraBrush, doneDotBrush;
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.72f, 0.44f, 0.24f), doneAuraBrush.GetAddressOf());
@@ -982,6 +1107,13 @@ LRESULT CALLBACK RecordingIndicator::indicatorWndProc(HWND hwnd, UINT msg, WPARA
                 return 0;
             }
 
+            if (self->m_saving) {
+                self->m_isDragging = true;
+                self->m_dragOffset = pt;
+                SetCapture(hwnd);
+                return 0;
+            }
+
             // 检查是否点击了按钮
             if (!self->m_countingDown && PtInRect(&self->m_pauseBtn, hitPt)) {
                 if (self->m_onPause) self->m_onPause();
@@ -1035,6 +1167,9 @@ LRESULT CALLBACK RecordingIndicator::indicatorWndProc(HWND hwnd, UINT msg, WPARA
                 static_cast<LONG>(pt.y / self->m_dpiScale)};
 
             bool changed = false;
+            if (self->m_saving) {
+                return 0;
+            }
             if (self->m_completed) {
                 bool hOpen = PtInRect(&self->m_openFolderBtn, hitPt);
                 bool hCopy = PtInRect(&self->m_copyFileBtn, hitPt);
@@ -1094,7 +1229,9 @@ LRESULT CALLBACK RecordingIndicator::indicatorWndProc(HWND hwnd, UINT msg, WPARA
                     static_cast<LONG>(pt.x / self->m_dpiScale),
                     static_cast<LONG>(pt.y / self->m_dpiScale)};
                 bool overBtn = false;
-                if (self->m_completed) {
+                if (self->m_saving) {
+                    overBtn = false;
+                } else if (self->m_completed) {
                     overBtn = PtInRect(&self->m_openFolderBtn, hitPt) ||
                               PtInRect(&self->m_copyFileBtn, hitPt) ||
                               PtInRect(&self->m_closeBtn, hitPt);
@@ -1121,6 +1258,10 @@ LRESULT CALLBACK RecordingIndicator::indicatorWndProc(HWND hwnd, UINT msg, WPARA
 
         case WM_TIMER: {
             if (self && wParam == RENDER_TIMER_ID) {
+                if (self->m_saving) {
+                    self->render();
+                    return 0;
+                }
                 if (self->m_completed) {
                     if (GetTickCount() - self->m_completedShowTick > 8000) {
                         self->hide();
@@ -1302,12 +1443,14 @@ LRESULT CALLBACK RecordingIndicator::countdownWndProc(HWND hwnd, UINT msg, WPARA
         HBITMAP memBm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
         HBITMAP oldBm = (HBITMAP)SelectObject(memDC, memBm);
 
-        HBRUSH bgBrush = CreateSolidBrush(RGB(252, 253, 255));
+        const bool darkCountdown = FloatingGlassBar::isEffectiveDarkMode();
+        const auto accentRgb = FloatingGlassBar::effectiveAccentRGB();
+        HBRUSH bgBrush = CreateSolidBrush(darkCountdown ? RGB(18, 22, 31) : RGB(252, 253, 255));
         FillRect(memDC, &rc, bgBrush);
         DeleteObject(bgBrush);
 
         SetBkMode(memDC, TRANSPARENT);
-        SetTextColor(memDC, RGB(15, 23, 42));
+        SetTextColor(memDC, darkCountdown ? RGB(248, 250, 252) : RGB(15, 23, 42));
 
         HFONT numFont = CreateFontW(
             -56, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
@@ -1327,7 +1470,7 @@ LRESULT CALLBACK RecordingIndicator::countdownWndProc(HWND hwnd, UINT msg, WPARA
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
         oldFont = (HFONT)SelectObject(memDC, hintFont);
-        SetTextColor(memDC, RGB(71, 85, 105));
+        SetTextColor(memDC, darkCountdown ? RGB(178, 190, 206) : RGB(71, 85, 105));
 
         std::wstring hintStr = isChineseLanguagePreferred() ? L"Space 跳过" : L"Space to skip";
         RECT hintRc = { 0, rc.bottom - 34, rc.right, rc.bottom - 8 };
@@ -1336,7 +1479,11 @@ LRESULT CALLBACK RecordingIndicator::countdownWndProc(HWND hwnd, UINT msg, WPARA
         SelectObject(memDC, oldFont);
         DeleteObject(hintFont);
 
-        HPEN ringPen = CreatePen(PS_SOLID, 3, RGB(232, 62, 68));
+        HPEN ringPen = CreatePen(
+            PS_SOLID, 3,
+            RGB(static_cast<int>(std::round(accentRgb.r * 255.0f)),
+                static_cast<int>(std::round(accentRgb.g * 255.0f)),
+                static_cast<int>(std::round(accentRgb.b * 255.0f))));
         HGDIOBJ oldPen = SelectObject(memDC, ringPen);
         HGDIOBJ oldB = SelectObject(memDC, GetStockObject(NULL_BRUSH));
         Ellipse(memDC, 3, 3, rc.right - 3, rc.bottom - 3);

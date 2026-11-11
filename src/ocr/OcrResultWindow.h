@@ -35,6 +35,16 @@ public:
     void cleanup();
 
     void showResult(const std::string& text);
+    void reloadTheme();
+
+    // 段落智能合并、双击选词与微调编辑接口
+    void setMergeParagraphs(bool enabled);
+    bool isMergeParagraphsEnabled() const noexcept { return m_mergeParagraphs; }
+    std::string selectAndCopyWordAt(TextPosition pos);
+    void insertTextAtCaret(const std::wstring& text);
+    void deleteBackwardAtCaret();
+    void deleteForwardAtCaret();
+    const std::string& currentTextUtf8() const noexcept { return m_text; }
 
     // 文本选区与测试内省接口
     HWND hwnd() const noexcept { return m_hwnd; }
@@ -61,8 +71,13 @@ private:
     bool ensureSurface(int width, int height);
     void releaseSurface();
     void discardDeviceResources();
+    void resetColorBrushes();
     void updatePlacement();
     void rebuildTextLayout();
+    void syncFullTextFromLines();
+    void pushEditUndo();
+    bool undoEdit();
+    bool deleteSelectionInternal();
     void updateHover(POINT point);
     void copyAll();
     void copyLine(int lineIndex);
@@ -84,9 +99,14 @@ private:
 
     HWND m_hwnd = nullptr;
     HINSTANCE m_instance = nullptr;
+    std::string m_rawUnmergedText;
+    std::wstring m_rawUnmergedWide;
     std::string m_text;
     std::wstring m_wideText;
+    std::vector<std::wstring> m_editUndoStack;
     std::vector<LineItem> m_lines;
+    bool m_mergeParagraphs = false;
+    bool m_editedSinceModeSwitch = false;
 
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_renderTarget;
@@ -98,14 +118,18 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextLayout> m_textLayout;
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushInnerHighlight;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushText;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushMuted;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushBorder;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushBtn;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushBtnHover;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushAccent;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushAccentSubtle;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushSuccess;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushError;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushSelection;
+    bool m_isDarkTheme = true;
 
     HDC m_screenDc = nullptr;
     HDC m_memoryDc = nullptr;
@@ -121,12 +145,14 @@ private:
     float m_scale = 1.0f;
 
     // UI Layout
+    D2D1_RECT_F m_btnMergeRect{};
     D2D1_RECT_F m_btnCopyRect{};
     D2D1_RECT_F m_btnCloseRect{};
 
     // Selection & Interaction State
     TextPosition m_selAnchor{};
     TextPosition m_selCaret{};
+    bool m_hasCaret = false;
     bool m_isSelectingText = false;
     bool m_hadSelectionOnMouseDown = false;
     POINT m_mouseDownPt{};
@@ -137,14 +163,17 @@ private:
 
     int m_hoverLineCopyBtn = -1;
     int m_pressedLineCopyBtn = -1;
+    bool m_pressedMergeBtn = false;
     bool m_pressedCopyBtn = false;
     bool m_pressedCloseBtn = false;
 
+    bool m_hoverMerge = false;
     bool m_hoverCopy = false;
     bool m_hoverClose = false;
     int m_hoverLineIndex = -1;
     int m_copiedLineIndex = -1;
     bool m_copiedSelection = false;
+    bool m_copiedWord = false;
     bool m_trackingMouse = false;
     bool m_updatingPlacement = false;
     float m_currentAlpha = 0.0f;

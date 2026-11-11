@@ -1,5 +1,6 @@
 #include "ScrollCaptureOverlay.h"
 #include "capture/CaptureHudPalette.h"
+#include "capture/FloatingGlassBar.h"
 #include "capture/ScrollCapture.h"
 #include "capture/ShortcutHintOverlay.h"
 #include "core/config/ConfigManager.h"
@@ -423,6 +424,14 @@ void ScrollCaptureOverlay::hide() {
     releaseLayeredDib(m_overlayDibCache);
 }
 
+void ScrollCaptureOverlay::reloadTheme() {
+    if (!m_hwnd && !m_controlHwnd) return;
+    if (!createResources()) return;
+    m_controlBarDirty = true;
+    renderControlBar(true);
+    render();
+}
+
 bool ScrollCaptureOverlay::createResources() {
     if (!m_d2dFactory) {
         if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_d2dFactory.GetAddressOf()))) {
@@ -456,12 +465,13 @@ bool ScrollCaptureOverlay::createResources() {
         if (FAILED(m_d2dFactory->CreateDCRenderTarget(&props, &m_controlRenderTarget))) return false;
     }
 
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     m_brushFlash.Reset();
     m_brushBorder.Reset();
     m_brushBg.Reset();
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &m_brushFlash);
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.77f, 0.37f, 1.0f), &m_brushBorder);
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.09f, 0.11f, 0.90f), &m_brushBg);
+    m_renderTarget->CreateSolidColorBrush(pal.accent, &m_brushBorder);
+    m_renderTarget->CreateSolidColorBrush(pal.panelBg, &m_brushBg);
 
     m_ctrlPanelBg.Reset();
     m_ctrlPanelBorder.Reset();
@@ -480,21 +490,38 @@ bool ScrollCaptureOverlay::createResources() {
     m_ctrlDangerHoverBg.Reset();
     m_ctrlDangerIconBrush.Reset();
 
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kPanelBg, &m_ctrlPanelBg);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kPanelOuterBorder, &m_ctrlPanelBorder);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kPanelInnerHighlight, &m_ctrlPanelInnerHighlight);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudDivider, &m_ctrlDividerBrush);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, &m_ctrlTextPrimary);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kSecondaryText, &m_ctrlTextSecondary);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &m_ctrlTextOnPrimary);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.06f), &m_ctrlBtnHoverBg);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.11f), &m_ctrlBtnPressBg);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipAccentBg, &m_ctrlKeycapBg);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.18f), &m_ctrlKeycapPrimaryBg);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kRecordCoralPrimary, &m_ctrlAccentBg);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kRecordCoralHover, &m_ctrlAccentHoverBg);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.94f, 0.26f, 0.26f, 0.12f), &m_ctrlDangerHoverBg);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.22f, 0.26f, 1.0f), &m_ctrlDangerIconBrush);
+    const float accentLum = 0.2126f * pal.accent.r + 0.7152f * pal.accent.g + 0.0722f * pal.accent.b;
+    const D2D1_COLOR_F onPrimary = accentLum > 0.68f
+        ? D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 1.0f)
+        : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+    const D2D1_COLOR_F accentHover = D2D1::ColorF(
+        std::clamp(pal.accent.r + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
+        std::clamp(pal.accent.g + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
+        std::clamp(pal.accent.b + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
+        1.0f);
+
+    m_controlRenderTarget->CreateSolidColorBrush(pal.panelBg, &m_ctrlPanelBg);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.panelOuterBorder, &m_ctrlPanelBorder);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.panelInnerHighlight, &m_ctrlPanelInnerHighlight);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.divider, &m_ctrlDividerBrush);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.textPrimary, &m_ctrlTextPrimary);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.textSecondary, &m_ctrlTextSecondary);
+    m_controlRenderTarget->CreateSolidColorBrush(onPrimary, &m_ctrlTextOnPrimary);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.hoverBg, &m_ctrlBtnHoverBg);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.pressBg, &m_ctrlBtnPressBg);
+    m_controlRenderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f) : CaptureHudPalette::kChipAccentBg, &m_ctrlKeycapBg);
+    m_controlRenderTarget->CreateSolidColorBrush(
+        accentLum > 0.68f ? D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.14f)
+                          : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.18f),
+        &m_ctrlKeycapPrimaryBg);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.accent, &m_ctrlAccentBg);
+    m_controlRenderTarget->CreateSolidColorBrush(accentHover, &m_ctrlAccentHoverBg);
+    m_controlRenderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.94f, 0.26f, 0.26f, pal.isDark ? 0.18f : 0.12f), &m_ctrlDangerHoverBg);
+    m_controlRenderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(1.0f, 0.42f, 0.46f, 1.0f) : D2D1::ColorF(0.90f, 0.22f, 0.26f, 1.0f),
+        &m_ctrlDangerIconBrush);
     m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.80f, 0.42f, 1.0f), &m_ctrlDotBrush);
 
     m_statusFormat.Reset();

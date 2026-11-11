@@ -419,7 +419,9 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
             const MagnifierCalloutStyle st = static_cast<MagnifierCalloutStyle>(clamped);
             state.currentMagnifierCalloutStyle = st;
             state.magnifierCalloutMode = true;
-            if (state.activeElement && state.activeElement->tool == MarkupTool::Magnifier) {
+            if (state.activeElement && state.activeElement->tool == MarkupTool::Magnifier &&
+                state.activeElement->magnifierCalloutStyle != st) {
+                state.markup.pushUndoSnapshot();
                 state.activeElement->magnifierCalloutStyle = st;
             }
             tools3000::core::ConfigManager::instance().set<int>("/capture/markup/magnifier/calloutStyle", clamped);

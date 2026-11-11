@@ -3,6 +3,7 @@
 #include "core/accessibility/OverlayUiaProvider.h"
 #include "capture/ShortcutHintStyle.h"
 #include "capture/CaptureHudPalette.h"
+#include "capture/FloatingGlassBar.h"
 
 #include "core/config/ConfigManager.h"
 #include "core/events/MainThreadDispatcher.h"
@@ -380,17 +381,31 @@ bool ShortcutHintOverlay::createResources(float scale) {
         m_renderTarget->CreateSolidColorBrush(systemColor(COLOR_HIGHLIGHT), &m_accentBrush);
         m_renderTarget->CreateSolidColorBrush(systemColor(COLOR_WINDOWTEXT), &m_sheenBrush);
     } else {
-        // 对标 PixPin 明亮清晰高对比只读 HUD：高通透曜石纯黑底舱 + 100% 纯白实心圆角键帽 + 纯白清晰文字
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutPanelBg, &m_panelBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutPanelBorder, &m_borderBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutKeyBg, &m_keyBrush);
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.20f), &m_keyBevelBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutKeyBorder, &m_keyBorderBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutKeyText, &m_keyTextBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutLabelText, &m_labelBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutHeaderText, &m_headerBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutDotAccent, &m_accentBrush);
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.06f), &m_sheenBrush);
+        const auto pal = FloatingGlassBar::resolveThemePalette();
+        if (pal.isDark) {
+            m_renderTarget->CreateSolidColorBrush(pal.panelBg, &m_panelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.panelOuterBorder, &m_borderBrush);
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.94f), &m_keyBrush);
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.22f), &m_keyBevelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accentBorder, &m_keyBorderBrush);
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 1.0f), &m_keyTextBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_labelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_headerBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accent, &m_accentBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.panelInnerHighlight, &m_sheenBrush);
+        } else {
+            // 雪瓷白微晶玻璃底舱 + 动态强调色点缀立体浅瓷键帽 + 深石板高对比文字
+            m_renderTarget->CreateSolidColorBrush(pal.panelBg, &m_panelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.panelOuterBorder, &m_borderBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accentSubtle, &m_keyBrush);
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.06f), &m_keyBevelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accentBorder, &m_keyBorderBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_keyTextBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_labelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_headerBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accent, &m_accentBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.panelInnerHighlight, &m_sheenBrush);
+        }
     }
     return m_panelBrush && m_keyBrush && m_keyBorderBrush && m_keyTextBrush && m_labelBrush && m_headerBrush;
 }
@@ -1087,7 +1102,8 @@ void ShortcutHintOverlay::render(int retryDepth) {
         if (isHC) {
             divBrush = m_borderBrush;
         } else {
-            m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutDivider, &divBrush);
+            const auto pal = FloatingGlassBar::resolveThemePalette();
+            m_renderTarget->CreateSolidColorBrush(pal.divider, &divBrush);
         }
         if (divBrush) {
             const float colDivTop = m_cardRect.top + padY + 2.0f * m_scale;
@@ -1115,7 +1131,7 @@ void ShortcutHintOverlay::render(int retryDepth) {
 
         const auto keyRR = D2D1::RoundedRect(keyFaceRect, keyCornerR, keyCornerR);
         m_renderTarget->FillRoundedRectangle(keyRR, m_keyBrush.Get());
-        if (isHC && m_keyBorderBrush) {
+        if (m_keyBorderBrush) {
             m_renderTarget->DrawRoundedRectangle(keyRR, m_keyBorderBrush.Get(), 1.0f * m_scale);
         }
         m_renderTarget->DrawTextW(
@@ -1178,6 +1194,14 @@ void ShortcutHintOverlay::discardResources() {
     m_renderTarget.Reset();
     m_dwriteFactory.Reset();
     m_d2dFactory.Reset();
+}
+
+void ShortcutHintOverlay::reloadTheme() {
+    if (!isVisible()) return;
+    discardResources();
+    if (createResources(m_scale)) {
+        render();
+    }
 }
 
 void ShortcutHintOverlay::hide() {
