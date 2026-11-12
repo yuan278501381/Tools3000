@@ -14,6 +14,7 @@
 #define TOOLS3000_CAPTURE_PINWINDOW_H
 
 #include "capture/PinGroupManager.h"
+#include "capture/MarkupEngine.h"
 #include <windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
@@ -37,10 +38,12 @@ struct CaptureRegion;
 
 class PinWindow : public std::enable_shared_from_this<PinWindow> {
 public:
-    /// 创建一个新的贴图窗口（可选携带微晶卡片圆角与原始纯文本元数据）
+    /// 创建一个新的贴图窗口（可选携带微晶卡片圆角、原始纯文本元数据、1:1 无损底图与独立矢量图元列表）
     static std::shared_ptr<PinWindow> create(const cv::Mat& image, int x, int y,
                                              float cardCornerRadius = 0.0f,
-                                             std::wstring sourceText = {});
+                                             std::wstring sourceText = {},
+                                             const cv::Mat& cleanBaseImage = {},
+                                             std::vector<MarkupElement> markupElements = {});
 
     /// 将剪贴板内容（图像 / 文本 / #颜色）智能贴成浮空贴图
     static std::shared_ptr<PinWindow> createFromClipboard();
@@ -136,6 +139,14 @@ public:
     /// 更新贴图图像内容
     void updateImage(const cv::Mat& newImage, bool clearCardMetadata = true);
 
+    /// 在 1:1 原始物理像素空间无损应用二次标注底图与独立矢量列表，保持 m_origWidth/Height 与 m_scale 缩放倍率不变
+    void applyEditedMarkup(const cv::Mat& cleanBaseImage,
+                           const std::vector<MarkupElement>& elements,
+                           const cv::Mat& precomposited = {});
+
+    const cv::Mat& cleanBaseImage() const noexcept { return m_cleanBaseImage; }
+    const std::vector<MarkupElement>& markupElements() const noexcept { return m_markupElements; }
+
     /// 是否为生成式微晶字签/色卡签
     bool isGeneratedCard() const { return m_cardCornerRadius > 0.5f || !m_pinnedSourceText.empty(); }
     float cardCornerRadius() const { return m_cardCornerRadius; }
@@ -159,6 +170,20 @@ public:
     D2D1_RECT_F textButtonRect() const noexcept { return m_btnTextRect; }
     D2D1_RECT_F invertButtonRect() const noexcept { return m_btnInvertRect; }
     void forceHoverStateForTest(bool hovering);
+    void renderForTest() { render(); }
+    bool lastChromeIsDark() const noexcept { return m_lastChromeIsDark; }
+    bool lastToolbarIsDark() const noexcept { return m_lastToolbarIsDark; }
+    bool lastRenderedPixelGrid() const noexcept { return m_lastRenderedPixelGrid; }
+    bool lastRenderedOcrBadge() const noexcept { return m_lastRenderedOcrBadge; }
+    std::wstring activeHudBadgeText() const;
+    std::wstring hudBadgeTextForTest() const {
+        if (m_hudBadgeText.empty() || GetTickCount64() >= m_hudBadgeUntilTick) return {};
+        return m_hudBadgeText;
+    }
+    void setOcrInFlightForTest(bool inFlight) noexcept {
+        m_ocrInFlightVersion.store(inFlight ? 1ULL : 0ULL, std::memory_order_release);
+        if (inFlight) m_ocrReady.store(false, std::memory_order_release);
+    }
 
     /// 激活并获取当前贴图窗口的键盘焦点（确保快捷键如旋转 R / 1 / 2 等即时生效）
     void focusWindow();
@@ -307,7 +332,14 @@ private:
     POINT m_selectEnd{};
     D2D1_RECT_F m_btnCopyFloatingRect = {};
     bool m_hoverCopyFloating = false;
-    
+    bool m_lastChromeIsDark = true;
+    bool m_lastToolbarIsDark = true;
+    bool m_lastRenderedPixelGrid = false;
+    bool m_lastRenderedOcrBadge = false;
+    std::wstring m_hudBadgeText;
+    uint64_t m_hudBadgeUntilTick = 0;
+
+    void showTransientHudBadge(std::wstring text, uint32_t durationMs = 800);
     void updateHoverAnimation();
     void drawHoverToolbar();
     void clearHoverToolbarRects() noexcept;
@@ -315,6 +347,8 @@ private:
     void executeInteractiveButton(int btnId, int clientX, int clientY, bool shiftHeld);
 
     cv::Mat m_sourceImage;  // 原图副本，供"复制到剪贴板"
+    cv::Mat m_cleanBaseImage;  // 1:1 原始物理分辨率无损纯净底图（与矢量标注分离存储）
+    std::vector<MarkupElement> m_markupElements;  // 1:1 原始像素空间下的独立可二次编辑矢量列表
     float m_cardCornerRadius = 0.0f;       // 微晶字签/色卡签基准像素圆角 (0 = 普通直角截图)
     std::wstring m_pinnedSourceText;       // 微晶字签/色卡签原始纯文本，支持零误差一键复制
 

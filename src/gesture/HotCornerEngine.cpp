@@ -7,7 +7,6 @@
 #include "gesture/GestureAction.h"
 #include "gesture/GestureInputPolicy.h"
 #include "gesture/MouseHook.h"
-#include "gesture/RadialMenuOverlay.h"
 #include <algorithm>
 
 namespace tools3000::gesture {
@@ -71,7 +70,10 @@ std::string HotCornerEngine::getCornerAction(HotCorner corner) const {
 }
 
 void HotCornerEngine::setEnabled(bool enabled) {
-    m_enabled.store(enabled);
+    const bool prev = m_enabled.exchange(enabled);
+    if (prev != enabled) {
+        m_cv.notify_all();
+    }
 }
 
 bool HotCornerEngine::isInteractionBlockingHotCorner() noexcept {
@@ -80,7 +82,6 @@ bool HotCornerEngine::isInteractionBlockingHotCorner() noexcept {
     const bool gestureTracking =
         MouseHook::instance().isTracking() || MouseHook::instance().isTriggerButtonDown();
     const bool overlayActive =
-        RadialMenuOverlay::instance().isVisible() ||
         isVisibleWindowByClass(L"Tools3000_CaptureOverlay") ||
         isVisibleWindowByClass(L"Tools3000_ScrollCaptureOverlay");
     return shouldSuppressTrigger(leftDown, rightDown, gestureTracking, overlayActive);
@@ -186,25 +187,35 @@ void HotCornerEngine::workerThread(std::stop_token stop) {
     const auto cooldownDuration = std::chrono::milliseconds(1000); // 1秒冷却
 
     while (!stop.stop_requested() && m_running.load()) {
-        {
-            std::unique_lock<std::mutex> waitLock(m_waitMutex);
-            m_cv.wait_for(waitLock, std::chrono::milliseconds(50), [&]() {
-                return stop.stop_requested() || !m_running.load();
-            });
-        }
-        if (stop.stop_requested() || !m_running.load()) {
-            break;
-        }
-
         if (!m_enabled.load()) {
             currentCorner = HotCorner::None;
             currentMonitor = nullptr;
             hasLastPt = false;
             triggered = false;
+            std::unique_lock<std::mutex> waitLock(m_waitMutex);
+            m_cv.wait(waitLock, [&]() {
+                return stop.stop_requested() || !m_running.load() || m_enabled.load();
+            });
+            if (stop.stop_requested() || !m_running.load()) {
+                break;
+            }
             continue;
         }
 
-        // A6: 拖拽窗口/文件、右键画手势、或截图/轮盘浮层可见时，立即重置角落驻留计时并跳过触发
+        {
+            std::unique_lock<std::mutex> waitLock(m_waitMutex);
+            m_cv.wait_for(waitLock, std::chrono::milliseconds(50), [&]() {
+                return stop.stop_requested() || !m_running.load() || !m_enabled.load();
+            });
+        }
+        if (stop.stop_requested() || !m_running.load()) {
+            break;
+        }
+        if (!m_enabled.load()) {
+            continue;
+        }
+
+        // A6: 拖拽窗口/文件、右键画手势、或截图浮层可见时，立即重置角落驻留计时并跳过触发
         if (isInteractionBlockingHotCorner()) {
             currentCorner = HotCorner::None;
             currentMonitor = nullptr;
@@ -220,7 +231,11 @@ void HotCornerEngine::workerThread(std::stop_token stop) {
         }
 
         const HMONITOR curMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONULL);
-        const HotCorner detected = detectCorner(pt);
+        HotCorner detected = detectCorner(pt);
+        if (detected != HotCorner::None && m_ignoreSharedCorners.load() && isPassThroughCorner(pt, detected)) {
+            // 默认过滤多显示器拼接处的共享内角，彻底杜绝跨屏移动光标卡顿误触
+            detected = HotCorner::None;
+        }
 
         if (detected != currentCorner || curMonitor != currentMonitor) {
             // 角落或所属物理显示器改变（如双屏横移从左屏 TopRight 跨入右屏 TopLeft）

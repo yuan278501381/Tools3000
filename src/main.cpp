@@ -50,6 +50,7 @@
 #include "core/logger/Logger.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/ElevationPolicy.h"
 #include "core/config/ConfigManager.h"
 #include "core/hotkey/HotkeyManager.h"
@@ -105,6 +106,7 @@ static std::optional<std::filesystem::path> g_performanceScenarioOutput;
 static std::atomic<bool> g_restartLaunchStarted{false};
 static HPOWERNOTIFY g_powerNotify = nullptr;
 static HWINEVENTHOOK g_fullscreenWinEventHook = nullptr;
+static tools3000::core::SubscriptionId g_hostThemeSubId = 0;
 
 namespace {
 
@@ -293,7 +295,7 @@ HANDLE createSingleInstanceMutex() {
 
 std::wstring buildRestartParameters(bool includeWindowPos) {
     std::wstring params = L"--restart-pid=" + std::to_wstring(GetCurrentProcessId());
-    if (hasCommandLineFlag(L"--silent")) {
+    if (hasCommandLineFlag(L"--silent") || hasCommandLineFlag(L"--autostart")) {
         params += L" --silent";
     }
     if (!includeWindowPos) return params;
@@ -440,7 +442,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     }
     if (hasCommandLineFlag(L"--update-shortcuts")) {
         CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        tools3000::core::WinUtils::syncApplicationShortcuts();
+        tools3000::core::WinUtils::syncApplicationShortcuts(true);
         CoUninitialize();
         return 0;
     }
@@ -468,7 +470,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     // ── 2. COM 初始化与 Job Object 生命周期绑定 ──────────────────────────
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(hr)) {
-        MessageBoxW(nullptr, L"COM 初始化失败", L"Tools3000 错误", MB_OK | MB_ICONERROR);
+        const bool sysZh = tools3000::core::WinUtils::isSystemLanguageChinese();
+        MessageBoxW(
+            nullptr,
+            sysZh ? L"COM 初始化失败" : L"Failed to initialize COM subsystem.",
+            sysZh ? L"Tools3000 错误" : L"Tools3000 Error",
+            MB_OK | MB_ICONERROR);
         releaseSingleInstanceMutex();
         return 1;
     }
@@ -539,6 +546,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
         return 1;
     }
 
+    // 同步 Win32 原生弹出菜单 (CreatePopupMenu / uxtheme) 明暗主题模式，消除深色下惨白右键菜单
+    tools3000::core::WinUtils::applyNativeMenuTheme();
+
     // 同步用户语言设置与日志保留天数到日志系统 (0 锁动态切换)
     tools3000::core::Logger::setLanguage(
         tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "auto")
@@ -567,13 +577,36 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     std::error_code ecInit;
     if (std::filesystem::exists(initialModulesPath, ecInit)) {
         try {
-            std::ifstream initFile(initialModulesPath);
+            std::ifstream initFile(initialModulesPath, std::ios::binary);
             if (initFile.is_open()) {
-                nlohmann::json patch = nlohmann::json::parse(initFile, nullptr, false);
+                const std::string rawContent(
+                    (std::istreambuf_iterator<char>(initFile)),
+                    std::istreambuf_iterator<char>());
                 initFile.close();
-                if (!patch.is_discarded() && patch.is_object()) {
-                    tools3000::core::ConfigManager::instance().mergePatch(patch);
-                    LOG_INFO("成功从安装包初始配置同步模块开关并写入当前用户配置");
+
+                std::error_code ecMeta;
+                const auto writeTicks = std::filesystem::last_write_time(initialModulesPath, ecMeta)
+                                            .time_since_epoch()
+                                            .count();
+                const uLong contentCrc = crc32(
+                    crc32(0L, Z_NULL, 0),
+                    reinterpret_cast<const Bytef*>(rawContent.data()),
+                    static_cast<uInt>(rawContent.size()));
+                const std::string stamp = std::to_string(writeTicks) + ":" +
+                                          std::to_string(rawContent.size()) + ":" +
+                                          std::to_string(contentCrc);
+                const std::string appliedStamp =
+                    tools3000::core::ConfigManager::instance().get<std::string>(
+                        "/general/appliedInitialModulesStamp", "");
+
+                if (stamp != appliedStamp) {
+                    nlohmann::json patch = nlohmann::json::parse(rawContent, nullptr, false);
+                    if (!patch.is_discarded() && patch.is_object()) {
+                        patch["general"]["appliedInitialModulesStamp"] = stamp;
+                        tools3000::core::ConfigManager::instance().mergePatch(patch);
+                        tools3000::core::ConfigManager::instance().flush();
+                        LOG_INFO("成功从安装包初始配置同步模块开关并写入当前用户配置");
+                    }
                 }
             }
             std::filesystem::remove(initialModulesPath, ecInit);
@@ -616,7 +649,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     g_powerNotify = RegisterSuspendResumeNotification(hwndMessage, DEVICE_NOTIFY_WINDOW_HANDLE);
 
     // ── 7. 初始化其他子系统 ──────────────────────────────────────────────
-    const bool silentStart = hasCommandLineFlag(L"--silent");
+    const bool silentStart = hasCommandLineFlag(L"--silent") || hasCommandLineFlag(L"--autostart");
     initializeSubsystems(hwndMessage, false);
     tools3000::core::PerformanceMonitor::instance().recordLatency(
         "startup.core",
@@ -652,7 +685,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
         showSettingsWindow();
         // 仅用户主动启动时反馈成功；登录自启动的 --silent 必须真正安静。
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"Tools3000 已启动"});
+            tools3000::core::ShowToastEvent{
+                tools3000::core::isUiLanguageChinese() ? L"Tools3000 已启动" : L"Tools3000 started"});
     }
 
     LOG_INFO("程序启动完成，进入消息循环");
@@ -865,6 +899,11 @@ HWND createMessageWindow(HINSTANCE hInstance) {
 }
 
 void initializeSubsystems(HWND hwnd, bool preloadSettings) {
+    g_hostThemeSubId = tools3000::core::EventBus::instance().subscribe<tools3000::core::ThemeChangedEvent>(
+        [](const tools3000::core::ThemeChangedEvent& ev) {
+            tools3000::core::WinUtils::applyNativeMenuTheme(ev.theme);
+        });
+
     // 1. 托盘图标（内部管理并安全退订 GesturePauseChangedEvent 与 ThemeChangedEvent）
     auto& tray = tools3000::tray::TrayIcon::instance();
     tray.create(hwnd);
@@ -1008,7 +1047,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         std::string selected = tools3000::core::WinUtils::captureSelectedText();
         const auto firstNotSpace = selected.find_first_not_of(" \t\n\r");
         if (firstNotSpace == std::string::npos) {
-            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"请先划选文字或复制文本后再按 Alt+X"});
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                tools3000::core::isUiLanguageChinese()
+                    ? L"请先划选文字或复制文本后再按 Alt+X"
+                    : L"Select or copy text first before pressing Alt+X"});
             return;
         }
         const auto lastNotSpace = selected.find_last_not_of(" \t\n\r");
@@ -1049,7 +1091,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         }
         std::string url = std::string("https://translate.google.com/?sl=auto&tl=") + targetLang + "&op=translate&text=" + encoded;
         tools3000::core::WinUtils::openUrl(tools3000::core::WinUtils::utf8ToWstring(url));
-        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{L"正在打开划词翻译"});
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            tools3000::core::isUiLanguageChinese()
+                ? L"正在打开划词翻译"
+                : L"Opening selection translation"});
     });
 
     // 注册核心基础 IPC 处理器
@@ -1156,11 +1201,16 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 Microsoft::WRL::ComPtr<IFileDialog> dialog;
                 HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
                 if (SUCCEEDED(hr) && dialog) {
-                    static const COMDLG_FILTERSPEC filters[] = {
+                    const bool isZh = tools3000::core::isUiLanguageChinese();
+                    static const COMDLG_FILTERSPEC filtersZh[] = {
                         {L"日志文件 (*.log;*.txt)", L"*.log;*.txt"},
                         {L"所有文件 (*.*)", L"*.*"},
                     };
-                    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
+                    static const COMDLG_FILTERSPEC filtersEn[] = {
+                        {L"Log Files (*.log;*.txt)", L"*.log;*.txt"},
+                        {L"All Files (*.*)", L"*.*"},
+                    };
+                    dialog->SetFileTypes(static_cast<UINT>(std::size(filtersZh)), isZh ? filtersZh : filtersEn);
                     dialog->SetDefaultExtension(L"log");
 
                     auto now = std::chrono::system_clock::now();
@@ -1175,7 +1225,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                                tmBuffer.tm_hour, tmBuffer.tm_min, tmBuffer.tm_sec);
 
                     dialog->SetFileName(defaultName);
-                    dialog->SetTitle(L"导出 Tools3000 诊断日志");
+                    dialog->SetTitle(isZh ? L"导出 Tools3000 诊断日志" : L"Export Tools3000 Diagnostic Logs");
 
                     // 后台 STA 工作线程严禁将主 UI 线程窗口作为模态 owner 硬挂接，防止跨线程输入队列互锁
                     if (SUCCEEDED(dialog->Show(nullptr))) {
@@ -1204,7 +1254,12 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         std::filesystem::path target = *savePath;
         std::ofstream out(target, std::ios::out | std::ios::binary | std::ios::trunc);
         if (!out.is_open()) {
-            return {{"success", false}, {"error", "无法创建目标导出文件"}};
+            return {
+                {"success", false},
+                {"error", tools3000::core::isUiLanguageChinese()
+                              ? "无法创建目标导出文件"
+                              : "Failed to create target export file"}
+            };
         }
 
         // 写入环境诊断头
@@ -1779,6 +1834,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 }
 
 void shutdownSubsystems() {
+    if (g_hostThemeSubId != 0) {
+        tools3000::core::EventBus::instance().unsubscribeAndWait(g_hostThemeSubId);
+        g_hostThemeSubId = 0;
+    }
     if (g_fullscreenWinEventHook) {
         UnhookWinEvent(g_fullscreenWinEventHook);
         g_fullscreenWinEventHook = nullptr;
@@ -1919,7 +1978,17 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 
     if (msg == WM_SETTINGCHANGE || msg == WM_THEMECHANGED) {
+        tools3000::core::WinUtils::applyNativeMenuTheme();
         tools3000::tray::TrayIcon::instance().refreshThemeIcon();
+        auto& cfg = tools3000::core::ConfigManager::instance();
+        const std::string configuredTheme = cfg.get<std::string>("/general/theme", "system");
+        if (configuredTheme == "system") {
+            tools3000::core::EventBus::instance().publish(tools3000::core::ThemeChangedEvent{
+                configuredTheme,
+                cfg.get<std::string>("/general/accentColor", "blue"),
+                cfg.get<std::string>("/general/trayIconTheme", "system")
+            });
+        }
         return 0;
     }
 

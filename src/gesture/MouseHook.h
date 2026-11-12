@@ -71,9 +71,11 @@ namespace GestureTriggerMask {
     static constexpr uint32_t EdgeTopRight    = 1u << 11;
     static constexpr uint32_t EdgeTopMiddle   = 1u << 12;
     static constexpr uint32_t EdgeTopLeft     = 1u << 13;
+    static constexpr uint32_t EdgeLeftWheel   = 1u << 14;
+    static constexpr uint32_t EdgeRightWheel  = 1u << 15;
 
     static constexpr uint32_t AnyEdgeSlide = EdgeTopSlide | EdgeBottomSlide | EdgeLeftSlide | EdgeRightSlide;
-    static constexpr uint32_t AnyEdgeWheel = EdgeTopWheel | EdgeBottomWheel;
+    static constexpr uint32_t AnyEdgeWheel = EdgeTopWheel | EdgeBottomWheel | EdgeLeftWheel | EdgeRightWheel;
     static constexpr uint32_t AnyEdge = AnyEdgeSlide | AnyEdgeWheel | EdgeTopRight | EdgeTopMiddle | EdgeTopLeft;
     static constexpr uint32_t AllTriggers = 0xFFFFFFFFu;
 }

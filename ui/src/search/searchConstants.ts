@@ -44,7 +44,7 @@ export const CATEGORY_DEFS = [
   { id: 'archive', labelKey: 'search.catArchives', defaultLabel: 'Archives', prefix: 'ext:zip;rar;7z;tar;gz ', icon: FileArchive },
   { id: 'code', labelKey: 'search.catCode', defaultLabel: 'Code', prefix: 'ext:cpp;h;ts;tsx;js;py;rs;go;java;lua;json ', icon: FileCode },
   { id: 'folder', labelKey: 'search.catFolders', defaultLabel: 'Folders', prefix: 'folder: ', icon: Folder },
-];
+] as const;
 
 export const SYNTAX_CATEGORIES = [
   { id: 'all', labelKey: 'search.syntaxCatAll', defaultLabel: 'All Syntax' },

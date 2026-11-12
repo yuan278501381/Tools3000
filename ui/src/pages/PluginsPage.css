@@ -1,6 +1,5 @@
 .plugins-page {
-  max-width: 1040px;
-  margin: 0 auto;
+  width: 100%;
   animation: fadeIn 0.2s ease;
 }
 

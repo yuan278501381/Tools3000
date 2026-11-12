@@ -46,6 +46,8 @@ interface Props {
   existingCodes?: string[];
   existingMappings?: GestureMapping[];
   initialFocusTarget?: 'instant' | 'silent' | 'action_type' | 'action_detail' | 'hotkey' | 'lua' | 'builtin' | 'program' | null;
+  webSearchEngine?: string;
+  onWebSearchEngineChange?: (engine: string) => void;
   onSave: (mapping: GestureMapping, options?: GestureSaveOptions) => void;
   onClose: () => void;
 }
@@ -67,6 +69,8 @@ export const GestureEditorModal: FC<Props> = ({
   existingCodes,
   existingMappings,
   initialFocusTarget,
+  webSearchEngine = 'bing',
+  onWebSearchEngineChange,
   onSave,
   onClose,
 }) => {
@@ -226,6 +230,14 @@ export const GestureEditorModal: FC<Props> = ({
         'D-R-D': { nameKey: 'gesture.actions.screenshot.name', name: 'Quick Screenshot', type: 2, builtinCmd: 10, descKey: 'gesture.actions.screenshot.desc', desc: 'Launch Tools3000 screenshot' },
         WHEELUP: { nameKey: 'gesture.actions.prevVirtualDesktop.name', name: 'Previous Virtual Desktop', type: 2, builtinCmd: 25, descKey: 'gesture.actions.prevVirtualDesktop.desc', desc: 'Switch to previous virtual desktop' },
         WHEELDOWN: { nameKey: 'gesture.actions.nextVirtualDesktop.name', name: 'Next Virtual Desktop', type: 2, builtinCmd: 26, descKey: 'gesture.actions.nextVirtualDesktop.desc', desc: 'Switch to next virtual desktop' },
+        'TOPEDGE+WHEELUP': { nameKey: 'gesture.actions.prevVirtualDesktop.name', name: 'Previous Virtual Desktop', type: 2, builtinCmd: 25, descKey: 'gesture.actions.prevVirtualDesktop.desc', desc: 'Switch to previous virtual desktop' },
+        'TOPEDGE+WHEELDOWN': { nameKey: 'gesture.actions.nextVirtualDesktop.name', name: 'Next Virtual Desktop', type: 2, builtinCmd: 26, descKey: 'gesture.actions.nextVirtualDesktop.desc', desc: 'Switch to next virtual desktop' },
+        'BOTTOMEDGE+WHEELUP': { nameKey: 'gesture.actions.volumeUp.name', name: 'Volume Up', type: 2, builtinCmd: 22, descKey: 'gesture.actions.volumeUp.desc', desc: 'Increase master volume' },
+        'BOTTOMEDGE+WHEELDOWN': { nameKey: 'gesture.actions.volumeDown.name', name: 'Volume Down', type: 2, builtinCmd: 23, descKey: 'gesture.actions.volumeDown.desc', desc: 'Decrease master volume' },
+        'LEFTEDGE+WHEELUP': { nameKey: 'gesture.actions.volumeUp.name', name: 'Volume Up', type: 2, builtinCmd: 22, descKey: 'gesture.actions.volumeUp.desc', desc: 'Increase master volume' },
+        'LEFTEDGE+WHEELDOWN': { nameKey: 'gesture.actions.volumeDown.name', name: 'Volume Down', type: 2, builtinCmd: 23, descKey: 'gesture.actions.volumeDown.desc', desc: 'Decrease master volume' },
+        'RIGHTEDGE+WHEELUP': { nameKey: 'gesture.actions.prevVirtualDesktop.name', name: 'Previous Virtual Desktop', type: 2, builtinCmd: 25, descKey: 'gesture.actions.prevVirtualDesktop.desc', desc: 'Switch to previous virtual desktop' },
+        'RIGHTEDGE+WHEELDOWN': { nameKey: 'gesture.actions.nextVirtualDesktop.name', name: 'Next Virtual Desktop', type: 2, builtinCmd: 26, descKey: 'gesture.actions.nextVirtualDesktop.desc', desc: 'Switch to next virtual desktop' },
       };
 
       const matched = presets[clean];
@@ -249,6 +261,7 @@ export const GestureEditorModal: FC<Props> = ({
 
   const handleTriggerChange = (targetTrigger: import('./gestureModel').TriggerButton) => {
     const parsed = parseGestureCode(draft.gestureCode);
+    if (!parsed.bareCode) return;
     const newCode = assembleGestureCode({
       edge: parsed.edge,
       triggerButton: targetTrigger,
@@ -262,6 +275,7 @@ export const GestureEditorModal: FC<Props> = ({
 
   const handleEdgeChange = (targetEdge: import('./gestureModel').ScreenEdge) => {
     const parsed = parseGestureCode(draft.gestureCode);
+    if (!parsed.bareCode) return;
     const newCode = assembleGestureCode({
       edge: targetEdge,
       triggerButton: parsed.triggerButton,
@@ -375,15 +389,38 @@ export const GestureEditorModal: FC<Props> = ({
           )}
 
           {draft.action.type === 2 && (
-            <Field label={t('gestureEditor.builtinCommand')}>
-              <Select
-                value={String(draft.action.builtinCmd ?? 0)}
-                options={BUILTIN_COMMAND_KEYS.map((key, i) => ({ value: String(i), label: t(key) }))}
-                onChange={(v: string) => setAction({ builtinCmd: Number(v) })}
-                placement="auto"
-                portal
-              />
-            </Field>
+            <>
+              <Field label={t('gestureEditor.builtinCommand')}>
+                <Select
+                  value={String(draft.action.builtinCmd ?? 0)}
+                  options={BUILTIN_COMMAND_KEYS
+                    .map((key, i) => ({ value: String(i), label: t(key) }))
+                    // C-01: 过滤下标 17 (已下线的 radialMenu)，保持其余枚举下标与 C++ 1:1 严格对齐
+                    .filter((opt) => opt.value !== '17')}
+                  onChange={(v: string) => setAction({ builtinCmd: Number(v) })}
+                  placement="auto"
+                  portal
+                />
+              </Field>
+              {draft.action.builtinCmd === 15 && onWebSearchEngineChange && (
+                <div style={{ marginTop: '8px' }}>
+                  <Field label={t('gesture.webSearchEngine', 'Web Search Engine')}>
+                    <Select
+                      value={webSearchEngine}
+                      options={[
+                        { value: 'bing', label: 'Bing' },
+                        { value: 'google', label: 'Google' },
+                        { value: 'baidu', label: t('gesture.engineBaidu', 'Baidu') },
+                        { value: 'duckduckgo', label: 'DuckDuckGo' },
+                      ]}
+                      onChange={onWebSearchEngineChange}
+                      placement="auto"
+                      portal
+                    />
+                  </Field>
+                </div>
+              )}
+            </>
           )}
 
           {draft.action.type === 3 && (

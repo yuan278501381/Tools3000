@@ -19,6 +19,10 @@
 #include <string_view>
 #include <filesystem>
 #include <mutex>
+#include <shared_mutex>
+#include <condition_variable>
+#include <chrono>
+#include <cstdint>
 #include <functional>
 #include <vector>
 #include <optional>
@@ -54,7 +58,7 @@ public:
     /// @param defaultValue 当 key 不存在时的回退值
     template <typename T>
     T get(const std::string& key, const T& defaultValue = T{}) const {
-        std::lock_guard lock(m_mutex);
+        std::shared_lock lock(m_mutex);
         try {
             auto ptr = json::json_pointer(key);
             if (m_config.contains(ptr)) {
@@ -89,6 +93,12 @@ public:
 
     /// 清空当前配置并立即持久化。调用方随后会回退到各模块的默认值。
     bool reset();
+
+    /// 立即将当前待刷脏配置同步原子落盘（供测试断言、关键阶段点与退出收尾调用）
+    bool flush();
+
+    /// 获取累计物理原子落盘次数（供性能监测与合并刷盘单测校验）
+    uint64_t diskWriteCount() const noexcept;
 
     // ── 配置变更通知 ─────────────────────────────────────────────────────
 
@@ -133,14 +143,32 @@ private:
     /// 文件变更监控线程函数
     void watchFileChanges();
 
+    /// 后台 200ms 脏合并异步刷盘工作线程
+    void flushWorkerLoop();
+    void markDirtyAndScheduleFlush();
+    bool flushPendingDirty();
+    bool hasPendingDirty() const noexcept;
+
     json m_config;
     std::filesystem::path m_configFilePath;
-    mutable std::mutex m_mutex;
+    mutable std::shared_mutex m_mutex;
     mutable std::mutex m_ioMutex;
+    mutable std::mutex m_callbackMutex;
 
     // 变更通知
     std::vector<std::pair<size_t, ConfigChangeCallback>> m_callbacks;
     std::atomic<size_t> m_nextCallbackId{1};
+
+    // 200ms 有界窗口异步脏合并刷盘
+    mutable std::mutex m_flushMutex;
+    std::condition_variable m_flushCv;
+    std::thread m_flushThread;
+    std::atomic<bool> m_flushRunning{false};
+    uint64_t m_dirtySeq = 0;
+    uint64_t m_flushedSeq = 0;
+    bool m_dirty = false;
+    std::chrono::steady_clock::time_point m_dirtyDeadline{};
+    mutable std::atomic<uint64_t> m_diskWriteCount{0};
 
     // 文件监控
     std::thread m_watchThread;

@@ -109,6 +109,12 @@ public:
                                              bool isDirectory,
                                              const std::wstring& filePath = L"");
 
+    /// 清空文件类型图标内存缓存（仅供单元测试隔离验证）
+    static void clearFileTypeIconCacheForTesting();
+
+    /// 查询当前文件类型图标缓存条目数（仅供单元测试验证静态后缀共享命中率）
+    static size_t getFileTypeIconCacheSizeForTesting();
+
     /// 复制宽文本到剪贴板（支持剪贴板占用重试与异常内存释放保护）
     static bool copyToClipboard(const std::wstring& wtext, HWND owner = nullptr);
 
@@ -181,6 +187,16 @@ public:
 
     /// 判定进程名或窗口类名是否属于专用影音播放器或全屏幻灯片演示软件 (PotPlayer / VLC / MPV / MPC-HC / Bilibili / PowerPoint 放映等)
     static bool isMediaPlayerProcessOrClass(std::wstring_view processName, std::wstring_view className) noexcept;
+
+    /// 获取内置默认远程桌面与虚拟机客户端进程名白名单（单一事实源）
+    static std::vector<std::string> defaultRemoteTargetProcesses();
+
+    /// 获取内置默认远程桌面与虚拟机客户端窗口类名白名单（单一事实源）
+    static std::vector<std::string> defaultRemoteTargetClasses();
+
+    /// 判定进程名或窗口类名是否命中内置默认远程桌面/虚拟机客户端列表
+    static bool isDefaultRemoteDesktopOrVmProcessOrClass(std::wstring_view processName,
+                                                         std::wstring_view className) noexcept;
 
     /// 判定进程名、窗口类名或可执行路径是否属于已知游戏或游戏引擎宿主 (Dota 2 / CS2 / LoL / Unity / Unreal / SDL / SteamApps 等)
     static bool isKnownGameProcessOrClass(std::wstring_view processName,
@@ -297,6 +313,10 @@ public:
     /// 判断 Windows 应用是否为深色模式 (AppsUseLightTheme, 0: Dark, 1: Light)
     static bool isSystemDarkMode();
 
+    /// 同步进程级 Win32 原生弹出菜单 (CreatePopupMenu / TrackPopupMenuEx) 明暗主题
+    /// themeMode: "system" / "dark" / "light"；为空时读取 /general/theme 配置
+    static void applyNativeMenuTheme(std::string_view themeMode = "");
+
     /// 获取/初始化进程级 Job Object (带 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
     static HANDLE getProcessJobObject();
 
@@ -329,8 +349,12 @@ public:
     /// 确保 Windows 10/11 任务栏固定项与开始菜单条目与运行进程精准归集
     static bool setShortcutAppUserModelId(const std::wstring& shortcutPath, const std::wstring& aumid);
 
-    /// 全局同步 Tools3000 桌面与开始菜单快捷方式属性，清除历史遗留旧快捷方式并广播 Windows Shell 刷新通知
-    static void syncApplicationShortcuts();
+    /// 幂等校验并同步单个快捷方式 (.lnk) 的 AUMID 与自身 TargetPath 图标定位（严禁跨目录污染）
+    /// 返回 true 表示实际写入了磁盘变更；若元数据已一致则 0 磁盘写入返回 false
+    static bool syncSingleShortcutMetadata(const std::wstring& shortcutPath, const std::wstring& aumid, bool forceRefresh = false);
+
+    /// 全局同步 Tools3000 桌面、开始菜单与任务栏固定快捷方式属性（便携模式自动跳过，常规启动幂等零闪烁）
+    static void syncApplicationShortcuts(bool forceRefresh = false);
 
     /// 应急输入状态自愈与清理：强制释放鼠标捕获、解除光标裁剪并使用 VK_F24 中立脉冲安全释放被卡住的修饰键
     static void emergencyFlushInputState() noexcept;

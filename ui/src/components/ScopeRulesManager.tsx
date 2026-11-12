@@ -6,7 +6,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Button, Badge, Toggle } from './UIKit';
+import { Card, Button, Badge, Toggle, ConfirmModal } from './UIKit';
 import { ScopeRuleModal } from './ScopeRuleModal';
 import { type ScopeRule, EFFECT_KEYS, MATCH_MODE_KEYS, ruleTarget } from './scopeModel';
 import { bridgeRequest } from '../hooks/useBridge';
@@ -24,6 +24,11 @@ export const ScopeRulesManager: FC<Props> = ({ profileNames }) => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<ScopeRule | null>(null);
+  const [confirmState, setConfirmState] = useState<
+    | { mode: 'one'; rule: ScopeRule }
+    | { mode: 'selected' }
+    | null
+  >(null);
 
   useEffect(() => {
     bridgeRequest<ScopeRule[]>('gesture.getScopeRules')
@@ -62,16 +67,25 @@ export const ScopeRulesManager: FC<Props> = ({ profileNames }) => {
     persist(rules.map((x) => (x.id === r.id ? { ...x, enabled } : x)));
 
   const deleteOne = (r: ScopeRule) => {
-    if (!window.confirm(t('scope.deleteRuleConfirm', { name: r.name }))) return;
-    persist(rules.filter((x) => x.id !== r.id));
-    setSelected((s) => { const n = new Set(s); n.delete(r.id); return n; });
+    setConfirmState({ mode: 'one', rule: r });
   };
 
   const deleteSelected = () => {
     if (selected.size === 0) return;
-    if (!window.confirm(t('scope.deleteSelectedConfirm', { count: selected.size }))) return;
-    persist(rules.filter((x) => !selected.has(x.id)));
-    setSelected(new Set());
+    setConfirmState({ mode: 'selected' });
+  };
+
+  const executeConfirmDelete = async () => {
+    if (!confirmState) return;
+    const current = confirmState;
+    setConfirmState(null);
+    if (current.mode === 'one') {
+      await persist(rules.filter((x) => x.id !== current.rule.id));
+      setSelected((s) => { const n = new Set(s); n.delete(current.rule.id); return n; });
+    } else {
+      await persist(rules.filter((x) => !selected.has(x.id)));
+      setSelected(new Set());
+    }
   };
 
   const toggleSelect = (id: string) =>
@@ -176,6 +190,19 @@ export const ScopeRulesManager: FC<Props> = ({ profileNames }) => {
           onClose={() => setEditorOpen(false)}
         />
       )}
+
+      <ConfirmModal
+        open={confirmState !== null}
+        title={t('common.delete')}
+        description={
+          confirmState?.mode === 'one'
+            ? t('scope.deleteRuleConfirm', { name: confirmState.rule.name })
+            : t('scope.deleteSelectedConfirm', { count: selected.size })
+        }
+        confirmText={t('common.delete')}
+        onConfirm={executeConfirmDelete}
+        onClose={() => setConfirmState(null)}
+      />
     </Card>
   );
 };

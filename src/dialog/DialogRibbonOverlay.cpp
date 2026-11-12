@@ -18,11 +18,15 @@
 #include "core/utils/ThemeUtils.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/config/ConfigManager.h"
+#include <commctrl.h>
+#include <uxtheme.h>
 #include <algorithm>
 #include <cmath>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "uxtheme.lib")
 
 using Microsoft::WRL::ComPtr;
 
@@ -30,9 +34,11 @@ namespace tools3000::dialog {
 
 namespace {
 const wchar_t* const RIBBON_WINDOW_CLASS = L"Tools3000_DialogRibbonOverlay";
-constexpr UINT WM_RIBBON_UPDATE_POS = WM_USER + 101;
-constexpr UINT WM_RIBBON_ATTACH     = WM_USER + 102;
-constexpr UINT WM_RIBBON_HIDE       = WM_USER + 103;
+constexpr UINT WM_RIBBON_UPDATE_POS      = WM_USER + 101;
+constexpr UINT WM_RIBBON_ATTACH          = WM_USER + 102;
+constexpr UINT WM_RIBBON_HIDE            = WM_USER + 103;
+constexpr UINT WM_RIBBON_THEME_CHANGED   = WM_USER + 104;
+constexpr UINT WM_RIBBON_REFRESH_CONTENT = WM_USER + 105;
 
 bool isRibbonEnglishLocale() {
     return !tools3000::core::isUiLanguageChinese();
@@ -115,6 +121,35 @@ bool DialogRibbonOverlay::init() {
         m_hwnd = createdHwnd;
     }
 
+    INITCOMMONCONTROLSEX icex{sizeof(INITCOMMONCONTROLSEX), ICC_WIN95_CLASSES};
+    InitCommonControlsEx(&icex);
+    HWND tooltipHwnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        TOOLTIPS_CLASSW,
+        nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        createdHwnd, nullptr, GetModuleHandleW(nullptr), nullptr
+    );
+    if (tooltipHwnd) {
+        SetWindowPos(tooltipHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        const bool isDark = tools3000::core::NativeThemePalette::isEffectiveDarkMode();
+        SetWindowTheme(tooltipHwnd, isDark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+        TTTOOLINFOW ti{};
+        ti.cbSize = sizeof(TTTOOLINFOW);
+        ti.uFlags = TTF_SUBCLASS;
+        ti.hwnd = createdHwnd;
+        ti.hinst = GetModuleHandleW(nullptr);
+        ti.uId = 1;
+        ti.lpszText = const_cast<LPWSTR>(L"");
+        ti.rect = {0, 0, 8192, 512};
+        SendMessageW(tooltipHwnd, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+        SendMessageW(tooltipHwnd, TTM_SETMAXTIPWIDTH, 0, 600);
+        SendMessageW(tooltipHwnd, TTM_SETDELAYTIME, TTDT_INITIAL, 220);
+        m_tooltipHwnd = tooltipHwnd;
+    }
+
     HDC screenDC = GetDC(nullptr);
     m_memDC = CreateCompatibleDC(screenDC);
     ReleaseDC(nullptr, screenDC);
@@ -150,17 +185,27 @@ void DialogRibbonOverlay::cleanup() {
     }
 
     HWND hwndToDestroy = nullptr;
+    HWND tooltipToDestroy = nullptr;
     {
         std::lock_guard lock(m_mutex);
         hwndToDestroy = m_hwnd;
+        tooltipToDestroy = m_tooltipHwnd;
         m_hwnd = nullptr;
+        m_tooltipHwnd = nullptr;
+        m_currentTooltipText.clear();
+        m_posUpdatePending.store(false, std::memory_order_release);
         m_dismissedDialog = nullptr;
         resetStateLocked();
     }
 
+    if (tooltipToDestroy && IsWindow(tooltipToDestroy)) {
+        DestroyWindow(tooltipToDestroy);
+    }
     if (hwndToDestroy && IsWindow(hwndToDestroy)) {
         DestroyWindow(hwndToDestroy);
     }
+    m_vdm.Reset();
+    m_vdmInitialized = false;
     if (m_memDC) {
         if (m_oldBitmap) {
             SelectObject(m_memDC, m_oldBitmap);
@@ -281,7 +326,29 @@ void DialogRibbonOverlay::attachToDialog(HWND dialogHwnd, const std::string& pro
 void DialogRibbonOverlay::updatePosition() {
     const HWND hwnd = getHwnd();
     if (hwnd && IsWindow(hwnd)) {
-        PostMessageW(hwnd, WM_RIBBON_UPDATE_POS, 0, 0);
+        if (!m_posUpdatePending.exchange(true, std::memory_order_acq_rel)) {
+            if (!PostMessageW(hwnd, WM_RIBBON_UPDATE_POS, 0, 0)) {
+                m_posUpdatePending.store(false, std::memory_order_release);
+            }
+        }
+    }
+}
+
+void DialogRibbonOverlay::refreshContent(bool clearDismissed) {
+    if (clearDismissed) {
+        std::lock_guard lock(m_mutex);
+        m_dismissedDialog = nullptr;
+    }
+    const HWND hwnd = getHwnd();
+    if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_RIBBON_REFRESH_CONTENT, clearDismissed ? 1 : 0, 0);
+    }
+}
+
+void DialogRibbonOverlay::onThemeChanged() {
+    const HWND hwnd = getHwnd();
+    if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_RIBBON_THEME_CHANGED, 0, 0);
     }
 }
 
@@ -311,6 +378,7 @@ void DialogRibbonOverlay::doHide() {
         hwnd = m_hwnd;
         resetStateLocked();
     }
+    updateTooltipText("");
     // 严格在释放 m_mutex 之后再调用同步 Win32 ShowWindow，杜绝同步窗口消息重入死锁
     if (hwnd && IsWindow(hwnd)) {
         ShowWindow(hwnd, SW_HIDE);
@@ -417,6 +485,23 @@ bool DialogRibbonOverlay::doUpdatePosition() {
             return false;
         }
 
+        // 2b. 虚拟桌面归属校验：当用户切换至其他虚拟桌面时立即隐藏，杜绝导览条在半空孤立悬浮
+        if (!m_vdmInitialized) {
+            m_vdmInitialized = true;
+            constexpr CLSID kClsidVirtualDesktopManager = {
+                0xaa509086, 0x5ca9, 0x4c25, {0x8f, 0x95, 0x58, 0x9d, 0x3c, 0x07, 0xb4, 0x8a}};
+            CoCreateInstance(kClsidVirtualDesktopManager, nullptr, CLSCTX_ALL,
+                             IID_PPV_ARGS(m_vdm.GetAddressOf()));
+        }
+        if (m_vdm) {
+            BOOL onCurrentDesktop = TRUE;
+            if (SUCCEEDED(m_vdm->IsWindowOnCurrentVirtualDesktop(targetDialog, &onCurrentDesktop)) &&
+                !onCurrentDesktop) {
+                if (IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_HIDE);
+                return false;
+            }
+        }
+
         RECT dlgRect{};
         if (!GetWindowRect(targetDialog, &dlgRect)) {
             doHide();
@@ -461,7 +546,7 @@ bool DialogRibbonOverlay::doUpdatePosition() {
                 !computeSafeHorizontalPlacement(dlgRect, newDpiScale, m_width, posConfig, posX, maxAvailableWidth)) {
                 winWidth = 0;
             } else {
-                posY = dlgRect.top + static_cast<int>(std::round(5.0f * newDpiScale));
+                posY = dlgRect.top + static_cast<int>(std::round(3.0f * newDpiScale));
                 m_posX = posX;
                 m_posY = posY;
                 winWidth = m_width;
@@ -476,8 +561,17 @@ bool DialogRibbonOverlay::doUpdatePosition() {
             return false;
         }
 
-        SetWindowPos(hwnd, HWND_TOPMOST, posX, posY, winWidth, winHeight, SWP_NOACTIVATE);
+        const UINT swpFlags = SWP_NOACTIVATE | (needRender ? 0u : SWP_NOREDRAW);
+        SetWindowPos(hwnd, HWND_TOPMOST, posX, posY, winWidth, winHeight, swpFlags);
         if (needRender) {
+            if (m_tooltipHwnd && IsWindow(m_tooltipHwnd)) {
+                TTTOOLINFOW ti{};
+                ti.cbSize = sizeof(TTTOOLINFOW);
+                ti.hwnd = hwnd;
+                ti.uId = 1;
+                ti.rect = {0, 0, winWidth, winHeight};
+                SendMessageW(m_tooltipHwnd, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&ti));
+            }
             render();
         }
         if (!IsWindowVisible(hwnd)) {
@@ -672,14 +766,14 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
         return measureWithFormat(wText, isBold ? m_boldFormat.Get() : m_textFormat.Get());
     };
 
-    m_height = static_cast<int>(std::round(32.0f * safeScale));
-    const float paddingX = 6.0f * safeScale;
-    const float btnH = 24.0f * safeScale;
+    m_height = static_cast<int>(std::round(25.0f * safeScale));
+    const float paddingX = 4.5f * safeScale;
+    const float btnH = 19.0f * safeScale;
     const float btnY = (static_cast<float>(m_height) - btnH) * 0.5f;
-    const float syncDividerGap = 10.0f * safeScale;
-    const float interButtonGap = 4.0f * safeScale;
+    const float syncDividerGap = 9.0f * safeScale;
+    const float interButtonGap = 3.5f * safeScale;
     const float minSyncWidth = 68.0f * safeScale;
-    const float closeW = 22.0f * safeScale;
+    const float closeW = 20.0f * safeScale;
 
     bool hasSync = false;
     std::string syncLabel;
@@ -840,9 +934,14 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
     }
 }
 
-bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
+bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark, const tools3000::core::AccentColorRGB& accent) {
     if (!m_renderTarget) return false;
-    if (m_brushesValid && m_brushesDarkTheme == isDark && m_bgBrush && m_textBrush && m_whiteBrush) {
+    const bool accentUnchanged =
+        std::abs(m_brushesAccent.r - accent.r) < 0.002f &&
+        std::abs(m_brushesAccent.g - accent.g) < 0.002f &&
+        std::abs(m_brushesAccent.b - accent.b) < 0.002f;
+    if (m_brushesValid && m_brushesDarkTheme == isDark && accentUnchanged &&
+        m_bgBrush && m_textBrush && m_whiteBrush && m_syncBgBrush) {
         return true;
     }
 
@@ -862,6 +961,10 @@ bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
 
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), m_whiteBrush.GetAddressOf());
 
+    const float borderR = (std::min)(1.0f, accent.r + (1.0f - accent.r) * 0.30f);
+    const float borderG = (std::min)(1.0f, accent.g + (1.0f - accent.g) * 0.30f);
+    const float borderB = (std::min)(1.0f, accent.b + (1.0f - accent.b) * 0.30f);
+
     if (isDark) {
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.13f, 0.17f, 0.93f), m_bgBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.13f), m_borderBrush.GetAddressOf());
@@ -869,8 +972,8 @@ bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.76f, 0.82f, 0.88f), m_textMutedBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.09f), m_highlightBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.15f), m_highlightBorderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.48f, 0.94f, 0.95f), m_syncBgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.68f, 1.0f, 0.40f), m_syncBorderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(accent.r, accent.g, accent.b, 0.95f), m_syncBgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(borderR, borderG, borderB, 0.45f), m_syncBorderBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.74f, 0.82f, 0.75f), m_chevronBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f), m_badgeBgBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.98f, 0.95f), m_badgeTextBrush.GetAddressOf());
@@ -882,8 +985,8 @@ bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.32f, 0.36f, 0.44f, 0.88f), m_textMutedBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.05f), m_highlightBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), m_highlightBorderBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.44f, 0.90f, 0.95f), m_syncBgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.55f, 1.0f, 0.50f), m_syncBorderBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(accent.r * 0.94f, accent.g * 0.94f, accent.b * 0.94f, 0.95f), m_syncBgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(borderR, borderG, borderB, 0.50f), m_syncBorderBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.44f, 0.52f, 0.75f), m_chevronBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.06f), m_badgeBgBrush.GetAddressOf());
         m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.22f, 0.28f, 0.92f), m_badgeTextBrush.GetAddressOf());
@@ -891,6 +994,7 @@ bool DialogRibbonOverlay::ensureDeviceBrushes(bool isDark) {
     }
 
     m_brushesDarkTheme = isDark;
+    m_brushesAccent = accent;
     m_brushesValid = (m_bgBrush != nullptr && m_textBrush != nullptr && m_whiteBrush != nullptr);
     return m_brushesValid;
 }
@@ -959,8 +1063,9 @@ void DialogRibbonOverlay::render() {
 
     ensureTextFormats(dpiScale);
 
-    const bool isDark = tools3000::core::WinUtils::isSystemDarkMode();
-    if (!ensureDeviceBrushes(isDark)) {
+    const bool isDark = tools3000::core::NativeThemePalette::isEffectiveDarkMode();
+    const auto accent = tools3000::core::NativeThemePalette::getEffectiveAccentColorRGB();
+    if (!ensureDeviceBrushes(isDark, accent)) {
         discardDeviceResources();
         return;
     }
@@ -1062,7 +1167,7 @@ void DialogRibbonOverlay::render() {
             }
 
             float badgeW = btn.badgeWidth > 0.0f ? btn.badgeWidth : (16.0f * dpiScale);
-            float badgeH = 14.0f * dpiScale;
+            float badgeH = 13.0f * dpiScale;
             float badgeX = textLeft + textW + 3.0f * dpiScale;
             float badgeY = (btn.rect.top + btn.rect.bottom - badgeH) * 0.5f;
             drawBadge(m_renderTarget.Get(), m_badgeBgBrush.Get(), m_badgeTextBrush.Get(), badgeX, badgeY, badgeW, badgeH, btn.badgeCount);
@@ -1178,6 +1283,35 @@ bool DialogRibbonOverlay::hitTestButton(const RibbonButtonRect& btn,
            fy >= (btn.rect.top - padY) && fy <= (btn.rect.bottom + padY);
 }
 
+void DialogRibbonOverlay::updateTooltipText(const std::string& utf8Tip) {
+    HWND hwnd = nullptr;
+    HWND tooltipHwnd = nullptr;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_currentTooltipText == utf8Tip) {
+            return;
+        }
+        m_currentTooltipText = utf8Tip;
+        hwnd = m_hwnd;
+        tooltipHwnd = m_tooltipHwnd;
+    }
+    if (!tooltipHwnd || !IsWindow(tooltipHwnd) || !hwnd || !IsWindow(hwnd)) {
+        return;
+    }
+
+    std::wstring wTip = tools3000::core::WinUtils::utf8ToWstring(utf8Tip);
+    TTTOOLINFOW ti{};
+    ti.cbSize = sizeof(TTTOOLINFOW);
+    ti.hwnd = hwnd;
+    ti.uId = 1;
+    ti.hinst = GetModuleHandleW(nullptr);
+    ti.lpszText = wTip.empty() ? const_cast<LPWSTR>(L"") : wTip.data();
+    SendMessageW(tooltipHwnd, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&ti));
+    if (wTip.empty()) {
+        SendMessageW(tooltipHwnd, TTM_POP, 0, 0);
+    }
+}
+
 void DialogRibbonOverlay::onMouseMove(int x, int y) {
     HWND hwnd = getHwnd();
     if (!m_trackingMouse && hwnd && IsWindow(hwnd)) {
@@ -1187,10 +1321,14 @@ void DialogRibbonOverlay::onMouseMove(int x, int y) {
     }
 
     bool needRepaint = false;
+    std::string hoveredTip;
     {
         std::lock_guard lock(m_mutex);
         for (auto& btn : m_buttons) {
             const bool inside = hitTestButton(btn, x, y, m_dpiScale);
+            if (inside && btn.type == RibbonButtonRect::Type::ExplorerSync && !btn.extraData.empty()) {
+                hoveredTip = btn.extraData;
+            }
             if (btn.hovered != inside) {
                 btn.hovered = inside;
                 needRepaint = true;
@@ -1198,6 +1336,7 @@ void DialogRibbonOverlay::onMouseMove(int x, int y) {
         }
     }
 
+    updateTooltipText(hoveredTip);
     if (needRepaint) {
         render();
     }
@@ -1215,6 +1354,7 @@ void DialogRibbonOverlay::onMouseLeave() {
             }
         }
     }
+    updateTooltipText("");
     if (needRepaint) render();
 }
 
@@ -1307,6 +1447,7 @@ void DialogRibbonOverlay::showRecentMenu(int screenX, int screenY, bool rightAli
         return;
     }
 
+    tools3000::core::WinUtils::applyNativeMenuTheme();
     HMENU hMenu = CreatePopupMenu();
     for (size_t i = 0; i < localRecentList.size(); ++i) {
         std::wstring itemText = tools3000::core::WinUtils::utf8ToWstring(localRecentList[i]);
@@ -1373,6 +1514,7 @@ void DialogRibbonOverlay::showFavoritesMenu(int screenX, int screenY, bool right
     }
 
     const bool isEn = isRibbonEnglishLocale();
+    tools3000::core::WinUtils::applyNativeMenuTheme();
     HMENU hMenu = CreatePopupMenu();
 
     const bool canOperateOnDialog = (localTargetDialog && IsWindow(localTargetDialog));
@@ -1481,6 +1623,9 @@ LRESULT CALLBACK DialogRibbonOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam
     if (self) {
         switch (msg) {
             case WM_RIBBON_UPDATE_POS:
+                self->m_posUpdatePending.store(false, std::memory_order_release);
+                self->doUpdatePosition();
+                return 0;
             case WM_TIMER:
             case WM_DPICHANGED:
                 self->doUpdatePosition();
@@ -1488,6 +1633,39 @@ LRESULT CALLBACK DialogRibbonOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam
             case WM_RIBBON_ATTACH:
                 self->doAttachToDialog();
                 return 0;
+            case WM_RIBBON_REFRESH_CONTENT: {
+                {
+                    std::lock_guard lock(self->m_mutex);
+                    if (wParam != 0) {
+                        self->m_dismissedDialog = nullptr;
+                    }
+                    self->m_buttons.clear();
+                    self->m_renderedWidth = 0;
+                    self->m_renderedHeight = 0;
+                }
+                self->doUpdatePosition();
+                return 0;
+            }
+            case WM_RIBBON_THEME_CHANGED: {
+                self->m_brushesValid = false;
+                HWND tooltipHwnd = nullptr;
+                bool hasTarget = false;
+                {
+                    std::lock_guard lock(self->m_mutex);
+                    tooltipHwnd = self->m_tooltipHwnd;
+                    self->m_renderedWidth = 0;
+                    self->m_renderedHeight = 0;
+                    hasTarget = (self->m_targetDialog != nullptr);
+                }
+                if (tooltipHwnd && IsWindow(tooltipHwnd)) {
+                    const bool isDark = tools3000::core::NativeThemePalette::isEffectiveDarkMode();
+                    SetWindowTheme(tooltipHwnd, isDark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+                }
+                if (hasTarget) {
+                    self->doUpdatePosition();
+                }
+                return 0;
+            }
             case WM_RIBBON_HIDE:
                 self->doHide();
                 return 0;

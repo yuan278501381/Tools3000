@@ -390,6 +390,7 @@ TEST(ConfigManagerTest, PersistenceAndDefaultFallbacks) {
     EXPECT_EQ(config.get<std::string>("/general/theme", ""), "dark");
     EXPECT_TRUE(config.remove("/capture/format"));
     EXPECT_FALSE(config.has("/capture/format"));
+    EXPECT_TRUE(config.flush());
 
     {
         std::ifstream file(temp / "config.json");
@@ -2356,6 +2357,7 @@ TEST(MouseStreamThrottleTest, ThrottleIntervalAndReset) {
 
 TEST(MouseStreamCoreTest, BasicPushDrainAndBatching) {
     auto& core = tools3000::core::MouseStreamCore::instance();
+    tools3000::core::MouseStreamCore::ScopedSubscriber sub(core);
     core.clear();
     core.resetThrottle();
     EXPECT_TRUE(core.empty());
@@ -2396,6 +2398,7 @@ TEST(MouseStreamCoreTest, BasicPushDrainAndBatching) {
 
 TEST(MouseStreamCoreTest, HighThroughputProducerConsumerStress) {
     auto& core = tools3000::core::MouseStreamCore::instance();
+    tools3000::core::MouseStreamCore::ScopedSubscriber sub(core);
     core.clear();
     core.resetThrottle();
 
@@ -3755,4 +3758,485 @@ TEST(ShellContextMenuRegressionTest, BindSystemDirectoryAndServiceLifecycle) {
     EXPECT_FALSE(menuSvc.showAsync(L""));
     menuSvc.shutdown();
     menuSvc.shutdown();
+}
+
+// -----------------------------------------------------------------------------
+// Batch 1 (V-01 & P-04): NativeThemePalette 与零磁盘共享图标缓存回归测试
+// -----------------------------------------------------------------------------
+TEST(ThemeUtilsNativePaletteTest, EffectiveThemeAccentAndUiLanguageSingleSourceOfTruth) {
+    using tools3000::core::ConfigManager;
+    using tools3000::core::NativeThemePalette;
+    using tools3000::core::WinUtils;
+
+    auto& cfg = ConfigManager::instance();
+    const std::string savedSnapshot = cfg.toJsonString(2);
+    struct ConfigRestoreGuard {
+        ConfigManager& mgr;
+        std::string snapshot;
+        ~ConfigRestoreGuard() {
+            mgr.fromJsonString(snapshot);
+        }
+    } restoreGuard{cfg, savedSnapshot};
+
+    // 1. 明暗主题单一事实源判定
+    ASSERT_TRUE(cfg.set("/general/theme", std::string("dark")));
+    EXPECT_TRUE(NativeThemePalette::isEffectiveDarkMode());
+
+    ASSERT_TRUE(cfg.set("/general/theme", std::string("light")));
+    EXPECT_FALSE(NativeThemePalette::isEffectiveDarkMode());
+
+    ASSERT_TRUE(cfg.set("/general/theme", std::string("system")));
+    EXPECT_EQ(NativeThemePalette::isEffectiveDarkMode(), WinUtils::isSystemDarkMode());
+
+    // 2. 动态强调色解析（预设枚举 + 自定义 #RRGGBB + 非法值回退）
+    ASSERT_TRUE(cfg.set("/general/accentColor", std::string("violet")));
+    const auto violet = NativeThemePalette::getEffectiveAccentColorRGB();
+    const auto expectedViolet = tools3000::core::getAccentColorRGB("violet");
+    EXPECT_FLOAT_EQ(violet.r, expectedViolet.r);
+    EXPECT_FLOAT_EQ(violet.g, expectedViolet.g);
+    EXPECT_FLOAT_EQ(violet.b, expectedViolet.b);
+
+    ASSERT_TRUE(cfg.set("/general/accentColor", std::string("#FF5500")));
+    const auto customHex = NativeThemePalette::getEffectiveAccentColorRGB();
+    EXPECT_NEAR(customHex.r, 1.0f, 1e-4f);
+    EXPECT_NEAR(customHex.g, 85.0f / 255.0f, 1e-4f);
+    EXPECT_NEAR(customHex.b, 0.0f, 1e-4f);
+
+    ASSERT_TRUE(cfg.set("/general/accentColor", std::string("invalid-accent-token")));
+    const auto fallbackBlue = NativeThemePalette::getEffectiveAccentColorRGB();
+    const auto expectedBlue = tools3000::core::getAccentColorRGB("blue");
+    EXPECT_FLOAT_EQ(fallbackBlue.r, expectedBlue.r);
+    EXPECT_FLOAT_EQ(fallbackBlue.g, expectedBlue.g);
+    EXPECT_FLOAT_EQ(fallbackBlue.b, expectedBlue.b);
+
+    // 3. UI 语言判定单一事实源
+    ASSERT_TRUE(cfg.set("/general/language", std::string("zh-CN")));
+    EXPECT_TRUE(NativeThemePalette::isUiLanguageChinese());
+    EXPECT_TRUE(tools3000::core::isUiLanguageChinese());
+
+    ASSERT_TRUE(cfg.set("/general/language", std::string("zh-TW")));
+    EXPECT_TRUE(NativeThemePalette::isUiLanguageChinese());
+
+    ASSERT_TRUE(cfg.set("/general/language", std::string("en-US")));
+    EXPECT_FALSE(NativeThemePalette::isUiLanguageChinese());
+    EXPECT_FALSE(tools3000::core::isUiLanguageChinese());
+
+    ASSERT_TRUE(cfg.set("/general/language", std::string("auto")));
+    EXPECT_EQ(NativeThemePalette::isUiLanguageChinese(), WinUtils::isSystemLanguageChinese());
+
+    // 4. Win32 原生菜单暗色策略动态加载幂等无崩溃验证
+    WinUtils::applyNativeMenuTheme("dark");
+    WinUtils::applyNativeMenuTheme("light");
+    WinUtils::applyNativeMenuTheme("system");
+    WinUtils::applyNativeMenuTheme();
+}
+
+TEST(WinUtilsFileTypeIconCacheTest, StaticExtensionZeroDiskSharedCacheHitRate) {
+    using tools3000::core::WinUtils;
+
+    WinUtils::clearFileTypeIconCacheForTesting();
+    EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 0u);
+
+    // 静态扩展名 (.txt): 同时验证三参数标准调用与首参传入完整路径的自适应提取，零物理磁盘 I/O + 共享缓存 100% 命中
+    const std::string txtA = WinUtils::getFileTypeIconBase64(
+        L".txt", false, L"Z:\\__t3k_nonexistent_volume_a__\\doc_alpha.txt");
+    const std::string txtB = WinUtils::getFileTypeIconBase64(
+        L"TXT", false, L"Y:\\__t3k_nonexistent_volume_b__\\DOC_BETA.TXT");
+    const std::string txtC = WinUtils::getFileTypeIconBase64(
+        L"X:\\__t3k_nonexistent_volume_c__\\nested\\doc_gamma.Txt", false);
+
+    EXPECT_TRUE(txtA.starts_with("data:image/png;base64,"));
+    EXPECT_GT(txtA.size(), 64u);
+    EXPECT_EQ(txtA, txtB);
+    EXPECT_EQ(txtA, txtC);
+    EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 1u);
+
+    // 另一种静态扩展名 (.cpp): 仅新增 1 条共享缓存
+    const std::string cppA = WinUtils::getFileTypeIconBase64(
+        L".cpp", false, L"Z:\\__t3k_nonexistent_volume_a__\\engine.cpp");
+    const std::string cppB = WinUtils::getFileTypeIconBase64(
+        L".CPP", false, L"W:\\__t3k_nonexistent_volume_d__\\ENGINE.CPP");
+    EXPECT_TRUE(cppA.starts_with("data:image/png;base64,"));
+    EXPECT_EQ(cppA, cppB);
+    EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 2u);
+
+    // 目录类型图标: 跨路径共享单条 ::dir:: 缓存
+    const std::string dirA = WinUtils::getFileTypeIconBase64(
+        L"", true, L"Z:\\__t3k_nonexistent_folder_1__");
+    const std::string dirB = WinUtils::getFileTypeIconBase64(
+        L"Z:\\__t3k_nonexistent_folder_2__", true);
+    EXPECT_TRUE(dirA.starts_with("data:image/png;base64,"));
+    EXPECT_EQ(dirA, dirB);
+    EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 3u);
+
+    // 动态实例图标后缀 (.exe): 按规范化文件路径独立缓存，避免不同可执行文件串用图标
+    wchar_t sysDir[MAX_PATH]{};
+    const UINT sysLen = GetSystemDirectoryW(sysDir, MAX_PATH);
+    if (sysLen > 0 && sysLen < MAX_PATH) {
+        const std::wstring cmdExe = std::filesystem::path(sysDir) / L"cmd.exe";
+        const std::wstring notepadExe = std::filesystem::path(sysDir) / L"notepad.exe";
+        if (std::filesystem::exists(cmdExe) && std::filesystem::exists(notepadExe)) {
+            const std::string iconCmd = WinUtils::getFileTypeIconBase64(L".exe", false, cmdExe);
+            const std::string iconNotepad = WinUtils::getFileTypeIconBase64(L".exe", false, notepadExe);
+            EXPECT_TRUE(iconCmd.starts_with("data:image/png;base64,"));
+            EXPECT_TRUE(iconNotepad.starts_with("data:image/png;base64,"));
+            EXPECT_EQ(WinUtils::getFileTypeIconCacheSizeForTesting(), 5u);
+        }
+    }
+}
+
+TEST(FileInteractionAsyncHandlersTest, DispatchesFileOperationsOffCallerThread) {
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    tools3000::core::registerFileInteractionHandlers(
+        bridge, "audit.asyncfile", "path is required");
+
+    struct UnregisterGuard {
+        tools3000::core::MessageBridge& mb;
+        ~UnregisterGuard() {
+            EXPECT_EQ(mb.unregisterHandlersByPrefix("audit.asyncfile"), 8u);
+        }
+    } guard{bridge};
+
+    const DWORD callerTid = GetCurrentThreadId();
+    for (const char* methodSuffix : {
+             "openFile", "openFolder", "openFileAsAdmin",
+             "showFileProperties", "openWithNotepad", "copyFile"}) {
+        std::promise<std::pair<DWORD, std::string>> donePromise;
+        auto doneFuture = donePromise.get_future();
+
+        const nlohmann::json req = {
+            {"id", 901},
+            {"method", std::string("audit.asyncfile.") + methodSuffix},
+            {"params", nlohmann::json::object()}
+        };
+        bridge.handleMessageAsync(req.dump(), [&donePromise](const std::string& resp) {
+            donePromise.set_value({GetCurrentThreadId(), resp});
+        });
+
+        ASSERT_EQ(doneFuture.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+            << methodSuffix;
+        const auto [workerTid, rawResp] = doneFuture.get();
+        EXPECT_NE(workerTid, callerTid) << methodSuffix;
+
+        const auto parsed = nlohmann::json::parse(rawResp);
+        ASSERT_TRUE(parsed.contains("result")) << rawResp;
+        EXPECT_FALSE(parsed["result"].value("success", true)) << methodSuffix;
+        EXPECT_EQ(parsed["result"].value("error", ""), "path is required") << methodSuffix;
+    }
+}
+
+TEST(ConfigManagerBatch2RegressionTest, CoalescesRapidWritesIntoAsyncAtomicFlush) {
+    const auto tempDir = std::filesystem::temp_directory_path() / "t3k_cfg_batch2_coalesce";
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    std::filesystem::create_directories(tempDir, ec);
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    cfg.shutdown();
+    ASSERT_TRUE(cfg.initialize(tempDir, "config.json"));
+
+    const uint64_t writesBefore = cfg.diskWriteCount();
+    for (int i = 0; i < 50; ++i) {
+        ASSERT_TRUE(cfg.set("/perf/counter", i));
+    }
+
+    // 内存态必须 0ms 即刻可读最新值，且 200ms 合并窗口内物理写盘次数远小于 50 次
+    EXPECT_EQ(cfg.get<int>("/perf/counter", -1), 49);
+    const uint64_t writesBeforeFlush = cfg.diskWriteCount() - writesBefore;
+    EXPECT_LE(writesBeforeFlush, 3u);
+
+    ASSERT_TRUE(cfg.flush());
+    const uint64_t totalWrites = cfg.diskWriteCount() - writesBefore;
+    EXPECT_GE(totalWrites, 1u);
+    EXPECT_LE(totalWrites, 4u);
+
+    // 验证磁盘 config.json 原子持久化结果一致
+    std::ifstream in(tempDir / "config.json", std::ios::binary);
+    ASSERT_TRUE(in.is_open());
+    const auto persisted = nlohmann::json::parse(in, nullptr, false);
+    ASSERT_FALSE(persisted.is_discarded());
+    EXPECT_EQ(persisted.value(nlohmann::json::json_pointer("/perf/counter"), -1), 49);
+    in.close();
+
+    cfg.shutdown();
+    std::filesystem::remove_all(tempDir, ec);
+}
+
+TEST(MessageBridgeBatch2RegressionTest, FastHeaderExtractAndRawHandlerZeroReparse) {
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    bridge.registerRawHandler("audit.raw.echo", [](const nlohmann::json& params) -> std::string {
+        const std::string tag = params.value("tag", "");
+        return std::string(R"({"rawDirect":true,"tag":)") + nlohmann::json(tag).dump() + "}";
+    });
+    bridge.registerAsyncRawHandler("audit.raw.asyncEcho", [](const nlohmann::json& params) -> std::string {
+        const int count = params.value("count", 0);
+        return std::string(R"({"asyncDirect":true,"count":)") + std::to_string(count) + "}";
+    });
+
+    struct Guard {
+        tools3000::core::MessageBridge& mb;
+        ~Guard() {
+            mb.unregisterHandlersByPrefix("audit.raw");
+        }
+    } guard{bridge};
+
+    // 1. 含转义引号与前置嵌套对象参数的快速头部解析与同步 Raw 直通（严防误取嵌套对象中的 id/method）
+    const std::string syncReq =
+        R"({"nested":{"fake":"\"method\":\"wrong.route\"","id":999},"id":1024,"method":"audit.raw.echo","params":{"tag":"hello\\world\"ok"}})";
+    const std::string syncRespStr = bridge.handleMessage(syncReq);
+    const auto syncResp = nlohmann::json::parse(syncRespStr);
+    EXPECT_EQ(syncResp["id"].get<int>(), 1024);
+    EXPECT_TRUE(syncResp["result"].value("rawDirect", false));
+    EXPECT_EQ(syncResp["result"].value("tag", ""), "hello\\world\"ok");
+
+    // 2. 异步 Raw 直通：前置嵌套干扰 + 零主线程全量 parse 并在工作线程直接拼装预序列化 JSON
+    std::promise<std::string> asyncPromise;
+    auto asyncFuture = asyncPromise.get_future();
+    const std::string asyncReq =
+        R"({"nested":{"id":888,"method":"wrong.route"},"id":2048,"method":"audit.raw.asyncEcho","params":{"count":77,"extra":"{\"method\":\"fake\"}"}})";
+    bridge.handleMessageAsync(asyncReq, [&asyncPromise](std::string resp) {
+        asyncPromise.set_value(std::move(resp));
+    });
+    ASSERT_EQ(asyncFuture.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    const auto asyncResp = nlohmann::json::parse(asyncFuture.get());
+    EXPECT_EQ(asyncResp["id"].get<int>(), 2048);
+    EXPECT_TRUE(asyncResp["result"].value("asyncDirect", false));
+    EXPECT_EQ(asyncResp["result"].value("count", 0), 77);
+}
+
+TEST(MouseStreamCoreBatch2RegressionTest, DefaultDormantAndScopedSubscriberRefCount) {
+    auto& core = tools3000::core::MouseStreamCore::instance();
+    core.setActive(false);
+    while (core.subscriberCount() > 0) {
+        core.releaseSubscriber();
+    }
+    core.clear();
+
+    // 无订阅者且未显式激活时保持休眠，1000Hz 移动点零入队
+    EXPECT_FALSE(core.isActive());
+    core.pushRawMove(120, 240);
+    EXPECT_TRUE(core.empty());
+
+    {
+        tools3000::core::MouseStreamCore::ScopedSubscriber sub1(core);
+        EXPECT_EQ(core.subscriberCount(), 1u);
+        EXPECT_TRUE(core.isActive());
+        core.pushRawMove(300, 400);
+        EXPECT_FALSE(core.empty());
+
+        {
+            tools3000::core::MouseStreamCore::ScopedSubscriber sub2(core);
+            EXPECT_EQ(core.subscriberCount(), 2u);
+            EXPECT_TRUE(core.isActive());
+        }
+
+        // sub2 析构后 sub1 仍存活，保持激活状态
+        EXPECT_EQ(core.subscriberCount(), 1u);
+        EXPECT_TRUE(core.isActive());
+    }
+
+    // 全部订阅者析构后自动停用并清空残留采样点
+    EXPECT_EQ(core.subscriberCount(), 0u);
+    EXPECT_FALSE(core.isActive());
+    EXPECT_TRUE(core.empty());
+}
+
+TEST(LuaEngineBatch3RegressionTest, NonBlockingToastAndErrorCodeSafeExists) {
+    auto& lua = tools3000::core::LuaEngine::instance();
+    ASSERT_TRUE(lua.initialize());
+
+    std::atomic<int> toastPublished{0};
+    std::wstring capturedToastMsg;
+    std::mutex msgMutex;
+    const auto subId = tools3000::core::EventBus::instance().subscribe<tools3000::core::ShowToastEvent>(
+        [&](const tools3000::core::ShowToastEvent& ev) {
+            {
+                std::lock_guard<std::mutex> lk(msgMutex);
+                capturedToastMsg = ev.message;
+            }
+            toastPublished.fetch_add(1, std::memory_order_relaxed);
+        });
+
+    const bool okToast = lua.executeScript(
+        R"(easy.ui.toast("Batch3NonBlockingToast"))",
+        tools3000::core::LuaPermission::All);
+    EXPECT_TRUE(okToast);
+    EXPECT_GE(toastPublished.load(std::memory_order_relaxed), 1);
+    {
+        std::lock_guard<std::mutex> lk(msgMutex);
+        EXPECT_EQ(capturedToastMsg, L"Batch3NonBlockingToast");
+    }
+    tools3000::core::EventBus::instance().unsubscribeAndWait(subId);
+
+    // 验证 easy.fs.exists 针对非法设备路径与含空字节路径安全返回 false 且不抛未捕获异常
+    const bool okFs = lua.executeScript(
+        R"(
+            assert(easy.fs.exists("\\\\?\\GLOBALROOT\\Device\\InvalidNonExistentVolume999\\x") == false)
+            assert(easy.fs.exists("Z:\\*invalid*path?|<>\\test.txt") == false)
+            assert(easy.fs.exists("bad\0embedded") == false)
+        )",
+        tools3000::core::LuaPermission::All);
+    EXPECT_TRUE(okFs);
+}
+
+TEST(StatsManagerNumpadEnterTest, TracksExtendedNumpadEnter0x10DSeparatelyAndRoundTripsJson) {
+    // 1. 验证 DailyStats JSON 序列化往返对 0x0D (13) 与 0x10D (269) 均无损保留
+    tools3000::core::DailyStats sample;
+    sample.totalKeys = 15;
+    sample.keyMap[VK_RETURN] = 9;
+    sample.keyMap[0x10D] = 6;
+    const auto dumped = sample.toJson();
+    const auto restored = tools3000::core::DailyStats::fromJson(dumped);
+    EXPECT_EQ(restored.totalKeys, 15u);
+    ASSERT_TRUE(restored.keyMap.contains(VK_RETURN));
+    ASSERT_TRUE(restored.keyMap.contains(0x10D));
+    EXPECT_EQ(restored.keyMap.at(VK_RETURN), 9u);
+    EXPECT_EQ(restored.keyMap.at(0x10D), 6u);
+
+    // 2. 验证 StatsManager 无锁环形计数槽 (512 容量) 对 0x0D 与 0x10D 独立累加互不丢弃
+    auto& stats = tools3000::core::StatsManager::instance();
+    stats.initialize();
+    const auto before = stats.getTodayStats();
+    const uint64_t baseMainEnter = before.keyMap.contains(VK_RETURN) ? before.keyMap.at(VK_RETURN) : 0ULL;
+    const uint64_t baseNumpadEnter = before.keyMap.contains(0x10D) ? before.keyMap.at(0x10D) : 0ULL;
+
+    stats.recordKey(VK_RETURN);
+    stats.recordKey(VK_RETURN);
+    stats.recordKey(0x10D);
+    stats.recordKey(0x10D);
+    stats.recordKey(0x10D);
+
+    const auto after = stats.getTodayStats();
+    ASSERT_TRUE(after.keyMap.contains(VK_RETURN));
+    ASSERT_TRUE(after.keyMap.contains(0x10D));
+    EXPECT_EQ(after.keyMap.at(VK_RETURN), baseMainEnter + 2ULL);
+    EXPECT_EQ(after.keyMap.at(0x10D), baseNumpadEnter + 3ULL);
+    stats.shutdown();
+}
+
+TEST(MessageBridgeOpenSaveDirTest, ResolvesAppDataDefaultAndKindFallbacks) {
+    const auto tempCfgDir = std::filesystem::temp_directory_path() / "t3k_cfg_opensavedir_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tempCfgDir, ec);
+    std::filesystem::create_directories(tempCfgDir, ec);
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    cfg.shutdown();
+    ASSERT_TRUE(cfg.initialize(tempCfgDir, "config.json"));
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    if (!bridge.hasHandler("capture.openSaveDirectory")) {
+        bridge.registerBuiltinHandlers();
+    }
+    const auto expectedScreenshots =
+        tools3000::core::WinUtils::wstringToUtf8((tools3000::core::WinUtils::getAppDataDirectory() / L"Screenshots").wstring());
+    const auto expectedRecordings =
+        tools3000::core::WinUtils::wstringToUtf8((tools3000::core::WinUtils::getAppDataDirectory() / L"Recordings").wstring());
+
+    // 1. 默认空路径：kind="capture" 回退 AppData/Screenshots，kind="recording" 回退 AppData/Recordings
+    const auto capDefault = bridge.invokeHandler("capture.openSaveDirectory", {
+        {"path", ""},
+        {"kind", "capture"},
+        {"dryRun", true}
+    });
+    EXPECT_TRUE(capDefault.value("success", false));
+    EXPECT_EQ(capDefault.value("path", ""), expectedScreenshots);
+
+    const auto recDefault = bridge.invokeHandler("capture.openSaveDirectory", {
+        {"path", "   "},
+        {"kind", "recording"},
+        {"dryRun", true}
+    });
+    EXPECT_TRUE(recDefault.value("success", false));
+    EXPECT_EQ(recDefault.value("path", ""), expectedRecordings);
+
+    // 2. 配置了兼容字段 /capture/savePath 与 /recording/saveDirectory 时优先按顺序读取
+    const auto customCapDir = tempCfgDir / "CustomShots";
+    const auto customRecDir = tempCfgDir / "CustomRecs";
+    ASSERT_TRUE(cfg.set("/capture/savePath", tools3000::core::WinUtils::wstringToUtf8(customCapDir.wstring())));
+    ASSERT_TRUE(cfg.set("/recording/saveDirectory", tools3000::core::WinUtils::wstringToUtf8(customRecDir.wstring())));
+
+    const auto capCustom = bridge.invokeHandler("capture.openSaveDirectory", {
+        {"path", ""},
+        {"kind", "capture"},
+        {"dryRun", true}
+    });
+    EXPECT_TRUE(capCustom.value("success", false));
+    EXPECT_EQ(capCustom.value("path", ""), tools3000::core::WinUtils::wstringToUtf8(customCapDir.wstring()));
+    EXPECT_TRUE(std::filesystem::exists(customCapDir));
+
+    const auto recCustom = bridge.invokeHandler("capture.openSaveDirectory", {
+        {"path", ""},
+        {"kind", "recording"},
+        {"dryRun", true}
+    });
+    EXPECT_TRUE(recCustom.value("success", false));
+    EXPECT_EQ(recCustom.value("path", ""), tools3000::core::WinUtils::wstringToUtf8(customRecDir.wstring()));
+    EXPECT_TRUE(std::filesystem::exists(customRecDir));
+
+    cfg.shutdown();
+    std::filesystem::remove_all(tempCfgDir, ec);
+}
+
+TEST(WinUtilsShortcutSyncTest, AnchorsIconLocationToTargetAndRemainsIdempotent) {
+    const HRESULT hrCom = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool comInited = SUCCEEDED(hrCom);
+
+    std::error_code ec;
+    const auto tempDir = std::filesystem::temp_directory_path() /
+        (L"Tools3000_ShortcutSyncTest_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(tempDir, ec);
+    std::filesystem::create_directories(tempDir / L"Installed", ec);
+    std::filesystem::create_directories(tempDir / L"PollutedDev", ec);
+
+    const auto fakeInstalledExe = tempDir / L"Installed" / L"Tools3000.exe";
+    const auto fakePollutedExe = tempDir / L"PollutedDev" / L"Tools3000.exe";
+    const auto lnkPath = tempDir / L"Tools3000.lnk";
+    {
+        std::ofstream(fakeInstalledExe, std::ios::binary) << "MZ";
+        std::ofstream(fakePollutedExe, std::ios::binary) << "MZ";
+    }
+
+    // 构造一个被开发构建目录跨路径污染了 IconLocation 的快捷方式
+    {
+        IShellLinkW* psl = nullptr;
+        ASSERT_TRUE(SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&psl))) && psl);
+        ASSERT_TRUE(SUCCEEDED(psl->SetPath(fakeInstalledExe.c_str())));
+        ASSERT_TRUE(SUCCEEDED(psl->SetIconLocation(fakePollutedExe.c_str(), 2)));
+        IPersistFile* ppf = nullptr;
+        ASSERT_TRUE(SUCCEEDED(psl->QueryInterface(IID_PPV_ARGS(&ppf))) && ppf);
+        ASSERT_TRUE(SUCCEEDED(ppf->Save(lnkPath.c_str(), TRUE)));
+        ppf->Release();
+        psl->Release();
+    }
+
+    // 首次同步：必须将 IconLocation 修复回快捷方式自身的 fakeInstalledExe (,0)，而非测试进程自身路径，并写入 AUMID
+    EXPECT_TRUE(tools3000::core::WinUtils::syncSingleShortcutMetadata(lnkPath.wstring(), L"Yy1.Tools3000", false));
+
+    {
+        IShellLinkW* psl = nullptr;
+        ASSERT_TRUE(SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&psl))) && psl);
+        IPersistFile* ppf = nullptr;
+        ASSERT_TRUE(SUCCEEDED(psl->QueryInterface(IID_PPV_ARGS(&ppf))) && ppf);
+        ASSERT_TRUE(SUCCEEDED(ppf->Load(lnkPath.c_str(), STGM_READ)));
+
+        wchar_t iconBuf[MAX_PATH]{};
+        int iconIdx = -1;
+        ASSERT_TRUE(SUCCEEDED(psl->GetIconLocation(iconBuf, MAX_PATH, &iconIdx)));
+        EXPECT_EQ(_wcsicmp(iconBuf, fakeInstalledExe.c_str()), 0);
+        EXPECT_EQ(iconIdx, 0);
+
+        ppf->Release();
+        psl->Release();
+    }
+
+    // 二次常规同步：元数据完全一致，必须幂等返回 false（0 次磁盘覆写）
+    EXPECT_FALSE(tools3000::core::WinUtils::syncSingleShortcutMetadata(lnkPath.wstring(), L"Yy1.Tools3000", false));
+    // 显式强制刷新 (--update-shortcuts)：返回 true
+    EXPECT_TRUE(tools3000::core::WinUtils::syncSingleShortcutMetadata(lnkPath.wstring(), L"Yy1.Tools3000", true));
+
+    std::filesystem::remove_all(tempDir, ec);
+    if (comInited) {
+        CoUninitialize();
+    }
 }

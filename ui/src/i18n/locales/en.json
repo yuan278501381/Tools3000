@@ -28,7 +28,8 @@
     "refresh": "Refresh",
     "enable": "Enable",
     "disable": "Disable",
-    "all": "All"
+    "all": "All",
+    "copy": "Copy"
   },
   "nav": {
     "capture": "Screen Capture",
@@ -415,7 +416,9 @@
     "pinGroupResetOne": "Restore default name and color",
     "loadFailed": "Could not load capture settings",
     "saveFailed": "Could not save this setting",
-    "browseFailed": "Could not open the folder picker"
+    "browseFailed": "Could not open the folder picker",
+    "openFolder": "Open Folder",
+    "openFolderFailed": "Could not open folder"
   },
   "history": {
     "title": "Capture History",
@@ -509,7 +512,15 @@
     "available": "Ready",
     "unavailable": "Language pack required",
     "loadFailed": "Could not load OCR settings",
-    "saveFailed": "Could not save this OCR setting"
+    "saveFailed": "Could not save this OCR setting",
+    "language": "Recognition Language",
+    "languageDesc": "Select target OCR language pack or auto-detect mixed text",
+    "langAuto": "Auto Detect (System / Mixed)",
+    "langZhHans": "Simplified Chinese + English",
+    "langZhHant": "Traditional Chinese + English",
+    "langEnUs": "English (en-US)",
+    "langJaJp": "Japanese",
+    "langKoKr": "Korean"
   },
   "gesture": {
     "title": "Mouse Gesture Settings",
@@ -674,8 +685,14 @@
     "prefixLeftButton": "[Left] ",
     "wheelUpArrow": "Wheel Up",
     "wheelDownArrow": "Wheel Down",
-    "canvasDrawTip": "Draw directly on canvas · Button, start pos & modifiers auto recognized",
-    "canvasEdgeTip": "Start top=Top edge · Start bottom=Bottom edge · Start middle=Global · Auto detect button pressed",
+    "edgePillTop": "Top",
+    "edgePillBottom": "Btm",
+    "edgePillLeft": "Left",
+    "edgePillRight": "Right",
+    "wheelUpBadge": "Wheel Up",
+    "wheelDownBadge": "Wheel Down",
+    "canvasDrawTip": "Swipe anywhere on canvas to record · Choose trigger zone above",
+    "canvasEdgeTip": "Global mode records anywhere as global · Switch to an Edge mode above for screen-edge gestures",
     "conflictReplaceWithAction": "Gesture 「{{arrows}}」 is already bound to 「{{action}}」. Saving will replace it.",
     "conflictReplaceSimple": "Gesture 「{{arrows}}」 already exists. Saving will replace it.",
     "actions": {
@@ -815,7 +832,23 @@
         "name": "Pull Down Minimize",
         "desc": "Top-middle pull down to minimize window"
       }
-    }
+    },
+    "triggerEdgeLeftWheel": "Left Screen Edge + Wheel",
+    "triggerEdgeRightWheel": "Right Screen Edge + Wheel",
+    "webSearchEngine": "Web Search Engine",
+    "webSearchEngineDesc": "Target search engine used when executing the Web Search Selected Text gesture command",
+    "engineBaidu": "Baidu",
+    "sideGestures": "Side Buttons",
+    "edgeGestures": "Screen Edges",
+    "wheelGestures": "Wheel Gestures",
+    "edgeShortTop": "Top Edge",
+    "edgeShortBottom": "Bottom Edge",
+    "edgeShortLeft": "Left Edge",
+    "edgeShortRight": "Right Edge",
+    "wheelShort": "Wheel",
+    "side1Short": "Side X1",
+    "side2Short": "Side X2",
+    "leftClickShort": "Left Btn"
   },
   "hotcorner": {
     "title": "Hot Corners",
@@ -848,7 +881,7 @@
     "triggerMiddleDesc": "Hold wheel and drag · Best for media/music track controls",
     "guidePrompt": "Use an appropriate trigger mode to draw a gesture on the canvas, the symbol will be recognized below.",
     "guideNote1": "Pressing one or more keys to 'modify' the gesture creates a different gesture; keyboard keys (Ctrl / Alt / Shift) can also serve as modifiers",
-    "guideNote2": "Hold Right Mouse Button ◐ or Middle Wheel ◓ and drag directly on the canvas to record",
+    "guideNote2": "Hold Right Mouse Button or Middle Wheel and drag directly on the canvas to record",
     "replaceSimilarTracks": "Replace all similar gesture tracks",
     "replaceSimilarHint1": "Unifying similar gesture tracks into the same value helps reduce accidental triggers and improves performance",
     "replaceSimilarHint2": "If a target has multiple identical gestures, only the last one remains active",
@@ -1085,7 +1118,11 @@
     "kw_dialog_enhancer": "open save folder favorite recent jump",
     "kw_remote_boost": "rdp mstsc remote desktop sticky ime",
     "kw_stats": "heatmap click distance counter analytics",
-    "kw_about": "version update license author diagnostic"
+    "kw_about": "version update license author diagnostic",
+    "deepSettingsGroup": "Matching Settings",
+    "inactiveSectionTitle": "Disabled Modules",
+    "inactiveBadge": "Disabled",
+    "enableAndOpen": "Enable & Open"
   },
   "onboarding": {
     "welcomeTitle": "Welcome to Tools3000",
@@ -1585,7 +1622,14 @@
     "opNotDesc": "Logical NOT, excludes files containing specific word",
     "opPhraseDesc": "Quoted phrase, strictly matches exact text with spaces",
     "opWildcardMulti": "Wildcard, matches 0 or more characters",
-    "opWildcardSingle": "Wildcard, matches 1 character"
+    "opWildcardSingle": "Wildcard, matches 1 character",
+    "defaultCategoryTitle": "Default Filter Category",
+    "defaultCategoryDesc": "Initial category pill activated when opening a blank search session",
+    "serviceStandby": "On-Demand Standby (Instant Wake on First Search)",
+    "serviceStandbyDesc": "Follows zero-boot-overhead DEMAND_START policy; wakes automatically on first search or click Wake Engine Now.",
+    "serviceStandbyToast": "Engine is in on-demand standby; click Wake Engine Now to start immediately",
+    "serviceWoken": "Indexing engine woken and ready",
+    "wakeNow": "Wake Engine Now"
   },
   "tray": {
     "brandName": "Tools3000",
@@ -1647,7 +1691,9 @@
     "pinResetGroupMeta": "Reset group name & color",
     "pinGroupColorLabel": "Group Color",
     "pinShowAll": "Show All",
-    "pinCloseAll": "Close All"
+    "pinCloseAll": "Close All",
+    "confirmCloseGroup": "Close all pins in this group?",
+    "confirmCloseAll": "Close all desktop pins?"
   },
   "dialog": {
     "title": "File Dialog Enhancer",
@@ -1684,7 +1730,8 @@
     "pinWorkspace": "Pin as Default Workspace",
     "unpinWorkspace": "Unpin",
     "fixedBadge": "Fixed Root",
-    "browseFolder": "Browse"
+    "browseFolder": "Browse",
+    "confirmClearMemories": "Clear all remembered recent folder records across applications?"
   },
   "spotlight": {
     "title": "Mouse Presentation & FX",
@@ -1864,7 +1911,11 @@
     "animSlide": "Damped Slide",
     "animPop": "Elastic Pop",
     "animFade": "Fade In",
-    "animNone": "Static"
+    "animNone": "Static",
+    "autoContrastBadge": "Smart High-Contrast",
+    "autoContrastLabel": "Smart high-contrast adaptive text color",
+    "restoreAutoContrastDesc": "Custom color active — click to restore smart high-contrast adaptive color",
+    "restoreAutoContrast": "Smart Contrast"
   },
   "quicklook": {
     "emptyTitle": "Select a file in File Explorer and press Space",
@@ -1922,8 +1973,11 @@
     "reload": "Reload"
   },
   "components": {
-    "topEdgeSensor": "◰ Top Edge Sensor Zone",
-    "bottomEdgeSensor": "◲ Bottom Edge Sensor Zone",
+    "topEdgeSensor": "Top Edge Active Zone",
+    "bottomEdgeSensor": "Bottom Edge Active Zone",
+    "leftEdgeSensor": "Left Edge Active Zone",
+    "rightEdgeSensor": "Right Edge Active Zone",
+    "canvasActiveEdgeHint": "Edge mode active ({{edge}}) · Swipe or scroll on canvas to bind edge gesture",
     "quickPresets": "Presets:",
     "hotkeyActiveTip": "Hotkey registered and active globally",
     "peakToday": "Today's Peak",
@@ -1954,7 +2008,7 @@
     "customIndependentDesc": "Override or extend global gestures",
     "disableGestureTitle": "Disable Gestures (Do Not Disturb)",
     "disableGestureDesc": "Completely disable gestures in this app",
-    "cockpitBarTip": "Auto-detection zone: automatically senses mouse buttons, starting points, and keyboard modifiers",
+    "cockpitBarTip": "Gesture control bar: select trigger zone & mouse button, and auto-detect keyboard modifiers",
     "triggerKeyLabel": "Trigger:",
     "rightButtonTip": "Right mouse button (hold right button to draw)",
     "rightButton": "Right Click",
@@ -1966,13 +2020,17 @@
     "x2Button": "Side 2",
     "leftButtonTip": "Left mouse button (starts on edge or with modifiers)",
     "leftButton": "Left Click",
-    "positionLabel": "Position:",
-    "globalPositionTip": "Starting from center is recognized as global gesture",
+    "positionLabel": "Zone:",
+    "globalPositionTip": "Global anywhere (default): swiping anywhere on canvas records a global gesture",
     "globalPosition": "Global",
-    "topEdgePositionTip": "Starting from top is recognized as top edge gesture",
-    "topEdgePosition": "◰ Top Edge",
-    "bottomEdgePositionTip": "Starting from bottom is recognized as bottom edge gesture",
-    "bottomEdgePosition": "◲ Bottom Edge",
+    "topEdgePositionTip": "Top screen edge: record gestures triggered from top edge of screen",
+    "topEdgePosition": "Top Edge",
+    "bottomEdgePositionTip": "Bottom screen edge: record gestures triggered from bottom edge of screen",
+    "bottomEdgePosition": "Bottom Edge",
+    "leftEdgePositionTip": "Left screen edge: record gestures triggered from left edge of screen",
+    "leftEdgePosition": "Left Edge",
+    "rightEdgePositionTip": "Right screen edge: record gestures triggered from right edge of screen",
+    "rightEdgePosition": "Right Edge",
     "modifiersLabel": "Modifiers:",
     "ctrlKeyTip": "Ctrl key (hold physical Ctrl on keyboard)",
     "shiftKeyTip": "Shift key (hold physical Shift on keyboard)",
@@ -2155,6 +2213,9 @@
     "resetFailed": "Failed to reset settings",
     "processExists": "Process already in target list",
     "resetDefaults": "Reset Defaults",
-    "autoSaved": "Auto saved"
+    "autoSaved": "Auto saved",
+    "classExists": "This window class is already in the list",
+    "targetClassesLabel": "Custom Remote Window Classes",
+    "addClassPlaceholder": "Enter Win32 window class name and press Enter..."
   }
 }

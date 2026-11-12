@@ -28,7 +28,8 @@
     "refresh": "刷新",
     "enable": "启用",
     "disable": "禁用",
-    "all": "全部"
+    "all": "全部",
+    "copy": "复制"
   },
   "nav": {
     "capture": "截图与录屏",
@@ -415,7 +416,9 @@
     "pinGroupResetOne": "恢复此组默认名称与颜色",
     "loadFailed": "无法加载截图设置",
     "saveFailed": "无法保存此设置",
-    "browseFailed": "无法打开文件夹选择器"
+    "browseFailed": "无法打开文件夹选择器",
+    "openFolder": "打开文件夹",
+    "openFolderFailed": "无法打开保存文件夹"
   },
   "history": {
     "title": "截图历史",
@@ -509,7 +512,15 @@
     "available": "已就绪",
     "unavailable": "需要安装语言包",
     "loadFailed": "无法加载 OCR 设置",
-    "saveFailed": "无法保存此 OCR 设置"
+    "saveFailed": "无法保存此 OCR 设置",
+    "language": "识别语种偏好",
+    "languageDesc": "选择离线 OCR 文字识别的目标语种或自动混合检测",
+    "langAuto": "自动检测（跟随系统与中英混排）",
+    "langZhHans": "简体中文 + 英文",
+    "langZhHant": "繁体中文 + 英文",
+    "langEnUs": "纯英文识别",
+    "langJaJp": "日语识别",
+    "langKoKr": "韩语识别"
   },
   "gesture": {
     "title": "鼠标手势设置",
@@ -674,8 +685,14 @@
     "prefixLeftButton": "[左键] ",
     "wheelUpArrow": "滚轮向上",
     "wheelDownArrow": "滚轮向下",
-    "canvasDrawTip": "直接在画板划动 · 按键、起笔位置与修饰键全自动识别",
-    "canvasEdgeTip": "顶部起笔=上边缘 · 底部起笔=底边缘 · 中间起笔=全局 · 按哪个按键自动识别哪个",
+    "edgePillTop": "顶边",
+    "edgePillBottom": "底边",
+    "edgePillLeft": "左边",
+    "edgePillRight": "右边",
+    "wheelUpBadge": "滚轮上",
+    "wheelDownBadge": "滚轮下",
+    "canvasDrawTip": "在画板任意位置滑动录制 · 顶部可切换全局或边缘触发区域",
+    "canvasEdgeTip": "默认全局模式在任意位置起笔均为全局手势 · 需录边缘手势请在顶部切换对应边缘",
     "conflictReplaceWithAction": "手势「{{arrows}}」当前已绑定到「{{action}}」，保存将自动替换原手势。",
     "conflictReplaceSimple": "手势「{{arrows}}」已存在，保存将自动替换原手势。",
     "actions": {
@@ -815,7 +832,23 @@
         "name": "下拉最小化",
         "desc": "上边缘中间下拉最小化窗口"
       }
-    }
+    },
+    "triggerEdgeLeftWheel": "屏幕左边缘 + 滚轮",
+    "triggerEdgeRightWheel": "屏幕右边缘 + 滚轮",
+    "webSearchEngine": "手势划词默认搜索引擎",
+    "webSearchEngineDesc": "执行“搜索选中文字”手势动作时默认跳转的搜索引擎",
+    "engineBaidu": "百度搜索",
+    "sideGestures": "侧键手势",
+    "edgeGestures": "边缘手势",
+    "wheelGestures": "滚轮手势",
+    "edgeShortTop": "顶边",
+    "edgeShortBottom": "底边",
+    "edgeShortLeft": "左边",
+    "edgeShortRight": "右边",
+    "wheelShort": "滚轮",
+    "side1Short": "侧键后退",
+    "side2Short": "侧键前进",
+    "leftClickShort": "左键辅助"
   },
   "hotcorner": {
     "title": "屏幕触发角",
@@ -848,7 +881,7 @@
     "triggerMiddleDesc": "按住滚轮滑动 · 切歌/多媒体专属",
     "guidePrompt": "使用一种合适的触发方式，在屏幕/画板上画出手势，对应的符号会显示在下方。",
     "guideNote1": "按下一个或多个键 \"修饰\" 绘制中的手势，会使之成为不同手势；键盘按键 (Ctrl / Alt / Shift) 也可以作为修饰键",
-    "guideNote2": "触发方式 ◐ (鼠标右键) 或 ◓ (鼠标中键/滚轮) 直接在画板上滑动即可实时录制",
+    "guideNote2": "按住鼠标右键或滚轮中键直接在画板上滑动即可实时录制",
     "replaceSimilarTracks": "替换所有相似手势轨迹",
     "replaceSimilarHint1": "将相似手势轨迹统一为相同值，有助于减少误操作并提升性能",
     "replaceSimilarHint2": "如果一个目标有多个相同手势，则只有最后一个有效",
@@ -1085,7 +1118,11 @@
     "kw_dialog_enhancer": "文件对话框 打开 保存 常用路径 文件夹跳转",
     "kw_remote_boost": "远程桌面 远程协助 粘滞 输入法 防卡键",
     "kw_stats": "按键统计 热力图 点击数 鼠标里程",
-    "kw_about": "关于 版本 检查更新 开源协议 诊断日志"
+    "kw_about": "关于 版本 检查更新 开源协议 诊断日志",
+    "deepSettingsGroup": "匹配的设置项",
+    "inactiveSectionTitle": "未启用的功能模块",
+    "inactiveBadge": "未启用",
+    "enableAndOpen": "一键启用并打开"
   },
   "onboarding": {
     "welcomeTitle": "欢迎使用 Tools3000",
@@ -1585,7 +1622,14 @@
     "opNotDesc": "逻辑 非 (NOT)，排除包含特定词的文件",
     "opPhraseDesc": "双引号短语，精确匹配包含空格的完整文本",
     "opWildcardMulti": "通配符，匹配 0 个或多个任意字符",
-    "opWildcardSingle": "通配符，匹配 1 个任意字符"
+    "opWildcardSingle": "通配符，匹配 1 个任意字符",
+    "defaultCategoryTitle": "默认初始筛选分类",
+    "defaultCategoryDesc": "打开空白搜索框时默认激活的顶部分类筛选标签",
+    "serviceStandby": "按需待机中（首次呼出搜索毫秒级唤醒）",
+    "serviceStandbyDesc": "遵循零开机负担按需启动策略，首次呼出搜索时自动拉起，也可点击右侧立即唤醒引擎",
+    "serviceStandbyToast": "索引引擎当前处于按需待机状态，点击“立即唤醒引擎”即可立即拉起",
+    "serviceWoken": "NTFS 索引引擎已成功唤醒并就绪",
+    "wakeNow": "立即唤醒引擎"
   },
   "tray": {
     "brandName": "Tools3000",
@@ -1647,7 +1691,9 @@
     "pinResetGroupMeta": "恢复默认组名与颜色",
     "pinGroupColorLabel": "分组颜色",
     "pinShowAll": "显示全部",
-    "pinCloseAll": "关闭全部"
+    "pinCloseAll": "关闭全部",
+    "confirmCloseGroup": "确定关闭该分组内的全部贴图？",
+    "confirmCloseAll": "确定关闭桌面上的全部贴图？"
   },
   "dialog": {
     "title": "文件对话框智能助手",
@@ -1684,7 +1730,8 @@
     "pinWorkspace": "固定为主工作区",
     "unpinWorkspace": "取消固定",
     "fixedBadge": "固定默认",
-    "browseFolder": "浏览选择"
+    "browseFolder": "浏览选择",
+    "confirmClearMemories": "确定要清空所有应用已记住的历史目录记录吗？"
   },
   "spotlight": {
     "title": "鼠标演示与特效",
@@ -1864,7 +1911,11 @@
     "animSlide": "阻尼推入",
     "animPop": "弹性冒出",
     "animFade": "渐现",
-    "animNone": "静态"
+    "animNone": "静态",
+    "autoContrastBadge": "智能高对比度",
+    "autoContrastLabel": "智能高对比自适应文字色",
+    "restoreAutoContrastDesc": "当前为自定义颜色，点击恢复智能高对比度自适应配字",
+    "restoreAutoContrast": "智能高对比"
   },
   "quicklook": {
     "emptyTitle": "在资源管理器中选中文件并按空格键",
@@ -1922,8 +1973,11 @@
     "reload": "重新加载"
   },
   "components": {
-    "topEdgeSensor": "◰ 顶部上边缘感应区",
-    "bottomEdgeSensor": "◲ 底部底边缘感应区",
+    "topEdgeSensor": "顶边边缘触发录制模式",
+    "bottomEdgeSensor": "底边边缘触发录制模式",
+    "leftEdgeSensor": "左边边缘触发录制模式",
+    "rightEdgeSensor": "右边边缘触发录制模式",
+    "canvasActiveEdgeHint": "当前处于「{{edge}}」录制模式 · 在画板划动或滚轮即生成该边缘手势",
     "quickPresets": "快捷预设:",
     "hotkeyActiveTip": "快捷键已成功注册并全局生效",
     "peakToday": "今日最高频",
@@ -1954,7 +2008,7 @@
     "customIndependentDesc": "覆盖或扩展全局手势",
     "disableGestureTitle": "禁用手势 (免打扰)",
     "disableGestureDesc": "在此应用中完全停用手势",
-    "cockpitBarTip": "自动识别监视区：根据你在画板上按下的鼠标按键、起笔位置与键盘修饰键全自动识别",
+    "cockpitBarTip": "手势控制舱：选择全局或屏幕边缘触发区域、鼠标触发按键及修饰键",
     "triggerKeyLabel": "触发键:",
     "rightButtonTip": "鼠标右键 (按住右键划动手势)",
     "rightButton": "右键",
@@ -1966,13 +2020,17 @@
     "x2Button": "侧键2",
     "leftButtonTip": "鼠标左键 (在边缘起笔或配合修饰键生效)",
     "leftButton": "左键",
-    "positionLabel": "位置:",
-    "globalPositionTip": "画板中央起笔自动识别为全局手势",
-    "globalPosition": "全局",
-    "topEdgePositionTip": "画板顶部起笔自动识别为屏幕上边缘手势",
-    "topEdgePosition": "◰ 上边缘",
-    "bottomEdgePositionTip": "画板底部起笔自动识别为屏幕底边缘手势",
-    "bottomEdgePosition": "◲ 底边缘",
+    "positionLabel": "触发区:",
+    "globalPositionTip": "全局任意位置（默认）：在画板任意位置起笔划动均录为纯正全局手势",
+    "globalPosition": "全局任意位置",
+    "topEdgePositionTip": "顶边模式：录制从屏幕顶部边缘触发的手势",
+    "topEdgePosition": "顶边",
+    "bottomEdgePositionTip": "底边模式：录制从屏幕底部边缘触发的手势",
+    "bottomEdgePosition": "底边",
+    "leftEdgePositionTip": "左边模式：录制从屏幕左侧边缘触发的手势",
+    "leftEdgePosition": "左边",
+    "rightEdgePositionTip": "右边模式：录制从屏幕右侧边缘触发的手势",
+    "rightEdgePosition": "右边",
     "modifiersLabel": "修饰键:",
     "ctrlKeyTip": "Ctrl 键 (按住键盘物理 Ctrl 自动捕获)",
     "shiftKeyTip": "Shift 键 (按住键盘物理 Shift 自动捕获)",
@@ -2155,6 +2213,9 @@
     "resetFailed": "重置默认配置失败",
     "processExists": "该进程已在目标列表中",
     "resetDefaults": "恢复默认配置",
-    "autoSaved": "已自动保存"
+    "autoSaved": "已自动保存",
+    "classExists": "该窗口类名已存在于列表中",
+    "targetClassesLabel": "受管远程控制窗口类名列表",
+    "addClassPlaceholder": "输入远程控制客户端窗口类名后按 Enter 添加..."
   }
 }

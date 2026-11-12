@@ -90,6 +90,14 @@ struct SearchClause {
     uint64_t dateMinFileTime = 0;
     uint64_t dateMaxFileTime = UINT64_MAX;
     bool parentDriveRootOnly = false;
+    bool hasSlashPreFilter = false;
+    bool slashAllowBranchA = false;
+    bool slashAllowBranchB = false;
+    bool slashLeafCaseSensitive = false;
+    uint64_t slashBranchADirMask = 0;
+    uint64_t slashBranchBDirMask = 0;
+    std::wstring slashLeafPrefix;
+    std::wstring slashLeafSuffix;
 };
 
 struct SearchParseOptions {
@@ -108,6 +116,12 @@ struct ContentSearchPlan;
 
 class SearchExpression {
 public:
+    enum class InMemoryMatchStatus : uint8_t {
+        Rejected = 0,
+        Matched = 1,
+        NeedsDiskStat = 2,
+    };
+
     using PathGetter = std::function<std::wstring()>;
     using StatHydrateCallback = std::function<void(
         uint64_t frn, uint64_t fileSize, uint64_t creationTime, uint64_t lastWriteTime)>;
@@ -144,11 +158,22 @@ public:
                             const PathGetter& getFullPath,
                             const StatHydrateCallback& onStatHydrated = {}) const;
 
+    // Lock-free three-state evaluation (`P-02`): evaluates all in-memory & path predicates
+    // without touching disk I/O (`GetFileAttributesExW`). Returns `NeedsDiskStat` only when
+    // `size:` / `dm:` clauses require unhydrated metadata so callers can stat outside locks.
+    InMemoryMatchStatus evaluateInMemoryWithDirMask(
+        const FileRecord& record,
+        wchar_t driveLetter,
+        uint64_t dirClauseMask,
+        bool isMetadataHydrated,
+        const PathGetter& getFullPath) const;
+
     bool matchesSeparable(const FileRecord& record, wchar_t driveLetter,
                           uint64_t dirClauseMask) const noexcept;
 
     bool hasSeparablePathGroups() const noexcept {
-        return (m_dirFileSatisfiedMask | m_dirFolderSatisfiedMask | m_negatedSeparableGroupMask) != 0;
+        return (m_dirFileSatisfiedMask | m_dirFolderSatisfiedMask |
+                m_negatedSeparableGroupMask | m_slashPredicateMask) != 0;
     }
     bool isFullySeparable() const noexcept { return m_fullySeparable; }
     uint64_t getNegatedSeparableGroupMask() const noexcept { return m_negatedSeparableGroupMask; }
@@ -162,6 +187,20 @@ public:
     static std::wstring normalize(std::wstring_view text);
 
 private:
+    enum class DirSegMatchOp : uint8_t {
+        Contains = 0,
+        Prefix = 1,
+        Suffix = 2,
+        Exact = 3,
+    };
+
+    struct DirSegmentPredicate {
+        DirSegMatchOp op = DirSegMatchOp::Contains;
+        bool caseSensitive = false;
+        uint8_t bitIndex = 0;
+        std::wstring needle;
+    };
+
     void recomputePathRequirement(const SearchParseOptions& options);
 
     std::wstring m_rawQuery;
@@ -170,10 +209,12 @@ private:
     std::vector<std::wstring> m_rankingTerms;
     std::wstring m_cleanAsciiQuery;
     std::vector<SearchOrGroup> m_orGroups;
+    std::vector<DirSegmentPredicate> m_slashDirPredicates;
     bool m_requiresFullPath = false;
     bool m_hasContentFilter = false;
     bool m_hasRegexClause = false;
     bool m_hasPureExtensionGroup = false;
+    bool m_hasFolderOnlyFilter = false;
     bool m_isAsciiQuery = false;
     bool m_pinyinEnabled = true;
     bool m_caseSensitive = false;
@@ -182,6 +223,7 @@ private:
     uint64_t m_negatedSeparableGroupMask = 0;
     uint64_t m_dirFileSatisfiedMask = 0;
     uint64_t m_dirFolderSatisfiedMask = 0;
+    uint64_t m_slashPredicateMask = 0;
     std::wstring m_contentQuery;
     std::vector<std::wstring> m_contentTerms;
 };

@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "gesture/GestureEngine.h"
+#include "gesture/BuiltinCommands.h"
 #include "gesture/GestureDispatchWorker.h"
 #include "gesture/GestureTrailOverlay.h"
 #include "gesture/GestureInputPolicy.h"
@@ -1505,21 +1506,26 @@ void GestureEngine::executeActionInternal(
                             (action.keyStroke.virtualKey >= VK_VOLUME_MUTE && action.keyStroke.virtualKey <= VK_MEDIA_PLAY_PAUSE)));
 
     if (isGlobal) {
-        GestureAction act = action;
-        const std::string traceId = m_gestureTraceId;
-        if (!tools3000::core::MainThreadDispatcher::instance().postDeferred([act, traceId]() {
-                tools3000::core::TraceId::setCurrent(traceId);
-                LOG_INFO("手势动作开始执行(输入线程): action={}, type={}, targetHwnd=0x{:X}",
-                         act.name, static_cast<int>(act.type), 0);
-                try {
-                    act.execute(nullptr);
-                    LOG_INFO("手势动作执行完毕: action={}", act.name);
-                } catch (const std::exception& e) {
-                    LOG_ERROR("手势动作执行异常: action={}, error={}", act.name, e.what());
-                } catch (...) {
-                    LOG_ERROR("手势动作执行未知异常: action={}", act.name);
-                }
-            })) {
+        if (action.type == ActionType::BuiltinCommand &&
+            BuiltinCommandDispatcher::instance().hasHandler(action.builtinCmd)) {
+            GestureAction act = action;
+            const std::string traceId = m_gestureTraceId;
+            if (!tools3000::core::MainThreadDispatcher::instance().postDeferred([act, traceId]() {
+                    tools3000::core::TraceId::setCurrent(traceId);
+                    LOG_INFO("手势动作开始执行(输入线程): action={}, type={}, targetHwnd=0x{:X}",
+                             act.name, static_cast<int>(act.type), 0);
+                    try {
+                        act.execute(nullptr);
+                        LOG_INFO("手势动作执行完毕: action={}", act.name);
+                    } catch (const std::exception& e) {
+                        LOG_ERROR("手势动作执行异常: action={}, error={}", act.name, e.what());
+                    } catch (...) {
+                        LOG_ERROR("手势动作执行未知异常: action={}", act.name);
+                    }
+                })) {
+                enqueueAction(action, m_gestureTraceId, nullptr);
+            }
+        } else {
             enqueueAction(action, m_gestureTraceId, nullptr);
         }
         return;
@@ -1528,47 +1534,72 @@ void GestureEngine::executeActionInternal(
     if (gestureActionNeedsInputThread(action.type)) {
         GestureAction act = action;
         const std::string traceId = m_gestureTraceId;
-        if (!tools3000::core::MainThreadDispatcher::instance().postDeferred(
-                [this, act, startPt, endPt, keyTarget, previousForeground, startWindow, targetMode, traceId]() {
-                tools3000::core::TraceId::setCurrent(traceId);
-                GestureTrailOverlay::instance().yieldZOrderForInput();
-                HWND underStart = static_cast<HWND>(
-                    windowFromPointSkippingGestureOverlay(startPt.x, startPt.y));
-                HWND underEnd = static_cast<HWND>(
-                    windowFromPointSkippingGestureOverlay(endPt.x, endPt.y));
-                const int slot = pickGestureTargetSlot(
-                    targetMode,
-                    underStart != nullptr,
-                    underEnd != nullptr,
-                    previousForeground != nullptr);
-                HWND hwnd = nullptr;
-                if (slot == 0) hwnd = underStart;
-                else if (slot == 1) hwnd = underEnd;
-                else if (slot == 2) hwnd = previousForeground;
-                if (!hwnd) hwnd = keyTarget;
-                if (hwnd) {
-                    std::lock_guard lock(m_mutex);
-                    m_lastExternalWindow = hwnd;
-                }
-                LOG_INFO("手势选窗: mode={} start=({},{}) end=({},{}) hwnd=0x{:X} class={} exe={}",
-                         gestureTargetModeKey(targetMode),
-                         startPt.x, startPt.y, endPt.x, endPt.y,
-                         reinterpret_cast<uintptr_t>(hwnd),
-                         hwnd ? tools3000::core::WinUtils::wstringToUtf8(
-                                    tools3000::core::WinUtils::getWindowClassName(hwnd)) : "",
-                         hwnd ? tools3000::core::WinUtils::getProcessNameFromWindow(hwnd) : "");
+        auto selectAndRun = [this, act, startPt, endPt, keyTarget, previousForeground, targetMode](bool onInputThread) {
+            GestureTrailOverlay::instance().yieldZOrderForInput();
+            HWND underStart = static_cast<HWND>(
+                windowFromPointSkippingGestureOverlay(startPt.x, startPt.y));
+            HWND underEnd = static_cast<HWND>(
+                windowFromPointSkippingGestureOverlay(endPt.x, endPt.y));
+            const int slot = pickGestureTargetSlot(
+                targetMode,
+                underStart != nullptr,
+                underEnd != nullptr,
+                previousForeground != nullptr);
+            HWND hwnd = nullptr;
+            if (slot == 0) hwnd = underStart;
+            else if (slot == 1) hwnd = underEnd;
+            else if (slot == 2) hwnd = previousForeground;
+            if (!hwnd) hwnd = keyTarget;
+            if (hwnd) {
+                std::lock_guard lock(m_mutex);
+                m_lastExternalWindow = hwnd;
+            }
+            LOG_INFO("手势选窗: mode={} start=({},{}) end=({},{}) hwnd=0x{:X} class={} exe={}",
+                     gestureTargetModeKey(targetMode),
+                     startPt.x, startPt.y, endPt.x, endPt.y,
+                     reinterpret_cast<uintptr_t>(hwnd),
+                     hwnd ? tools3000::core::WinUtils::wstringToUtf8(
+                                tools3000::core::WinUtils::getWindowClassName(hwnd)) : "",
+                     hwnd ? tools3000::core::WinUtils::getProcessNameFromWindow(hwnd) : "");
+            if (onInputThread) {
                 LOG_INFO("手势动作开始执行(输入线程): action={}, type={}, targetHwnd=0x{:X}",
                          act.name, static_cast<int>(act.type),
                          reinterpret_cast<uintptr_t>(hwnd));
-                try {
-                    act.execute(hwnd);
-                    LOG_INFO("手势动作执行完毕: action={}", act.name);
-                } catch (const std::exception& e) {
-                    LOG_ERROR("手势动作执行异常: action={}, error={}", act.name, e.what());
-                } catch (...) {
-                    LOG_ERROR("手势动作执行未知异常: action={}", act.name);
+            } else {
+                LOG_INFO("手势动作开始执行(后台队列): action={}, type={}, targetHwnd=0x{:X}",
+                         act.name, static_cast<int>(act.type),
+                         reinterpret_cast<uintptr_t>(hwnd));
+            }
+            try {
+                act.execute(hwnd);
+                LOG_INFO("手势动作执行完毕: action={}", act.name);
+            } catch (const std::exception& e) {
+                LOG_ERROR("手势动作执行异常: action={}, error={}", act.name, e.what());
+            } catch (...) {
+                LOG_ERROR("手势动作执行未知异常: action={}", act.name);
+            }
+        };
+
+        // 应用级已注册 Handler 的非阻塞内置命令 (如截图/呼出搜索/轮盘) 保持 UI 输入线程即刻响应；
+        // SendKeys 及含剪贴板/修饰键等待的键盘合成命令一律进入后台工作线程执行，绝不阻塞消息泵。
+        const bool isAppBuiltinWithHandler =
+            action.type == ActionType::BuiltinCommand &&
+            BuiltinCommandDispatcher::instance().hasHandler(action.builtinCmd);
+        if (isAppBuiltinWithHandler) {
+            if (!tools3000::core::MainThreadDispatcher::instance().postDeferred(
+                    [selectAndRun, traceId]() {
+                        tools3000::core::TraceId::setCurrent(traceId);
+                        selectAndRun(true);
+                    })) {
+                if (m_actionWorker.joinable()) {
+                    enqueueCustomAction(traceId, [selectAndRun]() { selectAndRun(false); });
+                } else {
+                    enqueueAction(action, m_gestureTraceId, keyTarget);
                 }
-            })) {
+            }
+        } else if (m_actionWorker.joinable()) {
+            enqueueCustomAction(traceId, [selectAndRun]() { selectAndRun(false); });
+        } else {
             enqueueAction(action, m_gestureTraceId, keyTarget);
         }
     } else {
@@ -1673,7 +1704,30 @@ void GestureEngine::enqueueAction(GestureAction action, std::string traceId, HWN
             LOG_WARN("手势动作队列已满，丢弃最旧动作");
             m_actionQueue.pop_front();
         }
-        m_actionQueue.push_back({std::move(action), std::move(traceId), targetWindow});
+        m_actionQueue.push_back({std::move(action), std::move(traceId), targetWindow, nullptr});
+    }
+    m_actionCv.notify_one();
+}
+
+void GestureEngine::enqueueCustomAction(std::string traceId, std::function<void()> task) {
+    if (!task) {
+        return;
+    }
+    if (!m_actionWorker.joinable()) {
+        tools3000::core::TraceId::setCurrent(traceId);
+        task();
+        return;
+    }
+    {
+        std::lock_guard lock(m_actionMutex);
+        if (m_actionQueue.size() >= 32) {
+            LOG_WARN("手势动作队列已满，丢弃最旧动作");
+            m_actionQueue.pop_front();
+        }
+        ActionJob job;
+        job.traceId = std::move(traceId);
+        job.customTask = std::move(task);
+        m_actionQueue.push_back(std::move(job));
     }
     m_actionCv.notify_one();
 }
@@ -1692,6 +1746,10 @@ void GestureEngine::actionWorkerLoop(std::stop_token stopToken) {
         }
 
         tools3000::core::TraceId::setCurrent(job.traceId);
+        if (job.customTask) {
+            job.customTask();
+            continue;
+        }
         LOG_INFO("手势动作开始执行(后台队列): action={}, type={}, targetHwnd=0x{:X}",
                  job.action.name, static_cast<int>(job.action.type),
                  reinterpret_cast<uintptr_t>(job.targetWindow));
@@ -2029,6 +2087,8 @@ uint32_t GestureEngine::computeTriggerMask() const {
 
     if (isTriggerEnabled("edge_top_wheel", false))      mask |= GestureTriggerMask::EdgeTopWheel;
     if (isTriggerEnabled("edge_bottom_wheel", false))   mask |= GestureTriggerMask::EdgeBottomWheel;
+    if (isTriggerEnabled("edge_left_wheel", false))     mask |= GestureTriggerMask::EdgeLeftWheel;
+    if (isTriggerEnabled("edge_right_wheel", false))    mask |= GestureTriggerMask::EdgeRightWheel;
 
     if (isTriggerEnabled("edge_top_right", false))      mask |= GestureTriggerMask::EdgeTopRight;
     if (isTriggerEnabled("edge_top_middle", false))     mask |= GestureTriggerMask::EdgeTopMiddle;

@@ -6,6 +6,24 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-12] 全仓 35 项主动深度优化（性能内存压榨、人类使用心流打磨、原生/Web 跨表面主题大一统与半成品收敛）
+- **背景与产品决策基线**：
+  - 通过多智能体集群（Swarm）对全仓 C++/Rust/TSX/CSS/Inno Setup 进行只读主动巡检与交叉实证，确立 4 大维度共 **35 项（P0 × 11、P1 × 20、P2 × 4）** 进阶清单并分三批次全量落地；
+  - 经项目负责人确认，针对历史未绑定半成品“径向轮盘菜单”采取 **路线 B（干净下线）**：移除 `src/gesture/RadialMenuOverlay.{h,cpp}`、`GesturePage.tsx` 轮盘配置块及 `settingsSearchIndex.ts` 残留检索项，保持与对外 README 能力边界 100% 严丝合缝。
+- **核心架构升级与控制点记录**：
+  1. **原生 Direct2D 浮层、Win32 右键菜单与 WebView2 跨表面主题/品牌色大一统 (`ThemeUtils.h`, `FloatingGlassBar`, `WinUtils::applyNativeMenuTheme`)**：
+     - 在 `src/core/utils/ThemeUtils.h` 建立单一事实源 `NativeThemePalette`（解析 `/general/theme`、`/general/accentColor`、`/general/language` 提供 `isEffectiveDarkMode()`、`getEffectiveAccentColorRGB()`、`isUiLanguageChinese()`），并通过 `uxtheme.dll` `#135 SetPreferredAppMode` / `#136 FlushMenuThemes` 驱动进程级原生菜单自适应暗色；
+     - 截图主副栏、贴图悬停栏/分组栏、长图控制台、录屏灵动岛、快捷键提示、离线 `OcrResultWindow`（补齐四层投影与 `WM_NCHITTEST` 八向缩放）、手势轨迹胶囊与对话框导览飘带全面联动明暗主题与自定义强调色（经离屏 D2D 光栅化 WCAG 对比度强断言守护）；WebView2 首帧同步挂载 `data-theme` 彻底消除亮色冷启动暗黑闪屏（FOUC）。
+  2. **百万级搜索引擎内存瘦身、无锁并发水合与办公深水区闭环 (`FileIndexStore`, `MftParser`, `ZipXmlExtractor`, `rust_content`)**：
+     - `FileIndexStore` 移除平行 `m_keys`（275 万文件立省 `~50.3 MB`），修复 `rehash()` 墓碑清理与重命名拼音槽复用；引入支持嵌套工作窃取的全局常驻 `QueryThreadPool`，消除持 `m_MapMutex` 读锁期间的同步磁盘 `GetFileAttributesExW` 阻塞，并在 `StoredFileRecord` 填充字节预计算 `pathTier`（桌面/开始菜单快捷方式提权至顶层 `kPathTierAppLauncher` 并补充枚举 `FOLDERID_AppsFolder` UWP 应用）；
+     - 斜杠路径片段（如 `service\main.cpp`）拆解为祖先目录位掩码 + 末段文件名双级 O(1) 预筛；`PlainTextExtractor` 映射视图内零拷贝 SIMD 预筛、`ZipXmlExtractor` 65KB EOCD 流式按需解压并支持 `.xlsx` `sharedStrings.xml` 按行精确还原；`rust_content` 补齐运行时 AVX2 动态派发与 ARM64 NEON；`SearchPlugin` 升级 4 槽位长连接命名管道池，前端 `SearchPage` 将 `DEMAND_START` 未唤醒态收敛为温和信息态待机卡片。
+  3. **截图/贴图/录屏/OCR 专业级手感与显存瘦身 (`CaptureRenderer`, `MarkupEngine`, `PinWindow`, `OcrEngine`, `ScreenRecorder`)**：
+     - `CaptureRenderer` 在 `<= safeMaxBmp` 时单纹理直传跳过冗余分块（双 4K 首帧立省 `66.3 MB` 显存）；`MarkupEngine` 引入局部 ROI 滤镜缓存、`m_underlayCache` 动静分层与 **50 步矢量快照全事务 Undo/Redo 栈**（改色/平移/`Delete`/`Clear` 100% 可逆），退出时 `resetSession()` 释放大底图；
+     - `PinWindow` 分离持有 1:1 原始无损底图 `m_cleanBaseImage` 与独立矢量列表，根治非 `1.0x` 缩放态二次标注尺寸平方暴涨或像素永久糊化，并在 `>= 300%` 放大时切换最近邻像素网格与瞬态百分比胶囊；`ScreenRecorder` 停止录屏异步收尾展示 `SAVING...` 防冻结；`OcrEngine` 引入递归垂直空白走廊投影分栏（XY-Cut）根治双栏文档/并排代码横向串行。
+  4. **输入管线收敛、跨端扩展键码契约与工程门禁加固 (`KeyboardHook`, `StatsManager`, `ConfigManager`, `QuickLookWindow`, `Sidebar`)**：
+     - Keycast 合并复用 `core::KeyboardHook` 单一底层钩子，`MouseStreamCore` 引用计数按需激活，`HotCornerEngine` 禁用态条件变量零唤醒休眠，`WideUniversalRotatingFileSink` 空闲零唤醒休眠；`ConfigManager` 升级 `shared_mutex` 并发读 + 200ms 脏合并异步刷盘；`QuickLookWindow` 全尺寸常规图片统一走虚拟主机流式加载；
+     - `KeyboardHook` 识别 `LLKHF_EXTENDED` 将小键盘回车独立编码为 `0x10D`，配合 `StatsManager` 扩容至 `512` 原子槽位与前端纯矢量 `KeyboardHeatmap` 实现双回车独立热力统计；`Sidebar` `Ctrl+K` 升级细粒度设置项级全文直达检索，`CapturePage` 默认空路径开放双目录一键打开并对接 `capture.openSaveDirectory`。
+
 ### [2026-11-11] Windows Defender 误报隔离 (`CreateProcess 失败；代码 225` / `Trojan:Win32/Bearfoos.A!ml`) 根因与三重根治防线
 - **故障现象与事件日志铁证**：
   - 运行 `Output\Tools3000-Setup.exe` 安装至最后拉起主程序时报错：`无法执行文件 C:\Program Files\Tools3000\Tools3000.exe — CreateProcess 失败；代码 225（文件包含病毒或潜在的垃圾软件）`。

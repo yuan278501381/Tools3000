@@ -4,14 +4,86 @@
 #include "core/events/MainThreadDispatcher.h"
 #include "core/ipc/FileInteractionHandlers.h"
 #include "core/ipc/MessageBridge.h"
+#include "core/utils/PathOperations.h"
+#include "core/utils/ShellContextMenuService.h"
+#include "core/utils/WinUtils.h"
 
 #include <windows.h>
+#include <shellapi.h>
 #include <algorithm>
+#include <cwctype>
+#include <filesystem>
+#include <string>
+#include <string_view>
 
 namespace tools3000::search {
 using tools3000::core::json;
 
 namespace {
+
+bool startsWithAsciiIgnoreCase(std::wstring_view text, std::wstring_view lowerPrefix) noexcept {
+    if (text.size() < lowerPrefix.size()) return false;
+    for (size_t i = 0; i < lowerPrefix.size(); ++i) {
+        const wchar_t ch = (text[i] == L'/')
+            ? L'\\'
+            : ((text[i] >= L'A' && text[i] <= L'Z') ? static_cast<wchar_t>(text[i] + 32) : text[i]);
+        if (ch != lowerPrefix[i]) return false;
+    }
+    return true;
+}
+
+bool isSafeAppsFolderUri(std::wstring_view wpath) noexcept {
+    if (!startsWithAsciiIgnoreCase(wpath, L"shell:appsfolder")) {
+        return false;
+    }
+    if (wpath.size() > 16 && wpath[16] != L'\\' && wpath[16] != L'/') {
+        return false;
+    }
+    for (wchar_t ch : wpath) {
+        if (ch < 0x20) return false;
+    }
+    return true;
+}
+
+bool isMissingLocalPathTarget(const std::wstring& wpath) noexcept {
+    if (wpath.empty() || startsWithAsciiIgnoreCase(wpath, L"shell:")) {
+        return false;
+    }
+    const DWORD attrs = GetFileAttributesW(wpath.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    const DWORD err = GetLastError();
+    return err == ERROR_FILE_NOT_FOUND ||
+           err == ERROR_PATH_NOT_FOUND ||
+           err == ERROR_INVALID_DRIVE ||
+           err == ERROR_NOT_READY ||
+           err == ERROR_BAD_NETPATH ||
+           err == ERROR_BAD_NET_NAME ||
+           err == ERROR_DEV_NOT_EXIST;
+}
+
+json makeFileNotFoundError() {
+    return {
+        {"success", false},
+        {"errorCode", "FILE_NOT_FOUND"},
+        {"error", "FILE_NOT_FOUND"}
+    };
+}
+
+bool executeShellAppsUri(const std::wstring& uri, const wchar_t* verb) noexcept {
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_FLAG_NO_UI;
+    sei.lpVerb = verb;
+    sei.lpFile = uri.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    return ShellExecuteExW(&sei) != FALSE;
+}
+
+std::string extractSearchRequestPath(const json& params) {
+    return params.value("filepath", params.value("path", ""));
+}
 
 HWND currentProcessSearchWindow() {
     const DWORD currentProcessId = GetCurrentProcessId();
@@ -29,6 +101,116 @@ HWND currentProcessSearchWindow() {
 
 void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
     tools3000::core::registerFileInteractionHandlers(bridge, "search", "path is empty", true);
+
+    bridge.registerHandler("search.openFile", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isSafeAppsFolderUri(wpath)) {
+            return {{"success", executeShellAppsUri(wpath, nullptr)}};
+        }
+        if (isMissingLocalPathTarget(wpath)) {
+            return makeFileNotFoundError();
+        }
+        return {{"success", tools3000::core::WinUtils::openFile(wpath)}};
+    });
+
+    bridge.registerHandler("search.openFileAsAdmin", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isSafeAppsFolderUri(wpath)) {
+            const bool ok = executeShellAppsUri(wpath, L"runas") || executeShellAppsUri(wpath, nullptr);
+            return {{"success", ok}};
+        }
+        if (isMissingLocalPathTarget(wpath)) {
+            return makeFileNotFoundError();
+        }
+        return {{"success", tools3000::core::WinUtils::openFileAsAdmin(wpath)}};
+    });
+
+    bridge.registerHandler("search.openFolder", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isSafeAppsFolderUri(wpath)) {
+            const std::wstring appsFolderRoot = L"shell:AppsFolder";
+            return {{"success", executeShellAppsUri(appsFolderRoot, L"open")}};
+        }
+        if (isMissingLocalPathTarget(wpath)) {
+            return makeFileNotFoundError();
+        }
+        return {{"success", tools3000::core::WinUtils::openFolderAndSelectItem(wpath)}};
+    });
+
+    bridge.registerHandler("search.showFileProperties", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isMissingLocalPathTarget(wpath)) {
+            return makeFileNotFoundError();
+        }
+        return {{"success", tools3000::core::WinUtils::showFileProperties(wpath)}};
+    });
+
+    bridge.registerHandler("search.openWithNotepad", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isMissingLocalPathTarget(wpath)) {
+            return makeFileNotFoundError();
+        }
+        return {{"success", tools3000::core::WinUtils::openWithNotepad(wpath)}};
+    });
+
+    bridge.registerHandler("search.copyFile", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isMissingLocalPathTarget(wpath)) {
+            return makeFileNotFoundError();
+        }
+        std::error_code ec;
+        const bool isGif = !std::filesystem::is_directory(wpath, ec) &&
+                           tools3000::core::WinUtils::toLower(std::filesystem::path(wpath).extension().wstring()) == L".gif";
+        const bool ok = isGif
+            ? (tools3000::core::WinUtils::copyGifToClipboard(wpath) || tools3000::core::WinUtils::copyFileToClipboard(wpath))
+            : tools3000::core::WinUtils::copyFileToClipboard(wpath);
+        return {{"success", ok}};
+    });
+
+    bridge.registerHandler("search.renamePath", [](const json& params) -> json {
+        const std::string oldPath = params.value("oldPath", params.value("path", ""));
+        const std::string newName = params.value("newName", params.value("name", ""));
+        if (oldPath.empty() || newName.empty()) {
+            return {{"success", false}, {"error", "invalid parameters"}};
+        }
+        const std::wstring wOldPath = tools3000::core::WinUtils::utf8ToWstring(oldPath);
+        if (isMissingLocalPathTarget(wOldPath)) {
+            return makeFileNotFoundError();
+        }
+        const auto result = tools3000::core::renamePathWithinParent(
+            wOldPath, tools3000::core::WinUtils::utf8ToWstring(newName));
+        if (!result.success) return {{"success", false}, {"error", result.error}};
+        return {
+            {"success", true},
+            {"newPath", tools3000::core::WinUtils::wstringToUtf8(result.newPath.wstring())},
+            {"newName", newName}
+        };
+    });
+
+    bridge.registerHandler("search.showShellContextMenu", [](const json& params) -> json {
+        const std::string path = extractSearchRequestPath(params);
+        if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
+        const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (isMissingLocalPathTarget(wpath)) {
+            return makeFileNotFoundError();
+        }
+        const bool started = tools3000::core::ShellContextMenuService::instance().showAsync(
+            wpath, params.value("x", -1), params.value("y", -1),
+            params.value("extended", false));
+        return {{"success", started}, {"busy", !started}};
+    });
 
     bridge.registerHandler("search.startDrag", [](const json&) -> json {
         const HWND hwnd = currentProcessSearchWindow();

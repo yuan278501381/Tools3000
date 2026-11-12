@@ -145,6 +145,7 @@ public:
     bool isAutoScrolling() const { return m_autoScrolling.load(std::memory_order_acquire); }
     ScrollRuntimeState runtimeState() const { return m_runtimeState.load(std::memory_order_acquire); }
     int currentFrameCount() const { return m_frameCount.load(std::memory_order_acquire); }
+    std::uint64_t lastScrollTooFastTickMs() const noexcept { return m_lastTooFastTickMs.load(std::memory_order_acquire); }
     SIZE stitchedDimensions() const;
 
 private:
@@ -205,6 +206,7 @@ private:
     cv::Mat m_lastFrame;
     std::unique_ptr<ICaptureBackend> m_captureBackend;
     std::atomic<int> m_frameCount{0};
+    std::atomic<std::uint64_t> m_lastTooFastTickMs{0};
     std::atomic<bool> m_completionDelivered{false};
     std::atomic<bool> m_suppressCompletion{false};
     ScrollProgressCallback m_progressCb;

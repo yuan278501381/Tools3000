@@ -97,13 +97,24 @@ bool PinWindow::waitForPendingOcrWorkers(uint32_t timeoutMs) noexcept {
 
 std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
                                              float cardCornerRadius,
-                                             std::wstring sourceText) {
+                                             std::wstring sourceText,
+                                             const cv::Mat& cleanBaseImage,
+                                             std::vector<MarkupElement> markupElements) {
     if (image.empty()) return nullptr;
 
     auto pin = std::shared_ptr<PinWindow>(new PinWindow());
     pin->m_origWidth = image.cols;
     pin->m_origHeight = image.rows;
     pin->m_sourceImage = image.clone();  // 保存原图，供右键"复制到剪贴板"
+    if (!cleanBaseImage.empty() &&
+        cleanBaseImage.cols == image.cols &&
+        cleanBaseImage.rows == image.rows) {
+        pin->m_cleanBaseImage = cleanBaseImage.clone();
+        pin->m_markupElements = std::move(markupElements);
+    } else {
+        pin->m_cleanBaseImage = image.clone();
+        pin->m_markupElements.clear();
+    }
     pin->m_cardCornerRadius = (std::max)(0.0f, cardCornerRadius);
     pin->m_pinnedSourceText = std::move(sourceText);
     if (s_activeGroupFilter >= PinGroupConstants::kMinGroupId &&
@@ -174,6 +185,8 @@ void PinWindow::close() {
     releaseGraphicsResources();
     HWND hwndToDestroy = std::exchange(m_hwnd, nullptr);
     m_sourceImage.release();
+    m_cleanBaseImage.release();
+    m_markupElements.clear();
     if (hwndToDestroy && IsWindow(hwndToDestroy)) {
         DestroyWindow(hwndToDestroy);
     }
@@ -205,6 +218,8 @@ void PinWindow::closeAll() {
     for (auto& pin : targets) {
         if (pin) {
             pin->m_sourceImage.release();
+            pin->m_cleanBaseImage.release();
+            pin->m_markupElements.clear();
             pin->releaseGraphicsResources();
             HWND hwndToDestroy = std::exchange(pin->m_hwnd, nullptr);
             if (hwndToDestroy && IsWindow(hwndToDestroy)) {
@@ -217,6 +232,10 @@ void PinWindow::closeAll() {
     s_activeGroupFilter = PinGroupConstants::kFilterAllGroups;
     s_createdGroups.fill(false);
     PinGroupBarOverlay::instance().shutdown();
+    if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
+        UnregisterClassW(PIN_CLASS, GetModuleHandleW(nullptr));
+        s_classRegistered = false;
+    }
     broadcastGroupStateChanged();
     tools3000::core::WinUtils::trimWorkingSet();
     LOG_INFO("所有贴图窗口已关闭并释放资源");
@@ -746,6 +765,8 @@ size_t PinWindow::closeGroup(int groupId) {
     for (auto& pin : targets) {
         if (!pin) continue;
         pin->m_sourceImage.release();
+        pin->m_cleanBaseImage.release();
+        pin->m_markupElements.clear();
         pin->releaseGraphicsResources();
         HWND hwndToDestroy = std::exchange(pin->m_hwnd, nullptr);
         if (hwndToDestroy && IsWindow(hwndToDestroy)) {
@@ -1016,6 +1037,10 @@ void PinWindow::applyLayeredOpacity() {
 void PinWindow::applySharpWindowCorners() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
     SetWindowRgn(m_hwnd, nullptr, TRUE);
+    // DWMWA_NCRENDERING_POLICY = 2, DWMNCRP_ENABLED = 2 (enables soft outer DWM drop shadow against same-color backgrounds)
+    constexpr DWORD kDwmNcRenderingPolicy = 2;
+    const DWORD ncrpEnabled = 2;
+    DwmSetWindowAttribute(m_hwnd, kDwmNcRenderingPolicy, &ncrpEnabled, sizeof(ncrpEnabled));
     // DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_DONOTROUND = 1
     constexpr DWORD kDwmWindowCornerPreference = 33;
     const DWORD pref = 1;
@@ -1196,20 +1221,24 @@ void PinWindow::drawHoverToolbar() {
     m_btnSaveRect   = layout.buttons[6];
     m_btnCloseRect  = layout.buttons[7];
     
-    // 绘制磨砂玻璃背景
-    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), m_toolbarRect, 6.0f * dpiScale, true);
-    
+    // 绘制磨砂玻璃背景（跟随动态明暗主题与自定义强调色）
+    const auto pal = FloatingGlassBar::resolveThemePalette();
+    m_lastToolbarIsDark = pal.isDark;
+    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), m_toolbarRect, 6.0f * dpiScale, pal.isDark);
+
     ComPtr<ID2D1SolidColorBrush> textBrush;
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.9f * m_hoverAlpha), textBrush.GetAddressOf());
+    D2D1_COLOR_F iconColor = pal.textPrimary;
+    iconColor.a *= m_hoverAlpha;
+    m_renderTarget->CreateSolidColorBrush(iconColor, textBrush.GetAddressOf());
     
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnFoldRect, 4.0f * dpiScale, m_hoverFold, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnRotateRect, 4.0f * dpiScale, m_hoverRotate, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnInvertRect, 4.0f * dpiScale, m_hoverInvert, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnEditRect, 4.0f * dpiScale, m_hoverEdit, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnTextRect, 4.0f * dpiScale, m_hoverText, m_textSelectionMode, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCopyRect, 4.0f * dpiScale, m_hoverCopy, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnSaveRect, 4.0f * dpiScale, m_hoverSave, false, false, false, m_hoverAlpha, true);
-    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCloseRect, 4.0f * dpiScale, m_hoverClose, false, true, false, m_hoverAlpha, true);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnFoldRect, 4.0f * dpiScale, m_hoverFold, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnRotateRect, 4.0f * dpiScale, m_hoverRotate, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnInvertRect, 4.0f * dpiScale, m_hoverInvert, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnEditRect, 4.0f * dpiScale, m_hoverEdit, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnTextRect, 4.0f * dpiScale, m_hoverText, m_textSelectionMode, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCopyRect, 4.0f * dpiScale, m_hoverCopy, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnSaveRect, 4.0f * dpiScale, m_hoverSave, false, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCloseRect, 4.0f * dpiScale, m_hoverClose, false, true, false, m_hoverAlpha, pal.isDark);
     
     // 1. Fold 图标 (Reicon: ActionFold)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
@@ -1295,7 +1324,7 @@ void PinWindow::drawHoverToolbar() {
                 : (baseTipRect.bottom - baseTipRect.top);
             const D2D1_RECT_F tipRect = D2D1::RectF(tipX, baseTipRect.top, tipX + tipW, baseTipRect.top + tipH);
 
-            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 4.0f * dpiScale, true);
+            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 4.0f * dpiScale, pal.isDark);
             const D2D1_RECT_F tipTextRect = D2D1::RectF(
                 tipRect.left + 6.0f * dpiScale,
                 tipRect.top,
@@ -1447,9 +1476,31 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
     }
 }
 
+void PinWindow::showTransientHudBadge(std::wstring text, uint32_t durationMs) {
+    m_hudBadgeText = std::move(text);
+    m_hudBadgeUntilTick = GetTickCount64() + static_cast<uint64_t>((std::max)(100u, durationMs));
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        SetTimer(m_hwnd, 2, (std::max)(100u, durationMs) + 25u, nullptr);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+std::wstring PinWindow::activeHudBadgeText() const {
+    if (m_hudBadgeText.empty() || GetTickCount64() >= m_hudBadgeUntilTick) {
+        return {};
+    }
+    return m_hudBadgeText;
+}
+
 void PinWindow::setOpacity(float opacity) {
-    m_opacity = std::clamp(opacity, 0.1f, 1.0f);
+    const float clamped = std::clamp(opacity, 0.1f, 1.0f);
+    const bool changed = std::abs(clamped - m_opacity) > 0.001f;
+    m_opacity = clamped;
     applyLayeredOpacity();
+    if (changed && m_hwnd && IsWindowVisible(m_hwnd) && !m_folded) {
+        showTransientHudBadge(std::format(L"{}%", static_cast<int>(std::lround(m_opacity * 100.0f))), 800);
+        render();
+    }
 }
 
 void PinWindow::setClickThrough(bool enable) {
@@ -1596,7 +1647,9 @@ static bool savePinnedImage(HWND owner, const cv::Mat& image) {
 }
 
 void PinWindow::setScale(float scale) {
-    m_scale = std::clamp(scale, 0.1f, 5.0f);
+    const float clamped = std::clamp(scale, 0.1f, 5.0f);
+    const bool changed = std::abs(clamped - m_scale) > 0.001f;
+    m_scale = clamped;
     if (m_hwnd) {
         if (m_folded) {
             return;
@@ -1608,6 +1661,9 @@ void PinWindow::setScale(float scale) {
 
         if (m_renderTarget) {
             m_renderTarget->Resize(D2D1::SizeU(w, h));
+        }
+        if (changed && IsWindowVisible(m_hwnd)) {
+            showTransientHudBadge(std::format(L"{}%", static_cast<int>(std::lround(m_scale * 100.0f))), 800);
         }
         render();
     }
@@ -1627,8 +1683,35 @@ void PinWindow::rotate(int angleDeg) {
         m_folded = false;
     }
 
+    const int prevOrigW = m_origWidth;
+    const int prevOrigH = m_origHeight;
     if (!PinInputController::applyRotation(m_sourceImage, m_colorBackup, m_origWidth, m_origHeight, angleDeg)) {
         return;
+    }
+    if (!m_cleanBaseImage.empty()) {
+        cv::Mat dummyBackup;
+        int cleanW = m_cleanBaseImage.cols;
+        int cleanH = m_cleanBaseImage.rows;
+        PinInputController::applyRotation(m_cleanBaseImage, dummyBackup, cleanW, cleanH, angleDeg);
+    }
+    if (!m_markupElements.empty() && prevOrigW > 0 && prevOrigH > 0) {
+        const int normDeg = PinInputController::normalizeRightAngleDegrees(angleDeg);
+        auto rotPt = [&](cv::Point& pt) {
+            const int px = pt.x;
+            const int py = pt.y;
+            if (normDeg == 90) {
+                pt = {prevOrigH - 1 - py, px};
+            } else if (normDeg == 180) {
+                pt = {prevOrigW - 1 - px, prevOrigH - 1 - py};
+            } else if (normDeg == 270) {
+                pt = {py, prevOrigW - 1 - px};
+            }
+        };
+        for (auto& el : m_markupElements) {
+            rotPt(el.startPt);
+            rotPt(el.endPt);
+            for (auto& p : el.penPoints) rotPt(p);
+        }
     }
 
     {
@@ -1660,6 +1743,21 @@ void PinWindow::flip(bool horizontal) {
     if (m_sourceImage.empty() || !m_hwnd) return;
     if (!PinInputController::applyFlip(m_sourceImage, m_colorBackup, horizontal)) {
         return;
+    }
+    if (!m_cleanBaseImage.empty()) {
+        cv::Mat dummyBackup;
+        PinInputController::applyFlip(m_cleanBaseImage, dummyBackup, horizontal);
+    }
+    if (!m_markupElements.empty() && m_origWidth > 0 && m_origHeight > 0) {
+        auto flipPt = [&](cv::Point& pt) {
+            if (horizontal) pt.x = m_origWidth - 1 - pt.x;
+            else pt.y = m_origHeight - 1 - pt.y;
+        };
+        for (auto& el : m_markupElements) {
+            flipPt(el.startPt);
+            flipPt(el.endPt);
+            for (auto& p : el.penPoints) flipPt(p);
+        }
     }
     if (m_folded) {
         m_folded = false;
@@ -1788,24 +1886,37 @@ void PinWindow::toggleFold() {
 
 void PinWindow::editMarkup() {
     if (!m_hwnd || m_sourceImage.empty()) return;
-    
+
     RECT rc{};
     GetWindowRect(m_hwnd, &rc);
-    CaptureRegion reg{ rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top };
+    CaptureRegion reg{rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top};
+
+    const cv::Mat baseForEdit = (!m_cleanBaseImage.empty() &&
+                                 m_cleanBaseImage.cols == m_origWidth &&
+                                 m_cleanBaseImage.rows == m_origHeight)
+        ? m_cleanBaseImage
+        : m_sourceImage;
 
     ShowWindow(m_hwnd, SW_HIDE);
     std::weak_ptr<PinWindow> weakSelf = shared_from_this();
-    CaptureOverlay::instance().startEditPinned(m_sourceImage, reg, [weakSelf](const cv::Mat& newImage) {
-        if (auto self = weakSelf.lock()) {
-            if (!newImage.empty()) {
-                self->updateImage(newImage, false);
+    CaptureOverlay::instance().startEditPinnedMarkup(
+        baseForEdit,
+        m_markupElements,
+        reg,
+        [weakSelf](bool accepted,
+                   const cv::Mat& newCleanBase,
+                   const cv::Mat& compositedImage,
+                   std::vector<MarkupElement> updatedElements) {
+            if (auto self = weakSelf.lock()) {
+                if (accepted && !newCleanBase.empty()) {
+                    self->applyEditedMarkup(newCleanBase, updatedElements, compositedImage);
+                }
+                if (self->m_hwnd && IsWindow(self->m_hwnd)) {
+                    ShowWindow(self->m_hwnd, SW_SHOW);
+                    self->focusWindow();
+                }
             }
-            if (self->m_hwnd && IsWindow(self->m_hwnd)) {
-                ShowWindow(self->m_hwnd, SW_SHOW);
-                self->focusWindow();
-            }
-        }
-    });
+        });
 }
 
 static void cleanupOcrWorkingSet() {
@@ -1895,6 +2006,10 @@ void PinWindow::ensureOcrExecutedAsync() {
             InvalidateRect(self->m_hwnd, nullptr, FALSE);
         }
     };
+
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
 
     try {
         std::thread([weakSelf, imgCopy, currentVer, activeWorkers, applyRecognizedBlocks]() {
@@ -2042,35 +2157,18 @@ void PinWindow::copySelectedText() {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         if (m_selectedBlockIndices.empty()) return;
 
-        std::vector<size_t> sorted = m_selectedBlockIndices;
-        std::sort(sorted.begin(), sorted.end(), [this](size_t a, size_t b) {
-            if (a >= m_ocrBlocks.size() || b >= m_ocrBlocks.size()) return a < b;
-            const auto& ba = m_ocrBlocks[a].origBox;
-            const auto& bb = m_ocrBlocks[b].origBox;
-            float avgH = (ba.height + bb.height) * 0.5f;
-            if (std::abs(ba.y - bb.y) > avgH * 0.45f) return ba.y < bb.y;
-            return ba.x < bb.x;
-        });
-
-        const PinOcrBlock* prevBlock = nullptr;
-        for (size_t idx : sorted) {
-            if (idx < m_ocrBlocks.size()) {
-                const auto& cur = m_ocrBlocks[idx];
-                if (prevBlock) {
-                    float avgH = (prevBlock->origBox.height + cur.origBox.height) * 0.5f;
-                    bool isSameLine = std::abs(prevBlock->origBox.y - cur.origBox.y) <= avgH * 0.45f;
-                    if (isSameLine) {
-                        if (!combined.empty() && combined.back() != ' ' && !cur.text.empty() && cur.text.front() != ' ') {
-                            combined += " ";
-                        }
-                    } else {
-                        combined += "\r\n";
-                    }
-                }
-                combined += cur.text;
-                prevBlock = &cur;
+        std::vector<tools3000::ocr::OcrResult> selectedBlocks;
+        selectedBlocks.reserve(m_selectedBlockIndices.size());
+        for (size_t idx : m_selectedBlockIndices) {
+            if (idx < m_ocrBlocks.size() && !m_ocrBlocks[idx].text.empty()) {
+                tools3000::ocr::OcrResult r;
+                r.text = m_ocrBlocks[idx].text;
+                r.confidence = 1.0f;
+                r.box = m_ocrBlocks[idx].origBox;
+                selectedBlocks.push_back(std::move(r));
             }
         }
+        combined = tools3000::ocr::OcrEngine::orderTextBlocksWithXYCut(selectedBlocks, "\r\n");
         m_selectedBlockIndices.clear();
     }
 
@@ -2100,35 +2198,18 @@ void PinWindow::copyAllText() {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         if (m_ocrReady && !m_ocrBlocks.empty()) {
             hasReadyBlocks = true;
-            std::vector<size_t> sorted(m_ocrBlocks.size());
-            for (size_t i = 0; i < m_ocrBlocks.size(); ++i) sorted[i] = i;
-            std::sort(sorted.begin(), sorted.end(), [this](size_t a, size_t b) {
-                const auto& ba = m_ocrBlocks[a].origBox;
-                const auto& bb = m_ocrBlocks[b].origBox;
-                float avgH = (ba.height + bb.height) * 0.5f;
-                if (std::abs(ba.y - bb.y) > avgH * 0.45f) return ba.y < bb.y;
-                return ba.x < bb.x;
-            });
-
-            const PinOcrBlock* prevBlock = nullptr;
-            for (size_t idx : sorted) {
-                if (idx < m_ocrBlocks.size()) {
-                    const auto& cur = m_ocrBlocks[idx];
-                    if (prevBlock) {
-                        float avgH = (prevBlock->origBox.height + cur.origBox.height) * 0.5f;
-                        bool isSameLine = std::abs(prevBlock->origBox.y - cur.origBox.y) <= avgH * 0.45f;
-                        if (isSameLine) {
-                            if (!combined.empty() && combined.back() != ' ' && !cur.text.empty() && cur.text.front() != ' ') {
-                                combined += " ";
-                            }
-                        } else {
-                            combined += "\r\n";
-                        }
-                    }
-                    combined += cur.text;
-                    prevBlock = &cur;
+            std::vector<tools3000::ocr::OcrResult> allBlocks;
+            allBlocks.reserve(m_ocrBlocks.size());
+            for (const auto& blk : m_ocrBlocks) {
+                if (!blk.text.empty()) {
+                    tools3000::ocr::OcrResult r;
+                    r.text = blk.text;
+                    r.confidence = 1.0f;
+                    r.box = blk.origBox;
+                    allBlocks.push_back(std::move(r));
                 }
             }
+            combined = tools3000::ocr::OcrEngine::orderTextBlocksWithXYCut(allBlocks, "\r\n");
         }
     }
 
@@ -2175,6 +2256,10 @@ void PinWindow::extractText() {
     }
     s_globalActiveOcrWorkers.fetch_add(1, std::memory_order_acq_rel);
 
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
     try {
         std::thread([imgCopy, activeWorkers, weakSelf, expectedVersion]() {
             struct ExtractWorkerGuard {
@@ -2183,6 +2268,9 @@ void PinWindow::extractText() {
                 ~ExtractWorkerGuard() {
                     if (auto pin = owner.lock()) {
                         pin->m_extractTextInFlight.store(false, std::memory_order_release);
+                        if (pin->m_hwnd && IsWindow(pin->m_hwnd)) {
+                            InvalidateRect(pin->m_hwnd, nullptr, FALSE);
+                        }
                     }
                     cleanupOcrWorkingSet();
                     if (workers) {
@@ -2242,6 +2330,8 @@ void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {
         m_pinnedSourceText.clear();
     }
     m_sourceImage = newImage.clone();
+    m_cleanBaseImage = newImage.clone();
+    m_markupElements.clear();
     m_origWidth = newImage.cols;
     m_origHeight = newImage.rows;
 
@@ -2260,6 +2350,68 @@ void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {
     const int newH = (std::max)(1, static_cast<int>(m_origHeight * m_scale));
     if (!m_folded) {
         SetWindowPos(m_hwnd, nullptr, 0, 0, newW, newH, SWP_NOMOVE | SWP_NOZORDER);
+        updateWindowCornerRegion();
+    }
+
+    createRenderResources(m_sourceImage);
+    render();
+}
+
+void PinWindow::applyEditedMarkup(
+    const cv::Mat& cleanBaseImage,
+    const std::vector<MarkupElement>& elements,
+    const cv::Mat& precomposited) {
+    if (cleanBaseImage.empty() || !m_hwnd) return;
+
+    m_colorBackup.release();
+    m_grayscale = false;
+    m_inverted = false;
+    m_cleanBaseImage = cleanBaseImage.clone();
+    m_markupElements = elements;
+
+    cv::Mat composited;
+    if (!precomposited.empty() &&
+        precomposited.cols == m_cleanBaseImage.cols &&
+        precomposited.rows == m_cleanBaseImage.rows) {
+        composited = precomposited.clone();
+    } else if (m_markupElements.empty()) {
+        composited = m_cleanBaseImage.clone();
+    } else {
+        MarkupEngine engine;
+        cv::Mat baseBgr = m_cleanBaseImage;
+        if (baseBgr.channels() == 4) {
+            cv::cvtColor(baseBgr, baseBgr, cv::COLOR_BGRA2BGR);
+        } else if (baseBgr.channels() == 1) {
+            cv::cvtColor(baseBgr, baseBgr, cv::COLOR_GRAY2BGR);
+        }
+        engine.setBaseImage(baseBgr);
+        engine.importElements(m_markupElements);
+        composited = engine.getCompositeImage();
+    }
+    if (composited.empty()) {
+        composited = m_cleanBaseImage.clone();
+    }
+
+    m_sourceImage = std::move(composited);
+    m_origWidth = m_sourceImage.cols;
+    m_origHeight = m_sourceImage.rows;
+
+    if (m_pinnedSourceText.empty()) {
+        {
+            std::lock_guard<std::mutex> lock(m_ocrMutex);
+            m_ocrBlocks.clear();
+            m_selectedBlockIndices.clear();
+            m_hoveredBlockIndex = -1;
+            m_ocrReady = false;
+        }
+        invalidateOcrStateAndRefreshIfSelecting();
+    }
+
+    // 保持原始 1:1 m_origWidth/Height 与用户当前 m_scale 倍率恒定不变，彻底根除缩放平方膨胀与长图糊化
+    const int keepW = (std::max)(1, static_cast<int>(m_origWidth * m_scale));
+    const int keepH = (std::max)(1, static_cast<int>(m_origHeight * m_scale));
+    if (!m_folded) {
+        SetWindowPos(m_hwnd, nullptr, 0, 0, keepW, keepH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         updateWindowCornerRegion();
     }
 
@@ -2572,7 +2724,10 @@ bool PinWindow::initWindow(HINSTANCE hInstance, int x, int y, int w, int h) {
         wc.hInstance = hInstance;
         wc.hCursor = LoadCursor(nullptr, IDC_SIZEALL);
         wc.lpszClassName = PIN_CLASS;
-        RegisterClassExW(&wc);
+        if (!RegisterClassExW(&wc) && GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+            UnregisterClassW(PIN_CLASS, hInstance);
+            RegisterClassExW(&wc);
+        }
         s_classRegistered = true;
     }
 
@@ -2611,7 +2766,8 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
     if (!m_renderTarget) {
         auto rtProps = D2D1::RenderTargetProperties(
             D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f, 96.0f
         );
         // DXGI 硬件交换链单边上限为 16384；若超长贴图窗口超过硬件交换链上限则钳制后备缓冲或回退软件渲染目标
         constexpr UINT kSafeInitMaxRtDim = 16384u;
@@ -2625,7 +2781,8 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
         if (FAILED(hr)) {
             auto swProps = D2D1::RenderTargetProperties(
                 D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+                96.0f, 96.0f
             );
             hr = m_d2dFactory->CreateHwndRenderTarget(swProps, hwndProps, m_renderTarget.GetAddressOf());
             if (FAILED(hr)) return false;
@@ -2634,6 +2791,7 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
         // 禁用 D2D 的自动 DPI 缩放
         m_renderTarget->SetDpi(96.0f, 96.0f);
     } else {
+        m_renderTarget->SetDpi(96.0f, 96.0f);
         const UINT32 maxRt = (std::max)(256u, m_renderTarget->GetMaximumBitmapSize());
         m_renderTarget->Resize(D2D1::SizeU((std::min)(targetW, maxRt), (std::min)(targetH, maxRt)));
     }
@@ -2732,17 +2890,17 @@ void PinWindow::render() {
     m_renderTarget->BeginDraw();
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
+    const auto pal = FloatingGlassBar::resolveThemePalette();
+    m_lastChromeIsDark = pal.isDark;
     auto size = m_renderTarget->GetSize();
     if (m_folded) {
         const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
         m_dpiScale = dpiScale;
-        auto& cfg = tools3000::core::ConfigManager::instance();
-        const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-        const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
+        const tools3000::core::AccentColorRGB themeRgb = FloatingGlassBar::effectiveAccentRGB();
 
         ComPtr<ID2D1SolidColorBrush> bgBrush, textBrush, accentBrush;
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.13f, 0.16f, 0.94f), bgBrush.GetAddressOf());
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.98f, 0.95f), textBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.panelBg, bgBrush.GetAddressOf());
+        m_renderTarget->CreateSolidColorBrush(pal.textPrimary, textBrush.GetAddressOf());
         const D2D1_COLOR_F foldAccent = (m_groupId >= PinGroupConstants::kMinGroupId)
             ? PinGroupPalette::accentColor(m_groupId, 0.96f)
             : D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.95f);
@@ -2787,11 +2945,34 @@ void PinWindow::render() {
 
         ComPtr<ID2D1DeviceContext> dc;
         m_renderTarget.As(&dc);
-        const bool highQualityZoom = (std::abs(sx - 1.0f) > 0.01f || std::abs(sy - 1.0f) > 0.01f);
-        const D2D1_INTERPOLATION_MODE dcInterp = highQualityZoom
-            ? D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC
-            : D2D1_INTERPOLATION_MODE_LINEAR;
-        const D2D1_BITMAP_INTERPOLATION_MODE rtInterp = D2D1_BITMAP_INTERPOLATION_MODE_LINEAR;
+        const bool pixelGridZoom = (m_scale >= 2.995f || (sx >= 2.995f && sy >= 2.995f));
+        const bool highQualityZoom = !pixelGridZoom && (std::abs(sx - 1.0f) > 0.01f || std::abs(sy - 1.0f) > 0.01f);
+        const D2D1_INTERPOLATION_MODE dcInterp = pixelGridZoom
+            ? D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+            : (highQualityZoom ? D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC : D2D1_INTERPOLATION_MODE_LINEAR);
+        const D2D1_BITMAP_INTERPOLATION_MODE rtInterp = pixelGridZoom
+            ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+            : D2D1_BITMAP_INTERPOLATION_MODE_LINEAR;
+
+        float visLeft = 0.0f;
+        float visTop = 0.0f;
+        float visRight = static_cast<float>((std::max)(1, m_origWidth));
+        float visBottom = static_cast<float>((std::max)(1, m_origHeight));
+        if (m_hwnd && sx > 0.0001f && sy > 0.0001f) {
+            RECT winRc{};
+            if (GetWindowRect(m_hwnd, &winRc)) {
+                const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+                if (vw > 0 && vh > 0) {
+                    visLeft = (std::max)(0.0f, static_cast<float>(vx - winRc.left) / sx - 64.0f);
+                    visTop = (std::max)(0.0f, static_cast<float>(vy - winRc.top) / sy - 64.0f);
+                    visRight = (std::min)(visRight, static_cast<float>(vx + vw - winRc.left) / sx + 64.0f);
+                    visBottom = (std::min)(visBottom, static_cast<float>(vy + vh - winRc.top) / sy + 64.0f);
+                }
+            }
+        }
 
         if (m_bitmap) {
             const D2D1_RECT_F srcSpaceRect = D2D1::RectF(
@@ -2804,27 +2985,6 @@ void PinWindow::render() {
                 m_renderTarget->DrawBitmap(m_bitmap.Get(), srcSpaceRect, 1.0f, rtInterp);
             }
         } else {
-            // 计算当前显示器屏幕可见区域映射回源图像空间的裁剪边界，仅提交可见瓦片
-            float visLeft = 0.0f;
-            float visTop = 0.0f;
-            float visRight = static_cast<float>((std::max)(1, m_origWidth));
-            float visBottom = static_cast<float>((std::max)(1, m_origHeight));
-            if (m_hwnd && sx > 0.0001f && sy > 0.0001f) {
-                RECT winRc{};
-                if (GetWindowRect(m_hwnd, &winRc)) {
-                    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-                    const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-                    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-                    const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-                    if (vw > 0 && vh > 0) {
-                        visLeft = (std::max)(0.0f, static_cast<float>(vx - winRc.left) / sx - 64.0f);
-                        visTop = (std::max)(0.0f, static_cast<float>(vy - winRc.top) / sy - 64.0f);
-                        visRight = (std::min)(visRight, static_cast<float>(vx + vw - winRc.left) / sx + 64.0f);
-                        visBottom = (std::min)(visBottom, static_cast<float>(vy + vh - winRc.top) / sy + 64.0f);
-                    }
-                }
-            }
-
             for (const auto& tile : m_bitmapTiles) {
                 if (!tile.bitmap || tile.width <= 0 || tile.height <= 0) continue;
                 const float tx0 = static_cast<float>(tile.x);
@@ -2844,14 +3004,38 @@ void PinWindow::render() {
         }
         m_renderTarget->SetTransform(prevTransform);
 
+        m_lastRenderedPixelGrid = false;
+        if (pixelGridZoom && sx >= 2.995f && sy >= 2.995f) {
+            ComPtr<ID2D1SolidColorBrush> gridBrush;
+            const float gridAlpha = std::clamp(0.14f + (sx - 3.0f) * 0.06f, 0.14f, 0.26f);
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.50f, 0.54f, 0.60f, gridAlpha), gridBrush.GetAddressOf());
+            if (gridBrush) {
+                const int startCol = (std::max)(1, static_cast<int>(std::floor(visLeft)));
+                const int endCol = (std::min)(m_origWidth - 1, static_cast<int>(std::ceil(visRight)));
+                const int startRow = (std::max)(1, static_cast<int>(std::floor(visTop)));
+                const int endRow = (std::min)(m_origHeight - 1, static_cast<int>(std::ceil(visBottom)));
+                const float clipTop = (std::max)(0.0f, visTop * sy);
+                const float clipBottom = (std::min)(size.height, visBottom * sy);
+                const float clipLeft = (std::max)(0.0f, visLeft * sx);
+                const float clipRight = (std::min)(size.width, visRight * sx);
+                for (int col = startCol; col <= endCol; ++col) {
+                    const float xPx = std::floor(static_cast<float>(col) * sx) + 0.5f;
+                    m_renderTarget->DrawLine(D2D1::Point2F(xPx, clipTop), D2D1::Point2F(xPx, clipBottom), gridBrush.Get(), 1.0f);
+                }
+                for (int row = startRow; row <= endRow; ++row) {
+                    const float yPx = std::floor(static_cast<float>(row) * sy) + 0.5f;
+                    m_renderTarget->DrawLine(D2D1::Point2F(clipLeft, yPx), D2D1::Point2F(clipRight, yPx), gridBrush.Get(), 1.0f);
+                }
+                m_lastRenderedPixelGrid = true;
+            }
+        }
+
         // 渲染划选与悬停的文字高亮块 (Live Text Selection Overlay)
         if (m_ocrReady) {
             std::lock_guard<std::mutex> lock(m_ocrMutex);
             const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
             m_dpiScale = dpiScale;
-            auto& cfg = tools3000::core::ConfigManager::instance();
-            const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-            const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
+            const tools3000::core::AccentColorRGB themeRgb = FloatingGlassBar::effectiveAccentRGB();
 
             ComPtr<ID2D1SolidColorBrush> hoverFillBrush, hoverStrokeBrush;
             ComPtr<ID2D1SolidColorBrush> selFillBrush, selStrokeBrush;
@@ -2955,11 +3139,12 @@ void PinWindow::render() {
                 pillY = std::clamp(pillY, 6.0f * dpiScale, maxPillY);
                 m_btnCopyFloatingRect = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
 
+                FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), m_btnCopyFloatingRect, 5.0f * dpiScale, pal.isDark);
                 FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCopyFloatingRect, 4.0f * dpiScale,
-                                                m_hoverCopyFloating, false, false, false, 0.95f, true);
+                                                m_hoverCopyFloating, false, false, false, 0.95f, pal.isDark);
 
                 ComPtr<ID2D1SolidColorBrush> pillTextBrush;
-                m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f), pillTextBrush.GetAddressOf());
+                m_renderTarget->CreateSolidColorBrush(pal.textPrimary, pillTextBrush.GetAddressOf());
 
                 // 复制图标居左
                 auto iconRect = D2D1::RectF(pillX + 4.0f * dpiScale, pillY + 3.0f * dpiScale,
@@ -3031,17 +3216,18 @@ void PinWindow::render() {
                 if (!overlapsToolbar) {
                     m_btnGroupBadgeRect = candidate;
                     const float badgeAlpha = hasGroup ? 0.96f : (0.92f * m_hoverAlpha);
-                    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), candidate, 6.0f * dpiScale, true);
+                    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), candidate, 6.0f * dpiScale, pal.isDark);
                     if (m_hoverGroupBadge) {
                         FloatingGlassBar::drawButtonPill(
-                            m_renderTarget.Get(), candidate, 5.0f * dpiScale, true, false, false, false, badgeAlpha, true);
+                            m_renderTarget.Get(), candidate, 5.0f * dpiScale, true, false, false, false, badgeAlpha, pal.isDark);
                     }
                     if (hasGroup) {
                         ComPtr<ID2D1SolidColorBrush> dotBr, txtBr;
                         m_renderTarget->CreateSolidColorBrush(
                             PinGroupPalette::accentColor(m_groupId, badgeAlpha), dotBr.GetAddressOf());
-                        m_renderTarget->CreateSolidColorBrush(
-                            D2D1::ColorF(1.0f, 1.0f, 1.0f, badgeAlpha), txtBr.GetAddressOf());
+                        D2D1_COLOR_F badgeTxt = pal.textPrimary;
+                        badgeTxt.a *= badgeAlpha;
+                        m_renderTarget->CreateSolidColorBrush(badgeTxt, txtBr.GetAddressOf());
                         const float dotR = 3.8f * dpiScale;
                         const float dotCx = candidate.left + 8.0f * dpiScale + dotR;
                         const float dotCy = (candidate.top + candidate.bottom) * 0.5f;
@@ -3058,8 +3244,9 @@ void PinWindow::render() {
                         }
                     } else {
                         ComPtr<ID2D1SolidColorBrush> iconBr;
-                        m_renderTarget->CreateSolidColorBrush(
-                            D2D1::ColorF(1.0f, 1.0f, 1.0f, badgeAlpha), iconBr.GetAddressOf());
+                        D2D1_COLOR_F badgeIcon = pal.textPrimary;
+                        badgeIcon.a *= badgeAlpha;
+                        m_renderTarget->CreateSolidColorBrush(badgeIcon, iconBr.GetAddressOf());
                         if (iconBr) {
                             CaptureVectorIcons::renderIcon(
                                 m_renderTarget.Get(), m_d2dFactory.Get(),
@@ -3076,9 +3263,7 @@ void PinWindow::render() {
             : 0.0f;
         ComPtr<ID2D1SolidColorBrush> borderBrush;
         if (m_focused) {
-            auto& cfg = tools3000::core::ConfigManager::instance();
-            const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-            const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
+            const tools3000::core::AccentColorRGB themeRgb = FloatingGlassBar::effectiveAccentRGB();
             const D2D1_COLOR_F focusCol = (m_groupId >= PinGroupConstants::kMinGroupId)
                 ? PinGroupPalette::accentColor(m_groupId, 0.96f)
                 : D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.95f);
@@ -3106,11 +3291,62 @@ void PinWindow::render() {
             const float r = (std::max)(2.0f, scaledCardR - 0.5f);
             m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(rc, r, r), borderBrush.Get(), 1.0f);
         } else {
-            // 普通直角截图绘制 1px 中性外框
-            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.5f, 0.5f, 0.5f, 0.5f), borderBrush.GetAddressOf());
+            // 双层抗融边高反差微晶轮廓：外环深影防纯白网页融边，内环微高光防纯黑终端/IDE 融边
+            ComPtr<ID2D1SolidColorBrush> innerRimBrush;
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.36f), innerRimBrush.GetAddressOf());
+            if (innerRimBrush && size.width > 3.0f && size.height > 3.0f) {
+                m_renderTarget->DrawRectangle(
+                    D2D1::RectF(1.5f, 1.5f, size.width - 1.5f, size.height - 1.5f),
+                    innerRimBrush.Get(), 1.0f);
+            }
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.45f), borderBrush.GetAddressOf());
             m_renderTarget->DrawRectangle(
                 D2D1::RectF(0.5f, 0.5f, (std::max)(0.5f, size.width - 0.5f), (std::max)(0.5f, size.height - 0.5f)),
                 borderBrush.Get(), 1.0f);
+        }
+
+        // 后台首次异步 OCR 等待期“正在识别... / Recognizing...”微胶囊 & 滚轮缩放/调透明度 800ms 百分比微晶胶囊
+        m_lastRenderedOcrBadge = false;
+        const bool ocrWaiting = ((m_ocrInFlightVersion.load(std::memory_order_acquire) != 0 && !m_ocrReady.load(std::memory_order_acquire)) ||
+                                 m_extractTextInFlight.load(std::memory_order_acquire));
+        const uint64_t nowHudTick = GetTickCount64();
+        const bool showPctBadge = (!m_hudBadgeText.empty() && nowHudTick < m_hudBadgeUntilTick);
+        if ((ocrWaiting || showPctBadge) && size.width >= 44.0f && size.height >= 24.0f) {
+            const float hudScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : (m_dpiScale > 0.0f ? m_dpiScale : 1.0f);
+            if (ensureTextResources(hudScale) && m_uiCenterTextFormat) {
+                const auto hudPal = FloatingGlassBar::resolveThemePalette();
+                ComPtr<ID2D1SolidColorBrush> hudTxtBr;
+                m_renderTarget->CreateSolidColorBrush(hudPal.textPrimary, hudTxtBr.GetAddressOf());
+
+                auto drawCapsulePill = [&](const std::wstring& pillText, float preferCenterY) {
+                    const float textW = measureUiTextWidth(pillText, hudScale);
+                    const float pillH = (std::min)(size.height - 4.0f, 24.0f * hudScale);
+                    const float pillW = std::clamp(textW + 20.0f * hudScale, 42.0f * hudScale, (std::max)(42.0f * hudScale, size.width - 8.0f));
+                    const float left = (size.width - pillW) * 0.5f;
+                    const float top = std::clamp(preferCenterY - pillH * 0.5f, 4.0f, (std::max)(4.0f, size.height - pillH - 4.0f));
+                    const D2D1_RECT_F pillRect = D2D1::RectF(left, top, left + pillW, top + pillH);
+                    FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), pillRect, pillH * 0.5f, hudPal.isDark);
+                    if (hudTxtBr) {
+                        m_renderTarget->DrawTextW(
+                            pillText.c_str(), static_cast<UINT32>(pillText.size()),
+                            m_uiCenterTextFormat.Get(), pillRect, hudTxtBr.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    }
+                };
+
+                if (ocrWaiting) {
+                    const bool isZh = tools3000::core::isUiLanguageChinese();
+                    const std::wstring waitText = isZh ? L"正在识别..." : L"Recognizing...";
+                    const float topAnchor = (m_hoverAlpha > 0.05f && m_toolbarRect.bottom > m_toolbarRect.top)
+                        ? (m_toolbarRect.bottom + 16.0f * hudScale)
+                        : (size.height * 0.5f);
+                    drawCapsulePill(waitText, topAnchor);
+                    m_lastRenderedOcrBadge = true;
+                }
+                if (showPctBadge) {
+                    const float bottomAnchor = size.height - 20.0f * hudScale;
+                    drawCapsulePill(m_hudBadgeText, bottomAnchor);
+                }
+            }
         }
     }
 
@@ -3636,6 +3872,12 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         case WM_TIMER: {
             if (self && wParam == 1) {
                 self->updateHoverAnimation();
+            } else if (self && wParam == 2) {
+                if (GetTickCount64() >= self->m_hudBadgeUntilTick) {
+                    KillTimer(hwnd, 2);
+                    self->m_hudBadgeText.clear();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
             }
             return 0;
         }
@@ -3724,10 +3966,8 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 float newOpacity = self->m_opacity + (delta > 0 ? 0.05f : -0.05f);
                 self->setOpacity(newOpacity);
             } else {
-                // 滚轮：以当前鼠标光标为锚点平滑缩放 (0.1x ~ 5.0x)
-                POINT cursor;
-                GetCursorPos(&cursor);
-                RECT rc;
+                // 滚轮：光标在贴图内时以光标为锚点缩放，光标在窗外或无坐标消息时以贴图中心原地缩放 (0.1x ~ 5.0x)
+                RECT rc{};
                 GetWindowRect(hwnd, &rc);
 
                 float oldScale = self->m_scale;
@@ -3738,8 +3978,28 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     if (self->m_folded) {
                         return 0;
                     }
-                    float relX = (cursor.x - rc.left) / static_cast<float>((std::max)(1L, rc.right - rc.left));
-                    float relY = (cursor.y - rc.top) / static_cast<float>((std::max)(1L, rc.bottom - rc.top));
+                    POINT anchor{
+                        (rc.left + rc.right) / 2,
+                        (rc.top + rc.bottom) / 2
+                    };
+                    float relX = 0.5f;
+                    float relY = 0.5f;
+                    POINT candidatePt{};
+                    bool hasCandidate = false;
+                    if (lParam != 0) {
+                        candidatePt.x = static_cast<int>(static_cast<short>(LOWORD(lParam)));
+                        candidatePt.y = static_cast<int>(static_cast<short>(HIWORD(lParam)));
+                        hasCandidate = true;
+                    } else if (GetCursorPos(&candidatePt)) {
+                        hasCandidate = true;
+                    }
+                    if (hasCandidate &&
+                        candidatePt.x >= rc.left && candidatePt.x <= rc.right &&
+                        candidatePt.y >= rc.top && candidatePt.y <= rc.bottom) {
+                        anchor = candidatePt;
+                        relX = (anchor.x - rc.left) / static_cast<float>((std::max)(1L, rc.right - rc.left));
+                        relY = (anchor.y - rc.top) / static_cast<float>((std::max)(1L, rc.bottom - rc.top));
+                    }
 
                     constexpr int64_t kMaxSafeWindowDim = 32000;
                     const int64_t scaledW64 = std::clamp(
@@ -3751,13 +4011,14 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     int newW = static_cast<int>(scaledW64);
                     int newH = static_cast<int>(scaledH64);
 
-                    int newLeft = cursor.x - static_cast<int>(std::llround(static_cast<double>(newW) * relX));
-                    int newTop = cursor.y - static_cast<int>(std::llround(static_cast<double>(newH) * relY));
+                    int newLeft = anchor.x - static_cast<int>(std::llround(static_cast<double>(newW) * relX));
+                    int newTop = anchor.y - static_cast<int>(std::llround(static_cast<double>(newH) * relY));
 
                     self->m_scale = newScale;
                     SetWindowPos(hwnd, nullptr, newLeft, newTop, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
                     self->updateWindowCornerRegion();
                     if (self->m_renderTarget) {
+                        self->m_renderTarget->SetDpi(96.0f, 96.0f);
                         RECT clientRc{};
                         GetClientRect(hwnd, &clientRc);
                         const UINT32 maxRt = (std::max)(256u, self->m_renderTarget->GetMaximumBitmapSize());
@@ -3767,6 +4028,8 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                             static_cast<UINT32>((std::max)(1L, clientRc.bottom - clientRc.top)), maxRt);
                         self->m_renderTarget->Resize(D2D1::SizeU(rtW, rtH));
                     }
+                    self->showTransientHudBadge(
+                        std::format(L"{}%", static_cast<int>(std::lround(newScale * 100.0f))), 800);
                     self->render();
                 }
             }

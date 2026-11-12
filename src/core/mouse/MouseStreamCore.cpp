@@ -55,12 +55,41 @@ MouseStreamCore& MouseStreamCore::instance() {
     return inst;
 }
 
+void MouseStreamCore::refreshActiveState() noexcept {
+    const bool shouldBeActive =
+        m_explicitActive.load(std::memory_order_acquire) ||
+        (m_subscriberCount.load(std::memory_order_acquire) > 0);
+    const bool prev = m_active.exchange(shouldBeActive, std::memory_order_acq_rel);
+    if (prev && !shouldBeActive) {
+        m_queue.clear();
+        m_throttle.reset();
+    }
+}
+
 void MouseStreamCore::setActive(bool active) noexcept {
-    m_active.store(active, std::memory_order_release);
+    m_explicitActive.store(active, std::memory_order_release);
+    refreshActiveState();
 }
 
 bool MouseStreamCore::isActive() const noexcept {
     return m_active.load(std::memory_order_relaxed);
+}
+
+void MouseStreamCore::acquireSubscriber() noexcept {
+    m_subscriberCount.fetch_add(1, std::memory_order_acq_rel);
+    refreshActiveState();
+}
+
+void MouseStreamCore::releaseSubscriber() noexcept {
+    uint32_t cur = m_subscriberCount.load(std::memory_order_relaxed);
+    while (cur > 0 && !m_subscriberCount.compare_exchange_weak(
+                          cur, cur - 1, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+    }
+    refreshActiveState();
+}
+
+uint32_t MouseStreamCore::subscriberCount() const noexcept {
+    return m_subscriberCount.load(std::memory_order_acquire);
 }
 
 void MouseStreamCore::setWakeEvent(HANDLE hEvent) noexcept {

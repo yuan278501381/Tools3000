@@ -27,6 +27,8 @@ export const TRIGGER_ITEM_DEFINITIONS: TriggerItemDef[] = [
   { key: 'edge_right_slide', name: 'Right Screen Edge + Mouse Slide', nameKey: 'gesture.triggerEdgeRightSlide', category: 'edge', iconType: 'edge_slide' },
   { key: 'edge_top_wheel', name: 'Top Screen Edge + Wheel', nameKey: 'gesture.triggerEdgeTopWheel', category: 'edge', iconType: 'edge_wheel' },
   { key: 'edge_bottom_wheel', name: 'Bottom Screen Edge + Wheel', nameKey: 'gesture.triggerEdgeBottomWheel', category: 'edge', iconType: 'edge_wheel' },
+  { key: 'edge_left_wheel', name: 'Left Screen Edge + Wheel', nameKey: 'gesture.triggerEdgeLeftWheel', category: 'edge', iconType: 'edge_wheel' },
+  { key: 'edge_right_wheel', name: 'Right Screen Edge + Wheel', nameKey: 'gesture.triggerEdgeRightWheel', category: 'edge', iconType: 'edge_wheel' },
 ];
 
 export interface GestureMapping {
@@ -92,6 +94,7 @@ export type ScreenEdge = 'none' | 'top' | 'bottom' | 'left' | 'right';
 export interface ParsedGestureCode {
   edge: ScreenEdge;
   triggerButton: TriggerButton;
+  hasExplicitTrigger?: boolean;
   isMiddle: boolean;
   isX1: boolean;
   isX2: boolean;
@@ -100,6 +103,7 @@ export interface ParsedGestureCode {
   hasCtrl: boolean;
   hasAlt: boolean;
   hasShift: boolean;
+  wheelDirection?: 'up' | 'down' | null;
   bareCode: string;
 }
 
@@ -107,6 +111,7 @@ export function parseGestureCode(code: string): ParsedGestureCode {
   let upper = (code || '').trim().toUpperCase();
   let edge: ScreenEdge = 'none';
   let triggerButton: TriggerButton = 'right';
+  let hasExplicitTrigger = false;
   let hasCtrl = false;
   let hasAlt = false;
   let hasShift = false;
@@ -142,28 +147,41 @@ export function parseGestureCode(code: string): ParsedGestureCode {
       hasShift = true;
       upper = upper.slice(6);
       matched = true;
+    } else if (upper.startsWith('RIGHT+') || upper.startsWith('RBUTTON+')) {
+      triggerButton = 'right';
+      hasExplicitTrigger = true;
+      upper = upper.replace(/^(RIGHT|RBUTTON)\+/, '');
+      matched = true;
     } else if (upper.startsWith('MIDDLE+')) {
       triggerButton = 'middle';
+      hasExplicitTrigger = true;
       upper = upper.slice(7);
       matched = true;
     } else if (upper.startsWith('X1+') || upper.startsWith('SIDE1+') || upper.startsWith('XBUTTON1+')) {
       triggerButton = 'x1';
+      hasExplicitTrigger = true;
       upper = upper.replace(/^(X1|SIDE1|XBUTTON1)\+/, '');
       matched = true;
     } else if (upper.startsWith('X2+') || upper.startsWith('SIDE2+') || upper.startsWith('XBUTTON2+')) {
       triggerButton = 'x2';
+      hasExplicitTrigger = true;
       upper = upper.replace(/^(X2|SIDE2|XBUTTON2)\+/, '');
       matched = true;
     } else if (upper.startsWith('LEFT+')) {
       triggerButton = 'left';
+      hasExplicitTrigger = true;
       upper = upper.slice(5);
       matched = true;
     }
   }
 
+  const wheelDirection: 'up' | 'down' | null =
+    upper === 'WHEELUP' ? 'up' : upper === 'WHEELDOWN' ? 'down' : null;
+
   return {
     edge,
     triggerButton,
+    hasExplicitTrigger,
     isMiddle: triggerButton === 'middle',
     isX1: triggerButton === 'x1',
     isX2: triggerButton === 'x2',
@@ -172,6 +190,7 @@ export function parseGestureCode(code: string): ParsedGestureCode {
     hasCtrl,
     hasAlt,
     hasShift,
+    wheelDirection,
     bareCode: upper,
   };
 }
@@ -209,6 +228,7 @@ export function assembleGestureCode(params: {
   else if (params.triggerButton === 'left' || params.isLeft) prefix += 'Left+';
 
   const bare = (params.bareCode || '').trim();
+  if (!bare) return '';
   if (bare.toUpperCase() === 'WHEELUP') return prefix + 'WheelUp';
   if (bare.toUpperCase() === 'WHEELDOWN') return prefix + 'WheelDown';
   return prefix + bare.toUpperCase();
@@ -266,7 +286,110 @@ export function codeToArrows(code: string, customTranslator?: (key: string) => s
   return prefix + bareCode;
 }
 
-export const GESTURE_CODE_PATTERN = /^((TopEdge|BottomEdge|LeftEdge|RightEdge|Middle|X1|X2|Left|Ctrl|Alt|Shift)\+)*([UDLR]{1,3}(-[UDLR]{1,3})*|WheelUp|WheelDown)$/i;
+export type ValidStrokeToken = 'U' | 'D' | 'L' | 'R' | 'UL' | 'UR' | 'DL' | 'DR' | 'LU' | 'RU' | 'LD' | 'RD';
+
+export const VALID_STROKE_TOKENS = new Set<string>([
+  'U', 'D', 'L', 'R',
+  'UL', 'UR', 'DL', 'DR',
+  'LU', 'RU', 'LD', 'RD',
+]);
+
+export interface ParsedGesturePreview {
+  edge: ScreenEdge;
+  triggerButton: TriggerButton;
+  hasCtrl: boolean;
+  hasAlt: boolean;
+  hasShift: boolean;
+  wheelDirection: 'up' | 'down' | null;
+  segments: ValidStrokeToken[];
+}
+
+/**
+ * 严格从裸编码中提取合法方向笔画序列。
+ * 滚轮或任何未知 token 绝不拆字母，更绝不 fallback 为向右折线。
+ */
+export function parseDirectionSegments(bareCode: string): ValidStrokeToken[] {
+  const clean = (bareCode || '').trim().toUpperCase();
+  if (!clean || clean === 'WHEELUP' || clean === 'WHEELDOWN') {
+    return [];
+  }
+
+  if (clean.includes('-')) {
+    const result: ValidStrokeToken[] = [];
+    for (const part of clean.split('-').filter(Boolean)) {
+      if (VALID_STROKE_TOKENS.has(part)) {
+        result.push(part as ValidStrokeToken);
+      } else if (part.length > 1 && /^[UDLR]+$/.test(part)) {
+        for (const ch of part) {
+          result.push(ch as ValidStrokeToken);
+        }
+      }
+      // 未知 token 直接忽略，严禁映射为右移
+    }
+    return result;
+  }
+
+  if (VALID_STROKE_TOKENS.has(clean)) {
+    return [clean as ValidStrokeToken];
+  }
+
+  if (/^[UDLR]+$/.test(clean)) {
+    return clean.split('') as ValidStrokeToken[];
+  }
+
+  return [];
+}
+
+/**
+ * 供 GestureStrokePreview 等组件复用的规范化手势预览解析单一事实源。
+ */
+export function parseGesturePreview(
+  code: string,
+  fallbackTrigger: TriggerButton = 'right',
+): ParsedGesturePreview {
+  const parsed = parseGestureCode(code);
+  return {
+    edge: parsed.edge,
+    triggerButton: parsed.hasExplicitTrigger ? parsed.triggerButton : fallbackTrigger,
+    hasCtrl: parsed.hasCtrl,
+    hasAlt: parsed.hasAlt,
+    hasShift: parsed.hasShift,
+    wheelDirection: parsed.wheelDirection ?? null,
+    segments: parseDirectionSegments(parsed.bareCode),
+  };
+}
+
+export type GestureFilterCategory = 'all' | 'right' | 'middle' | 'side' | 'edge' | 'wheel';
+
+/**
+ * 精准匹配手势编码所属的五分类筛选标签 (U-11):
+ * - right: 纯全局右键 (无边缘前缀、非滚轮、触发键为 right)
+ * - middle: 中键轨迹手势 (非滚轮、触发键为 middle)
+ * - side: 侧键 1/2 手势 (非滚轮、触发键为 x1 或 x2)
+ * - edge: 任意屏幕四边手势 (含边缘滑动与边缘滚轮)
+ * - wheel: 任意滚轮手势 (含按键+滚轮与边缘+滚轮)
+ */
+export function matchesGestureCategory(code: string, category: GestureFilterCategory): boolean {
+  if (category === 'all') return true;
+  const parsed = parseGestureCode(code);
+  const isWheel = parsed.wheelDirection !== null;
+  switch (category) {
+    case 'right':
+      return parsed.edge === 'none' && !isWheel && parsed.triggerButton === 'right';
+    case 'middle':
+      return !isWheel && parsed.triggerButton === 'middle';
+    case 'side':
+      return !isWheel && (parsed.triggerButton === 'x1' || parsed.triggerButton === 'x2');
+    case 'edge':
+      return parsed.edge !== 'none';
+    case 'wheel':
+      return isWheel;
+    default:
+      return true;
+  }
+}
+
+export const GESTURE_CODE_PATTERN = /^((TopEdge|BottomEdge|LeftEdge|RightEdge|Right|RButton|Middle|X1|X2|Side1|Side2|XButton1|XButton2|Left|Ctrl|Alt|Shift)\+)*([UDLR]{1,3}(-[UDLR]{1,3})*|WheelUp|WheelDown)$/i;
 
 export function normalizeGestureCode(code: string): string {
   return code.trim().toUpperCase();

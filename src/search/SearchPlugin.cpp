@@ -599,17 +599,129 @@ static bool ensureSearchServiceRunning() {
     return false;
 }
 
-// autoStart 为 false 时，服务没在跑就直接放弃本次调用。历史记录、数据库统计这类
-// 辅助数据会在搜索窗 WebView 预热完成的瞬间被前端拉一遍，若允许它们拉起服务，
-// 用户从没按过搜索热键也会在开机时凭空多出几百 MB 的索引进程。
-std::optional<std::string> querySearchService(const std::string& query, DWORD& error,
-                                              bool autoStart = true, DWORD timeoutMs = 120000) {
-    error = ERROR_SUCCESS;
-    if (g_searchPipe.empty()) {
-        error = ERROR_ACCESS_DENIED;
-        return std::nullopt;
+struct PooledPipeConnection {
+    std::string endpoint;
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    std::unique_ptr<PipeTransfer> transfer;
+    ULONGLONG lastUsedTick = 0;
+
+    PooledPipeConnection() = default;
+    PooledPipeConnection(const PooledPipeConnection&) = delete;
+    PooledPipeConnection& operator=(const PooledPipeConnection&) = delete;
+
+    PooledPipeConnection(PooledPipeConnection&& other) noexcept
+        : endpoint(std::move(other.endpoint)),
+          pipe(other.pipe),
+          transfer(std::move(other.transfer)),
+          lastUsedTick(other.lastUsedTick) {
+        other.pipe = INVALID_HANDLE_VALUE;
     }
-    const bool mayStart = autoStart && g_searchWindowExplicitlyShown.load();
+
+    PooledPipeConnection& operator=(PooledPipeConnection&& other) noexcept {
+        if (this != &other) {
+            close();
+            endpoint = std::move(other.endpoint);
+            pipe = other.pipe;
+            transfer = std::move(other.transfer);
+            lastUsedTick = other.lastUsedTick;
+            other.pipe = INVALID_HANDLE_VALUE;
+        }
+        return *this;
+    }
+
+    ~PooledPipeConnection() { close(); }
+
+    bool isOpen() const noexcept {
+        return pipe != INVALID_HANDLE_VALUE && transfer && transfer->valid();
+    }
+
+    void close() noexcept {
+        if (pipe != INVALID_HANDLE_VALUE) {
+            CancelIo(pipe);
+            CloseHandle(pipe);
+            pipe = INVALID_HANDLE_VALUE;
+        }
+        transfer.reset();
+        endpoint.clear();
+        lastUsedTick = 0;
+    }
+};
+
+constexpr std::size_t kMaxPooledPipes = 4;
+constexpr ULONGLONG kMaxPooledPipeIdleMs = 45'000ull;
+
+std::mutex g_pipePoolMutex;
+std::vector<PooledPipeConnection> g_pipePool;
+
+void closeAllPooledPipes() noexcept {
+    std::vector<PooledPipeConnection> drained;
+    {
+        std::lock_guard<std::mutex> lock(g_pipePoolMutex);
+        drained = std::move(g_pipePool);
+        g_pipePool.clear();
+    }
+    for (auto& conn : drained) {
+        conn.close();
+    }
+}
+
+std::optional<PooledPipeConnection> checkoutAnyPooledPipe() {
+    const ULONGLONG now = GetTickCount64();
+    std::vector<PooledPipeConnection> expired;
+    std::optional<PooledPipeConnection> chosen;
+    {
+        std::lock_guard<std::mutex> lock(g_pipePoolMutex);
+        auto it = g_pipePool.begin();
+        while (it != g_pipePool.end()) {
+            if (!it->isOpen() || (now > it->lastUsedTick && (now - it->lastUsedTick) >= kMaxPooledPipeIdleMs)) {
+                expired.push_back(std::move(*it));
+                it = g_pipePool.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (!g_pipePool.empty()) {
+            chosen = std::move(g_pipePool.back());
+            g_pipePool.pop_back();
+        }
+    }
+    return chosen;
+}
+
+void checkinPooledPipe(PooledPipeConnection&& conn) {
+    if (g_searchPluginShuttingDown.load(std::memory_order_relaxed) || !conn.isOpen()) {
+        conn.close();
+        return;
+    }
+    conn.lastUsedTick = GetTickCount64();
+    std::optional<PooledPipeConnection> evicted;
+    {
+        std::lock_guard<std::mutex> lock(g_pipePoolMutex);
+        if (g_searchPluginShuttingDown.load(std::memory_order_relaxed)) {
+            evicted = std::move(conn);
+        } else {
+            if (g_pipePool.size() >= kMaxPooledPipes) {
+                evicted = std::move(g_pipePool.front());
+                g_pipePool.erase(g_pipePool.begin());
+            }
+            g_pipePool.push_back(std::move(conn));
+        }
+    }
+}
+
+bool isBrokenPipeReconnectableError(DWORD err) noexcept {
+    return err == ERROR_BROKEN_PIPE ||
+           err == ERROR_PIPE_NOT_CONNECTED ||
+           err == ERROR_NO_DATA ||
+           err == ERROR_BAD_PIPE ||
+           err == ERROR_INVALID_HANDLE;
+}
+
+std::optional<PooledPipeConnection> openFreshPipeConnection(
+    bool autoStart,
+    bool mayStart,
+    DWORD& error
+) {
     std::string activePipe = resolveActiveSearchPipe(mayStart ? 200 : 1);
     if (activePipe.empty()) {
         if (!mayStart) {
@@ -667,47 +779,93 @@ std::optional<std::string> querySearchService(const std::string& query, DWORD& e
         error = connectError != ERROR_SUCCESS ? connectError : GetLastError();
         return std::nullopt;
     }
-    struct PipeGuard {
-        HANDLE value;
-        ~PipeGuard() { if (value != INVALID_HANDLE_VALUE) CloseHandle(value); }
-    } pipeGuard{pipe};
+
+    PooledPipeConnection conn;
+    conn.endpoint = std::move(activePipe);
+    conn.pipe = pipe;
+    conn.transfer = std::make_unique<PipeTransfer>();
+    if (!conn.transfer->valid()) {
+        error = GetLastError();
+        conn.close();
+        return std::nullopt;
+    }
+    conn.lastUsedTick = GetTickCount64();
+    return conn;
+}
+
+// autoStart 为 false 时，服务没在跑就直接放弃本次调用。历史记录、数据库统计这类
+// 辅助数据会在搜索窗 WebView 预热完成的瞬间被前端拉一遍，若允许它们拉起服务，
+// 用户从没按过搜索热键也会在开机时凭空多出几百 MB 的索引进程。
+std::optional<std::string> querySearchService(const std::string& query, DWORD& error,
+                                              bool autoStart = true, DWORD timeoutMs = 120000) {
+    error = ERROR_SUCCESS;
+    if (g_searchPipe.empty()) {
+        error = ERROR_ACCESS_DENIED;
+        return std::nullopt;
+    }
 
     namespace frame = tools3000::service::pipe;
-
     if (!frame::fitsInFrame(query.size(), frame::MaxRequestBytes)) {
         error = ERROR_INVALID_PARAMETER;
         return std::nullopt;
     }
 
-    PipeTransfer transfer;
-    if (!transfer.valid()) {
-        error = GetLastError();
-        return std::nullopt;
-    }
-
+    const bool mayStart = autoStart && g_searchWindowExplicitlyShown.load();
     const auto requestHeader = frame::encodeFrameHeader(static_cast<uint32_t>(query.size()));
-    if (!transfer.writeExact(pipe, requestHeader.data(), requestHeader.size(), 3000, error) ||
-        !transfer.writeExact(pipe, query.data(), query.size(), 3000, error)) {
-        return std::nullopt;
-    }
 
-    // 帧头到达即表示服务端已完成计算，因此这一步承担查询本身的等待时间 (内容搜索支持最高 30 分钟)。
-    char responseHeader[frame::HeaderSize] = {};
-    if (!transfer.readExact(pipe, responseHeader, sizeof(responseHeader), timeoutMs, error)) {
-        return std::nullopt;
-    }
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        bool fromPool = false;
+        std::optional<PooledPipeConnection> connOpt;
+        if (attempt == 0) {
+            connOpt = checkoutAnyPooledPipe();
+            fromPool = connOpt.has_value();
+        }
+        if (!connOpt) {
+            connOpt = openFreshPipeConnection(autoStart, mayStart, error);
+            if (!connOpt) {
+                return std::nullopt;
+            }
+        }
 
-    uint32_t responseBytes = 0;
-    if (!frame::decodeFrameHeader(responseHeader, responseBytes)) {
-        error = ERROR_INVALID_DATA;
-        return std::nullopt;
-    }
+        auto& conn = *connOpt;
+        if (!conn.transfer->writeExact(conn.pipe, requestHeader.data(), requestHeader.size(), 3000, error) ||
+            !conn.transfer->writeExact(conn.pipe, query.data(), query.size(), 3000, error)) {
+            conn.close();
+            if (fromPool && isBrokenPipeReconnectableError(error)) {
+                error = ERROR_SUCCESS;
+                continue;
+            }
+            return std::nullopt;
+        }
 
-    std::string response(responseBytes, '\0');
-    if (!transfer.readExact(pipe, response.data(), responseBytes, timeoutMs, error)) {
-        return std::nullopt;
+        // 帧头到达即表示服务端已完成计算，因此这一步承担查询本身的等待时间 (内容搜索支持最高 30 分钟)。
+        char responseHeader[frame::HeaderSize] = {};
+        if (!conn.transfer->readExact(conn.pipe, responseHeader, sizeof(responseHeader), timeoutMs, error)) {
+            conn.close();
+            if (fromPool && isBrokenPipeReconnectableError(error)) {
+                error = ERROR_SUCCESS;
+                continue;
+            }
+            return std::nullopt;
+        }
+
+        uint32_t responseBytes = 0;
+        if (!frame::decodeFrameHeader(responseHeader, responseBytes)) {
+            conn.close();
+            error = ERROR_INVALID_DATA;
+            return std::nullopt;
+        }
+
+        std::string response(responseBytes, '\0');
+        if (!conn.transfer->readExact(conn.pipe, response.data(), responseBytes, timeoutMs, error)) {
+            conn.close();
+            return std::nullopt;
+        }
+
+        checkinPooledPipe(std::move(conn));
+        return response;
     }
-    return response;
+    return std::nullopt;
 }
 
 static const std::unordered_map<std::string, std::vector<std::string>> CONTENT_CATEGORY_EXTS = {
@@ -717,6 +875,64 @@ static const std::unordered_map<std::string, std::vector<std::string>> CONTENT_C
     {"archive", {"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso"}}
 };
 
+static std::vector<std::string> normalizeFormatListJson(const nlohmann::json& raw) {
+    std::vector<std::string> out;
+    const auto pushClean = [&](std::string_view token) {
+        while (!token.empty() && (token.front() == ' ' || token.front() == '\t' || token.front() == '.')) {
+            token.remove_prefix(1);
+        }
+        while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) {
+            token.remove_suffix(1);
+        }
+        if (token.empty() || token.size() > tools3000::service::search_limits::MaxFormatUtf8Bytes) {
+            return;
+        }
+        std::string lower(token);
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (std::find(out.begin(), out.end(), lower) == out.end() &&
+            out.size() < tools3000::service::search_limits::MaxFormatItems) {
+            out.push_back(std::move(lower));
+        }
+    };
+
+    if (raw.is_array()) {
+        for (const auto& item : raw) {
+            if (item.is_string()) {
+                pushClean(item.get_ref<const std::string&>());
+            }
+        }
+    } else if (raw.is_string()) {
+        const auto& text = raw.get_ref<const std::string&>();
+        std::size_t start = 0;
+        while (start <= text.size()) {
+            std::size_t comma = text.find_first_of(",;", start);
+            if (comma == std::string::npos) {
+                pushClean(std::string_view(text).substr(start));
+                break;
+            }
+            pushClean(std::string_view(text).substr(start, comma - start));
+            start = comma + 1;
+        }
+    }
+    return out;
+}
+
+static std::vector<std::string> getCustomContentExtsFromConfig() {
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    auto custom = normalizeFormatListJson(cfg.get<nlohmann::json>("/search/customContentFormats", nlohmann::json::array()));
+    if (custom.empty()) {
+        custom = normalizeFormatListJson(cfg.get<nlohmann::json>("/search/contentExtensions", nlohmann::json::array()));
+    }
+    if (custom.empty()) {
+        const auto uiPrefs = cfg.get<nlohmann::json>("/search/uiPreferences", nlohmann::json::object());
+        if (uiPrefs.is_object() && uiPrefs.contains("customContentFormats")) {
+            custom = normalizeFormatListJson(uiPrefs["customContentFormats"]);
+        }
+    }
+    return custom;
+}
+
 static std::vector<std::string> getDisabledContentExtsFromConfig() {
     auto& cfg = tools3000::core::ConfigManager::instance();
     std::vector<std::string> disabled;
@@ -725,6 +941,19 @@ static std::vector<std::string> getDisabledContentExtsFromConfig() {
         const bool enabled = cfg.get<bool>(key, true);
         if (!enabled) {
             disabled.insert(disabled.end(), exts.begin(), exts.end());
+        }
+    }
+    auto explicitDisabled = normalizeFormatListJson(
+        cfg.get<nlohmann::json>("/search/disabledContentFormats", nlohmann::json::array()));
+    if (explicitDisabled.empty()) {
+        const auto uiPrefs = cfg.get<nlohmann::json>("/search/uiPreferences", nlohmann::json::object());
+        if (uiPrefs.is_object() && uiPrefs.contains("disabledContentFormats")) {
+            explicitDisabled = normalizeFormatListJson(uiPrefs["disabledContentFormats"]);
+        }
+    }
+    for (auto& ext : explicitDisabled) {
+        if (std::find(disabled.begin(), disabled.end(), ext) == disabled.end()) {
+            disabled.push_back(std::move(ext));
         }
     }
     return disabled;
@@ -827,8 +1056,14 @@ public:
                 }
             }
 
-            // 合并前端局部禁用后缀与 ConfigManager 中 /search/contentCategory_* 的禁用类别后缀
+            // 合并前端局部自定义/禁用后缀与 ConfigManager 中的内容格式偏好
             {
+                if (!normalized.contains("contentCustomExts")) {
+                    const auto cfgCustomExts = getCustomContentExtsFromConfig();
+                    if (!cfgCustomExts.empty()) {
+                        normalized["contentCustomExts"] = cfgCustomExts;
+                    }
+                }
                 const auto mergedDisabledExts = mergeDisabledContentExtensions(
                     normalized,
                     getDisabledContentExtsFromConfig(),
@@ -1033,6 +1268,40 @@ public:
             bool catArchive = cfg.get<bool>("/search/contentCategory_archive", true);
             std::string iconStyle = cfg.get<std::string>("/search/iconStyle", "native");
 
+            nlohmann::json uiPreferences = cfg.get<nlohmann::json>("/search/uiPreferences", nlohmann::json::object());
+            if (!uiPreferences.is_object()) {
+                uiPreferences = nlohmann::json::object();
+            }
+
+            std::string defaultSearchMode = cfg.get<std::string>("/search/defaultSearchMode", "");
+            if (defaultSearchMode != "name" && defaultSearchMode != "both" && defaultSearchMode != "content") {
+                const std::string uiMode = uiPreferences.value("searchMode", "name");
+                defaultSearchMode = (uiMode == "name" || uiMode == "both" || uiMode == "content") ? uiMode : "name";
+            }
+
+            const auto customFormats = getCustomContentExtsFromConfig();
+            std::vector<std::string> disabledFormats = normalizeFormatListJson(
+                cfg.get<nlohmann::json>("/search/disabledContentFormats", nlohmann::json::array()));
+            if (disabledFormats.empty() && uiPreferences.contains("disabledContentFormats")) {
+                disabledFormats = normalizeFormatListJson(uiPreferences["disabledContentFormats"]);
+            }
+
+            if (!uiPreferences.contains("searchMode")) {
+                uiPreferences["searchMode"] = defaultSearchMode;
+            }
+            if (!uiPreferences.contains("defaultCategory")) {
+                uiPreferences["defaultCategory"] = defaultCategory;
+            }
+            if (!uiPreferences.contains("excludeHidden")) {
+                uiPreferences["excludeHidden"] = excludeHidden;
+            }
+            if (!uiPreferences.contains("customContentFormats")) {
+                uiPreferences["customContentFormats"] = customFormats;
+            }
+            if (!uiPreferences.contains("disabledContentFormats")) {
+                uiPreferences["disabledContentFormats"] = disabledFormats;
+            }
+
             return {
                 // 保留字段以兼容旧 UI/API，但服务生命周期现已固定为：
                 // 首次显式唤起时按需启动，随后在本次 Windows 会话中常驻。
@@ -1041,6 +1310,7 @@ public:
                 {"hotkey", hotkey},
                 {"maxResults", maxResults},
                 {"defaultCategory", defaultCategory},
+                {"defaultSearchMode", defaultSearchMode},
                 {"caseSensitive", caseSensitive},
                 {"matchPath", matchPath},
                 {"pinyinEnabled", pinyinEnabled},
@@ -1053,7 +1323,11 @@ public:
                 {"contentCategory_doc", catDoc},
                 {"contentCategory_code", catCode},
                 {"contentCategory_design", catDesign},
-                {"contentCategory_archive", catArchive}
+                {"contentCategory_archive", catArchive},
+                {"contentExtensions", customFormats},
+                {"customContentFormats", customFormats},
+                {"disabledContentFormats", disabledFormats},
+                {"uiPreferences", std::move(uiPreferences)}
             };
         });
 
@@ -1064,6 +1338,9 @@ public:
             auto& cfg = tools3000::core::ConfigManager::instance();
             nlohmann::json patch = nlohmann::json::object();
             nlohmann::json searchPatch = nlohmann::json::object();
+            nlohmann::json uiPrefPatch = nlohmann::json::object();
+            bool hasEnabledDrivesUpdate = false;
+            std::string updatedEnabledDrives;
 
             if (params.contains("hotkey") && params["hotkey"].is_string()) {
                 const std::string newHotkey = params["hotkey"].get<std::string>();
@@ -1080,10 +1357,21 @@ public:
                 }
             }
             if (params.contains("maxResults") && params["maxResults"].is_number()) {
-                searchPatch["maxResults"] = params["maxResults"].get<int>();
+                const int mr = params["maxResults"].get<int>();
+                searchPatch["maxResults"] = mr;
+                uiPrefPatch["maxResultLimit"] = mr;
             }
             if (params.contains("defaultCategory") && params["defaultCategory"].is_string()) {
-                searchPatch["defaultCategory"] = params["defaultCategory"].get<std::string>();
+                const std::string cat = params["defaultCategory"].get<std::string>();
+                searchPatch["defaultCategory"] = cat;
+                uiPrefPatch["defaultCategory"] = cat;
+            }
+            if (params.contains("defaultSearchMode") && params["defaultSearchMode"].is_string()) {
+                const std::string mode = params["defaultSearchMode"].get<std::string>();
+                if (mode == "name" || mode == "both" || mode == "content") {
+                    searchPatch["defaultSearchMode"] = mode;
+                    uiPrefPatch["searchMode"] = mode;
+                }
             }
             if (params.contains("caseSensitive") && params["caseSensitive"].is_boolean()) {
                 searchPatch["caseSensitive"] = params["caseSensitive"].get<bool>();
@@ -1095,13 +1383,17 @@ public:
                 searchPatch["pinyinEnabled"] = params["pinyinEnabled"].get<bool>();
             }
             if (params.contains("enabledDrives") && params["enabledDrives"].is_string()) {
-                searchPatch["enabledDrives"] = params["enabledDrives"].get<std::string>();
+                updatedEnabledDrives = params["enabledDrives"].get<std::string>();
+                searchPatch["enabledDrives"] = updatedEnabledDrives;
+                hasEnabledDrivesUpdate = true;
             }
             if (params.contains("excludePatterns") && params["excludePatterns"].is_string()) {
                 searchPatch["excludePatterns"] = params["excludePatterns"].get<std::string>();
             }
             if (params.contains("excludeHidden") && params["excludeHidden"].is_boolean()) {
-                searchPatch["excludeHidden"] = params["excludeHidden"].get<bool>();
+                const bool exHidden = params["excludeHidden"].get<bool>();
+                searchPatch["excludeHidden"] = exHidden;
+                uiPrefPatch["excludeHidden"] = exHidden;
             }
             if (params.contains("excludeSystem") && params["excludeSystem"].is_boolean()) {
                 searchPatch["excludeSystem"] = params["excludeSystem"].get<bool>();
@@ -1124,12 +1416,82 @@ public:
             if (params.contains("iconStyle") && params["iconStyle"].is_string()) {
                 searchPatch["iconStyle"] = params["iconStyle"].get<std::string>();
             }
+            if (params.contains("contentExtensions")) {
+                const auto clean = normalizeFormatListJson(params["contentExtensions"]);
+                searchPatch["contentExtensions"] = clean;
+                searchPatch["customContentFormats"] = clean;
+                uiPrefPatch["customContentFormats"] = clean;
+            }
+            if (params.contains("customContentFormats")) {
+                const auto clean = normalizeFormatListJson(params["customContentFormats"]);
+                searchPatch["customContentFormats"] = clean;
+                searchPatch["contentExtensions"] = clean;
+                uiPrefPatch["customContentFormats"] = clean;
+            }
+            if (params.contains("disabledContentFormats")) {
+                const auto clean = normalizeFormatListJson(params["disabledContentFormats"]);
+                searchPatch["disabledContentFormats"] = clean;
+                uiPrefPatch["disabledContentFormats"] = clean;
+            }
+            if (params.contains("uiPreferences") && params["uiPreferences"].is_object()) {
+                for (const auto& [k, v] : params["uiPreferences"].items()) {
+                    uiPrefPatch[k] = v;
+                }
+                const auto& incomingUi = params["uiPreferences"];
+                if (incomingUi.contains("searchMode") && incomingUi["searchMode"].is_string()) {
+                    const std::string m = incomingUi["searchMode"].get<std::string>();
+                    if (m == "name" || m == "both" || m == "content") {
+                        searchPatch["defaultSearchMode"] = m;
+                    }
+                }
+                if (incomingUi.contains("defaultCategory") && incomingUi["defaultCategory"].is_string()) {
+                    searchPatch["defaultCategory"] = incomingUi["defaultCategory"].get<std::string>();
+                }
+                if (incomingUi.contains("excludeHidden") && incomingUi["excludeHidden"].is_boolean()) {
+                    searchPatch["excludeHidden"] = incomingUi["excludeHidden"].get<bool>();
+                }
+                if (incomingUi.contains("customContentFormats")) {
+                    const auto clean = normalizeFormatListJson(incomingUi["customContentFormats"]);
+                    searchPatch["customContentFormats"] = clean;
+                    searchPatch["contentExtensions"] = clean;
+                    uiPrefPatch["customContentFormats"] = clean;
+                }
+                if (incomingUi.contains("disabledContentFormats")) {
+                    const auto clean = normalizeFormatListJson(incomingUi["disabledContentFormats"]);
+                    searchPatch["disabledContentFormats"] = clean;
+                    uiPrefPatch["disabledContentFormats"] = clean;
+                }
+            }
+            if (!uiPrefPatch.empty()) {
+                searchPatch["uiPreferences"] = std::move(uiPrefPatch);
+            }
             if (!searchPatch.empty()) {
                 patch["search"] = std::move(searchPatch);
             }
             if (!patch.empty() && !cfg.mergePatch(patch)) {
                 return {{"success", false}, {"error", "failed to persist search settings"}};
             }
+
+            if (hasEnabledDrivesUpdate) {
+                nlohmann::json drivesArr = nlohmann::json::array();
+                for (std::size_t idx = 0; idx < updatedEnabledDrives.size(); ++idx) {
+                    const unsigned char ch = static_cast<unsigned char>(updatedEnabledDrives[idx]);
+                    if (std::isalpha(ch) &&
+                        (idx == 0 || updatedEnabledDrives[idx - 1] == ',' || updatedEnabledDrives[idx - 1] == ' ')) {
+                        drivesArr.push_back(std::string(1, static_cast<char>(std::toupper(ch))));
+                    }
+                }
+                if (!drivesArr.empty()) {
+                    nlohmann::json syncReq = {
+                        {"action", "syncVolumes"},
+                        {"drives", std::move(drivesArr)}
+                    };
+                    DWORD syncErr = ERROR_SUCCESS;
+                    // autoStart=false: strictly obey DEMAND_START service lifecycle contract.
+                    (void)querySearchService(syncReq.dump(), syncErr, /*autoStart=*/false, 2500);
+                }
+            }
+
             return {{"success", true}};
         });
 
@@ -1137,6 +1499,10 @@ public:
             std::string ext = params.value("ext", "");
             bool isDir = params.value("isDirectory", false);
             std::string path = params.value("path", "");
+            if (ext.empty() && !isDir && path.size() >= 6 &&
+                _strnicmp(path.c_str(), "shell:", 6) == 0) {
+                ext = ".exe";
+            }
             std::string base64 = tools3000::core::WinUtils::getFileTypeIconBase64(
                 tools3000::core::WinUtils::utf8ToWstring(ext),
                 isDir,
@@ -1154,6 +1520,10 @@ public:
                     std::string key = item.value("key", "");
                     if (key.empty()) {
                         key = isDir ? "::dir::" : (!path.empty() ? ("path:" + tools3000::core::WinUtils::toLower(path)) : ext);
+                    }
+                    if (ext.empty() && !isDir && path.size() >= 6 &&
+                        _strnicmp(path.c_str(), "shell:", 6) == 0) {
+                        ext = ".exe";
                     }
                     if (!result.contains(key)) {
                         result[key] = tools3000::core::WinUtils::getFileTypeIconBase64(
@@ -1278,6 +1648,7 @@ public:
     void shutdown() override {
         LOG_INFO("SearchPlugin: 关闭");
         g_searchPluginShuttingDown.store(true, std::memory_order_release);
+        closeAllPooledPipes();
         tools3000::core::MessageBridge::instance().unregisterHandlersByPrefix("search.");
         // 索引服务一旦因显式搜索需求启动，即独立常驻。
         // 主程序退出不发送 shutdown；SCM 的 demand start 保证下次开机不自启。

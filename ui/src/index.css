@@ -116,9 +116,13 @@
   --border-subtle: var(--card-border);
   --border-dark: rgba(255, 255, 255, 0.15);
   --border-light: rgba(255, 255, 255, 0.05);
-  --card-border-hover: rgba(255, 255, 255, 0.15);
+  --card-border-hover: color-mix(in srgb, var(--primary) 35%, rgba(255, 255, 255, 0.15));
   --card-bg-hover: var(--card-hover);
   --accent-dot-color: var(--primary);
+  --code-badge-bg: rgba(255, 255, 255, 0.05);
+  --code-badge-border: rgba(255, 255, 255, 0.08);
+  --code-badge-muted-bg: rgba(255, 255, 255, 0.03);
+  --code-badge-muted-border: rgba(255, 255, 255, 0.05);
 
   /* Keyboard Heatmap (Dark Theme) */
   --key-bg: rgba(255, 255, 255, 0.05);
@@ -148,6 +152,12 @@
   --primary-hover: #6d28d9;
   --primary-dim: rgba(124, 58, 237, 0.15);
   --primary-glow: rgba(124, 58, 237, 0.25);
+
+  /* 高对比度亮色语义色 (WCAG AA >= 4.8:1) */
+  --success: #047857;
+  --warning: #b45309;
+  --danger: #dc2626;
+  --info: #1d4ed8;
 
   --bg-base: #f8fafc;
   --bg-surface: #ffffff;
@@ -184,9 +194,13 @@
   --border-subtle: var(--card-border);
   --border-dark: rgba(203, 213, 225, 0.9);
   --border-light: rgba(241, 245, 249, 0.8);
-  --card-border-hover: rgba(139, 92, 246, 0.35);
+  --card-border-hover: color-mix(in srgb, var(--primary) 35%, transparent);
   --card-bg-hover: var(--card-hover);
   --accent-dot-color: var(--primary);
+  --code-badge-bg: rgba(15, 23, 42, 0.055);
+  --code-badge-border: rgba(15, 23, 42, 0.12);
+  --code-badge-muted-bg: rgba(15, 23, 42, 0.035);
+  --code-badge-muted-border: rgba(15, 23, 42, 0.08);
 
   /* Keyboard Heatmap (Light Theme) */
   --key-bg: rgba(0, 0, 0, 0.04);
@@ -320,9 +334,9 @@ body {
   /* ClearType 硬件加速次像素渲染优化 */
   background-color: var(--bg-base);
   background-image: 
-    radial-gradient(at 0% 0%, rgba(139, 92, 246, 0.08) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, rgba(52, 211, 153, 0.04) 0px, transparent 50%),
-    radial-gradient(at 100% 0%, rgba(96, 165, 250, 0.06) 0px, transparent 50%);
+    radial-gradient(at 0% 0%, color-mix(in srgb, var(--primary) 8%, transparent) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, color-mix(in srgb, var(--success) 5%, transparent) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, color-mix(in srgb, var(--primary-hover) 6%, transparent) 0px, transparent 50%);
   color: var(--text-primary);
   line-height: 1.5;
   overflow: hidden;

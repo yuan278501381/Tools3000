@@ -8,6 +8,7 @@ import { KeyStatsPage } from './KeyStatsPage';
 import { DialogEnhancerPage } from './DialogEnhancerPage';
 import { CapturePage } from './CapturePage';
 import { GeneralPage } from './GeneralPage';
+import { SearchPage } from './SearchPage';
 import * as bridge from '../hooks/useBridge';
 
 vi.mock('react-i18next', () => ({
@@ -180,8 +181,6 @@ describe('Pages Usability & Regression Suite', () => {
       return {};
     });
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     await act(async () => {
       render(<KeyStatsPage />);
     });
@@ -195,7 +194,14 @@ describe('Pages Usability & Regression Suite', () => {
       fireEvent.click(clearBtn);
     });
 
-    expect(confirmSpy).toHaveBeenCalled();
+    expect(bridgeSpy).not.toHaveBeenCalledWith('stats.clearToday');
+    expect(screen.getByRole('dialog')).toBeDefined();
+
+    const confirmBtn = screen.getByText('common.confirm');
+    await act(async () => {
+      fireEvent.click(confirmBtn);
+    });
+
     expect(bridgeSpy).toHaveBeenCalledWith('stats.clearToday');
   });
 
@@ -410,5 +416,48 @@ describe('Pages Usability & Regression Suite', () => {
       expect.objectContaining({ updateGroupMeta: expect.anything() }),
       expect.anything()
     );
+  });
+
+  it('SearchPage renders calm DEMAND_START standby state and wakes indexing daemon on button click (C-02)', async () => {
+    let woken = false;
+    bridgeSpy.mockImplementation(async (method: string) => {
+      if (method === 'search.getSettings') {
+        return { hotkey: 'Alt+Space', maxResults: 50, defaultCategory: 'all' };
+      }
+      if (method === 'hotkey.getAll') {
+        return [];
+      }
+      if (method === 'search.getServiceStatus') {
+        return { available: woken, pipeName: '\\\\.\\pipe\\Tools3000SearchPipe' };
+      }
+      if (method === 'search.windowShown') {
+        return { success: true };
+      }
+      if (method === 'search.warmup') {
+        woken = true;
+        return { available: true, pipeName: '\\\\.\\pipe\\Tools3000SearchPipe' };
+      }
+      return {};
+    });
+
+    await act(async () => {
+      render(<SearchPage />);
+    });
+
+    // Switch to Status & Index tab
+    const statusTab = screen.getByText('Service & Index');
+    await act(async () => {
+      fireEvent.click(statusTab);
+    });
+
+    expect(screen.getByText('On-Demand Standby (Instant Wake on First Search)')).toBeDefined();
+    const wakeBtn = screen.getByText('Wake Engine Now');
+    await act(async () => {
+      fireEvent.click(wakeBtn);
+    });
+
+    expect(bridgeSpy).toHaveBeenCalledWith('search.windowShown');
+    expect(bridgeSpy).toHaveBeenCalledWith('search.warmup');
+    expect(screen.getByText('Indexing Engine Running (Local Named Pipe)')).toBeDefined();
   });
 });

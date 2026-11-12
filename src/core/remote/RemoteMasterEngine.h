@@ -49,15 +49,20 @@ struct TOOLS3000CORE_API RemoteMasterSettings {
         "vncviewer.exe",
         "tv_w32.exe",
         "parsec.exe",
+        "parsecd.exe",
         "Splashtop.exe",
         "UltraViewer_Desktop.exe",
         "vmware.exe",
+        "vmware-vmx.exe",
+        "vmware-remotemks.exe",
         "VirtualBoxVM.exe",
+        "vmconnect.exe",
         "uuremote.exe",
         "GameViewer.exe",
         "Moonlight.exe"
     };
     std::vector<std::string> targetClasses = {
+        "TscShellContainerClass",
         "TSSHELLWND",
         "IHWindowClass",
         "OPContainerClass",
@@ -142,6 +147,13 @@ public:
         const std::vector<std::string>& targetClasses
     );
 
+    /// 判定远控客户端是否采用底层 Raw Input / 自有低级键盘钩子捕获（如 Parsec / Moonlight / VMware / VirtualBox）：
+    /// 对此类客户端不得拦截钩子链并改发伪 PostMessageW，以免破坏其原生硬件扫描码捕获引发 Alt+Tab / Win 死键。
+    static bool isRawInputRemoteClient(
+        std::string_view processName,
+        std::wstring_view className = L""
+    ) noexcept;
+
     /// 构建修饰键卡死急救的原子化 SendInput 数组 (8 组修饰键 + 3 组鼠标键)
     static std::vector<INPUT> buildEmergencyFlushInputs();
 
@@ -174,7 +186,7 @@ private:
     void onRemoteForegroundGained(HWND hwnd);
     void onRemoteForegroundLost(HWND hwnd);
     void postKeyToTarget(HWND fg, UINT msg, DWORD vk, DWORD scanCode, bool isExtended, bool isAltDown = false);
-    bool checkWindowIsRemote(HWND hwnd, std::string* outProcessName = nullptr);
+    bool checkWindowIsRemote(HWND hwnd, std::string* outProcessName = nullptr, bool* outIsRawInput = nullptr);
 
     static void CALLBACK winEventProc(
         HWINEVENTHOOK hWinEventHook,
@@ -200,6 +212,7 @@ private:
     std::atomic<uint64_t> m_packedEmergencyShortcut{0};
 
     std::atomic<bool> m_isRemoteForeground{false};
+    std::atomic<bool> m_activeRemoteIsRawInput{false};
     std::atomic<HWND> m_activeRemoteHwnd{nullptr};
     std::atomic<HWND> m_lastRemoteHwnd{nullptr};
     std::atomic<HWND> m_pendingProbeHwnd{nullptr};
@@ -221,6 +234,7 @@ private:
     // 前台窗口缓存加速
     HWND m_cachedForegroundHwnd = nullptr;
     bool m_cachedIsRemote = false;
+    bool m_cachedIsRawInput = false;
     std::string m_cachedProcessName;
 
     // 测试模拟注入支持

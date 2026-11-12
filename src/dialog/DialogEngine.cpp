@@ -198,6 +198,10 @@ void DialogEngine::hookThreadMain() {
         if (!m_hookInvoke) {
             LOG_WARN("DialogEngine: 按钮调用钩子注册失败, error={}", GetLastError());
         }
+
+        m_hookNameChange = SetWinEventHook(
+            EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE,
+            nullptr, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
     }
 
     {
@@ -217,6 +221,7 @@ void DialogEngine::hookThreadMain() {
     if (HWINEVENTHOOK h = m_hookForeground.exchange(nullptr)) { UnhookWinEvent(h); }
     if (HWINEVENTHOOK h = m_hookLocation.exchange(nullptr))   { UnhookWinEvent(h); }
     if (HWINEVENTHOOK h = m_hookInvoke.exchange(nullptr))     { UnhookWinEvent(h); }
+    if (HWINEVENTHOOK h = m_hookNameChange.exchange(nullptr)) { UnhookWinEvent(h); }
     m_hookThreadId.store(0, std::memory_order_release);
     LOG_INFO("DialogEngine: WinEvent 线程已退出");
 }
@@ -226,6 +231,11 @@ bool DialogEngine::start() {
     if (!m_running.compare_exchange_strong(expected, true)) return true;
 
     LOG_INFO("启动文件对话框增强引擎 (per-dialog session / per-exe memory)");
+    ExplorerTracker::instance().setPathChangedCallback([]() {
+        if (DialogRibbonOverlay::instance().getTargetDialog() != nullptr) {
+            DialogRibbonOverlay::instance().refreshContent(false);
+        }
+    });
     ExplorerTracker::instance().start();
     DialogNavigator::instance().startAsyncWorker();
     DialogRibbonOverlay::instance().init();
@@ -305,6 +315,7 @@ void DialogEngine::stop() {
     }
 
     // 4. 停止专用后台导航 MTA 线程与 Explorer STA 快照线程
+    ExplorerTracker::instance().setPathChangedCallback(nullptr);
     DialogNavigator::instance().shutdownAsyncWorker();
     ExplorerTracker::instance().shutdown();
 
@@ -341,8 +352,65 @@ void DialogEngine::onWinEvent(DWORD event, HWND hwnd, LONG idObject, LONG idChil
         case EVENT_OBJECT_LOCATIONCHANGE:
             handleDialogLocationChange(root);
             break;
+        case EVENT_OBJECT_NAMECHANGE:
+            // Win11 Explorer 多标签页切换时不触发 EVENT_SYSTEM_FOREGROUND，但顶层 CabinetWClass 窗口标题会更新
+            if (root == hwnd && isExplorerWindowClass(root)) {
+                ExplorerTracker::instance().requestRefresh();
+            }
+            break;
         default:
             break;
+    }
+}
+
+void DialogEngine::refreshActiveDialogOverlay(bool clearDismissed) {
+    if (!m_running.load(std::memory_order_acquire) ||
+        !PathMemoryManager::instance().isEnabled() ||
+        !PathMemoryManager::instance().isRibbonEnabled()) {
+        DialogRibbonOverlay::instance().hide();
+        return;
+    }
+
+    ExplorerTracker::instance().requestRefresh();
+
+    HWND candidate = DialogRibbonOverlay::instance().getTargetDialog();
+    if (!candidate || !IsWindow(candidate)) {
+        const HWND fg = GetForegroundWindow();
+        const HWND fgRoot = rootWindow(fg);
+        if (fgRoot && isDialogHostClass(fgRoot)) {
+            candidate = fgRoot;
+        }
+    }
+
+    if (!candidate || !IsWindow(candidate)) {
+        return;
+    }
+
+    std::string processName;
+    std::string cachedFolder;
+    bool sessionFound = false;
+    {
+        std::lock_guard lock(m_mutex);
+        auto it = m_sessions.find(candidate);
+        if (it != m_sessions.end() && it->second.initialized) {
+            sessionFound = true;
+            processName = it->second.processName;
+            cachedFolder = it->second.currentFolder;
+        }
+    }
+
+    if (sessionFound) {
+        if (!cachedFolder.empty()) {
+            DialogRibbonOverlay::instance().setCachedDialogFolder(candidate, cachedFolder);
+        }
+        if (DialogRibbonOverlay::instance().getTargetDialog() == candidate && !clearDismissed) {
+            DialogRibbonOverlay::instance().refreshContent(false);
+        } else {
+            DialogRibbonOverlay::instance().refreshContent(clearDismissed);
+            DialogRibbonOverlay::instance().attachToDialog(candidate, processName);
+        }
+    } else if (isDialogHostClass(candidate)) {
+        handleDialogShown(candidate);
     }
 }
 

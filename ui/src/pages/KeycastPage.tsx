@@ -2,9 +2,9 @@
  * KeycastPage.tsx — 按键回显与屏幕演示配置中心 (世界级 UX & 2D 时序流)
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useState, useEffect, type FC } from 'react';
+import { useState, useEffect, useRef, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Card, Toggle, SettingGroup, Button, NumberInput } from '../components/UIKit';
+import { Card, Toggle, SettingGroup, Button, NumberInput, ColorPickerInput, PageSkeleton } from '../components/UIKit';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import {
@@ -28,7 +28,6 @@ import './KeycastPage.css';
 interface KeycastSettings {
   enabled: boolean;
   autoBypassFullscreen: boolean;
-  showKeyboard: boolean;
   filterMode: 'smart_shortcuts' | 'with_single_modifiers' | 'all_keys';
   includeFunctionKeys: boolean;
   position: 'bottom_left' | 'bottom_center' | 'bottom_right' | 'top_left' | 'top_center' | 'top_right';
@@ -51,7 +50,6 @@ interface KeycastSettings {
 const DEFAULT_SETTINGS: KeycastSettings = {
   enabled: true,
   autoBypassFullscreen: true,
-  showKeyboard: true,
   filterMode: 'smart_shortcuts',
   includeFunctionKeys: false,
   position: 'top_left',
@@ -64,7 +62,7 @@ const DEFAULT_SETTINGS: KeycastSettings = {
   backgroundColor: '#1c1c22',
   modifierKeycapColor: 'auto',
   modifierKeycapOpacity: 50,
-  modifierTextColor: '#000000',
+  modifierTextColor: 'auto',
   firstKeyAnim: 'slide',
   subsequentKeyAnim: 'fade',
   rowCascadeAnim: true,
@@ -99,6 +97,7 @@ interface ColorSegmentControlProps {
   value: string;
   defaultCustomFallback: string;
   brandAccentHex: string;
+  autoMode?: 'brand' | 'contrast';
   onChange: (val: string) => void;
 }
 
@@ -108,11 +107,28 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
   value,
   defaultCustomFallback,
   brandAccentHex,
+  autoMode = 'brand',
   onChange,
 }) => {
   const { t } = useTranslation();
+  const [liveHex, setLiveHex] = useState<string | null>(null);
   const isAuto = value === 'auto';
-  const displayHex = isAuto ? brandAccentHex : value;
+  const effectiveCustomHex = liveHex ?? value;
+  const displayHex = isAuto
+    ? (autoMode === 'contrast' ? t('keycast.autoContrastBadge', 'AUTO') : brandAccentHex)
+    : effectiveCustomHex;
+  const swatchStyle = isAuto && autoMode === 'contrast'
+    ? { background: 'linear-gradient(135deg, #ffffff 0%, #ffffff 50%, #111827 50%, #111827 100%)' }
+    : { backgroundColor: isAuto ? brandAccentHex : effectiveCustomHex };
+  const autoLabelText = autoMode === 'contrast'
+    ? t('keycast.autoContrastLabel', 'Smart High Contrast')
+    : t('keycast.followBrandAccent', 'Follow Theme Accent');
+  const restoreTitleText = autoMode === 'contrast'
+    ? t('keycast.restoreAutoContrastDesc', 'Automatically pick crisp white or black text based on keycap background luminance')
+    : t('keycast.restoreFollowBrandDesc', 'Switch back and link dynamically to Tools3000 theme accent color');
+  const restoreBtnText = autoMode === 'contrast'
+    ? t('keycast.restoreAutoContrast', 'Smart Contrast')
+    : t('keycast.restoreFollowBrand', 'Follow Theme Accent');
 
   return (
     <div className="keycast-page__prop-card keycast-page__color-card">
@@ -126,11 +142,21 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
         <button
           type="button"
           className={`keycast-page__capsule-btn ${isAuto ? 'active' : ''}`}
-          onClick={() => onChange('auto')}
+          onClick={() => {
+            setLiveHex(null);
+            onChange('auto');
+          }}
         >
           <Sparkles size={13} />
-          <span>{t('keycast.followBrandAccent', 'Follow Theme Accent')}</span>
-          <span className="keycast-page__capsule-dot" style={{ backgroundColor: brandAccentHex }} />
+          <span>{autoLabelText}</span>
+          <span
+            className="keycast-page__capsule-dot"
+            style={
+              autoMode === 'contrast'
+                ? { background: 'linear-gradient(135deg, #ffffff 50%, #111827 50%)', border: '1px solid var(--card-border)' }
+                : { backgroundColor: brandAccentHex }
+            }
+          />
         </button>
 
         <button
@@ -138,6 +164,7 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
           className={`keycast-page__capsule-btn ${!isAuto ? 'active' : ''}`}
           onClick={() => {
             if (isAuto) {
+              setLiveHex(null);
               onChange(defaultCustomFallback);
             }
           }}
@@ -156,11 +183,14 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
               <button
                 type="button"
                 className="keycast-page__restore-capsule"
-                onClick={() => onChange('auto')}
-                title={t('keycast.restoreFollowBrandDesc', 'Switch back and link dynamically to Tools3000 theme accent color')}
+                onClick={() => {
+                  setLiveHex(null);
+                  onChange('auto');
+                }}
+                title={restoreTitleText}
               >
                 <RotateCcw size={11} />
-                <span>{t('keycast.restoreFollowBrand', 'Follow Theme Accent')}</span>
+                <span>{restoreBtnText}</span>
               </button>
             )}
           </div>
@@ -168,16 +198,19 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
           <div className="keycast-page__color-picker-wrap">
             <div
               className="keycast-page__color-swatch"
-              style={{ backgroundColor: displayHex }}
-              title={isAuto ? t('keycast.followBrandAccent') : displayHex}
+              style={swatchStyle}
+              title={isAuto ? autoLabelText : effectiveCustomHex}
             />
             {!isAuto && (
-              <input
-                type="color"
+              <ColorPickerInput
                 className="keycast-page__color-input"
-                value={displayHex}
-                onChange={(e) => onChange(e.target.value)}
-                aria-label={label}
+                value={effectiveCustomHex}
+                ariaLabel={label}
+                onPreview={(hex) => setLiveHex(hex)}
+                onChange={(hex) => {
+                  setLiveHex(null);
+                  onChange(hex);
+                }}
               />
             )}
           </div>
@@ -253,10 +286,13 @@ export const KeycastPage: FC = () => {
     }
   });
 
+  const saveSeqRef = useRef<Record<string, number>>({});
+
   const saveSetting = async <K extends keyof KeycastSettings>(key: K, value: KeycastSettings[K]) => {
+    const seq = (saveSeqRef.current[String(key)] ?? 0) + 1;
+    saveSeqRef.current[String(key)] = seq;
     const previous = settings[key];
-    const updated = { ...settings, [key]: value };
-    setSettings(updated);
+    setSettings((prev) => ({ ...prev, [key]: value }));
     try {
       if (key === 'enabled') {
         const nextEnabled = Boolean(value);
@@ -271,8 +307,10 @@ export const KeycastPage: FC = () => {
         await bridgeRequest('keycast.updateSettings', { [key]: value });
       }
     } catch (e) {
-      setSettings((prev) => ({ ...prev, [key]: previous }));
-      toast.error(t('keycast.saveFailed', 'Failed to save keycast settings'), { description: String(e) });
+      if (saveSeqRef.current[String(key)] === seq) {
+        setSettings((prev) => ({ ...prev, [key]: previous }));
+        toast.error(t('keycast.saveFailed', 'Failed to save keycast settings'), { description: String(e) });
+      }
     }
   };
 
@@ -297,7 +335,7 @@ export const KeycastPage: FC = () => {
   const currentBrandAccentHex = ACCENT_COLOR_MAP[accent] || '#3b82f6';
 
   if (loading) {
-    return <div style={{ padding: '2rem', opacity: 0.5 }}>{t('common.loading', 'Loading...')}</div>;
+    return <PageSkeleton cards={3} rowsPerCard={3} />;
   }
 
   const POSITIONS: Array<{ id: KeycastSettings['position']; labelKey: string; icon: typeof ArrowDownLeft }> = [
@@ -330,11 +368,8 @@ export const KeycastPage: FC = () => {
   return (
     <div className="keycast-page">
       {/* ── 顶部操作栏 ──────────────────────────────────────────────── */}
-      <div className="keycast-page__header">
-        <div className="keycast-page__title-wrap">
-          <h2 className="keycast-page__title">{t('keycast.title', 'Keycast')}</h2>
-        </div>
-        <Button variant="ghost" onClick={handleResetDefaults} title={t('keycast.resetDefaults')}>
+      <div className="keycast-page__header" style={{ justifyContent: 'flex-end' }}>
+        <Button variant="ghost" size="sm" onClick={handleResetDefaults} title={t('keycast.resetDefaults')}>
           <RotateCcw size={14} style={{ marginRight: 6 }} />
           <span>{t('keycast.resetDefaults')}</span>
         </Button>
@@ -681,13 +716,14 @@ export const KeycastPage: FC = () => {
             </div>
           </div>
 
-          {/* 修饰键文字颜色 (双态胶囊) */}
+          {/* 修饰键文字颜色 (双态胶囊: 智能高对比度 vs 自定义颜色) */}
           <ColorSegmentControl
             label={t('keycast.modifierTextColor', 'Modifier Key Text Color')}
             desc={t('keycast.modifierTextColorDesc', 'Text and icon color for Ctrl / Alt / Win keys (smart adaptive contrast by default, white on dark, black on light).')}
             value={settings.modifierTextColor || 'auto'}
             defaultCustomFallback="#ffffff"
             brandAccentHex={currentBrandAccentHex}
+            autoMode="contrast"
             onChange={(val) => saveSetting('modifierTextColor', val)}
           />
         </div>

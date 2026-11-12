@@ -235,5 +235,53 @@ describe('QuickLookApp Usability & Media Pipeline', () => {
     expect(mountedLines.length).toBeLessThan(250);
     expect(mountedLines[0].getAttribute('data-line')).toBe('1');
     expect(screen.getByText('· 3000 lines')).toBeDefined();
+
+    // Verify large virtualized code retains .wrap class by default and toggles cleanly via Alt+Z
+    const preEl = document.querySelector('pre.ql-code-content');
+    expect(preEl?.classList.contains('virtualized')).toBe(true);
+    expect(preEl?.classList.contains('wrap')).toBe(true);
+
+    fireEvent.keyDown(window, { key: 'z', altKey: true });
+    expect(preEl?.classList.contains('wrap')).toBe(false);
+  });
+
+  it('supports Grab-to-Pan pointer dragging when image is zoomed (>1x) and resets pan offset on 100% reset', async () => {
+    render(<QuickLookApp />);
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        path: 'C:\\Pictures\\diagram.png',
+        name: 'diagram.png',
+        extension: 'png',
+        type: 'image',
+        isDirectory: false,
+        size: 81920,
+        formattedSize: '80.0 KB',
+        modified: '2026-10-15 14:00:00',
+        mediaUrl: 'https://quicklook-media.tools3000.local/diagram.png',
+      });
+    });
+
+    const imageView = document.querySelector('.ql-image-view') as HTMLDivElement;
+    const imgEl = document.querySelector('.ql-image-element') as HTMLImageElement;
+    expect(imageView).not.toBeNull();
+    expect(imgEl).not.toBeNull();
+    expect(imgEl.style.transform).toBe('translate3d(0px, 0px, 0) scale(1)');
+
+    // Zoom in via '+' key -> scale becomes 1.25 and container enters zoomed state
+    fireEvent.keyDown(window, { key: '+' });
+    expect(imageView.classList.contains('ql-image-view--zoomed')).toBe(true);
+    expect(imgEl.style.transform).toBe('translate3d(0px, 0px, 0) scale(1.25)');
+
+    // Pointer drag translates image
+    fireEvent.pointerDown(imageView, { button: 0, pointerId: 1, clientX: 200, clientY: 150 });
+    fireEvent.pointerMove(imageView, { pointerId: 1, clientX: 245, clientY: 120 });
+    fireEvent.pointerUp(imageView, { pointerId: 1, clientX: 245, clientY: 120 });
+    expect(imgEl.style.transform).toBe('translate3d(45px, -30px, 0) scale(1.25)');
+
+    // Resetting to 100% via '0' key resets both scale and pan offset
+    fireEvent.keyDown(window, { key: '0' });
+    expect(imgEl.style.transform).toBe('translate3d(0px, 0px, 0) scale(1)');
   });
 });

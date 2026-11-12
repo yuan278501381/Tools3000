@@ -19,6 +19,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "core/lua/LuaEngine.h"
+#include "core/events/EventBus.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 #include "Tools3000Version.h"
@@ -971,7 +972,11 @@ void LuaEngine::bindFs(sol::table& easy) {
     sol::table t = easy.create_named("fs");
     t.set_function("exists", [this](const std::string& p) {
         requirePermission(m_lua->lua_state(), LuaPermission::Fs, "easy.fs");
-        return std::filesystem::exists(WinUtils::utf8ToWstring(p));
+        if (p.find('\0') != std::string::npos) {
+            return false;
+        }
+        std::error_code ec;
+        return std::filesystem::exists(WinUtils::utf8ToWstring(p), ec) && !ec;
     });
     t.set_function("readFile", [this](const std::string& p) -> std::string {
         requirePermission(m_lua->lua_state(), LuaPermission::Fs, "easy.fs");
@@ -1041,13 +1046,14 @@ void LuaEngine::bindUi(sol::table& easy) {
             return MessageBoxW(nullptr, wmsg.c_str(), wtitle.c_str(), flags | MB_TOPMOST);
         });
     };
-    t.set_function("toast", [this, box](const std::string& msg) {
+    t.set_function("toast", [this](const std::string& msg) {
         requirePermission(m_lua->lua_state(), LuaPermission::Ui, "easy.ui");
-        box(msg, "Tools3000", MB_OK | MB_ICONINFORMATION);
+        EventBus::instance().publish(ShowToastEvent{WinUtils::utf8ToWstring(msg)});
     });
-    t.set_function("notify", [this, box](const std::string& title, const std::string& msg) {
+    t.set_function("notify", [this](const std::string& title, const std::string& msg) {
         requirePermission(m_lua->lua_state(), LuaPermission::Ui, "easy.ui");
-        box(msg, title, MB_OK | MB_ICONINFORMATION);
+        const std::string combined = title.empty() ? msg : (title + ": " + msg);
+        EventBus::instance().publish(ShowToastEvent{WinUtils::utf8ToWstring(combined)});
     });
     t.set_function("confirm", [this, box](const std::string& msg) {
         requirePermission(m_lua->lua_state(), LuaPermission::Ui, "easy.ui");

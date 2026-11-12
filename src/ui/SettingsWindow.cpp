@@ -14,6 +14,7 @@
 #include "../resource.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
 #include "core/ipc/MessageBridge.h"
@@ -310,9 +311,11 @@ bool SettingsWindow::createWindow(HINSTANCE hInstance) {
             : CW_USEDEFAULT;
     }
 
-    const std::wstring windowTitle = tools3000::core::WinUtils::isCurrentProcessElevated()
-        ? L"Tools3000 设置 (管理员)"
-        : L"Tools3000 设置";
+    const bool zh = tools3000::core::isUiLanguageChinese();
+    const bool elevated = tools3000::core::WinUtils::isCurrentProcessElevated();
+    const std::wstring windowTitle = zh
+        ? (elevated ? L"Tools3000 设置 (管理员)" : L"Tools3000 设置")
+        : (elevated ? L"Tools3000 Settings (Administrator)" : L"Tools3000 Settings");
 
     m_hwnd = CreateWindowExW(
         WS_EX_APPWINDOW,
@@ -677,6 +680,13 @@ void SettingsWindow::persistGeometry() {
     const int width = rc.right - rc.left;
     const int height = rc.bottom - rc.top;
     if (width <= 0 || height <= 0) return;
+
+    m_config.posX = rc.left;
+    m_config.posY = rc.top;
+    m_config.width = (std::max)(400, width);
+    m_config.height = (std::max)(300, height);
+    m_config.hasCustomPlacement = true;
+    m_config.startCentered = false;
 
     tools3000::core::ConfigManager::instance().mergePatch({
         {"ui", {

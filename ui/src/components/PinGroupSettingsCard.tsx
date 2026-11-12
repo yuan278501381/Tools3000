@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Layers, Plus, RotateCcw, Pipette } from 'lucide-react';
-import { Card, SettingGroup, Button, CodeBadge } from './UIKit';
+import { Card, SettingGroup, Button, CodeBadge, ColorPickerInput } from './UIKit';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import {
   DEFAULT_PIN_GROUP_PRESET_COLORS,
@@ -39,6 +39,7 @@ export const PinGroupSettingsCard: FC = () => {
   const [maxGroupId, setMaxGroupId] = useState<number>(32);
   const [draftNames, setDraftNames] = useState<Record<number, string>>({});
   const skipBlurIdRef = useRef<number | null>(null);
+  const requestSeqRef = useRef<number>(0);
 
   const applyServerState = useCallback((raw: unknown) => {
     const normalized = normalizePinGroupState(raw);
@@ -90,12 +91,33 @@ export const PinGroupSettingsCard: FC = () => {
 
   const dispatchControl = useCallback(
     (payload: PinGroupControlPayload) => {
+      const seq = ++requestSeqRef.current;
       bridgeRequest('capture.pinGroupControl', payload as Record<string, unknown>, { silent: true })
-        .then((res) => applyServerState(res))
+        .then((res) => {
+          if (seq === requestSeqRef.current) {
+            applyServerState(res);
+          }
+        })
         .catch(() => {});
     },
     [applyServerState]
   );
+
+  const applyLocalColorPreview = useCallback((groupId: number, hex: string) => {
+    const upper = hex.toUpperCase();
+    setCatalog((prev) =>
+      prev.map((item) =>
+        item.id === groupId
+          ? {
+              ...item,
+              colorHex: upper,
+              customColorHex: upper,
+              hasCustomization: true,
+            }
+          : item
+      )
+    );
+  }, []);
 
   const handleCommitName = (entry: TrayPinGroupEntry) => {
     const draft = (draftNames[entry.id] ?? '').trim().slice(0, 24);
@@ -123,19 +145,7 @@ export const PinGroupSettingsCard: FC = () => {
 
   const handleSelectColor = (entry: TrayPinGroupEntry, hex: string) => {
     const upper = hex.toUpperCase();
-    if (upper === entry.colorHex.toUpperCase()) return;
-    setCatalog((prev) =>
-      prev.map((item) =>
-        item.id === entry.id
-          ? {
-              ...item,
-              colorHex: upper,
-              customColorHex: upper,
-              hasCustomization: true,
-            }
-          : item
-      )
-    );
+    applyLocalColorPreview(entry.id, upper);
     dispatchControl({
       updateGroupMeta: {
         id: entry.id,
@@ -352,12 +362,12 @@ export const PinGroupSettingsCard: FC = () => {
                     >
                       <Pipette size={13} aria-hidden="true" />
                       <span>{entry.colorHex.toUpperCase()}</span>
-                      <input
-                        type="color"
+                      <ColorPickerInput
                         className="pin-group-color-picker__native"
                         value={entry.colorHex}
-                        aria-label={t('capture.pinGroupCustomColorTip', 'Pick any custom color')}
-                        onChange={(e) => handleSelectColor(entry, e.target.value)}
+                        ariaLabel={t('capture.pinGroupCustomColorTip', 'Pick any custom color')}
+                        onPreview={(hex) => applyLocalColorPreview(entry.id, hex)}
+                        onChange={(hex) => handleSelectColor(entry, hex)}
                       />
                     </label>
 
