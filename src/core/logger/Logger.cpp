@@ -85,7 +85,7 @@ void Logger::initialize(const LoggerConfig& config) {
             spdlog::async_overflow_policy::block
         );
         newLogger->set_level(spdlog::level::trace);  // 总开关: 允许所有级别，由各 Sink 过滤
-        newLogger->flush_on(spdlog::level::info);    // INFO 及以上立即刷盘
+        newLogger->flush_on(spdlog::level::warn);    // WARN 及以上立即刷盘，常规 INFO 由 1s 周期批量刷盘
         spdlog::flush_every(std::chrono::seconds(1));
 
         spdlog::drop("tools3000");

@@ -20,7 +20,7 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { Card, Toggle, Button, Badge, CodeBadge } from '../components/UIKit';
+import { Card, Toggle, Button, Badge, CodeBadge, ConfirmModal } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import type { PluginStatus } from './PluginsPage';
 import './ExtensionPage.css';
@@ -362,8 +362,10 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
     }
   }, [pluginId, t]);
 
+  const [confirmUninstallOpen, setConfirmUninstallOpen] = useState(false);
+
   const handleUninstall = useCallback(async () => {
-    if (!window.confirm(t('extension.uninstallConfirm'))) return;
+    setConfirmUninstallOpen(false);
     setUninstalling(true);
     try {
       await bridgeRequest('plugins.uninstall', { id: pluginId });
@@ -535,32 +537,12 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
         </Card>
       </div>
 
-      {/* ── 模块基础配置 ───────────────────────────────────────── */}
+      {/* ── 模块管理与卸载 ───────────────────────────────────────── */}
       <Card title={t('extension.settings')} className="extension-settings-card">
-        <div className="extension-setting-row">
-          <div>
-            <div className="extension-setting-label">{t('extension.autoStart')}</div>
-            <div className="extension-setting-desc">
-              {t('extGuide.residentDesc', 'Auto launch and keep memory footprint < 1 MB')}
-            </div>
-          </div>
-          <Toggle id="ext-autostart-toggle" checked={enabled} onChange={handleToggle} disabled={saving} />
-        </div>
-
-        <div className="extension-setting-row">
-          <div>
-            <div className="extension-setting-label">{t('extension.customShortcut')}</div>
-            <div className="extension-setting-desc">{t('extension.customShortcutDesc')}</div>
-          </div>
-          <div className="extension-shortcut-badge">
-            <kbd>{guide.triggerKey}</kbd>
-          </div>
-        </div>
-
-        <div className="extension-setting-footer">
+        <div className="extension-setting-footer" style={{ borderTop: 'none', paddingTop: 0 }}>
           <Button
             variant="danger"
-            onClick={handleUninstall}
+            onClick={() => setConfirmUninstallOpen(true)}
             disabled={uninstalling}
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
@@ -570,6 +552,16 @@ export const ExtensionPage: FC<ExtensionPageProps> = ({ pluginId, plugin, onUnin
           </Button>
         </div>
       </Card>
+
+      <ConfirmModal
+        open={confirmUninstallOpen}
+        title={t('extension.uninstall')}
+        description={t('extension.uninstallConfirm')}
+        confirmText={t('extension.uninstall')}
+        loading={uninstalling}
+        onConfirm={handleUninstall}
+        onClose={() => setConfirmUninstallOpen(false)}
+      />
 
       {/* ── 内置交互式演练沙箱 (Live Playground Modal) ────────────────── */}
       {showPlayground && (

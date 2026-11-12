@@ -2,9 +2,9 @@
  * SpotlightPage.tsx — 寻找鼠标与演示特效配置中心 (世界级 UX 双态色彩体系)
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useState, useEffect, type FC } from 'react';
+import { useState, useEffect, useRef, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Card, Toggle, SettingGroup, Button, NumberInput, Select } from '../components/UIKit';
+import { Card, Toggle, SettingGroup, Button, NumberInput, Select, ColorPickerInput, PageSkeleton } from '../components/UIKit';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import {
@@ -102,8 +102,9 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
   onChange,
 }) => {
   const { t } = useTranslation();
+  const [liveHex, setLiveHex] = useState<string | null>(null);
   const isAuto = value === 'auto';
-  const displayHex = isAuto ? brandAccentHex : value;
+  const displayHex = isAuto ? brandAccentHex : (liveHex ?? value);
 
   return (
     <div className="spotlight-page__prop-card spotlight-page__color-card">
@@ -117,7 +118,10 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
         <button
           type="button"
           className={`spotlight-page__capsule-btn ${isAuto ? 'active' : ''}`}
-          onClick={() => onChange('auto')}
+          onClick={() => {
+            setLiveHex(null);
+            onChange('auto');
+          }}
         >
           <Sparkles size={13} />
           <span>{t('spotlight.followBrandAccent', 'Follow Theme Accent')}</span>
@@ -129,6 +133,7 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
           className={`spotlight-page__capsule-btn ${!isAuto ? 'active' : ''}`}
           onClick={() => {
             if (isAuto) {
+              setLiveHex(null);
               onChange(defaultCustomFallback);
             }
           }}
@@ -147,7 +152,10 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
               <button
                 type="button"
                 className="spotlight-page__restore-capsule"
-                onClick={() => onChange('auto')}
+                onClick={() => {
+                  setLiveHex(null);
+                  onChange('auto');
+                }}
                 title={t('spotlight.restoreFollowBrandDesc', 'Switch back and link dynamically to Tools3000 theme accent color')}
               >
                 <RotateCcw size={11} />
@@ -163,12 +171,15 @@ const ColorSegmentControl: FC<ColorSegmentControlProps> = ({
               title={isAuto ? t('spotlight.followBrandAccent') : displayHex}
             />
             {!isAuto && (
-              <input
-                type="color"
+              <ColorPickerInput
                 className="spotlight-page__color-input"
                 value={displayHex}
-                onChange={(e) => onChange(e.target.value)}
-                aria-label={label}
+                ariaLabel={label}
+                onPreview={(hex) => setLiveHex(hex)}
+                onChange={(hex) => {
+                  setLiveHex(null);
+                  onChange(hex);
+                }}
               />
             )}
           </div>
@@ -244,10 +255,13 @@ export const SpotlightPage: FC = () => {
     }
   });
 
+  const saveSeqRef = useRef<Record<string, number>>({});
+
   const saveSetting = async <K extends keyof SpotlightSettings>(key: K, value: SpotlightSettings[K]) => {
+    const seq = (saveSeqRef.current[String(key)] ?? 0) + 1;
+    saveSeqRef.current[String(key)] = seq;
     const previous = settings[key];
-    const updated = { ...settings, [key]: value };
-    setSettings(updated);
+    setSettings((prev) => ({ ...prev, [key]: value }));
     try {
       if (key === 'enabled') {
         await Promise.all([
@@ -258,8 +272,10 @@ export const SpotlightPage: FC = () => {
         await bridgeRequest('spotlight.updateSettings', { [key]: value });
       }
     } catch (e) {
-      setSettings((prev) => ({ ...prev, [key]: previous }));
-      toast.error(t('spotlight.saveFailed', 'Failed to save spotlight settings'), { description: String(e) });
+      if (saveSeqRef.current[String(key)] === seq) {
+        setSettings((prev) => ({ ...prev, [key]: previous }));
+        toast.error(t('spotlight.saveFailed', 'Failed to save spotlight settings'), { description: String(e) });
+      }
     }
   };
 
@@ -284,17 +300,14 @@ export const SpotlightPage: FC = () => {
   const currentBrandAccentHex = ACCENT_COLOR_MAP[accent] || '#3b82f6';
 
   if (loading) {
-    return <div style={{ padding: '2rem', opacity: 0.5 }}>{t('common.loading', 'Loading...')}</div>;
+    return <PageSkeleton cards={3} rowsPerCard={3} />;
   }
 
   return (
     <div className="spotlight-page">
       {/* ── 顶部操作栏 ──────────────────────────────────────────────── */}
-      <div className="spotlight-page__header">
-        <div className="spotlight-page__title-wrap">
-          <h2 className="spotlight-page__title">{t('spotlight.title', 'Mouse Presentation & FX')}</h2>
-        </div>
-        <Button variant="ghost" onClick={handleResetDefaults} title={t('spotlight.resetDefaults', 'Reset to Defaults')}>
+      <div className="spotlight-page__header" style={{ justifyContent: 'flex-end' }}>
+        <Button variant="ghost" size="sm" onClick={handleResetDefaults} title={t('spotlight.resetDefaults', 'Reset to Defaults')}>
           <RotateCcw size={14} style={{ marginRight: 6 }} />
           <span>{t('spotlight.resetDefaults', 'Reset to Defaults')}</span>
         </Button>

@@ -17,6 +17,7 @@
 #include "core/accessibility/OverlayUiaProvider.h"
 #include "core/config/ConfigManager.h"
 #include "core/hotkey/KeyboardHook.h"
+#include "core/utils/ThemeUtils.h"
 
 #include <opencv2/imgproc.hpp>
 
@@ -47,15 +48,16 @@ std::vector<tools3000::core::accessibility::OverlayUiaAction>
 toolbarUiaActions(HWND hwnd, const CaptureState& state) {
     RECT window{};
     GetWindowRect(hwnd, &window);
+    const bool zh = tools3000::core::isUiLanguageChinese();
     std::vector<tools3000::core::accessibility::OverlayUiaAction> actions;
     actions.reserve(state.toolbarButtons.size());
     for (std::size_t index = 0; index < state.toolbarButtons.size(); ++index) {
         const auto& button = state.toolbarButtons[index];
-        const auto name = toolbarButtonAccessibleName(button);
+        const auto name = toolbarButtonAccessibleName(button, zh);
         const auto shortcut = toolbarButtonKeyboardShortcut(button);
         actions.push_back({
             L"Tools3000.CaptureToolbar." + std::to_wstring(index), name,
-            L"截图工具栏：" + name, shortcut, {
+            (zh ? L"截图工具栏：" : L"Capture Toolbar: ") + name, shortcut, {
                 window.left + static_cast<LONG>(button.rect.left),
                 window.top + static_cast<LONG>(button.rect.top),
                 window.left + static_cast<LONG>(button.rect.right),
@@ -122,6 +124,9 @@ void CaptureOverlay::shutdown() {
     m_state.state = OverlayState::Idle;
     m_state.longCanvas.reset();
     m_editPinnedCallback = nullptr;
+    m_editPinnedMarkupCallback = nullptr;
+    m_editPinnedOriginalCleanBase.release();
+    m_editPinnedInitialRect = {};
     m_editLongImageCallback = nullptr;
     if (wasActive || m_hwnd) {
         tools3000::core::KeyboardHook::instance().setCaptureOverlayVisible(false);
@@ -233,8 +238,8 @@ void CaptureOverlay::resetTransientOverlayState() {
     m_state.toolbarLayoutLongImage = false;
     m_state.detectedQrText.clear();
     m_state.qrChipRect = {0, 0, 0, 0};
-    m_state.markup.clearAll();
-    m_state.markup.resetAllNumbers();
+    m_state.textEditEnteredTick = 0;
+    m_state.markup.resetSession();
     m_state.loupeToastUntil = 0;
     m_state.currentTool = MarkupTool::Rectangle;
     m_state.isMarkupToolActive = false;
@@ -323,8 +328,10 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     const auto windowStarted = std::chrono::steady_clock::now();
     if (!m_hwnd && (!m_hInstance || !createOverlayWindow(m_hInstance))) {
         LOG_ERROR("无法启动截图: 覆盖层窗口初始化失败");
-        tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"截图界面初始化失败，请重试"});
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            tools3000::core::isUiLanguageChinese()
+                ? L"截图界面初始化失败，请重试"
+                : L"Failed to initialize capture overlay, please retry"});
         if (m_closedCallback) m_closedCallback();
         return;
     }
@@ -375,8 +382,10 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     const auto freezeStarted = std::chrono::steady_clock::now();
     if (!freezeScreen()) {
         LOG_ERROR("无法启动截图: 桌面底图捕获或上传失败");
-        tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"无法捕获屏幕，请重试"});
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            tools3000::core::isUiLanguageChinese()
+                ? L"无法捕获屏幕，请重试"
+                : L"Failed to capture screen, please retry"});
         realCancel();
         return;
     }
@@ -386,8 +395,10 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     const auto uploadStarted = std::chrono::steady_clock::now();
     if (!m_renderer.updateScreenBitmap(m_state.frozenScreen)) {
         LOG_ERROR("无法启动截图: 桌面底图上传失败");
-        tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{L"无法显示屏幕截图，请重试"});
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            tools3000::core::isUiLanguageChinese()
+                ? L"无法显示屏幕截图，请重试"
+                : L"Failed to render screen capture, please retry"});
         realCancel();
         return;
     }
@@ -428,7 +439,10 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     CaptureInput::ensureCursorVisible();
     m_input.updateHoverCursor(m_state.currentCursor);
     tools3000::core::accessibility::announceOverlay(
-        m_hwnd, L"截图选区。拖动鼠标选择区域；Enter 确认；Esc 取消。"
+        m_hwnd,
+        tools3000::core::isUiLanguageChinese()
+            ? L"截图选区。拖动鼠标选择区域；Enter 确认；Esc 取消。"
+            : L"Capture selection. Drag to select an area; Enter to confirm; Esc to cancel."
     );
     tools3000::core::PerformanceMonitor::instance().recordLatency(
         "screenshot", elapsedMilliseconds(totalStarted));
@@ -460,6 +474,9 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
     }
 
     m_editPinnedCallback = std::move(onFinished);
+    m_editPinnedMarkupCallback = nullptr;
+    m_editPinnedOriginalCleanBase.release();
+    m_editPinnedInitialRect = {};
     m_editLongImageCallback = nullptr;
     resetTransientOverlayState();
     m_state.state = OverlayState::Selected;
@@ -539,7 +556,174 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
     CaptureInput::ensureCursorVisible();
     m_input.updateHoverCursor(m_state.currentCursor);
     tools3000::core::accessibility::announceOverlay(
-        m_hwnd, L"截图标注。使用工具栏完成标注；Enter 确认；Esc 取消。"
+        m_hwnd,
+        tools3000::core::isUiLanguageChinese()
+            ? L"截图标注。使用工具栏完成标注；Enter 确认；Esc 取消。"
+            : L"Capture annotation. Use the toolbar to annotate; Enter to confirm; Esc to cancel."
+    );
+}
+
+void CaptureOverlay::startEditPinnedMarkup(
+    const cv::Mat& cleanBaseImage,
+    const std::vector<MarkupElement>& existingElements,
+    const CaptureRegion& pinScreenRect,
+    EditPinnedMarkupCallback onFinished) {
+    tools3000::core::TraceId::Scope scope;
+    if (cleanBaseImage.empty() || cleanBaseImage.cols <= 0 || cleanBaseImage.rows <= 0) {
+        if (onFinished) onFinished(false, {}, {}, {});
+        return;
+    }
+
+    if (m_hwnd || m_state.state.load() != OverlayState::Idle) {
+        realCancel();
+    }
+
+    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    const int imgW = cleanBaseImage.cols;
+    const int imgH = cleanBaseImage.rows;
+
+    // 超出虚拟桌面尺寸的贴图（如 0.35x 缩小的超长截图）自动切入 1:1 长画布精修工作台，彻底避免下采样糊化
+    if (vw > 0 && vh > 0 && (imgW > vw || imgH > vh)) {
+        if (!startEditLongImage(cleanBaseImage, 1, nullptr)) {
+            if (onFinished) onFinished(false, {}, {}, {});
+            return;
+        }
+        m_editLongImageCallback = nullptr;
+        m_editPinnedMarkupCallback = std::move(onFinished);
+        m_editPinnedOriginalCleanBase = cleanBaseImage.clone();
+        m_editPinnedInitialRect = cv::Rect(0, 0, imgW, imgH);
+        if (!existingElements.empty()) {
+            m_state.markup.importElements(existingElements);
+        }
+        m_renderer.markMarkupDirty();
+        m_renderer.invalidate();
+        return;
+    }
+
+    POINT cursorScreen{};
+    GetCursorPos(&cursorScreen);
+    m_state.options = {};
+    m_state.options.autoDetectWindow = false;
+    m_state.options.showShortcutHints = tools3000::core::ConfigManager::instance().get<bool>(
+        "/capture/showShortcutHints", true);
+    m_state.mode = OverlayMode::Screenshot;
+    m_state.dpiScale = dpiScaleAt(cursorScreen);
+    m_state.currentCursor = {cursorScreen.x - vx, cursorScreen.y - vy};
+
+    if (!m_hwnd && (!m_hInstance || !createOverlayWindow(m_hInstance))) {
+        LOG_ERROR("Failed to initialize overlay window for pinned markup editing");
+        if (onFinished) onFinished(false, {}, {}, {});
+        return;
+    }
+
+    m_editPinnedCallback = nullptr;
+    m_editPinnedMarkupCallback = std::move(onFinished);
+    m_editPinnedOriginalCleanBase = cleanBaseImage.clone();
+    m_editLongImageCallback = nullptr;
+    resetTransientOverlayState();
+    m_state.state = OverlayState::Selected;
+    m_state.overlayShowTick = GetTickCount();
+    loadUserMarkupPreferences(false);
+
+    // 以贴图中心为锚点在 1:1 原始物理像素空间展开编辑选区，严禁按 m_scale 对底图做任何有损缩放
+    const int pinCenterX = pinScreenRect.x + pinScreenRect.width / 2;
+    const int pinCenterY = pinScreenRect.y + pinScreenRect.height / 2;
+    POINT anchorPt{pinCenterX, pinCenterY};
+    HMONITOR hMon = MonitorFromPoint(anchorPt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    int screenLeft = pinCenterX - imgW / 2;
+    int screenTop = pinCenterY - imgH / 2;
+    if (hMon && GetMonitorInfoW(hMon, &mi)) {
+        const int monW = mi.rcMonitor.right - mi.rcMonitor.left;
+        const int monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        if (imgW <= monW && imgH <= monH) {
+            screenLeft = std::clamp(screenLeft, static_cast<int>(mi.rcMonitor.left), static_cast<int>(mi.rcMonitor.right - imgW));
+            screenTop = std::clamp(screenTop, static_cast<int>(mi.rcMonitor.top), static_cast<int>(mi.rcMonitor.bottom - imgH));
+        }
+    }
+    screenLeft = std::clamp(screenLeft, vx, vx + (std::max)(0, vw - imgW));
+    screenTop = std::clamp(screenTop, vy, vy + (std::max)(0, vh - imgH));
+
+    m_state.dragStart = {screenLeft - vx, screenTop - vy};
+    m_state.dragEnd = {m_state.dragStart.x + imgW, m_state.dragStart.y + imgH};
+
+    if (!freezeScreen()) {
+        LOG_ERROR("Failed to freeze screen for pinned markup editing");
+        realCancel();
+        return;
+    }
+
+    const cv::Rect roi(m_state.dragStart.x, m_state.dragStart.y, imgW, imgH);
+    const cv::Rect clippedRoi = roi & cv::Rect(0, 0, m_state.frozenScreen.cols, m_state.frozenScreen.rows);
+    m_editPinnedInitialRect = clippedRoi;
+    if (clippedRoi.width == imgW && clippedRoi.height == imgH && !m_state.frozenScreen.empty()) {
+        try {
+            cv::Mat targetImage = cleanBaseImage;
+            const int targetChannels = m_state.frozenScreen.channels();
+            if (targetChannels == 4 && targetImage.channels() == 3) {
+                cv::cvtColor(targetImage, targetImage, cv::COLOR_BGR2BGRA);
+            } else if (targetChannels == 3 && targetImage.channels() == 4) {
+                cv::cvtColor(targetImage, targetImage, cv::COLOR_BGRA2BGR);
+            } else if (targetChannels == 1 && targetImage.channels() != 1) {
+                cv::cvtColor(targetImage, targetImage, cv::COLOR_BGR2GRAY);
+            }
+            if (targetImage.type() == m_state.frozenScreen.type()) {
+                targetImage.copyTo(m_state.frozenScreen(clippedRoi));
+            } else {
+                targetImage.convertTo(targetImage, m_state.frozenScreen.type());
+                targetImage.copyTo(m_state.frozenScreen(clippedRoi));
+            }
+        } catch (const std::exception& ex) {
+            LOG_ERROR("Pinned markup clean base copy failed: {}", ex.what());
+        }
+    }
+
+    syncMarkupBase(
+        m_state.frozenScreen,
+        clippedRoi,
+        m_state.markupBaseReady,
+        m_state.markupBaseRect,
+        m_state.markup);
+    if (!existingElements.empty()) {
+        m_state.markup.importElements(existingElements);
+    }
+    m_renderer.markMarkupDirty();
+
+    if (!m_renderer.updateScreenBitmap(m_state.frozenScreen)) {
+        LOG_ERROR("Failed to upload frozen screen bitmap for pinned markup editing");
+        realCancel();
+        return;
+    }
+
+    m_renderer.invalidate();
+
+    SetWindowPos(m_hwnd, HWND_TOPMOST, vx, vy, vw, vh, SWP_SHOWWINDOW);
+    tools3000::core::KeyboardHook::instance().setCaptureOverlayVisible(true);
+
+    if (m_state.options.showShortcutHints) {
+        ShortcutHintOverlay::instance().show(ShortcutHintContext::CaptureSelected, cursorScreen, {});
+    } else {
+        ShortcutHintOverlay::instance().hide();
+    }
+
+    SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
+    RedrawWindow(m_hwnd, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    SetCapture(m_hwnd);
+    SetForegroundWindow(m_hwnd);
+    SetActiveWindow(m_hwnd);
+    SetFocus(m_hwnd);
+    CaptureInput::ensureCursorVisible();
+    m_input.updateHoverCursor(m_state.currentCursor);
+    tools3000::core::accessibility::announceOverlay(
+        m_hwnd,
+        tools3000::core::isUiLanguageChinese()
+            ? L"截图标注。使用工具栏完成标注；Enter 确认；Esc 取消。"
+            : L"Capture annotation. Use the toolbar to annotate; Enter to confirm; Esc to cancel."
     );
 }
 
@@ -610,6 +794,9 @@ bool CaptureOverlay::startEditLongImage(
     }
 
     m_editPinnedCallback = nullptr;
+    m_editPinnedMarkupCallback = nullptr;
+    m_editPinnedOriginalCleanBase.release();
+    m_editPinnedInitialRect = {};
     m_editLongImageCallback = std::move(onFinished);
     resetTransientOverlayState();
     loadUserMarkupPreferences(false);
@@ -670,7 +857,10 @@ bool CaptureOverlay::startEditLongImage(
     CaptureInput::ensureCursorVisible();
     m_input.updateHoverCursor(m_state.currentCursor);
     tools3000::core::accessibility::announceOverlay(
-        m_hwnd, L"长截图精修工作台。拖动上下标尺无损裁切首尾，使用底部工具栏添加文字、序号与全部标注；Enter 完成；Esc 取消。"
+        m_hwnd,
+        tools3000::core::isUiLanguageChinese()
+            ? L"长截图精修工作台。拖动上下标尺无损裁切首尾，使用底部工具栏添加文字、序号与全部标注；Enter 完成；Esc 取消。"
+            : L"Long screenshot studio. Drag top and bottom handles to trim, use the toolbar to annotate; Enter to finish; Esc to cancel."
     );
     LOG_INFO("长截图精修工作台已打开: 尺寸={}x{}, 拼接帧数={}",
              m_state.frozenScreen.cols, m_state.frozenScreen.rows, m_state.longCanvas.frameCount);
@@ -821,7 +1011,7 @@ void CaptureOverlay::cleanupAfterDelivery() {
         m_hwnd = nullptr;
         DestroyWindow(hwndToDestroy);
     }
-    m_state.markup.clearAll();
+    m_state.markup.resetSession();
     m_state.detectedWindowHierarchy.clear();
     m_state.detectedWindowHierarchyDescriptions.clear();
     m_state.detectedWindow = {};
@@ -837,6 +1027,10 @@ void CaptureOverlay::realCancel() {
     ShortcutHintOverlay::instance().hide();
     auto editPinnedCb = std::move(m_editPinnedCallback);
     m_editPinnedCallback = nullptr;
+    auto editPinnedMarkupCb = std::move(m_editPinnedMarkupCallback);
+    m_editPinnedMarkupCallback = nullptr;
+    m_editPinnedOriginalCleanBase.release();
+    m_editPinnedInitialRect = {};
     const int savedLongFrames = m_state.longCanvas.frameCount;
     auto editLongCb = std::move(m_editLongImageCallback);
     m_editLongImageCallback = nullptr;
@@ -858,6 +1052,9 @@ void CaptureOverlay::realCancel() {
     cleanupAfterDelivery();
     if (editPinnedCb) {
         editPinnedCb(cv::Mat{});
+    }
+    if (editPinnedMarkupCb) {
+        editPinnedMarkupCb(false, cv::Mat{}, cv::Mat{}, {});
     }
     if (editLongCb) {
         editLongCb(cv::Mat{}, ScrollFinishAction::Cancelled, savedLongFrames);
@@ -889,17 +1086,35 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
 
     cv::Mat cropped;
     cv::Rect targetRect(x1, y1, w, h);
+    syncMarkupBase(m_state.frozenScreen, targetRect, m_state.markupBaseReady, m_state.markupBaseRect, m_state.markup);
     if (m_state.markup.elementCount() > 0) {
-        syncMarkupBase(m_state.frozenScreen, targetRect, m_state.markupBaseReady, m_state.markupBaseRect, m_state.markup);
         cropped = m_state.markup.getCompositeImage();
     } else {
         cropped = cropMarkupBase(m_state.frozenScreen, targetRect);
     }
 
+    cv::Mat cleanBaseDelivered;
+    std::vector<MarkupElement> updatedElements;
+    if (m_editPinnedMarkupCallback) {
+        if (targetRect == m_editPinnedInitialRect && !m_editPinnedOriginalCleanBase.empty()) {
+            cleanBaseDelivered = m_editPinnedOriginalCleanBase.clone();
+        } else {
+            cleanBaseDelivered = cropMarkupBase(m_state.frozenScreen, targetRect);
+        }
+        updatedElements = m_state.markup.exportElements();
+    }
+
+    const bool bakedDecorations =
+        (m_state.beautyShell.enabled || m_state.cornerRadius > 0.5f) &&
+        !cropped.empty() && m_state.mode != OverlayMode::RecordRegion;
     if (m_state.beautyShell.enabled && !cropped.empty() && m_state.mode != OverlayMode::RecordRegion) {
         cropped = applyBeautyShell(cropped, m_state.beautyShell);
     } else if (m_state.cornerRadius > 0.5f && !cropped.empty() && m_state.mode != OverlayMode::RecordRegion) {
         cropped = applyRoundedCorners(cropped, m_state.cornerRadius);
+    }
+    if (bakedDecorations && m_editPinnedMarkupCallback) {
+        cleanBaseDelivered = cropped.clone();
+        updatedElements.clear();
     }
 
     int offsetX = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -913,6 +1128,10 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
 
     auto editPinnedCb = std::move(m_editPinnedCallback);
     m_editPinnedCallback = nullptr;
+    auto editPinnedMarkupCb = std::move(m_editPinnedMarkupCallback);
+    m_editPinnedMarkupCallback = nullptr;
+    m_editPinnedOriginalCleanBase.release();
+    m_editPinnedInitialRect = {};
     const int savedLongFrames = m_state.longCanvas.frameCount;
     auto editLongCb = std::move(m_editLongImageCallback);
     m_editLongImageCallback = nullptr;
@@ -942,7 +1161,7 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     // 阶段 2 (业务交付): 同步执行交付回调 (写入多矩阵剪贴板与保存磁盘)
     if (mode == OverlayMode::RecordRegion) {
         if (rcb) rcb(region, m_state.recordSetup);
-    } else if (!editPinnedCb && !editLongCb) {
+    } else if (!editPinnedCb && !editPinnedMarkupCb && !editLongCb) {
         if (cb) cb(region, cropped, completion);
     }
 
@@ -950,6 +1169,9 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     cleanupAfterDelivery();
     if (editPinnedCb && !cropped.empty()) {
         editPinnedCb(cropped);
+    }
+    if (editPinnedMarkupCb && !cropped.empty()) {
+        editPinnedMarkupCb(true, cleanBaseDelivered, cropped, std::move(updatedElements));
     }
     if (editLongCb) {
         ScrollFinishAction finishAct = ScrollFinishAction::Confirm;

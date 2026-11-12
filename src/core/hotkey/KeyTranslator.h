@@ -17,6 +17,9 @@ struct KeycastKeyInfo {
     std::string rawKey;              ///< 唯一样本标识，用于连击与去重判定（例如 "Ctrl++" 或 "*" 或 "+"）
     bool isShortcut = false;         ///< 是否属于组合动作快捷键
     bool shouldDisplay = false;      ///< 在当前过滤模式下是否应当展示
+    DWORD vkCode = 0;                ///< 原始虚拟键码（供欧洲键盘布局 AltGr 合成字符解码）
+    UINT rawScanCode = 0;            ///< 原始硬件扫描码
+    bool isPureAltGr = false;        ///< 是否由欧洲键盘布局 AltGr（合成 0x21D LControl + RMENU）触发
 };
 
 /**

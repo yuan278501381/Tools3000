@@ -8,11 +8,15 @@
 
 #pragma once
 
+#include "core/utils/ThemeUtils.h"
+
+#include <atomic>
 #include <string>
 #include <vector>
 #include <memory>
 #include <mutex>
 #include <windows.h>
+#include <shobjidl_core.h>
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wrl/client.h>
@@ -42,6 +46,8 @@ public:
     void attachToDialog(HWND dialogHwnd, const std::string& processName);
     void setCachedDialogFolder(HWND dialogHwnd, const std::string& folderPath);
     void updatePosition();
+    void refreshContent(bool clearDismissed = false);
+    void onThemeChanged();
     void hide();
 
     static bool computeSafeHorizontalPlacement(const RECT& dlgRect, float dpiScale,
@@ -62,13 +68,14 @@ private:
     void doHide();
     void resetStateLocked();
     void discardDeviceResources();
-    bool ensureDeviceBrushes(bool isDark);
+    bool ensureDeviceBrushes(bool isDark, const tools3000::core::AccentColorRGB& accent);
     void render();
     void updateButtonsLayout(float dpiScale, int maxAvailableWidth = 0);
     bool hitTestButton(const RibbonButtonRect& btn, int x, int y, float dpiScale) const noexcept;
     void onLButtonDown(int x, int y);
     void onMouseMove(int x, int y);
     void onMouseLeave();
+    void updateTooltipText(const std::string& utf8Tip);
     void showRecentMenu(int screenX, int screenY, bool rightAlign = false);
     void showFavoritesMenu(int screenX, int screenY, bool rightAlign = false);
     void ensureTextFormats(float dpiScale);
@@ -80,15 +87,20 @@ private:
     void drawBadge(ID2D1RenderTarget* rt, ID2D1Brush* bgBrush, ID2D1Brush* textBrush, float x, float y, float w, float h, int count);
 
     HWND m_hwnd{nullptr};
+    HWND m_tooltipHwnd{nullptr};
     HWND m_targetDialog{nullptr};
     HWND m_dismissedDialog{nullptr};
     DWORD m_targetProcessId{0};
     std::string m_targetProcess;
     std::string m_cachedDialogFolder;
     std::string m_activeExplorerPath;
+    std::string m_currentTooltipText;
+    std::atomic<bool> m_posUpdatePending{false};
+    Microsoft::WRL::ComPtr<IVirtualDesktopManager> m_vdm;
+    bool m_vdmInitialized{false};
 
     int m_width{360};
-    int m_height{34};
+    int m_height{25};
     int m_posX{0};
     int m_posY{0};
     int m_lastMaxAvailableWidth{0};
@@ -112,6 +124,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_dividerBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_whiteBrush;
     bool m_brushesDarkTheme{false};
+    tools3000::core::AccentColorRGB m_brushesAccent{0.23f, 0.51f, 0.96f};
     bool m_brushesValid{false};
 
     Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;

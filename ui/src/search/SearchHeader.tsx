@@ -31,6 +31,7 @@ export interface SearchHeaderProps {
   hasSelectedResult: boolean;
   selectedIndex: number;
   setIsComposing: (val: boolean) => void;
+  onUserTypingActivity?: () => void;
 }
 
 export const SearchHeader: React.FC<SearchHeaderProps> = ({
@@ -53,6 +54,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
   hasSelectedResult,
   selectedIndex,
   setIsComposing,
+  onUserTypingActivity,
 }) => {
   const { t } = useTranslation();
   const [localValue, setLocalValue] = useState(query);
@@ -91,7 +93,14 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
             : t('search.placeholder', 'Search filename, wildcard (*.txt), ext:png, or keywords... [Use content: for full-text]')
         }
         value={localValue}
+        onKeyDown={(e) => {
+          if (e.key !== 'Alt' && e.key !== 'Control' && e.key !== 'Shift' && e.key !== 'Meta') {
+            onUserTypingActivity?.();
+          }
+        }}
+        onPointerDown={() => onUserTypingActivity?.()}
         onChange={(event) => {
+          onUserTypingActivity?.();
           const val = event.target.value;
           setLocalValue(val);
           // Windows TSF / IME 组字隔离：组字阶段完全拦截向上层 React 状态总线广播
@@ -100,6 +109,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
           }
         }}
         onCompositionStart={() => {
+          onUserTypingActivity?.();
           isComposingRef.current = true;
           setIsComposing(true);
         }}

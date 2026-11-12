@@ -43,6 +43,7 @@ public:
               const std::vector<RECT>& avoidRects = {});
     void updateAvoidance(const std::vector<RECT>& avoidRects);
     void hide();
+    void reloadTheme();
     void shutdown() { hide(); }
     bool isVisible() const;
     RECT getBounds() const;
@@ -133,6 +134,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_headerBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_accentBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_sheenBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_scratchBrush;
 };
 
 }  // namespace tools3000::capture

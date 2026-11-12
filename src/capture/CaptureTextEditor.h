@@ -267,9 +267,41 @@ public:
         if (!shiftExtend) anchor = caret;
     }
 
+    /// 解析截图标注体系的全局统一无衬线字体回退栈（SSOT：Noto Sans SC -> Source Han Sans SC -> Segoe UI / Microsoft YaHei UI）
+    static const wchar_t* resolveMarkupFontFamilyName(bool preferLatinDigits = false) {
+        initializeMarkupTextRenderer();
+        static const wchar_t* s_cjkResolved = []() -> const wchar_t* {
+            static constexpr const wchar_t* kCjkStack[] = {
+                L"Noto Sans SC",
+                L"Source Han Sans SC",
+                L"Microsoft YaHei UI",
+                L"Segoe UI"
+            };
+            for (const wchar_t* name : kCjkStack) {
+                Gdiplus::FontFamily fam(name);
+                if (fam.IsAvailable()) return name;
+            }
+            return L"Microsoft YaHei UI";
+        }();
+        static const wchar_t* s_latinResolved = []() -> const wchar_t* {
+            static constexpr const wchar_t* kLatinStack[] = {
+                L"Noto Sans SC",
+                L"Source Han Sans SC",
+                L"Segoe UI",
+                L"Microsoft YaHei UI"
+            };
+            for (const wchar_t* name : kLatinStack) {
+                Gdiplus::FontFamily fam(name);
+                if (fam.IsAvailable()) return name;
+            }
+            return L"Segoe UI";
+        }();
+        return preferLatinDigits ? s_latinResolved : s_cjkResolved;
+    }
+
     /// 计算文本标注高反差外扩描边线宽（与 MarkupEngine 渲染 100% 单一事实源同构）
     static float computeOutlineStrokeWidth(int fontSize) noexcept {
-        const int safeFontSize = (std::max)(10, fontSize);
+        const int safeFontSize = (std::max)(12, fontSize);
         return (std::max)(3.4f, static_cast<float>(safeFontSize) * 0.18f);
     }
 
@@ -284,7 +316,7 @@ public:
 
     /// 构建与 GDI+ GraphicsPath::AddString 完全对齐的多行字符边界度量表
     static MultilineTextLayout buildLayout(const std::wstring& wtext, int fontSize) {
-        const int safeFontSize = (std::max)(10, fontSize);
+        const int safeFontSize = (std::max)(12, fontSize);
 
         struct CachedLayoutEntry {
             std::wstring text;
@@ -318,7 +350,7 @@ public:
         layout.glyphHeight = fSize * 1.16f;
         layout.lineStep = fSize * 1.32f;
 
-        Gdiplus::FontFamily primaryFamily(L"Microsoft YaHei UI");
+        Gdiplus::FontFamily primaryFamily(resolveMarkupFontFamilyName(false));
         Gdiplus::FontFamily fallbackFamily(L"Segoe UI");
         const Gdiplus::FontFamily* activeFamily = primaryFamily.IsAvailable()
             ? &primaryFamily

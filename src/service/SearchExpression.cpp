@@ -810,6 +810,15 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
     for (auto& group : m_orGroups) {
         bool groupHasNonContentName = false;
         for (auto& clause : group.clauses) {
+            clause.hasSlashPreFilter = false;
+            clause.slashAllowBranchA = false;
+            clause.slashAllowBranchB = false;
+            clause.slashLeafCaseSensitive = false;
+            clause.slashBranchADirMask = 0;
+            clause.slashBranchBDirMask = 0;
+            clause.slashLeafPrefix.clear();
+            clause.slashLeafSuffix.clear();
+
             if (clause.filterType == SearchFilterType::Regex) {
                 m_hasRegexClause = true;
             }
@@ -854,6 +863,16 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
     }
 
     m_hasPureExtensionGroup = false;
+    m_hasFolderOnlyFilter = false;
+    for (const auto& grp : m_orGroups) {
+        for (const auto& c : grp.clauses) {
+            if (!c.isNegated && c.filterType == SearchFilterType::FolderOnly) {
+                m_hasFolderOnlyFilter = true;
+                break;
+            }
+        }
+        if (m_hasFolderOnlyFilter) break;
+    }
     if (m_orGroups.size() >= 2) {
         for (const auto& grp : m_orGroups) {
             if (grp.clauses.empty()) continue;
@@ -875,6 +894,8 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
     m_negatedSeparableGroupMask = 0;
     m_dirFileSatisfiedMask = 0;
     m_dirFolderSatisfiedMask = 0;
+    m_slashDirPredicates.clear();
+    m_slashPredicateMask = 0;
     m_fullySeparable = false;
 
     const size_t groupCount = std::min<size_t>(m_orGroups.size(), 64);
@@ -933,6 +954,182 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
                 if (hasSeparable) {
                     m_dirFileSatisfiedMask |= bit;
                     m_dirFolderSatisfiedMask |= bit;
+                }
+            }
+        }
+    }
+
+    // `U-05`: Precompile slash-separated path fragment clauses (`A\B\C`, `service\main.cpp`,
+    // `parent:src\service`, etc.) into ancestor directory bitmask predicates + leaf name
+    // prefix/suffix checks so non-matching records are rejected in O(1) without `buildFullPath`.
+    if (m_requiresFullPath) {
+        size_t nextPredBit = groupCount;
+        auto allocDirPred = [&](DirSegMatchOp op, std::wstring_view needle, bool cs, uint64_t& outMask) -> bool {
+            if (needle.empty()) {
+                return true;
+            }
+            const bool isDriveToken =
+                needle.size() == 2 && std::iswalpha(needle[0]) && needle[1] == L':';
+            const bool effectiveCs = isDriveToken ? false : cs;
+            std::wstring storedNeedle = effectiveCs ? std::wstring(needle) : normalize(needle);
+            for (const auto& existing : m_slashDirPredicates) {
+                if (existing.op == op &&
+                    existing.caseSensitive == effectiveCs &&
+                    existing.needle == storedNeedle) {
+                    outMask |= (1ULL << existing.bitIndex);
+                    return true;
+                }
+            }
+            if (nextPredBit >= 64) {
+                return false;
+            }
+            const uint8_t bitIdx = static_cast<uint8_t>(nextPredBit++);
+            m_slashDirPredicates.push_back(DirSegmentPredicate{
+                op,
+                effectiveCs,
+                bitIdx,
+                std::move(storedNeedle),
+            });
+            const uint64_t bitMask = (1ULL << bitIdx);
+            m_slashPredicateMask |= bitMask;
+            outMask |= bitMask;
+            return true;
+        };
+
+        auto splitBackslashSegments = [](std::wstring_view pat) {
+            std::vector<std::wstring_view> segs;
+            segs.reserve(4);
+            size_t start = 0;
+            while (true) {
+                const size_t pos = pat.find(L'\\', start);
+                if (pos == std::wstring_view::npos) {
+                    segs.push_back(pat.substr(start));
+                    break;
+                }
+                segs.push_back(pat.substr(start, pos - start));
+                start = pos + 1;
+            }
+            return segs;
+        };
+
+        for (auto& group : m_orGroups) {
+            for (auto& clause : group.clauses) {
+                const bool effCs =
+                    m_caseSensitive || (clause.filterType == SearchFilterType::CaseSensitive);
+                const std::wstring_view effPat = effCs
+                    ? std::wstring_view(clause.rawPattern)
+                    : std::wstring_view(clause.pattern);
+
+                if (clause.filterType == SearchFilterType::Parent &&
+                    !clause.parentDriveRootOnly && !clause.hasWildcard &&
+                    !effPat.empty() && effPat.find(L'/') == std::wstring_view::npos) {
+                    if (effPat.find(L'\\') == std::wstring_view::npos) {
+                        uint64_t mask = 0;
+                        if (allocDirPred(DirSegMatchOp::Contains, effPat, effCs, mask) && mask != 0) {
+                            clause.hasSlashPreFilter = true;
+                            clause.slashAllowBranchA = true;
+                            clause.slashAllowBranchB = false;
+                            clause.slashBranchADirMask = mask;
+                            clause.slashLeafCaseSensitive = effCs;
+                        }
+                    } else {
+                        const auto segs = splitBackslashSegments(effPat);
+                        bool validMiddle = segs.size() >= 2;
+                        for (size_t i = 1; validMiddle && i + 1 < segs.size(); ++i) {
+                            if (segs[i].empty()) validMiddle = false;
+                        }
+                        if (validMiddle) {
+                            uint64_t mask = 0;
+                            bool ok = allocDirPred(DirSegMatchOp::Suffix, segs.front(), effCs, mask);
+                            for (size_t i = 1; ok && i + 1 < segs.size(); ++i) {
+                                ok = allocDirPred(DirSegMatchOp::Exact, segs[i], effCs, mask);
+                            }
+                            if (ok) {
+                                ok = allocDirPred(DirSegMatchOp::Prefix, segs.back(), effCs, mask);
+                            }
+                            if (ok && mask != 0) {
+                                clause.hasSlashPreFilter = true;
+                                clause.slashAllowBranchA = true;
+                                clause.slashAllowBranchB = false;
+                                clause.slashBranchADirMask = mask;
+                                clause.slashLeafCaseSensitive = effCs;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                const bool supportsSlashPath =
+                    clause.hasPathSeparator &&
+                    (clause.filterType == SearchFilterType::None ||
+                     clause.filterType == SearchFilterType::Path ||
+                     clause.filterType == SearchFilterType::FileOnly ||
+                     clause.filterType == SearchFilterType::FolderOnly ||
+                     clause.filterType == SearchFilterType::NoPinyin ||
+                     clause.filterType == SearchFilterType::CaseSensitive);
+                if (!supportsSlashPath ||
+                    effPat.find(L'\\') == std::wstring_view::npos ||
+                    effPat.find(L'/') != std::wstring_view::npos) {
+                    continue;
+                }
+
+                const auto segs = splitBackslashSegments(effPat);
+                if (segs.size() < 2) {
+                    continue;
+                }
+
+                if (!clause.hasWildcard) {
+                    bool validMiddle = true;
+                    for (size_t i = 1; i + 1 < segs.size(); ++i) {
+                        if (segs[i].empty()) {
+                            validMiddle = false;
+                            break;
+                        }
+                    }
+                    if (!validMiddle) {
+                        continue;
+                    }
+                    uint64_t prefixMask = 0;
+                    bool ok = allocDirPred(DirSegMatchOp::Suffix, segs.front(), effCs, prefixMask);
+                    for (size_t i = 1; ok && i + 1 < segs.size(); ++i) {
+                        ok = allocDirPred(DirSegMatchOp::Exact, segs[i], effCs, prefixMask);
+                    }
+                    uint64_t branchAMask = prefixMask;
+                    if (ok && !segs.back().empty()) {
+                        ok = allocDirPred(DirSegMatchOp::Prefix, segs.back(), effCs, branchAMask);
+                    }
+                    if (ok) {
+                        clause.hasSlashPreFilter = true;
+                        clause.slashAllowBranchA = true;
+                        clause.slashAllowBranchB = true;
+                        clause.slashBranchADirMask = branchAMask;
+                        clause.slashBranchBDirMask = prefixMask;
+                        clause.slashLeafPrefix = std::wstring(segs.back());
+                        clause.slashLeafCaseSensitive = effCs;
+                    }
+                } else {
+                    uint64_t prefixMask = 0;
+                    bool ok = true;
+                    for (size_t i = 0; ok && i + 1 < segs.size(); ++i) {
+                        if (!segs[i].empty() && segs[i].find_first_of(L"*?") == std::wstring_view::npos) {
+                            ok = allocDirPred(
+                                i == 0 ? DirSegMatchOp::Suffix : DirSegMatchOp::Exact,
+                                segs[i], effCs, prefixMask);
+                        }
+                    }
+                    const std::wstring_view lastSeg = segs.back();
+                    const size_t lastWild = lastSeg.find_last_of(L"*?");
+                    const std::wstring_view tailLit = (lastWild == std::wstring_view::npos)
+                        ? lastSeg
+                        : lastSeg.substr(lastWild + 1);
+                    if (ok && (prefixMask != 0 || !tailLit.empty())) {
+                        clause.hasSlashPreFilter = true;
+                        clause.slashAllowBranchA = false;
+                        clause.slashAllowBranchB = true;
+                        clause.slashBranchBDirMask = prefixMask;
+                        clause.slashLeafSuffix = std::wstring(tailLit);
+                        clause.slashLeafCaseSensitive = effCs;
+                    }
                 }
             }
         }
@@ -1353,6 +1550,43 @@ inline std::wstring_view stripLeafExtension(std::wstring_view s) noexcept {
     return s.substr(0, dotPos);
 }
 
+inline bool startsWithText(std::wstring_view str, std::wstring_view prefix, bool caseSensitive) noexcept {
+    if (str.size() < prefix.size()) return false;
+    return caseSensitive
+        ? (str.substr(0, prefix.size()) == prefix)
+        : startsWithIgnoreCase(str, prefix);
+}
+
+inline bool endsWithText(std::wstring_view str, std::wstring_view suffix, bool caseSensitive) noexcept {
+    if (str.size() < suffix.size()) return false;
+    const std::wstring_view tail = str.substr(str.size() - suffix.size());
+    return caseSensitive ? (tail == suffix) : equalsIgnoreCase(tail, suffix);
+}
+
+inline bool canPossiblyMatchSlashClause(const SearchClause& clause,
+                                        std::wstring_view leafName,
+                                        uint64_t dirClauseMask,
+                                        bool hasDirMask) noexcept {
+    if (!hasDirMask || !clause.hasSlashPreFilter) {
+        return true;
+    }
+    if (clause.slashAllowBranchA &&
+        (dirClauseMask & clause.slashBranchADirMask) == clause.slashBranchADirMask) {
+        return true;
+    }
+    if (clause.slashAllowBranchB &&
+        (dirClauseMask & clause.slashBranchBDirMask) == clause.slashBranchBDirMask) {
+        const bool prefixOk = clause.slashLeafPrefix.empty() ||
+            startsWithText(leafName, clause.slashLeafPrefix, clause.slashLeafCaseSensitive);
+        const bool suffixOk = clause.slashLeafSuffix.empty() ||
+            endsWithText(leafName, clause.slashLeafSuffix, clause.slashLeafCaseSensitive);
+        if (prefixOk && suffixOk) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 template <typename PathSupplier, typename AttrSupplier>
@@ -1360,7 +1594,10 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
                                   wchar_t driveLetter, PathSupplier&& getPath,
                                   AttrSupplier&& getAttr, bool requiresFullPath,
                                   bool pinyinEnabled, bool caseSensitive,
-                                  bool hasPureExtensionGroup = false) {
+                                  bool hasPureExtensionGroup = false,
+                                  uint64_t dirClauseMask = 0,
+                                  bool hasDirMask = false,
+                                  bool allowDirectorySize = false) {
     bool matched = false;
     const bool stripExt = hasPureExtensionGroup && !record.isDirectory &&
                           !clause.hasWildcard && clause.pattern.find(L'.') == std::wstring::npos;
@@ -1375,7 +1612,8 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
             else if (clause.pattern.empty()) matched = true;
             else {
                 matched = matchTextSegment(effFileName, effNormName, clause, caseSensitive);
-                if (!matched && requiresFullPath) {
+                if (!matched && requiresFullPath &&
+                    canPossiblyMatchSlashClause(clause, effFileName, dirClauseMask, hasDirMask)) {
                     const std::wstring& fullP = getPath();
                     matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, caseSensitive);
                 }
@@ -1387,7 +1625,8 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
             else if (clause.pattern.empty()) matched = true;
             else {
                 matched = matchTextSegment(record.fileName, record.normalizedName, clause, caseSensitive);
-                if (!matched && requiresFullPath) {
+                if (!matched && requiresFullPath &&
+                    canPossiblyMatchSlashClause(clause, record.fileName, dirClauseMask, hasDirMask)) {
                     matched = matchPathSegment(getPath(), clause, caseSensitive);
                 }
             }
@@ -1420,12 +1659,16 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
         case SearchFilterType::Path:
             if (!requiresFullPath) {
                 matched = matchTextSegment(record.fileName, record.normalizedName, clause, caseSensitive);
-            } else {
+            } else if (canPossiblyMatchSlashClause(clause, record.fileName, dirClauseMask, hasDirMask)) {
                 matched = matchPathSegment(getPath(), clause, caseSensitive);
             }
             break;
 
         case SearchFilterType::Parent: {
+            if (!canPossiblyMatchSlashClause(clause, {}, dirClauseMask, hasDirMask)) {
+                matched = false;
+                break;
+            }
             const std::wstring slashPath = normalizePathSeparators(getPath());
             const auto slashPos = slashPath.rfind(L'\\');
             if (slashPos != std::wstring::npos) {
@@ -1516,7 +1759,8 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
 
         case SearchFilterType::CaseSensitive:
             matched = matchTextSegment(effFileName, effNormName, clause, true);
-            if (!matched && requiresFullPath) {
+            if (!matched && requiresFullPath &&
+                canPossiblyMatchSlashClause(clause, effFileName, dirClauseMask, hasDirMask)) {
                 const std::wstring& fullP = getPath();
                 matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, true);
             }
@@ -1536,18 +1780,19 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
 
         case SearchFilterType::NoPinyin:
             matched = matchTextSegment(effFileName, effNormName, clause, caseSensitive);
-            if (!matched && requiresFullPath) {
+            if (!matched && requiresFullPath &&
+                canPossiblyMatchSlashClause(clause, effFileName, dirClauseMask, hasDirMask)) {
                 const std::wstring& fullP = getPath();
                 matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, caseSensitive);
             }
             break;
 
         case SearchFilterType::Size:
-            if (record.isDirectory) {
+            if (record.isDirectory && !allowDirectorySize) {
                 matched = false;
             } else {
                 uint64_t effectiveSize = record.fileSize;
-                if (effectiveSize == 0) {
+                if (effectiveSize == 0 && !record.isDirectory) {
                     if (const WIN32_FILE_ATTRIBUTE_DATA* attr = getAttr()) {
                         if ((attr->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
                             effectiveSize = (static_cast<uint64_t>(attr->nFileSizeHigh) << 32) | attr->nFileSizeLow;
@@ -1631,7 +1876,8 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
             }
 
             // 2. 仅当检索表达式需要全路径 (如开启 matchPath 偏好、包含多词组、斜杠或 path: 前缀) 且文件名未命中时，才兜底在路径中匹配
-            if (!matched && requiresFullPath && !isPureSuffixWildcardPattern(clause.rawPattern)) {
+            if (!matched && requiresFullPath && !isPureSuffixWildcardPattern(clause.rawPattern) &&
+                canPossiblyMatchSlashClause(clause, effFileName, dirClauseMask, hasDirMask)) {
                 const std::wstring& fullP = getPath();
                 matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, caseSensitive);
             }
@@ -1645,40 +1891,75 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
 uint64_t SearchExpression::computeDirectorySegmentMask(std::wstring_view dirSegmentName,
                                                        std::wstring_view pinyinInitials,
                                                        std::wstring_view pinyinFull) const noexcept {
-    if (m_separableGroupMask == 0 || dirSegmentName.empty()) {
+    if (((m_separableGroupMask | m_slashPredicateMask) == 0) || dirSegmentName.empty()) {
         return 0;
     }
     uint64_t mask = 0;
-    const size_t groupCount = std::min<size_t>(m_orGroups.size(), 64);
-    for (size_t g = 0; g < groupCount; ++g) {
-        const uint64_t bit = (1ULL << g);
-        if ((m_separableGroupMask & bit) == 0) {
-            continue;
-        }
-        const auto& group = m_orGroups[g];
-        for (const auto& clause : group.clauses) {
-            if (!isClauseSeparableForDir(clause, m_requiresFullPath)) {
+    if (m_separableGroupMask != 0) {
+        const size_t groupCount = std::min<size_t>(m_orGroups.size(), 64);
+        for (size_t g = 0; g < groupCount; ++g) {
+            const uint64_t bit = (1ULL << g);
+            if ((m_separableGroupMask & bit) == 0) {
                 continue;
             }
-            const bool effCaseSensitive =
-                m_caseSensitive || (clause.filterType == SearchFilterType::CaseSensitive);
-            bool segMatched = matchTextSegment(dirSegmentName, {}, clause, effCaseSensitive);
-            if (!segMatched && m_pinyinEnabled && clause.isAsciiOnly &&
-                clause.filterType == SearchFilterType::None && !pinyinInitials.empty()) {
-                const auto& pat = clause.pinyinPattern.empty() ? clause.pattern : clause.pinyinPattern;
-                const bool isRedundantNonCjk =
-                    !effCaseSensitive &&
-                    pinyinInitials.data() == dirSegmentName.data() &&
-                    pinyinFull.data() == dirSegmentName.data() &&
-                    pat.size() == clause.pattern.size();
-                if (!isRedundantNonCjk) {
-                    segMatched = containsIgnoreCase(pinyinInitials, pat) ||
-                                 containsIgnoreCase(pinyinFull, pat);
+            const auto& group = m_orGroups[g];
+            for (const auto& clause : group.clauses) {
+                if (!isClauseSeparableForDir(clause, m_requiresFullPath)) {
+                    continue;
+                }
+                const bool effCaseSensitive =
+                    m_caseSensitive || (clause.filterType == SearchFilterType::CaseSensitive);
+                bool segMatched = matchTextSegment(dirSegmentName, {}, clause, effCaseSensitive);
+                if (!segMatched && m_pinyinEnabled && clause.isAsciiOnly &&
+                    clause.filterType == SearchFilterType::None && !pinyinInitials.empty()) {
+                    const auto& pat = clause.pinyinPattern.empty() ? clause.pattern : clause.pinyinPattern;
+                    const bool isRedundantNonCjk =
+                        !effCaseSensitive &&
+                        pinyinInitials.data() == dirSegmentName.data() &&
+                        pinyinFull.data() == dirSegmentName.data() &&
+                        pat.size() == clause.pattern.size();
+                    if (!isRedundantNonCjk) {
+                        segMatched = containsIgnoreCase(pinyinInitials, pat) ||
+                                     containsIgnoreCase(pinyinFull, pat);
+                    }
+                }
+                if (segMatched) {
+                    mask |= bit;
+                    break;
                 }
             }
-            if (segMatched) {
-                mask |= bit;
-                break;
+        }
+    }
+
+    if (!m_slashDirPredicates.empty()) {
+        wchar_t rootDriveBuf[2] = {L'\0', L':'};
+        std::wstring_view slashSeg = dirSegmentName;
+        if (dirSegmentName.size() == 1 && std::iswalpha(dirSegmentName[0]) && pinyinInitials.empty()) {
+            rootDriveBuf[0] = dirSegmentName[0];
+            slashSeg = std::wstring_view(rootDriveBuf, 2);
+        }
+        for (const auto& pred : m_slashDirPredicates) {
+            bool hit = false;
+            switch (pred.op) {
+                case DirSegMatchOp::Contains:
+                    hit = pred.caseSensitive
+                        ? (slashSeg.find(pred.needle) != std::wstring_view::npos)
+                        : containsIgnoreCase(slashSeg, pred.needle);
+                    break;
+                case DirSegMatchOp::Prefix:
+                    hit = startsWithText(slashSeg, pred.needle, pred.caseSensitive);
+                    break;
+                case DirSegMatchOp::Suffix:
+                    hit = endsWithText(slashSeg, pred.needle, pred.caseSensitive);
+                    break;
+                case DirSegMatchOp::Exact:
+                    hit = pred.caseSensitive
+                        ? (slashSeg == pred.needle)
+                        : equalsIgnoreCase(slashSeg, pred.needle);
+                    break;
+            }
+            if (hit) {
+                mask |= (1ULL << pred.bitIndex);
             }
         }
     }
@@ -1708,7 +1989,8 @@ bool SearchExpression::matchesSeparable(const FileRecord& record, wchar_t driveL
         for (const auto& clause : group.clauses) {
             if (matchSingleClauseLazy(clause, record, driveLetter, getNoPath, getNoAttr,
                                       /*requiresFullPath=*/false, m_pinyinEnabled, m_caseSensitive,
-                                      m_hasPureExtensionGroup)) {
+                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                      m_hasFolderOnlyFilter)) {
                 groupPassed = true;
                 break;
             }
@@ -1716,6 +1998,125 @@ bool SearchExpression::matchesSeparable(const FileRecord& record, wchar_t driveL
         if (!groupPassed) return false;
     }
     return true;
+}
+
+SearchExpression::InMemoryMatchStatus SearchExpression::evaluateInMemoryWithDirMask(
+    const FileRecord& record,
+    wchar_t driveLetter,
+    uint64_t dirClauseMask,
+    bool isMetadataHydrated,
+    const PathGetter& getFullPath) const {
+    if (m_orGroups.empty()) {
+        return InMemoryMatchStatus::Matched;
+    }
+    if ((dirClauseMask & m_negatedSeparableGroupMask) != 0) {
+        return InMemoryMatchStatus::Rejected;
+    }
+
+    const uint64_t dirSatisfiedMask =
+        dirClauseMask & (record.isDirectory ? m_dirFolderSatisfiedMask : m_dirFileSatisfiedMask);
+
+    std::wstring cachedFullPath;
+    bool pathLoaded = false;
+    auto getOrFetchPath = [&]() -> const std::wstring& {
+        if (!pathLoaded) {
+            if (getFullPath) {
+                cachedFullPath = getFullPath();
+            }
+            pathLoaded = true;
+        }
+        return cachedFullPath;
+    };
+    auto getNoAttr = []() noexcept -> const WIN32_FILE_ATTRIBUTE_DATA* { return nullptr; };
+
+    bool hasDiskStatGroups = false;
+    const size_t groupCount = m_orGroups.size();
+    for (size_t g = 0; g < groupCount; ++g) {
+        const auto& group = m_orGroups[g];
+        if (groupRequiresDiskStat(group)) {
+            hasDiskStatGroups = true;
+            continue;
+        }
+
+        if (g < 64) {
+            const uint64_t bit = (1ULL << g);
+            if ((dirSatisfiedMask & bit) != 0) {
+                continue;
+            }
+            if ((m_separableGroupMask & bit) != 0) {
+                bool groupPassed = false;
+                for (const auto& clause : group.clauses) {
+                    if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getNoAttr,
+                                              /*requiresFullPath=*/false, m_pinyinEnabled, m_caseSensitive,
+                                              m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                              m_hasFolderOnlyFilter)) {
+                        groupPassed = true;
+                        break;
+                    }
+                }
+                if (!groupPassed) {
+                    return InMemoryMatchStatus::Rejected;
+                }
+                continue;
+            }
+        }
+
+        bool groupPassed = false;
+        for (const auto& clause : group.clauses) {
+            if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getNoAttr,
+                                      m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
+                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                      m_hasFolderOnlyFilter)) {
+                groupPassed = true;
+                break;
+            }
+        }
+        if (!groupPassed) {
+            return InMemoryMatchStatus::Rejected;
+        }
+    }
+
+    if (!hasDiskStatGroups) {
+        return InMemoryMatchStatus::Matched;
+    }
+
+    bool anyGroupNeedsStat = false;
+    for (const auto& group : m_orGroups) {
+        if (!groupRequiresDiskStat(group)) {
+            continue;
+        }
+        bool groupPassed = false;
+        bool hasIndeterminateClause = false;
+        for (const auto& clause : group.clauses) {
+            if (clause.filterType == SearchFilterType::Size &&
+                !record.isDirectory && !isMetadataHydrated && record.fileSize == 0) {
+                hasIndeterminateClause = true;
+                continue;
+            }
+            if (clause.filterType == SearchFilterType::DateModified &&
+                clause.hasValidDateRange && !isMetadataHydrated && record.lastWriteTime == 0) {
+                hasIndeterminateClause = true;
+                continue;
+            }
+            if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getNoAttr,
+                                      m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
+                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                      m_hasFolderOnlyFilter)) {
+                groupPassed = true;
+                break;
+            }
+        }
+        if (!groupPassed) {
+            if (!hasIndeterminateClause) {
+                return InMemoryMatchStatus::Rejected;
+            }
+            anyGroupNeedsStat = true;
+        }
+    }
+
+    return anyGroupNeedsStat
+        ? InMemoryMatchStatus::NeedsDiskStat
+        : InMemoryMatchStatus::Matched;
 }
 
 bool SearchExpression::matchesWithDirMask(const FileRecord& record, wchar_t driveLetter,
@@ -1789,7 +2190,8 @@ bool SearchExpression::matchesWithDirMask(const FileRecord& record, wchar_t driv
                 for (const auto& clause : group.clauses) {
                     if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                               /*requiresFullPath=*/false, m_pinyinEnabled, m_caseSensitive,
-                                              m_hasPureExtensionGroup)) {
+                                              m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                              m_hasFolderOnlyFilter)) {
                         groupPassed = true;
                         break;
                     }
@@ -1803,7 +2205,8 @@ bool SearchExpression::matchesWithDirMask(const FileRecord& record, wchar_t driv
         for (const auto& clause : group.clauses) {
             if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                       m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                      m_hasPureExtensionGroup)) {
+                                      m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                      m_hasFolderOnlyFilter)) {
                 groupPassed = true;
                 break;
             }
@@ -1818,7 +2221,8 @@ bool SearchExpression::matchesWithDirMask(const FileRecord& record, wchar_t driv
             for (const auto& clause : group.clauses) {
                 if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                           m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                          m_hasPureExtensionGroup)) {
+                                          m_hasPureExtensionGroup, dirClauseMask, /*hasDirMask=*/true,
+                                          m_hasFolderOnlyFilter)) {
                     groupPassed = true;
                     break;
                 }
@@ -1883,7 +2287,7 @@ bool SearchExpression::matchesWithLazyPath(const FileRecord& record, wchar_t dri
         for (const auto& clause : group.clauses) {
             if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                       m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                      m_hasPureExtensionGroup)) {
+                                      m_hasPureExtensionGroup, 0, false, m_hasFolderOnlyFilter)) {
                 groupPassed = true;
                 break;
             }
@@ -1899,7 +2303,7 @@ bool SearchExpression::matchesWithLazyPath(const FileRecord& record, wchar_t dri
             for (const auto& clause : group.clauses) {
                 if (matchSingleClauseLazy(clause, record, driveLetter, getOrFetchPath, getOrFetchAttr,
                                           m_requiresFullPath, m_pinyinEnabled, m_caseSensitive,
-                                          m_hasPureExtensionGroup)) {
+                                          m_hasPureExtensionGroup, 0, false, m_hasFolderOnlyFilter)) {
                     groupPassed = true;
                     break;
                 }

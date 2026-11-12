@@ -403,15 +403,17 @@ void HotkeyManager::setPaused(bool paused) {
         LOG_INFO("Hotkey silent recording mode activated: OS hotkeys temporarily unregistered");
     } else {
         const bool fullscreenSuspended = m_fullscreenSuspended.load(std::memory_order_relaxed);
+        const bool remoteSuspended = m_remoteSuspended.load(std::memory_order_relaxed);
         for (auto& [name, entry] : m_hotkeys) {
             if (!entry.armed || entry.def.virtualKey == 0) {
                 entry.suspendedByPause = false;
                 continue;
             }
-            if (fullscreenSuspended) {
+            if (fullscreenSuspended || remoteSuspended) {
                 if (entry.suspendedByPause) {
                     entry.suspendedByPause = false;
-                    entry.suspendedByFullscreen = true;
+                    if (fullscreenSuspended) entry.suspendedByFullscreen = true;
+                    if (remoteSuspended) entry.suspendedByRemote = true;
                 }
                 continue;
             }
@@ -477,16 +479,24 @@ void HotkeyManager::setFullscreenSuspended(bool suspended) {
                 entry.registered = false;
                 entry.useHook = false;
                 entry.suspendedByFullscreen = true;
-            } else if (entry.suspendedByPause) {
+            } else if (entry.suspendedByPause || entry.suspendedByRemote) {
                 entry.suspendedByFullscreen = true;
             }
         }
         LOG_INFO("全屏游戏免打扰已激活：全局快捷键已临时卸下并交还前台游戏");
     } else {
         const bool isPausedNow = m_paused.load(std::memory_order_relaxed);
+        const bool remoteSuspendedNow = m_remoteSuspended.load(std::memory_order_relaxed);
         for (auto& [name, entry] : m_hotkeys) {
             if (!entry.armed || entry.def.virtualKey == 0) {
                 entry.suspendedByFullscreen = false;
+                continue;
+            }
+            if (remoteSuspendedNow) {
+                if (entry.suspendedByFullscreen) {
+                    entry.suspendedByFullscreen = false;
+                    entry.suspendedByRemote = true;
+                }
                 continue;
             }
             if (isPausedNow) {
@@ -530,6 +540,95 @@ bool HotkeyManager::isFullscreenSuspended() const {
     return m_fullscreenSuspended.load(std::memory_order_acquire);
 }
 
+void HotkeyManager::setRemoteSuspended(bool suspended) {
+    const DWORD ownerThreadId = m_ownerThreadId.load(std::memory_order_acquire);
+    if (isForeignHotkeyThread(ownerThreadId)) {
+        dispatchToHotkeyThread(ownerThreadId, "setRemoteSuspended",
+                               [this, suspended]() { setRemoteSuspended(suspended); });
+        return;
+    }
+
+    KeyboardHook::instance().setRemoteSuspended(suspended);
+
+    std::lock_guard lock(m_mutex);
+    const bool wasSuspended = m_remoteSuspended.exchange(suspended, std::memory_order_acq_rel);
+    if (wasSuspended == suspended) {
+        return;
+    }
+
+    if (suspended) {
+        for (auto& [name, entry] : m_hotkeys) {
+            if (entry.registered) {
+                if (entry.useHook) {
+                    KeyboardHook::instance().unregisterHookHotkey(entry.id);
+                } else if (m_hwnd) {
+                    UnregisterHotKey(m_hwnd, entry.id);
+                }
+                m_idToName.erase(entry.id);
+                entry.registered = false;
+                entry.useHook = false;
+                entry.suspendedByRemote = true;
+            } else if (entry.suspendedByPause || entry.suspendedByFullscreen) {
+                entry.suspendedByRemote = true;
+            }
+        }
+        LOG_INFO("[RemoteMaster] Local global hotkeys temporarily suspended for remote client");
+    } else {
+        const bool isPausedNow = m_paused.load(std::memory_order_relaxed);
+        const bool fullscreenNow = m_fullscreenSuspended.load(std::memory_order_relaxed);
+        for (auto& [name, entry] : m_hotkeys) {
+            if (!entry.armed || entry.def.virtualKey == 0) {
+                entry.suspendedByRemote = false;
+                continue;
+            }
+            if (fullscreenNow) {
+                if (entry.suspendedByRemote) {
+                    entry.suspendedByRemote = false;
+                    entry.suspendedByFullscreen = true;
+                }
+                continue;
+            }
+            if (isPausedNow) {
+                if (entry.suspendedByRemote) {
+                    entry.suspendedByRemote = false;
+                    entry.suspendedByPause = true;
+                }
+                continue;
+            }
+            if (entry.registered) {
+                entry.suspendedByRemote = false;
+                continue;
+            }
+            if (!entry.suspendedByRemote) {
+                continue;
+            }
+            entry.suspendedByRemote = false;
+            bool ok = false;
+            bool useHook = false;
+            if (m_hwnd && IsWindow(m_hwnd)) {
+                UINT mods = static_cast<UINT>(entry.def.modifiers) | MOD_NOREPEAT;
+                ok = (RegisterHotKey(m_hwnd, entry.id, mods, entry.def.virtualKey) != FALSE);
+            }
+            if (!ok && canFallbackToHook(entry.def)) {
+                KeyboardHook::instance().registerHookHotkey(entry.id, entry.def, name, entry.callback);
+                KeyboardHook::instance().install();
+                ok = true;
+                useHook = true;
+            }
+            entry.registered = ok;
+            entry.useHook = useHook;
+            if (ok) {
+                m_idToName[entry.id] = name;
+            }
+        }
+        LOG_INFO("[RemoteMaster] Local global hotkeys restored after leaving remote client");
+    }
+}
+
+bool HotkeyManager::isRemoteSuspended() const {
+    return m_remoteSuspended.load(std::memory_order_acquire);
+}
+
 void HotkeyManager::initialize(HWND messageWindow) {
     m_hwnd = messageWindow;
     DWORD ownerThreadId = 0;
@@ -548,8 +647,10 @@ void HotkeyManager::shutdown() {
     std::lock_guard lock(m_mutex);
     m_paused.store(false, std::memory_order_release);
     m_fullscreenSuspended.store(false, std::memory_order_release);
+    m_remoteSuspended.store(false, std::memory_order_release);
     KeyboardHook::instance().setPaused(false);
     KeyboardHook::instance().setFullscreenSuspended(false);
+    KeyboardHook::instance().setRemoteSuspended(false);
     for (const auto& [name, entry] : m_hotkeys) {
         if (entry.registered) {
             if (entry.useHook) {
@@ -601,13 +702,19 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
 
     int id = generateId();
     if (def.virtualKey == 0) {
-        m_hotkeys.emplace(name, HotkeyEntry{id, def, name, std::move(callback), false, true, false, "none", "", false, false, false});
+        m_hotkeys.emplace(name, HotkeyEntry{id, def, name, std::move(callback), false, true, false, "none", "", false, false, false, false});
         LOG_INFO("快捷键已禁用: name={}", name);
         return true;
     }
 
-    if (m_fullscreenSuspended.load(std::memory_order_relaxed)) {
-        m_hotkeys.emplace(name, HotkeyEntry{id, def, name, std::move(callback), false, true, false, "none", "", false, true, false});
+    if (m_fullscreenSuspended.load(std::memory_order_relaxed) ||
+        m_remoteSuspended.load(std::memory_order_relaxed)) {
+        m_hotkeys.emplace(name, HotkeyEntry{
+            id, def, name, std::move(callback), false, true, false, "none", "", false,
+            m_fullscreenSuspended.load(std::memory_order_relaxed),
+            m_remoteSuspended.load(std::memory_order_relaxed),
+            false
+        });
         return true;
     }
 
@@ -623,7 +730,7 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
         if (!canReg && canFallbackToHook(def)) {
             canReg = true;
         }
-        m_hotkeys.emplace(name, HotkeyEntry{id, def, name, std::move(callback), false, true, false, "none", "", false, false, canReg});
+        m_hotkeys.emplace(name, HotkeyEntry{id, def, name, std::move(callback), false, true, false, "none", "", false, false, false, canReg});
         return canReg;
     }
 
@@ -656,6 +763,7 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
         registered ? "none" : "external",
         registered ? "" : "已被第三方软件或系统快捷键占用",
         useHook,
+        false,
         false,
         false
     };
@@ -750,11 +858,13 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
         return true;
     }
 
-    if (m_fullscreenSuspended.load(std::memory_order_relaxed)) {
+    if (m_fullscreenSuspended.load(std::memory_order_relaxed) ||
+        m_remoteSuspended.load(std::memory_order_relaxed)) {
         it->second.def = newDef;
         it->second.registered = false;
         it->second.useHook = false;
-        it->second.suspendedByFullscreen = true;
+        it->second.suspendedByFullscreen = m_fullscreenSuspended.load(std::memory_order_relaxed);
+        it->second.suspendedByRemote = m_remoteSuspended.load(std::memory_order_relaxed);
         it->second.suspendedByPause = false;
         LOG_INFO("快捷键重绑定成功: name={}, {} → {}", name, oldDef.toString(), newDef.toString());
         return true;
@@ -831,6 +941,7 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
     it->second.registered = true;
     it->second.useHook = useHook;
     it->second.suspendedByFullscreen = false;
+    it->second.suspendedByRemote = false;
     it->second.suspendedByPause = false;
     m_idToName[it->second.id] = name;
     return true;
@@ -858,6 +969,7 @@ bool HotkeyManager::clearHotkey(const std::string& name) {
     it->second.registered = false;
     it->second.useHook = false;
     it->second.suspendedByFullscreen = false;
+    it->second.suspendedByRemote = false;
     it->second.suspendedByPause = false;
     LOG_INFO("快捷键已禁用: name={}", name);
     return true;
@@ -882,12 +994,14 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
         it->second.registered = false;
         it->second.useHook = false;
         it->second.suspendedByFullscreen = false;
+        it->second.suspendedByRemote = false;
         it->second.suspendedByPause = false;
         return true;
     }
 
     if (!armed) {
         it->second.suspendedByFullscreen = false;
+        it->second.suspendedByRemote = false;
         it->second.suspendedByPause = false;
         if (it->second.registered) {
             if (it->second.useHook) {
@@ -903,8 +1017,10 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
         return true;
     }
 
-    if (m_fullscreenSuspended.load(std::memory_order_relaxed)) {
-        it->second.suspendedByFullscreen = true;
+    if (m_fullscreenSuspended.load(std::memory_order_relaxed) ||
+        m_remoteSuspended.load(std::memory_order_relaxed)) {
+        it->second.suspendedByFullscreen = m_fullscreenSuspended.load(std::memory_order_relaxed);
+        it->second.suspendedByRemote = m_remoteSuspended.load(std::memory_order_relaxed);
         it->second.suspendedByPause = false;
         return true;
     }
@@ -932,6 +1048,7 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
     it->second.registered = ok;
     it->second.useHook = useHook;
     it->second.suspendedByFullscreen = false;
+    it->second.suspendedByRemote = false;
     it->second.suspendedByPause = false;
     if (ok) {
         m_idToName[it->second.id] = name;
@@ -946,7 +1063,7 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
 bool HotkeyManager::isConflict(const HotkeyDef& def) const {
     std::lock_guard lock(m_mutex);
     for (const auto& [name, entry] : m_hotkeys) {
-        if ((entry.registered || entry.suspendedByFullscreen || entry.suspendedByPause) &&
+        if ((entry.registered || entry.suspendedByFullscreen || entry.suspendedByRemote || entry.suspendedByPause) &&
             def.virtualKey != 0 && entry.def == def) {
             return true;
         }
@@ -1003,7 +1120,8 @@ HotkeyConflictInfo HotkeyManager::checkConflict(const HotkeyDef& def, const std:
 
 void HotkeyManager::handleHotkeyMessage(WPARAM wParam) {
     if (m_paused.load(std::memory_order_relaxed) ||
-        m_fullscreenSuspended.load(std::memory_order_relaxed)) {
+        m_fullscreenSuspended.load(std::memory_order_relaxed) ||
+        m_remoteSuspended.load(std::memory_order_relaxed)) {
         LOG_DEBUG("快捷键已暂停触发 (录制模式中)");
         return;
     }
@@ -1050,7 +1168,7 @@ std::vector<HotkeyEntry> HotkeyManager::getAllHotkeys() const {
 
     for (const auto& [name, entry] : m_hotkeys) {
         HotkeyEntry item = entry;
-        if (item.suspendedByFullscreen || item.suspendedByPause) {
+        if (item.suspendedByFullscreen || item.suspendedByRemote || item.suspendedByPause) {
             item.registered = true;
         }
         if (item.def.virtualKey == 0) {
@@ -1071,7 +1189,7 @@ std::vector<HotkeyEntry> HotkeyManager::getAllHotkeys() const {
                     }
                 }
                 item.conflictWith = "与插件/功能 [" + others + "] 冲突";
-            } else if (!item.suspendedByFullscreen && !item.suspendedByPause &&
+            } else if (!item.suspendedByFullscreen && !item.suspendedByRemote && !item.suspendedByPause &&
                        hotkeyLooksExternallyConflicted(
                            item.def.virtualKey != 0, item.armed, item.registered)) {
                 // 外部冲突 (被其它第三方软件占用)

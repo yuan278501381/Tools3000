@@ -49,7 +49,7 @@ const MAIN_ALPHA_ROWS: KeyDef[][] = [
     { label: '9', vkCode: 0x39, flex: 1 }, { label: '0', vkCode: 0x30, flex: 1 },
     { label: '-', fullName: 'Minus', vkCode: 0xBD, flex: 1 },
     { label: '=', fullName: 'Equals', vkCode: 0xBB, flex: 1 },
-    { label: 'Backspace', fullName: 'Backspace', vkCode: 0x08, flex: 2 }
+    { label: 'Bksp', fullName: 'Backspace', vkCode: 0x08, flex: 2 }
   ],
   // QWERTY Row (15u)
   [
@@ -99,9 +99,9 @@ const MAIN_ALPHA_ROWS: KeyDef[][] = [
 
 // ── 2. 编辑与方向键区 (Navigation / Editing / Arrows Cluster - 3u) ────────────
 const NAV_SYS_ROW: KeyDef[] = [
-  { label: 'PrtSc', fullName: 'Print Screen', vkCode: 0x2C, flex: 1 },
-  { label: 'ScrLk', fullName: 'Scroll Lock', vkCode: 0x91, flex: 1 },
-  { label: 'Pause', fullName: 'Pause Break', vkCode: 0x13, flex: 1 }
+  { label: 'Prt', fullName: 'Print Screen', vkCode: 0x2C, flex: 1 },
+  { label: 'Scr', fullName: 'Scroll Lock', vkCode: 0x91, flex: 1 },
+  { label: 'Pau', fullName: 'Pause Break', vkCode: 0x13, flex: 1 }
 ];
 
 const NAV_EDIT_ROWS: KeyDef[][] = [
@@ -150,18 +150,11 @@ const NUMPAD_GRID_KEYS: (KeyDef & { gridRow?: string; gridCol?: string })[] = [
   { label: '1', fullName: 'Numpad 1', vkCode: 0x61, gridRow: '4', gridCol: '1' },
   { label: '2', fullName: 'Numpad 2', vkCode: 0x62, gridRow: '4', gridCol: '2' },
   { label: '3', fullName: 'Numpad 3', vkCode: 0x63, gridRow: '4', gridCol: '3' },
-  { label: 'Enter', fullName: 'Numpad Enter', vkCode: [0x0D], gridRow: '4 / span 2', gridCol: '4' },
+  { label: 'Enter', fullName: 'Numpad Enter', vkCode: [0x10D], gridRow: '4 / span 2', gridCol: '4' },
   // Row 5
   { label: '0', fullName: 'Numpad 0', vkCode: 0x60, gridRow: '5', gridCol: '1 / span 2' },
   { label: '.', fullName: 'Numpad .', vkCode: 0x6E, gridRow: '5', gridCol: '3' },
 ];
-
-function formatMicroCount(num: number): string {
-  if (num <= 0) return '';
-  if (num >= 10000) return `${(num / 1000).toFixed(0)}k`;
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}k`;
-  return String(num);
-}
 
 interface KeyHeatStyle {
   background: string;
@@ -333,11 +326,13 @@ export const KeyboardHeatmap: FC<KeyboardHeatmapProps> = ({ keyMap }) => {
     const isLockedOn =
       (keyDef.label === 'Caps' && lockStates.capsLock) ||
       (keyDef.label === 'Num' && lockStates.numLock) ||
-      (keyDef.label === 'ScrLk' && lockStates.scrollLock);
+      (keyDef.fullName === 'Scroll Lock' && lockStates.scrollLock);
 
     return (
       <div
         key={keyIdentity}
+        data-key-identity={keyIdentity}
+        data-key-count={count}
         className={`keyboard-keycap ${customClass} ${count > 0 ? 'has-heat' : ''} ${isPeak ? 'is-peak' : ''} ${isLockedOn ? 'is-locked-on' : ''}`}
         style={{
           flex: keyDef.flex !== undefined ? `${keyDef.flex} 1 0%` : undefined,
@@ -349,15 +344,18 @@ export const KeyboardHeatmap: FC<KeyboardHeatmapProps> = ({ keyMap }) => {
         }}
       >
         <span className="keyboard-keycap__label">{keyDef.label}</span>
-        {count > 0 && (
+        {count > 0 && !isPeak && (
           <span
-            className="keyboard-keycap__count-pill"
-            style={{ color: style.subColor }}
-          >
-            {formatMicroCount(count)}
+            className="keyboard-keycap__heat-dot"
+            style={{ background: style.subColor }}
+            aria-hidden="true"
+          />
+        )}
+        {isPeak && (
+          <span className="keyboard-keycap__crown" aria-hidden="true">
+            <Flame size={11} color="#f97316" />
           </span>
         )}
-        {isPeak && <span className="keyboard-keycap__crown"><Flame size={10} color="#f97316" /></span>}
 
         {/* 浮动智能自适应轻量提示卡片 (顶部两行向下翻转，彻底杜绝顶部裁切与遮挡) */}
         <div className={`keyboard-heatmap__tooltip keyboard-heatmap__tooltip--${tooltipPlacement}`}>

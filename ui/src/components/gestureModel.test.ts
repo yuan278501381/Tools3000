@@ -4,6 +4,9 @@ import {
   upsertGestureMapping,
   codeToArrows,
   parseGestureCode,
+  parseDirectionSegments,
+  parseGesturePreview,
+  matchesGestureCategory,
   assembleGestureCode,
   GESTURE_CODE_PATTERN,
   simplifyDirections,
@@ -246,4 +249,83 @@ describe('simplifyDirections and recognizeStrokes (World-Class Recognition & Ant
     expect(recognizeStrokes(smoothRdrPoints)).toBe('R-D-R');
   });
 });
+
+describe('parseDirectionSegments and parseGesturePreview (U-06 regression)', () => {
+  it('parses wheel gestures with edge and button prefixes without splitting letters into stroke segments', () => {
+    const up = parseGesturePreview('WheelUp');
+    expect(up.wheelDirection).toBe('up');
+    expect(up.segments).toEqual([]);
+    expect(up.edge).toBe('none');
+    expect(up.triggerButton).toBe('right');
+
+    const edgeDown = parseGesturePreview('TopEdge+Middle+WheelDown');
+    expect(edgeDown.wheelDirection).toBe('down');
+    expect(edgeDown.edge).toBe('top');
+    expect(edgeDown.triggerButton).toBe('middle');
+    expect(edgeDown.segments).toEqual([]);
+
+    const rightExplicit = parseGesturePreview('RightEdge+Right+WheelUp');
+    expect(rightExplicit.wheelDirection).toBe('up');
+    expect(rightExplicit.edge).toBe('right');
+    expect(rightExplicit.triggerButton).toBe('right');
+    expect(rightExplicit.segments).toEqual([]);
+  });
+
+  it('strips all 4 screen edges and 5 mouse button prefixes cleanly before extracting direction segments', () => {
+    expect(parseGesturePreview('LeftEdge+R')).toMatchObject({
+      edge: 'left',
+      triggerButton: 'right',
+      wheelDirection: null,
+      segments: ['R'],
+    });
+    expect(parseGesturePreview('BottomEdge+Left+U-R')).toMatchObject({
+      edge: 'bottom',
+      triggerButton: 'left',
+      wheelDirection: null,
+      segments: ['U', 'R'],
+    });
+    expect(parseGesturePreview('X1+L')).toMatchObject({
+      edge: 'none',
+      triggerButton: 'x1',
+      segments: ['L'],
+    });
+    expect(parseGesturePreview('X2+D-R')).toMatchObject({
+      edge: 'none',
+      triggerButton: 'x2',
+      segments: ['D', 'R'],
+    });
+    expect(parseGesturePreview('LU')).toMatchObject({
+      wheelDirection: null,
+      segments: ['LU'],
+    });
+  });
+
+  it('never falls back unknown tokens into rightward segments', () => {
+    expect(parseDirectionSegments('WHEELUP')).toEqual([]);
+    expect(parseDirectionSegments('UNKNOWN_TOKEN')).toEqual([]);
+    expect(parseDirectionSegments('R-BOGUS-D')).toEqual(['R', 'D']);
+    expect(parseGesturePreview('InvalidGesture').segments).toEqual([]);
+    expect(parseGesturePreview('InvalidGesture').wheelDirection).toBeNull();
+  });
+
+  it('supports LeftEdge/RightEdge wheel gestures and classifies all 5 trigger categories accurately (U-11)', () => {
+    expect(GESTURE_CODE_PATTERN.test('LeftEdge+WheelUp')).toBe(true);
+    expect(GESTURE_CODE_PATTERN.test('RightEdge+WheelDown')).toBe(true);
+    expect(assembleGestureCode({ edge: 'left', bareCode: 'WheelUp' })).toBe('LeftEdge+WheelUp');
+    expect(assembleGestureCode({ edge: 'right', bareCode: 'WheelDown' })).toBe('RightEdge+WheelDown');
+
+    expect(matchesGestureCategory('R', 'right')).toBe(true);
+    expect(matchesGestureCategory('R', 'middle')).toBe(false);
+    expect(matchesGestureCategory('Middle+L', 'middle')).toBe(true);
+    expect(matchesGestureCategory('X1+L', 'side')).toBe(true);
+    expect(matchesGestureCategory('X2+R', 'side')).toBe(true);
+    expect(matchesGestureCategory('X1+L', 'right')).toBe(false);
+    expect(matchesGestureCategory('TopEdge+D', 'edge')).toBe(true);
+    expect(matchesGestureCategory('TopEdge+D', 'right')).toBe(false);
+    expect(matchesGestureCategory('LeftEdge+WheelUp', 'edge')).toBe(true);
+    expect(matchesGestureCategory('LeftEdge+WheelUp', 'wheel')).toBe(true);
+    expect(matchesGestureCategory('LeftEdge+WheelUp', 'right')).toBe(false);
+  });
+});
+
 

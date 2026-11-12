@@ -313,6 +313,14 @@ private:
 /// 标注引擎
 class MarkupEngine {
 public:
+    static constexpr size_t kMaxUndoSteps = 50;
+
+    /// 轻量级全矢量状态快照（仅含图元几何/样式元数据与序号进度，零整图拷贝）
+    struct MarkupSnapshot {
+        std::vector<MarkupElement> elements;
+        std::array<int, static_cast<size_t>(NumberFormat::COUNT)> nextNumbers = {1, 1, 1, 1, 1};
+    };
+
     MarkupEngine() = default;
 
     /// 设置底图（截图原图）。会清空所有标注与撤销栈（用于全新选区）。
@@ -321,7 +329,7 @@ public:
     /// 仅替换底图，保留现有标注与撤销栈（用于选区二次调整后重裁底图）。
     void updateBaseImage(const cv::Mat& image);
 
-    /// 平移所有标注（含撤销栈）。用于选区移动/缩放时让标注跟随屏幕内容。
+    /// 平移所有标注（含撤销/重做栈）。用于选区移动/缩放时让标注跟随屏幕内容。
     void translateAll(int dx, int dy);
 
     /// 获取当前合成图（底图 + 所有标注）
@@ -334,24 +342,52 @@ public:
     int baseWidth() const noexcept { return m_baseImage.cols; }
     int baseHeight() const noexcept { return m_baseImage.rows; }
 
+    // ── 事务快照与无损序列化 ─────────────────────────────────────────────
+
+    /// 捕获当前完整矢量快照（不修改撤销栈）
+    MarkupSnapshot captureSnapshot() const;
+
+    /// 在修改已有图元样式/几何前压入当前状态快照（支持最多 kMaxUndoSteps 步撤销）
+    void pushUndoSnapshot();
+
+    /// 提交外部预先捕获的事前快照（如拖拽平移/缩放结束后确认发生了实质位移再提交）
+    void commitUndoSnapshot(MarkupSnapshot&& beforeState);
+
+    /// 判断两组矢量图元状态在几何与样式上是否完全等价
+    static bool elementsEquivalent(const std::vector<MarkupElement>& a,
+                                   const std::vector<MarkupElement>& b) noexcept;
+    static bool elementEquivalent(const MarkupElement& a, const MarkupElement& b) noexcept;
+
+    /// 导出干净的矢量图元副本列表（剥离临时选中/编辑态，用于贴图二次无损标注）
+    std::vector<MarkupElement> exportElements() const;
+
+    /// 导入既有矢量图元列表并重建序号状态（清空历史撤销栈，作为新的二次编辑起点）
+    void importElements(const std::vector<MarkupElement>& elems);
+
     // ── 元素操作 ─────────────────────────────────────────────────────────
 
     /// 添加标注元素
     MarkupElement* addElement(std::unique_ptr<MarkupElement> element);
 
-    /// 撤销最后一个标注
+    /// 撤销上一步标注事务（增/删/改/移/清全支持）
     bool undo();
 
-    /// 重做
+    /// 重做下一步标注事务
     bool redo();
 
     /// UI affordances must be able to report these without attempting a
     /// mutation. This keeps disabled toolbar and UIA state truthful.
-    bool canUndo() const noexcept { return !m_elements.empty(); }
-    bool canRedo() const noexcept { return !m_undoStack.empty(); }
+    bool canUndo() const noexcept { return !m_undoHistory.empty(); }
+    bool canRedo() const noexcept { return !m_redoHistory.empty(); }
 
-    /// 清除所有标注
+    /// 硬重置清除所有标注与撤销/重做栈（用于新选区会话初始化或取消选区）
     void clearAll();
+
+    /// 退出截图会话时彻底释放底图矩阵、底层合成缓存与滤镜 ROI 缓存（冷路径内存回收）
+    void resetSession();
+
+    /// 可撤销地清空当前所有标注（用于工具栏 Clear 按钮与清空快捷键，支持 Ctrl+Z 一键恢复）
+    bool clearElementsUndoable();
 
     /// 获取当前标注数量
     size_t elementCount() const { return m_elements.size(); }
@@ -359,8 +395,10 @@ public:
     /// 获取所有图元元素列表
     const std::vector<std::unique_ptr<MarkupElement>>& elements() const noexcept { return m_elements; }
 
-    /// 是否存在任何标注（含撤销栈中已撤销但可重做的元素）
-    bool hasAnyMarkup() const { return !m_elements.empty() || !m_undoStack.empty(); }
+    /// 是否存在任何标注（含撤销/重做栈中可恢复的标注状态）
+    bool hasAnyMarkup() const {
+        return !m_elements.empty() || !m_undoHistory.empty() || !m_redoHistory.empty();
+    }
 
     /// 删除指定元素
     void removeElement(uint32_t id);
@@ -444,6 +482,15 @@ public:
     void renderAll(cv::Mat& canvas, bool includeActiveHandles = false) const;
 
 private:
+    struct FilterRoiCacheEntry {
+        MarkupTool tool = MarkupTool::Mosaic;
+        cv::Rect dstRoi;
+        int paramValue = 0;
+        int channels = 0;
+        uint64_t inputChecksum = 0;
+        cv::Mat resultPatch;
+    };
+
     static constexpr size_t numberFormatSlot(NumberFormat format) noexcept {
         const int idx = static_cast<int>(format);
         return (idx >= 0 && idx < static_cast<int>(NumberFormat::COUNT))
@@ -451,11 +498,21 @@ private:
             : 0u;
     }
     void recalculateNextNumbers() noexcept;
+    void restoreSnapshot(const MarkupSnapshot& snapshot);
+    void renderFilterElementCached(cv::Mat& canvas, const MarkupElement& elem) const;
+    void renderSubset(cv::Mat& canvas, size_t count, bool includeActiveHandles) const;
 
     cv::Mat m_baseImage;                                    // 底图
-    std::vector<std::unique_ptr<MarkupElement>> m_elements; // 标注元素
-    std::deque<std::unique_ptr<MarkupElement>> m_undoStack; // 撤销栈
+    std::vector<std::unique_ptr<MarkupElement>> m_elements; // 当前标注元素
+    std::deque<MarkupSnapshot> m_undoHistory;               // 撤销快照栈 (上限 kMaxUndoSteps)
+    std::deque<MarkupSnapshot> m_redoHistory;               // 重做快照栈 (上限 kMaxUndoSteps)
     std::array<int, static_cast<size_t>(NumberFormat::COUNT)> m_nextNumbers = {1, 1, 1, 1, 1}; // 各制式独立序列号
+
+    uint64_t m_baseRevision = 1;
+    mutable std::unordered_map<uint32_t, FilterRoiCacheEntry> m_filterRoiCache;
+    mutable cv::Mat m_underlayCache;
+    mutable uint64_t m_underlayBaseRev = 0;
+    mutable std::vector<MarkupElement> m_underlayElements;
 };
 
 }  // namespace tools3000::capture

@@ -80,6 +80,7 @@ struct HotkeyEntry {
     std::string conflictWith;   // 冲突关联说明
     bool useHook = false;       // 是否由底层键盘钩子接管
     bool suspendedByFullscreen = false; // 是否因全屏游戏防打扰临时挂起卸下
+    bool suspendedByRemote = false;     // 是否因远控窗口前台激活临时挂起让位
     bool suspendedByPause = false;      // 是否因快捷键静默录制模式临时卸下
 };
 
@@ -136,6 +137,10 @@ public:
     void setFullscreenSuspended(bool suspended);
     bool isFullscreenSuspended() const;
 
+    /// 远控桌面智能让位：远控客户端获焦时物理卸下本地全局热键（如将 F1/Alt+Space 归还给远端主机），失焦后自动恢复
+    void setRemoteSuspended(bool suspended);
+    bool isRemoteSuspended() const;
+
 private:
     HotkeyManager() = default;
     HotkeyManager(const HotkeyManager&) = delete;
@@ -151,6 +156,7 @@ private:
     std::atomic<int> m_nextId{1};
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_fullscreenSuspended{false};
+    std::atomic<bool> m_remoteSuspended{false};
 };
 
 }  // namespace tools3000::core

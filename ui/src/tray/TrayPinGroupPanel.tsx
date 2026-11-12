@@ -54,6 +54,11 @@ export function TrayPinGroupPanel({
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState<number>(1);
   const [draftOverrides, setDraftOverrides] = useState<Record<number, string>>({});
+  const [pendingConfirm, setPendingConfirm] = useState<
+    | { type: 'closeGroup'; groupId: number }
+    | { type: 'closeAll' }
+    | null
+  >(null);
   const skipCommitOnBlurRef = useRef(false);
 
   const groupCount = state.groups.length;
@@ -435,11 +440,40 @@ export function TrayPinGroupPanel({
                 type="button"
                 className="tray-pin-action-btn tray-pin-action-btn--danger"
                 disabled={disabled}
-                onClick={() => onControl({ closeGroup: state.activeFilter })}
+                onClick={() => setPendingConfirm({ type: 'closeGroup', groupId: state.activeFilter })}
               >
                 <Trash2 size={12} aria-hidden="true" />
                 <span>{t('tray.pinCloseGroup', 'Close Group')}</span>
               </button>
+            </div>
+          )}
+
+          {pendingConfirm?.type === 'closeGroup' && pendingConfirm.groupId === state.activeFilter && isGroupSelected && (
+            <div className="tray-pin-confirm-strip" role="alert">
+              <span className="tray-pin-confirm-strip__text">
+                {t('tray.confirmCloseGroup', 'Close all pins in this group?')}
+              </span>
+              <div className="tray-pin-confirm-strip__actions">
+                <button
+                  type="button"
+                  className="tray-pin-confirm-btn tray-pin-confirm-btn--danger"
+                  disabled={disabled}
+                  onClick={() => {
+                    const targetId = pendingConfirm.groupId;
+                    setPendingConfirm(null);
+                    onControl({ closeGroup: targetId });
+                  }}
+                >
+                  {t('common.confirm', 'Confirm')}
+                </button>
+                <button
+                  type="button"
+                  className="tray-pin-confirm-btn"
+                  onClick={() => setPendingConfirm(null)}
+                >
+                  {t('common.cancel', 'Cancel')}
+                </button>
+              </div>
             </div>
           )}
 
@@ -475,11 +509,39 @@ export function TrayPinGroupPanel({
                 type="button"
                 className="tray-pin-action-btn tray-pin-action-btn--danger"
                 disabled={disabled}
-                onClick={() => onControl({ closeAll: true })}
+                onClick={() => setPendingConfirm({ type: 'closeAll' })}
               >
                 <Trash2 size={12} aria-hidden="true" />
                 <span>{t('tray.pinCloseAll', 'Close All')}</span>
               </button>
+            </div>
+          )}
+
+          {pendingConfirm?.type === 'closeAll' && state.totalCount > 0 && (
+            <div className="tray-pin-confirm-strip" role="alert">
+              <span className="tray-pin-confirm-strip__text">
+                {t('tray.confirmCloseAll', 'Close all desktop pins?')}
+              </span>
+              <div className="tray-pin-confirm-strip__actions">
+                <button
+                  type="button"
+                  className="tray-pin-confirm-btn tray-pin-confirm-btn--danger"
+                  disabled={disabled}
+                  onClick={() => {
+                    setPendingConfirm(null);
+                    onControl({ closeAll: true });
+                  }}
+                >
+                  {t('common.confirm', 'Confirm')}
+                </button>
+                <button
+                  type="button"
+                  className="tray-pin-confirm-btn"
+                  onClick={() => setPendingConfirm(null)}
+                >
+                  {t('common.cancel', 'Cancel')}
+                </button>
+              </div>
             </div>
           )}
         </div>

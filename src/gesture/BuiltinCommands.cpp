@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "gesture/BuiltinCommands.h"
+#include "core/config/ConfigManager.h"
 #include "core/logger/Logger.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
@@ -10,6 +11,8 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <algorithm>
+#include <cctype>
 #include <cwctype>
 #include <mutex>
 #include <unordered_map>
@@ -37,7 +40,7 @@ std::string urlEncodeUtf8(std::string_view utf8) {
     return encoded;
 }
 
-std::wstring buildWebSearchUrl(std::wstring_view rawText) {
+std::wstring buildWebSearchUrl(std::wstring_view rawText, std::string_view engine) {
     size_t first = 0;
     while (first < rawText.size() && std::iswspace(rawText[first])) {
         ++first;
@@ -64,9 +67,26 @@ std::wstring buildWebSearchUrl(std::wstring_view rawText) {
         return std::wstring(trimmed);
     }
 
+    std::string resolvedEngine(engine);
+    if (resolvedEngine.empty()) {
+        resolvedEngine = tools3000::core::ConfigManager::instance().get<std::string>(
+            "/gesture/webSearchEngine", "bing");
+    }
+    std::transform(resolvedEngine.begin(), resolvedEngine.end(), resolvedEngine.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    std::wstring prefix = L"https://www.bing.com/search?q=";
+    if (resolvedEngine == "google") {
+        prefix = L"https://www.google.com/search?q=";
+    } else if (resolvedEngine == "baidu") {
+        prefix = L"https://www.baidu.com/s?wd=";
+    } else if (resolvedEngine == "duckduckgo") {
+        prefix = L"https://duckduckgo.com/?q=";
+    }
+
     const std::string utf8Query = tools3000::core::WinUtils::wstringToUtf8(std::wstring(trimmed));
     const std::string encodedQuery = urlEncodeUtf8(utf8Query);
-    return L"https://www.baidu.com/s?wd=" + tools3000::core::WinUtils::utf8ToWstring(encodedQuery);
+    return prefix + tools3000::core::WinUtils::utf8ToWstring(encodedQuery);
 }
 
 BuiltinCommandDispatcher& BuiltinCommandDispatcher::instance() {
@@ -253,21 +273,15 @@ void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr
         case BuiltinCommand::CloseTab:           sendCombo(MOD_CONTROL, 'W', targetWindowPtr); break;
         case BuiltinCommand::RestoreClosedTab:   sendCombo(MOD_CONTROL | MOD_SHIFT, 'T', targetWindowPtr); break;
         case BuiltinCommand::WebSearch: {
-            sendCombo(MOD_CONTROL, 'C', targetWindowPtr); // 发送 Ctrl+C 复制
-            Sleep(50); // 等待剪贴板更新
-            if (OpenClipboard(nullptr)) {
-                std::wstring text;
-                HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-                if (hData) {
-                    const wchar_t* pszText = static_cast<const wchar_t*>(GlobalLock(hData));
-                    if (pszText) {
-                        text.assign(pszText);
-                        GlobalUnlock(hData);
-                    }
-                }
-                CloseClipboard();
-
-                const std::wstring url = buildWebSearchUrl(text);
+            if (HWND target = resolveTargetWindow(targetWindowPtr);
+                target && IsWindow(target) && target != GetForegroundWindow()) {
+                SetForegroundWindow(target);
+                Sleep(15);
+            }
+            const std::string selectedUtf8 = tools3000::core::WinUtils::captureSelectedText();
+            if (!selectedUtf8.empty()) {
+                const std::wstring selectedWide = tools3000::core::WinUtils::utf8ToWstring(selectedUtf8);
+                const std::wstring url = buildWebSearchUrl(selectedWide);
                 if (!url.empty()) {
                     ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
@@ -291,12 +305,16 @@ void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr
         case BuiltinCommand::NextVirtualDesktop: executeStagedDesktopSwitch(/*next=*/true); break;
         case BuiltinCommand::LockScreen:         LockWorkStation(); break;
 
+        // ── 已下线历史命令槽位保留 (兼容旧配置数值索引) ───────────────────────
+        case BuiltinCommand::ShowRadialMenu:
+            LOG_DEBUG("ShowRadialMenu command ignored (deprecated slot)");
+            break;
+
         // ── 应用级 (经回调路由, 保持单向依赖) ─────────────────────────────────
         case BuiltinCommand::PauseGestures:
         case BuiltinCommand::TakeScreenshot:
         case BuiltinCommand::StartRecording:
         case BuiltinCommand::ToggleSearch:
-        case BuiltinCommand::ShowRadialMenu:
         case BuiltinCommand::PasteAsPin:
             dispatchAppCommand(cmd);
             break;

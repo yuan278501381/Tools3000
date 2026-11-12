@@ -20,8 +20,20 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { SavedToast } from './components/SavedToast';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { getPageMetadata, PAGE_DEFINITIONS } from './pages/registry';
+import { consumePendingDeepNavigation, type DeepNavigationPayload } from './config/settingsSearchIndex';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
-import { useAppearance } from './hooks/useAppearance';
+import {
+  applyLocalAppearance,
+  isAccentColor,
+  isThemePreference,
+  persistAppearanceToBackend,
+  readStoredAccent,
+  readStoredTheme,
+  useAppearance,
+  type AppearancePayload,
+  type Theme,
+  type ThemePreference,
+} from './hooks/useAppearance';
 import { shouldShowOnboarding } from './onboardingGate';
 import { Toaster } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -43,9 +55,6 @@ const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then(
 const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((module) => ({ default: module.RemoteBoostPage })));
 const ExtensionPage = lazy(() => import('./pages/ExtensionPage').then((module) => ({ default: module.ExtensionPage })));
 
-type Theme = 'dark' | 'light';
-type ThemePreference = Theme | 'system';
-
 const getInitialActivePluginIds = (): string[] | null => {
   try {
     const raw = localStorage.getItem('tools3000:active-plugins');
@@ -61,21 +70,9 @@ const getInitialActivePluginIds = (): string[] | null => {
   return null;
 };
 
-function readStoredThemePreference(): ThemePreference {
-  try {
-    const raw = localStorage.getItem('tools3000:theme');
-    if (raw === 'light' || raw === 'dark' || raw === 'system') {
-      return raw;
-    }
-  } catch {
-    // 忽略本地存储读取异常
-  }
-  return 'system';
-}
-
 function App() {
-  useAppearance();
   const { t } = useTranslation();
+  const [isElevated, setIsElevated] = useState(false);
   const [activePluginIds, setActivePluginIds] = useState<string[] | null>(() => getInitialActivePluginIds());
   const [activeNav, setActiveNav] = useState<NavId>(() => {
     try {
@@ -104,18 +101,13 @@ function App() {
     window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 
   const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme());
-  const [themePreference, setThemePreference] = useState<ThemePreference>(() => readStoredThemePreference());
-  const [accent, setAccent] = useState<string>(() => {
-    try {
-      return localStorage.getItem('tools3000:accent-color') || 'blue';
-    } catch {
-      return 'blue';
-    }
-  });
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => readStoredTheme('system'));
+  const [accent, setAccent] = useState<string>(() => readStoredAccent('blue'));
   const theme: Theme = themePreference === 'system' ? systemTheme : themePreference;
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
   const pageTitleRef = useRef<HTMLHeadingElement>(null);
+  const contentContainerRef = useRef<HTMLDivElement>(null);
 
   const handleNavSelect = useCallback((nav: NavId) => {
     setActiveNav(nav);
@@ -187,34 +179,27 @@ function App() {
     return new Set(['gesture', 'capture', 'search', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost']);
   }, [plugins, activePluginIds]);
 
-  const [isElevated, setIsElevated] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    bridgeRequest<{ theme?: string; accentColor?: string; elevated?: boolean }>('general.getSettings')
-      .then((settings) => {
-        if (cancelled || !settings) return;
-        if (typeof settings.elevated === 'boolean') {
-          setIsElevated(settings.elevated);
-        }
-        if (settings.theme === 'light' || settings.theme === 'dark' || settings.theme === 'system') {
-          setThemePreference(settings.theme);
-        }
-        if (typeof settings.accentColor === 'string' && settings.accentColor) {
-          setAccent(settings.accentColor);
-        }
-      })
-      .catch(console.error);
-    return () => { cancelled = true; };
+  const handleAppearanceHydrated = useCallback((settings: AppearancePayload) => {
+    if (typeof settings.elevated === 'boolean') {
+      setIsElevated(settings.elevated);
+    }
+    if (isThemePreference(settings.theme)) {
+      setThemePreference(settings.theme);
+    }
+    if (isAccentColor(settings.accentColor)) {
+      setAccent(settings.accentColor);
+    }
   }, []);
+
+  useAppearance(handleAppearanceHydrated);
 
   useBridgeEvent('appearance:changed', (data: unknown) => {
     if (!data || typeof data !== 'object') return;
     const payload = data as { theme?: unknown; accentColor?: unknown };
-    if (payload.theme === 'light' || payload.theme === 'dark' || payload.theme === 'system') {
+    if (isThemePreference(payload.theme)) {
       setThemePreference(payload.theme);
     }
-    if (typeof payload.accentColor === 'string' && payload.accentColor) {
+    if (isAccentColor(payload.accentColor)) {
       setAccent(payload.accentColor);
     }
   });
@@ -260,6 +245,48 @@ function App() {
     const frame = requestAnimationFrame(() => pageTitleRef.current?.focus());
     return () => cancelAnimationFrame(frame);
   }, [activeNav, showOnboarding]);
+
+  useEffect(() => {
+    let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const locateTargetInContent = (targetText: string, attempt = 0) => {
+      const container = contentContainerRef.current;
+      const needle = targetText.trim().toLowerCase();
+      if (!container || !needle) return;
+      const candidates = Array.from(
+        container.querySelectorAll<HTMLElement>('.uikit-setting-row, .uikit-setting-group, .uikit-card'),
+      );
+      const matched = candidates.find((el) => (el.textContent || '').toLowerCase().includes(needle));
+      if (matched) {
+        matched.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+        matched.classList.add('app__deep-highlight');
+        highlightTimer = setTimeout(() => {
+          matched.classList.remove('app__deep-highlight');
+        }, 1600);
+      } else if (attempt < 6) {
+        pollTimer = setTimeout(() => locateTargetInContent(targetText, attempt + 1), 80);
+      }
+    };
+
+    const pending = activeNav !== 'search' ? consumePendingDeepNavigation(activeNav) : null;
+    if (pending?.targetText) {
+      pollTimer = setTimeout(() => locateTargetInContent(pending.targetText!), 60);
+    }
+
+    const onDeepNav = (e: Event) => {
+      const detail = (e as CustomEvent<DeepNavigationPayload>).detail;
+      if (detail?.targetText && detail.navId === activeNav) {
+        pollTimer = setTimeout(() => locateTargetInContent(detail.targetText!), 60);
+      }
+    };
+    window.addEventListener('tools3000:navigate-deep', onDeepNav);
+    return () => {
+      window.removeEventListener('tools3000:navigate-deep', onDeepNav);
+      if (highlightTimer) clearTimeout(highlightTimer);
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [activeNav]);
 
   useEffect(() => {
     const handlePreference = (event: Event) => {
@@ -402,24 +429,14 @@ function App() {
         themePreference={themePreference}
         onSelectThemePreference={(pref) => {
           setThemePreference(pref);
-          try {
-            localStorage.setItem('tools3000:theme', pref);
-          } catch (e) {
-            void e;
-          }
-          bridgeRequest<{ success: boolean }>('general.updateSettings', { theme: pref }).catch(console.error);
-          window.dispatchEvent(new CustomEvent('tools3000:theme-changed', { detail: pref }));
+          applyLocalAppearance({ theme: pref });
+          persistAppearanceToBackend({ theme: pref, accentColor: accent }).catch(console.error);
         }}
         accent={accent}
         onSelectAccent={(newAccent) => {
           setAccent(newAccent);
-          try {
-            localStorage.setItem('tools3000:accent-color', newAccent);
-          } catch (e) {
-            void e;
-          }
-          bridgeRequest<{ success: boolean }>('general.updateSettings', { accentColor: newAccent }).catch(console.error);
-          window.dispatchEvent(new CustomEvent('tools3000:accent-changed', { detail: newAccent }));
+          applyLocalAppearance({ accentColor: newAccent });
+          persistAppearanceToBackend({ theme: themePreference, accentColor: newAccent }).catch(console.error);
         }}
       />
       <div className="app__body">
@@ -447,7 +464,7 @@ function App() {
           </header>
 
           {/* ── 页面内容 ────────────────────────────────────── */}
-          <div className="app__content" key={activeNav}>
+          <div className="app__content" ref={contentContainerRef} key={activeNav}>
             <Suspense fallback={<div role="status" aria-live="polite" className="surface-loading">{t('common.loading')}</div>}>
               {renderPage()}
             </Suspense>

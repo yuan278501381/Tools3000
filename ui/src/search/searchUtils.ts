@@ -731,24 +731,99 @@ export function stripContentSyntaxFromQuery(query: string): string {
   return output.join(' ');
 }
 
+const FILTER_ONLY_KEYWORD_PREFIXES = new Set([
+  'ext',
+  'size',
+  'len',
+  'dm',
+  'date',
+  'datemodified',
+  'modified',
+  'dc',
+  'datecreated',
+  'created',
+  'da',
+  'dateaccessed',
+  'accessed',
+  'sort',
+  'orderby',
+  'attrib',
+  'attributes',
+  'type',
+  'kind',
+  'dupe',
+  'parent',
+  'p',
+  'path',
+  'infolder',
+  'nosubfolders',
+  'regex',
+  'r',
+  'pinyin',
+  'py',
+]);
+
+const VALUE_BEARING_KEYWORD_PREFIXES = new Set([
+  'content',
+  '\u5185\u5bb9',
+  'c',
+  'case',
+  'cs',
+  'nocase',
+  'exact',
+  'wfn',
+  'wholefilename',
+  'nopy',
+  'file',
+  'folder',
+  'dir',
+]);
+
 /**
- * 从原始查询文本中提取用于行高亮的核心关键词列表，剔除语法前缀与特殊修饰符。
+ * 从原始查询文本中提取用于行高亮的核心关键词列表，剔除 `!` 排除项与已知冒号算子。
  */
 export function parseQueryKeywords(query: string): string[] {
   const trimmed = query.trim();
   if (!trimmed) return [];
-  const tokens = trimmed.split(/[\s|]+/).filter(Boolean);
+
+  const pushCleanedWords = (rawSegment: string, target: string[]) => {
+    const unquoted = stripOuterPairedQuotes(rawSegment);
+    for (const part of unquoted.split(/\s+/)) {
+      const clean = part.replace(/[*?"]/g, '').trim();
+      if (clean.length > 0 && !target.includes(clean)) {
+        target.push(clean);
+      }
+    }
+  };
+
+  const tokens = tokenizeQueryQuoteAware(trimmed);
   const keywords: string[] = [];
-  for (const token of tokens) {
-    let clean = token.replace(/^!/, '');
-    const colonPos = clean.indexOf(':');
-    if (colonPos !== -1 && colonPos < 8) {
-      clean = clean.substring(colonPos + 1);
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (!token || token === '|') continue;
+    // 剔除所有 ! 排除项（含 !"quoted phrase"）及独立逻辑连接符
+    if (token.startsWith('!')) continue;
+    if (token === 'NOT' || token === 'OR' || token === 'AND') continue;
+    // 跳过盘符或盘符路径限定词（如 c:, D:\Work）
+    if (/^[a-zA-Z]:(?:[\\/].*)?$/.test(token)) continue;
+
+    const colonPos = token.indexOf(':');
+    if (colonPos > 0) {
+      const prefix = token.slice(0, colonPos).toLowerCase();
+      const rest = token.slice(colonPos + 1);
+      if (FILTER_ONLY_KEYWORD_PREFIXES.has(prefix)) {
+        continue;
+      }
+      if (VALUE_BEARING_KEYWORD_PREFIXES.has(prefix)) {
+        if (rest.length > 0) {
+          pushCleanedWords(rest, keywords);
+        }
+        continue;
+      }
     }
-    clean = clean.replace(/[*?"]/g, '').trim();
-    if (clean.length > 0 && !keywords.includes(clean)) {
-      keywords.push(clean);
-    }
+
+    pushCleanedWords(token, keywords);
   }
   return keywords;
 }

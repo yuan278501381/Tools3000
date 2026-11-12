@@ -190,26 +190,13 @@ void GestureTrailOverlay::applyThemeColorsLocked() {
     m_style.outlineWidth = clampTrailOutlineWidth(
         std::isfinite(rawOutlineWidth) ? rawOutlineWidth : 1.5f);
 
-    const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-    const tools3000::core::AccentColorRGB themeRgb = tools3000::core::getAccentColorRGB(accent);
+    const tools3000::core::AccentColorRGB themeRgb =
+        tools3000::core::NativeThemePalette::getEffectiveAccentColorRGB();
     m_cachedTrailRgb = resolveGestureTrailRgb(colorMode, customHex, themeRgb);
 
-    // 检测是否为亮色主题 (仅在配置变更或主题刷新时执行一次低频注册表读取，杜绝热路径重复查询)
+    // 统一通过 NativeThemePalette 单一事实源判定明暗主题（仅在配置变更或主题刷新时执行，热路径零查询）
     const std::string theme = cfg.get<std::string>("/general/theme", "system");
-    bool systemAppsUseLight = false;
-    if (theme == "system") {
-        HKEY hKey;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-            0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            DWORD value = 1;
-            DWORD size = sizeof(value);
-            if (RegQueryValueExW(hKey, L"AppsUseLightTheme", nullptr, nullptr, (LPBYTE)&value, &size) == ERROR_SUCCESS) {
-                systemAppsUseLight = (value != 0);
-            }
-            RegCloseKey(hKey);
-        }
-    }
+    const bool systemAppsUseLight = !tools3000::core::WinUtils::isSystemDarkMode();
     m_isLightTheme = gestureTrailUsesLightPalette(theme, systemAppsUseLight);
     m_isDarkTheme = !m_isLightTheme;
 
@@ -571,16 +558,37 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                 } else {
                     const float fadeAlpha = gestureFadeAlpha(clockStarted, elapsed, holdMs, fadeMs);
                     m_fadeAlpha.store(fadeAlpha, std::memory_order_relaxed);
+                    const bool isSuccess = m_isRecognized.load(std::memory_order_relaxed);
 
                     if (m_compositorReady && m_dcompDevice && m_trailDcompVisual) {
-                        if (!clockStarted) {
-                            // 最后一帧固化：以 1.0f 完成轨迹与 Toast 卡片的最后一次物理光栅化
-                            m_fadeAlpha.store(1.0f, std::memory_order_relaxed);
-                            render();
-                            m_fadeStartTick = GetTickCount();
-                            m_fadeClockStarted.store(true, std::memory_order_release);
+                        static thread_local bool s_dcompPostPulseBaked = false;
+                        static thread_local uint64_t s_dcompBakedEpoch = 0;
+                        if (!clockStarted || s_dcompBakedEpoch != m_fadeEpoch) {
+                            s_dcompPostPulseBaked = false;
+                            s_dcompBakedEpoch = m_fadeEpoch;
+                        }
+
+                        const float pulse = gestureSuccessPulseIntensity(true, isSuccess, clockStarted, elapsed);
+                        if (!clockStarted || (isSuccess && elapsed < 190u)) {
+                            // 前 190ms 成功高光脉冲期：逐帧更新脉冲强度与硬件不透明度，保留流光收缩回落质感
+                            m_pulseIntensity.store(pulse, std::memory_order_relaxed);
+                            const bool presented = render();
+                            {
+                                std::lock_guard renderLock(m_renderMutex);
+                                applyVisualOpacityLocked(fadeAlpha);
+                            }
+                            if (!clockStarted && presented) {
+                                m_fadeStartTick = GetTickCount();
+                                m_fadeClockStarted.store(true, std::memory_order_release);
+                            }
+                            m_pacer.advanceDeadline();
                         } else {
-                            // 纯硬件淡出：0 CPU 重绘，0 GPU 绘制指令
+                            if (!s_dcompPostPulseBaked) {
+                                // 190ms 脉冲结束后固化一帧无脉冲底图，随后切入零重绘纯硬件 Opacity 淡出
+                                m_pulseIntensity.store(0.0f, std::memory_order_relaxed);
+                                render();
+                                s_dcompPostPulseBaked = true;
+                            }
                             {
                                 std::lock_guard renderLock(m_renderMutex);
                                 applyVisualOpacityLocked(fadeAlpha);
@@ -588,7 +596,6 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                             m_pacer.advanceDeadline();
                         }
                     } else {
-                        const bool isSuccess = m_isRecognized.load(std::memory_order_relaxed);
                         m_pulseIntensity.store(gestureSuccessPulseIntensity(true, isSuccess, clockStarted, elapsed), std::memory_order_relaxed);
                         const bool presented = render();
                         if (presented) {
@@ -1757,17 +1764,27 @@ void GestureTrailOverlay::drawToastContentDirect(
             const bool isSuccess = (isRecognized || m_isRecognized.load(std::memory_order_relaxed));
 
             D2D1_COLOR_F bgColor;
+            D2D1_COLOR_F borderColor;
+            D2D1_COLOR_F textColor;
             if (isFading && isSuccess) {
                 const auto pulseBg = computeSuccessPulseBgColor(trailRgb, pulseIntensity);
                 const float bgAlpha = (0.95f + 0.03f * pulseIntensity) * fadeAlpha;
                 bgColor = D2D1::ColorF(pulseBg.r, pulseBg.g, pulseBg.b, bgAlpha);
+                borderColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, (0.38f + 0.50f * pulseIntensity) * fadeAlpha);
+                textColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f * fadeAlpha);
+            } else if (m_isLightTheme) {
+                bgColor = D2D1::ColorF(0.97f, 0.98f, 0.99f, 0.94f * fadeAlpha);
+                borderColor = isSuccess
+                    ? D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 0.55f * fadeAlpha)
+                    : D2D1::ColorF(0.10f, 0.12f, 0.18f, 0.18f * fadeAlpha);
+                textColor = D2D1::ColorF(0.09f, 0.11f, 0.16f, 0.98f * fadeAlpha);
             } else {
-                bgColor = D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.86f * fadeAlpha);
+                bgColor = D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.88f * fadeAlpha);
+                borderColor = isSuccess
+                    ? D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 0.62f * fadeAlpha)
+                    : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f * fadeAlpha);
+                textColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f * fadeAlpha);
             }
-            D2D1_COLOR_F borderColor = (isFading && isSuccess)
-                ? D2D1::ColorF(1.0f, 1.0f, 1.0f, (0.38f + 0.50f * pulseIntensity) * fadeAlpha)
-                : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f * fadeAlpha);
-            D2D1_COLOR_F textColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f * fadeAlpha);
 
             if (!ctx.bgBrush) rt->CreateSolidColorBrush(bgColor, ctx.bgBrush.GetAddressOf());
             else ctx.bgBrush->SetColor(bgColor);

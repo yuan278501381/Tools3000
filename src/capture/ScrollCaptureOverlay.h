@@ -58,6 +58,7 @@ public:
     bool initialize();
     void show(RECT captureRect);
     void hide();
+    void reloadTheme();
 
     /// 更新最近滚动预览缩略图并触发边框脉冲反馈
     void updatePreview(const cv::Mat& stitched, int frameCount);

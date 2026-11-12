@@ -96,9 +96,10 @@ describe('getSortedResults with FileFolderPriority', () => {
 });
 
 describe('parseQueryKeywords & Content Search Syntax Helpers', () => {
-  it('extracts tokens and removes prefixes and wildcards', () => {
-    expect(parseQueryKeywords('ext:txt document* !exclude')).toEqual(['txt', 'document', 'exclude']);
-    expect(parseQueryKeywords('ext:docx content:"hello world"')).toEqual(['docx', 'hello', 'world']);
+  it('extracts highlightable tokens while filtering out !exclude terms and non-highlightable filter operators', () => {
+    expect(parseQueryKeywords('ext:txt document* !exclude')).toEqual(['document']);
+    expect(parseQueryKeywords('ext:docx content:"hello world" !"draft v1" dm:today size:>1mb')).toEqual(['hello', 'world']);
+    expect(parseQueryKeywords('case:Tools3000 !temp path:src')).toEqual(['Tools3000']);
     expect(parseQueryKeywords('content: 采购合同')).toEqual(['采购合同']);
     expect(parseQueryKeywords('')).toEqual([]);
   });

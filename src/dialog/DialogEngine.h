@@ -28,6 +28,7 @@ public:
     bool isRunning() const { return m_running.load(); }
 
     void onWinEvent(DWORD event, HWND hwnd, LONG idObject, LONG idChild);
+    void refreshActiveDialogOverlay(bool clearDismissed = false);
     static bool shouldProcessWinEvent(DWORD event, HWND hwnd, LONG idObject, LONG idChild) noexcept;
 
 private:
@@ -63,6 +64,7 @@ private:
     std::atomic<HWINEVENTHOOK> m_hookForeground{nullptr};
     std::atomic<HWINEVENTHOOK> m_hookLocation{nullptr};
     std::atomic<HWINEVENTHOOK> m_hookInvoke{nullptr};
+    std::atomic<HWINEVENTHOOK> m_hookNameChange{nullptr};
 
     std::thread m_hookThread;             // 专用钩子线程
     std::atomic<DWORD> m_hookThreadId{0}; // 钩子线程 tid，用于 PostThreadMessage

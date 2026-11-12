@@ -52,6 +52,47 @@ export const SearchSortDropdown: React.FC<SearchSortDropdownProps> = ({
   onToggleSmartPathPriority,
 }) => {
   const { t } = useTranslation();
+  const menuBodyRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!showSortMenu || !menuBodyRef.current) return;
+    const focusables = Array.from(
+      menuBodyRef.current.querySelectorAll<HTMLElement>(
+        '[data-sort-nav="true"], button:not(:disabled), input:not(:disabled)'
+      )
+    );
+    focusables[0]?.focus({ preventScroll: true });
+  }, [showSortMenu]);
+
+  const handleSortMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!menuBodyRef.current) return;
+    const focusables = Array.from(
+      menuBodyRef.current.querySelectorAll<HTMLElement>(
+        '[data-sort-nav="true"], button:not(:disabled), input:not(:disabled)'
+      )
+    );
+    if (focusables.length === 0) return;
+    const idx = focusables.indexOf(document.activeElement as HTMLElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      e.stopPropagation();
+      const next = idx < 0 ? 0 : (idx + 1) % focusables.length;
+      focusables[next]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      e.stopPropagation();
+      const next = idx <= 0 ? focusables.length - 1 : idx - 1;
+      focusables[next]?.focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      e.stopPropagation();
+      focusables[0]?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      e.stopPropagation();
+      focusables[focusables.length - 1]?.focus();
+    }
+  };
 
   const renderDirectionalLabel = (rawText: string, dir: SortDirection) => {
     const cleaned = rawText.replace(/\s*[↓↑]\s*$/u, '').trim();
@@ -118,15 +159,31 @@ export const SearchSortDropdown: React.FC<SearchSortDropdownProps> = ({
       </div>
 
       {showSortMenu && (
-        <div className="sort-dropdown-menu">
+        <div
+          ref={menuBodyRef}
+          role="menu"
+          className="sort-dropdown-menu"
+          onKeyDown={handleSortMenuKeyDown}
+        >
           <div className="sort-menu-header">
             <span>{t('search.sortMenuTitle', 'Sort Column & Direction')}</span>
           </div>
           <div className="sort-menu-items-group">
             {/* 智能相关度 */}
             <div
+              role="menuitemradio"
+              aria-checked={sortField === 'relevance'}
+              tabIndex={0}
+              data-sort-nav="true"
               className={`sort-menu-row ${sortField === 'relevance' ? 'sort-menu-row--active' : ''}`}
               onClick={() => onSetSortDirect('relevance', 'desc')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onSetSortDirect('relevance', 'desc');
+                }
+              }}
             >
               <div className="sort-row-left">
                 <Zap size={13} />

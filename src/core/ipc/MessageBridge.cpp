@@ -12,6 +12,7 @@
 #include "core/hotkey/HotkeyManager.h"
 #include "core/hotkey/MouseHook.h"
 #include "core/hotkey/KeyboardHook.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
 #include "core/stats/StatsManager.h"
 #include "core/stats/PerformanceMonitor.h"
@@ -48,6 +49,195 @@ std::string bridgeErrorResponse(int id, int code, std::string_view message) {
     return json{{"id", id}, {"error", {{"code", code}, {"message", std::string(message)}}}}.dump();
 }
 
+std::string bridgeRawSuccessResponse(int id, std::string_view rawResultJson) {
+    std::string trimmed = std::string(rawResultJson);
+    while (!trimmed.empty() && static_cast<unsigned char>(trimmed.front()) <= 0x20) {
+        trimmed.erase(trimmed.begin());
+    }
+    while (!trimmed.empty() && static_cast<unsigned char>(trimmed.back()) <= 0x20) {
+        trimmed.pop_back();
+    }
+    if (trimmed.empty()) {
+        trimmed = "null";
+    }
+    std::string out;
+    out.reserve(24 + trimmed.size());
+    out.append("{\"id\":");
+    out.append(std::to_string(id));
+    out.append(",\"result\":");
+    out.append(trimmed);
+    out.push_back('}');
+    return out;
+}
+
+// 零堆分配顶层 JSON-RPC 头部扫描器：在 UI 主线程极速提取顶层整数 "id" 与无转义字符串 "method"，
+// 彻底消除异步 IPC 在主线程与工作线程的双重全量 json::parse 开销；任何非常规/转义/畸形文本均安全回退慢路径。
+bool tryFastExtractJsonRpcHeader(std::string_view text, int& outId, std::string& outMethod) noexcept {
+    auto skipWs = [&](size_t& pos) noexcept {
+        while (pos < text.size()) {
+            const char c = text[pos];
+            if (c != ' ' && c != '\t' && c != '\r' && c != '\n') break;
+            ++pos;
+        }
+    };
+
+    auto skipString = [&](size_t& pos, std::string_view* plainSlice, bool& hadEscape) noexcept -> bool {
+        if (pos >= text.size() || text[pos] != '"') return false;
+        ++pos;
+        const size_t start = pos;
+        hadEscape = false;
+        while (pos < text.size()) {
+            const unsigned char c = static_cast<unsigned char>(text[pos]);
+            if (c < 0x20) return false; // JSON 字符串内禁止裸控制字符
+            if (c == '\\') {
+                hadEscape = true;
+                ++pos;
+                if (pos >= text.size()) return false;
+                const char esc = text[pos];
+                if (esc == 'u') {
+                    if (pos + 4 >= text.size()) return false;
+                    for (size_t k = 1; k <= 4; ++k) {
+                        const char hc = text[pos + k];
+                        const bool isHex = (hc >= '0' && hc <= '9') ||
+                                           (hc >= 'a' && hc <= 'f') ||
+                                           (hc >= 'A' && hc <= 'F');
+                        if (!isHex) return false;
+                    }
+                    pos += 5;
+                    continue;
+                }
+                if (esc != '"' && esc != '\\' && esc != '/' && esc != 'b' &&
+                    esc != 'f' && esc != 'n' && esc != 'r' && esc != 't') {
+                    return false;
+                }
+                ++pos;
+                continue;
+            }
+            if (c == '"') {
+                if (plainSlice) *plainSlice = text.substr(start, pos - start);
+                ++pos;
+                return true;
+            }
+            ++pos;
+        }
+        return false;
+    };
+
+    size_t pos = 0;
+    skipWs(pos);
+    if (pos >= text.size() || text[pos] != '{') return false;
+    ++pos;
+
+    int parsedId = 0;
+    bool foundMethod = false;
+    std::string_view methodView;
+    int depth = 1;
+
+    // 顶层键值对循环（depth == 1）
+    for (;;) {
+        skipWs(pos);
+        if (pos >= text.size()) return false;
+        if (text[pos] == '}') {
+            ++pos;
+            --depth;
+            break;
+        }
+        std::string_view keyView;
+        bool keyEsc = false;
+        if (!skipString(pos, &keyView, keyEsc)) return false;
+        skipWs(pos);
+        if (pos >= text.size() || text[pos] != ':') return false;
+        ++pos;
+        skipWs(pos);
+        if (pos >= text.size()) return false;
+
+        if (!keyEsc && keyView == "id") {
+            bool neg = false;
+            if (text[pos] == '-') {
+                neg = true;
+                ++pos;
+            }
+            if (pos >= text.size() || text[pos] < '0' || text[pos] > '9') return false;
+            long long val = 0;
+            while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
+                val = val * 10 + (text[pos] - '0');
+                if (val > 2147483647LL) return false;
+                ++pos;
+            }
+            // 若紧跟小数点或指数，交给完整解析器处理
+            if (pos < text.size() && (text[pos] == '.' || text[pos] == 'e' || text[pos] == 'E')) {
+                return false;
+            }
+            parsedId = static_cast<int>(neg ? -val : val);
+        } else if (!keyEsc && keyView == "method") {
+            bool valEsc = false;
+            std::string_view mSlice;
+            if (!skipString(pos, &mSlice, valEsc) || valEsc) return false;
+            methodView = mSlice;
+            foundMethod = true;
+        } else {
+            // 跳过任意合法 JSON value（嵌套对象/数组/字符串/字面量/数字）
+            const char vc = text[pos];
+            if (vc == '"') {
+                bool dummyEsc = false;
+                if (!skipString(pos, nullptr, dummyEsc)) return false;
+            } else if (vc == '{' || vc == '[') {
+                std::vector<char> stack;
+                stack.reserve(8);
+                stack.push_back(vc == '{' ? '}' : ']');
+                ++pos;
+                while (!stack.empty()) {
+                    if (pos >= text.size()) return false;
+                    const char nc = text[pos];
+                    if (nc == '"') {
+                        bool dummyEsc = false;
+                        if (!skipString(pos, nullptr, dummyEsc)) return false;
+                        continue;
+                    }
+                    if (nc == '{') {
+                        stack.push_back('}');
+                    } else if (nc == '[') {
+                        stack.push_back(']');
+                    } else if (nc == '}' || nc == ']') {
+                        if (stack.back() != nc) return false;
+                        stack.pop_back();
+                    }
+                    ++pos;
+                }
+            } else {
+                // 数字、true、false、null
+                const size_t litStart = pos;
+                while (pos < text.size()) {
+                    const char lc = text[pos];
+                    if (lc == ',' || lc == '}' || lc == ' ' || lc == '\t' || lc == '\r' || lc == '\n') break;
+                    if (lc == '"' || lc == '{' || lc == '[' || lc == ']') return false;
+                    ++pos;
+                }
+                if (pos == litStart) return false;
+            }
+        }
+
+        skipWs(pos);
+        if (pos >= text.size()) return false;
+        if (text[pos] == ',') {
+            ++pos;
+            continue;
+        }
+        if (text[pos] == '}') {
+            ++pos;
+            --depth;
+            break;
+        }
+        return false;
+    }
+
+    skipWs(pos);
+    if (depth != 0 || pos != text.size() || !foundMethod) return false;
+    outId = parsedId;
+    outMethod.assign(methodView.data(), methodView.size());
+    return true;
+}
+
 std::optional<std::filesystem::path> choosePath(bool save, bool folder = false) {
     const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     const bool needUninit = SUCCEEDED(comHr);
@@ -67,20 +257,23 @@ std::optional<std::filesystem::path> choosePath(bool save, bool folder = false) 
                                   IID_PPV_ARGS(&dialog));
     if (FAILED(hr) || !dialog) return std::nullopt;
 
+    const bool isZh = tools3000::core::isUiLanguageChinese();
     if (folder) {
         DWORD options = 0;
         dialog->GetOptions(&options);
         dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        dialog->SetTitle(L"选择保存目录");
+        dialog->SetTitle(isZh ? L"选择保存目录" : L"Select Save Directory");
     } else {
-        static const COMDLG_FILTERSPEC filters[] = {
-            {L"Tools3000 配置 (*.json)", L"*.json"},
-            {L"所有文件 (*.*)", L"*.*"},
+        const COMDLG_FILTERSPEC filters[] = {
+            {isZh ? L"Tools3000 配置 (*.json)" : L"Tools3000 Configuration (*.json)", L"*.json"},
+            {isZh ? L"所有文件 (*.*)" : L"All Files (*.*)", L"*.*"},
         };
         dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
         dialog->SetDefaultExtension(L"json");
         dialog->SetFileName(save ? L"Tools3000-config.json" : L"");
-        dialog->SetTitle(save ? L"导出 Tools3000 配置" : L"导入 Tools3000 配置");
+        dialog->SetTitle(save
+            ? (isZh ? L"导出 Tools3000 配置" : L"Export Tools3000 Configuration")
+            : (isZh ? L"导入 Tools3000 配置" : L"Import Tools3000 Configuration"));
     }
 
     std::optional<std::filesystem::path> result;
@@ -671,6 +864,7 @@ void syncRuntimeSettingsFromConfig(const char* source) {
     const std::string trayIconTheme = config.get<std::string>("/general/trayIconTheme", "system");
     const std::string fontFamily = config.get<std::string>("/general/fontFamily", "auto");
 
+    tools3000::core::WinUtils::applyNativeMenuTheme(theme);
     tools3000::core::EventBus::instance().publish(tools3000::core::ThemeChangedEvent{
         theme,
         accentColor,
@@ -723,8 +917,56 @@ void MessageBridge::registerHandler(const std::string& method, MessageHandler ha
     registerHandlerImpl(method, std::move(handler), false);
 }
 
+void MessageBridge::registerAsyncHandler(const std::string& method, MessageHandler handler) {
+    markMethodAsync(method);
+    registerHandlerImpl(method, std::move(handler), false);
+}
+
 void MessageBridge::registerHostHandler(const std::string& method, MessageHandler handler) {
     registerHandlerImpl(method, std::move(handler), true);
+}
+
+void MessageBridge::registerAsyncHostHandler(const std::string& method, MessageHandler handler) {
+    markMethodAsync(method);
+    registerHandlerImpl(method, std::move(handler), true);
+}
+
+void MessageBridge::registerRawHandlerImpl(const std::string& method,
+                                           RawMessageHandler handler,
+                                           bool isHostOwned) {
+    auto slot = std::make_shared<HandlerSlot>();
+    slot->rawHandler = std::move(handler);
+    slot->isHostOwned = isHostOwned;
+    std::shared_ptr<HandlerSlot> replaced;
+    {
+        std::unique_lock lock(m_mutex);
+        if (auto it = m_handlers.find(method); it != m_handlers.end()) {
+            replaced = std::move(it->second);
+            it->second = std::move(slot);
+        } else {
+            m_handlers.emplace(method, std::move(slot));
+        }
+    }
+    if (replaced) retireSlots({std::move(replaced)});
+    LOG_TRACE("注册 IPC 处理器: method={}", method);
+}
+
+void MessageBridge::registerRawHandler(const std::string& method, RawMessageHandler handler) {
+    registerRawHandlerImpl(method, std::move(handler), false);
+}
+
+void MessageBridge::registerAsyncRawHandler(const std::string& method, RawMessageHandler handler) {
+    markMethodAsync(method);
+    registerRawHandlerImpl(method, std::move(handler), false);
+}
+
+void MessageBridge::registerRawHostHandler(const std::string& method, RawMessageHandler handler) {
+    registerRawHandlerImpl(method, std::move(handler), true);
+}
+
+void MessageBridge::registerAsyncRawHostHandler(const std::string& method, RawMessageHandler handler) {
+    markMethodAsync(method);
+    registerRawHandlerImpl(method, std::move(handler), true);
 }
 
 bool MessageBridge::hasQuarantinedHandlers() const noexcept {
@@ -756,6 +998,7 @@ void MessageBridge::retireSlots(std::vector<std::shared_ptr<HandlerSlot>> slots,
             slot->idle.wait(lock, [&slot]() { return slot->activeCalls == 0; });
         }
         slot->handler = nullptr;
+        slot->rawHandler = nullptr;
     }
 }
 
@@ -812,11 +1055,13 @@ std::string MessageBridge::handleMessage(const std::string& messageJson) {
             if (it != m_handlers.end()) slot = it->second;
         }
         bool acquired = false;
+        bool useRawHandler = false;
         if (slot) {
             std::lock_guard lock(slot->mutex);
-            if (slot->accepting && slot->handler) {
+            if (slot->accepting && (slot->handler || slot->rawHandler)) {
                 ++slot->activeCalls;
                 acquired = true;
+                useRawHandler = static_cast<bool>(slot->rawHandler);
             }
         }
         if (!acquired) {
@@ -829,6 +1074,25 @@ std::string MessageBridge::handleMessage(const std::string& messageJson) {
         }
 
         const auto start = std::chrono::steady_clock::now();
+        if (useRawHandler) {
+            std::string rawResult;
+            try {
+                rawResult = slot->rawHandler(params);
+            } catch (...) {
+                std::lock_guard lock(slot->mutex);
+                if (--slot->activeCalls == 0) slot->idle.notify_all();
+                throw;
+            }
+            {
+                std::lock_guard lock(slot->mutex);
+                if (--slot->activeCalls == 0) slot->idle.notify_all();
+            }
+            const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            LOG_DEBUG("IPC 响应完成: method={}, id={}, 耗时={}us", method, id, elapsedUs);
+            return bridgeRawSuccessResponse(id, rawResult);
+        }
+
         json result;
         try {
             result = slot->handler(params);
@@ -844,6 +1108,12 @@ std::string MessageBridge::handleMessage(const std::string& messageJson) {
         const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - start).count();
         LOG_DEBUG("IPC 响应完成: method={}, id={}, 耗时={}us", method, id, elapsedUs);
+
+        if (result.is_object() && result.size() == 1 && result.contains("__raw_json_result") &&
+            result["__raw_json_result"].is_string()) {
+            return bridgeRawSuccessResponse(
+                id, result["__raw_json_result"].get_ref<const std::string&>());
+        }
 
         json response = {
             {"id", id},
@@ -901,7 +1171,11 @@ std::chrono::steady_clock::duration asyncJobTimeoutForMethod(std::string_view me
         method == "autoStart.set" ||
         method == "general.updateSettings" ||
         method == "app.restartElevated" ||
-        method == "app.restartDemoted") {
+        method == "app.restartDemoted" ||
+        method == "search.openFileAsAdmin" ||
+        method == "system.openFileAsAdmin" ||
+        method == "search.openAsAdmin" ||
+        method == "system.openAsAdmin") {
         return InteractiveAsyncJobTimeout;
     }
     return DefaultAsyncJobTimeout;
@@ -1205,15 +1479,20 @@ void MessageBridge::handleMessageAsync(const std::string& messageJson, AsyncResp
     int id = 0;
     bool runAsync = false;
     std::string method;
-    try {
-        auto request = json::parse(messageJson);
-        id = request.value("id", 0);
-        method = request.value("method", "");
+    if (tryFastExtractJsonRpcHeader(messageJson, id, method)) {
         std::shared_lock lock(m_mutex);
         runAsync = m_asyncMethods.find(method) != m_asyncMethods.end();
-    } catch (...) {
-        // 解析失败时交给同步路径，由它统一产出格式正确的错误响应。
-        runAsync = false;
+    } else {
+        try {
+            auto request = json::parse(messageJson);
+            id = request.value("id", 0);
+            method = request.value("method", "");
+            std::shared_lock lock(m_mutex);
+            runAsync = m_asyncMethods.find(method) != m_asyncMethods.end();
+        } catch (...) {
+            // 解析失败时交给同步路径，由它统一产出格式正确的错误响应。
+            runAsync = false;
+        }
     }
 
     if (!runAsync) {
@@ -1267,7 +1546,8 @@ bool MessageBridge::hasHandler(const std::string& method) const {
     auto it = m_handlers.find(method);
     if (it == m_handlers.end()) return false;
     std::lock_guard slotLock(it->second->mutex);
-    return it->second->accepting && static_cast<bool>(it->second->handler);
+    return it->second->accepting &&
+           (static_cast<bool>(it->second->handler) || static_cast<bool>(it->second->rawHandler));
 }
 
 json MessageBridge::invokeHandler(const std::string& method, const json& params) {
@@ -1278,14 +1558,28 @@ json MessageBridge::invokeHandler(const std::string& method, const json& params)
         if (it != m_handlers.end()) slot = it->second;
     }
     if (!slot) return {{"error", "handler not found"}};
+    bool useRawHandler = false;
     {
         std::lock_guard slotLock(slot->mutex);
-        if (!slot->accepting || !slot->handler) return {{"error", "handler not accepting"}};
+        if (!slot->accepting || (!slot->handler && !slot->rawHandler)) {
+            return {{"error", "handler not accepting"}};
+        }
         ++slot->activeCalls;
+        useRawHandler = static_cast<bool>(slot->rawHandler);
     }
     json result;
     try {
-        result = slot->handler(params);
+        if (useRawHandler) {
+            const std::string raw = slot->rawHandler(params);
+            result = raw.empty() ? json(nullptr) : json::parse(raw);
+        } else {
+            result = slot->handler(params);
+            if (result.is_object() && result.size() == 1 &&
+                result.contains("__raw_json_result") &&
+                result["__raw_json_result"].is_string()) {
+                result = json::parse(result["__raw_json_result"].get_ref<const std::string&>());
+            }
+        }
     } catch (const std::exception& e) {
         std::lock_guard slotLock(slot->mutex);
         if (--slot->activeCalls == 0) slot->idle.notify_all();
@@ -1834,11 +2128,14 @@ void MessageBridge::registerBuiltinHandlers() {
         if (id.empty()) {
             return {{"success", false}, {"error", "plugin id is required"}};
         }
+        const bool isZh = isUiLanguageChinese();
         return {
             {"success", false},
             {"id", id},
             {"restartRequired", false},
-            {"error", "扩展市场当前为预览目录，安全安装与签名校验完成前不会伪装安装成功"}
+            {"error", isZh
+                ? "扩展市场当前为预览目录，安全安装与签名校验完成前不会伪装安装成功"
+                : "Extension marketplace is currently a preview catalog; installation is disabled until signature verification is enforced"}
         };
     });
 
@@ -1854,8 +2151,8 @@ void MessageBridge::registerBuiltinHandlers() {
         };
     });
 
-    registerHandler("config.getAll", [](const json&) -> json {
-        return json::parse(ConfigManager::instance().toJsonString());
+    registerRawHostHandler("config.getAll", [](const json&) -> std::string {
+        return ConfigManager::instance().toJsonString(-1);
     });
     registerHandler("config.get", [](const json& params) -> json {
         std::string key = params.value("key", "");
@@ -2167,7 +2464,10 @@ void MessageBridge::registerBuiltinHandlers() {
             if (key == "trayIconTheme" && (!value.is_string() || !trayIconThemes.contains(value.get<std::string>()))) {
                 return {{"success", false}, {"error", "invalid tray icon theme"}};
             }
-            if (key == "accentColor" && (!value.is_string() || !accents.contains(value.get<std::string>()))) {
+            if (key == "accentColor" &&
+                (!value.is_string() ||
+                 (!accents.contains(value.get<std::string>()) &&
+                  !isValidHexColor(value.get<std::string>())))) {
                 return {{"success", false}, {"error", "invalid accent color"}};
             }
             if (key == "logLevel" && (!value.is_string() || !logLevels.contains(value.get<std::string>()))) {
@@ -2223,8 +2523,10 @@ void MessageBridge::registerBuiltinHandlers() {
             Logger::setRetentionDays(sanitizedPatch["logRetentionDays"].get<uint32_t>());
         }
         if (sanitizedPatch.contains("theme") || sanitizedPatch.contains("accentColor") || sanitizedPatch.contains("trayIconTheme")) {
+            const std::string effectiveTheme = config.get<std::string>("/general/theme", "system");
+            WinUtils::applyNativeMenuTheme(effectiveTheme);
             EventBus::instance().publish(ThemeChangedEvent{
-                config.get<std::string>("/general/theme", "system"),
+                effectiveTheme,
                 config.get<std::string>("/general/accentColor", "blue"),
                 config.get<std::string>("/general/trayIconTheme", "system")
             });
@@ -2242,9 +2544,73 @@ void MessageBridge::registerBuiltinHandlers() {
         }
         return {{"success", true}};
     });
-    registerHostHandler("capture.browseDirectory", [](const json&) -> json {
+    registerAsyncHostHandler("capture.browseDirectory", [](const json&) -> json {
         const auto selected = choosePath(false, true);
         return selected ? json(WinUtils::wstringToUtf8(selected->wstring())) : json(nullptr);
+    });
+    registerAsyncHostHandler("capture.openSaveDirectory", [](const json& params) -> json {
+        auto trimWs = [](std::string s) {
+            while (!s.empty() && static_cast<unsigned char>(s.front()) <= 0x20) {
+                s.erase(s.begin());
+            }
+            while (!s.empty() && static_cast<unsigned char>(s.back()) <= 0x20) {
+                s.pop_back();
+            }
+            return s;
+        };
+
+        const std::string kind = params.value("kind", "capture");
+        std::string dirUtf8 = trimWs(params.value("path", ""));
+        auto& cfg = ConfigManager::instance();
+        if (dirUtf8.empty()) {
+            if (kind == "recording") {
+                dirUtf8 = trimWs(cfg.get<std::string>("/recording/saveDirectory", ""));
+                if (dirUtf8.empty()) {
+                    dirUtf8 = trimWs(cfg.get<std::string>("/recording/savePath", ""));
+                }
+            } else {
+                dirUtf8 = trimWs(cfg.get<std::string>("/capture/saveDirectory", ""));
+                if (dirUtf8.empty()) {
+                    dirUtf8 = trimWs(cfg.get<std::string>("/capture/savePath", ""));
+                }
+            }
+        }
+
+        std::filesystem::path targetDir;
+        if (!dirUtf8.empty()) {
+            targetDir = std::filesystem::path(WinUtils::utf8ToWstring(dirUtf8));
+        } else if (kind == "recording") {
+            targetDir = WinUtils::getAppDataDirectory() / L"Recordings";
+        } else {
+            targetDir = WinUtils::getAppDataDirectory() / L"Screenshots";
+        }
+
+        std::error_code ec;
+        std::filesystem::create_directories(targetDir, ec);
+        const std::string resolvedUtf8 = WinUtils::wstringToUtf8(targetDir.wstring());
+        if (ec && !std::filesystem::exists(targetDir, ec)) {
+            return {
+                {"success", false},
+                {"path", resolvedUtf8},
+                {"error", isUiLanguageChinese() ? "无法创建保存目录" : "Failed to create save directory"}
+            };
+        }
+
+        if (params.value("dryRun", false)) {
+            return {{"success", true}, {"path", resolvedUtf8}};
+        }
+
+        const HINSTANCE hInst = ShellExecuteW(
+            nullptr, L"open", targetDir.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        const bool ok = reinterpret_cast<INT_PTR>(hInst) > 32;
+        if (!ok) {
+            return {
+                {"success", false},
+                {"path", resolvedUtf8},
+                {"error", isUiLanguageChinese() ? "无法打开保存目录" : "Failed to open save directory"}
+            };
+        }
+        return {{"success", true}, {"path", resolvedUtf8}};
     });
     registerSystemInteractionHandlers(*this);
     registerHostHandler("app.checkForUpdates", [](const json&) -> json {

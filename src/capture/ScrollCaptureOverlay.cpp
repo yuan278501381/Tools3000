@@ -1,5 +1,6 @@
 #include "ScrollCaptureOverlay.h"
 #include "capture/CaptureHudPalette.h"
+#include "capture/FloatingGlassBar.h"
 #include "capture/ScrollCapture.h"
 #include "capture/ShortcutHintOverlay.h"
 #include "core/config/ConfigManager.h"
@@ -402,6 +403,13 @@ void ScrollCaptureOverlay::hide() {
         std::lock_guard<std::mutex> lock(m_controlRectMutex);
         m_controlScreenRect = {};
     }
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_preview.release();
+        m_previewDirty = false;
+        m_d2dBitmap.Reset();
+        m_frameCount = 0;
+    }
     m_hoveredBtn = ControlButtonId::None;
     m_pressedBtn = ControlButtonId::None;
     m_trackingMouseLeave = false;
@@ -421,6 +429,14 @@ void ScrollCaptureOverlay::hide() {
 
     releaseLayeredDib(m_controlDibCache);
     releaseLayeredDib(m_overlayDibCache);
+}
+
+void ScrollCaptureOverlay::reloadTheme() {
+    if (!m_hwnd && !m_controlHwnd) return;
+    if (!createResources()) return;
+    m_controlBarDirty = true;
+    renderControlBar(true);
+    render();
 }
 
 bool ScrollCaptureOverlay::createResources() {
@@ -456,12 +472,13 @@ bool ScrollCaptureOverlay::createResources() {
         if (FAILED(m_d2dFactory->CreateDCRenderTarget(&props, &m_controlRenderTarget))) return false;
     }
 
+    const auto pal = FloatingGlassBar::resolveThemePalette();
     m_brushFlash.Reset();
     m_brushBorder.Reset();
     m_brushBg.Reset();
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &m_brushFlash);
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.77f, 0.37f, 1.0f), &m_brushBorder);
-    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.09f, 0.11f, 0.90f), &m_brushBg);
+    m_renderTarget->CreateSolidColorBrush(pal.accent, &m_brushBorder);
+    m_renderTarget->CreateSolidColorBrush(pal.panelBg, &m_brushBg);
 
     m_ctrlPanelBg.Reset();
     m_ctrlPanelBorder.Reset();
@@ -480,21 +497,38 @@ bool ScrollCaptureOverlay::createResources() {
     m_ctrlDangerHoverBg.Reset();
     m_ctrlDangerIconBrush.Reset();
 
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kPanelBg, &m_ctrlPanelBg);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kPanelOuterBorder, &m_ctrlPanelBorder);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kPanelInnerHighlight, &m_ctrlPanelInnerHighlight);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kSizeHudDivider, &m_ctrlDividerBrush);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kPrimaryText, &m_ctrlTextPrimary);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kSecondaryText, &m_ctrlTextSecondary);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &m_ctrlTextOnPrimary);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.06f), &m_ctrlBtnHoverBg);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.11f), &m_ctrlBtnPressBg);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kChipAccentBg, &m_ctrlKeycapBg);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.18f), &m_ctrlKeycapPrimaryBg);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kRecordCoralPrimary, &m_ctrlAccentBg);
-    m_controlRenderTarget->CreateSolidColorBrush(CaptureHudPalette::kRecordCoralHover, &m_ctrlAccentHoverBg);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.94f, 0.26f, 0.26f, 0.12f), &m_ctrlDangerHoverBg);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.22f, 0.26f, 1.0f), &m_ctrlDangerIconBrush);
+    const float accentLum = 0.2126f * pal.accent.r + 0.7152f * pal.accent.g + 0.0722f * pal.accent.b;
+    const D2D1_COLOR_F onPrimary = accentLum > 0.68f
+        ? D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 1.0f)
+        : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+    const D2D1_COLOR_F accentHover = D2D1::ColorF(
+        std::clamp(pal.accent.r + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
+        std::clamp(pal.accent.g + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
+        std::clamp(pal.accent.b + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
+        1.0f);
+
+    m_controlRenderTarget->CreateSolidColorBrush(pal.panelBg, &m_ctrlPanelBg);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.panelOuterBorder, &m_ctrlPanelBorder);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.panelInnerHighlight, &m_ctrlPanelInnerHighlight);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.divider, &m_ctrlDividerBrush);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.textPrimary, &m_ctrlTextPrimary);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.textSecondary, &m_ctrlTextSecondary);
+    m_controlRenderTarget->CreateSolidColorBrush(onPrimary, &m_ctrlTextOnPrimary);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.hoverBg, &m_ctrlBtnHoverBg);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.pressBg, &m_ctrlBtnPressBg);
+    m_controlRenderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f) : CaptureHudPalette::kChipAccentBg, &m_ctrlKeycapBg);
+    m_controlRenderTarget->CreateSolidColorBrush(
+        accentLum > 0.68f ? D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.14f)
+                          : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.18f),
+        &m_ctrlKeycapPrimaryBg);
+    m_controlRenderTarget->CreateSolidColorBrush(pal.accent, &m_ctrlAccentBg);
+    m_controlRenderTarget->CreateSolidColorBrush(accentHover, &m_ctrlAccentHoverBg);
+    m_controlRenderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.94f, 0.26f, 0.26f, pal.isDark ? 0.18f : 0.12f), &m_ctrlDangerHoverBg);
+    m_controlRenderTarget->CreateSolidColorBrush(
+        pal.isDark ? D2D1::ColorF(1.0f, 0.42f, 0.46f, 1.0f) : D2D1::ColorF(0.90f, 0.22f, 0.26f, 1.0f),
+        &m_ctrlDangerIconBrush);
     m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.80f, 0.42f, 1.0f), &m_ctrlDotBrush);
 
     m_statusFormat.Reset();
@@ -836,8 +870,12 @@ void ScrollCaptureOverlay::render() {
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
     const auto runtimeState = ScrollCapture::instance().runtimeState();
-    if (runtimeState == ScrollRuntimeState::HoldAtBottom) {
-        m_brushBorder->SetColor(D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f)); // 触底驻留琥珀金
+    const uint64_t nowOverlayTick = GetTickCount64();
+    const uint64_t tooFastOverlayTick = ScrollCapture::instance().lastScrollTooFastTickMs();
+    const bool overlayScrollTooFast =
+        (tooFastOverlayTick > 0 && nowOverlayTick >= tooFastOverlayTick && (nowOverlayTick - tooFastOverlayTick) < 1800);
+    if (overlayScrollTooFast || runtimeState == ScrollRuntimeState::HoldAtBottom) {
+        m_brushBorder->SetColor(D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f)); // 琥珀金预警 / 触底驻留
     } else if (runtimeState == ScrollRuntimeState::PausedManual) {
         m_brushBorder->SetColor(D2D1::ColorF(0.22f, 0.74f, 0.97f, 1.0f)); // 手动接管天青蓝
     } else {
@@ -983,14 +1021,21 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
     D2D1_COLOR_F dotColor = D2D1::ColorF(0.13f, 0.80f, 0.42f, 1.0f);
     int pulseStep = 20;
     std::wstring statusText;
-    if (state == ScrollRuntimeState::HoldAtBottom) {
+    const uint64_t nowBarTick = GetTickCount64();
+    const uint64_t tooFastTick = ScrollCapture::instance().lastScrollTooFastTickMs();
+    const bool isScrollTooFast =
+        (tooFastTick > 0 && nowBarTick >= tooFastTick && (nowBarTick - tooFastTick) < 1800);
+    if (isScrollTooFast) {
+        dotColor = D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f);
+        statusText = m_isChinese ? L"滚动过快 · 请放慢滚轮" : L"Scroll slower · Overlap lost";
+    } else if (state == ScrollRuntimeState::HoldAtBottom) {
         dotColor = D2D1::ColorF(0.98f, 0.65f, 0.10f, 1.0f);
         statusText = m_isChinese ? L"已停滚 · 回车裁切/完成" : L"Stopped · Enter to trim";
     } else if (state == ScrollRuntimeState::PausedManual) {
         dotColor = D2D1::ColorF(0.24f, 0.75f, 0.98f, 1.0f);
         statusText = m_isChinese ? L"已暂停 · 回车裁切/完成" : L"Paused · Enter to trim";
     } else {
-        const float pulse = 0.65f + 0.35f * std::sin(static_cast<float>(GetTickCount64() % 1200) / 1200.0f * 6.28318f);
+        const float pulse = 0.65f + 0.35f * std::sin(static_cast<float>(nowBarTick % 1200) / 1200.0f * 6.28318f);
         pulseStep = static_cast<int>(std::lround(pulse * 12.0f));
         dotColor = D2D1::ColorF(0.13f, 0.82f, 0.44f, static_cast<float>(pulseStep) / 12.0f);
         statusText = m_isChinese ? L"正在自动滚动采集" : L"Auto scrolling";

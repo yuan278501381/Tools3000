@@ -102,6 +102,7 @@ struct CaptureShortcutDecision {
     int dx = 0;
     int dy = 0;
     int intDelta = 0;
+    HitArea resizeHandle = HitArea::RB;
     MarkupTool tool = MarkupTool::Rectangle;
     MarkupColor color = MarkupColor::Red();
     AspectRatioPreset aspectPreset = AspectRatioPreset::Free;
@@ -255,15 +256,24 @@ public:
 
         // 3. Alt 组合键专属路由（避免落入无修饰单键误触）
         if (alt) {
-            if (!ctrl && hasSelection && isScreenshotMode) {
-                if (vk == 'B' && !shift) {
-                    out.action = CaptureShortcutAction::CycleBeautyShellPadding;
+            if (!ctrl && hasSelection) {
+                if (!ctx.hasActiveElement && isArrowKey(vk)) {
+                    const int step = shift ? kPixelStepFast : kPixelStepFine;
+                    fillDirectionDelta(vk, step, out.dx, out.dy);
+                    out.action = CaptureShortcutAction::ResizeSelectionByKey;
+                    out.resizeHandle = (vk == VK_LEFT || vk == VK_RIGHT) ? HitArea::L : HitArea::T;
                     return out;
                 }
-                if (vk == 'A' && !shift) {
-                    out.action = CaptureShortcutAction::ToggleMarkupTool;
-                    out.tool = MarkupTool::Arrow;
-                    return out;
+                if (isScreenshotMode) {
+                    if (vk == 'B' && !shift) {
+                        out.action = CaptureShortcutAction::CycleBeautyShellPadding;
+                        return out;
+                    }
+                    if (vk == 'A' && !shift) {
+                        out.action = CaptureShortcutAction::ToggleMarkupTool;
+                        out.tool = MarkupTool::Arrow;
+                        return out;
+                    }
                 }
             }
             return out;
@@ -313,9 +323,12 @@ public:
             // Ctrl + 方向键（以及无选区下 Ctrl + W/S/D）：10px 快速微调
             if (hasSelection && isArrowKey(vk)) {
                 fillDirectionDelta(vk, kPixelStepFast, out.dx, out.dy);
-                out.action = (shift && !ctx.hasActiveElement)
-                    ? CaptureShortcutAction::ResizeSelectionByKey
-                    : CaptureShortcutAction::NudgeSelectionOrElement;
+                if (shift && !ctx.hasActiveElement) {
+                    out.action = CaptureShortcutAction::ResizeSelectionByKey;
+                    out.resizeHandle = (vk == VK_LEFT || vk == VK_RIGHT) ? HitArea::R : HitArea::B;
+                } else {
+                    out.action = CaptureShortcutAction::NudgeSelectionOrElement;
+                }
                 return out;
             }
             if (!hasSelection && (isArrowKey(vk) || vk == 'W' || vk == 'S' || vk == 'D')) {
@@ -394,6 +407,9 @@ public:
             } else if (shift) {
                 fillDirectionDelta(vk, kPixelStepFine, out.dx, out.dy);
                 out.action = CaptureShortcutAction::ResizeSelectionByKey;
+                out.resizeHandle = (vk == VK_LEFT || vk == VK_RIGHT || vk == 'A' || vk == 'D')
+                    ? HitArea::R
+                    : HitArea::B;
             } else {
                 fillDirectionDelta(vk, kPixelStepFine, out.dx, out.dy);
                 out.action = CaptureShortcutAction::NudgeSelectionOrElement;

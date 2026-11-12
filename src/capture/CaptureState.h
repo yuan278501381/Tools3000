@@ -345,9 +345,16 @@ public:
     MarkupElement* activeElement = nullptr;
     HitArea dragHandle = HitArea::None;
     bool isManipulating = false;
+    MarkupEngine::MarkupSnapshot manipulateStartSnapshot{};
+    bool hasManipulateSnapshot = false;
+    MarkupEngine::MarkupSnapshot sliderStartSnapshot{};
+    bool hasSliderSnapshot = false;
+    uint32_t lastCoalescedUndoElemId = 0;
+    DWORD lastCoalescedUndoTick = 0;
     bool isSelectingText = false;      // 正在编辑态文本框内按住左键拖拽划词选中文字
     float textPreferredCaretX = -1.0f; // 多行文本上下移动光标时保持的期望水平像素 X 坐标
     POINT textManipulateStart{};       // 文本标注按下起点（用于区分拖拽平移文本框 vs 单击进入字符级编辑）
+    DWORD textEditEnteredTick = 0;     // 单击进入文本编辑态的时间戳（用于合并紧随其后的双击第二击，保持光标停在点击字缝）
 
     bool isAdjustingSelection = false;
     HitArea selAdjustHandle = HitArea::None;

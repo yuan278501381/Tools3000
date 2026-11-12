@@ -24,6 +24,7 @@ struct SearchResult {
     uint64_t lastWriteTime = 0;
     int matchRank = 7;
     int folderPriority = 200;
+    uint8_t pathTier = tools3000::service::kPathTierUncomputed;
 };
 
 struct SearchExcludeOptions {
@@ -77,8 +78,14 @@ public:
 
     bool Initialize(char driveLetter);
     void EnumerateFiles();
-    void requestStop() noexcept { m_StopRequested.store(true, std::memory_order_release); }
-    void resetStopRequest() noexcept { m_StopRequested.store(false, std::memory_order_release); }
+    void requestStop() noexcept {
+        m_StopRequested.store(true, std::memory_order_release);
+        m_StopHydration.store(true, std::memory_order_release);
+    }
+    void resetStopRequest() noexcept {
+        m_StopRequested.store(false, std::memory_order_release);
+        m_StopHydration.store(false, std::memory_order_release);
+    }
 
     // USN Journal Monitoring
     void StartListening();
@@ -125,6 +132,9 @@ public:
     uint32_t getVolumeSerialNumber() const;
     size_t getFileCount() const;
     uint64_t getApproximateIndexBytes() const;
+    size_t getLastSearchPathBuildCount() const noexcept {
+        return m_LastSearchPathBuildCount.load(std::memory_order_relaxed);
+    }
     void setRealTimeValidation(bool enable) noexcept { m_ValidateExistence.store(enable, std::memory_order_release); }
     bool isRealTimeValidationEnabled() const noexcept {
         return m_ValidateExistence.load(std::memory_order_acquire) ||
@@ -141,14 +151,18 @@ private:
     std::atomic<bool> m_ValidateExistence{false};
     std::atomic<bool> m_InitialScanDone{false};
 
-    // Listener Thread
+    // Listener & Low-priority Background Hydration Threads
     std::atomic<bool> m_IsListening{false};
     std::atomic<bool> m_StopRequested{false};
+    std::atomic<bool> m_StopHydration{false};
     std::unique_ptr<std::thread> m_ListenerThread;
+    std::unique_ptr<std::thread> m_HydrationThread;
     void UsnListenerLoop();
+    void BackgroundHydrateLoop();
 
     // Memory structures
     mutable std::shared_mutex m_MapMutex;
+    mutable std::atomic<size_t> m_LastSearchPathBuildCount{0};
     tools3000::service::FileIndexStore m_Store;
     std::atomic<uint64_t> m_IndexGeneration{0};
     std::mutex m_SearchCacheMutex;

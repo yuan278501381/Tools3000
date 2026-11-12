@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cwctype>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -99,7 +100,7 @@ public:
         const std::wstring key = normalizePathKey(fullPath);
         if (key.empty()) return false;
 
-        std::vector<uint8_t> compressedCopy;
+        std::shared_ptr<const std::vector<uint8_t>> compressedRef;
         size_t rawCharCount = 0;
         bool truncatedFlag = false;
         {
@@ -111,8 +112,9 @@ public:
             }
 
             const Entry& entry = *(it->second);
+            const size_t entryCompSize = entry.compressedBytes ? entry.compressedBytes->size() : 0;
             if (entry.fileSize != fileSize || entry.lastWriteTime != lastWriteTime) {
-                m_totalCompressedBytes -= entry.compressedBytes.size();
+                m_totalCompressedBytes -= entryCompSize;
                 m_lru.erase(it->second);
                 m_index.erase(it);
                 m_missCount.fetch_add(1, std::memory_order_relaxed);
@@ -120,7 +122,7 @@ public:
             }
 
             m_lru.splice(m_lru.begin(), m_lru, it->second);
-            compressedCopy = entry.compressedBytes;
+            compressedRef = entry.compressedBytes;
             rawCharCount = entry.rawCharCount;
             truncatedFlag = entry.isTruncated;
         }
@@ -131,20 +133,25 @@ public:
             m_hitCount.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
+        if (!compressedRef || compressedRef->empty()) {
+            m_missCount.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
 
         std::wstring restored(rawCharCount, L'\0');
         uLongf destBytes = static_cast<uLongf>(rawCharCount * sizeof(wchar_t));
         const int zrc = uncompress(
             reinterpret_cast<Bytef*>(restored.data()),
             &destBytes,
-            compressedCopy.data(),
-            static_cast<uLong>(compressedCopy.size())
+            compressedRef->data(),
+            static_cast<uLong>(compressedRef->size())
         );
         if (zrc != Z_OK || destBytes != rawCharCount * sizeof(wchar_t)) {
             std::lock_guard lock(m_mutex);
             const auto it = m_index.find(key);
             if (it != m_index.end()) {
-                m_totalCompressedBytes -= it->second->compressedBytes.size();
+                const size_t curCompSize = it->second->compressedBytes ? it->second->compressedBytes->size() : 0;
+                m_totalCompressedBytes -= curCompSize;
                 m_lru.erase(it->second);
                 m_index.erase(it);
             }
@@ -179,11 +186,12 @@ public:
             isTruncated = true;
         }
 
-        std::vector<uint8_t> compressed;
+        std::shared_ptr<const std::vector<uint8_t>> sharedCompressed;
+        size_t newCompBytes = 0;
         if (!sliceToStore.empty()) {
             const size_t rawBytes = sliceToStore.size() * sizeof(wchar_t);
             uLongf bound = compressBound(static_cast<uLong>(rawBytes));
-            compressed.resize(bound);
+            std::vector<uint8_t> compressed(bound);
             const int zrc = compress2(
                 compressed.data(),
                 &bound,
@@ -196,33 +204,37 @@ public:
             }
             compressed.resize(bound);
             compressed.shrink_to_fit();
+            newCompBytes = compressed.size();
+            sharedCompressed = std::make_shared<const std::vector<uint8_t>>(std::move(compressed));
         }
 
         std::lock_guard lock(m_mutex);
         const auto existing = m_index.find(key);
         if (existing != m_index.end()) {
-            m_totalCompressedBytes -= existing->second->compressedBytes.size();
+            const size_t oldSize = existing->second->compressedBytes ? existing->second->compressedBytes->size() : 0;
+            m_totalCompressedBytes -= oldSize;
             m_lru.erase(existing->second);
             m_index.erase(existing);
         }
 
         while (!m_lru.empty() &&
-               ((m_totalCompressedBytes + compressed.size() > MaxTotalCompressedBytes) ||
+               ((m_totalCompressedBytes + newCompBytes > MaxTotalCompressedBytes) ||
                 (m_lru.size() >= MaxCachedEntries))) {
             const Entry& victim = m_lru.back();
-            m_totalCompressedBytes -= victim.compressedBytes.size();
+            const size_t victimSize = victim.compressedBytes ? victim.compressedBytes->size() : 0;
+            m_totalCompressedBytes -= victimSize;
             m_index.erase(victim.key);
             m_lru.pop_back();
         }
 
-        m_totalCompressedBytes += compressed.size();
+        m_totalCompressedBytes += newCompBytes;
         m_lru.push_front(Entry{
             .key = key,
             .fileSize = fileSize,
             .lastWriteTime = lastWriteTime,
             .rawCharCount = sliceToStore.size(),
             .isTruncated = isTruncated,
-            .compressedBytes = std::move(compressed)
+            .compressedBytes = std::move(sharedCompressed)
         });
         m_index[key] = m_lru.begin();
     }
@@ -261,7 +273,7 @@ private:
         uint64_t lastWriteTime = 0;
         size_t rawCharCount = 0;
         bool isTruncated = false;
-        std::vector<uint8_t> compressedBytes;
+        std::shared_ptr<const std::vector<uint8_t>> compressedBytes;
     };
 
     static std::wstring normalizePathKey(std::wstring_view path) {

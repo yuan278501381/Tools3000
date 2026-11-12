@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import { bridgeRequest } from '../hooks/useBridge';
 import { CodeBadge, Toggle } from '../components/UIKit';
 import {
+  CATEGORY_DEFS,
   CONTENT_FORMAT_CATEGORIES,
   WINDOW_PRESETS,
 } from './searchConstants';
@@ -44,6 +45,8 @@ export interface SearchViewSettingsModalProps {
   onRebuildIndex: () => void;
   searchMode: SearchMode;
   onChangeSearchMode: (mode: SearchMode) => void;
+  defaultCategory: string;
+  onChangeDefaultCategory: (catId: string) => void;
   density: SearchDensity;
   onChangeDensity: (density: SearchDensity) => void;
   iconStyle: SearchIconStyle;
@@ -89,6 +92,8 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
   onRebuildIndex,
   searchMode,
   onChangeSearchMode,
+  defaultCategory,
+  onChangeDefaultCategory,
   density,
   onChangeDensity,
   iconStyle,
@@ -223,6 +228,35 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
                 {t('search.modeContentOnlyDesc', 'Full-text search inside documents, spreadsheets, PDFs, CAD and code files')}
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* 1.0b 默认初始分类 */}
+        <div className="popover-section">
+          <div className="popover-section-title">
+            <span>{t('searchPage.defaultCategoryTitle', 'Default Filter Category')}</span>
+            <span className="popover-badge-curr">
+              {(() => {
+                const matched = CATEGORY_DEFS.find(c => c.id === defaultCategory) ?? CATEGORY_DEFS[0];
+                return t(matched.labelKey, matched.defaultLabel);
+              })()}
+            </span>
+          </div>
+          <div className="popover-format-chips">
+            {CATEGORY_DEFS.map(cat => {
+              const active = defaultCategory === cat.id;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  className={`popover-segment ${active ? 'popover-segment--active' : ''}`}
+                  style={{ flex: 'none', padding: '4px 10px' }}
+                  onClick={() => onChangeDefaultCategory(cat.id)}
+                >
+                  {t(cat.labelKey, cat.defaultLabel)}
+                </button>
+              );
+            })}
           </div>
         </div>
 

@@ -5,7 +5,6 @@
 #include "gesture/MouseHook.h"
 #include "gesture/GestureAction.h"
 #include "gesture/GestureInputPolicy.h"
-#include "gesture/RadialMenuOverlay.h"
 #include "core/hotkey/MouseHook.h"
 #include "core/logger/Logger.h"
 #include "core/stats/StatsManager.h"
@@ -192,17 +191,21 @@ ScreenEdgeZone MouseHook::getActiveScreenEdgeZone(POINT pt, MouseEventType type)
             return (mask & bottomMask) ? ScreenEdgeZone::Bottom : ScreenEdgeZone::None;
         }
         case ScreenEdgeZone::Left: {
-            if (isWheel) return ScreenEdgeZone::None;
+            if (isWheel) {
+                return (mask & GestureTriggerMask::EdgeLeftWheel) ? ScreenEdgeZone::Left : ScreenEdgeZone::None;
+            }
             const uint32_t leftMask = (type == MouseEventType::LeftDown)
                 ? (GestureTriggerMask::EdgeLeftSlide | GestureTriggerMask::Left)
-                : GestureTriggerMask::EdgeLeftSlide;
+                : (GestureTriggerMask::EdgeLeftSlide | GestureTriggerMask::EdgeLeftWheel);
             return (mask & leftMask) ? ScreenEdgeZone::Left : ScreenEdgeZone::None;
         }
         case ScreenEdgeZone::Right: {
-            if (isWheel) return ScreenEdgeZone::None;
+            if (isWheel) {
+                return (mask & GestureTriggerMask::EdgeRightWheel) ? ScreenEdgeZone::Right : ScreenEdgeZone::None;
+            }
             const uint32_t rightMask = (type == MouseEventType::LeftDown)
                 ? (GestureTriggerMask::EdgeRightSlide | GestureTriggerMask::Left)
-                : GestureTriggerMask::EdgeRightSlide;
+                : (GestureTriggerMask::EdgeRightSlide | GestureTriggerMask::EdgeRightWheel);
             return (mask & rightMask) ? ScreenEdgeZone::Right : ScreenEdgeZone::None;
         }
         default:
@@ -241,23 +244,7 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
         default: break;
     }
 
-    // 0a. 径向轮盘可见时优先由轮盘接管悬停/确认/外部点击收起，绝不作为方向手势吞噬
-    if (RadialMenuOverlay::instance().isVisible()) {
-        if (m_triggerButtonDown.load(std::memory_order_relaxed) ||
-            m_isTracking.load(std::memory_order_relaxed)) {
-            resetTriggerState();
-        }
-        if (wParam == WM_LBUTTONDOWN) {
-            tools3000::core::StatsManager::instance().recordLeftClick();
-        } else if (wParam == WM_RBUTTONDOWN) {
-            tools3000::core::StatsManager::instance().recordRightClick();
-        } else if (wParam == WM_MOUSEWHEEL) {
-            tools3000::core::StatsManager::instance().recordScroll();
-        }
-        return RadialMenuOverlay::instance().handleGlobalMouseMessage(wParam, data.pt);
-    }
-
-    // 0b. 自身交互浮层豁免：截图、长截图、贴图、OCR 结果窗、对话框工具条激活/命中时 100% 放行物理触发键与边缘滚轮
+    // 0. 自身交互浮层豁免：截图、长截图、贴图、OCR 结果窗、对话框工具条激活/命中时 100% 放行物理触发键与边缘滚轮
     const bool isPotentialGestureTrigger =
         (wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN ||
          wParam == WM_XBUTTONDOWN || wParam == WM_MOUSEWHEEL ||

@@ -125,14 +125,38 @@ struct RecordingCapabilities {
     RecordingGpuProbe gpuEncoding;
 };
 
-/// GIF 调色板优化器 (PaletteGen 统计聚类 + PaletteUse 快速量化查表)
+/// GIF 调色板优化器 (Median-Cut 自适应调色板 + Sierra-2-4A 轻量误差扩散抖动 + 帧间透明差分包围盒)
 struct GifPaletteOptimizer {
     uint32_t palette[256]{};
+    uint8_t paletteR[256]{};
+    uint8_t paletteG[256]{};
+    uint8_t paletteB[256]{};
     uint8_t colorMap[32768]{};
     bool initialized = false;
     int frameCounter = 0;
+    int validColorCount = 256;
     bool reserveTransparent = false;
+    bool enableDithering = true;
+    bool enableFrameDiff = false;
     float cornerRadius = 0.0f;
+
+    std::vector<uint8_t> prevFrameBgr;
+    int prevWidth = 0;
+    int prevHeight = 0;
+    int lastDirtyLeft = 0;
+    int lastDirtyTop = 0;
+    int lastDirtyRight = 0;
+    int lastDirtyBottom = 0;
+
+    void resetFrameHistory() noexcept {
+        prevFrameBgr.clear();
+        prevWidth = 0;
+        prevHeight = 0;
+        lastDirtyLeft = 0;
+        lastDirtyTop = 0;
+        lastDirtyRight = 0;
+        lastDirtyBottom = 0;
+    }
 
     void updatePalette(const uint8_t* srcData, int width, int height, int stride, int bpp);
     void quantizeFrame(const uint8_t* srcData, int width, int height, int stride, int bpp,
@@ -173,8 +197,15 @@ public:
     void requestSnapshot();
     bool isSnapshotRequested() const { return m_snapshotRequested.load(); }
 
-    /// 停止录制
+    using AsyncStopCallback = std::function<void(const std::string& savedPath, const RecordStats& finalStats)>;
+
+    /// 停止录制（同步等待线程汇合与编码落盘，供后台收尾线程/插件停机/单测使用）
     std::string stopRecording();
+
+    /// 异步停止录制：立即发出停止信号并在后台收尾线程执行 join + finalizeEncoder + 原子落盘，零阻塞 UI 主线程
+    bool stopRecordingAsync(AsyncStopCallback onComplete = nullptr);
+    bool isStopping() const noexcept { return m_stopping.load(std::memory_order_acquire); }
+    void waitForAsyncStop();
 
     /// 当前状态
     RecordState state() const { return m_state.load(); }
@@ -202,7 +233,7 @@ private:
     };
 
     ScreenRecorder() = default;
-    ~ScreenRecorder() { reapFinishedSnapshots(true); }
+    ~ScreenRecorder() { waitForAsyncStop(); reapFinishedSnapshots(true); }
     ScreenRecorder(const ScreenRecorder&) = delete;
     ScreenRecorder& operator=(const ScreenRecorder&) = delete;
 
@@ -242,10 +273,14 @@ private:
     static std::string formatExtension(RecordFormat format);
 
     std::atomic<RecordState> m_state{RecordState::Idle};
+    std::atomic<bool> m_stopping{false};
     std::atomic<bool> m_finalizePending{false};
     std::atomic<bool> m_skipCountdown{false};
     std::atomic<bool> m_snapshotRequested{false};
     std::thread m_recordThread;
+    std::mutex m_stopThreadMutex;
+    std::thread m_stopThread;
+    std::string m_lastAsyncCompletedPath;
     RecordOptions m_options;
     RecordStats m_stats;
     RecordStateCallback m_stateCallback;

@@ -8,6 +8,9 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <chrono>
 #include <cstdint>
 #include <cwctype>
 
@@ -86,6 +89,10 @@ struct RunHistorySnapshot {
 
 class RunHistoryManager {
 public:
+    static constexpr size_t MaxRunHistoryEntries = 10000;
+    static constexpr uint32_t FlushDebounceMs = 350;
+    static constexpr uint32_t MaxFlushDelayMs = 1500;
+
     static RunHistoryManager& instance();
 
     RunHistoryManager();
@@ -122,7 +129,11 @@ public:
     // 磁盘持久化与载入
     bool load();
     bool save();
+    bool flush();
     void clear();
+
+    void setMaxEntries(size_t maxEntries);
+    size_t maxEntries() const;
 
     // 获取当前记录总数
     size_t size() const;
@@ -134,6 +145,10 @@ public:
 private:
     std::wstring getNormalizedKey(const std::wstring& path) const;
     void closeImpersonationTokenUnlocked() noexcept;
+    void evictOverflowUnlocked(uint64_t nowFt);
+    void scheduleAsyncFlush();
+    void stopFlushWorker() noexcept;
+    void asyncFlushWorkerLoop();
 
     mutable std::recursive_mutex m_mutex;
     std::wstring m_csvPath;
@@ -141,7 +156,17 @@ private:
     HANDLE m_impersonationToken = nullptr;
     bool m_requiresImpersonation = false;
     std::unordered_map<std::wstring, RunRecord> m_records;
+    size_t m_maxEntries = MaxRunHistoryEntries;
     bool m_isDirty = false;
+
+    std::mutex m_flushMutex;
+    std::condition_variable m_flushCv;
+    std::thread m_flushThread;
+    std::chrono::steady_clock::time_point m_firstDirtyTick{};
+    std::chrono::steady_clock::time_point m_lastDirtyTick{};
+    bool m_flushPending = false;
+    bool m_flushWorkerRunning = false;
+    bool m_stopFlushWorker = false;
 };
 
 } // namespace tools3000::service::db

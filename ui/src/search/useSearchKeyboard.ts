@@ -208,6 +208,42 @@ export function useSearchKeyboard({
       }
     }
 
+    // 6a. Tab / Shift+Tab 循环切换顶部分类胶囊（全键盘流零断层）
+    if (event.key === 'Tab' && !event.ctrlKey && !event.altKey && !event.metaKey && categories.length > 0) {
+      event.preventDefault();
+      const currIdx = categories.findIndex(c => c.id === activeCategory);
+      const safeIdx = currIdx >= 0 ? currIdx : 0;
+      const delta = event.shiftKey ? -1 : 1;
+      const nextCat = categories[(safeIdx + delta + categories.length) % categories.length];
+      if (nextCat) {
+        selectCategory(nextCat);
+      }
+      return;
+    }
+
+    // 6a-2. Shift+F10 或 ContextMenu 键为当前选中结果打开右键上下文菜单
+    if (
+      (event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && event.key === 'F10') ||
+      event.key === 'ContextMenu'
+    ) {
+      const current = sortedResults[selectedIndexRef.current];
+      if (current) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rowEl = document.getElementById(`search-result-${selectedIndexRef.current}`);
+        const rect = rowEl?.getBoundingClientRect();
+        const menuX = rect && rect.width > 0 ? Math.min(rect.left + 120, window.innerWidth - 250) : 160;
+        const menuY = rect && rect.height > 0 ? Math.min(rect.bottom - 4, window.innerHeight - 320) : 140;
+        setContextMenu({
+          visible: true,
+          x: Math.max(10, menuX),
+          y: Math.max(10, menuY),
+          result: current,
+        });
+        return;
+      }
+    }
+
     // 6b. F3 / Alt+Space（或焦点位于结果列表时单按 Space）快速预览当前选中项 (QuickLook)，避让系统输入法热键 Ctrl+Space
     const isInteractiveButtonOrLink = Boolean(
       typeof target?.closest === 'function' &&

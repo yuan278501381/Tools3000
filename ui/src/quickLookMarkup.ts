@@ -1,3 +1,5 @@
+import i18n from 'i18next';
+
 const HTML_ENTITIES: Record<string, string> = {
   '&': '&amp;',
   '<': '&lt;',
@@ -131,7 +133,7 @@ export function countTextLines(content: string): number {
  * placeholder tokens BEFORE emphasis regexes execute, preventing `*` pointers
  * or underscores inside code from being corrupted into `<em>`/`<strong>`.
  */
-export function renderMarkdownToHtml(markdown: string): string {
+export function renderMarkdownToHtml(markdown: string, copyLabelOverride?: string): string {
   if (!markdown) return '';
 
   const codeBlocks: string[] = [];
@@ -142,8 +144,10 @@ export function renderMarkdownToHtml(markdown: string): string {
       const encodedCode = encodeURIComponent(code);
       const highlighted = highlightCode(code);
       const safeLanguage = escapeHtml(language || 'text');
+      const resolvedCopy = copyLabelOverride ?? (i18n.isInitialized ? i18n.t('common.copy', 'Copy') : 'Copy');
+      const copyLabel = escapeHtml(resolvedCopy);
       codeBlocks.push(
-        `<div class="ql-code-block"><div class="ql-code-header"><span class="ql-code-lang">${safeLanguage}</span><button type="button" class="ql-code-copy-btn" data-quicklook-code="${encodedCode}">Copy</button></div><pre><code>${highlighted}</code></pre></div>`,
+        `<div class="ql-code-block"><div class="ql-code-header"><span class="ql-code-lang">${safeLanguage}</span><button type="button" class="ql-code-copy-btn" data-quicklook-code="${encodedCode}">${copyLabel}</button></div><pre><code>${highlighted}</code></pre></div>`,
       );
       return `\u0001TOOLS3000_CODE_BLOCK_${blockIndex}\u0002`;
     },

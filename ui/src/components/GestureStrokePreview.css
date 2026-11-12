@@ -1,6 +1,34 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * GestureStrokePreview.css — WGestures 2 风格手势矢量微缩画板与鼠标光标动效样式
+ * GestureStrokePreview.css — 动态手势矢量微缩画板、滚轮徽章与边缘胶囊样式
  * ───────────────────────────────────────────────────────────────────────────── */
+
+.gesture-stroke-preview-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.gesture-stroke-preview__edge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--primary-dim);
+  border: 1px solid var(--primary);
+  color: var(--primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.gesture-stroke-preview__edge-glyph {
+  flex-shrink: 0;
+}
 
 .gesture-stroke-preview {
   --path-length: 100px;
@@ -36,6 +64,12 @@
   height: 100%;
 }
 
+/* 边缘触发高亮感应条 */
+.gesture-stroke-preview__edge-bar {
+  fill: var(--primary);
+  opacity: 0.92;
+}
+
 /* 底层半透明基准轨道 */
 .gesture-stroke-preview__track {
   fill: none;
@@ -45,7 +79,7 @@
   stroke-linejoin: round;
 }
 
-/* 顶层动态高亮手势线条 (清新青蓝 / 薄荷绿高亮) */
+/* 顶层动态高亮手势线条 */
 .gesture-stroke-preview__stroke {
   fill: none;
   stroke: #06b6d4;
@@ -59,14 +93,15 @@
   filter: drop-shadow(0 0 3px rgba(34, 211, 238, 0.5));
 }
 
-/* 起点按键指示器 (WGestures 2 风格 ◐ 图标) */
+/* 起点按键纯矢量指示器 */
 .gesture-stroke-preview__trigger-indicator circle {
   fill: #ffffff;
   stroke: #334155;
   stroke-width: 0.9;
 }
 
-.gesture-stroke-preview__trigger-indicator path {
+.gesture-stroke-preview__trigger-indicator path,
+.gesture-stroke-preview__trigger-indicator rect {
   fill: #334155;
 }
 
@@ -75,8 +110,66 @@
   stroke: #94a3b8;
 }
 
-[data-theme="dark"] .gesture-stroke-preview__trigger-indicator path {
+[data-theme="dark"] .gesture-stroke-preview__trigger-indicator path,
+[data-theme="dark"] .gesture-stroke-preview__trigger-indicator rect {
   fill: #38bdf8;
+}
+
+/* 滚轮专属高精度矢量徽章 */
+.gesture-stroke-preview__wheel-body {
+  fill: var(--bg-elevated);
+  stroke: var(--text-secondary);
+  stroke-width: 1.35;
+}
+
+.gesture-stroke-preview__wheel-btn-tint {
+  fill: var(--primary);
+  opacity: 0.26;
+}
+
+.gesture-stroke-preview__wheel-seam {
+  stroke: var(--card-border);
+  stroke-width: 1;
+}
+
+.gesture-stroke-preview__wheel-roller {
+  fill: #06b6d4;
+}
+
+[data-theme="dark"] .gesture-stroke-preview__wheel-roller {
+  fill: #22d3ee;
+}
+
+.gesture-stroke-preview__wheel-chevron-primary {
+  fill: none;
+  stroke: #06b6d4;
+  stroke-width: 2.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gesture-stroke-preview__wheel-chevron-secondary {
+  fill: none;
+  stroke: #06b6d4;
+  stroke-width: 1.8;
+  stroke-opacity: 0.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+[data-theme="dark"] .gesture-stroke-preview__wheel-chevron-primary,
+[data-theme="dark"] .gesture-stroke-preview__wheel-chevron-secondary {
+  stroke: #22d3ee;
+}
+
+.gesture-stroke-preview--animating .gesture-stroke-preview__wheel-arrows--up,
+.gesture-stroke-preview--wheel:hover .gesture-stroke-preview__wheel-arrows--up {
+  animation: gestureWheelFloatUp 1.1s ease-in-out infinite;
+}
+
+.gesture-stroke-preview--animating .gesture-stroke-preview__wheel-arrows--down,
+.gesture-stroke-preview--wheel:hover .gesture-stroke-preview__wheel-arrows--down {
+  animation: gestureWheelFloatDown 1.1s ease-in-out infinite;
 }
 
 /* 移动的光标小箭头 */
@@ -112,5 +205,23 @@
   90%, 100% {
     stroke-dashoffset: 0;
     opacity: 0.85;
+  }
+}
+
+@keyframes gestureWheelFloatUp {
+  0%, 100% {
+    transform: translateY(1px);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes gestureWheelFloatDown {
+  0%, 100% {
+    transform: translateY(-1px);
+  }
+  50% {
+    transform: translateY(2px);
   }
 }

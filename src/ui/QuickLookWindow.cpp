@@ -6,6 +6,7 @@
 #include "core/logger/Logger.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/utils/DpiUtils.h"
+#include "core/utils/ThemeUtils.h"
 #include "core/utils/UiThreadJoin.h"
 #include "core/utils/WinUtils.h"
 #include "core/utils/TextFilePreviewDecoder.h"
@@ -56,20 +57,11 @@ static constexpr size_t kMaxTextPreviewBytes = 256 * 1024; // 256 KB 极速预�
 namespace {
 
 bool isQuickLookEnglishLocale() {
-    const std::string lang = tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "auto");
-    if (lang == "en" || lang == "en-US") return true;
-    if (lang == "auto") {
-        const LANGID langId = GetUserDefaultUILanguage();
-        if (PRIMARYLANGID(langId) == LANG_ENGLISH) return true;
-    }
-    return false;
+    return !tools3000::core::isUiLanguageChinese();
 }
 
 bool isQuickLookDarkTheme() {
-    const std::string theme = tools3000::core::ConfigManager::instance().get<std::string>("/general/theme", "dark");
-    if (theme == "light") return false;
-    if (theme == "dark") return true;
-    return tools3000::core::WinUtils::isSystemDarkMode();
+    return tools3000::core::NativeThemePalette::isEffectiveDarkMode();
 }
 
 void syncQuickLookWindowTheme(HWND hwnd) {
@@ -262,23 +254,6 @@ json generateFilePreviewPayload(const std::wstring& filePath) {
             } else {
                 payload["type"] = "binary";
                 payload["hexDump"] = std::move(decoded.hexDump);
-            }
-        }
-    } else if (type == "image") {
-        if (sizeBytes < 30 * 1024 * 1024) {
-            HANDLE hImg = CreateFileW(
-                filePath.c_str(), GENERIC_READ,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-            if (hImg != INVALID_HANDLE_VALUE) {
-                std::vector<uint8_t> buffer(static_cast<size_t>(sizeBytes));
-                DWORD bytesRead = 0;
-                if (sizeBytes > 0 && ReadFile(hImg, buffer.data(), static_cast<DWORD>(sizeBytes), &bytesRead, nullptr) && bytesRead > 0) {
-                    buffer.resize(bytesRead);
-                    std::string mime = "image/" + (ext == "svg" ? "svg+xml" : (ext == "jpg" ? "jpeg" : ext));
-                    payload["dataUri"] = "data:" + mime + ";base64," + tools3000::core::WinUtils::base64Encode(buffer);
-                }
-                CloseHandle(hImg);
             }
         }
     }
@@ -567,7 +542,7 @@ void QuickLookWindow::previewFile(const std::wstring& filePath) {
         std::wstring wMsg = tools3000::core::WinUtils::utf8ToWstring(envelope);
         m_webView->PostWebMessageAsString(wMsg.c_str());
 
-        if (exists) {
+        if (exists && needsAsyncDeepLoad) {
             ensureAsyncWorkerStarted();
             {
                 std::lock_guard lock(m_asyncMutex);

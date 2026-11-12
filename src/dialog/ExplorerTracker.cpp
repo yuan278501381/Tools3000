@@ -232,6 +232,11 @@ void ExplorerTracker::requestRefresh() {
     m_wakeCv.notify_one();
 }
 
+void ExplorerTracker::setPathChangedCallback(std::function<void()> callback) {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    m_onPathChanged = std::move(callback);
+}
+
 void ExplorerTracker::workerLoop() {
     ScopedComApartment comGuard;
     while (m_running.load(std::memory_order_acquire)) {
@@ -343,14 +348,22 @@ void ExplorerTracker::refreshSnapshotOnStaThread() {
         }
     }
 
+    std::function<void()> notifyCb;
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
+        const bool changed = (m_perWindowActivePaths != nextPerWindow) || (m_allOpenPaths != nextAllPaths);
         m_perWindowActivePaths = std::move(nextPerWindow);
         m_allOpenPaths = std::move(nextAllPaths);
         m_lastRefreshTick = GetTickCount64();
         ++m_snapshotEpoch;
+        if (changed) {
+            notifyCb = m_onPathChanged;
+        }
     }
     m_doneCv.notify_all();
+    if (notifyCb) {
+        notifyCb();
+    }
 }
 
 std::string ExplorerTracker::normalizeFolderPath(const std::wstring& rawPath) {

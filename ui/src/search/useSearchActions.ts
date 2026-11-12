@@ -55,6 +55,7 @@ export interface UseSearchActionsProps {
   renameTarget: { visible: boolean; result?: SearchResult; newName: string };
   setRenameTarget: React.Dispatch<React.SetStateAction<{ visible: boolean; result?: SearchResult; newName: string }>>;
   renameInputRef: React.RefObject<HTMLInputElement | null>;
+  searchInputRef?: React.RefObject<HTMLInputElement | null>;
   setResults: React.Dispatch<React.SetStateAction<SearchResult[]>>;
   query: string;
   sortedResults: SearchResult[];
@@ -68,6 +69,7 @@ export function useSearchActions({
   renameTarget,
   setRenameTarget,
   renameInputRef,
+  searchInputRef,
   setResults,
   query,
   sortedResults,
@@ -250,6 +252,7 @@ export function useSearchActions({
     const newName = renameTarget.newName.trim();
     if (newName === oldName) {
       setRenameTarget({ visible: false, newName: '' });
+      window.setTimeout(() => searchInputRef?.current?.focus(), 0);
       return;
     }
     if (/[\\/:*?"<>|]/.test(newName)) {
@@ -267,6 +270,7 @@ export function useSearchActions({
         setResults(prev => prev.map(item => item.path === renameTarget.result?.path ? { ...item, name: newName, path: newP } : item));
         toast.success(t('search.toastRenameSuccess', { name: newName, defaultValue: `Renamed to "${newName}"` }));
         setRenameTarget({ visible: false, newName: '' });
+        window.setTimeout(() => searchInputRef?.current?.focus(), 0);
       } else {
         toast.error(res?.error || t('search.toastRenameFail', 'Rename failed, please check if the file is in use'));
       }
@@ -282,6 +286,7 @@ export function useSearchActions({
           setResults(prev => prev.map(item => item.path === renameTarget.result?.path ? { ...item, name: newName, path: newP } : item));
           toast.success(t('search.toastRenameSuccess', { name: newName, defaultValue: `Renamed to "${newName}"` }));
           setRenameTarget({ visible: false, newName: '' });
+          window.setTimeout(() => searchInputRef?.current?.focus(), 0);
         } else {
           toast.error(res?.error || t('search.toastRenameFail', 'Rename failed, please check if the file is in use'));
         }
@@ -289,7 +294,7 @@ export function useSearchActions({
         toast.error(t('search.toastRenameFail', 'Rename failed, please check if the file is in use'));
       }
     }
-  }, [renameTarget, setRenameTarget, setResults, t]);
+  }, [renameTarget, searchInputRef, setRenameTarget, setResults, t]);
 
   const exportResultsToCsv = useCallback(() => {
     if (sortedResults.length === 0) {

@@ -34,11 +34,72 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $ScriptDir
 
 $TraceID = [guid]::NewGuid().ToString("N").Substring(0, 8)
-$SetupExe = Join-Path $ScriptDir "Output\Tools3000-Setup.exe"
-if (-not (Test-Path $SetupExe) -and (Test-Path (Join-Path $ScriptDir "Output\Tools3000-Setup.exe"))) {
-    $SetupExe = Join-Path $ScriptDir "Output\Tools3000-Setup.exe"
-}
+$OutputDir = Join-Path $ScriptDir "Output"
 $DeployDistExe = Join-Path $ScriptDir "deploy_dist\Tools3000.exe"
+
+function Get-NativeHostArch {
+    $rawArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    if ($rawArch -and $rawArch.ToUpperInvariant().Contains("ARM64")) {
+        return "arm64"
+    }
+    return "x64"
+}
+
+function Resolve-LatestSetupExe {
+    $arch = Get-NativeHostArch
+    $defaultName = if ($arch -eq "arm64") { "Tools3000-Setup-arm64.exe" } else { "Tools3000-Setup.exe" }
+    $fallbackPath = Join-Path $OutputDir $defaultName
+    if (-not (Test-Path -LiteralPath $OutputDir)) {
+        return $fallbackPath
+    }
+
+    $candidates = Get-ChildItem -LiteralPath $OutputDir -Filter "Tools3000*Setup*.exe" -File -ErrorAction SilentlyContinue | Where-Object {
+        if ($arch -eq "arm64") {
+            $_.Name -match "(?i)arm64"
+        } else {
+            $_.Name -notmatch "(?i)arm64"
+        }
+    } | Sort-Object LastWriteTimeUtc -Descending
+
+    if ($candidates -and $candidates.Count -gt 0) {
+        return $candidates[0].FullName
+    }
+    return $fallbackPath
+}
+
+function Resolve-InstalledAppDirectory {
+    $UninstallKeys = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Tools3000_is1",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Tools3000_is1",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Tools3000_is1"
+    )
+    foreach ($k in $UninstallKeys) {
+        if (Test-Path $k) {
+            $props = Get-ItemProperty -Path $k -ErrorAction SilentlyContinue
+            if ($props) {
+                foreach ($propName in @("InstallLocation", "Inno Setup: App Path")) {
+                    $rawLoc = $props.$propName
+                    if ($rawLoc) {
+                        $trimmed = $rawLoc.Trim().Trim('"').TrimEnd('\', '/')
+                        if ($trimmed -and (Test-Path -LiteralPath $trimmed)) {
+                            return $trimmed
+                        }
+                    }
+                }
+                if ($props.UninstallString) {
+                    $uninstExe = $props.UninstallString.Trim('"')
+                    $parentDir = Split-Path -Parent $uninstExe
+                    if ($parentDir -and (Test-Path -LiteralPath $parentDir)) {
+                        return $parentDir
+                    }
+                }
+            }
+        }
+    }
+    return (Join-Path $env:ProgramFiles "Tools3000")
+}
+
+$SetupExe = Resolve-LatestSetupExe
 
 function Format-InnoSetupArgument {
     param (
@@ -118,7 +179,8 @@ if ($Uninstall) {
     }
 
     if (-not $UninstallerPath -or -not (Test-Path $UninstallerPath)) {
-        $DefaultUninstaller = "C:\Program Files\Tools3000\unins000.exe"
+        $DetectedInstallDir = Resolve-InstalledAppDirectory
+        $DefaultUninstaller = Join-Path $DetectedInstallDir "unins000.exe"
         if (Test-Path $DefaultUninstaller) {
             $UninstallerPath = $DefaultUninstaller
         }
@@ -178,6 +240,7 @@ if ($Uninstall) {
 }
 
 # 3. 重新构建请求
+$SetupExe = Resolve-LatestSetupExe
 $IsSetupStale = (Test-Path $DeployDistExe) -and (Test-Path $SetupExe) -and ((Get-Item $DeployDistExe).LastWriteTimeUtc -gt (Get-Item $SetupExe).LastWriteTimeUtc.AddSeconds(2))
 if ($Rebuild -or -not (Test-Path $SetupExe) -or $IsSetupStale) {
     Write-CliLog "安装包不存在或指定了 -Rebuild，开始执行增量编译与打包..." "INFO"
@@ -186,6 +249,7 @@ if ($Rebuild -or -not (Test-Path $SetupExe) -or $IsSetupStale) {
         Write-CliLog "构建或自动化门禁未通过 (退出码: $LASTEXITCODE)，已阻断安装以防旧版本覆盖！" "ERROR"
         exit $LASTEXITCODE
     }
+    $SetupExe = Resolve-LatestSetupExe
 }
 
 if (-not (Test-Path $SetupExe)) {
@@ -288,7 +352,8 @@ public class ShellIconCache {
         }
 
         if ($Launch) {
-            $TargetExe = if ($Dir) { Join-Path $Dir "Tools3000.exe" } else { "C:\Program Files\Tools3000\Tools3000.exe" }
+            $ResolvedInstallDir = if ($Dir) { [System.IO.Path]::GetFullPath($Dir) } else { Resolve-InstalledAppDirectory }
+            $TargetExe = Join-Path $ResolvedInstallDir "Tools3000.exe"
             if (Test-Path $TargetExe) {
                 Write-CliLog "正在启动应用: $TargetExe" "INFO"
                 $launched = $false

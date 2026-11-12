@@ -549,6 +549,7 @@ function getMockResponse(method: string, params: Record<string, unknown> = {}): 
     case 'system.openExternal':
     case 'system.openFile':
     case 'system.openFolder':
+    case 'capture.openSaveDirectory':
     case 'config.export':
     case 'config.import':
     case 'config.reset':

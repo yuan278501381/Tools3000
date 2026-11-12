@@ -3,6 +3,7 @@
 #include "core/accessibility/OverlayUiaProvider.h"
 #include "capture/ShortcutHintStyle.h"
 #include "capture/CaptureHudPalette.h"
+#include "capture/FloatingGlassBar.h"
 
 #include "core/config/ConfigManager.h"
 #include "core/events/MainThreadDispatcher.h"
@@ -380,18 +381,33 @@ bool ShortcutHintOverlay::createResources(float scale) {
         m_renderTarget->CreateSolidColorBrush(systemColor(COLOR_HIGHLIGHT), &m_accentBrush);
         m_renderTarget->CreateSolidColorBrush(systemColor(COLOR_WINDOWTEXT), &m_sheenBrush);
     } else {
-        // 对标 PixPin 明亮清晰高对比只读 HUD：高通透曜石纯黑底舱 + 100% 纯白实心圆角键帽 + 纯白清晰文字
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutPanelBg, &m_panelBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutPanelBorder, &m_borderBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutKeyBg, &m_keyBrush);
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.20f), &m_keyBevelBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutKeyBorder, &m_keyBorderBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutKeyText, &m_keyTextBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutLabelText, &m_labelBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutHeaderText, &m_headerBrush);
-        m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutDotAccent, &m_accentBrush);
-        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.06f), &m_sheenBrush);
+        const auto pal = FloatingGlassBar::resolveThemePalette();
+        if (pal.isDark) {
+            m_renderTarget->CreateSolidColorBrush(pal.panelBg, &m_panelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.panelOuterBorder, &m_borderBrush);
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.94f), &m_keyBrush);
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.22f), &m_keyBevelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accentBorder, &m_keyBorderBrush);
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 1.0f), &m_keyTextBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_labelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_headerBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accent, &m_accentBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.panelInnerHighlight, &m_sheenBrush);
+        } else {
+            // 雪瓷白微晶玻璃底舱 + 动态强调色点缀立体浅瓷键帽 + 深石板高对比文字
+            m_renderTarget->CreateSolidColorBrush(pal.panelBg, &m_panelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.panelOuterBorder, &m_borderBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accentSubtle, &m_keyBrush);
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.06f), &m_keyBevelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accentBorder, &m_keyBorderBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_keyTextBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_labelBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.textPrimary, &m_headerBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.accent, &m_accentBrush);
+            m_renderTarget->CreateSolidColorBrush(pal.panelInnerHighlight, &m_sheenBrush);
+        }
     }
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f), &m_scratchBrush);
     return m_panelBrush && m_keyBrush && m_keyBorderBrush && m_keyTextBrush && m_labelBrush && m_headerBrush;
 }
 
@@ -983,13 +999,14 @@ void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
         startOrSnapToTarget(pos, true);
     }
 
-    std::wstring accessibleName = L"快捷键提示：" + m_headerTitle + L"；";
+    const bool isZh = tools3000::core::isUiLanguageChinese();
+    std::wstring accessibleName = (isZh ? L"快捷键提示：" : L"Shortcut Hints: ") + m_headerTitle + (isZh ? L"；" : L"; ");
     for (const auto& item : items) {
         if (accessibleName.size() > 1024) break;
         accessibleName += item.key;
         accessibleName += L" ";
         accessibleName += item.label;
-        accessibleName += L"；";
+        accessibleName += isZh ? L"；" : L"; ";
     }
     tools3000::core::accessibility::announceOverlay(m_hwnd, accessibleName);
     SetTimer(m_hwnd, kWatchdogTimerId, 45, nullptr);
@@ -1044,30 +1061,29 @@ void ShortcutHintOverlay::render(int retryDepth) {
             { 0.0f, 2.5f, 2.6f, 0.032f },
         };
 
-        for (const auto& step : ambientSteps) {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, step.alpha), b.GetAddressOf());
-            if (b) {
-                const float exp = step.expand * m_scale;
-                const auto sRect = D2D1::RectF(
-                    m_cardRect.left - exp + step.dx * m_scale,
-                    m_cardRect.top - exp + step.dy * m_scale,
-                    m_cardRect.right + exp + step.dx * m_scale,
-                    m_cardRect.bottom + exp + step.dy * m_scale);
-                m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(sRect, cornerR + exp, cornerR + exp), b.Get());
-            }
+        if (!m_scratchBrush) {
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f), &m_scratchBrush);
         }
-        for (const auto& step : keySteps) {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, step.alpha), b.GetAddressOf());
-            if (b) {
+        if (m_scratchBrush) {
+            for (const auto& step : ambientSteps) {
+                m_scratchBrush->SetColor(D2D1::ColorF(0.0f, 0.0f, 0.0f, step.alpha));
                 const float exp = step.expand * m_scale;
                 const auto sRect = D2D1::RectF(
                     m_cardRect.left - exp + step.dx * m_scale,
                     m_cardRect.top - exp + step.dy * m_scale,
                     m_cardRect.right + exp + step.dx * m_scale,
                     m_cardRect.bottom + exp + step.dy * m_scale);
-                m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(sRect, cornerR + exp, cornerR + exp), b.Get());
+                m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(sRect, cornerR + exp, cornerR + exp), m_scratchBrush.Get());
+            }
+            for (const auto& step : keySteps) {
+                m_scratchBrush->SetColor(D2D1::ColorF(0.0f, 0.0f, 0.0f, step.alpha));
+                const float exp = step.expand * m_scale;
+                const auto sRect = D2D1::RectF(
+                    m_cardRect.left - exp + step.dx * m_scale,
+                    m_cardRect.top - exp + step.dy * m_scale,
+                    m_cardRect.right + exp + step.dx * m_scale,
+                    m_cardRect.bottom + exp + step.dy * m_scale);
+                m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(sRect, cornerR + exp, cornerR + exp), m_scratchBrush.Get());
             }
         }
     }
@@ -1083,11 +1099,13 @@ void ShortcutHintOverlay::render(int retryDepth) {
 
     // 双栏模式下极柔和中轴视觉分隔丝
     if (m_twoColumnLayout && m_columnDividerX > m_cardRect.left) {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> divBrush;
+        ID2D1SolidColorBrush* divBrush = nullptr;
         if (isHC) {
-            divBrush = m_borderBrush;
-        } else {
-            m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kShortcutDivider, &divBrush);
+            divBrush = m_borderBrush.Get();
+        } else if (m_scratchBrush) {
+            const auto pal = FloatingGlassBar::resolveThemePalette();
+            m_scratchBrush->SetColor(pal.divider);
+            divBrush = m_scratchBrush.Get();
         }
         if (divBrush) {
             const float colDivTop = m_cardRect.top + padY + 2.0f * m_scale;
@@ -1096,7 +1114,7 @@ void ShortcutHintOverlay::render(int retryDepth) {
                 m_renderTarget->DrawLine(
                     D2D1::Point2F(m_columnDividerX, colDivTop),
                     D2D1::Point2F(m_columnDividerX, colDivBottom),
-                    divBrush.Get(), 1.0f * m_scale);
+                    divBrush, 1.0f * m_scale);
             }
         }
     }
@@ -1115,7 +1133,7 @@ void ShortcutHintOverlay::render(int retryDepth) {
 
         const auto keyRR = D2D1::RoundedRect(keyFaceRect, keyCornerR, keyCornerR);
         m_renderTarget->FillRoundedRectangle(keyRR, m_keyBrush.Get());
-        if (isHC && m_keyBorderBrush) {
+        if (m_keyBorderBrush) {
             m_renderTarget->DrawRoundedRectangle(keyRR, m_keyBorderBrush.Get(), 1.0f * m_scale);
         }
         m_renderTarget->DrawTextW(
@@ -1161,6 +1179,7 @@ void ShortcutHintOverlay::render(int retryDepth) {
 }
 
 void ShortcutHintOverlay::discardResources() {
+    m_scratchBrush.Reset();
     m_sheenBrush.Reset();
     m_accentBrush.Reset();
     m_headerBrush.Reset();
@@ -1178,6 +1197,14 @@ void ShortcutHintOverlay::discardResources() {
     m_renderTarget.Reset();
     m_dwriteFactory.Reset();
     m_d2dFactory.Reset();
+}
+
+void ShortcutHintOverlay::reloadTheme() {
+    if (!isVisible()) return;
+    discardResources();
+    if (createResources(m_scale)) {
+        render();
+    }
 }
 
 void ShortcutHintOverlay::hide() {

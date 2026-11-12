@@ -30,6 +30,9 @@ using json = nlohmann::json;
 /// 消息处理器类型: 接收请求参数，返回响应
 using MessageHandler = std::function<json(const json& params)>;
 
+/// 原始 JSON 直通消息处理器类型: 接收请求参数，直接返回已序列化的 result JSON 文本（零二次 parse/dump）
+using RawMessageHandler = std::function<std::string(const json& params)>;
+
 /// 事件推送器类型: 由 WebView2 层实现，用于向 JS 发送消息
 using EventPusher = std::function<void(const std::string& eventName, const json& data)>;
 
@@ -46,9 +49,21 @@ public:
     /// @param method 方法名 (如 "gesture.getProfiles", "config.get")
     void registerHandler(const std::string& method, MessageHandler handler);
 
+    /// 注册后台异步执行的消息处理器（自动标记为异步方法并投递到受管线程池，绝不阻塞 UI 主线程）
+    void registerAsyncHandler(const std::string& method, MessageHandler handler);
+
     /// 注册宿主（Tools3000.exe / Tools3000Core.dll）内置消息处理器。
     /// 按插件前缀注销时（unregisterHandlersByPrefix）将保留宿主处理器，仅在进程退出 clearHandlers() 时释放。
     void registerHostHandler(const std::string& method, MessageHandler handler);
+
+    /// 注册宿主内置后台异步消息处理器。
+    void registerAsyncHostHandler(const std::string& method, MessageHandler handler);
+
+    /// 注册原始 JSON 直通消息处理器（避免大载荷二次 json::parse 与 dump）
+    void registerRawHandler(const std::string& method, RawMessageHandler handler);
+    void registerAsyncRawHandler(const std::string& method, RawMessageHandler handler);
+    void registerRawHostHandler(const std::string& method, RawMessageHandler handler);
+    void registerAsyncRawHostHandler(const std::string& method, RawMessageHandler handler);
 
     /// 注销一个处理器，并等待已经进入该处理器的调用结束。
     void unregisterHandler(const std::string& method);
@@ -108,6 +123,7 @@ private:
 
     struct HandlerSlot {
         MessageHandler handler;
+        RawMessageHandler rawHandler;
         std::mutex mutex;
         std::condition_variable idle;
         size_t activeCalls = 0;
@@ -118,6 +134,7 @@ private:
     struct WorkerPool;
 
     void registerHandlerImpl(const std::string& method, MessageHandler handler, bool isHostOwned);
+    void registerRawHandlerImpl(const std::string& method, RawMessageHandler handler, bool isHostOwned);
     static void retireSlots(std::vector<std::shared_ptr<HandlerSlot>> slots,
                             bool boundedForShutdown = false);
 
