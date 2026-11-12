@@ -349,8 +349,12 @@ public:
     /// 确保 Windows 10/11 任务栏固定项与开始菜单条目与运行进程精准归集
     static bool setShortcutAppUserModelId(const std::wstring& shortcutPath, const std::wstring& aumid);
 
-    /// 全局同步 Tools3000 桌面与开始菜单快捷方式属性，清除历史遗留旧快捷方式并广播 Windows Shell 刷新通知
-    static void syncApplicationShortcuts();
+    /// 幂等校验并同步单个快捷方式 (.lnk) 的 AUMID 与自身 TargetPath 图标定位（严禁跨目录污染）
+    /// 返回 true 表示实际写入了磁盘变更；若元数据已一致则 0 磁盘写入返回 false
+    static bool syncSingleShortcutMetadata(const std::wstring& shortcutPath, const std::wstring& aumid, bool forceRefresh = false);
+
+    /// 全局同步 Tools3000 桌面、开始菜单与任务栏固定快捷方式属性（便携模式自动跳过，常规启动幂等零闪烁）
+    static void syncApplicationShortcuts(bool forceRefresh = false);
 
     /// 应急输入状态自愈与清理：强制释放鼠标捕获、解除光标裁剪并使用 VK_F24 中立脉冲安全释放被卡住的修饰键
     static void emergencyFlushInputState() noexcept;

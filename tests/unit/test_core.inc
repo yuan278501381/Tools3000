@@ -4177,3 +4177,66 @@ TEST(MessageBridgeOpenSaveDirTest, ResolvesAppDataDefaultAndKindFallbacks) {
     cfg.shutdown();
     std::filesystem::remove_all(tempCfgDir, ec);
 }
+
+TEST(WinUtilsShortcutSyncTest, AnchorsIconLocationToTargetAndRemainsIdempotent) {
+    const HRESULT hrCom = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool comInited = SUCCEEDED(hrCom);
+
+    std::error_code ec;
+    const auto tempDir = std::filesystem::temp_directory_path() /
+        (L"Tools3000_ShortcutSyncTest_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(tempDir, ec);
+    std::filesystem::create_directories(tempDir / L"Installed", ec);
+    std::filesystem::create_directories(tempDir / L"PollutedDev", ec);
+
+    const auto fakeInstalledExe = tempDir / L"Installed" / L"Tools3000.exe";
+    const auto fakePollutedExe = tempDir / L"PollutedDev" / L"Tools3000.exe";
+    const auto lnkPath = tempDir / L"Tools3000.lnk";
+    {
+        std::ofstream(fakeInstalledExe, std::ios::binary) << "MZ";
+        std::ofstream(fakePollutedExe, std::ios::binary) << "MZ";
+    }
+
+    // 构造一个被开发构建目录跨路径污染了 IconLocation 的快捷方式
+    {
+        IShellLinkW* psl = nullptr;
+        ASSERT_TRUE(SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&psl))) && psl);
+        ASSERT_TRUE(SUCCEEDED(psl->SetPath(fakeInstalledExe.c_str())));
+        ASSERT_TRUE(SUCCEEDED(psl->SetIconLocation(fakePollutedExe.c_str(), 2)));
+        IPersistFile* ppf = nullptr;
+        ASSERT_TRUE(SUCCEEDED(psl->QueryInterface(IID_PPV_ARGS(&ppf))) && ppf);
+        ASSERT_TRUE(SUCCEEDED(ppf->Save(lnkPath.c_str(), TRUE)));
+        ppf->Release();
+        psl->Release();
+    }
+
+    // 首次同步：必须将 IconLocation 修复回快捷方式自身的 fakeInstalledExe (,0)，而非测试进程自身路径，并写入 AUMID
+    EXPECT_TRUE(tools3000::core::WinUtils::syncSingleShortcutMetadata(lnkPath.wstring(), L"Yy1.Tools3000", false));
+
+    {
+        IShellLinkW* psl = nullptr;
+        ASSERT_TRUE(SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&psl))) && psl);
+        IPersistFile* ppf = nullptr;
+        ASSERT_TRUE(SUCCEEDED(psl->QueryInterface(IID_PPV_ARGS(&ppf))) && ppf);
+        ASSERT_TRUE(SUCCEEDED(ppf->Load(lnkPath.c_str(), STGM_READ)));
+
+        wchar_t iconBuf[MAX_PATH]{};
+        int iconIdx = -1;
+        ASSERT_TRUE(SUCCEEDED(psl->GetIconLocation(iconBuf, MAX_PATH, &iconIdx)));
+        EXPECT_EQ(_wcsicmp(iconBuf, fakeInstalledExe.c_str()), 0);
+        EXPECT_EQ(iconIdx, 0);
+
+        ppf->Release();
+        psl->Release();
+    }
+
+    // 二次常规同步：元数据完全一致，必须幂等返回 false（0 次磁盘覆写）
+    EXPECT_FALSE(tools3000::core::WinUtils::syncSingleShortcutMetadata(lnkPath.wstring(), L"Yy1.Tools3000", false));
+    // 显式强制刷新 (--update-shortcuts)：返回 true
+    EXPECT_TRUE(tools3000::core::WinUtils::syncSingleShortcutMetadata(lnkPath.wstring(), L"Yy1.Tools3000", true));
+
+    std::filesystem::remove_all(tempDir, ec);
+    if (comInited) {
+        CoUninitialize();
+    }
+}

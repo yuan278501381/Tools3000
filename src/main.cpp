@@ -442,7 +442,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     }
     if (hasCommandLineFlag(L"--update-shortcuts")) {
         CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        tools3000::core::WinUtils::syncApplicationShortcuts();
+        tools3000::core::WinUtils::syncApplicationShortcuts(true);
         CoUninitialize();
         return 0;
     }
