@@ -2529,30 +2529,108 @@ bool WinUtils::setShortcutAppUserModelId(const std::wstring& shortcutPath, const
     return SUCCEEDED(hr);
 }
 
-void WinUtils::syncApplicationShortcuts() {
-    const std::wstring aumid = L"Yy1.Tools3000";
-    wchar_t exePathBuf[MAX_PATH]{};
-    const DWORD exeLen = GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
-    const std::wstring currentExePath(exePathBuf, exeLen);
+bool WinUtils::syncSingleShortcutMetadata(const std::wstring& shortcutPath, const std::wstring& aumid, bool forceRefresh) {
+    if (shortcutPath.empty() || aumid.empty()) return false;
+    std::error_code ec;
+    if (!std::filesystem::exists(shortcutPath, ec) || ec) return false;
 
-    auto updateShortcutMetadata = [&](const std::filesystem::path& lnkPath, bool refreshIcon) {
-        setShortcutAppUserModelId(lnkPath.wstring(), aumid);
-        if (refreshIcon && !currentExePath.empty()) {
-            IShellLinkW* psl = nullptr;
-            if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&psl))) && psl) {
-                IPersistFile* ppf = nullptr;
-                if (SUCCEEDED(psl->QueryInterface(IID_PPV_ARGS(&ppf))) && ppf) {
-                    if (SUCCEEDED(ppf->Load(lnkPath.c_str(), STGM_READWRITE))) {
-                        psl->SetIconLocation(currentExePath.c_str(), 0);
-                        ppf->Save(lnkPath.c_str(), TRUE);
-                    }
-                    ppf->Release();
-                }
-                psl->Release();
+    Microsoft::WRL::ComPtr<IShellLinkW> pslRead;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pslRead))) || !pslRead) {
+        return false;
+    }
+    Microsoft::WRL::ComPtr<IPersistFile> ppfRead;
+    if (FAILED(pslRead.As(&ppfRead)) || !ppfRead) {
+        return false;
+    }
+    if (FAILED(ppfRead->Load(shortcutPath.c_str(), STGM_READ))) {
+        return false;
+    }
+
+    wchar_t targetBuf[MAX_PATH]{};
+    pslRead->GetPath(targetBuf, MAX_PATH, nullptr, 0);
+    const std::wstring targetPath(targetBuf);
+
+    wchar_t iconBuf[MAX_PATH]{};
+    int iconIdx = 0;
+    pslRead->GetIconLocation(iconBuf, MAX_PATH, &iconIdx);
+
+    std::wstring existingAumid;
+    Microsoft::WRL::ComPtr<IPropertyStore> ppsRead;
+    if (SUCCEEDED(pslRead.As(&ppsRead)) && ppsRead) {
+        PROPVARIANT pv;
+        PropVariantInit(&pv);
+        if (SUCCEEDED(ppsRead->GetValue(PKEY_AppUserModel_ID, &pv))) {
+            if ((pv.vt == VT_LPWSTR || pv.vt == VT_BSTR) && pv.pwszVal != nullptr) {
+                existingAumid = pv.pwszVal;
             }
-            SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, lnkPath.c_str(), nullptr);
         }
-    };
+        PropVariantClear(&pv);
+    }
+
+    // 图标定位严格锚定该快捷方式自身的有效 TargetPath，严禁开发构建目录 (deploy_dist) 或临时测试目录跨路径篡改已安装快捷方式
+    std::wstring desiredIconPath;
+    if (!targetPath.empty() && std::filesystem::exists(targetPath, ec) && !ec) {
+        desiredIconPath = targetPath;
+    }
+
+    const bool needAumid = (existingAumid != aumid);
+    const bool needIcon = !desiredIconPath.empty() &&
+        (forceRefresh || iconIdx != 0 || _wcsicmp(iconBuf, desiredIconPath.c_str()) != 0);
+
+    if (!needAumid && !needIcon) {
+        return false;
+    }
+
+    // 释放只读句柄后再以读写模式打开并原子落盘
+    ppsRead.Reset();
+    ppfRead.Reset();
+    pslRead.Reset();
+
+    Microsoft::WRL::ComPtr<IShellLinkW> pslWrite;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pslWrite))) || !pslWrite) {
+        return false;
+    }
+    Microsoft::WRL::ComPtr<IPersistFile> ppfWrite;
+    if (FAILED(pslWrite.As(&ppfWrite)) || !ppfWrite) {
+        return false;
+    }
+    if (FAILED(ppfWrite->Load(shortcutPath.c_str(), STGM_READWRITE))) {
+        return false;
+    }
+
+    if (needAumid) {
+        Microsoft::WRL::ComPtr<IPropertyStore> ppsWrite;
+        if (SUCCEEDED(pslWrite.As(&ppsWrite)) && ppsWrite) {
+            PROPVARIANT pv;
+            if (SUCCEEDED(InitPropVariantFromString(aumid.c_str(), &pv))) {
+                if (SUCCEEDED(ppsWrite->SetValue(PKEY_AppUserModel_ID, pv))) {
+                    ppsWrite->Commit();
+                }
+                PropVariantClear(&pv);
+            }
+        }
+    }
+
+    if (needIcon) {
+        pslWrite->SetIconLocation(desiredIconPath.c_str(), 0);
+    }
+
+    if (FAILED(ppfWrite->Save(shortcutPath.c_str(), TRUE))) {
+        return false;
+    }
+
+    SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, shortcutPath.c_str(), nullptr);
+    return true;
+}
+
+void WinUtils::syncApplicationShortcuts(bool forceRefresh) {
+    // 便携版严格保持零宿主快捷方式副作用，防止临时解压目录污染任务栏/开始菜单图标定位
+    if (!forceRefresh && isPortableMode()) {
+        return;
+    }
+
+    const std::wstring aumid = L"Yy1.Tools3000";
+    bool anyUpdated = false;
 
     // 1. 获取用户及公共目录下的开始菜单与桌面路径
     const int csidls[] = {
@@ -2567,14 +2645,15 @@ void WinUtils::syncApplicationShortcuts() {
         if (SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, folderPath))) {
             const std::filesystem::path baseDir(folderPath);
 
-            // 针对当前 Tools3000 快捷方式注入 AUMID 并同步图标
             std::filesystem::path toolsLnk = (csidl == CSIDL_PROGRAMS || csidl == CSIDL_COMMON_PROGRAMS)
                 ? (baseDir / L"Tools3000" / L"Tools3000.lnk")
                 : (baseDir / L"Tools3000.lnk");
 
             std::error_code ec;
-            if (std::filesystem::exists(toolsLnk, ec)) {
-                updateShortcutMetadata(toolsLnk, true);
+            if (std::filesystem::exists(toolsLnk, ec) && !ec) {
+                if (syncSingleShortcutMetadata(toolsLnk.wstring(), aumid, forceRefresh)) {
+                    anyUpdated = true;
+                }
             }
         }
     }
@@ -2587,12 +2666,16 @@ void WinUtils::syncApplicationShortcuts() {
             L"Quick Launch" / L"User Pinned" / L"TaskBar" / L"Tools3000.lnk";
         std::error_code ec;
         if (std::filesystem::exists(pinnedTaskBarLnk, ec) && !ec) {
-            updateShortcutMetadata(pinnedTaskBarLnk, true);
+            if (syncSingleShortcutMetadata(pinnedTaskBarLnk.wstring(), aumid, forceRefresh)) {
+                anyUpdated = true;
+            }
         }
     }
 
-    // 广播 SHChangeNotify 通知 Windows Shell 刷新图标与属性存储
-    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    // 仅在实际修复了快捷方式或显式强制刷新 (--update-shortcuts) 时通知 Shell 重刷图标缓存，消除冷启动桌面闪烁
+    if (anyUpdated || forceRefresh) {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    }
 }
 
 void WinUtils::emergencyFlushInputState() noexcept {
