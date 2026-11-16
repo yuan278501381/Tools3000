@@ -308,7 +308,7 @@ public:
     int currentStrokeWidth = 4;
     bool currentFillMode = false;
     float currentElementCornerRadius = 0.0f;
-    ArrowStyle currentArrowStyle = ArrowStyle::Standard;
+    ArrowStyle currentArrowStyle = ArrowStyle::Tech; // 默认燕尾箭头 (Stealth Arrow)
     int currentMosaicType = 0; // 0: 像素马赛克, 1: 高斯模糊
     bool currentTextOutline = true; // 文字是否描边 (默认开启高反差描边)
     MarkupColor currentTextOutlineColor = MarkupColor::Auto(); // 描边/边框颜色: Auto / Black / White / 自定义
@@ -317,11 +317,13 @@ public:
     bool currentSmoothCurve = false; // 折线/平滑样条曲线开关
     bool currentLineArrowEnabled = false; // 二级栏「箭头」复选框开关
     LineCapStyle currentStartCap = LineCapStyle::None; // 起点端点样式
-    LineCapStyle currentEndCap = LineCapStyle::OpenArrow; // 终点端点样式
+    LineCapStyle currentEndCap = LineCapStyle::StealthArrow; // 终点端点默认燕尾箭头
 
     bool markupBaseReady = false;
     cv::Rect markupBaseRect{0, 0, 0, 0};
     bool isMarking = false;
+    bool isDrawingMultiPointLine = false;
+    std::vector<POINT> multiPointDocVertices;
     POINT markupStart{};
     POINT markupEnd{};
     std::vector<cv::Point> penPoints;

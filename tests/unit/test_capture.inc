@@ -9,6 +9,7 @@
 #include "capture/ScrollCaptureOverlay.h"
 #include "capture/ScrollCaptureEditorOverlay.h"
 #include "capture/CaptureVectorIcons.h"
+#include "capture/MarkupCurveGeometry.h"
 
 TEST(CaptureBackendTest, Direct3DAndGdiSmoke) {
     const auto capabilities = tools3000::capture::captureBackendCapabilities();
@@ -12995,4 +12996,262 @@ TEST(CaptureBatch3TypographyAndBilingualGateTest, AccessibleEnglishLabelsAndMark
     EXPECT_GT(cv::norm(rendered, baseCanvas, cv::NORM_INF), 0.0);
     engine.resetSession();
 }
+
+TEST(CaptureMarkupRegression20261116, TextOutlineWindingEliminatesCjkStrokeCrossingHoles) {
+    using namespace tools3000::capture;
+
+    // 1. 使用无封闭内腔的汉字「十」精准断言横竖笔画正交重叠中心在 FillModeWinding 下 100% 实心着色（绝无白色奇偶挖空孔洞）
+    cv::Mat darkBase(180, 220, CV_8UC3, cv::Scalar(42, 37, 34));
+    MarkupEngine engine;
+    engine.setBaseImage(darkBase);
+
+    auto* crossText = engine.addText(
+        cv::Point(40, 24),
+        reinterpret_cast<const char*>(u8"十"),
+        MarkupColor::Red(), // R=244, G=63, B=94
+        72.0f,
+        true,
+        MarkupColor::White());
+    ASSERT_NE(crossText, nullptr);
+
+    const cv::Mat out = engine.getCompositeImage(false);
+    ASSERT_FALSE(out.empty());
+
+    auto isRedCore = [](const cv::Vec3b& bgr) noexcept {
+        return bgr[2] >= 210 && bgr[1] <= 105 && bgr[0] <= 130;
+    };
+
+    int maxRowRed = 0;
+    std::vector<int> rowCounts(static_cast<size_t>(out.rows), 0);
+    for (int y = 0; y < out.rows; ++y) {
+        int redCnt = 0;
+        for (int x = 0; x < out.cols; ++x) {
+            if (isRedCore(out.at<cv::Vec3b>(y, x))) ++redCnt;
+        }
+        rowCounts[static_cast<size_t>(y)] = redCnt;
+        maxRowRed = std::max(maxRowRed, redCnt);
+    }
+    int maxColRed = 0;
+    std::vector<int> colCounts(static_cast<size_t>(out.cols), 0);
+    for (int x = 0; x < out.cols; ++x) {
+        int redCnt = 0;
+        for (int y = 0; y < out.rows; ++y) {
+            if (isRedCore(out.at<cv::Vec3b>(y, x))) ++redCnt;
+        }
+        colCounts[static_cast<size_t>(x)] = redCnt;
+        maxColRed = std::max(maxColRed, redCnt);
+    }
+    ASSERT_GT(maxRowRed, 25);
+    ASSERT_GT(maxColRed, 25);
+
+    int firstPeakRow = -1, lastPeakRow = -1;
+    for (int y = 0; y < out.rows; ++y) {
+        if (rowCounts[static_cast<size_t>(y)] >= maxRowRed - 2) {
+            if (firstPeakRow < 0) firstPeakRow = y;
+            lastPeakRow = y;
+        }
+    }
+    int firstPeakCol = -1, lastPeakCol = -1;
+    for (int x = 0; x < out.cols; ++x) {
+        if (colCounts[static_cast<size_t>(x)] >= maxColRed - 2) {
+            if (firstPeakCol < 0) firstPeakCol = x;
+            lastPeakCol = x;
+        }
+    }
+    const int bestRow = (firstPeakRow + lastPeakRow) / 2;
+    const int bestCol = (firstPeakCol + lastPeakCol) / 2;
+    ASSERT_GT(bestRow, 1);
+    ASSERT_GT(bestCol, 1);
+
+    // 「十」字横竖主干交汇正中心 3x3 邻域必须全部为纯净实心珊瑚红，严禁穿透底层纯白描边
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const cv::Vec3b centerPx = out.at<cv::Vec3b>(bestRow + dy, bestCol + dx);
+            EXPECT_TRUE(isRedCore(centerPx))
+                << "White hole detected at CJK stroke crossing (" << (bestCol + dx) << "," << (bestRow + dy)
+                << ") BGR=(" << static_cast<int>(centerPx[0]) << ","
+                << static_cast<int>(centerPx[1]) << "," << static_cast<int>(centerPx[2]) << ")";
+        }
+    }
+
+    // 2. 验证用户实机复现文本「这里没有啊」在全不透明与半透明 (alpha=160) 双态下均平滑合成且无交叠杂色
+    engine.clearAll();
+    auto* phraseOpaque = engine.addText(
+        cv::Point(16, 20),
+        reinterpret_cast<const char*>(u8"这里没有啊"),
+        MarkupColor::Red(),
+        32.0f,
+        true,
+        MarkupColor::Auto());
+    ASSERT_NE(phraseOpaque, nullptr);
+
+    MarkupColor semiRed = MarkupColor::Red();
+    semiRed.a = 160;
+    auto* phraseSemi = engine.addText(
+        cv::Point(16, 92),
+        reinterpret_cast<const char*>(u8"这里没有啊"),
+        semiRed,
+        32.0f,
+        true,
+        MarkupColor::Auto());
+    ASSERT_NE(phraseSemi, nullptr);
+
+    const cv::Mat phraseOut = engine.getCompositeImage(false);
+    EXPECT_GT(cv::norm(phraseOut, darkBase, cv::NORM_INF), 150.0);
+    if (const char* dumpPath = std::getenv("TOOLS3000_VISUAL_VERIFY_TEXT"); dumpPath && *dumpPath) {
+        cv::imwrite(dumpPath, phraseOut);
+    }
+    engine.resetSession();
+}
+
+TEST(CaptureMarkupRegression20261116, DefaultArrowStyleIsStealthArrow) {
+    using namespace tools3000::capture;
+
+    CaptureState defaultState{};
+    EXPECT_EQ(defaultState.currentArrowStyle, ArrowStyle::Tech);
+    EXPECT_EQ(defaultState.currentEndCap, LineCapStyle::StealthArrow);
+
+    MarkupElement defaultElem{};
+    EXPECT_EQ(defaultElem.arrowStyle, ArrowStyle::Tech);
+    EXPECT_EQ(defaultElem.endCap, LineCapStyle::StealthArrow);
+
+    cv::Mat base(120, 300, CV_8UC3, cv::Scalar(0, 0, 0));
+    MarkupEngine engine;
+    engine.setBaseImage(base);
+    auto* arrow = engine.drawArrow(cv::Point(40, 60), cv::Point(240, 60), MarkupColor(255, 255, 255), 4.0f);
+    ASSERT_NE(arrow, nullptr);
+    EXPECT_EQ(arrow->arrowStyle, ArrowStyle::Tech);
+    EXPECT_EQ(arrow->endCap, LineCapStyle::StealthArrow);
+
+    const cv::Mat comp = engine.getCompositeImage(false);
+    // 尖端在 (240, 60)，headLen = max(14, 4*3.5) = 14；燕尾两翼后掠角在 x ~= 226, y ~= 60 +- 6 处点亮
+    EXPECT_GT(comp.at<cv::Vec3b>(54, 227)[0], 150);
+    EXPECT_GT(comp.at<cv::Vec3b>(66, 227)[0], 150);
+}
+
+TEST(CaptureMarkupRegression20261116, MultiPointPolylineAndCentripetalSmoothCurveWorkflow) {
+    using namespace tools3000::capture;
+
+    // 1. 验证向心 Catmull-Rom (alpha=0.5) 严格穿过全部控制点，且长短跨度交替不产生过冲自交
+    const std::vector<FloatPoint2D> anchors = {
+        {20.0f, 120.0f},
+        {220.0f, 40.0f},
+        {235.0f, 52.0f},
+        {360.0f, 130.0f}
+    };
+    const auto curve = sampleCentripetalCatmullRom(anchors, 3.5f);
+    ASSERT_GT(curve.size(), 40u);
+    for (const auto& anchor : anchors) {
+        float minDist = 1e9f;
+        for (const auto& sp : curve) {
+            minDist = std::min(minDist, std::hypot(sp.x - anchor.x, sp.y - anchor.y));
+        }
+        EXPECT_LT(minDist, 0.05f) << "Centripetal spline failed to pass through anchor (" << anchor.x << "," << anchor.y << ")";
+    }
+
+    // 2. 验证 3 点与 4 点多点连线在「折线连接」与「美感平滑曲线连接」双模式下的渲染、逐顶点命中与拖拽微调
+    cv::Mat base(240, 420, CV_8UC3, cv::Scalar(0, 0, 0));
+    MarkupEngine engine;
+    engine.setBaseImage(base);
+
+    const std::vector<cv::Point> pts3 = { cv::Point(40, 180), cv::Point(180, 50), cv::Point(340, 180) };
+    auto* poly = engine.drawPolyline(pts3, MarkupColor(255, 255, 255), 4.0f, LineStyle::Solid, false);
+    ASSERT_NE(poly, nullptr);
+    EXPECT_TRUE(poly->isMultiPoint);
+    EXPECT_FALSE(poly->smoothCurve);
+    poly->isActive = true;
+
+    // 3 点折线模式绝不能丢失中间顶点 (180, 50)
+    const cv::Mat straightOut = engine.getCompositeImage(false);
+    EXPECT_GT(straightOut.at<cv::Vec3b>(50, 180)[0], 200);
+    // 起点与终点连线中点 (190, 180) 在折线模式下不点亮
+    EXPECT_EQ(straightOut.at<cv::Vec3b>(180, 190)[0], 0);
+
+    // 切换为美感平滑曲线后，依然精准穿过中间顶点 (180, 50)
+    poly->smoothCurve = true;
+    const cv::Mat smoothOut = engine.getCompositeImage(false);
+    EXPECT_GT(smoothOut.at<cv::Vec3b>(50, 180)[0], 180);
+
+    // 验证中间顶点独立手柄命中 (makeVertexHitArea(1)) 与拖拽位移
+    EXPECT_EQ(poly->hitTestEx(cv::Point(180, 50), 5), makeVertexHitArea(1));
+    poly->resize(15, 25, makeVertexHitArea(1));
+    EXPECT_EQ(poly->penPoints[1], cv::Point(195, 75));
+
+    // 3. 验证 MultiPointLinePolicy 与二级栏双按钮 (折线 intParam=1 / 美感曲线 intParam=2) 端到端状态流转
+    CaptureState state{};
+    state.mode = OverlayMode::Screenshot;
+    state.state = OverlayState::Selected;
+    state.dpiScale = 1.0f;
+    state.dragStart = {50, 50};
+    state.dragEnd = {550, 350};
+    state.isMarkupToolActive = true;
+    state.currentTool = MarkupTool::Line;
+
+    rebuildCaptureToolbar(state, D2D1::RectF(50.0f, 50.0f, 550.0f, 350.0f), D2D1::SizeF(1920.0f, 1080.0f));
+    const ToolbarButton* polyBtn = nullptr;
+    const ToolbarButton* curveBtn = nullptr;
+    for (const auto& btn : state.secondaryToolbarButtons) {
+        if (btn.command == ToolbarCommand::ToggleCurveMode && btn.intParam == 1) polyBtn = &btn;
+        if (btn.command == ToolbarCommand::ToggleCurveMode && btn.intParam == 2) curveBtn = &btn;
+    }
+    ASSERT_NE(polyBtn, nullptr);
+    ASSERT_NE(curveBtn, nullptr);
+    EXPECT_TRUE(isToolbarButtonSelected(*polyBtn, state));
+    EXPECT_FALSE(isToolbarButtonSelected(*curveBtn, state));
+
+    // 第 1 点轻点 (100, 200)：自动进入 isDrawingMultiPointLine 且动态放大镜自动退避
+    MultiPointLinePolicy::startFromFirstClick(state, POINT{100, 200});
+    EXPECT_TRUE(state.isDrawingMultiPointLine);
+    EXPECT_TRUE(shouldSuppressDynamicMagnifierPreview(state, POINT{120, 200}));
+    ASSERT_EQ(state.multiPointDocVertices.size(), 1u);
+
+    // 第 2 点 (200, 120)、第 3 点 (300, 220)、误点第 4 点 (350, 260)
+    EXPECT_FALSE(MultiPointLinePolicy::appendVertexOrCloseLoop(state, POINT{200, 120}, false));
+    EXPECT_FALSE(MultiPointLinePolicy::appendVertexOrCloseLoop(state, POINT{300, 220}, false));
+    EXPECT_FALSE(MultiPointLinePolicy::appendVertexOrCloseLoop(state, POINT{350, 260}, false));
+    ASSERT_EQ(state.multiPointDocVertices.size(), 4u);
+
+    // 按 Backspace 撤回误点的第 4 点，再补点正确的第 4 点 (420, 140)
+    EXPECT_FALSE(MultiPointLinePolicy::popLastVertex(state));
+    ASSERT_EQ(state.multiPointDocVertices.size(), 3u);
+    EXPECT_FALSE(MultiPointLinePolicy::appendVertexOrCloseLoop(state, POINT{420, 140}, false));
+    ASSERT_EQ(state.multiPointDocVertices.size(), 4u);
+
+    // 绘制中途点击二级栏「美感曲线连接 (intParam=2)」按钮：保持多点草稿存活并实时切换曲线选中态
+    MultiPointLinePolicy::applyCurveModeButton(state, 2);
+    EXPECT_TRUE(state.isDrawingMultiPointLine);
+    EXPECT_TRUE(state.currentSmoothCurve);
+    EXPECT_FALSE(isToolbarButtonSelected(*polyBtn, state));
+    EXPECT_TRUE(isToolbarButtonSelected(*curveBtn, state));
+
+    // 靠近第 1 点 (104, 198) 点击触发磁吸闭合，落盘生成 5 顶点闭合美感平滑曲线
+    EXPECT_TRUE(MultiPointLinePolicy::appendVertexOrCloseLoop(state, POINT{104, 198}, false));
+    ASSERT_EQ(state.multiPointDocVertices.size(), 5u);
+    EXPECT_EQ(state.multiPointDocVertices.back().x, 100);
+    EXPECT_EQ(state.multiPointDocVertices.back().y, 200);
+
+    std::vector<cv::Point> localPts;
+    for (const auto& vp : state.multiPointDocVertices) {
+        localPts.emplace_back(vp.x - 50, vp.y - 50);
+    }
+    auto* closedCurve = state.markup.drawPolyline(localPts, MarkupColor::Red(), 4.0f, LineStyle::Solid, state.currentSmoothCurve);
+    ASSERT_NE(closedCurve, nullptr);
+    EXPECT_TRUE(closedCurve->isMultiPoint);
+    EXPECT_TRUE(closedCurve->smoothCurve);
+    EXPECT_EQ(closedCurve->penPoints.size(), 5u);
+
+    if (const char* dumpCurvePath = std::getenv("TOOLS3000_VISUAL_VERIFY_CURVE"); dumpCurvePath && *dumpCurvePath) {
+        cv::Mat showcase(260, 520, CV_8UC3, cv::Scalar(42, 37, 34));
+        MarkupEngine showEng;
+        showEng.setBaseImage(showcase);
+        showEng.drawArrow(cv::Point(30, 42), cv::Point(230, 42), MarkupColor::Red(), 4.0f);
+        showEng.addText(cv::Point(260, 18), reinterpret_cast<const char*>(u8"这里没有啊"), MarkupColor::Red(), 32.0f, true, MarkupColor::Auto());
+        showEng.drawPolyline({cv::Point(30, 145), cv::Point(105, 92), cv::Point(175, 152), cv::Point(245, 96)},
+                             MarkupColor::Red(), 4.0f, LineStyle::Solid, false);
+        showEng.drawPolyline({cv::Point(275, 155), cv::Point(335, 92), cv::Point(405, 165), cv::Point(485, 98)},
+                             MarkupColor::Red(), 4.0f, LineStyle::Solid, true);
+        cv::imwrite(dumpCurvePath, showEng.getCompositeImage(false));
+    }
+}
+
 

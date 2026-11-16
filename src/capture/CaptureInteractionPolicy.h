@@ -284,6 +284,9 @@ inline bool isPointNearSelectionControlHandles(const CaptureState& state, POINT 
 /// 当光标悬停在已有放大镜（含 8 向缩放控制点与源环）、其他已有标注图元或选区控制手柄上时立即退避隐藏，
 /// 完整无遮挡露出图元与编辑手柄；光标移回空白画布时返回 false 恢复连续标注预览。
 inline bool shouldSuppressDynamicMagnifierPreview(const CaptureState& state, POINT pt) noexcept {
+    if (state.isDrawingMultiPointLine) {
+        return true;
+    }
     if (isPointNearSelectionControlHandles(state, pt)) {
         return true;
     }
@@ -303,6 +306,72 @@ inline bool shouldSuppressDynamicMagnifierPreview(const CaptureState& state, POI
     }
     return false;
 }
+
+/// 直线工具多点连续点击折线 / 美感曲线状态机策略中枢（单一事实源，供 CaptureInput 与离线单测共用）
+struct MultiPointLinePolicy {
+    static void startFromFirstClick(CaptureState& state, POINT firstDocPt) {
+        state.isDrawingMultiPointLine = true;
+        state.multiPointDocVertices.clear();
+        state.multiPointDocVertices.push_back(firstDocPt);
+        state.markupStart = firstDocPt;
+        state.markupEnd = firstDocPt;
+        state.isMarking = true;
+        state.state = OverlayState::Marking;
+    }
+
+    /// 追加下一个点击锚点；若点击在起点磁吸圈内 (>=3 点) 自动闭合并返回 true 表示应立即收尾提交
+    static bool appendVertexOrCloseLoop(CaptureState& state, POINT rawDocPt, bool shiftSnap45) {
+        POINT nextDocPt = rawDocPt;
+        if (!state.multiPointDocVertices.empty() && shiftSnap45) {
+            const POINT refPt = state.multiPointDocVertices.back();
+            const double dx = static_cast<double>(nextDocPt.x - refPt.x);
+            const double dy = static_cast<double>(nextDocPt.y - refPt.y);
+            const double dist = std::hypot(dx, dy);
+            if (dist >= 1.0) {
+                const double angle = std::atan2(dy, dx);
+                constexpr double step = 3.14159265358979323846 / 4.0;
+                const double snappedAngle = std::round(angle / step) * step;
+                nextDocPt.x = static_cast<LONG>(std::lround(refPt.x + dist * std::cos(snappedAngle)));
+                nextDocPt.y = static_cast<LONG>(std::lround(refPt.y + dist * std::sin(snappedAngle)));
+            }
+        }
+        const double effScale = state.dpiScale > 0.0f ? static_cast<double>(state.dpiScale) : 1.0;
+        if (state.multiPointDocVertices.size() >= 3) {
+            const POINT firstPt = state.multiPointDocVertices.front();
+            if (std::hypot(static_cast<double>(nextDocPt.x - firstPt.x),
+                           static_cast<double>(nextDocPt.y - firstPt.y)) <= 10.0 * effScale) {
+                state.multiPointDocVertices.push_back(firstPt);
+                state.markupEnd = firstPt;
+                return true;
+            }
+        }
+        if (state.multiPointDocVertices.empty() ||
+            std::hypot(static_cast<double>(nextDocPt.x - state.multiPointDocVertices.back().x),
+                       static_cast<double>(nextDocPt.y - state.multiPointDocVertices.back().y)) >= 2.0) {
+            state.multiPointDocVertices.push_back(nextDocPt);
+        }
+        state.markupEnd = nextDocPt;
+        return false;
+    }
+
+    /// 撤回上一个锚点；若锚点已清空则返回 true 表示退出多点草稿态
+    static bool popLastVertex(CaptureState& state) noexcept {
+        if (!state.multiPointDocVertices.empty()) {
+            state.multiPointDocVertices.pop_back();
+        }
+        return state.multiPointDocVertices.empty();
+    }
+
+    static void applyCurveModeButton(CaptureState& state, int buttonIntParam) noexcept {
+        if (buttonIntParam == 1) {
+            state.currentSmoothCurve = false;
+        } else if (buttonIntParam == 2) {
+            state.currentSmoothCurve = true;
+        } else {
+            state.currentSmoothCurve = !state.currentSmoothCurve;
+        }
+    }
+};
 
 } // namespace tools3000::capture
 

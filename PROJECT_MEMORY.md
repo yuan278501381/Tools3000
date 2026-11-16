@@ -6,6 +6,17 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-16] 截图标注思源黑体交叠笔画奇偶挖空杂色根治、直线工具多点连续折线/美感向心曲线连接与燕尾箭头默认基线
+- **实机暗坑机理与三重体验升级**：
+  1. **思源黑体 (`Noto Sans SC` / `Source Han Sans SC`) 交叠笔画 `FillModeAlternate` 虚线杂色根因 (`MarkupEngine.cpp`)**：
+     - *暗坑机理*：现代 OpenType/可变中文字库的汉字（如「这」「里」「没」「有」「啊」「十」）由独立的横竖撇捺闭合轮廓交叠构成（未作布尔并集扁平化），而 `Gdiplus::GraphicsPath` 默认构造函数采用 `FillModeAlternate`（奇偶环绕规则）。在 `DrawPath` 先绘制纯白粗描边、再 `FillPath` 填充红色字芯时，所有笔画交叉处环绕数为 `2`（偶数）导致被奇偶规则挖空，底层白色描边穿透字芯呈现为断裂虚线与杂色斑点；
+     - *终局标准*：所有 `AddString` 路径强制显式构造为 `Gdiplus::GraphicsPath(Gdiplus::FillModeWinding)`（非零环绕规则），并对半透明（`alpha < 255`）带描边文字引入独立离屏满不透明度合成层后再按比例叠入，确保任意字重、任意透明度下字芯 100% 严密遮蔽内部交叠笔画轮廓。
+  2. **直线工具 (`MarkupTool::Line`) 多点连续点击折线连接与美感向心平滑曲线连接 (`MarkupCurveGeometry.h`, `CaptureInteractionPolicy.h`, `CaptureInput.cpp`, `CaptureRenderer.cpp`, `MarkupEngine.cpp`)**：
+     - *双模态顺滑交互*：保留按住拖拽两点秒画单段直线的肌肉记忆；当用户在画布轻点（位移 `< 5px`）时无缝进入多点连线模式（`MultiPointLinePolicy`），支持连续点击添加任意数量锚点、实时 120Hz 橡皮筋预览、`Shift` `45°` 正交吸附、`Backspace` 逐步撤回误点锚点、靠近起点（`>= 3` 点）自动磁吸闭合成环，以及通过双击、右键或 `Enter` 一键收尾；完成后所有顶点均挂载独立可拖拽微调手柄；
+     - *向心参数化样条 ($\alpha = 0.5$) 与 `1/16px` 亚像素丝滑落盘*：二级栏并列展示「多点折线连接 (`PropPolyline`, `intParam=1`)」与「美感曲线连接 (`PropSmoothCurve`, `intParam=2`)」双直选图标（绘制前/中/后随时互切）；摒弃在长短跨度交替时易自交打结与过冲的均匀样条（$\alpha = 0$），统一在 `MarkupCurveGeometry.h` 建立 Barry & Goldman 向心 Catmull-Rom 样条（$\alpha = 0.5$，100% 穿过每个点击锚点且数学保证零自交零尖点），并在 OpenCV 落盘侧启用 `kShift = 4`（`1/16` 像素定点精度）彻底消除整数坐标量化导致的斜向曲线微锯齿。
+  3. **箭头工具初始默认燕尾箭头 (`CaptureState.h`, `MarkupEngine.h`)**：
+     - 将全局初始 `currentArrowStyle` 对齐为 `ArrowStyle::Tech`（燕尾箭头），默认终点样式 `currentEndCap` 同步对齐为 `LineCapStyle::StealthArrow`。
+
 ### [2026-11-12] 全仓 35 项主动深度优化（性能内存压榨、人类使用心流打磨、原生/Web 跨表面主题大一统与半成品收敛）
 - **背景与产品决策基线**：
   - 通过多智能体集群（Swarm）对全仓 C++/Rust/TSX/CSS/Inno Setup 进行只读主动巡检与交叉实证，确立 4 大维度共 **35 项（P0 × 11、P1 × 20、P2 × 4）** 进阶清单并分三批次全量落地；

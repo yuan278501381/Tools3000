@@ -390,8 +390,10 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
                 specs.push_back({ToolbarCommand::SelectTool, MarkupTool::Ellipse, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
                 specs.push_back({ToolbarCommand::SelectTool, MarkupTool::Line, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
-                specs.push_back({ToolbarCommand::ToggleCurveMode, state.currentTool, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentSmoothCurve, false, true, true});
-                specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, false});
+                // 直线工具显式并列提供「多点折线连接 (intParam=1)」与「美感平滑曲线连接 (intParam=2)」双模式按钮
+                specs.push_back({ToolbarCommand::ToggleCurveMode, state.currentTool, {}, L"", 28.0f, 1, LineStyle::Solid, ArrowStyle::Standard, !state.currentSmoothCurve, false, true, true});
+                specs.push_back({ToolbarCommand::ToggleCurveMode, state.currentTool, {}, L"", 28.0f, 2, LineStyle::Solid, ArrowStyle::Standard, state.currentSmoothCurve, false, true, false});
+                specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, true});
                 specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 46.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
                 specs.push_back({ToolbarCommand::ToggleLineArrow, state.currentTool, {}, zh ? L"箭头" : L"Arrow", zh ? 58.0f : 64.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentLineArrowEnabled, false, true, true});
                 if (state.currentLineArrowEnabled) {
@@ -1090,7 +1092,14 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
         case ToolbarCommand::SelectLineStyle: return chinese ? L"切换线条样式" : L"Select Line Style";
         case ToolbarCommand::ToggleArrowStyleDropdown: return chinese ? L"箭头样式" : L"Arrow Style";
         case ToolbarCommand::SelectArrowStyle: return chinese ? L"切换箭头样式" : L"Select Arrow Style";
-        case ToolbarCommand::ToggleCurveMode: return chinese ? L"折线 / 平滑曲线切换" : L"Toggle Smooth Curve";
+        case ToolbarCommand::ToggleCurveMode:
+            if (button.intParam == 1) {
+                return chinese ? L"折线连接 (可连续点击多点，双击/右键完成)" : L"Straight Polyline (Click multiple points, double/right-click to finish)";
+            }
+            if (button.intParam == 2) {
+                return chinese ? L"美感曲线连接 (可连续点击多点，双击/右键完成)" : L"Smooth Curve (Click multiple points, double/right-click to finish)";
+            }
+            return chinese ? L"折线 / 平滑曲线切换" : L"Toggle Smooth Curve";
         case ToolbarCommand::ToggleLineArrow: return chinese ? L"启用端点箭头样式" : L"Enable Endpoint Caps";
         case ToolbarCommand::ToggleStartCapDropdown: return chinese ? L"起点端点样式 (10种)" : L"Start Endpoint Style (10 types)";
         case ToolbarCommand::SelectStartCap: return chinese ? L"选择起点端点样式" : L"Select Start Cap";

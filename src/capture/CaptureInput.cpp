@@ -235,6 +235,9 @@ HCURSOR CaptureInput::getCornerRadiusLiveCursor(int cornerIndex, float dpiScale,
 }
 
 static HCURSOR cursorForArea(HitArea area, int cornerIndex = 0, float dpiScale = 1.0f, bool isDragging = false) {
+    if (isVertexHitArea(area)) {
+        return LoadCursor(nullptr, IDC_HAND);
+    }
     switch (area) {
         case HitArea::LT:
         case HitArea::RB:
@@ -470,7 +473,7 @@ void CaptureInput::updateHoverCursor(POINT point) {
         }
 
         // ========== Level 4: 画布上已选中的激活元素或悬停元素 ==========
-        if (!cur) {
+        if (!cur && !m_state->isDrawingMultiPointLine) {
             const bool inSelection = isPointInSelection(point);
             if (inSelection) {
                 cv::Point local = toMarkupPoint(point);
@@ -936,6 +939,27 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
     // thread, and remains invisible to sighted users.
     tools3000::core::accessibility::announceOverlay(
         m_hwnd, toolbarButtonAccessibleName(button));
+
+    if (m_state->isDrawingMultiPointLine) {
+        const bool keepMultiPointAlive =
+            (button.command == ToolbarCommand::SelectColor ||
+             button.command == ToolbarCommand::ChooseCustomColor ||
+             button.command == ToolbarCommand::CycleStrokeWidth ||
+             button.command == ToolbarCommand::ToggleLineStyleDropdown ||
+             button.command == ToolbarCommand::SelectLineStyle ||
+             button.command == ToolbarCommand::ToggleCurveMode ||
+             button.command == ToolbarCommand::ToggleLineArrow ||
+             button.command == ToolbarCommand::ToggleStartCapDropdown ||
+             button.command == ToolbarCommand::SelectStartCap ||
+             button.command == ToolbarCommand::ToggleEndCapDropdown ||
+             button.command == ToolbarCommand::SelectEndCap);
+        if (!keepMultiPointAlive) {
+            const bool shouldCommit =
+                (button.command != ToolbarCommand::Cancel &&
+                 button.command != ToolbarCommand::Clear);
+            finalizeMultiPointLine(shouldCommit);
+        }
+    }
 
     // 仅在切换其他工具或执行重置/确认时退出选中态；改颜色/属性或选择相同工具时保留当前激活元素
     if (button.command != ToolbarCommand::SelectColor &&
@@ -1499,7 +1523,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             break;
 
         case ToolbarCommand::ToggleCurveMode:
-            m_state->currentSmoothCurve = !m_state->currentSmoothCurve;
+            MultiPointLinePolicy::applyCurveModeButton(*m_state, button.intParam);
             if (m_state->activeElement &&
                 (m_state->activeElement->tool == MarkupTool::Line ||
                  m_state->activeElement->tool == MarkupTool::Arrow ||
@@ -1518,7 +1542,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             if (m_state->currentLineArrowEnabled &&
                 m_state->currentStartCap == LineCapStyle::None &&
                 m_state->currentEndCap == LineCapStyle::None) {
-                m_state->currentEndCap = LineCapStyle::OpenArrow;
+                m_state->currentEndCap = LineCapStyle::StealthArrow;
             }
             if (!m_state->currentLineArrowEnabled &&
                 (m_state->openSubmenu == SubmenuType::StartCapStyle ||
@@ -2124,6 +2148,9 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
 }
 
 void CaptureInput::setCurrentTool(MarkupTool tool) {
+    if (m_state->isDrawingMultiPointLine) {
+        finalizeMultiPointLine(true);
+    }
     if (m_state->activeElement) {
         if (m_state->activeElement->tool == tool) {
             // 如果切回/选中的就是当前已激活元素对应的工具，保持激活状态；对于文本元素立即进入编辑
@@ -2342,7 +2369,63 @@ void CaptureInput::updateMarkup(POINT point) {
     }
 }
 
+void CaptureInput::finalizeMultiPointLine(bool commit) {
+    if (!m_state || !m_state->isDrawingMultiPointLine) return;
+
+    std::vector<cv::Point> localPts;
+    localPts.reserve(m_state->multiPointDocVertices.size());
+    for (size_t i = 0; i < m_state->multiPointDocVertices.size(); ++i) {
+        const cv::Point lp = toMarkupPointFromDoc(m_state->multiPointDocVertices[i]);
+        const bool isLastClosingFirst =
+            (i + 1 == m_state->multiPointDocVertices.size() &&
+             localPts.size() >= 3 &&
+             std::hypot(lp.x - localPts.front().x, lp.y - localPts.front().y) <= 2.0);
+        if (localPts.empty() ||
+            isLastClosingFirst ||
+            std::hypot(lp.x - localPts.back().x, lp.y - localPts.back().y) >= 2.0) {
+            localPts.push_back(isLastClosingFirst ? localPts.front() : lp);
+        }
+    }
+
+    m_state->isDrawingMultiPointLine = false;
+    m_state->multiPointDocVertices.clear();
+    m_state->isMarking = false;
+    m_state->state = OverlayState::Selected;
+
+    if (commit && localPts.size() >= 2) {
+        prepareMarkupBase();
+        const float currentDpiScale = m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f;
+        auto* elem = m_state->markup.drawPolyline(
+            localPts,
+            m_state->currentColor,
+            static_cast<float>(m_state->currentStrokeWidth),
+            m_state->currentLineStyle,
+            m_state->currentSmoothCurve);
+        if (elem) {
+            elem->hasCustomCaps = m_state->currentLineArrowEnabled;
+            elem->startCap = m_state->currentStartCap;
+            elem->endCap = m_state->currentEndCap;
+            elem->dpiScale = currentDpiScale;
+            m_state->activeElement = elem;
+            elem->isActive = true;
+        }
+        if (m_renderer) {
+            m_renderer->markMarkupDirty();
+        }
+    }
+
+    m_state->toolbarLayoutValid = false;
+    if (m_renderer) {
+        m_renderer->invalidate();
+    }
+    syncShortcutHintContext();
+}
+
 void CaptureInput::finishMarkup(POINT point) {
+    if (m_state->isDrawingMultiPointLine) {
+        finalizeMultiPointLine(true);
+        return;
+    }
     if (!m_state->isMarking) return;
 
     m_state->markupEnd = m_state->screenToDocPoint(point);
@@ -2376,6 +2459,20 @@ void CaptureInput::finishMarkup(POINT point) {
 
     int dx = std::abs(end.x - start.x);
     int dy = std::abs(end.y - start.y);
+
+    // 直线工具下轻点画布（非拖拽）：无缝进入多点连线模式（支持连续点击折线连接或美感平滑曲线连接）
+    if (m_state->currentTool == MarkupTool::Line && dx < 5 && dy < 5) {
+        MultiPointLinePolicy::startFromFirstClick(*m_state, m_state->markupStart);
+        const bool zh = tools3000::core::isUiLanguageChinese();
+        m_state->loupeToastUntil = GetTickCount() + 2400;
+        m_state->loupeToastMessage = zh
+            ? L"多点连线：继续点击添加节点 · 双击 / 右键 / Enter 完成"
+            : L"Multi-point: Click to add points · Double/Right-click or Enter to finish";
+        if (m_hwnd) {
+            SetTimer(m_hwnd, RENDER_TIMER_ID, 16, nullptr);
+        }
+        return;
+    }
 
     if (m_state->currentTool != MarkupTool::Pen &&
         m_state->currentTool != MarkupTool::Number &&
@@ -3320,9 +3417,31 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 }
 
                 if (!inSelection && selHit == HitArea::Body) {
+                    if (m_state->isDrawingMultiPointLine) {
+                        finalizeMultiPointLine(true);
+                    }
                     m_state->isAdjustingSelection = true;
                     m_state->selAdjustHandle = HitArea::Body;
                     m_state->selAdjustLast = point;
+                    updateHoverCursor(point);
+                    return 0;
+                }
+
+                // 3.5 多点连线创作态优先消费左键落点（不被画布既有标注图元拦截抢焦）
+                if (m_state->isDrawingMultiPointLine) {
+                    if (!inSelection) {
+                        finalizeMultiPointLine(m_state->multiPointDocVertices.size() >= 2);
+                        updateHoverCursor(point);
+                        return 0;
+                    }
+                    const POINT rawDocPt = m_state->screenToDocPoint(point);
+                    const bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (MultiPointLinePolicy::appendVertexOrCloseLoop(*m_state, rawDocPt, shiftHeld)) {
+                        finalizeMultiPointLine(true);
+                        updateHoverCursor(point);
+                        return 0;
+                    }
+                    m_renderer->invalidate();
                     updateHoverCursor(point);
                     return 0;
                 }
@@ -4252,6 +4371,12 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             }
 
             if (m_state->isMarking) {
+                if (m_state->isDrawingMultiPointLine) {
+                    // 多点连线已在 WM_LBUTTONDOWN 记录锚点，抬起左键保持橡皮筋继续延伸至下一点
+                    m_renderer->invalidate();
+                    updateHoverCursor(m_state->currentCursor);
+                    return 0;
+                }
                 finishMarkup({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)});
                 m_renderer->invalidate();
                 updateHoverCursor(m_state->currentCursor);
@@ -4362,6 +4487,13 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     return 0;
                 }
                 auto* hitBtn = hitTestToolbar(pt);
+                if (m_state->isDrawingMultiPointLine && hitBtn == nullptr &&
+                    !isPointInsideRectF(pt, m_state->primaryToolbarRect) &&
+                    !isPointInsideRectF(pt, m_state->secondaryToolbarRect)) {
+                    finalizeMultiPointLine(m_state->multiPointDocVertices.size() >= 2);
+                    updateHoverCursor(pt);
+                    return 0;
+                }
                 const bool inSel = isPointInSelection(pt);
                 const HitArea selBoxHit = hitTestSelectionBox(pt);
                 const cv::Point local = inSel ? toMarkupPoint(pt) : cv::Point{0, 0};
@@ -4575,6 +4707,13 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             if (hasAnyCapturePopupOpen(*m_state)) {
                 closeAllCapturePopups(*m_state, true);
                 m_renderer->invalidate();
+                return 0;
+            }
+
+            // 0.8 多点连线创作态下：右键一键完成已点击的多点折线/曲线（若仅 1 个点则干净取消草稿）
+            if (m_state->isDrawingMultiPointLine) {
+                finalizeMultiPointLine(m_state->multiPointDocVertices.size() >= 2);
+                updateHoverCursor(m_state->currentCursor);
                 return 0;
             }
 
@@ -5042,6 +5181,27 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_state->shiftTapCandidate, wParam, isAutoRepeat, ctrl, alt);
 
             const auto keyCtx = CaptureShortcutPolicy::snapshotFromState(*m_state);
+            if (m_state->isDrawingMultiPointLine && !ctrl && !alt) {
+                if (wParam == VK_BACK || wParam == VK_DELETE) {
+                    if (MultiPointLinePolicy::popLastVertex(*m_state)) {
+                        finalizeMultiPointLine(false);
+                    } else {
+                        m_renderer->invalidate();
+                    }
+                    updateHoverCursor(m_state->currentCursor);
+                    return 0;
+                }
+                if (wParam == VK_RETURN || wParam == VK_SPACE) {
+                    finalizeMultiPointLine(m_state->multiPointDocVertices.size() >= 2);
+                    updateHoverCursor(m_state->currentCursor);
+                    return 0;
+                }
+                if (wParam == VK_ESCAPE) {
+                    finalizeMultiPointLine(false);
+                    updateHoverCursor(m_state->currentCursor);
+                    return 0;
+                }
+            }
             if (m_state->isLongImageMode() && !keyCtx.editingText && !ctrl && !alt) {
                 const auto& stg = m_state->longCanvas.stageRect;
                 const float pageStep = (std::max)(120.0f, (stg.bottom - stg.top) * 0.82f);

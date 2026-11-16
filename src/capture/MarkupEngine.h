@@ -146,8 +146,23 @@ enum class HitArea {
     CornerRadius = 9,
     FocusSource = 10,
     LensOffset = 11,
-    TextMoveBorder = 12
+    TextMoveBorder = 12,
+    VertexBase = 100
 };
+
+constexpr bool isVertexHitArea(HitArea area) noexcept {
+    return static_cast<int>(area) >= static_cast<int>(HitArea::VertexBase);
+}
+
+constexpr size_t vertexIndexFromHitArea(HitArea area) noexcept {
+    return isVertexHitArea(area)
+        ? static_cast<size_t>(static_cast<int>(area) - static_cast<int>(HitArea::VertexBase))
+        : 0u;
+}
+
+constexpr HitArea makeVertexHitArea(size_t index) noexcept {
+    return static_cast<HitArea>(static_cast<int>(HitArea::VertexBase) + static_cast<int>(index));
+}
 
 struct MarkupElement;
 
@@ -164,11 +179,12 @@ struct MarkupElement {
     LineStyle lineStyle = LineStyle::Solid;
     bool fill = false;
     float cornerRadius = 0.0f;
-    ArrowStyle arrowStyle = ArrowStyle::Standard;
+    ArrowStyle arrowStyle = ArrowStyle::Tech;
     bool smoothCurve = false;
+    bool isMultiPoint = false;
     bool hasCustomCaps = false;
     LineCapStyle startCap = LineCapStyle::None;
-    LineCapStyle endCap = LineCapStyle::SolidTriangle;
+    LineCapStyle endCap = LineCapStyle::StealthArrow;
 
     // 起点/终点（矩形/箭头/椭圆用）
     cv::Point startPt{0, 0};
@@ -421,6 +437,10 @@ public:
 
     /// 画直线 (Snipaste / PixPin 核心标注)
     MarkupElement* drawLine(cv::Point p1, cv::Point p2, MarkupColor color, float thickness = 2.0f, LineStyle style = LineStyle::Solid);
+
+    /// 画多点折线或美感向心平滑曲线 (支持任意 >= 2 个锚点及折线/曲线无损互切)
+    MarkupElement* drawPolyline(const std::vector<cv::Point>& points, MarkupColor color, float thickness = 2.0f,
+                                LineStyle style = LineStyle::Solid, bool smoothCurve = false);
 
     /// 画箭头
     MarkupElement* drawArrow(cv::Point from, cv::Point to, MarkupColor color, float thickness = 2.0f);
