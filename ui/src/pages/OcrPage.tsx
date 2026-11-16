@@ -1,25 +1,48 @@
 /* ─────────────────────────────────────────────────────────────────────────────
-/* ─────────────────────────────────────────────────────────────────────────────
- * OcrPage — OCR 识别设置页
+ * OcrPage — 双引擎高精度离线文字识别 (PP-OCRv4 + 增强版 Windows OCR) 与原图实景选字设置页
  *
- * 引擎: Windows.Media.Ocr (系统内置、离线)。
- * 从 C++ ConfigManager 加载设置，修改后实时 IPC 保存；并展示引擎可用性。
+ * 核心能力:
+ *   1. 双引擎离线识别管线切换 (auto / ppocr_v4 / windows) 与可用性实时展示
+ *   2. 微信级高精度离线引擎包 (PP-OCRv4, OpenCV DNN) 一键安全下载、进度追踪与取消
+ *   3. 贴图原图实景选字 (Live Text)、截图原地定格实景贴图、表格重建与二维码顺手识别配置
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Badge, Select, PageSkeleton } from '../components/UIKit';
+import { useState, useEffect, useCallback, useRef, type FC } from 'react';
+import { Card, Toggle, SettingRow, SettingGroup, Badge, Select, Button, CodeBadge, PageSkeleton } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { FileText } from 'lucide-react';
+import { FileText, Cpu, Download, X, Sparkles, Table2, QrCode, SunMoon, Type, Loader2 } from 'lucide-react';
 
 interface OcrSettings {
   engine: string;
   language: string;
   copyResult: boolean;
   showResultWindow: boolean;
+  liveTextOnPin: boolean;
+  pinLiveTextOnCapture: boolean;
+}
+
+interface DeepOcrModelStatus {
+  installed: boolean;
+  downloading: boolean;
+  progressPercent: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  state: 'installed' | 'downloading' | 'not_installed' | 'error' | string;
+  currentFile: string;
+  modelDir: string;
+  error: string;
+}
+
+interface OcrStatusPayload {
+  available: boolean;
+  windowsOcrAvailable?: boolean;
+  deepOcrInstalled?: boolean;
+  effectiveEngine?: string;
+  modelStatus?: DeepOcrModelStatus;
 }
 
 interface OperationResult {
@@ -30,33 +53,75 @@ interface OperationResult {
   conflictWith?: string;
 }
 
+const DEFAULT_MODEL_STATUS: DeepOcrModelStatus = {
+  installed: false,
+  downloading: false,
+  progressPercent: 0,
+  downloadedBytes: 0,
+  totalBytes: 16600000,
+  state: 'not_installed',
+  currentFile: '',
+  modelDir: '',
+  error: '',
+};
+
 export const OcrPage: FC = () => {
   const [settings, setSettings] = useState<OcrSettings>({
-    engine: 'windows',
+    engine: 'auto',
     language: 'auto',
     copyResult: true,
     showResultWindow: true,
+    liveTextOnPin: true,
+    pinLiveTextOnCapture: true,
   });
   const [loading, setLoading] = useState(true);
   const [available, setAvailable] = useState(false);
+  const [modelStatus, setModelStatus] = useState<DeepOcrModelStatus>(DEFAULT_MODEL_STATUS);
+  const [actionBusy, setActionBusy] = useState(false);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [shortcut, setShortcut] = useState('Ctrl+Shift+O');
+  const wasDownloadingRef = useRef(false);
   const { t } = useTranslation();
 
   const getHotkey = (name: string) => hotkeys.find(h => h.name === name);
 
+  const syncStatusFromBackend = useCallback(async () => {
+    try {
+      const status = await bridgeRequest<OcrStatusPayload>('ocr.getStatus', undefined, { silent: true });
+      setAvailable(Boolean(status?.available));
+      if (status?.modelStatus) {
+        setModelStatus(status.modelStatus);
+      }
+    } catch {
+      // Keep current status snapshot on transient polling failure
+    }
+  }, []);
+
   useEffect(() => {
     Promise.all([
-      bridgeRequest<OcrSettings>('ocr.getSettings'),
-      bridgeRequest<{ available: boolean }>('ocr.getStatus'),
+      bridgeRequest<Partial<OcrSettings>>('ocr.getSettings'),
+      bridgeRequest<OcrStatusPayload>('ocr.getStatus'),
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
       bridgeRequest<string>('config.get', { key: '/ocr/language' }, { silent: true }).catch(() => null),
     ]).then(([data, status, hotkeyList, cfgLang]) => {
       const resolvedLanguage =
         (typeof data?.language === 'string' && data.language.trim() !== '' ? data.language : null) ??
         (typeof cfgLang === 'string' && cfgLang.trim() !== '' ? cfgLang : 'auto');
-      setSettings(prev => ({ ...prev, ...data, language: resolvedLanguage }));
-      setAvailable(status.available);
+      const resolvedEngine =
+        typeof data?.engine === 'string' && ['auto', 'ppocr_v4', 'windows'].includes(data.engine)
+          ? data.engine
+          : 'auto';
+      setSettings(prev => ({
+        ...prev,
+        ...data,
+        engine: resolvedEngine,
+        language: resolvedLanguage,
+      }));
+      setAvailable(Boolean(status?.available));
+      if (status?.modelStatus) {
+        setModelStatus(status.modelStatus);
+        wasDownloadingRef.current = Boolean(status.modelStatus.downloading);
+      }
       const list = Array.isArray(hotkeyList) ? hotkeyList : [];
       setHotkeys(list);
       setShortcut(list.find(item => item.name === 'OCR')?.shortcut ?? 'Ctrl+Shift+O');
@@ -66,6 +131,31 @@ export const OcrPage: FC = () => {
     }).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!modelStatus.downloading) {
+      return undefined;
+    }
+    wasDownloadingRef.current = true;
+    const timer = window.setInterval(() => {
+      bridgeRequest<DeepOcrModelStatus>('ocr.getModelStatus', undefined, { silent: true })
+        .then((next) => {
+          if (!next) return;
+          setModelStatus(next);
+          if (!next.downloading && wasDownloadingRef.current) {
+            wasDownloadingRef.current = false;
+            void syncStatusFromBackend();
+            if (next.installed) {
+              toast.success(t('ocr.downloadCompleted'));
+            } else if (next.state === 'error' && next.error) {
+              toast.error(t('ocr.downloadFailedToast'), { description: next.error });
+            }
+          }
+        })
+        .catch(() => { /* ignore transient poll error */ });
+    }, 380);
+    return () => window.clearInterval(timer);
+  }, [modelStatus.downloading, syncStatusFromBackend, t]);
 
   const updateSetting = useCallback((key: keyof OcrSettings, value: unknown) => {
     setSettings(prev => ({ ...prev, [key]: value }));
@@ -83,12 +173,54 @@ export const OcrPage: FC = () => {
       return;
     }
     bridgeRequest<OperationResult>('ocr.updateSettings', { [key]: value })
-      .then(result => { if (!result.success) throw new Error(result.error || 'update failed'); })
+      .then(result => {
+        if (!result.success) throw new Error(result.error || 'update failed');
+        void syncStatusFromBackend();
+      })
       .catch(async (error) => {
         toast.error(t('ocr.saveFailed'), { description: String(error) });
-        try { setSettings(await bridgeRequest<OcrSettings>('ocr.getSettings')); } catch { /* keep usable */ }
+        try {
+          const restored = await bridgeRequest<Partial<OcrSettings>>('ocr.getSettings');
+          setSettings(prev => ({ ...prev, ...restored }));
+        } catch { /* keep usable */ }
       });
-  }, [t]);
+  }, [syncStatusFromBackend, t]);
+
+  const handleStartDownload = async () => {
+    if (actionBusy || modelStatus.downloading) return;
+    setActionBusy(true);
+    try {
+      const res = await bridgeRequest<{ success: boolean; modelStatus?: DeepOcrModelStatus }>('ocr.downloadModel');
+      if (res?.modelStatus) {
+        setModelStatus(res.modelStatus);
+        wasDownloadingRef.current = Boolean(res.modelStatus.downloading);
+      }
+      if (res?.success) {
+        toast.info(t('ocr.downloadStarted'));
+      }
+    } catch (error) {
+      toast.error(t('ocr.downloadFailedToast'), { description: String(error) });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleCancelDownload = async () => {
+    if (actionBusy) return;
+    setActionBusy(true);
+    try {
+      wasDownloadingRef.current = false;
+      const res = await bridgeRequest<{ success: boolean; modelStatus?: DeepOcrModelStatus }>('ocr.cancelModelDownload');
+      if (res?.modelStatus) {
+        setModelStatus(res.modelStatus);
+      }
+      toast.info(t('ocr.downloadCancelled'));
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setActionBusy(false);
+    }
+  };
 
   const rebindShortcut = async (value: string) => {
     try {
@@ -105,16 +237,34 @@ export const OcrPage: FC = () => {
   };
 
   if (loading) {
-    return <PageSkeleton cards={1} rowsPerCard={4} />;
+    return <PageSkeleton cards={2} rowsPerCard={4} />;
   }
 
+  const renderModelStatusBadge = () => {
+    if (modelStatus.downloading) {
+      return (
+        <Badge
+          text={t('ocr.deepStatusDownloading', { percent: modelStatus.progressPercent })}
+          variant="primary"
+        />
+      );
+    }
+    if (modelStatus.installed) {
+      return <Badge text={t('ocr.deepStatusInstalled')} variant="success" />;
+    }
+    if (modelStatus.state === 'error') {
+      return <Badge text={t('ocr.deepStatusError')} variant="danger" />;
+    }
+    return <Badge text={t('ocr.deepStatusNotInstalled')} variant="muted" />;
+  };
+
   return (
-    <div className="ocr-page" style={{ animation: 'fadeIn 0.3s ease' }}>
+    <div className="ocr-page" style={{ animation: 'fadeIn 0.3s ease', display: 'flex', flexDirection: 'column', gap: 'var(--spacing-lg)' }}>
       <SettingGroup title={t('ocr.title')} icon={<FileText size={20} strokeWidth={2.5} />}>
         <Card>
           <SettingRow
             label={
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
                 <span>{t('ocr.shortcut')}</span>
                 <HotkeyStatusBadge entry={getHotkey('OCR')} />
               </div>
@@ -127,14 +277,126 @@ export const OcrPage: FC = () => {
               onChange={(v) => void rebindShortcut(v)}
             />
           </SettingRow>
-          
-          <SettingRow label={t('ocr.engine')} description={t('ocr.engineDesc')}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span>{t('ocr.engineWindowsOCR')}</span>
-              <Badge
-                text={available ? t('ocr.available') : t('ocr.unavailable')}
-                variant={available ? 'success' : 'muted'}
-              />
+
+          <SettingRow
+            label={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+                <span>{t('ocr.engine')}</span>
+                <Badge
+                  text={available ? t('ocr.available') : t('ocr.unavailable')}
+                  variant={available ? 'success' : 'muted'}
+                />
+              </div>
+            }
+            description={t('ocr.engineDesc')}
+          >
+            <Select
+              id="ocr-engine-mode"
+              value={settings.engine || 'auto'}
+              onChange={(val) => updateSetting('engine', val)}
+              options={[
+                { value: 'auto', label: t('ocr.engineAuto') },
+                { value: 'ppocr_v4', label: t('ocr.enginePpOcrV4') },
+                { value: 'windows', label: t('ocr.engineWindowsEnhanced') },
+              ]}
+            />
+          </SettingRow>
+
+          <SettingRow
+            layout="vertical"
+            label={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
+                <Cpu size={16} strokeWidth={2.2} aria-hidden="true" style={{ color: 'var(--primary)' }} />
+                <span>{t('ocr.deepPackTitle')}</span>
+                {renderModelStatusBadge()}
+              </div>
+            }
+            description={t('ocr.deepPackDesc')}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-sm)', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--spacing-md)', flexWrap: 'wrap' }}>
+                {modelStatus.modelDir && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-xs)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', color: 'var(--text-secondary)', lineHeight: 'var(--leading-normal)' }}>
+                    <span>{t('ocr.modelStorageDir')}</span>
+                    <CodeBadge>{modelStatus.modelDir}</CodeBadge>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+                  {modelStatus.downloading ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={actionBusy}
+                      onClick={() => void handleCancelDownload()}
+                    >
+                      <X size={15} strokeWidth={2.2} aria-hidden="true" />
+                      <span>{t('ocr.cancelDownload')}</span>
+                    </Button>
+                  ) : !modelStatus.installed ? (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={actionBusy}
+                      onClick={() => void handleStartDownload()}
+                    >
+                      {actionBusy ? (
+                        <Loader2 size={15} strokeWidth={2.2} aria-hidden="true" style={{ animation: 'spin 1s linear infinite' }} />
+                      ) : (
+                        <Download size={15} strokeWidth={2.2} aria-hidden="true" />
+                      )}
+                      <span>{modelStatus.state === 'error' ? t('ocr.retryDownload') : t('ocr.downloadInstall')}</span>
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+
+              {modelStatus.downloading && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-xs)', width: '100%' }}>
+                  <div
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={modelStatus.progressPercent}
+                    style={{
+                      width: '100%',
+                      height: '8px',
+                      borderRadius: 'var(--radius-full)',
+                      background: 'var(--bg-elevated)',
+                      border: '1px solid var(--card-border)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${Math.max(2, Math.min(100, modelStatus.progressPercent))}%`,
+                        height: '100%',
+                        background: 'var(--primary)',
+                        borderRadius: 'var(--radius-full)',
+                        transition: 'width var(--transition-fast)',
+                      }}
+                    />
+                  </div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      fontSize: 'var(--text-xs)',
+                      fontWeight: 'var(--font-medium)',
+                      lineHeight: 'var(--leading-normal)',
+                      color: 'var(--text-muted)',
+                      fontVariantNumeric: 'tabular-nums lining-nums',
+                    }}
+                  >
+                    <span>
+                      {modelStatus.currentFile
+                        ? t('ocr.downloadingFile', { file: modelStatus.currentFile })
+                        : t('ocr.deepStatusDownloading', { percent: modelStatus.progressPercent })}
+                    </span>
+                    <span>{`${modelStatus.progressPercent}%`}</span>
+                  </div>
+                </div>
+              )}
             </div>
           </SettingRow>
 
@@ -153,6 +415,26 @@ export const OcrPage: FC = () => {
               ]}
             />
           </SettingRow>
+        </Card>
+      </SettingGroup>
+
+      <SettingGroup title={t('ocr.liveTextGroupTitle')} icon={<Sparkles size={20} strokeWidth={2.5} />}>
+        <Card>
+          <Toggle
+            id="liveTextOnPin"
+            label={t('ocr.liveTextOnPin')}
+            description={t('ocr.liveTextOnPinDesc')}
+            checked={settings.liveTextOnPin}
+            onChange={(v) => updateSetting('liveTextOnPin', v)}
+          />
+
+          <Toggle
+            id="pinLiveTextOnCapture"
+            label={t('ocr.pinLiveTextOnCapture')}
+            description={t('ocr.pinLiveTextOnCaptureDesc')}
+            checked={settings.pinLiveTextOnCapture}
+            onChange={(v) => updateSetting('pinLiveTextOnCapture', v)}
+          />
 
           <Toggle
             id="copyResult"
@@ -169,6 +451,27 @@ export const OcrPage: FC = () => {
             checked={settings.showResultWindow}
             onChange={(v) => updateSetting('showResultWindow', v)}
           />
+
+          <SettingRow label={t('ocr.capabilitiesLabel')}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
+                <Type size={14} strokeWidth={2.2} aria-hidden="true" />
+                <span>{t('ocr.capCharLevel')}</span>
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
+                <Table2 size={14} strokeWidth={2.2} aria-hidden="true" />
+                <span>{t('ocr.capExcelTable')}</span>
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
+                <SunMoon size={14} strokeWidth={2.2} aria-hidden="true" />
+                <span>{t('ocr.capDarkCode')}</span>
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
+                <QrCode size={14} strokeWidth={2.2} aria-hidden="true" />
+                <span>{t('ocr.capQrCode')}</span>
+              </span>
+            </div>
+          </SettingRow>
         </Card>
       </SettingGroup>
     </div>

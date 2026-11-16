@@ -15,6 +15,7 @@
 
 #include "capture/PinGroupManager.h"
 #include "capture/MarkupEngine.h"
+#include "ocr/OcrEngine.h"
 #include <windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
@@ -26,12 +27,26 @@
 #include <cstdint>
 #include <mutex>
 #include <atomic>
+#include <string>
 
 namespace tools3000::capture {
 
 struct PinOcrBlock {
     std::string text;
     cv::Rect origBox;
+    std::vector<cv::Rect> charBoxes;
+};
+
+struct PinQrCodeItem {
+    std::string text;
+    cv::Rect origBox;
+    D2D1_RECT_F badgeRect{};
+};
+
+struct PinBlockCharSpan {
+    size_t blockIndex = 0;
+    size_t startChar = 0;
+    size_t endExclusive = 0;
 };
 
 struct CaptureRegion;
@@ -113,8 +128,21 @@ public:
     /// 复制全部文字到剪贴板 (Ctrl+Shift+C)
     void copyAllText();
 
-    /// 异步预加载/执行贴图 OCR 文本识别
-    void ensureOcrExecutedAsync();
+    /// 将选中或全图表格结构以 CF_HTML + TSV 双格式复制到剪贴板（Excel/WPS/飞书直粘分列）
+    void copySelectedOrAllAsTable();
+
+    /// 打开右侧/独立 OCR 对照面板窗口精修编辑文本
+    void openOcrComparisonPanel();
+
+    /// 复制指定二维码解码文本到剪贴板
+    void copyQrCodeText(size_t qrIndex);
+
+    /// 异步预加载/执行贴图 OCR 文本与二维码识别 (silentPreload=true 时静默识别不弹等待遮挡胶囊)
+    void ensureOcrExecutedAsync(bool silentPreload = false);
+
+    /// 直接注入已完成识别的页面文字行与二维码热区（供截图点击 OCR 原地生贴图零二次识别开销复用）
+    void injectRecognizedPage(std::vector<tools3000::ocr::OcrResult> lines,
+                              std::vector<tools3000::ocr::OcrQrResult> qrCodes = {});
 
     /// 清空当前文字选择
     void clearTextSelection();
@@ -125,16 +153,27 @@ public:
     /// 是否处于文字选择模式
     bool isTextSelectionMode() const { return m_textSelectionMode; }
 
+    /// 当前原图实景选字 (Live Text) 是否已启用
+    bool isLiveTextEnabled() const noexcept;
+
     /// 当前已选中的文字块数量（供状态查询与测试验证）
     size_t selectedTextBlockCount() const;
+    std::string selectedTextUtf8() const;
+    bool hasDetectedTable() const;
+    size_t qrCodeCount() const;
+    int hoveredBlockIndex() const noexcept { return m_hoveredBlockIndex; }
+    D2D1_RECT_F copyFloatingButtonRect() const noexcept { return m_btnCopyFloatingRect; }
+    D2D1_RECT_F copyTableFloatingButtonRect() const noexcept { return m_btnCopyTableFloatingRect; }
+    D2D1_RECT_F openPanelFloatingButtonRect() const noexcept { return m_btnOpenPanelFloatingRect; }
     bool isOcrReady() const noexcept { return m_ocrReady.load(); }
     bool isOcrInFlight() const noexcept {
         return m_ocrInFlightVersion.load() != 0 || (m_ocrActiveWorkers && m_ocrActiveWorkers->load() > 0);
     }
     uint64_t ocrRunCount() const noexcept { return m_ocrRunCount.load(); }
 
-    /// 注入/预置 OCR 文字块（供离线单元测试确定性验证 Ctrl+A / 旋转保护）
+    /// 注入/预置 OCR 文字块与二维码（供离线单元测试确定性验证 Ctrl+A / 逐字划选 / 旋转保护）
     void setOcrBlocksForTest(std::vector<PinOcrBlock> blocks);
+    void setQrCodesForTest(std::vector<tools3000::ocr::OcrQrResult> qrCodes);
 
     /// 更新贴图图像内容
     void updateImage(const cv::Mat& newImage, bool clearCardMetadata = true);
@@ -321,20 +360,33 @@ private:
     std::atomic<uint64_t> m_ocrInFlightVersion{0};
     std::atomic<uint64_t> m_ocrRunCount{0};
     std::atomic<bool> m_extractTextInFlight{false};
+    std::atomic<bool> m_silentOcrPreload{false};
     std::shared_ptr<std::atomic<uint32_t>> m_ocrActiveWorkers = std::make_shared<std::atomic<uint32_t>>(0);
     void invalidateOcrStateAndRefreshIfSelecting();
     void releaseGraphicsResources() noexcept;
+    bool selectWordAtClientPoint(int clientX, int clientY);
     std::vector<PinOcrBlock> m_ocrBlocks;
+    std::vector<PinQrCodeItem> m_qrCodes;
+    bool m_hasTableStructure = false;
     mutable std::mutex m_ocrMutex;
     std::atomic<bool> m_ocrReady{false};
     std::atomic<bool> m_pendingSelectAllOcr{false};
     std::vector<size_t> m_selectedBlockIndices;
+    std::vector<PinBlockCharSpan> m_selectedCharSpans;
     int m_hoveredBlockIndex = -1;
     bool m_isSelectingText = false;
+    bool m_isCharStreamSelecting = false;
+    int m_anchorBlockIndex = -1;
+    size_t m_anchorCharIndex = 0;
     POINT m_selectStart{};
     POINT m_selectEnd{};
     D2D1_RECT_F m_btnCopyFloatingRect = {};
+    D2D1_RECT_F m_btnCopyTableFloatingRect = {};
+    D2D1_RECT_F m_btnOpenPanelFloatingRect = {};
     bool m_hoverCopyFloating = false;
+    bool m_hoverCopyTableFloating = false;
+    bool m_hoverOpenPanelFloating = false;
+    int m_hoveredQrBadgeIndex = -1;
     bool m_lastChromeIsDark = true;
     bool m_lastToolbarIsDark = true;
     bool m_lastRenderedPixelGrid = false;

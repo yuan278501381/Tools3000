@@ -389,4 +389,36 @@ bool PinInputController::shouldAutoFocusOnHover(bool isWindowFocused,
     return !isWindowFocused && !isClickThrough && !isOverlayVisible;
 }
 
+PinCursorKind PinInputController::resolveCursorKind(const PinLiveTextState& state) noexcept {
+    if (state.isFolded || state.isDragging) {
+        return PinCursorKind::MoveWindow;
+    }
+    if (state.hoverInteractiveButton) {
+        return PinCursorKind::HandButton;
+    }
+    if (state.altHeld || state.isSelectingText || (state.textSelectionMode && !state.ocrReady)) {
+        return PinCursorKind::TextBeam;
+    }
+    if ((state.liveTextEnabled || state.textSelectionMode) && state.ocrReady && state.hitTextBlock) {
+        return PinCursorKind::TextBeam;
+    }
+    return PinCursorKind::MoveWindow;
+}
+
+PinLeftPressMode PinInputController::resolveLeftPressMode(const PinLiveTextState& state,
+                                                          bool hitInteractiveButton) noexcept {
+    if (!state.isFolded && hitInteractiveButton) {
+        return PinLeftPressMode::PressInteractiveButton;
+    }
+    if (!state.isFolded) {
+        if (state.altHeld) {
+            return PinLeftPressMode::StartLiveTextSelection;
+        }
+        if ((state.liveTextEnabled || state.textSelectionMode) && state.ocrReady && state.hitTextBlock) {
+            return PinLeftPressMode::StartLiveTextSelection;
+        }
+    }
+    return PinLeftPressMode::StartWindowDrag;
+}
+
 } // namespace tools3000::capture

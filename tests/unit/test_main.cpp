@@ -56,6 +56,8 @@
 #include "keycast/KeycastOverlay.h"
 #include "ocr/OcrResultStyle.h"
 #include "ocr/OcrEngine.h"
+#include "ocr/DeepOcrEngine.h"
+#include "ocr/OcrTableReconstructor.h"
 #include "common/AtomicFile.h"
 #include "service/PipeClientAuth.h"
 #include "service/content/PdfExtractor.h"
@@ -191,6 +193,7 @@ using namespace tools3000::gesture;
 #include "test_dialog.inc"
 #include "test_remote.inc"
 #include "test_keycast_translator.inc"
+#include "test_live_ocr.inc"
 
 TEST(UiThreadJoinTest, PumpsCrossThreadSentMessagesDuringShutdown) {
     HWND window = CreateWindowExW(

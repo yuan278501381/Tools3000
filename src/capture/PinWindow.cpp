@@ -31,6 +31,8 @@
 #include "core/events/MainThreadDispatcher.h"
 #include "core/utils/TraceId.h"
 #include "ocr/OcrEngine.h"
+#include "ocr/OcrTableReconstructor.h"
+#include "ocr/OcrResultWindow.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -139,9 +141,12 @@ std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
         // 微晶字签/色卡签直接内嵌零误差原始纯文本块，免启后台 OCR 线程消耗 CPU
         std::lock_guard<std::mutex> lock(pin->m_ocrMutex);
         pin->m_ocrBlocks.clear();
+        const std::string cardUtf8 = tools3000::core::WinUtils::wstringToUtf8(pin->m_pinnedSourceText);
+        const cv::Rect cardBox(4, 4, (std::max)(1, image.cols - 8), (std::max)(1, image.rows - 8));
         pin->m_ocrBlocks.push_back(PinOcrBlock{
-            tools3000::core::WinUtils::wstringToUtf8(pin->m_pinnedSourceText),
-            cv::Rect(4, 4, (std::max)(1, image.cols - 8), (std::max)(1, image.rows - 8))
+            cardUtf8,
+            cardBox,
+            tools3000::ocr::OcrEngine::buildProportionalCharBoxes(cardUtf8, cardBox)
         });
         pin->m_ocrReady = true;
     }
@@ -1427,12 +1432,21 @@ enum PinInteractiveButton : int {
     kPinBtnClose = 7,
     kPinBtnGroupBadge = 8,
     kPinBtnCopyFloating = 9,
+    kPinBtnCopyTableFloating = 10,
+    kPinBtnOpenPanelFloating = 11,
+    kPinBtnQrBadgeBase = 100,
 };
 
 bool isPointInRectF(const D2D1_RECT_F& rc, int x, int y) noexcept {
     return (rc.right > rc.left && rc.bottom > rc.top &&
             static_cast<float>(x) >= rc.left && static_cast<float>(x) <= rc.right &&
             static_cast<float>(y) >= rc.top && static_cast<float>(y) <= rc.bottom);
+}
+
+bool isAutomatedTestProcessMode() noexcept {
+    wchar_t buf[8]{};
+    const DWORD len = GetEnvironmentVariableW(L"TOOLS3000_TEST_MODE", buf, static_cast<DWORD>(std::size(buf)));
+    return len > 0 && buf[0] == L'1';
 }
 
 } // namespace
@@ -1444,6 +1458,9 @@ void PinWindow::forceHoverStateForTest(bool hovering) {
         clearHoverToolbarRects();
         m_hoverGroupBadge = false;
         m_hoverCopyFloating = false;
+        m_hoverCopyTableFloating = false;
+        m_hoverOpenPanelFloating = false;
+        m_hoveredQrBadgeIndex = -1;
     }
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, 1);
@@ -1478,8 +1495,24 @@ int PinWindow::hitTestInteractiveButton(int x, int y) const noexcept {
     if (isPointInRectF(m_btnGroupBadgeRect, x, y)) {
         return kPinBtnGroupBadge;
     }
-    if (!m_selectedBlockIndices.empty() && isPointInRectF(m_btnCopyFloatingRect, x, y)) {
-        return kPinBtnCopyFloating;
+    if (!m_selectedBlockIndices.empty()) {
+        if (isPointInRectF(m_btnCopyFloatingRect, x, y)) {
+            return kPinBtnCopyFloating;
+        }
+        if (isPointInRectF(m_btnCopyTableFloatingRect, x, y)) {
+            return kPinBtnCopyTableFloating;
+        }
+        if (isPointInRectF(m_btnOpenPanelFloatingRect, x, y)) {
+            return kPinBtnOpenPanelFloating;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        for (size_t q = 0; q < m_qrCodes.size(); ++q) {
+            if (isPointInRectF(m_qrCodes[q].badgeRect, x, y)) {
+                return kPinBtnQrBadgeBase + static_cast<int>(q);
+            }
+        }
     }
     if (m_hoverAlpha > 0.0f && m_toolbarRect.right > m_toolbarRect.left) {
         if (isPointInRectF(m_btnFoldRect, x, y))   return kPinBtnFold;
@@ -1499,6 +1532,10 @@ static bool savePinnedImage(HWND owner, const cv::Mat& image);
 
 void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bool shiftHeld) {
     if (m_folded) return;
+    if (btnId >= kPinBtnQrBadgeBase) {
+        copyQrCodeText(static_cast<size_t>(btnId - kPinBtnQrBadgeBase));
+        return;
+    }
     switch (btnId) {
         case kPinBtnGroupBadge: {
             if (m_hwnd && IsWindow(m_hwnd)) {
@@ -1510,6 +1547,12 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
         }
         case kPinBtnCopyFloating:
             copySelectedText();
+            break;
+        case kPinBtnCopyTableFloating:
+            copySelectedOrAllAsTable();
+            break;
+        case kPinBtnOpenPanelFloating:
+            openOcrComparisonPanel();
             break;
         case kPinBtnFold:
             toggleFold();
@@ -1998,19 +2041,163 @@ static void cleanupOcrWorkingSet() {
     tools3000::core::WinUtils::trimWorkingSet();
 }
 
+namespace {
+
+void normalizePinOcrBlocksAndTableState(std::vector<PinOcrBlock>& blocks, bool& outHasTable) {
+    std::vector<tools3000::ocr::OcrResult> resultsForTable;
+    resultsForTable.reserve(blocks.size());
+    for (auto& blk : blocks) {
+        const size_t cpCount = tools3000::ocr::OcrEngine::countUtf8Codepoints(blk.text);
+        if (blk.charBoxes.size() != cpCount) {
+            blk.charBoxes = tools3000::ocr::OcrEngine::buildProportionalCharBoxes(blk.text, blk.origBox);
+        }
+        if (!blk.text.empty()) {
+            tools3000::ocr::OcrResult r;
+            r.text = blk.text;
+            r.confidence = 1.0f;
+            r.box = blk.origBox;
+            r.charBoxes = blk.charBoxes;
+            resultsForTable.push_back(std::move(r));
+        }
+    }
+    outHasTable = tools3000::ocr::OcrTableReconstructor::hasTableStructure(resultsForTable);
+}
+
+size_t locateNearestCharInBlock(const PinOcrBlock& blk, float mx) noexcept {
+    if (blk.charBoxes.empty()) return 0;
+    for (size_t c = 0; c < blk.charBoxes.size(); ++c) {
+        const auto& cb = blk.charBoxes[c];
+        if (mx >= static_cast<float>(cb.x) && mx <= static_cast<float>(cb.x + cb.width)) {
+            return c;
+        }
+    }
+    size_t bestIdx = 0;
+    float bestDist = FLT_MAX;
+    for (size_t c = 0; c < blk.charBoxes.size(); ++c) {
+        const auto& cb = blk.charBoxes[c];
+        const float cx = static_cast<float>(cb.x) + static_cast<float>(cb.width) * 0.5f;
+        const float d = std::abs(mx - cx);
+        if (d < bestDist) {
+            bestDist = d;
+            bestIdx = c;
+        }
+    }
+    return bestIdx;
+}
+
+std::string assembleSelectedSpansText(const std::vector<PinOcrBlock>& blocks,
+                                      const std::vector<size_t>& selectedBlockIndices,
+                                      const std::vector<PinBlockCharSpan>& selectedCharSpans) {
+    if (!selectedCharSpans.empty()) {
+        std::vector<tools3000::ocr::OcrResult> slicedBlocks;
+        slicedBlocks.reserve(selectedCharSpans.size());
+        for (const auto& sp : selectedCharSpans) {
+            if (sp.blockIndex >= blocks.size() || sp.startChar >= sp.endExclusive) continue;
+            const auto& blk = blocks[sp.blockIndex];
+            std::string subText = tools3000::ocr::OcrEngine::sliceUtf8Codepoints(
+                blk.text, sp.startChar, sp.endExclusive);
+            if (subText.empty()) continue;
+
+            cv::Rect subBox = blk.origBox;
+            if (!blk.charBoxes.empty() && sp.startChar < blk.charBoxes.size()) {
+                const size_t lastIdx = (std::min)(sp.endExclusive, blk.charBoxes.size()) - 1;
+                int x1 = blk.charBoxes[sp.startChar].x;
+                int y1 = blk.charBoxes[sp.startChar].y;
+                int x2 = blk.charBoxes[sp.startChar].x + blk.charBoxes[sp.startChar].width;
+                int y2 = blk.charBoxes[sp.startChar].y + blk.charBoxes[sp.startChar].height;
+                for (size_t k = sp.startChar; k <= lastIdx; ++k) {
+                    const auto& cb = blk.charBoxes[k];
+                    x1 = (std::min)(x1, cb.x);
+                    y1 = (std::min)(y1, cb.y);
+                    x2 = (std::max)(x2, cb.x + cb.width);
+                    y2 = (std::max)(y2, cb.y + cb.height);
+                }
+                subBox = cv::Rect(x1, y1, (std::max)(1, x2 - x1), (std::max)(1, y2 - y1));
+            }
+            tools3000::ocr::OcrResult r;
+            r.text = std::move(subText);
+            r.confidence = 1.0f;
+            r.box = subBox;
+            slicedBlocks.push_back(std::move(r));
+        }
+        return tools3000::ocr::OcrEngine::orderTextBlocksWithXYCut(slicedBlocks, "\r\n");
+    }
+
+    if (selectedBlockIndices.empty()) return {};
+    std::vector<tools3000::ocr::OcrResult> selectedBlocks;
+    selectedBlocks.reserve(selectedBlockIndices.size());
+    for (size_t idx : selectedBlockIndices) {
+        if (idx < blocks.size() && !blocks[idx].text.empty()) {
+            tools3000::ocr::OcrResult r;
+            r.text = blocks[idx].text;
+            r.confidence = 1.0f;
+            r.box = blocks[idx].origBox;
+            selectedBlocks.push_back(std::move(r));
+        }
+    }
+    return tools3000::ocr::OcrEngine::orderTextBlocksWithXYCut(selectedBlocks, "\r\n");
+}
+
+enum class WordCharCategory {
+    WhitespaceOrPunct = 0,
+    AsciiWord = 1,
+    CjkGlyph = 2,
+};
+
+WordCharCategory classifyUtf8CodepointForWord(std::string_view cpUtf8) noexcept {
+    if (cpUtf8.empty()) return WordCharCategory::WhitespaceOrPunct;
+    if (cpUtf8.size() == 1) {
+        const unsigned char c = static_cast<unsigned char>(cpUtf8[0]);
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_' || c == '-') {
+            return WordCharCategory::AsciiWord;
+        }
+        return WordCharCategory::WhitespaceOrPunct;
+    }
+    const std::wstring w = tools3000::core::WinUtils::utf8ToWstring(std::string(cpUtf8));
+    if (w.empty()) return WordCharCategory::WhitespaceOrPunct;
+    const wchar_t wc = w[0];
+    if ((wc >= 0x4E00 && wc <= 0x9FFF) || (wc >= 0x3400 && wc <= 0x4DBF) ||
+        (wc >= 0xAC00 && wc <= 0xD7AF) || (wc >= 0x3040 && wc <= 0x30FF)) {
+        return WordCharCategory::CjkGlyph;
+    }
+    return WordCharCategory::WhitespaceOrPunct;
+}
+
+} // namespace
+
+bool PinWindow::isLiveTextEnabled() const noexcept {
+    try {
+        return tools3000::core::ConfigManager::instance().get<bool>("/ocr/liveTextOnPin", true);
+    } catch (...) {
+        return true;
+    }
+}
+
 void PinWindow::invalidateOcrStateAndRefreshIfSelecting() {
     {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         m_ocrBlocks.clear();
+        m_qrCodes.clear();
+        m_hasTableStructure = false;
         m_selectedBlockIndices.clear();
+        m_selectedCharSpans.clear();
         m_hoveredBlockIndex = -1;
+        m_hoveredQrBadgeIndex = -1;
+        m_isCharStreamSelecting = false;
+        m_anchorBlockIndex = -1;
+        m_anchorCharIndex = 0;
         m_pendingSelectAllOcr = false;
+        m_silentOcrPreload = false;
         ++m_ocrVersion;
         m_ocrInFlightVersion = 0;
         if (!m_pinnedSourceText.empty()) {
+            const std::string cardUtf8 = tools3000::core::WinUtils::wstringToUtf8(m_pinnedSourceText);
+            const cv::Rect cardBox(4, 4, (std::max)(1, m_origWidth - 8), (std::max)(1, m_origHeight - 8));
             m_ocrBlocks.push_back(PinOcrBlock{
-                tools3000::core::WinUtils::wstringToUtf8(m_pinnedSourceText),
-                cv::Rect(4, 4, (std::max)(1, m_origWidth - 8), (std::max)(1, m_origHeight - 8))
+                cardUtf8,
+                cardBox,
+                tools3000::ocr::OcrEngine::buildProportionalCharBoxes(cardUtf8, cardBox)
             });
             m_ocrReady = true;
         } else {
@@ -2018,14 +2205,17 @@ void PinWindow::invalidateOcrStateAndRefreshIfSelecting() {
         }
     }
     if (m_textSelectionMode && m_pinnedSourceText.empty()) {
-        ensureOcrExecutedAsync();
+        ensureOcrExecutedAsync(false);
     }
 }
 
-void PinWindow::ensureOcrExecutedAsync() {
+void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
     if (s_ocrShuttingDown.load(std::memory_order_acquire) ||
         m_sourceImage.empty() || !m_pinnedSourceText.empty() || m_ocrReady.load()) {
         return;
+    }
+    if (!silentPreload) {
+        m_silentOcrPreload.store(false, std::memory_order_release);
     }
     uint64_t currentVer = 0;
     {
@@ -2035,7 +2225,13 @@ void PinWindow::ensureOcrExecutedAsync() {
         }
         currentVer = m_ocrVersion.load();
         if (currentVer == 0) currentVer = ++m_ocrVersion;
-        if (m_ocrInFlightVersion.load() == currentVer) return;
+        if (m_ocrInFlightVersion.load() == currentVer) {
+            if (!silentPreload && m_hwnd && IsWindow(m_hwnd)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        }
+        m_silentOcrPreload.store(silentPreload, std::memory_order_release);
         m_ocrInFlightVersion.store(currentVer);
     }
     ++m_ocrRunCount;
@@ -2047,24 +2243,40 @@ void PinWindow::ensureOcrExecutedAsync() {
     }
     s_globalActiveOcrWorkers.fetch_add(1, std::memory_order_acq_rel);
 
-    auto applyRecognizedBlocks = [](const std::shared_ptr<PinWindow>& self,
-                                    const std::vector<tools3000::ocr::OcrResult>& results,
-                                    uint64_t expectedVer) {
+    auto applyRecognizedPage = [](const std::shared_ptr<PinWindow>& self,
+                                  const tools3000::ocr::OcrPageExtraction& page,
+                                  uint64_t expectedVer) {
         if (self->m_ocrVersion.load() != expectedVer) return;
         self->m_ocrBlocks.clear();
-        self->m_ocrBlocks.reserve(results.size());
-        for (const auto& r : results) {
+        self->m_ocrBlocks.reserve(page.lines.size());
+        for (const auto& r : page.lines) {
             if (!r.text.empty()) {
-                self->m_ocrBlocks.push_back({r.text, r.box});
+                self->m_ocrBlocks.push_back(PinOcrBlock{r.text, r.box, r.charBoxes});
             }
         }
+        normalizePinOcrBlocksAndTableState(self->m_ocrBlocks, self->m_hasTableStructure);
+
+        self->m_qrCodes.clear();
+        self->m_qrCodes.reserve(page.qrCodes.size());
+        for (const auto& q : page.qrCodes) {
+            if (!q.text.empty()) {
+                self->m_qrCodes.push_back(PinQrCodeItem{q.text, q.boundingBox, {}});
+            }
+        }
+
+        self->m_silentOcrPreload.store(false, std::memory_order_release);
         self->m_ocrReady = true;
         if (self->m_pendingSelectAllOcr.exchange(false)) {
             if (!self->m_ocrBlocks.empty()) {
                 self->m_textSelectionMode = true;
                 self->m_selectedBlockIndices.resize(self->m_ocrBlocks.size());
+                self->m_selectedCharSpans.clear();
+                self->m_selectedCharSpans.reserve(self->m_ocrBlocks.size());
                 for (size_t i = 0; i < self->m_ocrBlocks.size(); ++i) {
                     self->m_selectedBlockIndices[i] = i;
+                    self->m_selectedCharSpans.push_back(PinBlockCharSpan{
+                        i, 0, self->m_ocrBlocks[i].charBoxes.size()
+                    });
                 }
                 const bool isZh = tools3000::core::isUiLanguageChinese();
                 tools3000::core::EventBus::instance().publish(
@@ -2082,12 +2294,12 @@ void PinWindow::ensureOcrExecutedAsync() {
         }
     };
 
-    if (m_hwnd && IsWindow(m_hwnd)) {
+    if (!silentPreload && m_hwnd && IsWindow(m_hwnd)) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
     try {
-        std::thread([weakSelf, imgCopy, currentVer, activeWorkers, applyRecognizedBlocks]() {
+        std::thread([weakSelf, imgCopy, currentVer, activeWorkers, applyRecognizedPage]() {
             bool inFlightHandedOff = false;
             struct WorkerScopeGuard {
                 std::weak_ptr<PinWindow> weakPin;
@@ -2113,19 +2325,19 @@ void PinWindow::ensureOcrExecutedAsync() {
                 return;
             }
             tools3000::core::TraceId::Scope traceScope;
-            auto results = tools3000::ocr::OcrEngine::instance().extractText(imgCopy);
+            auto page = tools3000::ocr::OcrEngine::instance().extractPage(imgCopy);
             if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
                 return;
             }
             const bool posted = tools3000::core::MainThreadDispatcher::instance().post(
-                [weakSelf, results, currentVer, applyRecognizedBlocks]() {
+                [weakSelf, page, currentVer, applyRecognizedPage]() {
                     if (s_ocrShuttingDown.load(std::memory_order_acquire)) return;
                     if (auto self = weakSelf.lock()) {
                         uint64_t expected = currentVer;
                         self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
                         if (self->m_ocrVersion.load() != currentVer) return;
                         std::lock_guard<std::mutex> lock(self->m_ocrMutex);
-                        applyRecognizedBlocks(self, results, currentVer);
+                        applyRecognizedPage(self, page, currentVer);
                     }
                 });
             if (posted) {
@@ -2136,7 +2348,7 @@ void PinWindow::ensureOcrExecutedAsync() {
                     uint64_t expected = currentVer;
                     self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
                     inFlightHandedOff = true;
-                    applyRecognizedBlocks(self, results, currentVer);
+                    applyRecognizedPage(self, page, currentVer);
                 }
             }
         }).detach();
@@ -2150,11 +2362,43 @@ void PinWindow::ensureOcrExecutedAsync() {
     }
 }
 
+void PinWindow::injectRecognizedPage(std::vector<tools3000::ocr::OcrResult> lines,
+                                     std::vector<tools3000::ocr::OcrQrResult> qrCodes) {
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        m_ocrBlocks.clear();
+        m_ocrBlocks.reserve(lines.size());
+        for (auto& r : lines) {
+            if (!r.text.empty()) {
+                m_ocrBlocks.push_back(PinOcrBlock{std::move(r.text), r.box, std::move(r.charBoxes)});
+            }
+        }
+        normalizePinOcrBlocksAndTableState(m_ocrBlocks, m_hasTableStructure);
+
+        m_qrCodes.clear();
+        m_qrCodes.reserve(qrCodes.size());
+        for (auto& q : qrCodes) {
+            if (!q.text.empty()) {
+                m_qrCodes.push_back(PinQrCodeItem{std::move(q.text), q.boundingBox, {}});
+            }
+        }
+        m_selectedBlockIndices.clear();
+        m_selectedCharSpans.clear();
+        m_hoveredBlockIndex = -1;
+        m_hoveredQrBadgeIndex = -1;
+        m_silentOcrPreload = false;
+        m_ocrReady = true;
+        ++m_ocrVersion;
+        m_ocrInFlightVersion = 0;
+    }
+    render();
+}
+
 void PinWindow::selectAllText() {
     if (m_folded) return;
     if (!m_ocrReady.load()) {
         m_pendingSelectAllOcr.store(true);
-        ensureOcrExecutedAsync();
+        ensureOcrExecutedAsync(false);
         return;
     }
 
@@ -2164,8 +2408,13 @@ void PinWindow::selectAllText() {
         if (!m_ocrBlocks.empty()) {
             m_textSelectionMode = true;
             m_selectedBlockIndices.resize(m_ocrBlocks.size());
+            m_selectedCharSpans.clear();
+            m_selectedCharSpans.reserve(m_ocrBlocks.size());
             for (size_t i = 0; i < m_ocrBlocks.size(); ++i) {
                 m_selectedBlockIndices[i] = i;
+                m_selectedCharSpans.push_back(PinBlockCharSpan{
+                    i, 0, m_ocrBlocks[i].charBoxes.size()
+                });
             }
             countSelected = m_selectedBlockIndices.size();
         }
@@ -2189,24 +2438,104 @@ size_t PinWindow::selectedTextBlockCount() const {
     return m_selectedBlockIndices.size();
 }
 
+std::string PinWindow::selectedTextUtf8() const {
+    std::lock_guard<std::mutex> lock(m_ocrMutex);
+    return assembleSelectedSpansText(m_ocrBlocks, m_selectedBlockIndices, m_selectedCharSpans);
+}
+
+bool PinWindow::hasDetectedTable() const {
+    std::lock_guard<std::mutex> lock(m_ocrMutex);
+    return m_hasTableStructure;
+}
+
+size_t PinWindow::qrCodeCount() const {
+    std::lock_guard<std::mutex> lock(m_ocrMutex);
+    return m_qrCodes.size();
+}
+
 void PinWindow::setOcrBlocksForTest(std::vector<PinOcrBlock> blocks) {
     {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         m_ocrBlocks = std::move(blocks);
+        normalizePinOcrBlocksAndTableState(m_ocrBlocks, m_hasTableStructure);
         m_selectedBlockIndices.clear();
+        m_selectedCharSpans.clear();
         m_hoveredBlockIndex = -1;
         m_ocrReady = true;
         m_pendingSelectAllOcr = false;
+        m_silentOcrPreload = false;
         ++m_ocrVersion;
         m_ocrInFlightVersion = 0;
     }
     render();
 }
 
+void PinWindow::setQrCodesForTest(std::vector<tools3000::ocr::OcrQrResult> qrCodes) {
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        m_qrCodes.clear();
+        for (auto& q : qrCodes) {
+            if (!q.text.empty()) {
+                m_qrCodes.push_back(PinQrCodeItem{std::move(q.text), q.boundingBox, {}});
+            }
+        }
+        m_hoveredQrBadgeIndex = -1;
+        m_ocrReady = true;
+    }
+    render();
+}
+
+bool PinWindow::selectWordAtClientPoint(int clientX, int clientY) {
+    if (m_folded || !m_ocrReady.load()) return false;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    if (!alt && !m_textSelectionMode && !isLiveTextEnabled()) return false;
+
+    bool selectedAny = false;
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        const float safeScale = (std::max)(0.05f, m_scale);
+        const float mx = static_cast<float>(clientX) / safeScale;
+        const float my = static_cast<float>(clientY) / safeScale;
+        const cv::Point pt(static_cast<int>(mx), static_cast<int>(my));
+
+        for (size_t b = 0; b < m_ocrBlocks.size(); ++b) {
+            const auto& blk = m_ocrBlocks[b];
+            if (!blk.origBox.contains(pt)) continue;
+
+            const auto cps = tools3000::ocr::OcrEngine::splitUtf8Codepoints(blk.text);
+            if (cps.empty()) continue;
+
+            const size_t hitChar = (std::min)(locateNearestCharInBlock(blk, mx), cps.size() - 1);
+            const WordCharCategory cat = classifyUtf8CodepointForWord(cps[hitChar]);
+            size_t ws = hitChar;
+            size_t we = hitChar + 1;
+            if (cat != WordCharCategory::WhitespaceOrPunct) {
+                while (ws > 0 && classifyUtf8CodepointForWord(cps[ws - 1]) == cat) {
+                    --ws;
+                }
+                while (we < cps.size() && classifyUtf8CodepointForWord(cps[we]) == cat) {
+                    ++we;
+                }
+            }
+            m_selectedBlockIndices = {b};
+            m_selectedCharSpans = {PinBlockCharSpan{b, ws, we}};
+            m_isSelectingText = false;
+            m_isCharStreamSelecting = false;
+            selectedAny = true;
+            break;
+        }
+    }
+
+    if (selectedAny) {
+        render();
+    }
+    return selectedAny;
+}
+
 void PinWindow::toggleTextSelectionMode() {
     m_textSelectionMode = !m_textSelectionMode;
     if (m_textSelectionMode && !m_ocrReady.load()) {
-        ensureOcrExecutedAsync();
+        ensureOcrExecutedAsync(false);
     }
     if (!m_textSelectionMode) {
         clearTextSelection();
@@ -2222,8 +2551,12 @@ void PinWindow::toggleTextSelectionMode() {
 void PinWindow::clearTextSelection() {
     std::lock_guard<std::mutex> lock(m_ocrMutex);
     m_selectedBlockIndices.clear();
+    m_selectedCharSpans.clear();
     m_hoveredBlockIndex = -1;
     m_isSelectingText = false;
+    m_isCharStreamSelecting = false;
+    m_anchorBlockIndex = -1;
+    m_anchorCharIndex = 0;
 }
 
 void PinWindow::copySelectedText() {
@@ -2231,20 +2564,9 @@ void PinWindow::copySelectedText() {
     {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         if (m_selectedBlockIndices.empty()) return;
-
-        std::vector<tools3000::ocr::OcrResult> selectedBlocks;
-        selectedBlocks.reserve(m_selectedBlockIndices.size());
-        for (size_t idx : m_selectedBlockIndices) {
-            if (idx < m_ocrBlocks.size() && !m_ocrBlocks[idx].text.empty()) {
-                tools3000::ocr::OcrResult r;
-                r.text = m_ocrBlocks[idx].text;
-                r.confidence = 1.0f;
-                r.box = m_ocrBlocks[idx].origBox;
-                selectedBlocks.push_back(std::move(r));
-            }
-        }
-        combined = tools3000::ocr::OcrEngine::orderTextBlocksWithXYCut(selectedBlocks, "\r\n");
+        combined = assembleSelectedSpansText(m_ocrBlocks, m_selectedBlockIndices, m_selectedCharSpans);
         m_selectedBlockIndices.clear();
+        m_selectedCharSpans.clear();
     }
 
     if (!combined.empty()) {
@@ -2256,6 +2578,101 @@ void PinWindow::copySelectedText() {
             tools3000::core::ShowToastEvent{isZh ? (L"已复制所选文字: " + preview) : (L"Copied selected text: " + preview)});
     }
     render();
+}
+
+void PinWindow::copySelectedOrAllAsTable() {
+    tools3000::ocr::OcrTableGrid tableGrid;
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        std::vector<tools3000::ocr::OcrResult> selCandidates;
+        for (size_t idx : m_selectedBlockIndices) {
+            if (idx < m_ocrBlocks.size() && !m_ocrBlocks[idx].text.empty()) {
+                tools3000::ocr::OcrResult r;
+                r.text = m_ocrBlocks[idx].text;
+                r.confidence = 1.0f;
+                r.box = m_ocrBlocks[idx].origBox;
+                r.charBoxes = m_ocrBlocks[idx].charBoxes;
+                selCandidates.push_back(std::move(r));
+            }
+        }
+        tableGrid = tools3000::ocr::OcrTableReconstructor::reconstruct(selCandidates);
+        if (!tableGrid.isTable) {
+            std::vector<tools3000::ocr::OcrResult> allCandidates;
+            allCandidates.reserve(m_ocrBlocks.size());
+            for (const auto& blk : m_ocrBlocks) {
+                if (!blk.text.empty()) {
+                    tools3000::ocr::OcrResult r;
+                    r.text = blk.text;
+                    r.confidence = 1.0f;
+                    r.box = blk.origBox;
+                    r.charBoxes = blk.charBoxes;
+                    allCandidates.push_back(std::move(r));
+                }
+            }
+            tableGrid = tools3000::ocr::OcrTableReconstructor::reconstruct(allCandidates);
+        }
+        if (tableGrid.isTable) {
+            m_selectedBlockIndices.clear();
+            m_selectedCharSpans.clear();
+        }
+    }
+
+    const bool isZh = tools3000::core::isUiLanguageChinese();
+    if (tableGrid.isTable && tools3000::ocr::OcrTableReconstructor::copyTableToClipboard(tableGrid, m_hwnd)) {
+        tools3000::core::EventBus::instance().publish(
+            tools3000::core::ShowToastEvent{
+                isZh ? std::format(L"已复制 {}×{} 表格，可直接粘贴至 Excel / 飞书", tableGrid.rowCount, tableGrid.colCount)
+                     : std::format(L"Copied {}x{} table, ready to paste into Excel", tableGrid.rowCount, tableGrid.colCount)});
+        render();
+    } else {
+        copySelectedText();
+    }
+}
+
+void PinWindow::openOcrComparisonPanel() {
+    std::string panelText;
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        if (!m_selectedBlockIndices.empty()) {
+            panelText = assembleSelectedSpansText(m_ocrBlocks, m_selectedBlockIndices, m_selectedCharSpans);
+        }
+        if (panelText.empty() && !m_ocrBlocks.empty()) {
+            std::vector<tools3000::ocr::OcrResult> allBlocks;
+            allBlocks.reserve(m_ocrBlocks.size());
+            for (const auto& blk : m_ocrBlocks) {
+                if (!blk.text.empty()) {
+                    tools3000::ocr::OcrResult r;
+                    r.text = blk.text;
+                    r.confidence = 1.0f;
+                    r.box = blk.origBox;
+                    allBlocks.push_back(std::move(r));
+                }
+            }
+            panelText = tools3000::ocr::OcrEngine::orderTextBlocksWithXYCut(allBlocks, "\r\n");
+        }
+    }
+    if (!panelText.empty()) {
+        tools3000::ocr::OcrResultWindow::instance().showResult(panelText);
+    }
+}
+
+void PinWindow::copyQrCodeText(size_t qrIndex) {
+    std::string qrText;
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        if (qrIndex < m_qrCodes.size()) {
+            qrText = m_qrCodes[qrIndex].text;
+        }
+    }
+    if (!qrText.empty()) {
+        const std::wstring wtext = tools3000::core::WinUtils::utf8ToWstring(qrText);
+        tools3000::core::WinUtils::copyToClipboard(wtext);
+        const bool isZh = tools3000::core::isUiLanguageChinese();
+        const std::wstring preview = wtext.size() > 28 ? (wtext.substr(0, 28) + L"...") : wtext;
+        tools3000::core::EventBus::instance().publish(
+            tools3000::core::ShowToastEvent{
+                isZh ? (L"已复制二维码内容: " + preview) : (L"Copied QR code: " + preview)});
+    }
 }
 
 void PinWindow::copyAllText() {
@@ -3105,21 +3522,25 @@ void PinWindow::render() {
             }
         }
 
-        // 渲染划选与悬停的文字高亮块 (Live Text Selection Overlay)
+        // 渲染划选与悬停的文字高亮块、微晶操作胶囊组与二维码角标 (Live Text Selection Overlay)
+        m_btnCopyFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnCopyTableFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnOpenPanelFloatingRect = D2D1::RectF(0, 0, 0, 0);
         if (m_ocrReady) {
             std::lock_guard<std::mutex> lock(m_ocrMutex);
             const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
             m_dpiScale = dpiScale;
             const tools3000::core::AccentColorRGB themeRgb = FloatingGlassBar::effectiveAccentRGB();
 
-            ComPtr<ID2D1SolidColorBrush> hoverFillBrush, hoverStrokeBrush;
+            ComPtr<ID2D1SolidColorBrush> hoverFillBrush, hoverStrokeBrush, subtleHoverBrush;
             ComPtr<ID2D1SolidColorBrush> selFillBrush, selStrokeBrush;
             m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.16f), hoverFillBrush.GetAddressOf());
             m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.50f), hoverStrokeBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.08f), subtleHoverBrush.GetAddressOf());
             m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.32f), selFillBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.90f), selStrokeBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.88f), selStrokeBrush.GetAddressOf());
 
-            // 0. 文字划选模式下：为全部未被选中的文字块绘制半透明引导虚光胶囊
+            // 0. 显式文字划选模式下：为全部未被选中的文字块绘制半透明引导虚光胶囊
             if (m_textSelectionMode) {
                 ComPtr<ID2D1SolidColorBrush> guideFillBrush, guideStrokeBrush;
                 m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.04f), guideFillBrush.GetAddressOf());
@@ -3136,7 +3557,7 @@ void PinWindow::render() {
                 }
             }
 
-            // 1. 悬停块高亮
+            // 1. 悬停块高亮（显式模式下带细描边，平时零门槛 Live Text 悬停仅柔光底衬不遮原图）
             if (m_hoveredBlockIndex >= 0 && static_cast<size_t>(m_hoveredBlockIndex) < m_ocrBlocks.size()) {
                 bool alreadySelected = std::find(m_selectedBlockIndices.begin(), m_selectedBlockIndices.end(),
                                                  static_cast<size_t>(m_hoveredBlockIndex)) != m_selectedBlockIndices.end();
@@ -3144,34 +3565,72 @@ void PinWindow::render() {
                     const auto& b = m_ocrBlocks[m_hoveredBlockIndex].origBox;
                     D2D1_RECT_F r = D2D1::RectF(b.x * m_scale, b.y * m_scale, (b.x + b.width) * m_scale, (b.y + b.height) * m_scale);
                     D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 3.0f * dpiScale, 3.0f * dpiScale);
-                    if (hoverFillBrush) m_renderTarget->FillRoundedRectangle(&rr, hoverFillBrush.Get());
-                    if (hoverStrokeBrush) m_renderTarget->DrawRoundedRectangle(&rr, hoverStrokeBrush.Get(), 1.0f * dpiScale);
+                    const bool explicitMode = m_textSelectionMode || ((GetKeyState(VK_MENU) & 0x8000) != 0);
+                    if (explicitMode) {
+                        if (hoverFillBrush) m_renderTarget->FillRoundedRectangle(&rr, hoverFillBrush.Get());
+                        if (hoverStrokeBrush) m_renderTarget->DrawRoundedRectangle(&rr, hoverStrokeBrush.Get(), 1.0f * dpiScale);
+                    } else if (subtleHoverBrush) {
+                        m_renderTarget->FillRoundedRectangle(&rr, subtleHoverBrush.Get());
+                    }
                 }
             }
 
-            // 2. 选中块高亮
+            // 2. 选中文字高亮（优先绘制字符级紧贴选区 m_selectedCharSpans）
             float minSelY = size.height;
             float maxSelY = 0.0f;
-            float centerSelX = size.width / 2.0f;
-            for (size_t idx : m_selectedBlockIndices) {
-                if (idx < m_ocrBlocks.size()) {
-                    const auto& b = m_ocrBlocks[idx].origBox;
-                    D2D1_RECT_F r = D2D1::RectF(b.x * m_scale, b.y * m_scale, (b.x + b.width) * m_scale, (b.y + b.height) * m_scale);
-                    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 3.0f * dpiScale, 3.0f * dpiScale);
-                    if (selFillBrush) m_renderTarget->FillRoundedRectangle(&rr, selFillBrush.Get());
-                    if (selStrokeBrush) m_renderTarget->DrawRoundedRectangle(&rr, selStrokeBrush.Get(), 1.5f * dpiScale);
-                    if (r.top < minSelY) {
-                        minSelY = r.top;
-                        centerSelX = (r.left + r.right) / 2.0f;
+            float sumSelCenterX = 0.0f;
+            size_t selRectCount = 0;
+
+            auto recordAndDrawSelRect = [&](const D2D1_RECT_F& r) {
+                D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 2.5f * dpiScale, 2.5f * dpiScale);
+                if (selFillBrush) m_renderTarget->FillRoundedRectangle(&rr, selFillBrush.Get());
+                if (selStrokeBrush) m_renderTarget->DrawRoundedRectangle(&rr, selStrokeBrush.Get(), 1.2f * dpiScale);
+                if (r.top < minSelY) minSelY = r.top;
+                if (r.bottom > maxSelY) maxSelY = r.bottom;
+                sumSelCenterX += (r.left + r.right) * 0.5f;
+                ++selRectCount;
+            };
+
+            if (!m_selectedCharSpans.empty()) {
+                for (const auto& sp : m_selectedCharSpans) {
+                    if (sp.blockIndex >= m_ocrBlocks.size() || sp.startChar >= sp.endExclusive) continue;
+                    const auto& blk = m_ocrBlocks[sp.blockIndex];
+                    if (blk.charBoxes.empty() || sp.startChar >= blk.charBoxes.size()) {
+                        const auto& b = blk.origBox;
+                        recordAndDrawSelRect(D2D1::RectF(
+                            b.x * m_scale, b.y * m_scale, (b.x + b.width) * m_scale, (b.y + b.height) * m_scale));
+                        continue;
                     }
-                    if (r.bottom > maxSelY) {
-                        maxSelY = r.bottom;
+                    const size_t endIdx = (std::min)(sp.endExclusive, blk.charBoxes.size()) - 1;
+                    int x1 = blk.charBoxes[sp.startChar].x;
+                    int y1 = blk.charBoxes[sp.startChar].y;
+                    int x2 = blk.charBoxes[sp.startChar].x + blk.charBoxes[sp.startChar].width;
+                    int y2 = blk.charBoxes[sp.startChar].y + blk.charBoxes[sp.startChar].height;
+                    for (size_t k = sp.startChar; k <= endIdx; ++k) {
+                        const auto& cb = blk.charBoxes[k];
+                        x1 = (std::min)(x1, cb.x);
+                        y1 = (std::min)(y1, cb.y);
+                        x2 = (std::max)(x2, cb.x + cb.width);
+                        y2 = (std::max)(y2, cb.y + cb.height);
+                    }
+                    recordAndDrawSelRect(D2D1::RectF(
+                        x1 * m_scale, y1 * m_scale, x2 * m_scale, y2 * m_scale));
+                }
+            } else {
+                for (size_t idx : m_selectedBlockIndices) {
+                    if (idx < m_ocrBlocks.size()) {
+                        const auto& b = m_ocrBlocks[idx].origBox;
+                        recordAndDrawSelRect(D2D1::RectF(
+                            b.x * m_scale, b.y * m_scale, (b.x + b.width) * m_scale, (b.y + b.height) * m_scale));
                     }
                 }
             }
+            const float centerSelX = (selRectCount > 0)
+                ? (sumSelCenterX / static_cast<float>(selRectCount))
+                : (size.width * 0.5f);
 
-            // 3. 正在拉框划选时的半透明选区
-            if (m_isSelectingText) {
+            // 3. Alt 矩形框选模式时绘制橡皮筋框（流式逐字拖选紧贴文字本身，无需画矩形外框）
+            if (m_isSelectingText && !m_isCharStreamSelecting) {
                 float sx1 = static_cast<float>((std::min)(m_selectStart.x, m_selectEnd.x));
                 float sy1 = static_cast<float>((std::min)(m_selectStart.y, m_selectEnd.y));
                 float sx2 = static_cast<float>((std::max)(m_selectStart.x, m_selectEnd.x));
@@ -3181,21 +3640,51 @@ void PinWindow::render() {
                 if (selStrokeBrush) m_renderTarget->DrawRectangle(&selBox, selStrokeBrush.Get(), 1.0f * dpiScale);
             }
 
-            // 4. 浮动“复制文字”微晶胶囊（动态测宽 + 极窄贴图 maxPillX 安全保护 + 顶部悬停工具栏重叠避让）
+            // 4. 选区旁微晶悬浮操作胶囊组：[复制] + (表格时)[复制为表格] + [对照面板]
             if (!m_selectedBlockIndices.empty() && !m_isSelectingText) {
                 const bool isZh = tools3000::core::isUiLanguageChinese();
-                const wchar_t* btnLabel = isZh ? L"复制文字" : L"Copy";
-                const float labelW = measureUiTextWidth(btnLabel, dpiScale);
-                const float desiredPillW = std::ceil((std::max)(74.0f * dpiScale, 26.0f * dpiScale + labelW + 12.0f * dpiScale));
-                const float pillW = (size.width >= 36.0f * dpiScale)
-                    ? (std::min)(desiredPillW, (std::max)(36.0f * dpiScale, size.width - 12.0f * dpiScale))
-                    : desiredPillW;
-                const float pillH = 24.0f * dpiScale;
-                const float maxPillX = (std::max)(6.0f * dpiScale, size.width - pillW - 6.0f * dpiScale);
-                const float pillX = std::clamp(centerSelX - pillW * 0.5f, 6.0f * dpiScale, maxPillX);
-                float pillY = minSelY - pillH - 6.0f * dpiScale;
-                if (pillY < 6.0f * dpiScale) {
-                    pillY = (std::max)(minSelY + 28.0f * dpiScale, maxSelY + 6.0f * dpiScale);
+                const wchar_t* lblCopy = isZh ? L"复制" : L"Copy";
+                const wchar_t* lblTable = isZh ? L"复制为表格" : L"Copy Table";
+                const wchar_t* lblPanel = isZh ? L"对照面板" : L"Panel";
+
+                auto calcBtnW = [&](const wchar_t* txt) -> float {
+                    const float tw = measureUiTextWidth(txt, dpiScale);
+                    return std::ceil((std::max)(58.0f * dpiScale, 24.0f * dpiScale + tw + 10.0f * dpiScale));
+                };
+
+                const float wCopy = calcBtnW(lblCopy);
+                const float wTable = m_hasTableStructure ? calcBtnW(lblTable) : 0.0f;
+                const float wPanel = calcBtnW(lblPanel);
+                const float btnGap = 4.0f * dpiScale;
+                const float outerPad = 3.0f * dpiScale;
+                const float pillH = 26.0f * dpiScale;
+                const float availBarW = (std::max)(36.0f * dpiScale, size.width - 12.0f * dpiScale);
+
+                bool showTableBtn = false;
+                bool showPanelBtn = false;
+                if (m_hasTableStructure && (outerPad * 2.0f + wCopy + btnGap + wTable + btnGap + wPanel) <= availBarW) {
+                    showTableBtn = true;
+                    showPanelBtn = true;
+                } else if (m_hasTableStructure && (outerPad * 2.0f + wCopy + btnGap + wTable) <= availBarW) {
+                    showTableBtn = true;
+                } else if ((outerPad * 2.0f + wCopy + btnGap + wPanel) <= availBarW) {
+                    showPanelBtn = true;
+                }
+
+                float totalBarW = wCopy;
+                if (showTableBtn || showPanelBtn) {
+                    totalBarW = outerPad * 2.0f + wCopy +
+                                (showTableBtn ? (btnGap + wTable) : 0.0f) +
+                                (showPanelBtn ? (btnGap + wPanel) : 0.0f);
+                } else if (size.width >= 36.0f * dpiScale) {
+                    totalBarW = (std::min)(wCopy, availBarW);
+                }
+
+                const float maxBarX = (std::max)(6.0f * dpiScale, size.width - totalBarW - 6.0f * dpiScale);
+                const float barX = std::clamp(centerSelX - totalBarW * 0.5f, 6.0f * dpiScale, maxBarX);
+                float barY = minSelY - pillH - 6.0f * dpiScale;
+                if (barY < 6.0f * dpiScale) {
+                    barY = (std::max)(minSelY + 28.0f * dpiScale, maxSelY + 6.0f * dpiScale);
                 }
                 if (m_hoverAlpha > 0.01f &&
                     PinInputController::shouldShowHoverToolbar(
@@ -3204,43 +3693,130 @@ void PinWindow::render() {
                         size.width, size.height, dpiScale);
                     const D2D1_RECT_F tb = tbLayout.toolbarRect;
                     const bool overlapsTb =
-                        (pillX < tb.right && pillX + pillW > tb.left &&
-                         pillY < tb.bottom && pillY + pillH > tb.top);
+                        (barX < tb.right && barX + totalBarW > tb.left &&
+                         barY < tb.bottom && barY + pillH > tb.top);
                     if (overlapsTb) {
-                        pillY = (std::max)(maxSelY + 6.0f * dpiScale, tb.bottom + 6.0f * dpiScale);
+                        barY = (std::max)(maxSelY + 6.0f * dpiScale, tb.bottom + 6.0f * dpiScale);
                     }
                 }
-                const float maxPillY = (std::max)(6.0f * dpiScale, size.height - pillH - 6.0f * dpiScale);
-                pillY = std::clamp(pillY, 6.0f * dpiScale, maxPillY);
-                m_btnCopyFloatingRect = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
+                const float maxBarY = (std::max)(6.0f * dpiScale, size.height - pillH - 6.0f * dpiScale);
+                barY = std::clamp(barY, 6.0f * dpiScale, maxBarY);
 
-                FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), m_btnCopyFloatingRect, 5.0f * dpiScale, pal.isDark);
-                FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCopyFloatingRect, 4.0f * dpiScale,
-                                                m_hoverCopyFloating, false, false, false, 0.95f, pal.isDark);
+                const D2D1_RECT_F barRect = D2D1::RectF(barX, barY, barX + totalBarW, barY + pillH);
+                FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), barRect, 6.0f * dpiScale, pal.isDark);
 
                 ComPtr<ID2D1SolidColorBrush> pillTextBrush;
                 m_renderTarget->CreateSolidColorBrush(pal.textPrimary, pillTextBrush.GetAddressOf());
 
-                // 复制图标居左
-                auto iconRect = D2D1::RectF(pillX + 4.0f * dpiScale, pillY + 3.0f * dpiScale,
-                                            pillX + 22.0f * dpiScale, pillY + pillH - 3.0f * dpiScale);
-                CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
-                                              CaptureIconId::ActionCopy, iconRect, pillTextBrush.Get(), dpiScale);
+                auto drawCapsuleAction = [&](const D2D1_RECT_F& rc, CaptureIconId iconId, const wchar_t* txt, bool hovered) {
+                    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), rc, 4.5f * dpiScale,
+                                                    hovered, false, false, false, 0.95f, pal.isDark);
+                    const D2D1_RECT_F icRc = D2D1::RectF(
+                        rc.left + 4.0f * dpiScale, rc.top + 3.0f * dpiScale,
+                        rc.left + 21.0f * dpiScale, rc.bottom - 3.0f * dpiScale);
+                    CaptureVectorIcons::renderIcon(
+                        m_renderTarget.Get(), m_d2dFactory.Get(), iconId, icRc, pillTextBrush.Get(), dpiScale);
+                    if (ensureTextResources(dpiScale) && m_uiLeadTextFormat && pillTextBrush &&
+                        (rc.right - rc.left) > 32.0f * dpiScale) {
+                        const D2D1_RECT_F lblRc = D2D1::RectF(
+                            rc.left + 22.5f * dpiScale, rc.top,
+                            (std::max)(rc.left + 22.5f * dpiScale, rc.right - 4.0f * dpiScale),
+                            rc.bottom);
+                        m_renderTarget->DrawTextW(
+                            txt, static_cast<UINT32>(wcslen(txt)),
+                            m_uiLeadTextFormat.Get(), lblRc, pillTextBrush.Get(),
+                            D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    }
+                };
 
-                // “复制文字”居右（复用缓存 DWrite 12px 格式，强制 NO_WRAP）
-                if (ensureTextResources(dpiScale) && m_uiLeadTextFormat && pillTextBrush &&
-                    pillW > 34.0f * dpiScale) {
-                    const D2D1_RECT_F lblRect = D2D1::RectF(
-                        pillX + 24.0f * dpiScale, pillY,
-                        (std::max)(pillX + 24.0f * dpiScale, pillX + pillW - 4.0f * dpiScale),
-                        pillY + pillH);
-                    m_renderTarget->DrawTextW(
-                        btnLabel, static_cast<UINT32>(wcslen(btnLabel)),
-                        m_uiLeadTextFormat.Get(), lblRect, pillTextBrush.Get(),
-                        D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                if (showTableBtn || showPanelBtn) {
+                    float curX = barX + outerPad;
+                    const float innerTop = barY + 1.5f * dpiScale;
+                    const float innerBot = barY + pillH - 1.5f * dpiScale;
+
+                    m_btnCopyFloatingRect = D2D1::RectF(curX, innerTop, curX + wCopy, innerBot);
+                    drawCapsuleAction(m_btnCopyFloatingRect, CaptureIconId::ActionCopy, lblCopy, m_hoverCopyFloating);
+                    curX += wCopy + btnGap;
+
+                    if (showTableBtn) {
+                        m_btnCopyTableFloatingRect = D2D1::RectF(curX, innerTop, curX + wTable, innerBot);
+                        drawCapsuleAction(m_btnCopyTableFloatingRect, CaptureIconId::ActionArrangeGrid, lblTable, m_hoverCopyTableFloating);
+                        curX += wTable + btnGap;
+                    }
+                    if (showPanelBtn) {
+                        m_btnOpenPanelFloatingRect = D2D1::RectF(curX, innerTop, curX + wPanel, innerBot);
+                        drawCapsuleAction(m_btnOpenPanelFloatingRect, CaptureIconId::ActionExtractText, lblPanel, m_hoverOpenPanelFloating);
+                    }
+                } else {
+                    m_btnCopyFloatingRect = barRect;
+                    drawCapsuleAction(m_btnCopyFloatingRect, CaptureIconId::ActionCopy, lblCopy, m_hoverCopyFloating);
                 }
-            } else {
-                m_btnCopyFloatingRect = D2D1::RectF(0, 0, 0, 0);
+            }
+
+            // 5. 图中二维码热区四角取景框与清透一键复制角标
+            for (size_t q = 0; q < m_qrCodes.size(); ++q) {
+                m_qrCodes[q].badgeRect = D2D1::RectF(0, 0, 0, 0);
+                if (m_isSelectingText || size.width < 76.0f * dpiScale || size.height < 42.0f * dpiScale) {
+                    continue;
+                }
+                const auto& qb = m_qrCodes[q].origBox;
+                const D2D1_RECT_F qrc = D2D1::RectF(
+                    qb.x * m_scale, qb.y * m_scale,
+                    (qb.x + qb.width) * m_scale, (qb.y + qb.height) * m_scale);
+
+                if (selStrokeBrush && (qrc.right - qrc.left) >= 16.0f && (qrc.bottom - qrc.top) >= 16.0f) {
+                    const float arm = (std::min)(10.0f * dpiScale, (std::min)(qrc.right - qrc.left, qrc.bottom - qrc.top) * 0.25f);
+                    const float sw = 1.6f * dpiScale;
+                    // 左上、右上、右下、左下 L 型取景线
+                    m_renderTarget->DrawLine({qrc.left, qrc.top}, {qrc.left + arm, qrc.top}, selStrokeBrush.Get(), sw);
+                    m_renderTarget->DrawLine({qrc.left, qrc.top}, {qrc.left, qrc.top + arm}, selStrokeBrush.Get(), sw);
+                    m_renderTarget->DrawLine({qrc.right - arm, qrc.top}, {qrc.right, qrc.top}, selStrokeBrush.Get(), sw);
+                    m_renderTarget->DrawLine({qrc.right, qrc.top}, {qrc.right, qrc.top + arm}, selStrokeBrush.Get(), sw);
+                    m_renderTarget->DrawLine({qrc.right - arm, qrc.bottom}, {qrc.right, qrc.bottom}, selStrokeBrush.Get(), sw);
+                    m_renderTarget->DrawLine({qrc.right, qrc.bottom - arm}, {qrc.right, qrc.bottom}, selStrokeBrush.Get(), sw);
+                    m_renderTarget->DrawLine({qrc.left, qrc.bottom}, {qrc.left + arm, qrc.bottom}, selStrokeBrush.Get(), sw);
+                    m_renderTarget->DrawLine({qrc.left, qrc.bottom - arm}, {qrc.left, qrc.bottom}, selStrokeBrush.Get(), sw);
+                }
+
+                const bool isZh = tools3000::core::isUiLanguageChinese();
+                const wchar_t* qrLabel = isZh ? L"复制二维码" : L"Copy QR";
+                const float qrTw = measureUiTextWidth(qrLabel, dpiScale);
+                const float qrW = (std::min)(
+                    std::ceil((std::max)(72.0f * dpiScale, 24.0f * dpiScale + qrTw + 10.0f * dpiScale)),
+                    (std::max)(48.0f * dpiScale, size.width - 12.0f * dpiScale));
+                const float qrH = 24.0f * dpiScale;
+                const float qrCenterX = (qrc.left + qrc.right) * 0.5f;
+                const float qrX = std::clamp(qrCenterX - qrW * 0.5f, 6.0f * dpiScale,
+                                             (std::max)(6.0f * dpiScale, size.width - qrW - 6.0f * dpiScale));
+                float qrY = qrc.bottom + 5.0f * dpiScale;
+                if (qrY + qrH + 4.0f * dpiScale > size.height) {
+                    qrY = (std::max)(6.0f * dpiScale, qrc.top - qrH - 5.0f * dpiScale);
+                }
+                qrY = std::clamp(qrY, 6.0f * dpiScale, (std::max)(6.0f * dpiScale, size.height - qrH - 6.0f * dpiScale));
+
+                const D2D1_RECT_F badgeRc = D2D1::RectF(qrX, qrY, qrX + qrW, qrY + qrH);
+                m_qrCodes[q].badgeRect = badgeRc;
+
+                const bool qrHovered = (m_hoveredQrBadgeIndex == static_cast<int>(q));
+                FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), badgeRc, 5.0f * dpiScale, pal.isDark);
+                FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), badgeRc, 4.0f * dpiScale,
+                                                qrHovered, false, false, false, 0.94f, pal.isDark);
+
+                ComPtr<ID2D1SolidColorBrush> qrTxtBr;
+                m_renderTarget->CreateSolidColorBrush(pal.textPrimary, qrTxtBr.GetAddressOf());
+                const D2D1_RECT_F qrIcRc = D2D1::RectF(
+                    qrX + 4.0f * dpiScale, qrY + 3.0f * dpiScale,
+                    qrX + 21.0f * dpiScale, qrY + qrH - 3.0f * dpiScale);
+                CaptureVectorIcons::renderIcon(
+                    m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::PropQrCode, qrIcRc, qrTxtBr.Get(), dpiScale);
+                if (ensureTextResources(dpiScale) && m_uiLeadTextFormat && qrTxtBr && qrW > 34.0f * dpiScale) {
+                    const D2D1_RECT_F lblRc = D2D1::RectF(
+                        qrX + 22.5f * dpiScale, qrY,
+                        (std::max)(qrX + 22.5f * dpiScale, qrX + qrW - 4.0f * dpiScale), qrY + qrH);
+                    m_renderTarget->DrawTextW(
+                        qrLabel, static_cast<UINT32>(wcslen(qrLabel)),
+                        m_uiLeadTextFormat.Get(), lblRc, qrTxtBr.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
             }
         }
 
@@ -3380,9 +3956,11 @@ void PinWindow::render() {
                 borderBrush.Get(), 1.0f);
         }
 
-        // 后台首次异步 OCR 等待期“正在识别... / Recognizing...”微胶囊 & 滚轮缩放/调透明度 800ms 百分比微晶胶囊
+        // 后台首次显式异步 OCR 等待期“正在识别... / Recognizing...”微胶囊（后台静默预提取不显示遮挡胶囊）
         m_lastRenderedOcrBadge = false;
-        const bool ocrWaiting = ((m_ocrInFlightVersion.load(std::memory_order_acquire) != 0 && !m_ocrReady.load(std::memory_order_acquire)) ||
+        const bool ocrWaiting = ((!m_silentOcrPreload.load(std::memory_order_acquire) &&
+                                  m_ocrInFlightVersion.load(std::memory_order_acquire) != 0 &&
+                                  !m_ocrReady.load(std::memory_order_acquire)) ||
                                  m_extractTextInFlight.load(std::memory_order_acquire));
         const uint64_t nowHudTick = GetTickCount64();
         const bool showPctBadge = (!m_hudBadgeText.empty() && nowHudTick < m_hudBadgeUntilTick);
@@ -3462,29 +4040,38 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
         case WM_SETCURSOR: {
             if (self && !self->m_folded) {
-                if (self->m_isDragging) {
-                    SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
-                    return TRUE;
-                }
-                // 1. 悬停在分组胶囊、浮动复制微晶胶囊或悬浮工具栏按钮上：手型光标 IDC_HAND
-                if (self->m_hoverGroupBadge || self->m_hoverCopyFloating || self->m_hoverFold || self->m_hoverRotate ||
-                    self->m_hoverInvert || self->m_hoverEdit || self->m_hoverText ||
-                    self->m_hoverCopy || self->m_hoverSave || self->m_hoverClose) {
-                    SetCursor(LoadCursor(nullptr, IDC_HAND));
-                    return TRUE;
-                }
-
-                // 2. Alt 键按下、正在划选或悬停在 OCR 文字块上：文本光标 IDC_IBEAM
+                const bool hoverAnyBtn =
+                    self->m_hoverGroupBadge || self->m_hoverCopyFloating ||
+                    self->m_hoverCopyTableFloating || self->m_hoverOpenPanelFloating ||
+                    self->m_hoveredQrBadgeIndex >= 0 ||
+                    self->m_hoverFold || self->m_hoverRotate || self->m_hoverInvert ||
+                    self->m_hoverEdit || self->m_hoverText || self->m_hoverCopy ||
+                    self->m_hoverSave || self->m_hoverClose;
                 const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-                if (alt || self->m_isSelectingText || self->m_hoveredBlockIndex >= 0 ||
-                    (self->m_textSelectionMode && !self->m_ocrReady.load())) {
-                    SetCursor(LoadCursor(nullptr, IDC_IBEAM));
-                    return TRUE;
-                }
 
-                // 3. 否则默认平移拖拽光标 IDC_SIZEALL（含文字划选模式下指向空白区域时）
-                SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
-                return TRUE;
+                PinLiveTextState cursorState;
+                cursorState.isFolded = self->m_folded;
+                cursorState.isDragging = self->m_isDragging;
+                cursorState.isSelectingText = self->m_isSelectingText;
+                cursorState.hoverInteractiveButton = hoverAnyBtn;
+                cursorState.altHeld = alt;
+                cursorState.textSelectionMode = self->m_textSelectionMode;
+                cursorState.liveTextEnabled = self->isLiveTextEnabled();
+                cursorState.ocrReady = self->m_ocrReady.load(std::memory_order_acquire);
+                cursorState.hitTextBlock = (self->m_hoveredBlockIndex >= 0);
+
+                switch (PinInputController::resolveCursorKind(cursorState)) {
+                    case PinCursorKind::HandButton:
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    case PinCursorKind::TextBeam:
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    case PinCursorKind::MoveWindow:
+                    default:
+                        SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
+                        return TRUE;
+                }
             }
             break;
         }
@@ -3501,55 +4088,80 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             self->m_dragThresholdExceeded = false;
             self->m_isDragging = false;
 
-            // Drag-First 状态机：按下工具栏按钮/分组胶囊/复制胶囊时不立即触发动作或阻断拖拽，
-            // 先记录候选按钮并捕获鼠标；若后续移动 >= 4px*dpiScale 则直接拖动贴图，原地抬起才执行按钮动作！
             const int hitBtn = self->hitTestInteractiveButton(clickX, clickY);
-            if (hitBtn != kPinBtnNone) {
+            const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+            const bool liveEnabled = self->isLiveTextEnabled();
+
+            if (!self->m_folded && (alt || self->m_textSelectionMode) && !self->m_ocrReady.load()) {
+                self->ensureOcrExecutedAsync(false);
+            }
+
+            int hitOcrBlock = -1;
+            size_t hitCharIdx = 0;
+            if (!self->m_folded && hitBtn == kPinBtnNone && self->m_ocrReady.load()) {
+                std::lock_guard<std::mutex> lock(self->m_ocrMutex);
+                const float safeScale = (std::max)(0.05f, self->m_scale);
+                const float mx = static_cast<float>(clickX) / safeScale;
+                const float my = static_cast<float>(clickY) / safeScale;
+                const cv::Point pt(static_cast<int>(mx), static_cast<int>(my));
+                for (size_t i = 0; i < self->m_ocrBlocks.size(); ++i) {
+                    if (self->m_ocrBlocks[i].origBox.contains(pt)) {
+                        hitOcrBlock = static_cast<int>(i);
+                        hitCharIdx = locateNearestCharInBlock(self->m_ocrBlocks[i], mx);
+                        break;
+                    }
+                }
+            }
+
+            PinLiveTextState pressState;
+            pressState.isFolded = self->m_folded;
+            pressState.altHeld = alt;
+            pressState.textSelectionMode = self->m_textSelectionMode;
+            pressState.liveTextEnabled = liveEnabled;
+            pressState.ocrReady = self->m_ocrReady.load(std::memory_order_acquire);
+            pressState.hitTextBlock = (hitOcrBlock >= 0);
+
+            const PinLeftPressMode pressMode = PinInputController::resolveLeftPressMode(
+                pressState, hitBtn != kPinBtnNone);
+
+            if (pressMode == PinLeftPressMode::PressInteractiveButton) {
                 self->m_pressedToolbarBtn = hitBtn;
                 SetCapture(hwnd);
                 return 0;
             }
 
-            // 文字划选不阻断空白区拖拽：
-            // 仅当用户按住 Alt 键，或开启了 m_textSelectionMode 且按下位置命中 OCR 文字块包围盒时，才进入拉框选字；
-            // 否则一律走整窗拖拽移动，绝不吞没贴图拖拽！
-            const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-            const bool canSelectText = alt || self->m_textSelectionMode;
-            if (!self->m_folded && canSelectText) {
-                if (!self->m_ocrReady.load()) self->ensureOcrExecutedAsync();
-
-                int hitOcrBlock = -1;
+            if (pressMode == PinLeftPressMode::StartLiveTextSelection) {
+                self->m_isSelectingText = true;
+                self->m_isCharStreamSelecting = (!alt && hitOcrBlock >= 0);
+                self->m_anchorBlockIndex = hitOcrBlock;
+                self->m_anchorCharIndex = hitCharIdx;
+                self->m_selectStart = {clickX, clickY};
+                self->m_selectEnd = {clickX, clickY};
                 {
                     std::lock_guard<std::mutex> lock(self->m_ocrMutex);
-                    const float mx = static_cast<float>(clickX) / (std::max)(0.05f, self->m_scale);
-                    const float my = static_cast<float>(clickY) / (std::max)(0.05f, self->m_scale);
-                    const cv::Point pt(static_cast<int>(mx), static_cast<int>(my));
-                    for (size_t i = 0; i < self->m_ocrBlocks.size(); ++i) {
-                        if (self->m_ocrBlocks[i].origBox.contains(pt)) {
-                            hitOcrBlock = static_cast<int>(i);
-                            break;
-                        }
-                    }
-                }
-
-                if (alt || hitOcrBlock >= 0) {
-                    self->m_isSelectingText = true;
-                    self->m_selectStart = {clickX, clickY};
-                    self->m_selectEnd = {clickX, clickY};
                     self->m_selectedBlockIndices.clear();
-                    if (hitOcrBlock >= 0) {
+                    self->m_selectedCharSpans.clear();
+                    if (hitOcrBlock >= 0 && !self->m_isCharStreamSelecting) {
                         self->m_selectedBlockIndices.push_back(static_cast<size_t>(hitOcrBlock));
                     }
-                    SetCapture(hwnd);
-                    self->render();
-                    return 0;
                 }
+                SetCapture(hwnd);
+                self->render();
+                return 0;
             }
 
-            // 普通点击：如果有选中文字但点击在外部空白区，先清除文字选中并允许直接拖拽窗口
-            if (!self->m_selectedBlockIndices.empty()) {
-                self->m_selectedBlockIndices.clear();
-                self->render();
+            // 空白区点击：若有选中文字则先清空，随即直接拖动贴图窗口
+            {
+                bool hadSel = false;
+                {
+                    std::lock_guard<std::mutex> lock(self->m_ocrMutex);
+                    hadSel = !self->m_selectedBlockIndices.empty();
+                    self->m_selectedBlockIndices.clear();
+                    self->m_selectedCharSpans.clear();
+                }
+                if (hadSel) {
+                    self->render();
+                }
             }
 
             self->m_isDragging = true;
@@ -3720,7 +4332,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     return 0;
                 case PinShortcutAction::EscapeOrClose:
                     if (!self->m_selectedBlockIndices.empty()) {
-                        self->m_selectedBlockIndices.clear();
+                        self->clearTextSelection();
                         self->render();
                         return 0;
                     }
@@ -3788,7 +4400,9 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             if (self->m_isDragging) {
                 if (self->m_hoverGroupBadge || self->m_hoverFold || self->m_hoverRotate || self->m_hoverInvert ||
                     self->m_hoverEdit || self->m_hoverText || self->m_hoverCopy || self->m_hoverSave ||
-                    self->m_hoverClose || self->m_hoverCopyFloating) {
+                    self->m_hoverClose || self->m_hoverCopyFloating ||
+                    self->m_hoverCopyTableFloating || self->m_hoverOpenPanelFloating ||
+                    self->m_hoveredQrBadgeIndex >= 0) {
                     self->m_hoverGroupBadge = false;
                     self->m_hoverFold = false;
                     self->m_hoverRotate = false;
@@ -3799,6 +4413,9 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->m_hoverSave = false;
                     self->m_hoverClose = false;
                     self->m_hoverCopyFloating = false;
+                    self->m_hoverCopyTableFloating = false;
+                    self->m_hoverOpenPanelFloating = false;
+                    self->m_hoveredQrBadgeIndex = -1;
                     self->render();
                 }
                 RECT winRc{};
@@ -3841,15 +4458,31 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 const bool hoverSave = isPointInRectF(self->m_btnSaveRect, x, y);
                 const bool hoverClose = isPointInRectF(self->m_btnCloseRect, x, y);
                 const bool hoverGroupBadge = isPointInRectF(self->m_btnGroupBadgeRect, x, y);
-                const bool hoverCopyFloating = (!self->m_selectedBlockIndices.empty() &&
-                                                isPointInRectF(self->m_btnCopyFloatingRect, x, y));
+                const bool hasSel = !self->m_selectedBlockIndices.empty();
+                const bool hoverCopyFloating = (hasSel && isPointInRectF(self->m_btnCopyFloatingRect, x, y));
+                const bool hoverCopyTableFloating = (hasSel && isPointInRectF(self->m_btnCopyTableFloatingRect, x, y));
+                const bool hoverOpenPanelFloating = (hasSel && isPointInRectF(self->m_btnOpenPanelFloatingRect, x, y));
+
+                int hoverQrIdx = -1;
+                {
+                    std::lock_guard<std::mutex> lock(self->m_ocrMutex);
+                    for (size_t q = 0; q < self->m_qrCodes.size(); ++q) {
+                        if (isPointInRectF(self->m_qrCodes[q].badgeRect, x, y)) {
+                            hoverQrIdx = static_cast<int>(q);
+                            break;
+                        }
+                    }
+                }
                 
                 if (hoverGroupBadge != self->m_hoverGroupBadge ||
                     hoverFold != self->m_hoverFold || hoverRotate != self->m_hoverRotate ||
                     hoverInvert != self->m_hoverInvert || hoverEdit != self->m_hoverEdit ||
                     hoverText != self->m_hoverText || hoverCopy != self->m_hoverCopy ||
                     hoverSave != self->m_hoverSave || hoverClose != self->m_hoverClose ||
-                    hoverCopyFloating != self->m_hoverCopyFloating) {
+                    hoverCopyFloating != self->m_hoverCopyFloating ||
+                    hoverCopyTableFloating != self->m_hoverCopyTableFloating ||
+                    hoverOpenPanelFloating != self->m_hoverOpenPanelFloating ||
+                    hoverQrIdx != self->m_hoveredQrBadgeIndex) {
                     self->m_hoverGroupBadge = hoverGroupBadge;
                     self->m_hoverFold = hoverFold;
                     self->m_hoverRotate = hoverRotate;
@@ -3860,54 +4493,193 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->m_hoverSave = hoverSave;
                     self->m_hoverClose = hoverClose;
                     self->m_hoverCopyFloating = hoverCopyFloating;
+                    self->m_hoverCopyTableFloating = hoverCopyTableFloating;
+                    self->m_hoverOpenPanelFloating = hoverOpenPanelFloating;
+                    self->m_hoveredQrBadgeIndex = hoverQrIdx;
                     self->render();
                 }
 
-                // 正在拉框划选文字
+                // 正在原图流式逐字拖选或拉框划选文字
                 if (self->m_isSelectingText) {
                     self->m_selectEnd = {x, y};
-                    int sx1 = (std::min)(self->m_selectStart.x, self->m_selectEnd.x);
-                    int sy1 = (std::min)(self->m_selectStart.y, self->m_selectEnd.y);
-                    int sx2 = (std::max)(self->m_selectStart.x, self->m_selectEnd.x);
-                    int sy2 = (std::max)(self->m_selectStart.y, self->m_selectEnd.y);
+                    const float safeScale = (std::max)(0.05f, self->m_scale);
 
-                    std::vector<size_t> newIndices;
-                    {
-                        std::lock_guard<std::mutex> lock(self->m_ocrMutex);
-                        for (size_t i = 0; i < self->m_ocrBlocks.size(); ++i) {
-                            const auto& b = self->m_ocrBlocks[i].origBox;
-                            int bx1 = static_cast<int>(b.x * self->m_scale);
-                            int by1 = static_cast<int>(b.y * self->m_scale);
-                            int bx2 = static_cast<int>((b.x + b.width) * self->m_scale);
-                            int by2 = static_cast<int>((b.y + b.height) * self->m_scale);
+                    if (self->m_isCharStreamSelecting && self->m_anchorBlockIndex >= 0) {
+                        const float startMx = static_cast<float>(self->m_selectStart.x) / safeScale;
+                        const float startMy = static_cast<float>(self->m_selectStart.y) / safeScale;
+                        const float curMx = static_cast<float>(x) / safeScale;
+                        const float curMy = static_cast<float>(y) / safeScale;
+                        const float moveClientPx = std::hypot(
+                            static_cast<float>(x - self->m_selectStart.x),
+                            static_cast<float>(y - self->m_selectStart.y));
 
-                            bool overlap = !(bx2 < sx1 || bx1 > sx2 || by2 < sy1 || by1 > sy2);
-                            if (overlap) {
-                                newIndices.push_back(i);
+                        if (moveClientPx >= 1.5f) {
+                            std::lock_guard<std::mutex> lock(self->m_ocrMutex);
+                            if (static_cast<size_t>(self->m_anchorBlockIndex) < self->m_ocrBlocks.size()) {
+                                // 寻找当前鼠标所在的阅读行
+                                int targetBlock = -1;
+                                float bestScore = FLT_MAX;
+                                for (size_t b = 0; b < self->m_ocrBlocks.size(); ++b) {
+                                    const auto& ob = self->m_ocrBlocks[b].origBox;
+                                    const float padY = 4.0f;
+                                    if (curMy >= static_cast<float>(ob.y) - padY &&
+                                        curMy <= static_cast<float>(ob.y + ob.height) + padY) {
+                                        float dx = 0.0f;
+                                        if (curMx < static_cast<float>(ob.x)) dx = static_cast<float>(ob.x) - curMx;
+                                        else if (curMx > static_cast<float>(ob.x + ob.width)) dx = curMx - static_cast<float>(ob.x + ob.width);
+                                        if (dx < bestScore) {
+                                            bestScore = dx;
+                                            targetBlock = static_cast<int>(b);
+                                        }
+                                    }
+                                }
+                                if (targetBlock < 0) {
+                                    for (size_t b = 0; b < self->m_ocrBlocks.size(); ++b) {
+                                        const auto& ob = self->m_ocrBlocks[b].origBox;
+                                        const float cy = static_cast<float>(ob.y) + static_cast<float>(ob.height) * 0.5f;
+                                        const float dy = std::abs(curMy - cy);
+                                        if (dy < bestScore) {
+                                            bestScore = dy;
+                                            targetBlock = static_cast<int>(b);
+                                        }
+                                    }
+                                }
+
+                                std::vector<size_t> newIndices;
+                                std::vector<PinBlockCharSpan> newSpans;
+
+                                if (targetBlock == self->m_anchorBlockIndex) {
+                                    const auto& blk = self->m_ocrBlocks[static_cast<size_t>(targetBlock)];
+                                    const float minMx = (std::min)(startMx, curMx);
+                                    const float maxMx = (std::max)(startMx, curMx);
+                                    size_t firstHit = blk.charBoxes.size();
+                                    size_t lastHit = 0;
+                                    for (size_t c = 0; c < blk.charBoxes.size(); ++c) {
+                                        const auto& cb = blk.charBoxes[c];
+                                        const float entryThresh = static_cast<float>(cb.x) + static_cast<float>(cb.width) * 0.28f;
+                                        const float exitThresh = static_cast<float>(cb.x) + static_cast<float>(cb.width) * 0.72f;
+                                        if (entryThresh <= maxMx && exitThresh >= minMx) {
+                                            firstHit = (std::min)(firstHit, c);
+                                            lastHit = (std::max)(lastHit, c + 1);
+                                        }
+                                    }
+                                    if (firstHit >= lastHit && !blk.charBoxes.empty()) {
+                                        const size_t fallbackC = (std::min)(self->m_anchorCharIndex, blk.charBoxes.size() - 1);
+                                        firstHit = fallbackC;
+                                        lastHit = fallbackC + 1;
+                                    }
+                                    if (firstHit < lastHit) {
+                                        newIndices.push_back(static_cast<size_t>(targetBlock));
+                                        newSpans.push_back(PinBlockCharSpan{static_cast<size_t>(targetBlock), firstHit, lastHit});
+                                    }
+                                } else if (targetBlock >= 0) {
+                                    const size_t caretChar = locateNearestCharInBlock(
+                                        self->m_ocrBlocks[static_cast<size_t>(targetBlock)], curMx);
+                                    int b1 = self->m_anchorBlockIndex;
+                                    size_t c1 = self->m_anchorCharIndex;
+                                    int b2 = targetBlock;
+                                    size_t c2 = caretChar;
+                                    if (b1 > b2) {
+                                        std::swap(b1, b2);
+                                        std::swap(c1, c2);
+                                    }
+                                    for (int b = b1; b <= b2; ++b) {
+                                        const auto& blk = self->m_ocrBlocks[static_cast<size_t>(b)];
+                                        const size_t totalC = blk.charBoxes.size();
+                                        if (totalC == 0) continue;
+                                        size_t sc = 0;
+                                        size_t ec = totalC;
+                                        if (b == b1) sc = (std::min)(c1, totalC - 1);
+                                        if (b == b2) ec = (std::min)(totalC, c2 + 1);
+                                        if (sc < ec) {
+                                            newIndices.push_back(static_cast<size_t>(b));
+                                            newSpans.push_back(PinBlockCharSpan{static_cast<size_t>(b), sc, ec});
+                                        }
+                                    }
+                                }
+
+                                self->m_selectedBlockIndices = std::move(newIndices);
+                                self->m_selectedCharSpans = std::move(newSpans);
                             }
                         }
-                    }
-                    if (newIndices != self->m_selectedBlockIndices) {
-                        self->m_selectedBlockIndices = newIndices;
+                    } else {
+                        // Alt 矩形拉框选字：精确截取落入拉框内的字符子包围盒
+                        const float sx1 = static_cast<float>((std::min)(self->m_selectStart.x, self->m_selectEnd.x)) / safeScale;
+                        const float sy1 = static_cast<float>((std::min)(self->m_selectStart.y, self->m_selectEnd.y)) / safeScale;
+                        const float sx2 = static_cast<float>((std::max)(self->m_selectStart.x, self->m_selectEnd.x)) / safeScale;
+                        const float sy2 = static_cast<float>((std::max)(self->m_selectStart.y, self->m_selectEnd.y)) / safeScale;
+
+                        std::vector<size_t> newIndices;
+                        std::vector<PinBlockCharSpan> newSpans;
+                        {
+                            std::lock_guard<std::mutex> lock(self->m_ocrMutex);
+                            for (size_t i = 0; i < self->m_ocrBlocks.size(); ++i) {
+                                const auto& blk = self->m_ocrBlocks[i];
+                                const auto& b = blk.origBox;
+                                const bool blockOverlap = !(static_cast<float>(b.x + b.width) < sx1 ||
+                                                            static_cast<float>(b.x) > sx2 ||
+                                                            static_cast<float>(b.y + b.height) < sy1 ||
+                                                            static_cast<float>(b.y) > sy2);
+                                if (!blockOverlap) continue;
+
+                                if (blk.charBoxes.empty()) {
+                                    newIndices.push_back(i);
+                                    continue;
+                                }
+
+                                size_t firstC = blk.charBoxes.size();
+                                size_t lastC = 0;
+                                for (size_t c = 0; c < blk.charBoxes.size(); ++c) {
+                                    const auto& cb = blk.charBoxes[c];
+                                    const float cx = static_cast<float>(cb.x) + static_cast<float>(cb.width) * 0.5f;
+                                    const float cy = static_cast<float>(cb.y) + static_cast<float>(cb.height) * 0.5f;
+                                    const bool charHit = (cx >= sx1 && cx <= sx2 &&
+                                                          static_cast<float>(cb.y + cb.height) >= sy1 &&
+                                                          static_cast<float>(cb.y) <= sy2) ||
+                                                         (sx2 - sx1 < 3.0f && sy2 - sy1 < 3.0f &&
+                                                          cb.contains(cv::Point(static_cast<int>(sx1), static_cast<int>(sy1))));
+                                    (void)cy;
+                                    if (charHit) {
+                                        firstC = (std::min)(firstC, c);
+                                        lastC = (std::max)(lastC, c + 1);
+                                    }
+                                }
+                                if (firstC < lastC) {
+                                    newIndices.push_back(i);
+                                    newSpans.push_back(PinBlockCharSpan{i, firstC, lastC});
+                                }
+                            }
+                        }
+                        self->m_selectedBlockIndices = std::move(newIndices);
+                        self->m_selectedCharSpans = std::move(newSpans);
                     }
                     self->render();
                     return 0;
                 }
 
-                // Alt 或处于文字划选模式下：悬停文字块检测
+                // 零门槛 Live Text 智能悬停检测（无需按住 Alt 或切模式，指向文字自动变 IDC_IBEAM）
                 const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-                const bool canInspect = alt || self->m_textSelectionMode;
-                if (canInspect && !self->m_ocrReady.load()) {
-                    self->ensureOcrExecutedAsync();
+                const bool liveEnabled = self->isLiveTextEnabled();
+                if ((alt || self->m_textSelectionMode) && !self->m_ocrReady.load()) {
+                    self->ensureOcrExecutedAsync(false);
+                } else if (!leftHeld && liveEnabled && !self->m_ocrReady.load() && !self->m_clickThrough) {
+                    const bool allowHoverPreload = !isAutomatedTestProcessMode() ||
+                        tools3000::core::ConfigManager::instance().get<bool>("/ocr/preloadOnHoverInTest", false);
+                    if (allowHoverPreload) {
+                        self->ensureOcrExecutedAsync(true);
+                    }
                 }
-                if (canInspect && self->m_ocrReady) {
+
+                if ((alt || self->m_textSelectionMode || liveEnabled) && self->m_ocrReady.load()) {
                     int hovered = -1;
                     {
                         std::lock_guard<std::mutex> lock(self->m_ocrMutex);
-                        float mx = static_cast<float>(x) / self->m_scale;
-                        float my = static_cast<float>(y) / self->m_scale;
+                        const float safeScale = (std::max)(0.05f, self->m_scale);
+                        const float mx = static_cast<float>(x) / safeScale;
+                        const float my = static_cast<float>(y) / safeScale;
+                        const cv::Point pt(static_cast<int>(mx), static_cast<int>(my));
                         for (size_t i = 0; i < self->m_ocrBlocks.size(); ++i) {
-                            if (self->m_ocrBlocks[i].origBox.contains(cv::Point(static_cast<int>(mx), static_cast<int>(my)))) {
+                            if (self->m_ocrBlocks[i].origBox.contains(pt)) {
                                 hovered = static_cast<int>(i);
                                 break;
                             }
@@ -3939,6 +4711,9 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             self->m_hoverSave = false;
             self->m_hoverClose = false;
             self->m_hoverCopyFloating = false;
+            self->m_hoverCopyTableFloating = false;
+            self->m_hoverOpenPanelFloating = false;
+            self->m_hoveredQrBadgeIndex = -1;
             self->m_hoveredBlockIndex = -1;
             SetTimer(hwnd, 1, 16, nullptr);
             return 0;
@@ -3964,6 +4739,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 self->m_isDragging = false;
                 self->m_dragThresholdExceeded = false;
                 self->m_isSelectingText = false;
+                self->m_isCharStreamSelecting = false;
             }
             return 0;
         }
@@ -3974,6 +4750,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 const int upY = GET_Y_LPARAM(lParam);
                 if (self->m_isSelectingText) {
                     self->m_isSelectingText = false;
+                    self->m_isCharStreamSelecting = false;
                     ReleaseCapture();
                     self->render();
                     return 0;
@@ -3995,7 +4772,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_LBUTTONDBLCLK: {
-            // 双击：若折叠则展开微晶胶囊；若点在工具栏按钮上则按连击按钮处理；否则进入标注编辑模式
+            // 双击：若折叠则展开；若点在按钮上走连击；若点在文字热区上自动双击选词；空白处进入标注编辑模式
             if (self) {
                 if (self->m_folded) {
                     self->toggleFold();
@@ -4010,6 +4787,9 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                         self->m_dragThresholdExceeded = false;
                         self->m_isDragging = false;
                         SetCapture(hwnd);
+                        return 0;
+                    }
+                    if (self->selectWordAtClientPoint(dblX, dblY)) {
                         return 0;
                     }
                     self->editMarkup();
