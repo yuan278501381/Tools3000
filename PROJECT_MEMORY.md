@@ -21,6 +21,8 @@
      - **双模式零负担共存**：直出模式保持 0 秒落盘；开启演播室模式（Studio Mode）时录制期剥离系统光标捕获 Clean Plate 纯净底片，并同步以 250Hz 采集鼠标坐标、点击、输入插入符焦点 (`GetGUIThreadInfo`) 与本机离线 SAPI 语音识别时间轴；
      - **物理弹簧运镜与超清矢量重绘**：采用二阶临界阻尼弹簧 ($\zeta = 1.0$ 解析解，严格零超调) 自动聚类推进 `1.5x~2.2x` 镜头并钳制视口边界；采用 `OneEuroFilter2D` 消除手部微抖动并在放大画面顶层以 `1/16px` 亚像素精度重绘超清矢量指针与点击波纹；叠加 5 款渐变壁纸圆角阴影画框与预乘 Alpha 胶囊字幕；
      - **录完即达的原生 Direct2D 演播室预览台**：停止录屏瞬间弹出实时 30fps 合成预览窗，支持时间轴拖拽、单段蓝色放大块独立点击启停、实时切换倍率/光标/壁纸/字幕、硬件优先（`h264_nvenc/qsv/amf/mf` + 音轨无损 Stream Copy + 同名 `.srt` 导出）异步合成成片或 0 秒一键保留原片。
+  4. **Intel Iris Xe 驱动 (`igd10um64xe.dll`) 测试宿主退出 `DLL_PROCESS_DETACH` 自旋护栏 (`tests/unit/test_main.cpp`)**：
+     - 实机 `GetThreadContext` 采样证实：在混合运行 D3D11/Direct2D/DirectML/MediaFoundation 共 703 项单测后，Intel 用户态显卡驱动 `igd10um64xe.dll + 0x71398` 在 `ExitProcess -> DLL_PROCESS_DETACH` 阶段会因等待已被内核提前终止的驱动辅助线程而发生 100% CPU 永久自旋；在 `test_main.cpp` 入口剥离标准流 `HANDLE_FLAG_INHERIT` 并在 `RUN_ALL_TESTS()` 完成、业务单例有序关闭与标准流 `fflush` 后显式 `TerminateProcess(GetCurrentProcess(), ret)`，保障 CTest 44s 零挂起秒退。
 
 ### [2026-11-16] QuickLook 多格式零乱码无锁预览引擎 (`OfficeAndPdfPreview`)、关于页大众化精炼重构与生活场景动图升级
 - **用户实机反馈与三大核心病灶**：

@@ -1,12 +1,14 @@
 #include "capture/StudioVideoCompositor.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DWriteFontUtils.h"
+#include "core/utils/UiThreadJoin.h"
 #include "core/utils/WinUtils.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <objbase.h>
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wrl/client.h>
@@ -720,7 +722,7 @@ bool StudioVideoCompositor::extractPreviewDeck(
     return !outFramesBgr.empty();
 }
 
-bool StudioVideoCompositor::exportRenderedVideo(
+bool exportRenderedVideoOnCleanMta(
     const std::string& rawInputPathUtf8,
     const std::string& finalOutputPathUtf8,
     const StudioTimelineData& timeline,
@@ -729,6 +731,14 @@ bool StudioVideoCompositor::exportRenderedVideo(
     const std::function<void(double progress01)>& onProgress,
     const std::atomic<bool>* cancelFlag) {
     if (rawInputPathUtf8.empty() || finalOutputPathUtf8.empty()) return false;
+
+    const HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    struct ComScopeGuard {
+        bool needUninit = false;
+        ~ComScopeGuard() {
+            if (needUninit) CoUninitialize();
+        }
+    } comGuard{SUCCEEDED(hrCo)};
 
     AVFormatContext* inFmt = nullptr;
     if (avformat_open_input(&inFmt, rawInputPathUtf8.c_str(), nullptr, nullptr) < 0 || !inFmt) {
@@ -758,7 +768,7 @@ bool StudioVideoCompositor::exportRenderedVideo(
     }
 
     const int outFps = std::clamp(timeline.fps > 0 ? timeline.fps : 30, 10, 120);
-    const cv::Size outSize = resolveOutputCanvasSize(decCtx->width, decCtx->height);
+    const cv::Size outSize = StudioVideoCompositor::resolveOutputCanvasSize(decCtx->width, decCtx->height);
 
     const std::wstring finalWide = tools3000::core::WinUtils::utf8ToWstring(finalOutputPathUtf8);
     const std::wstring tempWide = finalWide + L".studio_tmp.mp4";
@@ -772,8 +782,17 @@ bool StudioVideoCompositor::exportRenderedVideo(
     }
 
     std::vector<const AVCodec*> encCandidates;
-    for (const char* name : {"h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264", "libopenh264", "mpeg4"}) {
-        addCodecIfPresent(encCandidates, name);
+    wchar_t testModeEnv[8]{};
+    const bool inUnitTestMode = GetEnvironmentVariableW(L"TOOLS3000_TEST_MODE", testModeEnv, 8) > 0 &&
+                                testModeEnv[0] == L'1';
+    if (inUnitTestMode) {
+        for (const char* name : {"libx264", "libopenh264", "mpeg4", "h264_mf"}) {
+            addCodecIfPresent(encCandidates, name);
+        }
+    } else {
+        for (const char* name : {"h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264", "libopenh264", "mpeg4"}) {
+            addCodecIfPresent(encCandidates, name);
+        }
     }
 
     AVCodecContext* encCtx = nullptr;
@@ -1001,6 +1020,34 @@ bool StudioVideoCompositor::exportRenderedVideo(
 
     if (onProgress) onProgress(1.0);
     return true;
+}
+
+bool StudioVideoCompositor::exportRenderedVideo(
+    const std::string& rawInputPathUtf8,
+    const std::string& finalOutputPathUtf8,
+    const StudioTimelineData& timeline,
+    const StudioRenderConfig& config,
+    int bitrateMbps,
+    const std::function<void(double progress01)>& onProgress,
+    const std::atomic<bool>* cancelFlag) {
+    if (rawInputPathUtf8.empty() || finalOutputPathUtf8.empty()) return false;
+
+    APTTYPE aptType = APTTYPE_CURRENT;
+    APTTYPEQUALIFIER aptQual = APTTYPEQUALIFIER_NONE;
+    const bool onSta = SUCCEEDED(CoGetApartmentType(&aptType, &aptQual)) &&
+                       (aptType == APTTYPE_STA || aptType == APTTYPE_MAINSTA);
+    if (onSta) {
+        auto ok = std::make_shared<bool>(false);
+        std::thread mtaWorker([&, ok]() {
+            *ok = exportRenderedVideoOnCleanMta(
+                rawInputPathUtf8, finalOutputPathUtf8, timeline, config, bitrateMbps, onProgress, cancelFlag);
+        });
+        tools3000::core::joinWorkerWhilePumpingSentMessages(mtaWorker, 600000);
+        return *ok;
+    }
+
+    return exportRenderedVideoOnCleanMta(
+        rawInputPathUtf8, finalOutputPathUtf8, timeline, config, bitrateMbps, onProgress, cancelFlag);
 }
 
 } // namespace tools3000::capture
