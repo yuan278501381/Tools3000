@@ -6,6 +6,22 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-16] 工业设计制图预览引擎 (`DesignAndCadPreview`)、微信级实景选字双引擎离线 OCR (`DeepOcrEngine` + `PinWindow`) 与 Screen Studio 级自动运镜演播室录屏 (`StudioTimeline` + `StudioVideoCompositor`)
+- **三大跨越级生产力引擎架构沉淀**：
+  1. **各行业工程制图与印前设计零文件锁预览引擎 (`DesignAndCadPreview.{h,cpp}`, `OfficeAndPdfPreview.{h,cpp}`, `QuickLookCadViewer.tsx`, `QuickLook3dViewer.tsx`)**：
+     - **MIT 纯净协议红线**：坚决不引入 `LibreDWG` 等 GPL 传染性库；全部基于公开规范与系统原生 COM 接口构建，所有磁盘读取统一采用 `FILE_SHARE_READ | WRITE | DELETE` 瞬时读入内存即刻关闭句柄，100% 零文件锁；
+     - **AutoCAD / 天正 TArch (`.dwg`)、SolidWorks (`.sldprt/.sldasm`)、SketchUp (`.skp`) 双通道择优**：第 1 级 5ms 直解 `.dwg` `AC1012~AC1032` 头信息与 `0x0D` Preview Sentinel 快照（以及天正自定义实体保存时的完整栅格快照）；第 2 级通过 STA 超时保护沙箱调用 `IShellItemImageFactory::GetImage(1600x1600)` 择优更高清系统缩略图，并在 UI 诚实标注快照说明与专业软件一键打开入口；
+     - **工程图纸 `.dxf` 交互式矢量看图与 `.stl/.obj` 3D 检视器**：原生支持 UTF-8/GBK 中文图层及 `LINE/LWPOLYLINE(含凸度圆弧)/CIRCLE/ARC/TEXT/MTEXT` 解析，前端 Canvas 合批渲染支持光标中心 10%~5000% 缩放、黑白图纸底色自适应反色与图层显隐开关；`.stl/.obj` 通过紧凑 Base64 `Float32Array` 直传前端零依赖 WebGL 1.0 双光源深度缓冲 + 线框叠加 360° 检视器；
+     - **平面印前 `.cdr` / `.psd` / `.psb` / `.ai` / `.eps`**：`.cdr` 兼容 X4~2026 ZIP 多页预览与 X3 老版 `RIFF DISP` DIB；`.psd/.psb` 流式边解码边降采样解析 `8BPS` Section 5 Raw/PackBits RLE 合成大图（兼容 CMYK/16-bit）；`.ai/.eps` 自动扫描内存 `%PDF-` 流偏移交由 WinRT PDF 光栅化（保留 `winrt::clear_factory_cache()` 防退出 Loader Lock 死锁）。
+  2. **微信级原图实景选字双引擎离线 OCR (`DeepOcrEngine.{h,cpp}`, `OcrTableReconstructor.{h,cpp}`, `OcrEngine.{h,cpp}`, `PinWindow.cpp`, `OcrPage.tsx`)**：
+     - **零外部框架膨胀的 PP-OCRv4 ONNX 推理引擎**：直接复用项目已链接的 `opencv_dnn` (`OpenCV 4.12`) 驱动 DBNet 倾斜文本检测 + 180° 方向分类 + SVTR/CRNN CTC 识别与单字符时间步逆透视包围盒 (`charBoxes`)；`OcrPage.tsx` 内置支持 HTTPS 防降级与模型完整性预校验的一键离线高精度模型包下载器；同时强化内置 `Windows.Media.Ocr` 的暗色代码反相与 CLAHE 增强，并集成 `cv::QRCodeDetector` (`quirc`) 顺手解码二维码；
+     - **Excel 原生分列表格重建 (`CF_HTML` + `TSV`)**：对 `>= 2×2` 行列簇自动对齐网格并写入双剪贴板格式，支持直接粘贴进 Excel / WPS / 飞书自动还原单元格；
+     - **零门槛贴图实景选字 (`Live Text`)**：无需按住 `Alt` 或切模式，贴图空白处保持拖拽移动，鼠标移入文字框自动切换 `IDC_IBEAM` 按字符流式划选，松手浮现 `[复制]`、`[复制为表格]`、`[对照面板]` 微晶胶囊。
+  3. **Screen Studio / Focusee 级自动运镜演播室录屏引擎 (`StudioTimeline.{h,cpp}`, `StudioVideoCompositor.{h,cpp}`, `StudioPreviewWindow.{h,cpp}`, `ScreenRecorder`, `CapturePage.tsx`)**：
+     - **双模式零负担共存**：直出模式保持 0 秒落盘；开启演播室模式（Studio Mode）时录制期剥离系统光标捕获 Clean Plate 纯净底片，并同步以 250Hz 采集鼠标坐标、点击、输入插入符焦点 (`GetGUIThreadInfo`) 与本机离线 SAPI 语音识别时间轴；
+     - **物理弹簧运镜与超清矢量重绘**：采用二阶临界阻尼弹簧 ($\zeta = 1.0$ 解析解，严格零超调) 自动聚类推进 `1.5x~2.2x` 镜头并钳制视口边界；采用 `OneEuroFilter2D` 消除手部微抖动并在放大画面顶层以 `1/16px` 亚像素精度重绘超清矢量指针与点击波纹；叠加 5 款渐变壁纸圆角阴影画框与预乘 Alpha 胶囊字幕；
+     - **录完即达的原生 Direct2D 演播室预览台**：停止录屏瞬间弹出实时 30fps 合成预览窗，支持时间轴拖拽、单段蓝色放大块独立点击启停、实时切换倍率/光标/壁纸/字幕、硬件优先（`h264_nvenc/qsv/amf/mf` + 音轨无损 Stream Copy + 同名 `.srt` 导出）异步合成成片或 0 秒一键保留原片。
+
 ### [2026-11-16] QuickLook 多格式零乱码无锁预览引擎 (`OfficeAndPdfPreview`)、关于页大众化精炼重构与生活场景动图升级
 - **用户实机反馈与三大核心病灶**：
   1. **QuickLook 打开 `PDF / CSV / Excel / Word` 出现乱码或裸露十六进制转储**：
