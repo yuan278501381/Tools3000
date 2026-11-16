@@ -414,4 +414,146 @@ describe('QuickLookApp Usability & Media Pipeline', () => {
     fireEvent.click(screen.getByText('Inspect File Header (Hex)'));
     expect(document.querySelector('.ql-hex-dump')?.textContent).toContain('50 4b 03 04');
   });
+
+  it('renders interactive DXF CAD vector viewer with Chinese layers toggle, dark/light print theme switch, and zoom', async () => {
+    render(<QuickLookApp />);
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\CAD\\floor_plan.dxf',
+        name: 'floor_plan.dxf',
+        extension: 'dxf',
+        type: 'cad_dxf',
+        isDirectory: false,
+        size: 65536,
+        formattedSize: '64.0 KB',
+        modified: '2026-10-18 14:00:00',
+        encoding: 'GBK',
+        dxfData: {
+          totalEntities: 3,
+          bounds: [0, 0, 1200, 800],
+          layers: [
+            { name: '墙体层', colorHex: '#06B6D4', adaptive: false, count: 2 },
+            { name: '轴网标注', colorHex: '#FF3B30', adaptive: false, count: 1 },
+          ],
+          entities: [
+            { k: 0, l: '墙体层', c: '#06B6D4', a: false, pts: [0, 0, 1200, 0] },
+            { k: 1, l: '墙体层', c: '#06B6D4', a: false, cl: true, pts: [0, 0, 1200, 0, 1200, 800, 0, 800] },
+            { k: 4, l: '轴网标注', c: '#FF3B30', a: false, pts: [100, 100], th: 24, t: '承重剪力墙' },
+          ],
+        },
+      });
+    });
+
+    expect(screen.getByText('DXF CAD Drawing')).toBeDefined();
+    expect(screen.getByText('3 entities')).toBeDefined();
+
+    // Switch between Classic Dark and Print White CAD canvas background
+    const viewerEl = document.querySelector('.ql-cad-viewer');
+    expect(viewerEl?.classList.contains('ql-cad-viewer--dark')).toBe(true);
+    fireEvent.click(screen.getByTestId('ql-cad-bg-toggle'));
+    expect(viewerEl?.classList.contains('ql-cad-viewer--light')).toBe(true);
+
+    // Expand CAD layers panel and toggle Chinese layer visibility
+    const layersToggle = screen.getByTestId('ql-cad-layers-toggle');
+    expect(layersToggle.textContent).toContain('Layers (2/2)');
+    fireEvent.click(layersToggle);
+
+    expect(screen.getByTestId('ql-cad-layers-panel')).toBeDefined();
+    const wallLayerBtn = screen.getByText('墙体层');
+    fireEvent.click(wallLayerBtn);
+    expect(layersToggle.textContent).toContain('Layers (1/2)');
+
+    // Zoom in and reset Fit to View
+    const cadCanvas = document.querySelector('canvas.ql-cad-canvas') as HTMLCanvasElement;
+    fireEvent.wheel(cadCanvas, { deltaY: -120, clientX: 200, clientY: 160 });
+    expect(screen.getByText('118%')).toBeDefined();
+    fireEvent.click(screen.getByText('Fit to View'));
+    expect(screen.getByText('100%')).toBeDefined();
+  });
+
+  it('renders interactive 3D STL/OBJ mesh viewer with triangle count, physical bounding box, shaded/wireframe toggle, and CAD snapshot banner', async () => {
+    render(<QuickLookApp />);
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\Models\\gearbox_housing.stl',
+        name: 'gearbox_housing.stl',
+        extension: 'stl',
+        type: 'model_3d',
+        isDirectory: false,
+        size: 131072,
+        formattedSize: '128.0 KB',
+        modified: '2026-10-18 15:00:00',
+        designMeta: 'STL (Binary)',
+        meshData: {
+          formatLabel: 'STL (Binary)',
+          totalTriangles: 2048,
+          sampledTriangles: 2048,
+          dimensions: [125.5, 80, 42.25],
+          positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        },
+      });
+    });
+
+    expect(screen.getByText('STL 3D Model')).toBeDefined();
+    const statsBadge = screen.getByTestId('ql-3d-stats-badge');
+    expect(statsBadge.textContent).toContain('125.5 × 80 × 42.25');
+    expect(statsBadge.textContent).toContain('tris');
+
+    const shadedBtn = screen.getByTestId('ql-3d-shaded-btn');
+    const wireBtn = screen.getByTestId('ql-3d-wireframe-btn');
+    expect(shadedBtn.classList.contains('active')).toBe(true);
+    fireEvent.click(wireBtn);
+    expect(wireBtn.classList.contains('active')).toBe(true);
+
+    // Verify DWG/TArch CAD snapshot transparent notice & multi-page CDR navigation
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\CAD\\tarch_building.dwg',
+        name: 'tarch_building.dwg',
+        extension: 'dwg',
+        type: 'image',
+        isDirectory: false,
+        size: 524288,
+        formattedSize: '512.0 KB',
+        modified: '2026-10-18 15:30:00',
+        designMeta: 'AutoCAD 2018+ / TArch · 1280×960',
+        previewNoteKind: 'cad_snapshot',
+        dataUri: 'data:image/png;base64,iVBORw0KGgo=',
+      });
+    });
+
+    expect(screen.getByTestId('ql-cad-snapshot-banner')).toBeDefined();
+    expect(screen.getByText('· AutoCAD 2018+ / TArch · 1280×960')).toBeDefined();
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\Design\\brochure.cdr',
+        name: 'brochure.cdr',
+        extension: 'cdr',
+        type: 'image',
+        isDirectory: false,
+        size: 262144,
+        formattedSize: '256.0 KB',
+        modified: '2026-10-18 16:00:00',
+        designMeta: 'CorelDRAW (ZIP) · 1600×1200 · 2 pages',
+        dataUri: 'data:image/png;base64,AAAA',
+        imagePages: ['data:image/png;base64,AAAA', 'data:image/png;base64,BBBB'],
+      });
+    });
+
+    expect(screen.getByText('CorelDRAW Artwork')).toBeDefined();
+    expect(screen.getByText('1 / 2')).toBeDefined();
+    fireEvent.click(screen.getByLabelText('Next Page'));
+    expect(screen.getByText('2 / 2')).toBeDefined();
+  });
 });

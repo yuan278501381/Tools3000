@@ -100,6 +100,7 @@
 #include "core/utils/WinUtils.h"
 #include "core/utils/TextFilePreviewDecoder.h"
 #include "core/utils/OfficeAndPdfPreview.h"
+#include "core/utils/DesignAndCadPreview.h"
 #include <zlib.h>
 #include "core/utils/TextFilePreviewDecoder.h"
 #include "core/logger/Logger.h"
@@ -191,6 +192,7 @@ using namespace tools3000::gesture;
 #include "test_dialog.inc"
 #include "test_remote.inc"
 #include "test_keycast_translator.inc"
+#include "test_industry_preview.inc"
 
 TEST(UiThreadJoinTest, PumpsCrossThreadSentMessagesDuringShutdown) {
     HWND window = CreateWindowExW(
