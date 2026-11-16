@@ -453,11 +453,14 @@ export const CapturePage: FC = () => {
                   value={normalizeBeautyShellTheme(capture.beautyShellTheme)}
                   onChange={(v) => updateCapture('beautyShellTheme', v)}
                   options={[
-                    { value: 'aurora_purple', label: t('capture.themeAuroraPurple') },
-                    { value: 'sunrise_coral', label: t('capture.themeSunriseCoral') },
-                    { value: 'emerald_sea', label: t('capture.themeEmeraldSea') },
                     { value: 'obsidian_dark', label: t('capture.themeObsidianDark') },
+                    { value: 'aurora_purple', label: t('capture.themeAuroraPurple') },
+                    { value: 'emerald_sea', label: t('capture.themeEmeraldSea') },
                     { value: 'minimal_light', label: t('capture.themeMinimalLight') },
+                    { value: 'sunrise_coral', label: t('capture.themeSunriseCoral') },
+                    { value: 'airy_glacier', label: t('capture.themeAiryGlacier') },
+                    { value: 'dusk_mountains', label: t('capture.themeDuskMountains') },
+                    { value: 'misty_lake_dawn', label: t('capture.themeMistyLakeDawn') },
                   ]}
                 />
               </SettingRow>
@@ -757,11 +760,14 @@ export const CapturePage: FC = () => {
                     value={normalizeBeautyShellTheme(recording.studioTheme)}
                     onChange={(v) => updateRecording('studioTheme', v)}
                     options={[
-                      { value: 'aurora_purple', label: t('capture.themeAuroraPurple') },
-                      { value: 'sunrise_coral', label: t('capture.themeSunriseCoral') },
-                      { value: 'emerald_sea', label: t('capture.themeEmeraldSea') },
                       { value: 'obsidian_dark', label: t('capture.themeObsidianDark') },
+                      { value: 'aurora_purple', label: t('capture.themeAuroraPurple') },
+                      { value: 'emerald_sea', label: t('capture.themeEmeraldSea') },
                       { value: 'minimal_light', label: t('capture.themeMinimalLight') },
+                      { value: 'sunrise_coral', label: t('capture.themeSunriseCoral') },
+                      { value: 'airy_glacier', label: t('capture.themeAiryGlacier') },
+                      { value: 'dusk_mountains', label: t('capture.themeDuskMountains') },
+                      { value: 'misty_lake_dawn', label: t('capture.themeMistyLakeDawn') },
                     ]}
                   />
                 </SettingRow>

@@ -1,6 +1,6 @@
 #pragma once
 // ─────────────────────────────────────────────────────────────────────────────
-// StudioPreviewWindow.h — 录屏结束即时弹出的 Screen Studio 级原生演播室预览与导出窗口
+// StudioPreviewWindow.h — 录屏结束即时弹出的 Screen Studio / FocuSee 级演播室预览与多格式导出窗口
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef TOOLS3000_CAPTURE_STUDIOPREVIEWWINDOW_H
@@ -14,6 +14,7 @@
 #include <dwrite.h>
 #include <wrl/client.h>
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <mutex>
@@ -54,12 +55,26 @@ private:
         int payload = -1;
     };
 
+    enum class ExportDropdownKind : int {
+        None       = 0,
+        Format     = 1,
+        Resolution = 2,
+        Fps        = 3,
+        Quality    = 4,
+    };
+
     bool ensureWindowCreated();
     bool ensureRenderResources();
     void discardDeviceResources();
     void rebakeTimelinePreview();
     void updateCurrentComposedBitmap();
+    void initExportModalDefaults();
+    void browseExportDirectory();
+    void applyFormatSmartDefaults(StudioExportFormat newFmt);
+    void persistExportPreferencesIfChecked();
+    std::string buildFinalExportPathUtf8() const;
     void render();
+    void renderExportModalOverlay(float W, float H, bool dark, bool isZh, ID2D1SolidColorBrush* brush);
     void onPlaybackTick();
     void startAsyncExport();
     void keepOriginalAndClose();
@@ -68,13 +83,15 @@ private:
     void handleMouseDown(float lx, float ly);
     void handleMouseMove(float lx, float ly, bool leftButtonDown);
     void handleMouseUp();
+    void handleCharInput(wchar_t ch);
+    void handleKeyDown(WPARAM vk);
 
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     HWND m_hwnd = nullptr;
     float m_dpiScale = 1.0f;
-    int m_logicalWidth = 980;
-    int m_logicalHeight = 620;
+    int m_logicalWidth = 1000;
+    int m_logicalHeight = 668;
 
     std::string m_rawVideoPath;
     StudioTimelineData m_timeline;
@@ -106,6 +123,15 @@ private:
     D2D1_RECT_F m_timelineTrackRect{};
     std::vector<HitZone> m_hitZones;
 
+    // 原位导出模态窗状态 (名称 / 保存目录 / 格式 / 分辨率 / 帧率 / 质量 / 保存偏好)
+    bool m_exportModalOpen = false;
+    bool m_editingExportName = false;
+    ExportDropdownKind m_openDropdown = ExportDropdownKind::None;
+    std::wstring m_exportFileNameStem;
+    std::wstring m_exportDirectoryWide;
+    StudioExportOptions m_exportOpts{};
+    bool m_saveExportPrefs = true;
+
     // 后台硬件加速转码导出状态
     std::atomic<bool> m_exporting{false};
     std::atomic<bool> m_cancelExport{false};
@@ -113,10 +139,11 @@ private:
     std::thread m_exportWorker;
     std::mutex m_exportMutex;
 
-    // Direct2D / DirectWrite 渲染资源
+    // Direct2D / DirectWrite 渲染资源与 8 款壁纸缩略图缓存
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> m_renderTarget;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_frameBitmap;
+    std::array<Microsoft::WRL::ComPtr<ID2D1Bitmap>, 8> m_themeThumbBitmaps;
     UINT32 m_bitmapW = 0;
     UINT32 m_bitmapH = 0;
     Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;

@@ -570,15 +570,196 @@ bool DeepOcrEngine::extractEmbeddedCharacterDictFromOnnx(
     return false;
 }
 
+namespace {
+
+void appendProtobufVarint(std::vector<uint8_t>& out, uint64_t val) {
+    while (true) {
+        uint8_t byte = static_cast<uint8_t>(val & 0x7Fu);
+        val >>= 7u;
+        if (val != 0) {
+            out.push_back(static_cast<uint8_t>(byte | 0x80u));
+        } else {
+            out.push_back(byte);
+            break;
+        }
+    }
+}
+
+void appendProtobufLengthDelimited(std::vector<uint8_t>& out, uint32_t fieldNum, const uint8_t* payload, size_t len) {
+    appendProtobufVarint(out, (static_cast<uint64_t>(fieldNum) << 3u) | 2ULL);
+    appendProtobufVarint(out, static_cast<uint64_t>(len));
+    if (len > 0 && payload != nullptr) {
+        out.insert(out.end(), payload, payload + len);
+    }
+}
+
+std::string extractValueInfoName(const uint8_t* buf, size_t len) {
+    size_t p = 0;
+    while (p < len) {
+        uint64_t tag = 0;
+        if (!readProtobufVarint(buf, len, p, tag) || tag == 0) break;
+        const uint32_t wire = static_cast<uint32_t>(tag & 0x07u);
+        const uint32_t fn = static_cast<uint32_t>(tag >> 3u);
+        if (wire == 2) {
+            uint64_t slen = 0;
+            if (!readProtobufVarint(buf, len, p, slen) || slen > len - p) break;
+            if (fn == 1) {
+                return std::string(reinterpret_cast<const char*>(buf + p), static_cast<size_t>(slen));
+            }
+            p += static_cast<size_t>(slen);
+        } else if (wire == 0) {
+            uint64_t dummy = 0;
+            if (!readProtobufVarint(buf, len, p, dummy)) break;
+        } else if (wire == 1) {
+            if (len - p < 8) break;
+            p += 8;
+        } else if (wire == 5) {
+            if (len - p < 4) break;
+            p += 4;
+        } else {
+            break;
+        }
+    }
+    return "x";
+}
+
+std::vector<uint8_t> buildFixedFloatValueInfoProto(std::string_view inputName, const std::array<int64_t, 4>& dims) {
+    std::vector<uint8_t> shapePayload;
+    shapePayload.reserve(48);
+    for (int64_t d : dims) {
+        std::vector<uint8_t> dimMsg;
+        appendProtobufVarint(dimMsg, (1ULL << 3u) | 0ULL); // Dimension.dim_value = field 1, varint
+        appendProtobufVarint(dimMsg, static_cast<uint64_t>(d));
+        appendProtobufLengthDelimited(shapePayload, 1, dimMsg.data(), dimMsg.size()); // TensorShapeProto.dim = field 1
+    }
+
+    std::vector<uint8_t> tensorPayload;
+    appendProtobufVarint(tensorPayload, (1ULL << 3u) | 0ULL); // TypeProto.Tensor.elem_type = 1 (FLOAT)
+    appendProtobufVarint(tensorPayload, 1ULL);
+    appendProtobufLengthDelimited(tensorPayload, 2, shapePayload.data(), shapePayload.size()); // shape = field 2
+
+    std::vector<uint8_t> typePayload;
+    appendProtobufLengthDelimited(typePayload, 1, tensorPayload.data(), tensorPayload.size()); // TypeProto.tensor_type = field 1
+
+    std::vector<uint8_t> valueInfo;
+    appendProtobufLengthDelimited(
+        valueInfo, 1, reinterpret_cast<const uint8_t*>(inputName.data()), inputName.size()); // ValueInfoProto.name = field 1
+    appendProtobufLengthDelimited(valueInfo, 2, typePayload.data(), typePayload.size());     // ValueInfoProto.type = field 2
+    return valueInfo;
+}
+
+} // namespace
+
+bool DeepOcrEngine::patchOnnxGraphInputShape(
+    const uint8_t* data,
+    size_t byteSize,
+    const std::array<int64_t, 4>& fixedDims,
+    std::vector<uint8_t>& outPatchedBytes) {
+    outPatchedBytes.clear();
+    if (!data || byteSize < 16) return false;
+
+    outPatchedBytes.reserve(byteSize + 64);
+    size_t pos = 0;
+    bool patchedInput = false;
+
+    while (pos < byteSize) {
+        const size_t fieldStart = pos;
+        uint64_t tag = 0;
+        if (!readProtobufVarint(data, byteSize, pos, tag) || tag == 0) {
+            return false;
+        }
+        const uint32_t wire = static_cast<uint32_t>(tag & 0x07u);
+        const uint32_t fnum = static_cast<uint32_t>(tag >> 3u);
+
+        if (fnum == 7 && wire == 2) { // ModelProto.graph = field 7
+            uint64_t graphLen = 0;
+            if (!readProtobufVarint(data, byteSize, pos, graphLen) || graphLen > byteSize - pos) {
+                return false;
+            }
+            const uint8_t* gData = data + pos;
+            const size_t gSize = static_cast<size_t>(graphLen);
+            pos += gSize;
+
+            std::vector<uint8_t> newGraph;
+            newGraph.reserve(gSize + 64);
+            size_t gp = 0;
+            while (gp < gSize) {
+                const size_t gFieldStart = gp;
+                uint64_t gtag = 0;
+                if (!readProtobufVarint(gData, gSize, gp, gtag) || gtag == 0) {
+                    return false;
+                }
+                const uint32_t gwire = static_cast<uint32_t>(gtag & 0x07u);
+                const uint32_t gfnum = static_cast<uint32_t>(gtag >> 3u);
+
+                if (gfnum == 11 && gwire == 2 && !patchedInput) { // GraphProto.input = field 11
+                    uint64_t inLen = 0;
+                    if (!readProtobufVarint(gData, gSize, gp, inLen) || inLen > gSize - gp) {
+                        return false;
+                    }
+                    const std::string inName = extractValueInfoName(gData + gp, static_cast<size_t>(inLen));
+                    gp += static_cast<size_t>(inLen);
+                    const auto fixedVi = buildFixedFloatValueInfoProto(inName, fixedDims);
+                    appendProtobufLengthDelimited(newGraph, 11, fixedVi.data(), fixedVi.size());
+                    patchedInput = true;
+                } else if (gwire == 0) {
+                    uint64_t dummy = 0;
+                    if (!readProtobufVarint(gData, gSize, gp, dummy)) return false;
+                    newGraph.insert(newGraph.end(), gData + gFieldStart, gData + gp);
+                } else if (gwire == 2) {
+                    uint64_t subLen = 0;
+                    if (!readProtobufVarint(gData, gSize, gp, subLen) || subLen > gSize - gp) return false;
+                    gp += static_cast<size_t>(subLen);
+                    newGraph.insert(newGraph.end(), gData + gFieldStart, gData + gp);
+                } else if (gwire == 5) {
+                    if (gSize - gp < 4) return false;
+                    gp += 4;
+                    newGraph.insert(newGraph.end(), gData + gFieldStart, gData + gp);
+                } else if (gwire == 1) {
+                    if (gSize - gp < 8) return false;
+                    gp += 8;
+                    newGraph.insert(newGraph.end(), gData + gFieldStart, gData + gp);
+                } else {
+                    return false;
+                }
+            }
+            appendProtobufLengthDelimited(outPatchedBytes, 7, newGraph.data(), newGraph.size());
+        } else if (wire == 0) {
+            uint64_t dummy = 0;
+            if (!readProtobufVarint(data, byteSize, pos, dummy)) return false;
+            outPatchedBytes.insert(outPatchedBytes.end(), data + fieldStart, data + pos);
+        } else if (wire == 2) {
+            uint64_t subLen = 0;
+            if (!readProtobufVarint(data, byteSize, pos, subLen) || subLen > byteSize - pos) return false;
+            pos += static_cast<size_t>(subLen);
+            outPatchedBytes.insert(outPatchedBytes.end(), data + fieldStart, data + pos);
+        } else if (wire == 5) {
+            if (byteSize - pos < 4) return false;
+            pos += 4;
+            outPatchedBytes.insert(outPatchedBytes.end(), data + fieldStart, data + pos);
+        } else if (wire == 1) {
+            if (byteSize - pos < 8) return false;
+            pos += 8;
+            outPatchedBytes.insert(outPatchedBytes.end(), data + fieldStart, data + pos);
+        } else {
+            return false;
+        }
+    }
+
+    return patchedInput;
+}
+
 bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelDir) {
-    if (m_modelsLoaded && m_loadedModelDir == modelDir && !m_detNet.empty() && !m_recNet.empty() && !m_dictKeys.empty()) {
+    if (m_modelsLoaded && m_loadedModelDir == modelDir &&
+        !m_detNet.empty() && !m_recNetShort.empty() && !m_recNetLong.empty() && !m_dictKeys.empty()) {
         return true;
     }
 
     m_modelsLoaded = false;
     m_detNet = cv::dnn::Net{};
     m_clsNet = cv::dnn::Net{};
-    m_recNet = cv::dnn::Net{};
+    m_recNetShort = cv::dnn::Net{};
+    m_recNetLong = cv::dnn::Net{};
     m_dictKeys.clear();
 
     try {
@@ -606,16 +787,35 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
             LOG_INFO("DeepOcrEngine: loaded {} dictionary keys directly from rec ONNX metadata", m_dictKeys.size());
         }
 
-        m_detNet = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(detBytes.data()), detBytes.size());
-        m_clsNet = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(clsBytes.data()), clsBytes.size());
-        m_recNet = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(recBytes.data()), recBytes.size());
+        std::vector<uint8_t> clsFixed, recShortFixed, recLongFixed;
+        const bool clsPatched = patchOnnxGraphInputShape(
+            clsBytes.data(), clsBytes.size(),
+            {1, 3, DeepOcrConstants::kClsImgHeight, DeepOcrConstants::kClsImgWidth},
+            clsFixed);
+        const bool recShortPatched = patchOnnxGraphInputShape(
+            recBytes.data(), recBytes.size(),
+            {1, 3, DeepOcrConstants::kRecImgHeight, DeepOcrConstants::kRecShortBucketWidth},
+            recShortFixed);
+        const bool recLongPatched = patchOnnxGraphInputShape(
+            recBytes.data(), recBytes.size(),
+            {1, 3, DeepOcrConstants::kRecImgHeight, DeepOcrConstants::kRecLongBucketWidth},
+            recLongFixed);
 
-        if (m_detNet.empty() || m_clsNet.empty() || m_recNet.empty()) {
+        const auto& clsSrc = clsPatched ? clsFixed : clsBytes;
+        const auto& recShortSrc = recShortPatched ? recShortFixed : recBytes;
+        const auto& recLongSrc = recLongPatched ? recLongFixed : recBytes;
+
+        m_detNet = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(detBytes.data()), detBytes.size());
+        m_clsNet = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(clsSrc.data()), clsSrc.size());
+        m_recNetShort = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(recShortSrc.data()), recShortSrc.size());
+        m_recNetLong = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(recLongSrc.data()), recLongSrc.size());
+
+        if (m_detNet.empty() || m_clsNet.empty() || m_recNetShort.empty() || m_recNetLong.empty()) {
             LOG_WARN("DeepOcrEngine: OpenCV DNN failed to parse ONNX graphs");
             return false;
         }
 
-        for (cv::dnn::Net* net : {&m_detNet, &m_clsNet, &m_recNet}) {
+        for (cv::dnn::Net* net : {&m_detNet, &m_clsNet, &m_recNetShort, &m_recNetLong}) {
             net->setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
             net->setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
         }
@@ -1064,10 +1264,10 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
         const int origH = bgr.rows;
         const int maxSide = (std::max)(origW, origH);
         float limitRatio = 1.0f;
-        const int targetLimit = (maxSide > 1600) ? 1280 : DeepOcrConstants::kDetMaxSideLen;
+        const int targetLimit = DeepOcrConstants::kDetMaxSideLen;
         if (maxSide > targetLimit) {
             limitRatio = static_cast<float>(targetLimit) / static_cast<float>(maxSide);
-        } else if (maxSide < 160) {
+        } else if (maxSide < 240) {
             limitRatio = 2.0f;
         }
 
@@ -1094,7 +1294,39 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
 
         rawBlocks.reserve(quads.size());
 
-        // 2. 透视矫正 + 180° 方向分类 + SVTR CTC 识别
+        auto runRecBucket = [&](const cv::Mat& subCrop) -> CtcDecodeOutput {
+            const float subAspect = static_cast<float>(subCrop.cols) / static_cast<float>((std::max)(1, subCrop.rows));
+            const int resizedW = std::clamp(
+                static_cast<int>(std::ceil(static_cast<float>(DeepOcrConstants::kRecImgHeight) * subAspect)),
+                8, DeepOcrConstants::kRecLongBucketWidth);
+            const bool useShort = (resizedW <= DeepOcrConstants::kRecShortBucketWidth);
+            const int bucketW = useShort
+                ? DeepOcrConstants::kRecShortBucketWidth
+                : DeepOcrConstants::kRecLongBucketWidth;
+            cv::dnn::Net& activeNet = useShort ? m_recNetShort : m_recNetLong;
+
+            cv::Mat recBlob = makeRecOrClsBlob(subCrop, DeepOcrConstants::kRecImgHeight, resizedW, bucketW);
+            activeNet.setInput(recBlob);
+            cv::Mat recOut = activeNet.forward();
+            if (recOut.empty()) return {};
+
+            int seqT = 0;
+            int numClasses = 0;
+            if (recOut.dims == 3) {
+                seqT = recOut.size[1];
+                numClasses = recOut.size[2];
+            } else if (recOut.dims == 2) {
+                seqT = recOut.rows;
+                numClasses = recOut.cols;
+            }
+            if (seqT <= 0 || numClasses <= 1) return {};
+
+            cv::Mat logits2d(seqT, numClasses, CV_32F, recOut.ptr<float>());
+            const float validRatio = static_cast<float>(resizedW) / static_cast<float>(bucketW);
+            return decodeCtcGreedy(logits2d, m_dictKeys, validRatio);
+        };
+
+        // 2. 透视矫正 + 180° 方向分类 + 双桶固定形状 SVTR CTC 识别（超长行自动寻缝分段）
         for (const auto& q : quads) {
             cv::Mat invPersp;
             bool rotatedVertical = false;
@@ -1129,34 +1361,66 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                 }
             }
 
-            // SVTR / CRNN 识别
-            const float recAspect = static_cast<float>(crop.cols) / static_cast<float>(crop.rows);
-            const int recResizedW = std::clamp(
-                static_cast<int>(std::ceil(static_cast<float>(DeepOcrConstants::kRecImgHeight) * recAspect)),
-                16, DeepOcrConstants::kRecMaxWidth);
-            const int recPaddedW = (std::max)(
-                DeepOcrConstants::kRecMinWidth,
-                ((recResizedW + 7) / 8) * 8);
+            const float fullAspect = static_cast<float>(crop.cols) / static_cast<float>(crop.rows);
+            const int fullResizedW = static_cast<int>(std::ceil(static_cast<float>(DeepOcrConstants::kRecImgHeight) * fullAspect));
 
-            cv::Mat recBlob = makeRecOrClsBlob(crop, DeepOcrConstants::kRecImgHeight, recResizedW, recPaddedW);
-            m_recNet.setInput(recBlob);
-            cv::Mat recOut = m_recNet.forward();
-            if (recOut.empty()) continue;
+            CtcDecodeOutput decoded;
+            if (fullResizedW <= DeepOcrConstants::kRecLongBucketWidth) {
+                decoded = runRecBucket(crop);
+            } else {
+                // 超宽行分段识别：按低垂直梯度竖缝切分为 <= kRecLongBucketWidth 的若干子片并精确还原全局归一化坐标
+                cv::Mat grayCrop;
+                cv::cvtColor(crop, grayCrop, cv::COLOR_BGR2GRAY);
+                const int maxSliceCropW = (std::max)(
+                    32,
+                    static_cast<int>(std::floor(
+                        static_cast<float>(crop.rows) *
+                        (static_cast<float>(DeepOcrConstants::kRecLongBucketWidth - 32) /
+                         static_cast<float>(DeepOcrConstants::kRecImgHeight)))));
 
-            int seqT = 0;
-            int numClasses = 0;
-            if (recOut.dims == 3) {
-                seqT = recOut.size[1];
-                numClasses = recOut.size[2];
-            } else if (recOut.dims == 2) {
-                seqT = recOut.rows;
-                numClasses = recOut.cols;
+                int segStart = 0;
+                float confWeightedSum = 0.0f;
+                size_t totalChars = 0;
+                while (segStart < crop.cols) {
+                    int segEnd = crop.cols;
+                    if (crop.cols - segStart > maxSliceCropW) {
+                        const int idealCut = segStart + maxSliceCropW;
+                        const int searchL = (std::max)(segStart + maxSliceCropW / 2, idealCut - crop.rows * 2);
+                        const int searchR = (std::min)(crop.cols - 8, idealCut);
+                        int bestCut = idealCut;
+                        double minColVar = 1e18;
+                        for (int x = searchL; x <= searchR; ++x) {
+                            cv::Scalar meanS, stdS;
+                            cv::meanStdDev(grayCrop.col(x), meanS, stdS);
+                            if (stdS[0] < minColVar) {
+                                minColVar = stdS[0];
+                                bestCut = x;
+                            }
+                        }
+                        segEnd = bestCut;
+                    }
+
+                    cv::Mat subCrop = crop(cv::Rect(segStart, 0, segEnd - segStart, crop.rows));
+                    CtcDecodeOutput part = runRecBucket(subCrop);
+                    if (!part.text.empty() && !part.chars.empty()) {
+                        const float uOffset = static_cast<float>(segStart) / static_cast<float>(crop.cols);
+                        const float uScale = static_cast<float>(segEnd - segStart) / static_cast<float>(crop.cols);
+                        decoded.text += part.text;
+                        confWeightedSum += part.confidence * static_cast<float>(part.chars.size());
+                        totalChars += part.chars.size();
+                        for (auto& ch : part.chars) {
+                            ch.normLeft = uOffset + ch.normLeft * uScale;
+                            ch.normRight = uOffset + ch.normRight * uScale;
+                            decoded.chars.push_back(std::move(ch));
+                        }
+                    }
+                    segStart = segEnd;
+                }
+                if (totalChars > 0) {
+                    decoded.confidence = confWeightedSum / static_cast<float>(totalChars);
+                }
             }
-            if (seqT <= 0 || numClasses <= 1) continue;
 
-            cv::Mat logits2d(seqT, numClasses, CV_32F, recOut.ptr<float>());
-            const float validRatio = static_cast<float>(recResizedW) / static_cast<float>(recPaddedW);
-            CtcDecodeOutput decoded = decodeCtcGreedy(logits2d, m_dictKeys, validRatio);
             if (decoded.text.empty() || decoded.confidence < DeepOcrConstants::kRecMinLineConfidence) {
                 continue;
             }
@@ -1192,41 +1456,92 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
         return rawBlocks;
     }
 
-    // 3. 将同一栏同一视觉行上被拆成多个检测框的列/短语合并，大间距注入 \t，并无缝合并精确 charBoxes
-    std::vector<OcrResult> mergedLines;
-    mergedLines.reserve(rawBlocks.size());
+    // 3. 视觉行聚类 + 行内严格按 X 左边界升序排序，再对同一行相邻块注入 \t 或空格并无缝合并 charBoxes
+    struct RowGroup {
+        std::vector<OcrResult> items;
+        float sumCy = 0.0f;
+        float sumH = 0.0f;
+        float avgCy() const noexcept { return items.empty() ? 0.0f : sumCy / static_cast<float>(items.size()); }
+        float avgH() const noexcept { return items.empty() ? 16.0f : sumH / static_cast<float>(items.size()); }
+    };
 
+    std::sort(rawBlocks.begin(), rawBlocks.end(), [](const OcrResult& a, const OcrResult& b) {
+        const float cyA = static_cast<float>(a.box.y) + static_cast<float>(a.box.height) * 0.5f;
+        const float cyB = static_cast<float>(b.box.y) + static_cast<float>(b.box.height) * 0.5f;
+        return cyA < cyB;
+    });
+
+    std::vector<RowGroup> rowGroups;
+    rowGroups.reserve(rawBlocks.size());
     for (auto& blk : rawBlocks) {
-        if (!mergedLines.empty()) {
-            auto& prev = mergedLines.back();
-            const float cyPrev = static_cast<float>(prev.box.y) + static_cast<float>(prev.box.height) * 0.5f;
-            const float cyCur = static_cast<float>(blk.box.y) + static_cast<float>(blk.box.height) * 0.5f;
-            const float refH = (std::max)(8.0f, static_cast<float>((std::min)(prev.box.height, blk.box.height)));
-            const int prevRight = prev.box.x + prev.box.width;
-            if (std::abs(cyCur - cyPrev) <= refH * 0.52f && blk.box.x >= prevRight - static_cast<int>(refH * 0.4f)) {
-                const float gap = static_cast<float>(blk.box.x - prevRight);
-                const char sep = (gap > refH * 1.35f) ? '\t' : ' ';
-                const cv::Rect sepBox(
-                    prevRight,
-                    (std::min)(prev.box.y, blk.box.y),
-                    (std::max)(1, blk.box.x - prevRight),
-                    (std::max)(prev.box.height, blk.box.height));
-
-                prev.text.push_back(sep);
-                prev.charBoxes.push_back(sepBox);
-                prev.text += blk.text;
-                prev.charBoxes.insert(prev.charBoxes.end(), blk.charBoxes.begin(), blk.charBoxes.end());
-                prev.confidence = (prev.confidence + blk.confidence) * 0.5f;
-
-                const int nx1 = (std::min)(prev.box.x, blk.box.x);
-                const int ny1 = (std::min)(prev.box.y, blk.box.y);
-                const int nx2 = (std::max)(prev.box.x + prev.box.width, blk.box.x + blk.box.width);
-                const int ny2 = (std::max)(prev.box.y + prev.box.height, blk.box.y + blk.box.height);
-                prev.box = cv::Rect(nx1, ny1, nx2 - nx1, ny2 - ny1);
-                continue;
+        const float cy = static_cast<float>(blk.box.y) + static_cast<float>(blk.box.height) * 0.5f;
+        const float h = static_cast<float>((std::max)(1, blk.box.height));
+        int bestIdx = -1;
+        float bestDy = FLT_MAX;
+        for (int i = static_cast<int>(rowGroups.size()) - 1; i >= 0; --i) {
+            const float refH = (std::max)(8.0f, (std::min)(rowGroups[i].avgH(), h));
+            const float dy = std::abs(cy - rowGroups[i].avgCy());
+            if (dy <= refH * 0.55f && dy < bestDy) {
+                bestDy = dy;
+                bestIdx = i;
             }
         }
-        mergedLines.push_back(std::move(blk));
+        if (bestIdx >= 0) {
+            rowGroups[bestIdx].sumCy += cy;
+            rowGroups[bestIdx].sumH += h;
+            rowGroups[bestIdx].items.push_back(std::move(blk));
+        } else {
+            RowGroup rg;
+            rg.sumCy = cy;
+            rg.sumH = h;
+            rg.items.push_back(std::move(blk));
+            rowGroups.push_back(std::move(rg));
+        }
+    }
+
+    std::sort(rowGroups.begin(), rowGroups.end(), [](const RowGroup& a, const RowGroup& b) {
+        return a.avgCy() < b.avgCy();
+    });
+
+    std::vector<OcrResult> mergedLines;
+    mergedLines.reserve(rowGroups.size());
+
+    for (auto& rg : rowGroups) {
+        std::sort(rg.items.begin(), rg.items.end(), [](const OcrResult& a, const OcrResult& b) {
+            return a.box.x < b.box.x;
+        });
+        for (auto& blk : rg.items) {
+            if (!mergedLines.empty()) {
+                auto& prev = mergedLines.back();
+                const float cyPrev = static_cast<float>(prev.box.y) + static_cast<float>(prev.box.height) * 0.5f;
+                const float cyCur = static_cast<float>(blk.box.y) + static_cast<float>(blk.box.height) * 0.5f;
+                const float refH = (std::max)(8.0f, static_cast<float>((std::min)(prev.box.height, blk.box.height)));
+                const int prevRight = prev.box.x + prev.box.width;
+                if (std::abs(cyCur - cyPrev) <= refH * 0.60f && blk.box.x >= prevRight - static_cast<int>(refH * 0.45f)) {
+                    const float gap = static_cast<float>(blk.box.x - prevRight);
+                    const char sep = (gap > refH * 1.25f) ? '\t' : ' ';
+                    const cv::Rect sepBox(
+                        prevRight,
+                        (std::min)(prev.box.y, blk.box.y),
+                        (std::max)(1, blk.box.x - prevRight),
+                        (std::max)(prev.box.height, blk.box.height));
+
+                    prev.text.push_back(sep);
+                    prev.charBoxes.push_back(sepBox);
+                    prev.text += blk.text;
+                    prev.charBoxes.insert(prev.charBoxes.end(), blk.charBoxes.begin(), blk.charBoxes.end());
+                    prev.confidence = (prev.confidence + blk.confidence) * 0.5f;
+
+                    const int nx1 = (std::min)(prev.box.x, blk.box.x);
+                    const int ny1 = (std::min)(prev.box.y, blk.box.y);
+                    const int nx2 = (std::max)(prev.box.x + prev.box.width, blk.box.x + blk.box.width);
+                    const int ny2 = (std::max)(prev.box.y + prev.box.height, blk.box.y + blk.box.height);
+                    prev.box = cv::Rect(nx1, ny1, nx2 - nx1, ny2 - ny1);
+                    continue;
+                }
+            }
+            mergedLines.push_back(std::move(blk));
+        }
     }
 
     return mergedLines;
@@ -1492,7 +1807,8 @@ void DeepOcrEngine::releaseLoadedModels() {
         m_loadedModelDir.clear();
         m_detNet = cv::dnn::Net{};
         m_clsNet = cv::dnn::Net{};
-        m_recNet = cv::dnn::Net{};
+        m_recNetShort = cv::dnn::Net{};
+        m_recNetLong = cv::dnn::Net{};
         m_dictKeys.clear();
     }
     cleanupDeepOcrWorkingSet();

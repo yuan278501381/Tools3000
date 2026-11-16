@@ -58,8 +58,23 @@ void getBackgroundPalette(BeautyBackgroundType type, cv::Vec3f& c1, cv::Vec3f& c
         case BeautyBackgroundType::MidnightGraphite:
             // 曜石黑晶: Slate (#334155 -> BGR: 85, 65, 51) -> Obsidian (#1E293B -> BGR: 59, 41, 30) -> Carbon (#090D16 -> BGR: 22, 13, 9)
             c1 = cv::Vec3f(85.0f, 65.0f, 51.0f);
-            c2 = cv::Vec3f(59.0f, 41.0f, 30.0f);
+            c2 = cv::Vec3f(59.0f, 41, 30.0f);
             c3 = cv::Vec3f(22.0f, 13.0f, 9.0f);
+            break;
+        case BeautyBackgroundType::AiryGlacier:
+            c1 = cv::Vec3f(254.0f, 249.0f, 236.0f);
+            c2 = cv::Vec3f(250.0f, 243.0f, 224.0f);
+            c3 = cv::Vec3f(245.0f, 250.0f, 236.0f);
+            break;
+        case BeautyBackgroundType::DuskMountains:
+            c1 = cv::Vec3f(115.0f, 52.0f, 49.0f);
+            c2 = cv::Vec3f(98.0f, 68.0f, 128.0f);
+            c3 = cv::Vec3f(72.0f, 118.0f, 212.0f);
+            break;
+        case BeautyBackgroundType::MistyLakeDawn:
+            c1 = cv::Vec3f(228.0f, 188.0f, 125.0f);
+            c2 = cv::Vec3f(212.0f, 210.0f, 186.0f);
+            c3 = cv::Vec3f(118.0f, 98.0f, 76.0f);
             break;
         case BeautyBackgroundType::PureMinimal:
         default:

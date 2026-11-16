@@ -36,11 +36,11 @@ namespace DeepOcrConstants {
     inline constexpr const wchar_t* kRecModelFileName = L"ch_PP-OCRv4_rec.onnx";
     inline constexpr const wchar_t* kKeysDictFileName = L"ppocr_keys_v1.txt";
 
-    inline constexpr int kDetMaxSideLen = 960;
+    inline constexpr int kDetMaxSideLen = 1600;
     inline constexpr int kDetStrideAlign = 32;
-    inline constexpr float kDetBinaryThresh = 0.30f;
-    inline constexpr float kDetBoxScoreThresh = 0.55f;
-    inline constexpr float kDetUnclipRatio = 1.60f;
+    inline constexpr float kDetBinaryThresh = 0.28f;
+    inline constexpr float kDetBoxScoreThresh = 0.50f;
+    inline constexpr float kDetUnclipRatio = 1.65f;
     inline constexpr float kDetMinBoxSidePx = 3.0f;
     inline constexpr int kDetMaxCandidates = 1000;
 
@@ -49,6 +49,8 @@ namespace DeepOcrConstants {
     inline constexpr float kClsRotate180Thresh = 0.90f;
 
     inline constexpr int kRecImgHeight = 48;
+    inline constexpr int kRecShortBucketWidth = 320;
+    inline constexpr int kRecLongBucketWidth = 960;
     inline constexpr int kRecMinWidth = 32;
     inline constexpr int kRecMaxWidth = 3200;
     inline constexpr float kRecMinLineConfidence = 0.42f;
@@ -175,6 +177,13 @@ public:
         size_t byteSize,
         std::vector<std::string>& outKeys);
 
+    /// 在内存中将 ONNX ModelProto 首个 Graph Input 张量形状固化为 [N, C, H, W]，消除 OpenCV DNN 对符号动态维度的 Reshape 折叠失配
+    static bool patchOnnxGraphInputShape(
+        const uint8_t* data,
+        size_t byteSize,
+        const std::array<int64_t, 4>& fixedDims,
+        std::vector<uint8_t>& outPatchedBytes);
+
 private:
     DeepOcrEngine() = default;
     ~DeepOcrEngine() { shutdown(); }
@@ -189,7 +198,8 @@ private:
     std::filesystem::path m_loadedModelDir;
     cv::dnn::Net m_detNet;
     cv::dnn::Net m_clsNet;
-    cv::dnn::Net m_recNet;
+    cv::dnn::Net m_recNetShort;
+    cv::dnn::Net m_recNetLong;
     std::vector<std::string> m_dictKeys;
 
     mutable std::mutex m_pathMutex;

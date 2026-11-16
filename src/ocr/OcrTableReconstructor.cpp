@@ -54,7 +54,40 @@ std::string sanitizeTsvCell(std::string_view sv) {
             out.push_back(ch);
         }
     }
-    return trimAsciiWhitespace(out);
+    out = trimAsciiWhitespace(out);
+    // 剥离表格横分割线紧贴产生的尾随孤立噪点（如 "Pdf ," -> "Pdf"）
+    if (out.size() >= 3 && out[out.size() - 2] == ' ' &&
+        (out.back() == ',' || out.back() == '.' || out.back() == '|' || out.back() == '_')) {
+        out.resize(out.size() - 2);
+        out = trimAsciiWhitespace(out);
+    }
+    return out;
+}
+
+bool isPureSeparatorNoiseToken(std::string_view sv) noexcept {
+    if (sv.empty()) return true;
+    bool hasSubstantive = false;
+    for (size_t i = 0; i < sv.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(sv[i]);
+        if (c == ' ' || c == '\t' || c == ',' || c == '.' || c == '-' ||
+            c == '_' || c == '|' || c == ':' || c == ';' || c == '\'' || c == '`') {
+            continue;
+        }
+        // UTF-8 常见分隔圆点/顿号 "·" (\xC2\xB7) 或 "、" (\xE3\x80\x81)
+        if (c == 0xC2 && i + 1 < sv.size() && static_cast<unsigned char>(sv[i + 1]) == 0xB7) {
+            ++i;
+            continue;
+        }
+        if (c == 0xE3 && i + 2 < sv.size() &&
+            static_cast<unsigned char>(sv[i + 1]) == 0x80 &&
+            (static_cast<unsigned char>(sv[i + 2]) == 0x81 || static_cast<unsigned char>(sv[i + 2]) == 0x82)) {
+            i += 2;
+            continue;
+        }
+        hasSubstantive = true;
+        break;
+    }
+    return !hasSubstantive;
 }
 
 std::vector<CellToken> expandBlocksToCellTokens(const std::vector<OcrResult>& blocks) {
@@ -65,8 +98,8 @@ std::vector<CellToken> expandBlocksToCellTokens(const std::vector<OcrResult>& bl
         if (blk.text.empty()) continue;
 
         if (blk.text.find('\t') == std::string::npos) {
-            std::string cleaned = trimAsciiWhitespace(blk.text);
-            if (!cleaned.empty()) {
+            std::string cleaned = sanitizeTsvCell(blk.text);
+            if (!cleaned.empty() && !isPureSeparatorNoiseToken(cleaned)) {
                 cv::Rect safeBox = blk.box;
                 if (safeBox.width <= 0) safeBox.width = 1;
                 if (safeBox.height <= 0) safeBox.height = 16;
@@ -86,8 +119,8 @@ std::vector<CellToken> expandBlocksToCellTokens(const std::vector<OcrResult>& bl
         bool hasRect = false;
 
         auto flushSegment = [&]() {
-            std::string cleaned = trimAsciiWhitespace(curSeg);
-            if (!cleaned.empty()) {
+            std::string cleaned = sanitizeTsvCell(curSeg);
+            if (!cleaned.empty() && !isPureSeparatorNoiseToken(cleaned)) {
                 cv::Rect segBox = hasRect
                     ? cv::Rect(minX, minY, (std::max)(1, maxX - minX), (std::max)(1, maxY - minY))
                     : blk.box;
@@ -546,9 +579,16 @@ OcrTableGrid OcrTableReconstructor::reconstruct(const std::vector<OcrResult>& bl
                 std::abs(leftCol.avgRight() - rightCol.avgRight())
             });
 
+            const size_t minColCount = (std::min)(leftCol.count, rightCol.count);
+            const size_t maxColCount = (std::max)(leftCol.count, rightCol.count);
+            const bool sparseOutlierPair =
+                (minColCount <= (std::max)(size_t{1}, rows.size() / 5)) &&
+                (maxColCount >= 3);
+
             const bool geometricallyRelated =
-                (overlap > -medH * 0.45f) ||
-                (minAnchorDiff <= (std::max)(24.0f, medH * 2.15f));
+                (overlap > -medH * (sparseOutlierPair ? 2.50f : 0.45f)) ||
+                (minAnchorDiff <= (std::max)(sparseOutlierPair ? 52.0f : 24.0f,
+                                             medH * (sparseOutlierPair ? 4.60f : 2.15f)));
             if (!geometricallyRelated) continue;
 
             size_t cooccurRows = 0;

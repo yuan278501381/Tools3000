@@ -26,6 +26,7 @@ inline bool syncWebViewDpi(ICoreWebView2Controller* controller, HWND hwnd) noexc
     RECT bounds{};
     GetClientRect(hwnd, &bounds);
     controller->put_Bounds(bounds);
+    controller->NotifyParentWindowPositionChanged();
     return true;
 }
 

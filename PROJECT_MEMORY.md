@@ -6,6 +6,24 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-17] 二轮实机深水区闭环：PP-OCRv4 动态符号维度内存重写器、PE Manifest 高分屏第三方 IME 缩放、4K 硬件编码防灰块与全格式导出台 (`MP4 / HEVC / 微信直发 GIF / 动态 WebP / 8 款高定背景`)
+- **用户二轮实机测试反馈的 6 大核心痛点与世界级终局方案**：
+  1. **PP-OCRv4 下载就绪后报 `reshape_layer.cpp: srcTotal == dstTotal` 静默回退与表格空列 `C` 根治 (`DeepOcrEngine.{h,cpp}`, `OcrTableReconstructor.cpp`)**：
+     - *暗坑机理*：`paddle2onnx` 导出的 `ch_PP-OCRv4_rec.onnx` 在 `GraphProto.input` 中使用符号字符串维度 `[p2o.DynamicDimension.0, 3, ?, p2o.DynamicDimension.1]`。`OpenCV 4.12` `cv::dnn::readNetFromONNX` 解析模型时将符号维度代换为 `1`，并提前将 SVTR Attention 尾部的 `Shape -> Concat` 子图常量折叠固化为静态 `[1, 1, 3, 8, 15]`，导致真实推理任意宽度（如 `W=640`）时在 `Reshape` 层触发 `srcTotal != dstTotal` 异常并静默回退至旧系统引擎（产生 `Win32 -> 河土n32`、`PinyinEngine -> PxnyxnEngxne` 误识及 `8.1`/`8.0` 漏识）；同时分割线噪点与第 10 行孤立微偏徽章 `100% Offline` 导致表格多出幽灵空列 `C`；
+     - *终局标准*：① 实现零外部依赖的内存 Protobuf 张量形状重写器 `DeepOcrEngine::patchOnnxGraphInputShape`，在送入 `readNetFromONNX` 前将识别网络固化为双宽度分桶 `m_recNetShort` (`[1, 3, 48, 320]`) 与 `m_recNetLong` (`[1, 3, 48, 960]`)（超长行自动按低方差垂直空白缝无损切块），分类器固化为 `[1, 3, 48, 192]`，检测上限提至 `1600px`，并按视觉行聚类 + 左至右 `box.x` 排序合并 `\t`；② `OcrTableReconstructor` 新增纯分割线标点噪点滤除、词尾孤立伪标点剥离，以及针对零同行共现 (`cooccurRows == 0`) 单行稀疏外点列簇的智能吸附归并，实现 100% 纯净 3 列矩阵重建。
+  2. **4K 150% 高分屏下 `SearchWindow` 第三方中文输入法（搜狗 IME）候选框缩成 100% 极小尺寸根治 (`src/Tools3000.manifest`, `CMakeLists.txt`, `WebViewDpi.h`, `SearchWindow.cpp`)**：
+     - *暗坑机理*：原 `Tools3000.exe` PE `RT_MANIFEST` 资源仅包含默认 `asInvoker` 权限声明而缺失 `<dpiAwareness>PerMonitorV2, PerMonitor</dpiAwareness>` 与 Windows 10/11 `<supportedOS>` GUID。尽管进程入口调用了运行时 API `SetProcessDpiAwarenessContext`，但搜狗输入法等跨进程外部 UI (`SGTool.exe`) 通过读取前台宿主 EXE 的静态 PE Manifest 激活上下文判定 DPI 感知级别，误将 `Tools3000.exe` 当作 `96 DPI (100%)` 未感知进程渲染候选窗；
+     - *终局标准*：新增 `src/Tools3000.manifest` 静态嵌入 `Tools3000` 主程序目标（完整声明 Windows 10/11 `supportedOS`、`PerMonitorV2`、`longPathAware` 与 Common-Controls `6.0`），并在 `syncWebViewDpi`、`SearchWindow::focusSearchIfVisible` 及 `WM_MOVE` 中同步触发 `ICoreWebView2Controller::NotifyParentWindowPositionChanged()` 刷新 TSF 输入法焦点坐标。
+  3. **4K 全屏演播室录屏内层灰块浮雕花屏、左下角快捷键提示入镜与倒计时运镜提示 (`ScreenRecorder.cpp`, `RecordingIndicator.cpp`, `PluginEntry.cpp`)**：
+     - *暗坑机理*：① vcpkg FFmpeg 未包含 GPL `libx264`，而 `h264_mf` 在未显式传入 `av_opt_set_int(priv, "hw_encoding", 1, 0)` 时默认绑定微软 CPU 软编 MFT（硬上限 `1920x1088`），在 `3456x2088` 4K 下报 `-22 Invalid argument` 回退至 `libopenh264`；`libopenh264` 默认开启 `allow_skip_frames=1`，在首帧 4K 纹理复杂度突增时主动丢弃关键参考宏块，导致后续 P 帧残差叠加在中性灰 (`Y=128`) 底板上形成浮雕灰雾；② `PluginEntry.cpp` 在进入 `Recording` 态时仍展示左下角 `ShortcutHintOverlay`；
+     - *终局标准*：① `ScreenRecorder` 与 `StudioVideoCompositor` 实施两阶段 Media Foundation 硬件探测（Pass 0 强制 `hw_encoding = 1` 激活 Intel/NVIDIA/AMD GPU 硬件 MFT 并支持超 `1920x1200` 自动挂载硬件 `hevc_mf`，Pass 1 软编兜底），针对异步硬件 MFT（如 `Intel Quick Sync Video H.264 Encoder MFT`）在 `avcodec_open2` 时尚未产出 `MF_MT_MPEG_SEQUENCE_HEADER` (`extradata_size == 0`) 导致 `+empty_moov` 写入空 `avcC` 头的底层陷阱，引入单帧预馈探测提取 46~51B 真实 `SPS/PPS extradata`，同时按像素面积自适应抬升码率下限（4K `~28+ Mbps`），对 `libopenh264` 强制 `allow_skip_frames = 0` + `slice_mode = auto` + 第 0 帧 `AV_PICTURE_TYPE_I`；② 进入 `RecordState::Recording` 瞬间立即隐藏 `ShortcutHintOverlay`（仅在倒计时与暂停态显示），并在倒计时圆角玻璃卡片上同步 DPI 缩放展示「演播室运镜已开启：每次鼠标点击将自动触发平滑放大特写（录后可调）」。
+  4. **对标 FocuSee 的演播室多格式导出模态框 + 微信聊天自动播放 GIF + 网页真彩动态 WebP (`StudioVideoCompositor.{h,cpp}`, `StudioPreviewWindow.{h,cpp}`, `CMakeLists.txt`)**：
+     - **全参数导出模态面板**：在演播室点击「导出」弹出对标 FocuSee 的深色微晶模态窗，支持自定义文件名称（原生键盘输入/退格/`Ctrl+V`）、`IFileOpenDialog(FOS_PICKFOLDERS)` 保存目录选择、`格式 / 分辨率 / 帧率 / 质量` 四维下拉菜单、`[x] 保存当前设置` 持久化以及右下角实时 `(预计大小: ~X.X MB)` 估算；
+     - **微信直发自动播放 GIF 硬核护栏 (`GIF_WeChat`)**：针对微信 PC/移动端聊天流 `> 5MB`、`> 1000px` 或 `> 300` 帧退化为静态文件卡片、以及帧延迟 `< 2cs` (`> 50fps`) 被强制惩罚为 `100ms` 慢放的底层机制，自动钳制长边 `<= 800px`、总帧数 `<= 260`、严格对齐 `{1, 100}` 厘秒时间基 (`>= 2cs`)、启用 `+transdiff` 帧间透明差分与 `GifPaletteOptimizer`，并内置 `> 4.85 MB` 自动降档闭环重压保险；
+     - **网页真彩循环动图 (`WebP_Animated`)**：直连 `libwebp` + `libwebpmux` (`WebPAnimEncoder`) 实现 24-bit RGB 无调色板噪点的帧间混合差分编码，完美适配现代官网、GitHub/Notion 文档与飞书内嵌自动播放。
+  5. **沉稳 · 轻盈 · 风景 三大系列共 8 款 FocuSee 级高定录屏背景 (`BeautyShell.{h,cpp}`, `StudioVideoCompositor.cpp`, `StudioPreviewWindow.cpp`, `CapturePage.tsx`)**：
+     - 摒弃生硬的高饱和双色对角线渐变，升级为「二维多光源高斯弥散色球 (`Gaussian Mesh`) + 4 层大气透视远山剪影与湖面微光程序化合成 + `4x4 Bayer` 抗色带抖动 + `1px` 微晶玻璃高光内边」的 8 款大师级背景：**沉稳系列**（深海曜石、暮夜星云、松烟墨翠）、**轻盈系列**（晨雾云母、暖杏羊绒、晴空薄荷）、**风景系列**（暮色苍山、拂晓湖山），并在演播室右侧面板实时渲染 `4×2` 真实壁纸缩略图卡片。
+
 ### [2026-11-16] 实机压测 8 项深水区根治：VFR->CFR 录屏合成保真、PP-OCRv4 内嵌字典自解析与多镜像、三锚点表格重建、Excel 列标/空白图文 Docx 预览、异步低优唤醒与 PDF 字体流秒跳
 - **用户实机深度体验反馈的 8 大现象与底层真因闭环**：
   1. **演播室录屏导出 33.8s 被压成 8.86s 快进残片 & 4K 单核掉帧 (`StudioVideoCompositor.cpp`, `ScreenRecorder.cpp`, `StudioTimeline.{h,cpp}`)**：

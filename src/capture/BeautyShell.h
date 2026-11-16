@@ -16,13 +16,16 @@
 
 namespace tools3000::capture {
 
-/// 美化外壳背景预设类型
+/// 美化外壳与演播室背景预设类型（涵盖 沉稳 / 轻盈 / 风景 三大高定系列）
 enum class BeautyBackgroundType {
-    StudioSlate      = 0, // 极光星云 (Aurora Nebula: Indigo #6366F1 -> Violet #8B5CF6 -> Rose #EC4899)
-    PaperChalk       = 1, // 晨曦落日 (Sunset Glow: Coral #FB7185 -> Amber #F97316 -> Gold #FACC15)
-    SilkMist         = 2, // 碧海极光 (Oceanic Teal: Sky #0EA5E9 -> Teal #14B8A6 -> Emerald #10B981)
-    MidnightGraphite = 3, // 曜石黑晶 (Obsidian Pro: Slate #334155 -> Obsidian #1E293B -> Carbon #090D16)
-    PureMinimal      = 4, // 钛金画廊 (Titanium Studio: Alabaster #F8FAFC -> Silver #E2E8F0 -> Titanium #CBD5E1)
+    StudioSlate      = 0, // [沉稳] 暮夜星云 (Velvet Dusk: 深靛丝绒弥散网格)
+    PaperChalk       = 1, // [轻盈] 暖杏羊绒 (Warm Cashmere: 北欧米杏与蜜桃柔光)
+    SilkMist         = 2, // [沉稳] 松烟墨翠 (Pine & Emerald: 深林冷杉暗调微光)
+    MidnightGraphite = 3, // [沉稳] 深海曜石 (Nordic Obsidian: 深海蓝炭黑钛微光)
+    PureMinimal      = 4, // [轻盈] 晨雾云母 (Airy Cloud: 珍珠白与冰蓝樱粉丝绸网格)
+    AiryGlacier      = 5, // [轻盈] 晴空薄荷 (Glacier Mint: 通透冰川青白弥散柔光)
+    DuskMountains    = 6, // [风景] 暮色苍山 (Dusk Peaks: 落日晚霞与四层远山剪影柔雾)
+    MistyLakeDawn    = 7, // [风景] 拂晓湖山 (Misty Lake: 破晓天青群山与静谧湖面微光)
     COUNT,
     // 兼容历史命名别名
     AuroraPurple = StudioSlate,

@@ -383,3 +383,146 @@ TEST(StudioRecorderTest, SparseVfrRecordingPreservesFullDurationWithoutFastForwa
 
     std::filesystem::remove_all(tmpDir, ec);
 }
+
+TEST(StudioRecorderTest, AllEightArtisticBackdropThemesAndThumbnailsRenderDistinctHighEndVisuals) {
+    using namespace tools3000::capture;
+
+    std::vector<cv::Scalar> meanColors;
+    for (int idx = 0; idx < static_cast<int>(BeautyBackgroundType::COUNT); ++idx) {
+        const auto theme = static_cast<BeautyBackgroundType>(idx);
+        cv::Mat bg;
+        StudioVideoCompositor::renderArtisticBackdropBgr(bg, 320, 180, theme);
+        ASSERT_EQ(bg.cols, 320);
+        ASSERT_EQ(bg.rows, 180);
+        ASSERT_EQ(bg.type(), CV_8UC3);
+
+        cv::Scalar meanVal, stdVal;
+        cv::meanStdDev(bg, meanVal, stdVal);
+        const double totalStd = stdVal[0] + stdVal[1] + stdVal[2];
+        // 每款高定背景均包含多层柔光网格或远山风景渐变，绝非死板纯色块
+        EXPECT_GT(totalStd, 4.5) << "Theme index " << idx << " lacks tonal depth";
+        meanColors.push_back(meanVal);
+
+        cv::Mat thumb = StudioVideoCompositor::renderThemeThumbnailBgra(theme, 96, 54);
+        ASSERT_EQ(thumb.cols, 96);
+        ASSERT_EQ(thumb.rows, 54);
+        ASSERT_EQ(thumb.type(), CV_8UC4);
+    }
+
+    // 校验风景系列（暮色苍山 DuskMountains=6 与 拂晓湖山 MistyLakeDawn=7）天空与山峦/湖面具有显著层次差异
+    for (BeautyBackgroundType landscapeTheme : {BeautyBackgroundType::DuskMountains, BeautyBackgroundType::MistyLakeDawn}) {
+        cv::Mat scene;
+        StudioVideoCompositor::renderArtisticBackdropBgr(scene, 320, 200, landscapeTheme);
+        const cv::Scalar skyMean = cv::mean(scene(cv::Rect(0, 0, 320, 60)));
+        const cv::Scalar ridgeMean = cv::mean(scene(cv::Rect(0, 120, 320, 80)));
+        const double l1Diff = std::abs(skyMean[0] - ridgeMean[0]) +
+                              std::abs(skyMean[1] - ridgeMean[1]) +
+                              std::abs(skyMean[2] - ridgeMean[2]);
+        EXPECT_GT(l1Diff, 35.0);
+    }
+
+    // 沉稳系列首款与轻盈系列首款亮度均值应拉开明显明暗对比
+    const double calmLuma = meanColors[static_cast<int>(BeautyBackgroundType::MidnightGraphite)][0] +
+                            meanColors[static_cast<int>(BeautyBackgroundType::MidnightGraphite)][1] +
+                            meanColors[static_cast<int>(BeautyBackgroundType::MidnightGraphite)][2];
+    const double airyLuma = meanColors[static_cast<int>(BeautyBackgroundType::PureMinimal)][0] +
+                            meanColors[static_cast<int>(BeautyBackgroundType::PureMinimal)][1] +
+                            meanColors[static_cast<int>(BeautyBackgroundType::PureMinimal)][2];
+    EXPECT_LT(calmLuma, 160.0);
+    EXPECT_GT(airyLuma, 620.0);
+}
+
+TEST(StudioRecorderTest, MultiFormatExportWeChatAutoPlayGifAnimatedWebPAndSizeEstimator) {
+    using namespace tools3000::capture;
+
+    EXPECT_STREQ(StudioVideoCompositor::extensionForExportFormat(StudioExportFormat::MP4_H264), ".mp4");
+    EXPECT_STREQ(StudioVideoCompositor::extensionForExportFormat(StudioExportFormat::MP4_HEVC), ".mp4");
+    EXPECT_STREQ(StudioVideoCompositor::extensionForExportFormat(StudioExportFormat::GIF_WeChat), ".gif");
+    EXPECT_STREQ(StudioVideoCompositor::extensionForExportFormat(StudioExportFormat::WebP_Animated), ".webp");
+    EXPECT_STREQ(StudioVideoCompositor::extensionForExportFormat(StudioExportFormat::WebM_VP9), ".webm");
+
+    // 微信自动播放 GIF 即使在 4K 原画输入 + 1080P 选项下，也必须自动钳制长边 <= 800px 偶数尺寸
+    StudioExportOptions wxGifOpts;
+    wxGifOpts.format = StudioExportFormat::GIF_WeChat;
+    wxGifOpts.resolution = StudioExportResolution::Res1080P;
+    wxGifOpts.fps = 15;
+    wxGifOpts.quality = StudioExportQuality::Recommended;
+    const cv::Size wxDim = StudioVideoCompositor::resolveExportDimensions(3456, 2088, wxGifOpts);
+    EXPECT_LE(wxDim.width, 800);
+    EXPECT_LE(wxDim.height, 800);
+    EXPECT_EQ(wxDim.width % 2, 0);
+    EXPECT_EQ(wxDim.height % 2, 0);
+
+    const uint64_t estWxBytes = StudioVideoCompositor::estimateExportSizeBytes(3456, 2088, 12.0, wxGifOpts);
+    EXPECT_GT(estWxBytes, 50'000u);
+    EXPECT_LE(estWxBytes, 4'850'000u);
+
+    const auto tmpDir = std::filesystem::temp_directory_path() / L"tools3000_studio_multifmt_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+
+    const std::string rawUtf8 = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"src_clip.mp4").wstring());
+    const std::wstring gifPathW = (tmpDir / L"wechat_autoplay.gif").wstring();
+    const std::wstring webpPathW = (tmpDir / L"web_anim.webp").wstring();
+    const std::string gifUtf8 = tools3000::core::WinUtils::wstringToUtf8(gifPathW);
+    const std::string webpUtf8 = tools3000::core::WinUtils::wstringToUtf8(webpPathW);
+
+    ASSERT_TRUE(writeSyntheticCleanMp4ForStudioTest(rawUtf8, 960, 540, 24, 24));
+
+    StudioTimelineData tl;
+    tl.sourceWidth = 960;
+    tl.sourceHeight = 540;
+    tl.fps = 24;
+    tl.durationMs = 1000;
+    tl.clickEvents.push_back({250, 130.0f, 90.0f, false});
+    tl.zoomSegments = StudioTimelineAnalyzer::buildAutoZoomSegments(tl, 1.75f);
+
+    StudioRenderConfig cfg;
+    cfg.autoZoomEnabled = true;
+    cfg.defaultZoomFactor = 1.75f;
+    cfg.smoothCursorEnabled = true;
+    cfg.autoFrameEnabled = true;
+    cfg.backgroundTheme = BeautyBackgroundType::DuskMountains;
+    cfg.exportSrtSidecar = false;
+
+    // 1. 导出微信自动播放 GIF：验证 GIF89a 文件头、逻辑屏幕尺寸 <= 800px、体积严格 <= 4.85 MB
+    ASSERT_TRUE(StudioVideoCompositor::exportStudioMedia(rawUtf8, gifUtf8, tl, cfg, wxGifOpts));
+    ASSERT_TRUE(std::filesystem::exists(gifPathW, ec));
+    const auto gifBytes = std::filesystem::file_size(gifPathW, ec);
+    EXPECT_GT(gifBytes, 512u);
+    EXPECT_LE(gifBytes, 4'850'000u);
+    {
+        std::ifstream ifs(gifPathW, std::ios::binary);
+        uint8_t hdr[10]{};
+        ifs.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
+        ASSERT_EQ(ifs.gcount(), 10);
+        EXPECT_EQ(std::string(reinterpret_cast<const char*>(hdr), 6), "GIF89a");
+        const uint16_t logicalW = static_cast<uint16_t>(hdr[6] | (hdr[7] << 8));
+        const uint16_t logicalH = static_cast<uint16_t>(hdr[8] | (hdr[9] << 8));
+        EXPECT_LE(logicalW, 800u);
+        EXPECT_LE(logicalH, 800u);
+    }
+
+    // 2. 导出网页真彩动态 WebP：验证 RIFF....WEBPVP8X / ANIM 容器结构
+    StudioExportOptions webpOpts;
+    webpOpts.format = StudioExportFormat::WebP_Animated;
+    webpOpts.resolution = StudioExportResolution::Res720P;
+    webpOpts.fps = 15;
+    webpOpts.quality = StudioExportQuality::Recommended;
+    ASSERT_TRUE(StudioVideoCompositor::exportStudioMedia(rawUtf8, webpUtf8, tl, cfg, webpOpts));
+    ASSERT_TRUE(std::filesystem::exists(webpPathW, ec));
+    const auto webpBytes = std::filesystem::file_size(webpPathW, ec);
+    EXPECT_GT(webpBytes, 256u);
+    {
+        std::ifstream ifs(webpPathW, std::ios::binary);
+        std::vector<char> head(64, 0);
+        ifs.read(head.data(), static_cast<std::streamsize>(head.size()));
+        const std::string headStr(head.data(), static_cast<size_t>(ifs.gcount()));
+        EXPECT_EQ(headStr.substr(0, 4), "RIFF");
+        EXPECT_EQ(headStr.substr(8, 4), "WEBP");
+        EXPECT_NE(headStr.find("ANIM"), std::string::npos);
+    }
+
+    std::filesystem::remove_all(tmpDir, ec);
+}

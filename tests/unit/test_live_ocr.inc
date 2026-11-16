@@ -559,3 +559,131 @@ TEST(LiveOcrAndTableTest, ExtractEmbeddedCharacterDictFromOnnxMetadataProps) {
     EXPECT_EQ(extracted[4], "中");
     EXPECT_EQ(extracted[5], "文");
 }
+
+TEST(DeepOcrEngineTest, PatchOnnxGraphInputShapeFixesDynamicSymbolicDimensions) {
+    using namespace tools3000::ocr;
+
+    auto appendVarint = [](std::vector<uint8_t>& buf, uint64_t val) {
+        while (val >= 0x80u) {
+            buf.push_back(static_cast<uint8_t>((val & 0x7Fu) | 0x80u));
+            val >>= 7u;
+        }
+        buf.push_back(static_cast<uint8_t>(val));
+    };
+    auto appendLenDelimited = [&](std::vector<uint8_t>& dst, uint32_t fieldNum, const std::vector<uint8_t>& payload) {
+        appendVarint(dst, (static_cast<uint64_t>(fieldNum) << 3u) | 2u);
+        appendVarint(dst, payload.size());
+        dst.insert(dst.end(), payload.begin(), payload.end());
+    };
+    auto makeSymDim = [&](const std::string& param) {
+        std::vector<uint8_t> d;
+        appendVarint(d, (2u << 3u) | 2u); // dim_param (field 2, string)
+        appendVarint(d, param.size());
+        d.insert(d.end(), param.begin(), param.end());
+        return d;
+    };
+    auto makeValDim = [&](uint64_t v) {
+        std::vector<uint8_t> d;
+        appendVarint(d, (1u << 3u) | 0u); // dim_value (field 1, int64)
+        appendVarint(d, v);
+        return d;
+    };
+
+    // 构造模拟 paddle2onnx 导出的动态符号维度 [p2o.DynamicDimension.0, 3, ?, p2o.DynamicDimension.1]
+    std::vector<uint8_t> shapeProto;
+    appendLenDelimited(shapeProto, 1, makeSymDim("p2o.DynamicDimension.0"));
+    appendLenDelimited(shapeProto, 1, makeValDim(3));
+    appendLenDelimited(shapeProto, 1, makeSymDim("?"));
+    appendLenDelimited(shapeProto, 1, makeSymDim("p2o.DynamicDimension.1"));
+
+    std::vector<uint8_t> tensorTypeProto;
+    tensorTypeProto.push_back(0x08); // elem_type = FLOAT (1)
+    tensorTypeProto.push_back(0x01);
+    appendLenDelimited(tensorTypeProto, 2, shapeProto); // field 2: shape
+
+    std::vector<uint8_t> typeProto;
+    appendLenDelimited(typeProto, 1, tensorTypeProto); // field 1: tensor_type
+
+    std::vector<uint8_t> valueInfoProto;
+    const std::vector<uint8_t> inputName = {'x'};
+    appendLenDelimited(valueInfoProto, 1, inputName);   // field 1: name = "x"
+    appendLenDelimited(valueInfoProto, 2, typeProto);   // field 2: type
+
+    std::vector<uint8_t> graphProto;
+    appendLenDelimited(graphProto, 11, valueInfoProto); // field 11: input
+
+    std::vector<uint8_t> modelProto;
+    modelProto.push_back(0x08); // ir_version = 8
+    modelProto.push_back(0x08);
+    appendLenDelimited(modelProto, 7, graphProto);      // field 7: graph
+
+    std::vector<uint8_t> patched;
+    ASSERT_TRUE(DeepOcrEngine::patchOnnxGraphInputShape(
+        modelProto.data(), modelProto.size(), {1, 3, 48, 320}, patched));
+    ASSERT_FALSE(patched.empty());
+
+    // 符号字符串 "p2o.DynamicDimension" 必须被彻底剥离，替换为定长 varint 维度 [1, 3, 48, 320]
+    const std::string patchedRaw(reinterpret_cast<const char*>(patched.data()), patched.size());
+    EXPECT_EQ(patchedRaw.find("p2o.DynamicDimension"), std::string::npos);
+    // 验证 [48] -> 0x08 0x30 与 [320] -> 0x08 0xC0 0x02 均已写入新张量形状
+    const std::string dim48("\x08\x30", 2);
+    const std::string dim320("\x08\xC0\x02", 3);
+    EXPECT_NE(patchedRaw.find(dim48), std::string::npos);
+    EXPECT_NE(patchedRaw.find(dim320), std::string::npos);
+
+    // 若当前机器已安装完整 PP-OCRv4 模型，执行真实 OpenCV DNN 固定分桶前向推理烟雾断言
+    if (DeepOcrEngine::instance().isModelInstalled()) {
+        cv::Mat synth(96, 520, CV_8UC3, cv::Scalar(252, 253, 255));
+        cv::putText(synth, "Win32 PinyinEngine 8.1", cv::Point(24, 62),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.05, cv::Scalar(28, 32, 38), 2, cv::LINE_AA);
+        const auto res = DeepOcrEngine::instance().extractText(synth);
+        ASSERT_FALSE(res.empty());
+        std::string joined;
+        for (const auto& r : res) joined += r.text + " ";
+        EXPECT_NE(joined.find("Win32"), std::string::npos);
+        EXPECT_NE(joined.find("8.1"), std::string::npos);
+    }
+}
+
+TEST(OcrTableReconstructorTest, FiltersSeparatorNoiseRowsAndCoalescesZeroCooccurrenceOutlierColumn) {
+    using namespace tools3000::ocr;
+
+    auto makeTok = [](const char* text, int x, int y, int w, int h = 18) {
+        OcrResult r;
+        r.text = text;
+        r.confidence = 0.96f;
+        r.box = cv::Rect(x, y, w, h);
+        return r;
+    };
+
+    // 复现 12 行表格场景：
+    // - 第 8 行与底行混入水平分割线被误检出的孤立标点噪点 "," 与 "."
+    // - 第 6 行词尾带伪标点 "Windows.Media.Ocr & Pdf ,"
+    // - 其余 11 行中间胶囊位于 x=290，唯独第 6 行 "100% Offline" 胶囊偏移至 x=336（与 x=290 列零同行共现）
+    std::vector<OcrResult> blocks = {
+        makeTok("C++20", 40, 30, 58), makeTok("MSVC v145", 290, 30, 96), makeTok("原生微内核主程序", 640, 30, 260),
+        makeTok("Rust Kernel", 40, 68, 92), makeTok("Edition 2021", 290, 68, 102), makeTok("高速文档正文检索内核", 620, 68, 280),
+        makeTok("Direct2D", 40, 106, 84), makeTok("GPU Hardware", 290, 106, 108), makeTok("显卡硬件加速绘制", 660, 106, 240),
+        makeTok("Win32 LL Hooks", 40, 144, 120), makeTok("Native API", 290, 144, 88), makeTok("全局热键与手势监听", 650, 144, 250),
+        makeTok("PinyinEngine", 40, 182, 106), makeTok("Built-in", 290, 182, 72), makeTok("中文全拼与首字母查找", 630, 182, 270),
+        makeTok(",", 292, 203, 6, 6), // 分割线孤立噪点行，必须被彻底剔除
+        makeTok("Windows.Media.Ocr & Pdf ,", 40, 224, 198),
+        makeTok("100% Offline", 336, 224, 98), // 零同行共现的单行轻微右偏胶囊，必须归并至第 2 列而非新建空列 C
+        makeTok("纯本地离线文字识别与 PDF 渲染", 610, 224, 290),
+        makeTok("UIAutomation", 40, 262, 112), makeTok("System API", 290, 262, 88), makeTok("文件对话框目录跳转", 650, 262, 250),
+        makeTok("WebView2", 40, 300, 82), makeTok("Evergreen", 290, 300, 84), makeTok("设置中心与搜索面板容器", 630, 300, 270),
+        makeTok("Vite", 40, 338, 42), makeTok("8.0", 290, 338, 36), makeTok("前端按需分包构建引擎", 640, 338, 260),
+        makeTok("Lucide Icons", 40, 376, 98), makeTok("1.21", 290, 376, 40), makeTok("高清矢量图标体系", 668, 376, 232),
+        makeTok(".", 42, 402, 5, 5), makeTok(".", 292, 402, 5, 5), // 底部边框孤立标点噪点行
+    };
+
+    const OcrTableGrid grid = OcrTableReconstructor::reconstruct(blocks);
+    ASSERT_TRUE(grid.isTable);
+    EXPECT_EQ(grid.colCount, 3u); // 严禁出现第 4 幽灵列（C 空列）
+    EXPECT_EQ(grid.rowCount, 10u); // 2 行纯标点分割线噪点已彻底滤除
+
+    ASSERT_EQ(grid.cells[5].size(), 3u);
+    EXPECT_EQ(grid.cells[5][0], "Windows.Media.Ocr & Pdf"); // 尾部伪标点 ',' 已剥离
+    EXPECT_EQ(grid.cells[5][1], "100% Offline");            // 精准落入第 2 列 B
+    EXPECT_EQ(grid.cells[5][2], "纯本地离线文字识别与 PDF 渲染");
+}

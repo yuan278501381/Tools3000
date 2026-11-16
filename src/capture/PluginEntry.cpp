@@ -126,6 +126,9 @@ BeautyBackgroundType studioThemeFromConfig(const std::string& raw) {
     if (raw == "emerald_sea" || raw == "silk_mist") return BeautyBackgroundType::SilkMist;
     if (raw == "obsidian_dark" || raw == "midnight_graphite") return BeautyBackgroundType::MidnightGraphite;
     if (raw == "minimal_light" || raw == "pure_minimal") return BeautyBackgroundType::PureMinimal;
+    if (raw == "airy_glacier") return BeautyBackgroundType::AiryGlacier;
+    if (raw == "dusk_mountains") return BeautyBackgroundType::DuskMountains;
+    if (raw == "misty_lake_dawn") return BeautyBackgroundType::MistyLakeDawn;
     return BeautyBackgroundType::StudioSlate;
 }
 
@@ -238,12 +241,20 @@ void configureRecorderStateCallback() {
             else {
                 indicator.setPaused(state == RecordState::Paused);
                 indicator.update(stats.durationSec, stats.frameCount);
-                ShortcutHintOverlay::instance().show(
-                    state == RecordState::Paused
-                        ? ShortcutHintContext::RecordingPaused
-                        : ShortcutHintContext::Recording,
-                    {LONG_MIN, LONG_MIN},
-                    indicator.avoidanceRects());
+                if (state == RecordState::Paused) {
+                    ShortcutHintOverlay::instance().show(
+                        ShortcutHintContext::RecordingPaused,
+                        {LONG_MIN, LONG_MIN},
+                        indicator.avoidanceRects());
+                } else if (state == RecordState::Countdown) {
+                    ShortcutHintOverlay::instance().show(
+                        ShortcutHintContext::Recording,
+                        {LONG_MIN, LONG_MIN},
+                        indicator.avoidanceRects());
+                } else {
+                    // 正式录制期间立即收起左下角快捷键提示浮层，严防录进全屏底片
+                    ShortcutHintOverlay::instance().hide();
+                }
             }
         });
     });
@@ -282,7 +293,7 @@ void stopRecordingWithFeedback() {
                                 RecordingIndicator::instance().showCompleted(savedPath, savedDur);
                                 tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                                     studioExported
-                                        ? (zh ? L"演播室美化成片已导出并保存" : L"Studio MP4 rendered and saved")
+                                        ? (zh ? L"演播室成片已导出并保存" : L"Studio export completed and saved")
                                         : (zh ? L"录屏已保存" : L"Recording saved")});
                             });
                         return;
