@@ -1210,6 +1210,7 @@ bool OcrEngine::initialize() {
 
 void OcrEngine::shutdown() {
     DeepOcrEngine::instance().shutdown();
+    winrt::clear_factory_cache();
     LOG_INFO("OCR 引擎已关闭");
 }
 

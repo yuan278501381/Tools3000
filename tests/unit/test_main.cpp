@@ -228,5 +228,7 @@ int main(int argc, char** argv) {
     _wputenv(L"TOOLS3000_TEST_MODE=1");
 
     ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    const int ret = RUN_ALL_TESTS();
+    tools3000::ocr::OcrEngine::instance().shutdown();
+    return ret;
 }

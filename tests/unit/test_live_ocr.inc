@@ -394,12 +394,13 @@ TEST(PinLiveTextInteractionTest, ZeroThresholdIBeamCursorCharSelectionDoubleClic
 
     // 注入 2x2 表格文字块与 1 个二维码热区（此时 textSelectionMode 保持默认 false！）
     // 第 0 块 "ABCDEFGHIJ" 位于 x=[20, 120], w=100 (每个字母精确宽 10px!), y=[50, 74]
+    // 第 2 块位于 y=[142, 166]，在 100%~200% DPI 下均避开第 0 块下方的悬浮胶囊操作条
     const auto initInspect = invokeRpc(3102, "capture.inspectPinOcrState", {
         {"mockBlocks", nlohmann::json::array({
-            {{"text", "ABCDEFGHIJ"}, {"x", 20},  {"y", 50}, {"w", 100}, {"h", 24}},
-            {{"text", "Col1Val"},    {"x", 200}, {"y", 50}, {"w", 80},  {"h", 24}},
-            {{"text", "Row2Key hello_world"}, {"x", 20}, {"y", 96}, {"w", 150}, {"h", 24}},
-            {{"text", "Col2Val"},    {"x", 200}, {"y", 96}, {"w", 80},  {"h", 24}}
+            {{"text", "ABCDEFGHIJ"}, {"x", 20},  {"y", 50},  {"w", 100}, {"h", 24}},
+            {{"text", "Col1Val"},    {"x", 200}, {"y", 50},  {"w", 80},  {"h", 24}},
+            {{"text", "Row2Key hello_world"}, {"x", 20}, {"y", 142}, {"w", 150}, {"h", 24}},
+            {{"text", "Col2Val"},    {"x", 200}, {"y", 142}, {"w", 80},  {"h", 24}}
         })},
         {"mockQrCodes", nlohmann::json::array({
             {{"text", "https://tools3000.local/qr"}, {"x", 360}, {"y", 150}, {"w", 72}, {"h", 72}}
@@ -427,17 +428,18 @@ TEST(PinLiveTextInteractionTest, ZeroThresholdIBeamCursorCharSelectionDoubleClic
     EXPECT_TRUE(charSelInspect.value("copyTableBtnVisible", false));
     EXPECT_TRUE(charSelInspect.value("openPanelBtnVisible", false));
 
-    // (C) 双击选词：在 "Row2Key hello_world" 右侧单词 "hello_world" 处 (130, 108) 双击 -> 自动精准选中 "hello_world"
-    SendMessageW(pinHwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(130, 108));
+    // (C) 双击选词：在 "Row2Key hello_world" 右侧单词 "hello_world" 处 (130, 154) 双击 -> 自动精准选中 "hello_world"
+    SendMessageW(pinHwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(130, 154));
+    SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(130, 154));
     const auto dblClickInspect = invokeRpc(3105, "capture.inspectPinOcrState", nlohmann::json::object());
     EXPECT_EQ(dblClickInspect.value("selectedText", ""), "hello_world");
 
-    // (D) 空白无字区域 (200, 200) 按住左键拖拽：清除文字选区并 100% 正常移动贴图窗口
+    // (D) 空白无字且远离胶囊与顶部悬停栏的区域 (390, 96) 按住左键拖拽：清除文字选区并 100% 正常移动贴图窗口
     RECT beforeDragRc{};
     ASSERT_TRUE(GetWindowRect(pinHwnd, &beforeDragRc));
-    SendMessageW(pinHwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(200, 200));
-    SendMessageW(pinHwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(238, 224));
-    SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(238, 224));
+    SendMessageW(pinHwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(390, 96));
+    SendMessageW(pinHwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(428, 120));
+    SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(428, 120));
 
     RECT afterDragRc{};
     ASSERT_TRUE(GetWindowRect(pinHwnd, &afterDragRc));
