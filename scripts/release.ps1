@@ -264,7 +264,7 @@ if (Test-Path -LiteralPath $UiPackageJsonPath) {
 $UiPackageLockPath = Join-Path $ScriptDir "ui\package-lock.json"
 if (Test-Path -LiteralPath $UiPackageLockPath) {
     $lockRaw = [System.IO.File]::ReadAllText($UiPackageLockPath, [System.Text.Encoding]::UTF8)
-    $lockObj = $lockRaw | ConvertFrom-Json
+    $null = $lockRaw | ConvertFrom-Json -AsHashtable
     $lockUpdated = $lockRaw
     # 精准替换顶层与 packages[""] 下的两个根版本号，零扰动保留原始缩进格式
     $lockMatches = [regex]::Matches($lockRaw, '(?m)^(\s{2,6}"version"\s*:\s*")[^"]+(")')
