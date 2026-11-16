@@ -105,6 +105,33 @@ struct PinHoverToolbarLayout {
     int rows = 1;
 };
 
+/// 贴图窗口鼠标指针形态枚举 (映射至 Win32 IDC_SIZEALL / IDC_HAND / IDC_IBEAM)
+enum class PinCursorKind {
+    MoveWindow = 0, // IDC_SIZEALL: 空白处平移拖拽贴图窗口
+    HandButton = 1, // IDC_HAND:    悬浮工具栏、微晶操作胶囊或二维码角标
+    TextBeam   = 2, // IDC_IBEAM:   原图实景智能 I 型文本选字指针
+};
+
+/// 贴图窗口鼠标左键按下动作决策枚举
+enum class PinLeftPressMode {
+    PressInteractiveButton = 0, // 命中按钮：进入 Drag-First 按钮候选
+    StartLiveTextSelection = 1, // 命中已识别文字热区（或按住 Alt）：原图直接划字选词
+    StartWindowDrag        = 2, // 命中无字空白处：清除已有选区并直接拖动贴图窗口
+};
+
+/// 贴图原图实景选字 (Live Text) 输入命中快照
+struct PinLiveTextState {
+    bool isFolded = false;
+    bool isDragging = false;
+    bool isSelectingText = false;
+    bool hoverInteractiveButton = false;
+    bool altHeld = false;
+    bool textSelectionMode = false;
+    bool liveTextEnabled = true;
+    bool ocrReady = false;
+    bool hitTextBlock = false;
+};
+
 class PinInputController {
 public:
     /// 解析贴图窗口 WM_KEYDOWN / WM_SYSKEYDOWN 消息，返回强类型动作决策
@@ -115,6 +142,15 @@ public:
                                               bool shift,
                                               bool alt,
                                               bool hasActiveTextContext = false) noexcept;
+
+    /// 原图实景选字 (Live Text) 光标状态机决策：
+    /// 无需按住 Alt 或手动切模式，悬停文字框自动返回 TextBeam (IDC_IBEAM)，空白处返回 MoveWindow (IDC_SIZEALL)
+    static PinCursorKind resolveCursorKind(const PinLiveTextState& state) noexcept;
+
+    /// 原图实景选字 (Live Text) 鼠标左键按下决策：
+    /// 命中文字框时直接启动流式选字，命中空白处时直接拖动贴图窗口，命中工具按钮时走 Drag-First 候选
+    static PinLeftPressMode resolveLeftPressMode(const PinLiveTextState& state,
+                                                 bool hitInteractiveButton) noexcept;
 
     /// 将任意角度归一化为 [0, 360) 范围内的正交角度 (90 / 180 / 270)，非法角度返回 0
     static int normalizeRightAngleDegrees(int angleDeg) noexcept;

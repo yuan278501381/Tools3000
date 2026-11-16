@@ -358,7 +358,7 @@ tools3000_add_plugin_manifest(Plugin_Capture)
 target_compile_definitions(Plugin_Capture PRIVATE PLUGIN_EXPORTS)
 target_include_directories(Plugin_Capture PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(Plugin_Capture PRIVATE Tools3000Core
-    opencv_core opencv_imgproc opencv_imgcodecs opencv_photo
+    opencv_core opencv_imgproc opencv_imgcodecs opencv_photo opencv_dnn opencv_objdetect
     ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY}
     d2d1 dwrite d3d11 dxgi dxguid dwmapi mfplat mfreadwrite mfuuid
     shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 windowscodecs winhttp windowsapp Shcore imm32
@@ -518,7 +518,10 @@ if(BUILD_TESTING)
     find_package(GTest CONFIG REQUIRED)
 
     add_executable(Tools3000Tests
-        tests/unit/test_main.cpp src/ocr/OcrEngine.cpp
+        tests/unit/test_main.cpp
+        src/ocr/OcrEngine.cpp
+        src/ocr/DeepOcrEngine.cpp
+        src/ocr/OcrTableReconstructor.cpp
         $<TARGET_OBJECTS:capture_objects>
         $<TARGET_OBJECTS:gesture_objects>
         $<TARGET_OBJECTS:service_objects>

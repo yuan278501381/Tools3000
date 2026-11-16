@@ -25,6 +25,7 @@
 #include "common/AtomicFile.h"
 #include <opencv2/imgcodecs.hpp>
 #include "ocr/OcrEngine.h"
+#include "ocr/DeepOcrEngine.h"
 #include "ocr/OcrResultWindow.h"
 #include <thread>
 #include <filesystem>
@@ -1090,22 +1091,31 @@ public:
         mb.registerHandler("ocr.getSettings", [](const nlohmann::json&) -> nlohmann::json {
             auto& config = tools3000::core::ConfigManager::instance();
             return {
-                {"engine", "windows"},
+                {"engine", config.get<std::string>("/ocr/engine", "auto")},
                 {"language", config.get<std::string>("/ocr/language", "auto")},
                 {"copyResult", config.get<bool>("/ocr/copyResult", true)},
-                {"showResultWindow", config.get<bool>("/ocr/showResultWindow", true)}
+                {"showResultWindow", config.get<bool>("/ocr/showResultWindow", true)},
+                {"liveTextOnPin", config.get<bool>("/ocr/liveTextOnPin", true)},
+                {"pinLiveTextOnCapture", config.get<bool>("/ocr/pinLiveTextOnCapture", true)}
             };
         });
 
         mb.registerHandler("ocr.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
             if (!params.is_object() || params.empty()) return {{"success", false}, {"error", "no settings supplied"}};
             for (const auto& [key, value] : params.items()) {
-                if (key == "copyResult" || key == "showResultWindow") {
+                if (key == "copyResult" || key == "showResultWindow" ||
+                    key == "liveTextOnPin" || key == "pinLiveTextOnCapture") {
                     if (!value.is_boolean())
                         return {{"success", false}, {"error", "invalid boolean OCR setting: " + key}};
                 } else if (key == "language") {
                     if (!value.is_string() || value.get<std::string>().empty())
                         return {{"success", false}, {"error", "invalid OCR language"}};
+                } else if (key == "engine") {
+                    if (!value.is_string())
+                        return {{"success", false}, {"error", "invalid OCR engine"}};
+                    const std::string eng = value.get<std::string>();
+                    if (eng != "auto" && eng != "ppocr_v4" && eng != "windows")
+                        return {{"success", false}, {"error", "unsupported OCR engine: " + eng}};
                 } else {
                     return {{"success", false}, {"error", "unsupported OCR setting: " + key}};
                 }
@@ -1115,8 +1125,55 @@ public:
             return {{"success", saved}, {"error", saved ? "" : "failed to persist settings"}};
         });
 
-        mb.registerHandler("ocr.getStatus", [](const nlohmann::json&) -> nlohmann::json {
-            return {{"available", tools3000::ocr::OcrEngine::instance().isAvailable()}};
+        auto serializeModelStatus = []() -> nlohmann::json {
+            const auto st = tools3000::ocr::DeepOcrEngine::instance().getModelStatus();
+            return {
+                {"installed", st.installed},
+                {"downloading", st.downloading},
+                {"progressPercent", st.progressPercent},
+                {"downloadedBytes", st.downloadedBytes},
+                {"totalBytes", st.totalBytes},
+                {"state", st.state},
+                {"currentFile", st.currentFile},
+                {"modelDir", st.modelDir},
+                {"error", st.error}
+            };
+        };
+
+        mb.registerHandler("ocr.getStatus", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
+            const auto& ocr = tools3000::ocr::OcrEngine::instance();
+            const bool deepInstalled = tools3000::ocr::DeepOcrEngine::instance().isModelInstalled();
+            const std::string engPref = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/engine", "auto");
+            const std::string effectiveEngine = ((engPref == "auto" || engPref == "ppocr_v4") && deepInstalled)
+                ? "ppocr_v4"
+                : "windows";
+            return {
+                {"available", ocr.isAvailable()},
+                {"windowsOcrAvailable", ocr.isWindowsOcrAvailable()},
+                {"deepOcrInstalled", deepInstalled},
+                {"effectiveEngine", effectiveEngine},
+                {"modelStatus", serializeModelStatus()}
+            };
+        });
+
+        mb.registerHandler("ocr.getModelStatus", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
+            return serializeModelStatus();
+        });
+
+        mb.registerHandler("ocr.downloadModel", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
+            const bool started = tools3000::ocr::DeepOcrEngine::instance().startModelDownload();
+            return {
+                {"success", started},
+                {"modelStatus", serializeModelStatus()}
+            };
+        });
+
+        mb.registerHandler("ocr.cancelModelDownload", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
+            tools3000::ocr::DeepOcrEngine::instance().cancelModelDownload();
+            return {
+                {"success", true},
+                {"modelStatus", serializeModelStatus()}
+            };
         });
 
         mb.registerHandler("ocr.recognizeImageFile", [](const nlohmann::json& params) -> nlohmann::json {
@@ -1410,6 +1467,23 @@ public:
                     }
                     pin->setOcrBlocksForTest(std::move(blocks));
                 }
+                if (params.contains("mockQrCodes") && params["mockQrCodes"].is_array()) {
+                    std::vector<tools3000::ocr::OcrQrResult> qrs;
+                    for (const auto& item : params["mockQrCodes"]) {
+                        tools3000::ocr::OcrQrResult q;
+                        q.text = item.value("text", "");
+                        q.boundingBox = cv::Rect(
+                            item.value("x", 0),
+                            item.value("y", 0),
+                            item.value("w", 48),
+                            item.value("h", 48));
+                        qrs.push_back(std::move(q));
+                    }
+                    pin->setQrCodesForTest(std::move(qrs));
+                }
+                if (params.value("copyTable", false)) {
+                    pin->copySelectedOrAllAsTable();
+                }
                 if (params.value("selectAll", false)) {
                     pin->selectAllText();
                 }
@@ -1492,10 +1566,18 @@ public:
                 const auto tbRect = pin->hoverToolbarRect();
                 const auto txtRect = pin->textButtonRect();
                 const auto invRect = pin->invertButtonRect();
+                const auto copyTblRect = pin->copyTableFloatingButtonRect();
+                const auto openPnlRect = pin->openPanelFloatingButtonRect();
                 return {
                     {"success", true},
                     {"textSelectionMode", pin->isTextSelectionMode()},
                     {"selectedBlockCount", static_cast<int>(pin->selectedTextBlockCount())},
+                    {"selectedText", pin->selectedTextUtf8()},
+                    {"hasDetectedTable", pin->hasDetectedTable()},
+                    {"qrCodeCount", static_cast<int>(pin->qrCodeCount())},
+                    {"hoveredBlockIndex", pin->hoveredBlockIndex()},
+                    {"copyTableBtnVisible", copyTblRect.right > copyTblRect.left},
+                    {"openPanelBtnVisible", openPnlRect.right > openPnlRect.left},
                     {"ocrReady", pin->isOcrReady()},
                     {"ocrInFlight", pin->isOcrInFlight()},
                     {"ocrRunCount", pin->ocrRunCount()},
