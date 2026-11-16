@@ -19,6 +19,7 @@
 #include "capture/PinInputController.h"
 #include "capture/PinGroupManager.h"
 #include "capture/PinGroupBarOverlay.h"
+#include "capture/PinContextMenu.h"
 #include "core/events/EventBus.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/logger/Logger.h"
@@ -182,6 +183,7 @@ void PinWindow::close() {
     }
 
     const int closedGroup = m_groupId;
+    PinContextMenu::instance().dismiss();
     releaseGraphicsResources();
     HWND hwndToDestroy = std::exchange(m_hwnd, nullptr);
     m_sourceImage.release();
@@ -213,6 +215,7 @@ void PinWindow::close() {
 }
 
 void PinWindow::closeAll() {
+    PinContextMenu::instance().dismiss();
     std::vector<std::shared_ptr<PinWindow>> targets = std::move(s_instances);
     s_instances.clear();
     for (auto& pin : targets) {
@@ -239,6 +242,43 @@ void PinWindow::closeAll() {
     broadcastGroupStateChanged();
     tools3000::core::WinUtils::trimWorkingSet();
     LOG_INFO("所有贴图窗口已关闭并释放资源");
+}
+
+void PinWindow::closeAllExcept(const PinWindow* keepPin) {
+    PinContextMenu::instance().dismiss();
+    std::vector<std::shared_ptr<PinWindow>> toClose;
+    toClose.reserve(s_instances.size());
+    for (const auto& pin : s_instances) {
+        if (pin && pin.get() != keepPin && pin->isAlive()) {
+            toClose.push_back(pin);
+        }
+    }
+    if (toClose.empty()) return;
+
+    for (auto& pin : toClose) {
+        pin->m_sourceImage.release();
+        pin->m_cleanBaseImage.release();
+        pin->m_markupElements.clear();
+        pin->releaseGraphicsResources();
+        HWND hwndToDestroy = std::exchange(pin->m_hwnd, nullptr);
+        if (hwndToDestroy && IsWindow(hwndToDestroy)) {
+            DestroyWindow(hwndToDestroy);
+        }
+    }
+
+    s_instances.erase(
+        std::remove_if(s_instances.begin(), s_instances.end(),
+                       [](const auto& p) { return !p || !p->isAlive(); }),
+        s_instances.end());
+
+    if (keepPin && keepPin->m_groupId >= PinGroupConstants::kMinGroupId &&
+        s_activeGroupFilter != PinGroupConstants::kFilterAllGroups &&
+        s_activeGroupFilter != keepPin->m_groupId) {
+        setActiveGroupFilter(PinGroupConstants::kFilterAllGroups);
+    } else {
+        refreshGroupBar();
+    }
+    tools3000::core::WinUtils::trimWorkingSet();
 }
 
 void PinWindow::toggleHideAll() {
@@ -793,203 +833,238 @@ size_t PinWindow::closeGroup(int groupId) {
     return closedCount;
 }
 
-namespace PinGroupMenuCmd {
-    inline constexpr int kRemoveFromGroup = 1000;
-    inline constexpr int kAssignBase = 1100;       // 1101..1132
-    inline constexpr int kCreateNewAndAssign = 1190;
-    inline constexpr int kAutoGroupUngrouped = 1195;
-    inline constexpr int kViewAll = 1200;
-    inline constexpr int kViewBase = 1200;         // 1201..1232
-    inline constexpr int kArrangeCurrentGroup = 1300;
-    inline constexpr int kDissolveCurrentGroup = 1301;
-    inline constexpr int kCloseCurrentGroup = 1302;
-    inline constexpr int kRenameCurrentGroup = 1305;
-    inline constexpr int kResetGroupMeta = 1400;
-    inline constexpr int kSetColorPresetBase = 1400; // 1401..1412
-} // namespace PinGroupMenuCmd
+static bool copyImageToClipboard(const cv::Mat& image);
+static bool savePinnedImage(HWND owner, const cv::Mat& image);
 
-static void populatePinGroupMenuItems(HMENU groupMenu, const PinWindow* self, bool isZh) {
-    if (!groupMenu || !self) return;
+static PinContextMenuSnapshot buildPinContextMenuSnapshot(const PinWindow* self) {
+    PinContextMenuSnapshot snap;
+    if (!self) return snap;
+
+    const bool isZh = tools3000::core::isUiLanguageChinese();
+    snap.isChinese = isZh;
+    snap.isFolded = self->isFolded();
+    snap.isInverted = self->isInverted();
+    snap.isGrayscale = self->isGrayscale();
+    snap.isClickThrough = self->isClickThrough();
+    snap.isTextSelectionMode = self->isTextSelectionMode();
+    snap.hasSelectedText = (self->selectedTextBlockCount() > 0);
+    snap.hasPinnedSourceText = !self->pinnedSourceText().empty();
+    snap.scale = self->scale();
+    snap.opacity = self->opacity();
+
+    snap.currentGroupId = self->groupId();
+    snap.activeGroupFilter = PinWindow::activeGroupFilter();
+    snap.nextAvailableGroupId = PinWindow::nextAvailableGroupId();
+    snap.totalPinCount = PinWindow::count();
+    snap.ungroupedPinCount = PinWindow::countInGroup(PinGroupConstants::kUngroupedId);
+    snap.allPinsHidden = PinWindow::isAllHidden();
+
+    if (snap.currentGroupId >= PinGroupConstants::kMinGroupId) {
+        snap.currentGroupHasCustomization = PinGroupPalette::hasCustomization(snap.currentGroupId);
+        snap.currentGroupShortLabel = PinGroupPalette::shortLabel(snap.currentGroupId, isZh);
+        snap.currentGroupAccentColor = PinGroupPalette::accentColor(snap.currentGroupId, 1.0f);
+
+        const std::string curHex = PinGroupPalette::accentHex(snap.currentGroupId);
+        const auto& presets = PinGroupPalette::presetPaletteHexes();
+        snap.currentGroupColorPresets.reserve(presets.size());
+        for (int idx = 0; idx < static_cast<int>(presets.size()); ++idx) {
+            PinContextMenuSnapshot::ColorPresetInfo pInfo;
+            pInfo.slotIndex = idx + 1;
+            pInfo.name = PinGroupPalette::presetColorName(idx + 1, isZh);
+            pInfo.color = PinGroupPalette::defaultColor(idx + 1, 1.0f);
+            pInfo.isCurrent = (curHex == presets[static_cast<size_t>(idx)]);
+            snap.currentGroupColorPresets.push_back(std::move(pInfo));
+        }
+    }
+
+    snap.groups.reserve(PinGroupConstants::kMaxGroupId);
     for (int g = PinGroupConstants::kMinGroupId; g <= PinGroupConstants::kMaxGroupId; ++g) {
         const size_t cnt = PinWindow::countInGroup(g);
-        const bool showInAssignList = (g <= PinGroupConstants::kDefaultQuickGroupCount) ||
-                                      (cnt > 0) ||
-                                      PinWindow::isExplicitGroupCreated(g) ||
-                                      (self->groupId() == g) ||
-                                      (PinWindow::activeGroupFilter() == g) ||
-                                      PinGroupPalette::hasCustomization(g);
-        if (!showInAssignList) continue;
-
-        std::wstring itemLabel;
-        if (g <= PinGroupConstants::kMaxShortcutGroupId) {
-            itemLabel = isZh
-                ? std::format(L"归入{}  [{}]  (Ctrl+{})", PinGroupPalette::fullLabel(g, true), cnt, g)
-                : std::format(L"Assign to {}  [{}]  (Ctrl+{})", PinGroupPalette::fullLabel(g, false), cnt, g);
-        } else {
-            itemLabel = isZh
-                ? std::format(L"归入{}  [{}]", PinGroupPalette::fullLabel(g, true), cnt)
-                : std::format(L"Assign to {}  [{}]", PinGroupPalette::fullLabel(g, false), cnt);
+        const bool explicitCreated = PinWindow::isExplicitGroupCreated(g);
+        const bool customized = PinGroupPalette::hasCustomization(g);
+        const bool showAssign = (g <= PinGroupConstants::kDefaultQuickGroupCount) ||
+                                (cnt > 0) ||
+                                explicitCreated ||
+                                (snap.currentGroupId == g) ||
+                                (snap.activeGroupFilter == g) ||
+                                customized;
+        const bool showView = (cnt > 0) || explicitCreated || (snap.activeGroupFilter == g);
+        if (!showAssign && !showView && g != snap.nextAvailableGroupId) {
+            continue;
         }
-        const UINT flags = ((self->groupId() == g) ? MF_CHECKED : MF_UNCHECKED) | MF_STRING;
-        AppendMenuW(groupMenu, flags, static_cast<UINT_PTR>(PinGroupMenuCmd::kAssignBase + g), itemLabel.c_str());
+
+        PinContextMenuSnapshot::GroupEntryInfo entry;
+        entry.groupId = g;
+        entry.count = cnt;
+        entry.showInAssignList = showAssign;
+        entry.showInViewList = showView;
+        entry.shortLabel = PinGroupPalette::shortLabel(g, isZh);
+        entry.fullLabel = PinGroupPalette::fullLabel(g, isZh);
+        entry.accentColor = PinGroupPalette::accentColor(g, 1.0f);
+        snap.groups.push_back(std::move(entry));
     }
 
-    const int nextFree = PinWindow::nextAvailableGroupId();
-    if (nextFree >= PinGroupConstants::kMinGroupId) {
-        const std::wstring newGroupLabel = isZh
-            ? std::format(L"+ 新建贴图组并归入：{}", PinGroupPalette::fullLabel(nextFree, true))
-            : std::format(L"+ New Group & Assign: {}", PinGroupPalette::fullLabel(nextFree, false));
-        AppendMenuW(groupMenu, MF_STRING, PinGroupMenuCmd::kCreateNewAndAssign, newGroupLabel.c_str());
-    }
-
-    if (self->groupId() >= PinGroupConstants::kMinGroupId) {
-        AppendMenuW(groupMenu, MF_STRING, PinGroupMenuCmd::kRemoveFromGroup,
-                    isZh ? L"移出当前分组  (Ctrl+0)" : L"Remove from Group  (Ctrl+0)");
-    }
-
-    const size_t ungroupedCnt = PinWindow::countInGroup(PinGroupConstants::kUngroupedId);
-    if (ungroupedCnt >= 1) {
-        const std::wstring autoLabel = isZh
-            ? std::format(L"一键编组未分组贴图 ({} 张)  (Ctrl+Shift+G)", ungroupedCnt)
-            : std::format(L"Auto-Group Ungrouped ({})  (Ctrl+Shift+G)", ungroupedCnt);
-        AppendMenuW(groupMenu, MF_STRING, PinGroupMenuCmd::kAutoGroupUngrouped, autoLabel.c_str());
-    }
-
-    AppendMenuW(groupMenu, MF_SEPARATOR, 0, nullptr);
-    const UINT allFlags = ((PinWindow::activeGroupFilter() == PinGroupConstants::kFilterAllGroups)
-                           ? MF_CHECKED : MF_UNCHECKED) | MF_STRING;
-    AppendMenuW(groupMenu, allFlags, PinGroupMenuCmd::kViewAll,
-                isZh ? L"按组查看：全部贴图  (Alt+0)" : L"View: All Pins  (Alt+0)");
-
-    for (int g = PinGroupConstants::kMinGroupId; g <= PinGroupConstants::kMaxGroupId; ++g) {
-        const size_t cnt = PinWindow::countInGroup(g);
-        if (cnt == 0 && !PinWindow::isExplicitGroupCreated(g) && PinWindow::activeGroupFilter() != g) continue;
-        std::wstring viewLabel;
-        if (g <= PinGroupConstants::kMaxShortcutGroupId) {
-            viewLabel = isZh
-                ? std::format(L"仅查看{} ({} 张)  (Alt+{})", PinGroupPalette::shortLabel(g, true), cnt, g)
-                : std::format(L"View Only {} ({})  (Alt+{})", PinGroupPalette::shortLabel(g, false), cnt, g);
-        } else {
-            viewLabel = isZh
-                ? std::format(L"仅查看{} ({} 张)", PinGroupPalette::shortLabel(g, true), cnt)
-                : std::format(L"View Only {} ({})", PinGroupPalette::shortLabel(g, false), cnt);
-        }
-        const UINT fFlags = ((PinWindow::activeGroupFilter() == g) ? MF_CHECKED : MF_UNCHECKED) | MF_STRING;
-        AppendMenuW(groupMenu, fFlags, static_cast<UINT_PTR>(PinGroupMenuCmd::kViewBase + g), viewLabel.c_str());
-    }
-
-    if (self->groupId() >= PinGroupConstants::kMinGroupId) {
-        AppendMenuW(groupMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(groupMenu, MF_STRING, PinGroupMenuCmd::kArrangeCurrentGroup,
-                    isZh ? L"网格整理本组贴图" : L"Arrange Current Group in Grid");
-        AppendMenuW(groupMenu, MF_STRING, PinGroupMenuCmd::kDissolveCurrentGroup,
-                    isZh ? L"移除本组全部标记（保留贴图）" : L"Ungroup Current Group (Keep Pins)");
-        AppendMenuW(groupMenu, MF_STRING, PinGroupMenuCmd::kCloseCurrentGroup,
-                    isZh ? L"关闭本组全部贴图" : L"Close All Pins in Current Group");
-        const int gid = self->groupId();
-        HMENU colorMenu = CreatePopupMenu();
-        if (colorMenu) {
-            const std::string curHex = PinGroupPalette::accentHex(gid);
-            const auto& presets = PinGroupPalette::presetPaletteHexes();
-            for (int idx = 0; idx < static_cast<int>(presets.size()); ++idx) {
-                const bool checked = (curHex == presets[static_cast<size_t>(idx)]);
-                const std::wstring cLabel = std::format(
-                    L"{}  ({})",
-                    PinGroupPalette::presetColorName(idx + 1, isZh),
-                    tools3000::core::WinUtils::utf8ToWstring(std::string(presets[static_cast<size_t>(idx)])));
-                AppendMenuW(colorMenu, (checked ? MF_CHECKED : MF_UNCHECKED) | MF_STRING,
-                            static_cast<UINT_PTR>(PinGroupMenuCmd::kSetColorPresetBase + 1 + idx), cLabel.c_str());
-            }
-            AppendMenuW(groupMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(groupMenu, MF_STRING, PinGroupMenuCmd::kRenameCurrentGroup,
-                        isZh ? L"重命名本组..." : L"Rename Current Group...");
-            AppendMenuW(groupMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(colorMenu),
-                        isZh ? L"切换本组颜色" : L"Set Group Color");
-        }
-        if (PinGroupPalette::hasCustomization(gid)) {
-            AppendMenuW(groupMenu, MF_STRING, PinGroupMenuCmd::kResetGroupMeta,
-                        isZh ? L"恢复默认组名与颜色" : L"Reset Default Group Name & Color");
-        }
-    }
+    return snap;
 }
 
-static bool dispatchPinGroupMenuCommand(PinWindow* self, int cmd) {
-    if (!self) return false;
-    if (cmd == PinGroupMenuCmd::kRemoveFromGroup) {
-        self->setGroupId(PinGroupConstants::kUngroupedId);
-        return true;
-    }
-    if (cmd > PinGroupMenuCmd::kAssignBase &&
-        cmd <= PinGroupMenuCmd::kAssignBase + PinGroupConstants::kMaxGroupId) {
-        self->toggleAssignGroup(cmd - PinGroupMenuCmd::kAssignBase);
-        return true;
-    }
-    if (cmd == PinGroupMenuCmd::kCreateNewAndAssign) {
-        PinWindow::createAndActivateNewGroup(self);
-        return true;
-    }
-    if (cmd == PinGroupMenuCmd::kAutoGroupUngrouped) {
-        PinWindow::groupAllUngrouped();
-        return true;
-    }
-    if (cmd == PinGroupMenuCmd::kViewAll) {
-        PinWindow::setActiveGroupFilter(PinGroupConstants::kFilterAllGroups);
-        return true;
-    }
-    if (cmd > PinGroupMenuCmd::kViewBase &&
-        cmd <= PinGroupMenuCmd::kViewBase + PinGroupConstants::kMaxGroupId) {
-        const int targetG = cmd - PinGroupMenuCmd::kViewBase;
-        if (PinWindow::activeGroupFilter() == targetG) {
+static void executePinContextMenuCommand(PinWindow* self, HWND hwnd, const PinMenuCommand& cmd) {
+    if (!self || !self->isAlive() || !cmd.isValid()) return;
+    const bool isZh = tools3000::core::isUiLanguageChinese();
+
+    switch (cmd.action) {
+        case PinMenuAction::CopyImage:
+            if (copyImageToClipboard(self->sourceImage())) {
+                tools3000::core::EventBus::instance().publish(
+                    tools3000::core::ShowToastEvent{isZh ? L"已复制贴图到剪贴板" : L"Copied pin to clipboard"});
+            }
+            break;
+        case PinMenuAction::CopySelectedText:
+            self->copySelectedText();
+            break;
+        case PinMenuAction::CopyNoteText:
+        case PinMenuAction::CopyAllText:
+            self->copyAllText();
+            break;
+        case PinMenuAction::EditMarkup:
+            self->editMarkup();
+            break;
+        case PinMenuAction::ExtractTextDialog:
+            self->extractText();
+            break;
+        case PinMenuAction::ToggleTextSelectionMode:
+            self->toggleTextSelectionMode();
+            break;
+        case PinMenuAction::SelectAllText:
+            self->selectAllText();
+            break;
+        case PinMenuAction::SaveImage:
+            if (hwnd && IsWindow(hwnd)) {
+                savePinnedImage(hwnd, self->sourceImage());
+            }
+            break;
+        case PinMenuAction::ResetScale:
+            self->resetScale();
+            break;
+        case PinMenuAction::RotateRight90:
+            self->rotate(PinInteractionConstants::kRotateClockwiseDeg);
+            break;
+        case PinMenuAction::RotateLeft90:
+            self->rotate(PinInteractionConstants::kRotateCounterClockwiseDeg);
+            break;
+        case PinMenuAction::FlipHorizontal:
+            self->flip(true);
+            break;
+        case PinMenuAction::FlipVertical:
+            self->flip(false);
+            break;
+        case PinMenuAction::ToggleInvert:
+            self->invertColors();
+            break;
+        case PinMenuAction::ToggleGrayscale:
+            self->toggleGrayscale();
+            break;
+        case PinMenuAction::ToggleFold:
+            self->toggleFold();
+            break;
+        case PinMenuAction::ToggleClickThrough:
+            self->setClickThrough(!self->isClickThrough());
+            break;
+        case PinMenuAction::ArrangeAllPins:
+            PinWindow::arrangeAll();
+            break;
+        case PinMenuAction::ToggleHideAllPins:
+            PinWindow::toggleHideAll();
+            break;
+        case PinMenuAction::CloseOtherPins:
+            PinWindow::closeAllExcept(self);
+            break;
+        case PinMenuAction::CloseAllPins:
+            PinWindow::closeAll();
+            break;
+        case PinMenuAction::ClosePin:
+            self->close();
+            break;
+
+        case PinMenuAction::GroupAssign:
+            self->toggleAssignGroup(cmd.param);
+            break;
+        case PinMenuAction::GroupCreateAndAssign:
+            PinWindow::createAndActivateNewGroup(self);
+            break;
+        case PinMenuAction::GroupRemoveCurrent:
+            self->setGroupId(PinGroupConstants::kUngroupedId);
+            break;
+        case PinMenuAction::GroupAutoGroupUngrouped:
+            PinWindow::groupAllUngrouped();
+            break;
+        case PinMenuAction::GroupViewAll:
             PinWindow::setActiveGroupFilter(PinGroupConstants::kFilterAllGroups);
-        } else {
-            PinWindow::setActiveGroupFilter(targetG);
+            break;
+        case PinMenuAction::GroupViewOnly:
+            if (PinWindow::activeGroupFilter() == cmd.param) {
+                PinWindow::setActiveGroupFilter(PinGroupConstants::kFilterAllGroups);
+            } else {
+                PinWindow::setActiveGroupFilter(cmd.param);
+            }
+            break;
+        case PinMenuAction::GroupArrangeCurrent:
+            if (self->groupId() >= PinGroupConstants::kMinGroupId) {
+                PinWindow::arrangeGroup(self->groupId());
+            }
+            break;
+        case PinMenuAction::GroupDissolveCurrent:
+            if (self->groupId() >= PinGroupConstants::kMinGroupId) {
+                PinWindow::dissolveGroup(self->groupId());
+            }
+            break;
+        case PinMenuAction::GroupCloseCurrent:
+            if (self->groupId() >= PinGroupConstants::kMinGroupId) {
+                PinWindow::closeGroup(self->groupId());
+            }
+            break;
+        case PinMenuAction::GroupRenameCurrent:
+            if (self->groupId() >= PinGroupConstants::kMinGroupId) {
+                PinGroupBarOverlay::instance().beginInlineRename(self->groupId());
+            }
+            break;
+        case PinMenuAction::GroupSetColorPreset: {
+            const auto& presets = PinGroupPalette::presetPaletteHexes();
+            const int slot = cmd.param - 1;
+            if (self->groupId() >= PinGroupConstants::kMinGroupId &&
+                slot >= 0 && static_cast<size_t>(slot) < presets.size()) {
+                if (PinGroupPalette::setGroupColor(self->groupId(), presets[static_cast<size_t>(slot)])) {
+                    PinWindow::refreshAllVisualsAndGroupBar();
+                }
+            }
+            break;
         }
-        return true;
+        case PinMenuAction::GroupResetMeta:
+            if (self->groupId() >= PinGroupConstants::kMinGroupId) {
+                PinGroupPalette::resetGroupCustomization(self->groupId());
+                PinWindow::refreshAllVisualsAndGroupBar();
+            }
+            break;
+        case PinMenuAction::None:
+        default:
+            break;
     }
-    if (cmd == PinGroupMenuCmd::kArrangeCurrentGroup && self->groupId() >= PinGroupConstants::kMinGroupId) {
-        PinWindow::arrangeGroup(self->groupId());
-        return true;
-    }
-    if (cmd == PinGroupMenuCmd::kDissolveCurrentGroup && self->groupId() >= PinGroupConstants::kMinGroupId) {
-        PinWindow::dissolveGroup(self->groupId());
-        return true;
-    }
-    if (cmd == PinGroupMenuCmd::kResetGroupMeta && self->groupId() >= PinGroupConstants::kMinGroupId) {
-        PinGroupPalette::resetGroupCustomization(self->groupId());
-        PinWindow::refreshAllVisualsAndGroupBar();
-        return true;
-    }
-    if (cmd == PinGroupMenuCmd::kRenameCurrentGroup && self->groupId() >= PinGroupConstants::kMinGroupId) {
-        PinGroupBarOverlay::instance().beginInlineRename(self->groupId());
-        return true;
-    }
-    const int presetCount = static_cast<int>(PinGroupPalette::presetPaletteHexes().size());
-    if (cmd > PinGroupMenuCmd::kSetColorPresetBase &&
-        cmd <= PinGroupMenuCmd::kSetColorPresetBase + presetCount &&
-        self->groupId() >= PinGroupConstants::kMinGroupId) {
-        const int slot = cmd - PinGroupMenuCmd::kSetColorPresetBase - 1;
-        if (PinGroupPalette::setGroupColor(self->groupId(),
-                                           PinGroupPalette::presetPaletteHexes()[static_cast<size_t>(slot)])) {
-            PinWindow::refreshAllVisualsAndGroupBar();
-        }
-        return true;
-    }
-    if (cmd == PinGroupMenuCmd::kCloseCurrentGroup && self->groupId() >= PinGroupConstants::kMinGroupId) {
-        PinWindow::closeGroup(self->groupId());
-        return true;
-    }
-    return false;
 }
 
 void PinWindow::showGroupPopupMenu(POINT screenPt) {
-    if (!m_hwnd) return;
-    HMENU groupMenu = CreatePopupMenu();
-    if (!groupMenu) return;
-    const bool isZh = tools3000::core::isUiLanguageChinese();
-    populatePinGroupMenuItems(groupMenu, this, isZh);
-    const int cmd = TrackPopupMenu(groupMenu, TPM_RETURNCMD, screenPt.x, screenPt.y, 0, m_hwnd, nullptr);
-    DestroyMenu(groupMenu);
-    dispatchPinGroupMenuCommand(this, cmd);
+    if (!m_hwnd || !IsWindow(m_hwnd)) return;
+    std::weak_ptr<PinWindow> weakSelf = weak_from_this();
+    const PinContextMenuSnapshot snapshot = buildPinContextMenuSnapshot(this);
+    const PinMenuCommand cmd = PinContextMenu::instance().showGroupMenu(
+        m_hwnd,
+        screenPt,
+        snapshot,
+        [weakSelf]() {
+            const auto locked = weakSelf.lock();
+            return locked && locked->isAlive() && locked->hwnd() && IsWindow(locked->hwnd());
+        });
+    if (auto aliveSelf = weakSelf.lock(); aliveSelf && aliveSelf->isAlive()) {
+        executePinContextMenuCommand(aliveSelf.get(), aliveSelf->hwnd(), cmd);
+    }
 }
 
 PinWindow::~PinWindow() {
@@ -4037,96 +4112,31 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_RBUTTONUP: {
-            // 右键菜单
+            // Direct2D 微晶自绘右键复合菜单（顶栏 6 枚快捷图标 + 实时不透明度滑块 + 精简列表）
             if (!self) break;
             self->focusWindow();
-            HMENU menu = CreatePopupMenu();
-            bool isZh = tools3000::core::isUiLanguageChinese();
-            if (!self->m_pinnedSourceText.empty()) {
-                AppendMenuW(menu, MF_STRING, 25, isZh ? L"复制贴图文字  (Ctrl+C)" : L"Copy Note Text  (Ctrl+C)");
-                AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            }
-            AppendMenuW(menu, MF_STRING, 16, isZh ? L"编辑 / 二次标注  (E / 双击)" : L"Edit / Annotate  (E / Double Click)");
-            AppendMenuW(menu, (self->m_folded ? MF_CHECKED : MF_UNCHECKED) | MF_STRING, 18, isZh ? L"折叠为迷你条  (M)" : L"Collapse  (M)");
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, (self->m_inverted ? MF_CHECKED : MF_UNCHECKED) | MF_STRING, 19, isZh ? L"色彩反转  (I)" : L"Invert Colors  (I)");
-            AppendMenuW(menu, (self->m_grayscale ? MF_CHECKED : MF_UNCHECKED) | MF_STRING, 20, isZh ? L"灰度化  (G)" : L"Grayscale  (G)");
-            AppendMenuW(menu, (self->m_textSelectionMode ? MF_CHECKED : MF_UNCHECKED) | MF_STRING, 23, isZh ? L"文字划选模式  (Alt 划选)" : L"Text Selection Mode  (Alt to select)");
-            AppendMenuW(menu, MF_STRING, 24, isZh ? L"全选贴图文字  (Ctrl+A)" : L"Select All Text  (Ctrl+A)");
-            if (!self->m_selectedBlockIndices.empty()) {
-                AppendMenuW(menu, MF_STRING, 21, isZh ? L"复制所选文字  (Ctrl+C)" : L"Copy Selected Text  (Ctrl+C)");
-            }
-            AppendMenuW(menu, MF_STRING, 22, isZh ? L"复制全部文字  (Ctrl+Shift+C)" : L"Copy All Text  (Ctrl+Shift+C)");
-            AppendMenuW(menu, MF_STRING, 1, isZh ? L"复制图片到剪贴板" : L"Copy Image to Clipboard");
-            AppendMenuW(menu, MF_STRING, 17, isZh ? L"提取文本 (OCR)  (Ctrl+T)" : L"Extract Text (OCR)  (Ctrl+T)");
-            AppendMenuW(menu, MF_STRING, 10, isZh ? L"保存图片...  (Ctrl+S)" : L"Save Image...  (Ctrl+S)");
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, MF_STRING, 15, isZh ? L"1:1 原始尺寸  (0 或鼠标中键)" : L"1:1 Original Scale  (0 or MButton)");
-            AppendMenuW(menu, MF_STRING, 11, isZh ? L"顺时针旋转 90°  (R / 数字 2)" : L"Rotate Right 90°  (R / Key 2)");
-            AppendMenuW(menu, MF_STRING, 12, isZh ? L"逆时针旋转 90°  (Shift+R / L / 数字 1)" : L"Rotate Left 90°  (Shift+R / L / Key 1)");
-            AppendMenuW(menu, MF_STRING, 13, isZh ? L"水平翻转  (H / 数字 3)" : L"Flip Horizontal  (H / Key 3)");
-            AppendMenuW(menu, MF_STRING, 14, isZh ? L"垂直翻转  (V / 数字 4)" : L"Flip Vertical  (V / Key 4)");
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, MF_STRING, 2, isZh ? L"透明度 100%  (数字 0 · [ / ] 微调)" : L"Opacity 100%  (Key 0 · [ / ] Step)");
-            AppendMenuW(menu, MF_STRING, 3, isZh ? L"透明度 75%  (数字 7)" : L"Opacity 75%  (Key 7)");
-            AppendMenuW(menu, MF_STRING, 4, isZh ? L"透明度 50%  (数字 5)" : L"Opacity 50%  (Key 5)");
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, (self->m_clickThrough ? MF_CHECKED : MF_UNCHECKED) | MF_STRING, 7, isZh ? L"鼠标穿透 / 幽灵模式  (T / F4)"
-                                                                                                       : L"Click-through / Ghost  (T / F4)");
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            HMENU groupSubMenu = CreatePopupMenu();
-            if (groupSubMenu) {
-                populatePinGroupMenuItems(groupSubMenu, self, isZh);
-                const std::wstring groupMenuTitle = (self->m_groupId >= PinGroupConstants::kMinGroupId)
-                    ? (isZh ? std::format(L"贴图分组 [{}]  (Ctrl+1~9)", PinGroupPalette::shortLabel(self->m_groupId, true))
-                            : std::format(L"Pin Group [{}]  (Ctrl+1~9)", PinGroupPalette::shortLabel(self->m_groupId, false)))
-                    : (isZh ? L"贴图分组与按组查看  (Ctrl+1~9 / Alt+1~9)"
-                            : L"Pin Groups & Filter  (Ctrl+1~9 / Alt+1~9)");
-                AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(groupSubMenu), groupMenuTitle.c_str());
-                AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            }
-            AppendMenuW(menu, MF_STRING, 9, isZh ? L"整理全部贴图" : L"Arrange All Pins");
-            AppendMenuW(menu, MF_STRING, 8, isZh ? L"隐藏全部贴图  (Ctrl+Alt+Shift+H 显示)"
-                                               : L"Hide All Pins  (Ctrl+Alt+Shift+H shows)");
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, MF_STRING, 5, isZh ? L"关闭  (Esc / Delete / Ctrl+W)" : L"Close  (Esc / Delete / Ctrl+W)");
-            AppendMenuW(menu, MF_STRING, 6, isZh ? L"关闭全部贴图" : L"Close All Pins");
 
-            POINT pt;
+            POINT pt{};
             GetCursorPos(&pt);
-            int cmd = TrackPopupMenu(menu, TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, nullptr);
-            DestroyMenu(menu);
+            std::weak_ptr<PinWindow> weakSelf = self->weak_from_this();
+            const PinContextMenuSnapshot snapshot = buildPinContextMenuSnapshot(self);
 
-            if (dispatchPinGroupMenuCommand(self, cmd)) {
-                return 0;
-            }
+            const PinMenuCommand cmd = PinContextMenu::instance().showContextMenu(
+                hwnd,
+                pt,
+                snapshot,
+                [weakSelf](float liveOpacity) {
+                    if (auto locked = weakSelf.lock(); locked && locked->isAlive()) {
+                        locked->setOpacity(liveOpacity);
+                    }
+                },
+                [weakSelf]() {
+                    const auto locked = weakSelf.lock();
+                    return locked && locked->isAlive() && locked->hwnd() && IsWindow(locked->hwnd());
+                });
 
-            switch (cmd) {
-                case 25: self->copyAllText(); break;
-                case 16: self->editMarkup(); break;
-                case 18: self->toggleFold(); break;
-                case 19: self->invertColors(); break;
-                case 20: self->toggleGrayscale(); break;
-                case 23: self->toggleTextSelectionMode(); break;
-                case 24: self->selectAllText(); break;
-                case 21: self->copySelectedText(); break;
-                case 22: self->copyAllText(); break;
-                case 1: copyImageToClipboard(self->m_sourceImage); break;
-                case 17: self->extractText(); break;
-                case 10: savePinnedImage(hwnd, self->m_sourceImage); break;
-                case 15: self->resetScale(); break;
-                case 11: self->rotate(90); break;
-                case 12: self->rotate(270); break;
-                case 13: self->flip(true); break;
-                case 14: self->flip(false); break;
-                case 2: self->setOpacity(1.0f); break;
-                case 3: self->setOpacity(0.75f); break;
-                case 4: self->setOpacity(0.5f); break;
-                case 5: self->close(); break;
-                case 6: PinWindow::closeAll(); break;
-                case 7: self->setClickThrough(!self->m_clickThrough); break;
-                case 8: PinWindow::toggleHideAll(); break;
-                case 9: PinWindow::arrangeAll(); break;
+            if (auto aliveSelf = weakSelf.lock(); aliveSelf && aliveSelf->isAlive()) {
+                executePinContextMenuCommand(aliveSelf.get(), aliveSelf->hwnd(), cmd);
             }
             return 0;
         }
