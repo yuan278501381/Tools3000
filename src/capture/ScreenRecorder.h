@@ -17,6 +17,7 @@
 #include "capture/CursorOverlay.h"
 #include "capture/AudioCapture.h"
 #include "capture/RecordingGpuProbe.h"
+#include "capture/StudioTimeline.h"
 
 #include <windows.h>
 #include <string>
@@ -71,6 +72,9 @@ struct RecordOptions {
     // Opt-in diagnostics only. No current release session switches away from
     // the proven CPU frame/encoder path when this is true.
     bool experimentalGpuEncoding = false;
+    // Screen Studio 级自动运镜演播室双轨录制模式（纯净底片 + 高频光标/点击/焦点/语音时间轴）
+    bool studioMode = false;
+    StudioRenderConfig studioConfig{};
 };
 
 /// 录制统计
@@ -224,6 +228,12 @@ public:
     static void setMaxGifBytesForTesting(std::uint64_t bytes);
     static std::uint64_t maxGifBytesForTesting();
 
+    /// 查询并提取最近一次 Studio 演播室录制会话的时间轴与配置快照
+    bool wasLastSessionStudioMode() const noexcept { return m_lastSessionWasStudioMode.load(std::memory_order_acquire); }
+    int lastSessionBitrateMbps() const noexcept { return m_lastSessionBitrateMbps.load(std::memory_order_acquire); }
+    StudioRenderConfig lastStudioConfig() const;
+    StudioTimelineData takeLastStudioTimeline();
+
 private:
     struct FrameTimings {
         double captureMs = 0.0;
@@ -326,6 +336,12 @@ private:
     std::mutex m_snapshotMutex;
     std::vector<SnapshotTask> m_snapshotTasks;
     std::unique_ptr<struct GifPaletteOptimizer> m_gifOptimizer;
+    StudioTimelineRecorder m_studioRecorder;
+    mutable std::mutex m_studioDataMutex;
+    StudioTimelineData m_lastStudioTimeline;
+    StudioRenderConfig m_lastStudioConfig{};
+    std::atomic<bool> m_lastSessionWasStudioMode{false};
+    std::atomic<int> m_lastSessionBitrateMbps{8};
 };
 
 /// 对捕获的视频帧应用平滑圆角遮罩 (Alpha 镂空或平滑融合遮罩)

@@ -737,6 +737,15 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
     m_adaptiveFrameStep = 1;
     m_overloadScore = 0;
     m_recoveryScore = 0;
+    m_studioRecorder.stop();
+    const bool enableStudio = options.studioMode && options.format != RecordFormat::GIF;
+    m_lastSessionWasStudioMode.store(enableStudio, std::memory_order_release);
+    m_lastSessionBitrateMbps.store(options.bitrateMbps, std::memory_order_release);
+    {
+        std::lock_guard studioLock(m_studioDataMutex);
+        m_lastStudioConfig = options.studioConfig;
+        m_lastStudioTimeline = {};
+    }
 
     // 自动检测屏幕尺寸
     if (options.fps < 1 || options.fps > 120 ||
@@ -859,6 +868,7 @@ void ScreenRecorder::pauseRecording() {
         // samples are cleared. A recorder thread that observes Paused can then
         // never see the old audio state from the transition window.
         m_audioCapture.setPaused(true);
+        m_studioRecorder.setPaused(true);
         {
             std::lock_guard lock(m_statsMutex);
             m_stats.systemAudioPeak = 0.0f;
@@ -875,6 +885,7 @@ void ScreenRecorder::resumeRecording() {
     std::lock_guard controlLock(m_controlMutex);
     if (m_state == RecordState::Paused) {
         m_audioCapture.resetAndResumeForSyncStart();
+        m_studioRecorder.setPaused(false);
         m_state = RecordState::Recording;
         LOG_INFO("屏幕录制已恢复");
         notifyState(RecordState::Recording);
@@ -978,6 +989,16 @@ std::string ScreenRecorder::stopRecording() {
     // 等待录制线程结束（避免在工作线程自身中 join 产生死锁）
     if (m_recordThread.joinable() && std::this_thread::get_id() != m_recordThread.get_id()) {
         m_recordThread.join();
+    }
+
+    if (m_options.studioMode && m_options.format != RecordFormat::GIF) {
+        const auto curStats = stats();
+        const int64_t durMs = static_cast<int64_t>(std::llround(curStats.durationSec * 1000.0));
+        auto capturedTimeline = m_studioRecorder.takeTimelineData(durMs, m_options.studioConfig.defaultZoomFactor);
+        std::lock_guard studioLock(m_studioDataMutex);
+        m_lastStudioTimeline = std::move(capturedTimeline);
+    } else {
+        m_studioRecorder.stop();
     }
 
     const bool finalized = finalizeEncoder();
@@ -1096,6 +1117,18 @@ void ScreenRecorder::recordingLoop() {
             m_accountedDroppedAudioFrames = 0;
             if (m_state == RecordState::Recording) {
                 m_audioCapture.resetAndResumeForSyncStart();
+            }
+            if (m_options.studioMode && m_options.format != RecordFormat::GIF) {
+                m_studioRecorder.start(
+                    m_options.regionX,
+                    m_options.regionY,
+                    m_options.width,
+                    m_options.height,
+                    m_options.fps,
+                    m_options.studioConfig.autoCaptionsEnabled);
+                if (m_state == RecordState::Paused) {
+                    m_studioRecorder.setPaused(true);
+                }
             }
             nextFrameAt = clock::now();
         }
@@ -1981,10 +2014,15 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         std::lock_guard lock(m_statsMutex);
         m_stats.captureBackend = backendInfo.id;
     }
+    const bool cleanPlateStudio = (m_options.studioMode && m_options.format != RecordFormat::GIF);
+    const bool bakeCursorIntoPlate = m_options.includeCursor &&
+        !(cleanPlateStudio && m_options.studioConfig.smoothCursorEnabled);
+    const bool bakeEffectsIntoPlate = m_options.showClickEffects && !cleanPlateStudio;
+    const bool bakeZoomIntoPlate = m_options.showClickZoom && !cleanPlateStudio;
     [[maybe_unused]] auto cursorPatch = m_cursorOverlay.apply(
         captured,
         {m_options.regionX, m_options.regionY, m_options.width, m_options.height},
-        m_options.includeCursor, m_options.showClickEffects, m_options.showClickZoom);
+        bakeCursorIntoPlate, bakeEffectsIntoPlate, bakeZoomIntoPlate);
 
     const bool isPal8Gif = (m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8);
     if (m_options.cornerRadius > 0.5f && !isPal8Gif) {
@@ -2211,6 +2249,16 @@ std::string ScreenRecorder::formatExtension(RecordFormat format) {
         case RecordFormat::GIF:      return "gif";
         default: return "mp4";
     }
+}
+
+StudioRenderConfig ScreenRecorder::lastStudioConfig() const {
+    std::lock_guard lock(m_studioDataMutex);
+    return m_lastStudioConfig;
+}
+
+StudioTimelineData ScreenRecorder::takeLastStudioTimeline() {
+    std::lock_guard lock(m_studioDataMutex);
+    return std::move(m_lastStudioTimeline);
 }
 
 }  // namespace tools3000::capture

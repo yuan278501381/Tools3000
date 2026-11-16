@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback, type FC } from 'react';
 import { Card, Toggle, SettingRow, SettingGroup, TextInput, Select, Button } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
-import { Camera, Video, Palette, FolderOpen } from 'lucide-react';
+import { Camera, Video, Palette, FolderOpen, Sparkles } from 'lucide-react';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { toast } from 'sonner';
@@ -48,6 +48,14 @@ interface RecordingSettings {
   systemAudioVolume: number;
   microphoneVolume: number;
   countdownSeconds: number;
+  studioMode?: boolean;
+  studioAutoZoom?: boolean;
+  studioZoomFactor?: number;
+  studioSmoothCursor?: boolean;
+  studioCursorScale?: number;
+  studioAutoFrame?: boolean;
+  studioTheme?: string;
+  studioAutoCaptions?: boolean;
 }
 
 interface AudioDeviceInfo {
@@ -101,6 +109,9 @@ export const CapturePage: FC = () => {
     systemAudioDeviceId: '', microphoneDeviceId: '',
     systemAudioVolume: 100, microphoneVolume: 100,
     countdownSeconds: 3,
+    studioMode: false, studioAutoZoom: true, studioZoomFactor: 1.85,
+    studioSmoothCursor: true, studioCursorScale: 1.35,
+    studioAutoFrame: true, studioTheme: 'aurora_purple', studioAutoCaptions: true,
   });
   const [audioDevices, setAudioDevices] = useState<AudioDeviceInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -681,6 +692,87 @@ export const CapturePage: FC = () => {
                   options={audioVolumeOptions(recording.microphoneVolume)}
                 />
               </SettingRow>
+            </>
+          )}
+        </Card>
+      </SettingGroup>
+
+      <SettingGroup title={t('recording.studioGroupTitle')} icon={<Sparkles size={20} strokeWidth={2.5} />}>
+        <Card>
+          <Toggle
+            id="record-studio-mode"
+            label={t('recording.studioMode')}
+            description={t('recording.studioModeDesc')}
+            checked={recording.studioMode ?? false}
+            disabled={recording.format === 'gif'}
+            onChange={(v) => updateRecording('studioMode', v)}
+          />
+          {(recording.studioMode ?? false) && recording.format !== 'gif' && (
+            <>
+              <Toggle
+                id="record-studio-auto-zoom"
+                label={t('recording.studioAutoZoom')}
+                description={t('recording.studioAutoZoomDesc')}
+                checked={recording.studioAutoZoom ?? true}
+                onChange={(v) => updateRecording('studioAutoZoom', v)}
+              />
+              {(recording.studioAutoZoom ?? true) && (
+                <SettingRow label={t('recording.studioZoomFactor')} description={t('recording.studioZoomFactorDesc')}>
+                  <Select
+                    id="record-studio-zoom-factor"
+                    value={
+                      Math.abs((recording.studioZoomFactor ?? 1.85) - 1.5) < 0.12
+                        ? '1.5'
+                        : Math.abs((recording.studioZoomFactor ?? 1.85) - 2.2) < 0.15
+                          ? '2.2'
+                          : '1.85'
+                    }
+                    onChange={(v) => updateRecording('studioZoomFactor', parseFloat(v))}
+                    options={[
+                      { value: '1.5', label: t('recording.studioZoom150') },
+                      { value: '1.85', label: t('recording.studioZoom185') },
+                      { value: '2.2', label: t('recording.studioZoom220') },
+                    ]}
+                  />
+                </SettingRow>
+              )}
+              <Toggle
+                id="record-studio-smooth-cursor"
+                label={t('recording.studioSmoothCursor')}
+                description={t('recording.studioSmoothCursorDesc')}
+                checked={recording.studioSmoothCursor ?? true}
+                onChange={(v) => updateRecording('studioSmoothCursor', v)}
+              />
+              <Toggle
+                id="record-studio-auto-frame"
+                label={t('recording.studioAutoFrame')}
+                description={t('recording.studioAutoFrameDesc')}
+                checked={recording.studioAutoFrame ?? true}
+                onChange={(v) => updateRecording('studioAutoFrame', v)}
+              />
+              {(recording.studioAutoFrame ?? true) && (
+                <SettingRow label={t('recording.studioTheme')} description={t('recording.studioThemeDesc')}>
+                  <Select
+                    id="record-studio-theme"
+                    value={normalizeBeautyShellTheme(recording.studioTheme)}
+                    onChange={(v) => updateRecording('studioTheme', v)}
+                    options={[
+                      { value: 'aurora_purple', label: t('capture.themeAuroraPurple') },
+                      { value: 'sunrise_coral', label: t('capture.themeSunriseCoral') },
+                      { value: 'emerald_sea', label: t('capture.themeEmeraldSea') },
+                      { value: 'obsidian_dark', label: t('capture.themeObsidianDark') },
+                      { value: 'minimal_light', label: t('capture.themeMinimalLight') },
+                    ]}
+                  />
+                </SettingRow>
+              )}
+              <Toggle
+                id="record-studio-captions"
+                label={t('recording.studioAutoCaptions')}
+                description={t('recording.studioAutoCaptionsDesc')}
+                checked={recording.studioAutoCaptions ?? true}
+                onChange={(v) => updateRecording('studioAutoCaptions', v)}
+              />
             </>
           )}
         </Card>

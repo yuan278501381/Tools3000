@@ -13482,5 +13482,7 @@ TEST(PinContextMenuTest, Direct2DPixelPreviewRendersDarkAndLightThemesCleanly) {
     PinContextMenu::instance().shutdown();
 }
 
+#include "test_studio_recorder.inc"
+
 
 
