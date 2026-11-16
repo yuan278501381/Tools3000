@@ -1183,6 +1183,94 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
             break;
         }
 
+        // ── 41. 鼠标穿透 / 幽灵模式（半透虚边视窗 + 穿透光标箭头） ───────────────────
+        case CaptureIconId::ActionClickThrough: {
+            if (auto subBr = makeSubBrush(0.45f)) {
+                drawPolyline({ p(4.0f, 8.2f), p(4.0f, 4.2f), p(8.2f, 4.2f) }, false, stroke * 0.88f, subBr.Get());
+                drawPolyline({ p(13.8f, 4.2f), p(18.2f, 4.2f), p(18.2f, 8.2f) }, false, stroke * 0.88f, subBr.Get());
+                drawPolyline({ p(4.0f, 13.8f), p(4.0f, 18.2f), p(8.2f, 18.2f) }, false, stroke * 0.88f, subBr.Get());
+            }
+            auto ptrGeo = createPath({
+                p(10.6f, 9.8f),
+                p(10.6f, 19.6f),
+                p(13.4f, 16.9f),
+                p(15.6f, 20.6f),
+                p(17.5f, 19.6f),
+                p(15.3f, 15.9f),
+                p(19.2f, 15.6f)
+            }, true);
+            if (ptrGeo) {
+                if (auto fillBr = makeSubBrush(0.20f)) {
+                    rt->FillGeometry(ptrGeo.Get(), fillBr.Get());
+                }
+                rt->DrawGeometry(ptrGeo.Get(), brush, stroke * 0.90f, roundStroke.Get());
+            } else {
+                drawPolyline({ p(10.8f, 10.0f), p(10.8f, 19.2f), p(14.0f, 16.2f), p(19.0f, 15.8f) }, true, stroke * 0.90f);
+            }
+            break;
+        }
+
+        // ── 42. 逆时针旋转 90°（与 ActionRotate 严格镜像对称） ──────────────────────
+        case CaptureIconId::ActionRotateLeft: {
+            drawCircularArc(D2D1::Point2F(cx, cy), 8.0f * s, 220.0f, 285.0f, stroke);
+            drawPolyline({ p(4.5f, 3.8f), p(4.5f, 9.0f), p(9.7f, 9.0f) }, false, stroke);
+            break;
+        }
+
+        // ── 43. 水平镜像翻转（垂直对称虚轴 + 左右镜像双翼） ─────────────────────────
+        case CaptureIconId::ActionFlipHorizontal: {
+            if (auto axisBr = makeSubBrush(0.55f)) {
+                rt->DrawLine(p(12.0f, 3.8f), p(12.0f, 7.2f), axisBr.Get(), stroke * 0.85f, roundStroke.Get());
+                rt->DrawLine(p(12.0f, 10.3f), p(12.0f, 13.7f), axisBr.Get(), stroke * 0.85f, roundStroke.Get());
+                rt->DrawLine(p(12.0f, 16.8f), p(12.0f, 20.2f), axisBr.Get(), stroke * 0.85f, roundStroke.Get());
+            }
+            drawPolyline({ p(9.2f, 6.4f), p(3.8f, 12.0f), p(9.2f, 17.6f) }, true, stroke * 0.92f);
+            if (auto rightFill = makeSubBrush(0.24f)) {
+                if (auto rightGeo = createPath({ p(14.8f, 6.4f), p(20.2f, 12.0f), p(14.8f, 17.6f) }, true)) {
+                    rt->FillGeometry(rightGeo.Get(), rightFill.Get());
+                }
+            }
+            drawPolyline({ p(14.8f, 6.4f), p(20.2f, 12.0f), p(14.8f, 17.6f) }, true, stroke * 0.92f);
+            break;
+        }
+
+        // ── 44. 垂直镜像翻转（水平对称虚轴 + 上下镜像双翼） ─────────────────────────
+        case CaptureIconId::ActionFlipVertical: {
+            if (auto axisBr = makeSubBrush(0.55f)) {
+                rt->DrawLine(p(3.8f, 12.0f), p(7.2f, 12.0f), axisBr.Get(), stroke * 0.85f, roundStroke.Get());
+                rt->DrawLine(p(10.3f, 12.0f), p(13.7f, 12.0f), axisBr.Get(), stroke * 0.85f, roundStroke.Get());
+                rt->DrawLine(p(16.8f, 12.0f), p(20.2f, 12.0f), axisBr.Get(), stroke * 0.85f, roundStroke.Get());
+            }
+            drawPolyline({ p(6.4f, 9.2f), p(12.0f, 3.8f), p(17.6f, 9.2f) }, true, stroke * 0.92f);
+            if (auto botFill = makeSubBrush(0.24f)) {
+                if (auto botGeo = createPath({ p(6.4f, 14.8f), p(12.0f, 20.2f), p(17.6f, 14.8f) }, true)) {
+                    rt->FillGeometry(botGeo.Get(), botFill.Get());
+                }
+            }
+            drawPolyline({ p(6.4f, 14.8f), p(12.0f, 20.2f), p(17.6f, 14.8f) }, true, stroke * 0.92f);
+            break;
+        }
+
+        // ── 45. 多贴图网格整理（2x2 圆角微晶卡片阵列） ─────────────────────────────
+        case CaptureIconId::ActionArrangeGrid: {
+            const auto b1 = D2D1::RectF(p(4.0f, 4.0f).x, p(4.0f, 4.0f).y, p(10.6f, 10.6f).x, p(10.6f, 10.6f).y);
+            const auto b2 = D2D1::RectF(p(13.4f, 4.0f).x, p(13.4f, 4.0f).y, p(20.0f, 10.6f).x, p(20.0f, 10.6f).y);
+            const auto b3 = D2D1::RectF(p(4.0f, 13.4f).x, p(4.0f, 13.4f).y, p(10.6f, 20.0f).x, p(10.6f, 20.0f).y);
+            const auto b4 = D2D1::RectF(p(13.4f, 13.4f).x, p(13.4f, 13.4f).y, p(20.0f, 20.0f).x, p(20.0f, 20.0f).y);
+            const float r = 1.6f * s;
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(b1, r, r), brush, stroke * 0.88f, roundStroke.Get());
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(b2, r, r), brush, stroke * 0.88f, roundStroke.Get());
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(b3, r, r), brush, stroke * 0.88f, roundStroke.Get());
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(b4, r, r), brush, stroke * 0.88f, roundStroke.Get());
+            break;
+        }
+
+        // ── 46. 子菜单右向展开折角 (Chevron Right) ─────────────────────────────────
+        case CaptureIconId::UiChevronRight: {
+            drawPolyline({ p(9.2f, 6.2f), p(15.0f, 12.0f), p(9.2f, 17.8f) }, false, stroke * 0.96f);
+            break;
+        }
+
         default:
             break;
     }

@@ -87,6 +87,12 @@ enum class CaptureIconId {
     PropPolyline,
     PropSmoothCurve,
     ActionInvertSelection,
+    ActionClickThrough,
+    ActionRotateLeft,
+    ActionFlipHorizontal,
+    ActionFlipVertical,
+    ActionArrangeGrid,
+    UiChevronRight,
 };
 
 struct MarkupColor;

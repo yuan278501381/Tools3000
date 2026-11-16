@@ -14,6 +14,7 @@
 #include "capture/ScreenRecorder.h"
 #include "capture/RecordingIndicator.h"
 #include "capture/PinWindow.h"
+#include "capture/PinContextMenu.h"
 #include "capture/PinGroupBarOverlay.h"
 #include "capture/CaptureOverlay.h"
 #include "capture/CaptureHistory.h"
@@ -1803,6 +1804,7 @@ public:
         // 阶段 2: 所有后台任务线程已 100% 停止，最后排空(drain) UI 主线程回调队列并销毁全部 UI 宿主单例
         tools3000::core::MainThreadDispatcher::instance().drain();
         ScrollCaptureOverlay::instance().hide();
+        PinContextMenu::instance().shutdown();
         PinGroupBarOverlay::instance().shutdown();
         RecordingIndicator::instance().onPause(nullptr);
         RecordingIndicator::instance().onStop(nullptr);

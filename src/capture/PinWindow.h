@@ -213,6 +213,9 @@ public:
     /// 关闭所有贴图窗口
     static void closeAll();
 
+    /// 关闭除指定贴图外的所有其他贴图窗口
+    static void closeAllExcept(const PinWindow* keepPin);
+
     /// 隐藏/显示所有贴图（在屏幕贴满时一键看桌面；隐藏后靠快捷键恢复）
     static void toggleHideAll();
 

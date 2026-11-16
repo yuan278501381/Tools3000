@@ -10,6 +10,7 @@
 #include "capture/ScrollCaptureEditorOverlay.h"
 #include "capture/CaptureVectorIcons.h"
 #include "capture/MarkupCurveGeometry.h"
+#include "capture/PinContextMenu.h"
 
 TEST(CaptureBackendTest, Direct3DAndGdiSmoke) {
     const auto capabilities = tools3000::capture::captureBackendCapabilities();
@@ -13253,5 +13254,233 @@ TEST(CaptureMarkupRegression20261116, MultiPointPolylineAndCentripetalSmoothCurv
         cv::imwrite(dumpCurvePath, showEng.getCompositeImage(false));
     }
 }
+
+TEST(PinContextMenuTest, CognitiveLoadArchitectureAndDynamicStateBadges) {
+    using namespace tools3000::capture;
+
+    // 1. 单张默认贴图：一级可选菜单项严格收敛至 6 项，自动隐藏多贴图批处理，0 括号多别名噪音
+    PinContextMenuSnapshot singleSnap{};
+    singleSnap.isChinese = true;
+    singleSnap.totalPinCount = 1;
+    singleSnap.ungroupedPinCount = 1;
+    singleSnap.scale = 1.0f;
+    singleSnap.opacity = 1.0f;
+
+    const PinContextMenuData singleMenu = PinContextMenuBuilder::buildRootMenu(singleSnap);
+    EXPECT_TRUE(singleMenu.hasHeaderBar);
+    EXPECT_TRUE(singleMenu.hasOpacitySlider);
+    EXPECT_EQ(singleMenu.headerButtons[0].primaryCommand.action, PinMenuAction::CopyImage);
+    EXPECT_EQ(singleMenu.headerButtons[1].primaryCommand.action, PinMenuAction::EditMarkup);
+    EXPECT_EQ(singleMenu.headerButtons[2].primaryCommand.action, PinMenuAction::ExtractTextDialog);
+    EXPECT_EQ(singleMenu.headerButtons[3].primaryCommand.action, PinMenuAction::RotateRight90);
+    EXPECT_EQ(singleMenu.headerButtons[3].shiftCommand.action, PinMenuAction::RotateLeft90);
+    EXPECT_EQ(singleMenu.headerButtons[4].primaryCommand.action, PinMenuAction::ToggleInvert);
+    EXPECT_EQ(singleMenu.headerButtons[5].primaryCommand.action, PinMenuAction::SaveImage);
+
+    size_t selectableCount = 0;
+    bool hasBatchManageInSingle = false;
+    auto verifyCleanShortcuts = [](const std::vector<PinMenuItem>& list, auto& selfRef) -> void {
+        for (const auto& item : list) {
+            if (item.isSeparator) continue;
+            EXPECT_EQ(item.shortcutText.find(L'('), std::wstring::npos);
+            EXPECT_EQ(item.shortcutText.find(L')'), std::wstring::npos);
+            EXPECT_EQ(item.shortcutText.find(L'/'), std::wstring::npos);
+            if (!item.submenu.empty()) {
+                selfRef(item.submenu, selfRef);
+            }
+        }
+    };
+    verifyCleanShortcuts(singleMenu.items, verifyCleanShortcuts);
+
+    for (const auto& item : singleMenu.items) {
+        if (item.isSelectable()) {
+            ++selectableCount;
+            if (item.label.find(L"批量") != std::wstring::npos) {
+                hasBatchManageInSingle = true;
+            }
+        }
+    }
+    EXPECT_EQ(selectableCount, 6u);
+    EXPECT_FALSE(hasBatchManageInSingle);
+
+    // 2. 多贴图 + 局部 OCR 选字 + 非默认缩放/反色 + 宝石色分组：动态置顶与状态微标外显
+    PinContextMenuSnapshot richSnap{};
+    richSnap.isChinese = true;
+    richSnap.hasSelectedText = true;
+    richSnap.isInverted = true;
+    richSnap.isTextSelectionMode = true;
+    richSnap.scale = 1.25f;
+    richSnap.opacity = 0.75f;
+    richSnap.currentGroupId = 1;
+    richSnap.currentGroupShortLabel = L"226-星云科技";
+    richSnap.currentGroupAccentColor = D2D1::ColorF(0.23f, 0.51f, 0.96f, 1.0f);
+    richSnap.totalPinCount = 4;
+    richSnap.ungroupedPinCount = 2;
+    richSnap.groups.push_back({1, 2, true, true, L"226-星云科技", L"1组 · 226-星云科技", D2D1::ColorF(0.23f, 0.51f, 0.96f, 1.0f)});
+    richSnap.currentGroupColorPresets.push_back({1, L"星海蓝", D2D1::ColorF(0.23f, 0.51f, 0.96f, 1.0f), true});
+    richSnap.currentGroupColorPresets.push_back({2, L"翡翠绿", D2D1::ColorF(0.06f, 0.73f, 0.51f, 1.0f), false});
+
+    const PinContextMenuData richMenu = PinContextMenuBuilder::buildRootMenu(richSnap);
+    EXPECT_TRUE(richMenu.headerButtons[4].isActive);
+    ASSERT_FALSE(richMenu.items.empty());
+    EXPECT_EQ(richMenu.items.front().command.action, PinMenuAction::CopySelectedText);
+
+    bool foundTransformBadge = false;
+    bool foundGroupColorCascade = false;
+    bool foundMultiBatch = false;
+    for (const auto& item : richMenu.items) {
+        if (item.label == L"旋转翻转与滤镜") {
+            EXPECT_NE(item.statusBadge.find(L"125%"), std::wstring::npos);
+            EXPECT_NE(item.statusBadge.find(L"反色"), std::wstring::npos);
+            foundTransformBadge = true;
+        }
+        if (item.label == L"贴图分组") {
+            EXPECT_TRUE(item.hasColorDot);
+            EXPECT_EQ(item.statusBadge, L"226-星云科技");
+            for (const auto& sub : item.submenu) {
+                if (sub.label == L"切换本组颜色" && sub.submenu.size() == 2u) {
+                    EXPECT_TRUE(sub.submenu[0].hasColorDot);
+                    EXPECT_TRUE(sub.submenu[0].isChecked);
+                    foundGroupColorCascade = true;
+                }
+            }
+        }
+        if (item.label == L"多贴图批量管理") {
+            EXPECT_EQ(item.statusBadge, L"4 张");
+            foundMultiBatch = true;
+        }
+    }
+    EXPECT_TRUE(foundTransformBadge);
+    EXPECT_TRUE(foundGroupColorCascade);
+    EXPECT_TRUE(foundMultiBatch);
+
+    // 3. 英文模式零汉字字符污染校验
+    PinContextMenuSnapshot enSnap = richSnap;
+    enSnap.isChinese = false;
+    enSnap.currentGroupShortLabel = L"Nebula";
+    enSnap.groups[0].shortLabel = L"Nebula";
+    enSnap.groups[0].fullLabel = L"G1 · Nebula";
+    enSnap.currentGroupColorPresets[0].name = L"Sapphire";
+    enSnap.currentGroupColorPresets[1].name = L"Emerald";
+    const PinContextMenuData enMenu = PinContextMenuBuilder::buildRootMenu(enSnap);
+    auto verifyNoCjk = [](const std::wstring& s) {
+        for (wchar_t ch : s) {
+            EXPECT_FALSE(ch >= 0x4E00 && ch <= 0x9FFF) << "Unexpected CJK in English menu";
+        }
+    };
+    verifyNoCjk(enMenu.opacityLabel);
+    for (const auto& hb : enMenu.headerButtons) verifyNoCjk(hb.shortLabel);
+    for (const auto& it : enMenu.items) {
+        verifyNoCjk(it.label);
+        verifyNoCjk(it.statusBadge);
+    }
+}
+
+TEST(PinContextMenuTest, OpacitySliderMappingAndMultiMonitorEdgeFlip) {
+    using namespace tools3000::capture;
+
+    const D2D1_RECT_F track{100.0f, 60.0f, 300.0f, 65.0f};
+    EXPECT_NEAR(PinContextMenuLayoutEngine::opacityFromSliderX(50.0f, track), 0.10f, 0.001f);
+    EXPECT_NEAR(PinContextMenuLayoutEngine::opacityFromSliderX(350.0f, track), 1.00f, 0.001f);
+
+    const float x75 = PinContextMenuLayoutEngine::sliderXFromOpacity(0.75f, track);
+    EXPECT_NEAR(PinContextMenuLayoutEngine::opacityFromSliderX(x75 + 1.2f, track), 0.75f, 0.001f);
+
+    const float x50 = PinContextMenuLayoutEngine::sliderXFromOpacity(0.50f, track);
+    EXPECT_NEAR(PinContextMenuLayoutEngine::opacityFromSliderX(x50 - 1.0f, track), 0.50f, 0.001f);
+
+    // 屏幕右下角触发：自动向左上方翻转且视觉面板严格落在 workArea 内部
+    const RECT workArea{0, 0, 1920, 1040};
+    const SIZE rootSz{332, 360};
+    const float sh = 10.0f;
+    const POINT rootPos = PinContextMenuLayoutEngine::placeRootWindow(POINT{1905, 1020}, rootSz, workArea, sh);
+    EXPECT_GE(rootPos.x + static_cast<LONG>(sh), workArea.left);
+    EXPECT_LE(rootPos.x + rootSz.cx - static_cast<LONG>(sh), workArea.right);
+    EXPECT_GE(rootPos.y + static_cast<LONG>(sh), workArea.top);
+    EXPECT_LE(rootPos.y + rootSz.cy - static_cast<LONG>(sh), workArea.bottom);
+
+    // 父面板靠近屏幕右侧时，子菜单自动翻转至父面板左侧展开
+    const RECT parentPanelNearRight{1600, 300, 1910, 620};
+    const SIZE subSz{260, 240};
+    const POINT subPos = PinContextMenuLayoutEngine::placeSubmenuWindow(
+        parentPanelNearRight, 420.0f, subSz, workArea, sh, 3.0f);
+    const LONG subPanelRight = subPos.x + subSz.cx - static_cast<LONG>(sh);
+    EXPECT_LE(subPanelRight, parentPanelNearRight.left + 4);
+
+    // 超多分组子菜单超出屏幕高度时自动启用滚动视口
+    std::vector<PinMenuItem> manyItems(36);
+    for (size_t i = 0; i < manyItems.size(); ++i) {
+        manyItems[i].label = std::format(L"归入分组 {}", i + 1);
+        manyItems[i].command = {PinMenuAction::GroupAssign, static_cast<int>(i + 1)};
+    }
+    const PinMenuPanelLayout tallLayout = PinContextMenuLayoutEngine::computePanelLayout(
+        false, nullptr, false, {}, manyItems, 1.0f, 520.0f, nullptr);
+    EXPECT_GT(tallLayout.maxScrollOffsetY, 100.0f);
+    EXPECT_LE(tallLayout.windowSize.cy, 540);
+}
+
+TEST(PinContextMenuTest, Direct2DPixelPreviewRendersDarkAndLightThemesCleanly) {
+    using namespace tools3000::capture;
+
+    PinContextMenuSnapshot snap{};
+    snap.isChinese = true;
+    snap.isInverted = true;
+    snap.scale = 1.25f;
+    snap.opacity = 0.75f;
+    snap.currentGroupId = 1;
+    snap.nextAvailableGroupId = 3;
+    snap.currentGroupShortLabel = L"226-星云科技";
+    snap.currentGroupAccentColor = D2D1::ColorF(0.23f, 0.51f, 0.96f, 1.0f);
+    snap.totalPinCount = 3;
+    snap.ungroupedPinCount = 1;
+    snap.groups.push_back({1, 2, true, true, L"226-星云科技", L"1组 · 226-星云科技", D2D1::ColorF(0.23f, 0.51f, 0.96f, 1.0f)});
+    snap.groups.push_back({2, 0, true, false, L"2组", L"2组", D2D1::ColorF(0.06f, 0.73f, 0.51f, 1.0f)});
+
+    const PinContextMenuData rootData = PinContextMenuBuilder::buildRootMenu(snap);
+    cv::Mat darkBmp = PinContextMenu::instance().renderPreviewBitmap(rootData, 1.5f, 0, 3, true);
+    cv::Mat lightBmp = PinContextMenu::instance().renderPreviewBitmap(rootData, 1.5f, 3, 4, false);
+    ASSERT_FALSE(darkBmp.empty());
+    ASSERT_FALSE(lightBmp.empty());
+    EXPECT_EQ(darkBmp.channels(), 4);
+    EXPECT_GT(darkBmp.cols, 420);
+    EXPECT_GT(darkBmp.rows, 420);
+
+    // 四角外侧阴影边缘应完全透明，面板中心应为实心微晶底色
+    EXPECT_EQ(darkBmp.at<cv::Vec4b>(0, 0)[3], 0);
+    EXPECT_GT(darkBmp.at<cv::Vec4b>(darkBmp.rows / 2, darkBmp.cols / 2)[3], 200);
+    EXPECT_GT(lightBmp.at<cv::Vec4b>(lightBmp.rows / 2, lightBmp.cols / 2)[3], 200);
+
+    if (const char* dumpDir = std::getenv("TOOLS3000_DUMP_PIN_MENU_DIR"); dumpDir && *dumpDir) {
+        auto compositeOnBackdrop = [](const cv::Mat& bgra, cv::Scalar bgBgr) {
+            cv::Mat out(bgra.rows, bgra.cols, CV_8UC3, bgBgr);
+            for (int r = 0; r < bgra.rows; ++r) {
+                const auto* src = bgra.ptr<cv::Vec4b>(r);
+                auto* dst = out.ptr<cv::Vec3b>(r);
+                for (int c = 0; c < bgra.cols; ++c) {
+                    const float a = src[c][3] / 255.0f;
+                    // src is premultiplied BGRA
+                    for (int ch = 0; ch < 3; ++ch) {
+                        const float v = static_cast<float>(src[c][ch]) + static_cast<float>(dst[c][ch]) * (1.0f - a);
+                        dst[c][ch] = static_cast<uchar>(std::clamp(std::lround(v), 0L, 255L));
+                    }
+                }
+            }
+            return out;
+        };
+        const std::filesystem::path dirPath(dumpDir);
+        std::filesystem::create_directories(dirPath);
+        cv::imwrite((dirPath / "pin_menu_dark.png").string(), compositeOnBackdrop(darkBmp, cv::Scalar(46, 40, 36)));
+        cv::imwrite((dirPath / "pin_menu_light.png").string(), compositeOnBackdrop(lightBmp, cv::Scalar(242, 238, 234)));
+
+        const PinContextMenuData grpData = PinContextMenuBuilder::buildGroupOnlyMenu(snap);
+        cv::Mat grpBmp = PinContextMenu::instance().renderPreviewBitmap(grpData, 1.5f, -1, 0, true);
+        if (!grpBmp.empty()) {
+            cv::imwrite((dirPath / "pin_menu_group_sub.png").string(), compositeOnBackdrop(grpBmp, cv::Scalar(46, 40, 36)));
+        }
+    }
+
+    PinContextMenu::instance().shutdown();
+}
+
 
 
