@@ -24,10 +24,17 @@ import {
   Plus,
   ArrowUp,
   ArrowDown,
+  Compass,
+  Box,
+  Layers,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
 import { useAppearance } from './hooks/useAppearance';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
+import { QuickLookCadViewer, type DxfPreviewPayload } from './components/QuickLookCadViewer';
+import { QuickLook3dViewer, type Mesh3dPreviewPayload } from './components/QuickLook3dViewer';
 import { countTextLines, highlightCodeLines, highlightSingleCodeLine, renderMarkdownToHtml, splitNormalizedLines } from './quickLookMarkup';
 import './QuickLookApp.css';
 
@@ -59,6 +66,12 @@ interface FilePreviewData {
     | 'document'
     | 'office_legacy'
     | 'image'
+    | 'psd'
+    | 'cdr'
+    | 'vector_design'
+    | 'cad_snapshot'
+    | 'cad_dxf'
+    | 'model_3d'
     | 'video'
     | 'audio'
     | 'pdf'
@@ -76,10 +89,16 @@ interface FilePreviewData {
   totalSheetCount?: number;
   encrypted?: boolean;
   officeFallback?: boolean;
+  designFallback?: boolean;
+  designMeta?: string;
+  previewNoteKind?: string;
   pdfPages?: string[];
   pdfPageCount?: number;
   pdfPasswordProtected?: boolean;
   dataUri?: string;
+  imagePages?: string[];
+  dxfData?: DxfPreviewPayload;
+  meshData?: Mesh3dPreviewPayload;
   mediaUrl?: string;
   hexDump?: string;
   folderChildren?: Array<{
@@ -212,6 +231,7 @@ export default function QuickLookApp() {
   const [imageScale, setImageScale] = useState(1);
   const [pdfScale, setPdfScale] = useState(1);
   const [activeSheetIndex, setActiveSheetIndex] = useState(0);
+  const [activeImagePageIndex, setActiveImagePageIndex] = useState(0);
   const [showHexDump, setShowHexDump] = useState(false);
   const [imagePan, setImagePan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDraggingImage, setIsDraggingImage] = useState(false);
@@ -295,6 +315,7 @@ export default function QuickLookApp() {
     setImageScale(1);
     setPdfScale(1);
     setActiveSheetIndex(0);
+    setActiveImagePageIndex(0);
     setShowHexDump(false);
     setCopiedFeedback(false);
     setPinnedFeedback(false);
@@ -374,11 +395,14 @@ export default function QuickLookApp() {
           );
           const nonScrollingType =
             data.type === 'image' ||
+            data.type === 'cad_dxf' ||
+            data.type === 'model_3d' ||
             data.type === 'audio' ||
             data.type === 'video' ||
             data.type === 'office_legacy' ||
             data.type === 'binary' ||
-            Boolean(data.officeFallback);
+            Boolean(data.officeFallback) ||
+            Boolean(data.designFallback);
           if (nonScrollingType || !hasVerticalOverflow) {
             e.preventDefault();
             void bridgeRequest('quicklook.stepSelection', { delta });
@@ -528,6 +552,14 @@ export default function QuickLookApp() {
   const fileIcon = useMemo(() => {
     if (!data) return <FileText size={18} />;
     if (data.isDirectory) return <Folder size={18} />;
+    const lowerExt = (data.extension || '').toLowerCase();
+    if (lowerExt === 'dxf' || lowerExt === 'dwg') return <Compass size={18} />;
+    if (lowerExt === 'stl' || lowerExt === 'obj' || lowerExt === 'sldprt' || lowerExt === 'sldasm' || lowerExt === 'skp') {
+      return <Box size={18} />;
+    }
+    if (lowerExt === 'psd' || lowerExt === 'psb' || lowerExt === 'cdr' || lowerExt === 'ai' || lowerExt === 'eps') {
+      return <Layers size={18} />;
+    }
     switch (data.type) {
       case 'markdown':
       case 'document':
@@ -538,6 +570,15 @@ export default function QuickLookApp() {
         return <Table2 size={18} />;
       case 'spreadsheet':
         return <FileSpreadsheet size={18} />;
+      case 'cad_dxf':
+      case 'cad_snapshot':
+        return <Compass size={18} />;
+      case 'model_3d':
+        return <Box size={18} />;
+      case 'psd':
+      case 'cdr':
+      case 'vector_design':
+        return <Layers size={18} />;
       case 'image':
         return <Image size={18} />;
       case 'video':
@@ -554,7 +595,23 @@ export default function QuickLookApp() {
   const typeLabel = useMemo(() => {
     if (!data) return '';
     if (data.isDirectory) return t('quicklook.typeFolder', 'Folder');
+    const lowerExt = (data.extension || '').toLowerCase();
     const upperExt = (data.extension || '').toUpperCase();
+    if (lowerExt === 'ai' || lowerExt === 'eps') {
+      return t('quicklook.typeVectorDesign', '{{ext}} Vector Artwork', { ext: upperExt });
+    }
+    if (lowerExt === 'psd' || lowerExt === 'psb') {
+      return t('quicklook.typePsd', '{{ext}} Design Document', { ext: upperExt });
+    }
+    if (lowerExt === 'cdr') {
+      return t('quicklook.typeCdr', 'CorelDRAW Artwork');
+    }
+    if (lowerExt === 'dwg' || lowerExt === 'dxf') {
+      return t('quicklook.typeCadDrawing', '{{ext}} CAD Drawing', { ext: upperExt });
+    }
+    if (lowerExt === 'stl' || lowerExt === 'obj' || lowerExt === 'sldprt' || lowerExt === 'sldasm' || lowerExt === 'skp') {
+      return t('quicklook.type3dModel', '{{ext}} 3D Model', { ext: upperExt });
+    }
     switch (data.type) {
       case 'markdown':
         return t('quicklook.typeMarkdown', 'Markdown Document');
@@ -565,6 +622,17 @@ export default function QuickLookApp() {
       case 'document':
       case 'office_legacy':
         return t('quicklook.typeOfficeDoc', '{{ext}} Document', { ext: upperExt || 'DOC' });
+      case 'cad_dxf':
+      case 'cad_snapshot':
+        return t('quicklook.typeCadDrawing', '{{ext}} CAD Drawing', { ext: upperExt || 'CAD' });
+      case 'model_3d':
+        return t('quicklook.type3dModel', '{{ext}} 3D Model', { ext: upperExt || '3D' });
+      case 'psd':
+        return t('quicklook.typePsd', '{{ext}} Design Document', { ext: upperExt || 'PSD' });
+      case 'cdr':
+        return t('quicklook.typeCdr', 'CorelDRAW Artwork');
+      case 'vector_design':
+        return t('quicklook.typeVectorDesign', '{{ext}} Vector Artwork', { ext: upperExt || 'AI' });
       case 'image':
         return t('quicklook.typeImage', '{{ext}} Image', { ext: upperExt });
       case 'video':
@@ -767,10 +835,21 @@ export default function QuickLookApp() {
   }
 
   const resolvedMediaSrc = data.mediaUrl || '';
-  const resolvedImageSrc = data.dataUri || data.mediaUrl || '';
+  const hasMultiImagePages = Boolean(data.imagePages && data.imagePages.length > 1);
+  const clampedImagePageIdx = hasMultiImagePages
+    ? Math.min(activeImagePageIndex, (data.imagePages?.length ?? 1) - 1)
+    : 0;
+  const resolvedImageSrc =
+    (hasMultiImagePages ? data.imagePages?.[clampedImagePageIdx] : undefined) ||
+    data.dataUri ||
+    data.mediaUrl ||
+    '';
   const isAsyncLoadingSkeleton = Boolean(
     data.loading &&
       !data.content &&
+      !data.dataUri &&
+      !data.dxfData &&
+      !data.meshData &&
       (!data.sheets || data.sheets.length === 0) &&
       (!data.pdfPages || data.pdfPages.length === 0) &&
       !data.mediaUrl &&
@@ -789,11 +868,24 @@ export default function QuickLookApp() {
         (data.truncated || activeSpreadsheetSheet?.truncatedRows || activeSpreadsheetSheet?.truncatedCols)),
   );
   const showGenericTruncatedBanner = Boolean(
-    data.truncated && data.type !== 'csv' && data.type !== 'spreadsheet',
+    data.truncated &&
+      data.type !== 'csv' &&
+      data.type !== 'spreadsheet' &&
+      data.type !== 'cad_dxf' &&
+      data.type !== 'model_3d',
+  );
+  const showCadSnapshotBanner = Boolean(
+    !isAsyncLoadingSkeleton && data.previewNoteKind === 'cad_snapshot',
+  );
+  const showDxfTruncatedBanner = Boolean(
+    !isAsyncLoadingSkeleton && data.type === 'cad_dxf' && data.truncated && data.dxfData,
+  );
+  const showMeshTruncatedBanner = Boolean(
+    !isAsyncLoadingSkeleton && data.type === 'model_3d' && data.truncated && data.meshData,
   );
   const showFallbackCard = Boolean(
     !isAsyncLoadingSkeleton &&
-      (data.officeFallback || data.type === 'office_legacy' || data.type === 'binary'),
+      (data.officeFallback || data.designFallback || data.type === 'office_legacy' || data.type === 'binary'),
   );
 
   return (
@@ -809,6 +901,7 @@ export default function QuickLookApp() {
             </div>
             <div className="ql-file-sub-row">
               <span>{data.isDirectory ? t('quicklook.typeFolder', 'Folder') : data.formattedSize}</span>
+              {data.designMeta && <span>· {data.designMeta}</span>}
               {data.encoding && <span>· {data.encoding}</span>}
               {linesCount > 0 && <span>· {t('quicklook.linesCount', '{{count}} lines', { count: linesCount })}</span>}
               {data.type === 'pdf' && typeof data.pdfPageCount === 'number' && data.pdfPageCount > 0 && (
@@ -849,6 +942,42 @@ export default function QuickLookApp() {
               >
                 <span>A</span>
                 <Plus size={11} strokeWidth={2.25} aria-hidden="true" />
+              </button>
+            </div>
+          )}
+
+          {data.type === 'image' && hasMultiImagePages && (
+            <div className="ql-code-controls">
+              <button
+                type="button"
+                className="ql-btn-sub"
+                onClick={() => {
+                  setActiveImagePageIndex(prev => Math.max(0, prev - 1));
+                  setImagePan({ x: 0, y: 0 });
+                }}
+                disabled={clampedImagePageIdx <= 0}
+                title={t('quicklook.prevPage', 'Previous Page')}
+                aria-label={t('quicklook.prevPage', 'Previous Page')}
+              >
+                <ChevronLeft size={13} strokeWidth={2.2} aria-hidden="true" />
+              </button>
+              <span className="ql-scale-text">
+                {clampedImagePageIdx + 1} / {data.imagePages?.length ?? 1}
+              </span>
+              <button
+                type="button"
+                className="ql-btn-sub"
+                onClick={() => {
+                  setActiveImagePageIndex(prev =>
+                    Math.min((data.imagePages?.length ?? 1) - 1, prev + 1),
+                  );
+                  setImagePan({ x: 0, y: 0 });
+                }}
+                disabled={clampedImagePageIdx >= (data.imagePages?.length ?? 1) - 1}
+                title={t('quicklook.nextPage', 'Next Page')}
+                aria-label={t('quicklook.nextPage', 'Next Page')}
+              >
+                <ChevronRight size={13} strokeWidth={2.2} aria-hidden="true" />
               </button>
             </div>
           )}
@@ -1003,6 +1132,63 @@ export default function QuickLookApp() {
         {showTableNoticeBanner && (
           <div className="ql-truncated-banner" role="status">
             <span>{t('quicklook.tableTruncatedNotice', 'Showing top rows and columns for instant preview.')}</span>
+            <button
+              type="button"
+              className="ql-truncated-open-btn"
+              onClick={() => void bridgeRequest('quicklook.open', { path: data.path })}
+            >
+              <ExternalLink size={12} aria-hidden="true" />
+              <span>{t('quicklook.openFullFile', 'Open Full File')}</span>
+            </button>
+          </div>
+        )}
+
+        {showCadSnapshotBanner && (
+          <div className="ql-truncated-banner ql-snapshot-banner" role="status" data-testid="ql-cad-snapshot-banner">
+            <span>
+              {t(
+                'quicklook.cadSnapshotNotice',
+                'Showing fast drawing snapshot (preserving TArch & custom objects). Press Enter to open and edit in your default CAD software.',
+              )}
+            </span>
+            <button
+              type="button"
+              className="ql-truncated-open-btn"
+              onClick={() => void bridgeRequest('quicklook.open', { path: data.path })}
+            >
+              <ExternalLink size={12} aria-hidden="true" />
+              <span>{t('quicklook.openFullFile', 'Open Full File')}</span>
+            </button>
+          </div>
+        )}
+
+        {showDxfTruncatedBanner && data.dxfData && (
+          <div className="ql-truncated-banner" role="status">
+            <span>
+              {t('quicklook.dxfTruncatedNotice', 'Large drawing detected: rendering first {{shown}} of {{total}} vector entities for instant response.', {
+                shown: data.dxfData.entities.length,
+                total: data.dxfData.totalEntities,
+              })}
+            </span>
+            <button
+              type="button"
+              className="ql-truncated-open-btn"
+              onClick={() => void bridgeRequest('quicklook.open', { path: data.path })}
+            >
+              <ExternalLink size={12} aria-hidden="true" />
+              <span>{t('quicklook.openFullFile', 'Open Full File')}</span>
+            </button>
+          </div>
+        )}
+
+        {showMeshTruncatedBanner && data.meshData && (
+          <div className="ql-truncated-banner" role="status">
+            <span>
+              {t('quicklook.meshTruncatedNotice', 'High-density mesh uniformly sampled ({{shown}} / {{total}} triangles) for 60 FPS interaction.', {
+                shown: data.meshData.sampledTriangles,
+                total: data.meshData.totalTriangles,
+              })}
+            </span>
             <button
               type="button"
               className="ql-truncated-open-btn"
@@ -1285,22 +1471,33 @@ export default function QuickLookApp() {
           </div>
         )}
 
+        {!isAsyncLoadingSkeleton && data.type === 'cad_dxf' && data.dxfData && (
+          <QuickLookCadViewer key={data.path} dxfData={data.dxfData} />
+        )}
+
+        {!isAsyncLoadingSkeleton && data.type === 'model_3d' && data.meshData && (
+          <QuickLook3dViewer key={data.path} meshData={data.meshData} />
+        )}
+
         {showFallbackCard && (
           <div className="ql-binary-view">
             <div className="ql-binary-card">
               <div className="ql-binary-icon">
-                {data.encrypted ? <Lock size={36} /> : data.type === 'binary' ? <FileDigit size={36} /> : <FileText size={36} />}
+                {data.encrypted ? <Lock size={36} /> : data.designFallback ? fileIcon : data.type === 'binary' ? <FileDigit size={36} /> : <FileText size={36} />}
               </div>
               <div className="ql-binary-name">{data.name}</div>
               <div className="ql-binary-meta">
-                {data.formattedSize} · {data.type === 'binary' ? t('quicklook.typeBinary', 'Binary File') : typeLabel}
+                {data.formattedSize}
+                {data.designMeta ? ` · ${data.designMeta}` : ` · ${data.type === 'binary' ? t('quicklook.typeBinary', 'Binary File') : typeLabel}`}
               </div>
               <p className="ql-binary-hint">
                 {data.encrypted
                   ? t('quicklook.encryptedDocHint', 'This document is encrypted or password-protected. Press Enter to open it in its native application.')
-                  : data.officeFallback || data.type === 'office_legacy'
-                    ? t('quicklook.officeFallbackHint', 'Direct preview is unavailable for this document format. Press Enter to open it in your default office app.')
-                    : t('quicklook.binaryHint', 'This file is in binary format. Click the button below or press Enter to open it in its default application.')}
+                  : data.designFallback
+                    ? t('quicklook.designFallbackHint', 'Embedded preview is unavailable for this design or CAD file. Press Enter to open it in its dedicated professional software.')
+                    : data.officeFallback || data.type === 'office_legacy'
+                      ? t('quicklook.officeFallbackHint', 'Direct preview is unavailable for this document format. Press Enter to open it in your default office app.')
+                      : t('quicklook.binaryHint', 'This file is in binary format. Click the button below or press Enter to open it in its default application.')}
               </p>
               <div className="ql-binary-actions">
                 <button

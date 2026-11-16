@@ -1681,10 +1681,23 @@ PdfPreviewResult OfficeAndPdfPreview::renderPdfPreviewPages(
     if (rawPdf.size() < 5) {
         return res;
     }
+    return renderPdfPreviewPagesFromMemory(rawPdf.data(), rawPdf.size(), maxPages, targetWidthPx);
+}
 
+PdfPreviewResult OfficeAndPdfPreview::renderPdfPreviewPagesFromMemory(
+    const uint8_t* pdfBytes,
+    size_t pdfSize,
+    uint32_t maxPages,
+    uint32_t targetWidthPx) {
+    PdfPreviewResult res;
+    if (!pdfBytes || pdfSize < 8) {
+        return res;
+    }
+
+    std::vector<uint8_t> buffer(pdfBytes, pdfBytes + pdfSize);
     if (isCurrentThreadStaApartment()) {
         auto sharedRes = std::make_shared<PdfPreviewResult>();
-        auto sharedBuf = std::make_shared<std::vector<uint8_t>>(std::move(rawPdf));
+        auto sharedBuf = std::make_shared<std::vector<uint8_t>>(std::move(buffer));
         std::thread mtaWorker([sharedRes, sharedBuf, maxPages, targetWidthPx]() {
             *sharedRes = rasterizePdfBufferOnMta(*sharedBuf, maxPages, targetWidthPx);
         });
@@ -1693,7 +1706,69 @@ PdfPreviewResult OfficeAndPdfPreview::renderPdfPreviewPages(
         }
         return res;
     }
-    return rasterizePdfBufferOnMta(rawPdf, maxPages, targetWidthPx);
+    return rasterizePdfBufferOnMta(buffer, maxPages, targetWidthPx);
+}
+
+PdfPreviewResult OfficeAndPdfPreview::renderAiOrEpsPreviewPages(
+    const std::wstring& filePath,
+    uint32_t maxPages,
+    uint32_t targetWidthPx) {
+    PdfPreviewResult res;
+    std::vector<uint8_t> raw;
+    if (!readFileBytesZeroLock(filePath, kMaxPreviewArchiveBytes, raw)) {
+        return res;
+    }
+    if (raw.size() < 8) {
+        return res;
+    }
+
+    static constexpr size_t kMaxPdfHeaderScanBytes = 4ULL * 1024ULL * 1024ULL;
+    const size_t scanLimit = (std::min)(raw.size(), kMaxPdfHeaderScanBytes);
+    size_t pdfOffset = std::string::npos;
+    for (size_t i = 0; i + 7 < scanLimit; ++i) {
+        if (raw[i] == '%' && raw[i + 1] == 'P' && raw[i + 2] == 'D' &&
+            raw[i + 3] == 'F' && raw[i + 4] == '-' &&
+            std::isdigit(static_cast<unsigned char>(raw[i + 5])) &&
+            raw[i + 6] == '.') {
+            pdfOffset = i;
+            break;
+        }
+    }
+    if (pdfOffset == std::string::npos) {
+        return res;
+    }
+
+    const uint8_t* sliceStart = raw.data() + pdfOffset;
+    const size_t sliceLen = raw.size() - pdfOffset;
+    res = renderPdfPreviewPagesFromMemory(sliceStart, sliceLen, maxPages, targetWidthPx);
+    if (res.ok || res.passwordProtected) {
+        return res;
+    }
+
+    // 部分混合 PostScript + PDF 的 .eps/.ai 在 PDF %%EOF 后跟有大量 PostScript 尾注，
+    // 导致严格校验尾部 %%EOF 距离的解析器退回；自动裁剪至首个有效 %%EOF 边界重试。
+    static constexpr char kEofMarker[] = "%%EOF";
+    std::string_view pdfView(reinterpret_cast<const char*>(sliceStart), sliceLen);
+    size_t searchFrom = 8;
+    while (searchFrom < pdfView.size()) {
+        const size_t eofPos = pdfView.find(kEofMarker, searchFrom);
+        if (eofPos == std::string_view::npos) {
+            break;
+        }
+        size_t cutLen = eofPos + (sizeof(kEofMarker) - 1);
+        while (cutLen < pdfView.size() && (pdfView[cutLen] == '\r' || pdfView[cutLen] == '\n')) {
+            ++cutLen;
+        }
+        if (cutLen < sliceLen) {
+            auto retryRes = renderPdfPreviewPagesFromMemory(sliceStart, cutLen, maxPages, targetWidthPx);
+            if (retryRes.ok || retryRes.passwordProtected) {
+                return retryRes;
+            }
+        }
+        searchFrom = eofPos + 5;
+    }
+
+    return res;
 }
 
 } // namespace tools3000::core

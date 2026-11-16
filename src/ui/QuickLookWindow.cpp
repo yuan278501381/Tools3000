@@ -11,6 +11,7 @@
 #include "core/utils/WinUtils.h"
 #include "core/utils/TextFilePreviewDecoder.h"
 #include "core/utils/OfficeAndPdfPreview.h"
+#include "core/utils/DesignAndCadPreview.h"
 #include "ui/WebViewEnvironmentManager.h"
 #include "ui/WebViewDpi.h"
 #include "ui/WebViewWindowStyle.h"
@@ -20,12 +21,15 @@
 #include <wrl/event.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <wincrypt.h>
 #include <windowsx.h>
 #include "../resource.h"
 #include <nlohmann/json.hpp>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <iomanip>
 #include <chrono>
@@ -116,6 +120,119 @@ std::string extractLowerExtUtf8(const std::filesystem::path& p, bool isDir) {
     return ext;
 }
 
+std::mutex g_cachedPinMutex;
+std::wstring g_cachedPinSourcePath;
+std::string g_cachedPinDataUri;
+
+void updateCachedPinDataUri(const std::wstring& filePath, const std::string& dataUri) {
+    std::lock_guard lock(g_cachedPinMutex);
+    if (dataUri.empty()) {
+        g_cachedPinSourcePath.clear();
+        g_cachedPinDataUri.clear();
+    } else {
+        g_cachedPinSourcePath = filePath;
+        g_cachedPinDataUri = dataUri;
+    }
+}
+
+void clearCachedPinDataUri() {
+    std::lock_guard lock(g_cachedPinMutex);
+    g_cachedPinSourcePath.clear();
+    g_cachedPinDataUri.clear();
+    g_cachedPinDataUri.shrink_to_fit();
+}
+
+bool writeDataUriToTempImageFile(const std::string& dataUri, std::wstring& outTempPath) {
+    outTempPath.clear();
+    const size_t comma = dataUri.find(";base64,");
+    if (dataUri.rfind("data:image/", 0) != 0 || comma == std::string::npos) {
+        return false;
+    }
+    const std::string_view fmt(dataUri.data() + 11, comma - 11);
+    const wchar_t* ext = L".png";
+    if (fmt == "jpeg" || fmt == "jpg") ext = L".jpg";
+    else if (fmt == "bmp") ext = L".bmp";
+    else if (fmt == "webp") ext = L".webp";
+
+    const char* b64Start = dataUri.data() + comma + 8;
+    const DWORD b64Len = static_cast<DWORD>(dataUri.size() - (comma + 8));
+    DWORD binLen = 0;
+    if (!CryptStringToBinaryA(b64Start, b64Len, CRYPT_STRING_BASE64, nullptr, &binLen, nullptr, nullptr) ||
+        binLen == 0 || binLen > 64ULL * 1024ULL * 1024ULL) {
+        return false;
+    }
+    std::vector<uint8_t> decoded(binLen);
+    if (!CryptStringToBinaryA(b64Start, b64Len, CRYPT_STRING_BASE64, decoded.data(), &binLen, nullptr, nullptr)) {
+        return false;
+    }
+    decoded.resize(binLen);
+
+    wchar_t tempDir[MAX_PATH] = {};
+    if (GetTempPathW(MAX_PATH, tempDir) == 0) {
+        return false;
+    }
+    wchar_t fileName[96] = {};
+    std::swprintf(fileName, std::size(fileName), L"Tools3000_QLPin_%lu_%llu%ls",
+                  GetCurrentProcessId(), static_cast<unsigned long long>(GetTickCount64()), ext);
+    const std::filesystem::path fullTemp = std::filesystem::path(tempDir) / fileName;
+
+    HANDLE hOut = CreateFileW(
+        fullTemp.c_str(),
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_TEMPORARY,
+        nullptr);
+    if (hOut == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    DWORD written = 0;
+    const BOOL ok = WriteFile(hOut, decoded.data(), static_cast<DWORD>(decoded.size()), &written, nullptr);
+    CloseHandle(hOut);
+    if (!ok || written != decoded.size()) {
+        DeleteFileW(fullTemp.c_str());
+        return false;
+    }
+    outTempPath = fullTemp.wstring();
+    return true;
+}
+
+std::string encodeFloat32BufferBase64(const std::vector<float>& floats) {
+    if (floats.empty()) return {};
+    const auto* rawBytes = reinterpret_cast<const uint8_t*>(floats.data());
+    const size_t byteLen = floats.size() * sizeof(float);
+    DWORD b64Chars = 0;
+    if (!CryptBinaryToStringA(
+            rawBytes,
+            static_cast<DWORD>(byteLen),
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            nullptr,
+            &b64Chars) || b64Chars == 0) {
+        return {};
+    }
+    std::string out(b64Chars, '\0');
+    DWORD written = b64Chars;
+    if (!CryptBinaryToStringA(
+            rawBytes,
+            static_cast<DWORD>(byteLen),
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            out.data(),
+            &written)) {
+        return {};
+    }
+    out.resize(written);
+    while (!out.empty() && out.back() == '\0') {
+        out.pop_back();
+    }
+    return out;
+}
+
+double roundCoordForJson(double v) noexcept {
+    if (!std::isfinite(v)) return 0.0;
+    return std::round(v * 1000.0) * 0.001;
+}
+
 std::string detectFileTypeByExtension(const std::filesystem::path& p, bool isDir) {
     if (isDir) return "folder";
     const std::string ext = extractLowerExtUtf8(p, false);
@@ -126,6 +243,12 @@ std::string detectFileTypeByExtension(const std::filesystem::path& p, bool isDir
     if (ext == "docx" || ext == "pptx") return "document";
     if (ext == "doc" || ext == "xls" || ext == "ppt" || ext == "rtf") return "office_legacy";
     if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp" || ext == "gif" || ext == "bmp" || ext == "svg" || ext == "ico") return "image";
+    if (ext == "psd" || ext == "psb") return "psd";
+    if (ext == "cdr") return "cdr";
+    if (ext == "ai" || ext == "eps") return "vector_design";
+    if (ext == "dwg" || ext == "sldprt" || ext == "sldasm" || ext == "skp") return "cad_snapshot";
+    if (ext == "dxf") return "cad_dxf";
+    if (ext == "stl" || ext == "obj") return "model_3d";
     if (ext == "mp4" || ext == "webm" || ext == "mkv" || ext == "mov" || ext == "avi") return "video";
     if (ext == "mp3" || ext == "wav" || ext == "ogg" || ext == "flac" || ext == "aac" || ext == "m4a") return "audio";
     if (ext == "pdf") return "pdf";
@@ -198,7 +321,9 @@ json generateFastInitialPreviewPayload(const std::wstring& filePath, bool& outNe
         outNeedsAsyncDeepLoad = true;
     } else if (type == "markdown" || type == "code" || type == "csv" ||
                type == "spreadsheet" || type == "document" || type == "office_legacy" ||
-               type == "pdf" || type == "binary") {
+               type == "pdf" || type == "psd" || type == "cdr" || type == "vector_design" ||
+               type == "cad_snapshot" || type == "cad_dxf" || type == "model_3d" ||
+               type == "binary") {
         payload["content"] = "";
         payload["loading"] = true;
         outNeedsAsyncDeepLoad = true;
@@ -319,6 +444,145 @@ json generateFilePreviewPayload(const std::wstring& filePath) {
         } else if (pdf.ok) {
             payload["pdfPageCount"] = pdf.totalPageCount;
             payload["pdfPages"] = std::move(pdf.pageDataUris);
+        }
+    } else if (type == "vector_design") {
+        auto pdf = tools3000::core::OfficeAndPdfPreview::renderAiOrEpsPreviewPages(filePath, 6, 1240);
+        if (pdf.passwordProtected) {
+            payload["type"] = "pdf";
+            payload["pdfPasswordProtected"] = true;
+        } else if (pdf.ok) {
+            payload["type"] = "pdf";
+            payload["pdfPageCount"] = pdf.totalPageCount;
+            payload["pdfPages"] = std::move(pdf.pageDataUris);
+        } else {
+            auto snap = tools3000::core::DesignAndCadPreview::extractCadOr3dSnapshotPreview(filePath, ext, true);
+            if (!snap.metaSummary.empty()) {
+                payload["designMeta"] = snap.metaSummary;
+            }
+            if (snap.ok) {
+                payload["type"] = "image";
+                payload["dataUri"] = std::move(snap.dataUri);
+            } else {
+                payload["designFallback"] = true;
+            }
+        }
+    } else if (type == "psd") {
+        auto psd = tools3000::core::DesignAndCadPreview::extractPsdPreview(filePath, 2560, true);
+        if (!psd.metaSummary.empty()) {
+            payload["designMeta"] = psd.metaSummary;
+        }
+        if (psd.ok) {
+            payload["type"] = "image";
+            payload["dataUri"] = std::move(psd.dataUri);
+        } else {
+            payload["designFallback"] = true;
+        }
+    } else if (type == "cdr") {
+        auto cdr = tools3000::core::DesignAndCadPreview::extractCdrPreview(filePath, true);
+        if (!cdr.metaSummary.empty()) {
+            payload["designMeta"] = cdr.metaSummary;
+        }
+        if (cdr.ok) {
+            payload["type"] = "image";
+            payload["dataUri"] = std::move(cdr.dataUri);
+            if (cdr.pageDataUris.size() > 1) {
+                payload["imagePages"] = std::move(cdr.pageDataUris);
+            }
+        } else {
+            payload["designFallback"] = true;
+        }
+    } else if (type == "cad_snapshot") {
+        auto snap = tools3000::core::DesignAndCadPreview::extractCadOr3dSnapshotPreview(filePath, ext, true);
+        if (!snap.metaSummary.empty()) {
+            payload["designMeta"] = snap.metaSummary;
+        }
+        if (snap.ok) {
+            payload["type"] = "image";
+            payload["dataUri"] = std::move(snap.dataUri);
+            payload["previewNoteKind"] = "cad_snapshot";
+        } else {
+            payload["designFallback"] = true;
+        }
+    } else if (type == "cad_dxf") {
+        auto dxf = tools3000::core::DesignAndCadPreview::extractDxfVectorPreview(filePath, 30000);
+        if (dxf.ok) {
+            payload["encoding"] = dxf.encoding;
+            payload["truncated"] = dxf.truncated;
+
+            json layersJson = json::array();
+            for (const auto& ly : dxf.layers) {
+                layersJson.push_back({
+                    {"name", ly.name},
+                    {"colorHex", ly.colorHex},
+                    {"adaptive", ly.adaptiveDefaultColor},
+                    {"count", ly.entityCount}
+                });
+            }
+
+            json entsJson = json::array();
+            for (const auto& ent : dxf.entities) {
+                json coordsJson = json::array();
+                for (double c : ent.coords) {
+                    coordsJson.push_back(roundCoordForJson(c));
+                }
+                json item = {
+                    {"k", static_cast<int>(ent.kind)},
+                    {"l", ent.layer},
+                    {"c", ent.colorHex},
+                    {"a", ent.adaptiveDefaultColor},
+                    {"pts", std::move(coordsJson)}
+                };
+                if (ent.closed) item["cl"] = true;
+                if (ent.kind == tools3000::core::DxfEntityKind::Circle ||
+                    ent.kind == tools3000::core::DxfEntityKind::Arc) {
+                    item["r"] = roundCoordForJson(ent.radius);
+                }
+                if (ent.kind == tools3000::core::DxfEntityKind::Arc) {
+                    item["sa"] = roundCoordForJson(ent.startAngleDeg);
+                    item["ea"] = roundCoordForJson(ent.endAngleDeg);
+                }
+                if (ent.kind == tools3000::core::DxfEntityKind::Text) {
+                    item["th"] = roundCoordForJson(ent.textHeight);
+                    if (std::abs(ent.rotationDeg) > 1e-3) {
+                        item["rot"] = roundCoordForJson(ent.rotationDeg);
+                    }
+                    item["t"] = ent.text;
+                }
+                entsJson.push_back(std::move(item));
+            }
+
+            payload["dxfData"] = {
+                {"totalEntities", dxf.totalEntities},
+                {"bounds", {
+                    roundCoordForJson(dxf.bounds[0]),
+                    roundCoordForJson(dxf.bounds[1]),
+                    roundCoordForJson(dxf.bounds[2]),
+                    roundCoordForJson(dxf.bounds[3])
+                }},
+                {"layers", std::move(layersJson)},
+                {"entities", std::move(entsJson)}
+            };
+        } else {
+            payload["designFallback"] = true;
+        }
+    } else if (type == "model_3d") {
+        auto mesh = tools3000::core::DesignAndCadPreview::extract3dMeshPreview(filePath, ext, 50000);
+        if (mesh.ok) {
+            payload["truncated"] = mesh.truncated;
+            payload["designMeta"] = mesh.formatLabel;
+            payload["meshData"] = {
+                {"formatLabel", mesh.formatLabel},
+                {"totalTriangles", mesh.totalTriangles},
+                {"sampledTriangles", mesh.sampledTriangles},
+                {"dimensions", {
+                    roundCoordForJson(mesh.dimensions[0]),
+                    roundCoordForJson(mesh.dimensions[1]),
+                    roundCoordForJson(mesh.dimensions[2])
+                }},
+                {"positionsBase64", encodeFloat32BufferBase64(mesh.positions)}
+            };
+        } else {
+            payload["designFallback"] = true;
         }
     } else if (type == "markdown" || type == "code" || type == "binary") {
         auto decoded = tools3000::core::TextFilePreviewDecoder::readAndDecodeFile(filePath, sizeBytes);
@@ -451,6 +715,11 @@ void QuickLookWindow::asyncWorkerLoop(std::stop_token st) {
                         json payload = json::parse(dumped, nullptr, false);
                         if (payload.is_discarded()) {
                             return;
+                        }
+                        if (hasDataUri && payload["dataUri"].is_string()) {
+                            updateCachedPinDataUri(previewPath, payload["dataUri"].get<std::string>());
+                        } else {
+                            clearCachedPinDataUri();
                         }
                         m_currentIsPdfPreview.store(exists && fileType == "pdf", std::memory_order_release);
                         const bool pdfNeedsIframeFallback =
@@ -644,6 +913,7 @@ void QuickLookWindow::hide() {
     ++m_previewRequestId;
     m_currentFilePath.clear();
     m_pendingFilePath.clear();
+    clearCachedPinDataUri();
     m_currentIsPdfPreview.store(false, std::memory_order_release);
     if (m_webView && m_webViewReady) {
         m_webView->PostWebMessageAsJson(
@@ -675,6 +945,7 @@ void QuickLookWindow::destroy() {
     shutdownAsyncWorker();
     m_currentFilePath.clear();
     m_pendingFilePath.clear();
+    clearCachedPinDataUri();
     m_currentIsPdfPreview.store(false, std::memory_order_release);
     clearMediaHostMapping();
     if (m_controller) {
@@ -907,7 +1178,29 @@ void QuickLookWindow::initializeWebView2() {
                                                 sender->PostWebMessageAsString(wReply.c_str());
                                                 return S_OK;
                                             }
+                                            std::wstring tempPinPath;
+                                            if (parsed.is_object() && parsed.value("method", "") == "capture.pinImageFile" &&
+                                                parsed.contains("params") && parsed["params"].is_object()) {
+                                                const std::string reqPathUtf8 = parsed["params"].value("path", "");
+                                                const std::wstring reqPathWide = normalizePreviewFilePath(
+                                                    tools3000::core::WinUtils::utf8ToWstring(reqPathUtf8));
+                                                std::string cachedUri;
+                                                {
+                                                    std::lock_guard lock(g_cachedPinMutex);
+                                                    if (!g_cachedPinDataUri.empty() &&
+                                                        _wcsicmp(reqPathWide.c_str(), g_cachedPinSourcePath.c_str()) == 0) {
+                                                        cachedUri = g_cachedPinDataUri;
+                                                    }
+                                                }
+                                                if (!cachedUri.empty() && writeDataUriToTempImageFile(cachedUri, tempPinPath)) {
+                                                    parsed["params"]["path"] = tools3000::core::WinUtils::wstringToUtf8(tempPinPath);
+                                                    message = parsed.dump();
+                                                }
+                                            }
                                             std::string response = tools3000::core::MessageBridge::instance().handleMessage(message);
+                                            if (!tempPinPath.empty()) {
+                                                DeleteFileW(tempPinPath.c_str());
+                                            }
                                             std::wstring wResponse = tools3000::core::WinUtils::utf8ToWstring(response);
                                             sender->PostWebMessageAsString(wResponse.c_str());
                                         }

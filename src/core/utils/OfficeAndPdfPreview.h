@@ -56,6 +56,17 @@ public:
         const std::wstring& filePath,
         uint32_t maxPages = 6,
         uint32_t targetWidthPx = 1240);
+
+    static PdfPreviewResult renderPdfPreviewPagesFromMemory(
+        const uint8_t* pdfBytes,
+        size_t pdfSize,
+        uint32_t maxPages = 6,
+        uint32_t targetWidthPx = 1240);
+
+    static PdfPreviewResult renderAiOrEpsPreviewPages(
+        const std::wstring& filePath,
+        uint32_t maxPages = 6,
+        uint32_t targetWidthPx = 1240);
 };
 
 } // namespace tools3000::core
