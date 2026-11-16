@@ -358,6 +358,33 @@ html[data-surface="quicklook"] #root {
   margin-bottom: 12px;
 }
 
+.ql-markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums lining-nums;
+  background: var(--ql-code-bg);
+  border: 1px solid var(--ql-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ql-markdown-body th,
+.ql-markdown-body td {
+  padding: 9px 14px;
+  border: 1px solid var(--ql-border);
+  text-align: left;
+}
+
+.ql-markdown-body th {
+  background: var(--ql-surface-btn);
+  color: var(--ql-text-main);
+  font-weight: 600;
+}
+
 .ql-blockquote {
   border-left: 4px solid var(--primary);
   background: var(--primary-dim);
@@ -614,6 +641,178 @@ html[data-surface="quicklook"] #root {
   background: var(--ql-code-bg);
 }
 
+.ql-pdf-pages-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ql-code-bg);
+}
+
+.ql-pdf-pages-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.ql-pdf-page-card {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.ql-pdf-page-img {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: #ffffff;
+  border-radius: 6px;
+  border: 1px solid var(--ql-border);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.ql-pdf-page-caption {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ql-text-muted);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* ── CSV / Excel 数据表格视图 ───────────────────────────────────────────── */
+.ql-loading-state {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+  color: var(--ql-text-sub);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+@keyframes qlSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.ql-loading-spin {
+  animation: qlSpin 0.9s linear infinite;
+  color: var(--primary);
+}
+
+.ql-sheet-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  user-select: text;
+}
+
+.ql-sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px;
+  background: var(--ql-header-bg);
+  border-bottom: 1px solid var(--ql-border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.ql-sheet-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: var(--ql-surface-btn);
+  border: 1px solid var(--ql-surface-btn-border);
+  color: var(--ql-text-sub);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ql-sheet-tab:hover {
+  background: var(--ql-surface-btn-hover);
+  color: var(--ql-text-main);
+}
+
+.ql-sheet-tab.active {
+  background: var(--primary-dim);
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.ql-data-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ql-code-bg);
+}
+
+.ql-data-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ql-data-table th,
+.ql-data-table td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--ql-border);
+  border-right: 1px solid var(--ql-border);
+  text-align: left;
+  max-width: 360px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ql-data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ql-header-bg);
+  backdrop-filter: blur(12px);
+  color: var(--ql-text-main);
+  font-weight: 600;
+}
+
+.ql-data-table tbody tr:hover td {
+  background: var(--ql-surface-btn);
+}
+
+.ql-data-row-num {
+  width: 44px;
+  min-width: 44px;
+  text-align: right !important;
+  color: var(--ql-text-muted) !important;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  user-select: none;
+  background: var(--ql-surface-btn);
+}
+
 .ql-video-player {
   max-width: 100%;
   max-height: 75vh;
@@ -744,7 +943,19 @@ html[data-surface="quicklook"] #root {
 
 .ql-binary-hint {
   font-size: 13px;
-  color: var(--ql-text-muted);
+  font-weight: 500;
+  line-height: 1.6;
+  color: var(--ql-text-sub);
+  max-width: 520px;
+  margin: 0 auto 20px;
+}
+
+.ql-binary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 16px;
 }
 
 /* ── 底部状态栏 ─────────────────────────────────────────────────────────── */

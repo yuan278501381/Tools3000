@@ -10,6 +10,7 @@
 #include "core/utils/UiThreadJoin.h"
 #include "core/utils/WinUtils.h"
 #include "core/utils/TextFilePreviewDecoder.h"
+#include "core/utils/OfficeAndPdfPreview.h"
 #include "ui/WebViewEnvironmentManager.h"
 #include "ui/WebViewDpi.h"
 #include "ui/WebViewWindowStyle.h"
@@ -105,12 +106,25 @@ std::string formatTimePoint(std::filesystem::file_time_type ftime) {
     }
 }
 
+std::string extractLowerExtUtf8(const std::filesystem::path& p, bool isDir) {
+    if (isDir) return {};
+    std::string ext = tools3000::core::WinUtils::toLower(
+        tools3000::core::WinUtils::wstringToUtf8(p.extension().wstring()));
+    if (!ext.empty() && ext[0] == '.') {
+        ext.erase(0, 1);
+    }
+    return ext;
+}
+
 std::string detectFileTypeByExtension(const std::filesystem::path& p, bool isDir) {
     if (isDir) return "folder";
-    std::string ext = tools3000::core::WinUtils::toLower(p.extension().string());
-    if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
+    const std::string ext = extractLowerExtUtf8(p, false);
 
     if (ext == "md" || ext == "markdown" || ext == "mdown" || ext == "mkd") return "markdown";
+    if (ext == "csv" || ext == "tsv") return "csv";
+    if (ext == "xlsx") return "spreadsheet";
+    if (ext == "docx" || ext == "pptx") return "document";
+    if (ext == "doc" || ext == "xls" || ext == "ppt" || ext == "rtf") return "office_legacy";
     if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp" || ext == "gif" || ext == "bmp" || ext == "svg" || ext == "ico") return "image";
     if (ext == "mp4" || ext == "webm" || ext == "mkv" || ext == "mov" || ext == "avi") return "video";
     if (ext == "mp3" || ext == "wav" || ext == "ogg" || ext == "flac" || ext == "aac" || ext == "m4a") return "audio";
@@ -124,7 +138,7 @@ std::string detectFileTypeByExtension(const std::filesystem::path& p, bool isDir
         ext == "sql" || ext == "prc" || ext == "fnc" || ext == "trg" || ext == "ch" || ext == "pld" ||
         ext == "sh" || ext == "bash" || ext == "ps1" || ext == "psm1" || ext == "bat" || ext == "cmd" || ext == "vbs" ||
         ext == "toml" || ext == "ini" || ext == "cfg" || ext == "conf" || ext == "config" || ext == "reg" ||
-        ext == "env" || ext == "log" || ext == "txt" || ext == "csv" || ext == "tsv" ||
+        ext == "env" || ext == "log" || ext == "txt" ||
         ext == "cmake" || ext == "dockerfile" || ext == "gitignore" || ext == "diff" || ext == "patch") {
         return "code";
     }
@@ -157,8 +171,7 @@ json generateFastInitialPreviewPayload(const std::wstring& filePath, bool& outNe
 
     const std::filesystem::path p(filePath);
     const bool isDir = (attrData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    std::string ext = isDir ? "" : tools3000::core::WinUtils::toLower(p.extension().string());
-    if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
+    const std::string ext = extractLowerExtUtf8(p, isDir);
     const std::string type = detectFileTypeByExtension(p, isDir);
 
     uintmax_t sizeBytes = 0;
@@ -181,9 +194,13 @@ json generateFastInitialPreviewPayload(const std::wstring& filePath, bool& outNe
 
     if (isDir) {
         payload["folderChildren"] = json::array();
+        payload["loading"] = true;
         outNeedsAsyncDeepLoad = true;
-    } else if (type == "markdown" || type == "code" || type == "binary") {
+    } else if (type == "markdown" || type == "code" || type == "csv" ||
+               type == "spreadsheet" || type == "document" || type == "office_legacy" ||
+               type == "pdf" || type == "binary") {
         payload["content"] = "";
+        payload["loading"] = true;
         outNeedsAsyncDeepLoad = true;
     }
 
@@ -202,8 +219,7 @@ json generateFilePreviewPayload(const std::wstring& filePath) {
     }
 
     bool isDir = std::filesystem::is_directory(p, ec);
-    std::string ext = isDir ? "" : tools3000::core::WinUtils::toLower(p.extension().string());
-    if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
+    std::string ext = extractLowerExtUtf8(p, isDir);
     std::string type = detectFileTypeByExtension(p, isDir);
 
     uintmax_t sizeBytes = 0;
@@ -215,6 +231,7 @@ json generateFilePreviewPayload(const std::wstring& filePath) {
 
     json payload = {
         {"exists", true},
+        {"loading", false},
         {"path", tools3000::core::WinUtils::wstringToUtf8(filePath)},
         {"name", tools3000::core::WinUtils::wstringToUtf8(p.filename().wstring())},
         {"extension", ext},
@@ -241,6 +258,68 @@ json generateFilePreviewPayload(const std::wstring& filePath) {
             count++;
         }
         payload["folderChildren"] = children;
+    } else if (type == "csv") {
+        auto decoded = tools3000::core::TextFilePreviewDecoder::readAndDecodeFile(filePath, sizeBytes);
+        if (decoded.fileOpened) {
+            if (decoded.isReadableText) {
+                payload["encoding"] = decoded.encoding;
+                payload["truncated"] = decoded.truncated;
+                payload["csvDelimiter"] = (ext == "tsv") ? "\t" : ",";
+                payload["content"] = std::move(decoded.utf8Text);
+            } else {
+                payload["type"] = "binary";
+                payload["hexDump"] = std::move(decoded.hexDump);
+            }
+        }
+    } else if (type == "spreadsheet") {
+        auto xls = tools3000::core::OfficeAndPdfPreview::extractXlsxPreview(filePath);
+        if (xls.ok) {
+            json sheetsJson = json::array();
+            bool anySheetTruncated = xls.truncatedSheets;
+            for (const auto& sh : xls.sheets) {
+                if (sh.truncatedRows || sh.truncatedCols) {
+                    anySheetTruncated = true;
+                }
+                sheetsJson.push_back({
+                    {"name", sh.name},
+                    {"rows", sh.rows},
+                    {"truncatedRows", sh.truncatedRows},
+                    {"truncatedCols", sh.truncatedCols}
+                });
+            }
+            payload["sheets"] = std::move(sheetsJson);
+            payload["totalSheetCount"] = xls.totalSheetCount;
+            payload["truncated"] = anySheetTruncated;
+        } else {
+            payload["encrypted"] = xls.encryptedOrUnsupported;
+            payload["officeFallback"] = true;
+        }
+    } else if (type == "document") {
+        auto doc = tools3000::core::OfficeAndPdfPreview::extractDocxOrPptxPreview(filePath, ext);
+        if (doc.ok) {
+            payload["content"] = std::move(doc.markdownText);
+            payload["truncated"] = doc.truncated;
+        } else {
+            payload["encrypted"] = doc.encryptedOrUnsupported;
+            payload["officeFallback"] = true;
+        }
+    } else if (type == "office_legacy") {
+        auto legacy = tools3000::core::OfficeAndPdfPreview::extractLegacyOfficePreview(filePath);
+        if (legacy.ok) {
+            payload["type"] = "document";
+            payload["content"] = std::move(legacy.markdownText);
+            payload["truncated"] = legacy.truncated;
+        } else {
+            payload["officeFallback"] = true;
+        }
+    } else if (type == "pdf") {
+        auto pdf = tools3000::core::OfficeAndPdfPreview::renderPdfPreviewPages(filePath, 6, 1240);
+        if (pdf.passwordProtected) {
+            payload["pdfPasswordProtected"] = true;
+        } else if (pdf.ok) {
+            payload["pdfPageCount"] = pdf.totalPageCount;
+            payload["pdfPages"] = std::move(pdf.pageDataUris);
+        }
     } else if (type == "markdown" || type == "code" || type == "binary") {
         auto decoded = tools3000::core::TextFilePreviewDecoder::readAndDecodeFile(filePath, sizeBytes);
         if (decoded.fileOpened) {
@@ -374,9 +453,13 @@ void QuickLookWindow::asyncWorkerLoop(std::stop_token st) {
                             return;
                         }
                         m_currentIsPdfPreview.store(exists && fileType == "pdf", std::memory_order_release);
+                        const bool pdfNeedsIframeFallback =
+                            (fileType == "pdf") &&
+                            !payload.contains("pdfPages") &&
+                            !payload.value("pdfPasswordProtected", false);
                         const bool needsMediaMapping =
                             exists &&
-                            (fileType == "video" || fileType == "audio" || fileType == "pdf" ||
+                            (fileType == "video" || fileType == "audio" || pdfNeedsIframeFallback ||
                              (fileType == "image" && !hasDataUri));
                         if (needsMediaMapping) {
                             std::error_code ec;
@@ -518,7 +601,7 @@ void QuickLookWindow::previewFile(const std::wstring& filePath) {
         m_currentIsPdfPreview.store(exists && fileType == "pdf", std::memory_order_release);
         const bool needsMediaMapping =
             exists &&
-            (fileType == "video" || fileType == "audio" || fileType == "pdf" ||
+            (fileType == "video" || fileType == "audio" ||
              (fileType == "image" && !payload.contains("dataUri")));
         if (needsMediaMapping) {
             const std::filesystem::path p(normalizedPath);

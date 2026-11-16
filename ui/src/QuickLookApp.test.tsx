@@ -284,4 +284,134 @@ describe('QuickLookApp Usability & Media Pipeline', () => {
     fireEvent.keyDown(window, { key: '0' });
     expect(imgEl.style.transform).toBe('translate3d(0px, 0px, 0) scale(1)');
   });
+
+  it('renders RFC 4180 CSV and multi-sheet Excel (.xlsx) previews as clean aligned data tables without garbled output', async () => {
+    render(<QuickLookApp />);
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\Travel\\budget.csv',
+        name: 'budget.csv',
+        extension: 'csv',
+        type: 'csv',
+        isDirectory: false,
+        size: 512,
+        formattedSize: '512 B',
+        modified: '2026-10-16 09:30:00',
+        encoding: 'GBK',
+        csvDelimiter: ',',
+        content: '项目,金额,备注\r\n"往返机票, 含税",1680,"直飞大理"\r\n海景民宿,920,双廊古镇',
+      });
+    });
+
+    const csvHeaders = Array.from(document.querySelectorAll('.ql-data-table thead th')).map(el => el.textContent);
+    expect(csvHeaders).toEqual(['#', '项目', '金额', '备注']);
+    const csvCells = Array.from(document.querySelectorAll('.ql-data-table tbody td')).map(el => el.textContent);
+    expect(csvCells).toContain('往返机票, 含税');
+    expect(csvCells).toContain('1680');
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\Travel\\trip_plan.xlsx',
+        name: 'trip_plan.xlsx',
+        extension: 'xlsx',
+        type: 'spreadsheet',
+        isDirectory: false,
+        size: 14336,
+        formattedSize: '14.0 KB',
+        modified: '2026-10-16 10:00:00',
+        totalSheetCount: 2,
+        sheets: [
+          {
+            name: '行程安排',
+            rows: [
+              ['天数', '地点'],
+              ['Day 1', '大理古城'],
+            ],
+          },
+          {
+            name: '装备清单',
+            rows: [
+              ['物品', '状态'],
+              ['防晒衣', '已备齐'],
+            ],
+          },
+        ],
+      });
+    });
+
+    expect(screen.getByText('大理古城')).toBeDefined();
+    fireEvent.click(screen.getByText('装备清单'));
+    expect(screen.getByText('防晒衣')).toBeDefined();
+  });
+
+  it('renders native rasterized PDF pages with zoom, structured Word documents, and hides raw hex dumps by default', async () => {
+    render(<QuickLookApp />);
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\Travel\\hotel_booking.pdf',
+        name: 'hotel_booking.pdf',
+        extension: 'pdf',
+        type: 'pdf',
+        isDirectory: false,
+        size: 81920,
+        formattedSize: '80.0 KB',
+        modified: '2026-10-16 11:00:00',
+        pdfPageCount: 2,
+        pdfPages: ['data:image/png;base64,iVBORw0KGgo=', 'data:image/png;base64,iVBORw0KGgo='],
+      });
+    });
+
+    const pdfImgs = document.querySelectorAll('img.ql-pdf-page-img');
+    expect(pdfImgs.length).toBe(2);
+    expect(document.querySelector('iframe.ql-pdf-frame')).toBeNull();
+    fireEvent.keyDown(window, { key: '+' });
+    expect(screen.getByText('120%')).toBeDefined();
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\Travel\\itinerary.docx',
+        name: 'itinerary.docx',
+        extension: 'docx',
+        type: 'document',
+        isDirectory: false,
+        size: 20480,
+        formattedSize: '20.0 KB',
+        modified: '2026-10-16 11:15:00',
+        content: '# 云南大理行程单\n\n| 日期 | 安排 |\n| --- | --- |\n| 第一天 | 洱海骑行 |',
+      });
+    });
+
+    expect(screen.getByText('云南大理行程单')).toBeDefined();
+    expect(screen.getByText('洱海骑行')).toBeDefined();
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\Archive\\unknown.bin',
+        name: 'unknown.bin',
+        extension: 'bin',
+        type: 'binary',
+        isDirectory: false,
+        size: 4096,
+        formattedSize: '4.0 KB',
+        modified: '2026-10-16 11:20:00',
+        hexDump: '50 4b 03 04 14 00 06 00',
+      });
+    });
+
+    expect(document.querySelector('.ql-hex-dump')).toBeNull();
+    fireEvent.click(screen.getByText('Inspect File Header (Hex)'));
+    expect(document.querySelector('.ql-hex-dump')?.textContent).toContain('50 4b 03 04');
+  });
 });

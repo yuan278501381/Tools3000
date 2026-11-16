@@ -6,6 +6,24 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-16] QuickLook 多格式零乱码无锁预览引擎 (`OfficeAndPdfPreview`)、关于页大众化精炼重构与生活场景动图升级
+- **用户实机反馈与三大核心病灶**：
+  1. **QuickLook 打开 `PDF / CSV / Excel / Word` 出现乱码或裸露十六进制转储**：
+     - `.docx`/`.xlsx`/`.pptx`（ZIP `PK\x03\x04`）与 `.doc`/`.xls`（OLE2 `D0 CF 11 E0`）此前在 `QuickLookWindow.cpp` 中未做专用分流，直接落入 `"binary"` 并全屏铺开 `50 4b 03 04` 十六进制，甚至当首 256 KB 偶然无 `0x00` 时可能被误判为 GBK 产生汉字乱码；
+     - `.csv`/`.tsv` 此前作为普通代码高亮展示（逗号未分列对齐），且 256 KB 截断切在双字节 GBK 汉字中间时会产生尾部乱码，同时 `p.extension().string()` 在非当前 ANSI 代码页路径下有抛异常风险；
+     - `.pdf` 此前依赖 WebView2 `<iframe>` + 虚拟主机映射，在 `WebViewEnvironmentManager.cpp` 锁定的 `--no-sandbox` 启动参数下易受 Chromium OOPIF PDF 插件兼容限制或产生磁盘文件锁。
+  2. **README 搜索动图与宣传措辞不够接地气**：`search_demo.webp` 使用偏极客晦涩的 `xykj 架构` 演示，且存在“秒看万物 / 全息预览”等夸大表述；
+  3. **「设置 -> 关于」页面文案晦涩且技术栈版本滞后**：功能简介堆砌底层术语，技术栈缺少 `Rust SIMD`、`SQLite & zlib`、`UIAutomation` 且版本号未同步 `React 19.2 / TS 6.0 / Vite 8.0 / Lua 5.5 / FFmpeg 8.1`。
+- **终局架构方案与防回退闭环**：
+  1. **零文件锁多格式解析与原生 PDF 光栅化 (`OfficeAndPdfPreview.{h,cpp}`, `TextFilePreviewDecoder.h`, `QuickLookWindow.cpp`, `QuickLookApp.tsx`, `quickLookMarkup.ts`)**：
+     - **二进制魔数硬拦截与 GBK 双字节安全修剪**：`TextFilePreviewDecoder` 前置拦截 `%PDF-`、`PK\x03\x04`、OLE2、PNG/JPEG/GIF/RAR/7z/SQLite 签名，并通过 `validateAndTrimGbkBuffer` 校验双字节合法性与自动回退截断边界的半个汉字；
+     - **内存零锁 ZIP+XML 与 SEH IFilter 提取**：通过 `FILE_SHARE_READ | WRITE | DELETE` 毫秒级读入内存后立即 `CloseHandle`（100% 零文件锁），原生解析 `.xlsx` 多工作表（支持 `xl/sharedStrings.xml` 与 `A1/C1` 稀疏列坐标对齐）、`.docx`（段落、标题与 `<w:tbl>` 转标准 GFM 表格）、`.pptx`（按页提取幻灯片大纲），并对旧版 OLE2 `.doc/.xls/.ppt/.rtf` 通过 `query.dll` `LoadIFilter` + 纯 POD SEH 沙箱安全提取文本；
+     - **WinRT `Windows.Data.Pdf` 无锁内存页面渲染**：在后台 MTA 线程通过 `InMemoryRandomAccessStream` + `PdfDocument::LoadFromStreamAsync` 将前 6 页高清光栅化为 PNG Data URI（`pdfPages`），100% 免疫 `--no-sandbox` 沙箱限制且零文件锁（超大 PDF 平滑回退 `mediaUrl`）；
+     - **现代数据表格与默认折叠十六进制**：前端内置 RFC 4180 CSV/TSV 解析器与多 Sheet 吸顶表格，补齐 `quickLookMarkup.ts` GFM 表格转 `<table>` 能力，并将未知二进制文件的 `hexDump` 默认折叠隐藏，展示友好的「使用默认程序打开 (Enter)」主卡片。
+  2. **大众化视觉叙事与技术栈精确对齐 (`AboutPage.tsx`, `zh.json`, `en.json`, `README.md`, `README.en.md`)**：
+     - 重绘中英双语 `search_demo.webp`（`yn 旅游攻略` / `kyoto trip` 命中旅行攻略 `.docx`、机票民宿订单 `.pdf`、预算表 `.xlsx` 并按空格预览行程与预算表格）与 `scene_quicklook.png`（改为诚实的「QuickLook 空格快速预览 · 免打开直看常用文件」）；
+     - 重写关于页通俗功能简介并补全 19 项真实技术栈矩阵与准确版本。
+
 ### [2026-11-16] 贴图窗口 (`PinWindow`) 路线 B Direct2D 微晶自绘右键复合菜单架构 (`PinContextMenuModel` + `PinContextMenu`)
 - **用户痛点与认知负荷病灶**：
   - 旧版 `PinWindow::WM_RBUTTONUP` 使用 Win32 `CreatePopupMenu` 平铺了 **23~25 个一级条目 + 8 条分割线**，并在文案末尾硬拼长串多别名快捷键（如 `(Shift+R / L / 数字 1)`、`(Esc / Delete / Ctrl+W)`），突破 `7±2` 工作记忆极限、破坏纵向扫视对齐，且将最高频的「复制图片」淹没在菜单中部、4 个 OCR 文字入口并列混杂、单张贴图亦常驻全局批处理噪音。

@@ -163,7 +163,7 @@ target_include_directories(Tools3000Core PUBLIC
 )
 target_link_libraries(Tools3000Core PUBLIC
     spdlog::spdlog nlohmann_json::nlohmann_json sol2::sol2 ${LUA_LIBRARIES} fmt::fmt ZLIB::ZLIB
-    user32 shell32 advapi32 dbghelp psapi shlwapi winhttp crypt32 uiautomationcore oleaut32 ole32 dwmapi gdiplus imm32 shcore propsys
+    user32 shell32 advapi32 dbghelp psapi shlwapi winhttp crypt32 uiautomationcore oleaut32 ole32 dwmapi gdiplus imm32 shcore propsys windowsapp
     d2d1 dwrite d3d11 dxgi dcomp
 )
 

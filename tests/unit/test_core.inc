@@ -4240,3 +4240,213 @@ TEST(WinUtilsShortcutSyncTest, AnchorsIconLocationToTargetAndRemainsIdempotent) 
         CoUninitialize();
     }
 }
+
+namespace {
+
+void writeMinimalDeflatedZip(
+    const std::filesystem::path& zipPath,
+    const std::vector<std::pair<std::string, std::string>>& files) {
+    struct CdEntry {
+        std::string name;
+        uint32_t crc = 0;
+        uint32_t compSize = 0;
+        uint32_t uncompSize = 0;
+        uint32_t localOffset = 0;
+    };
+
+    std::vector<uint8_t> out;
+    auto appendU16 = [&](uint16_t v) {
+        out.push_back(static_cast<uint8_t>(v & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >> 8) & 0xFFu));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        out.push_back(static_cast<uint8_t>(v & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >> 8) & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >> 16) & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >> 24) & 0xFFu));
+    };
+
+    std::vector<CdEntry> cdEntries;
+    for (const auto& [name, content] : files) {
+        std::vector<uint8_t> compBuf(content.size() + 128);
+        z_stream zs{};
+        ASSERT_EQ(deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY), Z_OK);
+        zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(content.data()));
+        zs.avail_in = static_cast<uInt>(content.size());
+        zs.next_out = compBuf.data();
+        zs.avail_out = static_cast<uInt>(compBuf.size());
+        ASSERT_EQ(deflate(&zs, Z_FINISH), Z_STREAM_END);
+        const uint32_t compSize = static_cast<uint32_t>(zs.total_out);
+        deflateEnd(&zs);
+
+        const uint32_t crc = crc32(0L, reinterpret_cast<const Bytef*>(content.data()), static_cast<uInt>(content.size()));
+        const uint32_t localOffset = static_cast<uint32_t>(out.size());
+
+        appendU32(0x04034b50u);
+        appendU16(20);
+        appendU16(0);
+        appendU16(8); // deflated
+        appendU16(0);
+        appendU16(0);
+        appendU32(crc);
+        appendU32(compSize);
+        appendU32(static_cast<uint32_t>(content.size()));
+        appendU16(static_cast<uint16_t>(name.size()));
+        appendU16(0);
+        out.insert(out.end(), name.begin(), name.end());
+        out.insert(out.end(), compBuf.begin(), compBuf.begin() + compSize);
+
+        cdEntries.push_back({name, crc, compSize, static_cast<uint32_t>(content.size()), localOffset});
+    }
+
+    const uint32_t cdOffset = static_cast<uint32_t>(out.size());
+    for (const auto& e : cdEntries) {
+        appendU32(0x02014b50u);
+        appendU16(20);
+        appendU16(20);
+        appendU16(0);
+        appendU16(8);
+        appendU16(0);
+        appendU16(0);
+        appendU32(e.crc);
+        appendU32(e.compSize);
+        appendU32(e.uncompSize);
+        appendU16(static_cast<uint16_t>(e.name.size()));
+        appendU16(0);
+        appendU16(0);
+        appendU16(0);
+        appendU16(0);
+        appendU32(0);
+        appendU32(e.localOffset);
+        out.insert(out.end(), e.name.begin(), e.name.end());
+    }
+    const uint32_t cdSize = static_cast<uint32_t>(out.size()) - cdOffset;
+
+    appendU32(0x06054b50u);
+    appendU16(0);
+    appendU16(0);
+    appendU16(static_cast<uint16_t>(cdEntries.size()));
+    appendU16(static_cast<uint16_t>(cdEntries.size()));
+    appendU32(cdSize);
+    appendU32(cdOffset);
+    appendU16(0);
+
+    std::ofstream f(zipPath, std::ios::binary | std::ios::trunc);
+    f.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+}
+
+void writeMinimalValidSinglePagePdf(const std::filesystem::path& pdfPath) {
+    std::string pdf = "%PDF-1.4\n";
+    std::vector<size_t> offsets(5, 0);
+
+    offsets[1] = pdf.size();
+    pdf += "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
+
+    offsets[2] = pdf.size();
+    pdf += "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n";
+
+    offsets[3] = pdf.size();
+    pdf += "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 180] /Contents 4 0 R >>\nendobj\n";
+
+    const std::string streamBody = "0.1 0.4 0.8 rg 24 24 252 132 re f\n";
+    offsets[4] = pdf.size();
+    pdf += "4 0 obj\n<< /Length " + std::to_string(streamBody.size()) + " >>\nstream\n" + streamBody + "endstream\nendobj\n";
+
+    const size_t xrefPos = pdf.size();
+    pdf += "xref\n0 5\n0000000000 65535 f \n";
+    for (size_t i = 1; i <= 4; ++i) {
+        char line[32]{};
+        std::snprintf(line, sizeof(line), "%010zu 00000 n \n", offsets[i]);
+        pdf += line;
+    }
+    pdf += "trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n" + std::to_string(xrefPos) + "\n%%EOF\n";
+
+    std::ofstream f(pdfPath, std::ios::binary | std::ios::trunc);
+    f.write(pdf.data(), static_cast<std::streamsize>(pdf.size()));
+}
+
+} // namespace
+
+TEST(TextFilePreviewDecoderTest, BlocksBinarySignaturesAndTrimsSplitGbkTail) {
+    using tools3000::core::TextFilePreviewDecoder;
+
+    // 1. ZIP/Office PK\x03\x04 stream without 0x00 bytes must never be misclassified as GBK text
+    const uint8_t fakeZipNoNulls[] = {0x50, 0x4B, 0x03, 0x04, 0x14, 0x41, 0x42, 0x43, 0xD4, 0xC6};
+    const auto zipRes = TextFilePreviewDecoder::decodeBuffer(fakeZipNoNulls, sizeof(fakeZipNoNulls));
+    EXPECT_FALSE(zipRes.isReadableText);
+    EXPECT_FALSE(zipRes.hexDump.empty());
+
+    // 2. PDF %PDF-1.7 signature must never be misclassified as text
+    const char fakePdf[] = "%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+    const auto pdfRes = TextFilePreviewDecoder::decodeBuffer(
+        reinterpret_cast<const uint8_t*>(fakePdf), sizeof(fakePdf) - 1);
+    EXPECT_FALSE(pdfRes.isReadableText);
+
+    // 3. GBK CSV with trailing split lead byte (0xD4 without trailing byte) trims cleanly to "云南"
+    // GBK for "云南": 0xD4 0xC6 ("云"), 0xC4 0xCF ("南")
+    const uint8_t gbkSplitTail[] = {'A', ',', 0xD4, 0xC6, 0xC4, 0xCF, 0xD4};
+    const auto gbkRes = TextFilePreviewDecoder::decodeBuffer(gbkSplitTail, sizeof(gbkSplitTail));
+    EXPECT_TRUE(gbkRes.isReadableText);
+    EXPECT_EQ(gbkRes.encoding, "GBK");
+    EXPECT_EQ(gbkRes.utf8Text, "A,\xE4\xBA\x91\xE5\x8D\x97"); // UTF-8 "A,云南"
+}
+
+TEST(OfficeAndPdfPreviewTest, ExtractsXlsxDocxPptxAndRendersPdfZeroLock) {
+    using tools3000::core::OfficeAndPdfPreview;
+
+    std::error_code ec;
+    const auto tempDir = std::filesystem::temp_directory_path() /
+        (L"Tools3000_OfficePdfPreview_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(tempDir, ec);
+    std::filesystem::create_directories(tempDir, ec);
+
+    // 1. XLSX multi-sheet with sparse column reference (A1, C1)
+    const auto xlsxPath = tempDir / L"云南出行预算.xlsx";
+    writeMinimalDeflatedZip(xlsxPath, {
+        {"xl/workbook.xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><workbook><sheets><sheet name="行程预算" sheetId="1" r:id="rId1"/></sheets></workbook>)"},
+        {"xl/_rels/workbook.xml.rels",
+         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>)"},
+        {"xl/sharedStrings.xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><sst><si><t>项目</t></si><si><t>预算金额</t></si><si><t>大理海景民宿</t></si></sst>)"},
+        {"xl/worksheets/sheet1.xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="C2"><v>1280</v></c></row></sheetData></worksheet>)"}
+    });
+
+    const auto xlsxRes = OfficeAndPdfPreview::extractXlsxPreview(xlsxPath.wstring());
+    ASSERT_TRUE(xlsxRes.ok);
+    ASSERT_EQ(xlsxRes.sheets.size(), 1u);
+    EXPECT_EQ(xlsxRes.sheets[0].name, "行程预算");
+    ASSERT_EQ(xlsxRes.sheets[0].rows.size(), 2u);
+    ASSERT_EQ(xlsxRes.sheets[0].rows[0].size(), 3u);
+    EXPECT_EQ(xlsxRes.sheets[0].rows[0][0], "项目");
+    EXPECT_EQ(xlsxRes.sheets[0].rows[0][1], "");
+    EXPECT_EQ(xlsxRes.sheets[0].rows[0][2], "预算金额");
+    EXPECT_EQ(xlsxRes.sheets[0].rows[1][0], "大理海景民宿");
+    EXPECT_EQ(xlsxRes.sheets[0].rows[1][2], "1280");
+
+    // 2. DOCX heading + embedded table
+    const auto docxPath = tempDir / L"云南五日游攻略.docx";
+    writeMinimalDeflatedZip(docxPath, {
+        {"word/document.xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><w:document><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>云南五日游攻略</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>天数</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>景点</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>Day 1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>洱海生态廊道</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>)"}
+    });
+    const auto docxRes = OfficeAndPdfPreview::extractDocxOrPptxPreview(docxPath.wstring(), "docx");
+    ASSERT_TRUE(docxRes.ok);
+    EXPECT_NE(docxRes.markdownText.find("# 云南五日游攻略"), std::string::npos);
+    EXPECT_NE(docxRes.markdownText.find("洱海生态廊道"), std::string::npos);
+
+    // 3. PDF zero-lock native rasterization + verify file can be immediately deleted right after preview
+    const auto pdfPath = tempDir / L"机票行程单.pdf";
+    writeMinimalValidSinglePagePdf(pdfPath);
+    const auto pdfRes = OfficeAndPdfPreview::renderPdfPreviewPages(pdfPath.wstring(), 4, 800);
+    EXPECT_FALSE(pdfRes.passwordProtected);
+    EXPECT_TRUE(pdfRes.ok);
+    EXPECT_EQ(pdfRes.totalPageCount, 1u);
+    ASSERT_EQ(pdfRes.pageDataUris.size(), 1u);
+    EXPECT_EQ(pdfRes.pageDataUris[0].rfind("data:image/png;base64,", 0), 0u);
+    // Zero file lock assertion: deleting pdfPath immediately must succeed!
+    EXPECT_TRUE(std::filesystem::remove(pdfPath, ec));
+
+    std::filesystem::remove_all(tempDir, ec);
+}

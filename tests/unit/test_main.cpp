@@ -99,6 +99,9 @@
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
 #include "core/utils/TextFilePreviewDecoder.h"
+#include "core/utils/OfficeAndPdfPreview.h"
+#include <zlib.h>
+#include "core/utils/TextFilePreviewDecoder.h"
 #include "core/logger/Logger.h"
 #include "core/logger/WideUniversalRotatingFileSink.h"
 #include "core/utils/ElevationPolicy.h"
