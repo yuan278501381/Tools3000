@@ -455,3 +455,107 @@ TEST(PinLiveTextInteractionTest, ZeroThresholdIBeamCursorCharSelectionDoubleClic
     EXPECT_TRUE(FreeLibrary(hMod));
     guard.mod = nullptr;
 }
+
+TEST(LiveOcrAndTableTest, MixedLeftBadgeRightAlignedTableWithMissingCellAndBrokenPhrase) {
+    using namespace tools3000::ocr;
+
+    auto makeTok = [](const char* text, int x, int y, int w, int h = 18) {
+        OcrResult r;
+        r.text = text;
+        r.confidence = 0.98f;
+        r.box = cv::Rect(x, y, w, h);
+        return r;
+    };
+
+    // 模拟真实「关于 -> 技术栈」卡片：
+    // 第 1 列左对齐 (x=40)，第 2 列胶囊左对齐 (x=290，其中 Vite 行缺失胶囊)，
+    // 第 3 列右对齐 (right=920，长短句左边界跨度从 560 到 740)，
+    // 且 SQLite 行第 3 列中间因单词漏检出现 32px 单行缺口
+    std::vector<OcrResult> blocks = {
+        makeTok("C++20", 40, 40, 56),
+        makeTok("MSVC v145 · x64 / ARM64", 290, 40, 175),
+        makeTok("原生微内核主程序与双架构 (x64 / ARM64) 极速运行时", 560, 40, 360),
+
+        makeTok("Direct2D & DirectComposition", 40, 82, 210),
+        makeTok("GPU Hardware", 290, 82, 102),
+        makeTok("截图、贴图、按键提示与鼠标特效的显卡硬件加速绘制", 575, 82, 345),
+
+        makeTok("React & TypeScript", 40, 124, 145),
+        makeTok("19.2 / 6.0", 290, 124, 76),
+        makeTok("界面交互组件体系与强类型状态管理", 696, 124, 224),
+
+        // Vite 行第 2 列胶囊漏检缺失，第 3 列右对齐 (right=920)
+        makeTok("Vite", 40, 166, 38),
+        makeTok("前端资源极速编译与按需分包构建引擎", 682, 166, 238),
+
+        makeTok("Lucide Icons", 40, 208, 96),
+        makeTok("1.21", 290, 208, 42),
+        makeTok("全界面统一高清矢量图标体系", 738, 208, 182),
+
+        // SQLite 行第 3 列内部出现 30px 缺口（上下多行在 x=710..740 均有文字覆盖，非垂直空白走廊）
+        makeTok("SQLite & zlib", 40, 250, 106),
+        makeTok("3.x / 1.3", 290, 250, 68),
+        makeTok("本地按键统计、打开历史存储与", 548, 250, 164),
+        makeTok("文档压缩流无损提取", 742, 250, 178),
+    };
+
+    const OcrTableGrid grid = OcrTableReconstructor::reconstruct(blocks);
+    ASSERT_TRUE(grid.isTable);
+    EXPECT_EQ(grid.rowCount, 6u);
+    EXPECT_EQ(grid.colCount, 3u);
+
+    // 验证 Vite 行：第 1 列 "Vite"，第 2 列保留空白 ""，第 3 列精准落入右对齐第 3 列
+    ASSERT_EQ(grid.cells[3].size(), 3u);
+    EXPECT_EQ(grid.cells[3][0], "Vite");
+    EXPECT_EQ(grid.cells[3][1], "");
+    EXPECT_EQ(grid.cells[3][2], "前端资源极速编译与按需分包构建引擎");
+
+    // 验证 SQLite 行：单行内部断句已自动缝合进第 3 列，未产生第 4/5 幽灵列
+    ASSERT_EQ(grid.cells[5].size(), 3u);
+    EXPECT_EQ(grid.cells[5][0], "SQLite & zlib");
+    EXPECT_EQ(grid.cells[5][1], "3.x / 1.3");
+    EXPECT_NE(grid.cells[5][2].find("本地按键统计"), std::string::npos);
+    EXPECT_NE(grid.cells[5][2].find("文档压缩流无损提取"), std::string::npos);
+}
+
+TEST(LiveOcrAndTableTest, ExtractEmbeddedCharacterDictFromOnnxMetadataProps) {
+    using namespace tools3000::ocr;
+
+    auto appendVarint = [](std::vector<uint8_t>& buf, uint64_t val) {
+        while (val >= 0x80u) {
+            buf.push_back(static_cast<uint8_t>((val & 0x7Fu) | 0x80u));
+            val >>= 7u;
+        }
+        buf.push_back(static_cast<uint8_t>(val));
+    };
+
+    std::string dictBody = "\xEF\xBB\xBF" "0\r\n1\nA\nB\n中\n文\n测\n试\n字\n典\n提取\n成功\n!\n@\n#\n$\n%\n^";
+    std::vector<uint8_t> entryProto;
+    // field 1 (key = "character"): tag 0x0A
+    entryProto.push_back(0x0A);
+    appendVarint(entryProto, 9);
+    const char* keyStr = "character";
+    entryProto.insert(entryProto.end(), keyStr, keyStr + 9);
+    // field 2 (value = dictBody): tag 0x12
+    entryProto.push_back(0x12);
+    appendVarint(entryProto, dictBody.size());
+    entryProto.insert(entryProto.end(), dictBody.begin(), dictBody.end());
+
+    std::vector<uint8_t> fakeOnnx;
+    // ir_version = 8 (field 1, varint -> 0x08 0x08)
+    fakeOnnx.push_back(0x08);
+    fakeOnnx.push_back(0x08);
+    // metadata_props (field 14, length-delimited -> (14 << 3) | 2 = 0x72)
+    fakeOnnx.push_back(0x72);
+    appendVarint(fakeOnnx, entryProto.size());
+    fakeOnnx.insert(fakeOnnx.end(), entryProto.begin(), entryProto.end());
+
+    std::vector<std::string> extracted;
+    ASSERT_TRUE(DeepOcrEngine::extractEmbeddedCharacterDictFromOnnx(
+        fakeOnnx.data(), fakeOnnx.size(), extracted));
+    ASSERT_GE(extracted.size(), 16u);
+    EXPECT_EQ(extracted[0], "0");
+    EXPECT_EQ(extracted[1], "1");
+    EXPECT_EQ(extracted[4], "中");
+    EXPECT_EQ(extracted[5], "文");
+}

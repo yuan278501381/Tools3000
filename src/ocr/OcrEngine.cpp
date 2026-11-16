@@ -837,10 +837,20 @@ bool runWinOcrOnPreparedMat(
     if (srcImg.cols >= 8 && srcImg.rows >= 8 && srcImg.cols + 24 < maxDim && srcImg.rows + 24 < maxDim) {
         outBorderPad = 12;
         cv::copyMakeBorder(srcImg, prepared, outBorderPad, outBorderPad, outBorderPad, outBorderPad, cv::BORDER_REPLICATE);
-        if ((std::max)(prepared.cols, prepared.rows) < 1800 &&
-            prepared.cols * 2 <= maxDim && prepared.rows * 2 <= maxDim) {
-            outScaleFactor = 2.0f;
-            cv::resize(prepared, prepared, cv::Size(), outScaleFactor, outScaleFactor, cv::INTER_CUBIC);
+        const int maxPreparedSide = (std::max)(prepared.cols, prepared.rows);
+        if (maxPreparedSide < 2600) {
+            const float maxAllowedScale = static_cast<float>(maxDim) / static_cast<float>((std::max)(1, maxPreparedSide));
+            const float desiredScale = (std::min)(2.0f, std::floor(maxAllowedScale * 10.0f) * 0.1f);
+            if (desiredScale >= 1.4f) {
+                const int upW = (std::min)(maxDim, (std::max)(1, static_cast<int>(std::round(static_cast<float>(prepared.cols) * desiredScale))));
+                const int upH = (std::min)(maxDim, (std::max)(1, static_cast<int>(std::round(static_cast<float>(prepared.rows) * desiredScale))));
+                outScaleFactor = static_cast<float>(upW) / static_cast<float>(prepared.cols);
+                cv::resize(prepared, prepared, cv::Size(upW, upH), 0.0, 0.0, cv::INTER_LANCZOS4);
+                // 温和反锐化掩模 (Unsharp Mask)：收紧高分屏次像素渲染灰字与浅色胶囊小数字边缘
+                cv::Mat blurred;
+                cv::GaussianBlur(prepared, blurred, cv::Size(0, 0), 0.85);
+                cv::addWeighted(prepared, 1.26, blurred, -0.26, 0.0, prepared);
+            }
         }
     } else if (srcImg.cols > maxDim) {
         outScaleFactor = static_cast<float>(maxDim) / static_cast<float>(srcImg.cols);

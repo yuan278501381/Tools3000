@@ -6,6 +6,22 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-16] 实机压测 8 项深水区根治：VFR->CFR 录屏合成保真、PP-OCRv4 内嵌字典自解析与多镜像、三锚点表格重建、Excel 列标/空白图文 Docx 预览、异步低优唤醒与 PDF 字体流秒跳
+- **用户实机深度体验反馈的 8 大现象与底层真因闭环**：
+  1. **演播室录屏导出 33.8s 被压成 8.86s 快进残片 & 4K 单核掉帧 (`StudioVideoCompositor.cpp`, `ScreenRecorder.cpp`, `StudioTimeline.{h,cpp}`)**：
+     - *暗坑机理*：`3454x2158` 4K 分辨率超出 `h264_mf` Level 4.1 硬上限回退 `libx264` 时，`attempt->thread_count` 保持默认 `1` 单核编码导致掉至 `7.9fps`（267 帧 VFR）；而 `exportRenderedVideoOnCleanMta` 原先忽略 `decFrame->best_effort_timestamp`，直接以解码帧序号写入 `encFrame->pts = encodedCount++` (`1/30s`) 并取 `evaluatedFrames[0..266]`，导致 33.8s 视频被 3.8 倍快进压成 `8.86s` 且丢失后 25s 运镜！同时倒计时收起异步投递 UI 线程导致第 0 帧拍入倒计时球，默认 `1.85x` 特写倍率在宽屏窗口下过度裁切；
+     - *终局标准*：① 录制与合成侧非 MF 编码器/解码器统一开启 `thread_count = 0` 全多核并行（`>= 2560x1440` 自动切 `ultrafast`）；② `exportRenderedVideoOnCleanMta` 与 `extractPreviewDeck` 严格按源流真实 PTS 重采样至 CFR `outFps` 时间轴，在 `[heldRawSec, curSec)` 驻留期内逐帧叠加对应时刻的 30fps 光标与弹簧运镜，100% 保留完整时长并与音轨/`.srt` 毫秒级对齐；③ 倒计时转录制态预留 `40ms` DWM 合成缓冲（严守 `Zero WDA_EXCLUDEFROMCAPTURE` 契约）；④ 默认运镜倍率调优至温和宽视野 `1.50x`（尾驻留 `1250ms` 自动回退全景）。
+  2. **PP-OCRv4 离线模型下载报 `ch_ppocr_mobile_v2.0_cls.onnx` 失败 & 安装包可选子组件 (`DeepOcrEngine.{h,cpp}`, `installer.iss`, `PluginEntry.cpp`)**：
+     - *暗坑机理*：`SWHL/RapidOCR` 仓库将 `cls` 模型置于 `PP-OCRv1/` 而非 `PP-OCRv4/`（返回 404），且无独立 `ppocr_keys_v1.txt`（GitHub raw 在国内易超时）；
+     - *终局标准*：① 镜像源置顶国内毫秒级直连的阿里云 `modelscope.cn`（`RapidAI/RapidOCR`）与 `hf-mirror.com`（修正 `PP-OCRv1` 路径），支持已校验本地文件断点跳过；② 实现零依赖 Protobuf 解析器 `DeepOcrEngine::extractEmbeddedCharacterDictFromOnnx`，直接从 `ch_PP-OCRv4_rec.onnx` 顶层 `field 14` (`metadata_props` `key="character"`) 提取官方内嵌 6,623 行字典落盘，彻底消除外部 `.txt` 依赖；③ 在 `installer.iss` `[Components]` 下挂载默认不勾选的 `capture\ocr_models` 子组件（`Flags: dontinheritcheck`），勾选后通过 `initial_modules.json` 驱动首次启动后台静默部署。
+  3. **OCR「复制为表格」右对齐列分裂与单行漏字断列 & 内置高分屏小字清晰度 (`OcrTableReconstructor.cpp`, `OcrEngine.cpp`)**：
+     - *终局标准*：① 引入跨行 **1D 垂直空白走廊水平投影**（缝合上下多行均有文字横跨的单行偶发断词缺口）；② `ColumnCluster` 扩展 **左/中/右三锚点对齐**（`avgLeft`/`avgCenter`/`avgRight`）与 **同行互斥重叠列簇归并**，完美还原「左对齐标题 + 居中胶囊（含空缺格）+ 右对齐长短描述」3 列矩阵，0 幽灵空列；③ `OcrEngine` 将高分屏超分门槛提升至 `< 2600px` 并采用 `INTER_LANCZOS4` + 温和反锐化掩模（Unsharp Mask），收紧浅灰胶囊小数字与 ClearType 边缘。
+  4. **QuickLook Excel 稀疏合并标题行错作表头、多工作表标签与空白/截图型 `.docx` 兼容 (`OfficeAndPdfPreview.{h,cpp}`, `QuickLookWindow.cpp`, `QuickLookApp.tsx`)**：
+     - *终局标准*：① `spreadsheet` 表格顶部采用标准 Excel 字母列标（`A, B, C...`），`1..N` 全部数据行保留在 `<tbody>` 中，彻底根除稀疏大标题行被吃成 `# | Col 1 | 许可申请 | Col 3`；扩容默认 `24` 个工作表 × `64` 列，兼容任意命名空间 `*:id` 与自定义 `sharedStrings` 路径，常驻展示多 Sheet 0ms 切换标签栏与工作表总数徽章；② `.docx`/`.pptx` 动态解析 `_rels/.rels` 主文档、页眉页脚兜底、自动提取 `word/media/*` 内嵌位图（完美预览纯截图工单 `.docx`），对未加密改后缀老版 OLE2/文本文件自动回退 `IFilter`/文本解码，并对 `default.docx` 等合法空白模板返回 `emptyDocument = true` 友好提示。
+  5. **首次搜索 `*.docx` 误报「服务不可用」与 `content:` 全文检索 32.7s 性能瓶颈根治 (`DatabaseManager.cpp`, `service/main.cpp`, `SearchPlugin.cpp`, `useSearchEngine.ts`, `PdfExtractor.cpp`, `PsdAiExtractor.cpp`, `MftParser.cpp`)**：
+     - *暗坑机理*：① 301.8 万文件快照冷启动耗时超过 `useSearchEngine.ts` 原 25 次（~22s）重试预算及 `MessageBridge` 30s 超时；② PDF 内嵌 TrueType 字体流的自身字典仅含 `/Length1` 而无 `/FontFile2`，导致 `PdfExtractor` 将 906 个 PDF（2.83 GB）中数以百计的几 MB 二进制字库流全部 zlib 解压并逐字节当作正文操作符扫描！
+     - *终局标准*：① 严守 `DEMAND_START`，`DatabaseManager::loadSnapshot` 合并为单趟流式内联边界校验（砍掉 301 万次冗余预扫），服务初始化与异步单飞 `search.warmup` 运行于 `THREAD_PRIORITY_BELOW_NORMAL` 零抢占前台资源，前端冷启动重试窗口扩充至 `90` 次（~90s）；② `PdfExtractor` 接管 `.ai`，先按 `/Length` $O(1)$ 定位流边界，在对 Page `/Contents` 与 Font `/ToUnicode` 显式引用对象白名单豁免的前提下精准拦截 `/Length1..3`、`/CIDFontType0C`、`/Type1C`、`/OpenType`、`/XRef`、`/Metadata`、ICC 与 `/Image` 流免解压秒跳；`PsdAiExtractor` 跳过 PSD 像素段并改用 `std::memchr` SIMD 搜寻 `TySh`；`MftParser` 下调 `.min.js`/`.bundle.js` 噪音权重并赋予中小业务文档体积亲和度加分。
+
 ### [2026-11-16] 工业设计制图预览引擎 (`DesignAndCadPreview`)、微信级实景选字双引擎离线 OCR (`DeepOcrEngine` + `PinWindow`) 与 Screen Studio 级自动运镜演播室录屏 (`StudioTimeline` + `StudioVideoCompositor`)
 - **三大跨越级生产力引擎架构沉淀**：
   1. **各行业工程制图与印前设计零文件锁预览引擎 (`DesignAndCadPreview.{h,cpp}`, `OfficeAndPdfPreview.{h,cpp}`, `QuickLookCadViewer.tsx`, `QuickLook3dViewer.tsx`)**：

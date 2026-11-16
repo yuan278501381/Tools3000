@@ -293,6 +293,17 @@ public:
         return true;
     }
 
+    bool extractBinaryEntry(std::string_view path, std::vector<uint8_t>& outBytes, size_t maxOutBytes = 8ULL * 1024ULL * 1024ULL) const {
+        outBytes.clear();
+        std::string tmp;
+        if (!extractTextEntry(path, tmp, maxOutBytes)) {
+            return false;
+        }
+        outBytes.assign(reinterpret_cast<const uint8_t*>(tmp.data()),
+                        reinterpret_cast<const uint8_t*>(tmp.data()) + tmp.size());
+        return true;
+    }
+
 private:
     const uint8_t* m_data = nullptr;
     size_t m_size = 0;
@@ -820,7 +831,9 @@ void extractWordParagraphText(std::string_view pInnerXml, int& outHeadingLevel, 
 
     size_t pos = 0;
     bool inT = false;
-    int skipDepth = 0; // Skip <w:instrText>, <w:delText>, <mc:Fallback>
+    int skipDepth = 0; // Skip <w:instrText>, <w:delText>, or redundant <mc:Fallback>
+    size_t textSizeBeforeChoice = 0;
+    bool choiceProducedText = false;
 
     while (pos < pInnerXml.size()) {
         const size_t lt = pInnerXml.find('<', pos);
@@ -838,9 +851,24 @@ void extractWordParagraphText(std::string_view pInnerXml, int& outHeadingLevel, 
             continue;
         }
 
-        if (tag.localLower == "instrtext" || tag.localLower == "deltext" || tag.localLower == "fallback") {
+        if (tag.localLower == "choice" && skipDepth == 0) {
+            if (!tag.isClosing && !tag.isSelfClosing) {
+                textSizeBeforeChoice = outText.size();
+                choiceProducedText = false;
+            } else if (tag.isClosing) {
+                choiceProducedText = (outText.size() > textSizeBeforeChoice);
+            }
+            pos = tag.closeBracket + 1;
+            continue;
+        }
+
+        if (tag.localLower == "instrtext" || tag.localLower == "deltext" ||
+            (tag.localLower == "fallback" && choiceProducedText)) {
             if (tag.isClosing) {
                 if (skipDepth > 0) --skipDepth;
+                if (tag.localLower == "fallback" && skipDepth == 0) {
+                    choiceProducedText = false;
+                }
             } else if (!tag.isSelfClosing) {
                 ++skipDepth;
             }
@@ -1334,6 +1362,158 @@ PdfPreviewResult rasterizePdfBufferOnMta(
 
 } // namespace
 
+namespace {
+
+bool containsWideAsciiNeedle(const std::vector<uint8_t>& raw, std::string_view asciiNeedle) noexcept {
+    if (asciiNeedle.empty() || raw.size() < asciiNeedle.size() * 2) return false;
+    const size_t scanLimit = (std::min<size_t>)(raw.size(), 256 * 1024);
+    std::vector<uint8_t> utf16Needle(asciiNeedle.size() * 2, 0);
+    for (size_t i = 0; i < asciiNeedle.size(); ++i) {
+        utf16Needle[i * 2] = static_cast<uint8_t>(asciiNeedle[i]);
+    }
+    auto it = std::search(
+        raw.begin(),
+        raw.begin() + static_cast<std::ptrdiff_t>(scanLimit),
+        utf16Needle.begin(),
+        utf16Needle.end());
+    return it != (raw.begin() + static_cast<std::ptrdiff_t>(scanLimit));
+}
+
+bool isEncryptedOle2Container(const std::vector<uint8_t>& raw) noexcept {
+    return containsWideAsciiNeedle(raw, "EncryptedPackage") ||
+           containsWideAsciiNeedle(raw, "EncryptionInfo") ||
+           containsWideAsciiNeedle(raw, "DRMEncryptedTransform");
+}
+
+std::string encodeBinaryImageDataUri(const uint8_t* imgData, size_t imgLen, std::string_view mimeType) {
+    if (!imgData || imgLen == 0 || mimeType.empty()) return {};
+    DWORD b64Chars = 0;
+    if (!CryptBinaryToStringA(
+            imgData,
+            static_cast<DWORD>(imgLen),
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            nullptr,
+            &b64Chars) || b64Chars == 0) {
+        return {};
+    }
+    std::string prefix = "data:";
+    prefix.append(mimeType);
+    prefix.append(";base64,");
+
+    std::string out;
+    out.resize(prefix.size() + b64Chars);
+    std::memcpy(out.data(), prefix.data(), prefix.size());
+    DWORD written = b64Chars;
+    if (!CryptBinaryToStringA(
+            imgData,
+            static_cast<DWORD>(imgLen),
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            out.data() + prefix.size(),
+            &written)) {
+        return {};
+    }
+    out.resize(prefix.size() + written);
+    while (!out.empty() && out.back() == '\0') {
+        out.pop_back();
+    }
+    return out;
+}
+
+std::string_view mediaMimeForExtension(std::string_view lowerName) noexcept {
+    if (lowerName.ends_with(".png")) return "image/png";
+    if (lowerName.ends_with(".jpg") || lowerName.ends_with(".jpeg")) return "image/jpeg";
+    if (lowerName.ends_with(".gif")) return "image/gif";
+    if (lowerName.ends_with(".webp")) return "image/webp";
+    if (lowerName.ends_with(".bmp")) return "image/bmp";
+    return {};
+}
+
+void extractPackageEmbeddedImages(
+    const MemoryZipReader& zip,
+    std::string_view mediaPrefixLower,
+    size_t maxImages,
+    std::vector<std::string>& outDataUris) {
+    outDataUris.clear();
+    std::vector<std::string> mediaEntries;
+    for (const auto& entry : zip.entries()) {
+        const std::string lower = WinUtils::toLower(entry.name);
+        if (lower.rfind(mediaPrefixLower, 0) == 0 && !mediaMimeForExtension(lower).empty()) {
+            mediaEntries.push_back(entry.name);
+        }
+    }
+    std::sort(mediaEntries.begin(), mediaEntries.end());
+
+    std::vector<uint8_t> imgBytes;
+    for (const auto& entryPath : mediaEntries) {
+        if (outDataUris.size() >= maxImages) break;
+        const std::string lower = WinUtils::toLower(entryPath);
+        const std::string_view mime = mediaMimeForExtension(lower);
+        if (mime.empty()) continue;
+        if (!zip.extractBinaryEntry(entryPath, imgBytes, 6ULL * 1024ULL * 1024ULL) || imgBytes.empty()) {
+            continue;
+        }
+        std::string uri = encodeBinaryImageDataUri(imgBytes.data(), imgBytes.size(), mime);
+        if (!uri.empty()) {
+            outDataUris.push_back(std::move(uri));
+        }
+    }
+}
+
+std::string findSheetRelationshipId(
+    std::string_view xml,
+    size_t attrStart,
+    size_t closeBracket,
+    const std::unordered_map<std::string, std::string>& relTargetByLowerId) {
+    std::string rid = decodeXmlAttrToUtf8(getXmlAttr(xml, attrStart, closeBracket, "r:id", false));
+    if (!rid.empty() && relTargetByLowerId.find(WinUtils::toLower(rid)) != relTargetByLowerId.end()) {
+        return rid;
+    }
+    // 扫描任意命名空间前缀的 *:id 属性（如 ns0:id / d2p1:id / relationships:id）
+    size_t p = attrStart;
+    while (p < closeBracket) {
+        while (p < closeBracket && (std::isspace(static_cast<unsigned char>(xml[p])) || xml[p] == '/')) ++p;
+        if (p >= closeBracket) break;
+        const size_t nameStart = p;
+        while (p < closeBracket && !std::isspace(static_cast<unsigned char>(xml[p])) &&
+               xml[p] != '=' && xml[p] != '/' && xml[p] != '>') {
+            ++p;
+        }
+        std::string_view rawAttr = xml.substr(nameStart, p - nameStart);
+        while (p < closeBracket && std::isspace(static_cast<unsigned char>(xml[p]))) ++p;
+        if (p >= closeBracket || xml[p] != '=') continue;
+        ++p;
+        while (p < closeBracket && std::isspace(static_cast<unsigned char>(xml[p]))) ++p;
+        if (p >= closeBracket) break;
+
+        std::string_view val;
+        if (xml[p] == '"' || xml[p] == '\'') {
+            const char quote = xml[p++];
+            const size_t endQuote = xml.find(quote, p);
+            if (endQuote == std::string_view::npos || endQuote > closeBracket) break;
+            val = xml.substr(p, endQuote - p);
+            p = endQuote + 1;
+        } else {
+            const size_t valStart = p;
+            while (p < closeBracket && !std::isspace(static_cast<unsigned char>(xml[p])) && xml[p] != '/') ++p;
+            val = xml.substr(valStart, p - valStart);
+        }
+
+        const std::string lowerAttr = WinUtils::toLower(std::string(rawAttr));
+        if (lowerAttr == "id" || (lowerAttr.size() > 3 && lowerAttr.ends_with(":id"))) {
+            std::string decoded = decodeXmlAttrToUtf8(val);
+            if (relTargetByLowerId.find(WinUtils::toLower(decoded)) != relTargetByLowerId.end()) {
+                return decoded;
+            }
+            if (rid.empty()) {
+                rid = std::move(decoded);
+            }
+        }
+    }
+    return rid;
+}
+
+} // namespace
+
 SpreadsheetPreviewResult OfficeAndPdfPreview::extractXlsxPreview(
     const std::wstring& filePath,
     size_t maxSheets,
@@ -1345,7 +1525,7 @@ SpreadsheetPreviewResult OfficeAndPdfPreview::extractXlsxPreview(
         return result;
     }
     if (raw.size() >= 8 && std::memcmp(raw.data(), kOle2Signature, 8) == 0) {
-        result.encryptedOrUnsupported = true;
+        result.encryptedOrUnsupported = isEncryptedOle2Container(raw);
         return result;
     }
 
@@ -1354,15 +1534,9 @@ SpreadsheetPreviewResult OfficeAndPdfPreview::extractXlsxPreview(
         return result;
     }
 
-    std::vector<std::string> sharedStrings;
-    std::string sharedXml;
-    if (zip.extractTextEntry("xl/sharedStrings.xml", sharedXml)) {
-        parseSharedStringsXml(sharedXml, sharedStrings);
-        sharedXml.clear();
-    }
-
-    // Parse xl/_rels/workbook.xml.rels -> rId to worksheet path
-    std::unordered_map<std::string, std::string> relTargetById;
+    // Parse xl/_rels/workbook.xml.rels -> rId to worksheet path & custom sharedStrings path
+    std::unordered_map<std::string, std::string> relTargetByLowerId;
+    std::string customSharedStringsPath;
     std::string relsXml;
     if (zip.extractTextEntry("xl/_rels/workbook.xml.rels", relsXml)) {
         size_t pos = 0;
@@ -1376,21 +1550,34 @@ SpreadsheetPreviewResult OfficeAndPdfPreview::extractXlsxPreview(
             }
             if (!tag.isClosing && tag.localLower == "relationship") {
                 const std::string id = decodeXmlAttrToUtf8(getXmlAttr(relsXml, tag.attrStart, tag.closeBracket, "id"));
+                const std::string relType = WinUtils::toLower(
+                    decodeXmlAttrToUtf8(getXmlAttr(relsXml, tag.attrStart, tag.closeBracket, "type")));
                 std::string target = decodeXmlAttrToUtf8(getXmlAttr(relsXml, tag.attrStart, tag.closeBracket, "target"));
                 target = normalizeZipEntryPath(target);
                 if (!target.empty() && target.rfind("xl/", 0) != 0) {
                     if (target.rfind("../", 0) == 0) {
                         target = target.substr(3);
-                    } else {
+                    } else if (!zip.hasEntry(target)) {
                         target = "xl/" + target;
                     }
                 }
+                if (relType.find("sharedstrings") != std::string::npos && !target.empty()) {
+                    customSharedStringsPath = target;
+                }
                 if (!id.empty() && !target.empty()) {
-                    relTargetById[id] = std::move(target);
+                    relTargetByLowerId[WinUtils::toLower(id)] = std::move(target);
                 }
             }
             pos = tag.closeBracket + 1;
         }
+    }
+
+    std::vector<std::string> sharedStrings;
+    std::string sharedXml;
+    if (zip.extractTextEntry("xl/sharedStrings.xml", sharedXml) ||
+        (!customSharedStringsPath.empty() && zip.extractTextEntry(customSharedStringsPath, sharedXml))) {
+        parseSharedStringsXml(sharedXml, sharedStrings);
+        sharedXml.clear();
     }
 
     struct SheetEntryRef {
@@ -1413,13 +1600,11 @@ SpreadsheetPreviewResult OfficeAndPdfPreview::extractXlsxPreview(
             }
             if (!tag.isClosing && tag.localLower == "sheet") {
                 std::string name = decodeXmlAttrToUtf8(getXmlAttr(workbookXml, tag.attrStart, tag.closeBracket, "name"));
-                std::string rid = decodeXmlAttrToUtf8(getXmlAttr(workbookXml, tag.attrStart, tag.closeBracket, "r:id", false));
-                if (rid.empty()) {
-                    rid = decodeXmlAttrToUtf8(getXmlAttr(workbookXml, tag.attrStart, tag.closeBracket, "id", true));
-                }
+                const std::string rid = findSheetRelationshipId(
+                    workbookXml, tag.attrStart, tag.closeBracket, relTargetByLowerId);
                 std::string targetPath;
-                auto it = relTargetById.find(rid);
-                if (it != relTargetById.end() && zip.hasEntry(it->second)) {
+                auto it = relTargetByLowerId.find(WinUtils::toLower(rid));
+                if (it != relTargetByLowerId.end() && zip.hasEntry(it->second)) {
                     targetPath = it->second;
                 } else {
                     std::string candidate = "xl/worksheets/sheet" + std::to_string(fallbackIdx) + ".xml";
@@ -1440,7 +1625,7 @@ SpreadsheetPreviewResult OfficeAndPdfPreview::extractXlsxPreview(
     }
 
     if (sheetRefs.empty()) {
-        for (size_t i = 1; i <= 16; ++i) {
+        for (size_t i = 1; i <= 24; ++i) {
             std::string candidate = "xl/worksheets/sheet" + std::to_string(i) + ".xml";
             if (zip.hasEntry(candidate)) {
                 sheetRefs.push_back({"Sheet" + std::to_string(i), std::move(candidate)});
@@ -1478,7 +1663,7 @@ DocumentPreviewResult OfficeAndPdfPreview::extractDocxOrPptxPreview(
         return result;
     }
     if (raw.size() >= 8 && std::memcmp(raw.data(), kOle2Signature, 8) == 0) {
-        result.encryptedOrUnsupported = true;
+        result.encryptedOrUnsupported = isEncryptedOle2Container(raw);
         return result;
     }
 
@@ -1488,12 +1673,73 @@ DocumentPreviewResult OfficeAndPdfPreview::extractDocxOrPptxPreview(
     }
 
     if (lowerExt == "docx") {
+        std::string mainDocPath = "word/document.xml";
+        if (!zip.hasEntry(mainDocPath)) {
+            std::string rootRels;
+            if (zip.extractTextEntry("_rels/.rels", rootRels)) {
+                size_t pos = 0;
+                while (pos < rootRels.size()) {
+                    const size_t lt = rootRels.find('<', pos);
+                    if (lt == std::string::npos) break;
+                    XmlTag tag{};
+                    if (!parseXmlTag(rootRels, lt, tag)) {
+                        pos = lt + 1;
+                        continue;
+                    }
+                    if (!tag.isClosing && tag.localLower == "relationship") {
+                        const std::string relType = WinUtils::toLower(
+                            decodeXmlAttrToUtf8(getXmlAttr(rootRels, tag.attrStart, tag.closeBracket, "type")));
+                        std::string target = normalizeZipEntryPath(
+                            decodeXmlAttrToUtf8(getXmlAttr(rootRels, tag.attrStart, tag.closeBracket, "target")));
+                        if (relType.find("officedocument") != std::string::npos && !target.empty() && zip.hasEntry(target)) {
+                            mainDocPath = std::move(target);
+                            break;
+                        }
+                    }
+                    pos = tag.closeBracket + 1;
+                }
+            }
+        }
+
         std::string docXml;
-        if (!zip.extractTextEntry("word/document.xml", docXml)) {
+        if (!zip.extractTextEntry(mainDocPath, docXml)) {
             return result;
         }
         parseWordDocumentXmlToMarkdown(docXml, maxChars, result.markdownText, result.truncated);
-        result.ok = !result.markdownText.empty();
+
+        // 若正文区域为空（如纯页眉/批注/文本框模板），补充扫描页眉、页脚与脚注
+        if (result.markdownText.empty()) {
+            std::vector<std::string> extraXmlPaths;
+            for (const auto& entry : zip.entries()) {
+                const std::string lower = WinUtils::toLower(entry.name);
+                if ((lower.rfind("word/header", 0) == 0 ||
+                     lower.rfind("word/footer", 0) == 0 ||
+                     lower == "word/footnotes.xml" ||
+                     lower == "word/endnotes.xml") &&
+                    lower.ends_with(".xml")) {
+                    extraXmlPaths.push_back(entry.name);
+                }
+            }
+            std::sort(extraXmlPaths.begin(), extraXmlPaths.end());
+            std::string partXml;
+            std::string partMd;
+            bool partTrunc = false;
+            for (const auto& ep : extraXmlPaths) {
+                if (result.markdownText.size() >= maxChars) break;
+                if (zip.extractTextEntry(ep, partXml)) {
+                    parseWordDocumentXmlToMarkdown(partXml, maxChars - result.markdownText.size(), partMd, partTrunc);
+                    if (!partMd.empty()) {
+                        result.markdownText += partMd;
+                    }
+                }
+            }
+        }
+
+        // 提取 word/media/* 内嵌图片（完美支持纯截图粘贴型工单/需求文档！）
+        extractPackageEmbeddedImages(zip, "word/media/", 8, result.embeddedImages);
+
+        result.emptyDocument = result.markdownText.empty() && result.embeddedImages.empty();
+        result.ok = true;
         return result;
     }
 
@@ -1533,7 +1779,12 @@ DocumentPreviewResult OfficeAndPdfPreview::extractDocxOrPptxPreview(
                 ++slideCount;
             }
         }
-        result.ok = !result.markdownText.empty();
+        extractPackageEmbeddedImages(zip, "ppt/media/", 8, result.embeddedImages);
+        const bool validPresentation = !slideEntries.empty() || zip.hasEntry("ppt/presentation.xml");
+        if (validPresentation) {
+            result.emptyDocument = result.markdownText.empty() && result.embeddedImages.empty();
+            result.ok = true;
+        }
         return result;
     }
 

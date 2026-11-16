@@ -162,7 +162,7 @@ RecordOptions configuredRecordOptions(const CaptureRegion& region) {
     options.studioMode = config.get<bool>("/recording/studioMode", false);
     options.studioConfig.autoZoomEnabled = config.get<bool>("/recording/studioAutoZoom", true);
     options.studioConfig.defaultZoomFactor = std::clamp(
-        static_cast<float>(config.get<double>("/recording/studioZoomFactor", 1.85)), 1.25f, 2.80f);
+        static_cast<float>(config.get<double>("/recording/studioZoomFactor", 1.50)), 1.25f, 2.80f);
     options.studioConfig.smoothCursorEnabled = config.get<bool>("/recording/studioSmoothCursor", true);
     options.studioConfig.cursorScale = std::clamp(
         static_cast<float>(config.get<double>("/recording/studioCursorScale", 1.35)), 0.80f, 2.20f);
@@ -684,6 +684,13 @@ public:
         indicator.onMicrophoneMute(toggleMicrophoneMuteWithFeedback);
 
         tools3000::ocr::OcrEngine::instance().initialize();
+        if (tools3000::core::ConfigManager::instance().get<bool>("/ocr/autoDownloadPackOnStartup", false)) {
+            tools3000::core::ConfigManager::instance().set<bool>("/ocr/autoDownloadPackOnStartup", false);
+            if (!tools3000::ocr::DeepOcrEngine::instance().isModelInstalled()) {
+                LOG_INFO("CapturePlugin: starting background PP-OCRv4 offline pack download requested by installer");
+                tools3000::ocr::DeepOcrEngine::instance().startModelDownload();
+            }
+        }
 
         
         auto& mb = tools3000::core::MessageBridge::instance();
@@ -929,7 +936,7 @@ public:
                 {"experimentalGpuEncoding", config.get<bool>("/recording/experimentalGpuEncoding", false)},
                 {"studioMode", config.get<bool>("/recording/studioMode", false)},
                 {"studioAutoZoom", config.get<bool>("/recording/studioAutoZoom", true)},
-                {"studioZoomFactor", config.get<double>("/recording/studioZoomFactor", 1.85)},
+                {"studioZoomFactor", config.get<double>("/recording/studioZoomFactor", 1.50)},
                 {"studioSmoothCursor", config.get<bool>("/recording/studioSmoothCursor", true)},
                 {"studioCursorScale", config.get<double>("/recording/studioCursorScale", 1.35)},
                 {"studioAutoFrame", config.get<bool>("/recording/studioAutoFrame", true)},

@@ -106,6 +106,8 @@ chinesesimplified.CompSearch=超级文件检索 (Search) — 全盘秒级索引�
 english.CompSearch=Fast File Search (Search) — Instant disk indexing & launcher
 chinesesimplified.CompCapture=截图贴图与录屏 (Capture) — 智能贴图、长截图、拾色器与高清录屏
 english.CompCapture=Screenshot, Pin & Recording (Capture) — Smart pin, OCR & HD recording
+chinesesimplified.CompOcrOfflinePack=微信级离线高精度文字识别引擎包 (PP-OCRv4 · 约 16MB) — 勾选后首次启动后台自动部署，大幅增强小字、中英代码混排、表格与倾斜文本识别精度
+english.CompOcrOfflinePack=High-Precision Offline OCR Engine Pack (PP-OCRv4, ~16 MB) — Auto-downloads in background on first launch for superior table, code & small-text accuracy
 chinesesimplified.CompGesture=鼠标手势与触发角 (Gesture) — 右键手势轨迹、屏幕四角触发与边缘滚轮
 english.CompGesture=Mouse Gestures & Hot Corners (Gesture) — Trailing gestures, hot corners & edge wheel
 chinesesimplified.CompKeycast=按键回显 (Keycast) — 屏幕实时按键显示、机械键帽动效
@@ -125,6 +127,7 @@ Name: "custom"; Description: "{cm:TypeCustom}"; Flags: iscustom
 [Components]
 Name: "search"; Description: "{cm:CompSearch}"; Types: full compact
 Name: "capture"; Description: "{cm:CompCapture}"; Types: full compact
+Name: "capture\ocr_models"; Description: "{cm:CompOcrOfflinePack}"; Flags: dontinheritcheck
 Name: "gesture"; Description: "{cm:CompGesture}"; Types: full compact
 Name: "keycast"; Description: "{cm:CompKeycast}"; Types: full
 Name: "dialogenhancer"; Description: "{cm:CompDialog}"; Types: full
@@ -917,8 +920,8 @@ end;
 procedure SyncInitialModuleConfig();
 var
   AppDir, InitialModulesPath: String;
-  SearchSel, CaptureSel, GestureSel, KeycastSel, DialogSel, SpotlightSel, RemoteSel: Boolean;
-  SearchStr, CaptureStr, GestureStr, KeycastStr, DialogStr, SpotlightStr, RemoteStr: String;
+  SearchSel, CaptureSel, OcrPackSel, GestureSel, KeycastSel, DialogSel, SpotlightSel, RemoteSel: Boolean;
+  SearchStr, CaptureStr, OcrPackStr, GestureStr, KeycastStr, DialogStr, SpotlightStr, RemoteStr: String;
   JsonContent: String;
 begin
   AppDir := ExpandConstant('{app}');
@@ -935,6 +938,7 @@ begin
 
   SearchSel := WizardIsComponentSelected('search');
   CaptureSel := WizardIsComponentSelected('capture');
+  OcrPackSel := WizardIsComponentSelected('capture\ocr_models');
   GestureSel := WizardIsComponentSelected('gesture');
   KeycastSel := WizardIsComponentSelected('keycast');
   DialogSel := WizardIsComponentSelected('dialogenhancer');
@@ -943,6 +947,7 @@ begin
 
   if SearchSel then SearchStr := 'true' else SearchStr := 'false';
   if CaptureSel then CaptureStr := 'true' else CaptureStr := 'false';
+  if OcrPackSel then OcrPackStr := 'true' else OcrPackStr := 'false';
   if GestureSel then GestureStr := 'true' else GestureStr := 'false';
   if KeycastSel then KeycastStr := 'true' else KeycastStr := 'false';
   if DialogSel then DialogStr := 'true' else DialogStr := 'false';
@@ -968,6 +973,9 @@ begin
     '  "spotlight": { "enabled": ' + SpotlightStr + ' },' + #13#10 +
     '  "remote_boost": {' + #13#10 +
     '    "enabled": ' + RemoteStr + '' + #13#10 +
+    '  },' + #13#10 +
+    '  "ocr": {' + #13#10 +
+    '    "autoDownloadPackOnStartup": ' + OcrPackStr + '' + #13#10 +
     '  },' + #13#10 +
     '  "general": {' + #13#10 +
     '    "keycastEnabled": ' + KeycastStr + '' + #13#10 +

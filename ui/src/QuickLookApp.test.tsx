@@ -556,4 +556,68 @@ describe('QuickLookApp Usability & Media Pipeline', () => {
     fireEvent.click(screen.getByLabelText('Next Page'));
     expect(screen.getByText('2 / 2')).toBeDefined();
   });
+
+  it('renders Excel A/B/C column letters without swallowing sparse title row 1, and previews blank or image-based .docx cleanly', async () => {
+    render(<QuickLookApp />);
+
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'D:\\Projects\\004测试许可申请-星云科技_17.xlsx',
+        name: '004测试许可申请-星云科技_17.xlsx',
+        extension: 'xlsx',
+        type: 'spreadsheet',
+        isDirectory: false,
+        size: 9984,
+        formattedSize: '9.8 KB',
+        modified: '2026-10-12 09:03:56',
+        totalSheetCount: 2,
+        sheets: [
+          {
+            name: '许可申请',
+            rows: [
+              ['', '许可申请'],
+              ['', '申请人', 'Hardware key', '版本'],
+              ['', '星云科技', 'NBL00000001', '10.0 2202 HF1'],
+            ],
+          },
+          {
+            name: '附录说明',
+            rows: [['备注', '一年有效期']],
+          },
+        ],
+      });
+    });
+
+    const excelHeaders = Array.from(document.querySelectorAll('.ql-data-table thead th')).map(el => el.textContent);
+    expect(excelHeaders).toEqual(['#', 'A', 'B', 'C', 'D']);
+    expect(screen.getByText('2 sheets')).toBeDefined();
+    expect(screen.getByText('申请人')).toBeDefined();
+    expect(screen.getByText('星云科技')).toBeDefined();
+
+    // Blank template default.docx should show emptyDocHint instead of unsupported fallback
+    await act(async () => {
+      fileChangedHandler?.({
+        exists: true,
+        loading: false,
+        path: 'C:\\Templates\\default.docx',
+        name: 'default.docx',
+        extension: 'docx',
+        type: 'document',
+        isDirectory: false,
+        size: 38092,
+        formattedSize: '37.2 KB',
+        modified: '2026-11-12 01:57:16',
+        content: '',
+        emptyDocument: true,
+      });
+    });
+
+    expect(
+      screen.getByText(
+        'This document is a blank template or contains no visible body content. Press Enter to edit in your default office app.',
+      ),
+    ).toBeDefined();
+  });
 });

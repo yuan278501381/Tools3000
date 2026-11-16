@@ -25,7 +25,9 @@ struct DocumentPreviewResult {
     bool ok = false;
     bool encryptedOrUnsupported = false;
     bool truncated = false;
+    bool emptyDocument = false;
     std::string markdownText;
+    std::vector<std::string> embeddedImages;
 };
 
 struct PdfPreviewResult {
@@ -39,9 +41,9 @@ class TOOLS3000CORE_API OfficeAndPdfPreview {
 public:
     static SpreadsheetPreviewResult extractXlsxPreview(
         const std::wstring& filePath,
-        size_t maxSheets = 8,
+        size_t maxSheets = 24,
         size_t maxRowsPerSheet = 200,
-        size_t maxColsPerRow = 32);
+        size_t maxColsPerRow = 64);
 
     static DocumentPreviewResult extractDocxOrPptxPreview(
         const std::wstring& filePath,

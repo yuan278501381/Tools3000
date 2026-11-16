@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstring>
 #include <cwctype>
 #include <string>
 #include <string_view>
@@ -55,7 +56,6 @@ std::wstring extractXmpText(const std::string& xmp) {
 PsdAiExtractor::PsdAiExtractor() {
     m_supportedExts.insert(L"psd");
     m_supportedExts.insert(L"psb");
-    m_supportedExts.insert(L"ai");
 }
 
 bool PsdAiExtractor::canHandle(std::wstring_view extension) const {
@@ -72,7 +72,38 @@ bool PsdAiExtractor::extractPsdAiText(
 ) const {
     if (dataSize < 12) return false;
 
-    std::string_view fullView(reinterpret_cast<const char*>(pData), dataSize);
+    // 计算 PSD/PSB 的元数据与图层区终点，直接跳过尾部数十 MB 的纯像素 Image Data 区
+    size_t layerScanEnd = dataSize;
+    if (dataSize >= 30 && pData[0] == '8' && pData[1] == 'B' && pData[2] == 'P' && pData[3] == 'S') {
+        const uint16_t ver = (static_cast<uint16_t>(pData[4]) << 8) | pData[5];
+        auto readBe32 = [&](size_t off) noexcept -> uint64_t {
+            return (static_cast<uint64_t>(pData[off]) << 24) |
+                   (static_cast<uint64_t>(pData[off + 1]) << 16) |
+                   (static_cast<uint64_t>(pData[off + 2]) << 8) |
+                   static_cast<uint64_t>(pData[off + 3]);
+        };
+        auto readBe64 = [&](size_t off) noexcept -> uint64_t {
+            return (readBe32(off) << 32) | readBe32(off + 4);
+        };
+        size_t pos = 26;
+        if (pos + 4 <= dataSize) {
+            const uint64_t colorLen = readBe32(pos);
+            pos += 4 + static_cast<size_t>((std::min<uint64_t>)(colorLen, dataSize - pos - 4));
+            if (pos + 4 <= dataSize) {
+                const uint64_t irLen = readBe32(pos);
+                pos += 4 + static_cast<size_t>((std::min<uint64_t>)(irLen, dataSize - pos - 4));
+                if (ver == 1 && pos + 4 <= dataSize) {
+                    const uint64_t lmLen = readBe32(pos);
+                    layerScanEnd = (std::min<size_t>)(dataSize, pos + 4 + static_cast<size_t>((std::min<uint64_t>)(lmLen, dataSize)));
+                } else if (ver == 2 && pos + 8 <= dataSize) {
+                    const uint64_t lmLen = readBe64(pos);
+                    layerScanEnd = (std::min<size_t>)(dataSize, pos + 8 + static_cast<size_t>((std::min<uint64_t>)(lmLen, dataSize)));
+                }
+            }
+        }
+    }
+
+    std::string_view fullView(reinterpret_cast<const char*>(pData), layerScanEnd);
     const size_t xmpStart = fullView.find("<?xpacket");
     if (xmpStart != std::string_view::npos) {
         const size_t xmpEnd = fullView.find("</xpacket>", xmpStart);
@@ -88,13 +119,18 @@ bool PsdAiExtractor::extractPsdAiText(
 
     size_t i = 0;
     size_t iter = 0;
-    while (i + 4 < dataSize) {
-        if (((++iter & 0xFFFFu) == 0) && isCancelled && isCancelled()) {
+    while (i + 4 < layerScanEnd) {
+        if (((++iter & 0x3FFu) == 0) && isCancelled && isCancelled()) {
             outExtractedText.clear();
             return false;
         }
-        if (pData[i] == 'T' && pData[i + 1] == 'y' && pData[i + 2] == 'S' && pData[i + 3] == 'h') {
-            const size_t scanLimit = (std::min)(dataSize, i + 8192);
+        const void* found = std::memchr(pData + i, 'T', (layerScanEnd - 3) - i);
+        if (!found) {
+            break;
+        }
+        i = static_cast<size_t>(static_cast<const uint8_t*>(found) - pData);
+        if (pData[i + 1] == 'y' && pData[i + 2] == 'S' && pData[i + 3] == 'h') {
+            const size_t scanLimit = (std::min)(layerScanEnd, i + 8192);
             for (size_t k = i + 4; k + 4 < scanLimit; ++k) {
                 if ((pData[k] == 0x00 && pData[k + 1] >= 0x20 && pData[k + 1] <= 0x7E) ||
                     (pData[k] >= 0x4E && pData[k] <= 0x9F) ||

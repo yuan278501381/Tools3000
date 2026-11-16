@@ -2051,7 +2051,10 @@
     "meshBoundingBox": "Size {{x}} × {{y}} × {{z}}",
     "meshOrbitHint": "Left-drag orbit · Right-drag pan · Wheel zoom",
     "prevPage": "Previous Page",
-    "nextPage": "Next Page"
+    "nextPage": "Next Page",
+    "sheetsSummary": "{{count}} sheets",
+    "emptyDocHint": "This document is a blank template or contains no visible body content. Press Enter to edit in your default office app.",
+    "embeddedImagesCount": "Embedded Images ({{count}})"
   },
   "main": {
     "errorTitle": "UI Failed to Render",

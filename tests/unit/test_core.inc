@@ -4448,5 +4448,29 @@ TEST(OfficeAndPdfPreviewTest, ExtractsXlsxDocxPptxAndRendersPdfZeroLock) {
     // Zero file lock assertion: deleting pdfPath immediately must succeed!
     EXPECT_TRUE(std::filesystem::remove(pdfPath, ec));
 
+    // 4. Blank template default.docx (<w:body><w:sectPr/></w:body>) must return ok=true & emptyDocument=true
+    const auto blankDocxPath = tempDir / L"default.docx";
+    writeMinimalDeflatedZip(blankDocxPath, {
+        {"word/document.xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><w:document><w:body><w:sectPr/></w:body></w:document>)"}
+    });
+    const auto blankDocxRes = OfficeAndPdfPreview::extractDocxOrPptxPreview(blankDocxPath.wstring(), "docx");
+    ASSERT_TRUE(blankDocxRes.ok);
+    EXPECT_TRUE(blankDocxRes.emptyDocument);
+    EXPECT_TRUE(blankDocxRes.markdownText.empty());
+
+    // 5. Image-only screenshot .docx (word/media/image1.png) must return ok=true & embeddedImages.size()==1
+    const auto imgDocxPath = tempDir / L"工单截图.docx";
+    writeMinimalDeflatedZip(imgDocxPath, {
+        {"word/document.xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><w:document><w:body><w:p/></w:body></w:document>)"},
+        {"word/media/image1.png", "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"}
+    });
+    const auto imgDocxRes = OfficeAndPdfPreview::extractDocxOrPptxPreview(imgDocxPath.wstring(), "docx");
+    ASSERT_TRUE(imgDocxRes.ok);
+    EXPECT_FALSE(imgDocxRes.emptyDocument);
+    ASSERT_EQ(imgDocxRes.embeddedImages.size(), 1u);
+    EXPECT_EQ(imgDocxRes.embeddedImages[0].rfind("data:image/png;base64,", 0), 0u);
+
     std::filesystem::remove_all(tempDir, ec);
 }

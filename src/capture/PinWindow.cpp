@@ -4506,7 +4506,6 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
                     if (self->m_isCharStreamSelecting && self->m_anchorBlockIndex >= 0) {
                         const float startMx = static_cast<float>(self->m_selectStart.x) / safeScale;
-                        const float startMy = static_cast<float>(self->m_selectStart.y) / safeScale;
                         const float curMx = static_cast<float>(x) / safeScale;
                         const float curMy = static_cast<float>(y) / safeScale;
                         const float moveClientPx = std::hypot(

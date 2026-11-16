@@ -1305,7 +1305,8 @@ bool hasReadablePdfText(std::wstring_view text) noexcept {
 } // namespace
 
 bool PdfExtractor::canHandle(std::wstring_view extension) const {
-    return ContentFormatFilter::normalizeExt(extension) == L"pdf";
+    const std::wstring ext = ContentFormatFilter::normalizeExt(extension);
+    return ext == L"pdf" || ext == L"ai";
 }
 
 bool PdfExtractor::extractPdfTextFromMemory(
@@ -1343,6 +1344,11 @@ bool PdfExtractor::extractPdfTextFromMemory(
         fallbackFontNameToFontObj,
         isCancelled
     );
+    std::unordered_set<uint32_t> knownToUnicodeObjs;
+    for (const auto& [fontObj, cmapObj] : fontObjToToUnicodeObj) {
+        (void)fontObj;
+        if (cmapObj > 0) knownToUnicodeObjs.insert(cmapObj);
+    }
 
     std::vector<DecodedStreamEntry> decodedStreams;
     size_t totalDecompressedBytes = 0;
@@ -1416,19 +1422,7 @@ bool PdfExtractor::extractPdfTextFromMemory(
         const std::string_view dictView = headerSlice.substr(dictOpen, (dictClose + 2) - dictOpen);
         const uint32_t objId = parsePrecedingObjectId(pdfView.substr(0, dictLookbackStart + dictOpen));
 
-        // Skip obvious image/font binary streams early to save CPU & memory
-        if (dictView.find("/Subtype /Image") != std::string_view::npos ||
-            dictView.find("/Subtype/Image") != std::string_view::npos ||
-            hasPdfNameToken(dictView, "/FontFile") ||
-            hasPdfNameToken(dictView, "/FontFile2") ||
-            hasPdfNameToken(dictView, "/FontFile3") ||
-            dictView.find("/Subtype /XML") != std::string_view::npos) {
-            const size_t nextEnd = pdfView.find("endstream", dataStart);
-            searchPos = (nextEnd != std::string_view::npos) ? (nextEnd + 9) : size;
-            continue;
-        }
-
-        // Determine stream byte slice
+        // Determine stream byte slice in O(1) via /Length first so binary streams skip without scanning megabytes
         size_t streamLen = 0;
         size_t afterEndStream = std::string_view::npos;
         const int explicitLength = parseDictIntValue(dictView, "/Length", -1);
@@ -1454,6 +1448,38 @@ bool PdfExtractor::extractPdfTextFromMemory(
 
         searchPos = afterEndStream;
         if (streamLen == 0) continue;
+
+        // Streams explicitly referenced by Page /Contents or Font /ToUnicode are never skipped as binary
+        const bool isExplicitContentOrCMapObj =
+            (objId > 0) &&
+            (streamObjToResourceOwnerObj.find(objId) != streamObjToResourceOwnerObj.end() ||
+             knownToUnicodeObjs.find(objId) != knownToUnicodeObjs.end());
+
+        // Skip embedded images, TrueType/CFF/OpenType font programs (/Length1, /CIDFontType0C, /Type1C),
+        // cross-reference tables (/XRef), XML metadata, and ICC color profiles before zlib inflation
+        const bool isBinaryNonTextStream =
+            !isExplicitContentOrCMapObj &&
+            (dictView.find("/Subtype /Image") != std::string_view::npos ||
+             dictView.find("/Subtype/Image") != std::string_view::npos ||
+             hasPdfNameToken(dictView, "/Length1") ||
+             hasPdfNameToken(dictView, "/Length2") ||
+             hasPdfNameToken(dictView, "/Length3") ||
+             hasPdfNameToken(dictView, "/FontFile") ||
+             hasPdfNameToken(dictView, "/FontFile2") ||
+             hasPdfNameToken(dictView, "/FontFile3") ||
+             dictView.find("/CIDFontType0C") != std::string_view::npos ||
+             dictView.find("/Type1C") != std::string_view::npos ||
+             dictView.find("/OpenType") != std::string_view::npos ||
+             dictView.find("/Type /XRef") != std::string_view::npos ||
+             dictView.find("/Type/XRef") != std::string_view::npos ||
+             dictView.find("/Type /Metadata") != std::string_view::npos ||
+             dictView.find("/Type/Metadata") != std::string_view::npos ||
+             dictView.find("/Subtype /XML") != std::string_view::npos ||
+             dictView.find("/Subtype/XML") != std::string_view::npos ||
+             (hasPdfNameToken(dictView, "/Alternate") && hasPdfNameToken(dictView, "/N")));
+        if (isBinaryNonTextStream) {
+            continue;
+        }
 
         const bool hasFlate =
             hasPdfNameToken(dictView, "/FlateDecode") ||
@@ -1518,6 +1544,10 @@ bool PdfExtractor::extractPdfTextFromMemory(
                 fallbackFontNameToFontObj,
                 isCancelled
             );
+            for (const auto& [fontObj, cmapObj] : fontObjToToUnicodeObj) {
+                (void)fontObj;
+                if (cmapObj > 0) knownToUnicodeObjs.insert(cmapObj);
+            }
         }
 
         decodedStreams.push_back(DecodedStreamEntry{

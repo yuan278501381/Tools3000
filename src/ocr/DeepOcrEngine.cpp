@@ -30,7 +30,7 @@ struct ModelDownloadSpec {
     const char* displayName;
     size_t minValidBytes;
     bool isOnnx;
-    std::array<const wchar_t*, 3> mirrorUrls;
+    std::array<const wchar_t*, 4> mirrorUrls;
 };
 
 constexpr std::array<ModelDownloadSpec, 4> kModelSpecs = {{
@@ -40,8 +40,9 @@ constexpr std::array<ModelDownloadSpec, 4> kModelSpecs = {{
         DeepOcrConstants::kMinDetModelBytes,
         true,
         {
-            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
+            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx",
             L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
+            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
             nullptr
         }
     },
@@ -51,8 +52,9 @@ constexpr std::array<ModelDownloadSpec, 4> kModelSpecs = {{
         DeepOcrConstants::kMinClsModelBytes,
         true,
         {
-            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_ppocr_mobile_v2.0_cls_infer.onnx",
-            L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_ppocr_mobile_v2.0_cls_infer.onnx",
+            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+            L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv1/ch_ppocr_mobile_v2.0_cls_infer.onnx",
+            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv1/ch_ppocr_mobile_v2.0_cls_infer.onnx",
             nullptr
         }
     },
@@ -62,8 +64,9 @@ constexpr std::array<ModelDownloadSpec, 4> kModelSpecs = {{
         DeepOcrConstants::kMinRecModelBytes,
         true,
         {
-            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
+            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile.onnx",
             L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
+            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
             nullptr
         }
     },
@@ -73,9 +76,10 @@ constexpr std::array<ModelDownloadSpec, 4> kModelSpecs = {{
         4096,
         false,
         {
+            L"https://ghfast.top/https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt",
             L"https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt",
-            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ppocr_keys_v1.txt",
-            L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv4/ppocr_keys_v1.txt"
+            nullptr,
+            nullptr
         }
     }
 }};
@@ -133,7 +137,8 @@ bool isDirectoryCompleteModelBundle(const std::filesystem::path& dir) {
     return checkFileMinSize(DeepOcrConstants::kDetModelFileName, 256) &&
            checkFileMinSize(DeepOcrConstants::kClsModelFileName, 256) &&
            checkFileMinSize(DeepOcrConstants::kRecModelFileName, 256) &&
-           checkFileMinSize(DeepOcrConstants::kKeysDictFileName, 64);
+           (checkFileMinSize(DeepOcrConstants::kKeysDictFileName, 64) ||
+            checkFileMinSize(DeepOcrConstants::kRecModelFileName, DeepOcrConstants::kMinRecModelBytes));
 }
 
 std::array<cv::Point2f, 4> orderQuadPointsClockwise(const cv::Point2f rawPts[4]) noexcept {
@@ -415,6 +420,156 @@ bool DeepOcrEngine::isValidOnnxBuffer(const uint8_t* data, size_t byteSize, size
     return true;
 }
 
+namespace {
+
+bool readProtobufVarint(const uint8_t* data, size_t byteSize, size_t& cursor, uint64_t& outVal) noexcept {
+    outVal = 0;
+    uint32_t shift = 0;
+    while (cursor < byteSize && shift < 64) {
+        const uint8_t b = data[cursor++];
+        outVal |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+        if ((b & 0x80u) == 0) {
+            return true;
+        }
+        shift += 7;
+    }
+    return false;
+}
+
+bool splitCharacterPayloadIntoLines(std::string_view payload, std::vector<std::string>& outKeys) {
+    outKeys.clear();
+    outKeys.reserve(6700);
+    size_t start = 0;
+    bool firstLine = true;
+    while (start <= payload.size()) {
+        size_t nl = payload.find('\n', start);
+        std::string_view line = (nl == std::string_view::npos)
+            ? payload.substr(start)
+            : payload.substr(start, nl - start);
+        if (firstLine) {
+            firstLine = false;
+            if (line.size() >= 3 &&
+                static_cast<uint8_t>(line[0]) == 0xEF &&
+                static_cast<uint8_t>(line[1]) == 0xBB &&
+                static_cast<uint8_t>(line[2]) == 0xBF) {
+                line.remove_prefix(3);
+            }
+        }
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+            line.remove_suffix(1);
+        }
+        if (!line.empty()) {
+            outKeys.emplace_back(line);
+        }
+        if (nl == std::string_view::npos) break;
+        start = nl + 1;
+    }
+    return outKeys.size() >= 16;
+}
+
+bool parseMetadataEntryProto(const uint8_t* entryData, size_t entryLen, std::string_view& outKey, std::string_view& outVal) noexcept {
+    outKey = {};
+    outVal = {};
+    size_t pos = 0;
+    while (pos < entryLen) {
+        uint64_t tag = 0;
+        if (!readProtobufVarint(entryData, entryLen, pos, tag) || tag == 0) return false;
+        const uint32_t wire = static_cast<uint32_t>(tag & 0x07u);
+        const uint32_t field = static_cast<uint32_t>(tag >> 3u);
+        if (wire == 2) {
+            uint64_t strLen = 0;
+            if (!readProtobufVarint(entryData, entryLen, pos, strLen)) return false;
+            if (strLen > entryLen - pos) return false;
+            std::string_view sv(reinterpret_cast<const char*>(entryData + pos), static_cast<size_t>(strLen));
+            if (field == 1) outKey = sv;
+            else if (field == 2) outVal = sv;
+            pos += static_cast<size_t>(strLen);
+        } else if (wire == 0) {
+            uint64_t dummy = 0;
+            if (!readProtobufVarint(entryData, entryLen, pos, dummy)) return false;
+        } else if (wire == 1) {
+            if (entryLen - pos < 8) return false;
+            pos += 8;
+        } else if (wire == 5) {
+            if (entryLen - pos < 4) return false;
+            pos += 4;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool DeepOcrEngine::extractEmbeddedCharacterDictFromOnnx(
+    const uint8_t* data,
+    size_t byteSize,
+    std::vector<std::string>& outKeys) {
+    outKeys.clear();
+    if (!data || byteSize < 32) {
+        return false;
+    }
+
+    // 路径 1: 标准 ONNX ModelProto 顶层字段遍历 (metadata_props = field 14, wire_type 2 => tag 0x72)
+    size_t cursor = 0;
+    while (cursor < byteSize) {
+        uint64_t tag = 0;
+        if (!readProtobufVarint(data, byteSize, cursor, tag) || tag == 0) {
+            break;
+        }
+        const uint32_t wire = static_cast<uint32_t>(tag & 0x07u);
+        const uint32_t field = static_cast<uint32_t>(tag >> 3u);
+        if (wire == 2) {
+            uint64_t len = 0;
+            if (!readProtobufVarint(data, byteSize, cursor, len) || len > byteSize - cursor) {
+                break;
+            }
+            if (field == 14) {
+                std::string_view k, v;
+                if (parseMetadataEntryProto(data + cursor, static_cast<size_t>(len), k, v) &&
+                    (k == "character" || k == "dict") && !v.empty()) {
+                    if (splitCharacterPayloadIntoLines(v, outKeys)) {
+                        return true;
+                    }
+                }
+            }
+            cursor += static_cast<size_t>(len);
+        } else if (wire == 0) {
+            uint64_t dummy = 0;
+            if (!readProtobufVarint(data, byteSize, cursor, dummy)) break;
+        } else if (wire == 1) {
+            if (byteSize - cursor < 8) break;
+            cursor += 8;
+        } else if (wire == 5) {
+            if (byteSize - cursor < 4) break;
+            cursor += 4;
+        } else {
+            break;
+        }
+    }
+
+    // 路径 2: 尾部元数据特征扫描兜底 (\x0A\x09character\x12 + varint length)
+    static constexpr uint8_t kMarker[] = {0x0A, 0x09, 'c', 'h', 'a', 'r', 'a', 'c', 't', 'e', 'r', 0x12};
+    const size_t scanWindow = (std::min)(byteSize, static_cast<size_t>(512 * 1024));
+    const size_t scanStart = byteSize - scanWindow;
+    for (size_t i = scanStart; i + sizeof(kMarker) < byteSize; ++i) {
+        if (std::memcmp(data + i, kMarker, sizeof(kMarker)) == 0) {
+            size_t vPos = i + sizeof(kMarker);
+            uint64_t vLen = 0;
+            if (readProtobufVarint(data, byteSize, vPos, vLen) && vLen > 0 && vLen <= byteSize - vPos) {
+                std::string_view v(reinterpret_cast<const char*>(data + vPos), static_cast<size_t>(vLen));
+                if (splitCharacterPayloadIntoLines(v, outKeys)) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    outKeys.clear();
+    return false;
+}
+
 bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelDir) {
     if (m_modelsLoaded && m_loadedModelDir == modelDir && !m_detNet.empty() && !m_recNet.empty() && !m_dictKeys.empty()) {
         return true;
@@ -444,8 +599,11 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
             return false;
         }
         if (!loadDictionaryLines(modelDir / DeepOcrConstants::kKeysDictFileName, m_dictKeys)) {
-            LOG_WARN("DeepOcrEngine: invalid or missing dictionary keys file");
-            return false;
+            if (!extractEmbeddedCharacterDictFromOnnx(recBytes.data(), recBytes.size(), m_dictKeys)) {
+                LOG_WARN("DeepOcrEngine: invalid or missing dictionary keys file");
+                return false;
+            }
+            LOG_INFO("DeepOcrEngine: loaded {} dictionary keys directly from rec ONNX metadata", m_dictKeys.size());
         }
 
         m_detNet = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(detBytes.data()), detBytes.size());
@@ -1171,8 +1329,86 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
         const std::filesystem::path finalPath = targetDir / spec.localFileName;
         const std::filesystem::path partPath = targetDir / (std::wstring(spec.localFileName) + L".part");
 
+        auto verifyCandidatePath = [&](const std::filesystem::path& candidatePath, uint64_t* outByteLen = nullptr) -> bool {
+            if (spec.isOnnx) {
+                std::vector<uint8_t> verifyBytes;
+                if (!readFileBytes(candidatePath, verifyBytes) ||
+                    !isValidOnnxBuffer(verifyBytes.data(), verifyBytes.size(), spec.minValidBytes)) {
+                    return false;
+                }
+                try {
+                    cv::dnn::Net probeNet = cv::dnn::readNetFromONNX(
+                        reinterpret_cast<const char*>(verifyBytes.data()), verifyBytes.size());
+                    if (probeNet.empty()) return false;
+                    if (outByteLen) *outByteLen = static_cast<uint64_t>(verifyBytes.size());
+                    return true;
+                } catch (...) {
+                    return false;
+                }
+            } else {
+                std::vector<std::string> probeKeys;
+                if (!loadDictionaryLines(candidatePath, probeKeys) ||
+                    probeKeys.size() < DeepOcrConstants::kMinDictKeyLines) {
+                    return false;
+                }
+                if (outByteLen) {
+                    std::error_code szEc;
+                    const auto sz = std::filesystem::file_size(candidatePath, szEc);
+                    *outByteLen = szEc ? 0ULL : static_cast<uint64_t>(sz);
+                }
+                return true;
+            }
+        };
+
+        // 断点续传加速：若本地目标文件已完整且通过 ONNX 图解析/字典校验，直接复用跳过重复下载
+        uint64_t existingValidBytes = 0;
+        if (verifyCandidatePath(finalPath, &existingValidBytes)) {
+            cumulativeBytes += existingValidBytes;
+            m_downloadedBytes.store(cumulativeBytes, std::memory_order_release);
+            const uint64_t estTotal = (std::max)(cumulativeBytes + 65536ULL, DeepOcrConstants::kEstimatedBundleBytes);
+            m_totalBytes.store(estTotal, std::memory_order_release);
+            m_progressPercent.store(
+                std::clamp(static_cast<int>((cumulativeBytes * 98ULL) / estTotal), 1, 98),
+                std::memory_order_release);
+            continue;
+        }
+
         bool fileDone = false;
+
+        // 字典文件零网络内嵌自提取优先：直接从已落盘的 ch_PP-OCRv4_rec.onnx 元数据导出官方字符表
+        if (!spec.isOnnx) {
+            std::vector<uint8_t> recModelBytes;
+            std::vector<std::string> embeddedKeys;
+            if (readFileBytes(targetDir / DeepOcrConstants::kRecModelFileName, recModelBytes) &&
+                extractEmbeddedCharacterDictFromOnnx(recModelBytes.data(), recModelBytes.size(), embeddedKeys) &&
+                embeddedKeys.size() >= DeepOcrConstants::kMinDictKeyLines) {
+                std::filesystem::remove(partPath, ec);
+                std::ofstream dictOut(partPath, std::ios::binary | std::ios::trunc);
+                if (dictOut) {
+                    for (const auto& k : embeddedKeys) {
+                        dictOut.write(k.data(), static_cast<std::streamsize>(k.size()));
+                        dictOut.put('\n');
+                    }
+                    dictOut.flush();
+                    const auto writtenPos = dictOut.tellp();
+                    dictOut.close();
+                    if (writtenPos > 0 &&
+                        MoveFileExW(partPath.c_str(), finalPath.c_str(),
+                                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+                        cumulativeBytes += static_cast<uint64_t>(writtenPos);
+                        m_downloadedBytes.store(cumulativeBytes, std::memory_order_release);
+                        fileDone = true;
+                        LOG_INFO("DeepOcrEngine: generated {} from embedded ONNX metadata ({} keys)",
+                                 spec.displayName, embeddedKeys.size());
+                    } else {
+                        std::filesystem::remove(partPath, ec);
+                    }
+                }
+            }
+        }
+
         for (const wchar_t* mirrorUrl : spec.mirrorUrls) {
+            if (fileDone) break;
             if (!mirrorUrl) continue;
             if (stopToken.stop_requested() || m_cancelRequested.load(std::memory_order_acquire)) {
                 break;
@@ -1202,26 +1438,7 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
             }
 
             // 严格验证文件完整性 (ONNX 魔数 + OpenCV DNN 试解析，或字典行数校验)
-            bool validArtifact = false;
-            if (spec.isOnnx) {
-                std::vector<uint8_t> verifyBytes;
-                if (readFileBytes(partPath, verifyBytes) &&
-                    isValidOnnxBuffer(verifyBytes.data(), verifyBytes.size(), spec.minValidBytes)) {
-                    try {
-                        cv::dnn::Net probeNet = cv::dnn::readNetFromONNX(
-                            reinterpret_cast<const char*>(verifyBytes.data()), verifyBytes.size());
-                        validArtifact = !probeNet.empty();
-                    } catch (...) {
-                        validArtifact = false;
-                    }
-                }
-            } else {
-                std::vector<std::string> probeKeys;
-                validArtifact = loadDictionaryLines(partPath, probeKeys) &&
-                                probeKeys.size() >= DeepOcrConstants::kMinDictKeyLines;
-            }
-
-            if (!validArtifact) {
+            if (!verifyCandidatePath(partPath)) {
                 LOG_WARN("DeepOcrEngine: downloaded file failed integrity check: {}", spec.displayName);
                 std::filesystem::remove(partPath, ec);
                 continue;

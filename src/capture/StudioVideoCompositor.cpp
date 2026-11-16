@@ -636,11 +636,17 @@ bool StudioVideoCompositor::extractPreviewDeck(
     AVStream* vStream = fmtCtx->streams[vStreamIdx];
     outOrigWidth = vStream->codecpar->width;
     outOrigHeight = vStream->codecpar->height;
+    const double inTb = (vStream->time_base.den > 0) ? av_q2d(vStream->time_base) : (1.0 / 30.0);
     if (fmtCtx->duration > 0) {
         outDurationSec = static_cast<double>(fmtCtx->duration) / static_cast<double>(AV_TIME_BASE);
+    } else if (vStream->duration > 0 && inTb > 0.0) {
+        outDurationSec = static_cast<double>(vStream->duration) * inTb;
     }
 
     AVCodecContext* decCtx = avcodec_alloc_context3(vCodec);
+    if (decCtx) {
+        decCtx->thread_count = 0;
+    }
     if (!decCtx ||
         avcodec_parameters_to_context(decCtx, vStream->codecpar) < 0 ||
         avcodec_open2(decCtx, vCodec, nullptr) < 0) {
@@ -660,22 +666,44 @@ bool StudioVideoCompositor::extractPreviewDeck(
     AVPacket* pkt = av_packet_alloc();
     AVFrame* frm = av_frame_alloc();
 
-    int64_t estTotalFrames = vStream->nb_frames;
-    if (estTotalFrames <= 0 && outDurationSec > 0.0) {
-        const double fps = (vStream->avg_frame_rate.den > 0)
-            ? av_q2d(vStream->avg_frame_rate)
-            : 30.0;
-        estTotalFrames = static_cast<int64_t>(std::ceil(outDurationSec * (std::max)(1.0, fps)));
-    }
-    const int strideStep = (estTotalFrames > maxDeckFrames && maxDeckFrames > 0)
-        ? static_cast<int>((estTotalFrames + maxDeckFrames - 1) / maxDeckFrames)
-        : 1;
+    const bool useTimeSampling = (outDurationSec > 0.05 && maxDeckFrames > 1);
+    const double sampleStepSec = useTimeSampling
+        ? (outDurationSec / static_cast<double>(maxDeckFrames))
+        : 0.0;
+    double nextSampleSec = 0.0;
+    int64_t firstPts = AV_NOPTS_VALUE;
+    double maxObservedSec = 0.0;
 
     int decodedIdx = 0;
+    int strideStep = 1;
     auto drainFrames = [&]() {
         while (avcodec_receive_frame(decCtx, frm) >= 0) {
-            if ((decodedIdx % strideStep) == 0 &&
-                (maxDeckFrames <= 0 || static_cast<int>(outFramesBgr.size()) < maxDeckFrames)) {
+            int64_t rawPts = (frm->best_effort_timestamp != AV_NOPTS_VALUE)
+                ? frm->best_effort_timestamp
+                : frm->pts;
+            double curSec = 0.0;
+            if (rawPts != AV_NOPTS_VALUE && inTb > 0.0) {
+                if (firstPts == AV_NOPTS_VALUE) firstPts = rawPts;
+                curSec = (std::max)(0.0, static_cast<double>(rawPts - firstPts) * inTb);
+                maxObservedSec = (std::max)(maxObservedSec, curSec);
+            } else {
+                curSec = static_cast<double>(decodedIdx) / 30.0;
+            }
+
+            bool shouldKeep = false;
+            if (useTimeSampling) {
+                if (static_cast<int>(outFramesBgr.size()) < maxDeckFrames &&
+                    (outFramesBgr.empty() || curSec + 1e-4 >= nextSampleSec)) {
+                    shouldKeep = true;
+                    nextSampleSec = curSec + sampleStepSec;
+                }
+            } else {
+                if ((decodedIdx % strideStep) == 0) {
+                    shouldKeep = true;
+                }
+            }
+
+            if (shouldKeep) {
                 if (!sws) {
                     sws = sws_getContext(
                         frm->width, frm->height, static_cast<AVPixelFormat>(frm->format),
@@ -687,6 +715,16 @@ bool StudioVideoCompositor::extractPreviewDeck(
                     int dstLinesize[4] = {static_cast<int>(bgr.step[0]), 0, 0, 0};
                     sws_scale(sws, frm->data, frm->linesize, 0, frm->height, dstData, dstLinesize);
                     outFramesBgr.push_back(std::move(bgr));
+                    if (!useTimeSampling && maxDeckFrames > 0 &&
+                        static_cast<int>(outFramesBgr.size()) >= maxDeckFrames * 2) {
+                        std::vector<cv::Mat> compacted;
+                        compacted.reserve(outFramesBgr.size() / 2 + 1);
+                        for (size_t k = 0; k < outFramesBgr.size(); k += 2) {
+                            compacted.push_back(std::move(outFramesBgr[k]));
+                        }
+                        outFramesBgr = std::move(compacted);
+                        strideStep *= 2;
+                    }
                 }
             }
             ++decodedIdx;
@@ -700,14 +738,13 @@ bool StudioVideoCompositor::extractPreviewDeck(
             }
         }
         av_packet_unref(pkt);
-        if (maxDeckFrames > 0 && static_cast<int>(outFramesBgr.size()) >= maxDeckFrames) {
-            break;
-        }
     }
     avcodec_send_packet(decCtx, nullptr);
     drainFrames();
 
-    if (outDurationSec <= 0.0 && decodedIdx > 0) {
+    if (maxObservedSec > 0.0) {
+        outDurationSec = (std::max)(outDurationSec, maxObservedSec + (1.0 / 30.0));
+    } else if (outDurationSec <= 0.0 && decodedIdx > 0) {
         const double fps = (vStream->avg_frame_rate.den > 0 && av_q2d(vStream->avg_frame_rate) > 0.5)
             ? av_q2d(vStream->avg_frame_rate)
             : 30.0;
@@ -759,6 +796,9 @@ bool exportRenderedVideoOnCleanMta(
 
     AVStream* inVStream = inFmt->streams[inVideoIdx];
     AVCodecContext* decCtx = avcodec_alloc_context3(vDecCodec);
+    if (decCtx) {
+        decCtx->thread_count = 0;
+    }
     if (!decCtx ||
         avcodec_parameters_to_context(decCtx, inVStream->codecpar) < 0 ||
         avcodec_open2(decCtx, vDecCodec, nullptr) < 0) {
@@ -768,6 +808,9 @@ bool exportRenderedVideoOnCleanMta(
     }
 
     const int outFps = std::clamp(timeline.fps > 0 ? timeline.fps : 30, 10, 120);
+    const double inTimeBaseSec = (inVStream->time_base.den > 0)
+        ? av_q2d(inVStream->time_base)
+        : (1.0 / static_cast<double>(outFps));
     const cv::Size outSize = StudioVideoCompositor::resolveOutputCanvasSize(decCtx->width, decCtx->height);
 
     const std::wstring finalWide = tools3000::core::WinUtils::utf8ToWstring(finalOutputPathUtf8);
@@ -811,6 +854,9 @@ bool exportRenderedVideoOnCleanMta(
         attempt->pix_fmt = selectStudioEncoderPixFmt(cand);
         if (outFmt->oformat->flags & AVFMT_GLOBALHEADER) {
             attempt->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        }
+        if (!isMf) {
+            attempt->thread_count = 0;
         }
         if (std::strcmp(cand->name, "libx264") == 0) {
             av_opt_set(attempt->priv_data, "preset", "veryfast", 0);
@@ -876,8 +922,15 @@ bool exportRenderedVideoOnCleanMta(
         return false;
     }
 
+    double estDurSec = timeline.durationMs > 0 ? (static_cast<double>(timeline.durationMs) / 1000.0) : 0.0;
+    if (inFmt->duration > 0) {
+        estDurSec = (std::max)(estDurSec, static_cast<double>(inFmt->duration) / static_cast<double>(AV_TIME_BASE));
+    }
+    if (inVStream->duration > 0 && inTimeBaseSec > 0.0) {
+        estDurSec = (std::max)(estDurSec, static_cast<double>(inVStream->duration) * inTimeBaseSec);
+    }
     const int estTotalFrames = (std::max)(
-        1, static_cast<int>(std::ceil((timeline.durationMs / 1000.0) * outFps)) + outFps * 2);
+        60, static_cast<int>(std::ceil(estDurSec * outFps)) + outFps * 4);
     StudioTimelineData bakedTimeline = timeline;
     if (bakedTimeline.sourceWidth <= 0) bakedTimeline.sourceWidth = decCtx->width;
     if (bakedTimeline.sourceHeight <= 0) bakedTimeline.sourceHeight = decCtx->height;
@@ -914,6 +967,42 @@ bool exportRenderedVideoOnCleanMta(
         }
     };
 
+    const double progressDenomFrames = (std::max)(1.0, estDurSec * static_cast<double>(outFps));
+    auto emitComposedOutputFrame = [&](const cv::Mat& rawBgr) {
+        if (!ok || rawBgr.empty()) return;
+        const size_t evalIdx = (std::min)(
+            static_cast<size_t>(encodedCount),
+            evaluatedFrames.empty() ? size_t(0) : (evaluatedFrames.size() - 1));
+        const StudioEvaluatedFrame fallbackEval{};
+        const StudioEvaluatedFrame& eval = evaluatedFrames.empty() ? fallbackEval : evaluatedFrames[evalIdx];
+
+        cv::Mat composed = compositor.composeFrame(rawBgr, eval, config, outSize);
+        if (av_frame_make_writable(encFrame) < 0) {
+            ok = false;
+            return;
+        }
+        const uint8_t* srcComposed[4] = {composed.data, nullptr, nullptr, nullptr};
+        int srcComposedStride[4] = {static_cast<int>(composed.step[0]), 0, 0, 0};
+        sws_scale(fromBgrSws, srcComposed, srcComposedStride, 0, outSize.height, encFrame->data, encFrame->linesize);
+
+        encFrame->pts = encodedCount++;
+        if (avcodec_send_frame(encCtx, encFrame) < 0) {
+            ok = false;
+            return;
+        }
+        drainEncoder();
+
+        if (onProgress) {
+            onProgress(std::clamp(static_cast<double>(encodedCount) / progressDenomFrames, 0.0, 0.99));
+        }
+    };
+
+    cv::Mat heldRawBgr;
+    bool hasHeldRaw = false;
+    int64_t firstRawPts = AV_NOPTS_VALUE;
+    double heldRawSec = 0.0;
+    const int maxGapFillFrames = outFps * 30; // 单次静止间隔上限保护 (30 秒)
+
     auto processDecodedFrames = [&]() {
         while (ok && avcodec_receive_frame(decCtx, decFrame) >= 0) {
             if (cancelFlag && cancelFlag->load(std::memory_order_acquire)) {
@@ -926,37 +1015,45 @@ bool exportRenderedVideoOnCleanMta(
                     decFrame->width, decFrame->height, AV_PIX_FMT_BGR24,
                     SWS_BILINEAR, nullptr, nullptr, nullptr);
             }
-            cv::Mat rawBgr(decFrame->height, decFrame->width, CV_8UC3);
-            uint8_t* dstBgr[4] = {rawBgr.data, nullptr, nullptr, nullptr};
-            int dstBgrStride[4] = {static_cast<int>(rawBgr.step[0]), 0, 0, 0};
+
+            int64_t rawPts = (decFrame->best_effort_timestamp != AV_NOPTS_VALUE)
+                ? decFrame->best_effort_timestamp
+                : decFrame->pts;
+            double curSec = 0.0;
+            if (rawPts != AV_NOPTS_VALUE && inTimeBaseSec > 0.0) {
+                if (firstRawPts == AV_NOPTS_VALUE) firstRawPts = rawPts;
+                curSec = (std::max)(0.0, static_cast<double>(rawPts - firstRawPts) * inTimeBaseSec);
+                if (hasHeldRaw) {
+                    curSec = (std::max)(curSec, heldRawSec);
+                }
+            } else {
+                curSec = hasHeldRaw ? (heldRawSec + 1.0 / static_cast<double>(outFps)) : 0.0;
+            }
+
+            // 将上一解码帧在 [heldRawSec, curSec) 驻留区间内按 CFR outFps 精确重采样输出，
+            // 确保 VFR 录屏时长 100% 保留，且每一帧叠加对应时刻的 30fps 光标与弹簧运镜轨迹
+            if (hasHeldRaw) {
+                int filled = 0;
+                while (ok && filled < maxGapFillFrames &&
+                       (static_cast<double>(encodedCount) + 0.5) / static_cast<double>(outFps) < curSec) {
+                    if (cancelFlag && cancelFlag->load(std::memory_order_acquire)) {
+                        ok = false;
+                        break;
+                    }
+                    emitComposedOutputFrame(heldRawBgr);
+                    ++filled;
+                }
+            }
+            if (!ok) break;
+
+            if (heldRawBgr.rows != decFrame->height || heldRawBgr.cols != decFrame->width || heldRawBgr.type() != CV_8UC3) {
+                heldRawBgr.create(decFrame->height, decFrame->width, CV_8UC3);
+            }
+            uint8_t* dstBgr[4] = {heldRawBgr.data, nullptr, nullptr, nullptr};
+            int dstBgrStride[4] = {static_cast<int>(heldRawBgr.step[0]), 0, 0, 0};
             sws_scale(toBgrSws, decFrame->data, decFrame->linesize, 0, decFrame->height, dstBgr, dstBgrStride);
-
-            const size_t evalIdx = (std::min)(
-                static_cast<size_t>(encodedCount),
-                evaluatedFrames.empty() ? size_t(0) : (evaluatedFrames.size() - 1));
-            const StudioEvaluatedFrame fallbackEval{};
-            const StudioEvaluatedFrame& eval = evaluatedFrames.empty() ? fallbackEval : evaluatedFrames[evalIdx];
-
-            cv::Mat composed = compositor.composeFrame(rawBgr, eval, config, outSize);
-            if (av_frame_make_writable(encFrame) < 0) {
-                ok = false;
-                break;
-            }
-            const uint8_t* srcComposed[4] = {composed.data, nullptr, nullptr, nullptr};
-            int srcComposedStride[4] = {static_cast<int>(composed.step[0]), 0, 0, 0};
-            sws_scale(fromBgrSws, srcComposed, srcComposedStride, 0, outSize.height, encFrame->data, encFrame->linesize);
-
-            encFrame->pts = encodedCount++;
-            if (avcodec_send_frame(encCtx, encFrame) < 0) {
-                ok = false;
-                break;
-            }
-            drainEncoder();
-
-            if (onProgress) {
-                const double denom = (std::max)(1.0, (timeline.durationMs / 1000.0) * outFps);
-                onProgress(std::clamp(static_cast<double>(encodedCount) / denom, 0.0, 0.99));
-            }
+            heldRawSec = curSec;
+            hasHeldRaw = true;
         }
     };
 
@@ -982,10 +1079,32 @@ bool exportRenderedVideoOnCleanMta(
     if (ok) {
         avcodec_send_packet(decCtx, nullptr);
         processDecodedFrames();
-        avcodec_send_frame(encCtx, nullptr);
-        drainEncoder();
-        if (av_write_trailer(outFmt) < 0) {
-            ok = false;
+        if (ok && hasHeldRaw) {
+            double finalEndSec = heldRawSec + (1.0 / static_cast<double>(outFps));
+            if (timeline.durationMs > 0) {
+                const double tlSec = static_cast<double>(timeline.durationMs) / 1000.0;
+                if (tlSec > finalEndSec && tlSec <= heldRawSec + 5.0) {
+                    finalEndSec = tlSec;
+                }
+            }
+            int tailFilled = 0;
+            while (ok && tailFilled < maxGapFillFrames &&
+                   (encodedCount == 0 ||
+                    (static_cast<double>(encodedCount) / static_cast<double>(outFps)) < finalEndSec - (0.25 / static_cast<double>(outFps)))) {
+                if (cancelFlag && cancelFlag->load(std::memory_order_acquire)) {
+                    ok = false;
+                    break;
+                }
+                emitComposedOutputFrame(heldRawBgr);
+                ++tailFilled;
+            }
+        }
+        if (ok) {
+            avcodec_send_frame(encCtx, nullptr);
+            drainEncoder();
+            if (av_write_trailer(outFmt) < 0) {
+                ok = false;
+            }
         }
     }
 

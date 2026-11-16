@@ -60,13 +60,13 @@ struct StudioZoomSegment {
     int64_t endMs = 0;
     float focusX = 0.0f;
     float focusY = 0.0f;
-    float targetZoom = 1.85f;
+    float targetZoom = 1.50f;
     bool enabled = true;
 };
 
 struct StudioRenderConfig {
     bool autoZoomEnabled = true;
-    float defaultZoomFactor = 1.85f;   // 1.35 ~ 2.60
+    float defaultZoomFactor = 1.50f;   // 1.35 ~ 2.60
     bool smoothCursorEnabled = true;
     float cursorScale = 1.35f;         // 1.00 ~ 2.00
     bool showClickRipple = true;

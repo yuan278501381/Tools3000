@@ -722,12 +722,67 @@ html[data-surface="quicklook"] #root {
 .ql-sheet-tabs {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 10px;
   padding: 8px 20px;
   background: var(--ql-header-bg);
   border-bottom: 1px solid var(--ql-border);
-  overflow-x: auto;
   flex-shrink: 0;
+}
+
+.ql-sheet-tabs-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.ql-sheet-count-badge {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--ql-surface-btn);
+  border: 1px solid var(--ql-border);
+  color: var(--ql-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ql-excel-col-letter {
+  text-align: center !important;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ql-text-sub) !important;
+  min-width: 72px;
+  user-select: none;
+}
+
+.ql-doc-images-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.ql-doc-images-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ql-text-muted);
+}
+
+.ql-doc-embedded-img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 8px;
+  border: 1px solid var(--ql-border);
+  background: #ffffff;
 }
 
 .ql-sheet-tab {

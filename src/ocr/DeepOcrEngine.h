@@ -169,6 +169,12 @@ public:
     /// 校验 ONNX 模型二进制头部合法性 (Protobuf ModelProto 魔数与体积阈值)
     static bool isValidOnnxBuffer(const uint8_t* data, size_t byteSize, size_t minBytes = 256) noexcept;
 
+    /// 从 PP-OCRv4 识别模型 (ch_PP-OCRv4_rec.onnx) 内嵌的 ModelProto.metadata_props ("character") 提取完整字典行
+    static bool extractEmbeddedCharacterDictFromOnnx(
+        const uint8_t* data,
+        size_t byteSize,
+        std::vector<std::string>& outKeys);
+
 private:
     DeepOcrEngine() = default;
     ~DeepOcrEngine() { shutdown(); }

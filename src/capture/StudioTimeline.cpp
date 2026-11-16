@@ -135,9 +135,9 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
         return a.ptsMs < b.ptsMs;
     });
 
-    constexpr int64_t kLeadInMs = 240;
-    constexpr int64_t kHoldTailMs = 1500;
-    constexpr int64_t kMergeGapMs = 650;
+    constexpr int64_t kLeadInMs = 220;
+    constexpr int64_t kHoldTailMs = 1250;
+    constexpr int64_t kMergeGapMs = 520;
     const int64_t maxDur = (std::max<int64_t>)(timeline.durationMs, anchors.back().ptsMs + kHoldTailMs);
 
     std::vector<StudioZoomSegment> segments;

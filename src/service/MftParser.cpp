@@ -2537,7 +2537,19 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                     if (excludedByName) continue;
                 }
 
-                const double extOffset = computeExtensionSignalOffset(extView, normName, explicitLock);
+                double extOffset = computeExtensionSignalOffset(extView, normName, explicitLock);
+                if (!explicitLock) {
+                    if (normName.ends_with(L".min.js") || normName.ends_with(L".min.css") ||
+                        normName.ends_with(L".bundle.js") || normName.ends_with(L".chunk.js") ||
+                        normName.ends_with(L".js.map")) {
+                        extOffset -= 2200.0;
+                    }
+                    if (record.fileSize > 0 && record.fileSize <= 2ULL * 1024ULL * 1024ULL) {
+                        extOffset += 160.0;
+                    } else if (record.fileSize > 25ULL * 1024ULL * 1024ULL) {
+                        extOffset -= 260.0;
+                    }
+                }
                 ContentCandidate cand{
                     .fileName = std::wstring(record.fileName),
                     .fullPath = std::move(finalPath),

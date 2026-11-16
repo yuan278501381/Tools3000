@@ -721,9 +721,9 @@ export const CapturePage: FC = () => {
                   <Select
                     id="record-studio-zoom-factor"
                     value={
-                      Math.abs((recording.studioZoomFactor ?? 1.85) - 1.5) < 0.12
+                      Math.abs((recording.studioZoomFactor ?? 1.5) - 1.5) < 0.12
                         ? '1.5'
-                        : Math.abs((recording.studioZoomFactor ?? 1.85) - 2.2) < 0.15
+                        : Math.abs((recording.studioZoomFactor ?? 1.5) - 2.2) < 0.15
                           ? '2.2'
                           : '1.85'
                     }

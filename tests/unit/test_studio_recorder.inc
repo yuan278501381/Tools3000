@@ -277,3 +277,109 @@ TEST(StudioRecorderTest, CompositorWallpaperZoomVectorCursorAndEndToEndMp4Export
 
     std::filesystem::remove_all(tmpDir, ec);
 }
+
+TEST(StudioRecorderTest, SparseVfrRecordingPreservesFullDurationWithoutFastForwardCompression) {
+    using namespace tools3000::capture;
+
+    const auto tmpDir = std::filesystem::temp_directory_path() / L"tools3000_studio_vfr_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+    const std::string rawUtf8 = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"sparse_vfr.mp4").wstring());
+    const std::string outUtf8 = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"studio_cfr_out.mp4").wstring());
+
+    // 构造一段模拟 4K 掉帧的稀疏 VFR 视频：仅编码 10 个物理帧，但 PTS 横跨 3.0 秒 (time_base = 1/30, pts = 0, 10, 20...90)
+    {
+        AVFormatContext* fmt = nullptr;
+        ASSERT_GE(avformat_alloc_output_context2(&fmt, nullptr, "mp4", rawUtf8.c_str()), 0);
+        ASSERT_NE(fmt, nullptr);
+        const AVCodec* codec = avcodec_find_encoder_by_name("libx264");
+        if (!codec) codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+        if (!codec) codec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+        ASSERT_NE(codec, nullptr);
+
+        AVCodecContext* ctx = avcodec_alloc_context3(codec);
+        ctx->width = 640;
+        ctx->height = 360;
+        ctx->time_base = {1, 30};
+        ctx->framerate = {30, 1};
+        ctx->gop_size = 15;
+        ctx->max_b_frames = 0;
+        ctx->bit_rate = 1'500'000;
+        ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+        if (fmt->oformat->flags & AVFMT_GLOBALHEADER) ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        ASSERT_GE(avcodec_open2(ctx, codec, nullptr), 0);
+
+        AVStream* st = avformat_new_stream(fmt, codec);
+        ASSERT_NE(st, nullptr);
+        ASSERT_GE(avcodec_parameters_from_context(st->codecpar, ctx), 0);
+        st->time_base = ctx->time_base;
+        ASSERT_GE(avio_open(&fmt->pb, rawUtf8.c_str(), AVIO_FLAG_WRITE), 0);
+        ASSERT_GE(avformat_write_header(fmt, nullptr), 0);
+
+        SwsContext* sws = sws_getContext(640, 360, AV_PIX_FMT_BGR24, 640, 360, ctx->pix_fmt, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        AVFrame* frm = av_frame_alloc();
+        frm->format = ctx->pix_fmt;
+        frm->width = 640;
+        frm->height = 360;
+        av_frame_get_buffer(frm, 0);
+        AVPacket* pkt = av_packet_alloc();
+
+        auto drain = [&]() {
+            while (avcodec_receive_packet(ctx, pkt) >= 0) {
+                av_packet_rescale_ts(pkt, ctx->time_base, st->time_base);
+                pkt->stream_index = st->index;
+                av_interleaved_write_frame(fmt, pkt);
+                av_packet_unref(pkt);
+            }
+        };
+
+        for (int i = 0; i < 10; ++i) {
+            cv::Mat img(360, 640, CV_8UC3, cv::Scalar(235, 240, 245));
+            cv::rectangle(img, cv::Rect(40 + i * 45, 120, 60, 50), cv::Scalar(40, 110, 240), cv::FILLED);
+            av_frame_make_writable(frm);
+            const uint8_t* srcSlice[4] = {img.data, nullptr, nullptr, nullptr};
+            int srcStride[4] = {static_cast<int>(img.step[0]), 0, 0, 0};
+            sws_scale(sws, srcSlice, srcStride, 0, 360, frm->data, frm->linesize);
+            frm->pts = static_cast<int64_t>(i) * 10; // 每帧跨 10/30 秒 = 333ms，共约 3.0 秒
+            avcodec_send_frame(ctx, frm);
+            drain();
+        }
+        avcodec_send_frame(ctx, nullptr);
+        drain();
+        av_write_trailer(fmt);
+        sws_freeContext(sws);
+        av_frame_free(&frm);
+        av_packet_free(&pkt);
+        avio_closep(&fmt->pb);
+        avcodec_free_context(&ctx);
+        avformat_free_context(fmt);
+    }
+
+    StudioTimelineData tl;
+    tl.sourceWidth = 640;
+    tl.sourceHeight = 360;
+    tl.fps = 30;
+    tl.durationMs = 3050;
+    tl.clickEvents.push_back({600, 180.0f, 150.0f, false});
+    tl.zoomSegments = StudioTimelineAnalyzer::buildAutoZoomSegments(tl, 1.50f);
+
+    StudioRenderConfig cfg;
+    cfg.autoZoomEnabled = true;
+    cfg.defaultZoomFactor = 1.50f;
+    cfg.smoothCursorEnabled = true;
+    cfg.autoFrameEnabled = true;
+    cfg.exportSrtSidecar = false;
+
+    ASSERT_TRUE(StudioVideoCompositor::exportRenderedVideo(rawUtf8, outUtf8, tl, cfg, 4));
+
+    // 解码校验输出视频：10 帧 VFR 绝不能被压缩成 10/30 = 0.33s，必须完整输出 ~90 帧 (3.0s CFR)！
+    std::vector<cv::Mat> verifyDeck;
+    int outW = 0, outH = 0;
+    double outDur = 0.0;
+    ASSERT_TRUE(StudioVideoCompositor::extractPreviewDeck(outUtf8, 320, 200, verifyDeck, outW, outH, outDur));
+    EXPECT_GE(outDur, 2.85);
+    EXPECT_GE(verifyDeck.size(), 80u);
+
+    std::filesystem::remove_all(tmpDir, ec);
+}

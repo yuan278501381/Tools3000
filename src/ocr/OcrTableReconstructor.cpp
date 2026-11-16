@@ -9,8 +9,11 @@
 #include "core/utils/WinUtils.h"
 
 #include <algorithm>
+#include <array>
 #include <cfloat>
+#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -136,10 +139,12 @@ struct ColumnCluster {
     float maxRight = 0.0f;
     float sumLeft = 0.0f;
     float sumCenter = 0.0f;
+    float sumRight = 0.0f;
     size_t count = 0;
 
     float avgLeft() const noexcept { return count > 0 ? sumLeft / static_cast<float>(count) : minLeft; }
     float avgCenter() const noexcept { return count > 0 ? sumCenter / static_cast<float>(count) : (minLeft + maxRight) * 0.5f; }
+    float avgRight() const noexcept { return count > 0 ? sumRight / static_cast<float>(count) : maxRight; }
 
     void absorb(const CellToken& tok) noexcept {
         if (count == 0) {
@@ -151,7 +156,22 @@ struct ColumnCluster {
         }
         sumLeft += tok.left();
         sumCenter += tok.cx();
+        sumRight += tok.right();
         ++count;
+    }
+
+    void mergeFrom(const ColumnCluster& other) noexcept {
+        if (other.count == 0) return;
+        if (count == 0) {
+            *this = other;
+            return;
+        }
+        minLeft = (std::min)(minLeft, other.minLeft);
+        maxRight = (std::max)(maxRight, other.maxRight);
+        sumLeft += other.sumLeft;
+        sumCenter += other.sumCenter;
+        sumRight += other.sumRight;
+        count += other.count;
     }
 };
 
@@ -163,12 +183,13 @@ float computeHorizontalMatchCost(const CellToken& tok, const ColumnCluster& col,
 
     const float leftDiff = std::abs(tok.left() - col.avgLeft());
     const float centerDiff = std::abs(tok.cx() - col.avgCenter());
+    const float rightDiff = std::abs(tok.right() - col.avgRight());
+    const float minAlignDist = (std::min)({leftDiff, centerDiff, rightDiff});
 
     if (overlap > minSpan * 0.20f) {
-        return (std::min)(leftDiff, centerDiff) * 0.5f;
+        return minAlignDist * 0.45f;
     }
-    const float minAlignDist = (std::min)(leftDiff, centerDiff);
-    if (minAlignDist <= (std::max)(18.0f, medH * 1.85f)) {
+    if (minAlignDist <= (std::max)(20.0f, medH * 1.90f)) {
         return minAlignDist;
     }
     return FLT_MAX;
@@ -317,11 +338,9 @@ OcrTableGrid OcrTableReconstructor::reconstruct(const std::vector<OcrResult>& bl
         return a.avgCy() < b.avgCy();
     });
 
-    // 行内从左到右排序，并合并同一单元格内部紧邻的碎词 (间距 < medH * 1.15f)
-    size_t multiColRowCount = 0;
-    size_t seedRowIdx = 0;
-    size_t maxRowCols = 0;
-
+    // 行内从左到右排序，并合并同一单元格内部紧邻的碎词
+    int globalMinX = INT_MAX;
+    int globalMaxX = INT_MIN;
     for (size_t r = 0; r < rows.size(); ++r) {
         auto& rowCells = rows[r].cells;
         std::sort(rowCells.begin(), rowCells.end(), [](const CellToken& a, const CellToken& b) {
@@ -349,11 +368,79 @@ OcrTableGrid OcrTableReconstructor::reconstruct(const std::vector<OcrResult>& bl
             mergedCells.push_back(std::move(c));
         }
         rowCells = std::move(mergedCells);
+        for (const auto& cell : rowCells) {
+            globalMinX = (std::min)(globalMinX, cell.box.x);
+            globalMaxX = (std::max)(globalMaxX, cell.box.x + (std::max)(1, cell.box.width));
+        }
+    }
 
-        if (rowCells.size() >= OcrTableConstants::kMinTableCols) {
+    // 1b. 跨行 1D 垂直空白走廊投影：若单行内部因个别单词漏检产生中等缺口 (< 2.8*H)，
+    //     但上下多行在该水平区间均有真实文字横跨（非贯穿分列走廊），自动缝合回同一单元格
+    if (rows.size() >= 3 && globalMaxX > globalMinX + 16 && (globalMaxX - globalMinX) <= 16384) {
+        const int spanW = globalMaxX - globalMinX + 4;
+        std::vector<uint16_t> xRowOcc(static_cast<size_t>(spanW), 0);
+        for (const auto& r : rows) {
+            int lastMarkedX = -1;
+            for (const auto& cell : r.cells) {
+                const int x0 = std::clamp(cell.box.x - globalMinX, 0, spanW - 1);
+                const int x1 = std::clamp(cell.box.x + (std::max)(1, cell.box.width) - globalMinX, x0, spanW - 1);
+                const int startX = (std::max)(x0, lastMarkedX + 1);
+                for (int x = startX; x <= x1; ++x) {
+                    ++xRowOcc[static_cast<size_t>(x)];
+                }
+                lastMarkedX = (std::max)(lastMarkedX, x1);
+            }
+        }
+
+        const uint16_t nonGutterRowFloor = static_cast<uint16_t>((std::max)(size_t{2}, rows.size() / 4));
+        for (auto& r : rows) {
+            if (r.cells.size() < 2) continue;
+            std::vector<CellToken> stitched;
+            stitched.reserve(r.cells.size());
+            for (auto& c : r.cells) {
+                if (!stitched.empty()) {
+                    auto& prev = stitched.back();
+                    const float gap = c.left() - prev.right();
+                    const float localH = (std::max)(8.0f, (prev.h() + c.h()) * 0.5f);
+                    if (gap >= 0.0f && gap < localH * 2.85f) {
+                        const int gx0 = std::clamp(static_cast<int>(std::floor(prev.right())) - globalMinX, 0, spanW - 1);
+                        const int gx1 = std::clamp(static_cast<int>(std::ceil(c.left())) - globalMinX, gx0, spanW - 1);
+                        uint16_t minOccInGap = UINT16_MAX;
+                        for (int x = gx0; x <= gx1; ++x) {
+                            minOccInGap = (std::min)(minOccInGap, xRowOcc[static_cast<size_t>(x)]);
+                        }
+                        if (minOccInGap != UINT16_MAX && minOccInGap >= nonGutterRowFloor) {
+                            prev.text += ' ';
+                            prev.text += c.text;
+                            const int nx1 = (std::min)(prev.box.x, c.box.x);
+                            const int ny1 = (std::min)(prev.box.y, c.box.y);
+                            const int nx2 = (std::max)(prev.box.x + prev.box.width, c.box.x + c.box.width);
+                            const int ny2 = (std::max)(prev.box.y + prev.box.height, c.box.y + c.box.height);
+                            prev.box = cv::Rect(nx1, ny1, nx2 - nx1, ny2 - ny1);
+                            continue;
+                        }
+                    }
+                }
+                stitched.push_back(std::move(c));
+            }
+            r.cells = std::move(stitched);
+        }
+    }
+
+    size_t multiColRowCount = 0;
+    size_t seedRowIdx = 0;
+    size_t maxRowCols = 0;
+    std::array<size_t, 33> colCountHist{};
+
+    for (size_t r = 0; r < rows.size(); ++r) {
+        const size_t rc = rows[r].cells.size();
+        if (rc >= OcrTableConstants::kMinTableCols) {
             ++multiColRowCount;
-            if (rowCells.size() > maxRowCols) {
-                maxRowCols = rowCells.size();
+            if (rc < colCountHist.size()) {
+                ++colCountHist[rc];
+            }
+            if (rc > maxRowCols) {
+                maxRowCols = rc;
                 seedRowIdx = r;
             }
         }
@@ -363,7 +450,24 @@ OcrTableGrid OcrTableReconstructor::reconstruct(const std::vector<OcrResult>& bl
         return result;
     }
 
-    // 2. 以列最完整的多列行初始化列簇，再融合所有多列行校准全局列坐标
+    // 优先选取在至少 2 行稳定出现的最大列数行作为初始列种子，避免单行异常碎片主导列数
+    size_t stableSeedCols = 0;
+    for (size_t k = (std::min)(maxRowCols, colCountHist.size() - 1); k >= OcrTableConstants::kMinTableCols; --k) {
+        if (colCountHist[k] >= 2) {
+            stableSeedCols = k;
+            break;
+        }
+    }
+    if (stableSeedCols >= OcrTableConstants::kMinTableCols) {
+        for (size_t r = 0; r < rows.size(); ++r) {
+            if (rows[r].cells.size() == stableSeedCols) {
+                seedRowIdx = r;
+                break;
+            }
+        }
+    }
+
+    // 2. 以稳健多列种子行初始化列簇，再融合所有多列行校准全局列坐标（支持左对齐/居中/右对齐混合列）
     std::vector<ColumnCluster> columns;
     columns.reserve(maxRowCols + 4);
     for (const auto& seedCell : rows[seedRowIdx].cells) {
@@ -408,6 +512,69 @@ OcrTableGrid OcrTableReconstructor::reconstruct(const std::vector<OcrResult>& bl
         return a.avgCenter() < b.avgCenter();
     });
 
+    // 2b. 同行互斥重叠列簇归并：消除右对齐长短句或单行偏移分裂出的伪空列，同时完整保留真实的空缺单元格列
+    auto assignCellToBestCol = [&](const CellToken& cell, const std::vector<ColumnCluster>& cols) -> size_t {
+        size_t bestCol = 0;
+        float bestDist = FLT_MAX;
+        for (size_t c = 0; c < cols.size(); ++c) {
+            const float cost = computeHorizontalMatchCost(cell, cols[c], medH);
+            const float fallbackDist = (std::min)({
+                std::abs(cell.left() - cols[c].avgLeft()),
+                std::abs(cell.cx() - cols[c].avgCenter()),
+                std::abs(cell.right() - cols[c].avgRight())
+            });
+            const float score = (cost < FLT_MAX) ? cost : (10000.0f + fallbackDist);
+            if (score < bestDist) {
+                bestDist = score;
+                bestCol = c;
+            }
+        }
+        return bestCol;
+    };
+
+    bool mergedAnyCol = true;
+    while (mergedAnyCol && columns.size() > OcrTableConstants::kMinTableCols) {
+        mergedAnyCol = false;
+        for (size_t c = 0; c + 1 < columns.size(); ++c) {
+            const auto& leftCol = columns[c];
+            const auto& rightCol = columns[c + 1];
+            const float overlap = (std::min)(leftCol.maxRight, rightCol.maxRight) -
+                                  (std::max)(leftCol.minLeft, rightCol.minLeft);
+            const float minAnchorDiff = (std::min)({
+                std::abs(leftCol.avgLeft() - rightCol.avgLeft()),
+                std::abs(leftCol.avgCenter() - rightCol.avgCenter()),
+                std::abs(leftCol.avgRight() - rightCol.avgRight())
+            });
+
+            const bool geometricallyRelated =
+                (overlap > -medH * 0.45f) ||
+                (minAnchorDiff <= (std::max)(24.0f, medH * 2.15f));
+            if (!geometricallyRelated) continue;
+
+            size_t cooccurRows = 0;
+            for (const auto& r : rows) {
+                bool hasC = false;
+                bool hasNext = false;
+                for (const auto& cell : r.cells) {
+                    const size_t assigned = assignCellToBestCol(cell, columns);
+                    if (assigned == c) hasC = true;
+                    else if (assigned == c + 1) hasNext = true;
+                }
+                if (hasC && hasNext) {
+                    ++cooccurRows;
+                    break;
+                }
+            }
+
+            if (cooccurRows == 0) {
+                columns[c].mergeFrom(rightCol);
+                columns.erase(columns.begin() + static_cast<std::ptrdiff_t>(c + 1));
+                mergedAnyCol = true;
+                break;
+            }
+        }
+    }
+
     // 验证至少有 2 个列簇在 >= 2 行中稳定出现（排除偶然断句误判）
     size_t stableCols = 0;
     for (const auto& col : columns) {
@@ -424,17 +591,7 @@ OcrTableGrid OcrTableReconstructor::reconstruct(const std::vector<OcrResult>& bl
 
     for (size_t r = 0; r < numRows; ++r) {
         for (const auto& cell : rows[r].cells) {
-            size_t bestCol = 0;
-            float bestDist = FLT_MAX;
-            for (size_t c = 0; c < numCols; ++c) {
-                const float cost = computeHorizontalMatchCost(cell, columns[c], medH);
-                const float fallbackDist = std::abs(cell.cx() - columns[c].avgCenter());
-                const float score = (cost < FLT_MAX) ? cost : (10000.0f + fallbackDist);
-                if (score < bestDist) {
-                    bestDist = score;
-                    bestCol = c;
-                }
-            }
+            const size_t bestCol = assignCellToBestCol(cell, columns);
             if (!grid[r][bestCol].empty()) {
                 grid[r][bestCol] += ' ';
             }

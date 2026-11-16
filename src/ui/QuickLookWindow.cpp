@@ -415,8 +415,27 @@ json generateFilePreviewPayload(const std::wstring& filePath) {
             payload["sheets"] = std::move(sheetsJson);
             payload["totalSheetCount"] = xls.totalSheetCount;
             payload["truncated"] = anySheetTruncated;
+        } else if (!xls.encryptedOrUnsupported) {
+            auto legacy = tools3000::core::OfficeAndPdfPreview::extractLegacyOfficePreview(filePath);
+            if (legacy.ok) {
+                payload["type"] = "document";
+                payload["content"] = std::move(legacy.markdownText);
+                payload["truncated"] = legacy.truncated;
+            } else {
+                auto decoded = tools3000::core::TextFilePreviewDecoder::readAndDecodeFile(filePath, sizeBytes);
+                if (decoded.fileOpened && decoded.isReadableText && !decoded.utf8Text.empty()) {
+                    const bool hasTab = decoded.utf8Text.find('\t') != std::string::npos;
+                    payload["type"] = hasTab ? "csv" : "code";
+                    if (hasTab) payload["csvDelimiter"] = "\t";
+                    payload["encoding"] = decoded.encoding;
+                    payload["truncated"] = decoded.truncated;
+                    payload["content"] = std::move(decoded.utf8Text);
+                } else {
+                    payload["officeFallback"] = true;
+                }
+            }
         } else {
-            payload["encrypted"] = xls.encryptedOrUnsupported;
+            payload["encrypted"] = true;
             payload["officeFallback"] = true;
         }
     } else if (type == "document") {
@@ -424,8 +443,28 @@ json generateFilePreviewPayload(const std::wstring& filePath) {
         if (doc.ok) {
             payload["content"] = std::move(doc.markdownText);
             payload["truncated"] = doc.truncated;
+            payload["emptyDocument"] = doc.emptyDocument;
+            if (!doc.embeddedImages.empty()) {
+                payload["embeddedImages"] = std::move(doc.embeddedImages);
+            }
+        } else if (!doc.encryptedOrUnsupported) {
+            auto legacy = tools3000::core::OfficeAndPdfPreview::extractLegacyOfficePreview(filePath);
+            if (legacy.ok) {
+                payload["content"] = std::move(legacy.markdownText);
+                payload["truncated"] = legacy.truncated;
+            } else {
+                auto decoded = tools3000::core::TextFilePreviewDecoder::readAndDecodeFile(filePath, sizeBytes);
+                if (decoded.fileOpened && decoded.isReadableText && !decoded.utf8Text.empty()) {
+                    payload["type"] = "code";
+                    payload["encoding"] = decoded.encoding;
+                    payload["truncated"] = decoded.truncated;
+                    payload["content"] = std::move(decoded.utf8Text);
+                } else {
+                    payload["officeFallback"] = true;
+                }
+            }
         } else {
-            payload["encrypted"] = doc.encryptedOrUnsupported;
+            payload["encrypted"] = true;
             payload["officeFallback"] = true;
         }
     } else if (type == "office_legacy") {

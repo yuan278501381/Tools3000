@@ -1102,6 +1102,8 @@ void ScreenRecorder::recordingLoop() {
                 }
                 m_state = RecordState::Recording;
                 notifyState(RecordState::Recording);
+                // 留出 DWM 1~2 帧合成缓冲，使 UI 线程先收起全屏倒计时球再抓取第 0 帧
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
             }
         }
         if (m_state != RecordState::Idle && !initializeCaptureResources()) {
@@ -1560,12 +1562,16 @@ bool ScreenRecorder::initializeEncoder(const RecordOptions& options) {
         if (fmtCtx->oformat->flags & AVFMT_GLOBALHEADER) {
             attempt->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         }
+        if (!mediaFoundation) {
+            attempt->thread_count = 0; // 自动启用全多核并行编码，防止 2K/4K 软编回退单核掉帧
+        }
 
         if (std::strcmp(candidate->name, "libx264") == 0) {
-            av_opt_set(attempt->priv_data, "preset", "veryfast", 0);
+            const bool ultraHighRes = (static_cast<int64_t>(options.width) * options.height) >= (2560LL * 1440LL);
+            av_opt_set(attempt->priv_data, "preset", ultraHighRes ? "ultrafast" : "veryfast", 0);
             av_opt_set(attempt->priv_data, "tune", "zerolatency", 0);
         } else if (std::strcmp(candidate->name, "libx265") == 0) {
-            av_opt_set(attempt->priv_data, "preset", "fast", 0);
+            av_opt_set(attempt->priv_data, "preset", "ultrafast", 0);
         }
 
         ret = avcodec_open2(attempt, candidate, nullptr);

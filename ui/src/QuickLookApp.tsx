@@ -87,6 +87,8 @@ interface FilePreviewData {
   csvDelimiter?: string;
   sheets?: SpreadsheetSheetData[];
   totalSheetCount?: number;
+  emptyDocument?: boolean;
+  embeddedImages?: string[];
   encrypted?: boolean;
   officeFallback?: boolean;
   designFallback?: boolean;
@@ -136,6 +138,17 @@ function detectCsvDelimiter(sample: string, hint?: string): string {
   if (tabs > commas && tabs >= semicolons) return '\t';
   if (semicolons > commas) return ';';
   return hint || ',';
+}
+
+function formatExcelColumnLabel(colIndex: number): string {
+  let n = colIndex + 1;
+  let label = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    label = String.fromCharCode(65 + rem) + label;
+    n = Math.floor((n - 1) / 26);
+  }
+  return label || 'A';
 }
 
 function parseDelimitedTable(rawText: string, hintDelimiter?: string): ParsedCsvTable {
@@ -847,6 +860,8 @@ export default function QuickLookApp() {
   const isAsyncLoadingSkeleton = Boolean(
     data.loading &&
       !data.content &&
+      !data.emptyDocument &&
+      (!data.embeddedImages || data.embeddedImages.length === 0) &&
       !data.dataUri &&
       !data.dxfData &&
       !data.meshData &&
@@ -1201,56 +1216,140 @@ export default function QuickLookApp() {
         )}
 
         {!isAsyncLoadingSkeleton &&
-          (data.type === 'markdown' || (data.type === 'document' && Boolean(data.content))) && (
-            <div
-              className="ql-markdown-view"
-              onClick={handleMarkdownClick}
-              dangerouslySetInnerHTML={{ __html: renderedMarkdownHtml }}
-            />
+          (data.type === 'markdown' ||
+            (data.type === 'document' &&
+              (Boolean(data.content) ||
+                Boolean(data.emptyDocument) ||
+                Boolean(data.embeddedImages && data.embeddedImages.length > 0)))) && (
+            data.type === 'document' && data.emptyDocument ? (
+              <div className="ql-binary-view">
+                <div className="ql-binary-card">
+                  <div className="ql-binary-icon"><FileText size={36} /></div>
+                  <div className="ql-binary-name">{data.name}</div>
+                  <div className="ql-binary-meta">{data.formattedSize} · {typeLabel}</div>
+                  <p className="ql-binary-hint">
+                    {t(
+                      'quicklook.emptyDocHint',
+                      'This document is a blank template or contains no visible body content. Press Enter to edit in your default office app.',
+                    )}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="ql-markdown-view" onClick={handleMarkdownClick}>
+                {Boolean(data.content) && (
+                  <div dangerouslySetInnerHTML={{ __html: renderedMarkdownHtml }} />
+                )}
+                {data.type === 'document' && data.embeddedImages && data.embeddedImages.length > 0 && (
+                  <div className="ql-doc-images-section">
+                    {Boolean(data.content) && (
+                      <div className="ql-doc-images-title">
+                        {t('quicklook.embeddedImagesCount', 'Embedded Images ({{count}})', {
+                          count: data.embeddedImages.length,
+                        })}
+                      </div>
+                    )}
+                    {data.embeddedImages.map((imgSrc, imgIdx) => (
+                      <img
+                        key={imgIdx}
+                        src={imgSrc}
+                        alt={`${data.name} - ${imgIdx + 1}`}
+                        className="ql-doc-embedded-img"
+                        draggable={false}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
           )}
 
         {!isAsyncLoadingSkeleton &&
           (data.type === 'csv' || (data.type === 'spreadsheet' && !data.officeFallback)) && (
             <div className="ql-sheet-view">
-              {data.type === 'spreadsheet' && data.sheets && data.sheets.length > 1 && (
+              {data.type === 'spreadsheet' && data.sheets && data.sheets.length >= 1 && (
                 <div className="ql-sheet-tabs" role="tablist">
-                  {data.sheets.map((sheet, idx) => (
-                    <button
-                      key={`${sheet.name}-${idx}`}
-                      type="button"
-                      role="tab"
-                      aria-selected={idx === activeSheetIndex}
-                      className={`ql-sheet-tab ${idx === activeSheetIndex ? 'active' : ''}`}
-                      onClick={() => setActiveSheetIndex(idx)}
-                    >
-                      <FileSpreadsheet size={13} aria-hidden="true" />
-                      <span>{sheet.name}</span>
-                    </button>
-                  ))}
+                  <div className="ql-sheet-tabs-list">
+                    {data.sheets.map((sheet, idx) => (
+                      <button
+                        key={`${sheet.name}-${idx}`}
+                        type="button"
+                        role="tab"
+                        aria-selected={idx === activeSheetIndex}
+                        className={`ql-sheet-tab ${idx === activeSheetIndex ? 'active' : ''}`}
+                        onClick={() => setActiveSheetIndex(idx)}
+                      >
+                        <FileSpreadsheet size={13} aria-hidden="true" />
+                        <span>{sheet.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {(data.totalSheetCount ?? data.sheets.length) > 1 && (
+                    <span className="ql-sheet-count-badge">
+                      {t('quicklook.sheetsSummary', '{{count}} sheets', {
+                        count: data.totalSheetCount ?? data.sheets.length,
+                      })}
+                    </span>
+                  )}
                 </div>
               )}
 
               {tableRows.length > 0 ? (
                 <div className="ql-data-table-scroll">
                   <table className="ql-data-table">
-                    <thead>
-                      <tr>
-                        <th className="ql-data-row-num">#</th>
-                        {tableRows[0].map((cell, cIdx) => (
-                          <th key={cIdx}>{cell || `Col ${cIdx + 1}`}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tableRows.slice(1).map((row, rIdx) => (
-                        <tr key={rIdx}>
-                          <td className="ql-data-row-num">{rIdx + 2}</td>
-                          {row.map((cell, cIdx) => (
-                            <td key={cIdx}>{cell}</td>
+                    {data.type === 'spreadsheet' ? (
+                      <>
+                        <thead>
+                          <tr>
+                            <th className="ql-data-row-num">#</th>
+                            {Array.from(
+                              {
+                                length: tableRows.reduce(
+                                  (maxC, r) => Math.max(maxC, r.length),
+                                  0,
+                                ),
+                              },
+                              (_, cIdx) => (
+                                <th key={cIdx} className="ql-excel-col-letter">
+                                  {formatExcelColumnLabel(cIdx)}
+                                </th>
+                              ),
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tableRows.map((row, rIdx) => (
+                            <tr key={rIdx}>
+                              <td className="ql-data-row-num">{rIdx + 1}</td>
+                              {row.map((cell, cIdx) => (
+                                <td key={cIdx}>{cell}</td>
+                              ))}
+                            </tr>
                           ))}
-                        </tr>
-                      ))}
-                    </tbody>
+                        </tbody>
+                      </>
+                    ) : (
+                      <>
+                        <thead>
+                          <tr>
+                            <th className="ql-data-row-num">#</th>
+                            {tableRows[0].map((cell, cIdx) => (
+                              <th key={cIdx}>{cell || `Col ${cIdx + 1}`}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tableRows.slice(1).map((row, rIdx) => (
+                            <tr key={rIdx}>
+                              <td className="ql-data-row-num">{rIdx + 2}</td>
+                              {row.map((cell, cIdx) => (
+                                <td key={cIdx}>{cell}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </>
+                    )}
                   </table>
                 </div>
               ) : (
