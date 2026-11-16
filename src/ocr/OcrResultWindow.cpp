@@ -1572,7 +1572,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             GetClientRect(hwnd, &client);
             const int cw = client.right - client.left;
             const int ch = client.bottom - client.top;
-            const int grip = (std::max)(6, static_cast<int>(std::lround(8.0f * self->m_scale)));
+            const int grip = (std::max)(10, static_cast<int>(std::lround((BaseShadowInset + 6.0f) * self->m_scale)));
 
             const bool onLeft = (point.x < grip);
             const bool onRight = (point.x >= cw - grip);

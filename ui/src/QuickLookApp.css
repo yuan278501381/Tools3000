@@ -358,6 +358,33 @@ html[data-surface="quicklook"] #root {
   margin-bottom: 12px;
 }
 
+.ql-markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums lining-nums;
+  background: var(--ql-code-bg);
+  border: 1px solid var(--ql-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ql-markdown-body th,
+.ql-markdown-body td {
+  padding: 9px 14px;
+  border: 1px solid var(--ql-border);
+  text-align: left;
+}
+
+.ql-markdown-body th {
+  background: var(--ql-surface-btn);
+  color: var(--ql-text-main);
+  font-weight: 600;
+}
+
 .ql-blockquote {
   border-left: 4px solid var(--primary);
   background: var(--primary-dim);
@@ -614,6 +641,233 @@ html[data-surface="quicklook"] #root {
   background: var(--ql-code-bg);
 }
 
+.ql-pdf-pages-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ql-code-bg);
+}
+
+.ql-pdf-pages-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.ql-pdf-page-card {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.ql-pdf-page-img {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: #ffffff;
+  border-radius: 6px;
+  border: 1px solid var(--ql-border);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.ql-pdf-page-caption {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ql-text-muted);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* ── CSV / Excel 数据表格视图 ───────────────────────────────────────────── */
+.ql-loading-state {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+  color: var(--ql-text-sub);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+@keyframes qlSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.ql-loading-spin {
+  animation: qlSpin 0.9s linear infinite;
+  color: var(--primary);
+}
+
+.ql-sheet-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  user-select: text;
+}
+
+.ql-sheet-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 20px;
+  background: var(--ql-header-bg);
+  border-bottom: 1px solid var(--ql-border);
+  flex-shrink: 0;
+}
+
+.ql-sheet-tabs-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.ql-sheet-count-badge {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--ql-surface-btn);
+  border: 1px solid var(--ql-border);
+  color: var(--ql-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ql-excel-col-letter {
+  text-align: center !important;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ql-text-sub) !important;
+  min-width: 72px;
+  user-select: none;
+}
+
+.ql-doc-images-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.ql-doc-images-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ql-text-muted);
+}
+
+.ql-doc-embedded-img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 8px;
+  border: 1px solid var(--ql-border);
+  background: #ffffff;
+}
+
+.ql-sheet-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: var(--ql-surface-btn);
+  border: 1px solid var(--ql-surface-btn-border);
+  color: var(--ql-text-sub);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ql-sheet-tab:hover {
+  background: var(--ql-surface-btn-hover);
+  color: var(--ql-text-main);
+}
+
+.ql-sheet-tab.active {
+  background: var(--primary-dim);
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.ql-data-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ql-code-bg);
+}
+
+.ql-data-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ql-data-table th,
+.ql-data-table td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--ql-border);
+  border-right: 1px solid var(--ql-border);
+  text-align: left;
+  max-width: 360px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ql-data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ql-header-bg);
+  backdrop-filter: blur(12px);
+  color: var(--ql-text-main);
+  font-weight: 600;
+}
+
+.ql-data-table tbody tr:hover td {
+  background: var(--ql-surface-btn);
+}
+
+.ql-data-row-num {
+  width: 44px;
+  min-width: 44px;
+  text-align: right !important;
+  color: var(--ql-text-muted) !important;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  user-select: none;
+  background: var(--ql-surface-btn);
+}
+
 .ql-video-player {
   max-width: 100%;
   max-height: 75vh;
@@ -744,7 +998,19 @@ html[data-surface="quicklook"] #root {
 
 .ql-binary-hint {
   font-size: 13px;
-  color: var(--ql-text-muted);
+  font-weight: 500;
+  line-height: 1.6;
+  color: var(--ql-text-sub);
+  max-width: 520px;
+  margin: 0 auto 20px;
+}
+
+.ql-binary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 16px;
 }
 
 /* ── 底部状态栏 ─────────────────────────────────────────────────────────── */
@@ -786,4 +1052,339 @@ html[data-surface="quicklook"] #root {
 
 .ql-footer-status {
   color: var(--ql-text-muted);
+}
+
+.ql-btn-sub:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.ql-snapshot-banner {
+  background: var(--ql-header-bg);
+  border-bottom: 1px solid var(--ql-border);
+}
+
+/* ── CAD (.dxf) 交互式矢量看图器 & 3D (.stl/.obj) 检视器 ─────────────────── */
+.ql-cad-viewer,
+.ql-3d-viewer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  container-type: inline-size;
+  background: #0b0f17;
+}
+
+.ql-cad-viewer--light {
+  background: #ffffff;
+}
+
+.ql-cad-canvas,
+.ql-3d-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+  cursor: grab;
+  touch-action: none;
+}
+
+.ql-cad-canvas.dragging,
+.ql-3d-canvas.dragging {
+  cursor: grabbing;
+}
+
+.ql-cad-toolbar {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ql-cad-tool-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+}
+
+.ql-cad-viewer--light .ql-cad-tool-group {
+  background: rgba(248, 250, 252, 0.9);
+  border-color: rgba(15, 23, 42, 0.14);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+.ql-cad-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #cbd5e1;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.ql-cad-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+}
+
+.ql-cad-btn.active {
+  background: var(--primary-dim);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.ql-cad-viewer--light .ql-cad-btn {
+  color: #334155;
+}
+
+.ql-cad-viewer--light .ql-cad-btn:hover {
+  background: rgba(15, 23, 42, 0.08);
+  color: #0f172a;
+}
+
+.ql-cad-viewer--light .ql-cad-btn.active {
+  background: var(--primary-dim);
+  color: var(--primary);
+}
+
+.ql-cad-zoom-readout {
+  min-width: 44px;
+  text-align: center;
+  padding: 0 4px;
+  color: #e2e8f0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.ql-cad-viewer--light .ql-cad-zoom-readout {
+  color: #1e293b;
+}
+
+.ql-cad-layers-panel {
+  position: absolute;
+  top: 56px;
+  left: 16px;
+  z-index: 5;
+  width: 248px;
+  max-height: calc(100% - 104px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+  overflow: hidden;
+}
+
+.ql-cad-viewer--light .ql-cad-layers-panel {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(15, 23, 42, 0.14);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+}
+
+.ql-cad-layers-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ql-cad-viewer--light .ql-cad-layers-header {
+  border-bottom-color: rgba(15, 23, 42, 0.08);
+}
+
+.ql-cad-layer-batch-btn {
+  flex: 1;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.ql-cad-layer-batch-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.ql-cad-viewer--light .ql-cad-layer-batch-btn {
+  border-color: rgba(15, 23, 42, 0.14);
+  background: rgba(15, 23, 42, 0.04);
+  color: #1e293b;
+}
+
+.ql-cad-viewer--light .ql-cad-layer-batch-btn:hover {
+  background: rgba(15, 23, 42, 0.09);
+}
+
+.ql-cad-layers-list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.ql-cad-layer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #f1f5f9;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ql-cad-layer-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ql-cad-layer-item.hidden {
+  opacity: 0.45;
+}
+
+.ql-cad-viewer--light .ql-cad-layer-item {
+  color: #0f172a;
+}
+
+.ql-cad-viewer--light .ql-cad-layer-item:hover {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.ql-cad-layer-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  flex-shrink: 0;
+}
+
+.ql-cad-layer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ql-cad-layer-count {
+  color: #94a3b8;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.ql-3d-stats-badge {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e2e8f0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+  pointer-events: none;
+}
+
+.ql-3d-stat-divider {
+  color: #64748b;
+}
+
+.ql-cad-hud-footer {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.68);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+  pointer-events: none;
+}
+
+.ql-cad-viewer--light .ql-cad-hud-footer {
+  background: rgba(248, 250, 252, 0.88);
+  border-color: rgba(15, 23, 42, 0.1);
+  color: #475569;
+}
+
+@container (max-width: 640px) {
+  .ql-3d-stats-badge {
+    top: auto;
+    bottom: 46px;
+    left: 16px;
+    right: auto;
+  }
 }

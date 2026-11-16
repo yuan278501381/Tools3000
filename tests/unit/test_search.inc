@@ -2618,6 +2618,35 @@ TEST(ContentExtractorMatrixTest, MultiPageCollidingFontNameToUnicodeAndFilterAbb
     snippets.clear();
     ASSERT_TRUE(engine.searchFile(docxPath, std::vector<std::wstring>{L"跨部门立项评审纪要2026"}, false, snippets, 3));
     ASSERT_FALSE(snippets.empty());
+
+    // 3. Embedded multi-MB TrueType font stream (/Length1 on standalone font object) placed BEFORE page content
+    //    must be skipped in O(1) without inflating or exhausting MaxTotalPdfDecompressedBytes.
+    const std::string hugeFontBinary(18u * 1024u * 1024u, '\0'); // 18 MB > 16 MB total PDF decompressed cap
+    const std::string compressedFont = compressZlibBytes(hugeFontBinary);
+    const std::string pageStream = compressZlibBytes("BT /F1 12 Tf (NebulaTechWorkload2026) Tj ET\n");
+    std::string fontHeavyPdf = "%PDF-1.5\n";
+    fontHeavyPdf += "1 0 obj\n<< /Type /Page /Resources << /Font << /F1 2 0 R >> >> /Contents 5 0 R >>\nendobj\n";
+    fontHeavyPdf += "2 0 obj\n<< /Type /Font /Subtype /TrueType /FontDescriptor 3 0 R >>\nendobj\n";
+    fontHeavyPdf += "3 0 obj\n<< /Type /FontDescriptor /FontFile2 4 0 R >>\nendobj\n";
+    fontHeavyPdf += "4 0 obj\n<< /Length1 " + std::to_string(hugeFontBinary.size()) +
+        " /Filter /FlateDecode /Length " + std::to_string(compressedFont.size()) + " >>\nstream\n";
+    fontHeavyPdf.append(compressedFont.data(), compressedFont.size());
+    fontHeavyPdf += "\nendstream\nendobj\n";
+    fontHeavyPdf += "5 0 obj\n<< /Filter /FlateDecode /Length " + std::to_string(pageStream.size()) + " >>\nstream\n";
+    fontHeavyPdf.append(pageStream.data(), pageStream.size());
+    fontHeavyPdf += "\nendstream\nendobj\n%%EOF\n";
+
+    const std::wstring fontPdfPath = std::wstring(tempDir) + L"Tools3000_Test_FontSkip_" +
+        std::to_wstring(GetCurrentProcessId()) + L".pdf";
+    TempFileDeleter fontPdfGuard{fontPdfPath};
+    {
+        std::ofstream ofs(fontPdfPath, std::ios::binary);
+        ofs.write(fontHeavyPdf.data(), static_cast<std::streamsize>(fontHeavyPdf.size()));
+    }
+    snippets.clear();
+    ASSERT_TRUE(engine.searchFile(fontPdfPath, std::vector<std::wstring>{L"NebulaTechWorkload2026"}, false, snippets, 3));
+    ASSERT_FALSE(snippets.empty());
+
     tools3000::service::content::ContentTextCache::instance().clear();
 }
 

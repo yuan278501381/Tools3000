@@ -6,6 +6,76 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-17] 二轮实机深水区闭环：PP-OCRv4 动态符号维度内存重写器、PE Manifest 高分屏第三方 IME 缩放、4K 硬件编码防灰块与全格式导出台 (`MP4 / HEVC / 微信直发 GIF / 动态 WebP / 8 款高定背景`)
+- **用户二轮实机测试反馈的 6 大核心痛点与世界级终局方案**：
+  1. **PP-OCRv4 下载就绪后报 `reshape_layer.cpp: srcTotal == dstTotal` 静默回退与表格空列 `C` 根治 (`DeepOcrEngine.{h,cpp}`, `OcrTableReconstructor.cpp`)**：
+     - *暗坑机理*：`paddle2onnx` 导出的 `ch_PP-OCRv4_rec.onnx` 在 `GraphProto.input` 中使用符号字符串维度 `[p2o.DynamicDimension.0, 3, ?, p2o.DynamicDimension.1]`。`OpenCV 4.12` `cv::dnn::readNetFromONNX` 解析模型时将符号维度代换为 `1`，并提前将 SVTR Attention 尾部的 `Shape -> Concat` 子图常量折叠固化为静态 `[1, 1, 3, 8, 15]`，导致真实推理任意宽度（如 `W=640`）时在 `Reshape` 层触发 `srcTotal != dstTotal` 异常并静默回退至旧系统引擎（产生 `Win32 -> 河土n32`、`PinyinEngine -> PxnyxnEngxne` 误识及 `8.1`/`8.0` 漏识）；同时分割线噪点与第 10 行孤立微偏徽章 `100% Offline` 导致表格多出幽灵空列 `C`；
+     - *终局标准*：① 实现零外部依赖的内存 Protobuf 张量形状重写器 `DeepOcrEngine::patchOnnxGraphInputShape`，在送入 `readNetFromONNX` 前将识别网络固化为双宽度分桶 `m_recNetShort` (`[1, 3, 48, 320]`) 与 `m_recNetLong` (`[1, 3, 48, 960]`)（超长行自动按低方差垂直空白缝无损切块），分类器固化为 `[1, 3, 48, 192]`，检测上限提至 `1600px`，并按视觉行聚类 + 左至右 `box.x` 排序合并 `\t`；② `OcrTableReconstructor` 新增纯分割线标点噪点滤除、词尾孤立伪标点剥离，以及针对零同行共现 (`cooccurRows == 0`) 单行稀疏外点列簇的智能吸附归并，实现 100% 纯净 3 列矩阵重建。
+  2. **4K 150% 高分屏下 `SearchWindow` 第三方中文输入法（搜狗 IME）候选框缩成 100% 极小尺寸根治 (`src/Tools3000.manifest`, `CMakeLists.txt`, `WebViewDpi.h`, `SearchWindow.cpp`)**：
+     - *暗坑机理*：原 `Tools3000.exe` PE `RT_MANIFEST` 资源仅包含默认 `asInvoker` 权限声明而缺失 `<dpiAwareness>PerMonitorV2, PerMonitor</dpiAwareness>` 与 Windows 10/11 `<supportedOS>` GUID。尽管进程入口调用了运行时 API `SetProcessDpiAwarenessContext`，但搜狗输入法等跨进程外部 UI (`SGTool.exe`) 通过读取前台宿主 EXE 的静态 PE Manifest 激活上下文判定 DPI 感知级别，误将 `Tools3000.exe` 当作 `96 DPI (100%)` 未感知进程渲染候选窗；
+     - *终局标准*：新增 `src/Tools3000.manifest` 静态嵌入 `Tools3000` 主程序目标（完整声明 Windows 10/11 `supportedOS`、`PerMonitorV2`、`longPathAware` 与 Common-Controls `6.0`），并在 `syncWebViewDpi`、`SearchWindow::focusSearchIfVisible` 及 `WM_MOVE` 中同步触发 `ICoreWebView2Controller::NotifyParentWindowPositionChanged()` 刷新 TSF 输入法焦点坐标。
+  3. **4K 全屏演播室录屏内层灰块浮雕花屏、左下角快捷键提示入镜与倒计时运镜提示 (`ScreenRecorder.cpp`, `RecordingIndicator.cpp`, `PluginEntry.cpp`)**：
+     - *暗坑机理*：① vcpkg FFmpeg 未包含 GPL `libx264`，而 `h264_mf` 在未显式传入 `av_opt_set_int(priv, "hw_encoding", 1, 0)` 时默认绑定微软 CPU 软编 MFT（硬上限 `1920x1088`），在 `3456x2088` 4K 下报 `-22 Invalid argument` 回退至 `libopenh264`；`libopenh264` 默认开启 `allow_skip_frames=1`，在首帧 4K 纹理复杂度突增时主动丢弃关键参考宏块，导致后续 P 帧残差叠加在中性灰 (`Y=128`) 底板上形成浮雕灰雾；② `PluginEntry.cpp` 在进入 `Recording` 态时仍展示左下角 `ShortcutHintOverlay`；
+     - *终局标准*：① `ScreenRecorder` 与 `StudioVideoCompositor` 实施两阶段 Media Foundation 硬件探测（Pass 0 强制 `hw_encoding = 1` 激活 Intel/NVIDIA/AMD GPU 硬件 MFT 并支持超 `1920x1200` 自动挂载硬件 `hevc_mf`，Pass 1 软编兜底），针对异步硬件 MFT（如 `Intel Quick Sync Video H.264 Encoder MFT`）在 `avcodec_open2` 时尚未产出 `MF_MT_MPEG_SEQUENCE_HEADER` (`extradata_size == 0`) 导致 `+empty_moov` 写入空 `avcC` 头的底层陷阱，引入单帧预馈探测提取 46~51B 真实 `SPS/PPS extradata`，同时按像素面积自适应抬升码率下限（4K `~28+ Mbps`），对 `libopenh264` 强制 `allow_skip_frames = 0` + `slice_mode = auto` + 第 0 帧 `AV_PICTURE_TYPE_I`；② 进入 `RecordState::Recording` 瞬间立即隐藏 `ShortcutHintOverlay`（仅在倒计时与暂停态显示），并在倒计时圆角玻璃卡片上同步 DPI 缩放展示「演播室运镜已开启：每次鼠标点击将自动触发平滑放大特写（录后可调）」。
+  4. **对标 FocuSee 的演播室多格式导出模态框 + 微信聊天自动播放 GIF + 网页真彩动态 WebP (`StudioVideoCompositor.{h,cpp}`, `StudioPreviewWindow.{h,cpp}`, `CMakeLists.txt`)**：
+     - **全参数导出模态面板**：在演播室点击「导出」弹出对标 FocuSee 的深色微晶模态窗，支持自定义文件名称（原生键盘输入/退格/`Ctrl+V`）、`IFileOpenDialog(FOS_PICKFOLDERS)` 保存目录选择、`格式 / 分辨率 / 帧率 / 质量` 四维下拉菜单、`[x] 保存当前设置` 持久化以及右下角实时 `(预计大小: ~X.X MB)` 估算；
+     - **微信直发自动播放 GIF 硬核护栏 (`GIF_WeChat`)**：针对微信 PC/移动端聊天流 `> 5MB`、`> 1000px` 或 `> 300` 帧退化为静态文件卡片、以及帧延迟 `< 2cs` (`> 50fps`) 被强制惩罚为 `100ms` 慢放的底层机制，自动钳制长边 `<= 800px`、总帧数 `<= 260`、严格对齐 `{1, 100}` 厘秒时间基 (`>= 2cs`)、启用 `+transdiff` 帧间透明差分与 `GifPaletteOptimizer`，并内置 `> 4.85 MB` 自动降档闭环重压保险；
+     - **网页真彩循环动图 (`WebP_Animated`)**：直连 `libwebp` + `libwebpmux` (`WebPAnimEncoder`) 实现 24-bit RGB 无调色板噪点的帧间混合差分编码，完美适配现代官网、GitHub/Notion 文档与飞书内嵌自动播放。
+  5. **沉稳 · 轻盈 · 风景 三大系列共 8 款 FocuSee 级高定录屏背景 (`BeautyShell.{h,cpp}`, `StudioVideoCompositor.cpp`, `StudioPreviewWindow.cpp`, `CapturePage.tsx`)**：
+     - 摒弃生硬的高饱和双色对角线渐变，升级为「二维多光源高斯弥散色球 (`Gaussian Mesh`) + 4 层大气透视远山剪影与湖面微光程序化合成 + `4x4 Bayer` 抗色带抖动 + `1px` 微晶玻璃高光内边」的 8 款大师级背景：**沉稳系列**（深海曜石、暮夜星云、松烟墨翠）、**轻盈系列**（晨雾云母、暖杏羊绒、晴空薄荷）、**风景系列**（暮色苍山、拂晓湖山），并在演播室右侧面板实时渲染 `4×2` 真实壁纸缩略图卡片。
+
+### [2026-11-16] 实机压测 8 项深水区根治：VFR->CFR 录屏合成保真、PP-OCRv4 内嵌字典自解析与多镜像、三锚点表格重建、Excel 列标/空白图文 Docx 预览、异步低优唤醒与 PDF 字体流秒跳
+- **用户实机深度体验反馈的 8 大现象与底层真因闭环**：
+  1. **演播室录屏导出 33.8s 被压成 8.86s 快进残片 & 4K 单核掉帧 (`StudioVideoCompositor.cpp`, `ScreenRecorder.cpp`, `StudioTimeline.{h,cpp}`)**：
+     - *暗坑机理*：`3454x2158` 4K 分辨率超出 `h264_mf` Level 4.1 硬上限回退 `libx264` 时，`attempt->thread_count` 保持默认 `1` 单核编码导致掉至 `7.9fps`（267 帧 VFR）；而 `exportRenderedVideoOnCleanMta` 原先忽略 `decFrame->best_effort_timestamp`，直接以解码帧序号写入 `encFrame->pts = encodedCount++` (`1/30s`) 并取 `evaluatedFrames[0..266]`，导致 33.8s 视频被 3.8 倍快进压成 `8.86s` 且丢失后 25s 运镜！同时倒计时收起异步投递 UI 线程导致第 0 帧拍入倒计时球，默认 `1.85x` 特写倍率在宽屏窗口下过度裁切；
+     - *终局标准*：① 录制与合成侧非 MF 编码器/解码器统一开启 `thread_count = 0` 全多核并行（`>= 2560x1440` 自动切 `ultrafast`）；② `exportRenderedVideoOnCleanMta` 与 `extractPreviewDeck` 严格按源流真实 PTS 重采样至 CFR `outFps` 时间轴，在 `[heldRawSec, curSec)` 驻留期内逐帧叠加对应时刻的 30fps 光标与弹簧运镜，100% 保留完整时长并与音轨/`.srt` 毫秒级对齐；③ 倒计时转录制态预留 `40ms` DWM 合成缓冲（严守 `Zero WDA_EXCLUDEFROMCAPTURE` 契约）；④ 默认运镜倍率调优至温和宽视野 `1.50x`（尾驻留 `1250ms` 自动回退全景）。
+  2. **PP-OCRv4 离线模型下载报 `ch_ppocr_mobile_v2.0_cls.onnx` 失败 & 安装包可选子组件 (`DeepOcrEngine.{h,cpp}`, `installer.iss`, `PluginEntry.cpp`)**：
+     - *暗坑机理*：`SWHL/RapidOCR` 仓库将 `cls` 模型置于 `PP-OCRv1/` 而非 `PP-OCRv4/`（返回 404），且无独立 `ppocr_keys_v1.txt`（GitHub raw 在国内易超时）；
+     - *终局标准*：① 镜像源置顶国内毫秒级直连的阿里云 `modelscope.cn`（`RapidAI/RapidOCR`）与 `hf-mirror.com`（修正 `PP-OCRv1` 路径），支持已校验本地文件断点跳过；② 实现零依赖 Protobuf 解析器 `DeepOcrEngine::extractEmbeddedCharacterDictFromOnnx`，直接从 `ch_PP-OCRv4_rec.onnx` 顶层 `field 14` (`metadata_props` `key="character"`) 提取官方内嵌 6,623 行字典落盘，彻底消除外部 `.txt` 依赖；③ 在 `installer.iss` `[Components]` 下挂载默认不勾选的 `capture\ocr_models` 子组件（`Flags: dontinheritcheck`），勾选后通过 `initial_modules.json` 驱动首次启动后台静默部署。
+  3. **OCR「复制为表格」右对齐列分裂与单行漏字断列 & 内置高分屏小字清晰度 (`OcrTableReconstructor.cpp`, `OcrEngine.cpp`)**：
+     - *终局标准*：① 引入跨行 **1D 垂直空白走廊水平投影**（缝合上下多行均有文字横跨的单行偶发断词缺口）；② `ColumnCluster` 扩展 **左/中/右三锚点对齐**（`avgLeft`/`avgCenter`/`avgRight`）与 **同行互斥重叠列簇归并**，完美还原「左对齐标题 + 居中胶囊（含空缺格）+ 右对齐长短描述」3 列矩阵，0 幽灵空列；③ `OcrEngine` 将高分屏超分门槛提升至 `< 2600px` 并采用 `INTER_LANCZOS4` + 温和反锐化掩模（Unsharp Mask），收紧浅灰胶囊小数字与 ClearType 边缘。
+  4. **QuickLook Excel 稀疏合并标题行错作表头、多工作表标签与空白/截图型 `.docx` 兼容 (`OfficeAndPdfPreview.{h,cpp}`, `QuickLookWindow.cpp`, `QuickLookApp.tsx`)**：
+     - *终局标准*：① `spreadsheet` 表格顶部采用标准 Excel 字母列标（`A, B, C...`），`1..N` 全部数据行保留在 `<tbody>` 中，彻底根除稀疏大标题行被吃成 `# | Col 1 | 许可申请 | Col 3`；扩容默认 `24` 个工作表 × `64` 列，兼容任意命名空间 `*:id` 与自定义 `sharedStrings` 路径，常驻展示多 Sheet 0ms 切换标签栏与工作表总数徽章；② `.docx`/`.pptx` 动态解析 `_rels/.rels` 主文档、页眉页脚兜底、自动提取 `word/media/*` 内嵌位图（完美预览纯截图工单 `.docx`），对未加密改后缀老版 OLE2/文本文件自动回退 `IFilter`/文本解码，并对 `default.docx` 等合法空白模板返回 `emptyDocument = true` 友好提示。
+  5. **首次搜索 `*.docx` 误报「服务不可用」与 `content:` 全文检索 32.7s 性能瓶颈根治 (`DatabaseManager.cpp`, `service/main.cpp`, `SearchPlugin.cpp`, `useSearchEngine.ts`, `PdfExtractor.cpp`, `PsdAiExtractor.cpp`, `MftParser.cpp`)**：
+     - *暗坑机理*：① 301.8 万文件快照冷启动耗时超过 `useSearchEngine.ts` 原 25 次（~22s）重试预算及 `MessageBridge` 30s 超时；② PDF 内嵌 TrueType 字体流的自身字典仅含 `/Length1` 而无 `/FontFile2`，导致 `PdfExtractor` 将 906 个 PDF（2.83 GB）中数以百计的几 MB 二进制字库流全部 zlib 解压并逐字节当作正文操作符扫描！
+     - *终局标准*：① 严守 `DEMAND_START`，`DatabaseManager::loadSnapshot` 合并为单趟流式内联边界校验（砍掉 301 万次冗余预扫），服务初始化与异步单飞 `search.warmup` 运行于 `THREAD_PRIORITY_BELOW_NORMAL` 零抢占前台资源，前端冷启动重试窗口扩充至 `90` 次（~90s）；② `PdfExtractor` 接管 `.ai`，先按 `/Length` $O(1)$ 定位流边界，在对 Page `/Contents` 与 Font `/ToUnicode` 显式引用对象白名单豁免的前提下精准拦截 `/Length1..3`、`/CIDFontType0C`、`/Type1C`、`/OpenType`、`/XRef`、`/Metadata`、ICC 与 `/Image` 流免解压秒跳；`PsdAiExtractor` 跳过 PSD 像素段并改用 `std::memchr` SIMD 搜寻 `TySh`；`MftParser` 下调 `.min.js`/`.bundle.js` 噪音权重并赋予中小业务文档体积亲和度加分。
+
+### [2026-11-16] 工业设计制图预览引擎 (`DesignAndCadPreview`)、微信级实景选字双引擎离线 OCR (`DeepOcrEngine` + `PinWindow`) 与 Screen Studio 级自动运镜演播室录屏 (`StudioTimeline` + `StudioVideoCompositor`)
+- **三大跨越级生产力引擎架构沉淀**：
+  1. **各行业工程制图与印前设计零文件锁预览引擎 (`DesignAndCadPreview.{h,cpp}`, `OfficeAndPdfPreview.{h,cpp}`, `QuickLookCadViewer.tsx`, `QuickLook3dViewer.tsx`)**：
+     - **MIT 纯净协议红线**：坚决不引入 `LibreDWG` 等 GPL 传染性库；全部基于公开规范与系统原生 COM 接口构建，所有磁盘读取统一采用 `FILE_SHARE_READ | WRITE | DELETE` 瞬时读入内存即刻关闭句柄，100% 零文件锁；
+     - **AutoCAD / 天正 TArch (`.dwg`)、SolidWorks (`.sldprt/.sldasm`)、SketchUp (`.skp`) 双通道择优**：第 1 级 5ms 直解 `.dwg` `AC1012~AC1032` 头信息与 `0x0D` Preview Sentinel 快照（以及天正自定义实体保存时的完整栅格快照）；第 2 级通过 STA 超时保护沙箱调用 `IShellItemImageFactory::GetImage(1600x1600)` 择优更高清系统缩略图，并在 UI 诚实标注快照说明与专业软件一键打开入口；
+     - **工程图纸 `.dxf` 交互式矢量看图与 `.stl/.obj` 3D 检视器**：原生支持 UTF-8/GBK 中文图层及 `LINE/LWPOLYLINE(含凸度圆弧)/CIRCLE/ARC/TEXT/MTEXT` 解析，前端 Canvas 合批渲染支持光标中心 10%~5000% 缩放、黑白图纸底色自适应反色与图层显隐开关；`.stl/.obj` 通过紧凑 Base64 `Float32Array` 直传前端零依赖 WebGL 1.0 双光源深度缓冲 + 线框叠加 360° 检视器；
+     - **平面印前 `.cdr` / `.psd` / `.psb` / `.ai` / `.eps`**：`.cdr` 兼容 X4~2026 ZIP 多页预览与 X3 老版 `RIFF DISP` DIB；`.psd/.psb` 流式边解码边降采样解析 `8BPS` Section 5 Raw/PackBits RLE 合成大图（兼容 CMYK/16-bit）；`.ai/.eps` 自动扫描内存 `%PDF-` 流偏移交由 WinRT PDF 光栅化（保留 `winrt::clear_factory_cache()` 防退出 Loader Lock 死锁）。
+  2. **微信级原图实景选字双引擎离线 OCR (`DeepOcrEngine.{h,cpp}`, `OcrTableReconstructor.{h,cpp}`, `OcrEngine.{h,cpp}`, `PinWindow.cpp`, `OcrPage.tsx`)**：
+     - **零外部框架膨胀的 PP-OCRv4 ONNX 推理引擎**：直接复用项目已链接的 `opencv_dnn` (`OpenCV 4.12`) 驱动 DBNet 倾斜文本检测 + 180° 方向分类 + SVTR/CRNN CTC 识别与单字符时间步逆透视包围盒 (`charBoxes`)；`OcrPage.tsx` 内置支持 HTTPS 防降级与模型完整性预校验的一键离线高精度模型包下载器；同时强化内置 `Windows.Media.Ocr` 的暗色代码反相与 CLAHE 增强，并集成 `cv::QRCodeDetector` (`quirc`) 顺手解码二维码；
+     - **Excel 原生分列表格重建 (`CF_HTML` + `TSV`)**：对 `>= 2×2` 行列簇自动对齐网格并写入双剪贴板格式，支持直接粘贴进 Excel / WPS / 飞书自动还原单元格；
+     - **零门槛贴图实景选字 (`Live Text`)**：无需按住 `Alt` 或切模式，贴图空白处保持拖拽移动，鼠标移入文字框自动切换 `IDC_IBEAM` 按字符流式划选，松手浮现 `[复制]`、`[复制为表格]`、`[对照面板]` 微晶胶囊。
+  3. **Screen Studio / Focusee 级自动运镜演播室录屏引擎 (`StudioTimeline.{h,cpp}`, `StudioVideoCompositor.{h,cpp}`, `StudioPreviewWindow.{h,cpp}`, `ScreenRecorder`, `CapturePage.tsx`)**：
+     - **双模式零负担共存**：直出模式保持 0 秒落盘；开启演播室模式（Studio Mode）时录制期剥离系统光标捕获 Clean Plate 纯净底片，并同步以 250Hz 采集鼠标坐标、点击、输入插入符焦点 (`GetGUIThreadInfo`) 与本机离线 SAPI 语音识别时间轴；
+     - **物理弹簧运镜与超清矢量重绘**：采用二阶临界阻尼弹簧 ($\zeta = 1.0$ 解析解，严格零超调) 自动聚类推进 `1.5x~2.2x` 镜头并钳制视口边界；采用 `OneEuroFilter2D` 消除手部微抖动并在放大画面顶层以 `1/16px` 亚像素精度重绘超清矢量指针与点击波纹；叠加 5 款渐变壁纸圆角阴影画框与预乘 Alpha 胶囊字幕；
+     - **录完即达的原生 Direct2D 演播室预览台**：停止录屏瞬间弹出实时 30fps 合成预览窗，支持时间轴拖拽、单段蓝色放大块独立点击启停、实时切换倍率/光标/壁纸/字幕、硬件优先（`h264_nvenc/qsv/amf/mf` + 音轨无损 Stream Copy + 同名 `.srt` 导出）异步合成成片或 0 秒一键保留原片。
+  4. **Intel Iris Xe 驱动 (`igd10um64xe.dll`) 测试宿主退出 `DLL_PROCESS_DETACH` 自旋护栏 (`tests/unit/test_main.cpp`)**：
+     - 实机 `GetThreadContext` 采样证实：在混合运行 D3D11/Direct2D/DirectML/MediaFoundation 共 703 项单测后，Intel 用户态显卡驱动 `igd10um64xe.dll + 0x71398` 在 `ExitProcess -> DLL_PROCESS_DETACH` 阶段会因等待已被内核提前终止的驱动辅助线程而发生 100% CPU 永久自旋；在 `test_main.cpp` 入口剥离标准流 `HANDLE_FLAG_INHERIT` 并在 `RUN_ALL_TESTS()` 完成、业务单例有序关闭与标准流 `fflush` 后显式 `TerminateProcess(GetCurrentProcess(), ret)`，保障 CTest 44s 零挂起秒退。
+
+### [2026-11-16] QuickLook 多格式零乱码无锁预览引擎 (`OfficeAndPdfPreview`)、关于页大众化精炼重构与生活场景动图升级
+- **用户实机反馈与三大核心病灶**：
+  1. **QuickLook 打开 `PDF / CSV / Excel / Word` 出现乱码或裸露十六进制转储**：
+     - `.docx`/`.xlsx`/`.pptx`（ZIP `PK\x03\x04`）与 `.doc`/`.xls`（OLE2 `D0 CF 11 E0`）此前在 `QuickLookWindow.cpp` 中未做专用分流，直接落入 `"binary"` 并全屏铺开 `50 4b 03 04` 十六进制，甚至当首 256 KB 偶然无 `0x00` 时可能被误判为 GBK 产生汉字乱码；
+     - `.csv`/`.tsv` 此前作为普通代码高亮展示（逗号未分列对齐），且 256 KB 截断切在双字节 GBK 汉字中间时会产生尾部乱码，同时 `p.extension().string()` 在非当前 ANSI 代码页路径下有抛异常风险；
+     - `.pdf` 此前依赖 WebView2 `<iframe>` + 虚拟主机映射，在 `WebViewEnvironmentManager.cpp` 锁定的 `--no-sandbox` 启动参数下易受 Chromium OOPIF PDF 插件兼容限制或产生磁盘文件锁。
+  2. **README 搜索动图与宣传措辞不够接地气**：`search_demo.webp` 使用偏极客晦涩的 `xykj 架构` 演示，且存在“秒看万物 / 全息预览”等夸大表述；
+  3. **「设置 -> 关于」页面文案晦涩且技术栈版本滞后**：功能简介堆砌底层术语，技术栈缺少 `Rust SIMD`、`SQLite & zlib`、`UIAutomation` 且版本号未同步 `React 19.2 / TS 6.0 / Vite 8.0 / Lua 5.5 / FFmpeg 8.1`。
+- **终局架构方案与防回退闭环**：
+  1. **零文件锁多格式解析与原生 PDF 光栅化 (`OfficeAndPdfPreview.{h,cpp}`, `TextFilePreviewDecoder.h`, `QuickLookWindow.cpp`, `QuickLookApp.tsx`, `quickLookMarkup.ts`)**：
+     - **二进制魔数硬拦截与 GBK 双字节安全修剪**：`TextFilePreviewDecoder` 前置拦截 `%PDF-`、`PK\x03\x04`、OLE2、PNG/JPEG/GIF/RAR/7z/SQLite 签名，并通过 `validateAndTrimGbkBuffer` 校验双字节合法性与自动回退截断边界的半个汉字；
+     - **内存零锁 ZIP+XML 与 SEH IFilter 提取**：通过 `FILE_SHARE_READ | WRITE | DELETE` 毫秒级读入内存后立即 `CloseHandle`（100% 零文件锁），原生解析 `.xlsx` 多工作表（支持 `xl/sharedStrings.xml` 与 `A1/C1` 稀疏列坐标对齐）、`.docx`（段落、标题与 `<w:tbl>` 转标准 GFM 表格）、`.pptx`（按页提取幻灯片大纲），并对旧版 OLE2 `.doc/.xls/.ppt/.rtf` 通过 `query.dll` `LoadIFilter` + 纯 POD SEH 沙箱安全提取文本；
+     - **WinRT `Windows.Data.Pdf` 无锁内存页面渲染**：在后台 MTA 线程通过 `InMemoryRandomAccessStream` + `PdfDocument::LoadFromStreamAsync` 将前 6 页高清光栅化为 PNG Data URI（`pdfPages`），100% 免疫 `--no-sandbox` 沙箱限制且零文件锁（超大 PDF 平滑回退 `mediaUrl`）；
+     - **现代数据表格与默认折叠十六进制**：前端内置 RFC 4180 CSV/TSV 解析器与多 Sheet 吸顶表格，补齐 `quickLookMarkup.ts` GFM 表格转 `<table>` 能力，并将未知二进制文件的 `hexDump` 默认折叠隐藏，展示友好的「使用默认程序打开 (Enter)」主卡片。
+  2. **大众化视觉叙事与技术栈精确对齐 (`AboutPage.tsx`, `zh.json`, `en.json`, `README.md`, `README.en.md`)**：
+     - 重绘中英双语 `search_demo.webp`（`yn 旅游攻略` / `kyoto trip` 命中旅行攻略 `.docx`、机票民宿订单 `.pdf`、预算表 `.xlsx` 并按空格预览行程与预算表格）与 `scene_quicklook.png`（改为诚实的「QuickLook 空格快速预览 · 免打开直看常用文件」）；
+     - 重写关于页通俗功能简介并补全 19 项真实技术栈矩阵与准确版本。
+
 ### [2026-11-16] 贴图窗口 (`PinWindow`) 路线 B Direct2D 微晶自绘右键复合菜单架构 (`PinContextMenuModel` + `PinContextMenu`)
 - **用户痛点与认知负荷病灶**：
   - 旧版 `PinWindow::WM_RBUTTONUP` 使用 Win32 `CreatePopupMenu` 平铺了 **23~25 个一级条目 + 8 条分割线**，并在文案末尾硬拼长串多别名快捷键（如 `(Shift+R / L / 数字 1)`、`(Esc / Delete / Ctrl+W)`），突破 `7±2` 工作记忆极限、破坏纵向扫视对齐，且将最高频的「复制图片」淹没在菜单中部、4 个 OCR 文字入口并列混杂、单张贴图亦常驻全局批处理噪音。

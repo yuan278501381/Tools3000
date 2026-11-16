@@ -13,6 +13,7 @@
 #include "capture/ClipboardUtils.h"
 #include "capture/ScreenRecorder.h"
 #include "capture/RecordingIndicator.h"
+#include "capture/StudioPreviewWindow.h"
 #include "capture/PinWindow.h"
 #include "capture/PinContextMenu.h"
 #include "capture/PinGroupBarOverlay.h"
@@ -24,6 +25,7 @@
 #include "common/AtomicFile.h"
 #include <opencv2/imgcodecs.hpp>
 #include "ocr/OcrEngine.h"
+#include "ocr/DeepOcrEngine.h"
 #include "ocr/OcrResultWindow.h"
 #include <thread>
 #include <filesystem>
@@ -119,6 +121,17 @@ const char* recordExtension(RecordFormat format) {
     }
 }
 
+BeautyBackgroundType studioThemeFromConfig(const std::string& raw) {
+    if (raw == "sunrise_coral" || raw == "paper_chalk") return BeautyBackgroundType::PaperChalk;
+    if (raw == "emerald_sea" || raw == "silk_mist") return BeautyBackgroundType::SilkMist;
+    if (raw == "obsidian_dark" || raw == "midnight_graphite") return BeautyBackgroundType::MidnightGraphite;
+    if (raw == "minimal_light" || raw == "pure_minimal") return BeautyBackgroundType::PureMinimal;
+    if (raw == "airy_glacier") return BeautyBackgroundType::AiryGlacier;
+    if (raw == "dusk_mountains") return BeautyBackgroundType::DuskMountains;
+    if (raw == "misty_lake_dawn") return BeautyBackgroundType::MistyLakeDawn;
+    return BeautyBackgroundType::StudioSlate;
+}
+
 void startRecordingForRegion(const CaptureRegion& region, const RecordSetupOptions& setup = {});
 
 RecordOptions configuredRecordOptions(const CaptureRegion& region) {
@@ -149,6 +162,17 @@ RecordOptions configuredRecordOptions(const CaptureRegion& region) {
         config.get<int>("/recording/countdownSeconds", 3), 0, 10);
     options.experimentalGpuEncoding = config.get<bool>(
         "/recording/experimentalGpuEncoding", false);
+    options.studioMode = config.get<bool>("/recording/studioMode", false);
+    options.studioConfig.autoZoomEnabled = config.get<bool>("/recording/studioAutoZoom", true);
+    options.studioConfig.defaultZoomFactor = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioZoomFactor", 1.50)), 1.25f, 2.80f);
+    options.studioConfig.smoothCursorEnabled = config.get<bool>("/recording/studioSmoothCursor", true);
+    options.studioConfig.cursorScale = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioCursorScale", 1.35)), 0.80f, 2.20f);
+    options.studioConfig.autoFrameEnabled = config.get<bool>("/recording/studioAutoFrame", true);
+    options.studioConfig.backgroundTheme = studioThemeFromConfig(
+        config.get<std::string>("/recording/studioTheme", "aurora_purple"));
+    options.studioConfig.autoCaptionsEnabled = config.get<bool>("/recording/studioAutoCaptions", true);
     const auto directory = config.get<std::string>(
         "/recording/saveDirectory", config.get<std::string>("/recording/savePath", ""));
     options.outputPath = timestampedPath(directory, "record_", recordExtension(options.format));
@@ -217,12 +241,20 @@ void configureRecorderStateCallback() {
             else {
                 indicator.setPaused(state == RecordState::Paused);
                 indicator.update(stats.durationSec, stats.frameCount);
-                ShortcutHintOverlay::instance().show(
-                    state == RecordState::Paused
-                        ? ShortcutHintContext::RecordingPaused
-                        : ShortcutHintContext::Recording,
-                    {LONG_MIN, LONG_MIN},
-                    indicator.avoidanceRects());
+                if (state == RecordState::Paused) {
+                    ShortcutHintOverlay::instance().show(
+                        ShortcutHintContext::RecordingPaused,
+                        {LONG_MIN, LONG_MIN},
+                        indicator.avoidanceRects());
+                } else if (state == RecordState::Countdown) {
+                    ShortcutHintOverlay::instance().show(
+                        ShortcutHintContext::Recording,
+                        {LONG_MIN, LONG_MIN},
+                        indicator.avoidanceRects());
+                } else {
+                    // 正式录制期间立即收起左下角快捷键提示浮层，严防录进全屏底片
+                    ShortcutHintOverlay::instance().hide();
+                }
             }
         });
     });
@@ -245,6 +277,27 @@ void stopRecordingWithFeedback() {
                 const bool isZh = tools3000::core::isUiLanguageChinese();
                 if (!path.empty()) {
                     LOG_INFO("录屏已保存: {}", path);
+                    auto& rec = ScreenRecorder::instance();
+                    if (rec.wasLastSessionStudioMode()) {
+                        ind.hide();
+                        auto timeline = rec.takeLastStudioTimeline();
+                        const auto studioCfg = rec.lastStudioConfig();
+                        const int bitrateMbps = rec.lastSessionBitrateMbps();
+                        StudioPreviewWindow::instance().showSession(
+                            path,
+                            std::move(timeline),
+                            studioCfg,
+                            bitrateMbps,
+                            [](const std::string& savedPath, double savedDur, bool studioExported) {
+                                const bool zh = tools3000::core::isUiLanguageChinese();
+                                RecordingIndicator::instance().showCompleted(savedPath, savedDur);
+                                tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                                    studioExported
+                                        ? (zh ? L"演播室成片已导出并保存" : L"Studio export completed and saved")
+                                        : (zh ? L"录屏已保存" : L"Recording saved")});
+                            });
+                        return;
+                    }
                     ind.showCompleted(path, dur);
                     tools3000::core::EventBus::instance().publish(
                         tools3000::core::ShowToastEvent{isZh ? L"录屏已保存" : L"Recording saved"});
@@ -642,6 +695,13 @@ public:
         indicator.onMicrophoneMute(toggleMicrophoneMuteWithFeedback);
 
         tools3000::ocr::OcrEngine::instance().initialize();
+        if (tools3000::core::ConfigManager::instance().get<bool>("/ocr/autoDownloadPackOnStartup", false)) {
+            tools3000::core::ConfigManager::instance().set<bool>("/ocr/autoDownloadPackOnStartup", false);
+            if (!tools3000::ocr::DeepOcrEngine::instance().isModelInstalled()) {
+                LOG_INFO("CapturePlugin: starting background PP-OCRv4 offline pack download requested by installer");
+                tools3000::ocr::DeepOcrEngine::instance().startModelDownload();
+            }
+        }
 
         
         auto& mb = tools3000::core::MessageBridge::instance();
@@ -885,6 +945,14 @@ public:
                 {"microphoneVolume", config.get<int>("/recording/microphoneVolume", 100)},
                 {"countdownSeconds", config.get<int>("/recording/countdownSeconds", 3)},
                 {"experimentalGpuEncoding", config.get<bool>("/recording/experimentalGpuEncoding", false)},
+                {"studioMode", config.get<bool>("/recording/studioMode", false)},
+                {"studioAutoZoom", config.get<bool>("/recording/studioAutoZoom", true)},
+                {"studioZoomFactor", config.get<double>("/recording/studioZoomFactor", 1.50)},
+                {"studioSmoothCursor", config.get<bool>("/recording/studioSmoothCursor", true)},
+                {"studioCursorScale", config.get<double>("/recording/studioCursorScale", 1.35)},
+                {"studioAutoFrame", config.get<bool>("/recording/studioAutoFrame", true)},
+                {"studioTheme", config.get<std::string>("/recording/studioTheme", "aurora_purple")},
+                {"studioAutoCaptions", config.get<bool>("/recording/studioAutoCaptions", true)},
                 {"saveDirectory", config.get<std::string>(
                     "/recording/saveDirectory", config.get<std::string>("/recording/savePath", ""))}
             };
@@ -967,6 +1035,9 @@ public:
 
         mb.registerHandler("recording.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
             static const std::unordered_set<std::string> formats = {"mp4_h264", "mp4_h265", "webm_vp9", "gif"};
+            static const std::unordered_set<std::string> studioThemes = {
+                "aurora_purple", "sunrise_coral", "emerald_sea", "obsidian_dark", "minimal_light"
+            };
             static const std::unordered_set<int> countdowns = {0, 3, 5, 10};
             if (!params.is_object() || params.empty()) return {{"success", false}, {"error", "no settings supplied"}};
             for (const auto& [key, value] : params.items()) {
@@ -987,10 +1058,19 @@ public:
                 if ((key == "systemAudioVolume" || key == "microphoneVolume") &&
                     (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 200))
                     return {{"success", false}, {"error", "audio volume must be between 0 and 200"}};
+                if (key == "studioTheme" && (!value.is_string() || !studioThemes.contains(value.get<std::string>())))
+                    return {{"success", false}, {"error", "invalid studioTheme"}};
+                if (key == "studioZoomFactor" && (!value.is_number() || value.get<double>() < 1.2 || value.get<double>() > 2.8))
+                    return {{"success", false}, {"error", "studioZoomFactor must be between 1.2 and 2.8"}};
+                if (key == "studioCursorScale" && (!value.is_number() || value.get<double>() < 0.8 || value.get<double>() > 2.2))
+                    return {{"success", false}, {"error", "studioCursorScale must be between 0.8 and 2.2"}};
                 if ((key == "includeCursor" || key == "showClickEffects" ||
                      key == "showClickZoom" || key == "includeKeycast" ||
                      key == "captureSystemAudio" || key == "captureMicrophone" ||
-                     key == "experimentalGpuEncoding") &&
+                     key == "experimentalGpuEncoding" ||
+                     key == "studioMode" || key == "studioAutoZoom" ||
+                     key == "studioSmoothCursor" || key == "studioAutoFrame" ||
+                     key == "studioAutoCaptions") &&
                     !value.is_boolean())
                     return {{"success", false}, {"error", key + " must be boolean"}};
                 if (key != "format" && key != "fps" && key != "bitrate" && key != "saveDirectory" &&
@@ -999,6 +1079,10 @@ public:
                     key != "showClickZoom" && key != "includeKeycast" &&
                     key != "captureSystemAudio" && key != "captureMicrophone" &&
                     key != "experimentalGpuEncoding" &&
+                    key != "studioMode" && key != "studioAutoZoom" &&
+                    key != "studioZoomFactor" && key != "studioSmoothCursor" &&
+                    key != "studioCursorScale" && key != "studioAutoFrame" &&
+                    key != "studioTheme" && key != "studioAutoCaptions" &&
                     key != "systemAudioDeviceId" && key != "microphoneDeviceId" &&
                     key != "systemAudioVolume" && key != "microphoneVolume")
                     return {{"success", false}, {"error", "unsupported setting: " + key}};
@@ -1025,22 +1109,31 @@ public:
         mb.registerHandler("ocr.getSettings", [](const nlohmann::json&) -> nlohmann::json {
             auto& config = tools3000::core::ConfigManager::instance();
             return {
-                {"engine", "windows"},
+                {"engine", config.get<std::string>("/ocr/engine", "auto")},
                 {"language", config.get<std::string>("/ocr/language", "auto")},
                 {"copyResult", config.get<bool>("/ocr/copyResult", true)},
-                {"showResultWindow", config.get<bool>("/ocr/showResultWindow", true)}
+                {"showResultWindow", config.get<bool>("/ocr/showResultWindow", true)},
+                {"liveTextOnPin", config.get<bool>("/ocr/liveTextOnPin", true)},
+                {"pinLiveTextOnCapture", config.get<bool>("/ocr/pinLiveTextOnCapture", true)}
             };
         });
 
         mb.registerHandler("ocr.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
             if (!params.is_object() || params.empty()) return {{"success", false}, {"error", "no settings supplied"}};
             for (const auto& [key, value] : params.items()) {
-                if (key == "copyResult" || key == "showResultWindow") {
+                if (key == "copyResult" || key == "showResultWindow" ||
+                    key == "liveTextOnPin" || key == "pinLiveTextOnCapture") {
                     if (!value.is_boolean())
                         return {{"success", false}, {"error", "invalid boolean OCR setting: " + key}};
                 } else if (key == "language") {
                     if (!value.is_string() || value.get<std::string>().empty())
                         return {{"success", false}, {"error", "invalid OCR language"}};
+                } else if (key == "engine") {
+                    if (!value.is_string())
+                        return {{"success", false}, {"error", "invalid OCR engine"}};
+                    const std::string eng = value.get<std::string>();
+                    if (eng != "auto" && eng != "ppocr_v4" && eng != "windows")
+                        return {{"success", false}, {"error", "unsupported OCR engine: " + eng}};
                 } else {
                     return {{"success", false}, {"error", "unsupported OCR setting: " + key}};
                 }
@@ -1050,8 +1143,55 @@ public:
             return {{"success", saved}, {"error", saved ? "" : "failed to persist settings"}};
         });
 
-        mb.registerHandler("ocr.getStatus", [](const nlohmann::json&) -> nlohmann::json {
-            return {{"available", tools3000::ocr::OcrEngine::instance().isAvailable()}};
+        auto serializeModelStatus = []() -> nlohmann::json {
+            const auto st = tools3000::ocr::DeepOcrEngine::instance().getModelStatus();
+            return {
+                {"installed", st.installed},
+                {"downloading", st.downloading},
+                {"progressPercent", st.progressPercent},
+                {"downloadedBytes", st.downloadedBytes},
+                {"totalBytes", st.totalBytes},
+                {"state", st.state},
+                {"currentFile", st.currentFile},
+                {"modelDir", st.modelDir},
+                {"error", st.error}
+            };
+        };
+
+        mb.registerHandler("ocr.getStatus", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
+            const auto& ocr = tools3000::ocr::OcrEngine::instance();
+            const bool deepInstalled = tools3000::ocr::DeepOcrEngine::instance().isModelInstalled();
+            const std::string engPref = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/engine", "auto");
+            const std::string effectiveEngine = ((engPref == "auto" || engPref == "ppocr_v4") && deepInstalled)
+                ? "ppocr_v4"
+                : "windows";
+            return {
+                {"available", ocr.isAvailable()},
+                {"windowsOcrAvailable", ocr.isWindowsOcrAvailable()},
+                {"deepOcrInstalled", deepInstalled},
+                {"effectiveEngine", effectiveEngine},
+                {"modelStatus", serializeModelStatus()}
+            };
+        });
+
+        mb.registerHandler("ocr.getModelStatus", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
+            return serializeModelStatus();
+        });
+
+        mb.registerHandler("ocr.downloadModel", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
+            const bool started = tools3000::ocr::DeepOcrEngine::instance().startModelDownload();
+            return {
+                {"success", started},
+                {"modelStatus", serializeModelStatus()}
+            };
+        });
+
+        mb.registerHandler("ocr.cancelModelDownload", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
+            tools3000::ocr::DeepOcrEngine::instance().cancelModelDownload();
+            return {
+                {"success", true},
+                {"modelStatus", serializeModelStatus()}
+            };
         });
 
         mb.registerHandler("ocr.recognizeImageFile", [](const nlohmann::json& params) -> nlohmann::json {
@@ -1345,6 +1485,23 @@ public:
                     }
                     pin->setOcrBlocksForTest(std::move(blocks));
                 }
+                if (params.contains("mockQrCodes") && params["mockQrCodes"].is_array()) {
+                    std::vector<tools3000::ocr::OcrQrResult> qrs;
+                    for (const auto& item : params["mockQrCodes"]) {
+                        tools3000::ocr::OcrQrResult q;
+                        q.text = item.value("text", "");
+                        q.boundingBox = cv::Rect(
+                            item.value("x", 0),
+                            item.value("y", 0),
+                            item.value("w", 48),
+                            item.value("h", 48));
+                        qrs.push_back(std::move(q));
+                    }
+                    pin->setQrCodesForTest(std::move(qrs));
+                }
+                if (params.value("copyTable", false)) {
+                    pin->copySelectedOrAllAsTable();
+                }
                 if (params.value("selectAll", false)) {
                     pin->selectAllText();
                 }
@@ -1427,10 +1584,18 @@ public:
                 const auto tbRect = pin->hoverToolbarRect();
                 const auto txtRect = pin->textButtonRect();
                 const auto invRect = pin->invertButtonRect();
+                const auto copyTblRect = pin->copyTableFloatingButtonRect();
+                const auto openPnlRect = pin->openPanelFloatingButtonRect();
                 return {
                     {"success", true},
                     {"textSelectionMode", pin->isTextSelectionMode()},
                     {"selectedBlockCount", static_cast<int>(pin->selectedTextBlockCount())},
+                    {"selectedText", pin->selectedTextUtf8()},
+                    {"hasDetectedTable", pin->hasDetectedTable()},
+                    {"qrCodeCount", static_cast<int>(pin->qrCodeCount())},
+                    {"hoveredBlockIndex", pin->hoveredBlockIndex()},
+                    {"copyTableBtnVisible", copyTblRect.right > copyTblRect.left},
+                    {"openPanelBtnVisible", openPnlRect.right > openPnlRect.left},
                     {"ocrReady", pin->isOcrReady()},
                     {"ocrInFlight", pin->isOcrInFlight()},
                     {"ocrRunCount", pin->ocrRunCount()},
@@ -1811,6 +1976,7 @@ public:
         RecordingIndicator::instance().onSystemAudioMute(nullptr);
         RecordingIndicator::instance().onMicrophoneMute(nullptr);
         RecordingIndicator::instance().shutdown();
+        StudioPreviewWindow::instance().shutdown();
         ShortcutHintOverlay::instance().shutdown();
         tools3000::ocr::OcrResultWindow::instance().cleanup();
         tools3000::ocr::OcrEngine::instance().shutdown();

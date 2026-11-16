@@ -162,6 +162,9 @@ void SearchWindow::focusSearchIfVisible() {
     if (!m_visible.load()) return;
     if (m_controller) {
         m_controller->put_IsVisible(TRUE);
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            syncWebViewDpi(m_controller.Get(), m_hwnd);
+        }
         m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
     }
     if (m_webView) {
@@ -585,6 +588,12 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
                 return calculateHitTest(rc, pt, scale);
             }
             return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+        }
+        case WM_MOVE: {
+            if (inst.m_controller) {
+                inst.m_controller->NotifyParentWindowPositionChanged();
+            }
+            break;
         }
         case WM_SIZE: {
             const int newW = LOWORD(lParam);

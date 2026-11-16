@@ -9,6 +9,7 @@ import './AboutPage.css';
 
 type DepPurposeKey =
   | 'about.depPurpose.cppStandard'
+  | 'about.depPurpose.rustSimd'
   | 'about.depPurpose.direct2d'
   | 'about.depPurpose.llHooks'
   | 'about.depPurpose.ntfsEngine'
@@ -16,11 +17,13 @@ type DepPurposeKey =
   | 'about.depPurpose.opencv'
   | 'about.depPurpose.ffmpeg'
   | 'about.depPurpose.windowsOcr'
+  | 'about.depPurpose.uiaShell'
   | 'about.depPurpose.webview2'
   | 'about.depPurpose.react'
   | 'about.depPurpose.vite'
   | 'about.depPurpose.lucideIcons'
   | 'about.depPurpose.designTokens'
+  | 'about.depPurpose.sqliteZlib'
   | 'about.depPurpose.luaSol2'
   | 'about.depPurpose.spdlog'
   | 'about.depPurpose.nlohmannJson'
@@ -35,30 +38,33 @@ interface DependencyInfo {
 
 const DEPENDENCIES: DependencyInfo[] = [
   // 第一梯队：核心底座与硬核原生性能 (Native Core & Hardware Acceleration)
-  { name: 'C++20',                        version: 'MSVC 19.4x', purpose: 'about.depPurpose.cppStandard' },
-  { name: 'Direct2D & DirectWrite',       version: 'Hardware',   purpose: 'about.depPurpose.direct2d' },
-  { name: 'Win32 LL Hooks & Raw Input',   version: 'Native',     purpose: 'about.depPurpose.llHooks' },
+  { name: 'C++20',                          version: 'MSVC v145 · x64 / ARM64',   purpose: 'about.depPurpose.cppStandard' },
+  { name: 'Rust (SIMD Kernel)',             version: 'Edition 2021 · AVX2 / NEON', purpose: 'about.depPurpose.rustSimd' },
+  { name: 'Direct2D & DirectComposition',   version: 'GPU Hardware',               purpose: 'about.depPurpose.direct2d' },
+  { name: 'Win32 LL Hooks & Raw Input',     version: 'Native API',                 purpose: 'about.depPurpose.llHooks' },
 
   // 第二梯队：垂直业务引擎与多媒体管线 (Domain Engines & Multimedia)
-  { name: 'NTFS MFT / USN Journal',       version: 'Win32 API',  purpose: 'about.depPurpose.ntfsEngine' },
-  { name: 'PinyinEngine',                 version: 'Native',     purpose: 'about.depPurpose.pinyin' },
-  { name: 'OpenCV',                       version: '4.12+',      purpose: 'about.depPurpose.opencv' },
-  { name: 'FFmpeg',                       version: '8.x',        purpose: 'about.depPurpose.ffmpeg' },
-  { name: 'Windows.Media.Ocr',            version: 'System',     purpose: 'about.depPurpose.windowsOcr' },
+  { name: 'NTFS MFT & USN Journal',         version: 'Kernel I/O',                 purpose: 'about.depPurpose.ntfsEngine' },
+  { name: 'PinyinEngine',                   version: 'Built-in',                   purpose: 'about.depPurpose.pinyin' },
+  { name: 'OpenCV',                         version: '4.12',                       purpose: 'about.depPurpose.opencv' },
+  { name: 'FFmpeg & WASAPI',                version: '8.1',                        purpose: 'about.depPurpose.ffmpeg' },
+  { name: 'Windows.Media.Ocr & Pdf',        version: '100% Offline',               purpose: 'about.depPurpose.windowsOcr' },
+  { name: 'UIAutomation & Shell COM',       version: 'System API',                 purpose: 'about.depPurpose.uiaShell' },
 
   // 第三梯队：现代化人机交互与展现容器 (Modern UI, Shell & Design Tokens)
-  { name: 'WebView2',                     version: 'Evergreen',  purpose: 'about.depPurpose.webview2' },
-  { name: 'React & TypeScript',           version: '19.x / 5.8+',purpose: 'about.depPurpose.react' },
-  { name: 'Vite',                         version: '6.x',        purpose: 'about.depPurpose.vite' },
-  { name: 'Lucide Icons',                 version: '1.x',        purpose: 'about.depPurpose.lucideIcons' },
-  { name: 'Tailwind CSS / Design Tokens', version: 'Tokens',     purpose: 'about.depPurpose.designTokens' },
+  { name: 'WebView2',                       version: '1.0.4022 · Evergreen',       purpose: 'about.depPurpose.webview2' },
+  { name: 'React & TypeScript',             version: '19.2 / 6.0',                 purpose: 'about.depPurpose.react' },
+  { name: 'Vite',                           version: '8.0',                        purpose: 'about.depPurpose.vite' },
+  { name: 'Lucide Icons',                   version: '1.21',                       purpose: 'about.depPurpose.lucideIcons' },
+  { name: 'CSS Design Tokens',              version: 'Native CSS',                 purpose: 'about.depPurpose.designTokens' },
 
-  // 第四梯队：扩展性、可观测性与工程门禁 (Infrastructure, Sandboxing & QA)
-  { name: 'Lua 5.4 + sol2',               version: '5.4.7',      purpose: 'about.depPurpose.luaSol2' },
-  { name: 'spdlog',                       version: '1.17+',      purpose: 'about.depPurpose.spdlog' },
-  { name: 'nlohmann/json',                version: '3.12+',      purpose: 'about.depPurpose.nlohmannJson' },
-  { name: 'Google Test (GTest)',          version: '1.17+',      purpose: 'about.depPurpose.gtest' },
-  { name: 'Inno Setup',                   version: '6.7+',       purpose: 'about.depPurpose.innoSetup' },
+  // 第四梯队：数据存储、扩展性与工程门禁 (Storage, Scripting & QA Gates)
+  { name: 'SQLite & zlib',                  version: '3.x / 1.3',                  purpose: 'about.depPurpose.sqliteZlib' },
+  { name: 'Lua + sol2',                     version: '5.5 / 3.5',                  purpose: 'about.depPurpose.luaSol2' },
+  { name: 'spdlog',                         version: '1.17',                       purpose: 'about.depPurpose.spdlog' },
+  { name: 'nlohmann/json',                  version: '3.12',                       purpose: 'about.depPurpose.nlohmannJson' },
+  { name: 'GoogleTest & Vitest',            version: '1.17 / 4.1',                 purpose: 'about.depPurpose.gtest' },
+  { name: 'Inno Setup',                     version: '6.7',                        purpose: 'about.depPurpose.innoSetup' },
 ];
 
 const TECH_STACK = DEPENDENCIES;
@@ -213,7 +219,7 @@ export const AboutPage: FC = () => {
                 <div className="about-hero__title-row">
                   <h2 className="about-hero__title">Tools3000</h2>
                   <Badge text={`v${version}`} variant="primary" />
-                  <Badge text="C++20 & Direct2D" variant="success" />
+                  <Badge text="C++20 · Rust · Direct2D" variant="success" />
                   <Badge text={t('about.authorBadge', 'Author · Yy1 (@yuan278501381)')} variant="muted" />
                 </div>
                 <p className="about-hero__subtitle">{t('about.subtitle')}</p>

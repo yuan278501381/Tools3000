@@ -737,6 +737,15 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
     m_adaptiveFrameStep = 1;
     m_overloadScore = 0;
     m_recoveryScore = 0;
+    m_studioRecorder.stop();
+    const bool enableStudio = options.studioMode && options.format != RecordFormat::GIF;
+    m_lastSessionWasStudioMode.store(enableStudio, std::memory_order_release);
+    m_lastSessionBitrateMbps.store(options.bitrateMbps, std::memory_order_release);
+    {
+        std::lock_guard studioLock(m_studioDataMutex);
+        m_lastStudioConfig = options.studioConfig;
+        m_lastStudioTimeline = {};
+    }
 
     // 自动检测屏幕尺寸
     if (options.fps < 1 || options.fps > 120 ||
@@ -859,6 +868,7 @@ void ScreenRecorder::pauseRecording() {
         // samples are cleared. A recorder thread that observes Paused can then
         // never see the old audio state from the transition window.
         m_audioCapture.setPaused(true);
+        m_studioRecorder.setPaused(true);
         {
             std::lock_guard lock(m_statsMutex);
             m_stats.systemAudioPeak = 0.0f;
@@ -875,6 +885,7 @@ void ScreenRecorder::resumeRecording() {
     std::lock_guard controlLock(m_controlMutex);
     if (m_state == RecordState::Paused) {
         m_audioCapture.resetAndResumeForSyncStart();
+        m_studioRecorder.setPaused(false);
         m_state = RecordState::Recording;
         LOG_INFO("屏幕录制已恢复");
         notifyState(RecordState::Recording);
@@ -980,6 +991,16 @@ std::string ScreenRecorder::stopRecording() {
         m_recordThread.join();
     }
 
+    if (m_options.studioMode && m_options.format != RecordFormat::GIF) {
+        const auto curStats = stats();
+        const int64_t durMs = static_cast<int64_t>(std::llround(curStats.durationSec * 1000.0));
+        auto capturedTimeline = m_studioRecorder.takeTimelineData(durMs, m_options.studioConfig.defaultZoomFactor);
+        std::lock_guard studioLock(m_studioDataMutex);
+        m_lastStudioTimeline = std::move(capturedTimeline);
+    } else {
+        m_studioRecorder.stop();
+    }
+
     const bool finalized = finalizeEncoder();
 
     const auto finalStats = stats();
@@ -1081,6 +1102,8 @@ void ScreenRecorder::recordingLoop() {
                 }
                 m_state = RecordState::Recording;
                 notifyState(RecordState::Recording);
+                // 留出 DWM 合成消隐缓冲，使 UI 线程先彻底销毁倒计时面板与快捷键浮层再抓取第 0 帧
+                std::this_thread::sleep_for(std::chrono::milliseconds(65));
             }
         }
         if (m_state != RecordState::Idle && !initializeCaptureResources()) {
@@ -1096,6 +1119,18 @@ void ScreenRecorder::recordingLoop() {
             m_accountedDroppedAudioFrames = 0;
             if (m_state == RecordState::Recording) {
                 m_audioCapture.resetAndResumeForSyncStart();
+            }
+            if (m_options.studioMode && m_options.format != RecordFormat::GIF) {
+                m_studioRecorder.start(
+                    m_options.regionX,
+                    m_options.regionY,
+                    m_options.width,
+                    m_options.height,
+                    m_options.fps,
+                    m_options.studioConfig.autoCaptionsEnabled);
+                if (m_state == RecordState::Paused) {
+                    m_studioRecorder.setPaused(true);
+                }
             }
             nextFrameAt = clock::now();
         }
@@ -1508,42 +1543,147 @@ bool ScreenRecorder::initializeEncoder(const RecordOptions& options) {
 
     // 不同机器上的 FFmpeg 可能提供 libx264、Media Foundation 或显卡编码器。
     // 逐个尝试，并依据编码器实际能力选择像素格式，避免固定 YUV420P 导致 EINVAL。
+    std::vector<const AVCodec*> effectiveCandidates = candidates;
+    const int64_t totalAreaPx = static_cast<int64_t>(options.width) * static_cast<int64_t>(options.height);
+    if (options.format == RecordFormat::MP4_H264 && totalAreaPx > (1920LL * 1200LL)) {
+        // 2K/4K 高分屏下若硬件 H.264 MFT 受 Level 限制，优先尝试同为原生 MP4 硬件秒播的 HEVC MFT，避免落入慢速 CPU 软编
+        if (const AVCodec* hevcMf = avcodec_find_encoder_by_name("hevc_mf")) {
+            auto posIt = std::find_if(effectiveCandidates.begin(), effectiveCandidates.end(), [](const AVCodec* c) {
+                return c && (std::strcmp(c->name, "libx264") == 0 || std::strcmp(c->name, "libopenh264") == 0);
+            });
+            effectiveCandidates.insert(posIt, hevcMf);
+        }
+    }
+
+    // 按 1080p 基准像素比自适应保障高分屏码率下限，杜绝 4K 画面因 6~8Mbps 码率饥渴糊片
+    const double areaScale = std::clamp(static_cast<double>(totalAreaPx) / (1920.0 * 1080.0), 0.5, 6.0);
+    const int64_t minAreaBitrate = static_cast<int64_t>(std::llround(areaScale * 8'500'000.0));
+    const int64_t targetBitrate = (std::max)(
+        static_cast<int64_t>(options.bitrateMbps) * 1'000'000LL,
+        minAreaBitrate);
+
     const AVCodec* codec = nullptr;
     AVCodecContext* codecCtx = nullptr;
-    for (const auto* candidate : candidates) {
-        AVCodecContext* attempt = avcodec_alloc_context3(candidate);
-        if (!attempt) continue;
+    for (const auto* candidate : effectiveCandidates) {
         const bool mediaFoundation = std::strstr(candidate->name, "_mf") != nullptr;
-        attempt->width = options.width;
-        attempt->height = options.height;
-        attempt->time_base = {1, options.fps};
-        attempt->framerate = {options.fps, 1};
-        // MF wrapper/部分 Windows MFT 不接受显式 GOP 长度；FFmpeg 自身也把
-        // MF encoder 的默认 g 设为 0。强行写 60 会让 avcodec_open2 返回 EINVAL。
-        attempt->gop_size = mediaFoundation ? 0 : options.fps * 2;
-        attempt->max_b_frames = 0;
-        attempt->bit_rate = static_cast<int64_t>(options.bitrateMbps) * 1'000'000;
-        attempt->pix_fmt = choosePixelFormat(candidate, options.format);
-        if (fmtCtx->oformat->flags & AVFMT_GLOBALHEADER) {
-            attempt->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        }
+        const int mfPasses = mediaFoundation ? 2 : 1; // pass 0: hw_encoding=1 显卡硬件直通; pass 1: 软件 MFT 兜底
 
-        if (std::strcmp(candidate->name, "libx264") == 0) {
-            av_opt_set(attempt->priv_data, "preset", "veryfast", 0);
-            av_opt_set(attempt->priv_data, "tune", "zerolatency", 0);
-        } else if (std::strcmp(candidate->name, "libx265") == 0) {
-            av_opt_set(attempt->priv_data, "preset", "fast", 0);
-        }
+        for (int mfPass = 0; mfPass < mfPasses; ++mfPass) {
+            AVCodecContext* attempt = avcodec_alloc_context3(candidate);
+            if (!attempt) continue;
+            attempt->width = options.width;
+            attempt->height = options.height;
+            attempt->time_base = {1, options.fps};
+            attempt->framerate = {options.fps, 1};
+            // MF wrapper/部分 Windows MFT 不接受显式 GOP 长度；FFmpeg 自身也把
+            // MF encoder 的默认 g 设为 0。强行写 60 会让 avcodec_open2 返回 EINVAL。
+            attempt->gop_size = mediaFoundation ? 0 : options.fps * 2;
+            attempt->max_b_frames = 0;
+            attempt->bit_rate = targetBitrate;
+            attempt->pix_fmt = choosePixelFormat(candidate, options.format);
+            if (fmtCtx->oformat->flags & AVFMT_GLOBALHEADER) {
+                attempt->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            }
+            if (mediaFoundation) {
+                if (mfPass == 0 && attempt->priv_data) {
+                    av_opt_set_int(attempt->priv_data, "hw_encoding", 1, 0);
+                }
+            } else {
+                attempt->thread_count = 0; // 自动启用全多核并行编码，防止 2K/4K 软编回退单核掉帧
+            }
 
-        ret = avcodec_open2(attempt, candidate, nullptr);
-        if (ret >= 0) {
-            codec = candidate;
-            codecCtx = attempt;
-            break;
+            if (std::strcmp(candidate->name, "libx264") == 0) {
+                const bool ultraHighRes = totalAreaPx >= (2560LL * 1440LL);
+                av_opt_set(attempt->priv_data, "preset", ultraHighRes ? "ultrafast" : "veryfast", 0);
+                av_opt_set(attempt->priv_data, "tune", "zerolatency", 0);
+            } else if (std::strcmp(candidate->name, "libx265") == 0) {
+                av_opt_set(attempt->priv_data, "preset", "ultrafast", 0);
+            } else if (std::strcmp(candidate->name, "libopenh264") == 0 && attempt->priv_data) {
+                // 严禁 libopenh264 跳过首帧参考宏块导致后续 P 帧出现灰底浮雕残差花屏
+                av_opt_set_int(attempt->priv_data, "allow_skip_frames", 0, 0);
+                av_opt_set(attempt->priv_data, "slice_mode", "auto", 0);
+                attempt->rc_max_rate = targetBitrate * 2;
+                attempt->rc_buffer_size = static_cast<int>((std::min<int64_t>)(targetBitrate * 2, 120'000'000LL));
+            }
+
+            ret = avcodec_open2(attempt, candidate, nullptr);
+            if (ret >= 0 && mediaFoundation &&
+                (attempt->flags & AV_CODEC_FLAG_GLOBAL_HEADER) &&
+                attempt->extradata_size <= 0) {
+                // 异步硬件 MFT (Intel QSV / NVIDIA / AMD) 在 avcodec_open2 时尚未生成 MF_MT_MPEG_SEQUENCE_HEADER (SPS/PPS)，
+                // 需通过轻量级探测上下文馈入单帧触发 stream format change 提取 extradata，防止 +empty_moov 写入空 avcC/hvcC 头导致无法解码
+                if (AVCodecContext* probeCtx = avcodec_alloc_context3(candidate)) {
+                    probeCtx->width = attempt->width;
+                    probeCtx->height = attempt->height;
+                    probeCtx->time_base = attempt->time_base;
+                    probeCtx->framerate = attempt->framerate;
+                    probeCtx->gop_size = attempt->gop_size;
+                    probeCtx->max_b_frames = attempt->max_b_frames;
+                    probeCtx->bit_rate = attempt->bit_rate;
+                    probeCtx->pix_fmt = attempt->pix_fmt;
+                    probeCtx->flags = attempt->flags;
+                    if (mfPass == 0 && probeCtx->priv_data) {
+                        av_opt_set_int(probeCtx->priv_data, "hw_encoding", 1, 0);
+                    }
+                    if (avcodec_open2(probeCtx, candidate, nullptr) >= 0) {
+                        AVFrame* pf = av_frame_alloc();
+                        AVPacket* pp = av_packet_alloc();
+                        if (pf && pp) {
+                            pf->format = probeCtx->pix_fmt;
+                            pf->width = probeCtx->width;
+                            pf->height = probeCtx->height;
+                            if (av_frame_get_buffer(pf, 0) >= 0) {
+                                if (pf->data[0]) std::memset(pf->data[0], 16, static_cast<size_t>(pf->linesize[0]) * pf->height);
+                                if (pf->data[1]) std::memset(pf->data[1], 128, static_cast<size_t>(pf->linesize[1]) * (pf->height / 2));
+                                if (pf->data[2]) std::memset(pf->data[2], 128, static_cast<size_t>(pf->linesize[2]) * (pf->height / 2));
+                                for (int k = 0; k < 6 && attempt->extradata_size <= 0; ++k) {
+                                    pf->pts = k;
+                                    pf->pict_type = (k == 0) ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+                                    avcodec_send_frame(probeCtx, pf);
+                                    while (avcodec_receive_packet(probeCtx, pp) >= 0) {
+                                        size_t sdBytes = 0;
+                                        const uint8_t* sd = av_packet_get_side_data(pp, AV_PKT_DATA_NEW_EXTRADATA, &sdBytes);
+                                        if (probeCtx->extradata && probeCtx->extradata_size > 0) {
+                                            const int sz = probeCtx->extradata_size;
+                                            attempt->extradata = static_cast<uint8_t*>(av_mallocz(static_cast<size_t>(sz) + AV_INPUT_BUFFER_PADDING_SIZE));
+                                            if (attempt->extradata) {
+                                                std::memcpy(attempt->extradata, probeCtx->extradata, static_cast<size_t>(sz));
+                                                attempt->extradata_size = sz;
+                                            }
+                                        } else if (sd && sdBytes > 0) {
+                                            attempt->extradata = static_cast<uint8_t*>(av_mallocz(sdBytes + AV_INPUT_BUFFER_PADDING_SIZE));
+                                            if (attempt->extradata) {
+                                                std::memcpy(attempt->extradata, sd, sdBytes);
+                                                attempt->extradata_size = static_cast<int>(sdBytes);
+                                            }
+                                        }
+                                        av_packet_unref(pp);
+                                        if (attempt->extradata_size > 0) break;
+                                    }
+                                }
+                            }
+                        }
+                        if (pp) av_packet_free(&pp);
+                        if (pf) av_frame_free(&pf);
+                    }
+                    avcodec_free_context(&probeCtx);
+                }
+                if (attempt->extradata_size <= 0) {
+                    ret = AVERROR_EXTERNAL;
+                }
+            }
+            if (ret >= 0) {
+                codec = candidate;
+                codecCtx = attempt;
+                break;
+            }
+            if (mfPass == mfPasses - 1) {
+                LOG_WARN("编码器不可用: codec={}, pixelFormat={}, error={} ({})",
+                         candidate->name, static_cast<int>(attempt->pix_fmt), ret, ffmpegError(ret));
+            }
+            avcodec_free_context(&attempt);
         }
-        LOG_WARN("编码器不可用: codec={}, pixelFormat={}, error={} ({})",
-                 candidate->name, static_cast<int>(attempt->pix_fmt), ret, ffmpegError(ret));
-        avcodec_free_context(&attempt);
+        if (codec && codecCtx) break;
     }
     if (!codec || !codecCtx) {
         LOG_ERROR("所有候选编码器均初始化失败: format={}", formatExtension(options.format));
@@ -1981,10 +2121,15 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         std::lock_guard lock(m_statsMutex);
         m_stats.captureBackend = backendInfo.id;
     }
+    const bool cleanPlateStudio = (m_options.studioMode && m_options.format != RecordFormat::GIF);
+    const bool bakeCursorIntoPlate = m_options.includeCursor &&
+        !(cleanPlateStudio && m_options.studioConfig.smoothCursorEnabled);
+    const bool bakeEffectsIntoPlate = m_options.showClickEffects && !cleanPlateStudio;
+    const bool bakeZoomIntoPlate = m_options.showClickZoom && !cleanPlateStudio;
     [[maybe_unused]] auto cursorPatch = m_cursorOverlay.apply(
         captured,
         {m_options.regionX, m_options.regionY, m_options.width, m_options.height},
-        m_options.includeCursor, m_options.showClickEffects, m_options.showClickZoom);
+        bakeCursorIntoPlate, bakeEffectsIntoPlate, bakeZoomIntoPlate);
 
     const bool isPal8Gif = (m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8);
     if (m_options.cornerRadius > 0.5f && !isPal8Gif) {
@@ -2037,6 +2182,7 @@ bool ScreenRecorder::captureAndEncodeFrame() {
     const auto convertedAt = clock::now();
 
     frame->pts = m_frameIndex++;
+    frame->pict_type = (!m_hasEncodedVideoFrame && !isPal8Gif) ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
 
     // 编码
     int ret = avcodec_send_frame(codecCtx, frame);
@@ -2211,6 +2357,16 @@ std::string ScreenRecorder::formatExtension(RecordFormat format) {
         case RecordFormat::GIF:      return "gif";
         default: return "mp4";
     }
+}
+
+StudioRenderConfig ScreenRecorder::lastStudioConfig() const {
+    std::lock_guard lock(m_studioDataMutex);
+    return m_lastStudioConfig;
+}
+
+StudioTimelineData ScreenRecorder::takeLastStudioTimeline() {
+    std::lock_guard lock(m_studioDataMutex);
+    return std::move(m_lastStudioTimeline);
 }
 
 }  // namespace tools3000::capture

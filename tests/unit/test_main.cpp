@@ -56,6 +56,8 @@
 #include "keycast/KeycastOverlay.h"
 #include "ocr/OcrResultStyle.h"
 #include "ocr/OcrEngine.h"
+#include "ocr/DeepOcrEngine.h"
+#include "ocr/OcrTableReconstructor.h"
 #include "common/AtomicFile.h"
 #include "service/PipeClientAuth.h"
 #include "service/content/PdfExtractor.h"
@@ -98,6 +100,10 @@
 #include "core/utils/DpiUtils.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
+#include "core/utils/TextFilePreviewDecoder.h"
+#include "core/utils/OfficeAndPdfPreview.h"
+#include "core/utils/DesignAndCadPreview.h"
+#include <zlib.h>
 #include "core/utils/TextFilePreviewDecoder.h"
 #include "core/logger/Logger.h"
 #include "core/logger/WideUniversalRotatingFileSink.h"
@@ -188,6 +194,8 @@ using namespace tools3000::gesture;
 #include "test_dialog.inc"
 #include "test_remote.inc"
 #include "test_keycast_translator.inc"
+#include "test_industry_preview.inc"
+#include "test_live_ocr.inc"
 
 TEST(UiThreadJoinTest, PumpsCrossThreadSentMessagesDuringShutdown) {
     HWND window = CreateWindowExW(
@@ -215,10 +223,28 @@ TEST(UiThreadJoinTest, PumpsCrossThreadSentMessagesDuringShutdown) {
 // 单元测试主入口 (Google Test 初始化与执行，包含 BeautyShell 与录屏增强测试套件)
 // ─────────────────────────────────────────────────────────────────────────────
 int main(int argc, char** argv) {
+    // 阻断任何测试派生的子进程（如 Shell 缩略图宿主或 Explorer 辅助进程）继承 CTest 匿名管道写端句柄，
+    // 彻底根除 Tools3000Tests.exe 已 0 码退出后 CTest 仍阻塞等待管道 EOF 直至 1500s 超时的经典句柄泄漏陷阱
+    if (HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE); hOut && hOut != INVALID_HANDLE_VALUE) {
+        SetHandleInformation(hOut, HANDLE_FLAG_INHERIT, 0);
+    }
+    if (HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE); hErr && hErr != INVALID_HANDLE_VALUE) {
+        SetHandleInformation(hErr, HANDLE_FLAG_INHERIT, 0);
+    }
+
     // 注入测试模式环境变量，彻底熔断对宿主操作系统计划任务与自启动注册表的物理写入
     SetEnvironmentVariableW(L"TOOLS3000_TEST_MODE", L"1");
     _wputenv(L"TOOLS3000_TEST_MODE=1");
 
     ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    const int ret = RUN_ALL_TESTS();
+    tools3000::capture::StudioPreviewWindow::instance().shutdown();
+    tools3000::capture::RecordingIndicator::instance().shutdown();
+    tools3000::ocr::OcrEngine::instance().shutdown();
+    std::fflush(stdout);
+    std::fflush(stderr);
+    // 规避 Intel Iris Xe 用户态显卡驱动 (igd10um64xe.dll) 在混合 D3D11/Direct2D/DirectML 测试后
+    // 于 ExitProcess -> DLL_PROCESS_DETACH 阶段等待已终止驱动辅助线程导致的永久自旋锁死
+    TerminateProcess(GetCurrentProcess(), static_cast<UINT>(ret));
+    return ret;
 }

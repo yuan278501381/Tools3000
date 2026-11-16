@@ -163,7 +163,63 @@ export function renderMarkdownToHtml(markdown: string, copyLabelOverride?: strin
     },
   );
 
-  let html = escapeHtml(withoutInlineCode)
+  const splitPipeRow = (rowLine: string): string[] => {
+    let trimmed = rowLine.trim();
+    if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+    if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
+    return trimmed.split(/(?<!\\)\|/g).map((cell) => cell.replace(/\\\|/g, '|').trim());
+  };
+
+  const renderInlineFormatting = (cellEscaped: string): string =>
+    cellEscaped
+      .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+  const tableBlocks: string[] = [];
+  const normalizedMd = withoutInlineCode.replace(/\r\n?/g, '\n');
+  const mdLines = normalizedMd.split('\n');
+  const processedLines: string[] = [];
+  for (let i = 0; i < mdLines.length; i += 1) {
+    const headerCand = mdLines[i]?.trim() ?? '';
+    const sepCand = mdLines[i + 1]?.trim() ?? '';
+    const isTableSep =
+      headerCand.includes('|') &&
+      sepCand.includes('|') &&
+      /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(sepCand);
+    if (isTableSep) {
+      const headers = splitPipeRow(headerCand);
+      const bodyRows: string[][] = [];
+      let j = i + 2;
+      while (j < mdLines.length) {
+        const nextLine = mdLines[j]?.trim() ?? '';
+        if (!nextLine || !nextLine.includes('|')) break;
+        bodyRows.push(splitPipeRow(nextLine));
+        j += 1;
+      }
+      const colCount = headers.length;
+      const theadHtml = `<thead><tr>${headers
+        .map((h) => `<th>${renderInlineFormatting(escapeHtml(h))}</th>`)
+        .join('')}</tr></thead>`;
+      const tbodyHtml = `<tbody>${bodyRows
+        .map((r) => {
+          const cells: string[] = [];
+          for (let c = 0; c < colCount; c += 1) {
+            cells.push(`<td>${renderInlineFormatting(escapeHtml(r[c] ?? ''))}</td>`);
+          }
+          return `<tr>${cells.join('')}</tr>`;
+        })
+        .join('')}</tbody>`;
+      const tblIdx = tableBlocks.length;
+      tableBlocks.push(`<table>${theadHtml}${tbodyHtml}</table>`);
+      processedLines.push(`\u0001TOOLS3000_TABLE_${tblIdx}\u0002`);
+      i = j - 1;
+    } else {
+      processedLines.push(mdLines[i] ?? '');
+    }
+  }
+
+  let html = escapeHtml(processedLines.join('\n'))
     // Headings # - ######
     .replace(/^###### (.*$)/gim, '<h6>$1</h6>')
     .replace(/^##### (.*$)/gim, '<h5>$1</h5>')
@@ -186,6 +242,10 @@ export function renderMarkdownToHtml(markdown: string, copyLabelOverride?: strin
     // Paragraph breaks
     .replace(/\n\n/g, '</p><p>')
     .replace(/\n/g, '<br />');
+
+  tableBlocks.forEach((tblHtml, index) => {
+    html = html.replace(`\u0001TOOLS3000_TABLE_${index}\u0002`, () => tblHtml);
+  });
 
   inlineCodeSpans.forEach((spanHtml, index) => {
     html = html.replace(`\u0001TOOLS3000_INLINE_CODE_${index}\u0002`, () => spanHtml);

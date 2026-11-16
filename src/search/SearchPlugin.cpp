@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -47,6 +48,9 @@ static std::atomic<bool> g_serviceConfirmedReady{false};
 // 只有原生 SearchWindow::show() 先发送 windowShown 后，后续请求才允许补拉服务。
 static std::atomic<bool> g_searchWindowExplicitlyShown{false};
 static std::atomic<bool> g_searchPluginShuttingDown{false};
+static std::atomic<bool> g_warmupInFlight{false};
+static std::mutex g_warmupThreadMutex;
+static std::thread g_warmupWorker;
 
 bool isPipePresentOrBusy(const std::string& pipeName, DWORD waitMs) noexcept {
     if (pipeName.empty()) return false;
@@ -728,14 +732,24 @@ std::optional<PooledPipeConnection> openFreshPipeConnection(
             error = ERROR_SERVICE_NOT_ACTIVE;
             return std::nullopt;
         }
-        if (!ensureSearchServiceRunning()) {
-            error = GetLastError();
-            return std::nullopt;
-        }
-        activePipe = resolveActiveSearchPipe(1000);
-        if (activePipe.empty()) {
-            error = ERROR_FILE_NOT_FOUND;
-            return std::nullopt;
+        // 若后台异步 warmup 正在拉起冷启动服务且管道尚未发布，立即返回 TIMEOUT 转为 starting，
+        // 避免首个 search.query 被 launchMutex 阻塞数十秒触发 MessageBridge 30s 超时报错
+        if (g_warmupInFlight.load(std::memory_order_acquire)) {
+            activePipe = resolveActiveSearchPipe(250);
+            if (activePipe.empty()) {
+                error = ERROR_TIMEOUT;
+                return std::nullopt;
+            }
+        } else {
+            if (!ensureSearchServiceRunning()) {
+                error = GetLastError();
+                return std::nullopt;
+            }
+            activePipe = resolveActiveSearchPipe(1000);
+            if (activePipe.empty()) {
+                error = ERROR_FILE_NOT_FOUND;
+                return std::nullopt;
+            }
         }
     }
 
@@ -1235,7 +1249,22 @@ public:
             if (!g_searchWindowExplicitlyShown.load()) {
                 return {{"available", false}, {"error", "search window was not explicitly shown"}};
             }
-            return {{"available", ensureSearchServiceRunning()}};
+            if (!g_searchPipe.empty() && isAnySearchPipeReady(1)) {
+                return {{"available", true}};
+            }
+            if (!g_warmupInFlight.exchange(true, std::memory_order_acq_rel)) {
+                std::lock_guard<std::mutex> lock(g_warmupThreadMutex);
+                if (g_warmupWorker.joinable()) {
+                    g_warmupWorker.join();
+                }
+                g_warmupWorker = std::thread([]() {
+                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                    (void)ensureSearchServiceRunning();
+                    g_warmupInFlight.store(false, std::memory_order_release);
+                });
+            }
+            const bool quickReady = !g_searchPipe.empty() && isAnySearchPipeReady(120);
+            return {{"available", quickReady}, {"warming", !quickReady}};
         });
 
         mb.registerHandler("search.windowShown", [](const nlohmann::json&) -> nlohmann::json {
@@ -1648,6 +1677,13 @@ public:
     void shutdown() override {
         LOG_INFO("SearchPlugin: 关闭");
         g_searchPluginShuttingDown.store(true, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(g_warmupThreadMutex);
+            if (g_warmupWorker.joinable()) {
+                g_warmupWorker.join();
+            }
+            g_warmupInFlight.store(false, std::memory_order_release);
+        }
         closeAllPooledPipes();
         tools3000::core::MessageBridge::instance().unregisterHandlersByPrefix("search.");
         // 索引服务一旦因显式搜索需求启动，即独立常驻。

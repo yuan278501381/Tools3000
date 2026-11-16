@@ -572,6 +572,8 @@ void RecordingIndicator::showCompleted(const std::string& filePath, double durat
 void RecordingIndicator::update(double durationSec, int frameCount) {
     m_duration = durationSec;
     m_frames = frameCount;
+    m_countingDown = (ScreenRecorder::instance().state() == RecordState::Countdown);
+    updateCountdownWindow();
     if (m_hwnd && IsWindowVisible(m_hwnd)) {
         render();
     }
@@ -1439,13 +1441,27 @@ LRESULT CALLBACK RecordingIndicator::countdownWndProc(HWND hwnd, UINT msg, WPARA
         int count = ScreenRecorder::instance().stats().countdownRemaining;
         if (count <= 0) count = 1;
 
+        const HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        const float scale = (std::max)(1.0f, indicatorDpiScale(mon));
+        const auto S = [scale](int v) -> int { return scaledIndicatorMetric(v, scale); };
+
+        const auto& rec = ScreenRecorder::instance();
+        const bool showStudioTip = rec.wasLastSessionStudioMode() && rec.lastStudioConfig().autoZoomEnabled;
+        const bool isZh = isChineseLanguagePreferred();
+
         HDC memDC = CreateCompatibleDC(hdc);
         HBITMAP memBm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
         HBITMAP oldBm = (HBITMAP)SelectObject(memDC, memBm);
 
         const bool darkCountdown = FloatingGlassBar::isEffectiveDarkMode();
         const auto accentRgb = FloatingGlassBar::effectiveAccentRGB();
-        HBRUSH bgBrush = CreateSolidBrush(darkCountdown ? RGB(18, 22, 31) : RGB(252, 253, 255));
+        const COLORREF bgColor = darkCountdown ? RGB(17, 21, 30) : RGB(252, 253, 255);
+        const COLORREF accentCol = RGB(
+            static_cast<int>(std::round(accentRgb.r * 255.0f)),
+            static_cast<int>(std::round(accentRgb.g * 255.0f)),
+            static_cast<int>(std::round(accentRgb.b * 255.0f)));
+
+        HBRUSH bgBrush = CreateSolidBrush(bgColor);
         FillRect(memDC, &rc, bgBrush);
         DeleteObject(bgBrush);
 
@@ -1453,40 +1469,63 @@ LRESULT CALLBACK RecordingIndicator::countdownWndProc(HWND hwnd, UINT msg, WPARA
         SetTextColor(memDC, darkCountdown ? RGB(248, 250, 252) : RGB(15, 23, 42));
 
         HFONT numFont = CreateFontW(
-            -56, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            -S(52), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HFONT oldFont = (HFONT)SelectObject(memDC, numFont);
 
         std::wstring numStr = std::to_wstring(count);
-        RECT numRc = { 0, 16, rc.right, rc.bottom - 36 };
+        RECT numRc = showStudioTip
+            ? RECT{ 0, S(12), rc.right, S(92) }
+            : RECT{ 0, S(14), rc.right, rc.bottom - S(34) };
         DrawTextW(memDC, numStr.c_str(), -1, &numRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         SelectObject(memDC, oldFont);
         DeleteObject(numFont);
 
         HFONT hintFont = CreateFontW(
-            -14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            -S(13), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
         oldFont = (HFONT)SelectObject(memDC, hintFont);
-        SetTextColor(memDC, darkCountdown ? RGB(178, 190, 206) : RGB(71, 85, 105));
+        SetTextColor(memDC, darkCountdown ? RGB(164, 178, 198) : RGB(71, 85, 105));
 
-        std::wstring hintStr = isChineseLanguagePreferred() ? L"Space 跳过" : L"Space to skip";
-        RECT hintRc = { 0, rc.bottom - 34, rc.right, rc.bottom - 8 };
-        DrawTextW(memDC, hintStr.c_str(), -1, &hintRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        std::wstring skipStr = isZh ? L"按 Space 立即开录" : L"Press Space to start now";
+        RECT skipRc = showStudioTip
+            ? RECT{ 0, S(88), rc.right, S(114) }
+            : RECT{ 0, rc.bottom - S(34), rc.right, rc.bottom - S(8) };
+        DrawTextW(memDC, skipStr.c_str(), -1, &skipRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        if (showStudioTip) {
+            // 底部分隔线与演播室自动运镜提示条
+            HPEN divPen = CreatePen(PS_SOLID, (std::max)(1, S(1)),
+                                    darkCountdown ? RGB(42, 51, 68) : RGB(226, 232, 240));
+            HGDIOBJ prevP = SelectObject(memDC, divPen);
+            MoveToEx(memDC, S(20), S(122), nullptr);
+            LineTo(memDC, rc.right - S(20), S(122));
+            SelectObject(memDC, prevP);
+            DeleteObject(divPen);
+
+            SetTextColor(memDC, accentCol);
+            const wchar_t* tipText = isZh
+                ? L"演播室运镜已开启：每次鼠标点击将自动触发平滑放大特写（录后可调）"
+                : L"Studio Auto-Zoom ON: Every mouse click triggers smooth zoom (editable)";
+            RECT tipRc = { S(14), S(126), rc.right - S(14), rc.bottom - S(8) };
+            DrawTextW(memDC, tipText, -1, &tipRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
 
         SelectObject(memDC, oldFont);
         DeleteObject(hintFont);
 
-        HPEN ringPen = CreatePen(
-            PS_SOLID, 3,
-            RGB(static_cast<int>(std::round(accentRgb.r * 255.0f)),
-                static_cast<int>(std::round(accentRgb.g * 255.0f)),
-                static_cast<int>(std::round(accentRgb.b * 255.0f))));
+        HPEN ringPen = CreatePen(PS_SOLID, (std::max)(2, S(2)), accentCol);
         HGDIOBJ oldPen = SelectObject(memDC, ringPen);
         HGDIOBJ oldB = SelectObject(memDC, GetStockObject(NULL_BRUSH));
-        Ellipse(memDC, 3, 3, rc.right - 3, rc.bottom - 3);
+        if (showStudioTip) {
+            const int rad = S(20);
+            RoundRect(memDC, S(2), S(2), rc.right - S(2), rc.bottom - S(2), rad * 2, rad * 2);
+        } else {
+            Ellipse(memDC, S(2), S(2), rc.right - S(2), rc.bottom - S(2));
+        }
         SelectObject(memDC, oldB);
         SelectObject(memDC, oldPen);
         DeleteObject(ringPen);
@@ -1516,7 +1555,11 @@ bool RecordingIndicator::createCountdownWindow(HINSTANCE hInstance) {
         s_countdownClassRegistered = true;
     }
 
-    int sz = scaledIndicatorMetric(130, m_dpiScale);
+    const auto& rec = ScreenRecorder::instance();
+    const bool showStudioTip = rec.wasLastSessionStudioMode() && rec.lastStudioConfig().autoZoomEnabled;
+
+    const int winW = scaledIndicatorMetric(showStudioTip ? 456 : 136, m_dpiScale);
+    const int winH = scaledIndicatorMetric(showStudioTip ? 166 : 136, m_dpiScale);
     int cx = 0, cy = 0;
     if (m_hasRecordingRegion) {
         cx = (m_recordingRegion.left + m_recordingRegion.right) / 2;
@@ -1526,23 +1569,28 @@ bool RecordingIndicator::createCountdownWindow(HINSTANCE hInstance) {
         cy = GetSystemMetrics(SM_CYSCREEN) / 2;
     }
 
-    int x = cx - sz / 2;
-    int y = cy - sz / 2;
+    int x = cx - winW / 2;
+    int y = cy - winH / 2;
 
     m_countdownHwnd = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
         COUNTDOWN_CLASS, L"",
         WS_POPUP,
-        x, y, sz, sz,
+        x, y, winW, winH,
         nullptr, nullptr, hInstance, nullptr
     );
 
     if (!m_countdownHwnd) return false;
 
-    HRGN circleRgn = CreateEllipticRgn(0, 0, sz, sz);
-    SetWindowRgn(m_countdownHwnd, circleRgn, TRUE);
+    if (showStudioTip) {
+        tools3000::core::WinUtils::applyUniversalRoundedCorners(
+            m_countdownHwnd, winW, winH, scaledIndicatorMetric(20, m_dpiScale));
+    } else {
+        HRGN circleRgn = CreateEllipticRgn(0, 0, winW, winH);
+        SetWindowRgn(m_countdownHwnd, circleRgn, TRUE);
+    }
 
-    SetLayeredWindowAttributes(m_countdownHwnd, 0, 235, LWA_ALPHA);
+    SetLayeredWindowAttributes(m_countdownHwnd, 0, 242, LWA_ALPHA);
     tools3000::core::WinUtils::excludeWindowFromCapture(m_countdownHwnd);
 
     ShowWindow(m_countdownHwnd, SW_SHOWNOACTIVATE);

@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -22,6 +23,31 @@ struct DecodedTextPreview {
 class TextFilePreviewDecoder {
 public:
     static constexpr size_t kMaxTextPreviewBytes = 256 * 1024; // 256 KB 极速预览上限
+
+    /// 识别明确的非纯文本二进制魔数（PDF / ZIP-Office / OLE2-Office / 图像 / 压缩包 / SQLite）
+    static bool hasKnownBinarySignature(const uint8_t* ptr, size_t len) noexcept {
+        if (!ptr || len < 4) return false;
+        if (len >= 5 && std::memcmp(ptr, "%PDF-", 5) == 0) return true;
+        if (ptr[0] == 0x50 && ptr[1] == 0x4B &&
+            ((ptr[2] == 0x03 && ptr[3] == 0x04) ||
+             (ptr[2] == 0x05 && ptr[3] == 0x06) ||
+             (ptr[2] == 0x07 && ptr[3] == 0x08))) {
+            return true;
+        }
+        static constexpr uint8_t kOle2Sig[8] = {0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1};
+        if (len >= 8 && std::memcmp(ptr, kOle2Sig, 8) == 0) return true;
+        static constexpr uint8_t kPngSig[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+        if (len >= 8 && std::memcmp(ptr, kPngSig, 8) == 0) return true;
+        if (ptr[0] == 0xFF && ptr[1] == 0xD8 && ptr[2] == 0xFF) return true;
+        if (len >= 6 && (std::memcmp(ptr, "GIF87a", 6) == 0 || std::memcmp(ptr, "GIF89a", 6) == 0)) return true;
+        static constexpr uint8_t kRarSig[6] = {0x52, 0x61, 0x72, 0x21, 0x1A, 0x07};
+        if (len >= 6 && std::memcmp(ptr, kRarSig, 6) == 0) return true;
+        static constexpr uint8_t k7zSig[6] = {0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C};
+        if (len >= 6 && std::memcmp(ptr, k7zSig, 6) == 0) return true;
+        if (ptr[0] == 0x1F && ptr[1] == 0x8B && ptr[2] == 0x08) return true;
+        if (len >= 16 && std::memcmp(ptr, "SQLite format 3", 15) == 0) return true;
+        return false;
+    }
 
     static bool isValidUtf8Buffer(const uint8_t* data, size_t len) noexcept {
         size_t i = 0;
@@ -90,7 +116,57 @@ public:
         return len;
     }
 
-    /// 仅当缓冲区确实包含 UTF-16 特征的 0x00 高位字节（ASCII 字符在 UTF-16 下必然产生 0x00 高字节）且无 0x0000 空字符时，才判定为无 BOM 的 UTF-16
+    /// 校验 GBK 双字节序列合法性并在截断处剥离尾部半个双字节汉字（杜绝随机二进制流误判为 GBK 乱码）
+    static bool validateAndTrimGbkBuffer(const uint8_t* data, size_t len, size_t& outValidLen) noexcept {
+        outValidLen = 0;
+        size_t i = 0;
+        size_t badCtrl = 0;
+        size_t invalidPairs = 0;
+        while (i < len) {
+            const uint8_t c = data[i];
+            if (c == 0x00) return false;
+            if (c <= 0x7F) {
+                if (c < 0x20 && c != 0x09 && c != 0x0A && c != 0x0D && c != 0x0C && c != 0x08 && c != 0x1B) {
+                    ++badCtrl;
+                }
+                ++i;
+                outValidLen = i;
+            } else if (c >= 0x81 && c <= 0xFE) {
+                if (i + 1 >= len) {
+                    // 截断边界刚好切在双字节汉字的前半字节，安全回退到 i
+                    break;
+                }
+                const uint8_t c2 = data[i + 1];
+                if (c2 >= 0x40 && c2 <= 0xFE && c2 != 0x7F) {
+                    i += 2;
+                    outValidLen = i;
+                } else if (c2 >= 0x30 && c2 <= 0x39 && i + 3 < len) {
+                    // GB18030 四字节扩展字符
+                    const uint8_t c3 = data[i + 2];
+                    const uint8_t c4 = data[i + 3];
+                    if (c3 >= 0x81 && c3 <= 0xFE && c4 >= 0x30 && c4 <= 0x39) {
+                        i += 4;
+                        outValidLen = i;
+                    } else {
+                        ++invalidPairs;
+                        ++i;
+                    }
+                } else {
+                    ++invalidPairs;
+                    ++i;
+                }
+            } else {
+                // 0x80 或 0xFF 非标准 GBK 独立字节
+                ++invalidPairs;
+                ++i;
+            }
+        }
+        if (badCtrl * 64 > len) return false;
+        if (invalidPairs * 128 > len) return false;
+        return outValidLen > 0;
+    }
+
+    /// 仅当缓冲区确实包含 UTF-16 特征的 0x00 高位字节且无 0x0000 空字符时，才判定为无 BOM 的 UTF-16
     static bool isBomlessUtf16Text(const uint8_t* data, size_t len, bool bigEndian) noexcept {
         if (len < 4) return false;
         const size_t pairCount = len / 2;
@@ -109,20 +185,7 @@ public:
                 }
             }
         }
-        // 无 BOM 的 UTF-16 文本必须存在显著比例的 ASCII 宽字符 (hi == 0x00)，绝不能把无 0x00 的 UTF-8/GBK 字节流误判为 UTF-16
         return asciiZeroHighCount * 5 >= pairCount && (badCtrl * 32 <= pairCount);
-    }
-
-    static bool isLikelyAnsiOrGbkText(const uint8_t* data, size_t len) noexcept {
-        size_t badCtrl = 0;
-        for (size_t i = 0; i < len; ++i) {
-            const uint8_t c = data[i];
-            if (c == 0x00) return false;
-            if (c < 0x20 && c != 0x09 && c != 0x0A && c != 0x0D && c != 0x0C && c != 0x08 && c != 0x1B) {
-                ++badCtrl;
-            }
-        }
-        return (badCtrl * 64 <= len);
     }
 
     static std::string buildHexDump(const uint8_t* data, size_t len) {
@@ -148,6 +211,12 @@ public:
 
         const uint8_t* ptr = rawData;
         size_t len = rawLen;
+
+        // 0. 已知二进制签名硬拦截（防止 PDF / ZIP / OLE2 等二进制文件被误判为文本产生乱码）
+        if (hasKnownBinarySignature(ptr, len)) {
+            res.hexDump = buildHexDump(rawData, rawLen);
+            return res;
+        }
 
         // 1. 显式 BOM 优先匹配（100% 确定性）
         if (len >= 3 && ptr[0] == 0xEF && ptr[1] == 0xBB && ptr[2] == 0xBF) {
@@ -177,14 +246,14 @@ public:
             res.isReadableText = true;
             res.encoding = "UTF-16 BE";
         }
-        // 2. 标准 UTF-8 / ASCII（必须在任何启发式猜测之前判定！）
+        // 2. 标准 UTF-8 / ASCII
         else if (isValidUtf8Buffer(ptr, len)) {
             len = trimIncompleteUtf8Tail(ptr, len);
             res.utf8Text.assign(reinterpret_cast<const char*>(ptr), len);
             res.isReadableText = true;
             res.encoding = "UTF-8";
         }
-        // 3. 无 BOM 的 UTF-16 LE / BE（仅在含 0x00 高字节的宽字符文本中命中）
+        // 3. 无 BOM 的 UTF-16 LE / BE
         else if (isBomlessUtf16Text(ptr, len, false)) {
             const size_t wlen = len / 2;
             std::wstring wide(reinterpret_cast<const wchar_t*>(ptr), wlen);
@@ -201,16 +270,24 @@ public:
             res.isReadableText = true;
             res.encoding = "UTF-16 BE";
         }
-        // 4. GBK / GB18030 (CP936) 或本地 ANSI 编码（无 0x00 字节但包含非 UTF-8 的双字节汉字）
-        else if (isLikelyAnsiOrGbkText(ptr, len)) {
-            const UINT cp = IsValidCodePage(54936) ? 54936 : (IsValidCodePage(936) ? 936 : CP_ACP);
-            int wideLen = MultiByteToWideChar(cp, 0, reinterpret_cast<const char*>(ptr), static_cast<int>(len), nullptr, 0);
-            if (wideLen > 0) {
-                std::wstring wide(wideLen, L'\0');
-                MultiByteToWideChar(cp, 0, reinterpret_cast<const char*>(ptr), static_cast<int>(len), wide.data(), wideLen);
-                res.utf8Text = WinUtils::wstringToUtf8(wide);
-                res.isReadableText = true;
-                res.encoding = "GBK";
+        // 4. GBK / GB18030 (CP936) 编码校验与尾部双字节对齐解码
+        else {
+            size_t validGbkLen = 0;
+            if (validateAndTrimGbkBuffer(ptr, len, validGbkLen)) {
+                const UINT cp = IsValidCodePage(54936) ? 54936 : (IsValidCodePage(936) ? 936 : CP_ACP);
+                int wideLen = MultiByteToWideChar(
+                    cp, MB_ERR_INVALID_CHARS, reinterpret_cast<const char*>(ptr), static_cast<int>(validGbkLen), nullptr, 0);
+                if (wideLen <= 0) {
+                    wideLen = MultiByteToWideChar(
+                        cp, 0, reinterpret_cast<const char*>(ptr), static_cast<int>(validGbkLen), nullptr, 0);
+                }
+                if (wideLen > 0) {
+                    std::wstring wide(wideLen, L'\0');
+                    MultiByteToWideChar(cp, 0, reinterpret_cast<const char*>(ptr), static_cast<int>(validGbkLen), wide.data(), wideLen);
+                    res.utf8Text = WinUtils::wstringToUtf8(wide);
+                    res.isReadableText = true;
+                    res.encoding = "GBK";
+                }
             }
         }
 

@@ -2246,10 +2246,12 @@ void IPCServerThread() {
         g_MftParsers = initialParsers;
     }
 
-    // 尝试从 Tools3000.db 二进制快照秒级冷启动 (< 30ms)
+    // 尝试从 Tools3000.db 二进制快照加载，临时降级线程调度优先级以保护前台应用 0 卡顿
     std::vector<MftParser*> rawParsers = toRawParserPointers(initialParsers);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 
     bool snapshotLoaded = tools3000::service::db::DatabaseManager::instance().loadSnapshot(rawParsers);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
     std::vector<std::thread> indexThreads;
 
     if (snapshotLoaded) {
@@ -2266,6 +2268,7 @@ void IPCServerThread() {
                 char drive = pShared->getDriveLetter();
                 g_InitialIndexWorkers.fetch_add(1, std::memory_order_relaxed);
                 indexThreads.emplace_back([pShared, drive]() {
+                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
                     try {
                         pShared->EnumerateFiles();
                         if (g_IsRunning.load(std::memory_order_acquire)) pShared->StartListening();
@@ -2291,6 +2294,7 @@ void IPCServerThread() {
             char drive = pShared->getDriveLetter();
             g_InitialIndexWorkers.fetch_add(1, std::memory_order_relaxed);
             indexThreads.emplace_back([pShared, drive]() {
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
                 try {
                     pShared->EnumerateFiles();
                     if (g_IsRunning.load(std::memory_order_acquire)) pShared->StartListening();

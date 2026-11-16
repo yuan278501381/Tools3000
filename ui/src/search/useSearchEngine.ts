@@ -342,10 +342,10 @@ export function useSearchEngine({
               setIsServiceStarting(true);
               setServiceAvailable(true);
             });
-            if (retryCountRef.current < 25) {
+            if (retryCountRef.current < 90) {
               retryCountRef.current += 1;
               keepRetrying = true;
-              const retryDelay = Math.min(250 + retryCountRef.current * 100, 1000);
+              const retryDelay = Math.min(250 + retryCountRef.current * 80, 1000);
               retryTimerRef.current = window.setTimeout(() => void runQuery(), retryDelay);
             } else {
               startTransition(() => {
@@ -439,10 +439,10 @@ export function useSearchEngine({
                 setIsServiceStarting(true);
                 setServiceAvailable(true);
               });
-              if (retryCountRef.current < 25) {
+              if (retryCountRef.current < 90) {
                 retryCountRef.current += 1;
                 keepRetrying = true;
-                const retryDelay = Math.min(250 + retryCountRef.current * 100, 1000);
+                const retryDelay = Math.min(250 + retryCountRef.current * 80, 1000);
                 retryTimerRef.current = window.setTimeout(() => void runQuery(), retryDelay);
               } else {
                 startTransition(() => {
@@ -557,14 +557,25 @@ export function useSearchEngine({
         }
       } catch {
         if (sequence === requestSequenceRef.current) {
-          startTransition(() => {
-            setSnapshot({
-              generationId: sequence,
-              query: trimmedQuery,
-              keywords: parsedKeywords,
-              results: [],
+          if (retryCountRef.current < 90 && lastCompletedAtRef.current === 0) {
+            startTransition(() => {
+              setIsServiceStarting(true);
+              setServiceAvailable(true);
             });
-          });
+            retryCountRef.current += 1;
+            keepRetrying = true;
+            const retryDelay = Math.min(350 + retryCountRef.current * 100, 1000);
+            retryTimerRef.current = window.setTimeout(() => void runQuery(), retryDelay);
+          } else {
+            startTransition(() => {
+              setSnapshot({
+                generationId: sequence,
+                query: trimmedQuery,
+                keywords: parsedKeywords,
+                results: [],
+              });
+            });
+          }
         }
       } finally {
         window.clearTimeout(loadingTimer);

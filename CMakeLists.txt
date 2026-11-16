@@ -125,6 +125,10 @@ find_library(AVUTIL_LIBRARY avutil REQUIRED)
 find_library(SWSCALE_LIBRARY swscale REQUIRED)
 find_library(SWRESAMPLE_LIBRARY swresample REQUIRED)
 
+find_path(WEBP_INCLUDE_DIR webp/mux.h REQUIRED)
+find_library(WEBP_LIBRARY NAMES libwebp webp REQUIRED)
+find_library(WEBPMUX_LIBRARY NAMES libwebpmux webpmux REQUIRED)
+
 set(WEBVIEW2_VERSION "1.0.4022.49" CACHE STRING "Pinned Microsoft.Web.WebView2 SDK version")
 set(WEBVIEW2_DIR "${CMAKE_SOURCE_DIR}/packages/Microsoft.Web.WebView2.${WEBVIEW2_VERSION}")
 if(NOT EXISTS "${WEBVIEW2_DIR}/build/native/include/WebView2.h")
@@ -163,7 +167,7 @@ target_include_directories(Tools3000Core PUBLIC
 )
 target_link_libraries(Tools3000Core PUBLIC
     spdlog::spdlog nlohmann_json::nlohmann_json sol2::sol2 ${LUA_LIBRARIES} fmt::fmt ZLIB::ZLIB
-    user32 shell32 advapi32 dbghelp psapi shlwapi winhttp crypt32 uiautomationcore oleaut32 ole32 dwmapi gdiplus imm32 shcore propsys
+    user32 shell32 advapi32 dbghelp psapi shlwapi winhttp crypt32 uiautomationcore oleaut32 ole32 dwmapi gdiplus imm32 shcore propsys windowsapp
     d2d1 dwrite d3d11 dxgi dcomp
 )
 
@@ -181,6 +185,9 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/MarkupEngine.cpp
     src/capture/CursorOverlay.cpp
     src/capture/ScreenRecorder.cpp
+    src/capture/StudioTimeline.cpp
+    src/capture/StudioVideoCompositor.cpp
+    src/capture/StudioPreviewWindow.cpp
     src/capture/ClipboardUtils.cpp
     src/capture/RecordingIndicator.cpp
     src/capture/RecordingGpuProbe.cpp
@@ -201,6 +208,9 @@ target_include_directories(capture_objects PUBLIC ${CMAKE_SOURCE_DIR}/src)
 if(FFMPEG_INCLUDE_DIR)
     target_include_directories(capture_objects PUBLIC ${FFMPEG_INCLUDE_DIR})
 endif()
+if(WEBP_INCLUDE_DIR)
+    target_include_directories(capture_objects PUBLIC ${WEBP_INCLUDE_DIR})
+endif()
 if(OpenCV_FOUND)
     target_include_directories(capture_objects PUBLIC ${OpenCV_INCLUDE_DIRS})
 endif()
@@ -209,6 +219,7 @@ if(MSVC)
 endif()
 target_link_libraries(capture_objects PUBLIC Tools3000Core ${OpenCV_LIBS}
     ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY}
+    ${WEBP_LIBRARY} ${WEBPMUX_LIBRARY}
     d2d1 dwrite d3d11 dxgi dxguid dwmapi mfplat mfreadwrite mfuuid
     shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 windowscodecs winhttp windowsapp Shcore imm32
 )
@@ -355,13 +366,17 @@ tools3000_add_plugin_manifest(Plugin_Capture)
 target_compile_definitions(Plugin_Capture PRIVATE PLUGIN_EXPORTS)
 target_include_directories(Plugin_Capture PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(Plugin_Capture PRIVATE Tools3000Core
-    opencv_core opencv_imgproc opencv_imgcodecs opencv_photo
+    opencv_core opencv_imgproc opencv_imgcodecs opencv_photo opencv_dnn opencv_objdetect
     ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY}
+    ${WEBP_LIBRARY} ${WEBPMUX_LIBRARY}
     d2d1 dwrite d3d11 dxgi dxguid dwmapi mfplat mfreadwrite mfuuid
     shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 windowscodecs winhttp windowsapp Shcore imm32
 )
 if(FFMPEG_INCLUDE_DIR)
     target_include_directories(Plugin_Capture PRIVATE ${FFMPEG_INCLUDE_DIR})
+endif()
+if(WEBP_INCLUDE_DIR)
+    target_include_directories(Plugin_Capture PRIVATE ${WEBP_INCLUDE_DIR})
 endif()
 if(OpenCV_FOUND)
     target_include_directories(Plugin_Capture PRIVATE ${OpenCV_INCLUDE_DIRS})
@@ -415,6 +430,7 @@ set(HOST_OTHER_SOURCES
     src/ui/TrayWindow.cpp
     src/ui/WebViewEnvironmentManager.cpp
     src/Tools3000.rc
+    src/Tools3000.manifest
 )
 add_executable(Tools3000 WIN32 ${HOST_OTHER_SOURCES} $<TARGET_OBJECTS:ui_objects>)
 set_target_properties(Tools3000 PROPERTIES OUTPUT_NAME "Tools3000")
@@ -515,7 +531,10 @@ if(BUILD_TESTING)
     find_package(GTest CONFIG REQUIRED)
 
     add_executable(Tools3000Tests
-        tests/unit/test_main.cpp src/ocr/OcrEngine.cpp
+        tests/unit/test_main.cpp
+        src/ocr/OcrEngine.cpp
+        src/ocr/DeepOcrEngine.cpp
+        src/ocr/OcrTableReconstructor.cpp
         $<TARGET_OBJECTS:capture_objects>
         $<TARGET_OBJECTS:gesture_objects>
         $<TARGET_OBJECTS:service_objects>
@@ -527,14 +546,14 @@ if(BUILD_TESTING)
         target_precompile_headers(Tools3000Tests PRIVATE "${CORE_PCH_HEADER}")
     endif()
     target_include_directories(Tools3000Tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-    target_include_directories(Tools3000Tests PRIVATE ${FFMPEG_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS})
+    target_include_directories(Tools3000Tests PRIVATE ${FFMPEG_INCLUDE_DIR} ${WEBP_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS})
     target_include_directories(Tools3000Tests PRIVATE "${WEBVIEW2_DIR}/build/native/include")
     if (MSVC)
         target_compile_options(Tools3000Tests PRIVATE /bigobj)
     endif()
     target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm windowsapp ntdll userenv ws2_32 dbghelp
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY}
-        ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY} ${OpenCV_LIBS})
+        ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY} ${WEBP_LIBRARY} ${WEBPMUX_LIBRARY} ${OpenCV_LIBS})
     add_dependencies(Tools3000Tests tools3000_content_rs_target Plugin_Gesture Plugin_Capture Plugin_Keycast Plugin_Search Plugin_DialogEnhancer)
     add_test(NAME Tools3000.Unit COMMAND Tools3000Tests)
 
