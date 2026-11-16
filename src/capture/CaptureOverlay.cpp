@@ -198,6 +198,8 @@ bool CaptureOverlay::createOverlayWindow(HINSTANCE hInstance, const RECT* custom
 void CaptureOverlay::resetTransientOverlayState() {
     m_state.dragging = false;
     m_state.isMarking = false;
+    m_state.isDrawingMultiPointLine = false;
+    m_state.multiPointDocVertices.clear();
     m_state.markupBaseReady = false;
     m_state.markupBaseRect = {0, 0, 0, 0};
     m_state.activeElement = nullptr;

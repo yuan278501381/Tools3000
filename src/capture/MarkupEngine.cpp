@@ -21,6 +21,7 @@
 #endif
 
 #include "capture/MarkupEngine.h"
+#include "capture/MarkupCurveGeometry.h"
 #include "capture/CaptureInteractionPolicy.h"
 #include "capture/CaptureTextEditor.h"
 #include "capture/CornerRadiusHelper.h"
@@ -199,9 +200,9 @@ namespace {
                     float alpha = fg[3] / 255.0f;
                     if (alpha > 0.001f) {
                         cv::Vec3b& bg = rowBg[targetX];
-                        bg[0] = static_cast<uchar>(fg[0] * alpha + bg[0] * (1.0f - alpha));
-                        bg[1] = static_cast<uchar>(fg[1] * alpha + bg[1] * (1.0f - alpha));
-                        bg[2] = static_cast<uchar>(fg[2] * alpha + bg[2] * (1.0f - alpha));
+                        bg[0] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround(fg[0] * alpha + bg[0] * (1.0f - alpha))), 0, 255));
+                        bg[1] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround(fg[1] * alpha + bg[1] * (1.0f - alpha))), 0, 255));
+                        bg[2] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround(fg[2] * alpha + bg[2] * (1.0f - alpha))), 0, 255));
                     }
                 }
             }
@@ -219,9 +220,9 @@ namespace {
                     float alpha = fg[3] / 255.0f;
                     if (alpha > 0.001f) {
                         cv::Vec4b& bg = rowBg[targetX];
-                        bg[0] = static_cast<uchar>(fg[0] * alpha + bg[0] * (1.0f - alpha));
-                        bg[1] = static_cast<uchar>(fg[1] * alpha + bg[1] * (1.0f - alpha));
-                        bg[2] = static_cast<uchar>(fg[2] * alpha + bg[2] * (1.0f - alpha));
+                        bg[0] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround(fg[0] * alpha + bg[0] * (1.0f - alpha))), 0, 255));
+                        bg[1] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround(fg[1] * alpha + bg[1] * (1.0f - alpha))), 0, 255));
+                        bg[2] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround(fg[2] * alpha + bg[2] * (1.0f - alpha))), 0, 255));
                         bg[3] = 255;
                     }
                 }
@@ -375,28 +376,68 @@ namespace {
             }
 
             if (!wtext.empty()) {
-                Gdiplus::GraphicsPath textPath;
+                // 关键铁律：必须显式使用 FillModeWinding（非零环绕规则）！
+                // 思源黑体 (Noto Sans SC / Source Han Sans SC) 等现代可变/OpenType 中文字库采用独立笔画闭合轮廓交叠构字，
+                // 默认的 FillModeAlternate（奇偶规则）会在横竖撇捺所有笔画交叉处产生偶次挖空孔洞，导致底层白色描边穿透形成断裂虚线杂色。
+                Gdiplus::GraphicsPath textPath(Gdiplus::FillModeWinding);
                 textPath.AddString(wtext.c_str(), -1, activeFamily, Gdiplus::FontStyleBold, static_cast<Gdiplus::REAL>(safeFontSize), Gdiplus::PointF(textX, textY), &format);
 
-                // 文字高精度外扩描边轮廓渲染 (先绘制外扩描边轮廓，再绘制内芯文字，确保高反差清晰度)
-                if (textOutline) {
-                    const tools3000::capture::MarkupColor textColor{rVal, gVal, bVal, 255};
-                    const tools3000::capture::MarkupColor resolvedOutline =
-                        tools3000::capture::resolveTextOutlineColor(
-                            textColor, outlineColor, canvas,
-                            cv::Rect(pt.x, pt.y, sz.width, sz.height), withBackdrop);
-                    const BYTE a = resolvedOutline.a > 0 ? resolvedOutline.a : 250;
-                    Gdiplus::Color strokeColor(a, resolvedOutline.r, resolvedOutline.g, resolvedOutline.b);
-                    const float strokeWidth = tools3000::capture::CaptureTextEditor::computeOutlineStrokeWidth(safeFontSize) *
-                                              std::clamp(outlineThicknessScale, 0.25f, 4.0f);
-                    Gdiplus::Pen strokePen(strokeColor, strokeWidth);
-                    strokePen.SetLineJoin(Gdiplus::LineJoinRound);
-                    g.DrawPath(&strokePen, &textPath);
-                }
+                const BYTE elemAlpha = (color[3] > 0) ? static_cast<BYTE>(std::clamp(color[3], 0.0, 255.0)) : 255;
+                auto drawGlyphAndOutline = [&](Gdiplus::Graphics& targetG, BYTE masterAlpha) {
+                    if (textOutline) {
+                        const tools3000::capture::MarkupColor textColor{rVal, gVal, bVal, 255};
+                        const tools3000::capture::MarkupColor resolvedOutline =
+                            tools3000::capture::resolveTextOutlineColor(
+                                textColor, outlineColor, canvas,
+                                cv::Rect(pt.x, pt.y, sz.width, sz.height), withBackdrop);
+                        const BYTE baseOutA = resolvedOutline.a > 0 ? resolvedOutline.a : 250;
+                        const BYTE outA = (masterAlpha == 255)
+                            ? baseOutA
+                            : static_cast<BYTE>(std::lround(static_cast<float>(baseOutA) * (static_cast<float>(masterAlpha) / 255.0f)));
+                        Gdiplus::Color strokeColor(outA, resolvedOutline.r, resolvedOutline.g, resolvedOutline.b);
+                        const float strokeWidth = tools3000::capture::CaptureTextEditor::computeOutlineStrokeWidth(safeFontSize) *
+                                                  std::clamp(outlineThicknessScale, 0.25f, 4.0f);
+                        Gdiplus::Pen strokePen(strokeColor, strokeWidth);
+                        strokePen.SetLineJoin(Gdiplus::LineJoinRound);
+                        targetG.DrawPath(&strokePen, &textPath);
+                    }
 
-                // 正文矢量文字填充
-                Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, rVal, gVal, bVal));
-                g.FillPath(&textBrush, &textPath);
+                    // 正文矢量文字以 255 满不透明度配合 FillModeWinding 严密覆盖一切内部交叠笔画描边
+                    Gdiplus::SolidBrush textBrush(Gdiplus::Color(masterAlpha, rVal, gVal, bVal));
+                    targetG.FillPath(&textBrush, &textPath);
+                };
+
+                if (textOutline && elemAlpha < 255) {
+                    // 半透明带描边文字：先在独立透明层完成 100% 实心遮罩合成（消除内部重叠笔画内描边透出），再按整体透明度缩放叠入
+                    cv::Mat glyphLayer(sz, CV_8UC4, cv::Scalar(0, 0, 0, 0));
+                    {
+                        Gdiplus::Bitmap glyphBmp(sz.width, sz.height, static_cast<INT>(glyphLayer.step), PixelFormat32bppARGB, glyphLayer.data);
+                        Gdiplus::Graphics gg(&glyphBmp);
+                        gg.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+                        gg.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+                        gg.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+                        drawGlyphAndOutline(gg, 255);
+                    }
+                    const float opScale = static_cast<float>(elemAlpha) / 255.0f;
+                    for (int y = 0; y < sz.height; ++y) {
+                        cv::Vec4b* dstRow = textMat.ptr<cv::Vec4b>(y);
+                        const cv::Vec4b* srcRow = glyphLayer.ptr<cv::Vec4b>(y);
+                        for (int x = 0; x < sz.width; ++x) {
+                            const float sa = (srcRow[x][3] / 255.0f) * opScale;
+                            if (sa <= 0.001f) continue;
+                            const float da = dstRow[x][3] / 255.0f;
+                            const float outA = sa + da * (1.0f - sa);
+                            if (outA > 1e-4f) {
+                                dstRow[x][0] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround((srcRow[x][0] * sa + dstRow[x][0] * da * (1.0f - sa)) / outA)), 0, 255));
+                                dstRow[x][1] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround((srcRow[x][1] * sa + dstRow[x][1] * da * (1.0f - sa)) / outA)), 0, 255));
+                                dstRow[x][2] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround((srcRow[x][2] * sa + dstRow[x][2] * da * (1.0f - sa)) / outA)), 0, 255));
+                                dstRow[x][3] = static_cast<uchar>(std::clamp(static_cast<int>(std::lround(outA * 255.0f)), 0, 255));
+                            }
+                        }
+                    }
+                } else {
+                    drawGlyphAndOutline(g, elemAlpha);
+                }
             } else if (isEditing || isSelected) {
                 // 空文本编辑态：绘制提示占位文字（严格遵循字重 >= 500 Bold 与字号 >= 12px 排版红线）
                 const std::wstring placeholder = tools3000::core::isUiLanguageChinese()
@@ -457,7 +498,7 @@ namespace {
             emSize = ((charLen >= 4) ? 12.0f : (charLen == 3 ? 12.5f : (charLen == 2 ? 13.8f : 16.0f))) * scale;
         }
 
-        Gdiplus::GraphicsPath textPath;
+        Gdiplus::GraphicsPath textPath(Gdiplus::FillModeWinding);
         Gdiplus::StringFormat genericFormat(Gdiplus::StringFormat::GenericTypographic());
         textPath.AddString(numWStr.c_str(), -1, activeFamily, Gdiplus::FontStyleBold,
                            emSize, Gdiplus::PointF(0.0f, 0.0f), &genericFormat);
@@ -747,6 +788,7 @@ bool MarkupEngine::elementEquivalent(const MarkupElement& a, const MarkupElement
         std::abs(a.cornerRadius - b.cornerRadius) > 1e-3f ||
         a.arrowStyle != b.arrowStyle ||
         a.smoothCurve != b.smoothCurve ||
+        a.isMultiPoint != b.isMultiPoint ||
         a.hasCustomCaps != b.hasCustomCaps ||
         a.startCap != b.startCap ||
         a.endCap != b.endCap ||
@@ -1128,6 +1170,22 @@ MarkupElement* MarkupEngine::drawLine(cv::Point p1, cv::Point p2, MarkupColor co
     elem->color = color;
     elem->thickness = thickness;
     elem->lineStyle = style;
+    return addElement(std::move(elem));
+}
+
+MarkupElement* MarkupEngine::drawPolyline(const std::vector<cv::Point>& points, MarkupColor color,
+                                          float thickness, LineStyle style, bool smoothCurve) {
+    if (points.size() < 2) return nullptr;
+    auto elem = std::make_unique<MarkupElement>();
+    elem->tool = MarkupTool::Line;
+    elem->isMultiPoint = true;
+    elem->penPoints = points;
+    elem->startPt = points.front();
+    elem->endPt = points.back();
+    elem->color = color;
+    elem->thickness = thickness;
+    elem->lineStyle = style;
+    elem->smoothCurve = smoothCurve;
     return addElement(std::move(elem));
 }
 
@@ -1794,6 +1852,29 @@ cv::Point getArrowOrLineCurveHandle(const MarkupElement& element) {
 }
 
 std::vector<cv::Point> buildLineOrCurvePath(const MarkupElement& element) {
+    if (element.isMultiPoint && element.penPoints.size() >= 2) {
+        if (!element.smoothCurve) {
+            return element.penPoints;
+        }
+        std::vector<tools3000::capture::FloatPoint2D> fpts;
+        fpts.reserve(element.penPoints.size());
+        for (const auto& p : element.penPoints) {
+            fpts.push_back({static_cast<float>(p.x), static_cast<float>(p.y)});
+        }
+        const auto sampled = tools3000::capture::sampleCentripetalCatmullRom(fpts, 3.5f);
+        std::vector<cv::Point> out;
+        out.reserve(sampled.size());
+        for (const auto& fp : sampled) {
+            cv::Point pt(static_cast<int>(std::lround(fp.x)), static_cast<int>(std::lround(fp.y)));
+            if (out.empty() || out.back() != pt) {
+                out.push_back(pt);
+            }
+        }
+        if (out.size() == 1) {
+            out.push_back(element.penPoints.back());
+        }
+        return out;
+    }
     if (element.penPoints.size() == 3 &&
         (element.tool == MarkupTool::Arrow || element.tool == MarkupTool::Line)) {
         if (!element.smoothCurve) {
@@ -1925,6 +2006,56 @@ void renderLineWithEndpointCaps(cv::Mat& canvas, const MarkupElement& element,
     float endTrim = 0.0f;
     drawEndpointCap(canvas, pts.front(), startAngle, startCap, color, thick, maxHeadLen, startTrim);
     drawEndpointCap(canvas, pts.back(), endAngle, endCap, color, thick, maxHeadLen, endTrim);
+
+    if (element.isMultiPoint && element.smoothCurve && element.lineStyle == LineStyle::Solid && element.penPoints.size() >= 2) {
+        std::vector<tools3000::capture::FloatPoint2D> fpts;
+        fpts.reserve(element.penPoints.size());
+        for (const auto& p : element.penPoints) {
+            fpts.push_back({static_cast<float>(p.x), static_cast<float>(p.y)});
+        }
+        const auto sampledF = tools3000::capture::sampleCentripetalCatmullRom(fpts, 2.5f);
+        if (sampledF.size() >= 2) {
+            std::vector<float> cumF(sampledF.size(), 0.0f);
+            for (size_t i = 1; i < sampledF.size(); ++i) {
+                cumF[i] = cumF[i - 1] + std::hypot(sampledF[i].x - sampledF[i - 1].x, sampledF[i].y - sampledF[i - 1].y);
+            }
+            const float totF = cumF.back();
+            if (totF > 1.0f && startTrim + endTrim < totF - 1.0f) {
+                const float tS = std::clamp(startTrim, 0.0f, totF);
+                const float tE = std::clamp(totF - endTrim, tS, totF);
+                auto interpF = [&](float d) -> tools3000::capture::FloatPoint2D {
+                    for (size_t i = 1; i < sampledF.size(); ++i) {
+                        if (cumF[i] >= d || i == sampledF.size() - 1) {
+                            const float sl = cumF[i] - cumF[i - 1];
+                            const float r = (sl > 1e-4f) ? std::clamp((d - cumF[i - 1]) / sl, 0.0f, 1.0f) : 0.0f;
+                            return {sampledF[i - 1].x + (sampledF[i].x - sampledF[i - 1].x) * r,
+                                    sampledF[i - 1].y + (sampledF[i].y - sampledF[i - 1].y) * r};
+                        }
+                    }
+                    return sampledF.back();
+                };
+                constexpr int kShift = 4;
+                constexpr float kScale = static_cast<float>(1 << kShift);
+                auto toSubPt = [&](const tools3000::capture::FloatPoint2D& fp) {
+                    return cv::Point(static_cast<int>(std::lround(fp.x * kScale)),
+                                     static_cast<int>(std::lround(fp.y * kScale)));
+                };
+                std::vector<cv::Point> subPts;
+                subPts.reserve(sampledF.size() + 2);
+                subPts.push_back(toSubPt(interpF(tS)));
+                for (size_t i = 1; i + 1 < sampledF.size(); ++i) {
+                    if (cumF[i] > tS + 0.3f && cumF[i] < tE - 0.3f) {
+                        subPts.push_back(toSubPt(sampledF[i]));
+                    }
+                }
+                subPts.push_back(toSubPt(interpF(tE)));
+                if (subPts.size() >= 2) {
+                    cv::polylines(canvas, std::vector<std::vector<cv::Point>>{subPts}, false, color, thick, cv::LINE_AA, kShift);
+                }
+            }
+            return;
+        }
+    }
 
     auto shaftPts = trimPolylineEnds(pts, startTrim, endTrim);
     if (shaftPts.size() >= 2) {
@@ -2492,7 +2623,7 @@ public:
         int y1 = (std::min)(element.startPt.y, element.endPt.y);
         int x2 = (std::max)(element.startPt.x, element.endPt.x);
         int y2 = (std::max)(element.startPt.y, element.endPt.y);
-        const auto pathPts = (element.smoothCurve || element.penPoints.size() >= 3)
+        const auto pathPts = (element.isMultiPoint || element.smoothCurve || element.penPoints.size() >= 3)
             ? buildLineOrCurvePath(element)
             : element.penPoints;
         for (const auto& pt : pathPts) {
@@ -2513,18 +2644,28 @@ public:
     HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
         if (element.isActive) {
             int hw = 8;
-            cv::Rect h1(element.startPt.x - hw, element.startPt.y - hw, hw * 2, hw * 2);
-            if (h1.contains(pt)) return HitArea::LT;
-            cv::Rect h2(element.endPt.x - hw, element.endPt.y - hw, hw * 2, hw * 2);
-            if (h2.contains(pt)) return HitArea::RB;
-            if (std::hypot(element.endPt.x - element.startPt.x, element.endPt.y - element.startPt.y) >= 28.0) {
-                const cv::Point midH = getArrowOrLineCurveHandle(element);
-                cv::Rect hm(midH.x - hw, midH.y - hw, hw * 2, hw * 2);
-                if (hm.contains(pt)) return HitArea::T;
+            if (element.isMultiPoint && element.penPoints.size() >= 2) {
+                for (size_t i = element.penPoints.size(); i-- > 0;) {
+                    const auto& v = element.penPoints[i];
+                    cv::Rect hv(v.x - hw, v.y - hw, hw * 2, hw * 2);
+                    if (hv.contains(pt)) {
+                        return makeVertexHitArea(i);
+                    }
+                }
+            } else {
+                cv::Rect h1(element.startPt.x - hw, element.startPt.y - hw, hw * 2, hw * 2);
+                if (h1.contains(pt)) return HitArea::LT;
+                cv::Rect h2(element.endPt.x - hw, element.endPt.y - hw, hw * 2, hw * 2);
+                if (h2.contains(pt)) return HitArea::RB;
+                if (std::hypot(element.endPt.x - element.startPt.x, element.endPt.y - element.startPt.y) >= 28.0) {
+                    const cv::Point midH = getArrowOrLineCurveHandle(element);
+                    cv::Rect hm(midH.x - hw, midH.y - hw, hw * 2, hw * 2);
+                    if (hm.contains(pt)) return HitArea::T;
+                }
             }
         }
         double dist = 0.0;
-        if (element.smoothCurve || element.penPoints.size() >= 3) {
+        if (element.isMultiPoint || element.smoothCurve || element.penPoints.size() >= 3) {
             dist = pointToPolylineMinDistance(buildLineOrCurvePath(element), pt);
         } else {
             double dx = element.endPt.x - element.startPt.x;
@@ -2545,6 +2686,16 @@ public:
     }
 
     void resize(MarkupElement& element, int dx, int dy, HitArea handle) const override {
+        if (element.isMultiPoint && isVertexHitArea(handle)) {
+            const size_t idx = vertexIndexFromHitArea(handle);
+            if (idx < element.penPoints.size()) {
+                element.penPoints[idx].x += dx;
+                element.penPoints[idx].y += dy;
+                element.startPt = element.penPoints.front();
+                element.endPt = element.penPoints.back();
+            }
+            return;
+        }
         if (handle == HitArea::T) {
             const cv::Point curMid = getArrowOrLineCurveHandle(element);
             const cv::Point newMid(curMid.x + dx, curMid.y + dy);
@@ -2584,7 +2735,7 @@ public:
     }
 
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
-        if (element.hasCustomCaps || element.smoothCurve || element.penPoints.size() >= 3) {
+        if (element.isMultiPoint || element.hasCustomCaps || element.smoothCurve || element.penPoints.size() >= 3) {
             const LineCapStyle sCap = element.hasCustomCaps ? element.startCap : LineCapStyle::None;
             const LineCapStyle eCap = element.hasCustomCaps ? element.endCap : LineCapStyle::None;
             renderLineWithEndpointCaps(canvas, element, sCap, eCap);
@@ -2597,12 +2748,23 @@ public:
 
     void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const override {
         cv::Scalar activeColor(255, 140, 0); // Azure/Blue
-        if (element.smoothCurve || element.penPoints.size() >= 3) {
+        if (element.isMultiPoint || element.smoothCurve || element.penPoints.size() >= 3) {
             drawPatternedPolyline(canvas, buildLineOrCurvePath(element), false, activeColor, 1, LineStyle::Dashed);
         } else {
             drawPatternedLine(canvas, element.startPt, element.endPt, activeColor, 1, LineStyle::Dashed);
         }
         int r = 5;
+        if (element.isMultiPoint && element.penPoints.size() >= 2) {
+            for (size_t i = 0; i < element.penPoints.size(); ++i) {
+                const auto& pt = element.penPoints[i];
+                cv::circle(canvas, pt, r + 1, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
+                if (i > 0 && i + 1 < element.penPoints.size()) {
+                    cv::circle(canvas, pt, r - 2, cv::Scalar(246, 130, 59), cv::FILLED, cv::LINE_AA);
+                }
+                cv::circle(canvas, pt, r + 1, activeColor, 1, cv::LINE_AA);
+            }
+            return;
+        }
         cv::Point handles[2] = { element.startPt, element.endPt };
         for (const auto& pt : handles) {
             cv::circle(canvas, pt, r + 1, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);

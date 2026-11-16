@@ -1138,6 +1138,21 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
             break;
         }
 
+        // ── 39b. 多点折线连接图标 (三段折线 + 4 枚顶点锚点) ────────────────────────────
+        case CaptureIconId::PropPolyline: {
+            const D2D1_POINT_2F v0 = p(4.2f, 17.6f);
+            const D2D1_POINT_2F v1 = p(9.6f, 8.2f);
+            const D2D1_POINT_2F v2 = p(14.8f, 15.0f);
+            const D2D1_POINT_2F v3 = p(19.8f, 6.2f);
+            drawPolyline({v0, v1, v2, v3}, false, stroke * 0.94f);
+            const float dotR = 1.45f * s;
+            rt->FillEllipse(D2D1::Ellipse(v0, dotR, dotR), brush);
+            rt->FillEllipse(D2D1::Ellipse(v1, dotR, dotR), brush);
+            rt->FillEllipse(D2D1::Ellipse(v2, dotR, dotR), brush);
+            rt->FillEllipse(D2D1::Ellipse(v3, dotR, dotR), brush);
+            break;
+        }
+
         // ── 40. 折线 / 平滑样条曲线切换图标 (S 型贝塞尔曲线 + 端点圆环) ────────────────
         case CaptureIconId::PropSmoothCurve: {
             if (factory) {

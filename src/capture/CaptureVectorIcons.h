@@ -84,6 +84,7 @@ enum class CaptureIconId {
     PropTextOutline,
     PropFontSize,
     PropTextBackground,
+    PropPolyline,
     PropSmoothCurve,
     ActionInvertSelection,
 };

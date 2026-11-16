@@ -83,7 +83,10 @@ inline std::wstring toolbarButtonAccessibleName(const ToolbarButton& button, boo
             if (button.tool != MarkupTool::Text) return zh ? L"调节边框粗细与边框颜色" : L"Adjust Border Width and Color";
             return zh ? L"文字高反差描边" : L"Toggle Text Outline";
         case ToolbarCommand::SelectTextOutlineColor: return zh ? L"文字描边颜色" : L"Select Text Outline Color";
-        case ToolbarCommand::ToggleCurveMode: return zh ? L"切换平滑曲线" : L"Toggle Smooth Curve";
+        case ToolbarCommand::ToggleCurveMode:
+            if (button.intParam == 1) return zh ? L"多点折线连接模式" : L"Multi-point Polyline Mode";
+            if (button.intParam == 2) return zh ? L"美感平滑曲线连接模式" : L"Smooth Curve Mode";
+            return zh ? L"切换平滑曲线" : L"Toggle Smooth Curve";
         case ToolbarCommand::ToggleLineArrow: return zh ? L"折线端点箭头开关" : L"Toggle Line Endpoint Arrow";
         case ToolbarCommand::ToggleStartCapDropdown: return zh ? L"选择起点端点样式" : L"Select Start Cap Style";
         case ToolbarCommand::SelectStartCap: return zh ? L"切换起点端点样式" : L"Switch Start Cap Style";
@@ -175,7 +178,11 @@ inline bool isToolbarButtonSelected(const ToolbarButton& button, const CaptureSt
         }
         return state.currentTextOutline || state.isEditingOutlineColor;
     }
-    if (button.command == ToolbarCommand::ToggleCurveMode) return state.currentSmoothCurve;
+    if (button.command == ToolbarCommand::ToggleCurveMode) {
+        if (button.intParam == 1) return !state.currentSmoothCurve;
+        if (button.intParam == 2) return state.currentSmoothCurve;
+        return state.currentSmoothCurve;
+    }
     if (button.command == ToolbarCommand::ToggleLineArrow) return state.currentLineArrowEnabled;
     if (button.command == ToolbarCommand::SelectStartCap) {
         return button.intParam == static_cast<int>(state.currentStartCap);

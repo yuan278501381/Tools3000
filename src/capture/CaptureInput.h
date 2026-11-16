@@ -48,6 +48,7 @@ private:
     void beginMarkup(POINT point);
     void updateMarkup(POINT point);
     void finishMarkup(POINT point);
+    void finalizeMultiPointLine(bool commit);
     
     void prepareMarkupBase();
     void rebuildMarkupBase();

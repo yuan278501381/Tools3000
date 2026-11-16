@@ -1,4 +1,5 @@
 #include "capture/CaptureRenderer.h"
+#include "capture/MarkupCurveGeometry.h"
 #include "capture/CaptureHudRimStyle.h"
 #include "capture/CaptureHudPalette.h"
 #include "capture/CaptureInteractionPolicy.h"
@@ -1774,7 +1775,13 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                     : (state.currentTextOutline || state.isEditingOutlineColor);
             }
             if (button.command == ToolbarCommand::ToggleCurveMode) {
-                isActiveTool = state.currentSmoothCurve;
+                if (button.intParam == 1) {
+                    isActiveTool = !state.currentSmoothCurve;
+                } else if (button.intParam == 2) {
+                    isActiveTool = state.currentSmoothCurve;
+                } else {
+                    isActiveTool = state.currentSmoothCurve;
+                }
             }
             if (button.command == ToolbarCommand::ToggleLineArrow) {
                 isActiveTool = state.currentLineArrowEnabled;
@@ -3320,8 +3327,11 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
             return;
         }
         case ToolbarCommand::ToggleCurveMode: {
+            const CaptureIconId iconId = (button.intParam == 1)
+                ? CaptureIconId::PropPolyline
+                : CaptureIconId::PropSmoothCurve;
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
-                CaptureIconId::PropSmoothCurve, rect, brush, scale);
+                iconId, rect, brush, scale);
             return;
         }
         case ToolbarCommand::ToggleStartCapDropdown:
@@ -3973,15 +3983,21 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
             x2 = x1 + (x2 >= x1 ? side : -side);
             y2 = y1 + (y2 >= y1 ? side : -side);
         } else if (state.currentTool == MarkupTool::Arrow || state.currentTool == MarkupTool::Line) {
-            double dx = x2 - x1;
-            double dy = y2 - y1;
+            const float refX = (state.isDrawingMultiPointLine && !state.multiPointDocVertices.empty())
+                ? static_cast<float>(state.multiPointDocVertices.back().x)
+                : x1;
+            const float refY = (state.isDrawingMultiPointLine && !state.multiPointDocVertices.empty())
+                ? static_cast<float>(state.multiPointDocVertices.back().y)
+                : y1;
+            double dx = x2 - refX;
+            double dy = y2 - refY;
             double dist = std::hypot(dx, dy);
             if (dist >= 1.0) {
                 double angle = std::atan2(dy, dx);
                 constexpr double step = 3.14159265358979323846 / 4.0;
                 double snappedAngle = std::round(angle / step) * step;
-                x2 = static_cast<float>(x1 + dist * std::cos(snappedAngle));
-                y2 = static_cast<float>(y1 + dist * std::sin(snappedAngle));
+                x2 = static_cast<float>(refX + dist * std::cos(snappedAngle));
+                y2 = static_cast<float>(refY + dist * std::sin(snappedAngle));
             }
         }
     }
@@ -3999,21 +4015,30 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
     ID2D1Brush* toolBrush = activeColorBrush ? activeColorBrush.Get() : m_borderBrush.Get();
 
     ComPtr<ID2D1StrokeStyle> customStrokeStyle;
-    if (m_d2dFactory && state.currentLineStyle != LineStyle::Solid) {
-        D2D1_STROKE_STYLE_PROPERTIES ssp = D2D1::StrokeStyleProperties(
-            D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
-            D2D1_LINE_JOIN_ROUND, 10.0f,
-            D2D1_DASH_STYLE_CUSTOM,
-            0.0f);
-        if (state.currentLineStyle == LineStyle::Dashed) {
-            const float dashes[] = { 2.2f, 2.8f };
-            m_d2dFactory->CreateStrokeStyle(ssp, dashes, 2, customStrokeStyle.GetAddressOf());
-        } else if (state.currentLineStyle == LineStyle::Dotted) {
-            const float dashes[] = { 0.20f, 2.4f };
-            m_d2dFactory->CreateStrokeStyle(ssp, dashes, 2, customStrokeStyle.GetAddressOf());
+    if (m_d2dFactory) {
+        if (state.currentLineStyle != LineStyle::Solid) {
+            D2D1_STROKE_STYLE_PROPERTIES ssp = D2D1::StrokeStyleProperties(
+                D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                D2D1_LINE_JOIN_ROUND, 10.0f,
+                D2D1_DASH_STYLE_CUSTOM,
+                0.0f);
+            if (state.currentLineStyle == LineStyle::Dashed) {
+                const float dashes[] = { 2.2f, 2.8f };
+                m_d2dFactory->CreateStrokeStyle(ssp, dashes, 2, customStrokeStyle.GetAddressOf());
+            } else if (state.currentLineStyle == LineStyle::Dotted) {
+                const float dashes[] = { 0.20f, 2.4f };
+                m_d2dFactory->CreateStrokeStyle(ssp, dashes, 2, customStrokeStyle.GetAddressOf());
+            } else {
+                const float dashes[] = { 2.2f, 2.6f, 0.20f, 2.6f };
+                m_d2dFactory->CreateStrokeStyle(ssp, dashes, 4, customStrokeStyle.GetAddressOf());
+            }
         } else {
-            const float dashes[] = { 2.2f, 2.6f, 0.20f, 2.6f };
-            m_d2dFactory->CreateStrokeStyle(ssp, dashes, 4, customStrokeStyle.GetAddressOf());
+            D2D1_STROKE_STYLE_PROPERTIES solidRoundProps = D2D1::StrokeStyleProperties(
+                D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                D2D1_LINE_JOIN_ROUND, 4.0f,
+                D2D1_DASH_STYLE_SOLID,
+                0.0f);
+            m_d2dFactory->CreateStrokeStyle(solidRoundProps, nullptr, 0, customStrokeStyle.GetAddressOf());
         }
     }
 
@@ -4187,7 +4212,23 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
 
         case MarkupTool::Line:
         case MarkupTool::Arrow: {
-            float dist = std::hypot(x2 - x1, y2 - y1);
+            const bool isMultiLinePreview =
+                (state.currentTool == MarkupTool::Line &&
+                 state.isDrawingMultiPointLine &&
+                 !state.multiPointDocVertices.empty());
+            const float dpiSnapScale = (state.dpiScale > 0.0f) ? state.dpiScale : 1.0f;
+            bool snappedCloseLoop = false;
+            if (isMultiLinePreview && state.multiPointDocVertices.size() >= 3) {
+                const float startX = static_cast<float>(state.multiPointDocVertices.front().x);
+                const float startY = static_cast<float>(state.multiPointDocVertices.front().y);
+                if (std::hypot(x2 - startX, y2 - startY) <= 10.0f * dpiSnapScale) {
+                    x2 = startX;
+                    y2 = startY;
+                    snappedCloseLoop = true;
+                }
+            }
+
+            float dist = isMultiLinePreview ? 10.0f : std::hypot(x2 - x1, y2 - y1);
             if (dist >= 2.0f) {
                 auto evalCatmullRom = [](const std::vector<D2D1_POINT_2F>& ctrl, int steps) -> std::vector<D2D1_POINT_2F> {
                     if (ctrl.size() < 3) return ctrl;
@@ -4221,7 +4262,28 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
                 };
 
                 std::vector<D2D1_POINT_2F> pathPts;
-                if (state.currentSmoothCurve && dist >= 6.0f) {
+                if (isMultiLinePreview) {
+                    std::vector<FloatPoint2D> rawAnchors;
+                    rawAnchors.reserve(state.multiPointDocVertices.size() + 1);
+                    for (const auto& v : state.multiPointDocVertices) {
+                        rawAnchors.push_back({static_cast<float>(v.x), static_cast<float>(v.y)});
+                    }
+                    if (std::hypot(x2 - rawAnchors.back().x, y2 - rawAnchors.back().y) >= 1.0f) {
+                        rawAnchors.push_back({x2, y2});
+                    }
+                    if (state.currentSmoothCurve && rawAnchors.size() >= 2) {
+                        const auto sampled = sampleCentripetalCatmullRom(rawAnchors, 3.5f);
+                        pathPts.reserve(sampled.size());
+                        for (const auto& sp : sampled) {
+                            pathPts.push_back(D2D1::Point2F(sp.x, sp.y));
+                        }
+                    } else {
+                        pathPts.reserve(rawAnchors.size());
+                        for (const auto& sp : rawAnchors) {
+                            pathPts.push_back(D2D1::Point2F(sp.x, sp.y));
+                        }
+                    }
+                } else if (state.currentSmoothCurve && dist >= 6.0f) {
                     const float dx = x2 - x1;
                     const float dy = y2 - y1;
                     if (state.currentTool == MarkupTool::Arrow) {
@@ -4257,6 +4319,23 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
                     pathPts = { D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2) };
                 }
 
+                auto drawMultiPointAnchorDots = [&]() {
+                    if (!isMultiLinePreview) return;
+                    ComPtr<ID2D1SolidColorBrush> dotCoreBrush;
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f), dotCoreBrush.GetAddressOf());
+                    const float dotR = 3.6f * dpiSnapScale;
+                    for (size_t idx = 0; idx < state.multiPointDocVertices.size(); ++idx) {
+                        const D2D1_POINT_2F vp = D2D1::Point2F(
+                            static_cast<float>(state.multiPointDocVertices[idx].x),
+                            static_cast<float>(state.multiPointDocVertices[idx].y));
+                        const float curR = (idx == 0 && snappedCloseLoop) ? (dotR * 1.45f) : dotR;
+                        if (dotCoreBrush) {
+                            m_renderTarget->FillEllipse(D2D1::Ellipse(vp, curR, curR), dotCoreBrush.Get());
+                        }
+                        m_renderTarget->DrawEllipse(D2D1::Ellipse(vp, curR, curR), toolBrush, 1.5f * dpiSnapScale);
+                    }
+                };
+
                 auto drawPolylineD2D = [&](const std::vector<D2D1_POINT_2F>& pts) {
                     if (pts.size() < 2) return;
                     if (pts.size() == 2) {
@@ -4281,7 +4360,14 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
 
                 const bool useCaps = (state.currentTool == MarkupTool::Arrow) || state.currentLineArrowEnabled;
                 if (!useCaps) {
-                    drawPolylineD2D(pathPts);
+                    if (pathPts.size() >= 2) {
+                        drawPolylineD2D(pathPts);
+                    }
+                    drawMultiPointAnchorDots();
+                    break;
+                }
+                if (pathPts.size() < 2) {
+                    drawMultiPointAnchorDots();
                     break;
                 }
 
@@ -4776,6 +4862,7 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
                     shaftPts.push_back(sampleAt(tEnd));
                     drawPolylineD2D(shaftPts);
                 }
+                drawMultiPointAnchorDots();
             }
             break;
         }
