@@ -19,6 +19,7 @@
 #include "capture/RecordingGpuProbe.h"
 #include "capture/StudioTimeline.h"
 
+#include <opencv2/core.hpp>
 #include <windows.h>
 #include <string>
 #include <atomic>
@@ -74,6 +75,9 @@ struct RecordOptions {
     bool experimentalGpuEncoding = false;
     // Screen Studio 级自动运镜演播室双轨录制模式（纯净底片 + 高频光标/点击/焦点/语音时间轴）
     bool studioMode = false;
+    bool voiceEnhance = true;       // 仅针对麦克风输入的人声降噪、均衡与防爆音（电脑系统声音原样保留）
+    bool hideDesktopIcons = false;  // 录制期间自动隐藏桌面图标（停止后自动恢复）
+    bool hideTaskbar = false;       // 录制期间自动隐藏任务栏（停止后自动恢复）
     StudioRenderConfig studioConfig{};
 };
 
@@ -228,11 +232,12 @@ public:
     static void setMaxGifBytesForTesting(std::uint64_t bytes);
     static std::uint64_t maxGifBytesForTesting();
 
-    /// 查询并提取最近一次 Studio 演播室录制会话的时间轴与配置快照
+    /// 查询并提取最近一次 Studio 演播室录制会话的时间轴、配置与内存实时预览牌组快照
     bool wasLastSessionStudioMode() const noexcept { return m_lastSessionWasStudioMode.load(std::memory_order_acquire); }
     int lastSessionBitrateMbps() const noexcept { return m_lastSessionBitrateMbps.load(std::memory_order_acquire); }
     StudioRenderConfig lastStudioConfig() const;
     StudioTimelineData takeLastStudioTimeline();
+    std::vector<cv::Mat> takeLastStudioPreviewDeck();
 
 private:
     struct FrameTimings {
@@ -249,6 +254,9 @@ private:
 
     /// 录制线程主循环
     void recordingLoop();
+
+    /// 初始化音频与 FFmpeg 编码器（倒计时期间可在后台与倒计时圆盘并行预热，消除 UI 阻塞）
+    bool prepareAudioAndEncoderForSession();
 
     /// 初始化 FFmpeg 编码器
     bool initializeEncoder(const RecordOptions& options);
@@ -340,8 +348,18 @@ private:
     mutable std::mutex m_studioDataMutex;
     StudioTimelineData m_lastStudioTimeline;
     StudioRenderConfig m_lastStudioConfig{};
+    std::vector<cv::Mat> m_livePreviewDeck;
+    std::vector<float> m_liveAudioWaveformPeaks;
+    size_t m_audioPeakDownsampleFactor = 1;
+    size_t m_audioPeakSubCounter = 0;
+    float m_audioPeakPendingMax = 0.0f;
+    int64_t m_liveDeckStepFrames = 3;
+    int64_t m_nextLiveDeckFrameIdx = 0;
     std::atomic<bool> m_lastSessionWasStudioMode{false};
     std::atomic<int> m_lastSessionBitrateMbps{8};
+    std::chrono::steady_clock::time_point m_sessionEpoch{};
+    std::chrono::steady_clock::time_point m_pauseStartedAt{};
+    std::atomic<int64_t> m_pausedAccumulatedNs{0};
 };
 
 /// 对捕获的视频帧应用平滑圆角遮罩 (Alpha 镂空或平滑融合遮罩)

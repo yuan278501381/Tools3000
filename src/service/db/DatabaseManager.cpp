@@ -89,7 +89,7 @@ DatabaseManager::~DatabaseManager() {
 }
 
 void DatabaseManager::init(const std::wstring& customDbPath) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_pathMutex);
     if (!customDbPath.empty()) {
         m_dbPath = customDbPath;
     } else if (m_dbPath.empty()) {
@@ -98,18 +98,18 @@ void DatabaseManager::init(const std::wstring& customDbPath) {
 }
 
 std::wstring DatabaseManager::getDbPath() const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_pathMutex);
     return m_dbPath;
 }
 
 DbStats DatabaseManager::getStats() const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    const std::wstring dbPath = getDbPath();
     DbStats stats;
-    stats.dbPath = m_dbPath;
-    if (m_dbPath.empty()) return stats;
+    stats.dbPath = dbPath;
+    if (dbPath.empty()) return stats;
 
     WIN32_FILE_ATTRIBUTE_DATA attr{};
-    if (GetFileAttributesExW(m_dbPath.c_str(), GetFileExInfoStandard, &attr)) {
+    if (GetFileAttributesExW(dbPath.c_str(), GetFileExInfoStandard, &attr)) {
         stats.exists = true;
         stats.fileSize = (static_cast<uint64_t>(attr.nFileSizeHigh) << 32) | attr.nFileSizeLow;
 
@@ -118,9 +118,9 @@ DbStats DatabaseManager::getStats() const {
         uli.HighPart = attr.ftLastWriteTime.dwHighDateTime;
         stats.timestamp = uli.QuadPart;
 
-        // 快速读取头部的 totalRecords
+        // 快速读取头部的 totalRecords（不与 loadSnapshot/saveSnapshot 争抢 m_ioMutex，杜绝阻塞 getDbStats IPC）
         ScopedHandle hFile(CreateFileW(
-            m_dbPath.c_str(),
+            dbPath.c_str(),
             GENERIC_READ,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr,
@@ -144,8 +144,9 @@ DbStats DatabaseManager::getStats() const {
 }
 
 bool DatabaseManager::saveSnapshot(const std::vector<MftParser*>& parsers) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_dbPath.empty() || parsers.empty()) return false;
+    std::lock_guard<std::mutex> ioLock(m_ioMutex);
+    const std::wstring dbPath = getDbPath();
+    if (dbPath.empty() || parsers.empty()) return false;
 
     // `MED-14`: Never persist a partial/in-progress index snapshot before every active
     // volume parser has finished its initial full scan (or loaded a valid snapshot).
@@ -160,20 +161,20 @@ bool DatabaseManager::saveSnapshot(const std::vector<MftParser*>& parsers) {
     if (!hasValidParser) return false;
 
     // Reparse-point defense (`CRIT-05`): verify parent chain and target file are non-reparse.
-    const size_t lastSlash = m_dbPath.find_last_of(L"\\/");
+    const size_t lastSlash = dbPath.find_last_of(L"\\/");
     if (lastSlash != std::wstring::npos) {
-        const std::wstring parentDir = m_dbPath.substr(0, lastSlash);
+        const std::wstring parentDir = dbPath.substr(0, lastSlash);
         if (!parentDir.empty() && !tools3000::common::ensureDirectorySafeNoReparse(parentDir)) {
             return false;
         }
     }
-    if (tools3000::common::pathContainsReparsePoint(m_dbPath)) {
+    if (tools3000::common::pathContainsReparsePoint(dbPath)) {
         return false;
     }
 
     static std::atomic<uint64_t> s_tmpSequence{0};
     const uint64_t seq = s_tmpSequence.fetch_add(1, std::memory_order_relaxed) + 1;
-    const std::wstring tmpPath = m_dbPath + L"." + std::to_wstring(GetCurrentProcessId()) +
+    const std::wstring tmpPath = dbPath + L"." + std::to_wstring(GetCurrentProcessId()) +
                                  L"_" + std::to_wstring(GetTickCount64()) +
                                  L"_" + std::to_wstring(seq) + L".tmp";
     if (tools3000::common::pathContainsReparsePoint(tmpPath)) {
@@ -314,7 +315,7 @@ bool DatabaseManager::saveSnapshot(const std::vector<MftParser*>& parsers) {
     hFile = INVALID_HANDLE_VALUE;
 
     // 原子替换
-    if (!MoveFileExW(tmpPath.c_str(), m_dbPath.c_str(),
+    if (!MoveFileExW(tmpPath.c_str(), dbPath.c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileW(tmpPath.c_str());
         return false;
@@ -323,140 +324,152 @@ bool DatabaseManager::saveSnapshot(const std::vector<MftParser*>& parsers) {
 }
 
 bool DatabaseManager::loadSnapshot(std::vector<MftParser*>& parsers) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_dbPath.empty() || parsers.empty()) return false;
+    const std::wstring dbPath = getDbPath();
+    if (dbPath.empty() || parsers.empty()) return false;
 
-    ScopedHandle hFile(CreateFileW(
-        m_dbPath.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_FLAG_SEQUENTIAL_SCAN,
-        nullptr
-    ));
-
-    if (hFile.handle == INVALID_HANDLE_VALUE) {
-        return false;
-    }
-
-    LARGE_INTEGER fileSize{};
-    if (!GetFileSizeEx(hFile.handle, &fileSize) || fileSize.QuadPart < static_cast<LONGLONG>(sizeof(DbHeader))) {
-        return false;
-    }
-    if (static_cast<uint64_t>(fileSize.QuadPart) > (std::numeric_limits<size_t>::max)()) {
-        return false;
-    }
-
-    ScopedHandle hMapping(CreateFileMappingW(hFile.handle, nullptr, PAGE_READONLY, 0, 0, nullptr));
-    if (!hMapping.handle) {
-        return false;
-    }
-
-    const size_t totalBytes = static_cast<size_t>(fileSize.QuadPart);
-    ScopedMappedView mappedView(MapViewOfFile(hMapping.handle, FILE_MAP_READ, 0, 0, totalBytes));
-    const auto* pData = static_cast<const uint8_t*>(mappedView.ptr);
-    if (!pData) {
-        return false;
-    }
-
-    DbHeader header{};
-    if (!tools3000::service::safeMappedMemcpy(&header, pData, sizeof(header))) {
-        return false;
-    }
-
-    // 校验魔数与版本
-    const bool validV2 = header.magic == 0x3230424459534145ULL && header.version == 2;
-    const bool validV1 = header.magic == 0x3130424459534145ULL && header.version == 1;
-    if (!validV2 && !validV1) {
-        return false;
-    }
-
-    size_t cursor = sizeof(DbHeader);
+    std::vector<std::pair<MftParser*, uint64_t>> pendingCatchUps;
     bool anyVolumeLoaded = false;
 
-    for (uint32_t v = 0; v < header.volumeCount; ++v) {
-        if (cursor > totalBytes || sizeof(DbVolumeHeader) > totalBytes - cursor) break;
-        DbVolumeHeader volume{};
-        if (!tools3000::service::safeMappedMemcpy(&volume, pData + cursor, sizeof(volume))) {
-            break;
+    {
+        std::lock_guard<std::mutex> ioLock(m_ioMutex);
+        ScopedHandle hFile(CreateFileW(
+            dbPath.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_SEQUENTIAL_SCAN,
+            nullptr
+        ));
+
+        if (hFile.handle == INVALID_HANDLE_VALUE) {
+            return false;
         }
-        cursor += sizeof(DbVolumeHeader);
 
-        const size_t stringPoolBytes = volume.stringPoolBytes;
-        if (stringPoolBytes % sizeof(wchar_t) != 0 ||
-            cursor > totalBytes || stringPoolBytes > totalBytes - cursor) {
-            break;
+        LARGE_INTEGER fileSize{};
+        if (!GetFileSizeEx(hFile.handle, &fileSize) || fileSize.QuadPart < static_cast<LONGLONG>(sizeof(DbHeader))) {
+            return false;
         }
-        const size_t afterStrings = cursor + stringPoolBytes;
-        const size_t availableForPods = totalBytes - afterStrings;
-        if (volume.recordCount > availableForPods / sizeof(DbRecordPod)) break;
-        const size_t podsBytes = static_cast<size_t>(volume.recordCount) * sizeof(DbRecordPod);
+        if (static_cast<uint64_t>(fileSize.QuadPart) > (std::numeric_limits<size_t>::max)()) {
+            return false;
+        }
 
-        const uint8_t* pStringBytes = pData + cursor;
-        cursor += stringPoolBytes;
+        ScopedHandle hMapping(CreateFileMappingW(hFile.handle, nullptr, PAGE_READONLY, 0, 0, nullptr));
+        if (!hMapping.handle) {
+            return false;
+        }
 
-        const auto* pPodBytes = pData + cursor;
-        cursor += podsBytes;
+        const size_t totalBytes = static_cast<size_t>(fileSize.QuadPart);
+        ScopedMappedView mappedView(MapViewOfFile(hMapping.handle, FILE_MAP_READ, 0, 0, totalBytes));
+        const auto* pData = static_cast<const uint8_t*>(mappedView.ptr);
+        if (!pData) {
+            return false;
+        }
 
-        const size_t totalWChars = stringPoolBytes / sizeof(wchar_t);
+        DbHeader header{};
+        if (!tools3000::service::safeMappedMemcpy(&header, pData, sizeof(header))) {
+            return false;
+        }
 
-        // 查找对应盘符的 MftParser
-        const wchar_t drive = toUpperDriveW(volume.driveLetter);
-        MftParser* targetParser = nullptr;
-        for (auto* parser : parsers) {
-            if (parser && toUpperDriveChar(parser->getDriveLetter()) == drive) {
-                targetParser = parser;
+        // 校验魔数与版本
+        const bool validV2 = header.magic == 0x3230424459534145ULL && header.version == 2;
+        const bool validV1 = header.magic == 0x3130424459534145ULL && header.version == 1;
+        if (!validV2 && !validV1) {
+            return false;
+        }
+
+        size_t cursor = sizeof(DbHeader);
+        pendingCatchUps.reserve(header.volumeCount);
+
+        for (uint32_t v = 0; v < header.volumeCount; ++v) {
+            if (cursor > totalBytes || sizeof(DbVolumeHeader) > totalBytes - cursor) break;
+            DbVolumeHeader volume{};
+            if (!tools3000::service::safeMappedMemcpy(&volume, pData + cursor, sizeof(volume))) {
                 break;
             }
-        }
+            cursor += sizeof(DbVolumeHeader);
 
-        if (!targetParser) continue;
-
-        // 单趟流式读取并内联边界校验，消除 300 万级记录下的冗余双趟内存扫描，冷启动提速 2x+
-        uint32_t podCursor = 0;
-        bool pageReadFault = false;
-
-        auto produce = [&](FileRecordInit& r) {
-            if (podCursor >= volume.recordCount) return false;
-            DbRecordPod pod{};
-            if (!tools3000::service::safeMappedMemcpy(
-                    &pod,
-                    pPodBytes + static_cast<size_t>(podCursor++) * sizeof(DbRecordPod),
-                    sizeof(pod))) {
-                pageReadFault = true;
-                return false;
+            const size_t stringPoolBytes = volume.stringPoolBytes;
+            if (stringPoolBytes % sizeof(wchar_t) != 0 ||
+                cursor > totalBytes || stringPoolBytes > totalBytes - cursor) {
+                break;
             }
-            if (pod.nameOffset > totalWChars || pod.nameLen > totalWChars - pod.nameOffset) {
-                pageReadFault = true;
-                return false;
-            }
-            r.fileReferenceNumber = pod.frn;
-            r.parentFileReferenceNumber = pod.parentFrn;
-            r.fileAttributes = pod.attributes;
-            r.isDirectory = (pod.isDirectory != 0);
-            r.fileSize = pod.fileSize;
-            r.creationTime = pod.creationTime;
-            r.lastWriteTime = pod.lastWriteTime;
+            const size_t afterStrings = cursor + stringPoolBytes;
+            const size_t availableForPods = totalBytes - afterStrings;
+            if (volume.recordCount > availableForPods / sizeof(DbRecordPod)) break;
+            const size_t podsBytes = static_cast<size_t>(volume.recordCount) * sizeof(DbRecordPod);
 
-            r.fileName.resize(pod.nameLen);
-            if (pod.nameLen > 0) {
+            const uint8_t* pStringBytes = pData + cursor;
+            cursor += stringPoolBytes;
+
+            const auto* pPodBytes = pData + cursor;
+            cursor += podsBytes;
+
+            const size_t totalWChars = stringPoolBytes / sizeof(wchar_t);
+
+            // 查找对应盘符的 MftParser
+            const wchar_t drive = toUpperDriveW(volume.driveLetter);
+            MftParser* targetParser = nullptr;
+            for (auto* parser : parsers) {
+                if (parser && toUpperDriveChar(parser->getDriveLetter()) == drive) {
+                    targetParser = parser;
+                    break;
+                }
+            }
+
+            if (!targetParser) continue;
+
+            // 单趟流式读取并内联边界校验，消除 300 万级记录下的冗余双趟内存扫描，冷启动提速 2x+
+            uint32_t podCursor = 0;
+            bool pageReadFault = false;
+
+            auto produce = [&](FileRecordInit& r) {
+                if (podCursor >= volume.recordCount) return false;
+                DbRecordPod pod{};
                 if (!tools3000::service::safeMappedMemcpy(
-                        r.fileName.data(),
-                        pStringBytes + static_cast<size_t>(pod.nameOffset) * sizeof(wchar_t),
-                        static_cast<size_t>(pod.nameLen) * sizeof(wchar_t))) {
+                        &pod,
+                        pPodBytes + static_cast<size_t>(podCursor++) * sizeof(DbRecordPod),
+                        sizeof(pod))) {
                     pageReadFault = true;
                     return false;
                 }
-            }
-            return true;
-        };
+                if (pod.nameOffset > totalWChars || pod.nameLen > totalWChars - pod.nameOffset) {
+                    pageReadFault = true;
+                    return false;
+                }
+                r.fileReferenceNumber = pod.frn;
+                r.parentFileReferenceNumber = pod.parentFrn;
+                r.fileAttributes = pod.attributes;
+                r.isDirectory = (pod.isDirectory != 0);
+                r.fileSize = pod.fileSize;
+                r.creationTime = pod.creationTime;
+                r.lastWriteTime = pod.lastWriteTime;
 
-        // 导入并触发 USN 增量追赶
-        if (targetParser->importSnapshot(produce, volume.recordCount, volume.lastUsn, volume.volumeSerial) &&
-            !pageReadFault) {
-            targetParser->catchUpUsnJournal(volume.lastUsn);
-            anyVolumeLoaded = true;
+                r.fileName.resize(pod.nameLen);
+                if (pod.nameLen > 0) {
+                    if (!tools3000::service::safeMappedMemcpy(
+                            r.fileName.data(),
+                            pStringBytes + static_cast<size_t>(pod.nameOffset) * sizeof(wchar_t),
+                            static_cast<size_t>(pod.nameLen) * sizeof(wchar_t))) {
+                        pageReadFault = true;
+                        return false;
+                    }
+                }
+                return true;
+            };
+
+            if (targetParser->importSnapshot(produce, volume.recordCount, volume.lastUsn, volume.volumeSerial) &&
+                !pageReadFault) {
+                pendingCatchUps.emplace_back(targetParser, volume.lastUsn);
+                anyVolumeLoaded = true;
+            }
+        }
+    }
+
+    // 在释放文件映射句柄与 m_ioMutex 之后再执行各卷 USN 增量追赶，避免锁持有跨卷 I/O
+    for (const auto& [parser, lastUsn] : pendingCatchUps) {
+        if (parser) {
+            parser->catchUpUsnJournal(lastUsn);
         }
     }
 

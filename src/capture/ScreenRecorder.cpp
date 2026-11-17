@@ -7,6 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/ScreenRecorder.h"
+#include "capture/RecordingEnvironmentGuard.h"
 #include "capture/ScreenCapture.h"
 #include "capture/ClipboardUtils.h"
 #include "common/AtomicFile.h"
@@ -21,6 +22,7 @@
 #include <chrono>
 #include <array>
 #include <cstring>
+#include <future>
 #include <iomanip>
 #include <sstream>
 #include <filesystem>
@@ -745,6 +747,9 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
         std::lock_guard studioLock(m_studioDataMutex);
         m_lastStudioConfig = options.studioConfig;
         m_lastStudioTimeline = {};
+        m_livePreviewDeck.clear();
+        m_liveDeckStepFrames = 1; // 初始 1:1 逐帧留存，保障时间轴鼠标滑轨 30~60fps 零跳帧丝滑跟随
+        m_nextLiveDeckFrameIdx = 0;
     }
 
     // 自动检测屏幕尺寸
@@ -801,11 +806,68 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
         return false;
     }
 
+    // 按需临时隐藏桌面图标与系统任务栏（录制停止或异常退出时自动幂等恢复）
+    if (m_options.hideDesktopIcons || m_options.hideTaskbar) {
+        RecordingEnvironmentGuard::instance().applyForSession(
+            m_options.hideDesktopIcons, m_options.hideTaskbar);
+    }
+
+    if (encoderCandidates(m_options.format).empty()) {
+        LOG_ERROR("未找到编码器: format={}", formatExtension(m_options.format));
+        RecordingEnvironmentGuard::instance().restoreAll();
+        commitOutputFile(false);
+        return false;
+    }
+
+    m_liveAudioWaveformPeaks.clear();
+    m_liveAudioWaveformPeaks.reserve(4096);
+    m_audioPeakDownsampleFactor = 1;
+    m_audioPeakSubCounter = 0;
+    m_audioPeakPendingMax = 0.0f;
+    m_pausedAccumulatedNs.store(0, std::memory_order_release);
+
+    const bool countingDown = m_options.countdownSeconds > 0;
+    if (!countingDown) {
+        if (!prepareAudioAndEncoderForSession()) {
+            RecordingEnvironmentGuard::instance().restoreAll();
+            m_audioCapture.stop();
+            cleanupEncoder();
+            commitOutputFile(false);
+            return false;
+        }
+    }
+
+    m_finalizePending = true;
+    m_skipCountdown.store(false);
+    {
+        std::lock_guard lock(m_statsMutex);
+        m_stats.countdownRemaining = countingDown ? m_options.countdownSeconds : 0;
+    }
+    m_state = countingDown ? RecordState::Countdown : RecordState::Recording;
+
+    // 启动录制线程（若开启了 3,2,1 倒计时，音频与硬件编码器在后台线程与倒计时圆盘并行初始化，主线程 0ms 阻塞秒弹倒计时！）
+    m_recordThread = std::thread([this, countingDown]() {
+        (void)countingDown;
+        recordingLoop();
+    });
+
+    LOG_INFO("屏幕录制已准备: {}x{} @ {}fps, countdown={}s, format={}, output={}",
+             m_options.width, m_options.height, m_options.fps,
+             m_options.countdownSeconds,
+             formatExtension(m_options.format), m_outputPath);
+
+    notifyState(m_state.load());
+
+    return true;
+}
+
+bool ScreenRecorder::prepareAudioAndEncoderForSession() {
     // 音频设备失败只关闭对应音轨，视频录制仍然可以开始。
     const bool wantsAudio = m_options.captureSystemAudio || m_options.captureMicrophone;
     if (wantsAudio && m_options.format != RecordFormat::GIF) {
         const AudioCaptureOptions audioOptions{
             m_options.captureSystemAudio, m_options.captureMicrophone,
+            m_options.voiceEnhance,
             m_options.systemAudioDeviceId, m_options.microphoneDeviceId,
             std::clamp(m_options.systemAudioVolume, 0.0f, 2.0f),
             std::clamp(m_options.microphoneVolume, 0.0f, 2.0f)
@@ -828,36 +890,10 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
         m_options.captureMicrophone = false;
     }
 
-    // 初始化编码器
     if (!initializeEncoder(m_options)) {
         LOG_ERROR("FFmpeg 编码器初始化失败");
-        m_audioCapture.stop();
-        cleanupEncoder();
-        commitOutputFile(false);
         return false;
     }
-    m_finalizePending = true;
-    m_skipCountdown.store(false);
-
-    const bool countingDown = m_options.countdownSeconds > 0;
-    {
-        std::lock_guard lock(m_statsMutex);
-        m_stats.countdownRemaining = countingDown ? m_options.countdownSeconds : 0;
-    }
-    m_state = countingDown ? RecordState::Countdown : RecordState::Recording;
-
-    // 启动录制线程
-    m_recordThread = std::thread([this]() {
-        recordingLoop();
-    });
-
-    LOG_INFO("屏幕录制已准备: {}x{} @ {}fps, countdown={}s, format={}, output={}",
-             m_options.width, m_options.height, m_options.fps,
-             m_options.countdownSeconds,
-             formatExtension(m_options.format), m_outputPath);
-
-    notifyState(m_state.load());
-
     return true;
 }
 
@@ -869,6 +905,7 @@ void ScreenRecorder::pauseRecording() {
         // never see the old audio state from the transition window.
         m_audioCapture.setPaused(true);
         m_studioRecorder.setPaused(true);
+        m_pauseStartedAt = std::chrono::steady_clock::now();
         {
             std::lock_guard lock(m_statsMutex);
             m_stats.systemAudioPeak = 0.0f;
@@ -884,6 +921,11 @@ void ScreenRecorder::pauseRecording() {
 void ScreenRecorder::resumeRecording() {
     std::lock_guard controlLock(m_controlMutex);
     if (m_state == RecordState::Paused) {
+        const auto pausedDelta = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - m_pauseStartedAt).count();
+        if (pausedDelta > 0) {
+            m_pausedAccumulatedNs.fetch_add(pausedDelta, std::memory_order_acq_rel);
+        }
         m_audioCapture.resetAndResumeForSyncStart();
         m_studioRecorder.setPaused(false);
         m_state = RecordState::Recording;
@@ -994,12 +1036,24 @@ std::string ScreenRecorder::stopRecording() {
     if (m_options.studioMode && m_options.format != RecordFormat::GIF) {
         const auto curStats = stats();
         const int64_t durMs = static_cast<int64_t>(std::llround(curStats.durationSec * 1000.0));
-        auto capturedTimeline = m_studioRecorder.takeTimelineData(durMs, m_options.studioConfig.defaultZoomFactor);
+        auto capturedTimeline = m_studioRecorder.takeTimelineData(
+            durMs,
+            m_options.studioConfig.defaultZoomFactor,
+            m_options.studioConfig.typingAutoZoom);
+        if (m_audioPeakSubCounter > 0) {
+            m_liveAudioWaveformPeaks.push_back(m_audioPeakPendingMax);
+            m_audioPeakSubCounter = 0;
+            m_audioPeakPendingMax = 0.0f;
+        }
+        capturedTimeline.audioWaveformPeaks = std::move(m_liveAudioWaveformPeaks);
         std::lock_guard studioLock(m_studioDataMutex);
         m_lastStudioTimeline = std::move(capturedTimeline);
     } else {
         m_studioRecorder.stop();
+        m_liveAudioWaveformPeaks.clear();
     }
+
+    RecordingEnvironmentGuard::instance().restoreAll();
 
     const bool finalized = finalizeEncoder();
 
@@ -1079,13 +1133,20 @@ void ScreenRecorder::recordingLoop() {
     // 线程函数会直接 std::terminate 整个进程。这里全程兜底, 异常时干净停止录制。
     try {
         if (m_state == RecordState::Countdown) {
-            const auto deadline = clock::now() + std::chrono::seconds(m_options.countdownSeconds);
+            // 倒计时圆盘已在主线程 0ms 立即弹出，利用倒计时窗口并行初始化音频与硬件编码器
+            std::future<bool> asyncInit = std::async(std::launch::async, [this]() {
+                return prepareAudioAndEncoderForSession();
+            });
+
+            const auto countdownStart = clock::now();
+            const auto deadline = countdownStart + std::chrono::seconds(m_options.countdownSeconds);
             while (m_state == RecordState::Countdown) {
-                if (m_skipCountdown.load() || (GetAsyncKeyState(VK_SPACE) & 0x8000)) {
+                const auto now = clock::now();
+                const bool graceElapsed = (now - countdownStart) >= std::chrono::milliseconds(180);
+                if (m_skipCountdown.load() || (graceElapsed && (GetAsyncKeyState(VK_SPACE) & 0x8000))) {
                     m_skipCountdown.store(true);
                     break;
                 }
-                const auto now = clock::now();
                 if (now >= deadline) break;
                 const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                     deadline - now).count();
@@ -1095,7 +1156,17 @@ void ScreenRecorder::recordingLoop() {
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
-            if (m_state == RecordState::Countdown) {
+
+            const bool encoderOk = asyncInit.get();
+            if (!encoderOk) {
+                {
+                    std::lock_guard lock(m_statsMutex);
+                    m_stats.countdownRemaining = 0;
+                    m_stats.stopReason = "encoder_initialization_failed";
+                }
+                m_state = RecordState::Idle;
+                notifyState(RecordState::Idle);
+            } else if (m_state == RecordState::Countdown) {
                 {
                     std::lock_guard lock(m_statsMutex);
                     m_stats.countdownRemaining = 0;
@@ -1115,8 +1186,18 @@ void ScreenRecorder::recordingLoop() {
             m_state = RecordState::Idle;
         }
         if (m_state != RecordState::Idle) {
+            // 首帧正式计时前执行一次 DXGI/GDI 预热采样并释放，消除首次桌面复制建表 ~40ms 偏移
+            if (m_captureBackend) {
+                CaptureFrameView warmFrame{};
+                std::string warmError;
+                if (m_captureBackend->capture(warmFrame, warmError)) {
+                    m_captureBackend->releaseFrame();
+                }
+            }
             m_audioFrameIndex = 0;
             m_accountedDroppedAudioFrames = 0;
+            m_sessionEpoch = clock::now();
+            m_pausedAccumulatedNs.store(0, std::memory_order_release);
             if (m_state == RecordState::Recording) {
                 m_audioCapture.resetAndResumeForSyncStart();
             }
@@ -1127,12 +1208,13 @@ void ScreenRecorder::recordingLoop() {
                     m_options.width,
                     m_options.height,
                     m_options.fps,
-                    m_options.studioConfig.autoCaptionsEnabled);
+                    m_options.studioConfig.autoCaptionsEnabled && m_options.captureMicrophone,
+                    m_sessionEpoch);
                 if (m_state == RecordState::Paused) {
                     m_studioRecorder.setPaused(true);
                 }
             }
-            nextFrameAt = clock::now();
+            nextFrameAt = m_sessionEpoch;
         }
         while (m_state != RecordState::Idle) {
             if (m_state == RecordState::Paused) {
@@ -1604,6 +1686,8 @@ bool ScreenRecorder::initializeEncoder(const RecordOptions& options) {
                 av_opt_set(attempt->priv_data, "slice_mode", "auto", 0);
                 attempt->rc_max_rate = targetBitrate * 2;
                 attempt->rc_buffer_size = static_cast<int>((std::min<int64_t>)(targetBitrate * 2, 120'000'000LL));
+            } else if (options.format == RecordFormat::GIF && attempt->priv_data) {
+                av_opt_set(attempt->priv_data, "gifflags", "+transdiff", 0);
             }
 
             ret = avcodec_open2(attempt, candidate, nullptr);
@@ -1864,14 +1948,45 @@ bool ScreenRecorder::encodeAvailableAudio() {
     auto* resampler = static_cast<SwrContext*>(m_audioSwrCtx);
     if (!codecCtx || !frame || !resampler) return true;
 
+    auto pushLiveAudioPeakSample = [this](float peak) {
+        m_audioPeakPendingMax = (std::max)(m_audioPeakPendingMax, std::clamp(peak, 0.0f, 1.0f));
+        if (++m_audioPeakSubCounter >= m_audioPeakDownsampleFactor) {
+            if (m_liveAudioWaveformPeaks.size() >= 16384) {
+                const size_t half = m_liveAudioWaveformPeaks.size() / 2;
+                for (size_t i = 0; i < half; ++i) {
+                    m_liveAudioWaveformPeaks[i] = (std::max)(
+                        m_liveAudioWaveformPeaks[i * 2], m_liveAudioWaveformPeaks[i * 2 + 1]);
+                }
+                m_liveAudioWaveformPeaks.resize(half);
+                m_audioPeakDownsampleFactor *= 2;
+            }
+            m_liveAudioWaveformPeaks.push_back(m_audioPeakPendingMax);
+            m_audioPeakSubCounter = 0;
+            m_audioPeakPendingMax = 0.0f;
+        }
+    };
+
     const auto preStatus = m_audioCapture.status();
     if (preStatus.droppedFrames > m_accountedDroppedAudioFrames) {
         const std::uint64_t deltaDropped = preStatus.droppedFrames - m_accountedDroppedAudioFrames;
         m_audioFrameIndex += static_cast<int64_t>(deltaDropped);
         m_accountedDroppedAudioFrames = preStatus.droppedFrames;
+        if (frame->nb_samples > 0) {
+            const std::uint64_t silentBlocks = (std::min<std::uint64_t>)(
+                256, deltaDropped / static_cast<std::uint64_t>(frame->nb_samples));
+            for (std::uint64_t b = 0; b < silentBlocks; ++b) {
+                pushLiveAudioPeakSample(0.0f);
+            }
+        }
     }
 
     while (m_audioCapture.readFrames(frame->nb_samples, m_audioInput)) {
+        float blockPeak = 0.0f;
+        for (float sample : m_audioInput) {
+            blockPeak = (std::max)(blockPeak, std::abs(sample));
+        }
+        pushLiveAudioPeakSample(blockPeak);
+
         if (av_frame_make_writable(frame) < 0) {
             m_audioEncodingFailed = true;
             return false;
@@ -2068,8 +2183,9 @@ bool ScreenRecorder::captureAndEncodeFrame() {
                     if (!m_gifOptimizer) {
                         m_gifOptimizer = std::make_unique<GifPaletteOptimizer>();
                     }
-                    m_gifOptimizer->reserveTransparent = true;
-                    m_gifOptimizer->enableFrameDiff = true;
+                    const bool needCornerTransparency = (m_options.cornerRadius > 0.5f);
+                    m_gifOptimizer->reserveTransparent = needCornerTransparency;
+                    m_gifOptimizer->enableFrameDiff = false;
                     m_gifOptimizer->cornerRadius = m_options.cornerRadius;
                     if (av_frame_make_writable(frame) < 0) return false;
                     m_gifOptimizer->quantizeFrame(
@@ -2157,8 +2273,11 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         if (!m_gifOptimizer) {
             m_gifOptimizer = std::make_unique<GifPaletteOptimizer>();
         }
-        m_gifOptimizer->reserveTransparent = true;
-        m_gifOptimizer->enableFrameDiff = true;
+        // 常规不透明矩形画面严禁手工将静止像素置为未声明 GCE 透明索引的 palette[255]，
+        // 统一交由 FFmpeg 原生 gifflags=+transdiff 合规执行帧间透明裁剪，杜绝微信表情渲染变白底花屏
+        const bool needCornerTransparency = (m_options.cornerRadius > 0.5f);
+        m_gifOptimizer->reserveTransparent = needCornerTransparency;
+        m_gifOptimizer->enableFrameDiff = false;
         m_gifOptimizer->cornerRadius = m_options.cornerRadius;
         if (av_frame_make_writable(frame) < 0) return false;
         int bpp = captured.format == CapturePixelFormat::Bgra32 ? 4 : 3;
@@ -2181,7 +2300,58 @@ bool ScreenRecorder::captureAndEncodeFrame() {
     }
     const auto convertedAt = clock::now();
 
-    frame->pts = m_frameIndex++;
+    // 演播室模式下在内存实时留存最多 540 帧 768px 高帧率预览牌组，使停止后 0ms 秒开且轨道滑动逐帧丝滑跟随
+    if (cleanPlateStudio && m_frameIndex >= m_nextLiveDeckFrameIdx && captured.data &&
+        m_options.width > 0 && m_options.height > 0) {
+        const int srcType = (captured.format == CapturePixelFormat::Bgra32) ? CV_8UC4 : CV_8UC3;
+        cv::Mat rawWrap(m_options.height, m_options.width, srcType,
+                        const_cast<uint8_t*>(captured.data), static_cast<size_t>(captured.stride));
+        const int longSide = (std::max)(m_options.width, m_options.height);
+        const double scale = (longSide > 768) ? (768.0 / static_cast<double>(longSide)) : 1.0;
+        const int dstW = (std::max)(2, static_cast<int>(std::round(m_options.width * scale)) & ~1);
+        const int dstH = (std::max)(2, static_cast<int>(std::round(m_options.height * scale)) & ~1);
+        cv::Mat scaled, previewBgr;
+        if (dstW != m_options.width || dstH != m_options.height) {
+            cv::resize(rawWrap, scaled, cv::Size(dstW, dstH), 0.0, 0.0, cv::INTER_LINEAR);
+        } else {
+            scaled = rawWrap;
+        }
+        if (scaled.channels() == 4) {
+            cv::cvtColor(scaled, previewBgr, cv::COLOR_BGRA2BGR);
+        } else {
+            previewBgr = scaled.clone();
+        }
+        if (!previewBgr.empty()) {
+            std::lock_guard studioLock(m_studioDataMutex);
+            while (m_nextLiveDeckFrameIdx <= m_frameIndex) {
+                if (m_livePreviewDeck.size() >= 540) {
+                    size_t dstIdx = 0;
+                    for (size_t srcIdx = 0; srcIdx < m_livePreviewDeck.size(); srcIdx += 2) {
+                        m_livePreviewDeck[dstIdx++] = std::move(m_livePreviewDeck[srcIdx]);
+                    }
+                    m_livePreviewDeck.resize(dstIdx);
+                    m_liveDeckStepFrames *= 2;
+                }
+                if (m_nextLiveDeckFrameIdx + m_liveDeckStepFrames <= m_frameIndex && !m_livePreviewDeck.empty()) {
+                    m_livePreviewDeck.push_back(m_livePreviewDeck.back());
+                } else {
+                    m_livePreviewDeck.push_back(previewBgr);
+                }
+                m_nextLiveDeckFrameIdx += m_liveDeckStepFrames;
+            }
+        }
+    }
+
+    if (cleanPlateStudio && m_sessionEpoch != clock::time_point{}) {
+        const auto activeElapsed = capturedAt - m_sessionEpoch -
+            std::chrono::nanoseconds(m_pausedAccumulatedNs.load(std::memory_order_acquire));
+        const double activeSec = (std::max)(0.0, std::chrono::duration<double>(activeElapsed).count());
+        const int64_t wallPts = static_cast<int64_t>(std::llround(activeSec * static_cast<double>(m_options.fps)));
+        frame->pts = (std::max)(m_frameIndex, wallPts);
+        m_frameIndex = frame->pts + 1;
+    } else {
+        frame->pts = m_frameIndex++;
+    }
     frame->pict_type = (!m_hasEncodedVideoFrame && !isPal8Gif) ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
 
     // 编码
@@ -2367,6 +2537,11 @@ StudioRenderConfig ScreenRecorder::lastStudioConfig() const {
 StudioTimelineData ScreenRecorder::takeLastStudioTimeline() {
     std::lock_guard lock(m_studioDataMutex);
     return std::move(m_lastStudioTimeline);
+}
+
+std::vector<cv::Mat> ScreenRecorder::takeLastStudioPreviewDeck() {
+    std::lock_guard lock(m_studioDataMutex);
+    return std::move(m_livePreviewDeck);
 }
 
 }  // namespace tools3000::capture

@@ -3986,3 +3986,105 @@ TEST(SearchPluginInteractionAndSettingsSyncTest, ReturnsFileNotFoundCodeAndPersi
     EXPECT_EQ(loaded["uiPreferences"].value("customContentFormats", nlohmann::json::array()), expectedCustom);
     EXPECT_EQ(loaded["uiPreferences"].value("disabledContentFormats", nlohmann::json::array()), expectedDisabled);
 }
+
+TEST(SearchServiceWakeupNonBlockingTest, MarkMetadataDirtyAndFastConcurrentDbStats) {
+    tools3000::service::FileIndexStore store;
+    store.setDriveLetter('C');
+    store.reserve(16);
+
+    FileRecordInit dirRec{};
+    dirRec.fileReferenceNumber = 100ULL;
+    dirRec.parentFileReferenceNumber = 0ULL;
+    dirRec.fileName = L"Chosen";
+    dirRec.isDirectory = true;
+    dirRec.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    store.upsert(dirRec, true);
+
+    FileRecordInit fileRec{};
+    fileRec.fileReferenceNumber = 200ULL;
+    fileRec.parentFileReferenceNumber = 100ULL;
+    fileRec.fileName = L"纳百川-采购阶梯价V10001.ch";
+    fileRec.isDirectory = false;
+    fileRec.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+    fileRec.fileSize = 4096ULL;
+    fileRec.creationTime = 133500000000000000ULL;
+    fileRec.lastWriteTime = 133500000000000000ULL;
+    store.upsert(fileRec, true);
+
+    const auto* storedBefore = store.find(200ULL);
+    ASSERT_NE(storedBefore, nullptr);
+    EXPECT_TRUE(storedBefore->isMetadataHydrated());
+
+    // 超量 USN 追赶跳过同步 OpenFileById 时标记为 dirty，验证清除水合位且保留文件名/拼音与树结构
+    EXPECT_TRUE(store.markMetadataDirty(200ULL));
+    EXPECT_FALSE(store.markMetadataDirty(100ULL)); // 目录不清除水合位
+    EXPECT_FALSE(store.markMetadataDirty(99999ULL));
+
+    const auto* storedAfter = store.find(200ULL);
+    ASSERT_NE(storedAfter, nullptr);
+    EXPECT_FALSE(storedAfter->isMetadataHydrated());
+    EXPECT_EQ(store.view(*storedAfter).fileName, L"纳百川-采购阶梯价V10001.ch");
+    EXPECT_NE(store.view(*storedAfter).pinyinInitials.find(L"nbc"), std::wstring::npos);
+
+    // 后台水合完成后再次恢复水合标记
+    EXPECT_TRUE(store.updateMetadata(200ULL, 8192ULL, 133500000000000000ULL, 133500010000000000ULL));
+    EXPECT_TRUE(store.find(200ULL)->isMetadataHydrated());
+    EXPECT_EQ(store.find(200ULL)->fileSize, 8192ULL);
+
+    // 验证 bulkImport + recomputeHierarchyMetadata 按树深桶排汇总跨多层目录大小与原语义完全一致
+    FileRecordInit subDir{};
+    subDir.fileReferenceNumber = 101ULL;
+    subDir.parentFileReferenceNumber = 100ULL;
+    subDir.fileName = L"SubPricing";
+    subDir.isDirectory = true;
+    subDir.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    store.upsert(subDir, false, true);
+
+    FileRecordInit nestedFile{};
+    nestedFile.fileReferenceNumber = 201ULL;
+    nestedFile.parentFileReferenceNumber = 101ULL;
+    nestedFile.fileName = L"阶梯价明细.xlsx";
+    nestedFile.isDirectory = false;
+    nestedFile.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+    nestedFile.fileSize = 2048ULL;
+    store.upsert(nestedFile, false, true);
+
+    store.recomputeHierarchyMetadata();
+    ASSERT_NE(store.find(101ULL), nullptr);
+    ASSERT_NE(store.find(100ULL), nullptr);
+    EXPECT_EQ(store.find(101ULL)->fileSize, 2048ULL);
+    EXPECT_EQ(store.find(100ULL)->fileSize, 8192ULL + 2048ULL);
+
+    // 验证 DatabaseManager::getStats 在快照保存/加载前后毫秒级无锁返回
+    wchar_t tempDirBuf[MAX_PATH]{};
+    ASSERT_GT(GetTempPathW(MAX_PATH, tempDirBuf), 0u);
+    const std::filesystem::path dbDir = std::filesystem::path(tempDirBuf) / L"t3k_nonblocking_dbstats_test";
+    std::error_code ec;
+    std::filesystem::remove_all(dbDir, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(dbDir, ec));
+    const std::wstring dbFile = (dbDir / L"Tools3000_Test.db").wstring();
+
+    MftParser parser;
+    parser.Initialize('C');
+    parser.setRealTimeValidation(false);
+    std::vector<FileRecordInit> snapRecords = {dirRec, fileRec};
+    ASSERT_TRUE(parser.importSnapshot(std::move(snapRecords), 5000ULL, parser.getVolumeSerialNumber()));
+
+    auto& dbMgr = tools3000::service::db::DatabaseManager::instance();
+    const std::wstring prevPath = dbMgr.getDbPath();
+    dbMgr.init(dbFile);
+
+    std::vector<MftParser*> parsers = {&parser};
+    ASSERT_TRUE(dbMgr.saveSnapshot(parsers));
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto stats = dbMgr.getStats();
+    const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    EXPECT_TRUE(stats.exists);
+    EXPECT_EQ(stats.totalRecords, 2ULL);
+    EXPECT_LT(elapsedUs, 50000); // < 50ms
+
+    dbMgr.init(prevPath);
+    std::filesystem::remove_all(dbDir, ec);
+}

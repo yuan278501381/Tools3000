@@ -1135,6 +1135,10 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
                 dmRect.bottom = (std::max)(dmRect.bottom, item.rect.bottom);
             }
             obstacles.push_back({dmRect, HudObstacleType::SecondaryToolbar, 2.2f});
+            if (state.dropdownMenu.childMenuRect.right > state.dropdownMenu.childMenuRect.left &&
+                state.dropdownMenu.childMenuRect.bottom > state.dropdownMenu.childMenuRect.top) {
+                obstacles.push_back({state.dropdownMenu.childMenuRect, HudObstacleType::SecondaryToolbar, 2.2f});
+            }
         }
         if (!state.detectedQrText.empty() &&
             state.qrChipRect.right > state.qrChipRect.left &&
@@ -1766,7 +1770,7 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                 isActiveTool = button.boolParam;
             }
             if (button.command == ToolbarCommand::RecordCycleClickEffect) {
-                isActiveTool = (state.recordSetup.showClickEffects || state.recordSetup.showClickZoom);
+                isActiveTool = (state.recordSetup.showClickEffects || state.recordSetup.zoomEffectMode != 0);
             }
 
             if (button.command == ToolbarCommand::ToggleTextOutline) {
@@ -1827,6 +1831,9 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
             }
             if (button.command == ToolbarCommand::CycleBeautyRadius) {
                 isActiveTool = (state.dropdownMenu.type == DropdownType::BeautyShellRadius);
+            }
+            if (button.command == ToolbarCommand::RecordToggleSettingsMenu) {
+                isActiveTool = (state.dropdownMenu.type == DropdownType::RecordMoreSettings);
             }
 
             bool isDisabled = false;
@@ -2963,13 +2970,16 @@ void CaptureRenderer::drawDropdownMenu(CaptureState& state) {
     const float scale = std::clamp(state.dpiScale > 0.0f ? state.dpiScale : 1.0f, 1.0f, 5.0f);
     const auto pal = FloatingGlassBar::resolveThemePalette();
     const bool isDark = pal.isDark;
+    const bool isCascadingCheckMenu = (state.dropdownMenu.type == DropdownType::RecordMoreSettings);
 
     // 1. 响应式微晶双列排版框架：严格测量全项主标题与辅助描述的最大宽度
     float maxLabelW = 0.0f;
     float maxHintW = 0.0f;
     bool hasAnySwatch = false;
+    bool hasAnyChild = false;
 
     for (const auto& it : state.dropdownMenu.items) {
+        if (it.isSeparator) continue;
         if (!it.label.empty()) {
             D2D1_SIZE_F lsz = measureText(it.label, m_infoTextFormat.Get());
             if (lsz.width > maxLabelW) maxLabelW = lsz.width;
@@ -2979,22 +2989,31 @@ void CaptureRenderer::drawDropdownMenu(CaptureState& state) {
             if (hsz.width > maxHintW) maxHintW = hsz.width;
         }
         if (it.hasSwatch) hasAnySwatch = true;
+        if (it.hasChildMenu) hasAnyChild = true;
     }
 
     // 几何规格与自适应留白 (MECE 双列对齐，杜绝重叠与横向跑动)
     const float itemH = 32.0f * scale;
+    const float sepH = 10.0f * scale;
     const float padY = 7.0f * scale;
     const float padX = 10.0f * scale;
     const float swatchSpace = hasAnySwatch ? (12.0f * scale + 10.0f * scale) : 0.0f;
+    const float leadCheckSpace = isCascadingCheckMenu ? (22.0f * scale) : 0.0f;
     const float columnGap = (maxHintW > 0.0f) ? 20.0f * scale : 0.0f; // 保证主副文本之间有绝对安全的呼吸间距
-    const float checkSpace = 24.0f * scale; // 选中对勾区域
+    const float checkSpace = isCascadingCheckMenu
+        ? (hasAnyChild ? 22.0f * scale : 8.0f * scale)
+        : 24.0f * scale; // 选中对勾或右向箭头区域
 
-    float contentW = swatchSpace + maxLabelW + columnGap + maxHintW + checkSpace;
+    float contentW = swatchSpace + leadCheckSpace + maxLabelW + columnGap + maxHintW + checkSpace;
     float menuW = contentW + padX * 2.0f + 16.0f * scale;
-    const float minMenuW = (maxHintW > 0.0f ? 144.0f : 112.0f) * scale;
+    const float minMenuW = (isCascadingCheckMenu ? 156.0f : (maxHintW > 0.0f ? 144.0f : 112.0f)) * scale;
     if (menuW < minMenuW) menuW = minMenuW;
 
-    float menuH = padY * 2.0f + static_cast<float>(state.dropdownMenu.items.size()) * itemH;
+    float totalItemsH = 0.0f;
+    for (const auto& it : state.dropdownMenu.items) {
+        totalItemsH += it.isSeparator ? sepH : itemH;
+    }
+    float menuH = padY * 2.0f + totalItemsH;
 
     const auto& anchor = state.dropdownMenu.anchorButtonRect;
     auto rtSize = m_renderTarget->GetSize();
@@ -3060,22 +3079,43 @@ void CaptureRenderer::drawDropdownMenu(CaptureState& state) {
     // 确保文本格式作用域隔离为左对齐、垂直居中、不自动换行
     TextFormatScope menuTextScope(m_infoTextFormat.Get(), DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP);
 
-    // 3. 绘制各选项 (双列严格对齐)
+    // 3. 绘制各选项 (双列严格对齐 + 级联子菜单)
     float curY = menuY + padY;
-    const float labelStartX = menuX + padX + 8.0f * scale + swatchSpace;
+    const float labelStartX = menuX + padX + 8.0f * scale + swatchSpace + leadCheckSpace;
     const float hintStartX = labelStartX + maxLabelW + columnGap;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sepBrush;
+    m_renderTarget->CreateSolidColorBrush(
+        isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.11f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.09f),
+        sepBrush.GetAddressOf());
 
     for (size_t i = 0; i < state.dropdownMenu.items.size(); ++i) {
         auto& item = state.dropdownMenu.items[i];
+        if (item.isSeparator) {
+            item.rect = D2D1::RectF(menuX + padX, curY, menuX + menuW - padX, curY + sepH);
+            item.isHovered = false;
+            if (sepBrush) {
+                const float lineY = std::floor(curY + sepH * 0.5f) + 0.5f;
+                m_renderTarget->DrawLine(
+                    D2D1::Point2F(menuX + padX + 4.0f * scale, lineY),
+                    D2D1::Point2F(menuX + menuW - padX - 4.0f * scale, lineY),
+                    sepBrush.Get(), 1.0f * scale);
+            }
+            curY += sepH;
+            continue;
+        }
+
         item.rect = D2D1::RectF(menuX + padX, curY, menuX + menuW - padX, curY + itemH);
 
-        bool isHover = (static_cast<int>(i) == state.dropdownMenu.hoveredIndex);
+        const bool isActiveParent = (static_cast<int>(i) == state.dropdownMenu.activeParentIndex && item.hasChildMenu);
+        bool isHover = (static_cast<int>(i) == state.dropdownMenu.hoveredIndex) || isActiveParent;
         item.isHovered = isHover;
 
-        if (isHover || item.isSelected) {
+        const bool highlightPill = isHover || (!isCascadingCheckMenu && item.isSelected);
+        if (highlightPill) {
             FloatingGlassBar::drawButtonPill(
-                m_renderTarget.Get(), item.rect, 5.0f * scale,
-                isHover, item.isSelected, false, false, 1.0f, isDark);
+                m_renderTarget.Get(), item.rect, 6.0f * scale,
+                isHover, (!isCascadingCheckMenu && item.isSelected), false, false, 1.0f, isDark);
         }
 
         // 微型渐变色板圆球
@@ -3104,9 +3144,20 @@ void CaptureRenderer::drawDropdownMenu(CaptureState& state) {
             }
         }
 
+        // 级联设置主菜单：左侧选中对勾 (与 FocuSee 原生视觉 1:1 对齐)
+        if (isCascadingCheckMenu && item.isSelected && textBrush) {
+            const float ckX = item.rect.left + 13.0f * scale;
+            const float ckY = curY + itemH * 0.5f;
+            D2D1_POINT_2F p1{ckX - 4.2f * scale, ckY + 0.2f * scale};
+            D2D1_POINT_2F p2{ckX - 1.2f * scale, ckY + 3.2f * scale};
+            D2D1_POINT_2F p3{ckX + 4.8f * scale, ckY - 3.0f * scale};
+            m_renderTarget->DrawLine(p1, p2, textBrush.Get(), 1.85f * scale);
+            m_renderTarget->DrawLine(p2, p3, textBrush.Get(), 1.85f * scale);
+        }
+
         // 绘制标题 Label (首列)
         if (m_infoTextFormat && textBrush && !item.label.empty()) {
-            D2D1_RECT_F textRect = D2D1::RectF(labelStartX, curY, labelStartX + maxLabelW + 2.0f * scale, curY + itemH);
+            D2D1_RECT_F textRect = D2D1::RectF(labelStartX, curY, labelStartX + maxLabelW + 4.0f * scale, curY + itemH);
             m_renderTarget->DrawText(item.label.c_str(), static_cast<UINT32>(item.label.size()),
                                      m_infoTextFormat.Get(), textRect, textBrush.Get());
         }
@@ -3118,8 +3169,19 @@ void CaptureRenderer::drawDropdownMenu(CaptureState& state) {
                                      m_infoTextFormat.Get(), hintRect, hintBrush.Get());
         }
 
-        // 绘制选中对勾 (Checkmark)
-        if (item.isSelected && checkBrush) {
+        // 右侧子菜单箭头 `>` 或常规选中对勾
+        if (item.hasChildMenu && hintBrush) {
+            const float chevBox = 14.0f * scale;
+            const float chevCx = item.rect.right - 12.0f * scale;
+            const float chevCy = curY + itemH * 0.5f;
+            D2D1_RECT_F chevRect = D2D1::RectF(
+                chevCx - chevBox * 0.5f, chevCy - chevBox * 0.5f,
+                chevCx + chevBox * 0.5f, chevCy + chevBox * 0.5f);
+            CaptureVectorIcons::renderIcon(
+                m_renderTarget.Get(), m_d2dFactory.Get(),
+                CaptureIconId::UiChevronRight, chevRect,
+                isHover ? textBrush.Get() : hintBrush.Get(), scale);
+        } else if (!isCascadingCheckMenu && item.isSelected && checkBrush) {
             float ckX = item.rect.right - 14.0f * scale;
             float ckY = curY + itemH * 0.5f;
             D2D1_POINT_2F p1{ckX - 4.0f * scale, ckY};
@@ -3130,6 +3192,72 @@ void CaptureRenderer::drawDropdownMenu(CaptureState& state) {
         }
 
         curY += itemH;
+    }
+
+    // 4. 若当前激活了二级级联子菜单（优先向左弹出，空间不足自动向右翻转）
+    state.dropdownMenu.childMenuRect = {};
+    if (state.dropdownMenu.activeParentIndex >= 0 &&
+        state.dropdownMenu.activeParentIndex < static_cast<int>(state.dropdownMenu.items.size())) {
+        auto& parent = state.dropdownMenu.items[state.dropdownMenu.activeParentIndex];
+        if (parent.hasChildMenu && !parent.childItems.empty()) {
+            float maxChildW = 0.0f;
+            for (const auto& ci : parent.childItems) {
+                if (!ci.label.empty()) {
+                    D2D1_SIZE_F csz = measureText(ci.label, m_infoTextFormat.Get());
+                    if (csz.width > maxChildW) maxChildW = csz.width;
+                }
+            }
+            float childW = (std::max)(118.0f * scale, maxChildW + 26.0f * scale + padX * 2.0f + 14.0f * scale);
+            float childH = padY * 2.0f + static_cast<float>(parent.childItems.size()) * itemH;
+            const float sideGap = 6.0f * scale;
+            float childX = menuX - childW - sideGap;
+            if (childX < 4.0f * scale) {
+                childX = menuX + menuW + sideGap;
+                if (childX + childW > rtSize.width - 4.0f * scale) {
+                    childX = (std::max)(4.0f * scale, rtSize.width - childW - 4.0f * scale);
+                }
+            }
+            float childY = std::clamp(
+                parent.rect.top - padY,
+                4.0f * scale,
+                (std::max)(4.0f * scale, rtSize.height - childH - 4.0f * scale));
+            state.dropdownMenu.childMenuRect = D2D1::RectF(childX, childY, childX + childW, childY + childH);
+
+            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), state.dropdownMenu.childMenuRect, 9.0f * scale, isDark);
+
+            float cyChild = childY + padY;
+            for (size_t c = 0; c < parent.childItems.size(); ++c) {
+                auto& cItem = parent.childItems[c];
+                cItem.rect = D2D1::RectF(childX + padX, cyChild, childX + childW - padX, cyChild + itemH);
+                const bool cHover = (static_cast<int>(c) == state.dropdownMenu.hoveredChildIndex);
+                cItem.isHovered = cHover;
+                if (cHover || cItem.isSelected) {
+                    FloatingGlassBar::drawButtonPill(
+                        m_renderTarget.Get(), cItem.rect, 6.0f * scale,
+                        cHover, cItem.isSelected, false, false, 1.0f, isDark);
+                }
+                if (m_infoTextFormat && textBrush && !cItem.label.empty()) {
+                    D2D1_RECT_F cTextRect = D2D1::RectF(
+                        cItem.rect.left + 10.0f * scale, cyChild,
+                        cItem.rect.right - 24.0f * scale, cyChild + itemH);
+                    m_renderTarget->DrawText(
+                        cItem.label.c_str(), static_cast<UINT32>(cItem.label.size()),
+                        m_infoTextFormat.Get(), cTextRect,
+                        (cHover || cItem.isSelected) ? textBrush.Get() : hintBrush.Get());
+                }
+                if (cItem.isSelected && (textBrush || checkBrush)) {
+                    ID2D1Brush* ckB = textBrush ? static_cast<ID2D1Brush*>(textBrush.Get()) : static_cast<ID2D1Brush*>(checkBrush.Get());
+                    const float ckX = cItem.rect.right - 13.0f * scale;
+                    const float ckY = cyChild + itemH * 0.5f;
+                    D2D1_POINT_2F p1{ckX - 4.2f * scale, ckY + 0.2f * scale};
+                    D2D1_POINT_2F p2{ckX - 1.2f * scale, ckY + 3.2f * scale};
+                    D2D1_POINT_2F p3{ckX + 4.8f * scale, ckY - 3.0f * scale};
+                    m_renderTarget->DrawLine(p1, p2, ckB, 1.85f * scale);
+                    m_renderTarget->DrawLine(p2, p3, ckB, 1.85f * scale);
+                }
+                cyChild += itemH;
+            }
+        }
     }
 }
 
@@ -3670,6 +3798,23 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
                 rect, brush, scale);
             return;
         }
+        case ToolbarCommand::RecordToggleSettingsMenu: {
+            const float outerR = 5.6f * scale;
+            const float innerR = 2.45f * scale;
+            const float strokeW = 1.65f * scale;
+            m_renderTarget->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), outerR, outerR), brush, strokeW);
+            m_renderTarget->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), innerR, innerR), brush, 1.35f * scale);
+            for (int t = 0; t < 6; ++t) {
+                const float ang = static_cast<float>(t) * (3.14159265f / 3.0f);
+                const float cs = std::cos(ang);
+                const float sn = std::sin(ang);
+                m_renderTarget->DrawLine(
+                    D2D1::Point2F(cx + cs * (outerR - 0.3f * scale), cy + sn * (outerR - 0.3f * scale)),
+                    D2D1::Point2F(cx + cs * (outerR + 2.1f * scale), cy + sn * (outerR + 2.1f * scale)),
+                    brush, 1.9f * scale);
+            }
+            return;
+        }
         default: break;
     }
 }
@@ -3758,7 +3903,10 @@ void CaptureRenderer::drawFloatingToast(const CaptureState& state) {
             if (state.isSizeMenuOpen) pushDownIfOverlaps(state.sizeMenuRect);
             pushDownIfOverlaps(state.primaryToolbarRect);
             pushDownIfOverlaps(state.secondaryToolbarRect);
-            if (state.dropdownMenu.type != DropdownType::None) pushDownIfOverlaps(state.dropdownMenu.menuRect);
+            if (state.dropdownMenu.type != DropdownType::None) {
+                pushDownIfOverlaps(state.dropdownMenu.menuRect);
+                pushDownIfOverlaps(state.dropdownMenu.childMenuRect);
+            }
             if (state.sliderPopup.type != SliderPopupType::None) pushDownIfOverlaps(state.sliderPopup.popupRect);
             if (state.openSubmenu != SubmenuType::None) pushDownIfOverlaps(state.openSubmenuRect);
         }
@@ -6225,6 +6373,7 @@ void CaptureRenderer::updateShortcutHintAvoidance(const CaptureState& state) {
                 dmRect.bottom = (std::max)(dmRect.bottom, item.rect.bottom);
             }
             pushIfValid(avoidRects, dmRect);
+            pushIfValid(avoidRects, state.dropdownMenu.childMenuRect);
         }
     }
 

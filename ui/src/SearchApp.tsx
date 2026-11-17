@@ -330,10 +330,16 @@ export default function SearchApp() {
             isInitialIndexingRef.current = false;
             setIsInitialIndexing(false);
             setServiceAvailable(true);
+            refreshQuery();
             toast.success(t('search.indexReadyToast', 'Full disk index built and ready!'));
           } else {
             setIsInitialIndexing(false);
-            setServiceAvailable(true);
+            setServiceAvailable((wasAvailable) => {
+              if (!wasAvailable) {
+                window.setTimeout(() => refreshQuery(), 0);
+              }
+              return true;
+            });
           }
           return false;
         }
@@ -342,7 +348,7 @@ export default function SearchApp() {
       // ignore
     }
     return false;
-  }, [setServiceAvailable, t]);
+  }, [refreshQuery, setServiceAvailable, t]);
 
   const refreshDbStats = useCallback(async () => {
     await checkInitialIndex();

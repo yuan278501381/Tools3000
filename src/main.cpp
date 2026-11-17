@@ -82,7 +82,8 @@
 static constexpr const wchar_t* WINDOW_CLASS_NAME = L"Tools3000_MessageWindow";
 static constexpr const wchar_t* WINDOW_TITLE      = L"Tools3000MessageWindow";
 static constexpr const wchar_t* MUTEX_NAME        = L"Global\\Tools3000_SingleInstance_Mutex";
-static constexpr UINT WM_TOOLS3000_SHOW_SETTINGS  = WM_APP + 101;
+static constexpr UINT WM_TOOLS3000_SHOW_SETTINGS    = WM_APP + 101;
+static constexpr UINT WM_TOOLS3000_TEST_INJECT_KEY  = WM_APP + 190;
 static constexpr UINT_PTR TIMER_ID_QUICKLOOK_REFRESH = 0x4551;
 static constexpr UINT_PTR TIMER_ID_PERFORMANCE_BASELINE = 0x4552;
 static constexpr UINT_PTR TIMER_ID_FULLSCREEN_GUARD = 0x4553;
@@ -1448,6 +1449,11 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 
         if (action == "openSettings") {
             showSettingsWindow();
+            const std::string page = jsonStringOr(params, "page");
+            if (!page.empty()) {
+                tools3000::ui::SettingsWindow::instance().navigateTo(
+                    page.front() == '/' ? page : ("/" + page));
+            }
         } else if (action == "search") {
             auto& searchWnd = tools3000::ui::SearchWindow::instance();
             if (searchWnd.isVisible()) searchWnd.hide();
@@ -1962,6 +1968,13 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     if (msg == WM_HOTKEY) {
         tools3000::core::HotkeyManager::instance().handleHotkeyMessage(wParam);
         return 0;
+    }
+
+    if (msg == WM_TOOLS3000_TEST_INJECT_KEY) {
+        const DWORD vkCode = static_cast<DWORD>(LOWORD(wParam));
+        const bool isKeyUp = (HIWORD(wParam) != 0);
+        const UINT scanCode = static_cast<UINT>(LOWORD(lParam));
+        return tools3000::core::KeyboardHook::instance().injectTestKeyEvent(vkCode, scanCode, isKeyUp) ? 1 : 0;
     }
 
     static UINT msgShowBroadcast = RegisterWindowMessageW(L"Tools3000_ShowSettings_Broadcast");

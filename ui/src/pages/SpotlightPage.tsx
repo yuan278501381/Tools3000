@@ -708,7 +708,7 @@ export const SpotlightPage: FC = () => {
                     <span className="spotlight-page__style-card-desc">{t('spotlight.styleBubblePopDesc', 'Crystal clear bubble expanding and popping into gentle mist droplets, airy and delightful')}</span>
                   </div>
 
-                  {/* 10. macOS 弹性光圈 */}
+                  {/* 10. 弹性柔光圈 */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'mac_zoom' ? 'spotlight-page__style-card--active' : ''}`}
                     role="button"
@@ -719,9 +719,9 @@ export const SpotlightPage: FC = () => {
                   >
                     <div className="spotlight-page__style-card-header">
                       <ZoomIn size={16} />
-                      <span>{t('spotlight.styleMacZoom', 'macOS Elastic Aura')}</span>
+                      <span>{t('spotlight.styleMacZoom', 'Elastic Glow Ring')}</span>
                     </div>
-                    <span className="spotlight-page__style-card-desc">{t('spotlight.styleMacZoomDesc', 'Screen Studio style spring-damped press, elastic burst, and soft glow aura')}</span>
+                    <span className="spotlight-page__style-card-desc">{t('spotlight.styleMacZoomDesc', 'Spring-damped press, elastic burst, and dual-layer soft glow aura')}</span>
                   </div>
                 </div>
               </div>

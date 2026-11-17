@@ -388,7 +388,8 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
     Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_renderTarget;
-    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_controlRenderTarget;
+    Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> m_controlRenderTarget;
+    bool m_controlCaptureExcluded = false;
     Microsoft::WRL::ComPtr<ID2D1StrokeStyle> m_roundStrokeStyle;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_statusFormat;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_metricsFormat;

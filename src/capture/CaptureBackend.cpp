@@ -110,7 +110,23 @@ public:
         }
         if (!BitBlt(m_memoryDc, 0, 0, m_region.width, m_region.height,
                     m_screenDc, m_region.x, m_region.y, SRCCOPY | CAPTUREBLT)) {
-            error = "BitBlt failed (" + std::to_string(GetLastError()) + ")";
+            const DWORD err = GetLastError();
+            static const bool s_allowHeadlessSynthetic =
+                (GetEnvironmentVariableW(L"TOOLS3000_ALLOW_INJECTED_MOUSE", nullptr, 0) > 0);
+            if (s_allowHeadlessSynthetic &&
+                (err == ERROR_ACCESS_DENIED || err == ERROR_INVALID_HANDLE)) {
+                if (!m_loggedSyntheticFallback) {
+                    m_loggedSyntheticFallback = true;
+                    LOG_WARN("GdiCaptureBackend: BitBlt restricted in test session (error={}), using synthetic dynamic frame", err);
+                }
+                renderSyntheticTestFrame();
+                frame = {
+                    static_cast<std::uint8_t*>(m_bits), m_stride,
+                    m_region.width, m_region.height, CapturePixelFormat::Bgr24
+                };
+                return true;
+            }
+            error = "BitBlt failed (" + std::to_string(err) + ")";
             return false;
         }
         frame = {
@@ -141,10 +157,30 @@ public:
             m_screenDc = nullptr;
         }
         m_stride = 0;
+        m_syntheticFrameCounter = 0;
+        m_loggedSyntheticFallback = false;
         m_region = {};
     }
 
 private:
+    void renderSyntheticTestFrame() noexcept {
+        if (!m_bits || m_region.width <= 0 || m_region.height <= 0 || m_stride <= 0) return;
+        auto* base = static_cast<std::uint8_t*>(m_bits);
+        const int barX = (m_syntheticFrameCounter * 12) % (std::max)(1, m_region.width);
+        const int barW = (std::max)(24, m_region.width / 8);
+        for (int y = 0; y < m_region.height; ++y) {
+            std::uint8_t* row = base + static_cast<std::size_t>(y) * static_cast<std::size_t>(m_stride);
+            const std::uint8_t gradG = static_cast<std::uint8_t>(36 + (y * 90) / (std::max)(1, m_region.height));
+            for (int x = 0; x < m_region.width; ++x) {
+                const bool inBar = (x >= barX && x < barX + barW);
+                row[x * 3 + 0] = inBar ? 235 : 96;     // B
+                row[x * 3 + 1] = inBar ? 186 : gradG;  // G
+                row[x * 3 + 2] = inBar ? 68  : 32;     // R
+            }
+        }
+        ++m_syntheticFrameCounter;
+    }
+
     CaptureBackendInfo m_info{"gdi-bitblt", "GDI BitBlt", true, false, {}};
     CaptureRegion m_region;
     HDC m_screenDc = nullptr;
@@ -153,6 +189,8 @@ private:
     HGDIOBJ m_previousBitmap = nullptr;
     void* m_bits = nullptr;
     int m_stride = 0;
+    int m_syntheticFrameCounter = 0;
+    bool m_loggedSyntheticFallback = false;
 };
 
 class DesktopDuplicationBackend final : public ICaptureBackend {

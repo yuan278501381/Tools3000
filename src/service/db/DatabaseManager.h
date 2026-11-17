@@ -78,7 +78,8 @@ public:
     std::wstring getDbPath() const;
 
 private:
-    mutable std::mutex m_mutex;
+    mutable std::mutex m_pathMutex;
+    std::mutex m_ioMutex;
     std::wstring m_dbPath;
 };
 

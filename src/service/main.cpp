@@ -397,6 +397,7 @@ bool configurePipeEndpoint(DWORD argc, wchar_t** argv) {
         g_UseKernelServicePipeSddl = false;
         g_SearchPipeName = *tokenPipe;
         g_SearchClientSid = std::move(sid);
+        g_IsolatedPortableToken = token;
         return true;
     }
 
@@ -2220,8 +2221,18 @@ void IPCServerThread() {
     // 扫描所有本地固定驱动器（启动期严格仅索引 DRIVE_FIXED，热插拔与非固定卷走运行期动态接入）
     const DWORD driveMask = GetLogicalDrives();
     g_KnownDriveMask.store(driveMask, std::memory_order_release);
+    char isolatedOnlyDrive = '\0';
+    if (!g_IsolatedPortableToken.empty()) {
+        wchar_t envBuf[8]{};
+        if (GetEnvironmentVariableW(L"TOOLS3000_TEST_ONLY_DRIVE", envBuf, 8) > 0 && envBuf[0] != L'\0') {
+            const wchar_t ch = envBuf[0];
+            if (ch >= L'a' && ch <= L'z') isolatedOnlyDrive = static_cast<char>(ch - (L'a' - L'A'));
+            else if (ch >= L'A' && ch <= L'Z') isolatedOnlyDrive = static_cast<char>(ch);
+        }
+    }
     std::vector<std::shared_ptr<MftParser>> initialParsers;
     for (char drive = 'A'; drive <= 'Z' && g_IsRunning.load(); ++drive) {
+        if (isolatedOnlyDrive != '\0' && drive != isolatedOnlyDrive) continue;
         if (!(driveMask & (1u << (drive - 'A')))) continue;
         const std::wstring root{static_cast<wchar_t>(drive), L':', L'\\'};
         UINT driveType = GetDriveTypeW(root.c_str());
@@ -2246,12 +2257,9 @@ void IPCServerThread() {
         g_MftParsers = initialParsers;
     }
 
-    // 尝试从 Tools3000.db 二进制快照加载，临时降级线程调度优先级以保护前台应用 0 卡顿
+    // 按需唤醒时全速从 Tools3000.db 二进制快照加载，保障用户显式打开搜索窗口后秒级就绪
     std::vector<MftParser*> rawParsers = toRawParserPointers(initialParsers);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-
     bool snapshotLoaded = tools3000::service::db::DatabaseManager::instance().loadSnapshot(rawParsers);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
     std::vector<std::thread> indexThreads;
 
     if (snapshotLoaded) {

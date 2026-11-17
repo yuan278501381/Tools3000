@@ -2,6 +2,7 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type Dispatch,
@@ -173,6 +174,9 @@ export function useSearchEngine({
   }, [stopScanStopwatch]);
 
   const startScanStopwatch = useCallback((sequence: number) => {
+    if (scanTimerRef.current?.sequence === sequence) {
+      return;
+    }
     stopScanStopwatch();
     setScanElapsedSeconds(0);
     const startTime = Date.now();
@@ -190,6 +194,22 @@ export function useSearchEngine({
     isRunningRef.current = false;
     requestSequenceRef.current += 1;
   }, [stopScanStopwatch]);
+
+  const enabledDrivesKey = enabledDrives.join('\u0000');
+  const customFormatsKey = customContentFormats.join('\u0000');
+  const disabledFormatsKey = disabledContentFormats.join('\u0000');
+  const stableEnabledDrives = useMemo(
+    () => (enabledDrivesKey ? enabledDrivesKey.split('\u0000') : []),
+    [enabledDrivesKey],
+  );
+  const stableCustomFormats = useMemo(
+    () => (customFormatsKey ? customFormatsKey.split('\u0000') : []),
+    [customFormatsKey],
+  );
+  const stableDisabledFormats = useMemo(
+    () => (disabledFormatsKey ? disabledFormatsKey.split('\u0000') : []),
+    [disabledFormatsKey],
+  );
 
   useEffect(() => {
     const trimmedQuery = query.trim();
@@ -263,12 +283,12 @@ export function useSearchEngine({
         ? [
             effectiveMode,
             trimmedQuery,
-            enabledDrives.slice().sort().join(','),
+            stableEnabledDrives.slice().sort().join(','),
             maxResultLimit,
             excludeGitAndModules ? 'exDev' : 'all',
             excludeHidden ? 'exHidden' : 'showHidden',
-            disabledContentFormats.slice().sort().join(','),
-            customContentFormats.slice().sort().join(','),
+            stableDisabledFormats.slice().sort().join(','),
+            stableCustomFormats.slice().sort().join(','),
           ].join(':')
         : '';
 
@@ -313,11 +333,11 @@ export function useSearchEngine({
             queryId: nextQueryId(),
             searchMode: effectiveMode,
             limit: maxResultLimit,
-            drives: enabledDrives.length > 0 ? enabledDrives : undefined,
+            drives: stableEnabledDrives.length > 0 ? stableEnabledDrives : undefined,
             excludes: excludes.length > 0 ? excludes : undefined,
             excludeHidden,
-            contentCustomExts: customContentFormats,
-            contentDisabledExts: disabledContentFormats,
+            contentCustomExts: stableCustomFormats,
+            contentDisabledExts: stableDisabledFormats,
           });
 
           if (response?.cancelled || sequence !== requestSequenceRef.current) return;
@@ -338,6 +358,7 @@ export function useSearchEngine({
           }
 
           if (response.status === 'starting' || (!response.available && response.status !== 'unavailable')) {
+            setLoading(true);
             startTransition(() => {
               setIsServiceStarting(true);
               setServiceAvailable(true);
@@ -398,11 +419,11 @@ export function useSearchEngine({
             progressive: true,
             cursor,
             planId: planId > 0 ? planId : undefined,
-            drives: enabledDrives.length > 0 ? enabledDrives : undefined,
+            drives: stableEnabledDrives.length > 0 ? stableEnabledDrives : undefined,
             excludes: excludes.length > 0 ? excludes : undefined,
             excludeHidden,
-            contentCustomExts: customContentFormats,
-            contentDisabledExts: disabledContentFormats,
+            contentCustomExts: stableCustomFormats,
+            contentDisabledExts: stableDisabledFormats,
           });
 
           if (response?.cancelled || sequence !== requestSequenceRef.current) return;
@@ -435,6 +456,7 @@ export function useSearchEngine({
           if (response.status === 'starting' || (!response.available && response.status !== 'unavailable')) {
             if (cursor === 0 && accumulated.length === 0) {
               window.clearTimeout(loadingTimer);
+              setLoading(true);
               startTransition(() => {
                 setIsServiceStarting(true);
                 setServiceAvailable(true);
@@ -557,7 +579,8 @@ export function useSearchEngine({
         }
       } catch {
         if (sequence === requestSequenceRef.current) {
-          if (retryCountRef.current < 90 && lastCompletedAtRef.current === 0) {
+          if (retryCountRef.current < 90) {
+            setLoading(true);
             startTransition(() => {
               setIsServiceStarting(true);
               setServiceAvailable(true);
@@ -568,6 +591,8 @@ export function useSearchEngine({
             retryTimerRef.current = window.setTimeout(() => void runQuery(), retryDelay);
           } else {
             startTransition(() => {
+              setIsServiceStarting(false);
+              setServiceAvailable(false);
               setSnapshot({
                 generationId: sequence,
                 query: trimmedQuery,
@@ -609,9 +634,6 @@ export function useSearchEngine({
     };
   }, [
     activeCategory,
-    customContentFormats,
-    disabledContentFormats,
-    enabledDrives,
     excludeGitAndModules,
     excludeHidden,
     isComposing,
@@ -619,6 +641,9 @@ export function useSearchEngine({
     query,
     refreshCounter,
     searchMode,
+    stableCustomFormats,
+    stableDisabledFormats,
+    stableEnabledDrives,
     startScanStopwatch,
     stopScanStopwatch,
   ]);

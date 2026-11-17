@@ -48,8 +48,12 @@ interface RecordingSettings {
   systemAudioVolume: number;
   microphoneVolume: number;
   countdownSeconds: number;
+  voiceEnhance?: boolean;
+  hideIndicatorInCapture?: boolean;
+  typingAutoZoom?: boolean;
   studioMode?: boolean;
   studioAutoZoom?: boolean;
+  studioZoomMode?: number;
   studioZoomFactor?: number;
   studioSmoothCursor?: boolean;
   studioCursorScale?: number;
@@ -109,9 +113,10 @@ export const CapturePage: FC = () => {
     systemAudioDeviceId: '', microphoneDeviceId: '',
     systemAudioVolume: 100, microphoneVolume: 100,
     countdownSeconds: 3,
-    studioMode: false, studioAutoZoom: true, studioZoomFactor: 1.85,
+    voiceEnhance: true, hideIndicatorInCapture: true, typingAutoZoom: false,
+    studioMode: true, studioAutoZoom: true, studioZoomMode: 1, studioZoomFactor: 1.50,
     studioSmoothCursor: true, studioCursorScale: 1.35,
-    studioAutoFrame: true, studioTheme: 'aurora_purple', studioAutoCaptions: true,
+    studioAutoFrame: true, studioTheme: 'aurora_purple', studioAutoCaptions: false,
   });
   const [audioDevices, setAudioDevices] = useState<AudioDeviceInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -695,8 +700,22 @@ export const CapturePage: FC = () => {
                   options={audioVolumeOptions(recording.microphoneVolume)}
                 />
               </SettingRow>
+              <Toggle
+                id="record-voice-enhance"
+                label={t('recording.voiceEnhance')}
+                description={t('recording.voiceEnhanceDesc')}
+                checked={recording.voiceEnhance ?? true}
+                onChange={(v) => updateRecording('voiceEnhance', v)}
+              />
             </>
           )}
+          <Toggle
+            id="record-hide-indicator"
+            label={t('recording.hideIndicatorInCapture')}
+            description={t('recording.hideIndicatorInCaptureDesc')}
+            checked={recording.hideIndicatorInCapture ?? true}
+            onChange={(v) => updateRecording('hideIndicatorInCapture', v)}
+          />
         </Card>
       </SettingGroup>
 
@@ -706,11 +725,11 @@ export const CapturePage: FC = () => {
             id="record-studio-mode"
             label={t('recording.studioMode')}
             description={t('recording.studioModeDesc')}
-            checked={recording.studioMode ?? false}
+            checked={recording.studioMode ?? true}
             disabled={recording.format === 'gif'}
             onChange={(v) => updateRecording('studioMode', v)}
           />
-          {(recording.studioMode ?? false) && recording.format !== 'gif' && (
+          {(recording.studioMode ?? true) && recording.format !== 'gif' && (
             <>
               <Toggle
                 id="record-studio-auto-zoom"
@@ -720,24 +739,44 @@ export const CapturePage: FC = () => {
                 onChange={(v) => updateRecording('studioAutoZoom', v)}
               />
               {(recording.studioAutoZoom ?? true) && (
-                <SettingRow label={t('recording.studioZoomFactor')} description={t('recording.studioZoomFactorDesc')}>
-                  <Select
-                    id="record-studio-zoom-factor"
-                    value={
-                      Math.abs((recording.studioZoomFactor ?? 1.5) - 1.5) < 0.12
-                        ? '1.5'
-                        : Math.abs((recording.studioZoomFactor ?? 1.5) - 2.2) < 0.15
-                          ? '2.2'
-                          : '1.85'
-                    }
-                    onChange={(v) => updateRecording('studioZoomFactor', parseFloat(v))}
-                    options={[
-                      { value: '1.5', label: t('recording.studioZoom150') },
-                      { value: '1.85', label: t('recording.studioZoom185') },
-                      { value: '2.2', label: t('recording.studioZoom220') },
-                    ]}
+                <>
+                  <SettingRow label={t('recording.studioZoomMode')} description={t('recording.studioZoomModeDesc')}>
+                    <Select
+                      id="record-studio-zoom-mode"
+                      value={String(recording.studioZoomMode === 2 ? 2 : 1)}
+                      onChange={(v) => updateRecording('studioZoomMode', parseInt(v))}
+                      options={[
+                        { value: '1', label: t('recording.studioZoomMode2D') },
+                        { value: '2', label: t('recording.studioZoomMode3D') },
+                      ]}
+                    />
+                  </SettingRow>
+                  <SettingRow label={t('recording.studioZoomFactor')} description={t('recording.studioZoomFactorDesc')}>
+                    <Select
+                      id="record-studio-zoom-factor"
+                      value={
+                        Math.abs((recording.studioZoomFactor ?? 1.5) - 1.5) < 0.12
+                          ? '1.5'
+                          : Math.abs((recording.studioZoomFactor ?? 1.5) - 2.2) < 0.15
+                            ? '2.2'
+                            : '1.85'
+                      }
+                      onChange={(v) => updateRecording('studioZoomFactor', parseFloat(v))}
+                      options={[
+                        { value: '1.5', label: t('recording.studioZoom150') },
+                        { value: '1.85', label: t('recording.studioZoom185') },
+                        { value: '2.2', label: t('recording.studioZoom220') },
+                      ]}
+                    />
+                  </SettingRow>
+                  <Toggle
+                    id="record-typing-auto-zoom"
+                    label={t('recording.typingAutoZoom')}
+                    description={t('recording.typingAutoZoomDesc')}
+                    checked={recording.typingAutoZoom ?? false}
+                    onChange={(v) => updateRecording('typingAutoZoom', v)}
                   />
-                </SettingRow>
+                </>
               )}
               <Toggle
                 id="record-studio-smooth-cursor"
@@ -776,7 +815,7 @@ export const CapturePage: FC = () => {
                 id="record-studio-captions"
                 label={t('recording.studioAutoCaptions')}
                 description={t('recording.studioAutoCaptionsDesc')}
-                checked={recording.studioAutoCaptions ?? true}
+                checked={recording.studioAutoCaptions ?? false}
                 onChange={(v) => updateRecording('studioAutoCaptions', v)}
               />
             </>

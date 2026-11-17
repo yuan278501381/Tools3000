@@ -1173,6 +1173,7 @@ public:
             }
 
             const bool isStarting = pipeError == ERROR_FILE_NOT_FOUND ||
+                                    g_warmupInFlight.load(std::memory_order_acquire) ||
                                     (!g_serviceConfirmedReady.load(std::memory_order_relaxed) &&
                                      (pipeError == ERROR_TIMEOUT || g_serviceSpawnedByUs.load()));
             const char* statusError = pipeError == ERROR_NOT_SUPPORTED
@@ -1205,7 +1206,7 @@ public:
             nlohmann::json req;
             req["action"] = "catchup";
             DWORD pipeError = ERROR_SUCCESS;
-            auto resp = querySearchService(req.dump(), pipeError, /*autoStart=*/false);
+            auto resp = querySearchService(req.dump(), pipeError, /*autoStart=*/false, 3500);
             if (resp) {
                 try {
                     return nlohmann::json::parse(*resp);
@@ -1274,7 +1275,7 @@ public:
 
         mb.registerHandler("search.windowHidden", [](const nlohmann::json&) -> nlohmann::json {
             DWORD error = 0;
-            querySearchService(R"({"action":"cancel"})", error, false);
+            querySearchService(R"({"action":"cancel"})", error, false, 1500);
             return {{"success", true}};
         });
 
@@ -1574,7 +1575,7 @@ public:
             req["action"] = "recordRun";
             req["path"] = path;
             DWORD err = 0;
-            auto res = querySearchService(req.dump(), err, /*autoStart=*/false);
+            auto res = querySearchService(req.dump(), err, /*autoStart=*/false, 2500);
             return {{"success", res.has_value()}};
         });
 
@@ -1585,7 +1586,7 @@ public:
             req["action"] = "recordSearch";
             req["query"] = query;
             DWORD err = 0;
-            auto res = querySearchService(req.dump(), err, /*autoStart=*/false);
+            auto res = querySearchService(req.dump(), err, /*autoStart=*/false, 2500);
             return {{"success", res.has_value()}};
         });
 
@@ -1594,7 +1595,7 @@ public:
             req["action"] = "getSearchHistory";
             if (params.contains("limit")) req["limit"] = params["limit"];
             DWORD err = 0;
-            auto res = querySearchService(req.dump(), err, /*autoStart=*/false);
+            auto res = querySearchService(req.dump(), err, /*autoStart=*/false, 3500);
             if (res && !res->empty()) {
                 try {
                     return nlohmann::json::parse(*res);
@@ -1611,7 +1612,7 @@ public:
             req["action"] = "removeSearchHistory";
             req["search"] = search;
             DWORD err = 0;
-            auto res = querySearchService(req.dump(), err);
+            auto res = querySearchService(req.dump(), err, /*autoStart=*/true, 3500);
             return {{"success", res.has_value()}};
         });
 
@@ -1619,7 +1620,7 @@ public:
             nlohmann::json req;
             req["action"] = "clearSearchHistory";
             DWORD err = 0;
-            auto res = querySearchService(req.dump(), err);
+            auto res = querySearchService(req.dump(), err, /*autoStart=*/true, 3500);
             return {{"success", res.has_value()}};
         });
 
@@ -1627,7 +1628,7 @@ public:
             nlohmann::json req;
             req["action"] = "getDbStats";
             DWORD err = 0;
-            auto res = querySearchService(req.dump(), err, /*autoStart=*/false);
+            auto res = querySearchService(req.dump(), err, /*autoStart=*/false, 3500);
             if (res && !res->empty()) {
                 try {
                     return nlohmann::json::parse(*res);

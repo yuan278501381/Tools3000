@@ -39,7 +39,6 @@ const LONG_RUNNING_METHODS = new Set([
   'capture.saveHistoryItemAs',
   'app.exportLogs',
   'app.checkForUpdates',
-  'plugins.selectExtensionFile',
   'system.pickForegroundWindow',
   'search.warmup',
 ]);

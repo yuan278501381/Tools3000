@@ -620,4 +620,17 @@ describe('QuickLookApp Usability & Media Pipeline', () => {
       ),
     ).toBeDefined();
   });
+
+  it('keeps QuickLook right scrollbar isolated from the 6px window resize handle and overrides thin scrollbar lock', async () => {
+    const fsSpecifier = ['node', 'fs'].join(':');
+    const fsModule = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (file: string, encoding: string) => string;
+    };
+    const cssText = fsModule.readFileSync('src/QuickLookApp.css', 'utf8');
+
+    expect(cssText).toContain('border-right: 6px solid transparent');
+    expect(cssText).toContain('scrollbar-width: auto !important');
+    expect(cssText).toContain('width: 14px');
+    expect(cssText).toContain('min-height: 44px');
+  });
 });

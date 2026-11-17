@@ -314,8 +314,24 @@ KeycastKeyInfo KeyTranslator::resolveKeycastEvent(
         if (hasAlt)   info.tokens.push_back("Alt");
         if (hasShift) info.tokens.push_back("Shift");
 
-        if (!standardName.empty()) {
-            info.tokens.push_back(standardName);
+        // 当组合键包含 Shift 且主键为 OEM 双档标点键时（如 Ctrl+Shift+= 意图为 Ctrl+Shift++、
+        // Ctrl+Shift+/ 意图为 Ctrl+Shift+?、Ctrl+Shift+. 意图为 Ctrl+Shift+>），解析为真实上档符号
+        const bool isAltGrCombo = hasCtrl && hasAlt && !hasWin;
+        std::string mainKeyLabel = standardName;
+        if (hasShift && isOemPunctuation && !isAltGrCombo) {
+            std::string shiftedSym = translateKeyToUnicode(vkCode, scanCode, true, hkl);
+            if (!shiftedSym.empty()) {
+                mainKeyLabel = std::move(shiftedSym);
+            } else {
+                const auto& shiftMap = getUsShiftSymbolMap();
+                if (auto it = shiftMap.find(vkCode); it != shiftMap.end()) {
+                    mainKeyLabel = it->second;
+                }
+            }
+        }
+
+        if (!mainKeyLabel.empty()) {
+            info.tokens.push_back(mainKeyLabel);
         }
 
         info.rawKey = formatCombo(info.tokens);

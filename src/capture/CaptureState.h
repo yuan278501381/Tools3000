@@ -76,6 +76,7 @@ enum class ToolbarCommand {
     RecordToggleKeycast,     // 开关按键回显 (Keycast)
     RecordToggleSystemAudio, // 开关录制系统声音
     RecordToggleMicrophone,  // 开关录制麦克风
+    RecordToggleSettingsMenu,// 展开录屏前快捷高级设置级联菜单 (缩放效果 / 倒计时 / 隐藏桌面图标 / 任务栏 / 打字缩放 / 人声增强 / 更多设置)
     RecordStartConfirm,      // 正式确认开始录制 (开始录制)
     // 选区侧边浮动菜单专属命令 (PixPin 标杆交互)
     SideToggleCornerRadius,  // 侧边展开/收起选区圆角滑块面板
@@ -135,6 +136,7 @@ enum class DropdownType {
     RecordFps,           // 15 / 30 / 60 fps
     RecordQuality,       // 标准 / 高清 / 原画
     RecordClickEffect,   // 无特效 / 柔光水波 / macOS缩放 / 水波+缩放
+    RecordMoreSettings,  // 录屏前级联设置菜单 (FocuSee 风格)
     BeautyShellBg,       // 冷灰 / 纸白 / 晨雾 / 曜石 / 纯影 (带渐变色块实时预览)
     BeautyShellPadding,  // 16px / 24px / 32px / 48px / 64px
     BeautyShellRadius,   // R0 / R8 / R16 / R24 / R32
@@ -153,14 +155,20 @@ struct DropdownItem {
     bool hasSwatch = false;
     D2D1_COLOR_F swatchColor1{};
     D2D1_COLOR_F swatchColor2{};
+    bool isSeparator = false;
+    bool hasChildMenu = false;
+    std::vector<DropdownItem> childItems;
 };
 
 struct DropdownMenuState {
     DropdownType type = DropdownType::None;
     D2D1_RECT_F anchorButtonRect{};
     D2D1_RECT_F menuRect{};
+    D2D1_RECT_F childMenuRect{};
     std::vector<DropdownItem> items;
     int hoveredIndex = -1;
+    int activeParentIndex = -1;
+    int hoveredChildIndex = -1;
     int previewOriginalValue = -1; // 实时预览回退备份
     BeautyBackgroundType originalBgType = BeautyBackgroundType::StudioSlate;
 };
@@ -266,6 +274,13 @@ struct RecordSetupOptions {
     bool includeKeycast = true;
     bool captureSystemAudio = false;
     bool captureMicrophone = false;
+    int zoomEffectMode = 1;        // 0: 无缩放, 1: 2D 缩放, 2: 3D 运镜
+    int countdownSeconds = 3;      // 0, 3, 5
+    bool hideDesktopIcons = false; // 录制期间自动隐藏桌面图标
+    bool hideTaskbar = false;      // 录制期间自动隐藏任务栏
+    bool typingAutoZoom = false;   // 打字自动缩放（默认关闭）
+    bool voiceEnhance = true;      // 麦克风人声降噪增强（默认开启）
+    bool requestOpenMoreSettings = false;
 };
 
 using SelectionCallback = std::function<void(

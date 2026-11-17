@@ -62,7 +62,9 @@ inline DoubleClickIntent resolveDoubleClickIntent(
         (!state.detectedQrText.empty() && isPointInsideRectF(pt, state.qrChipRect))) {
         return DoubleClickIntent::ConsumeNoOp;
     }
-    if (state.dropdownMenu.type != DropdownType::None && isPointInsideRectF(pt, state.dropdownMenu.menuRect)) {
+    if (state.dropdownMenu.type != DropdownType::None &&
+        (isPointInsideRectF(pt, state.dropdownMenu.menuRect) ||
+         isPointInsideRectF(pt, state.dropdownMenu.childMenuRect))) {
         return DoubleClickIntent::ForwardPointerDown;
     }
 

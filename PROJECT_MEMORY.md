@@ -6,6 +6,111 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-17] 七轮实机体验终局闭环：像素级鼠标点击磁吸对齐、仅麦克风降噪而系统声音 100% 原样直通、长截图控制栏硬件防入镜、0ms 瞬弹 3-2-1 倒计时圆盘、微信 GIF 防白底花屏与可双击放大分档，以及 DaVinci/Descript 级双极镜像声学频谱轨道
+- **用户 `3456×2160` (200% DPI) 真机与微信实测连续提出的 6 项核心痛点与终局根治架构**：
+  1. **【音频处理边界收敛】严格仅处理麦克风输入，100% 原样保留电脑本身背景声音 (`VoiceEnhancer.{h,cpp}`, `AudioCapture.{h,cpp}`, `CaptureDropdownMenu.cpp`, `zh.json`, `en.json`)**：
+     - *暗坑机理*：旧版 `VoiceEnhancer` 在检测到麦克风能量超阈值时将 `currentSystemDuckingGain()` 压至 `0.48f`（`-6.4 dB`）乘入 `sysBlock`，不仅压低了用户演示所需的电脑音乐/系统音效，更在电脑外放或轻微串音传入麦克风时触发自激抽吸；
+     - *终局标准*：物理移除系统音闪避压低（`currentSystemDuckingGain()` 恒返 `1.0f`），`VoiceEnhancer` 严格仅作用于 `micBlock`，系统回环音频 `sysBlock` 保持 `1.0x` 原样线性直通；全端 UI 文案同步校准为「麦克风人声降噪 / Mic Noise Suppression」。
+  2. **【录屏成片鼠标点击像素级精准对齐】消除高速点击滞后、量化错位与时钟漂移 (`StudioTimeline.{h,cpp}`, `StudioVideoCompositor.{h,cpp}`, `ScreenRecorder.{h,cpp}`)**：
+     - *五层叠加根因与全链路校准*：
+       1) **共享物理时钟零点 (`m_sessionEpoch`) 与首帧预热**：`ScreenRecorder` 在 `initializeCaptureResources()` 后先行执行一次非编码预热抓屏消化 DXGI/GDI 首次建表的 `~40ms` 延迟，随后将同一 `steady_clock::now()` 零点注入 `StudioTimelineRecorder::start` 并按每帧真实 `capturedAt` 计算墙钟对齐 PTS，消除高分屏掉帧下的时间漂移；
+       2) **低滞后滤波 + Click-Snap 点击磁吸零误差锚定**：`OneEuroFilter2D` 升级至 `(3.60, 0.140, 1.0)` 并新增 `snapTo`，在点击时刻 `[-75ms, +135ms]` 磁吸窗内平滑收敛（核心窗 `[-18ms, +45ms]` 权重 `1.0` 强制归零滞后余量），确保点击发生帧光标尖端 `0.00px` 命中真实点击点，且水波纹独立锚定在 `(rippleSrcX, rippleSrcY)` 原地扩散不随鼠标移走漂移；
+       3) **高分屏 500Hz 物理坐标采样**：`samplingLoop` 显式挂载 `PER_MONITOR_AWARE_V2` + `GetPhysicalCursorPos`，采样周期收紧至 `2ms`（点击轻滑容差提升至 `32px`）；
+       4) **半像素中心对齐亚像素逆仿射裁剪 (`cv::warpAffine`)**：替代整数 `cv::Rect` 裁剪，消除放大运镜时的 `2~6px` 像素取整错位与阶梯微抖；
+       5) **真实食指点击小手矢量光标 (`StudioCursorKind::Hand`) 与零外溢箭头尖端**：为网页/按钮 `IDC_HAND` 绘制白底墨边食指小手（指尖热点精确在 `(0,0)`），并内缩标准箭头深色箭芯消除白色圆头描边外溢。
+  3. **【长截图控制栏硬件级防入镜】全屏/最大化框选绝不截入自身工具栏 (`ScrollCaptureOverlay.{h,cpp}`)**：
+     - *暗坑机理*：`3456×2088` 最大化选区外侧无空间停靠时，`m_controlHwnd` 落入第 10 兜底位（选区右下角内部），而原 `ULW_ALPHA + WDA_NONE` 使控制栏被逐帧截入拼接长图；
+     - *终局标准*：将 `m_controlHwnd` 升级为与 `RecordingIndicator::m_hwnd` 同构的 **`ID2D1HwndRenderTarget` + `SetLayeredWindowAttributes(LWA_ALPHA)` + `WinUtils::applyUniversalRoundedCorners` + `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`**——对用户肉眼 100% 常驻清晰可见可交互、零闪烁，而在 DWM 硬件合成层对长截图抓帧 100% 自动隐形剔除（预览缩略图安全避让垫同步扩至 `10px * scale`）。
+  4. **【录屏 3,2,1 圆形倒计时 0ms 秒弹且零遮挡】根治真机看不到倒计时 (`ScreenRecorder.{h,cpp}`, `PluginEntry.cpp`, `RecordingIndicator.cpp`)**：
+     - *真机日志双元凶*：① `ScreenRecorder::startRecording` 在 UI 主线程同步初始化双路 WASAPI + 探测 `3456×2088` 硬件 MFT `extradata` 阻塞长达 `2.39s`；② `PluginEntry.cpp` 紧随 `RecordingIndicator::show()` 以选区中心为锚点弹出 `ShortcutHintOverlay`，全屏选区碰撞回退后直接盖死在正中央 `m_countdownHwnd` 之上；
+     - *终局标准*：① 开启倒计时 (`countdownSeconds > 0`) 时将 `prepareAudioAndEncoderForSession()` 移入后台 `std::async` 与 3 秒倒计时并行初始化，点击开始录屏 `<5ms` 即刻弹出 `256×256`（中心 `152px` 圆盘、`62px` 粗体数字）光学倒计时圆盘；② 倒计时阶段 `ShortcutHintOverlay` 强制传 `{LONG_MIN, LONG_MIN}` 停靠屏幕左下角且 `avoidanceRects()` 优先保护 `m_countdownHwnd`；③ `CreateDCRenderTarget` 显式启用 `GDI_COMPATIBLE` 且 `UpdateLayeredWindow` 传 `ptDst = nullptr` 锁定屏幕中心坐标。
+  5. **【微信 GIF 防白底反色花屏 + 可双击打开放大分档指引】(`StudioVideoCompositor.cpp`, `ScreenRecorder.cpp`, `StudioPreviewWindow.cpp`)**：
+     - *白底反色花屏真凶*：`GifPaletteOptimizer` 手工将静止未变像素填为 `palette[255] = 0x00000000`，但送入 FFmpeg 的 `AV_PIX_FMT_PAL8` 帧未声明 GIF89a Graphic Control Extension 透明索引且局部调色板动态刷新，导致微信表情渲染器将静止深色 IDE 背景整片清成纯白花屏；现对不透明矩形画布关闭手工 `255` 挖空，100% 交由 FFmpeg 原生合规 `gifflags=+transdiff` 执行帧间透明裁剪；
+     - *微信双击放大机制精准分档*：微信客户端将宽高 `<= 1000px` 的 GIF 强制归为「动态表情」（聊天流免点直播但禁止双击打开大图查看器放大），仅长边 `> 1000px` 才归为「普通图片」（支持双击独立查看器滚轮无级放大）。导出面板明确区分 **`GIF (微信表情 · 免点直播)`**（`<=800px`）与 **`GIF (高清大图 · 可双击放大)`**（默认 `1080P` 且自动保底长边 `>= 1080px`）并内置实时场景提示。
+  6. **【世界级专业 NLE 时间轴与双极镜像声学频谱轨道】(`StudioPreviewWindow.cpp`, `StudioVideoCompositor.cpp`)**：
+     - 摒弃旧版 `32px` 高紫底色上文字与单向折线锯齿挤压重叠的粗糙画法，升级为 `180px` 专业非线性剪辑台：**精密广播级时间标尺**（自适应人类友好整秒步长 + 5 等分次级微刻度齿）+ **`56px` 上下双舱复合视音主轨**（上舱 `17.5px` 独立微晶标题彩带与倍速胶囊物理隔离文字，下舱 `37px` 深邃声学暗槽贯穿 `0 dB` 中心轴，基于 `2048` 桶提取 + `P96` 稳健分位防爆麦压扁 + 3-Tap 汉宁核平滑，渲染 **中心对称圆头双层胶囊声波柱：Peak 瞬态柔光外衣 + RMS 均方根高亮实心核 + 静音气口微晶脉冲点**）+ **五边形钻石盾徽播放指针**。
+
+### [2026-11-17] 六轮实机体验终局闭环：修复 Win11 `ULW_ALPHA + WDA_EXCLUDEFROMCAPTURE` 倒计时圆盘隐身、演播室跨线程置顶解锁 Foreground Lock、全局「自动运镜」四端 SSOT 统一、QuickLook 6px 隔离带 + 14px 微晶滚动条，以及演播室双通道真实混音声波包络图
+- **用户真机实测与 FocuSee 对比提出的 5 项打磨诉求与底层根因终局方案**：
+  1. **录屏倒计时圆盘隐身 / 只看到一个 `3` 根因与修复 (`RecordingIndicator.cpp`, `CaptureOverlay.{h,cpp}`, `ScreenRecorder.cpp`)**：
+     - *三重暗坑机理*：① `m_countdownHwnd` 采用 `UpdateLayeredWindow(..., ULW_ALPHA)` 每像素预乘 Alpha 分层位图，而 Windows 11 DWM 对 `ULW_ALPHA` 与 `SetWindowDisplayAffinity(..., WDA_EXCLUDEFROMCAPTURE)` 互斥——同时设置时 DWM 直接丢弃分层表面，导致屏幕中央圆盘完全隐身（用户仅看到顶部常规控制条 `READY 3`）；② `CaptureOverlay::confirmSelection` 在 `OverlayMode::RecordRegion` 下先启动录屏倒计时，随后在主线程调用 `cleanupAfterDelivery()` 触发全屏 `cv::Mat` 无用裁剪与 `WinUtils::trimWorkingSet()` 软缺页抖动，吞噬倒计时前段帧率；③ 倒计时首帧未隔离启动前残留 `VK_SPACE` 按键状态，且圆盘内 `Space 跳过` 胶囊在高 DPI 下未禁折行；
+     - *终局标准*：① 倒计时阶段 `ScreenRecorder` 尚未初始化抓屏（归零销毁并等待 `65ms` DWM 消隐后才抓第 0 帧），故 `m_countdownHwnd` 严禁调用 `WDA_EXCLUDEFROMCAPTURE`，保持 `WinUtils::excludeWindowFromCapture` (`WDA_NONE`) + `applyTaskbarSafeOverlayStyle`，先执行 `renderCountdownLayered()` 填充首帧位图再 `SetWindowPos(HWND_TOPMOST, ..., SWP_SHOWWINDOW | SWP_NOACTIVATE)`；② `RecordRegion` 确认选区时跳过无用裁剪，先调用 `cleanupAfterDelivery(false)` 销毁覆盖层且跳过热启动前 `trimWorkingSet()`（留待 `stopRecording` 冷路径修剪），再启动录屏回调；③ 倒计时循环前 `180ms` 屏蔽物理 `VK_SPACE` 残留抖动，DirectWrite 文本格式显式开启 `DWRITE_WORD_WRAPPING_NO_WRAP` 并拓宽绘制框。
+  2. **录屏完成后演播室编辑窗口默认被压在后台需点任务栏图标根治 (`StudioPreviewWindow.cpp`)**：
+     - *暗坑机理*：停止录屏由全局热键或带 `WS_EX_NOACTIVATE` 的悬浮指示条触发，前台进程属于外部被录应用（浏览器/IDE），后台收尾完成后回投 UI 线程调用的 `SetWindowPos(HWND_TOP)` 与裸 `SetForegroundWindow` 被 Windows 内核 `Foreground Lock` 拦截，仅闪烁任务栏图标；
+     - *终局标准*：`StudioPreviewWindow::showSession` 实施三段式无侵入置顶激活管线：`SetWindowPos(HWND_TOPMOST, ..., SWP_SHOWWINDOW)` 越过外部窗口 -> `AllowSetForegroundWindow(ASFW_ANY)` + `AttachThreadInput(curTid, fgTid, TRUE)` + `BringWindowToTop` / `SetForegroundWindow` / `SetActiveWindow` / `SetFocus` 解除前台锁 -> `SetWindowPos(HWND_NOTOPMOST, ...)` 恢复普通顶层最前窗口（既无需点击任务栏即刻浮现，又不永久遮挡后续导出目录对话框）。
+  3. **录屏工具栏去除「macOS缩放」与全产品「自动运镜」四端 SSOT 统一 (`CaptureToolbarLayout.cpp`, `CaptureDropdownMenu.cpp`, `CaptureRenderer.cpp`, `StudioPreviewWindow.cpp`, `zh.json`, `en.json`, `SpotlightPage.tsx`)**：
+     - 彻底清除全库 UI 中晦涩割裂的 `macOS缩放` / `Mac Zoom` / `缩放效果` / `镜头运镜模式` / `关键帧自动放大` 等杂糅命名，全局统一收敛为精炼直观的 **`自动运镜`**（完整说明称 **`鼠标自动运镜`**，英文 **`Auto Zoom`**；三档子模式统一为 **`关闭 / 2D 运镜 / 3D 运镜`**，键盘联动统一为 **`打字自动运镜`**）；
+     - 录屏准备栏按钮精炼为四态 **`无效果 / 点击波纹 / 自动运镜 / 波纹+运镜`**，并与 `zoomEffectMode`、`/recording/studioAutoZoom` 及右侧齿轮菜单、设置中心、演播室抽屉达成 100% 单一事实源双向实时联动。
+  4. **QuickLook 快速预览右侧滚动条无法点击拖拽根治 (`QuickLookApp.css`)**：
+     - *双重暗坑机理*：① `<WindowResizeHandles />` 的 `.resize-handle--right` (`right: 0; width: 6px; z-index: 99999`) 完全盖死贴边渲染的 `5px` 滚动条，鼠标移入永远触发窗口左右拉伸 (`ew-resize`)；② `index.css` 全局声明 `* { scrollbar-width: thin; scrollbar-color: ... }`，导致现代 Chromium (WebView2) 强制锁定原生 `5px` 窄条而忽略 `::-webkit-scrollbar` 宽度定制；
+     - *终局标准*：对齐 `SearchApp` 黄金范式，为 `.ql-main` 施加 `border-right: 6px solid transparent; background-clip: padding-box` 物理隔离右边缘拉伸带，对所有滚动视图声明 `scrollbar-width: auto !important; scrollbar-color: auto !important` 解锁 WebKit 自定义，并配备位于 `6px~20px` 黄金交互带的 `14px` 宽、`min-height: 44px` 三态微晶高对比滑块。
+  5. **对标 FocuSee 的演播室磁性切片轨道真实混音音频声波包络图 (`StudioTimeline.{h,cpp}`, `ScreenRecorder.{h,cpp}`, `StudioVideoCompositor.{h,cpp}`, `StudioPreviewWindow.{h,cpp}`)**：
+     - *双通道声波采集*：① **录制期零开销主通道**：`ScreenRecorder::encodeAvailableAudio` 在读取 48kHz 混音浮点 PCM 帧时同步记录块峰值至 `m_liveAudioWaveformPeaks`（含丢帧静音对齐与 `16384` 上限双桶 Max-Pool 折半保底），停止录制时 0ms 直通移交 `StudioTimelineData::audioWaveformPeaks`；② **FFmpeg 极速音频解码兜底**：新增 `StudioVideoCompositor::extractAudioWaveformPeaks`（跳过全部视频 packet 仅解码音频流，60s 视频 `<5ms` 提取 640 桶归一化峰值）；
+     - *非线性切片映射渲染*：`StudioTimelineAnalyzer::sampleWaveformRangePeak` 按每个 `StudioVideoClip` 的 `[srcStartMs, srcEndMs]` 动态执行区间 Max-Pooling、`0.8%` 底噪静音气口门限过滤与 $x^{0.68}$ 感知响度压缩，在紫色切片卡片下半部渲染「柔和连续山峰面积图 + 已播高亮圆头微晶声波柱」（无音轨录屏自动呈现通透静音基准细线），辅助用户一眼定位说话停顿气口执行 `拆分(S)` 剪除。
+  6. **三大核心领域（截图录屏演播室 / 文件与全文内容搜索 / 按键回显硬断言）操作系统级端到端 (E2E) 门禁全接入 (`scripts/test_capture_recording_e2e.ps1`, `scripts/test_search_content_e2e.ps1`, `scripts/test_recording_keycast_e2e.ps1`, `deploy.ps1`)**：
+     - 彻底补齐此前 `verify_lifecycle.ps1` 仅测取消路径、搜索缺少跨进程 Named Pipe 查询实证、Keycast 存在软断言兜底的工程盲区，将三大 E2E 门禁全量挂载至 `deploy.ps1` 主干发布流水线：
+       1) **截图·贴图·录屏·圆形倒计时·演播室 6 关全链路 E2E (`test_capture_recording_e2e.ps1`)**：覆盖 `400×300` 区域框选 + 矩形标注 + PNG 尺寸校验与 Win32 多格式剪贴板位图校验、一键桌面贴图 `Tools3000_PinWindow` 创建与回收、录屏 60FPS 圆形倒计时窗 `Tools3000_RecordingCountdown` 可见性与 `GetWindowDisplayAffinity == WDA_NONE (0)` 防隐身断言、倒计时归零自动转录制、外部窗口抢焦下停止录屏触发 `Tools3000_StudioPreviewWindow` 自动越层置顶，以及演播室切片拆分 (`S`) + 右上角导出按钮（兼支持 `Ctrl+E` / `Ctrl+Enter`）+ 异步合成导出美化成片 MP4 落盘与工作台自动收起；
+       2) **文件搜索与文档内容全文搜索跨进程 Named Pipe E2E (`test_search_content_e2e.ps1`)**：在真实 NTFS 卷构建隔离语料库（含 `.ch` 自定义源码与 `.md` 中文手册），通过带 `TokenImpersonationLevel::Impersonation` 内核身份鉴权与 4 字节小端帧头协议的 Named Pipe 跨进程驱动 `Tools3000_Service.exe`（`--portable-isolated` 下支持 `TOOLS3000_TEST_ONLY_DRIVE` 单卷隔离提速），实测校验 `DEMAND_START` 冷启动静默、显式唤起搜索唤醒服务、`getDbStats < 500ms` 无锁竞争响应、多词中文检索（`"星云科技 阶梯价"`）、拼音首字母检索（`"xykj cgjtj"`）、`content:` 跨 `.ch` 与 `.md` 全文检索及高亮行 `snippets` 返回、以及主进程退出后服务会话常驻契约；
+       3) **按键回显 (Keycast) 与录屏停靠联动 5 关硬断言 E2E (`test_recording_keycast_e2e.ps1`)**：废除历史软断言兜底，100% 强制校验日常 `smart_shortcuts` 模式普通单字母打字零误弹、注入 `Ctrl+Shift+P` 与上档标点 `Ctrl+Shift+=` 真实弹出可见 `Tools3000_KeycastOverlay` 且几何尺寸合法、录屏停靠态拼音/空格/退格静默防刷屏及录屏 MP4 落盘复位；
+       4) **后台非交互测试会话内核边界治理 (`CaptureBackend.cpp`, `KeyboardHook.{h,cpp}`, `main.cpp`)**：严格仅在显式测试环境变量门控下（`TOOLS3000_ALLOW_INJECTED_MOUSE=1` / `TOOLS3000_ALLOW_INJECTED_KEYBOARD=1`，正式用户运行态 0 行为改变），为无桌面句柄权限的后台会话提供 `GdiCaptureBackend` 动态测试帧合成兜底与 `WM_TOOLS3000_TEST_INJECT_KEY` -> `KeyboardHook::injectTestKeyEvent` 受控测试注入通道；PowerShell 测试进程统一声明 `PER_MONITOR_AWARE_V2` 并采用 `FileShare.ReadWrite` 共享读取运行期日志。
+
+### [2026-11-17] 五轮实机深水区闭环：根治文件搜索冷启动 243s USN 积压 / 锁竞争熔断与 `0.1-0.9s` 秒表循环重置、60FPS 真透明纯圆形光学倒计时圆盘，以及演播室磁吸拆分删除与 120FPS 滑轨实时跟画
+- **用户真机实测与截图取证的三大核心诉求**：
+  1. **紧急搜索故障与 `0.1s~0.9s` 循环跳变**：用户搜索 `"星云科技 阶梯价"` 时，界面先一直卡在「正在极速连接文件索引服务...」且左下角状态栏「已耗时」在 `0.1~0.9` 秒之间死循环重置，最终报「文件索引服务暂不可用」；
+  2. **录屏倒计时动画粗糙方框重塑**：原倒计时在开启演播室自动运镜时退化为 `456×166` 的 GDI 矩形方框，缺乏圆环动效与现代桌面质感；
+  3. **演播室非线性剪辑与滑轨跟画体验重构**：摒弃反直觉的「插入红块剪除片段」模式，升级为符合人类直觉的 **「选位置点拆分 -> 再选位置点拆分 -> 选中中间片段按 Delete 删除（自动磁吸拼接）」**，并实现鼠标在时间轴轨道上滑动时画面如 FocuSee 般毫秒级实时丝滑跟随。
+- **搜索故障三重连环真凶（`tools3000.log`、`Tools3000_Service.log` 与 `fsutil usn queryjournal` 实证还原）与终局修复**：
+  1. **真凶一（D 盘 `1.41 GB` 历史 USN 积压逐块重放阻塞 243s + 批量快照导入重复爬树）**：实机 `Tools3000.db` 停留在 24 小时前的旧 `lastUsn`，期间 D 盘虚拟机/下载器累积了 `1.41 GB`（约两千万条）USN 日志；`catchUpUsnJournal` 用 64KB 缓冲逐条重放并对数万变更同步调用 `OpenFileById`，硬生生卡住 `g_SearchIndexReady = false` 长达 `166~243s`（而全量重扫 D 盘 50 万条 MFT 仅需 `0.8s`）；
+     - *修复 (`MftParser.cpp`, `FileIndexStore.{h,cpp}`, `StringArena.h`, `service/main.cpp`)*：① `catchUpUsnJournal` 新增 `kMaxIncrementalUsnSpanBytes = 32 MB` 智能快路阈值，积压超 `32 MB` 时直接切换至秒级全量 `EnumerateFiles()` 并在 `>= 4 MB` 时标记后台异步保存最新快照游标防滚雪球；同步单文件 stat 封顶 `256` 条，超出部分调用新增的 `FileIndexStore::markMetadataDirty(frn)` 交由后台 `BackgroundHydrateLoop` 目录级批量补齐；② `StringArena::reserveInternTable` + `upsert(..., bulkImport=true)` + `recomputeHierarchyMetadata()` 三阶段按树深桶排汇总，彻底消除 3000 万次跨页随机哈希爬树。
+  2. **真凶二（`DatabaseManager::m_mutex` 跨进程锁竞争拖垮主进程 `MessageBridge` 异步线程池触发 30s 熔断）**：前端每 500ms 轮询 `search.getDbStats`，服务端虽在初始化期间放行 `getDbStats`，但 `DatabaseManager::getStats()` 与耗时 `loadSnapshot()` 争抢同一把 `m_mutex`，且 `SearchPlugin.cpp` 对辅助 IPC 默认使用 `120000ms` 超时，导致主进程全部异步 IPC worker 在 `14:18:12~14:19:06` 连续报 30s 超时并触发熔断拒绝请求；
+     - *修复 (`DatabaseManager.{h,cpp}`, `SearchPlugin.cpp`, `SearchApp.tsx`)*：将 `m_mutex` 物理拆分为纳秒级纯内存 `m_pathMutex` 与快照专用 `m_ioMutex`（`getStats()` 实测 `2.6ms` 零阻塞返回，`catchUpUsnJournal` 移至 `UnmapViewOfFile` 与 `m_ioMutex` 释放之后）；为 `search.getDbStats` / `search.sync` / `search.getSearchHistory` 等全部辅助 IPC 收紧 `1500~3500ms` 短超时预算，并在 `SearchApp.tsx` 补齐索引就绪原地自动重刷查询的自愈链路。
+  3. **真凶三（`useSearchEngine.ts` 重试重入清零秒表）**：每次 `retryTimerRef`（间隔 `~0.9s`）重跑 `runQuery()` 时，无论是否属于同一查询 `sequence`，`startScanStopwatch(sequence)` 均无条件将 `scanElapsedSeconds` 置 `0` 并重置 `startTime`；
+     - *修复 (`useSearchEngine.ts`)*：同一 `sequence` 的秒表运行中时直接复用原 `startTime`（并对 `enabledDrives` 等数组依赖做值签名稳定化），保持耗时严格单调递增，并由 `useSearchEngine.test.tsx` 锁死防回退。
+- **60FPS 真透明纯圆形光学倒计时圆盘 (`RecordingIndicator.{h,cpp}`)**：
+  - 彻底废除 `456×166` GDI 矩形方框与 `CreateEllipticRgn` 1-bit 锯齿，改用 `220×220` 全透明分层画布 (`UpdateLayeredWindow` + `ID2D1DCRenderTarget` 预乘 Alpha) 承载中心 `132px` 微晶渐变正圆盘：内置 `16ms` (60 FPS) 顺滑圆头扫秒进度弧 + 前锋宝石光点、每秒向外扩散消隐的声呐呼吸光波环 (`Sonar Ripple Halo`)、数字切换前 `240ms` 三次缓出弹性微缩放 (`1.24x -> 1.00x`) 与圆盘内极简 `Space 跳过` 微胶囊，进入正式录制后自动切回 `100ms` 低功耗定时器。
+- **演播室磁吸波纹切片时间轴与 60~120FPS 实时滑轨跟画 (`StudioTimeline.{h,cpp}`, `StudioPreviewWindow.{h,cpp}`, `ScreenRecorder.cpp`, `StudioVideoCompositor.cpp`)**：
+  1. **磁吸波纹切片模型 (`StudioVideoClip`)**：引入连续切片序列与双向纯函数映射（`splitClipAtSourceMs`、`computeClipsKeptDurationMs`、`mapKeptMsToSourceMs`、`mapSourceMsToKeptMsViaClips`、`buildCutSegmentsFromClips`）；传输栏配备剪刀图标 `拆分 (S)`、`删除片段 (Delete)`、单切片独立倍速胶囊（`1.0x / 1.5x / 2.0x`）及 40 步 `Ctrl+Z / Ctrl+Y` 撤销重做栈，点击选中中间紫色音频波形切片按 `Delete` 即刻波纹删除并无缝闭合总时长。
+  2. **零延迟鼠标滑轨实时跟画 (`Live Timeline Hover Skimming`)**：录制期 `m_livePreviewDeck` 升级为 `1:1` 帧步长（`540` 帧 `768px` 高清内存牌组），文字标注 `drawStyledTextCalloutBgr` 挂载 `thread_local` DirectWrite 工厂与 12 槽位 LRU 位图缓存（单帧 `<0.05ms`）；鼠标无需按下、直接在任意时间轴轨道上左右滑动即以 `8ms` (`120FPS`) QPC 节流实时驱动预览舞台画面同步变化（移出轨道自动归位原播放头位置）。
+
+### [2026-11-17] 四轮实机体验精雕：演播室停止录制 0ms 瞬时秒开（消除 SAPI 12.1s 解码等待 + 内存预览牌组直通）、异步 STA 选图防卡死、左侧分栏 28 宫格正方形背景与 19 款可视化视频标注工作台
+- **用户真机实拍对比图与日志取证锁定的 4 大深水区优化**：
+  1. **录屏停止后卡顿等待 `12.1s` 才弹出演播室的真凶与 `<100ms` 秒开方案 (`StudioTimeline.cpp`, `ScreenRecorder.{h,cpp}`, `StudioPreviewWindow.cpp`)**：
+     - *真机日志铁证*：`tools3000.log` 显示 `13:06:35.752 -> 13:06:47.854` 在停止 11.5s 录屏时阻塞了 `12.10s`，随后 `extractPreviewDeck` 整片二次 FFmpeg 解码又耗时 `495ms`；
+     - *双重根因*：① Windows SAPI `ISpRecoGrammar::SetDictationState(SPRS_INACTIVE)` 在麦克风存在未断句底噪音频时会同步等待完整 Viterbi 尾静音解码超时（约 10~12 秒）；② 停止后又将刚写入磁盘的 MP4 从头软解码抽帧；
+     - *终局修复*：① `speechRecognitionLoop` 退出前率先调用 `recognizer->SetRecoState(SPRST_INACTIVE_WITH_PURGE)` 瞬时丢弃未决缓冲（`<3ms` 秒退），且仅在 `autoCaptionsEnabled && captureMicrophone` 同时开启时才创建 SAPI 线程（默认 `studioAutoCaptions = false`）；② `ScreenRecorder` 在演播室录制期间顺手留存最多 240 帧 `840px` 均匀抽稀内存预览牌组 (`m_livePreviewDeck`)，停止录屏后直接零拷贝移交 `StudioPreviewWindow::showSession`，实现 0ms 免磁盘重解码秒开。
+  2. **点击「选图...」卡住根治 (`StudioPreviewWindow.cpp`)**：
+     - *根因*：此前在 `WM_LBUTTONDOWN` 处理栈中直接于主 UI 线程同步调用模态 `IFileOpenDialog::Show(m_hwnd)`，与未闭合鼠标按下状态、`33ms` Direct2D 播放定时器及慢速 Shell 云盘/网络盘命名空间扩展发生跨套间/消息泵阻塞；
+     - *终局修复*：`browseCustomWallpaperImageAsync` 与 `browseExportDirectoryAsync` 彻底迁入独立后台 STA 线程（`COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE` + `dlg->Show(nullptr)` + `m_fileDialogInFlight` 单飞锁），选定后通过 `PostMessageW(WM_STUDIO_CUSTOM_BG_PICKED)` 异步通知 UI 线程并自动归入「自定义」背景页。
+  3. **左侧图标分栏骨架 + 朴实「背景」文案 + `7×4 = 28` 宫格圆角正方形小方框缩略图 (`StudioPreviewWindow.{h,cpp}`, `StudioVideoCompositor.cpp`)**：
+     - 对标 FocuSee 升级为「左侧 46px 竖向图标导航栏（背景 / 标注 / 运镜 / 字幕）+ 286px 专属抽屉面板 + 右上角导出按钮 + 右侧宽敞预览舞台」架构；
+     - 文案去浮夸化（直接命名为 `视频尺寸`、`内边距`、`内边框`（新增 `0~12px` 滑块与彩色选色圆点）、`圆角`、`阴影`、`背景模糊`、`背景`），背景列表升级为 `7 列 × 4 行 = 28 个` `64×64` 圆角正方形缩略图并支持鼠标滚轮直接上下翻页。
+  4. **19 款可视化视频标注卡片库与舞台直接拖拽缩放 (`StudioTimeline.h`, `StudioVideoCompositor.cpp`, `StudioPreviewWindow.cpp`)**：
+     - 「标注」抽屉提供三大分组可视化矢量卡片：**文本（6 款：纯文本、实心胶囊、对话气泡、虚线框、霓虹发光框、自动递增步骤圆标 `1,2,3`）**、**形状（9 款：发光直线、引导虚线、细箭头、直角框、圆角框、圆环、手绘涂鸦双圈、带呼吸微弹跳动效的玫粉粗体大箭头 `BoldArrow`、带脉冲波纹的点击小手 `HandPointer`）**、**遮罩与局部放大（4 款：聚光灯、像素马赛克、圆形 `2.2x` 光学放大镜 `Magnifier`、局部区域缩放）**；支持点击卡片一键放置并在舞台直接按住拖拽移位、拖控制点调节大小/箭头方向及实时换色改字。
+
+### [2026-11-17] 三轮实机深水区闭环：FocuSee 级三轨非线性演播室（运镜轨交互插入 / 片段裁剪与 2x 倍速 / 源锚定视频标注打码 / 3D 透视运镜 / 89 张高清摄影壁纸库）、静态帧智能 VFR 压缩（体积直降 80%+）、播客级人声降噪闪避、录制前级联菜单、录制栏防入镜与按键/鼠标回显一致性及插件市场全面下线
+- **用户三轮虚拟机与真机对比实测反馈的 13 项诉求与终局架构方案**：
+  1. **演播室导出 MP4 体积暴增 4.6 倍（`77.49 MB` vs 原片 `16.81 MB`）根因与静态帧 VFR 智能抽帧引擎 (`StudioVideoCompositor.cpp`)**：
+     - *暗坑机理*：原片 `094506.mp4` (`125s`) 在静止桌面下仅编码 `954` 个 VFR 包（`1,123 kbps`）；而演播室重采样为 30fps CFR 后，在无硬编环境的虚拟机 CPU `libopenh264` 上以 `5.2 Mbps` 强行编码全部 `3,750` 帧（85% 静止画面空耗 `66.12 MB` P 帧 + `125` 个 1 秒间隔 I 帧）；
+     - *终局标准*：① 实施 **Static-Frame VFR Elision（静态帧智能 VFR 抽帧编码）**：当合成画面与上一已编码帧最大通道差 `<= 2` 且平均绝对差 `< 0.14` 时，在 `1.0s` 窗口内跳过重复送帧并保持 `encFrame->pts = frameIdx` 严格对齐（流尾自动补发尾帧确保总时长零误差）；② 非 MF 编码器 `gop_size` 扩至 `outFps * 4`，桌面演示 1080p 基准目标码率科学收敛至 H.264 `2.8 Mbps` / HEVC `1.9 Mbps`（`libx264` 挂载自适应 `CRF 19/23/27` + VBV 限幅），同等时长成片体积直降 **80%+**（`~8~12 MB`）且编码提速 3~5 倍。
+  2. **防碎抖智能运镜聚类、默认开启演播室模式与 3D 空间透视运镜 (`StudioTimeline.{h,cpp}`, `StudioVideoCompositor.cpp`, `PluginEntry.cpp`)**：
+     - `/recording/studioMode` 默认开启 (`true`，`TOOLS3000_TEST_MODE=1` 无人值守测试自动旁路模态预览窗）；`typingAutoZoom` 默认关闭 (`false`)；
+     - `samplingLoop` 自动过滤拖拽操作（位移 `> 16px` 或按住 `> 360ms`）及点击 `RecordingIndicator` 自身窗口的动作；`buildAutoZoomSegments` 新增前后 `120ms` 高速路过点击滤除（`flyByDist > 160px`）与跨屏散点孤立误触抑制，合并间隙拓宽至 `1050ms`（尾驻留 `1400ms`）；
+     - 新增 `StudioZoomMode::Motion3D`：临界阻尼弹簧同步驱动 `tiltYawDeg` / `tiltPitchDeg` 与镜头速度运动模糊 (`motionBlurEnabled`)，通过三维旋转透视矩阵 `cv::getPerspectiveTransform` 实时渲染空间立体倾角。
+  3. **录制状态工具栏防入镜与录制前 FocuSee 级联快捷菜单 (`RecordingIndicator.cpp`, `RecordingEnvironmentGuard.{h,cpp}`, `CaptureDropdownMenu.cpp`, `CaptureRenderer.cpp`, `CaptureInput.cpp`)**：
+     - 在保持 `WinUtils::excludeWindowFromCapture` (`WDA_NONE`) 单测契约不变的前提下，`RecordingIndicator` 在录制态对控制条、选区呼吸红框与倒计时窗直接施加 `SetWindowDisplayAffinity(..., WDA_EXCLUDEFROMCAPTURE)`（进入录制完成卡片态恢复 `WDA_NONE`）；
+     - 录屏准备工具栏新增齿轮按钮与左展二级级联菜单（`缩放效果 > [无/2D缩放/3D运镜]`、`录制倒计时 > [无/3秒/5秒]`、`隐藏桌面图标`、`隐藏任务栏`、`打字自动缩放`、`人声降噪增强`、`更多设置`），由 `RecordingEnvironmentGuard` 幂等守护桌面 `SysListView32` 与主副屏任务栏显隐并在停止/异常退出时 100% 自动恢复。
+  4. **三轨非线性交互演播室：轨道点击插运镜、片段剪除/2x 快进、源坐标锚定视频标注与高清摄影壁纸库 (`StudioPreviewWindow.{h,cpp}`, `resources/wallpapers/*.jpg`)**：
+     - **三轨时间轴**：支持在运镜轨空白处单击直接插入运镜块、选中块在预览舞台单击重设 `(focusX, focusY)` 焦点、拖拽块左右边缘调节时长/中间平移/双击启停/右键或 `Delete` 删除；支持插入 `StudioCutSegment` 剪除片段 (`speedFactor = 0`，预览自动跳过、导出同步裁剪音视频并重映射后续音频与 `.srt` PTS) 及 `2.0x` 快进片段；
+     - **舞台 5 大视频标注工具 (`StudioAnnotationItem`)**：`模糊打码`、`聚光灯`、`高亮框`、`指示箭头`、`文字批注` 全量采用源画面 `[0..1]` 归一化坐标锚定，在 2D/3D 镜头推拉摇移中严丝合缝跟随目标控件不漂移；
+     - **画布精调与壁纸体系**：新增画幅比例（`原比例 / 16:9 / 9:16 / 4:3 / 1:1`）及 `画框留白 / 背景模糊 (0~40px) / 内框圆角 (0~36px) / 内框阴影 (0~100%)` 四条实时拖拽滑块；内置 8 张原创高清摄影/3D 丝绸壁纸（随安装包分发至 `resources/wallpapers/`），演播室自动扫描 `%LOCALAPPDATA%\Tools3000\wallpapers` 等本地扩展壁纸库按「精选 / 暗色 / 浅色 / 风景」分类翻页，并支持自定义选图。
+  5. **播客级实时麦克风人声降噪增强 (`VoiceEnhancer.{h,cpp}`, `AudioCapture.cpp`)**：
+     - 48kHz 双声道实时管线集成 85Hz 二阶 Butterworth 高通滤波（滤除空调/桌面共振）、自适应环境底噪门限抑制、260Hz 去浑浊 + 3.4kHz 人声清晰度提升双二阶 EQ、3:1 广播级平滑 AGC、`-1.0 dBFS` `tanh` 软限幅防爆音，以及人声活跃时自动将系统背景音平滑闪避压低至 `48%`。
+  6. **按键回显 `Ctrl+Shift++` 符号纠偏与区域停靠鼠标/键盘回显同源化 (`KeyTranslator.cpp`, `KeycastOverlay.cpp`, `CursorOverlay.cpp`, `StudioVideoCompositor.cpp`)**：
+     - 修复 `KeyTranslator::resolveKeycastEvent` 在含 `Ctrl/Alt/Win` 修饰键时忽略 `Shift` 导致 `Ctrl+Shift+=` 显示为 `Ctrl + Shift + =` 的问题：针对全部 11 枚 `VK_OEM_*` 标点键在 `Shift` 按下且非纯 `AltGr` 时精准解析上档符号（`+`, `_`, `?`, `>`, `<`, `:`, `"`, `{`, `}`, `|`, `~`），同时保持主键盘数字 `Ctrl + Shift + 8` 不变；
+     - `KeycastOverlay` 区域录屏停靠态不再硬编码底部居中，完整复用用户设置的 6 宫格方位锚定在录屏选区内；`CursorOverlay` 与 `StudioVideoCompositor` 点击回显直接读取 `/spotlight/` 的 `leftClickColor`、`rightClickColor` 与 `clickRippleStyle`（星芒放射/双环靶心/柔光等），实现局部录屏与全局鼠标回显 100% 视觉同源。
+  7. **安全彻底移除插件扩展市场及 4 个预览插件 (`MessageBridge.cpp`, `PluginsPage.tsx`, `routes.ts`, `App.tsx`)**：
+     - 物理下线 `plugins.getMarketplace` / `plugins.install` / `plugins.uninstall`、`getMarketplaceCatalog`（含 `ai_assistant`、`color_picker`、`clipboard_manager`、`markdown_preview` 4 项）及前端 `ExtensionPage`，模块管理页纯粹聚焦于 7 大内置核心原生模块的启停与配置跳转。
+
 ### [2026-11-17] 二轮实机深水区闭环：PP-OCRv4 动态符号维度内存重写器、PE Manifest 高分屏第三方 IME 缩放、4K 硬件编码防灰块与全格式导出台 (`MP4 / HEVC / 微信直发 GIF / 动态 WebP / 8 款高定背景`)
 - **用户二轮实机测试反馈的 6 大核心痛点与世界级终局方案**：
   1. **PP-OCRv4 下载就绪后报 `reshape_layer.cpp: srcTotal == dstTotal` 静默回退与表格空列 `C` 根治 (`DeepOcrEngine.{h,cpp}`, `OcrTableReconstructor.cpp`)**：

@@ -67,24 +67,25 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
             50.0f, state.recordSetup.qualityLevel, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false
         });
 
-        // 4. 鼠标点击特效切换 (无 / 柔光水波 / macOS缩放 / 水波+缩放)
+        // 4. 鼠标自动运镜与点击波纹切换 (无效果 / 点击波纹 / 自动运镜 / 波纹+运镜)
+        const bool autoZoomOn = (state.recordSetup.zoomEffectMode != 0);
         std::wstring clickText;
         if (zh) {
-            clickText = (state.recordSetup.showClickZoom && state.recordSetup.showClickEffects) ? L"水波+缩放"
-                      : state.recordSetup.showClickZoom ? L"macOS缩放"
-                      : state.recordSetup.showClickEffects ? L"柔光水波"
-                      : L"无点击特效";
+            clickText = (autoZoomOn && state.recordSetup.showClickEffects) ? L"波纹+运镜"
+                      : autoZoomOn ? L"自动运镜"
+                      : state.recordSetup.showClickEffects ? L"点击波纹"
+                      : L"无效果";
         } else {
-            clickText = (state.recordSetup.showClickZoom && state.recordSetup.showClickEffects) ? L"Ripple+Zoom"
-                      : state.recordSetup.showClickZoom ? L"Mac Zoom"
-                      : state.recordSetup.showClickEffects ? L"Ripple"
+            clickText = (autoZoomOn && state.recordSetup.showClickEffects) ? L"Ripple+Zoom"
+                      : autoZoomOn ? L"Auto Zoom"
+                      : state.recordSetup.showClickEffects ? L"Click Ripple"
                       : L"No FX";
         }
         specs.push_back({
             ToolbarCommand::RecordCycleClickEffect, MarkupTool::Rectangle, {},
             clickText,
-            zh ? 94.0f : 100.0f, 0, LineStyle::Solid, ArrowStyle::Standard,
-            state.recordSetup.showClickEffects || state.recordSetup.showClickZoom,
+            zh ? 92.0f : 104.0f, 0, LineStyle::Solid, ArrowStyle::Standard,
+            state.recordSetup.showClickEffects || autoZoomOn,
             false, false, true // separator
         });
 
@@ -108,6 +109,14 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
             ToolbarCommand::RecordToggleMicrophone, MarkupTool::Rectangle, {},
             L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard,
             state.recordSetup.captureMicrophone && state.recordSetup.format != RecordFormat::GIF,
+            false, false, false
+        });
+
+        // 7.5 录屏高级快捷设置菜单 (缩放效果 / 录制倒计时 / 隐藏桌面图标 / 隐藏任务栏 / 打字自动缩放 / 人声降噪 / 更多设置)
+        specs.push_back({
+            ToolbarCommand::RecordToggleSettingsMenu, MarkupTool::Rectangle, {},
+            L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard,
+            state.dropdownMenu.type == DropdownType::RecordMoreSettings,
             false, false, false
         });
 
@@ -1110,7 +1119,7 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
         case ToolbarCommand::RecordToggleFormat: return chinese ? L"录制格式 (MP4 / GIF)" : L"Recording Format (MP4 / GIF)";
         case ToolbarCommand::RecordCycleFps: return chinese ? L"录制帧率" : L"Frame Rate";
         case ToolbarCommand::RecordCycleQuality: return chinese ? L"录制画质" : L"Video Quality";
-        case ToolbarCommand::RecordCycleClickEffect: return chinese ? L"鼠标点击特效" : L"Click Effects";
+        case ToolbarCommand::RecordCycleClickEffect: return chinese ? L"鼠标自动运镜与点击波纹" : L"Auto Zoom & Click Ripple";
         case ToolbarCommand::RecordToggleKeycast: return chinese ? L"按键回显 (Keycast)" : L"Keycast Overlay";
         case ToolbarCommand::RecordToggleSystemAudio:
             return button.boolParam
@@ -1120,6 +1129,8 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
             return button.boolParam
                 ? (chinese ? L"麦克风: 已开启 (点击静音)" : L"Microphone: ON (Click to mute)")
                 : (chinese ? L"麦克风: 已静音 (点击开启)" : L"Microphone: Muted (Click to enable)");
+        case ToolbarCommand::RecordToggleSettingsMenu:
+            return chinese ? L"更多录屏选项 (自动运镜 / 倒计时 / 隐藏桌面图标)" : L"Recording Options (Auto Zoom / Countdown / Hide Icons)";
         case ToolbarCommand::RecordStartConfirm: return chinese ? L"开始录制 (Enter)" : L"Start Recording (Enter)";
         default: return L"";
     }

@@ -108,8 +108,11 @@ public:
     void clear();
 
     // Inserts or replaces the record for `init.fileReferenceNumber`.
-    void upsert(const FileRecordInit& init, bool metadataHydrated = false);
+    // When `bulkImport` is true, skips per-record incremental tier/size-propagation since
+    // `recomputeHierarchyMetadata()` will run once after the batch completes.
+    void upsert(const FileRecordInit& init, bool metadataHydrated = false, bool bulkImport = false);
     bool updateMetadata(uint64_t frn, uint64_t fileSize, uint64_t creationTime, uint64_t lastWriteTime) noexcept;
+    bool markMetadataDirty(uint64_t frn) noexcept;
     bool erase(uint64_t frn);
 
     // Finalizes `pathTier`, `dirClassFlags`, `dirStateBits`, `treeDepth`, and `folderPriority`

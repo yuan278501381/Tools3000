@@ -16,6 +16,10 @@
   --ql-code-bg: rgba(15, 17, 23, 0.75);
   --ql-code-line-height: 21px;
   --ql-gutter-width: 48px;
+  --ql-scrollbar-silent: rgba(148, 163, 184, 0.32);
+  --ql-scrollbar-thumb: rgba(148, 163, 184, 0.54);
+  --ql-scrollbar-hover: rgba(226, 232, 240, 0.84);
+  --ql-scrollbar-active: var(--primary);
 }
 
 [data-theme="light"] {
@@ -30,6 +34,10 @@
   --ql-surface-btn-hover: rgba(0, 0, 0, 0.09);
   --ql-footer-bg: #f4f4f8;
   --ql-code-bg: #f8f8fc;
+  --ql-scrollbar-silent: rgba(100, 116, 139, 0.28);
+  --ql-scrollbar-thumb: rgba(100, 116, 139, 0.50);
+  --ql-scrollbar-hover: rgba(51, 65, 85, 0.78);
+  --ql-scrollbar-active: var(--primary);
 }
 
 html[data-surface="quicklook"],
@@ -269,7 +277,7 @@ html[data-surface="quicklook"] #root {
   color: #ffffff;
 }
 
-/* ── 主体内容区 ─────────────────────────────────────────────────────────── */
+/* ── 主体内容区（右侧 6px 透明隔离带物理避开 WindowResizeHandles 边缘拉伸区，14px 宽微晶滚动条落于 6px~20px 黄金交互带） ── */
 .ql-main {
   flex: 1;
   display: flex;
@@ -278,6 +286,109 @@ html[data-surface="quicklook"] #root {
   overflow-x: hidden;
   position: relative;
   box-sizing: border-box;
+  border-right: 6px solid transparent;
+  background-clip: padding-box;
+}
+
+/* 强制覆盖全局 index.css 的 scrollbar-width: thin 规则，激活 Chromium 自定义 14px 宽易抓取滚动条热区 */
+.ql-main,
+.ql-code-content,
+.ql-data-table-scroll,
+.ql-pdf-pages-scroll,
+.ql-image-view,
+.ql-cad-layers-list,
+.ql-code-block pre,
+.ql-hex-dump,
+.ql-sheet-tabs-list {
+  scrollbar-width: auto !important;
+  scrollbar-color: auto !important;
+}
+
+.ql-main::-webkit-scrollbar,
+.ql-code-content::-webkit-scrollbar,
+.ql-data-table-scroll::-webkit-scrollbar,
+.ql-pdf-pages-scroll::-webkit-scrollbar,
+.ql-image-view::-webkit-scrollbar,
+.ql-cad-layers-list::-webkit-scrollbar,
+.ql-code-block pre::-webkit-scrollbar,
+.ql-hex-dump::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.ql-main::-webkit-scrollbar-track,
+.ql-code-content::-webkit-scrollbar-track,
+.ql-data-table-scroll::-webkit-scrollbar-track,
+.ql-pdf-pages-scroll::-webkit-scrollbar-track,
+.ql-image-view::-webkit-scrollbar-track,
+.ql-cad-layers-list::-webkit-scrollbar-track,
+.ql-code-block pre::-webkit-scrollbar-track,
+.ql-hex-dump::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ql-main::-webkit-scrollbar-corner,
+.ql-code-content::-webkit-scrollbar-corner,
+.ql-data-table-scroll::-webkit-scrollbar-corner,
+.ql-pdf-pages-scroll::-webkit-scrollbar-corner,
+.ql-image-view::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.ql-main::-webkit-scrollbar-thumb,
+.ql-code-content::-webkit-scrollbar-thumb,
+.ql-data-table-scroll::-webkit-scrollbar-thumb,
+.ql-pdf-pages-scroll::-webkit-scrollbar-thumb,
+.ql-image-view::-webkit-scrollbar-thumb,
+.ql-cad-layers-list::-webkit-scrollbar-thumb,
+.ql-code-block pre::-webkit-scrollbar-thumb,
+.ql-hex-dump::-webkit-scrollbar-thumb {
+  background-color: var(--ql-scrollbar-silent);
+  border: 4px solid transparent;
+  background-clip: padding-box;
+  border-radius: 9999px;
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.ql-main:hover::-webkit-scrollbar-thumb,
+.ql-code-content:hover::-webkit-scrollbar-thumb,
+.ql-data-table-scroll:hover::-webkit-scrollbar-thumb,
+.ql-pdf-pages-scroll:hover::-webkit-scrollbar-thumb,
+.ql-image-view:hover::-webkit-scrollbar-thumb,
+.ql-cad-layers-list:hover::-webkit-scrollbar-thumb {
+  background-color: var(--ql-scrollbar-thumb);
+  border: 2px solid transparent;
+}
+
+.ql-main::-webkit-scrollbar-thumb:hover,
+.ql-main:hover::-webkit-scrollbar-thumb:hover,
+.ql-code-content::-webkit-scrollbar-thumb:hover,
+.ql-code-content:hover::-webkit-scrollbar-thumb:hover,
+.ql-data-table-scroll::-webkit-scrollbar-thumb:hover,
+.ql-data-table-scroll:hover::-webkit-scrollbar-thumb:hover,
+.ql-pdf-pages-scroll::-webkit-scrollbar-thumb:hover,
+.ql-pdf-pages-scroll:hover::-webkit-scrollbar-thumb:hover,
+.ql-image-view::-webkit-scrollbar-thumb:hover,
+.ql-image-view:hover::-webkit-scrollbar-thumb:hover,
+.ql-cad-layers-list::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ql-scrollbar-hover);
+  border: 1px solid transparent;
+}
+
+.ql-main::-webkit-scrollbar-thumb:active,
+.ql-main:hover::-webkit-scrollbar-thumb:active,
+.ql-code-content::-webkit-scrollbar-thumb:active,
+.ql-code-content:hover::-webkit-scrollbar-thumb:active,
+.ql-data-table-scroll::-webkit-scrollbar-thumb:active,
+.ql-data-table-scroll:hover::-webkit-scrollbar-thumb:active,
+.ql-pdf-pages-scroll::-webkit-scrollbar-thumb:active,
+.ql-pdf-pages-scroll:hover::-webkit-scrollbar-thumb:active,
+.ql-image-view::-webkit-scrollbar-thumb:active,
+.ql-image-view:hover::-webkit-scrollbar-thumb:active,
+.ql-cad-layers-list::-webkit-scrollbar-thumb:active {
+  background-color: var(--ql-scrollbar-active);
+  border: 1px solid transparent;
 }
 
 .ql-truncated-banner {

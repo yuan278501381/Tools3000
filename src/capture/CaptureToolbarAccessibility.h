@@ -95,10 +95,11 @@ inline std::wstring toolbarButtonAccessibleName(const ToolbarButton& button, boo
         case ToolbarCommand::RecordToggleFormat: return zh ? L"录屏格式设置" : L"Recording Format";
         case ToolbarCommand::RecordCycleFps: return zh ? L"录屏帧率设置" : L"Recording Frame Rate";
         case ToolbarCommand::RecordCycleQuality: return zh ? L"录屏画质设置" : L"Recording Quality";
-        case ToolbarCommand::RecordCycleClickEffect: return zh ? L"录屏鼠标点击特效设置" : L"Mouse Click Effects";
+        case ToolbarCommand::RecordCycleClickEffect: return zh ? L"鼠标自动运镜与点击波纹设置" : L"Auto Zoom & Click Ripple";
         case ToolbarCommand::RecordToggleKeycast: return zh ? L"录屏按键回显开关" : L"Toggle Keycast";
         case ToolbarCommand::RecordToggleSystemAudio: return zh ? L"录屏系统声音开关" : L"Toggle System Audio";
         case ToolbarCommand::RecordToggleMicrophone: return zh ? L"录屏麦克风开关" : L"Toggle Microphone";
+        case ToolbarCommand::RecordToggleSettingsMenu: return zh ? L"录屏更多设置" : L"More Recording Settings";
         case ToolbarCommand::RecordStartConfirm: return zh ? L"正式开始录屏" : L"Start Recording";
         case ToolbarCommand::Copy: return zh ? L"复制到剪贴板" : L"Copy to Clipboard";
         case ToolbarCommand::Confirm: return zh ? L"确认截图" : L"Confirm Capture";
@@ -198,7 +199,8 @@ inline bool isToolbarButtonSelected(const ToolbarButton& button, const CaptureSt
     if (button.command == ToolbarCommand::RecordToggleSystemAudio) return state.recordSetup.captureSystemAudio && state.recordSetup.format != RecordFormat::GIF;
     if (button.command == ToolbarCommand::RecordToggleMicrophone) return state.recordSetup.captureMicrophone && state.recordSetup.format != RecordFormat::GIF;
     if (button.command == ToolbarCommand::RecordToggleKeycast) return state.recordSetup.includeKeycast;
-    if (button.command == ToolbarCommand::RecordCycleClickEffect) return state.recordSetup.showClickEffects || state.recordSetup.showClickZoom;
+    if (button.command == ToolbarCommand::RecordCycleClickEffect) return state.recordSetup.showClickEffects || state.recordSetup.zoomEffectMode != 0;
+    if (button.command == ToolbarCommand::RecordToggleSettingsMenu) return state.dropdownMenu.type == DropdownType::RecordMoreSettings;
     if (button.command == ToolbarCommand::SelectColor) {
         const MarkupColor& activeColor = (state.currentTool == MarkupTool::Magnifier)
             ? state.currentMagnifierColor

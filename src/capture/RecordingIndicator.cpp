@@ -277,13 +277,19 @@ void RecordingIndicator::clearRecordingRegion() {
 
 std::vector<RECT> RecordingIndicator::avoidanceRects() const {
     std::vector<RECT> rects;
+    if (m_countdownHwnd && IsWindow(m_countdownHwnd) && IsWindowVisible(m_countdownHwnd)) {
+        RECT cdRect{};
+        if (GetWindowRect(m_countdownHwnd, &cdRect) && cdRect.right > cdRect.left && cdRect.bottom > cdRect.top) {
+            rects.push_back(cdRect);
+        }
+    }
     if (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) {
         RECT barRect{};
         if (GetWindowRect(m_hwnd, &barRect) && barRect.right > barRect.left && barRect.bottom > barRect.top) {
             rects.push_back(barRect);
         }
     }
-    if (m_hasRecordingRegion &&
+    if (!m_countingDown && m_hasRecordingRegion &&
         m_recordingRegion.right > m_recordingRegion.left &&
         m_recordingRegion.bottom > m_recordingRegion.top) {
         rects.push_back(m_recordingRegion);
@@ -388,6 +394,9 @@ void RecordingIndicator::show() {
 
     SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, width, height,
                  SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    const bool hideFromRec = tools3000::core::ConfigManager::instance().get<bool>(
+        "/recording/hideIndicatorInCapture", true);
+    SetWindowDisplayAffinity(m_hwnd, hideFromRec ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
     tools3000::core::WinUtils::applyUniversalRoundedCorners(
         m_hwnd, width, height, scaledIndicatorMetric(INDICATOR_CORNER_RADIUS, m_dpiScale));
     if (m_renderTarget) {
@@ -399,10 +408,20 @@ void RecordingIndicator::show() {
         createBorderWindow(m_hInstance);
     }
 
+    if (m_countingDown) {
+        const ULONGLONG now64 = GetTickCount64();
+        m_countdownStartTick = now64;
+        m_countdownDigitTick = now64;
+        m_countdownInitialTotal = (std::max)(1, m_countdownRemaining);
+        m_countdownLastDigit = m_countdownRemaining;
+        updateCountdownWindow();
+    }
+
     ShortcutHintOverlay::instance().updateAvoidance(avoidanceRects());
 
     m_blinkTick = GetTickCount();
-    SetTimer(m_hwnd, RENDER_TIMER_ID, 100, nullptr);  // 10 Hz 电平刷新；闪烁仍按 500 ms 计算
+    m_highFreqCountdownTimer = m_countingDown;
+    SetTimer(m_hwnd, RENDER_TIMER_ID, m_countingDown ? 16 : 100, nullptr);
     LOG_INFO("录制指示器已显示");
 }
 
@@ -506,13 +525,16 @@ void RecordingIndicator::reloadTheme() {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
     if (m_countdownHwnd && IsWindow(m_countdownHwnd) && IsWindowVisible(m_countdownHwnd)) {
-        InvalidateRect(m_countdownHwnd, nullptr, FALSE);
+        renderCountdownLayered();
     }
 }
 
 void RecordingIndicator::showCompleted(const std::string& filePath, double durationSec) {
     destroyBorderWindow();
     destroyCountdownWindow();
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
+    }
     m_hasRecordingRegion = false;
     m_saving = false;
     m_completed = true;
@@ -557,6 +579,9 @@ void RecordingIndicator::showCompleted(const std::string& filePath, double durat
 
     SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, width, height,
                  SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    const bool hideFromRec = tools3000::core::ConfigManager::instance().get<bool>(
+        "/recording/hideIndicatorInCapture", true);
+    SetWindowDisplayAffinity(m_hwnd, hideFromRec ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
     tools3000::core::WinUtils::applyUniversalRoundedCorners(
         m_hwnd, width, height, scaledIndicatorMetric(INDICATOR_CORNER_RADIUS, m_dpiScale));
 
@@ -609,8 +634,10 @@ bool RecordingIndicator::createWindow(HINSTANCE hInstance) {
     SetLayeredWindowAttributes(m_hwnd, 0, 252, LWA_ALPHA);
     tools3000::core::WinUtils::applyUniversalRoundedCorners(
         m_hwnd, initPhysW, initPhysH, scaledIndicatorMetric(INDICATOR_CORNER_RADIUS, m_dpiScale));
-    if (!tools3000::core::WinUtils::excludeWindowFromCapture(m_hwnd)) {
-        LOG_WARN("当前 Windows 版本无法从捕获中排除录制悬浮条: error={}", GetLastError());
+    if (tools3000::core::ConfigManager::instance().get<bool>("/recording/hideIndicatorInCapture", true)) {
+        SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
+    } else {
+        tools3000::core::WinUtils::excludeWindowFromCapture(m_hwnd);
     }
 
     const int btnY = (INDICATOR_HEIGHT - BTN_SIZE) / 2;
@@ -688,6 +715,7 @@ void RecordingIndicator::releaseRenderResources() {
     m_btnTextFormat.Reset();
     m_subTextFormat.Reset();
     m_textFormat.Reset();
+    m_countdownDCRT.Reset();
     m_renderTarget.Reset();
     m_dwriteFactory.Reset();
     m_d2dFactory.Reset();
@@ -1283,6 +1311,10 @@ LRESULT CALLBACK RecordingIndicator::indicatorWndProc(HWND hwnd, UINT msg, WPARA
                 self->m_microphoneMuted = stats.microphoneMuted;
                 self->m_countingDown = ScreenRecorder::instance().state() == RecordState::Countdown;
                 self->m_countdownRemaining = stats.countdownRemaining;
+                if (self->m_countingDown != self->m_highFreqCountdownTimer) {
+                    self->m_highFreqCountdownTimer = self->m_countingDown;
+                    SetTimer(hwnd, RENDER_TIMER_ID, self->m_countingDown ? 16 : 100, nullptr);
+                }
                 self->m_storageWarning = stats.storageWarning;
                 self->m_estimatedRemainingSec = stats.estimatedRemainingSec;
                 self->m_performanceLimited = stats.performanceLimited;
@@ -1395,8 +1427,10 @@ bool RecordingIndicator::createBorderWindow(HINSTANCE hInstance) {
     SetLayeredWindowAttributes(m_borderHwnd, 0, 220, LWA_ALPHA);
 
     // 必须从录屏捕获中彻底剔除此发光线框窗口，防止录出的成片包含红框
-    if (!tools3000::core::WinUtils::excludeWindowFromCapture(m_borderHwnd)) {
-        LOG_WARN("无法从屏幕录制中排除呼吸发光线框: error={}", GetLastError());
+    if (tools3000::core::ConfigManager::instance().get<bool>("/recording/hideIndicatorInCapture", true)) {
+        SetWindowDisplayAffinity(m_borderHwnd, WDA_EXCLUDEFROMCAPTURE);
+    } else {
+        tools3000::core::WinUtils::excludeWindowFromCapture(m_borderHwnd);
     }
 
     ShowWindow(m_borderHwnd, SW_SHOWNOACTIVATE);
@@ -1423,122 +1457,364 @@ void RecordingIndicator::updateBorderPulse() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 视口居中 3-2-1 倒计时微动效窗口实现
+// 视口居中 60FPS 纯圆形光学倒计时圆盘实现 (UpdateLayeredWindow + Direct2D 预乘 Alpha)
 // ─────────────────────────────────────────────────────────────────────────────
 
 LRESULT CALLBACK RecordingIndicator::countdownWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_NCHITTEST) return HTTRANSPARENT;
+    if (msg == WM_ERASEBKGND) return 1;
     if (msg == WM_KEYDOWN && wParam == VK_SPACE) {
         ScreenRecorder::instance().skipCountdown();
         return 0;
     }
-    if (msg == WM_PAINT) {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-
-        int count = ScreenRecorder::instance().stats().countdownRemaining;
-        if (count <= 0) count = 1;
-
-        const HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        const float scale = (std::max)(1.0f, indicatorDpiScale(mon));
-        const auto S = [scale](int v) -> int { return scaledIndicatorMetric(v, scale); };
-
-        const auto& rec = ScreenRecorder::instance();
-        const bool showStudioTip = rec.wasLastSessionStudioMode() && rec.lastStudioConfig().autoZoomEnabled;
-        const bool isZh = isChineseLanguagePreferred();
-
-        HDC memDC = CreateCompatibleDC(hdc);
-        HBITMAP memBm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-        HBITMAP oldBm = (HBITMAP)SelectObject(memDC, memBm);
-
-        const bool darkCountdown = FloatingGlassBar::isEffectiveDarkMode();
-        const auto accentRgb = FloatingGlassBar::effectiveAccentRGB();
-        const COLORREF bgColor = darkCountdown ? RGB(17, 21, 30) : RGB(252, 253, 255);
-        const COLORREF accentCol = RGB(
-            static_cast<int>(std::round(accentRgb.r * 255.0f)),
-            static_cast<int>(std::round(accentRgb.g * 255.0f)),
-            static_cast<int>(std::round(accentRgb.b * 255.0f)));
-
-        HBRUSH bgBrush = CreateSolidBrush(bgColor);
-        FillRect(memDC, &rc, bgBrush);
-        DeleteObject(bgBrush);
-
-        SetBkMode(memDC, TRANSPARENT);
-        SetTextColor(memDC, darkCountdown ? RGB(248, 250, 252) : RGB(15, 23, 42));
-
-        HFONT numFont = CreateFontW(
-            -S(52), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HFONT oldFont = (HFONT)SelectObject(memDC, numFont);
-
-        std::wstring numStr = std::to_wstring(count);
-        RECT numRc = showStudioTip
-            ? RECT{ 0, S(12), rc.right, S(92) }
-            : RECT{ 0, S(14), rc.right, rc.bottom - S(34) };
-        DrawTextW(memDC, numStr.c_str(), -1, &numRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-        SelectObject(memDC, oldFont);
-        DeleteObject(numFont);
-
-        HFONT hintFont = CreateFontW(
-            -S(13), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
-        oldFont = (HFONT)SelectObject(memDC, hintFont);
-        SetTextColor(memDC, darkCountdown ? RGB(164, 178, 198) : RGB(71, 85, 105));
-
-        std::wstring skipStr = isZh ? L"按 Space 立即开录" : L"Press Space to start now";
-        RECT skipRc = showStudioTip
-            ? RECT{ 0, S(88), rc.right, S(114) }
-            : RECT{ 0, rc.bottom - S(34), rc.right, rc.bottom - S(8) };
-        DrawTextW(memDC, skipStr.c_str(), -1, &skipRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-        if (showStudioTip) {
-            // 底部分隔线与演播室自动运镜提示条
-            HPEN divPen = CreatePen(PS_SOLID, (std::max)(1, S(1)),
-                                    darkCountdown ? RGB(42, 51, 68) : RGB(226, 232, 240));
-            HGDIOBJ prevP = SelectObject(memDC, divPen);
-            MoveToEx(memDC, S(20), S(122), nullptr);
-            LineTo(memDC, rc.right - S(20), S(122));
-            SelectObject(memDC, prevP);
-            DeleteObject(divPen);
-
-            SetTextColor(memDC, accentCol);
-            const wchar_t* tipText = isZh
-                ? L"演播室运镜已开启：每次鼠标点击将自动触发平滑放大特写（录后可调）"
-                : L"Studio Auto-Zoom ON: Every mouse click triggers smooth zoom (editable)";
-            RECT tipRc = { S(14), S(126), rc.right - S(14), rc.bottom - S(8) };
-            DrawTextW(memDC, tipText, -1, &tipRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        }
-
-        SelectObject(memDC, oldFont);
-        DeleteObject(hintFont);
-
-        HPEN ringPen = CreatePen(PS_SOLID, (std::max)(2, S(2)), accentCol);
-        HGDIOBJ oldPen = SelectObject(memDC, ringPen);
-        HGDIOBJ oldB = SelectObject(memDC, GetStockObject(NULL_BRUSH));
-        if (showStudioTip) {
-            const int rad = S(20);
-            RoundRect(memDC, S(2), S(2), rc.right - S(2), rc.bottom - S(2), rad * 2, rad * 2);
-        } else {
-            Ellipse(memDC, S(2), S(2), rc.right - S(2), rc.bottom - S(2));
-        }
-        SelectObject(memDC, oldB);
-        SelectObject(memDC, oldPen);
-        DeleteObject(ringPen);
-
-        BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
-        SelectObject(memDC, oldBm);
-        DeleteObject(memBm);
-        DeleteDC(memDC);
-
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+void RecordingIndicator::renderCountdownLayered() {
+    if (!m_countdownHwnd || !IsWindow(m_countdownHwnd)) return;
+    if (!m_d2dFactory) {
+        if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_d2dFactory.GetAddressOf()))) {
+            return;
+        }
+    }
+    if (!ensureDWriteReady()) return;
+
+    if (!m_countdownDCRT) {
+        D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f,
+            96.0f,
+            D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE,
+            D2D1_FEATURE_LEVEL_DEFAULT);
+        if (FAILED(m_d2dFactory->CreateDCRenderTarget(&props, m_countdownDCRT.GetAddressOf()))) {
+            return;
+        }
+        m_countdownDCRT->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        m_countdownDCRT->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    }
+
+    RECT winRc{};
+    if (!GetWindowRect(m_countdownHwnd, &winRc)) return;
+    const int physW = winRc.right - winRc.left;
+    const int physH = winRc.bottom - winRc.top;
+    if (physW <= 0 || physH <= 0) return;
+
+    const HMONITOR mon = MonitorFromWindow(m_countdownHwnd, MONITOR_DEFAULTTONEAREST);
+    const float scale = (std::max)(1.0f, indicatorDpiScale(mon));
+
+    const ULONGLONG nowTick = GetTickCount64();
+    int count = ScreenRecorder::instance().stats().countdownRemaining;
+    if (count <= 0) count = 1;
+    if (count != m_countdownLastDigit) {
+        m_countdownLastDigit = count;
+        m_countdownDigitTick = nowTick;
+    }
+
+    const float subSecMs = static_cast<float>(nowTick >= m_countdownDigitTick ? (nowTick - m_countdownDigitTick) : 0ULL);
+    const float subSecFrac = std::clamp(subSecMs / 1000.0f, 0.0f, 0.995f);
+
+    // 数字切换前 240ms 的三次缓出弹簧微缩放 (1.24x -> 1.00x)
+    const float popT = std::clamp(subSecMs / 240.0f, 0.0f, 1.0f);
+    const float invPop = 1.0f - popT;
+    const float popScale = 1.0f + 0.24f * (invPop * invPop * invPop);
+    const float digitAlpha = std::clamp(0.45f + 0.55f * (1.0f - invPop * invPop), 0.0f, 1.0f);
+
+    // 声呐扩散呼吸光波环相位 (每秒向外柔和扩散并消隐)
+    const float rippleEase = 1.0f - (1.0f - subSecFrac) * (1.0f - subSecFrac);
+
+    HDC screenDC = GetDC(nullptr);
+    if (!screenDC) return;
+    HDC memDC = CreateCompatibleDC(screenDC);
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = physW;
+    bmi.bmiHeader.biHeight = -physH; // top-down 32-bit pre-multiplied BGRA
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pvBits = nullptr;
+    HBITMAP dib = CreateDIBSection(screenDC, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+    if (!dib || !pvBits) {
+        if (dib) DeleteObject(dib);
+        DeleteDC(memDC);
+        ReleaseDC(nullptr, screenDC);
+        return;
+    }
+    HGDIOBJ oldBmp = SelectObject(memDC, dib);
+
+    const RECT bindRc{0, 0, physW, physH};
+    if (SUCCEEDED(m_countdownDCRT->BindDC(memDC, &bindRc))) {
+        m_countdownDCRT->BeginDraw();
+        m_countdownDCRT->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
+        m_countdownDCRT->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+
+        const float logicalW = static_cast<float>(physW) / scale;
+        const float logicalH = static_cast<float>(physH) / scale;
+        const float cx = logicalW * 0.5f;
+        const float cy = logicalH * 0.5f;
+        const float discR = 76.0f;
+        const float ringR = 65.0f;
+
+        const bool dark = FloatingGlassBar::isEffectiveDarkMode();
+        const auto accent = FloatingGlassBar::effectiveAccentRGB();
+        const D2D1_COLOR_F accentSolid = D2D1::ColorF(accent.r, accent.g, accent.b, 1.0f);
+
+        // 1. 多层柔和漫射圆形悬浮投影（完全收束于透明画布内，零矩形边角印记）
+        for (int s = 4; s >= 1; --s) {
+            const float expand = static_cast<float>(s) * 4.2f;
+            const float yOff = static_cast<float>(s) * 1.6f;
+            const float a = (dark ? 0.085f : 0.048f) * static_cast<float>(5 - s) * 0.32f;
+            ComPtr<ID2D1SolidColorBrush> shadowBrush;
+            if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, a), &shadowBrush))) {
+                m_countdownDCRT->FillEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(cx, cy + yOff), discR + expand, discR + expand),
+                    shadowBrush.Get());
+            }
+        }
+
+        // 2. 声呐呼吸扩散光波环 (Sonar Ripple Halo)
+        {
+            const float rippleR = discR + 2.0f + rippleEase * 24.0f;
+            const float rippleAlpha = (1.0f - rippleEase) * (dark ? 0.42f : 0.32f);
+            if (rippleAlpha > 0.01f) {
+                ComPtr<ID2D1SolidColorBrush> rippleBrush;
+                if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(
+                        D2D1::ColorF(accent.r, accent.g, accent.b, rippleAlpha), &rippleBrush))) {
+                    m_countdownDCRT->DrawEllipse(
+                        D2D1::Ellipse(D2D1::Point2F(cx, cy), rippleR, rippleR),
+                        rippleBrush.Get(),
+                        1.8f * (1.0f - 0.35f * rippleEase));
+                }
+            }
+        }
+
+        // 3. 微晶光学圆盘主体 (Obsidian / Pearl Glass Medallion)
+        {
+            D2D1_GRADIENT_STOP stops[2]{};
+            if (dark) {
+                stops[0] = {0.0f, D2D1::ColorF(0.11f, 0.14f, 0.22f, 0.93f)};
+                stops[1] = {1.0f, D2D1::ColorF(0.05f, 0.07f, 0.12f, 0.96f)};
+            } else {
+                stops[0] = {0.0f, D2D1::ColorF(1.00f, 1.00f, 1.00f, 0.95f)};
+                stops[1] = {1.0f, D2D1::ColorF(0.93f, 0.95f, 0.98f, 0.97f)};
+            }
+            ComPtr<ID2D1GradientStopCollection> stopCol;
+            if (SUCCEEDED(m_countdownDCRT->CreateGradientStopCollection(stops, 2, &stopCol))) {
+                ComPtr<ID2D1LinearGradientBrush> discGrad;
+                if (SUCCEEDED(m_countdownDCRT->CreateLinearGradientBrush(
+                        D2D1::LinearGradientBrushProperties(
+                            D2D1::Point2F(cx, cy - discR),
+                            D2D1::Point2F(cx, cy + discR)),
+                        stopCol.Get(),
+                        &discGrad))) {
+                    m_countdownDCRT->FillEllipse(
+                        D2D1::Ellipse(D2D1::Point2F(cx, cy), discR, discR),
+                        discGrad.Get());
+                }
+            }
+
+            // 外沿镜面微晶边框（亮色带极细冷银分离环防白底融边）
+            ComPtr<ID2D1SolidColorBrush> rimBrush;
+            const D2D1_COLOR_F rimColor = dark
+                ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f)
+                : D2D1::ColorF(0.10f, 0.15f, 0.25f, 0.12f);
+            if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(rimColor, &rimBrush))) {
+                m_countdownDCRT->DrawEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(cx, cy), discR - 0.5f, discR - 0.5f),
+                    rimBrush.Get(),
+                    1.0f);
+            }
+        }
+
+        // 4. 360 度圆头流光扫秒进度环 (Circular Sweep Progress Arc + Leading Glow Gem)
+        {
+            ComPtr<ID2D1SolidColorBrush> trackBrush;
+            const D2D1_COLOR_F trackCol = dark
+                ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.09f)
+                : D2D1::ColorF(0.08f, 0.12f, 0.20f, 0.08f);
+            if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(trackCol, &trackBrush))) {
+                m_countdownDCRT->DrawEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(cx, cy), ringR, ringR),
+                    trackBrush.Get(),
+                    4.4f);
+            }
+
+            const float remainRatio = std::clamp(1.0f - subSecFrac, 0.015f, 0.999f);
+            const float sweepRad = remainRatio * 6.2831853f;
+            const float startRad = -1.5707963f; // 12 点钟方向 (-90 deg)
+            const float endRad = startRad + sweepRad;
+            const D2D1_POINT_2F startPt = D2D1::Point2F(
+                cx + ringR * std::cos(startRad),
+                cy + ringR * std::sin(startRad));
+            const D2D1_POINT_2F endPt = D2D1::Point2F(
+                cx + ringR * std::cos(endRad),
+                cy + ringR * std::sin(endRad));
+
+            D2D1_STROKE_STYLE_PROPERTIES strokeProps = D2D1::StrokeStyleProperties(
+                D2D1_CAP_STYLE_ROUND,
+                D2D1_CAP_STYLE_ROUND,
+                D2D1_CAP_STYLE_ROUND,
+                D2D1_LINE_JOIN_ROUND);
+            ComPtr<ID2D1StrokeStyle> roundStroke;
+            m_d2dFactory->CreateStrokeStyle(strokeProps, nullptr, 0, &roundStroke);
+
+            ComPtr<ID2D1PathGeometry> arcPath;
+            if (SUCCEEDED(m_d2dFactory->CreatePathGeometry(&arcPath))) {
+                ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(arcPath->Open(&sink))) {
+                    sink->BeginFigure(startPt, D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink->AddArc(D2D1::ArcSegment(
+                        endPt,
+                        D2D1::SizeF(ringR, ringR),
+                        0.0f,
+                        D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                        remainRatio > 0.5f ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL));
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    sink->Close();
+                }
+
+                // 进度弧柔和辉光衬底
+                ComPtr<ID2D1SolidColorBrush> glowArcBrush;
+                if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(
+                        D2D1::ColorF(accent.r, accent.g, accent.b, 0.26f), &glowArcBrush))) {
+                    m_countdownDCRT->DrawGeometry(arcPath.Get(), glowArcBrush.Get(), 8.5f, roundStroke.Get());
+                }
+
+                // 进度弧高饱和实心主轨
+                ComPtr<ID2D1SolidColorBrush> mainArcBrush;
+                if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(accentSolid, &mainArcBrush))) {
+                    m_countdownDCRT->DrawGeometry(arcPath.Get(), mainArcBrush.Get(), 4.4f, roundStroke.Get());
+                }
+            }
+
+            // 进度弧前锋宝石亮芯点
+            ComPtr<ID2D1SolidColorBrush> gemHaloBrush;
+            if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(
+                    D2D1::ColorF(accent.r, accent.g, accent.b, 0.42f), &gemHaloBrush))) {
+                m_countdownDCRT->FillEllipse(D2D1::Ellipse(endPt, 6.8f, 6.8f), gemHaloBrush.Get());
+            }
+            ComPtr<ID2D1SolidColorBrush> gemCoreBrush;
+            if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f), &gemCoreBrush))) {
+                m_countdownDCRT->FillEllipse(D2D1::Ellipse(endPt, 2.7f, 2.7f), gemCoreBrush.Get());
+            }
+        }
+
+        // 5. 弹性微缩放中心倒计时数字 + 底部极简 Space 跳过胶囊
+        {
+            const wchar_t* fontFamily = resolveIndicatorFontFamily(m_dwriteFactory.Get());
+            const wchar_t* numFontName = L"Segoe UI";
+            {
+                ComPtr<IDWriteFontCollection> sysFonts;
+                UINT32 famIdx = 0;
+                BOOL hasVarDisplay = FALSE;
+                if (SUCCEEDED(m_dwriteFactory->GetSystemFontCollection(&sysFonts, FALSE)) && sysFonts &&
+                    SUCCEEDED(sysFonts->FindFamilyName(L"Segoe UI Variable Display", &famIdx, &hasVarDisplay)) &&
+                    hasVarDisplay) {
+                    numFontName = L"Segoe UI Variable Display";
+                }
+            }
+            ComPtr<IDWriteTextFormat> numFmt;
+            if (SUCCEEDED(m_dwriteFactory->CreateTextFormat(
+                    numFontName,
+                    nullptr,
+                    DWRITE_FONT_WEIGHT_BOLD,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    62.0f,
+                    L"en-US",
+                    &numFmt))) {
+                numFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                numFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                numFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+                const std::wstring numStr = std::to_wstring(count);
+                const D2D1_POINT_2F numCenter = D2D1::Point2F(cx, cy - 8.0f);
+                m_countdownDCRT->SetTransform(
+                    D2D1::Matrix3x2F::Scale(popScale, popScale, numCenter) *
+                    D2D1::Matrix3x2F::Scale(scale, scale));
+
+                ComPtr<ID2D1SolidColorBrush> numBrush;
+                const D2D1_COLOR_F numCol = dark
+                    ? D2D1::ColorF(0.98f, 0.99f, 1.00f, digitAlpha)
+                    : D2D1::ColorF(0.06f, 0.09f, 0.16f, digitAlpha);
+                if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(numCol, &numBrush))) {
+                    const D2D1_RECT_F numRect = D2D1::RectF(cx - 56.0f, cy - 52.0f, cx + 56.0f, cy + 36.0f);
+                    m_countdownDCRT->DrawText(
+                        numStr.c_str(),
+                        static_cast<UINT32>(numStr.size()),
+                        numFmt.Get(),
+                        numRect,
+                        numBrush.Get());
+                }
+
+                m_countdownDCRT->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
+            }
+
+            // 圆盘内下半部极简 Space 提示微标（保持 100% 纯圆形边界，显式禁折行防高 DPI 截断）
+            ComPtr<IDWriteTextFormat> pillFmt;
+            if (SUCCEEDED(m_dwriteFactory->CreateTextFormat(
+                    fontFamily,
+                    nullptr,
+                    DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    11.8f,
+                    L"zh-CN",
+                    &pillFmt))) {
+                pillFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                pillFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                pillFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+                const bool isZh = isChineseLanguagePreferred();
+                const wchar_t* pillStr = isZh ? L"Space 跳过" : L"Space";
+                const D2D1_ROUNDED_RECT pillRc = D2D1::RoundedRect(
+                    D2D1::RectF(cx - 45.0f, cy + 28.0f, cx + 45.0f, cy + 48.0f),
+                    10.0f,
+                    10.0f);
+
+                ComPtr<ID2D1SolidColorBrush> pillBg;
+                const D2D1_COLOR_F pillBgCol = dark
+                    ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f)
+                    : D2D1::ColorF(0.06f, 0.09f, 0.16f, 0.06f);
+                if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(pillBgCol, &pillBg))) {
+                    m_countdownDCRT->FillRoundedRectangle(pillRc, pillBg.Get());
+                }
+
+                ComPtr<ID2D1SolidColorBrush> pillTextBrush;
+                const D2D1_COLOR_F pillTxtCol = dark
+                    ? D2D1::ColorF(0.76f, 0.82f, 0.91f, 0.90f)
+                    : D2D1::ColorF(0.28f, 0.34f, 0.44f, 0.90f);
+                if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(pillTxtCol, &pillTextBrush))) {
+                    m_countdownDCRT->DrawText(
+                        pillStr,
+                        static_cast<UINT32>(std::wcslen(pillStr)),
+                        pillFmt.Get(),
+                        pillRc.rect,
+                        pillTextBrush.Get());
+                }
+            }
+        }
+
+        if (m_countdownDCRT->EndDraw() == D2DERR_RECREATE_TARGET) {
+            m_countdownDCRT.Reset();
+        } else {
+            SIZE sizeWnd{physW, physH};
+            POINT ptSrc{0, 0};
+            BLENDFUNCTION blend{};
+            blend.BlendOp = AC_SRC_OVER;
+            blend.BlendFlags = 0;
+            blend.SourceConstantAlpha = 255;
+            blend.AlphaFormat = AC_SRC_ALPHA;
+            UpdateLayeredWindow(m_countdownHwnd, screenDC, nullptr, &sizeWnd, memDC, &ptSrc, 0, &blend, ULW_ALPHA);
+        }
+    }
+
+    SelectObject(memDC, oldBmp);
+    DeleteObject(dib);
+    DeleteDC(memDC);
+    ReleaseDC(nullptr, screenDC);
 }
 
 bool RecordingIndicator::createCountdownWindow(HINSTANCE hInstance) {
@@ -1555,11 +1831,9 @@ bool RecordingIndicator::createCountdownWindow(HINSTANCE hInstance) {
         s_countdownClassRegistered = true;
     }
 
-    const auto& rec = ScreenRecorder::instance();
-    const bool showStudioTip = rec.wasLastSessionStudioMode() && rec.lastStudioConfig().autoZoomEnabled;
-
-    const int winW = scaledIndicatorMetric(showStudioTip ? 456 : 136, m_dpiScale);
-    const int winH = scaledIndicatorMetric(showStudioTip ? 166 : 136, m_dpiScale);
+    // 256x256 纯透明分层正方形画布承载中心直径 152px 的光学正圆盘与扩散呼吸光晕（零方框裁切，高分屏一眼醒目可见）
+    const int winW = scaledIndicatorMetric(256, m_dpiScale);
+    const int winH = scaledIndicatorMetric(256, m_dpiScale);
     int cx = 0, cy = 0;
     if (m_hasRecordingRegion) {
         cx = (m_recordingRegion.left + m_recordingRegion.right) / 2;
@@ -1581,20 +1855,20 @@ bool RecordingIndicator::createCountdownWindow(HINSTANCE hInstance) {
     );
 
     if (!m_countdownHwnd) return false;
+    SetPropW(m_countdownHwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
+    tools3000::core::WinUtils::applyTaskbarSafeOverlayStyle(m_countdownHwnd);
+    // 注意：UpdateLayeredWindow (ULW_ALPHA) 每像素分层窗口严禁设置 WDA_EXCLUDEFROMCAPTURE，
+    // 否则 Windows 11 DWM 会直接丢弃分层位图导致中央倒计时圆盘完全隐身。
+    // 倒计时期间 ScreenRecorder 尚未开启抓屏（归零销毁并等待 65ms DWM 消隐后才抓第 0 帧），天然不会被录进视频。
+    tools3000::core::WinUtils::allowWindowCapture(m_countdownHwnd);
 
-    if (showStudioTip) {
-        tools3000::core::WinUtils::applyUniversalRoundedCorners(
-            m_countdownHwnd, winW, winH, scaledIndicatorMetric(20, m_dpiScale));
-    } else {
-        HRGN circleRgn = CreateEllipticRgn(0, 0, winW, winH);
-        SetWindowRgn(m_countdownHwnd, circleRgn, TRUE);
-    }
+    const ULONGLONG now64 = GetTickCount64();
+    m_countdownStartTick = now64;
+    m_countdownDigitTick = now64;
+    m_countdownLastDigit = (std::max)(1, ScreenRecorder::instance().stats().countdownRemaining);
 
-    SetLayeredWindowAttributes(m_countdownHwnd, 0, 242, LWA_ALPHA);
-    tools3000::core::WinUtils::excludeWindowFromCapture(m_countdownHwnd);
-
-    ShowWindow(m_countdownHwnd, SW_SHOWNOACTIVATE);
-    UpdateWindow(m_countdownHwnd);
+    SetWindowPos(m_countdownHwnd, HWND_TOPMOST, x, y, winW, winH, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    renderCountdownLayered();
     return true;
 }
 
@@ -1604,6 +1878,8 @@ void RecordingIndicator::destroyCountdownWindow() {
         DestroyWindow(m_countdownHwnd);
         m_countdownHwnd = nullptr;
     }
+    m_countdownDCRT.Reset();
+    m_countdownLastDigit = 0;
 }
 
 void RecordingIndicator::updateCountdownWindow() {
@@ -1612,7 +1888,9 @@ void RecordingIndicator::updateCountdownWindow() {
             createCountdownWindow(m_hInstance);
         }
         if (m_countdownHwnd) {
-            InvalidateRect(m_countdownHwnd, nullptr, FALSE);
+            SetWindowPos(m_countdownHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+            renderCountdownLayered();
         }
     } else {
         if (m_countdownHwnd) {
