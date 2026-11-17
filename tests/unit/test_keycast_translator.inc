@@ -273,3 +273,47 @@ TEST(KeycastTranslatorTest, MediaBrowserAndNavigationKeysResolution) {
     EXPECT_EQ(playInfo.tokens[0], "PlayPause");
 }
 
+TEST(KeycastTranslatorTest, ShiftedOemPunctuationShortcutsResolveShiftedSymbols) {
+    // 用户痛点防回退：按下 Ctrl + Shift + + (物理键 VK_OEM_PLUS) 必须回显为 "Ctrl + Shift + +" 而非 "Ctrl + Shift + ="
+    const KeycastKeyInfo zoomIn = KeyTranslator::resolveKeycastEvent(
+        VK_OEM_PLUS, 0, /*ctrl=*/true, /*alt=*/false, /*shift=*/true, /*win=*/false, "smart_shortcuts", true);
+    EXPECT_TRUE(zoomIn.shouldDisplay);
+    EXPECT_EQ(zoomIn.rawKey, "Ctrl + Shift + +");
+    ASSERT_EQ(zoomIn.tokens.size(), 3u);
+    EXPECT_EQ(zoomIn.tokens[2], "+");
+
+    // 不按 Shift 时 Ctrl + = 保持显示 "="
+    const KeycastKeyInfo plainEq = KeyTranslator::resolveKeycastEvent(
+        VK_OEM_PLUS, 0, /*ctrl=*/true, /*alt=*/false, /*shift=*/false, /*win=*/false, "smart_shortcuts", true);
+    EXPECT_EQ(plainEq.rawKey, "Ctrl + =");
+
+    // 全套 Shift + OEM 标点组合快捷键一致性校验
+    struct OemShiftCase {
+        DWORD vk;
+        const char* expectedSym;
+    };
+    const OemShiftCase cases[] = {
+        {VK_OEM_MINUS, "_"},
+        {VK_OEM_2,     "?"},
+        {VK_OEM_PERIOD,">"},
+        {VK_OEM_COMMA, "<"},
+        {VK_OEM_1,     ":"},
+        {VK_OEM_7,     "\""},
+        {VK_OEM_4,     "{"},
+        {VK_OEM_6,     "}"},
+        {VK_OEM_5,     "|"},
+        {VK_OEM_3,     "~"},
+    };
+    for (const auto& c : cases) {
+        const KeycastKeyInfo info = KeyTranslator::resolveKeycastEvent(
+            c.vk, 0, true, false, true, false, "smart_shortcuts", true);
+        ASSERT_EQ(info.tokens.size(), 3u) << "VK=" << c.vk;
+        EXPECT_EQ(info.tokens[2], c.expectedSym) << "VK=" << c.vk;
+    }
+
+    // 主键盘数字键 Ctrl + Shift + 8 保持惯例数字键名 "8"，不混淆为 "*"
+    const KeycastKeyInfo ctrlShift8 = KeyTranslator::resolveKeycastEvent(
+        '8', 0, true, false, true, false, "smart_shortcuts", true);
+    EXPECT_EQ(ctrlShift8.rawKey, "Ctrl + Shift + 8");
+}
+

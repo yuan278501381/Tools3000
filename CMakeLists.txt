@@ -175,6 +175,8 @@ target_link_libraries(Tools3000Core PUBLIC
 # 1. capture_objects (15 个源文件)
 set(CAPTURE_OBJECT_SOURCES
     src/capture/AudioCapture.cpp
+    src/capture/VoiceEnhancer.cpp
+    src/capture/RecordingEnvironmentGuard.cpp
     src/capture/CaptureBackend.cpp
     src/capture/CaptureToolbarLayout.cpp
     src/capture/CaptureDropdownMenu.cpp
@@ -193,6 +195,7 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/RecordingGpuProbe.cpp
     src/capture/ScrollCapture.cpp
     src/capture/ScrollCaptureEditorOverlay.cpp
+    src/capture/ScrollCaptureOverlay.cpp
     src/capture/ShortcutHintOverlay.cpp
     src/capture/HudAvoidanceEngine.cpp
     src/capture/PinSpawnCalculator.cpp
@@ -357,7 +360,6 @@ set(CAPTURE_OTHER_SOURCES
     src/capture/PinWindow.cpp
     src/capture/PluginEntry.cpp
     src/capture/ScreenCapture.cpp
-    src/capture/ScrollCaptureOverlay.cpp
     ${OCR_SOURCES}
 )
 add_library(Plugin_Capture SHARED ${CAPTURE_OTHER_SOURCES} $<TARGET_OBJECTS:capture_objects>)

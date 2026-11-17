@@ -129,11 +129,6 @@
   color: var(--primary);
 }
 
-.plugin-card__icon.marketplace-icon {
-  background: color-mix(in srgb, #6366f1 15%, transparent);
-  color: #6366f1;
-}
-
 .plugin-card__identity {
   min-width: 0;
   flex: 1;
@@ -169,15 +164,6 @@
   background: color-mix(in srgb, var(--primary) 12%, transparent);
   color: var(--primary);
   border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent);
-}
-
-.marketplace-category-tag {
-  font-size: var(--text-xs, 0.84rem);
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  border: 1px solid var(--card-border);
 }
 
 .plugin-card__version {
@@ -266,131 +252,6 @@
   gap: 10px;
 }
 
-.plugin-uninstall-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  font-size: var(--text-sm, 0.86rem);
-  border-radius: var(--radius-sm);
-  color: var(--danger);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--card-border));
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.plugin-uninstall-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 18%, transparent);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.marketplace-permissions {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--text-muted);
-  font-size: var(--text-xs, 0.84rem);
-}
-
-.marketplace-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.marketplace-uninstall-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  font-size: var(--text-sm, 0.86rem);
-  border-radius: var(--radius-sm);
-  color: var(--danger);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--card-border));
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.marketplace-uninstall-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 18%, transparent);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.marketplace-action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* 扩展市场专用工具栏 */
-.plugins-marketplace__toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: var(--spacing-lg);
-  flex-wrap: wrap;
-}
-
-.plugins-marketplace__categories {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.plugins-category-pill {
-  padding: 5px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--card-border);
-  background: var(--card-bg);
-  color: var(--text-secondary);
-  font-size: 0.83rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.plugins-category-pill:hover {
-  border-color: var(--primary);
-  color: var(--text-primary);
-}
-
-.plugins-category-pill.active {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: #ffffff;
-}
-
-.plugins-marketplace__search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--card-border);
-  border-radius: var(--radius-md);
-  min-width: 260px;
-}
-
-.plugins-marketplace__search input {
-  border: none;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 0.85rem;
-  width: 100%;
-  outline: none;
-}
-
-.plugins-marketplace__search input::placeholder {
-  color: var(--text-muted);
-}
-
 @media (max-width: 760px) {
   .plugins-page__grid { grid-template-columns: 1fr; }
-  .plugins-marketplace__toolbar { flex-direction: column; align-items: stretch; }
-  .plugins-marketplace__search { width: 100%; }
 }

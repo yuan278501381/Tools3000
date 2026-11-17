@@ -209,13 +209,20 @@ private:
     bool m_hasRecordingRegion = false;
     float m_borderPulse = 0.0f;
 
-    // 视口居中 3-2-1 倒计时微动效窗口
+    // 视口居中 60FPS 纯圆形光学倒计时圆盘窗口 (UpdateLayeredWindow + Direct2D 预乘抗锯齿)
     bool createCountdownWindow(HINSTANCE hInstance);
     void destroyCountdownWindow();
     void updateCountdownWindow();
+    void renderCountdownLayered();
     static LRESULT CALLBACK countdownWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     HWND m_countdownHwnd = nullptr;
+    ULONGLONG m_countdownStartTick = 0;
+    ULONGLONG m_countdownDigitTick = 0;
+    int m_countdownInitialTotal = 3;
+    int m_countdownLastDigit = 0;
+    bool m_highFreqCountdownTimer = false;
+    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_countdownDCRT;
 };
 
 }  // namespace tools3000::capture

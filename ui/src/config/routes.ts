@@ -17,10 +17,6 @@ import {
   FileText,
   BarChart3,
   Info,
-  Bot,
-  Pipette,
-  ClipboardList,
-  FileCode2,
   FolderSymlink,
   Sparkles,
   Keyboard,
@@ -43,11 +39,7 @@ export type BuiltinNavId =
   | 'dialog_enhancer'
   | 'remote_boost'
   | 'stats'
-  | 'about'
-  | 'ai_assistant'
-  | 'color_picker'
-  | 'clipboard_manager'
-  | 'markdown_preview';
+  | 'about';
 
 export type NavId = BuiltinNavId | (string & {});
 
@@ -83,12 +75,6 @@ export const APP_ROUTES: readonly RouteItemConfig[] = [
   // ── 洞察与关于 ────────────────────────────────────────────────────────────
   { id: 'stats', labelKey: 'nav.stats', subtitleKey: 'navSubtitle.stats', category: 'insights', icon: BarChart3 },
   { id: 'about', labelKey: 'nav.about', subtitleKey: 'navSubtitle.about', category: 'insights', icon: Info },
-
-  // ── 扩展应用 ──────────────────────────────────────────────────────────────
-  { id: 'ai_assistant', labelKey: 'nav.ai_assistant', subtitleKey: 'navSubtitle.ai_assistant', category: 'extension', icon: Bot },
-  { id: 'color_picker', labelKey: 'nav.color_picker', subtitleKey: 'navSubtitle.color_picker', category: 'extension', icon: Pipette },
-  { id: 'clipboard_manager', labelKey: 'nav.clipboard_manager', subtitleKey: 'navSubtitle.clipboard_manager', category: 'extension', icon: ClipboardList },
-  { id: 'markdown_preview', labelKey: 'nav.markdown_preview', subtitleKey: 'navSubtitle.markdown_preview', category: 'extension', icon: FileCode2 },
 ];
 
 export const ROUTE_MAP = new Map<string, RouteItemConfig>(APP_ROUTES.map(r => [r.id, r]));

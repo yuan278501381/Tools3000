@@ -1,4 +1,5 @@
 ﻿#include "capture/AudioCapture.h"
+#include "capture/VoiceEnhancer.h"
 
 #include "core/logger/Logger.h"
 
@@ -150,6 +151,8 @@ struct AudioCapture::Impl {
     std::atomic<float> microphoneVolume{1.0f};
     std::atomic<bool> systemMuted{false};
     std::atomic<bool> microphoneMuted{false};
+    std::atomic<bool> voiceEnhanceEnabled{true};
+    VoiceEnhancer voiceEnhancer{SampleRate};
     mutable std::mutex outputMutex;
     std::vector<float> output;
     std::size_t outputOffset = 0;
@@ -521,8 +524,26 @@ struct AudioCapture::Impl {
         extractEndpointBlock(system, systemGain, sysBlock, systemPeak);
         extractEndpointBlock(microphone, microphoneGain, micBlock, microphonePeak);
 
+        const bool isMicActiveAndUnmuted = microphone.active && !microphoneMuted.load(std::memory_order_relaxed) && microphoneGain > 0.01f;
+        if (isMicActiveAndUnmuted && voiceEnhanceEnabled.load(std::memory_order_relaxed)) {
+            // 严格仅对麦克风通道执行降噪、高通防喷麦与人声均衡增强；电脑系统音频 (sysBlock) 100% 原样无损保留
+            voiceEnhancer.processInterleavedStereo(micBlock.data(), MixBlockFrames);
+            microphonePeak = 0.0f;
+            for (float s : micBlock) {
+                microphonePeak = (std::max)(microphonePeak, std::abs(s));
+            }
+        }
+
         for (std::size_t index = 0; index < block.size(); ++index) {
-            const float mixed = std::clamp(sysBlock[index] + micBlock[index], -1.0f, 1.0f);
+            const float sum = sysBlock[index] + micBlock[index];
+            float mixed = sum;
+            const float absSum = std::abs(sum);
+            if (absSum > 0.92f) {
+                // 仅在双路同相叠加逼近满刻度时执行平滑防破音软保护，日常电平保持 100% 比特级线性直通
+                const float sign = (sum >= 0.0f) ? 1.0f : -1.0f;
+                mixed = sign * (0.92f + 0.078f * std::tanh((absSum - 0.92f) / 0.08f));
+            }
+            mixed = std::clamp(mixed, -1.0f, 1.0f);
             block[index] = mixed;
             mixedPeak = std::max(mixedPeak, std::abs(mixed));
         }
@@ -639,6 +660,7 @@ struct AudioCapture::Impl {
                 observedSyncEpoch = latestEpoch;
                 system.resetBufferState();
                 microphone.resetBufferState();
+                voiceEnhancer.reset();
                 {
                     std::lock_guard outLock(outputMutex);
                     output.clear();
@@ -659,6 +681,7 @@ struct AudioCapture::Impl {
             if (paused.load(std::memory_order_acquire)) {
                 system.resetBufferState();
                 microphone.resetBufferState();
+                voiceEnhancer.reset();
                 {
                     std::lock_guard statusLock(statusMutex);
                     captureStatus.systemPeak = 0.0f;
@@ -732,6 +755,8 @@ bool AudioCapture::start(const AudioCaptureOptions& options) {
                                    std::memory_order_relaxed);
     m_impl->systemMuted.store(false, std::memory_order_relaxed);
     m_impl->microphoneMuted.store(false, std::memory_order_relaxed);
+    m_impl->voiceEnhanceEnabled.store(options.voiceEnhance, std::memory_order_relaxed);
+    m_impl->voiceEnhancer.reset();
     {
         std::lock_guard lock(m_impl->outputMutex);
         m_impl->output.clear();

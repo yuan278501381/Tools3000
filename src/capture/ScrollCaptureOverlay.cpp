@@ -178,7 +178,11 @@ bool ScrollCaptureOverlay::initialize() {
         if (!m_controlHwnd) return false;
 
         SetPropW(m_controlHwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
-        tools3000::core::WinUtils::allowWindowCapture(m_controlHwnd);
+        tools3000::core::WinUtils::applyTaskbarSafeOverlayStyle(m_controlHwnd);
+        // 采用与 RecordingIndicator 主条同构的 LWA_ALPHA + ID2D1HwndRenderTarget + UniversalRoundedCorners + WDA_EXCLUDEFROMCAPTURE：
+        // 在 Windows 10/11 下对用户肉眼 100% 清晰可见可点击，同时在 DWM 硬件层对全屏/最大化选区长截图抓帧 100% 自动隐形剔除！
+        SetLayeredWindowAttributes(m_controlHwnd, 0, 250, LWA_ALPHA);
+        m_controlCaptureExcluded = (SetWindowDisplayAffinity(m_controlHwnd, WDA_EXCLUDEFROMCAPTURE) != FALSE);
     }
 
     if (!createResources()) return false;
@@ -468,9 +472,6 @@ bool ScrollCaptureOverlay::createResources() {
     if (!m_renderTarget) {
         if (FAILED(m_d2dFactory->CreateDCRenderTarget(&props, &m_renderTarget))) return false;
     }
-    if (!m_controlRenderTarget) {
-        if (FAILED(m_d2dFactory->CreateDCRenderTarget(&props, &m_controlRenderTarget))) return false;
-    }
 
     const auto pal = FloatingGlassBar::resolveThemePalette();
     m_brushFlash.Reset();
@@ -479,6 +480,23 @@ bool ScrollCaptureOverlay::createResources() {
     m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &m_brushFlash);
     m_renderTarget->CreateSolidColorBrush(pal.accent, &m_brushBorder);
     m_renderTarget->CreateSolidColorBrush(pal.panelBg, &m_brushBg);
+
+    if (m_controlHwnd && !m_controlRenderTarget) {
+        RECT ctrlRc{};
+        GetClientRect(m_controlHwnd, &ctrlRc);
+        const UINT32 cw = static_cast<UINT32>((std::max<LONG>)(1, ctrlRc.right - ctrlRc.left));
+        const UINT32 ch = static_cast<UINT32>((std::max<LONG>)(1, ctrlRc.bottom - ctrlRc.top));
+        D2D1_RENDER_TARGET_PROPERTIES hwndRtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
+            96.0f, 96.0f);
+        D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
+            m_controlHwnd, D2D1::SizeU(cw, ch));
+        if (FAILED(m_d2dFactory->CreateHwndRenderTarget(hwndRtProps, hwndProps, &m_controlRenderTarget))) {
+            return false;
+        }
+        m_controlRenderTarget->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+    }
 
     m_ctrlPanelBg.Reset();
     m_ctrlPanelBorder.Reset();
@@ -497,39 +515,42 @@ bool ScrollCaptureOverlay::createResources() {
     m_ctrlDangerHoverBg.Reset();
     m_ctrlDangerIconBrush.Reset();
 
-    const float accentLum = 0.2126f * pal.accent.r + 0.7152f * pal.accent.g + 0.0722f * pal.accent.b;
-    const D2D1_COLOR_F onPrimary = accentLum > 0.68f
-        ? D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 1.0f)
-        : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
-    const D2D1_COLOR_F accentHover = D2D1::ColorF(
-        std::clamp(pal.accent.r + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
-        std::clamp(pal.accent.g + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
-        std::clamp(pal.accent.b + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
-        1.0f);
+    if (m_controlRenderTarget) {
+        const float accentLum = 0.2126f * pal.accent.r + 0.7152f * pal.accent.g + 0.0722f * pal.accent.b;
+        const D2D1_COLOR_F onPrimary = accentLum > 0.68f
+            ? D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 1.0f)
+            : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+        const D2D1_COLOR_F accentHover = D2D1::ColorF(
+            std::clamp(pal.accent.r + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
+            std::clamp(pal.accent.g + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
+            std::clamp(pal.accent.b + (pal.isDark ? 0.06f : -0.05f), 0.0f, 1.0f),
+            1.0f);
 
-    m_controlRenderTarget->CreateSolidColorBrush(pal.panelBg, &m_ctrlPanelBg);
-    m_controlRenderTarget->CreateSolidColorBrush(pal.panelOuterBorder, &m_ctrlPanelBorder);
-    m_controlRenderTarget->CreateSolidColorBrush(pal.panelInnerHighlight, &m_ctrlPanelInnerHighlight);
-    m_controlRenderTarget->CreateSolidColorBrush(pal.divider, &m_ctrlDividerBrush);
-    m_controlRenderTarget->CreateSolidColorBrush(pal.textPrimary, &m_ctrlTextPrimary);
-    m_controlRenderTarget->CreateSolidColorBrush(pal.textSecondary, &m_ctrlTextSecondary);
-    m_controlRenderTarget->CreateSolidColorBrush(onPrimary, &m_ctrlTextOnPrimary);
-    m_controlRenderTarget->CreateSolidColorBrush(pal.hoverBg, &m_ctrlBtnHoverBg);
-    m_controlRenderTarget->CreateSolidColorBrush(pal.pressBg, &m_ctrlBtnPressBg);
-    m_controlRenderTarget->CreateSolidColorBrush(
-        pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f) : CaptureHudPalette::kChipAccentBg, &m_ctrlKeycapBg);
-    m_controlRenderTarget->CreateSolidColorBrush(
-        accentLum > 0.68f ? D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.14f)
-                          : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.18f),
-        &m_ctrlKeycapPrimaryBg);
-    m_controlRenderTarget->CreateSolidColorBrush(pal.accent, &m_ctrlAccentBg);
-    m_controlRenderTarget->CreateSolidColorBrush(accentHover, &m_ctrlAccentHoverBg);
-    m_controlRenderTarget->CreateSolidColorBrush(
-        D2D1::ColorF(0.94f, 0.26f, 0.26f, pal.isDark ? 0.18f : 0.12f), &m_ctrlDangerHoverBg);
-    m_controlRenderTarget->CreateSolidColorBrush(
-        pal.isDark ? D2D1::ColorF(1.0f, 0.42f, 0.46f, 1.0f) : D2D1::ColorF(0.90f, 0.22f, 0.26f, 1.0f),
-        &m_ctrlDangerIconBrush);
-    m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.80f, 0.42f, 1.0f), &m_ctrlDotBrush);
+        const D2D1_COLOR_F opaquePanelBg = D2D1::ColorF(pal.panelBg.r, pal.panelBg.g, pal.panelBg.b, 1.0f);
+        m_controlRenderTarget->CreateSolidColorBrush(opaquePanelBg, &m_ctrlPanelBg);
+        m_controlRenderTarget->CreateSolidColorBrush(pal.panelOuterBorder, &m_ctrlPanelBorder);
+        m_controlRenderTarget->CreateSolidColorBrush(pal.panelInnerHighlight, &m_ctrlPanelInnerHighlight);
+        m_controlRenderTarget->CreateSolidColorBrush(pal.divider, &m_ctrlDividerBrush);
+        m_controlRenderTarget->CreateSolidColorBrush(pal.textPrimary, &m_ctrlTextPrimary);
+        m_controlRenderTarget->CreateSolidColorBrush(pal.textSecondary, &m_ctrlTextSecondary);
+        m_controlRenderTarget->CreateSolidColorBrush(onPrimary, &m_ctrlTextOnPrimary);
+        m_controlRenderTarget->CreateSolidColorBrush(pal.hoverBg, &m_ctrlBtnHoverBg);
+        m_controlRenderTarget->CreateSolidColorBrush(pal.pressBg, &m_ctrlBtnPressBg);
+        m_controlRenderTarget->CreateSolidColorBrush(
+            pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f) : CaptureHudPalette::kChipAccentBg, &m_ctrlKeycapBg);
+        m_controlRenderTarget->CreateSolidColorBrush(
+            accentLum > 0.68f ? D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.14f)
+                              : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.18f),
+            &m_ctrlKeycapPrimaryBg);
+        m_controlRenderTarget->CreateSolidColorBrush(pal.accent, &m_ctrlAccentBg);
+        m_controlRenderTarget->CreateSolidColorBrush(accentHover, &m_ctrlAccentHoverBg);
+        m_controlRenderTarget->CreateSolidColorBrush(
+            D2D1::ColorF(0.94f, 0.26f, 0.26f, pal.isDark ? 0.18f : 0.12f), &m_ctrlDangerHoverBg);
+        m_controlRenderTarget->CreateSolidColorBrush(
+            pal.isDark ? D2D1::ColorF(1.0f, 0.42f, 0.46f, 1.0f) : D2D1::ColorF(0.90f, 0.22f, 0.26f, 1.0f),
+            &m_ctrlDangerIconBrush);
+        m_controlRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.80f, 0.42f, 1.0f), &m_ctrlDotBrush);
+    }
 
     m_statusFormat.Reset();
     m_metricsFormat.Reset();
@@ -699,7 +720,6 @@ void ScrollCaptureOverlay::show(RECT captureRect) {
         m_lastFlashTime = GetTickCount64();
     }
 
-    renderControlBar(true);
     updateControlPlacement(nullptr);
 
     ShowWindow(m_hwnd, SW_SHOWNA);
@@ -709,6 +729,7 @@ void ScrollCaptureOverlay::show(RECT captureRect) {
 
     SetTimer(m_hwnd, 1, 33, nullptr);
     render();
+    renderControlBar(true);
 }
 
 bool ScrollCaptureOverlay::isPointInControlZone(POINT screenPt) const {
@@ -800,10 +821,18 @@ void ScrollCaptureOverlay::updateControlPlacement(const RECT* thumbScreenRect) {
 
     if (current.left != chosen.left || current.top != chosen.top ||
         current.right != chosen.right || current.bottom != chosen.bottom) {
+        const int w = chosen.right - chosen.left;
+        const int h = chosen.bottom - chosen.top;
         SetWindowPos(m_controlHwnd, HWND_TOPMOST,
-                     chosen.left, chosen.top,
-                     chosen.right - chosen.left, chosen.bottom - chosen.top,
+                     chosen.left, chosen.top, w, h,
                      SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        tools3000::core::WinUtils::applyUniversalRoundedCorners(
+            m_controlHwnd, w, h, static_cast<int>(std::lround(11.5f * m_dpiScale)));
+        if (m_controlRenderTarget) {
+            m_controlRenderTarget->Resize(D2D1::SizeU(
+                static_cast<UINT32>((std::max)(1, w)),
+                static_cast<UINT32>((std::max)(1, h))));
+        }
         m_controlBarDirty = true;
     }
 }
@@ -958,7 +987,7 @@ void ScrollCaptureOverlay::render() {
                     thumbX, margin,
                     (std::max)(margin, static_cast<float>(width) - thumbWidth - margin));
 
-                const float padFrame = 6.0f * m_dpiScale;
+                const float padFrame = 10.0f * m_dpiScale;
                 const bool overlapsCaptureRect =
                     (thumbX - padFrame < cRect.right && thumbX + thumbWidth + padFrame > cRect.left &&
                      thumbY - padFrame < cRect.bottom && thumbY + thumbHeight + padFrame > cRect.top);
@@ -1097,37 +1126,28 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
     const int height = rc.bottom - rc.top;
     if (width <= 0 || height <= 0) return;
 
-    HDC hdcScreen = GetDC(nullptr);
-    if (!hdcScreen) return;
-    if (!ensureLayeredDib(hdcScreen, width, height, m_controlDibCache)) {
-        ReleaseDC(nullptr, hdcScreen);
-        return;
-    }
-
-    RECT bindRect = {0, 0, width, height};
-    if (FAILED(m_controlRenderTarget->BindDC(m_controlDibCache.memDc, &bindRect))) {
-        handleControlTargetDeviceLost();
-        ReleaseDC(nullptr, hdcScreen);
-        return;
+    const auto curTargetSize = m_controlRenderTarget->GetPixelSize();
+    if (curTargetSize.width != static_cast<UINT32>(width) ||
+        curTargetSize.height != static_cast<UINT32>(height)) {
+        m_controlRenderTarget->Resize(D2D1::SizeU(static_cast<UINT32>(width), static_cast<UINT32>(height)));
     }
 
     m_controlRenderTarget->BeginDraw();
-    m_controlRenderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
     const float w = static_cast<float>(width);
     const float h = static_cast<float>(height);
-    const float outerPad = 1.5f * s;
+    const float outerPad = 0.5f * s;
     const float radius = 11.5f * s;
 
     if (m_ctrlDotBrush) {
         m_ctrlDotBrush->SetColor(dotColor);
     }
 
+    if (m_ctrlPanelBg) {
+        m_controlRenderTarget->FillRectangle(D2D1::RectF(0.0f, 0.0f, w, h), m_ctrlPanelBg.Get());
+    }
     const D2D1_ROUNDED_RECT shell = D2D1::RoundedRect(
         D2D1::RectF(outerPad, outerPad, w - outerPad, h - outerPad), radius, radius);
-    if (m_ctrlPanelBg) {
-        m_controlRenderTarget->FillRoundedRectangle(&shell, m_ctrlPanelBg.Get());
-    }
     if (m_ctrlPanelInnerHighlight) {
         const float inset = 1.0f * s;
         const D2D1_ROUNDED_RECT innerShell = D2D1::RoundedRect(
@@ -1263,10 +1283,6 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
         endHr == DXGI_ERROR_DEVICE_RESET) {
         handleControlTargetDeviceLost();
     } else if (SUCCEEDED(endHr)) {
-        POINT ptSrc = {0, 0};
-        SIZE size = {width, height};
-        BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-        UpdateLayeredWindow(m_controlHwnd, hdcScreen, nullptr, &size, m_controlDibCache.memDc, &ptSrc, 0, &blend, ULW_ALPHA);
         m_controlBarDirty = false;
         m_lastRenderedState = state;
         m_lastRenderedWorkWidth = workWidth;
@@ -1276,8 +1292,6 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
         m_lastRenderedStatus = statusText;
         m_lastRenderedMetrics = metricsStr;
     }
-
-    ReleaseDC(nullptr, hdcScreen);
 }
 
 ScrollCaptureOverlay::ControlButtonId ScrollCaptureOverlay::hitTestControlButton(POINT clientPt) const {
@@ -1329,6 +1343,17 @@ LRESULT CALLBACK ScrollCaptureOverlay::wndProc(HWND hwnd, UINT msg, WPARAM wPara
 LRESULT CALLBACK ScrollCaptureOverlay::controlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto& self = instance();
     switch (msg) {
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            BeginPaint(hwnd, &ps);
+            EndPaint(hwnd, &ps);
+            self.renderControlBar(true);
+            return 0;
+        }
+
         case WM_MOUSEACTIVATE:
             // 核心铁律：点击悬浮控制台绝不抢夺底层目标滚动窗口的焦点
             return MA_NOACTIVATE;

@@ -2762,7 +2762,7 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
             scratch.creationTime = 0;
             scratch.lastWriteTime = 0;
             if (!next(scratch)) break;
-            m_Store.upsert(scratch);
+            m_Store.upsert(scratch, /*metadataHydrated=*/false, /*bulkImport=*/true);
         }
         m_Store.recomputeHierarchyMetadata();
         m_Store.releaseBuildScratch();
@@ -2819,6 +2819,26 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
         EnumerateFiles();
         m_RescannedDuringCatchUp.store(true, std::memory_order_release);
         return true;
+    }
+
+    // Fast-path threshold: replaying >32 MB of accumulated USN journal records (e.g. 1.4 GB from VMs/builds
+    // over 24h) takes minutes via 64 KB ioctl chunks, whereas a fresh sequential MFT scan takes <1 second!
+    constexpr uint64_t kMaxIncrementalUsnSpanBytes = 32ULL * 1024ULL * 1024ULL;
+    constexpr uint64_t kPersistCursorDeltaBytes = 4ULL * 1024ULL * 1024ULL;
+    const uint64_t usnSpanBytes = (nextUsn > startUsn)
+        ? static_cast<uint64_t>(nextUsn - startUsn)
+        : 0ULL;
+    if (usnSpanBytes > kMaxIncrementalUsnSpanBytes) {
+        spdlog::info(
+            "USN journal backlog on drive {}: is {} MB (> 32 MB), performing fast full MFT rescan instead of slow journal replay",
+            m_DriveLetter,
+            usnSpanBytes / (1024ULL * 1024ULL));
+        EnumerateFiles();
+        m_RescannedDuringCatchUp.store(true, std::memory_order_release);
+        return true;
+    }
+    if (usnSpanBytes >= kPersistCursorDeltaBytes) {
+        m_RescannedDuringCatchUp.store(true, std::memory_order_release);
     }
 
     READ_USN_JOURNAL_DATA_V0 rujd = {0};
@@ -2952,16 +2972,26 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
     }
 
     // Refresh disk metadata OUTSIDE `m_MapMutex` (`MED-15`).
+    // Bound synchronous per-file `OpenFileById` refreshes during startup USN catchup (`kMaxSyncCatchUpStatRefresh`)
+    // so tens of thousands of build/unpack changes accumulated while the service was stopped never stall
+    // `loadSnapshot` for minutes; excess entries are marked dirty (`!FlagMetadataHydrated`) so `size:`/`dm:`
+    // queries stat on demand and `BackgroundHydrateLoop` batch-hydrates directories asynchronously.
     if (!pendingStatRefresh.empty()) {
+        constexpr size_t kMaxSyncCatchUpStatRefresh = 256;
         struct RefreshedMeta {
             uint64_t frn = 0;
             uint64_t fileSize = 0;
             uint64_t creationTime = 0;
             uint64_t lastWriteTime = 0;
         };
+        const size_t totalPending = pendingStatRefresh.size();
+        const size_t syncStartIdx = (totalPending > kMaxSyncCatchUpStatRefresh)
+            ? (totalPending - kMaxSyncCatchUpStatRefresh)
+            : 0;
         std::vector<RefreshedMeta> refreshed;
-        refreshed.reserve(pendingStatRefresh.size());
-        for (const auto& [frn, fallbackPath] : pendingStatRefresh) {
+        refreshed.reserve(totalPending - syncStartIdx);
+        for (size_t idx = syncStartIdx; idx < totalPending; ++idx) {
+            const auto& [frn, fallbackPath] = pendingStatRefresh[idx];
             if (deletedInCatchUp.find(frn) != deletedInCatchUp.end()) continue;
             uint64_t fSize = 0;
             uint64_t cTime = 0;
@@ -2970,8 +3000,14 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
                 refreshed.push_back(RefreshedMeta{frn, fSize, cTime, mTime});
             }
         }
-        if (!refreshed.empty()) {
+        if (!refreshed.empty() || syncStartIdx > 0) {
             std::unique_lock statLock(m_MapMutex);
+            for (size_t idx = 0; idx < syncStartIdx; ++idx) {
+                const uint64_t deferredFrn = pendingStatRefresh[idx].first;
+                if (deletedInCatchUp.find(deferredFrn) == deletedInCatchUp.end()) {
+                    m_Store.markMetadataDirty(deferredFrn);
+                }
+            }
             for (const auto& item : refreshed) {
                 m_Store.updateMetadata(item.frn, item.fileSize, item.creationTime, item.lastWriteTime);
             }

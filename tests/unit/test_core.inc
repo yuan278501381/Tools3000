@@ -579,6 +579,16 @@ TEST(MessageBridgeTest, IPCChannelDispatch) {
         }
     }
     EXPECT_TRUE(foundRemoteBoost);
+    for (const auto& item : plugins["result"]) {
+        const std::string pid = item.value("id", "");
+        EXPECT_NE(pid, "ai_assistant");
+        EXPECT_NE(pid, "color_picker");
+        EXPECT_NE(pid, "clipboard_manager");
+        EXPECT_NE(pid, "markdown_preview");
+    }
+    auto removedMarket = nlohmann::json::parse(
+        bridge.handleMessage(R"({"id":790,"method":"plugins.getMarketplace"})"));
+    EXPECT_TRUE(removedMarket.contains("error"));
 
     auto toggleRemote = nlohmann::json::parse(bridge.handleMessage(
         R"({"id":801,"method":"plugins.setEnabled","params":{"id":"remote_boost","enabled":true}})"));

@@ -84,7 +84,7 @@ private:
     HBITMAP m_frozenBitmap = nullptr;
 
     void realCancel();
-    void cleanupAfterDelivery();
+    void cleanupAfterDelivery(bool trimMemory = true);
     void confirmSelection(CaptureCompletion completion = {});
     bool freezeScreen();
     void releaseFrozenSurface();

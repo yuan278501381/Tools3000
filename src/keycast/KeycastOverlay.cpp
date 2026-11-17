@@ -780,16 +780,13 @@ bool KeycastOverlay::updatePlacement() {
     int x = bounds.left + marginX;
     int y = bounds.top + marginY;
 
-    if (docked) {
-        // 录屏选区停靠时居中置底
-        x = bounds.left + ((bounds.right - bounds.left) - newWidth) / 2;
-        y = bounds.bottom - newHeight - marginY;
-    } else if (settings.hasCustomPosition) {
+    if (!docked && settings.hasCustomPosition) {
         const int maxX = (std::max)(static_cast<int>(bounds.left), static_cast<int>(bounds.right) - newWidth);
         const int maxY = (std::max)(static_cast<int>(bounds.top), static_cast<int>(bounds.bottom) - newHeight);
         x = std::clamp(settings.customX, static_cast<int>(bounds.left), maxX);
         y = std::clamp(settings.customY, static_cast<int>(bounds.top), maxY);
     } else {
+        // 录屏选区停靠 (docked) 与桌面常规模式 100% 共享同一套 6 宫格方位逻辑，仅外包边界由屏幕切换为录制区域
         if (settings.position == "top_left") {
             x = bounds.left + marginX;
             y = bounds.top + marginY;
@@ -1415,8 +1412,7 @@ void KeycastOverlay::render() {
 
     const KeycastDynamicMetrics dyn = computeKeycastMetrics(settings.fontSize, m_dpiScale);
 
-    const bool isBottom = dockedNow ||
-                          (settings.position == "bottom_left" ||
+    const bool isBottom = (settings.position == "bottom_left" ||
                            settings.position == "bottom_center" ||
                            settings.position == "bottom_right");
 
@@ -1445,7 +1441,7 @@ void KeycastOverlay::render() {
 
         float startX = edgePad;
         float pivotX = edgePad;
-        if (dockedNow || settings.position == "bottom_center" || settings.position == "top_center") {
+        if (settings.position == "bottom_center" || settings.position == "top_center") {
             startX = (m_width - rowWidth) / 2.0f;
             pivotX = m_width / 2.0f;
         } else if (settings.position == "top_right" || settings.position == "bottom_right") {

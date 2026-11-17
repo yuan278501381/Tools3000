@@ -380,6 +380,15 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     m_state.recordSetup.includeKeycast = config.get<bool>("/recording/includeKeycast", true);
     m_state.recordSetup.captureSystemAudio = config.get<bool>("/recording/captureSystemAudio", false);
     m_state.recordSetup.captureMicrophone = config.get<bool>("/recording/captureMicrophone", false);
+    const bool autoZoomCfg = config.get<bool>("/recording/studioAutoZoom", true);
+    const int savedZoomMode = std::clamp(config.get<int>("/recording/studioZoomMode", autoZoomCfg ? 1 : 0), 0, 2);
+    m_state.recordSetup.zoomEffectMode = autoZoomCfg ? (savedZoomMode == 0 ? 1 : savedZoomMode) : 0;
+    m_state.recordSetup.countdownSeconds = std::clamp(config.get<int>("/recording/countdownSeconds", 3), 0, 10);
+    m_state.recordSetup.hideDesktopIcons = config.get<bool>("/recording/hideDesktopIcons", false);
+    m_state.recordSetup.hideTaskbar = config.get<bool>("/recording/hideTaskbar", false);
+    m_state.recordSetup.typingAutoZoom = config.get<bool>("/recording/typingAutoZoom", false);
+    m_state.recordSetup.voiceEnhance = config.get<bool>("/recording/voiceEnhance", true);
+    m_state.recordSetup.requestOpenMoreSettings = false;
 
     const auto freezeStarted = std::chrono::steady_clock::now();
     if (!freezeScreen()) {
@@ -990,7 +999,7 @@ void CaptureOverlay::setShortcutHintsEnabled(bool enabled) {
     m_renderer.invalidate();
 }
 
-void CaptureOverlay::cleanupAfterDelivery() {
+void CaptureOverlay::cleanupAfterDelivery(bool trimMemory) {
     tools3000::core::KeyboardHook::instance().setCaptureOverlayVisible(false);
     m_state.dragging = false;
     m_state.isMarking = false;
@@ -1020,8 +1029,10 @@ void CaptureOverlay::cleanupAfterDelivery() {
     releaseFrozenSurface();
     if (m_closedCallback) m_closedCallback();
 
-    // 冷路径退场：主动修剪物理内存，将大图/D2D/DirectX 缓存归还系统
-    tools3000::core::WinUtils::trimWorkingSet();
+    if (trimMemory) {
+        // 冷路径退场：主动修剪物理内存，将大图/D2D/DirectX 缓存归还系统（进入录屏热路径时禁止修剪）
+        tools3000::core::WinUtils::trimWorkingSet();
+    }
 }
 
 void CaptureOverlay::realCancel() {
@@ -1087,36 +1098,37 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     }
 
     cv::Mat cropped;
-    cv::Rect targetRect(x1, y1, w, h);
-    syncMarkupBase(m_state.frozenScreen, targetRect, m_state.markupBaseReady, m_state.markupBaseRect, m_state.markup);
-    if (m_state.markup.elementCount() > 0) {
-        cropped = m_state.markup.getCompositeImage();
-    } else {
-        cropped = cropMarkupBase(m_state.frozenScreen, targetRect);
-    }
-
     cv::Mat cleanBaseDelivered;
     std::vector<MarkupElement> updatedElements;
-    if (m_editPinnedMarkupCallback) {
-        if (targetRect == m_editPinnedInitialRect && !m_editPinnedOriginalCleanBase.empty()) {
-            cleanBaseDelivered = m_editPinnedOriginalCleanBase.clone();
+    if (m_state.mode != OverlayMode::RecordRegion) {
+        cv::Rect targetRect(x1, y1, w, h);
+        syncMarkupBase(m_state.frozenScreen, targetRect, m_state.markupBaseReady, m_state.markupBaseRect, m_state.markup);
+        if (m_state.markup.elementCount() > 0) {
+            cropped = m_state.markup.getCompositeImage();
         } else {
-            cleanBaseDelivered = cropMarkupBase(m_state.frozenScreen, targetRect);
+            cropped = cropMarkupBase(m_state.frozenScreen, targetRect);
         }
-        updatedElements = m_state.markup.exportElements();
-    }
 
-    const bool bakedDecorations =
-        (m_state.beautyShell.enabled || m_state.cornerRadius > 0.5f) &&
-        !cropped.empty() && m_state.mode != OverlayMode::RecordRegion;
-    if (m_state.beautyShell.enabled && !cropped.empty() && m_state.mode != OverlayMode::RecordRegion) {
-        cropped = applyBeautyShell(cropped, m_state.beautyShell);
-    } else if (m_state.cornerRadius > 0.5f && !cropped.empty() && m_state.mode != OverlayMode::RecordRegion) {
-        cropped = applyRoundedCorners(cropped, m_state.cornerRadius);
-    }
-    if (bakedDecorations && m_editPinnedMarkupCallback) {
-        cleanBaseDelivered = cropped.clone();
-        updatedElements.clear();
+        if (m_editPinnedMarkupCallback) {
+            if (targetRect == m_editPinnedInitialRect && !m_editPinnedOriginalCleanBase.empty()) {
+                cleanBaseDelivered = m_editPinnedOriginalCleanBase.clone();
+            } else {
+                cleanBaseDelivered = cropMarkupBase(m_state.frozenScreen, targetRect);
+            }
+            updatedElements = m_state.markup.exportElements();
+        }
+
+        const bool bakedDecorations =
+            (m_state.beautyShell.enabled || m_state.cornerRadius > 0.5f) && !cropped.empty();
+        if (m_state.beautyShell.enabled && !cropped.empty()) {
+            cropped = applyBeautyShell(cropped, m_state.beautyShell);
+        } else if (m_state.cornerRadius > 0.5f && !cropped.empty()) {
+            cropped = applyRoundedCorners(cropped, m_state.cornerRadius);
+        }
+        if (bakedDecorations && m_editPinnedMarkupCallback) {
+            cleanBaseDelivered = cropped.clone();
+            updatedElements.clear();
+        }
     }
 
     int offsetX = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -1160,15 +1172,19 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
         ShowWindow(m_hwnd, SW_HIDE);
     }
 
-    // 阶段 2 (业务交付): 同步执行交付回调 (写入多矩阵剪贴板与保存磁盘)
+    // 阶段 2 & 3 (资源清理与业务交付):
+    // - 录屏选区模式：先销毁选区覆盖层并跳过 trimWorkingSet（防止热启动瞬间缺页抖动吞噬倒计时动画），随后立即启动录屏与 60FPS 倒计时圆盘；
+    // - 常规截图模式：同步执行剪贴板/落盘交付后，在冷路径销毁覆盖层并主动修剪物理工作集。
     if (mode == OverlayMode::RecordRegion) {
-        if (rcb) rcb(region, m_state.recordSetup);
-    } else if (!editPinnedCb && !editPinnedMarkupCb && !editLongCb) {
-        if (cb) cb(region, cropped, completion);
+        const RecordSetupOptions recordSetupSnapshot = m_state.recordSetup;
+        cleanupAfterDelivery(false);
+        if (rcb) rcb(region, recordSetupSnapshot);
+    } else {
+        if (!editPinnedCb && !editPinnedMarkupCb && !editLongCb) {
+            if (cb) cb(region, cropped, completion);
+        }
+        cleanupAfterDelivery(true);
     }
-
-    // 阶段 3 (冷路径清理与内存修剪): 业务数据交付彻底完成后，再安全销毁覆盖层窗口、释放底图并执行 trimWorkingSet()
-    cleanupAfterDelivery();
     if (editPinnedCb && !cropped.empty()) {
         editPinnedCb(cropped);
     }

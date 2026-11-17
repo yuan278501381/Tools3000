@@ -20,6 +20,8 @@
 #include "capture/CaptureHudPalette.h"
 #include "capture/MarkupBaseHelper.h"
 #include "core/config/ConfigManager.h"
+#include "core/ipc/MessageBridge.h"
+#include "core/events/MainThreadDispatcher.h"
 #include "core/accessibility/OverlayAnnouncement.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DWriteFontUtils.h"
@@ -421,8 +423,12 @@ void CaptureInput::updateHoverCursor(POINT point) {
                 }
             } else if (m_state->dropdownMenu.type != DropdownType::None) {
                 const auto dmRect = m_state->dropdownMenu.menuRect;
-                if (point.x >= dmRect.left && point.x <= dmRect.right &&
-                    point.y >= dmRect.top && point.y <= dmRect.bottom) {
+                const auto cmRect = m_state->dropdownMenu.childMenuRect;
+                if ((point.x >= dmRect.left && point.x <= dmRect.right &&
+                     point.y >= dmRect.top && point.y <= dmRect.bottom) ||
+                    (cmRect.right > cmRect.left &&
+                     point.x >= cmRect.left && point.x <= cmRect.right &&
+                     point.y >= cmRect.top && point.y <= cmRect.bottom)) {
                     cur = LoadCursor(nullptr, IDC_ARROW);
                 }
             } else if (m_state->openSubmenu != SubmenuType::None) {
@@ -1001,6 +1007,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
         button.command != ToolbarCommand::RecordCycleFps &&
         button.command != ToolbarCommand::RecordCycleQuality &&
         button.command != ToolbarCommand::RecordCycleClickEffect &&
+        button.command != ToolbarCommand::RecordToggleSettingsMenu &&
         button.command != ToolbarCommand::SelectTool) {
         if (m_state->activeElement) {
             m_state->activeElement->isActive = false;
@@ -1731,6 +1738,11 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 m_state->toolbarLayoutValid = false;
                 m_renderer->invalidate();
             }
+            break;
+        }
+
+        case ToolbarCommand::RecordToggleSettingsMenu: {
+            openDropdownMenu(DropdownType::RecordMoreSettings, button.rect);
             break;
         }
 
@@ -3143,8 +3155,43 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     }
                 }
 
-                // 1.2 微晶下拉菜单（聚光灯/几何图形、序号样式、美化外壳、录屏设置）点击与面板内边距防穿透
+                // 1.2 微晶下拉菜单（聚光灯/几何图形、序号样式、美化外壳、录屏设置及二级级联菜单）点击与面板内边距防穿透
                 if (m_state->dropdownMenu.type != DropdownType::None) {
+                    auto handlePostDropdownCommit = [&]() {
+                        if (m_state->recordSetup.requestOpenMoreSettings) {
+                            m_state->recordSetup.requestOpenMoreSettings = false;
+                            tools3000::capture::closeDropdownMenu(*m_state, false);
+                            if (m_cancelCb) m_cancelCb();
+                            tools3000::core::MainThreadDispatcher::instance().post([]() {
+                                tools3000::core::MessageBridge::instance().invokeHandler(
+                                    "tray.action", {{"action", "openSettings"}, {"page", "capture"}});
+                            });
+                            return;
+                        }
+                        m_renderer->invalidate();
+                    };
+
+                    if (m_state->dropdownMenu.activeParentIndex >= 0 &&
+                        m_state->dropdownMenu.activeParentIndex < static_cast<int>(m_state->dropdownMenu.items.size())) {
+                        const auto& parent = m_state->dropdownMenu.items[m_state->dropdownMenu.activeParentIndex];
+                        if (parent.hasChildMenu && !parent.childItems.empty()) {
+                            for (const auto& cItem : parent.childItems) {
+                                if (px >= cItem.rect.left && px <= cItem.rect.right &&
+                                    py >= cItem.rect.top && py <= cItem.rect.bottom) {
+                                    commitDropdownSelection(m_state->dropdownMenu.type, cItem.id);
+                                    handlePostDropdownCommit();
+                                    return 0;
+                                }
+                            }
+                            const auto cmRect = m_state->dropdownMenu.childMenuRect;
+                            if (cmRect.right > cmRect.left &&
+                                px >= cmRect.left && px <= cmRect.right &&
+                                py >= cmRect.top && py <= cmRect.bottom) {
+                                return 0;
+                            }
+                        }
+                    }
+
                     int hitItem = -1;
                     for (int i = 0; i < static_cast<int>(m_state->dropdownMenu.items.size()); ++i) {
                         const auto& item = m_state->dropdownMenu.items[i];
@@ -3155,7 +3202,19 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         }
                     }
                     if (hitItem >= 0) {
-                        commitDropdownSelection(m_state->dropdownMenu.type, m_state->dropdownMenu.items[hitItem].id);
+                        const auto& item = m_state->dropdownMenu.items[hitItem];
+                        if (item.isSeparator) {
+                            return 0;
+                        }
+                        if (item.hasChildMenu) {
+                            m_state->dropdownMenu.activeParentIndex = hitItem;
+                            m_state->dropdownMenu.hoveredIndex = hitItem;
+                            m_state->dropdownMenu.hoveredChildIndex = -1;
+                            m_renderer->invalidate();
+                            return 0;
+                        }
+                        commitDropdownSelection(m_state->dropdownMenu.type, item.id);
+                        handlePostDropdownCommit();
                         return 0;
                     }
                     const auto dmRect = m_state->dropdownMenu.menuRect;
@@ -3900,16 +3959,63 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             }
 
             if (m_state->dropdownMenu.type != DropdownType::None) {
-                int hoverItem = -1;
-                for (int i = 0; i < static_cast<int>(m_state->dropdownMenu.items.size()); ++i) {
-                    const auto& item = m_state->dropdownMenu.items[i];
-                    if (m_state->currentCursor.x >= item.rect.left && m_state->currentCursor.x <= item.rect.right &&
-                        m_state->currentCursor.y >= item.rect.top && m_state->currentCursor.y <= item.rect.bottom) {
-                        hoverItem = i;
-                        break;
+                const float mx = static_cast<float>(m_state->currentCursor.x);
+                const float my = static_cast<float>(m_state->currentCursor.y);
+                const auto cmRect = m_state->dropdownMenu.childMenuRect;
+                const bool inChildMenu =
+                    cmRect.right > cmRect.left &&
+                    mx >= cmRect.left && mx <= cmRect.right &&
+                    my >= cmRect.top && my <= cmRect.bottom;
+                if (inChildMenu &&
+                    m_state->dropdownMenu.activeParentIndex >= 0 &&
+                    m_state->dropdownMenu.activeParentIndex < static_cast<int>(m_state->dropdownMenu.items.size())) {
+                    int hoverChild = -1;
+                    const auto& cItems = m_state->dropdownMenu.items[m_state->dropdownMenu.activeParentIndex].childItems;
+                    for (int c = 0; c < static_cast<int>(cItems.size()); ++c) {
+                        const auto& ci = cItems[c];
+                        if (mx >= ci.rect.left && mx <= ci.rect.right &&
+                            my >= ci.rect.top && my <= ci.rect.bottom) {
+                            hoverChild = c;
+                            break;
+                        }
+                    }
+                    m_state->dropdownMenu.hoveredChildIndex = hoverChild;
+                    tools3000::capture::updateDropdownHover(*m_state, m_state->dropdownMenu.activeParentIndex);
+                } else {
+                    int hoverItem = -1;
+                    for (int i = 0; i < static_cast<int>(m_state->dropdownMenu.items.size()); ++i) {
+                        const auto& item = m_state->dropdownMenu.items[i];
+                        if (item.isSeparator) continue;
+                        if (mx >= item.rect.left && mx <= item.rect.right &&
+                            my >= item.rect.top && my <= item.rect.bottom) {
+                            hoverItem = i;
+                            break;
+                        }
+                    }
+                    if (hoverItem >= 0) {
+                        m_state->dropdownMenu.hoveredChildIndex = -1;
+                        m_state->dropdownMenu.activeParentIndex =
+                            m_state->dropdownMenu.items[hoverItem].hasChildMenu ? hoverItem : -1;
+                        tools3000::capture::updateDropdownHover(*m_state, hoverItem);
+                    } else {
+                        // 主菜单与子菜单之间的横向跨越桥接防抖走廊，避免移向子菜单途中闪断收起
+                        bool inBridgeGap = false;
+                        if (cmRect.right > cmRect.left && m_state->dropdownMenu.activeParentIndex >= 0) {
+                            const auto dmRect = m_state->dropdownMenu.menuRect;
+                            const float gapLeft = (std::min)(dmRect.left, cmRect.left) - 4.0f;
+                            const float gapRight = (std::max)(dmRect.right, cmRect.right) + 4.0f;
+                            const float gapTop = (std::min)(dmRect.top, cmRect.top) - 4.0f;
+                            const float gapBottom = (std::max)(dmRect.bottom, cmRect.bottom) + 4.0f;
+                            if (mx >= gapLeft && mx <= gapRight && my >= gapTop && my <= gapBottom) {
+                                inBridgeGap = true;
+                            }
+                        }
+                        if (!inBridgeGap) {
+                            m_state->dropdownMenu.hoveredChildIndex = -1;
+                            tools3000::capture::updateDropdownHover(*m_state, -1);
+                        }
                     }
                 }
-                tools3000::capture::updateDropdownHover(*m_state, hoverItem);
                 m_renderer->invalidate();
             }
 

@@ -53,7 +53,6 @@ const KeycastPage = lazy(() => import('./pages/KeycastPage').then((module) => ({
 const SpotlightPage = lazy(() => import('./pages/SpotlightPage').then((module) => ({ default: module.SpotlightPage })));
 const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then((module) => ({ default: module.DialogEnhancerPage })));
 const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((module) => ({ default: module.RemoteBoostPage })));
-const ExtensionPage = lazy(() => import('./pages/ExtensionPage').then((module) => ({ default: module.ExtensionPage })));
 
 const getInitialActivePluginIds = (): string[] | null => {
   try {
@@ -373,19 +372,6 @@ function App() {
     }
   }, [activeNav, isNavActive, handleNavSelect]);
 
-  const renderExtensionView = (extId: string) => (
-    <ExtensionPage
-      pluginId={extId}
-      plugin={plugins.find((p) => p.id === extId)}
-      onUninstall={() => {
-        handleNavSelect('plugins');
-        void bridgeRequest<PluginStatus[]>('plugins.getAll').then((items) =>
-          setPlugins(Array.isArray(items) ? items : [])
-        );
-      }}
-    />
-  );
-
   // 渲染当前页面：未启用页面的组件绝不挂载到 DOM 中，以阻断资源预载并释放内存
   const renderPage = () => {
     if (!isNavActive(activeNav)) {
@@ -406,15 +392,7 @@ function App() {
       case 'plugins':         return <PluginsPage initialPlugins={plugins} onNavigate={handleNavSelect} />;
       case 'general':         return <GeneralPage />;
       case 'about':           return <AboutPage />;
-      case 'ai_assistant':
-      case 'color_picker':
-      case 'clipboard_manager':
-      case 'markdown_preview':
-        return renderExtensionView(activeNav);
       default:
-        if (installedExtensionIds.includes(activeNav) || activePluginIds?.includes(activeNav)) {
-          return renderExtensionView(activeNav);
-        }
         return <GeneralPage />;
     }
   };

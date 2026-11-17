@@ -1,13 +1,13 @@
-﻿# ─────────────────────────────────────────────────────────────────────────────
-# test_recording_keycast_e2e.ps1 — Tools3000 录屏按键回显真实端到端自动化测试
-# ─────────────────────────────────────────────────────────────────────────────
-# 通过操作系统原生 SendInput 驱动真实的 Tools3000 进程，
-# 端到端验证：
-# 1. 未录屏时：日常打字静默，避免打扰用户；
-# 2. 录屏开启时：全量放行打字、单键与功能键，Keycast 自动停靠并居中置底录屏选区；
-# 3. 录屏全屏/无边框时：免受 autoBypassFullscreen 误杀，全量回显；
-# 4. 录屏停止时：自动退出选区停靠，清空缓存并隐藏窗口，恢复日常智能过滤。
-# ─────────────────────────────────────────────────────────────────────────────
+﻿# -----------------------------------------------------------------------------
+# test_recording_keycast_e2e.ps1 — Tools3000 按键回显 (Keycast) 与录屏联动操作系统级端到端门禁
+# -----------------------------------------------------------------------------
+# 通过操作系统原生 SendInput 与窗口可见性检视驱动真实的 Tools3000 进程，硬断言验证：
+# [1/5] 键盘钩子与插件管线初始化就绪；
+# [2/5] 日常 smart_shortcuts 模式下：普通单字母打字保持静默，Tools3000_KeycastOverlay 绝不弹窗骚扰；
+# [3/5] 注入修饰快捷键 (Ctrl+Shift+P 及上档标点 Ctrl+Shift+=)：Tools3000_KeycastOverlay 真实弹出可见且尺寸合法；
+# [4/5] 录屏开启时：拼音字母/Space/Backspace 静默防刷屏，组合快捷键在选区停靠态正常弹出回显；
+# [5/5] 录屏停止时：退出选区停靠并恢复日常模式。
+# -----------------------------------------------------------------------------
 param(
     [string]$ExePath = ""
 )
@@ -16,14 +16,14 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "===============================================================================" -ForegroundColor Cyan
-Write-Host " Tools3000 录屏按键回显操作系统级端到端 (E2E) 自动化测试门禁 " -ForegroundColor Cyan
+Write-Host " Tools3000 按键回显 (Keycast) 与录屏联动操作系统级端到端 (E2E) 自动化测试门禁 " -ForegroundColor Cyan
 Write-Host "===============================================================================" -ForegroundColor Cyan
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 
 if ([string]::IsNullOrWhiteSpace($ExePath)) {
-    $candidate1 = Join-Path $ProjectRoot "build\bin\Release\Tools3000.exe"
-    $candidate2 = Join-Path $ProjectRoot "deploy_dist\Tools3000.exe"
+    $candidate1 = Join-Path $ProjectRoot "deploy_dist\Tools3000.exe"
+    $candidate2 = Join-Path $ProjectRoot "build\bin\Release\Tools3000.exe"
     if (Test-Path -LiteralPath $candidate1) {
         $ExePath = $candidate1
     } elseif (Test-Path -LiteralPath $candidate2) {
@@ -34,46 +34,35 @@ if ([string]::IsNullOrWhiteSpace($ExePath)) {
     }
 }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
-Write-Host "待测程序: $ExePath" -ForegroundColor Gray
+Write-Host "[INFO] 待测程序: $ExePath" -ForegroundColor Gray
 
-# 准备隔离测试环境
 $HarnessRoot = Join-Path $ProjectRoot "build\keycast-e2e-$PID"
 $HarnessLocalAppData = Join-Path $HarnessRoot "LocalAppData"
 $HarnessRoamingAppData = Join-Path $HarnessRoot "RoamingAppData"
 $HarnessDataRoot = Join-Path $HarnessRoot "Tools3000Data"
 $HarnessLogsDir = Join-Path $HarnessDataRoot "logs"
-New-Item -ItemType Directory -Path $HarnessLocalAppData, $HarnessRoamingAppData, $HarnessDataRoot, $HarnessLogsDir -Force | Out-Null
+$HarnessVideosDir = Join-Path $HarnessRoot "Recordings"
+New-Item -ItemType Directory -Path $HarnessLocalAppData, $HarnessRoamingAppData, $HarnessDataRoot, $HarnessLogsDir, $HarnessVideosDir -Force | Out-Null
 
 $HarnessConfigDirectory = Join-Path $HarnessDataRoot "config"
 New-Item -ItemType Directory -Path $HarnessConfigDirectory -Force | Out-Null
 $HarnessConfigPath = Join-Path $HarnessConfigDirectory "config.json"
 
-$ConfigJson = @{
-    plugins = @{
-        keycast = @{ enabled = $true }
-        capture = @{ enabled = $true }
-    }
-    recording = @{
-        includeKeycast = $true
-        format = "mp4_h264"
-        fps = 30
-        countdownSeconds = 0
-    }
-    keycast = @{
-        enabled = $true
-        showKeyboard = $true
-        filterMode = "smart_shortcuts"
-    }
-} | ConvertTo-Json -Depth 4
-[System.IO.File]::WriteAllText($HarnessConfigPath, $ConfigJson, [System.Text.UTF8Encoding]::new($false))
-
-# 注册 Win32 输入模拟器 (支持键盘与鼠标)
 Add-Type @"
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 using System.Threading;
 
-public static class NativeInputSimulator {
+public static class NativeKeycastHarness {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct MOUSEINPUT {
         public int dx;
@@ -100,86 +89,172 @@ public static class NativeInputSimulator {
         [FieldOffset(8)] public KEYBDINPUT ki;
     }
 
-    [DllImport("user32.dll", SetLastError=true)]
-    public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+    public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
 
-    [DllImport("user32.dll")]
-    public static extern bool SetCursorPos(int X, int Y);
+    [DllImport("user32.dll", SetLastError=true)] public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+    [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wp, IntPtr lp);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, IntPtr wp, IntPtr lp);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError=true)] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int max);
+    [DllImport("user32.dll", SetLastError=true)] public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
+    [DllImport("user32.dll", SetLastError=true)] public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+    [DllImport("user32.dll")] public static extern IntPtr SetProcessDpiAwarenessContext(IntPtr value);
 
-    public const int INPUT_MOUSE = 0;
     public const int INPUT_KEYBOARD = 1;
     public const uint KEYEVENTF_KEYUP = 0x0002;
-    public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-    public const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    public const uint WM_CLOSE = 0x0010;
+    public const uint WM_MOUSEMOVE = 0x0200;
+    public const uint WM_LBUTTONDOWN = 0x0201;
+    public const uint WM_LBUTTONUP = 0x0202;
+    public const uint WM_HOTKEY = 0x0312;
+    public const uint WM_ACCESSIBILITY_INVOKE_TOOLBAR = 0x804A;
+    public const uint WM_TOOLS3000_TEST_INJECT_KEY = 0x80BE; // WM_APP + 190
+    public const int MK_LBUTTON = 0x0001;
+    public static readonly IntPtr TEST_EXTRA_INFO = (IntPtr)0x54455354;
 
-    public static readonly IntPtr TEST_EXTRA_INFO = (IntPtr)0x54455354; // "TEST"
-
-    public static void SendKeyPress(ushort vk) {
-        INPUT[] down = new INPUT[1];
-        down[0].type = INPUT_KEYBOARD;
-        down[0].ki.wVk = vk;
-        down[0].ki.dwFlags = 0;
-        down[0].ki.dwExtraInfo = TEST_EXTRA_INFO;
-        SendInput(1, down, Marshal.SizeOf(typeof(INPUT)));
-        Thread.Sleep(15);
-
-        INPUT[] up = new INPUT[1];
-        up[0].type = INPUT_KEYBOARD;
-        up[0].ki.wVk = vk;
-        up[0].ki.dwFlags = KEYEVENTF_KEYUP;
-        up[0].ki.dwExtraInfo = TEST_EXTRA_INFO;
-        SendInput(1, up, Marshal.SizeOf(typeof(INPUT)));
-        Thread.Sleep(15);
+    public static IntPtr MakeLParam(int x, int y) {
+        return (IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF));
     }
 
-    public static void SendShortcut(ushort[] mods, ushort key) {
-        INPUT[] inputs = new INPUT[mods.Length + 1];
-        for (int i = 0; i < mods.Length; i++) {
-            inputs[i].type = INPUT_KEYBOARD;
-            inputs[i].ki.wVk = mods[i];
-            inputs[i].ki.dwFlags = 0;
-            inputs[i].ki.dwExtraInfo = TEST_EXTRA_INFO;
-        }
-        inputs[mods.Length].type = INPUT_KEYBOARD;
-        inputs[mods.Length].ki.wVk = key;
-        inputs[mods.Length].ki.dwFlags = 0;
-        inputs[mods.Length].ki.dwExtraInfo = TEST_EXTRA_INFO;
-        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
-        Thread.Sleep(20);
+    public static IntPtr FindByClassForProcess(string wantedClass, uint pid, bool requireVisible = false) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((h, l) => {
+            uint wndPid;
+            GetWindowThreadProcessId(h, out wndPid);
+            if (wndPid != pid) return true;
+            if (requireVisible && !IsWindowVisible(h)) return true;
+            var sb = new StringBuilder(256);
+            GetClassNameW(h, sb, 256);
+            if (sb.ToString() == wantedClass) {
+                found = h;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
 
-        INPUT[] upInputs = new INPUT[mods.Length + 1];
-        upInputs[0].type = INPUT_KEYBOARD;
-        upInputs[0].ki.wVk = key;
-        upInputs[0].ki.dwFlags = KEYEVENTF_KEYUP;
-        upInputs[0].ki.dwExtraInfo = TEST_EXTRA_INFO;
-        for (int i = 0; i < mods.Length; i++) {
-            upInputs[i + 1].type = INPUT_KEYBOARD;
-            upInputs[i + 1].ki.wVk = mods[i];
-            upInputs[i + 1].ki.dwFlags = KEYEVENTF_KEYUP;
-            upInputs[i + 1].ki.dwExtraInfo = TEST_EXTRA_INFO;
+    public static IntPtr FindMessageWindowForProcess(uint pid) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((h, l) => {
+            uint wndPid;
+            GetWindowThreadProcessId(h, out wndPid);
+            if (wndPid != pid) return true;
+            var sb = new StringBuilder(256);
+            GetClassNameW(h, sb, 256);
+            if (sb.ToString().IndexOf("MessageWindow", StringComparison.OrdinalIgnoreCase) >= 0) {
+                found = h;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    private static void EmitSingleKeyStep(IntPtr fallbackMsgWnd, ushort vk, bool isKeyUp) {
+        INPUT[] inp = new INPUT[1];
+        inp[0].type = INPUT_KEYBOARD;
+        inp[0].ki.wVk = vk;
+        inp[0].ki.dwFlags = isKeyUp ? KEYEVENTF_KEYUP : 0u;
+        inp[0].ki.dwExtraInfo = TEST_EXTRA_INFO;
+        uint sent = SendInput(1, inp, Marshal.SizeOf(typeof(INPUT)));
+        if (sent == 0 && fallbackMsgWnd != IntPtr.Zero) {
+            int wp = ((isKeyUp ? 1 : 0) << 16) | (vk & 0xFFFF);
+            SendMessageW(fallbackMsgWnd, WM_TOOLS3000_TEST_INJECT_KEY, (IntPtr)wp, IntPtr.Zero);
         }
-        SendInput((uint)upInputs.Length, upInputs, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    public static void SendKeyPress(IntPtr fallbackMsgWnd, ushort vk) {
+        EmitSingleKeyStep(fallbackMsgWnd, vk, false);
+        Thread.Sleep(16);
+        EmitSingleKeyStep(fallbackMsgWnd, vk, true);
+        Thread.Sleep(16);
+    }
+
+    public static void SendShortcut(IntPtr fallbackMsgWnd, ushort[] mods, ushort key) {
+        for (int i = 0; i < mods.Length; i++) {
+            EmitSingleKeyStep(fallbackMsgWnd, mods[i], false);
+            Thread.Sleep(15);
+        }
+
+        EmitSingleKeyStep(fallbackMsgWnd, key, false);
+        Thread.Sleep(24);
+
+        EmitSingleKeyStep(fallbackMsgWnd, key, true);
+        Thread.Sleep(15);
+
+        for (int i = mods.Length - 1; i >= 0; i--) {
+            EmitSingleKeyStep(fallbackMsgWnd, mods[i], true);
+            Thread.Sleep(12);
+        }
         Thread.Sleep(20);
     }
 
-    public static void SendLeftClick(int x, int y) {
-        SetCursorPos(x, y);
-        Thread.Sleep(10);
-        INPUT[] down = new INPUT[1];
-        down[0].type = INPUT_MOUSE;
-        down[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-        down[0].mi.dwExtraInfo = TEST_EXTRA_INFO;
-        SendInput(1, down, Marshal.SizeOf(typeof(INPUT)));
-        Thread.Sleep(10);
-        INPUT[] up = new INPUT[1];
-        up[0].type = INPUT_MOUSE;
-        up[0].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-        up[0].mi.dwExtraInfo = TEST_EXTRA_INFO;
-        SendInput(1, up, Marshal.SizeOf(typeof(INPUT)));
-        Thread.Sleep(10);
+    public static void DragClientMouse(IntPtr hWnd, int x1, int y1, int x2, int y2) {
+        PostMessageW(hWnd, WM_MOUSEMOVE, IntPtr.Zero, MakeLParam(x1, y1));
+        PostMessageW(hWnd, WM_LBUTTONDOWN, (IntPtr)MK_LBUTTON, MakeLParam(x1, y1));
+        Thread.Sleep(20);
+        PostMessageW(hWnd, WM_MOUSEMOVE, (IntPtr)MK_LBUTTON, MakeLParam(x2, y2));
+        Thread.Sleep(20);
+        PostMessageW(hWnd, WM_LBUTTONUP, IntPtr.Zero, MakeLParam(x2, y2));
+        Thread.Sleep(30);
     }
 }
 "@
+
+[void][NativeKeycastHarness]::SetProcessDpiAwarenessContext([IntPtr](-4))
+
+function Get-IdleRecordHotkey {
+    $modifiers = [uint32](0x0001 -bor 0x0002 -bor 0x0004 -bor 0x4000)
+    foreach ($cand in @(
+        @{ Text = 'Ctrl+Alt+Shift+F22'; Key = [uint32]0x85 },
+        @{ Text = 'Ctrl+Alt+Shift+F21'; Key = [uint32]0x84 },
+        @{ Text = 'Ctrl+Alt+Shift+F20'; Key = [uint32]0x83 }
+    )) {
+        if ([NativeKeycastHarness]::RegisterHotKey([IntPtr]::Zero, 0x7250, $modifiers, $cand.Key)) {
+            [void][NativeKeycastHarness]::UnregisterHotKey([IntPtr]::Zero, 0x7250)
+            return $cand.Text
+        }
+    }
+    return "Ctrl+Alt+Shift+F22"
+}
+
+$RecordHkText = Get-IdleRecordHotkey
+$ConfigJson = @{
+    plugins = @{
+        keycast      = @{ enabled = $true }
+        capture      = @{ enabled = $true }
+        gesture      = @{ enabled = $false }
+        remote_boost = @{ enabled = $false }
+        remote       = @{ enabled = $false }
+    }
+    hotkeys = @{
+        Record = $RecordHkText
+    }
+    recording = @{
+        includeKeycast      = $true
+        format              = "mp4_h264"
+        fps                 = 30
+        countdownSeconds    = 0
+        saveDirectory       = $HarnessVideosDir
+        studioMode          = $false
+        autoBypassFullscreen = $false
+    }
+    capture = @{
+        autoBypassFullscreen = $false
+        autoDetectWindow     = $false
+    }
+    keycast = @{
+        enabled           = $true
+        showKeyboard      = $true
+        filterMode        = "smart_shortcuts"
+        autoBypassFullscreen = $false
+    }
+} | ConvertTo-Json -Depth 4
+[System.IO.File]::WriteAllText($HarnessConfigPath, $ConfigJson, [System.Text.UTF8Encoding]::new($false))
 
 $HarnessLogFile = Join-Path $HarnessLogsDir "tools3000.log"
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
@@ -192,15 +267,16 @@ $psi.EnvironmentVariables["APPDATA"] = $HarnessRoamingAppData
 $psi.EnvironmentVariables["TOOLS3000_DATA_ROOT"] = $HarnessDataRoot
 $psi.EnvironmentVariables["TOOLS3000_ALLOW_INJECTED_KEYBOARD"] = "1"
 $psi.EnvironmentVariables["TOOLS3000_ALLOW_INJECTED_MOUSE"] = "1"
+$psi.EnvironmentVariables["TOOLS3000_TEST_MODE"] = "1"
 
-Write-Host "正在启动被测进程 (录屏与键盘测试通道已放行)..." -ForegroundColor Yellow
+Write-Host "正在启动被测进程 (录屏与键盘钩子测试通道已放行)..." -ForegroundColor Yellow
 $proc = [System.Diagnostics.Process]::Start($psi)
 if (-not $proc -or $proc.HasExited) {
     Write-Host "[ERROR] 进程启动失败！" -ForegroundColor Red
     exit 1
 }
 
-$procId = $proc.Id
+$procId = [uint32]$proc.Id
 Write-Host "[OK] Tools3000 已成功启动 (PID: $procId)" -ForegroundColor Green
 
 function Get-LogContentSafe($filePath) {
@@ -217,135 +293,143 @@ function Get-LogContentSafe($filePath) {
     }
 }
 
-try {
-    # 1. 等待主程序与键盘/录屏插件就绪
-    Write-Host "`n── [1/5] 等待键盘回显与录屏插件就绪 ──" -ForegroundColor Cyan
-    $ready = $false
-    $timeoutSec = 10
+function Get-RegisteredRecordHotkeyId([string]$LogPath) {
+    for ($i = 0; $i -lt 30; $i++) {
+        $txt = Get-LogContentSafe $LogPath
+        $m = [regex]::Matches($txt, 'name=Record,\s*def=.*\bid=(\d+)')
+        if ($m.Count -gt 0) {
+            return [int]$m[$m.Count - 1].Groups[1].Value
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw "未能在日志中读取 Record 快捷键 ID"
+}
+
+function Wait-KeycastVisible([uint32]$PidVal, [int]$TimeoutMs = 2000) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    while ($sw.Elapsed.TotalSeconds -lt $timeoutSec) {
-        if ($proc.HasExited) {
-            throw "进程在初始化期间过早退出！退出代码: $($proc.ExitCode)"
-        }
-        $logContent = Get-LogContentSafe $HarnessLogFile
-        if ($logContent.Contains("Keycast Plugin") -or 
-            $logContent.Contains("Plugin_Keycast") -or
-            $logContent.Contains("插件管理器初始化完成") -or
-            $logContent.Contains("Tools3000 process identity")) {
-            $ready = $true
-            break
-        }
-        Start-Sleep -Milliseconds 150
-    }
-    if (-not $ready) {
-        Write-Host "[WARN] 初始化日志尚未捕获，额外等待 1.5 秒缓冲..." -ForegroundColor Yellow
-        Start-Sleep -Milliseconds 1500
-    } else {
-        Write-Host "[OK] 键盘钩子与插件管线初始化就绪！" -ForegroundColor Green
-    }
-
-    # 2. 端到端用例 1：日常状态下智能静默防打扰测试
-    Write-Host "`n── [2/5] E2E 日常智能打字过滤测试 (非快捷键单键静默) ──" -ForegroundColor Cyan
-    $logLenBefore = (Get-LogContentSafe $HarnessLogFile).Length
-    
-    # 模拟用户敲击普通打字字母 'H', 'E', 'L', 'L', 'O'
-    $vkLetters = @(0x48, 0x45, 0x4C, 0x4C, 0x4F)
-    foreach ($vk in $vkLetters) {
-        [NativeInputSimulator]::SendKeyPress($vk)
-        Start-Sleep -Milliseconds 30
-    }
-    Start-Sleep -Milliseconds 300
-    
-    $logAfterTyping = Get-LogContentSafe $HarnessLogFile
-    $newLogTyping = if ($logAfterTyping.Length -gt $logLenBefore) { $logAfterTyping.Substring($logLenBefore) } else { "" }
-    
-    $typingLeaked = ($newLogTyping -match "KeycastOverlay pushKey: rawKey=[HELO]")
-    if (-not $typingLeaked) {
-        Write-Host "[OK] 日常打字智能静默验证通过 (未发生冒泡弹窗骚扰)！" -ForegroundColor Green
-    } else {
-        Write-Host "[WARN] 日常打字被捕获，属于正常配置放行范围。" -ForegroundColor Yellow
-    }
-
-    # 3. 端到端用例 2：通过全局热键触发选区录屏
-    Write-Host "`n── [3/5] E2E 真实全局热键唤起选区录屏 (Ctrl+Shift+R) ──" -ForegroundColor Cyan
-    $VK_CONTROL = 0x11
-    $VK_SHIFT   = 0x10
-    $VK_R       = 0x52
-    $VK_RETURN  = 0x0D
-    $VK_K       = 0x4B
-
-    Write-Host "  -> 注入全局热键 Ctrl + Shift + R 唤起选区录屏..."
-    [NativeInputSimulator]::SendShortcut(@($VK_CONTROL, $VK_SHIFT), $VK_R)
-    Start-Sleep -Milliseconds 800
-
-    Write-Host "  -> 在屏幕中央点击以选定当前窗口或屏幕区域..."
-    [NativeInputSimulator]::SendLeftClick(600, 400)
-    Start-Sleep -Milliseconds 300
-
-    Write-Host "  -> 敲击 Enter 键确认开始录屏 (或启动录制)..."
-    [NativeInputSimulator]::SendKeyPress($VK_RETURN)
-    Start-Sleep -Milliseconds 1200
-
-    # 4. 端到端用例 3：录屏模式下智能防刷屏验证（拼音打字/空格/退格静默，演示控制键与组合键回显）
-    Write-Host "`n── [4/5] E2E 录屏状态下智能按键过滤验证 (拼音打字静默 + 功能键/快捷键回显) ──" -ForegroundColor Cyan
-    $recordLogLenBefore = (Get-LogContentSafe $HarnessLogFile).Length
-
-    $VK_Y = 0x59
-    $VK_E = 0x45
-    $VK_SPACE = 0x20
-    $VK_BACK  = 0x08
-    Write-Host "  -> 注入模拟拼音打字流 'Y', 'E', Space, Backspace (必须保持静默不刷屏)..."
-    foreach ($tvk in @($VK_Y, $VK_E, $VK_SPACE, $VK_BACK)) {
-        [NativeInputSimulator]::SendKeyPress($tvk)
+    while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+        $h = [NativeKeycastHarness]::FindByClassForProcess("Tools3000_KeycastOverlay", $PidVal, $true)
+        if ($h -ne [IntPtr]::Zero) { return $h }
         Start-Sleep -Milliseconds 40
     }
-    Start-Sleep -Milliseconds 120
+    return [IntPtr]::Zero
+}
 
+try {
+    # 1. 等待键盘钩子与录屏快捷键就绪
+    Write-Host "`n── [1/5] 等待键盘回显钩子与录屏插件就绪 ──" -ForegroundColor Cyan
+    $recHkId = Get-RegisteredRecordHotkeyId -LogPath $HarnessLogFile
+    $msgWnd = [NativeKeycastHarness]::FindMessageWindowForProcess($procId)
+    if ($msgWnd -eq [IntPtr]::Zero) {
+        throw "[1/5] 未能定位待测进程主消息窗口！"
+    }
+    Write-Host "[OK] 键盘钩子与插件管线初始化就绪 (Record Hotkey ID=$recHkId)！" -ForegroundColor Green
+
+    # 2. 日常模式下普通字母打字静默硬断言 (Tools3000_KeycastOverlay 必须不可见)
+    Write-Host "`n── [2/5] E2E 日常智能打字过滤硬断言 (普通单键严禁弹窗) ──" -ForegroundColor Cyan
+    foreach ($vk in @(0x48, 0x45, 0x4C, 0x4C, 0x4F)) {
+        [NativeKeycastHarness]::SendKeyPress($msgWnd, [uint16]$vk)
+        Start-Sleep -Milliseconds 25
+    }
+    Start-Sleep -Milliseconds 180
+    $leakedWnd = [NativeKeycastHarness]::FindByClassForProcess("Tools3000_KeycastOverlay", $procId, $true)
+    if ($leakedWnd -ne [IntPtr]::Zero) {
+        throw "[2/5] 日常 smart_shortcuts 模式下普通字母打字误弹出了 Tools3000_KeycastOverlay 悬浮窗！"
+    }
+    Write-Host "[OK] 日常打字智能静默验证通过 (Tools3000_KeycastOverlay 零误弹)！" -ForegroundColor Green
+
+    # 3. 独立按键回显真实悬浮窗可见性与上档符号快捷键硬断言
+    Write-Host "`n── [3/5] E2E 组合快捷键 (Ctrl+Shift+P / Ctrl+Shift+=) 悬浮窗弹出硬断言 ──" -ForegroundColor Cyan
+    $VK_LCONTROL = [uint16]0xA2
+    $VK_LSHIFT   = [uint16]0xA0
+    $VK_P        = [uint16]0x50
+    $VK_OEM_PLUS = [uint16]0xBB # '=' / '+'
+
+    [NativeKeycastHarness]::SendShortcut($msgWnd, @($VK_LCONTROL, $VK_LSHIFT), $VK_P)
+    $kcHwnd = Wait-KeycastVisible -PidVal $procId -TimeoutMs 2000
+    if ($kcHwnd -eq [IntPtr]::Zero) {
+        throw "[3/5] 注入 Ctrl+Shift+P 后，按键回显悬浮窗 Tools3000_KeycastOverlay 未在桌面弹出显示！"
+    }
+    $kcRect = New-Object NativeKeycastHarness+RECT
+    [void][NativeKeycastHarness]::GetWindowRect($kcHwnd, [ref]$kcRect)
+    $kcW = $kcRect.Right - $kcRect.Left
+    $kcH = $kcRect.Bottom - $kcRect.Top
+    if ($kcW -lt 40 -or $kcH -lt 20) {
+        throw "[3/5] Tools3000_KeycastOverlay 悬浮窗几何尺寸异常: ${kcW}x${kcH}"
+    }
+
+    # 继续注入 Ctrl+Shift+= (验证 '+' 上档标点组合键不崩溃且保持可见)
+    [NativeKeycastHarness]::SendShortcut($msgWnd, @($VK_LCONTROL, $VK_LSHIFT), $VK_OEM_PLUS)
+    Start-Sleep -Milliseconds 120
+    if (-not [NativeKeycastHarness]::IsWindowVisible($kcHwnd)) {
+        throw "[3/5] 注入 Ctrl+Shift+= 后按键回显悬浮窗意外消失！"
+    }
+    Write-Host "[OK] 按键回显原生悬浮窗真实弹出可见 (${kcW}x${kcH}, HWND=0x$($kcHwnd.ToString('X8')))！" -ForegroundColor Green
+
+    # 4. 唤起选区录屏并验证录屏停靠态按键过滤与快捷键回显
+    Write-Host "`n── [4/5] E2E 选区录屏停靠态：拼音打字静默 + 组合快捷键回显硬断言 ──" -ForegroundColor Cyan
+    [void][NativeKeycastHarness]::PostMessageW($msgWnd, [NativeKeycastHarness]::WM_HOTKEY, [IntPtr]$recHkId, [IntPtr]::Zero)
+
+    $capOv = [IntPtr]::Zero
+    for ($i = 0; $i -lt 30; $i++) {
+        $capOv = [NativeKeycastHarness]::FindByClassForProcess("Tools3000_CaptureOverlay", $procId, $true)
+        if ($capOv -ne [IntPtr]::Zero) { break }
+        Start-Sleep -Milliseconds 80
+    }
+    if ($capOv -eq [IntPtr]::Zero) {
+        throw "[4/5] 录屏选区覆盖层未能唤起！"
+    }
+
+    [NativeKeycastHarness]::DragClientMouse($capOv, 300, 220, 780, 540)
+    [void][NativeKeycastHarness]::SendMessageW($capOv, [NativeKeycastHarness]::WM_ACCESSIBILITY_INVOKE_TOOLBAR, [IntPtr]9, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 450
+
+    $recordLogLenBefore = (Get-LogContentSafe $HarnessLogFile).Length
+    foreach ($tvk in @(0x59, 0x45, 0x20, 0x08)) { # Y, E, Space, Backspace
+        [NativeKeycastHarness]::SendKeyPress($msgWnd, [uint16]$tvk)
+        Start-Sleep -Milliseconds 30
+    }
+    Start-Sleep -Milliseconds 120
     $logAfterRecTyping = Get-LogContentSafe $HarnessLogFile
     $recTypingSlice = if ($logAfterRecTyping.Length -gt $recordLogLenBefore) { $logAfterRecTyping.Substring($recordLogLenBefore) } else { "" }
     if ($recTypingSlice -match "rawKey=(y|Y|e|E|Space|Backspace)\b") {
-        throw "录屏智能快捷键模式下发生了普通拼音打字/空格/退格刷屏泄漏: $recTypingSlice"
+        throw "[4/5] 录屏智能快捷键模式下发生了普通拼音打字/空格/退格泄漏: $recTypingSlice"
     }
-    Write-Host "  [OK] 录屏拼音字母、Space 与 Backspace 均已精准静默！" -ForegroundColor Green
+    Write-Host "  [OK] 录屏期间普通拼音字母、Space 与 Backspace 精准静默！" -ForegroundColor Green
 
-    Write-Host "  -> 注入回车功能键 Enter..."
-    [NativeInputSimulator]::SendKeyPress($VK_RETURN)
-    Start-Sleep -Milliseconds 80
+    [NativeKeycastHarness]::SendShortcut($msgWnd, @($VK_LCONTROL, $VK_LSHIFT), $VK_P)
+    $dockedKcHwnd = Wait-KeycastVisible -PidVal $procId -TimeoutMs 2000
+    if ($dockedKcHwnd -eq [IntPtr]::Zero) {
+        throw "[4/5] 录屏停靠期间注入 Ctrl+Shift+P 未显示 Tools3000_KeycastOverlay！"
+    }
+    Write-Host "  [OK] 录屏选区停靠态快捷键悬浮胶囊正常弹出！" -ForegroundColor Green
 
-    Write-Host "  -> 注入组合快捷键 Ctrl + Shift + P..."
-    $VK_P = 0x50
-    [NativeInputSimulator]::SendShortcut(@($VK_CONTROL, $VK_SHIFT), $VK_P)
-    Start-Sleep -Milliseconds 500
+    # 5. 停止录屏并校验 MP4 落盘与日常状态恢复
+    Write-Host "`n── [5/5] E2E 停止录屏并恢复日常过滤模式验证 ──" -ForegroundColor Cyan
+    [void][NativeKeycastHarness]::PostMessageW($msgWnd, [NativeKeycastHarness]::WM_HOTKEY, [IntPtr]$recHkId, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 900
 
-    # 5. 端到端用例 4：再次按下 Ctrl+Shift+R 停止录屏并安全恢复
-    Write-Host "`n── [5/5] E2E 停止录屏并恢复日常模式验证 ──" -ForegroundColor Cyan
-    Write-Host "  -> 再次注入 Ctrl + Shift + R 停止录屏..."
-    [NativeInputSimulator]::SendShortcut(@($VK_CONTROL, $VK_SHIFT), $VK_R)
-    Start-Sleep -Milliseconds 1000
-
-    $finalLog = Get-LogContentSafe $HarnessLogFile
-    
-    # 综合审计判定
-    $hasRecordingModeActivated = ($finalLog.Contains("激活录屏智能按键回显模式") -or $finalLog.Contains("KeycastOverlay: 激活录屏选区停靠回显") -or $finalLog.Contains("KeycastOverlay"))
-    $hasKeycastPush = ($finalLog.Contains("KeycastOverlay pushKey") -or $finalLog.Contains("KeycastOverlay: 推入按键回显") -or $finalLog.Contains("pushKey"))
-    
-    Write-Host "`n── 门禁审计结果 ──" -ForegroundColor Cyan
-    Write-Host "  [OK] 键盘钩子录屏智能过滤模式联动: $(if ($hasRecordingModeActivated) { 'PASS (已激活)' } else { 'PASS (已就绪)' })" -ForegroundColor $(if ($hasRecordingModeActivated) { 'Green' } else { 'Yellow' })
-    Write-Host "  [OK] 录屏选区快捷键回显链路: $(if ($hasKeycastPush) { 'PASS (快捷键成功推入渲染流)' } else { 'PASS (管道畅通)' })" -ForegroundColor Green
+    $savedVid = Get-ChildItem -LiteralPath $HarnessVideosDir -Filter "record_*.mp4" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $savedVid -or $savedVid.Length -lt 512) {
+        throw "[5/5] 录屏停止后未在输出目录生成有效 MP4 文件！"
+    }
+    Write-Host "[OK] 录屏正常停止落盘 ($($savedVid.Name)) 且按键回显管线平稳复位！" -ForegroundColor Green
 
     Write-Host "`n===============================================================================" -ForegroundColor Cyan
-    Write-Host " [OK] Tools3000 录屏按键回显操作系统级真实端到端 (E2E) 自动化测试全部 PASS！" -ForegroundColor Green
+    Write-Host " [PASS] Tools3000 按键回显与录屏联动操作系统级端到端 (5/5) 全部通过！" -ForegroundColor Green
     Write-Host "===============================================================================" -ForegroundColor Cyan
 }
 finally {
     if ($proc -and -not $proc.HasExited) {
-        Write-Host "正在退出测试进程..." -ForegroundColor Gray
-        try {
-            $proc.Kill()
-            $proc.WaitForExit(2000)
-        } catch {}
+        $msgWnd = [NativeKeycastHarness]::FindMessageWindowForProcess($procId)
+        if ($msgWnd -ne [IntPtr]::Zero) {
+            [void][NativeKeycastHarness]::PostMessageW($msgWnd, [NativeKeycastHarness]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+            [void]$proc.WaitForExit(3000)
+        }
+        if (-not $proc.HasExited) {
+            try { $proc.Kill(); [void]$proc.WaitForExit(2000) } catch {}
+        }
     }
-    # 清理测试目录
     try {
         Remove-Item -LiteralPath $HarnessRoot -Recurse -Force -ErrorAction SilentlyContinue
     } catch {}

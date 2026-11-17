@@ -134,6 +134,12 @@ BeautyBackgroundType studioThemeFromConfig(const std::string& raw) {
 
 void startRecordingForRegion(const CaptureRegion& region, const RecordSetupOptions& setup = {});
 
+bool isAutomatedTestSession() {
+    wchar_t buf[16]{};
+    const DWORD len = GetEnvironmentVariableW(L"TOOLS3000_TEST_MODE", buf, static_cast<DWORD>(std::size(buf)));
+    return len > 0 && std::wstring_view(buf, len) == L"1";
+}
+
 RecordOptions configuredRecordOptions(const CaptureRegion& region) {
     auto& config = tools3000::core::ConfigManager::instance();
     RecordOptions options;
@@ -152,6 +158,9 @@ RecordOptions configuredRecordOptions(const CaptureRegion& region) {
     options.includeKeycast = config.get<bool>("/recording/includeKeycast", true);
     options.captureSystemAudio = config.get<bool>("/recording/captureSystemAudio", false);
     options.captureMicrophone = config.get<bool>("/recording/captureMicrophone", false);
+    options.voiceEnhance = config.get<bool>("/recording/voiceEnhance", true);
+    options.hideDesktopIcons = config.get<bool>("/recording/hideDesktopIcons", false);
+    options.hideTaskbar = config.get<bool>("/recording/hideTaskbar", false);
     options.systemAudioDeviceId = config.get<std::string>("/recording/systemAudioDeviceId", "");
     options.microphoneDeviceId = config.get<std::string>("/recording/microphoneDeviceId", "");
     options.systemAudioVolume = std::clamp(
@@ -162,17 +171,38 @@ RecordOptions configuredRecordOptions(const CaptureRegion& region) {
         config.get<int>("/recording/countdownSeconds", 3), 0, 10);
     options.experimentalGpuEncoding = config.get<bool>(
         "/recording/experimentalGpuEncoding", false);
-    options.studioMode = config.get<bool>("/recording/studioMode", false);
-    options.studioConfig.autoZoomEnabled = config.get<bool>("/recording/studioAutoZoom", true);
+    options.studioMode = config.get<bool>("/recording/studioMode", true);
+    const bool autoZoom = config.get<bool>("/recording/studioAutoZoom", true);
+    const int zoomModeInt = std::clamp(config.get<int>("/recording/studioZoomMode", autoZoom ? 1 : 0), 0, 2);
+    options.studioConfig.autoZoomEnabled = autoZoom && (zoomModeInt != 0);
+    options.studioConfig.zoomMode = (zoomModeInt == 2)
+        ? StudioZoomMode::Motion3D
+        : (zoomModeInt == 1 ? StudioZoomMode::Zoom2D : StudioZoomMode::None);
+    options.studioConfig.typingAutoZoom = config.get<bool>("/recording/typingAutoZoom", false);
     options.studioConfig.defaultZoomFactor = std::clamp(
         static_cast<float>(config.get<double>("/recording/studioZoomFactor", 1.50)), 1.25f, 2.80f);
     options.studioConfig.smoothCursorEnabled = config.get<bool>("/recording/studioSmoothCursor", true);
     options.studioConfig.cursorScale = std::clamp(
         static_cast<float>(config.get<double>("/recording/studioCursorScale", 1.35)), 0.80f, 2.20f);
     options.studioConfig.autoFrameEnabled = config.get<bool>("/recording/studioAutoFrame", true);
+    options.studioConfig.paddingRatio = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioPaddingRatio", 0.070)), 0.0f, 0.20f);
+    options.studioConfig.cornerRadius = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioCornerRadius", 16.0)), 0.0f, 48.0f);
+    options.studioConfig.insetBorderWidth = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioInsetBorder", 0.0)), 0.0f, 12.0f);
+    options.studioConfig.insetBorderColorHex =
+        config.get<std::string>("/recording/studioInsetBorderColor", "#FFFFFF");
+    options.studioConfig.backgroundBlur = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioBgBlur", 0.0)), 0.0f, 40.0f);
+    options.studioConfig.shadowIntensity = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioShadow", 0.65)), 0.0f, 1.0f);
+    options.studioConfig.motionBlurEnabled = config.get<bool>("/recording/studioMotionBlur", false);
+    options.studioConfig.cursorHighlightHalo = config.get<bool>("/recording/studioCursorHalo", false);
+    options.studioConfig.customBackgroundPath = config.get<std::string>("/recording/studioCustomBg", "");
     options.studioConfig.backgroundTheme = studioThemeFromConfig(
         config.get<std::string>("/recording/studioTheme", "aurora_purple"));
-    options.studioConfig.autoCaptionsEnabled = config.get<bool>("/recording/studioAutoCaptions", true);
+    options.studioConfig.autoCaptionsEnabled = config.get<bool>("/recording/studioAutoCaptions", false);
     const auto directory = config.get<std::string>(
         "/recording/saveDirectory", config.get<std::string>("/recording/savePath", ""));
     options.outputPath = timestampedPath(directory, "record_", recordExtension(options.format));
@@ -251,6 +281,7 @@ void configureRecorderStateCallback() {
                         ShortcutHintContext::Recording,
                         {LONG_MIN, LONG_MIN},
                         indicator.avoidanceRects());
+                    indicator.update(stats.durationSec, stats.frameCount);
                 } else {
                     // 正式录制期间立即收起左下角快捷键提示浮层，严防录进全屏底片
                     ShortcutHintOverlay::instance().hide();
@@ -278,7 +309,8 @@ void stopRecordingWithFeedback() {
                 if (!path.empty()) {
                     LOG_INFO("录屏已保存: {}", path);
                     auto& rec = ScreenRecorder::instance();
-                    if (rec.wasLastSessionStudioMode()) {
+                    auto preloadedDeck = rec.takeLastStudioPreviewDeck();
+                    if (rec.wasLastSessionStudioMode() && !isAutomatedTestSession()) {
                         ind.hide();
                         auto timeline = rec.takeLastStudioTimeline();
                         const auto studioCfg = rec.lastStudioConfig();
@@ -295,9 +327,12 @@ void stopRecordingWithFeedback() {
                                     studioExported
                                         ? (zh ? L"演播室成片已导出并保存" : L"Studio export completed and saved")
                                         : (zh ? L"录屏已保存" : L"Recording saved")});
-                            });
+                            },
+                            std::move(preloadedDeck));
                         return;
                     }
+                    preloadedDeck.clear();
+                    preloadedDeck.shrink_to_fit();
                     ind.showCompleted(path, dur);
                     tools3000::core::EventBus::instance().publish(
                         tools3000::core::ShowToastEvent{isZh ? L"录屏已保存" : L"Recording saved"});
@@ -368,6 +403,15 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
     options.includeKeycast = setup.includeKeycast;
     options.captureSystemAudio = setup.captureSystemAudio && setup.format != RecordFormat::GIF;
     options.captureMicrophone = setup.captureMicrophone && setup.format != RecordFormat::GIF;
+    options.voiceEnhance = setup.voiceEnhance;
+    options.countdownSeconds = std::clamp(setup.countdownSeconds, 0, 10);
+    options.hideDesktopIcons = setup.hideDesktopIcons;
+    options.hideTaskbar = setup.hideTaskbar;
+    options.studioConfig.typingAutoZoom = setup.typingAutoZoom;
+    options.studioConfig.autoZoomEnabled = (setup.zoomEffectMode != 0);
+    options.studioConfig.zoomMode = (setup.zoomEffectMode == 2)
+        ? StudioZoomMode::Motion3D
+        : (setup.zoomEffectMode == 1 ? StudioZoomMode::Zoom2D : StudioZoomMode::None);
     options.outputPath = timestampedPath(
         tools3000::core::ConfigManager::instance().get<std::string>(
             "/recording/saveDirectory", tools3000::core::ConfigManager::instance().get<std::string>("/recording/savePath", "")),
@@ -383,11 +427,15 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
     }
     if (ScreenRecorder::instance().startRecording(options)) {
         RecordingIndicator::instance().setRecordingRegion(region.x, region.y, region.width, region.height, region.cornerRadius);
+        if (options.countdownSeconds > 0) {
+            ShortcutHintOverlay::instance().show(
+                ShortcutHintContext::Recording,
+                {LONG_MIN, LONG_MIN},
+                RecordingIndicator::instance().avoidanceRects());
+        } else {
+            ShortcutHintOverlay::instance().hide();
+        }
         RecordingIndicator::instance().show();
-        ShortcutHintOverlay::instance().show(
-            ShortcutHintContext::Recording,
-            {region.x + region.width / 2, region.y + region.height / 2},
-            RecordingIndicator::instance().avoidanceRects());
     } else {
         tools3000::core::MessageBridge::instance().invokeHandler("keycast.setDockingRegion", {{"active", false}});
         const auto reason = ScreenRecorder::instance().stats().stopReason;
@@ -945,14 +993,26 @@ public:
                 {"microphoneVolume", config.get<int>("/recording/microphoneVolume", 100)},
                 {"countdownSeconds", config.get<int>("/recording/countdownSeconds", 3)},
                 {"experimentalGpuEncoding", config.get<bool>("/recording/experimentalGpuEncoding", false)},
-                {"studioMode", config.get<bool>("/recording/studioMode", false)},
+                {"voiceEnhance", config.get<bool>("/recording/voiceEnhance", true)},
+                {"hideDesktopIcons", config.get<bool>("/recording/hideDesktopIcons", false)},
+                {"hideTaskbar", config.get<bool>("/recording/hideTaskbar", false)},
+                {"typingAutoZoom", config.get<bool>("/recording/typingAutoZoom", false)},
+                {"hideIndicatorInCapture", config.get<bool>("/recording/hideIndicatorInCapture", true)},
+                {"studioMode", config.get<bool>("/recording/studioMode", true)},
                 {"studioAutoZoom", config.get<bool>("/recording/studioAutoZoom", true)},
+                {"studioZoomMode", config.get<int>("/recording/studioZoomMode", 1)},
                 {"studioZoomFactor", config.get<double>("/recording/studioZoomFactor", 1.50)},
                 {"studioSmoothCursor", config.get<bool>("/recording/studioSmoothCursor", true)},
                 {"studioCursorScale", config.get<double>("/recording/studioCursorScale", 1.35)},
                 {"studioAutoFrame", config.get<bool>("/recording/studioAutoFrame", true)},
                 {"studioTheme", config.get<std::string>("/recording/studioTheme", "aurora_purple")},
                 {"studioAutoCaptions", config.get<bool>("/recording/studioAutoCaptions", true)},
+                {"studioBgBlur", config.get<double>("/recording/studioBgBlur", 0.0)},
+                {"studioShadow", config.get<double>("/recording/studioShadow", 0.65)},
+                {"studioCornerRadius", config.get<double>("/recording/studioCornerRadius", 16.0)},
+                {"studioMotionBlur", config.get<bool>("/recording/studioMotionBlur", false)},
+                {"studioCursorHalo", config.get<bool>("/recording/studioCursorHalo", false)},
+                {"studioCustomBg", config.get<std::string>("/recording/studioCustomBg", "")},
                 {"saveDirectory", config.get<std::string>(
                     "/recording/saveDirectory", config.get<std::string>("/recording/savePath", ""))}
             };
@@ -1036,7 +1096,9 @@ public:
         mb.registerHandler("recording.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
             static const std::unordered_set<std::string> formats = {"mp4_h264", "mp4_h265", "webm_vp9", "gif"};
             static const std::unordered_set<std::string> studioThemes = {
-                "aurora_purple", "sunrise_coral", "emerald_sea", "obsidian_dark", "minimal_light"
+                "aurora_purple", "sunrise_coral", "emerald_sea", "obsidian_dark", "minimal_light",
+                "studio_slate", "paper_chalk", "silk_mist", "midnight_graphite", "pure_minimal",
+                "airy_glacier", "dusk_mountains", "misty_lake_dawn"
             };
             static const std::unordered_set<int> countdowns = {0, 3, 5, 10};
             if (!params.is_object() || params.empty()) return {{"success", false}, {"error", "no settings supplied"}};
@@ -1064,13 +1126,27 @@ public:
                     return {{"success", false}, {"error", "studioZoomFactor must be between 1.2 and 2.8"}};
                 if (key == "studioCursorScale" && (!value.is_number() || value.get<double>() < 0.8 || value.get<double>() > 2.2))
                     return {{"success", false}, {"error", "studioCursorScale must be between 0.8 and 2.2"}};
+                if (key == "studioZoomMode" && (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 2))
+                    return {{"success", false}, {"error", "studioZoomMode must be 0, 1, or 2"}};
+                if (key == "studioBgBlur" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 40.0))
+                    return {{"success", false}, {"error", "studioBgBlur must be between 0 and 40"}};
+                if (key == "studioShadow" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 1.0))
+                    return {{"success", false}, {"error", "studioShadow must be between 0 and 1"}};
+                if (key == "studioCornerRadius" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 48.0))
+                    return {{"success", false}, {"error", "studioCornerRadius must be between 0 and 48"}};
+                if (key == "studioCustomBg" && (!value.is_string() || value.get_ref<const std::string&>().size() > 32767))
+                    return {{"success", false}, {"error", "invalid studioCustomBg"}};
                 if ((key == "includeCursor" || key == "showClickEffects" ||
                      key == "showClickZoom" || key == "includeKeycast" ||
                      key == "captureSystemAudio" || key == "captureMicrophone" ||
                      key == "experimentalGpuEncoding" ||
+                     key == "voiceEnhance" || key == "hideDesktopIcons" ||
+                     key == "hideTaskbar" || key == "typingAutoZoom" ||
+                     key == "hideIndicatorInCapture" ||
                      key == "studioMode" || key == "studioAutoZoom" ||
                      key == "studioSmoothCursor" || key == "studioAutoFrame" ||
-                     key == "studioAutoCaptions") &&
+                     key == "studioAutoCaptions" || key == "studioMotionBlur" ||
+                     key == "studioCursorHalo") &&
                     !value.is_boolean())
                     return {{"success", false}, {"error", key + " must be boolean"}};
                 if (key != "format" && key != "fps" && key != "bitrate" && key != "saveDirectory" &&
@@ -1079,10 +1155,16 @@ public:
                     key != "showClickZoom" && key != "includeKeycast" &&
                     key != "captureSystemAudio" && key != "captureMicrophone" &&
                     key != "experimentalGpuEncoding" &&
-                    key != "studioMode" && key != "studioAutoZoom" &&
+                    key != "voiceEnhance" && key != "hideDesktopIcons" &&
+                    key != "hideTaskbar" && key != "typingAutoZoom" &&
+                    key != "hideIndicatorInCapture" &&
+                    key != "studioMode" && key != "studioAutoZoom" && key != "studioZoomMode" &&
                     key != "studioZoomFactor" && key != "studioSmoothCursor" &&
                     key != "studioCursorScale" && key != "studioAutoFrame" &&
                     key != "studioTheme" && key != "studioAutoCaptions" &&
+                    key != "studioBgBlur" && key != "studioShadow" &&
+                    key != "studioCornerRadius" && key != "studioMotionBlur" &&
+                    key != "studioCursorHalo" && key != "studioCustomBg" &&
                     key != "systemAudioDeviceId" && key != "microphoneDeviceId" &&
                     key != "systemAudioVolume" && key != "microphoneVolume")
                     return {{"success", false}, {"error", "unsupported setting: " + key}};

@@ -756,13 +756,14 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
     recording.dpiScale = 1.5f;
     rebuildCaptureToolbar(recording, D2D1::RectF(200.0f, 100.0f, 1200.0f, 800.0f),
                           desktop150);
-    EXPECT_EQ(recording.toolbarButtons.size(), 9u);
+    EXPECT_EQ(recording.toolbarButtons.size(), 10u);
     EXPECT_NEAR(recording.toolbarButtons[0].rect.right -
                 recording.toolbarButtons[0].rect.left, 54.0f * 1.5f, 0.01f);
     EXPECT_NEAR(recording.toolbarButtons[1].rect.right -
                 recording.toolbarButtons[1].rect.left, 62.0f * 1.5f, 0.01f);
-    EXPECT_NEAR(recording.toolbarButtons[8].rect.right -
-                recording.toolbarButtons[8].rect.left, (tools3000::core::WinUtils::isSystemLanguageChinese() ? 98.0f : 84.0f) * 1.5f, 0.01f);
+    EXPECT_EQ(recording.toolbarButtons[7].command, ToolbarCommand::RecordToggleSettingsMenu);
+    EXPECT_NEAR(recording.toolbarButtons[9].rect.right -
+                recording.toolbarButtons[9].rect.left, (tools3000::core::WinUtils::isSystemLanguageChinese() ? 98.0f : 84.0f) * 1.5f, 0.01f);
     check_toolbar_inside_surface(recording, desktop150);
 
     CaptureState extreme;
@@ -3326,7 +3327,7 @@ TEST(CaptureOptimizationAndNewFeaturesTest, PreRecordingSetupHudAndWeChatGifCopy
     recState.recordSetup.captureMicrophone = true;
 
     rebuildCaptureToolbar(recState, D2D1::RectF(100.0f, 100.0f, 600.0f, 500.0f), D2D1::SizeF(1920.0f, 1080.0f));
-    EXPECT_EQ(recState.toolbarButtons.size(), 9u);
+    EXPECT_EQ(recState.toolbarButtons.size(), 10u);
 
     // 验证无障碍命名与在 GIF 模式下声音按键安全屏蔽状态
     for (const auto& btn : recState.toolbarButtons) {
@@ -3535,11 +3536,40 @@ TEST(CapturePolymorphicFeaturesAndDevOpsTest, DropdownMenuStateMachineAndHoverPr
     EXPECT_EQ(state.recordSetup.qualityLevel, 2);
     EXPECT_EQ(tools3000::core::ConfigManager::instance().get<int>("/recording/bitrate", 0), 16);
 
-    // 10. 验证鼠标点击特效 (RecordClickEffect: 模式 3 水波纹 + Mac 缩放)
+    // 10. 验证鼠标自动运镜与点击波纹统一术语及四端联动 (RecordClickEffect: 0 无效果 / 1 点击波纹 / 2 自动运镜 / 3 波纹+运镜)
+    openDropdownMenu(state, DropdownType::RecordClickEffect, anchor);
+    commitDropdownSelection(state, DropdownType::RecordClickEffect, 0);
+    EXPECT_FALSE(state.recordSetup.showClickEffects);
+    EXPECT_FALSE(state.recordSetup.showClickZoom);
+    EXPECT_EQ(state.recordSetup.zoomEffectMode, 0);
+    EXPECT_FALSE(tools3000::core::ConfigManager::instance().get<bool>("/recording/studioAutoZoom", true));
+
+    openDropdownMenu(state, DropdownType::RecordClickEffect, anchor);
+    commitDropdownSelection(state, DropdownType::RecordClickEffect, 2);
+    EXPECT_FALSE(state.recordSetup.showClickEffects);
+    EXPECT_TRUE(state.recordSetup.showClickZoom);
+    EXPECT_NE(state.recordSetup.zoomEffectMode, 0);
+    EXPECT_TRUE(tools3000::core::ConfigManager::instance().get<bool>("/recording/studioAutoZoom", false));
+    {
+        const auto origMode = state.mode;
+        state.mode = OverlayMode::RecordRegion;
+        rebuildCaptureToolbar(state, D2D1::RectF(100.0f, 100.0f, 500.0f, 400.0f), D2D1::SizeF(1920.0f, 1080.0f));
+        bool foundAutoZoomBtn = false;
+        for (const auto& btn : state.toolbarButtons) {
+            if (btn.command == ToolbarCommand::RecordCycleClickEffect) {
+                EXPECT_TRUE(btn.label == L"自动运镜" || btn.label == L"Auto Zoom");
+                foundAutoZoomBtn = true;
+            }
+        }
+        EXPECT_TRUE(foundAutoZoomBtn);
+        state.mode = origMode;
+    }
+
     openDropdownMenu(state, DropdownType::RecordClickEffect, anchor);
     commitDropdownSelection(state, DropdownType::RecordClickEffect, 3);
     EXPECT_TRUE(state.recordSetup.showClickEffects);
     EXPECT_TRUE(state.recordSetup.showClickZoom);
+    EXPECT_NE(state.recordSetup.zoomEffectMode, 0);
     EXPECT_TRUE(tools3000::core::ConfigManager::instance().get<bool>("/recording/showClickEffects", false));
     EXPECT_TRUE(tools3000::core::ConfigManager::instance().get<bool>("/recording/showClickZoom", false));
 
@@ -4262,17 +4292,18 @@ TEST(CaptureRecordTransitionTest, ModeSwitchAndStateSanitization) {
     EXPECT_EQ(state.sliderPopup.type, SliderPopupType::None);
     EXPECT_FALSE(state.toolbarLayoutValid);
 
-    // 验证重新构建后的录屏主工具栏为 9 项规格（含 MP4/GIF、fps、画质、点击特效、按键回显、音频、麦克风、取消、开始录制）
+    // 验证重新构建后的录屏主工具栏为 10 项规格（含 MP4/GIF、fps、画质、点击特效、按键回显、音频、麦克风、录制快捷设置菜单、取消、开始录制）
     D2D1_RECT_F selRect = D2D1::RectF(100.0f, 100.0f, 600.0f, 500.0f);
     D2D1_SIZE_F surface = D2D1::SizeF(1920.0f, 1080.0f);
     rebuildCaptureToolbar(state, selRect, surface);
     EXPECT_TRUE(state.toolbarLayoutValid);
-    EXPECT_EQ(state.toolbarButtons.size(), 9u);
+    EXPECT_EQ(state.toolbarButtons.size(), 10u);
     EXPECT_TRUE(state.secondaryToolbarButtons.empty());
 
-    // 验证开始录制按钮与取消按钮的存在及正确命令
+    // 验证开始录制按钮、录制快捷设置齿轮与取消按钮的存在及正确命令
     EXPECT_EQ(state.toolbarButtons.back().command, ToolbarCommand::RecordStartConfirm);
-    EXPECT_EQ(state.toolbarButtons[7].command, ToolbarCommand::Cancel);
+    EXPECT_EQ(state.toolbarButtons[7].command, ToolbarCommand::RecordToggleSettingsMenu);
+    EXPECT_EQ(state.toolbarButtons[8].command, ToolbarCommand::Cancel);
 
     // 验证再次调用 transitionToRecordMode 为幂等保护（不重复触发清理）
     transitionToRecordMode(state);
@@ -9313,7 +9344,7 @@ TEST(CaptureToolbarLayoutTest, SizeMenuSegmentedLayoutAndRecordToolbarBreathingC
     recordState.dpiScale = 1.0f;
     rebuildCaptureToolbar(recordState, D2D1::RectF(200.0f, 200.0f, 1000.0f, 700.0f), surface);
 
-    ASSERT_EQ(recordState.toolbarButtons.size(), 9u);
+    ASSERT_EQ(recordState.toolbarButtons.size(), 10u);
     for (const auto& btn : recordState.toolbarButtons) {
         const float btnW = btn.rect.right - btn.rect.left;
         if (!btn.label.empty()) {
@@ -9500,6 +9531,24 @@ TEST(ScrollCaptureUiPolishRegressionTest, CompactDegradationKeepsFinishAndCancel
         }
         EXPECT_LE(portraitBar.buttonRects[4].right, static_cast<float>(portraitBar.barWidth));
     }
+}
+
+TEST(CaptureToolbarLayoutTest, ScrollCaptureControlBarExcludedFromScreenCaptureOnFullscreenRegion) {
+    using namespace tools3000::capture;
+
+    auto& overlay = ScrollCaptureOverlay::instance();
+    const RECT fullRect{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    overlay.show(fullRect);
+
+    HWND ctrlHwnd = FindWindowW(L"Tools3000_ScrollCaptureControlBar", nullptr);
+    ASSERT_NE(ctrlHwnd, nullptr);
+    EXPECT_TRUE(IsWindowVisible(ctrlHwnd));
+
+    DWORD affinity = WDA_NONE;
+    if (GetWindowDisplayAffinity(ctrlHwnd, &affinity)) {
+        EXPECT_EQ(affinity, static_cast<DWORD>(WDA_EXCLUDEFROMCAPTURE));
+    }
+    overlay.hide();
 }
 
 TEST(CaptureToolbarLayoutTest, WidenedBeautyShellAndTripleDigitFontSizeButtonsContract) {

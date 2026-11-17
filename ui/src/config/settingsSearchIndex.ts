@@ -63,9 +63,6 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'gen-logs', navId: 'general', labelKey: 'general.exportLogs', descKey: 'general.exportLogsDesc', keywords: 'log diagnostic debug export rizhi' },
   { id: 'gen-backup', navId: 'general', labelKey: 'general.exportConfig', descKey: 'general.exportConfigDesc', keywords: 'backup export import reset config beifen daochu' },
 
-  // Plugins
-  { id: 'plg-market', navId: 'plugins', labelKey: 'plugins.tabMarketplace', descKey: 'plugins.marketplaceDesc', keywords: 'marketplace store install extension chajian shichang' },
-
   // Search & Sub-tabs
   { id: 'srch-hotkey', navId: 'search', tabId: 'settings', labelKey: 'searchPage.toggleHotkey', descKey: 'searchPage.toggleHotkeyDesc', keywords: 'alt space summon search shortcut' },
   { id: 'srch-pinyin', navId: 'search', tabId: 'settings', labelKey: 'searchPage.pinyinTitle', descKey: 'searchPage.pinyinDesc', keywords: 'pinyin initials fuzzy chinese' },
@@ -87,6 +84,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'cap-beauty', navId: 'capture', labelKey: 'capture.beautyShellTitle', descKey: 'capture.beautyShellDefaultDesc', keywords: 'beauty gradient shadow rounded padding meihua' },
   { id: 'cap-pingroup', navId: 'capture', labelKey: 'capture.pinGroupsSectionTitle', descKey: 'capture.pinGroupsCardSubtitle', keywords: 'pin group desktop color tietu fenzu' },
   { id: 'rec-video', navId: 'capture', labelKey: 'recording.title', descKey: 'recording.formatDesc', keywords: 'record mp4 gif webm fps audio microphone luping' },
+  { id: 'rec-autozoom', navId: 'capture', labelKey: 'recording.studioAutoZoom', descKey: 'recording.studioAutoZoomDesc', keywords: 'studio auto zoom camera motion waveform yunjing zidongyunjing boxing' },
   { id: 'ocr-lang', navId: 'ocr', labelKey: 'ocr.language', descKey: 'ocr.languageDesc', keywords: 'ocr text extract japanese korean english shibie' },
   { id: 'his-recent', navId: 'history', labelKey: 'history.title', descKey: 'history.subtitle', keywords: 'history recent screenshot pin lishi' },
 

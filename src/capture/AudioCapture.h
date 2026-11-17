@@ -13,6 +13,7 @@ namespace tools3000::capture {
 struct AudioCaptureOptions {
     bool systemAudio = false;
     bool microphone = false;
+    bool voiceEnhance = true; // 仅针对麦克风通道的人声降噪、均衡与防爆音（电脑系统声音 100% 原样保留）
     std::string systemDeviceId;
     std::string microphoneDeviceId;
     float systemVolume = 1.0f;

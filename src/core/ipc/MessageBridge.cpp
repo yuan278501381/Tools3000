@@ -1166,7 +1166,6 @@ std::chrono::steady_clock::duration asyncJobTimeoutForMethod(std::string_view me
         method == "capture.browseDirectory" ||
         method == "app.exportLogs" ||
         method == "capture.saveHistoryItemAs" ||
-        method == "plugins.selectExtensionFile" ||
         method == "system.pickForegroundWindow" ||
         method == "autoStart.set" ||
         method == "general.updateSettings" ||
@@ -1659,119 +1658,10 @@ void MessageBridge::pushEvent(const std::string& eventName, const json& data) {
 
 namespace {
 
-struct MarketplaceItem {
-    std::string id;
-    std::string name;
-    std::string nameEn;
-    std::string version;
-    std::string author;
-    std::string description;
-    std::string descriptionEn;
-    std::string category;
-    uint32_t abiVersion;
-    std::vector<std::string> capabilities;
-    std::vector<std::string> permissions;
-    std::string downloadUrl;
-    bool featured;
-};
-
-const std::vector<MarketplaceItem>& getMarketplaceCatalog() {
-    static const std::vector<MarketplaceItem> catalog = {
-        {
-            "ai_assistant",
-            "AI 悬浮助手",
-            "AI Float Assistant",
-            "1.2.0",
-            "Tools3000 Team",
-            "全局快捷划词翻译、智能解释、代码优化与文本润色悬浮窗",
-            "Global shortcut word translation, smart explanation, and code refactor float window",
-            "ai",
-            1,
-            {"floating-window", "ai-chat", "text-selection", "api-bridge"},
-            {"network", "clipboard", "selection"},
-            "https://raw.githubusercontent.com/yuan278501381/Tools3000/main/marketplace/ai_assistant.zip",
-            true
-        },
-        {
-            "color_picker",
-            "高级屏幕取色与调色板",
-            "Advanced Color Picker",
-            "1.0.5",
-            "Tools3000 Team",
-            "像素级放大镜精准取色，支持 HEX/RGB/HSL/CMYK 一键复制与调色板收藏",
-            "Pixel magnifier precision color picking with HEX/RGB/HSL/CMYK copying and palettes",
-            "utility",
-            1,
-            {"screen-magnifier", "palette", "clipboard-copy"},
-            {"screen-capture", "clipboard"},
-            "https://raw.githubusercontent.com/yuan278501381/Tools3000/main/marketplace/color_picker.zip",
-            true
-        },
-        {
-            "clipboard_manager",
-            "剪贴板历史与灵感库",
-            "Clipboard Manager Pro",
-            "1.1.0",
-            "Tools3000 Team",
-            "无限剪贴板历史记录、富文本/图片分类检索与常用文本置顶收藏",
-            "Unlimited clipboard history, rich text/image search and pinned snippets",
-            "productivity",
-            1,
-            {"clipboard-history", "snippet-manager", "search"},
-            {"clipboard", "storage"},
-            "https://raw.githubusercontent.com/yuan278501381/Tools3000/main/marketplace/clipboard_manager.zip",
-            false
-        },
-        {
-            "markdown_preview",
-            "Markdown 桌面速览",
-            "Markdown Quick Viewer",
-            "1.0.1",
-            "Community Contributor",
-            "单按空格快速预览 .md 与代码文件，支持 GitHub 风格渲染与数学公式",
-            "Quick spacebar preview for markdown and code files with LaTeX & KaTeX support",
-            "productivity",
-            1,
-            {"quick-look", "markdown-render", "mathjax"},
-            {"file-read"},
-            "https://raw.githubusercontent.com/yuan278501381/Tools3000/main/marketplace/markdown_preview.zip",
-            false
-        }
-    };
-    return catalog;
-}
-
 bool isCoreBuiltinPlugin(const std::string& id) {
     return id == "gesture" || id == "capture" || id == "search" ||
            id == "keycast" || id == "dialogenhancer" || id == "dialog_enhancer" ||
            id == "spotlight" || id == "remote_boost" || id == "remote";
-}
-
-bool isExtensionInstalled(const std::string& id) {
-    if (isCoreBuiltinPlugin(id)) return false;
-    auto& config = ConfigManager::instance();
-    auto installedList = config.get<std::vector<std::string>>("/plugins/installedExtensions", {});
-    return std::find(installedList.begin(), installedList.end(), id) != installedList.end();
-}
-
-void markExtensionInstalled(const std::string& id, bool installed) {
-    if (isCoreBuiltinPlugin(id)) return;
-    auto& config = ConfigManager::instance();
-    auto installedList = config.get<std::vector<std::string>>("/plugins/installedExtensions", {});
-    auto it = std::find(installedList.begin(), installedList.end(), id);
-    if (installed) {
-        if (it == installedList.end()) {
-            installedList.push_back(id);
-            config.set("/plugins/installedExtensions", installedList);
-            config.set("/plugins/" + id + "/enabled", true);
-        }
-    } else {
-        if (it != installedList.end()) {
-            installedList.erase(it);
-            config.set("/plugins/installedExtensions", installedList);
-        }
-        config.set("/plugins/" + id + "/enabled", false);
-    }
 }
 
 void releasePluginResourcesAndTrim() {
@@ -1807,9 +1697,6 @@ void MessageBridge::registerBuiltinHandlers() {
     for (const char* method : {
              "plugins.setEnabled",
              "plugins.getAll",
-             "plugins.install",
-             "plugins.uninstall",
-             "plugins.getMarketplace",
              "app.restart",
              "app.restartElevated",
              "app.restartDemoted",
@@ -1917,32 +1804,6 @@ void MessageBridge::registerBuiltinHandlers() {
             {"isExtension", false}
         });
         existingIds.insert("remote_boost");
-
-        // 合并已安装的扩展插件
-        auto& config = ConfigManager::instance();
-        auto installedList = config.get<std::vector<std::string>>("/plugins/installedExtensions", {});
-        const auto& catalog = getMarketplaceCatalog();
-        for (const auto& item : catalog) {
-            if (std::find(installedList.begin(), installedList.end(), item.id) != installedList.end() &&
-                existingIds.find(item.id) == existingIds.end()) {
-                plugins.push_back({
-                    {"id", item.id},
-                    {"name", item.name},
-                    {"version", item.version},
-                    {"fileName", "Plugin_" + item.id + ".dll"},
-                    {"abiVersion", item.abiVersion},
-                    {"capabilities", item.capabilities},
-                    {"permissions", item.permissions},
-                    {"executionModel", "trusted-native-in-process"},
-                    {"enabled", false},
-                    {"active", false},
-                    {"restartRequired", false},
-                    {"state", "unavailable"},
-                    {"error", "扩展包尚未安装；旧版仅记录了目录状态"},
-                    {"isExtension", true}
-                });
-            }
-        }
         return plugins;
     });
 
@@ -2070,14 +1931,6 @@ void MessageBridge::registerBuiltinHandlers() {
             };
         }
 
-        if (isExtensionInstalled(id)) {
-            return {
-                {"success", false},
-                {"restartRequired", false},
-                {"error", "扩展市场安装器尚未开放，无法启用未加载的扩展包"}
-            };
-        }
-
         bool restartRequired = false;
         std::string error;
         const bool success = PluginManager::instance().setPluginEnabled(
@@ -2096,59 +1949,6 @@ void MessageBridge::registerBuiltinHandlers() {
     registerHandler("app.trimMemory", [](const json&) -> json {
         releasePluginResourcesAndTrim();
         return {{"success", true}};
-    });
-
-    registerHandler("plugins.getMarketplace", [](const json&) -> json {
-        const auto& catalog = getMarketplaceCatalog();
-        json arr = json::array();
-        for (const auto& item : catalog) {
-            arr.push_back({
-                {"id", item.id},
-                {"name", item.name},
-                {"nameEn", item.nameEn},
-                {"version", item.version},
-                {"author", item.author},
-                {"description", item.description},
-                {"descriptionEn", item.descriptionEn},
-                {"category", item.category},
-                {"abiVersion", item.abiVersion},
-                {"capabilities", item.capabilities},
-                {"permissions", item.permissions},
-                {"downloadUrl", item.downloadUrl},
-                {"installed", isExtensionInstalled(item.id)},
-                {"available", false},
-                {"featured", item.featured}
-            });
-        }
-        return arr;
-    });
-
-    registerHandler("plugins.install", [](const json& params) -> json {
-        const std::string id = params.value("id", "");
-        if (id.empty()) {
-            return {{"success", false}, {"error", "plugin id is required"}};
-        }
-        const bool isZh = isUiLanguageChinese();
-        return {
-            {"success", false},
-            {"id", id},
-            {"restartRequired", false},
-            {"error", isZh
-                ? "扩展市场当前为预览目录，安全安装与签名校验完成前不会伪装安装成功"
-                : "Extension marketplace is currently a preview catalog; installation is disabled until signature verification is enforced"}
-        };
-    });
-
-    registerHandler("plugins.uninstall", [](const json& params) -> json {
-        const std::string id = params.value("id", "");
-        if (id.empty()) {
-            return {{"success", false}, {"error", "plugin id is required"}};
-        }
-        markExtensionInstalled(id, false);
-        return {
-            {"success", true},
-            {"id", id}
-        };
     });
 
     registerRawHostHandler("config.getAll", [](const json&) -> std::string {

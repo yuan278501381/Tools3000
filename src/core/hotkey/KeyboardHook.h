@@ -63,6 +63,9 @@ public:
     void setScrollCaptureOverlayVisible(bool visible) noexcept;
     bool isAnyCaptureOverlayVisible() const noexcept;
 
+    /// 受控自动化测试按键注入入口（严格仅在 TOOLS3000_ALLOW_INJECTED_KEYBOARD=1 时生效，供无活动输入桌面的后台 CI 会话驱动完整回显管线）
+    bool injectTestKeyEvent(DWORD vkCode, UINT scanCode, bool isKeyUp, DWORD flags = LLKHF_INJECTED);
+
 private:
     KeyboardHook() = default;
     ~KeyboardHook() = default;
@@ -86,6 +89,7 @@ private:
     std::atomic<bool> m_realLCtrlDown{false};
     std::atomic<bool> m_realRCtrlDown{false};
     std::atomic<bool> m_syntheticAltGrCtrlDown{false};
+    std::atomic<uint8_t> m_testModifierMask{0}; // 0x01:Ctrl, 0x02:Alt, 0x04:Shift, 0x08:Win
     std::atomic<uint8_t> m_filterMode{0}; // 0: smart_shortcuts, 1: all_keys, 2: shortcuts_only
     std::atomic<bool> m_includeFunctionKeys{false};
     std::atomic<bool> m_keycastAutoBypassFullscreen{true};

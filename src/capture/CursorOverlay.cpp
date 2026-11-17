@@ -1,5 +1,6 @@
 #include "capture/CursorOverlay.h"
 
+#include "core/config/ConfigManager.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
 
@@ -410,9 +411,42 @@ CursorOverlay::Patch CursorOverlay::apply(CaptureFrameView& frame,
 
             const int extent = static_cast<int>(std::ceil((std::max)(radius + ringThickness, coreRadius) + 1.0f));
             const float baseAlpha = static_cast<float>(220.0 * (1.0 - clickProgress));
-            const std::uint8_t ringR = ripple.isRight ? 255 : 26;
-            const std::uint8_t ringG = ripple.isRight ? 140 : 122;
-            const std::uint8_t ringB = ripple.isRight ? 20  : 255;
+            auto parseHexRgb = [](const std::string& hex, std::uint8_t defR, std::uint8_t defG, std::uint8_t defB,
+                                  std::uint8_t& outR, std::uint8_t& outG, std::uint8_t& outB) {
+                outR = defR; outG = defG; outB = defB;
+                if (hex.size() == 7 && hex[0] == '#') {
+                    auto hexVal = [](char c) -> int {
+                        if (c >= '0' && c <= '9') return c - '0';
+                        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+                        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+                        return -1;
+                    };
+                    const int r1 = hexVal(hex[1]), r2 = hexVal(hex[2]);
+                    const int g1 = hexVal(hex[3]), g2 = hexVal(hex[4]);
+                    const int b1 = hexVal(hex[5]), b2 = hexVal(hex[6]);
+                    if (r1 >= 0 && r2 >= 0 && g1 >= 0 && g2 >= 0 && b1 >= 0 && b2 >= 0) {
+                        outR = static_cast<std::uint8_t>((r1 << 4) | r2);
+                        outG = static_cast<std::uint8_t>((g1 << 4) | g2);
+                        outB = static_cast<std::uint8_t>((b1 << 4) | b2);
+                    }
+                }
+            };
+            auto& cfg = tools3000::core::ConfigManager::instance();
+            std::string colHex = ripple.isRight
+                ? cfg.get<std::string>("/spotlight/rightClickColor", "#fb7185")
+                : cfg.get<std::string>("/spotlight/leftClickColor", "auto");
+            if (colHex == "auto" || colHex.empty()) {
+                colHex = cfg.get<std::string>("/general/accentColor", "#38bdf8");
+            }
+            const std::string rippleStyle = cfg.get<std::string>("/spotlight/clickRippleStyle", "sparkle_burst");
+            std::uint8_t ringR = 56, ringG = 189, ringB = 248;
+            if (ripple.isRight) {
+                parseHexRgb(colHex, 251, 113, 133, ringR, ringG, ringB);
+            } else {
+                parseHexRgb(colHex, 56, 189, 248, ringR, ringG, ringB);
+            }
+            const float innerPulseR = radius * 0.56f;
+            const bool hasDualRing = (rippleStyle == "target_pulse" || rippleStyle == "sparkle_burst");
 
             for (int y = -extent; y <= extent; ++y) {
                 int py = clickY + y;
@@ -431,10 +465,17 @@ CursorOverlay::Patch CursorOverlay::apply(CaptureFrameView& frame,
                         float norm = edgeDistVal / ringThickness;
                         alpha += baseAlpha * (1.0f - norm * norm);
                     }
+                    if (hasDualRing) {
+                        const float innerDist = std::abs(distVal - innerPulseR);
+                        if (innerDist <= ringThickness * 0.75f) {
+                            float norm2 = innerDist / (ringThickness * 0.75f);
+                            alpha += baseAlpha * 0.55f * (1.0f - norm2 * norm2);
+                        }
+                    }
                     // Layer 2: 内层柔光微光晕核心
                     if (coreFade > 0.0f && distVal <= coreRadius) {
                         float coreNorm = distVal / coreRadius;
-                        alpha += coreFade * 90.0f * (1.0f - coreNorm * coreNorm);
+                        alpha += coreFade * (rippleStyle == "soft_glow" ? 145.0f : 90.0f) * (1.0f - coreNorm * coreNorm);
                     }
 
                     if (alpha > 0.5f) {

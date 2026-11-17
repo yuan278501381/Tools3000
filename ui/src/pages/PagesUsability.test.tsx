@@ -3,7 +3,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import HistoryPage from './HistoryPage';
-import { ExtensionPage } from './ExtensionPage';
 import { KeyStatsPage } from './KeyStatsPage';
 import { DialogEnhancerPage } from './DialogEnhancerPage';
 import { CapturePage } from './CapturePage';
@@ -99,61 +98,6 @@ describe('Pages Usability & Regression Suite', () => {
       fireEvent.keyDown(card, { key: 'Enter' });
     });
     expect(bridgeSpy).toHaveBeenCalledWith('history.open', { index: 0 });
-  });
-
-  it('ExtensionPage resolves titleKey, descKey, conditionKey, and supportedFormatKeys for clipboard_manager and custom plugins', async () => {
-    const { rerender } = render(
-      <ExtensionPage
-        pluginId="clipboard_manager"
-        plugin={{
-          id: 'clipboard_manager',
-          name: '灵感剪贴板',
-          version: '1.0.0',
-          fileName: 'clipboard.lua',
-          abiVersion: 1,
-          capabilities: ['clipboard'],
-          permissions: ['clipboard'],
-          executionModel: 'trusted-native-in-process',
-          enabled: true,
-          active: true,
-          restartRequired: false,
-          state: 'running',
-          error: '',
-        }}
-      />
-    );
-
-    // Verify step keys and format keys are resolved via t() instead of rendering undefined
-    expect(screen.getByText('extGuide.stepClip1Title')).toBeDefined();
-    expect(screen.getByText('extGuide.stepClip1Desc')).toBeDefined();
-    expect(screen.getByText('extGuide.stepClip3Title:')).toBeDefined();
-    expect(screen.getByText('extGuide.formatRichText')).toBeDefined();
-    expect(screen.getByText('extGuide.formatCodeSnippet')).toBeDefined();
-
-    // Rerender with a custom extension ID to verify conditionKey and enabled state sync
-    rerender(
-      <ExtensionPage
-        pluginId="custom_lua_ext"
-        plugin={{
-          id: 'custom_lua_ext',
-          name: 'Custom Lua',
-          version: '0.1.0',
-          fileName: 'custom.lua',
-          abiVersion: 1,
-          capabilities: ['automation'],
-          permissions: ['ipc'],
-          executionModel: 'trusted-native-in-process',
-          enabled: false,
-          active: false,
-          restartRequired: false,
-          state: 'disabled',
-          error: '',
-        }}
-      />
-    );
-
-    expect(screen.getByText('extGuide.conditionGlobal')).toBeDefined();
-    expect(screen.getByText('extension.statusDisabled')).toBeDefined();
   });
 
   it('KeyStatsPage renders Today Keystrokes card, supports manual refresh, and resets today stats on confirmation', async () => {

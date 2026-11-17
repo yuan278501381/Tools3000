@@ -44,6 +44,7 @@ void KeyboardHook::uninstall() {
     if (m_hookHandle) {
         UnhookWindowsHookEx(m_hookHandle);
         m_hookHandle = nullptr;
+        m_testModifierMask.store(0, std::memory_order_relaxed);
         {
             std::lock_guard lock(m_callbackMutex);
             m_pendingModifierVk = 0;
@@ -125,6 +126,39 @@ void KeyboardHook::setScrollCaptureOverlayVisible(bool visible) noexcept {
 bool KeyboardHook::isAnyCaptureOverlayVisible() const noexcept {
     return m_captureOverlayVisible.load(std::memory_order_acquire) ||
            m_scrollCaptureOverlayVisible.load(std::memory_order_acquire);
+}
+
+bool KeyboardHook::injectTestKeyEvent(DWORD vkCode, UINT scanCode, bool isKeyUp, DWORD flags) {
+    static const bool s_allowInjectedKeyboard =
+        (GetEnvironmentVariableW(L"TOOLS3000_ALLOW_INJECTED_KEYBOARD", nullptr, 0) > 0);
+    if (!s_allowInjectedKeyboard) {
+        return false;
+    }
+
+    uint8_t modBit = 0;
+    if (vkCode == VK_CONTROL || vkCode == VK_LCONTROL || vkCode == VK_RCONTROL) modBit = 0x01;
+    else if (vkCode == VK_MENU || vkCode == VK_LMENU || vkCode == VK_RMENU) modBit = 0x02;
+    else if (vkCode == VK_SHIFT || vkCode == VK_LSHIFT || vkCode == VK_RSHIFT) modBit = 0x04;
+    else if (vkCode == VK_LWIN || vkCode == VK_RWIN) modBit = 0x08;
+
+    if (modBit != 0) {
+        if (isKeyUp) {
+            m_testModifierMask.fetch_and(static_cast<uint8_t>(~modBit), std::memory_order_relaxed);
+        } else {
+            m_testModifierMask.fetch_or(modBit, std::memory_order_relaxed);
+        }
+    }
+
+    KBDLLHOOKSTRUCT kbd{};
+    kbd.vkCode = vkCode;
+    kbd.scanCode = (scanCode != 0) ? scanCode : MapVirtualKeyW(vkCode, MAPVK_VK_TO_VSC);
+    kbd.flags = flags | (isKeyUp ? LLKHF_UP : 0);
+    kbd.time = GetTickCount();
+    kbd.dwExtraInfo = 0x54455354u;
+
+    const WPARAM wParam = isKeyUp ? WM_KEYUP : WM_KEYDOWN;
+    lowLevelKeyboardProc(HC_ACTION, wParam, reinterpret_cast<LPARAM>(&kbd));
+    return true;
 }
 
 bool KeyboardHook::registerHookHotkey(int id, const HotkeyDef& def, const std::string& name, HotkeyCallback cb) {
@@ -322,10 +356,15 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                                 }
 
                                 // 首次按下：计算当前修饰键并匹配钩子热键表
-                                bool hasCtrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-                                bool hasAlt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-                                bool hasShift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-                                bool hasWin   = ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) || ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
+                                const uint8_t testMods = s_allowInjectedKeyboard
+                                    ? self.m_testModifierMask.load(std::memory_order_relaxed)
+                                    : 0;
+                                bool hasCtrl  = ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) || ((testMods & 0x01) != 0);
+                                bool hasAlt   = ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0)    || ((testMods & 0x02) != 0);
+                                bool hasShift = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0)   || ((testMods & 0x04) != 0);
+                                bool hasWin   = ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) ||
+                                                ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0) ||
+                                                ((testMods & 0x08) != 0);
 
                                 ModKey currentMods = ModKey::None;
                                 if (hasCtrl)  currentMods = currentMods | ModKey::Ctrl;
@@ -430,10 +469,15 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     DWORD vk = data->vkCode;
                     bool isMod = KeyTranslator::isModifierKey(vk);
 
-                    bool hasCtrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-                    bool hasAlt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-                    bool hasShift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-                    bool hasWin   = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+                    const uint8_t testMods = s_allowInjectedKeyboard
+                        ? self.m_testModifierMask.load(std::memory_order_relaxed)
+                        : 0;
+                    bool hasCtrl  = ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) || ((testMods & 0x01) != 0);
+                    bool hasAlt   = ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0)    || ((testMods & 0x02) != 0);
+                    bool hasShift = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0)   || ((testMods & 0x04) != 0);
+                    bool hasWin   = ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) ||
+                                    ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0) ||
+                                    ((testMods & 0x08) != 0);
 
                     // 1. 处理 KeyDown 事件
                     if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {

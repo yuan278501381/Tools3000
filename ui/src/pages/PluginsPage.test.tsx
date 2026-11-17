@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PluginsPage, type PluginStatus } from './PluginsPage';
 import * as bridge from '../hooks/useBridge';
 
-// Mock i18next
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: { defaultValue?: string } | string) => {
@@ -21,7 +20,6 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-// Mock sonner toast
 vi.mock('sonner', () => ({
   toast: {
     success: vi.fn(),
@@ -74,9 +72,6 @@ describe('PluginsPage', () => {
     bridgeSpy = vi.spyOn(bridge, 'bridgeRequest').mockImplementation(async (method: string) => {
       if (method === 'plugins.getAll') {
         return mockPlugins;
-      }
-      if (method === 'plugins.getMarketplace') {
-        return [];
       }
       if (method === 'plugins.setEnabled') {
         return { success: true, restartRequired: false };
@@ -139,69 +134,13 @@ describe('PluginsPage', () => {
     );
   });
 
-  it('shows preview notice toast when marketplace plugin install returns success=false and opens data folder on local install', async () => {
-    const { toast } = await import('sonner');
-    bridgeSpy.mockImplementation(async (method: string) => {
-      if (method === 'plugins.getAll') return mockPlugins;
-      if (method === 'plugins.getMarketplace') {
-        return [
-          {
-            id: 'ai_assistant',
-            name: 'AI 悬浮助手',
-            nameEn: 'AI Assistant',
-            version: '1.2.0',
-            author: 'Tools3000 Team',
-            description: '全局划词翻译',
-            descriptionEn: 'AI translation',
-            category: 'ai',
-            downloads: '12.5k',
-            rating: 4.9,
-            installed: false,
-            capabilities: ['ai-translate'],
-          },
-        ];
-      }
-      if (method === 'plugins.install') {
-        return { success: false, error: 'Built-in preview' };
-      }
-      if (method === 'general.getSettings') {
-        return { dataDirectory: 'C:\\Users\\Test\\.tools3000' };
-      }
-      if (method === 'system.openFolder') {
-        return { success: true };
-      }
-      return {};
-    });
-
+  it('does not render deprecated plugin marketplace tab or request marketplace catalog', async () => {
     await act(async () => {
       render(<PluginsPage initialPlugins={mockPlugins} />);
     });
 
-    const marketTab = screen.getByText('plugins.tabMarketplace');
-    await act(async () => {
-      fireEvent.click(marketTab);
-    });
-
-    const installBtn = await screen.findByText('plugins.install');
-    await act(async () => {
-      fireEvent.click(installBtn);
-    });
-
-    expect(bridgeSpy).toHaveBeenCalledWith('plugins.install', { id: 'ai_assistant' });
-    expect(toast.info).toHaveBeenCalledWith(
-      'plugins.marketPreviewNotice',
-      expect.objectContaining({ description: 'Built-in preview' })
-    );
-
-    const localBtn = screen.getByText('plugins.installLocal');
-    await act(async () => {
-      fireEvent.click(localBtn);
-    });
-
-    expect(bridgeSpy).toHaveBeenCalledWith('system.openFolder', { path: 'C:\\Users\\Test\\.tools3000' });
-    expect(toast.info).toHaveBeenCalledWith(
-      'plugins.localInstallGuide',
-      expect.objectContaining({ description: 'plugins.restartHint' })
-    );
+    expect(screen.queryByText('plugins.tabMarketplace')).toBeNull();
+    expect(screen.queryByText('plugins.installLocal')).toBeNull();
+    expect(bridgeSpy).not.toHaveBeenCalledWith('plugins.getMarketplace');
   });
 });

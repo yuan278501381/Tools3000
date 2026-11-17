@@ -644,7 +644,10 @@ foreach ($rFile in $WhitelistedResourceFiles) {
 if (Test-Path "resources\scripts") {
     Copy-Item "resources\scripts" -Destination $TargetResourcesDir -Recurse
 }
-Write-Log "已通过白名单注入运行必需资源 (ico, png, scripts/)"
+if (Test-Path "resources\wallpapers") {
+    Copy-Item "resources\wallpapers" -Destination $TargetResourcesDir -Recurse
+}
+Write-Log "已通过白名单注入运行必需资源 (ico, png, scripts/, wallpapers/)"
 
 if (Test-Path "ui/dist") {
     $UiDeployDir = Join-Path $StagingDir "ui"
@@ -1000,6 +1003,30 @@ if (-not $SkipTests) {
             throw "录屏按键回显操作系统级端到端门禁未通过！退出码: $LASTEXITCODE"
         }
         Write-Log "录屏按键回显操作系统级端到端门禁全部通过。" "SUCCESS"
+    }
+
+    $CaptureRecordingE2EScript = Join-Path $ScriptDir "scripts\test_capture_recording_e2e.ps1"
+    if (Test-Path $CaptureRecordingE2EScript) {
+        Write-Log "[GATE] 正在执行截图·贴图·录屏·倒计时·演播室全链路操作系统级端到端门禁 (test_capture_recording_e2e.ps1)..." "INFO"
+        $TargetE2EExe = Join-Path $DeployDir "Tools3000.exe"
+
+        & pwsh.exe -File $CaptureRecordingE2EScript -ExePath $TargetE2EExe
+        if ($LASTEXITCODE -ne 0) {
+            throw "截图与录屏全链路操作系统级端到端门禁未通过！退出码: $LASTEXITCODE"
+        }
+        Write-Log "截图·贴图·录屏·倒计时·演播室全链路操作系统级端到端门禁全部通过。" "SUCCESS"
+    }
+
+    $SearchContentE2EScript = Join-Path $ScriptDir "scripts\test_search_content_e2e.ps1"
+    if (Test-Path $SearchContentE2EScript) {
+        Write-Log "[GATE] 正在执行文件搜索与文档内容全文搜索跨进程端到端门禁 (test_search_content_e2e.ps1)..." "INFO"
+        $TargetE2EExe = Join-Path $DeployDir "Tools3000.exe"
+
+        & pwsh.exe -File $SearchContentE2EScript -ExePath $TargetE2EExe
+        if ($LASTEXITCODE -ne 0) {
+            throw "文件搜索与文档内容全文搜索端到端门禁未通过！退出码: $LASTEXITCODE"
+        }
+        Write-Log "文件搜索与文档内容全文搜索跨进程端到端门禁全部通过。" "SUCCESS"
     }
 }
 

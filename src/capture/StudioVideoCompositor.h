@@ -59,14 +59,18 @@ class StudioVideoCompositor {
 public:
     StudioVideoCompositor() = default;
 
-    /// 计算对齐偶数的最终输出画布尺寸
-    static cv::Size resolveOutputCanvasSize(int srcWidth, int srcHeight) noexcept;
+    /// 计算对齐偶数的最终输出画布尺寸（支持 16:9 / 9:16 / 4:3 / 1:1 等画幅比例）
+    static cv::Size resolveOutputCanvasSize(
+        int srcWidth,
+        int srcHeight,
+        StudioAspectRatio aspect = StudioAspectRatio::Original) noexcept;
 
-    /// 根据导出格式与分辨率档位计算等比偶数对齐输出尺寸（微信 GIF 自动钳制长边 <= 800px）
+    /// 根据导出格式、分辨率档位与画布比例计算等比偶数对齐输出尺寸（微信 GIF 自动钳制长边 <= 800px）
     static cv::Size resolveExportDimensions(
         int srcWidth,
         int srcHeight,
-        const StudioExportOptions& exportOpts) noexcept;
+        const StudioExportOptions& exportOpts,
+        StudioAspectRatio aspect = StudioAspectRatio::Original) noexcept;
 
     /// 返回导出格式对应的标准小写文件扩展名（含点号，如 ".mp4", ".gif", ".webp", ".webm"）
     static const char* extensionForExportFormat(StudioExportFormat format) noexcept;
@@ -78,12 +82,13 @@ public:
         double durationSec,
         const StudioExportOptions& exportOpts) noexcept;
 
-    /// 渲染指定高定背景主题（沉稳 / 轻盈 / 风景）的 BGR 艺术画布（供合成底板与 UI 缩略图预览共用）
+    /// 渲染指定高定背景主题或本地真实壁纸图片的 BGR 艺术画布（供合成底板与 UI 缩略图预览共用）
     static void renderArtisticBackdropBgr(
         cv::Mat& outBgr,
         int width,
         int height,
-        BeautyBackgroundType theme);
+        BeautyBackgroundType theme,
+        const std::string& customPathUtf8 = "");
 
     /// 生成供 Direct2D UI 按钮直接显示的 BGRA 缩略预览图
     static cv::Mat renderThemeThumbnailBgra(
@@ -91,12 +96,19 @@ public:
         int width,
         int height);
 
-    /// 实时合成单帧画面（自动运镜裁剪放大 + 壁纸微晶圆角画框 + 顶层平滑超清矢量光标 + 对齐胶囊字幕）
+    /// 生成任意本地壁纸图片文件的 BGRA 缩略预览图
+    static cv::Mat renderCustomWallpaperThumbnailBgra(
+        const std::string& customPathUtf8,
+        int width,
+        int height);
+
+    /// 实时合成单帧画面（自动 2D/3D 运镜 + 真实高清壁纸/景深模糊/内框圆角/立体阴影 + 视频时间轴标注打码 + 同源鼠标回显 + 字幕）
     cv::Mat composeFrame(
         const cv::Mat& rawBgrOrBgra,
         const StudioEvaluatedFrame& eval,
         const StudioRenderConfig& config,
-        cv::Size targetSize = {});
+        cv::Size targetSize = {},
+        const std::vector<StudioAnnotationItem>* annotations = nullptr);
 
     /// 多格式全参数导出入口（支持 MP4 / HEVC / 微信自动播放 GIF / 高清 GIF / 网页动图 WebP / WebM）
     static bool exportStudioMedia(
@@ -128,16 +140,32 @@ public:
         int& outOrigHeight,
         double& outDurationSec);
 
+    /// 从视频文件音轨中极速解码提取归一化音频声波包络峰值序列（跳过视频流，仅数毫秒耗时；无音轨时返回 false 并清空 outPeaks）
+    static bool extractAudioWaveformPeaks(
+        const std::string& rawInputPathUtf8,
+        size_t bucketCount,
+        std::vector<float>& outPeaks);
+
 private:
     void ensureBackdropCache(
         int outW, int outH,
         bool autoFrame,
         BeautyBackgroundType theme,
+        const std::string& customBgPath,
+        float bgBlur,
+        float shadowIntensity,
         int padX, int padY,
         int innerW, int innerH,
         float radius);
 
     void ensureCaptionOverlayCache(const std::string& captionUtf8, int canvasW, int canvasH);
+
+    static void drawClickRippleEffect(
+        cv::Mat& canvasBgr,
+        float x, float y,
+        float scale,
+        float rippleProgress,
+        bool rippleRight);
 
     static void drawCrispVectorCursor(
         cv::Mat& canvasBgr,
@@ -145,14 +173,18 @@ private:
         StudioCursorKind kind,
         float scale,
         float rippleProgress,
-        bool rippleRight);
+        bool rippleRight,
+        bool highlightHalo = false);
 
-    // 壁纸 + 柔和立体投影 + 微晶外框预计算底板缓存
+    // 壁纸 + 景深模糊 + 柔和立体投影 + 微晶外框预计算底板缓存
     cv::Mat m_cachedBackdropBgr;
     int m_cacheW = 0;
     int m_cacheH = 0;
     bool m_cacheAutoFrame = false;
-    BeautyBackgroundType m_cacheTheme = BeautyBackgroundType::AuroraPurple;
+    BeautyBackgroundType m_cacheTheme = BeautyBackgroundType::StudioSlate;
+    std::string m_cacheCustomBgPath;
+    float m_cacheBgBlur = -1.0f;
+    float m_cacheShadowIntensity = -1.0f;
     int m_cachePadX = 0;
     int m_cachePadY = 0;
     int m_cacheInnerW = 0;

@@ -118,6 +118,23 @@ public:
         m_internUsed = 0;
     }
 
+    // Pre-sizes the intern hash table before bulk snapshot/MFT import to avoid repeated rehashes.
+    void reserveInternTable(size_t expectedUniqueStrings) {
+        const size_t desired = (expectedUniqueStrings + 1) * 2;
+        size_t cap = m_internSlots.empty() ? 1024 : m_internSlots.size();
+        while (cap < desired) cap <<= 1;
+        if (cap <= m_internSlots.size()) return;
+        std::vector<uint64_t> larger(cap, EmptySlot);
+        for (const uint64_t slot : m_internSlots) {
+            if (slot == EmptySlot) continue;
+            const uint64_t hash = hashOf(view(offsetOf(slot), lengthOf(slot)));
+            size_t probe = static_cast<size_t>(hash) & (larger.size() - 1);
+            while (larger[probe] != EmptySlot) probe = (probe + 1) & (larger.size() - 1);
+            larger[probe] = slot;
+        }
+        m_internSlots = std::move(larger);
+    }
+
     // Drops the interning table. Worth calling once bulk enumeration is done and
     // only a trickle of incremental names remains.
     void releaseInterner() {

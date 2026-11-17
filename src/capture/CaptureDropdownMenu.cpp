@@ -38,6 +38,47 @@ RecordFormat resolveRememberedVideoFormat(const CaptureState& state) {
     return RecordFormat::MP4_H264;
 }
 
+void populateRecordMoreSettingsItems(CaptureState& state, bool isZh) {
+    state.dropdownMenu.items.clear();
+
+    DropdownItem zoomParent{};
+    zoomParent.id = 10;
+    zoomParent.label = isZh ? L"自动运镜" : L"Auto Zoom";
+    zoomParent.hasChildMenu = true;
+    zoomParent.childItems = {
+        { 100, isZh ? L"关闭"    : L"Off",       L"", state.recordSetup.zoomEffectMode == 0 },
+        { 101, isZh ? L"2D 运镜" : L"2D Zoom",   L"", state.recordSetup.zoomEffectMode == 1 },
+        { 102, isZh ? L"3D 运镜" : L"3D Motion", L"", state.recordSetup.zoomEffectMode == 2 }
+    };
+    state.dropdownMenu.items.push_back(std::move(zoomParent));
+
+    DropdownItem cdParent{};
+    cdParent.id = 20;
+    cdParent.label = isZh ? L"录制倒计时" : L"Countdown";
+    cdParent.hasChildMenu = true;
+    cdParent.childItems = {
+        { 200, isZh ? L"无"   : L"None", L"", state.recordSetup.countdownSeconds <= 0 },
+        { 203, isZh ? L"3 秒" : L"3 s",  L"", state.recordSetup.countdownSeconds == 3 },
+        { 205, isZh ? L"5 秒" : L"5 s",  L"", state.recordSetup.countdownSeconds >= 5 }
+    };
+    state.dropdownMenu.items.push_back(std::move(cdParent));
+
+    DropdownItem sep1{};
+    sep1.isSeparator = true;
+    state.dropdownMenu.items.push_back(sep1);
+
+    state.dropdownMenu.items.push_back({ 301, isZh ? L"隐藏桌面图标" : L"Hide Desktop Icons",   L"", state.recordSetup.hideDesktopIcons });
+    state.dropdownMenu.items.push_back({ 302, isZh ? L"隐藏任务栏"   : L"Hide Taskbar",         L"", state.recordSetup.hideTaskbar });
+    state.dropdownMenu.items.push_back({ 303, isZh ? L"打字自动运镜" : L"Auto Zoom on Typing",  L"", state.recordSetup.typingAutoZoom });
+    state.dropdownMenu.items.push_back({ 304, isZh ? L"麦克风人声降噪" : L"Mic Noise Suppression", L"", state.recordSetup.voiceEnhance });
+
+    DropdownItem sep2{};
+    sep2.isSeparator = true;
+    state.dropdownMenu.items.push_back(sep2);
+
+    state.dropdownMenu.items.push_back({ 400, isZh ? L"更多设置" : L"More Settings", L"", false });
+}
+
 } // namespace
 
 void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F& anchorRect) {
@@ -100,6 +141,9 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
     state.dropdownMenu.type = type;
     state.dropdownMenu.anchorButtonRect = anchorRect;
     state.dropdownMenu.hoveredIndex = -1;
+    state.dropdownMenu.activeParentIndex = -1;
+    state.dropdownMenu.hoveredChildIndex = -1;
+    state.dropdownMenu.childMenuRect = {};
     state.dropdownMenu.items.clear();
     state.dropdownMenu.originalBgType = state.beautyShell.bgType;
     const bool isZh = tools3000::core::isUiLanguageChinese();
@@ -191,15 +235,20 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
         }
 
         case DropdownType::RecordClickEffect: {
-            bool ripple = state.recordSetup.showClickEffects;
-            bool zoom = state.recordSetup.showClickZoom;
-            int curMode = (!ripple && !zoom) ? 0 : (ripple && !zoom ? 1 : (!ripple && zoom ? 2 : 3));
+            const bool ripple = state.recordSetup.showClickEffects;
+            const bool zoom = (state.recordSetup.zoomEffectMode != 0);
+            const int curMode = (!ripple && !zoom) ? 0 : (ripple && !zoom ? 1 : (!ripple && zoom ? 2 : 3));
             state.dropdownMenu.items = {
-                { 0, isZh ? L"无特效"     : L"None",          L"", curMode == 0 },
-                { 1, isZh ? L"水波纹"     : L"Ripple",        L"", curMode == 1 },
-                { 2, isZh ? L"点击缩放"   : L"Click Zoom",    L"", curMode == 2 },
-                { 3, isZh ? L"波纹+缩放"  : L"Ripple + Zoom", L"", curMode == 3 }
+                { 0, isZh ? L"无效果"    : L"None",          L"", curMode == 0 },
+                { 1, isZh ? L"点击波纹"  : L"Click Ripple",  L"", curMode == 1 },
+                { 2, isZh ? L"自动运镜"  : L"Auto Zoom",     L"", curMode == 2 },
+                { 3, isZh ? L"波纹+运镜" : L"Ripple + Zoom", L"", curMode == 3 }
             };
+            break;
+        }
+
+        case DropdownType::RecordMoreSettings: {
+            populateRecordMoreSettingsItems(state, isZh);
             break;
         }
 
@@ -360,25 +409,100 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
         }
 
         case DropdownType::RecordClickEffect: {
+            auto& cfg = tools3000::core::ConfigManager::instance();
+            const int savedMode = std::clamp(cfg.get<int>("/recording/studioZoomMode", 1), 1, 2);
             if (id == 0) {
                 state.recordSetup.showClickEffects = false;
                 state.recordSetup.showClickZoom = false;
-                state.loupeToastMessage = isZh ? L"点击特效: 已关闭" : L"Click Effects: None";
+                state.recordSetup.zoomEffectMode = 0;
+                state.loupeToastMessage = isZh ? L"镜头与点击效果: 已关闭" : L"Auto Zoom & Ripple: Off";
             } else if (id == 1) {
                 state.recordSetup.showClickEffects = true;
                 state.recordSetup.showClickZoom = false;
-                state.loupeToastMessage = isZh ? L"点击特效: 水波纹" : L"Click Effects: Water Ripple";
+                state.recordSetup.zoomEffectMode = 0;
+                state.loupeToastMessage = isZh ? L"点击效果: 点击波纹" : L"Click Effect: Click Ripple";
             } else if (id == 2) {
                 state.recordSetup.showClickEffects = false;
                 state.recordSetup.showClickZoom = true;
-                state.loupeToastMessage = isZh ? L"点击特效: Mac 点击缩放" : L"Click Effects: Mac Click Zoom";
+                if (state.recordSetup.zoomEffectMode == 0) {
+                    state.recordSetup.zoomEffectMode = savedMode;
+                }
+                state.loupeToastMessage = isZh ? L"鼠标自动运镜: 已开启" : L"Auto Zoom: ON";
             } else {
                 state.recordSetup.showClickEffects = true;
                 state.recordSetup.showClickZoom = true;
-                state.loupeToastMessage = isZh ? L"点击特效: 水波纹 + 缩放" : L"Click Effects: Ripple + Zoom";
+                if (state.recordSetup.zoomEffectMode == 0) {
+                    state.recordSetup.zoomEffectMode = savedMode;
+                }
+                state.loupeToastMessage = isZh ? L"已开启: 点击波纹 + 自动运镜" : L"Ripple + Auto Zoom: ON";
             }
-            tools3000::core::ConfigManager::instance().set<bool>("/recording/showClickEffects", state.recordSetup.showClickEffects);
-            tools3000::core::ConfigManager::instance().set<bool>("/recording/showClickZoom", state.recordSetup.showClickZoom);
+            cfg.set<bool>("/recording/showClickEffects", state.recordSetup.showClickEffects);
+            cfg.set<bool>("/recording/showClickZoom", state.recordSetup.showClickZoom);
+            cfg.set<bool>("/recording/studioAutoZoom", state.recordSetup.zoomEffectMode != 0);
+            if (state.recordSetup.zoomEffectMode != 0) {
+                cfg.set<int>("/recording/studioZoomMode", state.recordSetup.zoomEffectMode);
+                cfg.set<bool>("/recording/studioMode", true);
+            }
+            break;
+        }
+
+        case DropdownType::RecordMoreSettings: {
+            auto& cfg = tools3000::core::ConfigManager::instance();
+            bool keepMenuOpen = true;
+            if (id >= 100 && id <= 102) {
+                const int mode = id - 100;
+                state.recordSetup.zoomEffectMode = mode;
+                state.recordSetup.showClickZoom = (mode != 0);
+                cfg.set<int>("/recording/studioZoomMode", mode);
+                cfg.set<bool>("/recording/studioAutoZoom", mode != 0);
+                cfg.set<bool>("/recording/showClickZoom", state.recordSetup.showClickZoom);
+                if (mode != 0) {
+                    cfg.set<bool>("/recording/studioMode", true);
+                }
+                static const wchar_t* zNamesZh[] = { L"关闭", L"2D 运镜", L"3D 运镜" };
+                static const wchar_t* zNamesEn[] = { L"Off", L"2D Zoom", L"3D Motion" };
+                state.loupeToastMessage = (isZh ? L"自动运镜: " : L"Auto Zoom: ") + std::wstring(isZh ? zNamesZh[mode] : zNamesEn[mode]);
+            } else if (id == 200 || id == 203 || id == 205) {
+                const int sec = id - 200;
+                state.recordSetup.countdownSeconds = sec;
+                cfg.set<int>("/recording/countdownSeconds", sec);
+                state.loupeToastMessage = (sec <= 0)
+                    ? (isZh ? L"录制倒计时: 无" : L"Countdown: Off")
+                    : (isZh ? std::format(L"录制倒计时: {} 秒", sec) : std::format(L"Countdown: {} s", sec));
+            } else if (id == 301) {
+                state.recordSetup.hideDesktopIcons = !state.recordSetup.hideDesktopIcons;
+                cfg.set<bool>("/recording/hideDesktopIcons", state.recordSetup.hideDesktopIcons);
+                state.loupeToastMessage = state.recordSetup.hideDesktopIcons
+                    ? (isZh ? L"隐藏桌面图标: 已开启" : L"Hide Desktop Icons: ON")
+                    : (isZh ? L"隐藏桌面图标: 已关闭" : L"Hide Desktop Icons: OFF");
+            } else if (id == 302) {
+                state.recordSetup.hideTaskbar = !state.recordSetup.hideTaskbar;
+                cfg.set<bool>("/recording/hideTaskbar", state.recordSetup.hideTaskbar);
+                state.loupeToastMessage = state.recordSetup.hideTaskbar
+                    ? (isZh ? L"隐藏任务栏: 已开启" : L"Hide Taskbar: ON")
+                    : (isZh ? L"隐藏任务栏: 已关闭" : L"Hide Taskbar: OFF");
+            } else if (id == 303) {
+                state.recordSetup.typingAutoZoom = !state.recordSetup.typingAutoZoom;
+                cfg.set<bool>("/recording/typingAutoZoom", state.recordSetup.typingAutoZoom);
+                state.loupeToastMessage = state.recordSetup.typingAutoZoom
+                    ? (isZh ? L"打字自动运镜: 已开启" : L"Auto Zoom on Typing: ON")
+                    : (isZh ? L"打字自动运镜: 已关闭" : L"Auto Zoom on Typing: OFF");
+            } else if (id == 304) {
+                state.recordSetup.voiceEnhance = !state.recordSetup.voiceEnhance;
+                cfg.set<bool>("/recording/voiceEnhance", state.recordSetup.voiceEnhance);
+                state.loupeToastMessage = state.recordSetup.voiceEnhance
+                    ? (isZh ? L"麦克风人声降噪: 已开启" : L"Mic Noise Suppression: ON")
+                    : (isZh ? L"麦克风人声降噪: 已关闭" : L"Mic Noise Suppression: OFF");
+            } else if (id == 400) {
+                state.recordSetup.requestOpenMoreSettings = true;
+                state.loupeToastUntil = 0;
+                keepMenuOpen = false;
+            }
+            if (keepMenuOpen) {
+                populateRecordMoreSettingsItems(state, isZh);
+                state.toolbarLayoutValid = false;
+                return;
+            }
             break;
         }
 
@@ -460,6 +584,9 @@ void closeDropdownMenu(CaptureState& state, bool restorePreview) {
     state.dropdownMenu.type = DropdownType::None;
     state.dropdownMenu.items.clear();
     state.dropdownMenu.hoveredIndex = -1;
+    state.dropdownMenu.activeParentIndex = -1;
+    state.dropdownMenu.hoveredChildIndex = -1;
+    state.dropdownMenu.childMenuRect = {};
     state.toolbarLayoutValid = false;
 }
 
