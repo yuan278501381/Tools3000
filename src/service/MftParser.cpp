@@ -2821,16 +2821,16 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
         return true;
     }
 
-    // Fast-path threshold: replaying >32 MB of accumulated USN journal records (e.g. 1.4 GB from VMs/builds
-    // over 24h) takes minutes via 64 KB ioctl chunks, whereas a fresh sequential MFT scan takes <1 second!
-    constexpr uint64_t kMaxIncrementalUsnSpanBytes = 32ULL * 1024ULL * 1024ULL;
-    constexpr uint64_t kPersistCursorDeltaBytes = 4ULL * 1024ULL * 1024ULL;
+    // Fast-path threshold: replaying >4 MB of accumulated USN journal records (~45k build/temp mutations)
+    // via per-record parent hierarchy updates is slower than a sequential MFT scan (~6s for 2.5M files).
+    constexpr uint64_t kMaxIncrementalUsnSpanBytes = 4ULL * 1024ULL * 1024ULL;
+    constexpr uint64_t kPersistCursorDeltaBytes = 1ULL * 1024ULL * 1024ULL;
     const uint64_t usnSpanBytes = (nextUsn > startUsn)
         ? static_cast<uint64_t>(nextUsn - startUsn)
         : 0ULL;
     if (usnSpanBytes > kMaxIncrementalUsnSpanBytes) {
         spdlog::info(
-            "USN journal backlog on drive {}: is {} MB (> 32 MB), performing fast full MFT rescan instead of slow journal replay",
+            "USN journal backlog on drive {}: is {} MB (> 4 MB), performing fast full MFT rescan instead of slow journal replay",
             m_DriveLetter,
             usnSpanBytes / (1024ULL * 1024ULL));
         EnumerateFiles();

@@ -460,6 +460,14 @@ cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
     bool opened = false;
     for (int retry = 0; retry < 25; ++retry) {
         if (OpenClipboard(nullptr)) {
+            SetLastError(0);
+            const UINT probeFmt = EnumClipboardFormats(0);
+            if ((probeFmt == 0 && GetLastError() == ERROR_CLIPBOARD_NOT_OPEN) ||
+                (probeFmt != 0 && GetClipboardData(probeFmt) == nullptr && GetLastError() == ERROR_CLIPBOARD_NOT_OPEN)) {
+                CloseClipboard();
+                Sleep(10);
+                continue;
+            }
             opened = true;
             break;
         }

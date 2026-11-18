@@ -404,13 +404,17 @@ CursorOverlay::Patch CursorOverlay::apply(CaptureFrameView& frame,
             const int clickX = ripple.point.x - screenRegion.x;
             const int clickY = ripple.point.y - screenRegion.y;
             const float dpiScale = tools3000::core::dpi::scaleAtPoint(ripple.point);
-            const float radius = static_cast<float>((8.0 + clickProgress * 24.0) * static_cast<double>(dpiScale));
-            const float ringThickness = static_cast<float>(3.6 * static_cast<double>(dpiScale));
-            const float coreRadius = static_cast<float>(14.0 * static_cast<double>(dpiScale));
-            const float coreFade = static_cast<float>((std::max)(0.0, 1.0 - clickProgress * 1.6));
+            const float p = std::clamp(static_cast<float>(clickProgress), 0.0f, 1.0f);
+            const float invP = 1.0f - p;
+            const float ease4 = 1.0f - invP * invP * invP * invP;
+            const float radius = (4.0f + 22.0f * ease4) * dpiScale;
+            const float outerSigma = (std::max)(0.75f, (1.20f * (1.0f - 0.55f * p)) * dpiScale);
+            const float innerDecay = (std::max)(1.25f, (5.20f * (0.52f + 0.48f * ease4) * (1.0f - 0.35f * p)) * dpiScale);
+            const float coreRadius = 11.0f * dpiScale;
+            const float coreFade = (p < 0.28f) ? ((1.0f - p / 0.28f) * (1.0f - p / 0.28f)) : 0.0f;
 
-            const int extent = static_cast<int>(std::ceil((std::max)(radius + ringThickness, coreRadius) + 1.0f));
-            const float baseAlpha = static_cast<float>(220.0 * (1.0 - clickProgress));
+            const int extent = static_cast<int>(std::ceil((std::max)(radius + outerSigma * 3.5f, coreRadius) + 1.0f));
+            const float baseAlpha = 128.0f * std::pow(invP, 1.65f) * (std::min)(1.0f, p / 0.06f + 0.30f);
             auto parseHexRgb = [](const std::string& hex, std::uint8_t defR, std::uint8_t defG, std::uint8_t defB,
                                   std::uint8_t& outR, std::uint8_t& outG, std::uint8_t& outB) {
                 outR = defR; outG = defG; outB = defB;
@@ -438,15 +442,12 @@ CursorOverlay::Patch CursorOverlay::apply(CaptureFrameView& frame,
             if (colHex == "auto" || colHex.empty()) {
                 colHex = cfg.get<std::string>("/general/accentColor", "#38bdf8");
             }
-            const std::string rippleStyle = cfg.get<std::string>("/spotlight/clickRippleStyle", "sparkle_burst");
             std::uint8_t ringR = 56, ringG = 189, ringB = 248;
             if (ripple.isRight) {
                 parseHexRgb(colHex, 251, 113, 133, ringR, ringG, ringB);
             } else {
                 parseHexRgb(colHex, 56, 189, 248, ringR, ringG, ringB);
             }
-            const float innerPulseR = radius * 0.56f;
-            const bool hasDualRing = (rippleStyle == "target_pulse" || rippleStyle == "sparkle_burst");
 
             for (int y = -extent; y <= extent; ++y) {
                 int py = clickY + y;
@@ -459,28 +460,33 @@ CursorOverlay::Patch CursorOverlay::apply(CaptureFrameView& frame,
                     const float distVal = CursorOverlay::fastDistance(d2);
 
                     float alpha = 0.0f;
-                    // Layer 1: 外层柔和扩散环
-                    const float edgeDistVal = std::abs(distVal - radius);
-                    if (edgeDistVal <= ringThickness) {
-                        float norm = edgeDistVal / ringThickness;
-                        alpha += baseAlpha * (1.0f - norm * norm);
-                    }
-                    if (hasDualRing) {
-                        const float innerDist = std::abs(distVal - innerPulseR);
-                        if (innerDist <= ringThickness * 0.75f) {
-                            float norm2 = innerDist / (ringThickness * 0.75f);
-                            alpha += baseAlpha * 0.55f * (1.0f - norm2 * norm2);
+                    // 单道解析式非对称 SDF 微晶细环（外沿凝练收边 + 内侧指数柔光羽化 + 动态收细，去除廉价双硬环）
+                    if (distVal >= radius) {
+                        const float od = (distVal - radius) / outerSigma;
+                        if (od < 3.4f) {
+                            alpha += baseAlpha * std::exp(-0.5f * od * od);
+                        }
+                    } else {
+                        const float id = (radius - distVal) / innerDecay;
+                        if (id < 4.2f) {
+                            const float centerClear = std::clamp(distVal / (std::max)(1.0f, radius * 0.42f), 0.0f, 1.0f);
+                            alpha += baseAlpha * std::exp(-id) * (centerClear * (2.0f - centerClear));
                         }
                     }
-                    // Layer 2: 内层柔光微光晕核心
+                    // 触点瞬态柔和微光核
                     if (coreFade > 0.0f && distVal <= coreRadius) {
                         float coreNorm = distVal / coreRadius;
-                        alpha += coreFade * (rippleStyle == "soft_glow" ? 145.0f : 90.0f) * (1.0f - coreNorm * coreNorm);
+                        alpha += coreFade * 72.0f * (1.0f - coreNorm * coreNorm);
                     }
 
                     if (alpha > 0.5f) {
+                        const float crest = std::exp(-std::abs(distVal - radius) / (std::max)(0.8f, 1.25f * dpiScale));
+                        const float wMix = crest * 0.36f;
+                        const auto cR = static_cast<std::uint8_t>(std::clamp(ringR + (255.0f - ringR) * wMix, 0.0f, 255.0f));
+                        const auto cG = static_cast<std::uint8_t>(std::clamp(ringG + (255.0f - ringG) * wMix, 0.0f, 255.0f));
+                        const auto cB = static_cast<std::uint8_t>(std::clamp(ringB + (255.0f - ringB) * wMix, 0.0f, 255.0f));
                         const auto alphaByte = static_cast<std::uint8_t>(std::clamp(alpha, 0.0f, 255.0f));
-                        blendPixel(frame, px, py, ringR, ringG, ringB, alphaByte);
+                        blendPixel(frame, px, py, cR, cG, cB, alphaByte);
                     }
                 }
             }

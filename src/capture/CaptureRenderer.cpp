@@ -1832,6 +1832,10 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
             if (button.command == ToolbarCommand::CycleBeautyRadius) {
                 isActiveTool = (state.dropdownMenu.type == DropdownType::BeautyShellRadius);
             }
+            if (button.command == ToolbarCommand::RecordSelectMicSource) {
+                isActiveTool = (state.dropdownMenu.type == DropdownType::RecordMicSource &&
+                                state.recordSetup.format != RecordFormat::GIF);
+            }
             if (button.command == ToolbarCommand::RecordToggleSettingsMenu) {
                 isActiveTool = (state.dropdownMenu.type == DropdownType::RecordMoreSettings);
             }
@@ -1841,10 +1845,16 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
             else if (button.command == ToolbarCommand::Redo) isDisabled = !state.markup.canRedo();
             else if (button.command == ToolbarCommand::Clear) isDisabled = (state.markup.elementCount() == 0);
             else if ((button.command == ToolbarCommand::RecordToggleSystemAudio ||
-                      button.command == ToolbarCommand::RecordToggleMicrophone) &&
+                      button.command == ToolbarCommand::RecordToggleMicrophone ||
+                      button.command == ToolbarCommand::RecordSelectMicSource) &&
                      state.recordSetup.format == RecordFormat::GIF) {
                 isDisabled = true;
             }
+
+            const bool isSplitMicLeft = (button.command == ToolbarCommand::RecordToggleMicrophone &&
+                                         state.mode == OverlayMode::RecordRegion);
+            const bool isSplitMicRight = (button.command == ToolbarCommand::RecordSelectMicSource);
+            const bool isSplitMicHalf = (isSplitMicLeft || isSplitMicRight);
 
             bool isColor = button.command == ToolbarCommand::SelectColor;
             bool isOutlineColor = button.command == ToolbarCommand::SelectTextOutlineColor;
@@ -1853,7 +1863,8 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                              button.command == ToolbarCommand::RecordStartConfirm;
             bool isCheckboxItem = (button.command == ToolbarCommand::ToggleLineArrow ||
                                    (button.command == ToolbarCommand::ToggleFill && !button.label.empty()));
-            bool isStepper = (button.command == ToolbarCommand::CycleStrokeWidth ||
+            bool isStepper = (isSplitMicHalf ||
+                              button.command == ToolbarCommand::CycleStrokeWidth ||
                               button.command == ToolbarCommand::CycleMagnifierScale ||
                               button.command == ToolbarCommand::CycleElementCornerRadius ||
                               button.command == ToolbarCommand::ToggleCornerRadius ||
@@ -1983,8 +1994,19 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                 } else if (isActiveTool && !isCheckboxItem) {
                     // 清爽 10% 科技蓝微晶底 + 底部科技蓝微指示条，告别厚重死灰框
                     auto* fallback = button.isSecondary ? secondaryActiveBrush.Get() : activeBrush.Get();
-                    if (fallback) m_renderTarget->FillRoundedRectangle(rounded, fallback);
-                    if (!button.isSecondary && button.label.empty() && activeIconBrush) {
+                    if (fallback) {
+                        if (isSplitMicHalf) {
+                            const D2D1_RECT_F unionRc = isSplitMicLeft
+                                ? D2D1::RectF(button.rect.left, button.rect.top, button.rect.right + btnRadius + 2.0f * scale, button.rect.bottom)
+                                : D2D1::RectF(button.rect.left - btnRadius - 2.0f * scale, button.rect.top, button.rect.right, button.rect.bottom);
+                            m_renderTarget->PushAxisAlignedClip(button.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), fallback);
+                            m_renderTarget->PopAxisAlignedClip();
+                        } else {
+                            m_renderTarget->FillRoundedRectangle(rounded, fallback);
+                        }
+                    }
+                    if (!button.isSecondary && button.label.empty() && !isSplitMicRight && activeIconBrush) {
                         const float bcx = (button.rect.left + button.rect.right) * 0.5f;
                         const float pillHalfW = 4.8f * scale;
                         const float pillH = 2.0f * scale;
@@ -1999,10 +2021,34 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                                     : (isDanger && isHovered) ? dangerHoverBrush.Get()
                                     : isHovered ? hoverBrush.Get()
                                     : buttonBrush.Get();
-                    if (fillBrush) m_renderTarget->FillRoundedRectangle(rounded, fillBrush);
-                    if (isStepper && isHovered && separatorBrush) {
+                    if (fillBrush) {
+                        if (isSplitMicHalf) {
+                            const D2D1_RECT_F unionRc = isSplitMicLeft
+                                ? D2D1::RectF(button.rect.left, button.rect.top, button.rect.right + btnRadius + 2.0f * scale, button.rect.bottom)
+                                : D2D1::RectF(button.rect.left - btnRadius - 2.0f * scale, button.rect.top, button.rect.right, button.rect.bottom);
+                            m_renderTarget->PushAxisAlignedClip(button.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), fillBrush);
+                            if (isHovered && separatorBrush) {
+                                m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), separatorBrush.Get(), 0.85f * scale);
+                            }
+                            m_renderTarget->PopAxisAlignedClip();
+                        } else {
+                            m_renderTarget->FillRoundedRectangle(rounded, fillBrush);
+                        }
+                    }
+                    if (!isSplitMicHalf && isStepper && isHovered && separatorBrush) {
                         m_renderTarget->DrawRoundedRectangle(rounded, separatorBrush.Get(), 0.85f * scale);
                     }
+                }
+
+                // 一体化分体双舱胶囊中间微晶分割丝线（精准像素对齐，上下优雅留白）
+                if (isSplitMicRight && separatorBrush) {
+                    const float divX = std::floor(button.rect.left) + 0.5f;
+                    m_renderTarget->DrawLine(
+                        D2D1::Point2F(divX, button.rect.top + 6.0f * scale),
+                        D2D1::Point2F(divX, button.rect.bottom - 6.0f * scale),
+                        separatorBrush.Get(),
+                        1.0f * scale);
                 }
 
                 auto* currentIconBrush = isDisabled ? disabledIconBrush.Get()
@@ -3796,6 +3842,35 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
                 m_renderTarget.Get(), m_d2dFactory.Get(),
                 button.boolParam ? CaptureIconId::ActionToggleMic : CaptureIconId::ActionToggleMicMuted,
                 rect, brush, scale);
+            // 当用户显式锁定了特定外接/耳机麦克风（非系统默认）时，在右上角点缀微晶指示圆点
+            if (button.intParam == 1 && m_renderTarget) {
+                ComPtr<ID2D1SolidColorBrush> pinDotBrush;
+                const D2D1_COLOR_F dotCol = button.boolParam
+                    ? D2D1::ColorF(0.06f, 0.72f, 0.50f, 0.96f)
+                    : D2D1::ColorF(0.23f, 0.51f, 0.96f, 0.80f);
+                if (SUCCEEDED(m_renderTarget->CreateSolidColorBrush(dotCol, pinDotBrush.GetAddressOf())) && pinDotBrush) {
+                    const D2D1_POINT_2F dotPt = D2D1::Point2F(rect.right - 5.2f * scale, rect.top + 6.2f * scale);
+                    m_renderTarget->FillEllipse(D2D1::Ellipse(dotPt, 2.0f * scale, 2.0f * scale), pinDotBrush.Get());
+                }
+            }
+            return;
+        }
+        case ToolbarCommand::RecordSelectMicSource: {
+            const float halfW = 3.1f * scale;
+            const float halfH = 1.65f * scale;
+            const bool expanded = button.boolParam;
+            const D2D1_POINT_2F pLeft  = D2D1::Point2F(cx - halfW, expanded ? (cy + halfH) : (cy - halfH));
+            const D2D1_POINT_2F pMid   = D2D1::Point2F(cx,         expanded ? (cy - halfH) : (cy + halfH));
+            const D2D1_POINT_2F pRight = D2D1::Point2F(cx + halfW, expanded ? (cy + halfH) : (cy - halfH));
+            ComPtr<ID2D1StrokeStyle> roundStroke;
+            if (m_d2dFactory) {
+                D2D1_STROKE_STYLE_PROPERTIES sp = D2D1::StrokeStyleProperties(
+                    D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                    D2D1_LINE_JOIN_ROUND, 4.0f);
+                m_d2dFactory->CreateStrokeStyle(sp, nullptr, 0, roundStroke.GetAddressOf());
+            }
+            m_renderTarget->DrawLine(pLeft, pMid, brush, 1.55f * scale, roundStroke.Get());
+            m_renderTarget->DrawLine(pMid, pRight, brush, 1.55f * scale, roundStroke.Get());
             return;
         }
         case ToolbarCommand::RecordToggleSettingsMenu: {

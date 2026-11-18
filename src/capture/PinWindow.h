@@ -35,6 +35,8 @@ struct PinOcrBlock {
     std::string text;
     cv::Rect origBox;
     std::vector<cv::Rect> charBoxes;
+    int layoutRegionId = 0;
+    int alignedRowId = -1;
 };
 
 struct PinQrCodeItem {

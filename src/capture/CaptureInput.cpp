@@ -19,6 +19,7 @@
 #include "capture/CaptureDropdownMenu.h"
 #include "capture/CaptureHudPalette.h"
 #include "capture/MarkupBaseHelper.h"
+#include "capture/WatermarkRenderer.h"
 #include "core/config/ConfigManager.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/events/MainThreadDispatcher.h"
@@ -1003,6 +1004,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
         button.command != ToolbarCommand::RecordToggleKeycast &&
         button.command != ToolbarCommand::RecordToggleSystemAudio &&
         button.command != ToolbarCommand::RecordToggleMicrophone &&
+        button.command != ToolbarCommand::RecordSelectMicSource &&
         button.command != ToolbarCommand::RecordToggleFormat &&
         button.command != ToolbarCommand::RecordCycleFps &&
         button.command != ToolbarCommand::RecordCycleQuality &&
@@ -1734,9 +1736,24 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 m_state->loupeToastUntil = GetTickCount() + 1500;
                 m_state->loupeToastMessage = m_state->recordSetup.captureMicrophone
                     ? (zh ? L"麦克风: 已开启" : L"Microphone: ON")
-                    : (zh ? L"麦克风: 已关闭" : L"Microphone: OFF");
+                    : (zh ? L"麦克风: 已静音" : L"Microphone: Muted");
                 m_state->toolbarLayoutValid = false;
                 m_renderer->invalidate();
+            }
+            break;
+        }
+
+        case ToolbarCommand::RecordSelectMicSource: {
+            if (m_state->recordSetup.format != RecordFormat::GIF) {
+                D2D1_RECT_F splitAnchor = button.rect;
+                for (const auto& tb : m_state->toolbarButtons) {
+                    if (tb.command == ToolbarCommand::RecordToggleMicrophone) {
+                        splitAnchor.left = (std::min)(splitAnchor.left, tb.rect.left);
+                        splitAnchor.right = (std::max)(splitAnchor.right, tb.rect.right);
+                        break;
+                    }
+                }
+                openDropdownMenu(DropdownType::RecordMicSource, splitAnchor);
             }
             break;
         }
@@ -2087,9 +2104,10 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             int padX = (cropped.cols > reg.width && reg.width > 0) ? (cropped.cols - reg.width) / 2 : 0;
             int padY = (cropped.rows > reg.height && reg.height > 0) ? (cropped.rows - reg.height) / 2 : 0;
 
-            // 写入剪贴板与历史记录，赋予贴图后可随时粘贴并追溯历史的能力
+            // 写入剪贴板与历史记录（贴图窗口保留纯净无水印底图，写入剪贴板的外发副本按配置自动压印水印）
             CaptureHistory::instance().push(cropped, reg);
-            ClipboardUtils::copyImageToClipboard(cropped, L"", nullptr, &reg, padX, padY);
+            const cv::Mat clipboardCopy = WatermarkRenderer::applyGlobalCaptureWatermarkIfEnabled(cropped);
+            ClipboardUtils::copyImageToClipboard(clipboardCopy, L"", nullptr, &reg, padX, padY);
 
             // 计算智能贴图坐标（原位对齐并避让重叠）
             POINT spawnPos = PinWindow::calculateSmartSpawnPosition(cropped.cols, cropped.rows, nullptr, &reg, padX, padY);
@@ -4806,6 +4824,34 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         m_renderer->invalidate();
                         return 0;
                     }
+                }
+            } else if (m_state->mode == OverlayMode::RecordRegion &&
+                       m_state->recordSetup.format != RecordFormat::GIF &&
+                       ((int)m_state->state.load() == (int)OverlayState::Selected ||
+                        (int)m_state->state.load() == (int)OverlayState::Marking)) {
+                // 录屏选区态下右键点击麦克风分体胶囊：直接原位弹出「麦克风输入源」设备选择菜单
+                POINT rpt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                rebuildToolbarButtons(currentSelectionRect());
+                D2D1_RECT_F micUnion{};
+                bool hasMicUnion = false;
+                for (const auto& btn : m_state->toolbarButtons) {
+                    if (btn.command == ToolbarCommand::RecordToggleMicrophone ||
+                        btn.command == ToolbarCommand::RecordSelectMicSource) {
+                        if (!hasMicUnion) {
+                            micUnion = btn.rect;
+                            hasMicUnion = true;
+                        } else {
+                            micUnion.left = (std::min)(micUnion.left, btn.rect.left);
+                            micUnion.right = (std::max)(micUnion.right, btn.rect.right);
+                        }
+                    }
+                }
+                if (hasMicUnion &&
+                    rpt.x >= micUnion.left && rpt.x <= micUnion.right &&
+                    rpt.y >= micUnion.top && rpt.y <= micUnion.bottom) {
+                    openDropdownMenu(DropdownType::RecordMicSource, micUnion);
+                    m_renderer->invalidate();
+                    return 0;
                 }
             }
             

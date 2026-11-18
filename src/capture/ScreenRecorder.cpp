@@ -10,6 +10,7 @@
 #include "capture/RecordingEnvironmentGuard.h"
 #include "capture/ScreenCapture.h"
 #include "capture/ClipboardUtils.h"
+#include "capture/WatermarkRenderer.h"
 #include "common/AtomicFile.h"
 #include "core/logger/Logger.h"
 #include "core/stats/PerformanceMonitor.h"
@@ -260,186 +261,248 @@ bool isOutsideRoundedCorner(int x, int y, int width, int height, float radius) n
 
 } // namespace
 
-void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int height, int stride, int bpp) {
-    const bool useTransparency = reserveTransparent;
-    const int maxOpaqueSlots = useTransparency ? 255 : 256;
+void GifPaletteOptimizer::resetHistogram() {
+    accumHist.assign(32768, 0);
+    accumSumR.assign(32768, 0);
+    accumSumG.assign(32768, 0);
+    accumSumB.assign(32768, 0);
+}
 
+void GifPaletteOptimizer::accumulateHistogram(const uint8_t* srcData, int width, int height, int stride, int bpp) {
+    if (accumHist.size() != 32768) {
+        resetHistogram();
+    }
+    if (!srcData || width <= 0 || height <= 0) return;
+
+    const bool useTransparency = reserveTransparent;
     const int sampleStep = (static_cast<int64_t>(width) * static_cast<int64_t>(height) <= 65536LL) ? 1 : 2;
-    std::vector<uint32_t> hist(32768, 0);
-    if (srcData && width > 0 && height > 0) {
-        for (int y = 0; y < height; y += sampleStep) {
-            const uint8_t* row = srcData + static_cast<std::size_t>(y) * stride;
-            for (int x = 0; x < width; x += sampleStep) {
-                if (useTransparency && isOutsideRoundedCorner(x, y, width, height, cornerRadius)) {
-                    continue;
-                }
-                const uint8_t* px = row + static_cast<std::size_t>(x) * bpp;
-                if (useTransparency && bpp == 4 && px[3] < 128) {
-                    continue;
-                }
-                const int r5 = px[2] >> 3;
-                const int g5 = px[1] >> 3;
-                const int b5 = px[0] >> 3;
-                hist[(r5 << 10) | (g5 << 5) | b5]++;
+    for (int y = 0; y < height; y += sampleStep) {
+        const uint8_t* row = srcData + static_cast<std::size_t>(y) * stride;
+        for (int x = 0; x < width; x += sampleStep) {
+            if (useTransparency && isOutsideRoundedCorner(x, y, width, height, cornerRadius)) {
+                continue;
             }
+            const uint8_t* px = row + static_cast<std::size_t>(x) * bpp;
+            if (useTransparency && bpp == 4 && px[3] < 128) {
+                continue;
+            }
+            const int r5 = px[2] >> 3;
+            const int g5 = px[1] >> 3;
+            const int b5 = px[0] >> 3;
+            const int idx15 = (r5 << 10) | (g5 << 5) | b5;
+            accumHist[idx15]++;
+            accumSumR[idx15] += px[2];
+            accumSumG[idx15] += px[1];
+            accumSumB[idx15] += px[0];
         }
     }
+}
+
+void GifPaletteOptimizer::finalizePaletteFromHistogram() {
+    if (accumHist.size() != 32768) {
+        resetHistogram();
+    }
+    const bool useTransparency = reserveTransparent;
+    const int maxOpaqueSlots = useTransparency ? 255 : 256;
 
     struct ColorSample {
         uint8_t r;
         uint8_t g;
         uint8_t b;
-        uint32_t count;
+        uint64_t count;
     };
     std::vector<ColorSample> activeColors;
     activeColors.reserve(4096);
+    uint64_t grandTotalSamples = 0;
     for (int c15 = 0; c15 < 32768; ++c15) {
-        if (hist[c15] == 0) continue;
-        const int r5 = (c15 >> 10) & 0x1F;
-        const int g5 = (c15 >> 5) & 0x1F;
-        const int b5 = c15 & 0x1F;
+        const uint64_t cnt = accumHist[c15];
+        if (cnt == 0) continue;
+        grandTotalSamples += cnt;
+        // 采用桶内真实 8-bit RGB 质心，根除旧版 5-bit 强截断对深色 IDE 背景产生的 ±5 固有色偏残差
         activeColors.push_back({
-            static_cast<uint8_t>((r5 << 3) | (r5 >> 2)),
-            static_cast<uint8_t>((g5 << 3) | (g5 >> 2)),
-            static_cast<uint8_t>((b5 << 3) | (b5 >> 2)),
-            hist[c15]
+            static_cast<uint8_t>((accumSumR[c15] + cnt / 2) / cnt),
+            static_cast<uint8_t>((accumSumG[c15] + cnt / 2) / cnt),
+            static_cast<uint8_t>((accumSumB[c15] + cnt / 2) / cnt),
+            cnt
         });
     }
 
+    // 桌面办公/ERP/IDE 无偏色中性黑白灰阶护栏锚点：
+    // 确保即便首帧全为暖色壁纸，后续切入浅色文档或表格等灰白窗口时也能第 0 帧起命中纯正中性白灰，杜绝全屏泛黄跳色
+    static constexpr uint8_t kNeutralGuardLevels[12] = {
+        255, 248, 241, 231, 214, 190, 158, 120, 80, 46, 23, 0
+    };
+    std::vector<uint8_t> missingNeutralAnchors;
+    missingNeutralAnchors.reserve(12);
+    for (uint8_t lv : kNeutralGuardLevels) {
+        bool covered = false;
+        for (const auto& c : activeColors) {
+            const int cMax = (std::max)({static_cast<int>(c.r), static_cast<int>(c.g), static_cast<int>(c.b)});
+            const int cMin = (std::min)({static_cast<int>(c.r), static_cast<int>(c.g), static_cast<int>(c.b)});
+            if ((cMax - cMin) <= 2 &&
+                std::abs(static_cast<int>(c.r) - static_cast<int>(lv)) <= 3 &&
+                std::abs(static_cast<int>(c.g) - static_cast<int>(lv)) <= 3 &&
+                std::abs(static_cast<int>(c.b) - static_cast<int>(lv)) <= 3) {
+                covered = true;
+                break;
+            }
+        }
+        if (!covered) {
+            missingNeutralAnchors.push_back(lv);
+        }
+    }
+
+    const int adaptiveSlots = (std::max)(16, maxOpaqueSlots - static_cast<int>(missingNeutralAnchors.size()));
     int numColors = 0;
-    if (static_cast<int>(activeColors.size()) <= maxOpaqueSlots) {
+
+    auto writeSlot = [&](int slot, uint8_t cr, uint8_t cg, uint8_t cb) {
+        paletteR[slot] = cr;
+        paletteG[slot] = cg;
+        paletteB[slot] = cb;
+        palette[slot] = (0xFFU << 24) |
+                        (static_cast<uint32_t>(cr) << 16) |
+                        (static_cast<uint32_t>(cg) << 8) |
+                        static_cast<uint32_t>(cb);
+    };
+
+    if (static_cast<int>(activeColors.size()) <= adaptiveSlots) {
         std::sort(activeColors.begin(), activeColors.end(),
                   [](const ColorSample& a, const ColorSample& b) { return a.count > b.count; });
-        numColors = static_cast<int>(activeColors.size());
-        for (int i = 0; i < numColors; ++i) {
-            paletteR[i] = activeColors[i].r;
-            paletteG[i] = activeColors[i].g;
-            paletteB[i] = activeColors[i].b;
-            palette[i] = (0xFFU << 24) |
-                         (static_cast<uint32_t>(paletteR[i]) << 16) |
-                         (static_cast<uint32_t>(paletteG[i]) << 8) |
-                         static_cast<uint32_t>(paletteB[i]);
+        for (const auto& c : activeColors) {
+            writeSlot(numColors++, c.r, c.g, c.b);
         }
     } else {
-        // 3D RGB Median-Cut adaptive color quantization: preserves smooth gradients and UI nuances
-        struct ColorBox {
-            std::size_t begin = 0;
-            std::size_t end = 0;
-            uint64_t totalCount = 0;
-            uint8_t minR = 255, maxR = 0;
-            uint8_t minG = 255, maxG = 0;
-            uint8_t minB = 255, maxB = 0;
-        };
-
-        auto recomputeBox = [&](ColorBox& box) {
-            box.totalCount = 0;
-            box.minR = box.minG = box.minB = 255;
-            box.maxR = box.maxG = box.maxB = 0;
-            for (std::size_t i = box.begin; i < box.end; ++i) {
-                const auto& c = activeColors[i];
-                box.totalCount += c.count;
-                if (c.r < box.minR) box.minR = c.r;
-                if (c.r > box.maxR) box.maxR = c.r;
-                if (c.g < box.minG) box.minG = c.g;
-                if (c.g > box.maxG) box.maxG = c.g;
-                if (c.b < box.minB) box.minB = c.b;
-                if (c.b > box.maxB) box.maxB = c.b;
-            }
-        };
-
-        std::vector<ColorBox> boxes;
-        boxes.reserve(static_cast<std::size_t>(maxOpaqueSlots));
-        ColorBox root{0, activeColors.size()};
-        recomputeBox(root);
-        boxes.push_back(root);
-
-        while (static_cast<int>(boxes.size()) < maxOpaqueSlots) {
-            int bestIdx = -1;
-            double bestScore = 0.0;
-            for (std::size_t i = 0; i < boxes.size(); ++i) {
-                const auto& b = boxes[i];
-                if (b.end - b.begin <= 1) continue;
-                const double spanR = static_cast<double>(b.maxR - b.minR);
-                const double spanG = static_cast<double>(b.maxG - b.minG) * 1.15;
-                const double spanB = static_cast<double>(b.maxB - b.minB) * 0.90;
-                const double maxSpan = (std::max)({spanR, spanG, spanB});
-                if (maxSpan <= 0.0) continue;
-                const double weight = std::log2(2.0 + static_cast<double>(b.totalCount));
-                const double score = maxSpan * weight;
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestIdx = static_cast<int>(i);
-                }
-            }
-            if (bestIdx < 0) break;
-
-            ColorBox target = boxes[static_cast<std::size_t>(bestIdx)];
-            const int rangeR = target.maxR - target.minR;
-            const int rangeG = target.maxG - target.minG;
-            const int rangeB = target.maxB - target.minB;
-            if (rangeG >= rangeR && rangeG >= rangeB) {
-                std::sort(activeColors.begin() + static_cast<std::ptrdiff_t>(target.begin),
-                          activeColors.begin() + static_cast<std::ptrdiff_t>(target.end),
-                          [](const ColorSample& a, const ColorSample& b) { return a.g < b.g; });
-            } else if (rangeR >= rangeB) {
-                std::sort(activeColors.begin() + static_cast<std::ptrdiff_t>(target.begin),
-                          activeColors.begin() + static_cast<std::ptrdiff_t>(target.end),
-                          [](const ColorSample& a, const ColorSample& b) { return a.r < b.r; });
-            } else {
-                std::sort(activeColors.begin() + static_cast<std::ptrdiff_t>(target.begin),
-                          activeColors.begin() + static_cast<std::ptrdiff_t>(target.end),
-                          [](const ColorSample& a, const ColorSample& b) { return a.b < b.b; });
-            }
-
-            const uint64_t halfCount = target.totalCount / 2;
-            uint64_t accum = 0;
-            std::size_t split = target.begin + 1;
-            for (std::size_t i = target.begin; i + 1 < target.end; ++i) {
-                accum += activeColors[i].count;
-                if (accum >= halfCount) {
-                    split = i + 1;
-                    break;
-                }
-            }
-            ColorBox leftBox{target.begin, split};
-            ColorBox rightBox{split, target.end};
-            recomputeBox(leftBox);
-            recomputeBox(rightBox);
-            boxes[static_cast<std::size_t>(bestIdx)] = leftBox;
-            boxes.push_back(rightBox);
+        // 先按面积降序直接锁定占比最高的前 8 个 UI 纯底主导桶（面积 >= 1.04%），防止被邻近暖色壁纸盒子均值拉偏
+        std::sort(activeColors.begin(), activeColors.end(),
+                  [](const ColorSample& a, const ColorSample& b) { return a.count > b.count; });
+        std::size_t pinnedCount = 0;
+        const uint64_t pinMinCount = (std::max<uint64_t>)(1, grandTotalSamples / 96);
+        while (pinnedCount < 8 &&
+               pinnedCount < activeColors.size() &&
+               numColors < adaptiveSlots - 8 &&
+               activeColors[pinnedCount].count >= pinMinCount) {
+            const auto& dom = activeColors[pinnedCount];
+            writeSlot(numColors++, dom.r, dom.g, dom.b);
+            ++pinnedCount;
         }
 
-        numColors = (std::min)(maxOpaqueSlots, static_cast<int>(boxes.size()));
-        for (int i = 0; i < numColors; ++i) {
-            const auto& b = boxes[static_cast<std::size_t>(i)];
-            uint64_t sumR = 0, sumG = 0, sumB = 0, total = 0;
-            for (std::size_t k = b.begin; k < b.end; ++k) {
-                const uint64_t w = activeColors[k].count;
-                sumR += static_cast<uint64_t>(activeColors[k].r) * w;
-                sumG += static_cast<uint64_t>(activeColors[k].g) * w;
-                sumB += static_cast<uint64_t>(activeColors[k].b) * w;
-                total += w;
+        const int remainAdaptive = adaptiveSlots - numColors;
+        if (remainAdaptive > 0 && pinnedCount < activeColors.size()) {
+            struct ColorBox {
+                std::size_t begin = 0;
+                std::size_t end = 0;
+                uint64_t totalCount = 0;
+                uint8_t minR = 255, maxR = 0;
+                uint8_t minG = 255, maxG = 0;
+                uint8_t minB = 255, maxB = 0;
+            };
+
+            auto recomputeBox = [&](ColorBox& box) {
+                box.totalCount = 0;
+                box.minR = box.minG = box.minB = 255;
+                box.maxR = box.maxG = box.maxB = 0;
+                for (std::size_t i = box.begin; i < box.end; ++i) {
+                    const auto& c = activeColors[i];
+                    box.totalCount += c.count;
+                    if (c.r < box.minR) box.minR = c.r;
+                    if (c.r > box.maxR) box.maxR = c.r;
+                    if (c.g < box.minG) box.minG = c.g;
+                    if (c.g > box.maxG) box.maxG = c.g;
+                    if (c.b < box.minB) box.minB = c.b;
+                    if (c.b > box.maxB) box.maxB = c.b;
+                }
+            };
+
+            std::vector<ColorBox> boxes;
+            boxes.reserve(static_cast<std::size_t>(remainAdaptive));
+            ColorBox root{pinnedCount, activeColors.size()};
+            recomputeBox(root);
+            boxes.push_back(root);
+
+            while (static_cast<int>(boxes.size()) < remainAdaptive) {
+                int bestIdx = -1;
+                double bestScore = 0.0;
+                for (std::size_t i = 0; i < boxes.size(); ++i) {
+                    const auto& b = boxes[i];
+                    if (b.end - b.begin <= 1) continue;
+                    const double spanR = static_cast<double>(b.maxR - b.minR);
+                    const double spanG = static_cast<double>(b.maxG - b.minG) * 1.06;
+                    const double spanB = static_cast<double>(b.maxB - b.minB);
+                    const double maxSpan = (std::max)({spanR, spanG, spanB});
+                    if (maxSpan <= 0.0) continue;
+                    const double weight = std::pow(1.0 + static_cast<double>(b.totalCount), 0.38);
+                    const double score = maxSpan * weight;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestIdx = static_cast<int>(i);
+                    }
+                }
+                if (bestIdx < 0) break;
+
+                ColorBox target = boxes[static_cast<std::size_t>(bestIdx)];
+                const int rangeR = target.maxR - target.minR;
+                const int rangeG = target.maxG - target.minG;
+                const int rangeB = target.maxB - target.minB;
+                if (rangeG >= rangeR && rangeG >= rangeB) {
+                    std::sort(activeColors.begin() + static_cast<std::ptrdiff_t>(target.begin),
+                              activeColors.begin() + static_cast<std::ptrdiff_t>(target.end),
+                              [](const ColorSample& a, const ColorSample& b) { return a.g < b.g; });
+                } else if (rangeR >= rangeB) {
+                    std::sort(activeColors.begin() + static_cast<std::ptrdiff_t>(target.begin),
+                              activeColors.begin() + static_cast<std::ptrdiff_t>(target.end),
+                              [](const ColorSample& a, const ColorSample& b) { return a.r < b.r; });
+                } else {
+                    std::sort(activeColors.begin() + static_cast<std::ptrdiff_t>(target.begin),
+                              activeColors.begin() + static_cast<std::ptrdiff_t>(target.end),
+                              [](const ColorSample& a, const ColorSample& b) { return a.b < b.b; });
+                }
+
+                const uint64_t halfCount = target.totalCount / 2;
+                uint64_t accum = 0;
+                std::size_t split = target.begin + 1;
+                for (std::size_t i = target.begin; i + 1 < target.end; ++i) {
+                    accum += activeColors[i].count;
+                    if (accum >= halfCount) {
+                        split = i + 1;
+                        break;
+                    }
+                }
+                ColorBox leftBox{target.begin, split};
+                ColorBox rightBox{split, target.end};
+                recomputeBox(leftBox);
+                recomputeBox(rightBox);
+                boxes[static_cast<std::size_t>(bestIdx)] = leftBox;
+                boxes.push_back(rightBox);
             }
-            const uint8_t cr = total > 0 ? static_cast<uint8_t>((sumR + total / 2) / total) : 0;
-            const uint8_t cg = total > 0 ? static_cast<uint8_t>((sumG + total / 2) / total) : 0;
-            const uint8_t cb = total > 0 ? static_cast<uint8_t>((sumB + total / 2) / total) : 0;
-            paletteR[i] = cr;
-            paletteG[i] = cg;
-            paletteB[i] = cb;
-            palette[i] = (0xFFU << 24) |
-                         (static_cast<uint32_t>(cr) << 16) |
-                         (static_cast<uint32_t>(cg) << 8) |
-                         static_cast<uint32_t>(cb);
+
+            const int boxCount = (std::min)(remainAdaptive, static_cast<int>(boxes.size()));
+            for (int i = 0; i < boxCount && numColors < adaptiveSlots; ++i) {
+                const auto& b = boxes[static_cast<std::size_t>(i)];
+                uint64_t sumR = 0, sumG = 0, sumB = 0, total = 0;
+                for (std::size_t k = b.begin; k < b.end; ++k) {
+                    const uint64_t w = activeColors[k].count;
+                    sumR += static_cast<uint64_t>(activeColors[k].r) * w;
+                    sumG += static_cast<uint64_t>(activeColors[k].g) * w;
+                    sumB += static_cast<uint64_t>(activeColors[k].b) * w;
+                    total += w;
+                }
+                const uint8_t cr = total > 0 ? static_cast<uint8_t>((sumR + total / 2) / total) : 0;
+                const uint8_t cg = total > 0 ? static_cast<uint8_t>((sumG + total / 2) / total) : 0;
+                const uint8_t cb = total > 0 ? static_cast<uint8_t>((sumB + total / 2) / total) : 0;
+                writeSlot(numColors++, cr, cg, cb);
+            }
         }
+    }
+
+    for (uint8_t lv : missingNeutralAnchors) {
+        if (numColors >= maxOpaqueSlots) break;
+        writeSlot(numColors++, lv, lv, lv);
     }
 
     const int remain = maxOpaqueSlots - numColors;
     for (int i = numColors; i < maxOpaqueSlots; ++i) {
         const uint8_t v = (remain > 1) ? static_cast<uint8_t>(((i - numColors) * 255) / (remain - 1)) : 0;
-        paletteR[i] = v;
-        paletteG[i] = v;
-        paletteB[i] = v;
-        palette[i] = (0xFFU << 24) | (static_cast<uint32_t>(v) << 16) | (static_cast<uint32_t>(v) << 8) | static_cast<uint32_t>(v);
+        writeSlot(i, v, v, v);
     }
     if (useTransparency) {
         paletteR[255] = 0;
@@ -448,22 +511,48 @@ void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int h
         palette[255] = 0x00000000U; // Reserved transparent color index for GIF Graphic Control Extension
     }
 
-    validColorCount = (numColors > 0) ? numColors : maxOpaqueSlots;
+    validColorCount = maxOpaqueSlots;
     for (int c15 = 0; c15 < 32768; ++c15) {
-        const int r5 = (c15 >> 10) & 0x1F;
-        const int g5 = (c15 >> 5) & 0x1F;
-        const int b5 = c15 & 0x1F;
-        const int r = (r5 << 3) | (r5 >> 2);
-        const int g = (g5 << 3) | (g5 >> 2);
-        const int b = (b5 << 3) | (b5 >> 2);
+        const uint64_t cnt = accumHist[c15];
+        int r = 0, g = 0, b = 0;
+        if (cnt > 0) {
+            r = static_cast<int>((accumSumR[c15] + cnt / 2) / cnt);
+            g = static_cast<int>((accumSumG[c15] + cnt / 2) / cnt);
+            b = static_cast<int>((accumSumB[c15] + cnt / 2) / cnt);
+        } else {
+            const int r5 = (c15 >> 10) & 0x1F;
+            const int g5 = (c15 >> 5) & 0x1F;
+            const int b5 = c15 & 0x1F;
+            r = (r5 << 3) | (r5 >> 2);
+            g = (g5 << 3) | (g5 >> 2);
+            b = (b5 << 3) | (b5 >> 2);
+        }
+
+        const int srcMax = (std::max)({r, g, b});
+        const int srcMin = (std::min)({r, g, b});
+        const int srcChroma = srcMax - srcMin;
 
         int bestIdx = 0;
         int bestDist = (std::numeric_limits<int>::max)();
         for (int i = 0; i < validColorCount; ++i) {
-            const int dr = r - paletteR[i];
-            const int dg = g - paletteG[i];
-            const int db = b - paletteB[i];
-            const int dist = dr * dr * 3 + dg * dg * 4 + db * db * 2;
+            const int pr = paletteR[i];
+            const int pg = paletteG[i];
+            const int pb = paletteB[i];
+            const int dr = r - pr;
+            const int dg = g - pg;
+            const int db = b - pb;
+            int dist = dr * dr * 3 + dg * dg * 4 + db * db * 3;
+            if (srcChroma <= 10) {
+                const int palMax = (std::max)({pr, pg, pb});
+                const int palMin = (std::min)({pr, pg, pb});
+                const int palChroma = palMax - palMin;
+                if (palChroma > srcChroma + 3) {
+                    const int drg = (r - g) - (pr - pg);
+                    const int dgb = (g - b) - (pg - pb);
+                    const int dbr = (b - r) - (pb - pr);
+                    dist += (drg * drg + dgb * dgb + dbr * dbr) * 5;
+                }
+            }
             if (dist < bestDist) {
                 bestDist = dist;
                 bestIdx = i;
@@ -475,13 +564,49 @@ void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int h
     initialized = true;
 }
 
+void GifPaletteOptimizer::updatePalette(const uint8_t* srcData, int width, int height, int stride, int bpp) {
+    resetHistogram();
+    accumulateHistogram(srcData, width, height, stride, bpp);
+    finalizePaletteFromHistogram();
+}
+
 void GifPaletteOptimizer::quantizeFrame(const uint8_t* srcData, int width, int height, int stride, int bpp,
                                         uint8_t* dstData, int dstLinesize, uint32_t* dstPalette) {
     if (!srcData || !dstData || width <= 0 || height <= 0) return;
 
-    const bool refreshPalette = !initialized || (++frameCounter % 30 == 0);
-    if (refreshPalette) {
+    if (!initialized) {
+        frameCounter = 0;
         updatePalette(srcData, width, height, stride, bpp);
+    } else {
+        ++frameCounter;
+        // 实时流式 GIF 录制下绝不盲目每 30 帧推翻 Global Color Table（否则会迫使 FFmpeg 后续全程写 LCT 并关闭 transdiff 导致百兆膨胀）；
+        // 仅在未锁定调色板且抽样发现大面积（>12%）高饱和新颜色失配（单通道误差 > 36）时增量融合更新调色板
+        if (!lockPalette && (frameCounter % 45 == 0)) {
+            const int stepX = (std::max)(4, width / 24);
+            const int stepY = (std::max)(4, height / 18);
+            int checked = 0;
+            int severeMiss = 0;
+            for (int sy = stepY / 2; sy < height; sy += stepY) {
+                const uint8_t* sRow = srcData + static_cast<std::size_t>(sy) * stride;
+                for (int sx = stepX / 2; sx < width; sx += stepX) {
+                    const uint8_t* spx = sRow + static_cast<std::size_t>(sx) * bpp;
+                    if (reserveTransparent && bpp == 4 && spx[3] < 128) continue;
+                    const int sr = spx[2], sg = spx[1], sb = spx[0];
+                    const uint8_t mapped = colorMap[((sr >> 3) << 10) | ((sg >> 3) << 5) | (sb >> 3)];
+                    const int err = (std::max)({
+                        std::abs(sr - static_cast<int>(paletteR[mapped])),
+                        std::abs(sg - static_cast<int>(paletteG[mapped])),
+                        std::abs(sb - static_cast<int>(paletteB[mapped]))
+                    });
+                    ++checked;
+                    if (err > 36) ++severeMiss;
+                }
+            }
+            if (checked > 0 && severeMiss * 100 > checked * 12) {
+                accumulateHistogram(srcData, width, height, stride, bpp);
+                finalizePaletteFromHistogram();
+            }
+        }
     }
     if (dstPalette) {
         std::memcpy(dstPalette, palette, 256 * sizeof(uint32_t));
@@ -574,18 +699,15 @@ void GifPaletteOptimizer::quantizeFrame(const uint8_t* srcData, int width, int h
         }
     }
 
-    // Sierra-2-4A lightweight error diffusion dithering (exact zero error on solid colors; eliminates gradient banding)
-    const std::size_t errStride = static_cast<std::size_t>(width) + 2ULL;
-    std::vector<int16_t> errCurR, errCurG, errCurB;
-    std::vector<int16_t> errNextR, errNextG, errNextB;
-    if (enableDithering) {
-        errCurR.assign(errStride, 0);
-        errCurG.assign(errStride, 0);
-        errCurB.assign(errStride, 0);
-        errNextR.assign(errStride, 0);
-        errNextG.assign(errStride, 0);
-        errNextB.assign(errStride, 0);
-    }
+    // 桌面录屏专用抗噪有序量化：
+    // 1) UI 纯色面板与文字死区保护 (maxErr <= 5 直接零抖动命中精确调色板色，深色 IDE 背景 100% 镜面零麻点)；
+    // 2) 宽渐变壁纸采用时空绝对静止的微幅 4x4 Bayer 有序矩阵 (±3)，根除 Sierra 误差扩散的 45° 斜纹瀑布与缩放沸腾闪烁。
+    static constexpr int8_t kBayer4x4[4][4] = {
+        { -4,  0, -3,  1 },
+        {  2, -2,  3, -1 },
+        { -3,  1, -4,  0 },
+        {  3, -1,  2, -2 }
+    };
 
     for (int y = dirtyT; y < dirtyB; ++y) {
         const uint8_t* srcRow = srcData + static_cast<std::size_t>(y) * stride;
@@ -603,11 +725,7 @@ void GifPaletteOptimizer::quantizeFrame(const uint8_t* srcData, int width, int h
             }
         }
 
-        if (enableDithering) {
-            std::fill(errNextR.begin(), errNextR.end(), int16_t{0});
-            std::fill(errNextG.begin(), errNextG.end(), int16_t{0});
-            std::fill(errNextB.begin(), errNextB.end(), int16_t{0});
-        }
+        const int8_t* bayerRow = kBayer4x4[y & 3];
 
         for (int x = dirtyL; x < dirtyR; ++x) {
             if (checkCorners && isOutsideRoundedCorner(x, y, width, height, cornerRadius)) {
@@ -632,46 +750,27 @@ void GifPaletteOptimizer::quantizeFrame(const uint8_t* srcData, int width, int h
                 histRow[x * 3 + 2] = px[2];
             }
 
-            int r = px[2];
-            int g = px[1];
-            int b = px[0];
-            if (enableDithering) {
-                const std::size_t ex = static_cast<std::size_t>(x) + 1ULL;
-                r = std::clamp(r + std::clamp<int>(errCurR[ex], -20, 20), 0, 255);
-                g = std::clamp(g + std::clamp<int>(errCurG[ex], -20, 20), 0, 255);
-                b = std::clamp(b + std::clamp<int>(errCurB[ex], -20, 20), 0, 255);
-            }
-
-            const int c15 = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
-            const uint8_t idx = colorMap[c15];
-            dstRow[x] = idx;
+            const int r0 = px[2];
+            const int g0 = px[1];
+            const int b0 = px[0];
+            const int baseC15 = ((r0 >> 3) << 10) | ((g0 >> 3) << 5) | (b0 >> 3);
+            uint8_t idx = colorMap[baseC15];
 
             if (enableDithering) {
-                const int er = r - static_cast<int>(paletteR[idx]);
-                const int eg = g - static_cast<int>(paletteG[idx]);
-                const int eb = b - static_cast<int>(paletteB[idx]);
-                if ((er | eg | eb) != 0) {
-                    const std::size_t ex = static_cast<std::size_t>(x) + 1ULL;
-                    // Sierra-2-4A: 2/4 right, 1/4 bottom-left, 1/4 bottom
-                    errCurR[ex + 1] = static_cast<int16_t>(errCurR[ex + 1] + (er >> 1));
-                    errCurG[ex + 1] = static_cast<int16_t>(errCurG[ex + 1] + (eg >> 1));
-                    errCurB[ex + 1] = static_cast<int16_t>(errCurB[ex + 1] + (eb >> 1));
-
-                    errNextR[ex - 1] = static_cast<int16_t>(errNextR[ex - 1] + (er >> 2));
-                    errNextG[ex - 1] = static_cast<int16_t>(errNextG[ex - 1] + (eg >> 2));
-                    errNextB[ex - 1] = static_cast<int16_t>(errNextB[ex - 1] + (eb >> 2));
-
-                    errNextR[ex] = static_cast<int16_t>(errNextR[ex] + (er >> 2));
-                    errNextG[ex] = static_cast<int16_t>(errNextG[ex] + (eg >> 2));
-                    errNextB[ex] = static_cast<int16_t>(errNextB[ex] + (eb >> 2));
+                const int maxErr = (std::max)({
+                    std::abs(r0 - static_cast<int>(paletteR[idx])),
+                    std::abs(g0 - static_cast<int>(paletteG[idx])),
+                    std::abs(b0 - static_cast<int>(paletteB[idx]))
+                });
+                if (maxErr > 5) {
+                    const int d = static_cast<int>(bayerRow[x & 3]);
+                    const int rd = std::clamp(r0 + d, 0, 255);
+                    const int gd = std::clamp(g0 + d, 0, 255);
+                    const int bd = std::clamp(b0 + d, 0, 255);
+                    idx = colorMap[((rd >> 3) << 10) | ((gd >> 3) << 5) | (bd >> 3)];
                 }
             }
-        }
-
-        if (enableDithering) {
-            errCurR.swap(errNextR);
-            errCurG.swap(errNextG);
-            errCurB.swap(errNextB);
+            dstRow[x] = idx;
         }
     }
 }
@@ -824,6 +923,7 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
     m_audioPeakDownsampleFactor = 1;
     m_audioPeakSubCounter = 0;
     m_audioPeakPendingMax = 0.0f;
+    m_directSessionWatermark = WatermarkRenderer::loadStudioWatermarkConfig();
     m_pausedAccumulatedNs.store(0, std::memory_order_release);
 
     const bool countingDown = m_options.countdownSeconds > 0;
@@ -1328,6 +1428,7 @@ void ScreenRecorder::recordingLoop() {
                     m_overloadScore >= overloadThreshold / 2;
             }
             if (clock::now() >= nextStorageCheck) {
+                RecordingEnvironmentGuard::instance().keepHiddenIfActive();
                 if (!updateOutputStorageStatus()) {
                     LOG_ERROR("录屏因磁盘安全余量不足而停止");
                     {
@@ -1951,11 +2052,12 @@ bool ScreenRecorder::encodeAvailableAudio() {
     auto pushLiveAudioPeakSample = [this](float peak) {
         m_audioPeakPendingMax = (std::max)(m_audioPeakPendingMax, std::clamp(peak, 0.0f, 1.0f));
         if (++m_audioPeakSubCounter >= m_audioPeakDownsampleFactor) {
-            if (m_liveAudioWaveformPeaks.size() >= 16384) {
+            if (m_liveAudioWaveformPeaks.size() >= 32768) {
                 const size_t half = m_liveAudioWaveformPeaks.size() / 2;
                 for (size_t i = 0; i < half; ++i) {
-                    m_liveAudioWaveformPeaks[i] = (std::max)(
-                        m_liveAudioWaveformPeaks[i * 2], m_liveAudioWaveformPeaks[i * 2 + 1]);
+                    const float a = m_liveAudioWaveformPeaks[i * 2];
+                    const float b = m_liveAudioWaveformPeaks[i * 2 + 1];
+                    m_liveAudioWaveformPeaks[i] = 0.65f * (std::max)(a, b) + 0.35f * 0.5f * (a + b);
                 }
                 m_liveAudioWaveformPeaks.resize(half);
                 m_audioPeakDownsampleFactor *= 2;
@@ -1966,26 +2068,40 @@ bool ScreenRecorder::encodeAvailableAudio() {
         }
     };
 
+    constexpr int kSubWinFrames = 128; // 2.67ms @ 48kHz 超高时间分辨率声学子窗
+
     const auto preStatus = m_audioCapture.status();
     if (preStatus.droppedFrames > m_accountedDroppedAudioFrames) {
         const std::uint64_t deltaDropped = preStatus.droppedFrames - m_accountedDroppedAudioFrames;
         m_audioFrameIndex += static_cast<int64_t>(deltaDropped);
         m_accountedDroppedAudioFrames = preStatus.droppedFrames;
-        if (frame->nb_samples > 0) {
-            const std::uint64_t silentBlocks = (std::min<std::uint64_t>)(
-                256, deltaDropped / static_cast<std::uint64_t>(frame->nb_samples));
-            for (std::uint64_t b = 0; b < silentBlocks; ++b) {
-                pushLiveAudioPeakSample(0.0f);
-            }
+        const std::uint64_t silentBlocks = (std::min<std::uint64_t>)(
+            1024, deltaDropped / static_cast<std::uint64_t>(kSubWinFrames));
+        for (std::uint64_t b = 0; b < silentBlocks; ++b) {
+            pushLiveAudioPeakSample(0.0f);
         }
     }
 
     while (m_audioCapture.readFrames(frame->nb_samples, m_audioInput)) {
-        float blockPeak = 0.0f;
-        for (float sample : m_audioInput) {
-            blockPeak = (std::max)(blockPeak, std::abs(sample));
+        const size_t chs = (std::max<size_t>)(1, AudioCapture::Channels);
+        const size_t totalFramesRead = m_audioInput.size() / chs;
+        for (size_t f0 = 0; f0 < totalFramesRead; f0 += static_cast<size_t>(kSubWinFrames)) {
+            const size_t fEnd = (std::min)(totalFramesRead, f0 + static_cast<size_t>(kSubWinFrames));
+            const size_t sStart = f0 * chs;
+            const size_t sEnd = fEnd * chs;
+            float subPeak = 0.0f;
+            double sumSq = 0.0;
+            for (size_t si = sStart; si < sEnd; ++si) {
+                const float v = std::abs(m_audioInput[si]);
+                subPeak = (std::max)(subPeak, v);
+                sumSq += static_cast<double>(v) * static_cast<double>(v);
+            }
+            const float subRms = (sEnd > sStart)
+                ? static_cast<float>(std::sqrt(sumSq / static_cast<double>(sEnd - sStart)))
+                : 0.0f;
+            const float perceptualEnv = 0.82f * subRms + 0.18f * (std::min)(1.0f, subPeak);
+            pushLiveAudioPeakSample(perceptualEnv);
         }
-        pushLiveAudioPeakSample(blockPeak);
 
         if (av_frame_make_writable(frame) < 0) {
             m_audioEncodingFailed = true;
@@ -2123,9 +2239,10 @@ void ScreenRecorder::dispatchSnapshotSave(
         const std::wstring fullPathW = fullPath.wstring();
         const std::string fullPathUtf8 = tools3000::core::WinUtils::wstringToUtf8(fullPathW);
 
+        const cv::Mat watermarkedSnap = WatermarkRenderer::applyGlobalCaptureWatermarkIfEnabled(snapshot);
         std::vector<uchar> pngBytes;
         bool savedOk = false;
-        if (cv::imencode(".png", snapshot, pngBytes) && !pngBytes.empty()) {
+        if (cv::imencode(".png", watermarkedSnap, pngBytes) && !pngBytes.empty()) {
             savedOk = tools3000::common::atomicWriteBinaryFileWithFlush(
                 fullPathW, pngBytes.data(), pngBytes.size());
         }
@@ -2135,8 +2252,8 @@ void ScreenRecorder::dispatchSnapshotSave(
             LOG_ERROR("Failed to save recording snapshot: {}", fullPathUtf8);
         }
 
-        auto deliverToClipboard = [snapshot, fullPathW, savedOk]() {
-            ClipboardUtils::copyImageToClipboard(snapshot, savedOk ? fullPathW : std::wstring{});
+        auto deliverToClipboard = [watermarkedSnap, fullPathW, savedOk]() {
+            ClipboardUtils::copyImageToClipboard(watermarkedSnap, savedOk ? fullPathW : std::wstring{});
 
             const bool isZh = tools3000::core::isUiLanguageChinese();
             if (savedOk) {
@@ -2248,6 +2365,13 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         bakeCursorIntoPlate, bakeEffectsIntoPlate, bakeZoomIntoPlate);
 
     const bool isPal8Gif = (m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8);
+    if (!cleanPlateStudio && m_directSessionWatermark.enabled && m_directSessionWatermark.policyForced &&
+        captured.data && m_options.width > 0 && m_options.height > 0) {
+        const int wmType = (captured.format == CapturePixelFormat::Bgra32) ? CV_8UC4 : CV_8UC3;
+        cv::Mat directWrap(m_options.height, m_options.width, wmType,
+                           captured.data, static_cast<size_t>(captured.stride));
+        WatermarkRenderer::applyInPlace(directWrap, m_directSessionWatermark, nullptr);
+    }
     if (m_options.cornerRadius > 0.5f && !isPal8Gif) {
         applyVideoFrameCornerMask(captured.data, m_options.width, m_options.height, captured.stride, captured.format, m_options.cornerRadius);
     }
@@ -2300,19 +2424,19 @@ bool ScreenRecorder::captureAndEncodeFrame() {
     }
     const auto convertedAt = clock::now();
 
-    // 演播室模式下在内存实时留存最多 540 帧 768px 高帧率预览牌组，使停止后 0ms 秒开且轨道滑动逐帧丝滑跟随
+    // 演播室模式下在内存实时留存最多 320 帧 1280px 面积积分抗混叠高清代理牌组，配合 StudioHiResFrameReader 实现 0ms 拖拽跟手与停稳原生超清
     if (cleanPlateStudio && m_frameIndex >= m_nextLiveDeckFrameIdx && captured.data &&
         m_options.width > 0 && m_options.height > 0) {
         const int srcType = (captured.format == CapturePixelFormat::Bgra32) ? CV_8UC4 : CV_8UC3;
         cv::Mat rawWrap(m_options.height, m_options.width, srcType,
                         const_cast<uint8_t*>(captured.data), static_cast<size_t>(captured.stride));
         const int longSide = (std::max)(m_options.width, m_options.height);
-        const double scale = (longSide > 768) ? (768.0 / static_cast<double>(longSide)) : 1.0;
+        const double scale = (longSide > 1280) ? (1280.0 / static_cast<double>(longSide)) : 1.0;
         const int dstW = (std::max)(2, static_cast<int>(std::round(m_options.width * scale)) & ~1);
         const int dstH = (std::max)(2, static_cast<int>(std::round(m_options.height * scale)) & ~1);
         cv::Mat scaled, previewBgr;
         if (dstW != m_options.width || dstH != m_options.height) {
-            cv::resize(rawWrap, scaled, cv::Size(dstW, dstH), 0.0, 0.0, cv::INTER_LINEAR);
+            cv::resize(rawWrap, scaled, cv::Size(dstW, dstH), 0.0, 0.0, cv::INTER_AREA);
         } else {
             scaled = rawWrap;
         }
@@ -2324,7 +2448,7 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         if (!previewBgr.empty()) {
             std::lock_guard studioLock(m_studioDataMutex);
             while (m_nextLiveDeckFrameIdx <= m_frameIndex) {
-                if (m_livePreviewDeck.size() >= 540) {
+                if (m_livePreviewDeck.size() >= 224) {
                     size_t dstIdx = 0;
                     for (size_t srcIdx = 0; srcIdx < m_livePreviewDeck.size(); srcIdx += 2) {
                         m_livePreviewDeck[dstIdx++] = std::move(m_livePreviewDeck[srcIdx]);

@@ -7,6 +7,7 @@
 #define TOOLS3000_CAPTURE_STUDIOTIMELINE_H
 
 #include "capture/BeautyShell.h"
+#include "capture/WatermarkRenderer.h"
 #include <windows.h>
 #include <atomic>
 #include <chrono>
@@ -61,6 +62,14 @@ enum class StudioZoomMode : int {
     Motion3D = 2, // 3D 空间透视运镜
 };
 
+/// 演播室录屏专属高定鼠标点击动效（彻底解耦会议投屏花哨靶心，采用解析式 SDF 光学着色与二阶物理按压弹簧）
+enum class StudioClickEffectStyle : int {
+    CrystalPulse = 0, // 微晶单波 (默认 · Screen Studio 极简物理按压 + 单道非对称羽化收细微晶光环)
+    SoftTouch    = 1, // 柔雾触点 (Apple HIG 触控风 · 纯径向高斯柔光圆斑，零线条感)
+    DualRipple   = 2, // 错峰涟漪 (清晰教学风 · 75ms 相位差双道 SDF 渐变细水波)
+    TactileOnly  = 3, // 仅按压   (纯粹苹果宣传片质感 · 零波纹，仅保留光标物理弹性微缩与轻叩倾角)
+};
+
 enum class StudioAspectRatio : int {
     Original  = 0, // 原始录制比例
     Ratio16_9 = 1, // 16:9 横屏演示
@@ -107,6 +116,7 @@ struct StudioAnnotationItem {
     std::string text;                 // Text 类型的批注内容 (UTF-8)
     float strokeWidth = 3.0f;
     bool enabled = true;
+    bool customStepText = false;      // StepBadge 是否被用户手动指定了自定义文本（false 时按时间轴顺序自动动态重排 1, 2, 3...）
 };
 
 struct StudioZoomSegment {
@@ -149,6 +159,7 @@ struct StudioRenderConfig {
     float cursorScale = 1.35f;         // 1.00 ~ 2.00
     bool cursorHighlightHalo = false;  // 光标周围柔和聚光环跟随
     bool showClickRipple = true;
+    StudioClickEffectStyle clickEffectStyle = StudioClickEffectStyle::CrystalPulse;
     bool autoFrameEnabled = true;
     StudioAspectRatio aspectRatio = StudioAspectRatio::Original;
     BeautyBackgroundType backgroundTheme = BeautyBackgroundType::AuroraPurple;
@@ -161,6 +172,7 @@ struct StudioRenderConfig {
     float shadowIntensity = 0.55f;     // 内嵌画面立体阴影强度 (0.0 ~ 1.0)
     bool autoCaptionsEnabled = false;
     bool exportSrtSidecar = true;
+    WatermarkConfig watermark{};
 };
 
 struct StudioTimelineData {
@@ -276,12 +288,21 @@ struct StudioEvaluatedFrame {
     float smoothCursorX = 0.0f; // 源画面空间平滑后光标 X
     float smoothCursorY = 0.0f; // 源画面空间平滑后光标 Y
     StudioCursorKind cursorKind = StudioCursorKind::Arrow;
-    float clickScale = 1.0f;    // 点击微弹跳缩放 [0.82 .. 1.18]
+    float clickScale = 1.0f;    // 点击物理弹簧微缩回弹 [0.79 .. 1.05]
+    float clickTiltDeg = 0.0f;  // 点击瞬间以尖端为支点的物理轻叩倾角 [-3.4 .. 0 deg]
     float rippleProgress = -1.0f; // < 0 表示无活跃水波纹，[0..1] 表示水波纹扩散进度
     float rippleSrcX = 0.0f;    // 水波纹锚定的真实点击源坐标 X (原地扩散不随光标漂移)
     float rippleSrcY = 0.0f;    // 水波纹锚定的真实点击源坐标 Y
     bool rippleIsRight = false;
     std::string activeCaption;
+};
+
+struct StudioWaveformEnvelopeConfig {
+    float noiseFloor = 0.008f;
+    float activePedestal = 0.008f;
+    float referencePeak = 0.80f;
+    float gamma = 1.0f;
+    bool hasAudio = false;
 };
 
 class StudioTimelineAnalyzer {
@@ -350,13 +371,42 @@ public:
         const std::vector<StudioVideoClip>& clips,
         int64_t rawTotalDurationMs);
 
-    /// 对源视频时间区间 [rangeStartMs, rangeEndMs] 的音频波形包络执行最大值池化与感知响度映射 [0.0f .. 1.0f]
+    /// 对源视频时间区间 [rangeStartMs, rangeEndMs] 的音频波形包络执行本底降噪与高动态响度映射 [0.0f .. 1.0f]
     static float sampleWaveformRangePeak(
         const std::vector<float>& peaks,
         int64_t totalDurationMs,
         int64_t rangeStartMs,
         int64_t rangeEndMs,
-        float referencePeak = 1.0f) noexcept;
+        float referencePeak = 1.0f,
+        float noiseFloor = 0.008f) noexcept;
+
+    /// 智能识别全片声学包络特征（区分纯静音、微弱风扇底噪、自然人声与母带重压缩系统音乐）
+    static StudioWaveformEnvelopeConfig analyzeWaveformProfile(
+        const std::vector<float>& peaks) noexcept;
+
+    /// 采样单列像素区间的双层雕刻声波高度（outBodyEnergy 连续能量山体 + outPeakCrest 瞬态尖峰雾影）
+    static void sampleSculptedWaveformColumn(
+        const std::vector<float>& peaks,
+        int64_t totalDurationMs,
+        int64_t rangeStartMs,
+        int64_t rangeEndMs,
+        const StudioWaveformEnvelopeConfig& profile,
+        float& outBodyEnergy,
+        float& outPeakCrest) noexcept;
+
+    /// 按有效保留时间轴出场先后顺序动态重排全部非自定义 StepBadge 序号为 1, 2, 3...，并输出各标注的动态位次
+    static int resequenceAutoStepBadges(
+        std::vector<StudioAnnotationItem>& annotations,
+        const std::vector<StudioVideoClip>& clips,
+        std::vector<int>* outStepOrderRanks = nullptr);
+
+    /// 生成演播室时间线标注块与悬停气泡的直观展示标签（含形状/文本框名称及动态步骤序号位次）
+    static std::wstring formatTimelineAnnotationLabel(
+        const StudioAnnotationItem& ann,
+        int stepOrderRank,
+        float availWidthPx,
+        bool forTooltip,
+        bool isZh = true);
 };
 
 /// 录制期高频非侵入式双轨事件与离线语音字幕采集器
@@ -383,6 +433,7 @@ public:
 
 private:
     void samplingLoop();
+    void typingFocusLoop();
     void speechRecognitionLoop();
     int64_t currentElapsedTimelineMs() const noexcept;
 
@@ -403,7 +454,11 @@ private:
     mutable std::mutex m_dataMutex;
     StudioTimelineData m_data;
     std::thread m_samplerThread;
+    std::thread m_typingFocusThread;
     std::thread m_speechThread;
+    HANDLE m_typingStopEvent = nullptr;
+    HANDLE m_typingWakeEvent = nullptr;
+    std::atomic<int64_t> m_latestTypingPtsMs{-1};
     HANDLE m_speechStopEvent = nullptr;
 };
 

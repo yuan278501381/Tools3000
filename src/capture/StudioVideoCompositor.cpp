@@ -434,12 +434,213 @@ cv::Scalar parseHexBgrScalar(const std::string& hex, const cv::Scalar& fallbackB
     return fallbackBgr;
 }
 
+void alphaBlendPremultipliedBgraTransformedOntoBgr(
+    const cv::Mat& srcBgra,
+    cv::Mat& dstBgr,
+    int centerX,
+    int centerY,
+    float scale,
+    float opacity) {
+    if (srcBgra.empty() || srcBgra.type() != CV_8UC4 || dstBgr.empty() || dstBgr.type() != CV_8UC3) return;
+    const float clampedOp = std::clamp(opacity, 0.0f, 1.0f);
+    if (clampedOp <= 0.005f) return;
+
+    cv::Mat activeBgra = srcBgra;
+    const float clampedScale = std::clamp(scale, 0.25f, 2.2f);
+    if (std::abs(clampedScale - 1.0f) > 0.012f) {
+        const int sw = (std::max)(4, static_cast<int>(std::round(srcBgra.cols * clampedScale)));
+        const int sh = (std::max)(4, static_cast<int>(std::round(srcBgra.rows * clampedScale)));
+        cv::resize(srcBgra, activeBgra, cv::Size(sw, sh), 0.0, 0.0,
+                   clampedScale < 1.0f ? cv::INTER_AREA : cv::INTER_LINEAR);
+    }
+
+    const int dstX = std::clamp(centerX - activeBgra.cols / 2, 2, (std::max)(2, dstBgr.cols - activeBgra.cols - 2));
+    const int dstY = std::clamp(centerY - activeBgra.rows / 2, 2, (std::max)(2, dstBgr.rows - activeBgra.rows - 2));
+
+    if (clampedOp >= 0.995f) {
+        alphaBlendPremultipliedBgraOntoBgr(activeBgra, dstBgr, dstX, dstY);
+        return;
+    }
+
+    const int x0 = (std::max)(0, dstX);
+    const int y0 = (std::max)(0, dstY);
+    const int x1 = (std::min)(dstBgr.cols, dstX + activeBgra.cols);
+    const int y1 = (std::min)(dstBgr.rows, dstY + activeBgra.rows);
+    if (x1 <= x0 || y1 <= y0) return;
+
+    const uint32_t op256 = static_cast<uint32_t>(std::round(clampedOp * 256.0f));
+    for (int y = y0; y < y1; ++y) {
+        const uint8_t* sRow = activeBgra.ptr<uint8_t>(y - dstY) + (x0 - dstX) * 4;
+        uint8_t* dRow = dstBgr.ptr<uint8_t>(y) + x0 * 3;
+        for (int x = x0; x < x1; ++x) {
+            const uint32_t effA = (static_cast<uint32_t>(sRow[3]) * op256 + 128u) >> 8;
+            if (effA > 0) {
+                const uint32_t sb = (static_cast<uint32_t>(sRow[0]) * op256 + 128u) >> 8;
+                const uint32_t sg = (static_cast<uint32_t>(sRow[1]) * op256 + 128u) >> 8;
+                const uint32_t sr = (static_cast<uint32_t>(sRow[2]) * op256 + 128u) >> 8;
+                const uint32_t invA = 255u - (std::min<uint32_t>)(255u, effA);
+                dRow[0] = static_cast<uint8_t>((std::min<uint32_t>)(255u, sb + (dRow[0] * invA + 127u) / 255u));
+                dRow[1] = static_cast<uint8_t>((std::min<uint32_t>)(255u, sg + (dRow[1] * invA + 127u) / 255u));
+                dRow[2] = static_cast<uint8_t>((std::min<uint32_t>)(255u, sr + (dRow[2] * invA + 127u) / 255u));
+            }
+            sRow += 4;
+            dRow += 3;
+        }
+    }
+}
+
+template <typename DrawFn>
+void blendRoiOverlayBgr(cv::Mat& baseBgr, const cv::Rect& dirtyBounds, double alpha, DrawFn&& fn) {
+    if (baseBgr.empty() || alpha <= 0.01) return;
+    const cv::Rect valid = dirtyBounds & cv::Rect(0, 0, baseBgr.cols, baseBgr.rows);
+    if (valid.width <= 1 || valid.height <= 1) return;
+    const double clampedAlpha = std::clamp(alpha, 0.0, 1.0);
+    if (clampedAlpha >= 0.995) {
+        cv::Mat directRoi = baseBgr(valid);
+        fn(directRoi, -valid.x, -valid.y);
+        return;
+    }
+    cv::Mat baseRoi = baseBgr(valid);
+    cv::Mat overlayRoi = baseRoi.clone();
+    fn(overlayRoi, -valid.x, -valid.y);
+    cv::addWeighted(overlayRoi, clampedAlpha, baseRoi, 1.0 - clampedAlpha, 0.0, baseRoi);
+}
+
+// 线程局部可复用 Direct2D 预乘 BGRA 矢量画板：为圆弧、手绘重点圈、圆角框提供原生圆头笔帽与 8x8 硬件级平滑抗锯齿
+struct ThreadLocalD2DSurface {
+    ComPtr<ID2D1Factory> factory;
+    ComPtr<ID2D1DCRenderTarget> dcRt;
+    ComPtr<ID2D1StrokeStyle> roundStroke;
+    HDC memDc = nullptr;
+    HBITMAP dibBmp = nullptr;
+    HGDIOBJ oldBmp = nullptr;
+    void* bits = nullptr;
+    int capW = 0;
+    int capH = 0;
+
+    ~ThreadLocalD2DSurface() {
+        dcRt.Reset();
+        roundStroke.Reset();
+        factory.Reset();
+        if (memDc) {
+            if (oldBmp) SelectObject(memDc, oldBmp);
+            if (dibBmp) DeleteObject(dibBmp);
+            DeleteDC(memDc);
+        }
+    }
+
+    bool ensureCapacity(int w, int h) {
+        if (!factory) {
+            if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, factory.GetAddressOf())) || !factory) {
+                return false;
+            }
+        }
+        if (!roundStroke) {
+            D2D1_STROKE_STYLE_PROPERTIES sp = D2D1::StrokeStyleProperties(
+                D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                D2D1_LINE_JOIN_ROUND, 4.0f, D2D1_DASH_STYLE_SOLID, 0.0f);
+            factory->CreateStrokeStyle(sp, nullptr, 0, roundStroke.GetAddressOf());
+        }
+        if (!dcRt) {
+            D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            if (FAILED(factory->CreateDCRenderTarget(&props, dcRt.GetAddressOf())) || !dcRt) {
+                return false;
+            }
+        }
+        if (!memDc) {
+            memDc = CreateCompatibleDC(nullptr);
+            if (!memDc) return false;
+        }
+        if (!dibBmp || w > capW || h > capH) {
+            const int allocW = (std::max)(capW, (w + 63) & ~63);
+            const int allocH = (std::max)(capH, (h + 63) & ~63);
+            BITMAPINFO bmi{};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = allocW;
+            bmi.bmiHeader.biHeight = -allocH; // Top-down
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            void* newBits = nullptr;
+            HBITMAP newBmp = CreateDIBSection(memDc, &bmi, DIB_RGB_COLORS, &newBits, nullptr, 0);
+            if (!newBmp || !newBits) {
+                if (newBmp) DeleteObject(newBmp);
+                return false;
+            }
+            HGDIOBJ prev = SelectObject(memDc, newBmp);
+            if (!oldBmp) oldBmp = prev;
+            if (dibBmp) DeleteObject(dibBmp);
+            dibBmp = newBmp;
+            bits = newBits;
+            capW = allocW;
+            capH = allocH;
+        }
+        return true;
+    }
+};
+
+template <typename D2DDrawFn>
+void renderD2DRoiVectorOntoBgr(cv::Mat& baseBgr, const cv::Rect& dirtyBounds, float masterOpacity, D2DDrawFn&& fn) {
+    if (baseBgr.empty() || masterOpacity <= 0.01f) return;
+    const cv::Rect valid = dirtyBounds & cv::Rect(0, 0, baseBgr.cols, baseBgr.rows);
+    if (valid.width <= 2 || valid.height <= 2) return;
+
+    thread_local ThreadLocalD2DSurface s_surf;
+    if (!s_surf.ensureCapacity(valid.width, valid.height)) return;
+
+    RECT bindRc{0, 0, valid.width, valid.height};
+    if (FAILED(s_surf.dcRt->BindDC(s_surf.memDc, &bindRc))) return;
+
+    s_surf.dcRt->BeginDraw();
+    s_surf.dcRt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    s_surf.dcRt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+    ComPtr<ID2D1SolidColorBrush> brush;
+    if (SUCCEEDED(s_surf.dcRt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), brush.GetAddressOf())) && brush) {
+        fn(s_surf.factory.Get(), s_surf.dcRt.Get(), brush.Get(), s_surf.roundStroke.Get(),
+           -static_cast<float>(valid.x), -static_cast<float>(valid.y));
+    }
+    if (FAILED(s_surf.dcRt->EndDraw())) {
+        s_surf.dcRt.Reset();
+        return;
+    }
+
+    cv::Mat roiBgra(valid.height, valid.width, CV_8UC4, s_surf.bits, static_cast<size_t>(s_surf.capW) * 4);
+    if (masterOpacity >= 0.995f) {
+        alphaBlendPremultipliedBgraOntoBgr(roiBgra, baseBgr, valid.x, valid.y);
+    } else {
+        const uint32_t op256 = static_cast<uint32_t>(std::round(std::clamp(masterOpacity, 0.0f, 1.0f) * 256.0f));
+        for (int y = 0; y < valid.height; ++y) {
+            const uint8_t* sRow = roiBgra.ptr<uint8_t>(y);
+            uint8_t* dRow = baseBgr.ptr<uint8_t>(valid.y + y) + valid.x * 3;
+            for (int x = 0; x < valid.width; ++x) {
+                const uint32_t effA = (static_cast<uint32_t>(sRow[3]) * op256 + 128u) >> 8;
+                if (effA > 0) {
+                    const uint32_t sb = (static_cast<uint32_t>(sRow[0]) * op256 + 128u) >> 8;
+                    const uint32_t sg = (static_cast<uint32_t>(sRow[1]) * op256 + 128u) >> 8;
+                    const uint32_t sr = (static_cast<uint32_t>(sRow[2]) * op256 + 128u) >> 8;
+                    const uint32_t invA = 255u - (std::min<uint32_t>)(255u, effA);
+                    dRow[0] = static_cast<uint8_t>((std::min<uint32_t>)(255u, sb + (dRow[0] * invA + 127u) / 255u));
+                    dRow[1] = static_cast<uint8_t>((std::min<uint32_t>)(255u, sg + (dRow[1] * invA + 127u) / 255u));
+                    dRow[2] = static_cast<uint8_t>((std::min<uint32_t>)(255u, sr + (dRow[2] * invA + 127u) / 255u));
+                }
+                sRow += 4;
+                dRow += 3;
+            }
+        }
+    }
+}
+
 void drawStyledTextCalloutBgr(
     cv::Mat& innerBgr,
     int x, int y,
     StudioAnnotationKind kind,
     const std::string& textUtf8,
-    const cv::Scalar& accentBgr) {
+    const cv::Scalar& accentBgr,
+    float scale = 1.0f,
+    float opacity = 1.0f,
+    int* outBoxRadius = nullptr) {
     if (textUtf8.empty() || innerBgr.empty()) return;
 
     struct CalloutBitmapCacheEntry {
@@ -461,9 +662,10 @@ void drawStyledTextCalloutBgr(
     for (const auto& entry : s_calloutCache) {
         if (entry.kind == kind && entry.bgrPacked == packedColor &&
             entry.refRows == innerBgr.rows && entry.text == textUtf8 && !entry.premulBgra.empty()) {
-            const int drawX = std::clamp(x - entry.premulBgra.cols / 2, 2, (std::max)(2, innerBgr.cols - entry.premulBgra.cols - 2));
-            const int drawY = std::clamp(y - entry.premulBgra.rows / 2, 2, (std::max)(2, innerBgr.rows - entry.premulBgra.rows - 2));
-            alphaBlendPremultipliedBgraOntoBgr(entry.premulBgra, innerBgr, drawX, drawY);
+            if (outBoxRadius) {
+                *outBoxRadius = (std::max)(entry.premulBgra.cols, entry.premulBgra.rows) / 2;
+            }
+            alphaBlendPremultipliedBgraTransformedOntoBgr(entry.premulBgra, innerBgr, x, y, scale, opacity);
             return;
         }
     }
@@ -635,26 +837,42 @@ void drawStyledTextCalloutBgr(
     }
     s_calloutCache.push_back({kind, textUtf8, packedColor, innerBgr.rows, pillBgra});
 
-    const int drawX = std::clamp(x - boxW / 2, 2, (std::max)(2, innerBgr.cols - boxW - 2));
-    const int drawY = std::clamp(y - totalH / 2, 2, (std::max)(2, innerBgr.rows - totalH - 2));
-    alphaBlendPremultipliedBgraOntoBgr(pillBgra, innerBgr, drawX, drawY);
+    if (outBoxRadius) {
+        *outBoxRadius = (std::max)(boxW, totalH) / 2;
+    }
+    alphaBlendPremultipliedBgraTransformedOntoBgr(pillBgra, innerBgr, x, y, scale, opacity);
 
     SelectObject(memDc, oldBmp);
     DeleteObject(hBmp);
     DeleteDC(memDc);
 }
 
-void drawDashedSegmentBgr(cv::Mat& img, cv::Point p0, cv::Point p1, const cv::Scalar& col, int thick) {
+void drawDashedSegmentBgr(
+    cv::Mat& img,
+    cv::Point p0,
+    cv::Point p1,
+    const cv::Scalar& col,
+    int thick,
+    double phaseOffsetPx = 0.0,
+    double revealRatio = 1.0) {
     const double totalLen = std::hypot(static_cast<double>(p1.x - p0.x), static_cast<double>(p1.y - p0.y));
     if (totalLen < 2.0) return;
+    const double activeLen = totalLen * std::clamp(revealRatio, 0.0, 1.0);
+    if (activeLen < 1.5) return;
+
     const double dashLen = (std::max)(8.0, thick * 3.2);
     const double gapLen = (std::max)(6.0, thick * 2.2);
+    const double cycle = dashLen + gapLen;
+    const double shift = std::fmod(std::fmod(phaseOffsetPx, cycle) + cycle, cycle);
     const double ux = (p1.x - p0.x) / totalLen;
     const double uy = (p1.y - p0.y) / totalLen;
-    for (double d = 0.0; d < totalLen; d += (dashLen + gapLen)) {
-        const double dEnd = (std::min)(totalLen, d + dashLen);
-        cv::Point a(static_cast<int>(std::round(p0.x + ux * d)), static_cast<int>(std::round(p0.y + uy * d)));
-        cv::Point b(static_cast<int>(std::round(p0.x + ux * dEnd)), static_cast<int>(std::round(p0.y + uy * dEnd)));
+
+    for (double d = shift - cycle; d < activeLen; d += cycle) {
+        const double seg0 = (std::max)(0.0, d);
+        const double seg1 = (std::min)(activeLen, d + dashLen);
+        if (seg1 - seg0 < 1.0) continue;
+        cv::Point a(static_cast<int>(std::round(p0.x + ux * seg0)), static_cast<int>(std::round(p0.y + uy * seg0)));
+        cv::Point b(static_cast<int>(std::round(p0.x + ux * seg1)), static_cast<int>(std::round(p0.y + uy * seg1)));
         cv::line(img, a, b, col, thick, cv::LINE_AA);
     }
 }
@@ -683,7 +901,10 @@ void renderTimelineAnnotationsOnInner(
     int64_t ptsMs,
     float srcCols, float srcRows,
     float effCropX, float effCropY,
-    float effCropW, float effCropH) {
+    float effCropW, float effCropH,
+    bool animateAnnotations = true,
+    int64_t annotationPreviewElapsedMs = -1,
+    int previewTargetAnnIndex = -1) {
     if (innerBgr.empty() || annotations.empty()) return;
     const float safeCropW = (std::max)(1.0f, effCropW);
     const float safeCropH = (std::max)(1.0f, effCropH);
@@ -691,8 +912,24 @@ void renderTimelineAnnotationsOnInner(
     const float ihF = static_cast<float>(innerBgr.rows);
     const float strokeScale = std::clamp(ihF / 900.0f, 0.6f, 2.5f);
 
-    for (const auto& ann : annotations) {
-        if (!ann.enabled || ptsMs < ann.startMs || ptsMs > ann.endMs) continue;
+    auto easeOutCubic = [](double t) noexcept -> double {
+        t = std::clamp(t, 0.0, 1.0);
+        const double inv = 1.0 - t;
+        return 1.0 - inv * inv * inv;
+    };
+    auto springPopScale = [](double t) noexcept -> float {
+        t = std::clamp(t, 0.0, 1.0);
+        if (t >= 0.999) return 1.0f;
+        // 二阶阻尼微超调弹簧: 0.52 -> 1.09 -> 1.00
+        return static_cast<float>(1.0 - 0.48 * std::exp(-5.4 * t) * std::cos(5.2 * t));
+    };
+
+    for (size_t annIdx = 0; annIdx < annotations.size(); ++annIdx) {
+        const auto& ann = annotations[annIdx];
+        const bool isLiveDemoTarget = (annotationPreviewElapsedMs >= 0 &&
+                                       static_cast<int>(annIdx) == previewTargetAnnIndex);
+        if (!ann.enabled) continue;
+        if (!isLiveDemoTarget && (ptsMs < ann.startMs || ptsMs > ann.endMs)) continue;
 
         const float sx0 = ann.x0 * srcCols;
         const float sy0 = ann.y0 * srcRows;
@@ -706,41 +943,134 @@ void renderTimelineAnnotationsOnInner(
 
         const cv::Scalar colBgr = parseHexBgrScalar(ann.colorHex, cv::Scalar(153, 72, 236));
         const int thick = (std::max)(2, static_cast<int>(std::round(ann.strokeWidth * strokeScale)));
-        const double animPhase = static_cast<double>(ptsMs - ann.startMs) * 0.0075;
 
-        // 1. 文本与步骤徽章家族 (6 款)
+        // ── 计算「抓眼入场 + 驻留微律动 + 优雅退场」三段式动力学包络 ──
+        const double durMs = static_cast<double>((std::max<int64_t>)(240, ann.endMs - ann.startMs));
+        const double localMs = isLiveDemoTarget
+            ? static_cast<double>(annotationPreviewElapsedMs)
+            : static_cast<double>(ptsMs - ann.startMs);
+
+        const bool useMotion = animateAnnotations || isLiveDemoTarget;
+        double enterLinear = 1.0;
+        double exitLinear = 1.0;
+        if (useMotion) {
+            const double inSpanMs = isLiveDemoTarget ? 270.0 : std::clamp(durMs * 0.20, 120.0, 280.0);
+            enterLinear = std::clamp(localMs / inSpanMs, 0.0, 1.0);
+            if (!isLiveDemoTarget) {
+                const double outSpanMs = std::clamp(durMs * 0.15, 90.0, 190.0);
+                exitLinear = std::clamp((durMs - localMs) / outSpanMs, 0.0, 1.0);
+            }
+        }
+        const double enterEase = easeOutCubic(enterLinear);
+        const double exitEase = easeOutCubic(exitLinear);
+        const double masterAlpha = std::clamp(std::min(enterLinear * 1.65, exitEase), 0.0, 1.0);
+        const double animSec = useMotion ? (localMs * 0.001) : 0.45;
+        const double animPhase = animSec * 7.2;
+
+        // 隐私打码遮罩特例：从首帧至末帧 100% 严密遮挡，绝不做入退场透明或缩放以防敏感信息泄露
+        if (ann.kind == StudioAnnotationKind::BlurMask) {
+            const int rx0 = std::clamp((std::min)(px0, px1), 0, innerBgr.cols);
+            const int ry0 = std::clamp((std::min)(py0, py1), 0, innerBgr.rows);
+            const int rx1 = std::clamp((std::max)(px0, px1), 0, innerBgr.cols);
+            const int ry1 = std::clamp((std::max)(py0, py1), 0, innerBgr.rows);
+            const cv::Rect rc(rx0, ry0, rx1 - rx0, ry1 - ry0);
+            if (rc.width >= 4 && rc.height >= 4) {
+                cv::Mat roi = innerBgr(rc);
+                const int cell = std::clamp(static_cast<int>(std::round(12.0f * strokeScale)), 6, 24);
+                const int pixW = (std::max)(2, rc.width / cell);
+                const int pixH = (std::max)(2, rc.height / cell);
+                cv::Mat tiny, mosaic;
+                cv::resize(roi, tiny, cv::Size(pixW, pixH), 0.0, 0.0, cv::INTER_AREA);
+                cv::resize(tiny, mosaic, rc.size(), 0.0, 0.0, cv::INTER_NEAREST);
+                mosaic.copyTo(roi);
+            }
+            continue;
+        }
+
+        if (masterAlpha <= 0.015) continue;
+
+        // 1. 文本与步骤徽章家族 (6 款：弹簧跃出/微距上浮入场 + 分类别驻留微律动)
         if (ann.kind == StudioAnnotationKind::Text ||
             ann.kind == StudioAnnotationKind::TextPlain ||
             ann.kind == StudioAnnotationKind::TextBubble ||
             ann.kind == StudioAnnotationKind::TextDashed ||
             ann.kind == StudioAnnotationKind::TextNeon ||
             ann.kind == StudioAnnotationKind::StepBadge) {
-            const int cx = (px0 + px1) / 2;
-            const int cy = (py0 + py1) / 2;
-            const std::string fallback = (ann.kind == StudioAnnotationKind::StepBadge) ? "1" : "Text";
-            drawStyledTextCalloutBgr(innerBgr, cx, cy, ann.kind,
-                                     ann.text.empty() ? fallback : ann.text, colBgr);
+            const int baseCx = (px0 + px1) / 2;
+            const int baseCy = (py0 + py1) / 2;
+            const bool isBadge = (ann.kind == StudioAnnotationKind::StepBadge);
+
+            const float popScale = useMotion
+                ? (isBadge ? springPopScale(enterLinear)
+                           : static_cast<float>(0.88 + 0.12 * enterEase)) *
+                  static_cast<float>(0.95 + 0.05 * exitEase)
+                : 1.0f;
+            int floatOffsetY = useMotion
+                ? static_cast<int>(std::round((1.0 - enterEase) * 10.0 * strokeScale))
+                : 0;
+            if (useMotion && enterLinear >= 0.99) {
+                if (ann.kind == StudioAnnotationKind::TextBubble) {
+                    // 对话气泡轻柔微悬浮呼吸
+                    floatOffsetY += static_cast<int>(std::round(std::sin(animSec * 3.8) * 2.8 * strokeScale));
+                }
+            }
+            const int drawCx = baseCx;
+            const int drawCy = baseCy + floatOffsetY;
+
+            // StepBadge 专属：驻留期向外释放柔和同心雷达脉冲环，一眼锁定步骤顺序
+            int approxRad = static_cast<int>(std::round(20.0f * strokeScale));
+            const std::string fallback = isBadge ? "1" : "Text";
+            drawStyledTextCalloutBgr(
+                innerBgr, drawCx, drawCy, ann.kind,
+                ann.text.empty() ? fallback : ann.text,
+                colBgr, popScale, static_cast<float>(masterAlpha), &approxRad);
+
+            if (useMotion && isBadge && enterLinear > 0.65) {
+                const double pulseCycle = std::fmod( (std::max)(0.0, animSec - 0.18) * 0.90, 1.0 );
+                const int ringR = approxRad + static_cast<int>(std::round(pulseCycle * 15.0 * strokeScale));
+                const double ringAlpha = (1.0 - pulseCycle) * (1.0 - pulseCycle) * 0.58 * masterAlpha;
+                const int pad = ringR + thick + 6;
+                blendRoiOverlayBgr(
+                    innerBgr, cv::Rect(drawCx - pad, drawCy - pad, pad * 2, pad * 2), ringAlpha,
+                    [&](cv::Mat& sub, int ox, int oy) {
+                        cv::circle(sub, {drawCx + ox, drawCy + oy}, ringR, colBgr, (std::max)(2, thick - 1), cv::LINE_AA);
+                    });
+            } else if (useMotion && ann.kind == StudioAnnotationKind::TextNeon && enterLinear > 0.8) {
+                // 霓虹文字框外围柔和呼吸光晕
+                const double glowPulse = (0.5 + 0.5 * std::sin(animSec * 5.2)) * 0.28 * masterAlpha;
+                const int hw = approxRad + static_cast<int>(6 * strokeScale);
+                const int hh = (std::max)(14, approxRad / 2) + static_cast<int>(4 * strokeScale);
+                blendRoiOverlayBgr(
+                    innerBgr, cv::Rect(drawCx - hw - 10, drawCy - hh - 10, (hw + 10) * 2, (hh + 10) * 2), glowPulse,
+                    [&](cv::Mat& sub, int ox, int oy) {
+                        drawRoundedBoxStrokeBgr(
+                            sub, cv::Rect(drawCx - hw + ox, drawCy - hh + oy, hw * 2, hh * 2),
+                            static_cast<int>(10 * strokeScale), colBgr, thick + 3);
+                    });
+            }
             continue;
         }
 
-        // 2. 醒目粗体动态弹跳大箭头 (FocuSee 标志性玫粉色粗体指向大箭头)
+        // 2. 醒目粗体动态弹跳大箭头 (弹簧射入 + 指向呼吸弹跳 + 局部 ROI 高速阴影)
         if (ann.kind == StudioAnnotationKind::BoldArrow) {
             const double dx = static_cast<double>(px1 - px0);
             const double dy = static_cast<double>(py1 - py0);
-            const double len = std::hypot(dx, dy);
+            const double fullLen = std::hypot(dx, dy);
+            const double growScale = useMotion ? std::clamp(0.30 + 0.70 * enterEase, 0.30, 1.0) : 1.0;
+            const double len = fullLen * growScale;
             if (len >= 8.0) {
-                const double ux = dx / len;
-                const double uy = dy / len;
+                const double ux = dx / fullLen;
+                const double uy = dy / fullLen;
                 const double nx = -uy;
                 const double ny = ux;
-                // 沿指向方向的柔和正弦呼吸微弹跳，极强视觉引导力
-                const double bounce = std::sin(animPhase) * 6.0 * strokeScale;
-                const double bx0 = px0 + ux * bounce;
-                const double by0 = py0 + uy * bounce;
-                const double bx1 = px1 + ux * bounce;
-                const double by1 = py1 + uy * bounce;
+                const double bounce = useMotion ? (std::sin(animPhase) * 6.5 * strokeScale * enterEase) : 0.0;
+                const double slideIn = useMotion ? (-(1.0 - enterEase) * 18.0 * strokeScale) : 0.0;
+                const double bx0 = px0 + ux * (bounce + slideIn);
+                const double by0 = py0 + uy * (bounce + slideIn);
+                const double bx1 = bx0 + ux * len;
+                const double by1 = by0 + uy * len;
 
-                const double headLen = std::clamp(len * 0.42, 18.0 * strokeScale, 54.0 * strokeScale);
+                const double headLen = std::clamp(len * 0.42, 16.0 * strokeScale, 54.0 * strokeScale);
                 const double headHalfW = headLen * 0.62;
                 const double shaftHalfW = headHalfW * 0.42;
                 const double neckX = bx1 - ux * headLen;
@@ -755,55 +1085,168 @@ void renderTimelineAnnotationsOnInner(
                     cv::Point(static_cast<int>(std::round(neckX - nx * shaftHalfW)), static_cast<int>(std::round(neckY - ny * shaftHalfW))),
                     cv::Point(static_cast<int>(std::round(bx0 - nx * shaftHalfW)), static_cast<int>(std::round(by0 - ny * shaftHalfW)))
                 };
-                std::vector<cv::Point> shadowPoly = poly;
-                for (auto& p : shadowPoly) {
-                    p.x += static_cast<int>(std::round(3.0 * strokeScale));
-                    p.y += static_cast<int>(std::round(4.0 * strokeScale));
-                }
-                cv::Mat shOverlay = innerBgr.clone();
-                cv::fillPoly(shOverlay, std::vector<std::vector<cv::Point>>{shadowPoly}, cv::Scalar(12, 14, 22), cv::LINE_AA);
-                cv::addWeighted(shOverlay, 0.32, innerBgr, 0.68, 0.0, innerBgr);
+                cv::Rect bounds = cv::boundingRect(poly);
+                const int shDx = static_cast<int>(std::round(3.0 * strokeScale));
+                const int shDy = static_cast<int>(std::round(4.0 * strokeScale));
+                bounds.x -= 8;
+                bounds.y -= 8;
+                bounds.width += shDx + 16;
+                bounds.height += shDy + 16;
 
-                cv::fillPoly(innerBgr, std::vector<std::vector<cv::Point>>{poly}, colBgr, cv::LINE_AA);
-                cv::polylines(innerBgr, std::vector<std::vector<cv::Point>>{poly}, true,
-                              cv::Scalar(255, 255, 255), (std::max)(1, static_cast<int>(std::round(1.6f * strokeScale))), cv::LINE_AA);
+                blendRoiOverlayBgr(innerBgr, bounds, 0.32 * masterAlpha, [&](cv::Mat& sub, int ox, int oy) {
+                    std::vector<cv::Point> shPoly = poly;
+                    for (auto& p : shPoly) {
+                        p.x += ox + shDx;
+                        p.y += oy + shDy;
+                    }
+                    cv::fillPoly(sub, std::vector<std::vector<cv::Point>>{shPoly}, cv::Scalar(12, 14, 22), cv::LINE_AA);
+                });
+                blendRoiOverlayBgr(innerBgr, bounds, masterAlpha, [&](cv::Mat& sub, int ox, int oy) {
+                    std::vector<cv::Point> fgPoly = poly;
+                    for (auto& p : fgPoly) {
+                        p.x += ox;
+                        p.y += oy;
+                    }
+                    cv::fillPoly(sub, std::vector<std::vector<cv::Point>>{fgPoly}, colBgr, cv::LINE_AA);
+                    cv::polylines(sub, std::vector<std::vector<cv::Point>>{fgPoly}, true,
+                                  cv::Scalar(255, 255, 255), (std::max)(1, static_cast<int>(std::round(1.6f * strokeScale))), cv::LINE_AA);
+                });
             }
             continue;
         }
 
-        // 3. 纤细指示箭头 / 发光直线 / 引导虚线
+        // 3. 纤细指示箭头 / 荧光划线 / 引导虚线
         if (ann.kind == StudioAnnotationKind::Arrow) {
-            const double len = std::hypot(static_cast<double>(px1 - px0), static_cast<double>(py1 - py0));
-            if (len >= 4.0) {
-                const double tipRatio = std::clamp(16.0 * strokeScale / len, 0.12, 0.42);
-                cv::arrowedLine(innerBgr, {px0, py0}, {px1, py1}, cv::Scalar(16, 20, 28), thick + 2, cv::LINE_AA, 0, tipRatio);
-                cv::arrowedLine(innerBgr, {px0, py0}, {px1, py1}, colBgr, thick, cv::LINE_AA, 0, tipRatio);
+            const double dx = static_cast<double>(px1 - px0);
+            const double dy = static_cast<double>(py1 - py0);
+            const double fullLen = std::hypot(dx, dy);
+            if (fullLen >= 4.0) {
+                const double ux = dx / fullLen;
+                const double uy = dy / fullLen;
+                // 入场沿轴线快速射出；驻留期做柔和指向轻叩 + 箭尖微脉冲光点
+                const double drawFrac = useMotion ? std::clamp(enterEase, 0.12, 1.0) : 1.0;
+                const double nudge = (useMotion && enterLinear >= 0.98)
+                    ? (std::sin(animSec * 6.4) * 4.2 * strokeScale)
+                    : 0.0;
+                const cv::Point a0(
+                    static_cast<int>(std::round(px0 + ux * nudge)),
+                    static_cast<int>(std::round(py0 + uy * nudge)));
+                const cv::Point a1(
+                    static_cast<int>(std::round(px0 + ux * (fullLen * drawFrac + nudge))),
+                    static_cast<int>(std::round(py0 + uy * (fullLen * drawFrac + nudge))));
+                const double curLen = std::hypot(static_cast<double>(a1.x - a0.x), static_cast<double>(a1.y - a0.y));
+                if (curLen >= 3.0) {
+                    const double tipRatio = std::clamp(16.0 * strokeScale / curLen, 0.12, 0.44);
+                    const int pad = static_cast<int>(26 * strokeScale) + thick;
+                    const cv::Rect bounds(
+                        (std::min)(a0.x, a1.x) - pad, (std::min)(a0.y, a1.y) - pad,
+                        std::abs(a1.x - a0.x) + pad * 2, std::abs(a1.y - a0.y) + pad * 2);
+                    blendRoiOverlayBgr(innerBgr, bounds, masterAlpha, [&](cv::Mat& sub, int ox, int oy) {
+                        cv::arrowedLine(sub, {a0.x + ox, a0.y + oy}, {a1.x + ox, a1.y + oy},
+                                        cv::Scalar(16, 20, 28), thick + 2, cv::LINE_AA, 0, tipRatio);
+                        cv::arrowedLine(sub, {a0.x + ox, a0.y + oy}, {a1.x + ox, a1.y + oy},
+                                        colBgr, thick, cv::LINE_AA, 0, tipRatio);
+                    });
+                    if (useMotion && enterLinear >= 0.95) {
+                        const double tipWave = std::fmod((std::max)(0.0, animSec - 0.2) * 1.15, 1.0);
+                        const int tipR = static_cast<int>(std::round((4.0 + tipWave * 14.0) * strokeScale));
+                        const double tipAlpha = (1.0 - tipWave) * 0.52 * masterAlpha;
+                        blendRoiOverlayBgr(
+                            innerBgr, cv::Rect(px1 - tipR - 6, py1 - tipR - 6, (tipR + 6) * 2, (tipR + 6) * 2), tipAlpha,
+                            [&](cv::Mat& sub, int ox, int oy) {
+                                cv::circle(sub, {px1 + ox, py1 + oy}, tipR, colBgr, (std::max)(1, thick - 1), cv::LINE_AA);
+                            });
+                    }
+                }
             }
             continue;
         }
+
         if (ann.kind == StudioAnnotationKind::GlowLine) {
-            cv::Mat glow = innerBgr.clone();
-            cv::line(glow, {px0, py0}, {px1, py1}, colBgr, thick * 3 + 4, cv::LINE_AA);
-            cv::addWeighted(glow, 0.35, innerBgr, 0.65, 0.0, innerBgr);
-            cv::line(innerBgr, {px0, py0}, {px1, py1}, colBgr, thick + 1, cv::LINE_AA);
+            // 荧光马克笔：一笔划出 + 底层荧光呼吸 + 流光高光扫掠
+            const double drawFrac = useMotion ? enterEase : 1.0;
+            const cv::Point g0(px0, py0);
+            const cv::Point g1(
+                static_cast<int>(std::round(px0 + (px1 - px0) * drawFrac)),
+                static_cast<int>(std::round(py0 + (py1 - py0) * drawFrac)));
+            const int pad = thick * 4 + 12;
+            const cv::Rect bounds(
+                (std::min)(g0.x, g1.x) - pad, (std::min)(g0.y, g1.y) - pad,
+                std::abs(g1.x - g0.x) + pad * 2, std::abs(g1.y - g0.y) + pad * 2);
+            const double glowBreath = useMotion ? (0.30 + 0.14 * (0.5 + 0.5 * std::sin(animSec * 4.8))) : 0.35;
+            blendRoiOverlayBgr(innerBgr, bounds, glowBreath * masterAlpha, [&](cv::Mat& sub, int ox, int oy) {
+                cv::line(sub, {g0.x + ox, g0.y + oy}, {g1.x + ox, g1.y + oy}, colBgr, thick * 3 + 5, cv::LINE_AA);
+            });
+            blendRoiOverlayBgr(innerBgr, bounds, masterAlpha, [&](cv::Mat& sub, int ox, int oy) {
+                cv::line(sub, {g0.x + ox, g0.y + oy}, {g1.x + ox, g1.y + oy}, colBgr, thick + 1, cv::LINE_AA);
+            });
+            if (useMotion && enterLinear >= 0.98) {
+                const double sweep = std::fmod(animSec * 0.85, 1.35);
+                if (sweep <= 1.0) {
+                    const double s0 = (std::max)(0.0, sweep - 0.16);
+                    const double s1 = (std::min)(1.0, sweep + 0.06);
+                    const cv::Point sp0(
+                        static_cast<int>(std::round(px0 + (px1 - px0) * s0)),
+                        static_cast<int>(std::round(py0 + (py1 - py0) * s0)));
+                    const cv::Point sp1(
+                        static_cast<int>(std::round(px0 + (px1 - px0) * s1)),
+                        static_cast<int>(std::round(py0 + (py1 - py0) * s1)));
+                    blendRoiOverlayBgr(innerBgr, bounds, 0.72 * masterAlpha, [&](cv::Mat& sub, int ox, int oy) {
+                        cv::line(sub, {sp0.x + ox, sp0.y + oy}, {sp1.x + ox, sp1.y + oy},
+                                 cv::Scalar(255, 255, 255), (std::max)(2, thick), cv::LINE_AA);
+                    });
+                }
+            }
             continue;
         }
+
         if (ann.kind == StudioAnnotationKind::DashedLine) {
-            drawDashedSegmentBgr(innerBgr, {px0, py0}, {px1, py1}, colBgr, thick + 1);
+            // 引导虚线：入场延伸铺开 + 驻留期定向行军流 (Marching Flow)
+            const double marchPx = useMotion ? (animSec * 46.0 * strokeScale) : 0.0;
+            const double reveal = useMotion ? enterEase : 1.0;
+            const int pad = thick * 2 + 8;
+            const cv::Rect bounds(
+                (std::min)(px0, px1) - pad, (std::min)(py0, py1) - pad,
+                std::abs(px1 - px0) + pad * 2, std::abs(py1 - py0) + pad * 2);
+            blendRoiOverlayBgr(innerBgr, bounds, masterAlpha, [&](cv::Mat& sub, int ox, int oy) {
+                drawDashedSegmentBgr(sub, {px0 + ox, py0 + oy}, {px1 + ox, py1 + oy},
+                                     colBgr, thick + 1, marchPx, reveal);
+            });
             continue;
         }
 
-        // 4. 点击小手引导图标 (带同心扩散波纹环)
+        // 4. 点击小手引导图标 (真实食指轻触下压节拍 + 双道扩散点击波纹环)
         if (ann.kind == StudioAnnotationKind::HandPointer) {
-            const int hx = (px0 + px1) / 2;
-            const int hy = (py0 + py1) / 2;
-            const float s = std::clamp(strokeScale * 1.15f, 0.7f, 2.6f);
-            const int pulseR = static_cast<int>(std::round((14.0 + 7.0 * (0.5 + 0.5 * std::sin(animPhase * 1.2))) * s));
-            cv::Mat ringLayer = innerBgr.clone();
-            cv::circle(ringLayer, {hx, hy - static_cast<int>(10 * s)}, pulseR, colBgr, (std::max)(2, thick), cv::LINE_AA);
-            cv::addWeighted(ringLayer, 0.65, innerBgr, 0.35, 0.0, innerBgr);
+            const int baseHx = (px0 + px1) / 2;
+            const int baseHy = (py0 + py1) / 2;
+            const float s = std::clamp(strokeScale * 1.15f, 0.7f, 2.6f) *
+                            (useMotion ? springPopScale(enterLinear) : 1.0f);
+            const double tapCycle = useMotion ? std::fmod(animSec * 1.15, 1.0) : 0.35;
+            const double tapPress = (tapCycle < 0.24)
+                ? std::sin((tapCycle / 0.24) * 3.14159265)
+                : 0.0;
+            const int hx = baseHx;
+            const int hy = baseHy + static_cast<int>(std::round(tapPress * 4.5 * s));
+            const int tipY = baseHy - static_cast<int>(10 * s);
 
-            // 圆润白手套食指点击矢量多边形
+            const int pad = static_cast<int>(38 * s) + thick;
+            const cv::Rect bounds(baseHx - pad, baseHy - pad, pad * 2, pad * 2);
+
+            if (useMotion) {
+                for (int wIdx = 0; wIdx < 2; ++wIdx) {
+                    const double wp = std::fmod(tapCycle + wIdx * 0.22, 1.0);
+                    const int pulseR = static_cast<int>(std::round((8.0 + wp * 20.0) * s));
+                    const double rAlpha = (1.0 - wp) * (1.0 - wp) * 0.72 * masterAlpha;
+                    blendRoiOverlayBgr(innerBgr, bounds, rAlpha, [&](cv::Mat& sub, int ox, int oy) {
+                        cv::circle(sub, {baseHx + ox, tipY + oy}, pulseR, colBgr, (std::max)(2, thick), cv::LINE_AA);
+                    });
+                }
+            } else {
+                blendRoiOverlayBgr(innerBgr, bounds, 0.65, [&](cv::Mat& sub, int ox, int oy) {
+                    cv::circle(sub, {baseHx + ox, tipY + oy}, static_cast<int>(16 * s), colBgr, (std::max)(2, thick), cv::LINE_AA);
+                });
+            }
+
             std::vector<cv::Point> handPts = {
                 {hx - static_cast<int>(3 * s), hy - static_cast<int>(14 * s)},
                 {hx + static_cast<int>(3 * s), hy - static_cast<int>(14 * s)},
@@ -816,9 +1259,15 @@ void renderTimelineAnnotationsOnInner(
                 {hx - static_cast<int>(8 * s), hy + static_cast<int>(5 * s)},
                 {hx - static_cast<int>(3 * s), hy + static_cast<int>(9 * s)}
             };
-            cv::fillPoly(innerBgr, std::vector<std::vector<cv::Point>>{handPts}, cv::Scalar(252, 253, 255), cv::LINE_AA);
-            cv::polylines(innerBgr, std::vector<std::vector<cv::Point>>{handPts}, true, cv::Scalar(24, 30, 42),
-                          (std::max)(2, static_cast<int>(std::round(2.0f * s))), cv::LINE_AA);
+            blendRoiOverlayBgr(innerBgr, bounds, masterAlpha, [&](cv::Mat& sub, int ox, int oy) {
+                for (auto& pt : handPts) {
+                    pt.x += ox;
+                    pt.y += oy;
+                }
+                cv::fillPoly(sub, std::vector<std::vector<cv::Point>>{handPts}, cv::Scalar(252, 253, 255), cv::LINE_AA);
+                cv::polylines(sub, std::vector<std::vector<cv::Point>>{handPts}, true, cv::Scalar(24, 30, 42),
+                              (std::max)(2, static_cast<int>(std::round(2.0f * s))), cv::LINE_AA);
+            });
             continue;
         }
 
@@ -828,34 +1277,41 @@ void renderTimelineAnnotationsOnInner(
         const int ry1 = std::clamp((std::max)(py0, py1), 0, innerBgr.rows);
         const cv::Rect rc(rx0, ry0, rx1 - rx0, ry1 - ry0);
 
-        if (ann.kind == StudioAnnotationKind::BlurMask) {
-            if (rc.width >= 4 && rc.height >= 4) {
-                cv::Mat roi = innerBgr(rc);
-                const int cell = std::clamp(static_cast<int>(std::round(12.0f * strokeScale)), 6, 24);
-                const int pixW = (std::max)(2, rc.width / cell);
-                const int pixH = (std::max)(2, rc.height / cell);
-                cv::Mat tiny, mosaic;
-                cv::resize(roi, tiny, cv::Size(pixW, pixH), 0.0, 0.0, cv::INTER_AREA);
-                cv::resize(tiny, mosaic, rc.size(), 0.0, 0.0, cv::INTER_NEAREST);
-                mosaic.copyTo(roi);
-            }
-        } else if (ann.kind == StudioAnnotationKind::Spotlight) {
+        if (ann.kind == StudioAnnotationKind::Spotlight) {
+            // 剧场级聚光灯：背景暗场平滑渐合与渐退 + 聚光亮窗呼吸白边光晕
+            const double dimStrength = masterAlpha * 0.64; // 峰值保留 0.36 亮度
             cv::Mat dimmed;
-            innerBgr.convertTo(dimmed, -1, 0.36, 0.0);
+            innerBgr.convertTo(dimmed, -1, 1.0 - dimStrength, 0.0);
             if (rc.width > 4 && rc.height > 4) {
                 cv::Mat mask(innerBgr.rows, innerBgr.cols, CV_8UC1, cv::Scalar(0));
-                fillRoundedRectMask(mask, rc, 10.0f * strokeScale);
+                const int rad = static_cast<int>(std::round(10.0f * strokeScale));
+                fillRoundedRectMask(mask, rc, static_cast<float>(rad));
                 innerBgr.copyTo(dimmed, mask);
-                drawRoundedBoxStrokeBgr(dimmed, rc, static_cast<int>(std::round(10.0f * strokeScale)),
-                                        cv::Scalar(255, 255, 255), (std::max)(1, thick - 1));
+
+                if (useMotion) {
+                    const double haloWave = 0.5 + 0.5 * std::sin(animSec * 4.2);
+                    const int expand = static_cast<int>(std::round((2.0 + haloWave * 5.0) * strokeScale));
+                    const cv::Rect haloRc(rc.x - expand, rc.y - expand, rc.width + expand * 2, rc.height + expand * 2);
+                    blendRoiOverlayBgr(
+                        dimmed, cv::Rect(haloRc.x - 8, haloRc.y - 8, haloRc.width + 16, haloRc.height + 16),
+                        (0.18 + 0.18 * haloWave) * masterAlpha,
+                        [&](cv::Mat& sub, int ox, int oy) {
+                            drawRoundedBoxStrokeBgr(
+                                sub, cv::Rect(haloRc.x + ox, haloRc.y + oy, haloRc.width, haloRc.height),
+                                rad + expand, cv::Scalar(255, 255, 255), thick + 1);
+                        });
+                }
+                drawRoundedBoxStrokeBgr(dimmed, rc, rad, cv::Scalar(255, 255, 255), (std::max)(1, thick - 1));
             }
             dimmed.copyTo(innerBgr);
         } else if (ann.kind == StudioAnnotationKind::Magnifier) {
-            // 圆形局部 2.2x 光学放大镜
+            // 圆形局部光学放大镜：倍率 1.0x -> 2.2x 丝滑推近聚焦入场 + 镜框呼吸光环
             const int cx = (px0 + px1) / 2;
             const int cy = (py0 + py1) / 2;
-            const int rad = std::clamp((std::max)(rc.width, rc.height) / 2,
-                                       static_cast<int>(28 * strokeScale), (std::min)(innerBgr.cols, innerBgr.rows) / 2 - 4);
+            const double radScale = useMotion ? (0.82 + 0.18 * enterEase) : 1.0;
+            const int rad = std::clamp(
+                static_cast<int>(std::round(((std::max)(rc.width, rc.height) * 0.5) * radScale)),
+                static_cast<int>(24 * strokeScale), (std::min)(innerBgr.cols, innerBgr.rows) / 2 - 4);
             const cv::Rect boxRc(
                 std::clamp(cx - rad, 0, innerBgr.cols - 1),
                 std::clamp(cy - rad, 0, innerBgr.rows - 1),
@@ -864,7 +1320,9 @@ void renderTimelineAnnotationsOnInner(
             if (boxRc.width >= 12 && boxRc.height >= 12 && !fullSrcBgr.empty()) {
                 const float centerSrcX = ((ann.x0 + ann.x1) * 0.5f) * srcCols;
                 const float centerSrcY = ((ann.y0 + ann.y1) * 0.5f) * srcRows;
-                const float zoomMag = 2.2f;
+                const float zoomMag = useMotion
+                    ? static_cast<float>(1.08 + 1.12 * enterEase * exitEase)
+                    : 2.2f;
                 const float sampleHalfW = (static_cast<float>(rad) / iwF) * safeCropW / zoomMag;
                 const float sampleHalfH = (static_cast<float>(rad) / ihF) * safeCropH / zoomMag;
                 const int s0x = std::clamp(static_cast<int>(std::round(centerSrcX - sampleHalfW)), 0, fullSrcBgr.cols - 2);
@@ -874,46 +1332,285 @@ void renderTimelineAnnotationsOnInner(
                 cv::Mat magnified;
                 cv::resize(fullSrcBgr(cv::Rect(s0x, s0y, sw, sh)), magnified, cv::Size(rad * 2, rad * 2), 0.0, 0.0, cv::INTER_CUBIC);
 
-                cv::Mat circleMask(innerBgr.rows, innerBgr.cols, CV_8UC1, cv::Scalar(0));
-                cv::circle(circleMask, {cx, cy}, rad, cv::Scalar(255), cv::FILLED, cv::LINE_AA);
+                const int pad = rad + static_cast<int>(16 * strokeScale) + thick;
+                blendRoiOverlayBgr(
+                    innerBgr, cv::Rect(cx - pad, cy - pad, pad * 2, pad * 2), masterAlpha,
+                    [&](cv::Mat& sub, int ox, int oy) {
+                        const int lcx = cx + ox;
+                        const int lcy = cy + oy;
+                        cv::Mat circleMask(sub.rows, sub.cols, CV_8UC1, cv::Scalar(0));
+                        cv::circle(circleMask, {lcx, lcy}, rad, cv::Scalar(255), cv::FILLED, cv::LINE_AA);
 
-                const int mx0 = (std::max)(0, rad - cx);
-                const int my0 = (std::max)(0, rad - cy);
-                const cv::Rect magSub(mx0, my0, (std::min)(boxRc.width, magnified.cols - mx0), (std::min)(boxRc.height, magnified.rows - my0));
-                if (magSub.width > 0 && magSub.height > 0) {
-                    const cv::Rect dstSub(boxRc.x, boxRc.y, magSub.width, magSub.height);
-                    magnified(magSub).copyTo(innerBgr(dstSub), circleMask(dstSub));
+                        const int dstX0 = std::clamp(lcx - rad, 0, sub.cols - 1);
+                        const int dstY0 = std::clamp(lcy - rad, 0, sub.rows - 1);
+                        const int dstX1 = std::clamp(lcx + rad, 1, sub.cols);
+                        const int dstY1 = std::clamp(lcy + rad, 1, sub.rows);
+                        const int mx0 = dstX0 - (lcx - rad);
+                        const int my0 = dstY0 - (lcy - rad);
+                        const int mw = (std::min)(dstX1 - dstX0, magnified.cols - mx0);
+                        const int mh = (std::min)(dstY1 - dstY0, magnified.rows - my0);
+                        if (mw > 0 && mh > 0) {
+                            magnified(cv::Rect(mx0, my0, mw, mh)).copyTo(
+                                sub(cv::Rect(dstX0, dstY0, mw, mh)),
+                                circleMask(cv::Rect(dstX0, dstY0, mw, mh)));
+                        }
+                        cv::circle(sub, {lcx, lcy}, rad + 1, cv::Scalar(18, 22, 32), thick + 2, cv::LINE_AA);
+                        cv::circle(sub, {lcx, lcy}, rad, cv::Scalar(255, 255, 255), (std::max)(2, thick), cv::LINE_AA);
+                    });
+
+                if (useMotion && enterLinear >= 0.90) {
+                    const double sonar = std::fmod((std::max)(0.0, animSec - 0.22) * 0.80, 1.0);
+                    const int sRad = rad + static_cast<int>(std::round(sonar * 12.0 * strokeScale));
+                    blendRoiOverlayBgr(
+                        innerBgr, cv::Rect(cx - pad, cy - pad, pad * 2, pad * 2),
+                        (1.0 - sonar) * 0.42 * masterAlpha,
+                        [&](cv::Mat& sub, int ox, int oy) {
+                            cv::circle(sub, {cx + ox, cy + oy}, sRad, cv::Scalar(255, 255, 255), (std::max)(1, thick - 1), cv::LINE_AA);
+                        });
                 }
-                cv::circle(innerBgr, {cx, cy}, rad + 1, cv::Scalar(18, 22, 32), thick + 2, cv::LINE_AA);
-                cv::circle(innerBgr, {cx, cy}, rad, cv::Scalar(255, 255, 255), (std::max)(2, thick), cv::LINE_AA);
             }
-        } else if (ann.kind == StudioAnnotationKind::Rectangle) {
-            if (rc.width >= 2 && rc.height >= 2) {
-                cv::rectangle(innerBgr, rc, cv::Scalar(16, 20, 28), thick + 2, cv::LINE_AA);
-                cv::rectangle(innerBgr, rc, colBgr, thick, cv::LINE_AA);
-            }
-        } else if (ann.kind == StudioAnnotationKind::RoundedBox) {
+        } else if (ann.kind == StudioAnnotationKind::Rectangle ||
+                   ann.kind == StudioAnnotationKind::RoundedBox) {
+            // 直角框 / 圆角框：Direct2D 圆头抗锯齿一笔闭合勾勒 + 柔和声呐外扩光环
             if (rc.width >= 4 && rc.height >= 4) {
-                const int rad = std::clamp(static_cast<int>(std::round(14.0f * strokeScale)), 4, (std::min)(rc.width, rc.height) / 3);
-                drawRoundedBoxStrokeBgr(innerBgr, rc, rad, cv::Scalar(16, 20, 28), thick + 2);
-                drawRoundedBoxStrokeBgr(innerBgr, rc, rad, colBgr, thick);
+                const bool isRounded = (ann.kind == StudioAnnotationKind::RoundedBox);
+                const float radF = isRounded
+                    ? std::clamp(14.0f * strokeScale, 4.0f, static_cast<float>((std::min)(rc.width, rc.height)) * 0.34f)
+                    : 2.0f;
+                const float drawProg = static_cast<float>(useMotion ? enterEase : 1.0);
+                const float fThick = (std::max)(2.2f, ann.strokeWidth * strokeScale);
+                const int pad = static_cast<int>(22 * strokeScale) + thick * 2;
+                const cv::Rect bounds(rc.x - pad, rc.y - pad, rc.width + pad * 2, rc.height + pad * 2);
+                const float cr = static_cast<float>(colBgr[2] / 255.0);
+                const float cg = static_cast<float>(colBgr[1] / 255.0);
+                const float cb = static_cast<float>(colBgr[0] / 255.0);
+
+                renderD2DRoiVectorOntoBgr(innerBgr, bounds, static_cast<float>(masterAlpha),
+                    [&](ID2D1Factory* fac, ID2D1RenderTarget* rt, ID2D1SolidColorBrush* br,
+                        ID2D1StrokeStyle* roundSt, float ox, float oy) {
+                        const D2D1_RECT_F box = D2D1::RectF(
+                            rc.x + ox, rc.y + oy, rc.x + rc.width + ox, rc.y + rc.height + oy);
+
+                        // 驻留期柔和外扩呼吸光晕
+                        if (useMotion && enterLinear >= 0.92) {
+                            const float sonar = static_cast<float>(std::fmod((std::max)(0.0, animSec - 0.24) * 0.78, 1.0));
+                            const float exp = sonar * 11.0f * strokeScale;
+                            const D2D1_RECT_F pBox = D2D1::RectF(box.left - exp, box.top - exp, box.right + exp, box.bottom + exp);
+                            br->SetColor(D2D1::ColorF(cr, cg, cb, (1.0f - sonar) * (1.0f - sonar) * 0.48f));
+                            rt->DrawRoundedRectangle(D2D1::RoundedRect(pBox, radF + exp, radF + exp), br, (std::max)(1.4f, fThick * 0.65f));
+                        }
+
+                        if (drawProg >= 0.995f) {
+                            // 完整闭合超平滑圆角/微圆角框 + 立体柔和衬底描边
+                            br->SetColor(D2D1::ColorF(0.05f, 0.07f, 0.12f, 0.34f));
+                            rt->DrawRoundedRectangle(
+                                D2D1::RoundedRect(D2D1::RectF(box.left + 1.0f, box.top + 1.8f, box.right + 1.0f, box.bottom + 1.8f), radF, radF),
+                                br, fThick + 1.6f);
+                            br->SetColor(D2D1::ColorF(cr, cg, cb, 0.98f));
+                            rt->DrawRoundedRectangle(D2D1::RoundedRect(box, radF, radF), br, fThick);
+                        } else if (fac) {
+                            // 入场顺时针连续圆头几何路径一笔勾勒
+                            constexpr int kSteps = 80;
+                            const int activePts = (std::max)(2, static_cast<int>(std::round(kSteps * drawProg)));
+                            const float cx = (box.left + box.right) * 0.5f;
+                            const float cy = (box.top + box.bottom) * 0.5f;
+                            const float hw = (box.right - box.left) * 0.5f;
+                            const float hh = (box.bottom - box.top) * 0.5f;
+                            const float r = (std::min)({radF, hw * 0.95f, hh * 0.95f});
+
+                            // 构造顺时针超椭圆/圆角矩形连续参数采样点
+                            auto sampleBoxPerim = [&](float u) -> D2D1_POINT_2F {
+                                const float topW = (std::max)(0.0f, (hw - r) * 2.0f);
+                                const float sideH = (std::max)(0.0f, (hh - r) * 2.0f);
+                                const float arcL = 1.5707963f * r;
+                                const float totalP = (topW + sideH) * 2.0f + arcL * 4.0f;
+                                float d = std::clamp(u, 0.0f, 1.0f) * totalP;
+                                if (d <= topW) return {box.left + r + d, box.top};
+                                d -= topW;
+                                if (d <= arcL) {
+                                    const float a = -1.5707963f + (d / (std::max)(0.01f, arcL)) * 1.5707963f;
+                                    return {box.right - r + std::cos(a) * r, box.top + r + std::sin(a) * r};
+                                }
+                                d -= arcL;
+                                if (d <= sideH) return {box.right, box.top + r + d};
+                                d -= sideH;
+                                if (d <= arcL) {
+                                    const float a = (d / (std::max)(0.01f, arcL)) * 1.5707963f;
+                                    return {box.right - r + std::cos(a) * r, box.bottom - r + std::sin(a) * r};
+                                }
+                                d -= arcL;
+                                if (d <= topW) return {box.right - r - d, box.bottom};
+                                d -= topW;
+                                if (d <= arcL) {
+                                    const float a = 1.5707963f + (d / (std::max)(0.01f, arcL)) * 1.5707963f;
+                                    return {box.left + r + std::cos(a) * r, box.bottom - r + std::sin(a) * r};
+                                }
+                                d -= arcL;
+                                if (d <= sideH) return {box.left, box.bottom - r - d};
+                                d -= sideH;
+                                const float a = 3.1415926f + (d / (std::max)(0.01f, arcL)) * 1.5707963f;
+                                return {box.left + r + std::cos(a) * r, box.top + r + std::sin(a) * r};
+                            };
+
+                            ComPtr<ID2D1PathGeometry> geo;
+                            if (SUCCEEDED(fac->CreatePathGeometry(geo.GetAddressOf())) && geo) {
+                                ComPtr<ID2D1GeometrySink> sink;
+                                if (SUCCEEDED(geo->Open(sink.GetAddressOf())) && sink) {
+                                    sink->BeginFigure(sampleBoxPerim(0.0f), D2D1_FIGURE_BEGIN_HOLLOW);
+                                    for (int i = 1; i <= activePts; ++i) {
+                                        sink->AddLine(sampleBoxPerim(static_cast<float>(i) / static_cast<float>(kSteps)));
+                                    }
+                                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                                    sink->Close();
+                                    br->SetColor(D2D1::ColorF(0.05f, 0.07f, 0.12f, 0.32f));
+                                    rt->DrawGeometry(geo.Get(), br, fThick + 1.6f, roundSt);
+                                    br->SetColor(D2D1::ColorF(cr, cg, cb, 0.98f));
+                                    rt->DrawGeometry(geo.Get(), br, fThick, roundSt);
+                                }
+                            }
+                            (void)cx;
+                            (void)cy;
+                        }
+                    });
             }
         } else if (ann.kind == StudioAnnotationKind::CircleRing) {
+            // 标准圆环/椭圆聚焦环：Direct2D 超平滑圆头弧线顺时针一笔闭合 + 同心声呐聚焦波
             if (rc.width >= 4 && rc.height >= 4) {
-                const cv::Point center(rc.x + rc.width / 2, rc.y + rc.height / 2);
-                const cv::Size axes(rc.width / 2, rc.height / 2);
-                cv::ellipse(innerBgr, center, axes, 0.0, 0.0, 360.0, cv::Scalar(16, 20, 28), thick + 2, cv::LINE_AA);
-                cv::ellipse(innerBgr, center, axes, 0.0, 0.0, 360.0, colBgr, thick, cv::LINE_AA);
+                const float cx = rc.x + rc.width * 0.5f;
+                const float cy = rc.y + rc.height * 0.5f;
+                const float rx = rc.width * 0.5f;
+                const float ry = rc.height * 0.5f;
+                const float drawProg = static_cast<float>(useMotion ? enterEase : 1.0);
+                const float fThick = (std::max)(2.2f, ann.strokeWidth * strokeScale);
+                const int pad = static_cast<int>(22 * strokeScale) + thick * 2;
+                const cv::Rect bounds(rc.x - pad, rc.y - pad, rc.width + pad * 2, rc.height + pad * 2);
+                const float cr = static_cast<float>(colBgr[2] / 255.0);
+                const float cg = static_cast<float>(colBgr[1] / 255.0);
+                const float cb = static_cast<float>(colBgr[0] / 255.0);
+
+                renderD2DRoiVectorOntoBgr(innerBgr, bounds, static_cast<float>(masterAlpha),
+                    [&](ID2D1Factory* fac, ID2D1RenderTarget* rt, ID2D1SolidColorBrush* br,
+                        ID2D1StrokeStyle* roundSt, float ox, float oy) {
+                        const D2D1_POINT_2F cPt{cx + ox, cy + oy};
+                        if (useMotion && enterLinear >= 0.92) {
+                            const float sonar = static_cast<float>(std::fmod((std::max)(0.0, animSec - 0.24) * 0.80, 1.0));
+                            const float exp = sonar * 11.0f * strokeScale;
+                            br->SetColor(D2D1::ColorF(cr, cg, cb, (1.0f - sonar) * (1.0f - sonar) * 0.48f));
+                            rt->DrawEllipse(D2D1::Ellipse(cPt, rx + exp, ry + exp), br, (std::max)(1.4f, fThick * 0.65f));
+                        }
+                        if (drawProg >= 0.995f) {
+                            br->SetColor(D2D1::ColorF(0.05f, 0.07f, 0.12f, 0.34f));
+                            rt->DrawEllipse(D2D1::Ellipse({cPt.x + 1.0f, cPt.y + 1.8f}, rx, ry), br, fThick + 1.6f);
+                            br->SetColor(D2D1::ColorF(cr, cg, cb, 0.98f));
+                            rt->DrawEllipse(D2D1::Ellipse(cPt, rx, ry), br, fThick);
+                        } else if (fac) {
+                            constexpr int kSteps = 96;
+                            const int activePts = (std::max)(2, static_cast<int>(std::round(kSteps * drawProg)));
+                            ComPtr<ID2D1PathGeometry> geo;
+                            if (SUCCEEDED(fac->CreatePathGeometry(geo.GetAddressOf())) && geo) {
+                                ComPtr<ID2D1GeometrySink> sink;
+                                if (SUCCEEDED(geo->Open(sink.GetAddressOf())) && sink) {
+                                    auto ptAt = [&](int idx) -> D2D1_POINT_2F {
+                                        const float ang = -1.5707963f + (static_cast<float>(idx) / kSteps) * 6.2831853f;
+                                        return {cPt.x + std::cos(ang) * rx, cPt.y + std::sin(ang) * ry};
+                                    };
+                                    sink->BeginFigure(ptAt(0), D2D1_FIGURE_BEGIN_HOLLOW);
+                                    for (int i = 1; i <= activePts; ++i) sink->AddLine(ptAt(i));
+                                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                                    sink->Close();
+                                    br->SetColor(D2D1::ColorF(0.05f, 0.07f, 0.12f, 0.32f));
+                                    rt->DrawGeometry(geo.Get(), br, fThick + 1.6f, roundSt);
+                                    br->SetColor(D2D1::ColorF(cr, cg, cb, 0.98f));
+                                    rt->DrawGeometry(geo.Get(), br, fThick, roundSt);
+                                }
+                            }
+                        }
+                    });
             }
         } else if (ann.kind == StudioAnnotationKind::SketchCircle) {
-            // 双圈错位手绘涂鸦强调圈 + 弧尾小箭头
+            // 手绘重点圈 (Hand-Drawn Marker Loop)：
+            // 彻底摒弃旧版双错位 OpenCV ellipse (>360° 截断撕裂破碎)，升级为 Direct2D 原生圆头抗锯齿单笔流畅马克笔圈重点曲线！
             if (rc.width >= 8 && rc.height >= 8) {
-                const cv::Point c1(rc.x + rc.width / 2, rc.y + rc.height / 2);
-                const cv::Point c2(c1.x + static_cast<int>(2 * strokeScale), c1.y - static_cast<int>(2 * strokeScale));
-                const cv::Size ax1(rc.width / 2, rc.height / 2);
-                const cv::Size ax2((std::max)(4, rc.width / 2 - 3), (std::max)(4, rc.height / 2 + 2));
-                cv::ellipse(innerBgr, c1, ax1, -8.0, 18.0, 345.0, colBgr, thick + 1, cv::LINE_AA);
-                cv::ellipse(innerBgr, c2, ax2, 6.0, 35.0, 385.0, colBgr, (std::max)(2, thick - 1), cv::LINE_AA);
+                const float cx = rc.x + rc.width * 0.5f;
+                const float cy = rc.y + rc.height * 0.5f;
+                const float rx = rc.width * 0.5f;
+                const float ry = rc.height * 0.5f;
+                const float drawProg = static_cast<float>(useMotion ? easeOutCubic(std::clamp(enterLinear / 0.88, 0.0, 1.0)) : 1.0);
+                const float fThick = (std::max)(2.8f, ann.strokeWidth * 1.12f * strokeScale);
+                const int pad = static_cast<int>(26 * strokeScale) + thick * 3;
+                const cv::Rect bounds(rc.x - pad, rc.y - pad, rc.width + pad * 2, rc.height + pad * 2);
+                const float cr = static_cast<float>(colBgr[2] / 255.0);
+                const float cg = static_cast<float>(colBgr[1] / 255.0);
+                const float cb = static_cast<float>(colBgr[0] / 255.0);
+
+                if (drawProg > 0.015f) {
+                    renderD2DRoiVectorOntoBgr(innerBgr, bounds, static_cast<float>(masterAlpha),
+                        [&](ID2D1Factory* fac, ID2D1RenderTarget* rt, ID2D1SolidColorBrush* br,
+                            ID2D1StrokeStyle* roundSt, float ox, float oy) {
+                            if (!fac) return;
+                            const float lcx = cx + ox;
+                            const float lcy = cy + oy;
+                            // 顺时针一气呵成画 392°（一整圈 + 顶部 32° 自然微距外飘优雅叠尾，零交叉打结、零缺口断裂）
+                            constexpr int kTotalSamples = 128;
+                            const int endSample = (std::max)(3, static_cast<int>(std::round(kTotalSamples * drawProg)));
+                            const float tiltRad = -0.052f; // -3.0° 自然手写微倾角
+                            const float cosTilt = std::cos(tiltRad);
+                            const float sinTilt = std::sin(tiltRad);
+
+                            auto evalMarkerPt = [&](float u, float dxOff = 0.0f, float dyOff = 0.0f) -> D2D1_POINT_2F {
+                                // u in [0, 1] -> theta from -108 deg (-1.885 rad) clockwise by 392 deg (6.842 rad)
+                                const float theta = -1.885f + u * 6.842f;
+                                // 半径从 0.965 平滑渐扩至 1.055，使首尾交叠 32° 保持柔和平行微距，浑然天成
+                                const float spiral = 0.965f + 0.090f * u;
+                                const float organic = 1.0f + 0.012f * std::sin(theta * 2.0f + 0.6f);
+                                const float ex = std::cos(theta) * rx * spiral * organic;
+                                const float ey = std::sin(theta) * ry * spiral * organic;
+                                return {
+                                    lcx + ex * cosTilt - ey * sinTilt + dxOff,
+                                    lcy + ex * sinTilt + ey * cosTilt + dyOff
+                                };
+                            };
+
+                            auto buildSubPath = [&](int s0, int s1, float dxOff, float dyOff) -> ComPtr<ID2D1PathGeometry> {
+                                ComPtr<ID2D1PathGeometry> g;
+                                if (s1 <= s0 || FAILED(fac->CreatePathGeometry(g.GetAddressOf())) || !g) return nullptr;
+                                ComPtr<ID2D1GeometrySink> sk;
+                                if (SUCCEEDED(g->Open(sk.GetAddressOf())) && sk) {
+                                    sk->BeginFigure(evalMarkerPt(static_cast<float>(s0) / kTotalSamples, dxOff, dyOff),
+                                                    D2D1_FIGURE_BEGIN_HOLLOW);
+                                    for (int i = s0 + 1; i <= s1; ++i) {
+                                        sk->AddLine(evalMarkerPt(static_cast<float>(i) / kTotalSamples, dxOff, dyOff));
+                                    }
+                                    sk->EndFigure(D2D1_FIGURE_END_OPEN);
+                                    sk->Close();
+                                }
+                                return g;
+                            };
+
+                            const ComPtr<ID2D1PathGeometry> shadowGeo =
+                                buildSubPath(0, endSample, 1.4f * strokeScale, 2.2f * strokeScale);
+                            const ComPtr<ID2D1PathGeometry> mainGeo =
+                                buildSubPath(0, endSample, 0.0f, 0.0f);
+                            if (!mainGeo) return;
+
+                            // 1) 柔和立体暗影托底（深浅背景皆清晰醒目）
+                            if (shadowGeo) {
+                                br->SetColor(D2D1::ColorF(0.04f, 0.06f, 0.11f, 0.22f));
+                                rt->DrawGeometry(shadowGeo.Get(), br, fThick + 1.2f, roundSt);
+                            }
+
+                            // 2) 外层轻柔马克笔边缘光晕（驻留期极轻柔呼吸）
+                            const float glowBreath = useMotion
+                                ? static_cast<float>(0.09 + 0.08 * (0.5 + 0.5 * std::sin(animSec * 3.8)))
+                                : 0.10f;
+                            br->SetColor(D2D1::ColorF(cr, cg, cb, glowBreath));
+                            rt->DrawGeometry(mainGeo.Get(), br, fThick * 2.1f, roundSt);
+
+                            // 3) 主体纯正饱满实心圆头马克笔迹（零夹心白线，白底与深底皆纯净醒目）
+                            br->SetColor(D2D1::ColorF(cr, cg, cb, 0.98f));
+                            rt->DrawGeometry(mainGeo.Get(), br, fThick, roundSt);
+                        });
+                }
             }
         }
     }
@@ -1292,19 +1989,21 @@ bool exportContainerVideoOnMta(
     }
 
     const int64_t areaPx = static_cast<int64_t>(outSize.width) * static_cast<int64_t>(outSize.height);
-    const double areaRatio = std::clamp(static_cast<double>(areaPx) / (1920.0 * 1080.0), 0.25, 6.0);
-    const double fpsRatio = std::clamp(static_cast<double>(outFps) / 30.0, 0.5, 2.2);
+    const double areaRatio = std::clamp(static_cast<double>(areaPx) / (1920.0 * 1080.0), 0.30, 6.0);
+    const double fpsRatio = std::clamp(static_cast<double>(outFps) / 30.0, 0.55, 2.2);
     const double qScale = qualityScaleFactor(opts.quality);
-    // 针对高占比纯色/文字桌面录屏调优目标码率（配合静态帧 VFR 抽帧，1080p 推荐档仅需 ~2.8 Mbps 峰值预算，体积直降 80%+）
+    // 桌面录屏含高频锐利代码边缘与全屏自动运镜缩放（全画面同时位移无平移运动矢量复用），
+    // 必须为硬件/软件编码器提供充裕动态码率天花板（1080p 推荐档 14 Mbps），彻底根除缩放期间 QP=51 宏块马赛克崩坏
     const int64_t targetBitrate = std::clamp(
-        static_cast<int64_t>(std::llround(areaRatio * fpsRatio * qScale * (isHevc ? 1'900'000.0 : 2'800'000.0))),
-        600'000LL, 60'000'000LL);
+        static_cast<int64_t>(std::llround(areaRatio * fpsRatio * qScale * (isHevc ? 10'000'000.0 : 14'000'000.0))),
+        2'500'000LL, 85'000'000LL);
 
     AVCodecContext* encCtx = nullptr;
     const AVCodec* chosenEnc = nullptr;
     for (const auto* cand : encCandidates) {
         const bool isMf = std::strstr(cand->name, "_mf") != nullptr;
-        const int mfPasses = (isMf && !inUnitTestMode) ? 2 : 1;
+        // Media Foundation 编码器：第 0 轮优先尝试硬件 Quality 恒定画质模式，第 1 轮硬件高码率 VBR/CBR，第 2 轮软件 MFT
+        const int mfPasses = (isMf && !inUnitTestMode) ? 3 : 1;
 
         for (int mfPass = 0; mfPass < mfPasses; ++mfPass) {
             AVCodecContext* attempt = avcodec_alloc_context3(cand);
@@ -1313,22 +2012,44 @@ bool exportContainerVideoOnMta(
             attempt->height = outSize.height;
             attempt->time_base = {1, outFps};
             attempt->framerate = {outFps, 1};
-            attempt->gop_size = isMf ? 0 : outFps * 4;
+            attempt->gop_size = outFps * 2;
             attempt->max_b_frames = 0;
             attempt->bit_rate = targetBitrate;
+            attempt->rc_max_rate = targetBitrate * 3 / 2;
+            attempt->rc_buffer_size = static_cast<int>((std::min<int64_t>)(targetBitrate * 2, 160'000'000LL));
             attempt->pix_fmt = selectStudioEncoderPixFmt(cand);
             if (outFmt->oformat->flags & AVFMT_GLOBALHEADER) {
                 attempt->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
             }
             if (isMf) {
-                if (!inUnitTestMode && mfPass == 0 && attempt->priv_data) {
+                if (!inUnitTestMode && mfPass <= 1 && attempt->priv_data) {
                     av_opt_set_int(attempt->priv_data, "hw_encoding", 1, 0);
+                }
+                if (attempt->priv_data) {
+                    const int mfQual = (opts.quality == StudioExportQuality::High)
+                        ? 92 : ((opts.quality == StudioExportQuality::Compact) ? 74 : 86);
+                    if (mfPass == 0) {
+                        av_opt_set(attempt->priv_data, "rate_control", "quality", 0);
+                        av_opt_set_int(attempt->priv_data, "quality", mfQual, 0);
+                    } else {
+                        av_opt_set(attempt->priv_data, "rate_control", "u_vbr", 0);
+                        av_opt_set_int(attempt->priv_data, "quality", mfQual, 0);
+                    }
                 }
             } else {
                 attempt->thread_count = 0;
             }
 
-            if (std::strcmp(cand->name, "libx264") == 0 && attempt->priv_data) {
+            if (std::strstr(cand->name, "_nvenc") != nullptr && attempt->priv_data) {
+                const int cqVal = (opts.quality == StudioExportQuality::High)
+                    ? 18 : ((opts.quality == StudioExportQuality::Compact) ? 26 : 21);
+                av_opt_set(attempt->priv_data, "rc", "vbr", 0);
+                av_opt_set_int(attempt->priv_data, "cq", cqVal, 0);
+            } else if (std::strstr(cand->name, "_qsv") != nullptr && attempt->priv_data) {
+                const int qsvQual = (opts.quality == StudioExportQuality::High)
+                    ? 18 : ((opts.quality == StudioExportQuality::Compact) ? 26 : 21);
+                av_opt_set_int(attempt->priv_data, "global_quality", qsvQual, 0);
+            } else if (std::strcmp(cand->name, "libx264") == 0 && attempt->priv_data) {
                 av_opt_set(attempt->priv_data, "preset", areaPx >= (2560LL * 1440LL) ? "ultrafast" : "veryfast", 0);
                 const int crfVal = (opts.quality == StudioExportQuality::High)
                     ? 19 : ((opts.quality == StudioExportQuality::Compact) ? 27 : 23);
@@ -1363,8 +2084,14 @@ bool exportContainerVideoOnMta(
                     probeCtx->bit_rate = attempt->bit_rate;
                     probeCtx->pix_fmt = attempt->pix_fmt;
                     probeCtx->flags = attempt->flags;
-                    if (!inUnitTestMode && mfPass == 0 && probeCtx->priv_data) {
+                    if (!inUnitTestMode && mfPass <= 1 && probeCtx->priv_data) {
                         av_opt_set_int(probeCtx->priv_data, "hw_encoding", 1, 0);
+                    }
+                    if (probeCtx->priv_data) {
+                        const int mfQual = (opts.quality == StudioExportQuality::High)
+                            ? 92 : ((opts.quality == StudioExportQuality::Compact) ? 74 : 86);
+                        av_opt_set(probeCtx->priv_data, "rate_control", mfPass == 0 ? "quality" : "u_vbr", 0);
+                        av_opt_set_int(probeCtx->priv_data, "quality", mfQual, 0);
                     }
                     if (avcodec_open2(probeCtx, cand, nullptr) >= 0) {
                         AVFrame* pf = av_frame_alloc();
@@ -1479,7 +2206,7 @@ bool exportContainerVideoOnMta(
     SwsContext* fromBgrSws = sws_getContext(
         outSize.width, outSize.height, AV_PIX_FMT_BGR24,
         outSize.width, outSize.height, encCtx->pix_fmt,
-        SWS_BILINEAR, nullptr, nullptr, nullptr);
+        SWS_BICUBIC | SWS_ACCURATE_RND, nullptr, nullptr, nullptr);
     AVPacket* outPkt = av_packet_alloc();
     AVFrame* encFrame = av_frame_alloc();
     encFrame->format = encCtx->pix_fmt;
@@ -1503,7 +2230,9 @@ bool exportContainerVideoOnMta(
     cv::Mat deferredTailBgr;
     int64_t lastEncodedPts = -1;
     int64_t lastObservedPts = -1;
-    const int maxStaticSkipFrames = (std::max)(2, outFps); // 静态画面最多合并 1.0 秒内的重复帧
+    // 硬件 MFT 编码器的内部码率与量化器步进依赖连续均匀帧率：禁止对 _mf 进行长间隔 VFR 跳帧，防止静止转运镜瞬间触发 QP=51 块噪
+    const bool chosenIsMf = chosenEnc && (std::strstr(chosenEnc->name, "_mf") != nullptr);
+    const int maxStaticSkipFrames = chosenIsMf ? 1 : (std::max)(2, outFps / 2);
 
     auto isFrameNearlyIdentical = [](const cv::Mat& a, const cv::Mat& b) noexcept -> bool {
         if (a.empty() || b.empty() || a.rows != b.rows || a.cols != b.cols || a.type() != b.type()) {
@@ -1690,6 +2419,60 @@ bool runSingleGifEncodePass(
     palOpt.enableFrameDiff = false;
     palOpt.enableDithering = enableDithering;
 
+    // 跨全片均匀采样预构建全局 256 色调色板并全程锁定：
+    // 1) 避免片头第 0 帧尚未出现中途浅色新窗口导致前 30 帧亮底严重偏黄/偏青、播放几秒后才跳变恢复；
+    // 2) 全片 0 个 Local Color Table，保证 FFmpeg gifflags=+transdiff 帧间差分压缩全程生效，杜绝 100MB+ 体积失控膨胀。
+    {
+        std::vector<cv::Mat> sampleDeck;
+        int rawW = 0, rawH = 0;
+        double rawDurSec = 0.0;
+        if (StudioVideoCompositor::extractPreviewDeck(rawInputPathUtf8, 720, 12, sampleDeck, rawW, rawH, rawDurSec) &&
+            !sampleDeck.empty()) {
+            StudioTimelineData sampleTl = timeline;
+            const float scaleSampleX = (rawW > 0) ? (static_cast<float>(sampleDeck[0].cols) / static_cast<float>(rawW)) : 1.0f;
+            const float scaleSampleY = (rawH > 0) ? (static_cast<float>(sampleDeck[0].rows) / static_cast<float>(rawH)) : 1.0f;
+            sampleTl.sourceWidth = sampleDeck[0].cols;
+            sampleTl.sourceHeight = sampleDeck[0].rows;
+            for (auto& cs : sampleTl.cursorSamples) { cs.x *= scaleSampleX; cs.y *= scaleSampleY; }
+            for (auto& ck : sampleTl.clickEvents)   { ck.x *= scaleSampleX; ck.y *= scaleSampleY; }
+            for (auto& fc : sampleTl.focusEvents)   { fc.x *= scaleSampleX; fc.y *= scaleSampleY; }
+            for (auto& zs : sampleTl.zoomSegments)  { zs.focusX *= scaleSampleX; zs.focusY *= scaleSampleY; }
+
+            const int sampleEvalCount = (std::max)(2, static_cast<int>(sampleDeck.size()));
+            const double safeDur = (rawDurSec > 0.05) ? rawDurSec : 1.0;
+            const int sampleEvalFps = (std::max)(1, static_cast<int>(std::ceil(sampleEvalCount / safeDur)));
+            const auto sampleEvals = StudioTimelineAnalyzer::bakeEvaluatedFrames(
+                sampleTl, config, sampleEvalFps, (std::max)(sampleEvalCount + 2, static_cast<int>(std::ceil(safeDur * sampleEvalFps)) + 2));
+
+            const cv::Size palCanvasSz(
+                (std::min)(outSize.width, 640),
+                (std::max)(64, static_cast<int>(std::round(static_cast<double>(outSize.height) *
+                    (std::min)(1.0, 640.0 / static_cast<double>((std::max)(1, outSize.width)))))));
+            StudioVideoCompositor palComp;
+            const auto* annPtr = sampleTl.annotations.empty() ? nullptr : &sampleTl.annotations;
+
+            palOpt.resetHistogram();
+            for (size_t si = 0; si < sampleDeck.size(); ++si) {
+                const double ratio = (sampleDeck.size() > 1)
+                    ? (static_cast<double>(si) / static_cast<double>(sampleDeck.size() - 1))
+                    : 0.0;
+                const size_t eIdx = sampleEvals.empty()
+                    ? 0
+                    : (std::min)(sampleEvals.size() - 1,
+                                 static_cast<size_t>(std::llround(ratio * static_cast<double>(sampleEvals.size() - 1))));
+                const StudioEvaluatedFrame fbEval{};
+                const cv::Mat sampleComp = palComp.composeFrame(
+                    sampleDeck[si], sampleEvals.empty() ? fbEval : sampleEvals[eIdx], config, palCanvasSz, annPtr, false);
+                if (!sampleComp.empty()) {
+                    palOpt.accumulateHistogram(
+                        sampleComp.data, sampleComp.cols, sampleComp.rows, static_cast<int>(sampleComp.step[0]), 3);
+                }
+            }
+            palOpt.finalizePaletteFromHistogram();
+            palOpt.lockPalette = true;
+        }
+    }
+
     bool writeOk = true;
     int64_t lastCentisecPts = -1;
 
@@ -1811,11 +2594,11 @@ bool exportAnimatedGifOnMta(
                 return false;
             }
             const double scaleDown = std::clamp(
-                std::sqrt(static_cast<double>(kWeChatGifSafeMaxBytes) * 0.86 / static_cast<double>(actualBytes)),
-                0.48, 0.82);
+                std::sqrt(static_cast<double>(kWeChatGifSafeMaxBytes) * 0.90 / static_cast<double>(actualBytes)),
+                0.62, 0.86);
             outSize = StudioVideoCompositor::resolveOutputCanvasSize(
-                (std::max)(320, static_cast<int>(std::round(outSize.width * scaleDown))),
-                (std::max)(200, static_cast<int>(std::round(outSize.height * scaleDown))));
+                (std::max)(520, static_cast<int>(std::round(outSize.width * scaleDown))),
+                (std::max)(320, static_cast<int>(std::round(outSize.height * scaleDown))));
             targetFps = (std::max)(6, targetFps - 2);
             std::filesystem::remove(tempWide, ec);
             if (!runSingleGifEncodePass(
@@ -2482,12 +3265,15 @@ void StudioVideoCompositor::drawClickRippleEffect(
     float x, float y,
     float scale,
     float rippleProgress,
-    bool rippleRight) {
-    if (canvasBgr.empty() || rippleProgress < 0.0f || rippleProgress > 1.0f) return;
-    if (x < -64.0f || y < -64.0f || x > canvasBgr.cols + 64.0f || y > canvasBgr.rows + 64.0f) return;
-
-    constexpr int kShift = 4;
-    constexpr float kSub = 16.0f;
+    bool rippleRight,
+    StudioClickEffectStyle style) {
+    if (canvasBgr.empty() || style == StudioClickEffectStyle::TactileOnly ||
+        rippleProgress < 0.0f || rippleProgress > 1.0f) {
+        return;
+    }
+    if (x < -80.0f || y < -80.0f || x > canvasBgr.cols + 80.0f || y > canvasBgr.rows + 80.0f) {
+        return;
+    }
 
     auto& cfg = tools3000::core::ConfigManager::instance();
     std::string colHex = rippleRight
@@ -2496,53 +3282,127 @@ void StudioVideoCompositor::drawClickRippleEffect(
     if (colHex == "auto" || colHex.empty()) {
         colHex = cfg.get<std::string>("/general/accentColor", "#38bdf8");
     }
-    const std::string rippleStyle = cfg.get<std::string>("/spotlight/clickRippleStyle", "sparkle_burst");
-    const cv::Scalar ringColor = parseHexBgrScalar(
+    const cv::Scalar baseBgr = parseHexBgrScalar(
         colHex, rippleRight ? cv::Scalar(133, 113, 251) : cv::Scalar(248, 189, 56));
+    const float accentB = static_cast<float>(baseBgr[0]);
+    const float accentG = static_cast<float>(baseBgr[1]);
+    const float accentR = static_cast<float>(baseBgr[2]);
 
-    const float ease = 1.0f - (1.0f - rippleProgress) * (1.0f - rippleProgress);
-    const float radius = (9.0f + 32.0f * ease) * std::clamp(scale, 0.85f, 1.8f);
-    const float alpha = (1.0f - rippleProgress) * 0.68f;
-    const int rInt = static_cast<int>(std::ceil(radius + 10.0f));
-    const int rx0 = (std::max)(0, static_cast<int>(x) - rInt);
-    const int ry0 = (std::max)(0, static_cast<int>(y) - rInt);
-    const int rx1 = (std::min)(canvasBgr.cols, static_cast<int>(x) + rInt);
-    const int ry1 = (std::min)(canvasBgr.rows, static_cast<int>(y) + rInt);
-    if (rx1 > rx0 && ry1 > ry0 && alpha > 0.02f) {
-        cv::Mat roi = canvasBgr(cv::Rect(rx0, ry0, rx1 - rx0, ry1 - ry0));
-        cv::Mat overlay = roi.clone();
-        const cv::Point localCenter(
-            static_cast<int>(std::round((x - rx0) * kSub)),
-            static_cast<int>(std::round((y - ry0) * kSub)));
-        const int ringThick = (std::max)(2, static_cast<int>(std::round(2.4f * scale)));
+    const float s = std::clamp(scale, 0.75f, 2.2f);
+    const float p = std::clamp(rippleProgress, 0.0f, 1.0f);
 
-        if (rippleStyle == "soft_glow") {
-            cv::circle(overlay, localCenter, static_cast<int>(radius * 0.88f * kSub), ringColor, cv::FILLED, cv::LINE_AA, kShift);
-        } else {
-            cv::circle(overlay, localCenter, static_cast<int>(radius * kSub), ringColor, ringThick, cv::LINE_AA, kShift);
-            if (rippleStyle == "target_pulse" || rippleStyle == "sparkle_burst") {
-                cv::circle(overlay, localCenter, static_cast<int>(radius * 0.54f * kSub), ringColor,
-                           (std::max)(1, ringThick - 1), cv::LINE_AA, kShift);
+    // 解析式非对称 SDF 单波剖面求解器（外沿凝练收边 + 内侧指数柔光羽化 + 环宽随扩散动态收细，零硬圈锯齿）
+    auto evalAsymmetricWave = [&](float dist, float waveP, float rMin, float rSpan,
+                                  float& outCrestMix) noexcept -> float {
+        if (waveP <= 0.0f || waveP >= 1.0f) return 0.0f;
+        const float inv = 1.0f - waveP;
+        const float ease4 = 1.0f - inv * inv * inv * inv; // 四次缓出：清脆瞬态破开，尾段优雅消融
+        const float R = (rMin + rSpan * ease4) * s;
+        const float outerSigma = (std::max)(0.68f, (1.15f * (1.0f - 0.55f * waveP)) * s);
+        const float innerDecay = (std::max)(1.20f, (5.40f * (0.52f + 0.48f * ease4) * (1.0f - 0.38f * waveP)) * s);
+        const float envAlpha = std::pow(inv, 1.65f) * (std::min)(1.0f, waveP / 0.06f + 0.30f);
+
+        float spatial = 0.0f;
+        if (dist >= R) {
+            const float od = (dist - R) / outerSigma;
+            if (od < 3.6f) {
+                spatial = std::exp(-0.5f * od * od);
             }
-            if (rippleStyle == "sparkle_burst" || rippleStyle == "supernova") {
-                for (int ray = 0; ray < 8; ++ray) {
-                    const float ang = static_cast<float>(ray) * (3.14159265f * 0.25f) + ease * 0.35f;
-                    const float cs = std::cos(ang);
-                    const float sn = std::sin(ang);
-                    const float rIn = radius * 0.72f;
-                    const float rOut = radius * 1.12f;
-                    const cv::Point pA(
-                        static_cast<int>(std::round(((x - rx0) + cs * rIn) * kSub)),
-                        static_cast<int>(std::round(((y - ry0) + sn * rIn) * kSub)));
-                    const cv::Point pB(
-                        static_cast<int>(std::round(((x - rx0) + cs * rOut) * kSub)),
-                        static_cast<int>(std::round(((y - ry0) + sn * rOut) * kSub)));
-                    cv::line(overlay, pA, pB, ringColor, (std::max)(1, ringThick - 1), cv::LINE_AA, kShift);
-                }
+        } else {
+            const float id = (R - dist) / innerDecay;
+            if (id < 4.5f) {
+                const float centerClear = std::clamp(dist / (std::max)(1.0f, R * 0.42f), 0.0f, 1.0f);
+                spatial = std::exp(-id) * (centerClear * (2.0f - centerClear));
             }
         }
-        cv::addWeighted(overlay, rippleStyle == "soft_glow" ? alpha * 0.52 : alpha,
-                        roi, 1.0 - (rippleStyle == "soft_glow" ? alpha * 0.52 : alpha), 0.0, roi);
+        const float crestProximity = std::exp(-std::abs(dist - R) / (std::max)(0.8f, 1.25f * s));
+        outCrestMix = (std::max)(outCrestMix, crestProximity * spatial);
+        return spatial * envAlpha;
+    };
+
+    const float maxBoundPx = (style == StudioClickEffectStyle::DualRipple ? 33.0f : 29.0f) * s + 4.0f;
+    const int rInt = static_cast<int>(std::ceil(maxBoundPx));
+    const int rx0 = (std::max)(0, static_cast<int>(std::floor(x)) - rInt);
+    const int ry0 = (std::max)(0, static_cast<int>(std::floor(y)) - rInt);
+    const int rx1 = (std::min)(canvasBgr.cols, static_cast<int>(std::ceil(x)) + rInt);
+    const int ry1 = (std::min)(canvasBgr.rows, static_cast<int>(std::ceil(y)) + rInt);
+    if (rx1 <= rx0 || ry1 <= ry0) return;
+
+    const float invP = 1.0f - p;
+    const float softEase3 = 1.0f - invP * invP * invP;
+    const float softRadius = (6.0f + 17.5f * softEase3) * s;
+    const float softTimeEnv = std::pow(invP, 1.45f) * (std::min)(1.0f, p / 0.08f + 0.35f);
+
+    const float flashActive = (p < 0.28f) ? ((1.0f - p / 0.28f) * (1.0f - p / 0.28f)) : 0.0f;
+    const float flashSigma = (std::max)(1.5f, 4.6f * s);
+
+    for (int py = ry0; py < ry1; ++py) {
+        uint8_t* row = canvasBgr.ptr<uint8_t>(py);
+        const float dy = (static_cast<float>(py) + 0.5f) - y;
+        const float dy2 = dy * dy;
+        for (int px = rx0; px < rx1; ++px) {
+            const float dx = (static_cast<float>(px) + 0.5f) - x;
+            const float d2 = dx * dx + dy2;
+            if (d2 > maxBoundPx * maxBoundPx) continue;
+            const float dist = std::sqrt(d2);
+
+            float alpha = 0.0f;
+            float whiteHighlight = 0.0f;
+
+            if (style == StudioClickEffectStyle::SoftTouch) {
+                // Apple HIG 触控柔雾流：无环纯径向柔光斑，温润克制零线条
+                if (dist < softRadius) {
+                    const float u = dist / softRadius;
+                    const float falloff = (1.0f - u * u) * (1.0f - u * u);
+                    alpha = falloff * softTimeEnv * 0.42f;
+                    whiteHighlight = (1.0f - u) * 0.28f;
+                }
+            } else if (style == StudioClickEffectStyle::DualRipple) {
+                // 75ms 相位差错峰双细涟漪：主波先行破开，次波滞后从中心涌出
+                const float p1 = std::clamp(p / 0.78f, 0.0f, 1.0f);
+                const float p2 = std::clamp((p - 0.18f) / 0.82f, 0.0f, 1.0f);
+                float crest1 = 0.0f, crest2 = 0.0f;
+                const float w1 = evalAsymmetricWave(dist, p1, 3.8f, 23.5f, crest1) * 0.48f;
+                const float w2 = evalAsymmetricWave(dist, p2, 3.2f, 16.5f, crest2) * 0.36f;
+                alpha = std::clamp(w1 + w2 * (1.0f - w1 * 0.5f), 0.0f, 0.62f);
+                whiteHighlight = std::clamp((std::max)(crest1, crest2) * 0.40f, 0.0f, 0.45f);
+            } else {
+                // 默认 CrystalPulse (Screen Studio 招牌微晶单波)：前段触点微闪 + 单道外锐内柔收细微晶光环
+                float crest = 0.0f;
+                const float ringVal = evalAsymmetricWave(dist, p, 3.8f, 21.5f, crest) * 0.46f;
+                float flashVal = 0.0f;
+                if (flashActive > 0.001f && dist < flashSigma * 3.0f) {
+                    const float fd = dist / flashSigma;
+                    flashVal = flashActive * std::exp(-0.5f * fd * fd) * 0.26f;
+                }
+                alpha = std::clamp(ringVal + flashVal * (1.0f - ringVal), 0.0f, 0.54f);
+                whiteHighlight = std::clamp(crest * 0.44f + (flashVal > 0.02f ? 0.24f : 0.0f), 0.0f, 0.50f);
+            }
+
+            if (alpha <= 0.004f) continue;
+
+            // 微晶高光折射调色 + 轻度滤色提亮混合，深浅背景皆晶莹通透不发灰
+            const float tintB = accentB + (255.0f - accentB) * whiteHighlight;
+            const float tintG = accentG + (255.0f - accentG) * whiteHighlight;
+            const float tintR = accentR + (255.0f - accentR) * whiteHighlight;
+
+            uint8_t* dst = row + px * 3;
+            const float bgB = static_cast<float>(dst[0]);
+            const float bgG = static_cast<float>(dst[1]);
+            const float bgR = static_cast<float>(dst[2]);
+
+            // 70% 标准 Alpha + 30% Screen 滤色增亮，模拟真实光学折射感
+            const float scrB = 255.0f - ((255.0f - bgB) * (255.0f - tintB)) / 255.0f;
+            const float scrG = 255.0f - ((255.0f - bgG) * (255.0f - tintG)) / 255.0f;
+            const float scrR = 255.0f - ((255.0f - bgR) * (255.0f - tintR)) / 255.0f;
+            const float targetB = tintB * 0.70f + scrB * 0.30f;
+            const float targetG = tintG * 0.70f + scrG * 0.30f;
+            const float targetR = tintR * 0.70f + scrR * 0.30f;
+
+            dst[0] = static_cast<uint8_t>(std::clamp(bgB + (targetB - bgB) * alpha, 0.0f, 255.0f));
+            dst[1] = static_cast<uint8_t>(std::clamp(bgG + (targetG - bgG) * alpha, 0.0f, 255.0f));
+            dst[2] = static_cast<uint8_t>(std::clamp(bgR + (targetR - bgR) * alpha, 0.0f, 255.0f));
+        }
     }
 }
 
@@ -2553,16 +3413,23 @@ void StudioVideoCompositor::drawCrispVectorCursor(
     float scale,
     float rippleProgress,
     bool rippleRight,
-    bool highlightHalo) {
+    bool highlightHalo,
+    float tiltDeg,
+    StudioClickEffectStyle style) {
     if (kind == StudioCursorKind::Hidden || canvasBgr.empty()) return;
     if (x < -32.0f || y < -32.0f || x > canvasBgr.cols + 32.0f || y > canvasBgr.rows + 32.0f) return;
 
     constexpr int kShift = 4;
     constexpr float kSub = 16.0f;
+    const float rad = tiltDeg * (3.14159265f / 180.0f);
+    const float cosT = std::cos(rad);
+    const float sinT = std::sin(rad);
     const auto toSubPt = [&](float dx, float dy) -> cv::Point {
+        const float rx = dx * cosT - dy * sinT;
+        const float ry = dx * sinT + dy * cosT;
         return {
-            static_cast<int>(std::round((x + dx * scale) * kSub)),
-            static_cast<int>(std::round((y + dy * scale) * kSub))
+            static_cast<int>(std::round((x + rx * scale) * kSub)),
+            static_cast<int>(std::round((y + ry * scale) * kSub))
         };
     };
 
@@ -2589,7 +3456,7 @@ void StudioVideoCompositor::drawCrispVectorCursor(
     }
 
     if (rippleProgress >= 0.0f && rippleProgress <= 1.0f) {
-        drawClickRippleEffect(canvasBgr, x, y, scale, rippleProgress, rippleRight);
+        drawClickRippleEffect(canvasBgr, x, y, scale, rippleProgress, rippleRight, style);
     }
 
     if (kind == StudioCursorKind::IBeam) {
@@ -2744,7 +3611,10 @@ cv::Mat StudioVideoCompositor::composeFrame(
     const StudioEvaluatedFrame& eval,
     const StudioRenderConfig& config,
     cv::Size targetSize,
-    const std::vector<StudioAnnotationItem>* annotations) {
+    const std::vector<StudioAnnotationItem>* annotations,
+    bool animateAnnotations,
+    int64_t annotationPreviewElapsedMs,
+    int previewTargetAnnIndex) {
     if (rawBgrOrBgra.empty()) return {};
 
     cv::Mat srcBgr;
@@ -2830,37 +3700,53 @@ cv::Mat StudioVideoCompositor::composeFrame(
         const int interp = (innerW < srcBgr.cols || innerH < srcBgr.rows) ? cv::INTER_AREA : cv::INTER_LINEAR;
         cv::resize(srcBgr, zoomedInner, cv::Size(innerW, innerH), 0.0, 0.0, interp);
     } else {
-        // 亚像素半像素中心对齐逆仿射重采样：彻底消除整数 cv::Rect 裁剪导致的 2~6px 鼠标/画面错位与运镜阶梯抖动
-        cv::Mat warpSrc = srcBgr;
-        double adjCropX = static_cast<double>(effCropX);
-        double adjCropY = static_cast<double>(effCropY);
-        double adjSx = static_cast<double>(effCropW) / static_cast<double>((std::max)(1, innerW));
-        double adjSy = static_cast<double>(effCropH) / static_cast<double>((std::max)(1, innerH));
-        if (adjSx > 1.75 && adjSy > 1.75) {
-            const double preScale = 1.0 / std::floor((std::min)(adjSx, adjSy));
-            if (preScale >= 0.12 && preScale <= 0.75) {
-                cv::resize(srcBgr, warpSrc, cv::Size(), preScale, preScale, cv::INTER_AREA);
-                const double rsX = static_cast<double>(warpSrc.cols) / static_cast<double>(srcBgr.cols);
-                const double rsY = static_cast<double>(warpSrc.rows) / static_cast<double>(srcBgr.rows);
-                adjCropX = static_cast<double>(effCropX) * rsX;
-                adjCropY = static_cast<double>(effCropY) * rsY;
-                adjSx = (static_cast<double>(effCropW) * rsX) / static_cast<double>((std::max)(1, innerW));
-                adjSy = (static_cast<double>(effCropH) * rsY) / static_cast<double>((std::max)(1, innerH));
+        // 连续无阶跃亚像素对齐 + 全像素 INTER_AREA 面积积分抗混叠重采样：
+        // 彻底消除旧版 floor(preScale) 运镜途中清晰度阶跃跳变及 INTER_LINEAR 下采样导致的细小代码文字高频闪烁摩尔纹噪点
+        const bool isDownsampling = (effCropW > static_cast<float>(innerW) * 1.04f ||
+                                     effCropH > static_cast<float>(innerH) * 1.04f);
+        if (isDownsampling) {
+            const int rx0 = std::clamp(static_cast<int>(std::floor(effCropX)) - 2, 0, srcBgr.cols - 1);
+            const int ry0 = std::clamp(static_cast<int>(std::floor(effCropY)) - 2, 0, srcBgr.rows - 1);
+            const int rx1 = std::clamp(static_cast<int>(std::ceil(effCropX + effCropW)) + 2, rx0 + 1, srcBgr.cols);
+            const int ry1 = std::clamp(static_cast<int>(std::ceil(effCropY + effCropH)) + 2, ry0 + 1, srcBgr.rows);
+            const cv::Mat srcPatch = srcBgr(cv::Rect(rx0, ry0, rx1 - rx0, ry1 - ry0));
+
+            const int alignedW = (std::max)(innerW, static_cast<int>(std::round(effCropW)));
+            const int alignedH = (std::max)(innerH, static_cast<int>(std::round(effCropH)));
+            const double subX = static_cast<double>(effCropX) - static_cast<double>(rx0);
+            const double subY = static_cast<double>(effCropY) - static_cast<double>(ry0);
+            const double sx = static_cast<double>(effCropW) / static_cast<double>((std::max)(1, alignedW));
+            const double sy = static_cast<double>(effCropH) / static_cast<double>((std::max)(1, alignedH));
+
+            cv::Mat subAligned;
+            const cv::Mat invM = (cv::Mat_<double>(2, 3) <<
+                sx, 0.0, subX + 0.5 * sx - 0.5,
+                0.0, sy, subY + 0.5 * sy - 0.5);
+            cv::warpAffine(srcPatch, subAligned, invM, cv::Size(alignedW, alignedH),
+                           cv::WARP_INVERSE_MAP | cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+            if (alignedW == innerW && alignedH == innerH) {
+                zoomedInner = std::move(subAligned);
+            } else {
+                cv::resize(subAligned, zoomedInner, cv::Size(innerW, innerH), 0.0, 0.0, cv::INTER_AREA);
             }
+        } else {
+            const double adjSx = static_cast<double>(effCropW) / static_cast<double>((std::max)(1, innerW));
+            const double adjSy = static_cast<double>(effCropH) / static_cast<double>((std::max)(1, innerH));
+            const cv::Mat invM = (cv::Mat_<double>(2, 3) <<
+                adjSx, 0.0, static_cast<double>(effCropX) + 0.5 * adjSx - 0.5,
+                0.0, adjSy, static_cast<double>(effCropY) + 0.5 * adjSy - 0.5);
+            cv::warpAffine(srcBgr, zoomedInner, invM, cv::Size(innerW, innerH),
+                           cv::WARP_INVERSE_MAP | cv::INTER_CUBIC, cv::BORDER_REPLICATE);
         }
-        const cv::Mat invM = (cv::Mat_<double>(2, 3) <<
-            adjSx, 0.0, adjCropX + 0.5 * adjSx - 0.5,
-            0.0, adjSy, adjCropY + 0.5 * adjSy - 0.5);
-        cv::warpAffine(warpSrc, zoomedInner, invM, cv::Size(innerW, innerH),
-                       cv::WARP_INVERSE_MAP | cv::INTER_LINEAR, cv::BORDER_REPLICATE);
     }
 
-    // 1. 渲染时间轴视频标注与隐私遮罩/光学放大镜（锚定源坐标，跟随 2D/3D 运镜无缝缩放平移）
+    // 1. 渲染时间轴动态重点标注与隐私遮罩/光学放大镜（锚定源坐标，跟随 2D/3D 运镜无缝缩放平移）
     if (annotations && !annotations->empty()) {
         renderTimelineAnnotationsOnInner(
             zoomedInner, srcBgr, *annotations, eval.ptsMs,
             static_cast<float>(srcBgr.cols), static_cast<float>(srcBgr.rows),
-            effCropX, effCropY, effCropW, effCropH);
+            effCropX, effCropY, effCropW, effCropH,
+            animateAnnotations, annotationPreviewElapsedMs, previewTargetAnnIndex);
     }
 
     // 1.5 可选微晶彩色内边框 (Inset Border: 0 ~ 12px)
@@ -2902,7 +3788,8 @@ cv::Mat StudioVideoCompositor::composeFrame(
                     ripY,
                     config.cursorScale * dpiRatio,
                     eval.rippleProgress,
-                    eval.rippleIsRight);
+                    eval.rippleIsRight,
+                    config.clickEffectStyle);
             }
         }
 
@@ -2920,7 +3807,9 @@ cv::Mat StudioVideoCompositor::composeFrame(
                 config.cursorScale * eval.clickScale * dpiRatio,
                 -1.0f, // 水波纹已按真实点击源坐标独立绘制
                 eval.rippleIsRight,
-                config.cursorHighlightHalo);
+                config.cursorHighlightHalo,
+                eval.clickTiltDeg,
+                config.clickEffectStyle);
         }
     };
 
@@ -3029,6 +3918,10 @@ cv::Mat StudioVideoCompositor::composeFrame(
         }
     }
 
+    if (config.watermark.enabled) {
+        WatermarkRenderer::applyInPlace(canvas, config.watermark, nullptr);
+    }
+
     return canvas;
 }
 
@@ -3099,7 +3992,7 @@ bool StudioVideoCompositor::extractPreviewDeck(
         outDurationSec = static_cast<double>(vStream->duration) * av_q2d(vStream->time_base);
     }
 
-    const int safeMaxW = std::clamp(maxPreviewWidth, 160, 1920);
+    const int safeMaxW = std::clamp(maxPreviewWidth, 160, 2560);
     const double scale = (outOrigWidth > safeMaxW)
         ? (static_cast<double>(safeMaxW) / static_cast<double>(outOrigWidth))
         : 1.0;
@@ -3138,10 +4031,11 @@ bool StudioVideoCompositor::extractPreviewDeck(
             }
 
             if (!sws) {
+                const int swsFlags = (dstW < frame->width || dstH < frame->height) ? SWS_AREA : SWS_BILINEAR;
                 sws = sws_getContext(
                     frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
                     dstW, dstH, AV_PIX_FMT_BGR24,
-                    SWS_BILINEAR, nullptr, nullptr, nullptr);
+                    swsFlags, nullptr, nullptr, nullptr);
             }
             if (!sws) continue;
 
@@ -3250,74 +4144,54 @@ bool StudioVideoCompositor::extractAudioWaveformPeaks(
     AVPacket* pkt = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
 
-    auto computeFramePeak = [](const AVFrame* f) -> float {
-        if (!f || f->nb_samples <= 0) return 0.0f;
+    auto appendSubWindowEnvelopes = [&](const AVFrame* f, double frameStartSec) {
+        if (!f || f->nb_samples <= 0) return;
         const int chs = (std::max)(1, f->ch_layout.nb_channels);
         const int n = f->nb_samples;
         const auto fmt = static_cast<AVSampleFormat>(f->format);
         const bool planar = av_sample_fmt_is_planar(fmt) != 0;
-        float pk = 0.0f;
+        constexpr int kSubWin = 128;
 
-        if (fmt == AV_SAMPLE_FMT_FLT || fmt == AV_SAMPLE_FMT_FLTP) {
-            if (planar) {
+        auto readAbsSample = [&](int sampleIdx, int ch) -> float {
+            if (fmt == AV_SAMPLE_FMT_FLT || fmt == AV_SAMPLE_FMT_FLTP) {
+                const auto* p = reinterpret_cast<const float*>(planar ? (f->extended_data ? f->extended_data[ch] : f->data[ch]) : f->data[0]);
+                return p ? std::abs(p[planar ? sampleIdx : (sampleIdx * chs + ch)]) : 0.0f;
+            }
+            if (fmt == AV_SAMPLE_FMT_S16 || fmt == AV_SAMPLE_FMT_S16P) {
+                constexpr float kInv = 1.0f / 32768.0f;
+                const auto* p = reinterpret_cast<const int16_t*>(planar ? (f->extended_data ? f->extended_data[ch] : f->data[ch]) : f->data[0]);
+                return p ? std::abs(static_cast<float>(p[planar ? sampleIdx : (sampleIdx * chs + ch)])) * kInv : 0.0f;
+            }
+            if (fmt == AV_SAMPLE_FMT_S32 || fmt == AV_SAMPLE_FMT_S32P) {
+                constexpr float kInv = 1.0f / 2147483648.0f;
+                const auto* p = reinterpret_cast<const int32_t*>(planar ? (f->extended_data ? f->extended_data[ch] : f->data[ch]) : f->data[0]);
+                return p ? std::abs(static_cast<float>(p[planar ? sampleIdx : (sampleIdx * chs + ch)])) * kInv : 0.0f;
+            }
+            if (fmt == AV_SAMPLE_FMT_DBL || fmt == AV_SAMPLE_FMT_DBLP) {
+                const auto* p = reinterpret_cast<const double*>(planar ? (f->extended_data ? f->extended_data[ch] : f->data[ch]) : f->data[0]);
+                return p ? static_cast<float>(std::abs(p[planar ? sampleIdx : (sampleIdx * chs + ch)])) : 0.0f;
+            }
+            return 0.0f;
+        };
+
+        for (int s0 = 0; s0 < n; s0 += kSubWin) {
+            const int sEnd = (std::min)(n, s0 + kSubWin);
+            float subPeak = 0.0f;
+            double sumSq = 0.0;
+            int cnt = 0;
+            for (int i = s0; i < sEnd; ++i) {
                 for (int c = 0; c < chs; ++c) {
-                    const auto* p = reinterpret_cast<const float*>(f->extended_data ? f->extended_data[c] : f->data[c]);
-                    if (!p) continue;
-                    for (int i = 0; i < n; ++i) pk = (std::max)(pk, std::abs(p[i]));
-                }
-            } else {
-                const auto* p = reinterpret_cast<const float*>(f->data[0]);
-                if (p) {
-                    const int total = n * chs;
-                    for (int i = 0; i < total; ++i) pk = (std::max)(pk, std::abs(p[i]));
+                    const float v = readAbsSample(i, c);
+                    subPeak = (std::max)(subPeak, v);
+                    sumSq += static_cast<double>(v) * static_cast<double>(v);
+                    ++cnt;
                 }
             }
-        } else if (fmt == AV_SAMPLE_FMT_S16 || fmt == AV_SAMPLE_FMT_S16P) {
-            constexpr float kInv = 1.0f / 32768.0f;
-            if (planar) {
-                for (int c = 0; c < chs; ++c) {
-                    const auto* p = reinterpret_cast<const int16_t*>(f->extended_data ? f->extended_data[c] : f->data[c]);
-                    if (!p) continue;
-                    for (int i = 0; i < n; ++i) pk = (std::max)(pk, std::abs(static_cast<float>(p[i])) * kInv);
-                }
-            } else {
-                const auto* p = reinterpret_cast<const int16_t*>(f->data[0]);
-                if (p) {
-                    const int total = n * chs;
-                    for (int i = 0; i < total; ++i) pk = (std::max)(pk, std::abs(static_cast<float>(p[i])) * kInv);
-                }
-            }
-        } else if (fmt == AV_SAMPLE_FMT_S32 || fmt == AV_SAMPLE_FMT_S32P) {
-            constexpr float kInv = 1.0f / 2147483648.0f;
-            if (planar) {
-                for (int c = 0; c < chs; ++c) {
-                    const auto* p = reinterpret_cast<const int32_t*>(f->extended_data ? f->extended_data[c] : f->data[c]);
-                    if (!p) continue;
-                    for (int i = 0; i < n; ++i) pk = (std::max)(pk, std::abs(static_cast<float>(p[i])) * kInv);
-                }
-            } else {
-                const auto* p = reinterpret_cast<const int32_t*>(f->data[0]);
-                if (p) {
-                    const int total = n * chs;
-                    for (int i = 0; i < total; ++i) pk = (std::max)(pk, std::abs(static_cast<float>(p[i])) * kInv);
-                }
-            }
-        } else if (fmt == AV_SAMPLE_FMT_DBL || fmt == AV_SAMPLE_FMT_DBLP) {
-            if (planar) {
-                for (int c = 0; c < chs; ++c) {
-                    const auto* p = reinterpret_cast<const double*>(f->extended_data ? f->extended_data[c] : f->data[c]);
-                    if (!p) continue;
-                    for (int i = 0; i < n; ++i) pk = (std::max)(pk, static_cast<float>(std::abs(p[i])));
-                }
-            } else {
-                const auto* p = reinterpret_cast<const double*>(f->data[0]);
-                if (p) {
-                    const int total = n * chs;
-                    for (int i = 0; i < total; ++i) pk = (std::max)(pk, static_cast<float>(std::abs(p[i])));
-                }
-            }
+            const float rms = (cnt > 0) ? static_cast<float>(std::sqrt(sumSq / static_cast<double>(cnt))) : 0.0f;
+            const float env = std::clamp(0.82f * rms + 0.18f * (std::min)(1.0f, subPeak), 0.0f, 1.0f);
+            const double subMidSec = frameStartSec + (static_cast<double>(s0 + sEnd) * 0.5) / static_cast<double>(sampleRate);
+            framePeaks.emplace_back(subMidSec, env);
         }
-        return std::clamp(pk, 0.0f, 1.0f);
     };
 
     auto drainAudio = [&]() {
@@ -3332,7 +4206,7 @@ bool StudioVideoCompositor::extractAudioWaveformPeaks(
             }
             const double frameSpanSec = static_cast<double>((std::max)(1, frame->nb_samples)) / static_cast<double>(sampleRate);
             runningSec = (std::max)(runningSec, tSec + frameSpanSec);
-            framePeaks.emplace_back(tSec + frameSpanSec * 0.5, computeFramePeak(frame));
+            appendSubWindowEnvelopes(frame, tSec);
         }
     };
 
@@ -3357,14 +4231,18 @@ bool StudioVideoCompositor::extractAudioWaveformPeaks(
     if (finalDur <= 1e-4) return false;
 
     outPeaks.assign(safeBuckets, 0.0f);
-    for (const auto& [tCenterSec, pk] : framePeaks) {
-        const double halfSpan = (std::max)(0.011, 1024.0 / (2.0 * static_cast<double>(sampleRate)));
-        const double t0 = std::clamp((tCenterSec - halfSpan) / finalDur, 0.0, 0.999999);
-        const double t1 = std::clamp((tCenterSec + halfSpan) / finalDur, t0, 0.999999);
-        const size_t b0 = std::min<size_t>(safeBuckets - 1, static_cast<size_t>(t0 * static_cast<double>(safeBuckets)));
-        const size_t b1 = std::min<size_t>(safeBuckets - 1, static_cast<size_t>(t1 * static_cast<double>(safeBuckets)));
-        for (size_t b = b0; b <= b1; ++b) {
-            outPeaks[b] = (std::max)(outPeaks[b], pk);
+    std::vector<uint32_t> bucketCounts(safeBuckets, 0u);
+    for (const auto& [tCenterSec, env] : framePeaks) {
+        const double u = std::clamp(tCenterSec / finalDur, 0.0, 0.999999);
+        const size_t b = std::min<size_t>(safeBuckets - 1, static_cast<size_t>(u * static_cast<double>(safeBuckets)));
+        outPeaks[b] += env;
+        bucketCounts[b] += 1u;
+    }
+    for (size_t b = 0; b < safeBuckets; ++b) {
+        if (bucketCounts[b] > 0u) {
+            outPeaks[b] /= static_cast<float>(bucketCounts[b]);
+        } else if (b > 0) {
+            outPeaks[b] = outPeaks[b - 1] * 0.85f;
         }
     }
     return true;
@@ -3414,6 +4292,377 @@ bool StudioVideoCompositor::exportRenderedVideo(
     opts.baseBitrateMbps = bitrateMbps;
     return exportStudioMedia(
         rawInputPathUtf8, finalOutputPathUtf8, timeline, config, opts, onProgress, cancelFlag);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// StudioHiResFrameReader — 演播室驻留式原生全分辨率原片帧解码器 + LRU 缓存
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct StudioHiResFrameReader::Impl {
+    struct CachedEntry {
+        double sec = -1.0;
+        uint64_t stamp = 0;
+        cv::Mat bgr;
+    };
+
+    AVFormatContext* fmtCtx = nullptr;
+    AVCodecContext* decCtx = nullptr;
+    SwsContext* sws = nullptr;
+    AVPacket* pkt = nullptr;
+    AVFrame* frame = nullptr;
+    AVFrame* bestCandidateFrame = nullptr;
+
+    std::string openedPath;
+    int videoIdx = -1;
+    int origW = 0;
+    int origH = 0;
+    int dstW = 0;
+    int dstH = 0;
+    int swsSrcW = 0;
+    int swsSrcH = 0;
+    int swsSrcFmt = -1;
+
+    double streamTbSec = 1.0 / 30.0;
+    double durationSec = 0.0;
+    int64_t firstPts = AV_NOPTS_VALUE;
+    double lastDecodedSec = -1e9;
+    bool freshAtStreamStart = true;
+    cv::Mat lastDecodedBgr;
+
+    uint64_t accessCounter = 0;
+    size_t cachedBytes = 0;
+    static constexpr size_t kMaxCacheBytes = 128ULL * 1024ULL * 1024ULL; // 严格锁定 <= 128MB 原生帧 LRU 预算
+    static constexpr size_t kMaxCacheEntries = 20;
+    std::vector<CachedEntry> cache;
+
+    ~Impl() {
+        reset();
+    }
+
+    void reset() noexcept {
+        cache.clear();
+        cachedBytes = 0;
+        lastDecodedBgr.release();
+        lastDecodedSec = -1e9;
+        freshAtStreamStart = true;
+        firstPts = AV_NOPTS_VALUE;
+        videoIdx = -1;
+        origW = 0;
+        origH = 0;
+        dstW = 0;
+        dstH = 0;
+        swsSrcW = 0;
+        swsSrcH = 0;
+        swsSrcFmt = -1;
+        openedPath.clear();
+
+        if (sws) {
+            sws_freeContext(sws);
+            sws = nullptr;
+        }
+        if (bestCandidateFrame) {
+            av_frame_free(&bestCandidateFrame);
+        }
+        if (frame) {
+            av_frame_free(&frame);
+        }
+        if (pkt) {
+            av_packet_free(&pkt);
+        }
+        if (decCtx) {
+            avcodec_free_context(&decCtx);
+        }
+        if (fmtCtx) {
+            avformat_close_input(&fmtCtx);
+        }
+    }
+
+    bool convertAvFrameToBgr(const AVFrame* srcFrame, cv::Mat& outMat) {
+        if (!srcFrame || srcFrame->width <= 0 || srcFrame->height <= 0 || dstW <= 0 || dstH <= 0) {
+            return false;
+        }
+        if (!sws || swsSrcW != srcFrame->width || swsSrcH != srcFrame->height || swsSrcFmt != srcFrame->format) {
+            if (sws) {
+                sws_freeContext(sws);
+                sws = nullptr;
+            }
+            const int flags = (dstW < srcFrame->width || dstH < srcFrame->height) ? SWS_AREA : SWS_BILINEAR;
+            sws = sws_getContext(
+                srcFrame->width, srcFrame->height, static_cast<AVPixelFormat>(srcFrame->format),
+                dstW, dstH, AV_PIX_FMT_BGR24,
+                flags, nullptr, nullptr, nullptr);
+            swsSrcW = srcFrame->width;
+            swsSrcH = srcFrame->height;
+            swsSrcFmt = srcFrame->format;
+        }
+        if (!sws) return false;
+
+        outMat.create(dstH, dstW, CV_8UC3);
+        uint8_t* dstData[4] = {outMat.data, nullptr, nullptr, nullptr};
+        int dstLinesize[4] = {static_cast<int>(outMat.step[0]), 0, 0, 0};
+        return sws_scale(sws, srcFrame->data, srcFrame->linesize, 0, srcFrame->height, dstData, dstLinesize) > 0;
+    }
+
+    void insertCache(double sec, const cv::Mat& bgr) {
+        if (bgr.empty()) return;
+        for (auto& e : cache) {
+            if (std::abs(e.sec - sec) <= 0.012) {
+                e.stamp = ++accessCounter;
+                e.bgr = bgr;
+                return;
+            }
+        }
+        const size_t frameBytes = bgr.total() * bgr.elemSize();
+        while (!cache.empty() &&
+               (cache.size() >= kMaxCacheEntries || (cachedBytes + frameBytes > kMaxCacheBytes))) {
+            auto oldestIt = std::min_element(
+                cache.begin(), cache.end(),
+                [](const CachedEntry& a, const CachedEntry& b) { return a.stamp < b.stamp; });
+            const size_t oldBytes = oldestIt->bgr.total() * oldestIt->bgr.elemSize();
+            cachedBytes = (cachedBytes >= oldBytes) ? (cachedBytes - oldBytes) : 0;
+            cache.erase(oldestIt);
+        }
+        cache.push_back(CachedEntry{sec, ++accessCounter, bgr});
+        cachedBytes += frameBytes;
+    }
+};
+
+StudioHiResFrameReader::StudioHiResFrameReader()
+    : m_impl(std::make_unique<Impl>()) {}
+
+StudioHiResFrameReader::~StudioHiResFrameReader() = default;
+
+void StudioHiResFrameReader::close() noexcept {
+    if (m_impl) {
+        m_impl->reset();
+    }
+}
+
+bool StudioHiResFrameReader::isOpen() const noexcept {
+    return m_impl && m_impl->fmtCtx != nullptr && m_impl->decCtx != nullptr && m_impl->videoIdx >= 0;
+}
+
+int StudioHiResFrameReader::nativeWidth() const noexcept {
+    return m_impl ? m_impl->dstW : 0;
+}
+
+int StudioHiResFrameReader::nativeHeight() const noexcept {
+    return m_impl ? m_impl->dstH : 0;
+}
+
+bool StudioHiResFrameReader::open(const std::string& videoPathUtf8, int maxDecodeLongSide) {
+    if (!m_impl) return false;
+    if (videoPathUtf8.empty()) {
+        m_impl->reset();
+        return false;
+    }
+    if (isOpen() && m_impl->openedPath == videoPathUtf8) {
+        return true;
+    }
+
+    m_impl->reset();
+
+    if (avformat_open_input(&m_impl->fmtCtx, videoPathUtf8.c_str(), nullptr, nullptr) < 0 || !m_impl->fmtCtx) {
+        m_impl->reset();
+        return false;
+    }
+    if (avformat_find_stream_info(m_impl->fmtCtx, nullptr) < 0) {
+        m_impl->reset();
+        return false;
+    }
+
+    for (unsigned i = 0; i < m_impl->fmtCtx->nb_streams; ++i) {
+        if (m_impl->fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            m_impl->videoIdx = static_cast<int>(i);
+            break;
+        }
+    }
+    if (m_impl->videoIdx < 0) {
+        m_impl->reset();
+        return false;
+    }
+
+    AVStream* vStream = m_impl->fmtCtx->streams[m_impl->videoIdx];
+    const AVCodec* decCodec = avcodec_find_decoder(vStream->codecpar->codec_id);
+    if (!decCodec) {
+        m_impl->reset();
+        return false;
+    }
+
+    m_impl->decCtx = avcodec_alloc_context3(decCodec);
+    if (!m_impl->decCtx) {
+        m_impl->reset();
+        return false;
+    }
+    m_impl->decCtx->thread_count = 4;
+    if (avcodec_parameters_to_context(m_impl->decCtx, vStream->codecpar) < 0 ||
+        avcodec_open2(m_impl->decCtx, decCodec, nullptr) < 0) {
+        m_impl->reset();
+        return false;
+    }
+
+    m_impl->origW = m_impl->decCtx->width;
+    m_impl->origH = m_impl->decCtx->height;
+    if (m_impl->origW <= 0 || m_impl->origH <= 0) {
+        m_impl->reset();
+        return false;
+    }
+
+    const int safeCap = std::clamp(maxDecodeLongSide, 640, 3840);
+    const int longSide = (std::max)(m_impl->origW, m_impl->origH);
+    const double scale = (longSide > safeCap)
+        ? (static_cast<double>(safeCap) / static_cast<double>(longSide))
+        : 1.0;
+    m_impl->dstW = (std::max)(32, static_cast<int>(std::round(m_impl->origW * scale)) & ~1);
+    m_impl->dstH = (std::max)(32, static_cast<int>(std::round(m_impl->origH * scale)) & ~1);
+
+    m_impl->streamTbSec = (vStream->time_base.den > 0) ? av_q2d(vStream->time_base) : (1.0 / 30.0);
+    if (vStream->start_time != AV_NOPTS_VALUE) {
+        m_impl->firstPts = vStream->start_time;
+    }
+    if (m_impl->fmtCtx->duration > 0) {
+        m_impl->durationSec = static_cast<double>(m_impl->fmtCtx->duration) / static_cast<double>(AV_TIME_BASE);
+    } else if (vStream->duration > 0 && vStream->time_base.den > 0) {
+        m_impl->durationSec = static_cast<double>(vStream->duration) * av_q2d(vStream->time_base);
+    }
+
+    m_impl->pkt = av_packet_alloc();
+    m_impl->frame = av_frame_alloc();
+    m_impl->bestCandidateFrame = av_frame_alloc();
+    if (!m_impl->pkt || !m_impl->frame || !m_impl->bestCandidateFrame) {
+        m_impl->reset();
+        return false;
+    }
+
+    m_impl->openedPath = videoPathUtf8;
+    return true;
+}
+
+bool StudioHiResFrameReader::tryGetCachedFrame(double targetSec, cv::Mat& outBgr, double toleranceSec) noexcept {
+    if (!m_impl || m_impl->cache.empty()) return false;
+    const double clampedSec = (std::max)(0.0, targetSec);
+    double bestDiff = toleranceSec + 1.0;
+    Impl::CachedEntry* bestEntry = nullptr;
+    for (auto& entry : m_impl->cache) {
+        const double d = std::abs(entry.sec - clampedSec);
+        if (d <= toleranceSec && d < bestDiff && !entry.bgr.empty()) {
+            bestDiff = d;
+            bestEntry = &entry;
+        }
+    }
+    if (!bestEntry) return false;
+    bestEntry->stamp = ++m_impl->accessCounter;
+    outBgr = bestEntry->bgr;
+    return true;
+}
+
+bool StudioHiResFrameReader::decodeFrameAt(double targetSec, cv::Mat& outBgr) {
+    if (!isOpen()) return false;
+
+    double clampedSec = (std::max)(0.0, targetSec);
+    if (m_impl->durationSec > 0.05) {
+        clampedSec = (std::min)(clampedSec, (std::max)(0.0, m_impl->durationSec - 0.01));
+    }
+
+    if (tryGetCachedFrame(clampedSec, outBgr, 0.018)) {
+        return true;
+    }
+
+    const bool canRollForward =
+        (m_impl->freshAtStreamStart && clampedSec <= 0.65) ||
+        ((m_impl->lastDecodedSec >= -1e-4) &&
+         (clampedSec >= m_impl->lastDecodedSec - 0.018) &&
+         (clampedSec <= m_impl->lastDecodedSec + 0.65));
+
+    if (!m_impl->freshAtStreamStart && canRollForward &&
+        clampedSec <= m_impl->lastDecodedSec + 0.016 && !m_impl->lastDecodedBgr.empty()) {
+        outBgr = m_impl->lastDecodedBgr;
+        return true;
+    }
+
+    if (!canRollForward) {
+        const int64_t basePts = (m_impl->firstPts != AV_NOPTS_VALUE) ? m_impl->firstPts : 0;
+        const double seekSec = (std::max)(0.0, clampedSec - 0.04);
+        const int64_t seekTs = basePts + static_cast<int64_t>(std::llround(seekSec / (std::max)(1e-6, m_impl->streamTbSec)));
+        av_seek_frame(m_impl->fmtCtx, m_impl->videoIdx, seekTs, AVSEEK_FLAG_BACKWARD);
+        avcodec_flush_buffers(m_impl->decCtx);
+        m_impl->lastDecodedSec = -1e9;
+    }
+    m_impl->freshAtStreamStart = false;
+
+    bool hasCandidate = false;
+    double candidateSec = 0.0;
+    int decodedCount = 0;
+    constexpr int kMaxDecodeSteps = 210;
+    bool reachedTarget = false;
+
+    auto processDecodedFrames = [&]() {
+        while (!reachedTarget && avcodec_receive_frame(m_impl->decCtx, m_impl->frame) >= 0) {
+            ++decodedCount;
+            const int64_t rawPts = (m_impl->frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                ? m_impl->frame->best_effort_timestamp
+                : m_impl->frame->pts;
+            double fSec = (m_impl->lastDecodedSec >= 0.0) ? (m_impl->lastDecodedSec + (1.0 / 30.0)) : 0.0;
+            if (rawPts != AV_NOPTS_VALUE) {
+                if (m_impl->firstPts == AV_NOPTS_VALUE) {
+                    m_impl->firstPts = rawPts;
+                }
+                fSec = (std::max)(0.0, static_cast<double>(rawPts - m_impl->firstPts) * m_impl->streamTbSec);
+            }
+
+            av_frame_unref(m_impl->bestCandidateFrame);
+            if (av_frame_ref(m_impl->bestCandidateFrame, m_impl->frame) >= 0) {
+                hasCandidate = true;
+                candidateSec = fSec;
+            }
+            m_impl->lastDecodedSec = fSec;
+
+            if (fSec >= clampedSec - 0.014 || decodedCount >= kMaxDecodeSteps) {
+                reachedTarget = true;
+                av_frame_unref(m_impl->frame);
+                break;
+            }
+            av_frame_unref(m_impl->frame);
+        }
+    };
+
+    // 先消费解码器内部可能残留的已缓冲帧
+    processDecodedFrames();
+
+    while (!reachedTarget && decodedCount < kMaxDecodeSteps) {
+        const int rd = av_read_frame(m_impl->fmtCtx, m_impl->pkt);
+        if (rd < 0) {
+            avcodec_send_packet(m_impl->decCtx, nullptr);
+            processDecodedFrames();
+            break;
+        }
+        if (m_impl->pkt->stream_index == m_impl->videoIdx) {
+            if (avcodec_send_packet(m_impl->decCtx, m_impl->pkt) >= 0) {
+                processDecodedFrames();
+            }
+        }
+        av_packet_unref(m_impl->pkt);
+    }
+
+    if (!hasCandidate) {
+        if (!m_impl->lastDecodedBgr.empty()) {
+            outBgr = m_impl->lastDecodedBgr;
+            return true;
+        }
+        return false;
+    }
+
+    cv::Mat decodedBgr;
+    const bool converted = m_impl->convertAvFrameToBgr(m_impl->bestCandidateFrame, decodedBgr);
+    av_frame_unref(m_impl->bestCandidateFrame);
+    if (!converted || decodedBgr.empty()) {
+        return false;
+    }
+
+    m_impl->lastDecodedBgr = decodedBgr;
+    m_impl->insertCache(candidateSec, decodedBgr);
+    outBgr = std::move(decodedBgr);
+    return true;
 }
 
 } // namespace tools3000::capture

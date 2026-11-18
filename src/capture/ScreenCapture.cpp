@@ -9,6 +9,7 @@
 
 #include "capture/ScreenCapture.h"
 #include "capture/ClipboardUtils.h"
+#include "capture/WatermarkRenderer.h"
 #include "capture/CaptureBackend.h"
 #include "capture/CursorOverlay.h"
 #include "core/events/EventBus.h"
@@ -77,9 +78,17 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         const auto decision = resolveCaptureDeliveryDecision(activeOpts, completion);
         const bool isZh = useChineseCaptureToast();
 
-        if ((decision.shouldSaveExplicitly || decision.shouldSaveAutomatically) && !markedImage.empty()) {
+        // 底片纯净、出口压印：内存直达回调（如 OCR）使用无水印原图 markedImage，保存文件与复制剪贴板自动压印企业/品牌水印
+        const bool needsExportWatermark = !markedImage.empty() &&
+            (decision.shouldSaveExplicitly || decision.shouldSaveAutomatically ||
+             decision.shouldCopyToClipboard || decision.shouldPromptSaveAsFallback);
+        const cv::Mat deliverableImage = needsExportWatermark
+            ? WatermarkRenderer::applyGlobalCaptureWatermarkIfEnabled(markedImage)
+            : markedImage;
+
+        if ((decision.shouldSaveExplicitly || decision.shouldSaveAutomatically) && !deliverableImage.empty()) {
             const auto format = decision.shouldSaveExplicitly ? completion.format : activeOpts.format;
-            auto encoded = encodeImage(markedImage, format, activeOpts.quality);
+            auto encoded = encodeImage(deliverableImage, format, activeOpts.quality);
             if (!encoded.empty()) {
                 const std::string path = decision.shouldSaveExplicitly
                     ? completion.filePath
@@ -97,11 +106,11 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         }
 
         // 复制到剪贴板：仅在显式复制 (Copy) 或用户开启了 copyToClipboard 时写入，绝不在关闭开关或快捷键 OCR 时污染剪贴板
-        if (decision.shouldCopyToClipboard && !markedImage.empty()) {
+        if (decision.shouldCopyToClipboard && !deliverableImage.empty()) {
             const std::wstring widePath = tools3000::core::WinUtils::utf8ToWstring(result.filePath);
-            int padX = (markedImage.cols > region.width && region.width > 0) ? (markedImage.cols - region.width) / 2 : 0;
-            int padY = (markedImage.rows > region.height && region.height > 0) ? (markedImage.rows - region.height) / 2 : 0;
-            copyToClipboard(markedImage, widePath, &region, padX, padY);
+            int padX = (deliverableImage.cols > region.width && region.width > 0) ? (deliverableImage.cols - region.width) / 2 : 0;
+            int padY = (deliverableImage.rows > region.height && region.height > 0) ? (deliverableImage.rows - region.height) / 2 : 0;
+            copyToClipboard(deliverableImage, widePath, &region, padX, padY);
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                 isZh ? L"截图已复制到剪贴板" : L"Screenshot copied to clipboard"});
         } else if (!decision.shouldSaveExplicitly &&
@@ -114,8 +123,8 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         }
 
         // 当用户同时关闭了自动复制与自动保存（且非内存直达回调）时，弹出系统另存为对话框兜底防丢图
-        if (decision.shouldPromptSaveAsFallback && !markedImage.empty()) {
-            cv::Mat imgToSave = markedImage.clone();
+        if (decision.shouldPromptSaveAsFallback && !deliverableImage.empty()) {
+            cv::Mat imgToSave = deliverableImage.clone();
             const ImageFormat defFmt = activeOpts.format;
             const int quality = activeOpts.quality;
             const bool recordHist = decision.shouldRecordHistory;

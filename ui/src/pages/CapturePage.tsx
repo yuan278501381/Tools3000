@@ -5,10 +5,10 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, TextInput, Select, Button } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, TextInput, Select, Button, CodeBadge } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
-import { Camera, Video, Palette, FolderOpen, Sparkles } from 'lucide-react';
+import { Camera, Video, Palette, FolderOpen, Sparkles, ShieldCheck } from 'lucide-react';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { toast } from 'sonner';
@@ -28,6 +28,14 @@ interface CaptureSettings {
   beautyShellTheme?: string;
   beautyShellPadding?: number;
   beautyShellRadius?: number;
+  watermarkEnabled?: boolean;
+  watermarkMode?: number;
+  watermarkImagePath?: string;
+  watermarkText?: string;
+  watermarkAnchor?: number;
+  watermarkScale?: number;
+  watermarkOpacity?: number;
+  watermarkPolicyForced?: boolean;
   shortcut?: string;
   saveDirectory?: string;
 }
@@ -50,16 +58,31 @@ interface RecordingSettings {
   countdownSeconds: number;
   voiceEnhance?: boolean;
   hideIndicatorInCapture?: boolean;
+  hideDesktopIcons?: boolean;
+  hideTaskbar?: boolean;
   typingAutoZoom?: boolean;
   studioMode?: boolean;
   studioAutoZoom?: boolean;
   studioZoomMode?: number;
   studioZoomFactor?: number;
+  studioMotionBlur?: boolean;
   studioSmoothCursor?: boolean;
   studioCursorScale?: number;
+  studioClickStyle?: number;
   studioAutoFrame?: boolean;
   studioTheme?: string;
   studioAutoCaptions?: boolean;
+  studioExportFormat?: number;
+  studioExportResolution?: number;
+  studioExportAutoClose?: boolean;
+  studioWatermarkEnabled?: boolean;
+  studioWatermarkMode?: number;
+  studioWatermarkImagePath?: string;
+  studioWatermarkText?: string;
+  studioWatermarkAnchor?: number;
+  studioWatermarkScale?: number;
+  studioWatermarkOpacity?: number;
+  studioWatermarkPolicyForced?: boolean;
 }
 
 interface AudioDeviceInfo {
@@ -95,6 +118,8 @@ function normalizeBeautyShellTheme(raw?: string): string {
 const BEAUTY_SHELL_PADDING_PRESETS = [16, 24, 32, 48, 64, 72] as const;
 const BEAUTY_SHELL_RADIUS_PRESETS = [0, 8, 10, 12, 16, 24, 32] as const;
 const RECORDING_BITRATE_PRESETS = [4, 8, 16, 32] as const;
+const WATERMARK_SCALE_PRESETS = [0.6, 0.8, 1.0, 1.25, 1.5, 2.0] as const;
+const WATERMARK_OPACITY_PRESETS = [0.08, 0.12, 0.16, 0.25, 0.4, 0.65, 0.85, 1.0] as const;
 
 export const CapturePage: FC = () => {
   const { t } = useTranslation();
@@ -105,6 +130,10 @@ export const CapturePage: FC = () => {
     autoBypassFullscreen: true,
     beautyShellEnabled: false, beautyShellTheme: 'aurora_purple',
     beautyShellPadding: 32, beautyShellRadius: 16,
+    watermarkEnabled: false, watermarkMode: 2, watermarkImagePath: '',
+    watermarkText: '{user} · {host} · {date} {time}',
+    watermarkAnchor: 3, watermarkScale: 1.0, watermarkOpacity: 0.16,
+    watermarkPolicyForced: false,
   });
   const [recording, setRecording] = useState<RecordingSettings>({
     format: 'mp4_h264', fps: 30, bitrate: 8, includeCursor: true, showClickEffects: false,
@@ -113,10 +142,16 @@ export const CapturePage: FC = () => {
     systemAudioDeviceId: '', microphoneDeviceId: '',
     systemAudioVolume: 100, microphoneVolume: 100,
     countdownSeconds: 3,
-    voiceEnhance: true, hideIndicatorInCapture: true, typingAutoZoom: false,
+    voiceEnhance: true, hideIndicatorInCapture: true,
+    hideDesktopIcons: false, hideTaskbar: false, typingAutoZoom: false,
     studioMode: true, studioAutoZoom: true, studioZoomMode: 1, studioZoomFactor: 1.50,
-    studioSmoothCursor: true, studioCursorScale: 1.35,
+    studioMotionBlur: false,
+    studioSmoothCursor: true, studioCursorScale: 1.35, studioClickStyle: 0,
     studioAutoFrame: true, studioTheme: 'aurora_purple', studioAutoCaptions: false,
+    studioExportFormat: 0, studioExportResolution: 3, studioExportAutoClose: false,
+    studioWatermarkEnabled: false, studioWatermarkMode: 0, studioWatermarkImagePath: '',
+    studioWatermarkText: '{user} · {date} {time}', studioWatermarkAnchor: 3,
+    studioWatermarkScale: 1.0, studioWatermarkOpacity: 0.88, studioWatermarkPolicyForced: false,
   });
   const [audioDevices, setAudioDevices] = useState<AudioDeviceInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -269,6 +304,125 @@ export const CapturePage: FC = () => {
     } catch (error) {
       toast.error(t('capture.startFailed'), { description: String(error) });
     }
+  };
+
+  const handlePickWatermarkImage = async () => {
+    try {
+      const res = await bridgeRequest<{ success?: boolean; path?: string; cancelled?: boolean; error?: string }>(
+        'capture.pickWatermarkImage',
+      );
+      if (res?.cancelled) return;
+      if (!res?.success || !res.path) {
+        throw new Error(res?.error || t('capture.browseFailed'));
+      }
+      updateCapture('watermarkImagePath', res.path);
+    } catch (error) {
+      toast.error(t('capture.browseFailed'), { description: String(error) });
+    }
+  };
+
+  const handleWatermarkModeChange = (rawMode: string) => {
+    const nextMode = parseInt(rawMode, 10);
+    const curOpacity = capture.watermarkOpacity ?? 0.16;
+    let nextOpacity = curOpacity;
+    if (nextMode === 2 && curOpacity > 0.40) {
+      nextOpacity = 0.16;
+    } else if (nextMode !== 2 && curOpacity < 0.30) {
+      nextOpacity = 0.85;
+    }
+    setCapture(prev => ({ ...prev, watermarkMode: nextMode, watermarkOpacity: nextOpacity }));
+    void bridgeRequest<OperationResult>('capture.updateSettings', {
+      watermarkMode: nextMode,
+      watermarkOpacity: nextOpacity,
+    }).catch(() => { /* synced via focus fallback */ });
+  };
+
+  const handleInsertWatermarkToken = (token: string) => {
+    const cur = (capture.watermarkText ?? '').trimEnd();
+    const next = cur.length > 0 ? `${cur} · ${token}` : token;
+    updateCapture('watermarkText', next);
+  };
+
+  const handlePickStudioWatermarkImage = async () => {
+    try {
+      const res = await bridgeRequest<{ success?: boolean; path?: string; cancelled?: boolean; error?: string }>(
+        'capture.pickWatermarkImage',
+      );
+      if (res?.cancelled) return;
+      if (!res?.success || !res.path) {
+        throw new Error(res?.error || t('capture.browseFailed'));
+      }
+      updateRecording('studioWatermarkImagePath', res.path);
+    } catch (error) {
+      toast.error(t('capture.browseFailed'), { description: String(error) });
+    }
+  };
+
+  const handleStudioWatermarkModeChange = (rawMode: string) => {
+    const nextMode = parseInt(rawMode, 10);
+    const curOpacity = recording.studioWatermarkOpacity ?? 0.88;
+    let nextOpacity = curOpacity;
+    if (nextMode === 2 && curOpacity > 0.40) {
+      nextOpacity = 0.16;
+    } else if (nextMode !== 2 && curOpacity < 0.30) {
+      nextOpacity = 0.88;
+    }
+    setRecording(prev => ({ ...prev, studioWatermarkMode: nextMode, studioWatermarkOpacity: nextOpacity }));
+    void bridgeRequest<OperationResult>('recording.updateSettings', {
+      studioWatermarkMode: nextMode,
+      studioWatermarkOpacity: nextOpacity,
+    }).catch(() => { /* synced via focus fallback */ });
+  };
+
+  const handleInsertStudioWatermarkToken = (token: string) => {
+    const cur = (recording.studioWatermarkText ?? '').trimEnd();
+    const next = cur.length > 0 ? `${cur} · ${token}` : token;
+    updateRecording('studioWatermarkText', next);
+  };
+
+  const handleSyncStudioWatermarkFromCapture = () => {
+    const patch = {
+      studioWatermarkEnabled: true,
+      studioWatermarkMode: capture.watermarkMode ?? 2,
+      studioWatermarkImagePath: capture.watermarkImagePath ?? '',
+      studioWatermarkText: capture.watermarkText ?? '{user} · {host} · {date} {time}',
+      studioWatermarkAnchor: Math.min(4, Math.max(0, capture.watermarkAnchor ?? 3)),
+      studioWatermarkScale: capture.watermarkScale ?? 1.0,
+      studioWatermarkOpacity: capture.watermarkOpacity ?? 0.16,
+    };
+    setRecording(prev => ({ ...prev, ...patch }));
+    bridgeRequest<OperationResult>('recording.updateSettings', patch)
+      .then(res => {
+        if (!res.success) throw new Error(res.error || 'sync failed');
+        toast.success(t('recording.studioWatermarkSyncedToast'));
+      })
+      .catch(err => toast.error(t('capture.saveFailed'), { description: String(err) }));
+  };
+
+  const watermarkScaleOptions = (current: number) => {
+    const rounded = Math.round(current * 100) / 100;
+    const values: number[] = [...WATERMARK_SCALE_PRESETS];
+    if (!values.some(v => Math.abs(v - rounded) < 0.02)) {
+      values.push(rounded);
+      values.sort((a, b) => a - b);
+    }
+    return values.map(v => ({
+      value: String(v),
+      label: `${Math.round(v * 100)}%`,
+    }));
+  };
+
+  const watermarkOpacityOptions = (current: number) => {
+    const rounded = Math.round(current * 100) / 100;
+    const values: number[] = [...WATERMARK_OPACITY_PRESETS];
+    if (!values.some(v => Math.abs(v - rounded) < 0.02)) {
+      values.push(rounded);
+      values.sort((a, b) => a - b);
+    }
+    return values.map(v => ({
+      value: String(v),
+      label: `${Math.round(v * 100)}%`,
+    }));
   };
 
   const audioDeviceOptions = (systemAudio: boolean, selectedId: string) => {
@@ -496,6 +650,129 @@ export const CapturePage: FC = () => {
         </Card>
       </SettingGroup>
 
+      <SettingGroup title={t('capture.watermarkSectionTitle')} icon={<ShieldCheck size={20} strokeWidth={2.5} />}>
+        <Card>
+          <Toggle
+            id="capture-watermark-enabled"
+            label={t('capture.watermarkEnable')}
+            description={
+              capture.watermarkPolicyForced
+                ? t('capture.watermarkPolicyLockedDesc')
+                : t('capture.watermarkEnableDesc')
+            }
+            checked={Boolean(capture.watermarkEnabled || capture.watermarkPolicyForced)}
+            disabled={Boolean(capture.watermarkPolicyForced)}
+            onChange={(v) => updateCapture('watermarkEnabled', v)}
+          />
+          {(capture.watermarkEnabled || capture.watermarkPolicyForced) && (
+            <>
+              <SettingRow label={t('capture.watermarkMode')} description={t('capture.watermarkModeDesc')}>
+                <Select
+                  id="capture-watermark-mode"
+                  value={String(capture.watermarkMode ?? 2)}
+                  disabled={Boolean(capture.watermarkPolicyForced)}
+                  onChange={handleWatermarkModeChange}
+                  options={[
+                    { value: '2', label: t('capture.watermarkModeTiled') },
+                    { value: '0', label: t('capture.watermarkModeImage') },
+                    { value: '1', label: t('capture.watermarkModeCornerText') },
+                  ]}
+                />
+              </SettingRow>
+              {(capture.watermarkMode ?? 2) === 0 ? (
+                <SettingRow label={t('capture.watermarkImage')} description={t('capture.watermarkImageDesc')}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <TextInput
+                      id="capture-watermark-image-path"
+                      value={capture.watermarkImagePath || ''}
+                      placeholder={t('capture.watermarkImagePlaceholder')}
+                      readOnly
+                      onChange={() => {}}
+                    />
+                    <Button
+                      variant="ghost"
+                      disabled={Boolean(capture.watermarkPolicyForced)}
+                      onClick={() => void handlePickWatermarkImage()}
+                    >
+                      {t('capture.watermarkPickImage')}
+                    </Button>
+                  </div>
+                </SettingRow>
+              ) : (
+                <SettingRow
+                  label={t('capture.watermarkText')}
+                  description={t('capture.watermarkTextDesc')}
+                  layout="vertical"
+                >
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
+                    <TextInput
+                      id="capture-watermark-text"
+                      value={capture.watermarkText ?? ''}
+                      disabled={Boolean(capture.watermarkPolicyForced)}
+                      onChange={(v) => updateCapture('watermarkText', v)}
+                    />
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      {([
+                        ['{user}', t('capture.watermarkTokenUser')],
+                        ['{host}', t('capture.watermarkTokenHost')],
+                        ['{ip}', t('capture.watermarkTokenIp')],
+                        ['{date}', t('capture.watermarkTokenDate')],
+                        ['{time}', t('capture.watermarkTokenTime')],
+                      ] as const).map(([tok, label]) => (
+                        <Button
+                          key={tok}
+                          variant="ghost"
+                          disabled={Boolean(capture.watermarkPolicyForced)}
+                          onClick={() => handleInsertWatermarkToken(tok)}
+                        >
+                          <span>{label}</span>
+                          <CodeBadge>{tok}</CodeBadge>
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                </SettingRow>
+              )}
+              {(capture.watermarkMode ?? 2) !== 2 && (
+                <SettingRow label={t('capture.watermarkAnchor')} description={t('capture.watermarkAnchorDesc')}>
+                  <Select
+                    id="capture-watermark-anchor"
+                    value={String(Math.min(4, Math.max(0, capture.watermarkAnchor ?? 3)))}
+                    disabled={Boolean(capture.watermarkPolicyForced)}
+                    onChange={(v) => updateCapture('watermarkAnchor', parseInt(v, 10))}
+                    options={[
+                      { value: '0', label: t('capture.watermarkAnchorTopLeft') },
+                      { value: '1', label: t('capture.watermarkAnchorTopRight') },
+                      { value: '2', label: t('capture.watermarkAnchorBottomLeft') },
+                      { value: '3', label: t('capture.watermarkAnchorBottomRight') },
+                      { value: '4', label: t('capture.watermarkAnchorCenter') },
+                    ]}
+                  />
+                </SettingRow>
+              )}
+              <SettingRow label={t('capture.watermarkScale')} description={t('capture.watermarkScaleDesc')}>
+                <Select
+                  id="capture-watermark-scale"
+                  value={String(Math.round((capture.watermarkScale ?? 1.0) * 100) / 100)}
+                  disabled={Boolean(capture.watermarkPolicyForced)}
+                  onChange={(v) => updateCapture('watermarkScale', parseFloat(v))}
+                  options={watermarkScaleOptions(capture.watermarkScale ?? 1.0)}
+                />
+              </SettingRow>
+              <SettingRow label={t('capture.watermarkOpacity')} description={t('capture.watermarkOpacityDesc')}>
+                <Select
+                  id="capture-watermark-opacity"
+                  value={String(Math.round((capture.watermarkOpacity ?? 0.16) * 100) / 100)}
+                  disabled={Boolean(capture.watermarkPolicyForced)}
+                  onChange={(v) => updateCapture('watermarkOpacity', parseFloat(v))}
+                  options={watermarkOpacityOptions(capture.watermarkOpacity ?? 0.16)}
+                />
+              </SettingRow>
+            </>
+          )}
+        </Card>
+      </SettingGroup>
+
       <PinGroupSettingsCard />
 
       <SettingGroup title={t('recording.title')} icon={<Video size={20} strokeWidth={2.5} />}>
@@ -716,6 +993,20 @@ export const CapturePage: FC = () => {
             checked={recording.hideIndicatorInCapture ?? true}
             onChange={(v) => updateRecording('hideIndicatorInCapture', v)}
           />
+          <Toggle
+            id="record-hide-desktop-icons"
+            label={t('recording.hideDesktopIcons')}
+            description={t('recording.hideDesktopIconsDesc')}
+            checked={recording.hideDesktopIcons ?? false}
+            onChange={(v) => updateRecording('hideDesktopIcons', v)}
+          />
+          <Toggle
+            id="record-hide-taskbar"
+            label={t('recording.hideTaskbar')}
+            description={t('recording.hideTaskbarDesc')}
+            checked={recording.hideTaskbar ?? false}
+            onChange={(v) => updateRecording('hideTaskbar', v)}
+          />
         </Card>
       </SettingGroup>
 
@@ -724,7 +1015,11 @@ export const CapturePage: FC = () => {
           <Toggle
             id="record-studio-mode"
             label={t('recording.studioMode')}
-            description={t('recording.studioModeDesc')}
+            description={
+              recording.format === 'gif'
+                ? t('recording.studioGifHintDesc')
+                : t('recording.studioModeDesc')
+            }
             checked={recording.studioMode ?? true}
             disabled={recording.format === 'gif'}
             onChange={(v) => updateRecording('studioMode', v)}
@@ -770,6 +1065,13 @@ export const CapturePage: FC = () => {
                     />
                   </SettingRow>
                   <Toggle
+                    id="record-studio-motion-blur"
+                    label={t('recording.studioMotionBlur')}
+                    description={t('recording.studioMotionBlurDesc')}
+                    checked={recording.studioMotionBlur ?? false}
+                    onChange={(v) => updateRecording('studioMotionBlur', v)}
+                  />
+                  <Toggle
                     id="record-typing-auto-zoom"
                     label={t('recording.typingAutoZoom')}
                     description={t('recording.typingAutoZoomDesc')}
@@ -785,6 +1087,41 @@ export const CapturePage: FC = () => {
                 checked={recording.studioSmoothCursor ?? true}
                 onChange={(v) => updateRecording('studioSmoothCursor', v)}
               />
+              {(recording.studioSmoothCursor ?? true) && (
+                <>
+                  <SettingRow label={t('recording.studioCursorScale')} description={t('recording.studioCursorScaleDesc')}>
+                    <Select
+                      id="record-studio-cursor-scale"
+                      value={
+                        Math.abs((recording.studioCursorScale ?? 1.35) - 1.0) < 0.16
+                          ? '1.0'
+                          : Math.abs((recording.studioCursorScale ?? 1.35) - 1.7) < 0.20
+                            ? '1.7'
+                            : '1.35'
+                      }
+                      onChange={(v) => updateRecording('studioCursorScale', parseFloat(v))}
+                      options={[
+                        { value: '1.0', label: t('recording.studioCursor100') },
+                        { value: '1.35', label: t('recording.studioCursor135') },
+                        { value: '1.7', label: t('recording.studioCursor170') },
+                      ]}
+                    />
+                  </SettingRow>
+                  <SettingRow label={t('recording.studioClickStyle')} description={t('recording.studioClickStyleDesc')}>
+                    <Select
+                      id="record-studio-click-style"
+                      value={String(Math.min(3, Math.max(0, recording.studioClickStyle ?? 0)))}
+                      onChange={(v) => updateRecording('studioClickStyle', parseInt(v, 10))}
+                      options={[
+                        { value: '0', label: t('recording.studioClickCrystal') },
+                        { value: '1', label: t('recording.studioClickDual') },
+                        { value: '2', label: t('recording.studioClickSoft') },
+                        { value: '3', label: t('recording.studioClickTactile') },
+                      ]}
+                    />
+                  </SettingRow>
+                </>
+              )}
               <Toggle
                 id="record-studio-auto-frame"
                 label={t('recording.studioAutoFrame')}
@@ -810,6 +1147,154 @@ export const CapturePage: FC = () => {
                     ]}
                   />
                 </SettingRow>
+              )}
+              <SettingRow label={t('recording.studioExportFormat')} description={t('recording.studioExportFormatDesc')}>
+                <Select
+                  id="record-studio-export-format"
+                  value={String(Math.min(5, Math.max(0, recording.studioExportFormat ?? 0)))}
+                  onChange={(v) => updateRecording('studioExportFormat', parseInt(v, 10))}
+                  options={[
+                    { value: '0', label: t('recording.studioExportMp4H264') },
+                    { value: '1', label: t('recording.studioExportMp4Hevc') },
+                    { value: '3', label: t('recording.studioExportGifHd') },
+                    { value: '2', label: t('recording.studioExportGifWeChat') },
+                    { value: '4', label: t('recording.studioExportWebp') },
+                    { value: '5', label: t('recording.studioExportWebm') },
+                  ]}
+                />
+              </SettingRow>
+              <Toggle
+                id="record-studio-export-autoclose"
+                label={t('recording.studioExportAutoClose')}
+                description={t('recording.studioExportAutoCloseDesc')}
+                checked={recording.studioExportAutoClose ?? false}
+                onChange={(v) => updateRecording('studioExportAutoClose', v)}
+              />
+              <Toggle
+                id="record-studio-watermark-enabled"
+                label={t('recording.studioWatermarkEnable')}
+                description={
+                  recording.studioWatermarkPolicyForced
+                    ? t('capture.watermarkPolicyLockedDesc')
+                    : t('recording.studioWatermarkEnableDesc')
+                }
+                checked={Boolean(recording.studioWatermarkEnabled || recording.studioWatermarkPolicyForced)}
+                disabled={Boolean(recording.studioWatermarkPolicyForced)}
+                onChange={(v) => updateRecording('studioWatermarkEnabled', v)}
+              />
+              {(recording.studioWatermarkEnabled || recording.studioWatermarkPolicyForced) && (
+                <>
+                  <SettingRow label={t('capture.watermarkMode')} description={t('capture.watermarkModeDesc')}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <Select
+                        id="record-studio-watermark-mode"
+                        value={String(recording.studioWatermarkMode ?? 0)}
+                        disabled={Boolean(recording.studioWatermarkPolicyForced)}
+                        onChange={handleStudioWatermarkModeChange}
+                        options={[
+                          { value: '0', label: t('capture.watermarkModeImage') },
+                          { value: '1', label: t('capture.watermarkModeCornerText') },
+                          { value: '2', label: t('capture.watermarkModeTiled') },
+                        ]}
+                      />
+                      {!recording.studioWatermarkPolicyForced && (
+                        <Button variant="ghost" onClick={handleSyncStudioWatermarkFromCapture}>
+                          {t('recording.studioWatermarkSyncBtn')}
+                        </Button>
+                      )}
+                    </div>
+                  </SettingRow>
+                  {(recording.studioWatermarkMode ?? 0) === 0 ? (
+                    <SettingRow label={t('capture.watermarkImage')} description={t('capture.watermarkImageDesc')}>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <TextInput
+                          id="record-studio-watermark-image"
+                          value={recording.studioWatermarkImagePath || ''}
+                          placeholder={t('capture.watermarkImagePlaceholder')}
+                          readOnly
+                          onChange={() => {}}
+                        />
+                        <Button
+                          variant="ghost"
+                          disabled={Boolean(recording.studioWatermarkPolicyForced)}
+                          onClick={() => void handlePickStudioWatermarkImage()}
+                        >
+                          {t('capture.watermarkPickImage')}
+                        </Button>
+                      </div>
+                    </SettingRow>
+                  ) : (
+                    <SettingRow
+                      label={t('capture.watermarkText')}
+                      description={t('capture.watermarkTextDesc')}
+                      layout="vertical"
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
+                        <TextInput
+                          id="record-studio-watermark-text"
+                          value={recording.studioWatermarkText ?? ''}
+                          disabled={Boolean(recording.studioWatermarkPolicyForced)}
+                          onChange={(v) => updateRecording('studioWatermarkText', v)}
+                        />
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          {([
+                            ['{user}', t('capture.watermarkTokenUser')],
+                            ['{host}', t('capture.watermarkTokenHost')],
+                            ['{ip}', t('capture.watermarkTokenIp')],
+                            ['{date}', t('capture.watermarkTokenDate')],
+                            ['{time}', t('capture.watermarkTokenTime')],
+                          ] as const).map(([tok, label]) => (
+                            <Button
+                              key={tok}
+                              variant="ghost"
+                              disabled={Boolean(recording.studioWatermarkPolicyForced)}
+                              onClick={() => handleInsertStudioWatermarkToken(tok)}
+                            >
+                              <span>{label}</span>
+                              <CodeBadge>{tok}</CodeBadge>
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    </SettingRow>
+                  )}
+                  {(recording.studioWatermarkMode ?? 0) !== 2 && (
+                    <SettingRow label={t('capture.watermarkAnchor')} description={t('capture.watermarkAnchorDesc')}>
+                      <Select
+                        id="record-studio-watermark-anchor"
+                        value={String(Math.min(5, Math.max(0, recording.studioWatermarkAnchor ?? 3)))}
+                        disabled={Boolean(recording.studioWatermarkPolicyForced)}
+                        onChange={(v) => updateRecording('studioWatermarkAnchor', parseInt(v, 10))}
+                        options={[
+                          { value: '0', label: t('capture.watermarkAnchorTopLeft') },
+                          { value: '1', label: t('capture.watermarkAnchorTopRight') },
+                          { value: '2', label: t('capture.watermarkAnchorBottomLeft') },
+                          { value: '3', label: t('capture.watermarkAnchorBottomRight') },
+                          { value: '4', label: t('capture.watermarkAnchorCenter') },
+                          { value: '5', label: t('recording.studioWatermarkAnchorCustom') },
+                        ]}
+                      />
+                    </SettingRow>
+                  )}
+                  <SettingRow label={t('capture.watermarkScale')} description={t('capture.watermarkScaleDesc')}>
+                    <Select
+                      id="record-studio-watermark-scale"
+                      value={String(Math.round((recording.studioWatermarkScale ?? 1.0) * 100) / 100)}
+                      disabled={Boolean(recording.studioWatermarkPolicyForced)}
+                      onChange={(v) => updateRecording('studioWatermarkScale', parseFloat(v))}
+                      options={watermarkScaleOptions(recording.studioWatermarkScale ?? 1.0)}
+                    />
+                  </SettingRow>
+                  <SettingRow label={t('capture.watermarkOpacity')} description={t('capture.watermarkOpacityDesc')}>
+                    <Select
+                      id="record-studio-watermark-opacity"
+                      value={String(Math.round((recording.studioWatermarkOpacity ?? 0.88) * 100) / 100)}
+                      disabled={Boolean(recording.studioWatermarkPolicyForced)}
+                      onChange={(v) => updateRecording('studioWatermarkOpacity', parseFloat(v))}
+                      options={watermarkOpacityOptions(recording.studioWatermarkOpacity ?? 0.88)}
+                    />
+                  </SettingRow>
+                </>
               )}
               <Toggle
                 id="record-studio-captions"

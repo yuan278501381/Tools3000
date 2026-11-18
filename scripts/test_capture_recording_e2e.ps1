@@ -7,7 +7,7 @@
 # [3/6] 区域录屏启动 -> 60FPS 圆形倒计时窗 (Tools3000_RecordingCountdown) 可见性与 WDA_NONE 防隐身断言
 # [4/6] 倒计时归零自动转入正式录制 + 选区内真实鼠标移动/点击触发自动运镜轨迹采集
 # [5/6] 外部窗口抢焦下停止录屏 -> 原始 MP4 落盘校验 + 演播室 (Tools3000_StudioPreviewWindow) 自动置顶获焦断言
-# [6/6] 演播室切片拆分 (S) + 点击右上角导出按钮 + 异步合成导出成片 (Enter) -> MP4 成片落盘与优雅退出
+# [6/6] 演播室切片拆分 (S) + 点击右上角导出按钮 + 异步合成导出成片 (Enter) -> MP4 成片落盘、原位交付卡常驻与 Enter 完成收起
 # -----------------------------------------------------------------------------
 param(
     [string]$ExePath = ""
@@ -69,6 +69,7 @@ public static class CaptureE2EHarness {
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
     [DllImport("user32.dll", SetLastError=true)] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int max);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int max);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool GetWindowDisplayAffinity(IntPtr hWnd, out uint dwAffinity);
@@ -80,6 +81,11 @@ public static class CaptureE2EHarness {
     [DllImport("user32.dll")] public static extern bool CloseClipboard();
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+    [DllImport("user32.dll", SetLastError=true)] public static extern int GetWindowLongW(IntPtr hWnd, int nIndex);
+
+    public const int GWL_STYLE = -16;
+    public const int WS_THICKFRAME = 0x00040000;
+    public const uint WM_NCHITTEST = 0x0084;
 
     public const uint GW_HWNDPREV = 3;
 
@@ -469,9 +475,9 @@ try {
     }
     Start-Sleep -Milliseconds 120
 
-    # 框选 480x320 录屏区域并调用录屏工具栏索引 9 (RecordStartConfirm) 启动 2 秒倒计时
+    # 框选 480x320 录屏区域并调用录屏工具栏索引 10 (RecordStartConfirm) 启动 2 秒倒计时
     [CaptureE2EHarness]::DragClientMouse($recOverlayHwnd, 280, 200, 760, 520, 10)
-    [void][CaptureE2EHarness]::SendMessageW($recOverlayHwnd, [CaptureE2EHarness]::WM_ACCESSIBILITY_INVOKE_TOOLBAR, [IntPtr]9, [IntPtr]::Zero)
+    [void][CaptureE2EHarness]::SendMessageW($recOverlayHwnd, [CaptureE2EHarness]::WM_ACCESSIBILITY_INVOKE_TOOLBAR, [IntPtr]10, [IntPtr]::Zero)
 
     $countdownHwnd = Wait-ForWindowClass -TargetPid $targetPid -ClassName "Tools3000_RecordingCountdown" -TimeoutMs 2000
     if ($countdownHwnd -eq [IntPtr]::Zero) {
@@ -490,15 +496,24 @@ try {
     [void][CaptureE2EHarness]::GetWindowRect($countdownHwnd, [ref]$cdRect)
     $cdW = $cdRect.Right - $cdRect.Left
     $cdH = $cdRect.Bottom - $cdRect.Top
-    if ($cdW -lt 180 -or [Math]::Abs($cdW - $cdH) -gt 2) {
-        throw "[3/6] 圆形倒计时画布窗口尺寸非预期正方形: ${cdW}x${cdH}"
+    $cdDpi = [CaptureE2EHarness]::GetDpiForWindow($countdownHwnd)
+    if ($cdDpi -lt 96) { $cdDpi = 96 }
+    $expectedCdW = [int][Math]::Round(360.0 * [double]$cdDpi / 96.0)
+    $expectedCdH = [int][Math]::Round(260.0 * [double]$cdDpi / 96.0)
+    if ([Math]::Abs($cdW - $expectedCdW) -gt 4 -or [Math]::Abs($cdH - $expectedCdH) -gt 4) {
+        throw "[3/6] 倒计时圆盘与下方微晶提示胶囊画布尺寸未对齐当前显示器 DPI ($cdDpi): 实际=${cdW}x${cdH}, 期望=${expectedCdW}x${expectedCdH}"
+    }
+    $cdCx = ($cdRect.Left + $cdRect.Right) / 2
+    $cdCy = ($cdRect.Top + $cdRect.Bottom) / 2
+    if ([Math]::Abs($cdCx - 520) -gt 8 -or [Math]::Abs($cdCy - 360) -gt 8) {
+        throw "[3/6] 圆形倒计时窗口未居中于录制选区中心 (520,360): 实际中心=($cdCx,$cdCy)"
     }
 
     $indicatorHwnd = Wait-ForWindowClass -TargetPid $targetPid -ClassName "Tools3000_RecordingIndicator" -TimeoutMs 1500
     if ($indicatorHwnd -eq [IntPtr]::Zero) {
         throw "[3/6] 录制悬浮状态栏 Tools3000_RecordingIndicator 未显示！"
     }
-    Write-Host "[OK] 圆形倒计时窗口 (${cdW}x${cdH}, Affinity=WDA_NONE) 与悬浮录制条可见性验证通过！" -ForegroundColor Green
+    Write-Host "[OK] 圆形倒计时窗口 (${cdW}x${cdH} @ ${cdDpi}DPI, 中心=($cdCx,$cdCy), Affinity=WDA_NONE) 与悬浮录制条可见性验证通过！" -ForegroundColor Green
 
     # -------------------------------------------------------------------------
     # [4/6] 等待倒计时自然结束进入正式录制 + 外部前台目标窗口动态录制
@@ -532,12 +547,26 @@ try {
 
     $studioHwnd = Wait-ForWindowClass -TargetPid $targetPid -ClassName "Tools3000_StudioPreviewWindow" -TimeoutMs 8000
     if ($studioHwnd -eq [IntPtr]::Zero) {
-        throw "[5/6] 停止录屏后演播室编辑窗口 Tools3000_StudioPreviewWindow 未自动弹出！"
+        throw "[5/6] 停止录屏后演播室窗口 Tools3000_StudioPreviewWindow 未自动弹出！"
     }
 
-    $rawMp4 = Get-ChildItem -LiteralPath $HarnessVideosDir -Filter "record_*.mp4" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $rawMp4 -or $rawMp4.Length -lt 1024 -or -not (Test-Mp4ContainerSignature $rawMp4.FullName)) {
-        throw "[5/6] 原始录屏 MP4 未生成或容器头非法！"
+    # 等待 FocuSee 级准备等待界面完成后台母带原子落盘并无缝切入正式演播室就绪态
+    $rawMp4 = $null
+    $readySw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($readySw.ElapsedMilliseconds -lt 8000) {
+        $candMp4 = Get-ChildItem -LiteralPath $HarnessVideosDir -Filter "record_*.mp4" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        $sbTitle = [System.Text.StringBuilder]::new(256)
+        [void][CaptureE2EHarness]::GetWindowTextW($studioHwnd, $sbTitle, $sbTitle.Capacity)
+        $curTitle = $sbTitle.ToString()
+        $stillPreparing = ($curTitle -match "Preparing|正在准备")
+        if ($candMp4 -and $candMp4.Length -ge 1024 -and (Test-Mp4ContainerSignature $candMp4.FullName) -and (-not $stillPreparing)) {
+            $rawMp4 = $candMp4
+            break
+        }
+        Start-Sleep -Milliseconds 40
+    }
+    if (-not $rawMp4) {
+        throw "[5/6] 原始录屏 MP4 未生成、容器头非法或演播室未完成就绪切换！"
     }
 
     Start-Sleep -Milliseconds 180
@@ -555,14 +584,48 @@ try {
     Start-Sleep -Milliseconds 300
     [CaptureE2EHarness]::SendWindowKey($studioHwnd, $VK_S)
 
-    # 计算 StudioPreviewWindow 右上角「导出」按钮物理客户区中心点 (逻辑区域 [W-136, 8, W-48, 36] -> 中心 W-92, 22)
+    # 验证演播室具备标准 Windows WS_THICKFRAME 可调大小窗口样式，且四角真实返回 HTTOPLEFT/HTTOPRIGHT/HTBOTTOMLEFT/HTBOTTOMRIGHT
+    $winStyle = [CaptureE2EHarness]::GetWindowLongW($studioHwnd, [CaptureE2EHarness]::GWL_STYLE)
+    if (($winStyle -band [CaptureE2EHarness]::WS_THICKFRAME) -eq 0) {
+        throw ("[6/6] 演播室窗口缺少标准 WS_THICKFRAME (0x00040000) 样式，导致四角无法拖拽拉大放小！Style=0x{0:X8}" -f $winStyle)
+    }
+    $winRc = New-Object CaptureE2EHarness+RECT
+    [void][CaptureE2EHarness]::GetWindowRect($studioHwnd, [ref]$winRc)
+    $htTL = [CaptureE2EHarness]::SendMessageW($studioHwnd, [CaptureE2EHarness]::WM_NCHITTEST, [IntPtr]::Zero, [CaptureE2EHarness]::MakeLParam($winRc.Left + 3, $winRc.Top + 3)).ToInt64()
+    $htTR = [CaptureE2EHarness]::SendMessageW($studioHwnd, [CaptureE2EHarness]::WM_NCHITTEST, [IntPtr]::Zero, [CaptureE2EHarness]::MakeLParam($winRc.Right - 3, $winRc.Top + 3)).ToInt64()
+    $htBL = [CaptureE2EHarness]::SendMessageW($studioHwnd, [CaptureE2EHarness]::WM_NCHITTEST, [IntPtr]::Zero, [CaptureE2EHarness]::MakeLParam($winRc.Left + 3, $winRc.Bottom - 3)).ToInt64()
+    $htBR = [CaptureE2EHarness]::SendMessageW($studioHwnd, [CaptureE2EHarness]::WM_NCHITTEST, [IntPtr]::Zero, [CaptureE2EHarness]::MakeLParam($winRc.Right - 3, $winRc.Bottom - 3)).ToInt64()
+    if ($htTL -ne 13 -or $htTR -ne 14 -or $htBL -ne 16 -or $htBR -ne 17) {
+        throw ("[6/6] 演播室窗口四角 WM_NCHITTEST 未返回标准对角缩放码 (期望 13/14/16/17，实际 TL={0}, TR={1}, BL={2}, BR={3})！" -f $htTL, $htTR, $htBL, $htBR)
+    }
+
+    # 验证演播室右上角「最大化 / 还原」按钮真实放大窗口能力 (maxRc 逻辑区域 [W-73, 9, W-43, 37] -> 中心 W-58, 23)
+    $origClientRc = New-Object CaptureE2EHarness+RECT
+    [void][CaptureE2EHarness]::GetClientRect($studioHwnd, [ref]$origClientRc)
+    $origClientW = $origClientRc.Right - $origClientRc.Left
+    $winDpi = [CaptureE2EHarness]::GetDpiForWindow($studioHwnd)
+    $dpiScale = if ($winDpi -gt 0) { [double]$winDpi / 96.0 } else { 1.0 }
+    $maxToggleX = [int]([Math]::Round($origClientW - 58.0 * $dpiScale))
+    $maxToggleY = [int]([Math]::Round(23.0 * $dpiScale))
+    [CaptureE2EHarness]::ClickClientMouse($studioHwnd, $maxToggleX, $maxToggleY)
+    Start-Sleep -Milliseconds 160
+    $maxClientRc = New-Object CaptureE2EHarness+RECT
+    [void][CaptureE2EHarness]::GetClientRect($studioHwnd, [ref]$maxClientRc)
+    $maxClientW = $maxClientRc.Right - $maxClientRc.Left
+    if ($maxClientW -lt $origClientW) {
+        throw "[6/6] 点击演播室最大化按钮后窗口宽度异常缩小 ($origClientW -> $maxClientW)！"
+    }
+    # 再次点击最大化/还原按钮恢复标准窗口尺寸
+    $restoreToggleX = [int]([Math]::Round($maxClientW - 58.0 * $dpiScale))
+    [CaptureE2EHarness]::ClickClientMouse($studioHwnd, $restoreToggleX, $maxToggleY)
+    Start-Sleep -Milliseconds 160
+
+    # 计算 StudioPreviewWindow 右上角「导出」主按钮物理客户区中心点 (逻辑区域 [W-217, 8, W-125, 38] -> 中心 W-171, 23)
     $clientRc = New-Object CaptureE2EHarness+RECT
     [void][CaptureE2EHarness]::GetClientRect($studioHwnd, [ref]$clientRc)
     $clientW = $clientRc.Right - $clientRc.Left
-    $winDpi = [CaptureE2EHarness]::GetDpiForWindow($studioHwnd)
-    $dpiScale = if ($winDpi -gt 0) { [double]$winDpi / 96.0 } else { 1.0 }
-    $exportClickX = [int]([Math]::Round($clientW - 92.0 * $dpiScale))
-    $exportClickY = [int]([Math]::Round(22.0 * $dpiScale))
+    $exportClickX = [int]([Math]::Round($clientW - 171.0 * $dpiScale))
+    $exportClickY = [int]([Math]::Round(23.0 * $dpiScale))
     [CaptureE2EHarness]::ClickClientMouse($studioHwnd, $exportClickX, $exportClickY)
     Start-Sleep -Milliseconds 180
     [CaptureE2EHarness]::SendWindowKey($studioHwnd, $VK_RETURN)
@@ -570,9 +633,10 @@ try {
     $exportedMp4 = $null
     $exportSw = [System.Diagnostics.Stopwatch]::StartNew()
     while ($exportSw.ElapsedMilliseconds -lt 25000) {
-        $exportedMp4 = Get-ChildItem -LiteralPath $HarnessExportDir -Filter "*.mp4" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-        $studioStillVisible = [CaptureE2EHarness]::IsWindowVisible($studioHwnd)
-        if ($exportedMp4 -and $exportedMp4.Length -gt 1024 -and -not $studioStillVisible) {
+        $exportedMp4 = Get-ChildItem -LiteralPath $HarnessExportDir -Filter "*.mp4" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notlike '*.studio_tmp*' -and $_.Name -notlike '*.part*' -and $_.Name -notlike '.studio_master*' } |
+            Select-Object -First 1
+        if ($exportedMp4 -and $exportedMp4.Length -gt 1024 -and (Test-Mp4ContainerSignature $exportedMp4.FullName)) {
             break
         }
         Start-Sleep -Milliseconds 150
@@ -580,7 +644,19 @@ try {
     if (-not $exportedMp4 -or $exportedMp4.Length -lt 1024 -or -not (Test-Mp4ContainerSignature $exportedMp4.FullName)) {
         throw "[6/6] 演播室异步合成导出成片失败或超时未在导出目录 ($HarnessExportDir) 生成合法 MP4 文件！"
     }
-    Write-Host "[OK] 演播室成片合成导出成功 ($($exportedMp4.Name), $($exportedMp4.Length) bytes) 并自动收起工作台！" -ForegroundColor Green
+
+    # 等待主线程接收导出完成回调并切换至原位交付结果卡，断言演播室默认常驻不自动退出（支持继续导出 GIF 对比）
+    Start-Sleep -Milliseconds 250
+    if (-not [CaptureE2EHarness]::IsWindowVisible($studioHwnd)) {
+        throw "[6/6] 演播室导出完成后未保持非破坏性常驻（意外自动关闭），无法继续导出其他格式对比！"
+    }
+
+    # 在原位交付结果卡按下 Enter 触发「完成并关闭」，验证演播室优雅退出并清理未使用的临时母带
+    [CaptureE2EHarness]::SendWindowKey($studioHwnd, $VK_RETURN)
+    if (-not (Wait-ForWindowGone -TargetPid $targetPid -ClassName "Tools3000_StudioPreviewWindow" -TimeoutMs 4000)) {
+        throw "[6/6] 在导出完成交付卡按下 Enter (完成并关闭) 后演播室窗口未能及时收起！"
+    }
+    Write-Host "[OK] 演播室成片合成导出成功 ($($exportedMp4.Name), $($exportedMp4.Length) bytes)，非破坏性交付卡常驻与 Enter 收起验证全部通过！" -ForegroundColor Green
 
     Write-Host "`n===============================================================================" -ForegroundColor Cyan
     Write-Host " [PASS] 截图·贴图·录屏·圆形倒计时·演播室全链路端到端 (6/6 关卡) 100% 全部通过！" -ForegroundColor Green
