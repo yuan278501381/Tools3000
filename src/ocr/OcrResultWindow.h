@@ -34,7 +34,7 @@ public:
     bool initialize();
     void cleanup();
 
-    void showResult(const std::string& text);
+    void showResult(const std::string& text, const RECT* anchorRect = nullptr);
     void reloadTheme();
 
     // 段落智能合并、双击选词与微调编辑接口
@@ -179,6 +179,8 @@ private:
     bool m_copiedWord = false;
     bool m_trackingMouse = false;
     bool m_updatingPlacement = false;
+    bool m_hasAnchorRect = false;
+    RECT m_anchorRect{};
     float m_currentAlpha = 0.0f;
     uint64_t m_showTime = 0;
 

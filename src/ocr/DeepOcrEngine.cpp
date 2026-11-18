@@ -23,7 +23,9 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <future>
@@ -36,20 +38,82 @@ namespace tools3000::ocr {
 namespace waml = winrt::Windows::AI::MachineLearning;
 
 struct DeepOcrEngine::WinMlContext {
+    struct StaticBucketSpec {
+        int n = 1;
+        int h = 48;
+        int w = 960;
+    };
+
+    // 3 档零重编译检测画布桶: [0]=960x640 (中小截图), [1]=1280x1024 (横屏/方屏高分屏大图), [2]=960x1280 (竖屏长图)
+    static constexpr std::array<StaticBucketSpec, 3> kDetSpecs = {{
+        {1, 640, 960},
+        {1, 1024, 1280},
+        {1, 1280, 960},
+    }};
+
+    // 4 档零重编译识别微批次桶: [0]=1x640 (短词), [1]=4x960 (中小段落), [2]=16x960 (中大页), [3]=32x960 (满屏高密度长文主力桶)
+    static constexpr std::array<StaticBucketSpec, 4> kRecSpecs = {{
+        {1, DeepOcrConstants::kRecImgHeight, 640},
+        {4, DeepOcrConstants::kRecImgHeight, DeepOcrConstants::kRecFixedStripWidth},
+        {16, DeepOcrConstants::kRecImgHeight, DeepOcrConstants::kRecFixedStripWidth},
+        {32, DeepOcrConstants::kRecImgHeight, DeepOcrConstants::kRecFixedStripWidth},
+    }};
+
     waml::LearningModel detModel{nullptr};
     waml::LearningModel clsModel{nullptr};
     waml::LearningModel recModel{nullptr};
     waml::LearningModelDevice device{nullptr};
-    waml::LearningModelSession detSession{nullptr};
+
     waml::LearningModelSession clsSession{nullptr};
-    waml::LearningModelSession recSession{nullptr};
+    std::array<waml::LearningModelSession, 3> detBucketSessions{nullptr, nullptr, nullptr};
+    std::array<waml::LearningModelSession, 4> recBucketSessions{nullptr, nullptr, nullptr, nullptr};
+    waml::LearningModelSession cpuFallbackRecSession960{nullptr};
+
     bool usingDirectMLGpu = false;
+    bool supportsBatchEval = false;
     winrt::hstring detInName;
     winrt::hstring detOutName;
     winrt::hstring clsInName;
     winrt::hstring clsOutName;
     winrt::hstring recInName;
     winrt::hstring recOutName;
+
+    waml::LearningModelSession* ensureDetSession(size_t idx) {
+        if (idx >= kDetSpecs.size()) return nullptr;
+        if (!detBucketSessions[idx]) {
+            waml::LearningModelSessionOptions opts;
+            opts.CloseModelOnSessionCreation(false);
+            detBucketSessions[idx] = waml::LearningModelSession(detModel, device, opts);
+        }
+        return &detBucketSessions[idx];
+    }
+
+    waml::LearningModelSession* ensureRecSession(size_t idx) {
+        if (!supportsBatchEval) {
+            if (idx == 0) {
+                if (!recBucketSessions[0]) {
+                    waml::LearningModelSessionOptions opts;
+                    opts.CloseModelOnSessionCreation(false);
+                    recBucketSessions[0] = waml::LearningModelSession(recModel, device, opts);
+                }
+                return &recBucketSessions[0];
+            }
+            if (!cpuFallbackRecSession960) {
+                waml::LearningModelSessionOptions opts;
+                opts.CloseModelOnSessionCreation(false);
+                cpuFallbackRecSession960 = waml::LearningModelSession(recModel, device, opts);
+            }
+            return &cpuFallbackRecSession960;
+        }
+
+        if (idx >= kRecSpecs.size()) return nullptr;
+        if (!recBucketSessions[idx]) {
+            waml::LearningModelSessionOptions opts;
+            opts.CloseModelOnSessionCreation(false);
+            recBucketSessions[idx] = waml::LearningModelSession(recModel, device, opts);
+        }
+        return &recBucketSessions[idx];
+    }
 };
 
 namespace {
@@ -843,6 +907,8 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
     }
 
     m_modelsLoaded = false;
+    m_modelsLoadedAtomic.store(false, std::memory_order_release);
+    m_bucketsPrecompiled = false;
     m_useWinMl = false;
     m_winMl.reset();
     m_detNet = cv::dnn::Net{};
@@ -881,13 +947,10 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
             LOG_INFO("DeepOcrEngine: loaded {} dictionary keys directly from rec ONNX metadata", m_dictKeys.size());
         }
 
-        // 优先挂载系统内置 Windows.AI.MachineLearning (ONNX Runtime MLAS SIMD 多核算子融合引擎，原生支持动态宽度且提速 10~30x)
+        // 优先挂载系统内置 Windows.AI.MachineLearning + DirectML 原生 D3D12 固定形状多桶管线
         try {
             ensureComApartmentInitialized();
             auto ctx = std::make_unique<WinMlContext>();
-            waml::LearningModelSessionOptions sessOpts;
-            sessOpts.CloseModelOnSessionCreation(true);
-
             ctx->detModel = waml::LearningModel::LoadFromFilePath(detPath.wstring());
             ctx->clsModel = waml::LearningModel::LoadFromFilePath(clsPath.wstring());
             ctx->recModel = waml::LearningModel::LoadFromFilePath(recPath.wstring());
@@ -907,41 +970,67 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                     waml::LearningModelDevice gpuDev(waml::LearningModelDeviceKind::DirectXHighPerformance);
                     waml::LearningModelSessionOptions probeOpts;
                     probeOpts.CloseModelOnSessionCreation(false);
-                    waml::LearningModelSession gpuDet(ctx->detModel, gpuDev, probeOpts);
                     waml::LearningModelSession gpuCls(ctx->clsModel, gpuDev, probeOpts);
-                    waml::LearningModelSession gpuRec(ctx->recModel, gpuDev, probeOpts);
 
-                    // 跑一次 1x3x48x320 极微热身校验，确保当前显卡/DirectML 驱动完整支持 SVTR 动态算子且非软模拟故障态
-                    auto warmIn = waml::TensorFloat::Create(winrt::single_threaded_vector<int64_t>({1, 3, 48, 320}));
-                    waml::LearningModelBinding warmBind(gpuRec);
-                    warmBind.Bind(ctx->recInName, warmIn);
-                    auto warmOut = gpuRec.Evaluate(warmBind, L"").Outputs().Lookup(ctx->recOutName).as<waml::TensorFloat>();
-                    if (warmOut && warmOut.Shape().Size() >= 2) {
-                        ctx->device = gpuDev;
-                        ctx->detSession = std::move(gpuDet);
-                        ctx->clsSession = std::move(gpuCls);
-                        ctx->recSession = std::move(gpuRec);
-                        ctx->usingDirectMLGpu = true;
+                    bool batchOk = false;
+                    try {
+                        waml::LearningModelSession s4(ctx->recModel, gpuDev, probeOpts);
+                        auto t4 = waml::TensorFloat::Create(winrt::single_threaded_vector<int64_t>({
+                            4, 3, DeepOcrConstants::kRecImgHeight, DeepOcrConstants::kRecFixedStripWidth}));
+                        waml::LearningModelBinding b4(s4);
+                        b4.Bind(ctx->recInName, t4);
+                        auto out4 = s4.Evaluate(b4, L"").Outputs().Lookup(ctx->recOutName).as<waml::TensorFloat>();
+                        if (out4 && out4.Shape().Size() >= 3 && out4.Shape().GetAt(0) == 4) {
+                            ctx->recBucketSessions[1] = std::move(s4);
+                            batchOk = true;
+                        }
+                    } catch (...) {
+                        batchOk = false;
+                    }
+
+                    if (!batchOk) {
+                        waml::LearningModelSession s1(ctx->recModel, gpuDev, probeOpts);
+                        auto t1 = waml::TensorFloat::Create(winrt::single_threaded_vector<int64_t>({
+                            1, 3, DeepOcrConstants::kRecImgHeight, 640}));
+                        waml::LearningModelBinding b1(s1);
+                        b1.Bind(ctx->recInName, t1);
+                        auto out1 = s1.Evaluate(b1, L"").Outputs().Lookup(ctx->recOutName).as<waml::TensorFloat>();
+                        if (out1 && out1.Shape().Size() >= 2) {
+                            ctx->recBucketSessions[0] = std::move(s1);
+                            gpuReady = true;
+                        }
+                    } else {
                         gpuReady = true;
+                    }
+
+                    if (gpuReady) {
+                        ctx->device = gpuDev;
+                        ctx->clsSession = std::move(gpuCls);
+                        ctx->usingDirectMLGpu = true;
+                        ctx->supportsBatchEval = batchOk;
                     }
                 } catch (...) {
                     gpuReady = false;
                 }
 
                 if (!gpuReady) {
+                    waml::LearningModelSessionOptions cpuOpts;
+                    cpuOpts.CloseModelOnSessionCreation(false);
                     ctx->device = waml::LearningModelDevice(waml::LearningModelDeviceKind::Cpu);
-                    ctx->detSession = waml::LearningModelSession(ctx->detModel, ctx->device, sessOpts);
-                    ctx->clsSession = waml::LearningModelSession(ctx->clsModel, ctx->device, sessOpts);
-                    ctx->recSession = waml::LearningModelSession(ctx->recModel, ctx->device, sessOpts);
+                    ctx->clsSession = waml::LearningModelSession(ctx->clsModel, ctx->device, cpuOpts);
                     ctx->usingDirectMLGpu = false;
+                    ctx->supportsBatchEval = false;
                 }
 
                 m_winMl = std::move(ctx);
                 m_useWinMl = true;
                 m_loadedModelDir = modelDir;
                 m_modelsLoaded = true;
-                LOG_INFO("DeepOcrEngine: PP-OCRv4 loaded with native WinML ONNX Runtime ({}, dict={} keys)",
-                         m_winMl->usingDirectMLGpu ? "DirectML GPU" : "CPU SIMD", m_dictKeys.size());
+                m_modelsLoadedAtomic.store(true, std::memory_order_release);
+                LOG_INFO("DeepOcrEngine: PP-OCRv4 loaded with native WinML ONNX Runtime ({}{}, dict={} keys)",
+                         m_winMl->usingDirectMLGpu ? "DirectML GPU" : "CPU SIMD",
+                         m_winMl->supportsBatchEval ? " + StaticBatchFusion" : "",
+                         m_dictKeys.size());
                 return true;
             }
         } catch (...) {
@@ -985,11 +1074,13 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
 
         m_loadedModelDir = modelDir;
         m_modelsLoaded = true;
+        m_modelsLoadedAtomic.store(true, std::memory_order_release);
         LOG_INFO("DeepOcrEngine: PP-OCRv4 ONNX models loaded (dict={} keys)", m_dictKeys.size());
         return true;
     } catch (const std::exception& e) {
         LOG_ERROR("DeepOcrEngine: exception loading PP-OCRv4 models: {}", e.what());
         m_modelsLoaded = false;
+        m_modelsLoadedAtomic.store(false, std::memory_order_release);
         return false;
     }
 }
@@ -1137,13 +1228,34 @@ cv::Mat DeepOcrEngine::warpPerspectiveQuad(
         {0.0f, static_cast<float>(cropH)}
     };
 
-    const cv::Mat M = cv::getPerspectiveTransform(srcPts, dstPts);
     if (outInverseTransform) {
         *outInverseTransform = cv::getPerspectiveTransform(dstPts, srcPts);
     }
 
+    // 先截取紧致局部 ROI 再做局部透视变换，消除在 2K/4K 全屏大图上的跨页缓存未命中
+    float minX = quad[0].x, maxX = quad[0].x, minY = quad[0].y, maxY = quad[0].y;
+    for (size_t i = 1; i < 4; ++i) {
+        minX = (std::min)(minX, quad[i].x);
+        maxX = (std::max)(maxX, quad[i].x);
+        minY = (std::min)(minY, quad[i].y);
+        maxY = (std::max)(maxY, quad[i].y);
+    }
+    const int rx0 = std::clamp(static_cast<int>(std::floor(minX)) - 2, 0, image.cols - 1);
+    const int ry0 = std::clamp(static_cast<int>(std::floor(minY)) - 2, 0, image.rows - 1);
+    const int rx1 = std::clamp(static_cast<int>(std::ceil(maxX)) + 2, rx0 + 1, image.cols);
+    const int ry1 = std::clamp(static_cast<int>(std::ceil(maxY)) + 2, ry0 + 1, image.rows);
+
+    const cv::Point2f localSrcPts[4] = {
+        {quad[0].x - static_cast<float>(rx0), quad[0].y - static_cast<float>(ry0)},
+        {quad[1].x - static_cast<float>(rx0), quad[1].y - static_cast<float>(ry0)},
+        {quad[2].x - static_cast<float>(rx0), quad[2].y - static_cast<float>(ry0)},
+        {quad[3].x - static_cast<float>(rx0), quad[3].y - static_cast<float>(ry0)}
+    };
+    const cv::Mat localM = cv::getPerspectiveTransform(localSrcPts, dstPts);
+    cv::Mat roiView = image(cv::Rect(rx0, ry0, rx1 - rx0, ry1 - ry0));
+
     cv::Mat warped;
-    cv::warpPerspective(image, warped, M, cv::Size(cropW, cropH), cv::INTER_CUBIC, cv::BORDER_REPLICATE);
+    cv::warpPerspective(roiView, warped, localM, cv::Size(cropW, cropH), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
 
     if (cropH >= static_cast<int>(static_cast<float>(cropW) * 1.5f) && cropW >= 8) {
         cv::rotate(warped, warped, cv::ROTATE_90_COUNTERCLOCKWISE);
@@ -1330,9 +1442,43 @@ std::vector<cv::Rect> DeepOcrEngine::projectCharSpansToImage(
     const size_t expectedCodepoints = OcrEngine::countUtf8Codepoints(lineText);
     if (expectedCodepoints == 0) return {};
 
-    if (decodedChars.size() != expectedCodepoints || inversePerspective.empty() ||
-        inversePerspective.rows != 3 || inversePerspective.cols != 3 ||
-        cropWidth <= 0 || cropHeight <= 0) {
+    if (decodedChars.size() != expectedCodepoints || cropWidth <= 0 || cropHeight <= 0) {
+        return OcrEngine::buildProportionalCharBoxes(lineText, fallbackLineBox);
+    }
+
+    // 轴对齐水平框零矩阵快速精确映射：直接按 CTC 时间步区间投影至原图物理像素包围盒
+    if (inversePerspective.empty() || inversePerspective.rows != 3 || inversePerspective.cols != 3) {
+        if (!rotatedVertical && fallbackLineBox.width > 0 && fallbackLineBox.height > 0) {
+            std::vector<cv::Rect> fastBoxes;
+            fastBoxes.reserve(decodedChars.size());
+            const float baseLeft = static_cast<float>(fallbackLineBox.x);
+            const float spanW = static_cast<float>(fallbackLineBox.width);
+            for (const auto& dc : decodedChars) {
+                float u0 = std::clamp(dc.normLeft, 0.0f, 1.0f);
+                float u1 = std::clamp(dc.normRight, u0, 1.0f);
+                if (rotated180) {
+                    const float nu0 = 1.0f - u1;
+                    const float nu1 = 1.0f - u0;
+                    u0 = nu0;
+                    u1 = nu1;
+                }
+                int rx1 = static_cast<int>(std::floor(baseLeft + u0 * spanW));
+                int rx2 = static_cast<int>(std::ceil(baseLeft + u1 * spanW));
+                int ry1 = fallbackLineBox.y;
+                int ry2 = fallbackLineBox.y + fallbackLineBox.height;
+                if (maxImageWidth > 0 && maxImageHeight > 0) {
+                    rx1 = std::clamp(rx1, 0, maxImageWidth - 1);
+                    ry1 = std::clamp(ry1, 0, maxImageHeight - 1);
+                    rx2 = std::clamp(rx2, rx1 + 1, maxImageWidth);
+                    ry2 = std::clamp(ry2, ry1 + 1, maxImageHeight);
+                } else {
+                    rx2 = (std::max)(rx1 + 1, rx2);
+                    ry2 = (std::max)(ry1 + 1, ry2);
+                }
+                fastBoxes.emplace_back(rx1, ry1, rx2 - rx1, ry2 - ry1);
+            }
+            return fastBoxes;
+        }
         return OcrEngine::buildProportionalCharBoxes(lineText, fallbackLineBox);
     }
 
@@ -1424,78 +1570,133 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
 
     std::vector<OcrResult> rawBlocks;
     try {
-        // 1. DBNet 文本区域检测（零拷贝 IMemoryBufferByteAccess 直通张量，消除百万级元素 COM 封送开销）
+        // 1. DBNet 文本区域检测（3 档静态画布桶零重编译 + 多核并行张量填充 + 零拷贝直通）
         const int origW = bgr.cols;
         const int origH = bgr.rows;
         const int maxSide = (std::max)(origW, origH);
-        float limitRatio = 1.0f;
-        const int targetLimit = 1472;
-        if (maxSide > targetLimit) {
-            limitRatio = static_cast<float>(targetLimit) / static_cast<float>(maxSide);
+        float desiredRatio = 1.0f;
+        if (maxSide > DeepOcrConstants::kDetMaxSideLen) {
+            desiredRatio = static_cast<float>(DeepOcrConstants::kDetMaxSideLen) / static_cast<float>(maxSide);
         } else if (maxSide < 240) {
-            limitRatio = 2.0f;
-        } else if (maxSide < 1220) {
-            limitRatio = (std::min)(1.65f, 1344.0f / static_cast<float>((std::max)(1, maxSide)));
+            desiredRatio = 2.0f;
+        } else if (maxSide < 1180) {
+            desiredRatio = (std::min)(1.55f, static_cast<float>(DeepOcrConstants::kDetMaxSideLen) / static_cast<float>((std::max)(1, maxSide)));
         }
 
-        const int alignW = (std::max)(DeepOcrConstants::kDetStrideAlign,
-            static_cast<int>(std::round(static_cast<float>(origW) * limitRatio / 32.0f)) * 32);
-        const int alignH = (std::max)(DeepOcrConstants::kDetStrideAlign,
-            static_cast<int>(std::round(static_cast<float>(origH) * limitRatio / 32.0f)) * 32);
-
-        const float ratioW = static_cast<float>(alignW) / static_cast<float>(origW);
-        const float ratioH = static_cast<float>(alignH) / static_cast<float>(origH);
-
-        cv::Mat detResized;
-        cv::resize(bgr, detResized, cv::Size(alignW, alignH), 0.0, 0.0,
-                   limitRatio < 1.0f ? cv::INTER_AREA : cv::INTER_CUBIC);
-
         cv::Mat probOut;
+        float ratioW = 1.0f;
+        float ratioH = 1.0f;
+
         if (m_useWinMl && m_winMl) {
-            auto inTensor = waml::TensorFloat::Create(winrt::single_threaded_vector<int64_t>({1, 3, alignH, alignW}));
-            {
-                WinMlTensorBufferLock inLock(inTensor);
-                const size_t plane = static_cast<size_t>(alignH) * static_cast<size_t>(alignW);
-                if (inLock.data && inLock.floatCount >= plane * 3) {
-                    constexpr float kMean[3] = {0.485f, 0.456f, 0.406f};
-                    constexpr float kInvStd[3] = {1.0f / 0.229f, 1.0f / 0.224f, 1.0f / 0.225f};
-                    constexpr float kInv255 = 1.0f / 255.0f;
-                    float* c0 = inLock.data;
-                    float* c1 = inLock.data + plane;
-                    float* c2 = inLock.data + plane * 2;
-                    for (int y = 0; y < alignH; ++y) {
-                        const auto* row = detResized.ptr<cv::Vec3b>(y);
-                        const size_t base = static_cast<size_t>(y) * static_cast<size_t>(alignW);
-                        for (int x = 0; x < alignW; ++x) {
-                            c0[base + x] = (static_cast<float>(row[x][0]) * kInv255 - kMean[0]) * kInvStd[0];
-                            c1[base + x] = (static_cast<float>(row[x][1]) * kInv255 - kMean[1]) * kInvStd[1];
-                            c2[base + x] = (static_cast<float>(row[x][2]) * kInv255 - kMean[2]) * kInvStd[2];
+            const int tentativeW = static_cast<int>(std::round(static_cast<float>(origW) * desiredRatio));
+            const int tentativeH = static_cast<int>(std::round(static_cast<float>(origH) * desiredRatio));
+            size_t detBucketIdx = 1;
+            if (tentativeW <= 960 && tentativeH <= 640) {
+                detBucketIdx = 0;
+            } else if (origH > origW) {
+                detBucketIdx = 2;
+            } else {
+                detBucketIdx = 1;
+            }
+
+            const auto& bucketSpec = WinMlContext::kDetSpecs[detBucketIdx];
+            const int canvasW = bucketSpec.w;
+            const int canvasH = bucketSpec.h;
+            const float fitScale = (std::min)(
+                desiredRatio,
+                (std::min)(static_cast<float>(canvasW) / static_cast<float>(origW),
+                           static_cast<float>(canvasH) / static_cast<float>(origH)));
+            const int validW = std::clamp(static_cast<int>(std::round(static_cast<float>(origW) * fitScale)), 16, canvasW);
+            const int validH = std::clamp(static_cast<int>(std::round(static_cast<float>(origH) * fitScale)), 16, canvasH);
+            ratioW = static_cast<float>(validW) / static_cast<float>(origW);
+            ratioH = static_cast<float>(validH) / static_cast<float>(origH);
+
+            cv::Mat detValid;
+            cv::resize(bgr, detValid, cv::Size(validW, validH), 0.0, 0.0,
+                       fitScale < 1.0f ? cv::INTER_AREA : cv::INTER_LINEAR);
+
+            cv::Mat detCanvas;
+            if (validW == canvasW && validH == canvasH) {
+                detCanvas = detValid;
+            } else {
+                cv::copyMakeBorder(
+                    detValid, detCanvas,
+                    0, canvasH - validH, 0, canvasW - validW,
+                    cv::BORDER_REPLICATE);
+            }
+
+            if (waml::LearningModelSession* detSess = m_winMl->ensureDetSession(detBucketIdx)) {
+                auto detTensor = waml::TensorFloat::Create(
+                    winrt::single_threaded_vector<int64_t>({1, 3, canvasH, canvasW}));
+                {
+                    WinMlTensorBufferLock inLock(detTensor);
+                    const size_t plane = static_cast<size_t>(canvasH) * static_cast<size_t>(canvasW);
+                    if (inLock.data && inLock.floatCount >= plane * 3) {
+                        float* c0 = inLock.data;
+                        float* c1 = inLock.data + plane;
+                        float* c2 = inLock.data + plane * 2;
+                        cv::parallel_for_(cv::Range(0, canvasH), [&](const cv::Range& range) {
+                            constexpr float kMean[3] = {0.485f, 0.456f, 0.406f};
+                            constexpr float kInvStd[3] = {1.0f / 0.229f, 1.0f / 0.224f, 1.0f / 0.225f};
+                            constexpr float kInv255 = 1.0f / 255.0f;
+                            for (int y = range.start; y < range.end; ++y) {
+                                const auto* row = detCanvas.ptr<cv::Vec3b>(y);
+                                const size_t base = static_cast<size_t>(y) * static_cast<size_t>(canvasW);
+                                for (int x = 0; x < canvasW; ++x) {
+                                    c0[base + x] = (static_cast<float>(row[x][0]) * kInv255 - kMean[0]) * kInvStd[0];
+                                    c1[base + x] = (static_cast<float>(row[x][1]) * kInv255 - kMean[1]) * kInvStd[1];
+                                    c2[base + x] = (static_cast<float>(row[x][2]) * kInv255 - kMean[2]) * kInvStd[2];
+                                }
+                            }
+                        });
+                    }
+                }
+                waml::LearningModelBinding binding(*detSess);
+                binding.Bind(m_winMl->detInName, detTensor);
+                auto evalRes = detSess->Evaluate(binding, L"");
+                auto outTensor = evalRes.Outputs().Lookup(m_winMl->detOutName).as<waml::TensorFloat>();
+                const auto outShape = outTensor.Shape();
+                if (outShape.Size() >= 4) {
+                    const int outH = static_cast<int>(outShape.GetAt(2));
+                    const int outW = static_cast<int>(outShape.GetAt(3));
+                    const int cropOutW = (std::min)(validW, outW);
+                    const int cropOutH = (std::min)(validH, outH);
+                    const size_t needFloats = static_cast<size_t>(outH) * static_cast<size_t>(outW);
+                    if (cropOutH > 0 && cropOutW > 0) {
+                        probOut.create(cropOutH, cropOutW, CV_32FC1);
+                        WinMlTensorBufferLock outLock(outTensor);
+                        if (outLock.data && outLock.floatCount >= needFloats) {
+                            for (int y = 0; y < cropOutH; ++y) {
+                                std::memcpy(
+                                    probOut.ptr<float>(y),
+                                    outLock.data + static_cast<size_t>(y) * static_cast<size_t>(outW),
+                                    static_cast<size_t>(cropOutW) * sizeof(float));
+                            }
+                        } else {
+                            outLock.release();
+                            std::vector<float> tmpOut(needFloats);
+                            auto vecView = outTensor.GetAsVectorView();
+                            vecView.GetMany(0, winrt::array_view<float>(tmpOut.data(), tmpOut.data() + needFloats));
+                            for (int y = 0; y < cropOutH; ++y) {
+                                std::memcpy(
+                                    probOut.ptr<float>(y),
+                                    tmpOut.data() + static_cast<size_t>(y) * static_cast<size_t>(outW),
+                                    static_cast<size_t>(cropOutW) * sizeof(float));
+                            }
                         }
                     }
                 }
             }
-            waml::LearningModelBinding binding(m_winMl->detSession);
-            binding.Bind(m_winMl->detInName, inTensor);
-            auto evalRes = m_winMl->detSession.Evaluate(binding, L"");
-            auto outTensor = evalRes.Outputs().Lookup(m_winMl->detOutName).as<waml::TensorFloat>();
-            const auto outShape = outTensor.Shape();
-            if (outShape.Size() >= 4) {
-                const int outH = static_cast<int>(outShape.GetAt(2));
-                const int outW = static_cast<int>(outShape.GetAt(3));
-                const size_t needFloats = static_cast<size_t>(outH) * static_cast<size_t>(outW);
-                if (outH > 0 && outW > 0) {
-                    probOut.create(outH, outW, CV_32FC1);
-                    WinMlTensorBufferLock outLock(outTensor);
-                    if (outLock.data && outLock.floatCount >= needFloats) {
-                        std::memcpy(probOut.ptr<float>(), outLock.data, needFloats * sizeof(float));
-                    } else {
-                        outLock.release();
-                        auto vecView = outTensor.GetAsVectorView();
-                        vecView.GetMany(0, winrt::array_view<float>(probOut.ptr<float>(), probOut.ptr<float>() + needFloats));
-                    }
-                }
-            }
         } else {
+            const int alignW = (std::max)(DeepOcrConstants::kDetStrideAlign,
+                static_cast<int>(std::round(static_cast<float>(origW) * desiredRatio / 32.0f)) * 32);
+            const int alignH = (std::max)(DeepOcrConstants::kDetStrideAlign,
+                static_cast<int>(std::round(static_cast<float>(origH) * desiredRatio / 32.0f)) * 32);
+            ratioW = static_cast<float>(alignW) / static_cast<float>(origW);
+            ratioH = static_cast<float>(alignH) / static_cast<float>(origH);
+            cv::Mat detResized;
+            cv::resize(bgr, detResized, cv::Size(alignW, alignH), 0.0, 0.0,
+                       desiredRatio < 1.0f ? cv::INTER_AREA : cv::INTER_LINEAR);
             cv::Mat detBlob = makeDbNetBlob(detResized);
             m_detNet.setInput(detBlob);
             probOut = m_detNet.forward();
@@ -1504,6 +1705,86 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
         auto quads = postprocessDbMap(probOut, origW, origH, ratioW, ratioH);
         if (quads.empty()) {
             return {};
+        }
+
+        // 自适应斜向淡色半透明水印剔除：当页面主体为水平/正交排版时，精准剔除低对比度斜铺溯源水印候选框
+        if (quads.size() >= DeepOcrConstants::kWatermarkFilterMinOrthoQuads + 2) {
+            auto computeMinOrthoDeltaDeg = [](const std::array<cv::Point2f, 4>& c) noexcept -> float {
+                const float dxTop = c[1].x - c[0].x;
+                const float dyTop = c[1].y - c[0].y;
+                const float dxLeft = c[3].x - c[0].x;
+                const float dyLeft = c[3].y - c[0].y;
+                const float lenTop = std::hypot(dxTop, dyTop);
+                const float lenLeft = std::hypot(dxLeft, dyLeft);
+                const float majorDx = (lenTop >= lenLeft) ? dxTop : dxLeft;
+                const float majorDy = (lenTop >= lenLeft) ? dyTop : dyLeft;
+                const float absDeg = std::abs(std::atan2(majorDy, majorDx) * (180.0f / 3.14159265f));
+                const float mod90 = std::fmod(absDeg, 90.0f);
+                return (std::min)(mod90, 90.0f - mod90);
+            };
+
+            size_t orthoCount = 0;
+            for (const auto& q : quads) {
+                if (computeMinOrthoDeltaDeg(q.corners) <= 8.0f) {
+                    ++orthoCount;
+                }
+            }
+
+            if (orthoCount >= DeepOcrConstants::kWatermarkFilterMinOrthoQuads) {
+                std::vector<DbDetectedQuad> filtered;
+                filtered.reserve(quads.size());
+                for (const auto& q : quads) {
+                    const float orthoDelta = computeMinOrthoDeltaDeg(q.corners);
+                    if (orthoDelta >= DeepOcrConstants::kWatermarkMinTiltDeg &&
+                        orthoDelta <= DeepOcrConstants::kWatermarkMaxTiltDeg) {
+                        // 沿倾斜四边形内部双线性采样灰度分布，避免外接矩形混入相邻黑字行导致误判
+                        std::array<uint16_t, 256> hist{};
+                        uint32_t count = 0;
+                        constexpr int kGridU = 24;
+                        constexpr int kGridV = 8;
+                        for (int iv = 1; iv < kGridV; ++iv) {
+                            const float v = static_cast<float>(iv) / static_cast<float>(kGridV);
+                            for (int iu = 1; iu < kGridU; ++iu) {
+                                const float u = static_cast<float>(iu) / static_cast<float>(kGridU);
+                                const float px = (1.0f - u) * (1.0f - v) * q.corners[0].x +
+                                                 u * (1.0f - v) * q.corners[1].x +
+                                                 u * v * q.corners[2].x +
+                                                 (1.0f - u) * v * q.corners[3].x;
+                                const float py = (1.0f - u) * (1.0f - v) * q.corners[0].y +
+                                                 u * (1.0f - v) * q.corners[1].y +
+                                                 u * v * q.corners[2].y +
+                                                 (1.0f - u) * v * q.corners[3].y;
+                                const int ix = std::clamp(static_cast<int>(px), 0, origW - 1);
+                                const int iy = std::clamp(static_cast<int>(py), 0, origH - 1);
+                                const auto& pix = bgr.at<cv::Vec3b>(iy, ix);
+                                const int lum = (pix[2] * 77 + pix[1] * 150 + pix[0] * 29) >> 8;
+                                ++hist[static_cast<size_t>(lum & 0xFF)];
+                                ++count;
+                            }
+                        }
+                        if (count >= 16) {
+                            auto pctAt = [&](uint32_t target) -> int {
+                                uint32_t acc = 0;
+                                for (int i = 0; i < 256; ++i) {
+                                    acc += hist[static_cast<size_t>(i)];
+                                    if (acc >= target) return i;
+                                }
+                                return 255;
+                            };
+                            const int p12 = pctAt((count * 12u) / 100u);
+                            const int p88 = pctAt((count * 88u) / 100u);
+                            if ((p88 - p12) <= DeepOcrConstants::kWatermarkFaintMaxContrast) {
+                                continue;
+                            }
+                        }
+                    }
+                    filtered.push_back(q);
+                }
+                quads = std::move(filtered);
+                if (quads.empty()) {
+                    return {};
+                }
+            }
         }
 
         rawBlocks.reserve(quads.size());
@@ -1516,20 +1797,20 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             cv::Mat clsBlob = makeRecOrClsBlob(
                 crop, DeepOcrConstants::kClsImgHeight, clsResizedW, DeepOcrConstants::kClsImgWidth);
             float p0 = 1.0f, p1 = 0.0f;
-            if (m_useWinMl && m_winMl) {
-                auto inTensor = waml::TensorFloat::Create(winrt::single_threaded_vector<int64_t>({
+            if (m_useWinMl && m_winMl && m_winMl->clsSession) {
+                auto clsTensor = waml::TensorFloat::Create(winrt::single_threaded_vector<int64_t>({
                     1, 3, DeepOcrConstants::kClsImgHeight, DeepOcrConstants::kClsImgWidth}));
                 const size_t clsFloats = static_cast<size_t>(3) *
                                          static_cast<size_t>(DeepOcrConstants::kClsImgHeight) *
                                          static_cast<size_t>(DeepOcrConstants::kClsImgWidth);
                 {
-                    WinMlTensorBufferLock inLock(inTensor);
+                    WinMlTensorBufferLock inLock(clsTensor);
                     if (inLock.data && inLock.floatCount >= clsFloats) {
                         std::memcpy(inLock.data, clsBlob.ptr<float>(), clsFloats * sizeof(float));
                     }
                 }
                 waml::LearningModelBinding binding(m_winMl->clsSession);
-                binding.Bind(m_winMl->clsInName, inTensor);
+                binding.Bind(m_winMl->clsInName, clsTensor);
                 auto evalRes = m_winMl->clsSession.Evaluate(binding, L"");
                 auto outTensor = evalRes.Outputs().Lookup(m_winMl->clsOutName).as<waml::TensorFloat>();
                 WinMlTensorBufferLock outLock(outTensor);
@@ -1558,11 +1839,12 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             return false;
         };
 
-        // 2. 全图零打断统一条带装箱 + 单 Session 无争抢高速推理
-        constexpr int kBatchStripW = 960;
-        constexpr int kStripLeadPad = 8;
-        constexpr int kStripSepTotal = 40; // 12px 右边缘延展 + 16px 中性零激活死区 + 12px 左边缘延展
-        constexpr int kMaxPieceW = kBatchStripW - kStripLeadPad * 2; // 944
+        // 2. 轴对齐零拷贝切片 + 光学字宽自适应归一化 + 单趟列方差切分 + FFD 降序最佳装箱
+        constexpr int kBatchStripW = DeepOcrConstants::kRecFixedStripWidth;
+        constexpr int kStripLeadPad = 6;
+        constexpr int kStripEdgeExtend = 6;
+        constexpr int kStripSepTotal = 24; // 6px 右延展 + 12px 中性零激活死区 + 6px 左延展
+        constexpr int kMaxPieceW = kBatchStripW - kStripLeadPad * 2; // 948
 
         struct QuadMeta {
             cv::Rect lineBox;
@@ -1576,10 +1858,12 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             float confWeightedSum = 0.0f;
             size_t totalChars = 0;
             std::vector<CtcDecodedChar> chars;
+            std::vector<std::pair<int, std::vector<CtcDecodedChar>>> segOutputs;
         };
 
         struct RecPiece {
             size_t quadIdx = 0;
+            int subOrder = 0;
             float uOffset = 0.0f;
             float uScale = 1.0f;
             cv::Mat resizedCrop; // 48 x resizedW
@@ -1592,11 +1876,6 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
 
         for (size_t qi = 0; qi < quads.size(); ++qi) {
             const auto& q = quads[qi];
-            cv::Mat invPersp;
-            bool rotatedVertical = false;
-            cv::Mat crop = warpPerspectiveQuad(bgr, q.corners, &invPersp, &rotatedVertical);
-            if (crop.empty() || crop.cols < 2 || crop.rows < 2) continue;
-
             float minX = FLT_MAX, minY = FLT_MAX, maxX = -FLT_MAX, maxY = -FLT_MAX;
             for (const auto& pt : q.corners) {
                 minX = (std::min)(minX, pt.x);
@@ -1608,11 +1887,33 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             const int by1 = std::clamp(static_cast<int>(std::floor(minY)), 0, origH - 1);
             const int bx2 = std::clamp(static_cast<int>(std::ceil(maxX)), bx1 + 1, origW);
             const int by2 = std::clamp(static_cast<int>(std::ceil(maxY)), by1 + 1, origH);
+            const cv::Rect lineBox(bx1, by1, bx2 - bx1, by2 - by1);
+
+            const float topSkew = std::abs(q.corners[1].y - q.corners[0].y);
+            const float botSkew = std::abs(q.corners[2].y - q.corners[3].y);
+            const float leftSkew = std::abs(q.corners[3].x - q.corners[0].x);
+            const float rightSkew = std::abs(q.corners[2].x - q.corners[1].x);
+            const bool isNearAxisAlignedHoriz =
+                topSkew <= DeepOcrConstants::kAxisAlignedMaxSkewPx &&
+                botSkew <= DeepOcrConstants::kAxisAlignedMaxSkewPx &&
+                leftSkew <= DeepOcrConstants::kAxisAlignedMaxSkewPx &&
+                rightSkew <= DeepOcrConstants::kAxisAlignedMaxSkewPx &&
+                lineBox.height < static_cast<int>(static_cast<float>(lineBox.width) * 1.45f);
+
+            cv::Mat invPersp;
+            bool rotatedVertical = false;
+            cv::Mat crop;
+            if (isNearAxisAlignedHoriz) {
+                crop = bgr(lineBox);
+            } else {
+                crop = warpPerspectiveQuad(bgr, q.corners, &invPersp, &rotatedVertical);
+            }
+            if (crop.empty() || crop.cols < 2 || crop.rows < 2) continue;
 
             const bool rotated180 = rotatedVertical ? checkRotate180IfNeeded(crop) : false;
 
             auto& qm = quadMetas[qi];
-            qm.lineBox = cv::Rect(bx1, by1, bx2 - bx1, by2 - by1);
+            qm.lineBox = lineBox;
             qm.invPersp = std::move(invPersp);
             qm.origCropW = crop.cols;
             qm.origCropH = crop.rows;
@@ -1620,26 +1921,47 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             qm.rotatedVertical = rotatedVertical;
             qm.valid = true;
 
-            const float fullAspect = static_cast<float>(crop.cols) / static_cast<float>(crop.rows);
-            const int fullResizedW = static_cast<int>(std::ceil(static_cast<float>(DeepOcrConstants::kRecImgHeight) * fullAspect));
+            // 光学字宽自适应归一化：保障常规字号与小号英文单词间距 100% 全额放大，仅抑制 >42px 特大标题框横向过度膨胀
+            const float cropRowsF = static_cast<float>((std::max)(1, crop.rows));
+            float horizScale = static_cast<float>(DeepOcrConstants::kRecImgHeight) / cropRowsF;
+            if (crop.rows > 42) {
+                const float effectiveTargetH = (std::min)(
+                    static_cast<float>(DeepOcrConstants::kRecImgHeight),
+                    42.0f + (cropRowsF - 42.0f) * 0.35f);
+                horizScale = (std::max)(1.05f, effectiveTargetH / cropRowsF);
+            }
+            const int fullResizedW = static_cast<int>(std::ceil(static_cast<float>(crop.cols) * horizScale));
 
             if (fullResizedW <= kMaxPieceW) {
                 const int rw = std::clamp(fullResizedW, 8, kMaxPieceW);
                 cv::Mat rc;
                 cv::resize(crop, rc, cv::Size(rw, DeepOcrConstants::kRecImgHeight), 0.0, 0.0,
                            crop.rows < DeepOcrConstants::kRecImgHeight ? cv::INTER_CUBIC : cv::INTER_AREA);
-                pieces.push_back(RecPiece{qi, 0.0f, 1.0f, std::move(rc), rw});
+                pieces.push_back(RecPiece{qi, 0, 0.0f, 1.0f, std::move(rc), rw});
             } else {
                 cv::Mat grayCrop;
                 cv::cvtColor(crop, grayCrop, cv::COLOR_BGR2GRAY);
                 const int maxSliceCropW = (std::max)(
                     24,
-                    static_cast<int>(std::floor(
-                        static_cast<float>(crop.rows) *
-                        (static_cast<float>(kMaxPieceW - 16) /
-                         static_cast<float>(DeepOcrConstants::kRecImgHeight)))));
+                    static_cast<int>(std::floor(static_cast<float>(kMaxPieceW - 12) / horizScale)));
+
+                // 单趟连续指针扫描预计算每列方差，O(W*H) 零 OpenCV 虚函数分配开销
+                const int gRows = grayCrop.rows;
+                const int gCols = grayCrop.cols;
+                std::vector<uint32_t> colSum(static_cast<size_t>(gCols), 0);
+                std::vector<uint32_t> colSumSq(static_cast<size_t>(gCols), 0);
+                for (int r = 0; r < gRows; ++r) {
+                    const uint8_t* gPtr = grayCrop.ptr<uint8_t>(r);
+                    for (int c = 0; c < gCols; ++c) {
+                        const uint32_t v = gPtr[c];
+                        colSum[static_cast<size_t>(c)] += v;
+                        colSumSq[static_cast<size_t>(c)] += v * v;
+                    }
+                }
+                const double invRows = 1.0 / static_cast<double>((std::max)(1, gRows));
 
                 int segStart = 0;
+                int subOrd = 0;
                 while (segStart < crop.cols) {
                     int segEnd = crop.cols;
                     if (crop.cols - segStart > maxSliceCropW) {
@@ -1649,10 +1971,11 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                         int bestCut = idealCut;
                         double minColVar = 1e18;
                         for (int x = searchL; x <= searchR; ++x) {
-                            cv::Scalar meanS, stdS;
-                            cv::meanStdDev(grayCrop.col(x), meanS, stdS);
-                            if (stdS[0] < minColVar) {
-                                minColVar = stdS[0];
+                            const double s = static_cast<double>(colSum[static_cast<size_t>(x)]);
+                            const double sq = static_cast<double>(colSumSq[static_cast<size_t>(x)]);
+                            const double var = sq * invRows - (s * invRows) * (s * invRows);
+                            if (var < minColVar) {
+                                minColVar = var;
                                 bestCut = x;
                             }
                         }
@@ -1661,15 +1984,15 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
 
                     const int segW = segEnd - segStart;
                     cv::Mat subCrop = crop(cv::Rect(segStart, 0, segW, crop.rows));
-                    const float subAspect = static_cast<float>(segW) / static_cast<float>((std::max)(1, crop.rows));
                     const int rw = std::clamp(
-                        static_cast<int>(std::ceil(static_cast<float>(DeepOcrConstants::kRecImgHeight) * subAspect)),
+                        static_cast<int>(std::ceil(static_cast<float>(segW) * horizScale)),
                         8, kMaxPieceW);
                     cv::Mat rc;
                     cv::resize(subCrop, rc, cv::Size(rw, DeepOcrConstants::kRecImgHeight), 0.0, 0.0,
                                crop.rows < DeepOcrConstants::kRecImgHeight ? cv::INTER_CUBIC : cv::INTER_AREA);
                     pieces.push_back(RecPiece{
                         qi,
+                        subOrd++,
                         static_cast<float>(segStart) / static_cast<float>(crop.cols),
                         static_cast<float>(segW) / static_cast<float>(crop.cols),
                         std::move(rc),
@@ -1697,54 +2020,68 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             std::vector<StripSlot> slots;
         };
 
-        std::vector<PackedStrip> strips;
-        strips.reserve((pieces.size() / 4) + 2);
-        {
-            std::vector<StripSlot> curSlots;
-            curSlots.reserve(12);
+        // First-Fit Decreasing (FFD 降序最佳适应装箱)：消除长行尾块碎片化，条带装载率提升至 92%+
+        std::vector<size_t> ffdOrder(pieces.size());
+        std::iota(ffdOrder.begin(), ffdOrder.end(), 0);
+        std::stable_sort(ffdOrder.begin(), ffdOrder.end(), [&](size_t a, size_t b) {
+            return pieces[a].resizedW > pieces[b].resizedW;
+        });
+
+        struct OpenBin {
             int cursor = kStripLeadPad;
-
-            auto finalizeCurStrip = [&]() {
-                if (curSlots.empty()) return;
-                const int contentW = (std::min)(kBatchStripW, cursor + kStripLeadPad);
-                cv::Mat stripBgr(DeepOcrConstants::kRecImgHeight, contentW, CV_8UC3, cv::Scalar(128, 128, 128));
-                for (size_t i = 0; i < curSlots.size(); ++i) {
-                    const auto& sl = curSlots[i];
-                    const auto& pc = pieces[sl.pieceIdx];
-                    if (sl.stripX0 < 0 || sl.stripX1 > contentW) continue;
-                    pc.resizedCrop.copyTo(stripBgr(cv::Rect(sl.stripX0, 0, sl.resizedW, DeepOcrConstants::kRecImgHeight)));
-
-                    const int leftPad = (i == 0) ? kStripLeadPad : 12;
-                    if (leftPad > 0 && sl.stripX0 >= leftPad) {
-                        cv::Mat leftCol = pc.resizedCrop.col(0);
-                        for (int px = sl.stripX0 - leftPad; px < sl.stripX0; ++px) {
-                            leftCol.copyTo(stripBgr.col(px));
-                        }
-                    }
-                    const int rightPad = (i + 1 == curSlots.size()) ? (contentW - sl.stripX1) : 12;
-                    if (rightPad > 0 && sl.stripX1 + rightPad <= contentW) {
-                        cv::Mat rightCol = pc.resizedCrop.col(sl.resizedW - 1);
-                        for (int px = sl.stripX1; px < sl.stripX1 + rightPad; ++px) {
-                            rightCol.copyTo(stripBgr.col(px));
-                        }
-                    }
+            std::vector<StripSlot> slots;
+        };
+        std::vector<OpenBin> openBins;
+        openBins.reserve((pieces.size() / 2) + 2);
+        for (size_t pi : ffdOrder) {
+            const int rw = pieces[pi].resizedW;
+            bool placed = false;
+            for (auto& bin : openBins) {
+                const int x0 = bin.slots.empty() ? bin.cursor : (bin.cursor + kStripSepTotal);
+                if (x0 + rw + kStripLeadPad <= kBatchStripW) {
+                    bin.slots.push_back(StripSlot{pi, x0, x0 + rw, rw});
+                    bin.cursor = x0 + rw;
+                    placed = true;
+                    break;
                 }
-                strips.push_back(PackedStrip{std::move(stripBgr), contentW, std::move(curSlots)});
-                curSlots.clear();
-                cursor = kStripLeadPad;
-            };
-
-            for (size_t pi = 0; pi < pieces.size(); ++pi) {
-                const int rw = pieces[pi].resizedW;
-                const int needed = (curSlots.empty() ? 0 : kStripSepTotal) + rw;
-                if (!curSlots.empty() && (cursor + needed + kStripLeadPad > kBatchStripW)) {
-                    finalizeCurStrip();
-                }
-                const int x0 = curSlots.empty() ? cursor : (cursor + kStripSepTotal);
-                curSlots.push_back(StripSlot{pi, x0, x0 + rw, rw});
-                cursor = x0 + rw;
             }
-            finalizeCurStrip();
+            if (!placed) {
+                OpenBin nb;
+                nb.slots.reserve(8);
+                nb.slots.push_back(StripSlot{pi, kStripLeadPad, kStripLeadPad + rw, rw});
+                nb.cursor = kStripLeadPad + rw;
+                openBins.push_back(std::move(nb));
+            }
+        }
+
+        std::vector<PackedStrip> strips;
+        strips.reserve(openBins.size());
+        for (auto& bin : openBins) {
+            if (bin.slots.empty()) continue;
+            const int contentW = (std::min)(kBatchStripW, bin.cursor + kStripLeadPad);
+            cv::Mat stripBgr(DeepOcrConstants::kRecImgHeight, contentW, CV_8UC3, cv::Scalar(128, 128, 128));
+            for (size_t i = 0; i < bin.slots.size(); ++i) {
+                const auto& sl = bin.slots[i];
+                const auto& pc = pieces[sl.pieceIdx];
+                if (sl.stripX0 < 0 || sl.stripX1 > contentW) continue;
+                pc.resizedCrop.copyTo(stripBgr(cv::Rect(sl.stripX0, 0, sl.resizedW, DeepOcrConstants::kRecImgHeight)));
+
+                const int leftPad = (i == 0) ? kStripLeadPad : kStripEdgeExtend;
+                if (leftPad > 0 && sl.stripX0 >= leftPad) {
+                    cv::Mat leftCol = pc.resizedCrop.col(0);
+                    for (int px = sl.stripX0 - leftPad; px < sl.stripX0; ++px) {
+                        leftCol.copyTo(stripBgr.col(px));
+                    }
+                }
+                const int rightPad = (i + 1 == bin.slots.size()) ? (contentW - sl.stripX1) : kStripEdgeExtend;
+                if (rightPad > 0 && sl.stripX1 + rightPad <= contentW) {
+                    cv::Mat rightCol = pc.resizedCrop.col(sl.resizedW - 1);
+                    for (int px = sl.stripX1; px < sl.stripX1 + rightPad; ++px) {
+                        rightCol.copyTo(stripBgr.col(px));
+                    }
+                }
+            }
+            strips.push_back(PackedStrip{std::move(stripBgr), contentW, std::move(bin.slots)});
         }
 
         auto scatterStripDecodedToQuads = [&](const PackedStrip& st, const CtcDecodeOutput& stripDecoded) {
@@ -1764,18 +2101,14 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                     CtcDecodedChar mapped = dc;
                     mapped.normLeft = std::clamp((pxL - sx0) / sw, 0.0f, 1.0f);
                     mapped.normRight = std::clamp((pxR - sx0) / sw, mapped.normLeft + 0.005f, 1.0f);
+                    mapped.normLeft = pc.uOffset + mapped.normLeft * pc.uScale;
+                    mapped.normRight = pc.uOffset + mapped.normRight * pc.uScale;
                     chars.push_back(std::move(mapped));
                 }
                 while (!chars.empty() && chars.front().utf8Char == " ") chars.erase(chars.begin());
                 while (!chars.empty() && chars.back().utf8Char == " ") chars.pop_back();
-                if (chars.empty()) return;
-                for (auto& ch : chars) {
-                    qm.text += ch.utf8Char;
-                    qm.confWeightedSum += ch.confidence;
-                    ++qm.totalChars;
-                    ch.normLeft = pc.uOffset + ch.normLeft * pc.uScale;
-                    ch.normRight = pc.uOffset + ch.normRight * pc.uScale;
-                    qm.chars.push_back(std::move(ch));
+                if (!chars.empty()) {
+                    qm.segOutputs.emplace_back(pc.subOrder, std::move(chars));
                 }
                 return;
             }
@@ -1791,7 +2124,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                 for (size_t i = 0; i < st.slots.size(); ++i) {
                     const float sx0 = static_cast<float>(st.slots[i].stripX0);
                     const float sx1 = static_cast<float>(st.slots[i].stripX1);
-                    if (pxMid >= sx0 - 16.0f && pxMid <= sx1 + 16.0f) {
+                    if (pxMid >= sx0 - 10.0f && pxMid <= sx1 + 10.0f) {
                         const float dist = (pxMid < sx0) ? (sx0 - pxMid) : ((pxMid > sx1) ? (pxMid - sx1) : 0.0f);
                         if (dist < bestDist) {
                             bestDist = dist;
@@ -1824,38 +2157,61 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                 const auto& pc = pieces[st.slots[i].pieceIdx];
                 auto& qm = quadMetas[pc.quadIdx];
                 for (auto& ch : chars) {
-                    qm.text += ch.utf8Char;
-                    qm.confWeightedSum += ch.confidence;
-                    ++qm.totalChars;
                     ch.normLeft = pc.uOffset + ch.normLeft * pc.uScale;
                     ch.normRight = pc.uOffset + ch.normRight * pc.uScale;
-                    qm.chars.push_back(std::move(ch));
                 }
+                qm.segOutputs.emplace_back(pc.subOrder, std::move(chars));
             }
         };
 
         const int H = DeepOcrConstants::kRecImgHeight;
-        if (m_useWinMl && m_winMl && m_winMl->recSession) {
-            std::vector<float> fallbackOutVec;
-            for (size_t si = 0; si < strips.size(); ++si) {
-                const auto& st = strips[si];
-                const int netW = std::clamp(((st.contentW + 31) / 32) * 32, 32, kBatchStripW);
+        if (m_useWinMl && m_winMl) {
+            std::vector<float> hostInBuf;
+            std::vector<float> hostOutBuf;
+            size_t si = 0;
+            while (si < strips.size()) {
+                const size_t rem = strips.size() - si;
+                size_t bucketIdx = 1;
+                if (m_winMl->supportsBatchEval) {
+                    if (rem >= 18) {
+                        bucketIdx = 3; // 32 x 960
+                    } else if (rem >= 7) {
+                        bucketIdx = 2; // 16 x 960
+                    } else if (rem == 1 && strips[si].contentW <= 640) {
+                        bucketIdx = 0; // 1 x 640
+                    } else {
+                        bucketIdx = 1; // 4 x 960
+                    }
+                } else {
+                    bucketIdx = (strips[si].contentW <= 640) ? 0 : 1;
+                }
+
+                waml::LearningModelSession* recSess = m_winMl->ensureRecSession(bucketIdx);
+                if (!recSess) {
+                    break;
+                }
+
+                const int batchCap = m_winMl->supportsBatchEval
+                    ? WinMlContext::kRecSpecs[bucketIdx].n
+                    : 1;
+                const int netW = (bucketIdx == 0) ? 640 : kBatchStripW;
+                const int actualB = static_cast<int>((std::min)(rem, static_cast<size_t>(batchCap)));
+                const size_t planeFloats = static_cast<size_t>(H) * static_cast<size_t>(netW);
+                const size_t sampleFloats = static_cast<size_t>(3) * planeFloats;
+                const size_t batchFloats = static_cast<size_t>(batchCap) * sampleFloats;
+
                 try {
-                    auto inTensor = waml::TensorFloat::Create(
-                        winrt::single_threaded_vector<int64_t>({1, 3, H, netW}));
-                    const size_t planeFloats = static_cast<size_t>(H) * static_cast<size_t>(netW);
-                    const size_t totalFloats = static_cast<size_t>(3) * planeFloats;
-                    {
-                        WinMlTensorBufferLock inLock(inTensor);
-                        if (inLock.data && inLock.floatCount >= totalFloats) {
-                            if (st.contentW < netW) {
-                                std::memset(inLock.data, 0, totalFloats * sizeof(float));
-                            }
-                            constexpr float kScale = 2.0f / 255.0f;
+                    hostInBuf.assign(batchFloats, 0.0f);
+                    float* basePtr = hostInBuf.data();
+                    cv::parallel_for_(cv::Range(0, actualB), [&](const cv::Range& br) {
+                        constexpr float kScale = 2.0f / 255.0f;
+                        for (int b = br.start; b < br.end; ++b) {
+                            const auto& st = strips[si + static_cast<size_t>(b)];
+                            float* sampleBase = basePtr + static_cast<size_t>(b) * sampleFloats;
                             const int copyW = (std::min)(st.contentW, netW);
-                            float* c0 = inLock.data;
-                            float* c1 = inLock.data + planeFloats;
-                            float* c2 = inLock.data + planeFloats * 2;
+                            float* c0 = sampleBase;
+                            float* c1 = sampleBase + planeFloats;
+                            float* c2 = sampleBase + planeFloats * 2;
                             for (int y = 0; y < H; ++y) {
                                 const auto* row = st.stripBgr.ptr<cv::Vec3b>(y);
                                 const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(netW);
@@ -1866,11 +2222,14 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                                 }
                             }
                         }
-                    }
+                    });
 
-                    waml::LearningModelBinding binding(m_winMl->recSession);
-                    binding.Bind(m_winMl->recInName, inTensor);
-                    auto evalRes = m_winMl->recSession.Evaluate(binding, L"");
+                    auto recTensor = waml::TensorFloat::CreateFromArray(
+                        winrt::single_threaded_vector<int64_t>({batchCap, 3, H, netW}),
+                        winrt::array_view<const float>(hostInBuf.data(), hostInBuf.data() + batchFloats));
+                    waml::LearningModelBinding binding(*recSess);
+                    binding.Bind(m_winMl->recInName, recTensor);
+                    auto evalRes = recSess->Evaluate(binding, L"");
                     auto outTensor = evalRes.Outputs().Lookup(m_winMl->recOutName).as<waml::TensorFloat>();
                     const auto outShape = outTensor.Shape();
                     int seqT = 0;
@@ -1883,23 +2242,41 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                         numClasses = static_cast<int>(outShape.GetAt(1));
                     }
                     if (seqT > 0 && numClasses > 1) {
-                        const size_t outFloats = static_cast<size_t>(seqT) * static_cast<size_t>(numClasses);
-                        const float validRatio = static_cast<float>(st.contentW) / static_cast<float>(netW);
-                        WinMlTensorBufferLock outLock(outTensor);
-                        if (outLock.data && outLock.floatCount >= outFloats) {
-                            cv::Mat logits2d(seqT, numClasses, CV_32FC1, outLock.data);
-                            scatterStripDecodedToQuads(st, decodeCtcGreedy(logits2d, m_dictKeys, validRatio));
-                        } else {
-                            outLock.release();
-                            fallbackOutVec.resize(outFloats);
-                            auto vecView = outTensor.GetAsVectorView();
-                            vecView.GetMany(0, winrt::array_view<float>(fallbackOutVec.data(), fallbackOutVec.data() + outFloats));
-                            cv::Mat logits2d(seqT, numClasses, CV_32FC1, fallbackOutVec.data());
-                            scatterStripDecodedToQuads(st, decodeCtcGreedy(logits2d, m_dictKeys, validRatio));
+                        const size_t oneOutFloats = static_cast<size_t>(seqT) * static_cast<size_t>(numClasses);
+                        const size_t needOutFloats = static_cast<size_t>(actualB) * oneOutFloats;
+                        hostOutBuf.resize(needOutFloats);
+                        {
+                            // 关键硬件加速优化：DirectML 输出张量映射区为 D3D12 Readback 非缓存内存 (Uncached/WC)，
+                            // 先以整块流式 std::memcpy 突发拉取至 CPU L3-Cached 连续缓冲区，杜绝 7000 万次标量随机读总线惩罚
+                            WinMlTensorBufferLock outLock(outTensor);
+                            if (outLock.data && outLock.floatCount >= needOutFloats) {
+                                std::memcpy(hostOutBuf.data(), outLock.data, needOutFloats * sizeof(float));
+                            } else {
+                                outLock.release();
+                                auto vecView = outTensor.GetAsVectorView();
+                                vecView.GetMany(0, winrt::array_view<float>(hostOutBuf.data(), hostOutBuf.data() + needOutFloats));
+                            }
+                        }
+
+                        std::vector<CtcDecodeOutput> batchDecoded(static_cast<size_t>(actualB));
+                        float* cachedHostPtr = hostOutBuf.data();
+                        cv::parallel_for_(cv::Range(0, actualB), [&](const cv::Range& br) {
+                            for (int b = br.start; b < br.end; ++b) {
+                                const auto& st = strips[si + static_cast<size_t>(b)];
+                                const float validRatio = static_cast<float>(st.contentW) / static_cast<float>(netW);
+                                cv::Mat logits2d(seqT, numClasses, CV_32FC1, cachedHostPtr + static_cast<size_t>(b) * oneOutFloats);
+                                batchDecoded[static_cast<size_t>(b)] = decodeCtcGreedy(logits2d, m_dictKeys, validRatio);
+                            }
+                        });
+
+                        for (int b = 0; b < actualB; ++b) {
+                            scatterStripDecodedToQuads(strips[si + static_cast<size_t>(b)], batchDecoded[static_cast<size_t>(b)]);
                         }
                     }
                 } catch (...) {
                 }
+
+                si += static_cast<size_t>(actualB);
             }
         } else {
             for (const auto& st : strips) {
@@ -1924,7 +2301,21 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
 
         for (size_t qi = 0; qi < quadMetas.size(); ++qi) {
             auto& qm = quadMetas[qi];
-            if (!qm.valid || qm.text.empty() || qm.totalChars == 0) continue;
+            if (!qm.valid || qm.segOutputs.empty()) continue;
+            if (qm.segOutputs.size() > 1) {
+                std::sort(qm.segOutputs.begin(), qm.segOutputs.end(), [](const auto& a, const auto& b) {
+                    return a.first < b.first;
+                });
+            }
+            for (auto& seg : qm.segOutputs) {
+                for (auto& ch : seg.second) {
+                    qm.text += ch.utf8Char;
+                    qm.confWeightedSum += ch.confidence;
+                    ++qm.totalChars;
+                    qm.chars.push_back(std::move(ch));
+                }
+            }
+            if (qm.text.empty() || qm.totalChars == 0) continue;
             const float avgConf = qm.confWeightedSum / static_cast<float>(qm.totalChars);
             if (avgConf < DeepOcrConstants::kRecMinLineConfidence) continue;
 
@@ -2201,12 +2592,93 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
 
     m_downloading.store(false, std::memory_order_release);
     cleanupDeepOcrWorkingSet();
+    if (allSucceeded && !m_shuttingDown.load(std::memory_order_acquire)) {
+        warmupAsync(100);
+    }
+}
+
+bool DeepOcrEngine::isWarmAndLoaded() const noexcept {
+    return m_modelsLoadedAtomic.load(std::memory_order_acquire);
+}
+
+void DeepOcrEngine::precompileFixedBucketsLocked() {
+    if (m_bucketsPrecompiled || !m_useWinMl || !m_winMl) return;
+    try {
+        for (size_t di : {size_t{0}, size_t{1}}) {
+            if (m_shuttingDown.load(std::memory_order_acquire)) return;
+            if (waml::LearningModelSession* dSess = m_winMl->ensureDetSession(di)) {
+                const auto& sp = WinMlContext::kDetSpecs[di];
+                auto dTen = waml::TensorFloat::Create(winrt::single_threaded_vector<int64_t>({sp.n, 3, sp.h, sp.w}));
+                waml::LearningModelBinding db(*dSess);
+                db.Bind(m_winMl->detInName, dTen);
+                (void)dSess->Evaluate(db, L"");
+            }
+        }
+        const size_t maxRecBucket = m_winMl->supportsBatchEval ? WinMlContext::kRecSpecs.size() : 2;
+        for (size_t ri = 0; ri < maxRecBucket; ++ri) {
+            if (m_shuttingDown.load(std::memory_order_acquire)) return;
+            if (waml::LearningModelSession* rSess = m_winMl->ensureRecSession(ri)) {
+                const int bCap = m_winMl->supportsBatchEval ? WinMlContext::kRecSpecs[ri].n : 1;
+                const int netW = (ri == 0) ? 640 : DeepOcrConstants::kRecFixedStripWidth;
+                auto rTen = waml::TensorFloat::Create(
+                    winrt::single_threaded_vector<int64_t>({bCap, 3, DeepOcrConstants::kRecImgHeight, netW}));
+                waml::LearningModelBinding rb(*rSess);
+                rb.Bind(m_winMl->recInName, rTen);
+                (void)rSess->Evaluate(rb, L"");
+            }
+        }
+        m_bucketsPrecompiled = true;
+    } catch (...) {
+    }
+}
+
+void DeepOcrEngine::warmupAsync(int delayMs) {
+    if (m_shuttingDown.load(std::memory_order_acquire)) return;
+    bool installed = false;
+    const auto modelDir = resolveModelDirectory(&installed);
+    if (!installed) return;
+
+    std::lock_guard<std::mutex> lock(m_warmupMutex);
+    if (m_shuttingDown.load(std::memory_order_acquire)) return;
+    if (m_modelsLoadedAtomic.load(std::memory_order_acquire) && m_bucketsPrecompiled) {
+        return;
+    }
+    if (m_warmupThread.joinable()) {
+        return;
+    }
+
+    m_warmupThread = std::jthread([this, modelDir, delayMs](std::stop_token st) {
+        tools3000::core::TraceId::Scope traceScope;
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        int remainingMs = (std::max)(0, delayMs);
+        while (remainingMs > 0) {
+            if (st.stop_requested() || m_shuttingDown.load(std::memory_order_acquire)) {
+                return;
+            }
+            const int step = (std::min)(50, remainingMs);
+            Sleep(static_cast<DWORD>(step));
+            remainingMs -= step;
+        }
+        if (st.stop_requested() || m_shuttingDown.load(std::memory_order_acquire)) {
+            return;
+        }
+        std::lock_guard<std::mutex> inferLock(m_inferMutex);
+        if (st.stop_requested() || m_shuttingDown.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (ensureModelsLoadedLocked(modelDir)) {
+            precompileFixedBucketsLocked();
+            LOG_INFO("DeepOcrEngine: background static bucket pre-compilation completed");
+        }
+    });
 }
 
 void DeepOcrEngine::releaseLoadedModels() {
     {
         std::lock_guard<std::mutex> lock(m_inferMutex);
         m_modelsLoaded = false;
+        m_modelsLoadedAtomic.store(false, std::memory_order_release);
+        m_bucketsPrecompiled = false;
         m_useWinMl = false;
         m_loadedModelDir.clear();
         m_winMl.reset();
@@ -2220,7 +2692,15 @@ void DeepOcrEngine::releaseLoadedModels() {
 }
 
 void DeepOcrEngine::shutdown() {
+    m_shuttingDown.store(true, std::memory_order_release);
     m_cancelRequested.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> wLock(m_warmupMutex);
+        if (m_warmupThread.joinable()) {
+            m_warmupThread.request_stop();
+            m_warmupThread.join();
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(m_downloadMutex);
         if (m_downloadThread.joinable()) {

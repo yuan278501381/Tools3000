@@ -50,6 +50,7 @@ public:
     void shutdown();
 
     bool isVisible() const noexcept;
+    void reloadTheme();
 
     /// 离屏渲染底部工具按钮微缩剧场卡片（供自动化测试与视觉快照校验，coachSlot = 0..6）
     static cv::Mat renderCoachCardPreviewForTest(int coachSlot, float phase01, bool dark, bool isZh = true);

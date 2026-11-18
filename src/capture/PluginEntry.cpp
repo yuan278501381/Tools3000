@@ -608,27 +608,31 @@ bool encodeAndWriteImageFile(const cv::Mat& image, const std::filesystem::path& 
 
 static std::atomic<bool> g_ocrPending{false};
 static std::atomic<bool> g_ocrRunning{false};
+static std::atomic<uint64_t> g_ocrTaskGeneration{0};
 static std::jthread g_ocrWorker;
 
 static void releaseOcrTransientMemory() {
     tools3000::core::WinUtils::trimWorkingSet();
 }
 
-static void startMemoryOcrTask(const cv::Mat& capturedImage) {
+static void startMemoryOcrTask(const cv::Mat& capturedImage, const CaptureRegion* capturedRegion = nullptr) {
     if (capturedImage.empty()) return;
     const bool isZh = tools3000::core::isUiLanguageChinese();
-    if (g_ocrRunning.exchange(true)) {
-        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            isZh ? L"OCR 正在识别，请稍候" : L"OCR recognition in progress, please wait"});
-        return;
-    }
+    const uint64_t myGen = g_ocrTaskGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    g_ocrRunning.store(true, std::memory_order_release);
+
+    const bool hasAnchor = (capturedRegion != nullptr && capturedRegion->width > 0 && capturedRegion->height > 0);
+    const RECT anchorRc = hasAnchor
+        ? RECT{capturedRegion->x, capturedRegion->y, capturedRegion->x + capturedRegion->width, capturedRegion->y + capturedRegion->height}
+        : RECT{};
 
     const bool showResultWindow = tools3000::core::ConfigManager::instance().get<bool>(
         "/ocr/showResultWindow", true);
     if (showResultWindow) {
-        tools3000::core::MainThreadDispatcher::instance().post([isZh]() {
+        tools3000::core::MainThreadDispatcher::instance().post([isZh, hasAnchor, anchorRc]() {
             tools3000::ocr::OcrResultWindow::instance().showResult(
-                isZh ? "正在识别..." : "Recognizing...");
+                isZh ? "正在识别..." : "Recognizing...",
+                hasAnchor ? &anchorRc : nullptr);
         });
     } else {
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
@@ -636,20 +640,30 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage) {
     }
 
     cv::Mat img = capturedImage.clone();
-    if (g_ocrWorker.joinable()) g_ocrWorker.join();
-    g_ocrWorker = std::jthread([img = std::move(img)]() {
+    std::jthread prevWorker = std::move(g_ocrWorker);
+    g_ocrWorker = std::jthread([prev = std::move(prevWorker), img = std::move(img), myGen, hasAnchor, anchorRc]() mutable {
+        if (prev.joinable()) {
+            prev.join();
+        }
+        if (g_ocrTaskGeneration.load(std::memory_order_acquire) != myGen) {
+            return;
+        }
         const bool zh = tools3000::core::isUiLanguageChinese();
         try {
             auto results = tools3000::ocr::OcrEngine::instance().extractText(img);
+            if (g_ocrTaskGeneration.load(std::memory_order_acquire) != myGen) {
+                return;
+            }
             std::string fullText;
             for (const auto& r : results) {
                 fullText += r.text + "\r\n";
             }
             if (fullText.empty()) {
                 if (tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true)) {
-                    tools3000::core::MainThreadDispatcher::instance().post([zh]() {
+                    tools3000::core::MainThreadDispatcher::instance().post([zh, hasAnchor, anchorRc]() {
                         tools3000::ocr::OcrResultWindow::instance().showResult(
-                            zh ? "未识别到文字" : "No text recognized");
+                            zh ? "未识别到文字" : "No text recognized",
+                            hasAnchor ? &anchorRc : nullptr);
                     });
                 } else {
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
@@ -662,8 +676,9 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage) {
                     tools3000::core::WinUtils::copyToClipboard(fullText);
                 }
                 if (showResult) {
-                    tools3000::core::MainThreadDispatcher::instance().post([text = std::move(fullText)]() {
-                        tools3000::ocr::OcrResultWindow::instance().showResult(text);
+                    tools3000::core::MainThreadDispatcher::instance().post([text = std::move(fullText), hasAnchor, anchorRc]() {
+                        tools3000::ocr::OcrResultWindow::instance().showResult(
+                            text, hasAnchor ? &anchorRc : nullptr);
                     });
                 } else {
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
@@ -682,7 +697,9 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage) {
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                 zh ? L"OCR 识别失败" : L"OCR recognition failed"});
         }
-        g_ocrRunning.store(false);
+        if (g_ocrTaskGeneration.load(std::memory_order_acquire) == myGen) {
+            g_ocrRunning.store(false, std::memory_order_release);
+        }
     });
 }
 
@@ -763,8 +780,8 @@ static void triggerOcrCapture() {
     opts.saveToFile = false;
     opts.savePath.clear();
     opts.recordHistory = false;
-    opts.onImageCaptured = [](const cv::Mat& image, const CaptureRegion&) {
-        startMemoryOcrTask(image);
+    opts.onImageCaptured = [](const cv::Mat& image, const CaptureRegion& reg) {
+        startMemoryOcrTask(image, &reg);
     };
     g_ocrPending.store(false);
     tools3000::capture::ScreenCapture::instance().startCapture(opts);
@@ -808,6 +825,15 @@ public:
             if (!tools3000::ocr::DeepOcrEngine::instance().isModelInstalled()) {
                 LOG_INFO("CapturePlugin: starting background PP-OCRv4 offline pack download requested by installer");
                 tools3000::ocr::DeepOcrEngine::instance().startModelDownload();
+            }
+        }
+        {
+            wchar_t testEnvBuf[8]{};
+            const DWORD envLen = GetEnvironmentVariableW(
+                L"TOOLS3000_TEST_MODE", testEnvBuf, static_cast<DWORD>(std::size(testEnvBuf)));
+            const bool inTestMode = (envLen > 0 && testEnvBuf[0] == L'1');
+            if (!inTestMode && tools3000::ocr::DeepOcrEngine::instance().isModelInstalled()) {
+                tools3000::ocr::DeepOcrEngine::instance().warmupAsync();
             }
         }
 
@@ -867,6 +893,7 @@ public:
             tools3000::capture::CaptureOverlay::instance().reloadThemeColors();
             tools3000::capture::PinWindow::refreshAllVisualsAndGroupBar();
             tools3000::capture::RecordingIndicator::instance().reloadTheme();
+            tools3000::capture::StudioPreviewWindow::instance().reloadTheme();
             tools3000::capture::ScrollCaptureOverlay::instance().reloadTheme();
             tools3000::capture::ShortcutHintOverlay::instance().reloadTheme();
             tools3000::ocr::OcrResultWindow::instance().reloadTheme();
@@ -1533,17 +1560,35 @@ public:
 
         mb.registerHandler("ocr.openResultWindow", [callOnUiThread](const nlohmann::json& params) -> nlohmann::json {
             const std::string text = params.value("text", "");
-            return callOnUiThread([text]() -> nlohmann::json {
+            bool hasAnchor = false;
+            RECT anchorRc{};
+            if (params.contains("anchorRect") && params["anchorRect"].is_object()) {
+                const auto& ar = params["anchorRect"];
+                anchorRc.left = ar.value("left", 0);
+                anchorRc.top = ar.value("top", 0);
+                anchorRc.right = ar.value("right", 0);
+                anchorRc.bottom = ar.value("bottom", 0);
+                hasAnchor = (anchorRc.right > anchorRc.left && anchorRc.bottom > anchorRc.top);
+            }
+            return callOnUiThread([text, hasAnchor, anchorRc]() -> nlohmann::json {
                 auto& win = tools3000::ocr::OcrResultWindow::instance();
-                win.showResult(text);
+                win.showResult(text, hasAnchor ? &anchorRc : nullptr);
                 RECT rc{};
-                if (win.hwnd()) GetClientRect(win.hwnd(), &rc);
+                RECT winRc{};
+                if (win.hwnd()) {
+                    GetClientRect(win.hwnd(), &rc);
+                    GetWindowRect(win.hwnd(), &winRc);
+                }
                 const float cw = static_cast<float>((std::max)(1L, rc.right - rc.left));
                 return {
                     {"success", win.hwnd() != nullptr && IsWindow(win.hwnd())},
                     {"lineCount", static_cast<int>(win.lineCount())},
                     {"maxScroll", win.maxScroll()},
-                    {"singleLineFooter", win.isFooterHintSingleLine(cw)}
+                    {"singleLineFooter", win.isFooterHintSingleLine(cw)},
+                    {"windowLeft", static_cast<int>(winRc.left)},
+                    {"windowTop", static_cast<int>(winRc.top)},
+                    {"windowRight", static_cast<int>(winRc.right)},
+                    {"windowBottom", static_cast<int>(winRc.bottom)}
                 };
             });
         });
@@ -1809,6 +1854,8 @@ public:
                             item.value("y", 0),
                             item.value("w", 40),
                             item.value("h", 18));
+                        b.layoutRegionId = item.value("layoutRegionId", 0);
+                        b.alignedRowId = item.value("alignedRowId", -1);
                         blocks.push_back(std::move(b));
                     }
                     pin->setOcrBlocksForTest(std::move(blocks));
@@ -1838,6 +1885,12 @@ public:
                 }
                 if (params.value("copyAll", false)) {
                     pin->copyAllText();
+                }
+                if (params.value("extractText", false)) {
+                    pin->extractText();
+                }
+                if (params.value("openComparisonPanel", false)) {
+                    pin->openOcrComparisonPanel();
                 }
                 if (params.value("clearSelection", false)) {
                     pin->clearTextSelection();
@@ -1927,6 +1980,7 @@ public:
                     {"ocrReady", pin->isOcrReady()},
                     {"ocrInFlight", pin->isOcrInFlight()},
                     {"ocrRunCount", pin->ocrRunCount()},
+                    {"ocrPanelText", tools3000::ocr::OcrResultWindow::instance().currentTextUtf8()},
                     {"globalOcrWorkers", tools3000::capture::PinWindow::globalActiveOcrWorkerCount()},
                     {"origWidth", pin->origWidth()},
                     {"origHeight", pin->origHeight()},

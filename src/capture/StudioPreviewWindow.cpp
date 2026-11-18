@@ -554,6 +554,20 @@ bool StudioPreviewWindow::isVisible() const noexcept {
     return m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd);
 }
 
+void StudioPreviewWindow::reloadTheme() {
+    if (!m_hwnd || !IsWindow(m_hwnd)) return;
+    const std::string themePref = tools3000::core::ConfigManager::instance().get<std::string>("/general/theme", "system");
+    bool isDark = false;
+    if (themePref == "dark") isDark = true;
+    else if (themePref == "light") isDark = false;
+    else isDark = tools3000::core::WinUtils::isSystemDarkMode();
+    const BOOL darkFlag = isDark ? TRUE : FALSE;
+    DwmSetWindowAttribute(m_hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &darkFlag, sizeof(darkFlag));
+    if (IsWindowVisible(m_hwnd)) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
 // ── 磁性波纹拆分剪辑 (Split -> Select -> Delete / Speed) + Undo/Redo ──────────
 
 void StudioPreviewWindow::pushUndoSnapshot() {
