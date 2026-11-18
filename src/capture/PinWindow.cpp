@@ -103,7 +103,8 @@ std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
                                              float cardCornerRadius,
                                              std::wstring sourceText,
                                              const cv::Mat& cleanBaseImage,
-                                             std::vector<MarkupElement> markupElements) {
+                                             std::vector<MarkupElement> markupElements,
+                                             bool autoStartLiveOcr) {
     if (image.empty()) return nullptr;
 
     auto pin = std::shared_ptr<PinWindow>(new PinWindow());
@@ -159,7 +160,7 @@ std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
     s_instances.push_back(pin);
     s_allHidden = false;
     refreshGroupBar();
-    if (pin->m_pinnedSourceText.empty() && pin->isLiveTextEnabled()) {
+    if (autoStartLiveOcr && pin->m_pinnedSourceText.empty() && pin->isLiveTextEnabled()) {
         wchar_t testEnvBuf[8]{};
         const DWORD envLen = GetEnvironmentVariableW(
             L"TOOLS3000_TEST_MODE", testEnvBuf, static_cast<DWORD>(std::size(testEnvBuf)));
@@ -2276,6 +2277,8 @@ void PinWindow::invalidateOcrStateAndRefreshIfSelecting() {
         m_anchorBlockIndex = -1;
         m_anchorCharIndex = 0;
         m_pendingSelectAllOcr = false;
+        m_pendingCopyAllOcr = false;
+        m_pendingOpenPanelOcr = false;
         m_silentOcrPreload = false;
         ++m_ocrVersion;
         m_ocrInFlightVersion = 0;
@@ -2356,6 +2359,31 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
 
         self->m_silentOcrPreload.store(false, std::memory_order_release);
         self->m_ocrReady = true;
+
+        auto buildAllTextUtf8 = [&]() -> std::string {
+            std::vector<tools3000::ocr::OcrResult> allBlocks;
+            allBlocks.reserve(self->m_ocrBlocks.size());
+            for (const auto& blk : self->m_ocrBlocks) {
+                if (!blk.text.empty()) {
+                    tools3000::ocr::OcrResult r;
+                    r.text = blk.text;
+                    r.confidence = 1.0f;
+                    r.box = blk.origBox;
+                    r.layoutRegionId = blk.layoutRegionId;
+                    r.alignedRowId = blk.alignedRowId;
+                    allBlocks.push_back(std::move(r));
+                }
+            }
+            std::string txt = joinAlignedSelectedPieces(allBlocks, "\r\n");
+            if (txt.empty() && !self->m_qrCodes.empty()) {
+                for (size_t qi = 0; qi < self->m_qrCodes.size(); ++qi) {
+                    if (qi > 0) txt += "\r\n";
+                    txt += self->m_qrCodes[qi].text;
+                }
+            }
+            return txt;
+        };
+
         if (self->m_pendingSelectAllOcr.exchange(false)) {
             if (!self->m_ocrBlocks.empty()) {
                 self->m_textSelectionMode = true;
@@ -2377,6 +2405,34 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
                 tools3000::core::EventBus::instance().publish(
                     tools3000::core::ShowToastEvent{isZh ? L"未识别到文字"
                                                          : L"No text recognized"});
+            }
+        }
+
+        const bool wantCopyAll = self->m_pendingCopyAllOcr.exchange(false);
+        const bool wantOpenPanel = self->m_pendingOpenPanelOcr.exchange(false);
+        if (wantCopyAll || wantOpenPanel) {
+            const std::string fullText = buildAllTextUtf8();
+            const bool isZh = tools3000::core::isUiLanguageChinese();
+            if (wantCopyAll) {
+                if (!fullText.empty()) {
+                    const std::wstring wtext = tools3000::core::WinUtils::utf8ToWstring(fullText);
+                    tools3000::core::WinUtils::copyToClipboard(wtext);
+                    tools3000::core::EventBus::instance().publish(
+                        tools3000::core::ShowToastEvent{isZh ? L"已提取文本并复制到剪贴板"
+                                                             : L"Text extracted and copied to clipboard"});
+                } else {
+                    tools3000::core::EventBus::instance().publish(
+                        tools3000::core::ShowToastEvent{isZh ? L"未识别到文字"
+                                                             : L"No text recognized"});
+                }
+            }
+            if (wantOpenPanel) {
+                RECT pinRc{};
+                const bool hasRc = (self->m_hwnd && IsWindow(self->m_hwnd) && GetWindowRect(self->m_hwnd, &pinRc) != FALSE);
+                const std::string display = fullText.empty()
+                    ? (isZh ? "未识别到文字" : "No text recognized")
+                    : fullText;
+                tools3000::ocr::OcrResultWindow::instance().showResult(display, hasRc ? &pinRc : nullptr);
             }
         }
         if (self->m_hwnd && IsWindow(self->m_hwnd)) {
@@ -2555,6 +2611,8 @@ void PinWindow::setOcrBlocksForTest(std::vector<PinOcrBlock> blocks) {
         m_hoveredBlockIndex = -1;
         m_ocrReady = true;
         m_pendingSelectAllOcr = false;
+        m_pendingCopyAllOcr = false;
+        m_pendingOpenPanelOcr = false;
         m_silentOcrPreload = false;
         ++m_ocrVersion;
         m_ocrInFlightVersion = 0;
@@ -2721,6 +2779,18 @@ void PinWindow::copySelectedOrAllAsTable() {
 }
 
 void PinWindow::openOcrComparisonPanel() {
+    RECT pinRc{};
+    const bool hasRc = (m_hwnd && IsWindow(m_hwnd) && GetWindowRect(m_hwnd, &pinRc) != FALSE);
+    if (!m_ocrReady.load() && m_pinnedSourceText.empty()) {
+        const bool isZh = tools3000::core::isUiLanguageChinese();
+        tools3000::ocr::OcrResultWindow::instance().showResult(
+            isZh ? "正在识别..." : "Recognizing...",
+            hasRc ? &pinRc : nullptr);
+        m_pendingOpenPanelOcr.store(true, std::memory_order_release);
+        ensureOcrExecutedAsync(false);
+        return;
+    }
+
     std::string panelText;
     {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
@@ -2745,7 +2815,7 @@ void PinWindow::openOcrComparisonPanel() {
         }
     }
     if (!panelText.empty()) {
-        tools3000::ocr::OcrResultWindow::instance().showResult(panelText);
+        tools3000::ocr::OcrResultWindow::instance().showResult(panelText, hasRc ? &pinRc : nullptr);
     }
 }
 
@@ -2820,90 +2890,48 @@ void PinWindow::extractText() {
     }
     if (s_ocrShuttingDown.load(std::memory_order_acquire) || !isAlive() || m_sourceImage.empty()) return;
 
-    // 单窗口 OCR 进行中防重入守卫，杜绝连按重复拉起多线程识别
-    bool expectedInFlight = false;
-    if (!m_extractTextInFlight.compare_exchange_strong(expectedInFlight, true, std::memory_order_acq_rel)) {
-        return;
-    }
-
-    std::weak_ptr<PinWindow> weakSelf;
-    try {
-        weakSelf = shared_from_this();
-    } catch (const std::bad_weak_ptr&) {
-        m_extractTextInFlight.store(false, std::memory_order_release);
-        return;
-    }
-
-    const uint64_t expectedVersion = m_ocrVersion.load(std::memory_order_acquire);
-    cv::Mat imgCopy = m_sourceImage.clone();
-    auto activeWorkers = m_ocrActiveWorkers;
-    if (activeWorkers) {
-        activeWorkers->fetch_add(1, std::memory_order_acq_rel);
-    }
-    s_globalActiveOcrWorkers.fetch_add(1, std::memory_order_acq_rel);
-
-    if (m_hwnd && IsWindow(m_hwnd)) {
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-    }
-
-    try {
-        std::thread([imgCopy, activeWorkers, weakSelf, expectedVersion]() {
-            struct ExtractWorkerGuard {
-                std::shared_ptr<std::atomic<uint32_t>> workers;
-                std::weak_ptr<PinWindow> owner;
-                ~ExtractWorkerGuard() {
-                    if (auto pin = owner.lock()) {
-                        pin->m_extractTextInFlight.store(false, std::memory_order_release);
-                        if (pin->m_hwnd && IsWindow(pin->m_hwnd)) {
-                            InvalidateRect(pin->m_hwnd, nullptr, FALSE);
-                        }
-                    }
-                    cleanupOcrWorkingSet();
-                    if (workers) {
-                        workers->fetch_sub(1, std::memory_order_acq_rel);
-                    }
-                    s_globalActiveOcrWorkers.fetch_sub(1, std::memory_order_acq_rel);
+    // 若贴图后台实景 OCR 已经就绪，0ms 直接复用内存版面块复制全文，彻底消灭重复深度学习推理
+    if (m_ocrReady.load(std::memory_order_acquire)) {
+        std::string combined;
+        {
+            std::lock_guard<std::mutex> lock(m_ocrMutex);
+            std::vector<tools3000::ocr::OcrResult> allBlocks;
+            allBlocks.reserve(m_ocrBlocks.size());
+            for (const auto& blk : m_ocrBlocks) {
+                if (!blk.text.empty()) {
+                    tools3000::ocr::OcrResult r;
+                    r.text = blk.text;
+                    r.confidence = 1.0f;
+                    r.box = blk.origBox;
+                    r.layoutRegionId = blk.layoutRegionId;
+                    r.alignedRowId = blk.alignedRowId;
+                    allBlocks.push_back(std::move(r));
                 }
-            } workerGuard{activeWorkers, weakSelf};
-
-            if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
-                return;
             }
-            if (auto pin = weakSelf.lock(); !pin || !pin->isAlive() ||
-                pin->m_ocrVersion.load(std::memory_order_acquire) != expectedVersion) {
-                return;
-            }
-            tools3000::core::TraceId::Scope traceScope;
-            std::string text = tools3000::ocr::OcrEngine::instance().recognizeToText(imgCopy);
-            if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
-                return;
-            }
-            tools3000::core::MainThreadDispatcher::instance().post([text, weakSelf, expectedVersion]() {
-                if (s_ocrShuttingDown.load(std::memory_order_acquire)) return;
-                auto pin = weakSelf.lock();
-                if (!pin || !pin->isAlive() ||
-                    pin->m_ocrVersion.load(std::memory_order_acquire) != expectedVersion) {
-                    return;
+            combined = joinAlignedSelectedPieces(allBlocks, "\r\n");
+            if (combined.empty() && !m_qrCodes.empty()) {
+                for (size_t qi = 0; qi < m_qrCodes.size(); ++qi) {
+                    if (qi > 0) combined += "\r\n";
+                    combined += m_qrCodes[qi].text;
                 }
-                bool isZh = tools3000::core::isUiLanguageChinese();
-                if (!text.empty()) {
-                    std::wstring wtext = tools3000::core::WinUtils::utf8ToWstring(text);
-                    tools3000::core::WinUtils::copyToClipboard(wtext);
-                    tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{isZh ? L"已提取文本并复制到剪贴板" : L"Text extracted and copied to clipboard"});
-                } else {
-                    tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{isZh ? L"未识别到文字" : L"No text recognized"});
-                }
-            });
-        }).detach();
-    } catch (...) {
-        m_extractTextInFlight.store(false, std::memory_order_release);
-        if (activeWorkers) {
-            activeWorkers->fetch_sub(1, std::memory_order_acq_rel);
+            }
         }
-        s_globalActiveOcrWorkers.fetch_sub(1, std::memory_order_acq_rel);
+        const bool isZh = tools3000::core::isUiLanguageChinese();
+        if (!combined.empty()) {
+            const std::wstring wtext = tools3000::core::WinUtils::utf8ToWstring(combined);
+            tools3000::core::WinUtils::copyToClipboard(wtext);
+            tools3000::core::EventBus::instance().publish(
+                tools3000::core::ShowToastEvent{isZh ? L"已提取文本并复制到剪贴板" : L"Text extracted and copied to clipboard"});
+        } else {
+            tools3000::core::EventBus::instance().publish(
+                tools3000::core::ShowToastEvent{isZh ? L"未识别到文字" : L"No text recognized"});
+        }
+        return;
     }
+
+    // 若后台静默预热已在途或尚未启动，直接挂载完成复制意图并复用同一条 ensureOcrExecutedAsync 推理管线
+    m_pendingCopyAllOcr.store(true, std::memory_order_release);
+    ensureOcrExecutedAsync(false);
 }
 
 void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {

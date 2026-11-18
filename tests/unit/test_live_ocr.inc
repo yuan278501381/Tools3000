@@ -928,3 +928,173 @@ TEST(LiveOcrLayoutAndRowAlignmentTest, DenseFormLayoutIsolatesSidePaneCanyonsAnd
     EXPECT_TRUE(FreeLibrary(hMod));
     guard.mod = nullptr;
 }
+
+TEST(LiveTextOcrTest, AxisAlignedZeroMatrixCharProjectionPreservesVariableWidthSpans) {
+    using namespace tools3000::ocr;
+
+    const std::string text = "AI极速";
+    std::vector<CtcDecodedChar> decoded = {
+        {"A",  0.99f, 0, 1, 2, 0.00f, 0.12f},
+        {"I",  0.99f, 3, 3, 4, 0.12f, 0.22f},
+        {"极", 0.98f, 6, 8, 10, 0.25f, 0.62f},
+        {"速", 0.98f, 11, 13, 15, 0.62f, 1.00f},
+    };
+    const cv::Rect lineBox(100, 50, 200, 28);
+    const cv::Mat emptyInvPersp;
+
+    const auto boxes = DeepOcrEngine::projectCharSpansToImage(
+        text, decoded, 200, 28, false, false, emptyInvPersp, lineBox, 800, 600);
+    ASSERT_EQ(boxes.size(), 4u);
+    EXPECT_NEAR(boxes[0].x, 100, 1);
+    EXPECT_NEAR(boxes[0].width, 24, 1);
+    EXPECT_NEAR(boxes[1].x, 124, 1);
+    EXPECT_NEAR(boxes[1].width, 20, 1);
+    EXPECT_NEAR(boxes[2].x, 150, 1);
+    EXPECT_NEAR(boxes[2].width, 74, 1);
+    EXPECT_NEAR(boxes[3].x, 224, 1);
+    EXPECT_NEAR(boxes[3].x + boxes[3].width, 300, 1);
+    for (const auto& rc : boxes) {
+        EXPECT_EQ(rc.y, 50);
+        EXPECT_EQ(rc.height, 28);
+    }
+}
+
+TEST(LiveTextOcrTest, OcrEngineImageFingerprintCacheHitAndPixelInvalidation) {
+    using namespace tools3000::ocr;
+    OcrEngine::instance().initialize();
+
+    cv::Mat imgA(160, 520, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::putText(imgA, "CACHE-HIT-2026", cv::Point(28, 96),
+                cv::FONT_HERSHEY_SIMPLEX, 1.35, cv::Scalar(16, 16, 16), 3, cv::LINE_AA);
+
+    const auto firstPage = OcrEngine::instance().extractPage(imgA);
+    ASSERT_FALSE(firstPage.lines.empty());
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto cachedPage = OcrEngine::instance().extractPage(imgA);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double cachedMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    ASSERT_EQ(cachedPage.lines.size(), firstPage.lines.size());
+    EXPECT_EQ(cachedPage.lines.front().text, firstPage.lines.front().text);
+    EXPECT_LT(cachedMs, 35.0);
+
+    cv::Mat imgB(160, 520, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::putText(imgB, "DELTA-NEW-9080", cv::Point(28, 96),
+                cv::FONT_HERSHEY_SIMPLEX, 1.35, cv::Scalar(16, 16, 16), 3, cv::LINE_AA);
+    const auto secondPage = OcrEngine::instance().extractPage(imgB);
+    ASSERT_FALSE(secondPage.lines.empty());
+    EXPECT_NE(secondPage.lines.front().text, firstPage.lines.front().text);
+}
+
+TEST(LiveTextOcrTest, PinZeroDuplicateOcrReuseAndSideDockingViaPlugin) {
+    std::array<wchar_t, 4096> executablePath{};
+    const DWORD length = GetModuleFileNameW(
+        nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
+    ASSERT_GT(length, 0u);
+    const auto executableDir = std::filesystem::path(executablePath.data()).parent_path();
+    const auto pluginDllPath =
+        executableDir.parent_path() / L"plugins" / executableDir.filename() / L"Plugin_Capture.dll";
+    ASSERT_TRUE(std::filesystem::exists(pluginDllPath));
+
+    HMODULE hMod = LoadLibraryExW(
+        pluginDllPath.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    ASSERT_NE(hMod, nullptr);
+    using CreatePluginFunc = tools3000::core::IPlugin* (*)();
+    const auto createPlugin = reinterpret_cast<CreatePluginFunc>(GetProcAddress(hMod, "CreatePlugin"));
+    ASSERT_NE(createPlugin, nullptr);
+    tools3000::core::IPlugin* capturePlugin = createPlugin();
+    ASSERT_NE(capturePlugin, nullptr);
+    ASSERT_TRUE(capturePlugin->initialize());
+
+    const auto tempPng = std::filesystem::temp_directory_path() /
+                         (L"tools3000_ocr_reuse_dock_" + std::to_wstring(GetCurrentProcessId()) + L".png");
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    auto invokeRpc = [&](int id, const char* method, const nlohmann::json& params) -> nlohmann::json {
+        nlohmann::json req = {{"id", id}, {"method", method}, {"params", params}};
+        const std::string raw = bridge.handleMessage(req.dump());
+        const auto parsed = nlohmann::json::parse(raw, nullptr, false);
+        return parsed.is_object() && parsed.contains("result") ? parsed["result"] : parsed;
+    };
+
+    struct PluginCleanupGuard {
+        HMODULE mod = nullptr;
+        tools3000::core::IPlugin* plugin = nullptr;
+        std::filesystem::path png;
+        ~PluginCleanupGuard() {
+            while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+                SendMessageW(existing, WM_KEYDOWN, VK_DELETE, 0);
+                if (IsWindow(existing)) DestroyWindow(existing);
+            }
+            if (plugin) plugin->shutdown();
+            if (mod) FreeLibrary(mod);
+            std::error_code ec;
+            std::filesystem::remove(png, ec);
+        }
+    } guard{hMod, capturePlugin, tempPng};
+
+    // 1. 验证 OcrResultWindow 锚点侧翼避让停靠（右侧空间充足时吸附在锚点右侧，绝不居中遮挡原图）
+    HMONITOR mon = MonitorFromPoint(POINT{100, 100}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    ASSERT_TRUE(GetMonitorInfoW(mon, &mi));
+    if ((mi.rcWork.right - mi.rcWork.left) >= 960) {
+        const int anchorLeft = mi.rcWork.left + 60;
+        const int anchorRight = anchorLeft + 260;
+        const auto dockRes = invokeRpc(3301, "ocr.openResultWindow", {
+            {"text", "对照首行文本\n对照次行文本"},
+            {"anchorRect", {
+                {"left", anchorLeft},
+                {"top", static_cast<int>(mi.rcWork.top + 80)},
+                {"right", anchorRight},
+                {"bottom", static_cast<int>(mi.rcWork.top + 320)}
+            }}
+        });
+        ASSERT_TRUE(dockRes.value("success", false));
+        EXPECT_GE(dockRes.value("windowLeft", 0), anchorRight);
+        invokeRpc(3302, "ocr.closeResultWindow", nlohmann::json::object());
+    }
+
+    // 2. 验证 PinWindow 已就绪 OCR 数据调用 extractText() 时 0ms 零二次推理复用与列对齐文本回填
+    cv::Mat canvas(180, 360, CV_8UC3, cv::Scalar(250, 252, 255));
+    std::vector<uchar> encoded;
+    ASSERT_TRUE(cv::imencode(".png", canvas, encoded));
+    {
+        std::ofstream ofs(tempPng, std::ios::binary | std::ios::trunc);
+        ofs.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+    }
+
+    ASSERT_TRUE(invokeRpc(3303, "capture.pinImageFile", {
+        {"path", tools3000::core::WinUtils::wstringToUtf8(tempPng.wstring())}
+    }).value("success", false));
+
+    nlohmann::json mockBlocks = nlohmann::json::array({
+        {{"text", "项目编码"}, {"x", 20},  {"y", 30}, {"w", 88}, {"h", 24}, {"layoutRegionId", 0}, {"alignedRowId", 0}},
+        {{"text", "A-1024"},   {"x", 180}, {"y", 30}, {"w", 76}, {"h", 24}, {"layoutRegionId", 0}, {"alignedRowId", 0}},
+        {{"text", "状态正常"}, {"x", 20},  {"y", 72}, {"w", 88}, {"h", 24}, {"layoutRegionId", 0}, {"alignedRowId", 1}}
+    });
+
+    const auto reuseRes = invokeRpc(3304, "capture.inspectPinOcrState", {
+        {"mockBlocks", mockBlocks},
+        {"extractText", true},
+        {"openComparisonPanel", true}
+    });
+    ASSERT_TRUE(reuseRes.value("success", false));
+    EXPECT_TRUE(reuseRes.value("ocrReady", false));
+    EXPECT_EQ(reuseRes.value("ocrRunCount", 99u), 0u);
+    std::string panelText = reuseRes.value("ocrPanelText", "");
+    panelText.erase(std::remove(panelText.begin(), panelText.end(), '\r'), panelText.end());
+    EXPECT_EQ(panelText, "项目编码\tA-1024\n状态正常");
+
+    invokeRpc(3305, "ocr.closeResultWindow", nlohmann::json::object());
+    while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+        SendMessageW(existing, WM_KEYDOWN, VK_DELETE, 0);
+        if (IsWindow(existing)) DestroyWindow(existing);
+    }
+    capturePlugin->shutdown();
+    guard.plugin = nullptr;
+    EXPECT_TRUE(FreeLibrary(hMod));
+    guard.mod = nullptr;
+}

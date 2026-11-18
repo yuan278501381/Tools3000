@@ -145,6 +145,7 @@ private:
     CaptureOptions m_activeOptions;
     std::jthread m_ocrWorker;
     std::atomic<bool> m_ocrRunning{false};
+    std::atomic<uint64_t> m_ocrGeneration{0};
 };
 
 }  // namespace tools3000::capture

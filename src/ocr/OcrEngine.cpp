@@ -1333,27 +1333,28 @@ bool runWinOcrOnPreparedMat(
     outScaleFactor = 1.0f;
 
     cv::Mat prepared = srcImg;
-    if (srcImg.cols >= 8 && srcImg.rows >= 8 && srcImg.cols + 24 < maxDim && srcImg.rows + 24 < maxDim) {
+    const int effectiveWinMaxDim = (std::min)(maxDim, 1680);
+    if (srcImg.cols >= 8 && srcImg.rows >= 8 && srcImg.cols + 24 < effectiveWinMaxDim && srcImg.rows + 24 < effectiveWinMaxDim) {
         outBorderPad = 12;
         cv::copyMakeBorder(srcImg, prepared, outBorderPad, outBorderPad, outBorderPad, outBorderPad, cv::BORDER_REPLICATE);
         const int maxPreparedSide = (std::max)(prepared.cols, prepared.rows);
-        if (maxPreparedSide < 2600) {
-            const float maxAllowedScale = static_cast<float>(maxDim) / static_cast<float>((std::max)(1, maxPreparedSide));
+        if (maxPreparedSide < 1280) {
+            const float maxAllowedScale = static_cast<float>(effectiveWinMaxDim) / static_cast<float>((std::max)(1, maxPreparedSide));
             const float desiredScale = (std::min)(2.0f, std::floor(maxAllowedScale * 10.0f) * 0.1f);
-            if (desiredScale >= 1.4f) {
-                const int upW = (std::min)(maxDim, (std::max)(1, static_cast<int>(std::round(static_cast<float>(prepared.cols) * desiredScale))));
-                const int upH = (std::min)(maxDim, (std::max)(1, static_cast<int>(std::round(static_cast<float>(prepared.rows) * desiredScale))));
+            if (desiredScale >= 1.35f) {
+                const int upW = (std::min)(effectiveWinMaxDim, (std::max)(1, static_cast<int>(std::round(static_cast<float>(prepared.cols) * desiredScale))));
+                const int upH = (std::min)(effectiveWinMaxDim, (std::max)(1, static_cast<int>(std::round(static_cast<float>(prepared.rows) * desiredScale))));
                 outScaleFactor = static_cast<float>(upW) / static_cast<float>(prepared.cols);
-                cv::resize(prepared, prepared, cv::Size(upW, upH), 0.0, 0.0, cv::INTER_LANCZOS4);
-                // 温和反锐化掩模 (Unsharp Mask)：收紧高分屏次像素渲染灰字与浅色胶囊小数字边缘
+                cv::resize(prepared, prepared, cv::Size(upW, upH), 0.0, 0.0, cv::INTER_CUBIC);
+                // 温和反锐化掩模 (Unsharp Mask)：收紧小尺寸低分屏灰字与浅色胶囊数字边缘
                 cv::Mat blurred;
                 cv::GaussianBlur(prepared, blurred, cv::Size(0, 0), 0.85);
-                cv::addWeighted(prepared, 1.26, blurred, -0.26, 0.0, prepared);
+                cv::addWeighted(prepared, 1.24, blurred, -0.24, 0.0, prepared);
             }
         }
-    } else if (srcImg.cols > maxDim) {
-        outScaleFactor = static_cast<float>(maxDim) / static_cast<float>(srcImg.cols);
-        const int targetW = (std::min)(maxDim, (std::max)(1, static_cast<int>(std::floor(srcImg.cols * outScaleFactor))));
+    } else if (srcImg.cols > effectiveWinMaxDim) {
+        outScaleFactor = static_cast<float>(effectiveWinMaxDim) / static_cast<float>(srcImg.cols);
+        const int targetW = (std::min)(effectiveWinMaxDim, (std::max)(1, static_cast<int>(std::floor(srcImg.cols * outScaleFactor))));
         const int targetH = (std::max)(1, static_cast<int>(std::floor(srcImg.rows * outScaleFactor)));
         outScaleFactor = static_cast<float>(targetW) / static_cast<float>(srcImg.cols);
         cv::resize(srcImg, prepared, cv::Size(targetW, targetH), 0.0, 0.0, cv::INTER_AREA);
@@ -1703,7 +1704,98 @@ bool OcrEngine::initialize() {
     return isAvailable();
 }
 
+namespace {
+
+struct CachedOcrEntry {
+    uint64_t key = 0;
+    int width = 0;
+    int height = 0;
+    bool hasQrChecked = false;
+    OcrPageExtraction page;
+};
+
+constexpr size_t kMaxRecentOcrCacheEntries = 8;
+std::mutex g_ocrCacheMutex;
+std::vector<CachedOcrEntry> g_ocrRecentCache;
+
+uint64_t computeImageOcrCacheKey(const cv::Mat& image, std::string_view effectiveRoute) noexcept {
+    if (image.empty() || image.cols <= 0 || image.rows <= 0) return 0;
+    uint64_t h = 14695981039346656037ULL;
+    auto mix = [&](uint64_t v) noexcept {
+        h ^= v;
+        h *= 1099511628211ULL;
+    };
+    mix(static_cast<uint64_t>(image.cols));
+    mix(static_cast<uint64_t>(image.rows));
+    mix(static_cast<uint64_t>(image.type()));
+    for (unsigned char ch : effectiveRoute) {
+        mix(ch);
+    }
+
+    const int elemBytes = static_cast<int>(image.elemSize());
+    const int gridY = (std::min)(image.rows, 40);
+    const int gridX = (std::min)(image.cols, 40);
+    for (int gy = 0; gy < gridY; ++gy) {
+        const int r = (gy * (image.rows - 1)) / (std::max)(1, gridY - 1);
+        const uint8_t* rowPtr = image.ptr<uint8_t>(r);
+        for (int gx = 0; gx < gridX; ++gx) {
+            const int c = (gx * (image.cols - 1)) / (std::max)(1, gridX - 1);
+            const uint8_t* px = rowPtr + static_cast<size_t>(c * elemBytes);
+            uint64_t packed = 0;
+            for (int b = 0; b < (std::min)(elemBytes, 4); ++b) {
+                packed |= (static_cast<uint64_t>(px[b]) << (b * 8));
+            }
+            mix(packed);
+        }
+    }
+    return h == 0 ? 1ULL : h;
+}
+
+bool lookupRecentOcrCache(uint64_t key, int w, int h, bool requireQr, OcrPageExtraction& outPage) {
+    if (key == 0) return false;
+    std::lock_guard<std::mutex> lock(g_ocrCacheMutex);
+    for (size_t i = 0; i < g_ocrRecentCache.size(); ++i) {
+        const auto& e = g_ocrRecentCache[i];
+        if (e.key == key && e.width == w && e.height == h && (!requireQr || e.hasQrChecked)) {
+            outPage = e.page;
+            if (i + 1 < g_ocrRecentCache.size()) {
+                CachedOcrEntry promoted = std::move(g_ocrRecentCache[i]);
+                g_ocrRecentCache.erase(g_ocrRecentCache.begin() + static_cast<std::ptrdiff_t>(i));
+                g_ocrRecentCache.push_back(std::move(promoted));
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+void storeRecentOcrCache(uint64_t key, int w, int h, bool hasQrChecked, const OcrPageExtraction& page) {
+    if (key == 0) return;
+    std::lock_guard<std::mutex> lock(g_ocrCacheMutex);
+    for (size_t i = 0; i < g_ocrRecentCache.size(); ++i) {
+        if (g_ocrRecentCache[i].key == key && g_ocrRecentCache[i].width == w && g_ocrRecentCache[i].height == h) {
+            if (!hasQrChecked && g_ocrRecentCache[i].hasQrChecked) {
+                return;
+            }
+            g_ocrRecentCache.erase(g_ocrRecentCache.begin() + static_cast<std::ptrdiff_t>(i));
+            break;
+        }
+    }
+    if (g_ocrRecentCache.size() >= kMaxRecentOcrCacheEntries) {
+        g_ocrRecentCache.erase(g_ocrRecentCache.begin());
+    }
+    g_ocrRecentCache.push_back(CachedOcrEntry{key, w, h, hasQrChecked, page});
+}
+
+void clearRecentOcrCache() {
+    std::lock_guard<std::mutex> lock(g_ocrCacheMutex);
+    g_ocrRecentCache.clear();
+}
+
+} // namespace
+
 void OcrEngine::shutdown() {
+    clearRecentOcrCache();
     DeepOcrEngine::instance().shutdown();
     winrt::clear_factory_cache();
     LOG_INFO("OCR 引擎已关闭");
@@ -1816,19 +1908,40 @@ std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image) {
         enginePref = "auto";
     }
 
+    const bool deepInstalled = DeepOcrEngine::instance().isModelInstalled();
     const bool allowDeepOcr = (enginePref == "auto" || enginePref == "ppocr" || enginePref == "ppocr_v4" || enginePref == "deep");
-    if (allowDeepOcr && DeepOcrEngine::instance().isModelInstalled()) {
+    std::string langPref = "auto";
+    try {
+        langPref = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/language", "auto");
+    } catch (...) {
+    }
+    const std::string routeTag = ((allowDeepOcr && deepInstalled) ? "deep:" : "win:") + enginePref + ":" + langPref;
+    const uint64_t cacheKey = computeImageOcrCacheKey(image, routeTag);
+
+    OcrPageExtraction cached{};
+    if (lookupRecentOcrCache(cacheKey, image.cols, image.rows, /*requireQr=*/false, cached)) {
+        return cached.lines;
+    }
+
+    if (allowDeepOcr && deepInstalled) {
         auto deepResults = DeepOcrEngine::instance().extractText(image);
-        if (!deepResults.empty()) {
-            return deepResults;
-        }
-        // 若用户强制锁定 ppocr_v4 且模型真实加载成功但图中确实无字，无需重复跑 Windows OCR
-        if (enginePref == "ppocr_v4" && DeepOcrEngine::instance().isModelInstalled()) {
+        if (!deepResults.empty() || enginePref == "ppocr_v4") {
+            OcrPageExtraction entry;
+            entry.lines = deepResults;
+            entry.activeEngine = "ppocr_v4";
+            storeRecentOcrCache(cacheKey, image.cols, image.rows, /*hasQrChecked=*/false, entry);
             return deepResults;
         }
     }
 
-    return extractWithWindowsOcr(image);
+    auto winResults = extractWithWindowsOcr(image);
+    {
+        OcrPageExtraction entry;
+        entry.lines = winResults;
+        entry.activeEngine = "windows";
+        storeRecentOcrCache(cacheKey, image.cols, image.rows, /*hasQrChecked=*/false, entry);
+    }
+    return winResults;
 }
 
 OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image) {
@@ -1845,8 +1958,28 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image) {
         enginePref = "auto";
     }
 
+    const bool deepInstalled = DeepOcrEngine::instance().isModelInstalled();
     const bool preferDeep = (enginePref == "auto" || enginePref == "ppocr" || enginePref == "ppocr_v4" || enginePref == "deep") &&
-                            DeepOcrEngine::instance().isModelInstalled();
+                            deepInstalled;
+    std::string langPref = "auto";
+    try {
+        langPref = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/language", "auto");
+    } catch (...) {
+    }
+    const std::string routeTag = (preferDeep ? "deep:" : "win:") + enginePref + ":" + langPref;
+    const uint64_t cacheKey = computeImageOcrCacheKey(image, routeTag);
+
+    if (lookupRecentOcrCache(cacheKey, image.cols, image.rows, /*requireQr=*/true, page)) {
+        return page;
+    }
+
+    // 若文字行已在缓存中命中（如刚执行过 extractText），仅补齐极速 QR 扫描即可 0ms 复用文字结果
+    OcrPageExtraction textOnlyCached{};
+    if (lookupRecentOcrCache(cacheKey, image.cols, image.rows, /*requireQr=*/false, textOnlyCached)) {
+        textOnlyCached.qrCodes = detectQrCodes(image);
+        storeRecentOcrCache(cacheKey, image.cols, image.rows, /*hasQrChecked=*/true, textOnlyCached);
+        return textOnlyCached;
+    }
 
     auto qrFuture = std::async(std::launch::async, [&image]() {
         return detectQrCodes(image);
@@ -1857,6 +1990,7 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image) {
         if (!page.lines.empty() || enginePref == "ppocr_v4") {
             page.qrCodes = qrFuture.get();
             page.activeEngine = "ppocr_v4";
+            storeRecentOcrCache(cacheKey, image.cols, image.rows, /*hasQrChecked=*/true, page);
             return page;
         }
     }
@@ -1864,6 +1998,7 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image) {
     page.lines = extractWithWindowsOcr(image);
     page.qrCodes = qrFuture.get();
     page.activeEngine = "windows";
+    storeRecentOcrCache(cacheKey, image.cols, image.rows, /*hasQrChecked=*/true, page);
     return page;
 }
 

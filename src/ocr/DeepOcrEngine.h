@@ -37,8 +37,9 @@ namespace DeepOcrConstants {
     inline constexpr const wchar_t* kRecModelFileName = L"ch_PP-OCRv4_rec.onnx";
     inline constexpr const wchar_t* kKeysDictFileName = L"ppocr_keys_v1.txt";
 
-    inline constexpr int kDetMaxSideLen = 1600;
+    inline constexpr int kDetMaxSideLen = 1280;
     inline constexpr int kDetStrideAlign = 32;
+    inline constexpr int kDetBucketAlign = 64;
     inline constexpr float kDetBinaryThresh = 0.28f;
     inline constexpr float kDetBoxScoreThresh = 0.50f;
     inline constexpr float kDetUnclipRatio = 1.65f;
@@ -52,9 +53,18 @@ namespace DeepOcrConstants {
     inline constexpr int kRecImgHeight = 48;
     inline constexpr int kRecShortBucketWidth = 320;
     inline constexpr int kRecLongBucketWidth = 960;
+    inline constexpr int kRecFixedStripWidth = 960;
+    inline constexpr int kRecMaxBatchSize = 32;
     inline constexpr int kRecMinWidth = 32;
     inline constexpr int kRecMaxWidth = 3200;
     inline constexpr float kRecMinLineConfidence = 0.42f;
+
+    inline constexpr float kAxisAlignedMaxSkewPx = 1.8f;
+    inline constexpr size_t kWatermarkFilterMinOrthoQuads = 4;
+    inline constexpr float kWatermarkMinTiltDeg = 14.0f;
+    inline constexpr float kWatermarkMaxTiltDeg = 68.0f;
+    inline constexpr int kWatermarkFaintMaxContrast = 48;
+    inline constexpr int kWarmupInitialDelayMs = 900;
 
     inline constexpr size_t kMinDetModelBytes = 512 * 1024;      // >= 512 KiB
     inline constexpr size_t kMinClsModelBytes = 64 * 1024;       // >= 64 KiB
@@ -127,7 +137,13 @@ public:
     /// 释放内存中的 cv::dnn::Net 权重缓存（冷路径回收物理内存）
     void releaseLoadedModels();
 
-    /// 停机并安全等待后台下载线程退出
+    /// 后台空闲低优先级异步加载模型并预编译固定形状 DirectML 算子管线（消灭首次识字冷启动延迟）
+    void warmupAsync(int delayMs = DeepOcrConstants::kWarmupInitialDelayMs);
+
+    /// 当前模型与 GPU 固定桶管线是否已完成内存加载
+    bool isWarmAndLoaded() const noexcept;
+
+    /// 停机并安全等待后台下载/预热线程退出
     void shutdown();
 
     // ── 纯算法核心原语（供生产推理与高覆盖率离线单元测试直接调用） ───────────
@@ -194,10 +210,13 @@ private:
     DeepOcrEngine& operator=(const DeepOcrEngine&) = delete;
 
     bool ensureModelsLoadedLocked(const std::filesystem::path& modelDir);
+    void precompileFixedBucketsLocked();
     void downloadWorkerLoop(std::stop_token stopToken, std::filesystem::path targetDir);
 
     mutable std::mutex m_inferMutex;
+    std::atomic<bool> m_modelsLoadedAtomic{false};
     bool m_modelsLoaded = false;
+    bool m_bucketsPrecompiled = false;
     bool m_useWinMl = false;
     std::filesystem::path m_loadedModelDir;
     std::unique_ptr<WinMlContext> m_winMl;
@@ -206,6 +225,10 @@ private:
     cv::dnn::Net m_recNetShort;
     cv::dnn::Net m_recNetLong;
     std::vector<std::string> m_dictKeys;
+
+    mutable std::mutex m_warmupMutex;
+    std::jthread m_warmupThread;
+    std::atomic<bool> m_shuttingDown{false};
 
     mutable std::mutex m_pathMutex;
     std::filesystem::path m_customTestModelDir;

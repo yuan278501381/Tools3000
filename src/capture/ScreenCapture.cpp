@@ -194,11 +194,8 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
     overlay.setOcrCallback([this](const CaptureRegion& region, const cv::Mat& cropped) {
         if (cropped.empty()) return;
         const bool isZh = useChineseCaptureToast();
-        if (m_ocrRunning.exchange(true)) {
-            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                isZh ? L"OCR 正在识别，请稍候" : L"OCR recognition in progress, please wait"});
-            return;
-        }
+        const uint64_t myGen = m_ocrGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        m_ocrRunning.store(true, std::memory_order_release);
 
         wchar_t testModeBuf[8]{};
         const bool inTestMode = GetEnvironmentVariableW(
@@ -209,19 +206,56 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         const bool showResultWindow = tools3000::core::ConfigManager::instance().get<bool>(
             "/ocr/showResultWindow", true);
 
+        cv::Mat img = cropped.clone();
+        CaptureRegion capturedReg = region;
+        RECT anchorRc{
+            capturedReg.x,
+            capturedReg.y,
+            capturedReg.x + (std::max)(1, capturedReg.width),
+            capturedReg.y + (std::max)(1, capturedReg.height)
+        };
+
+        std::weak_ptr<PinWindow> weakLivePin;
+        if (pinLiveTextOnCapture) {
+            auto livePin = PinWindow::create(
+                img, capturedReg.x, capturedReg.y, 0.0f, {}, {}, {}, /*autoStartLiveOcr=*/false);
+            if (livePin) {
+                livePin->setOcrInFlightForTest(true);
+                if (livePin->hwnd() && IsWindow(livePin->hwnd())) {
+                    GetWindowRect(livePin->hwnd(), &anchorRc);
+                    InvalidateRect(livePin->hwnd(), nullptr, FALSE);
+                }
+                weakLivePin = livePin;
+            }
+        }
+
         if (showResultWindow) {
             tools3000::ocr::OcrResultWindow::instance().showResult(
-                isZh ? "正在识别..." : "Recognizing...");
+                isZh ? "正在识别..." : "Recognizing...",
+                &anchorRc);
         } else if (!pinLiveTextOnCapture) {
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                 isZh ? L"正在识别..." : L"Recognizing..."});
         }
 
         std::string traceId = tools3000::core::TraceId::current();
-        cv::Mat img = cropped.clone();
-        CaptureRegion capturedReg = region;
-        if (m_ocrWorker.joinable()) m_ocrWorker.join();
-        m_ocrWorker = std::jthread([this, img = std::move(img), capturedReg, pinLiveTextOnCapture, traceId]() {
+        std::jthread prevWorker = std::move(m_ocrWorker);
+        m_ocrWorker = std::jthread([this, prev = std::move(prevWorker), img = std::move(img),
+                                    weakLivePin, anchorRc, pinLiveTextOnCapture, myGen, traceId]() mutable {
+            if (prev.joinable()) {
+                prev.join();
+            }
+            if (m_ocrGeneration.load(std::memory_order_acquire) != myGen) {
+                if (weakLivePin.lock()) {
+                    tools3000::core::MainThreadDispatcher::instance().post([weakLivePin]() {
+                        if (auto stalePin = weakLivePin.lock()) {
+                            stalePin->setOcrInFlightForTest(false);
+                        }
+                    });
+                }
+                return;
+            }
+
             tools3000::core::TraceId::setCurrent(traceId);
             const bool zh = useChineseCaptureToast();
             std::string displayText;
@@ -234,7 +268,8 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                     for (const auto& q : page.qrCodes) fullText += q.text + "\r\n";
                 }
                 if (!fullText.empty()) {
-                    if (tools3000::core::ConfigManager::instance().get<bool>("/ocr/copyResult", true)) {
+                    if (m_ocrGeneration.load(std::memory_order_acquire) == myGen &&
+                        tools3000::core::ConfigManager::instance().get<bool>("/ocr/copyResult", true)) {
                         tools3000::core::WinUtils::copyToClipboard(fullText);
                     }
                     LOG_INFO("OCR 提取完成, 行数={}", page.lines.size());
@@ -250,25 +285,46 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                 LOG_ERROR("OCR(覆盖层) 未知异常");
                 displayText = zh ? "识别失败" : "Recognition failed";
             }
-            m_ocrRunning.store(false);
+
+            if (m_ocrGeneration.load(std::memory_order_acquire) != myGen) {
+                if (weakLivePin.lock()) {
+                    tools3000::core::MainThreadDispatcher::instance().post([weakLivePin]() {
+                        if (auto stalePin = weakLivePin.lock()) {
+                            stalePin->setOcrInFlightForTest(false);
+                        }
+                    });
+                }
+                return;
+            }
+            m_ocrRunning.store(false, std::memory_order_release);
 
             const bool shouldShowPanel = tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true);
             const bool hasLiveContent = !page.lines.empty() || !page.qrCodes.empty();
-            if (pinLiveTextOnCapture && hasLiveContent) {
+            if (pinLiveTextOnCapture) {
                 tools3000::core::MainThreadDispatcher::instance().post(
-                    [pinImg = img, capturedReg, lines = std::move(page.lines), qrs = std::move(page.qrCodes),
+                    [weakLivePin, hasLiveContent, anchorRc,
+                     lines = std::move(page.lines), qrs = std::move(page.qrCodes),
                      shouldShowPanel, text = displayText]() mutable {
-                        auto pin = PinWindow::create(pinImg, capturedReg.x, capturedReg.y);
-                        if (pin) {
-                            pin->injectRecognizedPage(std::move(lines), std::move(qrs));
+                        RECT currentAnchor = anchorRc;
+                        if (auto pin = weakLivePin.lock()) {
+                            if (hasLiveContent) {
+                                pin->injectRecognizedPage(std::move(lines), std::move(qrs));
+                                if (pin->hwnd() && IsWindow(pin->hwnd())) {
+                                    GetWindowRect(pin->hwnd(), &currentAnchor);
+                                }
+                            } else {
+                                pin->setOcrInFlightForTest(false);
+                                pin->close();
+                            }
                         }
                         if (shouldShowPanel) {
-                            tools3000::ocr::OcrResultWindow::instance().showResult(text);
+                            tools3000::ocr::OcrResultWindow::instance().showResult(
+                                text, hasLiveContent ? &currentAnchor : nullptr);
                         }
                     });
             } else if (shouldShowPanel) {
-                tools3000::core::MainThreadDispatcher::instance().post([text = std::move(displayText)]() {
-                    tools3000::ocr::OcrResultWindow::instance().showResult(text);
+                tools3000::core::MainThreadDispatcher::instance().post([text = std::move(displayText), anchorRc]() {
+                    tools3000::ocr::OcrResultWindow::instance().showResult(text, &anchorRc);
                 });
             } else {
                 const bool copied = tools3000::core::ConfigManager::instance().get<bool>("/ocr/copyResult", true);

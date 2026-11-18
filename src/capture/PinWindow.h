@@ -60,7 +60,8 @@ public:
                                              float cardCornerRadius = 0.0f,
                                              std::wstring sourceText = {},
                                              const cv::Mat& cleanBaseImage = {},
-                                             std::vector<MarkupElement> markupElements = {});
+                                             std::vector<MarkupElement> markupElements = {},
+                                             bool autoStartLiveOcr = true);
 
     /// 将剪贴板内容（图像 / 文本 / #颜色）智能贴成浮空贴图
     static std::shared_ptr<PinWindow> createFromClipboard();
@@ -373,6 +374,8 @@ private:
     mutable std::mutex m_ocrMutex;
     std::atomic<bool> m_ocrReady{false};
     std::atomic<bool> m_pendingSelectAllOcr{false};
+    std::atomic<bool> m_pendingCopyAllOcr{false};
+    std::atomic<bool> m_pendingOpenPanelOcr{false};
     std::vector<size_t> m_selectedBlockIndices;
     std::vector<PinBlockCharSpan> m_selectedCharSpans;
     int m_hoveredBlockIndex = -1;

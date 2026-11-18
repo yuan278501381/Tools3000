@@ -161,7 +161,15 @@ const wchar_t* footerHintText(bool chinese, bool compact) noexcept {
 bool OcrResultWindow::initialize() {
     if (m_hwnd && IsWindow(m_hwnd)) return true;
 
-    m_instance = GetModuleHandleW(nullptr);
+    HMODULE moduleInstance = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&OcrResultWindow::wndProc),
+            &moduleInstance) || !moduleInstance) {
+        moduleInstance = GetModuleHandleW(nullptr);
+    }
+    m_instance = moduleInstance;
+
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     windowClass.lpfnWndProc = wndProc;
@@ -205,6 +213,10 @@ void OcrResultWindow::cleanup() {
         const HWND window = m_hwnd;
         m_hwnd = nullptr;
         DestroyWindow(window);
+    }
+    if (m_instance) {
+        UnregisterClassW(WindowClass, m_instance);
+        m_instance = nullptr;
     }
     m_dwriteFactory.Reset();
     m_d2dFactory.Reset();
@@ -396,7 +408,13 @@ void OcrResultWindow::updatePlacement() {
     if (!m_hwnd || m_updatingPlacement) return;
     m_updatingPlacement = true;
 
-    const HMONITOR monitor = tools3000::core::dpi::activeMonitor();
+    HMONITOR monitor = nullptr;
+    if (m_hasAnchorRect && m_anchorRect.right > m_anchorRect.left && m_anchorRect.bottom > m_anchorRect.top) {
+        monitor = MonitorFromRect(&m_anchorRect, MONITOR_DEFAULTTONEAREST);
+    }
+    if (!monitor) {
+        monitor = tools3000::core::dpi::activeMonitor();
+    }
     const RECT workArea = tools3000::core::dpi::workArea(monitor);
     const unsigned dpi = tools3000::core::dpi::effectiveDpiForMonitor(monitor);
     const float scale = tools3000::core::dpi::scaleForDpi(dpi);
@@ -409,8 +427,33 @@ void OcrResultWindow::updatePlacement() {
         1, static_cast<int>(workArea.bottom - workArea.top) - margin * 2);
     size.cx = (std::min)(size.cx, static_cast<LONG>(availableWidth));
     size.cy = (std::min)(size.cy, static_cast<LONG>(availableHeight));
-    const int x = workArea.left + (workArea.right - workArea.left - size.cx) / 2;
-    const int y = workArea.top + (workArea.bottom - workArea.top - size.cy) / 2;
+
+    int x = workArea.left + (workArea.right - workArea.left - size.cx) / 2;
+    int y = workArea.top + (workArea.bottom - workArea.top - size.cy) / 2;
+
+    if (m_hasAnchorRect && m_anchorRect.right > m_anchorRect.left && m_anchorRect.bottom > m_anchorRect.top) {
+        const int gap = tools3000::core::dpi::scaleMetric(14, scale);
+        const int rightSpace = workArea.right - margin - m_anchorRect.right;
+        const int leftSpace = m_anchorRect.left - (workArea.left + margin);
+        if (rightSpace >= size.cx + gap) {
+            x = m_anchorRect.right + gap;
+            y = std::clamp(static_cast<int>(m_anchorRect.top),
+                           static_cast<int>(workArea.top + margin),
+                           static_cast<int>((std::max)(workArea.top + margin, workArea.bottom - margin - size.cy)));
+        } else if (leftSpace >= size.cx + gap) {
+            x = m_anchorRect.left - gap - size.cx;
+            y = std::clamp(static_cast<int>(m_anchorRect.top),
+                           static_cast<int>(workArea.top + margin),
+                           static_cast<int>((std::max)(workArea.top + margin, workArea.bottom - margin - size.cy)));
+        } else {
+            // 原图较宽时停靠在右侧工作区边缘，最大限度露出左侧原图区域便于双栏对照
+            x = (std::max)(static_cast<int>(workArea.left + margin),
+                           static_cast<int>(workArea.right - margin - size.cx));
+            y = std::clamp(static_cast<int>(m_anchorRect.top + gap),
+                           static_cast<int>(workArea.top + margin),
+                           static_cast<int>((std::max)(workArea.top + margin, workArea.bottom - margin - size.cy)));
+        }
+    }
 
     const bool dpiChanged = std::abs(m_scale - scale) > 0.001f;
     m_scale = scale;
@@ -958,18 +1001,33 @@ OcrResultWindow::TextPosition OcrResultWindow::hitTestTextPosition(POINT clientP
     return {lineIdx, 0};
 }
 
-void OcrResultWindow::showResult(const std::string& text) {
+void OcrResultWindow::showResult(const std::string& text, const RECT* anchorRect) {
+    const bool hasAnchor = (anchorRect != nullptr && anchorRect->right > anchorRect->left && anchorRect->bottom > anchorRect->top);
+    const RECT capturedAnchor = hasAnchor ? *anchorRect : RECT{};
     auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
     if (m_hwnd && GetWindowThreadProcessId(m_hwnd, nullptr) != GetCurrentThreadId()) {
-        dispatcher.post([this, text]() { showResult(text); });
+        dispatcher.post([this, text, hasAnchor, capturedAnchor]() {
+            showResult(text, hasAnchor ? &capturedAnchor : nullptr);
+        });
         return;
     }
     if (!m_hwnd && dispatcher.isInitialized() && !dispatcher.isOwnerThread()) {
-        dispatcher.post([this, text]() { showResult(text); });
+        dispatcher.post([this, text, hasAnchor, capturedAnchor]() {
+            showResult(text, hasAnchor ? &capturedAnchor : nullptr);
+        });
         return;
     }
 
     if ((!m_hwnd || !IsWindow(m_hwnd)) && !initialize()) return;
+
+    const bool alreadyVisible = IsWindowVisible(m_hwnd) != FALSE;
+    if (hasAnchor) {
+        m_hasAnchorRect = true;
+        m_anchorRect = capturedAnchor;
+    } else if (!alreadyVisible) {
+        m_hasAnchorRect = false;
+        m_anchorRect = {};
+    }
 
     m_rawUnmergedText = text;
     m_rawUnmergedWide = tools3000::core::WinUtils::utf8ToWstring(text);
@@ -999,15 +1057,23 @@ void OcrResultWindow::showResult(const std::string& text) {
     m_copiedLineIndex = -1;
     resetColorBrushes();
     clearSelection();
-    m_showTime = GetTickCount64();
-    m_currentAlpha = 0.0f;
     KillTimer(m_hwnd, CopyStateTimerId);
 
-    updatePlacement();
-    ShowWindow(m_hwnd, SW_SHOW);
+    if (!alreadyVisible || hasAnchor) {
+        updatePlacement();
+    } else {
+        rebuildTextLayout();
+    }
+    if (!alreadyVisible) {
+        m_showTime = GetTickCount64();
+        m_currentAlpha = 0.0f;
+        ShowWindow(m_hwnd, SW_SHOW);
+        SetTimer(m_hwnd, FadeTimerId, FadeIntervalMs, nullptr);
+    } else if (m_currentAlpha >= 0.99f) {
+        m_currentAlpha = 1.0f;
+    }
     SetForegroundWindow(m_hwnd);
     SetFocus(m_hwnd);
-    SetTimer(m_hwnd, FadeTimerId, FadeIntervalMs, nullptr);
     render();
 }
 
