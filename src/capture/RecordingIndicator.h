@@ -16,6 +16,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wrl/client.h>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -86,6 +87,9 @@ public:
     /// 响应全局明暗主题与强调色变更即时重绘
     void reloadTheme();
 
+    /// 实时同步录制状态栏与呼吸边框的屏幕捕获排除属性 (hideIndicatorInCapture)
+    void refreshCaptureAffinity();
+
     /// 判定当前是否应使用中文指示器文案（遵循 /general/language 配置与系统语言回退）
     static bool isChineseLanguagePreferred();
 
@@ -107,6 +111,11 @@ public:
     void onSnapshot(IndicatorAction action) { m_onSnapshot = std::move(action); }
     void onSystemAudioMute(IndicatorAction action) { m_onSystemAudioMute = std::move(action); }
     void onMicrophoneMute(IndicatorAction action) { m_onMicrophoneMute = std::move(action); }
+
+    /// 倒计时圆盘分层窗口诊断与防退化测试探针
+    HWND countdownHwnd() const noexcept { return m_countdownHwnd; }
+    std::uint32_t lastCountdownCenterAlpha() const noexcept { return m_lastCountdownCenterAlpha.load(); }
+    std::uint32_t countdownPresentedFrames() const noexcept { return m_countdownPresentedFrames.load(); }
 
 private:
     RecordingIndicator() = default;
@@ -210,6 +219,7 @@ private:
     float m_borderPulse = 0.0f;
 
     // 视口居中 60FPS 纯圆形光学倒计时圆盘窗口 (UpdateLayeredWindow + Direct2D 预乘抗锯齿)
+    RECT computeTargetCountdownRect(float& outDpiScale) const;
     bool createCountdownWindow(HINSTANCE hInstance);
     void destroyCountdownWindow();
     void updateCountdownWindow();
@@ -223,6 +233,8 @@ private:
     int m_countdownLastDigit = 0;
     bool m_highFreqCountdownTimer = false;
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_countdownDCRT;
+    std::atomic<std::uint32_t> m_lastCountdownCenterAlpha{0};
+    std::atomic<std::uint32_t> m_countdownPresentedFrames{0};
 };
 
 }  // namespace tools3000::capture

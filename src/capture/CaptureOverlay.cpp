@@ -1,4 +1,5 @@
 #include "capture/CaptureOverlay.h"
+#include "capture/AudioCapture.h"
 #include "capture/CaptureBackend.h"
 #include "capture/CursorOverlay.h"
 #include "capture/MarkupBaseHelper.h"
@@ -380,6 +381,32 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     m_state.recordSetup.includeKeycast = config.get<bool>("/recording/includeKeycast", true);
     m_state.recordSetup.captureSystemAudio = config.get<bool>("/recording/captureSystemAudio", false);
     m_state.recordSetup.captureMicrophone = config.get<bool>("/recording/captureMicrophone", false);
+    m_state.recordSetup.microphoneDeviceId = config.get<std::string>("/recording/microphoneDeviceId", "");
+    m_state.recordSetup.cachedMicDevices.clear();
+    m_state.recordSetup.cachedDefaultMicName.clear();
+    if (mode == OverlayMode::RecordRegion) {
+        const auto allDevs = AudioCapture::devices();
+        bool savedMicOnline = m_state.recordSetup.microphoneDeviceId.empty();
+        for (const auto& dev : allDevs) {
+            if (dev.systemAudio) continue;
+            std::wstring wname = tools3000::core::WinUtils::utf8ToWstring(dev.name);
+            if (wname.empty()) {
+                wname = L"Microphone";
+            }
+            if (dev.defaultDevice && m_state.recordSetup.cachedDefaultMicName.empty()) {
+                m_state.recordSetup.cachedDefaultMicName = wname;
+            }
+            if (!savedMicOnline && dev.id == m_state.recordSetup.microphoneDeviceId) {
+                savedMicOnline = true;
+            }
+            m_state.recordSetup.cachedMicDevices.emplace_back(dev.id, std::move(wname));
+            if (m_state.recordSetup.cachedMicDevices.size() >= 12) break;
+        }
+        // 外接耳机/麦克风已拔出离线时平滑回退系统默认，避免悬停显示失效设备
+        if (!savedMicOnline) {
+            m_state.recordSetup.microphoneDeviceId.clear();
+        }
+    }
     const bool autoZoomCfg = config.get<bool>("/recording/studioAutoZoom", true);
     const int savedZoomMode = std::clamp(config.get<int>("/recording/studioZoomMode", autoZoomCfg ? 1 : 0), 0, 2);
     m_state.recordSetup.zoomEffectMode = autoZoomCfg ? (savedZoomMode == 0 ? 1 : savedZoomMode) : 0;

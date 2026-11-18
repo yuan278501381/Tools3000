@@ -99,6 +99,7 @@ inline std::wstring toolbarButtonAccessibleName(const ToolbarButton& button, boo
         case ToolbarCommand::RecordToggleKeycast: return zh ? L"录屏按键回显开关" : L"Toggle Keycast";
         case ToolbarCommand::RecordToggleSystemAudio: return zh ? L"录屏系统声音开关" : L"Toggle System Audio";
         case ToolbarCommand::RecordToggleMicrophone: return zh ? L"录屏麦克风开关" : L"Toggle Microphone";
+        case ToolbarCommand::RecordSelectMicSource: return zh ? L"选择录屏麦克风来源" : L"Select Microphone Source";
         case ToolbarCommand::RecordToggleSettingsMenu: return zh ? L"录屏更多设置" : L"More Recording Settings";
         case ToolbarCommand::RecordStartConfirm: return zh ? L"正式开始录屏" : L"Start Recording";
         case ToolbarCommand::Copy: return zh ? L"复制到剪贴板" : L"Copy to Clipboard";
@@ -198,6 +199,7 @@ inline bool isToolbarButtonSelected(const ToolbarButton& button, const CaptureSt
     }
     if (button.command == ToolbarCommand::RecordToggleSystemAudio) return state.recordSetup.captureSystemAudio && state.recordSetup.format != RecordFormat::GIF;
     if (button.command == ToolbarCommand::RecordToggleMicrophone) return state.recordSetup.captureMicrophone && state.recordSetup.format != RecordFormat::GIF;
+    if (button.command == ToolbarCommand::RecordSelectMicSource) return state.dropdownMenu.type == DropdownType::RecordMicSource && state.recordSetup.format != RecordFormat::GIF;
     if (button.command == ToolbarCommand::RecordToggleKeycast) return state.recordSetup.includeKeycast;
     if (button.command == ToolbarCommand::RecordCycleClickEffect) return state.recordSetup.showClickEffects || state.recordSetup.zoomEffectMode != 0;
     if (button.command == ToolbarCommand::RecordToggleSettingsMenu) return state.dropdownMenu.type == DropdownType::RecordMoreSettings;

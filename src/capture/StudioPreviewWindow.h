@@ -33,6 +33,10 @@ public:
 
     static StudioPreviewWindow& instance();
 
+    /// 停止录制瞬间 0ms 立即弹出 FocuSee 级微晶流光「正在准备演播室」等待界面（支持超长录屏后台封装期间 60FPS 丝滑反馈）
+    bool showPreparingOverlay(double recordedDurationSec);
+    void dismissPreparingOverlay();
+
     /// 在 UI 主线程瞬时打开演播室实时预览与编辑窗口（支持直传内存预存预览牌组实现 0ms 秒开）
     bool showSession(
         const std::string& rawVideoPathUtf8,
@@ -46,6 +50,18 @@ public:
     void shutdown();
 
     bool isVisible() const noexcept;
+
+    /// 离屏渲染底部工具按钮微缩剧场卡片（供自动化测试与视觉快照校验，coachSlot = 0..6）
+    static cv::Mat renderCoachCardPreviewForTest(int coachSlot, float phase01, bool dark, bool isZh = true);
+
+    /// 离屏渲染完整时间轴与胶片声波主轨快照（供视觉回归审查与真实音频包络检验）
+    static cv::Mat renderTimelineStripPreviewForTest(
+        const std::vector<cv::Mat>& deckBgr,
+        const std::vector<float>& audioPeaks,
+        double durationSec,
+        double playheadSec,
+        bool dark,
+        bool isZh = true);
 
 private:
     StudioPreviewWindow() = default;
@@ -70,7 +86,8 @@ private:
         CanvasBg     = 0, // 视频尺寸 / 内边距 / 内边框 / 圆角 / 阴影 / 背景模糊 / 28 宫格背景
         Annotations  = 1, // 文本(6款) / 形状(9款) / 遮罩与放大(4款) 可视化标注库
         CameraCursor = 2, // 镜头 2D/3D 运镜 / 倍率 / 动感模糊 / 矢量光标 / 聚光环
-        Captions     = 3, // 离线语音字幕对齐与导出选项
+        Watermark    = 3, // 企业溯源斜铺水印 / 品牌图片 Logo 导入与四角吸附定位
+        Captions     = 4, // 离线语音字幕对齐与导出选项
     };
 
     enum class ExportDropdownKind : int {
@@ -92,18 +109,23 @@ private:
     };
 
     enum class StageAnnDragKind : int {
-        None         = 0,
-        MoveBody     = 1,
-        DragEndPoint = 2,
+        None           = 0,
+        MoveBody       = 1,
+        DragEndPoint   = 2,
+        DragStartPoint = 3,
     };
 
     enum class SliderDragKind : int {
-        None        = 0,
-        Padding     = 1,
-        InsetBorder = 2,
-        Radius      = 3,
-        Shadow      = 4,
-        BgBlur      = 5,
+        None             = 0,
+        Padding          = 1,
+        InsetBorder      = 2,
+        Radius           = 3,
+        Shadow           = 4,
+        BgBlur           = 5,
+        WatermarkScale   = 6,
+        WatermarkOpacity = 7,
+        TimelineZoom     = 8,
+        TimelinePan      = 9,
     };
 
     struct WallpaperEntry {
@@ -115,15 +137,19 @@ private:
     };
 
     bool ensureWindowCreated();
+    void toggleMaximizeRestore();
+    void applyWindowRoundingForCurrentState(int physW, int physH);
     bool ensureRenderResources();
     void discardDeviceResources();
     void discoverLocalWallpapers();
     void rebuildFilteredWallpapers();
     void invalidateWallpaperPageBitmaps();
     void browseCustomWallpaperImageAsync();
+    void browseWatermarkLogoImageAsync();
     void browseExportDirectoryAsync();
     void joinFileDialogWorkerIfDone(bool wait);
     void onCustomWallpaperPicked();
+    void onWatermarkLogoPicked();
     void onExportDirectoryPicked();
 
     // 磁性波纹切片剪辑 (Split -> Select -> Delete / Speed) 与 Undo/Redo
@@ -137,15 +163,24 @@ private:
     double currentDisplayedSourceSec() const noexcept;
     void requestImmediatePreviewRefresh(bool forceNow = false);
 
-    void insertAnnotationCardPreset(int cardIndex);
+    void resequenceAutoStepBadges();
+    void insertAnnotationCardPreset(int cardIndex, const float* dropNormX = nullptr, const float* dropNormY = nullptr);
+    bool hitTestStageAnnotation(float lx, float ly, int& outAnnIdx, StageAnnDragKind& outPart) const;
+    HCURSOR resolveDesiredCursor(float lx, float ly) const;
     void rebakeTimelinePreview();
     void updateCurrentComposedBitmap();
     double computeEffectiveDurationSec() const;
+    double visibleTimelineSpanSec(double keptDurSec) const noexcept;
+    void clampTimelineViewWindow(double keptDurSec) noexcept;
+    void setTimelineZoomAnchored(float newZoom, double anchorKeptSec, float anchorNorm01, double keptDurSec) noexcept;
+    float mapKeptSecToTrackX(double keptSec, float laneLeft, float trackW, double keptDurSec) const noexcept;
+    double mapTrackXToKeptSec(float lx, float laneLeft, float trackW, double keptDurSec) const noexcept;
     bool mapStagePointToSourceNorm(float lx, float ly, float& outNormX, float& outNormY) const;
     bool mapSourceNormToStagePoint(float normX, float normY, float& outLx, float& outLy) const;
     void applySliderAtX(SliderDragKind kind, float lx);
     void initExportModalDefaults();
     void applyFormatSmartDefaults(StudioExportFormat newFmt);
+    void ensureNonCollidingExportStem();
     void persistExportPreferencesIfChecked();
     std::string buildFinalExportPathUtf8() const;
     void render();
@@ -153,9 +188,17 @@ private:
                                  bool dark, bool isZh, ID2D1SolidColorBrush* brush);
     void renderAnnotationDrawer(float padL, float padR, float startY, float bottomLimit,
                                 bool dark, bool isZh, ID2D1SolidColorBrush* brush);
+    void renderWatermarkDrawer(float padL, float padR, float startY, float bottomLimit,
+                               bool dark, bool isZh, ID2D1SolidColorBrush* brush);
+    void renderCoachTooltipOverlay(float W, float H, float minLeft,
+                                   bool dark, bool isZh, ID2D1SolidColorBrush* brush);
     void renderExportModalOverlay(float W, float H, bool dark, bool isZh, ID2D1SolidColorBrush* brush);
+    void renderPreparingOverlay(float W, float H, bool dark, bool isZh, ID2D1SolidColorBrush* brush);
     void onPlaybackTick();
     void startAsyncExport();
+    void copyLastExportedToClipboard();
+    void finishExportedSessionAndClose();
+    void closeOrKeepBySessionState();
     void keepOriginalAndClose();
     void closeSessionAndCleanup();
     void joinExportWorkerIfDone(bool wait);
@@ -172,10 +215,14 @@ private:
 
     HWND m_hwnd = nullptr;
     float m_dpiScale = 1.0f;
-    int m_logicalWidth = 1180;
-    int m_logicalHeight = 728;
+    int m_logicalWidth = 1260;
+    int m_logicalHeight = 776;
+    bool m_isMaximized = false;
+    RECT m_restoreWindowRect{0, 0, 0, 0};
 
     std::string m_rawVideoPath;
+    std::string m_masterVideoPath; // 会话期只读无壁纸纯净母带路径（同名导出前自动原子隔离保护）
+    bool m_masterIsIsolatedTemp = false;
     StudioTimelineData m_timeline;
     StudioRenderConfig m_config;
     int m_bitrateMbps = 10;
@@ -187,10 +234,16 @@ private:
     std::vector<TimelineUndoSnapshot> m_undoStack;
     std::vector<TimelineUndoSnapshot> m_redoStack;
 
-    // 高帧率轻量预览帧牌组与预烘焙时间轴状态
+    // 高帧率轻量预览帧牌组、驻留式原片全清解码器与预烘焙时间轴状态
     std::vector<cv::Mat> m_previewDeckBgr;
+    StudioHiResFrameReader m_hiResReader;
     int m_origWidth = 0;
     int m_origHeight = 0;
+    int m_stageViewportPhysW = 1280;
+    int m_stageViewportPhysH = 720;
+    bool m_inInteractiveSizing = false;
+    bool m_lastComposedUsedProxy = false;
+    ULONGLONG m_lastFastScrubTick = 0;
     int m_previewEvalFps = 30;
     std::vector<StudioEvaluatedFrame> m_evaluatedFrames;
     StudioVideoCompositor m_previewCompositor;
@@ -214,6 +267,16 @@ private:
     int m_nextStepBadgeNumber = 1;
     bool m_editingAnnotationText = false;
     StageAnnDragKind m_stageAnnDrag = StageAnnDragKind::None;
+    int m_hoveredStageAnnIdx = -1;
+    StageAnnDragKind m_hoveredStageAnnPart = StageAnnDragKind::None;
+    bool m_draggingZoomFocus = false;
+    bool m_hoveredZoomFocusReticle = false;
+    int m_pressedPresetCardIdx = -1;
+    bool m_draggingPresetToStage = false;
+    float m_presetDragStartLx = 0.0f;
+    float m_presetDragStartLy = 0.0f;
+    float m_lastMouseLx = 0.0f;
+    float m_lastMouseLy = 0.0f;
     float m_annDragStartNormX = 0.0f;
     float m_annDragStartNormY = 0.0f;
     float m_annOrigX0 = 0.0f, m_annOrigY0 = 0.0f, m_annOrigX1 = 0.0f, m_annOrigY1 = 0.0f;
@@ -241,15 +304,27 @@ private:
     int64_t m_trackDragOrigKeptStartMs = 0;
     int64_t m_trackDragOrigKeptEndMs = 0;
     D2D1_RECT_F m_timelineTrackRect{};
+    D2D1_RECT_F m_timelineCardRect{};
     D2D1_RECT_F m_cutLaneRect{};
     D2D1_RECT_F m_zoomLaneRect{};
     D2D1_RECT_F m_annLaneRect{};
+    float m_timelineZoom = 1.0f;          // 时间轴横向视野缩放倍率 [1.0x 全览 .. 24.0x 精修]
+    double m_timelineViewStartSec = 0.0;  // 放大态可见窗口起始成片秒数
     float m_waveformReferencePeak = 1.0f;
+    float m_waveformNoiseFloor = 0.008f;
     bool m_hasActiveAudioWaveform = false;
+    StudioWaveformEnvelopeConfig m_waveformProfile{};
+    std::vector<Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_filmstripBitmaps;
+    bool m_filmstripDirty = true;
+    bool m_preparingSession = false;
+    ULONGLONG m_prepareStartTick = 0;
+    double m_prepareRecordedDurSec = 0.0;
+    ULONGLONG m_clickDemoStartTick = 0; // 演播室左侧切换点击动效时，在舞台光标处触发一次实时 60FPS 动态预览脉冲
+    ULONGLONG m_annDemoStartTick = 0;   // 演播室新插入或切换视频标注时，在暂停舞台触发一次 1.45s 实时 60FPS 动态标注预览
 
     // 无级滑块与 28 宫格背景缩略图状态
     SliderDragKind m_activeSlider = SliderDragKind::None;
-    std::array<D2D1_RECT_F, 7> m_sliderTrackRects{};
+    std::array<D2D1_RECT_F, 11> m_sliderTrackRects{};
     int m_wallpaperCategory = 0;
     int m_wallpaperPage = 0;
     std::vector<WallpaperEntry> m_allWallpapers;
@@ -257,23 +332,59 @@ private:
     bool m_wallpapersDiscovered = false;
     bool m_wallpaperThumbsDirty = true;
 
+    // 演播室企业/品牌水印抽屉与舞台拖拽交互状态
+    bool m_editingWatermarkText = false;
+    std::vector<std::string> m_recentLogoPaths;
+    std::array<Microsoft::WRL::ComPtr<ID2D1Bitmap>, 6> m_recentLogoThumbBitmaps;
+    bool m_recentLogoThumbsDirty = true;
+    D2D1_RECT_F m_lastWatermarkStageRect{};
+    int m_watermarkStageDragMode = 0; // 0: None, 1: Move, 2: ResizeCorner
+    bool m_hoveredWatermarkOnStage = false;
+    bool m_hoveredWatermarkCorner = false;
+    float m_wmDragStartLx = 0.0f;
+    float m_wmDragStartLy = 0.0f;
+    float m_wmOrigNormX = 0.88f;
+    float m_wmOrigNormY = 0.90f;
+    float m_wmOrigScale = 1.0f;
+
     std::vector<HitZone> m_hitZones;
+
+    struct CoachHoverZone {
+        int id = 0;
+        D2D1_RECT_F rect{};
+        bool enabled = true;
+    };
+    std::vector<CoachHoverZone> m_coachHoverZones;
+    int m_hoveredCoachId = 0;
+    ULONGLONG m_coachHoverEnterTick = 0;
+    ULONGLONG m_coachLastActiveTick = 0;
 
     // 独立异步 STA 文件选择线程状态
     std::atomic<bool> m_fileDialogInFlight{false};
     std::mutex m_fileDialogMutex;
     std::thread m_fileDialogWorker;
     std::wstring m_pendingCustomBgWide;
+    std::wstring m_pendingWatermarkImgWide;
     std::wstring m_pendingExportDirWide;
 
-    // 原位导出模态窗状态
+    // 原位导出模态窗与导出完成交付结果卡片状态
     bool m_exportModalOpen = false;
+    bool m_exportCompletedCard = false;
     bool m_editingExportName = false;
+    bool m_userEditedExportStem = false;
     ExportDropdownKind m_openDropdown = ExportDropdownKind::None;
+    std::wstring m_initialFileNameStem;
     std::wstring m_exportFileNameStem;
     std::wstring m_exportDirectoryWide;
     StudioExportOptions m_exportOpts{};
     bool m_saveExportPrefs = true;
+    bool m_autoCloseAfterExport = false;
+    std::vector<std::wstring> m_sessionExportedPathsLower;
+    std::string m_lastExportedFilePath;
+    std::uint64_t m_lastExportedFileBytes = 0;
+    StudioExportFormat m_lastExportedFormat = StudioExportFormat::MP4_H264;
+    std::wstring m_lastExportedSpecLine;
+    ULONGLONG m_copyFeedbackUntilTick = 0;
 
     // 后台硬件加速转码导出状态
     std::atomic<bool> m_exporting{false};
@@ -294,6 +405,7 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_sectionFmt;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_bodyFmt;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_captionFmt;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_captionWrapFmt;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_monoFmt;
 };
 

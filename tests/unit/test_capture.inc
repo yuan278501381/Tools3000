@@ -756,14 +756,18 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
     recording.dpiScale = 1.5f;
     rebuildCaptureToolbar(recording, D2D1::RectF(200.0f, 100.0f, 1200.0f, 800.0f),
                           desktop150);
-    EXPECT_EQ(recording.toolbarButtons.size(), 10u);
+    EXPECT_EQ(recording.toolbarButtons.size(), 11u);
     EXPECT_NEAR(recording.toolbarButtons[0].rect.right -
                 recording.toolbarButtons[0].rect.left, 54.0f * 1.5f, 0.01f);
     EXPECT_NEAR(recording.toolbarButtons[1].rect.right -
                 recording.toolbarButtons[1].rect.left, 62.0f * 1.5f, 0.01f);
-    EXPECT_EQ(recording.toolbarButtons[7].command, ToolbarCommand::RecordToggleSettingsMenu);
-    EXPECT_NEAR(recording.toolbarButtons[9].rect.right -
-                recording.toolbarButtons[9].rect.left, (tools3000::core::WinUtils::isSystemLanguageChinese() ? 98.0f : 84.0f) * 1.5f, 0.01f);
+    EXPECT_EQ(recording.toolbarButtons[6].command, ToolbarCommand::RecordToggleMicrophone);
+    EXPECT_EQ(recording.toolbarButtons[7].command, ToolbarCommand::RecordSelectMicSource);
+    // 验证麦克风双舱分体胶囊严格零外间隙拼合
+    EXPECT_NEAR(recording.toolbarButtons[6].rect.right, recording.toolbarButtons[7].rect.left, 0.01f);
+    EXPECT_EQ(recording.toolbarButtons[8].command, ToolbarCommand::RecordToggleSettingsMenu);
+    EXPECT_NEAR(recording.toolbarButtons[10].rect.right -
+                recording.toolbarButtons[10].rect.left, (tools3000::core::WinUtils::isSystemLanguageChinese() ? 98.0f : 84.0f) * 1.5f, 0.01f);
     check_toolbar_inside_surface(recording, desktop150);
 
     CaptureState extreme;
@@ -2664,6 +2668,75 @@ TEST(ScreenRecordingIndicatorAndCountdownTest, DurationFormatAndSkipCountdown) {
     EXPECT_EQ(recorder.state(), RecordState::Idle);
 }
 
+TEST(ScreenRecordingIndicatorAndCountdownTest, CountdownOverlayRendersOpaquePixelsEvenWhenUpdatePrecedesShow) {
+    using namespace tools3000::capture;
+
+    const auto tmpDir = std::filesystem::temp_directory_path() / L"tools3000_countdown_opaque_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+
+    auto& recorder = ScreenRecorder::instance();
+    recorder.initialize();
+    auto& indicator = RecordingIndicator::instance();
+    indicator.shutdown();
+    indicator.initialize(GetModuleHandleW(nullptr));
+
+    RecordOptions opts{};
+    opts.fullScreen = false;
+    opts.regionX = 400;
+    opts.regionY = 300;
+    opts.width = 800;
+    opts.height = 500;
+    opts.fps = 30;
+    opts.bitrateMbps = 4;
+    opts.countdownSeconds = 2;
+    opts.captureSystemAudio = false;
+    opts.captureMicrophone = false;
+    opts.studioMode = true;
+    opts.studioConfig.autoZoomEnabled = true;
+    opts.outputPath = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"cd_test.mp4").wstring());
+
+    ASSERT_TRUE(recorder.startRecording(opts));
+    ASSERT_EQ(recorder.state(), RecordState::Countdown);
+
+    // 复现真实竞态：异步状态回调 update() 先于 setRecordingRegion() + show() 到达，
+    // 验证不会以未初始化 DPI 抢跑创建倒计时窗或因 D2D1Factory 重建覆盖引发 D2DERR_WRONG_FACTORY 全透明空帧
+    indicator.update(0.0, 0);
+    EXPECT_EQ(indicator.countdownHwnd(), nullptr);
+
+    indicator.setRecordingRegion(400, 300, 800, 500);
+    indicator.show();
+    indicator.update(0.0, 0);
+    indicator.update(0.0, 0);
+    indicator.update(0.0, 0);
+
+    HWND cdHwnd = indicator.countdownHwnd();
+    ASSERT_NE(cdHwnd, nullptr);
+    EXPECT_TRUE(IsWindowVisible(cdHwnd));
+    EXPECT_GE(indicator.countdownPresentedFrames(), 4u);
+    EXPECT_GE(indicator.lastCountdownCenterAlpha(), 230u);
+
+    RECT cdRc{};
+    ASSERT_TRUE(GetWindowRect(cdHwnd, &cdRc));
+    const int cdCenterX = (cdRc.left + cdRc.right) / 2;
+    const int cdCenterY = (cdRc.top + cdRc.bottom) / 2;
+    EXPECT_NEAR(cdCenterX, 800, 3);
+    EXPECT_NEAR(cdCenterY, 550, 3);
+
+    const HMONITOR mon = MonitorFromWindow(cdHwnd, MONITOR_DEFAULTTONEAREST);
+    const float expectedScale = tools3000::core::dpi::scaleForMonitor(mon);
+    const int expectedW = tools3000::core::dpi::scaleMetric(360, expectedScale);
+    const int expectedH = tools3000::core::dpi::scaleMetric(260, expectedScale);
+    EXPECT_NEAR(cdRc.right - cdRc.left, expectedW, 2);
+    EXPECT_NEAR(cdRc.bottom - cdRc.top, expectedH, 2);
+
+    recorder.stopRecording();
+    indicator.hide();
+    indicator.shutdown();
+    std::filesystem::remove_all(tmpDir, ec);
+}
+
 TEST(PolymorphicMarkupAndPinEnhancementTest, PolymorphicHandlersAndLineAndPinOperations) {
     using namespace tools3000::capture;
 
@@ -3327,7 +3400,7 @@ TEST(CaptureOptimizationAndNewFeaturesTest, PreRecordingSetupHudAndWeChatGifCopy
     recState.recordSetup.captureMicrophone = true;
 
     rebuildCaptureToolbar(recState, D2D1::RectF(100.0f, 100.0f, 600.0f, 500.0f), D2D1::SizeF(1920.0f, 1080.0f));
-    EXPECT_EQ(recState.toolbarButtons.size(), 10u);
+    EXPECT_EQ(recState.toolbarButtons.size(), 11u);
 
     // 验证无障碍命名与在 GIF 模式下声音按键安全屏蔽状态
     for (const auto& btn : recState.toolbarButtons) {
@@ -3335,7 +3408,8 @@ TEST(CaptureOptimizationAndNewFeaturesTest, PreRecordingSetupHudAndWeChatGifCopy
         if (btn.command == ToolbarCommand::RecordToggleSystemAudio) {
             EXPECT_FALSE(isToolbarButtonSelected(btn, recState));
         }
-        if (btn.command == ToolbarCommand::RecordToggleMicrophone) {
+        if (btn.command == ToolbarCommand::RecordToggleMicrophone ||
+            btn.command == ToolbarCommand::RecordSelectMicSource) {
             EXPECT_FALSE(isToolbarButtonSelected(btn, recState));
         }
         if (btn.command == ToolbarCommand::RecordToggleKeycast) {
@@ -3585,6 +3659,51 @@ TEST(CapturePolymorphicFeaturesAndDevOpsTest, DropdownMenuStateMachineAndHoverPr
     const float curR = state.beautyShell.cornerRadius;
     openDropdownMenu(state, DropdownType::BeautyShellRadius, D2D1::RectF(0, 0, 0, 0));
     EXPECT_NE(state.beautyShell.cornerRadius, curR);
+
+    // 12. 验证工具栏麦克风分体胶囊专属下拉菜单 (DropdownType::RecordMicSource)：
+    // 静音态默认命中底部「不使用麦克风」(id=499)；开启麦克风且空 ID 时命中首项「系统默认」(id=500)；
+    // 选择指定设备与切回系统默认时同步落盘并自动启用麦克风，且齿轮菜单不重复堆砌麦克风项
+    state.recordSetup.format = RecordFormat::MP4_H264;
+    state.recordSetup.captureMicrophone = false;
+    state.recordSetup.microphoneDeviceId.clear();
+
+    openDropdownMenu(state, DropdownType::RecordMoreSettings, anchor);
+    ASSERT_FALSE(state.dropdownMenu.items.empty());
+    EXPECT_EQ(state.dropdownMenu.items.front().id, 10); // 齿轮菜单首项保持纯粹的「自动运镜」
+    closeDropdownMenu(state, true);
+
+    openDropdownMenu(state, DropdownType::RecordMicSource, anchor);
+    ASSERT_GE(state.dropdownMenu.items.size(), 3u);
+    EXPECT_EQ(state.dropdownMenu.items.front().id, 500);
+    EXPECT_FALSE(state.dropdownMenu.items.front().isSelected);
+    EXPECT_EQ(state.dropdownMenu.items.back().id, 499);
+    EXPECT_TRUE(state.dropdownMenu.items.back().isSelected);
+
+    // 注入双麦克风设备拓扑（内置麦 + USB 耳机麦），验证选择第 2 台耳机麦 (id=502) 自动开启麦克风并落盘
+    state.recordSetup.cachedMicDevices = {
+        {"{0.0.1.00000000}.{builtin-array}", L"麦克风阵列 (2- Realtek(R) Audio)"},
+        {"{0.0.1.00000000}.{usb-headset}",   L"耳机麦克风 (USB Headset)"}
+    };
+    state.recordSetup.cachedDefaultMicName = L"麦克风阵列 (2- Realtek(R) Audio)";
+    commitDropdownSelection(state, DropdownType::RecordMicSource, 502);
+    EXPECT_EQ(state.recordSetup.microphoneDeviceId, "{0.0.1.00000000}.{usb-headset}");
+    EXPECT_TRUE(state.recordSetup.captureMicrophone);
+    EXPECT_EQ(tools3000::core::ConfigManager::instance().get<std::string>("/recording/microphoneDeviceId", ""),
+              "{0.0.1.00000000}.{usb-headset}");
+
+    // 模拟切回系统默认麦克风 (id=500)
+    openDropdownMenu(state, DropdownType::RecordMicSource, anchor);
+    commitDropdownSelection(state, DropdownType::RecordMicSource, 500);
+    EXPECT_TRUE(state.recordSetup.microphoneDeviceId.empty());
+    EXPECT_TRUE(state.recordSetup.captureMicrophone);
+    EXPECT_EQ(tools3000::core::ConfigManager::instance().get<std::string>("/recording/microphoneDeviceId", "nonempty"), "");
+
+    // 模拟点击底部「不使用麦克风」(id=499) 一键静音
+    openDropdownMenu(state, DropdownType::RecordMicSource, anchor);
+    EXPECT_TRUE(state.dropdownMenu.items.front().isSelected);
+    commitDropdownSelection(state, DropdownType::RecordMicSource, 499);
+    EXPECT_FALSE(state.recordSetup.captureMicrophone);
+    closeDropdownMenu(state, true);
 }
 
 TEST(CapturePolymorphicFeaturesAndDevOpsTest, TextFontSizeConfigPersistenceFramework) {
@@ -4292,18 +4411,20 @@ TEST(CaptureRecordTransitionTest, ModeSwitchAndStateSanitization) {
     EXPECT_EQ(state.sliderPopup.type, SliderPopupType::None);
     EXPECT_FALSE(state.toolbarLayoutValid);
 
-    // 验证重新构建后的录屏主工具栏为 10 项规格（含 MP4/GIF、fps、画质、点击特效、按键回显、音频、麦克风、录制快捷设置菜单、取消、开始录制）
-    D2D1_RECT_F selRect = D2D1::RectF(100.0f, 100.0f, 600.0f, 500.0f);
-    D2D1_SIZE_F surface = D2D1::SizeF(1920.0f, 1080.0f);
+    // 验证重新构建后的录屏主工具栏为 11 项规格（含 MP4/GIF、fps、画质、点击特效、按键回显、系统声音、麦克风开关左舱+选源右舱、录制快捷设置菜单、取消、开始录制）
+    D2D1_RECT_F selRect = D2D1_RECT_F{100.0f, 100.0f, 600.0f, 500.0f};
+    D2D1_SIZE_F surface = D2D1_SIZE_F{1920.0f, 1080.0f};
     rebuildCaptureToolbar(state, selRect, surface);
     EXPECT_TRUE(state.toolbarLayoutValid);
-    EXPECT_EQ(state.toolbarButtons.size(), 10u);
+    EXPECT_EQ(state.toolbarButtons.size(), 11u);
     EXPECT_TRUE(state.secondaryToolbarButtons.empty());
 
-    // 验证开始录制按钮、录制快捷设置齿轮与取消按钮的存在及正确命令
+    // 验证开始录制按钮、麦克风分体双舱、录制快捷设置齿轮与取消按钮的存在及正确命令
     EXPECT_EQ(state.toolbarButtons.back().command, ToolbarCommand::RecordStartConfirm);
-    EXPECT_EQ(state.toolbarButtons[7].command, ToolbarCommand::RecordToggleSettingsMenu);
-    EXPECT_EQ(state.toolbarButtons[8].command, ToolbarCommand::Cancel);
+    EXPECT_EQ(state.toolbarButtons[6].command, ToolbarCommand::RecordToggleMicrophone);
+    EXPECT_EQ(state.toolbarButtons[7].command, ToolbarCommand::RecordSelectMicSource);
+    EXPECT_EQ(state.toolbarButtons[8].command, ToolbarCommand::RecordToggleSettingsMenu);
+    EXPECT_EQ(state.toolbarButtons[9].command, ToolbarCommand::Cancel);
 
     // 验证再次调用 transitionToRecordMode 为幂等保护（不重复触发清理）
     transitionToRecordMode(state);
@@ -5107,7 +5228,17 @@ TEST(ClipboardUtilsTest, EmptyImageRejection) {
 TEST(ClipboardUtilsTest, MultiFormatMatrixAndDesktopDrop) {
     auto openClipboardWithRetry = []() -> bool {
         for (int retry = 0; retry < 50; ++retry) {
-            if (OpenClipboard(nullptr)) return true;
+            if (OpenClipboard(nullptr)) {
+                SetLastError(0);
+                const UINT probeFmt = EnumClipboardFormats(0);
+                if ((probeFmt == 0 && GetLastError() == ERROR_CLIPBOARD_NOT_OPEN) ||
+                    (probeFmt != 0 && GetClipboardData(probeFmt) == nullptr && GetLastError() == ERROR_CLIPBOARD_NOT_OPEN)) {
+                    CloseClipboard();
+                    Sleep(12);
+                    continue;
+                }
+                return true;
+            }
             Sleep(10 + retry * 2);
         }
         return false;
@@ -5208,7 +5339,17 @@ TEST(ClipboardUtilsTest, MultiFormatMatrixAndDesktopDrop) {
 TEST(ClipboardUtilsTest, PreferredFilePathCustomHDROP) {
     auto openClipboardWithRetry = []() -> bool {
         for (int retry = 0; retry < 50; ++retry) {
-            if (OpenClipboard(nullptr)) return true;
+            if (OpenClipboard(nullptr)) {
+                SetLastError(0);
+                if (IsClipboardFormatAvailable(CF_HDROP) &&
+                    GetClipboardData(CF_HDROP) == nullptr &&
+                    GetLastError() == ERROR_CLIPBOARD_NOT_OPEN) {
+                    CloseClipboard();
+                    Sleep(12);
+                    continue;
+                }
+                return true;
+            }
             Sleep(10 + retry * 2);
         }
         return false;
@@ -6532,7 +6673,17 @@ TEST(CaptureMarkupResizeTest, TextElementActiveHandlesHitTestAndNonEditingCaret)
 TEST(ClipboardUtilsTest, TimestampedHdropFileNamePatternAndContent) {
     auto openClipboardWithRetry = []() -> bool {
         for (int retry = 0; retry < 25; ++retry) {
-            if (OpenClipboard(nullptr)) return true;
+            if (OpenClipboard(nullptr)) {
+                SetLastError(0);
+                if (IsClipboardFormatAvailable(CF_HDROP) &&
+                    GetClipboardData(CF_HDROP) == nullptr &&
+                    GetLastError() == ERROR_CLIPBOARD_NOT_OPEN) {
+                    CloseClipboard();
+                    Sleep(12);
+                    continue;
+                }
+                return true;
+            }
             Sleep(10);
         }
         return false;
@@ -9344,7 +9495,7 @@ TEST(CaptureToolbarLayoutTest, SizeMenuSegmentedLayoutAndRecordToolbarBreathingC
     recordState.dpiScale = 1.0f;
     rebuildCaptureToolbar(recordState, D2D1::RectF(200.0f, 200.0f, 1000.0f, 700.0f), surface);
 
-    ASSERT_EQ(recordState.toolbarButtons.size(), 10u);
+    ASSERT_EQ(recordState.toolbarButtons.size(), 11u);
     for (const auto& btn : recordState.toolbarButtons) {
         const float btnW = btn.rect.right - btn.rect.left;
         if (!btn.label.empty()) {
@@ -9927,9 +10078,16 @@ TEST(MicroGlassNotePinTest, CompactSingleLineNoteVerticalStackingAndExactCopy) {
     EXPECT_EQ(inspected.value("pinnedSourceText", std::string{}), "Hycan@!0798");
 
     std::wstring copiedBack;
-    for (int retry = 0; retry < 10; ++retry) {
+    for (int retry = 0; retry < 20; ++retry) {
         if (OpenClipboard(nullptr)) {
-            if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+            SetLastError(0);
+            HANDLE h = GetClipboardData(CF_UNICODETEXT);
+            if (!h && GetLastError() == ERROR_CLIPBOARD_NOT_OPEN) {
+                CloseClipboard();
+                Sleep(12);
+                continue;
+            }
+            if (h) {
                 if (const auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
                     copiedBack = p;
                     GlobalUnlock(h);
@@ -11075,9 +11233,16 @@ TEST(PinWindowLazyOcrTest, GeneratedTextCardPreservesSelectAllAcrossRotateAndFli
     EXPECT_EQ(afterCopySelected.value("selectedBlockCount", 99), 0);
 
     std::wstring copiedBack;
-    for (int retry = 0; retry < 15; ++retry) {
+    for (int retry = 0; retry < 20; ++retry) {
         if (OpenClipboard(nullptr)) {
-            if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+            SetLastError(0);
+            HANDLE h = GetClipboardData(CF_UNICODETEXT);
+            if (!h && GetLastError() == ERROR_CLIPBOARD_NOT_OPEN) {
+                CloseClipboard();
+                Sleep(12);
+                continue;
+            }
+            if (h) {
                 if (const auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
                     copiedBack = p;
                     GlobalUnlock(h);

@@ -296,7 +296,11 @@ try {
     }
     if (-not $indexReady) {
         $svcCount = (Get-HarnessServiceProcesses).Count
-        throw "[1/4] 唤起搜索后 Tools3000_Service 未在 45 秒内完成索引就绪！(svcCount=$svcCount, lastErr=$lastProbeErr)"
+        Get-ChildItem -LiteralPath $HarnessLogsDir -Filter "*.log" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "=== LOG: $($_.Name) ===" -ForegroundColor Yellow
+            Get-Content -LiteralPath $_.FullName -Tail 35 -Encoding UTF8 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkYellow }
+        }
+        throw "[1/4] 唤起搜索后 Tools3000_Service 未在 90 秒内完成索引就绪！(svcCount=$svcCount, lastErr=$lastProbeErr)"
     }
 
     # 验证 getDbStats 非阻塞纳秒锁分离后的毫秒级响应 (< 500ms)

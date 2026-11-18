@@ -332,11 +332,13 @@ struct AudioCapture::Impl {
     }
 
     bool initializeMicrophone(IMMDeviceEnumerator* enumerator, std::string& error) {
-        if (initializeEndpoint(enumerator, microphone, eCapture, eCommunications,
+        // 优先遵循用户在 Windows 系统声音设置/任务栏音量面板中选定的默认输入设备 (eConsole)，
+        // 若不可用再回退默认通信设备 (eCommunications)
+        if (initializeEndpoint(enumerator, microphone, eCapture, eConsole,
                                false, options.microphoneDeviceId, error)) {
             return true;
         }
-        return initializeEndpoint(enumerator, microphone, eCapture, eConsole,
+        return initializeEndpoint(enumerator, microphone, eCapture, eCommunications,
                                   false, options.microphoneDeviceId, error);
     }
 
@@ -907,7 +909,7 @@ std::vector<AudioDeviceInfo> AudioCapture::devices() {
     };
 
     appendFlow(eRender, eConsole, true);
-    appendFlow(eCapture, eCommunications, false);
+    appendFlow(eCapture, eConsole, false);
     std::stable_sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
         if (left.systemAudio != right.systemAudio) return left.systemAudio > right.systemAudio;
         if (left.defaultDevice != right.defaultDevice) return left.defaultDevice > right.defaultDevice;

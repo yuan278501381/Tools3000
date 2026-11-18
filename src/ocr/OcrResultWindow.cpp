@@ -1102,11 +1102,12 @@ void OcrResultWindow::updateHover(POINT point) {
         }
     }
 
+    const bool inDragHeader = (point.y >= 0 && point.y < header && !hoverMerge);
     const LPCWSTR cursorId =
         (hoverMerge || hoverCopy || hoverClose || hoverScrollbar || hoverCopyBtn >= 0 ||
          (overLineIndex && hoverLine >= 0))
             ? IDC_HAND
-            : (inTextViewport && !m_lines.empty() ? IDC_IBEAM : IDC_ARROW);
+            : (inTextViewport && !m_lines.empty() ? IDC_IBEAM : (inDragHeader ? IDC_SIZEALL : IDC_ARROW));
     SetCursor(LoadCursorW(nullptr, cursorId));
 
     if (hoverMerge == m_hoverMerge &&
@@ -1721,6 +1722,15 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                 self->clearSelection();
                 self->render();
             }
+            if (point.y >= 0 && point.y < header) {
+                self->m_draggingWindow = true;
+                GetCursorPos(&self->m_dragStartScreenPt);
+                RECT wr{};
+                GetWindowRect(hwnd, &wr);
+                self->m_windowStartPos = {wr.left, wr.top};
+                SetCapture(hwnd);
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            }
             return 0;
         }
         case WM_MOUSEMOVE: {
@@ -1729,6 +1739,18 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                 self->m_trackingMouse = TrackMouseEvent(&tracking) != FALSE;
             }
             const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+
+            if (self->m_draggingWindow) {
+                POINT curScreen{};
+                GetCursorPos(&curScreen);
+                SetWindowPos(
+                    hwnd, nullptr,
+                    self->m_windowStartPos.x + (curScreen.x - self->m_dragStartScreenPt.x),
+                    self->m_windowStartPos.y + (curScreen.y - self->m_dragStartScreenPt.y),
+                    0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+                return 0;
+            }
 
             if (self->m_draggingScrollbar) {
                 RECT client{};
@@ -1788,6 +1810,12 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             if (GetCapture() == hwnd) ReleaseCapture();
             const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 
+            if (self->m_draggingWindow) {
+                self->m_draggingWindow = false;
+                self->updateHover(point);
+                return 0;
+            }
+
             if (self->m_draggingScrollbar) {
                 self->m_draggingScrollbar = false;
                 self->updateHover(point);
@@ -1835,6 +1863,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             return 0;
         }
         case WM_CAPTURECHANGED:
+            self->m_draggingWindow = false;
             self->m_draggingScrollbar = false;
             self->m_isSelectingText = false;
             self->m_pressedMergeBtn = false;

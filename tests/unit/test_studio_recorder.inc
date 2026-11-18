@@ -2,10 +2,12 @@
 // test_studio_recorder.inc — Screen Studio 级自动运镜、光标平滑、壁纸合成与转码回归测试
 // ─────────────────────────────────────────────────────────────────────────────
 
+#include "capture/ScreenRecorder.h"
 #include "capture/StudioTimeline.h"
 #include "capture/StudioVideoCompositor.h"
 #include "capture/StudioPreviewWindow.h"
 #include "capture/VoiceEnhancer.h"
+#include "capture/WatermarkRenderer.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -1044,4 +1046,897 @@ TEST(StudioRecorderTest, GifExportPreservesDarkBackgroundAcrossFramesAndHdZoomab
     avformat_close_input(&fmt);
 
     std::filesystem::remove_all(tmpDir, ec);
+}
+
+TEST(StudioRecorderTest, FourStudioClickEffectStylesSdfOpticalAndTactileSpring) {
+    using namespace tools3000::capture;
+
+    StudioTimelineData tl;
+    tl.sourceWidth = 1280;
+    tl.sourceHeight = 720;
+    tl.fps = 60;
+    tl.durationMs = 600;
+    tl.cursorSamples.push_back({0,   640.0f, 360.0f, StudioCursorKind::Arrow});
+    tl.cursorSamples.push_back({600, 640.0f, 360.0f, StudioCursorKind::Arrow});
+    tl.clickEvents.push_back({100, 640.0f, 360.0f, false});
+
+    StudioRenderConfig cfg;
+    cfg.autoZoomEnabled = false;
+    cfg.autoFrameEnabled = false;
+    cfg.smoothCursorEnabled = true;
+    cfg.showClickRipple = true;
+    cfg.clickEffectStyle = StudioClickEffectStyle::CrystalPulse;
+
+    const auto crystalBaked = StudioTimelineAnalyzer::bakeEvaluatedFrames(tl, cfg, 60, 36);
+    ASSERT_EQ(crystalBaked.size(), 36u);
+
+    // t = 150ms (点击后 50ms): 光标物理按压下沉至 ~0.80x 且尖端支点顺时针轻叩 < -2.5 deg
+    const auto& pressFrame = crystalBaked[9];
+    EXPECT_LT(pressFrame.clickScale, 0.84f);
+    EXPECT_LT(pressFrame.clickTiltDeg, -2.5f);
+    EXPECT_GT(pressFrame.rippleProgress, 0.05f);
+
+    // 切换为 TactileOnly (仅物理按压): 零波纹，但完整保留物理按压缩放与轻叩倾角
+    StudioRenderConfig tactileCfg = cfg;
+    tactileCfg.clickEffectStyle = StudioClickEffectStyle::TactileOnly;
+    const auto tactileBaked = StudioTimelineAnalyzer::bakeEvaluatedFrames(tl, tactileCfg, 60, 36);
+    ASSERT_EQ(tactileBaked.size(), 36u);
+    EXPECT_LT(tactileBaked[9].rippleProgress, 0.0f);
+    EXPECT_NEAR(tactileBaked[9].clickScale, pressFrame.clickScale, 1e-4f);
+    EXPECT_NEAR(tactileBaked[9].clickTiltDeg, pressFrame.clickTiltDeg, 1e-4f);
+
+    // 验证四档风格在 composeFrame 下的 SDF 光学渲染互不相同且完全无越界异常
+    cv::Mat darkPlate(720, 1280, CV_8UC3, cv::Scalar(22, 26, 36));
+    StudioVideoCompositor comp;
+
+    StudioRenderConfig softCfg = cfg;
+    softCfg.clickEffectStyle = StudioClickEffectStyle::SoftTouch;
+    const auto softBaked = StudioTimelineAnalyzer::bakeEvaluatedFrames(tl, softCfg, 60, 36);
+
+    StudioRenderConfig dualCfg = cfg;
+    dualCfg.clickEffectStyle = StudioClickEffectStyle::DualRipple;
+    const auto dualBaked = StudioTimelineAnalyzer::bakeEvaluatedFrames(tl, dualCfg, 60, 36);
+
+    // 取点击后 ~117ms (frame 13) 比较四档光学剖面差异
+    const cv::Mat outCrystal = comp.composeFrame(darkPlate, crystalBaked[13], cfg, cv::Size(640, 360));
+    const cv::Mat outSoft    = comp.composeFrame(darkPlate, softBaked[13], softCfg, cv::Size(640, 360));
+    const cv::Mat outDual    = comp.composeFrame(darkPlate, dualBaked[13], dualCfg, cv::Size(640, 360));
+    const cv::Mat outTactile = comp.composeFrame(darkPlate, tactileBaked[13], tactileCfg, cv::Size(640, 360));
+
+    EXPECT_GT(cv::norm(outCrystal, outTactile, cv::NORM_L1), 400.0);
+    EXPECT_GT(cv::norm(outSoft, outTactile, cv::NORM_L1), 400.0);
+    EXPECT_GT(cv::norm(outDual, outCrystal, cv::NORM_L1), 150.0);
+    EXPECT_GT(cv::norm(outCrystal, outSoft, cv::NORM_L1), 150.0);
+}
+
+TEST(StudioRecorderTest, GifExactCentroidZeroSolidNoiseAndTypingAutoZoomWiring) {
+    using namespace tools3000::capture;
+
+    // 1. 验证 GifPaletteOptimizer 在非 8 倍数深色 IDE 纯底色 BGR(41, 32, 29) + 外圈暖色渐变壁纸下：
+    //    即使开启 enableDithering=true，内部深色纯底区域必须 100% 命中同一精确调色板索引（0 颗斜纹麻点），且重建颜色误差 == 0！
+    const int W = 320, H = 200;
+    cv::Mat frameBgr(H, W, CV_8UC3);
+    for (int y = 0; y < H; ++y) {
+        uint8_t* row = frameBgr.ptr<uint8_t>(y);
+        for (int x = 0; x < W; ++x) {
+            if (x >= 28 && x < W - 28 && y >= 22 && y < H - 22) {
+                // 刻意选用旧版 5-bit 截断会产生 5 灰阶残差的深色 IDE 灰底 (R=29, G=32, B=41)
+                row[x * 3 + 0] = 41;
+                row[x * 3 + 1] = 32;
+                row[x * 3 + 2] = 29;
+            } else {
+                // 外圈暖杏羊绒连续渐变壁纸
+                row[x * 3 + 0] = static_cast<uint8_t>(180 + (x * 45) / W);
+                row[x * 3 + 1] = static_cast<uint8_t>(195 + (y * 40) / H);
+                row[x * 3 + 2] = static_cast<uint8_t>(215 + ((x + y) * 35) / (W + H));
+            }
+        }
+    }
+
+    GifPaletteOptimizer opt{};
+    opt.reserveTransparent = false;
+    opt.enableFrameDiff = false;
+    opt.enableDithering = true;
+
+    std::vector<uint8_t> indexed(static_cast<size_t>(W) * static_cast<size_t>(H), 0);
+    uint32_t pal[256]{};
+    opt.quantizeFrame(frameBgr.data, W, H, static_cast<int>(frameBgr.step[0]), 3,
+                      indexed.data(), W, pal);
+
+    const uint8_t centerIdx = indexed[static_cast<size_t>(H / 2) * W + (W / 2)];
+    int mismatchPixels = 0;
+    for (int y = 30; y < H - 30; ++y) {
+        for (int x = 36; x < W - 36; ++x) {
+            if (indexed[static_cast<size_t>(y) * W + x] != centerIdx) {
+                ++mismatchPixels;
+            }
+        }
+    }
+    EXPECT_EQ(mismatchPixels, 0);
+
+    const uint32_t argb = pal[centerIdx];
+    const int palR = static_cast<int>((argb >> 16) & 0xFF);
+    const int palG = static_cast<int>((argb >> 8) & 0xFF);
+    const int palB = static_cast<int>(argb & 0xFF);
+    EXPECT_NEAR(palR, 29, 1);
+    EXPECT_NEAR(palG, 32, 1);
+    EXPECT_NEAR(palB, 41, 1);
+
+    // 2. 验证 typingAutoZoom 开启时，无鼠标点击纯打字 focusEvents 能真实驱动自动运镜片段生成与焦点牵引
+    StudioTimelineData typingTl;
+    typingTl.sourceWidth = 1920;
+    typingTl.sourceHeight = 1080;
+    typingTl.fps = 30;
+    typingTl.durationMs = 3000;
+    typingTl.focusEvents.push_back({600, 420.0f, 760.0f});
+    typingTl.focusEvents.push_back({1100, 460.0f, 760.0f});
+
+    const auto zoomOffSegs = StudioTimelineAnalyzer::buildAutoZoomSegments(typingTl, 1.85f, /*includeTypingFocus=*/false);
+    EXPECT_TRUE(zoomOffSegs.empty());
+
+    const auto zoomOnSegs = StudioTimelineAnalyzer::buildAutoZoomSegments(typingTl, 1.85f, /*includeTypingFocus=*/true);
+    ASSERT_EQ(zoomOnSegs.size(), 1u);
+    EXPECT_LE(zoomOnSegs[0].startMs, 600);
+    EXPECT_GE(zoomOnSegs[0].endMs, 2200);
+    EXPECT_NEAR(zoomOnSegs[0].focusY, 760.0f, 10.0f);
+}
+
+TEST(StudioRecorderTest, DynamicMotionCalloutsAnimateSmoothlyWhileBlurMaskProtectsFirstFrame) {
+    using namespace tools3000::capture;
+
+    cv::Mat srcBgr(360, 640, CV_8UC3, cv::Scalar(32, 38, 52));
+    // 模拟敏感文本棋盘区供 BlurMask 首帧全遮挡测试
+    for (int y = 90; y < 170; y += 8) {
+        for (int x = 80; x < 240; x += 8) {
+            if (((x + y) / 8) % 2 == 0) {
+                cv::rectangle(srcBgr, cv::Rect(x, y, 8, 8), cv::Scalar(245, 248, 252), cv::FILLED);
+            }
+        }
+    }
+
+    StudioRenderConfig cfg;
+    cfg.autoFrameEnabled = false;
+    cfg.smoothCursorEnabled = false;
+
+    StudioEvaluatedFrame eval{};
+    eval.sourceWidth = 640.0f;
+    eval.sourceHeight = 360.0f;
+    eval.camera.zoom = 1.0f;
+    eval.camera.cropX = 0.0f;
+    eval.camera.cropY = 0.0f;
+    eval.camera.cropW = 640.0f;
+    eval.camera.cropH = 360.0f;
+
+    StudioVideoCompositor comp;
+    const cv::Mat cleanFrame = comp.composeFrame(srcBgr, eval, cfg, cv::Size(640, 360), nullptr);
+
+    // 1. 动态重点标注：验证入场勾勒阶段 (70ms) -> 饱满驻留期 (420ms) -> 声呐/行军律动期 (780ms) 持续动态抓眼
+    std::vector<StudioAnnotationItem> motionAnns = {
+        {StudioAnnotationKind::RoundedBox,   0, 2400, 0.45f, 0.20f, 0.85f, 0.52f, "#F59E0B", "", 3.5f, true},
+        {StudioAnnotationKind::SketchCircle, 0, 2400, 0.48f, 0.56f, 0.78f, 0.86f, "#F97316", "", 3.5f, true},
+        {StudioAnnotationKind::DashedLine,   0, 2400, 0.12f, 0.76f, 0.42f, 0.76f, "#38BDF8", "", 3.5f, true},
+        {StudioAnnotationKind::StepBadge,    0, 2400, 0.36f, 0.24f, 0.43f, 0.34f, "#3B82F6", "1", 3.5f, true},
+    };
+
+    eval.ptsMs = 70;
+    const cv::Mat frameEnter = comp.composeFrame(srcBgr, eval, cfg, cv::Size(640, 360), &motionAnns, true);
+    eval.ptsMs = 420;
+    const cv::Mat frameHoldA = comp.composeFrame(srcBgr, eval, cfg, cv::Size(640, 360), &motionAnns, true);
+    eval.ptsMs = 780;
+    const cv::Mat frameHoldB = comp.composeFrame(srcBgr, eval, cfg, cv::Size(640, 360), &motionAnns, true);
+
+    EXPECT_GT(cv::norm(cleanFrame, frameEnter, cv::NORM_L1), 2000.0);
+    EXPECT_GT(cv::norm(frameEnter, frameHoldA, cv::NORM_L1), 4000.0); // 入场一笔勾勒过程中画面持续生长
+    EXPECT_GT(cv::norm(frameHoldA, frameHoldB, cv::NORM_L1), 1500.0); // 驻留期声呐脉冲与虚线流动持续律动
+
+    // 暂停静态拖拽模式 (animateAnnotations=false)：即使停在 startMs=0 第 0 毫秒，框体亦 100% 闭合清晰可见
+    eval.ptsMs = 0;
+    const cv::Mat framePausedAtZero = comp.composeFrame(srcBgr, eval, cfg, cv::Size(640, 360), &motionAnns, false);
+    EXPECT_GT(cv::norm(cleanFrame, framePausedAtZero, cv::NORM_L1), 15000.0);
+
+    // 2. 隐私马赛克遮罩 (BlurMask)：首帧 (0ms) 与中间帧 (500ms) 必须 100% 同等严密打码，零渐显泄露
+    std::vector<StudioAnnotationItem> blurOnly = {
+        {StudioAnnotationKind::BlurMask, 0, 2000, 0.10f, 0.22f, 0.40f, 0.50f, "#94A3B8", "", 3.5f, true}
+    };
+    eval.ptsMs = 0;
+    const cv::Mat blurAt0 = comp.composeFrame(srcBgr, eval, cfg, cv::Size(640, 360), &blurOnly, true);
+    eval.ptsMs = 500;
+    const cv::Mat blurAt500 = comp.composeFrame(srcBgr, eval, cfg, cv::Size(640, 360), &blurOnly, true);
+    EXPECT_GT(cv::norm(cleanFrame, blurAt0, cv::NORM_L1), 10000.0);
+    EXPECT_DOUBLE_EQ(cv::norm(blurAt0, blurAt500, cv::NORM_L1), 0.0);
+
+    // 3. 验证全部 7 款底部功能按钮微缩剧场画廊卡片（深/浅双主题）离屏高分屏渲染完好且动画帧间真实律动
+    const float keyPhases[7] = {0.46f, 0.38f, 0.56f, 0.30f, 0.52f, 0.56f, 0.58f};
+    std::vector<cv::Mat> lightCards, darkCards;
+    for (int slot = 0; slot < 7; ++slot) {
+        cv::Mat cardL = StudioPreviewWindow::renderCoachCardPreviewForTest(slot, keyPhases[slot], false, true);
+        cv::Mat cardL2 = StudioPreviewWindow::renderCoachCardPreviewForTest(slot, 0.10f, false, true);
+        cv::Mat cardD = StudioPreviewWindow::renderCoachCardPreviewForTest(slot, keyPhases[slot], true, true);
+        ASSERT_FALSE(cardL.empty());
+        ASSERT_FALSE(cardD.empty());
+        EXPECT_GT(cv::norm(cardL, cardL2, cv::NORM_L1), 1500.0) << "Coach slot " << slot << " should animate";
+        lightCards.push_back(cardL);
+        darkCards.push_back(cardD);
+    }
+
+    if (const char* dumpDir = std::getenv("TOOLS3000_DUMP_STUDIO_GALLERY_DIR"); dumpDir && *dumpDir) {
+        const std::filesystem::path outDir(dumpDir);
+        std::filesystem::create_directories(outDir);
+
+        auto tileGallery = [](const std::vector<cv::Mat>& cards, cv::Scalar bg) -> cv::Mat {
+            const int cw = cards[0].cols;
+            const int ch = cards[0].rows;
+            cv::Mat grid(ch * 3, cw * 3, CV_8UC3, bg);
+            for (size_t i = 0; i < cards.size(); ++i) {
+                const int r = static_cast<int>(i) / 3;
+                const int c = static_cast<int>(i) % 3;
+                cards[i].copyTo(grid(cv::Rect(c * cw, r * ch, cw, ch)));
+            }
+            return grid;
+        };
+        cv::imwrite((outDir / "coach_gallery_light.png").string(), tileGallery(lightCards, cv::Scalar(250, 246, 242)));
+        cv::imwrite((outDir / "coach_gallery_dark.png").string(), tileGallery(darkCards, cv::Scalar(26, 18, 14)));
+
+        // 生成一张模拟明亮与深色双区 UI 的 1280x720 画面，检验新版「手绘重点圈」与各重点标注的真实颜值
+        cv::Mat uiDemo(720, 1280, CV_8UC3, cv::Scalar(248, 250, 253));
+        cv::rectangle(uiDemo, cv::Rect(40, 40, 560, 640), cv::Scalar(255, 255, 255), cv::FILLED);
+        cv::rectangle(uiDemo, cv::Rect(640, 40, 600, 640), cv::Scalar(38, 29, 24), cv::FILLED);
+        cv::rectangle(uiDemo, cv::Rect(120, 180, 260, 48), cv::Scalar(245, 130, 59), cv::FILLED);
+        cv::rectangle(uiDemo, cv::Rect(760, 180, 280, 48), cv::Scalar(160, 180, 60), cv::FILLED);
+
+        std::vector<StudioAnnotationItem> showcaseAnns = {
+            // 浅色背景上的宽扁手绘重点圈 + 正圆手绘重点圈
+            {StudioAnnotationKind::SketchCircle, 0, 3000, 0.08f, 0.22f, 0.32f, 0.35f, "#F97316", "", 3.8f, true},
+            {StudioAnnotationKind::SketchCircle, 0, 3000, 0.12f, 0.48f, 0.28f, 0.72f, "#EF4444", "", 3.8f, true},
+            // 深色背景上的手绘重点圈 + 圆角框 + 圆环 + 步骤章
+            {StudioAnnotationKind::SketchCircle, 0, 3000, 0.57f, 0.22f, 0.84f, 0.35f, "#F59E0B", "", 3.8f, true},
+            {StudioAnnotationKind::RoundedBox,   0, 3000, 0.57f, 0.46f, 0.84f, 0.62f, "#10B981", "", 3.5f, true},
+            {StudioAnnotationKind::CircleRing,   0, 3000, 0.58f, 0.68f, 0.72f, 0.88f, "#38BDF8", "", 3.5f, true},
+            {StudioAnnotationKind::StepBadge,    0, 3000, 0.51f, 0.24f, 0.55f, 0.32f, "#3B82F6", "1", 3.5f, true},
+        };
+        StudioEvaluatedFrame demoEval{};
+        demoEval.ptsMs = 620;
+        demoEval.sourceWidth = 1280.0f;
+        demoEval.sourceHeight = 720.0f;
+        demoEval.camera.zoom = 1.0f;
+        demoEval.camera.cropW = 1280.0f;
+        demoEval.camera.cropH = 720.0f;
+        cv::Mat renderedDemo = comp.composeFrame(uiDemo, demoEval, cfg, cv::Size(1280, 720), &showcaseAnns, true);
+        cv::imwrite((outDir / "sketch_circle_showcase.png").string(), renderedDemo);
+    }
+}
+
+TEST(StudioRecorderTest, DynamicStepBadgeResequencingAndTimelineAnnotationLabels) {
+    using namespace tools3000::capture;
+
+    std::vector<StudioVideoClip> clips = {{0, 10000, 1.0f}};
+    std::vector<StudioAnnotationItem> anns = {
+        {StudioAnnotationKind::SketchCircle, 300,  2200, 0.2f, 0.2f, 0.5f, 0.5f, "#F97316", "", 3.5f, true, false},
+        {StudioAnnotationKind::StepBadge,    800,  2600, 0.4f, 0.4f, 0.5f, 0.5f, "#3B82F6", "10", 3.5f, true, false},
+        {StudioAnnotationKind::TextBubble,   1500, 3500, 0.3f, 0.3f, 0.6f, 0.4f, "#A855F7", "点击这里", 3.5f, true, false},
+        {StudioAnnotationKind::StepBadge,    3200, 5000, 0.5f, 0.5f, 0.6f, 0.6f, "#3B82F6", "11", 3.5f, true, false},
+        {StudioAnnotationKind::StepBadge,    6000, 8200, 0.6f, 0.4f, 0.7f, 0.5f, "#3B82F6", "12", 3.5f, true, false},
+    };
+
+    // 1. 自动重排消除历史遗留 "10, 11, 12"，严格按时间轴出场顺序重算为 "1, 2, 3"
+    std::vector<int> ranks;
+    const int nextSeq = StudioTimelineAnalyzer::resequenceAutoStepBadges(anns, clips, &ranks);
+    EXPECT_EQ(nextSeq, 4);
+    ASSERT_EQ(ranks.size(), anns.size());
+    EXPECT_EQ(anns[1].text, "1");
+    EXPECT_EQ(anns[3].text, "2");
+    EXPECT_EQ(anns[4].text, "3");
+    EXPECT_EQ(ranks[1], 1);
+    EXPECT_EQ(ranks[3], 2);
+    EXPECT_EQ(ranks[4], 3);
+
+    // 2. 删除中间第 2 个步骤章 (index 3) 后，原第 3 个立即自动递补变为 "2"
+    anns.erase(anns.begin() + 3);
+    StudioTimelineAnalyzer::resequenceAutoStepBadges(anns, clips, &ranks);
+    EXPECT_EQ(anns[1].text, "1");
+    EXPECT_EQ(anns[3].text, "2");
+    EXPECT_EQ(ranks[1], 1);
+    EXPECT_EQ(ranks[3], 2);
+
+    // 3. 在时间线上把后面的步骤章拖到最前面 (startMs = 200 < 800) -> 动态互换为 "1" 和 "2"
+    anns[3].startMs = 200;
+    anns[3].endMs = 1600;
+    StudioTimelineAnalyzer::resequenceAutoStepBadges(anns, clips, &ranks);
+    EXPECT_EQ(anns[3].text, "1");
+    EXPECT_EQ(anns[1].text, "2");
+    EXPECT_EQ(ranks[3], 1);
+    EXPECT_EQ(ranks[1], 2);
+
+    // 4. 用户手动将第二个步骤章文本改为自定义 "2B" (customStepText = true)：画面保留 "2B"，时间轴仍精确标注第 2 个
+    anns[1].text = "2B";
+    anns[1].customStepText = true;
+    StudioTimelineAnalyzer::resequenceAutoStepBadges(anns, clips, &ranks);
+    EXPECT_EQ(anns[1].text, "2B");
+    EXPECT_EQ(StudioTimelineAnalyzer::formatTimelineAnnotationLabel(anns[1], ranks[1], 110.0f, false, true), L"步骤 2·2B");
+    EXPECT_EQ(StudioTimelineAnalyzer::formatTimelineAnnotationLabel(anns[1], ranks[1], 0.0f, true, true), L"步骤序号 · 第 2 个 (显示 2B)");
+
+    // 5. 验证各标注在轨道宽块、窄块与悬停气泡中的直观名称展示
+    EXPECT_EQ(StudioTimelineAnalyzer::formatTimelineAnnotationLabel(anns[3], ranks[3], 90.0f, false, true), L"步骤 1");
+    EXPECT_EQ(StudioTimelineAnalyzer::formatTimelineAnnotationLabel(anns[3], ranks[3], 38.0f, false, true), L"#1");
+    EXPECT_EQ(StudioTimelineAnalyzer::formatTimelineAnnotationLabel(anns[3], ranks[3], 0.0f, true, true), L"步骤序号 · 第 1 个");
+
+    EXPECT_EQ(StudioTimelineAnalyzer::formatTimelineAnnotationLabel(anns[0], 0, 120.0f, false, true), L"手绘重点圈");
+    EXPECT_EQ(StudioTimelineAnalyzer::formatTimelineAnnotationLabel(anns[0], 0, 48.0f, false, true), L"重点圈");
+    EXPECT_EQ(StudioTimelineAnalyzer::formatTimelineAnnotationLabel(anns[2], 0, 140.0f, false, true), L"气泡: 点击这里");
+    EXPECT_EQ(StudioTimelineAnalyzer::formatTimelineAnnotationLabel(anns[2], 0, 0.0f, true, true), L"对话气泡: 点击这里");
+
+    // 6. 剪辑联动：若前 1700ms 片段被剪除，落在被剪除区内的步骤章自动不占号，后续步骤顺延为第 1 个
+    std::vector<StudioVideoClip> trimmedClips = {{1700, 10000, 1.0f}};
+    anns[1].customStepText = false;
+    StudioTimelineAnalyzer::resequenceAutoStepBadges(anns, trimmedClips, &ranks);
+    EXPECT_EQ(ranks[3], 0); // [200..1600ms] 已被剪除，不占序号
+    EXPECT_EQ(ranks[1], 1); // [800..2600ms] 在 1700ms 后仍有 900ms 可见区间，顺延成为第 1 个步骤！
+    EXPECT_EQ(anns[1].text, "1");
+}
+
+TEST(StudioRecorderTest, GifGlobalPalettePreservesMidVideoWhiteErpScreenWithoutYellowTint) {
+    using namespace tools3000::capture;
+
+    const auto tmpDir = std::filesystem::temp_directory_path() / L"tools3000_gif_white_notint_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+
+    const std::string rawMp4Utf8 = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"warm_to_white.mp4").wstring());
+    const std::wstring outGifW   = (tmpDir / L"warm_to_white_hd.gif").wstring();
+    const std::string outGifUtf8 = tools3000::core::WinUtils::wstringToUtf8(outGifW);
+
+    // 合成一段「前半段暖橙金多彩桌面 -> 后半段突然切入灰白底单据报表」的视频
+    {
+        const int w = 640, h = 400, fps = 12, totalFrames = 24;
+        AVFormatContext* fmt = nullptr;
+        ASSERT_GE(avformat_alloc_output_context2(&fmt, nullptr, "mp4", rawMp4Utf8.c_str()), 0);
+        ASSERT_NE(fmt, nullptr);
+        const AVCodec* codec = avcodec_find_encoder_by_name("libx264");
+        if (!codec) codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+        if (!codec) codec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+        ASSERT_NE(codec, nullptr);
+
+        AVCodecContext* ctx = avcodec_alloc_context3(codec);
+        ctx->width = w; ctx->height = h;
+        ctx->time_base = {1, fps}; ctx->framerate = {fps, 1};
+        ctx->gop_size = fps; ctx->max_b_frames = 0;
+        ctx->bit_rate = 3'000'000; ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+        if (fmt->oformat->flags & AVFMT_GLOBALHEADER) ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        ASSERT_GE(avcodec_open2(ctx, codec, nullptr), 0);
+
+        AVStream* st = avformat_new_stream(fmt, codec);
+        ASSERT_NE(st, nullptr);
+        ASSERT_GE(avcodec_parameters_from_context(st->codecpar, ctx), 0);
+        ASSERT_GE(avio_open(&fmt->pb, rawMp4Utf8.c_str(), AVIO_FLAG_WRITE), 0);
+        ASSERT_GE(avformat_write_header(fmt, nullptr), 0);
+        st->time_base = ctx->time_base;
+
+        SwsContext* sws = sws_getContext(w, h, AV_PIX_FMT_BGR24, w, h, ctx->pix_fmt, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        AVFrame* frm = av_frame_alloc();
+        frm->format = ctx->pix_fmt; frm->width = w; frm->height = h;
+        ASSERT_GE(av_frame_get_buffer(frm, 32), 0);
+        AVPacket* pkt = av_packet_alloc();
+
+        for (int i = 0; i < totalFrames; ++i) {
+            cv::Mat bgr(h, w, CV_8UC3);
+            if (i < 12) {
+                // 前半段：高饱和暖橙黄紫渐变画面（复现第 0 帧被暖色垄断调色板的极端条件）
+                for (int y = 0; y < h; ++y) {
+                    auto* row = bgr.ptr<cv::Vec3b>(y);
+                    for (int x = 0; x < w; ++x) {
+                        row[x] = cv::Vec3b(
+                            static_cast<uint8_t>(40 + (x * 120) / w),
+                            static_cast<uint8_t>(120 + (y * 110) / h),
+                            static_cast<uint8_t>(245));
+                    }
+                }
+            } else {
+                // 后半段：纯正灰白表格单据界面 (BGR: 白底 252,252,252 + 浅冷灰表头 238,236,234 + 黄色底部按钮 130,220,248)
+                bgr.setTo(cv::Scalar(252, 252, 252));
+                cv::rectangle(bgr, cv::Rect(0, 0, w, 56), cv::Scalar(238, 236, 234), cv::FILLED);
+                cv::rectangle(bgr, cv::Rect(24, h - 46, 130, 30), cv::Scalar(130, 220, 248), cv::FILLED);
+            }
+
+            av_frame_make_writable(frm);
+            const uint8_t* srcSlice[1] = {bgr.data};
+            const int srcStride[1] = {static_cast<int>(bgr.step[0])};
+            sws_scale(sws, srcSlice, srcStride, 0, h, frm->data, frm->linesize);
+            frm->pts = i;
+            ASSERT_GE(avcodec_send_frame(ctx, frm), 0);
+            while (avcodec_receive_packet(ctx, pkt) == 0) {
+                av_packet_rescale_ts(pkt, ctx->time_base, st->time_base);
+                pkt->stream_index = st->index;
+                av_interleaved_write_frame(fmt, pkt);
+                av_packet_unref(pkt);
+            }
+        }
+        avcodec_send_frame(ctx, nullptr);
+        while (avcodec_receive_packet(ctx, pkt) == 0) {
+            av_packet_rescale_ts(pkt, ctx->time_base, st->time_base);
+            pkt->stream_index = st->index;
+            av_interleaved_write_frame(fmt, pkt);
+            av_packet_unref(pkt);
+        }
+        av_write_trailer(fmt);
+        av_packet_free(&pkt);
+        av_frame_free(&frm);
+        sws_freeContext(sws);
+        avio_closep(&fmt->pb);
+        avcodec_free_context(&ctx);
+        avformat_free_context(fmt);
+    }
+
+    StudioTimelineData tl{};
+    tl.sourceWidth = 640;
+    tl.sourceHeight = 400;
+    tl.fps = 12;
+    tl.durationMs = 2000;
+
+    StudioRenderConfig cfg{};
+    cfg.autoZoomEnabled = false;
+    cfg.autoFrameEnabled = false;
+    cfg.smoothCursorEnabled = false;
+    cfg.exportSrtSidecar = false;
+
+    StudioExportOptions gifOpts{};
+    gifOpts.format = StudioExportFormat::GIF_HD;
+    gifOpts.resolution = StudioExportResolution::Original;
+    gifOpts.fps = 12;
+    gifOpts.quality = StudioExportQuality::High;
+
+    ASSERT_TRUE(StudioVideoCompositor::exportStudioMedia(rawMp4Utf8, outGifUtf8, tl, cfg, gifOpts));
+    ASSERT_TRUE(std::filesystem::exists(outGifW, ec));
+
+    // 解码生成的 GIF 文件，验证切入浅白底界面的首帧即保持中性纯净白（零偏黄染色）
+    AVFormatContext* decFmt = nullptr;
+    ASSERT_GE(avformat_open_input(&decFmt, outGifUtf8.c_str(), nullptr, nullptr), 0);
+    ASSERT_GE(avformat_find_stream_info(decFmt, nullptr), 0);
+    int vIdx = -1;
+    for (unsigned s = 0; s < decFmt->nb_streams; ++s) {
+        if (decFmt->streams[s]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            vIdx = static_cast<int>(s);
+            break;
+        }
+    }
+    ASSERT_GE(vIdx, 0);
+    const AVCodec* gifDec = avcodec_find_decoder(decFmt->streams[vIdx]->codecpar->codec_id);
+    ASSERT_NE(gifDec, nullptr);
+    AVCodecContext* decCtx = avcodec_alloc_context3(gifDec);
+    ASSERT_GE(avcodec_parameters_to_context(decCtx, decFmt->streams[vIdx]->codecpar), 0);
+    ASSERT_GE(avcodec_open2(decCtx, gifDec, nullptr), 0);
+
+    SwsContext* toBgr = nullptr;
+    AVFrame* dFrm = av_frame_alloc();
+    AVPacket* dPkt = av_packet_alloc();
+    int decodedIdx = 0;
+    int verifiedWhiteFrames = 0;
+
+    while (av_read_frame(decFmt, dPkt) >= 0) {
+        if (dPkt->stream_index == vIdx && avcodec_send_packet(decCtx, dPkt) >= 0) {
+            while (avcodec_receive_frame(decCtx, dFrm) == 0) {
+                if (!toBgr) {
+                    toBgr = sws_getContext(
+                        dFrm->width, dFrm->height, static_cast<AVPixelFormat>(dFrm->format),
+                        dFrm->width, dFrm->height, AV_PIX_FMT_BGR24, SWS_POINT, nullptr, nullptr, nullptr);
+                }
+                cv::Mat frameBgr(dFrm->height, dFrm->width, CV_8UC3);
+                uint8_t* dstSlice[1] = {frameBgr.data};
+                int dstStride[1] = {static_cast<int>(frameBgr.step[0])};
+                sws_scale(toBgr, dFrm->data, dFrm->linesize, 0, dFrm->height, dstSlice, dstStride);
+
+                if (decodedIdx >= 13) {
+                    // 采样表格中央白底区域：B、G、R 必须均 >= 238，且红蓝差 |R - B| <= 8（绝无泛黄染色！）
+                    const cv::Scalar whiteRoi = cv::mean(frameBgr(cv::Rect(220, 160, 160, 100)));
+                    EXPECT_GE(whiteRoi[0], 238.0) << "Blue channel dropped (yellow tint!) at frame " << decodedIdx;
+                    EXPECT_GE(whiteRoi[1], 238.0) << "Green channel dropped at frame " << decodedIdx;
+                    EXPECT_GE(whiteRoi[2], 238.0) << "Red channel dropped at frame " << decodedIdx;
+                    EXPECT_LE(std::abs(whiteRoi[2] - whiteRoi[0]), 8.0)
+                        << "White table background tinted yellow at frame " << decodedIdx;
+                    ++verifiedWhiteFrames;
+                }
+                ++decodedIdx;
+            }
+        }
+        av_packet_unref(dPkt);
+    }
+
+    EXPECT_GE(verifiedWhiteFrames, 6);
+    if (toBgr) sws_freeContext(toBgr);
+    av_packet_free(&dPkt);
+    av_frame_free(&dFrm);
+    avcodec_free_context(&decCtx);
+    avformat_close_input(&decFmt);
+    std::filesystem::remove_all(tmpDir, ec);
+}
+
+TEST(StudioRecorderTest, EnterpriseTiledAndLogoWatermarkAdaptiveContrastAndBounds) {
+    using namespace tools3000::capture;
+
+    // 1. 验证动态溯源变量解析器
+    const std::wstring resolved = WatermarkRenderer::resolveDynamicText("{user} · {host} · {date} {time}");
+    EXPECT_FALSE(resolved.empty());
+    EXPECT_EQ(resolved.find(L"{user}"), std::wstring::npos);
+    EXPECT_EQ(resolved.find(L"{date}"), std::wstring::npos);
+
+    // 2. 验证全屏斜铺企业溯源水印在「左半浅白底 + 右半深黑底」分屏图上的逐像素极性自适应显影
+    cv::Mat splitScreen(540, 960, CV_8UC3);
+    splitScreen(cv::Rect(0, 0, 480, 540)).setTo(cv::Scalar(250, 250, 250)); // 左半白底
+    splitScreen(cv::Rect(480, 0, 480, 540)).setTo(cv::Scalar(20, 24, 34));   // 右半深黑底
+    const cv::Mat origSplit = splitScreen.clone();
+
+    WatermarkConfig tiledCfg{};
+    tiledCfg.enabled = true;
+    tiledCfg.mode = WatermarkMode::TiledTraceability;
+    tiledCfg.textTemplate = "CONFIDENTIAL · {user} · {date}";
+    tiledCfg.scale = 1.15f;
+    tiledCfg.opacity = 0.22f;
+
+    ASSERT_TRUE(WatermarkRenderer::applyInPlace(splitScreen, tiledCfg));
+
+    int darkenedOnWhiteSide = 0;
+    int lightenedOnDarkSide = 0;
+    for (int y = 20; y < 520; ++y) {
+        const auto* srcR = origSplit.ptr<cv::Vec3b>(y);
+        const auto* dstR = splitScreen.ptr<cv::Vec3b>(y);
+        for (int x = 20; x < 460; ++x) {
+            if (dstR[x][0] + 6 < srcR[x][0] && dstR[x][1] + 6 < srcR[x][1]) {
+                ++darkenedOnWhiteSide;
+            }
+        }
+        for (int x = 500; x < 940; ++x) {
+            if (dstR[x][0] > srcR[x][0] + 6 && dstR[x][1] > srcR[x][1] + 6) {
+                ++lightenedOnDarkSide;
+            }
+        }
+    }
+    EXPECT_GT(darkenedOnWhiteSide, 400) << "Tiled watermark must darken pixels on bright ERP background";
+    EXPECT_GT(lightenedOnDarkSide, 400) << "Tiled watermark must lighten pixels on dark IDE background";
+
+    // 3. 验证透明 PNG 品牌 Logo 角标解码、自由坐标定位与舞台包围盒命中计算
+    const auto tmpDir = std::filesystem::temp_directory_path() / L"tools3000_watermark_logo_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+
+    const std::filesystem::path logoPath = tmpDir / L"brand_logo_透明.png";
+    {
+        cv::Mat logoBgra(96, 200, CV_8UC4, cv::Scalar(0, 0, 0, 0));
+        cv::circle(logoBgra, cv::Point(48, 48), 36, cv::Scalar(246, 130, 59, 255), cv::FILLED, cv::LINE_AA);
+        cv::rectangle(logoBgra, cv::Rect(96, 28, 88, 40), cv::Scalar(255, 255, 255, 230), cv::FILLED);
+        std::vector<uint8_t> pngBuf;
+        ASSERT_TRUE(cv::imencode(".png", logoBgra, pngBuf));
+        std::ofstream ofs(logoPath, std::ios::binary | std::ios::trunc);
+        ofs.write(reinterpret_cast<const char*>(pngBuf.data()), static_cast<std::streamsize>(pngBuf.size()));
+    }
+
+    WatermarkConfig logoCfg{};
+    logoCfg.enabled = true;
+    logoCfg.mode = WatermarkMode::ImageLogo;
+    logoCfg.imagePathUtf8 = tools3000::core::WinUtils::wstringToUtf8(logoPath.wstring());
+    logoCfg.anchor = WatermarkAnchor::CustomFree;
+    logoCfg.customNormX = 0.80f;
+    logoCfg.customNormY = 0.82f;
+    logoCfg.scale = 1.0f;
+    logoCfg.opacity = 0.90f;
+
+    cv::Rect expectedBounds{};
+    ASSERT_TRUE(WatermarkRenderer::computeSingleBadgeBounds(800, 500, logoCfg, expectedBounds));
+    EXPECT_GT(expectedBounds.width, 40);
+    EXPECT_GT(expectedBounds.height, 20);
+    EXPECT_NEAR(expectedBounds.x + expectedBounds.width * 0.5, 800 * 0.80, 3.0);
+    EXPECT_NEAR(expectedBounds.y + expectedBounds.height * 0.5, 500 * 0.82, 3.0);
+
+    cv::Mat stageImg(500, 800, CV_8UC3, cv::Scalar(30, 36, 48));
+    cv::Rect appliedBounds{};
+    ASSERT_TRUE(WatermarkRenderer::applyInPlace(stageImg, logoCfg, &appliedBounds));
+    EXPECT_EQ(appliedBounds, expectedBounds);
+
+    // 验证圆章蓝色区域已清晰混合进目标画布，而圆章外的透明边角保持原底色不脏污
+    const cv::Vec3b cornerBg = stageImg.at<cv::Vec3b>(appliedBounds.y + 2, appliedBounds.x + 2);
+    EXPECT_NEAR(cornerBg[0], 30, 2);
+    const cv::Scalar badgeMean = cv::mean(stageImg(appliedBounds));
+    EXPECT_GT(badgeMean[0] + badgeMean[1] + badgeMean[2], 140.0);
+
+    std::filesystem::remove_all(tmpDir, ec);
+}
+
+TEST(StudioRecorderTest, WaveformNoiseFloorPreventsFlatCaterpillarAndHiResReaderDecodesCrispNativeFrames) {
+    using namespace tools3000::capture;
+
+    // 1. 验证声学本底噪声自适应归一化：稳态微弱风扇底噪 (0.055..0.072) 绝不炸成平顶栅栏，真实音节保持高对比度波峰波谷
+    std::vector<float> steadyFanNoise(400, 0.0f);
+    for (size_t i = 0; i < steadyFanNoise.size(); ++i) {
+        steadyFanNoise[i] = 0.058f + 0.008f * std::sin(static_cast<float>(i) * 0.35f);
+    }
+    const float fanBar = StudioTimelineAnalyzer::sampleWaveformRangePeak(
+        steadyFanNoise, 4000, 1200, 1250, 0.38f, 0.052f);
+    EXPECT_LT(fanBar, 0.08f);
+
+    std::vector<float> crispSpeech(500, 0.015f);
+    for (size_t i = 100; i < 160; ++i) {
+        crispSpeech[i] = 0.56f; // 清晰说话重读音节
+    }
+    const float vowelPeak = StudioTimelineAnalyzer::sampleWaveformRangePeak(
+        crispSpeech, 5000, 1050, 1500, 0.56f, 0.014f);
+    const float breathGap = StudioTimelineAnalyzer::sampleWaveformRangePeak(
+        crispSpeech, 5000, 2400, 2800, 0.56f, 0.014f);
+    EXPECT_GT(vowelPeak, 0.85f);
+    EXPECT_LT(breathGap, 0.02f);
+
+    // 2. 验证 StudioHiResFrameReader 驻留式原片原生全清解码器 (1600x900 1:1 清晰帧读取 + 随机 Seek + 0ms LRU 命中)
+    const auto tmpDir = std::filesystem::temp_directory_path() / L"tools3000_hires_reader_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+    const std::string hiResMp4Utf8 = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"native_1600x900.mp4").wstring());
+
+    {
+        const int w = 1600, h = 900, fps = 15, totalFrames = 18;
+        AVFormatContext* fmt = nullptr;
+        ASSERT_GE(avformat_alloc_output_context2(&fmt, nullptr, "mp4", hiResMp4Utf8.c_str()), 0);
+        ASSERT_NE(fmt, nullptr);
+        const AVCodec* codec = avcodec_find_encoder_by_name("libx264");
+        if (!codec) codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+        if (!codec) codec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+        ASSERT_NE(codec, nullptr);
+
+        AVCodecContext* ctx = avcodec_alloc_context3(codec);
+        ctx->width = w; ctx->height = h;
+        ctx->time_base = {1, fps}; ctx->framerate = {fps, 1};
+        ctx->gop_size = 6; ctx->max_b_frames = 0;
+        ctx->bit_rate = 8'000'000; ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+        if (fmt->oformat->flags & AVFMT_GLOBALHEADER) ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        ASSERT_GE(avcodec_open2(ctx, codec, nullptr), 0);
+
+        AVStream* st = avformat_new_stream(fmt, codec);
+        ASSERT_NE(st, nullptr);
+        st->time_base = ctx->time_base;
+        ASSERT_GE(avcodec_parameters_from_context(st->codecpar, ctx), 0);
+        ASSERT_GE(avio_open(&fmt->pb, hiResMp4Utf8.c_str(), AVIO_FLAG_WRITE), 0);
+        ASSERT_GE(avformat_write_header(fmt, nullptr), 0);
+
+        SwsContext* sws = sws_getContext(w, h, AV_PIX_FMT_BGR24, w, h, ctx->pix_fmt, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        AVFrame* frm = av_frame_alloc();
+        frm->format = ctx->pix_fmt; frm->width = w; frm->height = h;
+        ASSERT_GE(av_frame_get_buffer(frm, 32), 0);
+        AVPacket* pkt = av_packet_alloc();
+
+        for (int i = 0; i < totalFrames; ++i) {
+            cv::Mat bgr(h, w, CV_8UC3, (i < 9) ? cv::Scalar(240, 240, 240) : cv::Scalar(24, 32, 180));
+            cv::rectangle(bgr, cv::Rect(200 + i * 20, 180, 320, 240), cv::Scalar(20, 180, 40), cv::FILLED);
+            ASSERT_GE(av_frame_make_writable(frm), 0);
+            const uint8_t* srcSlice[1] = {bgr.data};
+            int srcStride[1] = {static_cast<int>(bgr.step[0])};
+            sws_scale(sws, srcSlice, srcStride, 0, h, frm->data, frm->linesize);
+            frm->pts = i;
+            ASSERT_GE(avcodec_send_frame(ctx, frm), 0);
+            while (avcodec_receive_packet(ctx, pkt) >= 0) {
+                av_packet_rescale_ts(pkt, ctx->time_base, st->time_base);
+                pkt->stream_index = st->index;
+                av_interleaved_write_frame(fmt, pkt);
+                av_packet_unref(pkt);
+            }
+        }
+        avcodec_send_frame(ctx, nullptr);
+        while (avcodec_receive_packet(ctx, pkt) >= 0) {
+            av_packet_rescale_ts(pkt, ctx->time_base, st->time_base);
+            pkt->stream_index = st->index;
+            av_interleaved_write_frame(fmt, pkt);
+            av_packet_unref(pkt);
+        }
+        av_write_trailer(fmt);
+        sws_freeContext(sws);
+        av_packet_free(&pkt);
+        av_frame_free(&frm);
+        avcodec_free_context(&ctx);
+        avio_closep(&fmt->pb);
+        avformat_free_context(fmt);
+    }
+
+    StudioHiResFrameReader reader;
+    ASSERT_TRUE(reader.open(hiResMp4Utf8, 3200));
+    EXPECT_EQ(reader.nativeWidth(), 1600);
+    EXPECT_EQ(reader.nativeHeight(), 900);
+
+    cv::Mat fStart, fSecondHalf, fSeekBack, fCached;
+    ASSERT_TRUE(reader.decodeFrameAt(0.05, fStart));
+    EXPECT_EQ(fStart.cols, 1600);
+    EXPECT_EQ(fStart.rows, 900);
+    EXPECT_GT(fStart.at<cv::Vec3b>(50, 50)[0], 200); // 前半段亮白底
+
+    ASSERT_TRUE(reader.decodeFrameAt(0.85, fSecondHalf));
+    EXPECT_EQ(fSecondHalf.cols, 1600);
+    EXPECT_GT(fSecondHalf.at<cv::Vec3b>(50, 50)[2], 140); // 后半段深红底
+    EXPECT_LT(fSecondHalf.at<cv::Vec3b>(50, 50)[0], 60);
+
+    // 验证向后随机 Seek 与 0ms 缓存命中
+    ASSERT_TRUE(reader.decodeFrameAt(0.12, fSeekBack));
+    EXPECT_GT(fSeekBack.at<cv::Vec3b>(50, 50)[0], 200);
+    EXPECT_TRUE(reader.tryGetCachedFrame(0.12, fCached, 0.020));
+    EXPECT_EQ(fCached.cols, 1600);
+
+    reader.close();
+    EXPECT_FALSE(reader.isOpen());
+    std::filesystem::remove_all(tmpDir, ec);
+}
+
+TEST(StudioRecorderTest, SculptedWaveformFilmstripWatermarkScaleAndFourHourTimelinePerf) {
+    using namespace tools3000::capture;
+    // 1. 验证重压缩音乐 + 前奏静音的雕刻声学山峦动态展开（防平顶梳子退化）
+    std::vector<float> compressedTrack(4096, 0.0f);
+    for (size_t i = 1050; i < compressedTrack.size(); ++i) {
+        const double beat = 0.5 + 0.5 * std::sin(static_cast<double>(i) * 0.085);
+        compressedTrack[i] = static_cast<float>(0.33 + 0.21 * std::pow(beat, 2.2));
+    }
+    const auto prof = StudioTimelineAnalyzer::analyzeWaveformProfile(compressedTrack);
+    EXPECT_TRUE(prof.hasAudio);
+    EXPECT_GT(prof.activePedestal, prof.noiseFloor + 0.05f);
+
+    float silBody = 1.0f, silPeak = 1.0f;
+    StudioTimelineAnalyzer::sampleSculptedWaveformColumn(
+        compressedTrack, 22000, 1000, 1200, prof, silBody, silPeak);
+    EXPECT_FLOAT_EQ(silBody, 0.0f);
+    EXPECT_FLOAT_EQ(silPeak, 0.0f);
+
+    float valleyBody = 0.0f, valleyPeak = 0.0f;
+    float crestBody = 0.0f, crestPeak = 0.0f;
+    float minActive = 1.0f, maxActive = 0.0f;
+    for (int64_t t = 6500; t < 20000; t += 60) {
+        StudioTimelineAnalyzer::sampleSculptedWaveformColumn(
+            compressedTrack, 22000, t, t + 60, prof, valleyBody, valleyPeak);
+        minActive = (std::min)(minActive, valleyBody);
+        maxActive = (std::max)(maxActive, valleyBody);
+    }
+    (void)crestBody;
+    (void)crestPeak;
+    EXPECT_LT(minActive, 0.32f);
+    EXPECT_GT(maxActive, 0.78f);
+    EXPECT_GT(maxActive - minActive, 0.45f) << "Compressed music must preserve rich mountain-and-valley dynamics";
+
+    // 2. 验证胶片画廊 + 雕刻山峦声波离屏渲染（含可选导出快照供人工像素审查）
+    std::vector<cv::Mat> mockDeck;
+    for (int f = 0; f < 16; ++f) {
+        cv::Mat frame(360, 640, CV_8UC3, cv::Scalar(34 + f * 6, 42 + f * 4, 58 + f * 5));
+        cv::rectangle(frame, cv::Rect(60 + f * 18, 50, 220, 180), cv::Scalar(235, 240, 246), cv::FILLED);
+        mockDeck.push_back(std::move(frame));
+    }
+    const cv::Mat stripLight = StudioPreviewWindow::renderTimelineStripPreviewForTest(
+        mockDeck, compressedTrack, 22.0, 10.1, false, true);
+    const cv::Mat stripDark = StudioPreviewWindow::renderTimelineStripPreviewForTest(
+        mockDeck, compressedTrack, 22.0, 10.1, true, true);
+    const cv::Mat stripShort4s = StudioPreviewWindow::renderTimelineStripPreviewForTest(
+        mockDeck, compressedTrack, 4.6, 1.2, false, true);
+    ASSERT_FALSE(stripLight.empty());
+    ASSERT_FALSE(stripDark.empty());
+    ASSERT_FALSE(stripShort4s.empty());
+    EXPECT_GT(stripLight.cols, 1200);
+    EXPECT_GT(stripLight.rows, 190);
+
+    // 验证中枢立体主题蓝核心播放按钮在顶栏居中舱内清晰显影
+    int accentPlayPixels = 0;
+    for (int y = 10; y <= 48; ++y) {
+        const auto* row = stripShort4s.ptr<cv::Vec3b>(y);
+        for (int x = 720; x <= 1180 && x < stripShort4s.cols; ++x) {
+            const int b = row[x][0], g = row[x][1], r = row[x][2];
+            if (b >= 200 && b > r + 90 && g >= 85) {
+                ++accentPlayPixels;
+            }
+        }
+    }
+    EXPECT_GT(accentPlayPixels, 120) << "Centered integrated transport console must render saturated accent play button";
+
+    // 验证三级长·中·短游标卡尺刻度：4.6s 标尺在 0.5s 半格中点处有中高度竖线，而在 0.1s..0.4s 处仅有底部短齿
+    auto countDarkColumnsAtRow = [&](int physY) -> int {
+        if (physY < 0 || physY >= stripShort4s.rows) return 0;
+        const auto* row = stripShort4s.ptr<cv::Vec3b>(physY);
+        int hits = 0;
+        bool inTick = false;
+        for (int x = 122; x < stripShort4s.cols - 24; ++x) {
+            const int lum = (static_cast<int>(row[x][0]) + static_cast<int>(row[x][1]) + static_cast<int>(row[x][2])) / 3;
+            const bool darkPx = (lum < 244);
+            if (darkPx && !inTick) {
+                ++hits;
+                inTick = true;
+            } else if (!darkPx) {
+                inTick = false;
+            }
+        }
+        return hits;
+    };
+    // kScale = 1.5 => rulerBottomY = 59.5 * 1.5 = 89.25px
+    // 细齿顶 ~83.5px (y=86 穿过主+中+细全部刻度)；中线顶 ~77px (y=80 穿过主+半秒中线，不穿细齿)
+    const int fineBandTicks = countDarkColumnsAtRow(86);
+    const int midBandTicks  = countDarkColumnsAtRow(80);
+    EXPECT_GE(fineBandTicks, 35) << "Fine 0.1s ticks must populate between seconds on 4.6s ruler";
+    EXPECT_GE(midBandTicks, 8)   << "Half-second midpoint ticks (0.5s, 1.5s...) must rise taller than fine ticks";
+    EXPECT_GT(fineBandTicks, midBandTicks + 15) << "Fine ticks must stay shorter than half-second midpoint ticks";
+
+    wchar_t dumpEnv[MAX_PATH]{};
+    wchar_t realMp4Env[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"TOOLS3000_DUMP_TIMELINE_PREVIEW_DIR", dumpEnv, MAX_PATH) > 0) {
+        const std::filesystem::path outDir(dumpEnv);
+        std::error_code ec;
+        std::filesystem::create_directories(outDir, ec);
+        std::vector<cv::Mat> realDeck;
+        std::vector<float> realPeaks;
+        int rw = 0, rh = 0;
+        double rdur = 22.0;
+        if (GetEnvironmentVariableW(L"TOOLS3000_DUMP_TIMELINE_REAL_MP4", realMp4Env, MAX_PATH) > 0 &&
+            std::filesystem::exists(realMp4Env, ec)) {
+            const std::string realMp4Utf8 = tools3000::core::WinUtils::wstringToUtf8(realMp4Env);
+            if (StudioVideoCompositor::extractPreviewDeck(realMp4Utf8, 640, 32, realDeck, rw, rh, rdur) &&
+                StudioVideoCompositor::extractAudioWaveformPeaks(realMp4Utf8, 4096, realPeaks)) {
+                cv::imwrite((outDir / "real_215708_light.png").string(),
+                            StudioPreviewWindow::renderTimelineStripPreviewForTest(realDeck, realPeaks, rdur, 10.1, false, true));
+                cv::imwrite((outDir / "real_215708_dark.png").string(),
+                            StudioPreviewWindow::renderTimelineStripPreviewForTest(realDeck, realPeaks, rdur, 10.1, true, true));
+                cv::imwrite((outDir / "real_4s_vernier_light.png").string(),
+                            StudioPreviewWindow::renderTimelineStripPreviewForTest(realDeck, realPeaks, 4.6, 1.2, false, true));
+            }
+        } else {
+            cv::imwrite((outDir / "synth_light.png").string(), stripLight);
+            cv::imwrite((outDir / "synth_dark.png").string(), stripDark);
+            cv::imwrite((outDir / "synth_4s_vernier_light.png").string(), stripShort4s);
+        }
+    }
+
+    // 3. 验证平铺水印在 35%~68% 低缩放段无死区响应，且中间调灰底 (gray=134) 清晰显影
+    WatermarkConfig wmSmall{};
+    wmSmall.enabled = true;
+    wmSmall.mode = WatermarkMode::TiledTraceability;
+    wmSmall.textTemplate = "CorpSec · 2026-11-18";
+    wmSmall.scale = 0.38f;
+    wmSmall.opacity = 0.16f;
+
+    WatermarkConfig wmNormal = wmSmall;
+    wmNormal.scale = 0.95f;
+
+    cv::Mat midGraySmall(720, 1280, CV_8UC3, cv::Scalar(134, 134, 134));
+    cv::Mat midGrayNormal(720, 1280, CV_8UC3, cv::Scalar(134, 134, 134));
+    ASSERT_TRUE(WatermarkRenderer::applyInPlace(midGraySmall, wmSmall));
+    ASSERT_TRUE(WatermarkRenderer::applyInPlace(midGrayNormal, wmNormal));
+
+    int maxDiffOnMidGray = 0;
+    int changedSmall = 0, changedNormal = 0;
+    for (int y = 0; y < midGraySmall.rows; y += 2) {
+        const auto* ps = midGraySmall.ptr<cv::Vec3b>(y);
+        const auto* pn = midGrayNormal.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < midGraySmall.cols; x += 2) {
+            const int ds = std::abs(static_cast<int>(ps[x][0]) - 134);
+            const int dn = std::abs(static_cast<int>(pn[x][0]) - 134);
+            maxDiffOnMidGray = (std::max)(maxDiffOnMidGray, dn);
+            if (ds >= 6) ++changedSmall;
+            if (dn >= 6) ++changedNormal;
+        }
+    }
+    EXPECT_GE(maxDiffOnMidGray, 16) << "Tiled watermark must remain clearly visible on mid-gray backgrounds";
+    EXPECT_NE(changedSmall, changedNormal) << "Scale slider between 38% and 95% must actively resize tiled watermark";
+
+    // 4. 验证 4 小时 (14,400s) 超长录屏时间轴预烘焙 O(F + C) 亚百毫秒级性能
+    StudioTimelineData fourHourTl{};
+    fourHourTl.sourceWidth = 2560;
+    fourHourTl.sourceHeight = 1440;
+    fourHourTl.durationMs = 4LL * 3600LL * 1000LL; // 14,400,000 ms
+    for (int i = 0; i < 4800; ++i) {
+        const int64_t pts = static_cast<int64_t>(i) * 3000LL + 500LL;
+        fourHourTl.cursorSamples.push_back({pts, 400.0f + (i % 900), 300.0f + (i % 500), StudioCursorKind::Arrow, false, false});
+        fourHourTl.clickEvents.push_back({pts, 400.0f + (i % 900), 300.0f + (i % 500), false});
+    }
+    fourHourTl.zoomSegments = StudioTimelineAnalyzer::buildAutoZoomSegments(fourHourTl, 1.80f, true);
+    for (int c = 0; c < 1800; ++c) {
+        const int64_t cs = static_cast<int64_t>(c) * 8000LL;
+        fourHourTl.captions.push_back({cs, cs + 3500LL, "Long session subtitle segment"});
+    }
+
+    StudioRenderConfig renderCfg{};
+    renderCfg.autoZoomEnabled = true;
+    renderCfg.smoothCursorEnabled = true;
+    renderCfg.autoCaptionsEnabled = true;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto baked = StudioTimelineAnalyzer::bakeEvaluatedFrames(fourHourTl, renderCfg, 5, 72002);
+    const double bakeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    EXPECT_EQ(baked.size(), 72002u);
+    EXPECT_LT(bakeMs, 450.0) << "4-hour recording timeline bake must complete well under 450ms";
 }

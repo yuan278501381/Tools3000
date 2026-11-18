@@ -381,7 +381,7 @@ try {
     }
 
     [NativeKeycastHarness]::DragClientMouse($capOv, 300, 220, 780, 540)
-    [void][NativeKeycastHarness]::SendMessageW($capOv, [NativeKeycastHarness]::WM_ACCESSIBILITY_INVOKE_TOOLBAR, [IntPtr]9, [IntPtr]::Zero)
+    [void][NativeKeycastHarness]::SendMessageW($capOv, [NativeKeycastHarness]::WM_ACCESSIBILITY_INVOKE_TOOLBAR, [IntPtr]10, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 450
 
     $recordLogLenBefore = (Get-LogContentSafe $HarnessLogFile).Length

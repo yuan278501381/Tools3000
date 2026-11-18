@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <opencv2/core.hpp>
 #include <opencv2/dnn.hpp>
@@ -185,8 +186,10 @@ public:
         std::vector<uint8_t>& outPatchedBytes);
 
 private:
-    DeepOcrEngine() = default;
-    ~DeepOcrEngine() { shutdown(); }
+    struct WinMlContext;
+
+    DeepOcrEngine();
+    ~DeepOcrEngine();
     DeepOcrEngine(const DeepOcrEngine&) = delete;
     DeepOcrEngine& operator=(const DeepOcrEngine&) = delete;
 
@@ -195,7 +198,9 @@ private:
 
     mutable std::mutex m_inferMutex;
     bool m_modelsLoaded = false;
+    bool m_useWinMl = false;
     std::filesystem::path m_loadedModelDir;
+    std::unique_ptr<WinMlContext> m_winMl;
     cv::dnn::Net m_detNet;
     cv::dnn::Net m_clsNet;
     cv::dnn::Net m_recNetShort;

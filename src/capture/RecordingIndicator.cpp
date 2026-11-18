@@ -408,6 +408,8 @@ void RecordingIndicator::show() {
         createBorderWindow(m_hInstance);
     }
 
+    m_lastCountdownCenterAlpha.store(0);
+    m_countdownPresentedFrames.store(0);
     if (m_countingDown) {
         const ULONGLONG now64 = GetTickCount64();
         m_countdownStartTick = now64;
@@ -415,6 +417,8 @@ void RecordingIndicator::show() {
         m_countdownInitialTotal = (std::max)(1, m_countdownRemaining);
         m_countdownLastDigit = m_countdownRemaining;
         updateCountdownWindow();
+    } else {
+        destroyCountdownWindow();
     }
 
     ShortcutHintOverlay::instance().updateAvoidance(avoidanceRects());
@@ -422,6 +426,7 @@ void RecordingIndicator::show() {
     m_blinkTick = GetTickCount();
     m_highFreqCountdownTimer = m_countingDown;
     SetTimer(m_hwnd, RENDER_TIMER_ID, m_countingDown ? 16 : 100, nullptr);
+    render();
     LOG_INFO("录制指示器已显示");
 }
 
@@ -594,13 +599,27 @@ void RecordingIndicator::showCompleted(const std::string& filePath, double durat
     LOG_INFO("录制指示器已显示");
 }
 
+void RecordingIndicator::refreshCaptureAffinity() {
+    const bool hideFromRec = tools3000::core::ConfigManager::instance().get<bool>(
+        "/recording/hideIndicatorInCapture", true);
+    const DWORD affinity = hideFromRec ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE;
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        SetWindowDisplayAffinity(m_hwnd, affinity);
+    }
+    if (m_borderHwnd && IsWindow(m_borderHwnd)) {
+        SetWindowDisplayAffinity(m_borderHwnd, affinity);
+    }
+}
+
 void RecordingIndicator::update(double durationSec, int frameCount) {
     m_duration = durationSec;
     m_frames = frameCount;
     m_countingDown = (ScreenRecorder::instance().state() == RecordState::Countdown);
-    updateCountdownWindow();
     if (m_hwnd && IsWindowVisible(m_hwnd)) {
+        updateCountdownWindow();
         render();
+    } else if (!m_countingDown && m_countdownHwnd) {
+        destroyCountdownWindow();
     }
 }
 
@@ -657,10 +676,12 @@ bool RecordingIndicator::createWindow(HINSTANCE hInstance) {
 }
 
 bool RecordingIndicator::createRenderResources() {
-    HRESULT hr;
+    HRESULT hr = S_OK;
 
-    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_d2dFactory.GetAddressOf());
-    if (FAILED(hr)) return false;
+    if (!m_d2dFactory) {
+        hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_d2dFactory.ReleaseAndGetAddressOf());
+        if (FAILED(hr)) return false;
+    }
 
     if (!ensureDWriteReady()) return false;
 
@@ -1457,8 +1478,39 @@ void RecordingIndicator::updateBorderPulse() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 视口居中 60FPS 纯圆形光学倒计时圆盘实现 (UpdateLayeredWindow + Direct2D 预乘 Alpha)
+// 视口居中 60FPS 纯圆形光学倒计时圆盘 + 独立悬浮微晶提示胶囊 (UpdateLayeredWindow + Direct2D)
 // ─────────────────────────────────────────────────────────────────────────────
+
+static std::wstring resolveCountdownEffectTip(bool isZh) {
+    const auto& rec = ScreenRecorder::instance();
+    if (rec.wasLastSessionStudioMode()) {
+        const auto studioCfg = rec.lastStudioConfig();
+        const bool zoomOn = studioCfg.autoZoomEnabled && studioCfg.zoomMode != StudioZoomMode::None;
+        if (zoomOn) {
+            if (studioCfg.zoomMode == StudioZoomMode::Motion3D) {
+                return isZh
+                    ? L"点击鼠标 3D 立体缩放 · 录后可调"
+                    : L"Click for 3D zoom · Editable";
+            }
+            return isZh
+                ? L"点击鼠标自动平滑缩放 · 录后可调"
+                : L"Click to auto-zoom · Editable";
+        }
+        return isZh
+            ? L"鼠标平滑轨迹 · 录后可加缩放"
+            : L"Smooth cursor · Zoom editable";
+    }
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    const bool clickZoom = cfg.get<bool>("/recording/showClickZoom", true);
+    const bool clickRipple = cfg.get<bool>("/recording/showClickEffects", false);
+    if (clickZoom || clickRipple) {
+        return isZh
+            ? L"鼠标点击动效已开启"
+            : L"Click effects active";
+    }
+    return {};
+}
 
 LRESULT CALLBACK RecordingIndicator::countdownWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_NCHITTEST) return HTTRANSPARENT;
@@ -1473,7 +1525,7 @@ LRESULT CALLBACK RecordingIndicator::countdownWndProc(HWND hwnd, UINT msg, WPARA
 void RecordingIndicator::renderCountdownLayered() {
     if (!m_countdownHwnd || !IsWindow(m_countdownHwnd)) return;
     if (!m_d2dFactory) {
-        if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_d2dFactory.GetAddressOf()))) {
+        if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_d2dFactory.ReleaseAndGetAddressOf()))) {
             return;
         }
     }
@@ -1485,9 +1537,9 @@ void RecordingIndicator::renderCountdownLayered() {
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
             96.0f,
             96.0f,
-            D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE,
+            D2D1_RENDER_TARGET_USAGE_NONE,
             D2D1_FEATURE_LEVEL_DEFAULT);
-        if (FAILED(m_d2dFactory->CreateDCRenderTarget(&props, m_countdownDCRT.GetAddressOf()))) {
+        if (FAILED(m_d2dFactory->CreateDCRenderTarget(&props, m_countdownDCRT.ReleaseAndGetAddressOf()))) {
             return;
         }
         m_countdownDCRT->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -1542,6 +1594,9 @@ void RecordingIndicator::renderCountdownLayered() {
         ReleaseDC(nullptr, screenDC);
         return;
     }
+    std::fill_n(static_cast<std::uint32_t*>(pvBits),
+                static_cast<std::size_t>(physW) * static_cast<std::size_t>(physH),
+                0u);
     HGDIOBJ oldBmp = SelectObject(memDC, dib);
 
     const RECT bindRc{0, 0, physW, physH};
@@ -1550,10 +1605,14 @@ void RecordingIndicator::renderCountdownLayered() {
         m_countdownDCRT->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
         m_countdownDCRT->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
+        const bool isZh = isChineseLanguagePreferred();
+        const std::wstring effectTip = resolveCountdownEffectTip(isZh);
+        const bool hasEffectTip = !effectTip.empty();
+
         const float logicalW = static_cast<float>(physW) / scale;
         const float logicalH = static_cast<float>(physH) / scale;
         const float cx = logicalW * 0.5f;
-        const float cy = logicalH * 0.5f;
+        const float cy = hasEffectTip ? 114.0f : (logicalH * 0.5f);
         const float discR = 76.0f;
         const float ringR = 65.0f;
 
@@ -1652,16 +1711,22 @@ void RecordingIndicator::renderCountdownLayered() {
                 cx + ringR * std::cos(endRad),
                 cy + ringR * std::sin(endRad));
 
+            ComPtr<ID2D1Factory> rtFactory;
+            m_countdownDCRT->GetFactory(&rtFactory);
+            if (!rtFactory) rtFactory = m_d2dFactory;
+
             D2D1_STROKE_STYLE_PROPERTIES strokeProps = D2D1::StrokeStyleProperties(
                 D2D1_CAP_STYLE_ROUND,
                 D2D1_CAP_STYLE_ROUND,
                 D2D1_CAP_STYLE_ROUND,
                 D2D1_LINE_JOIN_ROUND);
             ComPtr<ID2D1StrokeStyle> roundStroke;
-            m_d2dFactory->CreateStrokeStyle(strokeProps, nullptr, 0, &roundStroke);
+            if (rtFactory) {
+                rtFactory->CreateStrokeStyle(strokeProps, nullptr, 0, &roundStroke);
+            }
 
             ComPtr<ID2D1PathGeometry> arcPath;
-            if (SUCCEEDED(m_d2dFactory->CreatePathGeometry(&arcPath))) {
+            if (rtFactory && SUCCEEDED(rtFactory->CreatePathGeometry(&arcPath))) {
                 ComPtr<ID2D1GeometrySink> sink;
                 if (SUCCEEDED(arcPath->Open(&sink))) {
                     sink->BeginFigure(startPt, D2D1_FIGURE_BEGIN_HOLLOW);
@@ -1767,7 +1832,6 @@ void RecordingIndicator::renderCountdownLayered() {
                 pillFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 pillFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
-                const bool isZh = isChineseLanguagePreferred();
                 const wchar_t* pillStr = isZh ? L"Space 跳过" : L"Space";
                 const D2D1_ROUNDED_RECT pillRc = D2D1::RoundedRect(
                     D2D1::RectF(cx - 45.0f, cy + 28.0f, cx + 45.0f, cy + 48.0f),
@@ -1795,11 +1859,130 @@ void RecordingIndicator::renderCountdownLayered() {
                         pillTextBrush.Get());
                 }
             }
+
+            // 6. 圆盘正下方视觉弱化的轻雾微语胶囊（不抢主圆盘焦点，余光不经意提醒特殊能力）
+            if (hasEffectTip) {
+                ComPtr<IDWriteTextFormat> tipFmt;
+                if (SUCCEEDED(m_dwriteFactory->CreateTextFormat(
+                        fontFamily,
+                        nullptr,
+                        DWRITE_FONT_WEIGHT_MEDIUM,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        11.8f,
+                        isZh ? L"zh-CN" : L"en-US",
+                        &tipFmt))) {
+                    tipFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                    tipFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    tipFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+                    float measuredTipW = static_cast<float>(effectTip.size()) * 10.5f;
+                    ComPtr<IDWriteTextLayout> tipLayout;
+                    if (SUCCEEDED(m_dwriteFactory->CreateTextLayout(
+                            effectTip.c_str(),
+                            static_cast<UINT32>(effectTip.size()),
+                            tipFmt.Get(),
+                            640.0f,
+                            26.0f,
+                            &tipLayout)) && tipLayout) {
+                        DWRITE_TEXT_METRICS tm{};
+                        if (SUCCEEDED(tipLayout->GetMetrics(&tm))) {
+                            measuredTipW = tm.widthIncludingTrailingWhitespace;
+                        }
+                    }
+
+                    const float tipPillH = 25.0f;
+                    const float tipRadius = tipPillH * 0.5f;
+                    const float tipPillW = std::clamp(
+                        measuredTipW + 30.0f,
+                        136.0f,
+                        (std::max)(136.0f, logicalW - 16.0f));
+                    const float tipLeft = cx - tipPillW * 0.5f;
+                    const float tipRight = cx + tipPillW * 0.5f;
+                    const float tipTop = cy + discR + 12.0f;
+                    const float tipBottom = tipTop + tipPillH;
+                    const float tipCy = (tipTop + tipBottom) * 0.5f;
+
+                    // 单层极轻柔影，保持空气悬浮感
+                    ComPtr<ID2D1SolidColorBrush> shBrush;
+                    if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(
+                            D2D1::ColorF(0.0f, 0.0f, 0.0f, dark ? 0.10f : 0.05f), &shBrush))) {
+                        m_countdownDCRT->FillRoundedRectangle(
+                            D2D1::RoundedRect(
+                                D2D1::RectF(tipLeft - 1.5f, tipTop + 1.5f, tipRight + 1.5f, tipBottom + 2.5f),
+                                tipRadius + 1.5f,
+                                tipRadius + 1.5f),
+                            shBrush.Get());
+                    }
+
+                    // 半透雾感胶囊底衬（低不透明度退后，不形成抢眼色块）
+                    const D2D1_ROUNDED_RECT tipPillRc = D2D1::RoundedRect(
+                        D2D1::RectF(tipLeft, tipTop, tipRight, tipBottom),
+                        tipRadius,
+                        tipRadius);
+                    ComPtr<ID2D1SolidColorBrush> tipBgBrush;
+                    const D2D1_COLOR_F tipBgCol = dark
+                        ? D2D1::ColorF(0.07f, 0.10f, 0.16f, 0.58f)
+                        : D2D1::ColorF(0.98f, 0.99f, 1.00f, 0.68f);
+                    if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(tipBgCol, &tipBgBrush))) {
+                        m_countdownDCRT->FillRoundedRectangle(tipPillRc, tipBgBrush.Get());
+                    }
+
+                    // 极淡中性微晶丝边（去掉彩色亮框，零干扰）
+                    ComPtr<ID2D1SolidColorBrush> tipBorderBrush;
+                    const D2D1_COLOR_F tipBorderCol = dark
+                        ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.085f)
+                        : D2D1::ColorF(0.10f, 0.15f, 0.25f, 0.075f);
+                    if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(tipBorderCol, &tipBorderBrush))) {
+                        m_countdownDCRT->DrawRoundedRectangle(
+                            D2D1::RoundedRect(
+                                D2D1::RectF(tipLeft + 0.5f, tipTop + 0.5f, tipRight - 0.5f, tipBottom - 0.5f),
+                                tipRadius - 0.5f,
+                                tipRadius - 0.5f),
+                            tipBorderBrush.Get(),
+                            0.8f);
+                    }
+
+                    // 左侧安静克制的低饱和静态微点
+                    const D2D1_POINT_2F dotPt = D2D1::Point2F(tipLeft + 11.5f, tipCy);
+                    ComPtr<ID2D1SolidColorBrush> dotCoreBrush;
+                    if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(
+                            D2D1::ColorF(accent.r, accent.g, accent.b, 0.62f), &dotCoreBrush))) {
+                        m_countdownDCRT->FillEllipse(D2D1::Ellipse(dotPt, 2.2f, 2.2f), dotCoreBrush.Get());
+                    }
+
+                    // 低对比次级雾感文字（视觉退后，余光可读）
+                    ComPtr<ID2D1SolidColorBrush> tipTxtBrush;
+                    const D2D1_COLOR_F tipTxtCol = dark
+                        ? D2D1::ColorF(0.80f, 0.85f, 0.92f, 0.72f)
+                        : D2D1::ColorF(0.26f, 0.33f, 0.43f, 0.75f);
+                    if (SUCCEEDED(m_countdownDCRT->CreateSolidColorBrush(tipTxtCol, &tipTxtBrush))) {
+                        const D2D1_RECT_F txtRc = D2D1::RectF(tipLeft + 19.0f, tipTop, tipRight - 9.0f, tipBottom);
+                        m_countdownDCRT->DrawText(
+                            effectTip.c_str(),
+                            static_cast<UINT32>(effectTip.size()),
+                            tipFmt.Get(),
+                            txtRc,
+                            tipTxtBrush.Get(),
+                            D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    }
+                }
+            }
         }
 
-        if (m_countdownDCRT->EndDraw() == D2DERR_RECREATE_TARGET) {
+        const HRESULT endHr = m_countdownDCRT->EndDraw();
+        if (FAILED(endHr)) {
             m_countdownDCRT.Reset();
         } else {
+            const auto* pixels = static_cast<const std::uint8_t*>(pvBits);
+            const int midX = std::clamp(static_cast<int>(std::lround(cx * scale)), 0, physW - 1);
+            const int midY = std::clamp(static_cast<int>(std::lround(cy * scale)), 0, physH - 1);
+            const std::size_t midOffset =
+                (static_cast<std::size_t>(midY) * static_cast<std::size_t>(physW) +
+                 static_cast<std::size_t>(midX)) * 4u;
+            m_lastCountdownCenterAlpha.store(pixels[midOffset + 3u]);
+
+            POINT ptDst{winRc.left, winRc.top};
             SIZE sizeWnd{physW, physH};
             POINT ptSrc{0, 0};
             BLENDFUNCTION blend{};
@@ -1807,7 +1990,9 @@ void RecordingIndicator::renderCountdownLayered() {
             blend.BlendFlags = 0;
             blend.SourceConstantAlpha = 255;
             blend.AlphaFormat = AC_SRC_ALPHA;
-            UpdateLayeredWindow(m_countdownHwnd, screenDC, nullptr, &sizeWnd, memDC, &ptSrc, 0, &blend, ULW_ALPHA);
+            if (UpdateLayeredWindow(m_countdownHwnd, screenDC, &ptDst, &sizeWnd, memDC, &ptSrc, 0, &blend, ULW_ALPHA)) {
+                m_countdownPresentedFrames.fetch_add(1);
+            }
         }
     }
 
@@ -1815,6 +2000,47 @@ void RecordingIndicator::renderCountdownLayered() {
     DeleteObject(dib);
     DeleteDC(memDC);
     ReleaseDC(nullptr, screenDC);
+}
+
+RECT RecordingIndicator::computeTargetCountdownRect(float& outDpiScale) const {
+    POINT anchor{};
+    if (m_hasRecordingRegion &&
+        m_recordingRegion.right > m_recordingRegion.left &&
+        m_recordingRegion.bottom > m_recordingRegion.top) {
+        anchor.x = (m_recordingRegion.left + m_recordingRegion.right) / 2;
+        anchor.y = (m_recordingRegion.top + m_recordingRegion.bottom) / 2;
+    } else {
+        GetCursorPos(&anchor);
+    }
+
+    const HMONITOR mon = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+    outDpiScale = (std::max)(1.0f, indicatorDpiScale(mon));
+
+    MONITORINFO mi{sizeof(mi)};
+    if (!GetMonitorInfoW(mon, &mi)) {
+        mi.rcMonitor = {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+        mi.rcWork = mi.rcMonitor;
+    }
+
+    if (!m_hasRecordingRegion ||
+        m_recordingRegion.right <= m_recordingRegion.left ||
+        m_recordingRegion.bottom <= m_recordingRegion.top) {
+        anchor.x = (mi.rcMonitor.left + mi.rcMonitor.right) / 2;
+        anchor.y = (mi.rcMonitor.top + mi.rcMonitor.bottom) / 2;
+    }
+
+    const bool hasEffectTip = !resolveCountdownEffectTip(isChineseLanguagePreferred()).empty();
+    const int winW = scaledIndicatorMetric(hasEffectTip ? 360 : 264, outDpiScale);
+    const int winH = scaledIndicatorMetric(hasEffectTip ? 260 : 264, outDpiScale);
+    int x = anchor.x - winW / 2;
+    int y = anchor.y - winH / 2;
+
+    const int maxX = (std::max)(static_cast<int>(mi.rcMonitor.left), static_cast<int>(mi.rcMonitor.right) - winW);
+    const int maxY = (std::max)(static_cast<int>(mi.rcMonitor.top), static_cast<int>(mi.rcMonitor.bottom) - winH);
+    x = std::clamp(x, static_cast<int>(mi.rcMonitor.left), maxX);
+    y = std::clamp(y, static_cast<int>(mi.rcMonitor.top), maxY);
+
+    return RECT{x, y, x + winW, y + winH};
 }
 
 bool RecordingIndicator::createCountdownWindow(HINSTANCE hInstance) {
@@ -1831,26 +2057,16 @@ bool RecordingIndicator::createCountdownWindow(HINSTANCE hInstance) {
         s_countdownClassRegistered = true;
     }
 
-    // 256x256 纯透明分层正方形画布承载中心直径 152px 的光学正圆盘与扩散呼吸光晕（零方框裁切，高分屏一眼醒目可见）
-    const int winW = scaledIndicatorMetric(256, m_dpiScale);
-    const int winH = scaledIndicatorMetric(256, m_dpiScale);
-    int cx = 0, cy = 0;
-    if (m_hasRecordingRegion) {
-        cx = (m_recordingRegion.left + m_recordingRegion.right) / 2;
-        cy = (m_recordingRegion.top + m_recordingRegion.bottom) / 2;
-    } else {
-        cx = GetSystemMetrics(SM_CXSCREEN) / 2;
-        cy = GetSystemMetrics(SM_CYSCREEN) / 2;
-    }
-
-    int x = cx - winW / 2;
-    int y = cy - winH / 2;
+    float cdScale = m_dpiScale;
+    const RECT targetRc = computeTargetCountdownRect(cdScale);
+    const int winW = targetRc.right - targetRc.left;
+    const int winH = targetRc.bottom - targetRc.top;
 
     m_countdownHwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
         COUNTDOWN_CLASS, L"",
         WS_POPUP,
-        x, y, winW, winH,
+        targetRc.left, targetRc.top, winW, winH,
         nullptr, nullptr, hInstance, nullptr
     );
 
@@ -1867,8 +2083,10 @@ bool RecordingIndicator::createCountdownWindow(HINSTANCE hInstance) {
     m_countdownDigitTick = now64;
     m_countdownLastDigit = (std::max)(1, ScreenRecorder::instance().stats().countdownRemaining);
 
-    SetWindowPos(m_countdownHwnd, HWND_TOPMOST, x, y, winW, winH, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    // 先通过 UpdateLayeredWindow 提交首帧非透明预乘位图，再置顶显示，杜绝空帧与首帧隐身
     renderCountdownLayered();
+    SetWindowPos(m_countdownHwnd, HWND_TOPMOST, targetRc.left, targetRc.top, winW, winH,
+                 SWP_SHOWWINDOW | SWP_NOACTIVATE);
     return true;
 }
 
@@ -1886,10 +2104,27 @@ void RecordingIndicator::updateCountdownWindow() {
     if (m_countingDown) {
         if (!m_countdownHwnd && m_hInstance) {
             createCountdownWindow(m_hInstance);
+            return;
         }
         if (m_countdownHwnd) {
-            SetWindowPos(m_countdownHwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+            float cdScale = m_dpiScale;
+            const RECT targetRc = computeTargetCountdownRect(cdScale);
+            RECT curRc{};
+            const bool needMoveResize = !GetWindowRect(m_countdownHwnd, &curRc) ||
+                std::abs(curRc.left - targetRc.left) > 1 ||
+                std::abs(curRc.top - targetRc.top) > 1 ||
+                std::abs((curRc.right - curRc.left) - (targetRc.right - targetRc.left)) > 1 ||
+                std::abs((curRc.bottom - curRc.top) - (targetRc.bottom - targetRc.top)) > 1;
+            if (needMoveResize) {
+                SetWindowPos(m_countdownHwnd, HWND_TOPMOST,
+                             targetRc.left, targetRc.top,
+                             targetRc.right - targetRc.left,
+                             targetRc.bottom - targetRc.top,
+                             SWP_SHOWWINDOW | SWP_NOACTIVATE);
+            } else {
+                SetWindowPos(m_countdownHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+            }
             renderCountdownLayered();
         }
     } else {

@@ -7,9 +7,12 @@
 #endif
 #include <windows.h>
 #include <ole2.h>
+#include <oleauto.h>
 #include <sapi.h>
+#include <uiautomation.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <numbers>
@@ -253,6 +256,36 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
     float anchorFocusX = centerDefaultX;
     float anchorFocusY = centerDefaultY;
     size_t sampleIdx = 0;
+    size_t clickSnapCursor = 0;
+    size_t clickZoomCursor = 0;
+    size_t focusZoomCursor = 0;
+    size_t clickRippleCursor = 0;
+    size_t captionCursor = 0;
+
+    // 针对 3~4 小时超长录屏：确保事件表严格单调有序，以双指针游标将 O(F * C) 嵌套扫描降为 O(F + C) 亚毫秒级线性推进
+    const auto ensureSortedClicks = [&]() -> std::vector<StudioClickEvent> {
+        if (std::is_sorted(timeline.clickEvents.begin(), timeline.clickEvents.end(),
+                           [](const StudioClickEvent& a, const StudioClickEvent& b) { return a.ptsMs < b.ptsMs; })) {
+            return {};
+        }
+        auto copy = timeline.clickEvents;
+        std::sort(copy.begin(), copy.end(),
+                  [](const StudioClickEvent& a, const StudioClickEvent& b) { return a.ptsMs < b.ptsMs; });
+        return copy;
+    }();
+    const auto& clicksRef = ensureSortedClicks.empty() ? timeline.clickEvents : ensureSortedClicks;
+
+    const auto ensureSortedFocus = [&]() -> std::vector<StudioFocusEvent> {
+        if (std::is_sorted(timeline.focusEvents.begin(), timeline.focusEvents.end(),
+                           [](const StudioFocusEvent& a, const StudioFocusEvent& b) { return a.ptsMs < b.ptsMs; })) {
+            return {};
+        }
+        auto copy = timeline.focusEvents;
+        std::sort(copy.begin(), copy.end(),
+                  [](const StudioFocusEvent& a, const StudioFocusEvent& b) { return a.ptsMs < b.ptsMs; });
+        return copy;
+    }();
+    const auto& focusRef = ensureSortedFocus.empty() ? timeline.focusEvents : ensureSortedFocus;
 
     const double dtSec = 1.0 / static_cast<double>(safeFps);
 
@@ -295,22 +328,26 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
         float smoothCurY = rawCurY;
         if (config.smoothCursorEnabled) {
             cursorFilter.filter(rawCurX, rawCurY, tSec, smoothCurX, smoothCurY);
-            // Click-Snap 点击瞬间零误差磁吸收敛：在点击时刻 [-75ms, +135ms] 窗口内将平滑光标无痕收敛至真实点击点，
-            // 核心命中窗 [-18ms, +45ms] 权重 1.0 并重置滤波器滞后余量，彻底消除高速急停点击时的相位滞后偏移
+            // Click-Snap 点击瞬间零误差磁吸收敛：在点击时刻 [-75ms, +135ms] 窗口内将平滑光标无痕收敛至真实点击点
             float bestSnapW = 0.0f;
             float snapTargetX = smoothCurX;
             float snapTargetY = smoothCurY;
-            for (const auto& clk : timeline.clickEvents) {
+            while (clickSnapCursor < clicksRef.size() && clicksRef[clickSnapCursor].ptsMs < ptsMs - 135) {
+                ++clickSnapCursor;
+            }
+            for (size_t ci = clickSnapCursor; ci < clicksRef.size(); ++ci) {
+                const auto& clk = clicksRef[ci];
+                if (clk.ptsMs > ptsMs + 75) break;
                 const int64_t dtMs = ptsMs - clk.ptsMs;
                 if (dtMs >= -75 && dtMs <= 135) {
                     float w = 0.0f;
                     if (dtMs >= -18 && dtMs <= 45) {
                         w = 1.0f;
                     } else if (dtMs < -18) {
-                        const float u = static_cast<float>(dtMs + 75) / 57.0f; // 0 -> 1
+                        const float u = static_cast<float>(dtMs + 75) / 57.0f;
                         w = 0.5f - 0.5f * std::cos(u * 3.14159265f);
                     } else {
-                        const float u = static_cast<float>(135 - dtMs) / 90.0f; // 1 -> 0
+                        const float u = static_cast<float>(135 - dtMs) / 90.0f;
                         w = 0.5f - 0.5f * std::cos(u * 3.14159265f);
                     }
                     if (w > bestSnapW) {
@@ -354,15 +391,31 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
                 float refX = activeSeg->focusX;
                 float refY = activeSeg->focusY;
                 if (!activeSeg->manualInserted) {
-                    for (const auto& clk : timeline.clickEvents) {
-                        if (clk.ptsMs >= activeSeg->startMs && clk.ptsMs <= ptsMs + 180) {
+                    while (clickZoomCursor < clicksRef.size() && clicksRef[clickZoomCursor].ptsMs < activeSeg->startMs) {
+                        ++clickZoomCursor;
+                    }
+                    while (clickZoomCursor > 0 && clicksRef[clickZoomCursor - 1].ptsMs >= activeSeg->startMs) {
+                        --clickZoomCursor;
+                    }
+                    for (size_t ci = clickZoomCursor; ci < clicksRef.size(); ++ci) {
+                        const auto& clk = clicksRef[ci];
+                        if (clk.ptsMs > ptsMs + 180) break;
+                        if (clk.ptsMs >= activeSeg->startMs) {
                             refX = clk.x;
                             refY = clk.y;
                         }
                     }
                     if (config.typingAutoZoom) {
-                        for (const auto& foc : timeline.focusEvents) {
-                            if (foc.ptsMs >= activeSeg->startMs && foc.ptsMs <= ptsMs + 120) {
+                        while (focusZoomCursor < focusRef.size() && focusRef[focusZoomCursor].ptsMs < activeSeg->startMs) {
+                            ++focusZoomCursor;
+                        }
+                        while (focusZoomCursor > 0 && focusRef[focusZoomCursor - 1].ptsMs >= activeSeg->startMs) {
+                            --focusZoomCursor;
+                        }
+                        for (size_t fi = focusZoomCursor; fi < focusRef.size(); ++fi) {
+                            const auto& foc = focusRef[fi];
+                            if (foc.ptsMs > ptsMs + 120) break;
+                            if (foc.ptsMs >= activeSeg->startMs) {
                                 refX = foc.x;
                                 refY = foc.y;
                             }
@@ -429,36 +482,64 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
         const float cropX = std::clamp(curCx - cropW * 0.5f, 0.0f, (std::max)(0.0f, srcW - cropW));
         const float cropY = std::clamp(curCy - cropH * 0.5f, 0.0f, (std::max)(0.0f, srcH - cropH));
 
-        // 4. 点击微缩放弹跳与水波纹进度计算（水波纹严格锚定真实点击源坐标原地扩散，绝不随光标后续移动漂移）
+        // 4. Screen Studio 级二阶物理触感按压 (Tactile Squish + Micro-Tilt) 与 SDF 光学波纹进度计算
         float clickScale = 1.0f;
+        float clickTiltDeg = 0.0f;
         float rippleProgress = -1.0f;
         float rippleSrcX = smoothCurX;
         float rippleSrcY = smoothCurY;
         bool rippleRight = false;
-        constexpr int64_t kRippleDurationMs = 380;
-        for (const auto& clk : timeline.clickEvents) {
+
+        constexpr int64_t kTactileDurationMs = 260;
+        const int64_t rippleDurationMs =
+            (config.clickEffectStyle == StudioClickEffectStyle::DualRipple) ? 430
+            : ((config.clickEffectStyle == StudioClickEffectStyle::SoftTouch) ? 290 : 310);
+        const int64_t maxLookbackMs = (std::max)(kTactileDurationMs, rippleDurationMs);
+
+        while (clickRippleCursor < clicksRef.size() && clicksRef[clickRippleCursor].ptsMs < ptsMs - maxLookbackMs) {
+            ++clickRippleCursor;
+        }
+        for (size_t ci = clickRippleCursor; ci < clicksRef.size(); ++ci) {
+            const auto& clk = clicksRef[ci];
+            if (clk.ptsMs > ptsMs) break;
             const int64_t elapsed = ptsMs - clk.ptsMs;
-            if (elapsed >= 0 && elapsed <= kRippleDurationMs) {
-                const float p = static_cast<float>(elapsed) / static_cast<float>(kRippleDurationMs);
-                rippleProgress = p;
+            if (elapsed < 0 || elapsed > maxLookbackMs) {
+                continue;
+            }
+            if (elapsed <= kTactileDurationMs) {
+                const float u = static_cast<float>(elapsed) / static_cast<float>(kTactileDurationMs);
+                if (u <= 0.24f) {
+                    // 前 62ms 快速干脆点按下沉至 0.79x，同时围绕尖端 (0,0) 轻叩 -3.4 deg
+                    const float k = u / 0.24f;
+                    const float inv = 1.0f - k;
+                    const float easeDown = 1.0f - inv * inv * inv;
+                    clickScale = 1.0f - 0.21f * easeDown;
+                    clickTiltDeg = -3.4f * easeDown;
+                } else {
+                    // 62ms..260ms 二阶欠阻尼弹簧清脆回弹 (0.79x -> ~1.045x -> 1.00x)
+                    const float k = (u - 0.24f) / 0.76f;
+                    clickScale = 1.0f - 0.21f * std::exp(-5.2f * k) * std::cos(4.4f * k);
+                    clickTiltDeg = -3.4f * std::exp(-6.0f * k) * std::cos(3.2f * k);
+                }
+            }
+            if (elapsed <= rippleDurationMs) {
+                rippleProgress = static_cast<float>(elapsed) / static_cast<float>(rippleDurationMs);
                 rippleSrcX = std::clamp(clk.x, 0.0f, srcW);
                 rippleSrcY = std::clamp(clk.y, 0.0f, srcH);
                 rippleRight = clk.isRight;
-                // 前 28% 快速按压下沉至 0.82x，随后回弹至 1.12x 再平复到 1.0x
-                if (p < 0.28f) {
-                    const float k = p / 0.28f;
-                    clickScale = 1.0f - 0.18f * std::sin(k * 1.5707963f);
-                } else {
-                    const float k = (p - 0.28f) / 0.72f;
-                    clickScale = 1.0f + 0.12f * std::sin(k * 3.1415926f) * (1.0f - k);
-                }
             }
         }
 
         // 5. 匹配当前时间点的字幕
         std::string captionText;
-        if (config.autoCaptionsEnabled) {
-            for (const auto& cap : timeline.captions) {
+        if (config.autoCaptionsEnabled && !timeline.captions.empty()) {
+            while (captionCursor + 1 < timeline.captions.size() &&
+                   timeline.captions[captionCursor].endMs < ptsMs) {
+                ++captionCursor;
+            }
+            for (size_t k = captionCursor; k < timeline.captions.size(); ++k) {
+                const auto& cap = timeline.captions[k];
+                if (cap.startMs > ptsMs) break;
                 if (ptsMs >= cap.startMs && ptsMs <= cap.endMs) {
                     captionText = cap.text;
                     break;
@@ -491,7 +572,10 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
         ef.smoothCursorY = smoothCurY;
         ef.cursorKind = curKind;
         ef.clickScale = clickScale;
-        ef.rippleProgress = config.showClickRipple ? rippleProgress : -1.0f;
+        ef.clickTiltDeg = clickTiltDeg;
+        const bool wantWave = config.showClickRipple &&
+                              (config.clickEffectStyle != StudioClickEffectStyle::TactileOnly);
+        ef.rippleProgress = wantWave ? rippleProgress : -1.0f;
         ef.rippleSrcX = rippleSrcX;
         ef.rippleSrcY = rippleSrcY;
         ef.rippleIsRight = rippleRight;
@@ -762,6 +846,162 @@ bool StudioTimelineAnalyzer::exportSrtFile(
         withBom.size());
 }
 
+namespace {
+
+const wchar_t* timelineAnnotationKindName(StudioAnnotationKind k, bool isZh, bool compact) noexcept {
+    switch (k) {
+        case StudioAnnotationKind::TextPlain:
+            return isZh ? (compact ? L"文字" : L"纯文字") : (compact ? L"Text" : L"Plain Text");
+        case StudioAnnotationKind::Text:
+            return isZh ? (compact ? L"标签" : L"文字标签") : (compact ? L"Label" : L"Filled Label");
+        case StudioAnnotationKind::TextBubble:
+            return isZh ? (compact ? L"气泡" : L"对话气泡") : (compact ? L"Bubble" : L"Speech Bubble");
+        case StudioAnnotationKind::TextDashed:
+            return isZh ? (compact ? L"虚线框" : L"虚线文本框") : (compact ? L"Dashed" : L"Dashed Box");
+        case StudioAnnotationKind::TextNeon:
+            return isZh ? (compact ? L"发光框" : L"发光文本框") : (compact ? L"Glow" : L"Glow Callout");
+        case StudioAnnotationKind::StepBadge:
+            return isZh ? (compact ? L"步骤" : L"步骤序号") : (compact ? L"Step" : L"Step Number");
+        case StudioAnnotationKind::GlowLine:
+            return isZh ? (compact ? L"划线" : L"荧光划线") : (compact ? L"Line" : L"Highlighter");
+        case StudioAnnotationKind::DashedLine:
+            return isZh ? L"虚线" : (compact ? L"Dashed" : L"Dashed Line");
+        case StudioAnnotationKind::Arrow:
+            return isZh ? L"箭头" : L"Arrow";
+        case StudioAnnotationKind::Rectangle:
+            return isZh ? (compact ? L"矩形" : L"矩形框") : (compact ? L"Rect" : L"Rectangle");
+        case StudioAnnotationKind::RoundedBox:
+            return isZh ? (compact ? L"圆角" : L"圆角框") : (compact ? L"Round" : L"Rounded Box");
+        case StudioAnnotationKind::CircleRing:
+            return isZh ? L"圆环" : L"Circle";
+        case StudioAnnotationKind::SketchCircle:
+            return isZh ? (compact ? L"重点圈" : L"手绘重点圈") : (compact ? L"Marker" : L"Marker Circle");
+        case StudioAnnotationKind::BoldArrow:
+            return isZh ? (compact ? L"大箭头" : L"醒目大箭头") : (compact ? L"Arrow" : L"Bold Arrow");
+        case StudioAnnotationKind::HandPointer:
+            return isZh ? (compact ? L"手势" : L"点击手势") : (compact ? L"Hand" : L"Click Hand");
+        case StudioAnnotationKind::Spotlight:
+            return isZh ? (compact ? L"聚光灯" : L"聚光灯高亮") : (compact ? L"Spot" : L"Spotlight");
+        case StudioAnnotationKind::BlurMask:
+            return isZh ? (compact ? L"马赛克" : L"马赛克打码") : (compact ? L"Mosaic" : L"Mosaic Blur");
+        case StudioAnnotationKind::Magnifier:
+            return isZh ? (compact ? L"放大镜" : L"局部放大镜") : (compact ? L"Loupe" : L"Magnifier");
+        default:
+            return isZh ? L"标注" : L"Mark";
+    }
+}
+
+bool isTimelineTextLikeKind(StudioAnnotationKind k) noexcept {
+    return k == StudioAnnotationKind::Text ||
+           k == StudioAnnotationKind::TextPlain ||
+           k == StudioAnnotationKind::TextBubble ||
+           k == StudioAnnotationKind::TextDashed ||
+           k == StudioAnnotationKind::TextNeon ||
+           k == StudioAnnotationKind::StepBadge;
+}
+
+} // namespace
+
+int StudioTimelineAnalyzer::resequenceAutoStepBadges(
+    std::vector<StudioAnnotationItem>& annotations,
+    const std::vector<StudioVideoClip>& clips,
+    std::vector<int>* outStepOrderRanks) {
+    if (outStepOrderRanks) {
+        outStepOrderRanks->assign(annotations.size(), 0);
+    }
+
+    struct StepOrderRef {
+        size_t index = 0;
+        int64_t keptStartMs = 0;
+    };
+    std::vector<StepOrderRef> activeSteps;
+    activeSteps.reserve(annotations.size());
+
+    for (size_t i = 0; i < annotations.size(); ++i) {
+        const auto& ann = annotations[i];
+        if (!ann.enabled || ann.kind != StudioAnnotationKind::StepBadge) continue;
+        const int64_t ks = clips.empty()
+            ? (std::max<int64_t>)(0, ann.startMs)
+            : mapSourceMsToKeptMsViaClips(clips, ann.startMs);
+        const int64_t ke = clips.empty()
+            ? (std::max<int64_t>)(0, ann.endMs)
+            : mapSourceMsToKeptMsViaClips(clips, ann.endMs);
+        if (ke <= ks + 30) continue;
+        activeSteps.push_back({i, ks});
+    }
+
+    std::stable_sort(activeSteps.begin(), activeSteps.end(), [](const StepOrderRef& a, const StepOrderRef& b) {
+        if (a.keptStartMs != b.keptStartMs) return a.keptStartMs < b.keptStartMs;
+        return a.index < b.index;
+    });
+
+    int seq = 1;
+    for (const auto& ref : activeSteps) {
+        auto& ann = annotations[ref.index];
+        if (!ann.customStepText) {
+            ann.text = std::to_string(seq);
+        }
+        if (outStepOrderRanks) {
+            (*outStepOrderRanks)[ref.index] = seq;
+        }
+        ++seq;
+    }
+    return seq;
+}
+
+std::wstring StudioTimelineAnalyzer::formatTimelineAnnotationLabel(
+    const StudioAnnotationItem& ann,
+    int stepOrderRank,
+    float availWidthPx,
+    bool forTooltip,
+    bool isZh) {
+    const std::wstring wText = tools3000::core::WinUtils::utf8ToWstring(ann.text);
+    if (ann.kind == StudioAnnotationKind::StepBadge) {
+        const int rank = (stepOrderRank > 0) ? stepOrderRank : 1;
+        const std::wstring badgeShown = wText.empty() ? std::to_wstring(rank) : wText;
+        if (forTooltip) {
+            wchar_t buf[96]{};
+            if (ann.customStepText && badgeShown != std::to_wstring(rank)) {
+                std::swprintf(buf, std::size(buf),
+                              isZh ? L"步骤序号 · 第 %d 个 (显示 %ls)" : L"Step #%d (%ls)",
+                              rank, badgeShown.c_str());
+            } else {
+                std::swprintf(buf, std::size(buf),
+                              isZh ? L"步骤序号 · 第 %d 个" : L"Step #%d",
+                              rank);
+            }
+            return buf;
+        }
+        if (availWidthPx >= 64.0f) {
+            wchar_t buf[64]{};
+            if (ann.customStepText && badgeShown != std::to_wstring(rank)) {
+                std::swprintf(buf, std::size(buf), isZh ? L"步骤 %d·%ls" : L"Step %d·%ls", rank, badgeShown.c_str());
+            } else {
+                std::swprintf(buf, std::size(buf), isZh ? L"步骤 %d" : L"Step %d", rank);
+            }
+            return buf;
+        }
+        return L"#" + badgeShown;
+    }
+
+    if (isTimelineTextLikeKind(ann.kind)) {
+        const wchar_t* fullKind = timelineAnnotationKindName(ann.kind, isZh, false);
+        const wchar_t* shortKind = timelineAnnotationKindName(ann.kind, isZh, true);
+        if (forTooltip) {
+            return wText.empty() ? std::wstring(fullKind) : (std::wstring(fullKind) + L": " + wText);
+        }
+        if (availWidthPx >= 92.0f && !wText.empty()) {
+            return std::wstring(shortKind) + L": " + wText;
+        }
+        if (!wText.empty()) {
+            return wText;
+        }
+        return shortKind;
+    }
+
+    return timelineAnnotationKindName(ann.kind, isZh, !forTooltip && availWidthPx < 74.0f);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // StudioTimelineRecorder — 250Hz 轨迹焦点采集与本地 SAPI 离线语音字幕线程
 // ─────────────────────────────────────────────────────────────────────────────
@@ -810,9 +1050,15 @@ void StudioTimelineRecorder::start(
         m_data.cursorSamples.reserve(16384);
     }
 
+    m_latestTypingPtsMs.store(-1, std::memory_order_release);
     m_paused.store(false, std::memory_order_release);
     m_running.store(true, std::memory_order_release);
+    m_typingStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    m_typingWakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     m_samplerThread = std::thread(&StudioTimelineRecorder::samplingLoop, this);
+    if (m_typingStopEvent && m_typingWakeEvent) {
+        m_typingFocusThread = std::thread(&StudioTimelineRecorder::typingFocusLoop, this);
+    }
 
     if (m_enableSpeech) {
         m_speechStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -839,14 +1085,28 @@ void StudioTimelineRecorder::setPaused(bool paused) noexcept {
 
 void StudioTimelineRecorder::stop() {
     m_running.store(false, std::memory_order_release);
+    if (m_typingStopEvent) {
+        SetEvent(m_typingStopEvent);
+    }
     if (m_speechStopEvent) {
         SetEvent(m_speechStopEvent);
     }
     if (m_samplerThread.joinable()) {
         m_samplerThread.join();
     }
+    if (m_typingFocusThread.joinable()) {
+        m_typingFocusThread.join();
+    }
     if (m_speechThread.joinable()) {
         m_speechThread.join();
+    }
+    if (m_typingStopEvent) {
+        CloseHandle(m_typingStopEvent);
+        m_typingStopEvent = nullptr;
+    }
+    if (m_typingWakeEvent) {
+        CloseHandle(m_typingWakeEvent);
+        m_typingWakeEvent = nullptr;
     }
     if (m_speechStopEvent) {
         CloseHandle(m_speechStopEvent);
@@ -884,6 +1144,24 @@ void StudioTimelineRecorder::samplingLoop() {
 
     POINT prevCaretScreen{LONG_MIN, LONG_MIN};
     int caretPollTick = 0;
+
+    // 供零阻塞检测真实键盘文字输入（排除 Ctrl/Alt/Win 组合快捷键）的扫描键表
+    static constexpr int kTypingVkList[] = {
+        'A','B','C','D','E','F','G','H','I','J','K','L','M',
+        'N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
+        '0','1','2','3','4','5','6','7','8','9',
+        VK_SPACE, VK_BACK, VK_RETURN,
+        VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4,
+        VK_NUMPAD5, VK_NUMPAD6, VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9,
+        VK_OEM_1, VK_OEM_PLUS, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD,
+        VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7
+    };
+    std::array<bool, std::size(kTypingVkList)> prevTypingDown{};
+    for (size_t ki = 0; ki < prevTypingDown.size(); ++ki) {
+        prevTypingDown[ki] = (GetAsyncKeyState(kTypingVkList[ki]) & 0x8000) != 0;
+    }
+    int64_t prevKeystrokePts = -5000;
+    int sustainedBurstCount = 0;
 
     while (m_running.load(std::memory_order_acquire)) {
         if (m_paused.load(std::memory_order_acquire)) {
@@ -963,7 +1241,35 @@ void StudioTimelineRecorder::samplingLoop() {
 
         {
             std::lock_guard lock(m_dataMutex);
-            m_data.cursorSamples.push_back({pts, relX, relY, kind, leftDown, rightDown});
+            // 3~4 小时超长录屏内存保护：过滤静止冗余点并对超长轨迹保拐点流式抽稀封顶 (<= 131072 点，恒定 < 3MB)
+            bool shouldPushSample = true;
+            if (!m_data.cursorSamples.empty()) {
+                const auto& prevS = m_data.cursorSamples.back();
+                const float moveSq = (relX - prevS.x) * (relX - prevS.x) + (relY - prevS.y) * (relY - prevS.y);
+                if (moveSq < 0.25f &&
+                    prevS.kind == kind &&
+                    prevS.leftDown == leftDown &&
+                    prevS.rightDown == rightDown &&
+                    (pts - prevS.ptsMs) < 180) {
+                    shouldPushSample = false;
+                }
+            }
+            if (shouldPushSample) {
+                if (m_data.cursorSamples.size() >= 131072) {
+                    size_t dst = 0;
+                    for (size_t i = 0; i < m_data.cursorSamples.size(); ++i) {
+                        const bool keep = ((i % 2) == 0) ||
+                            (i + 1 == m_data.cursorSamples.size()) ||
+                            (i > 0 && (m_data.cursorSamples[i].leftDown != m_data.cursorSamples[i - 1].leftDown ||
+                                       m_data.cursorSamples[i].rightDown != m_data.cursorSamples[i - 1].rightDown));
+                        if (keep) {
+                            m_data.cursorSamples[dst++] = m_data.cursorSamples[i];
+                        }
+                    }
+                    m_data.cursorSamples.resize(dst);
+                }
+                m_data.cursorSamples.push_back({pts, relX, relY, kind, leftDown, rightDown});
+            }
             // 高分屏 (200%+ DPI) 适配：允许按压轻滑位移 <= 32px 且按压时长 <= 680ms 判定为真实意图点击
             constexpr float kMaxClickDriftSq = 32.0f * 32.0f;
             constexpr int64_t kMaxClickHoldMs = 680;
@@ -983,8 +1289,40 @@ void StudioTimelineRecorder::samplingLoop() {
         prevLeft = leftDown;
         prevRight = rightDown;
 
-        // 每 60ms 低开销探测一次键盘打字光标焦点位置，若插入符发生实质移动则记录打字聚焦点
-        if ((++caretPollTick % 30) == 0) {
+        // 1) 每 20ms 非阻塞检测真实连续打字按键边沿，唤醒独立 MTA UIA 聚焦线程定位现代编辑器/浏览器/IM 打字焦点
+        if ((++caretPollTick % 10) == 0) {
+            const bool shortcutModHeld =
+                ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
+                ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) ||
+                ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) ||
+                ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
+            bool anyNewKeystroke = false;
+            for (size_t ki = 0; ki < prevTypingDown.size(); ++ki) {
+                const bool down = (GetAsyncKeyState(kTypingVkList[ki]) & 0x8000) != 0;
+                if (down && !prevTypingDown[ki] && !shortcutModHeld) {
+                    anyNewKeystroke = true;
+                }
+                prevTypingDown[ki] = down;
+            }
+            if (anyNewKeystroke) {
+                if (pts - prevKeystrokePts <= 1800) {
+                    ++sustainedBurstCount;
+                } else {
+                    sustainedBurstCount = 1;
+                }
+                prevKeystrokePts = pts;
+                // 连续敲击 >= 2 键确认属于真实文字输入（过滤单按空格暂停视频等孤立键）
+                if (sustainedBurstCount >= 2) {
+                    m_latestTypingPtsMs.store(pts, std::memory_order_release);
+                    if (m_typingWakeEvent) {
+                        SetEvent(m_typingWakeEvent);
+                    }
+                }
+            }
+        }
+
+        // 2) 每 60ms 轻量探测传统 Win32 插入符位置（兼容经典记事本/ERP 输入框）
+        if ((caretPollTick % 30) == 0) {
             HWND fg = GetForegroundWindow();
             if (fg) {
                 const DWORD tid = GetWindowThreadProcessId(fg, nullptr);
@@ -1013,6 +1351,155 @@ void StudioTimelineRecorder::samplingLoop() {
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(2)); // ~500Hz 高精度采样
+    }
+}
+
+void StudioTimelineRecorder::typingFocusLoop() {
+    SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    const HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool needUninit = SUCCEEDED(hrCo);
+
+    IUIAutomation* uia = nullptr;
+    CoCreateInstance(__uuidof(CUIAutomation), nullptr, CLSCTX_INPROC_SERVER,
+                     __uuidof(IUIAutomation), reinterpret_cast<void**>(&uia));
+
+    HANDLE handles[2] = {m_typingStopEvent, m_typingWakeEvent};
+    int64_t lastEmittedPts = -1000;
+
+    while (m_running.load(std::memory_order_acquire)) {
+        const DWORD wr = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+        if (wr == WAIT_OBJECT_0 || !m_running.load(std::memory_order_acquire)) {
+            break;
+        }
+        if (m_paused.load(std::memory_order_acquire)) {
+            continue;
+        }
+        const int64_t pts = m_latestTypingPtsMs.load(std::memory_order_acquire);
+        if (pts < 0 || (pts - lastEmittedPts) < 280) {
+            continue; // 280ms 节流合并连续打字聚焦锚点，保持平滑连续放大不抖动
+        }
+
+        bool resolved = false;
+        float focusRelX = 0.0f;
+        float focusRelY = 0.0f;
+
+        auto acceptScreenPoint = [&](double sx, double sy) -> bool {
+            const float rx = static_cast<float>(sx - static_cast<double>(m_regionX));
+            const float ry = static_cast<float>(sy - static_cast<double>(m_regionY));
+            if (rx >= 0.0f && rx <= static_cast<float>(m_width) &&
+                ry >= 0.0f && ry <= static_cast<float>(m_height)) {
+                focusRelX = rx;
+                focusRelY = ry;
+                return true;
+            }
+            return false;
+        };
+
+        // 第 1 级 & 第 2 级：UI Automation TextPattern 精确闪烁光标坐标 / 焦点输入框包围盒
+        // 通杀 VS Code / Antigravity / Chrome / Edge / Word / 微信 / 飞书 / WinUI 3
+        if (uia) {
+            IUIAutomationElement* focusedEl = nullptr;
+            if (SUCCEEDED(uia->GetFocusedElement(&focusedEl)) && focusedEl) {
+                IUIAutomationTextPattern* textPat = nullptr;
+                if (SUCCEEDED(focusedEl->GetCurrentPatternAs(
+                        UIA_TextPatternId, __uuidof(IUIAutomationTextPattern),
+                        reinterpret_cast<void**>(&textPat))) && textPat) {
+                    IUIAutomationTextRangeArray* selArr = nullptr;
+                    if (SUCCEEDED(textPat->GetSelection(&selArr)) && selArr) {
+                        int selLen = 0;
+                        if (SUCCEEDED(selArr->get_Length(&selLen)) && selLen > 0) {
+                            IUIAutomationTextRange* range0 = nullptr;
+                            if (SUCCEEDED(selArr->GetElement(0, &range0)) && range0) {
+                                SAFEARRAY* rectSa = nullptr;
+                                if (SUCCEEDED(range0->GetBoundingRectangles(&rectSa)) && rectSa) {
+                                    LONG lBound = 0, uBound = -1;
+                                    SafeArrayGetLBound(rectSa, 1, &lBound);
+                                    SafeArrayGetUBound(rectSa, 1, &uBound);
+                                    if (uBound - lBound + 1 >= 4) {
+                                        double* vals = nullptr;
+                                        if (SUCCEEDED(SafeArrayAccessData(rectSa, reinterpret_cast<void**>(&vals))) && vals) {
+                                            const double rl = vals[0], rt = vals[1], rw = vals[2], rh = vals[3];
+                                            SafeArrayUnaccessData(rectSa);
+                                            if ((rw >= 0.0 && rh > 1.0) &&
+                                                acceptScreenPoint(rl + (std::min)(rw * 0.5, 24.0), rt + rh * 0.5)) {
+                                                resolved = true;
+                                            }
+                                        }
+                                    }
+                                    SafeArrayDestroy(rectSa);
+                                }
+                                range0->Release();
+                            }
+                        }
+                        selArr->Release();
+                    }
+                    textPat->Release();
+                }
+
+                // 若该输入控件未暴露 TextPattern（如部分聊天框/单行 input），读取焦点控件自身边界框
+                if (!resolved) {
+                    RECT brc{};
+                    if (SUCCEEDED(focusedEl->get_CurrentBoundingRectangle(&brc))) {
+                        const double bw = static_cast<double>(brc.right - brc.left);
+                        const double bh = static_cast<double>(brc.bottom - brc.top);
+                        const double regionArea = static_cast<double>(m_width) * static_cast<double>(m_height);
+                        // 仅当焦点控件确实是具体输入框/编辑子区（面积 <= 选区 52%）时才取其输入起始视点
+                        if (bw >= 12.0 && bh >= 10.0 && (bw * bh) <= regionArea * 0.52) {
+                            const double targetX = static_cast<double>(brc.left) + (std::min)(bw * 0.35, 160.0);
+                            const double targetY = static_cast<double>(brc.top) + (std::min)(bh * 0.5, 120.0);
+                            if (acceptScreenPoint(targetX, targetY)) {
+                                resolved = true;
+                            }
+                        }
+                    }
+                }
+                focusedEl->Release();
+            }
+        }
+
+        // 第 3 级兜底（无 UIA 的自绘 Canvas / 终端 / 远控编辑器）：
+        // 若用户刚在选区内点击定位了输入框（8s 内）或鼠标正呈 IBeam 编辑指针停留在选区内并持续打字，锁定该编辑点持续放大
+        if (!resolved) {
+            std::lock_guard lock(m_dataMutex);
+            if (!m_data.clickEvents.empty()) {
+                const auto& lastClk = m_data.clickEvents.back();
+                if (pts - lastClk.ptsMs <= 8000 &&
+                    lastClk.x >= 0.0f && lastClk.x <= static_cast<float>(m_width) &&
+                    lastClk.y >= 0.0f && lastClk.y <= static_cast<float>(m_height)) {
+                    focusRelX = lastClk.x;
+                    focusRelY = lastClk.y;
+                    resolved = true;
+                }
+            }
+            if (!resolved && !m_data.cursorSamples.empty()) {
+                const auto& lastCur = m_data.cursorSamples.back();
+                if (lastCur.kind == StudioCursorKind::IBeam &&
+                    lastCur.x >= 0.0f && lastCur.x <= static_cast<float>(m_width) &&
+                    lastCur.y >= 0.0f && lastCur.y <= static_cast<float>(m_height)) {
+                    focusRelX = lastCur.x;
+                    focusRelY = lastCur.y;
+                    resolved = true;
+                }
+            }
+            if (resolved) {
+                m_data.focusEvents.push_back({pts, focusRelX, focusRelY});
+                lastEmittedPts = pts;
+                continue;
+            }
+        }
+
+        if (resolved) {
+            std::lock_guard lock(m_dataMutex);
+            m_data.focusEvents.push_back({pts, focusRelX, focusRelY});
+            lastEmittedPts = pts;
+        }
+    }
+
+    if (uia) {
+        uia->Release();
+    }
+    if (needUninit) {
+        CoUninitialize();
     }
 }
 
@@ -1149,7 +1636,8 @@ float StudioTimelineAnalyzer::sampleWaveformRangePeak(
     int64_t totalDurationMs,
     int64_t rangeStartMs,
     int64_t rangeEndMs,
-    float referencePeak) noexcept {
+    float referencePeak,
+    float noiseFloor) noexcept {
     if (peaks.empty() || totalDurationMs <= 0) {
         return 0.0f;
     }
@@ -1163,18 +1651,124 @@ float StudioTimelineAnalyzer::sampleWaveformRangePeak(
         n - 1,
         static_cast<size_t>(std::ceil((static_cast<double>(eMs) / static_cast<double>(totalDurationMs)) * static_cast<double>(n) - 1e-6)));
 
+    const size_t endIdx = (std::max)(i0, i1);
     float maxVal = 0.0f;
-    for (size_t i = i0; i <= (std::max)(i0, i1); ++i) {
+    for (size_t i = i0; i <= endIdx; ++i) {
         maxVal = (std::max)(maxVal, peaks[i]);
     }
-    // 抑制极微弱电路底噪 (< 0.8% 满量程视作静音气口，便于用户直观识别说话停顿点拆分剪除)
-    if (maxVal < 0.008f) {
+
+    const float safeFloor = std::clamp(noiseFloor, 0.0f, 0.25f);
+    if (maxVal <= safeFloor + 0.004f) {
         return 0.0f;
     }
-    const float safeRef = (std::max)(0.08f, referencePeak);
-    const float norm = std::clamp(maxVal / safeRef, 0.0f, 1.0f);
-    // 轻度感知压缩曲线，兼顾轻音清晰度与重音层次感
-    return std::clamp(std::pow(norm, 0.68f), 0.0f, 1.0f);
+
+    const float clean = maxVal - safeFloor;
+    const float effSpan = (std::max)(0.18f, referencePeak - safeFloor);
+    const float norm = std::clamp(clean / effSpan, 0.0f, 1.0f);
+    return std::clamp(std::pow(norm, 0.92f), 0.0f, 1.0f);
+}
+
+StudioWaveformEnvelopeConfig StudioTimelineAnalyzer::analyzeWaveformProfile(
+    const std::vector<float>& peaks) noexcept {
+    StudioWaveformEnvelopeConfig cfg{};
+    if (peaks.empty()) return cfg;
+
+    std::vector<float> active;
+    active.reserve(peaks.size());
+    for (float v : peaks) {
+        if (v >= 0.014f) {
+            active.push_back(v);
+        }
+    }
+    if (active.empty()) {
+        return cfg;
+    }
+
+    std::sort(active.begin(), active.end());
+    const size_t n = active.size();
+    const float actP12 = active[std::min<size_t>(n - 1, static_cast<size_t>(std::floor((n - 1) * 0.12)))];
+    const float actP98 = active[std::min<size_t>(n - 1, static_cast<size_t>(std::floor((n - 1) * 0.98)))];
+    if (actP98 < 0.014f) {
+        return cfg;
+    }
+
+    cfg.hasAudio = true;
+    if (actP98 < 0.115f && (actP98 - actP12) < 0.022f) {
+        // 恒定微弱麦克风风扇/电流本底底噪：压在零轴微澜，杜绝平顶毛毛虫
+        cfg.noiseFloor = actP12 * 0.88f;
+        cfg.activePedestal = cfg.noiseFloor;
+        cfg.referencePeak = (std::max)(0.38f, actP98 * 5.0f);
+        cfg.gamma = 1.15f;
+    } else if (actP12 > 0.13f && (actP12 / (std::max)(0.05f, actP98)) > 0.40f) {
+        // 重度母带响度压限的系统音乐/视频伴奏：剥离稳态高底座并展开鼓点与重音动态峰谷
+        cfg.noiseFloor = 0.012f;
+        cfg.activePedestal = actP12 * 0.80f;
+        cfg.referencePeak = (std::max)(cfg.activePedestal + 0.10f, actP98);
+        cfg.gamma = 1.35f;
+    } else {
+        // 自然抑扬顿挫麦克风人声讲解或高动态音效
+        cfg.noiseFloor = std::clamp(actP12 * 0.55f, 0.008f, actP98 * 0.24f);
+        cfg.activePedestal = cfg.noiseFloor;
+        cfg.referencePeak = (std::max)(0.20f, actP98);
+        cfg.gamma = 1.06f;
+    }
+    return cfg;
+}
+
+void StudioTimelineAnalyzer::sampleSculptedWaveformColumn(
+    const std::vector<float>& peaks,
+    int64_t totalDurationMs,
+    int64_t rangeStartMs,
+    int64_t rangeEndMs,
+    const StudioWaveformEnvelopeConfig& profile,
+    float& outBodyEnergy,
+    float& outPeakCrest) noexcept {
+    outBodyEnergy = 0.0f;
+    outPeakCrest = 0.0f;
+    if (!profile.hasAudio || peaks.empty() || totalDurationMs <= 0) {
+        return;
+    }
+
+    const int64_t sMs = std::clamp<int64_t>(rangeStartMs, 0, totalDurationMs);
+    const int64_t eMs = std::clamp<int64_t>((std::max)(sMs + 1, rangeEndMs), 0, totalDurationMs);
+    const size_t n = peaks.size();
+    const size_t i0 = std::min<size_t>(
+        n - 1,
+        static_cast<size_t>((static_cast<double>(sMs) / static_cast<double>(totalDurationMs)) * static_cast<double>(n)));
+    const size_t i1 = std::min<size_t>(
+        n - 1,
+        static_cast<size_t>(std::ceil((static_cast<double>(eMs) / static_cast<double>(totalDurationMs)) * static_cast<double>(n) - 1e-6)));
+    const size_t endIdx = (std::max)(i0, i1);
+
+    float maxVal = 0.0f;
+    double sumSq = 0.0;
+    size_t count = 0;
+    for (size_t i = i0; i <= endIdx; ++i) {
+        const float v = peaks[i];
+        maxVal = (std::max)(maxVal, v);
+        sumSq += static_cast<double>(v) * static_cast<double>(v);
+        ++count;
+    }
+    if (maxVal <= profile.noiseFloor + 0.004f) {
+        return;
+    }
+
+    const float rmsVal = (count > 0) ? static_cast<float>(std::sqrt(sumSq / static_cast<double>(count))) : maxVal;
+    const bool compressedMusic = (profile.activePedestal > profile.noiseFloor + 0.02f);
+    const float span = (std::max)(0.10f, profile.referencePeak - profile.activePedestal);
+
+    const float rawBodyNorm = std::clamp((rmsVal - profile.activePedestal) / span, 0.0f, 1.0f);
+    const float shapedBody = std::pow(rawBodyNorm, profile.gamma);
+    outBodyEnergy = compressedMusic
+        ? std::clamp(0.10f + 0.90f * shapedBody, 0.09f, 1.0f)
+        : std::clamp(shapedBody, 0.0f, 1.0f);
+
+    const float rawPeakNorm = std::clamp((maxVal - profile.activePedestal) / span, 0.0f, 1.0f);
+    const float shapedPeak = std::pow(rawPeakNorm, (std::max)(0.85f, profile.gamma * 0.82f));
+    const float candCrest = compressedMusic
+        ? std::clamp(0.16f + 0.84f * shapedPeak, outBodyEnergy, 1.0f)
+        : std::clamp(shapedPeak, outBodyEnergy, 1.0f);
+    outPeakCrest = (std::min)(candCrest, outBodyEnergy + 0.26f);
 }
 
 } // namespace tools3000::capture

@@ -1,5 +1,6 @@
 #include "capture/CaptureDropdownMenu.h"
 
+#include "capture/AudioCapture.h"
 #include "core/config/ConfigManager.h"
 #include "core/utils/DWriteFontUtils.h"
 #include "core/utils/WinUtils.h"
@@ -36,6 +37,191 @@ RecordFormat resolveRememberedVideoFormat(const CaptureState& state) {
         return state.recordSetup.preferredVideoFormat;
     }
     return RecordFormat::MP4_H264;
+}
+
+std::wstring truncateMicLabel(std::wstring text, std::size_t maxChars = 30) {
+    if (text.size() > maxChars && maxChars > 3) {
+        text.resize(maxChars - 1);
+        text += L"…";
+    }
+    return text;
+}
+
+std::wstring cleanAudioDeviceTokens(std::wstring s) {
+    auto eraseAll = [&](std::wstring_view needle) {
+        std::size_t pos = 0;
+        while ((pos = s.find(needle, pos)) != std::wstring::npos) {
+            s.erase(pos, needle.size());
+        }
+    };
+    eraseAll(L"(R)");
+    eraseAll(L"(r)");
+    eraseAll(L"(TM)");
+    eraseAll(L"(tm)");
+    eraseAll(L"®");
+    eraseAll(L"™");
+
+    // 折叠连续空格并修剪首尾空白
+    std::wstring compact;
+    compact.reserve(s.size());
+    bool prevSpace = true;
+    for (wchar_t ch : s) {
+        const bool isSp = (ch == L' ' || ch == L'\t');
+        if (isSp) {
+            if (!prevSpace) compact.push_back(L' ');
+            prevSpace = true;
+        } else {
+            compact.push_back(ch);
+            prevSpace = false;
+        }
+    }
+    if (!compact.empty() && compact.back() == L' ') {
+        compact.pop_back();
+    }
+    return compact;
+}
+
+// 将 Windows 驱动冗长名称拆分为「清爽主名称 + 硬件/声卡副标签」双列结构
+// 例如: "麦克风阵列 (2- Realtek(R) Audio)" -> {"麦克风阵列", "Realtek Audio"}
+std::pair<std::wstring, std::wstring> splitCleanMicDeviceName(const std::wstring& raw) {
+    std::wstring cleaned = cleanAudioDeviceTokens(raw);
+    if (cleaned.size() >= 4 && cleaned.back() == L')') {
+        int depth = 0;
+        std::size_t openPos = std::wstring::npos;
+        for (std::size_t i = cleaned.size(); i-- > 0;) {
+            if (cleaned[i] == L')') {
+                ++depth;
+            } else if (cleaned[i] == L'(') {
+                --depth;
+                if (depth == 0) {
+                    openPos = i;
+                    break;
+                }
+            }
+        }
+        if (openPos != std::wstring::npos && openPos > 0) {
+            std::wstring mainPart = cleanAudioDeviceTokens(cleaned.substr(0, openPos));
+            std::wstring subPart = cleanAudioDeviceTokens(cleaned.substr(openPos + 1, cleaned.size() - openPos - 2));
+            // 剥离 Windows 多实例数字前缀，如 "2- Realtek Audio" -> "Realtek Audio"
+            std::size_t d = 0;
+            while (d < subPart.size() && subPart[d] >= L'0' && subPart[d] <= L'9') ++d;
+            if (d > 0 && d < subPart.size()) {
+                while (d < subPart.size() && (subPart[d] == L' ' || subPart[d] == L'-')) ++d;
+                subPart = cleanAudioDeviceTokens(subPart.substr(d));
+            }
+            if (!mainPart.empty()) {
+                return { truncateMicLabel(mainPart, 22), truncateMicLabel(subPart, 22) };
+            }
+        }
+    }
+    return { truncateMicLabel(cleaned, 28), L"" };
+}
+
+std::vector<DropdownItem> buildMicSourceDropdownItems(CaptureState& state, bool isZh, bool refreshDevices) {
+    if (refreshDevices || state.recordSetup.cachedMicDevices.empty()) {
+        state.recordSetup.cachedMicDevices.clear();
+        state.recordSetup.cachedDefaultMicName.clear();
+        const auto allDevs = AudioCapture::devices();
+        for (const auto& dev : allDevs) {
+            if (dev.systemAudio) continue;
+            std::wstring wname = tools3000::core::WinUtils::utf8ToWstring(dev.name);
+            if (wname.empty()) {
+                wname = isZh ? L"未知麦克风设备" : L"Microphone Device";
+            }
+            if (dev.defaultDevice && state.recordSetup.cachedDefaultMicName.empty()) {
+                state.recordSetup.cachedDefaultMicName = wname;
+            }
+            state.recordSetup.cachedMicDevices.emplace_back(dev.id, std::move(wname));
+            if (state.recordSetup.cachedMicDevices.size() >= 12) break;
+        }
+    }
+
+    bool matchedExplicit = false;
+    if (!state.recordSetup.microphoneDeviceId.empty()) {
+        for (const auto& kv : state.recordSetup.cachedMicDevices) {
+            if (kv.first == state.recordSetup.microphoneDeviceId) {
+                matchedExplicit = true;
+                break;
+            }
+        }
+    }
+
+    const bool micEnabled = state.recordSetup.captureMicrophone;
+    std::wstring defHint;
+    if (!state.recordSetup.cachedDefaultMicName.empty()) {
+        const auto [defMain, defSub] = splitCleanMicDeviceName(state.recordSetup.cachedDefaultMicName);
+        defHint = (!defSub.empty() && (defMain == L"麦克风" || defMain == L"Microphone"))
+            ? defSub
+            : defMain;
+        defHint = truncateMicLabel(defHint, 20);
+    }
+
+    std::vector<DropdownItem> items;
+    items.push_back({
+        500,
+        isZh ? L"系统默认" : L"System Default",
+        defHint,
+        micEnabled && (state.recordSetup.microphoneDeviceId.empty() || !matchedExplicit)
+    });
+    for (std::size_t i = 0; i < state.recordSetup.cachedMicDevices.size(); ++i) {
+        const auto& kv = state.recordSetup.cachedMicDevices[i];
+        const auto [devMain, devSub] = splitCleanMicDeviceName(kv.second);
+        items.push_back({
+            static_cast<int>(501 + i),
+            devMain,
+            devSub,
+            micEnabled && matchedExplicit && (kv.first == state.recordSetup.microphoneDeviceId)
+        });
+    }
+
+    DropdownItem sep{};
+    sep.isSeparator = true;
+    items.push_back(sep);
+
+    items.push_back({
+        499,
+        isZh ? L"不使用麦克风" : L"Mute Microphone",
+        isZh ? L"静音" : L"Off",
+        !micEnabled
+    });
+    return items;
+}
+
+bool applyMicSourceDropdownSelection(CaptureState& state, int id, bool isZh) {
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    if (id == 499) {
+        state.recordSetup.captureMicrophone = false;
+        cfg.set<bool>("/recording/captureMicrophone", false);
+        state.loupeToastMessage = isZh ? L"麦克风: 已静音" : L"Microphone: Muted";
+        return true;
+    }
+    if (id == 500) {
+        state.recordSetup.microphoneDeviceId.clear();
+        cfg.set<std::string>("/recording/microphoneDeviceId", "");
+        if (state.recordSetup.format != RecordFormat::GIF) {
+            state.recordSetup.captureMicrophone = true;
+            cfg.set<bool>("/recording/captureMicrophone", true);
+        }
+        state.loupeToastMessage = isZh ? L"麦克风: 系统默认" : L"Microphone: System Default";
+        return true;
+    }
+    if (id >= 501) {
+        const std::size_t idx = static_cast<std::size_t>(id - 501);
+        if (idx < state.recordSetup.cachedMicDevices.size()) {
+            const auto& chosen = state.recordSetup.cachedMicDevices[idx];
+            state.recordSetup.microphoneDeviceId = chosen.first;
+            cfg.set<std::string>("/recording/microphoneDeviceId", chosen.first);
+            if (state.recordSetup.format != RecordFormat::GIF) {
+                state.recordSetup.captureMicrophone = true;
+                cfg.set<bool>("/recording/captureMicrophone", true);
+            }
+            const auto [devMain, devSub] = splitCleanMicDeviceName(chosen.second);
+            const std::wstring disp = devSub.empty() ? devMain : std::format(L"{} ({})", devMain, devSub);
+            state.loupeToastMessage = (isZh ? L"麦克风: " : L"Microphone: ") + truncateMicLabel(disp, 26);
+            return true;
+        }
+    }
+    return false;
 }
 
 void populateRecordMoreSettingsItems(CaptureState& state, bool isZh) {
@@ -249,6 +435,11 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
 
         case DropdownType::RecordMoreSettings: {
             populateRecordMoreSettingsItems(state, isZh);
+            break;
+        }
+
+        case DropdownType::RecordMicSource: {
+            state.dropdownMenu.items = buildMicSourceDropdownItems(state, isZh, true);
             break;
         }
 
@@ -503,6 +694,12 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
                 state.toolbarLayoutValid = false;
                 return;
             }
+            break;
+        }
+
+        case DropdownType::RecordMicSource: {
+            applyMicSourceDropdownSelection(state, id, isZh);
+            state.toolbarLayoutValid = false;
             break;
         }
 

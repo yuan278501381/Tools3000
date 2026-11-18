@@ -207,7 +207,21 @@ TEST(OcrTableReconstructorTest, GridAlignmentCfHtmlOffsetsAndDualClipboardWrite)
     // 4. 真实写入系统剪贴板并同时回读 HTML Format 与 CF_UNICODETEXT
     if (OcrTableReconstructor::copyTableToClipboard(grid)) {
         const UINT htmlFmt = RegisterClipboardFormatW(L"HTML Format");
-        if (OpenClipboard(nullptr)) {
+        bool clipReady = false;
+        for (int retry = 0; retry < 20; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                SetLastError(0);
+                if (GetClipboardData(CF_UNICODETEXT) == nullptr && GetLastError() == ERROR_CLIPBOARD_NOT_OPEN) {
+                    CloseClipboard();
+                    Sleep(10);
+                    continue;
+                }
+                clipReady = true;
+                break;
+            }
+            Sleep(8);
+        }
+        if (clipReady) {
             HANDLE hHtml = GetClipboardData(htmlFmt);
             HANDLE hUni = GetClipboardData(CF_UNICODETEXT);
             EXPECT_NE(hHtml, nullptr);
@@ -686,4 +700,231 @@ TEST(OcrTableReconstructorTest, FiltersSeparatorNoiseRowsAndCoalescesZeroCooccur
     EXPECT_EQ(grid.cells[5][0], "Windows.Media.Ocr & Pdf"); // 尾部伪标点 ',' 已剥离
     EXPECT_EQ(grid.cells[5][1], "100% Offline");            // 精准落入第 2 列 B
     EXPECT_EQ(grid.cells[5][2], "纯本地离线文字识别与 PDF 渲染");
+}
+
+TEST(LiveOcrLayoutAndRowAlignmentTest, DenseFormLayoutIsolatesSidePaneCanyonsAndMisalignedRows) {
+    using namespace tools3000::ocr;
+
+    // 合成 1880x920 企业级密集分栏表单界面（含 x=1500 物理竖向窗格分割线）
+    cv::Mat formCanvas(920, 1880, CV_8UC3, cv::Scalar(246, 247, 249));
+    cv::line(formCanvas, cv::Point(1500, 36), cv::Point(1500, 896), cv::Scalar(162, 168, 176), 2);
+
+    auto makeRaw = [](const char* text, int x, int y, int w, int h = 18) {
+        OcrResult r;
+        r.text = text;
+        r.confidence = 0.99f;
+        r.box = cv::Rect(x, y, w, h);
+        r.charBoxes = OcrEngine::buildProportionalCharBoxes(text, r.box);
+        return r;
+    };
+
+    std::vector<OcrResult> rawBlocks = {
+        // 1. 主窗格标准对齐表格行（含大跨度空缺列，各列严格同水平基线 y=310 / y=332 / y=418）
+        makeRaw("1", 24, 310, 14),
+        makeRaw("JX0200-00680", 46, 310, 112),
+        makeRaw("SY-GC-243-13150 高压真空断路器", 176, 310, 290),
+        makeRaw("7", 778, 310, 14),
+        makeRaw("0.0000", 916, 310, 44),
+        makeRaw("J2", 968, 310, 18),
+        makeRaw("手动", 1256, 310, 34),
+
+        makeRaw("2", 24, 332, 14),
+        makeRaw("WXF0300-00193", 46, 332, 118),
+        makeRaw("PJG550系列气箱部分 10kV", 176, 332, 260),
+        makeRaw("7", 778, 332, 14),
+        makeRaw("0.0000", 916, 332, 44),
+        makeRaw("J2", 968, 332, 18),
+        makeRaw("手动", 1256, 332, 34),
+
+        makeRaw("6", 24, 418, 14),
+        makeRaw("WXF0300-00197", 46, 418, 118),
+        makeRaw("PJG550系列气箱部分(母联) 10kV", 176, 418, 310),
+        makeRaw("3", 778, 418, 14),
+        makeRaw("0.0000", 916, 418, 44),
+        makeRaw("J2", 968, 418, 18),
+        makeRaw("手动", 1256, 418, 34),
+
+        // 2. x=1500 分割线右侧的自定义字段侧边栏（"合同考核分类" y=419 与主表第 6 行仅差 1px，但隔着竖分割线）
+        makeRaw("所属集团客户代码", 1545, 374, 118),
+        makeRaw("所属集团客户名称", 1545, 396, 118),
+        makeRaw("合同考核分类", 1545, 419, 92),
+        makeRaw("是否正式合同", 1545, 441, 92),
+        makeRaw("星云答复交货日期", 1545, 774, 122),
+        makeRaw("第1次CDD原因", 1545, 796, 98),
+        makeRaw("第2次CDD原因", 1545, 818, 98),
+        makeRaw("第3次CDD原因", 1545, 840, 98),
+
+        // 3. 左下角「备注」多行表单区（左侧标签 "备注" y=810 垂直居中夹在右侧两行输入框 y=803 / y=820 之间）
+        makeRaw("备注", 18, 810, 36),
+        makeRaw("基于 采购申请 12700. 基于", 176, 803, 180),
+        makeRaw("采购订单 38604.", 176, 820, 132),
+
+        // 4. 隔着 780px 半屏空白鸿沟且高低错位 8px 的右下角金额汇总区
+        makeRaw("到期付款总计", 1136, 795, 92),
+        makeRaw("62,376.00 RMB", 1366, 795, 104),
+        makeRaw("对账的金额", 1136, 811, 80),
+        makeRaw("到期余额", 1136, 828, 68),
+        makeRaw("62,376.00 RMB", 1366, 828, 104),
+    };
+
+    const auto assembled = OcrEngine::assembleRecognizedBlocksWithLayout(rawBlocks, formCanvas);
+    const auto atomic = OcrEngine::splitIntoAtomicBlocks(assembled);
+    ASSERT_FALSE(atomic.empty());
+
+    auto findBlock = [&](const std::string& exactText, int minY = 0) -> const OcrResult* {
+        for (const auto& b : atomic) {
+            if (b.text == exactText && b.box.y >= minY) return &b;
+        }
+        return nullptr;
+    };
+
+    const OcrResult* row6Code = findBlock("WXF0300-00197");
+    const OcrResult* row6Manual = findBlock("手动", 400);
+    const OcrResult* sideContract = findBlock("合同考核分类");
+    const OcrResult* remarkLine1 = findBlock("基于 采购申请 12700. 基于");
+    const OcrResult* remarkLine2 = findBlock("采购订单 38604.");
+    const OcrResult* rightReconAmt = findBlock("对账的金额");
+    const OcrResult* rightBalanceKey = findBlock("到期余额");
+    const OcrResult* rightBalanceVal = findBlock("62,376.00 RMB", 820);
+    const OcrResult* sideCdd2 = findBlock("第2次CDD原因");
+
+    ASSERT_NE(row6Code, nullptr);
+    ASSERT_NE(row6Manual, nullptr);
+    ASSERT_NE(sideContract, nullptr);
+    ASSERT_NE(remarkLine1, nullptr);
+    ASSERT_NE(remarkLine2, nullptr);
+    ASSERT_NE(rightReconAmt, nullptr);
+    ASSERT_NE(rightBalanceKey, nullptr);
+    ASSERT_NE(rightBalanceVal, nullptr);
+    ASSERT_NE(sideCdd2, nullptr);
+
+    // (A) 主表第 6 行内部真正水平对齐的跨列单元格共享同一 layoutRegionId 与 alignedRowId（支持整行高亮）
+    EXPECT_EQ(row6Code->layoutRegionId, row6Manual->layoutRegionId);
+    EXPECT_GE(row6Code->alignedRowId, 0);
+    EXPECT_EQ(row6Code->alignedRowId, row6Manual->alignedRowId);
+
+    // (B) 右侧自定义字段侧边栏被竖向分割线物理隔离，绝不与主表第 6 行串成一行
+    EXPECT_NE(sideContract->layoutRegionId, row6Code->layoutRegionId);
+    EXPECT_NE(sideContract->alignedRowId, row6Code->alignedRowId);
+
+    // (C) 左下备注、右下错位金额、右侧侧边栏三者分属独立区域与独立行，彻底杜绝横跨全屏拼接
+    EXPECT_EQ(remarkLine1->layoutRegionId, remarkLine2->layoutRegionId);
+    EXPECT_NE(remarkLine1->layoutRegionId, rightReconAmt->layoutRegionId);
+    EXPECT_NE(remarkLine1->layoutRegionId, sideCdd2->layoutRegionId);
+    EXPECT_NE(rightReconAmt->layoutRegionId, sideCdd2->layoutRegionId);
+    EXPECT_NE(remarkLine1->alignedRowId, rightReconAmt->alignedRowId);
+    EXPECT_NE(remarkLine2->alignedRowId, rightReconAmt->alignedRowId);
+
+    // (D) 右下汇总区内部真正水平对齐的 Key-Value（"到期余额" 与 "62,376.00 RMB"）保持同行对齐关系
+    EXPECT_EQ(rightBalanceKey->layoutRegionId, rightBalanceVal->layoutRegionId);
+    EXPECT_EQ(rightBalanceKey->alignedRowId, rightBalanceVal->alignedRowId);
+
+    // (E) 零空白幽灵框校验：在下方表单区 (y >= 780) 绝无任何块跨越中部 x=[420..1080] 空白鸿沟
+    for (const auto& b : atomic) {
+        if (b.box.y >= 780) {
+            EXPECT_FALSE(b.box.x < 420 && (b.box.x + b.box.width) > 1080)
+                << "Unexpected canyon-spanning ghost box for text: " << b.text;
+        }
+    }
+
+    // (F) PinWindow 真窗口端到端流式拖选验证：拖选左下角备注两行，绝不误吸左侧孤立「备注」标签或右下角「对账的金额」
+    std::array<wchar_t, 4096> executablePath{};
+    const DWORD length = GetModuleFileNameW(
+        nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
+    ASSERT_GT(length, 0u);
+    const auto executableDir = std::filesystem::path(executablePath.data()).parent_path();
+    const auto pluginDllPath =
+        executableDir.parent_path() / L"plugins" / executableDir.filename() / L"Plugin_Capture.dll";
+    ASSERT_TRUE(std::filesystem::exists(pluginDllPath));
+
+    HMODULE hMod = LoadLibraryExW(
+        pluginDllPath.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    ASSERT_NE(hMod, nullptr);
+    using CreatePluginFunc = tools3000::core::IPlugin* (*)();
+    const auto createPlugin = reinterpret_cast<CreatePluginFunc>(GetProcAddress(hMod, "CreatePlugin"));
+    ASSERT_NE(createPlugin, nullptr);
+    tools3000::core::IPlugin* capturePlugin = createPlugin();
+    ASSERT_NE(capturePlugin, nullptr);
+    ASSERT_TRUE(capturePlugin->initialize());
+
+    const auto tempPng = std::filesystem::temp_directory_path() /
+                         (L"tools3000_form_pin_ocr_" + std::to_wstring(GetCurrentProcessId()) + L".png");
+    struct FormCleanupGuard {
+        HMODULE mod = nullptr;
+        tools3000::core::IPlugin* plugin = nullptr;
+        std::filesystem::path png;
+        ~FormCleanupGuard() {
+            while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+                SendMessageW(existing, WM_KEYDOWN, VK_DELETE, 0);
+                if (IsWindow(existing)) DestroyWindow(existing);
+            }
+            if (plugin) plugin->shutdown();
+            if (mod) FreeLibrary(mod);
+            std::error_code ec;
+            std::filesystem::remove(png, ec);
+        }
+    } guard{hMod, capturePlugin, tempPng};
+
+    while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+        SendMessageW(existing, WM_KEYDOWN, VK_DELETE, 0);
+        if (IsWindow(existing)) DestroyWindow(existing);
+    }
+
+    std::vector<uchar> encoded;
+    ASSERT_TRUE(cv::imencode(".png", formCanvas, encoded));
+    {
+        std::ofstream ofs(tempPng, std::ios::binary | std::ios::trunc);
+        ofs.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+    }
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    auto invokeRpc = [&](int id, const char* method, const nlohmann::json& params) -> nlohmann::json {
+        nlohmann::json req = {{"id", id}, {"method", method}, {"params", params}};
+        const std::string raw = bridge.handleMessage(req.dump());
+        const auto parsed = nlohmann::json::parse(raw, nullptr, false);
+        return parsed.is_object() && parsed.contains("result") ? parsed["result"] : parsed;
+    };
+
+    ASSERT_TRUE(invokeRpc(3201, "capture.pinImageFile", {
+        {"path", tools3000::core::WinUtils::wstringToUtf8(tempPng.wstring())}
+    }).value("success", false));
+
+    HWND pinHwnd = FindWindowW(L"Tools3000_PinWindow", nullptr);
+    ASSERT_NE(pinHwnd, nullptr);
+
+    nlohmann::json mockJson = nlohmann::json::array();
+    for (const auto& rb : rawBlocks) {
+        mockJson.push_back({
+            {"text", rb.text},
+            {"x", rb.box.x},
+            {"y", rb.box.y},
+            {"w", rb.box.width},
+            {"h", rb.box.height}
+        });
+    }
+    ASSERT_TRUE(invokeRpc(3202, "capture.inspectPinOcrState", {{"mockBlocks", mockJson}}).value("success", false));
+
+    RECT clientRc{};
+    ASSERT_TRUE(GetClientRect(pinHwnd, &clientRc));
+    const double scaleX = static_cast<double>(clientRc.right - clientRc.left) / static_cast<double>(formCanvas.cols);
+    const double scaleY = static_cast<double>(clientRc.bottom - clientRc.top) / static_cast<double>(formCanvas.rows);
+
+    const int startCx = static_cast<int>(std::lround(178.0 * scaleX));
+    const int startCy = static_cast<int>(std::lround(812.0 * scaleY));
+    const int endCx = static_cast<int>(std::lround(306.0 * scaleX));
+    const int endCy = static_cast<int>(std::lround(829.0 * scaleY));
+
+    SendMessageW(pinHwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(startCx, startCy));
+    SendMessageW(pinHwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(endCx, endCy));
+    SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(endCx, endCy));
+
+    const auto dragRes = invokeRpc(3203, "capture.inspectPinOcrState", nlohmann::json::object());
+    EXPECT_EQ(dragRes.value("selectedText", ""), "基于 采购申请 12700. 基于\r\n采购订单 38604.");
+
+    SendMessageW(pinHwnd, WM_KEYDOWN, VK_DELETE, 0);
+    capturePlugin->shutdown();
+    guard.plugin = nullptr;
+    EXPECT_TRUE(FreeLibrary(hMod));
+    guard.mod = nullptr;
 }

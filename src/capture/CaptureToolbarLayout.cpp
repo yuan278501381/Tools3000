@@ -29,6 +29,8 @@ struct ButtonSpec {
     bool hasDropdown = false;
     bool isSecondary = false;
     bool isSeparatorBefore = false;
+    std::wstring tooltipHint;
+    bool joinWithPrev = false;
 };
 
 bool useChineseLabels() {
@@ -104,12 +106,40 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
             false, false, true // separator
         });
 
-        // 7. 麦克风 (GIF 格式下置灰/不可选)
+        // 7. 麦克风一体化分体双舱胶囊 [ 图标开关 | ▾ 选择来源 ] (GIF 格式下置灰/不可选)
+        std::wstring micHint = zh ? L"系统默认" : L"System Default";
+        if (state.recordSetup.microphoneDeviceId.empty()) {
+            if (!state.recordSetup.cachedDefaultMicName.empty()) {
+                const std::wstring defShort = state.recordSetup.cachedDefaultMicName.size() > 16
+                    ? (state.recordSetup.cachedDefaultMicName.substr(0, 15) + L"…")
+                    : state.recordSetup.cachedDefaultMicName;
+                micHint = zh
+                    ? std::format(L"系统默认 · {}", defShort)
+                    : std::format(L"Default · {}", defShort);
+            }
+        } else {
+            micHint = zh ? L"已选外接设备" : L"Custom Device";
+            for (const auto& kv : state.recordSetup.cachedMicDevices) {
+                if (kv.first == state.recordSetup.microphoneDeviceId && !kv.second.empty()) {
+                    micHint = kv.second.size() > 20 ? (kv.second.substr(0, 19) + L"…") : kv.second;
+                    break;
+                }
+            }
+        }
+        // intParam = 1 表示用户显式锁定了特定外接/独立麦克风（非系统默认），渲染微晶角标提示
+        const int explicitMicFlag = (!state.recordSetup.microphoneDeviceId.empty() &&
+                                     state.recordSetup.format != RecordFormat::GIF) ? 1 : 0;
         specs.push_back({
             ToolbarCommand::RecordToggleMicrophone, MarkupTool::Rectangle, {},
-            L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard,
+            L"", 30.0f, explicitMicFlag, LineStyle::Solid, ArrowStyle::Standard,
             state.recordSetup.captureMicrophone && state.recordSetup.format != RecordFormat::GIF,
-            false, false, false
+            false, false, false, micHint, false
+        });
+        specs.push_back({
+            ToolbarCommand::RecordSelectMicSource, MarkupTool::Rectangle, {},
+            L"", 18.0f, 0, LineStyle::Solid, ArrowStyle::Standard,
+            state.dropdownMenu.type == DropdownType::RecordMicSource && state.recordSetup.format != RecordFormat::GIF,
+            false, false, false, micHint, true
         });
 
         // 7.5 录屏高级快捷设置菜单 (缩放效果 / 录制倒计时 / 隐藏桌面图标 / 隐藏任务栏 / 打字自动缩放 / 人声降噪 / 更多设置)
@@ -687,6 +717,9 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
     const auto priSpecs = primaryButtonSpecs(state, chinese);
     float priContentW = gripW + gripGap;
     for (const auto& sp : priSpecs) {
+        if (sp.joinWithPrev) {
+            priContentW -= gapX;
+        }
         float extra = sp.isSeparatorBefore ? sepWidth : 0.0f;
         priContentW += extra + sp.baseWidth * scale + gapX;
     }
@@ -827,6 +860,9 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
     float curY = priPanelY + paddingY;
     state.toolbarButtons.reserve(priSpecs.size());
     for (const auto& sp : priSpecs) {
+        if (sp.joinWithPrev) {
+            curX -= gapX * priShrink;
+        }
         if (sp.isSeparatorBefore) {
             curX += sepWidth * priShrink;
         }
@@ -843,6 +879,7 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
         btn.hasDropdown = sp.hasDropdown;
         btn.isSecondary = false;
         btn.isSeparatorBefore = sp.isSeparatorBefore;
+        btn.tooltipHint = sp.tooltipHint;
         btn.rect = D2D1::RectF(curX, curY, curX + w, curY + buttonHeight);
         state.toolbarButtons.push_back(btn);
         curX += w + gapX * priShrink;
@@ -1125,12 +1162,25 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
             return button.boolParam
                 ? (chinese ? L"系统声音: 已开启 (点击静音)" : L"System Audio: ON (Click to mute)")
                 : (chinese ? L"系统声音: 已静音 (点击开启)" : L"System Audio: Muted (Click to enable)");
-        case ToolbarCommand::RecordToggleMicrophone:
+        case ToolbarCommand::RecordToggleMicrophone: {
+            const std::wstring srcTag = button.tooltipHint.empty()
+                ? (chinese ? L"系统默认" : L"System Default")
+                : button.tooltipHint;
             return button.boolParam
-                ? (chinese ? L"麦克风: 已开启 (点击静音)" : L"Microphone: ON (Click to mute)")
+                ? (chinese ? std::format(L"麦克风: 已开启 · {} (点击静音)", srcTag)
+                           : std::format(L"Microphone: ON · {} (Click to mute)", srcTag))
                 : (chinese ? L"麦克风: 已静音 (点击开启)" : L"Microphone: Muted (Click to enable)");
+        }
+        case ToolbarCommand::RecordSelectMicSource: {
+            const std::wstring srcTag = button.tooltipHint.empty()
+                ? (chinese ? L"系统默认" : L"System Default")
+                : button.tooltipHint;
+            return chinese
+                ? std::format(L"选择麦克风来源 (当前: {})", srcTag)
+                : std::format(L"Select Microphone Source (Current: {})", srcTag);
+        }
         case ToolbarCommand::RecordToggleSettingsMenu:
-            return chinese ? L"更多录屏选项 (自动运镜 / 倒计时 / 隐藏桌面图标)" : L"Recording Options (Auto Zoom / Countdown / Hide Icons)";
+            return chinese ? L"更多录屏选项 (自动运镜 / 倒计时 / 降噪)" : L"Recording Options (Auto Zoom / Countdown / Noise Suppression)";
         case ToolbarCommand::RecordStartConfirm: return chinese ? L"开始录制 (Enter)" : L"Start Recording (Enter)";
         default: return L"";
     }

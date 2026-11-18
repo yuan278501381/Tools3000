@@ -23,7 +23,10 @@ public:
     /// 在正式进入录制/倒计时前按需净化桌面环境
     void applyForSession(bool hideDesktopIcons, bool hideTaskbar);
 
-    /// 录制结束、取消或异常退出时幂等恢复全部被临时隐藏的系统窗口
+    /// 录制期间周期性轻量巡检，防止 Windows 11 Explorer 焦点切换时自动重刷常驻任务栏
+    void keepHiddenIfActive() noexcept;
+
+    /// 录制结束、取消或异常退出时幂等恢复全部被临时隐藏的系统窗口与任务栏 AppBar 状态
     void restoreAll() noexcept;
 
 private:
@@ -35,6 +38,10 @@ private:
     std::mutex m_mutex;
     std::vector<HWND> m_hiddenDesktopIconViews;
     std::vector<HWND> m_hiddenTaskbars;
+    bool m_activeHideDesktop = false;
+    bool m_activeHideTaskbar = false;
+    bool m_modifiedAppBarState = false;
+    UINT m_savedAppBarState = 0;
 };
 
 } // namespace tools3000::capture

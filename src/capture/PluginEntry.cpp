@@ -14,6 +14,7 @@
 #include "capture/ScreenRecorder.h"
 #include "capture/RecordingIndicator.h"
 #include "capture/StudioPreviewWindow.h"
+#include "capture/WatermarkRenderer.h"
 #include "capture/PinWindow.h"
 #include "capture/PinContextMenu.h"
 #include "capture/PinGroupBarOverlay.h"
@@ -181,7 +182,8 @@ RecordOptions configuredRecordOptions(const CaptureRegion& region) {
     options.studioConfig.typingAutoZoom = config.get<bool>("/recording/typingAutoZoom", false);
     options.studioConfig.defaultZoomFactor = std::clamp(
         static_cast<float>(config.get<double>("/recording/studioZoomFactor", 1.50)), 1.25f, 2.80f);
-    options.studioConfig.smoothCursorEnabled = config.get<bool>("/recording/studioSmoothCursor", true);
+    options.studioConfig.smoothCursorEnabled =
+        options.includeCursor && config.get<bool>("/recording/studioSmoothCursor", true);
     options.studioConfig.cursorScale = std::clamp(
         static_cast<float>(config.get<double>("/recording/studioCursorScale", 1.35)), 0.80f, 2.20f);
     options.studioConfig.autoFrameEnabled = config.get<bool>("/recording/studioAutoFrame", true);
@@ -199,10 +201,19 @@ RecordOptions configuredRecordOptions(const CaptureRegion& region) {
         static_cast<float>(config.get<double>("/recording/studioShadow", 0.65)), 0.0f, 1.0f);
     options.studioConfig.motionBlurEnabled = config.get<bool>("/recording/studioMotionBlur", false);
     options.studioConfig.cursorHighlightHalo = config.get<bool>("/recording/studioCursorHalo", false);
+    const int clickStyleInt = std::clamp(config.get<int>("/recording/studioClickStyle", 0), 0, 3);
+    options.studioConfig.clickEffectStyle = static_cast<StudioClickEffectStyle>(clickStyleInt);
+    options.studioConfig.showClickRipple =
+        options.showClickEffects && (options.studioConfig.clickEffectStyle != StudioClickEffectStyle::TactileOnly);
+    if (options.showClickEffects && options.studioConfig.clickEffectStyle == StudioClickEffectStyle::TactileOnly) {
+        options.studioConfig.clickEffectStyle = StudioClickEffectStyle::CrystalPulse;
+        options.studioConfig.showClickRipple = true;
+    }
     options.studioConfig.customBackgroundPath = config.get<std::string>("/recording/studioCustomBg", "");
     options.studioConfig.backgroundTheme = studioThemeFromConfig(
         config.get<std::string>("/recording/studioTheme", "aurora_purple"));
     options.studioConfig.autoCaptionsEnabled = config.get<bool>("/recording/studioAutoCaptions", false);
+    options.studioConfig.watermark = WatermarkRenderer::loadStudioWatermarkConfig();
     const auto directory = config.get<std::string>(
         "/recording/saveDirectory", config.get<std::string>("/recording/savePath", ""));
     options.outputPath = timestampedPath(directory, "record_", recordExtension(options.format));
@@ -300,26 +311,70 @@ void stopRecordingWithFeedback() {
     ShortcutHintOverlay::instance().hide();
     tools3000::core::MessageBridge::instance().invokeHandler("keycast.setDockingRegion", {{"active", false}});
     const double duration = recorder.stats().durationSec;
-    indicator.showSaving();
-    recorder.stopRecordingAsync([duration](const std::string& path, const RecordStats& finalStats) {
+    const bool willOpenStudio = recorder.wasLastSessionStudioMode() && !isAutomatedTestSession();
+    if (willOpenStudio) {
+        tools3000::core::MainThreadDispatcher::instance().post([duration]() {
+            RecordingIndicator::instance().hide();
+            StudioPreviewWindow::instance().showPreparingOverlay(duration);
+        });
+    } else {
+        indicator.showSaving();
+    }
+    recorder.stopRecordingAsync([duration, willOpenStudio](const std::string& path, const RecordStats& finalStats) {
+        // 超长录屏无阻塞预处理：在后台收尾工作线程预先备齐预览帧牌组与声学波形，保障 UI 主线程 0ms 无缝切入演播室
+        std::vector<cv::Mat> preparedDeck;
+        StudioTimelineData preparedTimeline;
+        StudioRenderConfig preparedCfg{};
+        int preparedBitrate = 10;
+        bool openStudioReady = false;
+
+        if (!path.empty()) {
+            auto& rec = ScreenRecorder::instance();
+            preparedDeck = rec.takeLastStudioPreviewDeck();
+            if (willOpenStudio && rec.wasLastSessionStudioMode() && !isAutomatedTestSession()) {
+                preparedTimeline = rec.takeLastStudioTimeline();
+                preparedCfg = rec.lastStudioConfig();
+                preparedBitrate = rec.lastSessionBitrateMbps();
+                if (preparedDeck.empty()) {
+                    int ow = preparedTimeline.sourceWidth;
+                    int oh = preparedTimeline.sourceHeight;
+                    double dSec = preparedTimeline.durationMs / 1000.0;
+                    StudioVideoCompositor::extractPreviewDeck(path, 1280, 224, preparedDeck, ow, oh, dSec);
+                    if (preparedTimeline.sourceWidth <= 0) preparedTimeline.sourceWidth = ow;
+                    if (preparedTimeline.sourceHeight <= 0) preparedTimeline.sourceHeight = oh;
+                    if (preparedTimeline.durationMs <= 0 && dSec > 0.0) {
+                        preparedTimeline.durationMs = static_cast<int64_t>(std::llround(dSec * 1000.0));
+                    }
+                }
+                if (preparedTimeline.audioWaveformPeaks.empty()) {
+                    StudioVideoCompositor::extractAudioWaveformPeaks(path, 4096, preparedTimeline.audioWaveformPeaks);
+                }
+                openStudioReady = true;
+            } else {
+                preparedDeck.clear();
+                preparedDeck.shrink_to_fit();
+            }
+        }
+
         tools3000::core::MainThreadDispatcher::instance().post(
-            [path, dur = (finalStats.durationSec > 0.0 ? finalStats.durationSec : duration)]() {
+            [path,
+             dur = (finalStats.durationSec > 0.0 ? finalStats.durationSec : duration),
+             openStudioReady,
+             deck = std::move(preparedDeck),
+             timeline = std::move(preparedTimeline),
+             preparedCfg,
+             preparedBitrate]() mutable {
                 auto& ind = RecordingIndicator::instance();
                 const bool isZh = tools3000::core::isUiLanguageChinese();
                 if (!path.empty()) {
                     LOG_INFO("录屏已保存: {}", path);
-                    auto& rec = ScreenRecorder::instance();
-                    auto preloadedDeck = rec.takeLastStudioPreviewDeck();
-                    if (rec.wasLastSessionStudioMode() && !isAutomatedTestSession()) {
+                    if (openStudioReady) {
                         ind.hide();
-                        auto timeline = rec.takeLastStudioTimeline();
-                        const auto studioCfg = rec.lastStudioConfig();
-                        const int bitrateMbps = rec.lastSessionBitrateMbps();
                         StudioPreviewWindow::instance().showSession(
                             path,
                             std::move(timeline),
-                            studioCfg,
-                            bitrateMbps,
+                            preparedCfg,
+                            preparedBitrate,
                             [](const std::string& savedPath, double savedDur, bool studioExported) {
                                 const bool zh = tools3000::core::isUiLanguageChinese();
                                 RecordingIndicator::instance().showCompleted(savedPath, savedDur);
@@ -328,15 +383,15 @@ void stopRecordingWithFeedback() {
                                         ? (zh ? L"演播室成片已导出并保存" : L"Studio export completed and saved")
                                         : (zh ? L"录屏已保存" : L"Recording saved")});
                             },
-                            std::move(preloadedDeck));
+                            std::move(deck));
                         return;
                     }
-                    preloadedDeck.clear();
-                    preloadedDeck.shrink_to_fit();
+                    StudioPreviewWindow::instance().dismissPreparingOverlay();
                     ind.showCompleted(path, dur);
                     tools3000::core::EventBus::instance().publish(
                         tools3000::core::ShowToastEvent{isZh ? L"录屏已保存" : L"Recording saved"});
                 } else {
+                    StudioPreviewWindow::instance().dismissPreparingOverlay();
                     ind.hide();
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                         isZh ? L"录屏已停止，未生成有效内容" : L"Recording stopped, no content saved"});
@@ -400,9 +455,14 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
     }
     options.showClickEffects = setup.showClickEffects;
     options.showClickZoom = setup.showClickZoom;
+    options.studioConfig.showClickRipple = setup.showClickEffects;
+    if (setup.showClickEffects && options.studioConfig.clickEffectStyle == StudioClickEffectStyle::TactileOnly) {
+        options.studioConfig.clickEffectStyle = StudioClickEffectStyle::CrystalPulse;
+    }
     options.includeKeycast = setup.includeKeycast;
     options.captureSystemAudio = setup.captureSystemAudio && setup.format != RecordFormat::GIF;
     options.captureMicrophone = setup.captureMicrophone && setup.format != RecordFormat::GIF;
+    options.microphoneDeviceId = setup.microphoneDeviceId;
     options.voiceEnhance = setup.voiceEnhance;
     options.countdownSeconds = std::clamp(setup.countdownSeconds, 0, 10);
     options.hideDesktopIcons = setup.hideDesktopIcons;
@@ -427,6 +487,7 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
     }
     if (ScreenRecorder::instance().startRecording(options)) {
         RecordingIndicator::instance().setRecordingRegion(region.x, region.y, region.width, region.height, region.cornerRadius);
+        RecordingIndicator::instance().show();
         if (options.countdownSeconds > 0) {
             ShortcutHintOverlay::instance().show(
                 ShortcutHintContext::Recording,
@@ -435,7 +496,6 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
         } else {
             ShortcutHintOverlay::instance().hide();
         }
-        RecordingIndicator::instance().show();
     } else {
         tools3000::core::MessageBridge::instance().invokeHandler("keycast.setDockingRegion", {{"active", false}});
         const auto reason = ScreenRecorder::instance().stats().stopReason;
@@ -892,6 +952,7 @@ public:
 
         mb.registerHandler("capture.getSettings", [](const nlohmann::json&) -> nlohmann::json {
             auto& config = tools3000::core::ConfigManager::instance();
+            const auto wmCfg = tools3000::capture::WatermarkRenderer::loadGlobalCaptureConfig();
             return {
                 {"format", config.get<std::string>("/capture/format", "png")},
                 {"quality", config.get<int>("/capture/quality", 90)},
@@ -908,25 +969,79 @@ public:
                 {"beautyShellTheme", config.get<std::string>("/capture/beautyShellTheme", "aurora_purple")},
                 {"beautyShellPadding", config.get<int>("/capture/beautyShellPadding", 32)},
                 {"beautyShellRadius", config.get<int>("/capture/beautyShellRadius", 16)},
+                {"watermarkEnabled", wmCfg.enabled},
+                {"watermarkMode", static_cast<int>(wmCfg.mode)},
+                {"watermarkImagePath", wmCfg.imagePathUtf8},
+                {"watermarkText", wmCfg.textTemplate},
+                {"watermarkAnchor", static_cast<int>(wmCfg.anchor)},
+                {"watermarkScale", static_cast<double>(wmCfg.scale)},
+                {"watermarkOpacity", static_cast<double>(wmCfg.opacity)},
+                {"watermarkPolicyForced", wmCfg.policyForced},
                 {"sizeUnit", config.get<std::string>("/capture/sizeUnit", "px")},
                 {"showSizePosition", config.get<bool>("/capture/showSizePosition", true)},
                 {"showSizeUnit", config.get<bool>("/capture/showSizeUnit", true)}
             };
         });
 
+        mb.registerHandler("capture.pickWatermarkImage", [](const nlohmann::json&) -> nlohmann::json {
+            struct ComStaGuard {
+                HRESULT hr;
+                ComStaGuard() : hr(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)) {}
+                ~ComStaGuard() { if (hr == S_OK || hr == S_FALSE) CoUninitialize(); }
+            } comGuard;
+
+            IFileOpenDialog* dlg = nullptr;
+            if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))) || !dlg) {
+                return {{"success", false}, {"error", "failed to open file dialog"}};
+            }
+            const bool isZh = tools3000::core::isUiLanguageChinese();
+            const COMDLG_FILTERSPEC spec[] = {
+                {isZh ? L"图片文件 (*.png;*.webp;*.jpg;*.jpeg;*.bmp)" : L"Image Files (*.png;*.webp;*.jpg;*.jpeg;*.bmp)",
+                 L"*.png;*.webp;*.jpg;*.jpeg;*.bmp"},
+                {isZh ? L"所有文件 (*.*)" : L"All Files (*.*)", L"*.*"}
+            };
+            dlg->SetFileTypes(static_cast<UINT>(std::size(spec)), spec);
+            dlg->SetTitle(isZh ? L"选择水印图片 / 企业 Logo" : L"Select Watermark Logo Image");
+            DWORD fos = 0;
+            if (SUCCEEDED(dlg->GetOptions(&fos))) {
+                dlg->SetOptions(fos | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
+            }
+            std::string chosenUtf8;
+            const HRESULT showHr = dlg->Show(GetForegroundWindow());
+            if (SUCCEEDED(showHr)) {
+                IShellItem* item = nullptr;
+                if (SUCCEEDED(dlg->GetResult(&item)) && item) {
+                    PWSTR rawPath = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
+                        chosenUtf8 = tools3000::core::WinUtils::wstringToUtf8(rawPath);
+                        CoTaskMemFree(rawPath);
+                    }
+                    item->Release();
+                }
+            }
+            dlg->Release();
+            if (chosenUtf8.empty()) {
+                return {{"success", false}, {"cancelled", true}};
+            }
+            tools3000::capture::WatermarkRenderer::pushStudioRecentLogoPath(chosenUtf8);
+            return {{"success", true}, {"path", chosenUtf8}};
+        });
+
         mb.registerHandler("capture.updateSettings", [runOnUiThread](const nlohmann::json& params) -> nlohmann::json {
             static const std::unordered_set<std::string> formats = {"png", "jpg", "jpeg", "webp", "bmp"};
             static const std::unordered_set<std::string> themes = {
                 "studio_slate", "paper_chalk", "silk_mist", "midnight_graphite", "pure_minimal",
-                "aurora_purple", "sunrise_coral", "emerald_sea", "obsidian_dark", "minimal_light"
+                "aurora_purple", "sunrise_coral", "emerald_sea", "obsidian_dark", "minimal_light",
+                "airy_glacier", "dusk_mountains", "misty_lake_dawn"
             };
             static const std::unordered_set<std::string> sizeUnits = {"px", "dp"};
             static const std::unordered_set<std::string> boolKeys = {
                 "saveToFile", "copyToClipboard", "includeCursor", "showCrosshair", "autoDetectWindow",
                 "showShortcutHints", "autoBypassFullscreen", "beautyShellEnabled",
-                "showSizePosition", "showSizeUnit"
+                "watermarkEnabled", "showSizePosition", "showSizeUnit"
             };
             if (!params.is_object() || params.empty()) return {{"success", false}, {"error", "no settings supplied"}};
+            const auto currentWm = tools3000::capture::WatermarkRenderer::loadGlobalCaptureConfig();
             for (const auto& [key, value] : params.items()) {
                 if (key == "format" && (!value.is_string() || !formats.contains(value.get<std::string>())))
                     return {{"success", false}, {"error", "invalid image format"}};
@@ -940,12 +1055,28 @@ public:
                     return {{"success", false}, {"error", "beauty shell padding must be between 0 and 128"}};
                 if (key == "beautyShellRadius" && (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 64))
                     return {{"success", false}, {"error", "beauty shell radius must be between 0 and 64"}};
+                if (key == "watermarkEnabled" && currentWm.policyForced && value.is_boolean() && !value.get<bool>())
+                    return {{"success", false}, {"error", "watermark is enforced by enterprise policy"}};
+                if (key == "watermarkMode" && (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 2))
+                    return {{"success", false}, {"error", "invalid watermark mode"}};
+                if (key == "watermarkAnchor" && (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 5))
+                    return {{"success", false}, {"error", "invalid watermark anchor"}};
+                if (key == "watermarkImagePath" && (!value.is_string() || value.get_ref<const std::string&>().size() > 32767))
+                    return {{"success", false}, {"error", "invalid watermark image path"}};
+                if (key == "watermarkText" && (!value.is_string() || value.get_ref<const std::string&>().size() > 512))
+                    return {{"success", false}, {"error", "invalid watermark text"}};
+                if (key == "watermarkScale" && (!value.is_number() || value.get<double>() < 0.30 || value.get<double>() > 3.0))
+                    return {{"success", false}, {"error", "invalid watermark scale"}};
+                if (key == "watermarkOpacity" && (!value.is_number() || value.get<double>() < 0.03 || value.get<double>() > 1.0))
+                    return {{"success", false}, {"error", "invalid watermark opacity"}};
                 if (key == "sizeUnit" && (!value.is_string() || !sizeUnits.contains(value.get<std::string>())))
                     return {{"success", false}, {"error", "invalid size unit"}};
                 if (boolKeys.contains(key) && !value.is_boolean())
                     return {{"success", false}, {"error", key + " must be boolean"}};
                 if (key != "format" && key != "quality" && key != "saveDirectory" &&
                     key != "beautyShellTheme" && key != "beautyShellPadding" && key != "beautyShellRadius" &&
+                    key != "watermarkMode" && key != "watermarkAnchor" && key != "watermarkImagePath" &&
+                    key != "watermarkText" && key != "watermarkScale" && key != "watermarkOpacity" &&
                     key != "sizeUnit" && !boolKeys.contains(key))
                     return {{"success", false}, {"error", "unsupported setting: " + key}};
             }
@@ -977,6 +1108,7 @@ public:
 
         mb.registerHandler("recording.getSettings", [](const nlohmann::json&) -> nlohmann::json {
             auto& config = tools3000::core::ConfigManager::instance();
+            const auto studioWm = tools3000::capture::WatermarkRenderer::loadStudioWatermarkConfig();
             return {
                 {"format", config.get<std::string>("/recording/format", "mp4_h264")},
                 {"fps", config.get<int>("/recording/fps", 30)},
@@ -1006,13 +1138,25 @@ public:
                 {"studioCursorScale", config.get<double>("/recording/studioCursorScale", 1.35)},
                 {"studioAutoFrame", config.get<bool>("/recording/studioAutoFrame", true)},
                 {"studioTheme", config.get<std::string>("/recording/studioTheme", "aurora_purple")},
-                {"studioAutoCaptions", config.get<bool>("/recording/studioAutoCaptions", true)},
+                {"studioAutoCaptions", config.get<bool>("/recording/studioAutoCaptions", false)},
                 {"studioBgBlur", config.get<double>("/recording/studioBgBlur", 0.0)},
                 {"studioShadow", config.get<double>("/recording/studioShadow", 0.65)},
                 {"studioCornerRadius", config.get<double>("/recording/studioCornerRadius", 16.0)},
                 {"studioMotionBlur", config.get<bool>("/recording/studioMotionBlur", false)},
                 {"studioCursorHalo", config.get<bool>("/recording/studioCursorHalo", false)},
+                {"studioClickStyle", config.get<int>("/recording/studioClickStyle", 0)},
                 {"studioCustomBg", config.get<std::string>("/recording/studioCustomBg", "")},
+                {"studioExportFormat", std::clamp(config.get<int>("/recording/studioExport/format", 0), 0, 5)},
+                {"studioExportResolution", std::clamp(config.get<int>("/recording/studioExport/resolution", 3), 0, 6)},
+                {"studioExportAutoClose", config.get<bool>("/recording/studioExport/autoClose", false)},
+                {"studioWatermarkEnabled", studioWm.enabled},
+                {"studioWatermarkMode", static_cast<int>(studioWm.mode)},
+                {"studioWatermarkImagePath", studioWm.imagePathUtf8},
+                {"studioWatermarkText", studioWm.textTemplate},
+                {"studioWatermarkAnchor", static_cast<int>(studioWm.anchor)},
+                {"studioWatermarkScale", static_cast<double>(studioWm.scale)},
+                {"studioWatermarkOpacity", static_cast<double>(studioWm.opacity)},
+                {"studioWatermarkPolicyForced", studioWm.policyForced},
                 {"saveDirectory", config.get<std::string>(
                     "/recording/saveDirectory", config.get<std::string>("/recording/savePath", ""))}
             };
@@ -1102,6 +1246,10 @@ public:
             };
             static const std::unordered_set<int> countdowns = {0, 3, 5, 10};
             if (!params.is_object() || params.empty()) return {{"success", false}, {"error", "no settings supplied"}};
+            auto curStudioWm = tools3000::capture::WatermarkRenderer::loadStudioWatermarkConfig();
+            bool studioWmChanged = false;
+            nlohmann::json directParams = nlohmann::json::object();
+
             for (const auto& [key, value] : params.items()) {
                 if (key == "format" && (!value.is_string() || !formats.contains(value.get<std::string>())))
                     return {{"success", false}, {"error", "invalid recording format"}};
@@ -1128,6 +1276,8 @@ public:
                     return {{"success", false}, {"error", "studioCursorScale must be between 0.8 and 2.2"}};
                 if (key == "studioZoomMode" && (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 2))
                     return {{"success", false}, {"error", "studioZoomMode must be 0, 1, or 2"}};
+                if (key == "studioClickStyle" && (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 3))
+                    return {{"success", false}, {"error", "studioClickStyle must be between 0 and 3"}};
                 if (key == "studioBgBlur" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 40.0))
                     return {{"success", false}, {"error", "studioBgBlur must be between 0 and 40"}};
                 if (key == "studioShadow" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 1.0))
@@ -1136,6 +1286,72 @@ public:
                     return {{"success", false}, {"error", "studioCornerRadius must be between 0 and 48"}};
                 if (key == "studioCustomBg" && (!value.is_string() || value.get_ref<const std::string&>().size() > 32767))
                     return {{"success", false}, {"error", "invalid studioCustomBg"}};
+                if (key == "studioExportFormat") {
+                    if (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 5)
+                        return {{"success", false}, {"error", "invalid studioExportFormat"}};
+                    continue;
+                }
+                if (key == "studioExportResolution") {
+                    if (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 6)
+                        return {{"success", false}, {"error", "invalid studioExportResolution"}};
+                    continue;
+                }
+                if (key == "studioExportAutoClose") {
+                    if (!value.is_boolean())
+                        return {{"success", false}, {"error", "studioExportAutoClose must be boolean"}};
+                    continue;
+                }
+                if (key == "studioWatermarkEnabled") {
+                    if (!value.is_boolean())
+                        return {{"success", false}, {"error", "studioWatermarkEnabled must be boolean"}};
+                    if (curStudioWm.policyForced && !value.get<bool>())
+                        return {{"success", false}, {"error", "watermark is enforced by enterprise policy"}};
+                    curStudioWm.enabled = value.get<bool>();
+                    studioWmChanged = true;
+                    continue;
+                }
+                if (key == "studioWatermarkMode") {
+                    if (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 2)
+                        return {{"success", false}, {"error", "invalid studioWatermarkMode"}};
+                    curStudioWm.mode = static_cast<tools3000::capture::WatermarkMode>(value.get<int>());
+                    studioWmChanged = true;
+                    continue;
+                }
+                if (key == "studioWatermarkAnchor") {
+                    if (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 5)
+                        return {{"success", false}, {"error", "invalid studioWatermarkAnchor"}};
+                    curStudioWm.anchor = static_cast<tools3000::capture::WatermarkAnchor>(value.get<int>());
+                    studioWmChanged = true;
+                    continue;
+                }
+                if (key == "studioWatermarkImagePath") {
+                    if (!value.is_string() || value.get_ref<const std::string&>().size() > 32767)
+                        return {{"success", false}, {"error", "invalid studioWatermarkImagePath"}};
+                    curStudioWm.imagePathUtf8 = value.get<std::string>();
+                    studioWmChanged = true;
+                    continue;
+                }
+                if (key == "studioWatermarkText") {
+                    if (!value.is_string() || value.get_ref<const std::string&>().size() > 512)
+                        return {{"success", false}, {"error", "invalid studioWatermarkText"}};
+                    curStudioWm.textTemplate = value.get<std::string>();
+                    studioWmChanged = true;
+                    continue;
+                }
+                if (key == "studioWatermarkScale") {
+                    if (!value.is_number() || value.get<double>() < 0.30 || value.get<double>() > 3.0)
+                        return {{"success", false}, {"error", "invalid studioWatermarkScale"}};
+                    curStudioWm.scale = std::clamp(static_cast<float>(value.get<double>()), 0.35f, 2.80f);
+                    studioWmChanged = true;
+                    continue;
+                }
+                if (key == "studioWatermarkOpacity") {
+                    if (!value.is_number() || value.get<double>() < 0.03 || value.get<double>() > 1.0)
+                        return {{"success", false}, {"error", "invalid studioWatermarkOpacity"}};
+                    curStudioWm.opacity = std::clamp(static_cast<float>(value.get<double>()), 0.04f, 1.00f);
+                    studioWmChanged = true;
+                    continue;
+                }
                 if ((key == "includeCursor" || key == "showClickEffects" ||
                      key == "showClickZoom" || key == "includeKeycast" ||
                      key == "captureSystemAudio" || key == "captureMicrophone" ||
@@ -1164,13 +1380,38 @@ public:
                     key != "studioTheme" && key != "studioAutoCaptions" &&
                     key != "studioBgBlur" && key != "studioShadow" &&
                     key != "studioCornerRadius" && key != "studioMotionBlur" &&
-                    key != "studioCursorHalo" && key != "studioCustomBg" &&
+                    key != "studioCursorHalo" && key != "studioClickStyle" && key != "studioCustomBg" &&
                     key != "systemAudioDeviceId" && key != "microphoneDeviceId" &&
                     key != "systemAudioVolume" && key != "microphoneVolume")
                     return {{"success", false}, {"error", "unsupported setting: " + key}};
+                directParams[key] = value;
             }
-            const bool saved = tools3000::core::ConfigManager::instance().mergePatch(
-                {{"recording", params}}, "/recording");
+
+            bool saved = true;
+            if (!directParams.empty()) {
+                saved = tools3000::core::ConfigManager::instance().mergePatch(
+                    {{"recording", directParams}}, "/recording");
+            }
+            if (saved) {
+                auto& cm = tools3000::core::ConfigManager::instance();
+                if (params.contains("studioExportFormat")) {
+                    cm.set<int>("/recording/studioExport/format", params.at("studioExportFormat").get<int>());
+                    cm.set<bool>("/recording/studioExport/savePrefs", true);
+                }
+                if (params.contains("studioExportResolution")) {
+                    cm.set<int>("/recording/studioExport/resolution", params.at("studioExportResolution").get<int>());
+                    cm.set<bool>("/recording/studioExport/savePrefs", true);
+                }
+                if (params.contains("studioExportAutoClose")) {
+                    cm.set<bool>("/recording/studioExport/autoClose", params.at("studioExportAutoClose").get<bool>());
+                }
+                if (studioWmChanged) {
+                    tools3000::capture::WatermarkRenderer::saveStudioWatermarkConfig(curStudioWm);
+                    if (!curStudioWm.imagePathUtf8.empty()) {
+                        tools3000::capture::WatermarkRenderer::pushStudioRecentLogoPath(curStudioWm.imagePathUtf8);
+                    }
+                }
+            }
             if (saved && params.contains("format")) {
                 const auto fmt = params.at("format").get<std::string>();
                 if (fmt != "gif") {
@@ -1184,6 +1425,11 @@ public:
                 ScreenRecorder::instance().setAudioVolumes(
                     std::clamp(config.get<int>("/recording/systemAudioVolume", 100), 0, 200) / 100.0f,
                     std::clamp(config.get<int>("/recording/microphoneVolume", 100), 0, 200) / 100.0f);
+            }
+            if (saved && params.contains("hideIndicatorInCapture")) {
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    RecordingIndicator::instance().refreshCaptureAffinity();
+                });
             }
             return {{"success", saved}, {"error", saved ? "" : "failed to persist settings"}};
         });

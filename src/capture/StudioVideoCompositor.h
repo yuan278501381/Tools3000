@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -102,13 +103,16 @@ public:
         int width,
         int height);
 
-    /// 实时合成单帧画面（自动 2D/3D 运镜 + 真实高清壁纸/景深模糊/内框圆角/立体阴影 + 视频时间轴标注打码 + 同源鼠标回显 + 字幕）
+    /// 实时合成单帧画面（自动 2D/3D 运镜 + 真实高清壁纸/景深模糊/内框圆角/立体阴影 + 动态重点视频标注/打码 + 同源鼠标回显 + 字幕）
     cv::Mat composeFrame(
         const cv::Mat& rawBgrOrBgra,
         const StudioEvaluatedFrame& eval,
         const StudioRenderConfig& config,
         cv::Size targetSize = {},
-        const std::vector<StudioAnnotationItem>* annotations = nullptr);
+        const std::vector<StudioAnnotationItem>* annotations = nullptr,
+        bool animateAnnotations = true,
+        int64_t annotationPreviewElapsedMs = -1,
+        int previewTargetAnnIndex = -1);
 
     /// 多格式全参数导出入口（支持 MP4 / HEVC / 微信自动播放 GIF / 高清 GIF / 网页动图 WebP / WebM）
     static bool exportStudioMedia(
@@ -165,7 +169,8 @@ private:
         float x, float y,
         float scale,
         float rippleProgress,
-        bool rippleRight);
+        bool rippleRight,
+        StudioClickEffectStyle style = StudioClickEffectStyle::CrystalPulse);
 
     static void drawCrispVectorCursor(
         cv::Mat& canvasBgr,
@@ -174,7 +179,9 @@ private:
         float scale,
         float rippleProgress,
         bool rippleRight,
-        bool highlightHalo = false);
+        bool highlightHalo = false,
+        float tiltDeg = 0.0f,
+        StudioClickEffectStyle style = StudioClickEffectStyle::CrystalPulse);
 
     // 壁纸 + 景深模糊 + 柔和立体投影 + 微晶外框预计算底板缓存
     cv::Mat m_cachedBackdropBgr;
@@ -197,6 +204,35 @@ private:
     cv::Mat m_cachedCaptionBgra;
     int m_cachedCaptionDrawX = 0;
     int m_cachedCaptionDrawY = 0;
+};
+
+/// 演播室驻留式原生全分辨率原片帧解码器（Dual-Tier Retina Preview Engine 核心组件）
+/// - 顺序播放时免 Seek 流式推进解码（单帧 1080p 耗时 ~1.5ms）
+/// - 暂停精修/放大窗口/特写运镜时按需随机精准 Seek 并通过字节受限 LRU 缓存提供 0ms 重复合成命中
+class StudioHiResFrameReader {
+public:
+    StudioHiResFrameReader();
+    ~StudioHiResFrameReader();
+
+    StudioHiResFrameReader(const StudioHiResFrameReader&) = delete;
+    StudioHiResFrameReader& operator=(const StudioHiResFrameReader&) = delete;
+
+    bool open(const std::string& videoPathUtf8, int maxDecodeLongSide = 3200);
+    void close() noexcept;
+    bool isOpen() const noexcept;
+
+    int nativeWidth() const noexcept;
+    int nativeHeight() const noexcept;
+
+    /// 0ms 查询内存 LRU 原生全分辨率帧缓存（调整壁纸/圆角/标注/水印时零重解码直接命中）
+    bool tryGetCachedFrame(double targetSec, cv::Mat& outBgr, double toleranceSec = 0.020) noexcept;
+
+    /// 解码指定源视频秒数的原生高分辨率 BGR 帧（自动选择流式前滚或关键帧回退精准 Seek）
+    bool decodeFrameAt(double targetSec, cv::Mat& outBgr);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
 } // namespace tools3000::capture

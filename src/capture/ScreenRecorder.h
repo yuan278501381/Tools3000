@@ -146,7 +146,13 @@ struct GifPaletteOptimizer {
     bool reserveTransparent = false;
     bool enableDithering = true;
     bool enableFrameDiff = false;
+    bool lockPalette = false;
     float cornerRadius = 0.0f;
+
+    std::vector<uint64_t> accumHist;
+    std::vector<uint64_t> accumSumR;
+    std::vector<uint64_t> accumSumG;
+    std::vector<uint64_t> accumSumB;
 
     std::vector<uint8_t> prevFrameBgr;
     int prevWidth = 0;
@@ -166,6 +172,9 @@ struct GifPaletteOptimizer {
         lastDirtyBottom = 0;
     }
 
+    void resetHistogram();
+    void accumulateHistogram(const uint8_t* srcData, int width, int height, int stride, int bpp);
+    void finalizePaletteFromHistogram();
     void updatePalette(const uint8_t* srcData, int width, int height, int stride, int bpp);
     void quantizeFrame(const uint8_t* srcData, int width, int height, int stride, int bpp,
                        uint8_t* dstData, int dstLinesize, uint32_t* dstPalette);
@@ -348,6 +357,7 @@ private:
     mutable std::mutex m_studioDataMutex;
     StudioTimelineData m_lastStudioTimeline;
     StudioRenderConfig m_lastStudioConfig{};
+    WatermarkConfig m_directSessionWatermark{};
     std::vector<cv::Mat> m_livePreviewDeck;
     std::vector<float> m_liveAudioWaveformPeaks;
     size_t m_audioPeakDownsampleFactor = 1;

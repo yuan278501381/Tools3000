@@ -160,6 +160,9 @@ private:
     bool m_draggingScrollbar = false;
     float m_scrollbarDragOffset = 0.0f;
     bool m_hoverScrollbar = false;
+    bool m_draggingWindow = false;
+    POINT m_dragStartScreenPt{};
+    POINT m_windowStartPos{};
 
     int m_hoverLineCopyBtn = -1;
     int m_pressedLineCopyBtn = -1;

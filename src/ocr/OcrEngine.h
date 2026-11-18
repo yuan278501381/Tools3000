@@ -29,6 +29,10 @@ struct OcrResult {
     cv::Rect box;
     /// 与 text 解码出的 UTF-32 Unicode 码点序列 1:1 对应的原图物理像素子包围盒
     std::vector<cv::Rect> charBoxes;
+    /// 所属版面分栏/局部 UI 区块 ID（同区域内流式阅读，跨区域隔离防串行）
+    int layoutRegionId = 0;
+    /// 严格水平对齐的逻辑行 ID（同区域且基线严格对齐时共享同一 ID，用于整行悬停高亮）
+    int alignedRowId = -1;
 };
 
 struct OcrQrResult {
@@ -103,7 +107,16 @@ public:
         float scaleFactor = 1.0f,
         int borderPad = 0,
         int maxImageWidth = 0,
-        int maxImageHeight = 0);
+        int maxImageHeight = 0,
+        const cv::Mat& sourceImage = {});
+
+    /// 对已识别细粒度文本块（含精确 charBoxes）执行 UI 分栏感知切分与严苛水平基线对齐行聚类（双引擎共享 SSOT）
+    static std::vector<OcrResult> assembleRecognizedBlocksWithLayout(
+        std::vector<OcrResult> rawBlocks,
+        const cv::Mat& sourceImage = {});
+
+    /// 将含制表符的同行结果无损拆解为保留 layoutRegionId / alignedRowId 的紧凑原子块（供原图实景选字消除空白幽灵框）
+    static std::vector<OcrResult> splitIntoAtomicBlocks(const std::vector<OcrResult>& lines);
 
     /// 对已识别文本块集合执行 XY-Cut 分栏阅读序重排与同行拼接（供贴图选词复制与全选复制复用）
     static std::string orderTextBlocksWithXYCut(
