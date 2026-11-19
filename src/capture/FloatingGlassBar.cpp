@@ -37,6 +37,12 @@ FloatingGlassBar::ThemePalette FloatingGlassBar::resolveThemePalette() noexcept 
     return resolveThemePalette(isEffectiveDarkMode());
 }
 
+FloatingGlassBar::ThemePalette FloatingGlassBar::resolveHudPalette() noexcept {
+    // 截图、录屏与贴图操作期 HUD 恒定锁定「黑曜石暗房光学玻璃」深色体系：
+    // 在纯白文档、彩色网页或深色 IDE 上均稳定隐退不刺眼，始终保持专业创作心流
+    return resolveThemePalette(true);
+}
+
 FloatingGlassBar::ThemePalette FloatingGlassBar::resolveThemePalette(bool isDark) noexcept {
     const auto rgb = effectiveAccentRGB();
     ThemePalette p{};
@@ -44,41 +50,41 @@ FloatingGlassBar::ThemePalette FloatingGlassBar::resolveThemePalette(bool isDark
     p.accent = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 1.0f);
 
     if (isDark) {
-        p.accentSoftBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.24f);
-        p.accentHoverBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.34f);
-        p.accentBorder = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.58f);
-        // 暗色底上适度混入 35% 纯白，保障深蓝/深紫在黑曜石底板上高对比清晰可读
+        p.accentSoftBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.20f);
+        p.accentHoverBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.30f);
+        p.accentBorder = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.56f);
+        // 暗房炭黑底上混入 38% 纯白，保障任意品牌色（含深蓝/深紫）在黑曜石面板上高对比且克制优雅
         p.accentText = D2D1::ColorF(
-            std::min(1.0f, rgb.r * 0.65f + 0.35f),
-            std::min(1.0f, rgb.g * 0.65f + 0.35f),
-            std::min(1.0f, rgb.b * 0.65f + 0.35f),
+            std::min(1.0f, rgb.r * 0.62f + 0.38f),
+            std::min(1.0f, rgb.g * 0.62f + 0.38f),
+            std::min(1.0f, rgb.b * 0.62f + 0.38f),
             0.98f);
 
-        p.panelBg = D2D1::ColorF(18.0f / 255.0f, 21.0f / 255.0f, 29.0f / 255.0f, 0.96f);
-        p.panelHoverBg = D2D1::ColorF(28.0f / 255.0f, 32.0f / 255.0f, 43.0f / 255.0f, 0.98f);
-        p.panelBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f);
-        p.panelHoverBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.26f);
-        p.panelInnerHighlight = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f);
+        p.panelBg = D2D1::ColorF(18.0f / 255.0f, 20.0f / 255.0f, 26.0f / 255.0f, 0.96f);
+        p.panelHoverBg = D2D1::ColorF(29.0f / 255.0f, 32.0f / 255.0f, 41.0f / 255.0f, 0.98f);
+        p.panelBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.13f);
+        p.panelHoverBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f);
+        p.panelInnerHighlight = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.22f);
 
         p.primaryText = D2D1::ColorF(248.0f / 255.0f, 250.0f / 255.0f, 252.0f / 255.0f, 0.98f);
-        p.secondaryText = D2D1::ColorF(203.0f / 255.0f, 213.0f / 255.0f, 225.0f / 255.0f, 0.92f);
-        p.mutedText = D2D1::ColorF(148.0f / 255.0f, 163.0f / 255.0f, 184.0f / 255.0f, 0.88f);
-        p.divider = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f);
-        p.hoverBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.11f);
+        p.secondaryText = D2D1::ColorF(196.0f / 255.0f, 204.0f / 255.0f, 218.0f / 255.0f, 0.92f);
+        p.mutedText = D2D1::ColorF(138.0f / 255.0f, 148.0f / 255.0f, 166.0f / 255.0f, 0.88f);
+        p.divider = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f);
+        p.hoverBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.095f);
 
-        p.chipBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.09f);
-        p.chipHoverBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.15f);
-        p.chipBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f);
-        p.chipHoverBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f);
+        p.chipBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.075f);
+        p.chipHoverBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.135f);
+        p.chipBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f);
+        p.chipHoverBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.26f);
         p.chipText = D2D1::ColorF(241.0f / 255.0f, 245.0f / 255.0f, 249.0f / 255.0f, 0.96f);
 
-        p.gripDotIdle = D2D1::ColorF(148.0f / 255.0f, 163.0f / 255.0f, 184.0f / 255.0f, 0.62f);
-        p.gripDotHover = D2D1::ColorF(248.0f / 255.0f, 250.0f / 255.0f, 252.0f / 255.0f, 0.92f);
+        p.gripDotIdle = D2D1::ColorF(160.0f / 255.0f, 170.0f / 255.0f, 188.0f / 255.0f, 0.44f);
+        p.gripDotHover = D2D1::ColorF(248.0f / 255.0f, 250.0f / 255.0f, 252.0f / 255.0f, 0.90f);
         p.toggleOnBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.95f);
-        p.toggleOffBg = D2D1::ColorF(71.0f / 255.0f, 85.0f / 255.0f, 105.0f / 255.0f, 0.88f);
-        p.pressBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f);
-        p.dangerSoftBg = D2D1::ColorF(239.0f / 255.0f, 68.0f / 255.0f, 68.0f / 255.0f, 0.24f);
-        p.dangerText = D2D1::ColorF(254.0f / 255.0f, 202.0f / 255.0f, 202.0f / 255.0f, 0.98f);
+        p.toggleOffBg = D2D1::ColorF(66.0f / 255.0f, 74.0f / 255.0f, 90.0f / 255.0f, 0.90f);
+        p.pressBg = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f);
+        p.dangerSoftBg = D2D1::ColorF(244.0f / 255.0f, 63.0f / 255.0f, 94.0f / 255.0f, 0.22f);
+        p.dangerText = D2D1::ColorF(254.0f / 255.0f, 180.0f / 255.0f, 190.0f / 255.0f, 0.98f);
     } else {
         p.accentSoftBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.13f);
         p.accentHoverBg = D2D1::ColorF(rgb.r, rgb.g, rgb.b, 0.20f);
@@ -188,7 +194,7 @@ void FloatingGlassBar::drawGlassPanel(
         const auto outerContourRect = D2D1::RectF(rect.left - 0.5f, rect.top - 0.5f, rect.right + 0.5f, rect.bottom + 0.5f);
         ComPtr<ID2D1SolidColorBrush> outerContourBrush;
         rt->CreateSolidColorBrush(
-            isDark ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.52f)
+            isDark ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.68f)
                    : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.12f),
             outerContourBrush.GetAddressOf());
         if (outerContourBrush) {
@@ -199,16 +205,16 @@ void FloatingGlassBar::drawGlassPanel(
 
     auto rr = D2D1::RoundedRect(rect, radius, radius);
 
-    // 3. 高定黑曜石 / 纯净雪瓷微晶渐变主体 (Obsidian & Porcelain Glassmorphism Body)
+    // 3. 高定暗房丝绒黑曜石 / 纯净雪瓷微晶渐变主体 (Obsidian Darkroom & Porcelain Glassmorphism Body)
     ComPtr<ID2D1GradientStopCollection> stopCollection;
     D2D1_GRADIENT_STOP stops[3];
     if (isDark) {
         stops[0].position = 0.0f;
-        stops[0].color = D2D1::ColorF(26.0f / 255.0f, 29.0f / 255.0f, 37.0f / 255.0f, 0.95f);
-        stops[1].position = 0.45f;
-        stops[1].color = D2D1::ColorF(19.0f / 255.0f, 22.0f / 255.0f, 29.0f / 255.0f, 0.96f);
+        stops[0].color = D2D1::ColorF(30.0f / 255.0f, 33.0f / 255.0f, 41.0f / 255.0f, 0.945f);
+        stops[1].position = 0.42f;
+        stops[1].color = D2D1::ColorF(20.0f / 255.0f, 22.0f / 255.0f, 28.0f / 255.0f, 0.960f);
         stops[2].position = 1.0f;
-        stops[2].color = D2D1::ColorF(14.0f / 255.0f, 16.0f / 255.0f, 22.0f / 255.0f, 0.97f);
+        stops[2].color = D2D1::ColorF(13.0f / 255.0f, 15.0f / 255.0f, 20.0f / 255.0f, 0.975f);
     } else {
         stops[0].position = 0.0f;
         stops[0].color = D2D1::ColorF(255.0f / 255.0f, 255.0f / 255.0f, 255.0f / 255.0f, 0.98f);
@@ -234,7 +240,7 @@ void FloatingGlassBar::drawGlassPanel(
     if (!filledBody) {
         ComPtr<ID2D1SolidColorBrush> fallbackBrush;
         rt->CreateSolidColorBrush(
-            isDark ? D2D1::ColorF(18.0f / 255.0f, 20.0f / 255.0f, 27.0f / 255.0f, 0.96f)
+            isDark ? D2D1::ColorF(18.0f / 255.0f, 20.0f / 255.0f, 26.0f / 255.0f, 0.96f)
                    : D2D1::ColorF(250.0f / 255.0f, 251.0f / 255.0f, 253.0f / 255.0f, 0.96f),
             fallbackBrush.GetAddressOf());
         if (fallbackBrush) rt->FillRoundedRectangle(rr, fallbackBrush.Get());
@@ -261,8 +267,8 @@ void FloatingGlassBar::drawGlassPanel(
     D2D1_GRADIENT_STOP rimStops[3];
     if (isDark) {
         rimStops[0] = { 0.0f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.22f) };
-        rimStops[1] = { 0.35f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.09f) };
-        rimStops[2] = { 1.0f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.04f) };
+        rimStops[1] = { 0.35f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.085f) };
+        rimStops[2] = { 1.0f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.045f) };
     } else {
         rimStops[0] = { 0.0f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f) };
         rimStops[1] = { 0.45f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.45f) };
@@ -278,6 +284,26 @@ void FloatingGlassBar::drawGlassPanel(
                     D2D1::Point2F(innerRimRect.left, innerRimRect.bottom)),
                 rimStopCol.Get(), rimGrad.GetAddressOf())) && rimGrad) {
             rt->DrawRoundedRectangle(D2D1::RoundedRect(innerRimRect, innerRadius, innerRadius), rimGrad.Get(), 1.0f);
+        }
+    }
+
+    // 5. 顶部光学漫反射月光冠线 (Top Specular Crown Light) — 深浅双态均呈现精密仪器研磨玻璃立体感
+    if ((rect.right - rect.left) > radius * 2.4f + 8.0f) {
+        const float crownX0 = rect.left + radius * 0.9f;
+        const float crownX1 = rect.right - radius * 0.9f;
+        const float crownY = rect.top + (fullSurfaceWindowMode ? 1.5f : 0.75f);
+        D2D1_GRADIENT_STOP crownStops[3] = {
+            { 0.0f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.0f) },
+            { 0.5f, D2D1::ColorF(1.0f, 1.0f, 1.0f, isDark ? 0.24f : 0.96f) },
+            { 1.0f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.0f) }
+        };
+        ComPtr<ID2D1GradientStopCollection> crownCol;
+        ComPtr<ID2D1LinearGradientBrush> crownGrad;
+        if (SUCCEEDED(rt->CreateGradientStopCollection(crownStops, 3, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, crownCol.GetAddressOf())) &&
+            SUCCEEDED(rt->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(crownX0, crownY), D2D1::Point2F(crownX1, crownY)),
+                crownCol.Get(), crownGrad.GetAddressOf())) && crownGrad) {
+            rt->DrawLine(D2D1::Point2F(crownX0, crownY), D2D1::Point2F(crownX1, crownY), crownGrad.Get(), 1.0f);
         }
     }
 }
@@ -299,7 +325,7 @@ void FloatingGlassBar::drawButtonPill(
     if (isConfirm) {
         D2D1_GRADIENT_STOP cStops[2] = {
             { 0.0f, D2D1::ColorF(0.08f, 0.78f, 0.49f, (isHovered ? 1.0f : 0.96f) * alpha) },
-            { 1.0f, D2D1::ColorF(0.04f, 0.62f, 0.39f, (isHovered ? 1.0f : 0.96f) * alpha) }
+            { 1.0f, D2D1::ColorF(0.04f, 0.60f, 0.37f, (isHovered ? 1.0f : 0.96f) * alpha) }
         };
         ComPtr<ID2D1GradientStopCollection> cCol;
         ComPtr<ID2D1LinearGradientBrush> cGrad;
@@ -313,36 +339,110 @@ void FloatingGlassBar::drawButtonPill(
             rt->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.72f, 0.44f, (isHovered ? 1.0f : 0.95f) * alpha), confirmBrush.GetAddressOf());
             if (confirmBrush) rt->FillRoundedRectangle(rr, confirmBrush.Get());
         }
+        ComPtr<ID2D1SolidColorBrush> sheen;
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.26f * alpha), sheen.GetAddressOf());
+        if (sheen) {
+            const float ir = std::max(1.0f, radius - 0.6f);
+            rt->DrawRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(rect.left + 0.6f, rect.top + 0.6f, rect.right - 0.6f, rect.bottom - 0.6f), ir, ir),
+                sheen.Get(), 0.9f);
+        }
         return;
     }
 
     if (isDanger) {
-        ComPtr<ID2D1SolidColorBrush> dangerBrush;
-        float a = (isHovered ? (isDark ? 0.30f : 0.16f) : (isDark ? 0.16f : 0.08f)) * alpha;
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.25f, 0.32f, a), dangerBrush.GetAddressOf());
+        if (!isHovered && !isActive) return;
+        ComPtr<ID2D1SolidColorBrush> dangerBrush, dangerBorder;
+        const float a = (isHovered ? (isDark ? 0.26f : 0.16f) : (isDark ? 0.16f : 0.08f)) * alpha;
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.25f, 0.37f, a), dangerBrush.GetAddressOf());
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.32f, 0.42f, (isHovered ? 0.42f : 0.24f) * alpha), dangerBorder.GetAddressOf());
         if (dangerBrush) rt->FillRoundedRectangle(rr, dangerBrush.Get());
+        if (dangerBorder) rt->DrawRoundedRectangle(rr, dangerBorder.Get(), 0.9f);
         return;
     }
 
     if (isActive) {
-        ComPtr<ID2D1SolidColorBrush> activeBg, activeBorder;
         const tools3000::core::AccentColorRGB themeRgb = effectiveAccentRGB();
-        const float bgAlpha = (isDark ? 0.24f : 0.13f) * alpha;
-        const float borderAlpha = (isDark ? 0.56f : 0.44f) * alpha;
-        rt->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, bgAlpha), activeBg.GetAddressOf());
-        rt->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, borderAlpha), activeBorder.GetAddressOf());
-        if (activeBg) rt->FillRoundedRectangle(rr, activeBg.Get());
-        if (activeBorder) rt->DrawRoundedRectangle(rr, activeBorder.Get(), 1.0f);
+        if (isDark) {
+            // 暗房高定立体微浮键帽：柔和石墨高光渐变 + 品牌主题微润 + 极细光学上沿边
+            D2D1_GRADIENT_STOP aStops[2] = {
+                { 0.0f, D2D1::ColorF(
+                    std::min(1.0f, themeRgb.r * 0.42f + 0.14f),
+                    std::min(1.0f, themeRgb.g * 0.42f + 0.15f),
+                    std::min(1.0f, themeRgb.b * 0.42f + 0.18f),
+                    0.46f * alpha) },
+                { 1.0f, D2D1::ColorF(
+                    std::min(1.0f, themeRgb.r * 0.34f + 0.06f),
+                    std::min(1.0f, themeRgb.g * 0.34f + 0.07f),
+                    std::min(1.0f, themeRgb.b * 0.34f + 0.10f),
+                    0.34f * alpha) }
+            };
+            ComPtr<ID2D1GradientStopCollection> aCol;
+            ComPtr<ID2D1LinearGradientBrush> aGrad;
+            if (SUCCEEDED(rt->CreateGradientStopCollection(aStops, 2, aCol.GetAddressOf())) &&
+                SUCCEEDED(rt->CreateLinearGradientBrush(
+                    D2D1::LinearGradientBrushProperties(D2D1::Point2F(rect.left, rect.top), D2D1::Point2F(rect.left, rect.bottom)),
+                    aCol.Get(), aGrad.GetAddressOf())) && aGrad) {
+                rt->FillRoundedRectangle(rr, aGrad.Get());
+            } else {
+                ComPtr<ID2D1SolidColorBrush> activeBg;
+                rt->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.24f * alpha), activeBg.GetAddressOf());
+                if (activeBg) rt->FillRoundedRectangle(rr, activeBg.Get());
+            }
+            ComPtr<ID2D1SolidColorBrush> activeBorder;
+            rt->CreateSolidColorBrush(
+                D2D1::ColorF(
+                    std::min(1.0f, themeRgb.r * 0.72f + 0.28f),
+                    std::min(1.0f, themeRgb.g * 0.72f + 0.28f),
+                    std::min(1.0f, themeRgb.b * 0.72f + 0.28f),
+                    0.50f * alpha),
+                activeBorder.GetAddressOf());
+            if (activeBorder) rt->DrawRoundedRectangle(rr, activeBorder.Get(), 0.95f);
+        } else {
+            // 浅色雪瓷高定立体微浮键帽：顶部柔和冷白微润 -> 底部品牌微晶底色 + 细腻主题折射边
+            D2D1_GRADIENT_STOP lStops[2] = {
+                { 0.0f, D2D1::ColorF(
+                    std::min(1.0f, themeRgb.r * 0.14f + 0.86f),
+                    std::min(1.0f, themeRgb.g * 0.14f + 0.86f),
+                    std::min(1.0f, themeRgb.b * 0.14f + 0.86f),
+                    0.96f * alpha) },
+                { 1.0f, D2D1::ColorF(
+                    std::min(1.0f, themeRgb.r * 0.22f + 0.78f),
+                    std::min(1.0f, themeRgb.g * 0.22f + 0.78f),
+                    std::min(1.0f, themeRgb.b * 0.22f + 0.78f),
+                    0.94f * alpha) }
+            };
+            ComPtr<ID2D1GradientStopCollection> lCol;
+            ComPtr<ID2D1LinearGradientBrush> lGrad;
+            if (SUCCEEDED(rt->CreateGradientStopCollection(lStops, 2, lCol.GetAddressOf())) &&
+                SUCCEEDED(rt->CreateLinearGradientBrush(
+                    D2D1::LinearGradientBrushProperties(D2D1::Point2F(rect.left, rect.top), D2D1::Point2F(rect.left, rect.bottom)),
+                    lCol.Get(), lGrad.GetAddressOf())) && lGrad) {
+                rt->FillRoundedRectangle(rr, lGrad.Get());
+            } else {
+                ComPtr<ID2D1SolidColorBrush> activeBg;
+                rt->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.14f * alpha), activeBg.GetAddressOf());
+                if (activeBg) rt->FillRoundedRectangle(rr, activeBg.Get());
+            }
+            ComPtr<ID2D1SolidColorBrush> activeBorder;
+            rt->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.40f * alpha), activeBorder.GetAddressOf());
+            if (activeBorder) rt->DrawRoundedRectangle(rr, activeBorder.Get(), 0.95f);
+        }
         return;
     }
 
     if (isHovered) {
-        ComPtr<ID2D1SolidColorBrush> hoverBrush;
-        float hAlpha = (isDark ? 0.11f : 0.055f) * alpha;
+        ComPtr<ID2D1SolidColorBrush> hoverBrush, hoverBorder;
+        const float hAlpha = (isDark ? 0.095f : 0.060f) * alpha;
         rt->CreateSolidColorBrush(isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, hAlpha)
                                          : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, hAlpha),
                                   hoverBrush.GetAddressOf());
         if (hoverBrush) rt->FillRoundedRectangle(rr, hoverBrush.Get());
+        rt->CreateSolidColorBrush(
+            isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.13f * alpha)
+                   : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.10f * alpha),
+            hoverBorder.GetAddressOf());
+        if (hoverBorder) rt->DrawRoundedRectangle(rr, hoverBorder.Get(), 0.85f);
     }
 }
 

@@ -51,6 +51,7 @@ enum class MarkupTool {
     Watermark,   // 水印叠加
     Inpaint,     // 智能消除（背景重建）
     Blur,        // 平滑高斯模糊
+    TextReplace, // 原位无痕改字（背景擦除 + 6 维视觉 DNA 克隆 + DirectWrite 渲染）
 };
 
 /// 线条样式
@@ -253,6 +254,20 @@ struct MarkupElement {
 
     // 智能消除（Inpaint）参数
     int inpaintRadius = 5;            // 修复半径
+
+    // 原位无痕改字（TextReplace）无损图元参数
+    std::string replaceOriginalText;
+    cv::Rect replaceSourceRect{0, 0, 0, 0};
+    std::vector<cv::Rect> replaceCharBoxes;
+    int replaceFontClass = 0;         // 0=UiSans, 1=Monospace, 2=Serif
+    int replaceFontWeight = 400;      // 400 / 500 / 600 / 700
+    float replaceOffsetX = 0.0f;
+    float replaceOffsetY = 0.0f;
+    int replaceBgMode = 0;            // 0=Auto, 1=CleanPlane, 2=AiInpaint
+    bool replaceStyleInitialized = false;
+    bool replaceReflowRight = false;  // 改长时自动将同行右侧原图文字无损顺延让位
+    cv::Rect replaceRightTailRect{0, 0, 0, 0};
+    mutable cv::Rect replaceLastRenderRect{0, 0, 0, 0};
 
     uint32_t id = 0; // 唯一标识
 

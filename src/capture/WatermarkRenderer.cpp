@@ -389,6 +389,22 @@ void blendPremultipliedBgraOntoTarget(
     }
 }
 
+void applyMultiLineTypography(IDWriteTextLayout* layout, const std::wstring& resolved, float baseFontPx) {
+    if (!layout) return;
+    const size_t firstNl = resolved.find(L'\n');
+    if (firstNl == std::wstring::npos) return;
+
+    layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, baseFontPx * 1.18f, baseFontPx * 0.94f);
+    if (firstNl + 1 < resolved.size()) {
+        const DWRITE_TEXT_RANGE subRange{
+            static_cast<UINT32>(firstNl + 1),
+            static_cast<UINT32>(resolved.size() - (firstNl + 1))
+        };
+        layout->SetFontWeight(DWRITE_FONT_WEIGHT_MEDIUM, subRange);
+        layout->SetFontSize((std::max)(7.5f, baseFontPx * 0.86f), subRange);
+    }
+}
+
 bool measureCornerTextBadgeSize(
     int canvasW, int canvasH, const WatermarkConfig& cfg,
     std::wstring& outResolved, float& outFontPx, int& outBadgeW, int& outBadgeH,
@@ -411,19 +427,28 @@ bool measureCornerTextBadgeSize(
     outFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
     const float maxLayoutW = (std::max)(120.0f, canvasW * 0.85f);
+    const float maxLayoutH = (std::max)(outFontPx * 10.0f, canvasH * 0.65f);
     if (FAILED(t_wmD2D.dwFactory->CreateTextLayout(
             outResolved.c_str(), static_cast<UINT32>(outResolved.size()),
-            outFmt.Get(), maxLayoutW, outFontPx * 2.5f, outLayout.GetAddressOf())) || !outLayout) {
+            outFmt.Get(), maxLayoutW, maxLayoutH, outLayout.GetAddressOf())) || !outLayout) {
         return false;
     }
+    applyMultiLineTypography(outLayout.Get(), outResolved, outFontPx);
 
     DWRITE_TEXT_METRICS metrics{};
     if (FAILED(outLayout->GetMetrics(&metrics))) return false;
 
+    const float tightW = (std::max)(16.0f, std::ceil(metrics.widthIncludingTrailingWhitespace) + 2.0f);
+    const float tightH = (std::max)(outFontPx, std::ceil(metrics.height) + 2.0f);
+    outLayout->SetMaxWidth(tightW);
+    outLayout->SetMaxHeight(tightH);
+    const bool isMultiLine = (outResolved.find(L'\n') != std::wstring::npos);
+    outLayout->SetTextAlignment(isMultiLine ? DWRITE_TEXT_ALIGNMENT_LEADING : DWRITE_TEXT_ALIGNMENT_CENTER);
+
     const int padX = (std::max)(8, static_cast<int>(std::round(outFontPx * 0.62f)));
-    const int padY = (std::max)(5, static_cast<int>(std::round(outFontPx * 0.34f)));
-    outBadgeW = std::clamp(static_cast<int>(std::ceil(metrics.widthIncludingTrailingWhitespace)) + padX * 2, 24, canvasW);
-    outBadgeH = std::clamp(static_cast<int>(std::ceil(metrics.height)) + padY * 2, 18, canvasH);
+    const int padY = (std::max)(5, static_cast<int>(std::round(outFontPx * 0.36f)));
+    outBadgeW = std::clamp(static_cast<int>(std::ceil(tightW)) + padX * 2, 24, canvasW);
+    outBadgeH = std::clamp(static_cast<int>(std::ceil(tightH)) + padY * 2, 18, canvasH);
     return true;
 }
 
@@ -433,6 +458,21 @@ std::wstring WatermarkRenderer::resolveDynamicText(std::string_view utf8Template
     std::wstring text = utf8Template.empty()
         ? L"{user} · {host} · {date} {time}"
         : tools3000::core::WinUtils::utf8ToWstring(std::string(utf8Template));
+
+    // 统一支持多行企业防泄密水印换行语法：真实换行符、字面量 "\n" 以及 "{nl}" 变量
+    {
+        size_t pos = 0;
+        while ((pos = text.find(L"\r\n", pos)) != std::wstring::npos) {
+            text.replace(pos, 2, L"\n");
+            ++pos;
+        }
+        pos = 0;
+        while ((pos = text.find(L"\\n", pos)) != std::wstring::npos) {
+            text.replace(pos, 2, L"\n");
+            ++pos;
+        }
+        replaceTokenCaseInsensitive(text, L"{nl}", L"\n");
+    }
 
     if (text.find(L'{') != std::wstring::npos) {
         const auto now = std::chrono::system_clock::now();
@@ -637,7 +677,7 @@ bool WatermarkRenderer::applyInPlace(
         ComPtr<ID2D1SolidColorBrush> br;
         rt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), br.GetAddressOf());
         if (br) {
-            const float rad = std::clamp(dstRc.height * 0.28f, 4.0f, 12.0f);
+            const float rad = std::clamp((std::min)(dstRc.height * 0.28f, fontPx * 0.72f), 4.0f, 12.0f);
             const D2D1_RECT_F pillRc = D2D1::RectF(0.5f, 0.5f, dstRc.width - 0.5f, dstRc.height - 0.5f);
             br->SetColor(brightUnder
                 ? D2D1::ColorF(0.07f, 0.10f, 0.17f, 0.62f * safeOpacity)
@@ -647,10 +687,13 @@ bool WatermarkRenderer::applyInPlace(
             br->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.22f * safeOpacity));
             rt->DrawRoundedRectangle(D2D1::RoundedRect(pillRc, rad, rad), br.Get(), 1.0f);
 
-            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            DWRITE_TEXT_METRICS tm{};
+            const float drawW = SUCCEEDED(layout->GetMetrics(&tm)) ? layout->GetMaxWidth() : static_cast<float>(dstRc.width);
+            const float drawH = (tm.height > 0.5f) ? tm.height : static_cast<float>(dstRc.height);
+            const float ox = (std::max)(0.0f, (static_cast<float>(dstRc.width) - drawW) * 0.5f);
+            const float oy = (std::max)(0.0f, (static_cast<float>(dstRc.height) - drawH) * 0.5f);
             br->SetColor(D2D1::ColorF(0.98f, 0.99f, 1.0f, 0.96f * safeOpacity));
-            rt->DrawText(resolved.c_str(), static_cast<UINT32>(resolved.size()), fmt.Get(), pillRc, br.Get());
+            rt->DrawTextLayout(D2D1::Point2F(ox, oy), layout.Get(), br.Get());
         }
         if (FAILED(rt->EndDraw())) {
             t_wmD2D.releaseSurface();
@@ -692,15 +735,25 @@ bool WatermarkRenderer::applyInPlace(
     ComPtr<IDWriteTextLayout> layout;
     if (FAILED(t_wmD2D.dwFactory->CreateTextLayout(
             resolved.c_str(), static_cast<UINT32>(resolved.size()),
-            fmt.Get(), 2800.0f, fontPx * 3.0f, layout.GetAddressOf())) || !layout) {
+            fmt.Get(), 2800.0f, fontPx * 10.0f, layout.GetAddressOf())) || !layout) {
         return false;
     }
+    applyMultiLineTypography(layout.Get(), resolved, fontPx);
+
     DWRITE_TEXT_METRICS tm{};
     if (FAILED(layout->GetMetrics(&tm))) return false;
 
+    // 先以实际最宽行锁定紧凑盒宽；企业双行/多行水印采用标准左对齐（首行账号与次行日期时间左缘齐平），单行保持居中
+    const float tightW = (std::max)(28.0f, std::ceil(tm.widthIncludingTrailingWhitespace) + 4.0f);
+    layout->SetMaxWidth(tightW);
+    const bool isMultiLine = (resolved.find(L'\n') != std::wstring::npos);
+    layout->SetTextAlignment(isMultiLine ? DWRITE_TEXT_ALIGNMENT_LEADING : DWRITE_TEXT_ALIGNMENT_CENTER);
+    if (FAILED(layout->GetMetrics(&tm))) return false;
+
     const float textW = (std::max)(28.0f, tm.widthIncludingTrailingWhitespace);
-    const float stepX = textW + (std::max)(28.0f, fontPx * 4.0f);
-    const float stepY = (std::max)(24.0f, fontPx * 4.8f);
+    const float textH = (std::max)(fontPx, tm.height);
+    const float stepX = textW + (std::max)(28.0f, fontPx * 3.8f);
+    const float stepY = (std::max)(26.0f, textH + fontPx * 3.6f);
     const float diag = std::hypot(static_cast<float>(mW), static_cast<float>(mH));
 
     auto* rt = t_wmD2D.dcRt.Get();

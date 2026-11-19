@@ -7177,6 +7177,58 @@ TEST(PinPasteCoordinatorTest, DesktopFingerprintDeduplicationPreventsDuplicateLo
     }
 }
 
+TEST(PinPasteCoordinatorTest, ThinWavyAnnotationChangesFingerprintAndFreshClipboardBeatsOldHistory) {
+    using namespace tools3000::capture;
+
+    auto& history = CaptureHistory::instance();
+    history.clear();
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+
+    // 模拟真实截图 800x480：只在中间一条极细局部画 2px 波浪线（旧版 16x16 稀疏网格采样会 100% 漏扫导致撞指纹！）
+    cv::Mat original(480, 800, CV_8UC3, cv::Scalar(48, 43, 40));
+    cv::Mat annotated = original.clone();
+    cv::line(annotated, cv::Point(111, 137), cv::Point(193, 137), cv::Scalar(94, 63, 244), 2, cv::LINE_AA);
+
+    const uint64_t fpOrig = PinPasteCoordinator::computeContentFingerprint(original);
+    const uint64_t fpAnno = PinPasteCoordinator::computeContentFingerprint(annotated);
+    ASSERT_NE(fpOrig, 0ULL);
+    ASSERT_NE(fpAnno, 0ULL);
+    EXPECT_NE(fpOrig, fpAnno);
+
+    // 历史库中存着加波浪线前的原图，用户刚把加了波浪线的贴图 Ctrl+C 进了剪贴板，且原贴图仍开在桌面上
+    history.push(original, CaptureRegion{10, 10, 800, 480});
+    ASSERT_TRUE(ClipboardUtils::copyImageToClipboard(annotated));
+
+    // 1) 候选列表第 0 项必须是带波浪线的剪贴板新图（绝不可误判重复被丢弃！）
+    auto cands = coord.resolveCandidates(GetClipboardSequenceNumber(), history.count());
+    ASSERT_EQ(cands.size(), 2u);
+    EXPECT_TRUE(cands[0].isFromClipboard);
+    EXPECT_EQ(cands[0].contentFingerprint, fpAnno);
+    EXPECT_EQ(cands[1].contentFingerprint, fpOrig);
+
+    // 2) 即使桌面已经显示着当前贴图（指纹 fpAnno 与底图 fpOrig 都在 activeDesktopFingerprints），
+    //    用户刚执行 Ctrl+C 后紧接着按 F3，必须贴出带波浪线的 fpAnno，绝不能跳过它翻出无波浪线的 fpOrig！
+    std::unordered_set<uint64_t> desktopFps = { fpAnno, fpOrig };
+    auto dec = coord.stepNext(nullptr, &desktopFps);
+    ASSERT_TRUE(dec.has_value());
+    EXPECT_FALSE(dec->alreadyVisibleOnDesktop);
+    EXPECT_TRUE(dec->candidate.isFromClipboard);
+    EXPECT_EQ(dec->candidate.contentFingerprint, fpAnno);
+
+    // 3) 若未再次复制新内容而紧接着连按第 2 次 F3，此时防重复套娃机制恢复生效（绝不无限套娃）
+    auto secondDec = coord.stepNext(nullptr, &desktopFps);
+    ASSERT_TRUE(secondDec.has_value());
+    EXPECT_TRUE(secondDec->alreadyVisibleOnDesktop);
+
+    history.clear();
+    coord.reset();
+    for (int r = 0; r < 10; ++r) {
+        if (OpenClipboard(nullptr)) { EmptyClipboard(); CloseClipboard(); break; }
+        Sleep(5);
+    }
+}
+
 TEST(CaptureWindowFilterTest, VirtualDesktopCloakedAndZeroAlphaWindowsAreExcluded) {
     using namespace tools3000::core;
     EXPECT_FALSE(WinUtils::isWindowVisibleOnCurrentDesktop(nullptr));
@@ -12147,7 +12199,8 @@ TEST(PinWindowDragFirstAndZeroOcclusionTest, SmallPinZeroToolbarOcclusionAndDrag
         const auto afterOcrSelectState = invokeRpc(2113, "capture.inspectPinOcrState", nlohmann::json::object());
         EXPECT_EQ(afterOcrSelectState.value("selectedBlockCount", 0), 1);
 
-        // (5) V-01 防回退：切换浅色/深色主题并强制刷新 PinWindow 悬停工具栏与浮层胶囊，断言浅色绝不硬编码深黑底板
+        // (5) V-01 防回退：工具栏与贴图控件必须精准跟随主设置深浅主题（浅色雪瓷高定 / 深色黑曜石暗房），
+        //     而纯 HUD 提示浮层则由 FloatingGlassBar::resolveHudPalette() 独立锁定高级深色保持心流
         const std::string savedTheme = tools3000::core::ConfigManager::instance().get<std::string>("/general/theme", "dark");
         const auto lightPinThemeState = invokeRpc(2114, "capture.inspectPinOcrState", {
             {"setTheme", "light"},
@@ -12803,6 +12856,14 @@ TEST(FloatingGlassThemePaletteTest, FollowsLightDarkThemeAndCustomHexAccent) {
     EXPECT_NEAR(lightPal.accent.r, 255.0f / 255.0f, 0.01f);
     EXPECT_NEAR(lightPal.accent.g, 87.0f / 255.0f, 0.01f);
     EXPECT_NEAR(lightPal.accent.b, 51.0f / 255.0f, 0.01f);
+
+    // 截图与录屏 HUD 暗房恒定深色契约：即便全局主题为 light，resolveHudPalette() 也必须锁定暗房深色并联动品牌强调色
+    const auto hudInLight = FloatingGlassBar::resolveHudPalette();
+    EXPECT_TRUE(hudInLight.isDark);
+    EXPECT_LT(hudInLight.panelBg.r, 0.14f);
+    EXPECT_NEAR(hudInLight.accent.r, 255.0f / 255.0f, 0.01f);
+    EXPECT_NEAR(hudInLight.accent.g, 87.0f / 255.0f, 0.01f);
+    EXPECT_NEAR(hudInLight.accent.b, 51.0f / 255.0f, 0.01f);
 
     cfg.set<std::string>("/general/theme", "dark");
     cfg.set<std::string>("/general/accentColor", "emerald");
@@ -13778,6 +13839,351 @@ TEST(PinContextMenuTest, Direct2DPixelPreviewRendersDarkAndLightThemesCleanly) {
     }
 
     PinContextMenu::instance().shutdown();
+}
+
+TEST(WatermarkRendererTest, MultiLineEnterpriseDualRowResolveAndRender) {
+    using namespace tools3000::capture;
+
+    // 1. 验证字面量 "\n" 与 "{nl}" 均能解析为双行结构（首行账号、次行日期时间）
+    const std::wstring dualResolved = WatermarkRenderer::resolveDynamicText("admin\\n{date} {time}");
+    const size_t nlPos = dualResolved.find(L'\n');
+    ASSERT_NE(nlPos, std::wstring::npos);
+    EXPECT_EQ(dualResolved.substr(0, nlPos), L"admin");
+    EXPECT_GT(dualResolved.size(), nlPos + 10);
+
+    const std::wstring nlAliasResolved = WatermarkRenderer::resolveDynamicText("admin{nl}2026-11-19 15:30");
+    EXPECT_EQ(nlAliasResolved, L"admin\n2026-11-19 15:30");
+
+    // 2. 角标模式：双行胶囊测量高度必须显著高于单行（自适应撑开，不裁切次行）
+    WatermarkConfig singleCfg;
+    singleCfg.enabled = true;
+    singleCfg.mode = WatermarkMode::CornerText;
+    singleCfg.textTemplate = "admin";
+    singleCfg.scale = 1.0f;
+    singleCfg.opacity = 0.85f;
+    cv::Rect singleBounds;
+    ASSERT_TRUE(WatermarkRenderer::computeSingleBadgeBounds(1280, 720, singleCfg, singleBounds));
+
+    WatermarkConfig dualCfg = singleCfg;
+    dualCfg.textTemplate = "admin\\n2026-11-19 15:30";
+    cv::Rect dualBounds;
+    ASSERT_TRUE(WatermarkRenderer::computeSingleBadgeBounds(1280, 720, dualCfg, dualBounds));
+    EXPECT_GT(dualBounds.height, static_cast<int>(singleBounds.height * 1.35));
+
+    // 3. 企业平铺溯源模式：双行居中斜铺在浅色与深色画布上均正常显影且无越界崩溃
+    WatermarkConfig tiledCfg;
+    tiledCfg.enabled = true;
+    tiledCfg.mode = WatermarkMode::TiledTraceability;
+    tiledCfg.textTemplate = "admin\\n{date} {time}";
+    tiledCfg.scale = 1.0f;
+    tiledCfg.opacity = 0.22f;
+
+    cv::Mat lightCanvas(720, 1280, CV_8UC3, cv::Scalar(246, 248, 250));
+    cv::Mat lightBefore = lightCanvas.clone();
+    EXPECT_TRUE(WatermarkRenderer::applyInPlace(lightCanvas, tiledCfg));
+    EXPECT_GT(cv::norm(lightCanvas, lightBefore, cv::NORM_L1), 5000.0);
+
+    cv::Mat darkCanvas(720, 1280, CV_8UC3, cv::Scalar(22, 24, 30));
+    cv::Mat darkBefore = darkCanvas.clone();
+    EXPECT_TRUE(WatermarkRenderer::applyInPlace(darkCanvas, tiledCfg));
+    EXPECT_GT(cv::norm(darkCanvas, darkBefore, cv::NORM_L1), 5000.0);
+}
+
+TEST(ScrollCaptureUiPolishRegressionTest, ControlBarIsInteractiveAndConfirmClickAlwaysDeliversFinish) {
+    using namespace tools3000::capture;
+
+    // 构造虚拟内存后端，避免实机屏幕抓帧受环境影响
+    auto& sc = ScrollCapture::instance();
+    std::atomic<int> completedCount{0};
+    ScrollFinishAction deliveredAction = ScrollFinishAction::Cancelled;
+    sc.setCompletionCallback([&](const ScrollCaptureResult& r) {
+        deliveredAction = r.action;
+        completedCount.fetch_add(1, std::memory_order_acq_rel);
+    });
+
+    const RECT capRect{120, 120, 720, 620};
+    ScrollCaptureOptions opts;
+    opts.mode = ScrollMode::Manual; // 手动模式确保不会自动滚完退出
+    opts.captureRect = capRect;
+    opts.interactiveHoldAtBottom = true;
+
+    setCaptureBackendFactoryForTesting([]() {
+        return createMemoryCaptureBackend(CapturePixelFormat::Bgr24);
+    });
+    struct BackendFactoryResetGuard {
+        ~BackendFactoryResetGuard() {
+            setCaptureBackendFactoryForTesting(nullptr);
+        }
+    } backendGuard;
+
+    auto& overlay = ScrollCaptureOverlay::instance();
+    overlay.show(capRect);
+    sc.start(opts);
+    sc.captureCurrentFrame();
+    ASSERT_TRUE(sc.isRunning());
+
+    HWND ctrlHwnd = overlay.controlWindowHandleForTest();
+    ASSERT_NE(ctrlHwnd, nullptr);
+    ASSERT_TRUE(IsWindow(ctrlHwnd));
+    EXPECT_TRUE(IsWindowVisible(ctrlHwnd));
+
+    // 硬门禁 1：严禁控制栏携带 WS_EX_TRANSPARENT（否则 100% 鼠标穿透导致点击完成按钮完全没反应！）
+    const LONG_PTR exStyle = GetWindowLongPtrW(ctrlHwnd, GWL_EXSTYLE);
+    EXPECT_EQ(exStyle & WS_EX_TRANSPARENT, 0);
+    EXPECT_NE(exStyle & WS_EX_NOACTIVATE, 0);
+    EXPECT_NE(exStyle & WS_EX_TOPMOST, 0);
+
+    // 硬门禁 2：验证暂停/继续按钮 (index 0) 点击可真实切换运行状态
+    const D2D1_RECT_F pauseRect = overlay.buttonRectForTest(0);
+    ASSERT_GT(pauseRect.right, pauseRect.left);
+    const LPARAM pauseCenter = MAKELPARAM(
+        static_cast<int>((pauseRect.left + pauseRect.right) * 0.5f),
+        static_cast<int>((pauseRect.top + pauseRect.bottom) * 0.5f));
+    const bool wasPaused = sc.isPaused();
+    SendMessageW(ctrlHwnd, WM_LBUTTONDOWN, MK_LBUTTON, pauseCenter);
+    SendMessageW(ctrlHwnd, WM_LBUTTONUP, 0, pauseCenter);
+    EXPECT_NE(sc.isPaused(), wasPaused);
+
+    // 硬门禁 3：验证点击「完成」按钮 (index 4)，即使按下期间发生预览刷新与 2px 边缘手抖偏移，依然 100% 触发 Confirm！
+    const D2D1_RECT_F confirmRect = overlay.buttonRectForTest(4);
+    ASSERT_GT(confirmRect.right, confirmRect.left);
+    const int confirmX = static_cast<int>((confirmRect.left + confirmRect.right) * 0.5f);
+    const int confirmY = static_cast<int>((confirmRect.top + confirmRect.bottom) * 0.5f);
+    SendMessageW(ctrlHwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(confirmX, confirmY));
+    overlay.updatePreview(cv::Mat(500, 600, CV_8UC3, cv::Scalar(48, 50, 56)), 12);
+    SendMessageW(ctrlHwnd, WM_LBUTTONUP, 0, MAKELPARAM(
+        static_cast<int>(confirmRect.right) + 2, confirmY));
+
+    EXPECT_EQ(completedCount.load(std::memory_order_acquire), 1);
+    EXPECT_EQ(deliveredAction, ScrollFinishAction::Confirm);
+    EXPECT_FALSE(sc.isRunning());
+
+    overlay.hide();
+    sc.setCompletionCallback(nullptr);
+}
+
+TEST(ScrollCaptureTest, DarkSparseChatZeroDuplicateUnderHoverBlinkAndSimilarCards) {
+    using namespace tools3000::capture;
+
+    // 高度还原用户实拍深色 AI 聊天窗特征：
+    // ~80% 均一深灰背景 RGB(48,50,55) + 重复右侧缩略图与底部点赞栏 + 高 116px 圆角底部输入框
+    const int W = 720;
+    const int docH = 2200;
+    const cv::Scalar bg(55, 50, 48); // BGR
+    cv::Mat fullDoc(docH, W, CV_8UC3, bg);
+
+    for (int msg = 0; msg < 7; ++msg) {
+        const int baseY = 30 + msg * 300;
+        if (baseY + 260 >= docH) break;
+
+        // 1. 相同样式的右侧图片缩略图卡片 + 用户深灰气泡框（高风险诱发周期误配）
+        cv::rectangle(fullDoc, cv::Point(W - 96, baseY), cv::Point(W - 32, baseY + 52),
+                      cv::Scalar(235, 232, 228), cv::FILLED);
+        cv::rectangle(fullDoc, cv::Point(W - 90, baseY + 6), cv::Point(W - 38, baseY + 46),
+                      cv::Scalar(160, 175, 210), 2);
+        cv::rectangle(fullDoc, cv::Point(220, baseY + 60), cv::Point(W - 32, baseY + 106),
+                      cv::Scalar(74, 68, 66), cv::FILLED);
+
+        // 2. 每条消息内部稀疏但唯一的文字笔画（模拟中英文短行，整行 >75% 仍是纯深灰）
+        for (int line = 0; line < 4; ++line) {
+            const int ly = baseY + 124 + line * 22;
+            const int segCount = 3 + ((msg * 5 + line * 3) % 5);
+            int x = 56 + ((msg * 19 + line * 11) % 36);
+            for (int k = 0; k < segCount; ++k) {
+                const int w = 22 + ((msg * 29 + line * 17 + k * 13) % 46);
+                if (x + w >= W - 120) break;
+                cv::line(fullDoc, cv::Point(x, ly), cv::Point(x + w, ly),
+                         cv::Scalar(215, 218, 224), 2);
+                x += w + 14 + ((msg + k) % 10);
+            }
+        }
+
+        // 3. 相同的底部小工具条（点赞/复制图标）
+        cv::rectangle(fullDoc, cv::Point(56, baseY + 230), cv::Point(72, baseY + 244),
+                      cv::Scalar(120, 122, 128), cv::FILLED);
+        cv::rectangle(fullDoc, cv::Point(84, baseY + 230), cv::Point(100, baseY + 244),
+                      cv::Scalar(120, 122, 128), cv::FILLED);
+        cv::rectangle(fullDoc, cv::Point(W - 92, baseY + 228), cv::Point(W - 36, baseY + 246),
+                      cv::Scalar(78, 74, 72), cv::FILLED);
+    }
+
+    const int viewH = 720;
+    const int stickyTop = 40;
+    const int stickyBottom = 116; // 含上方 22px 深灰留白 + 94px 高圆角底部输入区
+    const int dynViewH = viewH - stickyTop - stickyBottom;
+
+    auto renderView = [&](int scrollY, int hoverCardIdx, bool blinkCursor, bool focusInput) -> cv::Mat {
+        cv::Mat frame(viewH, W, CV_8UC3, bg);
+        // 顶部固定栏
+        frame(cv::Rect(0, 0, W, stickyTop)).setTo(cv::Scalar(42, 38, 36));
+        cv::rectangle(frame, cv::Point(20, 12), cv::Point(180, 26), cv::Scalar(185, 190, 200), cv::FILLED);
+
+        // 动态正文区
+        const int clampedY = std::clamp(scrollY, 0, docH - dynViewH);
+        fullDoc(cv::Rect(0, clampedY, W, dynViewH)).copyTo(frame(cv::Rect(0, stickyTop, W, dynViewH)));
+
+        // 模拟触底后鼠标在底层窗口移动触发的局部按钮 Hover / 悬浮提示微动
+        if (hoverCardIdx >= 0) {
+            const int hy = stickyTop + 80 + (hoverCardIdx % 3) * 140;
+            cv::rectangle(frame, cv::Point(W - 110, hy), cv::Point(W - 36, hy + 28),
+                          cv::Scalar(115, 118, 132), cv::FILLED);
+        }
+
+        // 底部固定高输入框（上方 22px 纯深灰留白 + 94px 圆角输入区 + 光标闪烁/焦点边框微变）
+        const int fTop = viewH - stickyBottom;
+        frame(cv::Rect(0, fTop, W, stickyBottom)).setTo(bg);
+        cv::rectangle(frame, cv::Point(36, fTop + 22), cv::Point(W - 36, viewH - 12),
+                      cv::Scalar(66, 62, 60), cv::FILLED);
+        cv::rectangle(frame, cv::Point(36, fTop + 22), cv::Point(W - 36, viewH - 12),
+                      focusInput ? cv::Scalar(220, 160, 90) : cv::Scalar(92, 88, 86), 1);
+        cv::rectangle(frame, cv::Point(W - 76, viewH - 40), cv::Point(W - 48, viewH - 20),
+                      cv::Scalar(230, 232, 238), cv::FILLED);
+        if (blinkCursor) {
+            cv::line(frame, cv::Point(58, fTop + 34), cv::Point(58, fTop + 56),
+                     cv::Scalar(240, 240, 245), 2);
+        }
+        return frame;
+    };
+
+    auto& sc = ScrollCapture::instance();
+    const cv::Mat f0 = renderView(0,   -1, true,  false);
+    const cv::Mat f1 = renderView(220, -1, false, false);
+    const cv::Mat f2 = renderView(440, -1, true,  false);
+    const cv::Mat f3 = renderView(660, -1, false, false);
+
+    // 触底后模拟 6 帧鼠标移动/点击穿透引发的 Hover、光标闪烁与输入框焦点变化
+    const cv::Mat idle1 = renderView(660, 0, true,  true);
+    const cv::Mat idle2 = renderView(660, 1, false, true);
+    const cv::Mat idle3 = renderView(660, 2, true,  false);
+    const cv::Mat idle4 = renderView(660, -1, false, true);
+    const cv::Mat idle5 = renderView(660, 0, true,  false);
+    const cv::Mat idle6 = renderView(660, 1, true,  true);
+
+    // 断言所有 6 帧触底微动帧均被双轨零位移门禁直接否决为静止，绝不复读拼接！
+    for (const cv::Mat& idleF : {idle1, idle2, idle3, idle4, idle5, idle6}) {
+        const auto trIdle = sc.analyzeFrameTransition(f3, idleF);
+        EXPECT_TRUE(trIdle.isUnchanged);
+        EXPECT_FALSE(trIdle.matched);
+    }
+
+    const auto tr01 = sc.analyzeFrameTransition(f0, f1);
+    const auto tr12 = sc.analyzeFrameTransition(f1, f2);
+    const auto tr23 = sc.analyzeFrameTransition(f2, f3);
+    EXPECT_TRUE(tr01.matched) << "tr01 unchanged=" << tr01.isUnchanged << " back=" << tr01.isBackwardScroll << " delta=" << tr01.scrollDelta << " top=" << tr01.stickyTopRows << " bot=" << tr01.stickyBottomRows;
+    EXPECT_TRUE(tr12.matched) << "tr12 unchanged=" << tr12.isUnchanged << " back=" << tr12.isBackwardScroll << " delta=" << tr12.scrollDelta << " top=" << tr12.stickyTopRows << " bot=" << tr12.stickyBottomRows;
+    EXPECT_TRUE(tr23.matched) << "tr23 unchanged=" << tr23.isUnchanged << " back=" << tr23.isBackwardScroll << " delta=" << tr23.scrollDelta << " top=" << tr23.stickyTopRows << " bot=" << tr23.stickyBottomRows;
+
+    const std::vector<cv::Mat> seq{f0, f1, f2, f3, idle1, idle2, idle3, idle4, idle5, idle6};
+    const cv::Mat stitched = sc.stitchFrames(seq, 20);
+    ASSERT_FALSE(stitched.empty());
+    EXPECT_NEAR(stitched.rows, viewH + 3 * 220, 6)
+        << "d01=" << tr01.scrollDelta << " d12=" << tr12.scrollDelta << " d23=" << tr23.scrollDelta
+        << " b01=" << tr01.stickyBottomRows << " b12=" << tr12.stickyBottomRows << " b23=" << tr23.stickyBottomRows;
+    EXPECT_EQ(stitched.cols, W);
+}
+
+TEST(ScrollCaptureTest, BackwardScrollAndTailLoopGuardWithRepeatingTableExemption) {
+    using namespace tools3000::capture;
+
+    const int W = 640;
+    const int viewH = 520;
+    const int docH = 1800;
+    cv::Mat doc(docH, W, CV_8UC3, cv::Scalar(34, 32, 30));
+    for (int y = 20; y < docH - 20; y += 20) {
+        const int x0 = 40 + ((y * 17) % 110);
+        const int x1 = std::min(W - 44, x0 + 110 + ((y * 29) % 260));
+        cv::line(doc, cv::Point(x0, y), cv::Point(x1, y),
+                 cv::Scalar(160 + (y % 70), 175 + ((y * 3) % 60), 190 + ((y * 5) % 50)), 2);
+    }
+
+    auto crop = [&](int y) { return doc(cv::Rect(0, y, W, viewH)).clone(); };
+    const cv::Mat f0 = crop(0);
+    const cv::Mat f1 = crop(200);
+    const cv::Mat f2 = crop(400);
+    const cv::Mat f3 = crop(600);
+
+    auto& sc = ScrollCapture::instance();
+
+    // 1. 反向向上回滚探测：f2 -> f1 必须识别为 isBackwardScroll == true 且不误匹配正位移
+    const auto fwdTr = sc.analyzeFrameTransition(f0, f1);
+    const auto revTr = sc.analyzeFrameTransition(f2, f1);
+    EXPECT_TRUE(fwdTr.matched) << "fwd unchanged=" << fwdTr.isUnchanged << " back=" << fwdTr.isBackwardScroll << " delta=" << fwdTr.scrollDelta;
+    EXPECT_TRUE(revTr.isBackwardScroll) << "rev unchanged=" << revTr.isUnchanged << " matched=" << revTr.matched << " delta=" << revTr.scrollDelta;
+    EXPECT_FALSE(revTr.matched);
+
+    // 2. 序列中夹杂用户手动向上回滚 (f2 -> f1 -> f2) 后继续向下滚到 f3，最终高度零重复且与正常序列一致
+    const cv::Mat cleanStitched = sc.stitchFrames({f0, f1, f2, f3}, 20);
+    const cv::Mat withBacktrack = sc.stitchFrames({f0, f1, f2, f1, f2, f3}, 20);
+    ASSERT_FALSE(cleanStitched.empty());
+    ASSERT_FALSE(withBacktrack.empty());
+    EXPECT_NEAR(withBacktrack.rows, cleanStitched.rows, 4);
+
+    // 3. 合法周期性重复表格豁免：等高重复数据行在滚动拼接时不得被尾部去重门禁误拦截
+    cv::Mat tableDoc(1400, W, CV_8UC3, cv::Scalar(248, 249, 251));
+    for (int y = 0; y < 1400; y += 28) {
+        cv::line(tableDoc, cv::Point(20, y), cv::Point(W - 20, y), cv::Scalar(210, 214, 220), 1);
+        cv::rectangle(tableDoc, cv::Point(44, y + 8), cv::Point(180, y + 18), cv::Scalar(48, 52, 60), cv::FILLED);
+        cv::rectangle(tableDoc, cv::Point(240, y + 8), cv::Point(380, y + 18), cv::Scalar(62, 68, 78), cv::FILLED);
+        // 加入细微递增行号宽度差异（非 7 行周期，避免滚动 196px=7*28 后两帧逐像素完全相同）
+        const int rowNum = y / 28;
+        cv::rectangle(tableDoc, cv::Point(440, y + 8), cv::Point(456 + ((rowNum * 5) % 13) * 8, y + 18),
+                      cv::Scalar(54, 60, 72), cv::FILLED);
+    }
+    const std::vector<cv::Mat> tableFrames{
+        tableDoc(cv::Rect(0, 0, W, viewH)).clone(),
+        tableDoc(cv::Rect(0, 196, W, viewH)).clone(),
+        tableDoc(cv::Rect(0, 392, W, viewH)).clone()
+    };
+    const cv::Mat tableStitched = sc.stitchFrames(tableFrames, 20);
+    ASSERT_FALSE(tableStitched.empty());
+    EXPECT_NEAR(tableStitched.rows, viewH + 392, 6);
+}
+
+TEST(ScrollCaptureTest, SplitPaneStaticSidebarStitchesScrollingRightContentAccurately) {
+    using namespace tools3000::capture;
+
+    // 模拟微信/钉钉/VS Code 全窗口长截图：左侧 30% 联系人/文件树侧边栏完全静止，右侧 70% 正文向下滚动
+    const int W = 800;
+    const int viewH = 560;
+    const int sidebarW = 240; // 30%
+    const int docH = 1600;
+
+    cv::Mat sidebar(viewH, sidebarW, CV_8UC3, cv::Scalar(38, 36, 34));
+    for (int y = 24; y < viewH - 20; y += 44) {
+        cv::circle(sidebar, cv::Point(36, y + 12), 14, cv::Scalar(90 + (y % 80), 120, 180), cv::FILLED);
+        cv::rectangle(sidebar, cv::Point(64, y + 4), cv::Point(190, y + 14), cv::Scalar(200, 204, 212), cv::FILLED);
+        cv::rectangle(sidebar, cv::Point(64, y + 20), cv::Point(150, y + 27), cv::Scalar(120, 124, 132), cv::FILLED);
+    }
+
+    cv::Mat rightDoc(docH, W - sidebarW, CV_8UC3, cv::Scalar(48, 46, 44));
+    for (int y = 20; y < docH - 20; y += 22) {
+        const int x0 = 28 + ((y * 13) % 70);
+        const int x1 = std::min(W - sidebarW - 40, x0 + 90 + ((y * 23) % 240));
+        cv::line(rightDoc, cv::Point(x0, y), cv::Point(x1, y),
+                 cv::Scalar(205, 210, 220), 2);
+    }
+
+    auto makeSplitFrame = [&](int scrollY) {
+        cv::Mat f(viewH, W, CV_8UC3);
+        sidebar.copyTo(f(cv::Rect(0, 0, sidebarW, viewH)));
+        rightDoc(cv::Rect(0, scrollY, W - sidebarW, viewH)).copyTo(f(cv::Rect(sidebarW, 0, W - sidebarW, viewH)));
+        return f;
+    };
+
+    const cv::Mat f0 = makeSplitFrame(0);
+    const cv::Mat f1 = makeSplitFrame(210);
+    const cv::Mat f2 = makeSplitFrame(420);
+
+    auto& sc = ScrollCapture::instance();
+    const auto tr01 = sc.analyzeFrameTransition(f0, f1);
+    EXPECT_TRUE(tr01.matched);
+    EXPECT_FALSE(tr01.isUnchanged);
+    EXPECT_NEAR(tr01.scrollDelta, 210, 2);
+
+    const cv::Mat stitched = sc.stitchFrames({f0, f1, f2}, 20);
+    ASSERT_FALSE(stitched.empty());
+    EXPECT_NEAR(stitched.rows, viewH + 420, 4);
+    EXPECT_EQ(stitched.cols, W);
 }
 
 #include "test_studio_recorder.inc"

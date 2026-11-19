@@ -69,6 +69,7 @@ enum class CaptureIconId {
     TextMarkupHighlight,
     TextMarkupWavy,
     TextMarkupUnderline,
+    TextReplaceEdit,
     PropStrokeWidth,
     PropCornerRadius,
     PropPadding,

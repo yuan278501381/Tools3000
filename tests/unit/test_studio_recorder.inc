@@ -2128,3 +2128,62 @@ TEST(StudioRecorderTest, RawDirectOutputPolicyAndUnsavedEditDetection) {
     // 5. 默认关闭态下未导出防丢确认框保持关闭
     EXPECT_FALSE(StudioPreviewWindow::instance().isCloseConfirmModalOpen());
 }
+
+TEST(StudioRecorderTest, MagneticTimelineSnappingToClipSplitPlayheadAndBoundaries) {
+    using namespace tools3000::capture;
+
+    // 构造两段拆分视频：片段 1 [0..8400ms], 片段 2 [8400..18500ms]（在 8400ms 处拆分）
+    std::vector<StudioVideoClip> clips = {
+        {0, 8400, 1.0f},
+        {8400, 18500, 1.0f}
+    };
+    std::vector<StudioZoomSegment> zooms = {
+        {2000, 4200, 0.5f, 0.5f, 1.85f, true, true},
+        {9000, 11000, 0.5f, 0.5f, 1.85f, true, true}
+    };
+    StudioAnnotationItem ann{};
+    ann.startMs = 5000;
+    ann.endMs = 7500;
+    std::vector<StudioAnnotationItem> anns = {ann};
+
+    // 收集除 zooms[1] 外的全部吸附锚点（含拆分点 8400ms、播放头 12400ms、zooms[0] 2000/4200、ann 5000/7500）
+    const auto anchors = StudioTimelineAnalyzer::collectTimelineSnapAnchors(
+        clips, zooms, anns, 12400, /*excludeZoomIdx=*/1, /*excludeAnnIdx=*/-1, true);
+
+    // 1. 整块拖动 zooms[1] 使其左缘靠近拆分点 8400ms (8490ms, 距拆分点 90ms <= 窗口 150ms)：
+    //    必须精准吸附到 8400ms 并保持块长 2000ms 不变！
+    const auto snapLeftToSplit = StudioTimelineAnalyzer::snapTimelineRangeDrag(
+        8490, 10490, /*MoveBoth=*/0, anchors, /*snapWin=*/150, /*minSpan=*/220, /*maxTotal=*/18500);
+    EXPECT_TRUE(snapLeftToSplit.snapped);
+    EXPECT_EQ(snapLeftToSplit.targetKind, TimelineSnapTargetKind::ClipSplit);
+    EXPECT_EQ(snapLeftToSplit.snapLineKeptMs, 8400);
+    EXPECT_EQ(snapLeftToSplit.snappedStartMs, 8400);
+    EXPECT_EQ(snapLeftToSplit.snappedEndMs, 10400);
+
+    // 2. 整块拖动使其右缘靠近拆分点 8400ms (6310..8310ms, 右缘距拆分点 90ms)：
+    //    必须右缘精准吸附至 8400ms，块长依然保持 2000ms (6400..8400ms)！
+    const auto snapRightToSplit = StudioTimelineAnalyzer::snapTimelineRangeDrag(
+        6310, 8310, /*MoveBoth=*/0, anchors, 150, 220, 18500);
+    EXPECT_TRUE(snapRightToSplit.snapped);
+    EXPECT_EQ(snapRightToSplit.targetKind, TimelineSnapTargetKind::ClipSplit);
+    EXPECT_EQ(snapRightToSplit.snappedStartMs, 6400);
+    EXPECT_EQ(snapRightToSplit.snappedEndMs, 8400);
+
+    // 3. 拖动左缘拉伸靠近标注右缘 7500ms：精准贴合 7500ms 且右缘保持不变
+    const auto snapResizeLeft = StudioTimelineAnalyzer::snapTimelineRangeDrag(
+        7580, 10000, /*LeftEdge=*/1, anchors, 150, 220, 18500);
+    EXPECT_TRUE(snapResizeLeft.snapped);
+    EXPECT_EQ(snapResizeLeft.targetKind, TimelineSnapTargetKind::AnnBoundary);
+    EXPECT_EQ(snapResizeLeft.snappedStartMs, 7500);
+    EXPECT_EQ(snapResizeLeft.snappedEndMs, 10000);
+
+    // 4. Alt 自由微调（snapWindowMs = 0）：绝不触发吸附
+    const auto freeDrag = StudioTimelineAnalyzer::snapTimelineRangeDrag(
+        8450, 10450, 0, anchors, 0, 220, 18500);
+    EXPECT_FALSE(freeDrag.snapped);
+    EXPECT_EQ(freeDrag.snappedStartMs, 8450);
+
+    // 5. 关键点跳转：从 7500ms 向后必跳到拆分点 8400ms，再向前必回 7500ms
+    EXPECT_EQ(StudioTimelineAnalyzer::findNextTimelineKeyframeMs(7500, +1, anchors), 8400);
+    EXPECT_EQ(StudioTimelineAnalyzer::findNextTimelineKeyframeMs(8400, -1, anchors), 7500);
+}

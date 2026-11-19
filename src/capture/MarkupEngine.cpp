@@ -22,6 +22,7 @@
 
 #include "capture/MarkupEngine.h"
 #include "capture/TextAnnotationHelper.h"
+#include "capture/TextReplaceEngine.h"
 #include "capture/MarkupCurveGeometry.h"
 #include "capture/CaptureInteractionPolicy.h"
 #include "capture/CaptureTextEditor.h"
@@ -5505,6 +5506,71 @@ public:
     }
 };
 
+class TextReplaceHandler : public IMarkupToolHandler {
+public:
+    void render(cv::Mat& canvas, const MarkupElement& element) const override {
+        const cv::Rect srcRc = (element.replaceSourceRect.width > 0 && element.replaceSourceRect.height > 0)
+            ? element.replaceSourceRect
+            : cv::Rect(element.startPt, element.endPt);
+        if (srcRc.width <= 0 || srcRc.height <= 0) return;
+
+        TextReplaceRenderSpec spec{};
+        spec.sourceRect = srcRc;
+        spec.charBoxes = element.replaceCharBoxes;
+        spec.originalTextUtf8 = element.replaceOriginalText;
+        spec.newTextUtf8 = element.text;
+        spec.textBgr = cv::Vec3b(element.color.b, element.color.g, element.color.r);
+        spec.fontSizePx = element.fontSize;
+        spec.fontWeight = element.replaceFontWeight;
+        spec.fontClass = static_cast<TextReplaceFontClass>(std::clamp(element.replaceFontClass, 0, 2));
+        spec.offsetX = element.replaceOffsetX;
+        spec.offsetY = element.replaceOffsetY;
+        spec.bgMode = static_cast<TextReplaceBgMode>(std::clamp(element.replaceBgMode, 0, 2));
+        spec.styleInitialized = element.replaceStyleInitialized;
+        spec.reflowRightTail = element.replaceReflowRight;
+        spec.rightTailRect = element.replaceRightTailRect;
+        spec.isEditing = element.isEditing;
+        spec.caretUtf16 = element.textCaret;
+        spec.selAnchorUtf16 = element.textSelAnchor;
+        spec.lastCaretTick = element.textLastCaretTick;
+        spec.showCaretBlink = true;
+
+        const cv::Rect rendered = TextReplaceEngine::renderReplacement(canvas, spec);
+        if (rendered.width > 0 && rendered.height > 0) {
+            element.replaceLastRenderRect = rendered;
+        }
+    }
+
+    cv::Rect getBoundingBox(const MarkupElement& element) const override {
+        if (element.replaceLastRenderRect.width > 0 && element.replaceLastRenderRect.height > 0) {
+            return element.replaceLastRenderRect;
+        }
+        return (element.replaceSourceRect.width > 0 && element.replaceSourceRect.height > 0)
+            ? element.replaceSourceRect
+            : cv::Rect(element.startPt, element.endPt);
+    }
+
+    HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
+        cv::Rect box = getBoundingBox(element);
+        if (box.width <= 0 || box.height <= 0) return HitArea::None;
+        cv::Rect padded(box.x - padding, box.y - padding, box.width + padding * 2, box.height + padding * 2);
+        return padded.contains(pt) ? HitArea::Body : HitArea::None;
+    }
+
+    void resize(MarkupElement& element, int dx, int dy, HitArea /*handle*/) const override {
+        element.replaceOffsetX += static_cast<float>(dx);
+        element.replaceOffsetY += static_cast<float>(dy);
+    }
+
+    void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const override {
+        if (element.isEditing) return;
+        const cv::Rect box = getBoundingBox(element);
+        if (box.width > 0 && box.height > 0) {
+            cv::rectangle(canvas, box, cv::Scalar(246, 130, 59), 1, cv::LINE_AA);
+        }
+    }
+};
+
 }  // namespace
 
 MarkupToolRegistry& MarkupToolRegistry::instance() {
@@ -5527,6 +5593,7 @@ MarkupToolRegistry::MarkupToolRegistry() {
     registerHandler(MarkupTool::Spotlight, std::make_shared<SpotlightHandler>());
     registerHandler(MarkupTool::Watermark, std::make_shared<WatermarkHandler>());
     registerHandler(MarkupTool::Inpaint, std::make_shared<InpaintHandler>());
+    registerHandler(MarkupTool::TextReplace, std::make_shared<TextReplaceHandler>());
 }
 
 void MarkupToolRegistry::registerHandler(MarkupTool tool, std::shared_ptr<IMarkupToolHandler> handler) {

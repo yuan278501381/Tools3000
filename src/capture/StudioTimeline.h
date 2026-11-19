@@ -305,6 +305,28 @@ struct StudioWaveformEnvelopeConfig {
     bool hasAudio = false;
 };
 
+/// 演播室时间线磁性吸附目标类型（按剪辑直觉设定优先级：视频拆分点 > 主播放头 > 运镜边界 > 标注边界）
+enum class TimelineSnapTargetKind : int {
+    None = 0,
+    ClipSplit = 1,    // 视频拆分点 / 片段起止边界
+    Playhead = 2,     // 主播放头指针
+    ZoomBoundary = 3, // 其他运镜块起止边界
+    AnnBoundary = 4   // 其他标注/字幕块起止边界
+};
+
+struct TimelineSnapAnchor {
+    int64_t keptMs = 0;
+    TimelineSnapTargetKind kind = TimelineSnapTargetKind::None;
+};
+
+struct TimelineSnapResult {
+    bool snapped = false;
+    int64_t snappedStartMs = 0;
+    int64_t snappedEndMs = 0;
+    int64_t snapLineKeptMs = 0; // 对齐辅助激光线所在位置 (成片 keptMs)
+    TimelineSnapTargetKind targetKind = TimelineSnapTargetKind::None;
+};
+
 class StudioTimelineAnalyzer {
 public:
     /// 基于意图过滤后的点击事件与可选打字焦点自动聚类生成平滑关键帧放大区间
@@ -407,6 +429,39 @@ public:
         float availWidthPx,
         bool forTooltip,
         bool isZh = true);
+
+    /// 收集当前演播室全轨有效磁性吸附锚点（成片 keptMs 坐标，自动兼容多段切片与变速）
+    static std::vector<TimelineSnapAnchor> collectTimelineSnapAnchors(
+        const std::vector<StudioVideoClip>& clips,
+        const std::vector<StudioZoomSegment>& zoomSegments,
+        const std::vector<StudioAnnotationItem>& annotations,
+        int64_t playheadKeptMs,
+        int excludeZoomIdx = -1,
+        int excludeAnnIdx = -1,
+        bool includePlayhead = true);
+
+    /// 对轨道区间拖拽（dragEdgeMode: 0=整块平移双缘感知, 1=仅拉左缘, 2=仅拉右缘）执行磁性吸附
+    static TimelineSnapResult snapTimelineRangeDrag(
+        int64_t rawStartMs,
+        int64_t rawEndMs,
+        int dragEdgeMode,
+        const std::vector<TimelineSnapAnchor>& anchors,
+        int64_t snapWindowMs,
+        int64_t minSpanMs,
+        int64_t maxTotalMs) noexcept;
+
+    /// 对单点时间线位置（主播放头拖拽或点击落点）执行磁性吸附
+    static TimelineSnapResult snapTimelinePoint(
+        int64_t rawKeptMs,
+        const std::vector<TimelineSnapAnchor>& anchors,
+        int64_t snapWindowMs,
+        int64_t maxTotalMs) noexcept;
+
+    /// 查找距离当前播放头最近的下一个/上一个关键剪辑点（direction: -1 向前, +1 向后；未找到返回 -1）
+    static int64_t findNextTimelineKeyframeMs(
+        int64_t currentKeptMs,
+        int direction,
+        const std::vector<TimelineSnapAnchor>& anchors) noexcept;
 };
 
 /// 录制期高频非侵入式双轨事件与离线语音字幕采集器

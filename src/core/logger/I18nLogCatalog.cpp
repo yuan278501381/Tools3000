@@ -2945,6 +2945,10 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] CaptureHistory: 已按 ID 移除历史记录 id={}, 剩余={}",
             "[{}] CaptureHistory: removed history entry id={}, remaining={}"
         }},
+        {"长截图检测到重复内容段，已自动拦截: rows={}, score={:.3f}", {
+            "[{}] 长截图检测到重复内容段，已自动拦截: rows={}, score={:.3f}",
+            "[{}] ScrollCapture detected duplicated content segment and blocked it: rows={}, score={:.3f}"
+        }},
     };
     return catalog;
 }

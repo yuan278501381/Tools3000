@@ -174,6 +174,8 @@ public:
     D2D1_RECT_F highlightFloatingButtonRect() const noexcept { return m_btnHighlightFloatingRect; }
     D2D1_RECT_F wavyFloatingButtonRect() const noexcept { return m_btnWavyFloatingRect; }
     D2D1_RECT_F underlineFloatingButtonRect() const noexcept { return m_btnUnderlineFloatingRect; }
+    D2D1_RECT_F textReplaceFloatingButtonRect() const noexcept { return m_btnTextReplaceFloatingRect; }
+    D2D1_RECT_F textReplaceDragHandleRect() const noexcept { return m_trDragHandleRect; }
     D2D1_RECT_F undoFloatingButtonRect() const noexcept { return m_btnUndoFloatingRect; }
     D2D1_RECT_F colorDotFloatingRect(size_t idx) const noexcept {
         return idx < m_btnColorDotFloatingRects.size() ? m_btnColorDotFloatingRects[idx] : D2D1_RECT_F{};
@@ -181,6 +183,15 @@ public:
 
     /// 对当前选中的实景文字施加或切换（Toggle）荧光笔 / 波浪线 / 直线，保留 OCR 缓存零重跑
     bool annotateSelectedText(TextMarkupMode mode);
+    /// 对当前选中的文字开启原位无痕改字实时编辑态（6 维视觉 DNA 自动克隆 + 无损图元）
+    bool startInPlaceTextReplace();
+    /// 双击已存在的原位改字图元重新进入无损二次编辑
+    bool startInPlaceTextReplaceOnElement(size_t elementIdx);
+    /// 提交或取消回滚当前原位改字编辑态
+    void commitInPlaceTextReplace(bool keepChanges = true);
+    bool isEditingTextReplace() const noexcept { return m_editingTextReplaceIdx >= 0; }
+    bool handleTextReplaceChar(wchar_t ch);
+    bool handleTextReplaceKeyDown(WPARAM vk, bool ctrl, bool shift, bool alt);
     void setTextMarkupColorIndex(int index);
     int textMarkupColorIndex() const noexcept { return m_textMarkupColorIndex; }
     MarkupColor currentTextMarkupColor() const noexcept;
@@ -400,6 +411,7 @@ private:
     std::vector<PinBlockCharSpan> m_selectedCharSpans;
     int m_hoveredBlockIndex = -1;
     bool m_isSelectingText = false;
+    bool m_isSelectingReplaceText = false;
     bool m_isCharStreamSelecting = false;
     int m_anchorBlockIndex = -1;
     size_t m_anchorCharIndex = 0;
@@ -411,6 +423,7 @@ private:
     D2D1_RECT_F m_btnHighlightFloatingRect = {};
     D2D1_RECT_F m_btnWavyFloatingRect = {};
     D2D1_RECT_F m_btnUnderlineFloatingRect = {};
+    D2D1_RECT_F m_btnTextReplaceFloatingRect = {};
     D2D1_RECT_F m_btnUndoFloatingRect = {};
     std::array<D2D1_RECT_F, 5> m_btnColorDotFloatingRects = {};
     bool m_hoverCopyFloating = false;
@@ -419,10 +432,33 @@ private:
     bool m_hoverHighlightFloating = false;
     bool m_hoverWavyFloating = false;
     bool m_hoverUnderlineFloating = false;
+    bool m_hoverTextReplaceFloating = false;
     bool m_hoverUndoFloating = false;
     int m_hoveredColorDotIndex = -1;
     int m_textMarkupColorIndex = 0;
     bool m_ocrMarkupPreviewClean = false;
+
+    // 原位无痕改字 (In-Place Text Replace) 实时编辑态与微调浮岛状态
+    int m_editingTextReplaceIdx = -1;
+    bool m_editingTextReplaceWasNew = false;
+    bool m_isDraggingReplacePos = false;
+    bool m_hoverReplaceDragHandle = false;
+    POINT m_replaceDragStartClientPt{};
+    float m_replaceDragOrigOffsetX = 0.0f;
+    float m_replaceDragOrigOffsetY = 0.0f;
+    D2D1_RECT_F m_trDragHandleRect = {};
+    D2D1_RECT_F m_trEditBoxClientRect = {};
+    std::vector<MarkupElement> m_editingTextReplaceBackup;
+    D2D1_RECT_F m_btnTrFontDecRect = {};
+    D2D1_RECT_F m_btnTrFontIncRect = {};
+    D2D1_RECT_F m_btnTrWeightRect = {};
+    D2D1_RECT_F m_btnTrFamilyRect = {};
+    D2D1_RECT_F m_btnTrBgModeRect = {};
+    D2D1_RECT_F m_btnTrReflowRect = {};
+    D2D1_RECT_F m_btnTrDoneRect = {};
+    int m_hoveredTrBtnId = -1;
+    void updateImeCompositionAnchor() noexcept;
+    void clearTextReplaceToolbarRects() noexcept;
     int m_hoveredQrBadgeIndex = -1;
     bool m_lastChromeIsDark = true;
     bool m_lastToolbarIsDark = true;

@@ -1881,6 +1881,60 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             int resizedW = 0;
         };
 
+        // 弱对比度屏摄/反光灰字条带自适应提纯：
+        // 仅在送入 SVTR 前的 48px 高度条带灰度动态范围 (P95 - P05) 落在 [16, 112) 时生效，
+        // 通过查表平滑拉伸动态范围（增益上限 2.35x），正常高对比度截图 (>=112) 100% 零改动直通。
+        auto enhanceLowContrastStripCrop = [](cv::Mat& bgr48) {
+            if (bgr48.empty() || bgr48.type() != CV_8UC3) return;
+            std::array<uint32_t, 256> hist{};
+            const int rows = bgr48.rows;
+            const int cols = bgr48.cols;
+            const uint32_t total = static_cast<uint32_t>(rows) * static_cast<uint32_t>(cols);
+            if (total < 64) return;
+            for (int r = 0; r < rows; ++r) {
+                const auto* row = bgr48.ptr<cv::Vec3b>(r);
+                for (int c = 0; c < cols; ++c) {
+                    const uint32_t lum = (static_cast<uint32_t>(row[c][0]) * 29u +
+                                          static_cast<uint32_t>(row[c][1]) * 150u +
+                                          static_cast<uint32_t>(row[c][2]) * 77u) >> 8u;
+                    ++hist[lum & 255u];
+                }
+            }
+            auto pctBin = [&](uint32_t targetCount) -> int {
+                uint32_t acc = 0;
+                for (int i = 0; i < 256; ++i) {
+                    acc += hist[static_cast<size_t>(i)];
+                    if (acc >= targetCount) return i;
+                }
+                return 255;
+            };
+            const int p02 = pctBin((total * 2u) / 100u);
+            const int p05 = pctBin((total * 5u) / 100u);
+            const int p95 = pctBin((total * 95u) / 100u);
+            const int p98 = pctBin((total * 98u) / 100u);
+            const int dynRange = p95 - p05;
+            if (dynRange < 16 || dynRange >= 112) return;
+
+            const float lo = static_cast<float>(p02);
+            const float hi = static_cast<float>((std::max)(p98, p02 + 16));
+            const float mid = 0.5f * (lo + hi);
+            const float gain = std::clamp(216.0f / (hi - lo), 1.15f, 2.35f);
+
+            std::array<uint8_t, 256> lut{};
+            for (int i = 0; i < 256; ++i) {
+                const float mapped = 128.0f + (static_cast<float>(i) - mid) * gain;
+                lut[static_cast<size_t>(i)] = static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(mapped)), 0, 255));
+            }
+            for (int r = 0; r < rows; ++r) {
+                auto* row = bgr48.ptr<cv::Vec3b>(r);
+                for (int c = 0; c < cols; ++c) {
+                    row[c][0] = lut[row[c][0]];
+                    row[c][1] = lut[row[c][1]];
+                    row[c][2] = lut[row[c][2]];
+                }
+            }
+        };
+
         std::vector<QuadMeta> quadMetas(quads.size());
         std::vector<RecPiece> pieces;
         pieces.reserve(quads.size() + 16);
@@ -1932,15 +1986,10 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             qm.rotatedVertical = rotatedVertical;
             qm.valid = true;
 
-            // 光学字宽自适应归一化：保障常规字号与小号英文单词间距 100% 全额放大，仅抑制 >42px 特大标题框横向过度膨胀
+            // 严格保持纵横比缩放至识别网络标准高度 (48px)：
+            // 彻底根治高像素手机原图（如 4284x5712、单行高 160~220px）因下限钳制导致的横向畸形拉扁失真与错误切碎。
             const float cropRowsF = static_cast<float>((std::max)(1, crop.rows));
-            float horizScale = static_cast<float>(DeepOcrConstants::kRecImgHeight) / cropRowsF;
-            if (crop.rows > 42) {
-                const float effectiveTargetH = (std::min)(
-                    static_cast<float>(DeepOcrConstants::kRecImgHeight),
-                    42.0f + (cropRowsF - 42.0f) * 0.35f);
-                horizScale = (std::max)(1.05f, effectiveTargetH / cropRowsF);
-            }
+            const float horizScale = static_cast<float>(DeepOcrConstants::kRecImgHeight) / cropRowsF;
             const int fullResizedW = static_cast<int>(std::ceil(static_cast<float>(crop.cols) * horizScale));
 
             if (fullResizedW <= kMaxPieceW) {
@@ -1948,6 +1997,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                 cv::Mat rc;
                 cv::resize(crop, rc, cv::Size(rw, DeepOcrConstants::kRecImgHeight), 0.0, 0.0,
                            crop.rows < DeepOcrConstants::kRecImgHeight ? cv::INTER_CUBIC : cv::INTER_AREA);
+                enhanceLowContrastStripCrop(rc);
                 pieces.push_back(RecPiece{qi, 0, 0.0f, 1.0f, std::move(rc), rw});
             } else {
                 cv::Mat grayCrop;
@@ -2001,6 +2051,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                     cv::Mat rc;
                     cv::resize(subCrop, rc, cv::Size(rw, DeepOcrConstants::kRecImgHeight), 0.0, 0.0,
                                crop.rows < DeepOcrConstants::kRecImgHeight ? cv::INTER_CUBIC : cv::INTER_AREA);
+                    enhanceLowContrastStripCrop(rc);
                     pieces.push_back(RecPiece{
                         qi,
                         subOrd++,

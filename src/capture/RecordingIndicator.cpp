@@ -793,7 +793,7 @@ void RecordingIndicator::render() {
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
     m_renderTarget->SetTransform(D2D1::Matrix3x2F::Scale(m_dpiScale, m_dpiScale));
 
-    // 动态跟随应用明暗主题（雪瓷白 / 黑曜石微晶玻璃）与用户自定义强调色
+    // 录屏控制灵动岛跟随全局明暗主题（雪瓷高定 / 黑曜石暗房）与用户自定义强调色
     const auto pal = FloatingGlassBar::resolveThemePalette();
     const bool isDark = pal.isDark;
     if (m_textBrush) {
@@ -941,23 +941,62 @@ void RecordingIndicator::render() {
             auto* dotBrush = m_paused ? m_pausedDotBrush.Get() : m_redDotBrush.Get();
             if (auraBrush) {
                 m_renderTarget->FillEllipse(
-                    D2D1::Ellipse(D2D1::Point2F(18, size.height / 2), 8.5f, 8.5f),
+                    D2D1::Ellipse(D2D1::Point2F(18, size.height / 2), 9.0f, 9.0f),
                     auraBrush
                 );
             }
             if (dotBrush) {
                 m_renderTarget->FillEllipse(
-                    D2D1::Ellipse(D2D1::Point2F(18, size.height / 2), 4.5f, 4.5f),
+                    D2D1::Ellipse(D2D1::Point2F(18, size.height / 2), 4.2f, 4.2f),
                     dotBrush
                 );
+                ComPtr<ID2D1SolidColorBrush> dotCoreSpec;
+                m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.42f), dotCoreSpec.GetAddressOf());
+                if (dotCoreSpec) {
+                    m_renderTarget->FillEllipse(
+                        D2D1::Ellipse(D2D1::Point2F(17.1f, size.height / 2 - 1.1f), 1.25f, 1.25f),
+                        dotCoreSpec.Get());
+                }
             }
         }
 
-        // REC 文字（主状态字阶）
-        m_renderTarget->DrawText(recText.c_str(), static_cast<UINT32>(recText.size()),
-                                 m_textFormat.Get(),
-                                 barLayout.statusRect,
-                                 m_textBrush.Get());
+        // REC / 暂停 状态徽章胶囊（深浅双态自适应高对比宝石微光衬底，清晰拉开状态与计时器视觉层级）
+        {
+            const float chipPadY = (size.height - 20.0f) * 0.5f;
+            const D2D1_RECT_F statusChipRc = D2D1::RectF(
+                barLayout.statusRect.left - 3.0f, chipPadY,
+                barLayout.statusRect.right - 2.0f, chipPadY + 20.0f);
+            ComPtr<ID2D1SolidColorBrush> statusBg, statusRim, statusTxt;
+            const D2D1_COLOR_F stBgCol = m_paused
+                ? D2D1::ColorF(245.0f / 255.0f, 158.0f / 255.0f, 11.0f / 255.0f, isDark ? 0.18f : 0.13f)
+                : (m_countingDown
+                    ? D2D1::ColorF(pal.accent.r, pal.accent.g, pal.accent.b, isDark ? 0.20f : 0.13f)
+                    : D2D1::ColorF(244.0f / 255.0f, 63.0f / 255.0f, 94.0f / 255.0f, isDark ? 0.18f : 0.11f));
+            const D2D1_COLOR_F stRimCol = m_paused
+                ? D2D1::ColorF(217.0f / 255.0f, 119.0f / 255.0f, 6.0f / 255.0f, isDark ? 0.45f : 0.34f)
+                : (m_countingDown
+                    ? D2D1::ColorF(pal.accentBorder.r, pal.accentBorder.g, pal.accentBorder.b, isDark ? 0.48f : 0.38f)
+                    : D2D1::ColorF(225.0f / 255.0f, 29.0f / 255.0f, 72.0f / 255.0f, isDark ? 0.44f : 0.30f));
+            const D2D1_COLOR_F stTxtCol = m_paused
+                ? (isDark ? D2D1::ColorF(253.0f / 255.0f, 224.0f / 255.0f, 130.0f / 255.0f, 0.98f)
+                          : D2D1::ColorF(180.0f / 255.0f, 83.0f / 255.0f, 9.0f / 255.0f, 0.98f))
+                : (m_countingDown ? pal.accentText
+                                  : (isDark ? D2D1::ColorF(254.0f / 255.0f, 195.0f / 255.0f, 205.0f / 255.0f, 0.98f)
+                                            : D2D1::ColorF(190.0f / 255.0f, 18.0f / 255.0f, 60.0f / 255.0f, 0.98f)));
+            m_renderTarget->CreateSolidColorBrush(stBgCol, statusBg.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(stRimCol, statusRim.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(stTxtCol, statusTxt.GetAddressOf());
+            if (statusBg && statusChipRc.right > statusChipRc.left + 8.0f) {
+                m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(statusChipRc, 5.5f, 5.5f), statusBg.Get());
+            }
+            if (statusRim && statusChipRc.right > statusChipRc.left + 8.0f) {
+                m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(statusChipRc, 5.5f, 5.5f), statusRim.Get(), 0.85f);
+            }
+            m_renderTarget->DrawText(recText.c_str(), static_cast<UINT32>(recText.size()),
+                                     m_textFormat.Get(),
+                                     barLayout.statusRect,
+                                     statusTxt ? statusTxt.Get() : m_textBrush.Get());
+        }
 
         // 时间 (HH:MM:SS)（主计时字阶）
         m_renderTarget->DrawText(timeStr.c_str(), static_cast<UINT32>(timeStr.size()),
@@ -1036,13 +1075,42 @@ void RecordingIndicator::render() {
                 iconRect, m_textBrush.Get(), 1.0f);
 
             const float normalized = std::clamp(peak, 0.0f, 1.0f);
-            if (!muted && normalized > 0.005f) {
-                const auto fill = D2D1::RoundedRect(
-                    D2D1::RectF(static_cast<float>(rect.right - 5),
-                                 static_cast<float>(rect.bottom - 3) - normalized * 22,
-                                 static_cast<float>(rect.right - 2),
-                                 static_cast<float>(rect.bottom - 3)), 2.0f, 2.0f);
-                m_renderTarget->FillRoundedRectangle(fill, m_audioBrush.Get());
+            if (!muted) {
+                const float meterLeft = static_cast<float>(rect.right - 5);
+                const float meterRight = static_cast<float>(rect.right - 2);
+                const float meterTop = static_cast<float>(rect.bottom - 25);
+                const float meterBot = static_cast<float>(rect.bottom - 3);
+                ComPtr<ID2D1SolidColorBrush> meterTrack;
+                m_renderTarget->CreateSolidColorBrush(
+                    isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f)
+                           : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.10f),
+                    meterTrack.GetAddressOf());
+                if (meterTrack) {
+                    m_renderTarget->FillRoundedRectangle(
+                        D2D1::RoundedRect(D2D1::RectF(meterLeft, meterTop, meterRight, meterBot), 1.5f, 1.5f),
+                        meterTrack.Get());
+                }
+                if (normalized > 0.005f) {
+                    const float fillTop = meterBot - normalized * (meterBot - meterTop);
+                    const auto fill = D2D1::RoundedRect(
+                        D2D1::RectF(meterLeft, fillTop, meterRight, meterBot), 1.5f, 1.5f);
+                    // 广播级三段渐变电平表：底绿 -> 中琥珀 -> 顶珊瑚红
+                    D2D1_GRADIENT_STOP vuStops[3] = {
+                        { 0.0f, D2D1::ColorF(244.0f / 255.0f, 63.0f / 255.0f, 94.0f / 255.0f, 1.0f) },
+                        { 0.45f, D2D1::ColorF(251.0f / 255.0f, 191.0f / 255.0f, 36.0f / 255.0f, 1.0f) },
+                        { 1.0f, D2D1::ColorF(16.0f / 255.0f, 185.0f / 255.0f, 129.0f / 255.0f, 1.0f) }
+                    };
+                    ComPtr<ID2D1GradientStopCollection> vuCol;
+                    ComPtr<ID2D1LinearGradientBrush> vuGrad;
+                    if (SUCCEEDED(m_renderTarget->CreateGradientStopCollection(vuStops, 3, vuCol.GetAddressOf())) &&
+                        SUCCEEDED(m_renderTarget->CreateLinearGradientBrush(
+                            D2D1::LinearGradientBrushProperties(D2D1::Point2F(meterLeft, meterTop), D2D1::Point2F(meterLeft, meterBot)),
+                            vuCol.Get(), vuGrad.GetAddressOf())) && vuGrad) {
+                        m_renderTarget->FillRoundedRectangle(fill, vuGrad.Get());
+                    } else if (m_audioBrush) {
+                        m_renderTarget->FillRoundedRectangle(fill, m_audioBrush.Get());
+                    }
+                }
             }
         };
         if (!m_countingDown) {
@@ -1616,7 +1684,7 @@ void RecordingIndicator::renderCountdownLayered() {
         const float discR = 76.0f;
         const float ringR = 65.0f;
 
-        const bool dark = FloatingGlassBar::isEffectiveDarkMode();
+        const bool dark = true; // 录屏倒计时球恒定暗房黑曜石深色，保持心流
         const auto accent = FloatingGlassBar::effectiveAccentRGB();
         const D2D1_COLOR_F accentSolid = D2D1::ColorF(accent.r, accent.g, accent.b, 1.0f);
 

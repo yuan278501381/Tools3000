@@ -45,6 +45,7 @@
 #include "capture/CaptureVectorIcons.h"
 #include "capture/BeautyShell.h"
 #include "capture/MarkupEngine.h"
+#include "capture/TextReplaceEngine.h"
 #include "capture/MarkupBaseHelper.h"
 #include "capture/CornerRadiusHelper.h"
 #include "capture/HudAvoidanceEngine.h"

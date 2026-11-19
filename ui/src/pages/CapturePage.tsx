@@ -337,10 +337,27 @@ export const CapturePage: FC = () => {
     }).catch(() => { /* synced via focus fallback */ });
   };
 
+  const appendWatermarkToken = (current: string, token: string): string => {
+    const cur = current.trimEnd();
+    if (token === '\\n') {
+      return cur.length > 0 ? `${cur}\\n` : '\\n';
+    }
+    if (cur.length === 0) return token;
+    if (cur.endsWith('\\n') || cur.endsWith('\n')) {
+      return `${cur}${token}`;
+    }
+    if (cur.endsWith('{date}') && token === '{time}') {
+      return `${cur} ${token}`;
+    }
+    return `${cur} · ${token}`;
+  };
+
   const handleInsertWatermarkToken = (token: string) => {
-    const cur = (capture.watermarkText ?? '').trimEnd();
-    const next = cur.length > 0 ? `${cur} · ${token}` : token;
-    updateCapture('watermarkText', next);
+    updateCapture('watermarkText', appendWatermarkToken(capture.watermarkText ?? '', token));
+  };
+
+  const handleApplyDualLineWatermarkPreset = () => {
+    updateCapture('watermarkText', '{user}\\n{date} {time}');
   };
 
   const handlePickStudioWatermarkImage = async () => {
@@ -375,9 +392,11 @@ export const CapturePage: FC = () => {
   };
 
   const handleInsertStudioWatermarkToken = (token: string) => {
-    const cur = (recording.studioWatermarkText ?? '').trimEnd();
-    const next = cur.length > 0 ? `${cur} · ${token}` : token;
-    updateRecording('studioWatermarkText', next);
+    updateRecording('studioWatermarkText', appendWatermarkToken(recording.studioWatermarkText ?? '', token));
+  };
+
+  const handleApplyDualLineStudioWatermarkPreset = () => {
+    updateRecording('studioWatermarkText', '{user}\\n{date} {time}');
   };
 
   const handleSyncStudioWatermarkFromCapture = () => {
@@ -718,6 +737,7 @@ export const CapturePage: FC = () => {
                         ['{ip}', t('capture.watermarkTokenIp')],
                         ['{date}', t('capture.watermarkTokenDate')],
                         ['{time}', t('capture.watermarkTokenTime')],
+                        ['\\n', t('capture.watermarkTokenNewline')],
                       ] as const).map(([tok, label]) => (
                         <Button
                           key={tok}
@@ -729,6 +749,13 @@ export const CapturePage: FC = () => {
                           <CodeBadge>{tok}</CodeBadge>
                         </Button>
                       ))}
+                      <Button
+                        variant="secondary"
+                        disabled={Boolean(capture.watermarkPolicyForced)}
+                        onClick={handleApplyDualLineWatermarkPreset}
+                      >
+                        <span>{t('capture.watermarkPresetDualLine')}</span>
+                      </Button>
                     </div>
                   </div>
                 </SettingRow>
@@ -1243,6 +1270,7 @@ export const CapturePage: FC = () => {
                             ['{ip}', t('capture.watermarkTokenIp')],
                             ['{date}', t('capture.watermarkTokenDate')],
                             ['{time}', t('capture.watermarkTokenTime')],
+                            ['\\n', t('capture.watermarkTokenNewline')],
                           ] as const).map(([tok, label]) => (
                             <Button
                               key={tok}
@@ -1254,6 +1282,13 @@ export const CapturePage: FC = () => {
                               <CodeBadge>{tok}</CodeBadge>
                             </Button>
                           ))}
+                          <Button
+                            variant="secondary"
+                            disabled={Boolean(recording.studioWatermarkPolicyForced)}
+                            onClick={handleApplyDualLineStudioWatermarkPreset}
+                          >
+                            <span>{t('capture.watermarkPresetDualLine')}</span>
+                          </Button>
                         </div>
                       </div>
                     </SettingRow>

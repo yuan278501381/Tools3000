@@ -15,7 +15,9 @@
 #include "capture/CaptureVectorIcons.h"
 #include "capture/FloatingGlassBar.h"
 #include "capture/TextAnnotationHelper.h"
+#include "capture/TextReplaceEngine.h"
 #include "capture/CaptureHistory.h"
+#include <imm.h>
 #include "capture/PinSpawnCalculator.h"
 #include "capture/PinPasteCoordinator.h"
 #include "capture/PinInputController.h"
@@ -199,6 +201,15 @@ void PinWindow::close() {
     }
 
     const int closedGroup = m_groupId;
+    if (m_editingTextReplaceIdx >= 0) {
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            KillTimer(m_hwnd, 3);
+        }
+        m_editingTextReplaceIdx = -1;
+        m_editingTextReplaceBackup.clear();
+        m_editingTextReplaceWasNew = false;
+        clearTextReplaceToolbarRects();
+    }
     PinContextMenu::instance().dismiss();
     releaseGraphicsResources();
     HWND hwndToDestroy = std::exchange(m_hwnd, nullptr);
@@ -1412,7 +1423,13 @@ void PinWindow::drawHoverToolbar() {
                 : (baseTipRect.bottom - baseTipRect.top);
             const D2D1_RECT_F tipRect = D2D1::RectF(tipX, baseTipRect.top, tipX + tipW, baseTipRect.top + tipH);
 
-            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 4.0f * dpiScale, pal.isDark);
+            // 贴图工具栏悬停提示气泡（Tooltip HUD）恒定采用高级暗房深色，保持操作心流
+            const auto tipPal = FloatingGlassBar::resolveHudPalette();
+            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 5.0f * dpiScale, true);
+            ComPtr<ID2D1SolidColorBrush> tipTextBr;
+            D2D1_COLOR_F tipTxtCol = tipPal.textPrimary;
+            tipTxtCol.a *= m_hoverAlpha;
+            m_renderTarget->CreateSolidColorBrush(tipTxtCol, tipTextBr.GetAddressOf());
             const D2D1_RECT_F tipTextRect = D2D1::RectF(
                 tipRect.left + 6.0f * dpiScale,
                 tipRect.top,
@@ -1420,7 +1437,7 @@ void PinWindow::drawHoverToolbar() {
                 tipRect.bottom);
             m_renderTarget->DrawTextW(
                 tipText, static_cast<UINT32>(wcslen(tipText)),
-                m_uiCenterTextFormat.Get(), tipTextRect, textBrush.Get(),
+                m_uiCenterTextFormat.Get(), tipTextRect, tipTextBr ? tipTextBr.Get() : textBrush.Get(),
                 D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
     }
@@ -1446,7 +1463,15 @@ enum PinInteractiveButton : int {
     kPinBtnWavyFloating = 13,
     kPinBtnUnderlineFloating = 14,
     kPinBtnUndoFloating = 15,
+    kPinBtnTextReplaceFloating = 16,
     kPinBtnColorDotBase = 20, // 20..24
+    kPinBtnTrFontDec = 30,
+    kPinBtnTrFontInc = 31,
+    kPinBtnTrWeight = 32,
+    kPinBtnTrFamily = 33,
+    kPinBtnTrBgMode = 34,
+    kPinBtnTrDone = 35,
+    kPinBtnTrReflow = 36,
     kPinBtnQrBadgeBase = 100,
 };
 
@@ -1505,10 +1530,19 @@ int PinWindow::hitTestInteractiveButton(int x, int y) const noexcept {
     if (m_folded) {
         return kPinBtnNone;
     }
+    if (m_editingTextReplaceIdx >= 0) {
+        if (isPointInRectF(m_btnTrFontDecRect, x, y)) return kPinBtnTrFontDec;
+        if (isPointInRectF(m_btnTrFontIncRect, x, y)) return kPinBtnTrFontInc;
+        if (isPointInRectF(m_btnTrWeightRect, x, y))  return kPinBtnTrWeight;
+        if (isPointInRectF(m_btnTrFamilyRect, x, y))  return kPinBtnTrFamily;
+        if (isPointInRectF(m_btnTrBgModeRect, x, y))  return kPinBtnTrBgMode;
+        if (isPointInRectF(m_btnTrReflowRect, x, y))  return kPinBtnTrReflow;
+        if (isPointInRectF(m_btnTrDoneRect, x, y))    return kPinBtnTrDone;
+    }
     if (isPointInRectF(m_btnGroupBadgeRect, x, y)) {
         return kPinBtnGroupBadge;
     }
-    if (!m_selectedBlockIndices.empty()) {
+    if (!m_selectedBlockIndices.empty() && m_editingTextReplaceIdx < 0) {
         if (isPointInRectF(m_btnCopyFloatingRect, x, y)) {
             return kPinBtnCopyFloating;
         }
@@ -1526,6 +1560,9 @@ int PinWindow::hitTestInteractiveButton(int x, int y) const noexcept {
         }
         if (isPointInRectF(m_btnUnderlineFloatingRect, x, y)) {
             return kPinBtnUnderlineFloating;
+        }
+        if (isPointInRectF(m_btnTextReplaceFloatingRect, x, y)) {
+            return kPinBtnTextReplaceFloating;
         }
         if (isPointInRectF(m_btnUndoFloatingRect, x, y)) {
             return kPinBtnUndoFloating;
@@ -1584,7 +1621,15 @@ bool PinWindow::isInteractiveButtonHitWithSlop(int btnId, int x, int y, float sl
         case kPinBtnHighlightFloating: return !m_selectedBlockIndices.empty() && hitExpanded(m_btnHighlightFloatingRect);
         case kPinBtnWavyFloating:      return !m_selectedBlockIndices.empty() && hitExpanded(m_btnWavyFloatingRect);
         case kPinBtnUnderlineFloating: return !m_selectedBlockIndices.empty() && hitExpanded(m_btnUnderlineFloatingRect);
+        case kPinBtnTextReplaceFloating: return !m_selectedBlockIndices.empty() && hitExpanded(m_btnTextReplaceFloatingRect);
         case kPinBtnUndoFloating:      return !m_selectedBlockIndices.empty() && hitExpanded(m_btnUndoFloatingRect);
+        case kPinBtnTrFontDec:         return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrFontDecRect);
+        case kPinBtnTrFontInc:         return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrFontIncRect);
+        case kPinBtnTrWeight:          return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrWeightRect);
+        case kPinBtnTrFamily:          return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrFamilyRect);
+        case kPinBtnTrBgMode:          return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrBgModeRect);
+        case kPinBtnTrReflow:          return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrReflowRect);
+        case kPinBtnTrDone:            return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrDoneRect);
         // 右上角工具栏 8 键：只要按下时已锁定，抬手校验不受 m_hoverAlpha 定时器竞态淡出影响
         case kPinBtnFold:   return hitExpanded(m_btnFoldRect);
         case kPinBtnRotate: return hitExpanded(m_btnRotateRect);
@@ -1601,6 +1646,9 @@ bool PinWindow::isInteractiveButtonHitWithSlop(int btnId, int x, int y, float sl
 static bool savePinnedImage(HWND owner, const cv::Mat& image);
 
 bool PinWindow::copyPinImageWithFeedback() {
+    if (m_editingTextReplaceIdx >= 0) {
+        commitInPlaceTextReplace(true);
+    }
     const bool ok = copyImageToClipboard(m_sourceImage, m_hwnd);
     const bool isZh = tools3000::core::isUiLanguageChinese();
     tools3000::core::EventBus::instance().publish(
@@ -1661,6 +1709,47 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
             break;
         case kPinBtnUnderlineFloating:
             annotateSelectedText(TextMarkupMode::StraightUnderline);
+            break;
+        case kPinBtnTextReplaceFloating:
+            startInPlaceTextReplace();
+            break;
+        case kPinBtnTrFontDec:
+        case kPinBtnTrFontInc:
+        case kPinBtnTrWeight:
+        case kPinBtnTrFamily:
+        case kPinBtnTrBgMode:
+        case kPinBtnTrReflow: {
+            if (m_editingTextReplaceIdx >= 0 &&
+                m_editingTextReplaceIdx < static_cast<int>(m_markupElements.size())) {
+                auto& el = m_markupElements[static_cast<size_t>(m_editingTextReplaceIdx)];
+                if (btnId == kPinBtnTrFontDec) {
+                    el.fontSize = std::clamp(el.fontSize - 0.5f, 8.0f, 128.0f);
+                } else if (btnId == kPinBtnTrFontInc) {
+                    el.fontSize = std::clamp(el.fontSize + 0.5f, 8.0f, 128.0f);
+                } else if (btnId == kPinBtnTrWeight) {
+                    el.replaceFontWeight = (el.replaceFontWeight < 500) ? 500
+                        : ((el.replaceFontWeight < 600) ? 600
+                        : ((el.replaceFontWeight < 700) ? 700 : 400));
+                } else if (btnId == kPinBtnTrFamily) {
+                    el.replaceFontClass = (el.replaceFontClass + 1) % 3;
+                } else if (btnId == kPinBtnTrBgMode) {
+                    el.replaceBgMode = (el.replaceBgMode + 1) % 3;
+                    if (el.replaceBgMode == 2 && !AiInpaintEngine::instance().isModelInstalled()) {
+                        const bool zh = tools3000::core::isUiLanguageChinese();
+                        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                            zh ? L"当前使用内置快速纹理修复；可在「设置 -> 文字识别」按需下载 MI-GAN 512 AI 模型增强复杂底纹"
+                               : L"Using built-in fast inpainting; download MI-GAN 512 in Settings > OCR for complex textures"});
+                    }
+                } else if (btnId == kPinBtnTrReflow) {
+                    el.replaceReflowRight = !el.replaceReflowRight;
+                }
+                el.textLastCaretTick = GetTickCount();
+                recompositeMarkupPreservingOcr();
+            }
+            break;
+        }
+        case kPinBtnTrDone:
+            commitInPlaceTextReplace(true);
             break;
         case kPinBtnUndoFloating:
             undoPinMarkup();
@@ -3060,6 +3149,13 @@ void PinWindow::extractText() {
 
 void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {
     if (newImage.empty() || !m_hwnd) return;
+    if (m_editingTextReplaceIdx >= 0) {
+        KillTimer(m_hwnd, 3);
+        m_editingTextReplaceIdx = -1;
+        m_editingTextReplaceBackup.clear();
+        m_editingTextReplaceWasNew = false;
+        clearTextReplaceToolbarRects();
+    }
     m_colorBackup.release();
     m_grayscale = false;
     m_inverted = false;
@@ -3103,6 +3199,13 @@ void PinWindow::applyEditedMarkup(
     const std::vector<MarkupElement>& elements,
     const cv::Mat& precomposited) {
     if (cleanBaseImage.empty() || !m_hwnd) return;
+    if (m_editingTextReplaceIdx >= 0) {
+        KillTimer(m_hwnd, 3);
+        m_editingTextReplaceIdx = -1;
+        m_editingTextReplaceBackup.clear();
+        m_editingTextReplaceWasNew = false;
+        clearTextReplaceToolbarRects();
+    }
 
     m_colorBackup.release();
     m_grayscale = false;
@@ -3342,6 +3445,10 @@ void PinWindow::setTextMarkupColorIndex(int index) {
 }
 
 bool PinWindow::undoPinMarkup() {
+    if (m_editingTextReplaceIdx >= 0) {
+        commitInPlaceTextReplace(false);
+        return true;
+    }
     if (m_pinUndoStack.empty()) return false;
     m_pinRedoStack.push_back(m_markupElements);
     if (m_pinRedoStack.size() > MarkupEngine::kMaxUndoSteps) {
@@ -3354,6 +3461,7 @@ bool PinWindow::undoPinMarkup() {
 }
 
 bool PinWindow::redoPinMarkup() {
+    if (m_editingTextReplaceIdx >= 0) return false;
     if (m_pinRedoStack.empty()) return false;
     m_pinUndoStack.push_back(m_markupElements);
     if (m_pinUndoStack.size() > MarkupEngine::kMaxUndoSteps) {
@@ -3362,6 +3470,460 @@ bool PinWindow::redoPinMarkup() {
     m_markupElements = std::move(m_pinRedoStack.back());
     m_pinRedoStack.pop_back();
     recompositeMarkupPreservingOcr();
+    return true;
+}
+
+void PinWindow::clearTextReplaceToolbarRects() noexcept {
+    m_btnTrFontDecRect = {};
+    m_btnTrFontIncRect = {};
+    m_btnTrWeightRect = {};
+    m_btnTrFamilyRect = {};
+    m_btnTrBgModeRect = {};
+    m_btnTrReflowRect = {};
+    m_btnTrDoneRect = {};
+    m_trDragHandleRect = {};
+    m_trEditBoxClientRect = {};
+}
+
+static TextReplaceRenderSpec buildTextReplaceSpecForOverlay(const MarkupElement& el) {
+    TextReplaceRenderSpec spec;
+    spec.sourceRect = el.replaceSourceRect;
+    spec.charBoxes = el.replaceCharBoxes;
+    spec.originalTextUtf8 = el.replaceOriginalText;
+    spec.newTextUtf8 = el.text;
+    spec.textBgr = cv::Vec3b(el.color.b, el.color.g, el.color.r);
+    spec.fontSizePx = el.fontSize;
+    spec.fontWeight = el.replaceFontWeight;
+    spec.fontClass = static_cast<TextReplaceFontClass>(std::clamp(el.replaceFontClass, 0, 2));
+    spec.offsetX = el.replaceOffsetX;
+    spec.offsetY = el.replaceOffsetY;
+    spec.bgMode = static_cast<TextReplaceBgMode>(std::clamp(el.replaceBgMode, 0, 2));
+    spec.styleInitialized = el.replaceStyleInitialized;
+    spec.reflowRightTail = el.replaceReflowRight;
+    spec.rightTailRect = el.replaceRightTailRect;
+    spec.isEditing = true;
+    spec.caretUtf16 = el.textCaret;
+    spec.selAnchorUtf16 = el.textSelAnchor;
+    spec.lastCaretTick = el.textLastCaretTick;
+    spec.showCaretBlink = true;
+    return spec;
+}
+
+void PinWindow::updateImeCompositionAnchor() noexcept {
+    if (!m_hwnd || m_editingTextReplaceIdx < 0 ||
+        m_editingTextReplaceIdx >= static_cast<int>(m_markupElements.size())) {
+        return;
+    }
+    HIMC himc = ImmGetContext(m_hwnd);
+    if (!himc) return;
+    const auto& el = m_markupElements[static_cast<size_t>(m_editingTextReplaceIdx)];
+    const auto ov = TextReplaceEngine::computeEditOverlayMetrics(
+        m_cleanBaseImage, buildTextReplaceSpecForOverlay(el));
+    COMPOSITIONFORM cf{};
+    cf.dwStyle = CFS_POINT;
+    if (ov.valid) {
+        cf.ptCurrentPos.x = static_cast<LONG>(std::lround(ov.caretX * m_scale));
+        cf.ptCurrentPos.y = static_cast<LONG>(std::lround((ov.caretBottom + 3.0f) * m_scale));
+    } else {
+        const cv::Rect& rc = el.replaceSourceRect;
+        cf.ptCurrentPos.x = static_cast<LONG>(std::lround((static_cast<float>(rc.x) + el.replaceOffsetX) * m_scale));
+        cf.ptCurrentPos.y = static_cast<LONG>(std::lround((static_cast<float>(rc.y + rc.height) + el.replaceOffsetY + 4.0f) * m_scale));
+    }
+    ImmSetCompositionWindow(himc, &cf);
+    ImmReleaseContext(m_hwnd, himc);
+}
+
+bool PinWindow::startInPlaceTextReplace() {
+    if (m_folded || !m_pinnedSourceText.empty() || m_cleanBaseImage.empty()) return false;
+    if (m_editingTextReplaceIdx >= 0) {
+        commitInPlaceTextReplace(true);
+    }
+
+    std::vector<cv::Rect> spans;
+    std::vector<cv::Rect> selCharBoxes;
+    std::string origText;
+    cv::Rect detectedRightTail{0, 0, 0, 0};
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        spans = collectCoalescedSelectedTextRectsLocked();
+        origText = assembleSelectedSpansText(m_ocrBlocks, m_selectedBlockIndices, m_selectedCharSpans);
+        // 收集对应原始字符框供等宽/字距克隆参考，并同步探测同行右侧剩余原图文字（供改长自动顺延让位）
+        int anchorRegionId = -1;
+        int anchorRowId = -1;
+        const cv::Rect firstSpan = spans.empty() ? cv::Rect() : spans.front();
+        const int targetRightX = firstSpan.x + firstSpan.width;
+        const int targetTopY = firstSpan.y;
+        const int targetBotY = firstSpan.y + firstSpan.height;
+        auto unionTail = [&](const cv::Rect& r) {
+            if (r.width <= 0 || r.height <= 0) return;
+            if (detectedRightTail.width <= 0 || detectedRightTail.height <= 0) {
+                detectedRightTail = r;
+            } else {
+                detectedRightTail |= r;
+            }
+        };
+
+        if (!m_selectedCharSpans.empty()) {
+            const auto& firstSp = m_selectedCharSpans.front();
+            if (firstSp.blockIndex < m_ocrBlocks.size()) {
+                const auto& blk = m_ocrBlocks[firstSp.blockIndex];
+                anchorRegionId = blk.layoutRegionId;
+                anchorRowId = blk.alignedRowId;
+                for (size_t c = firstSp.startChar; c < firstSp.endExclusive && c < blk.charBoxes.size(); ++c) {
+                    selCharBoxes.push_back(blk.charBoxes[c]);
+                }
+                // 同一 OCR 块内选中后半段之前若仍有未选中的右侧字符，纳入同行右尾顺延区域
+                for (size_t c = firstSp.endExclusive; c < blk.charBoxes.size(); ++c) {
+                    const cv::Rect& cb = blk.charBoxes[c];
+                    if (cb.x >= targetRightX - 2) {
+                        unionTail(cb);
+                    }
+                }
+            }
+        } else if (!m_selectedBlockIndices.empty() && m_selectedBlockIndices.front() < m_ocrBlocks.size()) {
+            const auto& blk = m_ocrBlocks[m_selectedBlockIndices.front()];
+            anchorRegionId = blk.layoutRegionId;
+            anchorRowId = blk.alignedRowId;
+            selCharBoxes = blk.charBoxes;
+        }
+
+        // 合并同一版面分区内、同一水平行且位于目标选区右侧的其余 OCR 文本块
+        if (!spans.empty() && firstSpan.height > 0) {
+            for (const auto& blk : m_ocrBlocks) {
+                if (anchorRegionId >= 0 && blk.layoutRegionId != anchorRegionId) continue;
+                const cv::Rect& br = blk.origBox;
+                if (br.width <= 0 || br.height <= 0) continue;
+                if (br.x < targetRightX - 2) continue;
+                const int ovTop = (std::max)(targetTopY, br.y);
+                const int ovBot = (std::min)(targetBotY, br.y + br.height);
+                const int ovH = (std::max)(0, ovBot - ovTop);
+                const int minH = (std::max)(1, (std::min)(firstSpan.height, br.height));
+                const bool sameRow = (anchorRowId >= 0 && blk.alignedRowId == anchorRowId) ||
+                                     (static_cast<float>(ovH) / static_cast<float>(minH) >= 0.55f);
+                if (!sameRow) continue;
+                unionTail(br);
+            }
+        }
+    }
+    if (spans.empty()) return false;
+
+    // 合并为首个目标改字框（支持同行/多词连续替换），若原位已存在改字图元直接重新唤醒二次编辑
+    const cv::Rect targetRect = spans.front();
+    for (size_t i = 0; i < m_markupElements.size(); ++i) {
+        const auto& ex = m_markupElements[i];
+        if (ex.tool == MarkupTool::TextReplace) {
+            const cv::Rect inter = ex.replaceSourceRect & targetRect;
+            if (inter.area() * 2 >= (std::min)(ex.replaceSourceRect.area(), targetRect.area())) {
+                return startInPlaceTextReplaceOnElement(i);
+            }
+        }
+    }
+
+    // 去除多行选中时的换行符，聚焦首行精准替换
+    const size_t nlPos = origText.find('\n');
+    if (nlPos != std::string::npos) {
+        origText = origText.substr(0, nlPos);
+    }
+    while (!origText.empty() && (origText.back() == '\r' || origText.back() == ' ')) {
+        origText.pop_back();
+    }
+
+    const ExtractedTextStyle dna = TextReplaceEngine::extractStyle(
+        m_cleanBaseImage, targetRect, selCharBoxes, origText);
+
+    m_editingTextReplaceBackup = m_markupElements;
+    m_editingTextReplaceWasNew = true;
+
+    uint32_t nextId = 1;
+    for (const auto& ex : m_markupElements) {
+        nextId = (std::max)(nextId, ex.id + 1);
+    }
+
+    MarkupElement elem;
+    elem.id = nextId;
+    elem.tool = MarkupTool::TextReplace;
+    elem.startPt = cv::Point(targetRect.x, targetRect.y);
+    elem.endPt = cv::Point(targetRect.x + targetRect.width, targetRect.y + targetRect.height);
+    elem.replaceOriginalText = origText;
+    elem.text = origText;
+    elem.replaceSourceRect = targetRect;
+    elem.replaceCharBoxes = std::move(selCharBoxes);
+    elem.color = MarkupColor{dna.textBgr[2], dna.textBgr[1], dna.textBgr[0], 255};
+    elem.fontSize = dna.fontSizePx;
+    elem.replaceFontWeight = dna.fontWeight;
+    elem.replaceFontClass = static_cast<int>(dna.fontClass);
+    elem.replaceOffsetX = 0.0f;
+    elem.replaceOffsetY = 0.0f;
+    elem.replaceBgMode = static_cast<int>(TextReplaceBgMode::Auto);
+    elem.replaceStyleInitialized = true;
+    elem.replaceRightTailRect = detectedRightTail & cv::Rect(0, 0, m_cleanBaseImage.cols, m_cleanBaseImage.rows);
+    // 纯色/线性渐变背景且检测到同行右侧原图文字时，默认开启智能顺延让位，改长绝不压盖后字
+    elem.replaceReflowRight = (!dna.complexBackground &&
+                               elem.replaceRightTailRect.width > 0 &&
+                               elem.replaceRightTailRect.height > 0);
+    elem.isEditing = true;
+    const std::wstring wInit = tools3000::core::WinUtils::utf8ToWstring(elem.text);
+    elem.textSelAnchor = 0;
+    elem.textCaret = wInit.size();
+    elem.textLastCaretTick = GetTickCount();
+
+    m_markupElements.push_back(std::move(elem));
+    m_editingTextReplaceIdx = static_cast<int>(m_markupElements.size()) - 1;
+    m_ocrMarkupPreviewClean = true;
+
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        focusWindow();
+        SetTimer(m_hwnd, 3, 530, nullptr);
+        updateImeCompositionAnchor();
+    }
+    recompositeMarkupPreservingOcr();
+    return true;
+}
+
+bool PinWindow::startInPlaceTextReplaceOnElement(size_t elementIdx) {
+    if (elementIdx >= m_markupElements.size()) return false;
+    if (m_markupElements[elementIdx].tool != MarkupTool::TextReplace) return false;
+    if (m_editingTextReplaceIdx >= 0 && m_editingTextReplaceIdx != static_cast<int>(elementIdx)) {
+        commitInPlaceTextReplace(true);
+    }
+    if (elementIdx >= m_markupElements.size()) return false;
+
+    m_editingTextReplaceBackup = m_markupElements;
+    m_editingTextReplaceWasNew = false;
+    m_editingTextReplaceIdx = static_cast<int>(elementIdx);
+    auto& el = m_markupElements[elementIdx];
+    el.isEditing = true;
+    const std::wstring wCur = tools3000::core::WinUtils::utf8ToWstring(el.text);
+    el.textSelAnchor = 0;
+    el.textCaret = wCur.size();
+    el.textLastCaretTick = GetTickCount();
+    m_ocrMarkupPreviewClean = true;
+
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        focusWindow();
+        SetTimer(m_hwnd, 3, 530, nullptr);
+        updateImeCompositionAnchor();
+    }
+    recompositeMarkupPreservingOcr();
+    return true;
+}
+
+void PinWindow::commitInPlaceTextReplace(bool keepChanges) {
+    if (m_editingTextReplaceIdx < 0) return;
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, 3);
+    }
+
+    const int idx = m_editingTextReplaceIdx;
+    m_editingTextReplaceIdx = -1;
+    m_isSelectingReplaceText = false;
+    m_isDraggingReplacePos = false;
+    m_hoverReplaceDragHandle = false;
+    m_hoveredTrBtnId = -1;
+    clearTextReplaceToolbarRects();
+
+    if (!keepChanges) {
+        m_markupElements = std::move(m_editingTextReplaceBackup);
+        m_editingTextReplaceBackup.clear();
+        m_editingTextReplaceWasNew = false;
+        recompositeMarkupPreservingOcr();
+        return;
+    }
+
+    if (idx >= 0 && idx < static_cast<int>(m_markupElements.size())) {
+        m_markupElements[static_cast<size_t>(idx)].isEditing = false;
+    }
+    // 压入无损撤销栈（保存编辑前完整快照，支持 Ctrl+Z 一步还原）
+    m_pinUndoStack.push_back(std::move(m_editingTextReplaceBackup));
+    if (m_pinUndoStack.size() > MarkupEngine::kMaxUndoSteps) {
+        m_pinUndoStack.pop_front();
+    }
+    m_pinRedoStack.clear();
+    m_editingTextReplaceBackup.clear();
+    m_editingTextReplaceWasNew = false;
+    m_ocrMarkupPreviewClean = true;
+    recompositeMarkupPreservingOcr();
+}
+
+bool PinWindow::handleTextReplaceChar(wchar_t ch) {
+    if (m_editingTextReplaceIdx < 0 ||
+        m_editingTextReplaceIdx >= static_cast<int>(m_markupElements.size())) {
+        return false;
+    }
+    if (ch < 0x20 || ch == 0x7F) return true; // 控制字符由 WM_KEYDOWN 统一处理
+
+    auto& el = m_markupElements[static_cast<size_t>(m_editingTextReplaceIdx)];
+    std::wstring w = tools3000::core::WinUtils::utf8ToWstring(el.text);
+    const size_t s0 = (std::min)(w.size(), (std::min)(el.textCaret, el.textSelAnchor));
+    const size_t s1 = (std::min)(w.size(), (std::max)(el.textCaret, el.textSelAnchor));
+    w.erase(s0, s1 - s0);
+    if (w.size() < 240) {
+        w.insert(s0, 1, ch);
+        el.textCaret = s0 + 1;
+        el.textSelAnchor = el.textCaret;
+    }
+    el.text = tools3000::core::WinUtils::wstringToUtf8(w);
+    el.textLastCaretTick = GetTickCount();
+    recompositeMarkupPreservingOcr();
+    updateImeCompositionAnchor();
+    return true;
+}
+
+bool PinWindow::handleTextReplaceKeyDown(WPARAM vk, bool ctrl, bool shift, bool alt) {
+    if (m_editingTextReplaceIdx < 0 ||
+        m_editingTextReplaceIdx >= static_cast<int>(m_markupElements.size())) {
+        return false;
+    }
+
+    auto& el = m_markupElements[static_cast<size_t>(m_editingTextReplaceIdx)];
+    std::wstring w = tools3000::core::WinUtils::utf8ToWstring(el.text);
+    el.textCaret = (std::min)(el.textCaret, w.size());
+    el.textSelAnchor = (std::min)(el.textSelAnchor, w.size());
+
+    if (vk == VK_RETURN) {
+        commitInPlaceTextReplace(true);
+        return true;
+    }
+    if (vk == VK_ESCAPE) {
+        commitInPlaceTextReplace(false);
+        return true;
+    }
+
+    // Alt + 方向键：1px 像素级精准微调新文字偏移位置
+    if (alt && (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN)) {
+        const float step = shift ? 3.0f : 1.0f;
+        if (vk == VK_LEFT)  el.replaceOffsetX -= step;
+        if (vk == VK_RIGHT) el.replaceOffsetX += step;
+        if (vk == VK_UP)    el.replaceOffsetY -= step;
+        if (vk == VK_DOWN)  el.replaceOffsetY += step;
+        el.textLastCaretTick = GetTickCount();
+        recompositeMarkupPreservingOcr();
+        return true;
+    }
+
+    // Ctrl + +/-：0.5px 字号精调
+    if (ctrl && (vk == VK_OEM_PLUS || vk == VK_ADD || vk == VK_OEM_MINUS || vk == VK_SUBTRACT)) {
+        const float delta = (vk == VK_OEM_PLUS || vk == VK_ADD) ? 0.5f : -0.5f;
+        el.fontSize = std::clamp(el.fontSize + delta, 8.0f, 128.0f);
+        el.textLastCaretTick = GetTickCount();
+        recompositeMarkupPreservingOcr();
+        return true;
+    }
+
+    if (ctrl && vk == 'A') {
+        el.textSelAnchor = 0;
+        el.textCaret = w.size();
+        el.textLastCaretTick = GetTickCount();
+        render();
+        return true;
+    }
+    if (ctrl && vk == 'C') {
+        const size_t s0 = (std::min)(el.textCaret, el.textSelAnchor);
+        const size_t s1 = (std::max)(el.textCaret, el.textSelAnchor);
+        if (s1 > s0) {
+            tools3000::core::WinUtils::copyToClipboard(w.substr(s0, s1 - s0));
+        }
+        return true;
+    }
+    if (ctrl && vk == 'V') {
+        if (OpenClipboard(m_hwnd)) {
+            if (HANDLE hData = GetClipboardData(CF_UNICODETEXT)) {
+                if (const auto* ptr = static_cast<const wchar_t*>(GlobalLock(hData))) {
+                    std::wstring clip;
+                    for (size_t i = 0; ptr[i] != L'\0' && clip.size() < 160; ++i) {
+                        if (ptr[i] >= 0x20) clip.push_back(ptr[i]);
+                    }
+                    GlobalUnlock(hData);
+                    if (!clip.empty()) {
+                        const size_t s0 = (std::min)(el.textCaret, el.textSelAnchor);
+                        const size_t s1 = (std::max)(el.textCaret, el.textSelAnchor);
+                        w.erase(s0, s1 - s0);
+                        w.insert(s0, clip);
+                        el.textCaret = s0 + clip.size();
+                        el.textSelAnchor = el.textCaret;
+                        el.text = tools3000::core::WinUtils::wstringToUtf8(w);
+                        el.textLastCaretTick = GetTickCount();
+                        recompositeMarkupPreservingOcr();
+                    }
+                }
+            }
+            CloseClipboard();
+        }
+        return true;
+    }
+
+    if (vk == VK_BACK) {
+        const size_t s0 = (std::min)(el.textCaret, el.textSelAnchor);
+        const size_t s1 = (std::max)(el.textCaret, el.textSelAnchor);
+        if (s1 > s0) {
+            w.erase(s0, s1 - s0);
+            el.textCaret = s0;
+            el.textSelAnchor = s0;
+        } else if (el.textCaret > 0) {
+            w.erase(el.textCaret - 1, 1);
+            --el.textCaret;
+            el.textSelAnchor = el.textCaret;
+        }
+        el.text = tools3000::core::WinUtils::wstringToUtf8(w);
+        el.textLastCaretTick = GetTickCount();
+        recompositeMarkupPreservingOcr();
+        return true;
+    }
+    if (vk == VK_DELETE) {
+        const size_t s0 = (std::min)(el.textCaret, el.textSelAnchor);
+        const size_t s1 = (std::max)(el.textCaret, el.textSelAnchor);
+        if (s1 > s0) {
+            w.erase(s0, s1 - s0);
+            el.textCaret = s0;
+            el.textSelAnchor = s0;
+        } else if (el.textCaret < w.size()) {
+            w.erase(el.textCaret, 1);
+        }
+        el.text = tools3000::core::WinUtils::wstringToUtf8(w);
+        el.textLastCaretTick = GetTickCount();
+        recompositeMarkupPreservingOcr();
+        return true;
+    }
+    if (vk == VK_LEFT) {
+        if (!shift && el.textCaret != el.textSelAnchor) {
+            el.textCaret = (std::min)(el.textCaret, el.textSelAnchor);
+        } else if (el.textCaret > 0) {
+            --el.textCaret;
+        }
+        if (!shift) el.textSelAnchor = el.textCaret;
+        el.textLastCaretTick = GetTickCount();
+        updateImeCompositionAnchor();
+        render();
+        return true;
+    }
+    if (vk == VK_RIGHT) {
+        if (!shift && el.textCaret != el.textSelAnchor) {
+            el.textCaret = (std::max)(el.textCaret, el.textSelAnchor);
+        } else if (el.textCaret < w.size()) {
+            ++el.textCaret;
+        }
+        if (!shift) el.textSelAnchor = el.textCaret;
+        el.textLastCaretTick = GetTickCount();
+        updateImeCompositionAnchor();
+        render();
+        return true;
+    }
+    if (vk == VK_HOME) {
+        el.textCaret = 0;
+        if (!shift) el.textSelAnchor = 0;
+        el.textLastCaretTick = GetTickCount();
+        updateImeCompositionAnchor();
+        render();
+        return true;
+    }
+    if (vk == VK_END) {
+        el.textCaret = w.size();
+        if (!shift) el.textSelAnchor = w.size();
+        el.textLastCaretTick = GetTickCount();
+        updateImeCompositionAnchor();
+        render();
+        return true;
+    }
     return true;
 }
 
@@ -4038,8 +4600,10 @@ void PinWindow::render() {
         m_btnHighlightFloatingRect = D2D1::RectF(0, 0, 0, 0);
         m_btnWavyFloatingRect = D2D1::RectF(0, 0, 0, 0);
         m_btnUnderlineFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnTextReplaceFloatingRect = D2D1::RectF(0, 0, 0, 0);
         m_btnUndoFloatingRect = D2D1::RectF(0, 0, 0, 0);
         m_btnColorDotFloatingRects.fill(D2D1::RectF(0, 0, 0, 0));
+        clearTextReplaceToolbarRects();
         if (m_ocrReady) {
             std::lock_guard<std::mutex> lock(m_ocrMutex);
             const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
@@ -4191,8 +4755,8 @@ void PinWindow::render() {
             }
 
             // 4. 选区旁世界级微晶悬浮工坊（Apple / Figma 级材质与分段层级，恒定单行避让架构）：
-            //    [复制] (表格) [对照] | 〔荧光笔 · 波浪线 · 直线〕 | 5 枚高定珠宝色珠 | (撤销)
-            if (!m_selectedBlockIndices.empty() && !m_isSelectingText) {
+            //    [复制] (表格) [对照] | 〔荧光笔 · 波浪线 · 直线 · 改字〕 | 5 枚高定珠宝色珠 | (撤销)
+            if (!m_selectedBlockIndices.empty() && !m_isSelectingText && m_editingTextReplaceIdx < 0) {
                 const bool isZh = tools3000::core::isUiLanguageChinese();
                 const bool floatingCopyAsImage = (m_ocrMarkupPreviewClean && m_pinnedSourceText.empty());
                 const wchar_t* lblCopy = floatingCopyAsImage
@@ -4203,6 +4767,7 @@ void PinWindow::render() {
                 const wchar_t* lblHl = isZh ? L"荧光笔" : L"Highlight";
                 const wchar_t* lblWavy = isZh ? L"波浪线" : L"Wavy";
                 const wchar_t* lblLine = isZh ? L"直线" : L"Line";
+                const wchar_t* lblReplace = isZh ? L"改字" : L"Edit";
 
                 auto calcBtnW = [&](const wchar_t* txt, float minDip = 54.0f) -> float {
                     const float tw = measureUiTextWidth(txt, dpiScale);
@@ -4215,6 +4780,7 @@ void PinWindow::render() {
                 const float wHlFull = calcBtnW(lblHl, 64.0f);
                 const float wWavyFull = calcBtnW(lblWavy, 64.0f);
                 const float wLineFull = calcBtnW(lblLine, 56.0f);
+                const float wReplaceFull = calcBtnW(lblReplace, 56.0f);
                 const float iconBtnW = std::ceil(24.0f * dpiScale);
                 const float dotCellFullW = std::ceil(18.0f * dpiScale);
                 const float dotCellCompactW = std::ceil(13.5f * dpiScale);
@@ -4267,10 +4833,10 @@ void PinWindow::render() {
 
                 const float undoExtraW = showUndoBtn ? (btnGap + iconBtnW) : 0.0f;
                 const float markupFullW = segTrackPadX * 2.0f + wHlFull + btnGap + wWavyFull + btnGap + wLineFull +
-                    sepSpace + (dotCellFullW * 5.0f) + undoExtraW;
-                const float markupIcon5DotsW = segTrackPadX * 2.0f + iconBtnW * 3.0f + btnGap * 2.0f +
+                    btnGap + wReplaceFull + sepSpace + (dotCellFullW * 5.0f) + undoExtraW;
+                const float markupIcon5DotsW = segTrackPadX * 2.0f + iconBtnW * 4.0f + btnGap * 3.0f +
                     sepSpace + (dotCellCompactW * 5.0f) + undoExtraW;
-                const float markupIcon1DotW = segTrackPadX * 2.0f + iconBtnW * 3.0f + btnGap * 2.0f +
+                const float markupIcon1DotW = segTrackPadX * 2.0f + iconBtnW * 4.0f + btnGap * 3.0f +
                     sepSpace + dotCellFullW + undoExtraW;
 
                 bool showMarkupTools = false;
@@ -4525,7 +5091,8 @@ void PinWindow::render() {
                         const float wH = markupWithLabels ? wHlFull : iconBtnW;
                         const float wW = markupWithLabels ? wWavyFull : iconBtnW;
                         const float wU = markupWithLabels ? wLineFull : iconBtnW;
-                        const float segTotalW = segTrackPadX * 2.0f + wH + btnGap + wW + btnGap + wU;
+                        const float wR = markupWithLabels ? wReplaceFull : iconBtnW;
+                        const float segTotalW = segTrackPadX * 2.0f + wH + btnGap + wW + btnGap + wU + btnGap + wR;
 
                         // 内凹微晶分段轨道槽（Recessed Segmented Control Track）
                         const D2D1_RECT_F trackRc = D2D1::RectF(
@@ -4564,7 +5131,16 @@ void PinWindow::render() {
                         drawCapsuleAction(m_btnUnderlineFloatingRect, CaptureIconId::TextMarkupUnderline,
                                           markupWithLabels ? lblLine : L"", m_hoverUnderlineFloating, activeStraight,
                                           activeAccentBrush.Get(), true);
-                        curX += wU + segTrackPadX;
+                        curX += wU + btnGap;
+
+                        ComPtr<ID2D1SolidColorBrush> replaceAccentBrush;
+                        m_renderTarget->CreateSolidColorBrush(
+                            D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.96f), replaceAccentBrush.GetAddressOf());
+                        m_btnTextReplaceFloatingRect = D2D1::RectF(curX, innerTop, curX + wR, innerBot);
+                        drawCapsuleAction(m_btnTextReplaceFloatingRect, CaptureIconId::TextReplaceEdit,
+                                          markupWithLabels ? lblReplace : L"", m_hoverTextReplaceFloating, false,
+                                          replaceAccentBrush.Get(), true);
+                        curX += wR + segTrackPadX;
 
                         drawDivider(curX + sepSpace * 0.5f, innerTop, innerBot);
                         curX += sepSpace;
@@ -4580,6 +5156,328 @@ void PinWindow::render() {
                     m_btnCopyFloatingRect = barRect;
                     drawCapsuleAction(m_btnCopyFloatingRect, CaptureIconId::ActionCopy, lblCopy, m_hoverCopyFloating);
                 }
+            }
+
+            // 4B. 原位无痕改字实时编辑态：Direct2D GPU 顶层焦框 + 选中高亮 + 60FPS 呼吸插入光标 + 精调浮岛
+            if (m_editingTextReplaceIdx >= 0 &&
+                m_editingTextReplaceIdx < static_cast<int>(m_markupElements.size()) &&
+                ensureTextResources(dpiScale) && m_uiCenterTextFormat) {
+                const auto& ed = m_markupElements[static_cast<size_t>(m_editingTextReplaceIdx)];
+                const bool isZh = tools3000::core::isUiLanguageChinese();
+
+                // 1) GPU 顶层高定编辑焦框 + 文字选区高亮 + 清晰锐利呼吸光标（0 CPU 合成，100% 永不污染图片）
+                const auto ov = TextReplaceEngine::computeEditOverlayMetrics(
+                    m_cleanBaseImage, buildTextReplaceSpecForOverlay(ed));
+                float anchorCx = (static_cast<float>(ed.replaceSourceRect.x) +
+                                  static_cast<float>(ed.replaceSourceRect.width) * 0.5f) * sx;
+                float anchorTop = static_cast<float>(ed.replaceSourceRect.y) * sy;
+                float anchorBot = static_cast<float>(ed.replaceSourceRect.y + ed.replaceSourceRect.height) * sy;
+
+                const float pad = 4.5f * dpiScale;
+                const float gap = 3.0f * dpiScale;
+                const float barH = 30.0f * dpiScale;
+                const bool barBelow = (anchorTop - barH - 9.0f * dpiScale < 6.0f * dpiScale);
+
+                if (ov.valid) {
+                    const D2D1_RECT_F focusRc = D2D1::RectF(
+                        std::clamp(ov.boxLeft * sx, 1.5f, (std::max)(2.0f, size.width - 1.5f)),
+                        std::clamp(ov.boxTop * sy, 1.5f, (std::max)(2.0f, size.height - 1.5f)),
+                        std::clamp(ov.boxRight * sx, 2.5f, (std::max)(3.0f, size.width - 1.5f)),
+                        std::clamp(ov.boxBottom * sy, 2.5f, (std::max)(3.0f, size.height - 1.5f)));
+                    m_trEditBoxClientRect = focusRc;
+                    anchorCx = (focusRc.left + focusRc.right) * 0.5f;
+                    anchorTop = focusRc.top;
+                    anchorBot = focusRc.bottom;
+
+                    const bool effBarBelow = (anchorTop - barH - 9.0f * dpiScale < 6.0f * dpiScale);
+                    const float focusR = 4.2f * dpiScale;
+                    const D2D1_RECT_F haloRc = D2D1::RectF(
+                        (std::max)(0.5f, focusRc.left - 2.2f * dpiScale),
+                        (std::max)(0.5f, focusRc.top - 2.2f * dpiScale),
+                        (std::min)(size.width - 0.5f, focusRc.right + 2.2f * dpiScale),
+                        (std::min)(size.height - 0.5f, focusRc.bottom + 2.2f * dpiScale));
+
+                    ComPtr<ID2D1SolidColorBrush> haloBr, tintBr, borderBr, selBr, caretBr, caretGlowBr;
+                    const float accR = ov.darkBackground ? (std::min)(1.0f, themeRgb.r * 0.65f + 0.35f) : themeRgb.r;
+                    const float accG = ov.darkBackground ? (std::min)(1.0f, themeRgb.g * 0.65f + 0.35f) : themeRgb.g;
+                    const float accB = ov.darkBackground ? (std::min)(1.0f, themeRgb.b * 0.65f + 0.35f) : themeRgb.b;
+
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(accR, accG, accB, 0.22f), haloBr.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(accR, accG, accB, ov.darkBackground ? 0.08f : 0.055f), tintBr.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(accR, accG, accB, 0.94f), borderBr.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(accR, accG, accB, ov.darkBackground ? 0.36f : 0.26f), selBr.GetAddressOf());
+                    // 深底光标用极高对比度纯白核心 + 主题蓝微光，浅底用饱满主题蓝核心
+                    m_renderTarget->CreateSolidColorBrush(
+                        ov.darkBackground ? D2D1::ColorF(0.96f, 0.98f, 1.0f, 0.98f)
+                                          : D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.98f),
+                        caretBr.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(accR, accG, accB, 0.38f), caretGlowBr.GetAddressOf());
+
+                    // 拖拽偏移离开原擦除区时，在旧字源区绘制极淡虚线参考幽灵框，直观提示擦除源位置（提交后自动消失）
+                    if ((m_isDraggingReplacePos ||
+                         std::abs(ed.replaceOffsetX) > 2.0f || std::abs(ed.replaceOffsetY) > 2.0f) &&
+                        ed.replaceSourceRect.width > 0 && ed.replaceSourceRect.height > 0 && m_d2dFactory) {
+                        const D2D1_RECT_F ghostRc = D2D1::RectF(
+                            std::clamp(static_cast<float>(ed.replaceSourceRect.x) * sx, 1.5f, (std::max)(2.0f, size.width - 1.5f)),
+                            std::clamp(static_cast<float>(ed.replaceSourceRect.y) * sy, 1.5f, (std::max)(2.0f, size.height - 1.5f)),
+                            std::clamp(static_cast<float>(ed.replaceSourceRect.x + ed.replaceSourceRect.width) * sx, 2.5f, (std::max)(3.0f, size.width - 1.5f)),
+                            std::clamp(static_cast<float>(ed.replaceSourceRect.y + ed.replaceSourceRect.height) * sy, 2.5f, (std::max)(3.0f, size.height - 1.5f)));
+                        ComPtr<ID2D1SolidColorBrush> ghostBr;
+                        ComPtr<ID2D1StrokeStyle> dashStyle;
+                        const float dashes[] = {2.5f, 2.5f};
+                        D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
+                            D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                            D2D1_LINE_JOIN_ROUND, 10.0f, D2D1_DASH_STYLE_CUSTOM, 0.0f);
+                        m_d2dFactory->CreateStrokeStyle(props, dashes, 2, dashStyle.GetAddressOf());
+                        m_renderTarget->CreateSolidColorBrush(
+                            ov.darkBackground ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f)
+                                              : D2D1::ColorF(0.15f, 0.23f, 0.35f, 0.26f),
+                            ghostBr.GetAddressOf());
+                        if (ghostBr && dashStyle) {
+                            m_renderTarget->DrawRoundedRectangle(
+                                D2D1::RoundedRect(ghostRc, 3.0f * dpiScale, 3.0f * dpiScale),
+                                ghostBr.Get(), 1.05f * dpiScale, dashStyle.Get());
+                        }
+                    }
+
+                    // 拖拽且与原行水平基线齐平时，左右侧外延极淡智能对齐参考丝线（0 遮挡文字，松手即隐）
+                    if (m_isDraggingReplacePos && std::abs(ed.replaceOffsetY) <= 0.25f && m_d2dFactory) {
+                        const float guideY = std::floor((focusRc.top + focusRc.bottom) * 0.5f) + 0.5f;
+                        const float guideSpan = 28.0f * dpiScale;
+                        ComPtr<ID2D1SolidColorBrush> guideBr;
+                        ComPtr<ID2D1StrokeStyle> guideDash;
+                        const float gDashes[] = {3.0f, 2.5f};
+                        m_d2dFactory->CreateStrokeStyle(
+                            D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                        D2D1_LINE_JOIN_ROUND, 10.0f, D2D1_DASH_STYLE_CUSTOM, 0.0f),
+                            gDashes, 2, guideDash.GetAddressOf());
+                        m_renderTarget->CreateSolidColorBrush(
+                            ov.darkBackground ? D2D1::ColorF(0.20f, 0.86f, 0.68f, 0.72f)
+                                              : D2D1::ColorF(0.06f, 0.65f, 0.50f, 0.72f),
+                            guideBr.GetAddressOf());
+                        if (guideBr && guideDash) {
+                            const float l0 = (std::max)(2.0f, focusRc.left - guideSpan);
+                            const float l1 = (std::max)(l0, focusRc.left - 3.0f * dpiScale);
+                            const float r0 = (std::min)(size.width - 2.0f, focusRc.right + 3.0f * dpiScale);
+                            const float r1 = (std::min)(size.width - 2.0f, focusRc.right + guideSpan);
+                            if (l1 > l0 + 2.0f) {
+                                m_renderTarget->DrawLine({l0, guideY}, {l1, guideY}, guideBr.Get(), 1.1f * dpiScale, guideDash.Get());
+                            }
+                            if (r1 > r0 + 2.0f) {
+                                m_renderTarget->DrawLine({r0, guideY}, {r1, guideY}, guideBr.Get(), 1.1f * dpiScale, guideDash.Get());
+                            }
+                        }
+                    }
+
+                    // 柔光聚焦外环 + 微弱可编辑底色 + 清晰圆角编辑框
+                    if (haloBr) {
+                        m_renderTarget->DrawRoundedRectangle(
+                            D2D1::RoundedRect(haloRc, focusR + 1.5f * dpiScale, focusR + 1.5f * dpiScale),
+                            haloBr.Get(), 2.4f * dpiScale);
+                    }
+                    if (tintBr) {
+                        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(focusRc, focusR, focusR), tintBr.Get());
+                    }
+                    if (selBr) {
+                        for (const auto& sr : ov.selectionRects) {
+                            const D2D1_RECT_F sRc = D2D1::RectF(
+                                sr.x * sx, sr.y * sy, (sr.x + sr.width) * sx, (sr.y + sr.height) * sy);
+                            m_renderTarget->FillRoundedRectangle(
+                                D2D1::RoundedRect(sRc, 2.5f * dpiScale, 2.5f * dpiScale), selBr.Get());
+                        }
+                    }
+                    if (borderBr) {
+                        m_renderTarget->DrawRoundedRectangle(
+                            D2D1::RoundedRect(focusRc, focusR, focusR), borderBr.Get(), 1.45f * dpiScale);
+                    }
+
+                    // 底部居中横向 6 点微晶药丸拖柄（彻底释放左右同行视野便于像素级对齐；
+                    // 若上方工具浮岛被迫翻转到下方或贴近底边，则自动切到编辑框正上方居中，永不挡左右文字）
+                    const float gripW = std::clamp((focusRc.right - focusRc.left) * 0.55f, 26.0f * dpiScale, 36.0f * dpiScale);
+                    const float gripH = 11.5f * dpiScale;
+                    const float gripGap = 4.0f * dpiScale;
+                    const bool placeBelow = !effBarBelow && (focusRc.bottom + gripGap + gripH <= size.height - 2.0f);
+                    const float gx0 = std::clamp(anchorCx - gripW * 0.5f, 2.0f, (std::max)(2.0f, size.width - gripW - 2.0f));
+                    const float gy0 = placeBelow
+                        ? (focusRc.bottom + gripGap)
+                        : (std::max)(2.0f, focusRc.top - gripGap - gripH);
+                    m_trDragHandleRect = D2D1::RectF(gx0, gy0, gx0 + gripW, gy0 + gripH);
+
+                    const bool gripActive = m_isDraggingReplacePos || m_hoverReplaceDragHandle;
+                    ComPtr<ID2D1SolidColorBrush> gripBgBr, gripDotBr;
+                    m_renderTarget->CreateSolidColorBrush(
+                        gripActive
+                            ? D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.96f)
+                            : (ov.darkBackground
+                                ? D2D1::ColorF(36.0f / 255.0f, 44.0f / 255.0f, 58.0f / 255.0f, 0.92f)
+                                : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.94f)),
+                        gripBgBr.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(
+                        gripActive
+                            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f)
+                            : D2D1::ColorF(accR, accG, accB, 0.92f),
+                        gripDotBr.GetAddressOf());
+                    const float gripR = gripH * 0.5f;
+                    if (gripBgBr) {
+                        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(m_trDragHandleRect, gripR, gripR), gripBgBr.Get());
+                    }
+                    if (borderBr) {
+                        m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(m_trDragHandleRect, gripR, gripR), borderBr.Get(), 1.0f * dpiScale);
+                    }
+                    if (gripDotBr) {
+                        const float gCx = (m_trDragHandleRect.left + m_trDragHandleRect.right) * 0.5f;
+                        const float gCy = (m_trDragHandleRect.top + m_trDragHandleRect.bottom) * 0.5f;
+                        const float dotR = 1.05f * dpiScale;
+                        const float dxDot = 3.8f * dpiScale;
+                        const float dyDot = 1.95f * dpiScale;
+                        for (int col = -1; col <= 1; ++col) {
+                            m_renderTarget->FillEllipse(D2D1::Ellipse({gCx + col * dxDot, gCy - dyDot}, dotR, dotR), gripDotBr.Get());
+                            m_renderTarget->FillEllipse(D2D1::Ellipse({gCx + col * dxDot, gCy + dyDot}, dotR, dotR), gripDotBr.Get());
+                        }
+                    }
+
+                    // 拖拽移动位置时，顺滑衔接在拖柄外侧展示 0.5px 偏移微胶囊（零遮挡左右同行文字）
+                    if (m_isDraggingReplacePos && m_uiCenterTextFormat) {
+                        const std::wstring posLabel = std::format(L"X {:+.1f}  Y {:+.1f}", ed.replaceOffsetX, ed.replaceOffsetY);
+                        const float badgeW = (std::max)(88.0f * dpiScale, measureUiTextWidth(posLabel, dpiScale) + 14.0f * dpiScale);
+                        const float badgeH = 20.0f * dpiScale;
+                        const float badgeX = std::clamp(anchorCx - badgeW * 0.5f, 4.0f * dpiScale,
+                                                        (std::max)(4.0f * dpiScale, size.width - badgeW - 4.0f * dpiScale));
+                        float badgeY = placeBelow
+                            ? (m_trDragHandleRect.bottom + 5.0f * dpiScale)
+                            : (m_trDragHandleRect.top - badgeH - 5.0f * dpiScale);
+                        if (badgeY + badgeH > size.height - 4.0f * dpiScale) {
+                            badgeY = (std::max)(4.0f * dpiScale, focusRc.top - badgeH - 6.0f * dpiScale);
+                        } else if (badgeY < 4.0f * dpiScale) {
+                            badgeY = (std::min)(size.height - badgeH - 4.0f * dpiScale, focusRc.bottom + 6.0f * dpiScale);
+                        }
+                        const D2D1_RECT_F badgeRc = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
+                        ComPtr<ID2D1SolidColorBrush> badgeBg, badgeTxt;
+                        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.88f), badgeBg.GetAddressOf());
+                        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.98f, 1.0f, 0.98f), badgeTxt.GetAddressOf());
+                        if (badgeBg) {
+                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(badgeRc, 5.0f * dpiScale, 5.0f * dpiScale), badgeBg.Get());
+                        }
+                        if (badgeTxt) {
+                            m_renderTarget->DrawTextW(posLabel.c_str(), static_cast<UINT32>(posLabel.size()),
+                                                      m_uiCenterTextFormat.Get(), badgeRc, badgeTxt.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        }
+                    }
+
+                    // 清晰锐利 530ms 呼吸插入光标（打字/移动后 520ms 内瞬间常亮；拖拽位置期间暂隐免干扰对齐）
+                    const uint32_t nowTick = GetTickCount();
+                    const bool caretVisible = !m_isDraggingReplacePos && (
+                        (nowTick - ed.textLastCaretTick < 520u) ||
+                        (((nowTick - ed.textLastCaretTick) / 530u) % 2u == 0u));
+                    if (caretVisible && caretBr) {
+                        const float cxPx = std::floor(ov.caretX * sx) + 0.5f;
+                        const float cTopPx = ov.caretTop * sy;
+                        const float cBotPx = ov.caretBottom * sy;
+                        if (caretGlowBr) {
+                            m_renderTarget->DrawLine({cxPx, cTopPx}, {cxPx, cBotPx}, caretGlowBr.Get(), 4.0f * dpiScale);
+                        }
+                        m_renderTarget->DrawLine({cxPx, cTopPx}, {cxPx, cBotPx}, caretBr.Get(), 1.75f * dpiScale);
+                    }
+                } else {
+                    m_trDragHandleRect = {};
+                    m_trEditBoxClientRect = {};
+                }
+                (void)barBelow;
+
+                const std::wstring sizeStr = std::format(L"{:.1f}", ed.fontSize);
+                const wchar_t* weightLbl = (ed.replaceFontWeight >= 650) ? (isZh ? L"粗体" : L"Bold")
+                    : ((ed.replaceFontWeight >= 550) ? (isZh ? L"半粗" : L"Semi")
+                    : ((ed.replaceFontWeight >= 460) ? (isZh ? L"中等" : L"Med")
+                    : (isZh ? L"常规" : L"Reg")));
+                const wchar_t* famLbl = (ed.replaceFontClass == 1) ? (isZh ? L"等宽" : L"Mono")
+                    : ((ed.replaceFontClass == 2) ? (isZh ? L"宋体" : L"Serif")
+                    : (isZh ? L"无衬线" : L"Sans"));
+                const wchar_t* bgLbl = (ed.replaceBgMode == 1) ? (isZh ? L"平面底" : L"Plane")
+                    : ((ed.replaceBgMode == 2) ? (isZh ? L"AI修复" : L"AI Fill")
+                    : (isZh ? L"智能底" : L"Auto"));
+                const bool showReflowBtn = (ed.replaceRightTailRect.width > 0 && ed.replaceRightTailRect.height > 0);
+                const wchar_t* reflowLbl = ed.replaceReflowRight
+                    ? (isZh ? L"顺延" : L"Reflow")
+                    : (isZh ? L"原位" : L"Fixed");
+                const wchar_t* doneLbl = isZh ? L"完成" : L"Done";
+
+                const float wDec = 24.0f * dpiScale;
+                const float wSize = 36.0f * dpiScale;
+                const float wInc = 24.0f * dpiScale;
+                const float wWgt = 44.0f * dpiScale;
+                const float wFam = 52.0f * dpiScale;
+                const float wBg  = 54.0f * dpiScale;
+                const float wReflow = showReflowBtn ? (46.0f * dpiScale) : 0.0f;
+                const float wDone = 48.0f * dpiScale;
+                const float totalW = pad * 2.0f + wDec + wSize + wInc + wWgt + wFam + wBg +
+                                     (showReflowBtn ? (wReflow + gap) : 0.0f) + wDone + gap * 6.0f;
+
+                const float bx = std::clamp(anchorCx - totalW * 0.5f, 6.0f * dpiScale,
+                                            (std::max)(6.0f * dpiScale, size.width - totalW - 6.0f * dpiScale));
+                float by = anchorTop - barH - 9.0f * dpiScale;
+                if (by < 6.0f * dpiScale) {
+                    by = anchorBot + 9.0f * dpiScale;
+                }
+                by = std::clamp(by, 6.0f * dpiScale, (std::max)(6.0f * dpiScale, size.height - barH - 6.0f * dpiScale));
+
+                const D2D1_RECT_F trBarRc = D2D1::RectF(bx, by, bx + totalW, by + barH);
+                FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), trBarRc, 9.5f * dpiScale, pal.isDark);
+
+                ComPtr<ID2D1SolidColorBrush> txtBr, subBr, accentBr, accentSoftBr, whiteBr;
+                m_renderTarget->CreateSolidColorBrush(pal.textPrimary, txtBr.GetAddressOf());
+                m_renderTarget->CreateSolidColorBrush(pal.textSecondary, subBr.GetAddressOf());
+                m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.96f), accentBr.GetAddressOf());
+                m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, pal.isDark ? 0.28f : 0.16f), accentSoftBr.GetAddressOf());
+                m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f), whiteBr.GetAddressOf());
+
+                const float iTop = by + 3.5f * dpiScale;
+                const float iBot = by + barH - 3.5f * dpiScale;
+                float cx = bx + pad;
+
+                auto drawTrBtn = [&](D2D1_RECT_F& outRc, float w, const wchar_t* label, int btnId,
+                                     bool isPrimary = false, bool isActive = false) {
+                    outRc = D2D1::RectF(cx, iTop, cx + w, iBot);
+                    const bool hov = (m_hoveredTrBtnId == btnId);
+                    if (isPrimary && accentBr) {
+                        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(outRc, 6.5f * dpiScale, 6.5f * dpiScale), accentBr.Get());
+                        if (whiteBr) {
+                            m_renderTarget->DrawTextW(label, static_cast<UINT32>(wcslen(label)),
+                                                      m_uiCenterTextFormat.Get(), outRc, whiteBr.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        }
+                    } else {
+                        if (isActive && accentSoftBr) {
+                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(outRc, 6.0f * dpiScale, 6.0f * dpiScale), accentSoftBr.Get());
+                        }
+                        FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), outRc, 6.0f * dpiScale,
+                                                         hov, false, false, false, 0.96f, pal.isDark);
+                        ID2D1SolidColorBrush* useTxt = (isActive && accentBr && !pal.isDark) ? accentBr.Get() : txtBr.Get();
+                        if (useTxt) {
+                            m_renderTarget->DrawTextW(label, static_cast<UINT32>(wcslen(label)),
+                                                      m_uiCenterTextFormat.Get(), outRc, useTxt, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        }
+                    }
+                    cx += w + gap;
+                };
+
+                drawTrBtn(m_btnTrFontDecRect, wDec, L"A-", kPinBtnTrFontDec);
+                {
+                    const D2D1_RECT_F szRc = D2D1::RectF(cx, iTop, cx + wSize, iBot);
+                    if (subBr) {
+                        m_renderTarget->DrawTextW(sizeStr.c_str(), static_cast<UINT32>(sizeStr.size()),
+                                                  m_uiCenterTextFormat.Get(), szRc, subBr.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    }
+                    cx += wSize + gap;
+                }
+                drawTrBtn(m_btnTrFontIncRect, wInc, L"A+", kPinBtnTrFontInc);
+                drawTrBtn(m_btnTrWeightRect, wWgt, weightLbl, kPinBtnTrWeight);
+                drawTrBtn(m_btnTrFamilyRect, wFam, famLbl, kPinBtnTrFamily);
+                drawTrBtn(m_btnTrBgModeRect, wBg, bgLbl, kPinBtnTrBgMode);
+                if (showReflowBtn) {
+                    drawTrBtn(m_btnTrReflowRect, wReflow, reflowLbl, kPinBtnTrReflow, false, ed.replaceReflowRight);
+                } else {
+                    m_btnTrReflowRect = {};
+                }
+                drawTrBtn(m_btnTrDoneRect, wDone, doneLbl, kPinBtnTrDone, true);
             }
 
             // 5. 图中二维码热区四角取景框与清透一键复制角标
@@ -4796,7 +5694,7 @@ void PinWindow::render() {
         if ((ocrWaiting || showPctBadge) && size.width >= 44.0f && size.height >= 24.0f) {
             const float hudScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : (m_dpiScale > 0.0f ? m_dpiScale : 1.0f);
             if (ensureTextResources(hudScale) && m_uiCenterTextFormat) {
-                const auto hudPal = FloatingGlassBar::resolveThemePalette();
+                const auto hudPal = FloatingGlassBar::resolveHudPalette();
                 ComPtr<ID2D1SolidColorBrush> hudTxtBr;
                 m_renderTarget->CreateSolidColorBrush(hudPal.textPrimary, hudTxtBr.GetAddressOf());
 
@@ -4872,10 +5770,22 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 const bool hoverAnyBtn =
                     self->m_hoverGroupBadge || self->m_hoverCopyFloating ||
                     self->m_hoverCopyTableFloating || self->m_hoverOpenPanelFloating ||
+                    self->m_hoverHighlightFloating || self->m_hoverWavyFloating ||
+                    self->m_hoverUnderlineFloating || self->m_hoverTextReplaceFloating ||
+                    self->m_hoverUndoFloating || self->m_hoveredColorDotIndex >= 0 ||
+                    self->m_hoveredTrBtnId >= 0 ||
                     self->m_hoveredQrBadgeIndex >= 0 ||
                     self->m_hoverFold || self->m_hoverRotate || self->m_hoverInvert ||
                     self->m_hoverEdit || self->m_hoverText || self->m_hoverCopy ||
                     self->m_hoverSave || self->m_hoverClose;
+                if (self->m_editingTextReplaceIdx >= 0 && !hoverAnyBtn) {
+                    if (self->m_isDraggingReplacePos || self->m_hoverReplaceDragHandle) {
+                        SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
+                    } else {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                    }
+                    return TRUE;
+                }
                 const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
 
                 PinLiveTextState cursorState;
@@ -4918,6 +5828,90 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             self->m_isDragging = false;
 
             const int hitBtn = self->hitTestInteractiveButton(clickX, clickY);
+            if (self->m_editingTextReplaceIdx >= 0) {
+                if (hitBtn != kPinBtnNone) {
+                    self->m_pressedToolbarBtn = hitBtn;
+                    SetCapture(hwnd);
+                    return 0;
+                }
+                // 1) 点击左侧 6 点微晶抓手、编辑框四边边框带，或按住 Alt 点击框内 -> 鼠标自由拖拽移动所改文字位置
+                if (self->m_editingTextReplaceIdx < static_cast<int>(self->m_markupElements.size())) {
+                    auto& edEl = self->m_markupElements[static_cast<size_t>(self->m_editingTextReplaceIdx)];
+                    const float safeScale = (std::max)(0.05f, self->m_scale);
+                    const float safeDpi = (self->m_dpiScale > 0.0f) ? self->m_dpiScale : 1.0f;
+                    const bool altHeld = (GetKeyState(VK_MENU) & 0x8000) != 0;
+
+                    auto isPointOnReplaceDragZone = [&](int px, int py) noexcept -> bool {
+                        const D2D1_RECT_F gRc = self->m_trDragHandleRect;
+                        const float gPad = 3.0f * safeDpi;
+                        if (gRc.right > gRc.left &&
+                            static_cast<float>(px) >= gRc.left - gPad && static_cast<float>(px) <= gRc.right + gPad &&
+                            static_cast<float>(py) >= gRc.top - gPad && static_cast<float>(py) <= gRc.bottom + gPad) {
+                            return true;
+                        }
+                        const D2D1_RECT_F bRc = self->m_trEditBoxClientRect;
+                        if (bRc.right > bRc.left && bRc.bottom > bRc.top) {
+                            const float outPad = 5.5f * safeDpi;
+                            const float inPad = (std::min)(3.0f * safeDpi, (bRc.bottom - bRc.top) * 0.22f);
+                            const bool inOuter =
+                                static_cast<float>(px) >= bRc.left - outPad && static_cast<float>(px) <= bRc.right + outPad &&
+                                static_cast<float>(py) >= bRc.top - outPad && static_cast<float>(py) <= bRc.bottom + outPad;
+                            const bool inInner =
+                                static_cast<float>(px) >= bRc.left + inPad && static_cast<float>(px) <= bRc.right - inPad &&
+                                static_cast<float>(py) >= bRc.top + inPad && static_cast<float>(py) <= bRc.bottom - inPad;
+                            if (inOuter && (!inInner || altHeld)) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    };
+
+                    if (isPointOnReplaceDragZone(clickX, clickY)) {
+                        self->m_isDraggingReplacePos = true;
+                        self->m_hoverReplaceDragHandle = true;
+                        self->m_replaceDragStartClientPt = {clickX, clickY};
+                        self->m_replaceDragOrigOffsetX = edEl.replaceOffsetX;
+                        self->m_replaceDragOrigOffsetY = edEl.replaceOffsetY;
+                        SetCapture(hwnd);
+                        self->render();
+                        return 0;
+                    }
+
+                    // 2) 点击编辑框内部文字核心区 -> 精准落点光标并支持拖选局部字符；点击外部 -> 自动确认提交退出编辑态
+                    const float imgXf = static_cast<float>(clickX) / safeScale;
+                    const float imgYf = static_cast<float>(clickY) / safeScale;
+                    const auto ov = TextReplaceEngine::computeEditOverlayMetrics(
+                        self->m_cleanBaseImage, buildTextReplaceSpecForOverlay(edEl));
+                    bool hitEditingBox = false;
+                    if (ov.valid) {
+                        hitEditingBox = (imgXf >= ov.boxLeft - 6.0f && imgXf <= ov.boxRight + 6.0f &&
+                                         imgYf >= ov.boxTop - 6.0f && imgYf <= ov.boxBottom + 6.0f);
+                    } else {
+                        const cv::Rect hitBox = (edEl.replaceLastRenderRect.width > 0 && edEl.replaceLastRenderRect.height > 0)
+                            ? edEl.replaceLastRenderRect
+                            : edEl.replaceSourceRect;
+                        hitEditingBox = cv::Rect(hitBox.x - 6, hitBox.y - 6, hitBox.width + 12, hitBox.height + 12)
+                            .contains(cv::Point(static_cast<int>(std::lround(imgXf)), static_cast<int>(std::lround(imgYf))));
+                    }
+                    if (hitEditingBox) {
+                        const size_t hitIdx = TextReplaceEngine::hitTestCaretIndex(
+                            self->m_cleanBaseImage, buildTextReplaceSpecForOverlay(edEl), imgXf, imgYf);
+                        const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                        edEl.textCaret = hitIdx;
+                        if (!shiftDown) {
+                            edEl.textSelAnchor = hitIdx;
+                        }
+                        edEl.textLastCaretTick = GetTickCount();
+                        self->m_isSelectingReplaceText = true;
+                        SetCapture(hwnd);
+                        self->updateImeCompositionAnchor();
+                        self->render();
+                        return 0;
+                    }
+                }
+                self->commitInPlaceTextReplace(true);
+                return 0;
+            }
             const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
             const bool liveEnabled = self->isLiveTextEnabled();
 
@@ -5009,16 +6003,42 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
 
+        case WM_IME_STARTCOMPOSITION: {
+            if (self && self->m_editingTextReplaceIdx >= 0) {
+                self->updateImeCompositionAnchor();
+            }
+            break;
+        }
+
+        case WM_CHAR: {
+            if (self && self->m_editingTextReplaceIdx >= 0) {
+                if (self->handleTextReplaceChar(static_cast<wchar_t>(wParam))) {
+                    return 0;
+                }
+            }
+            break;
+        }
+
         case WM_SYSKEYDOWN:
         case WM_KEYDOWN: {
             if (!self) break;
             const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool alt = (msg == WM_SYSKEYDOWN) || ((GetKeyState(VK_MENU) & 0x8000) != 0);
+            if (self->m_editingTextReplaceIdx >= 0) {
+                if (self->handleTextReplaceKeyDown(wParam, ctrl, shift, alt)) {
+                    return 0;
+                }
+            }
             bool hasSelectedBlocks = false;
             {
                 std::lock_guard<std::mutex> lock(self->m_ocrMutex);
                 hasSelectedBlocks = !self->m_selectedBlockIndices.empty();
+            }
+            if (hasSelectedBlocks && !ctrl && !alt && !shift && wParam == 'E') {
+                if (self->startInPlaceTextReplace()) {
+                    return 0;
+                }
             }
             const bool hasTextContext = self->m_textSelectionMode || self->m_isSelectingText || hasSelectedBlocks;
 
@@ -5210,10 +6230,12 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 TrackMouseEvent(&tme);
             }
 
-            // 悬停即获焦（当贴图尚未获焦、不处于鼠标穿透且截图遮罩未打开时），
-            // 保障无论是首次移入还是遮罩关闭后鼠标仍在贴图内移动，按键旋转/缩放/关闭均即时生效
+            // 悬停即获焦（仅在非拖拽/非划选状态下触发，严禁在拖拽移动文字或划选期间调用 focusWindow() 破坏 SetCapture）
+            const bool anyPointerDragActive =
+                self->m_isDragging || self->m_isSelectingText ||
+                self->m_isDraggingReplacePos || self->m_isSelectingReplaceText;
             const bool isActuallyFocused = self->m_focused && (GetFocus() == hwnd);
-            if (PinInputController::shouldAutoFocusOnHover(
+            if (!anyPointerDragActive && PinInputController::shouldAutoFocusOnHover(
                     isActuallyFocused, self->m_clickThrough, CaptureOverlay::instance().isOverlayVisible())) {
                 self->focusWindow();
             }
@@ -5221,6 +6243,59 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
             const bool leftHeld = (wParam & MK_LBUTTON) != 0;
+
+            // 原位改字编辑态：实时拖拽自由移动所改文字位置（0.5px 精度，按住 Shift 自动锁定水平/垂直轴）
+            if (self->m_isDraggingReplacePos) {
+                if (leftHeld && self->m_editingTextReplaceIdx >= 0 &&
+                    self->m_editingTextReplaceIdx < static_cast<int>(self->m_markupElements.size())) {
+                    auto& edEl = self->m_markupElements[static_cast<size_t>(self->m_editingTextReplaceIdx)];
+                    const float safeScale = (std::max)(0.05f, self->m_scale);
+                    float dxImg = static_cast<float>(x - self->m_replaceDragStartClientPt.x) / safeScale;
+                    float dyImg = static_cast<float>(y - self->m_replaceDragStartClientPt.y) / safeScale;
+                    if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+                        if (std::abs(dxImg) >= std::abs(dyImg)) dyImg = 0.0f;
+                        else dxImg = 0.0f;
+                    }
+                    float rawOy = self->m_replaceDragOrigOffsetY + dyImg;
+                    // 原基线 ±0.8px 轻柔磁吸（左右平移微调字距不跑偏；按住 Alt 随时绕过磁吸做 0.5px 任意垂直微调）
+                    if (((GetKeyState(VK_MENU) & 0x8000) == 0) && std::abs(rawOy) <= 0.8f) {
+                        rawOy = 0.0f;
+                    }
+                    const float nextOx = std::round((self->m_replaceDragOrigOffsetX + dxImg) * 2.0f) * 0.5f;
+                    const float nextOy = std::round(rawOy * 2.0f) * 0.5f;
+                    if (std::abs(nextOx - edEl.replaceOffsetX) >= 0.25f ||
+                        std::abs(nextOy - edEl.replaceOffsetY) >= 0.25f) {
+                        edEl.replaceOffsetX = nextOx;
+                        edEl.replaceOffsetY = nextOy;
+                        edEl.textLastCaretTick = GetTickCount();
+                        self->recompositeMarkupPreservingOcr();
+                        self->updateImeCompositionAnchor();
+                    }
+                    return 0;
+                }
+                self->m_isDraggingReplacePos = false;
+            }
+
+            // 原位改字编辑框内按住左键丝滑拖选部分字符
+            if (self->m_isSelectingReplaceText) {
+                if (leftHeld && self->m_editingTextReplaceIdx >= 0 &&
+                    self->m_editingTextReplaceIdx < static_cast<int>(self->m_markupElements.size())) {
+                    auto& edEl = self->m_markupElements[static_cast<size_t>(self->m_editingTextReplaceIdx)];
+                    const float safeScale = (std::max)(0.05f, self->m_scale);
+                    const size_t hitIdx = TextReplaceEngine::hitTestCaretIndex(
+                        self->m_cleanBaseImage,
+                        buildTextReplaceSpecForOverlay(edEl),
+                        static_cast<float>(x) / safeScale,
+                        static_cast<float>(y) / safeScale);
+                    if (hitIdx != edEl.textCaret) {
+                        edEl.textCaret = hitIdx;
+                        edEl.textLastCaretTick = GetTickCount();
+                        self->render();
+                    }
+                    return 0;
+                }
+                self->m_isSelectingReplaceText = false;
+            }
 
             if (!leftHeld && (self->m_pressedToolbarBtn != kPinBtnNone || self->m_isDragging)) {
                 self->m_pressedToolbarBtn = kPinBtnNone;
@@ -5304,14 +6379,52 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 const bool hoverSave = isPointInRectF(self->m_btnSaveRect, x, y);
                 const bool hoverClose = isPointInRectF(self->m_btnCloseRect, x, y);
                 const bool hoverGroupBadge = isPointInRectF(self->m_btnGroupBadgeRect, x, y);
-                const bool hasSel = !self->m_selectedBlockIndices.empty();
+                const bool hasSel = !self->m_selectedBlockIndices.empty() && self->m_editingTextReplaceIdx < 0;
                 const bool hoverCopyFloating = (hasSel && isPointInRectF(self->m_btnCopyFloatingRect, x, y));
                 const bool hoverCopyTableFloating = (hasSel && isPointInRectF(self->m_btnCopyTableFloatingRect, x, y));
                 const bool hoverOpenPanelFloating = (hasSel && isPointInRectF(self->m_btnOpenPanelFloatingRect, x, y));
                 const bool hoverHighlightFloating = (hasSel && isPointInRectF(self->m_btnHighlightFloatingRect, x, y));
                 const bool hoverWavyFloating = (hasSel && isPointInRectF(self->m_btnWavyFloatingRect, x, y));
                 const bool hoverUnderlineFloating = (hasSel && isPointInRectF(self->m_btnUnderlineFloatingRect, x, y));
+                const bool hoverTextReplaceFloating = (hasSel && isPointInRectF(self->m_btnTextReplaceFloatingRect, x, y));
                 const bool hoverUndoFloating = (hasSel && isPointInRectF(self->m_btnUndoFloatingRect, x, y));
+                int hoveredTrBtnId = -1;
+                bool hoverReplaceDragHandle = false;
+                if (self->m_editingTextReplaceIdx >= 0) {
+                    if (isPointInRectF(self->m_btnTrFontDecRect, x, y)) hoveredTrBtnId = kPinBtnTrFontDec;
+                    else if (isPointInRectF(self->m_btnTrFontIncRect, x, y)) hoveredTrBtnId = kPinBtnTrFontInc;
+                    else if (isPointInRectF(self->m_btnTrWeightRect, x, y)) hoveredTrBtnId = kPinBtnTrWeight;
+                    else if (isPointInRectF(self->m_btnTrFamilyRect, x, y)) hoveredTrBtnId = kPinBtnTrFamily;
+                    else if (isPointInRectF(self->m_btnTrBgModeRect, x, y)) hoveredTrBtnId = kPinBtnTrBgMode;
+                    else if (isPointInRectF(self->m_btnTrReflowRect, x, y)) hoveredTrBtnId = kPinBtnTrReflow;
+                    else if (isPointInRectF(self->m_btnTrDoneRect, x, y)) hoveredTrBtnId = kPinBtnTrDone;
+
+                    if (hoveredTrBtnId < 0) {
+                        const float safeDpi = (self->m_dpiScale > 0.0f) ? self->m_dpiScale : 1.0f;
+                        const D2D1_RECT_F gRc = self->m_trDragHandleRect;
+                        const float gPad = 3.0f * safeDpi;
+                        if (gRc.right > gRc.left &&
+                            static_cast<float>(x) >= gRc.left - gPad && static_cast<float>(x) <= gRc.right + gPad &&
+                            static_cast<float>(y) >= gRc.top - gPad && static_cast<float>(y) <= gRc.bottom + gPad) {
+                            hoverReplaceDragHandle = true;
+                        } else {
+                            const D2D1_RECT_F bRc = self->m_trEditBoxClientRect;
+                            if (bRc.right > bRc.left && bRc.bottom > bRc.top) {
+                                const float outPad = 5.5f * safeDpi;
+                                const float inPad = (std::min)(3.0f * safeDpi, (bRc.bottom - bRc.top) * 0.22f);
+                                const bool inOuter =
+                                    static_cast<float>(x) >= bRc.left - outPad && static_cast<float>(x) <= bRc.right + outPad &&
+                                    static_cast<float>(y) >= bRc.top - outPad && static_cast<float>(y) <= bRc.bottom + outPad;
+                                const bool inInner =
+                                    static_cast<float>(x) >= bRc.left + inPad && static_cast<float>(x) <= bRc.right - inPad &&
+                                    static_cast<float>(y) >= bRc.top + inPad && static_cast<float>(y) <= bRc.bottom - inPad;
+                                if (inOuter && (!inInner || ((GetKeyState(VK_MENU) & 0x8000) != 0))) {
+                                    hoverReplaceDragHandle = true;
+                                }
+                            }
+                        }
+                    }
+                }
                 int hoverColorDotIdx = -1;
                 if (hasSel) {
                     for (size_t ci = 0; ci < self->m_btnColorDotFloatingRects.size(); ++ci) {
@@ -5344,7 +6457,10 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     hoverHighlightFloating != self->m_hoverHighlightFloating ||
                     hoverWavyFloating != self->m_hoverWavyFloating ||
                     hoverUnderlineFloating != self->m_hoverUnderlineFloating ||
+                    hoverTextReplaceFloating != self->m_hoverTextReplaceFloating ||
                     hoverUndoFloating != self->m_hoverUndoFloating ||
+                    hoveredTrBtnId != self->m_hoveredTrBtnId ||
+                    hoverReplaceDragHandle != self->m_hoverReplaceDragHandle ||
                     hoverColorDotIdx != self->m_hoveredColorDotIndex ||
                     hoverQrIdx != self->m_hoveredQrBadgeIndex) {
                     self->m_hoverGroupBadge = hoverGroupBadge;
@@ -5362,7 +6478,10 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->m_hoverHighlightFloating = hoverHighlightFloating;
                     self->m_hoverWavyFloating = hoverWavyFloating;
                     self->m_hoverUnderlineFloating = hoverUnderlineFloating;
+                    self->m_hoverTextReplaceFloating = hoverTextReplaceFloating;
                     self->m_hoverUndoFloating = hoverUndoFloating;
+                    self->m_hoveredTrBtnId = hoveredTrBtnId;
+                    self->m_hoverReplaceDragHandle = hoverReplaceDragHandle;
                     self->m_hoveredColorDotIndex = hoverColorDotIdx;
                     self->m_hoveredQrBadgeIndex = hoverQrIdx;
                     self->render();
@@ -5688,7 +6807,10 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             self->m_hoverHighlightFloating = false;
             self->m_hoverWavyFloating = false;
             self->m_hoverUnderlineFloating = false;
+            self->m_hoverTextReplaceFloating = false;
             self->m_hoverUndoFloating = false;
+            self->m_hoveredTrBtnId = -1;
+            self->m_hoverReplaceDragHandle = false;
             self->m_hoveredColorDotIndex = -1;
             self->m_hoveredQrBadgeIndex = -1;
             self->m_hoveredBlockIndex = -1;
@@ -5705,6 +6827,12 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->m_hudBadgeText.clear();
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
+            } else if (self && wParam == 3) {
+                if (self->m_editingTextReplaceIdx >= 0) {
+                    self->render();
+                } else {
+                    KillTimer(hwnd, 3);
+                }
             }
             return 0;
         }
@@ -5716,6 +6844,8 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 self->m_isDragging = false;
                 self->m_dragThresholdExceeded = false;
                 self->m_isSelectingText = false;
+                self->m_isSelectingReplaceText = false;
+                self->m_isDraggingReplacePos = false;
                 self->m_isCharStreamSelecting = false;
             }
             return 0;
@@ -5725,6 +6855,19 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             if (self) {
                 const int upX = GET_X_LPARAM(lParam);
                 const int upY = GET_Y_LPARAM(lParam);
+                if (self->m_isDraggingReplacePos) {
+                    self->m_isDraggingReplacePos = false;
+                    ReleaseCapture();
+                    self->updateImeCompositionAnchor();
+                    self->render();
+                    return 0;
+                }
+                if (self->m_isSelectingReplaceText) {
+                    self->m_isSelectingReplaceText = false;
+                    ReleaseCapture();
+                    self->render();
+                    return 0;
+                }
                 if (self->m_isSelectingText) {
                     self->m_isSelectingText = false;
                     self->m_isCharStreamSelecting = false;
@@ -5766,6 +6909,25 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                         self->m_isDragging = false;
                         SetCapture(hwnd);
                         return 0;
+                    }
+                    // 双击已修改过的原位文字图层 -> 立即无缝重新进入二次编辑
+                    if (self->m_editingTextReplaceIdx < 0 && !self->m_markupElements.empty()) {
+                        const float safeScale = (std::max)(0.05f, self->m_scale);
+                        const cv::Point imgPt(
+                            static_cast<int>(std::lround(static_cast<float>(dblX) / safeScale)),
+                            static_cast<int>(std::lround(static_cast<float>(dblY) / safeScale)));
+                        for (int i = static_cast<int>(self->m_markupElements.size()) - 1; i >= 0; --i) {
+                            const auto& el = self->m_markupElements[static_cast<size_t>(i)];
+                            if (el.tool != MarkupTool::TextReplace) continue;
+                            const cv::Rect hitRc = (el.replaceLastRenderRect.width > 0 && el.replaceLastRenderRect.height > 0)
+                                ? el.replaceLastRenderRect
+                                : el.replaceSourceRect;
+                            const cv::Rect expanded(hitRc.x - 4, hitRc.y - 4, hitRc.width + 8, hitRc.height + 8);
+                            if (expanded.contains(imgPt)) {
+                                self->startInPlaceTextReplaceOnElement(i);
+                                return 0;
+                            }
+                        }
                     }
                     if (self->selectWordAtClientPoint(dblX, dblY)) {
                         return 0;
