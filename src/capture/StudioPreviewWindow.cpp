@@ -98,6 +98,7 @@ enum HitId : int {
     Hit_ToggleCaptions = 140,
     Hit_OpenExportModalBtn = 145,
     Hit_KeepOriginalBtn = 146,
+    Hit_ToggleRawModeBtn = 147,
 
     // 视频标注抽屉：19 张可视化样式卡片 + 8 色圆点 + 文本编辑框
     Hit_AnnCardBase = 150,     // 150..168 (19 款标注卡片)
@@ -144,6 +145,14 @@ enum HitId : int {
     Hit_ModalResultExportMoreBtn = 215,
     Hit_ModalResultFinishCloseBtn = 216,
     Hit_ModalDropdownItemBase = 300, // 300 + optionIndex
+
+    // 未导出防丢关闭确认模态框热区 (450..459)
+    Hit_CloseConfirmBackdrop = 450,
+    Hit_CloseConfirmCard = 451,
+    Hit_CloseConfirmCancelBtn = 452,
+    Hit_CloseConfirmDiscardBtn = 453,
+    Hit_CloseConfirmSaveBtn = 454,
+    Hit_CloseConfirmSkipStudioCheck = 455,
 
     // 三轨时间轴可选中/拖拽片段热区
     Hit_ZoomSegmentBase = 1000, // 1000 + idx
@@ -1254,7 +1263,7 @@ bool StudioPreviewWindow::ensureWindowCreated() {
         return false;
     }
 
-    MARGINS margins = {1, 1, 1, 1};
+    MARGINS margins = {0, 0, 0, 1};
     DwmExtendFrameIntoClientArea(m_hwnd, &margins);
     SetWindowPos(m_hwnd, nullptr, posX, posY, fitted.cx, fitted.cy,
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -1326,6 +1335,9 @@ double StudioPreviewWindow::mapTrackXToKeptSec(
 void StudioPreviewWindow::initExportModalDefaults() {
     m_exportModalOpen = false;
     m_exportCompletedCard = false;
+    m_closeConfirmModalOpen = false;
+    m_closeAfterSaveExport = false;
+    m_confirmSkipStudioNextTime = false;
     m_editingExportName = false;
     m_userEditedExportStem = false;
     m_openDropdown = ExportDropdownKind::None;
@@ -1495,6 +1507,9 @@ bool StudioPreviewWindow::showPreparingOverlay(double recordedDurationSec) {
     m_hoverSkimming = false;
     m_exportModalOpen = false;
     m_exportCompletedCard = false;
+    m_closeConfirmModalOpen = false;
+    m_closeAfterSaveExport = false;
+    m_confirmSkipStudioNextTime = false;
     m_lastTickMs = GetTickCount();
 
     auto& cm = tools3000::core::ConfigManager::instance();
@@ -1524,6 +1539,10 @@ bool StudioPreviewWindow::showPreparingOverlay(double recordedDurationSec) {
     if (IsZoomed(m_hwnd) && !m_isMaximized) {
         ShowWindow(m_hwnd, SW_RESTORE);
     }
+    // 等待过渡层开启硬件级防截隐身，并预先提交首帧 D2D 缓冲后再亮出窗口，根除未初始化表面闪烁
+    SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
+    SetWindowPos(m_hwnd, nullptr, normX, normY, initWinW, initWinH, SWP_NOZORDER | SWP_NOACTIVATE);
+    render();
     SetWindowPos(m_hwnd, HWND_TOPMOST, normX, normY, fitted.cx, fitted.cy,
                  m_isMaximized ? SWP_NOACTIVATE : SWP_SHOWWINDOW);
     if (m_isMaximized) {
@@ -1689,6 +1708,9 @@ bool StudioPreviewWindow::showSession(
     initExportModalDefaults();
 
     m_exporting.store(false, std::memory_order_release);
+    m_closeConfirmModalOpen = false;
+    m_closeAfterSaveExport = false;
+    m_confirmSkipStudioNextTime = false;
     m_cancelExport.store(false, std::memory_order_release);
     m_exportProgress.store(0.0, std::memory_order_release);
 
@@ -1706,6 +1728,11 @@ bool StudioPreviewWindow::showSession(
     m_lastTickMs = GetTickCount();
     m_lastComposeQpcTick = queryQpcNow();
 
+    // 正式进入演播室编辑会话时恢复允许截图（WDA_NONE），并先完成高清帧读取器、时间轴与首帧画面预合成再亮出窗口
+    tools3000::core::WinUtils::allowWindowCapture(m_hwnd);
+    m_hiResReader.open(m_masterVideoPath, 3200);
+    rebakeTimelinePreview();
+
     if (wasAlreadyShowingPrepare) {
         RECT cli{};
         GetClientRect(m_hwnd, &cli);
@@ -1713,6 +1740,8 @@ bool StudioPreviewWindow::showSession(
         const int curWinH = (std::max)(480, static_cast<int>(cli.bottom - cli.top));
         m_stageViewportPhysW = (std::max)(640, curWinW - tools3000::core::dpi::scaleMetric(400, m_dpiScale));
         m_stageViewportPhysH = (std::max)(360, curWinH - tools3000::core::dpi::scaleMetric(256, m_dpiScale));
+        updateCurrentComposedBitmap();
+        render();
     } else {
         auto& cm = tools3000::core::ConfigManager::instance();
         m_logicalWidth = std::clamp(cm.get<int>("/recording/studioWindowWidth", 1260), 1020, 3840);
@@ -1736,6 +1765,10 @@ bool StudioPreviewWindow::showSession(
         const int initWinH = m_isMaximized ? (work.bottom - work.top) : fitted.cy;
         m_stageViewportPhysW = (std::max)(640, initWinW - tools3000::core::dpi::scaleMetric(400, m_dpiScale));
         m_stageViewportPhysH = (std::max)(360, initWinH - tools3000::core::dpi::scaleMetric(256, m_dpiScale));
+
+        updateCurrentComposedBitmap();
+        SetWindowPos(m_hwnd, nullptr, normX, normY, initWinW, initWinH, SWP_NOZORDER | SWP_NOACTIVATE);
+        render();
 
         if (IsIconic(m_hwnd)) {
             ShowWindow(m_hwnd, SW_RESTORE);
@@ -1770,14 +1803,10 @@ bool StudioPreviewWindow::showSession(
         SetWindowPos(m_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     }
 
-    m_hiResReader.open(m_masterVideoPath, 3200);
-    rebakeTimelinePreview();
-    updateCurrentComposedBitmap();
-
     SetTimer(m_hwnd, kPlaybackTimerId, kTimerIntervalMs, nullptr);
     const bool isZhReady = tools3000::core::NativeThemePalette::isUiLanguageChinese();
     SetWindowTextW(m_hwnd, isZhReady ? L"Tools3000 录屏演播室" : L"Tools3000 Studio");
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    RedrawWindow(m_hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
 
     LOG_INFO("StudioPreviewWindow opened: raw={}, deckFrames={}, zoomSegments={}, wallpapers={}",
              m_rawVideoPath, m_previewDeckBgr.size(),
@@ -5896,6 +5925,192 @@ cv::Mat StudioPreviewWindow::renderTimelineStripPreviewForTest(
     return outBgr;
 }
 
+void StudioPreviewWindow::renderUnsavedCloseModalOverlay(
+    float W, float H, bool dark, bool isZh, ID2D1SolidColorBrush* brush) {
+    if (!m_renderTarget || !brush) return;
+
+    m_hitZones.clear();
+
+    const auto accentRgb = tools3000::core::NativeThemePalette::getEffectiveAccentColorRGB();
+    const D2D1_COLOR_F colAccent = D2D1::ColorF(accentRgb.r, accentRgb.g, accentRgb.b, 1.0f);
+    const D2D1_COLOR_F colModalBg = dark
+        ? D2D1::ColorF(0.082f, 0.094f, 0.133f, 0.988f)
+        : D2D1::ColorF(0.994f, 0.996f, 1.000f, 0.992f);
+    const D2D1_COLOR_F colBorder = dark
+        ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f)
+        : D2D1::ColorF(0.059f, 0.090f, 0.165f, 0.14f);
+    const D2D1_COLOR_F colPrimary = dark
+        ? D2D1::ColorF(0.96f, 0.97f, 0.99f, 1.0f)
+        : D2D1::ColorF(0.059f, 0.090f, 0.165f, 1.0f);
+    const D2D1_COLOR_F colSecondary = dark
+        ? D2D1::ColorF(0.66f, 0.72f, 0.82f, 1.0f)
+        : D2D1::ColorF(0.35f, 0.41f, 0.51f, 1.0f);
+    const D2D1_COLOR_F colWarn = D2D1::ColorF(0.95f, 0.62f, 0.14f, 1.0f);
+    const D2D1_COLOR_F colDanger = D2D1::ColorF(0.92f, 0.28f, 0.30f, 1.0f);
+    const ComPtr<ID2D1StrokeStyle> roundStroke = createRoundStrokeStyle(m_d2dFactory.Get());
+
+    auto setBrush = [&](const D2D1_COLOR_F& c) { brush->SetColor(c); };
+    auto drawTxt = [&](const std::wstring& txt, IDWriteTextFormat* fmt, const D2D1_RECT_F& r,
+                       const D2D1_COLOR_F& col,
+                       DWRITE_TEXT_ALIGNMENT hAlign = DWRITE_TEXT_ALIGNMENT_LEADING,
+                       DWRITE_PARAGRAPH_ALIGNMENT vAlign = DWRITE_PARAGRAPH_ALIGNMENT_CENTER) {
+        if (!fmt || txt.empty() || r.right <= r.left || r.bottom <= r.top) return;
+        fmt->SetTextAlignment(hAlign);
+        fmt->SetParagraphAlignment(vAlign);
+        setBrush(col);
+        m_renderTarget->DrawText(txt.c_str(), static_cast<UINT32>(txt.size()), fmt, r, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    };
+
+    const D2D1_RECT_F fullRc = D2D1::RectF(0.0f, 0.0f, W, H);
+    m_hitZones.push_back({Hit_CloseConfirmBackdrop, fullRc, -1});
+    setBrush(D2D1::ColorF(0.02f, 0.03f, 0.06f, dark ? 0.66f : 0.42f));
+    m_renderTarget->FillRectangle(fullRc, brush);
+
+    const float cardW = 472.0f;
+    const float cardH = 250.0f;
+    const float cardL = (W - cardW) * 0.5f;
+    const float cardT = (H - cardH) * 0.5f;
+    const D2D1_RECT_F cardRc = D2D1::RectF(cardL, cardT, cardL + cardW, cardT + cardH);
+    m_hitZones.push_back({Hit_CloseConfirmCard, cardRc, -1});
+
+    // 柔雾悬浮阴影层
+    setBrush(D2D1::ColorF(0.01f, 0.02f, 0.05f, dark ? 0.44f : 0.18f));
+    m_renderTarget->FillRoundedRectangle(
+        D2D1::RoundedRect(D2D1::RectF(cardL, cardT + 8.0f, cardL + cardW, cardT + cardH + 12.0f), 18.0f, 18.0f),
+        brush);
+
+    setBrush(colModalBg);
+    m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(cardRc, 16.0f, 16.0f), brush);
+    setBrush(colBorder);
+    m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(cardRc, 16.0f, 16.0f), brush, 1.15f);
+
+    // 右上角矢量 [×] 取消并返回编辑
+    const D2D1_RECT_F cancelRc = D2D1::RectF(cardRc.right - 40.0f, cardT + 14.0f, cardRc.right - 14.0f, cardT + 40.0f);
+    m_hitZones.push_back({Hit_CloseConfirmCancelBtn, cancelRc, -1});
+    const bool hovCancel = (m_hoveredHitId == Hit_CloseConfirmCancelBtn);
+    if (hovCancel) {
+        setBrush(dark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f) : D2D1::ColorF(0.06f, 0.10f, 0.18f, 0.08f));
+        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(cancelRc, 7.0f, 7.0f), brush);
+    }
+    setBrush(hovCancel ? colPrimary : colSecondary);
+    {
+        const float cx = (cancelRc.left + cancelRc.right) * 0.5f;
+        const float cy = (cancelRc.top + cancelRc.bottom) * 0.5f;
+        m_renderTarget->DrawLine({cx - 4.4f, cy - 4.4f}, {cx + 4.4f, cy + 4.4f}, brush, 1.6f, roundStroke.Get());
+        m_renderTarget->DrawLine({cx + 4.4f, cy - 4.4f}, {cx - 4.4f, cy + 4.4f}, brush, 1.6f, roundStroke.Get());
+    }
+
+    // 顶部琥珀金矢量警示圆徽 + 主标题
+    const float inL = cardL + 26.0f;
+    const float inR = cardRc.right - 26.0f;
+    const D2D1_POINT_2F iconPt{inL + 16.0f, cardT + 40.0f};
+    setBrush(D2D1::ColorF(colWarn.r, colWarn.g, colWarn.b, dark ? 0.18f : 0.14f));
+    m_renderTarget->FillEllipse(D2D1::Ellipse(iconPt, 16.0f, 16.0f), brush);
+    setBrush(D2D1::ColorF(colWarn.r, colWarn.g, colWarn.b, 0.42f));
+    m_renderTarget->DrawEllipse(D2D1::Ellipse(iconPt, 16.0f, 16.0f), brush, 1.0f);
+    setBrush(colWarn);
+    m_renderTarget->DrawLine({iconPt.x, iconPt.y - 6.2f}, {iconPt.x, iconPt.y + 1.8f}, brush, 2.2f, roundStroke.Get());
+    m_renderTarget->FillEllipse(D2D1::Ellipse({iconPt.x, iconPt.y + 6.0f}, 1.35f, 1.35f), brush);
+
+    drawTxt(isZh ? L"尚未导出录屏内容" : L"Recording Not Exported",
+            m_titleFmt.Get(),
+            D2D1::RectF(inL + 42.0f, cardT + 24.0f, cancelRc.left - 8.0f, cardT + 56.0f),
+            colPrimary);
+
+    const bool hasEdits = hasStudioEditsToRender();
+    const std::wstring bodyTxt = hasEdits
+        ? (isZh
+            ? L"当前录屏尚未导出，直接退出将丢失本次录屏与编辑内容。请选择「保存后退出」自动导出成片，或选择「不保存退出」放弃并清理临时文件。"
+            : L"This recording has not been exported yet. Choose \"Save & Exit\" to export your current edits automatically, or \"Exit Without Saving\" to discard the temporary capture.")
+        : (isZh
+            ? L"当前未启用运镜或背景美化，点击「保存后退出」将瞬间无损保留原始录屏；点击「不保存退出」将直接放弃并清理临时文件。"
+            : L"No studio zoom or framing is enabled. \"Save & Exit\" preserves the original lossless recording immediately; \"Exit Without Saving\" discards the temporary file.");
+    drawTxt(bodyTxt,
+            m_captionWrapFmt.Get(),
+            D2D1::RectF(inL, cardT + 68.0f, inR, cardT + 132.0f),
+            colSecondary,
+            DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+
+    // 可选快捷记忆复选框：下次录屏直接原样保存（跳过演播室）
+    const D2D1_RECT_F checkRowRc = D2D1::RectF(inL, cardT + 140.0f, inR, cardT + 170.0f);
+    m_hitZones.push_back({Hit_CloseConfirmSkipStudioCheck, checkRowRc, -1});
+    const bool hovCheck = (m_hoveredHitId == Hit_CloseConfirmSkipStudioCheck);
+    if (hovCheck) {
+        setBrush(dark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.05f) : D2D1::ColorF(0.06f, 0.10f, 0.18f, 0.04f));
+        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(checkRowRc, 7.0f, 7.0f), brush);
+    }
+    const D2D1_RECT_F boxRc = D2D1::RectF(inL + 4.0f, checkRowRc.top + 7.0f, inL + 20.0f, checkRowRc.top + 23.0f);
+    if (m_confirmSkipStudioNextTime) {
+        setBrush(colAccent);
+        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(boxRc, 4.5f, 4.5f), brush);
+        setBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f));
+        m_renderTarget->DrawLine({boxRc.left + 3.8f, boxRc.top + 8.3f}, {boxRc.left + 6.9f, boxRc.top + 11.4f},
+                                 brush, 1.85f, roundStroke.Get());
+        m_renderTarget->DrawLine({boxRc.left + 6.9f, boxRc.top + 11.4f}, {boxRc.right - 3.5f, boxRc.top + 4.8f},
+                                 brush, 1.85f, roundStroke.Get());
+    } else {
+        setBrush(dark ? D2D1::ColorF(0.14f, 0.17f, 0.24f, 0.92f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(boxRc, 4.5f, 4.5f), brush);
+        setBrush(hovCheck ? colAccent : colBorder);
+        m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(boxRc, 4.5f, 4.5f), brush, 1.15f);
+    }
+    drawTxt(isZh ? L"下次录屏直接原样保存（跳过演播室，记住设置）"
+                 : L"Skip Studio and save raw recording next time (remember)",
+            m_captionFmt.Get(),
+            D2D1::RectF(boxRc.right + 9.0f, checkRowRc.top, checkRowRc.right - 4.0f, checkRowRc.bottom),
+            m_confirmSkipStudioNextTime ? colPrimary : colSecondary);
+
+    // 底部柔和分割线与双操作按钮：[不保存退出]  [保存后退出]
+    setBrush(dark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f) : D2D1::ColorF(0.06f, 0.10f, 0.18f, 0.08f));
+    m_renderTarget->DrawLine({inL, cardRc.bottom - 66.0f}, {inR, cardRc.bottom - 66.0f}, brush, 0.9f);
+
+    const float btnH = 36.0f;
+    const float btnY = cardRc.bottom - 52.0f;
+    const float btnGap = 12.0f;
+    const float btnW = (inR - inL - btnGap) * 0.5f;
+    const D2D1_RECT_F discardRc = D2D1::RectF(inL, btnY, inL + btnW, btnY + btnH);
+    const D2D1_RECT_F saveRc    = D2D1::RectF(discardRc.right + btnGap, btnY, inR, btnY + btnH);
+    m_hitZones.push_back({Hit_CloseConfirmDiscardBtn, discardRc, -1});
+    m_hitZones.push_back({Hit_CloseConfirmSaveBtn, saveRc, -1});
+
+    // 次级警示按钮：不保存退出
+    {
+        const bool hovDisc = (m_hoveredHitId == Hit_CloseConfirmDiscardBtn);
+        setBrush(hovDisc
+            ? D2D1::ColorF(colDanger.r, colDanger.g, colDanger.b, dark ? 0.22f : 0.11f)
+            : (dark ? D2D1::ColorF(0.145f, 0.170f, 0.235f, 0.92f) : D2D1::ColorF(0.956f, 0.966f, 0.984f, 1.0f)));
+        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(discardRc, 8.5f, 8.5f), brush);
+        setBrush(hovDisc ? D2D1::ColorF(colDanger.r, colDanger.g, colDanger.b, 0.78f) : colBorder);
+        m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(discardRc, 8.5f, 8.5f), brush, hovDisc ? 1.2f : 1.0f);
+        drawTxt(isZh ? L"不保存退出" : L"Exit Without Saving",
+                m_sectionFmt.Get(), discardRc,
+                hovDisc ? colDanger : colPrimary,
+                DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+
+    // 主按钮：保存后退出（动态主题色双色渐变 + 顶部镜面亮边）
+    {
+        const bool hovSave = (m_hoveredHitId == Hit_CloseConfirmSaveBtn);
+        const float lift = hovSave ? 0.06f : 0.0f;
+        setBrush(D2D1::ColorF(accentRgb.r * 0.4f, accentRgb.g * 0.4f, accentRgb.b * 0.5f, dark ? 0.36f : 0.20f));
+        m_renderTarget->FillRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(saveRc.left, saveRc.top + 1.5f, saveRc.right, saveRc.bottom + 2.0f), 8.5f, 8.5f),
+            brush);
+        fillLinearVGradRounded(
+            m_renderTarget.Get(), saveRc, 8.5f,
+            D2D1::ColorF((std::min)(1.0f, accentRgb.r + 0.08f + lift), (std::min)(1.0f, accentRgb.g + 0.08f + lift), (std::min)(1.0f, accentRgb.b + 0.08f + lift), 1.0f),
+            D2D1::ColorF((std::max)(0.0f, accentRgb.r - 0.05f + lift), (std::max)(0.0f, accentRgb.g - 0.05f + lift), (std::max)(0.0f, accentRgb.b - 0.02f + lift), 1.0f));
+        setBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f));
+        m_renderTarget->DrawLine({saveRc.left + 8.0f, saveRc.top + 0.8f},
+                                 {saveRc.right - 8.0f, saveRc.top + 0.8f}, brush, 0.9f);
+        drawTxt(isZh ? L"保存后退出" : L"Save & Exit",
+                m_sectionFmt.Get(), saveRc,
+                D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f),
+                DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+}
+
 void StudioPreviewWindow::renderPreparingOverlay(
     float W, float H, bool dark, bool isZh, ID2D1SolidColorBrush* brush) {
     if (!m_renderTarget || !brush) return;
@@ -6166,14 +6381,20 @@ void StudioPreviewWindow::render() {
     }
 
     const bool exporting = m_exporting.load(std::memory_order_acquire);
+    const bool modalBlocked = m_exportModalOpen || m_closeConfirmModalOpen;
     const D2D1_RECT_F closeRc = D2D1::RectF(W - 40.0f, 9.0f, W - 10.0f, 37.0f);
     const D2D1_RECT_F maxRc   = D2D1::RectF(closeRc.left - 33.0f, 9.0f, closeRc.left - 3.0f, 37.0f);
     const D2D1_RECT_F minRc   = D2D1::RectF(maxRc.left - 33.0f, 9.0f, maxRc.left - 3.0f, 37.0f);
     const float hdrSepX       = minRc.left - 9.0f;
     const D2D1_RECT_F exportBtnRc = D2D1::RectF(hdrSepX - 102.0f, 8.0f, hdrSepX - 10.0f, 38.0f);
     const D2D1_RECT_F keepBtnRc   = D2D1::RectF(exportBtnRc.left - 90.0f, 8.0f, exportBtnRc.left - 8.0f, 38.0f);
+    const D2D1_RECT_F rawModeBtnRc = D2D1::RectF(keepBtnRc.left - 98.0f, 8.0f, keepBtnRc.left - 8.0f, 38.0f);
+    const bool showRawModeBtn = (rawModeBtnRc.left > metaPillRc.right + 10.0f);
 
-    if (!exporting && !m_exportModalOpen) {
+    if (!exporting && !modalBlocked) {
+        if (showRawModeBtn) {
+            m_hitZones.push_back({Hit_ToggleRawModeBtn, rawModeBtnRc, -1});
+        }
         m_hitZones.push_back({Hit_KeepOriginalBtn, keepBtnRc, -1});
         m_hitZones.push_back({Hit_OpenExportModalBtn, exportBtnRc, -1});
         m_hitZones.push_back({Hit_MinimizeBtn, minRc, -1});
@@ -6181,9 +6402,43 @@ void StudioPreviewWindow::render() {
     }
     m_hitZones.push_back({Hit_CloseBtn, closeRc, -1});
 
+    // 快捷模式切换微晶胶囊：[原样模式]（一键开关背景修饰与自动运镜并记住设置）
+    if (showRawModeBtn) {
+        const bool rawActive = isRawOutputModeActive();
+        const bool hovRaw = (m_hoveredHitId == Hit_ToggleRawModeBtn && !modalBlocked);
+        const D2D1_COLOR_F rawDotCol = rawActive
+            ? D2D1::ColorF(0.11f, 0.72f, 0.45f, 1.0f)
+            : (dark ? D2D1::ColorF(0.54f, 0.62f, 0.74f, 0.85f) : D2D1::ColorF(0.42f, 0.50f, 0.62f, 0.85f));
+        if (rawActive) {
+            setBrush(dark ? D2D1::ColorF(0.08f, 0.34f, 0.24f, hovRaw ? 0.72f : 0.52f)
+                          : D2D1::ColorF(0.11f, 0.72f, 0.45f, hovRaw ? 0.18f : 0.12f));
+            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(rawModeBtnRc, 7.5f, 7.5f), brush.Get());
+            setBrush(D2D1::ColorF(0.11f, 0.72f, 0.45f, hovRaw ? 0.86f : 0.60f));
+            m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(rawModeBtnRc, 7.5f, 7.5f), brush.Get(), 1.05f);
+        } else {
+            setBrush(dark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, hovRaw ? 0.09f : 0.045f)
+                          : D2D1::ColorF(0.06f, 0.10f, 0.18f, hovRaw ? 0.075f : 0.038f));
+            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(rawModeBtnRc, 7.5f, 7.5f), brush.Get());
+            setBrush(hovRaw ? colAccent : colBorder);
+            m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(rawModeBtnRc, 7.5f, 7.5f), brush.Get(), hovRaw ? 1.1f : 0.9f);
+        }
+        const float dotCy = (rawModeBtnRc.top + rawModeBtnRc.bottom) * 0.5f;
+        setBrush(rawDotCol);
+        if (rawActive) {
+            m_renderTarget->FillEllipse(D2D1::Ellipse({rawModeBtnRc.left + 13.0f, dotCy}, 3.6f, 3.6f), brush.Get());
+        } else {
+            m_renderTarget->DrawEllipse(D2D1::Ellipse({rawModeBtnRc.left + 13.0f, dotCy}, 3.3f, 3.3f), brush.Get(), 1.35f);
+        }
+        drawTextAligned(isZh ? L"原样模式" : L"Raw Mode", m_captionFmt.Get(),
+                        D2D1::RectF(rawModeBtnRc.left + 21.0f, rawModeBtnRc.top, rawModeBtnRc.right - 5.0f, rawModeBtnRc.bottom),
+                        rawActive ? (dark ? D2D1::ColorF(0.55f, 0.96f, 0.76f, 1.0f) : D2D1::ColorF(0.05f, 0.45f, 0.28f, 1.0f))
+                                  : (hovRaw ? colPrimary : colSecondary),
+                        DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+
     // 次级按钮：微晶白瓷/曜石立体键帽 [保留原片]
     {
-        const bool hovKeep = (m_hoveredHitId == Hit_KeepOriginalBtn && !m_exportModalOpen);
+        const bool hovKeep = (m_hoveredHitId == Hit_KeepOriginalBtn && !modalBlocked);
         fillLinearVGradRounded(
             m_renderTarget.Get(), keepBtnRc, 7.5f,
             dark ? D2D1::ColorF(0.145f, 0.175f, 0.245f, hovKeep ? 1.0f : 0.88f)
@@ -7203,6 +7458,8 @@ void StudioPreviewWindow::render() {
 
     if (m_exportModalOpen) {
         renderExportModalOverlay(W, H, dark, isZh, brush.Get());
+    } else if (m_closeConfirmModalOpen) {
+        renderUnsavedCloseModalOverlay(W, H, dark, isZh, brush.Get());
     }
 
     if (m_renderTarget->EndDraw() == D2DERR_RECREATE_TARGET) {
@@ -7423,7 +7680,10 @@ void StudioPreviewWindow::startAsyncExport() {
         tools3000::core::MainThreadDispatcher::instance().post(
             [this, ok, canceled, sourceMasterPath, finalPath, exportOptsCopy, durSec]() {
                 m_exporting.store(false, std::memory_order_release);
-                if (canceled) return;
+                if (canceled) {
+                    m_closeAfterSaveExport = false;
+                    return;
+                }
                 const bool isZh = tools3000::core::NativeThemePalette::isUiLanguageChinese();
                 if (ok) {
                     const std::filesystem::path doneFs(tools3000::core::WinUtils::utf8ToWstring(finalPath));
@@ -7446,7 +7706,9 @@ void StudioPreviewWindow::startAsyncExport() {
                     m_copyFeedbackUntilTick = 0;
 
                     LOG_INFO("StudioPreviewWindow: exported studio video successfully: {}", finalPath);
-                    if (m_autoCloseAfterExport) {
+                    const bool shouldCloseNow = m_autoCloseAfterExport || m_closeAfterSaveExport;
+                    m_closeAfterSaveExport = false;
+                    if (shouldCloseNow) {
                         finishExportedSessionAndClose();
                     } else {
                         m_exportModalOpen = true;
@@ -7454,6 +7716,7 @@ void StudioPreviewWindow::startAsyncExport() {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                     }
                 } else {
+                    m_closeAfterSaveExport = false;
                     LOG_WARN("StudioPreviewWindow: exportRenderedVideo failed, keeping raw video: {}", sourceMasterPath);
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                         isZh ? L"演播室合成失败，已为您安全保留原始录屏" : L"Studio export failed; raw recording preserved"});
@@ -7508,11 +7771,135 @@ void StudioPreviewWindow::finishExportedSessionAndClose() {
     }
 }
 
+bool StudioPreviewWindow::isRawOutputModeConfig(const StudioRenderConfig& cfg) noexcept {
+    return !cfg.autoFrameEnabled &&
+           !cfg.autoZoomEnabled &&
+           cfg.aspectRatio == StudioAspectRatio::Original;
+}
+
+bool StudioPreviewWindow::hasStudioEditsToRender(
+    const StudioRenderConfig& cfg,
+    const StudioTimelineData& timeline,
+    const std::vector<StudioVideoClip>& clips,
+    int64_t rawTotalMs) noexcept {
+    if (cfg.autoFrameEnabled) return true;
+    if (cfg.aspectRatio != StudioAspectRatio::Original) return true;
+    if (cfg.autoZoomEnabled && cfg.zoomMode != StudioZoomMode::None) {
+        for (const auto& seg : timeline.zoomSegments) {
+            if (seg.enabled) return true;
+        }
+    }
+    if (!timeline.annotations.empty()) return true;
+    if (cfg.watermark.enabled) return true;
+    if (cfg.autoCaptionsEnabled) return true;
+    if (cfg.smoothCursorEnabled &&
+        (cfg.cursorHighlightHalo || cfg.showClickRipple || std::abs(cfg.cursorScale - 1.0f) > 0.05f)) {
+        return true;
+    }
+    if (!clips.empty()) {
+        if (clips.size() > 1) return true;
+        const auto& c = clips.front();
+        if (c.srcStartMs > 40) return true;
+        if (rawTotalMs > 100 && c.srcEndMs < rawTotalMs - 40) return true;
+        if (std::abs(c.speed - 1.0f) > 0.03f) return true;
+    }
+    return false;
+}
+
+bool StudioPreviewWindow::hasStudioEditsToRender() const noexcept {
+    const int64_t rawTotalMs = (std::max<int64_t>)(
+        100, static_cast<int64_t>(std::llround(m_durationSec * 1000.0)));
+    return hasStudioEditsToRender(m_config, m_timeline, m_videoClips, rawTotalMs);
+}
+
+bool StudioPreviewWindow::isRawOutputModeActive() const noexcept {
+    return isRawOutputModeConfig(m_config);
+}
+
+void StudioPreviewWindow::toggleRawOutputPreset() {
+    const bool isZh = tools3000::core::NativeThemePalette::isUiLanguageChinese();
+    if (!isRawOutputModeActive()) {
+        m_config.autoFrameEnabled = false;
+        m_config.autoZoomEnabled = false;
+        m_config.zoomMode = StudioZoomMode::None;
+        m_config.aspectRatio = StudioAspectRatio::Original;
+        m_config.smoothCursorEnabled = false;
+        m_config.showClickRipple = false;
+        m_config.cursorHighlightHalo = false;
+        persistStudioConfigToSettings(m_config);
+        rebakeTimelinePreview();
+        requestImmediatePreviewRefresh(true);
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            isZh ? L"已切换为原样模式（无运镜/无背景边框），设置已记住"
+                 : L"Switched to Raw Mode (no zoom or framing), preference saved"});
+    } else {
+        m_config.autoFrameEnabled = true;
+        m_config.autoZoomEnabled = true;
+        m_config.zoomMode = StudioZoomMode::Zoom2D;
+        m_config.smoothCursorEnabled = true;
+        m_config.showClickRipple = (m_config.clickEffectStyle != StudioClickEffectStyle::TactileOnly);
+        persistStudioConfigToSettings(m_config);
+        rebakeTimelinePreview();
+        requestImmediatePreviewRefresh(true);
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            isZh ? L"已恢复演播室运镜与背景美化，设置已记住"
+                 : L"Restored Studio framing and auto zoom, preference saved"});
+    }
+}
+
 void StudioPreviewWindow::closeOrKeepBySessionState() {
     if (!m_sessionExportedPathsLower.empty()) {
         finishExportedSessionAndClose();
     } else {
         keepOriginalAndClose();
+    }
+}
+
+void StudioPreviewWindow::requestCloseWithConfirm() {
+    if (m_exporting.load(std::memory_order_acquire)) return;
+    if (!m_sessionExportedPathsLower.empty()) {
+        finishExportedSessionAndClose();
+        return;
+    }
+    m_playing = false;
+    m_hoverSkimming = false;
+    m_exportModalOpen = false;
+    m_exportCompletedCard = false;
+    m_closeConfirmModalOpen = false;
+    m_closeAfterSaveExport = false;
+    m_confirmSkipStudioNextTime = false;
+    m_editingExportName = false;
+    m_editingAnnotationText = false;
+    m_editingWatermarkText = false;
+    m_openDropdown = ExportDropdownKind::None;
+    m_confirmSkipStudioNextTime =
+        !tools3000::core::ConfigManager::instance().get<bool>("/recording/studioMode", true);
+    m_closeConfirmModalOpen = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void StudioPreviewWindow::discardOriginalAndClose() {
+    if (m_exporting.load(std::memory_order_acquire)) return;
+    persistStudioConfigToSettings(m_config);
+    m_hiResReader.close();
+
+    auto tryRemoveFile = [](const std::string& utf8Path) {
+        if (utf8Path.empty()) return;
+        std::error_code ec;
+        const std::filesystem::path p(tools3000::core::WinUtils::utf8ToWstring(utf8Path));
+        if (std::filesystem::exists(p, ec)) {
+            std::filesystem::remove(p, ec);
+        }
+    };
+    tryRemoveFile(m_masterVideoPath);
+    if (m_rawVideoPath != m_masterVideoPath) {
+        tryRemoveFile(m_rawVideoPath);
+    }
+
+    auto cb = std::move(m_onFinished);
+    closeSessionAndCleanup();
+    if (cb) {
+        cb("", 0.0, false);
     }
 }
 
@@ -7583,6 +7970,9 @@ void StudioPreviewWindow::closeSessionAndCleanup() {
     m_trackingMouseLeave = false;
     m_exportModalOpen = false;
     m_exportCompletedCard = false;
+    m_closeConfirmModalOpen = false;
+    m_closeAfterSaveExport = false;
+    m_confirmSkipStudioNextTime = false;
     m_editingExportName = false;
     m_userEditedExportStem = false;
     m_editingAnnotationText = false;
@@ -7830,6 +8220,47 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
 
         const int id = it->id;
 
+        // ── 未导出防丢关闭确认模态框热区处理（最高优先拦截） ──
+        if (m_closeConfirmModalOpen) {
+            if (id == Hit_CloseConfirmBackdrop || id == Hit_CloseConfirmCancelBtn) {
+                m_closeConfirmModalOpen = false;
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+            if (id == Hit_CloseConfirmCard) {
+                return;
+            }
+            if (id == Hit_CloseConfirmSkipStudioCheck) {
+                m_confirmSkipStudioNextTime = !m_confirmSkipStudioNextTime;
+                tools3000::core::ConfigManager::instance().set<bool>(
+                    "/recording/studioMode", !m_confirmSkipStudioNextTime);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+            if (id == Hit_CloseConfirmDiscardBtn) {
+                m_closeConfirmModalOpen = false;
+                discardOriginalAndClose();
+                return;
+            }
+            if (id == Hit_CloseConfirmSaveBtn) {
+                m_closeConfirmModalOpen = false;
+                if (!hasStudioEditsToRender()) {
+                    keepOriginalAndClose();
+                } else {
+                    m_closeAfterSaveExport = true;
+                    m_exportModalOpen = true;
+                    m_exportCompletedCard = false;
+                    m_editingExportName = false;
+                    m_openDropdown = ExportDropdownKind::None;
+                    ensureNonCollidingExportStem();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    startAsyncExport();
+                }
+                return;
+            }
+            return;
+        }
+
         // ── 导出模态窗热区处理（严格限定在模态窗打开态，严禁误吞 300..999 区间的抽屉控件 ID！） ──
         if (m_exportModalOpen && m_openDropdown != ExportDropdownKind::None &&
             id >= Hit_ModalDropdownItemBase && id < Hit_ModalDropdownItemBase + 32) {
@@ -7960,8 +8391,13 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
                 m_cancelExport.store(true, std::memory_order_release);
                 joinExportWorkerIfDone(true);
                 m_exporting.store(false, std::memory_order_release);
+                m_closeAfterSaveExport = false;
             }
-            closeOrKeepBySessionState();
+            requestCloseWithConfirm();
+            return;
+        }
+        if (id == Hit_ToggleRawModeBtn) {
+            toggleRawOutputPreset();
             return;
         }
         if (id == Hit_KeepOriginalBtn) {
@@ -7969,6 +8405,7 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
                 m_cancelExport.store(true, std::memory_order_release);
                 joinExportWorkerIfDone(true);
                 m_exporting.store(false, std::memory_order_release);
+                m_closeAfterSaveExport = false;
             }
             keepOriginalAndClose();
             return;
@@ -8476,12 +8913,14 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
                 m_config.autoZoomEnabled = true;
                 m_config.zoomMode = (id == Hit_ZoomMode_3D) ? StudioZoomMode::Motion3D : StudioZoomMode::Zoom2D;
             }
+            persistStudioConfigToSettings(m_config);
             rebakeTimelinePreview();
             requestImmediatePreviewRefresh(true);
             return;
         }
         if (id == Hit_ToggleMotionBlur) {
             m_config.motionBlurEnabled = !m_config.motionBlurEnabled;
+            persistStudioConfigToSettings(m_config);
             requestImmediatePreviewRefresh(true);
             return;
         }
@@ -8495,12 +8934,14 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
             } else {
                 for (auto& seg : m_timeline.zoomSegments) seg.targetZoom = z;
             }
+            persistStudioConfigToSettings(m_config);
             rebakeTimelinePreview();
             requestImmediatePreviewRefresh(true);
             return;
         }
         if (id == Hit_ToggleSmoothCursor) {
             m_config.smoothCursorEnabled = !m_config.smoothCursorEnabled;
+            persistStudioConfigToSettings(m_config);
             rebakeTimelinePreview();
             requestImmediatePreviewRefresh(true);
             return;
@@ -8509,12 +8950,14 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
             m_config.cursorScale = (id == Hit_CursorScale_100) ? 1.00f
                 : ((id == Hit_CursorScale_135) ? 1.35f : 1.70f);
             m_config.smoothCursorEnabled = true;
+            persistStudioConfigToSettings(m_config);
             requestImmediatePreviewRefresh(true);
             return;
         }
         if (id == Hit_ToggleCursorHalo) {
             m_config.cursorHighlightHalo = !m_config.cursorHighlightHalo;
             m_config.smoothCursorEnabled = true;
+            persistStudioConfigToSettings(m_config);
             requestImmediatePreviewRefresh(true);
             return;
         }
@@ -8531,11 +8974,13 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
         }
         if (id == Hit_ToggleAutoFrame) {
             m_config.autoFrameEnabled = !m_config.autoFrameEnabled;
+            persistStudioConfigToSettings(m_config);
             requestImmediatePreviewRefresh(true);
             return;
         }
         if (id >= Hit_AspectBase && id < Hit_AspectBase + 5) {
             m_config.aspectRatio = static_cast<StudioAspectRatio>(id - Hit_AspectBase);
+            persistStudioConfigToSettings(m_config);
             requestImmediatePreviewRefresh(true);
             return;
         }
@@ -8767,7 +9212,9 @@ HCURSOR StudioPreviewWindow::resolveDesiredCursor(float lx, float ly) const {
     }
     if (m_hoveredHitId != Hit_None &&
         m_hoveredHitId != Hit_ModalBackdrop &&
-        m_hoveredHitId != Hit_ModalCardBody) {
+        m_hoveredHitId != Hit_ModalCardBody &&
+        m_hoveredHitId != Hit_CloseConfirmBackdrop &&
+        m_hoveredHitId != Hit_CloseConfirmCard) {
         return LoadCursorW(nullptr, IDC_HAND);
     }
     return LoadCursorW(nullptr, IDC_ARROW);
@@ -9220,6 +9667,14 @@ void StudioPreviewWindow::handleKeyDown(WPARAM vk) {
 
     const bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 
+    if (m_closeConfirmModalOpen) {
+        if (vk == VK_ESCAPE) {
+            m_closeConfirmModalOpen = false;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
     if (m_exportModalOpen) {
         if (m_exportCompletedCard) {
             if (vk == VK_ESCAPE) {
@@ -9414,7 +9869,7 @@ void StudioPreviewWindow::handleKeyDown(WPARAM vk) {
         return;
     }
     if (vk == VK_ESCAPE) {
-        closeOrKeepBySessionState();
+        requestCloseWithConfirm();
     }
 }
 
@@ -9548,8 +10003,18 @@ LRESULT CALLBACK StudioPreviewWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-        case WM_ERASEBKGND:
+        case WM_ERASEBKGND: {
+            if (!self->m_renderTarget && wParam) {
+                RECT rc{};
+                if (GetClientRect(hwnd, &rc)) {
+                    const bool dark = tools3000::core::NativeThemePalette::isEffectiveDarkMode();
+                    HBRUSH bg = CreateSolidBrush(dark ? RGB(14, 18, 27) : RGB(247, 249, 252));
+                    FillRect(reinterpret_cast<HDC>(wParam), &rc, bg);
+                    DeleteObject(bg);
+                }
+            }
             return 1;
+        }
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             BeginPaint(hwnd, &ps);
@@ -9656,7 +10121,7 @@ LRESULT CALLBACK StudioPreviewWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam
             return 0;
         case WM_CLOSE:
             if (!self->m_exporting.load(std::memory_order_acquire)) {
-                self->closeOrKeepBySessionState();
+                self->requestCloseWithConfirm();
             }
             return 0;
         default:

@@ -68,6 +68,14 @@ inline std::wstring toolbarButtonAccessibleName(const ToolbarButton& button, boo
             return button.intParam == 0
                 ? (zh ? L"像素马赛克模式" : L"Pixel Mosaic Mode")
                 : (zh ? L"高斯模糊模式" : L"Gaussian Blur Mode");
+        case ToolbarCommand::SelectTextMarkupMode: {
+            switch (static_cast<TextMarkupMode>(button.intParam)) {
+                case TextMarkupMode::Highlight: return zh ? L"选中文字荧光笔" : L"Text Highlighter";
+                case TextMarkupMode::WavyUnderline: return zh ? L"选中文字波浪线" : L"Text Wavy Underline";
+                case TextMarkupMode::StraightUnderline: return zh ? L"选中文字直线" : L"Text Underline";
+                default: return zh ? L"自由矩形高亮" : L"Rectangle Highlight";
+            }
+        }
         case ToolbarCommand::ToggleNumberShape:
             return button.tool == MarkupTool::Magnifier
                 ? (zh ? L"切换放大透镜形状" : L"Switch Lens Shape")
@@ -151,6 +159,9 @@ inline bool isToolbarButtonSelected(const ToolbarButton& button, const CaptureSt
     if (button.command == ToolbarCommand::SelectMosaicType) {
         const int effectiveMosaicType = (state.currentTool == MarkupTool::Blur) ? 1 : state.currentMosaicType;
         return button.intParam == effectiveMosaicType;
+    }
+    if (button.command == ToolbarCommand::SelectTextMarkupMode) {
+        return button.intParam == static_cast<int>(state.currentTextMarkupMode);
     }
     if (button.command == ToolbarCommand::ToggleBeautyShell) return state.beautyShell.enabled;
     if (button.command == ToolbarCommand::SideCycleAspectRatio) return state.aspectRatio != AspectRatioPreset::Free;

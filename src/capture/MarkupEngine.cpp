@@ -21,6 +21,7 @@
 #endif
 
 #include "capture/MarkupEngine.h"
+#include "capture/TextAnnotationHelper.h"
 #include "capture/MarkupCurveGeometry.h"
 #include "capture/CaptureInteractionPolicy.h"
 #include "capture/CaptureTextEditor.h"
@@ -741,6 +742,9 @@ void MarkupElement::moveBy(int dx, int dy) {
     for (auto& pt : penPoints) {
         pt.x += dx; pt.y += dy;
     }
+    for (auto& rc : textSpans) {
+        rc.x += dx; rc.y += dy;
+    }
 }
 
 void MarkupElement::resize(int dx, int dy, HitArea handle) {
@@ -818,11 +822,15 @@ bool MarkupEngine::elementEquivalent(const MarkupElement& a, const MarkupElement
         std::abs(a.watermarkAngle - b.watermarkAngle) > 1e-3f ||
         a.watermarkSpacing != b.watermarkSpacing ||
         a.inpaintRadius != b.inpaintRadius ||
-        a.penPoints.size() != b.penPoints.size()) {
+        a.penPoints.size() != b.penPoints.size() ||
+        a.textSpans.size() != b.textSpans.size()) {
         return false;
     }
     for (size_t i = 0; i < a.penPoints.size(); ++i) {
         if (a.penPoints[i] != b.penPoints[i]) return false;
+    }
+    for (size_t i = 0; i < a.textSpans.size(); ++i) {
+        if (a.textSpans[i] != b.textSpans[i]) return false;
     }
     return true;
 }
@@ -1233,6 +1241,62 @@ MarkupElement* MarkupEngine::drawHighlight(cv::Point p1, cv::Point p2, MarkupCol
     return addElement(std::move(elem));
 }
 
+MarkupElement* MarkupEngine::drawTextHighlightSpans(const std::vector<cv::Rect>& spans, MarkupColor color) {
+    std::vector<cv::Rect> valid;
+    valid.reserve(spans.size());
+    int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+    for (const auto& r : spans) {
+        if (r.width <= 0 || r.height <= 0) continue;
+        valid.push_back(r);
+        minX = (std::min)(minX, r.x);
+        minY = (std::min)(minY, r.y);
+        maxX = (std::max)(maxX, r.x + r.width);
+        maxY = (std::max)(maxY, r.y + r.height);
+    }
+    if (valid.empty()) return nullptr;
+
+    auto elem = std::make_unique<MarkupElement>();
+    elem->tool = MarkupTool::Highlight;
+    elem->textSpans = std::move(valid);
+    elem->startPt = cv::Point(minX, minY);
+    elem->endPt = cv::Point(maxX, maxY);
+    elem->color = color;
+    elem->color.a = 220;
+    return addElement(std::move(elem));
+}
+
+MarkupElement* MarkupEngine::drawTextUnderlineSpans(const std::vector<cv::Rect>& spans, MarkupColor color,
+                                                    LineStyle style, float thickness) {
+    std::vector<cv::Rect> valid;
+    valid.reserve(spans.size());
+    int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+    int sumH = 0;
+    for (const auto& r : spans) {
+        if (r.width <= 0 || r.height <= 0) continue;
+        valid.push_back(r);
+        minX = (std::min)(minX, r.x);
+        minY = (std::min)(minY, r.y);
+        maxX = (std::max)(maxX, r.x + r.width);
+        maxY = (std::max)(maxY, r.y + r.height + 5);
+        sumH += r.height;
+    }
+    if (valid.empty()) return nullptr;
+
+    const float avgH = static_cast<float>(sumH) / static_cast<float>(valid.size());
+    auto elem = std::make_unique<MarkupElement>();
+    elem->tool = MarkupTool::Line;
+    elem->textSpans = std::move(valid);
+    elem->startPt = cv::Point(minX, minY);
+    elem->endPt = cv::Point(maxX, maxY);
+    elem->color = color;
+    elem->color.a = 255;
+    elem->lineStyle = style;
+    elem->thickness = (thickness > 0.5f)
+        ? thickness
+        : std::clamp(avgH * 0.095f, 1.8f, 2.85f);
+    return addElement(std::move(elem));
+}
+
 MarkupElement* MarkupEngine::applyMosaic(cv::Point p1, cv::Point p2, int blockSize) {
     blockSize = (std::max)(2, blockSize);
     auto elem = std::make_unique<MarkupElement>();
@@ -1551,10 +1615,383 @@ void DefaultBoxHandler::renderActiveHandles(cv::Mat& canvas, const MarkupElement
 
 namespace {
 
+void blendGdiPlusOverlayOntoCanvas(cv::Mat& canvas, const cv::Rect& roiRect, const cv::Mat& overlayBgra) {
+    if (canvas.empty() || overlayBgra.empty() || overlayBgra.channels() != 4) return;
+    if (roiRect.x < 0 || roiRect.y < 0 ||
+        roiRect.x + roiRect.width > canvas.cols ||
+        roiRect.y + roiRect.height > canvas.rows ||
+        overlayBgra.cols != roiRect.width ||
+        overlayBgra.rows != roiRect.height) {
+        return;
+    }
+
+    cv::Mat dst = canvas(roiRect);
+    const int ch = dst.channels();
+    for (int r = 0; r < roiRect.height; ++r) {
+        const cv::Vec4b* srcRow = overlayBgra.ptr<cv::Vec4b>(r);
+        if (ch == 3) {
+            cv::Vec3b* dstRow = dst.ptr<cv::Vec3b>(r);
+            for (int c = 0; c < roiRect.width; ++c) {
+                const uint32_t a = srcRow[c][3];
+                if (a == 0) continue;
+                if (a == 255) {
+                    dstRow[c][0] = srcRow[c][0];
+                    dstRow[c][1] = srcRow[c][1];
+                    dstRow[c][2] = srcRow[c][2];
+                } else {
+                    const uint32_t inv = 255u - a;
+                    dstRow[c][0] = static_cast<uchar>((dstRow[c][0] * inv + srcRow[c][0] * a + 127u) / 255u);
+                    dstRow[c][1] = static_cast<uchar>((dstRow[c][1] * inv + srcRow[c][1] * a + 127u) / 255u);
+                    dstRow[c][2] = static_cast<uchar>((dstRow[c][2] * inv + srcRow[c][2] * a + 127u) / 255u);
+                }
+            }
+        } else if (ch == 4) {
+            cv::Vec4b* dstRow = dst.ptr<cv::Vec4b>(r);
+            for (int c = 0; c < roiRect.width; ++c) {
+                const uint32_t a = srcRow[c][3];
+                if (a == 0) continue;
+                const uint32_t inv = 255u - a;
+                dstRow[c][0] = static_cast<uchar>((dstRow[c][0] * inv + srcRow[c][0] * a + 127u) / 255u);
+                dstRow[c][1] = static_cast<uchar>((dstRow[c][1] * inv + srcRow[c][1] * a + 127u) / 255u);
+                dstRow[c][2] = static_cast<uchar>((dstRow[c][2] * inv + srcRow[c][2] * a + 127u) / 255u);
+                dstRow[c][3] = static_cast<uchar>((std::max<uint32_t>)(dstRow[c][3], a));
+            }
+        }
+    }
+}
+
+void renderHandDrawnRibbonGdiPlus(cv::Mat& canvas,
+                                  const HandDrawnRibbon& ribbon,
+                                  const cv::Scalar& bgrColor,
+                                  float baseWidth) {
+    if (canvas.empty() || ribbon.outline.size() < 3 || ribbon.spine.size() < 2) return;
+
+    float minXf = ribbon.outline[0].x;
+    float minYf = ribbon.outline[0].y;
+    float maxXf = minXf;
+    float maxYf = minYf;
+    for (const auto& pt : ribbon.outline) {
+        if (pt.x < minXf) minXf = pt.x;
+        if (pt.y < minYf) minYf = pt.y;
+        if (pt.x > maxXf) maxXf = pt.x;
+        if (pt.y > maxYf) maxYf = pt.y;
+    }
+
+    const int margin = static_cast<int>(std::ceil((std::max)(2.0f, baseWidth * 0.85f))) + 5;
+    const int x1 = (std::max)(0, static_cast<int>(std::floor(minXf)) - margin);
+    const int y1 = (std::max)(0, static_cast<int>(std::floor(minYf)) - margin);
+    const int x2 = (std::min)(canvas.cols, static_cast<int>(std::ceil(maxXf)) + margin);
+    const int y2 = (std::min)(canvas.rows, static_cast<int>(std::ceil(maxYf)) + margin);
+    if (x2 <= x1 || y2 <= y1) return;
+
+    const cv::Rect roiRect(x1, y1, x2 - x1, y2 - y1);
+    cv::Mat overlay(roiRect.height, roiRect.width, CV_8UC4, cv::Scalar(0, 0, 0, 0));
+
+    std::vector<Gdiplus::PointF> polyPts;
+    polyPts.reserve(ribbon.outline.size());
+    for (const auto& pt : ribbon.outline) {
+        polyPts.emplace_back(pt.x - static_cast<float>(roiRect.x),
+                             pt.y - static_cast<float>(roiRect.y));
+    }
+
+    std::vector<Gdiplus::PointF> spinePts;
+    spinePts.reserve(ribbon.spine.size());
+    for (const auto& sp : ribbon.spine) {
+        spinePts.emplace_back(sp.x - static_cast<float>(roiRect.x),
+                              sp.y - static_cast<float>(roiRect.y));
+    }
+
+    {
+        Gdiplus::Bitmap bmp(roiRect.width, roiRect.height, static_cast<INT>(overlay.step),
+                            PixelFormat32bppARGB, overlay.data);
+        Gdiplus::Graphics g(&bmp);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+
+        // 感知背景亮度：深色界面柔和提亮 12% 呈现清透琉璃感，浅色文档保留高定醇厚油墨质感
+        const float bgLum = sampleCanvasRegionLuminance(canvas, roiRect);
+        const bool darkBg = (bgLum < 0.36f);
+        auto liftCh = [&](double ch) -> BYTE {
+            const double v = std::clamp(ch, 0.0, 255.0);
+            const double boosted = darkBg ? (v + (255.0 - v) * 0.13) : v;
+            return static_cast<BYTE>(std::clamp(std::round(boosted), 0.0, 255.0));
+        };
+        const BYTE cr = liftCh(bgrColor[2]);
+        const BYTE cg = liftCh(bgrColor[1]);
+        const BYTE cb = liftCh(bgrColor[0]);
+        const BYTE baseAlpha = (bgrColor[3] > 0.5)
+            ? static_cast<BYTE>(std::clamp(bgrColor[3], 1.0, 255.0))
+            : static_cast<BYTE>(240);
+
+        // 1. 细腻克制的微光墨晕底座（深底轻盈琉璃光晕 15%，浅底柔和水彩边缘 13%，绝不臃肿发糊）
+        const BYTE haloAlpha = static_cast<BYTE>(std::clamp(static_cast<int>(baseAlpha) * (darkBg ? 15 : 13) / 100, 12, 38));
+        Gdiplus::Pen haloPen(Gdiplus::Color(haloAlpha, cr, cg, cb), (std::max)(2.2f, baseWidth * 1.24f));
+        haloPen.SetStartCap(Gdiplus::LineCapRound);
+        haloPen.SetEndCap(Gdiplus::LineCapRound);
+        haloPen.SetLineJoin(Gdiplus::LineJoinRound);
+        g.DrawLines(&haloPen, spinePts.data(), static_cast<INT>(spinePts.size()));
+
+        // 2. 沿笔迹流向的微妙油墨光泽线性渐变（起笔醇厚 -> 中段清亮饱满 -> 收笔轻盈淡雅）
+        const Gdiplus::PointF gStart = spinePts.front();
+        Gdiplus::PointF gEnd = spinePts.back();
+        if (std::hypot(gEnd.X - gStart.X, gEnd.Y - gStart.Y) < 2.0f) {
+            gEnd.X += 4.0f;
+        }
+        auto tintLight = [](BYTE c, float amt) -> BYTE {
+            return static_cast<BYTE>(std::clamp(std::round(c + (255.0f - c) * amt), 0.0f, 255.0f));
+        };
+        const Gdiplus::Color cHead(static_cast<BYTE>(std::clamp(static_cast<int>(baseAlpha) * 95 / 100, 1, 255)), cr, cg, cb);
+        const Gdiplus::Color cMid(baseAlpha, tintLight(cr, 0.08f), tintLight(cg, 0.08f), tintLight(cb, 0.08f));
+        const Gdiplus::Color cTail(static_cast<BYTE>(std::clamp(static_cast<int>(baseAlpha) * 86 / 100, 1, 255)),
+                                   tintLight(cr, 0.14f), tintLight(cg, 0.14f), tintLight(cb, 0.14f));
+        Gdiplus::LinearGradientBrush inkGrad(gStart, gEnd, cHead, cTail);
+        Gdiplus::Color gradColors[3] = { cHead, cMid, cTail };
+        Gdiplus::REAL gradPos[3] = { 0.0f, 0.52f, 1.0f };
+        inkGrad.SetInterpolationColors(gradColors, gradPos, 3);
+        g.FillPolygon(&inkGrad, polyPts.data(), static_cast<INT>(polyPts.size()), Gdiplus::FillModeWinding);
+    }
+
+    blendGdiPlusOverlayOntoCanvas(canvas, roiRect, overlay);
+}
+
+void drawSmoothWavySegmentGdiPlus(cv::Mat& canvas,
+                                  cv::Point2f p1,
+                                  cv::Point2f p2,
+                                  const cv::Scalar& bgrColor,
+                                  float strokeWidth,
+                                  float amplitude,
+                                  float halfWavelength,
+                                  bool extendEnds = true) {
+    if (canvas.empty()) return;
+    const float dist = std::hypot(p2.x - p1.x, p2.y - p1.y);
+    const float sw = (std::max)(1.6f, strokeWidth);
+    if (dist < 1.5f) {
+        cv::circle(canvas, cv::Point(static_cast<int>(std::round(p1.x)), static_cast<int>(std::round(p1.y))),
+                   (std::max)(1, static_cast<int>(std::round(sw * 0.5f))), bgrColor, cv::FILLED, cv::LINE_AA);
+        return;
+    }
+
+    const auto ribbon = HandDrawnStrokeGenerator::buildWavyStroke(
+        p1.x, p1.y, p2.x, p2.y, sw, amplitude, halfWavelength, extendEnds);
+    renderHandDrawnRibbonGdiPlus(canvas, ribbon, bgrColor, sw);
+}
+
+void drawSmoothStraightSegmentGdiPlus(cv::Mat& canvas,
+                                      cv::Point2f p1,
+                                      cv::Point2f p2,
+                                      const cv::Scalar& bgrColor,
+                                      float strokeWidth,
+                                      bool extendEnds = true) {
+    if (canvas.empty()) return;
+    const float dist = std::hypot(p2.x - p1.x, p2.y - p1.y);
+    const float sw = (std::max)(1.6f, strokeWidth);
+    if (dist < 1.5f) {
+        cv::circle(canvas, cv::Point(static_cast<int>(std::round(p1.x)), static_cast<int>(std::round(p1.y))),
+                   (std::max)(1, static_cast<int>(std::round(sw * 0.5f))), bgrColor, cv::FILLED, cv::LINE_AA);
+        return;
+    }
+
+    const auto ribbon = HandDrawnStrokeGenerator::buildStraightStroke(
+        p1.x, p1.y, p2.x, p2.y, sw, extendEnds);
+    renderHandDrawnRibbonGdiPlus(canvas, ribbon, bgrColor, sw);
+}
+
+void addGdiPlusRoundedRectPath(Gdiplus::GraphicsPath& path, float x, float y, float w, float h, float r) {
+    const float rad = std::clamp(r, 0.0f, (std::min)(w, h) * 0.5f);
+    if (rad <= 0.5f) {
+        path.AddRectangle(Gdiplus::RectF(x, y, w, h));
+        return;
+    }
+    const float d = rad * 2.0f;
+    path.StartFigure();
+    path.AddArc(x, y, d, d, 180.0f, 90.0f);
+    path.AddArc(x + w - d, y, d, d, 270.0f, 90.0f);
+    path.AddArc(x + w - d, y + h - d, d, d, 0.0f, 90.0f);
+    path.AddArc(x, y + h - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+void renderTextSpansHighlightImpl(cv::Mat& canvas,
+                                  const std::vector<cv::Rect>& spans,
+                                  const MarkupColor& color) {
+    if (canvas.empty() || spans.empty() || (canvas.channels() != 3 && canvas.channels() != 4)) return;
+
+    struct PaddedSpan {
+        float x, y, w, h, radius;
+    };
+    std::vector<PaddedSpan> padded;
+    padded.reserve(spans.size());
+
+    int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+    for (const auto& sp : spans) {
+        if (sp.width <= 0 || sp.height <= 0) continue;
+        const float padX = std::clamp(sp.height * 0.08f, 1.5f, 3.0f);
+        const float padTop = std::clamp(sp.height * 0.05f, 1.0f, 2.2f);
+        const float padBot = std::clamp(sp.height * 0.08f, 1.5f, 2.8f);
+        const float rx = static_cast<float>(sp.x) - padX;
+        const float ry = static_cast<float>(sp.y) - padTop;
+        const float rw = static_cast<float>(sp.width) + padX * 2.0f;
+        const float rh = static_cast<float>(sp.height) + padTop + padBot;
+        const float rad = std::clamp(rh * 0.16f, 2.2f, 4.4f);
+        padded.push_back({rx, ry, rw, rh, rad});
+
+        minX = (std::min)(minX, static_cast<int>(std::floor(rx)) - 2);
+        minY = (std::min)(minY, static_cast<int>(std::floor(ry)) - 2);
+        maxX = (std::max)(maxX, static_cast<int>(std::ceil(rx + rw)) + 2);
+        maxY = (std::max)(maxY, static_cast<int>(std::ceil(ry + rh)) + 2);
+    }
+    if (padded.empty()) return;
+
+    minX = (std::max)(0, minX);
+    minY = (std::max)(0, minY);
+    maxX = (std::min)(canvas.cols, maxX);
+    maxY = (std::min)(canvas.rows, maxY);
+    if (maxX <= minX || maxY <= minY) return;
+
+    const cv::Rect unionRoi(minX, minY, maxX - minX, maxY - minY);
+    cv::Mat maskBgra(unionRoi.height, unionRoi.width, CV_8UC4, cv::Scalar(0, 0, 0, 0));
+    {
+        Gdiplus::Bitmap bmp(unionRoi.width, unionRoi.height, static_cast<INT>(maskBgra.step),
+                            PixelFormat32bppARGB, maskBgra.data);
+        Gdiplus::Graphics g(&bmp);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        // CompositingModeSourceCopy 确保多行微重叠圆角带 Alpha 封顶 255，100% 根除行间双倍深色重影横线
+        Gdiplus::SolidBrush maskBrush(Gdiplus::Color(255, 255, 255, 255));
+        for (const auto& ps : padded) {
+            Gdiplus::GraphicsPath path;
+            addGdiPlusRoundedRectPath(
+                path,
+                ps.x - static_cast<float>(unionRoi.x),
+                ps.y - static_cast<float>(unionRoi.y),
+                ps.w, ps.h, ps.radius);
+            g.FillPath(&maskBrush, &path);
+        }
+    }
+
+    const float bgLum = sampleCanvasRegionLuminance(canvas, unionRoi);
+    const bool lightBackground = (bgLum >= 0.36f);
+    // 浅底采用正片叠底（Multiply 0.43）保持黑字 100% 浓黑锐利与灰底代码胶囊自然层次；深底自适应清透微光
+    const float userScale = (color.a > 0 && color.a < 180) ? (color.a / 220.0f) : 1.0f;
+    const float strength = (lightBackground ? 0.43f : 0.34f) * std::clamp(userScale, 0.25f, 1.25f);
+    const uint32_t hr = color.r;
+    const uint32_t hg = color.g;
+    const uint32_t hb = color.b;
+
+    cv::Mat dst = canvas(unionRoi);
+    const int ch = dst.channels();
+    for (int r = 0; r < unionRoi.height; ++r) {
+        const cv::Vec4b* mRow = maskBgra.ptr<cv::Vec4b>(r);
+        if (ch == 3) {
+            cv::Vec3b* dRow = dst.ptr<cv::Vec3b>(r);
+            for (int c = 0; c < unionRoi.width; ++c) {
+                const uint32_t cov = mRow[c][3];
+                if (cov == 0) continue;
+                const uint32_t a256 = static_cast<uint32_t>(std::round(cov * strength));
+                if (a256 == 0) continue;
+                const uint32_t inv = 255u - a256;
+                cv::Vec3b& px = dRow[c];
+                if (lightBackground) {
+                    const uint32_t mb = (px[0] * hb + 127u) / 255u;
+                    const uint32_t mg = (px[1] * hg + 127u) / 255u;
+                    const uint32_t mr = (px[2] * hr + 127u) / 255u;
+                    px[0] = static_cast<uchar>((px[0] * inv + mb * a256 + 127u) / 255u);
+                    px[1] = static_cast<uchar>((px[1] * inv + mg * a256 + 127u) / 255u);
+                    px[2] = static_cast<uchar>((px[2] * inv + mr * a256 + 127u) / 255u);
+                } else {
+                    const uint32_t sb = 255u - ((255u - px[0]) * (255u - hb) + 127u) / 255u;
+                    const uint32_t sg = 255u - ((255u - px[1]) * (255u - hg) + 127u) / 255u;
+                    const uint32_t sr = 255u - ((255u - px[2]) * (255u - hr) + 127u) / 255u;
+                    px[0] = static_cast<uchar>((px[0] * inv + sb * a256 + 127u) / 255u);
+                    px[1] = static_cast<uchar>((px[1] * inv + sg * a256 + 127u) / 255u);
+                    px[2] = static_cast<uchar>((px[2] * inv + sr * a256 + 127u) / 255u);
+                }
+            }
+        } else {
+            cv::Vec4b* dRow = dst.ptr<cv::Vec4b>(r);
+            for (int c = 0; c < unionRoi.width; ++c) {
+                const uint32_t cov = mRow[c][3];
+                if (cov == 0) continue;
+                const uint32_t a256 = static_cast<uint32_t>(std::round(cov * strength));
+                if (a256 == 0) continue;
+                const uint32_t inv = 255u - a256;
+                cv::Vec4b& px = dRow[c];
+                if (lightBackground) {
+                    const uint32_t mb = (px[0] * hb + 127u) / 255u;
+                    const uint32_t mg = (px[1] * hg + 127u) / 255u;
+                    const uint32_t mr = (px[2] * hr + 127u) / 255u;
+                    px[0] = static_cast<uchar>((px[0] * inv + mb * a256 + 127u) / 255u);
+                    px[1] = static_cast<uchar>((px[1] * inv + mg * a256 + 127u) / 255u);
+                    px[2] = static_cast<uchar>((px[2] * inv + mr * a256 + 127u) / 255u);
+                } else {
+                    const uint32_t sb = 255u - ((255u - px[0]) * (255u - hb) + 127u) / 255u;
+                    const uint32_t sg = 255u - ((255u - px[1]) * (255u - hg) + 127u) / 255u;
+                    const uint32_t sr = 255u - ((255u - px[2]) * (255u - hr) + 127u) / 255u;
+                    px[0] = static_cast<uchar>((px[0] * inv + sb * a256 + 127u) / 255u);
+                    px[1] = static_cast<uchar>((px[1] * inv + sg * a256 + 127u) / 255u);
+                    px[2] = static_cast<uchar>((px[2] * inv + sr * a256 + 127u) / 255u);
+                }
+            }
+        }
+    }
+}
+
+void renderTextSpansUnderlineImpl(cv::Mat& canvas,
+                                  const std::vector<cv::Rect>& spans,
+                                  const MarkupColor& color,
+                                  LineStyle style,
+                                  float explicitThickness) {
+    if (canvas.empty() || spans.empty()) return;
+    const cv::Scalar bgr = color.toCvScalar();
+    for (const auto& sp : spans) {
+        if (sp.width <= 0 || sp.height <= 0) continue;
+        const float x0 = static_cast<float>(sp.x);
+        const float x1 = static_cast<float>(sp.x + sp.width);
+        if (style == LineStyle::Wavy) {
+            float sw = 0.0f, amp = 0.0f, halfWave = 0.0f;
+            HandDrawnStrokeGenerator::resolveTextWavyMetrics(
+                static_cast<float>(sp.height), explicitThickness, sw, amp, halfWave);
+            const float baseY = HandDrawnStrokeGenerator::resolveTextWavyBaselineY(
+                static_cast<float>(sp.y + sp.height), static_cast<float>(sp.height), amp);
+            drawSmoothWavySegmentGdiPlus(canvas, cv::Point2f(x0, baseY), cv::Point2f(x1, baseY),
+                                         bgr, sw, amp, halfWave, true);
+        } else if (style == LineStyle::Solid) {
+            const float sw = HandDrawnStrokeGenerator::resolveTextStraightWidth(
+                static_cast<float>(sp.height), explicitThickness);
+            const float baseY = HandDrawnStrokeGenerator::resolveTextStraightBaselineY(
+                static_cast<float>(sp.y + sp.height), static_cast<float>(sp.height), sw);
+            drawSmoothStraightSegmentGdiPlus(canvas, cv::Point2f(x0, baseY), cv::Point2f(x1, baseY),
+                                             bgr, sw, true);
+        } else {
+            const float sw = HandDrawnStrokeGenerator::resolveTextStraightWidth(
+                static_cast<float>(sp.height), explicitThickness);
+            const int iy = sp.y + sp.height + (std::max)(2, static_cast<int>(std::round(sw * 0.6f)));
+            cv::line(canvas, cv::Point(sp.x, iy), cv::Point(sp.x + sp.width, iy),
+                     bgr, (std::max)(1, static_cast<int>(std::round(sw))), cv::LINE_AA);
+        }
+    }
+}
+
 void drawPatternedPolyline(cv::Mat& canvas, const std::vector<cv::Point>& points, bool closed, const cv::Scalar& color, int thick, LineStyle style) {
     if (points.size() < 2) return;
     if (style == LineStyle::Solid) {
         cv::polylines(canvas, points, closed, color, thick, cv::LINE_AA);
+        return;
+    }
+    if (style == LineStyle::Wavy) {
+        const float sw = (std::max)(2.6f, static_cast<float>((std::max)(1, thick)) * 1.08f);
+        const float amp = std::clamp(sw * 1.15f + 1.4f, 2.8f, 9.5f);
+        const float halfWave = std::clamp(sw * 3.8f + 7.5f, 13.5f, 32.0f);
+        const size_t numEdges = closed ? points.size() : (points.size() - 1);
+        for (size_t i = 0; i < numEdges; ++i) {
+            const cv::Point& a = points[i];
+            const cv::Point& b = points[(i + 1) % points.size()];
+            drawSmoothWavySegmentGdiPlus(
+                canvas,
+                cv::Point2f(static_cast<float>(a.x), static_cast<float>(a.y)),
+                cv::Point2f(static_cast<float>(b.x), static_cast<float>(b.y)),
+                color, sw, amp, halfWave, false);
+        }
         return;
     }
 
@@ -1645,6 +2082,15 @@ void drawPatternedPolyline(cv::Mat& canvas, const std::vector<cv::Point>& points
 void drawPatternedLine(cv::Mat& canvas, cv::Point p1, cv::Point p2, const cv::Scalar& color, int thick, LineStyle style) {
     if (style == LineStyle::Solid) {
         cv::line(canvas, p1, p2, color, thick, cv::LINE_AA);
+    } else if (style == LineStyle::Wavy) {
+        const float sw = (std::max)(2.6f, static_cast<float>((std::max)(1, thick)) * 1.08f);
+        const float amp = std::clamp(sw * 1.15f + 1.4f, 2.8f, 9.5f);
+        const float halfWave = std::clamp(sw * 3.8f + 7.5f, 13.5f, 32.0f);
+        drawSmoothWavySegmentGdiPlus(
+            canvas,
+            cv::Point2f(static_cast<float>(p1.x), static_cast<float>(p1.y)),
+            cv::Point2f(static_cast<float>(p2.x), static_cast<float>(p2.y)),
+            color, sw, amp, halfWave, false);
     } else {
         drawPatternedPolyline(canvas, { p1, p2 }, false, color, thick, style);
     }
@@ -2619,6 +3065,19 @@ double pointToPolylineMinDistance(const std::vector<cv::Point>& pts, cv::Point p
 class LineHandler : public IMarkupToolHandler {
 public:
     cv::Rect getBoundingBox(const MarkupElement& element) const override {
+        if (!element.textSpans.empty()) {
+            int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+            for (const auto& sp : element.textSpans) {
+                if (sp.width <= 0 || sp.height <= 0) continue;
+                minX = (std::min)(minX, sp.x - 2);
+                minY = (std::min)(minY, sp.y);
+                maxX = (std::max)(maxX, sp.x + sp.width + 2);
+                maxY = (std::max)(maxY, sp.y + sp.height + 6);
+            }
+            if (minX < maxX && minY < maxY) {
+                return cv::Rect(minX, minY, maxX - minX, maxY - minY);
+            }
+        }
         int x1 = (std::min)(element.startPt.x, element.endPt.x);
         int y1 = (std::min)(element.startPt.y, element.endPt.y);
         int x2 = (std::max)(element.startPt.x, element.endPt.x);
@@ -2633,6 +3092,9 @@ public:
             y2 = (std::max)(y2, pt.y);
         }
         int pad = (std::max)(1, static_cast<int>(std::ceil(element.thickness / 2.0f)));
+        if (element.lineStyle == LineStyle::Wavy) {
+            pad = (std::max)(pad, static_cast<int>(std::ceil(element.thickness * 1.4f + 3.0f)));
+        }
         if (element.hasCustomCaps && (element.startCap != LineCapStyle::None || element.endCap != LineCapStyle::None)) {
             pad = (std::max)(pad, static_cast<int>(std::ceil(element.thickness * 2.5f)));
         }
@@ -2642,6 +3104,20 @@ public:
     }
 
     HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
+        if (!element.textSpans.empty()) {
+            if (element.isActive) {
+                const HitArea h = HandleGeometry::hitTestHandles(getBoundingBox(element), pt);
+                if (h != HitArea::None) return h;
+            }
+            const int pad = (std::max)(4, padding);
+            for (const auto& sp : element.textSpans) {
+                if (sp.width <= 0 || sp.height <= 0) continue;
+                const cv::Rect band(sp.x - pad, sp.y + sp.height / 2 - pad,
+                                    sp.width + pad * 2, sp.height / 2 + pad * 2 + 6);
+                if (band.contains(pt)) return HitArea::Body;
+            }
+            return HitArea::None;
+        }
         if (element.isActive) {
             int hw = 8;
             if (element.isMultiPoint && element.penPoints.size() >= 2) {
@@ -2686,6 +3162,22 @@ public:
     }
 
     void resize(MarkupElement& element, int dx, int dy, HitArea handle) const override {
+        if (!element.textSpans.empty()) {
+            const cv::Rect oldBox = getBoundingBox(element);
+            const cv::Rect newBox = HandleGeometry::computeResizedRect(oldBox, dx, dy, handle, 12, 8);
+            const double sx = (oldBox.width > 1) ? (static_cast<double>(newBox.width) / oldBox.width) : 1.0;
+            const double sy = (oldBox.height > 1) ? (static_cast<double>(newBox.height) / oldBox.height) : 1.0;
+            for (auto& sp : element.textSpans) {
+                const int nx = newBox.x + static_cast<int>(std::round((sp.x - oldBox.x) * sx));
+                const int ny = newBox.y + static_cast<int>(std::round((sp.y - oldBox.y) * sy));
+                const int nw = (std::max)(4, static_cast<int>(std::round(sp.width * sx)));
+                const int nh = (std::max)(4, static_cast<int>(std::round(sp.height * sy)));
+                sp = cv::Rect(nx, ny, nw, nh);
+            }
+            element.startPt = cv::Point(newBox.x, newBox.y);
+            element.endPt = cv::Point(newBox.x + newBox.width, newBox.y + newBox.height);
+            return;
+        }
         if (element.isMultiPoint && isVertexHitArea(handle)) {
             const size_t idx = vertexIndexFromHitArea(handle);
             if (idx < element.penPoints.size()) {
@@ -2735,6 +3227,11 @@ public:
     }
 
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
+        if (!element.textSpans.empty()) {
+            renderTextSpansUnderlineImpl(canvas, element.textSpans, element.color,
+                                         element.lineStyle, element.thickness);
+            return;
+        }
         if (element.isMultiPoint || element.hasCustomCaps || element.smoothCurve || element.penPoints.size() >= 3) {
             const LineCapStyle sCap = element.hasCustomCaps ? element.startCap : LineCapStyle::None;
             const LineCapStyle eCap = element.hasCustomCaps ? element.endCap : LineCapStyle::None;
@@ -2747,6 +3244,10 @@ public:
     }
 
     void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const override {
+        if (!element.textSpans.empty()) {
+            HandleGeometry::renderBoxHandles(canvas, getBoundingBox(element));
+            return;
+        }
         cv::Scalar activeColor(255, 140, 0); // Azure/Blue
         if (element.isMultiPoint || element.smoothCurve || element.penPoints.size() >= 3) {
             drawPatternedPolyline(canvas, buildLineOrCurvePath(element), false, activeColor, 1, LineStyle::Dashed);
@@ -3130,7 +3631,65 @@ public:
 
 class HighlightHandler : public DefaultBoxHandler {
 public:
+    cv::Rect getBoundingBox(const MarkupElement& element) const override {
+        if (!element.textSpans.empty()) {
+            int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+            for (const auto& sp : element.textSpans) {
+                if (sp.width <= 0 || sp.height <= 0) continue;
+                minX = (std::min)(minX, sp.x - 2);
+                minY = (std::min)(minY, sp.y - 2);
+                maxX = (std::max)(maxX, sp.x + sp.width + 2);
+                maxY = (std::max)(maxY, sp.y + sp.height + 3);
+            }
+            if (minX < maxX && minY < maxY) {
+                return cv::Rect(minX, minY, maxX - minX, maxY - minY);
+            }
+        }
+        return DefaultBoxHandler::getBoundingBox(element);
+    }
+
+    HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
+        if (!element.textSpans.empty()) {
+            if (element.isActive) {
+                const HitArea h = hitTestHandles(element, pt, padding);
+                if (h != HitArea::None) return h;
+            }
+            const int pad = (std::max)(3, padding);
+            for (const auto& sp : element.textSpans) {
+                if (sp.width <= 0 || sp.height <= 0) continue;
+                const cv::Rect expanded(sp.x - pad, sp.y - pad, sp.width + pad * 2, sp.height + pad * 2);
+                if (expanded.contains(pt)) return HitArea::Body;
+            }
+            return HitArea::None;
+        }
+        return DefaultBoxHandler::hitTest(element, pt, padding);
+    }
+
+    void resize(MarkupElement& element, int dx, int dy, HitArea handle) const override {
+        if (!element.textSpans.empty()) {
+            const cv::Rect oldBox = getBoundingBox(element);
+            const cv::Rect newBox = HandleGeometry::computeResizedRect(oldBox, dx, dy, handle, 12, 8);
+            const double sx = (oldBox.width > 1) ? (static_cast<double>(newBox.width) / oldBox.width) : 1.0;
+            const double sy = (oldBox.height > 1) ? (static_cast<double>(newBox.height) / oldBox.height) : 1.0;
+            for (auto& sp : element.textSpans) {
+                const int nx = newBox.x + static_cast<int>(std::round((sp.x - oldBox.x) * sx));
+                const int ny = newBox.y + static_cast<int>(std::round((sp.y - oldBox.y) * sy));
+                const int nw = (std::max)(4, static_cast<int>(std::round(sp.width * sx)));
+                const int nh = (std::max)(4, static_cast<int>(std::round(sp.height * sy)));
+                sp = cv::Rect(nx, ny, nw, nh);
+            }
+            element.startPt = cv::Point(newBox.x, newBox.y);
+            element.endPt = cv::Point(newBox.x + newBox.width, newBox.y + newBox.height);
+            return;
+        }
+        DefaultBoxHandler::resize(element, dx, dy, handle);
+    }
+
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
+        if (!element.textSpans.empty()) {
+            renderTextSpansHighlightImpl(canvas, element.textSpans, element.color);
+            return;
+        }
         int x1 = (std::min)(element.startPt.x, element.endPt.x);
         int y1 = (std::min)(element.startPt.y, element.endPt.y);
         int x2 = (std::max)(element.startPt.x, element.endPt.x);
@@ -4927,6 +5486,20 @@ void MarkupEngine::renderElement(cv::Mat& canvas, const MarkupElement& element, 
             handler->renderActiveHandles(canvas, element);
         }
     }
+}
+
+void MarkupEngine::renderTextHighlightPreview(cv::Mat& canvas,
+                                              const std::vector<cv::Rect>& spans,
+                                              MarkupColor color) {
+    renderTextSpansHighlightImpl(canvas, spans, color);
+}
+
+void MarkupEngine::renderTextUnderlinePreview(cv::Mat& canvas,
+                                              const std::vector<cv::Rect>& spans,
+                                              MarkupColor color,
+                                              LineStyle style,
+                                              float thickness) {
+    renderTextSpansUnderlineImpl(canvas, spans, color, style, thickness);
 }
 
 }  // namespace tools3000::capture

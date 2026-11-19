@@ -69,25 +69,27 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
             50.0f, state.recordSetup.qualityLevel, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false
         });
 
-        // 4. 鼠标自动运镜与点击波纹切换 (无效果 / 点击波纹 / 自动运镜 / 波纹+运镜)
-        const bool autoZoomOn = (state.recordSetup.zoomEffectMode != 0);
+        // 4. 录后输出模式与镜头点击效果切换 (原样直出 / 无效果 / 点击波纹 / 自动运镜 / 波纹+运镜)
+        const bool autoZoomOn = state.recordSetup.studioMode && (state.recordSetup.zoomEffectMode != 0);
         std::wstring clickText;
-        if (zh) {
+        if (!state.recordSetup.studioMode) {
+            clickText = zh ? L"原样直出" : L"Raw Direct";
+        } else if (zh) {
             clickText = (autoZoomOn && state.recordSetup.showClickEffects) ? L"波纹+运镜"
                       : autoZoomOn ? L"自动运镜"
                       : state.recordSetup.showClickEffects ? L"点击波纹"
-                      : L"无效果";
+                      : L"演播室·无特效";
         } else {
             clickText = (autoZoomOn && state.recordSetup.showClickEffects) ? L"Ripple+Zoom"
                       : autoZoomOn ? L"Auto Zoom"
                       : state.recordSetup.showClickEffects ? L"Click Ripple"
-                      : L"No FX";
+                      : L"Studio · Raw";
         }
         specs.push_back({
             ToolbarCommand::RecordCycleClickEffect, MarkupTool::Rectangle, {},
             clickText,
-            zh ? 92.0f : 104.0f, 0, LineStyle::Solid, ArrowStyle::Standard,
-            state.recordSetup.showClickEffects || autoZoomOn,
+            zh ? 98.0f : 108.0f, 0, LineStyle::Solid, ArrowStyle::Standard,
+            state.recordSetup.studioMode && (state.recordSetup.showClickEffects || autoZoomOn),
             false, false, true // separator
         });
 
@@ -330,10 +332,19 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
 
                 if (state.currentTool == MarkupTool::Pen) {
                     specs.push_back({ToolbarCommand::ToggleCurveMode, MarkupTool::Pen, {}, L"", 30.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentSmoothCurve, false, true, true});
+                    specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, false});
+                    specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 46.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+                } else {
+                    // 智能文字批注四模切换：[文字荧光笔] [文字波浪线] [文字直线] [自由矩形高亮]（舒展高定分段槽）
+                    specs.push_back({ToolbarCommand::SelectTextMarkupMode, MarkupTool::Highlight, state.currentColor, L"", 30.0f, static_cast<int>(TextMarkupMode::Highlight), LineStyle::Solid, ArrowStyle::Standard, false, false, true, true});
+                    specs.push_back({ToolbarCommand::SelectTextMarkupMode, MarkupTool::Highlight, state.currentColor, L"", 30.0f, static_cast<int>(TextMarkupMode::WavyUnderline), LineStyle::Wavy, ArrowStyle::Standard, false, false, true, false});
+                    specs.push_back({ToolbarCommand::SelectTextMarkupMode, MarkupTool::Highlight, state.currentColor, L"", 30.0f, static_cast<int>(TextMarkupMode::StraightUnderline), LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+                    specs.push_back({ToolbarCommand::SelectTextMarkupMode, MarkupTool::Highlight, state.currentColor, L"", 30.0f, static_cast<int>(TextMarkupMode::RectRegion), LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
+                    if (state.currentTextMarkupMode == TextMarkupMode::WavyUnderline ||
+                        state.currentTextMarkupMode == TextMarkupMode::StraightUnderline) {
+                        specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 46.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, true});
+                    }
                 }
-
-                specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, state.currentTool != MarkupTool::Pen});
-                specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 46.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
                 appendColorPalette(state.currentTool);
                 break;
@@ -616,10 +627,10 @@ void rebuildSubmenuLayout(CaptureState& state, D2D1_SIZE_F surfaceSize, float sc
         const float itemGap = 4.0f * scale;
         const float padX = 8.0f * scale;
         const float padY = 8.0f * scale;
-        const LineStyle styles[] = { LineStyle::Solid, LineStyle::Dashed, LineStyle::Dotted, LineStyle::DashDot };
-        const float menuH = 4.0f * itemH + 3.0f * itemGap + 2.0f * padY;
+        const LineStyle styles[] = { LineStyle::Solid, LineStyle::Dashed, LineStyle::Dotted, LineStyle::DashDot, LineStyle::Wavy };
+        const float menuH = 5.0f * itemH + 4.0f * itemGap + 2.0f * padY;
         state.openSubmenuRect = resolvePopupRect(ToolbarCommand::ToggleLineStyleDropdown, menuW, menuH);
-        for (size_t i = 0; i < 4; ++i) {
+        for (size_t i = 0; i < 5; ++i) {
             const float iy = state.openSubmenuRect.top + padY + i * (itemH + itemGap);
             ToolbarButton sbtn;
             sbtn.command = ToolbarCommand::SelectLineStyle;
@@ -1152,6 +1163,14 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
         case ToolbarCommand::ToggleEndCapDropdown: return chinese ? L"终点端点样式 (10种)" : L"End Endpoint Style (10 types)";
         case ToolbarCommand::SelectEndCap: return chinese ? L"选择终点端点样式" : L"Select End Cap";
         case ToolbarCommand::SelectMosaicType: return chinese ? (button.intParam == 0 ? L"像素马赛克" : L"高斯模糊") : (button.intParam == 0 ? L"Pixel Mosaic" : L"Gaussian Blur");
+        case ToolbarCommand::SelectTextMarkupMode: {
+            switch (static_cast<TextMarkupMode>(button.intParam)) {
+                case TextMarkupMode::Highlight: return chinese ? L"选中文字荧光笔" : L"Text Highlighter";
+                case TextMarkupMode::WavyUnderline: return chinese ? L"选中文字波浪线" : L"Text Wavy Underline";
+                case TextMarkupMode::StraightUnderline: return chinese ? L"选中文字直线" : L"Text Underline";
+                default: return chinese ? L"自由矩形高亮" : L"Rectangle Highlight";
+            }
+        }
         case ToolbarCommand::ResetNumberCounter: return chinese ? L"重置序号起始编号为 1" : L"Reset Number Counter (1)";
         case ToolbarCommand::RecordToggleFormat: return chinese ? L"录制格式 (MP4 / GIF)" : L"Recording Format (MP4 / GIF)";
         case ToolbarCommand::RecordCycleFps: return chinese ? L"录制帧率" : L"Frame Rate";

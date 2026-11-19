@@ -7113,6 +7113,90 @@ TEST(PinPasteCoordinatorTest, TextClipboardRendersGeekCardAndPrecedesHistory) {
     clearClipboardSafely();
 }
 
+TEST(PinPasteCoordinatorTest, DesktopFingerprintDeduplicationPreventsDuplicateLoopAndPreservesSameSizeNewImage) {
+    using namespace tools3000::capture;
+
+    auto& history = CaptureHistory::instance();
+    history.clear();
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+    for (int r = 0; r < 10; ++r) {
+        if (OpenClipboard(nullptr)) { EmptyClipboard(); CloseClipboard(); break; }
+        Sleep(5);
+    }
+
+    // 1. 同尺寸不同像素的两张图指纹必须不同，且剪贴板新图绝不被误吞
+    cv::Mat imgA(100, 140, CV_8UC3, cv::Scalar(30, 80, 210));
+    cv::Mat imgB(100, 140, CV_8UC3, cv::Scalar(220, 180, 40));
+    const uint64_t fpA = PinPasteCoordinator::computeContentFingerprint(imgA);
+    const uint64_t fpB = PinPasteCoordinator::computeContentFingerprint(imgB);
+    ASSERT_NE(fpA, 0ULL);
+    ASSERT_NE(fpB, 0ULL);
+    EXPECT_NE(fpA, fpB);
+
+    history.push(imgA, CaptureRegion{10, 10, 140, 100});
+    ASSERT_TRUE(ClipboardUtils::copyImageToClipboard(imgB));
+    auto cands = coord.resolveCandidates(GetClipboardSequenceNumber(), history.count());
+    ASSERT_EQ(cands.size(), 2u);
+    EXPECT_TRUE(cands[0].isFromClipboard);
+    EXPECT_EQ(cands[0].contentFingerprint, fpB);
+    EXPECT_EQ(cands[1].contentFingerprint, fpA);
+
+    // 2. 当仅有 1 张图且该图已在当前桌面显示时，按 F3 绝不能无限套娃重复贴出
+    history.clear();
+    for (int r = 0; r < 10; ++r) {
+        if (OpenClipboard(nullptr)) { EmptyClipboard(); CloseClipboard(); break; }
+        Sleep(5);
+    }
+    history.push(imgA, CaptureRegion{20, 20, 140, 100});
+    coord.reset();
+    std::unordered_set<uint64_t> desktopFps = { fpA };
+    auto dupDec = coord.stepNext(nullptr, &desktopFps);
+    ASSERT_TRUE(dupDec.has_value());
+    EXPECT_TRUE(dupDec->alreadyVisibleOnDesktop);
+
+    // 3. 当有 2 张图 [B, A] 且 B 已在桌面时，按 F3 自动跳过 B 直接贴出未显示的 A；两者均在桌面后再按 F3 则停止套娃
+    history.push(imgB, CaptureRegion{40, 40, 140, 100});
+    coord.reset();
+    std::unordered_set<uint64_t> onlyBOnDesktop = { fpB };
+    auto skipDec = coord.stepNext(nullptr, &onlyBOnDesktop);
+    ASSERT_TRUE(skipDec.has_value());
+    EXPECT_FALSE(skipDec->alreadyVisibleOnDesktop);
+    EXPECT_EQ(skipDec->candidate.contentFingerprint, fpA);
+
+    std::unordered_set<uint64_t> bothOnDesktop = { fpA, fpB };
+    auto allDoneDec = coord.stepNext(nullptr, &bothOnDesktop);
+    ASSERT_TRUE(allDoneDec.has_value());
+    EXPECT_TRUE(allDoneDec->alreadyVisibleOnDesktop);
+
+    history.clear();
+    coord.reset();
+    for (int r = 0; r < 10; ++r) {
+        if (OpenClipboard(nullptr)) { EmptyClipboard(); CloseClipboard(); break; }
+        Sleep(5);
+    }
+}
+
+TEST(CaptureWindowFilterTest, VirtualDesktopCloakedAndZeroAlphaWindowsAreExcluded) {
+    using namespace tools3000::core;
+    EXPECT_FALSE(WinUtils::isWindowVisibleOnCurrentDesktop(nullptr));
+
+    HWND ghost = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"STATIC", L"Tools3000_GhostFilterTest",
+        WS_POPUP, 40, 40, 120, 80, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(ghost, nullptr);
+    EXPECT_FALSE(WinUtils::isWindowVisibleOnCurrentDesktop(ghost));
+    SetLayeredWindowAttributes(ghost, 0, 0, LWA_ALPHA);
+    ShowWindow(ghost, SW_SHOWNOACTIVATE);
+    EXPECT_FALSE(WinUtils::isWindowVisibleOnCurrentDesktop(ghost));
+    SetLayeredWindowAttributes(ghost, 0, 255, LWA_ALPHA);
+    EXPECT_TRUE(WinUtils::isWindowVisibleOnCurrentDesktop(ghost));
+    ShowWindow(ghost, SW_MINIMIZE);
+    EXPECT_FALSE(WinUtils::isWindowVisibleOnCurrentDesktop(ghost));
+    DestroyWindow(ghost);
+}
+
 TEST(PinPasteCoordinatorTest, HexColorClipboardRendersColorSwatch) {
     using namespace tools3000::capture;
     cv::Scalar bgr{};

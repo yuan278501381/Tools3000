@@ -31,6 +31,8 @@
 #include <vector>
 #include <string>
 #include <optional>
+#include <unordered_set>
+#include <cstdint>
 #include <opencv2/core.hpp>
 #include "capture/ScreenCapture.h"
 
@@ -47,24 +49,32 @@ struct PinPasteCandidate {
     float cardCornerRadius = 0.0f;
     std::wstring sourceText;
     std::string timestamp;
+    uint64_t contentFingerprint = 0; // 64-bit 像素+文本内容指纹，用于防误杀同尺寸新图及桌面防重复套娃
 };
 
 /// 贴图决策结果
 struct PinPasteDecision {
     PinPasteCandidate candidate;
     POINT spawnPos{0, 0};
-    int reverseIndex = 0;       // 本次会话触发的累计步数 (0, 1, 2...)
-    int targetIndex = 0;        // 实际映射到的候选索引 (0..totalCount-1)
-    int totalCount = 0;         // 可用总候选数
-    bool isLooped = false;       // 是否发生了环回至最新
+    int reverseIndex = 0;            // 本次会话触发的累计步数 (0, 1, 2...)
+    int targetIndex = 0;             // 实际映射到的候选索引 (0..totalCount-1)
+    int totalCount = 0;              // 可用总候选数
+    bool isLooped = false;           // 是否发生了环回至最新
+    bool alreadyVisibleOnDesktop = false; // 所有候选均已在当前虚拟桌面展示，禁止重复套娃
 };
 
 class PinPasteCoordinator {
 public:
     static PinPasteCoordinator& instance();
 
+    /// 计算贴图内容的 64-bit 轻量指纹（尺寸 + 通道 + 16x16 网格采样像素 + 来源文本）
+    static uint64_t computeContentFingerprint(const cv::Mat& image, const std::wstring& sourceText = {}) noexcept;
+
     /// 步进并计算下一次贴图的完整决策信息（状态机步进、原位/避让坐标计算）
-    std::optional<PinPasteDecision> stepNext(const POINT* fallbackCursor = nullptr);
+    /// @param activeDesktopFingerprints 可选：当前虚拟桌面已可见的贴图内容指纹集合；传入后将自动跳过重复项并在全部已显示时拒绝套娃
+    std::optional<PinPasteDecision> stepNext(
+        const POINT* fallbackCursor = nullptr,
+        const std::unordered_set<uint64_t>* activeDesktopFingerprints = nullptr);
 
     /// 重置连续贴图会话
     void reset();
@@ -96,6 +106,7 @@ private:
     std::chrono::steady_clock::time_point m_lastTriggerTime{};
     DWORD m_lastClipboardSeq = 0;
     int m_lastHistoryCount = 0;
+    uint64_t m_lastHistoryHeadId = 0;
     int m_sessionTimeoutMs = 3000;
 };
 

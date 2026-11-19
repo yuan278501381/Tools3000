@@ -9,6 +9,15 @@ namespace tools3000::capture {
 void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory,
                                     CaptureIconId iconId, const D2D1_RECT_F& rect,
                                     ID2D1Brush* brush, float scale) {
+    renderIconWithAccent(rt, factory, iconId, rect, brush, brush, scale);
+}
+
+void CaptureVectorIcons::renderIconWithAccent(ID2D1RenderTarget* rt, ID2D1Factory* factory,
+                                              CaptureIconId iconId, const D2D1_RECT_F& rect,
+                                              ID2D1Brush* primaryBrush, ID2D1Brush* accentBrush,
+                                              float scale) {
+    ID2D1Brush* brush = primaryBrush;
+    ID2D1Brush* decBrush = accentBrush ? accentBrush : primaryBrush;
     if (!rt || !brush) return;
 
     const float cx = (rect.left + rect.right) * 0.5f;
@@ -1268,6 +1277,84 @@ void CaptureVectorIcons::renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory
         // ── 46. 子菜单右向展开折角 (Chevron Right) ─────────────────────────────────
         case CaptureIconId::UiChevronRight: {
             drawPolyline({ p(9.2f, 6.2f), p(15.0f, 12.0f), p(9.2f, 17.8f) }, false, stroke * 0.96f);
+            break;
+        }
+
+        // ── 47. 手绘宽舒波浪线型图标 (1.65 周期舒展马克笔波浪，告别 Word 锯齿) ──────
+        case CaptureIconId::PropWavyLine: {
+            std::vector<D2D1_POINT_2F> wavePts;
+            wavePts.reserve(25);
+            for (int i = 0; i <= 24; ++i) {
+                const float t = static_cast<float>(i) / 24.0f;
+                const float x = 2.8f + t * 18.4f;
+                const float arch = -std::sin(t * 3.14159265f) * 0.55f;
+                const float y = 12.2f + arch + std::sin(t * 1.65f * 6.2831853f) * 2.85f;
+                wavePts.push_back(p(x, y));
+            }
+            drawPolyline(wavePts, false, stroke * 1.24f, decBrush);
+            break;
+        }
+
+        // ── 48. 选中文字荧光笔图标 (斜切高定荧光马克笔色带 + 挺拔字母 A) ──────────
+        case CaptureIconId::TextMarkupHighlight: {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bandSoft, bandCore;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> srcAccent;
+            if (SUCCEEDED(decBrush->QueryInterface(IID_PPV_ARGS(&srcAccent))) && srcAccent) {
+                D2D1_COLOR_F cSoft = srcAccent->GetColor();
+                cSoft.a = (decBrush == brush) ? (cSoft.a * 0.28f) : 0.36f;
+                rt->CreateSolidColorBrush(cSoft, bandSoft.GetAddressOf());
+                D2D1_COLOR_F cCore = srcAccent->GetColor();
+                cCore.a = (decBrush == brush) ? (cCore.a * 0.62f) : 0.92f;
+                rt->CreateSolidColorBrush(cCore, bandCore.GetAddressOf());
+            }
+            // 斜切马克笔手绘高亮色带（柔和宽带 + 底部精锐饱和底线）
+            const std::vector<D2D1_POINT_2F> bandQuad = {
+                p(4.0f, 13.0f), p(20.6f, 13.0f), p(19.6f, 19.6f), p(3.0f, 19.6f)
+            };
+            if (auto geo = createPath(bandQuad, true)) {
+                rt->FillGeometry(geo.Get(), bandSoft ? static_cast<ID2D1Brush*>(bandSoft.Get()) : decBrush);
+            }
+            rt->DrawLine(p(3.6f, 19.2f), p(19.8f, 19.2f),
+                         bandCore ? static_cast<ID2D1Brush*>(bandCore.Get()) : decBrush,
+                         stroke * 1.22f, roundStroke.Get());
+            // 居中纤雅几何字母 A（清晰位于荧光色带之上）
+            drawPolyline({ p(7.6f, 15.2f), p(12.0f, 4.2f), p(16.4f, 15.2f) }, false, stroke * 1.04f, brush);
+            rt->DrawLine(p(9.1f, 11.4f), p(14.9f, 11.4f), brush, stroke * 0.94f, roundStroke.Get());
+            break;
+        }
+
+        // ── 49. 选中文字手绘波浪线图标 (纤雅字母 A + 下方醒目宽舒手绘马克笔波浪) ───
+        case CaptureIconId::TextMarkupWavy: {
+            drawPolyline({ p(7.8f, 13.6f), p(12.0f, 3.8f), p(16.2f, 13.6f) }, false, stroke * 1.02f, brush);
+            rt->DrawLine(p(9.2f, 10.2f), p(14.8f, 10.2f), brush, stroke * 0.92f, roundStroke.Get());
+            // 1.55 周期宽舒手绘马克笔波浪（饱满醒目，与实际手绘重点波浪线 100% 呼应）
+            std::vector<D2D1_POINT_2F> wavePts;
+            wavePts.reserve(23);
+            for (int i = 0; i <= 22; ++i) {
+                const float t = static_cast<float>(i) / 22.0f;
+                const float x = 3.0f + t * 18.0f;
+                const float arch = -std::sin(t * 3.14159265f) * 0.45f;
+                const float y = 18.8f + arch + std::sin(t * 1.55f * 6.2831853f) * 2.05f;
+                wavePts.push_back(p(x, y));
+            }
+            drawPolyline(wavePts, false, stroke * 1.38f, decBrush);
+            break;
+        }
+
+        // ── 50. 选中文字手绘醒目直线图标 (纤雅字母 A + 下方微弓饱满马克笔重点划线) ──
+        case CaptureIconId::TextMarkupUnderline: {
+            drawPolyline({ p(7.8f, 13.6f), p(12.0f, 3.8f), p(16.2f, 13.6f) }, false, stroke * 1.02f, brush);
+            rt->DrawLine(p(9.2f, 10.2f), p(14.8f, 10.2f), brush, stroke * 0.92f, roundStroke.Get());
+            // 带柔和手腕微弓弧度的醒目手绘重点划线
+            std::vector<D2D1_POINT_2F> strokePts;
+            strokePts.reserve(13);
+            for (int i = 0; i <= 12; ++i) {
+                const float t = static_cast<float>(i) / 12.0f;
+                const float x = 3.0f + t * 18.0f;
+                const float y = 19.1f - std::sin(t * 3.14159265f) * 0.95f - t * 0.35f;
+                strokePts.push_back(p(x, y));
+            }
+            drawPolyline(strokePts, false, stroke * 1.48f, decBrush);
             break;
         }
 

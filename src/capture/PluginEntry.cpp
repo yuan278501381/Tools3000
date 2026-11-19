@@ -307,19 +307,19 @@ void stopRecordingWithFeedback() {
     if (recorder.isStopping()) {
         return;
     }
+    const double duration = recorder.stats().durationSec;
+    const bool willOpenStudio = recorder.wasLastSessionStudioMode() && !isAutomatedTestSession();
+
+    // 第一优先级：微秒级原子冻结桌面与音频采样并等待在途单帧退出，确保后续任何界面切换 0% 混入录屏母带
+    recorder.freezeCaptureImmediately();
+
     auto& indicator = RecordingIndicator::instance();
     ShortcutHintOverlay::instance().hide();
     tools3000::core::MessageBridge::instance().invokeHandler("keycast.setDockingRegion", {{"active", false}});
-    const double duration = recorder.stats().durationSec;
-    const bool willOpenStudio = recorder.wasLastSessionStudioMode() && !isAutomatedTestSession();
-    if (willOpenStudio) {
-        tools3000::core::MainThreadDispatcher::instance().post([duration]() {
-            RecordingIndicator::instance().hide();
-            StudioPreviewWindow::instance().showPreparingOverlay(duration);
-        });
-    } else {
-        indicator.showSaving();
-    }
+
+    // 停止封装期间仅保留轻量级顶部状态胶囊（隐藏全屏等待过渡层，彻底杜绝遮挡屏幕或未就绪窗口闪烁）
+    indicator.showSaving();
+
     recorder.stopRecordingAsync([duration, willOpenStudio](const std::string& path, const RecordStats& finalStats) {
         // 超长录屏无阻塞预处理：在后台收尾工作线程预先备齐预览帧牌组与声学波形，保障 UI 主线程 0ms 无缝切入演播室
         std::vector<cv::Mat> preparedDeck;
@@ -377,6 +377,12 @@ void stopRecordingWithFeedback() {
                             preparedBitrate,
                             [](const std::string& savedPath, double savedDur, bool studioExported) {
                                 const bool zh = tools3000::core::isUiLanguageChinese();
+                                if (savedPath.empty()) {
+                                    RecordingIndicator::instance().hide();
+                                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                                        zh ? L"已不保存退出，未保留本次录屏" : L"Closed without saving recording"});
+                                    return;
+                                }
                                 RecordingIndicator::instance().showCompleted(savedPath, savedDur);
                                 tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                                     studioExported
@@ -467,11 +473,13 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
     options.countdownSeconds = std::clamp(setup.countdownSeconds, 0, 10);
     options.hideDesktopIcons = setup.hideDesktopIcons;
     options.hideTaskbar = setup.hideTaskbar;
-    options.studioConfig.typingAutoZoom = setup.typingAutoZoom;
-    options.studioConfig.autoZoomEnabled = (setup.zoomEffectMode != 0);
-    options.studioConfig.zoomMode = (setup.zoomEffectMode == 2)
-        ? StudioZoomMode::Motion3D
-        : (setup.zoomEffectMode == 1 ? StudioZoomMode::Zoom2D : StudioZoomMode::None);
+    options.studioMode = setup.studioMode;
+    options.studioConfig.typingAutoZoom = setup.studioMode && setup.typingAutoZoom;
+    options.studioConfig.autoZoomEnabled = setup.studioMode && (setup.zoomEffectMode != 0);
+    options.studioConfig.zoomMode = !setup.studioMode ? StudioZoomMode::None
+        : ((setup.zoomEffectMode == 2)
+            ? StudioZoomMode::Motion3D
+            : (setup.zoomEffectMode == 1 ? StudioZoomMode::Zoom2D : StudioZoomMode::None));
     options.outputPath = timestampedPath(
         tools3000::core::ConfigManager::instance().get<std::string>(
             "/recording/saveDirectory", tools3000::core::ConfigManager::instance().get<std::string>("/recording/savePath", "")),
@@ -1917,6 +1925,25 @@ public:
                 if (params.contains("setOcrInFlight") && params["setOcrInFlight"].is_boolean()) {
                     pin->setOcrInFlightForTest(params["setOcrInFlight"].get<bool>());
                 }
+                if (params.contains("setMarkupColorIndex") && params["setMarkupColorIndex"].is_number_integer()) {
+                    pin->setTextMarkupColorIndex(params["setMarkupColorIndex"].get<int>());
+                }
+                if (params.contains("annotateMode") && params["annotateMode"].is_string()) {
+                    const std::string modeStr = params["annotateMode"].get<std::string>();
+                    if (modeStr == "highlight") {
+                        pin->annotateSelectedText(tools3000::capture::TextMarkupMode::Highlight);
+                    } else if (modeStr == "wavy") {
+                        pin->annotateSelectedText(tools3000::capture::TextMarkupMode::WavyUnderline);
+                    } else if (modeStr == "underline") {
+                        pin->annotateSelectedText(tools3000::capture::TextMarkupMode::StraightUnderline);
+                    }
+                }
+                if (params.value("undoMarkup", false)) {
+                    pin->undoPinMarkup();
+                }
+                if (params.value("redoMarkup", false)) {
+                    pin->redoPinMarkup();
+                }
                 if (params.value("forceRender", false)) {
                     pin->renderForTest();
                 }
@@ -1967,6 +1994,10 @@ public:
                 const auto invRect = pin->invertButtonRect();
                 const auto copyTblRect = pin->copyTableFloatingButtonRect();
                 const auto openPnlRect = pin->openPanelFloatingButtonRect();
+                const auto hlRect = pin->highlightFloatingButtonRect();
+                const auto wavyRect = pin->wavyFloatingButtonRect();
+                const auto ulRect = pin->underlineFloatingButtonRect();
+                const auto undoFloatingRect = pin->undoFloatingButtonRect();
                 return {
                     {"success", true},
                     {"textSelectionMode", pin->isTextSelectionMode()},
@@ -1977,6 +2008,13 @@ public:
                     {"hoveredBlockIndex", pin->hoveredBlockIndex()},
                     {"copyTableBtnVisible", copyTblRect.right > copyTblRect.left},
                     {"openPanelBtnVisible", openPnlRect.right > openPnlRect.left},
+                    {"highlightBtnVisible", hlRect.right > hlRect.left},
+                    {"wavyBtnVisible", wavyRect.right > wavyRect.left},
+                    {"underlineBtnVisible", ulRect.right > ulRect.left},
+                    {"undoBtnVisible", undoFloatingRect.right > undoFloatingRect.left},
+                    {"canUndoPinMarkup", pin->canUndoPinMarkup()},
+                    {"canRedoPinMarkup", pin->canRedoPinMarkup()},
+                    {"textMarkupColorIndex", pin->textMarkupColorIndex()},
                     {"ocrReady", pin->isOcrReady()},
                     {"ocrInFlight", pin->isOcrInFlight()},
                     {"ocrRunCount", pin->ocrRunCount()},

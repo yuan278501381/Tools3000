@@ -168,6 +168,23 @@ public:
     D2D1_RECT_F copyFloatingButtonRect() const noexcept { return m_btnCopyFloatingRect; }
     D2D1_RECT_F copyTableFloatingButtonRect() const noexcept { return m_btnCopyTableFloatingRect; }
     D2D1_RECT_F openPanelFloatingButtonRect() const noexcept { return m_btnOpenPanelFloatingRect; }
+    D2D1_RECT_F highlightFloatingButtonRect() const noexcept { return m_btnHighlightFloatingRect; }
+    D2D1_RECT_F wavyFloatingButtonRect() const noexcept { return m_btnWavyFloatingRect; }
+    D2D1_RECT_F underlineFloatingButtonRect() const noexcept { return m_btnUnderlineFloatingRect; }
+    D2D1_RECT_F undoFloatingButtonRect() const noexcept { return m_btnUndoFloatingRect; }
+    D2D1_RECT_F colorDotFloatingRect(size_t idx) const noexcept {
+        return idx < m_btnColorDotFloatingRects.size() ? m_btnColorDotFloatingRects[idx] : D2D1_RECT_F{};
+    }
+
+    /// 对当前选中的实景文字施加或切换（Toggle）荧光笔 / 波浪线 / 直线，保留 OCR 缓存零重跑
+    bool annotateSelectedText(TextMarkupMode mode);
+    void setTextMarkupColorIndex(int index);
+    int textMarkupColorIndex() const noexcept { return m_textMarkupColorIndex; }
+    MarkupColor currentTextMarkupColor() const noexcept;
+    bool undoPinMarkup();
+    bool redoPinMarkup();
+    bool canUndoPinMarkup() const noexcept { return !m_pinUndoStack.empty(); }
+    bool canRedoPinMarkup() const noexcept { return !m_pinRedoStack.empty(); }
     bool isOcrReady() const noexcept { return m_ocrReady.load(); }
     bool isOcrInFlight() const noexcept {
         return m_ocrInFlightVersion.load() != 0 || (m_ocrActiveWorkers && m_ocrActiveWorkers->load() > 0);
@@ -388,9 +405,21 @@ private:
     D2D1_RECT_F m_btnCopyFloatingRect = {};
     D2D1_RECT_F m_btnCopyTableFloatingRect = {};
     D2D1_RECT_F m_btnOpenPanelFloatingRect = {};
+    D2D1_RECT_F m_btnHighlightFloatingRect = {};
+    D2D1_RECT_F m_btnWavyFloatingRect = {};
+    D2D1_RECT_F m_btnUnderlineFloatingRect = {};
+    D2D1_RECT_F m_btnUndoFloatingRect = {};
+    std::array<D2D1_RECT_F, 5> m_btnColorDotFloatingRects = {};
     bool m_hoverCopyFloating = false;
     bool m_hoverCopyTableFloating = false;
     bool m_hoverOpenPanelFloating = false;
+    bool m_hoverHighlightFloating = false;
+    bool m_hoverWavyFloating = false;
+    bool m_hoverUnderlineFloating = false;
+    bool m_hoverUndoFloating = false;
+    int m_hoveredColorDotIndex = -1;
+    int m_textMarkupColorIndex = 0;
+    bool m_ocrMarkupPreviewClean = false;
     int m_hoveredQrBadgeIndex = -1;
     bool m_lastChromeIsDark = true;
     bool m_lastToolbarIsDark = true;
@@ -398,6 +427,12 @@ private:
     bool m_lastRenderedOcrBadge = false;
     std::wstring m_hudBadgeText;
     uint64_t m_hudBadgeUntilTick = 0;
+
+    std::vector<cv::Rect> collectCoalescedSelectedTextRectsLocked() const;
+    void recompositeMarkupPreservingOcr();
+    void pushPinMarkupUndoState();
+    std::deque<std::vector<MarkupElement>> m_pinUndoStack;
+    std::deque<std::vector<MarkupElement>> m_pinRedoStack;
 
     void showTransientHudBadge(std::wstring text, uint32_t durationMs = 800);
     void updateHoverAnimation();
@@ -408,6 +443,7 @@ private:
 
     cv::Mat m_sourceImage;  // 原图副本，供"复制到剪贴板"
     cv::Mat m_cleanBaseImage;  // 1:1 原始物理分辨率无损纯净底图（与矢量标注分离存储）
+    uint64_t m_contentFingerprint = 0; // 当前贴图内容 64-bit 指纹（供 F3 贴图防重复套娃去重）
     std::vector<MarkupElement> m_markupElements;  // 1:1 原始像素空间下的独立可二次编辑矢量列表
     float m_cardCornerRadius = 0.0f;       // 微晶字签/色卡签基准像素圆角 (0 = 普通直角截图)
     std::wstring m_pinnedSourceText;       // 微晶字签/色卡签原始纯文本，支持零误差一键复制

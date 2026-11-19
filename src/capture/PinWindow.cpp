@@ -14,6 +14,7 @@
 #include "capture/CaptureOverlay.h"
 #include "capture/CaptureVectorIcons.h"
 #include "capture/FloatingGlassBar.h"
+#include "capture/TextAnnotationHelper.h"
 #include "capture/CaptureHistory.h"
 #include "capture/PinSpawnCalculator.h"
 #include "capture/PinPasteCoordinator.h"
@@ -122,6 +123,7 @@ std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
     }
     pin->m_cardCornerRadius = (std::max)(0.0f, cardCornerRadius);
     pin->m_pinnedSourceText = std::move(sourceText);
+    pin->m_contentFingerprint = PinPasteCoordinator::computeContentFingerprint(pin->m_sourceImage, pin->m_pinnedSourceText);
     if (s_activeGroupFilter >= PinGroupConstants::kMinGroupId &&
         s_activeGroupFilter <= PinGroupConstants::kMaxGroupId) {
         pin->m_groupId = s_activeGroupFilter;
@@ -1443,6 +1445,11 @@ enum PinInteractiveButton : int {
     kPinBtnCopyFloating = 9,
     kPinBtnCopyTableFloating = 10,
     kPinBtnOpenPanelFloating = 11,
+    kPinBtnHighlightFloating = 12,
+    kPinBtnWavyFloating = 13,
+    kPinBtnUnderlineFloating = 14,
+    kPinBtnUndoFloating = 15,
+    kPinBtnColorDotBase = 20, // 20..24
     kPinBtnQrBadgeBase = 100,
 };
 
@@ -1514,6 +1521,23 @@ int PinWindow::hitTestInteractiveButton(int x, int y) const noexcept {
         if (isPointInRectF(m_btnOpenPanelFloatingRect, x, y)) {
             return kPinBtnOpenPanelFloating;
         }
+        if (isPointInRectF(m_btnHighlightFloatingRect, x, y)) {
+            return kPinBtnHighlightFloating;
+        }
+        if (isPointInRectF(m_btnWavyFloatingRect, x, y)) {
+            return kPinBtnWavyFloating;
+        }
+        if (isPointInRectF(m_btnUnderlineFloatingRect, x, y)) {
+            return kPinBtnUnderlineFloating;
+        }
+        if (isPointInRectF(m_btnUndoFloatingRect, x, y)) {
+            return kPinBtnUndoFloating;
+        }
+        for (size_t i = 0; i < m_btnColorDotFloatingRects.size(); ++i) {
+            if (isPointInRectF(m_btnColorDotFloatingRects[i], x, y)) {
+                return kPinBtnColorDotBase + static_cast<int>(i);
+            }
+        }
     }
     {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
@@ -1545,6 +1569,19 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
         copyQrCodeText(static_cast<size_t>(btnId - kPinBtnQrBadgeBase));
         return;
     }
+    if (btnId >= kPinBtnColorDotBase && btnId < kPinBtnColorDotBase + 5) {
+        int visibleDots = 0;
+        for (const auto& rc : m_btnColorDotFloatingRects) {
+            if (rc.right > rc.left) ++visibleDots;
+        }
+        if (visibleDots <= 1) {
+            setTextMarkupColorIndex(
+                (m_textMarkupColorIndex + 1) % static_cast<int>(TextAnnotationConstants::kPresetColorCount));
+        } else {
+            setTextMarkupColorIndex(btnId - kPinBtnColorDotBase);
+        }
+        return;
+    }
     switch (btnId) {
         case kPinBtnGroupBadge: {
             if (m_hwnd && IsWindow(m_hwnd)) {
@@ -1562,6 +1599,18 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
             break;
         case kPinBtnOpenPanelFloating:
             openOcrComparisonPanel();
+            break;
+        case kPinBtnHighlightFloating:
+            annotateSelectedText(TextMarkupMode::Highlight);
+            break;
+        case kPinBtnWavyFloating:
+            annotateSelectedText(TextMarkupMode::WavyUnderline);
+            break;
+        case kPinBtnUnderlineFloating:
+            annotateSelectedText(TextMarkupMode::StraightUnderline);
+            break;
+        case kPinBtnUndoFloating:
+            undoPinMarkup();
             break;
         case kPinBtnFold:
             toggleFold();
@@ -1840,8 +1889,22 @@ void PinWindow::rotate(int angleDeg) {
             rotPt(el.startPt);
             rotPt(el.endPt);
             for (auto& p : el.penPoints) rotPt(p);
+            for (auto& rc : el.textSpans) {
+                cv::Point c1(rc.x, rc.y);
+                cv::Point c2(rc.x + rc.width, rc.y + rc.height);
+                rotPt(c1);
+                rotPt(c2);
+                const int nx1 = (std::min)(c1.x, c2.x);
+                const int ny1 = (std::min)(c1.y, c2.y);
+                const int nx2 = (std::max)(c1.x, c2.x);
+                const int ny2 = (std::max)(c1.y, c2.y);
+                rc = cv::Rect(nx1, ny1, (std::max)(1, nx2 - nx1), (std::max)(1, ny2 - ny1));
+            }
         }
     }
+    m_pinUndoStack.clear();
+    m_pinRedoStack.clear();
+    m_ocrMarkupPreviewClean = false;
 
     {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
@@ -1886,8 +1949,18 @@ void PinWindow::flip(bool horizontal) {
             flipPt(el.startPt);
             flipPt(el.endPt);
             for (auto& p : el.penPoints) flipPt(p);
+            for (auto& rc : el.textSpans) {
+                if (horizontal) {
+                    rc.x = m_origWidth - (rc.x + rc.width);
+                } else {
+                    rc.y = m_origHeight - (rc.y + rc.height);
+                }
+            }
         }
     }
+    m_pinUndoStack.clear();
+    m_pinRedoStack.clear();
+    m_ocrMarkupPreviewClean = false;
     if (m_folded) {
         m_folded = false;
         RECT curRc{};
@@ -2707,6 +2780,7 @@ void PinWindow::clearTextSelection() {
     m_isCharStreamSelecting = false;
     m_anchorBlockIndex = -1;
     m_anchorCharIndex = 0;
+    m_ocrMarkupPreviewClean = false;
 }
 
 void PinWindow::copySelectedText() {
@@ -2946,6 +3020,9 @@ void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {
     m_sourceImage = newImage.clone();
     m_cleanBaseImage = newImage.clone();
     m_markupElements.clear();
+    m_pinUndoStack.clear();
+    m_pinRedoStack.clear();
+    m_ocrMarkupPreviewClean = false;
     m_origWidth = newImage.cols;
     m_origHeight = newImage.rows;
 
@@ -3029,8 +3106,213 @@ void PinWindow::applyEditedMarkup(
         updateWindowCornerRegion();
     }
 
+    m_pinUndoStack.clear();
+    m_pinRedoStack.clear();
+    m_ocrMarkupPreviewClean = false;
+
     createRenderResources(m_sourceImage);
     render();
+}
+
+MarkupColor PinWindow::currentTextMarkupColor() const noexcept {
+    const int idx = std::clamp(m_textMarkupColorIndex, 0,
+                               static_cast<int>(TextAnnotationConstants::kPresetColorCount) - 1);
+    return TextAnnotationConstants::kPresetColors[static_cast<size_t>(idx)];
+}
+
+std::vector<cv::Rect> PinWindow::collectCoalescedSelectedTextRectsLocked() const {
+    return TextAnnotationHelper::coalesceSelectedTextSpans(
+        m_ocrBlocks, m_selectedBlockIndices, m_selectedCharSpans, m_origWidth, m_origHeight);
+}
+
+void PinWindow::pushPinMarkupUndoState() {
+    m_pinUndoStack.push_back(m_markupElements);
+    if (m_pinUndoStack.size() > MarkupEngine::kMaxUndoSteps) {
+        m_pinUndoStack.pop_front();
+    }
+    m_pinRedoStack.clear();
+}
+
+void PinWindow::recompositeMarkupPreservingOcr() {
+    if (m_cleanBaseImage.empty() || !m_hwnd) return;
+    m_colorBackup.release();
+    m_grayscale = false;
+    m_inverted = false;
+
+    cv::Mat composited;
+    if (m_markupElements.empty()) {
+        composited = m_cleanBaseImage.clone();
+    } else {
+        MarkupEngine engine;
+        cv::Mat baseBgr = m_cleanBaseImage;
+        if (baseBgr.channels() == 4) {
+            cv::cvtColor(baseBgr, baseBgr, cv::COLOR_BGRA2BGR);
+        } else if (baseBgr.channels() == 1) {
+            cv::cvtColor(baseBgr, baseBgr, cv::COLOR_GRAY2BGR);
+        }
+        engine.setBaseImage(baseBgr);
+        engine.importElements(m_markupElements);
+        composited = engine.getCompositeImage();
+        if (m_cleanBaseImage.channels() == 4 && composited.channels() == 3) {
+            std::vector<cv::Mat> bgraCh(4);
+            cv::split(m_cleanBaseImage, bgraCh);
+            std::vector<cv::Mat> compCh(3);
+            cv::split(composited, compCh);
+            cv::merge(std::vector<cv::Mat>{compCh[0], compCh[1], compCh[2], bgraCh[3]}, composited);
+        }
+    }
+    if (composited.empty()) {
+        composited = m_cleanBaseImage.clone();
+    }
+
+    m_sourceImage = std::move(composited);
+    m_contentFingerprint = PinPasteCoordinator::computeContentFingerprint(m_sourceImage, m_pinnedSourceText);
+    createRenderResources(m_sourceImage);
+    render();
+}
+
+bool PinWindow::annotateSelectedText(TextMarkupMode mode) {
+    if (m_folded || !m_pinnedSourceText.empty() || m_cleanBaseImage.empty()) return false;
+    if (mode == TextMarkupMode::RectRegion) return false;
+
+    std::vector<cv::Rect> spans;
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        spans = collectCoalescedSelectedTextRectsLocked();
+    }
+    if (spans.empty()) return false;
+
+    const MarkupColor targetColor = currentTextMarkupColor();
+    auto matchesMode = [&](const MarkupElement& el) noexcept -> bool {
+        if (el.textSpans.empty()) return false;
+        if (mode == TextMarkupMode::Highlight) {
+            return el.tool == MarkupTool::Highlight;
+        }
+        if (mode == TextMarkupMode::WavyUnderline) {
+            return el.tool == MarkupTool::Line && el.lineStyle == LineStyle::Wavy;
+        }
+        return el.tool == MarkupTool::Line && el.lineStyle != LineStyle::Wavy;
+    };
+
+    pushPinMarkupUndoState();
+
+    bool foundExisting = false;
+    for (auto it = m_markupElements.begin(); it != m_markupElements.end(); ++it) {
+        if (matchesMode(*it) && TextAnnotationHelper::spansGeometryEqual(it->textSpans, spans)) {
+            foundExisting = true;
+            const bool sameRgb = (it->color.r == targetColor.r &&
+                                  it->color.g == targetColor.g &&
+                                  it->color.b == targetColor.b);
+            if (sameRgb) {
+                m_markupElements.erase(it);
+            } else {
+                it->color.r = targetColor.r;
+                it->color.g = targetColor.g;
+                it->color.b = targetColor.b;
+            }
+            break;
+        }
+    }
+
+    if (!foundExisting) {
+        int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+        int sumH = 0;
+        for (const auto& r : spans) {
+            minX = (std::min)(minX, r.x);
+            minY = (std::min)(minY, r.y);
+            maxX = (std::max)(maxX, r.x + r.width);
+            maxY = (std::max)(maxY, r.y + r.height);
+            sumH += r.height;
+        }
+        uint32_t nextId = 1;
+        for (const auto& ex : m_markupElements) {
+            nextId = (std::max)(nextId, ex.id + 1);
+        }
+
+        MarkupElement elem;
+        elem.id = nextId;
+        elem.textSpans = std::move(spans);
+        elem.startPt = cv::Point(minX, minY);
+        elem.endPt = cv::Point(maxX, maxY + 4);
+        elem.color = targetColor;
+        if (mode == TextMarkupMode::Highlight) {
+            elem.tool = MarkupTool::Highlight;
+            elem.color.a = 220;
+        } else {
+            elem.tool = MarkupTool::Line;
+            elem.color.a = 255;
+            elem.lineStyle = (mode == TextMarkupMode::WavyUnderline) ? LineStyle::Wavy : LineStyle::Solid;
+            const float avgH = static_cast<float>(sumH) / static_cast<float>(elem.textSpans.size());
+            elem.thickness = std::clamp(avgH * 0.095f, 1.8f, 2.85f);
+        }
+        m_markupElements.push_back(std::move(elem));
+    }
+
+    m_ocrMarkupPreviewClean = true;
+    recompositeMarkupPreservingOcr();
+    return true;
+}
+
+void PinWindow::setTextMarkupColorIndex(int index) {
+    const int clamped = std::clamp(index, 0,
+                                   static_cast<int>(TextAnnotationConstants::kPresetColorCount) - 1);
+    m_textMarkupColorIndex = clamped;
+    const MarkupColor targetColor = currentTextMarkupColor();
+
+    std::vector<cv::Rect> spans;
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        spans = collectCoalescedSelectedTextRectsLocked();
+    }
+
+    if (!spans.empty() && !m_markupElements.empty()) {
+        bool anyMatched = false;
+        for (const auto& el : m_markupElements) {
+            if (!el.textSpans.empty() && TextAnnotationHelper::spansGeometryEqual(el.textSpans, spans) &&
+                (el.color.r != targetColor.r || el.color.g != targetColor.g || el.color.b != targetColor.b)) {
+                anyMatched = true;
+                break;
+            }
+        }
+        if (anyMatched) {
+            pushPinMarkupUndoState();
+            for (auto& el : m_markupElements) {
+                if (!el.textSpans.empty() && TextAnnotationHelper::spansGeometryEqual(el.textSpans, spans)) {
+                    el.color.r = targetColor.r;
+                    el.color.g = targetColor.g;
+                    el.color.b = targetColor.b;
+                }
+            }
+            m_ocrMarkupPreviewClean = true;
+            recompositeMarkupPreservingOcr();
+            return;
+        }
+    }
+    render();
+}
+
+bool PinWindow::undoPinMarkup() {
+    if (m_pinUndoStack.empty()) return false;
+    m_pinRedoStack.push_back(m_markupElements);
+    if (m_pinRedoStack.size() > MarkupEngine::kMaxUndoSteps) {
+        m_pinRedoStack.pop_front();
+    }
+    m_markupElements = std::move(m_pinUndoStack.back());
+    m_pinUndoStack.pop_back();
+    recompositeMarkupPreservingOcr();
+    return true;
+}
+
+bool PinWindow::redoPinMarkup() {
+    if (m_pinRedoStack.empty()) return false;
+    m_pinUndoStack.push_back(m_markupElements);
+    if (m_pinUndoStack.size() > MarkupEngine::kMaxUndoSteps) {
+        m_pinUndoStack.pop_front();
+    }
+    m_markupElements = std::move(m_pinRedoStack.back());
+    m_pinRedoStack.pop_back();
+    recompositeMarkupPreservingOcr();
+    return true;
 }
 
 POINT PinWindow::calculateMagneticSnap(HWND currentHwnd, POINT targetPos, int curW, int curH) {
@@ -3303,22 +3585,77 @@ std::shared_ptr<PinWindow> PinWindow::createFromClipboard() {
 }
 
 std::shared_ptr<PinWindow> PinWindow::pasteNextHistoryOrClipboard() {
-    auto decision = PinPasteCoordinator::instance().stepNext();
+    // 若用户主动按住 Shift+F3，允许显式强制复制一份新副本；常规按 F3 开启当前虚拟桌面防重复套娃去重
+    const bool forceDuplicate = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    std::unordered_set<uint64_t> activeFps;
+    if (!forceDuplicate) {
+        for (const auto& inst : s_instances) {
+            if (!inst || !inst->m_hwnd || !IsWindow(inst->m_hwnd)) continue;
+            if (!tools3000::core::WinUtils::isWindowVisibleOnCurrentDesktop(inst->m_hwnd)) continue;
+            if (inst->m_contentFingerprint != 0ULL) {
+                activeFps.insert(inst->m_contentFingerprint);
+            }
+            if (!inst->m_cleanBaseImage.empty()) {
+                const uint64_t baseFp = PinPasteCoordinator::computeContentFingerprint(
+                    inst->m_cleanBaseImage, inst->m_pinnedSourceText);
+                if (baseFp != 0ULL) {
+                    activeFps.insert(baseFp);
+                }
+            }
+        }
+    }
+
+    auto decision = PinPasteCoordinator::instance().stepNext(
+        nullptr,
+        forceDuplicate ? nullptr : &activeFps);
     if (!decision.has_value()) return nullptr;
     const auto& d = *decision;
+
+    if (d.alreadyVisibleOnDesktop && !forceDuplicate) {
+        std::shared_ptr<PinWindow> existingPin;
+        for (auto it = s_instances.rbegin(); it != s_instances.rend(); ++it) {
+            const auto& inst = *it;
+            if (!inst || !inst->m_hwnd || !IsWindow(inst->m_hwnd)) continue;
+            if (!tools3000::core::WinUtils::isWindowVisibleOnCurrentDesktop(inst->m_hwnd)) continue;
+            const uint64_t baseFp = inst->m_cleanBaseImage.empty()
+                ? 0ULL
+                : PinPasteCoordinator::computeContentFingerprint(inst->m_cleanBaseImage, inst->m_pinnedSourceText);
+            if (inst->m_contentFingerprint == d.candidate.contentFingerprint ||
+                (baseFp != 0ULL && baseFp == d.candidate.contentFingerprint)) {
+                existingPin = inst;
+                break;
+            }
+        }
+        if (existingPin) {
+            if (existingPin->m_folded) {
+                existingPin->toggleFold();
+            }
+            SetWindowPos(existingPin->m_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            existingPin->focusWindow();
+            existingPin->render();
+        }
+        const bool isZh = tools3000::core::isUiLanguageChinese();
+        std::wstring toastMsg;
+        if (d.totalCount <= 1) {
+            toastMsg = isZh ? L"该贴图已在桌面显示（暂无更多历史截图）"
+                            : L"Already pinned on desktop (no more history)";
+        } else {
+            toastMsg = isZh ? std::format(L"全部 {} 张历史贴图均已在桌面显示", d.totalCount)
+                            : std::format(L"All {} history pins are already on desktop", d.totalCount);
+        }
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
+        return existingPin;
+    }
+
     auto pin = create(d.candidate.image, d.spawnPos.x, d.spawnPos.y,
                       d.candidate.cardCornerRadius, d.candidate.sourceText);
 
-    if (d.totalCount > 1 && d.reverseIndex > 0) {
+    if (d.totalCount > 1 && d.targetIndex > 0) {
         bool isZh = tools3000::core::isUiLanguageChinese();
-        std::wstring toastMsg;
-        if (d.isLooped) {
-            toastMsg = isZh ? std::format(L"历史贴图 1/{}（最新）", d.totalCount)
-                            : std::format(L"Pin history 1/{} (Latest)", d.totalCount);
-        } else {
-            toastMsg = isZh ? std::format(L"历史贴图 {}/{}", d.targetIndex + 1, d.totalCount)
-                            : std::format(L"Pin history {}/{}", d.targetIndex + 1, d.totalCount);
-        }
+        std::wstring toastMsg = isZh
+            ? std::format(L"历史贴图 {}/{}", d.targetIndex + 1, d.totalCount)
+            : std::format(L"Pin history {}/{}", d.targetIndex + 1, d.totalCount);
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
     }
 
@@ -3648,6 +3985,11 @@ void PinWindow::render() {
         m_btnCopyFloatingRect = D2D1::RectF(0, 0, 0, 0);
         m_btnCopyTableFloatingRect = D2D1::RectF(0, 0, 0, 0);
         m_btnOpenPanelFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnHighlightFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnWavyFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnUnderlineFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnUndoFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnColorDotFloatingRects.fill(D2D1::RectF(0, 0, 0, 0));
         if (m_ocrReady) {
             std::lock_guard<std::mutex> lock(m_ocrMutex);
             const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
@@ -3738,9 +4080,11 @@ void PinWindow::render() {
             size_t selRectCount = 0;
 
             auto recordAndDrawSelRect = [&](const D2D1_RECT_F& r) {
-                D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 2.5f * dpiScale, 2.5f * dpiScale);
-                if (selFillBrush) m_renderTarget->FillRoundedRectangle(&rr, selFillBrush.Get());
-                if (selStrokeBrush) m_renderTarget->DrawRoundedRectangle(&rr, selStrokeBrush.Get(), 1.2f * dpiScale);
+                if (!m_ocrMarkupPreviewClean || m_isSelectingText) {
+                    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 2.5f * dpiScale, 2.5f * dpiScale);
+                    if (selFillBrush) m_renderTarget->FillRoundedRectangle(&rr, selFillBrush.Get());
+                    if (selStrokeBrush) m_renderTarget->DrawRoundedRectangle(&rr, selStrokeBrush.Get(), 1.2f * dpiScale);
+                }
                 if (r.top < minSelY) minSelY = r.top;
                 if (r.bottom > maxSelY) maxSelY = r.bottom;
                 sumSelCenterX += (r.left + r.right) * 0.5f;
@@ -3796,51 +4140,143 @@ void PinWindow::render() {
                 if (selStrokeBrush) m_renderTarget->DrawRectangle(&selBox, selStrokeBrush.Get(), 1.0f * dpiScale);
             }
 
-            // 4. 选区旁微晶悬浮操作胶囊组：[复制] + (表格时)[复制为表格] + [对照面板]
+            // 4. 选区旁世界级微晶悬浮工坊（Apple / Figma 级材质与分段层级，恒定单行避让架构）：
+            //    [复制] (表格) [对照] | 〔荧光笔 · 波浪线 · 直线〕 | 5 枚高定珠宝色珠 | (撤销)
             if (!m_selectedBlockIndices.empty() && !m_isSelectingText) {
                 const bool isZh = tools3000::core::isUiLanguageChinese();
                 const wchar_t* lblCopy = isZh ? L"复制" : L"Copy";
-                const wchar_t* lblTable = isZh ? L"复制为表格" : L"Copy Table";
-                const wchar_t* lblPanel = isZh ? L"对照面板" : L"Panel";
+                const wchar_t* lblTable = isZh ? L"复制表格" : L"Table";
+                const wchar_t* lblPanel = isZh ? L"对照" : L"Panel";
+                const wchar_t* lblHl = isZh ? L"荧光笔" : L"Highlight";
+                const wchar_t* lblWavy = isZh ? L"波浪线" : L"Wavy";
+                const wchar_t* lblLine = isZh ? L"直线" : L"Line";
 
-                auto calcBtnW = [&](const wchar_t* txt) -> float {
+                auto calcBtnW = [&](const wchar_t* txt, float minDip = 54.0f) -> float {
                     const float tw = measureUiTextWidth(txt, dpiScale);
-                    return std::ceil((std::max)(58.0f * dpiScale, 24.0f * dpiScale + tw + 10.0f * dpiScale));
+                    return std::ceil((std::max)(minDip * dpiScale, 24.5f * dpiScale + tw + 9.5f * dpiScale));
                 };
 
-                const float wCopy = calcBtnW(lblCopy);
-                const float wTable = m_hasTableStructure ? calcBtnW(lblTable) : 0.0f;
-                const float wPanel = calcBtnW(lblPanel);
-                const float btnGap = 4.0f * dpiScale;
-                const float outerPad = 3.0f * dpiScale;
-                const float pillH = 26.0f * dpiScale;
+                const float wCopyFull = calcBtnW(lblCopy, 54.0f);
+                const float wTableFull = m_hasTableStructure ? calcBtnW(lblTable, 68.0f) : 0.0f;
+                const float wPanelFull = calcBtnW(lblPanel, 54.0f);
+                const float wHlFull = calcBtnW(lblHl, 64.0f);
+                const float wWavyFull = calcBtnW(lblWavy, 64.0f);
+                const float wLineFull = calcBtnW(lblLine, 56.0f);
+                const float iconBtnW = std::ceil(24.0f * dpiScale);
+                const float dotCellFullW = std::ceil(18.0f * dpiScale);
+                const float dotCellCompactW = std::ceil(13.5f * dpiScale);
+                const float segTrackPadX = 2.0f * dpiScale;
+                const float sepSpace = 6.5f * dpiScale;
+                const float btnGap = 2.0f * dpiScale;
+                const float outerPad = 4.0f * dpiScale;
+                const float rowH = 30.5f * dpiScale;
                 const float availBarW = (std::max)(36.0f * dpiScale, size.width - 12.0f * dpiScale);
+                const bool canAnnotateImage = m_pinnedSourceText.empty() && !m_cleanBaseImage.empty() &&
+                                              size.width >= 180.0f * dpiScale && size.height >= 44.0f * dpiScale;
+                const bool showUndoBtn = canAnnotateImage && !m_pinUndoStack.empty();
+
+                // 检查当前选区已挂载的文字批注激活态
+                bool activeHl = false;
+                bool activeWavy = false;
+                bool activeStraight = false;
+                if (canAnnotateImage && !m_markupElements.empty()) {
+                    const auto curSpans = collectCoalescedSelectedTextRectsLocked();
+                    if (!curSpans.empty()) {
+                        for (const auto& el : m_markupElements) {
+                            if (el.textSpans.empty() ||
+                                !TextAnnotationHelper::spansGeometryEqual(el.textSpans, curSpans)) {
+                                continue;
+                            }
+                            if (el.tool == MarkupTool::Highlight) activeHl = true;
+                            else if (el.tool == MarkupTool::Line && el.lineStyle == LineStyle::Wavy) activeWavy = true;
+                            else if (el.tool == MarkupTool::Line) activeStraight = true;
+                        }
+                    }
+                }
 
                 bool showTableBtn = false;
                 bool showPanelBtn = false;
-                if (m_hasTableStructure && (outerPad * 2.0f + wCopy + btnGap + wTable + btnGap + wPanel) <= availBarW) {
+                if (m_hasTableStructure && (outerPad * 2.0f + wCopyFull + btnGap + wTableFull + btnGap + wPanelFull) <= availBarW) {
                     showTableBtn = true;
                     showPanelBtn = true;
-                } else if (m_hasTableStructure && (outerPad * 2.0f + wCopy + btnGap + wTable) <= availBarW) {
+                } else if (m_hasTableStructure && (outerPad * 2.0f + wCopyFull + btnGap + wTableFull) <= availBarW) {
                     showTableBtn = true;
-                } else if ((outerPad * 2.0f + wCopy + btnGap + wPanel) <= availBarW) {
+                } else if ((outerPad * 2.0f + wCopyFull + btnGap + wPanelFull) <= availBarW) {
                     showPanelBtn = true;
                 }
 
-                float totalBarW = wCopy;
-                if (showTableBtn || showPanelBtn) {
-                    totalBarW = outerPad * 2.0f + wCopy +
-                                (showTableBtn ? (btnGap + wTable) : 0.0f) +
-                                (showPanelBtn ? (btnGap + wPanel) : 0.0f);
-                } else if (size.width >= 36.0f * dpiScale) {
-                    totalBarW = (std::min)(wCopy, availBarW);
+                const float copyGroupFullW = wCopyFull +
+                    (showTableBtn ? (btnGap + wTableFull) : 0.0f) +
+                    (showPanelBtn ? (btnGap + wPanelFull) : 0.0f);
+                const int copyBtnCount = 1 + (showTableBtn ? 1 : 0) + (showPanelBtn ? 1 : 0);
+                const float copyGroupIconW = iconBtnW * static_cast<float>(copyBtnCount) +
+                    btnGap * static_cast<float>(copyBtnCount - 1);
+
+                const float undoExtraW = showUndoBtn ? (btnGap + iconBtnW) : 0.0f;
+                const float markupFullW = segTrackPadX * 2.0f + wHlFull + btnGap + wWavyFull + btnGap + wLineFull +
+                    sepSpace + (dotCellFullW * 5.0f) + undoExtraW;
+                const float markupIcon5DotsW = segTrackPadX * 2.0f + iconBtnW * 3.0f + btnGap * 2.0f +
+                    sepSpace + (dotCellCompactW * 5.0f) + undoExtraW;
+                const float markupIcon1DotW = segTrackPadX * 2.0f + iconBtnW * 3.0f + btnGap * 2.0f +
+                    sepSpace + dotCellFullW + undoExtraW;
+
+                bool showMarkupTools = false;
+                bool copyWithLabels = true;
+                bool markupWithLabels = false;
+                bool singleColorDot = false;
+                float activeDotCellW = dotCellFullW;
+                float totalBarW = wCopyFull;
+                const float totalBarH = rowH;
+
+                if (canAnnotateImage) {
+                    const float tier1FullW = outerPad * 2.0f + copyGroupFullW + sepSpace + markupFullW;
+                    const float tier2CopyLblMarkupIconW = outerPad * 2.0f + copyGroupFullW + sepSpace + markupIcon5DotsW;
+                    const float tier3AllIcon5DotsW = outerPad * 2.0f + copyGroupIconW + sepSpace + markupIcon5DotsW;
+                    const float tier4AllIcon1DotW = outerPad * 2.0f + copyGroupIconW + sepSpace + markupIcon1DotW;
+                    if (tier1FullW <= availBarW) {
+                        showMarkupTools = true;
+                        copyWithLabels = true;
+                        markupWithLabels = true;
+                        singleColorDot = false;
+                        activeDotCellW = dotCellFullW;
+                        totalBarW = tier1FullW;
+                    } else if (tier2CopyLblMarkupIconW <= availBarW) {
+                        showMarkupTools = true;
+                        copyWithLabels = true;
+                        markupWithLabels = false;
+                        singleColorDot = false;
+                        activeDotCellW = dotCellCompactW;
+                        totalBarW = tier2CopyLblMarkupIconW;
+                    } else if (tier3AllIcon5DotsW <= availBarW) {
+                        showMarkupTools = true;
+                        copyWithLabels = false;
+                        markupWithLabels = false;
+                        singleColorDot = false;
+                        activeDotCellW = dotCellCompactW;
+                        totalBarW = tier3AllIcon5DotsW;
+                    } else if (tier4AllIcon1DotW <= availBarW) {
+                        showMarkupTools = true;
+                        copyWithLabels = false;
+                        markupWithLabels = false;
+                        singleColorDot = true;
+                        activeDotCellW = dotCellFullW;
+                        totalBarW = tier4AllIcon1DotW;
+                    }
+                }
+
+                if (!showMarkupTools) {
+                    if (showTableBtn || showPanelBtn) {
+                        totalBarW = outerPad * 2.0f + copyGroupFullW;
+                    } else if (size.width >= 36.0f * dpiScale) {
+                        totalBarW = (std::min)(wCopyFull, availBarW);
+                    }
                 }
 
                 const float maxBarX = (std::max)(6.0f * dpiScale, size.width - totalBarW - 6.0f * dpiScale);
                 const float barX = std::clamp(centerSelX - totalBarW * 0.5f, 6.0f * dpiScale, maxBarX);
-                float barY = minSelY - pillH - 6.0f * dpiScale;
+                float barY = minSelY - totalBarH - 7.0f * dpiScale;
                 if (barY < 6.0f * dpiScale) {
-                    barY = (std::max)(minSelY + 28.0f * dpiScale, maxSelY + 6.0f * dpiScale);
+                    barY = maxSelY + 7.0f * dpiScale;
                 }
                 if (m_hoverAlpha > 0.01f &&
                     PinInputController::shouldShowHoverToolbar(
@@ -3850,33 +4286,87 @@ void PinWindow::render() {
                     const D2D1_RECT_F tb = tbLayout.toolbarRect;
                     const bool overlapsTb =
                         (barX < tb.right && barX + totalBarW > tb.left &&
-                         barY < tb.bottom && barY + pillH > tb.top);
+                         barY < tb.bottom && barY + totalBarH > tb.top);
                     if (overlapsTb) {
-                        barY = (std::max)(maxSelY + 6.0f * dpiScale, tb.bottom + 6.0f * dpiScale);
+                        barY = (std::max)(maxSelY + 7.0f * dpiScale, tb.bottom + 6.0f * dpiScale);
                     }
                 }
-                const float maxBarY = (std::max)(6.0f * dpiScale, size.height - pillH - 6.0f * dpiScale);
+                const float maxBarY = (std::max)(6.0f * dpiScale, size.height - totalBarH - 6.0f * dpiScale);
                 barY = std::clamp(barY, 6.0f * dpiScale, maxBarY);
 
-                const D2D1_RECT_F barRect = D2D1::RectF(barX, barY, barX + totalBarW, barY + pillH);
-                FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), barRect, 6.0f * dpiScale, pal.isDark);
+                const D2D1_RECT_F barRect = D2D1::RectF(barX, barY, barX + totalBarW, barY + totalBarH);
+                FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), barRect, 9.5f * dpiScale, pal.isDark);
 
-                ComPtr<ID2D1SolidColorBrush> pillTextBrush;
+                ComPtr<ID2D1SolidColorBrush> pillTextBrush, activeAccentBrush;
                 m_renderTarget->CreateSolidColorBrush(pal.textPrimary, pillTextBrush.GetAddressOf());
+                const MarkupColor activeColor = currentTextMarkupColor();
+                m_renderTarget->CreateSolidColorBrush(
+                    D2D1::ColorF(activeColor.r / 255.0f, activeColor.g / 255.0f, activeColor.b / 255.0f, 1.0f),
+                    activeAccentBrush.GetAddressOf());
 
-                auto drawCapsuleAction = [&](const D2D1_RECT_F& rc, CaptureIconId iconId, const wchar_t* txt, bool hovered) {
-                    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), rc, 4.5f * dpiScale,
-                                                    hovered, false, false, false, 0.95f, pal.isDark);
-                    const D2D1_RECT_F icRc = D2D1::RectF(
-                        rc.left + 4.0f * dpiScale, rc.top + 3.0f * dpiScale,
-                        rc.left + 21.0f * dpiScale, rc.bottom - 3.0f * dpiScale);
-                    CaptureVectorIcons::renderIcon(
-                        m_renderTarget.Get(), m_d2dFactory.Get(), iconId, icRc, pillTextBrush.Get(), dpiScale);
-                    if (ensureTextResources(dpiScale) && m_uiLeadTextFormat && pillTextBrush &&
-                        (rc.right - rc.left) > 32.0f * dpiScale) {
+                auto drawDivider = [&](float xPos, float topY, float botY) {
+                    const float sxPos = std::floor(xPos) + 0.5f;
+                    FloatingGlassBar::drawSeparator(
+                        m_renderTarget.Get(), sxPos, topY + 2.5f * dpiScale, botY - 2.5f * dpiScale, 1.0f, pal.isDark);
+                };
+
+                auto drawCapsuleAction = [&](const D2D1_RECT_F& rc, CaptureIconId iconId, const wchar_t* txt,
+                                             bool hovered, bool toggled = false, ID2D1Brush* customAccent = nullptr,
+                                             bool segmentedElevated = false) {
+                    const float pillR = 6.2f * dpiScale;
+                    if (segmentedElevated && toggled) {
+                        // 高定立体浮起微晶滑块卡片（告别生硬警示红框）
+                        ComPtr<ID2D1SolidColorBrush> shBrush, bodyBrush, rimBrush;
+                        m_renderTarget->CreateSolidColorBrush(
+                            pal.isDark ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.36f)
+                                       : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.11f),
+                            shBrush.GetAddressOf());
+                        m_renderTarget->CreateSolidColorBrush(
+                            pal.isDark ? D2D1::ColorF(46.0f / 255.0f, 54.0f / 255.0f, 71.0f / 255.0f, 0.98f)
+                                       : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.99f),
+                            bodyBrush.GetAddressOf());
+                        m_renderTarget->CreateSolidColorBrush(
+                            pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f)
+                                       : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.13f),
+                            rimBrush.GetAddressOf());
+                        if (shBrush) {
+                            const D2D1_RECT_F shRc = D2D1::RectF(rc.left, rc.top + 0.9f * dpiScale,
+                                                                 rc.right, rc.bottom + 1.1f * dpiScale);
+                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(shRc, pillR, pillR), shBrush.Get());
+                        }
+                        if (bodyBrush) {
+                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(rc, pillR, pillR), bodyBrush.Get());
+                        }
+                        if (rimBrush) {
+                            m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(rc, pillR, pillR), rimBrush.Get(), 0.9f * dpiScale);
+                        }
+                        if (customAccent) {
+                            const float cxBtn = (rc.left + rc.right) * 0.5f;
+                            const float barHalfW = (std::min)(7.0f * dpiScale, (rc.right - rc.left) * 0.24f);
+                            const D2D1_RECT_F glowBar = D2D1::RectF(
+                                cxBtn - barHalfW, rc.bottom - 2.3f * dpiScale,
+                                cxBtn + barHalfW, rc.bottom - 0.5f * dpiScale);
+                            m_renderTarget->FillRoundedRectangle(
+                                D2D1::RoundedRect(glowBar, 0.9f * dpiScale, 0.9f * dpiScale), customAccent);
+                        }
+                    } else {
+                        // 正确路由 toggled -> isActive (第 5 参)，绝不误传至 isDanger
+                        FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), rc, pillR,
+                                                         hovered, toggled, false, false, 0.96f, pal.isDark);
+                    }
+                    const bool iconOnly = (!txt || txt[0] == L'\0' || (rc.right - rc.left) <= 32.0f * dpiScale);
+                    const D2D1_RECT_F icRc = iconOnly
+                        ? D2D1::RectF(rc.left + 2.8f * dpiScale, rc.top + 2.2f * dpiScale,
+                                      rc.right - 2.8f * dpiScale, rc.bottom - 2.2f * dpiScale)
+                        : D2D1::RectF(rc.left + 4.5f * dpiScale, rc.top + 2.4f * dpiScale,
+                                      rc.left + 22.0f * dpiScale, rc.bottom - 2.4f * dpiScale);
+                    CaptureVectorIcons::renderIconWithAccent(
+                        m_renderTarget.Get(), m_d2dFactory.Get(), iconId, icRc,
+                        pillTextBrush.Get(), customAccent ? customAccent : pillTextBrush.Get(), dpiScale);
+                    if (!iconOnly && ensureTextResources(dpiScale) && m_uiLeadTextFormat && pillTextBrush) {
                         const D2D1_RECT_F lblRc = D2D1::RectF(
-                            rc.left + 22.5f * dpiScale, rc.top,
-                            (std::max)(rc.left + 22.5f * dpiScale, rc.right - 4.0f * dpiScale),
+                            rc.left + 23.0f * dpiScale, rc.top,
+                            (std::max)(rc.left + 23.0f * dpiScale, rc.right - 4.2f * dpiScale),
                             rc.bottom);
                         m_renderTarget->DrawTextW(
                             txt, static_cast<UINT32>(wcslen(txt)),
@@ -3885,23 +4375,153 @@ void PinWindow::render() {
                     }
                 };
 
-                if (showTableBtn || showPanelBtn) {
-                    float curX = barX + outerPad;
-                    const float innerTop = barY + 1.5f * dpiScale;
-                    const float innerBot = barY + pillH - 1.5f * dpiScale;
+                auto drawColorSwatches = [&](float& mx, float topY, float botY) {
+                    const float midY = (topY + botY) * 0.5f;
+                    ComPtr<ID2D1SolidColorBrush> ringWhiteBrush, dotShadowBrush, specGlintBrush, rimEdgeBrush;
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f), ringWhiteBrush.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, pal.isDark ? 0.36f : 0.14f), dotShadowBrush.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.34f), specGlintBrush.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(
+                        pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f)
+                                   : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.14f),
+                        rimEdgeBrush.GetAddressOf());
+                    const size_t curIdx = static_cast<size_t>(std::clamp(
+                        m_textMarkupColorIndex, 0, static_cast<int>(TextAnnotationConstants::kPresetColorCount) - 1));
+                    for (size_t ci = 0; ci < TextAnnotationConstants::kPresetColorCount; ++ci) {
+                        if (singleColorDot && ci != curIdx) continue;
+                        const auto& pc = TextAnnotationConstants::kPresetColors[ci];
+                        const D2D1_RECT_F cellRc = D2D1::RectF(mx, topY, mx + activeDotCellW, botY);
+                        m_btnColorDotFloatingRects[ci] = cellRc;
+                        const float dotCx = (cellRc.left + cellRc.right) * 0.5f;
+                        const bool isSel = (ci == curIdx);
+                        const bool isHov = (static_cast<int>(ci) == m_hoveredColorDotIndex);
+                        const float rDot = (isSel ? 6.2f : (isHov ? 5.8f : 5.1f)) * dpiScale;
 
-                    m_btnCopyFloatingRect = D2D1::RectF(curX, innerTop, curX + wCopy, innerBot);
-                    drawCapsuleAction(m_btnCopyFloatingRect, CaptureIconId::ActionCopy, lblCopy, m_hoverCopyFloating);
-                    curX += wCopy + btnGap;
+                        ComPtr<ID2D1SolidColorBrush> dotBrush, glowBrush;
+                        m_renderTarget->CreateSolidColorBrush(
+                            D2D1::ColorF(pc.r / 255.0f, pc.g / 255.0f, pc.b / 255.0f, 1.0f), dotBrush.GetAddressOf());
+                        if (isSel || isHov) {
+                            m_renderTarget->CreateSolidColorBrush(
+                                D2D1::ColorF(pc.r / 255.0f, pc.g / 255.0f, pc.b / 255.0f, isSel ? 0.32f : 0.18f),
+                                glowBrush.GetAddressOf());
+                            if (glowBrush) {
+                                m_renderTarget->FillEllipse(
+                                    D2D1::Ellipse(D2D1::Point2F(dotCx, midY), rDot + 2.4f * dpiScale, rDot + 2.4f * dpiScale),
+                                    glowBrush.Get());
+                            }
+                        }
+                        if (dotShadowBrush) {
+                            m_renderTarget->FillEllipse(
+                                D2D1::Ellipse(D2D1::Point2F(dotCx, midY + 0.85f * dpiScale), rDot, rDot),
+                                dotShadowBrush.Get());
+                        }
+                        if (dotBrush) {
+                            m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotCx, midY), rDot, rDot), dotBrush.Get());
+                        }
+                        // 高定珠宝顶部镜面高光微点
+                        if (specGlintBrush) {
+                            m_renderTarget->FillEllipse(
+                                D2D1::Ellipse(D2D1::Point2F(dotCx - rDot * 0.24f, midY - rDot * 0.32f),
+                                              rDot * 0.42f, rDot * 0.24f),
+                                specGlintBrush.Get());
+                        }
+                        if (isSel && ringWhiteBrush) {
+                            m_renderTarget->DrawEllipse(
+                                D2D1::Ellipse(D2D1::Point2F(dotCx, midY), rDot - 1.15f * dpiScale, rDot - 1.15f * dpiScale),
+                                ringWhiteBrush.Get(), 1.35f * dpiScale);
+                        } else if (rimEdgeBrush) {
+                            m_renderTarget->DrawEllipse(
+                                D2D1::Ellipse(D2D1::Point2F(dotCx, midY), rDot, rDot),
+                                rimEdgeBrush.Get(), 0.85f * dpiScale);
+                        }
+                        mx += activeDotCellW;
+                    }
+                };
+
+                if (showMarkupTools || showTableBtn || showPanelBtn) {
+                    float curX = barX + outerPad;
+                    const float innerTop = barY + 3.2f * dpiScale;
+                    const float innerBot = barY + rowH - 3.2f * dpiScale;
+                    const float wCopyCur = copyWithLabels ? wCopyFull : iconBtnW;
+                    const float wTableCur = copyWithLabels ? wTableFull : iconBtnW;
+                    const float wPanelCur = copyWithLabels ? wPanelFull : iconBtnW;
+
+                    m_btnCopyFloatingRect = D2D1::RectF(curX, innerTop, curX + wCopyCur, innerBot);
+                    drawCapsuleAction(m_btnCopyFloatingRect, CaptureIconId::ActionCopy,
+                                      copyWithLabels ? lblCopy : L"", m_hoverCopyFloating);
+                    curX += wCopyCur;
 
                     if (showTableBtn) {
-                        m_btnCopyTableFloatingRect = D2D1::RectF(curX, innerTop, curX + wTable, innerBot);
-                        drawCapsuleAction(m_btnCopyTableFloatingRect, CaptureIconId::ActionArrangeGrid, lblTable, m_hoverCopyTableFloating);
-                        curX += wTable + btnGap;
+                        curX += btnGap;
+                        m_btnCopyTableFloatingRect = D2D1::RectF(curX, innerTop, curX + wTableCur, innerBot);
+                        drawCapsuleAction(m_btnCopyTableFloatingRect, CaptureIconId::ActionArrangeGrid,
+                                          copyWithLabels ? lblTable : L"", m_hoverCopyTableFloating);
+                        curX += wTableCur;
                     }
                     if (showPanelBtn) {
-                        m_btnOpenPanelFloatingRect = D2D1::RectF(curX, innerTop, curX + wPanel, innerBot);
-                        drawCapsuleAction(m_btnOpenPanelFloatingRect, CaptureIconId::ActionExtractText, lblPanel, m_hoverOpenPanelFloating);
+                        curX += btnGap;
+                        m_btnOpenPanelFloatingRect = D2D1::RectF(curX, innerTop, curX + wPanelCur, innerBot);
+                        drawCapsuleAction(m_btnOpenPanelFloatingRect, CaptureIconId::ActionExtractText,
+                                          copyWithLabels ? lblPanel : L"", m_hoverOpenPanelFloating);
+                        curX += wPanelCur;
+                    }
+                    if (showMarkupTools) {
+                        drawDivider(curX + sepSpace * 0.5f, innerTop, innerBot);
+                        curX += sepSpace;
+
+                        const float wH = markupWithLabels ? wHlFull : iconBtnW;
+                        const float wW = markupWithLabels ? wWavyFull : iconBtnW;
+                        const float wU = markupWithLabels ? wLineFull : iconBtnW;
+                        const float segTotalW = segTrackPadX * 2.0f + wH + btnGap + wW + btnGap + wU;
+
+                        // 内凹微晶分段轨道槽（Recessed Segmented Control Track）
+                        const D2D1_RECT_F trackRc = D2D1::RectF(
+                            curX, innerTop - 1.2f * dpiScale, curX + segTotalW, innerBot + 1.2f * dpiScale);
+                        const float trackR = 7.4f * dpiScale;
+                        ComPtr<ID2D1SolidColorBrush> trackBg, trackRim;
+                        m_renderTarget->CreateSolidColorBrush(
+                            pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.052f)
+                                       : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.048f),
+                            trackBg.GetAddressOf());
+                        m_renderTarget->CreateSolidColorBrush(
+                            pal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.080f)
+                                       : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.070f),
+                            trackRim.GetAddressOf());
+                        if (trackBg) {
+                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(trackRc, trackR, trackR), trackBg.Get());
+                        }
+                        if (trackRim) {
+                            m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(trackRc, trackR, trackR), trackRim.Get(), 0.85f * dpiScale);
+                        }
+
+                        curX += segTrackPadX;
+                        m_btnHighlightFloatingRect = D2D1::RectF(curX, innerTop, curX + wH, innerBot);
+                        drawCapsuleAction(m_btnHighlightFloatingRect, CaptureIconId::TextMarkupHighlight,
+                                          markupWithLabels ? lblHl : L"", m_hoverHighlightFloating, activeHl,
+                                          activeAccentBrush.Get(), true);
+                        curX += wH + btnGap;
+
+                        m_btnWavyFloatingRect = D2D1::RectF(curX, innerTop, curX + wW, innerBot);
+                        drawCapsuleAction(m_btnWavyFloatingRect, CaptureIconId::TextMarkupWavy,
+                                          markupWithLabels ? lblWavy : L"", m_hoverWavyFloating, activeWavy,
+                                          activeAccentBrush.Get(), true);
+                        curX += wW + btnGap;
+
+                        m_btnUnderlineFloatingRect = D2D1::RectF(curX, innerTop, curX + wU, innerBot);
+                        drawCapsuleAction(m_btnUnderlineFloatingRect, CaptureIconId::TextMarkupUnderline,
+                                          markupWithLabels ? lblLine : L"", m_hoverUnderlineFloating, activeStraight,
+                                          activeAccentBrush.Get(), true);
+                        curX += wU + segTrackPadX;
+
+                        drawDivider(curX + sepSpace * 0.5f, innerTop, innerBot);
+                        curX += sepSpace;
+                        drawColorSwatches(curX, innerTop, innerBot);
+
+                        if (showUndoBtn) {
+                            curX += btnGap;
+                            m_btnUndoFloatingRect = D2D1::RectF(curX, innerTop, curX + iconBtnW, innerBot);
+                            drawCapsuleAction(m_btnUndoFloatingRect, CaptureIconId::ActionUndo, L"", m_hoverUndoFloating);
+                        }
                     }
                 } else {
                     m_btnCopyFloatingRect = barRect;
@@ -4287,6 +4907,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             }
 
             if (pressMode == PinLeftPressMode::StartLiveTextSelection) {
+                self->m_ocrMarkupPreviewClean = false;
                 self->m_isSelectingText = true;
                 self->m_isCharStreamSelecting = (!alt && hitOcrBlock >= 0);
                 self->m_anchorBlockIndex = hitOcrBlock;
@@ -4486,6 +5107,21 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 case PinShortcutAction::ShowAllGroups:
                     PinWindow::setActiveGroupFilter(PinGroupConstants::kFilterAllGroups);
                     return 0;
+                case PinShortcutAction::AnnotateSelectedHighlight:
+                    self->annotateSelectedText(TextMarkupMode::Highlight);
+                    return 0;
+                case PinShortcutAction::AnnotateSelectedWavy:
+                    self->annotateSelectedText(TextMarkupMode::WavyUnderline);
+                    return 0;
+                case PinShortcutAction::AnnotateSelectedUnderline:
+                    self->annotateSelectedText(TextMarkupMode::StraightUnderline);
+                    return 0;
+                case PinShortcutAction::UndoPinMarkup:
+                    self->undoPinMarkup();
+                    return 0;
+                case PinShortcutAction::RedoPinMarkup:
+                    self->redoPinMarkup();
+                    return 0;
                 case PinShortcutAction::EscapeOrClose:
                     if (!self->m_selectedBlockIndices.empty()) {
                         self->clearTextSelection();
@@ -4618,6 +5254,19 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 const bool hoverCopyFloating = (hasSel && isPointInRectF(self->m_btnCopyFloatingRect, x, y));
                 const bool hoverCopyTableFloating = (hasSel && isPointInRectF(self->m_btnCopyTableFloatingRect, x, y));
                 const bool hoverOpenPanelFloating = (hasSel && isPointInRectF(self->m_btnOpenPanelFloatingRect, x, y));
+                const bool hoverHighlightFloating = (hasSel && isPointInRectF(self->m_btnHighlightFloatingRect, x, y));
+                const bool hoverWavyFloating = (hasSel && isPointInRectF(self->m_btnWavyFloatingRect, x, y));
+                const bool hoverUnderlineFloating = (hasSel && isPointInRectF(self->m_btnUnderlineFloatingRect, x, y));
+                const bool hoverUndoFloating = (hasSel && isPointInRectF(self->m_btnUndoFloatingRect, x, y));
+                int hoverColorDotIdx = -1;
+                if (hasSel) {
+                    for (size_t ci = 0; ci < self->m_btnColorDotFloatingRects.size(); ++ci) {
+                        if (isPointInRectF(self->m_btnColorDotFloatingRects[ci], x, y)) {
+                            hoverColorDotIdx = static_cast<int>(ci);
+                            break;
+                        }
+                    }
+                }
 
                 int hoverQrIdx = -1;
                 {
@@ -4638,6 +5287,11 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     hoverCopyFloating != self->m_hoverCopyFloating ||
                     hoverCopyTableFloating != self->m_hoverCopyTableFloating ||
                     hoverOpenPanelFloating != self->m_hoverOpenPanelFloating ||
+                    hoverHighlightFloating != self->m_hoverHighlightFloating ||
+                    hoverWavyFloating != self->m_hoverWavyFloating ||
+                    hoverUnderlineFloating != self->m_hoverUnderlineFloating ||
+                    hoverUndoFloating != self->m_hoverUndoFloating ||
+                    hoverColorDotIdx != self->m_hoveredColorDotIndex ||
                     hoverQrIdx != self->m_hoveredQrBadgeIndex) {
                     self->m_hoverGroupBadge = hoverGroupBadge;
                     self->m_hoverFold = hoverFold;
@@ -4651,6 +5305,11 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->m_hoverCopyFloating = hoverCopyFloating;
                     self->m_hoverCopyTableFloating = hoverCopyTableFloating;
                     self->m_hoverOpenPanelFloating = hoverOpenPanelFloating;
+                    self->m_hoverHighlightFloating = hoverHighlightFloating;
+                    self->m_hoverWavyFloating = hoverWavyFloating;
+                    self->m_hoverUnderlineFloating = hoverUnderlineFloating;
+                    self->m_hoverUndoFloating = hoverUndoFloating;
+                    self->m_hoveredColorDotIndex = hoverColorDotIdx;
                     self->m_hoveredQrBadgeIndex = hoverQrIdx;
                     self->render();
                 }
@@ -4972,6 +5631,11 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             self->m_hoverCopyFloating = false;
             self->m_hoverCopyTableFloating = false;
             self->m_hoverOpenPanelFloating = false;
+            self->m_hoverHighlightFloating = false;
+            self->m_hoverWavyFloating = false;
+            self->m_hoverUnderlineFloating = false;
+            self->m_hoverUndoFloating = false;
+            self->m_hoveredColorDotIndex = -1;
             self->m_hoveredQrBadgeIndex = -1;
             self->m_hoveredBlockIndex = -1;
             SetTimer(hwnd, 1, 16, nullptr);

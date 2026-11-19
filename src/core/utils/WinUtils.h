@@ -154,6 +154,11 @@ public:
     /// 判断窗口是否为任务栏窗口 (Shell_TrayWnd / Shell_SecondaryTrayWnd)
     static bool isTaskbarWindow(HWND hwnd);
 
+    /// 判断窗口是否在当前 Windows 虚拟桌面上真实可见：
+    /// 联合检测 IsWindowVisible/IsIconic、DWMWA_CLOAKED（含其他虚拟桌面与挂起 UWP 窗口）、
+    /// WS_EX_LAYERED 零透明度幽灵窗与 COM IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop。
+    static bool isWindowVisibleOnCurrentDesktop(HWND hwnd);
+
     /// 判断系统界面语言是否为中文
     static bool isSystemLanguageChinese();
 

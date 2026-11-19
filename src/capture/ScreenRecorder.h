@@ -219,6 +219,9 @@ public:
     /// 停止录制（同步等待线程汇合与编码落盘，供后台收尾线程/插件停机/单测使用）
     std::string stopRecording();
 
+    /// 微秒级原子冻结桌面帧与音频采集，并等待在途单帧采样临界区退出（确保点击结束后的任何 UI 变化 0% 混入视频）
+    void freezeCaptureImmediately() noexcept;
+
     /// 异步停止录制：立即发出停止信号并在后台收尾线程执行 join + finalizeEncoder + 原子落盘，零阻塞 UI 主线程
     bool stopRecordingAsync(AsyncStopCallback onComplete = nullptr);
     bool isStopping() const noexcept { return m_stopping.load(std::memory_order_acquire); }
@@ -300,10 +303,12 @@ private:
     static std::string formatExtension(RecordFormat format);
 
     std::atomic<RecordState> m_state{RecordState::Idle};
+    std::atomic<bool> m_captureFrozen{false};
     std::atomic<bool> m_stopping{false};
     std::atomic<bool> m_finalizePending{false};
     std::atomic<bool> m_skipCountdown{false};
     std::atomic<bool> m_snapshotRequested{false};
+    std::mutex m_inFlightCaptureMutex;
     std::thread m_recordThread;
     std::mutex m_stopThreadMutex;
     std::thread m_stopThread;

@@ -49,6 +49,9 @@ public:
     // 文本选区与测试内省接口
     HWND hwnd() const noexcept { return m_hwnd; }
     float currentScale() const noexcept { return m_scale; }
+    float currentAlpha() const noexcept { return m_currentAlpha; }
+    D2D1_RECT_F topCloseButtonRect() const noexcept { return m_btnTopCloseRect; }
+    D2D1_RECT_F bottomCloseButtonRect() const noexcept { return m_btnCloseRect; }
     float scrollY() const noexcept { return m_scrollY; }
     float maxScroll() const noexcept { return m_maxScroll; }
     size_t lineCount() const noexcept { return m_lines.size(); }
@@ -145,6 +148,7 @@ private:
     float m_scale = 1.0f;
 
     // UI Layout
+    D2D1_RECT_F m_btnTopCloseRect{};
     D2D1_RECT_F m_btnMergeRect{};
     D2D1_RECT_F m_btnCopyRect{};
     D2D1_RECT_F m_btnCloseRect{};
@@ -166,10 +170,12 @@ private:
 
     int m_hoverLineCopyBtn = -1;
     int m_pressedLineCopyBtn = -1;
+    bool m_pressedTopCloseBtn = false;
     bool m_pressedMergeBtn = false;
     bool m_pressedCopyBtn = false;
     bool m_pressedCloseBtn = false;
 
+    bool m_hoverTopClose = false;
     bool m_hoverMerge = false;
     bool m_hoverCopy = false;
     bool m_hoverClose = false;
