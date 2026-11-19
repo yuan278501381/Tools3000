@@ -6,6 +6,36 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-19] 实机精雕四项世界级升级：人手马克笔自然手绘波浪/直线、F3 贴图桌面内容指纹防套娃、高定微晶分段工坊 UI 与 Windows 虚拟桌面跨桌面幽灵窗口隔离
+- **用户实机深度反馈与四项架构闭环**：
+  1. **大师级斜角书法丝带波浪线与微弧手绘重点直线 (`TextAnnotationHelper.h`, `MarkupEngine.cpp`, `CaptureRenderer.cpp`)**：
+     - *两轮实拍演进*：第 1 轮告别 Word 高频锯齿，第 2 轮针对实拍图“波浪切入字底 + 分段随机偏铁丝感 + 塑料感实色”全面升级为 **斜角平头书法笔尖物理模型（38° Oblique Calligraphic Nib）**：波峰最高点与文字底边保持 `1.8~3.0px` 黄金呼吸间距绝不压字；采用 `C^∞` 无穷阶光滑相位呼吸调制（宽舒全波长 `31~52px` + 克制优雅振幅 `1.85~3.1px`）与下按饱满 `1.24x` / 上挑纤细 `0.62x` 真实书法丝带粗细韵律；渲染层感知背景明度（深底琉璃提亮 13%）并沿笔迹流向铺设三段微光油墨线性渐变。
+  5. **OCR 结果对照窗口 (`OcrResultWindow.{h,cpp}`) 按钮 100% 失灵终极真凶根治与 7 重关闭加固**：
+     - *终极真凶发现*：**`WM_LBUTTONUP` 头部先调 `ReleaseCapture()` 同步派发了 `WM_CAPTURECHANGED`，在 `ReleaseCapture()` 返回前就把 `m_pressedCloseBtn / m_pressedTopCloseBtn / m_pressedCopyBtn / m_pressedMergeBtn / m_isSelectingText` 全部清零，导致右下角「关闭」和全部按钮点击 100% 被静默吞噬！**（由 `OcrResultWindowCloseTest` 实机消息回归测试当场抓获）；
+     - *全量闭环修复*：① `WM_LBUTTONUP` 头部先快照全部按压态局部变量再 `ReleaseCapture()`；② 修复 `showResult` 二次刷新将 `m_currentAlpha` 误写成 `1.0f`（而非 `255.0f`）导致窗口退化为 `1/255` 透明幽灵膜；③ 修复按 `Esc` 需先消选区、再消光标、第 3 次才关闭窗口的折磨（现无选区 1 击直关、有选区 1 击全清、2 击必关）；④ 新增右上角标准微晶矢量 `×` 按钮（悬停珊瑚红微光）、`WM_NCHITTEST` 按钮最高优先放行、`8px` 抬手防抖容差、以及 `WM_CLOSE` / `Alt+F4` / `Ctrl+W` 全通道安全隐藏。
+  6. **演播室未导出关闭防丢确认模态框与「原样直出 / 原样模式」永久记忆体系 (`StudioPreviewWindow.{h,cpp}`, `CaptureState.h`, `CaptureOverlay.cpp`, `CaptureToolbarLayout.cpp`, `CaptureDropdownMenu.cpp`, `PluginEntry.cpp`)**：
+     - *未导出防丢闭环*：演播室尚未导出任何成片时，点击右上角 `×`、按 `Esc` 或 `Alt+F4`/`WM_CLOSE` 不再静默直接关闭，统一弹出原生 Direct2D 高定微晶确认框（支持深/浅色与右上角取消返回），明确提供 **`保存后退出`**（无运镜/美化/剪辑改动时 0 秒无损保存原片并退出，有改动时一键自动导出并在完成后无缝关闭）与 **`不保存退出`**（自动彻底清理临时录像母带绝不留残留并回调空路径提示 Toast）；已导出过文件的会话仍零干扰直接退出。
+     - *场景化原样录屏与永久记忆*：① 录屏准备栏运镜菜单与更多设置新增 **`原样直出（跳过演播室）`** 一键选项，开启后准备栏按钮直显 `原样直出`，结束录屏直接无损落盘保存并永久记住 `/recording/studioMode = false`；② 演播室顶栏新增 **`原样模式`** 一键微晶切换胶囊（单点开关背景美化 + 自动运镜 + 光标特效），同时修复演播室左侧【样式】/【运镜】/【比例】开关未实时写入 `ConfigManager` 的持久化缺口，并在关闭确认框内提供「下次录屏直接原样保存（跳过演播室，记住设置）」快捷勾选框。
+  2. **F3 贴图反复叠罗汉贴出同一张图根治 (`PinPasteCoordinator.{h,cpp}`, `PinWindow.{h,cpp}`)**：
+     - *双重暗坑*：① `stepNext` 对 `totalCandidates` 无脑取模循环，当历史仅有 1 张或全部已在桌面时连续按 F3 疯狂套娃克隆 7+ 张一模一样的贴图；② `resolveCandidates` 仅凭 `cols/rows` 判重，误吞剪贴板中同尺寸不同像素的新图（或批注后复制的图），且历史满容后未追踪 `headId`；
+     - *终局标准*：引入 64-bit 网格采样内容指纹 `computeContentFingerprint`（精准比对像素且抹平 BGR/BGRA 差异）；按 F3 时采集当前虚拟桌面活跃贴图指纹，智能跳过已在桌面显示的条目，若全部历史均已在当前桌面显示则禁止套娃、直接展开并置顶聚焦已有贴图并弹出双语轻提示（`Shift+F3` 保留显式强制复制副本入口）。
+  3. **画波浪线/直线工具栏高级感重塑 (`PinWindow.cpp`, `CaptureRenderer.cpp`, `CaptureToolbarLayout.cpp`, `CaptureVectorIcons.cpp`)**：
+     - 修复 `PinWindow.cpp` 将 `toggled` 误传给 `drawButtonPill` 的 `isDanger` 参数导致激活态变刺眼廉价红底的传参乌龙；
+     - 贴图悬浮舱升级为 `30.5 DIP` 舒展单行高定微晶工坊 + 内凹微晶分段轨道槽（Recessed Segmented Control Track）+ 立体浮起激活微晶卡片（带底部当前批注色微光条）+ 带镜面高光月牙的高定珠宝色珠 + 渐隐发丝分隔线；截图二级栏同步接入分段轨道与浮起滑块，并重绘 4 枚大振幅手绘矢量图标。
+  4. **Windows 虚拟桌面（Virtual Desktop）跨桌面幽灵窗口隔离 (`WinUtils.{h,cpp}`, `CaptureInput.cpp`, `PinPasteCoordinator.cpp`)**：
+     - *底层机理*：Windows 10/11 切换至空白虚拟桌面 2 后，虚拟桌面 1 的窗口在 `IsWindowVisible` 上仍返回 `TRUE`，但会被 DWM 标记为 `DWM_CLOAKED_SHELL (0x2)` 且 `IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop` 返回 `FALSE`；
+     - *三道防线 (`WinUtils::isWindowVisibleOnCurrentDesktop`)*：① `DwmGetWindowAttribute(DWMWA_CLOAKED)` 过滤全部 Cloaked/挂起 UWP/他桌面窗口；② 剔除 `WS_EX_LAYERED` 零透明度幽灵窗；③ 线程局部复用 COM `IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop` 权威校验，并在 `CaptureInput::detectWindowHierarchy` 中同步过滤 `Progman`/`WorkerW`/穿透层及采用 `DWMWA_EXTENDED_FRAME_BOUNDS`。
+
+### [2026-11-19] 选中文字原位智能批注（荧光笔 / 波浪线 / 直线）与录屏结束零等待界面混入、零绿屏四重防线
+- **两大核心体验升级与底层真凶根治**：
+  1. **录屏点击结束把等待界面录进去且末尾出现 25 帧纯草绿屏 (`BGR=[5, 129, 72]`) 根因与四重防线 (`ScreenRecorder.{h,cpp}`, `PluginEntry.cpp`, `StudioPreviewWindow.cpp`)**：
+     - *取证还原真凶链条*：① `MainThreadDispatcher::post` 在 UI 主线程内为同步阻塞执行；旧版 `stopRecordingWithFeedback()` 在调用 `recorder.stopRecordingAsync()` **之前**就在主线程投递了 `StudioPreviewWindow::showPreparingOverlay()`；② `showPreparingOverlay()` 先调用 `ShowWindow(SW_MAXIMIZE)` 将尚未提交首帧 `ID2D1HwndRenderTarget::EndDraw()` 的窗口铺满屏幕，随后主线程同步阻塞在冷启动 `ensureRenderResources()`（DirectWrite 字体枚举 + D2D 交换链创建耗时 `~0.95s`）；③ 在 VMware SVGA 3D 等显卡驱动下，未完成首次 `EndDraw()` 的 DWM 重定向表面暴露未初始化视频缓冲（`YUV=(0,0,0)` 映射为 `BGR=[5, 129, 72]` 纯草绿色），而此时 `ScreenRecorder` 尚未收到停止信号，导致连续录下 25 帧（`0.83s`）渐变至纯草绿的等待窗口画面！
+     - *终局四重防线*：① **微秒级原子截断采集屏障 (`ScreenRecorder::freezeCaptureImmediately`)**：点击结束第 0 微秒立即置位 `m_captureFrozen` + `RecordState::Idle` 并暂停音轨，通过仅包裹纯内存采样区的 `m_inFlightCaptureMutex`（`< 1ms`）建立物理屏障，返回后 100% 绝无任何后续桌面像素进入母带；② **隐藏全屏抢跑等待层**：停止冲刷期间仅由轻量级顶部灵动岛 `RecordingIndicator::showSaving()` 承接，待后台封装就绪后一步到位打开正式演播室（保留 `showPreparingOverlay` 接口并挂载 `WDA_EXCLUDEFROMCAPTURE`，进入 `showSession` 恢复 `WDA_NONE`）；③ **首帧离屏预提交零绿闪**：`StudioPreviewWindow` 在隐藏态完成 `updateCurrentComposedBitmap()` + `render()` 提交首帧交换链像素后再调用 `ShowWindow`，并在 `WM_ERASEBKGND` 挂载主题色纯色兜底画刷；④ **编码帧中性色度护栏**：`AVFrame` 分配后立即预填 TV Black（`Y=16, UV/NV12=128`），从源头消灭 `YUV(0,0,0)` 草绿像素。
+  2. **选中文字原位智能批注：荧光笔 / 波浪线 / 直线双阵地无缝体验 (`TextAnnotationHelper.h`, `MarkupEngine.{h,cpp}`, `CaptureVectorIcons.{h,cpp}`, `PinWindow.{h,cpp}`, `PinInputController.{h,cpp}`, `CaptureInput.cpp`, `CaptureRenderer.cpp`, `CaptureToolbarLayout.cpp`)**：
+     - *版面感知流式选区与同行跨度桥接 (`TextAnnotationHelper.h`)*：统一封装字符级流式选字与 `coalesceSelectedTextSpans` 同行相邻词块/行内代码胶囊无缝桥接合并算法，同时物理隔离跨分栏大空白走廊；
+     - *光学级多跨度原子渲染 (`MarkupEngine`)*：扩展 `LineStyle::Wavy` 与 `MarkupElement::textSpans`（跨多行批注作为单个原子矢量图元，单次 `Ctrl+Z` 整段撤销）；荧光笔采用 GDI+ 单通道联合圆角蒙版（根除行间双倍深色重影接缝）配合浅底正片叠底（Multiply `0.43`，100% 保持黑字浓黑锐利与灰底代码胶囊层次）及深底自适应微光滤色；波浪线与直线采用 GDI+ `SmoothingModeHighQuality` 亚像素浮点正弦曲线（带余弦收尾包络）抗锯齿渲染；
+     - *贴图 (`PinWindow`) 与截图框选 (`CaptureOverlay`) 双阵地直通*：贴图划选文字松手后浮现自适应单/双行微晶工具舱（`[复制] (表格) [对照] | [荧光笔(H)] [波浪线(W)] [直线(U)] | 5枚微晶色球 | [撤销]`），支持 `< 1ms` 零重跑 OCR 原地重合成、清透预览态自动隐去蓝色遮罩、同选区叠加（如荧光笔+波浪线）、再次点击 Toggle 取消、点色球实时换色与贴图内 `Ctrl+Z` / `Ctrl+Y`；截图框选【荧光笔】二级栏同步提供 4 模式切换、选区静默异步 OCR 缓存、文字悬停 `IDC_IBEAM` 与 60FPS 流式拖拽实时预览（空白处零阻塞回退自由绘制）。
+
 ### [2026-11-19] 全场景世界级极速 OCR 架构重构：DirectML 固定形状多桶零重编译、FFD 紧凑装箱、抗斜铺淡水印、指纹缓存与 0ms 原位贴图侧翼对照交互
 - **用户实机深度反馈与 MECE 六维性能/体验终局闭环**：
   1. **DirectML 动态尺寸算子重编译根治：多档固定形状独立 Session 桶 (`DeepOcrEngine.{h,cpp}`)**：

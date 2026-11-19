@@ -145,6 +145,12 @@ bool contains(const D2D1_RECT_F& rect, POINT point) noexcept {
            point.y >= rect.top && point.y <= rect.bottom;
 }
 
+bool containsExpanded(const D2D1_RECT_F& rect, POINT point, float pad) noexcept {
+    return rect.right > rect.left && rect.bottom > rect.top &&
+           point.x >= rect.left - pad && point.x <= rect.right + pad &&
+           point.y >= rect.top - pad && point.y <= rect.bottom + pad;
+}
+
 const wchar_t* footerHintText(bool chinese, bool compact) noexcept {
     if (chinese) {
         return compact
@@ -1043,6 +1049,7 @@ void OcrResultWindow::showResult(const std::string& text, const RECT* anchorRect
     m_copySucceeded = false;
     m_copiedSelection = false;
     m_copiedWord = false;
+    m_hoverTopClose = false;
     m_hoverMerge = false;
     m_hoverCopy = false;
     m_hoverClose = false;
@@ -1050,6 +1057,7 @@ void OcrResultWindow::showResult(const std::string& text, const RECT* anchorRect
     m_draggingScrollbar = false;
     m_hoverLineCopyBtn = -1;
     m_pressedLineCopyBtn = -1;
+    m_pressedTopCloseBtn = false;
     m_pressedMergeBtn = false;
     m_pressedCopyBtn = false;
     m_pressedCloseBtn = false;
@@ -1069,8 +1077,10 @@ void OcrResultWindow::showResult(const std::string& text, const RECT* anchorRect
         m_currentAlpha = 0.0f;
         ShowWindow(m_hwnd, SW_SHOW);
         SetTimer(m_hwnd, FadeTimerId, FadeIntervalMs, nullptr);
-    } else if (m_currentAlpha >= 0.99f) {
-        m_currentAlpha = 1.0f;
+    } else {
+        // 窗口已可见时直接稳态满不透明 (255.0f)，杜绝旧版误设为 1.0f 导致窗口变 1/255 透明幽灵窗
+        KillTimer(m_hwnd, FadeTimerId);
+        m_currentAlpha = 255.0f;
     }
     SetForegroundWindow(m_hwnd);
     SetFocus(m_hwnd);
@@ -1127,6 +1137,7 @@ void OcrResultWindow::hide() {
 }
 
 void OcrResultWindow::updateHover(POINT point) {
+    const bool hoverTopClose = contains(m_btnTopCloseRect, point);
     const bool hoverMerge = contains(m_btnMergeRect, point);
     const bool hoverCopy = contains(m_btnCopyRect, point);
     const bool hoverClose = contains(m_btnCloseRect, point);
@@ -1168,15 +1179,16 @@ void OcrResultWindow::updateHover(POINT point) {
         }
     }
 
-    const bool inDragHeader = (point.y >= 0 && point.y < header && !hoverMerge);
+    const bool inDragHeader = (point.y >= 0 && point.y < header && !hoverMerge && !hoverTopClose);
     const LPCWSTR cursorId =
-        (hoverMerge || hoverCopy || hoverClose || hoverScrollbar || hoverCopyBtn >= 0 ||
+        (hoverTopClose || hoverMerge || hoverCopy || hoverClose || hoverScrollbar || hoverCopyBtn >= 0 ||
          (overLineIndex && hoverLine >= 0))
             ? IDC_HAND
             : (inTextViewport && !m_lines.empty() ? IDC_IBEAM : (inDragHeader ? IDC_SIZEALL : IDC_ARROW));
     SetCursor(LoadCursorW(nullptr, cursorId));
 
-    if (hoverMerge == m_hoverMerge &&
+    if (hoverTopClose == m_hoverTopClose &&
+        hoverMerge == m_hoverMerge &&
         hoverCopy == m_hoverCopy &&
         hoverClose == m_hoverClose &&
         hoverScrollbar == m_hoverScrollbar &&
@@ -1184,6 +1196,7 @@ void OcrResultWindow::updateHover(POINT point) {
         hoverCopyBtn == m_hoverLineCopyBtn) {
         return;
     }
+    m_hoverTopClose = hoverTopClose;
     m_hoverMerge = hoverMerge;
     m_hoverCopy = hoverCopy;
     m_hoverClose = hoverClose;
@@ -1243,12 +1256,17 @@ void OcrResultWindow::render(int retryDepth) {
     const float buttonGap = OcrResultStyle::BaseButtonGap * scale;
     const bool chinese = tools3000::core::isUiLanguageChinese();
 
+    const float topCloseSz = 26.0f * scale;
     const float mergeBtnW = (chinese ? 94.0f : 104.0f) * scale;
     const float mergeBtnH = 26.0f * scale;
     const float mergeBtnTop = shadowInset + (std::max)(4.0f * scale, (header - shadowInset - mergeBtnH) * 0.5f);
+    m_btnTopCloseRect = D2D1::RectF(
+        width - padding - topCloseSz, mergeBtnTop,
+        width - padding, mergeBtnTop + topCloseSz);
+    const float topGap = 8.0f * scale;
     m_btnMergeRect = D2D1::RectF(
-        width - padding - mergeBtnW, mergeBtnTop,
-        width - padding, mergeBtnTop + mergeBtnH);
+        m_btnTopCloseRect.left - topGap - mergeBtnW, mergeBtnTop,
+        m_btnTopCloseRect.left - topGap, mergeBtnTop + mergeBtnH);
 
     m_btnCloseRect = D2D1::RectF(
         width - padding - closeWidth, height - padding - buttonHeight,
@@ -1366,6 +1384,35 @@ void OcrResultWindow::render(int retryDepth) {
             D2D1::RectF(labelLeft + (m_mergeParagraphs ? 4.0f * scale : 10.0f * scale),
                         m_btnMergeRect.top, m_btnMergeRect.right - 6.0f * scale, m_btnMergeRect.bottom),
             mergeFg, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+        // 右上角标准微晶矢量关闭按钮 (×)：悬停呈现柔和珊瑚绯红微光底与锐利高反差交叉线
+        const float closeR = 7.0f * scale;
+        const auto closePill = D2D1::RoundedRect(m_btnTopCloseRect, closeR, closeR);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> closeHoverBg, closeHoverFg;
+        if (m_hoverTopClose) {
+            m_renderTarget->CreateSolidColorBrush(
+                m_isDarkTheme ? D2D1::ColorF(239.0f / 255.0f, 68.0f / 255.0f, 68.0f / 255.0f, 0.26f)
+                              : D2D1::ColorF(239.0f / 255.0f, 68.0f / 255.0f, 68.0f / 255.0f, 0.14f),
+                &closeHoverBg);
+            m_renderTarget->CreateSolidColorBrush(
+                m_isDarkTheme ? D2D1::ColorF(254.0f / 255.0f, 202.0f / 255.0f, 202.0f / 255.0f, 0.98f)
+                              : D2D1::ColorF(220.0f / 255.0f, 38.0f / 255.0f, 38.0f / 255.0f, 0.98f),
+                &closeHoverFg);
+            if (closeHoverBg) {
+                m_renderTarget->FillRoundedRectangle(&closePill, closeHoverBg.Get());
+            }
+        } else if (m_brushBtn) {
+            m_renderTarget->FillRoundedRectangle(&closePill, m_brushBtn.Get());
+        }
+        ID2D1SolidColorBrush* xStroke = (m_hoverTopClose && closeHoverFg) ? closeHoverFg.Get() : m_brushMuted.Get();
+        if (xStroke) {
+            const float cx = (m_btnTopCloseRect.left + m_btnTopCloseRect.right) * 0.5f;
+            const float cy = (m_btnTopCloseRect.top + m_btnTopCloseRect.bottom) * 0.5f;
+            const float half = 4.6f * scale;
+            const float sw = 1.65f * scale;
+            m_renderTarget->DrawLine(D2D1::Point2F(cx - half, cy - half), D2D1::Point2F(cx + half, cy + half), xStroke, sw);
+            m_renderTarget->DrawLine(D2D1::Point2F(cx + half, cy - half), D2D1::Point2F(cx - half, cy + half), xStroke, sw);
+        }
     }
 
     if (!m_lines.empty()) {
@@ -1635,6 +1682,15 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
         case WM_NCHITTEST: {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             ScreenToClient(hwnd, &point);
+
+            // 交互按钮最高优先级放行，绝不被窗口边缘缩放热区或标题栏拖拽拦截
+            if (contains(self->m_btnTopCloseRect, point) ||
+                contains(self->m_btnMergeRect, point) ||
+                contains(self->m_btnCopyRect, point) ||
+                contains(self->m_btnCloseRect, point)) {
+                return HTCLIENT;
+            }
+
             RECT client{};
             GetClientRect(hwnd, &client);
             const int cw = client.right - client.left;
@@ -1654,11 +1710,19 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             if (onTop) return HTTOP;
             if (onBottom) return HTBOTTOM;
 
-            if (contains(self->m_btnMergeRect, point)) {
-                return HTCLIENT;
-            }
             const float dragBottom = OcrResultStyle::BaseHeaderHeight * self->m_scale;
             return point.y < dragBottom ? HTCAPTION : HTCLIENT;
+        }
+        case WM_CLOSE: {
+            self->hide();
+            return 0;
+        }
+        case WM_SYSKEYDOWN: {
+            if (wParam == VK_F4) {
+                self->hide();
+                return 0;
+            }
+            return DefWindowProcW(hwnd, message, wParam, lParam);
         }
         case WM_SIZE: {
             if (!self->m_updatingPlacement && wParam != SIZE_MINIMIZED) {
@@ -1703,7 +1767,12 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             const int clientW = client.right - client.left;
             const int clientH = client.bottom - client.top;
 
-            // 0. 顶栏“合并段落”切换胶囊按钮
+            // 0. 顶栏关闭按钮 (×) 与“合并段落”切换胶囊按钮
+            if (contains(self->m_btnTopCloseRect, point)) {
+                self->m_pressedTopCloseBtn = true;
+                SetCapture(hwnd);
+                return 0;
+            }
             if (contains(self->m_btnMergeRect, point)) {
                 self->m_pressedMergeBtn = true;
                 SetCapture(hwnd);
@@ -1864,6 +1933,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
         }
         case WM_MOUSELEAVE:
             self->m_trackingMouse = false;
+            self->m_hoverTopClose = false;
             self->m_hoverMerge = false;
             self->m_hoverCopy = false;
             self->m_hoverClose = false;
@@ -1873,55 +1943,74 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             self->render();
             return 0;
         case WM_LBUTTONUP: {
+            // 关键：ReleaseCapture() 会同步派发 WM_CAPTURECHANGED 清空全部按压态，
+            // 因此必须在释放捕获之前先行快照按压状态，否则按钮点击 100% 被吞噬失效！
+            const bool wasDraggingWindow = self->m_draggingWindow;
+            const bool wasDraggingScrollbar = self->m_draggingScrollbar;
+            const bool wasPressedTopClose = self->m_pressedTopCloseBtn;
+            const bool wasPressedMerge = self->m_pressedMergeBtn;
+            const bool wasPressedCopy = self->m_pressedCopyBtn;
+            const bool wasPressedClose = self->m_pressedCloseBtn;
+            const int wasPressedLineCopy = self->m_pressedLineCopyBtn;
+            const bool wasSelectingText = self->m_isSelectingText;
+
+            self->m_draggingWindow = false;
+            self->m_draggingScrollbar = false;
+            self->m_pressedTopCloseBtn = false;
+            self->m_pressedMergeBtn = false;
+            self->m_pressedCopyBtn = false;
+            self->m_pressedCloseBtn = false;
+            self->m_pressedLineCopyBtn = -1;
+            self->m_isSelectingText = false;
+
             if (GetCapture() == hwnd) ReleaseCapture();
             const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            const float clickSlop = 8.0f * self->m_scale;
 
-            if (self->m_draggingWindow) {
-                self->m_draggingWindow = false;
+            if (wasDraggingWindow) {
                 self->updateHover(point);
                 return 0;
             }
 
-            if (self->m_draggingScrollbar) {
-                self->m_draggingScrollbar = false;
+            if (wasDraggingScrollbar) {
                 self->updateHover(point);
                 self->render();
                 return 0;
             }
 
-            if (self->m_pressedMergeBtn) {
-                self->m_pressedMergeBtn = false;
-                if (contains(self->m_btnMergeRect, point)) {
+            if (wasPressedTopClose) {
+                if (containsExpanded(self->m_btnTopCloseRect, point, clickSlop)) {
+                    self->hide();
+                }
+                return 0;
+            }
+            if (wasPressedMerge) {
+                if (containsExpanded(self->m_btnMergeRect, point, clickSlop)) {
                     self->setMergeParagraphs(!self->isMergeParagraphsEnabled());
                 }
                 return 0;
             }
-            if (self->m_pressedCopyBtn) {
-                self->m_pressedCopyBtn = false;
-                if (contains(self->m_btnCopyRect, point)) self->copySelectionOrAll();
+            if (wasPressedCopy) {
+                if (containsExpanded(self->m_btnCopyRect, point, clickSlop)) self->copySelectionOrAll();
                 return 0;
             }
-            if (self->m_pressedCloseBtn) {
-                self->m_pressedCloseBtn = false;
-                if (contains(self->m_btnCloseRect, point)) self->hide();
+            if (wasPressedClose) {
+                if (containsExpanded(self->m_btnCloseRect, point, clickSlop)) self->hide();
                 return 0;
             }
-            if (self->m_pressedLineCopyBtn >= 0) {
-                const int targetLine = self->m_pressedLineCopyBtn;
-                self->m_pressedLineCopyBtn = -1;
+            if (wasPressedLineCopy >= 0) {
                 RECT client{};
                 GetClientRect(hwnd, &client);
                 const float padding = OcrResultStyle::BasePadding * self->m_scale;
-                if (contains(self->computeLineCopyButtonRect(targetLine, client.right - client.left), point) ||
+                if (contains(self->computeLineCopyButtonRect(wasPressedLineCopy, client.right - client.left), point) ||
                     point.x < padding + BaseIndexColWidth * self->m_scale) {
-                    self->copyLine(targetLine);
+                    self->copyLine(wasPressedLineCopy);
                 }
                 return 0;
             }
 
-            if (self->m_isSelectingText) {
+            if (wasSelectingText) {
                 self->m_selCaret = self->hitTestTextPosition(point);
-                self->m_isSelectingText = false;
                 self->m_hasCaret = true;
                 self->render();
                 return 0;
@@ -1932,6 +2021,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             self->m_draggingWindow = false;
             self->m_draggingScrollbar = false;
             self->m_isSelectingText = false;
+            self->m_pressedTopCloseBtn = false;
             self->m_pressedMergeBtn = false;
             self->m_pressedCopyBtn = false;
             self->m_pressedCloseBtn = false;
@@ -1959,15 +2049,15 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
             const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             if (wParam == VK_ESCAPE) {
+                // 若存在显式拖选高亮，首次 Esc 一步清除选区与光标；无选区时（即便曾点过正文）单次 Esc 立即关闭窗口
                 if (self->hasSelection()) {
-                    self->m_selAnchor = self->m_selCaret;
-                    self->render();
-                } else if (self->m_hasCaret) {
                     self->clearSelection();
                     self->render();
                 } else {
                     self->hide();
                 }
+            } else if (control && wParam == 'W') {
+                self->hide();
             } else if (control && wParam == 'C') {
                 self->copySelectionOrAll();
             } else if (control && wParam == 'X') {

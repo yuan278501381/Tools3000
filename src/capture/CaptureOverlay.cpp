@@ -407,9 +407,10 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
             m_state.recordSetup.microphoneDeviceId.clear();
         }
     }
+    m_state.recordSetup.studioMode = config.get<bool>("/recording/studioMode", true);
     const bool autoZoomCfg = config.get<bool>("/recording/studioAutoZoom", true);
     const int savedZoomMode = std::clamp(config.get<int>("/recording/studioZoomMode", autoZoomCfg ? 1 : 0), 0, 2);
-    m_state.recordSetup.zoomEffectMode = autoZoomCfg ? (savedZoomMode == 0 ? 1 : savedZoomMode) : 0;
+    m_state.recordSetup.zoomEffectMode = (m_state.recordSetup.studioMode && autoZoomCfg) ? (savedZoomMode == 0 ? 1 : savedZoomMode) : 0;
     m_state.recordSetup.countdownSeconds = std::clamp(config.get<int>("/recording/countdownSeconds", 3), 0, 10);
     m_state.recordSetup.hideDesktopIcons = config.get<bool>("/recording/hideDesktopIcons", false);
     m_state.recordSetup.hideTaskbar = config.get<bool>("/recording/hideTaskbar", false);
@@ -998,6 +999,13 @@ bool CaptureOverlay::freezeScreen() {
 
 void CaptureOverlay::releaseFrozenSurface() {
     m_state.frozenScreen.release();
+    ++m_state.selectionOcrRequestSeq;
+    m_state.selectionOcrBlocks.clear();
+    m_state.selectionOcrCachedRect = {0, 0, 0, 0};
+    m_state.selectionOcrReady = false;
+    m_state.selectionOcrInFlight = false;
+    m_state.isTextMarkupStreaming = false;
+    m_state.liveTextMarkupPreviewSpans.clear();
     if (m_frozenBitmap) {
         DeleteObject(m_frozenBitmap);
         m_frozenBitmap = nullptr;

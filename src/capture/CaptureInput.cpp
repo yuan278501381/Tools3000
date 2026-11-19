@@ -20,6 +20,8 @@
 #include "capture/CaptureHudPalette.h"
 #include "capture/MarkupBaseHelper.h"
 #include "capture/WatermarkRenderer.h"
+#include "capture/TextAnnotationHelper.h"
+#include "ocr/OcrEngine.h"
 #include "core/config/ConfigManager.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/events/MainThreadDispatcher.h"
@@ -345,7 +347,7 @@ void CaptureInput::updateHoverCursor(POINT point) {
         // ========== Level 1: 进行中的交互拖拽操作 (最高优先级) ==========
         if (m_state->isDraggingToolbar) {
             cur = LoadCursor(nullptr, IDC_SIZEALL);
-        } else if (m_state->isSelectingText) {
+        } else if (m_state->isSelectingText || m_state->isTextMarkupStreaming) {
             cur = LoadCursor(nullptr, IDC_IBEAM);
         } else if (m_state->isAdjustingCornerRadius) {
             cur = getCornerRadiusLiveCursor(m_state->cornerDragIndex, curDpi, true);
@@ -555,6 +557,18 @@ void CaptureInput::updateHoverCursor(POINT point) {
                     } else {
                         cur = LoadCursor(nullptr, IDC_IBEAM);
                     }
+                } else if (m_state->currentTool == MarkupTool::Highlight &&
+                           m_state->currentTextMarkupMode != TextMarkupMode::RectRegion &&
+                           m_state->selectionOcrReady &&
+                           !m_state->selectionOcrBlocks.empty()) {
+                    const cv::Point localPt = toMarkupPoint(point);
+                    size_t dummyChar = 0;
+                    const int hitBlk = TextAnnotationHelper::hitTestBlockAndChar(
+                        m_state->selectionOcrBlocks,
+                        static_cast<float>(localPt.x),
+                        static_cast<float>(localPt.y),
+                        &dummyChar, 4.0f);
+                    cur = (hitBlk >= 0) ? LoadCursor(nullptr, IDC_IBEAM) : getBeautifulCrosshairCursor(effDpi);
                 } else {
                     cur = getBeautifulCrosshairCursor(effDpi);
                 }
@@ -987,6 +1001,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
         button.command != ToolbarCommand::ToggleEndCapDropdown &&
         button.command != ToolbarCommand::SelectEndCap &&
         button.command != ToolbarCommand::SelectMosaicType &&
+        button.command != ToolbarCommand::SelectTextMarkupMode &&
         button.command != ToolbarCommand::ToggleNumberShape &&
         button.command != ToolbarCommand::ToggleNumberFormatDropdown &&
         button.command != ToolbarCommand::ToggleSpotlightShape &&
@@ -1642,6 +1657,34 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             m_renderer->invalidate();
             break;
 
+        case ToolbarCommand::SelectTextMarkupMode: {
+            m_state->currentTextMarkupMode = static_cast<TextMarkupMode>(
+                std::clamp(button.intParam, 0, static_cast<int>(TextMarkupMode::RectRegion)));
+            m_state->openSubmenu = SubmenuType::None;
+            if (m_state->currentTextMarkupMode != TextMarkupMode::RectRegion) {
+                ensureSelectionOcrForTextMarkup();
+            }
+            if (m_state->activeElement && !m_state->activeElement->textSpans.empty() &&
+                m_state->currentTextMarkupMode != TextMarkupMode::RectRegion) {
+                m_state->markup.pushUndoSnapshot();
+                resetCoalescedUndo(*m_state);
+                if (m_state->currentTextMarkupMode == TextMarkupMode::Highlight) {
+                    m_state->activeElement->tool = MarkupTool::Highlight;
+                    m_state->activeElement->color.a = 220;
+                } else {
+                    m_state->activeElement->tool = MarkupTool::Line;
+                    m_state->activeElement->color.a = 255;
+                    m_state->activeElement->lineStyle =
+                        (m_state->currentTextMarkupMode == TextMarkupMode::WavyUnderline) ? LineStyle::Wavy : LineStyle::Solid;
+                }
+                m_renderer->markMarkupDirty();
+            }
+            m_state->toolbarLayoutValid = false;
+            m_renderer->invalidate();
+            updateHoverCursor(m_state->currentCursor);
+            break;
+        }
+
         case ToolbarCommand::ToggleBeautyShell: {
             m_state->beautyShell.enabled = !m_state->beautyShell.enabled;
             tools3000::core::ConfigManager::instance().set<bool>(
@@ -2207,6 +2250,11 @@ void CaptureInput::setCurrentTool(MarkupTool tool) {
     m_state->currentTool = tool;
     m_state->isMarkupToolActive = true;
     m_state->isMarking = false;
+    m_state->isTextMarkupStreaming = false;
+    m_state->liveTextMarkupPreviewSpans.clear();
+    if (tool == MarkupTool::Highlight && m_state->currentTextMarkupMode != TextMarkupMode::RectRegion) {
+        ensureSelectionOcrForTextMarkup();
+    }
     closeAllCapturePopups(*m_state, false);
     m_state->toolbarLayoutValid = false;
     if ((int)m_state->state.load() == (int)OverlayState::Marking) m_state->state = OverlayState::Selected;
@@ -2380,8 +2428,39 @@ void CaptureInput::beginMarkup(POINT point) {
     m_state->markupStart = docPt;
     m_state->markupEnd = docPt;
     m_state->penPoints.clear();
+    m_state->isTextMarkupStreaming = false;
+    m_state->liveTextMarkupPreviewSpans.clear();
     if (m_state->currentTool == MarkupTool::Pen) {
         m_state->penPoints.push_back(local);
+    } else if (m_state->currentTool == MarkupTool::Highlight &&
+               m_state->currentTextMarkupMode != TextMarkupMode::RectRegion) {
+        if (!m_state->selectionOcrReady) {
+            ensureSelectionOcrForTextMarkup();
+        }
+        if (m_state->selectionOcrReady && !m_state->selectionOcrBlocks.empty()) {
+            size_t anchorChar = 0;
+            const int anchorBlk = TextAnnotationHelper::hitTestBlockAndChar(
+                m_state->selectionOcrBlocks,
+                static_cast<float>(local.x),
+                static_cast<float>(local.y),
+                &anchorChar, 5.0f);
+            if (anchorBlk >= 0) {
+                m_state->isTextMarkupStreaming = true;
+                m_state->textMarkupAnchorBlock = anchorBlk;
+                m_state->textMarkupAnchorChar = anchorChar;
+                std::vector<size_t> initIndices;
+                std::vector<SelectedBlockCharSpan> initSpans;
+                TextAnnotationHelper::computeStreamSelection(
+                    m_state->selectionOcrBlocks,
+                    anchorBlk, anchorChar,
+                    static_cast<float>(local.x),
+                    static_cast<float>(local.x), static_cast<float>(local.y),
+                    initIndices, initSpans);
+                m_state->liveTextMarkupPreviewSpans = TextAnnotationHelper::coalesceSelectedTextSpans(
+                    m_state->selectionOcrBlocks, initIndices, initSpans);
+                updateHoverCursor(point);
+            }
+        }
     }
     m_state->isMarking = true;
     m_state->state = OverlayState::Marking;
@@ -2396,6 +2475,23 @@ void CaptureInput::updateMarkup(POINT point) {
         if (m_state->penPoints.empty() || m_state->penPoints.back() != local) {
             m_state->penPoints.push_back(local);
         }
+    } else if (m_state->isTextMarkupStreaming &&
+               m_state->currentTool == MarkupTool::Highlight &&
+               m_state->selectionOcrReady &&
+               !m_state->selectionOcrBlocks.empty()) {
+        const cv::Point startLocal = toMarkupPointFromDoc(m_state->markupStart);
+        const cv::Point curLocal = toMarkupPointFromDoc(m_state->markupEnd);
+        std::vector<size_t> selIndices;
+        std::vector<SelectedBlockCharSpan> selSpans;
+        TextAnnotationHelper::computeStreamSelection(
+            m_state->selectionOcrBlocks,
+            m_state->textMarkupAnchorBlock,
+            m_state->textMarkupAnchorChar,
+            static_cast<float>(startLocal.x),
+            static_cast<float>(curLocal.x), static_cast<float>(curLocal.y),
+            selIndices, selSpans);
+        m_state->liveTextMarkupPreviewSpans = TextAnnotationHelper::coalesceSelectedTextSpans(
+            m_state->selectionOcrBlocks, selIndices, selSpans);
     }
 }
 
@@ -2507,8 +2603,11 @@ void CaptureInput::finishMarkup(POINT point) {
     if (m_state->currentTool != MarkupTool::Pen &&
         m_state->currentTool != MarkupTool::Number &&
         m_state->currentTool != MarkupTool::Magnifier &&
+        !(m_state->isTextMarkupStreaming && !m_state->liveTextMarkupPreviewSpans.empty()) &&
         dx < 3 && dy < 3) {
         m_state->isMarking = false;
+        m_state->isTextMarkupStreaming = false;
+        m_state->liveTextMarkupPreviewSpans.clear();
         m_state->state = OverlayState::Selected;
         return;
     }
@@ -2668,10 +2767,31 @@ void CaptureInput::finishMarkup(POINT point) {
         }
 
         case MarkupTool::Highlight: {
-            auto* elem = m_state->markup.drawHighlight(start, end, m_state->currentColor);
+            MarkupElement* elem = nullptr;
+            if (m_state->isTextMarkupStreaming && !m_state->liveTextMarkupPreviewSpans.empty()) {
+                if (m_state->currentTextMarkupMode == TextMarkupMode::Highlight) {
+                    elem = m_state->markup.drawTextHighlightSpans(
+                        m_state->liveTextMarkupPreviewSpans, m_state->currentColor);
+                } else if (m_state->currentTextMarkupMode == TextMarkupMode::WavyUnderline) {
+                    elem = m_state->markup.drawTextUnderlineSpans(
+                        m_state->liveTextMarkupPreviewSpans, m_state->currentColor, LineStyle::Wavy, 0.0f);
+                } else {
+                    elem = m_state->markup.drawTextUnderlineSpans(
+                        m_state->liveTextMarkupPreviewSpans, m_state->currentColor, LineStyle::Solid, 0.0f);
+                }
+            } else if (m_state->currentTextMarkupMode == TextMarkupMode::WavyUnderline) {
+                elem = m_state->markup.drawLine(
+                    start, end, m_state->currentColor, static_cast<float>(m_state->currentStrokeWidth), LineStyle::Wavy);
+            } else if (m_state->currentTextMarkupMode == TextMarkupMode::StraightUnderline) {
+                elem = m_state->markup.drawLine(
+                    start, end, m_state->currentColor, static_cast<float>(m_state->currentStrokeWidth), LineStyle::Solid);
+            } else {
+                elem = m_state->markup.drawHighlight(start, end, m_state->currentColor);
+            }
+            m_state->isTextMarkupStreaming = false;
+            m_state->liveTextMarkupPreviewSpans.clear();
             if (elem) {
                 elem->dpiScale = currentDpiScale;
-                elem->thickness = static_cast<float>(m_state->currentStrokeWidth);
                 m_state->activeElement = elem;
                 elem->isActive = true;
             }
@@ -2782,6 +2902,75 @@ void CaptureInput::prepareMarkupBase() {
 
 void CaptureInput::rebuildMarkupBase() {
     prepareMarkupBase();
+    if (m_state && m_state->isMarkupToolActive &&
+        m_state->currentTool == MarkupTool::Highlight &&
+        m_state->currentTextMarkupMode != TextMarkupMode::RectRegion) {
+        ensureSelectionOcrForTextMarkup();
+    }
+}
+
+void CaptureInput::ensureSelectionOcrForTextMarkup() {
+    if (!m_state || m_state->frozenScreen.empty()) return;
+    if (m_state->mode == OverlayMode::RecordRegion) return;
+
+    const auto sel = currentSelectionRect();
+    const int rx = static_cast<int>(std::round(sel.left));
+    const int ry = static_cast<int>(std::round(sel.top));
+    const int rw = static_cast<int>(std::round(sel.right - sel.left));
+    const int rh = static_cast<int>(std::round(sel.bottom - sel.top));
+    if (rw < 12 || rh < 10) return;
+
+    const cv::Rect screenBounds(0, 0, m_state->frozenScreen.cols, m_state->frozenScreen.rows);
+    const cv::Rect clipped = cv::Rect(rx, ry, rw, rh) & screenBounds;
+    if (clipped.width < 12 || clipped.height < 10) return;
+
+    if (m_state->selectionOcrCachedRect == clipped &&
+        (m_state->selectionOcrReady || m_state->selectionOcrInFlight)) {
+        return;
+    }
+
+    m_state->selectionOcrCachedRect = clipped;
+    m_state->selectionOcrReady = false;
+    m_state->selectionOcrInFlight = true;
+    m_state->selectionOcrBlocks.clear();
+    const uint64_t reqSeq = ++m_state->selectionOcrRequestSeq;
+    cv::Mat cropImg = m_state->frozenScreen(clipped).clone();
+    CaptureState* statePtr = m_state;
+    CaptureRenderer* rendererPtr = m_renderer;
+    CaptureInput* selfPtr = this;
+
+    std::thread([cropImg = std::move(cropImg), reqSeq, statePtr, rendererPtr, selfPtr]() mutable {
+        auto ocrLines = tools3000::ocr::OcrEngine::instance().extractText(cropImg);
+        std::vector<CaptureState::SelectionOcrBlock> parsedBlocks;
+        parsedBlocks.reserve(ocrLines.size());
+        for (auto& line : ocrLines) {
+            if (line.text.empty() || line.box.width <= 0 || line.box.height <= 0) continue;
+            CaptureState::SelectionOcrBlock blk;
+            blk.text = std::move(line.text);
+            blk.origBox = line.box;
+            blk.layoutRegionId = line.layoutRegionId;
+            blk.alignedRowId = line.alignedRowId;
+            blk.charBoxes = !line.charBoxes.empty()
+                ? std::move(line.charBoxes)
+                : tools3000::ocr::OcrEngine::buildProportionalCharBoxes(blk.text, blk.origBox);
+            parsedBlocks.push_back(std::move(blk));
+        }
+
+        tools3000::core::MainThreadDispatcher::instance().post(
+            [reqSeq, statePtr, rendererPtr, selfPtr, blocks = std::move(parsedBlocks)]() mutable {
+                if (!CaptureOverlay::instance().isOverlayVisible() || !statePtr) return;
+                if (statePtr->selectionOcrRequestSeq != reqSeq) return;
+                statePtr->selectionOcrBlocks = std::move(blocks);
+                statePtr->selectionOcrInFlight = false;
+                statePtr->selectionOcrReady = true;
+                if (selfPtr) {
+                    selfPtr->updateHoverCursor(statePtr->currentCursor);
+                }
+                if (rendererPtr) {
+                    rendererPtr->invalidate();
+                }
+            });
+    }).detach();
 }
 
 std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
@@ -2800,13 +2989,28 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
 
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
         auto* p = reinterpret_cast<SearchParam*>(lParam);
-        if (hwnd == p->exclude || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
-        wchar_t cls[64] = {};
-        if (GetClassNameW(hwnd, cls, 64) > 0 && wcscmp(cls, L"Tools3000_ShortcutHintOverlay") == 0) {
+        if (hwnd == p->exclude ||
+            !tools3000::core::WinUtils::isWindowVisibleOnCurrentDesktop(hwnd)) {
             return TRUE;
         }
-        RECT r;
-        GetWindowRect(hwnd, &r);
+        const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        // 跳过全透明鼠标穿透浮层（例如其它覆盖层/点击穿透贴图）
+        if ((exStyle & (WS_EX_LAYERED | WS_EX_TRANSPARENT)) == (WS_EX_LAYERED | WS_EX_TRANSPARENT)) {
+            return TRUE;
+        }
+        wchar_t cls[64] = {};
+        if (GetClassNameW(hwnd, cls, 64) > 0) {
+            if (wcscmp(cls, L"Tools3000_ShortcutHintOverlay") == 0 ||
+                wcscmp(cls, L"Progman") == 0 ||
+                wcscmp(cls, L"WorkerW") == 0) {
+                return TRUE;
+            }
+        }
+        RECT r{};
+        if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(r)))) {
+            if (!GetWindowRect(hwnd, &r)) return TRUE;
+        }
+        if ((r.right - r.left) <= 8 || (r.bottom - r.top) <= 8) return TRUE;
         if (PtInRect(&r, p->pt)) {
             p->found = hwnd;
             return FALSE;

@@ -938,6 +938,7 @@ bool ScreenRecorder::startRecording(const RecordOptions& options) {
     }
 
     m_finalizePending = true;
+    m_captureFrozen.store(false, std::memory_order_release);
     m_skipCountdown.store(false);
     {
         std::lock_guard lock(m_statsMutex);
@@ -1057,6 +1058,16 @@ void ScreenRecorder::waitForAsyncStop() {
     }
 }
 
+void ScreenRecorder::freezeCaptureImmediately() noexcept {
+    m_captureFrozen.store(true, std::memory_order_release);
+    m_state.store(RecordState::Idle, std::memory_order_release);
+    m_audioCapture.setPaused(true);
+    m_studioRecorder.setPaused(true);
+    if (std::this_thread::get_id() != m_recordThread.get_id()) {
+        std::lock_guard captureLock(m_inFlightCaptureMutex);
+    }
+}
+
 bool ScreenRecorder::stopRecordingAsync(AsyncStopCallback onComplete) {
     bool expectedStopping = false;
     if (!m_stopping.compare_exchange_strong(expectedStopping, true, std::memory_order_acq_rel)) {
@@ -1074,8 +1085,8 @@ bool ScreenRecorder::stopRecordingAsync(AsyncStopCallback onComplete) {
         return false;
     }
 
-    // 立即发出停止信号让录制循环在下一拍跳出，而耗时 join + 编码冲刷 + 原子重命名移交后台收尾线程
-    m_state.store(RecordState::Idle, std::memory_order_release);
+    // 立即冻结桌面帧与音频采样，确保停止动作触发后的任何界面显隐 0% 进入母带
+    freezeCaptureImmediately();
 
     waitForAsyncStop();
     try {
@@ -1126,7 +1137,7 @@ std::string ScreenRecorder::stopRecording() {
     if (m_state == RecordState::Idle && !m_recordThread.joinable() && !m_finalizePending.load()) return "";
 
     tools3000::core::TraceId::Scope scope;
-    m_state = RecordState::Idle;
+    freezeCaptureImmediately();
 
     // 等待录制线程结束（避免在工作线程自身中 join 产生死锁）
     if (m_recordThread.joinable() && std::this_thread::get_id() != m_recordThread.get_id()) {
@@ -1349,6 +1360,10 @@ void ScreenRecorder::recordingLoop() {
                 std::this_thread::sleep_until(nextFrameAt);
                 now = clock::now();
             }
+            if (m_captureFrozen.load(std::memory_order_acquire) ||
+                m_state.load(std::memory_order_acquire) == RecordState::Idle) {
+                break;
+            }
 
             // 捕获或编码比目标帧周期慢时，跳过已经错过的时间槽并让 PTS 留出
             // 对应间隔。这样不会形成无界帧队列，也不会让输出视频加速播放。
@@ -1360,6 +1375,10 @@ void ScreenRecorder::recordingLoop() {
             }
 
             if (!captureAndEncodeFrame()) {
+                if (m_captureFrozen.load(std::memory_order_acquire) ||
+                    m_state.load(std::memory_order_acquire) == RecordState::Idle) {
+                    break;
+                }
                 LOG_ERROR("帧捕获/编码失败, 停止录制");
                 {
                     std::lock_guard lock(m_statsMutex);
@@ -1945,6 +1964,26 @@ bool ScreenRecorder::initializeEncoder(const RecordOptions& options) {
         av_frame_free(&frame);
         return false;
     }
+    // 预填充安全中性黑平面（Y=16, UV/NV12=128），根除任何未初始化 YUV(0,0,0) 草绿色像素风险
+    if (frame->format == AV_PIX_FMT_NV12 || frame->format == AV_PIX_FMT_NV21) {
+        if (frame->data[0] && frame->linesize[0] > 0) {
+            std::memset(frame->data[0], 16, static_cast<size_t>(frame->linesize[0]) * static_cast<size_t>(frame->height));
+        }
+        if (frame->data[1] && frame->linesize[1] > 0) {
+            std::memset(frame->data[1], 128, static_cast<size_t>(frame->linesize[1]) * static_cast<size_t>((frame->height + 1) / 2));
+        }
+    } else if (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) {
+        const uint8_t yBlack = (frame->format == AV_PIX_FMT_YUVJ420P) ? 0 : 16;
+        if (frame->data[0] && frame->linesize[0] > 0) {
+            std::memset(frame->data[0], yBlack, static_cast<size_t>(frame->linesize[0]) * static_cast<size_t>(frame->height));
+        }
+        if (frame->data[1] && frame->linesize[1] > 0) {
+            std::memset(frame->data[1], 128, static_cast<size_t>(frame->linesize[1]) * static_cast<size_t>((frame->height + 1) / 2));
+        }
+        if (frame->data[2] && frame->linesize[2] > 0) {
+            std::memset(frame->data[2], 128, static_cast<size_t>(frame->linesize[2]) * static_cast<size_t>((frame->height + 1) / 2));
+        }
+    }
     m_frame = frame;
     m_packet = av_packet_alloc();
     if (!m_packet) {
@@ -2278,11 +2317,21 @@ void ScreenRecorder::dispatchSnapshotSave(
 
 bool ScreenRecorder::captureAndEncodeFrame() {
     using clock = std::chrono::steady_clock;
+    if (m_captureFrozen.load(std::memory_order_acquire) ||
+        m_state.load(std::memory_order_acquire) == RecordState::Idle) {
+        return false;
+    }
     const auto pipelineStarted = clock::now();
     auto* codecCtx = static_cast<AVCodecContext*>(m_codecCtx);
     auto* frame = static_cast<AVFrame*>(m_frame);
 
     if (!codecCtx || !frame) return false;
+
+    std::unique_lock captureLock(m_inFlightCaptureMutex);
+    if (m_captureFrozen.load(std::memory_order_acquire) ||
+        m_state.load(std::memory_order_acquire) == RecordState::Idle) {
+        return false;
+    }
 
     if (!m_captureBackend) return false;
     CaptureFrameView captured;
@@ -2344,7 +2393,13 @@ bool ScreenRecorder::captureAndEncodeFrame() {
     const auto capturedAt = clock::now();
     struct FrameReleaseGuard {
         ICaptureBackend* backend;
-        ~FrameReleaseGuard() { backend->releaseFrame(); }
+        void releaseNow() noexcept {
+            if (backend) {
+                backend->releaseFrame();
+                backend = nullptr;
+            }
+        }
+        ~FrameReleaseGuard() { releaseNow(); }
     } releaseGuard{m_captureBackend.get()};
 
     const auto& backendInfo = m_captureBackend->info();
@@ -2464,6 +2519,12 @@ bool ScreenRecorder::captureAndEncodeFrame() {
                 m_nextLiveDeckFrameIdx += m_liveDeckStepFrames;
             }
         }
+    }
+
+    // 桌面像素拷贝与预览牌组提取已完成，立即释放捕获帧与在途屏障锁，确保点击停止时 <1ms 零阻塞
+    releaseGuard.releaseNow();
+    if (captureLock.owns_lock()) {
+        captureLock.unlock();
     }
 
     if (cleanPlateStudio && m_sessionEpoch != clock::time_point{}) {

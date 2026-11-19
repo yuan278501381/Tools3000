@@ -107,8 +107,16 @@ PinShortcutDecision PinInputController::resolveKeyDown(WPARAM wParam,
         return decision;
     }
 
-    // 1.2 贴图分组快捷键: Ctrl+1..9 归组/切换, Ctrl+0 移出分组, Ctrl+Shift+G 一键编组
+    // 1.2 贴图分组快捷键: Ctrl+1..9 归组/切换, Ctrl+0 移出分组, Ctrl+Shift+G 一键编组; Ctrl+Z/Y 撤销重做批注
     if (ctrl && !alt) {
+        if (!shift && wParam == 'Z') {
+            decision.action = PinShortcutAction::UndoPinMarkup;
+            return decision;
+        }
+        if ((shift && wParam == 'Z') || (!shift && wParam == 'Y')) {
+            decision.action = PinShortcutAction::RedoPinMarkup;
+            return decision;
+        }
         if (shift && wParam == 'G') {
             decision.action = PinShortcutAction::AutoGroupUngrouped;
             return decision;
@@ -127,9 +135,25 @@ PinShortcutDecision PinInputController::resolveKeyDown(WPARAM wParam,
         }
     }
 
-    // 1.5 文字划选模式或已有选中文字块时，保护文字选区免受 R / L / Ctrl+R 误触旋转破坏
-    if (hasActiveTextContext && (wParam == 'R' || (!ctrl && wParam == 'L'))) {
-        return decision;
+    // 1.5 文字划选模式或已有选中文字块时：单键 H / W / U 直接对选中文字施加荧光笔 / 波浪线 / 直线，并保护选区免受 R / L 误触旋转破坏
+    if (hasActiveTextContext) {
+        if (!ctrl && !shift && !alt) {
+            if (wParam == 'H') {
+                decision.action = PinShortcutAction::AnnotateSelectedHighlight;
+                return decision;
+            }
+            if (wParam == 'W') {
+                decision.action = PinShortcutAction::AnnotateSelectedWavy;
+                return decision;
+            }
+            if (wParam == 'U') {
+                decision.action = PinShortcutAction::AnnotateSelectedUnderline;
+                return decision;
+            }
+        }
+        if (wParam == 'R' || (!ctrl && wParam == 'L')) {
+            return decision;
+        }
     }
 
     // 2. R / Shift+R / Ctrl+R / Ctrl+Shift+R: 顺时针 / 逆时针旋转 90 度

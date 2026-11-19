@@ -52,6 +52,7 @@ private:
     
     void prepareMarkupBase();
     void rebuildMarkupBase();
+    void ensureSelectionOcrForTextMarkup();
     
     RECT detectWindowUnderCursor(POINT cursorPos);
     std::vector<RECT> detectWindowHierarchy(POINT cursorPos);

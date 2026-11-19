@@ -59,6 +59,15 @@ enum class LineStyle {
     Dashed = 1,  // 长虚线 ------
     Dotted = 2,  // 点虚线 ......
     DashDot = 3, // 点划线 -.-.-.-
+    Wavy = 4,    // 波浪线 ~~~~~~
+};
+
+/// 智能文字批注子模式（荧光笔 / 波浪下划线 / 直线下划线 / 传统矩形区域高亮）
+enum class TextMarkupMode {
+    Highlight = 0,         // 选中文字荧光笔（正片叠底保字锐度）
+    WavyUnderline = 1,     // 选中文字波浪下划线
+    StraightUnderline = 2, // 选中文字直线下划线
+    RectRegion = 3,        // 自由矩形区域荧光高亮
 };
 
 /// 箭头样式
@@ -192,6 +201,9 @@ struct MarkupElement {
 
     // 画笔轨迹点
     std::vector<cv::Point> penPoints;
+
+    // 多行流式文字批注跨度集合（非空时表示紧贴每行文字边界的原子荧光笔/波浪线/直线图元）
+    std::vector<cv::Rect> textSpans;
 
     // 文本内容与描边体系
     std::string text;
@@ -453,6 +465,18 @@ public:
 
     /// 高亮（半透明矩形）
     MarkupElement* drawHighlight(cv::Point p1, cv::Point p2, MarkupColor color);
+
+    /// 选中文字多行跨度荧光笔（原子图元，单次 Ctrl+Z 整段撤销）
+    MarkupElement* drawTextHighlightSpans(const std::vector<cv::Rect>& spans, MarkupColor color);
+
+    /// 选中文字多行跨度下划线（支持 LineStyle::Wavy 波浪线与 LineStyle::Solid 直线）
+    MarkupElement* drawTextUnderlineSpans(const std::vector<cv::Rect>& spans, MarkupColor color,
+                                          LineStyle style = LineStyle::Solid, float thickness = 0.0f);
+
+    /// 静态实时渲染辅助（供划选文字拖拽流式预览与正式图元渲染共享单一事实源）
+    static void renderTextHighlightPreview(cv::Mat& canvas, const std::vector<cv::Rect>& spans, MarkupColor color);
+    static void renderTextUnderlinePreview(cv::Mat& canvas, const std::vector<cv::Rect>& spans, MarkupColor color,
+                                           LineStyle style, float thickness = 0.0f);
 
     /// 马赛克区域
     MarkupElement* applyMosaic(cv::Point p1, cv::Point p2, int blockSize = 12);

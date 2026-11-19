@@ -49,6 +49,7 @@ enum class ToolbarCommand {
     ToggleArrowDropdown,     // 展开/收起箭头主下拉菜单
     ToggleMosaicDropdown,    // 展开/收起马赛克下拉菜单
     SelectMosaicType,        // 选择马赛克类型 (像素/高斯模糊)
+    SelectTextMarkupMode,    // 选择智能文字批注子模式 (荧光笔 / 波浪线 / 直线 / 矩形区域高亮)
     CycleBeautyBg,           // 循环切换美化外壳背景预设
     CycleBeautyPadding,      // 循环切换美化外壳衬底内边距
     CycleBeautyRadius,       // 循环切换美化外壳圆角 (0, 10, 16, 24, 32)
@@ -286,6 +287,7 @@ struct RecordSetupOptions {
     bool hideTaskbar = false;      // 录制期间自动隐藏任务栏
     bool typingAutoZoom = false;   // 打字自动缩放（默认关闭）
     bool voiceEnhance = true;      // 麦克风人声降噪增强（默认开启）
+    bool studioMode = true;        // true = 录后进入演播室精修；false = 极简原样直出（跳过演播室与运镜，永久记忆）
     bool requestOpenMoreSettings = false;
 };
 
@@ -331,6 +333,25 @@ public:
     float currentElementCornerRadius = 0.0f;
     ArrowStyle currentArrowStyle = ArrowStyle::Tech; // 默认燕尾箭头 (Stealth Arrow)
     int currentMosaicType = 0; // 0: 像素马赛克, 1: 高斯模糊
+    TextMarkupMode currentTextMarkupMode = TextMarkupMode::Highlight; // 默认智能文字荧光笔
+
+    // 选区内智能文字批注 OCR 异步缓存与流式划选预览状态
+    struct SelectionOcrBlock {
+        std::string text;
+        cv::Rect origBox;
+        std::vector<cv::Rect> charBoxes;
+        int layoutRegionId = 0;
+        int alignedRowId = -1;
+    };
+    std::vector<SelectionOcrBlock> selectionOcrBlocks;
+    cv::Rect selectionOcrCachedRect{0, 0, 0, 0};
+    uint64_t selectionOcrRequestSeq = 0;
+    bool selectionOcrReady = false;
+    bool selectionOcrInFlight = false;
+    bool isTextMarkupStreaming = false;
+    int textMarkupAnchorBlock = -1;
+    size_t textMarkupAnchorChar = 0;
+    std::vector<cv::Rect> liveTextMarkupPreviewSpans;
     bool currentTextOutline = true; // 文字是否描边 (默认开启高反差描边)
     MarkupColor currentTextOutlineColor = MarkupColor::Auto(); // 描边/边框颜色: Auto / Black / White / 自定义
     int currentOutlineWidth = 2; // 边框/描边线粗细 (0~12px，默认 2px)

@@ -238,6 +238,16 @@ void populateRecordMoreSettingsItems(CaptureState& state, bool isZh) {
     };
     state.dropdownMenu.items.push_back(std::move(zoomParent));
 
+    DropdownItem outputParent{};
+    outputParent.id = 5;
+    outputParent.label = isZh ? L"录后输出模式" : L"After Recording";
+    outputParent.hasChildMenu = true;
+    outputParent.childItems = {
+        { 50, isZh ? L"原样直接保存（无运镜/无边框）" : L"Save Raw Directly (No Studio)", L"", !state.recordSetup.studioMode },
+        { 51, isZh ? L"进入演播室精修（可调背景/运镜）" : L"Open Studio Editor",             L"", state.recordSetup.studioMode }
+    };
+    state.dropdownMenu.items.push_back(std::move(outputParent));
+
     DropdownItem cdParent{};
     cdParent.id = 20;
     cdParent.label = isZh ? L"录制倒计时" : L"Countdown";
@@ -421,14 +431,16 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
         }
 
         case DropdownType::RecordClickEffect: {
+            const bool studioOn = state.recordSetup.studioMode;
             const bool ripple = state.recordSetup.showClickEffects;
-            const bool zoom = (state.recordSetup.zoomEffectMode != 0);
-            const int curMode = (!ripple && !zoom) ? 0 : (ripple && !zoom ? 1 : (!ripple && zoom ? 2 : 3));
+            const bool zoom = studioOn && (state.recordSetup.zoomEffectMode != 0);
+            const int curMode = !studioOn ? -1 : ((!ripple && !zoom) ? 0 : (ripple && !zoom ? 1 : (!ripple && zoom ? 2 : 3)));
             state.dropdownMenu.items = {
-                { 0, isZh ? L"无效果"    : L"None",          L"", curMode == 0 },
-                { 1, isZh ? L"点击波纹"  : L"Click Ripple",  L"", curMode == 1 },
-                { 2, isZh ? L"自动运镜"  : L"Auto Zoom",     L"", curMode == 2 },
-                { 3, isZh ? L"波纹+运镜" : L"Ripple + Zoom", L"", curMode == 3 }
+                { -1, isZh ? L"原样直出（跳过演播室）" : L"Raw Direct (Skip Studio)", L"", curMode == -1 },
+                {  0, isZh ? L"演播室 · 无特效"       : L"Studio · No FX",           L"", curMode == 0 },
+                {  1, isZh ? L"点击波纹"              : L"Click Ripple",             L"", curMode == 1 },
+                {  2, isZh ? L"自动运镜"              : L"Auto Zoom",                L"", curMode == 2 },
+                {  3, isZh ? L"波纹+运镜"             : L"Ripple + Zoom",            L"", curMode == 3 }
             };
             break;
         }
@@ -602,37 +614,53 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
         case DropdownType::RecordClickEffect: {
             auto& cfg = tools3000::core::ConfigManager::instance();
             const int savedMode = std::clamp(cfg.get<int>("/recording/studioZoomMode", 1), 1, 2);
-            if (id == 0) {
+            if (id == -1) {
+                state.recordSetup.studioMode = false;
                 state.recordSetup.showClickEffects = false;
                 state.recordSetup.showClickZoom = false;
                 state.recordSetup.zoomEffectMode = 0;
-                state.loupeToastMessage = isZh ? L"镜头与点击效果: 已关闭" : L"Auto Zoom & Ripple: Off";
+                cfg.set<bool>("/recording/studioMode", false);
+                cfg.set<bool>("/recording/studioAutoZoom", false);
+                cfg.set<int>("/recording/studioZoomMode", 0);
+                state.loupeToastMessage = isZh ? L"已切换并记住：原样直出（录完直接保存原片）" : L"Saved preference: Raw Direct (Skip Studio)";
+            } else if (id == 0) {
+                state.recordSetup.studioMode = true;
+                state.recordSetup.showClickEffects = false;
+                state.recordSetup.showClickZoom = false;
+                state.recordSetup.zoomEffectMode = 0;
+                cfg.set<bool>("/recording/studioMode", true);
+                state.loupeToastMessage = isZh ? L"演播室模式：已关闭运镜与波纹" : L"Studio Mode: No FX";
             } else if (id == 1) {
+                state.recordSetup.studioMode = true;
                 state.recordSetup.showClickEffects = true;
                 state.recordSetup.showClickZoom = false;
                 state.recordSetup.zoomEffectMode = 0;
+                cfg.set<bool>("/recording/studioMode", true);
                 state.loupeToastMessage = isZh ? L"点击效果: 点击波纹" : L"Click Effect: Click Ripple";
             } else if (id == 2) {
+                state.recordSetup.studioMode = true;
                 state.recordSetup.showClickEffects = false;
                 state.recordSetup.showClickZoom = true;
                 if (state.recordSetup.zoomEffectMode == 0) {
                     state.recordSetup.zoomEffectMode = savedMode;
                 }
+                cfg.set<bool>("/recording/studioMode", true);
                 state.loupeToastMessage = isZh ? L"鼠标自动运镜: 已开启" : L"Auto Zoom: ON";
             } else {
+                state.recordSetup.studioMode = true;
                 state.recordSetup.showClickEffects = true;
                 state.recordSetup.showClickZoom = true;
                 if (state.recordSetup.zoomEffectMode == 0) {
                     state.recordSetup.zoomEffectMode = savedMode;
                 }
+                cfg.set<bool>("/recording/studioMode", true);
                 state.loupeToastMessage = isZh ? L"已开启: 点击波纹 + 自动运镜" : L"Ripple + Auto Zoom: ON";
             }
             cfg.set<bool>("/recording/showClickEffects", state.recordSetup.showClickEffects);
             cfg.set<bool>("/recording/showClickZoom", state.recordSetup.showClickZoom);
-            cfg.set<bool>("/recording/studioAutoZoom", state.recordSetup.zoomEffectMode != 0);
-            if (state.recordSetup.zoomEffectMode != 0) {
+            cfg.set<bool>("/recording/studioAutoZoom", state.recordSetup.studioMode && state.recordSetup.zoomEffectMode != 0);
+            if (state.recordSetup.studioMode && state.recordSetup.zoomEffectMode != 0) {
                 cfg.set<int>("/recording/studioZoomMode", state.recordSetup.zoomEffectMode);
-                cfg.set<bool>("/recording/studioMode", true);
             }
             break;
         }
@@ -640,7 +668,21 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
         case DropdownType::RecordMoreSettings: {
             auto& cfg = tools3000::core::ConfigManager::instance();
             bool keepMenuOpen = true;
-            if (id >= 100 && id <= 102) {
+            if (id == 50 || id == 51) {
+                const bool useStudio = (id == 51);
+                state.recordSetup.studioMode = useStudio;
+                cfg.set<bool>("/recording/studioMode", useStudio);
+                if (!useStudio) {
+                    state.recordSetup.zoomEffectMode = 0;
+                    state.recordSetup.showClickZoom = false;
+                    cfg.set<bool>("/recording/studioAutoZoom", false);
+                    cfg.set<int>("/recording/studioZoomMode", 0);
+                    cfg.set<bool>("/recording/showClickZoom", false);
+                }
+                state.loupeToastMessage = useStudio
+                    ? (isZh ? L"已记住：录后进入演播室精修" : L"Saved: Open Studio Editor")
+                    : (isZh ? L"已记住：录后原样直接保存" : L"Saved: Save Raw Directly");
+            } else if (id >= 100 && id <= 102) {
                 const int mode = id - 100;
                 state.recordSetup.zoomEffectMode = mode;
                 state.recordSetup.showClickZoom = (mode != 0);
@@ -648,6 +690,7 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
                 cfg.set<bool>("/recording/studioAutoZoom", mode != 0);
                 cfg.set<bool>("/recording/showClickZoom", state.recordSetup.showClickZoom);
                 if (mode != 0) {
+                    state.recordSetup.studioMode = true;
                     cfg.set<bool>("/recording/studioMode", true);
                 }
                 static const wchar_t* zNamesZh[] = { L"关闭", L"2D 运镜", L"3D 运镜" };

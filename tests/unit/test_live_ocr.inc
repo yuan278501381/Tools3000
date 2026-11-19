@@ -13,6 +13,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <opencv2/objdetect.hpp>
+#include "capture/TextAnnotationHelper.h"
 #include <opencv2/imgproc.hpp>
 
 TEST(LiveOcrCharBoxesTest, ProportionalCodepointSplittingAndXYCutSubBoxes) {
@@ -1097,4 +1098,340 @@ TEST(LiveTextOcrTest, PinZeroDuplicateOcrReuseAndSideDockingViaPlugin) {
     guard.plugin = nullptr;
     EXPECT_TRUE(FreeLibrary(hMod));
     guard.mod = nullptr;
+}
+
+TEST(LiveTextOcrTest, TextAnnotationCoalescesSameRowAndPreservesColumnGap) {
+    using namespace tools3000::capture;
+
+    struct MockBlk {
+        std::string text;
+        cv::Rect origBox;
+        std::vector<cv::Rect> charBoxes;
+        int layoutRegionId = 0;
+        int alignedRowId = -1;
+    };
+
+    auto makeBlk = [](const std::string& txt, int x, int y, int w, int h, int reg, int row) {
+        MockBlk b;
+        b.text = txt;
+        b.origBox = cv::Rect(x, y, w, h);
+        b.charBoxes = tools3000::ocr::OcrEngine::buildProportionalCharBoxes(txt, b.origBox);
+        b.layoutRegionId = reg;
+        b.alignedRowId = row;
+        return b;
+    };
+
+    // 同行内的普通文本 + 代码胶囊 `960x640` 紧邻（间隔 8px），应合并为单条连贯行跨度；
+    // 右侧另一分栏（间隔 160px）或下一行则保持独立跨度
+    std::vector<MockBlk> blocks = {
+        makeBlk("固定形状多桶：", 24, 30, 120, 22, 0, 0),
+        makeBlk("960x640",       152, 30,  78, 22, 0, 0),
+        makeBlk("右侧独立分栏",   420, 30, 110, 22, 1, 0),
+        makeBlk("第二行正文内容",  24, 62, 140, 22, 0, 1),
+    };
+
+    std::vector<size_t> selIdx = {0, 1, 2, 3};
+    std::vector<SelectedBlockCharSpan> emptyCharSpans;
+    const auto coalesced = TextAnnotationHelper::coalesceSelectedTextSpans(blocks, selIdx, emptyCharSpans);
+    ASSERT_EQ(coalesced.size(), 3u);
+    EXPECT_EQ(coalesced[0].x, 24);
+    EXPECT_EQ(coalesced[0].width, (152 + 78) - 24); // 第 0 块与第 1 块无缝桥接
+    EXPECT_EQ(coalesced[1].x, 420);                 // 跨栏块保持物理隔离
+    EXPECT_EQ(coalesced[2].y, 62);                  // 第二行独立跨度
+}
+
+TEST(LiveTextOcrTest, TextMarkupHighlightPreservesCrispDarkTextAndSupportsWavyAndUnderline) {
+    using namespace tools3000::capture;
+
+    initializeMarkupTextRenderer();
+
+    // 构造白底黑字 + 灰底代码胶囊模拟图
+    cv::Mat base(180, 480, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::rectangle(base, cv::Rect(210, 26, 110, 26), cv::Scalar(240, 242, 245), cv::FILLED);
+    // 写入浓黑笔画像素 (BGR = 18, 18, 18)
+    cv::rectangle(base, cv::Rect(50, 32, 12, 14), cv::Scalar(18, 18, 18), cv::FILLED);
+
+    MarkupEngine engine;
+    engine.setBaseImage(base);
+
+    const std::vector<cv::Rect> twoLineSpans = {
+        cv::Rect(36, 28, 300, 22),
+        cv::Rect(36, 52, 260, 22) // 与上一行紧邻，验证单通道联合圆角蒙版无双倍重影横线
+    };
+    const MarkupColor coralPink{244, 63, 94, 255};
+    ASSERT_NE(engine.drawTextHighlightSpans(twoLineSpans, coralPink), nullptr);
+    ASSERT_NE(engine.drawTextUnderlineSpans({cv::Rect(36, 100, 240, 22)}, coralPink, LineStyle::Wavy), nullptr);
+    ASSERT_NE(engine.drawTextUnderlineSpans({cv::Rect(36, 138, 240, 22)}, MarkupColor::Blue(), LineStyle::Solid), nullptr);
+
+    const cv::Mat comp = engine.getCompositeImage(false);
+    ASSERT_FALSE(comp.empty());
+
+    // 1) 白底位置应呈现清透粉红（R 高、G/B 适中下降，绝非不透明死红）
+    const cv::Vec3b whiteHighlighted = comp.at<cv::Vec3b>(38, 100);
+    EXPECT_GT(whiteHighlighted[2], 235);
+    EXPECT_LT(whiteHighlighted[1], 200);
+    EXPECT_GT(whiteHighlighted[1], 130);
+
+    // 2) 黑字笔画中心必须依然保持浓黑锐利（正片叠底不泛白雾）
+    const cv::Vec3b darkGlyph = comp.at<cv::Vec3b>(38, 55);
+    EXPECT_LT(darkGlyph[0], 32);
+    EXPECT_LT(darkGlyph[1], 32);
+    EXPECT_LT(darkGlyph[2], 32);
+
+    // 3) 灰底代码胶囊应呈现比白底略深的自然层次
+    const cv::Vec3b codePillPx = comp.at<cv::Vec3b>(38, 240);
+    EXPECT_LT(codePillPx[1], whiteHighlighted[1]);
+
+    // 4) 手绘波浪线与手绘直线区域下方应真实渲染出醒目彩色下划线像素
+    bool wavyRendered = false;
+    for (int y = 120; y <= 132 && !wavyRendered; ++y) {
+        for (int x = 50; x <= 200; ++x) {
+            const cv::Vec3b p = comp.at<cv::Vec3b>(y, x);
+            if (p[2] > 200 && p[1] < 160) {
+                wavyRendered = true;
+                break;
+            }
+        }
+    }
+    EXPECT_TRUE(wavyRendered);
+
+    bool straightRendered = false;
+    for (int y = 158; y <= 168 && !straightRendered; ++y) {
+        const cv::Vec3b p = comp.at<cv::Vec3b>(y, 120);
+        if (p[0] > 200 && p[2] < 140) {
+            straightRendered = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(straightRendered);
+
+    // 5) 单次 undo 原子撤销整条图元
+    EXPECT_EQ(engine.elementCount(), 3u);
+    EXPECT_TRUE(engine.undo());
+    EXPECT_EQ(engine.elementCount(), 2u);
+}
+
+TEST(LiveTextOcrTest, PinInPlaceTextAnnotationSupportsStackingColorSwitchAndUndoZeroOcrRerun) {
+    wchar_t exePathBuf[MAX_PATH]{};
+    ASSERT_GT(GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH), 0u);
+    const std::filesystem::path exeDir = std::filesystem::path(exePathBuf).parent_path();
+    const std::filesystem::path pluginDll =
+        exeDir.parent_path() / L"plugins" / exeDir.filename() / L"Plugin_Capture.dll";
+    ASSERT_TRUE(std::filesystem::exists(pluginDll));
+
+    HMODULE hMod = LoadLibraryExW(
+        pluginDll.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    ASSERT_NE(hMod, nullptr);
+    using CreateFn = tools3000::core::IPlugin* (*)();
+    auto createFn = reinterpret_cast<CreateFn>(GetProcAddress(hMod, "CreatePlugin"));
+    ASSERT_NE(createFn, nullptr);
+
+    tools3000::core::IPlugin* capturePlugin = createFn();
+    ASSERT_NE(capturePlugin, nullptr);
+    ASSERT_TRUE(capturePlugin->initialize());
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    const std::filesystem::path tempPng = std::filesystem::temp_directory_path() /
+        std::format(L"tools3000_pin_text_annot_{}.png", GetCurrentProcessId());
+
+    auto invokeRpc = [&](int id, const char* method, const nlohmann::json& params) -> nlohmann::json {
+        nlohmann::json req = {{"id", id}, {"method", method}, {"params", params}};
+        const std::string raw = bridge.handleMessage(req.dump());
+        const auto parsed = nlohmann::json::parse(raw, nullptr, false);
+        return parsed.is_object() && parsed.contains("result") ? parsed["result"] : parsed;
+    };
+
+    struct PluginCleanupGuard {
+        HMODULE mod = nullptr;
+        tools3000::core::IPlugin* plugin = nullptr;
+        std::filesystem::path png;
+        ~PluginCleanupGuard() {
+            while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+                SendMessageW(existing, WM_KEYDOWN, VK_DELETE, 0);
+                if (IsWindow(existing)) DestroyWindow(existing);
+            }
+            if (plugin) plugin->shutdown();
+            if (mod) FreeLibrary(mod);
+            std::error_code ec;
+            std::filesystem::remove(png, ec);
+        }
+    } guard{hMod, capturePlugin, tempPng};
+
+    cv::Mat canvas(220, 520, CV_8UC3, cv::Scalar(255, 255, 255));
+    std::vector<uchar> encoded;
+    ASSERT_TRUE(cv::imencode(".png", canvas, encoded));
+    {
+        std::ofstream ofs(tempPng, std::ios::binary | std::ios::trunc);
+        ofs.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+    }
+
+    ASSERT_TRUE(invokeRpc(3401, "capture.pinImageFile", {
+        {"path", tools3000::core::WinUtils::wstringToUtf8(tempPng.wstring())}
+    }).value("success", false));
+
+    nlohmann::json mockBlocks = nlohmann::json::array({
+        {{"text", "高精度几何装箱与抗水印干扰"}, {"x", 30}, {"y", 40}, {"w", 320}, {"h", 26}, {"layoutRegionId", 0}, {"alignedRowId", 0}},
+        {{"text", "零拷贝切片与降序最佳装箱"},   {"x", 30}, {"y", 82}, {"w", 290}, {"h", 24}, {"layoutRegionId", 0}, {"alignedRowId", 1}}
+    });
+
+    // 1. 全选文字，检查悬浮舱荧光笔/波浪线/直线按钮均可见
+    const auto selRes = invokeRpc(3402, "capture.inspectPinOcrState", {
+        {"mockBlocks", mockBlocks},
+        {"selectAll", true},
+        {"forceRender", true}
+    });
+    ASSERT_TRUE(selRes.value("success", false));
+    EXPECT_TRUE(selRes.value("highlightBtnVisible", false));
+    EXPECT_TRUE(selRes.value("wavyBtnVisible", false));
+    EXPECT_TRUE(selRes.value("underlineBtnVisible", false));
+
+    // 2. 施加珊瑚粉荧光笔 + 同选区叠加手绘波浪线，验证原图像素变粉且 ocrRunCount == 0（零重跑 OCR）
+    const auto hlRes = invokeRpc(3403, "capture.inspectPinOcrState", {
+        {"annotateMode", "highlight"},
+        {"sampleX", 100},
+        {"sampleY", 50}
+    });
+    ASSERT_TRUE(hlRes.value("success", false));
+    EXPECT_EQ(hlRes.value("ocrRunCount", 99u), 0u);
+    EXPECT_GT(hlRes.value("sampleR", 0), 235);
+    EXPECT_LT(hlRes.value("sampleG", 255), 205);
+
+    const auto wavyRes = invokeRpc(3404, "capture.inspectPinOcrState", {
+        {"annotateMode", "wavy"},
+        {"forceRender", true}
+    });
+    ASSERT_TRUE(wavyRes.value("success", false));
+    EXPECT_TRUE(wavyRes.value("canUndoPinMarkup", false));
+    EXPECT_TRUE(wavyRes.value("undoBtnVisible", false));
+
+    // 3. 切换为第 3 号色球（晴空宝蓝 #3B82F6），验证已标荧光笔实时切换为蓝色调
+    const auto blueRes = invokeRpc(3405, "capture.inspectPinOcrState", {
+        {"setMarkupColorIndex", 3},
+        {"sampleX", 100},
+        {"sampleY", 50}
+    });
+    ASSERT_TRUE(blueRes.value("success", false));
+    EXPECT_GT(blueRes.value("sampleB", 0), blueRes.value("sampleR", 255));
+    EXPECT_EQ(blueRes.value("ocrRunCount", 99u), 0u);
+
+    // 4. 连续三次撤销退回纯白原图，再重做恢复
+    invokeRpc(3406, "capture.inspectPinOcrState", {{"undoMarkup", true}});
+    invokeRpc(3407, "capture.inspectPinOcrState", {{"undoMarkup", true}});
+    const auto cleanRes = invokeRpc(3408, "capture.inspectPinOcrState", {
+        {"undoMarkup", true},
+        {"sampleX", 100},
+        {"sampleY", 50}
+    });
+    EXPECT_EQ(cleanRes.value("sampleR", 0), 255);
+    EXPECT_EQ(cleanRes.value("sampleG", 0), 255);
+    EXPECT_EQ(cleanRes.value("sampleB", 0), 255);
+
+    const auto redoRes = invokeRpc(3409, "capture.inspectPinOcrState", {
+        {"redoMarkup", true},
+        {"sampleX", 100},
+        {"sampleY", 50}
+    });
+    EXPECT_LT(redoRes.value("sampleG", 255), 220);
+
+    while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+        SendMessageW(existing, WM_KEYDOWN, VK_DELETE, 0);
+        if (IsWindow(existing)) DestroyWindow(existing);
+    }
+    capturePlugin->shutdown();
+    guard.plugin = nullptr;
+    EXPECT_TRUE(FreeLibrary(hMod));
+    guard.mod = nullptr;
+}
+
+TEST(LiveTextOcrTest, HandDrawnWavyAndStraightStrokesAreOrganicBoldAndDeterministic) {
+    using namespace tools3000::capture;
+
+    // 1. 验证高定斜角书法丝带波浪线参数：宽舒大波长 (>= 30px)、克制优雅振幅 [1.8, 3.2] 与黄金呼吸间距绝不压字
+    float w = 0.0f, amp = 0.0f, halfW = 0.0f;
+    HandDrawnStrokeGenerator::resolveTextWavyMetrics(24.0f, 0.0f, w, amp, halfW);
+    EXPECT_GE(w, 2.8f);
+    EXPECT_GE(amp, 1.8f);
+    EXPECT_LE(amp, 3.2f);
+    EXPECT_GE(halfW * 2.0f, 30.0f);
+    const float baseY = HandDrawnStrokeGenerator::resolveTextWavyBaselineY(120.0f, 24.0f, amp);
+    EXPECT_GT(baseY - amp, 121.5f); // 波峰最高点严格位于文字底边下方留白区，100% 绝不切字
+
+    // 2. 验证斜角书法笔锋动态宽窄韵律（下按饱满、上挑纤细）、确定性及收笔尖锋
+    const auto wavy1 = HandDrawnStrokeGenerator::buildWavyStroke(40.0f, baseY, 320.0f, baseY, w, amp, halfW, true);
+    const auto wavy2 = HandDrawnStrokeGenerator::buildWavyStroke(40.0f, baseY, 320.0f, baseY, w, amp, halfW, true);
+    ASSERT_GT(wavy1.spine.size(), 40u);
+    ASSERT_EQ(wavy1.outline.size(), wavy2.outline.size());
+    EXPECT_FLOAT_EQ(wavy1.spine[wavy1.spine.size() / 2].y, wavy2.spine[wavy2.spine.size() / 2].y);
+    float minMidHw = 999.0f, maxMidHw = 0.0f;
+    for (size_t i = wavy1.spine.size() / 5; i < (wavy1.spine.size() * 4) / 5; ++i) {
+        minMidHw = (std::min)(minMidHw, wavy1.spine[i].halfWidth);
+        maxMidHw = (std::max)(maxMidHw, wavy1.spine[i].halfWidth);
+    }
+    EXPECT_GT(maxMidHw, minMidHw * 1.25f); // 斜角书法笔尖产生清晰的下粗上细丝带层次
+    EXPECT_LT(wavy1.spine.back().halfWidth, maxMidHw * 0.65f);
+
+    const float straightW = HandDrawnStrokeGenerator::resolveTextStraightWidth(24.0f, 0.0f);
+    EXPECT_GE(straightW, 3.1f);
+    const auto straight = HandDrawnStrokeGenerator::buildStraightStroke(40.0f, 160.0f, 280.0f, 160.0f, straightW, true);
+    ASSERT_GT(straight.spine.size(), 20u);
+    ASSERT_GT(straight.outline.size(), 40u);
+    EXPECT_LT(straight.spine.back().halfWidth, straight.spine[straight.spine.size() / 2].halfWidth * 0.72f);
+    float maxDev = 0.0f;
+    for (const auto& s : straight.spine) {
+        maxDev = (std::max)(maxDev, std::abs(s.y - 160.0f));
+    }
+    EXPECT_GT(maxDev, 0.45f);
+    EXPECT_LT(maxDev, 3.8f);
+}
+
+TEST(OcrResultWindowCloseTest, TopCloseBottomCloseSingleEscWmCloseAndSecondRefreshAlphaSafe) {
+    auto& win = tools3000::ocr::OcrResultWindow::instance();
+    win.showResult("正在识别...");
+    ASSERT_NE(win.hwnd(), nullptr);
+    ASSERT_TRUE(IsWindowVisible(win.hwnd()));
+
+    // 1. 二次刷新正文时 m_currentAlpha 必须满额 255.0f，绝不退化为 1.0f 透明幽灵窗
+    win.showResult("第一行文字\n第二行文字\n第三行文字");
+    EXPECT_TRUE(IsWindowVisible(win.hwnd()));
+    EXPECT_GE(win.currentAlpha(), 254.0f);
+
+    // 2. 右上角 × 按钮可见且点击即关闭
+    const D2D1_RECT_F topCloseRc = win.topCloseButtonRect();
+    ASSERT_GT(topCloseRc.right - topCloseRc.left, 16.0f);
+    const int tx = static_cast<int>((topCloseRc.left + topCloseRc.right) * 0.5f);
+    const int ty = static_cast<int>((topCloseRc.top + topCloseRc.bottom) * 0.5f);
+    SendMessageW(win.hwnd(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(tx, ty));
+    SendMessageW(win.hwnd(), WM_LBUTTONUP, 0, MAKELPARAM(tx, ty));
+    EXPECT_FALSE(IsWindowVisible(win.hwnd()));
+
+    // 3. 重新打开后验证右下角关闭按钮点击即关闭
+    win.showResult("第一行文字\n第二行文字");
+    ASSERT_TRUE(IsWindowVisible(win.hwnd()));
+    const D2D1_RECT_F botCloseRc = win.bottomCloseButtonRect();
+    const int bx = static_cast<int>((botCloseRc.left + botCloseRc.right) * 0.5f);
+    const int by = static_cast<int>((botCloseRc.top + botCloseRc.bottom) * 0.5f);
+    SendMessageW(win.hwnd(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(bx, by));
+    SendMessageW(win.hwnd(), WM_LBUTTONUP, 0, MAKELPARAM(bx, by));
+    EXPECT_FALSE(IsWindowVisible(win.hwnd()));
+
+    // 4. 有选区时第 1 次 Esc 一步清空选区与光标，第 2 次 Esc 立即关闭（绝不需连按 3 次）
+    win.showResult("Hello World\nSecond Line");
+    ASSERT_TRUE(IsWindowVisible(win.hwnd()));
+    win.selectAll();
+    ASSERT_TRUE(win.hasSelection());
+    SendMessageW(win.hwnd(), WM_KEYDOWN, VK_ESCAPE, 0);
+    EXPECT_FALSE(win.hasSelection());
+    EXPECT_TRUE(IsWindowVisible(win.hwnd()));
+    SendMessageW(win.hwnd(), WM_KEYDOWN, VK_ESCAPE, 0);
+    EXPECT_FALSE(IsWindowVisible(win.hwnd()));
+
+    // 5. WM_CLOSE 安全隐藏且窗口句柄可再次复用不崩溃
+    win.showResult("WM_CLOSE Reuse Test");
+    ASSERT_TRUE(IsWindowVisible(win.hwnd()));
+    SendMessageW(win.hwnd(), WM_CLOSE, 0, 0);
+    EXPECT_FALSE(IsWindowVisible(win.hwnd()));
+    EXPECT_TRUE(IsWindow(win.hwnd()));
+
+    win.cleanup();
 }

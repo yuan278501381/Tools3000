@@ -50,7 +50,18 @@ public:
     void shutdown();
 
     bool isVisible() const noexcept;
+    bool isCloseConfirmModalOpen() const noexcept { return m_closeConfirmModalOpen; }
     void reloadTheme();
+
+    /// 判断给定渲染配置是否处于「纯净原样输出」预设（无背景边框、无自动运镜、原始画布比例）
+    static bool isRawOutputModeConfig(const StudioRenderConfig& cfg) noexcept;
+
+    /// 判断当前会话是否存在需要重新编码的演播室美化、运镜、标注、水印、字幕或剪辑改动
+    static bool hasStudioEditsToRender(
+        const StudioRenderConfig& cfg,
+        const StudioTimelineData& timeline,
+        const std::vector<StudioVideoClip>& clips,
+        int64_t rawTotalMs) noexcept;
 
     /// 离屏渲染底部工具按钮微缩剧场卡片（供自动化测试与视觉快照校验，coachSlot = 0..6）
     static cv::Mat renderCoachCardPreviewForTest(int coachSlot, float phase01, bool dark, bool isZh = true);
@@ -194,13 +205,19 @@ private:
     void renderCoachTooltipOverlay(float W, float H, float minLeft,
                                    bool dark, bool isZh, ID2D1SolidColorBrush* brush);
     void renderExportModalOverlay(float W, float H, bool dark, bool isZh, ID2D1SolidColorBrush* brush);
+    void renderUnsavedCloseModalOverlay(float W, float H, bool dark, bool isZh, ID2D1SolidColorBrush* brush);
     void renderPreparingOverlay(float W, float H, bool dark, bool isZh, ID2D1SolidColorBrush* brush);
     void onPlaybackTick();
     void startAsyncExport();
     void copyLastExportedToClipboard();
+    bool hasStudioEditsToRender() const noexcept;
+    bool isRawOutputModeActive() const noexcept;
+    void toggleRawOutputPreset();
     void finishExportedSessionAndClose();
     void closeOrKeepBySessionState();
+    void requestCloseWithConfirm();
     void keepOriginalAndClose();
+    void discardOriginalAndClose();
     void closeSessionAndCleanup();
     void joinExportWorkerIfDone(bool wait);
     void handleMouseDown(float lx, float ly, bool isDoubleClick = false);
@@ -368,9 +385,12 @@ private:
     std::wstring m_pendingWatermarkImgWide;
     std::wstring m_pendingExportDirWide;
 
-    // 原位导出模态窗与导出完成交付结果卡片状态
+    // 原位导出模态窗、未导出防丢关闭确认窗与导出完成交付结果卡片状态
     bool m_exportModalOpen = false;
     bool m_exportCompletedCard = false;
+    bool m_closeConfirmModalOpen = false;
+    bool m_closeAfterSaveExport = false;
+    bool m_confirmSkipStudioNextTime = false;
     bool m_editingExportName = false;
     bool m_userEditedExportStem = false;
     ExportDropdownKind m_openDropdown = ExportDropdownKind::None;

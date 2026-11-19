@@ -55,6 +55,7 @@
 #include "keycast/KeycastStyle.h"
 #include "keycast/KeycastOverlay.h"
 #include "ocr/OcrResultStyle.h"
+#include "ocr/OcrResultWindow.h"
 #include "ocr/OcrEngine.h"
 #include "ocr/DeepOcrEngine.h"
 #include "ocr/OcrTableReconstructor.h"

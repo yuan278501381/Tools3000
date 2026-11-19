@@ -81,6 +81,11 @@ enum class PinShortcutAction {
     AutoGroupUngrouped,
     FilterByGroup,
     ShowAllGroups,
+    AnnotateSelectedHighlight,
+    AnnotateSelectedWavy,
+    AnnotateSelectedUnderline,
+    UndoPinMarkup,
+    RedoPinMarkup,
     EscapeOrClose,
     ClosePin,
 };

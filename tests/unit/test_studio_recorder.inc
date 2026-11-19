@@ -1940,3 +1940,191 @@ TEST(StudioRecorderTest, SculptedWaveformFilmstripWatermarkScaleAndFourHourTimel
     EXPECT_EQ(baked.size(), 72002u);
     EXPECT_LT(bakeMs, 450.0) << "4-hour recording timeline bake must complete well under 450ms";
 }
+
+TEST(StudioRecorderTest, FreezeCaptureImmediatelyBlocksPostStopOverlayAndEliminatesGreenTailFrames) {
+    using namespace tools3000::capture;
+
+    auto postStopGreenFlag = std::make_shared<std::atomic<bool>>(false);
+    auto postStopCapturedCount = std::make_shared<std::atomic<int>>(0);
+
+    class StopBoundaryMockBackend final : public ICaptureBackend {
+    public:
+        StopBoundaryMockBackend(std::shared_ptr<std::atomic<bool>> greenFlag,
+                                std::shared_ptr<std::atomic<int>> leakCount)
+            : m_greenFlag(std::move(greenFlag)), m_leakCount(std::move(leakCount)) {
+            m_info = {"mock-stop-boundary", "Mock Stop Boundary Backend", true, true, {}};
+        }
+
+        const CaptureBackendInfo& info() const noexcept override { return m_info; }
+
+        bool initialize(const CaptureRegion& region, std::string&) override {
+            m_region = region;
+            m_stride = region.width * 4;
+            m_buf.resize(static_cast<size_t>(m_stride) * static_cast<size_t>(region.height), 0);
+            return true;
+        }
+
+        bool capture(CaptureFrameView& frame, std::string&) override {
+            const bool isGreen = m_greenFlag->load(std::memory_order_acquire);
+            if (isGreen) {
+                m_leakCount->fetch_add(1, std::memory_order_relaxed);
+            }
+            for (int y = 0; y < m_region.height; ++y) {
+                uint8_t* row = m_buf.data() + static_cast<size_t>(y) * static_cast<size_t>(m_stride);
+                for (int x = 0; x < m_region.width; ++x) {
+                    if (isGreen) {
+                        // 模拟停止后弹出的未初始化 YUV(0,0,0) 草绿屏 BGR=[5, 129, 72]
+                        row[x * 4 + 0] = 5;
+                        row[x * 4 + 1] = 129;
+                        row[x * 4 + 2] = 72;
+                        row[x * 4 + 3] = 255;
+                    } else {
+                        // 正常深灰聊天窗口 BGR=[64, 54, 49]
+                        row[x * 4 + 0] = 64;
+                        row[x * 4 + 1] = 54;
+                        row[x * 4 + 2] = 49;
+                        row[x * 4 + 3] = 255;
+                    }
+                }
+            }
+            frame = {m_buf.data(), m_stride, m_region.width, m_region.height, CapturePixelFormat::Bgra32};
+            return true;
+        }
+
+        void releaseFrame() noexcept override {}
+        void shutdown() noexcept override { m_buf.clear(); }
+
+    private:
+        CaptureBackendInfo m_info;
+        CaptureRegion m_region;
+        int m_stride = 0;
+        std::vector<uint8_t> m_buf;
+        std::shared_ptr<std::atomic<bool>> m_greenFlag;
+        std::shared_ptr<std::atomic<int>> m_leakCount;
+    };
+
+    struct BackendResetGuard {
+        ~BackendResetGuard() { setCaptureBackendFactoryForTesting(nullptr); }
+    } resetGuard;
+
+    setCaptureBackendFactoryForTesting([postStopGreenFlag, postStopCapturedCount]() {
+        return std::make_unique<StopBoundaryMockBackend>(postStopGreenFlag, postStopCapturedCount);
+    });
+
+    const auto tmpMp4 = std::filesystem::temp_directory_path() /
+                        (L"tools3000_stop_no_green_" + std::to_wstring(GetCurrentProcessId()) + L".mp4");
+    std::error_code ec;
+    std::filesystem::remove(tmpMp4, ec);
+
+    auto& rec = ScreenRecorder::instance();
+    rec.initialize();
+
+    RecordOptions opts;
+    opts.format = RecordFormat::MP4_H264;
+    opts.fps = 30;
+    opts.fullScreen = false;
+    opts.regionX = 0;
+    opts.regionY = 0;
+    opts.width = 640;
+    opts.height = 360;
+    opts.countdownSeconds = 0;
+    opts.captureSystemAudio = false;
+    opts.captureMicrophone = false;
+    opts.includeCursor = false;
+    opts.studioMode = true;
+    opts.outputPath = tools3000::core::WinUtils::wstringToUtf8(tmpMp4.wstring());
+
+    ASSERT_TRUE(rec.startRecording(opts));
+    std::this_thread::sleep_for(std::chrono::milliseconds(320));
+
+    // 点击结束瞬间：先调用 freezeCaptureImmediately()，随即屏幕上立刻出现草绿色过渡界面并阻塞 200ms 再调异步停止
+    rec.freezeCaptureImmediately();
+    postStopGreenFlag->store(true, std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(180));
+
+    std::promise<std::string> donePromise;
+    auto doneFuture = donePromise.get_future();
+    ASSERT_TRUE(rec.stopRecordingAsync([&donePromise](const std::string& saved, const RecordStats&) {
+        donePromise.set_value(saved);
+    }));
+    const std::string finalPath = doneFuture.get();
+    rec.waitForAsyncStop();
+
+    ASSERT_FALSE(finalPath.empty());
+    EXPECT_EQ(postStopCapturedCount->load(), 0) << "Zero frames may be captured after freezeCaptureImmediately()";
+
+    const auto deck = rec.takeLastStudioPreviewDeck();
+    ASSERT_FALSE(deck.empty());
+    for (const auto& thumb : deck) {
+        const cv::Scalar m = cv::mean(thumb);
+        EXPECT_LT(m[1], 90.0) << "Preview deck must not contain any green BGR=[5,129,72] frame";
+    }
+
+    std::vector<cv::Mat> decodedDeck;
+    int ow = 0, oh = 0;
+    double dur = 0.0;
+    ASSERT_TRUE(StudioVideoCompositor::extractPreviewDeck(finalPath, 640, 64, decodedDeck, ow, oh, dur));
+    ASSERT_FALSE(decodedDeck.empty());
+    for (size_t i = 0; i < decodedDeck.size(); ++i) {
+        const cv::Scalar m = cv::mean(decodedDeck[i]);
+        EXPECT_LT(m[1], 90.0) << "Encoded MP4 frame " << i << " must be free of post-stop green screen";
+    }
+
+    std::filesystem::remove(tmpMp4, ec);
+}
+
+TEST(StudioRecorderTest, RawDirectOutputPolicyAndUnsavedEditDetection) {
+    using namespace tools3000::capture;
+
+    // 1. 纯净原样配置（无背景修饰、无运镜、无平滑光标叠加、原始比例、无剪辑/标注/水印/字幕）
+    StudioRenderConfig rawCfg{};
+    rawCfg.autoFrameEnabled = false;
+    rawCfg.autoZoomEnabled = false;
+    rawCfg.zoomMode = StudioZoomMode::None;
+    rawCfg.aspectRatio = StudioAspectRatio::Original;
+    rawCfg.smoothCursorEnabled = false;
+    rawCfg.showClickRipple = false;
+    rawCfg.cursorHighlightHalo = false;
+    rawCfg.autoCaptionsEnabled = false;
+    rawCfg.watermark.enabled = false;
+
+    StudioTimelineData tl{};
+    tl.durationMs = 5000;
+    std::vector<StudioVideoClip> fullClip = {{0, 5000, 1.0f}};
+
+    EXPECT_TRUE(StudioPreviewWindow::isRawOutputModeConfig(rawCfg));
+    EXPECT_FALSE(StudioPreviewWindow::hasStudioEditsToRender(rawCfg, tl, fullClip, 5000));
+
+    // 2. 开启背景边框即进入演播室编辑态，需重编码导出
+    StudioRenderConfig framedCfg = rawCfg;
+    framedCfg.autoFrameEnabled = true;
+    EXPECT_FALSE(StudioPreviewWindow::isRawOutputModeConfig(framedCfg));
+    EXPECT_TRUE(StudioPreviewWindow::hasStudioEditsToRender(framedCfg, tl, fullClip, 5000));
+
+    // 3. 开启自动运镜且存在启用运镜段时需重编码导出
+    StudioRenderConfig zoomCfg = rawCfg;
+    zoomCfg.autoZoomEnabled = true;
+    zoomCfg.zoomMode = StudioZoomMode::Zoom2D;
+    tl.zoomSegments.push_back({1000, 3000, 0.5f, 0.5f, 1.85f, true, true});
+    EXPECT_FALSE(StudioPreviewWindow::isRawOutputModeConfig(zoomCfg));
+    EXPECT_TRUE(StudioPreviewWindow::hasStudioEditsToRender(zoomCfg, tl, fullClip, 5000));
+    tl.zoomSegments.clear();
+
+    // 4. 即使处于原样配置，若对时间轴做了裁剪、倍速或添加了标注，仍判定为有编辑需导出
+    std::vector<StudioVideoClip> trimmedClip = {{500, 4500, 1.0f}};
+    EXPECT_TRUE(StudioPreviewWindow::hasStudioEditsToRender(rawCfg, tl, trimmedClip, 5000));
+
+    std::vector<StudioVideoClip> spedUpClip = {{0, 5000, 1.5f}};
+    EXPECT_TRUE(StudioPreviewWindow::hasStudioEditsToRender(rawCfg, tl, spedUpClip, 5000));
+
+    StudioTimelineData annTl = tl;
+    StudioAnnotationItem ann{};
+    ann.startMs = 500;
+    ann.endMs = 2000;
+    ann.text = "Note";
+    annTl.annotations.push_back(ann);
+    EXPECT_TRUE(StudioPreviewWindow::hasStudioEditsToRender(rawCfg, annTl, fullClip, 5000));
+
+    // 5. 默认关闭态下未导出防丢确认框保持关闭
+    EXPECT_FALSE(StudioPreviewWindow::instance().isCloseConfirmModalOpen());
+}

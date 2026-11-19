@@ -13,6 +13,7 @@
 #include <softpub.h>
 #include <wintrust.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <shldisp.h>
 #include <exdisp.h>
 #include <dwmapi.h>
@@ -1060,6 +1061,81 @@ bool WinUtils::isTaskbarWindow(HWND hwnd) {
     if (!root) root = hwnd;
     std::wstring cls = getWindowClassName(root);
     return (cls == L"Shell_TrayWnd" || cls == L"Shell_SecondaryTrayWnd");
+}
+
+bool WinUtils::isWindowVisibleOnCurrentDesktop(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+        return false;
+    }
+
+    HWND root = GetAncestor(hwnd, GA_ROOT);
+    if (!root || !IsWindow(root)) {
+        root = hwnd;
+    }
+    if (!IsWindowVisible(root) || IsIconic(root)) {
+        return false;
+    }
+
+    // 第一防线：DWM Cloaked 校验（Windows 10/11 切换虚拟桌面时，非当前桌面的窗口会被标记 DWM_CLOAKED_SHELL；
+    // 挂起的 UWP / Modern 应用窗口会被标记 DWM_CLOAKED_APP，IsWindowVisible 仍为 TRUE，必须用 DWMWA_CLOAKED 剔除）
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(root, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+        return false;
+    }
+    if (root != hwnd) {
+        DWORD childCloaked = 0;
+        if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &childCloaked, sizeof(childCloaked))) && childCloaked != 0) {
+            return false;
+        }
+    }
+
+    // 第二防线：过滤完全不可见的零透明度分层幽灵窗
+    const LONG_PTR exStyle = GetWindowLongPtrW(root, GWL_EXSTYLE);
+    if ((exStyle & WS_EX_LAYERED) != 0) {
+        BYTE alpha = 255;
+        DWORD flags = 0;
+        if (GetLayeredWindowAttributes(root, nullptr, &alpha, &flags) &&
+            (flags & LWA_ALPHA) != 0 && alpha == 0) {
+            return false;
+        }
+    }
+
+    // 第三防线：官方 COM IVirtualDesktopManager 跨虚拟桌面权威校验（线程局部复用，零每帧创建开销）
+    struct ThreadLocalVdm {
+        Microsoft::WRL::ComPtr<IVirtualDesktopManager> mgr;
+        bool attempted = false;
+        bool ownCom = false;
+        ~ThreadLocalVdm() {
+            mgr.Reset();
+            if (ownCom) {
+                CoUninitialize();
+            }
+        }
+        IVirtualDesktopManager* get() noexcept {
+            if (!attempted) {
+                attempted = true;
+                HRESULT coHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+                if (coHr == S_OK || coHr == S_FALSE) {
+                    ownCom = true;
+                }
+                if (SUCCEEDED(coHr) || coHr == RPC_E_CHANGED_MODE) {
+                    CoCreateInstance(CLSID_VirtualDesktopManager, nullptr, CLSCTX_INPROC_SERVER,
+                                     IID_PPV_ARGS(mgr.GetAddressOf()));
+                }
+            }
+            return mgr.Get();
+        }
+    };
+    thread_local ThreadLocalVdm tlsVdm;
+    if (IVirtualDesktopManager* vdm = tlsVdm.get()) {
+        BOOL onCurrent = TRUE;
+        const HRESULT hr = vdm->IsWindowOnCurrentVirtualDesktop(root, &onCurrent);
+        if (SUCCEEDED(hr) && !onCurrent) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool WinUtils::isSystemLanguageChinese() {

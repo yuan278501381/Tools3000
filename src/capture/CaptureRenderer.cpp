@@ -1,4 +1,5 @@
 #include "capture/CaptureRenderer.h"
+#include "capture/TextAnnotationHelper.h"
 #include "capture/MarkupCurveGeometry.h"
 #include "capture/CaptureHudRimStyle.h"
 #include "capture/CaptureHudPalette.h"
@@ -1707,6 +1708,42 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
     m_renderTarget->CreateSolidColorBrush(pal.divider, separatorBrush.GetAddressOf());
 
     auto drawButtonGroup = [&](const std::vector<ToolbarButton>& btnList) {
+        // 先为连续的智能文字批注模式按钮绘制高定内凹微晶分段轨道底槽 (Apple/Figma Segmented Control Track)
+        {
+            float segL = 1e9f, segT = 1e9f, segR = -1e9f, segB = -1e9f;
+            int segCount = 0;
+            for (const auto& b : btnList) {
+                if (b.command == ToolbarCommand::SelectTextMarkupMode) {
+                    segL = (std::min)(segL, b.rect.left);
+                    segT = (std::min)(segT, b.rect.top);
+                    segR = (std::max)(segR, b.rect.right);
+                    segB = (std::max)(segB, b.rect.bottom);
+                    ++segCount;
+                }
+            }
+            if (segCount >= 2) {
+                const float padX = 2.2f * scale;
+                const float padY = 1.6f * scale;
+                const D2D1_RECT_F trackRc = D2D1::RectF(segL - padX, segT - padY, segR + padX, segB + padY);
+                const float trackR = 7.6f * scale;
+                ComPtr<ID2D1SolidColorBrush> trackBg, trackRim;
+                m_renderTarget->CreateSolidColorBrush(
+                    isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.055f)
+                           : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.050f),
+                    trackBg.GetAddressOf());
+                m_renderTarget->CreateSolidColorBrush(
+                    isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.085f)
+                           : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.075f),
+                    trackRim.GetAddressOf());
+                if (trackBg) {
+                    m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(trackRc, trackR, trackR), trackBg.Get());
+                }
+                if (trackRim) {
+                    m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(trackRc, trackR, trackR), trackRim.Get(), 0.9f * scale);
+                }
+            }
+        }
+
         for (size_t idx = 0; idx < btnList.size(); ++idx) {
             const auto& button = btnList[idx];
             // 绘制前置微刻痕细腻分隔线 (1px 双层微刻痕，严格居中于相邻两枚按钮间距中点)
@@ -1757,6 +1794,9 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
             if (button.command == ToolbarCommand::SelectMosaicType) {
                 const int effectiveMosaicType = (state.currentTool == MarkupTool::Blur) ? 1 : state.currentMosaicType;
                 isActiveTool = (button.intParam == effectiveMosaicType);
+            }
+            if (button.command == ToolbarCommand::SelectTextMarkupMode) {
+                isActiveTool = (button.intParam == static_cast<int>(state.currentTextMarkupMode));
             }
             if (button.command == ToolbarCommand::ToggleBeautyShell) {
                 isActiveTool = state.beautyShell.enabled;
@@ -1992,29 +2032,71 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                         m_renderTarget->DrawRoundedRectangle(innerR, confirmHighlightBrush.Get(), 0.9f * scale);
                     }
                 } else if (isActiveTool && !isCheckboxItem) {
-                    // 清爽 10% 科技蓝微晶底 + 底部科技蓝微指示条，告别厚重死灰框
-                    auto* fallback = button.isSecondary ? secondaryActiveBrush.Get() : activeBrush.Get();
-                    if (fallback) {
-                        if (isSplitMicHalf) {
-                            const D2D1_RECT_F unionRc = isSplitMicLeft
-                                ? D2D1::RectF(button.rect.left, button.rect.top, button.rect.right + btnRadius + 2.0f * scale, button.rect.bottom)
-                                : D2D1::RectF(button.rect.left - btnRadius - 2.0f * scale, button.rect.top, button.rect.right, button.rect.bottom);
-                            m_renderTarget->PushAxisAlignedClip(button.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), fallback);
-                            m_renderTarget->PopAxisAlignedClip();
-                        } else {
-                            m_renderTarget->FillRoundedRectangle(rounded, fallback);
+                    if (button.command == ToolbarCommand::SelectTextMarkupMode) {
+                        // 高定立体浮起分段滑块卡片 (Elevated Segmented Control Pill) + 底部当前批注色微光指示条
+                        ComPtr<ID2D1SolidColorBrush> segShadow, segFill, segRim, segGlowBar;
+                        m_renderTarget->CreateSolidColorBrush(
+                            isDark ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.34f)
+                                   : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.10f),
+                            segShadow.GetAddressOf());
+                        m_renderTarget->CreateSolidColorBrush(
+                            isDark ? D2D1::ColorF(45.0f / 255.0f, 52.0f / 255.0f, 68.0f / 255.0f, 0.96f)
+                                   : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f),
+                            segFill.GetAddressOf());
+                        m_renderTarget->CreateSolidColorBrush(
+                            isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f)
+                                   : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.13f),
+                            segRim.GetAddressOf());
+                        m_renderTarget->CreateSolidColorBrush(
+                            D2D1::ColorF(state.currentColor.r / 255.0f, state.currentColor.g / 255.0f,
+                                         state.currentColor.b / 255.0f, 0.92f),
+                            segGlowBar.GetAddressOf());
+                        if (segShadow) {
+                            auto shRc = D2D1::RectF(button.rect.left, button.rect.top + 1.0f * scale,
+                                                    button.rect.right, button.rect.bottom + 1.2f * scale);
+                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(shRc, btnRadius, btnRadius), segShadow.Get());
                         }
-                    }
-                    if (!button.isSecondary && button.label.empty() && !isSplitMicRight && activeIconBrush) {
-                        const float bcx = (button.rect.left + button.rect.right) * 0.5f;
-                        const float pillHalfW = 4.8f * scale;
-                        const float pillH = 2.0f * scale;
-                        auto indPill = D2D1::RoundedRect(
-                            D2D1::RectF(bcx - pillHalfW, button.rect.bottom - 3.2f * scale,
-                                        bcx + pillHalfW, button.rect.bottom - 3.2f * scale + pillH),
-                            1.0f * scale, 1.0f * scale);
-                        m_renderTarget->FillRoundedRectangle(indPill, activeIconBrush.Get());
+                        if (segFill) {
+                            m_renderTarget->FillRoundedRectangle(rounded, segFill.Get());
+                        }
+                        if (segRim) {
+                            m_renderTarget->DrawRoundedRectangle(rounded, segRim.Get(), 0.95f * scale);
+                        }
+                        if (segGlowBar) {
+                            const float bcx = (button.rect.left + button.rect.right) * 0.5f;
+                            const float pillHalfW = 5.4f * scale;
+                            const float pillH = 2.0f * scale;
+                            auto indPill = D2D1::RoundedRect(
+                                D2D1::RectF(bcx - pillHalfW, button.rect.bottom - 3.0f * scale,
+                                            bcx + pillHalfW, button.rect.bottom - 3.0f * scale + pillH),
+                                1.0f * scale, 1.0f * scale);
+                            m_renderTarget->FillRoundedRectangle(indPill, segGlowBar.Get());
+                        }
+                    } else {
+                        // 清爽 10% 科技蓝微晶底 + 底部科技蓝微指示条，告别厚重死灰框
+                        auto* fallback = button.isSecondary ? secondaryActiveBrush.Get() : activeBrush.Get();
+                        if (fallback) {
+                            if (isSplitMicHalf) {
+                                const D2D1_RECT_F unionRc = isSplitMicLeft
+                                    ? D2D1::RectF(button.rect.left, button.rect.top, button.rect.right + btnRadius + 2.0f * scale, button.rect.bottom)
+                                    : D2D1::RectF(button.rect.left - btnRadius - 2.0f * scale, button.rect.top, button.rect.right, button.rect.bottom);
+                                m_renderTarget->PushAxisAlignedClip(button.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                                m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), fallback);
+                                m_renderTarget->PopAxisAlignedClip();
+                            } else {
+                                m_renderTarget->FillRoundedRectangle(rounded, fallback);
+                            }
+                        }
+                        if (!button.isSecondary && button.label.empty() && !isSplitMicRight && activeIconBrush) {
+                            const float bcx = (button.rect.left + button.rect.right) * 0.5f;
+                            const float pillHalfW = 4.8f * scale;
+                            const float pillH = 2.0f * scale;
+                            auto indPill = D2D1::RoundedRect(
+                                D2D1::RectF(bcx - pillHalfW, button.rect.bottom - 3.2f * scale,
+                                            bcx + pillHalfW, button.rect.bottom - 3.2f * scale + pillH),
+                                1.0f * scale, 1.0f * scale);
+                            m_renderTarget->FillRoundedRectangle(indPill, activeIconBrush.Get());
+                        }
                     }
                 } else {
                     auto* fillBrush = isStepper ? stepperBg.Get()
@@ -2392,6 +2474,7 @@ void CaptureRenderer::drawSubmenu(CaptureState& state) {
             { LineStyle::Dashed, state.toolbarLayoutChinese ? L"长虚线" : L"Dashed" },
             { LineStyle::Dotted, state.toolbarLayoutChinese ? L"点虚线" : L"Dotted" },
             { LineStyle::DashDot, state.toolbarLayoutChinese ? L"点划线" : L"DashDot" },
+            { LineStyle::Wavy, state.toolbarLayoutChinese ? L"波浪线" : L"Wavy" },
         };
 
         float menuH = items.size() * itemH + (items.size() - 1) * itemGap + 2.0f * padY;
@@ -2437,6 +2520,7 @@ void CaptureRenderer::drawSubmenu(CaptureState& state) {
             auto iconId = (items[i].style == LineStyle::Dashed) ? CaptureIconId::PropDashedLine
                         : (items[i].style == LineStyle::Dotted) ? CaptureIconId::PropDottedLine
                         : (items[i].style == LineStyle::DashDot) ? CaptureIconId::PropDashDotLine
+                        : (items[i].style == LineStyle::Wavy) ? CaptureIconId::PropWavyLine
                         : CaptureIconId::PropSolidLine;
             auto lineRect = D2D1::RectF(itemRect.left + 6.0f * scale, itemRect.top, itemRect.left + 48.0f * scale, itemRect.bottom);
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), iconId, lineRect,
@@ -3658,9 +3742,29 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
             auto iconId = (button.lineStyleParam == LineStyle::Dashed) ? CaptureIconId::PropDashedLine
                         : (button.lineStyleParam == LineStyle::Dotted) ? CaptureIconId::PropDottedLine
                         : (button.lineStyleParam == LineStyle::DashDot) ? CaptureIconId::PropDashDotLine
+                        : (button.lineStyleParam == LineStyle::Wavy) ? CaptureIconId::PropWavyLine
                         : CaptureIconId::PropSolidLine;
             auto lineRect = D2D1::RectF(rect.left + 3.0f * scale, rect.top, rect.right - 9.0f * scale, rect.bottom);
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), iconId, lineRect, brush, scale);
+            return;
+        }
+        case ToolbarCommand::SelectTextMarkupMode: {
+            const auto mode = static_cast<TextMarkupMode>(button.intParam);
+            if (mode == TextMarkupMode::RectRegion) {
+                CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
+                    CaptureIconId::ToolHighlight, rect, brush, scale);
+                return;
+            }
+            const CaptureIconId iconId = (mode == TextMarkupMode::WavyUnderline)
+                ? CaptureIconId::TextMarkupWavy
+                : (mode == TextMarkupMode::StraightUnderline ? CaptureIconId::TextMarkupUnderline : CaptureIconId::TextMarkupHighlight);
+            ComPtr<ID2D1SolidColorBrush> decBrush;
+            m_renderTarget->CreateSolidColorBrush(
+                D2D1::ColorF(button.color.r / 255.0f, button.color.g / 255.0f, button.color.b / 255.0f, 1.0f),
+                decBrush.GetAddressOf());
+            CaptureVectorIcons::renderIconWithAccent(
+                m_renderTarget.Get(), m_d2dFactory.Get(), iconId, rect,
+                brush, decBrush ? static_cast<ID2D1Brush*>(decBrush.Get()) : brush, scale);
             return;
         }
         case ToolbarCommand::ChooseCustomColor: {
@@ -4421,6 +4525,78 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
         }
 
         case MarkupTool::Highlight: {
+            auto drawD2dHandDrawnRibbon = [&](const HandDrawnRibbon& ribbon) {
+                if (!m_d2dFactory || ribbon.outline.size() < 3) return;
+                ComPtr<ID2D1PathGeometry> geo;
+                if (SUCCEEDED(m_d2dFactory->CreatePathGeometry(geo.GetAddressOf())) && geo) {
+                    ComPtr<ID2D1GeometrySink> sk;
+                    if (SUCCEEDED(geo->Open(sk.GetAddressOf())) && sk) {
+                        sk->SetFillMode(D2D1_FILL_MODE_WINDING);
+                        sk->BeginFigure(D2D1::Point2F(ribbon.outline[0].x, ribbon.outline[0].y), D2D1_FIGURE_BEGIN_FILLED);
+                        for (size_t i = 1; i < ribbon.outline.size(); ++i) {
+                            sk->AddLine(D2D1::Point2F(ribbon.outline[i].x, ribbon.outline[i].y));
+                        }
+                        sk->EndFigure(D2D1_FIGURE_END_CLOSED);
+                        sk->Close();
+                        m_renderTarget->FillGeometry(geo.Get(), toolBrush);
+                    }
+                }
+            };
+
+            if (state.isTextMarkupStreaming && !state.liveTextMarkupPreviewSpans.empty()) {
+                ComPtr<ID2D1SolidColorBrush> highlightBrush;
+                m_renderTarget->CreateSolidColorBrush(
+                    D2D1::ColorF(state.currentColor.r / 255.0f,
+                                 state.currentColor.g / 255.0f,
+                                 state.currentColor.b / 255.0f,
+                                 0.38f),
+                    highlightBrush.GetAddressOf());
+                for (const auto& sp : state.liveTextMarkupPreviewSpans) {
+                    if (sp.width <= 0 || sp.height <= 0) continue;
+                    const float sx0 = selectionRect.left + static_cast<float>(sp.x);
+                    const float sy0 = selectionRect.top + static_cast<float>(sp.y);
+                    const float sx1 = sx0 + static_cast<float>(sp.width);
+                    const float sy1 = sy0 + static_cast<float>(sp.height);
+                    if (state.currentTextMarkupMode == TextMarkupMode::Highlight) {
+                        const D2D1_RECT_F band = D2D1::RectF(sx0 - 1.8f, sy0 - 1.2f, sx1 + 1.8f, sy1 + 1.8f);
+                        const float r = std::clamp(static_cast<float>(sp.height) * 0.16f, 2.2f, 4.2f);
+                        if (highlightBrush) {
+                            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(band, r, r), highlightBrush.Get());
+                        }
+                    } else if (state.currentTextMarkupMode == TextMarkupMode::WavyUnderline) {
+                        float sw = 0.0f, amp = 0.0f, halfW = 0.0f;
+                        HandDrawnStrokeGenerator::resolveTextWavyMetrics(
+                            static_cast<float>(sp.height), 0.0f, sw, amp, halfW);
+                        const float by = HandDrawnStrokeGenerator::resolveTextWavyBaselineY(
+                            sy1, static_cast<float>(sp.height), amp);
+                        drawD2dHandDrawnRibbon(
+                            HandDrawnStrokeGenerator::buildWavyStroke(sx0, by, sx1, by, sw, amp, halfW, true));
+                    } else {
+                        const float sw = HandDrawnStrokeGenerator::resolveTextStraightWidth(
+                            static_cast<float>(sp.height), 0.0f);
+                        const float by = HandDrawnStrokeGenerator::resolveTextStraightBaselineY(
+                            sy1, static_cast<float>(sp.height), sw);
+                        drawD2dHandDrawnRibbon(
+                            HandDrawnStrokeGenerator::buildStraightStroke(sx0, by, sx1, by, sw, true));
+                    }
+                }
+                break;
+            }
+
+            if (state.currentTextMarkupMode == TextMarkupMode::WavyUnderline) {
+                const float sw = (std::max)(2.6f, static_cast<float>(state.currentStrokeWidth) * 1.08f);
+                drawD2dHandDrawnRibbon(HandDrawnStrokeGenerator::buildWavyStroke(
+                    x1, y1, x2, y2, sw,
+                    std::clamp(sw * 1.15f + 1.4f, 2.8f, 9.5f),
+                    std::clamp(sw * 3.8f + 7.5f, 13.5f, 32.0f), false));
+                break;
+            }
+            if (state.currentTextMarkupMode == TextMarkupMode::StraightUnderline) {
+                const float sw = (std::max)(3.0f, static_cast<float>(state.currentStrokeWidth) * 1.12f);
+                drawD2dHandDrawnRibbon(HandDrawnStrokeGenerator::buildStraightStroke(x1, y1, x2, y2, sw, false));
+                break;
+            }
+
             ComPtr<ID2D1SolidColorBrush> highlightBrush;
             m_renderTarget->CreateSolidColorBrush(
                 D2D1::ColorF(state.currentColor.r / 255.0f,

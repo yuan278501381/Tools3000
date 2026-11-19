@@ -65,6 +65,10 @@ enum class CaptureIconId {
     PropDashedLine,
     PropDottedLine,
     PropDashDotLine,
+    PropWavyLine,
+    TextMarkupHighlight,
+    TextMarkupWavy,
+    TextMarkupUnderline,
     PropStrokeWidth,
     PropCornerRadius,
     PropPadding,
@@ -103,6 +107,12 @@ public:
     static void renderIcon(ID2D1RenderTarget* rt, ID2D1Factory* factory,
                            CaptureIconId iconId, const D2D1_RECT_F& rect,
                            ID2D1Brush* brush, float scale);
+
+    /// 渲染支持双色装饰的矢量图标（如文字荧光笔/波浪线/直线图标：字形使用 primaryBrush，底部装饰使用 accentBrush）
+    static void renderIconWithAccent(ID2D1RenderTarget* rt, ID2D1Factory* factory,
+                                     CaptureIconId iconId, const D2D1_RECT_F& rect,
+                                     ID2D1Brush* primaryBrush, ID2D1Brush* accentBrush,
+                                     float scale);
 
     /// 绘制 PixPin 风格调色板第 1 位「连续彩虹圆角方框 + 1.4x 白环 + 当前生效色圆角内芯」指示器
     static void drawCustomColorIndicator(ID2D1RenderTarget* rt,

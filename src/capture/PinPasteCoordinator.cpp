@@ -570,6 +570,57 @@ cv::Mat renderClipboardTextOrColor(const std::wstring& clipText, float& outCorne
 
 } // namespace
 
+uint64_t PinPasteCoordinator::computeContentFingerprint(const cv::Mat& image, const std::wstring& sourceText) noexcept {
+    constexpr uint64_t kFnvOffset = 14695981039346656037ULL;
+    constexpr uint64_t kFnvPrime = 1099511628211ULL;
+    uint64_t h = kFnvOffset;
+    auto mix64 = [&](uint64_t v) noexcept {
+        for (int i = 0; i < 8; ++i) {
+            h ^= (v & 0xFFu);
+            h *= kFnvPrime;
+            v >>= 8;
+        }
+    };
+
+    if (!sourceText.empty()) {
+        mix64(0x54585431ULL); // "TXT1"
+        mix64(static_cast<uint64_t>(sourceText.size()));
+        for (wchar_t ch : sourceText) {
+            h ^= static_cast<uint64_t>(static_cast<uint16_t>(ch) & 0xFFu);
+            h *= kFnvPrime;
+            h ^= static_cast<uint64_t>((static_cast<uint16_t>(ch) >> 8) & 0xFFu);
+            h *= kFnvPrime;
+        }
+        return h;
+    }
+
+    if (image.empty() || image.cols <= 0 || image.rows <= 0) {
+        return 0;
+    }
+
+    mix64(0x494D4731ULL); // "IMG1"
+    mix64(static_cast<uint64_t>(image.cols));
+    mix64(static_cast<uint64_t>(image.rows));
+
+    const int ch = image.channels();
+    const int elemBytes = (std::min)(ch, 3); // 仅比较 RGB，消除 BGR(24位) 与 BGRA(32位) 透明封装差异误判
+    const int gridX = (std::min)(16, image.cols);
+    const int gridY = (std::min)(16, image.rows);
+    for (int gy = 0; gy < gridY; ++gy) {
+        const int y = (gridY == 1) ? 0 : (gy * (image.rows - 1)) / (gridY - 1);
+        const uint8_t* rowPtr = image.ptr<uint8_t>(y);
+        for (int gx = 0; gx < gridX; ++gx) {
+            const int x = (gridX == 1) ? 0 : (gx * (image.cols - 1)) / (gridX - 1);
+            const uint8_t* px = rowPtr + static_cast<size_t>(x) * static_cast<size_t>(ch);
+            for (int c = 0; c < elemBytes; ++c) {
+                h ^= static_cast<uint64_t>(px[c]);
+                h *= kFnvPrime;
+            }
+        }
+    }
+    return h;
+}
+
 PinPasteCoordinator& PinPasteCoordinator::instance() {
     static PinPasteCoordinator coord;
     return coord;
@@ -581,6 +632,7 @@ void PinPasteCoordinator::reset() {
     m_lastTriggerTime = {};
     m_lastClipboardSeq = 0;
     m_lastHistoryCount = 0;
+    m_lastHistoryHeadId = 0;
 }
 
 int PinPasteCoordinator::currentReverseIndex() const {
@@ -633,22 +685,19 @@ std::vector<PinPasteCandidate> PinPasteCoordinator::resolveCandidates([[maybe_un
     // 2. 检查 CaptureHistory 中的条目
     auto& history = CaptureHistory::instance();
     const int count = (historyCount >= 0) ? historyCount : history.count();
+    const uint64_t clipFp = !clipImg.empty()
+        ? computeContentFingerprint(clipImg, clipFromTextOrColor ? generatedSourceText : std::wstring{})
+        : 0ULL;
 
-    // 检查剪贴板图像是否已在 CaptureHistory[0] 中匹配（微晶字签/色卡绝不与历史截图判重）
+    // 检查剪贴板图像是否与 CaptureHistory[0] 像素内容完全一致（用 64-bit 像素指纹精准判重，
+    // 绝不因两张不同截图恰好同尺寸而误吞新图；微晶字签/色卡绝不与历史截图判重）
     bool clipboardMatchesHistory0 = false;
     if (!clipImg.empty() && !clipFromTextOrColor && count > 0) {
         auto latestOpt = history.get(0);
         if (latestOpt.has_value() && !latestOpt->image.empty()) {
             const auto& latest = *latestOpt;
-            if (meta.magic == 0x54333030 &&
-                meta.regionW == latest.region.width &&
-                meta.regionH == latest.region.height &&
-                clipImg.cols == latest.image.cols &&
-                clipImg.rows == latest.image.rows) {
-                clipboardMatchesHistory0 = true;
-            } else if (clipImg.cols == latest.image.cols &&
-                       clipImg.rows == latest.image.rows &&
-                       clipImg.type() == latest.image.type()) {
+            const uint64_t latestFp = computeContentFingerprint(latest.image);
+            if (clipFp != 0ULL && latestFp != 0ULL && clipFp == latestFp) {
                 clipboardMatchesHistory0 = true;
             }
         }
@@ -667,6 +716,7 @@ std::vector<PinPasteCandidate> PinPasteCoordinator::resolveCandidates([[maybe_un
         clipCand.isGeneratedCard = clipFromTextOrColor;
         clipCand.cardCornerRadius = generatedCornerRadius;
         clipCand.sourceText = generatedSourceText;
+        clipCand.contentFingerprint = clipFp;
         candidates.push_back(std::move(clipCand));
     }
 
@@ -686,6 +736,7 @@ std::vector<PinPasteCandidate> PinPasteCoordinator::resolveCandidates([[maybe_un
             histCand.padY = (entry.image.rows - entry.region.height) / 2;
         }
         histCand.isFromClipboard = false;
+        histCand.contentFingerprint = computeContentFingerprint(entry.image);
         candidates.push_back(std::move(histCand));
     }
 
@@ -696,25 +747,36 @@ std::vector<PinPasteCandidate> PinPasteCoordinator::resolveCandidates([[maybe_un
         clipCand.isGeneratedCard = clipFromTextOrColor;
         clipCand.cardCornerRadius = generatedCornerRadius;
         clipCand.sourceText = generatedSourceText;
+        clipCand.contentFingerprint = clipFp;
         candidates.push_back(std::move(clipCand));
     }
 
     return candidates;
 }
 
-std::optional<PinPasteDecision> PinPasteCoordinator::stepNext(const POINT* fallbackCursor) {
+std::optional<PinPasteDecision> PinPasteCoordinator::stepNext(
+    const POINT* fallbackCursor,
+    const std::unordered_set<uint64_t>* activeDesktopFingerprints) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
     auto now = std::chrono::steady_clock::now();
     DWORD currentSeq = GetClipboardSequenceNumber();
-    int historyCount = CaptureHistory::instance().count();
+    auto& history = CaptureHistory::instance();
+    int historyCount = history.count();
+    uint64_t historyHeadId = 0;
+    if (historyCount > 0) {
+        if (auto headOpt = history.get(0); headOpt.has_value()) {
+            historyHeadId = headOpt->id;
+        }
+    }
 
     bool sessionValid = false;
     if (m_lastTriggerTime.time_since_epoch().count() > 0) {
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastTriggerTime).count();
         if (elapsed <= m_sessionTimeoutMs &&
             currentSeq == m_lastClipboardSeq &&
-            historyCount == m_lastHistoryCount) {
+            historyCount == m_lastHistoryCount &&
+            historyHeadId == m_lastHistoryHeadId) {
             sessionValid = true;
         }
     }
@@ -733,8 +795,36 @@ std::optional<PinPasteDecision> PinPasteCoordinator::stepNext(const POINT* fallb
     }
 
     const int totalCandidates = static_cast<int>(candidates.size());
-    const int targetIndex = m_reverseIndex % totalCandidates;
-    const auto& candidate = candidates[targetIndex];
+    int targetIndex = m_reverseIndex % totalCandidates;
+    bool alreadyVisibleOnDesktop = false;
+
+    // 真实桌面防重复套娃机制：当传入当前虚拟桌面已显示的贴图指纹集合时，
+    // 智能跳过已贴在桌面上的重复条目；若全部候选均已在桌面显示则禁止无限套娃克隆，转由调用方置顶聚焦并提示
+    if (activeDesktopFingerprints && !activeDesktopFingerprints->empty()) {
+        auto isAlreadyVisible = [&](int idx) -> bool {
+            const uint64_t fp = candidates[static_cast<size_t>(idx)].contentFingerprint;
+            return fp != 0ULL && activeDesktopFingerprints->find(fp) != activeDesktopFingerprints->end();
+        };
+
+        int chosen = -1;
+        for (int offset = 0; offset < totalCandidates; ++offset) {
+            const int probe = (targetIndex + offset) % totalCandidates;
+            if (!isAlreadyVisible(probe)) {
+                chosen = probe;
+                break;
+            }
+        }
+        if (chosen >= 0) {
+            targetIndex = chosen;
+            m_reverseIndex = chosen;
+        } else {
+            alreadyVisibleOnDesktop = true;
+            targetIndex = 0;
+            m_reverseIndex = 0;
+        }
+    }
+
+    const auto& candidate = candidates[static_cast<size_t>(targetIndex)];
 
     POINT cursor{};
     if (fallbackCursor) {
@@ -771,10 +861,10 @@ std::optional<PinPasteDecision> PinPasteCoordinator::stepNext(const POINT* fallb
         };
     }
 
-    // 动态探测桌面所有现有活跃贴图窗口，用于阶梯避让或微晶便签栈垂直排布
+    // 动态探测当前虚拟桌面所有现有活跃贴图窗口，用于阶梯避让或微晶便签栈垂直排布（隔离其他虚拟桌面窗口）
     HWND hExisting = nullptr;
     while ((hExisting = FindWindowExW(nullptr, hExisting, L"Tools3000_PinWindow", nullptr)) != nullptr) {
-        if (IsWindowVisible(hExisting)) {
+        if (tools3000::core::WinUtils::isWindowVisibleOnCurrentDesktop(hExisting)) {
             RECT rc{};
             GetWindowRect(hExisting, &rc);
             input.existingPins.push_back(rc);
@@ -790,10 +880,12 @@ std::optional<PinPasteDecision> PinPasteCoordinator::stepNext(const POINT* fallb
     decision.targetIndex = targetIndex;
     decision.totalCount = totalCandidates;
     decision.isLooped = (m_reverseIndex > 0 && targetIndex == 0);
+    decision.alreadyVisibleOnDesktop = alreadyVisibleOnDesktop;
 
     m_lastTriggerTime = now;
     m_lastClipboardSeq = currentSeq;
     m_lastHistoryCount = historyCount;
+    m_lastHistoryHeadId = historyHeadId;
 
     LOG_INFO("PinPasteCoordinator: 贴出历史条目 [{}/{}], 尺寸={}x{}, 坐标=({}, {})",
              targetIndex + 1, totalCandidates, candidate.image.cols, candidate.image.rows, spawnPos.x, spawnPos.y);
