@@ -1305,6 +1305,27 @@ TEST(LiveTextOcrTest, PinInPlaceTextAnnotationSupportsStackingColorSwitchAndUndo
     EXPECT_TRUE(wavyRes.value("canUndoPinMarkup", false));
     EXPECT_TRUE(wavyRes.value("undoBtnVisible", false));
 
+    // 2B. 已施加批注进入清透预览态后：点击悬浮舱首钮 [复制图]（附 5px 手抖模拟）必须将带标注图片写入剪贴板而非纯文本！
+    {
+        HWND pinHwnd = FindWindowW(L"Tools3000_PinWindow", nullptr);
+        ASSERT_NE(pinHwnd, nullptr);
+        const int cfx = wavyRes.value("copyFloatingCenterX", 0);
+        const int cfy = wavyRes.value("copyFloatingCenterY", 0);
+        ASSERT_GT(cfx, 0);
+        ASSERT_GT(cfy, 0);
+        SendMessageW(pinHwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(cfx, cfy));
+        SendMessageW(pinHwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(cfx + 5, cfy + 2));
+        SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(cfx + 5, cfy + 2));
+
+        ASSERT_TRUE(OpenClipboard(nullptr));
+        const bool hasImage = (IsClipboardFormatAvailable(CF_DIB) != FALSE) ||
+                              (IsClipboardFormatAvailable(CF_BITMAP) != FALSE);
+        const bool hasText = (IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE);
+        CloseClipboard();
+        EXPECT_TRUE(hasImage) << "Post-markup copy pill must copy annotated image to clipboard";
+        EXPECT_FALSE(hasText) << "Post-markup copy pill must not overwrite clipboard with plain text";
+    }
+
     // 3. 切换为第 3 号色球（晴空宝蓝 #3B82F6），验证已标荧光笔实时切换为蓝色调
     const auto blueRes = invokeRpc(3405, "capture.inspectPinOcrState", {
         {"setMarkupColorIndex", 3},
@@ -1434,4 +1455,94 @@ TEST(OcrResultWindowCloseTest, TopCloseBottomCloseSingleEscWmCloseAndSecondRefre
     EXPECT_TRUE(IsWindow(win.hwnd()));
 
     win.cleanup();
+}
+
+TEST(LiveTextOcrTest, CompactLineSpacingInkBehindTextPreservesLowerLineLegibility) {
+    using namespace tools3000::capture;
+
+    // 1. 验证自适应行距求解器在紧凑 2px 行距下精确锁死两行走廊中线并收束振幅与笔宽
+    const auto tightWavy = HandDrawnStrokeGenerator::resolveAdaptiveWavyPlacement(
+        100.0f, 14.0f, 2.5f, true, 0.0f);
+    EXPECT_TRUE(tightWavy.compactCorridor);
+    EXPECT_NEAR(tightWavy.baselineY, 101.25f, 0.1f);
+    EXPECT_LT(tightWavy.amplitude, 1.3f);
+    EXPECT_LT(tightWavy.strokeWidth, 2.0f);
+
+    const auto looseWavy = HandDrawnStrokeGenerator::resolveAdaptiveWavyPlacement(
+        100.0f, 18.0f, 16.0f, true, 0.0f);
+    EXPECT_FALSE(looseWavy.compactCorridor);
+    EXPECT_GT(looseWavy.amplitude, 1.8f);
+
+    // 2. 暗色终端极限紧凑两行像素实测（行距仅 2px）：验证画波浪线后空白走廊呈明显红色且第 2 行白字笔画零被盖糊
+    cv::Mat darkTerminal(80, 360, CV_8UC3, cv::Scalar(32, 30, 28));
+    // 第 1 行白字模拟横笔区 y=[18..30]，第 2 行白字模拟横笔区 y=[33..45]（真实行间走廊仅 2px：y=31..32）
+    cv::rectangle(darkTerminal, cv::Rect(24, 19, 280, 11), cv::Scalar(225, 228, 232), cv::FILLED);
+    cv::rectangle(darkTerminal, cv::Rect(24, 33, 280, 11), cv::Scalar(225, 228, 232), cv::FILLED);
+
+    cv::Mat annotated = darkTerminal.clone();
+    MarkupEngine::renderTextUnderlinePreview(
+        annotated,
+        {cv::Rect(24, 18, 280, 13)},
+        MarkupColor{239, 68, 68, 255},
+        LineStyle::Wavy,
+        0.0f);
+
+    // 走廊中线 (y=31..32) 必须出现醒目红色波浪像素
+    int redCorridorPixels = 0;
+    for (int y = 30; y <= 32; ++y) {
+        for (int x = 30; x < 300; ++x) {
+            const cv::Vec3b px = annotated.at<cv::Vec3b>(y, x);
+            if (static_cast<int>(px[2]) - static_cast<int>(px[0]) >= 55) {
+                ++redCorridorPixels;
+            }
+        }
+    }
+    EXPECT_GT(redCorridorPixels, 40) << "Wavy stroke must remain vivid in the inter-line corridor";
+
+    // 第 2 行核心白字区域（y=34..43）必须受 Ink-Behind-Text 保护，保持 >= 195 清晰亮白，绝不被红线盖住！
+    int protectedWhitePixels = 0;
+    int totalRow2Pixels = 0;
+    for (int y = 34; y <= 43; ++y) {
+        for (int x = 30; x < 300; ++x) {
+            const cv::Vec3b px = annotated.at<cv::Vec3b>(y, x);
+            const int lum = (static_cast<int>(px[2]) * 77 + static_cast<int>(px[1]) * 150 + static_cast<int>(px[0]) * 29) >> 8;
+            ++totalRow2Pixels;
+            if (lum >= 195) ++protectedWhitePixels;
+        }
+    }
+    EXPECT_EQ(protectedWhitePixels, totalRow2Pixels)
+        << "Second line bright text strokes must remain crisp and unobstructed via Ink-Behind-Text compositing";
+}
+
+TEST(LiveTextOcrTest, EnvRealImageOcrBenchmark) {
+    wchar_t envBuf[1024]{};
+    const DWORD len = GetEnvironmentVariableW(L"TOOLS3000_OCR_BENCH_IMAGE", envBuf, static_cast<DWORD>(std::size(envBuf)));
+    if (len == 0 || len >= std::size(envBuf)) {
+        GTEST_SKIP() << "Set TOOLS3000_OCR_BENCH_IMAGE to run real-image OCR latency benchmark";
+    }
+    const std::string pathUtf8 = tools3000::core::WinUtils::wstringToUtf8(std::wstring(envBuf, len));
+    const cv::Mat img = cv::imread(pathUtf8, cv::IMREAD_COLOR);
+    ASSERT_FALSE(img.empty()) << "Failed to load benchmark image: " << pathUtf8;
+
+    auto& deep = tools3000::ocr::DeepOcrEngine::instance();
+    ASSERT_TRUE(deep.getModelStatus().installed) << "DeepOcrEngine models not installed";
+
+    // 预热一次固定桶（模拟主程序启动后的常驻暖机状态），再测一次真实运行耗时
+    const auto tCold0 = std::chrono::steady_clock::now();
+    const auto warmRes = deep.extractText(img);
+    const auto coldMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - tCold0).count();
+
+    const auto tWarm0 = std::chrono::steady_clock::now();
+    const auto hotRes = deep.extractText(img);
+    const auto hotMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - tWarm0).count();
+
+    size_t totalChars = 0;
+    for (const auto& r : hotRes) {
+        totalChars += tools3000::ocr::OcrEngine::splitUtf8Codepoints(r.text).size();
+    }
+    std::printf("[OCR-BENCH] image=%dx%d lines=%zu chars=%zu firstRun=%lldms warmRun=%lldms\n",
+                img.cols, img.rows, hotRes.size(), totalChars, coldMs, hotMs);
+    EXPECT_GT(hotRes.size(), 0u);
 }

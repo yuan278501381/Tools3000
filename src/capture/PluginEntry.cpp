@@ -1992,6 +1992,7 @@ public:
                 const auto tbRect = pin->hoverToolbarRect();
                 const auto txtRect = pin->textButtonRect();
                 const auto invRect = pin->invertButtonRect();
+                const auto copyFloatingRect = pin->copyFloatingButtonRect();
                 const auto copyTblRect = pin->copyTableFloatingButtonRect();
                 const auto openPnlRect = pin->openPanelFloatingButtonRect();
                 const auto hlRect = pin->highlightFloatingButtonRect();
@@ -2043,6 +2044,8 @@ public:
                     {"textBtnCenterY", static_cast<int>(std::lround((txtRect.top + txtRect.bottom) * 0.5f))},
                     {"invertBtnCenterX", static_cast<int>(std::lround((invRect.left + invRect.right) * 0.5f))},
                     {"invertBtnCenterY", static_cast<int>(std::lround((invRect.top + invRect.bottom) * 0.5f))},
+                    {"copyFloatingCenterX", static_cast<int>(std::lround((copyFloatingRect.left + copyFloatingRect.right) * 0.5f))},
+                    {"copyFloatingCenterY", static_cast<int>(std::lround((copyFloatingRect.top + copyFloatingRect.bottom) * 0.5f))},
                     {"pressedToolbarBtn", pin->pressedToolbarBtn()},
                     {"isDragging", pin->isDragging()},
                     {"isInverted", pin->isInverted()},

@@ -849,7 +849,7 @@ size_t PinWindow::closeGroup(int groupId) {
     return closedCount;
 }
 
-static bool copyImageToClipboard(const cv::Mat& image);
+static bool copyImageToClipboard(const cv::Mat& image, HWND ownerHwnd = nullptr);
 static bool savePinnedImage(HWND owner, const cv::Mat& image);
 
 static PinContextMenuSnapshot buildPinContextMenuSnapshot(const PinWindow* self) {
@@ -929,10 +929,7 @@ static void executePinContextMenuCommand(PinWindow* self, HWND hwnd, const PinMe
 
     switch (cmd.action) {
         case PinMenuAction::CopyImage:
-            if (copyImageToClipboard(self->sourceImage())) {
-                tools3000::core::EventBus::instance().publish(
-                    tools3000::core::ShowToastEvent{isZh ? L"已复制贴图到剪贴板" : L"Copied pin to clipboard"});
-            }
+            self->copyPinImageWithFeedback();
             break;
         case PinMenuAction::CopySelectedText:
             self->copySelectedText();
@@ -1560,8 +1557,58 @@ int PinWindow::hitTestInteractiveButton(int x, int y) const noexcept {
     return kPinBtnNone;
 }
 
-static bool copyImageToClipboard(const cv::Mat& image);
+bool PinWindow::isInteractiveButtonHitWithSlop(int btnId, int x, int y, float slopPx) const noexcept {
+    if (m_folded || btnId == kPinBtnNone) return false;
+    auto hitExpanded = [&](const D2D1_RECT_F& rc) noexcept -> bool {
+        if (rc.right <= rc.left || rc.bottom <= rc.top) return false;
+        const float fx = static_cast<float>(x);
+        const float fy = static_cast<float>(y);
+        return fx >= rc.left - slopPx && fx <= rc.right + slopPx &&
+               fy >= rc.top - slopPx && fy <= rc.bottom + slopPx;
+    };
+    if (btnId >= kPinBtnQrBadgeBase) {
+        const size_t q = static_cast<size_t>(btnId - kPinBtnQrBadgeBase);
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        return q < m_qrCodes.size() && hitExpanded(m_qrCodes[q].badgeRect);
+    }
+    if (btnId >= kPinBtnColorDotBase && btnId < kPinBtnColorDotBase + 5) {
+        const size_t ci = static_cast<size_t>(btnId - kPinBtnColorDotBase);
+        return !m_selectedBlockIndices.empty() && ci < m_btnColorDotFloatingRects.size() &&
+               hitExpanded(m_btnColorDotFloatingRects[ci]);
+    }
+    switch (btnId) {
+        case kPinBtnGroupBadge:        return hitExpanded(m_btnGroupBadgeRect);
+        case kPinBtnCopyFloating:      return !m_selectedBlockIndices.empty() && hitExpanded(m_btnCopyFloatingRect);
+        case kPinBtnCopyTableFloating: return !m_selectedBlockIndices.empty() && hitExpanded(m_btnCopyTableFloatingRect);
+        case kPinBtnOpenPanelFloating: return !m_selectedBlockIndices.empty() && hitExpanded(m_btnOpenPanelFloatingRect);
+        case kPinBtnHighlightFloating: return !m_selectedBlockIndices.empty() && hitExpanded(m_btnHighlightFloatingRect);
+        case kPinBtnWavyFloating:      return !m_selectedBlockIndices.empty() && hitExpanded(m_btnWavyFloatingRect);
+        case kPinBtnUnderlineFloating: return !m_selectedBlockIndices.empty() && hitExpanded(m_btnUnderlineFloatingRect);
+        case kPinBtnUndoFloating:      return !m_selectedBlockIndices.empty() && hitExpanded(m_btnUndoFloatingRect);
+        // 右上角工具栏 8 键：只要按下时已锁定，抬手校验不受 m_hoverAlpha 定时器竞态淡出影响
+        case kPinBtnFold:   return hitExpanded(m_btnFoldRect);
+        case kPinBtnRotate: return hitExpanded(m_btnRotateRect);
+        case kPinBtnInvert: return hitExpanded(m_btnInvertRect);
+        case kPinBtnEdit:   return hitExpanded(m_btnEditRect);
+        case kPinBtnText:   return hitExpanded(m_btnTextRect);
+        case kPinBtnCopy:   return hitExpanded(m_btnCopyRect);
+        case kPinBtnSave:   return hitExpanded(m_btnSaveRect);
+        case kPinBtnClose:  return hitExpanded(m_btnCloseRect);
+        default:            return false;
+    }
+}
+
 static bool savePinnedImage(HWND owner, const cv::Mat& image);
+
+bool PinWindow::copyPinImageWithFeedback() {
+    const bool ok = copyImageToClipboard(m_sourceImage, m_hwnd);
+    const bool isZh = tools3000::core::isUiLanguageChinese();
+    tools3000::core::EventBus::instance().publish(
+        tools3000::core::ShowToastEvent{
+            ok ? (isZh ? L"已复制贴图到剪贴板" : L"Copied pin to clipboard")
+               : (isZh ? L"剪贴板被其他程序占用，复制失败，请重试" : L"Clipboard busy, copy failed — please retry")});
+    return ok;
+}
 
 void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bool shiftHeld) {
     if (m_folded) return;
@@ -1592,7 +1639,13 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
             break;
         }
         case kPinBtnCopyFloating:
-            copySelectedText();
+            // 已对选中文字施加批注进入清透预览态后，悬浮舱首钮直接复制带标注高清贴图；
+            // 未批注蓝选态则复制选中的纯文本，彻底消除标注后点复制按钮只复制文字的困惑
+            if (m_ocrMarkupPreviewClean && m_pinnedSourceText.empty()) {
+                copyPinImageWithFeedback();
+            } else {
+                copySelectedText();
+            }
             break;
         case kPinBtnCopyTableFloating:
             copySelectedOrAllAsTable();
@@ -1634,10 +1687,7 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
             }
             break;
         case kPinBtnCopy:
-            copyImageToClipboard(m_sourceImage);
-            tools3000::core::EventBus::instance().publish(
-                tools3000::core::ShowToastEvent{
-                    tools3000::core::isUiLanguageChinese() ? L"已复制贴图到剪贴板" : L"Copied pin to clipboard"});
+            copyPinImageWithFeedback();
             break;
         case kPinBtnSave:
             if (m_hwnd && IsWindow(m_hwnd)) {
@@ -1733,10 +1783,10 @@ void PinWindow::cancelAllClickThrough() {
 }
 
 // 将 cv::Mat 以标准底向上 CF_DIB 与 PNG 写入剪贴板（贴图外发复制出口自动按配置压印企业/品牌水印，不影响内存原图 OCR）
-static bool copyImageToClipboard(const cv::Mat& image) {
+static bool copyImageToClipboard(const cv::Mat& image, HWND ownerHwnd) {
     if (image.empty()) return false;
     const cv::Mat exported = WatermarkRenderer::applyGlobalCaptureWatermarkIfEnabled(image);
-    return copyMatToClipboard(exported);
+    return ClipboardUtils::copyImageToClipboard(exported, L"", ownerHwnd);
 }
 
 static bool savePinnedImage(HWND owner, const cv::Mat& image) {
@@ -4144,7 +4194,10 @@ void PinWindow::render() {
             //    [复制] (表格) [对照] | 〔荧光笔 · 波浪线 · 直线〕 | 5 枚高定珠宝色珠 | (撤销)
             if (!m_selectedBlockIndices.empty() && !m_isSelectingText) {
                 const bool isZh = tools3000::core::isUiLanguageChinese();
-                const wchar_t* lblCopy = isZh ? L"复制" : L"Copy";
+                const bool floatingCopyAsImage = (m_ocrMarkupPreviewClean && m_pinnedSourceText.empty());
+                const wchar_t* lblCopy = floatingCopyAsImage
+                    ? (isZh ? L"复制图" : L"Copy Img")
+                    : (isZh ? L"复制" : L"Copy");
                 const wchar_t* lblTable = isZh ? L"复制表格" : L"Table";
                 const wchar_t* lblPanel = isZh ? L"对照" : L"Panel";
                 const wchar_t* lblHl = isZh ? L"荧光笔" : L"Highlight";
@@ -5032,7 +5085,10 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->copyAllText();
                     return 0;
                 case PinShortcutAction::CopySelectedOrImage:
-                    if (!self->m_selectedBlockIndices.empty()) {
+                    // 仅当处于可见蓝底选字态（未落笔批注进入清透态）时，Ctrl+C 复制选中文字；
+                    // 一旦对文字添加了荧光笔/波浪线/直线批注（m_ocrMarkupPreviewClean==true），
+                    // 按 Ctrl+C 直接复制带全部最新标注的高清贴图，绝不再误复制成纯文本！
+                    if (!self->m_selectedBlockIndices.empty() && !self->m_ocrMarkupPreviewClean) {
                         self->copySelectedText();
                         return 0;
                     }
@@ -5040,10 +5096,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                         self->copyAllText();
                         return 0;
                     }
-                    copyImageToClipboard(self->m_sourceImage);
-                    tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{
-                            tools3000::core::isUiLanguageChinese() ? L"已复制贴图到剪贴板" : L"Copied pin to clipboard"});
+                    self->copyPinImageWithFeedback();
                     return 0;
                 case PinShortcutAction::ExtractText:
                     self->extractText();
@@ -5175,14 +5228,15 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 self->m_dragThresholdExceeded = false;
             }
 
-            // Drag-First 阈值跃迁：若在工具栏按钮/胶囊上按下左键后移动距离 >= 4.0 * dpiScale，
-            // 立即取消按钮触发候选，平滑切换为整窗拖拽移动！
+            // Drag-First 阈值跃迁：在工具栏按钮上使用防手抖 10 DIP 阈值（避免点击小图标手轻晃 4~8px 误吞点击），
+            // 超过 10 DIP 才切换为整窗拖拽移动，兼顾 100% 可靠点击与自由拖拽！
             if (leftHeld && self->m_pressedToolbarBtn != kPinBtnNone && !self->m_isDragging) {
                 const float moveDist = std::hypot(
                     static_cast<float>(x - self->m_pressStartClientPt.x),
                     static_cast<float>(y - self->m_pressStartClientPt.y));
                 const float safeScale = (self->m_dpiScale > 0.0f) ? self->m_dpiScale : 1.0f;
-                if (moveDist >= PinInteractionConstants::kDragStartThresholdDip * safeScale) {
+                const float btnDragCancelDip = (std::max)(10.0f, PinInteractionConstants::kDragStartThresholdDip * 2.5f);
+                if (moveDist >= btnDragCancelDip * safeScale) {
                     self->m_pressedToolbarBtn = kPinBtnNone;
                     self->m_dragThresholdExceeded = true;
                     self->m_isDragging = true;
@@ -5685,8 +5739,9 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 self->m_dragThresholdExceeded = false;
                 ReleaseCapture();
 
+                const float clickSlopPx = 8.0f * ((self->m_dpiScale > 0.0f) ? self->m_dpiScale : 1.0f);
                 if (!wasDragging && pressedBtn != kPinBtnNone &&
-                    self->hitTestInteractiveButton(upX, upY) == pressedBtn) {
+                    self->isInteractiveButtonHitWithSlop(pressedBtn, upX, upY, clickSlopPx)) {
                     const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     self->executeInteractiveButton(pressedBtn, upX, upY, shift);
                 }

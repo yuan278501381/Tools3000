@@ -1569,6 +1569,12 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
     }
 
     std::vector<OcrResult> rawBlocks;
+    const auto tTotalStart = std::chrono::steady_clock::now();
+    long long detMs = 0;
+    long long packMs = 0;
+    long long recMs = 0;
+    size_t detectedQuadCount = 0;
+    size_t packedStripCount = 0;
     try {
         // 1. DBNet 文本区域检测（3 档静态画布桶零重编译 + 多核并行张量填充 + 零拷贝直通）
         const int origW = bgr.cols;
@@ -1703,7 +1709,12 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
         }
 
         auto quads = postprocessDbMap(probOut, origW, origH, ratioW, ratioH);
+        detMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tTotalStart).count();
+        detectedQuadCount = quads.size();
         if (quads.empty()) {
+            LOG_INFO("DeepOcrEngine: recognized 0 lines on {}x{} in {} ms (det={} ms)",
+                     origW, origH, detMs, detMs);
             return {};
         }
 
@@ -2083,6 +2094,9 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             }
             strips.push_back(PackedStrip{std::move(stripBgr), contentW, std::move(bin.slots)});
         }
+        const auto tRecStart = std::chrono::steady_clock::now();
+        packMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRecStart - tTotalStart).count() - detMs;
+        packedStripCount = strips.size();
 
         auto scatterStripDecodedToQuads = [&](const PackedStrip& st, const CtcDecodeOutput& stripDecoded) {
             if (stripDecoded.chars.empty() || st.slots.empty()) return;
@@ -2299,6 +2313,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             }
         }
 
+        recMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tRecStart).count();
         for (size_t qi = 0; qi < quadMetas.size(); ++qi) {
             auto& qm = quadMetas[qi];
             if (!qm.valid || qm.segOutputs.empty()) continue;
@@ -2338,7 +2354,13 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
     }
 
     // 3. 统一委托至 OcrEngine 版面感知内核（竖向分割线检测 + 递归 XY-Cut 分区 + 严苛同行基线对齐锁）
-    return OcrEngine::assembleRecognizedBlocksWithLayout(std::move(rawBlocks), image);
+    auto assembled = OcrEngine::assembleRecognizedBlocksWithLayout(std::move(rawBlocks), image);
+    const long long totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - tTotalStart).count();
+    LOG_INFO("DeepOcrEngine: recognized {} lines ({} quads -> {} strips) on {}x{} in {} ms (det={} ms, pack={} ms, rec={} ms)",
+             assembled.size(), detectedQuadCount, packedStripCount,
+             bgr.cols, bgr.rows, totalMs, detMs, packMs, recMs);
+    return assembled;
 }
 
 DeepOcrModelStatus DeepOcrEngine::getModelStatus() const {

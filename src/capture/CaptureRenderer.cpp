@@ -4564,20 +4564,23 @@ void CaptureRenderer::drawActiveMarkupPreview(const D2D1_RECT_F& selectionRect, 
                             m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(band, r, r), highlightBrush.Get());
                         }
                     } else if (state.currentTextMarkupMode == TextMarkupMode::WavyUnderline) {
-                        float sw = 0.0f, amp = 0.0f, halfW = 0.0f;
-                        HandDrawnStrokeGenerator::resolveTextWavyMetrics(
-                            static_cast<float>(sp.height), 0.0f, sw, amp, halfW);
-                        const float by = HandDrawnStrokeGenerator::resolveTextWavyBaselineY(
-                            sy1, static_cast<float>(sp.height), amp);
+                        float peerGap = 18.0f;
+                        const bool hasBelow = HandDrawnStrokeGenerator::findNearestBelowSpanGap(
+                            sp, state.liveTextMarkupPreviewSpans, peerGap);
+                        const auto pl = HandDrawnStrokeGenerator::resolveAdaptiveWavyPlacement(
+                            sy1, static_cast<float>(sp.height), peerGap, hasBelow, 0.0f);
                         drawD2dHandDrawnRibbon(
-                            HandDrawnStrokeGenerator::buildWavyStroke(sx0, by, sx1, by, sw, amp, halfW, true));
+                            HandDrawnStrokeGenerator::buildWavyStroke(sx0, pl.baselineY, sx1, pl.baselineY,
+                                                                      pl.strokeWidth, pl.amplitude, pl.halfWavelength, true));
                     } else {
-                        const float sw = HandDrawnStrokeGenerator::resolveTextStraightWidth(
-                            static_cast<float>(sp.height), 0.0f);
-                        const float by = HandDrawnStrokeGenerator::resolveTextStraightBaselineY(
-                            sy1, static_cast<float>(sp.height), sw);
+                        float peerGap = 18.0f;
+                        const bool hasBelow = HandDrawnStrokeGenerator::findNearestBelowSpanGap(
+                            sp, state.liveTextMarkupPreviewSpans, peerGap);
+                        const auto pl = HandDrawnStrokeGenerator::resolveAdaptiveStraightPlacement(
+                            sy1, static_cast<float>(sp.height), peerGap, hasBelow, 0.0f);
                         drawD2dHandDrawnRibbon(
-                            HandDrawnStrokeGenerator::buildStraightStroke(sx0, by, sx1, by, sw, true));
+                            HandDrawnStrokeGenerator::buildStraightStroke(sx0, pl.baselineY, sx1, pl.baselineY,
+                                                                          pl.strokeWidth, true, pl.straightBowMax));
                     }
                 }
                 break;

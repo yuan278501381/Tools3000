@@ -1660,11 +1660,256 @@ void blendGdiPlusOverlayOntoCanvas(cv::Mat& canvas, const cv::Rect& roiRect, con
     }
 }
 
+cv::Vec3b estimateLocalBgBgrFromCanvas(const cv::Mat& canvas, const cv::Rect& refRect) {
+    if (canvas.empty() || (canvas.channels() != 3 && canvas.channels() != 4)) {
+        return cv::Vec3b(255, 255, 255);
+    }
+
+    std::vector<uint8_t> bVals, gVals, rVals;
+    bVals.reserve(256);
+    gVals.reserve(256);
+    rVals.reserve(256);
+
+    const int ch = canvas.channels();
+    auto samplePixel = [&](int x, int y) {
+        if (x < 0 || x >= canvas.cols || y < 0 || y >= canvas.rows) return;
+        if (ch == 3) {
+            const auto& px = canvas.at<cv::Vec3b>(y, x);
+            bVals.push_back(px[0]);
+            gVals.push_back(px[1]);
+            rVals.push_back(px[2]);
+        } else {
+            const auto& px = canvas.at<cv::Vec4b>(y, x);
+            bVals.push_back(px[0]);
+            gVals.push_back(px[1]);
+            rVals.push_back(px[2]);
+        }
+    };
+
+    // 1. 优先采样 refRect 外围 2~8px 纯净环带（左右端空隙与上下外缘），彻底免疫超粗体/高覆盖文字误当背景
+    const int lx1 = (std::max)(0, refRect.x - 8);
+    const int lx2 = (std::max)(0, refRect.x - 1);
+    const int rx1 = (std::min)(canvas.cols - 1, refRect.x + refRect.width + 1);
+    const int rx2 = (std::min)(canvas.cols - 1, refRect.x + refRect.width + 8);
+    const int ty1 = (std::max)(0, refRect.y - 6);
+    const int ty2 = (std::max)(0, refRect.y - 1);
+    const int by1 = (std::min)(canvas.rows - 1, refRect.y + refRect.height);
+    const int by2 = (std::min)(canvas.rows - 1, refRect.y + refRect.height + 2);
+
+    const int spanStepX = (std::max)(1, refRect.width / 32);
+    const int spanStepY = (std::max)(1, refRect.height / 6);
+    for (int y = (std::max)(0, refRect.y); y < (std::min)(canvas.rows, refRect.y + refRect.height); y += spanStepY) {
+        for (int x = lx1; x <= lx2; x += 2) samplePixel(x, y);
+        for (int x = rx1; x <= rx2; x += 2) samplePixel(x, y);
+    }
+    for (int x = (std::max)(0, refRect.x); x < (std::min)(canvas.cols, refRect.x + refRect.width); x += spanStepX) {
+        for (int y = ty1; y <= ty2; y += 2) samplePixel(x, y);
+        for (int y = by1; y <= by2; ++y) samplePixel(x, y);
+    }
+
+    // 2. 若 refRect 紧贴画布四边导致外环样本极少，再回退全区域采样
+    if (bVals.size() < 16) {
+        const int x1 = std::clamp(refRect.x - 4, 0, canvas.cols - 1);
+        const int x2 = std::clamp(refRect.x + refRect.width + 4, x1 + 1, canvas.cols);
+        const int y1 = std::clamp(refRect.y - 3, 0, canvas.rows - 1);
+        const int y2 = std::clamp(refRect.y + refRect.height + 6, y1 + 1, canvas.rows);
+        const int stepX = (std::max)(1, (x2 - x1) / 36);
+        const int stepY = (std::max)(1, (y2 - y1) / 10);
+        for (int y = y1; y < y2; y += stepY) {
+            for (int x = x1; x < x2; x += stepX) {
+                samplePixel(x, y);
+            }
+        }
+    }
+
+    if (bVals.empty()) return cv::Vec3b(255, 255, 255);
+    const size_t mid = bVals.size() / 2;
+    std::nth_element(bVals.begin(), bVals.begin() + static_cast<ptrdiff_t>(mid), bVals.end());
+    std::nth_element(gVals.begin(), gVals.begin() + static_cast<ptrdiff_t>(mid), gVals.end());
+    std::nth_element(rVals.begin(), rVals.begin() + static_cast<ptrdiff_t>(mid), rVals.end());
+    return cv::Vec3b(bVals[mid], gVals[mid], rVals[mid]);
+}
+
+/// 像素级真实行间安全走廊探测：
+/// 1) 紧致校准当前行真实字墨底边（剔除 OCR 框底部多包的 1~3px 空白，直接释放宝贵行间走廊）；
+/// 2) 融合同图元 peerSpans 与下方像素扫描，精准探测下一行文字顶边，自适应 0px~24px 任意行距
+void probeTextRowCorridorFromCanvas(const cv::Mat& canvas,
+                                    const cv::Rect& span,
+                                    const std::vector<cv::Rect>& peerSpans,
+                                    const cv::Vec3b& bgBgr,
+                                    float& outAnchorBottomY,
+                                    float& outAvailableGapPx,
+                                    bool& outHasBelowLine) {
+    outAnchorBottomY = static_cast<float>(span.y + span.height);
+    outAvailableGapPx = 18.0f;
+    outHasBelowLine = false;
+
+    float peerGap = 0.0f;
+    if (HandDrawnStrokeGenerator::findNearestBelowSpanGap(span, peerSpans, peerGap)) {
+        outHasBelowLine = true;
+        outAvailableGapPx = peerGap;
+    }
+
+    if (canvas.empty() || span.width < 4 || span.height < 6 ||
+        (canvas.channels() != 3 && canvas.channels() != 4)) {
+        return;
+    }
+
+    const int x1 = std::clamp(span.x, 0, canvas.cols - 1);
+    const int x2 = std::clamp(span.x + span.width, x1 + 1, canvas.cols);
+    const int sampleW = x2 - x1;
+    const int stepX = (sampleW > 240) ? 2 : 1;
+    const int totalSamples = (sampleW + stepX - 1) / stepX;
+    if (totalSamples <= 0) return;
+
+    const int ch = canvas.channels();
+    auto rowInkRatio = [&](int y) -> float {
+        if (y < 0 || y >= canvas.rows) return 0.0f;
+        int fgCount = 0;
+        if (ch == 3) {
+            const auto* row = canvas.ptr<cv::Vec3b>(y);
+            for (int x = x1; x < x2; x += stepX) {
+                const int d = (std::max)({
+                    std::abs(static_cast<int>(row[x][0]) - static_cast<int>(bgBgr[0])),
+                    std::abs(static_cast<int>(row[x][1]) - static_cast<int>(bgBgr[1])),
+                    std::abs(static_cast<int>(row[x][2]) - static_cast<int>(bgBgr[2]))
+                });
+                if (d >= 34) ++fgCount;
+            }
+        } else {
+            const auto* row = canvas.ptr<cv::Vec4b>(y);
+            for (int x = x1; x < x2; x += stepX) {
+                const int d = (std::max)({
+                    std::abs(static_cast<int>(row[x][0]) - static_cast<int>(bgBgr[0])),
+                    std::abs(static_cast<int>(row[x][1]) - static_cast<int>(bgBgr[1])),
+                    std::abs(static_cast<int>(row[x][2]) - static_cast<int>(bgBgr[2]))
+                });
+                if (d >= 34) ++fgCount;
+            }
+        }
+        return static_cast<float>(fgCount) / static_cast<float>(totalSamples);
+    };
+
+    // 1. 紧致校准本行真实正文底边（仅允许向上收紧最多 3px 去除 OCR 框底部留白，绝不误切正文）
+    int tightBot = std::clamp(span.y + span.height - 1, 0, canvas.rows - 1);
+    const int minTightBot = (std::max)(span.y + (std::max)(4, span.height * 2 / 3), tightBot - 3);
+    while (tightBot > minTightBot && rowInkRatio(tightBot) < 0.032f) {
+        --tightBot;
+    }
+    const float calibratedBotY = static_cast<float>(tightBot + 1);
+    if (outHasBelowLine) {
+        outAvailableGapPx += (outAnchorBottomY - calibratedBotY);
+    }
+    outAnchorBottomY = calibratedBotY;
+
+    // 2. 向下探测相邻下一行真实字墨顶边（跳过单行零散降部，捕获连续正文顶部或高密度横笔）
+    const int maxProbe = std::clamp(static_cast<int>(std::ceil(span.height * 0.95f)), 10, 24);
+    const int scanStart = tightBot + 1;
+    const int scanEnd = (std::min)(canvas.rows - 1, scanStart + maxProbe);
+
+    bool seenGap = false;
+    int consecInk = 0;
+    int nextTopY = -1;
+    for (int y = scanStart; y <= scanEnd; ++y) {
+        const float ratio = rowInkRatio(y);
+        if (!seenGap) {
+            if (ratio < 0.045f) {
+                seenGap = true;
+            } else if (y - scanStart >= 2) {
+                // 极零行距下（直接紧贴下一行），2px 后仍高密度直接按紧邻处理
+                seenGap = true;
+            }
+            continue;
+        }
+        if (ratio >= 0.055f) {
+            ++consecInk;
+            if (consecInk >= 2 || ratio >= 0.11f) {
+                nextTopY = y - consecInk + 1;
+                break;
+            }
+        } else {
+            consecInk = 0;
+        }
+    }
+
+    if (nextTopY >= scanStart) {
+        const float pixelGap = static_cast<float>(nextTopY) - outAnchorBottomY;
+        if (!outHasBelowLine || pixelGap < outAvailableGapPx) {
+            outAvailableGapPx = pixelGap;
+            outHasBelowLine = true;
+        }
+    }
+}
+
+/// 文字保护穿底混合（Contrast-Adaptive Ink-Behind-Text Compositing）：
+/// - 空白背景像素：100% 满额保留波浪线/直线色彩与不透明度，醒目高级；
+/// - 底层文字核心笔画像素（无论深底亮字还是浅底黑字）：平滑将笔迹 Alpha 保护性衰减至 14%，
+///   让文字如处于顶层图层般 100% 刀锋清晰，彻底杜绝任何行距下的「盖住字」问题
+void blendHandDrawnInkBehindTextOntoCanvas(cv::Mat& canvas,
+                                           const cv::Rect& roiRect,
+                                           const cv::Mat& bgraOverlay,
+                                           const cv::Vec3b& bgBgr) {
+    if (canvas.empty() || bgraOverlay.empty()) return;
+    cv::Mat dst = canvas(roiRect);
+    const int ch = dst.channels();
+    if (ch != 3 && ch != 4) return;
+
+    auto computeStrokeAlphaFactor = [&](uint8_t b, uint8_t g, uint8_t r) noexcept -> float {
+        const int delta = (std::max)({
+            std::abs(static_cast<int>(b) - static_cast<int>(bgBgr[0])),
+            std::abs(static_cast<int>(g) - static_cast<int>(bgBgr[1])),
+            std::abs(static_cast<int>(r) - static_cast<int>(bgBgr[2]))
+        });
+        if (delta <= 22) return 1.0f;
+        if (delta >= 54) return 0.14f;
+        const float t = static_cast<float>(delta - 22) / 32.0f;
+        const float smooth = t * t * (3.0f - 2.0f * t);
+        return 1.0f - 0.86f * smooth;
+    };
+
+    for (int r = 0; r < roiRect.height; ++r) {
+        const cv::Vec4b* sRow = bgraOverlay.ptr<cv::Vec4b>(r);
+        if (ch == 3) {
+            cv::Vec3b* dRow = dst.ptr<cv::Vec3b>(r);
+            for (int c = 0; c < roiRect.width; ++c) {
+                const uint32_t rawA = sRow[c][3];
+                if (rawA == 0) continue;
+                cv::Vec3b& px = dRow[c];
+                const float keep = computeStrokeAlphaFactor(px[0], px[1], px[2]);
+                const uint32_t effA = static_cast<uint32_t>(std::lround(static_cast<float>(rawA) * keep));
+                if (effA == 0) continue;
+                const uint32_t inv = 255u - effA;
+                px[0] = static_cast<uchar>((sRow[c][0] * effA + px[0] * inv + 127u) / 255u);
+                px[1] = static_cast<uchar>((sRow[c][1] * effA + px[1] * inv + 127u) / 255u);
+                px[2] = static_cast<uchar>((sRow[c][2] * effA + px[2] * inv + 127u) / 255u);
+            }
+        } else {
+            cv::Vec4b* dRow = dst.ptr<cv::Vec4b>(r);
+            for (int c = 0; c < roiRect.width; ++c) {
+                const uint32_t rawA = sRow[c][3];
+                if (rawA == 0) continue;
+                cv::Vec4b& px = dRow[c];
+                const float keep = computeStrokeAlphaFactor(px[0], px[1], px[2]);
+                const uint32_t effA = static_cast<uint32_t>(std::lround(static_cast<float>(rawA) * keep));
+                if (effA == 0) continue;
+                const uint32_t inv = 255u - effA;
+                px[0] = static_cast<uchar>((sRow[c][0] * effA + px[0] * inv + 127u) / 255u);
+                px[1] = static_cast<uchar>((sRow[c][1] * effA + px[1] * inv + 127u) / 255u);
+                px[2] = static_cast<uchar>((sRow[c][2] * effA + px[2] * inv + 127u) / 255u);
+                px[3] = static_cast<uchar>((std::min)(255u, px[3] + (effA * (255u - px[3]) + 127u) / 255u));
+            }
+        }
+    }
+}
+
 void renderHandDrawnRibbonGdiPlus(cv::Mat& canvas,
                                   const HandDrawnRibbon& ribbon,
                                   const cv::Scalar& bgrColor,
-                                  float baseWidth) {
+                                  float baseWidth,
+                                  bool inkBehindText = false,
+                                  const cv::Vec3b* localBgBgr = nullptr) {
     if (canvas.empty() || ribbon.outline.size() < 3 || ribbon.spine.size() < 2) return;
+    ensureGdiplusStartup();
 
     float minXf = ribbon.outline[0].x;
     float minYf = ribbon.outline[0].y;
@@ -1751,7 +1996,12 @@ void renderHandDrawnRibbonGdiPlus(cv::Mat& canvas,
         g.FillPolygon(&inkGrad, polyPts.data(), static_cast<INT>(polyPts.size()), Gdiplus::FillModeWinding);
     }
 
-    blendGdiPlusOverlayOntoCanvas(canvas, roiRect, overlay);
+    if (inkBehindText) {
+        const cv::Vec3b resolvedBg = localBgBgr ? *localBgBgr : estimateLocalBgBgrFromCanvas(canvas, roiRect);
+        blendHandDrawnInkBehindTextOntoCanvas(canvas, roiRect, overlay, resolvedBg);
+    } else {
+        blendGdiPlusOverlayOntoCanvas(canvas, roiRect, overlay);
+    }
 }
 
 void drawSmoothWavySegmentGdiPlus(cv::Mat& canvas,
@@ -1761,10 +2011,12 @@ void drawSmoothWavySegmentGdiPlus(cv::Mat& canvas,
                                   float strokeWidth,
                                   float amplitude,
                                   float halfWavelength,
-                                  bool extendEnds = true) {
+                                  bool extendEnds = true,
+                                  bool inkBehindText = false,
+                                  const cv::Vec3b* localBgBgr = nullptr) {
     if (canvas.empty()) return;
     const float dist = std::hypot(p2.x - p1.x, p2.y - p1.y);
-    const float sw = (std::max)(1.6f, strokeWidth);
+    const float sw = (std::max)(1.25f, strokeWidth);
     if (dist < 1.5f) {
         cv::circle(canvas, cv::Point(static_cast<int>(std::round(p1.x)), static_cast<int>(std::round(p1.y))),
                    (std::max)(1, static_cast<int>(std::round(sw * 0.5f))), bgrColor, cv::FILLED, cv::LINE_AA);
@@ -1773,7 +2025,7 @@ void drawSmoothWavySegmentGdiPlus(cv::Mat& canvas,
 
     const auto ribbon = HandDrawnStrokeGenerator::buildWavyStroke(
         p1.x, p1.y, p2.x, p2.y, sw, amplitude, halfWavelength, extendEnds);
-    renderHandDrawnRibbonGdiPlus(canvas, ribbon, bgrColor, sw);
+    renderHandDrawnRibbonGdiPlus(canvas, ribbon, bgrColor, sw, inkBehindText, localBgBgr);
 }
 
 void drawSmoothStraightSegmentGdiPlus(cv::Mat& canvas,
@@ -1781,10 +2033,13 @@ void drawSmoothStraightSegmentGdiPlus(cv::Mat& canvas,
                                       cv::Point2f p2,
                                       const cv::Scalar& bgrColor,
                                       float strokeWidth,
-                                      bool extendEnds = true) {
+                                      bool extendEnds = true,
+                                      bool inkBehindText = false,
+                                      const cv::Vec3b* localBgBgr = nullptr,
+                                      float maxBowAmp = 2.05f) {
     if (canvas.empty()) return;
     const float dist = std::hypot(p2.x - p1.x, p2.y - p1.y);
-    const float sw = (std::max)(1.6f, strokeWidth);
+    const float sw = (std::max)(1.25f, strokeWidth);
     if (dist < 1.5f) {
         cv::circle(canvas, cv::Point(static_cast<int>(std::round(p1.x)), static_cast<int>(std::round(p1.y))),
                    (std::max)(1, static_cast<int>(std::round(sw * 0.5f))), bgrColor, cv::FILLED, cv::LINE_AA);
@@ -1792,8 +2047,8 @@ void drawSmoothStraightSegmentGdiPlus(cv::Mat& canvas,
     }
 
     const auto ribbon = HandDrawnStrokeGenerator::buildStraightStroke(
-        p1.x, p1.y, p2.x, p2.y, sw, extendEnds);
-    renderHandDrawnRibbonGdiPlus(canvas, ribbon, bgrColor, sw);
+        p1.x, p1.y, p2.x, p2.y, sw, extendEnds, maxBowAmp);
+    renderHandDrawnRibbonGdiPlus(canvas, ribbon, bgrColor, sw, inkBehindText, localBgBgr);
 }
 
 void addGdiPlusRoundedRectPath(Gdiplus::GraphicsPath& path, float x, float y, float w, float h, float r) {
@@ -1815,6 +2070,7 @@ void renderTextSpansHighlightImpl(cv::Mat& canvas,
                                   const std::vector<cv::Rect>& spans,
                                   const MarkupColor& color) {
     if (canvas.empty() || spans.empty() || (canvas.channels() != 3 && canvas.channels() != 4)) return;
+    ensureGdiplusStartup();
 
     struct PaddedSpan {
         float x, y, w, h, radius;
@@ -1947,27 +2203,29 @@ void renderTextSpansUnderlineImpl(cv::Mat& canvas,
         if (sp.width <= 0 || sp.height <= 0) continue;
         const float x0 = static_cast<float>(sp.x);
         const float x1 = static_cast<float>(sp.x + sp.width);
+        const cv::Vec3b localBg = estimateLocalBgBgrFromCanvas(canvas, sp);
+        float anchorBotY = static_cast<float>(sp.y + sp.height);
+        float availGap = 18.0f;
+        bool hasBelowLine = false;
+        probeTextRowCorridorFromCanvas(canvas, sp, spans, localBg, anchorBotY, availGap, hasBelowLine);
+
         if (style == LineStyle::Wavy) {
-            float sw = 0.0f, amp = 0.0f, halfWave = 0.0f;
-            HandDrawnStrokeGenerator::resolveTextWavyMetrics(
-                static_cast<float>(sp.height), explicitThickness, sw, amp, halfWave);
-            const float baseY = HandDrawnStrokeGenerator::resolveTextWavyBaselineY(
-                static_cast<float>(sp.y + sp.height), static_cast<float>(sp.height), amp);
-            drawSmoothWavySegmentGdiPlus(canvas, cv::Point2f(x0, baseY), cv::Point2f(x1, baseY),
-                                         bgr, sw, amp, halfWave, true);
+            const auto pl = HandDrawnStrokeGenerator::resolveAdaptiveWavyPlacement(
+                anchorBotY, static_cast<float>(sp.height), availGap, hasBelowLine, explicitThickness);
+            drawSmoothWavySegmentGdiPlus(canvas, cv::Point2f(x0, pl.baselineY), cv::Point2f(x1, pl.baselineY),
+                                         bgr, pl.strokeWidth, pl.amplitude, pl.halfWavelength,
+                                         true, true, &localBg);
         } else if (style == LineStyle::Solid) {
-            const float sw = HandDrawnStrokeGenerator::resolveTextStraightWidth(
-                static_cast<float>(sp.height), explicitThickness);
-            const float baseY = HandDrawnStrokeGenerator::resolveTextStraightBaselineY(
-                static_cast<float>(sp.y + sp.height), static_cast<float>(sp.height), sw);
-            drawSmoothStraightSegmentGdiPlus(canvas, cv::Point2f(x0, baseY), cv::Point2f(x1, baseY),
-                                             bgr, sw, true);
+            const auto pl = HandDrawnStrokeGenerator::resolveAdaptiveStraightPlacement(
+                anchorBotY, static_cast<float>(sp.height), availGap, hasBelowLine, explicitThickness);
+            drawSmoothStraightSegmentGdiPlus(canvas, cv::Point2f(x0, pl.baselineY), cv::Point2f(x1, pl.baselineY),
+                                             bgr, pl.strokeWidth, true, true, &localBg, pl.straightBowMax);
         } else {
-            const float sw = HandDrawnStrokeGenerator::resolveTextStraightWidth(
-                static_cast<float>(sp.height), explicitThickness);
-            const int iy = sp.y + sp.height + (std::max)(2, static_cast<int>(std::round(sw * 0.6f)));
+            const auto pl = HandDrawnStrokeGenerator::resolveAdaptiveStraightPlacement(
+                anchorBotY, static_cast<float>(sp.height), availGap, hasBelowLine, explicitThickness);
+            const int iy = static_cast<int>(std::round(pl.baselineY));
             cv::line(canvas, cv::Point(sp.x, iy), cv::Point(sp.x + sp.width, iy),
-                     bgr, (std::max)(1, static_cast<int>(std::round(sw))), cv::LINE_AA);
+                     bgr, (std::max)(1, static_cast<int>(std::round(pl.strokeWidth))), cv::LINE_AA);
         }
     }
 }
