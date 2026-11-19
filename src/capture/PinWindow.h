@@ -140,6 +140,9 @@ public:
     /// 复制指定二维码解码文本到剪贴板
     void copyQrCodeText(size_t qrIndex);
 
+    /// 将当前带全部最新标注的高清贴图写入剪贴板并给出诚实 Toast 反馈
+    bool copyPinImageWithFeedback();
+
     /// 异步预加载/执行贴图 OCR 文本与二维码识别 (silentPreload=true 时静默识别不弹等待遮挡胶囊)
     void ensureOcrExecutedAsync(bool silentPreload = false);
 
@@ -439,6 +442,7 @@ private:
     void drawHoverToolbar();
     void clearHoverToolbarRects() noexcept;
     int hitTestInteractiveButton(int x, int y) const noexcept;
+    bool isInteractiveButtonHitWithSlop(int btnId, int x, int y, float slopPx) const noexcept;
     void executeInteractiveButton(int btnId, int clientX, int clientY, bool shiftHeld);
 
     cv::Mat m_sourceImage;  // 原图副本，供"复制到剪贴板"

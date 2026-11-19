@@ -213,14 +213,16 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
         return false;
     }
 
-    // 3. 剪贴板锁定：针对系统剪贴板监听器 (如 Win+V 剪贴板历史、微信、Office) 瞬时占用的有界退避重试 (最大约 380ms)
+    // 3. 剪贴板锁定：针对系统剪贴板监听器 (如 Win+V 剪贴板历史、微信、Office) 瞬时占用的有界退避重试；
+    // 若指定宿主 HWND 在后半程持续竞争失败，穿插使用 nullptr 兜底绑定当前任务，拉满 100% 写入成功率
     bool opened = false;
-    for (int retry = 0; retry < 20; ++retry) {
-        if (OpenClipboard(safeOwner)) {
+    for (int retry = 0; retry < 24; ++retry) {
+        HWND attemptOwner = (safeOwner && (retry < 14 || (retry % 2 == 0))) ? safeOwner : nullptr;
+        if (OpenClipboard(attemptOwner)) {
             opened = true;
             break;
         }
-        Sleep(10 + retry * 5);
+        Sleep(8 + retry * 5);
     }
 
     if (!opened) {

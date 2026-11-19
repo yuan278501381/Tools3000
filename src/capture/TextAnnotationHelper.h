@@ -539,6 +539,105 @@ public:
         return spanBottomY + strokeWidth * 0.55f + std::clamp(h * 0.10f, 2.2f, 3.4f);
     }
 
+    struct TextUnderlinePlacement {
+        float baselineY = 0.0f;
+        float strokeWidth = 2.4f;
+        float amplitude = 2.0f;
+        float halfWavelength = 16.0f;
+        float straightBowMax = 1.85f;
+        bool compactCorridor = false;
+    };
+
+    /// 在给定相邻行框集合中，扫描位于目标 span 正下方且水平交叠的最近下一行顶边间距
+    static bool findNearestBelowSpanGap(const cv::Rect& span,
+                                        const std::vector<cv::Rect>& peerSpans,
+                                        float& outGapPx) noexcept {
+        if (span.width <= 0 || span.height <= 0) return false;
+        const float spL = static_cast<float>(span.x);
+        const float spR = static_cast<float>(span.x + span.width);
+        const float spBot = static_cast<float>(span.y + span.height);
+        const float maxSearchDist = (std::max)(24.0f, static_cast<float>(span.height) * 1.85f);
+
+        bool found = false;
+        float bestGap = FLT_MAX;
+        for (const auto& peer : peerSpans) {
+            if (peer.width <= 0 || peer.height <= 0) continue;
+            if (peer.y <= span.y + (std::max)(2, span.height / 3)) continue;
+            const float pL = static_cast<float>(peer.x);
+            const float pR = static_cast<float>(peer.x + peer.width);
+            const float overlapX = (std::min)(spR, pR) - (std::max)(spL, pL);
+            if (overlapX <= 2.0f) continue;
+
+            const float gap = static_cast<float>(peer.y) - spBot;
+            if (gap < -static_cast<float>(span.height) * 0.35f || gap > maxSearchDist) continue;
+            if (gap < bestGap) {
+                bestGap = gap;
+                found = true;
+            }
+        }
+        if (found) {
+            outGapPx = bestGap;
+        }
+        return found;
+    }
+
+    /// 行距感知自适应书法波浪线参数求解：
+    /// - 宽裕行距 (gap >= 9px 或末行)：舒展大师级斜角书法丝带 + 黄金呼吸留白；
+    /// - 中/紧凑行距 (gap < 9px)：自动锚定两行安全走廊正中心并平滑收束振幅与笔宽，绝不闯入下一行文字
+    static TextUnderlinePlacement resolveAdaptiveWavyPlacement(float spanBottomY,
+                                                               float spanHeight,
+                                                               float availableGapPx,
+                                                               bool hasBelowLine,
+                                                               float explicitThickness = 0.0f) noexcept {
+        TextUnderlinePlacement p{};
+        float fullW = 0.0f, fullAmp = 0.0f, fullHalfW = 0.0f;
+        resolveTextWavyMetrics(spanHeight, explicitThickness, fullW, fullAmp, fullHalfW);
+        if (!hasBelowLine || availableGapPx >= 9.0f) {
+            p.strokeWidth = fullW;
+            p.amplitude = fullAmp;
+            p.halfWavelength = fullHalfW;
+            p.baselineY = resolveTextWavyBaselineY(spanBottomY, spanHeight, fullAmp);
+            p.compactCorridor = false;
+            return p;
+        }
+
+        const float gap = (std::max)(0.5f, availableGapPx);
+        const float t = std::clamp((gap - 1.5f) / 7.5f, 0.0f, 1.0f);
+        p.compactCorridor = true;
+        p.strokeWidth = 1.38f + (fullW - 1.38f) * t;
+        const float targetAmp = 0.82f + (fullAmp - 0.82f) * t;
+        const float corridorCapAmp = (std::max)(0.78f, (gap - p.strokeWidth * 0.58f) * 0.44f);
+        p.amplitude = (std::min)(targetAmp, corridorCapAmp);
+        p.halfWavelength = (std::min)(11.8f, fullHalfW) + (fullHalfW - (std::min)(11.8f, fullHalfW)) * t;
+        p.baselineY = spanBottomY + gap * 0.50f;
+        return p;
+    }
+
+    /// 行距感知自适应手绘重点直线参数求解：紧凑行距自动锁死走廊正中并收束微弓弧度，绝不压盖下一行文字
+    static TextUnderlinePlacement resolveAdaptiveStraightPlacement(float spanBottomY,
+                                                                   float spanHeight,
+                                                                   float availableGapPx,
+                                                                   bool hasBelowLine,
+                                                                   float explicitThickness = 0.0f) noexcept {
+        TextUnderlinePlacement p{};
+        const float fullW = resolveTextStraightWidth(spanHeight, explicitThickness);
+        if (!hasBelowLine || availableGapPx >= 8.5f) {
+            p.strokeWidth = fullW;
+            p.baselineY = resolveTextStraightBaselineY(spanBottomY, spanHeight, fullW);
+            p.straightBowMax = 1.95f;
+            p.compactCorridor = false;
+            return p;
+        }
+
+        const float gap = (std::max)(0.5f, availableGapPx);
+        const float t = std::clamp((gap - 1.5f) / 7.0f, 0.0f, 1.0f);
+        p.compactCorridor = true;
+        p.strokeWidth = 1.50f + (fullW - 1.50f) * t;
+        p.straightBowMax = 0.42f + (1.95f - 0.42f) * t;
+        p.baselineY = spanBottomY + gap * 0.50f;
+        return p;
+    }
+
     /// 生成大师级斜角书法丝带手绘波浪线（C-infinity 光滑相位呼吸 + 38° 斜切笔尖下粗上细韵律 + 起落笔收锋）
     static HandDrawnRibbon buildWavyStroke(float x0, float y0, float x1, float y1,
                                            float baseWidth, float amplitude, float halfWavelength,
@@ -562,10 +661,10 @@ public:
         const float sy = y0 - uy * extL;
         const float dist = rawDist + extL + extR;
 
-        const float sw = (std::max)(1.6f, baseWidth);
+        const float sw = (std::max)(1.25f, baseWidth);
         const float baseR = sw * 0.5f;
-        const float amp = (std::max)(1.4f, amplitude);
-        const float halfW = (std::max)(10.0f, halfWavelength);
+        const float amp = (std::max)(0.75f, amplitude);
+        const float halfW = (std::max)(9.5f, halfWavelength);
 
         // 连续光滑低频有机调制参数（C-infinity 无折角，彻底告别铁丝拧巴感与 Word 锯齿）
         const float phWave = unitRand(seed, 1) * 6.2831853f;
@@ -663,7 +762,8 @@ public:
 
     /// 生成人手马克笔醒目手绘直线（微弓弧度 + 细微手腕运笔纹理 + 落笔顿挫/收笔尖锋）
     static HandDrawnRibbon buildStraightStroke(float x0, float y0, float x1, float y1,
-                                               float baseWidth, bool extendEnds = true) {
+                                               float baseWidth, bool extendEnds = true,
+                                               float maxBowAmp = 2.05f) {
         HandDrawnRibbon res;
         const float dx = x1 - x0;
         const float dy = y1 - y0;
@@ -682,13 +782,16 @@ public:
         const float sy = y0 - uy * extL;
         const float dist = rawDist + extL + extR;
 
-        const float sw = (std::max)(1.6f, baseWidth);
+        const float sw = (std::max)(1.25f, baseWidth);
         const float baseR = sw * 0.5f;
 
-        // 柔和手腕微弓弧度（一眼仍是醒目直线，同时一眼能看出是人手专门划出来的）
+        // 柔和手腕微弓弧度（紧凑行距下自动收束 maxBowAmp，既保留手绘感又绝不上下越界压字）
+        const float clampedMaxBow = std::clamp(maxBowAmp, 0.30f, 2.20f);
+        const float minBow = (std::min)(0.70f, clampedMaxBow * 0.65f);
         const float bowSign = (unitRand(seed, 5) > 0.42f) ? -1.0f : 1.0f; // 略偏向人手向上轻拱的经典弧度
-        const float bowAmp = std::clamp(dist * 0.0085f, 0.70f, 2.05f) * bowSign;
-        const float tiltEnd = (unitRand(seed, 6) - 0.62f) * 1.1f; // 收笔自然微挑
+        const float bowAmp = std::clamp(dist * 0.0085f, minBow, clampedMaxBow) * bowSign;
+        const float texScale = std::clamp(clampedMaxBow / 1.85f, 0.35f, 1.0f);
+        const float tiltEnd = (unitRand(seed, 6) - 0.62f) * 1.1f * texScale; // 收笔自然微挑
         const float ph1 = unitRand(seed, 7) * 6.2831853f;
         const float ph2 = unitRand(seed, 8) * 6.2831853f;
         const float pressPhase = unitRand(seed, 9) * 6.2831853f;
@@ -704,9 +807,9 @@ public:
             const float s = dist * t;
             const float archOff = std::sin(3.14159265f * t) * bowAmp;
             const float tiltOff = (t - 0.5f) * tiltEnd;
-            // 低频柔和笔触纹理（严格限制在 +-0.55px 内，保持笔直醒目但告别机械像素直线）
+            // 低频柔和笔触纹理（随紧凑行距比例收束，保持笔直醒目但告别机械像素直线）
             const float microTex = (0.34f * std::sin(s * 0.048f + ph1) + 0.18f * std::cos(s * 0.095f + ph2))
-                                   * std::sin(3.14159265f * t);
+                                   * std::sin(3.14159265f * t) * texScale;
             const float totalOff = archOff + tiltOff + microTex;
 
             float widthFactor = 1.00f + 0.08f * std::sin(t * 5.8f + pressPhase) + 0.04f * std::cos(s * 0.06f);
