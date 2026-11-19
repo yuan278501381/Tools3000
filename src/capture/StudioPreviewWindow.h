@@ -321,6 +321,12 @@ private:
     float m_trackDragStartX = 0.0f;
     int64_t m_trackDragOrigKeptStartMs = 0;
     int64_t m_trackDragOrigKeptEndMs = 0;
+    int64_t m_trackDragOrigPlayheadKeptMs = -1;
+    int64_t m_trackDragCurrentKeptStartMs = 0;
+    int64_t m_trackDragCurrentKeptEndMs = 0;
+    bool m_timelineSnapActive = false;
+    int64_t m_timelineSnapLineKeptMs = 0;
+    TimelineSnapTargetKind m_timelineSnapTargetKind = TimelineSnapTargetKind::None;
     D2D1_RECT_F m_timelineTrackRect{};
     D2D1_RECT_F m_timelineCardRect{};
     D2D1_RECT_F m_cutLaneRect{};

@@ -232,7 +232,7 @@ void CaptureRenderer::shutdown() {
 void CaptureRenderer::applyThemeColors() {
     if (!m_renderTarget) return;
 
-    const auto pal = FloatingGlassBar::resolveThemePalette();
+    const auto pal = FloatingGlassBar::resolveHudPalette();
     m_renderTarget->CreateSolidColorBrush(pal.panelBg, m_infoBgBrush.ReleaseAndGetAddressOf());
     m_renderTarget->CreateSolidColorBrush(pal.primaryText, m_infoTextBrush.ReleaseAndGetAddressOf());
 
@@ -1315,7 +1315,7 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
     auto pillRounded = D2D1::RoundedRect(pillRect, pillRadius, pillRadius);
 
     // 1. 统一复用动态明暗主题微晶浮岛底板（雪瓷白 / 黑曜石微晶玻璃 + 动态强调色）
-    const auto pal = FloatingGlassBar::resolveThemePalette();
+    const auto pal = FloatingGlassBar::resolveHudPalette();
     const bool activeState = isHovered || state.isSizeMenuOpen;
     FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), pillRect, pillRadius, pal.isDark);
 
@@ -1629,8 +1629,8 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
     const auto pal = FloatingGlassBar::resolveThemePalette();
     const bool isDark = pal.isDark;
 
-    // 1. 绘制主工具栏浮岛卡片 (12px 现代光学双环微晶圆角)
-    drawGlassPanel(state.primaryToolbarRect, 12.0f * scale, false);
+    // 1. 绘制主工具栏浮岛卡片 (12.5px 同心光学双环圆角，配内部 7.5px 按钮严守 Concentric Radius)
+    drawGlassPanel(state.primaryToolbarRect, 12.5f * scale, false);
 
     // 1b. 绘制主工具栏左侧 2x3 六点拖拽手柄 (PixPin 风格自由拖拽握把)
     if (state.toolbarGripRect.right > state.toolbarGripRect.left &&
@@ -1642,7 +1642,7 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
              state.currentCursor.y <= state.toolbarGripRect.bottom);
         ComPtr<ID2D1SolidColorBrush> gripDotBrush;
         const D2D1_COLOR_F gripColor = isDark
-            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, gripHovered ? 0.65f : 0.34f)
+            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, gripHovered ? 0.72f : 0.30f)
             : (gripHovered ? CaptureHudPalette::kGripDotHover : CaptureHudPalette::kGripDotIdle);
         m_renderTarget->CreateSolidColorBrush(gripColor, gripDotBrush.GetAddressOf());
         if (gripDotBrush) {
@@ -1650,7 +1650,7 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
             const float gcy = (state.toolbarGripRect.top + state.toolbarGripRect.bottom) * 0.5f;
             const float colOffset = 2.2f * scale;
             const float rowStep = 5.0f * scale;
-            const float dotR = 1.45f * scale;
+            const float dotR = 1.35f * scale;
             for (int rIdx = -1; rIdx <= 1; ++rIdx) {
                 const float dy = gcy + static_cast<float>(rIdx) * rowStep;
                 m_renderTarget->FillEllipse(
@@ -1661,9 +1661,9 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
         }
     }
 
-    // 2. 如果存在二级属性栏，绘制二级属性栏浮岛卡片 (11px)
+    // 2. 如果存在二级属性栏，绘制二级属性栏浮岛卡片 (11.5px 同心圆角)
     if (!state.secondaryToolbarButtons.empty()) {
-        drawGlassPanel(state.secondaryToolbarRect, 11.0f * scale, false);
+        drawGlassPanel(state.secondaryToolbarRect, 11.5f * scale, false);
     }
 
     ComPtr<ID2D1SolidColorBrush> buttonBrush;
@@ -1923,7 +1923,7 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                              state.currentCursor.x >= button.rect.left && state.currentCursor.x <= button.rect.right &&
                              state.currentCursor.y >= button.rect.top  && state.currentCursor.y <= button.rect.bottom;
 
-            const float btnRadius = 6.5f * scale;
+            const float btnRadius = (button.isSecondary ? 6.5f : 7.5f) * scale;
             auto rounded = D2D1::RoundedRect(button.rect, btnRadius, btnRadius);
 
             if (isColor) {
@@ -1987,13 +1987,18 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                     m_renderTarget->DrawEllipse(hoverOuter, hoverBrush.Get(), 1.4f * scale);
                 }
             } else {
-                ComPtr<ID2D1SolidColorBrush> stepperBg;
+                ComPtr<ID2D1SolidColorBrush> stepperBg, stepperRim;
                 if (isStepper) {
                     m_renderTarget->CreateSolidColorBrush(
                         isDark
-                            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, isHovered ? 0.105f : 0.058f)
+                            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, isHovered ? 0.125f : 0.062f)
                             : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, isHovered ? 0.075f : 0.044f),
                         stepperBg.GetAddressOf());
+                    m_renderTarget->CreateSolidColorBrush(
+                        isDark
+                            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, isHovered ? 0.22f : 0.105f)
+                            : D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, isHovered ? 0.16f : 0.09f),
+                        stepperRim.GetAddressOf());
                 }
 
                 if (isConfirm) {
@@ -2073,27 +2078,76 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                             m_renderTarget->FillRoundedRectangle(indPill, segGlowBar.Get());
                         }
                     } else {
-                        // 清爽 10% 科技蓝微晶底 + 底部科技蓝微指示条，告别厚重死灰框
-                        auto* fallback = button.isSecondary ? secondaryActiveBrush.Get() : activeBrush.Get();
-                        if (fallback) {
+                        // 深浅双态高定立体微浮键帽（Elevated Studio Keycap）+ 品牌主题柔光边 + 底部光学微灯丝
+                        const auto themeRgb = FloatingGlassBar::effectiveAccentRGB();
+                        D2D1_GRADIENT_STOP keyStops[2] = {
+                            {0.0f, isDark
+                                ? D2D1::ColorF(
+                                    (std::min)(1.0f, themeRgb.r * 0.36f + 0.13f),
+                                    (std::min)(1.0f, themeRgb.g * 0.36f + 0.14f),
+                                    (std::min)(1.0f, themeRgb.b * 0.36f + 0.18f), 0.48f)
+                                : D2D1::ColorF(
+                                    (std::min)(1.0f, themeRgb.r * 0.14f + 0.86f),
+                                    (std::min)(1.0f, themeRgb.g * 0.14f + 0.86f),
+                                    (std::min)(1.0f, themeRgb.b * 0.14f + 0.86f), 0.96f)},
+                            {1.0f, isDark
+                                ? D2D1::ColorF(
+                                    (std::min)(1.0f, themeRgb.r * 0.28f + 0.05f),
+                                    (std::min)(1.0f, themeRgb.g * 0.28f + 0.06f),
+                                    (std::min)(1.0f, themeRgb.b * 0.28f + 0.09f), 0.34f)
+                                : D2D1::ColorF(
+                                    (std::min)(1.0f, themeRgb.r * 0.22f + 0.78f),
+                                    (std::min)(1.0f, themeRgb.g * 0.22f + 0.78f),
+                                    (std::min)(1.0f, themeRgb.b * 0.22f + 0.78f), 0.94f)}
+                        };
+                        ComPtr<ID2D1GradientStopCollection> kCol;
+                        ComPtr<ID2D1LinearGradientBrush> kGrad;
+                        ID2D1Brush* keyFill = button.isSecondary ? static_cast<ID2D1Brush*>(secondaryActiveBrush.Get())
+                                                                 : static_cast<ID2D1Brush*>(activeBrush.Get());
+                        if (SUCCEEDED(m_renderTarget->CreateGradientStopCollection(keyStops, 2, kCol.GetAddressOf())) &&
+                            SUCCEEDED(m_renderTarget->CreateLinearGradientBrush(
+                                D2D1::LinearGradientBrushProperties(
+                                    D2D1::Point2F(button.rect.left, button.rect.top),
+                                    D2D1::Point2F(button.rect.left, button.rect.bottom)),
+                                kCol.Get(), kGrad.GetAddressOf())) && kGrad) {
+                            keyFill = kGrad.Get();
+                        }
+                        if (keyFill) {
                             if (isSplitMicHalf) {
                                 const D2D1_RECT_F unionRc = isSplitMicLeft
                                     ? D2D1::RectF(button.rect.left, button.rect.top, button.rect.right + btnRadius + 2.0f * scale, button.rect.bottom)
                                     : D2D1::RectF(button.rect.left - btnRadius - 2.0f * scale, button.rect.top, button.rect.right, button.rect.bottom);
                                 m_renderTarget->PushAxisAlignedClip(button.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                                m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), fallback);
+                                m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), keyFill);
+                                if (activeBorderBrush) {
+                                    m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), activeBorderBrush.Get(), 0.9f * scale);
+                                }
                                 m_renderTarget->PopAxisAlignedClip();
                             } else {
-                                m_renderTarget->FillRoundedRectangle(rounded, fallback);
+                                m_renderTarget->FillRoundedRectangle(rounded, keyFill);
+                                if (activeBorderBrush) {
+                                    m_renderTarget->DrawRoundedRectangle(rounded, activeBorderBrush.Get(), 0.9f * scale);
+                                }
                             }
                         }
                         if (!button.isSecondary && button.label.empty() && !isSplitMicRight && activeIconBrush) {
                             const float bcx = (button.rect.left + button.rect.right) * 0.5f;
-                            const float pillHalfW = 4.8f * scale;
+                            const float pillHalfW = 5.2f * scale;
                             const float pillH = 2.0f * scale;
+                            const float indY = button.rect.bottom - 3.0f * scale;
+                            ComPtr<ID2D1SolidColorBrush> indGlow;
+                            m_renderTarget->CreateSolidColorBrush(
+                                D2D1::ColorF(themeRgb.r, themeRgb.g, themeRgb.b, 0.34f), indGlow.GetAddressOf());
+                            if (indGlow) {
+                                m_renderTarget->FillRoundedRectangle(
+                                    D2D1::RoundedRect(
+                                        D2D1::RectF(bcx - pillHalfW - 1.5f * scale, indY - 1.0f * scale,
+                                                    bcx + pillHalfW + 1.5f * scale, indY + pillH + 1.0f * scale),
+                                        2.0f * scale, 2.0f * scale),
+                                    indGlow.Get());
+                            }
                             auto indPill = D2D1::RoundedRect(
-                                D2D1::RectF(bcx - pillHalfW, button.rect.bottom - 3.2f * scale,
-                                            bcx + pillHalfW, button.rect.bottom - 3.2f * scale + pillH),
+                                D2D1::RectF(bcx - pillHalfW, indY, bcx + pillHalfW, indY + pillH),
                                 1.0f * scale, 1.0f * scale);
                             m_renderTarget->FillRoundedRectangle(indPill, activeIconBrush.Get());
                         }
@@ -2110,16 +2164,18 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                                 : D2D1::RectF(button.rect.left - btnRadius - 2.0f * scale, button.rect.top, button.rect.right, button.rect.bottom);
                             m_renderTarget->PushAxisAlignedClip(button.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                             m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), fillBrush);
-                            if (isHovered && separatorBrush) {
-                                m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), separatorBrush.Get(), 0.85f * scale);
+                            if (stepperRim) {
+                                m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(unionRc, btnRadius, btnRadius), stepperRim.Get(), 0.85f * scale);
                             }
                             m_renderTarget->PopAxisAlignedClip();
                         } else {
                             m_renderTarget->FillRoundedRectangle(rounded, fillBrush);
+                            if (isStepper && stepperRim) {
+                                m_renderTarget->DrawRoundedRectangle(rounded, stepperRim.Get(), 0.85f * scale);
+                            } else if (isHovered && !isDanger && separatorBrush) {
+                                m_renderTarget->DrawRoundedRectangle(rounded, separatorBrush.Get(), 0.8f * scale);
+                            }
                         }
-                    }
-                    if (!isSplitMicHalf && isStepper && isHovered && separatorBrush) {
-                        m_renderTarget->DrawRoundedRectangle(rounded, separatorBrush.Get(), 0.85f * scale);
                     }
                 }
 
@@ -2336,19 +2392,15 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                                                 state.primaryToolbarRect,
                                                 isVerticalSideBar);
 
-            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 7.0f * scale, isDark);
+            // 悬停提示气泡（Tooltip HUD）恒定采用高级暗房深色 + 立体暗银微晶键帽，保持操作心流
+            const auto tipPal = FloatingGlassBar::resolveHudPalette();
+            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 7.5f * scale, true);
 
             ComPtr<ID2D1SolidColorBrush> textBrush, kbdBgBrush, kbdBorderBrush, kbdTextBrush;
-            m_renderTarget->CreateSolidColorBrush(pal.primaryText, textBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(
-                isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f) : CaptureHudPalette::kShortcutKeyBg,
-                kbdBgBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(
-                isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f) : CaptureHudPalette::kShortcutKeyBorder,
-                kbdBorderBrush.GetAddressOf());
-            m_renderTarget->CreateSolidColorBrush(
-                isDark ? pal.primaryText : CaptureHudPalette::kShortcutKeyText,
-                kbdTextBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(tipPal.primaryText, textBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(44.0f / 255.0f, 48.0f / 255.0f, 60.0f / 255.0f, 0.96f), kbdBgBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.22f), kbdBorderBrush.GetAddressOf());
+            m_renderTarget->CreateSolidColorBrush(tipPal.primaryText, kbdTextBrush.GetAddressOf());
 
             float curLeft = tipRect.left + padX;
             if (m_infoTextFormat && textBrush) {
@@ -2361,12 +2413,19 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
 
             if (!kbdPart.empty() && kbdBgBrush && kbdBorderBrush && kbdTextBrush && m_infoTextFormat) {
                 float kx = curLeft + labelW + kbdGap;
-                float kh = 17.0f * scale;
+                float kh = 18.0f * scale;
                 float ky = tipRect.top + (th - kh) * 0.5f;
                 auto kbdRect = D2D1::RectF(kx, ky, kx + kbdW, ky + kh);
-                auto kbdRound = D2D1::RoundedRect(kbdRect, 4.0f * scale, 4.0f * scale);
+                auto kbdRound = D2D1::RoundedRect(kbdRect, 4.5f * scale, 4.5f * scale);
+                // 立体暗房物理键帽底棱（Raycast / Apple 风格微刻键帽）
+                ComPtr<ID2D1SolidColorBrush> kbdBevel;
+                m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.42f), kbdBevel.GetAddressOf());
+                if (kbdBevel) {
+                    auto bevelRc = D2D1::RectF(kbdRect.left, kbdRect.top + 1.0f * scale, kbdRect.right, kbdRect.bottom + 1.2f * scale);
+                    m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(bevelRc, 4.5f * scale, 4.5f * scale), kbdBevel.Get());
+                }
                 m_renderTarget->FillRoundedRectangle(kbdRound, kbdBgBrush.Get());
-                m_renderTarget->DrawRoundedRectangle(kbdRound, kbdBorderBrush.Get(), 1.0f * scale);
+                m_renderTarget->DrawRoundedRectangle(kbdRound, kbdBorderBrush.Get(), 0.9f * scale);
                 TextFormatScope scopeKbd(m_infoTextFormat.Get(), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP);
                 m_renderTarget->DrawText(kbdPart.c_str(), static_cast<UINT32>(kbdPart.size()),
                     m_infoTextFormat.Get(),
@@ -4013,7 +4072,7 @@ void CaptureRenderer::drawFloatingToast(const CaptureState& state) {
     }
 
     const float scale = (state.dpiScale > 0.0f) ? state.dpiScale : 1.0f;
-    const bool isDark = FloatingGlassBar::isEffectiveDarkMode();
+    const bool isDark = true;
     IDWriteTextFormat* toastFmt = m_hudPrimaryFormat ? m_hudPrimaryFormat.Get() : m_infoTextFormat.Get();
     const std::wstring cleanMsg = std::wstring(
         tools3000::ui::ToastStyle::stripMachineStatusPrefix(state.loupeToastMessage));
@@ -6505,7 +6564,7 @@ void CaptureRenderer::drawCrosshair(float x, float y, CaptureState* pState) {
             auto badgeRect = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
             auto badgeRound = D2D1::RoundedRect(badgeRect, 6.0f * scale, 6.0f * scale);
 
-            const auto pal = FloatingGlassBar::resolveThemePalette();
+            const auto pal = FloatingGlassBar::resolveHudPalette();
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush, bgBrush, borderBrush, textBrush, colorChipBrush;
             m_renderTarget->CreateSolidColorBrush(
                 D2D1::ColorF(0.06f, 0.09f, 0.16f, pal.isDark ? 0.24f : 0.09f), shadowBrush.GetAddressOf());
@@ -7621,7 +7680,7 @@ void CaptureRenderer::render(CaptureState& state) {
                         alphaMultiplier = static_cast<float>(remaining) / 300.0f;
                     }
 
-                    const auto pal = FloatingGlassBar::resolveThemePalette();
+                    const auto pal = FloatingGlassBar::resolveHudPalette();
                     const float badgeRadius = 9.5f * scale;
                     ComPtr<ID2D1SolidColorBrush> badgeShadow, badgeBg, badgeBorder, badgeDot;
                     m_renderTarget->CreateSolidColorBrush(

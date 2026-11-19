@@ -1423,7 +1423,13 @@ void PinWindow::drawHoverToolbar() {
                 : (baseTipRect.bottom - baseTipRect.top);
             const D2D1_RECT_F tipRect = D2D1::RectF(tipX, baseTipRect.top, tipX + tipW, baseTipRect.top + tipH);
 
-            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 4.0f * dpiScale, pal.isDark);
+            // 贴图工具栏悬停提示气泡（Tooltip HUD）恒定采用高级暗房深色，保持操作心流
+            const auto tipPal = FloatingGlassBar::resolveHudPalette();
+            FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), tipRect, 5.0f * dpiScale, true);
+            ComPtr<ID2D1SolidColorBrush> tipTextBr;
+            D2D1_COLOR_F tipTxtCol = tipPal.textPrimary;
+            tipTxtCol.a *= m_hoverAlpha;
+            m_renderTarget->CreateSolidColorBrush(tipTxtCol, tipTextBr.GetAddressOf());
             const D2D1_RECT_F tipTextRect = D2D1::RectF(
                 tipRect.left + 6.0f * dpiScale,
                 tipRect.top,
@@ -1431,7 +1437,7 @@ void PinWindow::drawHoverToolbar() {
                 tipRect.bottom);
             m_renderTarget->DrawTextW(
                 tipText, static_cast<UINT32>(wcslen(tipText)),
-                m_uiCenterTextFormat.Get(), tipTextRect, textBrush.Get(),
+                m_uiCenterTextFormat.Get(), tipTextRect, tipTextBr ? tipTextBr.Get() : textBrush.Get(),
                 D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
     }
@@ -5688,7 +5694,7 @@ void PinWindow::render() {
         if ((ocrWaiting || showPctBadge) && size.width >= 44.0f && size.height >= 24.0f) {
             const float hudScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : (m_dpiScale > 0.0f ? m_dpiScale : 1.0f);
             if (ensureTextResources(hudScale) && m_uiCenterTextFormat) {
-                const auto hudPal = FloatingGlassBar::resolveThemePalette();
+                const auto hudPal = FloatingGlassBar::resolveHudPalette();
                 ComPtr<ID2D1SolidColorBrush> hudTxtBr;
                 m_renderTarget->CreateSolidColorBrush(hudPal.textPrimary, hudTxtBr.GetAddressOf());
 

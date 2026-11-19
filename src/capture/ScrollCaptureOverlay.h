@@ -92,6 +92,15 @@ public:
     ScrollControlBarLayoutSnapshot computeControlBarLayoutForTest(
         float dpiScale, bool isChinese, bool isPaused, int workWidth = 0);
 
+    /// 供回归测试检查真实控制栏句柄、扩展样式与按钮物理像素热区
+    HWND controlWindowHandleForTest() const noexcept { return m_controlHwnd; }
+    D2D1_RECT_F buttonRectForTest(int index) const noexcept {
+        if (index < 0 || index >= static_cast<int>(m_buttonRects.size())) {
+            return D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+        return m_buttonRects[static_cast<std::size_t>(index)].rect;
+    }
+
     /// 单一事实源控制栏自适应布局计算（支持传入已有 DWrite 格式或按需自建探测格式；workWidth > 0 时启用两级紧凑降级）
     static inline ScrollControlBarLayoutSnapshot buildControlBarLayout(
         float dpiScale,
@@ -199,7 +208,7 @@ public:
         std::array<BtnSpec, 5> specs = {{
             {isPausedOrHold ? (isChinese ? L"继续" : L"Resume") : (isChinese ? L"暂停" : L"Pause"),
              isPausedOrHold ? (isChinese ? L"暂停" : L"Pause") : (isChinese ? L"继续" : L"Resume"),
-             L"Space"},
+             isPausedOrHold ? L"" : L"Space"},
             {isChinese ? L"贴图" : L"Pin", L"", L"Ctrl+T"},
             {isChinese ? L"保存" : L"Save", L"", L"Ctrl+S"},
             {L"", L"", L"Esc"},
@@ -333,7 +342,7 @@ private:
     void render();
     void updateControlPlacement(const RECT* thumbScreenRect);
     void renderControlBar(bool forceRedraw = false);
-    ControlButtonId hitTestControlButton(POINT clientPt) const;
+    ControlButtonId hitTestControlButton(POINT clientPt, float padPx = 0.0f) const;
     void executeControlAction(ControlButtonId id);
     void registerTransientHotkeys();
     void unregisterTransientHotkeys();
@@ -363,6 +372,7 @@ private:
     ControlButtonId m_hoveredBtn = ControlButtonId::None;
     ControlButtonId m_pressedBtn = ControlButtonId::None;
     bool m_trackingMouseLeave = false;
+    bool m_finishRequested = false;
     std::array<ControlButtonRect, 5> m_buttonRects{};
 
     ScrollControlBarLayoutSnapshot m_cachedLayoutSnap{};

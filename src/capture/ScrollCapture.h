@@ -85,6 +85,7 @@ struct ScrollCaptureResult {
 /// 相邻两帧滚动过渡分析结果
 struct ScrollFrameTransition {
     bool isUnchanged = false;       // 动态内容核心区静止（未滚动或已到底部）
+    bool isBackwardScroll = false;  // 检测到反向向上回滚（手动回滚或触底弹性回弹）
     bool matched = false;           // 多频带共识匹配成功
     int scrollDelta = 0;            // 内容向上滚动的像素位移 (> 0)
     int stickyTopRows = 0;          // 顶部固定栏像素高度
@@ -172,6 +173,7 @@ private:
     int lastSegmentRows() const;
     void trimLastSegmentBottomRows(int trimRows, std::size_t rowBytes);
     void featherSpilledBoundary(const cv::Mat& fullCurrFrame, int currOffset, std::size_t rowBytes);
+    bool isDuplicateOfStitchedTail(const cv::Mat& newDynamic, int trimPrevRows) const;
     cv::Mat buildStitchedImage() const;
     cv::Mat buildRecentPreview(int maxRows) const;
     void deliverCompletion(const std::string& error = {});
@@ -202,6 +204,8 @@ private:
     std::atomic<int> m_segmentWidth{0};
     std::atomic<int> m_totalRows{0};
     int m_segmentType = -1;
+    int m_knownStickyBottom = 0;
+    int m_knownStickyBottomHits = 0;
     std::string m_terminalError;
     cv::Mat m_lastFrame;
     std::unique_ptr<ICaptureBackend> m_captureBackend;

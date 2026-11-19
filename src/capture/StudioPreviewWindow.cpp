@@ -113,6 +113,8 @@ enum HitId : int {
     Hit_WatermarkTextInput = 410,
     Hit_WatermarkSliderScale = 411,
     Hit_WatermarkSliderOpacity = 412,
+    Hit_WatermarkNewLine = 413,
+    Hit_WatermarkPresetDualLine = 414,
     Hit_WatermarkTokenBase = 415,  // 415..418 (+用户名 / +设备名 / +日期时间 / +严禁外传)
     Hit_WatermarkRecentBase = 420, // 420..425 (6 槽历史常用 Logo 缩略卡片)
 
@@ -3023,6 +3025,13 @@ void StudioPreviewWindow::renderWatermarkDrawer(
         m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(txtBox, 6.5f, 6.5f), brush, m_editingWatermarkText ? 1.5f : 1.0f);
 
         std::wstring shown = tools3000::core::WinUtils::utf8ToWstring(wm.textTemplate);
+        {
+            size_t nlPos = 0;
+            while ((nlPos = shown.find(L'\n', nlPos)) != std::wstring::npos) {
+                shown.replace(nlPos, 1, L"\\n");
+                nlPos += 2;
+            }
+        }
         if (m_editingWatermarkText && ((GetTickCount() / 500) % 2 == 0)) {
             shown.push_back(L'|');
         }
@@ -3061,7 +3070,34 @@ void StudioPreviewWindow::renderWatermarkDrawer(
             drawTxt(label, m_captionFmt.Get(), krc,
                     (tokOn || hov) ? colAccent : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
         }
-        y += 32.0f;
+        y += 29.0f;
+
+        // 换行符插入 + 企业双排预设（第一行账号 / 第二行日期时间）
+        const float nlW = (fullW - tGap) * 0.42f;
+        const D2D1_RECT_F nlRc = D2D1::RectF(padL, y, padL + nlW, y + 24.0f);
+        const D2D1_RECT_F dualRc = D2D1::RectF(padL + nlW + tGap, y, padR, y + 24.0f);
+        m_hitZones.push_back({Hit_WatermarkNewLine, nlRc, 0});
+        m_hitZones.push_back({Hit_WatermarkPresetDualLine, dualRc, 0});
+        const bool isDualLine = (wm.textTemplate.find("\\n") != std::string::npos || wm.textTemplate.find('\n') != std::string::npos);
+        const bool nlHov = (m_hoveredHitId == Hit_WatermarkNewLine);
+        const bool dualHov = (m_hoveredHitId == Hit_WatermarkPresetDualLine);
+
+        setBrush(nlHov ? D2D1::ColorF(accentRgb.r, accentRgb.g, accentRgb.b, 0.10f) : colFieldBg);
+        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(nlRc, 5.5f, 5.5f), brush);
+        setBrush(nlHov ? colAccent : colBorder);
+        m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(nlRc, 5.5f, 5.5f), brush, 0.9f);
+        drawTxt(isZh ? L"+换行 (\\n)" : L"+Newline (\\n)", m_captionFmt.Get(), nlRc,
+                nlHov ? colAccent : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+        setBrush(isDualLine
+            ? D2D1::ColorF(accentRgb.r, accentRgb.g, accentRgb.b, dark ? 0.24f : 0.13f)
+            : (dualHov ? D2D1::ColorF(accentRgb.r, accentRgb.g, accentRgb.b, 0.10f) : colFieldBg));
+        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(dualRc, 5.5f, 5.5f), brush);
+        setBrush((isDualLine || dualHov) ? colAccent : colBorder);
+        m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(dualRc, 5.5f, 5.5f), brush, isDualLine ? 1.2f : 0.9f);
+        drawTxt(isZh ? L"企业双行 (账号/时间)" : L"2-Line (User / Time)", m_captionFmt.Get(), dualRc,
+                (isDualLine || dualHov) ? colAccent : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
+        y += 31.0f;
     }
 
     // 3. 锚定位置一体式分段器（仅在单点图片或文字角标模式下展示，同时支持右侧画面直接拖拽自由定位）
@@ -7318,6 +7354,24 @@ void StudioPreviewWindow::render() {
             brush.Get());
     }
 
+    // 视频切片接缝微晶刻度线（直观映射拆分点与下方运镜/标注轨的垂直对齐基准）
+    if (m_videoClips.size() > 1 && keptDurSec > 1e-4) {
+        int64_t seamAccMs = 0;
+        for (size_t i = 0; i + 1 < m_videoClips.size(); ++i) {
+            seamAccMs += m_videoClips[i].keptDurationMs();
+            const float seamX = mapKeptSecToTrackX(static_cast<double>(seamAccMs) / 1000.0, laneLeft, trackW, keptDurSec);
+            if (seamX <= laneLeft + 1.0f || seamX >= laneRight - 1.0f) continue;
+            const bool seamSnapped = m_timelineSnapActive &&
+                                     m_timelineSnapTargetKind == TimelineSnapTargetKind::ClipSplit &&
+                                     std::abs(m_timelineSnapLineKeptMs - seamAccMs) <= 8;
+            setBrush(seamSnapped
+                ? D2D1::ColorF(0.98f, 0.72f, 0.16f, 0.96f)
+                : (dark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f) : D2D1::ColorF(0.12f, 0.20f, 0.34f, 0.14f)));
+            m_renderTarget->DrawLine({seamX, m_cutLaneRect.bottom + 1.0f},
+                                     {seamX, m_annLaneRect.bottom}, brush.Get(), seamSnapped ? 1.5f : 0.85f);
+        }
+    }
+
     // 悬停实时掠览游标细线 (Live Skimmer Line) + 石墨微晶时间胶囊
     if (m_hoverSkimming && keptDurSec > 1e-4) {
         const float skimX = mapKeptSecToTrackX(m_hoverSkimSec, laneLeft, trackW, keptDurSec);
@@ -7374,6 +7428,84 @@ void StudioPreviewWindow::render() {
                 m_renderTarget->DrawGeometry(capGeo.Get(), brush.Get(), 0.8f);
             }
         }
+    }
+
+    // 磁性吸附命中时的贯通三轨高定琥珀金对齐激光线 + 暗房吸附徽章 + 拖拽区间实时时间浮标
+    if (m_timelineSnapActive && keptDurSec > 1e-4) {
+        const float snapX = mapKeptSecToTrackX(static_cast<double>(m_timelineSnapLineKeptMs) / 1000.0, laneLeft, trackW, keptDurSec);
+        if (snapX >= laneLeft - 1.5f && snapX <= laneRight + 1.5f) {
+            const float topY = m_cutLaneRect.top - 4.0f;
+            const float botY = m_annLaneRect.bottom + 4.0f;
+            // 柔和琥珀金光学光晕
+            setBrush(D2D1::ColorF(0.98f, 0.68f, 0.12f, dark ? 0.32f : 0.28f));
+            m_renderTarget->DrawLine({snapX, topY}, {snapX, botY}, brush.Get(), 5.5f);
+            // 1.5px 锐利琥珀金核线
+            setBrush(D2D1::ColorF(0.99f, 0.76f, 0.20f, 0.98f));
+            m_renderTarget->DrawLine({snapX, topY}, {snapX, botY}, brush.Get(), 1.5f);
+            // 顶/底微晶圆点锚标
+            m_renderTarget->FillEllipse(D2D1::Ellipse({snapX, topY}, 2.6f, 2.6f), brush.Get());
+            m_renderTarget->FillEllipse(D2D1::Ellipse({snapX, botY}, 2.6f, 2.6f), brush.Get());
+
+            const wchar_t* kindLbl = isZh ? L"对齐" : L"Snap";
+            switch (m_timelineSnapTargetKind) {
+                case TimelineSnapTargetKind::ClipSplit:    kindLbl = isZh ? L"吸附拆分点" : L"Snap Split"; break;
+                case TimelineSnapTargetKind::Playhead:     kindLbl = isZh ? L"吸附指针"   : L"Snap Head";  break;
+                case TimelineSnapTargetKind::ZoomBoundary: kindLbl = isZh ? L"吸附运镜"   : L"Snap Zoom";  break;
+                case TimelineSnapTargetKind::AnnBoundary:  kindLbl = isZh ? L"吸附标注"   : L"Snap Mark";  break;
+                default: break;
+            }
+            const std::wstring snapTimeTxt = formatCompactDurationBadge(static_cast<double>(m_timelineSnapLineKeptMs) / 1000.0, isZh);
+            const std::wstring snapBadge = std::wstring(kindLbl) + L" · " + snapTimeTxt;
+            float estW = 0.0f;
+            for (wchar_t wc : snapBadge) estW += (wc > 0x7F) ? 11.4f : 6.4f;
+            const float bw = std::clamp(estW + 16.0f, 76.0f, 180.0f);
+            const float bl = std::clamp(snapX - bw * 0.5f, laneLeft, laneRight - bw);
+            const D2D1_RECT_F sRc = D2D1::RectF(bl, tlCard.top + 38.0f, bl + bw, tlCard.top + 56.0f);
+            setBrush(D2D1::ColorF(0.08f, 0.10f, 0.16f, 0.96f));
+            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(sRc, 5.0f, 5.0f), brush.Get());
+            setBrush(D2D1::ColorF(0.98f, 0.74f, 0.18f, 0.90f));
+            m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(sRc, 5.0f, 5.0f), brush.Get(), 1.0f);
+            drawTextAligned(snapBadge, m_captionFmt.Get(), sRc,
+                            D2D1::ColorF(0.99f, 0.88f, 0.54f, 1.0f), DWRITE_TEXT_ALIGNMENT_CENTER);
+        }
+    }
+
+    // 拖拽运镜/标注块期间实时展示暗房起止时间与时长胶囊（Alt 自由微调态同步提示）
+    if (m_trackDragKind != TrackDragKind::None && keptDurSec > 1e-4 &&
+        m_trackDragCurrentKeptEndMs > m_trackDragCurrentKeptStartMs) {
+        const double stSec = static_cast<double>(m_trackDragCurrentKeptStartMs) / 1000.0;
+        const double edSec = static_cast<double>(m_trackDragCurrentKeptEndMs) / 1000.0;
+        const double durSec = (std::max)(0.1, edSec - stSec);
+        const bool isZoomDrag = (m_trackDragKind == TrackDragKind::ZoomMove ||
+                                 m_trackDragKind == TrackDragKind::ZoomLeft ||
+                                 m_trackDragKind == TrackDragKind::ZoomRight);
+        const bool altFree = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        wchar_t spanBuf[96]{};
+        if (altFree) {
+            std::swprintf(spanBuf, std::size(spanBuf),
+                          isZh ? L"%.1fs - %.1fs (%.1fs · 自由微调)" : L"%.1fs - %.1fs (%.1fs · Free)",
+                          stSec, edSec, durSec);
+        } else {
+            std::swprintf(spanBuf, std::size(spanBuf), L"%.1fs - %.1fs (%.1fs)", stSec, edSec, durSec);
+        }
+        const std::wstring spanTxt(spanBuf);
+        float estW = 0.0f;
+        for (wchar_t wc : spanTxt) estW += (wc > 0x7F) ? 11.4f : 6.4f;
+        const float bw = std::clamp(estW + 18.0f, 100.0f, 230.0f);
+        const float sx = mapKeptSecToTrackX(stSec, laneLeft, trackW, keptDurSec);
+        const float ex = mapKeptSecToTrackX(edSec, laneLeft, trackW, keptDurSec);
+        const float cx = (sx + ex) * 0.5f;
+        const float bl = std::clamp(cx - bw * 0.5f, laneLeft, laneRight - bw);
+        const float baseTop = isZoomDrag ? m_zoomLaneRect.top : m_annLaneRect.top;
+        const D2D1_RECT_F dRc = D2D1::RectF(bl, baseTop - 24.0f, bl + bw, baseTop - 4.0f);
+        setBrush(D2D1::ColorF(0.08f, 0.11f, 0.18f, 0.95f));
+        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(dRc, 5.0f, 5.0f), brush.Get());
+        setBrush(m_timelineSnapActive
+            ? D2D1::ColorF(0.98f, 0.74f, 0.18f, 0.85f)
+            : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f));
+        m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(dRc, 5.0f, 5.0f), brush.Get(), 0.95f);
+        drawTextAligned(spanTxt, m_captionFmt.Get(), dRc,
+                        D2D1::ColorF(0.96f, 0.98f, 1.0f, 0.98f), DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
     // 悬停在时间轴标注轨道块上时，在轨道块正上方浮现完整标注名称/步骤序号与起止秒数气泡
@@ -8373,7 +8505,10 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
         if (id != Hit_AnnTextInputBox && id != Hit_StageCanvas) {
             m_editingAnnotationText = false;
         }
-        if (id != Hit_WatermarkTextInput && !(id >= Hit_WatermarkTokenBase && id < Hit_WatermarkTokenBase + 4)) {
+        if (id != Hit_WatermarkTextInput &&
+            id != Hit_WatermarkNewLine &&
+            id != Hit_WatermarkPresetDualLine &&
+            !(id >= Hit_WatermarkTokenBase && id < Hit_WatermarkTokenBase + 4)) {
             m_editingWatermarkText = false;
         }
 
@@ -8571,6 +8706,24 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
+        if (id == Hit_WatermarkNewLine) {
+            std::string& tpl = m_config.watermark.textTemplate;
+            while (!tpl.empty() && tpl.back() == ' ') tpl.pop_back();
+            if (tpl.size() + 2 <= 140) {
+                tpl += "\\n";
+            }
+            m_config.watermark.enabled = true;
+            WatermarkRenderer::saveStudioWatermarkConfig(m_config.watermark);
+            requestImmediatePreviewRefresh(true);
+            return;
+        }
+        if (id == Hit_WatermarkPresetDualLine) {
+            m_config.watermark.textTemplate = "{user}\\n{date} {time}";
+            m_config.watermark.enabled = true;
+            WatermarkRenderer::saveStudioWatermarkConfig(m_config.watermark);
+            requestImmediatePreviewRefresh(true);
+            return;
+        }
         if (id >= Hit_WatermarkTokenBase && id < Hit_WatermarkTokenBase + 4) {
             const bool isZh = tools3000::core::NativeThemePalette::isUiLanguageChinese();
             static const char* kTokensZh[4] = { "{user}", "{host}", "{date} {time}", "内部资料 严禁外传" };
@@ -8613,7 +8766,10 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
 
                 if (!removed) {
                     const char* tok = isZh ? kTokensZh[k] : kTokensEn[k];
-                    if (!tpl.empty() && tpl.back() != ' ') {
+                    const bool endsWithNl =
+                        (!tpl.empty() && tpl.back() == '\n') ||
+                        (tpl.size() >= 2 && tpl.compare(tpl.size() - 2, 2, "\\n") == 0);
+                    if (!tpl.empty() && tpl.back() != ' ' && !endsWithNl) {
                         tpl += " · ";
                     }
                     tpl += tok;
@@ -8796,18 +8952,48 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
 
         // ── 时间轴插入运镜与轨道拖拽 ──
         const int64_t rawTotalMs = (std::max<int64_t>)(400, static_cast<int64_t>(std::llround(m_durationSec * 1000.0)));
+        const int64_t keptTotalMsDown = (std::max<int64_t>)(100, static_cast<int64_t>(std::llround(keptDurSec * 1000.0)));
         if (id == Hit_AddZoomAtPlayhead || id == Hit_ZoomLaneEmpty) {
             pushUndoSnapshot();
             m_playing = false;
             m_hoverSkimming = false;
             const float laneW = (std::max)(1.0f, m_zoomLaneRect.right - m_zoomLaneRect.left);
-            const int64_t clickKeptMs = (id == Hit_ZoomLaneEmpty)
+            const double visSpanMsDown = (std::max)(100.0, visibleTimelineSpanSec(keptDurSec) * 1000.0);
+            int64_t clickKeptMs = (id == Hit_ZoomLaneEmpty)
                 ? static_cast<int64_t>(std::llround(mapTrackXToKeptSec(lx, m_zoomLaneRect.left, laneW, keptDurSec) * 1000.0))
                 : static_cast<int64_t>(std::llround(m_playheadSec * 1000.0));
-            const int64_t centerSrcMs = StudioTimelineAnalyzer::mapKeptMsToSourceMs(m_videoClips, clickKeptMs);
-            const int64_t halfSpan = (std::min<int64_t>)(1100, rawTotalMs / 3);
-            int64_t st = std::clamp<int64_t>(centerSrcMs - halfSpan / 2, 0, (std::max<int64_t>)(0, rawTotalMs - 300));
-            int64_t ed = (std::min)(rawTotalMs, st + (std::max<int64_t>)(400, halfSpan * 2));
+
+            // 智能贴边插入：若点击/播放头处于视频拆分点或边界 8.5 DIP 磁性区内，自动吸附起点精准对齐拆分点并向后延伸（不跨越切缝）
+            const auto insertAnchors = StudioTimelineAnalyzer::collectTimelineSnapAnchors(
+                m_videoClips, m_timeline.zoomSegments, m_timeline.annotations,
+                -1, -1, -1, false);
+            const int64_t insertSnapWinMs = static_cast<int64_t>(std::llround((8.5 / laneW) * visSpanMsDown));
+            const auto ptSnap = StudioTimelineAnalyzer::snapTimelinePoint(
+                clickKeptMs, insertAnchors, insertSnapWinMs, keptTotalMsDown);
+            const bool alignedToAnchor = ptSnap.snapped;
+            if (alignedToAnchor) {
+                clickKeptMs = ptSnap.snappedStartMs;
+            }
+
+            const int64_t defaultDurKept = (std::min<int64_t>)(2200, (std::max<int64_t>)(500, keptTotalMsDown / 3));
+            int64_t keptSt = alignedToAnchor
+                ? std::clamp<int64_t>(clickKeptMs, 0, (std::max<int64_t>)(0, keptTotalMsDown - 350))
+                : std::clamp<int64_t>(clickKeptMs - defaultDurKept / 4, 0, (std::max<int64_t>)(0, keptTotalMsDown - 350));
+            int64_t keptEd = (std::min<int64_t>)(keptTotalMsDown, keptSt + defaultDurKept);
+
+            // 若右侧紧邻已有运镜块或视频拆分点，智能收束终点避免重叠压盖
+            for (const auto& existingZ : m_timeline.zoomSegments) {
+                const int64_t eks = StudioTimelineAnalyzer::mapSourceMsToKeptMsViaClips(m_videoClips, existingZ.startMs);
+                if (eks > keptSt + 350 && eks < keptEd) {
+                    keptEd = eks;
+                }
+            }
+
+            int64_t st = StudioTimelineAnalyzer::mapKeptMsToSourceMs(m_videoClips, keptSt);
+            int64_t ed = StudioTimelineAnalyzer::mapKeptMsToSourceMs(m_videoClips, keptEd);
+            if (ed <= st + 260) {
+                ed = (std::min)(rawTotalMs, st + 400);
+            }
 
             const float srcW = static_cast<float>((std::max)(1, m_timeline.sourceWidth));
             const float srcH = static_cast<float>((std::max)(1, m_timeline.sourceHeight));
@@ -8836,7 +9022,7 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
             m_selectedZoomIdx = static_cast<int>(m_timeline.zoomSegments.size()) - 1;
             m_selectedClipIdx = -1;
             m_selectedAnnIdx = -1;
-            m_playheadSec = std::clamp(clickKeptMs / 1000.0, 0.0, keptDurSec);
+            m_playheadSec = std::clamp(keptSt / 1000.0, 0.0, keptDurSec);
             rebakeTimelinePreview();
             requestImmediatePreviewRefresh(true);
             return;
@@ -8863,6 +9049,10 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
                     m_trackDragStartX = lx;
                     m_trackDragOrigKeptStartMs = StudioTimelineAnalyzer::mapSourceMsToKeptMsViaClips(m_videoClips, ann.startMs);
                     m_trackDragOrigKeptEndMs = StudioTimelineAnalyzer::mapSourceMsToKeptMsViaClips(m_videoClips, ann.endMs);
+                    m_trackDragCurrentKeptStartMs = m_trackDragOrigKeptStartMs;
+                    m_trackDragCurrentKeptEndMs = m_trackDragOrigKeptEndMs;
+                    m_trackDragOrigPlayheadKeptMs = static_cast<int64_t>(std::llround(m_playheadSec * 1000.0));
+                    m_timelineSnapActive = false;
                     SetCapture(m_hwnd);
                 }
                 m_playheadSec = std::clamp(
@@ -8893,6 +9083,10 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
                     m_trackDragStartX = lx;
                     m_trackDragOrigKeptStartMs = StudioTimelineAnalyzer::mapSourceMsToKeptMsViaClips(m_videoClips, zseg.startMs);
                     m_trackDragOrigKeptEndMs = StudioTimelineAnalyzer::mapSourceMsToKeptMsViaClips(m_videoClips, zseg.endMs);
+                    m_trackDragCurrentKeptStartMs = m_trackDragOrigKeptStartMs;
+                    m_trackDragCurrentKeptEndMs = m_trackDragOrigKeptEndMs;
+                    m_trackDragOrigPlayheadKeptMs = static_cast<int64_t>(std::llround(m_playheadSec * 1000.0));
+                    m_timelineSnapActive = false;
                     SetCapture(m_hwnd);
                 }
                 const int64_t steadyOffsetMs = (std::min<int64_t>)(420, (std::max<int64_t>)(80, (zseg.endMs - zseg.startMs) / 2));
@@ -9351,19 +9545,44 @@ void StudioPreviewWindow::handleMouseMove(float lx, float ly, bool leftButtonDow
         const float laneW = (std::max)(1.0f, m_zoomLaneRect.right - m_zoomLaneRect.left);
         const int64_t deltaKeptMs = static_cast<int64_t>(std::llround(((lx - m_trackDragStartX) / laneW) * visSpanMs));
         const int64_t minSpan = 220;
+        const bool altBypassSnap = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        const int64_t snapWindowMs = altBypassSnap
+            ? 0
+            : static_cast<int64_t>(std::llround((8.0 / laneW) * visSpanMs));
 
-        auto applyKeptDragToSourceBounds = [&](int64_t& srcSt, int64_t& srcEd, TrackDragKind moveK, TrackDragKind leftK) -> int64_t {
-            int64_t newKeptSt = m_trackDragOrigKeptStartMs;
-            int64_t newKeptEd = m_trackDragOrigKeptEndMs;
+        auto applyKeptDragToSourceBounds = [&](int64_t& srcSt, int64_t& srcEd,
+                                               TrackDragKind moveK, TrackDragKind leftK,
+                                               int excludeZoomIdx, int excludeAnnIdx) -> int64_t {
+            int64_t rawKeptSt = m_trackDragOrigKeptStartMs;
+            int64_t rawKeptEd = m_trackDragOrigKeptEndMs;
+            int edgeMode = 0;
             if (m_trackDragKind == moveK) {
+                edgeMode = 0;
                 const int64_t len = (std::max<int64_t>)(minSpan, m_trackDragOrigKeptEndMs - m_trackDragOrigKeptStartMs);
-                newKeptSt = std::clamp<int64_t>(m_trackDragOrigKeptStartMs + deltaKeptMs, 0, (std::max<int64_t>)(0, keptTotalMs - len));
-                newKeptEd = newKeptSt + len;
+                rawKeptSt = m_trackDragOrigKeptStartMs + deltaKeptMs;
+                rawKeptEd = rawKeptSt + len;
             } else if (m_trackDragKind == leftK) {
-                newKeptSt = std::clamp<int64_t>(m_trackDragOrigKeptStartMs + deltaKeptMs, 0, m_trackDragOrigKeptEndMs - minSpan);
+                edgeMode = 1;
+                rawKeptSt = m_trackDragOrigKeptStartMs + deltaKeptMs;
             } else {
-                newKeptEd = std::clamp<int64_t>(m_trackDragOrigKeptEndMs + deltaKeptMs, m_trackDragOrigKeptStartMs + minSpan, keptTotalMs);
+                edgeMode = 2;
+                rawKeptEd = m_trackDragOrigKeptEndMs + deltaKeptMs;
             }
+
+            const auto anchors = StudioTimelineAnalyzer::collectTimelineSnapAnchors(
+                m_videoClips, m_timeline.zoomSegments, m_timeline.annotations,
+                m_trackDragOrigPlayheadKeptMs, excludeZoomIdx, excludeAnnIdx, m_trackDragOrigPlayheadKeptMs >= 0);
+            const auto snapRes = StudioTimelineAnalyzer::snapTimelineRangeDrag(
+                rawKeptSt, rawKeptEd, edgeMode, anchors, snapWindowMs, minSpan, keptTotalMs);
+
+            const int64_t newKeptSt = snapRes.snappedStartMs;
+            const int64_t newKeptEd = snapRes.snappedEndMs;
+            m_trackDragCurrentKeptStartMs = newKeptSt;
+            m_trackDragCurrentKeptEndMs = newKeptEd;
+            m_timelineSnapActive = snapRes.snapped;
+            m_timelineSnapLineKeptMs = snapRes.snapLineKeptMs;
+            m_timelineSnapTargetKind = snapRes.targetKind;
+
             srcSt = StudioTimelineAnalyzer::mapKeptMsToSourceMs(m_videoClips, newKeptSt);
             srcEd = StudioTimelineAnalyzer::mapKeptMsToSourceMs(m_videoClips, newKeptEd);
             if (srcEd <= srcSt + minSpan) {
@@ -9379,7 +9598,7 @@ void StudioPreviewWindow::handleMouseMove(float lx, float ly, bool leftButtonDow
             if (m_trackDragIndex >= 0 && m_trackDragIndex < static_cast<int>(m_timeline.zoomSegments.size())) {
                 auto& z = m_timeline.zoomSegments[static_cast<size_t>(m_trackDragIndex)];
                 const int64_t previewKeptMs = applyKeptDragToSourceBounds(
-                    z.startMs, z.endMs, TrackDragKind::ZoomMove, TrackDragKind::ZoomLeft);
+                    z.startMs, z.endMs, TrackDragKind::ZoomMove, TrackDragKind::ZoomLeft, m_trackDragIndex, -1);
                 m_playheadSec = std::clamp(previewKeptMs / 1000.0, 0.0, keptDurSec);
                 rebakeTimelinePreview();
                 requestImmediatePreviewRefresh(false);
@@ -9390,7 +9609,7 @@ void StudioPreviewWindow::handleMouseMove(float lx, float ly, bool leftButtonDow
             if (m_trackDragIndex >= 0 && m_trackDragIndex < static_cast<int>(m_timeline.annotations.size())) {
                 auto& a = m_timeline.annotations[static_cast<size_t>(m_trackDragIndex)];
                 const int64_t previewKeptMs = applyKeptDragToSourceBounds(
-                    a.startMs, a.endMs, TrackDragKind::AnnMove, TrackDragKind::AnnLeft);
+                    a.startMs, a.endMs, TrackDragKind::AnnMove, TrackDragKind::AnnLeft, -1, m_trackDragIndex);
                 resequenceAutoStepBadges();
                 m_playheadSec = std::clamp(previewKeptMs / 1000.0, 0.0, keptDurSec);
                 requestImmediatePreviewRefresh(false);
@@ -9399,16 +9618,28 @@ void StudioPreviewWindow::handleMouseMove(float lx, float ly, bool leftButtonDow
         return;
     }
 
-    // 按住左键在标尺或轨道区域拖拽主指针 (Active Scrubbing)
+    // 按住左键在标尺或轨道区域拖拽主指针 (Active Scrubbing，靠近拆分点/运镜/标注边界时柔和磁吸，按 Alt 自由微调)
     if (m_scrubbingTimeline && leftButtonDown) {
         const float laneLeft = m_cutLaneRect.left;
         const float w = (std::max)(1.0f, m_cutLaneRect.right - laneLeft);
-        m_playheadSec = mapTrackXToKeptSec(lx, laneLeft, w, keptDurSec);
+        const int64_t rawKeptMs = static_cast<int64_t>(std::llround(mapTrackXToKeptSec(lx, laneLeft, w, keptDurSec) * 1000.0));
+        const bool altBypassSnap = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        const int64_t scrubSnapWinMs = altBypassSnap
+            ? 0
+            : static_cast<int64_t>(std::llround((6.5 / w) * visSpanMs));
+        const auto anchors = StudioTimelineAnalyzer::collectTimelineSnapAnchors(
+            m_videoClips, m_timeline.zoomSegments, m_timeline.annotations,
+            -1, -1, -1, false);
+        const auto ptSnap = StudioTimelineAnalyzer::snapTimelinePoint(rawKeptMs, anchors, scrubSnapWinMs, keptTotalMs);
+        m_timelineSnapActive = ptSnap.snapped;
+        m_timelineSnapLineKeptMs = ptSnap.snapLineKeptMs;
+        m_timelineSnapTargetKind = ptSnap.targetKind;
+        m_playheadSec = std::clamp(static_cast<double>(ptSnap.snappedStartMs) / 1000.0, 0.0, keptDurSec);
         m_hoverSkimming = false;
         // 同步高亮拖动所经位置的视频切片
         int clipAtCursor = -1;
         StudioTimelineAnalyzer::mapKeptMsToSourceMs(
-            m_videoClips, static_cast<int64_t>(std::llround(m_playheadSec * 1000.0)), &clipAtCursor);
+            m_videoClips, ptSnap.snappedStartMs, &clipAtCursor);
         if (m_scrubOnLaneArea && clipAtCursor >= 0) {
             m_selectedClipIdx = clipAtCursor;
         }
@@ -9562,6 +9793,9 @@ void StudioPreviewWindow::handleMouseUp() {
     m_activeSlider = SliderDragKind::None;
     m_trackDragKind = TrackDragKind::None;
     m_trackDragIndex = -1;
+    m_trackDragOrigPlayheadKeptMs = -1;
+    m_timelineSnapActive = false;
+    m_timelineSnapTargetKind = TimelineSnapTargetKind::None;
     m_stageAnnDrag = StageAnnDragKind::None;
     m_draggingZoomFocus = false;
     m_watermarkStageDragMode = 0;
@@ -9828,6 +10062,30 @@ void StudioPreviewWindow::handleKeyDown(WPARAM vk) {
         m_playheadSec = 0.0;
         m_timelineViewStartSec = 0.0;
         requestImmediatePreviewRefresh(true);
+        return;
+    }
+
+    if (vk == VK_UP || vk == VK_DOWN || vk == VK_OEM_4 || vk == VK_OEM_6) {
+        // NLE 关键剪辑点秒跳：Up / '[' 跳转至上一个拆分点/运镜/标注边界，Down / ']' 跳转至下一个关键点
+        m_playing = false;
+        m_hoverSkimming = false;
+        const double keptDurSec = computeEffectiveDurationSec();
+        const int64_t curKeptMs = static_cast<int64_t>(std::llround(m_playheadSec * 1000.0));
+        const auto anchors = StudioTimelineAnalyzer::collectTimelineSnapAnchors(
+            m_videoClips, m_timeline.zoomSegments, m_timeline.annotations, -1, -1, -1, false);
+        const int dir = (vk == VK_DOWN || vk == VK_OEM_6) ? +1 : -1;
+        const int64_t nextMs = StudioTimelineAnalyzer::findNextTimelineKeyframeMs(curKeptMs, dir, anchors);
+        if (nextMs >= 0) {
+            m_playheadSec = std::clamp(static_cast<double>(nextMs) / 1000.0, 0.0, keptDurSec);
+            if (m_timelineZoom > 1.01f) {
+                const double visSpan = visibleTimelineSpanSec(keptDurSec);
+                if (m_playheadSec < m_timelineViewStartSec || m_playheadSec > m_timelineViewStartSec + visSpan) {
+                    m_timelineViewStartSec = m_playheadSec - visSpan * 0.25;
+                    clampTimelineViewWindow(keptDurSec);
+                }
+            }
+            requestImmediatePreviewRefresh(true);
+        }
         return;
     }
 

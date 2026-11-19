@@ -71,6 +71,9 @@ public:
     static ThemePalette resolveThemePalette() noexcept;
     static ThemePalette resolveThemePalette(bool isDark) noexcept;
 
+    /// 截图与录屏全域 HUD 恒定暗房黑曜石调色板（不跟随全局浅色设置，保持视觉心流，响应用户品牌强调色）
+    static ThemePalette resolveHudPalette() noexcept;
+
     /// 绘制通用微晶玻璃浮岛底板
     static void drawGlassPanel(
         ID2D1RenderTarget* rt,

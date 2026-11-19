@@ -1516,13 +1516,12 @@ void CaptureVectorIcons::drawPresetColorSwatch(ID2D1RenderTarget* rt,
     if (!rt) return;
     const float cx = (rect.left + rect.right) * 0.5f;
     const float cy = (rect.top + rect.bottom) * 0.5f;
-    const float halfSide = (isHovered ? (17.5f * 0.5f + 0.8f) : (17.5f * 0.5f)) * scale;
-    const float cornerR = 4.8f * scale;
-    const D2D1_ROUNDED_RECT swatchRect = D2D1::RoundedRect(
-        D2D1::RectF(cx - halfSide, cy - halfSide, cx + halfSide, cy + halfSide),
-        cornerR, cornerR);
+    const float halfSide = (isHovered ? (17.5f * 0.5f + 0.9f) : (17.5f * 0.5f)) * scale;
+    const float cornerR = 5.2f * scale;
+    const D2D1_RECT_F box = D2D1::RectF(cx - halfSide, cy - halfSide, cx + halfSide, cy + halfSide);
+    const D2D1_ROUNDED_RECT swatchRect = D2D1::RoundedRect(box, cornerR, cornerR);
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> colorBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> colorBrush, rimBrush, sheenBrush;
     rt->CreateSolidColorBrush(
         D2D1::ColorF(color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, 1.0f),
         &colorBrush);
@@ -1530,26 +1529,39 @@ void CaptureVectorIcons::drawPresetColorSwatch(ID2D1RenderTarget* rt,
         rt->FillRoundedRectangle(swatchRect, colorBrush.Get());
     }
 
-    // 白色/浅亮色色块常驻 1.0f * scale 的 #CBD5E1 细灰描边
-    if (color.r > 235 && color.g > 235 && color.b > 235) {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lightBorderBrush;
-        rt->CreateSolidColorBrush(
-            D2D1::ColorF(203 / 255.0f, 213 / 255.0f, 225 / 255.0f, 1.0f),
-            &lightBorderBrush);
-        if (lightBorderBrush) {
-            rt->DrawRoundedRectangle(swatchRect, lightBorderBrush.Get(), 1.0f * scale);
-        }
+    // 暗房微晶宝石高光内边：深色/纯黑色块在黑曜石面板上带柔和冷银轮廓，亮色块带温和内折射光
+    const float luma = 0.2126f * (color.r / 255.0f) + 0.7152f * (color.g / 255.0f) + 0.0722f * (color.b / 255.0f);
+    rt->CreateSolidColorBrush(
+        luma < 0.22f
+            ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f)
+            : (luma > 0.85f ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.20f)
+                            : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f)),
+        &rimBrush);
+    if (rimBrush) {
+        rt->DrawRoundedRectangle(swatchRect, rimBrush.Get(), 1.0f * scale);
     }
 
-    // 仅在鼠标悬停时绘一圈极淡柔光环，不在选中时绘制外层同心圆环
-    if (isHovered && hoverBrush) {
-        const float hoverHalf = halfSide + 1.4f * scale;
-        const float hoverR = cornerR + 1.2f * scale;
+    // 顶部 1px 微弧折射高光（赋予高定珠宝按键质感）
+    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, luma > 0.85f ? 0.40f : 0.26f), &sheenBrush);
+    if (sheenBrush) {
+        const float inset = 1.6f * scale;
+        rt->DrawLine(
+            D2D1::Point2F(box.left + cornerR * 0.7f, box.top + inset),
+            D2D1::Point2F(box.right - cornerR * 0.7f, box.top + inset),
+            sheenBrush.Get(), 0.9f * scale);
+    }
+
+    // 悬停态优雅纯白纤细呼吸外环
+    if (isHovered) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverRing;
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.72f), &hoverRing);
+        const float hoverHalf = halfSide + 1.8f * scale;
+        const float hoverR = cornerR + 1.5f * scale;
         rt->DrawRoundedRectangle(
             D2D1::RoundedRect(
                 D2D1::RectF(cx - hoverHalf, cy - hoverHalf, cx + hoverHalf, cy + hoverHalf),
                 hoverR, hoverR),
-            hoverBrush, 1.2f * scale);
+            hoverRing ? hoverRing.Get() : hoverBrush, 1.25f * scale);
     }
 }
 

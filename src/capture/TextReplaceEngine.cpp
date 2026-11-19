@@ -174,21 +174,22 @@ LinearBgPlane fitRobustLinearBgPlane(const cv::Mat& bgr, const cv::Rect& roi) {
     struct Sample {
         float dx, dy;
         cv::Vec3b px;
+        bool isInnerRing = false; // 紧贴 ROI 外围 1~2px 的近环样本（紧凑表格/单字选区防远环撞入上下行黑字）
     };
     std::vector<Sample> samples;
     samples.reserve(512);
 
-    auto pushPt = [&](int x, int y) {
+    auto pushPt = [&](int x, int y, bool innerRing) {
         if (x < 0 || x >= bgr.cols || y < 0 || y >= bgr.rows) return;
         samples.push_back(Sample{
             static_cast<float>(x) - plane.originX,
             static_cast<float>(y) - plane.originY,
-            bgr.at<cv::Vec3b>(y, x)
+            bgr.at<cv::Vec3b>(y, x),
+            innerRing
         });
     };
 
-    // 采样外围 2~7px 环带（避开内部文字）
-    const int ringMin = 2;
+    // 采样外围近环 (1~2px) + 远环 (4~6px)（近环精准命中紧凑 Excel 单元格留白，远环稳定拟合渐变斜率）
     const int ringMax = 6;
     const int xStart = (std::max)(0, roi.x - ringMax);
     const int xEnd = (std::min)(bgr.cols - 1, roi.x + roi.width + ringMax);
@@ -198,37 +199,94 @@ LinearBgPlane fitRobustLinearBgPlane(const cv::Mat& bgr, const cv::Rect& roi) {
     const int stepX = (std::max)(1, (xEnd - xStart) / 48);
     const int stepY = (std::max)(1, (yEnd - yStart) / 14);
 
+    constexpr std::array<int, 4> kRingDists = {{1, 2, 4, 6}};
     for (int x = xStart; x <= xEnd; x += stepX) {
-        for (int dy = ringMin; dy <= ringMax; dy += 2) {
-            pushPt(x, roi.y - dy);
-            pushPt(x, roi.y + roi.height - 1 + dy);
+        for (int dy : kRingDists) {
+            const bool inner = (dy <= 2);
+            pushPt(x, roi.y - dy, inner);
+            pushPt(x, roi.y + roi.height - 1 + dy, inner);
         }
     }
     for (int y = (std::max)(0, roi.y); y < (std::min)(bgr.rows, roi.y + roi.height); y += stepY) {
-        for (int dx = ringMin; dx <= ringMax; dx += 2) {
-            pushPt(roi.x - dx, y);
-            pushPt(roi.x + roi.width - 1 + dx, y);
+        for (int dx : kRingDists) {
+            const bool inner = (dx <= 2);
+            pushPt(roi.x - dx, y, inner);
+            pushPt(roi.x + roi.width - 1 + dx, y, inner);
         }
     }
 
     // 极端贴边兜底：采样 ROI 四条内缘
     if (samples.size() < 12) {
         for (int x = (std::max)(0, roi.x); x < (std::min)(bgr.cols, roi.x + roi.width); x += (std::max)(1, roi.width / 24)) {
-            pushPt(x, (std::max)(0, roi.y));
-            pushPt(x, (std::min)(bgr.rows - 1, roi.y + roi.height - 1));
+            pushPt(x, (std::max)(0, roi.y), true);
+            pushPt(x, (std::min)(bgr.rows - 1, roi.y + roi.height - 1), true);
         }
     }
     if (samples.empty()) return plane;
 
-    // 1. 先求三通道中位数，剔除距离中位数过远的异常点（如 1px 表格线或相邻文字）
+    // 1. 量化颜色主峰众数锚定（Unimodal Dominant Mode）+ 次峰对抗检测：
+    //    相比简单中位数，主峰众数在四周挤满 40%~50% 单侧黑字（如紧凑 Excel 表格单字）时绝不被拉灰，
+    //    同时通过检测远离主峰的次峰强度，100% 识别 50/50 棋盘格/双色条纹等复杂底纹！
+    std::unordered_map<uint32_t, int> bucketCounts;
+    bucketCounts.reserve(64);
+    auto colorBucketKey = [](const cv::Vec3b& c) noexcept -> uint32_t {
+        return (static_cast<uint32_t>(c[0] >> 4) << 8) |
+               (static_cast<uint32_t>(c[1] >> 4) << 4) |
+               static_cast<uint32_t>(c[2] >> 4);
+    };
+    for (const auto& s : samples) {
+        ++bucketCounts[colorBucketKey(s.px)];
+    }
+
+    uint32_t bestKey = 0;
+    int bestBucketCnt = 0;
+    for (const auto& kv : bucketCounts) {
+        if (kv.second > bestBucketCnt) {
+            bestBucketCnt = kv.second;
+            bestKey = kv.first;
+        }
+    }
+    const int peakB0 = static_cast<int>((bestKey >> 8) & 0xFu) * 16 + 8;
+    const int peakG0 = static_cast<int>((bestKey >> 4) & 0xFu) * 16 + 8;
+    const int peakR0 = static_cast<int>(bestKey & 0xFu) * 16 + 8;
+
+    // 统计远离主峰 (> 32 色差) 的最强次峰（专门拦截 50/50 棋盘格与双色条纹）
+    int secondPeakCnt = 0;
+    for (const auto& kv : bucketCounts) {
+        const int kb = static_cast<int>((kv.first >> 8) & 0xFu) * 16 + 8;
+        const int kg = static_cast<int>((kv.first >> 4) & 0xFu) * 16 + 8;
+        const int kr = static_cast<int>(kv.first & 0xFu) * 16 + 8;
+        const int distToPeak = (std::max)({std::abs(kb - peakB0), std::abs(kg - peakG0), std::abs(kr - peakR0)});
+        if (distToPeak >= 32 && kv.second > secondPeakCnt) {
+            secondPeakCnt = kv.second;
+        }
+    }
+    const float secondPeakRatio = static_cast<float>(secondPeakCnt) / static_cast<float>((std::max<size_t>)(1, samples.size()));
+
+    // 在主峰邻域 (<= 24 色差) 内求精确三通道中位数，得到零拉偏的真实背景基准色
     std::vector<uint8_t> bv, gv, rv;
     bv.reserve(samples.size());
     gv.reserve(samples.size());
     rv.reserve(samples.size());
     for (const auto& s : samples) {
-        bv.push_back(s.px[0]);
-        gv.push_back(s.px[1]);
-        rv.push_back(s.px[2]);
+        const int d = (std::max)({
+            std::abs(static_cast<int>(s.px[0]) - peakB0),
+            std::abs(static_cast<int>(s.px[1]) - peakG0),
+            std::abs(static_cast<int>(s.px[2]) - peakR0)
+        });
+        if (d <= 24) {
+            bv.push_back(s.px[0]);
+            gv.push_back(s.px[1]);
+            rv.push_back(s.px[2]);
+        }
+    }
+    if (bv.size() < 6) {
+        bv.clear(); gv.clear(); rv.clear();
+        for (const auto& s : samples) {
+            bv.push_back(s.px[0]);
+            gv.push_back(s.px[1]);
+            rv.push_back(s.px[2]);
+        }
     }
     const size_t mid = bv.size() / 2;
     std::nth_element(bv.begin(), bv.begin() + static_cast<ptrdiff_t>(mid), bv.end());
@@ -247,9 +305,10 @@ LinearBgPlane fitRobustLinearBgPlane(const cv::Mat& bgr, const cv::Rect& roi) {
         dists.push_back(d);
     }
     std::vector<int> sortedDists = dists;
-    const size_t p75Idx = (sortedDists.size() * 3) / 4;
-    std::nth_element(sortedDists.begin(), sortedDists.begin() + static_cast<ptrdiff_t>(p75Idx), sortedDists.end());
-    const int inlierThresh = (std::max)(18, (std::min)(48, sortedDists[p75Idx] * 2 + 8));
+    const size_t p50Idx = sortedDists.size() / 2;
+    std::nth_element(sortedDists.begin(), sortedDists.begin() + static_cast<ptrdiff_t>(p50Idx), sortedDists.end());
+    // 采用鲁棒统计学 MAD (中位数绝对偏差) 设定内点阈值，防紧凑表格单字四周邻字污染
+    const int inlierThresh = (std::max)(14, (std::min)(22, sortedDists[p50Idx] * 2 + 6));
 
     std::vector<Sample> inliers;
     inliers.reserve(samples.size());
@@ -292,10 +351,19 @@ LinearBgPlane fitRobustLinearBgPlane(const cv::Mat& bgr, const cv::Rect& roi) {
         }
     }
 
-    // 3. 仅当背景内点占绝对主导 (>= 64%) 且内点紧贴二维线性渐变平面 (inlierStd <= 8.5) 时，
-    //    锁定为纯色/渐变平面（既彻底根治紧凑多行上下邻行文字拉高方差误走 Telea 留鬼影，
-    //    又防止 50/50 棋盘格或复杂底纹照片被误判为纯色平面）
+    // 3. 评估纯净背景主导度：
+    //    情形 A：全环内点占绝对主导 (>= 64%) 且紧贴二维线性渐变平面 (inlierStd <= 8.5)；
+    //    情形 B：紧凑单字表格（四周 4~6px 远环全撞入紧邻黑字）中，紧贴 1~2px 近环内点占优 (>= 66%) 且内点极其纯净 (inlierStd <= 5.5)；
+    //    二者均完美豁免 50/50 棋盘格（近远环均为 50%）与复杂纹理照片（inlierStd > 10）。
     double inlierSqSum = 0.0;
+    size_t innerRingTotal = 0;
+    size_t innerRingInliers = 0;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        if (samples[i].isInnerRing) {
+            ++innerRingTotal;
+            if (dists[i] <= inlierThresh) ++innerRingInliers;
+        }
+    }
     for (const auto& s : inliers) {
         const cv::Vec3b pred = plane.evalAt(plane.originX + s.dx, plane.originY + s.dy);
         const double db = static_cast<double>(s.px[0]) - static_cast<double>(pred[0]);
@@ -305,7 +373,44 @@ LinearBgPlane fitRobustLinearBgPlane(const cv::Mat& bgr, const cv::Rect& roi) {
     }
     const float inlierStd = static_cast<float>(std::sqrt(inlierSqSum / static_cast<double>((std::max<size_t>)(1, inliers.size()))));
     const float inlierRatio = static_cast<float>(inliers.size()) / static_cast<float>((std::max<size_t>)(1, samples.size()));
-    if (inlierRatio >= 0.64f && inlierStd <= 8.5f) {
+    const float innerRingRatio = (innerRingTotal >= 8)
+        ? (static_cast<float>(innerRingInliers) / static_cast<float>(innerRingTotal))
+        : inlierRatio;
+
+    // 紧凑单字表格辅助校验：单字四周 1~6px 均紧邻黑字时，文字框内部本身 58%~75% 仍是纯净底色；
+    // 50/50 棋盘格或复杂纹理在框内叠加文字后单色匹配率必然 < 50%，绝不误判！
+    float roiMatchRatio = 0.0f;
+    if (inlierRatio >= 0.36f && inlierRatio < 0.64f && inlierStd <= 4.5f) {
+        const cv::Rect safeInner = roi & cv::Rect(0, 0, bgr.cols, bgr.rows);
+        if (safeInner.width > 0 && safeInner.height > 0) {
+            size_t totalInner = 0;
+            size_t matchedInner = 0;
+            for (int y = safeInner.y; y < safeInner.y + safeInner.height; ++y) {
+                const auto* row = bgr.ptr<cv::Vec3b>(y);
+                for (int x = safeInner.x; x < safeInner.x + safeInner.width; ++x) {
+                    const cv::Vec3b pred = plane.evalAt(static_cast<float>(x), static_cast<float>(y));
+                    const int d = (std::max)({
+                        std::abs(static_cast<int>(row[x][0]) - static_cast<int>(pred[0])),
+                        std::abs(static_cast<int>(row[x][1]) - static_cast<int>(pred[1])),
+                        std::abs(static_cast<int>(row[x][2]) - static_cast<int>(pred[2]))
+                    });
+                    ++totalInner;
+                    if (d <= inlierThresh) ++matchedInner;
+                }
+            }
+            if (totalInner > 0) {
+                roiMatchRatio = static_cast<float>(matchedInner) / static_cast<float>(totalInner);
+            }
+        }
+    }
+
+    // 单峰纯净背景判定：要求不存在 >= 28% 的强异色次峰（直接拦杀 50/50 棋盘格与双色条纹）
+    const bool unimodalBg = (secondPeakRatio < 0.28f);
+    const bool dominantCleanPlane =
+        (inlierRatio >= 0.64f && inlierStd <= 8.5f) ||
+        (unimodalBg && inlierRatio >= 0.42f && innerRingRatio >= 0.52f && inlierStd <= 8.5f) ||
+        (unimodalBg && inlierRatio >= 0.36f && roiMatchRatio >= 0.50f && inlierStd <= 8.5f);
+    if (dominantCleanPlane) {
         plane.complexity = inlierStd;
     } else {
         double allSqSum = 0.0;
@@ -319,6 +424,420 @@ LinearBgPlane fitRobustLinearBgPlane(const cv::Mat& bgr, const cv::Rect& roi) {
         plane.complexity = (std::max)(inlierStd, static_cast<float>(std::sqrt(allSqSum / static_cast<double>((std::max<size_t>)(1, samples.size())))));
     }
     return plane;
+}
+
+/// 三阶像素级连通域主权护栏（MECE 覆盖左右跨界连笔、邻字独立点画/偏旁、上下行探入、低分粘连谷底切分、单字符豁免）
+struct NeighborGlyphGuardResult {
+    cv::Rect obsRoi;
+    cv::Mat protectMaskInObs; // CV_8UC1 (obsRoi 尺寸): 255 = 必须保全的相邻未选中字形及其 1px 护城河
+    int rightProtectedMinX = INT_MAX; // 若右侧邻字渗入选区并受保护，记录其全图最左 X（供同行右尾顺延无撕裂完整吸纳）
+    bool hasProtected = false;
+
+    /// 将保护掩码裁切映射到任意目标区域 dstRoi（全图坐标）
+    cv::Mat cropTo(const cv::Rect& dstRoi) const {
+        cv::Mat out(dstRoi.height, dstRoi.width, CV_8UC1, cv::Scalar(0));
+        if (!hasProtected || protectMaskInObs.empty()) return out;
+        const cv::Rect inter = obsRoi & dstRoi;
+        if (inter.width <= 0 || inter.height <= 0) return out;
+        const cv::Rect srcSub(inter.x - obsRoi.x, inter.y - obsRoi.y, inter.width, inter.height);
+        const cv::Rect dstSub(inter.x - dstRoi.x, inter.y - dstRoi.y, inter.width, inter.height);
+        protectMaskInObs(srcSub).copyTo(out(dstSub));
+        return out;
+    }
+};
+
+NeighborGlyphGuardResult buildNeighborGlyphGuard(const cv::Mat& bgr,
+                                                 const cv::Rect& roi,
+                                                 const LinearBgPlane& bgPlane) {
+    NeighborGlyphGuardResult res{};
+    if (bgr.empty() || roi.width <= 0 || roi.height <= 0) return res;
+
+    const cv::Rect canvasRc(0, 0, bgr.cols, bgr.rows);
+    const cv::Rect safeRoi = roi & canvasRc;
+    if (safeRoi.width < 2 || safeRoi.height < 2) return res;
+
+    // 观察窗横向外扩 1.5x 行高（足以完整囊括紧邻整字如 "余"/"待"），纵向外扩 0.5x 行高（囊括紧邻上下行）
+    const int marginX = std::clamp((safeRoi.height * 3) / 2, 16, 64);
+    const int marginY = std::clamp(safeRoi.height / 2, 4, 20);
+    res.obsRoi = cv::Rect(
+        safeRoi.x - marginX, safeRoi.y - marginY,
+        safeRoi.width + marginX * 2, safeRoi.height + marginY * 2) & canvasRc;
+    if (res.obsRoi.width <= safeRoi.width && res.obsRoi.height <= safeRoi.height) return res;
+
+    const int inX0 = safeRoi.x - res.obsRoi.x;
+    const int inY0 = safeRoi.y - res.obsRoi.y;
+    const int inX1 = inX0 + safeRoi.width;
+    const int inY1 = inY0 + safeRoi.height;
+
+    cv::Mat diffObs(res.obsRoi.height, res.obsRoi.width, CV_8UC1, cv::Scalar(0));
+    int maxInnerDiff = 0;
+    for (int r = 0; r < res.obsRoi.height; ++r) {
+        const int gy = res.obsRoi.y + r;
+        const auto* row = bgr.ptr<cv::Vec3b>(gy) + res.obsRoi.x;
+        uint8_t* dRow = diffObs.ptr<uint8_t>(r);
+        const bool yInside = (r >= inY0 && r < inY1);
+        for (int c = 0; c < res.obsRoi.width; ++c) {
+            const cv::Vec3b bg = bgPlane.evalAt(static_cast<float>(res.obsRoi.x + c), static_cast<float>(gy));
+            const int d = (std::max)({
+                std::abs(static_cast<int>(row[c][0]) - static_cast<int>(bg[0])),
+                std::abs(static_cast<int>(row[c][1]) - static_cast<int>(bg[1])),
+                std::abs(static_cast<int>(row[c][2]) - static_cast<int>(bg[2]))
+            });
+            dRow[c] = static_cast<uint8_t>((std::min)(255, d));
+            if (yInside && c >= inX0 && c < inX1 && d > maxInnerDiff) {
+                maxInnerDiff = d;
+            }
+        }
+    }
+    if (maxInnerDiff < 20) return res;
+
+    const uint8_t fgCut = static_cast<uint8_t>(std::clamp((maxInnerDiff * 24) / 100, 16, 48));
+    cv::Mat obsFg;
+    cv::threshold(diffObs, obsFg, fgCut, 255, cv::THRESH_BINARY);
+
+    cv::Mat labels, stats, centroids;
+    const int numLabels = cv::connectedComponentsWithStats(obsFg, labels, stats, centroids, 8, CV_32S);
+    if (numLabels <= 1) return res;
+
+    struct CompInfo {
+        int left = 0;
+        int top = 0;
+        int right = 0;
+        int bottom = 0;
+        int area = 0;
+        int insideCnt = 0;
+        int leftOutCnt = 0;
+        int rightOutCnt = 0;
+        int topOutCnt = 0;
+        int botOutCnt = 0;
+        int insideMinX = INT_MAX;
+        int insideMaxX = -1;
+        double cx = 0.0;
+        double cy = 0.0;
+        bool touchesRoi = false;
+        bool fullyInside = false;
+        bool isNeighbor = false;
+        bool isFusedBoundary = false; // 邻字与目标字低分物理粘连，改走列谷底硬切
+    };
+
+    std::vector<CompInfo> comps(static_cast<size_t>(numLabels));
+    int totalInnerFgPixels = 0;
+    int leftInvadeMaxX = -1;
+    int rightInvadeMinX = INT_MAX;
+
+    // Pass 1：统计跨界连通域主权（连笔跨左右界、跨上下行界、项目符号/表格线）
+    for (int id = 1; id < numLabels; ++id) {
+        auto& ci = comps[static_cast<size_t>(id)];
+        ci.left = stats.at<int>(id, cv::CC_STAT_LEFT);
+        ci.top = stats.at<int>(id, cv::CC_STAT_TOP);
+        const int cw = stats.at<int>(id, cv::CC_STAT_WIDTH);
+        const int ch = stats.at<int>(id, cv::CC_STAT_HEIGHT);
+        ci.right = ci.left + cw;
+        ci.bottom = ci.top + ch;
+        ci.area = stats.at<int>(id, cv::CC_STAT_AREA);
+        ci.cx = centroids.at<double>(id, 0);
+        ci.cy = centroids.at<double>(id, 1);
+
+        if (ci.area < 2) continue;
+        if (ci.right <= inX0 || ci.left >= inX1 || ci.bottom <= inY0 || ci.top >= inY1) continue;
+        // 忽略横跨整窗的超大背景噪块/大框
+        if (cw > safeRoi.width + marginX && ch > safeRoi.height + marginY) continue;
+
+        ci.touchesRoi = true;
+        ci.fullyInside = (ci.left >= inX0 && ci.right <= inX1 && ci.top >= inY0 && ci.bottom <= inY1);
+
+        if (ci.fullyInside) {
+            ci.insideCnt = ci.area;
+            ci.insideMinX = ci.left;
+            ci.insideMaxX = ci.right - 1;
+            totalInnerFgPixels += ci.insideCnt;
+            continue;
+        }
+
+        for (int r = ci.top; r < ci.bottom; ++r) {
+            const int* lRow = labels.ptr<int>(r);
+            const bool yIn = (r >= inY0 && r < inY1);
+            for (int c = ci.left; c < ci.right; ++c) {
+                if (lRow[c] != id) continue;
+                const bool xIn = (c >= inX0 && c < inX1);
+                if (xIn && yIn) {
+                    ++ci.insideCnt;
+                    if (c < ci.insideMinX) ci.insideMinX = c;
+                    if (c > ci.insideMaxX) ci.insideMaxX = c;
+                } else {
+                    if (c < inX0) ++ci.leftOutCnt;
+                    else if (c >= inX1) ++ci.rightOutCnt;
+                    if (r < inY0) ++ci.topOutCnt;
+                    else if (r >= inY1) ++ci.botOutCnt;
+                }
+            }
+        }
+        totalInnerFgPixels += ci.insideCnt;
+        if (ci.insideCnt <= 0) continue;
+
+        const int outsideCnt = ci.area - ci.insideCnt;
+        const float outRatio = static_cast<float>(outsideCnt) / static_cast<float>((std::max)(1, ci.area));
+        const int insideSpanW = (ci.insideMaxX >= ci.insideMinX) ? (ci.insideMaxX - ci.insideMinX + 1) : 0;
+
+        // 安全阀 1（低分物理粘连检测）：若单个跨界连通域把选区内超过 55% 的宽度连成一片，说明邻字和目标字发生了粘连，
+        // 不得整块保护（否则目标字擦不掉），标记为粘连态在后文用列投影谷底精确切分。
+        if (insideSpanW > (safeRoi.width * 55) / 100 && ci.insideCnt >= 10 &&
+            (ci.leftOutCnt >= 4 || ci.rightOutCnt >= 4)) {
+            ci.isFusedBoundary = true;
+            continue;
+        }
+
+        const int thinRadicalMaxSpan = (std::max)(3, safeRoi.height / 5);
+        const bool wideEnoughForThinRadical = (safeRoi.width >= (std::max)(12, (safeRoi.height * 7) / 10));
+        const bool isLeftNeighbor = (ci.leftOutCnt > 0) &&
+            (outRatio >= 0.36f ||
+             (ci.cx < static_cast<double>(inX0) && ci.leftOutCnt >= 3) ||
+             (wideEnoughForThinRadical && ci.leftOutCnt >= 3 && outRatio >= 0.22f && insideSpanW <= thinRadicalMaxSpan));
+        const bool isRightNeighbor = (ci.rightOutCnt > 0) &&
+            (outRatio >= 0.36f ||
+             (ci.cx >= static_cast<double>(inX1) && ci.rightOutCnt >= 3) ||
+             (wideEnoughForThinRadical && ci.rightOutCnt >= 3 && outRatio >= 0.22f && insideSpanW <= thinRadicalMaxSpan));
+        const bool isVertNeighbor = (ci.topOutCnt > 0 || ci.botOutCnt > 0) &&
+            (outRatio >= 0.44f ||
+             (ci.cy < static_cast<double>(inY0) && ci.topOutCnt >= 3) ||
+             (ci.cy >= static_cast<double>(inY1) && ci.botOutCnt >= 3));
+
+        if (isLeftNeighbor || isRightNeighbor || isVertNeighbor) {
+            ci.isNeighbor = true;
+            if (isLeftNeighbor && ci.insideMaxX >= inX0 && ci.insideMaxX < inX0 + (safeRoi.width * 45) / 100) {
+                leftInvadeMaxX = (std::max)(leftInvadeMaxX, ci.insideMaxX);
+            }
+            if (isRightNeighbor && ci.insideMinX < inX1 && ci.insideMinX > inX0 + (safeRoi.width * 55) / 100) {
+                rightInvadeMinX = (std::min)(rightInvadeMinX, ci.insideMinX);
+            }
+        }
+    }
+
+    if (totalInnerFgPixels <= 0) return res;
+
+    // Pass 2：邻字独立点画/偏旁包络守护（专治汉字如 "余" 右下点、"太/犬" 独立点、"氵/彳" 独立首点被整颗包入选区的情形）
+    // 安全阀 2（单字符/标点豁免）：仅当选区足够宽（非单独选中窄标点/单数字）时启用
+    const bool allowDetachedDotCheck = (safeRoi.width >= (std::max)(12, (safeRoi.height * 7) / 10));
+    if (allowDetachedDotCheck) {
+        // 统计选区内每列有效墨迹数（仅含非邻居像素），以及紧贴左/右外侧是否存在外部邻字墨迹
+        std::vector<int> obsColInk(static_cast<size_t>(res.obsRoi.width), 0);
+        for (int r = inY0; r < inY1; ++r) {
+            const int* lRow = labels.ptr<int>(r);
+            for (int c = 0; c < res.obsRoi.width; ++c) {
+                if (lRow[c] > 0) ++obsColInk[static_cast<size_t>(c)];
+            }
+        }
+
+        // 查找紧贴左界外侧最近的外部墨迹列 & 紧贴右界外侧最近的外部墨迹列
+        int nearestExtLeftCol = -1;
+        for (int c = inX0 - 1; c >= (std::max)(0, inX0 - 5); --c) {
+            if (obsColInk[static_cast<size_t>(c)] > 0) {
+                nearestExtLeftCol = c;
+                break;
+            }
+        }
+        int nearestExtRightCol = -1;
+        for (int c = inX1; c < (std::min)(res.obsRoi.width, inX1 + 5); ++c) {
+            if (obsColInk[static_cast<size_t>(c)] > 0) {
+                nearestExtRightCol = c;
+                break;
+            }
+        }
+
+        const int maxDotW = (std::max)(4, (safeRoi.height * 46) / 100);
+        const int maxDotH = (std::max)(5, (safeRoi.height * 54) / 100);
+        const int maxGapScan = (std::max)(3, safeRoi.height / 3);
+
+        for (int id = 1; id < numLabels; ++id) {
+            auto& ci = comps[static_cast<size_t>(id)];
+            if (!ci.fullyInside || ci.isNeighbor) continue;
+            const int cw = ci.right - ci.left;
+            const int ch = ci.bottom - ci.top;
+            if (cw > maxDotW || ch > maxDotH) continue;
+            // 不能占走选区超过 32% 的总墨迹，防误伤短目标自身主干
+            if (ci.insideCnt * 100 > totalInnerFgPixels * 32) continue;
+
+            // 2a) 左侧独立点画：
+            //   情形 A：位于左侧跨界邻居横向侵入包络 [inX0, leftInvadeMaxX + 2] 之内（例如 "余" 人字头捺下方的右下角点）
+            const bool insideLeftEnvelope =
+                (leftInvadeMaxX >= inX0 && ci.left <= leftInvadeMaxX + 1 && ci.right <= leftInvadeMaxX + 3);
+            //   情形 B：紧贴选区左缘（距左界 <= 2px），紧邻左侧外部汉字（<= 4px），且其右侧存在完整空白列把它与目标主体隔开，
+            //           并且该点明显比到右侧目标主体更贴近左侧外部邻居
+            bool detachedLeftEdgeDot = false;
+            if (!insideLeftEnvelope && nearestExtLeftCol >= 0 &&
+                ci.left <= inX0 + 2 && ci.right < inX0 + (safeRoi.width * 42) / 100) {
+                int distToExtLeft = ci.left - nearestExtLeftCol;
+                int distToNextInner = -1;
+                for (int c = ci.right; c < (std::min)(inX1, ci.right + maxGapScan + 4); ++c) {
+                    if (obsColInk[static_cast<size_t>(c)] > 0) {
+                        distToNextInner = c - ci.right + 1;
+                        break;
+                    }
+                }
+                if (distToNextInner >= 2 && distToExtLeft <= 4 && distToExtLeft <= distToNextInner) {
+                    detachedLeftEdgeDot = true;
+                }
+            }
+            if (insideLeftEnvelope || detachedLeftEdgeDot) {
+                ci.isNeighbor = true;
+                continue;
+            }
+
+            // 2b) 右侧独立点画（完全对称）：
+            const bool insideRightEnvelope =
+                (rightInvadeMinX < inX1 && ci.right >= rightInvadeMinX && ci.left >= rightInvadeMinX - 2);
+            bool detachedRightEdgeDot = false;
+            if (!insideRightEnvelope && nearestExtRightCol >= 0 &&
+                ci.right >= inX1 - 2 && ci.left > inX0 + (safeRoi.width * 58) / 100) {
+                int distToExtRight = nearestExtRightCol - (ci.right - 1);
+                int distToPrevInner = -1;
+                for (int c = ci.left - 1; c >= (std::max)(inX0, ci.left - maxGapScan - 4); --c) {
+                    if (obsColInk[static_cast<size_t>(c)] > 0) {
+                        distToPrevInner = ci.left - c;
+                        break;
+                    }
+                }
+                if (distToPrevInner >= 2 && distToExtRight <= 4 && distToExtRight <= distToPrevInner) {
+                    detachedRightEdgeDot = true;
+                }
+            }
+            if (insideRightEnvelope || detachedRightEdgeDot) {
+                ci.isNeighbor = true;
+            }
+        }
+    }
+
+    // 汇总被保护像素并执行最终安全锁（绝不把超过 72% 的选区目标像素误锁掉）
+    int protectedInnerCnt = 0;
+    bool anyNeighbor = false;
+    bool anyFused = false;
+    for (int id = 1; id < numLabels; ++id) {
+        const auto& ci = comps[static_cast<size_t>(id)];
+        if (ci.isNeighbor) {
+            anyNeighbor = true;
+            protectedInnerCnt += ci.insideCnt;
+        }
+        if (ci.isFusedBoundary) {
+            anyFused = true;
+        }
+    }
+    if (!anyNeighbor && !anyFused) return res;
+    if (protectedInnerCnt * 100 >= totalInnerFgPixels * 72) {
+        // 触发过度保护安全阀，清空整块保护，仅允许粘连谷底兜底
+        for (int id = 1; id < numLabels; ++id) comps[static_cast<size_t>(id)].isNeighbor = false;
+        anyNeighbor = false;
+    }
+
+    cv::Mat rawProtect(res.obsRoi.height, res.obsRoi.width, CV_8UC1, cv::Scalar(0));
+    cv::Mat targetCore(res.obsRoi.height, res.obsRoi.width, CV_8UC1, cv::Scalar(0));
+
+    for (int r = 0; r < res.obsRoi.height; ++r) {
+        const int* lRow = labels.ptr<int>(r);
+        uint8_t* pRow = rawProtect.ptr<uint8_t>(r);
+        uint8_t* tRow = targetCore.ptr<uint8_t>(r);
+        const bool yIn = (r >= inY0 && r < inY1);
+        for (int c = 0; c < res.obsRoi.width; ++c) {
+            const int id = lRow[c];
+            if (id <= 0) continue;
+            const auto& ci = comps[static_cast<size_t>(id)];
+            if (ci.isNeighbor) {
+                pRow[c] = 255;
+            } else if (ci.touchesRoi && yIn && c >= inX0 && c < inX1 && !ci.isFusedBoundary) {
+                tRow[c] = 255;
+            }
+        }
+    }
+
+    // Pass 2.5：低分物理粘连兜底（列投影谷底硬切）——只在相邻字和目标字像素直接连成一块时触发
+    if (anyFused) {
+        const int maxCut = std::clamp(safeRoi.height / 3, 2, (std::max)(2, safeRoi.width / 4));
+        for (int id = 1; id < numLabels; ++id) {
+            const auto& ci = comps[static_cast<size_t>(id)];
+            if (!ci.isFusedBoundary) continue;
+            if (ci.leftOutCnt >= 4) {
+                int bestCol = inX0;
+                int minCnt = INT_MAX;
+                const int scanEnd = (std::min)(inX1 - 1, inX0 + maxCut);
+                for (int c = inX0; c <= scanEnd; ++c) {
+                    int cnt = 0;
+                    for (int r = inY0; r < inY1; ++r) {
+                        if (labels.at<int>(r, c) == id) ++cnt;
+                    }
+                    if (cnt < minCnt) {
+                        minCnt = cnt;
+                        bestCol = c;
+                    }
+                }
+                if (bestCol > inX0) {
+                    for (int r = inY0; r < inY1; ++r) {
+                        const int* lRow = labels.ptr<int>(r);
+                        uint8_t* pRow = rawProtect.ptr<uint8_t>(r);
+                        for (int c = inX0; c < bestCol; ++c) {
+                            if (lRow[c] == id) pRow[c] = 255;
+                        }
+                    }
+                    anyNeighbor = true;
+                }
+            }
+            if (ci.rightOutCnt >= 4) {
+                int bestCol = inX1 - 1;
+                int minCnt = INT_MAX;
+                const int scanStart = (std::max)(inX0, inX1 - 1 - maxCut);
+                for (int c = inX1 - 1; c >= scanStart; --c) {
+                    int cnt = 0;
+                    for (int r = inY0; r < inY1; ++r) {
+                        if (labels.at<int>(r, c) == id) ++cnt;
+                    }
+                    if (cnt < minCnt) {
+                        minCnt = cnt;
+                        bestCol = c;
+                    }
+                }
+                if (bestCol < inX1 - 1) {
+                    for (int r = inY0; r < inY1; ++r) {
+                        const int* lRow = labels.ptr<int>(r);
+                        uint8_t* pRow = rawProtect.ptr<uint8_t>(r);
+                        for (int c = bestCol + 1; c < inX1; ++c) {
+                            if (lRow[c] == id) pRow[c] = 255;
+                        }
+                    }
+                    anyNeighbor = true;
+                }
+            }
+        }
+    }
+
+    if (!anyNeighbor) return res;
+
+    // Pass 3：为邻字像素披上 1px 抗锯齿十字护城河（且严格避让已确认为目标字的核心像素）
+    cv::Mat dilatedProtect;
+    const cv::Mat crossKernel = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(3, 3));
+    cv::dilate(rawProtect, dilatedProtect, crossKernel);
+    for (int r = 0; r < res.obsRoi.height; ++r) {
+        uint8_t* dRow = dilatedProtect.ptr<uint8_t>(r);
+        const uint8_t* tRow = targetCore.ptr<uint8_t>(r);
+        for (int c = 0; c < res.obsRoi.width; ++c) {
+            if (tRow[c] > 0) dRow[c] = 0;
+        }
+    }
+
+    res.protectMaskInObs = std::move(dilatedProtect);
+    res.hasProtected = (cv::countNonZero(res.protectMaskInObs(cv::Rect(inX0, inY0, safeRoi.width, safeRoi.height))) > 0);
+    if (res.hasProtected) {
+        // 统计选区右半段被保护邻居像素的最左 X（用于同行右侧顺延完整囊括被保全的右邻左偏旁）
+        const int rightHalfStart = inX0 + safeRoi.width / 2;
+        for (int c = rightHalfStart; c < inX1; ++c) {
+            bool hasP = false;
+            for (int r = inY0; r < inY1; ++r) {
+                if (res.protectMaskInObs.at<uint8_t>(r, c) > 0) { hasP = true; break; }
+            }
+            if (hasP) {
+                res.rightProtectedMinX = res.obsRoi.x + c;
+                break;
+            }
+        }
+    }
+    return res;
 }
 
 uint64_t computeRoiContentHash(const cv::Mat& bgr, const cv::Rect& roi, int bgMode, bool aiInstalled) noexcept {
@@ -354,25 +873,27 @@ struct CachedErasedPatch {
     uint64_t key = 0;
     cv::Rect roi;
     cv::Mat cleanPatchBgr;
+    int rightProtectedMinX = INT_MAX;
 };
 
 std::mutex g_patchCacheMutex;
 std::deque<CachedErasedPatch> g_patchCache;
 constexpr size_t kMaxCachedPatches = 12;
 
-bool lookupErasedPatchCache(uint64_t key, cv::Rect& outRoi, cv::Mat& outPatch) {
+bool lookupErasedPatchCache(uint64_t key, cv::Rect& outRoi, cv::Mat& outPatch, int* outRightProtectedMinX = nullptr) {
     std::lock_guard<std::mutex> lock(g_patchCacheMutex);
     for (const auto& entry : g_patchCache) {
         if (entry.key == key && !entry.cleanPatchBgr.empty()) {
             outRoi = entry.roi;
             outPatch = entry.cleanPatchBgr.clone();
+            if (outRightProtectedMinX) *outRightProtectedMinX = entry.rightProtectedMinX;
             return true;
         }
     }
     return false;
 }
 
-void storeErasedPatchCache(uint64_t key, const cv::Rect& roi, const cv::Mat& patch) {
+void storeErasedPatchCache(uint64_t key, const cv::Rect& roi, const cv::Mat& patch, int rightProtectedMinX = INT_MAX) {
     if (patch.empty()) return;
     std::lock_guard<std::mutex> lock(g_patchCacheMutex);
     for (auto it = g_patchCache.begin(); it != g_patchCache.end(); ++it) {
@@ -381,7 +902,7 @@ void storeErasedPatchCache(uint64_t key, const cv::Rect& roi, const cv::Mat& pat
             break;
         }
     }
-    g_patchCache.push_front(CachedErasedPatch{key, roi, patch.clone()});
+    g_patchCache.push_front(CachedErasedPatch{key, roi, patch.clone(), rightProtectedMinX});
     while (g_patchCache.size() > kMaxCachedPatches) {
         g_patchCache.pop_back();
     }
@@ -1318,6 +1839,19 @@ ExtractedTextStyle TextReplaceEngine::extractStyle(const cv::Mat& canvas,
     cv::Mat fgMask;
     cv::threshold(diffMap, fgMask, fgThresh, 255, cv::THRESH_BINARY);
 
+    // 剔除 OCR 字符框边界偏移误包入的相邻未选中字形像素（如 "剩余5%" 中渗入左界的 "余" 字右捺/独立点），
+    // 确保 inkLeftX/inkRightX/字号/字重 100% 忠实于被选目标字自身，杜绝假留白与字号虚胖
+    const NeighborGlyphGuardResult styleGuard = buildNeighborGlyphGuard(bgr, roi, st.bgPlane);
+    if (styleGuard.hasProtected) {
+        const cv::Mat guardInRoi = styleGuard.cropTo(roi);
+        cv::Mat cleanedFg = fgMask.clone();
+        cleanedFg.setTo(0, guardInRoi);
+        if (cv::countNonZero(cleanedFg) >= 4) {
+            fgMask = std::move(cleanedFg);
+            diffMap.setTo(0, guardInRoi);
+        }
+    }
+
     int inkTop = 0;
     int inkBot = roi.height - 1;
     std::vector<int> rowCounts(static_cast<size_t>(roi.height), 0);
@@ -1575,13 +2109,40 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
         const int coreMeanInk = (coreNonZeroRows > 0) ? (coreSum / coreNonZeroRows) : (std::max)(8, seedRect.width / 4);
         const int capInkLimit = (std::max)(20, static_cast<int>(std::lround(coreMeanInk * 0.85)));
 
+        auto isHorizontalGridRuleRow = [&](int y) -> bool {
+            if (y < 0 || y >= bgrCanvas.rows || x1 - x0 < 24) return false;
+            const int cx0 = (std::max)(0, x0);
+            const int cx1 = (std::min)(bgrCanvas.cols, x1);
+            const int spanW = cx1 - cx0;
+            if (spanW < 24) return false;
+            const auto* row = bgrCanvas.ptr<cv::Vec3b>(y);
+            int mildDiffCnt = 0;
+            int strongInkCnt = 0;
+            for (int x = cx0; x < cx1; ++x) {
+                const cv::Vec3b bg = plane.evalAt(static_cast<float>(x), static_cast<float>(y));
+                const int d = (std::max)({
+                    std::abs(static_cast<int>(row[x][0]) - static_cast<int>(bg[0])),
+                    std::abs(static_cast<int>(row[x][1]) - static_cast<int>(bg[1])),
+                    std::abs(static_cast<int>(row[x][2]) - static_cast<int>(bg[2]))
+                });
+                if (d >= 8 && d <= 68) ++mildDiffCnt;
+                if (d > 72) ++strongInkCnt;
+            }
+            // Excel / 网页表格横线特征：横贯整段 >= 78% 宽度且为低对比度均匀细灰线，绝不可跨越它冲进上下邻行！
+            return (mildDiffCnt * 100 >= spanW * 78) && (strongInkCnt * 100 <= spanW * 12);
+        };
+
         auto scanDir = [&](int startY, int step, int maxDist) -> int {
             if (maxDist <= 0) return 0;
             std::vector<int> counts(static_cast<size_t>(maxDist + 2), 0);
+            std::vector<bool> isGridWall(static_cast<size_t>(maxDist + 2), false);
             for (int d = 1; d <= maxDist + 1; ++d) {
                 const int yy = startY + step * d;
                 if (yy < 0 || yy >= bgrCanvas.rows) {
                     counts[static_cast<size_t>(d)] = 0;
+                } else if (isHorizontalGridRuleRow(yy)) {
+                    counts[static_cast<size_t>(d)] = 0;
+                    isGridWall[static_cast<size_t>(d)] = true;
                 } else {
                     counts[static_cast<size_t>(d)] = probeRowInkCount(yy, x0, x1, plane, diffThresh);
                 }
@@ -1592,7 +2153,12 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
             int minInk = counts[1];
             int minInkDist = 0;
             bool hitZero = false;
+            bool hitGridWall = false;
             for (int d = 1; d <= maxDist; ++d) {
+                if (isGridWall[static_cast<size_t>(d)]) {
+                    hitGridWall = true;
+                    break;
+                }
                 const int c = counts[static_cast<size_t>(d)];
                 if (c == 0) {
                     hitZero = true;
@@ -1610,17 +2176,30 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
                 best = d;
             }
 
-            // 阶段 B：若首次遇空白，继续向前窥探 1~2px 字内点隙（专门捕捉 立/高/音/i/j 悬空顶头小点），
-            // 仅当该小点紧接着上方/下方存在纯空白分隔且厚度 <= 4px 时吸纳，绝不吸走相邻行文字！
-            if (hitZero) {
+            // 封顶空白校验律 (Clearance Seal Law)：若连续扫描至 maxDist 仍未遇见空白封顶且外侧仍有密集墨迹，
+            // 说明已撞入相邻行正文（而非本行独立顶头凸起），回退至最低谷底（或 0），绝不误吞邻行！
+            if (!hitZero && !hitGridWall && best >= maxDist && counts[static_cast<size_t>(maxDist + 1)] > 0) {
+                best = (minInk <= coreMeanInk / 3) ? minInkDist : 0;
+                return best;
+            }
+
+            // 阶段 B：若首次遇空白（且非表格硬墙），继续向前窥探 1~2px 字内点隙（捕捉 立/高/音/i/j 悬空顶头小点），
+            // 仅当该小点紧接着上方/下方存在纯空白分隔且厚度 <= 4px 时吸纳，绝不跨越表格线或吸走相邻行文字！
+            if (hitZero && !hitGridWall) {
                 for (int gap = 1; gap <= 2; ++gap) {
                     const int dotStart = best + 1 + gap;
                     if (dotStart > maxDist) break;
+                    bool crossedWall = false;
+                    for (int k = best + 1; k <= dotStart; ++k) {
+                        if (isGridWall[static_cast<size_t>(k)]) { crossedWall = true; break; }
+                    }
+                    if (crossedWall) break;
                     if (counts[static_cast<size_t>(dotStart)] == 0) continue;
 
                     int dotEnd = dotStart;
                     int maxDotRowInk = counts[static_cast<size_t>(dotStart)];
-                    while (dotEnd + 1 <= maxDist && counts[static_cast<size_t>(dotEnd + 1)] > 0) {
+                    while (dotEnd + 1 <= maxDist && !isGridWall[static_cast<size_t>(dotEnd + 1)] &&
+                           counts[static_cast<size_t>(dotEnd + 1)] > 0) {
                         ++dotEnd;
                         maxDotRowInk = (std::max)(maxDotRowInk, counts[static_cast<size_t>(dotEnd)]);
                     }
@@ -1655,7 +2234,9 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
     const uint64_t cacheKey = computeRoiContentHash(bgrCanvas, eraseRoi, static_cast<int>(spec.bgMode), aiModelInstalled);
     cv::Rect cachedRoi;
     cv::Mat cleanPatchBgr;
-    if (!lookupErasedPatchCache(cacheKey, cachedRoi, cleanPatchBgr) || cachedRoi != eraseRoi) {
+    int rightProtectedMinX = INT_MAX;
+    if (!lookupErasedPatchCache(cacheKey, cachedRoi, cleanPatchBgr, &rightProtectedMinX) || cachedRoi != eraseRoi) {
+        rightProtectedMinX = INT_MAX;
         cleanPatchBgr = bgrCanvas(eraseRoi).clone();
 
         // 构建紧致文字墨迹掩码（保护紧贴文字边缘的 1px 表格线或左右紧邻未选中文字！）
@@ -1685,6 +2266,11 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
         const uint8_t maskCut = static_cast<uint8_t>(std::clamp(maxLocalDiff * 16 / 100, 14, 42));
         cv::threshold(inkMask, inkMask, maskCut, 255, cv::THRESH_BINARY);
 
+        // 预计算三阶连通域主权护栏：100% 保全渗入选区四边的邻字连笔、独立点画（如 "余" 右下点）与上下邻行探入笔画
+        const NeighborGlyphGuardResult eraseGuard = buildNeighborGlyphGuard(bgrCanvas, effectiveOrigRoi, extracted.bgPlane);
+        rightProtectedMinX = eraseGuard.rightProtectedMinX;
+        const cv::Mat guardProtectInErase = eraseGuard.hasProtected ? eraseGuard.cropTo(eraseRoi) : cv::Mat();
+
         if (useAiEngine) {
             const cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
             cv::dilate(inkMask, inkMask, dilateKernel);
@@ -1699,17 +2285,27 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
                 cv::rectangle(inkMask, innerCore, cv::Scalar(255), cv::FILLED);
             }
         }
+        if (!guardProtectInErase.empty()) {
+            inkMask.setTo(0, guardProtectInErase);
+        }
 
         cv::Mat softMaskF;
         cv::GaussianBlur(inkMask, softMaskF, cv::Size(3, 3), 0.65);
         softMaskF.convertTo(softMaskF, CV_32FC1, 1.0 / 255.0);
 
-        // 邻字零损伤护栏：对 effectiveOrigRoi 外部 1~2px 过渡边，若该像素本身是高对比度相邻文字/表格线（diff >= 30），强制 alpha = 0 保护！
+        // 邻字零损伤护栏：
+        // 1) 命中连通域主权护栏的邻字像素及其 1px 抗锯齿护城河强制 alpha = 0（绝对最高优先级）；
+        // 2) 对 effectiveOrigRoi 外部 1~2px 过渡边，若该像素本身是高对比度相邻文字/表格线（diff >= 30），强制 alpha = 0 保护！
         for (int r = 0; r < eraseRoi.height; ++r) {
             const int gy = eraseRoi.y + r;
             const auto* origRow = bgrCanvas.ptr<cv::Vec3b>(gy) + eraseRoi.x;
+            const uint8_t* gpRow = guardProtectInErase.empty() ? nullptr : guardProtectInErase.ptr<uint8_t>(r);
             float* aRow = softMaskF.ptr<float>(r);
             for (int c = 0; c < eraseRoi.width; ++c) {
+                if (gpRow && gpRow[c] > 0) {
+                    aRow[c] = 0.0f;
+                    continue;
+                }
                 const int gx = eraseRoi.x + c;
                 const bool insideOrig = (gx >= effectiveOrigRoi.x && gx < effectiveOrigRoi.x + effectiveOrigRoi.width &&
                                          gy >= effectiveOrigRoi.y && gy < effectiveOrigRoi.y + effectiveOrigRoi.height);
@@ -1724,10 +2320,23 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
                         aRow[c] = 0.0f;
                     }
                 } else if (!useAiEngine) {
-                    // 纯色/平滑渐变核心字区内 100% 彻底擦净，杜绝残留淡灰轮廓
+                    // 纯色/平滑渐变核心字区内 100% 彻底擦净（远离被保护邻字 1px 外），杜绝残留淡灰轮廓
                     const bool onInnerBorder = (gx == effectiveOrigRoi.x || gx == effectiveOrigRoi.x + effectiveOrigRoi.width - 1 ||
                                                 gy == effectiveOrigRoi.y || gy == effectiveOrigRoi.y + effectiveOrigRoi.height - 1);
-                    if (!onInnerBorder) {
+                    bool nearProtected = false;
+                    if (gpRow) {
+                        const int r0 = (std::max)(0, r - 1);
+                        const int r1 = (std::min)(eraseRoi.height - 1, r + 1);
+                        const int c0 = (std::max)(0, c - 1);
+                        const int c1 = (std::min)(eraseRoi.width - 1, c + 1);
+                        for (int rr = r0; rr <= r1 && !nearProtected; ++rr) {
+                            const uint8_t* pChk = guardProtectInErase.ptr<uint8_t>(rr);
+                            for (int cc = c0; cc <= c1; ++cc) {
+                                if (pChk[cc] > 0) { nearProtected = true; break; }
+                            }
+                        }
+                    }
+                    if (!onInnerBorder && !nearProtected) {
                         aRow[c] = 1.0f;
                     }
                 }
@@ -1787,7 +2396,7 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
             }
         }
 
-        storeErasedPatchCache(cacheKey, eraseRoi, cleanPatchBgr);
+        storeErasedPatchCache(cacheKey, eraseRoi, cleanPatchBgr, rightProtectedMinX);
     }
 
     auto writePatchToCanvas = [&](const cv::Mat& patchBgr, const cv::Rect& dstRect) {
@@ -1844,8 +2453,11 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
             const int probeY0 = (std::max)(0, rawTail.y - 2);
             const int probeY1 = (std::min)(bgrCanvas.rows, rawTail.y + rawTail.height + 2);
 
-            // 1a) 向左微扩（严格不越过 effectiveOrigRoi 右缘，容忍 1~2px 左偏旁/左引号字内窄缝，遇 3px 空白刹车）
-            const int minAllowedLeft = (std::min)(rawTail.x, effectiveOrigRoi.x + effectiveOrigRoi.width);
+            // 1a) 向左微扩（若右侧邻字左偏旁曾渗入选区并由主权护栏保全，一并无撕裂纳入顺延尾巴；容忍 1~2px 字内窄缝，遇 3px 空白刹车）
+            int minAllowedLeft = (std::min)(rawTail.x, effectiveOrigRoi.x + effectiveOrigRoi.width);
+            if (rightProtectedMinX < minAllowedLeft) {
+                minAllowedLeft = rightProtectedMinX;
+            }
             int bestLeft = rawTail.x;
             int leftEmptyRun = 0;
             for (int x = rawTail.x - 1; x >= minAllowedLeft; --x) {
@@ -1920,11 +2532,44 @@ cv::Rect TextReplaceEngine::renderReplacement(cv::Mat& canvas, const TextReplace
             const cv::Rect safeTail = expandVerticalToSafeInkCorridor(horizExpandedTail, tailBgPlane, maxUp, maxDown, 16) &
                                       cv::Rect(0, 0, bgrCanvas.cols, bgrCanvas.rows);
 
-            const float newRightEdge = place.drawTextX + place.measuredTextW + 3.0f;
-            const int needShift = static_cast<int>(std::ceil(newRightEdge - static_cast<float>(safeTail.x)));
+            // 步骤 3：原图真实墨水字距保真顺延（Ink-to-Ink Gap-Preserving Reflow）
+            // 严禁按含右侧承白的 advanceW + 硬编码 3px 盲推（会导致 "分"->"不分" 后出现 "不分 摊" 尴尬半角大空隙）；
+            // 改为精准测量原图 [原字真实墨水右缘 -> 尾巴真实首笔墨水左缘] 的原始物理字距，并在新字真实墨水右缘后 1:1 复现！
+            int tailInkLeftX = safeTail.x;
+            {
+                const int scanLimit = (std::min)(safeTail.x + safeTail.width, safeTail.x + (std::max)(16, rawTail.height * 2));
+                for (int x = safeTail.x; x < scanLimit; ++x) {
+                    if (probeColInkCount(x, safeTail.y, safeTail.y + safeTail.height, 22) > 0) {
+                        tailInkLeftX = x;
+                        break;
+                    }
+                }
+            }
+            const float minSafeGap = (std::max)(1.0f, fontSizePx * 0.08f);
+            const float maxPreservedGap = (std::max)(3.0f, fontSizePx * 0.65f);
+            const float origInkRight = (extracted.inkRightX > extracted.inkLeftX)
+                ? extracted.inkRightX
+                : static_cast<float>(origRoi.x + origRoi.width);
+            const float rawOrigGap = static_cast<float>(tailInkLeftX) - origInkRight;
+            const float preservedGap = (rawOrigGap >= -2.0f)
+                ? std::clamp(rawOrigGap, minSafeGap, maxPreservedGap)
+                : std::clamp(fontSizePx * 0.14f, 1.0f, 3.0f);
+
+            const RenderedGlyphProbe newInkProbe = measureRenderedGlyphInk(
+                wNew, fontClass, fontSizePx, fontWeight, extracted.darkBackground);
+            float newInkRight = newInkProbe.valid
+                ? (place.drawTextX + newInkProbe.inkRight)
+                : (place.drawTextX + place.measuredTextW);
+            const bool trailingSpace = !wNew.empty() && (wNew.back() == L' ' || wNew.back() == L'\u3000' || wNew.back() == L'\t');
+            if (trailingSpace) {
+                newInkRight = (std::max)(newInkRight, place.drawTextX + place.measuredTextW);
+            }
+
+            const float desiredTailInkLeft = newInkRight + preservedGap;
+            const int needShift = static_cast<int>(std::lround(desiredTailInkLeft - static_cast<float>(tailInkLeftX)));
             const int maxShift = (std::max)(0, bgrCanvas.cols - (safeTail.x + safeTail.width) - 2);
             const int shiftX = std::clamp(needShift, 0, maxShift);
-            if (shiftX > 1 && safeTail.width > 0 && safeTail.height > 0) {
+            if (shiftX >= 1 && safeTail.width > 0 && safeTail.height > 0) {
                 const cv::Mat tailPixels = bgrCanvas(safeTail).clone();
                 // 用右侧尾巴独立拟合的背景平面彻底清平完整四向扩张区域（顶/底/左/右 0 残点、0 胶囊底色块！）
                 cv::Mat clearTail(safeTail.height, safeTail.width, CV_8UC3);

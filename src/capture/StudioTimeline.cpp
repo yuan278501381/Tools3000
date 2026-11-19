@@ -1771,4 +1771,206 @@ void StudioTimelineAnalyzer::sampleSculptedWaveformColumn(
     outPeakCrest = (std::min)(candCrest, outBodyEnergy + 0.26f);
 }
 
+std::vector<TimelineSnapAnchor> StudioTimelineAnalyzer::collectTimelineSnapAnchors(
+    const std::vector<StudioVideoClip>& clips,
+    const std::vector<StudioZoomSegment>& zoomSegments,
+    const std::vector<StudioAnnotationItem>& annotations,
+    int64_t playheadKeptMs,
+    int excludeZoomIdx,
+    int excludeAnnIdx,
+    bool includePlayhead) {
+    std::vector<TimelineSnapAnchor> out;
+    out.reserve(clips.size() + zoomSegments.size() * 2 + annotations.size() * 2 + 4);
+
+    // 1. 视频切片首尾与全部拆分接缝点（最高视觉/剪辑优先级）
+    int64_t accKept = 0;
+    out.push_back({0, TimelineSnapTargetKind::ClipSplit});
+    for (const auto& c : clips) {
+        accKept += c.keptDurationMs();
+        out.push_back({accKept, TimelineSnapTargetKind::ClipSplit});
+    }
+
+    // 2. 当前主播放头
+    if (includePlayhead && playheadKeptMs >= 0) {
+        out.push_back({std::clamp<int64_t>(playheadKeptMs, 0, (std::max<int64_t>)(0, accKept)),
+                       TimelineSnapTargetKind::Playhead});
+    }
+
+    // 3. 其他运镜缩放块的起止边界
+    for (size_t i = 0; i < zoomSegments.size(); ++i) {
+        if (static_cast<int>(i) == excludeZoomIdx) continue;
+        const int64_t ks = mapSourceMsToKeptMsViaClips(clips, zoomSegments[i].startMs);
+        const int64_t ke = mapSourceMsToKeptMsViaClips(clips, zoomSegments[i].endMs);
+        if (ke <= ks + 30) continue;
+        out.push_back({ks, TimelineSnapTargetKind::ZoomBoundary});
+        out.push_back({ke, TimelineSnapTargetKind::ZoomBoundary});
+    }
+
+    // 4. 其他标注/字幕块的起止边界
+    for (size_t i = 0; i < annotations.size(); ++i) {
+        if (static_cast<int>(i) == excludeAnnIdx) continue;
+        const int64_t ks = mapSourceMsToKeptMsViaClips(clips, annotations[i].startMs);
+        const int64_t ke = mapSourceMsToKeptMsViaClips(clips, annotations[i].endMs);
+        if (ke <= ks + 30) continue;
+        out.push_back({ks, TimelineSnapTargetKind::AnnBoundary});
+        out.push_back({ke, TimelineSnapTargetKind::AnnBoundary});
+    }
+
+    // 按 keptMs 升序排列，同位置优先保留枚举值更小（ClipSplit > Playhead > Zoom > Ann）的锚点
+    std::sort(out.begin(), out.end(), [](const TimelineSnapAnchor& a, const TimelineSnapAnchor& b) {
+        if (a.keptMs != b.keptMs) return a.keptMs < b.keptMs;
+        return static_cast<int>(a.kind) < static_cast<int>(b.kind);
+    });
+    std::vector<TimelineSnapAnchor> dedup;
+    dedup.reserve(out.size());
+    for (const auto& a : out) {
+        if (!dedup.empty() && std::abs(dedup.back().keptMs - a.keptMs) <= 4) {
+            if (static_cast<int>(a.kind) < static_cast<int>(dedup.back().kind)) {
+                dedup.back() = a;
+            }
+        } else {
+            dedup.push_back(a);
+        }
+    }
+    return dedup;
+}
+
+TimelineSnapResult StudioTimelineAnalyzer::snapTimelineRangeDrag(
+    int64_t rawStartMs,
+    int64_t rawEndMs,
+    int dragEdgeMode,
+    const std::vector<TimelineSnapAnchor>& anchors,
+    int64_t snapWindowMs,
+    int64_t minSpanMs,
+    int64_t maxTotalMs) noexcept {
+    TimelineSnapResult res{};
+    const int64_t total = (std::max<int64_t>)(minSpanMs, maxTotalMs);
+    const int64_t len = (std::max<int64_t>)(minSpanMs, rawEndMs - rawStartMs);
+
+    if (dragEdgeMode == 0) {
+        res.snappedStartMs = std::clamp<int64_t>(rawStartMs, 0, (std::max<int64_t>)(0, total - len));
+        res.snappedEndMs = res.snappedStartMs + len;
+    } else if (dragEdgeMode == 1) {
+        res.snappedEndMs = std::clamp<int64_t>(rawEndMs, minSpanMs, total);
+        res.snappedStartMs = std::clamp<int64_t>(rawStartMs, 0, res.snappedEndMs - minSpanMs);
+    } else {
+        res.snappedStartMs = std::clamp<int64_t>(rawStartMs, 0, total - minSpanMs);
+        res.snappedEndMs = std::clamp<int64_t>(rawEndMs, res.snappedStartMs + minSpanMs, total);
+    }
+
+    if (snapWindowMs <= 0 || anchors.empty()) {
+        return res;
+    }
+
+    auto priorityBonusMs = [](TimelineSnapTargetKind k) noexcept -> int64_t {
+        // 近似等距时赋予视频拆分点与主播放头 12ms / 6ms 优先权，切缝手感干脆不跳动
+        switch (k) {
+            case TimelineSnapTargetKind::ClipSplit:    return 12;
+            case TimelineSnapTargetKind::Playhead:     return 6;
+            case TimelineSnapTargetKind::ZoomBoundary: return 2;
+            default:                                   return 0;
+        }
+    };
+
+    int64_t bestScore = LLONG_MAX;
+    TimelineSnapResult best = res;
+
+    auto tryCandidate = [&](int64_t candStart, int64_t candEnd, int64_t rawDiff, const TimelineSnapAnchor& anchor) {
+        if (rawDiff > snapWindowMs) return;
+        if (candStart < 0 || candEnd > total || (candEnd - candStart) < minSpanMs) return;
+        const int64_t score = rawDiff - priorityBonusMs(anchor.kind);
+        if (score < bestScore) {
+            bestScore = score;
+            best.snapped = true;
+            best.snappedStartMs = candStart;
+            best.snappedEndMs = candEnd;
+            best.snapLineKeptMs = anchor.keptMs;
+            best.targetKind = anchor.kind;
+        }
+    };
+
+    for (const auto& anchor : anchors) {
+        if (dragEdgeMode == 0) {
+            // 整块移动：同时检测左缘与右缘吸附，保持块长度 100% 不变
+            const int64_t diffL = std::abs(res.snappedStartMs - anchor.keptMs);
+            if (diffL <= snapWindowMs) {
+                tryCandidate(anchor.keptMs, anchor.keptMs + len, diffL, anchor);
+            }
+            const int64_t diffR = std::abs(res.snappedEndMs - anchor.keptMs);
+            if (diffR <= snapWindowMs) {
+                tryCandidate(anchor.keptMs - len, anchor.keptMs, diffR, anchor);
+            }
+        } else if (dragEdgeMode == 1) {
+            const int64_t diffL = std::abs(res.snappedStartMs - anchor.keptMs);
+            if (diffL <= snapWindowMs) {
+                tryCandidate(anchor.keptMs, res.snappedEndMs, diffL, anchor);
+            }
+        } else {
+            const int64_t diffR = std::abs(res.snappedEndMs - anchor.keptMs);
+            if (diffR <= snapWindowMs) {
+                tryCandidate(res.snappedStartMs, anchor.keptMs, diffR, anchor);
+            }
+        }
+    }
+    return best;
+}
+
+TimelineSnapResult StudioTimelineAnalyzer::snapTimelinePoint(
+    int64_t rawKeptMs,
+    const std::vector<TimelineSnapAnchor>& anchors,
+    int64_t snapWindowMs,
+    int64_t maxTotalMs) noexcept {
+    TimelineSnapResult res{};
+    const int64_t total = (std::max<int64_t>)(0, maxTotalMs);
+    const int64_t clamped = std::clamp<int64_t>(rawKeptMs, 0, total);
+    res.snappedStartMs = clamped;
+    res.snappedEndMs = clamped;
+    if (snapWindowMs <= 0 || anchors.empty()) return res;
+
+    int64_t bestScore = LLONG_MAX;
+    for (const auto& anchor : anchors) {
+        if (anchor.keptMs < 0 || anchor.keptMs > total) continue;
+        const int64_t diff = std::abs(clamped - anchor.keptMs);
+        if (diff > snapWindowMs) continue;
+        const int64_t bonus = (anchor.kind == TimelineSnapTargetKind::ClipSplit) ? 10 : 0;
+        const int64_t score = diff - bonus;
+        if (score < bestScore) {
+            bestScore = score;
+            res.snapped = true;
+            res.snappedStartMs = anchor.keptMs;
+            res.snappedEndMs = anchor.keptMs;
+            res.snapLineKeptMs = anchor.keptMs;
+            res.targetKind = anchor.kind;
+        }
+    }
+    return res;
+}
+
+int64_t StudioTimelineAnalyzer::findNextTimelineKeyframeMs(
+    int64_t currentKeptMs,
+    int direction,
+    const std::vector<TimelineSnapAnchor>& anchors) noexcept {
+    constexpr int64_t kEpsMs = 28;
+    if (direction > 0) {
+        int64_t best = -1;
+        for (const auto& a : anchors) {
+            if (a.kind == TimelineSnapTargetKind::Playhead) continue;
+            if (a.keptMs > currentKeptMs + kEpsMs) {
+                if (best < 0 || a.keptMs < best) best = a.keptMs;
+            }
+        }
+        return best;
+    } else if (direction < 0) {
+        int64_t best = -1;
+        for (const auto& a : anchors) {
+            if (a.kind == TimelineSnapTargetKind::Playhead) continue;
+            if (a.keptMs + kEpsMs < currentKeptMs) {
+                if (best < 0 || a.keptMs > best) best = a.keptMs;
+            }
+        }
+        return best;
+    }
+    return -1;
+}
+
 } // namespace tools3000::capture

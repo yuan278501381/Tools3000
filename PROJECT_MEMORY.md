@@ -6,6 +6,39 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-19] 长截图悬浮控制台点击失效根治与 MECE 八维防重复拼接引擎重构
+- **实机日志 + 像素级双实证根因与终局修复**：
+  1. **悬浮控制台「点击完成/暂停/贴图/保存/取消全部没反应，仅 Enter 有效」致命真凶 (`ScrollCaptureOverlay.{h,cpp}`)**：
+     - *暗坑真凶*：① `ScrollCaptureOverlay::initialize()` 对可交互控制栏窗口 `m_controlHwnd` 误调用了 `WinUtils::applyTaskbarSafeOverlayStyle(m_controlHwnd)`，该函数强行注入 `WS_EX_LAYERED | WS_EX_TRANSPARENT`，导致整个悬浮控制台 100% 鼠标事件穿透至底层窗口；② `controlWndProc` 未调用 `SetCapture` 且 `33ms` 定时器在状态文案/帧数变更时会调用 `SetWindowPos` 动态改宽并重写 `m_buttonRects`，按下至松开间隙极易抽走按钮吞掉点击；
+     - *终局标准*：① 严禁对任何可交互浮窗调用带 `WS_EX_TRANSPARENT` 的样式函数，`m_controlHwnd` 显式保留 `WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` 并强制清除 `WS_EX_TRANSPARENT | WS_EX_APPWINDOW`，`show()` 前先以 DWrite 预计算真实尺寸并 Z-Order 压顶；② 接入标准 `SetCapture` / `WM_CAPTURECHANGED` 与 `WM_LBUTTONUP` 先快照 `pressed` 再 `ReleaseCapture()` 铁律 + `4px * dpiScale` 边缘手抖容差；按下期间冻结控制栏位置与尺寸重排；触发完成/取消立即置 `m_finishRequested` 防连点并切换「正在生成长截图...」即时视觉反馈；暂停/触底释放 `Space` 热键时同步隐藏按钮 0 误导性 `Space` 键帽。
+  2. **深色聊天/AI 对话长截图「复读机式重复拼接 6~7 遍」及 MECE 八维边界根治 (`ScrollCapture.{h,cpp}`, `I18nLogCatalog.cpp`)**：
+     - *复合真凶链*：① 实拍深色 AI 对话界面 `78.9%` 像素为均一深灰、`48.5%` 整行为纯色空行；旧版 `verifyCandidateOnFullOverlap` 与 `zeroShiftInlierRatio` 全按含空行的全行均值评分，一方面在触底驻留态因底层鼠标 Hover/输入框光标微动绕过零位移门禁后被深灰空行稀释放行重复气泡间的假位移（日志实证 `frame=8` 触底后 26 秒内被复读拼成 `frame=15`），另一方面在稀疏文字页会把真实滚动误判静止；② `detectStaticMargins` 的无上限 `bridge` 在稀疏/等行距细线页面会连续跳格将上下 `83%` 正文吃成 `stickyTop`/`stickyBottom`；③ `matchSingleBand` 用 `0.5x INTER_AREA` 降采样在 `1~2px` 细字体奇偶平移下产生相位混叠丢峰，且 `candidateRoughYs` 为空时不回退原分辨率；④ 缺乏反向滚动探测与前/后向对称对决，用户手动向上回滚时易在周期卡片里凑出擦边假正位移并误报「滚动过快」；
+     - *MECE 八维终局架构*：① **有效纹理行双轨验证 (`computeRowActivity` + `evaluateOverlapAtDelta`)**：剔除纯色空行稀释，独立计算有效纹理行的全局灰度 ZNCC、前景像素 MAD 与纹理行内点率，同步赋能 `d == 0` 零位移绝对否决门禁与候选位移门禁；② **抗混叠高斯金字塔 `pyrDown` + 6 峰/5 簇 + 原分辨率兜底 (`matchSingleBand`)**；③ **`detectStaticMargins` 单次纹理锚定桥接 + 纯色动态留白防吞噬保护** + `refineStickyBottomWithDelta` `28px` 内部空白/光标跨接 + 会话级 `m_knownStickyBottom` 稳定性保护；④ **32 条带水平静态侧边栏自动剥离 (`refineDynamicHorizROI`)**（微信/钉钉/VS Code 左侧静止栏不拖累匹配且保持全宽拼接）；⑤ **前向 vs 后向对称对决 (`detectBackwardScroll`)**（反向回滚高置信度碾压擦边假正向匹配，静默忽略不误拼、不污染 `m_lastFrame`、不误报「滚动过快」，并同步保护 `overshot` 回滚防拉锯）；⑥ **纵深防线：已拼接长图尾部全局防重复循环门禁 (`isDuplicateSegmentInTail`)**（要求 `>= 96%` 有效纹理行逐像素一致且豁免自身周期性重复表格，0 误杀相似卡片不同消息 + 0 误杀重复数据表）；⑦ **启动瞬间光标安全移入内容核心区 `(centerX, top + 42% capH)` + 首帧 3 次唤醒缓冲**，根治 `frame=1` 1 秒秒停；⑧ `stitchFrames` 改为维护 `lastAcceptedIdx` 防止跳帧污染比对基准。
+
+### [2026-11-19] 手机高像素原图 OCR 420% 横向拉扁根治、改字三阶连通域主权护栏（MECE 邻字零误伤）与企业防泄密双排结构水印
+- **实拍图三大深水区病灶与终局架构**：
+  1. **2400 万像素手机屏摄原图（`4284×5712`）OCR 误识（`周转箱编码：ZZ30003665已被禁` -> `周转箱扁码：乙乙30003665己被禁`）根因根治 (`DeepOcrEngine.cpp`)**：
+     - *暗坑真凶*：`DeepOcrEngine` 第 1938 行历史残留对 `crop.rows > 42` 强加了 `horizScale = std::max(1.05f, ...)` 下限；在 `4284×5712` 手机原图上单行文字高达 `190px`，本应等比缩放 `48 / 190 = 0.252`（压成 `378×48`），却被 `1.05f` 强行锁成 `1575×48`，造成 **420% 畸形横向拉扁** 与错误切碎，直接把 `编/ZZ/已` 扭曲成 `扁/乙乙/己`；
+     - *终局标准*：① 恢复严格等比归一化 `horizScale = 48.0f / crop.rows`，任意分辨率下笔画高宽比 100% 忠实还原；② 新增微秒级 `enhanceLowContrastStripCrop` 查表提纯（仅在 `P95 - P05` 落在 `[16, 112)` 的屏摄反光/灰雾弱对比度行触发，温和线性增益封顶 `2.35x`，正常高对比度截图 `>= 112` 100% 零改动直通）。
+  2. **局部无痕改字误咬紧邻汉字偏旁/独立点画（如 `剩余5%` 改为 `剩余10%` 削掉 `余` 字右下角点）MECE 三阶连通域主权护栏与原图真实字距保真顺延 (`TextReplaceEngine.cpp`)**：
+     - *暗坑真凶*：① OCR CTC 8px 步长投影在紧排中英混排（`余` 紧贴 `5`）时易使 `sourceRect.x` 向左多滑 `2~5px`；旧版纯色平面擦除将整个 `effectiveOrigRoi` 矩形直接刷平，既削掉跨左界 `余` 字右捺，也抹掉整颗落入选区内的 `余` 字右下角独立小点；且 `extractStyle` 将该碎片误计入 `inkLeftX` 导致新字左缘假留白；② 旧版同行右尾顺延按 `advanceW + 3.0f` 盲推，在小字号 Excel 表格（如 `制造费用分摊` 改 `分 -> 不分`）叠加字承白边与 `3px` 硬推后产生半字宽尴尬大空隙（`不分 摊`）；
+     - *MECE 三阶物理护栏 (`buildNeighborGlyphGuard`) + 真实字距保真顺延*：① **一阶跨界连通域主权**：在 `1.5×行高` 横向 / `0.5×行高` 纵向观察窗内对前景连通域判权，凡跨左右/上下边界且外侧占比 `>= 36%/44%`、质心在外或细竖偏旁（`亻/彳/丨`）外露 `>= 22%` 均判为邻字并披 `1px` 十字抗锯齿护城河（严格避让目标字核心）；② **二阶邻字独立点画/偏旁包络守护**：对完全落入选区内且处于左/右跨界邻字横向侵入包络内、或贴边且更靠近外部邻字并有贯通空白缝隔开的矮小独立点画（专治 `余` 右下角独立点、`太/犬/氵` 等汉字结构），自动归属邻字保全；③ **安全阀与全链路联动**：设单字符窄目标豁免、过度保护上限（`< 72%`）与低分粘连列谷底硬切兜底；同步接入 `extractStyle()`（恢复精准 `inkLeftX` 消除假留白）、纯色 & AI Inpaint 双擦除引擎以及同行右尾顺延（`rightProtectedMinX` 联动）；④ **原图真实墨水字距保真顺延**：精准实测原图 `[origInkRight -> tailInkLeftX]` 物理字距 `preservedGap`，再以 `measureRenderedGlyphInk` 测得的新字真实墨水右缘 `newInkRight + preservedGap`（尊重主动尾随空格）定位顺延尾巴，1:1 复现原图自然字距。
+  3. **企业防泄密「多行/双排结构」水印（首行账号 `admin` + 次行日期时间左对齐）(`WatermarkRenderer.cpp`, `StudioPreviewWindow.cpp`, `CapturePage.tsx`, `{zh,en}.json`)**：
+     - `WatermarkRenderer::resolveDynamicText` 原生解析字面量 `\n`、`{nl}` 与 `\r\n` 换行符；
+     - 多行排印引入 `applyMultiLineTypography`（均匀紧致行距 `1.18x` + 次行 `Medium` / `0.86x` 精致层级）；`TiledTraceability` 与 `CornerText` 在多行时统一采用标准企业水印 **左对齐 (`DWRITE_TEXT_ALIGNMENT_LEADING`)**（单行居中），先锁最宽行紧致盒宽并按实测多行块高动态自适应 `-28°` 斜铺步距 `stepY` 绝不碰撞；设置页（截图 + 录屏）与演播室水印面板均新增 `+换行 (\n)` 与一键 `企业双行模板`（`{user}\n{date} {time}`）。
+
+  4. **录屏演播室全域磁性吸附引擎与专业 NLE 时间线体验升级 (`StudioTimeline.{h,cpp}`, `StudioPreviewWindow.{h,cpp}`)**：
+     - **纯算法磁性吸附核心 (`collectTimelineSnapAnchors` / `snapTimelineRangeDrag` / `snapTimelinePoint` / `findNextTimelineKeyframeMs`)**：在成片 `keptMs` 时间轴空间统一收集全部对齐锚点（视频拆分点/首尾 > 主播放头 > 其他运镜块起止边界 > 其他标注块起止边界），自动兼容多段切片与 `1.5x/2.0x` 变速；拖拽块整移时双缘（左/右）同步感知取最近锚点并保持块长恒定，拖拽边缘拉伸与拖拽主播放头同样全覆盖；恒定屏幕空间 `8.0 DIP`（播放头 `6.5 DIP`）动态换算毫秒容差，无论时间轴放大倍率如何手感恒定；按住 `Alt` 实时进入自由微调态。
+     - **五大 NLE 细节闭环**：① 吸附命中瞬间贯通三轨绘制琥珀金光学对齐激光线 + 顶部暗房徽章（如 `吸附拆分点 · 00:08.4`）；② 拖拽块期间实时展示暗房起止时间与持续时长胶囊（如 `8.4s - 10.6s (2.2s)`）；③ 拆分点附近点击「+ 运镜」或运镜轨空白时智能吸附起点向后延伸（绝不倒退跨过切缝）且遇前方已有运镜块自动收束防重叠；④ 多段视频切片接缝处常驻微晶对齐引导线（命中吸附时点亮琥珀金）；⑤ 支持 `Up`/`Down` 或 `[`/`]` 快捷键一键精准跳转至上/下一个剪辑关键点并自动滚屏跟随。
+
+### [2026-11-19] 截图与录屏「双层分离高定美学」：只读 HUD/提示恒定黑曜石暗房深色，工具栏与菜单跟随主设置深浅与品牌色
+- **产品决策与视觉架构升级（经项目负责人明确校准）**：
+  1. **只读 HUD & 提示层恒定锁定高级暗房深色 (`FloatingGlassBar::resolveHudPalette`)，保持心流**：
+     - 所有截图、录屏与贴图中的只读信息 HUD 与提示浮层——左下角快捷键提示卡（`ShortcutHintOverlay`）、悬停按键 Tooltip 气泡（`CaptureRenderer` / `PinWindow`）、浮动操作 Toast（`drawFloatingToast`）、选区尺寸提示 HUD（`drawSizeInfo`）、十字准星取色 HUD（`drawCrosshair`）、窗口层级识别提示徽章（`hierarchyBadge`）、像素取色放大镜信息舱、录屏 3-2-1 倒计时球（`RecordingIndicator`）、贴图瞬态操作提示微胶囊（`PinWindow::hudPal`）——统一路由至 `FloatingGlassBar::resolveHudPalette()`，**不跟随全局浅色主题切换**，始终保持高对比黑曜石暗房深色（仅联动强调色），在任意明暗桌面上保持沉浸心流。
+  2. **所有可交互工具栏、菜单与控制面板跟随主设置深浅主题与强调色 (`FloatingGlassBar::resolveThemePalette`)，深浅双态同享世界级光学玻璃质感**：
+     - 截图主/副工具栏、录屏准备栏、下拉/子菜单、滑块浮窗、二维码胶囊、长图画布顶栏与缩略导览、滚动长截图控制台、录屏控制灵动岛、贴图悬停栏/选字浮舱/改字浮岛/微晶右键菜单全部跟随主设置深浅与品牌强调色；
+     - *双态多维光学材质*：深色为中性丝绒炭黑渐变 + `1px` 深黑分离廓环 + 冷银内切面 + 顶部光学漫反射月光冠线；浅色为温润雪瓷渐变 + 顶部纯白光学冠线 + 细腻石板微边；主栏 `12.5/7.5` 与副栏 `11.5/6.5` 严守同心圆角定律；激活态深浅均升级为立体微浮渐变键帽 + 主题柔光边框 + 底部光学微灯丝；录屏参数胶囊采用精密内凹微刻槽；色板方块增加顶部 `1px` 折射高光与明度自适应勾边；Tooltip 与快捷键面板采用暗房立体微晶暗银键帽；录屏灵动岛状态灯带镜面高光、`REC`/暂停带深浅自适应微晶徽章、双声道音频电平升级为广播级三段渐变（绿/琥珀/绯红）能量柱。
+
 ### [2026-11-19] 方案 B：截图原位无痕改字 + 可选按需下载轻量 AI 纹理无痕修复引擎（MI-GAN 512 ONNX）
 - **核心架构设计与全链路闭环**：
   1. **三层自适应背景无痕擦除 + Render-and-Match 物理闭环克隆引擎 (`TextReplaceEngine.{h,cpp}`)**：

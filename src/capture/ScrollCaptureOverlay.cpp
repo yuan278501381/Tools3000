@@ -8,6 +8,7 @@
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/WinUtils.h"
+#include <dwmapi.h>
 #include <opencv2/imgproc.hpp>
 #include <windowsx.h>
 #include <algorithm>
@@ -178,7 +179,19 @@ bool ScrollCaptureOverlay::initialize() {
         if (!m_controlHwnd) return false;
 
         SetPropW(m_controlHwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
-        tools3000::core::WinUtils::applyTaskbarSafeOverlayStyle(m_controlHwnd);
+        // 严禁对可交互悬浮控制台调用带 WS_EX_TRANSPARENT 的 applyTaskbarSafeOverlayStyle，
+        // 否则整个控制栏会 100% 鼠标事件穿透导致点击「完成/暂停/贴图/保存/取消」全部失效。
+        {
+            LONG_PTR exStyle = GetWindowLongPtrW(m_controlHwnd, GWL_EXSTYLE);
+            constexpr LONG_PTR interactiveRequired =
+                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            exStyle = (exStyle | interactiveRequired) &
+                      ~static_cast<LONG_PTR>(WS_EX_TRANSPARENT | WS_EX_APPWINDOW);
+            SetWindowLongPtrW(m_controlHwnd, GWL_EXSTYLE, exStyle);
+            const BOOL disableTransitions = TRUE;
+            DwmSetWindowAttribute(m_controlHwnd, DWMWA_TRANSITIONS_FORCEDISABLED,
+                                  &disableTransitions, sizeof(disableTransitions));
+        }
         // 采用与 RecordingIndicator 主条同构的 LWA_ALPHA + ID2D1HwndRenderTarget + UniversalRoundedCorners + WDA_EXCLUDEFROMCAPTURE：
         // 在 Windows 10/11 下对用户肉眼 100% 清晰可见可点击，同时在 DWM 硬件层对全屏/最大化选区长截图抓帧 100% 自动隐形剔除！
         SetLayeredWindowAttributes(m_controlHwnd, 0, 250, LWA_ALPHA);
@@ -395,6 +408,9 @@ void ScrollCaptureOverlay::hide() {
     applyTransientOverlayShield(false);
 
     if (m_controlHwnd) {
+        if (GetCapture() == m_controlHwnd) {
+            ReleaseCapture();
+        }
         DestroyWindow(m_controlHwnd);
         m_controlHwnd = nullptr;
     }
@@ -417,6 +433,7 @@ void ScrollCaptureOverlay::hide() {
     m_hoveredBtn = ControlButtonId::None;
     m_pressedBtn = ControlButtonId::None;
     m_trackingMouseLeave = false;
+    m_finishRequested = false;
     m_layoutCacheValid = false;
     m_controlBarDirty = true;
 
@@ -708,6 +725,9 @@ void ScrollCaptureOverlay::show(RECT captureRect) {
     m_hasThumbRect = false;
     m_desiredBarWidth = 0;
     m_desiredBarHeight = 0;
+    m_finishRequested = false;
+    m_hoveredBtn = ControlButtonId::None;
+    m_pressedBtn = ControlButtonId::None;
     m_layoutCacheValid = false;
     m_controlBarDirty = true;
 
@@ -720,10 +740,27 @@ void ScrollCaptureOverlay::show(RECT captureRect) {
         m_lastFlashTime = GetTickCount64();
     }
 
+    // 首次展示前即用真实工作区宽度与 DWrite 测量预计算控制栏尺寸，消除首帧宽跳变闪烁
+    {
+        const POINT capCenter{(m_captureRect.left + m_captureRect.right) / 2,
+                              (m_captureRect.top + m_captureRect.bottom) / 2};
+        const HMONITOR mon = MonitorFromPoint(capCenter, MONITOR_DEFAULTTONEAREST);
+        const RECT work = tools3000::core::dpi::workArea(mon);
+        const int workWidth = static_cast<int>(work.right - work.left);
+        const std::wstring initStatus = m_isChinese ? L"正在自动滚动采集" : L"Auto scrolling";
+        const std::wstring initMetrics = m_isChinese ? L"准备采集中..." : L"Preparing...";
+        const auto initSnap = rebuildLayout(workWidth, initStatus, initMetrics, false);
+        m_desiredBarWidth = initSnap.barWidth;
+        m_desiredBarHeight = initSnap.barHeight;
+    }
+
     updateControlPlacement(nullptr);
 
     ShowWindow(m_hwnd, SW_SHOWNA);
     ShowWindow(m_controlHwnd, SW_SHOWNA);
+    // 确保可交互控制栏 Z 序绝对压在全屏指示框之上
+    SetWindowPos(m_controlHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     m_overlayVisibleFlag = true;
     tools3000::core::KeyboardHook::instance().setScrollCaptureOverlayVisible(true);
 
@@ -746,6 +783,8 @@ bool ScrollCaptureOverlay::isPointInControlZone(POINT screenPt) const {
 
 void ScrollCaptureOverlay::updateControlPlacement(const RECT* thumbScreenRect) {
     if (!m_controlHwnd) return;
+    // 按下按钮期间冻结控制栏位置与尺寸，绝不在用户按下到松手的间隙移动按钮导致吞点击
+    if (m_pressedBtn != ControlButtonId::None) return;
 
     const POINT center{(m_captureRect.left + m_captureRect.right) / 2,
                        (m_captureRect.top + m_captureRect.bottom) / 2};
@@ -1054,7 +1093,10 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
     const uint64_t tooFastTick = ScrollCapture::instance().lastScrollTooFastTickMs();
     const bool isScrollTooFast =
         (tooFastTick > 0 && nowBarTick >= tooFastTick && (nowBarTick - tooFastTick) < 1800);
-    if (isScrollTooFast) {
+    if (m_finishRequested) {
+        dotColor = D2D1::ColorF(0.24f, 0.75f, 0.98f, 1.0f);
+        statusText = m_isChinese ? L"正在生成长截图..." : L"Finalizing...";
+    } else if (isScrollTooFast) {
         dotColor = D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f);
         statusText = m_isChinese ? L"滚动过快 · 请放慢滚轮" : L"Scroll slower · Overlap lost";
     } else if (state == ScrollRuntimeState::HoldAtBottom) {
@@ -1088,11 +1130,15 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
     const RECT work = tools3000::core::dpi::workArea(mon);
     const int workWidth = static_cast<int>(work.right - work.left);
 
-    const auto snap = rebuildLayout(workWidth, statusText, metricsStr, isPausedOrHold);
+    // 按下按钮期间冻结按钮几何与窗口尺寸重排，避免 33ms 定时器文案或帧数变化把按钮从鼠标下方移走
+    const auto snap = (m_pressedBtn != ControlButtonId::None && m_layoutCacheValid)
+        ? m_cachedLayoutSnap
+        : rebuildLayout(workWidth, statusText, metricsStr, isPausedOrHold);
     const int desiredW = snap.barWidth;
     const int desiredH = snap.barHeight;
 
-    if (m_desiredBarWidth != desiredW || m_desiredBarHeight != desiredH) {
+    if (m_pressedBtn == ControlButtonId::None &&
+        (m_desiredBarWidth != desiredW || m_desiredBarHeight != desiredH)) {
         m_desiredBarWidth = desiredW;
         m_desiredBarHeight = desiredH;
         updateControlPlacement(m_hasThumbRect ? &m_lastThumbScreenRect : nullptr);
@@ -1294,13 +1340,13 @@ void ScrollCaptureOverlay::renderControlBar(bool forceRedraw) {
     }
 }
 
-ScrollCaptureOverlay::ControlButtonId ScrollCaptureOverlay::hitTestControlButton(POINT clientPt) const {
+ScrollCaptureOverlay::ControlButtonId ScrollCaptureOverlay::hitTestControlButton(POINT clientPt, float padPx) const {
     const float x = static_cast<float>(clientPt.x);
     const float y = static_cast<float>(clientPt.y);
     for (const auto& item : m_buttonRects) {
         if (item.id != ControlButtonId::None &&
-            x >= item.rect.left && x <= item.rect.right &&
-            y >= item.rect.top && y <= item.rect.bottom) {
+            x >= item.rect.left - padPx && x <= item.rect.right + padPx &&
+            y >= item.rect.top - padPx && y <= item.rect.bottom + padPx) {
             return item.id;
         }
     }
@@ -1308,22 +1354,33 @@ ScrollCaptureOverlay::ControlButtonId ScrollCaptureOverlay::hitTestControlButton
 }
 
 void ScrollCaptureOverlay::executeControlAction(ControlButtonId id) {
+    if (m_finishRequested && id != ControlButtonId::None) {
+        return;
+    }
     switch (id) {
         case ControlButtonId::TogglePause:
             ScrollCapture::instance().togglePause();
             syncPauseHotkeyWithRuntimeState();
-            renderControlBar();
+            renderControlBar(true);
             break;
         case ControlButtonId::Pin:
+            m_finishRequested = true;
+            renderControlBar(true);
             ScrollCapture::instance().requestFinish(ScrollFinishAction::Pin);
             break;
         case ControlButtonId::SaveAs:
+            m_finishRequested = true;
+            renderControlBar(true);
             ScrollCapture::instance().requestFinish(ScrollFinishAction::SaveAs);
             break;
         case ControlButtonId::Cancel:
+            m_finishRequested = true;
+            renderControlBar(true);
             ScrollCapture::instance().requestCancel();
             break;
         case ControlButtonId::Confirm:
+            m_finishRequested = true;
+            renderControlBar(true);
             ScrollCapture::instance().requestFinish(ScrollFinishAction::Confirm);
             break;
         default:
@@ -1376,7 +1433,8 @@ LRESULT CALLBACK ScrollCaptureOverlay::controlWndProc(HWND hwnd, UINT msg, WPARA
                 }
             }
             const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-            const auto hit = self.hitTestControlButton(pt);
+            const float tol = (self.m_pressedBtn != ControlButtonId::None) ? (4.0f * self.m_dpiScale) : 0.0f;
+            const auto hit = self.hitTestControlButton(pt, tol);
             if (hit != self.m_hoveredBtn) {
                 self.m_hoveredBtn = hit;
                 self.renderControlBar();
@@ -1386,8 +1444,15 @@ LRESULT CALLBACK ScrollCaptureOverlay::controlWndProc(HWND hwnd, UINT msg, WPARA
 
         case WM_MOUSELEAVE: {
             self.m_trackingMouseLeave = false;
-            if (self.m_hoveredBtn != ControlButtonId::None || self.m_pressedBtn != ControlButtonId::None) {
+            if (self.m_pressedBtn == ControlButtonId::None && self.m_hoveredBtn != ControlButtonId::None) {
                 self.m_hoveredBtn = ControlButtonId::None;
+                self.renderControlBar();
+            }
+            return 0;
+        }
+
+        case WM_CAPTURECHANGED: {
+            if (self.m_pressedBtn != ControlButtonId::None) {
                 self.m_pressedBtn = ControlButtonId::None;
                 self.renderControlBar();
             }
@@ -1395,17 +1460,36 @@ LRESULT CALLBACK ScrollCaptureOverlay::controlWndProc(HWND hwnd, UINT msg, WPARA
         }
 
         case WM_LBUTTONDOWN: {
+            if (self.m_finishRequested) {
+                return 0;
+            }
             const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-            self.m_pressedBtn = self.hitTestControlButton(pt);
+            const auto hit = self.hitTestControlButton(pt);
+            self.m_pressedBtn = hit;
+            self.m_hoveredBtn = hit;
+            if (hit != ControlButtonId::None) {
+                SetCapture(hwnd);
+            }
             self.renderControlBar();
             return 0;
         }
 
         case WM_LBUTTONUP: {
             const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-            const auto releasedOn = self.hitTestControlButton(pt);
+            // 先快照 pressed 再 ReleaseCapture()，避免 ReleaseCapture() 同步触发 WM_CAPTURECHANGED 清空 pressed
             const auto pressed = self.m_pressedBtn;
             self.m_pressedBtn = ControlButtonId::None;
+            if (GetCapture() == hwnd) {
+                ReleaseCapture();
+            }
+            auto releasedOn = self.hitTestControlButton(pt, 0.0f);
+            if (releasedOn != pressed && pressed != ControlButtonId::None) {
+                const float releaseTol = 4.0f * self.m_dpiScale;
+                if (self.hitTestControlButton(pt, releaseTol) == pressed) {
+                    releasedOn = pressed;
+                }
+            }
+            self.m_hoveredBtn = self.hitTestControlButton(pt, 0.0f);
             self.renderControlBar();
             if (pressed != ControlButtonId::None && pressed == releasedOn) {
                 self.executeControlAction(releasedOn);

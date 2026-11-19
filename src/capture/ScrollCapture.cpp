@@ -18,6 +18,7 @@
 #include <dwmapi.h>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -42,9 +43,13 @@ struct BandVote {
 struct OverlapVerification {
     int refinedDelta = 0;
     int overlapRows = 0;
+    int activeRows = 0;
     double inlierRatio = 0.0;
     double trimmedMad = 999.0;
     double meanMad = 999.0;
+    double activeInlierRatio = 0.0;
+    double activeTrimmedMad = 999.0;
+    double activeNcc = -1.0;
     bool valid = false;
 };
 
@@ -59,6 +64,117 @@ void computeContentHorizROI(int totalCols, int& outX, int& outW) {
     const int rightMargin = std::min(totalCols / 6, 32);
     outX = leftMargin;
     outW = std::max(8, totalCols - leftMargin - rightMargin);
+}
+
+// 水平静态侧边栏自动剥离（面向微信/钉钉/IDE/侧边导航栏全窗口长截图：只影响匹配与校验区间，不裁剪最终拼接图全宽）
+void refineDynamicHorizROI(const cv::Mat& diffMat, int dynTop, int dynBottom,
+                           int& subX, int& subW) {
+    subX = 0;
+    subW = diffMat.cols;
+    const int rows = dynBottom - dynTop;
+    const int cols = diffMat.cols;
+    if (rows < 24 || cols < 240) return;
+
+    constexpr int kStrips = 32;
+    std::array<double, kStrips> stripDiff{};
+    double maxStripDiff = 0.0;
+    const int rowStep = std::max(1, rows / 160);
+
+    for (int s = 0; s < kStrips; ++s) {
+        const int x0 = (s * cols) / kStrips;
+        const int x1 = ((s + 1) * cols) / kStrips;
+        const int xStep = std::max(1, (x1 - x0) / 8);
+        double sum = 0.0;
+        int count = 0;
+        for (int y = dynTop; y < dynBottom; y += rowStep) {
+            const auto* ptr = diffMat.ptr<cv::Vec3b>(y);
+            for (int x = x0; x < x1; x += xStep) {
+                const cv::Vec3b& d = ptr[x];
+                sum += (static_cast<int>(d[0]) + static_cast<int>(d[1]) + static_cast<int>(d[2])) / 3.0;
+                ++count;
+            }
+        }
+        stripDiff[static_cast<std::size_t>(s)] = (count > 0) ? (sum / count) : 0.0;
+        maxStripDiff = std::max(maxStripDiff, stripDiff[static_cast<std::size_t>(s)]);
+    }
+
+    // 若整帧差异都很小（可能静止或极弱变化），不裁剪列区；阈值兼顾高留白/稀疏文字行
+    if (maxStripDiff < 1.5) return;
+
+    const double staticThresh = std::min(0.85, maxStripDiff * 0.12);
+    int leftStatic = 0;
+    while (leftStatic < 12 && stripDiff[static_cast<std::size_t>(leftStatic)] <= staticThresh) {
+        ++leftStatic;
+    }
+    int rightStatic = 0;
+    while (rightStatic < 12 && stripDiff[static_cast<std::size_t>(kStrips - 1 - rightStatic)] <= staticThresh) {
+        ++rightStatic;
+    }
+
+    if (leftStatic == 0 && rightStatic == 0) return;
+    // 至少保留 50% 宽度，避免在纯居中窄文栏下过度收缩
+    const int remStrips = kStrips - leftStatic - rightStatic;
+    if (remStrips < 16) return;
+
+    const int newX0 = (leftStatic * cols) / kStrips;
+    const int newX1 = ((kStrips - rightStatic) * cols) / kStrips;
+    const int newW = newX1 - newX0;
+    if (newW >= std::max(120, (cols * 45) / 100)) {
+        subX = newX0;
+        subW = newW;
+    }
+}
+
+// 逐行计算有效纹理标记：精准识别包含文字/边框/图像的有效行，剔除大面积深灰/纯白背景空行对匹配评分的稀释
+std::vector<uint8_t> computeRowActivity(const cv::Mat& img) {
+    const int rows = img.rows;
+    const int cols = img.cols;
+    std::vector<uint8_t> active(static_cast<std::size_t>(std::max(0, rows)), 0);
+    if (rows <= 0 || cols <= 2) return active;
+
+    const int stepX = std::max(1, cols / 360);
+    for (int y = 0; y < rows; ++y) {
+        const auto* cur = img.ptr<cv::Vec3b>(y);
+        const auto* prev = img.ptr<cv::Vec3b>(std::max(0, y - 1));
+        double sumGx = 0.0;
+        double sumGy = 0.0;
+        double sumLuma = 0.0;
+        int samples = 0;
+
+        for (int x = stepX; x < cols; x += stepX) {
+            const cv::Vec3b& c = cur[x];
+            const cv::Vec3b& l = cur[x - stepX];
+            const cv::Vec3b& p = prev[x];
+            sumGx += (std::abs(static_cast<int>(c[0]) - static_cast<int>(l[0])) +
+                      std::abs(static_cast<int>(c[1]) - static_cast<int>(l[1])) +
+                      std::abs(static_cast<int>(c[2]) - static_cast<int>(l[2]))) / 3.0;
+            sumGy += (std::abs(static_cast<int>(c[0]) - static_cast<int>(p[0])) +
+                      std::abs(static_cast<int>(c[1]) - static_cast<int>(p[1])) +
+                      std::abs(static_cast<int>(c[2]) - static_cast<int>(p[2]))) / 3.0;
+            sumLuma += (static_cast<int>(c[0]) * 29 + static_cast<int>(c[1]) * 150 + static_cast<int>(c[2]) * 77) / 256.0;
+            ++samples;
+        }
+        if (samples <= 0) continue;
+
+        const double avgGx = sumGx / samples;
+        const double avgGy = sumGy / samples;
+        if (avgGx >= 1.35 || avgGy >= 2.2) {
+            active[static_cast<std::size_t>(y)] = 1;
+            continue;
+        }
+
+        const double meanLuma = sumLuma / samples;
+        double madLuma = 0.0;
+        for (int x = stepX; x < cols; x += stepX) {
+            const cv::Vec3b& c = cur[x];
+            const double luma = (static_cast<int>(c[0]) * 29 + static_cast<int>(c[1]) * 150 + static_cast<int>(c[2]) * 77) / 256.0;
+            madLuma += std::abs(luma - meanLuma);
+        }
+        if (madLuma / samples >= 4.8) {
+            active[static_cast<std::size_t>(y)] = 1;
+        }
+    }
+    return active;
 }
 
 // 计算整帧纹理标准差之和（区分真实富纹理界面与无纹理纯色单测合成帧）
@@ -118,21 +234,32 @@ void detectStaticMargins(const cv::Mat& uInner, const cv::Mat& lInner,
         }
     }
 
+    const auto uRowAct = computeRowActivity(uInner);
+
+    // 限制每个固定边栏最多桥接 1 处极窄微动（<= 2 行），且桥接后方必须紧跟连续静态有纹理控件行，
+    // 彻底杜绝稀疏正文/等行距细线/左右分栏页面被无限跳格吞成 38% 顶栏 + 45% 底栏！
     const int maxTop = (rows * 38) / 100;
+    int topBridgesUsed = 0;
     for (int y = 0; y < maxTop; ++y) {
         if (rowStatic[static_cast<std::size_t>(y)]) {
             stickyTop = y + 1;
             continue;
         }
+        if (topBridgesUsed >= 1) break;
         int bridge = 0;
         while (bridge < 3 && (y + bridge) < maxTop && !rowStatic[static_cast<std::size_t>(y + bridge)]) {
             ++bridge;
         }
         int confirmStatic = 0;
-        for (int k = y + bridge; k < std::min(maxTop, y + bridge + 5); ++k) {
-            if (rowStatic[static_cast<std::size_t>(k)]) ++confirmStatic;
+        int confirmActiveStatic = 0;
+        for (int k = y + bridge; k < std::min(maxTop, y + bridge + 6); ++k) {
+            if (rowStatic[static_cast<std::size_t>(k)]) {
+                ++confirmStatic;
+                if (uRowAct[static_cast<std::size_t>(k)]) ++confirmActiveStatic;
+            }
         }
-        if (bridge < 3 && confirmStatic >= 4) {
+        if (bridge <= 2 && confirmStatic >= 5 && confirmActiveStatic >= 2) {
+            ++topBridgesUsed;
             y += bridge - 1;
             continue;
         }
@@ -140,6 +267,7 @@ void detectStaticMargins(const cv::Mat& uInner, const cv::Mat& lInner,
     }
 
     const int maxBottom = (rows * 45) / 100;
+    int botBridgesUsed = 0;
     for (int dist = 0; dist < maxBottom; ++dist) {
         const int y = rows - 1 - dist;
         if (y <= stickyTop) break;
@@ -147,6 +275,7 @@ void detectStaticMargins(const cv::Mat& uInner, const cv::Mat& lInner,
             stickyBottom = dist + 1;
             continue;
         }
+        if (botBridgesUsed >= 1) break;
         int bridge = 0;
         while (bridge < 3 && (dist + bridge) < maxBottom &&
                (rows - 1 - (dist + bridge)) > stickyTop &&
@@ -154,15 +283,54 @@ void detectStaticMargins(const cv::Mat& uInner, const cv::Mat& lInner,
             ++bridge;
         }
         int confirmStatic = 0;
-        for (int k = dist + bridge; k < std::min(maxBottom, dist + bridge + 5); ++k) {
+        int confirmActiveStatic = 0;
+        for (int k = dist + bridge; k < std::min(maxBottom, dist + bridge + 6); ++k) {
             const int ky = rows - 1 - k;
-            if (ky > stickyTop && rowStatic[static_cast<std::size_t>(ky)]) ++confirmStatic;
+            if (ky > stickyTop && rowStatic[static_cast<std::size_t>(ky)]) {
+                ++confirmStatic;
+                if (uRowAct[static_cast<std::size_t>(ky)]) ++confirmActiveStatic;
+            }
         }
-        if (bridge < 3 && confirmStatic >= 4) {
+        if (bridge <= 2 && confirmStatic >= 5 && confirmActiveStatic >= 2) {
+            ++botBridgesUsed;
             dist += bridge - 1;
             continue;
         }
         break;
+    }
+
+    // 剥离大块误吞的纯色动态留白：stickyTop / stickyBottom 末尾若紧贴动态区存在超长纯背景空行（无任何纹理/边框），
+    // 最多仅保留 24px 紧邻静态控件的内边距，避免把聊天消息间的深色留白误吞进固定栏导致错裁正文
+    if (stickyTop > 0 || stickyBottom > 0) {
+        if (stickyTop > 24) {
+            int lastActiveTop = -1;
+            for (int y = stickyTop - 1; y >= 0; --y) {
+                if (uRowAct[static_cast<std::size_t>(y)]) {
+                    lastActiveTop = y;
+                    break;
+                }
+            }
+            if (lastActiveTop < 0) {
+                stickyTop = 0;
+            } else {
+                stickyTop = std::min(stickyTop, lastActiveTop + 1 + 24);
+            }
+        }
+        if (stickyBottom > 24) {
+            int highestActiveBottomDist = -1;
+            for (int dist = stickyBottom - 1; dist >= 0; --dist) {
+                const int y = rows - 1 - dist;
+                if (y >= 0 && uRowAct[static_cast<std::size_t>(y)]) {
+                    highestActiveBottomDist = dist;
+                    break;
+                }
+            }
+            if (highestActiveBottomDist < 0) {
+                stickyBottom = 0;
+            } else {
+                stickyBottom = std::min(stickyBottom, highestActiveBottomDist + 1 + 24);
+            }
+        }
     }
 
     const int dynTop = stickyTop;
@@ -225,20 +393,22 @@ bool matchSingleBand(const cv::Mat& uInner, const cv::Mat& lInner,
     if (usePyramid) {
         constexpr double kScale = 0.5;
         cv::Mat smallTpl, smallSearch, smallRes;
-        cv::resize(tpl, smallTpl, cv::Size(), kScale, kScale, cv::INTER_AREA);
-        cv::resize(searchArea, smallSearch, cv::Size(), kScale, kScale, cv::INTER_AREA);
+        // 使用抗混叠高斯金字塔 pyrDown 替代硬箱式 INTER_AREA，消除 1~2px 细字体/细横线在奇偶滚动位移下的相位混叠失配
+        cv::pyrDown(tpl, smallTpl);
+        cv::pyrDown(searchArea, smallSearch);
         if (smallSearch.rows >= smallTpl.rows && smallTpl.rows >= 4 && smallTpl.cols >= 8) {
             cv::matchTemplate(smallSearch, smallTpl, smallRes, cv::TM_CCOEFF_NORMED);
             cv::Mat work = smallRes.clone();
-            for (int peakIdx = 0; peakIdx < 3; ++peakIdx) {
+            // 保留前 6 个非极大值抑制峰值：防止等行距代码/表格/聊天流里相邻行相位峰挤掉真实大幅滚动位移
+            for (int peakIdx = 0; peakIdx < 6; ++peakIdx) {
                 double maxVal = -1.0;
                 cv::Point maxLoc{};
                 cv::minMaxLoc(work, nullptr, &maxVal, nullptr, &maxLoc);
-                const double minPeak = (peakIdx == 0) ? 0.60 : 0.66;
+                const double minPeak = (peakIdx == 0) ? 0.54 : 0.58;
                 if (maxVal < minPeak) break;
                 candidateRoughYs.push_back(searchTop + static_cast<int>(std::lround(maxLoc.y / kScale)));
-                const int supTop = std::max(0, maxLoc.y - 6);
-                const int supBot = std::min(work.rows, maxLoc.y + 7);
+                const int supTop = std::max(0, maxLoc.y - 5);
+                const int supBot = std::min(work.rows, maxLoc.y + 6);
                 work.rowRange(supTop, supBot).setTo(-1.0f);
             }
         }
@@ -253,7 +423,7 @@ bool matchSingleBand(const cv::Mat& uInner, const cv::Mat& lInner,
         cv::Mat fineRes;
         cv::matchTemplate(lInner.rowRange(winTop, winBottom), tpl, fineRes, cv::TM_CCOEFF_NORMED);
         cv::Mat work = fineRes.clone();
-        const int maxPeaks = multiPeak ? 2 : 1;
+        const int maxPeaks = multiPeak ? 3 : 1;
 
         for (int p = 0; p < maxPeaks; ++p) {
             double localMax = -1.0;
@@ -301,7 +471,9 @@ bool matchSingleBand(const cv::Mat& uInner, const cv::Mat& lInner,
         for (int roughY : candidateRoughYs) {
             evaluateFineWindow(roughY - 8, roughY + tplH + 8, false);
         }
-    } else if (!usePyramid) {
+    }
+    if (!anyAdded) {
+        // 当金字塔粗搜因极细笔画或极端纹理未产出有效精配投票时，回退原分辨率全窗精搜兜底
         evaluateFineWindow(searchTop, searchBottom, true);
     }
 
@@ -373,8 +545,165 @@ int estimateRowProfileDelta(const cv::Mat& uInner, const cv::Mat& lInner,
     return bestD;
 }
 
-// 全重叠区像素级一致性验证与 ±2px 微精修（封杀周期性重复卡片跨段误配与零位移假阳性）
+// 在指定垂直位移 d >= 0 下计算全重叠区双轨一致性指标（全行 + 有效纹理行 ZNCC/前景 MAD）
+OverlapVerification evaluateOverlapAtDelta(const cv::Mat& uInner, const cv::Mat& lInner,
+                                           const std::vector<uint8_t>& uAct,
+                                           const std::vector<uint8_t>& lAct,
+                                           int dynTop, int dynBottom, int d) {
+    OverlapVerification out;
+    const int dynH = dynBottom - dynTop;
+    const int cols = uInner.cols;
+    const int overlapRows = dynH - d;
+    if (d < 0 || overlapRows <= 0 || cols <= 0) return out;
+    if (dynTop + d + overlapRows > uInner.rows || dynTop + overlapRows > lInner.rows) return out;
+
+    const int stepX = std::max(1, cols / 360);
+    std::vector<double> rowErrs;
+    rowErrs.reserve(static_cast<std::size_t>(overlapRows));
+    std::vector<double> activeRowErrs;
+    activeRowErrs.reserve(static_cast<std::size_t>(overlapRows));
+
+    int inlierRows = 0;
+    double totalMean = 0.0;
+    int activeRows = 0;
+    int activeInlierRows = 0;
+
+    double gSumU = 0.0, gSumL = 0.0;
+    double gSumUU = 0.0, gSumLL = 0.0, gSumUL = 0.0;
+    int gSamples = 0;
+
+    for (int r = 0; r < overlapRows; ++r) {
+        const int uY = dynTop + d + r;
+        const int lY = dynTop + r;
+        const auto* uPtr = uInner.ptr<cv::Vec3b>(uY);
+        const auto* lPtr = lInner.ptr<cv::Vec3b>(lY);
+        const bool isActiveRow =
+            (static_cast<std::size_t>(uY) < uAct.size() && uAct[static_cast<std::size_t>(uY)] != 0) ||
+            (static_cast<std::size_t>(lY) < lAct.size() && lAct[static_cast<std::size_t>(lY)] != 0);
+
+        double rSum = 0.0;
+        int samples = 0;
+        if (!isActiveRow) {
+            for (int x = 0; x < cols; x += stepX) {
+                const cv::Vec3b& up = uPtr[x];
+                const cv::Vec3b& lp = lPtr[x];
+                rSum += (std::abs(static_cast<int>(up[0]) - static_cast<int>(lp[0])) +
+                         std::abs(static_cast<int>(up[1]) - static_cast<int>(lp[1])) +
+                         std::abs(static_cast<int>(up[2]) - static_cast<int>(lp[2]))) / 3.0;
+                ++samples;
+            }
+            const double rErr = (samples > 0) ? (rSum / samples) : 0.0;
+            rowErrs.push_back(rErr);
+            totalMean += rErr;
+            if (rErr < 6.2) ++inlierRows;
+            continue;
+        }
+
+        // 有效纹理行：先计算该行亮度均值，用于分离前景墨迹像素并计算行级/全局 ZNCC
+        double rowSumU = 0.0, rowSumL = 0.0;
+        double rowSumUU = 0.0, rowSumLL = 0.0, rowSumUL = 0.0;
+        for (int x = 0; x < cols; x += stepX) {
+            const cv::Vec3b& up = uPtr[x];
+            const cv::Vec3b& lp = lPtr[x];
+            rSum += (std::abs(static_cast<int>(up[0]) - static_cast<int>(lp[0])) +
+                     std::abs(static_cast<int>(up[1]) - static_cast<int>(lp[1])) +
+                     std::abs(static_cast<int>(up[2]) - static_cast<int>(lp[2]))) / 3.0;
+            const double ul = (static_cast<int>(up[0]) * 29 + static_cast<int>(up[1]) * 150 + static_cast<int>(up[2]) * 77) / 256.0;
+            const double ll = (static_cast<int>(lp[0]) * 29 + static_cast<int>(lp[1]) * 150 + static_cast<int>(lp[2]) * 77) / 256.0;
+            rowSumU += ul;
+            rowSumL += ll;
+            rowSumUU += ul * ul;
+            rowSumLL += ll * ll;
+            rowSumUL += ul * ll;
+            ++samples;
+        }
+        if (samples <= 0) continue;
+
+        const double rErr = rSum / samples;
+        rowErrs.push_back(rErr);
+        totalMean += rErr;
+        if (rErr < 6.2) ++inlierRows;
+
+        gSumU += rowSumU;
+        gSumL += rowSumL;
+        gSumUU += rowSumUU;
+        gSumLL += rowSumLL;
+        gSumUL += rowSumUL;
+        gSamples += samples;
+
+        const double meanU = rowSumU / samples;
+        const double meanL = rowSumL / samples;
+        const double varU = std::max(0.0, rowSumUU - samples * meanU * meanU);
+        const double varL = std::max(0.0, rowSumLL - samples * meanL * meanL);
+        const double cov = rowSumUL - samples * meanU * meanL;
+        const double rowNcc = (varU > 25.0 && varL > 25.0)
+            ? (cov / std::sqrt(varU * varL))
+            : ((rErr < 3.5) ? 1.0 : 0.0);
+
+        // 仅在偏离该行背景均值的真实前景像素上统计 MAD，彻底消除 85% 纯深灰/纯白背景对文字误差的稀释
+        double fgErrSum = 0.0;
+        int fgCount = 0;
+        for (int x = 0; x < cols; x += stepX) {
+            const cv::Vec3b& up = uPtr[x];
+            const cv::Vec3b& lp = lPtr[x];
+            const double ul = (static_cast<int>(up[0]) * 29 + static_cast<int>(up[1]) * 150 + static_cast<int>(up[2]) * 77) / 256.0;
+            const double ll = (static_cast<int>(lp[0]) * 29 + static_cast<int>(lp[1]) * 150 + static_cast<int>(lp[2]) * 77) / 256.0;
+            if (std::abs(ul - meanU) >= 10.0 || std::abs(ll - meanL) >= 10.0) {
+                fgErrSum += (std::abs(static_cast<int>(up[0]) - static_cast<int>(lp[0])) +
+                             std::abs(static_cast<int>(up[1]) - static_cast<int>(lp[1])) +
+                             std::abs(static_cast<int>(up[2]) - static_cast<int>(lp[2]))) / 3.0;
+                ++fgCount;
+            }
+        }
+        const double fgMad = (fgCount >= 2) ? (fgErrSum / fgCount) : rErr;
+        activeRowErrs.push_back(fgMad);
+        ++activeRows;
+        if ((fgMad < 15.5 && rowNcc >= 0.60) || (rErr < 3.4 && rowNcc >= 0.78)) {
+            ++activeInlierRows;
+        }
+    }
+
+    out.refinedDelta = d;
+    out.overlapRows = overlapRows;
+    out.activeRows = activeRows;
+    out.inlierRatio = static_cast<double>(inlierRows) / std::max(1, overlapRows);
+    out.meanMad = totalMean / std::max(1, overlapRows);
+
+    if (!rowErrs.empty()) {
+        std::sort(rowErrs.begin(), rowErrs.end());
+        const std::size_t keepCount = std::max<std::size_t>(1, (rowErrs.size() * 85) / 100);
+        double trimSum = 0.0;
+        for (std::size_t i = 0; i < keepCount; ++i) trimSum += rowErrs[i];
+        out.trimmedMad = trimSum / static_cast<double>(keepCount);
+    }
+
+    if (activeRows > 0 && gSamples > 0) {
+        out.activeInlierRatio = static_cast<double>(activeInlierRows) / activeRows;
+        std::sort(activeRowErrs.begin(), activeRowErrs.end());
+        const std::size_t keepAct = std::max<std::size_t>(1, (activeRowErrs.size() * 85) / 100);
+        double actTrimSum = 0.0;
+        for (std::size_t i = 0; i < keepAct; ++i) actTrimSum += activeRowErrs[i];
+        out.activeTrimmedMad = actTrimSum / static_cast<double>(keepAct);
+
+        const double gMeanU = gSumU / gSamples;
+        const double gMeanL = gSumL / gSamples;
+        const double gVarU = std::max(0.0, gSumUU - gSamples * gMeanU * gMeanU);
+        const double gVarL = std::max(0.0, gSumLL - gSamples * gMeanL * gMeanL);
+        const double gCov = gSumUL - gSamples * gMeanU * gMeanL;
+        if (gVarU > 100.0 && gVarL > 100.0) {
+            out.activeNcc = gCov / std::sqrt(gVarU * gVarL);
+        } else {
+            out.activeNcc = (out.activeTrimmedMad < 4.5) ? 0.95 : 0.0;
+        }
+    }
+
+    return out;
+}
+
+// 全重叠区像素级一致性验证与 ±2px 微精修（双轨门禁：全行统计 + 有效纹理行 ZNCC/前景 MAD，彻底封杀深色空行稀释与周期性重复卡片误配）
 OverlapVerification verifyCandidateOnFullOverlap(const cv::Mat& uInner, const cv::Mat& lInner,
+                                                 const std::vector<uint8_t>& uAct,
+                                                 const std::vector<uint8_t>& lAct,
                                                  int dynTop, int dynBottom, int seedDelta) {
     OverlapVerification best;
     const int dynH = dynBottom - dynTop;
@@ -386,64 +715,234 @@ OverlapVerification verifyCandidateOnFullOverlap(const cv::Mat& uInner, const cv
     const int dMax = std::min(dynH - minOverlapRows, seedDelta + 2);
     if (dMin > dMax) return best;
 
-    cv::Mat overlapDiff;
-    std::vector<double> rowErrs;
-
     for (int d = dMin; d <= dMax; ++d) {
         const int overlapRows = dynH - d;
         if (overlapRows < minOverlapRows) continue;
 
-        const cv::Mat uSub = uInner.rowRange(dynTop + d, dynBottom);
-        const cv::Mat lSub = lInner.rowRange(dynTop, dynBottom - d);
-        cv::absdiff(uSub, lSub, overlapDiff);
+        OverlapVerification cur = evaluateOverlapAtDelta(uInner, lInner, uAct, lAct, dynTop, dynBottom, d);
+        const bool passGlobal = (cur.inlierRatio >= 0.56) || (cur.trimmedMad <= 11.5 && cur.inlierRatio >= 0.38);
+        if (!passGlobal) continue;
 
-        rowErrs.assign(static_cast<std::size_t>(overlapRows), 0.0);
-        int inlierRows = 0;
-        double totalMean = 0.0;
-
-        for (int r = 0; r < overlapRows; ++r) {
-            const auto* ptr = overlapDiff.ptr<cv::Vec3b>(r);
-            double rSum = 0.0;
-            for (int x = 0; x < cols; ++x) {
-                const cv::Vec3b& px = ptr[x];
-                rSum += (static_cast<int>(px[0]) + static_cast<int>(px[1]) + static_cast<int>(px[2])) / 3.0;
-            }
-            const double rErr = rSum / cols;
-            rowErrs[static_cast<std::size_t>(r)] = rErr;
-            totalMean += rErr;
-            if (rErr < 6.2) {
-                ++inlierRows;
-            }
+        // 有效纹理行硬门禁：一旦重叠区存在真实文字/边框/图像行，严禁靠 75% 纯色背景空行蒙混过关
+        if (cur.activeRows >= 6) {
+            const bool passActive =
+                (cur.activeInlierRatio >= 0.60 && cur.activeNcc >= 0.72 && cur.activeTrimmedMad <= 20.0) ||
+                (cur.activeInlierRatio >= 0.78 && cur.activeNcc >= 0.65 && cur.activeTrimmedMad <= 14.0);
+            if (!passActive) continue;
         }
 
-        const double inlierRatio = static_cast<double>(inlierRows) / overlapRows;
-        const double meanMad = totalMean / overlapRows;
-
-        std::sort(rowErrs.begin(), rowErrs.end());
-        const std::size_t keepCount = std::max<std::size_t>(1, (rowErrs.size() * 85) / 100);
-        double trimSum = 0.0;
-        for (std::size_t i = 0; i < keepCount; ++i) {
-            trimSum += rowErrs[i];
-        }
-        const double trimmedMad = trimSum / static_cast<double>(keepCount);
-
-        const bool passGate = (inlierRatio >= 0.56) || (trimmedMad <= 11.5 && inlierRatio >= 0.38);
-        if (!passGate) continue;
-
-        // 综合评分：高内点率 + 低截尾误差优先
-        const double curQuality = inlierRatio * 100.0 - trimmedMad * 2.4;
-        const double bestQuality = best.inlierRatio * 100.0 - best.trimmedMad * 2.4;
+        cur.valid = true;
+        const double curQuality = (cur.activeRows >= 6)
+            ? (cur.activeInlierRatio * 65.0 + cur.activeNcc * 55.0 - cur.activeTrimmedMad * 1.4 + cur.inlierRatio * 20.0)
+            : (cur.inlierRatio * 100.0 - cur.trimmedMad * 2.4);
+        const double bestQuality = (best.activeRows >= 6)
+            ? (best.activeInlierRatio * 65.0 + best.activeNcc * 55.0 - best.activeTrimmedMad * 1.4 + best.inlierRatio * 20.0)
+            : (best.inlierRatio * 100.0 - best.trimmedMad * 2.4);
         if (!best.valid || curQuality > bestQuality) {
-            best.valid = true;
-            best.refinedDelta = d;
-            best.overlapRows = overlapRows;
-            best.inlierRatio = inlierRatio;
-            best.trimmedMad = trimmedMad;
-            best.meanMad = meanMad;
+            best = cur;
         }
     }
 
     return best;
+}
+
+// 反向滚动（向上回滚 / 弹性触底回弹）轻量探测器：返回最佳反向重叠验证结果，用于无匹配兜底及与擦边正向假匹配的对称对决
+OverlapVerification detectBackwardScroll(const cv::Mat& uInner, const cv::Mat& lInner,
+                                         const std::vector<uint8_t>& uAct, const std::vector<uint8_t>& lAct,
+                                         int dynTop, int dynBottom) {
+    OverlapVerification bestRev;
+    const int dynH = dynBottom - dynTop;
+    const int refH = std::min(uInner.rows, lInner.rows);
+    if (dynH < 48 || refH < 64 || uInner.cols < 48) return bestRev;
+
+    const int tplH = std::clamp(dynH / 6, 18, 56);
+    if (dynH < tplH + 12) return bestRev;
+
+    // 反向滚动时：lInner 较靠下的位置匹配到 uInner 较靠上的位置（等价于互换 lInner/uInner 寻找正位移）
+    std::vector<BandVote> backVotes;
+    std::vector<BandVote> tmpVotes;
+    constexpr int kProbeBands = 5;
+    const int sampleTop = std::max(0, dynTop);
+    const int sampleBot = std::max(sampleTop + 1, std::min(refH - tplH - 2, dynBottom - tplH / 2));
+
+    for (int i = 0; i < kProbeBands; ++i) {
+        const int y = (kProbeBands == 1 || sampleBot <= sampleTop)
+            ? sampleTop
+            : (sampleTop + ((sampleBot - sampleTop) * i) / (kProbeBands - 1));
+        if (y + tplH > refH) continue;
+        tmpVotes.clear();
+        const int searchTop = std::max(0, dynTop - 4);
+        const int searchBot = std::min(refH, y + tplH + 2);
+        if (!matchSingleBand(lInner, uInner, y, tplH, searchTop, searchBot, tmpVotes)) continue;
+        for (const auto& v : tmpVotes) {
+            if (v.delta >= 4 && v.score >= 0.82) {
+                backVotes.push_back(v);
+            }
+        }
+    }
+
+    if (backVotes.empty()) return bestRev;
+
+    // 取权重前 3 簇依次执行全重叠区严格双轨核验，防止等行距代码/列表下假相位峰遮蔽真实回滚位移
+    std::vector<BandVote> remBack = backVotes;
+    for (int cIdx = 0; cIdx < 3 && !remBack.empty(); ++cIdx) {
+        double bestWeight = -1.0;
+        int bestSeed = 0;
+        for (const auto& s : remBack) {
+            double w = 0.0;
+            for (const auto& c : remBack) {
+                if (std::abs(c.delta - s.delta) <= 3) w += c.weight;
+            }
+            if (w > bestWeight) {
+                bestWeight = w;
+                bestSeed = s.delta;
+            }
+        }
+        if (bestWeight <= 0.0 || bestSeed < 4) break;
+
+        std::vector<BandVote> nextRem;
+        for (const auto& v : remBack) {
+            if (std::abs(v.delta - bestSeed) > 4) nextRem.push_back(v);
+        }
+        remBack = std::move(nextRem);
+
+        const OverlapVerification revVer = verifyCandidateOnFullOverlap(
+            lInner, uInner, lAct, uAct, dynTop, dynBottom, bestSeed);
+        if (!revVer.valid) continue;
+        const bool passRev = (revVer.activeRows >= 6)
+            ? (revVer.activeNcc >= 0.80 && revVer.activeInlierRatio >= 0.70)
+            : (revVer.inlierRatio >= 0.75);
+        if (!passRev) continue;
+
+        const double curQ = (revVer.activeRows >= 6)
+            ? (revVer.activeNcc * 60.0 + revVer.activeInlierRatio * 60.0 - revVer.activeTrimmedMad * 1.5)
+            : (revVer.inlierRatio * 100.0 - revVer.trimmedMad * 2.0);
+        const double bestQ = (bestRev.activeRows >= 6)
+            ? (bestRev.activeNcc * 60.0 + bestRev.activeInlierRatio * 60.0 - bestRev.activeTrimmedMad * 1.5)
+            : (bestRev.inlierRatio * 100.0 - bestRev.trimmedMad * 2.0);
+        if (!bestRev.valid || curQ > bestQ) {
+            bestRev = revVer;
+        }
+    }
+    return bestRev;
+}
+
+// 纵深防线：检验即将追加的新动态正文段是否已经在已拼接长图尾部出现过（彻底封杀复读机长图，同时 100% 豁免周期性重复表格）
+bool isDuplicateSegmentInTail(const cv::Mat& tailWindow, const cv::Mat& newDynamic, double* outBestScore = nullptr) {
+    if (outBestScore) *outBestScore = 0.0;
+    if (tailWindow.empty() || newDynamic.empty() ||
+        tailWindow.cols != newDynamic.cols || tailWindow.type() != newDynamic.type()) {
+        return false;
+    }
+
+    const int newH = newDynamic.rows;
+    const int tailH = tailWindow.rows;
+    if (newH < 56 || tailH < newH + 24) return false;
+
+    int roiX = 0, roiW = newDynamic.cols;
+    computeContentHorizROI(newDynamic.cols, roiX, roiW);
+    if (roiW < 48) return false;
+
+    const cv::Mat dynRoi = newDynamic(cv::Rect(roiX, 0, roiW, newH));
+    if (computeFrameTextureStd(dynRoi) < 3.5) return false;
+
+    const auto dynAct = computeRowActivity(dynRoi);
+    int dynActiveCount = 0;
+    for (uint8_t f : dynAct) {
+        if (f) ++dynActiveCount;
+    }
+    // 有效纹理行不足（大段空白或极短微步），直接放行避免误伤
+    if (dynActiveCount < 14) return false;
+
+    // 周期性重复表格豁免检测：若新段自身内部在纵向上高度自相似（如等高重复表格行），则属于合法重复内容，绝不误拦截
+    if (newH >= 80) {
+        const int probeH = std::clamp(newH / 3, 24, 48);
+        const cv::Mat selfTpl = dynRoi.rowRange(0, probeH);
+        const cv::Mat selfSearch = dynRoi.rowRange(std::min(newH - probeH, std::max(14, probeH / 2)), newH);
+        if (selfSearch.rows >= selfTpl.rows && computeFrameTextureStd(selfTpl) >= 3.0) {
+            cv::Mat selfRes;
+            cv::matchTemplate(selfSearch, selfTpl, selfRes, cv::TM_CCOEFF_NORMED);
+            double selfMax = -1.0;
+            cv::minMaxLoc(selfRes, nullptr, &selfMax);
+            if (selfMax >= 0.90) {
+                return false;
+            }
+        }
+    }
+
+    // 在已拼接长图尾部中搜索（排除距离最末尾 < 6px 的接缝边界自身，只抓真正回头重复的旧内容块）
+    const int searchLimitH = tailH - 6;
+    if (searchLimitH < newH) return false;
+    const cv::Mat tailRoi = tailWindow(cv::Rect(roiX, 0, roiW, searchLimitH));
+
+    // 先用 0.5x 金字塔快速定位最高相似度候选位置
+    int bestCandY = -1;
+    double roughScore = -1.0;
+    if (roiW >= 96 && newH >= 48) {
+        constexpr double kScale = 0.5;
+        cv::Mat smallTail, smallDyn, smallRes;
+        cv::resize(tailRoi, smallTail, cv::Size(), kScale, kScale, cv::INTER_AREA);
+        cv::resize(dynRoi, smallDyn, cv::Size(), kScale, kScale, cv::INTER_AREA);
+        if (smallTail.rows >= smallDyn.rows && smallDyn.rows >= 12 && smallDyn.cols >= 16) {
+            cv::matchTemplate(smallTail, smallDyn, smallRes, cv::TM_CCOEFF_NORMED);
+            cv::Point loc{};
+            cv::minMaxLoc(smallRes, nullptr, &roughScore, nullptr, &loc);
+            if (roughScore >= 0.84) {
+                bestCandY = static_cast<int>(std::lround(loc.y / kScale));
+            }
+        }
+    } else {
+        cv::Mat fullRes;
+        cv::matchTemplate(tailRoi, dynRoi, fullRes, cv::TM_CCOEFF_NORMED);
+        cv::Point loc{};
+        cv::minMaxLoc(fullRes, nullptr, &roughScore, nullptr, &loc);
+        if (roughScore >= 0.86) {
+            bestCandY = loc.y;
+        }
+    }
+
+    if (bestCandY < 0) return false;
+
+    // 原分辨率精配 + 有效纹理行双轨严检
+    const int winTop = std::max(0, bestCandY - 6);
+    const int winBot = std::min(searchLimitH, bestCandY + newH + 6);
+    if (winBot - winTop < newH) return false;
+
+    cv::Mat fineRes;
+    cv::matchTemplate(tailRoi.rowRange(winTop, winBot), dynRoi, fineRes, cv::TM_CCOEFF_NORMED);
+    double fineMax = -1.0;
+    cv::Point fineLoc{};
+    cv::minMaxLoc(fineRes, nullptr, &fineMax, nullptr, &fineLoc);
+    if (outBestScore) *outBestScore = fineMax;
+    if (fineMax < 0.89) return false;
+
+    const int matchY = winTop + fineLoc.y;
+    const cv::Mat matchedPatch = tailRoi.rowRange(matchY, matchY + newH);
+    const auto patchAct = computeRowActivity(matchedPatch);
+    const OverlapVerification dupVer = evaluateOverlapAtDelta(
+        matchedPatch, dynRoi, patchAct, dynAct, 0, newH, 0);
+
+    // 严防误杀「卡片框架相同、仅数行文字不同」的两条合法不同消息：
+    // 真正复读的重复段必须几乎 100% 有效纹理行逐像素一致（含最差 5% 文字行，96% 内点率 + 0.96 ZNCC）！
+    if (dupVer.activeRows < 12 ||
+        dupVer.activeNcc < 0.96 ||
+        dupVer.activeInlierRatio < 0.96 ||
+        dupVer.activeTrimmedMad > 4.2) {
+        return false;
+    }
+
+    // 二次全纹理行高分位检验：确保连 4% 的不同文字行都不会被截尾放过
+    cv::Mat exactDiff;
+    cv::absdiff(matchedPatch, dynRoi, exactDiff);
+    int mismatchedActiveRows = 0;
+    for (int r = 0; r < newH; ++r) {
+        if (!patchAct[static_cast<std::size_t>(r)] && !dynAct[static_cast<std::size_t>(r)]) continue;
+        const cv::Scalar rm = cv::mean(exactDiff.row(r));
+        if ((rm[0] + rm[1] + rm[2]) / 3.0 > 4.5) {
+            ++mismatchedActiveRows;
+        }
+    }
+    return mismatchedActiveRows * 100 <= dupVer.activeRows * 3;
 }
 
 // 在真实滚动量锁定后，从底部向上反向精修固定底栏（确保底部输入框/悬浮底栏在前序分段中 100% 剥离干净）
@@ -480,14 +979,34 @@ int refineStickyBottomWithDelta(const cv::Mat& uInner, const cv::Mat& lInner,
         return s / cols;
     };
 
-    // 探测底部是否存在在零位移下静止、但在平移 delta 后显著失配的固定底栏块（如带深色边距的底部输入框）
+    auto computeZeroRowBlockStatic = [&](int y) -> bool {
+        const auto* ptr = zeroDiffMat.ptr<cv::Vec3b>(y);
+        const int numBlocks = std::clamp(cols / 32, 1, 8);
+        int staticBlocks = 0;
+        double sum = 0.0;
+        for (int b = 0; b < numBlocks; ++b) {
+            const int x0 = (b * cols) / numBlocks;
+            const int x1 = ((b + 1) * cols) / numBlocks;
+            const int bw = std::max(1, x1 - x0);
+            double bSum = 0.0;
+            for (int x = x0; x < x1; ++x) {
+                bSum += (static_cast<int>(ptr[x][0]) + static_cast<int>(ptr[x][1]) + static_cast<int>(ptr[x][2])) / 3.0;
+            }
+            sum += bSum;
+            if (bSum / bw < 2.8) ++staticBlocks;
+        }
+        return (staticBlocks * 4 >= numBlocks * 3) && (sum / cols < 5.5);
+    };
+
+    // 探测底部是否存在在零位移下静止、但在平移 delta 后显著失配的固定底栏块（如带深色边距与闪烁光标的高圆角输入框）
     for (int dist = refinedBottom; dist < maxBottom; ++dist) {
         const int lY = rows - 1 - dist;
         if (lY <= stickyTop + delta + 8) break;
 
         const double zeroErr = computeZeroRowErr(lY);
+        const bool rowMostlyStatic = (zeroErr < 2.5) || computeZeroRowBlockStatic(lY);
         // 若该行本身随滚动剧烈变化，说明已进入真正的滚动正文区，立即停止
-        if (zeroErr > 4.2) {
+        if (!rowMostlyStatic && zeroErr > 4.2) {
             break;
         }
 
@@ -507,16 +1026,17 @@ int refineStickyBottomWithDelta(const cv::Mat& uInner, const cv::Mat& lInner,
         }
         (void)computeShiftedRowErr;
 
-        if (zeroErr < 2.5 && revShiftErr > zeroErr + 3.5) {
+        if (rowMostlyStatic && revShiftErr > zeroErr + 3.5) {
             refinedBottom = dist + 1;
-        } else if (zeroErr < 2.0 && dist - refinedBottom <= 10) {
-            // 允许跨过固定输入框内部最多 10px 纯色静态行，前提是其上方仍有明确固定边框行
+        } else if (rowMostlyStatic && dist - refinedBottom <= 28) {
+            // 允许跨过固定输入框内部最多 28px 纯色静态行或局部光标行，前提是其上方仍有明确固定边框锚点行
             bool foundStaticAnchorAbove = false;
-            for (int look = 1; look <= 10 && (dist + look) < maxBottom; ++look) {
+            for (int look = 1; look <= 28 && (dist + look) < maxBottom; ++look) {
                 const int ky = rows - 1 - (dist + look);
                 if (ky - delta < stickyTop) break;
                 const double kz = computeZeroRowErr(ky);
-                if (kz > 4.2) break;
+                const bool kStatic = (kz < 2.5) || computeZeroRowBlockStatic(ky);
+                if (!kStatic && kz > 4.2) break;
                 const auto* uPtr = uInner.ptr<cv::Vec3b>(ky);
                 const auto* lPtr = lInner.ptr<cv::Vec3b>(ky - delta);
                 double s = 0.0;
@@ -525,7 +1045,7 @@ int refineStickyBottomWithDelta(const cv::Mat& uInner, const cv::Mat& lInner,
                           std::abs(static_cast<int>(uPtr[x][1]) - static_cast<int>(lPtr[x][1])) +
                           std::abs(static_cast<int>(uPtr[x][2]) - static_cast<int>(lPtr[x][2]))) / 3.0;
                 }
-                if (kz < 2.5 && (s / cols) > kz + 4.5) {
+                if (kStatic && (s / cols) > kz + 4.5) {
                     foundStaticAnchorAbove = true;
                     break;
                 }
@@ -890,7 +1410,7 @@ void ScrollCapture::autoScrollLoop() {
         const int capW = std::max(1L, r.right - r.left);
         const int capH = std::max(1L, r.bottom - r.top);
         const int centerX = (r.left + r.right) / 2;
-        const int centerY = (r.top + r.bottom) / 2;
+        const int safeScrollY = r.top + std::clamp((capH * 42) / 100, 1, std::max(1, capH - 1));
 
         // 连续亚刻度滚轮剂量（WHEEL_DELTA = 120 为标准 1 格）：初始保守起步，确保首步拥有充足重叠区
         int initialNotches = std::max(1, m_options.scrollAmount);
@@ -907,17 +1427,17 @@ void ScrollCapture::autoScrollLoop() {
         }
         bool allowSubDetent = true;
 
-        // 启动时若光标不在选区内部（且不在控制台按钮上），仅在起点定位一次光标
+        // 启动瞬间若光标不在选区内部（刚点完截图工具栏按钮必然位于选区外，甚至可能恰好与新弹出的控制栏重合），
+        // 主动将其移至选区内容核心区偏上位置（避开顶部标题栏与底部输入框），避免首帧滚动落空秒停
         if (!isMemoryTestBackend && m_running.load(std::memory_order_acquire)) {
             POINT cur{};
             if (GetCursorPos(&cur)) {
-                const bool onUi = (m_options.isUiHotZone && m_options.isUiHotZone(cur));
                 const int inset = std::min(12, std::min(capW, capH) / 6);
-                if (!onUi && !isPointInsideRect(cur, r, inset)) {
-                    SetCursorPos(centerX, centerY);
-                    lastProgrammaticCursor = {centerX, centerY};
+                if (!isPointInsideRect(cur, r, inset)) {
+                    SetCursorPos(centerX, safeScrollY);
+                    lastProgrammaticCursor = {centerX, safeScrollY};
                     movedCursorProgrammatically = true;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(35));
                 }
             }
         }
@@ -949,9 +1469,12 @@ void ScrollCapture::autoScrollLoop() {
                     appendFrame(frame, nullptr);
                 } else {
                     const ScrollFrameTransition tr = analyzeFrameTransition(lastRef, frame);
-                    if (tr.matched && !tr.isUnchanged && tr.scrollDelta >= 4) {
+                    if (tr.matched && !tr.isUnchanged && !tr.isBackwardScroll && tr.scrollDelta >= 4) {
                         m_lastTooFastTickMs.store(0, std::memory_order_release);
                         appendFrame(frame, &tr);
+                    } else if (tr.isBackwardScroll) {
+                        // 用户手动向上回滚或触底弹性回弹：静默忽略，绝不误报「滚动过快」也不污染末帧基准
+                        m_lastTooFastTickMs.store(0, std::memory_order_release);
                     } else if (!tr.matched && !tr.isUnchanged) {
                         m_lastTooFastTickMs.store(GetTickCount64(), std::memory_order_release);
                     }
@@ -979,8 +1502,8 @@ void ScrollCapture::autoScrollLoop() {
                     const int inset = std::min(12, std::min(capW, capH) / 6);
                     if (m_resumeNudgeCursor.exchange(false, std::memory_order_acq_rel) &&
                         !isPointInsideRect(cur, r, inset)) {
-                        SetCursorPos(centerX, centerY);
-                        lastProgrammaticCursor = {centerX, centerY};
+                        SetCursorPos(centerX, safeScrollY);
+                        lastProgrammaticCursor = {centerX, safeScrollY};
                         movedCursorProgrammatically = true;
                         std::this_thread::sleep_for(std::chrono::milliseconds(30));
                     }
@@ -1039,7 +1562,7 @@ void ScrollCapture::autoScrollLoop() {
                 lastRef = snapshotLastFrame();
                 if (!settledFrame.empty() && !lastRef.empty()) {
                     ScrollFrameTransition settledTr = analyzeFrameTransition(lastRef, settledFrame);
-                    if (settledTr.matched && !settledTr.isUnchanged && settledTr.scrollDelta >= 3) {
+                    if (settledTr.matched && !settledTr.isUnchanged && !settledTr.isBackwardScroll && settledTr.scrollDelta >= 3) {
                         frame = std::move(settledFrame);
                         tr = settledTr;
                     }
@@ -1047,11 +1570,11 @@ void ScrollCapture::autoScrollLoop() {
             }
 
             // 防漏截杀手锏：超调自动反向回滚补帧 (Overshoot Auto-Backtrack Recovery)
-            // 当画面明显发生了滚动 (!tr.isUnchanged)，但因单步滚幅过大跨过了整个视口导致 !tr.matched 或重叠区过窄时，
+            // 当画面明显发生了向下滚动 (!tr.isUnchanged && !tr.isBackwardScroll)，但因单步滚幅过大跨过了整个视口导致 !tr.matched 或重叠区过窄时，
             // 绝不盲目硬拼吞掉中间漏截内容，而是自动反向向上回滚半步找回重叠帧！
             const int estDynH = std::max(60, frame.rows - tr.stickyTopRows - tr.stickyBottomRows);
             const int remOverlap = estDynH - tr.scrollDelta;
-            const bool overshot = !isMemoryTestBackend && !tr.isUnchanged &&
+            const bool overshot = !isMemoryTestBackend && !tr.isUnchanged && !tr.isBackwardScroll &&
                 (!tr.matched || remOverlap < std::max(18, (estDynH * 12) / 100)) &&
                 computeFrameTextureStd(frame) >= 3.0;
 
@@ -1068,16 +1591,21 @@ void ScrollCapture::autoScrollLoop() {
                     lastRef = snapshotLastFrame();
                     if (recovered.empty() || lastRef.empty()) break;
                     ScrollFrameTransition recTr = analyzeFrameTransition(lastRef, recovered);
-                    if (recTr.matched && !recTr.isUnchanged && recTr.scrollDelta >= 3) {
+                    if (recTr.matched && !recTr.isUnchanged && !recTr.isBackwardScroll && recTr.scrollDelta >= 3) {
                         frame = std::move(recovered);
                         tr = recTr;
+                        wheelUnits = std::max(allowSubDetent ? 54 : WHEEL_DELTA, (wheelUnits * 52) / 100);
+                        break;
+                    }
+                    if (recTr.isBackwardScroll || recTr.isUnchanged) {
+                        // 回滚已退回至上帧之前或原位：立即止步并降步长，严防来回拉锯造成重复拼接
                         wheelUnits = std::max(allowSubDetent ? 54 : WHEEL_DELTA, (wheelUnits * 52) / 100);
                         break;
                     }
                 }
             }
 
-            if (tr.matched && !tr.isUnchanged && tr.scrollDelta >= 3) {
+            if (tr.matched && !tr.isUnchanged && !tr.isBackwardScroll && tr.scrollDelta >= 3) {
                 stagnantProbes = 0;
 
                 // 连续比例闭环控制：将每步滚动量精准锚定在动态可视高度的 38%（保持 62% 黄金重叠带）
@@ -1095,16 +1623,28 @@ void ScrollCapture::autoScrollLoop() {
                 }
 
                 appendFrame(frame, &tr);
-            } else if (!tr.isUnchanged && !tr.matched && isMemoryTestBackend &&
+            } else if (!tr.isUnchanged && !tr.isBackwardScroll && !tr.matched && isMemoryTestBackend &&
                        computeFrameTextureStd(frame) < 2.5) {
                 // 保持无纹理纯色内存合成单测向后兼容
                 stagnantProbes = 0;
                 appendFrame(frame, &tr);
             } else {
                 ++stagnantProbes;
-                const int requiredStagnantProbes = isMemoryTestBackend ? 1 : 2;
+                // 首帧起步（frame==1）给 Electron/Chromium/刚失焦恢复的窗口多留 1 次唤醒缓冲，并尝试微调光标至安全内容核心区
+                const int curFrames = m_frameCount.load(std::memory_order_acquire);
+                if (!isMemoryTestBackend && curFrames <= 1 && stagnantProbes == 1) {
+                    POINT cur{};
+                    if (GetCursorPos(&cur) && !(m_options.isUiHotZone && m_options.isUiHotZone(cur))) {
+                        const int retryY = r.top + std::clamp((capH * 36) / 100, 1, std::max(1, capH - 1));
+                        SetCursorPos(centerX, retryY);
+                        lastProgrammaticCursor = {centerX, retryY};
+                        movedCursorProgrammatically = true;
+                        sleepInterruptible(60, true, ScrollRuntimeState::AutoScrolling);
+                    }
+                }
+                const int requiredStagnantProbes = isMemoryTestBackend ? 1 : (curFrames <= 1 ? 3 : 2);
                 if (stagnantProbes >= requiredStagnantProbes) {
-                    LOG_INFO("检测到滚动到底部, frame={}", m_frameCount.load());
+                    LOG_INFO("检测到滚动到底部, frame={}", curFrames);
                     m_autoScrolling.store(false, std::memory_order_release);
                     if (m_options.interactiveHoldAtBottom) {
                         m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
@@ -1216,6 +1756,26 @@ void ScrollCapture::featherSpilledBoundary(const cv::Mat& fullCurrFrame, int cur
     io.flush();
 }
 
+bool ScrollCapture::isDuplicateOfStitchedTail(const cv::Mat& newDynamic, int trimPrevRows) const {
+    if (newDynamic.empty() || newDynamic.rows < 56) return false;
+    const int curTotalRows = m_totalRows.load(std::memory_order_acquire);
+    const int effectivePrevRows = curTotalRows - std::max(0, trimPrevRows);
+    if (effectivePrevRows < newDynamic.rows + 24) return false;
+
+    const int maxFetch = std::min(curTotalRows, std::max(newDynamic.rows * 3, 2400) + std::max(0, trimPrevRows));
+    cv::Mat tail = buildRecentPreview(maxFetch);
+    if (tail.empty()) return false;
+    if (trimPrevRows > 0 && tail.rows > trimPrevRows) {
+        tail = tail.rowRange(0, tail.rows - trimPrevRows);
+    }
+    double dupScore = 0.0;
+    if (isDuplicateSegmentInTail(tail, newDynamic, &dupScore)) {
+        LOG_WARN("长截图检测到重复内容段，已自动拦截: rows={}, score={:.3f}", newDynamic.rows, dupScore);
+        return true;
+    }
+    return false;
+}
+
 void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransition* precomputed) {
     if (frame.empty()) return;
 
@@ -1227,19 +1787,50 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
     int offset = 0;
     int trimPrevRows = 0;
     bool hasVerifiedMatch = false;
+    int effectiveStickyBottom = 0;
 
     if (m_lastFrame.empty()) {
         offset = 0;
     } else {
         ScrollFrameTransition localTr;
         const ScrollFrameTransition& tr = precomputed ? *precomputed : (localTr = analyzeFrameTransition(m_lastFrame, frame));
-        if (tr.isUnchanged) {
+        if (tr.isUnchanged || tr.isBackwardScroll) {
             return;
         }
         if (tr.matched && tr.scrollDelta > 0) {
+            effectiveStickyBottom = tr.stickyBottomRows;
+            // 会话级固定底栏稳定性保护：连续 >= 2 帧确认到高固定底栏后，防止单帧光标闪烁导致底栏高度骤降漏拼入正文
+            if (effectiveStickyBottom >= 24) {
+                if (m_knownStickyBottom > 0 && std::abs(effectiveStickyBottom - m_knownStickyBottom) <= 12) {
+                    m_knownStickyBottom = (m_knownStickyBottom + effectiveStickyBottom) / 2;
+                    ++m_knownStickyBottomHits;
+                } else if (m_knownStickyBottomHits < 2) {
+                    m_knownStickyBottom = effectiveStickyBottom;
+                    m_knownStickyBottomHits = 1;
+                }
+            } else if (m_knownStickyBottomHits >= 2 && m_knownStickyBottom >= 24 &&
+                       effectiveStickyBottom + 8 < m_knownStickyBottom &&
+                       m_lastFrame.size() == frame.size()) {
+                const int checkH = std::min(m_knownStickyBottom, (frame.rows * 45) / 100);
+                int roiX = 0, roiW = frame.cols;
+                computeContentHorizROI(frame.cols, roiX, roiW);
+                const cv::Mat prevBot = m_lastFrame(cv::Rect(roiX, frame.rows - checkH, roiW, checkH));
+                const cv::Mat currBot = frame(cv::Rect(roiX, frame.rows - checkH, roiW, checkH));
+                cv::Mat botDiff;
+                cv::absdiff(prevBot, currBot, botDiff);
+                int staticBotRows = 0;
+                for (int r = 0; r < checkH; ++r) {
+                    const cv::Scalar rm = cv::mean(botDiff.row(r));
+                    if ((rm[0] + rm[1] + rm[2]) / 3.0 < 3.6) ++staticBotRows;
+                }
+                if (staticBotRows * 100 >= checkH * 82) {
+                    effectiveStickyBottom = checkH;
+                }
+            }
+
             const int prevRows = lastSegmentRows();
             const int maxSafeTrim = std::clamp(
-                std::min({tr.stickyBottomRows, std::max(0, prevRows - 1),
+                std::min({effectiveStickyBottom, std::max(0, prevRows - 1),
                           frame.rows - tr.stickyTopRows - tr.scrollDelta}),
                 0, frame.rows - 1);
             trimPrevRows = maxSafeTrim;
@@ -1254,6 +1845,17 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
     offset = std::clamp(offset, 0, frame.rows);
     const int remaining = frame.rows - offset;
     if (remaining <= 0) return;
+
+    // 纵深防线：对已验证滚动的新增动态正文段执行尾部全局防重复循环检测，彻底杜绝复读机长图
+    if (hasVerifiedMatch && m_frameCount.load(std::memory_order_acquire) >= 2) {
+        const int dynRows = remaining - trimPrevRows;
+        if (dynRows >= 56 && offset + dynRows <= frame.rows) {
+            const cv::Mat newDynamic = frame.rowRange(offset, offset + dynRows);
+            if (isDuplicateOfStitchedTail(newDynamic, trimPrevRows)) {
+                return;
+            }
+        }
+    }
 
     if (static_cast<std::size_t>(remaining) > (std::numeric_limits<std::size_t>::max)() / rowBytes) {
         m_terminalError = tools3000::core::isUiLanguageChinese()
@@ -1451,6 +2053,8 @@ void ScrollCapture::clearStorage() {
     m_segmentWidth.store(0, std::memory_order_release);
     m_totalRows.store(0, std::memory_order_release);
     m_segmentType = -1;
+    m_knownStickyBottom = 0;
+    m_knownStickyBottomHits = 0;
     if (!m_spillPath.empty()) {
         std::error_code error;
         std::filesystem::remove(m_spillPath, error);
@@ -1636,8 +2240,9 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
     detectStaticMargins(uInner, lInner, diffMat, tr.stickyTopRows, tr.stickyBottomRows,
                         dynMeanDiff, zeroShiftInlierRatio, zeroShiftTrimmedMad);
 
-    // 全局零位移门禁：当动态区整体未动或 85%+ 的行完全静止（仅有局部光标/悬浮提示微变）时，直接阻断假阳性重复拼接
-    if (dynMeanDiff < 1.35 || (zeroShiftInlierRatio >= 0.85 && zeroShiftTrimmedMad < 2.2)) {
+    // 全局零位移快速门禁：仅当整帧几乎逐像素完全一致（dynMeanDiff < 0.45）时秒退；
+    // 绝不单独依赖被纯色空行稀释的 zeroShiftInlierRatio 误杀深色聊天/稀疏文字界面的真实滚动！
+    if (dynMeanDiff < 0.45) {
         tr.isUnchanged = true;
         tr.lowerStartRow = lower.rows;
         return tr;
@@ -1651,6 +2256,33 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
         : std::clamp(dynH / 6, 18, 68);
 
     if (refH < tplH + 4) return tr;
+
+    // 水平静态侧边栏自动剥离（仅作用于匹配与双轨一致性校验，不影响最终全宽拼接图）
+    int dynSubX = 0, dynSubW = uInner.cols;
+    refineDynamicHorizROI(diffMat, dynTop, dynBottom, dynSubX, dynSubW);
+    const cv::Mat uWork = uInner(cv::Rect(dynSubX, 0, dynSubW, refH));
+    const cv::Mat lWork = lInner(cv::Rect(dynSubX, 0, dynSubW, refH));
+
+    // 预计算双帧行级有效纹理特征，并计算 d==0 零位移双轨基准（彻底封杀深色空行稀释与触底 Hover/光标微动引发的复读拼接）
+    const auto uAct = computeRowActivity(uWork);
+    const auto lAct = computeRowActivity(lWork);
+    const OverlapVerification zeroEval = evaluateOverlapAtDelta(
+        uWork, lWork, uAct, lAct, dynTop, dynBottom, 0);
+
+    // 双轨零位移门禁：无纹理极简帧回退旧阈值；富纹理帧严格要求有效纹理行本身也高度静止
+    if (zeroEval.activeRows < 6) {
+        if (dynMeanDiff < 1.35 || (zeroShiftInlierRatio >= 0.85 && zeroShiftTrimmedMad < 2.2)) {
+            tr.isUnchanged = true;
+            tr.lowerStartRow = lower.rows;
+            return tr;
+        }
+    } else if (zeroEval.activeInlierRatio >= 0.84 &&
+               zeroEval.activeNcc >= 0.92 &&
+               zeroEval.activeTrimmedMad <= 6.5) {
+        tr.isUnchanged = true;
+        tr.lowerStartRow = lower.rows;
+        return tr;
+    }
 
     // 在动态核心区均匀分布最多 10 条候选采样带
     const int sampleTop = std::max(0, dynTop);
@@ -1677,7 +2309,7 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
         allBandVotes.clear();
         const int searchTop = std::max(0, tr.stickyTopRows - 6);
         const int searchBottom = std::min(refH, tplY + tplH + 4);
-        if (!matchSingleBand(uInner, lInner, tplY, tplH, searchTop, searchBottom, allBandVotes)) {
+        if (!matchSingleBand(uWork, lWork, tplY, tplH, searchTop, searchBottom, allBandVotes)) {
             continue;
         }
 
@@ -1698,7 +2330,7 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
         }
     }
 
-    // 收集候选滚动位移簇（最多取权重前 3 簇 + 一维行梯度能量剖面全局候选）
+    // 收集候选滚动位移簇（最多取权重前 5 簇 + 一维行梯度能量剖面全局候选）
     struct CandidateCluster {
         int consensusDelta = 0;
         double clusterWeight = 0.0;
@@ -1708,7 +2340,7 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
     std::vector<CandidateCluster> candidateClusters;
 
     std::vector<BandVote> remainingVotes = scrollingVotes;
-    for (int cIdx = 0; cIdx < 3 && !remainingVotes.empty(); ++cIdx) {
+    for (int cIdx = 0; cIdx < 5 && !remainingVotes.empty(); ++cIdx) {
         double bestWeight = -1.0;
         int bestSeedDelta = 0;
         for (const auto& seed : remainingVotes) {
@@ -1750,7 +2382,7 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
         candidateClusters.push_back(cc);
     }
 
-    const int profileDelta = estimateRowProfileDelta(uInner, lInner, dynTop, dynBottom);
+    const int profileDelta = estimateRowProfileDelta(uWork, lWork, dynTop, dynBottom);
     if (profileDelta >= 3) {
         bool alreadyCovered = false;
         for (const auto& cc : candidateClusters) {
@@ -1770,8 +2402,15 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
     }
 
     if (candidateClusters.empty()) {
-        if (staticVotesCount > 0 || zeroShiftInlierRatio >= 0.72) {
+        const bool isStaticByTexture = (zeroEval.activeRows >= 6)
+            ? (zeroEval.activeInlierRatio >= 0.65 && zeroEval.activeNcc >= 0.82)
+            : (zeroShiftInlierRatio >= 0.72);
+        if (staticVotesCount > 0 || isStaticByTexture) {
             tr.isUnchanged = true;
+            tr.lowerStartRow = lower.rows;
+        } else if (computeFrameTextureStd(uWork) >= 3.0 &&
+                   detectBackwardScroll(uWork, lWork, uAct, lAct, dynTop, dynBottom).valid) {
+            tr.isBackwardScroll = true;
             tr.lowerStartRow = lower.rows;
         }
         return tr;
@@ -1793,26 +2432,48 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
     }
 
     const int verifyBottom = std::max(dynTop + 8, refH - workingStickyBottom);
+    const OverlapVerification verifyZeroEval = (verifyBottom == dynBottom)
+        ? zeroEval
+        : evaluateOverlapAtDelta(uWork, lWork, uAct, lAct, dynTop, verifyBottom, 0);
 
-    // 对所有候选位移簇执行全重叠区像素级验证与 ±2px 精修
+    // 对所有候选位移簇执行全重叠区双轨像素级验证与 ±2px 精修
     int winningIdx = -1;
     OverlapVerification winningVer;
     double winningTotalScore = -1e9;
 
     for (std::size_t i = 0; i < candidateClusters.size(); ++i) {
         const auto& cc = candidateClusters[i];
-        OverlapVerification ver = verifyCandidateOnFullOverlap(uInner, lInner, dynTop, verifyBottom, cc.consensusDelta);
+        OverlapVerification ver = verifyCandidateOnFullOverlap(
+            uWork, lWork, uAct, lAct, dynTop, verifyBottom, cc.consensusDelta);
         if (!ver.valid) continue;
 
-        // 零位移对抗检验：若页面大量频带处于静止，任何滚动假设在全重叠区的截尾误差必须显著低于零位移误差，
-        // 彻底杜绝滚到底部后因聊天流存在相似分割条而把整屏内容重复再拼一遍！
+        // 零位移双轨对抗检验（无条件生效，不再依赖 staticVotesCount >= 2）：
+        // 若动态区有效纹理行在原地已高度静止（例如触底后鼠标 Hover/光标微动），
+        // 任何滚动假设必须在有效纹理行上碾压零位移基准，否则一票否决，彻底杜绝复读机长图！
+        if (verifyZeroEval.activeRows >= 6 &&
+            verifyZeroEval.activeInlierRatio >= 0.52 &&
+            verifyZeroEval.activeNcc >= 0.72) {
+            const bool clearlyBeatsZeroByNcc =
+                (ver.activeNcc > verifyZeroEval.activeNcc + 0.045) &&
+                (ver.activeTrimmedMad < verifyZeroEval.activeTrimmedMad * 0.75);
+            const bool clearlyBeatsZeroByInlier =
+                (ver.activeInlierRatio >= verifyZeroEval.activeInlierRatio + 0.14) &&
+                (ver.activeNcc >= 0.84) &&
+                (ver.activeTrimmedMad < verifyZeroEval.activeTrimmedMad * 0.85);
+            if (!clearlyBeatsZeroByNcc && !clearlyBeatsZeroByInlier) {
+                continue;
+            }
+        }
         if (staticVotesCount >= 2 && zeroShiftInlierRatio >= 0.55) {
             if (ver.trimmedMad >= zeroShiftTrimmedMad * 0.78 && ver.inlierRatio <= zeroShiftInlierRatio + 0.08) {
                 continue;
             }
         }
 
-        const double totalScore = ver.inlierRatio * 80.0 - ver.trimmedMad * 2.2 + std::min(cc.clusterWeight, 8.0) * 3.5;
+        const double totalScore = (ver.activeRows >= 6)
+            ? (ver.activeInlierRatio * 60.0 + ver.activeNcc * 50.0 - ver.activeTrimmedMad * 1.4 +
+               ver.inlierRatio * 20.0 + std::min(cc.clusterWeight, 8.0) * 3.2)
+            : (ver.inlierRatio * 80.0 - ver.trimmedMad * 2.2 + std::min(cc.clusterWeight, 8.0) * 3.5);
         if (winningIdx < 0 || totalScore > winningTotalScore) {
             winningIdx = static_cast<int>(i);
             winningVer = ver;
@@ -1821,12 +2482,41 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
     }
 
     if (winningIdx < 0) {
-        // 没有任何候选通过全重叠区全局一致性门禁：若静态投票显著，判定为已触底静止；否则返回 !matched 供上层回滚补帧
-        if ((staticVotesCount >= 2 && staticWeightSum >= 1.2) || zeroShiftInlierRatio >= 0.74) {
+        // 没有任何候选通过双轨一致性门禁：优先判触底静止；其次探测是否为用户向上回滚；否则返回 !matched 供上层回滚补帧
+        const bool isStaticFallback = (verifyZeroEval.activeRows >= 6)
+            ? (verifyZeroEval.activeInlierRatio >= 0.62 && verifyZeroEval.activeNcc >= 0.80)
+            : (zeroShiftInlierRatio >= 0.74);
+        if ((staticVotesCount >= 2 && staticWeightSum >= 1.2) || isStaticFallback) {
             tr.isUnchanged = true;
+            tr.lowerStartRow = lower.rows;
+        } else if (computeFrameTextureStd(uWork) >= 3.0 &&
+                   detectBackwardScroll(uWork, lWork, uAct, lAct, dynTop, verifyBottom).valid) {
+            tr.isBackwardScroll = true;
             tr.lowerStartRow = lower.rows;
         }
         return tr;
+    }
+
+    // 前向 vs 后向对称对决：当正向匹配并非近 100% 完美匹配（例如向上回滚时在周期结构里凑出的擦边假正向匹配），
+    // 执行一次轻量反向滚动核验；若反向匹配显著碾压正向匹配，直接否决正向假匹配并标记为反向回滚！
+    const bool forwardNearPerfect = (winningVer.activeRows >= 6)
+        ? (winningVer.activeNcc >= 0.94 && winningVer.activeInlierRatio >= 0.92 && winningVer.activeTrimmedMad <= 3.5)
+        : (winningVer.inlierRatio >= 0.94 && winningVer.trimmedMad <= 2.5);
+    if (!forwardNearPerfect && computeFrameTextureStd(uWork) >= 3.0) {
+        const OverlapVerification backVer = detectBackwardScroll(uWork, lWork, uAct, lAct, dynTop, verifyBottom);
+        if (backVer.valid) {
+            const bool backDominates = (backVer.activeRows >= 6 && winningVer.activeRows >= 6)
+                ? (backVer.activeNcc > winningVer.activeNcc + 0.05 &&
+                   backVer.activeInlierRatio >= winningVer.activeInlierRatio + 0.06 &&
+                   backVer.activeTrimmedMad < winningVer.activeTrimmedMad * 0.75 + 0.5)
+                : (backVer.inlierRatio > winningVer.inlierRatio + 0.08 &&
+                   backVer.trimmedMad < winningVer.trimmedMad * 0.70 + 0.5);
+            if (backDominates) {
+                tr.isBackwardScroll = true;
+                tr.lowerStartRow = lower.rows;
+                return tr;
+            }
+        }
     }
 
     const int finalDelta = winningVer.refinedDelta;
@@ -1842,7 +2532,8 @@ ScrollFrameTransition ScrollCapture::analyzeFrameTransition(const cv::Mat& upper
     tr.matched = true;
     tr.isUnchanged = false;
     tr.scrollDelta = finalDelta;
-    tr.confidence = std::max(winCluster.maxScore, winningVer.inlierRatio);
+    tr.confidence = std::max(winCluster.maxScore,
+                             winningVer.activeRows >= 6 ? winningVer.activeNcc : winningVer.inlierRatio);
     tr.trimPrevBottomRows = std::clamp(
         tr.stickyBottomRows, 0,
         std::max(0, refH - tr.stickyTopRows - finalDelta));
@@ -1879,27 +2570,82 @@ cv::Mat ScrollCapture::stitchFrames(const std::vector<cv::Mat>& frames, int over
     segments.reserve(frames.size());
     segments.push_back(frames[0].clone());
 
+    auto buildRecentLocalTail = [&](int maxRows, int trimBackRows) -> cv::Mat {
+        if (segments.empty() || maxRows <= 0) return {};
+        std::vector<cv::Mat> pieces;
+        int remaining = maxRows;
+        int skipTail = std::max(0, trimBackRows);
+        for (auto it = segments.rbegin(); it != segments.rend() && remaining > 0; ++it) {
+            if (it->rows <= 0) continue;
+            int avail = it->rows;
+            if (skipTail > 0) {
+                const int drop = std::min(avail, skipTail);
+                avail -= drop;
+                skipTail -= drop;
+                if (avail <= 0) continue;
+            }
+            const int take = std::min(avail, remaining);
+            pieces.push_back((*it)(cv::Rect(0, avail - take, it->cols, take)));
+            remaining -= take;
+        }
+        if (pieces.empty()) return {};
+        std::reverse(pieces.begin(), pieces.end());
+        cv::Mat out;
+        cv::vconcat(pieces, out);
+        return out;
+    };
+
+    std::size_t lastAcceptedIdx = 0;
+    int knownStickyBottom = 0;
+    int knownStickyBottomHits = 0;
+
     for (std::size_t i = 1; i < frames.size(); ++i) {
-        const cv::Mat& prevFrame = frames[i - 1];
+        const cv::Mat& prevFrame = frames[lastAcceptedIdx];
         const cv::Mat& curFrame = frames[i];
         if (curFrame.empty() || curFrame.cols != segments.front().cols || curFrame.type() != segments.front().type()) {
             continue;
         }
 
         const ScrollFrameTransition tr = analyzeFrameTransition(prevFrame, curFrame);
-        if (tr.isUnchanged) continue;
+        if (tr.isUnchanged || tr.isBackwardScroll) continue;
 
         int offset = 0;
+        int trimRows = 0;
         bool verified = false;
         if (tr.matched && tr.scrollDelta > 0) {
+            int effStickyBottom = tr.stickyBottomRows;
+            if (effStickyBottom >= 24) {
+                if (knownStickyBottom > 0 && std::abs(effStickyBottom - knownStickyBottom) <= 12) {
+                    knownStickyBottom = (knownStickyBottom + effStickyBottom) / 2;
+                    ++knownStickyBottomHits;
+                } else if (knownStickyBottomHits < 2) {
+                    knownStickyBottom = effStickyBottom;
+                    knownStickyBottomHits = 1;
+                }
+            } else if (knownStickyBottomHits >= 2 && knownStickyBottom >= 24 &&
+                       effStickyBottom + 8 < knownStickyBottom &&
+                       prevFrame.size() == curFrame.size()) {
+                const int checkH = std::min(knownStickyBottom, (curFrame.rows * 45) / 100);
+                int roiX = 0, roiW = curFrame.cols;
+                computeContentHorizROI(curFrame.cols, roiX, roiW);
+                cv::Mat botDiff;
+                cv::absdiff(prevFrame(cv::Rect(roiX, curFrame.rows - checkH, roiW, checkH)),
+                            curFrame(cv::Rect(roiX, curFrame.rows - checkH, roiW, checkH)), botDiff);
+                int staticBotRows = 0;
+                for (int r = 0; r < checkH; ++r) {
+                    const cv::Scalar rm = cv::mean(botDiff.row(r));
+                    if ((rm[0] + rm[1] + rm[2]) / 3.0 < 3.6) ++staticBotRows;
+                }
+                if (staticBotRows * 100 >= checkH * 82) {
+                    effStickyBottom = checkH;
+                }
+            }
+
             const int prevSegRows = segments.back().rows;
-            const int trimRows = std::clamp(
-                std::min({tr.stickyBottomRows, std::max(0, prevSegRows - 1),
+            trimRows = std::clamp(
+                std::min({effStickyBottom, std::max(0, prevSegRows - 1),
                           curFrame.rows - tr.stickyTopRows - tr.scrollDelta}),
                 0, curFrame.rows - 1);
-            if (trimRows > 0) {
-                segments.back() = segments.back().rowRange(0, prevSegRows - trimRows).clone();
-            }
             offset = curFrame.rows - trimRows - tr.scrollDelta;
             verified = true;
         } else {
@@ -1908,12 +2654,32 @@ cv::Mat ScrollCapture::stitchFrames(const std::vector<cv::Mat>& frames, int over
 
         offset = std::clamp(offset, 0, curFrame.rows);
         const int remaining = curFrame.rows - offset;
-        if (remaining > 0) {
-            if (verified && !segments.empty()) {
-                featherSegmentBoundary(segments.back(), curFrame, offset);
+        if (remaining <= 0) continue;
+
+        if (verified && segments.size() >= 2) {
+            const int dynRows = remaining - trimRows;
+            if (dynRows >= 56 && offset + dynRows <= curFrame.rows) {
+                const cv::Mat tailWin = buildRecentLocalTail(std::max(dynRows * 3, 2400), trimRows);
+                double dupScore = 0.0;
+                if (isDuplicateSegmentInTail(tailWin, curFrame.rowRange(offset, offset + dynRows), &dupScore)) {
+                    LOG_WARN("长截图检测到重复内容段，已自动拦截: rows={}, score={:.3f}", dynRows, dupScore);
+                    continue;
+                }
             }
-            segments.push_back(curFrame.rowRange(offset, curFrame.rows).clone());
         }
+
+        if (verified && trimRows > 0) {
+            const int prevSegRows = segments.back().rows;
+            const int actual = std::min(trimRows, std::max(0, prevSegRows - 1));
+            if (actual > 0) {
+                segments.back() = segments.back().rowRange(0, prevSegRows - actual).clone();
+            }
+        }
+        if (verified && !segments.empty()) {
+            featherSegmentBoundary(segments.back(), curFrame, offset);
+        }
+        segments.push_back(curFrame.rowRange(offset, curFrame.rows).clone());
+        lastAcceptedIdx = i;
     }
 
     cv::Mat result;
