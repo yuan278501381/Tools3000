@@ -7177,6 +7177,58 @@ TEST(PinPasteCoordinatorTest, DesktopFingerprintDeduplicationPreventsDuplicateLo
     }
 }
 
+TEST(PinPasteCoordinatorTest, ThinWavyAnnotationChangesFingerprintAndFreshClipboardBeatsOldHistory) {
+    using namespace tools3000::capture;
+
+    auto& history = CaptureHistory::instance();
+    history.clear();
+    auto& coord = PinPasteCoordinator::instance();
+    coord.reset();
+
+    // 模拟真实截图 800x480：只在中间一条极细局部画 2px 波浪线（旧版 16x16 稀疏网格采样会 100% 漏扫导致撞指纹！）
+    cv::Mat original(480, 800, CV_8UC3, cv::Scalar(48, 43, 40));
+    cv::Mat annotated = original.clone();
+    cv::line(annotated, cv::Point(111, 137), cv::Point(193, 137), cv::Scalar(94, 63, 244), 2, cv::LINE_AA);
+
+    const uint64_t fpOrig = PinPasteCoordinator::computeContentFingerprint(original);
+    const uint64_t fpAnno = PinPasteCoordinator::computeContentFingerprint(annotated);
+    ASSERT_NE(fpOrig, 0ULL);
+    ASSERT_NE(fpAnno, 0ULL);
+    EXPECT_NE(fpOrig, fpAnno);
+
+    // 历史库中存着加波浪线前的原图，用户刚把加了波浪线的贴图 Ctrl+C 进了剪贴板，且原贴图仍开在桌面上
+    history.push(original, CaptureRegion{10, 10, 800, 480});
+    ASSERT_TRUE(ClipboardUtils::copyImageToClipboard(annotated));
+
+    // 1) 候选列表第 0 项必须是带波浪线的剪贴板新图（绝不可误判重复被丢弃！）
+    auto cands = coord.resolveCandidates(GetClipboardSequenceNumber(), history.count());
+    ASSERT_EQ(cands.size(), 2u);
+    EXPECT_TRUE(cands[0].isFromClipboard);
+    EXPECT_EQ(cands[0].contentFingerprint, fpAnno);
+    EXPECT_EQ(cands[1].contentFingerprint, fpOrig);
+
+    // 2) 即使桌面已经显示着当前贴图（指纹 fpAnno 与底图 fpOrig 都在 activeDesktopFingerprints），
+    //    用户刚执行 Ctrl+C 后紧接着按 F3，必须贴出带波浪线的 fpAnno，绝不能跳过它翻出无波浪线的 fpOrig！
+    std::unordered_set<uint64_t> desktopFps = { fpAnno, fpOrig };
+    auto dec = coord.stepNext(nullptr, &desktopFps);
+    ASSERT_TRUE(dec.has_value());
+    EXPECT_FALSE(dec->alreadyVisibleOnDesktop);
+    EXPECT_TRUE(dec->candidate.isFromClipboard);
+    EXPECT_EQ(dec->candidate.contentFingerprint, fpAnno);
+
+    // 3) 若未再次复制新内容而紧接着连按第 2 次 F3，此时防重复套娃机制恢复生效（绝不无限套娃）
+    auto secondDec = coord.stepNext(nullptr, &desktopFps);
+    ASSERT_TRUE(secondDec.has_value());
+    EXPECT_TRUE(secondDec->alreadyVisibleOnDesktop);
+
+    history.clear();
+    coord.reset();
+    for (int r = 0; r < 10; ++r) {
+        if (OpenClipboard(nullptr)) { EmptyClipboard(); CloseClipboard(); break; }
+        Sleep(5);
+    }
+}
+
 TEST(CaptureWindowFilterTest, VirtualDesktopCloakedAndZeroAlphaWindowsAreExcluded) {
     using namespace tools3000::core;
     EXPECT_FALSE(WinUtils::isWindowVisibleOnCurrentDesktop(nullptr));

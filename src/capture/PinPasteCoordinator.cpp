@@ -602,18 +602,30 @@ uint64_t PinPasteCoordinator::computeContentFingerprint(const cv::Mat& image, co
     mix64(static_cast<uint64_t>(image.cols));
     mix64(static_cast<uint64_t>(image.rows));
 
+    // 全像素极速 64-bit FNV-1a 精确指纹（仅哈希 RGB 3 通道，消除 BGR 24-bit 与 BGRA 32-bit 封装差异）：
+    // 彻底根治旧版 16x16 稀疏网格采样漏掉细波浪线/直线/单字修改，导致 F3 误把刚复制的带标注剪贴板新图当成重复丢弃！
     const int ch = image.channels();
-    const int elemBytes = (std::min)(ch, 3); // 仅比较 RGB，消除 BGR(24位) 与 BGRA(32位) 透明封装差异误判
-    const int gridX = (std::min)(16, image.cols);
-    const int gridY = (std::min)(16, image.rows);
-    for (int gy = 0; gy < gridY; ++gy) {
-        const int y = (gridY == 1) ? 0 : (gy * (image.rows - 1)) / (gridY - 1);
-        const uint8_t* rowPtr = image.ptr<uint8_t>(y);
-        for (int gx = 0; gx < gridX; ++gx) {
-            const int x = (gridX == 1) ? 0 : (gx * (image.cols - 1)) / (gridX - 1);
-            const uint8_t* px = rowPtr + static_cast<size_t>(x) * static_cast<size_t>(ch);
-            for (int c = 0; c < elemBytes; ++c) {
-                h ^= static_cast<uint64_t>(px[c]);
+    const int cols = image.cols;
+    const int rows = image.rows;
+    if (ch >= 3) {
+        for (int y = 0; y < rows; ++y) {
+            const uint8_t* rowPtr = image.ptr<uint8_t>(y);
+            for (int x = 0; x < cols; ++x) {
+                const uint8_t* px = rowPtr + static_cast<size_t>(x) * static_cast<size_t>(ch);
+                h ^= static_cast<uint64_t>(px[0]);
+                h *= kFnvPrime;
+                h ^= static_cast<uint64_t>(px[1]);
+                h *= kFnvPrime;
+                h ^= static_cast<uint64_t>(px[2]);
+                h *= kFnvPrime;
+            }
+        }
+    } else {
+        for (int y = 0; y < rows; ++y) {
+            const uint8_t* rowPtr = image.ptr<uint8_t>(y);
+            const int rowBytes = cols * ch;
+            for (int i = 0; i < rowBytes; ++i) {
+                h ^= static_cast<uint64_t>(rowPtr[i]);
                 h *= kFnvPrime;
             }
         }
@@ -798,9 +810,15 @@ std::optional<PinPasteDecision> PinPasteCoordinator::stepNext(
     int targetIndex = m_reverseIndex % totalCandidates;
     bool alreadyVisibleOnDesktop = false;
 
+    // 剪贴板新鲜复制最高优先契约：
+    // 若用户刚刚更新了系统剪贴板（如在贴图上加完波浪线后按 Ctrl+C / 点复制），紧接着按 F3 时
+    // 必须 100% 优先贴出刚复制的新剪贴板内容（与粘贴到微信的结果完全一致），绝不可跳过它翻出历史里的旧图！
+    const bool freshClipboardExplicitCopy =
+        (targetIndex == 0 && candidates[0].isFromClipboard && currentSeq != m_lastClipboardSeq);
+
     // 真实桌面防重复套娃机制：当传入当前虚拟桌面已显示的贴图指纹集合时，
     // 智能跳过已贴在桌面上的重复条目；若全部候选均已在桌面显示则禁止无限套娃克隆，转由调用方置顶聚焦并提示
-    if (activeDesktopFingerprints && !activeDesktopFingerprints->empty()) {
+    if (!freshClipboardExplicitCopy && activeDesktopFingerprints && !activeDesktopFingerprints->empty()) {
         auto isAlreadyVisible = [&](int idx) -> bool {
             const uint64_t fp = candidates[static_cast<size_t>(idx)].contentFingerprint;
             return fp != 0ULL && activeDesktopFingerprints->find(fp) != activeDesktopFingerprints->end();

@@ -449,12 +449,12 @@ TEST(PinLiveTextInteractionTest, ZeroThresholdIBeamCursorCharSelectionDoubleClic
     const auto dblClickInspect = invokeRpc(3105, "capture.inspectPinOcrState", nlohmann::json::object());
     EXPECT_EQ(dblClickInspect.value("selectedText", ""), "hello_world");
 
-    // (D) 空白无字且远离胶囊与顶部悬停栏的区域 (390, 96) 按住左键拖拽：清除文字选区并 100% 正常移动贴图窗口
+    // (D) 空白无字且远离悬浮舱与顶部悬停栏的底部空白区 (40, 235) 按住左键拖拽：清除文字选区并 100% 正常移动贴图窗口
     RECT beforeDragRc{};
     ASSERT_TRUE(GetWindowRect(pinHwnd, &beforeDragRc));
-    SendMessageW(pinHwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(390, 96));
-    SendMessageW(pinHwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(428, 120));
-    SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(428, 120));
+    SendMessageW(pinHwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(40, 235));
+    SendMessageW(pinHwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(78, 259));
+    SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(78, 259));
 
     RECT afterDragRc{};
     ASSERT_TRUE(GetWindowRect(pinHwnd, &afterDragRc));
@@ -1545,4 +1545,539 @@ TEST(LiveTextOcrTest, EnvRealImageOcrBenchmark) {
     std::printf("[OCR-BENCH] image=%dx%d lines=%zu chars=%zu firstRun=%lldms warmRun=%lldms\n",
                 img.cols, img.rows, hotRes.size(), totalChars, coldMs, hotMs);
     EXPECT_GT(hotRes.size(), 0u);
+}
+
+TEST(TextReplaceEngineTest, StyleDnaExtractionAndTableBorderPreservingReplacement) {
+    using namespace tools3000::capture;
+
+    initializeMarkupTextRenderer();
+    TextReplaceEngine::clearPatchCache();
+
+    // 1. 浅色表格单元格（含紧贴上/下/左/右的深灰表格边框线）：验证 6 维 DNA 克隆与改字绝不破坏表格线
+    cv::Mat tableImg(140, 420, CV_8UC3, cv::Scalar(246, 248, 250));
+    const cv::Rect cellBorder(24, 24, 240, 44);
+    cv::rectangle(tableImg, cellBorder, cv::Scalar(160, 165, 172), 1, cv::LINE_8);
+    cv::putText(tableImg, "1280.00", cv::Point(44, 54),
+                cv::FONT_HERSHEY_SIMPLEX, 0.78, cv::Scalar(24, 28, 34), 2, cv::LINE_AA);
+
+    const cv::Rect textBox(42, 34, 120, 24);
+    const std::vector<cv::Rect> propBoxes =
+        tools3000::ocr::OcrEngine::buildProportionalCharBoxes("1280.00", textBox);
+    const auto lightStyle = TextReplaceEngine::extractStyle(tableImg, textBox, propBoxes, "1280.00");
+    EXPECT_FALSE(lightStyle.complexBackground);
+    EXPECT_LT(static_cast<int>(lightStyle.textBgr[2]), 85);
+    EXPECT_LT(static_cast<int>(lightStyle.textBgr[1]), 85);
+    EXPECT_LT(static_cast<int>(lightStyle.textBgr[0]), 85);
+    EXPECT_GT(lightStyle.fontSizePx, 12.0f);
+    EXPECT_LT(lightStyle.fontSizePx, 36.0f);
+
+    // 通过无损 MarkupEngine::TextReplace 图元将 "1280.00" 原位无痕改为 "9980.00"
+    MarkupEngine engine;
+    engine.setBaseImage(tableImg);
+    MarkupElement trElem;
+    trElem.id = 1;
+    trElem.tool = MarkupTool::TextReplace;
+    trElem.text = "9980.00";
+    trElem.replaceOriginalText = "1280.00";
+    trElem.replaceSourceRect = textBox;
+    trElem.replaceCharBoxes = propBoxes;
+    trElem.startPt = cv::Point(textBox.x, textBox.y);
+    trElem.endPt = cv::Point(textBox.x + textBox.width, textBox.y + textBox.height);
+    trElem.color = MarkupColor{lightStyle.textBgr[2], lightStyle.textBgr[1], lightStyle.textBgr[0], 255};
+    trElem.fontSize = lightStyle.fontSizePx;
+    trElem.replaceFontClass = static_cast<int>(lightStyle.fontClass);
+    trElem.replaceFontWeight = lightStyle.fontWeight;
+    trElem.replaceStyleInitialized = true;
+    engine.importElements({trElem});
+
+    const cv::Mat replaced = engine.getCompositeImage(false);
+    ASSERT_FALSE(replaced.empty());
+
+    // 验证表格上/下边框线像素 100% 未受损
+    const cv::Vec3b topBorderPx = replaced.at<cv::Vec3b>(24, 100);
+    const cv::Vec3b botBorderPx = replaced.at<cv::Vec3b>(24 + 44 - 1, 100);
+    EXPECT_NEAR(topBorderPx[0], 160, 2);
+    EXPECT_NEAR(botBorderPx[0], 160, 2);
+
+    // 验证原位文字区已绘制出深色新字且与旧图像素产生真实变化
+    int darkNewInkPixels = 0;
+    int diffPixels = 0;
+    for (int y = textBox.y; y < textBox.y + textBox.height; ++y) {
+        for (int x = textBox.x; x < textBox.x + textBox.width; ++x) {
+            const cv::Vec3b pNew = replaced.at<cv::Vec3b>(y, x);
+            const cv::Vec3b pOld = tableImg.at<cv::Vec3b>(y, x);
+            if (pNew[0] < 120 && pNew[1] < 120 && pNew[2] < 120) ++darkNewInkPixels;
+            if (std::abs(int(pNew[0]) - int(pOld[0])) + std::abs(int(pNew[1]) - int(pOld[1])) > 30) ++diffPixels;
+        }
+    }
+    EXPECT_GT(darkNewInkPixels, 35);
+    EXPECT_GT(diffPixels, 20);
+
+    // 2. 暗色代码终端等宽字自动识别：验证等宽 charBoxes -> Monospace + 亮色字色提取
+    cv::Mat darkTerm(100, 340, CV_8UC3, cv::Scalar(34, 30, 28));
+    cv::putText(darkTerm, "PORT=8080", cv::Point(30, 60),
+                cv::FONT_HERSHEY_SIMPLEX, 0.72, cv::Scalar(230, 234, 240), 2, cv::LINE_AA);
+    const cv::Rect monoBox(28, 38, 144, 24);
+    std::vector<cv::Rect> monoChars;
+    for (int i = 0; i < 9; ++i) {
+        monoChars.emplace_back(28 + i * 16, 38, 16, 24);
+    }
+    const auto darkStyle = TextReplaceEngine::extractStyle(darkTerm, monoBox, monoChars, "PORT=8080");
+    EXPECT_EQ(darkStyle.fontClass, TextReplaceFontClass::Monospace);
+    EXPECT_GT(static_cast<int>(darkStyle.textBgr[2]), 180);
+    EXPECT_GT(static_cast<int>(darkStyle.textBgr[1]), 180);
+
+    // 3. 高频复杂底纹图片：验证强制纹理修复模式在无 AI 模型时优雅降级 OpenCV Telea 零崩溃
+    cv::Mat complexImg(140, 320, CV_8UC3);
+    for (int y = 0; y < complexImg.rows; ++y) {
+        for (int x = 0; x < complexImg.cols; ++x) {
+            const uint8_t v = static_cast<uint8_t>(((x / 8 + y / 8) % 2 == 0) ? 220 : 120);
+            complexImg.at<cv::Vec3b>(y, x) = cv::Vec3b(v, static_cast<uint8_t>(255 - v / 2), 180);
+        }
+    }
+    cv::putText(complexImg, "SALE", cv::Point(40, 78),
+                cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(18, 22, 235), 2, cv::LINE_AA);
+    const cv::Rect saleBox(38, 52, 86, 30);
+    const auto complexStyle = TextReplaceEngine::extractStyle(complexImg, saleBox, {}, "SALE");
+    EXPECT_TRUE(complexStyle.complexBackground);
+
+    TextReplaceRenderSpec spec;
+    spec.originalTextUtf8 = "SALE";
+    spec.newTextUtf8 = "FREE";
+    spec.sourceRect = saleBox;
+    spec.textBgr = complexStyle.textBgr;
+    spec.fontSizePx = complexStyle.fontSizePx;
+    spec.fontWeight = complexStyle.fontWeight;
+    spec.fontClass = complexStyle.fontClass;
+    spec.styleInitialized = true;
+    spec.bgMode = TextReplaceBgMode::AiInpaint;
+    const cv::Rect covered = TextReplaceEngine::renderReplacement(complexImg, spec);
+    EXPECT_GT(covered.width, 0);
+    EXPECT_GT(covered.height, 0);
+}
+
+TEST(TextReplaceEngineTest, RenderAndMatchCalibrationZeroVerticalDriftAndEditOverlayCaretHitTest) {
+    using namespace tools3000::capture;
+
+    TextReplaceEngine::clearPatchCache();
+
+    // 复刻用户真实深色界面场景：暗灰背景 (#282B33) + 18px 微软雅黑柔和灰白中文字 "回归测试"
+    cv::Mat darkUi(120, 420, CV_8UC3, cv::Scalar(51, 43, 40));
+    TextReplaceRenderSpec seedSpec;
+    seedSpec.sourceRect = cv::Rect(80, 40, 80, 26);
+    seedSpec.originalTextUtf8 = "回归测试";
+    seedSpec.newTextUtf8 = "回归测试";
+    seedSpec.textBgr = cv::Vec3b(224, 220, 214); // 柔和灰白
+    seedSpec.fontSizePx = 18.0f;
+    seedSpec.fontWeight = 500;
+    seedSpec.fontClass = TextReplaceFontClass::UiSans;
+    seedSpec.styleInitialized = true;
+    seedSpec.bgMode = TextReplaceBgMode::CleanPlane;
+    TextReplaceEngine::renderReplacement(darkUi, seedSpec);
+
+    // 测出种子图真实文字墨水垂直中心（作为权威 Ground Truth）
+    auto measureInkCenterY = [&](const cv::Mat& img, const cv::Rect& roi) -> float {
+        double wSum = 0.0, ySum = 0.0;
+        for (int y = roi.y; y < roi.y + roi.height; ++y) {
+            for (int x = roi.x; x < roi.x + roi.width; ++x) {
+                const cv::Vec3b p = img.at<cv::Vec3b>(y, x);
+                const int d = (std::max)({std::abs(int(p[0]) - 51), std::abs(int(p[1]) - 43), std::abs(int(p[2]) - 40)});
+                if (d >= 45) {
+                    wSum += d;
+                    ySum += static_cast<double>(y) * d;
+                }
+            }
+        }
+        return (wSum > 1.0) ? static_cast<float>(ySum / wSum) : -1.0f;
+    };
+
+    const cv::Rect probeBox(74, 34, 96, 38);
+    const float truthCenterY = measureInkCenterY(darkUi, probeBox);
+    ASSERT_GT(truthCenterY, 35.0f);
+
+    // 1. 验证 Render-and-Match 闭环自校准反解字号精准命中 18.0px（绝不再虚胖到 21.5px！）
+    const ExtractedTextStyle dna = TextReplaceEngine::extractStyle(darkUi, probeBox, {}, "回归测试");
+    EXPECT_TRUE(dna.darkBackground);
+    EXPECT_NEAR(dna.fontSizePx, 18.0f, 1.5f) << "Render-and-Match must recover true ~18px font size without inflation";
+    // 深底字色应忠实还原柔和灰白，不过曝成纯白 255
+    EXPECT_GE(static_cast<int>(dna.textBgr[2]), 185);
+    EXPECT_LE(static_cast<int>(dna.textBgr[2]), 240);
+
+    // 2. 执行原位改字 "回归测试" -> "回没测试"，验证新字垂直重心与原字严格齐平（偏差 <= 1.5px，零向上飘移！）
+    cv::Mat replaced = darkUi.clone();
+    TextReplaceRenderSpec repSpec;
+    repSpec.sourceRect = probeBox;
+    repSpec.originalTextUtf8 = "回归测试";
+    repSpec.newTextUtf8 = "回没测试";
+    repSpec.textBgr = dna.textBgr;
+    repSpec.fontSizePx = dna.fontSizePx;
+    repSpec.fontWeight = dna.fontWeight;
+    repSpec.fontClass = dna.fontClass;
+    repSpec.styleInitialized = true;
+    repSpec.bgMode = TextReplaceBgMode::Auto;
+    TextReplaceEngine::renderReplacement(replaced, repSpec);
+
+    const float replacedCenterY = measureInkCenterY(replaced, probeBox);
+    ASSERT_GT(replacedCenterY, 35.0f);
+    EXPECT_NEAR(replacedCenterY, truthCenterY, 1.5f) << "Replaced CJK text must align vertically with original ink";
+
+    // 3. 验证编辑态 GPU 顶层焦框、选中高亮矩形与光标位置计算，以及鼠标点击精准落点字符索引
+    repSpec.isEditing = true;
+    repSpec.selAnchorUtf16 = 0;
+    repSpec.caretUtf16 = 4; // 全选 4 个汉字
+    const auto ov = TextReplaceEngine::computeEditOverlayMetrics(darkUi, repSpec);
+    EXPECT_TRUE(ov.valid);
+    EXPECT_TRUE(ov.darkBackground);
+    EXPECT_GT(ov.boxRight - ov.boxLeft, 50.0f);
+    EXPECT_GT(ov.caretBottom - ov.caretTop, 12.0f);
+    EXPECT_FALSE(ov.selectionRects.empty());
+    EXPECT_GT(ov.caretX, ov.drawTextX + 40.0f);
+
+    // 点击最左侧应落点索引 0，点击最右侧应落点索引 4，点击中点应落点索引 2
+    const float midY = (ov.caretTop + ov.caretBottom) * 0.5f;
+    EXPECT_EQ(TextReplaceEngine::hitTestCaretIndex(darkUi, repSpec, ov.drawTextX - 4.0f, midY), 0u);
+    EXPECT_EQ(TextReplaceEngine::hitTestCaretIndex(darkUi, repSpec, ov.caretX + 12.0f, midY), 4u);
+    const size_t midIdx = TextReplaceEngine::hitTestCaretIndex(
+        darkUi, repSpec, (ov.drawTextX + ov.caretX) * 0.5f, midY);
+    EXPECT_GE(midIdx, 1u);
+    EXPECT_LE(midIdx, 3u);
+}
+
+TEST(TextReplaceEngineTest, AiInpaintModelStatusLifecycle) {
+    using namespace tools3000::capture;
+
+    auto& engine = AiInpaintEngine::instance();
+    const auto status = engine.getModelStatus();
+    EXPECT_FALSE(status.modelDir.empty());
+    EXPECT_EQ(status.modelFile, "migan_pipeline_v2.onnx");
+    EXPECT_EQ(status.totalBytes, 28079181ULL);
+    EXPECT_FALSE(status.downloading);
+    engine.cancelModelDownload();
+    engine.releaseResources();
+}
+
+TEST(TextReplaceEngineTest, PinEndToEndInPlaceTextReplaceEditCommitAndUndoViaPlugin) {
+    std::array<wchar_t, 4096> executablePath{};
+    const DWORD length = GetModuleFileNameW(
+        nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
+    ASSERT_GT(length, 0u);
+    const auto executableDir = std::filesystem::path(executablePath.data()).parent_path();
+    const auto pluginDllPath =
+        executableDir.parent_path() / L"plugins" / executableDir.filename() / L"Plugin_Capture.dll";
+    ASSERT_TRUE(std::filesystem::exists(pluginDllPath));
+
+    HMODULE hMod = LoadLibraryExW(
+        pluginDllPath.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    ASSERT_NE(hMod, nullptr);
+    using CreatePluginFunc = tools3000::core::IPlugin* (*)();
+    const auto createPlugin = reinterpret_cast<CreatePluginFunc>(GetProcAddress(hMod, "CreatePlugin"));
+    ASSERT_NE(createPlugin, nullptr);
+    tools3000::core::IPlugin* capturePlugin = createPlugin();
+    ASSERT_NE(capturePlugin, nullptr);
+    ASSERT_TRUE(capturePlugin->initialize());
+
+    const auto tempPng = std::filesystem::temp_directory_path() /
+                         (L"tools3000_text_replace_e2e_" + std::to_wstring(GetCurrentProcessId()) + L".png");
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    auto invokeRpc = [&](int id, const char* method, const nlohmann::json& params) -> nlohmann::json {
+        nlohmann::json req = {{"id", id}, {"method", method}, {"params", params}};
+        const std::string raw = bridge.handleMessage(req.dump());
+        const auto parsed = nlohmann::json::parse(raw, nullptr, false);
+        return parsed.is_object() && parsed.contains("result") ? parsed["result"] : parsed;
+    };
+
+    struct PluginCleanupGuard {
+        HMODULE mod = nullptr;
+        tools3000::core::IPlugin* plugin = nullptr;
+        std::filesystem::path png;
+        ~PluginCleanupGuard() {
+            while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+                SendMessageW(existing, WM_KEYDOWN, VK_DELETE, 0);
+                if (IsWindow(existing)) DestroyWindow(existing);
+            }
+            if (plugin) plugin->shutdown();
+            if (mod) FreeLibrary(mod);
+            std::error_code ec;
+            std::filesystem::remove(png, ec);
+        }
+    } guard{hMod, capturePlugin, tempPng};
+
+    // 验证 AI 修复模型 IPC 契约在线可达
+    const auto modelSt = invokeRpc(4100, "capture.getInpaintModelStatus", nlohmann::json::object());
+    EXPECT_EQ(modelSt.value("modelFile", ""), "migan_pipeline_v2.onnx");
+    EXPECT_FALSE(modelSt.value("modelDir", "").empty());
+
+    // 构造清晰白底数字贴图
+    cv::Mat img(160, 420, CV_8UC3, cv::Scalar(252, 253, 255));
+    cv::putText(img, "2025", cv::Point(44, 72),
+                cv::FONT_HERSHEY_SIMPLEX, 0.95, cv::Scalar(28, 30, 36), 2, cv::LINE_AA);
+    std::vector<uchar> encoded;
+    ASSERT_TRUE(cv::imencode(".png", img, encoded));
+    {
+        std::ofstream ofs(tempPng, std::ios::binary | std::ios::trunc);
+        ofs.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+    }
+
+    ASSERT_TRUE(invokeRpc(4101, "capture.pinImageFile", {
+        {"path", tools3000::core::WinUtils::wstringToUtf8(tempPng.wstring())}
+    }).value("success", false));
+
+    nlohmann::json mockBlocks = nlohmann::json::array({
+        {{"text", "2025"}, {"x", 40}, {"y", 46}, {"w", 86}, {"h", 28}, {"layoutRegionId", 0}, {"alignedRowId", 0}}
+    });
+
+    // 1) 选字后悬浮舱必须显示 [改字] 按钮
+    const auto selRes = invokeRpc(4102, "capture.inspectPinOcrState", {
+        {"mockBlocks", mockBlocks},
+        {"selectAll", true},
+        {"forceRender", true}
+    });
+    ASSERT_TRUE(selRes.value("success", false));
+    EXPECT_TRUE(selRes.value("textReplaceBtnVisible", false));
+    EXPECT_FALSE(selRes.value("editingTextReplace", true));
+
+    // 2) 进入原位改字 -> 直接键入 "2026" 替换默认全选旧文字 -> 拖动左侧 6 点微晶抓手移动文字位置 -> 提交保存
+    const auto editRes = invokeRpc(4103, "capture.inspectPinOcrState", {
+        {"startTextReplace", true},
+        {"replaceTypeText", "2026"}
+    });
+    ASSERT_TRUE(editRes.value("success", false));
+    EXPECT_TRUE(editRes.value("editingTextReplace", false));
+    EXPECT_EQ(editRes.value("latestTextReplaceText", ""), "2026");
+    EXPECT_TRUE(editRes.value("trDragHandleVisible", false));
+
+    HWND pinHwnd = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(editRes.value("pinHwnd", std::uint64_t{0})));
+    ASSERT_NE(pinHwnd, nullptr);
+    ASSERT_TRUE(IsWindow(pinHwnd));
+    const int gx = editRes.value("trDragHandleCenterX", 0);
+    const int gy = editRes.value("trDragHandleCenterY", 0);
+    SendMessageW(pinHwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(gx, gy));
+    SendMessageW(pinHwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(gx + 9, gy - 4));
+    SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(gx + 9, gy - 4));
+
+    const auto movedRes = invokeRpc(41031, "capture.inspectPinOcrState", nlohmann::json::object());
+    EXPECT_TRUE(movedRes.value("editingTextReplace", false));
+    EXPECT_NEAR(movedRes.value("latestTextReplaceOffsetX", 0.0), 9.0, 0.6);
+    EXPECT_NEAR(movedRes.value("latestTextReplaceOffsetY", 0.0), -4.0, 0.6);
+
+    const auto commitRes = invokeRpc(4104, "capture.inspectPinOcrState", {
+        {"commitTextReplace", true}
+    });
+    ASSERT_TRUE(commitRes.value("success", false));
+    EXPECT_FALSE(commitRes.value("editingTextReplace", true));
+    EXPECT_EQ(commitRes.value("markupCount", 0), 1);
+    EXPECT_TRUE(commitRes.value("canUndoPinMarkup", false));
+    EXPECT_EQ(commitRes.value("ocrRunCount", 99u), 0u);
+
+    // 3) Ctrl+Z 一步无损还原：图元清零且无二次 OCR 重跑
+    const auto undoRes = invokeRpc(4105, "capture.inspectPinOcrState", {
+        {"undoMarkup", true}
+    });
+    ASSERT_TRUE(undoRes.value("success", false));
+    EXPECT_EQ(undoRes.value("markupCount", 99), 0);
+    EXPECT_TRUE(undoRes.value("canRedoPinMarkup", false));
+    EXPECT_EQ(undoRes.value("ocrRunCount", 99u), 0u);
+
+    while (HWND existing = FindWindowW(L"Tools3000_PinWindow", nullptr)) {
+        SendMessageW(existing, WM_KEYDOWN, VK_DELETE, 0);
+        if (IsWindow(existing)) DestroyWindow(existing);
+    }
+    capturePlugin->shutdown();
+    guard.plugin = nullptr;
+    EXPECT_TRUE(FreeLibrary(hMod));
+    guard.mod = nullptr;
+}
+
+TEST(TextReplaceEngineTest, CompactDenseDarkLinesNoTeleaGhostAndSameLineRightReflowAndRigidDragBox) {
+    using namespace tools3000::capture;
+
+    // 复刻深色紧凑多行界面实拍场景：#282B33 纯深灰底，上下邻行亮白字间距仅 3px，
+    // 左侧紧贴 '+' 号，中间为待改短词，右侧紧邻同行尾巴文字
+    const cv::Scalar darkBg(51, 43, 40); // BGR = (51, 43, 40) -> #282B33
+    const cv::Scalar brightFg(230, 224, 218);
+    cv::Mat base(180, 560, CV_8UC3, darkBg);
+
+    // 上一行与下一行紧邻亮白字（距目标行上下仅 3px，旧版会污染外围采样环带导致误判复杂纹理送入 Telea）
+    cv::putText(base, "Upper tight white line text 1234567890", cv::Point(28, 42),
+                cv::FONT_HERSHEY_SIMPLEX, 0.56, brightFg, 1, cv::LINE_AA);
+    cv::putText(base, "Lower tight white line text 1234567890", cv::Point(28, 88),
+                cv::FONT_HERSHEY_SIMPLEX, 0.56, brightFg, 1, cv::LINE_AA);
+
+    // 目标行：左侧 '+' (x=80..94)，中间待改短词 "AB" (x=98..126)，右侧原文 "TAIL" (x=134..190)
+    const cv::Rect plusRect(80, 48, 14, 18);
+    cv::line(base, cv::Point(87, 50), cv::Point(87, 64), brightFg, 2);
+    cv::line(base, cv::Point(81, 57), cv::Point(93, 57), brightFg, 2);
+
+    const cv::Rect targetRoi(98, 47, 30, 20);
+    cv::putText(base, "AB", cv::Point(99, 64),
+                cv::FONT_HERSHEY_SIMPLEX, 0.60, brightFg, 2, cv::LINE_AA);
+
+    const cv::Rect rightTailRect(136, 47, 64, 20);
+    cv::putText(base, "TAIL", cv::Point(138, 64),
+                cv::FONT_HERSHEY_SIMPLEX, 0.60, brightFg, 2, cv::LINE_AA);
+
+    // 1) 纯深灰紧凑多行必须保持 complexBackground == false（绝不可被上下邻行白字拉高方差误送 Telea）
+    const ExtractedTextStyle dna = TextReplaceEngine::extractStyle(base, targetRoi, {}, "AB");
+    EXPECT_FALSE(dna.complexBackground);
+
+    // 2) 将短词 "AB" 改为更长的新词 "ABCDEFGH" 并开启同行右侧顺延让位
+    TextReplaceRenderSpec spec;
+    spec.sourceRect = targetRoi;
+    spec.originalTextUtf8 = "AB";
+    spec.newTextUtf8 = "ABCDEFGH";
+    spec.textBgr = dna.textBgr;
+    spec.fontSizePx = dna.fontSizePx;
+    spec.fontWeight = dna.fontWeight;
+    spec.fontClass = dna.fontClass;
+    spec.bgMode = TextReplaceBgMode::Auto;
+    spec.styleInitialized = true;
+    spec.reflowRightTail = true;
+    spec.rightTailRect = rightTailRect;
+
+    cv::Mat canvas = base.clone();
+    const cv::Rect renderRoi = TextReplaceEngine::renderReplacement(canvas, spec);
+    ASSERT_GT(renderRoi.width, 0);
+    ASSERT_GT(renderRoi.height, 0);
+
+    // 2a) 左侧紧邻 '+' 号像素必须 100% 完好无损（不得被旧字擦除越界咬伤）
+    int plusBrightPx = 0;
+    for (int y = plusRect.y; y < plusRect.y + plusRect.height; ++y) {
+        for (int x = plusRect.x; x < plusRect.x + plusRect.width; ++x) {
+            const cv::Vec3b p = canvas.at<cv::Vec3b>(y, x);
+            if (p[0] > 180 && p[1] > 180 && p[2] > 180) {
+                ++plusBrightPx;
+            }
+        }
+    }
+    EXPECT_GE(plusBrightPx, 30);
+
+    // 2b) 原右侧尾巴 "TAIL" 应已顺延至 renderRoi 右侧之后，在新区域内存在清晰亮白笔画
+    int shiftedTailBrightPx = 0;
+    const int tailSearchX0 = (std::min)(canvas.cols - 1, renderRoi.x + renderRoi.width + 1);
+    const int tailSearchX1 = (std::min)(canvas.cols, tailSearchX0 + rightTailRect.width + 24);
+    for (int y = rightTailRect.y; y < rightTailRect.y + rightTailRect.height; ++y) {
+        for (int x = tailSearchX0; x < tailSearchX1; ++x) {
+            const cv::Vec3b p = canvas.at<cv::Vec3b>(y, x);
+            if (p[0] > 160 && p[1] > 160 && p[2] > 160) {
+                ++shiftedTailBrightPx;
+            }
+        }
+    }
+    EXPECT_GE(shiftedTailBrightPx, 45);
+
+    // 3) 拖动新文字至下方新位置 (offsetX=+50, offsetY=+48)：
+    //    编辑框与 renderRoi 必须 1:1 刚体平移紧贴新文字，绝不再与旧擦除框 targetRoi 拉扯成巨型框；
+    //    同时旧擦除位置 targetRoi 中心必须被干净抹回纯深灰底，无 Telea 灰白鬼影！
+    spec.offsetX = 50.0f;
+    spec.offsetY = 48.0f;
+    spec.isEditing = true;
+    spec.caretUtf16 = 8;
+    spec.selAnchorUtf16 = 8;
+
+    cv::Mat movedCanvas = base.clone();
+    const cv::Rect movedRoi = TextReplaceEngine::renderReplacement(movedCanvas, spec);
+    ASSERT_GT(movedRoi.width, 0);
+    const auto ov = TextReplaceEngine::computeEditOverlayMetrics(base, spec);
+    ASSERT_TRUE(ov.valid);
+
+    // 编辑框整体刚体平移：顶边与左边都必须远离原 targetRoi，高度保持单行紧致
+    EXPECT_GT(ov.boxTop, static_cast<float>(targetRoi.y) + 32.0f);
+    EXPECT_GT(ov.boxLeft, static_cast<float>(targetRoi.x) + 35.0f);
+    EXPECT_LT(ov.boxBottom - ov.boxTop, static_cast<float>(targetRoi.height) * 2.2f);
+    EXPECT_GT(movedRoi.y, targetRoi.y + 30);
+
+    // 旧擦除框内部无任何灰白脏鬼影（最大像素偏差 <= 12）
+    int maxGhostDiff = 0;
+    for (int y = targetRoi.y + 2; y < targetRoi.y + targetRoi.height - 2; ++y) {
+        for (int x = targetRoi.x + 2; x < targetRoi.x + targetRoi.width - 2; ++x) {
+            const cv::Vec3b p = movedCanvas.at<cv::Vec3b>(y, x);
+            const int diff = std::abs(static_cast<int>(p[0]) - 51) +
+                             std::abs(static_cast<int>(p[1]) - 43) +
+                             std::abs(static_cast<int>(p[2]) - 40);
+            maxGhostDiff = (std::max)(maxGhostDiff, diff);
+        }
+    }
+    EXPECT_LE(maxGhostDiff, 18);
+
+    // 4) 同行顺延抗削顶与独立局部底色验证：
+    //    模拟真实 OCR 紧致框比文字顶部低 3px（裁在 "立/i" 悬空顶头点下方 1px 空隙处），
+    //    且左侧被改原词位于浅灰代码胶囊内、右侧顺延文字位于深灰页面主底色上
+    cv::Mat reflowImg(160, 560, CV_8UC3, darkBg);
+    // 上一行正文（间隔 6px 空白走廊，验证绝不误吸上一行）
+    cv::putText(reflowImg, "Previous line must stay untouched", cv::Point(20, 32),
+                cv::FONT_HERSHEY_SIMPLEX, 0.52, brightFg, 1, cv::LINE_AA);
+    // 左侧深灰代码胶囊 (#383D47) 内待改短词 "OK"
+    const cv::Scalar pillBg(71, 61, 56);
+    cv::rectangle(reflowImg, cv::Rect(30, 44, 54, 26), pillBg, cv::FILLED);
+    const cv::Rect pillWordRoi(36, 48, 38, 18);
+    cv::putText(reflowImg, "OK", cv::Point(37, 63),
+                cv::FONT_HERSHEY_SIMPLEX, 0.56, brightFg, 2, cv::LINE_AA);
+
+    // 右侧同行文字主体 (y=49..65, 短词 "HI" x=96..124) + 刻意位于 OCR 框四向边缘外的像素：
+    //   顶部 y=46..47 悬空顶头点（模拟 立/i）
+    //   底部 y=67..69 悬空下伸部（模拟 g/y/下点）
+    //   左侧 x=92..93（与 x=96 隔 2px 缝，模拟 氵/“ 偏旁）
+    //   右侧 x=128..131（与 x=124 隔 4px 全角留白，模拟行尾全角句号/高右括号且高出顶部至 y=47）
+    const cv::Rect tightOcrTailRoi(96, 49, 28, 17);
+    cv::putText(reflowImg, "HI", cv::Point(98, 64),
+                cv::FONT_HERSHEY_SIMPLEX, 0.56, brightFg, 2, cv::LINE_AA);
+    cv::rectangle(reflowImg, cv::Rect(106, 46, 3, 2), brightFg, cv::FILLED); // 顶部悬空点
+    cv::rectangle(reflowImg, cv::Rect(112, 67, 3, 3), brightFg, cv::FILLED); // 底部下伸部
+    cv::rectangle(reflowImg, cv::Rect(92, 52, 2, 10), brightFg, cv::FILLED); // 左侧隔 2px 字缝偏旁
+    cv::rectangle(reflowImg, cv::Rect(128, 47, 4, 17), brightFg, cv::FILLED); // 右侧隔 4px 全角留白高标点
+
+    TextReplaceRenderSpec rfSpec;
+    rfSpec.sourceRect = pillWordRoi;
+    rfSpec.originalTextUtf8 = "OK";
+    rfSpec.newTextUtf8 = "LONG_REFLOW_WORD";
+    rfSpec.bgMode = TextReplaceBgMode::Auto;
+    rfSpec.reflowRightTail = true;
+    rfSpec.rightTailRect = tightOcrTailRoi;
+
+    cv::Mat rfCanvas = reflowImg.clone();
+    const cv::Rect rfRoi = TextReplaceEngine::renderReplacement(rfCanvas, rfSpec);
+    ASSERT_GT(rfRoi.width, 0);
+
+    // 4a) 顶/底/右高标点顶边原位边缘点必须全部清平归零（贴合页面深灰底而非浅灰胶囊底，0 残点！）
+    auto expectClearedToPageBg = [&](const cv::Rect& r) {
+        for (int y = r.y; y < r.y + r.height; ++y) {
+            for (int x = r.x; x < r.x + r.width; ++x) {
+                const cv::Vec3b p = rfCanvas.at<cv::Vec3b>(y, x);
+                const int diffFromPageBg = std::abs(static_cast<int>(p[0]) - 51) +
+                                           std::abs(static_cast<int>(p[1]) - 43) +
+                                           std::abs(static_cast<int>(p[2]) - 40);
+                EXPECT_LE(diffFromPageBg, 18);
+            }
+        }
+    };
+    expectClearedToPageBg(cv::Rect(106, 46, 3, 2)); // 原顶部悬空点已清净
+    expectClearedToPageBg(cv::Rect(112, 67, 3, 3)); // 原底部下伸部已清净
+    expectClearedToPageBg(cv::Rect(128, 47, 4, 1)); // 原右侧 4px 全角留白高标点顶边已连根搬走
+
+    // 4b) 平移后的目标区域顶部 (y=46..47)、底部 (y=67..69) 与右端高标点全部完整保留（四向零削切！）
+    int movedTopDotBrightPx = 0;
+    int movedBotDescBrightPx = 0;
+    int movedRightPunctBrightPx = 0;
+    const int movedStartX = rfRoi.x + rfRoi.width;
+    for (int x = movedStartX; x < rfCanvas.cols - 4; ++x) {
+        for (int y = 46; y <= 47; ++y) {
+            const cv::Vec3b p = rfCanvas.at<cv::Vec3b>(y, x);
+            if (p[0] > 180 && p[1] > 180 && p[2] > 180) ++movedTopDotBrightPx;
+        }
+        for (int y = 67; y <= 69; ++y) {
+            const cv::Vec3b p = rfCanvas.at<cv::Vec3b>(y, x);
+            if (p[0] > 180 && p[1] > 180 && p[2] > 180) ++movedBotDescBrightPx;
+        }
+        if (x >= movedStartX + 32) {
+            for (int y = 47; y <= 63; ++y) {
+                const cv::Vec3b p = rfCanvas.at<cv::Vec3b>(y, x);
+                if (p[0] > 180 && p[1] > 180 && p[2] > 180) ++movedRightPunctBrightPx;
+            }
+        }
+    }
+    EXPECT_GE(movedTopDotBrightPx, 8);
+    EXPECT_GE(movedBotDescBrightPx, 6);
+    EXPECT_GE(movedRightPunctBrightPx, 40);
 }

@@ -643,7 +643,22 @@
     "capCharLevel": "Character-Level Selection",
     "capExcelTable": "Excel Table Reconstruction",
     "capDarkCode": "Dark-Mode Code Enhancement",
-    "capQrCode": "Instant QR Detection"
+    "capQrCode": "Instant QR Detection",
+    "capInPlaceTextReplace": "In-Place Seamless Text Edit",
+    "inpaintPackTitle": "AI In-Place Text Background Inpaint Engine (MI-GAN 512 · Optional)",
+    "inpaintPackDesc": "Solid, gradient, and table screenshots are edited seamlessly by the built-in engine in milliseconds. Optionally download this 26.8 MB offline AI model to restore complex photo and poster textures with DirectML GPU acceleration",
+    "inpaintStatusInstalled": "AI Model Ready",
+    "inpaintStatusInstalledGpu": "AI Model Ready (GPU)",
+    "inpaintStatusNotInstalled": "Not Installed (Optional · 26.8 MB)",
+    "inpaintStatusDownloading": "Downloading {{percent}}%",
+    "inpaintStatusError": "Download Failed",
+    "inpaintDeleteModel": "Remove Model",
+    "inpaintDownloadStarted": "Started downloading MI-GAN 512 offline inpaint model",
+    "inpaintDownloadCompleted": "AI inpaint model installed and ready for complex backgrounds",
+    "inpaintDownloadCancelled": "Cancelled AI inpaint model download",
+    "inpaintDownloadFailed": "AI inpaint model download failed; built-in fast inpainting remains active",
+    "inpaintDeleteSuccess": "Local AI inpaint model removed and disk space freed",
+    "inpaintDeleteFailed": "Failed to remove AI inpaint model"
   },
   "gesture": {
     "title": "Mouse Gesture Settings",

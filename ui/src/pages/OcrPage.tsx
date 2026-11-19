@@ -14,7 +14,7 @@ import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusB
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { FileText, Cpu, Download, X, Sparkles, Table2, QrCode, SunMoon, Type, Loader2 } from 'lucide-react';
+import { FileText, Cpu, Download, X, Sparkles, Table2, QrCode, SunMoon, Type, Loader2, Wand2, Trash2, PencilLine } from 'lucide-react';
 
 interface OcrSettings {
   engine: string;
@@ -35,6 +35,19 @@ interface DeepOcrModelStatus {
   currentFile: string;
   modelDir: string;
   error: string;
+}
+
+interface AiInpaintModelStatus {
+  installed: boolean;
+  downloading: boolean;
+  progressPercent: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  state: 'installed' | 'downloading' | 'not_installed' | 'error' | string;
+  modelDir: string;
+  modelFile: string;
+  error: string;
+  usingGpu: boolean;
 }
 
 interface OcrStatusPayload {
@@ -65,6 +78,19 @@ const DEFAULT_MODEL_STATUS: DeepOcrModelStatus = {
   error: '',
 };
 
+const DEFAULT_INPAINT_STATUS: AiInpaintModelStatus = {
+  installed: false,
+  downloading: false,
+  progressPercent: 0,
+  downloadedBytes: 0,
+  totalBytes: 28079181,
+  state: 'not_installed',
+  modelDir: '',
+  modelFile: 'migan_pipeline_v2.onnx',
+  error: '',
+  usingGpu: false,
+};
+
 export const OcrPage: FC = () => {
   const [settings, setSettings] = useState<OcrSettings>({
     engine: 'auto',
@@ -78,9 +104,12 @@ export const OcrPage: FC = () => {
   const [available, setAvailable] = useState(false);
   const [modelStatus, setModelStatus] = useState<DeepOcrModelStatus>(DEFAULT_MODEL_STATUS);
   const [actionBusy, setActionBusy] = useState(false);
+  const [inpaintStatus, setInpaintStatus] = useState<AiInpaintModelStatus>(DEFAULT_INPAINT_STATUS);
+  const [inpaintBusy, setInpaintBusy] = useState(false);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [shortcut, setShortcut] = useState('Ctrl+Shift+O');
   const wasDownloadingRef = useRef(false);
+  const wasInpaintDownloadingRef = useRef(false);
   const { t } = useTranslation();
 
   const getHotkey = (name: string) => hotkeys.find(h => h.name === name);
@@ -103,7 +132,8 @@ export const OcrPage: FC = () => {
       bridgeRequest<OcrStatusPayload>('ocr.getStatus'),
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
       bridgeRequest<string>('config.get', { key: '/ocr/language' }, { silent: true }).catch(() => null),
-    ]).then(([data, status, hotkeyList, cfgLang]) => {
+      bridgeRequest<AiInpaintModelStatus>('capture.getInpaintModelStatus', undefined, { silent: true }).catch(() => null),
+    ]).then(([data, status, hotkeyList, cfgLang, inpaintPayload]) => {
       const resolvedLanguage =
         (typeof data?.language === 'string' && data.language.trim() !== '' ? data.language : null) ??
         (typeof cfgLang === 'string' && cfgLang.trim() !== '' ? cfgLang : 'auto');
@@ -122,6 +152,10 @@ export const OcrPage: FC = () => {
         setModelStatus(status.modelStatus);
         wasDownloadingRef.current = Boolean(status.modelStatus.downloading);
       }
+      if (inpaintPayload) {
+        setInpaintStatus(inpaintPayload);
+        wasInpaintDownloadingRef.current = Boolean(inpaintPayload.downloading);
+      }
       const list = Array.isArray(hotkeyList) ? hotkeyList : [];
       setHotkeys(list);
       setShortcut(list.find(item => item.name === 'OCR')?.shortcut ?? 'Ctrl+Shift+O');
@@ -131,6 +165,30 @@ export const OcrPage: FC = () => {
     }).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!inpaintStatus.downloading) {
+      return undefined;
+    }
+    wasInpaintDownloadingRef.current = true;
+    const timer = window.setInterval(() => {
+      bridgeRequest<AiInpaintModelStatus>('capture.getInpaintModelStatus', undefined, { silent: true })
+        .then((next) => {
+          if (!next) return;
+          setInpaintStatus(next);
+          if (!next.downloading && wasInpaintDownloadingRef.current) {
+            wasInpaintDownloadingRef.current = false;
+            if (next.installed) {
+              toast.success(t('ocr.inpaintDownloadCompleted'));
+            } else if (next.state === 'error' && next.error) {
+              toast.error(t('ocr.inpaintDownloadFailed'), { description: next.error });
+            }
+          }
+        })
+        .catch(() => { /* ignore transient poll error */ });
+    }, 380);
+    return () => window.clearInterval(timer);
+  }, [inpaintStatus.downloading, t]);
 
   useEffect(() => {
     if (!modelStatus.downloading) {
@@ -222,6 +280,62 @@ export const OcrPage: FC = () => {
     }
   };
 
+  const handleStartInpaintDownload = async () => {
+    if (inpaintBusy || inpaintStatus.downloading) return;
+    setInpaintBusy(true);
+    try {
+      const res = await bridgeRequest<{ success: boolean; modelStatus?: AiInpaintModelStatus }>('capture.downloadInpaintModel');
+      if (res?.modelStatus) {
+        setInpaintStatus(res.modelStatus);
+        wasInpaintDownloadingRef.current = Boolean(res.modelStatus.downloading);
+      }
+      if (res?.success) {
+        toast.info(t('ocr.inpaintDownloadStarted'));
+      }
+    } catch (error) {
+      toast.error(t('ocr.inpaintDownloadFailed'), { description: String(error) });
+    } finally {
+      setInpaintBusy(false);
+    }
+  };
+
+  const handleCancelInpaintDownload = async () => {
+    if (inpaintBusy) return;
+    setInpaintBusy(true);
+    try {
+      wasInpaintDownloadingRef.current = false;
+      const res = await bridgeRequest<{ success: boolean; modelStatus?: AiInpaintModelStatus }>('capture.cancelInpaintModelDownload');
+      if (res?.modelStatus) {
+        setInpaintStatus(res.modelStatus);
+      }
+      toast.info(t('ocr.inpaintDownloadCancelled'));
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setInpaintBusy(false);
+    }
+  };
+
+  const handleDeleteInpaintModel = async () => {
+    if (inpaintBusy || inpaintStatus.downloading) return;
+    setInpaintBusy(true);
+    try {
+      const res = await bridgeRequest<{ success: boolean; modelStatus?: AiInpaintModelStatus }>('capture.deleteInpaintModel');
+      if (res?.modelStatus) {
+        setInpaintStatus(res.modelStatus);
+      }
+      if (res?.success) {
+        toast.success(t('ocr.inpaintDeleteSuccess'));
+      } else {
+        toast.error(t('ocr.inpaintDeleteFailed'));
+      }
+    } catch (error) {
+      toast.error(t('ocr.inpaintDeleteFailed'), { description: String(error) });
+    } finally {
+      setInpaintBusy(false);
+    }
+  };
+
   const rebindShortcut = async (value: string) => {
     try {
       const result = await bridgeRequest<OperationResult>('hotkey.rebind', { name: 'OCR', hotkey: value });
@@ -256,6 +370,29 @@ export const OcrPage: FC = () => {
       return <Badge text={t('ocr.deepStatusError')} variant="danger" />;
     }
     return <Badge text={t('ocr.deepStatusNotInstalled')} variant="muted" />;
+  };
+
+  const renderInpaintStatusBadge = () => {
+    if (inpaintStatus.downloading) {
+      return (
+        <Badge
+          text={t('ocr.inpaintStatusDownloading', { percent: inpaintStatus.progressPercent })}
+          variant="primary"
+        />
+      );
+    }
+    if (inpaintStatus.installed) {
+      return (
+        <Badge
+          text={inpaintStatus.usingGpu ? t('ocr.inpaintStatusInstalledGpu') : t('ocr.inpaintStatusInstalled')}
+          variant="success"
+        />
+      );
+    }
+    if (inpaintStatus.state === 'error') {
+      return <Badge text={t('ocr.inpaintStatusError')} variant="danger" />;
+    }
+    return <Badge text={t('ocr.inpaintStatusNotInstalled')} variant="muted" />;
   };
 
   return (
@@ -400,6 +537,114 @@ export const OcrPage: FC = () => {
             </div>
           </SettingRow>
 
+          <SettingRow
+            layout="vertical"
+            label={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
+                <Wand2 size={16} strokeWidth={2.2} aria-hidden="true" style={{ color: 'var(--primary)' }} />
+                <span>{t('ocr.inpaintPackTitle')}</span>
+                {renderInpaintStatusBadge()}
+              </div>
+            }
+            description={t('ocr.inpaintPackDesc')}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-sm)', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--spacing-md)', flexWrap: 'wrap' }}>
+                {inpaintStatus.modelDir && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-xs)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', color: 'var(--text-secondary)', lineHeight: 'var(--leading-normal)' }}>
+                    <span>{t('ocr.modelStorageDir')}</span>
+                    <CodeBadge>{inpaintStatus.modelDir}</CodeBadge>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+                  {inpaintStatus.downloading ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={inpaintBusy}
+                      onClick={() => void handleCancelInpaintDownload()}
+                    >
+                      <X size={15} strokeWidth={2.2} aria-hidden="true" />
+                      <span>{t('ocr.cancelDownload')}</span>
+                    </Button>
+                  ) : inpaintStatus.installed ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={inpaintBusy}
+                      onClick={() => void handleDeleteInpaintModel()}
+                    >
+                      <Trash2 size={15} strokeWidth={2.2} aria-hidden="true" />
+                      <span>{t('ocr.inpaintDeleteModel')}</span>
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={inpaintBusy}
+                      onClick={() => void handleStartInpaintDownload()}
+                    >
+                      {inpaintBusy ? (
+                        <Loader2 size={15} strokeWidth={2.2} aria-hidden="true" style={{ animation: 'spin 1s linear infinite' }} />
+                      ) : (
+                        <Download size={15} strokeWidth={2.2} aria-hidden="true" />
+                      )}
+                      <span>{inpaintStatus.state === 'error' ? t('ocr.retryDownload') : t('ocr.downloadInstall')}</span>
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {inpaintStatus.downloading && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-xs)', width: '100%' }}>
+                  <div
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={inpaintStatus.progressPercent}
+                    style={{
+                      width: '100%',
+                      height: '8px',
+                      borderRadius: 'var(--radius-full)',
+                      background: 'var(--bg-elevated)',
+                      border: '1px solid var(--card-border)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${Math.max(2, Math.min(100, inpaintStatus.progressPercent))}%`,
+                        height: '100%',
+                        background: 'var(--primary)',
+                        borderRadius: 'var(--radius-full)',
+                        transition: 'width var(--transition-fast)',
+                      }}
+                    />
+                  </div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      fontSize: 'var(--text-xs)',
+                      fontWeight: 'var(--font-medium)',
+                      lineHeight: 'var(--leading-normal)',
+                      color: 'var(--text-muted)',
+                      fontVariantNumeric: 'tabular-nums lining-nums',
+                    }}
+                  >
+                    <span>
+                      {inpaintStatus.modelFile
+                        ? t('ocr.downloadingFile', { file: inpaintStatus.modelFile })
+                        : t('ocr.inpaintStatusDownloading', { percent: inpaintStatus.progressPercent })}
+                    </span>
+                    <span>{`${inpaintStatus.progressPercent}%`}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </SettingRow>
+
           <SettingRow label={t('ocr.language')} description={t('ocr.languageDesc')}>
             <Select
               id="ocr-language"
@@ -469,6 +714,10 @@ export const OcrPage: FC = () => {
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
                 <QrCode size={14} strokeWidth={2.2} aria-hidden="true" />
                 <span>{t('ocr.capQrCode')}</span>
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
+                <PencilLine size={14} strokeWidth={2.2} aria-hidden="true" />
+                <span>{t('ocr.capInPlaceTextReplace')}</span>
               </span>
             </div>
           </SettingRow>

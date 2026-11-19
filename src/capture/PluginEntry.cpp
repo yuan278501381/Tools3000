@@ -20,6 +20,7 @@
 #include "capture/PinGroupBarOverlay.h"
 #include "capture/CaptureOverlay.h"
 #include "capture/CaptureHistory.h"
+#include "capture/TextReplaceEngine.h"
 #include "capture/ShortcutHintOverlay.h"
 #include "capture/ScrollCapture.h"
 #include "capture/ScrollCaptureOverlay.h"
@@ -1557,6 +1558,50 @@ public:
             };
         });
 
+        auto serializeInpaintStatus = []() -> nlohmann::json {
+            const auto st = tools3000::capture::AiInpaintEngine::instance().getModelStatus();
+            return {
+                {"installed", st.installed},
+                {"downloading", st.downloading},
+                {"progressPercent", st.progressPercent},
+                {"downloadedBytes", st.downloadedBytes},
+                {"totalBytes", st.totalBytes},
+                {"state", st.state},
+                {"modelDir", st.modelDir},
+                {"modelFile", st.modelFile},
+                {"error", st.error},
+                {"usingGpu", st.usingGpu}
+            };
+        };
+
+        mb.registerHandler("capture.getInpaintModelStatus", [serializeInpaintStatus](const nlohmann::json&) -> nlohmann::json {
+            return serializeInpaintStatus();
+        });
+
+        mb.registerHandler("capture.downloadInpaintModel", [serializeInpaintStatus](const nlohmann::json&) -> nlohmann::json {
+            const bool started = tools3000::capture::AiInpaintEngine::instance().startModelDownload();
+            return {
+                {"success", started},
+                {"modelStatus", serializeInpaintStatus()}
+            };
+        });
+
+        mb.registerHandler("capture.cancelInpaintModelDownload", [serializeInpaintStatus](const nlohmann::json&) -> nlohmann::json {
+            tools3000::capture::AiInpaintEngine::instance().cancelModelDownload();
+            return {
+                {"success", true},
+                {"modelStatus", serializeInpaintStatus()}
+            };
+        });
+
+        mb.registerHandler("capture.deleteInpaintModel", [serializeInpaintStatus](const nlohmann::json&) -> nlohmann::json {
+            const bool deleted = tools3000::capture::AiInpaintEngine::instance().deleteModel();
+            return {
+                {"success", deleted},
+                {"modelStatus", serializeInpaintStatus()}
+            };
+        });
+
         mb.registerHandler("ocr.recognizeImageFile", [](const nlohmann::json& params) -> nlohmann::json {
             std::string path = params.value("path", "");
             if (path.empty()) return {{"success", false}, {"error", "path is required"}};
@@ -1944,6 +1989,19 @@ public:
                 if (params.value("redoMarkup", false)) {
                     pin->redoPinMarkup();
                 }
+                if (params.value("startTextReplace", false)) {
+                    pin->startInPlaceTextReplace();
+                }
+                if (params.contains("replaceTypeText") && params["replaceTypeText"].is_string()) {
+                    const std::wstring typed = tools3000::core::WinUtils::utf8ToWstring(
+                        params["replaceTypeText"].get<std::string>());
+                    for (wchar_t ch : typed) {
+                        pin->handleTextReplaceChar(ch);
+                    }
+                }
+                if (params.contains("commitTextReplace") && params["commitTextReplace"].is_boolean()) {
+                    pin->commitInPlaceTextReplace(params["commitTextReplace"].get<bool>());
+                }
                 if (params.value("forceRender", false)) {
                     pin->renderForTest();
                 }
@@ -1998,9 +2056,23 @@ public:
                 const auto hlRect = pin->highlightFloatingButtonRect();
                 const auto wavyRect = pin->wavyFloatingButtonRect();
                 const auto ulRect = pin->underlineFloatingButtonRect();
+                const auto trRect = pin->textReplaceFloatingButtonRect();
+                const auto trDragRect = pin->textReplaceDragHandleRect();
                 const auto undoFloatingRect = pin->undoFloatingButtonRect();
+                std::string latestTextReplaceText;
+                double latestTextReplaceOffsetX = 0.0;
+                double latestTextReplaceOffsetY = 0.0;
+                for (auto it = pin->markupElements().rbegin(); it != pin->markupElements().rend(); ++it) {
+                    if (it->tool == tools3000::capture::MarkupTool::TextReplace) {
+                        latestTextReplaceText = it->text;
+                        latestTextReplaceOffsetX = it->replaceOffsetX;
+                        latestTextReplaceOffsetY = it->replaceOffsetY;
+                        break;
+                    }
+                }
                 return {
                     {"success", true},
+                    {"pinHwnd", static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(pin->hwnd()))},
                     {"textSelectionMode", pin->isTextSelectionMode()},
                     {"selectedBlockCount", static_cast<int>(pin->selectedTextBlockCount())},
                     {"selectedText", pin->selectedTextUtf8()},
@@ -2012,6 +2084,14 @@ public:
                     {"highlightBtnVisible", hlRect.right > hlRect.left},
                     {"wavyBtnVisible", wavyRect.right > wavyRect.left},
                     {"underlineBtnVisible", ulRect.right > ulRect.left},
+                    {"textReplaceBtnVisible", trRect.right > trRect.left},
+                    {"editingTextReplace", pin->isEditingTextReplace()},
+                    {"latestTextReplaceText", latestTextReplaceText},
+                    {"latestTextReplaceOffsetX", latestTextReplaceOffsetX},
+                    {"latestTextReplaceOffsetY", latestTextReplaceOffsetY},
+                    {"trDragHandleVisible", trDragRect.right > trDragRect.left},
+                    {"trDragHandleCenterX", static_cast<int>(std::lround((trDragRect.left + trDragRect.right) * 0.5f))},
+                    {"trDragHandleCenterY", static_cast<int>(std::lround((trDragRect.top + trDragRect.bottom) * 0.5f))},
                     {"undoBtnVisible", undoFloatingRect.right > undoFloatingRect.left},
                     {"canUndoPinMarkup", pin->canUndoPinMarkup()},
                     {"canRedoPinMarkup", pin->canRedoPinMarkup()},
@@ -2403,6 +2483,8 @@ public:
         ShortcutHintOverlay::instance().shutdown();
         tools3000::ocr::OcrResultWindow::instance().cleanup();
         tools3000::ocr::OcrEngine::instance().shutdown();
+        AiInpaintEngine::instance().releaseResources();
+        TextReplaceEngine::clearPatchCache();
         shutdownMarkupTextRenderer();
     }
 

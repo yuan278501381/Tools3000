@@ -6,6 +6,19 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-19] 方案 B：截图原位无痕改字 + 可选按需下载轻量 AI 纹理无痕修复引擎（MI-GAN 512 ONNX）
+- **核心架构设计与全链路闭环**：
+  1. **三层自适应背景无痕擦除 + Render-and-Match 物理闭环克隆引擎 (`TextReplaceEngine.{h,cpp}`)**：
+     - *Render-and-Match 五维物理闭环 (`extractStyle` + `measureRenderedGlyphInk`)*：① 沿目标文字框外围 `2~6px` 采样纯净背景环带，经鲁棒中位数离群值过滤后做 `3×3` 最小二乘二维线性渐变平面拟合；② 前景主体字色取 `diff >= 56%~60% maxDiff` 核心笔画像素中位数，彻底避免深底抓到极端高光点导致新字发白刺眼；③ 线程局部复用 DirectWrite 工厂实测原文字 `20px` 光栅化墨水宽与高，采用**宽（68%）+ 高（32%）双约束反解 `fontSizePx`**（精度 `±0.25px`，根治旧版单纯按高度估算虚胖 20% 顽疾）；④ 通过自定义 `IDWriteRenderingParams` 调节 `gamma / enhancedContrast` 弥补 `Microsoft YaHei UI` 缺少 `500/600` 实体字重的系统暗坑，并按 `400/500/600/700` 四档实测总墨水能量闭环匹配字重；⑤ 渲染与编辑叠加共享 `resolveTextPlacement`，对中文/混排按**真实物理墨水垂直中心 + 左墨水边距对齐**（根治微软雅黑汉字比拉丁基线低 `~2.5px` 导致文字向上飘移）。
+     - *三层零膨胀背景还原与双层 LRU 缓存*：① 常规纯色/渐变/表格截图由二维线性渐变平面插值 + `2px` 羽化 `< 1ms` 还原（100% 保护表格边框线）；② 复杂底纹在未装 AI 模型时自动降级 OpenCV `INPAINT_TELEA` 零报错；③ 安装可选 AI 模型后走 WinML DirectML GPU 推理 MI-GAN 512 补全真实底纹；12-Slot 擦除底图缓存 + 48-Slot 探针缓存确保 60FPS 零延迟。
+  2. **可选按需下载 MI-GAN 512 ONNX 引擎 (`AiInpaintEngine`, `PluginEntry.cpp`, `OcrPage.tsx`)**：
+     - 保持基础安装包 `0 KB` 膨胀；支持在「设置 -> 文本识别」按需一键下载 `migan_pipeline_v2.onnx`（`26.8 MB`，双源容灾 `hf-mirror.com` -> `huggingface.co`）至 `%LOCALAPPDATA%\Tools3000\models\inpaint\`，支持实时进度条、取消与一键移除释放空间；WinML DirectML GPU 推理严格遵循每次新建 `TensorUInt8Bit` 规避 GPU 脏位暗坑（张量契约：`image` `[1,3,H,W]` RGB、`mask` `[1,1,H,W]` 其中 `255=保留原图, 0=修复`）。
+  3. **贴图原位零门槛交互、GPU 顶层 60FPS 呼吸光标与鼠标点选拖选 (`MarkupEngine.{h,cpp}`, `PinWindow.{h,cpp}`, `CaptureVectorIcons.{h,cpp}`)**：
+     - *根治编辑态光标消失暗坑*：`MarkupEngine::importElements()` 会将 `copy->isEditing` 强行置为 `false`；现架构升级为 `cv::Mat` 仅烘焙 100% 纯净无痕新文字（零光标污染），编辑态视觉（柔光聚焦外环 + 主题蓝圆角编辑框 + 半透明选中高亮 + 清晰锐利 `1.75px` 呼吸闪烁光标）全部在 `PinWindow::render()` 的 Direct2D GPU 顶层实时绘制，`WM_TIMER(3)` 仅调 `render()` 实现 0 CPU 重合成、60FPS 零开销呼吸光标；
+     - *原生级原位编辑体验与去 A 纯图形高定图标*：① 彻底移除 `TextMarkupHighlight`、`TextMarkupWavy`、`TextMarkupUnderline`、`TextReplaceEdit` 四枚图标上的冗余字母 `A`，放大为居中大气的纯图形矢量原语（斜切马克笔+荧光涂抹带、大振幅柔影手绘波浪、微弧柔影重点直线、斜角编辑钢笔+基线），在贴图悬浮舱与截图二级栏全局同步生效；② 位置拖拽抓手采用**编辑框正下方居中横向 6 点微晶药丸拖柄**（浮岛被迫翻下时自动智能切到正上方居中，彻底解放左右同行视野便于像素级对齐左右字距与基线；同步支持四边边框带及 `Alt+左键` 三通道自由拖动、`0.5px` 精度、`±0.8px` 原基线轻柔磁吸配左右青翠对齐参考丝线、`Shift` 正交轴锁定、`Alt` 绕过磁吸，与框内 `IDC_IBEAM` 单击定位光标/局部拖选 100% 零冲突），IME 候选框实时跟随光标，支持双击已改文字二次编辑与 `Ctrl+Z`/`Ctrl+Y` 无损还原。
+  4. **紧凑多行深底抗鬼影 + 邻字零误伤护栏 + 同行右侧自动顺延让位 + 1:1 刚体平移编辑框 (`TextReplaceEngine.{h,cpp}`, `MarkupEngine.{h,cpp}`, `PinWindow.{h,cpp}`)**：
+     - *实拍图三大像素级真凶根治*：① 旧版 `fitRobustLinearBgPlane` 用未剔除离群值的全量外围环带采样算残差标准差，紧凑多行深灰背景因上下行仅隔 `3px` 的亮白字被拉高方差误判为复杂纹理送进 `INPAINT_TELEA` 留下脏糊灰白鬼影——现改为仅基于过滤离群文字后的纯净背景内点 `inliers` 评估复杂度（`inlierRatio >= 0.64 && inlierStd <= 8.5` 锁定二维渐变平面，兼顾 50/50 棋盘格与复杂底纹准确识别），纯深灰/纯白紧凑多行 100% 零鬼影；② 旧版 `eraseRoi` 外扩 `2px` + `5×5` 膨胀会误咬紧邻左侧字符（如 `+` 号被削掉半边）——现纯色/渐变模式收紧至 `1px` 边界，并在外侧过渡边对高对比度邻字/表格线（`diff >= 30`）强制 `alpha = 0` 物理零损伤保护；③ `renderRoi` 与 `computeEditOverlayMetrics` 彻底解绑旧擦除位置 `origRoi`，拖到哪编辑框/下方横向 6 点抓手/光标/浮岛就 1:1 刚体平移跟到哪，拖拽偏移时在原擦除区以极淡虚线幽灵轮廓提示擦除源；④ 进入改字自动探测同行右侧原图剩余文字 `replaceRightTailRect`（含同块未选右半段与同行右侧块），纯色/渐变底默认开启 **同行右侧无缝顺延 (`[顺延]/[原位]` 一键切换)**，并对顺延尾巴独立拟合局部背景平面（防代码胶囊底色污染页面主底）且执行 **先左右、后顶底的四向像素级安全走廊闭环扩张**（左端严守不越旧字右缘并容忍 `1~2px` 偏旁/符号字内缝；右端吸收连续笔画并专项捕捉 `3~5px` 全角留白后的孤立行尾标点如 `。/：/）`；再对完整水平跨度执行顶/底双对称安全走廊扩张含 `1~2px` 悬空点隙吸纳与行间空白刹车，扩展带前景透写绝不碰相邻行），彻底消除顶/底/左/右任意方向削切与原位残留小点。
+
 ### [2026-11-19] 实机精雕四项世界级升级：人手马克笔自然手绘波浪/直线、F3 贴图桌面内容指纹防套娃、高定微晶分段工坊 UI 与 Windows 虚拟桌面跨桌面幽灵窗口隔离
 - **用户实机深度反馈与四项架构闭环**：
   1. **大师级斜角书法丝带波浪线与微弧手绘重点直线 (`TextAnnotationHelper.h`, `MarkupEngine.cpp`, `CaptureRenderer.cpp`)**：
@@ -21,7 +34,7 @@
      - *标注后 `Ctrl+C` 与工具栏复制 100% 必达*：① 修复贴图标注落笔进入清透预览态（`m_ocrMarkupPreviewClean == true`）后 `m_selectedBlockIndices` 仍非空导致 `Ctrl+C` 静默把选中文字当纯文本复制进剪贴板的体验陷阱——现清透批注态按 `Ctrl+C` 与悬浮舱首钮（自动切显 `复制图`）均 100% 直接复制带全部最新标注的高清贴图；② 右上角工具栏按钮防手抖拖拽取消阈值由 `4 DIP` 放宽至 `10 DIP`、抬手增加 `8 DIP` 扩展容差且不受 `m_hoverAlpha` 淡出竞态影响；③ `copyPinImageWithFeedback()` 传入真实窗口句柄并校验返回值、`ClipboardUtils` 增加 `nullptr` 兜底重试并诚实反馈 Toast。
   2. **F3 贴图反复叠罗汉贴出同一张图根治 (`PinPasteCoordinator.{h,cpp}`, `PinWindow.{h,cpp}`)**：
      - *双重暗坑*：① `stepNext` 对 `totalCandidates` 无脑取模循环，当历史仅有 1 张或全部已在桌面时连续按 F3 疯狂套娃克隆 7+ 张一模一样的贴图；② `resolveCandidates` 仅凭 `cols/rows` 判重，误吞剪贴板中同尺寸不同像素的新图（或批注后复制的图），且历史满容后未追踪 `headId`；
-     - *终局标准*：引入 64-bit 网格采样内容指纹 `computeContentFingerprint`（精准比对像素且抹平 BGR/BGRA 差异）；按 F3 时采集当前虚拟桌面活跃贴图指纹，智能跳过已在桌面显示的条目，若全部历史均已在当前桌面显示则禁止套娃、直接展开并置顶聚焦已有贴图并弹出双语轻提示（`Shift+F3` 保留显式强制复制副本入口）。
+     - *终局标准*：引入 **全像素 64-bit FNV-1a 精确内容指纹** `computeContentFingerprint`（遍历全图 RGB 3 通道、抹平 BGR/BGRA 差异，彻底根治旧版 `16×16` 稀疏网格采样漏掉局部 `2px` 波浪线/改字导致误吞剪贴板标注新图退回旧原图）；并在 `stepNext` 建立 **新鲜剪贴板显式复制最高优先契约**（当 `currentSeq != m_lastClipboardSeq` 且 `candidates[0].isFromClipboard` 时，即用户刚对贴图加波浪线后按 `Ctrl+C`/点复制再按 `F3`，100% 优先贴出与微信一致的最新带标注剪贴板图，绝不跳过它翻出旧原图；不改剪贴板继续连按 `F3` 时防套娃去重与 `Shift+F3` 强制副本机制照常生效）。
   3. **画波浪线/直线工具栏高级感重塑 (`PinWindow.cpp`, `CaptureRenderer.cpp`, `CaptureToolbarLayout.cpp`, `CaptureVectorIcons.cpp`)**：
      - 修复 `PinWindow.cpp` 将 `toggled` 误传给 `drawButtonPill` 的 `isDanger` 参数导致激活态变刺眼廉价红底的传参乌龙；
      - 贴图悬浮舱升级为 `30.5 DIP` 舒展单行高定微晶工坊 + 内凹微晶分段轨道槽（Recessed Segmented Control Track）+ 立体浮起激活微晶卡片（带底部当前批注色微光条）+ 带镜面高光月牙的高定珠宝色珠 + 渐隐发丝分隔线；截图二级栏同步接入分段轨道与浮起滑块，并重绘 4 枚大振幅手绘矢量图标。
