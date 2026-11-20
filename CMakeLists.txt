@@ -265,6 +265,7 @@ set(SERVICE_OBJECT_SOURCES
     src/service/SearchExpression.cpp
     src/service/FileIndexStore.cpp
     src/service/MftParser.cpp
+    src/service/MftParserQuery.cpp
     src/service/db/RunHistoryManager.cpp
     src/service/db/SearchHistoryManager.cpp
     src/service/db/DatabaseManager.cpp
