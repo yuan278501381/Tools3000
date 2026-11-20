@@ -298,8 +298,8 @@ void PinWindow::drawHoverToolbar() {
                 D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
     }
-}
-
+}
+
 bool PinWindow::createRenderResources(const cv::Mat& image) {
     HRESULT hr;
 

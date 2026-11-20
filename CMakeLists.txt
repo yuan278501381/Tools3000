@@ -187,6 +187,8 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/WatermarkRenderer.cpp
     src/capture/TextReplaceEngine.cpp
     src/capture/MarkupEngine.cpp
+    src/capture/MarkupEngineEffects.cpp
+    src/capture/MarkupEngineShapes.cpp
     src/capture/CursorOverlay.cpp
     src/capture/ScreenRecorder.cpp
     src/capture/StudioBackdropCatalog.cpp
