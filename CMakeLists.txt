@@ -364,6 +364,9 @@ set(CAPTURE_OTHER_SOURCES
     src/capture/CaptureInput.cpp
     src/capture/CaptureOverlay.cpp
     src/capture/CaptureRenderer.cpp
+    src/capture/CaptureRendererHud.cpp
+    src/capture/CaptureRendererMarkup.cpp
+    src/capture/CaptureRendererToolbar.cpp
     src/capture/PinGroupBarOverlay.cpp
     src/capture/PinWindow.cpp
     src/capture/PinWindowInput.cpp
