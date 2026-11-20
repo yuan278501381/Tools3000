@@ -201,6 +201,283 @@ cv::Mat DeepOcrEngine::enhanceLowContrastForDetection(const cv::Mat& bgr) {
     return enhancedBgr;
 }
 
+cv::Mat DeepOcrEngine::suppressRedStampForOcr(const cv::Mat& bgr, bool* outSuppressed) {
+    if (outSuppressed) *outSuppressed = false;
+    if (bgr.empty() || bgr.cols < 48 || bgr.rows < 48 || bgr.type() != CV_8UC3) {
+        return bgr;
+    }
+
+    // 1. 快采样前提：必须以浅色纸面/文档为主，且存在一定比例的高饱和纯红像素，否则 O(1) 零开销直通
+    constexpr int kSampleStep = 4;
+    uint32_t sampled = 0;
+    uint32_t brightCount = 0;
+    uint32_t redCandidateCount = 0;
+    uint32_t darkInkCount = 0;
+    for (int y = 0; y < bgr.rows; y += kSampleStep) {
+        const auto* row = bgr.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < bgr.cols; x += kSampleStep) {
+            const int b = row[x][0];
+            const int g = row[x][1];
+            const int r = row[x][2];
+            const int lum = (b * 29 + g * 150 + r * 77) >> 8;
+            const int chroma = (std::max)({r, g, b}) - (std::min)({r, g, b});
+            ++sampled;
+            if (lum >= 160) ++brightCount;
+            if (r >= 105 && (r - g) >= 52 && (r - b) >= 52 && chroma >= 65) ++redCandidateCount;
+            if (lum < 120 && chroma < 42) ++darkInkCount;
+        }
+    }
+    if (sampled < 64) return bgr;
+    const float brightRatio = static_cast<float>(brightCount) / static_cast<float>(sampled);
+    const float redRatio = static_cast<float>(redCandidateCount) / static_cast<float>(sampled);
+    if (brightRatio < 0.35f || redCandidateCount < 8 || redRatio > 0.35f || darkInkCount < 4) {
+        return bgr;
+    }
+
+    // 2. 精确构造高饱和红章像素掩码与低饱和暗文字墨水掩码
+    cv::Mat redMask(bgr.rows, bgr.cols, CV_8UC1, cv::Scalar(0));
+    cv::Mat darkInkMask(bgr.rows, bgr.cols, CV_8UC1, cv::Scalar(0));
+    for (int y = 0; y < bgr.rows; ++y) {
+        const auto* row = bgr.ptr<cv::Vec3b>(y);
+        auto* rOut = redMask.ptr<uint8_t>(y);
+        auto* dOut = darkInkMask.ptr<uint8_t>(y);
+        for (int x = 0; x < bgr.cols; ++x) {
+            const int b = row[x][0];
+            const int g = row[x][1];
+            const int r = row[x][2];
+            const int mx = (std::max)({r, g, b});
+            const int mn = (std::min)({r, g, b});
+            const int chroma = mx - mn;
+            const int lum = (b * 29 + g * 150 + r * 77) >> 8;
+
+            // 高饱和纯红（排除了低饱和暖肤色、红底深褐墨水与橙黄色）
+            const bool isPureRed =
+                (r >= 105) &&
+                ((r - g) >= 48) &&
+                ((r - b) >= 48) &&
+                (chroma * 255 >= mx * 92) &&
+                (std::abs(g - b) <= (std::max)(42, (r - g) / 2 + 16));
+            if (isPureRed) {
+                rOut[x] = 255;
+            }
+            // 被压覆的纯黑/深灰正文笔画（三通道均暗且低饱和）
+            if (lum < 120 && chroma < 42) {
+                dOut[x] = 255;
+            }
+        }
+    }
+
+    // 3. 连通域验证：仅滤除「与暗文字墨水产生真实交叉压覆」的红章区域，100% 保护独立的红色警示文字/标题！
+    cv::Mat closedRed;
+    cv::morphologyEx(redMask, closedRed, cv::MORPH_CLOSE,
+                     cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5)));
+    cv::Mat dilatedInk;
+    cv::dilate(darkInkMask, dilatedInk,
+               cv::getStructuringElement(cv::MORPH_RECT, cv::Size(7, 7)));
+
+    cv::Mat labels, stats, centroids;
+    const int numLabels = cv::connectedComponentsWithStats(closedRed, labels, stats, centroids, 8, CV_32S);
+    if (numLabels <= 1) return bgr;
+
+    std::vector<uint8_t> suppressLabel(static_cast<size_t>(numLabels), 0);
+    bool anyStampLabel = false;
+    for (int lbl = 1; lbl < numLabels; ++lbl) {
+        const int area = stats.at<int>(lbl, cv::CC_STAT_AREA);
+        const int rw = stats.at<int>(lbl, cv::CC_STAT_WIDTH);
+        const int rh = stats.at<int>(lbl, cv::CC_STAT_HEIGHT);
+        if (area < 60 || (rw < 14 && rh < 14)) continue;
+
+        const int x0 = stats.at<int>(lbl, cv::CC_STAT_LEFT);
+        const int y0 = stats.at<int>(lbl, cv::CC_STAT_TOP);
+        int overlapInk = 0;
+        for (int y = y0; y < y0 + rh; ++y) {
+            const auto* lRow = labels.ptr<int>(y);
+            const auto* inkRow = dilatedInk.ptr<uint8_t>(y);
+            for (int x = x0; x < x0 + rw; ++x) {
+                if (lRow[x] == lbl && inkRow[x] != 0) {
+                    ++overlapInk;
+                }
+            }
+        }
+        // 红章与黑色正文产生交叉压覆（至少 12 像素重叠且占印章红区域 >= 1.5%），确认是印章而非独立红字
+        if (overlapInk >= 12 && overlapInk * 200 >= area * 3) {
+            suppressLabel[static_cast<size_t>(lbl)] = 1;
+            anyStampLabel = true;
+        }
+    }
+
+    if (!anyStampLabel) {
+        return bgr;
+    }
+
+    // 4. 红色通道穿透漂白：红色印章在 R 通道几乎与纸面等亮，而在 G/B 通道显著发暗；
+    //    将命中的红章像素（及其 1px 抗锯齿红边，避开底层低饱和黑字）以 R 通道亮度柔和还原为纸面中性底色。
+    cv::Mat stampRegionMask(bgr.rows, bgr.cols, CV_8UC1, cv::Scalar(0));
+    for (int y = 0; y < bgr.rows; ++y) {
+        const auto* lRow = labels.ptr<int>(y);
+        auto* outM = stampRegionMask.ptr<uint8_t>(y);
+        for (int x = 0; x < bgr.cols; ++x) {
+            const int lbl = lRow[x];
+            if (lbl > 0 && suppressLabel[static_cast<size_t>(lbl)]) {
+                outM[x] = 255;
+            }
+        }
+    }
+    cv::dilate(stampRegionMask, stampRegionMask,
+               cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)));
+
+    cv::Mat cleaned = bgr.clone();
+    for (int y = 0; y < cleaned.rows; ++y) {
+        auto* row = cleaned.ptr<cv::Vec3b>(y);
+        const auto* mRow = stampRegionMask.ptr<uint8_t>(y);
+        for (int x = 0; x < cleaned.cols; ++x) {
+            if (mRow[x] == 0) continue;
+            const int b = row[x][0];
+            const int g = row[x][1];
+            const int r = row[x][2];
+            const int chroma = (std::max)({r, g, b}) - (std::min)({r, g, b});
+            const int lum = (b * 29 + g * 150 + r * 77) >> 8;
+
+            // 严苛保护底层黑色/深灰文字笔画像素（即使在红章叠加处表现为深暗红褐，仍维持高暗度！）
+            if (r < 95 && lum < 85) continue;
+            if ((r - g) >= 22 && (r - b) >= 22 && chroma >= 26) {
+                // R 通道天然穿透红章墨水：红章覆盖白纸时 R≈225..250，覆盖黑字交叉处时 R≈30..115
+                const uint8_t v = static_cast<uint8_t>(std::clamp(r, 0, 255));
+                row[x] = cv::Vec3b(v, v, v);
+            }
+        }
+    }
+
+    if (outSuppressed) *outSuppressed = true;
+    return cleaned;
+}
+
+bool DeepOcrEngine::isShadowedDocumentPhoto(const cv::Mat& bgr) {
+    if (bgr.empty() || bgr.cols < 96 || bgr.rows < 96 || bgr.type() != CV_8UC3) {
+        return false;
+    }
+
+    constexpr int kStep = 4;
+    uint32_t sampled = 0;
+    uint32_t darkCount = 0;
+    uint32_t highSatCount = 0;
+    uint32_t flatPairs = 0;
+    uint32_t totalPairs = 0;
+
+    std::array<std::vector<uint8_t>, 16> gridLums{};
+    const int cellW = (std::max)(1, bgr.cols / 4);
+    const int cellH = (std::max)(1, bgr.rows / 4);
+
+    for (int y = 0; y < bgr.rows; y += kStep) {
+        const auto* row = bgr.ptr<cv::Vec3b>(y);
+        const int gy = (std::min)(3, y / cellH);
+        for (int x = 0; x < bgr.cols; x += kStep) {
+            const int b = row[x][0];
+            const int g = row[x][1];
+            const int r = row[x][2];
+            const int lum = (b * 29 + g * 150 + r * 77) >> 8;
+            const int chroma = (std::max)({r, g, b}) - (std::min)({r, g, b});
+            ++sampled;
+            if (lum < 45) ++darkCount;
+            if (chroma >= 55) ++highSatCount;
+            const int gx = (std::min)(3, x / cellW);
+            gridLums[static_cast<size_t>(gy * 4 + gx)].push_back(static_cast<uint8_t>(lum));
+            if (x + 1 < bgr.cols) {
+                const int nl = (static_cast<int>(row[x + 1][0]) * 29 +
+                                static_cast<int>(row[x + 1][1]) * 150 +
+                                static_cast<int>(row[x + 1][2]) * 77) >> 8;
+                ++totalPairs;
+                if (nl == lum) ++flatPairs;
+            }
+        }
+    }
+
+    if (sampled < 64 || totalPairs < 64) return false;
+    const float flatRatio = static_cast<float>(flatPairs) / static_cast<float>(totalPairs);
+    const float darkRatio = static_cast<float>(darkCount) / static_cast<float>(sampled);
+    const float highSatRatio = static_cast<float>(highSatCount) / static_cast<float>(sampled);
+
+    // 1. 原生数字截图平坦度极高 -> 立即排除
+    // 2. 含黑色边框/衣物/暗桌沿前景或高饱和彩图 -> 排除（防止把“暗桌面+白贴纸”误判为阴影纸张）
+    if (flatRatio >= 0.48f || darkRatio >= 0.06f || highSatRatio >= 0.25f) {
+        return false;
+    }
+
+    int p85Min = 255;
+    int p85Max = 0;
+    for (auto& cell : gridLums) {
+        if (cell.size() < 4) continue;
+        const size_t idx85 = (cell.size() * 85u) / 100u;
+        std::nth_element(cell.begin(), cell.begin() + static_cast<ptrdiff_t>(idx85), cell.end());
+        const int p85 = static_cast<int>(cell[idx85]);
+        p85Min = (std::min)(p85Min, p85);
+        p85Max = (std::max)(p85Max, p85);
+    }
+
+    // 真实纸张/手写本/白板阴影拍照特征：最暗格纸面仍处阴影灰段 (>=65)，最亮格为纸面白 (>=155)，且跨格光照极差 >= 36
+    return (p85Min >= 65) && (p85Max >= 155) && ((p85Max - p85Min) >= 36);
+}
+
+cv::Mat DeepOcrEngine::enhanceDocumentPhoto(const cv::Mat& bgr) {
+    if (!isShadowedDocumentPhoto(bgr)) {
+        return bgr;
+    }
+
+    // 在 1/4 缩小图上以大核形态学闭运算擦除所有文字与手写笔画，提取纯粹低频光照底面场，
+    // 再通过逐通道除法归一化抹平手影/台灯渐变暗角，柔和融合保留笔迹抗锯齿细节。
+    const int dsW = (std::max)(32, bgr.cols / 4);
+    const int dsH = (std::max)(32, bgr.rows / 4);
+    cv::Mat smallBgr;
+    cv::resize(bgr, smallBgr, cv::Size(dsW, dsH), 0.0, 0.0, cv::INTER_AREA);
+
+    const int kSize = std::clamp(((std::min)(dsW, dsH) / 12) | 1, 11, 35);
+    cv::Mat bgSmall;
+    cv::morphologyEx(smallBgr, bgSmall, cv::MORPH_CLOSE,
+                     cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kSize, kSize)));
+    cv::GaussianBlur(bgSmall, bgSmall, cv::Size(kSize, kSize), 0.0);
+
+    cv::Mat bgFull;
+    cv::resize(bgSmall, bgFull, bgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+
+    cv::Mat normalized(bgr.size(), CV_8UC3);
+    for (int y = 0; y < bgr.rows; ++y) {
+        const auto* srcRow = bgr.ptr<cv::Vec3b>(y);
+        const auto* bgRow = bgFull.ptr<cv::Vec3b>(y);
+        auto* dstRow = normalized.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < bgr.cols; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const int denom = (std::max)(36, static_cast<int>(bgRow[x][c]));
+                const int normV = (static_cast<int>(srcRow[x][c]) * 246) / denom;
+                const int clamped = std::clamp(normV, 0, 255);
+                // 0.80 归一化漂白 + 0.20 原图保真，防止极亮高光区过曝
+                dstRow[x][c] = static_cast<uint8_t>((clamped * 4 + static_cast<int>(srcRow[x][c])) / 5);
+            }
+        }
+    }
+    return normalized;
+}
+
+cv::Mat DeepOcrEngine::preprocessImageForDetection(const cv::Mat& bgr, bool* outApplyToRecognition) {
+    if (outApplyToRecognition) *outApplyToRecognition = false;
+    if (bgr.empty() || bgr.type() != CV_8UC3) return bgr;
+
+    bool stampSuppressed = false;
+    cv::Mat cur = suppressRedStampForOcr(bgr, &stampSuppressed);
+
+    if (isShadowedDocumentPhoto(cur)) {
+        cur = enhanceDocumentPhoto(cur);
+    } else if (isLowContrastScreenPhoto(cur)) {
+        cur = enhanceLowContrastForDetection(cur);
+    }
+
+    // 红章压字穿透需同步更新识别源图，确保 SVTR 直接读取无红章干扰的干净黑字；
+    // 阴影纸面漂白与拍屏摩尔纹增强专供 DBNet 提高检出召回，识别阶段由原图 + 48px 逐行动态范围拉伸保真笔画锐度。
+    if (outApplyToRecognition && stampSuppressed) {
+        *outApplyToRecognition = true;
+    }
+    return cur;
+}
+
 std::vector<DbDetectedQuad> DeepOcrEngine::postprocessDbMap(
     const cv::Mat& probMapInput,
     int origWidth,

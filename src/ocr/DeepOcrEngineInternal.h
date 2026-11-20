@@ -26,9 +26,10 @@ void cleanupDeepOcrWorkingSet();
 // 唯一定义位于 DeepOcrEngineModel.cpp
 bool readFileBytes(const std::filesystem::path& filePath,
                    std::vector<uint8_t>& outBytes,
-                   size_t maxBytes = 128ULL * 1024ULL * 1024ULL);
+                   size_t maxBytes = 192ULL * 1024ULL * 1024ULL);
 bool loadDictionaryLines(const std::filesystem::path& dictPath, std::vector<std::string>& outKeys);
 bool isDirectoryCompleteModelBundle(const std::filesystem::path& dir);
+bool isServerRecModelPresent(const std::filesystem::path& dir);
 
 // 唯一定义位于 DeepOcrEnginePostprocess.cpp
 std::array<cv::Point2f, 4> orderQuadPointsClockwise(const cv::Point2f rawPts[4]) noexcept;

@@ -261,7 +261,11 @@ DeepOcrEngine& DeepOcrEngine::instance() {
 }
 
 bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelDir) {
-    if (m_modelsLoaded && m_loadedModelDir == modelDir && !m_dictKeys.empty() &&
+    const std::string desiredTier =
+        (configuredModelTier() == "server" && isServerRecModelPresent(modelDir)) ? "server" : "mobile";
+
+    if (m_modelsLoaded && m_loadedModelDir == modelDir && m_loadedModelTier == desiredTier &&
+        !m_dictKeys.empty() &&
         ((m_useWinMl && m_winMl != nullptr) ||
          (!m_detNet.empty() && !m_recNetShort.empty() && !m_recNetLong.empty()))) {
         return true;
@@ -271,6 +275,7 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
     m_modelsLoadedAtomic.store(false, std::memory_order_release);
     m_bucketsPrecompiled = false;
     m_useWinMl = false;
+    m_loadedModelTier.clear();
     m_winMl.reset();
     m_detNet = cv::dnn::Net{};
     m_clsNet = cv::dnn::Net{};
@@ -281,7 +286,8 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
     try {
         const auto detPath = modelDir / DeepOcrConstants::kDetModelFileName;
         const auto clsPath = modelDir / DeepOcrConstants::kClsModelFileName;
-        const auto recPath = modelDir / DeepOcrConstants::kRecModelFileName;
+        const auto mobileRecPath = modelDir / DeepOcrConstants::kRecModelFileName;
+        const auto serverRecPath = modelDir / DeepOcrConstants::kRecServerModelFileName;
         const auto dictPath = modelDir / DeepOcrConstants::kKeysDictFileName;
 
         std::vector<uint8_t> detBytes, clsBytes, recBytes;
@@ -295,10 +301,25 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
             LOG_WARN("DeepOcrEngine: invalid or missing cls ONNX model");
             return false;
         }
+
+        std::string actualTier = desiredTier;
+        std::filesystem::path recPath = (desiredTier == "server") ? serverRecPath : mobileRecPath;
         if (!readFileBytes(recPath, recBytes) ||
             !isValidOnnxBuffer(recBytes.data(), recBytes.size(), 256)) {
-            LOG_WARN("DeepOcrEngine: invalid or missing rec ONNX model");
-            return false;
+            if (desiredTier == "server") {
+                LOG_WARN("DeepOcrEngine: server rec ONNX model invalid or unreadable, gracefully falling back to mobile tier");
+                actualTier = "mobile";
+                recPath = mobileRecPath;
+                recBytes.clear();
+                if (!readFileBytes(recPath, recBytes) ||
+                    !isValidOnnxBuffer(recBytes.data(), recBytes.size(), 256)) {
+                    LOG_WARN("DeepOcrEngine: invalid or missing mobile rec ONNX model");
+                    return false;
+                }
+            } else {
+                LOG_WARN("DeepOcrEngine: invalid or missing rec ONNX model");
+                return false;
+            }
         }
         if (!loadDictionaryLines(dictPath, m_dictKeys)) {
             if (!extractEmbeddedCharacterDictFromOnnx(recBytes.data(), recBytes.size(), m_dictKeys)) {
@@ -386,11 +407,13 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                 m_winMl = std::move(ctx);
                 m_useWinMl = true;
                 m_loadedModelDir = modelDir;
+                m_loadedModelTier = actualTier;
                 m_modelsLoaded = true;
                 m_modelsLoadedAtomic.store(true, std::memory_order_release);
-                LOG_INFO("DeepOcrEngine: PP-OCRv4 loaded with native WinML ONNX Runtime ({}{}, dict={} keys)",
+                LOG_INFO("DeepOcrEngine: PP-OCRv4 loaded with native WinML ONNX Runtime ({}{}, tier={}, dict={} keys)",
                          m_winMl->usingDirectMLGpu ? "DirectML GPU" : "CPU SIMD",
                          m_winMl->supportsBatchEval ? " + StaticBatchFusion" : "",
+                         m_loadedModelTier,
                          m_dictKeys.size());
                 return true;
             }
@@ -434,9 +457,10 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
         }
 
         m_loadedModelDir = modelDir;
+        m_loadedModelTier = actualTier;
         m_modelsLoaded = true;
         m_modelsLoadedAtomic.store(true, std::memory_order_release);
-        LOG_INFO("DeepOcrEngine: PP-OCRv4 ONNX models loaded (dict={} keys)", m_dictKeys.size());
+        LOG_INFO("DeepOcrEngine: PP-OCRv4 ONNX models loaded (tier={}, dict={} keys)", m_loadedModelTier, m_dictKeys.size());
         return true;
     } catch (const std::exception& e) {
         LOG_ERROR("DeepOcrEngine: exception loading PP-OCRv4 models: {}", e.what());
@@ -454,7 +478,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
     const std::filesystem::path modelDir = resolveModelDirectory(&installed);
     if (!installed) return {};
 
-    const cv::Mat bgr = ensureBgr3(image);
+    cv::Mat bgr = ensureBgr3(image);
     if (bgr.empty()) return {};
 
     std::lock_guard<std::mutex> lock(m_inferMutex);
@@ -472,7 +496,16 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
     long long recMs = 0;
     size_t detectedQuadCount = 0;
     size_t packedStripCount = 0;
+    bool pageRotated90Or270 = false;
+    bool pageRotated270Ccw = false;
     try {
+        // 0. 自适应视觉增强前处理（红章压字穿透 + 阴影纸面/手写光照归一化 / 拍屏摩尔纹抑制；清晰数字截图 0 拷贝直通）
+        bool applyPreprocToRec = false;
+        cv::Mat detSourceBgr = preprocessImageForDetection(bgr, &applyPreprocToRec);
+        if (applyPreprocToRec) {
+            bgr = detSourceBgr;
+        }
+
         // 1. DBNet 文本区域检测（3 档静态画布桶零重编译 + 多核并行张量填充 + 零拷贝直通）
         const int origW = bgr.cols;
         const int origH = bgr.rows;
@@ -515,9 +548,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             ratioH = static_cast<float>(validH) / static_cast<float>(origH);
 
             cv::Mat detValid;
-            cv::resize(bgr, detValid, cv::Size(validW, validH), 0.0, 0.0,
+            cv::resize(detSourceBgr, detValid, cv::Size(validW, validH), 0.0, 0.0,
                        fitScale < 1.0f ? cv::INTER_AREA : cv::INTER_LINEAR);
-            detValid = enhanceLowContrastForDetection(detValid);
 
             cv::Mat detCanvas;
             if (validW == canvasW && validH == canvasH) {
@@ -599,9 +631,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             ratioW = static_cast<float>(alignW) / static_cast<float>(origW);
             ratioH = static_cast<float>(alignH) / static_cast<float>(origH);
             cv::Mat detResized;
-            cv::resize(bgr, detResized, cv::Size(alignW, alignH), 0.0, 0.0,
+            cv::resize(detSourceBgr, detResized, cv::Size(alignW, alignH), 0.0, 0.0,
                        desiredRatio < 1.0f ? cv::INTER_AREA : cv::INTER_LINEAR);
-            detResized = enhanceLowContrastForDetection(detResized);
             cv::Mat detBlob = makeDbNetBlob(detResized);
             m_detNet.setInput(detBlob);
             probOut = m_detNet.forward();
@@ -1266,6 +1297,26 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             rawBlocks.push_back(std::move(item));
         }
 
+        // 2.4 整图 90°/270° 拍歪自动探测（0 额外推理耗时）：
+        // 若 >= 3 个识别块且 >= 80% 均触发了竖长框 90° 旋转，基于 180° 方向分类器投票确定正向阅读序。
+        {
+            size_t validCount = 0;
+            size_t vertCount = 0;
+            size_t vertRot180Count = 0;
+            for (const auto& qm : quadMetas) {
+                if (!qm.valid || qm.totalChars == 0) continue;
+                ++validCount;
+                if (qm.rotatedVertical && qm.lineBox.height >= static_cast<int>(static_cast<float>((std::max)(1, qm.lineBox.width)) * 1.65f)) {
+                    ++vertCount;
+                    if (qm.rotated180) ++vertRot180Count;
+                }
+            }
+            if (validCount >= 3 && vertCount * 5 >= validCount * 4) {
+                pageRotated90Or270 = true;
+                pageRotated270Ccw = (vertRot180Count * 2 > vertCount);
+            }
+        }
+
         // 2.5 像素级 UI 下拉箭头剥离 + 像素级漏识下划线还原 + 结构化 JSON 标点规整（均严格保持 text 与 charBoxes 1:1 对齐）
         stripUiDropdownChevrons(bgr, rawBlocks);
         for (auto& blk : rawBlocks) {
@@ -1281,8 +1332,33 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
         return {};
     }
 
-    // 3. 统一委托至 OcrEngine 版面感知内核（竖向分割线检测 + 递归 XY-Cut 分区 + 严苛同行基线对齐锁）
-    auto assembled = OcrEngine::assembleRecognizedBlocksWithLayout(std::move(rawBlocks), image);
+    // 3. 整图 90°/270° 拍歪阅读序校正；常规正向图委托 OcrEngine 版面感知内核（竖向分割线 + 递归 XY-Cut + 同行基线对齐）
+    std::vector<OcrResult> assembled;
+    if (pageRotated90Or270) {
+        std::sort(rawBlocks.begin(), rawBlocks.end(), [pageRotated270Ccw](const OcrResult& a, const OcrResult& b) {
+            const float cxA = static_cast<float>(a.box.x) + 0.5f * static_cast<float>(a.box.width);
+            const float cxB = static_cast<float>(b.box.x) + 0.5f * static_cast<float>(b.box.width);
+            const float cyA = static_cast<float>(a.box.y) + 0.5f * static_cast<float>(a.box.height);
+            const float cyB = static_cast<float>(b.box.y) + 0.5f * static_cast<float>(b.box.height);
+            const float minW = static_cast<float>((std::max)(6, (std::min)(a.box.width, b.box.width)));
+            const bool sameRotatedLine = std::abs(cxA - cxB) <= minW * 0.65f;
+            if (pageRotated270Ccw) {
+                // 原图逆时针偏转 90°：最左侧为第 1 行，同行内自下而上阅读
+                if (sameRotatedLine) return cyA > cyB;
+                return cxA < cxB;
+            }
+            // 原图顺时针偏转 90°：最右侧为第 1 行，同行内自上而下阅读
+            if (sameRotatedLine) return cyA < cyB;
+            return cxA > cxB;
+        });
+        for (size_t i = 0; i < rawBlocks.size(); ++i) {
+            rawBlocks[i].layoutRegionId = 0;
+            rawBlocks[i].alignedRowId = static_cast<int>(i);
+        }
+        assembled = std::move(rawBlocks);
+    } else {
+        assembled = OcrEngine::assembleRecognizedBlocksWithLayout(std::move(rawBlocks), image);
+    }
     const long long totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - tTotalStart).count();
     LOG_INFO("DeepOcrEngine: recognized {} lines ({} quads -> {} strips) on {}x{} in {} ms (det={} ms, pack={} ms, rec={} ms)",
@@ -1377,6 +1453,7 @@ void DeepOcrEngine::releaseLoadedModels() {
         m_bucketsPrecompiled = false;
         m_useWinMl = false;
         m_loadedModelDir.clear();
+        m_loadedModelTier.clear();
         m_winMl.reset();
         m_detNet = cv::dnn::Net{};
         m_clsNet = cv::dnn::Net{};
@@ -1404,6 +1481,7 @@ void DeepOcrEngine::shutdown() {
             m_downloadThread.join();
         }
     }
+    m_downloadingServer.store(false, std::memory_order_release);
     m_downloading.store(false, std::memory_order_release);
     releaseLoadedModels();
 }

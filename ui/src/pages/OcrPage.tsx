@@ -18,6 +18,7 @@ import { FileText, Cpu, Download, X, Sparkles, Table2, QrCode, SunMoon, Type, Lo
 
 interface OcrSettings {
   engine: string;
+  modelTier: string;
   language: string;
   copyResult: boolean;
   showResultWindow: boolean;
@@ -27,10 +28,15 @@ interface OcrSettings {
 
 interface DeepOcrModelStatus {
   installed: boolean;
+  serverInstalled?: boolean;
   downloading: boolean;
+  downloadingServer?: boolean;
   progressPercent: number;
   downloadedBytes: number;
   totalBytes: number;
+  serverTotalBytes?: number;
+  modelTier?: string;
+  activeModelTier?: string;
   state: 'installed' | 'downloading' | 'not_installed' | 'error' | string;
   currentFile: string;
   modelDir: string;
@@ -68,10 +74,15 @@ interface OperationResult {
 
 const DEFAULT_MODEL_STATUS: DeepOcrModelStatus = {
   installed: false,
+  serverInstalled: false,
   downloading: false,
+  downloadingServer: false,
   progressPercent: 0,
   downloadedBytes: 0,
   totalBytes: 16600000,
+  serverTotalBytes: 90530732,
+  modelTier: 'mobile',
+  activeModelTier: 'mobile',
   state: 'not_installed',
   currentFile: '',
   modelDir: '',
@@ -94,6 +105,7 @@ const DEFAULT_INPAINT_STATUS: AiInpaintModelStatus = {
 export const OcrPage: FC = () => {
   const [settings, setSettings] = useState<OcrSettings>({
     engine: 'auto',
+    modelTier: 'mobile',
     language: 'auto',
     copyResult: true,
     showResultWindow: true,
@@ -109,6 +121,7 @@ export const OcrPage: FC = () => {
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [shortcut, setShortcut] = useState('Ctrl+Shift+O');
   const wasDownloadingRef = useRef(false);
+  const wasDownloadingServerRef = useRef(false);
   const wasInpaintDownloadingRef = useRef(false);
   const { t } = useTranslation();
 
@@ -141,16 +154,22 @@ export const OcrPage: FC = () => {
         typeof data?.engine === 'string' && ['auto', 'ppocr_v4', 'windows'].includes(data.engine)
           ? data.engine
           : 'auto';
+      const resolvedModelTier =
+        typeof data?.modelTier === 'string' && ['mobile', 'server'].includes(data.modelTier)
+          ? data.modelTier
+          : 'mobile';
       setSettings(prev => ({
         ...prev,
         ...data,
         engine: resolvedEngine,
+        modelTier: resolvedModelTier,
         language: resolvedLanguage,
       }));
       setAvailable(Boolean(status?.available));
       if (status?.modelStatus) {
         setModelStatus(status.modelStatus);
         wasDownloadingRef.current = Boolean(status.modelStatus.downloading);
+        wasDownloadingServerRef.current = Boolean(status.modelStatus.downloadingServer);
       }
       if (inpaintPayload) {
         setInpaintStatus(inpaintPayload);
@@ -195,15 +214,25 @@ export const OcrPage: FC = () => {
       return undefined;
     }
     wasDownloadingRef.current = true;
+    wasDownloadingServerRef.current = Boolean(modelStatus.downloadingServer);
     const timer = window.setInterval(() => {
       bridgeRequest<DeepOcrModelStatus>('ocr.getModelStatus', undefined, { silent: true })
         .then((next) => {
           if (!next) return;
           setModelStatus(next);
           if (!next.downloading && wasDownloadingRef.current) {
+            const finishedServer = wasDownloadingServerRef.current;
             wasDownloadingRef.current = false;
+            wasDownloadingServerRef.current = false;
             void syncStatusFromBackend();
-            if (next.installed) {
+            if (finishedServer) {
+              if (next.serverInstalled && !next.error) {
+                setSettings(prev => ({ ...prev, modelTier: 'server' }));
+                toast.success(t('ocr.serverDownloadCompleted'));
+              } else if (next.error) {
+                toast.error(t('ocr.serverDownloadFailed'), { description: next.error });
+              }
+            } else if (next.installed && !next.error) {
               toast.success(t('ocr.downloadCompleted'));
             } else if (next.state === 'error' && next.error) {
               toast.error(t('ocr.downloadFailedToast'), { description: next.error });
@@ -213,7 +242,7 @@ export const OcrPage: FC = () => {
         .catch(() => { /* ignore transient poll error */ });
     }, 380);
     return () => window.clearInterval(timer);
-  }, [modelStatus.downloading, syncStatusFromBackend, t]);
+  }, [modelStatus.downloading, modelStatus.downloadingServer, syncStatusFromBackend, t]);
 
   const updateSetting = useCallback((key: keyof OcrSettings, value: unknown) => {
     setSettings(prev => ({ ...prev, [key]: value }));
@@ -244,20 +273,27 @@ export const OcrPage: FC = () => {
       });
   }, [syncStatusFromBackend, t]);
 
-  const handleStartDownload = async () => {
+  const handleStartDownload = async (tier: 'mobile' | 'server' = 'mobile') => {
     if (actionBusy || modelStatus.downloading) return;
     setActionBusy(true);
     try {
-      const res = await bridgeRequest<{ success: boolean; modelStatus?: DeepOcrModelStatus }>('ocr.downloadModel');
+      const res = await bridgeRequest<{ success: boolean; modelStatus?: DeepOcrModelStatus }>(
+        'ocr.downloadModel',
+        { tier },
+      );
       if (res?.modelStatus) {
         setModelStatus(res.modelStatus);
         wasDownloadingRef.current = Boolean(res.modelStatus.downloading);
+        wasDownloadingServerRef.current = Boolean(res.modelStatus.downloadingServer);
       }
       if (res?.success) {
-        toast.info(t('ocr.downloadStarted'));
+        toast.info(tier === 'server' ? t('ocr.serverDownloadStarted') : t('ocr.downloadStarted'));
       }
     } catch (error) {
-      toast.error(t('ocr.downloadFailedToast'), { description: String(error) });
+      toast.error(
+        tier === 'server' ? t('ocr.serverDownloadFailed') : t('ocr.downloadFailedToast'),
+        { description: String(error) },
+      );
     } finally {
       setActionBusy(false);
     }
@@ -268,6 +304,7 @@ export const OcrPage: FC = () => {
     setActionBusy(true);
     try {
       wasDownloadingRef.current = false;
+      wasDownloadingServerRef.current = false;
       const res = await bridgeRequest<{ success: boolean; modelStatus?: DeepOcrModelStatus }>('ocr.cancelModelDownload');
       if (res?.modelStatus) {
         setModelStatus(res.modelStatus);
@@ -275,6 +312,29 @@ export const OcrPage: FC = () => {
       toast.info(t('ocr.downloadCancelled'));
     } catch (error) {
       console.error(error);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleDeleteServerModel = async () => {
+    if (actionBusy || modelStatus.downloading) return;
+    setActionBusy(true);
+    try {
+      const res = await bridgeRequest<{ success: boolean; modelStatus?: DeepOcrModelStatus }>('ocr.deleteServerModel');
+      if (res?.modelStatus) {
+        setModelStatus(res.modelStatus);
+        if (res.modelStatus.modelTier) {
+          setSettings(prev => ({ ...prev, modelTier: res.modelStatus?.modelTier ?? 'mobile' }));
+        }
+      }
+      if (res?.success) {
+        toast.success(t('ocr.serverDeleteSuccess'));
+      } else {
+        toast.error(t('ocr.serverDeleteFailed'));
+      }
+    } catch (error) {
+      toast.error(t('ocr.serverDeleteFailed'), { description: String(error) });
     } finally {
       setActionBusy(false);
     }
@@ -370,6 +430,26 @@ export const OcrPage: FC = () => {
       return <Badge text={t('ocr.deepStatusError')} variant="danger" />;
     }
     return <Badge text={t('ocr.deepStatusNotInstalled')} variant="muted" />;
+  };
+
+  const renderServerTierBadge = () => {
+    if (modelStatus.downloading && modelStatus.downloadingServer) {
+      return (
+        <Badge
+          text={t('ocr.deepStatusDownloading', { percent: modelStatus.progressPercent })}
+          variant="primary"
+        />
+      );
+    }
+    if (modelStatus.serverInstalled) {
+      return (
+        <Badge
+          text={modelStatus.activeModelTier === 'server' ? t('ocr.tierServerActive') : t('ocr.tierServerReady')}
+          variant={modelStatus.activeModelTier === 'server' ? 'success' : 'muted'}
+        />
+      );
+    }
+    return <Badge text={t('ocr.tierServerNotInstalled')} variant="muted" />;
   };
 
   const renderInpaintStatusBadge = () => {
@@ -475,7 +555,7 @@ export const OcrPage: FC = () => {
                       variant="primary"
                       size="sm"
                       disabled={actionBusy}
-                      onClick={() => void handleStartDownload()}
+                      onClick={() => void handleStartDownload('mobile')}
                     >
                       {actionBusy ? (
                         <Loader2 size={15} strokeWidth={2.2} aria-hidden="true" style={{ animation: 'spin 1s linear infinite' }} />
@@ -532,6 +612,75 @@ export const OcrPage: FC = () => {
                     </span>
                     <span>{`${modelStatus.progressPercent}%`}</span>
                   </div>
+                </div>
+              )}
+            </div>
+          </SettingRow>
+
+          <SettingRow
+            layout="vertical"
+            label={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
+                <span>{t('ocr.modelTier')}</span>
+                {renderServerTierBadge()}
+              </div>
+            }
+            description={t('ocr.modelTierDesc')}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-sm)', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--spacing-md)', flexWrap: 'wrap' }}>
+                <Select
+                  id="ocr-model-tier"
+                  value={settings.modelTier || 'mobile'}
+                  onChange={(val) => updateSetting('modelTier', val)}
+                  options={[
+                    { value: 'mobile', label: t('ocr.tierMobile') },
+                    { value: 'server', label: t('ocr.tierServer') },
+                  ]}
+                />
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+                  {modelStatus.downloading && modelStatus.downloadingServer ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={actionBusy}
+                      onClick={() => void handleCancelDownload()}
+                    >
+                      <X size={15} strokeWidth={2.2} aria-hidden="true" />
+                      <span>{t('ocr.cancelDownload')}</span>
+                    </Button>
+                  ) : modelStatus.serverInstalled ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={actionBusy || modelStatus.downloading}
+                      onClick={() => void handleDeleteServerModel()}
+                    >
+                      <Trash2 size={15} strokeWidth={2.2} aria-hidden="true" />
+                      <span>{t('ocr.deleteServerTier')}</span>
+                    </Button>
+                  ) : (
+                    <Button
+                      variant={settings.modelTier === 'server' ? 'primary' : 'secondary'}
+                      size="sm"
+                      disabled={actionBusy || modelStatus.downloading}
+                      onClick={() => void handleStartDownload('server')}
+                    >
+                      {actionBusy ? (
+                        <Loader2 size={15} strokeWidth={2.2} aria-hidden="true" style={{ animation: 'spin 1s linear infinite' }} />
+                      ) : (
+                        <Download size={15} strokeWidth={2.2} aria-hidden="true" />
+                      )}
+                      <span>{t('ocr.downloadServerTier')}</span>
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {settings.modelTier === 'server' && !modelStatus.serverInstalled && !modelStatus.downloading && (
+                <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', color: 'var(--text-secondary)', lineHeight: 'var(--leading-normal)' }}>
+                  {t('ocr.tierServerFallbackHint')}
                 </div>
               )}
             </div>

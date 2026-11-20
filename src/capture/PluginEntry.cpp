@@ -1542,6 +1542,7 @@ public:
             auto& config = tools3000::core::ConfigManager::instance();
             return {
                 {"engine", config.get<std::string>("/ocr/engine", "auto")},
+                {"modelTier", config.get<std::string>("/ocr/modelTier", "mobile")},
                 {"language", config.get<std::string>("/ocr/language", "auto")},
                 {"copyResult", config.get<bool>("/ocr/copyResult", true)},
                 {"showResultWindow", config.get<bool>("/ocr/showResultWindow", true)},
@@ -1566,12 +1567,24 @@ public:
                     const std::string eng = value.get<std::string>();
                     if (eng != "auto" && eng != "ppocr_v4" && eng != "windows")
                         return {{"success", false}, {"error", "unsupported OCR engine: " + eng}};
+                } else if (key == "modelTier") {
+                    if (!value.is_string())
+                        return {{"success", false}, {"error", "invalid OCR modelTier"}};
+                    const std::string tier = value.get<std::string>();
+                    if (tier != "mobile" && tier != "server")
+                        return {{"success", false}, {"error", "unsupported OCR modelTier: " + tier}};
                 } else {
                     return {{"success", false}, {"error", "unsupported OCR setting: " + key}};
                 }
             }
             const bool saved = tools3000::core::ConfigManager::instance().mergePatch(
                 {{"ocr", params}}, "/ocr");
+            if (saved && params.contains("modelTier")) {
+                auto& deep = tools3000::ocr::DeepOcrEngine::instance();
+                if (deep.isModelInstalled()) {
+                    deep.warmupAsync(100);
+                }
+            }
             return {{"success", saved}, {"error", saved ? "" : "failed to persist settings"}};
         });
 
@@ -1579,10 +1592,15 @@ public:
             const auto st = tools3000::ocr::DeepOcrEngine::instance().getModelStatus();
             return {
                 {"installed", st.installed},
+                {"serverInstalled", st.serverInstalled},
                 {"downloading", st.downloading},
+                {"downloadingServer", st.downloadingServer},
                 {"progressPercent", st.progressPercent},
                 {"downloadedBytes", st.downloadedBytes},
                 {"totalBytes", st.totalBytes},
+                {"serverTotalBytes", st.serverTotalBytes},
+                {"modelTier", st.modelTier},
+                {"activeModelTier", st.activeModelTier},
                 {"state", st.state},
                 {"currentFile", st.currentFile},
                 {"modelDir", st.modelDir},
@@ -1610,8 +1628,15 @@ public:
             return serializeModelStatus();
         });
 
-        mb.registerHandler("ocr.downloadModel", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
-            const bool started = tools3000::ocr::DeepOcrEngine::instance().startModelDownload();
+        mb.registerHandler("ocr.downloadModel", [serializeModelStatus](const nlohmann::json& params) -> nlohmann::json {
+            std::string tier = "mobile";
+            if (params.is_object() && params.contains("tier") && params["tier"].is_string()) {
+                const std::string reqTier = params["tier"].get<std::string>();
+                if (reqTier == "server") {
+                    tier = "server";
+                }
+            }
+            const bool started = tools3000::ocr::DeepOcrEngine::instance().startModelDownload(tier);
             return {
                 {"success", started},
                 {"modelStatus", serializeModelStatus()}
@@ -1622,6 +1647,14 @@ public:
             tools3000::ocr::DeepOcrEngine::instance().cancelModelDownload();
             return {
                 {"success", true},
+                {"modelStatus", serializeModelStatus()}
+            };
+        });
+
+        mb.registerHandler("ocr.deleteServerModel", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
+            const bool deleted = tools3000::ocr::DeepOcrEngine::instance().deleteServerModel();
+            return {
+                {"success", deleted},
                 {"modelStatus", serializeModelStatus()}
             };
         });

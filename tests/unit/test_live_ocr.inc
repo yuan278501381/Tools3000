@@ -2723,6 +2723,97 @@ TEST(LiveTextOcrTest, OcrEngineSoftWrappedJsonSeamlessJoinAndGuards) {
     // 6. 防呆护栏 C：普通非 JSON 文本偶发未闭合引号 -> 严禁误合并
     EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
         "She said \"Hello world", "Next paragraph line", &r1, &r2));
+
+    // 7. 通用长 URL 与 Windows / UNC 文件路径软折行无缝续接及防误粘护栏
+    EXPECT_TRUE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "https://221.219.244.245:52400/b1s/", "v2/view.svc/$metadata", &r1, &r2));
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "https://example.com/first/", "https://example.com/second", &r1, &r2));
+    EXPECT_TRUE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "C:\\repo\\Tools3000\\build\\", "bin\\Release\\Tools3000.exe", &r1, &r2));
+    EXPECT_TRUE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "\\\\192.168.1.150\\b1_shr\\", "attachments\\order_2026.pdf", &r1, &r2));
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "C:\\repo\\Tools3000\\", "D:\\other\\file.txt", &r1, &r2));
+}
+
+TEST(LiveTextOcrTest, OcrEngineOneDimensionalBarcodeDecodingWithFormat) {
+    using namespace tools3000::ocr;
+
+    // 按 ISO/IEC 15420 规范精确编码生成标准 EAN-13 条形码 "6901234567892"
+    static constexpr const char* kL[10] = {
+        "0001101", "0011001", "0010011", "0111101", "0100011",
+        "0110001", "0101111", "0111011", "0110111", "0001011"
+    };
+    static constexpr const char* kG[10] = {
+        "0100111", "0110011", "0011011", "0100001", "0011101",
+        "0111001", "0000101", "0010001", "0001001", "0010111"
+    };
+    static constexpr const char* kR[10] = {
+        "1110010", "1100110", "1101100", "1000010", "1011100",
+        "1001110", "1010000", "1000100", "1001000", "1110100"
+    };
+    // 首数字 '6' 对应的左 6 位奇偶校验模板: L G G G L L
+    const char* kParity6 = "LGGGLL";
+    const int digits[13] = {6, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 2};
+
+    std::string bits = "101";
+    for (int i = 1; i <= 6; ++i) {
+        bits += (kParity6[i - 1] == 'L') ? kL[digits[i]] : kG[digits[i]];
+    }
+    bits += "01010";
+    for (int i = 7; i <= 12; ++i) {
+        bits += kR[digits[i]];
+    }
+    bits += "101";
+    ASSERT_EQ(bits.size(), 95u);
+
+    constexpr int kModuleW = 4;
+    constexpr int kQuietX = 48;
+    constexpr int kBarH = 120;
+    constexpr int kPadY = 44;
+    const int imgW = kQuietX * 2 + static_cast<int>(bits.size()) * kModuleW;
+    const int imgH = kPadY * 2 + kBarH;
+
+    cv::Mat barImg(imgH, imgW, CV_8UC3, cv::Scalar(255, 255, 255));
+    for (size_t i = 0; i < bits.size(); ++i) {
+        if (bits[i] == '1') {
+            cv::rectangle(barImg,
+                          cv::Rect(kQuietX + static_cast<int>(i) * kModuleW, kPadY, kModuleW, kBarH),
+                          cv::Scalar(0, 0, 0), cv::FILLED);
+        }
+    }
+
+    const auto codes = OcrEngine::detectQrCodes(barImg);
+    bool foundEan13 = false;
+    for (const auto& c : codes) {
+        if (c.text == "6901234567892") {
+            foundEan13 = true;
+            EXPECT_NE(c.format.find("EAN_13"), std::string::npos) << c.format;
+            EXPECT_GT(c.boundingBox.width, 100);
+            EXPECT_GT(c.boundingBox.height, 40);
+        }
+    }
+    EXPECT_TRUE(foundEan13) << "OcrEngine::detectQrCodes must decode tightly-cropped EAN-13 1D barcode";
+
+    // 2. 大尺寸整页单据中局部嵌入 EAN-13 条形码：自动定位并解码
+    cv::Mat pageImg(768, 1024, CV_8UC3, cv::Scalar(248, 248, 248));
+    for (size_t i = 0; i < bits.size(); ++i) {
+        if (bits[i] == '1') {
+            cv::rectangle(pageImg,
+                          cv::Rect(620 + static_cast<int>(i) * 3, 500, 3, 90),
+                          cv::Scalar(0, 0, 0), cv::FILLED);
+        }
+    }
+    const auto pageCodes = OcrEngine::detectQrCodes(pageImg);
+    bool foundPageEan13 = false;
+    for (const auto& c : pageCodes) {
+        if (c.text == "6901234567892") {
+            foundPageEan13 = true;
+            EXPECT_NE(c.format.find("EAN_13"), std::string::npos) << c.format;
+        }
+    }
+    EXPECT_TRUE(foundPageEan13) << "OcrEngine::detectQrCodes must locate and decode embedded EAN-13 barcode on full document page";
 }
 
 namespace {
@@ -3088,4 +3179,200 @@ TEST(LiveTextOcrTest, FixtureDenseDocAndSapMultiColumnRegression) {
         EXPECT_NE(allText.find("SHA-256"), std::string::npos) << allText;
         EXPECT_NE(allText.find("MP4 / GIF / WebP"), std::string::npos) << allText;
     }
+}
+
+TEST(LiveTextOcrTest, DeepOcrRedStampSuppressionShadowNormalizationAndRotatedPageOrder) {
+    using namespace tools3000::ocr;
+
+    // 1. 红章压黑字穿透：半透明大红公章圆环直接压在黑色正文上 -> 印章红墨水被穿透滤除，黑字 100% 保留；
+    //    同时独立的纯红警示文字（不与黑字交叉）严禁被误抹除！
+    {
+        cv::Mat doc(220, 480, CV_8UC3, cv::Scalar(248, 248, 248));
+        cv::putText(doc, "INV-2026-8899", cv::Point(40, 96),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.05, cv::Scalar(22, 22, 22), 2, cv::LINE_AA);
+        // 叠加一个半透明大红圆形财务印章直接盖在 "INV-2026-8899" 上
+        cv::Mat overlay = doc.clone();
+        cv::circle(overlay, cv::Point(180, 90), 54, cv::Scalar(25, 28, 228), 5, cv::LINE_AA);
+        cv::circle(overlay, cv::Point(180, 90), 36, cv::Scalar(25, 28, 228), 3, cv::LINE_AA);
+        cv::line(overlay, cv::Point(132, 90), cv::Point(228, 90), cv::Scalar(25, 28, 228), 4, cv::LINE_AA);
+        cv::addWeighted(overlay, 0.72, doc, 0.28, 0.0, doc);
+
+        // 下方远离黑字区域放置独立的纯红警示文字（无黑字交叉），必须 100% 完整保留
+        cv::putText(doc, "WARNING 404", cv::Point(40, 195),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.85, cv::Scalar(28, 30, 224), 2, cv::LINE_AA);
+
+        bool suppressed = false;
+        const cv::Mat cleaned = DeepOcrEngine::suppressRedStampForOcr(doc, &suppressed);
+        EXPECT_TRUE(suppressed);
+
+        // 校验红章顶部纯红弧线（非黑字处）已被漂白至接近纸面白底
+        const cv::Vec3b stampTopPx = cleaned.at<cv::Vec3b>(36, 180);
+        EXPECT_GT(static_cast<int>(stampTopPx[1]), 175) << "Red stamp green channel should be neutralized near white";
+        EXPECT_LT(std::abs(static_cast<int>(stampTopPx[2]) - static_cast<int>(stampTopPx[1])), 16);
+
+        // 校验独立纯红警示文字 "WARNING 404" 像素 100% 保留红字特征未被误伤
+        int preservedRedWarningPixels = 0;
+        for (int y = 172; y < 204; ++y) {
+            for (int x = 36; x < 240; ++x) {
+                const auto& p = cleaned.at<cv::Vec3b>(y, x);
+                if (static_cast<int>(p[2]) - static_cast<int>(p[1]) >= 80) {
+                    ++preservedRedWarningPixels;
+                }
+            }
+        }
+        EXPECT_GT(preservedRedWarningPixels, 120) << "Standalone red warning text must never be erased";
+
+        // 模型已安装时，端到端实测穿透后能正确读出被红章覆盖的 "INV-2026-8899" 与独立红字 "WARNING 404"
+        if (DeepOcrEngine::instance().getModelStatus().installed) {
+            const auto lines = DeepOcrEngine::instance().extractText(doc);
+            const std::string allText = joinOcrLines(lines);
+            EXPECT_NE(allText.find("INV-2026-8899"), std::string::npos) << allText;
+            EXPECT_NE(allText.find("WARNING"), std::string::npos) << allText;
+        }
+    }
+
+    // 2. 纸面/手写拍照光照阴影归一化：左暗右亮手影梯度 + 轻微相机颗粒噪声 -> 精准判定并拉平纸面光照，
+    //    同时对清晰纯白数字截图 100% 返回 false 零干预！
+    {
+        cv::Mat cleanScreen(200, 320, CV_8UC3, cv::Scalar(255, 255, 255));
+        cv::putText(cleanScreen, "Clean Digital UI", cv::Point(20, 100),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(20, 20, 20), 2, cv::LINE_AA);
+        EXPECT_FALSE(DeepOcrEngine::isShadowedDocumentPhoto(cleanScreen));
+
+        cv::Mat shadowedPaper(260, 420, CV_8UC3);
+        cv::RNG rng(20261121);
+        for (int y = 0; y < shadowedPaper.rows; ++y) {
+            auto* row = shadowedPaper.ptr<cv::Vec3b>(y);
+            for (int x = 0; x < shadowedPaper.cols; ++x) {
+                const float t = static_cast<float>(x) / static_cast<float>(shadowedPaper.cols);
+                const int base = static_cast<int>(108.0f + 122.0f * t);
+                const int noise = rng.uniform(-7, 8);
+                const uint8_t b = static_cast<uint8_t>(std::clamp(base - 8 + noise, 0, 255));
+                const uint8_t g = static_cast<uint8_t>(std::clamp(base - 2 + noise, 0, 255));
+                const uint8_t r = static_cast<uint8_t>(std::clamp(base + 4 + noise, 0, 255));
+                row[x] = cv::Vec3b(b, g, r);
+            }
+        }
+        cv::putText(shadowedPaper, "NOTE 2026-11-21", cv::Point(32, 130),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(48, 52, 58), 2, cv::LINE_AA);
+        EXPECT_TRUE(DeepOcrEngine::isShadowedDocumentPhoto(shadowedPaper));
+
+        const cv::Mat normalized = DeepOcrEngine::enhanceDocumentPhoto(shadowedPaper);
+        // 左侧原暗影区 (base~110) 应被提亮至接近纸面白底 (>= 195)，大幅缩小左右亮度极差
+        const cv::Scalar leftMean = cv::mean(normalized(cv::Rect(10, 10, 40, 40)));
+        const cv::Scalar rightMean = cv::mean(normalized(cv::Rect(360, 10, 40, 40)));
+        EXPECT_GT(leftMean[1], 195.0);
+        EXPECT_LT(std::abs(rightMean[1] - leftMean[1]), 35.0);
+    }
+
+    // 3. 整图顺时针拍歪 90° 横向文档端到端识别与阅读序校正
+    if (DeepOcrEngine::instance().getModelStatus().installed) {
+        cv::Mat horiz(240, 520, CV_8UC3, cv::Scalar(252, 252, 252));
+        cv::putText(horiz, "LINE-ONE-ALPHA", cv::Point(40, 62),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(20, 20, 20), 2, cv::LINE_AA);
+        cv::putText(horiz, "LINE-TWO-BETA", cv::Point(40, 132),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(20, 20, 20), 2, cv::LINE_AA);
+        cv::putText(horiz, "LINE-THREE-GAMMA", cv::Point(40, 202),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(20, 20, 20), 2, cv::LINE_AA);
+
+        cv::Mat rot90;
+        cv::rotate(horiz, rot90, cv::ROTATE_90_CLOCKWISE);
+        const auto lines = DeepOcrEngine::instance().extractText(rot90);
+        const std::string allText = joinOcrLines(lines);
+        const size_t pos1 = allText.find("ALPHA");
+        const size_t pos2 = allText.find("BETA");
+        const size_t pos3 = allText.find("GAMMA");
+        EXPECT_NE(pos1, std::string::npos) << allText;
+        EXPECT_NE(pos2, std::string::npos) << allText;
+        EXPECT_NE(pos3, std::string::npos) << allText;
+        if (pos1 != std::string::npos && pos2 != std::string::npos && pos3 != std::string::npos) {
+            EXPECT_LT(pos1, pos2) << "90-degree rotated page must restore logical top-to-bottom reading order:\n" << allText;
+            EXPECT_LT(pos2, pos3) << "90-degree rotated page must restore logical top-to-bottom reading order:\n" << allText;
+        }
+    }
+}
+
+TEST(LiveTextOcrTest, DeepOcrModelTierFallbackAndServerRemoval) {
+    using namespace tools3000::ocr;
+    namespace fs = std::filesystem;
+
+    auto& deep = DeepOcrEngine::instance();
+    auto& cfg = tools3000::core::ConfigManager::instance();
+
+    const fs::path tempRoot = fs::temp_directory_path() / L"tools3000_ocr_tier_test_dir";
+    const fs::path tempDir = tempRoot / L"models";
+    const fs::path tempCfgDir = tempRoot / L"config";
+    std::error_code ec;
+    fs::remove_all(tempRoot, ec);
+    ASSERT_TRUE(fs::create_directories(tempDir, ec) || fs::is_directory(tempDir));
+    ASSERT_TRUE(fs::create_directories(tempCfgDir, ec) || fs::is_directory(tempCfgDir));
+    ASSERT_TRUE(cfg.initialize(tempCfgDir));
+
+    struct TierTestGuard {
+        DeepOcrEngine& engine;
+        tools3000::core::ConfigManager& config;
+        fs::path rootDir;
+        ~TierTestGuard() {
+            engine.setCustomModelDirectoryForTest({});
+            try {
+                config.mergePatch({{"ocr", {{"modelTier", "mobile"}}}}, "/ocr");
+            } catch (...) {
+            }
+            std::error_code cleanEc;
+            fs::remove_all(rootDir, cleanEc);
+        }
+    } guard{deep, cfg, tempRoot};
+
+    auto writeDummyFile = [](const fs::path& p, size_t size, uint8_t firstByte) {
+        std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(ofs.good());
+        std::vector<uint8_t> buf(size, 0x20);
+        buf[0] = firstByte;
+        ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+    };
+
+    // 1. 仅安装基础 mobile 四件套
+    writeDummyFile(tempDir / DeepOcrConstants::kDetModelFileName, 512, 0x08);
+    writeDummyFile(tempDir / DeepOcrConstants::kClsModelFileName, 512, 0x08);
+    writeDummyFile(tempDir / DeepOcrConstants::kRecModelFileName, 512, 0x08);
+    writeDummyFile(tempDir / DeepOcrConstants::kKeysDictFileName, 128, 'a');
+
+    deep.setCustomModelDirectoryForTest(tempDir);
+    EXPECT_TRUE(deep.isModelInstalled());
+    EXPECT_FALSE(deep.isServerModelInstalled());
+
+    // 未安装 server 模型时配置为 server，必须优雅回退 mobile 不瘫痪
+    ASSERT_TRUE(cfg.mergePatch({{"ocr", {{"modelTier", "server"}}}}, "/ocr"));
+    EXPECT_EQ(deep.configuredModelTier(), "server");
+    EXPECT_EQ(deep.effectiveModelTier(), "mobile");
+    {
+        const auto st = deep.getModelStatus();
+        EXPECT_TRUE(st.installed);
+        EXPECT_FALSE(st.serverInstalled);
+        EXPECT_EQ(st.modelTier, "server");
+        EXPECT_EQ(st.activeModelTier, "mobile");
+    }
+
+    // 2. 落地高精度 server 识别模型文件后自动生效
+    writeDummyFile(tempDir / DeepOcrConstants::kRecServerModelFileName, 1024, 0x08);
+    EXPECT_TRUE(deep.isServerModelInstalled());
+    EXPECT_EQ(deep.effectiveModelTier(), "server");
+    {
+        const auto st = deep.getModelStatus();
+        EXPECT_TRUE(st.serverInstalled);
+        EXPECT_EQ(st.activeModelTier, "server");
+    }
+
+    // 切回 mobile 后 server 文件保留但生效档位切回 mobile
+    ASSERT_TRUE(cfg.mergePatch({{"ocr", {{"modelTier", "mobile"}}}}, "/ocr"));
+    EXPECT_TRUE(deep.isServerModelInstalled());
+    EXPECT_EQ(deep.effectiveModelTier(), "mobile");
+
+    // 3. 选中 server 后执行 deleteServerModel()：释放 server 文件、基础包完好且配置回落 mobile
+    ASSERT_TRUE(cfg.mergePatch({{"ocr", {{"modelTier", "server"}}}}, "/ocr"));
+    EXPECT_TRUE(deep.deleteServerModel());
+    EXPECT_FALSE(deep.isServerModelInstalled());
+    EXPECT_TRUE(deep.isModelInstalled());
+    EXPECT_EQ(deep.configuredModelTier(), "mobile");
+    EXPECT_EQ(deep.effectiveModelTier(), "mobile");
 }

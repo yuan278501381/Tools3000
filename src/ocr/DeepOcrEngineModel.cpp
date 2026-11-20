@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "ocr/DeepOcrEngineInternal.h"
+#include "core/config/ConfigManager.h"
 #include "core/logger/Logger.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
@@ -88,6 +89,19 @@ bool isDirectoryCompleteModelBundle(const std::filesystem::path& dir) {
             checkFileMinSize(DeepOcrConstants::kRecModelFileName, DeepOcrConstants::kMinRecModelBytes));
 }
 
+bool isServerRecModelPresent(const std::filesystem::path& dir) {
+    std::error_code ec;
+    if (dir.empty() || !std::filesystem::is_directory(dir, ec) || ec) {
+        return false;
+    }
+    const auto p = dir / DeepOcrConstants::kRecServerModelFileName;
+    if (!std::filesystem::is_regular_file(p, ec) || ec) {
+        return false;
+    }
+    const auto fsz = std::filesystem::file_size(p, ec);
+    return !ec && fsz >= 256;
+}
+
 
 } // namespace deep_ocr_detail
 
@@ -151,6 +165,19 @@ constexpr std::array<ModelDownloadSpec, 4> kModelSpecs = {{
         }
     }
 }};
+
+constexpr ModelDownloadSpec kServerRecModelSpec = {
+    DeepOcrConstants::kRecServerModelFileName,
+    "ch_PP-OCRv4_rec_server.onnx",
+    DeepOcrConstants::kMinRecServerModelBytes,
+    true,
+    {
+        L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_server.onnx",
+        L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_server_infer.onnx",
+        L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_server_infer.onnx",
+        nullptr
+    }
+};
 
 
 bool downloadHttpsUrlToFile(
@@ -317,6 +344,31 @@ bool DeepOcrEngine::isModelInstalled() const {
     bool installed = false;
     (void)resolveModelDirectory(&installed);
     return installed;
+}
+
+bool DeepOcrEngine::isServerModelInstalled() const {
+    bool installed = false;
+    const auto dir = resolveModelDirectory(&installed);
+    return installed && isServerRecModelPresent(dir);
+}
+
+std::string DeepOcrEngine::configuredModelTier() const {
+    try {
+        std::string tier = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/modelTier", "mobile");
+        for (char& ch : tier) {
+            if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+        }
+        return (tier == "server") ? "server" : "mobile";
+    } catch (...) {
+        return "mobile";
+    }
+}
+
+std::string DeepOcrEngine::effectiveModelTier() const {
+    if (configuredModelTier() == "server" && isServerModelInstalled()) {
+        return "server";
+    }
+    return "mobile";
 }
 
 bool DeepOcrEngine::isValidOnnxBuffer(const uint8_t* data, size_t byteSize, size_t minBytes) noexcept {
@@ -677,11 +729,16 @@ DeepOcrModelStatus DeepOcrEngine::getModelStatus() const {
     bool installed = false;
     const auto dir = resolveModelDirectory(&installed);
     st.installed = installed;
+    st.serverInstalled = installed && isServerRecModelPresent(dir);
+    st.modelTier = configuredModelTier();
+    st.activeModelTier = (st.serverInstalled && st.modelTier == "server") ? "server" : "mobile";
     st.modelDir = tools3000::core::WinUtils::wstringToUtf8(dir.wstring());
     st.downloading = m_downloading.load(std::memory_order_acquire);
+    st.downloadingServer = st.downloading && m_downloadingServer.load(std::memory_order_acquire);
     st.progressPercent = m_progressPercent.load(std::memory_order_acquire);
     st.downloadedBytes = m_downloadedBytes.load(std::memory_order_acquire);
     st.totalBytes = m_totalBytes.load(std::memory_order_acquire);
+    st.serverTotalBytes = DeepOcrConstants::kEstimatedServerAddOnBytes;
 
     {
         std::lock_guard<std::mutex> lock(m_downloadMutex);
@@ -702,16 +759,25 @@ DeepOcrModelStatus DeepOcrEngine::getModelStatus() const {
     return st;
 }
 
-bool DeepOcrEngine::startModelDownload() {
+bool DeepOcrEngine::startModelDownload(const std::string& tier) {
     if (m_downloading.exchange(true, std::memory_order_acq_rel)) {
         return true;
     }
 
+    const bool includeServerRec = (tier == "server");
     const std::filesystem::path targetDir = defaultInstallDirectory();
+    const bool baseAlreadyPresent = isDirectoryCompleteModelBundle(targetDir);
+    const uint64_t initialEstTotal = includeServerRec
+        ? (baseAlreadyPresent
+               ? DeepOcrConstants::kEstimatedServerAddOnBytes
+               : (DeepOcrConstants::kEstimatedBundleBytes + DeepOcrConstants::kEstimatedServerAddOnBytes))
+        : DeepOcrConstants::kEstimatedBundleBytes;
+
+    m_downloadingServer.store(includeServerRec, std::memory_order_release);
     m_cancelRequested.store(false, std::memory_order_release);
     m_progressPercent.store(0, std::memory_order_release);
     m_downloadedBytes.store(0, std::memory_order_release);
-    m_totalBytes.store(DeepOcrConstants::kEstimatedBundleBytes, std::memory_order_release);
+    m_totalBytes.store(initialEstTotal, std::memory_order_release);
 
     {
         std::lock_guard<std::mutex> lock(m_downloadMutex);
@@ -720,8 +786,8 @@ bool DeepOcrEngine::startModelDownload() {
         if (m_downloadThread.joinable()) {
             m_downloadThread.join();
         }
-        m_downloadThread = std::jthread([this, targetDir](std::stop_token st) {
-            downloadWorkerLoop(st, targetDir);
+        m_downloadThread = std::jthread([this, targetDir, includeServerRec](std::stop_token st) {
+            downloadWorkerLoop(st, targetDir, includeServerRec);
         });
     }
     return true;
@@ -735,7 +801,54 @@ void DeepOcrEngine::cancelModelDownload() {
     }
 }
 
-void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesystem::path targetDir) {
+bool DeepOcrEngine::deleteServerModel() {
+    if (m_downloading.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    std::filesystem::path targetDir;
+    {
+        std::lock_guard<std::mutex> lock(m_pathMutex);
+        if (!m_customTestModelDir.empty()) {
+            targetDir = m_customTestModelDir;
+        }
+    }
+    if (targetDir.empty()) {
+        bool installed = false;
+        const auto resolved = resolveModelDirectory(&installed);
+        targetDir = installed ? resolved : defaultInstallDirectory();
+    }
+
+    // 先释放已加载的 WinML/OpenCV 会话，避免 Windows 文件映射句柄锁死导致删除失败
+    releaseLoadedModels();
+
+    const std::filesystem::path serverPath = targetDir / DeepOcrConstants::kRecServerModelFileName;
+    const std::filesystem::path partPath = targetDir / (std::wstring(DeepOcrConstants::kRecServerModelFileName) + L".part");
+    std::error_code ec;
+    std::filesystem::remove(partPath, ec);
+    ec.clear();
+    if (std::filesystem::exists(serverPath, ec) && !ec) {
+        std::filesystem::remove(serverPath, ec);
+    }
+
+    const bool removed = !std::filesystem::exists(serverPath, ec) && !ec;
+    if (removed && configuredModelTier() == "server") {
+        try {
+            auto& cfg = tools3000::core::ConfigManager::instance();
+            if (!cfg.mergePatch({{"ocr", {{"modelTier", "mobile"}}}}, "/ocr")) {
+                cfg.set<std::string>("/ocr/modelTier", "mobile");
+            }
+        } catch (...) {
+        }
+    }
+    deep_ocr_detail::cleanupDeepOcrWorkingSet();
+    if (removed) {
+        LOG_INFO("DeepOcrEngine: removed server rec model from local cache");
+    }
+    return removed;
+}
+
+void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesystem::path targetDir, bool includeServerRec) {
     tools3000::core::TraceId::Scope traceScope;
     std::error_code ec;
     std::filesystem::create_directories(targetDir, ec);
@@ -745,22 +858,33 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
             m_lastDownloadError = "Failed to create model directory";
             m_currentDownloadFile.clear();
         }
+        m_downloadingServer.store(false, std::memory_order_release);
         m_downloading.store(false, std::memory_order_release);
         return;
     }
 
+    std::vector<ModelDownloadSpec> specs;
+    specs.reserve(kModelSpecs.size() + (includeServerRec ? 1u : 0u));
+    for (const auto& baseSpec : kModelSpecs) {
+        specs.push_back(baseSpec);
+    }
+    if (includeServerRec) {
+        specs.push_back(kServerRecModelSpec);
+    }
+
+    const uint64_t expectedTotalBytes = m_totalBytes.load(std::memory_order_acquire);
     uint64_t cumulativeBytes = 0;
     bool allSucceeded = true;
     std::string failReason;
 
-    for (size_t idx = 0; idx < kModelSpecs.size(); ++idx) {
+    for (size_t idx = 0; idx < specs.size(); ++idx) {
         if (stopToken.stop_requested() || m_cancelRequested.load(std::memory_order_acquire)) {
             allSucceeded = false;
             failReason = "cancelled";
             break;
         }
 
-        const auto& spec = kModelSpecs[idx];
+        const auto& spec = specs[idx];
         {
             std::lock_guard<std::mutex> lock(m_downloadMutex);
             m_currentDownloadFile = spec.displayName;
@@ -803,13 +927,20 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
         // 断点续传加速：若本地目标文件已完整且通过 ONNX 图解析/字典校验，直接复用跳过重复下载
         uint64_t existingValidBytes = 0;
         if (verifyCandidatePath(finalPath, &existingValidBytes)) {
-            cumulativeBytes += existingValidBytes;
-            m_downloadedBytes.store(cumulativeBytes, std::memory_order_release);
-            const uint64_t estTotal = (std::max)(cumulativeBytes + 65536ULL, DeepOcrConstants::kEstimatedBundleBytes);
-            m_totalBytes.store(estTotal, std::memory_order_release);
-            m_progressPercent.store(
-                std::clamp(static_cast<int>((cumulativeBytes * 98ULL) / estTotal), 1, 98),
-                std::memory_order_release);
+            // 若本次仅需增量下载 server 增强包且基础件已存在，不把已跳过的基础件混入增量进度基数，让进度条从 0%~100% 精准反馈新增下载
+            const bool isIncrementalServerSkip =
+                includeServerRec &&
+                idx < kModelSpecs.size() &&
+                expectedTotalBytes <= DeepOcrConstants::kEstimatedServerAddOnBytes;
+            if (!isIncrementalServerSkip) {
+                cumulativeBytes += existingValidBytes;
+                m_downloadedBytes.store(cumulativeBytes, std::memory_order_release);
+                const uint64_t estTotal = (std::max)(cumulativeBytes + 65536ULL, expectedTotalBytes);
+                m_totalBytes.store(estTotal, std::memory_order_release);
+                m_progressPercent.store(
+                    std::clamp(static_cast<int>((cumulativeBytes * 98ULL) / estTotal), 1, 98),
+                    std::memory_order_release);
+            }
             continue;
         }
 
@@ -864,7 +995,7 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
                     fileProgressBytes += delta;
                     const uint64_t curTotal = baseBeforeFile + fileProgressBytes;
                     m_downloadedBytes.store(curTotal, std::memory_order_release);
-                    const uint64_t estTotal = (std::max)(curTotal + 65536ULL, DeepOcrConstants::kEstimatedBundleBytes);
+                    const uint64_t estTotal = (std::max)(curTotal + 65536ULL, expectedTotalBytes);
                     m_totalBytes.store(estTotal, std::memory_order_release);
                     const int pct = std::clamp(
                         static_cast<int>((curTotal * 98ULL) / estTotal),
@@ -904,13 +1035,24 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
         }
     }
 
+    if (allSucceeded && includeServerRec) {
+        try {
+            auto& cfg = tools3000::core::ConfigManager::instance();
+            if (!cfg.mergePatch({{"ocr", {{"modelTier", "server"}}}}, "/ocr")) {
+                cfg.set<std::string>("/ocr/modelTier", "server");
+            }
+        } catch (...) {
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lock(m_downloadMutex);
         m_currentDownloadFile.clear();
         if (allSucceeded) {
             m_lastDownloadError.clear();
             m_progressPercent.store(100, std::memory_order_release);
-            LOG_INFO("DeepOcrEngine: PP-OCRv4 offline model bundle installed successfully");
+            LOG_INFO("DeepOcrEngine: PP-OCRv4 offline model bundle installed successfully (tier={})",
+                     includeServerRec ? "server" : "mobile");
         } else if (failReason == "cancelled") {
             m_lastDownloadError.clear();
             m_progressPercent.store(0, std::memory_order_release);
@@ -921,6 +1063,7 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
         }
     }
 
+    m_downloadingServer.store(false, std::memory_order_release);
     m_downloading.store(false, std::memory_order_release);
     deep_ocr_detail::cleanupDeepOcrWorkingSet();
     if (allSucceeded && !m_shuttingDown.load(std::memory_order_acquire)) {
