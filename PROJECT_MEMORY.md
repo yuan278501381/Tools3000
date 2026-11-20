@@ -16,7 +16,8 @@
 - **鼠标手势三合一单次切屏 E2E 门禁 (`scripts/test_gesture_suite_e2e.ps1`, `deploy.ps1`, `scripts/test_capture_recording_e2e.ps1`)**：
   - 将原 `deploy.ps1` 中连续 3 次强制切屏的 `test_gesture_e2e.ps1`、`stress_gesture_1000hz.ps1`、`adversarial_stress_gesture.ps1` 合并为单进程、单次切屏的 `test_gesture_suite_e2e.ps1`，测试输入全部安全落入无副作用空白靶板窗，100% 保留全部原始断言与吞吐量校验，并在结束后自动归还鼠标坐标与用户原前台窗口焦点；
 - **GitHub 中英双语 README 全动图与视觉焕新 (`README.md`, `README.en.md`, `docs/images/{zh-CN,en-US}/`)**：
-  - 顶部首屏直接以 2×2 高清动态 WebP 展示核心场景（文件搜索+空格预览、离线高精度文本识别/批注/改字、滚动长截图、高清录屏与自动运镜演播室），新增中英双语 Apple/Linear Bento 风格「七大核心功能一图速览」海报 `feature_bento_overview.png` 及文档内容搜索 / 精准截图标注 / 离线选字批注 / 录屏自动运镜演播室 4 组双语动图，保证全部 7 大核心功能均有直观自动播放动图；严守产品克制要求，不在 README 中铺陈去阴影/红章/条形码/高精度模型等底层实现细节。
+  - 顶部首屏直接以 2×2 高清动态 WebP 展示核心场景（文件搜索+空格预览、离线高精度文本识别/批注/改字、滚动长截图、高清录屏与自动运镜演播室），新增中英双语 Apple/Linear Bento 风格「八大核心功能一图速览」海报 `feature_bento_overview.png` 及全部 8 大核心功能中英双语共 16 张「导演级四拍因果交互节拍」动图（`9.2s–10.7s`，高对比双描边光标平滑移动 -> 目标按钮 Hover 亮起 -> 物理按压下沉 + 双层脉冲波纹 + 极简点击徽标 -> 效果展开 + 呼吸停顿消化，底部 3.5px 细进度条，全部经逐格视觉验收）；严守产品克制要求，不在 README 中铺陈去阴影/红章/条形码/高精度模型等底层实现细节；
+  - **全球 8 语种零冗余 README 矩阵 (`README.md`, `README.zh-TW.md`, `README.en.md`, `README.ja.md`, `README.ko.md`, `README.ru.md`, `README.pt-BR.md`, `README.es.md`)**：面向全球 Windows 桌面效率工具用户盘面扩展繁體中文、日本語、한국어、Русский、Português (Brasil)、Español 6 份母语 README，顶部 8 语种互链导览且全量复用既有 `zh-CN`/`en-US` 动图（0 仓库体积膨胀），同时在下载区坦诚标注当前客户端 UI 语言为英文与简体中文；软件客户端侧多语言重构（涉及 `src/` 下 32 个 `.cpp` 共 622 处 `isZh` 三元分支升级为键值目录）按项目负责人指示暂缓，待后续单独拍板。
 
 ### [2026-11-21] 全库 9 大巨石源文件零回归纯物理拆分收官（全库业务源码 100% < 3,000 行）与实景 OCR 样本集入库 (`tests/fixtures/ocr/`) + 小型倾斜二维码 2x 强透视召回
 - **全库巨石文件零回归纯物理拆分总账（严守零语义改动 / 严格 ODR / 公开 ABI 零破坏 / 纯净单 CRLF / 逐个编译单测门禁原子提交）**：
