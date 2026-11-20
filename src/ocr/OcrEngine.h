@@ -39,6 +39,8 @@ struct OcrQrResult {
     std::string text;
     cv::Rect boundingBox;
     std::array<cv::Point2f, 4> corners{};
+    /// 条码/二维码制式标识（如 "QR_CODE"、"EAN_13"、"EAN_8"、"UPC_A"、"UPC_E"）
+    std::string format = "QR_CODE";
 };
 
 struct OcrPageExtraction {

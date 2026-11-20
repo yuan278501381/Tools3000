@@ -2723,6 +2723,97 @@ TEST(LiveTextOcrTest, OcrEngineSoftWrappedJsonSeamlessJoinAndGuards) {
     // 6. 防呆护栏 C：普通非 JSON 文本偶发未闭合引号 -> 严禁误合并
     EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
         "She said \"Hello world", "Next paragraph line", &r1, &r2));
+
+    // 7. 通用长 URL 与 Windows / UNC 文件路径软折行无缝续接及防误粘护栏
+    EXPECT_TRUE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "https://221.219.244.245:52400/b1s/", "v2/view.svc/$metadata", &r1, &r2));
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "https://example.com/first/", "https://example.com/second", &r1, &r2));
+    EXPECT_TRUE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "C:\\repo\\Tools3000\\build\\", "bin\\Release\\Tools3000.exe", &r1, &r2));
+    EXPECT_TRUE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "\\\\192.168.1.150\\b1_shr\\", "attachments\\order_2026.pdf", &r1, &r2));
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "C:\\repo\\Tools3000\\", "D:\\other\\file.txt", &r1, &r2));
+}
+
+TEST(LiveTextOcrTest, OcrEngineOneDimensionalBarcodeDecodingWithFormat) {
+    using namespace tools3000::ocr;
+
+    // 按 ISO/IEC 15420 规范精确编码生成标准 EAN-13 条形码 "6901234567892"
+    static constexpr const char* kL[10] = {
+        "0001101", "0011001", "0010011", "0111101", "0100011",
+        "0110001", "0101111", "0111011", "0110111", "0001011"
+    };
+    static constexpr const char* kG[10] = {
+        "0100111", "0110011", "0011011", "0100001", "0011101",
+        "0111001", "0000101", "0010001", "0001001", "0010111"
+    };
+    static constexpr const char* kR[10] = {
+        "1110010", "1100110", "1101100", "1000010", "1011100",
+        "1001110", "1010000", "1000100", "1001000", "1110100"
+    };
+    // 首数字 '6' 对应的左 6 位奇偶校验模板: L G G G L L
+    const char* kParity6 = "LGGGLL";
+    const int digits[13] = {6, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 2};
+
+    std::string bits = "101";
+    for (int i = 1; i <= 6; ++i) {
+        bits += (kParity6[i - 1] == 'L') ? kL[digits[i]] : kG[digits[i]];
+    }
+    bits += "01010";
+    for (int i = 7; i <= 12; ++i) {
+        bits += kR[digits[i]];
+    }
+    bits += "101";
+    ASSERT_EQ(bits.size(), 95u);
+
+    constexpr int kModuleW = 4;
+    constexpr int kQuietX = 48;
+    constexpr int kBarH = 120;
+    constexpr int kPadY = 44;
+    const int imgW = kQuietX * 2 + static_cast<int>(bits.size()) * kModuleW;
+    const int imgH = kPadY * 2 + kBarH;
+
+    cv::Mat barImg(imgH, imgW, CV_8UC3, cv::Scalar(255, 255, 255));
+    for (size_t i = 0; i < bits.size(); ++i) {
+        if (bits[i] == '1') {
+            cv::rectangle(barImg,
+                          cv::Rect(kQuietX + static_cast<int>(i) * kModuleW, kPadY, kModuleW, kBarH),
+                          cv::Scalar(0, 0, 0), cv::FILLED);
+        }
+    }
+
+    const auto codes = OcrEngine::detectQrCodes(barImg);
+    bool foundEan13 = false;
+    for (const auto& c : codes) {
+        if (c.text == "6901234567892") {
+            foundEan13 = true;
+            EXPECT_NE(c.format.find("EAN_13"), std::string::npos) << c.format;
+            EXPECT_GT(c.boundingBox.width, 100);
+            EXPECT_GT(c.boundingBox.height, 40);
+        }
+    }
+    EXPECT_TRUE(foundEan13) << "OcrEngine::detectQrCodes must decode tightly-cropped EAN-13 1D barcode";
+
+    // 2. 大尺寸整页单据中局部嵌入 EAN-13 条形码：自动定位并解码
+    cv::Mat pageImg(768, 1024, CV_8UC3, cv::Scalar(248, 248, 248));
+    for (size_t i = 0; i < bits.size(); ++i) {
+        if (bits[i] == '1') {
+            cv::rectangle(pageImg,
+                          cv::Rect(620 + static_cast<int>(i) * 3, 500, 3, 90),
+                          cv::Scalar(0, 0, 0), cv::FILLED);
+        }
+    }
+    const auto pageCodes = OcrEngine::detectQrCodes(pageImg);
+    bool foundPageEan13 = false;
+    for (const auto& c : pageCodes) {
+        if (c.text == "6901234567892") {
+            foundPageEan13 = true;
+            EXPECT_NE(c.format.find("EAN_13"), std::string::npos) << c.format;
+        }
+    }
+    EXPECT_TRUE(foundPageEan13) << "OcrEngine::detectQrCodes must locate and decode embedded EAN-13 barcode on full document page";
 }
 
 namespace {

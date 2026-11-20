@@ -15,6 +15,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/objdetect.hpp>
+#include <opencv2/objdetect/barcode.hpp>
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -1601,7 +1602,8 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
         }
 
         cv::QRCodeDetector detector;
-        auto appendDecoded = [&](const std::string& text, const cv::Mat& points, int rowIdx, float passInvScale) {
+        auto appendDecoded = [&](const std::string& text, const cv::Mat& points, int rowIdx, float passInvScale,
+                                 const std::string& format = "QR_CODE") {
             if (text.empty()) return;
             for (const auto& existing : qrResults) {
                 if (existing.text == text) return;
@@ -1609,6 +1611,7 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
 
             OcrQrResult item;
             item.text = text;
+            item.format = format.empty() ? "QR_CODE" : format;
 
             float minX = FLT_MAX, minY = FLT_MAX, maxX = -FLT_MAX, maxY = -FLT_MAX;
             bool validPts = false;
@@ -1688,6 +1691,41 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
         if (qrResults.empty() && isDarkBackgroundImage(image)) {
             cv::Mat invWork = 255 - work;
             runPass(invWork, invScale, /*tryMulti=*/true);
+        }
+
+        // 并联扫描一维商品/工业条形码 (OpenCV 4.12 原生 BarcodeDetector: EAN-13 / EAN-8 / UPC-A / UPC-E 等)
+        try {
+            cv::barcode::BarcodeDetector barcodeDetector;
+            std::vector<std::string> barInfos;
+            std::vector<std::string> barTypes;
+            cv::Mat barPoints;
+            bool barDecoded = barcodeDetector.detectAndDecodeWithType(work, barInfos, barTypes, barPoints);
+            if (!barDecoded && work.cols >= 80 && work.rows >= 32 &&
+                work.cols <= 960 && work.rows <= 640) {
+                // 紧贴条形码裁剪的小图缺乏周边大面积留白时，结构张量定位器易漏检，补一次 <1ms 整图直解兜底
+                cv::Mat wholePts(1, 4, CV_32FC2);
+                auto* wp = wholePts.ptr<cv::Point2f>(0);
+                wp[0] = cv::Point2f(0.0f, static_cast<float>(work.rows - 1));
+                wp[1] = cv::Point2f(0.0f, 0.0f);
+                wp[2] = cv::Point2f(static_cast<float>(work.cols - 1), 0.0f);
+                wp[3] = cv::Point2f(static_cast<float>(work.cols - 1), static_cast<float>(work.rows - 1));
+                barInfos.clear();
+                barTypes.clear();
+                if (barcodeDetector.decodeWithType(work, wholePts, barInfos, barTypes)) {
+                    barPoints = wholePts;
+                    barDecoded = true;
+                }
+            }
+            if (barDecoded) {
+                const size_t nBars = barInfos.size();
+                for (size_t bi = 0; bi < nBars; ++bi) {
+                    const std::string fmt = (bi < barTypes.size() && !barTypes[bi].empty())
+                        ? barTypes[bi]
+                        : std::string("BARCODE");
+                    appendDecoded(barInfos[bi], barPoints, static_cast<int>(bi), invScale, fmt);
+                }
+            }
+        } catch (...) {
         }
     } catch (const std::exception& e) {
         LOG_WARN("QR detection skipped due to exception: {}", e.what());
@@ -2382,24 +2420,112 @@ bool OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
         }
     }
 
-    if (!inString || (!hasJsonContext && !lastOpenAfterJsonPunct)) {
+    if (inString && (hasJsonContext || lastOpenAfterJsonPunct)) {
+        // 3. 防呆护栏：若前一行实际因 OCR 漏掉闭合引号，而 nextLineText 已直接以新的 JSON 键 `"Key":` 开头，严禁误合并
+        size_t nextStart = 0;
+        while (nextStart < nextLineText.size() &&
+               (nextLineText[nextStart] == ' ' || nextLineText[nextStart] == '\t')) {
+            ++nextStart;
+        }
+        if (nextStart < nextLineText.size() && !isJsonKeyStart(nextLineText, nextStart)) {
+            return true;
+        }
         return false;
     }
 
-    // 3. 防呆护栏：若前一行实际因 OCR 漏掉闭合引号，而 nextLineText 已直接以新的 JSON 键 `"Key":` 开头，严禁误合并
-    size_t nextStart = 0;
-    while (nextStart < nextLineText.size() &&
-           (nextLineText[nextStart] == ' ' || nextLineText[nextStart] == '\t')) {
-        ++nextStart;
-    }
-    if (nextStart >= nextLineText.size()) {
-        return false;
-    }
-    if (isJsonKeyStart(nextLineText, nextStart)) {
-        return false;
+    // 4. 通用软折行续接扩展：长 URL (`https://...`) 与 Windows 本地/UNC 文件路径 (`C:\...` / `\\host\...`) 跨行折断
+    {
+        // 提取 accumulatedText 最后一行（最近一个换行符之后）
+        size_t lastNl = accumulatedText.find_last_of("\r\n");
+        std::string_view prevLine = (lastNl == std::string_view::npos)
+            ? accumulatedText
+            : accumulatedText.substr(lastNl + 1);
+        while (!prevLine.empty() && (prevLine.back() == ' ' || prevLine.back() == '\t')) {
+            prevLine.remove_suffix(1);
+        }
+        std::string_view nextTrim = nextLineText;
+        while (!nextTrim.empty() && (nextTrim.front() == ' ' || nextTrim.front() == '\t')) {
+            nextTrim.remove_prefix(1);
+        }
+        while (!nextTrim.empty() && (nextTrim.back() == ' ' || nextTrim.back() == '\t')) {
+            nextTrim.remove_suffix(1);
+        }
+        if (prevLine.empty() || nextTrim.empty() || nextTrim.find('\t') != std::string_view::npos) {
+            return false;
+        }
+
+        // 取 prevLine 末尾最后一个非空 token
+        const size_t lastSpace = prevLine.find_last_of(" \t");
+        const std::string_view prevTailToken = (lastSpace == std::string_view::npos)
+            ? prevLine
+            : prevLine.substr(lastSpace + 1);
+
+        auto startsWithCaseInsensitive = [](std::string_view s, std::string_view prefix) noexcept -> bool {
+            if (s.size() < prefix.size()) return false;
+            for (size_t i = 0; i < prefix.size(); ++i) {
+                const unsigned char a = static_cast<unsigned char>(s[i]);
+                const unsigned char b = static_cast<unsigned char>(prefix[i]);
+                const unsigned char la = (a >= 'A' && a <= 'Z') ? static_cast<unsigned char>(a + 32) : a;
+                const unsigned char lb = (b >= 'A' && b <= 'Z') ? static_cast<unsigned char>(b + 32) : b;
+                if (la != lb) return false;
+            }
+            return true;
+        };
+
+        auto isUrlChar = [](unsigned char c) noexcept -> bool {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                   c == '/' || c == ':' || c == '.' || c == '-' || c == '_' || c == '?' ||
+                   c == '&' || c == '=' || c == '%' || c == '#' || c == '~' || c == '+' ||
+                   c == '@' || c == '!' || c == '$' || c == ',' || c == ';' || c == '(' || c == ')';
+        };
+
+        // 4a. 长 URL 软折行（如 https://host/a/b/ + c/d?x=1），严禁合并两条独立的 URL
+        const bool prevIsUrl =
+            startsWithCaseInsensitive(prevTailToken, "https://") ||
+            startsWithCaseInsensitive(prevTailToken, "http://");
+        const bool nextStartsNewUrl =
+            startsWithCaseInsensitive(nextTrim, "https://") ||
+            startsWithCaseInsensitive(nextTrim, "http://");
+        if (prevIsUrl && !nextStartsNewUrl && nextTrim.find(' ') == std::string_view::npos) {
+            bool allUrlChars = true;
+            bool nextHasUrlPunct = false;
+            for (char ch : nextTrim) {
+                const unsigned char uc = static_cast<unsigned char>(ch);
+                if (!isUrlChar(uc)) {
+                    allUrlChars = false;
+                    break;
+                }
+                if (uc == '/' || uc == '?' || uc == '&' || uc == '=' || uc == '%' || uc == '#' || uc == '.') {
+                    nextHasUrlPunct = true;
+                }
+            }
+            const char tailCh = prevTailToken.back();
+            const bool prevEndsWithUrlDelim =
+                tailCh == '/' || tailCh == '?' || tailCh == '&' || tailCh == '=' ||
+                tailCh == '%' || tailCh == '#' || tailCh == '-' || tailCh == '_';
+            if (allUrlChars && (prevEndsWithUrlDelim || (prevTailToken.size() >= 28 && nextHasUrlPunct))) {
+                return true;
+            }
+        }
+
+        // 4b. Windows 本地/UNC 文件路径在反斜杠 `\` 后软折行（如 C:\repo\Tools3000\ + build\Tools3000.exe）
+        const bool prevIsWinPath =
+            (prevTailToken.size() >= 4 &&
+             ((prevTailToken[0] >= 'A' && prevTailToken[0] <= 'Z') || (prevTailToken[0] >= 'a' && prevTailToken[0] <= 'z')) &&
+             prevTailToken[1] == ':' && prevTailToken[2] == '\\') ||
+            (prevTailToken.size() >= 4 && prevTailToken[0] == '\\' && prevTailToken[1] == '\\');
+        const bool nextStartsNewWinPath =
+            (nextTrim.size() >= 3 &&
+             ((nextTrim[0] >= 'A' && nextTrim[0] <= 'Z') || (nextTrim[0] >= 'a' && nextTrim[0] <= 'z')) &&
+             nextTrim[1] == ':' && nextTrim[2] == '\\') ||
+            (nextTrim.size() >= 2 && nextTrim[0] == '\\' && nextTrim[1] == '\\');
+        if (prevIsWinPath && prevTailToken.back() == '\\' && !nextStartsNewWinPath && !nextStartsNewUrl &&
+            nextTrim.front() != '\\' && nextTrim.front() != '"') {
+            return true;
+        }
     }
 
-    return true;
+    return false;
 }
 
 std::string OcrEngine::orderTextBlocksWithXYCut(
