@@ -193,6 +193,11 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/StudioTimeline.cpp
     src/capture/StudioVideoCompositor.cpp
     src/capture/StudioPreviewWindow.cpp
+    src/capture/StudioPreviewWindowDrawers.cpp
+    src/capture/StudioPreviewWindowExport.cpp
+    src/capture/StudioPreviewWindowInput.cpp
+    src/capture/StudioPreviewWindowRender.cpp
+    src/capture/StudioPreviewWindowTimeline.cpp
     src/capture/ClipboardUtils.cpp
     src/capture/RecordingIndicator.cpp
     src/capture/RecordingGpuProbe.cpp
