@@ -142,17 +142,20 @@ std::string joinAlignedSelectedPieces(
     });
 
     std::string out;
+    const tools3000::ocr::OcrResult* prevPiece = nullptr;
     for (size_t i = 0; i < pieces.size(); ++i) {
         if (pieces[i].text.empty()) continue;
-        if (!out.empty() && i > 0) {
-            if (pieces[i].layoutRegionId == pieces[i - 1].layoutRegionId &&
-                pieces[i].alignedRowId == pieces[i - 1].alignedRowId) {
+        if (!out.empty() && prevPiece != nullptr) {
+            if (pieces[i].layoutRegionId == prevPiece->layoutRegionId &&
+                pieces[i].alignedRowId == prevPiece->alignedRowId) {
                 out.push_back('\t');
-            } else {
+            } else if (!tools3000::ocr::OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+                           out, pieces[i].text, &prevPiece->box, &pieces[i].box)) {
                 out += eol;
             }
         }
         out += pieces[i].text;
+        prevPiece = &pieces[i];
     }
     return out;
 }

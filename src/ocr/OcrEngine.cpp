@@ -2020,10 +2020,18 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image) {
 }
 
 std::string OcrEngine::recognizeToText(const cv::Mat& image) {
+    const auto lines = extractText(image);
     std::string text;
-    for (auto const& r : extractText(image)) {
-        if (!text.empty()) text += '\n';
+    const OcrResult* prevLine = nullptr;
+    for (auto const& r : lines) {
+        if (r.text.empty()) continue;
+        if (!text.empty() && prevLine != nullptr) {
+            if (!shouldSeamlessJoinSoftWrappedJsonLine(text, r.text, &prevLine->box, &r.box)) {
+                text += '\n';
+            }
+        }
         text += r.text;
+        prevLine = &r;
     }
     return text;
 }
@@ -2282,6 +2290,118 @@ std::vector<OcrResult> OcrEngine::assembleLinesWithXYCut(
     return results;
 }
 
+bool OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+    std::string_view accumulatedText,
+    std::string_view nextLineText,
+    const cv::Rect* prevBox,
+    const cv::Rect* nextBox) noexcept {
+    if (accumulatedText.empty() || nextLineText.empty()) {
+        return false;
+    }
+
+    // 1. 物理同栏邻接校验（避免把左栏底行与右栏顶行或跨越大幅留白的无关文本误粘）
+    if (prevBox != nullptr && nextBox != nullptr &&
+        prevBox->width > 0 && prevBox->height > 0 &&
+        nextBox->width > 0 && nextBox->height > 0) {
+        const int maxH = (std::max)(prevBox->height, nextBox->height);
+        if (nextBox->y < prevBox->y - maxH / 2) {
+            return false;
+        }
+        const int verticalGap = nextBox->y - (prevBox->y + prevBox->height);
+        const int maxGap = (std::max)(22, static_cast<int>(std::lround(static_cast<float>(maxH) * 2.4f)));
+        if (verticalGap > maxGap) {
+            return false;
+        }
+        const int hOverlap = (std::min)(prevBox->x + prevBox->width, nextBox->x + nextBox->width) -
+                             (std::max)(prevBox->x, nextBox->x);
+        if (hOverlap <= 0) {
+            return false;
+        }
+    }
+
+    auto isJsonKeyStart = [](std::string_view s, size_t start) noexcept -> bool {
+        if (start >= s.size() || s[start] != '"') return false;
+        size_t j = start + 1;
+        size_t keyLen = 0;
+        while (j < s.size() && s[j] != '"' && s[j] != '\r' && s[j] != '\n') {
+            const unsigned char ch = static_cast<unsigned char>(s[j]);
+            if (ch < 0x20) return false;
+            ++j;
+            ++keyLen;
+            if (keyLen > 96) return false;
+        }
+        if (keyLen == 0 || j >= s.size() || s[j] != '"') return false;
+        size_t k = j + 1;
+        while (k < s.size() && (s[k] == ' ' || s[k] == '\t')) ++k;
+        return (k < s.size() && s[k] == ':');
+    };
+
+    // 2. 精确双引号状态机（跳过 \" / \\ 转义），仅当处于未闭合 JSON 字符串且具备 JSON 语法上下文时触发
+    bool inString = false;
+    bool escaped = false;
+    bool hasJsonContext = false;
+    bool lastOpenAfterJsonPunct = false;
+    char lastNonSpaceOutside = '\0';
+
+    for (size_t i = 0; i < accumulatedText.size(); ++i) {
+        const char ch = accumulatedText[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                inString = false;
+                lastNonSpaceOutside = '"';
+            }
+            continue;
+        }
+
+        if (ch == '"') {
+            if (!hasJsonContext && isJsonKeyStart(accumulatedText, i)) {
+                hasJsonContext = true;
+            }
+            lastOpenAfterJsonPunct = (lastNonSpaceOutside == ':' ||
+                                      lastNonSpaceOutside == ',' ||
+                                      lastNonSpaceOutside == '[' ||
+                                      lastNonSpaceOutside == '{');
+            inString = true;
+            escaped = false;
+            continue;
+        }
+
+        if (ch == ':' && lastNonSpaceOutside == '"') {
+            hasJsonContext = true;
+        }
+        if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
+            lastNonSpaceOutside = ch;
+        }
+    }
+
+    if (!inString || (!hasJsonContext && !lastOpenAfterJsonPunct)) {
+        return false;
+    }
+
+    // 3. 防呆护栏：若前一行实际因 OCR 漏掉闭合引号，而 nextLineText 已直接以新的 JSON 键 `"Key":` 开头，严禁误合并
+    size_t nextStart = 0;
+    while (nextStart < nextLineText.size() &&
+           (nextLineText[nextStart] == ' ' || nextLineText[nextStart] == '\t')) {
+        ++nextStart;
+    }
+    if (nextStart >= nextLineText.size()) {
+        return false;
+    }
+    if (isJsonKeyStart(nextLineText, nextStart)) {
+        return false;
+    }
+
+    return true;
+}
+
 std::string OcrEngine::orderTextBlocksWithXYCut(
     const std::vector<OcrResult>& blocks,
     const char* lineEnding) {
@@ -2290,12 +2410,17 @@ std::string OcrEngine::orderTextBlocksWithXYCut(
 
     const auto orderedLines = assembleRecognizedBlocksWithLayout(blocks);
     std::string combined;
+    const OcrResult* prevLine = nullptr;
     for (size_t i = 0; i < orderedLines.size(); ++i) {
         if (orderedLines[i].text.empty()) continue;
-        if (!combined.empty()) {
-            combined += eol;
+        if (!combined.empty() && prevLine != nullptr) {
+            if (!shouldSeamlessJoinSoftWrappedJsonLine(combined, orderedLines[i].text,
+                                                      &prevLine->box, &orderedLines[i].box)) {
+                combined += eol;
+            }
         }
         combined += orderedLines[i].text;
+        prevLine = &orderedLines[i];
     }
     return combined;
 }
@@ -2365,7 +2490,11 @@ std::wstring OcrEngine::smartMergeParagraphs(const std::wstring& rawMultiLineTex
             const bool prevShortEnded = isSentenceTerminalPunct(prevLast) &&
                                         maxLen >= 16 &&
                                         prevRawLen * 100 < maxLen * 68;
-            if (prevHadTab || curHasTab || curIsList || hasDeepIndent || prevShortEnded) {
+            const std::string outUtf8 = tools3000::core::WinUtils::wstringToUtf8(out);
+            const std::string curUtf8 = tools3000::core::WinUtils::wstringToUtf8(std::wstring(cur));
+            if (shouldSeamlessJoinSoftWrappedJsonLine(outUtf8, curUtf8)) {
+                out.append(cur.data(), cur.size());
+            } else if (prevHadTab || curHasTab || curIsList || hasDeepIndent || prevShortEnded) {
                 out += L'\n';
                 out.append(cur.data(), cur.size());
             } else if (prevLast == L'-' && out.size() >= 2 &&

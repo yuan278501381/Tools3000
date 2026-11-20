@@ -2669,6 +2669,62 @@ TEST(LiveTextOcrTest, DeepOcrPixelUnderscoreRescueAndHyperlinkGuard) {
     EXPECT_EQ(hyperlink.text, "foo bar") << "Full-width hyperlink underline must never turn a word space into underscore";
 }
 
+TEST(LiveTextOcrTest, OcrEngineSoftWrappedJsonSeamlessJoinAndGuards) {
+    using namespace tools3000::ocr;
+
+    // 1. 压缩单行 JSON 在中文字符串中间软折行：拼接后绝不能插入 \r\n 破坏 RFC 8259 字符串语法
+    std::vector<OcrResult> wrappedJson;
+    auto pushRow = [&](int x, int y, int w, int h, const char* txt) {
+        OcrResult r;
+        r.text = txt;
+        r.box = cv::Rect(x, y, w, h);
+        r.confidence = 0.96f;
+        wrappedJson.push_back(std::move(r));
+    };
+    pushRow(70, 184, 880, 15, "{\"U_PLM_Categ2\":\"BCP0300\",\"U_YF_Project\":\"TXZW-WH003\",");
+    pushRow(70, 200, 940, 15, "\"ItemName\":\"KT154-F19 \xE6\xB5\x87");
+    pushRow(70, 216, 940, 14, "\xE5\xB0\x81\xE9\x94\x82\xE7\x94\xB5\xE6\xB1\xA0\xE7\xBB\x84\",\"User_Text\":\"\xE5\x8D\x97\xE9\x80\x9A\xE5\x8D\x97\xE5\x8D\x93\xE7\x94\xB5");
+    pushRow(70, 232, 940, 15, "\xE5\xAD\x90\xE7\xA7\x91\xE6\x8A\x80\xE6\x9C\x89\xE9\x99\x90\xE5\x85\xAC\xE5\x8F\xB8\",\"U_financial_type\":\"\xE8\x87\xAA\xE7\xA0\x94\xE4\xBA\xA7");
+    pushRow(70, 248, 930, 14, "\xE5\x93\x81\",\"ItemsGroupCode\":104,\"ItemPrices\":[{\"Currency\":\"RMB\",\"PriceList\":1}]}");
+
+    const std::string joined = OcrEngine::orderTextBlocksWithXYCut(wrappedJson, "\r\n");
+    const auto parsed = nlohmann::json::parse(joined);
+    EXPECT_EQ(parsed.at("U_PLM_Categ2").get<std::string>(), "BCP0300");
+    EXPECT_EQ(parsed.at("ItemName").get<std::string>(), "KT154-F19 \xE6\xB5\x87\xE5\xB0\x81\xE9\x94\x82\xE7\x94\xB5\xE6\xB1\xA0\xE7\xBB\x84");
+    EXPECT_EQ(parsed.at("User_Text").get<std::string>(), "\xE5\x8D\x97\xE9\x80\x9A\xE5\x8D\x97\xE5\x8D\x93\xE7\x94\xB5\xE5\xAD\x90\xE7\xA7\x91\xE6\x8A\x80\xE6\x9C\x89\xE9\x99\x90\xE5\x85\xAC\xE5\x8F\xB8");
+    EXPECT_EQ(parsed.at("U_financial_type").get<std::string>(), "\xE8\x87\xAA\xE7\xA0\x94\xE4\xBA\xA7\xE5\x93\x81");
+    EXPECT_EQ(parsed.at("ItemsGroupCode").get<int>(), 104);
+    ASSERT_EQ(parsed.at("ItemPrices").size(), 1u);
+    EXPECT_EQ(parsed.at("ItemPrices")[0].at("Currency").get<std::string>(), "RMB");
+
+    // 2. 长 URL 软折行：smartMergeParagraphs 也必须无缝直连（绝不插入空格把 URL 拆断）
+    const std::string mergedUrl = OcrEngine::smartMergeParagraphsUtf8(
+        "\"@odata.context\": \"https://example.com/b1s/\n    v2/view.svc/$metadata\",");
+    EXPECT_EQ(mergedUrl, "\"@odata.context\": \"https://example.com/b1s/v2/view.svc/$metadata\",");
+
+    // 3. 常规格式化多行 JSON：每行字符串均已闭合，必须完整保留换行
+    const cv::Rect r1(100, 100, 150, 14);
+    const cv::Rect r2(100, 116, 150, 14);
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "\"DocEntry\" : 90411,", "\"CANCELED\" : \"N\",", &r1, &r2));
+
+    // 4. 防呆护栏 A：上一行漏识闭合引号，而下一行直接以新的 JSON 键 `"Age":` 开头 -> 严禁误合并
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "{\"Name\": \"Alice", "\"Age\": 30}", &r1, &r2));
+
+    // 5. 防呆护栏 B：几何跨分栏（右侧新栏顶部）或垂直大间隔 -> 严禁误合并
+    const cv::Rect rightColTop(600, 100, 150, 14);
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "{\"Name\": \"Alice", "Smith\"}", &r1, &rightColTop));
+    const cv::Rect farBelow(100, 260, 150, 14);
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "{\"Name\": \"Alice", "Smith\"}", &r1, &farBelow));
+
+    // 6. 防呆护栏 C：普通非 JSON 文本偶发未闭合引号 -> 严禁误合并
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "She said \"Hello world", "Next paragraph line", &r1, &r2));
+}
+
 namespace {
 
 std::filesystem::path resolveRealWorldOcrFixtureDir() {
@@ -2826,6 +2882,32 @@ TEST(LiveTextOcrTest, FixtureApifoxCompactWideJsonRegression) {
     EXPECT_NE(allText.find("PATCH"), std::string::npos) << allText;
     EXPECT_EQ(allText.find("PATCH v"), std::string::npos) << "Dropdown chevron next to PATCH leaked into OCR text";
     EXPECT_NE(allText.find("格式化"), std::string::npos) << allText;
+
+    // 端到端复制拼接 + 标准 JSON 解析器强断言：
+    // 框选编辑器区 5 行软折行紧凑 JSON 并走 OcrEngine::orderTextBlocksWithXYCut 拼接后，
+    // 必须无缝缝合所有被中文软折行劈断的字符串，直接通过 nlohmann::json::parse 零报错解析！
+    std::vector<OcrResult> jsonEditorLines;
+    for (const auto& blk : lines) {
+        if (blk.box.y >= 175 && blk.box.y <= 260 && blk.box.x >= 60) {
+            jsonEditorLines.push_back(blk);
+        }
+    }
+    ASSERT_EQ(jsonEditorLines.size(), 5u);
+    const std::string copiedJson = OcrEngine::orderTextBlocksWithXYCut(jsonEditorLines, "\r\n");
+    nlohmann::json parsed;
+    ASSERT_NO_THROW(parsed = nlohmann::json::parse(copiedJson)) << "Copied compact JSON must be valid RFC 8259 JSON:\n" << copiedJson;
+    EXPECT_EQ(parsed.at("U_PLM_Categ2").get<std::string>(), "BCP0300");
+    EXPECT_EQ(parsed.at("U_PLM_Categ1").get<std::string>(), "半成品");
+    EXPECT_EQ(parsed.at("ProcurementMethod").get<std::string>(), "bom_Make");
+    EXPECT_EQ(parsed.at("ItemCode").get<std::string>(), "BCP1097");
+    EXPECT_NE(parsed.at("ItemName").get<std::string>().find("浇封锂电池组（型号：SY-F19-L）"), std::string::npos);
+    EXPECT_NE(parsed.at("User_Text").get<std::string>().find("南通南卓电子科技有限公司"), std::string::npos);
+    EXPECT_EQ(parsed.at("U_financial_type").get<std::string>(), "自研产品");
+    EXPECT_EQ(parsed.at("ItemsGroupCode").get<int>(), 104);
+    ASSERT_TRUE(parsed.at("ItemPrices").is_array());
+    ASSERT_EQ(parsed.at("ItemPrices").size(), 1u);
+    EXPECT_EQ(parsed.at("ItemPrices")[0].at("Currency").get<std::string>(), "RMB");
+    EXPECT_EQ(parsed.at("ItemPrices")[0].at("PriceList").get<int>(), 1);
 }
 
 TEST(LiveTextOcrTest, FixtureRealWorldScreenPhotosAndQrRegression) {
