@@ -523,6 +523,7 @@ try {
         throw "[4/6] 倒计时超时后 Tools3000_RecordingCountdown 未自动销毁收起！"
     }
 
+    $savedUserFg = [CaptureE2EHarness]::GetForegroundWindow()
     $decoyForm = [System.Windows.Forms.Form]::new()
     $decoyForm.Text = "ExternalTargetApp"
     $decoyForm.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
@@ -679,4 +680,7 @@ finally {
     try {
         Remove-Item -LiteralPath $HarnessRoot -Recurse -Force -ErrorAction SilentlyContinue
     } catch {}
+    if ($savedUserFg -and $savedUserFg -ne [IntPtr]::Zero -and [CaptureE2EHarness]::IsWindow($savedUserFg)) {
+        [void][CaptureE2EHarness]::SetForegroundWindow($savedUserFg)
+    }
 }
