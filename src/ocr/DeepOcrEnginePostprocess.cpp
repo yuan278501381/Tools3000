@@ -1232,6 +1232,172 @@ void DeepOcrEngine::stripUiDropdownChevrons(
     blocks = std::move(kept);
 }
 
+void DeepOcrEngine::rescueMissedUnderscores(
+    const cv::Mat& bgr,
+    OcrResult& item) {
+    if (bgr.empty() || bgr.type() != CV_8UC3 || item.text.size() < 3) return;
+    if (item.text.find(' ') == std::string::npos) return;
+
+    auto cps = OcrEngine::splitUtf8Codepoints(item.text);
+    if (cps.size() < 3 || item.charBoxes.size() != cps.size()) return;
+
+    const cv::Rect imgBounds(0, 0, bgr.cols, bgr.rows);
+    const cv::Rect lineSafe = item.box & imgBounds;
+    if (lineSafe.width < 8 || lineSafe.height < 8) return;
+
+    auto isAsciiAlnum = [](const std::string& cp) noexcept -> bool {
+        if (cp.size() != 1) return false;
+        const unsigned char c = static_cast<unsigned char>(cp[0]);
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    };
+
+    const int sy1 = lineSafe.y;
+    const int sy2 = (std::min)(bgr.rows, lineSafe.y + lineSafe.height + 1);
+    const int gh = sy2 - sy1;
+    if (gh < 8) return;
+
+    const int u0 = std::clamp(static_cast<int>(std::lround(static_cast<float>(gh) * 0.12f)), 0, gh - 2);
+    const int u1 = std::clamp(static_cast<int>(std::lround(static_cast<float>(gh) * 0.72f)), u0 + 1, gh - 1);
+    const int b0 = std::clamp(static_cast<int>(std::lround(static_cast<float>(gh) * 0.72f)), 1, gh - 1);
+    const int b1 = gh;
+
+    bool changed = false;
+    for (size_t i = 1; i + 1 < cps.size(); ++i) {
+        if (cps[i] != " ") continue;
+        if (!isAsciiAlnum(cps[i - 1]) || !isAsciiAlnum(cps[i + 1])) continue;
+
+        const cv::Rect& prevBox = item.charBoxes[i - 1];
+        const cv::Rect& spBox = item.charBoxes[i];
+        const cv::Rect& nextBox = item.charBoxes[i + 1];
+
+        const int sx1 = (std::max)(lineSafe.x, (std::min)(prevBox.x, spBox.x) - 2);
+        const int sx2 = (std::min)(lineSafe.x + lineSafe.width,
+                                   (std::max)(nextBox.x + nextBox.width, spBox.x + spBox.width) + 2);
+        if (sx2 - sx1 < 6) continue;
+
+        // 使用局部包围窗背景色（兼容单行内局部高亮选区如浅蓝底与周边白底混合场景）
+        const int bgX1 = (std::max)(0, sx1 - 10);
+        const int bgX2 = (std::min)(bgr.cols, sx2 + 10);
+        bool localUniform = false;
+        const cv::Vec3b bg = estimateBorderBackgroundColor(
+            bgr(cv::Rect(bgX1, sy1, bgX2 - bgX1, gh)), &localUniform);
+        if (!localUniform) continue;
+
+        auto pixelDiff = [&](int absY, int absX) noexcept -> int {
+            const auto& p = bgr.at<cv::Vec3b>(absY, absX);
+            return (std::max)({
+                std::abs(static_cast<int>(p[0]) - static_cast<int>(bg[0])),
+                std::abs(static_cast<int>(p[1]) - static_cast<int>(bg[1])),
+                std::abs(static_cast<int>(p[2]) - static_cast<int>(bg[2])),
+            });
+        };
+
+        // 在上部字符主体带 [u0, u1) 定位前后字母之间干净无墨水的真实空隙 [gapL, gapR)
+        const int sw = sx2 - sx1;
+        std::vector<uint8_t> upperClean(static_cast<size_t>(sw), 1);
+        for (int dx = 0; dx < sw; ++dx) {
+            const int ax = sx1 + dx;
+            for (int dy = u0; dy < u1; ++dy) {
+                if (pixelDiff(sy1 + dy, ax) >= 36) {
+                    upperClean[static_cast<size_t>(dx)] = 0;
+                    break;
+                }
+            }
+        }
+
+        const float spCenterX = static_cast<float>(spBox.x) + 0.5f * static_cast<float>(spBox.width);
+        const int maxGapW = (std::max)(14, gh);
+        int bestGapL = -1;
+        int bestGapR = -1;
+        float bestDist = 1e9f;
+        for (int dx = 0; dx < sw; ) {
+            if (!upperClean[static_cast<size_t>(dx)]) {
+                ++dx;
+                continue;
+            }
+            int end = dx;
+            while (end < sw && upperClean[static_cast<size_t>(end)]) ++end;
+            const int gw = end - dx;
+            if (dx > 0 && end < sw && gw >= 3 && gw <= maxGapW) {
+                const float gMid = static_cast<float>(sx1 + dx) + 0.5f * static_cast<float>(gw);
+                const float dist = std::abs(gMid - spCenterX);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestGapL = sx1 + dx;
+                    bestGapR = sx1 + end;
+                }
+            }
+            dx = end;
+        }
+        if (bestGapL < 0 || bestDist > static_cast<float>((std::max)(10, gh))) continue;
+
+        const int gw = bestGapR - bestGapL;
+        int bestRow = -1;
+        int bestRun = 0;
+        int bestPeak = 0;
+        int activeRows = 0;
+        for (int dy = b0; dy < b1; ++dy) {
+            const int ay = sy1 + dy;
+            int curRun = 0;
+            int rowMaxRun = 0;
+            int rowPeak = 0;
+            for (int ax = bestGapL; ax < bestGapR; ++ax) {
+                const int d = pixelDiff(ay, ax);
+                if (d >= 40) {
+                    ++curRun;
+                    if (curRun > rowMaxRun) rowMaxRun = curRun;
+                    if (d > rowPeak) rowPeak = d;
+                } else {
+                    curRun = 0;
+                }
+            }
+            if (rowMaxRun >= 3) ++activeRows;
+            if (rowMaxRun > bestRun || (rowMaxRun == bestRun && rowPeak > bestPeak)) {
+                bestRun = rowMaxRun;
+                bestPeak = rowPeak;
+                bestRow = ay;
+            }
+        }
+
+        const int minRequiredRun = (std::max)(4, static_cast<int>(std::ceil(static_cast<float>(gw) * 0.60f)));
+        const int maxAllowedThick = (std::max)(2, gh / 4);
+        if (bestRow < 0 || bestRun < minRequiredRun || bestPeak < 48 || activeRows > maxAllowedThick) {
+            continue;
+        }
+
+        // 反超链接通长下划线护栏：真实下划线 `_` 仅限于空隙底部，左右相邻字符脚下必为干净背景；
+        // 若左右翼均沿同一像素行延伸出连续通长横线，说明属于带下划线的普通文本/超链接，严禁误改！
+        auto countWingDark = [&](int xStart, int xEnd) noexcept -> int {
+            int darkCols = 0;
+            for (int ax = xStart; ax < xEnd; ++ax) {
+                if (ax < 0 || ax >= bgr.cols) continue;
+                int maxD = pixelDiff(bestRow, ax);
+                if (bestRow - 1 >= sy1 + b0) maxD = (std::max)(maxD, pixelDiff(bestRow - 1, ax));
+                if (bestRow + 1 < sy2) maxD = (std::max)(maxD, pixelDiff(bestRow + 1, ax));
+                if (maxD >= 40) ++darkCols;
+            }
+            return darkCols;
+        };
+        const int leftWingDark = countWingDark(bestGapL - 5, bestGapL - 1);
+        const int rightWingDark = countWingDark(bestGapR + 1, bestGapR + 5);
+        if (leftWingDark >= 3 && rightWingDark >= 3) {
+            continue;
+        }
+
+        cps[i] = "_";
+        changed = true;
+    }
+
+    if (changed) {
+        std::string rebuilt;
+        rebuilt.reserve(item.text.size());
+        for (const auto& cp : cps) {
+            rebuilt += cp;
+        }
+        item.text = std::move(rebuilt);
+    }
+}
+
 void DeepOcrEngine::normalizeStructuredJsonPunctuation(OcrResult& item) {
     if (item.text.empty()) return;
     auto cps = OcrEngine::splitUtf8Codepoints(item.text);
@@ -1267,7 +1433,7 @@ void DeepOcrEngine::normalizeStructuredJsonPunctuation(OcrResult& item) {
         }
     }
 
-    // 3. JSON 字段结束位的结构性全角逗号 `，` -> `,`（紧邻 `"`/数字/`]`/`}`/bool/null 之后且位于行尾或下一键引号前）
+    // 3. JSON 字段结束位的结构性全角逗号 `，` -> `,`（紧邻 `"`/数字/`]`/`}` 之后且位于行尾或下一键引号前）
     for (size_t i = 1; i < cps.size(); ++i) {
         if (cps[i] != "\xEF\xBC\x8C") continue; // `，`
         const std::string& prev = cps[i - 1];
@@ -1284,11 +1450,12 @@ void DeepOcrEngine::normalizeStructuredJsonPunctuation(OcrResult& item) {
         }
     }
 
-    // 4. 保守 JSON 对象花括号修复（JSON 语法中不存在圆括号对象 `("Key":` 或 `[("Key":`）
+    // 4. 保守 JSON 对象花括号修复（合法 JSON 中不存在圆括号对象或裸单字符 `f` 值）：
+    //    4a. 行首 `("Key":` / `f"Key":` -> `{"Key":`
     {
         size_t p = 0;
         while (p < cps.size() && cps[p] == " ") ++p;
-        if (p < cps.size() && cps[p] == "(") {
+        if (p < cps.size() && (cps[p] == "(" || cps[p] == "f")) {
             size_t q = p + 1;
             while (q < cps.size() && cps[q] == " ") ++q;
             if (matchAsciiJsonKeyColon(cps, q) != std::string::npos) {
@@ -1298,9 +1465,10 @@ void DeepOcrEngine::normalizeStructuredJsonPunctuation(OcrResult& item) {
         }
     }
 
+    //    4b. 数组内对象 `[("Key":` / `[f"Key":` -> `[{"Key":`（并同步规整尾部 `)]` -> `}]`）
     bool hasArrayObjOpen = false;
     for (size_t i = 0; i + 1 < cps.size(); ++i) {
-        if (cps[i] == "[" && cps[i + 1] == "(") {
+        if (cps[i] == "[" && (cps[i + 1] == "(" || cps[i + 1] == "f")) {
             size_t q = i + 2;
             while (q < cps.size() && cps[q] == " ") ++q;
             if (matchAsciiJsonKeyColon(cps, q) != std::string::npos) {
@@ -1316,6 +1484,23 @@ void DeepOcrEngine::normalizeStructuredJsonPunctuation(OcrResult& item) {
         for (size_t i = 0; i + 1 < cps.size(); ++i) {
             if (cps[i] == ")" && cps[i + 1] == "]") {
                 cps[i] = "}";
+                changed = true;
+            }
+        }
+    }
+
+    //    4c. 键值对嵌套对象起始 `"key": f` (行尾孤立单字符 `f`/`(`) 或 `"key": f"childKey":` -> `"key": {`
+    //        （严格保护 `"flag": false` 与 `"code": "f"` 绝不误改）
+    for (size_t i = 0; i < cps.size(); ++i) {
+        const size_t colonIdx = matchAsciiJsonKeyColon(cps, i);
+        if (colonIdx == std::string::npos) continue;
+        size_t v = colonIdx + 1;
+        while (v < cps.size() && cps[v] == " ") ++v;
+        if (v < cps.size() && (cps[v] == "f" || cps[v] == "(")) {
+            size_t after = v + 1;
+            while (after < cps.size() && cps[after] == " ") ++after;
+            if (after >= cps.size() || matchAsciiJsonKeyColon(cps, after) != std::string::npos) {
+                cps[v] = "{";
                 changed = true;
             }
         }

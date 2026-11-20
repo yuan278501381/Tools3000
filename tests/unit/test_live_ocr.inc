@@ -2575,12 +2575,98 @@ TEST(LiveTextOcrTest, DeepOcrStructuredJsonPunctuationNormalization) {
     EXPECT_EQ(OcrEngine::countUtf8Codepoints(jsonLine.text), origCpCount);
     EXPECT_EQ(jsonLine.charBoxes.size(), origCpCount);
 
-    // 2. 普通中文自然语言散文含中式引号/冒号/逗号：必须 100% 原样零改动！
+    // 2. JSON 嵌套对象起始 `{` 被误识为 `f` 或 `(`（行尾 `"message": f` / 内嵌 `"message":f"lang":` / 数组 `[f"Currency":`）
+    {
+        OcrResult msgBrace;
+        msgBrace.text = "\"message\": f";
+        msgBrace.charBoxes = OcrEngine::buildProportionalCharBoxes(msgBrace.text, cv::Rect(0, 0, 120, 14));
+        DeepOcrEngine::normalizeStructuredJsonPunctuation(msgBrace);
+        EXPECT_EQ(msgBrace.text, "\"message\": {");
+        EXPECT_EQ(msgBrace.charBoxes.size(), OcrEngine::countUtf8Codepoints(msgBrace.text));
+
+        OcrResult inlineBrace;
+        inlineBrace.text = "\"message\":f\"lang\":\"en-us\"}";
+        inlineBrace.charBoxes = OcrEngine::buildProportionalCharBoxes(inlineBrace.text, cv::Rect(0, 0, 260, 14));
+        DeepOcrEngine::normalizeStructuredJsonPunctuation(inlineBrace);
+        EXPECT_EQ(inlineBrace.text, "\"message\":{\"lang\":\"en-us\"}");
+
+        OcrResult arrBrace;
+        arrBrace.text = "\"ItemPrices\":[f\"Currency\":\"RMB\"}]}";
+        arrBrace.charBoxes = OcrEngine::buildProportionalCharBoxes(arrBrace.text, cv::Rect(0, 0, 320, 14));
+        DeepOcrEngine::normalizeStructuredJsonPunctuation(arrBrace);
+        EXPECT_EQ(arrBrace.text, "\"ItemPrices\":[{\"Currency\":\"RMB\"}]}");
+
+        // 负例保护：布尔值 `"flag": false` 与单字符字符串 `"code": "f"` 严禁被误改！
+        OcrResult boolFalse;
+        boolFalse.text = "\"flag\": false, \"code\": \"f\"";
+        DeepOcrEngine::normalizeStructuredJsonPunctuation(boolFalse);
+        EXPECT_EQ(boolFalse.text, "\"flag\": false, \"code\": \"f\"");
+    }
+
+    // 3. 普通中文自然语言散文含中式引号/冒号/逗号：必须 100% 原样零改动！
     OcrResult chineseProse;
     chineseProse.text = "\xE2\x80\x9C\xE4\xBD\xA0\xE5\xA5\xBD\xE2\x80\x9D\xEF\xBC\x8C\xE5\xA5\xB9\xE8\xAF\xB4\xEF\xBC\x9A\xE2\x80\x9C\xE4\xBB\x8A\xE5\xA4\xA9\xE5\xA4\xA9\xE6\xB0\x94\xE5\xBE\x88\xE5\xA5\xBD\xE3\x80\x82\xE2\x80\x9D";
     const std::string proseBefore = chineseProse.text;
     DeepOcrEngine::normalizeStructuredJsonPunctuation(chineseProse);
     EXPECT_EQ(chineseProse.text, proseBefore);
+}
+
+TEST(LiveTextOcrTest, DeepOcrPixelUnderscoreRescueAndHyperlinkGuard) {
+    using namespace tools3000::ocr;
+
+    // 1. 正例：浅蓝选区背景上真实绘制 "bom_Make"（底部独立 6px 下划线），OCR 误输出 "bom Make" -> 精准还原 "bom_Make"
+    cv::Mat img(120, 260, CV_8UC3, cv::Scalar(250, 232, 212)); // 浅蓝选中底色 (BGR)
+    const cv::Scalar ink(35, 35, 35);
+    // "bom" x=20..44, y=14..23; "_" x=46..52, y=25; "Make" x=54..84, y=14..23
+    cv::rectangle(img, cv::Rect(20, 14, 7, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(28, 16, 7, 8), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(36, 16, 8, 8), ink, cv::FILLED);
+    cv::line(img, cv::Point(46, 25), cv::Point(51, 25), ink, 1);
+    cv::rectangle(img, cv::Rect(54, 14, 8, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(63, 16, 6, 8), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(70, 14, 6, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(77, 16, 6, 8), ink, cv::FILLED);
+
+    OcrResult missed;
+    missed.text = "bom Make";
+    missed.box = cv::Rect(18, 12, 68, 15);
+    missed.charBoxes = {
+        cv::Rect(20, 12, 7, 15), cv::Rect(28, 12, 7, 15), cv::Rect(36, 12, 8, 15),
+        cv::Rect(45, 12, 8, 15),
+        cv::Rect(54, 12, 8, 15), cv::Rect(63, 12, 6, 15), cv::Rect(70, 12, 6, 15), cv::Rect(77, 12, 6, 15),
+    };
+    DeepOcrEngine::rescueMissedUnderscores(img, missed);
+    EXPECT_EQ(missed.text, "bom_Make");
+    EXPECT_EQ(missed.charBoxes.size(), 8u);
+
+    // 2. 负例 A：正常英文词间空格 "foo bar"（底部无笔画）-> 保持原样
+    cv::rectangle(img, cv::Rect(20, 48, 22, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(52, 48, 22, 10), ink, cv::FILLED);
+    OcrResult normalSpace;
+    normalSpace.text = "foo bar";
+    normalSpace.box = cv::Rect(18, 46, 58, 15);
+    normalSpace.charBoxes = {
+        cv::Rect(20, 46, 7, 15), cv::Rect(27, 46, 7, 15), cv::Rect(34, 46, 8, 15),
+        cv::Rect(43, 46, 8, 15),
+        cv::Rect(52, 46, 7, 15), cv::Rect(59, 46, 7, 15), cv::Rect(66, 46, 8, 15),
+    };
+    DeepOcrEngine::rescueMissedUnderscores(img, normalSpace);
+    EXPECT_EQ(normalSpace.text, "foo bar");
+
+    // 3. 负例 B：带通长下划线的超链接 "foo bar"（左右两翼均延续贯穿下划线）-> 反超链接护栏拦截，100% 保持空格
+    cv::rectangle(img, cv::Rect(20, 82, 22, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(52, 82, 22, 10), ink, cv::FILLED);
+    cv::line(img, cv::Point(20, 93), cv::Point(74, 93), ink, 1);
+    OcrResult hyperlink;
+    hyperlink.text = "foo bar";
+    hyperlink.box = cv::Rect(18, 80, 58, 15);
+    hyperlink.charBoxes = {
+        cv::Rect(20, 80, 7, 15), cv::Rect(27, 80, 7, 15), cv::Rect(34, 80, 8, 15),
+        cv::Rect(43, 80, 8, 15),
+        cv::Rect(52, 80, 7, 15), cv::Rect(59, 80, 7, 15), cv::Rect(66, 80, 8, 15),
+    };
+    DeepOcrEngine::rescueMissedUnderscores(img, hyperlink);
+    EXPECT_EQ(hyperlink.text, "foo bar") << "Full-width hyperlink underline must never turn a word space into underscore";
 }
 
 namespace {
@@ -2719,17 +2805,22 @@ TEST(LiveTextOcrTest, FixtureApifoxCompactWideJsonRegression) {
     EXPECT_NE(allText.find("\"U_PLM_Categ1\":\"半成品\","), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"U_YF_Project\":\"TXZW-WH003\","), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"PlanningSystem\":\"bop_MRP\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"ProcurementMethod\":\"bom_Make\","), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"ItemCode\":\"BCP1097\","), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"InventoryItem\":\"Y\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"User_Text\":"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"U_financial_type\":\"自研产"), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"ItemPrices\":[{\"Currency\":\"RMB\",\"PriceList\":1}]}"), std::string::npos) << allText;
 
     // 字符串值内部中文标点必须完好保全，严防被 JSON 标点规整误伤
     EXPECT_NE(allText.find("（型号：SY-F19-L）"), std::string::npos) << allText;
     EXPECT_NE(allText.find("生产厂家：南通南卓电"), std::string::npos) << allText;
 
-    // 底部错误响应 JSON 与 UI 按钮断言
+    // 底部错误响应 JSON 与 UI 按钮断言（含 `"message": {` 单个花括号精准还原）
     EXPECT_NE(allText.find("\"error\": {"), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"code\": -10,"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"message\": {"), std::string::npos) << allText;
+    EXPECT_EQ(allText.find("\"message\": f"), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"lang\": \"en-us\","), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"value\": \"Internal error (-10) occurred\""), std::string::npos) << allText;
     EXPECT_NE(allText.find("PATCH"), std::string::npos) << allText;

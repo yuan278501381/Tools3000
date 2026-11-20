@@ -217,6 +217,11 @@ public:
         const cv::Mat& bgr,
         std::vector<OcrResult>& blocks);
 
+    /// 像素级漏识下划线还原：对洁净背景行中 ASCII 字母/数字间的空格校验底部独立下划线笔画，精准还原 `_` 且免疫超链接通长下划线
+    static void rescueMissedUnderscores(
+        const cv::Mat& bgr,
+        OcrResult& item);
+
     /// 针对明确 JSON 键值语法行将结构位上的中文全角引号/冒号/逗号及失真括号规整为标准 ASCII（保留中文值内部标点及 charBoxes 1:1 对齐）
     static void normalizeStructuredJsonPunctuation(OcrResult& item);
 

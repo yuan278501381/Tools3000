@@ -1266,9 +1266,10 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             rawBlocks.push_back(std::move(item));
         }
 
-        // 2.5 像素级 UI 下拉箭头剥离 + 结构化 JSON 标点规整（均严格保持 text 与 charBoxes 1:1 对齐）
+        // 2.5 像素级 UI 下拉箭头剥离 + 像素级漏识下划线还原 + 结构化 JSON 标点规整（均严格保持 text 与 charBoxes 1:1 对齐）
         stripUiDropdownChevrons(bgr, rawBlocks);
         for (auto& blk : rawBlocks) {
+            rescueMissedUnderscores(bgr, blk);
             normalizeStructuredJsonPunctuation(blk);
         }
     } catch (const std::exception& e) {
