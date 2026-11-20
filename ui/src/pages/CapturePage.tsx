@@ -13,6 +13,7 @@ import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { toast } from 'sonner';
 import { PinGroupSettingsCard } from '../components/PinGroupSettingsCard';
+import { STUDIO_BACKDROP_OPTIONS, normalizeStudioBackdropKey } from '../constants/studioBackdrops';
 
 interface CaptureSettings {
   format: string;
@@ -153,7 +154,7 @@ export const CapturePage: FC = () => {
     studioLockCameraHold: true,
     studioMotionBlur: false,
     studioSmoothCursor: true, studioCursorScale: 1.35, studioClickStyle: 0,
-    studioAutoFrame: true, studioTheme: 'aurora_purple', studioAutoCaptions: false,
+    studioAutoFrame: true, studioTheme: 'blossom_silk', studioAutoCaptions: false,
     studioExportFormat: 0, studioExportResolution: 3, studioExportAutoClose: false,
     studioWatermarkEnabled: false, studioWatermarkMode: 0, studioWatermarkImagePath: '',
     studioWatermarkText: '{user} · {date} {time}', studioWatermarkAnchor: 3,
@@ -1300,18 +1301,12 @@ export const CapturePage: FC = () => {
                 <SettingRow label={t('recording.studioTheme')} description={t('recording.studioThemeDesc')}>
                   <Select
                     id="record-studio-theme"
-                    value={normalizeBeautyShellTheme(recording.studioTheme)}
+                    value={normalizeStudioBackdropKey(recording.studioTheme)}
                     onChange={(v) => updateRecording('studioTheme', v)}
-                    options={[
-                      { value: 'obsidian_dark', label: t('capture.themeObsidianDark') },
-                      { value: 'aurora_purple', label: t('capture.themeAuroraPurple') },
-                      { value: 'emerald_sea', label: t('capture.themeEmeraldSea') },
-                      { value: 'minimal_light', label: t('capture.themeMinimalLight') },
-                      { value: 'sunrise_coral', label: t('capture.themeSunriseCoral') },
-                      { value: 'airy_glacier', label: t('capture.themeAiryGlacier') },
-                      { value: 'dusk_mountains', label: t('capture.themeDuskMountains') },
-                      { value: 'misty_lake_dawn', label: t('capture.themeMistyLakeDawn') },
-                    ]}
+                    options={STUDIO_BACKDROP_OPTIONS.map((item) => ({
+                      value: item.value,
+                      label: t(item.labelKey),
+                    }))}
                   />
                 </SettingRow>
               )}

@@ -6,15 +6,81 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
-### [2026-11-20] 安装向导无故拦截「必须重启计算机」根治（`wpPreparing` 前置 PFRO 精准成对自愈引擎）与 `ChineseSimplified.isl` 翻译错位修复
-- **权威底层根因与三大暗坑 (`installer.iss`, `resources/installer/ChineseSimplified.isl`)**：
-  1. *Inno Setup `wpPreparing` 硬门禁时序暗坑*：进入 `wpPreparing` 页面瞬间，**严格早于** `[Code]` 中的 `PrepareToInstall()` 事件，Inno Setup 会扫描 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations` 及 `PendingFileRenameOperations2`；只要存在哪怕 1 条指向 `[Files]` / `[InstallDelete]` 目标目录的待重启删除/替换项（例如上次卸载或升级时被杀软/慢释放句柄短暂占用了 50ms 被 `uninsrestartdelete`/`restartreplace` 写入），即便此刻文件早已解锁或已消失，Inno Setup 也会直接阻断弹出「先前程序的安装/删除未完成，必须重启计算机」；
-  2. *`RegWriteMultiStringValue` 吞掉末尾空串的致命暗坑*：实测 Inno Setup 6 内置 `RegWriteMultiStringValue` 在末尾字符串为空串 `""`（Windows PFRO 用空目标串表示待重启删除操作，UTF-16LE 末尾需 `\0\0\0`）时会吞掉尾部空串，导致其他软件（如 Edge/Copilot/Windows Update）的 `(Src, Dst)` 奇偶配对错位！因此严禁使用 `RegWriteMultiStringValue` 回写 PFRO，必须通过 Win32 原生 `RegQueryValueExW` / `RegSetValueExW` / `RegDeleteValueW`（`KEY_WOW64_64KEY`）按字节精确读写 `REG_MULTI_SZ`；
-  3. *源头漏杀早退与翻译错位*：① 旧版 `StopAndKillAllTools3000Processes()` 当互斥体/窗口/SCM 已释放但 `AreAppFilesLocked()` 仍为真时漏执行 `taskkill` 与停服，且卸载 `WaitForProcessesAndFilesReleased(1000)` 对慢机/杀软扫描偏短；② `ChineseSimplified.isl` 第 243~244 行错将重启单选按钮 `YesRadio`/`NoRadio` 粘贴为「我同意此协议 / 我不同意此协议」。
-- **三道铁闸终局方案**：
-  1. **前置 PFRO 精准自愈 (`NextButtonClick(wpReady)` -> `ClearStaleAppPendingFileRenames(WizardDirValue)`)**：实测证实 `NextButtonClick(wpReady)` 在交互点击「安装」及 `/VERYSILENT` 静默模式下均严格先于 `wpPreparing` 触发，且 `WizardDirValue` 已是最终目录；仅对通过 `tools3000` 安全白名单的目标目录（兼容长路径与 8.3 短路径及目录本身）执行现场解锁清理（已不存在直接摘除、已解锁现场删旧文件/过期 `.tmp` 后摘除、真正被外部进程死锁的条目诚实保留），其余所有系统与第三方软件条目 100% 字节无损原样保留；冷路径（无残留）0 进程创建、0 注册表写入瞬过；
-  2. **源头止血加固**：修复 `StopAndKillAllTools3000ProcessesForDir` 在 `FilesLocked = True` 时同步补杀主进程与搜索服务，将 `PrepareToInstall` 释放轮询扩至 `15×200ms = 3000ms`、卸载释放等待扩至 `3500ms`（无锁仍 0ms 立即跳出）；
-  3. **语言包纠偏与防回退门禁**：将 `ChineseSimplified.isl` `YesRadio` / `NoRadio` 修正为「是，立即重新启动计算机(&Y)」/「否，稍后我将自己重新启动计算机(&N)」，并在 `tests/unit/test_core.inc` 补充 `InstallerRebootGuardAndI18nTest`。
+### [2026-11-21] 全库 9 大巨石源文件零回归纯物理拆分收官（全库业务源码 100% < 3,000 行）与实景 OCR 样本集入库 (`tests/fixtures/ocr/`) + 小型倾斜二维码 2x 强透视召回
+- **全库巨石文件零回归纯物理拆分总账（严守零语义改动 / 严格 ODR / 公开 ABI 零破坏 / 纯净单 CRLF / 逐个编译单测门禁原子提交）**：
+  1. `src/capture/PinWindow.cpp`（7,185 行 -> 5 文件 + `PinWindowInternal.h`，主文件 1,812 行）；
+  2. `src/capture/StudioPreviewWindow.cpp`（10,506 行 -> 6 文件 + `StudioPreviewWindowInternal.h`，主文件 1,881 行）；
+  3. `src/capture/CaptureRenderer.cpp`（7,805 行 -> 4 文件 + `CaptureRendererInternal.h`，主文件 1,562 行）；
+  4. `src/capture/CaptureInput.cpp`（6,790 行 -> 4 文件 + `CaptureInputInternal.h`，主文件 1,983 行）；
+  5. `src/capture/MarkupEngine.cpp`（5,831 行 -> 3 文件 + `MarkupEngineInternal.h`，主文件 1,398 行）；
+  6. `src/capture/StudioVideoCompositor.cpp`（4,883 行 -> 3 文件 + `StudioVideoCompositorInternal.h`，主文件 1,766 行）；
+  7. `src/ocr/DeepOcrEngine.cpp`（3,592 行 -> 3 文件 + `DeepOcrEngineInternal.h`：`DeepOcrEngine.cpp` 1,410 行、`DeepOcrEngineModel.cpp` 931 行、`DeepOcrEnginePostprocess.cpp` 1,334 行）；
+  8. `ui/src/SearchApp.css`（3,399 行 -> 10 行顺序 `@import` 入口 + `ui/src/styles/search/` 下 5 个子样式模块，保持选择器层叠顺序 100% 等价）；
+  9. `src/service/MftParser.cpp`（3,029 行 -> `MftParser.cpp` 1,342 行 + `MftParserQuery.cpp` 1,713 行）。
+  - *治理成果*：除静态汉字拼音数据表 `src/service/UnicodePinyinData.h`（3,842 行）外，全库全部 C++ / TypeScript / CSS / Rust 业务源码文件均已控制在 `< 3,000` 行以内。
+- **用户实景 OCR 样本集入库与端到端回归测试矩阵 (`tests/fixtures/ocr/`, `tests/unit/test_live_ocr.inc`, `src/ocr/OcrEngine.cpp`)**：
+  1. **8 张真实场景样本纳入 Git 版本管理**（经项目负责人确认无泄密风险，合计 ~1.63 MB）：`sap_form_table.jpg`、`release_notes_dense_doc.png`、`pda_screen_photo.jpg`、`meeting_tv_photo.jpg`、`erp_table_screen_photo.jpg`、`packing_card_photo.jpg`、`apifox_json_pretty.png`、`apifox_json_compact.jpg`，并附 `tests/fixtures/ocr/README.md` 清单；
+  2. **5 大自动化防回退用例接入 `Tools3000Tests.exe`**：`RealWorldOcrFixtureCatalogIntegrity`（全环境强制校验 8 张样本文件完整可读）、`FixtureApifoxPrettyJsonAndDropdownChevronRegression`、`FixtureApifoxCompactWideJsonRegression`、`FixtureRealWorldScreenPhotosAndQrRegression`（覆盖 PDA 强摩尔纹防 `乙乙` 回退、ERP 深灰表头 90+ 行召回、装箱卡双层表格 + QR 码 `ZZ00444040` 解码，以及真实 PPT 图 `TextReplaceEngine` 原位改字 `5% -> 10%` 紧邻字 `余` 零抹除实测）、`FixtureDenseDocAndSapMultiColumnRegression`（SAP 多栏防跨栏合并 + 高密度文档 2000+ 字符召回）；无 PP-OCRv4 模型包环境优雅 `GTEST_SKIP()`；
+  3. **实景回归捕获并修复 `OcrEngine::detectQrCodes` 小型倾斜二维码漏检**：复杂背景图中占画面不足 2% 的工业装箱卡 QR 码（~75×75px，单模块 ~2.5px）在 1× `detectAndDecodeMulti` 下漏检；新增 1× `detectAndDecode` + 2× `INTER_CUBIC` 单码强透视兜底（仅 1× 未检出且分辨率适中时执行，且在 `extractPage` 中与 OCR 并行运行实现 0ms 感知开销），实测成功解出 `ZZ00444040`；
+  4. **像素级漏识下划线还原 (`rescueMissedUnderscores`) 与 JSON 嵌套对象花括号 `{` 完整修复**：① 对洁净局部背景（兼容浅蓝选区高亮）中 ASCII 字母/数字间的空格，在原图像素上先于上部主体带 `[12%..72%]` 精准定位无墨水空隙，再于底部下划线带 `[72%..100%]` 校验扁平连续水平暗线，并附带左右两翼反超链接通长下划线护栏（100% 免疫带下划线的普通英文词间空格），精准还原 `"bom_Make"` / `"User_Text"` / `"U_financial_type"`；② 扩展 `normalizeStructuredJsonPunctuation` 修复 `"message": f` / `"message":f"lang":` / `[f"Currency":` 中被误识为 `f`/`(` 的 JSON 对象左花括号 `{`（严格保全 `"flag": false` 与 `"code": "f"`）；
+  5. **未闭合 JSON 字符串软折行无缝续接 (`OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine`)**：针对压缩单行 JSON / 长 URL 在编辑器内自动软换行（如 `"ItemName":"KT154-F19 浇` + 换行 + `封锂电池组..."`）复制粘贴至 Postman/VS Code 后因字符串字面量内夹杂原始 `\r\n` 触发 RFC 8259 语法报错的痛点，建立精确双引号状态机（跳过 `\"`/`\\` 转义）+ 同栏邻接几何检验 + 漏引号跨新键 `"Key":` 防误粘护栏，统一接入 `PinWindowOcr::joinAlignedSelectedPieces`、`OcrEngine::orderTextBlocksWithXYCut`、`OcrEngine::recognizeToText` 与 `OcrEngine::smartMergeParagraphs`，实测 [apifox_json_compact.jpg](file:///c:/repo/Tools3000/tests/fixtures/ocr/apifox_json_compact.jpg) 复制结果 100% 直通 `nlohmann::json::parse` 零报错。
+
+### [2026-11-20] 代码/JSON 截图高精度 OCR 架构升级：彻底废除多行横向拼接串扰 + 墨水感知标点挽救 + 重叠滑窗谷底拼接 + 像素级 UI 下拉箭头剥离 (`DeepOcrEngine.{h,cpp}`)
+- **实测五大深水区根因与终局重构**：
+  1. **SVTR 全局自注意力多行串扰与边列涂抹根治**：旧版 FFD 多行横向拼接（`960px` 条带 + `128,128,128` 暗灰隔断墙 + 复制 `col(rw-1)` 边列延展）既引发 Transformer 跨行注意力串扰（将 `"DocTotalFC"` / `"U_BillType"` / `$filter` / `$orderby` 扭曲为 `"DocTota1FC"` / `"U_Bi11Type"` / `Sfilter` / `Sorderby`），又把贴边逗号 `,` 横向涂抹成 `_` / `-`（导致 `"Comments" : "-` 与 `"U_Bi11Type" : "Y"_`）。现升级为 **单行隔离 3 档宽度分桶微批次推理**（`W=320 / 640 / 960`，每行独占独立 Batch 行，洁净估计背景色留白 + 小字号贴边行 `1~2px` 呼吸边距），实测 896×632 JSON 截图热运行耗时反而由 `1273ms` 降至 **`892ms`**（快 30%）且彻底消除跨行串扰；
+  2. **同基线极小碎片合并 + 防碰撞墨水感知标点挽救 (`coalesceSameLineTinyFragments`, `refineAxisAlignedLineBox`)**：自动合并被 DBNet 切碎的同基线极小标点/短值碎片（如 `"WddStatus"` + `:` + `"-"` 合并恢复完整 `"WddStatus" : "-",`），并对洁净背景轴对齐框执行防碰撞首尾墨水扫描，完整挽救贴边尾随 `,` 与首部 `{` / `u`；
+  3. **超宽紧凑 JSON 重叠滑窗 + 洁净单列谷底拼接**：摒弃 `minColVar` 零重叠硬切（易把低方差 1px 下划线 `_` 切碎），改为 `28~52px` 重叠滑窗并在重叠内圈按全行最大背景差寻址真正无墨水单列谷底拼接 + 接缝 `4.5px` 同字符去重，完整保真 `940px` 紧凑单行 JSON 下划线与引号；
+  4. **像素级 UI 下拉框箭头剥离 (`isUiDropdownChevronPatch`, `stripUiDropdownChevrons`)**：针对按钮尾部/独立候选符号（`v/V/√/~/^`），跨空白谷底隔离其独立前景掩码，综合校验扁平宽高比（`w >= 1.18h`）、垂直居中非基线对齐、左右镜像对称度（`>= 0.68`）及 `V`/`^` 笔画能量分布，精准剥离 `GET v`、`Body~`、`utf8 √` 及独立下拉箭头，对基线真实字母 `v/V` 与非对称勾选符 `√` 零误伤；
+  5. **结构感知 JSON 标点规整 (`normalizeStructuredJsonPunctuation`)**：仅在存在明确 `"<ascii_key>":` 键值结构时执行严格 1-to-1 码点替换（结构位中式全角引号/冒号/逗号 -> 标准 ASCII，`("Key":` / `[("Key":` / `)]` -> 花括号），100% 保留中文字符串值内部标点并严格维持 `text` 与 `charBoxes` 1:1 长度对齐。
+
+### [2026-11-20] 巨石文件零回归纯物理拆分范式试点完成：`PinWindow.cpp`（7,185 行 -> 5 个高内聚子域 + 私有内部协作头）
+- **四条零回归铁律（后续拆分 `StudioPreviewWindow.cpp` 等巨石文件统一沿用）**：
+  1. **纯物理搬家、零语义改动（Zero Behavior Change）**：拆分 commit 中绝不夹带逻辑改写、算法微调、顺手修 Bug 或字段重命名；公开头文件 `PinWindow.h` ABI 与外部调用方 0 改动；
+  2. **严格 ODR 单一事实源 (`PinWindowInternal.h`)**：绝不把可变 `static` 状态或大函数放进头文件；唯一跨编译单元可变原子量（`s_ocrShuttingDown`、`s_globalActiveOcrWorkers`）留在主文件 `PinWindow.cpp` 唯一定义，在私有协作头 `src/capture/PinWindowInternal.h`（104 行）以 `extern` 声明；
+  3. **按业务子域分步渐进 + 每步编译/单测/静态门禁原子提交**：共 4 步原子推进，主文件 `src/capture/PinWindow.cpp` 从 7,185 行瘦身至 **1,812 行**（生命周期/分组/变换/磁吸/剪贴板调度），并拆出 `PinWindowTextReplace.cpp`（486 行，原位改字）、`PinWindowOcr.cpp`（1,251 行，实景 OCR 与批注）、`PinWindowRender.cpp`（1,734 行，Direct2D 渲染管线）、`PinWindowInput.cpp`（2,013 行，右键菜单/热区命中/Win32 `pinWndProc` 消息循环）；
+  4. **全量真机门禁收口**：最终完整通过 `Plugin_Capture` / `Tools3000` / `Tools3000Tests` 编译、`Tools3000Tests.exe` 全量 **767/767** 通过（1 项需环境变量的外部基准测试跳过）、`logger-check`（728 条 100% 对齐）与 `trim-workingset-check`（24 处调用点 100% 合规）。
+
+### [2026-11-20] Windows Server 多管理员并发会话隔离引擎 (`SessionIsolation`) 与多 Provider 公网可信代码签名体系 (`Azure Trusted Signing` + `SignPath`)
+- **架构痛点与终局决策**：
+  1. **Windows Server 多会话并发隔离 (`SessionIsolation.{h,cpp}`, `main.cpp`, `WebViewEnvironmentManager.{h,cpp}`, `AtomicFile.h`, `StatsManager.cpp`, `ConfigManager.cpp`, `installer.iss`)**：
+     - *旧版瓶颈*：`main.cpp` 使用内核全局命名空间 `Global\Tools3000_SingleInstance_Mutex`，导致同一台 Windows Server 上 Console 会话与多个 RDP 管理员会话并发登录时第二个会话被直接锁死退出；即便放开互斥体，同账号多会话共享 `%LOCALAPPDATA%\Tools3000\webview2_data` 也会触发 Chromium `SingletonLock` 冲突导致 WebView2 白屏；
+     - *世界级终局方案*：① 单实例锁切换至会话级 `Local\Tools3000_SingleInstance_Mutex`（同会话内保持严格单实例与 UAC 提权交接，跨会话完全独立并行；`installer.iss` 同步兼容探测 `Local\` + `Global\`）；② 构建基于 OS 内核托管独占文件锁（`dwShareMode=0` + `FILE_FLAG_DELETE_ON_CLOSE`）的 **WebView2 主/副槽位租约 (`acquireWebViewProfileSlot`)**——Slot 0 (`webview2_data`) 优先抢占保证单机零迁移、并发会话平滑降级复用 Slot 1..15 (`webview2_data_slot_<N>`)、强杀 0 僵尸锁、主槽位自动冷清理超 7 天过期未锁副槽位；③ `AtomicFile.h` 增加 `MoveFileExW` 3 次短退避重试，并将 `StatsManager` / `ConfigManager::exportTo` 固定 `.tmp` 收归 `WinUtils::atomicWriteFileWithFlush` 单一事实源，消除多会话同时落盘共享冲突。
+  2. **多 Provider 公网可信代码签名与 SmartScreen 零拦截门禁 (`scripts/sign-artifacts.ps1`, `deploy.ps1`, `.github/workflows/release.yml`, `docs/CODE_SIGNING_AND_MULTI_SESSION.md`)**：
+     - 重构 `sign-artifacts.ps1` 为策略分发签名引擎，原生支持 **`azure-trusted-signing`（微软官方 Artifact Signing / OIDC 无私钥短效公网可信证书）**、**`pfx`**、**`cert-store`** 与 **`-VerifyOnly` 只读信任审计模式**；
+     - 内置多 RFC 3161 TSA 自动故障切换（`timestamp.acs.microsoft.com` / `digicert` / `sectigo` / `globalsign`）及 **`-RequirePublicTrust` 公网根 CA 强断言**（严禁自签名证书 `Subject == Issuer` 外泄至公网）；
+     - `.github/workflows/release.yml` 升级为 `Azure Trusted Signing (OIDC) -> SignPath (开源计划)` 双云端公网双轮签名矩阵，并在发版出口强制执行 `-VerifyOnly -Required -RequirePublicTrust` 门禁。
+
+### [2026-11-20] Windows Server / RDP 与 RustDesk / 向日葵 / ToDesk 远控录屏「点了没反应、控制条与停止按钮彻底隐身」根治 (`WDA_EXCLUDEFROMCAPTURE` 远程抓屏冲突全自动防御)
+- **实机诊断日志复盘 (`Tools3000_Logs_v1.0.8_20261120_132552.log`) 与复合根因**：
+  1. *表象与真相反差*：用户通过 **RustDesk** 远程连入 Windows Server 点击开始录屏后感觉“完全没反应”，18 秒后再次按 `F1` 点击录屏触发 `[warning] 已在录制中, 请先停止当前录制`。日志证实第一次点击已在当前会话成功启动 DXGI 录屏写入 MP4，并非跑到了其他 Administrator 会话；
+  2. *底层致命冲突 (`WDA_EXCLUDEFROMCAPTURE` vs RustDesk / RDP 远程抓屏流)*：无论是微软 RDP 还是 **RustDesk / 向日葵 / ToDesk**（本身通过 DXGI Desktop Duplication 抓取被控机画面），只要窗口硬设了 `SetWindowDisplayAffinity(..., WDA_EXCLUDEFROMCAPTURE)`，远控软件就会把顶部录制状态控制条 (`m_hwnd`)、计时器、红色「停止」按钮与呼吸红框 (`m_borderHwnd`) 从传给远控端的画面中 **100% 抹除隐形**；
+  3. *二次点击状态污染*：录制中用户再次通过 `F1` 点击开始录屏时，旧版 `PluginEntry::startRecordingForRegion` 先覆写了正在录制的 `Keycast` 停靠区，撞上 `startRecording() == false` 后又关闭了 `Keycast` 停靠并弹出含糊的「无法开始录屏，请查看日志」。
+- **终局根治与全链路加固 (`WinUtils.{h,cpp}`, `RecordingIndicator.cpp`, `ScrollCaptureOverlay.cpp`, `StudioPreviewWindow.cpp`, `PluginEntry.cpp`)**：
+  1. 建立单一事实源 `WinUtils::canSafelyExcludeWindowFromCapture()` 与 `applyCaptureExclusionIfSafe()`：实时检测 ① 系统 `SM_REMOTESESSION / SM_REMOTECONTROL`；② **第三方远控被控端活跃连接精准识别**（通过只读低权限 `PROCESS_QUERY_LIMITED_INFORMATION` + `NtQueryInformationProcess(ProcessCommandLineInformation=60)` 检测当前 Session 是否存在 RustDesk 被控连接进程 `rustdesk.exe --cm`、向日葵 `--mod=desktop` 或 ToDesk 被控工作进程——本机仅装服务待机或主控连别人时 0 误判，被别人连入控制时 100% 自动回退 `WDA_NONE`）；③ `RtlGetVersion >= Build 19041`；确保远程控制下无需手动改任何设置，录屏控制条、停止按钮、呼吸红框与长截图悬浮栏 100% 自动清晰显现；
+  2. `RecordingIndicator` 订阅 `WTSRegisterSessionNotification` (`WM_WTSSESSION_CHANGE`)，支持物理控制台与 RDP 会话中途热切换实时刷新可见性；
+  3. `startRecordingForRegion` 入口前置拦截非 `Idle` 状态，零破坏当前 `Keycast` 停靠区，当场刷新置顶录制控制条并弹出明确指引「正在录屏中，请点击顶部红色停止按钮或按 Ctrl+Shift+R 结束保存」。
+
+### [2026-11-20] 演播室世界级美学舞台与大师配色系统：Apple VisionOS 物理折射磨砂水晶外托框 + 三层 152px 空气悬浮深影 + 二维流体旋流丝绸极光 + 49 款策展首屏置顶 (`StudioBackdropCatalog`, `StudioVideoCompositor`)
+- **用户实机发现的两重现象与视觉第一原理根因**：
+  1. *数量差异根因*：旧版 [StudioPreviewWindow.cpp](file:///c:/repo/Tools3000/src/capture/StudioPreviewWindow.cpp) 遗留了扫描 `%APPDATA%\iMobie\FocuSee\BackgroundData\source` 的调试代码，导致装过 FocuSee 的开发机多出 81 张外部图，而纯净测试机仅显示 8 张；
+  2. *第一版“缺乏惊叹美感”的光学合成层真凶*：单纯替换底图无法消除廉价感——旧版合成层把录屏窗口直贴在背景上（“PPT 贴纸感”），仅用单层窄核（`49px`）黑影、缺少 **磨砂水晶玻璃折射外托框**、`insetBorderWidth` 竟向画面内部画 72% 死白粗线遮挡内容、外沿 `1px` `cv::line + cv::ellipse` 圆角拼线错位、且算法渐变仅为静态圆斑。
+- **世界级终局光学舞台与色彩体系**：
+  1. **Apple VisionOS 级三阶光学合成舞台 (`StudioVideoCompositor::ensureBackdropCache`)**：
+     - **三层画廊空气悬浮深影**：第 1 层全分接触紧影（锚定底边防飘）+ 第 2 层 `1/4` 低分合成 `46px` 立体中影 + 第 3 层 `1/4` 低分合成 **`152px` 超广域空气漫射深影**（向下偏移模拟真实顶光），耗时 `< 1.5ms` 且全程缓存复用；
+     - **真实物理折射磨砂水晶外托框 (`insetBorderWidth` 升级为「水晶框 / Glass」，默认 `7px`，范围 `0~16px`)**：采样未加阴影的纯净流光底图做 `31px` 高斯磨砂折射，叠加左上 45° 天光方向性提亮与高定微染色，包裹在录屏画面外围同心外圆角（`radius + bezelPx`）上，透出背后丝绸壁纸的朦胧流光；
+     - **解析式圆角矩形 SDF 亚像素方向性镜面高光棱线**：为水晶框外棱与内屏边界同时绘制左上亮、右下温润收暗的 `1.2px` 亚像素抗锯齿镜面高光倒角（彻底根除 `cv::line + cv::ellipse` 拼缝错位），默认留白提升至 `9.2%`（上限 `22%`），并通过 `/recording/studioStageSchemaVersion = 2` 对旧配置做一次性无损平滑升级；
+  2. **二维光滑旋流域扭曲流体丝绸着色器 (`renderArtisticBackdropBgr`)**：为 21 款 `mesh_*` 预设注入无散度双频三角旋流场（Domain Warping）与斜向丝绸波峰光泽调制 + `4×4 Bayer` / TPDF 磨砂微颗粒，呈现 Apple Display P3 灵感大师配色（克莱因流光、马尔代夫、莫奈睡莲、京都晚樱、加州落日、托斯卡纳、黑曜蓝宝、午夜紫晶等）；
+  3. **首屏殿堂级主视觉策展置顶 (`StudioBackdropCatalog.{h,cpp}` + `resources/wallpapers/*.jpg`)**：21 张 100% 原创高清壁纸（首屏第 1~2 行置顶蔚蓝流金、琉璃花语、流金棱镜、深海液态镜、全息霞光、云海圣光、暮雪镜湖、幻彩贝母等高通透体积光作品）+ 28 款流体丝绸/纯色 = 49 款，演播室 6 分类 Tab（`全部 / 沉稳 / 轻盈 / 风景 / 渐变 / 自定义`）+ `1/8 DCT` `0ms` 缩略图缓存，100% 零第三方路径依赖。
+
+### [2026-11-20] 彻底根治虚拟机/任何机器安装完成后自动重启：移除 `restartreplace` + 全目录无条件清场 + NTFS 原地改名腾位 (`EvacuateLockedFilesInTree`) + 前置 PFRO 自愈
+- **权威底层根因链 (`installer.iss`, `ISetup.chm`)**：
+  1. *虚拟机安装完成后自动重启的真凶*：查阅官方 `ISetup.chm` 证实，Inno Setup 的 `NeedRestart()` 与内部重启标志是 **逻辑或（OR）** 关系，无法否决 `[Files]` 中 `restartreplace` 触发的重启！当用户在虚拟机直接双击运行 `Tools3000-Setup.exe`（无外层 `deploy.ps1` 代杀、无 `/NORESTART`）覆盖升级时，旧版 `CheckDirFilesLocked` 仅检查 `{app}` 根与 `plugins` 下的 `.dll/.exe`（漏检被孤儿 `msedgewebview2.exe` 锁住的 `ui\assets\*.woff2` 等子目录文件）且跨 UAC 会话存在互斥体盲区，导致跳过 `taskkill`；拷贝撞锁后 `restartreplace` 置位重启标志——静默模式结束直接 `ExitWindowsEx` 自动重启，交互模式 `wpFinished` 默认勾选第 1 项 `YesRadio`（立即重启），点「完成」即刻重启；
+  2. *前置 `wpPreparing` 拦截暗坑与 `RegWriteMultiStringValue` 吞空串陷阱*：进入 `wpPreparing` 瞬间早于 `PrepareToInstall()` 扫描 `PendingFileRenameOperations`/`2`；且 Inno Setup 内置 `RegWriteMultiStringValue` 会吞掉 `REG_MULTI_SZ` 末尾空目标串 `""`，必须使用 Win32 原生 `RegQueryValueExW` / `RegSetValueExW` 按精确字节读写。
+- **100% 物理零重启四重铁闸终局架构**：
+  1. **`[Files]` 全量物理移除 `restartreplace`（保留 `ignoreversion uninsrestartdelete`）**：从编译期根源斩断 Inno Setup 置位内部重启标志与写入 PFRO 的通道；
+  2. **覆盖升级无条件全进程树清场 (`StopAndKillAllTools3000ProcessesForDir`)**：只要目标目录已存在旧版（`ExistingInstallPresent = True`），无视跨会话互斥体盲区，无条件发送关闭消息、停服并执行 `taskkill /f /t /im Tools3000.exe`（`/t` 连同子 `msedgewebview2.exe` 整树终结）与 `Tools3000_Service.exe`；`CheckDirFilesLocked` 升级为递归扫描 `{app}` 全目录树全文件类型；
+  3. **NTFS 原地改名腾位热覆盖引擎 (`CurStepChanged(ssInstall)` -> `EvacuateLockedFilesInTree`)**：利用 Windows NTFS 允许对映射运行中的 `.exe`/`.dll` 同目录 `MoveFileExW` 改名的内核特性，将任何仍被外部杀软/跨会话进程锁住的旧文件原地改名为 `.old_del_<tick>` 腾出原路径（并在后续升级与 `[UninstallDelete]` 自动清扫），经 Inno Setup 6.7.3 真锁探针实测在不传 `/NORESTART` 下 `INSTALL_EXIT_CODE=0`、`Need to restart Windows? No`；
+  4. **前置 PFRO 自愈 (`NextButtonClick(wpReady)`) + `wpFinished` `NoRadio` 防呆锁 + 单测红线门禁**：安装前自动摘除已解锁历史 PFRO 残留，完成页若因外部环境显示单选框亦强制选中 `NoRadio`，并在 `InstallerRebootGuardAndI18nTest` 硬断言 `[Files]` 段 0 `restartreplace`。
 
 ### [2026-11-20] 演播室认知友好型自动运镜引擎（三档预置 + 四维无级微调 + 因果聚焦 + 锁定视角 + 聚焦暗角）与侧边栏搜索框内嵌直角焦点框根治
 - **世界级认知友好型自动运镜引擎 (`StudioTimeline.{h,cpp}`, `StudioVideoCompositor.cpp`, `StudioPreviewWindow.{h,cpp}`, `PluginEntry.cpp`, `CapturePage.tsx`)**：
@@ -2132,3 +2198,16 @@
   6. **搜索服务策略 B（C++ SEH/MFT 安全壳 + Rust 7 模块物理分层 SIMD 全文检索静态库 `tools3000_content_rs`）**：
      - 保留 `Tools3000_Service` 的 Win32 SCM `DEMAND_START` 服务生命周期、USN 实时监听、SQLite WAL、PDF/Office/IFilter 提取器及 `PlainTextExtractor` 的 `__try / __except (EXCEPTION_IN_PAGE_ERROR)` 内存映射抗硬件断联保护壳；
      - 将 CPU 密集的编码嗅探、SIMD 换行跳跃、多词 AND 大小写折叠匹配与 UTF-16 代理对安全摘要裁剪下沉至 Rust 静态库 `src/service/rust_content/`，并严格遵循物理分层拆分为 7 个职责单一模块（`constants.rs`、`encoding.rs`、`simd.rs`、`snippet.rs`、`matcher.rs`、`ffi.rs`、`lib.rs`）。
+
+
+---
+
+## 2026-11-20 离线 OCR 拍屏低反差增强、贴图跨区流式选字修复与双语精装 README 演进
+1. **PP-OCRv4 检测/识别双分支低反差拍屏摩尔纹增强 (`src/ocr/DeepOcrEngine.{h,cpp}`)**:
+   - **根因**：手机翻拍 ERP 屏幕时存在深灰表头低反差与 RGB 彩色摩尔纹，导致 DBNet 检测漏掉表头与紧邻黑线的短数字（如 `77` 漏成 `7`），同时若在识别阶段强锐化会给高清晰小字引入振铃误识。
+   - **架构解法**：新增 `DeepOcrEngine::isLowContrastScreenPhoto()`（4px 快采样判定平坦度 `< 0.45`、中灰占比 `>= 0.45` 且纯白 `< 0.15`，原生清晰桌面截图 0ms 零改动直通）与 `enhanceLowContrastForDetection()`（LAB 空间 `a/b` 通道 `5x5` 高斯压彩纹 + `L` 通道温和 `CLAHE(2.2, 8x8)` 68/32 融合），仅作用于检测输入，识别切片仍从纯净原图裁剪并将 `enhanceLowContrastStripCrop` 动态范围上限由 `112` 调优至 `132`。配套 `DeepOcrLowContrastScreenPhotoEnhancementTest`。
+2. **贴图上下跨区流式选字修复 (`src/capture/PinWindow.{h,cpp}`)**:
+   - **根因**：在“上方大表 + 下方装箱卡”等上下堆叠多版面分区图片上普通左键从上往下流式拖选时，跨入不同 `layoutRegionId` 会静默退化为无视觉引导框的二维矩形围选，将终点 X 右侧所有已识别文字（甚至单个词后半段）一刀切掉，造成右侧漏识别错觉。
+   - **架构解法**：区分起止分区是否为真正左右并排双栏（`sideBySideColumns`：垂直重叠 `>= 40%` 且水平重叠 `< 25%`）；仅左右并排双栏走带可见橡皮筋引导框（`m_showCrossRegionRectGuide`）的二维围选，上下堆叠分区保持完整阅读序流式选字，杜绝右侧腰斩。配套真窗口回归测试 `PinWindowCrossRegionVerticalFlowSelectionTest`。
+3. **中英双语精装 README 与原位改字视觉资产 (`README.md`, `README.en.md`, `docs/DEVELOPER.md`, `docs/images/{zh-CN,en-US}/scene_pin_live_text_wavy.png`)**:
+   - README 瘦身至 118 行极简名片风，研发/架构/构建文档外链收口至 `docs/DEVELOPER.md`；调用真实 `TextReplaceEngine` + `MarkupEngine` + `FloatingGlassBar` + `CaptureVectorIcons` 产出含错别字原位编辑（`新版本发[不|]前核对清单` + `bu | 1. 布 2. 步 3. 部`）、波浪线、荧光笔、直线与划选复制的 1.5x 双语实景展示图。

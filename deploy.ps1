@@ -24,6 +24,7 @@ param (
     [switch]$StaticAnalysis = $false,    # 对核心、搜索插件和索引服务运行 MSVC /analyze
     [switch]$Install = $false,           # 构建完成后立即通过 CLI 执行静默安装与启动
     [switch]$RequireSigning = $false,    # 正式发布门禁：所有自有二进制与安装包必须签名
+    [switch]$RequirePublicTrust = $false,# 公网发布门禁：严禁自签名证书，必须由微软信任根 CA 签发（Azure Trusted Signing / EV / SignPath）
     [string]$BinaryCacheDir = ""         # 自定义 vcpkg 二进制包缓存目录
 )
 
@@ -694,7 +695,15 @@ foreach ($Artifact in $RequiredArtifacts) {
 
 $SignScript = Join-Path $ScriptDir "scripts\sign-artifacts.ps1"
 if (-not (Test-Path -LiteralPath $SignScript)) { throw "缺少签名脚本: $SignScript" }
-if ([string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1) -and
+$HasAzureTrustedSigning =
+    (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_AZURE_SIGNING_ENDPOINT)) -and
+    (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_AZURE_SIGNING_ACCOUNT)) -and
+    (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_AZURE_SIGNING_PROFILE))
+if ($HasAzureTrustedSigning) {
+    Write-Log "[SIGN] 已启用微软 Azure Trusted Signing 云端可信签名: Account=$($env:TOOLS3000_AZURE_SIGNING_ACCOUNT), Profile=$($env:TOOLS3000_AZURE_SIGNING_PROFILE)" "SUCCESS"
+}
+if (-not $HasAzureTrustedSigning -and
+    [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1) -and
     [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_PFX) -and
     $env:CI -ne 'true' -and $env:GITHUB_ACTIONS -ne 'true') {
     $Now = Get-Date
@@ -703,6 +712,7 @@ if ([string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1) -and
         $Chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
         try { return $Chain.Build($_) } finally { $Chain.Dispose() }
     } | Sort-Object `
+        @{ Expression = { if ($_.Subject -ne $_.Issuer) { 0 } else { 1 } }; Ascending = $true }, `
         @{ Expression = { if ($_.Subject -match 'Tools3000|yuan278501381|EasyTools') { 0 } else { 1 } }; Ascending = $true }, `
         @{ Expression = { $_.NotAfter }; Descending = $true }) | Select-Object -First 1
     if ($AutoCert) {
@@ -710,7 +720,8 @@ if ([string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1) -and
         Write-Log "[SIGN] 自动发现并挂载本机 CurrentUser\My 受信代码签名证书: $($AutoCert.Subject) ($($AutoCert.Thumbprint))" "SUCCESS"
     }
 }
-$HasSigningIdentity = (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1)) -or
+$HasSigningIdentity = $HasAzureTrustedSigning -or
+                      (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1)) -or
                       (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_PFX))
 $OwnedArtifacts = @(
     (Join-Path $StagingDir $MainExeArtifact),
@@ -737,7 +748,7 @@ if ($HasSigningIdentity) {
         }
     }
 }
-& $SignScript -Paths $FirstPassSignTargets.ToArray() -Required:$RequireSigning
+& $SignScript -Paths $FirstPassSignTargets.ToArray() -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust
 
 # ------------------------------------------------------------------------------
 # 6. 优雅关闭及原子交换 (Atomic Swap)
@@ -881,8 +892,9 @@ if ($SkipInstaller) {
         }
         if ($HasSigningIdentity) {
             $InnoSignRequiredFlag = if ($RequireSigning) { "-Required " } else { "" }
+            $InnoSignPublicFlag = if ($RequirePublicTrust) { "-RequirePublicTrust " } else { "" }
             $InnoArgs += "/DTools3000SignedBuild=1"
-            $InnoArgs += "/Stools3000=pwsh.exe -NoProfile -ExecutionPolicy Bypass -File `$q$SignScript`$q ${InnoSignRequiredFlag}-Paths `$q`$f`$q"
+            $InnoArgs += "/Stools3000=pwsh.exe -NoProfile -ExecutionPolicy Bypass -File `$q$SignScript`$q ${InnoSignRequiredFlag}${InnoSignPublicFlag}-Paths `$q`$f`$q"
         }
         & $ISCC @InnoArgs $InstallerScript
         if ($LASTEXITCODE -eq 0) {
@@ -890,14 +902,16 @@ if ($SkipInstaller) {
                 $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
                 if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or ($RequireSigning -and -not $SetupSignature.TimeStamperCertificate)) {
                     Write-Log "正在对生成的安装包执行外层 Authenticode 签名与时间戳加固: $TargetSetupFile"
-                    & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning
+                    & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust
+                } elseif ($RequirePublicTrust) {
+                    & $SignScript -Paths $TargetSetupFile -VerifyOnly -Required:$RequireSigning -RequirePublicTrust
                 }
                 $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
                 if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or ($RequireSigning -and -not $SetupSignature.TimeStamperCertificate)) {
                     throw "Inno Setup 生成的安装包外层签名或时间戳验证失败: $($SetupSignature.Status)"
                 }
             } else {
-                & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning
+                & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust
             }
             $VersionedSetupName = if ($Arch -eq "arm64") { "Tools3000-v$ProjectVersion-Setup-arm64.exe" } else { "Tools3000-v$ProjectVersion-Setup.exe" }
             Copy-Item -LiteralPath $TargetSetupFile -Destination (Join-Path $OutputInstallerDir $VersionedSetupName) -Force

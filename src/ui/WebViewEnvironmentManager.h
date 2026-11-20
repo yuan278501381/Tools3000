@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include "core/utils/SessionIsolation.h"
+
 #include <windows.h>
 #include <wrl/client.h>
 #include <WebView2.h>
@@ -36,6 +38,7 @@ private:
     std::mutex m_mutex;
     State m_state = State::Idle;
     uint64_t m_generation = 0;
+    tools3000::core::WebViewProfileSlotLease m_profileSlotLease;
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_environment;
     std::vector<ReadyCallback> m_callbacks;
 };

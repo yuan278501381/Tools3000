@@ -49,8 +49,25 @@ void WebViewEnvironmentManager::acquire(ReadyCallback callback) {
     }
     if (!shouldInitialize) return;
 
-    const auto userDataPath =
-        (tools3000::core::WinUtils::getAppDataDirectory() / L"webview2_data").wstring();
+    std::wstring userDataPath;
+    int acquiredSlot = -1;
+    {
+        auto lease = tools3000::core::SessionIsolation::acquireWebViewProfileSlot(
+            tools3000::core::WinUtils::getAppDataDirectory());
+        userDataPath = lease.dataDirectory().wstring();
+        acquiredSlot = lease.slotIndex();
+        std::lock_guard lock(m_mutex);
+        if (generation != m_generation || m_state != State::Initializing) {
+            return;
+        }
+        m_profileSlotLease = std::move(lease);
+    }
+    if (acquiredSlot > 0) {
+        LOG_INFO("WebView2 multi-session isolation active: sessionId={}, slot={}, dataDir={}",
+                 tools3000::core::SessionIsolation::currentSessionId(),
+                 acquiredSlot,
+                 tools3000::core::WinUtils::wstringToUtf8(userDataPath));
+    }
     auto options = Make<CoreWebView2EnvironmentOptions>();
     if (options) {
         options->put_AdditionalBrowserArguments(
@@ -80,6 +97,7 @@ void WebViewEnvironmentManager::shutdown() {
         ++m_generation;
         m_state = State::Idle;
         m_environment.Reset();
+        m_profileSlotLease.release();
         pending.swap(m_callbacks);
     }
     for (auto& cb : pending) {
@@ -101,6 +119,7 @@ void WebViewEnvironmentManager::completeInitialization(
             m_state = State::Ready;
         } else {
             m_environment.Reset();
+            m_profileSlotLease.release();
             m_state = State::Idle;
         }
         callbacks.swap(m_callbacks);

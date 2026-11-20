@@ -286,10 +286,24 @@ inline bool atomicWriteBinaryFileWithFlush(const std::wstring& targetPath, std::
         return false;
     }
 
-    if (!MoveFileExW(
-            tempPath.c_str(),
-            targetPath.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    constexpr DWORD kRenameRetryBackoffMs[] = {10, 20, 35};
+    bool moved = false;
+    for (size_t attempt = 0; attempt <= std::size(kRenameRetryBackoffMs); ++attempt) {
+        if (MoveFileExW(
+                tempPath.c_str(),
+                targetPath.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            moved = true;
+            break;
+        }
+        const DWORD moveErr = GetLastError();
+        if ((moveErr != ERROR_SHARING_VIOLATION && moveErr != ERROR_ACCESS_DENIED) ||
+            attempt == std::size(kRenameRetryBackoffMs)) {
+            break;
+        }
+        Sleep(kRenameRetryBackoffMs[attempt]);
+    }
+    if (!moved) {
         DeleteFileW(tempPath.c_str());
         return false;
     }

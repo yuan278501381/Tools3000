@@ -606,23 +606,10 @@ bool ConfigManager::exportTo(const std::filesystem::path& filePath) const {
             std::shared_lock lock(m_mutex);
             snapshot = m_config;
         }
-        auto tempPath = safePath;
-        tempPath += L".tmp";
-        std::ofstream file(tempPath, std::ios::binary | std::ios::trunc);
-        if (!file.is_open()) {
-            LOG_ERROR("无法打开配置导出临时文件: {}", tempPath.string());
+        const std::string payload = snapshot.dump(2);
+        if (!WinUtils::atomicWriteFileWithFlush(safePath.wstring(), payload)) {
+            LOG_ERROR("配置导出失败: {}", WinUtils::wstringToUtf8(safePath.wstring()));
             return false;
-        }
-        file << snapshot.dump(2);
-        file.flush();
-        if (!file.good()) throw std::runtime_error("写入配置导出文件失败");
-        file.close();
-        if (!MoveFileExW(tempPath.c_str(), safePath.c_str(),
-                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            const DWORD error = GetLastError();
-            std::error_code removeError;
-            std::filesystem::remove(tempPath, removeError);
-            throw std::runtime_error("替换配置导出文件失败, error=" + std::to_string(error));
         }
         LOG_INFO("配置已导出到: {}", WinUtils::wstringToUtf8(safePath.wstring()));
         return true;

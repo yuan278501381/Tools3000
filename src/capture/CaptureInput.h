@@ -58,6 +58,9 @@ private:
     std::vector<RECT> detectWindowHierarchy(POINT cursorPos);
     D2D1_RECT_F currentSelectionRect() const;
 
+    LRESULT handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    LRESULT handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
     HWND m_hwnd = nullptr;
     CaptureState* m_state = nullptr;
     CaptureRenderer* m_renderer = nullptr;

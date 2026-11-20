@@ -66,6 +66,7 @@
 #include "core/stats/PerformanceMonitor.h"
 #include "core/update/UpdateChecker.h"
 #include "core/utils/ShellContextMenuService.h"
+#include "core/utils/SessionIsolation.h"
 #include "core/ipc/AutoStartPolicy.h"
 #include "tray/TrayIcon.h"
 #include "ui/SettingsWindow.h"
@@ -81,7 +82,7 @@
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 static constexpr const wchar_t* WINDOW_CLASS_NAME = L"Tools3000_MessageWindow";
 static constexpr const wchar_t* WINDOW_TITLE      = L"Tools3000MessageWindow";
-static constexpr const wchar_t* MUTEX_NAME        = L"Global\\Tools3000_SingleInstance_Mutex";
+static constexpr const wchar_t* MUTEX_NAME        = L"Local\\Tools3000_SingleInstance_Mutex";
 static constexpr UINT WM_TOOLS3000_SHOW_SETTINGS    = WM_APP + 101;
 static constexpr UINT WM_TOOLS3000_TEST_INJECT_KEY  = WM_APP + 190;
 static constexpr UINT_PTR TIMER_ID_QUICKLOOK_REFRESH = 0x4551;
@@ -280,12 +281,11 @@ HANDLE createSingleInstanceMutex() {
     // CreateMutexW requests MUTEX_ALL_ACCESS when the object already exists.
     // Request only the rights required by the wait/release protocol so the
     // restricted same-user ACE is sufficient across integrity levels.
-    // 生命周期门禁需要和用户已安装、正在运行的实例并行验证待测二进制。
-    // 该显式内部参数为本进程生成独立 mutex；正常启动仍严格保持单实例。
-    std::wstring mutexName = MUTEX_NAME;
-    if (hasCommandLineFlag(L"--lifecycle-test-instance")) {
-        mutexName = L"Local\\Tools3000_LifecycleTest_" + std::to_wstring(GetCurrentProcessId());
-    }
+    // 会话级单实例互斥体（Local\）：同一桌面会话内保持严格单实例并支持 UAC 提权交接，
+    // 在 Windows Server 多管理员并发登录（Console + 多个 RDP 会话）时允许各会话独立并行运行。
+    const std::wstring mutexName = tools3000::core::SessionIsolation::buildSingleInstanceMutexName(
+        hasCommandLineFlag(L"--lifecycle-test-instance"), GetCurrentProcessId());
+    (void)MUTEX_NAME;
     HANDLE mutex = CreateMutexExW(
         &security, mutexName.c_str(), 0, SYNCHRONIZE | MUTEX_MODIFY_STATE);
     const DWORD error = GetLastError();
@@ -529,8 +529,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     tools3000::core::TraceId::Scope mainScope;
     LOG_INFO("========================================");
     LOG_INFO("Tools3000 v{} 启动", tools3000::version::String);
-    LOG_INFO("Tools3000 process identity: pid={}, elevated={}",
-             GetCurrentProcessId(), tools3000::core::WinUtils::isCurrentProcessElevated());
+    LOG_INFO("Tools3000 process identity: pid={}, sessionId={}, elevated={}",
+             GetCurrentProcessId(),
+             tools3000::core::SessionIsolation::currentSessionId(),
+             tools3000::core::WinUtils::isCurrentProcessElevated());
     LOG_INFO("========================================");
 
     // ── 5a. 性能监控启动 ─────────────────────────────────────────────

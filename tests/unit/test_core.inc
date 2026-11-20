@@ -4614,9 +4614,32 @@ TEST(InstallerRebootGuardAndI18nTest, PfroSelfHealAndChineseRestartRadioContract
         EXPECT_NE(content.find("ReadExactMultiStringValue("), std::string::npos);
         EXPECT_EQ(content.find("RegWriteMultiStringValue("), std::string::npos)
             << "RegWriteMultiStringValue truncates trailing empty REG_MULTI_SZ items in PFRO; must use WriteExactMultiStringValue";
-        EXPECT_NE(content.find("if NeedKillApp or FilesLocked then"), std::string::npos);
-        EXPECT_NE(content.find("if NeedKillService or FilesLocked then"), std::string::npos);
+        EXPECT_NE(content.find("if (not ExistingInstallPresent) and (not NeedKillApp) and (not NeedKillService) and (not FilesLocked) then"), std::string::npos);
+        EXPECT_NE(content.find("EvacuateLockedFilesInTree("), std::string::npos);
+        EXPECT_NE(content.find("MoveFileExW("), std::string::npos);
+        EXPECT_NE(content.find("WizardForm.NoRadio.Checked := True;"), std::string::npos);
         EXPECT_NE(content.find("WaitForProcessesAndFilesReleased(3500);"), std::string::npos);
+
+        // 严苛红线：[Files] 段 100% 禁用 restartreplace，从物理根源阻断 Inno Setup 置位重启标志与自动重启！
+        std::istringstream issStream(content);
+        bool inFilesSection = false;
+        int filesEntriesChecked = 0;
+        std::string issLine;
+        while (std::getline(issStream, issLine)) {
+            if (!issLine.empty() && issLine.back() == '\r') issLine.pop_back();
+            const auto firstChar = issLine.find_first_not_of(" \t");
+            if (firstChar == std::string::npos || issLine[firstChar] == ';') continue;
+            const std::string trimmed = issLine.substr(firstChar);
+            if (trimmed.front() == '[') {
+                inFilesSection = (trimmed == "[Files]");
+                continue;
+            }
+            if (!inFilesSection) continue;
+            ++filesEntriesChecked;
+            EXPECT_EQ(trimmed.find("restartreplace"), std::string::npos)
+                << "[Files] entry MUST NOT use restartreplace (causes forced VM/silent reboot): " << trimmed;
+        }
+        EXPECT_GE(filesEntriesChecked, 5);
     }
 
     // 2. 校验 ChineseSimplified.isl：重启单选按钮不得再错译为“我同意此协议 / 我不同意此协议”
@@ -4639,4 +4662,149 @@ TEST(InstallerRebootGuardAndI18nTest, PfroSelfHealAndChineseRestartRadioContract
         EXPECT_NE(yesLine.find(asUtf8(u8"重新启动计算机")), std::string::npos);
         EXPECT_NE(noLine.find(asUtf8(u8"重新启动计算机")), std::string::npos);
     }
+}
+
+TEST(WinUtilsRdpCaptureAffinityGuardTest, NeverHidesControlBarsInRemoteDesktopOrLegacyServer) {
+    using tools3000::core::WinUtils;
+
+    if (WinUtils::isRemoteDesktopSession()) {
+        EXPECT_FALSE(WinUtils::canSafelyExcludeWindowFromCapture());
+    }
+
+    HWND dummy = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+        L"STATIC", L"", WS_POPUP,
+        0, 0, 64, 24, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(dummy, nullptr);
+
+    EXPECT_FALSE(WinUtils::applyCaptureExclusionIfSafe(dummy, false));
+    DWORD affinity = WDA_EXCLUDEFROMCAPTURE;
+    if (GetWindowDisplayAffinity(dummy, &affinity)) {
+        EXPECT_EQ(affinity, static_cast<DWORD>(WDA_NONE));
+    }
+
+    const bool applied = WinUtils::applyCaptureExclusionIfSafe(dummy, true);
+    EXPECT_EQ(applied, WinUtils::canSafelyExcludeWindowFromCapture());
+    if (GetWindowDisplayAffinity(dummy, &affinity)) {
+        EXPECT_EQ(affinity, applied ? static_cast<DWORD>(WDA_EXCLUDEFROMCAPTURE) : static_cast<DWORD>(WDA_NONE));
+    }
+
+    DestroyWindow(dummy);
+}
+
+TEST(SessionIsolationTest, MultiSessionMutexWebViewSlotLeasesAndConcurrentAtomicWrite) {
+    using tools3000::core::SessionIsolation;
+    using tools3000::core::WinUtils;
+
+    // 1. 会话级互斥体命名契约：正常模式必须使用 Local\ 命名空间允许 Windows Server 多管理员并发登录
+    const std::wstring normalMutex = SessionIsolation::buildSingleInstanceMutexName(false, 1234);
+    EXPECT_EQ(normalMutex, L"Local\\Tools3000_SingleInstance_Mutex");
+    const std::wstring testMutex = SessionIsolation::buildSingleInstanceMutexName(true, 5678);
+    EXPECT_EQ(testMutex, L"Local\\Tools3000_LifecycleTest_5678");
+
+    // 2. WebView2 主/副槽位内核租约：主槽位优先、并发自动降级副槽位、释放后低熵复用、主槽位清理过期未锁副槽位
+    const auto tempRoot = std::filesystem::temp_directory_path() /
+                          (L"tools3000_session_iso_test_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(tempRoot, ec);
+    std::filesystem::create_directories(tempRoot, ec);
+
+    {
+        // 模拟一个已过期 (10 天前) 且未锁定的僵尸副槽位目录 webview2_data_slot_9
+        const auto staleDir = tempRoot / L"webview2_data_slot_9";
+        std::filesystem::create_directories(staleDir, ec);
+        std::ofstream(staleDir / L"dummy.txt") << "stale";
+        const auto oldTime = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * 10);
+        std::filesystem::last_write_time(staleDir, oldTime, ec);
+
+        // 会话 1 抢占主槽位 Slot 0 (webview2_data)，顺手清扫过期副槽位
+        auto lease0 = SessionIsolation::acquireWebViewProfileSlot(tempRoot);
+        ASSERT_TRUE(lease0.isHeld());
+        EXPECT_TRUE(lease0.isPrimarySlot());
+        EXPECT_EQ(lease0.slotIndex(), 0);
+        EXPECT_EQ(lease0.dataDirectory().filename(), L"webview2_data");
+        EXPECT_FALSE(std::filesystem::exists(staleDir, ec));
+
+        // 并发会话 2 自动无冲突降级至 Slot 1 (webview2_data_slot_1)
+        auto lease1 = SessionIsolation::acquireWebViewProfileSlot(tempRoot);
+        ASSERT_TRUE(lease1.isHeld());
+        EXPECT_FALSE(lease1.isPrimarySlot());
+        EXPECT_EQ(lease1.slotIndex(), 1);
+        EXPECT_EQ(lease1.dataDirectory().filename(), L"webview2_data_slot_1");
+
+        // 并发会话 3 自动无冲突降级至 Slot 2 (webview2_data_slot_2)
+        auto lease2 = SessionIsolation::acquireWebViewProfileSlot(tempRoot);
+        ASSERT_TRUE(lease2.isHeld());
+        EXPECT_EQ(lease2.slotIndex(), 2);
+        EXPECT_EQ(lease2.dataDirectory().filename(), L"webview2_data_slot_2");
+
+        // 即使强行执行 0 天激进清理，正在被 lease1/lease2 锁定的活跃副槽位也 100% 受到内核锁保护
+        EXPECT_EQ(SessionIsolation::pruneStaleSecondaryWebViewSlots(tempRoot, 0), 0u);
+        EXPECT_TRUE(std::filesystem::exists(lease1.dataDirectory(), ec));
+        EXPECT_TRUE(std::filesystem::exists(lease2.dataDirectory(), ec));
+
+        // 释放会话 2 的 Slot 1 -> 新来的会话 4 立刻复用 Slot 1（零目录无限膨胀）
+        lease1.release();
+        auto leaseReused = SessionIsolation::acquireWebViewProfileSlot(tempRoot);
+        ASSERT_TRUE(leaseReused.isHeld());
+        EXPECT_EQ(leaseReused.slotIndex(), 1);
+        EXPECT_EQ(leaseReused.dataDirectory().filename(), L"webview2_data_slot_1");
+    }
+
+    // 全部租约释放后，Slot 0 立即恢复可用
+    {
+        auto leaseAgain = SessionIsolation::acquireWebViewProfileSlot(tempRoot);
+        ASSERT_TRUE(leaseAgain.isHeld());
+        EXPECT_EQ(leaseAgain.slotIndex(), 0);
+    }
+
+    // 3. 多线程高频并发原子落盘验证：8 线程同时覆盖写入同一目标文件 0 损坏、0 共享冲突崩溃
+    {
+        const auto targetFile = tempRoot / L"concurrent_config.json";
+        std::atomic<int> successCount{0};
+        std::vector<std::thread> workers;
+        for (int t = 0; t < 8; ++t) {
+            workers.emplace_back([&, t]() {
+                for (int i = 0; i < 12; ++i) {
+                    const std::string payload = "{\"worker\":" + std::to_string(t) + ",\"iter\":" + std::to_string(i) + "}";
+                    if (WinUtils::atomicWriteFileWithFlush(targetFile.wstring(), payload)) {
+                        successCount.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            });
+        }
+        for (auto& w : workers) w.join();
+        EXPECT_GE(successCount.load(), 90);
+        std::ifstream ifs(targetFile);
+        ASSERT_TRUE(ifs.is_open());
+        const std::string finalContent((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        EXPECT_TRUE(nlohmann::json::accept(finalContent)) << "Final concurrent file must remain valid JSON";
+    }
+
+    // 4. 源码与安装器防回退契约：main.cpp 与 installer.iss 必须接入 Local\ 会话级互斥体
+    {
+        std::filesystem::path probe = std::filesystem::current_path(ec);
+        std::filesystem::path repoRoot;
+        for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+            if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+                repoRoot = probe;
+                break;
+            }
+            probe = probe.parent_path();
+        }
+        if (!repoRoot.empty()) {
+            std::ifstream mainIfs(repoRoot / L"src" / L"main.cpp", std::ios::binary);
+            ASSERT_TRUE(mainIfs.is_open());
+            const std::string mainSrc((std::istreambuf_iterator<char>(mainIfs)), std::istreambuf_iterator<char>());
+            EXPECT_NE(mainSrc.find("Local\\\\Tools3000_SingleInstance_Mutex"), std::string::npos);
+            EXPECT_NE(mainSrc.find("SessionIsolation::buildSingleInstanceMutexName"), std::string::npos);
+
+            std::ifstream issIfs(repoRoot / L"installer.iss", std::ios::binary);
+            ASSERT_TRUE(issIfs.is_open());
+            const std::string issSrc((std::istreambuf_iterator<char>(issIfs)), std::istreambuf_iterator<char>());
+            EXPECT_NE(issSrc.find("CheckForMutexes('Local\\Tools3000_SingleInstance_Mutex')"), std::string::npos);
+        }
+    }
+
+    std::filesystem::remove_all(tempRoot, ec);
 }

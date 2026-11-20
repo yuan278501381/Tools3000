@@ -123,6 +123,14 @@ public:
         const std::vector<OcrResult>& blocks,
         const char* lineEnding = "\r\n");
 
+    /// 判定累计文本与下一行是否属于「未闭合 JSON 字符串软折行续行」，
+    /// 若是则应无缝直连（禁止插入换行符破坏 RFC 8259 字符串语法，且防漏引号跨键误粘与跨分栏误粘）
+    static bool shouldSeamlessJoinSoftWrappedJsonLine(
+        std::string_view accumulatedText,
+        std::string_view nextLineText,
+        const cv::Rect* prevBox = nullptr,
+        const cv::Rect* nextBox = nullptr) noexcept;
+
     /// 智能合并段落内因版面宽度产生的硬换行，保留真实段落/列表/代码块换行
     static std::wstring smartMergeParagraphs(const std::wstring& rawMultiLineText);
     static std::string smartMergeParagraphsUtf8(const std::string& rawMultiLineUtf8);

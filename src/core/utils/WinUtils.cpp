@@ -1037,6 +1037,135 @@ bool WinUtils::allowWindowCapture(HWND hwnd) {
     return SetWindowDisplayAffinity(hwnd, WDA_NONE) != FALSE;
 }
 
+namespace {
+
+struct WinUnicodeStringView {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+};
+
+std::wstring queryProcessCommandLineLimited(DWORD pid) {
+    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!hProc) return {};
+
+    static const auto s_ntQueryInfo = []() {
+        using NtQueryInfoFn = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        return ntdll ? reinterpret_cast<NtQueryInfoFn>(GetProcAddress(ntdll, "NtQueryInformationProcess")) : nullptr;
+    }();
+
+    std::wstring result;
+    if (s_ntQueryInfo) {
+        constexpr ULONG kProcessCommandLineInformation = 60;
+        ULONG retLen = 0;
+        s_ntQueryInfo(hProc, kProcessCommandLineInformation, nullptr, 0, &retLen);
+        if (retLen >= sizeof(WinUnicodeStringView) && retLen <= 65536) {
+            std::vector<std::byte> buf(retLen);
+            if (s_ntQueryInfo(hProc, kProcessCommandLineInformation, buf.data(), retLen, &retLen) == 0) {
+                const auto* us = reinterpret_cast<const WinUnicodeStringView*>(buf.data());
+                if (us->Buffer && us->Length >= sizeof(wchar_t)) {
+                    result.assign(us->Buffer, us->Length / sizeof(wchar_t));
+                    std::transform(result.begin(), result.end(), result.begin(), [](wchar_t ch) {
+                        return (ch >= L'A' && ch <= L'Z') ? static_cast<wchar_t>(ch - L'A' + L'a') : ch;
+                    });
+                }
+            }
+        }
+    }
+    CloseHandle(hProc);
+    return result;
+}
+
+bool hasActiveScreenCaptureRemoteSession() {
+    DWORD curSessionId = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &curSessionId)) {
+        return false;
+    }
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    bool activeIncoming = false;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            const bool isRustDesk = (_wcsicmp(pe.szExeFile, L"rustdesk.exe") == 0);
+            const bool isSunlogin = !isRustDesk && (_wcsicmp(pe.szExeFile, L"sunloginclient.exe") == 0);
+            const bool isToDesk   = !isRustDesk && !isSunlogin && (_wcsicmp(pe.szExeFile, L"todesk.exe") == 0);
+            if (!isRustDesk && !isSunlogin && !isToDesk) {
+                continue;
+            }
+            DWORD procSessionId = 0;
+            if (!ProcessIdToSessionId(pe.th32ProcessID, &procSessionId) || procSessionId != curSessionId) {
+                continue;
+            }
+            const std::wstring cmd = queryProcessCommandLineLimited(pe.th32ProcessID);
+            if (cmd.empty()) continue;
+            // RustDesk 被控端仅在外部远程桌面活跃连入时派生 `--cm` (Connection Manager)；
+            // 本机后台待机 (--service/--server/--tray) 或主控连别人时均无 `--cm`，零误判！
+            if (isRustDesk && (cmd.find(L"--cm") != std::wstring::npos)) {
+                activeIncoming = true;
+                break;
+            }
+            // 向日葵被控端活跃桌面抓屏子进程特征 (`--mod=desktop`)
+            if (isSunlogin && (cmd.find(L"--mod=desktop") != std::wstring::npos)) {
+                activeIncoming = true;
+                break;
+            }
+            // ToDesk 被控端活跃桌面传输子进程特征
+            if (isToDesk && (cmd.find(L"-m work") != std::wstring::npos || cmd.find(L"--desktop") != std::wstring::npos)) {
+                activeIncoming = true;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return activeIncoming;
+}
+
+} // namespace
+
+bool WinUtils::isRemoteDesktopSession() {
+    if (GetSystemMetrics(SM_REMOTESESSION) != 0 ||
+        GetSystemMetrics(SM_REMOTECONTROL) != 0) {
+        return true;
+    }
+    return hasActiveScreenCaptureRemoteSession();
+}
+
+bool WinUtils::canSafelyExcludeWindowFromCapture() {
+    if (isRemoteDesktopSession()) {
+        return false;
+    }
+    static const DWORD s_osBuildNumber = []() -> DWORD {
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (!ntdll) return 0;
+        using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+        const auto fn = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion"));
+        if (!fn) return 0;
+        RTL_OSVERSIONINFOW osvi{};
+        osvi.dwOSVersionInfoSize = sizeof(osvi);
+        if (fn(&osvi) == 0) {
+            return osvi.dwBuildNumber;
+        }
+        return 0;
+    }();
+    return s_osBuildNumber >= 19041;
+}
+
+bool WinUtils::applyCaptureExclusionIfSafe(HWND hwnd, bool wantExclude) {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    if (wantExclude && canSafelyExcludeWindowFromCapture()) {
+        if (SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) != FALSE) {
+            return true;
+        }
+    }
+    SetWindowDisplayAffinity(hwnd, WDA_NONE);
+    return false;
+}
+
 bool WinUtils::excludeWindowFromCapture(HWND hwnd) {
     // 零隐私防截底层策略 (Zero WDA_EXCLUDEFROMCAPTURE)：
     // 用户明确要求所有界面都支持被截图，绝不开启隐私防截，统一重定向至 allowWindowCapture (WDA_NONE)

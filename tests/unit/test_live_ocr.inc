@@ -2391,3 +2391,701 @@ TEST(LiveTextOcrTest, HighResLargeFontAspectRatioPreservation) {
     for (const auto& l : lines) joined += l.text;
     EXPECT_NE(joined.find("ZZ30003665"), std::string::npos) << "Recognized text was: " << joined;
 }
+
+TEST(LiveTextOcrTest, DeepOcrFragmentCoalescingAndInkEdgeRescue) {
+    using namespace tools3000::ocr;
+
+    // 1. 同一水平基线上被 DBNet 切碎的极小标点/短值碎片（模拟 "WddStatus" + ":" + "\"-\""）必须自动合并，
+    //    同时跳过右侧独立对称 UI 下拉箭头图标，绝不把按钮旁的下拉箭头吸进标签框。
+    cv::Mat canvas(80, 360, CV_8UC3, cv::Scalar(255, 255, 255));
+    // 绘制紧邻按钮右侧的一个 9x5 对称向下下拉箭头 V（x=270..278, y=24..28）
+    const cv::Vec3b chevCol(120, 120, 120);
+    for (int k = 0; k < 5; ++k) {
+        canvas.at<cv::Vec3b>(24 + k, 270 + k) = chevCol;
+        canvas.at<cv::Vec3b>(24 + k, 278 - k) = chevCol;
+    }
+
+    auto makeRectQuad = [](float x, float y, float w, float h, float score = 0.95f) {
+        DbDetectedQuad q;
+        q.corners = {
+            cv::Point2f(x, y),
+            cv::Point2f(x + w, y),
+            cv::Point2f(x + w, y + h),
+            cv::Point2f(x, y + h),
+        };
+        q.score = score;
+        return q;
+    };
+
+    std::vector<DbDetectedQuad> quads = {
+        makeRectQuad(20.0f, 20.0f, 77.0f, 12.0f),   // "WddStatus"
+        makeRectQuad(96.0f, 24.0f, 10.0f, 5.0f),    // ":"
+        makeRectQuad(110.0f, 21.0f, 20.0f, 6.0f),   // "\"-\","
+        makeRectQuad(220.0f, 18.0f, 38.0f, 18.0f),  // "保存"
+        makeRectQuad(268.0f, 24.0f, 13.0f, 5.0f),   // 独立下拉箭头 v
+    };
+    DeepOcrEngine::coalesceSameLineTinyFragments(quads, canvas);
+    ASSERT_EQ(quads.size(), 3u) << "Three JSON fragments should coalesce into 1 quad while chevron stays separate";
+    EXPECT_NEAR(quads[0].corners[0].x, 20.0f, 0.5f);
+    EXPECT_NEAR(quads[0].corners[1].x, 130.0f, 0.5f);
+    EXPECT_NEAR(quads[1].corners[0].x, 220.0f, 0.5f);
+    EXPECT_NEAR(quads[1].corners[1].x, 258.0f, 0.5f);
+
+    // 2. 墨水感知防碰撞边界精修：DBNet 盒右缘漏掉 2px 外的逗号 `,` 且左缘漏掉 2px 外的 `{`，
+    //    必须精准双向扩张包裹首尾标点，同时严格止步于相邻列框之前。
+    cv::Mat jsonStrip(40, 260, CV_8UC3, cv::Scalar(255, 255, 255));
+    const cv::Scalar darkInk(20, 20, 20);
+    // 左缘外 2px 处的 `{`（x=36..38）
+    cv::rectangle(jsonStrip, cv::Rect(36, 13, 3, 10), darkInk, cv::FILLED);
+    // 主体文字（x=41..138）
+    cv::rectangle(jsonStrip, cv::Rect(41, 14, 98, 9), darkInk, cv::FILLED);
+    // 右缘外 2px 处的尾随逗号 `,`（x=141..143）
+    cv::rectangle(jsonStrip, cv::Rect(141, 20, 3, 4), darkInk, cv::FILLED);
+    // 右侧紧邻列（x=148..210）
+    cv::rectangle(jsonStrip, cv::Rect(148, 14, 40, 9), darkInk, cv::FILLED);
+
+    const std::vector<cv::Rect> allBoxes = {
+        cv::Rect(40, 12, 100, 14),
+        cv::Rect(147, 12, 50, 14),
+    };
+    cv::Vec3b estBg(0, 0, 0);
+    bool uniformBg = false;
+    const cv::Rect refined = DeepOcrEngine::refineAxisAlignedLineBox(
+        jsonStrip, allBoxes[0], allBoxes, 0, &estBg, &uniformBg);
+    EXPECT_TRUE(uniformBg);
+    EXPECT_EQ(estBg, cv::Vec3b(255, 255, 255));
+    EXPECT_LE(refined.x, 36) << "Must rescue leading '{' at x=36";
+    EXPECT_GE(refined.x + refined.width, 144) << "Must rescue trailing ',' at x=141..143";
+    EXPECT_LT(refined.x + refined.width, 147) << "Must never encroach onto neighbor box at x=147";
+}
+
+TEST(LiveTextOcrTest, DeepOcrDropdownChevronSuppressionPrecisionAndZeroFalsePositives) {
+    using namespace tools3000::ocr;
+
+    cv::Mat uiImg(120, 360, CV_8UC3, cv::Scalar(255, 255, 255));
+
+    // 场景 A：绿色按钮 "GET" + 6px 空白 + 7x4 绿色对称下拉箭头（模拟 `GET v`）
+    cv::rectangle(uiImg, cv::Rect(10, 10, 72, 24), cv::Scalar(235, 248, 238), cv::FILLED);
+    const cv::Scalar greenInk(108, 185, 42);
+    // 模拟 "GET" 三个满高字母（y=17..26, height=10）
+    cv::rectangle(uiImg, cv::Rect(16, 17, 7, 10), greenInk, cv::FILLED);
+    cv::rectangle(uiImg, cv::Rect(25, 17, 7, 10), greenInk, cv::FILLED);
+    cv::rectangle(uiImg, cv::Rect(34, 17, 7, 10), greenInk, cv::FILLED);
+    // 6px 空白后绘制 7x4 对称向下箭头（x=47..53, y=20..23, 居中悬浮）
+    for (int k = 0; k < 4; ++k) {
+        uiImg.at<cv::Vec3b>(20 + k, 47 + k) = cv::Vec3b(120, 196, 80);
+        uiImg.at<cv::Vec3b>(20 + k, 53 - k) = cv::Vec3b(120, 196, 80);
+    }
+
+    // 场景 B："Body" 后紧跟浅灰 10x6 对称下拉箭头（模拟 `Body~`，即使前字高对比度微悬垂也不能屏蔽浅灰箭头）
+    const cv::Scalar darkText(30, 35, 45);
+    cv::rectangle(uiImg, cv::Rect(120, 16, 30, 12), darkText, cv::FILLED);
+    for (int k = 0; k < 5; ++k) {
+        uiImg.at<cv::Vec3b>(19 + k, 155 + k) = cv::Vec3b(200, 200, 200);
+        uiImg.at<cv::Vec3b>(19 + k, 164 - k) = cv::Vec3b(200, 200, 200);
+    }
+
+    // 场景 C：独立下拉箭头块（模拟保存按钮旁独立 `√`）
+    for (int k = 0; k < 5; ++k) {
+        uiImg.at<cv::Vec3b>(20 + k, 220 + k) = cv::Vec3b(110, 110, 110);
+        uiImg.at<cv::Vec3b>(20 + k, 228 - k) = cv::Vec3b(110, 110, 110);
+    }
+
+    // 场景 D（负例防误伤）：基线对齐的正常英文字母 "A v"（高 9px、宽 7px，高宽比不满足扁平下拉箭头）
+    cv::rectangle(uiImg, cv::Rect(16, 62, 8, 11), darkText, cv::FILLED); // "A" (y=62..72)
+    // 绘制正常窄高小写 'v'，底部落在基线 y=72（x=30..36, y=64..72, cw=7, ch=9）
+    cv::line(uiImg, cv::Point(30, 64), cv::Point(33, 72), darkText, 1);
+    cv::line(uiImg, cv::Point(36, 64), cv::Point(33, 72), darkText, 1);
+
+    // 场景 E（负例防误伤）：非对称真实勾选符 "√"（左短右长，不满足左右镜像对称）
+    cv::line(uiImg, cv::Point(120, 69), cv::Point(123, 73), darkText, 1);
+    cv::line(uiImg, cv::Point(123, 73), cv::Point(130, 62), darkText, 1);
+
+    OcrResult getBtn;
+    getBtn.text = "GET v";
+    getBtn.box = cv::Rect(14, 14, 44, 16);
+    getBtn.charBoxes = {
+        cv::Rect(16, 14, 8, 16), cv::Rect(25, 14, 8, 16), cv::Rect(34, 14, 8, 16),
+        cv::Rect(42, 14, 4, 16), cv::Rect(47, 14, 8, 16),
+    };
+
+    OcrResult bodyBtn;
+    bodyBtn.text = "Body~";
+    bodyBtn.box = cv::Rect(118, 14, 50, 16);
+    bodyBtn.charBoxes = {
+        cv::Rect(120, 14, 8, 16), cv::Rect(128, 14, 8, 16),
+        cv::Rect(136, 14, 7, 16), cv::Rect(143, 14, 8, 16), cv::Rect(154, 14, 12, 16),
+    };
+
+    OcrResult loneChev;
+    loneChev.text = "\xE2\x88\x9A"; // √
+    loneChev.box = cv::Rect(218, 18, 13, 9);
+    loneChev.charBoxes = {loneChev.box};
+
+    OcrResult realLetterV;
+    realLetterV.text = "A v";
+    realLetterV.box = cv::Rect(14, 60, 26, 15);
+    realLetterV.charBoxes = {
+        cv::Rect(16, 60, 8, 15), cv::Rect(24, 60, 5, 15), cv::Rect(29, 60, 9, 15),
+    };
+
+    OcrResult realCheckmark;
+    realCheckmark.text = "\xE2\x88\x9A"; // √
+    realCheckmark.box = cv::Rect(118, 60, 15, 15);
+    realCheckmark.charBoxes = {realCheckmark.box};
+
+    std::vector<OcrResult> blocks = {getBtn, bodyBtn, loneChev, realLetterV, realCheckmark};
+    DeepOcrEngine::stripUiDropdownChevrons(uiImg, blocks);
+
+    ASSERT_EQ(blocks.size(), 4u) << "Standalone dropdown chevron must be removed while real checkmark stays";
+    EXPECT_EQ(blocks[0].text, "GET");
+    EXPECT_EQ(blocks[0].charBoxes.size(), 3u);
+    EXPECT_LT(blocks[0].box.width, getBtn.box.width);
+
+    EXPECT_EQ(blocks[1].text, "Body");
+    EXPECT_EQ(blocks[1].charBoxes.size(), 4u);
+
+    EXPECT_EQ(blocks[2].text, "A v") << "Baseline-aligned real letter 'v' must never be stripped";
+    EXPECT_EQ(blocks[2].charBoxes.size(), 3u);
+
+    EXPECT_EQ(blocks[3].text, "\xE2\x88\x9A") << "Asymmetric real checkmark must never be stripped";
+}
+
+TEST(LiveTextOcrTest, DeepOcrStructuredJsonPunctuationNormalization) {
+    using namespace tools3000::ocr;
+
+    // 1. JSON 键值对含中文字符串值：仅规整 JSON 结构位上的全角引号/冒号/逗号及误识圆括号，
+    //    严格保全中文值内部的中文逗号/冒号/括号，且 text 与 charBoxes 严格 1:1 保持长度同步。
+    OcrResult jsonLine;
+    jsonLine.text =
+        "(\xE2\x80\x9C" "U_PLM_Categ1\xE2\x80\x9D\xEF\xBC\x9A\xE2\x80\x9C\xE5\x8D\x8A\xE6\x88\x90\xE5\x93\x81\xE2\x80\x9D\xEF\xBC\x8C"
+        "\"User_Text\"\xEF\xBC\x9A\xE2\x80\x9C" "C\xE7\xB1\xBB\xE5\x8F\x97\xE6\x8E\xA7\xEF\xBC\x8C\xE5\x8E\x82\xE5\xAE\xB6\xEF\xBC\x9A\xE5\x8D\x97\xE9\x80\x9A\xE2\x80\x9D\xEF\xBC\x8C"
+        "\"ItemPrices\":[(\"Currency\":\"RMB\",\"PriceList\":1)]}";
+    const size_t origCpCount = OcrEngine::countUtf8Codepoints(jsonLine.text);
+    jsonLine.charBoxes = OcrEngine::buildProportionalCharBoxes(jsonLine.text, cv::Rect(0, 0, 800, 16));
+    ASSERT_EQ(jsonLine.charBoxes.size(), origCpCount);
+
+    DeepOcrEngine::normalizeStructuredJsonPunctuation(jsonLine);
+
+    const std::string expectedJson =
+        "{\"U_PLM_Categ1\":\"\xE5\x8D\x8A\xE6\x88\x90\xE5\x93\x81\","
+        "\"User_Text\":\"C\xE7\xB1\xBB\xE5\x8F\x97\xE6\x8E\xA7\xEF\xBC\x8C\xE5\x8E\x82\xE5\xAE\xB6\xEF\xBC\x9A\xE5\x8D\x97\xE9\x80\x9A\","
+        "\"ItemPrices\":[{\"Currency\":\"RMB\",\"PriceList\":1}]}";
+    EXPECT_EQ(jsonLine.text, expectedJson);
+    EXPECT_EQ(OcrEngine::countUtf8Codepoints(jsonLine.text), origCpCount);
+    EXPECT_EQ(jsonLine.charBoxes.size(), origCpCount);
+
+    // 2. JSON 嵌套对象起始 `{` 被误识为 `f` 或 `(`（行尾 `"message": f` / 内嵌 `"message":f"lang":` / 数组 `[f"Currency":`）
+    {
+        OcrResult msgBrace;
+        msgBrace.text = "\"message\": f";
+        msgBrace.charBoxes = OcrEngine::buildProportionalCharBoxes(msgBrace.text, cv::Rect(0, 0, 120, 14));
+        DeepOcrEngine::normalizeStructuredJsonPunctuation(msgBrace);
+        EXPECT_EQ(msgBrace.text, "\"message\": {");
+        EXPECT_EQ(msgBrace.charBoxes.size(), OcrEngine::countUtf8Codepoints(msgBrace.text));
+
+        OcrResult inlineBrace;
+        inlineBrace.text = "\"message\":f\"lang\":\"en-us\"}";
+        inlineBrace.charBoxes = OcrEngine::buildProportionalCharBoxes(inlineBrace.text, cv::Rect(0, 0, 260, 14));
+        DeepOcrEngine::normalizeStructuredJsonPunctuation(inlineBrace);
+        EXPECT_EQ(inlineBrace.text, "\"message\":{\"lang\":\"en-us\"}");
+
+        OcrResult arrBrace;
+        arrBrace.text = "\"ItemPrices\":[f\"Currency\":\"RMB\"}]}";
+        arrBrace.charBoxes = OcrEngine::buildProportionalCharBoxes(arrBrace.text, cv::Rect(0, 0, 320, 14));
+        DeepOcrEngine::normalizeStructuredJsonPunctuation(arrBrace);
+        EXPECT_EQ(arrBrace.text, "\"ItemPrices\":[{\"Currency\":\"RMB\"}]}");
+
+        // 负例保护：布尔值 `"flag": false` 与单字符字符串 `"code": "f"` 严禁被误改！
+        OcrResult boolFalse;
+        boolFalse.text = "\"flag\": false, \"code\": \"f\"";
+        DeepOcrEngine::normalizeStructuredJsonPunctuation(boolFalse);
+        EXPECT_EQ(boolFalse.text, "\"flag\": false, \"code\": \"f\"");
+    }
+
+    // 3. 普通中文自然语言散文含中式引号/冒号/逗号：必须 100% 原样零改动！
+    OcrResult chineseProse;
+    chineseProse.text = "\xE2\x80\x9C\xE4\xBD\xA0\xE5\xA5\xBD\xE2\x80\x9D\xEF\xBC\x8C\xE5\xA5\xB9\xE8\xAF\xB4\xEF\xBC\x9A\xE2\x80\x9C\xE4\xBB\x8A\xE5\xA4\xA9\xE5\xA4\xA9\xE6\xB0\x94\xE5\xBE\x88\xE5\xA5\xBD\xE3\x80\x82\xE2\x80\x9D";
+    const std::string proseBefore = chineseProse.text;
+    DeepOcrEngine::normalizeStructuredJsonPunctuation(chineseProse);
+    EXPECT_EQ(chineseProse.text, proseBefore);
+}
+
+TEST(LiveTextOcrTest, DeepOcrPixelUnderscoreRescueAndHyperlinkGuard) {
+    using namespace tools3000::ocr;
+
+    // 1. 正例：浅蓝选区背景上真实绘制 "bom_Make"（底部独立 6px 下划线），OCR 误输出 "bom Make" -> 精准还原 "bom_Make"
+    cv::Mat img(120, 260, CV_8UC3, cv::Scalar(250, 232, 212)); // 浅蓝选中底色 (BGR)
+    const cv::Scalar ink(35, 35, 35);
+    // "bom" x=20..44, y=14..23; "_" x=46..52, y=25; "Make" x=54..84, y=14..23
+    cv::rectangle(img, cv::Rect(20, 14, 7, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(28, 16, 7, 8), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(36, 16, 8, 8), ink, cv::FILLED);
+    cv::line(img, cv::Point(46, 25), cv::Point(51, 25), ink, 1);
+    cv::rectangle(img, cv::Rect(54, 14, 8, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(63, 16, 6, 8), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(70, 14, 6, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(77, 16, 6, 8), ink, cv::FILLED);
+
+    OcrResult missed;
+    missed.text = "bom Make";
+    missed.box = cv::Rect(18, 12, 68, 15);
+    missed.charBoxes = {
+        cv::Rect(20, 12, 7, 15), cv::Rect(28, 12, 7, 15), cv::Rect(36, 12, 8, 15),
+        cv::Rect(45, 12, 8, 15),
+        cv::Rect(54, 12, 8, 15), cv::Rect(63, 12, 6, 15), cv::Rect(70, 12, 6, 15), cv::Rect(77, 12, 6, 15),
+    };
+    DeepOcrEngine::rescueMissedUnderscores(img, missed);
+    EXPECT_EQ(missed.text, "bom_Make");
+    EXPECT_EQ(missed.charBoxes.size(), 8u);
+
+    // 2. 负例 A：正常英文词间空格 "foo bar"（底部无笔画）-> 保持原样
+    cv::rectangle(img, cv::Rect(20, 48, 22, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(52, 48, 22, 10), ink, cv::FILLED);
+    OcrResult normalSpace;
+    normalSpace.text = "foo bar";
+    normalSpace.box = cv::Rect(18, 46, 58, 15);
+    normalSpace.charBoxes = {
+        cv::Rect(20, 46, 7, 15), cv::Rect(27, 46, 7, 15), cv::Rect(34, 46, 8, 15),
+        cv::Rect(43, 46, 8, 15),
+        cv::Rect(52, 46, 7, 15), cv::Rect(59, 46, 7, 15), cv::Rect(66, 46, 8, 15),
+    };
+    DeepOcrEngine::rescueMissedUnderscores(img, normalSpace);
+    EXPECT_EQ(normalSpace.text, "foo bar");
+
+    // 3. 负例 B：带通长下划线的超链接 "foo bar"（左右两翼均延续贯穿下划线）-> 反超链接护栏拦截，100% 保持空格
+    cv::rectangle(img, cv::Rect(20, 82, 22, 10), ink, cv::FILLED);
+    cv::rectangle(img, cv::Rect(52, 82, 22, 10), ink, cv::FILLED);
+    cv::line(img, cv::Point(20, 93), cv::Point(74, 93), ink, 1);
+    OcrResult hyperlink;
+    hyperlink.text = "foo bar";
+    hyperlink.box = cv::Rect(18, 80, 58, 15);
+    hyperlink.charBoxes = {
+        cv::Rect(20, 80, 7, 15), cv::Rect(27, 80, 7, 15), cv::Rect(34, 80, 8, 15),
+        cv::Rect(43, 80, 8, 15),
+        cv::Rect(52, 80, 7, 15), cv::Rect(59, 80, 7, 15), cv::Rect(66, 80, 8, 15),
+    };
+    DeepOcrEngine::rescueMissedUnderscores(img, hyperlink);
+    EXPECT_EQ(hyperlink.text, "foo bar") << "Full-width hyperlink underline must never turn a word space into underscore";
+}
+
+TEST(LiveTextOcrTest, OcrEngineSoftWrappedJsonSeamlessJoinAndGuards) {
+    using namespace tools3000::ocr;
+
+    // 1. 压缩单行 JSON 在中文字符串中间软折行：拼接后绝不能插入 \r\n 破坏 RFC 8259 字符串语法
+    std::vector<OcrResult> wrappedJson;
+    auto pushRow = [&](int x, int y, int w, int h, const char* txt) {
+        OcrResult r;
+        r.text = txt;
+        r.box = cv::Rect(x, y, w, h);
+        r.confidence = 0.96f;
+        wrappedJson.push_back(std::move(r));
+    };
+    pushRow(70, 184, 880, 15, "{\"U_PLM_Categ2\":\"BCP0300\",\"U_YF_Project\":\"TXZW-WH003\",");
+    pushRow(70, 200, 940, 15, "\"ItemName\":\"KT154-F19 \xE6\xB5\x87");
+    pushRow(70, 216, 940, 14, "\xE5\xB0\x81\xE9\x94\x82\xE7\x94\xB5\xE6\xB1\xA0\xE7\xBB\x84\",\"User_Text\":\"\xE5\x8D\x97\xE9\x80\x9A\xE5\x8D\x97\xE5\x8D\x93\xE7\x94\xB5");
+    pushRow(70, 232, 940, 15, "\xE5\xAD\x90\xE7\xA7\x91\xE6\x8A\x80\xE6\x9C\x89\xE9\x99\x90\xE5\x85\xAC\xE5\x8F\xB8\",\"U_financial_type\":\"\xE8\x87\xAA\xE7\xA0\x94\xE4\xBA\xA7");
+    pushRow(70, 248, 930, 14, "\xE5\x93\x81\",\"ItemsGroupCode\":104,\"ItemPrices\":[{\"Currency\":\"RMB\",\"PriceList\":1}]}");
+
+    const std::string joined = OcrEngine::orderTextBlocksWithXYCut(wrappedJson, "\r\n");
+    const auto parsed = nlohmann::json::parse(joined);
+    EXPECT_EQ(parsed.at("U_PLM_Categ2").get<std::string>(), "BCP0300");
+    EXPECT_EQ(parsed.at("ItemName").get<std::string>(), "KT154-F19 \xE6\xB5\x87\xE5\xB0\x81\xE9\x94\x82\xE7\x94\xB5\xE6\xB1\xA0\xE7\xBB\x84");
+    EXPECT_EQ(parsed.at("User_Text").get<std::string>(), "\xE5\x8D\x97\xE9\x80\x9A\xE5\x8D\x97\xE5\x8D\x93\xE7\x94\xB5\xE5\xAD\x90\xE7\xA7\x91\xE6\x8A\x80\xE6\x9C\x89\xE9\x99\x90\xE5\x85\xAC\xE5\x8F\xB8");
+    EXPECT_EQ(parsed.at("U_financial_type").get<std::string>(), "\xE8\x87\xAA\xE7\xA0\x94\xE4\xBA\xA7\xE5\x93\x81");
+    EXPECT_EQ(parsed.at("ItemsGroupCode").get<int>(), 104);
+    ASSERT_EQ(parsed.at("ItemPrices").size(), 1u);
+    EXPECT_EQ(parsed.at("ItemPrices")[0].at("Currency").get<std::string>(), "RMB");
+
+    // 2. 长 URL 软折行：smartMergeParagraphs 也必须无缝直连（绝不插入空格把 URL 拆断）
+    const std::string mergedUrl = OcrEngine::smartMergeParagraphsUtf8(
+        "\"@odata.context\": \"https://example.com/b1s/\n    v2/view.svc/$metadata\",");
+    EXPECT_EQ(mergedUrl, "\"@odata.context\": \"https://example.com/b1s/v2/view.svc/$metadata\",");
+
+    // 3. 常规格式化多行 JSON：每行字符串均已闭合，必须完整保留换行
+    const cv::Rect r1(100, 100, 150, 14);
+    const cv::Rect r2(100, 116, 150, 14);
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "\"DocEntry\" : 90411,", "\"CANCELED\" : \"N\",", &r1, &r2));
+
+    // 4. 防呆护栏 A：上一行漏识闭合引号，而下一行直接以新的 JSON 键 `"Age":` 开头 -> 严禁误合并
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "{\"Name\": \"Alice", "\"Age\": 30}", &r1, &r2));
+
+    // 5. 防呆护栏 B：几何跨分栏（右侧新栏顶部）或垂直大间隔 -> 严禁误合并
+    const cv::Rect rightColTop(600, 100, 150, 14);
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "{\"Name\": \"Alice", "Smith\"}", &r1, &rightColTop));
+    const cv::Rect farBelow(100, 260, 150, 14);
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "{\"Name\": \"Alice", "Smith\"}", &r1, &farBelow));
+
+    // 6. 防呆护栏 C：普通非 JSON 文本偶发未闭合引号 -> 严禁误合并
+    EXPECT_FALSE(OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine(
+        "She said \"Hello world", "Next paragraph line", &r1, &r2));
+}
+
+namespace {
+
+std::filesystem::path resolveRealWorldOcrFixtureDir() {
+    auto probeFrom = [](std::filesystem::path base) -> std::filesystem::path {
+        std::error_code ec;
+        for (int depth = 0; depth < 8 && !base.empty(); ++depth) {
+            const auto candidate = base / "tests" / "fixtures" / "ocr";
+            if (std::filesystem::is_regular_file(candidate / "README.md", ec)) {
+                return candidate;
+            }
+            const auto parent = base.parent_path();
+            if (parent == base) break;
+            base = parent;
+        }
+        return {};
+    };
+
+    wchar_t exePathBuf[MAX_PATH]{};
+    const DWORD exeLen = GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+    if (exeLen > 0 && exeLen < MAX_PATH) {
+        if (auto dir = probeFrom(std::filesystem::path(exePathBuf).parent_path()); !dir.empty()) {
+            return dir;
+        }
+    }
+    std::error_code ec;
+    return probeFrom(std::filesystem::current_path(ec));
+}
+
+cv::Mat loadRealWorldOcrFixture(const char* fileName) {
+    const auto dir = resolveRealWorldOcrFixtureDir();
+    if (dir.empty()) return {};
+    const auto fullPath = dir / fileName;
+    return cv::imread(tools3000::core::WinUtils::wstringToUtf8(fullPath.wstring()), cv::IMREAD_COLOR);
+}
+
+std::string joinOcrLines(const std::vector<tools3000::ocr::OcrResult>& lines) {
+    std::string out;
+    for (const auto& r : lines) {
+        out += r.text;
+        out.push_back('\n');
+    }
+    return out;
+}
+
+bool containsLineToken(const std::vector<tools3000::ocr::OcrResult>& lines, std::string_view needle) {
+    for (const auto& r : lines) {
+        if (r.text.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
+} // namespace
+
+TEST(LiveTextOcrTest, RealWorldOcrFixtureCatalogIntegrity) {
+    const auto dir = resolveRealWorldOcrFixtureDir();
+    ASSERT_FALSE(dir.empty()) << "Failed to locate tests/fixtures/ocr directory from executable or working dir";
+
+    constexpr const char* kFixtures[] = {
+        "sap_form_table.jpg",
+        "release_notes_dense_doc.png",
+        "pda_screen_photo.jpg",
+        "meeting_tv_photo.jpg",
+        "erp_table_screen_photo.jpg",
+        "packing_card_photo.jpg",
+        "apifox_json_pretty.png",
+        "apifox_json_compact.jpg",
+    };
+
+    for (const char* name : kFixtures) {
+        const auto p = dir / name;
+        std::error_code ec;
+        ASSERT_TRUE(std::filesystem::is_regular_file(p, ec)) << "Missing OCR regression fixture: " << name;
+        const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(p.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(img.empty()) << "Failed to decode OCR regression fixture: " << name;
+        EXPECT_GT(img.cols, 200) << name;
+        EXPECT_GT(img.rows, 200) << name;
+    }
+}
+
+TEST(LiveTextOcrTest, FixtureApifoxPrettyJsonAndDropdownChevronRegression) {
+    using namespace tools3000::ocr;
+    auto& deep = DeepOcrEngine::instance();
+    if (!deep.getModelStatus().installed) {
+        GTEST_SKIP() << "PP-OCRv4 offline model bundle not installed";
+    }
+
+    const cv::Mat img = loadRealWorldOcrFixture("apifox_json_pretty.png");
+    ASSERT_FALSE(img.empty());
+
+    const auto page = OcrEngine::instance().extractPage(img);
+    EXPECT_EQ(page.activeEngine, "ppocr_v4");
+    ASSERT_GE(page.lines.size(), 35u);
+
+    const std::string allText = joinOcrLines(page.lines);
+    EXPECT_NE(allText.find("\"DocTotalFC\" : 0.0,"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"Comments\" : \"\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"U_BillType\" : \"Y\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"WddStatus\" : \"-\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"DocEntry\" : 90411,"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"DocTotal\" : 69355.20,"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"CardName\":\"北京赛泰克生物科技有限公司\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("$filter"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("$orderby"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("$skip"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("1000000"), std::string::npos) << allText;
+
+    // UI 下拉箭头剥离防回退断言：GET / Body / Raw / utf8 不应夹带下拉箭头误识尾缀
+    EXPECT_TRUE(containsLineToken(page.lines, "GET")) << allText;
+    EXPECT_EQ(allText.find("GET v"), std::string::npos) << "Dropdown chevron next to GET leaked into OCR text";
+    EXPECT_EQ(allText.find("Body~"), std::string::npos) << "Dropdown chevron next to Body leaked into OCR text";
+    EXPECT_EQ(allText.find("Raw v"), std::string::npos) << "Dropdown chevron next to Raw leaked into OCR text";
+
+    for (const auto& blk : page.lines) {
+        EXPECT_EQ(blk.charBoxes.size(), OcrEngine::countUtf8Codepoints(blk.text)) << blk.text;
+    }
+}
+
+TEST(LiveTextOcrTest, FixtureApifoxCompactWideJsonRegression) {
+    using namespace tools3000::ocr;
+    auto& deep = DeepOcrEngine::instance();
+    if (!deep.getModelStatus().installed) {
+        GTEST_SKIP() << "PP-OCRv4 offline model bundle not installed";
+    }
+
+    const cv::Mat img = loadRealWorldOcrFixture("apifox_json_compact.jpg");
+    ASSERT_FALSE(img.empty());
+
+    const auto lines = deep.extractText(img);
+    ASSERT_GE(lines.size(), 25u);
+    const std::string allText = joinOcrLines(lines);
+
+    // 超宽紧凑单行 JSON 核心字段与结构标点规整回归断言
+    EXPECT_NE(allText.find("{\"U_PLM_Categ2\":\"BCP0300\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"U_PLM_Categ1\":\"半成品\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"U_YF_Project\":\"TXZW-WH003\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"PlanningSystem\":\"bop_MRP\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"ProcurementMethod\":\"bom_Make\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"ItemCode\":\"BCP1097\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"InventoryItem\":\"Y\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"User_Text\":"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"U_financial_type\":\"自研产"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"ItemPrices\":[{\"Currency\":\"RMB\",\"PriceList\":1}]}"), std::string::npos) << allText;
+
+    // 字符串值内部中文标点必须完好保全，严防被 JSON 标点规整误伤
+    EXPECT_NE(allText.find("（型号：SY-F19-L）"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("生产厂家：南通南卓电"), std::string::npos) << allText;
+
+    // 底部错误响应 JSON 与 UI 按钮断言（含 `"message": {` 单个花括号精准还原）
+    EXPECT_NE(allText.find("\"error\": {"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"code\": -10,"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"message\": {"), std::string::npos) << allText;
+    EXPECT_EQ(allText.find("\"message\": f"), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"lang\": \"en-us\","), std::string::npos) << allText;
+    EXPECT_NE(allText.find("\"value\": \"Internal error (-10) occurred\""), std::string::npos) << allText;
+    EXPECT_NE(allText.find("PATCH"), std::string::npos) << allText;
+    EXPECT_EQ(allText.find("PATCH v"), std::string::npos) << "Dropdown chevron next to PATCH leaked into OCR text";
+    EXPECT_NE(allText.find("格式化"), std::string::npos) << allText;
+
+    // 端到端复制拼接 + 标准 JSON 解析器强断言：
+    // 框选编辑器区 5 行软折行紧凑 JSON 并走 OcrEngine::orderTextBlocksWithXYCut 拼接后，
+    // 必须无缝缝合所有被中文软折行劈断的字符串，直接通过 nlohmann::json::parse 零报错解析！
+    std::vector<OcrResult> jsonEditorLines;
+    for (const auto& blk : lines) {
+        if (blk.box.y >= 175 && blk.box.y <= 260 && blk.box.x >= 60) {
+            jsonEditorLines.push_back(blk);
+        }
+    }
+    ASSERT_EQ(jsonEditorLines.size(), 5u);
+    const std::string copiedJson = OcrEngine::orderTextBlocksWithXYCut(jsonEditorLines, "\r\n");
+    nlohmann::json parsed;
+    ASSERT_NO_THROW(parsed = nlohmann::json::parse(copiedJson)) << "Copied compact JSON must be valid RFC 8259 JSON:\n" << copiedJson;
+    EXPECT_EQ(parsed.at("U_PLM_Categ2").get<std::string>(), "BCP0300");
+    EXPECT_EQ(parsed.at("U_PLM_Categ1").get<std::string>(), "半成品");
+    EXPECT_EQ(parsed.at("ProcurementMethod").get<std::string>(), "bom_Make");
+    EXPECT_EQ(parsed.at("ItemCode").get<std::string>(), "BCP1097");
+    EXPECT_NE(parsed.at("ItemName").get<std::string>().find("浇封锂电池组（型号：SY-F19-L）"), std::string::npos);
+    EXPECT_NE(parsed.at("User_Text").get<std::string>().find("南通南卓电子科技有限公司"), std::string::npos);
+    EXPECT_EQ(parsed.at("U_financial_type").get<std::string>(), "自研产品");
+    EXPECT_EQ(parsed.at("ItemsGroupCode").get<int>(), 104);
+    ASSERT_TRUE(parsed.at("ItemPrices").is_array());
+    ASSERT_EQ(parsed.at("ItemPrices").size(), 1u);
+    EXPECT_EQ(parsed.at("ItemPrices")[0].at("Currency").get<std::string>(), "RMB");
+    EXPECT_EQ(parsed.at("ItemPrices")[0].at("PriceList").get<int>(), 1);
+}
+
+TEST(LiveTextOcrTest, FixtureRealWorldScreenPhotosAndQrRegression) {
+    using namespace tools3000::ocr;
+    using namespace tools3000::capture;
+    auto& deep = DeepOcrEngine::instance();
+    if (!deep.getModelStatus().installed) {
+        GTEST_SKIP() << "PP-OCRv4 offline model bundle not installed";
+    }
+
+    // 1. 手持 PDA 强摩尔纹拍屏：验证 ZZ30003665 不再回退为 "乙乙30003665"
+    {
+        const cv::Mat pda = loadRealWorldOcrFixture("pda_screen_photo.jpg");
+        ASSERT_FALSE(pda.empty());
+        const auto lines = deep.extractText(pda);
+        const std::string allText = joinOcrLines(lines);
+        EXPECT_NE(allText.find("生产报工"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("生产箱单-PL202610150024"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("ZZ30003665"), std::string::npos) << allText;
+        EXPECT_EQ(allText.find("乙乙30003665"), std::string::npos) << allText;
+    }
+
+    // 2. 会议室电视 PPT 实拍：OCR 精准识别 + 真实端到端原位改字 "5%" -> "10%" 不抹除紧邻左字 "余"
+    {
+        const cv::Mat ppt = loadRealWorldOcrFixture("meeting_tv_photo.jpg");
+        ASSERT_FALSE(ppt.empty());
+        const auto lines = deep.extractText(ppt);
+        const std::string allText = joinOcrLines(lines);
+        EXPECT_NE(allText.find("SAP待解决问题"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("SAP机台销货只能是整数台"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("剩余5%待到期时开票"), std::string::npos) << allText;
+
+        const OcrResult* targetLine = nullptr;
+        for (const auto& r : lines) {
+            if (r.text.find("剩余5%") != std::string::npos) {
+                targetLine = &r;
+                break;
+            }
+        }
+        ASSERT_NE(targetLine, nullptr);
+        const auto cps = OcrEngine::splitUtf8Codepoints(targetLine->text);
+        int idx5 = -1;
+        for (size_t c = 0; c + 1 < cps.size(); ++c) {
+            if (cps[c] == "5" && cps[c + 1] == "%") {
+                idx5 = static_cast<int>(c);
+                break;
+            }
+        }
+        ASSERT_GE(idx5, 1);
+        ASSERT_EQ(targetLine->charBoxes.size(), cps.size());
+
+        const cv::Rect prevCharBox = targetLine->charBoxes[static_cast<size_t>(idx5 - 1)]; // "余"
+        const cv::Rect selRect = targetLine->charBoxes[static_cast<size_t>(idx5)] |
+                                 targetLine->charBoxes[static_cast<size_t>(idx5 + 1)];
+        cv::Rect tailRect;
+        for (size_t c = static_cast<size_t>(idx5 + 2); c < targetLine->charBoxes.size(); ++c) {
+            tailRect = tailRect.empty() ? targetLine->charBoxes[c] : (tailRect | targetLine->charBoxes[c]);
+        }
+
+        initializeMarkupTextRenderer();
+        TextReplaceEngine::clearPatchCache();
+        TextReplaceRenderSpec spec;
+        spec.sourceRect = selRect;
+        spec.charBoxes = {targetLine->charBoxes[static_cast<size_t>(idx5)],
+                          targetLine->charBoxes[static_cast<size_t>(idx5 + 1)]};
+        spec.originalTextUtf8 = "5%";
+        spec.newTextUtf8 = "10%";
+        spec.bgMode = TextReplaceBgMode::Auto;
+        spec.reflowRightTail = !tailRect.empty();
+        spec.rightTailRect = tailRect;
+
+        cv::Mat replaced = ppt.clone();
+        TextReplaceEngine::renderReplacement(replaced, spec);
+
+        // 验证 "余" 字主体像素（避开最右 1px 抗锯齿交界）100% 未受损
+        const cv::Rect safePrevRc = prevCharBox & cv::Rect(0, 0, ppt.cols, ppt.rows);
+        const int checkW = (std::max)(1, safePrevRc.width - 2);
+        int alteredPrevPixels = 0;
+        for (int y = safePrevRc.y; y < safePrevRc.y + safePrevRc.height; ++y) {
+            for (int x = safePrevRc.x; x < safePrevRc.x + checkW; ++x) {
+                const cv::Vec3b a = ppt.at<cv::Vec3b>(y, x);
+                const cv::Vec3b b = replaced.at<cv::Vec3b>(y, x);
+                if (std::abs(a[0] - b[0]) + std::abs(a[1] - b[1]) + std::abs(a[2] - b[2]) > 18) {
+                    ++alteredPrevPixels;
+                }
+            }
+        }
+        EXPECT_EQ(alteredPrevPixels, 0) << "In-place replacing 5% -> 10% must not erase neighboring glyph";
+    }
+
+    // 3. ERP 摩尔纹深灰表头密集表格拍屏
+    {
+        const cv::Mat erp = loadRealWorldOcrFixture("erp_table_screen_photo.jpg");
+        ASSERT_FALSE(erp.empty());
+        const auto lines = deep.extractText(erp);
+        ASSERT_GE(lines.size(), 90u);
+        const std::string allText = joinOcrLines(lines);
+        EXPECT_NE(allText.find("仓库名称"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("零件号"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("单位"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("周转箱编码"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("焊装车间线边库"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("冲压车间线边库"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("ZZ00443481"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("400"), std::string::npos) << allText;
+    }
+
+    // 4. 工业产品装箱卡 + QR 码 + 背景脏污物料表
+    {
+        const cv::Mat card = loadRealWorldOcrFixture("packing_card_photo.jpg");
+        ASSERT_FALSE(card.empty());
+        const auto page = OcrEngine::instance().extractPage(card);
+        ASSERT_GE(page.lines.size(), 40u);
+        const std::string allText = joinOcrLines(page.lines);
+        EXPECT_NE(allText.find("HB0501000546"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("501010567AA"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("右前纵梁后部加强板"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("成飞T1X项目"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("ZZ30001332"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("崔华松"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("502009390AA"), std::string::npos) << allText;
+
+        bool foundQr = false;
+        for (const auto& qr : page.qrCodes) {
+            if (qr.text.find("ZZ00444040") != std::string::npos) {
+                foundQr = true;
+                break;
+            }
+        }
+        EXPECT_TRUE(foundQr) << "Packing card QR code ZZ00444040 must be decoded by OcrEngine::extractPage";
+    }
+}
+
+TEST(LiveTextOcrTest, FixtureDenseDocAndSapMultiColumnRegression) {
+    using namespace tools3000::ocr;
+    auto& deep = DeepOcrEngine::instance();
+    if (!deep.getModelStatus().installed) {
+        GTEST_SKIP() << "PP-OCRv4 offline model bundle not installed";
+    }
+
+    // 1. SAP B1 多栏表单 + 密集表格 + 右侧属性边栏：验证高召回与左右栏物理隔离
+    {
+        const cv::Mat sap = loadRealWorldOcrFixture("sap_form_table.jpg");
+        ASSERT_FALSE(sap.empty());
+        const auto lines = deep.extractText(sap);
+        ASSERT_GE(lines.size(), 60u);
+        const std::string allText = joinOcrLines(lines);
+        EXPECT_NE(allText.find("17,300.000 RMB"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("627,699.08 RMB"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("折扣前总计"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("到期付款总计"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("第3次CDD日期"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("SAP"), std::string::npos) << allText;
+
+        // 主表单区 (x < 780) 与右侧属性边栏 (x > 820) 之间存在硬分栏，严禁出现跨越中线的超长幽灵框
+        for (const auto& r : lines) {
+            EXPECT_FALSE(r.box.x < 500 && (r.box.x + r.box.width) > 900)
+                << "Cross-column ghost merge detected across SAP form and right sidebar: " << r.text;
+        }
+    }
+
+    // 2. 高密度中英混排长文档：验证大文本量稳定召回与核心段落精度
+    {
+        const cv::Mat doc = loadRealWorldOcrFixture("release_notes_dense_doc.png");
+        ASSERT_FALSE(doc.empty());
+        const auto lines = deep.extractText(doc);
+        ASSERT_GE(lines.size(), 35u);
+        size_t totalChars = 0;
+        for (const auto& r : lines) {
+            totalChars += OcrEngine::countUtf8Codepoints(r.text);
+        }
+        EXPECT_GE(totalChars, 2000u);
+
+        const std::string allText = joinOcrLines(lines);
+        EXPECT_NE(allText.find("本次版本核心亮点与体验升级"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("演播室视听与时间轴重塑"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("WinML/DirectML"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("SHA-256"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("MP4 / GIF / WebP"), std::string::npos) << allText;
+    }
+}

@@ -147,9 +147,11 @@ private:
     struct WallpaperEntry {
         bool isBuiltin = true;
         BeautyBackgroundType builtinTheme = BeautyBackgroundType::StudioSlate;
+        std::string presetKey;
+        uint32_t categoryMask = 0;
         std::string filePathUtf8;
         std::wstring displayName;
-        int category = 0; // 0: 默认, 1: 沉稳(暗色), 2: 轻盈(浅色), 3: 风景, 4: 自定义
+        int category = 0; // 0: 全部, 1: 沉稳, 2: 轻盈, 3: 风景, 4: 渐变, 5: 自定义
     };
 
     bool ensureWindowCreated();

@@ -187,13 +187,14 @@ struct StudioRenderConfig {
     bool autoFrameEnabled = true;
     StudioAspectRatio aspectRatio = StudioAspectRatio::Original;
     BeautyBackgroundType backgroundTheme = BeautyBackgroundType::AuroraPurple;
-    std::string customBackgroundPath;     // 本地自定义/扩展超清壁纸路径（非空时优先于枚举主题）
-    float paddingRatio = 0.065f;          // 画布四周背景留白占短边比例 (0.0 ~ 0.16)
-    float insetBorderWidth = 0.0f;        // 内边框粗细 (0.0 ~ 12.0 px)
-    std::string insetBorderColorHex = "#FFFFFF"; // 内边框颜色 (默认微晶白)
+    std::string backgroundPresetKey;      // 内置 49 款高定背景目录预设键（为空时兼容回退至 backgroundTheme）
+    std::string customBackgroundPath;     // 本地自定义/扩展超清壁纸路径（非空时优先于内置预设）
+    float paddingRatio = 0.092f;          // 画布四周画廊呼吸留白占短边比例 (0.0 ~ 0.22，默认黄金 9.2%)
+    float insetBorderWidth = 7.0f;        // VisionOS 磨砂水晶外托框宽度 (0.0 ~ 16.0 px，0 为纯粹无框)
+    std::string insetBorderColorHex = "#FFFFFF"; // 水晶外托框光学染色色调 (默认纯净微晶白)
     float backgroundBlur = 0.0f;          // 背景高斯景深虚化半径 (0.0 ~ 40.0 px)
-    float cornerRadius = 16.0f;           // 内嵌画面圆角半径 (0.0 ~ 36.0 px)
-    float shadowIntensity = 0.55f;        // 内嵌画面立体阴影强度 (0.0 ~ 1.0)
+    float cornerRadius = 18.0f;           // 内嵌画面圆角半径 (0.0 ~ 36.0 px)
+    float shadowIntensity = 0.72f;        // 三层空气悬浮立体阴影强度 (0.0 ~ 1.0)
     bool autoCaptionsEnabled = false;
     bool exportSrtSidecar = true;
     WatermarkConfig watermark{};

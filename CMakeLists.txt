@@ -187,11 +187,21 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/WatermarkRenderer.cpp
     src/capture/TextReplaceEngine.cpp
     src/capture/MarkupEngine.cpp
+    src/capture/MarkupEngineEffects.cpp
+    src/capture/MarkupEngineShapes.cpp
     src/capture/CursorOverlay.cpp
     src/capture/ScreenRecorder.cpp
+    src/capture/StudioBackdropCatalog.cpp
     src/capture/StudioTimeline.cpp
     src/capture/StudioVideoCompositor.cpp
+    src/capture/StudioVideoCompositorAnnotations.cpp
+    src/capture/StudioVideoCompositorExport.cpp
     src/capture/StudioPreviewWindow.cpp
+    src/capture/StudioPreviewWindowDrawers.cpp
+    src/capture/StudioPreviewWindowExport.cpp
+    src/capture/StudioPreviewWindowInput.cpp
+    src/capture/StudioPreviewWindowRender.cpp
+    src/capture/StudioPreviewWindowTimeline.cpp
     src/capture/ClipboardUtils.cpp
     src/capture/RecordingIndicator.cpp
     src/capture/RecordingGpuProbe.cpp
@@ -255,6 +265,7 @@ set(SERVICE_OBJECT_SOURCES
     src/service/SearchExpression.cpp
     src/service/FileIndexStore.cpp
     src/service/MftParser.cpp
+    src/service/MftParserQuery.cpp
     src/service/db/RunHistoryManager.cpp
     src/service/db/SearchHistoryManager.cpp
     src/service/db/DatabaseManager.cpp
@@ -356,10 +367,20 @@ set_target_properties(Plugin_Gesture PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAK
 # ── 3. Plugin_Capture (动态库) ────────────────────────────────────────────────
 set(CAPTURE_OTHER_SOURCES
     src/capture/CaptureInput.cpp
+    src/capture/CaptureInputCommands.cpp
+    src/capture/CaptureInputKeyboard.cpp
+    src/capture/CaptureInputMouse.cpp
     src/capture/CaptureOverlay.cpp
     src/capture/CaptureRenderer.cpp
+    src/capture/CaptureRendererHud.cpp
+    src/capture/CaptureRendererMarkup.cpp
+    src/capture/CaptureRendererToolbar.cpp
     src/capture/PinGroupBarOverlay.cpp
     src/capture/PinWindow.cpp
+    src/capture/PinWindowInput.cpp
+    src/capture/PinWindowOcr.cpp
+    src/capture/PinWindowRender.cpp
+    src/capture/PinWindowTextReplace.cpp
     src/capture/PluginEntry.cpp
     src/capture/ScreenCapture.cpp
     ${OCR_SOURCES}
@@ -538,6 +559,8 @@ if(BUILD_TESTING)
         tests/unit/test_main.cpp
         src/ocr/OcrEngine.cpp
         src/ocr/DeepOcrEngine.cpp
+        src/ocr/DeepOcrEngineModel.cpp
+        src/ocr/DeepOcrEnginePostprocess.cpp
         src/ocr/OcrTableReconstructor.cpp
         src/ocr/OcrResultWindow.cpp
         $<TARGET_OBJECTS:capture_objects>

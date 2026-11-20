@@ -146,22 +146,12 @@ bool StatsManager::saveToFile() {
         return false;
     }
     auto path = dir / L"stats.json";
-    auto tempPath = dir / L"stats.json.tmp";
-    
     m_historyData[m_currentDate] = m_todayStats.toJson();
-    
+
     try {
-        std::ofstream ofs(tempPath, std::ios::binary | std::ios::trunc);
-        ofs << m_historyData.dump(2);
-        ofs.flush();
-        if (!ofs) throw std::runtime_error("写入统计临时文件失败");
-        ofs.close();
-        if (!MoveFileExW(tempPath.c_str(), path.c_str(),
-                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            const DWORD moveErr = GetLastError();
-            std::error_code rmEc;
-            std::filesystem::remove(tempPath, rmEc);
-            throw std::runtime_error("替换统计文件失败, error=" + std::to_string(moveErr));
+        const std::string payload = m_historyData.dump(2);
+        if (!WinUtils::atomicWriteFileWithFlush(path.wstring(), payload)) {
+            throw std::runtime_error("替换统计文件失败");
         }
         m_dirty = false;
         return true;
