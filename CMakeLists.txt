@@ -194,6 +194,8 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/StudioBackdropCatalog.cpp
     src/capture/StudioTimeline.cpp
     src/capture/StudioVideoCompositor.cpp
+    src/capture/StudioVideoCompositorAnnotations.cpp
+    src/capture/StudioVideoCompositorExport.cpp
     src/capture/StudioPreviewWindow.cpp
     src/capture/StudioPreviewWindowDrawers.cpp
     src/capture/StudioPreviewWindowExport.cpp
