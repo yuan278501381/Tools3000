@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/CaptureRendererInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/TextAnnotationHelper.h"
 #include "capture/MarkupCurveGeometry.h"
 #include "capture/CaptureHudRimStyle.h"
@@ -1156,16 +1157,16 @@ void CaptureRenderer::drawSubmenu(CaptureState& state) {
         struct CapItem { LineCapStyle style; std::wstring label; };
         const bool zh = state.toolbarLayoutChinese;
         std::vector<CapItem> items = {
-            { LineCapStyle::None,           zh ? L"无端点" : L"None" },
-            { LineCapStyle::OpenArrow,      zh ? L"细线箭头" : L"Open Arrow" },
-            { LineCapStyle::SolidTriangle,  zh ? L"实心三角" : L"Solid Triangle" },
-            { LineCapStyle::HollowTriangle, zh ? L"空心三角" : L"Hollow Triangle" },
-            { LineCapStyle::StealthArrow,   zh ? L"燕尾箭头" : L"Stealth Arrow" },
-            { LineCapStyle::SolidCircle,    zh ? L"实心圆点" : L"Solid Circle" },
-            { LineCapStyle::HollowCircle,   zh ? L"空心圆环" : L"Hollow Circle" },
-            { LineCapStyle::SolidDiamond,   zh ? L"实心菱形" : L"Solid Diamond" },
-            { LineCapStyle::HollowDiamond,  zh ? L"空心菱形" : L"Hollow Diamond" },
-            { LineCapStyle::BarStop,        zh ? L"截止竖线" : L"Bar Stop" },
+            { LineCapStyle::None,           tools3000::core::trWCstrFor(zh, L"无端点", L"None") },
+            { LineCapStyle::OpenArrow,      tools3000::core::trWCstrFor(zh, L"细线箭头", L"Open Arrow") },
+            { LineCapStyle::SolidTriangle,  tools3000::core::trWCstrFor(zh, L"实心三角", L"Solid Triangle") },
+            { LineCapStyle::HollowTriangle, tools3000::core::trWCstrFor(zh, L"空心三角", L"Hollow Triangle") },
+            { LineCapStyle::StealthArrow,   tools3000::core::trWCstrFor(zh, L"燕尾箭头", L"Stealth Arrow") },
+            { LineCapStyle::SolidCircle,    tools3000::core::trWCstrFor(zh, L"实心圆点", L"Solid Circle") },
+            { LineCapStyle::HollowCircle,   tools3000::core::trWCstrFor(zh, L"空心圆环", L"Hollow Circle") },
+            { LineCapStyle::SolidDiamond,   tools3000::core::trWCstrFor(zh, L"实心菱形", L"Solid Diamond") },
+            { LineCapStyle::HollowDiamond,  tools3000::core::trWCstrFor(zh, L"空心菱形", L"Hollow Diamond") },
+            { LineCapStyle::BarStop,        tools3000::core::trWCstrFor(zh, L"截止竖线", L"Bar Stop") },
         };
 
         float menuH = items.size() * itemH + (items.size() - 1) * itemGap + 2.0f * padY;

@@ -1,4 +1,5 @@
 #include "capture/StudioTimeline.h"
+#include "core/i18n/UiI18n.h"
 #include "common/AtomicFile.h"
 #include "core/utils/WinUtils.h"
 #include <opencv2/imgproc.hpp>
@@ -1195,43 +1196,75 @@ namespace {
 const wchar_t* timelineAnnotationKindName(StudioAnnotationKind k, bool isZh, bool compact) noexcept {
     switch (k) {
         case StudioAnnotationKind::TextPlain:
-            return isZh ? (compact ? L"文字" : L"纯文字") : (compact ? L"Text" : L"Plain Text");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"文字", L"Text")
+                : tools3000::core::trWCstrFor(isZh, L"纯文字", L"Plain Text");
         case StudioAnnotationKind::Text:
-            return isZh ? (compact ? L"标签" : L"文字标签") : (compact ? L"Label" : L"Filled Label");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"标签", L"Label")
+                : tools3000::core::trWCstrFor(isZh, L"文字标签", L"Filled Label");
         case StudioAnnotationKind::TextBubble:
-            return isZh ? (compact ? L"气泡" : L"对话气泡") : (compact ? L"Bubble" : L"Speech Bubble");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"气泡", L"Bubble")
+                : tools3000::core::trWCstrFor(isZh, L"对话气泡", L"Speech Bubble");
         case StudioAnnotationKind::TextDashed:
-            return isZh ? (compact ? L"虚线框" : L"虚线文本框") : (compact ? L"Dashed" : L"Dashed Box");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"虚线框", L"Dashed")
+                : tools3000::core::trWCstrFor(isZh, L"虚线文本框", L"Dashed Box");
         case StudioAnnotationKind::TextNeon:
-            return isZh ? (compact ? L"发光框" : L"发光文本框") : (compact ? L"Glow" : L"Glow Callout");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"发光框", L"Glow")
+                : tools3000::core::trWCstrFor(isZh, L"发光文本框", L"Glow Callout");
         case StudioAnnotationKind::StepBadge:
-            return isZh ? (compact ? L"步骤" : L"步骤序号") : (compact ? L"Step" : L"Step Number");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"步骤", L"Step")
+                : tools3000::core::trWCstrFor(isZh, L"步骤序号", L"Step Number");
         case StudioAnnotationKind::GlowLine:
-            return isZh ? (compact ? L"划线" : L"荧光划线") : (compact ? L"Line" : L"Highlighter");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"划线", L"Line")
+                : tools3000::core::trWCstrFor(isZh, L"荧光划线", L"Highlighter");
         case StudioAnnotationKind::DashedLine:
-            return isZh ? L"虚线" : (compact ? L"Dashed" : L"Dashed Line");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"虚线", L"Dashed")
+                : tools3000::core::trWCstrFor(isZh, L"虚线", L"Dashed Line");
         case StudioAnnotationKind::Arrow:
-            return isZh ? L"箭头" : L"Arrow";
+            return tools3000::core::trWCstrFor(isZh, L"箭头", L"Arrow");
         case StudioAnnotationKind::Rectangle:
-            return isZh ? (compact ? L"矩形" : L"矩形框") : (compact ? L"Rect" : L"Rectangle");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"矩形", L"Rect")
+                : tools3000::core::trWCstrFor(isZh, L"矩形框", L"Rectangle");
         case StudioAnnotationKind::RoundedBox:
-            return isZh ? (compact ? L"圆角" : L"圆角框") : (compact ? L"Round" : L"Rounded Box");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"圆角", L"Round")
+                : tools3000::core::trWCstrFor(isZh, L"圆角框", L"Rounded Box");
         case StudioAnnotationKind::CircleRing:
-            return isZh ? L"圆环" : L"Circle";
+            return tools3000::core::trWCstrFor(isZh, L"圆环", L"Circle");
         case StudioAnnotationKind::SketchCircle:
-            return isZh ? (compact ? L"重点圈" : L"手绘重点圈") : (compact ? L"Marker" : L"Marker Circle");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"重点圈", L"Marker")
+                : tools3000::core::trWCstrFor(isZh, L"手绘重点圈", L"Marker Circle");
         case StudioAnnotationKind::BoldArrow:
-            return isZh ? (compact ? L"大箭头" : L"醒目大箭头") : (compact ? L"Arrow" : L"Bold Arrow");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"大箭头", L"Arrow")
+                : tools3000::core::trWCstrFor(isZh, L"醒目大箭头", L"Bold Arrow");
         case StudioAnnotationKind::HandPointer:
-            return isZh ? (compact ? L"手势" : L"点击手势") : (compact ? L"Hand" : L"Click Hand");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"手势", L"Hand")
+                : tools3000::core::trWCstrFor(isZh, L"点击手势", L"Click Hand");
         case StudioAnnotationKind::Spotlight:
-            return isZh ? (compact ? L"聚光灯" : L"聚光灯高亮") : (compact ? L"Spot" : L"Spotlight");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"聚光灯", L"Spot")
+                : tools3000::core::trWCstrFor(isZh, L"聚光灯高亮", L"Spotlight");
         case StudioAnnotationKind::BlurMask:
-            return isZh ? (compact ? L"马赛克" : L"马赛克打码") : (compact ? L"Mosaic" : L"Mosaic Blur");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"马赛克", L"Mosaic")
+                : tools3000::core::trWCstrFor(isZh, L"马赛克打码", L"Mosaic Blur");
         case StudioAnnotationKind::Magnifier:
-            return isZh ? (compact ? L"放大镜" : L"局部放大镜") : (compact ? L"Loupe" : L"Magnifier");
+            return compact
+                ? tools3000::core::trWCstrFor(isZh, L"放大镜", L"Loupe")
+                : tools3000::core::trWCstrFor(isZh, L"局部放大镜", L"Magnifier");
         default:
-            return isZh ? L"标注" : L"Mark";
+            return tools3000::core::trWCstrFor(isZh, L"标注", L"Mark");
     }
 }
 
@@ -1307,11 +1340,11 @@ std::wstring StudioTimelineAnalyzer::formatTimelineAnnotationLabel(
             wchar_t buf[96]{};
             if (ann.customStepText && badgeShown != std::to_wstring(rank)) {
                 std::swprintf(buf, std::size(buf),
-                              isZh ? L"步骤序号 · 第 %d 个 (显示 %ls)" : L"Step #%d (%ls)",
+                              tools3000::core::trWCstrFor(isZh, L"步骤序号 · 第 %d 个 (显示 %ls)", L"Step #%d (%ls)"),
                               rank, badgeShown.c_str());
             } else {
                 std::swprintf(buf, std::size(buf),
-                              isZh ? L"步骤序号 · 第 %d 个" : L"Step #%d",
+                              tools3000::core::trWCstrFor(isZh, L"步骤序号 · 第 %d 个", L"Step #%d"),
                               rank);
             }
             return buf;
@@ -1319,9 +1352,9 @@ std::wstring StudioTimelineAnalyzer::formatTimelineAnnotationLabel(
         if (availWidthPx >= 64.0f) {
             wchar_t buf[64]{};
             if (ann.customStepText && badgeShown != std::to_wstring(rank)) {
-                std::swprintf(buf, std::size(buf), isZh ? L"步骤 %d·%ls" : L"Step %d·%ls", rank, badgeShown.c_str());
+                std::swprintf(buf, std::size(buf), tools3000::core::trWCstrFor(isZh, L"步骤 %d·%ls", L"Step %d·%ls"), rank, badgeShown.c_str());
             } else {
-                std::swprintf(buf, std::size(buf), isZh ? L"步骤 %d" : L"Step %d", rank);
+                std::swprintf(buf, std::size(buf), tools3000::core::trWCstrFor(isZh, L"步骤 %d", L"Step %d"), rank);
             }
             return buf;
         }

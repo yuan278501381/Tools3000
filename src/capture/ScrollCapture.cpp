@@ -9,6 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/ScrollCapture.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/ScrollCaptureStorage.h"
 #include "core/logger/Logger.h"
 #include "core/utils/ThemeUtils.h"
@@ -1174,9 +1175,7 @@ void ScrollCapture::start(const ScrollCaptureOptions& options) {
         m_running.store(false, std::memory_order_release);
         m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
         LOG_ERROR("长截图捕获后端初始化失败: {}", captureError);
-        const char* defaultInitErr = tools3000::core::isUiLanguageChinese()
-            ? "无法初始化屏幕捕获"
-            : "Failed to initialize screen capture";
+        const char* defaultInitErr = tools3000::core::trUtf8Cstr("无法初始化屏幕捕获", "Failed to initialize screen capture");
         deliverCompletion(captureError.empty() ? defaultInitErr : captureError);
         return;
     }
@@ -1681,7 +1680,7 @@ void ScrollCapture::autoScrollLoop() {
         m_runtimeState.store(ScrollRuntimeState::Idle, std::memory_order_release);
         restoreCursorIfUntouched();
         LOG_ERROR("长截图线程未知异常, 已停止");
-        deliverCompletion(tools3000::core::isUiLanguageChinese() ? "未知错误" : "Unknown error");
+        deliverCompletion(tools3000::core::trUtf8Cstr("未知错误", "Unknown error"));
         m_workerInLoop.store(false, std::memory_order_release);
     }
 }
@@ -1858,9 +1857,7 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
     }
 
     if (static_cast<std::size_t>(remaining) > (std::numeric_limits<std::size_t>::max)() / rowBytes) {
-        m_terminalError = tools3000::core::isUiLanguageChinese()
-            ? "长截图尺寸超出可表示范围"
-            : "Scrolling capture dimensions exceeded supported limit";
+        m_terminalError = tools3000::core::trUtf8Cstr("长截图尺寸超出可表示范围", "Scrolling capture dimensions exceeded supported limit");
         m_autoScrolling.store(false, std::memory_order_release);
         if (m_options.interactiveHoldAtBottom && m_frameCount.load(std::memory_order_acquire) > 0) {
             m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
@@ -1885,9 +1882,7 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
             // 交互式桌面长截图已采集有效帧：仅停止自动滚动并驻留，保持长截图会话有效等待用户点击完成/复制/保存
             m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
         } else {
-            m_terminalError = tools3000::core::isUiLanguageChinese()
-                ? "长截图已达到安全内存上限，已保留当前结果"
-                : "Reached safe memory limit; partial result kept";
+            m_terminalError = tools3000::core::trUtf8Cstr("长截图已达到安全内存上限，已保留当前结果", "Reached safe memory limit; partial result kept");
             m_running.store(false, std::memory_order_release);
         }
         return;
@@ -1903,9 +1898,7 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
         m_segmentType = segment.type();
     }
     if (segment.cols != expectedWidth || segment.type() != m_segmentType) {
-        m_terminalError = tools3000::core::isUiLanguageChinese()
-            ? "长截图帧格式发生变化，已安全停止"
-            : "Frame dimensions changed during scrolling capture; stopped safely";
+        m_terminalError = tools3000::core::trUtf8Cstr("长截图帧格式发生变化，已安全停止", "Frame dimensions changed during scrolling capture; stopped safely");
         m_autoScrolling.store(false, std::memory_order_release);
         if (m_options.interactiveHoldAtBottom && m_frameCount.load(std::memory_order_acquire) > 0) {
             m_runtimeState.store(ScrollRuntimeState::HoldAtBottom, std::memory_order_release);
@@ -1926,9 +1919,7 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
 
     if (mustSpill) {
         if (!spillResidentSegments()) {
-            m_terminalError = tools3000::core::isUiLanguageChinese()
-                ? "长截图临时存储不可用，已安全停止"
-                : "Temporary storage unavailable for scrolling capture";
+            m_terminalError = tools3000::core::trUtf8Cstr("长截图临时存储不可用，已安全停止", "Temporary storage unavailable for scrolling capture");
             m_autoScrolling.store(false, std::memory_order_release);
             m_running.store(false, std::memory_order_release);
             return;
@@ -1940,9 +1931,7 @@ void ScrollCapture::appendFrame(const cv::Mat& frame, const ScrollFrameTransitio
             featherSpilledBoundary(frame, offset, rowBytes);
         }
         if (!appendSpilledSegment(segment)) {
-            m_terminalError = tools3000::core::isUiLanguageChinese()
-                ? "长截图临时存储不可用，已安全停止"
-                : "Temporary storage unavailable for scrolling capture";
+            m_terminalError = tools3000::core::trUtf8Cstr("长截图临时存储不可用，已安全停止", "Temporary storage unavailable for scrolling capture");
             m_autoScrolling.store(false, std::memory_order_release);
             m_running.store(false, std::memory_order_release);
             return;
@@ -2159,8 +2148,8 @@ void ScrollCapture::deliverCompletion(const std::string& error) {
         if (!result.cancelled && !result.success && result.errorMessage.empty()) {
             const bool isZh = tools3000::core::isUiLanguageChinese();
             result.errorMessage = result.frameCount == 0
-                ? (isZh ? "没有捕获到任何帧" : "No frames captured")
-                : (isZh ? "图像拼接失败" : "Failed to stitch captured frames");
+                ? (tools3000::core::trUtf8CstrFor(isZh, "没有捕获到任何帧", "No frames captured"))
+                : (tools3000::core::trUtf8CstrFor(isZh, "图像拼接失败", "Failed to stitch captured frames"));
         }
         if (m_captureBackend) m_captureBackend->shutdown();
         m_captureBackend.reset();

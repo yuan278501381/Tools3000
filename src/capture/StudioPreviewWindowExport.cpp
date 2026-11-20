@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/StudioPreviewWindowInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/StudioBackdropCatalog.h"
 #include "../resource.h"
 #include "core/config/ConfigManager.h"
@@ -74,12 +75,12 @@ void StudioPreviewWindow::browseCustomWallpaperImageAsync() {
             ComPtr<IFileOpenDialog> dlg;
             if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dlg.GetAddressOf()))) && dlg) {
                 const COMDLG_FILTERSPEC spec[] = {
-                    {isZh ? L"图片文件 (*.jpg;*.jpeg;*.png;*.webp;*.bmp)" : L"Image Files (*.jpg;*.jpeg;*.png;*.webp;*.bmp)",
+                    {tools3000::core::trWCstrFor(isZh, L"图片文件 (*.jpg;*.jpeg;*.png;*.webp;*.bmp)", L"Image Files (*.jpg;*.jpeg;*.png;*.webp;*.bmp)"),
                      L"*.jpg;*.jpeg;*.png;*.webp;*.bmp"},
-                    {isZh ? L"所有文件 (*.*)" : L"All Files (*.*)", L"*.*"}
+                    {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"}
                 };
                 dlg->SetFileTypes(static_cast<UINT>(std::size(spec)), spec);
-                dlg->SetTitle(isZh ? L"选择自定义背景图片" : L"Select Custom Background Image");
+                dlg->SetTitle(tools3000::core::trWCstrFor(isZh, L"选择自定义背景图片", L"Select Custom Background Image"));
                 DWORD fos = 0;
                 if (SUCCEEDED(dlg->GetOptions(&fos))) {
                     dlg->SetOptions(fos | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
@@ -135,7 +136,7 @@ void StudioPreviewWindow::browseExportDirectoryAsync() {
                 if (SUCCEEDED(dlg->GetOptions(&fos))) {
                     dlg->SetOptions(fos | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
                 }
-                dlg->SetTitle(isZh ? L"选择导出保存目录" : L"Select Export Directory");
+                dlg->SetTitle(tools3000::core::trWCstrFor(isZh, L"选择导出保存目录", L"Select Export Directory"));
                 if (!initDir.empty()) {
                     ComPtr<IShellItem> initFolder;
                     if (SUCCEEDED(SHCreateItemFromParsingName(initDir.c_str(), nullptr, IID_PPV_ARGS(initFolder.GetAddressOf()))) && initFolder) {
@@ -245,12 +246,12 @@ void StudioPreviewWindow::browseWatermarkLogoImageAsync() {
             ComPtr<IFileOpenDialog> dlg;
             if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dlg.GetAddressOf()))) && dlg) {
                 const COMDLG_FILTERSPEC spec[] = {
-                    {isZh ? L"透明图片与 Logo (*.png;*.webp;*.jpg;*.jpeg;*.bmp)" : L"Logo & Images (*.png;*.webp;*.jpg;*.jpeg;*.bmp)",
+                    {tools3000::core::trWCstrFor(isZh, L"透明图片与 Logo (*.png;*.webp;*.jpg;*.jpeg;*.bmp)", L"Logo & Images (*.png;*.webp;*.jpg;*.jpeg;*.bmp)"),
                      L"*.png;*.webp;*.jpg;*.jpeg;*.bmp"},
-                    {isZh ? L"所有文件 (*.*)" : L"All Files (*.*)", L"*.*"}
+                    {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"}
                 };
                 dlg->SetFileTypes(static_cast<UINT>(std::size(spec)), spec);
-                dlg->SetTitle(isZh ? L"导入水印图片 / 企业 Logo" : L"Import Watermark Logo Image");
+                dlg->SetTitle(tools3000::core::trWCstrFor(isZh, L"导入水印图片 / 企业 Logo", L"Import Watermark Logo Image"));
                 DWORD fos = 0;
                 if (SUCCEEDED(dlg->GetOptions(&fos))) {
                     dlg->SetOptions(fos | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
@@ -545,7 +546,7 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
         m_renderTarget->DrawLine({badgePt.x - 4.4f, badgePt.y + 0.2f}, {badgePt.x - 1.2f, badgePt.y + 3.6f}, brush, 2.0f);
         m_renderTarget->DrawLine({badgePt.x - 1.2f, badgePt.y + 3.6f}, {badgePt.x + 5.0f, badgePt.y - 3.2f}, brush, 2.0f);
 
-        drawTxt(isZh ? L"导出完成" : L"Export Completed", m_titleFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"导出完成", L"Export Completed"), m_titleFmt.Get(),
                 D2D1::RectF(badgePt.x + 17.0f, cardT + 14.0f, cardRc.right - 46.0f, cardT + 48.0f),
                 colPrimary, DWRITE_TEXT_ALIGNMENT_LEADING);
 
@@ -606,14 +607,13 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
 
         drawActionChip(
             Hit_ModalResultCopyFileBtn, 0,
-            copiedNow ? (isZh ? L"已复制到剪贴板" : L"Copied") : (isZh ? L"复制文件 (Ctrl+C)" : L"Copy File"),
+            copiedNow ? (tools3000::core::trWCstrFor(isZh, L"已复制到剪贴板", L"Copied")) : (tools3000::core::trWCstrFor(isZh, L"复制文件 (Ctrl+C)", L"Copy File")),
             copiedNow);
-        drawActionChip(Hit_ModalResultOpenPlayBtn, 1, isZh ? L"打开预览" : L"Open File");
-        drawActionChip(Hit_ModalResultRevealBtn, 2, isZh ? L"打开所在位置" : L"Show in Folder");
+        drawActionChip(Hit_ModalResultOpenPlayBtn, 1, tools3000::core::trWCstrFor(isZh, L"打开预览", L"Open File"));
+        drawActionChip(Hit_ModalResultRevealBtn, 2, tools3000::core::trWCstrFor(isZh, L"打开所在位置", L"Show in Folder"));
 
         // 提示小字：告知可随时点遮罩回画布微调，或继续导出其他格式对比（支持双行折行，零溢出）
-        drawTxt(isZh ? L"演播室母带保持无损就绪：可继续导出 GIF / 其他参数对比，或点击外侧遮罩回画布微调"
-                     : L"Master recording stays intact: export another format (e.g. GIF) or click backdrop to tweak canvas",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"演播室母带保持无损就绪：可继续导出 GIF / 其他参数对比，或点击外侧遮罩回画布微调", L"Master recording stays intact: export another format (e.g. GIF) or click backdrop to tweak canvas"),
                 m_captionWrapFmt.Get(),
                 D2D1::RectF(inL, cardT + 214.0f, inR, cardT + 250.0f),
                 colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -634,19 +634,19 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
         m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(moreBtnRc, 8.0f, 8.0f), brush);
         setBrush(m_hoveredHitId == Hit_ModalResultExportMoreBtn ? colAccent : colBorder);
         m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(moreBtnRc, 8.0f, 8.0f), brush, 1.2f);
-        drawTxt(isZh ? L"继续导出其他格式" : L"Export Another Format",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"继续导出其他格式", L"Export Another Format"),
                 m_sectionFmt.Get(), moreBtnRc, colPrimary, DWRITE_TEXT_ALIGNMENT_CENTER);
 
         setBrush(m_hoveredHitId == Hit_ModalResultFinishCloseBtn
             ? D2D1::ColorF((std::min)(1.0f, accentRgb.r + 0.07f), (std::min)(1.0f, accentRgb.g + 0.07f), (std::min)(1.0f, accentRgb.b + 0.07f), 1.0f)
             : colAccent);
         m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(doneBtnRc, 8.0f, 8.0f), brush);
-        drawTxt(isZh ? L"完成并关闭 (Enter)" : L"Done & Close (Enter)",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"完成并关闭 (Enter)", L"Done & Close (Enter)"),
                 m_sectionFmt.Get(), doneBtnRc, D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), DWRITE_TEXT_ALIGNMENT_CENTER);
         return;
     }
 
-    drawTxt(isZh ? L"导出" : L"Export", m_titleFmt.Get(),
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"导出", L"Export"), m_titleFmt.Get(),
             D2D1::RectF(cardL + 24.0f, cardT + 14.0f, cardRc.right - 24.0f, cardT + 48.0f),
             colPrimary, DWRITE_TEXT_ALIGNMENT_CENTER);
 
@@ -654,7 +654,7 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
     const float inR = cardRc.right - 26.0f;
     float y = cardT + 56.0f;
 
-    drawTxt(isZh ? L"名称" : L"Name", m_captionFmt.Get(), D2D1::RectF(inL, y, inR, y + 20.0f), colSecondary);
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"名称", L"Name"), m_captionFmt.Get(), D2D1::RectF(inL, y, inR, y + 20.0f), colSecondary);
     y += 22.0f;
     const D2D1_RECT_F nameBox = D2D1::RectF(inL, y, inR, y + 38.0f);
     if (!exporting) {
@@ -675,7 +675,7 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
     drawTxt(extHint, m_monoFmt.Get(), D2D1::RectF(inR - 54.0f, y, inR - 12.0f, y + 38.0f), colSecondary, DWRITE_TEXT_ALIGNMENT_TRAILING);
 
     y += 48.0f;
-    drawTxt(isZh ? L"保存至" : L"Save To", m_captionFmt.Get(), D2D1::RectF(inL, y, inR, y + 20.0f), colSecondary);
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"保存至", L"Save To"), m_captionFmt.Get(), D2D1::RectF(inL, y, inR, y + 20.0f), colSecondary);
     y += 22.0f;
     const D2D1_RECT_F dirBox = D2D1::RectF(inL, y, inR, y + 38.0f);
     const D2D1_RECT_F dirBtn = D2D1::RectF(inR - 40.0f, y + 2.0f, inR - 2.0f, y + 36.0f);
@@ -712,42 +712,34 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
     };
 
     const D2D1_RECT_F fmtBox = drawSelectBox(
-        Hit_ModalFormatSelect, inL, y, isZh ? L"格式" : L"Format",
+        Hit_ModalFormatSelect, inL, y, tools3000::core::trWCstrFor(isZh, L"格式", L"Format"),
         formatLabel(m_exportOpts.format, isZh), m_openDropdown == ExportDropdownKind::Format);
     const D2D1_RECT_F resBox = drawSelectBox(
-        Hit_ModalResSelect, rightColL, y, isZh ? L"分辨率" : L"Resolution",
+        Hit_ModalResSelect, rightColL, y, tools3000::core::trWCstrFor(isZh, L"分辨率", L"Resolution"),
         resolutionLabel(m_exportOpts.resolution, isZh), m_openDropdown == ExportDropdownKind::Resolution);
 
     y += 72.0f;
     wchar_t fpsTxt[32]{};
     std::swprintf(fpsTxt, std::size(fpsTxt), L"%d FPS", m_exportOpts.fps);
     const D2D1_RECT_F fpsBox = drawSelectBox(
-        Hit_ModalFpsSelect, inL, y, isZh ? L"帧率" : L"Frame Rate",
+        Hit_ModalFpsSelect, inL, y, tools3000::core::trWCstrFor(isZh, L"帧率", L"Frame Rate"),
         fpsTxt, m_openDropdown == ExportDropdownKind::Fps);
     const D2D1_RECT_F qualBox = drawSelectBox(
-        Hit_ModalQualitySelect, rightColL, y, isZh ? L"质量" : L"Quality",
+        Hit_ModalQualitySelect, rightColL, y, tools3000::core::trWCstrFor(isZh, L"质量", L"Quality"),
         qualityLabel(m_exportOpts.quality, isZh), m_openDropdown == ExportDropdownKind::Quality);
 
     y += 66.0f;
     {
         std::wstring fmtTip;
         if (m_exportOpts.format == StudioExportFormat::GIF_WeChat) {
-            fmtTip = isZh
-                ? L"提示：<=800px 微信按「动态表情」气泡内免点自动播放（不支持双击放大）；如需在微信双击打开独立查看器滚轮放大，请选「GIF 高清大图」或 MP4。"
-                : L"Note: <=800px auto-plays inline in WeChat as a Sticker (no zoom viewer). Choose 'GIF (HD · Zoomable)' or MP4 to enable double-click viewer zoom.";
+            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：<=800px 微信按「动态表情」气泡内免点自动播放（不支持双击放大）；如需在微信双击打开独立查看器滚轮放大，请选「GIF 高清大图」或 MP4。", L"Note: <=800px auto-plays inline in WeChat as a Sticker (no zoom viewer). Choose 'GIF (HD · Zoomable)' or MP4 to enable double-click viewer zoom.");
         } else if (m_exportOpts.format == StudioExportFormat::GIF_HD) {
-            fmtTip = isZh
-                ? L"提示：长边 >=1080px 发微信按「普通高清动图」展示，支持双击打开微信独立查看器循环播放并滚轮无级放大看清细节。"
-                : L"Note: >=1080px sends as an HD animated image in WeChat — supports double-click viewer playback and scroll-wheel zoom.";
+            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：长边 >=1080px 发微信按「普通高清动图」展示，支持双击打开微信独立查看器循环播放并滚轮无级放大看清细节。", L"Note: >=1080px sends as an HD animated image in WeChat — supports double-click viewer playback and scroll-wheel zoom.");
         } else if (m_exportOpts.format == StudioExportFormat::MP4_H264 ||
                    m_exportOpts.format == StudioExportFormat::MP4_HEVC) {
-            fmtTip = isZh
-                ? L"提示：完整保留立体声音轨与 24-bit 真彩锐利画质，微信/飞书/网页均支持独立大窗高清全屏放大播放。"
-                : L"Note: Preserves stereo audio & 24-bit crisp color with full-screen zoom playback across WeChat, Lark & web.";
+            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：完整保留立体声音轨与 24-bit 真彩锐利画质，微信/飞书/网页均支持独立大窗高清全屏放大播放。", L"Note: Preserves stereo audio & 24-bit crisp color with full-screen zoom playback across WeChat, Lark & web.");
         } else {
-            fmtTip = isZh
-                ? L"提示：现代网页 24-bit 真彩动图/视频容器，无 256 色限制，适合嵌入文档、GitHub 与技术博客。"
-                : L"Note: 24-bit true-color web media container without 256-color limits, ideal for docs, GitHub & blogs.";
+            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：现代网页 24-bit 真彩动图/视频容器，无 256 色限制，适合嵌入文档、GitHub 与技术博客。", L"Note: 24-bit true-color web media container without 256-color limits, ideal for docs, GitHub & blogs.");
         }
         const D2D1_RECT_F tipBox = D2D1::RectF(inL, y, inR, y + 42.0f);
         setBrush(dark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.045f) : D2D1::ColorF(0.06f, 0.09f, 0.16f, 0.038f));
@@ -781,9 +773,9 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
     };
 
     drawCompactCheckbox(Hit_ModalSavePrefsCheck, inL, inL + 112.0f, m_saveExportPrefs,
-                        isZh ? L"保存偏好" : L"Save Prefs");
+                        tools3000::core::trWCstrFor(isZh, L"保存偏好", L"Save Prefs"));
     drawCompactCheckbox(Hit_ModalAutoCloseCheck, inL + 118.0f, inL + 248.0f, m_autoCloseAfterExport,
-                        isZh ? L"导完自动关闭" : L"Auto-Close");
+                        tools3000::core::trWCstrFor(isZh, L"导完自动关闭", L"Auto-Close"));
 
     const cv::Size targetCanvasSz = StudioVideoCompositor::resolveOutputCanvasSize(
         m_origWidth, m_origHeight, m_config.aspectRatio);
@@ -805,7 +797,7 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
         setBrush(colAccent);
         m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(fillRc, 8.0f, 8.0f), brush);
         wchar_t pTxt[64]{};
-        std::swprintf(pTxt, std::size(pTxt), isZh ? L"正在合成 %d%%..." : L"Exporting %d%%...",
+        std::swprintf(pTxt, std::size(pTxt), tools3000::core::trWCstrFor(isZh, L"正在合成 %d%%...", L"Exporting %d%%..."),
                       static_cast<int>(std::round(prog * 100.0f)));
         drawTxt(pTxt, m_sectionFmt.Get(), expBtn, D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), DWRITE_TEXT_ALIGNMENT_CENTER);
     } else {
@@ -813,7 +805,7 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
             ? D2D1::ColorF((std::min)(1.0f, accentRgb.r + 0.07f), (std::min)(1.0f, accentRgb.g + 0.07f), (std::min)(1.0f, accentRgb.b + 0.07f), 1.0f)
             : colAccent);
         m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(expBtn, 8.0f, 8.0f), brush);
-        const std::wstring btnTxt = (isZh ? L"导出  (~" : L"Export (~") + estStr + L")";
+        const std::wstring btnTxt = (tools3000::core::trWCstrFor(isZh, L"导出  (~", L"Export (~")) + estStr + L")";
         drawTxt(btnTxt, m_sectionFmt.Get(), expBtn, D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
@@ -982,19 +974,15 @@ void StudioPreviewWindow::renderUnsavedCloseModalOverlay(
     m_renderTarget->DrawLine({iconPt.x, iconPt.y - 6.2f}, {iconPt.x, iconPt.y + 1.8f}, brush, 2.2f, roundStroke.Get());
     m_renderTarget->FillEllipse(D2D1::Ellipse({iconPt.x, iconPt.y + 6.0f}, 1.35f, 1.35f), brush);
 
-    drawTxt(isZh ? L"尚未导出录屏内容" : L"Recording Not Exported",
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"尚未导出录屏内容", L"Recording Not Exported"),
             m_titleFmt.Get(),
             D2D1::RectF(inL + 42.0f, cardT + 24.0f, cancelRc.left - 8.0f, cardT + 56.0f),
             colPrimary);
 
     const bool hasEdits = hasStudioEditsToRender();
     const std::wstring bodyTxt = hasEdits
-        ? (isZh
-            ? L"当前录屏尚未导出，直接退出将丢失本次录屏与编辑内容。请选择「保存后退出」自动导出成片，或选择「不保存退出」放弃并清理临时文件。"
-            : L"This recording has not been exported yet. Choose \"Save & Exit\" to export your current edits automatically, or \"Exit Without Saving\" to discard the temporary capture.")
-        : (isZh
-            ? L"当前未启用运镜或背景美化，点击「保存后退出」将瞬间无损保留原始录屏；点击「不保存退出」将直接放弃并清理临时文件。"
-            : L"No studio zoom or framing is enabled. \"Save & Exit\" preserves the original lossless recording immediately; \"Exit Without Saving\" discards the temporary file.");
+        ? (tools3000::core::trWCstrFor(isZh, L"当前录屏尚未导出，直接退出将丢失本次录屏与编辑内容。请选择「保存后退出」自动导出成片，或选择「不保存退出」放弃并清理临时文件。", L"This recording has not been exported yet. Choose \"Save & Exit\" to export your current edits automatically, or \"Exit Without Saving\" to discard the temporary capture."))
+        : (tools3000::core::trWCstrFor(isZh, L"当前未启用运镜或背景美化，点击「保存后退出」将瞬间无损保留原始录屏；点击「不保存退出」将直接放弃并清理临时文件。", L"No studio zoom or framing is enabled. \"Save & Exit\" preserves the original lossless recording immediately; \"Exit Without Saving\" discards the temporary file."));
     drawTxt(bodyTxt,
             m_captionWrapFmt.Get(),
             D2D1::RectF(inL, cardT + 68.0f, inR, cardT + 132.0f),
@@ -1025,8 +1013,7 @@ void StudioPreviewWindow::renderUnsavedCloseModalOverlay(
         setBrush(hovCheck ? colAccent : colBorder);
         m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(boxRc, 4.5f, 4.5f), brush, 1.15f);
     }
-    drawTxt(isZh ? L"下次录屏直接原样保存（跳过演播室，记住设置）"
-                 : L"Skip Studio and save raw recording next time (remember)",
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"下次录屏直接原样保存（跳过演播室，记住设置）", L"Skip Studio and save raw recording next time (remember)"),
             m_captionFmt.Get(),
             D2D1::RectF(boxRc.right + 9.0f, checkRowRc.top, checkRowRc.right - 4.0f, checkRowRc.bottom),
             m_confirmSkipStudioNextTime ? colPrimary : colSecondary);
@@ -1053,7 +1040,7 @@ void StudioPreviewWindow::renderUnsavedCloseModalOverlay(
         m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(discardRc, 8.5f, 8.5f), brush);
         setBrush(hovDisc ? D2D1::ColorF(colDanger.r, colDanger.g, colDanger.b, 0.78f) : colBorder);
         m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(discardRc, 8.5f, 8.5f), brush, hovDisc ? 1.2f : 1.0f);
-        drawTxt(isZh ? L"不保存退出" : L"Exit Without Saving",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"不保存退出", L"Exit Without Saving"),
                 m_sectionFmt.Get(), discardRc,
                 hovDisc ? colDanger : colPrimary,
                 DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -1074,7 +1061,7 @@ void StudioPreviewWindow::renderUnsavedCloseModalOverlay(
         setBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.28f));
         m_renderTarget->DrawLine({saveRc.left + 8.0f, saveRc.top + 0.8f},
                                  {saveRc.right - 8.0f, saveRc.top + 0.8f}, brush, 0.9f);
-        drawTxt(isZh ? L"保存后退出" : L"Save & Exit",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"保存后退出", L"Save & Exit"),
                 m_sectionFmt.Get(), saveRc,
                 D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f),
                 DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -1210,7 +1197,7 @@ void StudioPreviewWindow::startAsyncExport() {
                     m_closeAfterSaveExport = false;
                     LOG_WARN("StudioPreviewWindow: exportRenderedVideo failed, keeping raw video: {}", sourceMasterPath);
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                        isZh ? L"演播室合成失败，已为您安全保留原始录屏" : L"Studio export failed; raw recording preserved"});
+                        tools3000::core::trWCstrFor(isZh, L"演播室合成失败，已为您安全保留原始录屏", L"Studio export failed; raw recording preserved")});
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             });
@@ -1321,8 +1308,7 @@ void StudioPreviewWindow::toggleRawOutputPreset() {
         rebakeTimelinePreview();
         requestImmediatePreviewRefresh(true);
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            isZh ? L"已切换为原样模式（无运镜/无背景边框），设置已记住"
-                 : L"Switched to Raw Mode (no zoom or framing), preference saved"});
+            tools3000::core::trWCstrFor(isZh, L"已切换为原样模式（无运镜/无背景边框），设置已记住", L"Switched to Raw Mode (no zoom or framing), preference saved")});
     } else {
         m_config.autoFrameEnabled = true;
         m_config.autoZoomEnabled = true;
@@ -1333,8 +1319,7 @@ void StudioPreviewWindow::toggleRawOutputPreset() {
         rebakeTimelinePreview();
         requestImmediatePreviewRefresh(true);
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            isZh ? L"已恢复演播室运镜与背景美化，设置已记住"
-                 : L"Restored Studio framing and auto zoom, preference saved"});
+            tools3000::core::trWCstrFor(isZh, L"已恢复演播室运镜与背景美化，设置已记住", L"Restored Studio framing and auto zoom, preference saved")});
     }
 }
 

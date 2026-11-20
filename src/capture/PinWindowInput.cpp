@@ -8,6 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/PinWindowInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/CaptureHistory.h"
 #include "capture/CaptureOverlay.h"
 #include "capture/PinContextMenu.h"
@@ -434,8 +435,8 @@ bool PinWindow::copyPinImageWithFeedback() {
     const bool isZh = tools3000::core::isUiLanguageChinese();
     tools3000::core::EventBus::instance().publish(
         tools3000::core::ShowToastEvent{
-            ok ? (isZh ? L"已复制贴图到剪贴板" : L"Copied pin to clipboard")
-               : (isZh ? L"剪贴板被其他程序占用，复制失败，请重试" : L"Clipboard busy, copy failed — please retry")});
+            ok ? (tools3000::core::trWCstrFor(isZh, L"已复制贴图到剪贴板", L"Copied pin to clipboard"))
+               : (tools3000::core::trWCstrFor(isZh, L"剪贴板被其他程序占用，复制失败，请重试", L"Clipboard busy, copy failed — please retry"))});
     return ok;
 }
 
@@ -518,8 +519,7 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
                     if (el.replaceBgMode == 2 && !AiInpaintEngine::instance().isModelInstalled()) {
                         const bool zh = tools3000::core::isUiLanguageChinese();
                         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                            zh ? L"当前使用内置快速纹理修复；可在「设置 -> 文字识别」按需下载 MI-GAN 512 AI 模型增强复杂底纹"
-                               : L"Using built-in fast inpainting; download MI-GAN 512 in Settings > OCR for complex textures"});
+                            tools3000::core::trWCstrFor(zh, L"当前使用内置快速纹理修复；可在「设置 -> 文字识别」按需下载 MI-GAN 512 AI 模型增强复杂底纹", L"Using built-in fast inpainting; download MI-GAN 512 in Settings > OCR for complex textures")});
                     }
                 } else if (btnId == kPinBtnTrReflow) {
                     el.replaceReflowRight = !el.replaceReflowRight;

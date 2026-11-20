@@ -1,4 +1,5 @@
 #include "capture/ShortcutHintOverlay.h"
+#include "core/i18n/UiI18n.h"
 #include "core/accessibility/OverlayAnnouncement.h"
 #include "core/accessibility/OverlayUiaProvider.h"
 #include "capture/ShortcutHintStyle.h"
@@ -124,27 +125,27 @@ std::wstring ShortcutHintOverlay::headerTitleFor(ShortcutHintContext context) co
     const bool zh = useChineseLabels();
     switch (context) {
         case ShortcutHintContext::CaptureSelecting:
-            return zh ? L"智能寻窗与像素取色" : L"Window Snap & Pixel Color";
+            return tools3000::core::trWCstrFor(zh, L"智能寻窗与像素取色", L"Window Snap & Pixel Color");
         case ShortcutHintContext::CaptureDragging:
-            return zh ? L"拖拽框选区域" : L"Drag Region Selection";
+            return tools3000::core::trWCstrFor(zh, L"拖拽框选区域", L"Drag Region Selection");
         case ShortcutHintContext::CaptureSelected:
-            return zh ? L"选区微调与快捷标注" : L"Selection & Quick Markup";
+            return tools3000::core::trWCstrFor(zh, L"选区微调与快捷标注", L"Selection & Quick Markup");
         case ShortcutHintContext::CaptureMarking:
-            return zh ? L"图形绘制与几何约束" : L"Drawing & Snap Modifiers";
+            return tools3000::core::trWCstrFor(zh, L"图形绘制与几何约束", L"Drawing & Snap Modifiers");
         case ShortcutHintContext::CaptureMarkingNumber:
-            return zh ? L"序号标记与引线模式" : L"Step Badge & Leader Arrow";
+            return tools3000::core::trWCstrFor(zh, L"序号标记与引线模式", L"Step Badge & Leader Arrow");
         case ShortcutHintContext::CaptureEditingText:
-            return zh ? L"富文本原地编辑" : L"Rich Text In-Place Editing";
+            return tools3000::core::trWCstrFor(zh, L"富文本原地编辑", L"Rich Text In-Place Editing");
         case ShortcutHintContext::RecordSelecting:
-            return zh ? L"区域录屏取景" : L"Screen Recording Region";
+            return tools3000::core::trWCstrFor(zh, L"区域录屏取景", L"Screen Recording Region");
         case ShortcutHintContext::ScrollCapture:
-            return zh ? L"智能滚动长截图" : L"Scrolling Long Capture";
+            return tools3000::core::trWCstrFor(zh, L"智能滚动长截图", L"Scrolling Long Capture");
         case ShortcutHintContext::Recording:
-            return zh ? L"屏幕录制进行中" : L"Recording Active";
+            return tools3000::core::trWCstrFor(zh, L"屏幕录制进行中", L"Recording Active");
         case ShortcutHintContext::RecordingPaused:
-            return zh ? L"屏幕录制已暂停" : L"Recording Paused";
+            return tools3000::core::trWCstrFor(zh, L"屏幕录制已暂停", L"Recording Paused");
     }
-    return zh ? L"快捷键指引" : L"Shortcuts";
+    return tools3000::core::trWCstrFor(zh, L"快捷键指引", L"Shortcuts");
 }
 
 std::vector<ShortcutHintItem>
@@ -280,10 +281,10 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                     : (context == ShortcutHintContext::RecordingPaused ? L"Resume" : L"Pause")});
             }
             if (const auto stop = configuredShortcut("Record", L"Ctrl+Shift+R"); !stop.empty()) {
-                items.push_back({stop, zh ? L"停止并保存" : L"Stop and save"});
+                items.push_back({stop, tools3000::core::trWCstrFor(zh, L"停止并保存", L"Stop and save")});
             }
             if (const auto mute = configuredShortcut("Mute Microphone", L""); !mute.empty()) {
-                items.push_back({mute, zh ? L"麦克风静音" : L"Mute microphone"});
+                items.push_back({mute, tools3000::core::trWCstrFor(zh, L"麦克风静音", L"Mute microphone")});
             }
             return items;
         }
@@ -987,13 +988,13 @@ void ShortcutHintOverlay::show(ShortcutHintContext context, POINT anchor,
     }
 
     const bool isZh = tools3000::core::isUiLanguageChinese();
-    std::wstring accessibleName = (isZh ? L"快捷键提示：" : L"Shortcut Hints: ") + m_headerTitle + (isZh ? L"；" : L"; ");
+    std::wstring accessibleName = (tools3000::core::trWCstrFor(isZh, L"快捷键提示：", L"Shortcut Hints: ")) + m_headerTitle + (tools3000::core::trWCstrFor(isZh, L"；", L"; "));
     for (const auto& item : items) {
         if (accessibleName.size() > 1024) break;
         accessibleName += item.key;
         accessibleName += L" ";
         accessibleName += item.label;
-        accessibleName += isZh ? L"；" : L"; ";
+        accessibleName += tools3000::core::trWCstrFor(isZh, L"；", L"; ");
     }
     tools3000::core::accessibility::announceOverlay(m_hwnd, accessibleName);
     SetTimer(m_hwnd, kWatchdogTimerId, 45, nullptr);

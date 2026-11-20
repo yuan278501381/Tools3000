@@ -6,6 +6,26 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 全软件 8 语种国际化引擎 (`UiI18n` + 855 原生词条 + 2,311 前端词条 + 8 语种安装程序) 与 8×9=72 份本地化视觉资产全栈交付
+- **产品决策与零体积膨胀架构基线**：
+  - 全面支持 **8 种界面与文档语言**：`zh-CN`（简体中文）、`zh-TW`（繁體中文）、`en-US`（English / 全局兜底）、`ja-JP`（日本語）、`ko-KR`（한국어）、`ru-RU`（Русский）、`pt-BR`（Português (Brasil)）、`es-ES`（Español）；
+  - **默认跟随操作系统显示语言**（`/general/language = "auto"`），探测系统真实 UI 语言并精确区分 `zh-TW/HK/MO/Hant` 与 `zh-CN/SG/Hans`，未支持语种自动回退 `en-US`；用户可随时通过标题栏快捷语言胶囊或「设置 -> 通用 -> 界面语言」手动切换（下拉项展示各语种原生母语名，彻底防止误切外语后找不到切回入口）；
+  - **零安装包体积膨胀字体方案**：安装包继续仅内嵌既有 `1.10 MB` 单字重 `Noto Sans SC`，非简中语种在 CSS (`:root:lang(...)`) 与 DirectWrite (`DWriteFontUtils.h`) 中按当前语言动态优选 Windows 原生字体（`zh-TW` -> `Microsoft JhengHei UI`、`ja-JP` -> `Yu Gothic UI`、`ko-KR` -> `Malgun Gothic`、`ru/pt/es/en` -> `Segoe UI Variable Text`），新增多语言对安装包字体体积增加 `0 KB`。
+- **全栈工程实现与防回退门禁**：
+  1. **C++ 微内核 8 语种运行时 (`src/core/i18n/UiI18n.{h,cpp}`, `MessageBridge.cpp`, `Logger.cpp`, `DWriteFontUtils.h`, `ThemeUtils.h`, `main.cpp`)**：
+     - 严格遵守 DLL 导出符号规范（`TOOLS3000CORE_API` 非模板实现全部下沉 `.cpp`）；通过 `GetUserDefaultUILanguage` + `LCIDToLocaleName` 探测 OS 语言，`MessageBridge` 在 `general.getSettings` 与 `appearance:changed` 透传 `systemLanguage` 与 `resolvedLanguage`；
+     - O(1) 线程安全不可变词典快照缓存（加载 `resources/locales/native/<tag>.json`），提供 `noexcept` 常驻指针 API `trWCstr`/`trUtf8Cstr`/`trWCstrFor`/`trUtf8CstrFor` 与异常安全 `{0}/{1}` 占位符格式化 `trFmtW`/`trFmtUtf8`；`Logger.cpp` 同步修正 `ja/ko/ru/pt/es` 路由至英文日志模板，杜绝误落简体中文；
+     - 完成全库 **55 个 C++ 原生 UI 文件**迁移（截图/贴图/演播室/长截图/手势/键鼠回显/OCR/托盘/对话框增强/右键菜单/远控助手，提取 **855 个**唯一原生词条并完成 6 套海外/繁体精译词典）；`CMakeLists.txt` POST_BUILD 与 `deploy.ps1` 白名单同步分发 `resources/locales/`；
+  2. **React 前端 8 语种单一事实源 (`ui/src/i18n/languages.ts`, `config.ts`, `useAppearance.ts`, `TitleBar.tsx`, `GeneralPage.tsx`, `index.css`)**：
+     - 全部 8 套前端语言包（每套 **2,311 键**）100% 同构精译；优先采信 C++ 探测的真实 Windows 显示语言（规避 WebView2 `navigator.language` 偏差），实时同步 `document.documentElement.lang` 触发对应语种原生字体栈；
+     - 升级 `ui/scripts/check-i18n.js` 覆盖 8 语言同构与非汉字语种（`en/ko/ru/pt-BR/es`）0 汉字门禁，新增 `ui/scripts/check-native-i18n.js` 校验全库 855 个 C++ 原生词条 × 6 套海外/繁体词典 100% 对齐与占位符一致，全部纳入 `npm run lint` CI 阻断门禁；
+  3. **Inno Setup 8 语种安装程序 (`installer.iss`, `resources/installer/ChineseTraditional.isl`)**：
+     - 注册全部 8 语种安装界面与 28×8 条完整 `[CustomMessages]`，补齐 `[UninstallDelete]` 清理 `resources\locales`，通过本机 Inno Setup 6.7.3 (`ISCC.exe`) 实测编译；
+  4. **8 份多语种 README 与 72 份本地化视觉资产 (`README*.md`, `docs/images/{zh-CN,zh-TW,en-US,ja-JP,ko-KR,ru-RU,pt-BR,es-ES}/`)**：
+     - 每种语言均配备对应母语的 8 卡 Bento 总览海报（`feature_bento_overview.png`）与 8 组「导演级四拍因果交互节拍」高清动态 WebP（`9.20s–10.65s`），共 **72/72** 份本地化资产全部经逐语种人工视觉审查与自动化完整性脚本 100% 验证；
+  5. **全链路回归验证基线**：
+     - 前端 7 重门禁 `npm run lint` 100% 通过、Vitest `26/26` 测试文件 `196/196` 用例全绿、`npm run build` 生产包验证通过；C++ Release 全目标编译通过，`Tools3000Tests.exe` 全量 **781/781** 通过（含新建 `UiI18nTest.EightLanguageResolutionCatalogLoadingAndInstallerContract`，1 项需环境变量实图基准测试跳过）。
+
 ### [2026-11-21] 全场景世界级离线 OCR 五大硬核进阶、三合一单次切屏鼠标手势 E2E 门禁合并与 GitHub 全功能动图首屏焕新
 - **离线 OCR 五大能力闭环 (`DeepOcrEngine.{h,cpp}`, `DeepOcrEngineModel.cpp`, `DeepOcrEnginePostprocess.cpp`, `OcrEngine.{h,cpp}`, `PluginEntry.cpp`, `OcrPage.tsx`)**：
   1. **合同/发票红章压字穿透滤除 (`suppressRedStampForOcr`)**：仅在浅色纸面定位与黑色墨水产生真实交叉的高饱和红色印章连通域，柔和中和至周边底色，100% 保留黑字核心笔画与独立纯红警示文字；
@@ -16,7 +36,8 @@
 - **鼠标手势三合一单次切屏 E2E 门禁 (`scripts/test_gesture_suite_e2e.ps1`, `deploy.ps1`, `scripts/test_capture_recording_e2e.ps1`)**：
   - 将原 `deploy.ps1` 中连续 3 次强制切屏的 `test_gesture_e2e.ps1`、`stress_gesture_1000hz.ps1`、`adversarial_stress_gesture.ps1` 合并为单进程、单次切屏的 `test_gesture_suite_e2e.ps1`，测试输入全部安全落入无副作用空白靶板窗，100% 保留全部原始断言与吞吐量校验，并在结束后自动归还鼠标坐标与用户原前台窗口焦点；
 - **GitHub 中英双语 README 全动图与视觉焕新 (`README.md`, `README.en.md`, `docs/images/{zh-CN,en-US}/`)**：
-  - 顶部首屏直接以 2×2 高清动态 WebP 展示核心场景（文件搜索+空格预览、离线高精度文本识别/批注/改字、滚动长截图、高清录屏与自动运镜演播室），新增中英双语 Apple/Linear Bento 风格「七大核心功能一图速览」海报 `feature_bento_overview.png` 及文档内容搜索 / 精准截图标注 / 离线选字批注 / 录屏自动运镜演播室 4 组双语动图，保证全部 7 大核心功能均有直观自动播放动图；严守产品克制要求，不在 README 中铺陈去阴影/红章/条形码/高精度模型等底层实现细节。
+  - 顶部首屏直接以 2×2 高清动态 WebP 展示核心场景（文件搜索+空格预览、离线高精度文本识别/批注/改字、滚动长截图、高清录屏与自动运镜演播室），新增中英双语 Apple/Linear Bento 风格「八大核心功能一图速览」海报 `feature_bento_overview.png` 及全部 8 大核心功能中英双语共 16 张「导演级四拍因果交互节拍」动图（`9.2s–10.7s`，高对比双描边光标平滑移动 -> 目标按钮 Hover 亮起 -> 物理按压下沉 + 双层脉冲波纹 + 极简点击徽标 -> 效果展开 + 呼吸停顿消化，底部 3.5px 细进度条，全部经逐格视觉验收）；严守产品克制要求，不在 README 中铺陈去阴影/红章/条形码/高精度模型等底层实现细节；
+  - **全球 8 语种零冗余 README 矩阵 (`README.md`, `README.zh-TW.md`, `README.en.md`, `README.ja.md`, `README.ko.md`, `README.ru.md`, `README.pt-BR.md`, `README.es.md`)**：面向全球 Windows 桌面效率工具用户盘面扩展繁體中文、日本語、한국어、Русский、Português (Brasil)、Español 6 份母语 README，顶部 8 语种互链导览且全量复用既有 `zh-CN`/`en-US` 动图（0 仓库体积膨胀），同时在下载区坦诚标注当前客户端 UI 语言为英文与简体中文；软件客户端侧多语言重构（涉及 `src/` 下 32 个 `.cpp` 共 622 处 `isZh` 三元分支升级为键值目录）按项目负责人指示暂缓，待后续单独拍板。
 
 ### [2026-11-21] 全库 9 大巨石源文件零回归纯物理拆分收官（全库业务源码 100% < 3,000 行）与实景 OCR 样本集入库 (`tests/fixtures/ocr/`) + 小型倾斜二维码 2x 强透视召回
 - **全库巨石文件零回归纯物理拆分总账（严守零语义改动 / 严格 ODR / 公开 ABI 零破坏 / 纯净单 CRLF / 逐个编译单测门禁原子提交）**：

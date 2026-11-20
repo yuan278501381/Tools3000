@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/StudioPreviewWindowInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/StudioBackdropCatalog.h"
 #include "../resource.h"
 #include "core/config/ConfigManager.h"
@@ -135,55 +136,41 @@ void renderLuxuryCoachCardScene(
 
     switch (coachHitId) {
         case Hit_SplitAtPlayhead:
-            titleTxt = isZh ? L"在指针处拆分片段" : L"Split Clip at Playhead";
+            titleTxt = tools3000::core::trWCstrFor(isZh, L"在指针处拆分片段", L"Split Clip at Playhead");
             shortcutTxt = L"S";
-            descTxt = isZh
-                ? L"将当前视频从播放指针处切开一分为二。在需要剪掉的首尾位置各切一刀，即可分离出中间片段。"
-                : L"Splits the clip into two at the playhead. Cut at start and end to isolate unwanted sections.";
+            descTxt = tools3000::core::trWCstrFor(isZh, L"将当前视频从播放指针处切开一分为二。在需要剪掉的首尾位置各切一刀，即可分离出中间片段。", L"Splits the clip into two at the playhead. Cut at start and end to isolate unwanted sections.");
             break;
         case Hit_DeleteSelectedItem:
-            titleTxt = isZh ? L"删除选中项并自动拼接" : L"Ripple Delete";
+            titleTxt = tools3000::core::trWCstrFor(isZh, L"删除选中项并自动拼接", L"Ripple Delete");
             shortcutTxt = L"Del";
             descTxt = targetEnabled
-                ? (isZh ? L"删除当前选中的视频片段、运镜或标注；删除片段后右侧画面自动向左无缝贴合，不留黑屏。"
-                        : L"Removes the selected clip, zoom, or mark and snaps subsequent clips together seamlessly.")
-                : (isZh ? L"先用「拆分(S)」切出片段并点击选中（或点选运镜/标注块），按 Del 即可删除并自动无缝拼接。"
-                        : L"Split a clip with 'S' and click to select it first, then press Del to remove and snap.");
+                ? (tools3000::core::trWCstrFor(isZh, L"删除当前选中的视频片段、运镜或标注；删除片段后右侧画面自动向左无缝贴合，不留黑屏。", L"Removes the selected clip, zoom, or mark and snaps subsequent clips together seamlessly."))
+                : (tools3000::core::trWCstrFor(isZh, L"先用「拆分(S)」切出片段并点击选中（或点选运镜/标注块），按 Del 即可删除并自动无缝拼接。", L"Split a clip with 'S' and click to select it first, then press Del to remove and snap."));
             break;
         case Hit_CycleClipSpeed:
-            titleTxt = isZh ? L"片段局部变速" : L"Clip Playback Speed";
+            titleTxt = tools3000::core::trWCstrFor(isZh, L"片段局部变速", L"Clip Playback Speed");
             shortcutTxt = L"1.0x ~ 3.0x";
-            descTxt = isZh
-                ? L"为选中的单个片段循环切换 1.0x / 1.2x / 1.5x / 2.0x / 3.0x 倍速，轻松快进冗长的加载等待。"
-                : L"Cycles playback speed (1.0x to 3.0x) on the selected clip to fast-forward long waits.";
+            descTxt = tools3000::core::trWCstrFor(isZh, L"为选中的单个片段循环切换 1.0x / 1.2x / 1.5x / 2.0x / 3.0x 倍速，轻松快进冗长的加载等待。", L"Cycles playback speed (1.0x to 3.0x) on the selected clip to fast-forward long waits.");
             break;
         case Hit_UndoBtn:
-            titleTxt = isZh ? L"撤销上一步操作" : L"Undo Last Action";
+            titleTxt = tools3000::core::trWCstrFor(isZh, L"撤销上一步操作", L"Undo Last Action");
             shortcutTxt = L"Ctrl + Z";
-            descTxt = isZh
-                ? L"支持最多 40 步无损回退，随时撤回刚才的片段拆分、删除、变速、运镜或标注修改。"
-                : L"Reverts up to 40 steps of clip splits, deletions, speed changes, zooms, or annotations.";
+            descTxt = tools3000::core::trWCstrFor(isZh, L"支持最多 40 步无损回退，随时撤回刚才的片段拆分、删除、变速、运镜或标注修改。", L"Reverts up to 40 steps of clip splits, deletions, speed changes, zooms, or annotations.");
             break;
         case Hit_RedoBtn:
-            titleTxt = isZh ? L"重做已撤销操作" : L"Redo Action";
+            titleTxt = tools3000::core::trWCstrFor(isZh, L"重做已撤销操作", L"Redo Action");
             shortcutTxt = L"Ctrl + Y";
-            descTxt = isZh
-                ? L"恢复刚刚撤销的剪辑、变速、运镜或画面标注状态。"
-                : L"Restores the most recently undone timeline edit, camera zoom, or annotation.";
+            descTxt = tools3000::core::trWCstrFor(isZh, L"恢复刚刚撤销的剪辑、变速、运镜或画面标注状态。", L"Restores the most recently undone timeline edit, camera zoom, or annotation.");
             break;
         case Hit_QuickOpenAnnotations:
-            titleTxt = isZh ? L"画面重点标注" : L"Timeline Annotations";
-            shortcutTxt = isZh ? L"19 种样式" : L"19 Styles";
-            descTxt = isZh
-                ? L"在指定时间段添加手绘重点圈、圆角框、箭头、步骤序号、聚光灯、局部放大镜或马赛克打码。"
-                : L"Places timed marker circles, boxes, arrows, step badges, spotlight, magnifier, or blur.";
+            titleTxt = tools3000::core::trWCstrFor(isZh, L"画面重点标注", L"Timeline Annotations");
+            shortcutTxt = tools3000::core::trWCstrFor(isZh, L"19 种样式", L"19 Styles");
+            descTxt = tools3000::core::trWCstrFor(isZh, L"在指定时间段添加手绘重点圈、圆角框、箭头、步骤序号、聚光灯、局部放大镜或马赛克打码。", L"Places timed marker circles, boxes, arrows, step badges, spotlight, magnifier, or blur.");
             break;
         case Hit_AddZoomAtPlayhead:
-            titleTxt = isZh ? L"插入镜头推近特写" : L"Insert Camera Zoom";
-            shortcutTxt = isZh ? L"可拖焦点" : L"Drag Focus";
-            descTxt = isZh
-                ? L"在指针处新增一段平滑放大运镜；选中蓝色运镜块后，可在画面直接拖动十字准星调整聚焦位置。"
-                : L"Adds a smooth zoom-in segment at playhead; drag the stage crosshair to re-aim focus.";
+            titleTxt = tools3000::core::trWCstrFor(isZh, L"插入镜头推近特写", L"Insert Camera Zoom");
+            shortcutTxt = tools3000::core::trWCstrFor(isZh, L"可拖焦点", L"Drag Focus");
+            descTxt = tools3000::core::trWCstrFor(isZh, L"在指针处新增一段平滑放大运镜；选中蓝色运镜块后，可在画面直接拖动十字准星调整聚焦位置。", L"Adds a smooth zoom-in segment at playhead; drag the stage crosshair to re-aim focus.");
             break;
         default:
             return;
@@ -717,7 +704,7 @@ void renderLuxuryCoachCardScene(
             const D2D1_RECT_F bub = D2D1::RectF(bx - hw, by - hh, bx + hw, by + hh);
             fillVGradRounded(bub, 6.0f, rgba(0.66f, 0.34f, 0.98f, 0.96f * std::min(1.0f, sc)),
                              rgba(0.52f, 0.22f, 0.88f, 0.96f * std::min(1.0f, sc)));
-            drawTextClip(isZh ? L"重点" : L"Key", fonts.captionFmt, bub, rgba(1.0f, 1.0f, 1.0f, std::min(1.0f, sc)),
+            drawTextClip(tools3000::core::trWCstrFor(isZh, L"重点", L"Key"), fonts.captionFmt, bub, rgba(1.0f, 1.0f, 1.0f, std::min(1.0f, sc)),
                          DWRITE_TEXT_ALIGNMENT_CENTER);
         }
 
@@ -1390,7 +1377,7 @@ void renderCinemaFilmstripAndMountainWaveformClip(
         wchar_t cLbl[80]{};
         if (visCw >= 116.0f) {
             std::swprintf(cLbl, std::size(cLbl),
-                          isZh ? L"片段 %zu · %s" : L"Clip %zu · %s",
+                          tools3000::core::trWCstrFor(isZh, L"片段 %zu · %s", L"Clip %zu · %s"),
                           clipIndex + 1, durStr.c_str());
         } else {
             std::swprintf(cLbl, std::size(cLbl), L"%s", durStr.c_str());
@@ -1637,7 +1624,7 @@ void renderCinemaFilmstripAndMountainWaveformClip(
                         const std::wstring silDurTxt = formatCompactDurationBadge(silDurSec, isZh);
                         wchar_t silLbl[48]{};
                         std::swprintf(silLbl, std::size(silLbl),
-                                      isZh ? L"静音 %s" : L"Silence %s", silDurTxt.c_str());
+                                      tools3000::core::trWCstrFor(isZh, L"静音 %s", L"Silence %s"), silDurTxt.c_str());
                         const float badgeW = (std::min)(silPxW - 10.0f, isZh ? 76.0f : 86.0f);
                         const float midX = (sx0 + sx1) * 0.5f;
                         const float midWaveY = (splitY + baseY) * 0.5f;
@@ -1663,7 +1650,7 @@ void renderCinemaFilmstripAndMountainWaveformClip(
                           : D2D1::ColorF(0.24f, 0.36f, 0.54f, 0.16f));
             rt->DrawLine({waveLeft + 4.0f, midWaveY}, {waveRight - 4.0f, midWaveY}, brush, 0.85f);
             if (cw >= 120.0f) {
-                drawTxt(isZh ? L"无音频轨道 / 静音片段" : L"Muted / No Audio Track",
+                drawTxt(tools3000::core::trWCstrFor(isZh, L"无音频轨道 / 静音片段", L"Muted / No Audio Track"),
                         captionFmt, waveBox,
                         dark ? D2D1::ColorF(0.62f, 0.70f, 0.82f, 0.54f)
                              : D2D1::ColorF(0.32f, 0.40f, 0.52f, 0.56f),
@@ -1825,18 +1812,18 @@ cv::Mat StudioPreviewWindow::renderTimelineStripPreviewForTest(
                     drawCrispUndoRedoIcon(d2d.Get(), rt.Get(), br.Get(), 293.0f, 20.0f, false, roundSt.Get());
 
                     br->SetColor(colPrimary);
-                    const wchar_t* s1 = isZh ? L"拆分(S)" : L"Split(S)";
-                    const wchar_t* s2 = isZh ? L"标注" : L"Mark";
-                    const wchar_t* s3 = isZh ? L"运镜" : L"Zoom";
+                    const wchar_t* s1 = tools3000::core::trWCstrFor(isZh, L"拆分(S)", L"Split(S)");
+                    const wchar_t* s2 = tools3000::core::trWCstrFor(isZh, L"标注", L"Mark");
+                    const wchar_t* s3 = tools3000::core::trWCstrFor(isZh, L"运镜", L"Zoom");
                     rt->DrawText(s1, static_cast<UINT32>(wcslen(s1)), capFmt.Get(), D2D1::RectF(34.0f, 8.0f, 84.0f, 32.0f), br.Get());
                     rt->DrawText(L"1.0x", 4, monoFmt.Get(), D2D1::RectF(170.0f, 8.0f, 209.0f, 32.0f), br.Get());
                     rt->DrawText(s2, static_cast<UINT32>(wcslen(s2)), capFmt.Get(), D2D1::RectF(371.0f, 8.0f, 406.0f, 32.0f), br.Get());
                     rt->DrawText(s3, static_cast<UINT32>(wcslen(s3)), capFmt.Get(), D2D1::RectF(431.0f, 8.0f, 470.0f, 32.0f), br.Get());
 
                     br->SetColor(D2D1::ColorF(colPrimary.r, colPrimary.g, colPrimary.b, 0.35f));
-                    const wchar_t* d1 = isZh ? L"删除" : L"Delete";
-                    const wchar_t* d2 = isZh ? L"撤销" : L"Undo";
-                    const wchar_t* d3 = isZh ? L"重做" : L"Redo";
+                    const wchar_t* d1 = tools3000::core::trWCstrFor(isZh, L"删除", L"Delete");
+                    const wchar_t* d2 = tools3000::core::trWCstrFor(isZh, L"撤销", L"Undo");
+                    const wchar_t* d3 = tools3000::core::trWCstrFor(isZh, L"重做", L"Redo");
                     rt->DrawText(d1, static_cast<UINT32>(wcslen(d1)), capFmt.Get(), D2D1::RectF(109.0f, 8.0f, 145.0f, 32.0f), br.Get());
                     rt->DrawText(d2, static_cast<UINT32>(wcslen(d2)), capFmt.Get(), D2D1::RectF(242.0f, 8.0f, 276.0f, 32.0f), br.Get());
                     rt->DrawText(d3, static_cast<UINT32>(wcslen(d3)), capFmt.Get(), D2D1::RectF(301.0f, 8.0f, 338.0f, 32.0f), br.Get());
@@ -1854,7 +1841,7 @@ cv::Mat StudioPreviewWindow::renderTimelineStripPreviewForTest(
                 drawPreviewDiv(zoomPodLeft + 48.0f);
                 if (capFmt) {
                     capFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                    const wchar_t* zTxt = isZh ? L"全览" : L"Fit";
+                    const wchar_t* zTxt = tools3000::core::trWCstrFor(isZh, L"全览", L"Fit");
                     br->SetColor(colSecondary);
                     rt->DrawText(zTxt, static_cast<UINT32>(wcslen(zTxt)), capFmt.Get(),
                                  D2D1::RectF(zoomPodLeft + 3.0f, 6.0f, zoomPodLeft + 47.0f, 34.0f), br.Get());
@@ -1894,7 +1881,7 @@ cv::Mat StudioPreviewWindow::renderTimelineStripPreviewForTest(
                     capFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                     capFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                     br->SetColor(colSecondary);
-                    const wchar_t* tLbl = isZh ? L"视频/音轨" : L"Video/Aud";
+                    const wchar_t* tLbl = tools3000::core::trWCstrFor(isZh, L"视频/音轨", L"Video/Aud");
                     rt->DrawText(tLbl, static_cast<UINT32>(wcslen(tLbl)), capFmt.Get(),
                                  D2D1::RectF(12.0f, laneRc.top, 74.0f, laneRc.bottom), br.Get());
                 }

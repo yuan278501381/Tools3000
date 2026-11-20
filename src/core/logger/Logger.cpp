@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "core/logger/Logger.h"
+#include "core/i18n/UiI18n.h"
 #include "core/logger/WideUniversalRotatingFileSink.h"
 #include "core/utils/WinUtils.h"
 
@@ -183,25 +184,15 @@ std::shared_ptr<WideUniversalRotatingFileSink> Logger::getFileSink() {
 }
 
 void Logger::setLanguage(const std::string& langCode) {
-    if (langCode == "en-US" || langCode == "en") {
-        s_logLanguage.store(static_cast<uint8_t>(LogLanguage::EnUS), std::memory_order_relaxed);
-    } else if (langCode == "zh-TW" || langCode == "zh-HK") {
-        s_logLanguage.store(static_cast<uint8_t>(LogLanguage::ZhTW), std::memory_order_relaxed);
-    } else if (langCode == "auto") {
-        LANGID langId = GetUserDefaultUILanguage();
-        if (PRIMARYLANGID(langId) == LANG_ENGLISH) {
-            s_logLanguage.store(static_cast<uint8_t>(LogLanguage::EnUS), std::memory_order_relaxed);
-        } else if (PRIMARYLANGID(langId) == LANG_CHINESE) {
-            if (SUBLANGID(langId) == SUBLANG_CHINESE_TRADITIONAL || SUBLANGID(langId) == SUBLANG_CHINESE_HONGKONG) {
-                s_logLanguage.store(static_cast<uint8_t>(LogLanguage::ZhTW), std::memory_order_relaxed);
-            } else {
-                s_logLanguage.store(static_cast<uint8_t>(LogLanguage::ZhCN), std::memory_order_relaxed);
-            }
-        } else {
-            s_logLanguage.store(static_cast<uint8_t>(LogLanguage::EnUS), std::memory_order_relaxed);
-        }
-    } else {
+    const UiLanguage resolved = UiI18n::isFollowSystemSetting(langCode)
+        ? UiI18n::detectSystemLanguage()
+        : UiI18n::parseLanguageTag(langCode);
+    if (resolved == UiLanguage::ZhCN) {
         s_logLanguage.store(static_cast<uint8_t>(LogLanguage::ZhCN), std::memory_order_relaxed);
+    } else if (resolved == UiLanguage::ZhTW) {
+        s_logLanguage.store(static_cast<uint8_t>(LogLanguage::ZhTW), std::memory_order_relaxed);
+    } else {
+        s_logLanguage.store(static_cast<uint8_t>(LogLanguage::EnUS), std::memory_order_relaxed);
     }
 }
 

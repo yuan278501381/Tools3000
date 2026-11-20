@@ -86,7 +86,7 @@ function getFiles(dir, exts = ['.ts', '.tsx']) {
 
 // ── 防线 1 & 防线 2 & 防线 3 & 防线 4：N 语言同构矩阵、纯净度与翻译泄漏检查 ──
 function checkLocaleMatrix(targetFile, targetData) {
-  const isEnglish = targetFile === 'en.json';
+  const forbidHanScript = ['en.json', 'ko.json', 'ru.json', 'pt-BR.json', 'es.json'].includes(targetFile);
   const cjkRegex = /[\u4e00-\u9fa5]/;
 
   function traverse(baseObj, targetObj, prefix = '') {
@@ -107,9 +107,9 @@ function checkLocaleMatrix(targetFile, targetData) {
           console.error(`[ERROR] [Missing Key Matrix] ${targetFile} 缺失翻译键位: ${fullKey}`);
           hasError = true;
         } else if (typeof baseVal === 'string' && typeof targetVal === 'string') {
-          // 防线 2：英文包绝对 0 汉字污染
-          if (isEnglish && cjkRegex.test(targetVal)) {
-            console.error(`[ERROR] [CJK in English Gate] en.json 存在非法汉字字符: [${fullKey}] -> "${targetVal}"`);
+          // 防线 2：非汉字语系语言包（en / ko / ru / pt-BR / es）绝对 0 汉字污染
+          if (forbidHanScript && cjkRegex.test(targetVal)) {
+            console.error(`[ERROR] [CJK Contamination Gate] ${targetFile} 存在非法汉字字符: [${fullKey}] -> "${targetVal}"`);
             hasError = true;
           }
 

@@ -1,4 +1,5 @@
 #include "capture/CaptureOverlay.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/AudioCapture.h"
 #include "capture/CaptureBackend.h"
 #include "capture/CursorOverlay.h"
@@ -58,7 +59,7 @@ toolbarUiaActions(HWND hwnd, const CaptureState& state) {
         const auto shortcut = toolbarButtonKeyboardShortcut(button);
         actions.push_back({
             L"Tools3000.CaptureToolbar." + std::to_wstring(index), name,
-            (zh ? L"截图工具栏：" : L"Capture Toolbar: ") + name, shortcut, {
+            (tools3000::core::trWCstrFor(zh, L"截图工具栏：", L"Capture Toolbar: ")) + name, shortcut, {
                 window.left + static_cast<LONG>(button.rect.left),
                 window.top + static_cast<LONG>(button.rect.top),
                 window.left + static_cast<LONG>(button.rect.right),
@@ -332,9 +333,7 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     if (!m_hwnd && (!m_hInstance || !createOverlayWindow(m_hInstance))) {
         LOG_ERROR("无法启动截图: 覆盖层窗口初始化失败");
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            tools3000::core::isUiLanguageChinese()
-                ? L"截图界面初始化失败，请重试"
-                : L"Failed to initialize capture overlay, please retry"});
+            tools3000::core::trWCstr(L"截图界面初始化失败，请重试", L"Failed to initialize capture overlay, please retry")});
         if (m_closedCallback) m_closedCallback();
         return;
     }
@@ -422,9 +421,7 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     if (!freezeScreen()) {
         LOG_ERROR("无法启动截图: 桌面底图捕获或上传失败");
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            tools3000::core::isUiLanguageChinese()
-                ? L"无法捕获屏幕，请重试"
-                : L"Failed to capture screen, please retry"});
+            tools3000::core::trWCstr(L"无法捕获屏幕，请重试", L"Failed to capture screen, please retry")});
         realCancel();
         return;
     }
@@ -435,9 +432,7 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     if (!m_renderer.updateScreenBitmap(m_state.frozenScreen)) {
         LOG_ERROR("无法启动截图: 桌面底图上传失败");
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            tools3000::core::isUiLanguageChinese()
-                ? L"无法显示屏幕截图，请重试"
-                : L"Failed to render screen capture, please retry"});
+            tools3000::core::trWCstr(L"无法显示屏幕截图，请重试", L"Failed to render screen capture, please retry")});
         realCancel();
         return;
     }
@@ -479,9 +474,7 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     m_input.updateHoverCursor(m_state.currentCursor);
     tools3000::core::accessibility::announceOverlay(
         m_hwnd,
-        tools3000::core::isUiLanguageChinese()
-            ? L"截图选区。拖动鼠标选择区域；Enter 确认；Esc 取消。"
-            : L"Capture selection. Drag to select an area; Enter to confirm; Esc to cancel."
+        tools3000::core::trWCstr(L"截图选区。拖动鼠标选择区域；Enter 确认；Esc 取消。", L"Capture selection. Drag to select an area; Enter to confirm; Esc to cancel.")
     );
     tools3000::core::PerformanceMonitor::instance().recordLatency(
         "screenshot", elapsedMilliseconds(totalStarted));
@@ -596,9 +589,7 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
     m_input.updateHoverCursor(m_state.currentCursor);
     tools3000::core::accessibility::announceOverlay(
         m_hwnd,
-        tools3000::core::isUiLanguageChinese()
-            ? L"截图标注。使用工具栏完成标注；Enter 确认；Esc 取消。"
-            : L"Capture annotation. Use the toolbar to annotate; Enter to confirm; Esc to cancel."
+        tools3000::core::trWCstr(L"截图标注。使用工具栏完成标注；Enter 确认；Esc 取消。", L"Capture annotation. Use the toolbar to annotate; Enter to confirm; Esc to cancel.")
     );
 }
 
@@ -760,9 +751,7 @@ void CaptureOverlay::startEditPinnedMarkup(
     m_input.updateHoverCursor(m_state.currentCursor);
     tools3000::core::accessibility::announceOverlay(
         m_hwnd,
-        tools3000::core::isUiLanguageChinese()
-            ? L"截图标注。使用工具栏完成标注；Enter 确认；Esc 取消。"
-            : L"Capture annotation. Use the toolbar to annotate; Enter to confirm; Esc to cancel."
+        tools3000::core::trWCstr(L"截图标注。使用工具栏完成标注；Enter 确认；Esc 取消。", L"Capture annotation. Use the toolbar to annotate; Enter to confirm; Esc to cancel.")
     );
 }
 
@@ -897,9 +886,7 @@ bool CaptureOverlay::startEditLongImage(
     m_input.updateHoverCursor(m_state.currentCursor);
     tools3000::core::accessibility::announceOverlay(
         m_hwnd,
-        tools3000::core::isUiLanguageChinese()
-            ? L"长截图精修工作台。拖动上下标尺无损裁切首尾，使用底部工具栏添加文字、序号与全部标注；Enter 完成；Esc 取消。"
-            : L"Long screenshot studio. Drag top and bottom handles to trim, use the toolbar to annotate; Enter to finish; Esc to cancel."
+        tools3000::core::trWCstr(L"长截图精修工作台。拖动上下标尺无损裁切首尾，使用底部工具栏添加文字、序号与全部标注；Enter 完成；Esc 取消。", L"Long screenshot studio. Drag top and bottom handles to trim, use the toolbar to annotate; Enter to finish; Esc to cancel.")
     );
     LOG_INFO("长截图精修工作台已打开: 尺寸={}x{}, 拼接帧数={}",
              m_state.frozenScreen.cols, m_state.frozenScreen.rows, m_state.longCanvas.frameCount);

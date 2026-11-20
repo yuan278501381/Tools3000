@@ -1,4 +1,5 @@
 #include "ui/ToastOverlay.h"
+#include "core/i18n/UiI18n.h"
 #include "ui/ToastStyle.h"
 #include "core/config/ConfigManager.h"
 #include "core/logger/Logger.h"
@@ -268,7 +269,7 @@ bool ToastOverlay::createResources() {
 
         if (m_dwriteFactory && !m_textFormat) {
             const wchar_t* fontFamily = tools3000::core::resolveInstalledUiFontFamily(m_dwriteFactory.Get());
-            const wchar_t* localeName = tools3000::core::isUiLanguageChinese() ? L"zh-CN" : L"en-US";
+            const wchar_t* localeName = tools3000::core::trWCstr(L"zh-CN", L"en-US");
             const HRESULT hr = m_dwriteFactory->CreateTextFormat(
                 fontFamily, nullptr, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,

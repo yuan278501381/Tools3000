@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/CaptureRendererInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/TextAnnotationHelper.h"
 #include "capture/MarkupCurveGeometry.h"
 #include "capture/CaptureHudRimStyle.h"
@@ -1009,7 +1010,7 @@ void CaptureRenderer::drawSizeInfo(const D2D1_RECT_F& rect, CaptureState& state)
         badges.push_back(std::format(L"R{}px", static_cast<int>(effectiveRadius)));
     }
     if (state.beautyShell.enabled) {
-        badges.push_back(zh ? L"外壳" : L"Shell");
+        badges.push_back(tools3000::core::trWCstrFor(zh, L"外壳", L"Shell"));
     }
 
     auto measureSpanWidth = [&](const std::wstring& txt, IDWriteTextFormat* fmt, float fallbackPerChar) -> float {

@@ -13,6 +13,14 @@ import { useTranslation } from 'react-i18next';
 import { Minus, Square, Copy, X, Globe, Sun, Moon, Monitor, Check, ChevronDown, Palette } from 'lucide-react';
 import { LogoGlyph } from './Tools3000Bolt';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
+import {
+  SUPPORTED_LANGUAGES,
+  applyHtmlLanguageAttribute,
+  findLanguageMeta,
+  normalizeLanguagePreference,
+  resolveI18nBundle,
+  type LanguagePreference,
+} from '../i18n/languages';
 import './TitleBar.css';
 
 const ACCENT_PRESETS = [
@@ -43,14 +51,14 @@ export const TitleBar: FC<TitleBarProps> = ({
   const [isMaximized, setIsMaximized] = useState(false);
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
-  const [isAutoLanguage, setIsAutoLanguage] = useState<boolean>(() => {
+  const [langPreference, setLangPreference] = useState<LanguagePreference>(() => {
     try {
-      const stored = localStorage.getItem('tools3000:language');
-      return !stored || stored === 'auto';
+      return normalizeLanguagePreference(localStorage.getItem('tools3000:language'));
     } catch {
-      return false;
+      return 'auto';
     }
   });
+  const isAutoLanguage = langPreference === 'auto';
 
   const langRef = useRef<HTMLDivElement>(null);
   const themeRef = useRef<HTMLDivElement>(null);
@@ -64,7 +72,7 @@ export const TitleBar: FC<TitleBarProps> = ({
           return null;
         }
       })();
-      setIsAutoLanguage(!pref || pref === 'auto');
+      setLangPreference(normalizeLanguagePreference(pref));
     };
     const onLangChangedEvent = (e: Event) => {
       const detail = (e as CustomEvent<string>).detail;
@@ -148,19 +156,17 @@ export const TitleBar: FC<TitleBarProps> = ({
   }, []);
 
   // 切换语言
-  const handleSelectLanguage = (langKey: 'auto' | 'zh-CN' | 'en-US') => {
+  const handleSelectLanguage = (langKey: LanguagePreference) => {
     setLangMenuOpen(false);
-    setIsAutoLanguage(langKey === 'auto');
+    setLangPreference(langKey);
     try {
       localStorage.setItem('tools3000:language', langKey);
     } catch {
       // 忽略本地存储异常
     }
-    if (langKey === 'auto') {
-      void i18n.changeLanguage(navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en');
-    } else {
-      void i18n.changeLanguage(langKey.startsWith('zh') ? 'zh' : 'en');
-    }
+    const bundle = resolveI18nBundle(langKey);
+    applyHtmlLanguageAttribute(bundle);
+    void i18n.changeLanguage(bundle);
     bridgeRequest<{ success: boolean }>('general.updateSettings', { language: langKey }).catch(console.error);
     window.dispatchEvent(new CustomEvent('tools3000:language-changed', { detail: langKey }));
   };
@@ -214,9 +220,8 @@ export const TitleBar: FC<TitleBarProps> = ({
 
   const currentAccent = ACCENT_PRESETS.find((p) => p.id === accent) || ACCENT_PRESETS[0];
 
-  const activeLanguage = (i18n.resolvedLanguage || i18n.language || 'en').toLowerCase();
-  const isZhLanguage = activeLanguage.startsWith('zh');
-  const currentLangLabel = isZhLanguage ? t('general.langZh') : t('general.langEn');
+  const activeLangMeta = findLanguageMeta(i18n.resolvedLanguage || i18n.language || 'en');
+  const currentLangLabel = activeLangMeta.nativeName;
 
   const currentThemeLabel = (() => {
     if (themePreference === 'light') return t('general.themeLight');
@@ -281,32 +286,25 @@ export const TitleBar: FC<TitleBarProps> = ({
                   <Check size={13} strokeWidth={2.6} className="titlebar__dropdown-item-check" />
                 )}
               </button>
-              <button
-                type="button"
-                className={`titlebar__dropdown-item ${!isAutoLanguage && isZhLanguage ? 'active' : ''}`}
-                onClick={() => handleSelectLanguage('zh-CN')}
-              >
-                <div className="titlebar__dropdown-item-left">
-                  <span className="titlebar__dropdown-item-badge">ZH</span>
-                  <span className="titlebar__dropdown-item-title">{t('general.langZh')}</span>
-                </div>
-                {!isAutoLanguage && isZhLanguage && (
-                  <Check size={13} strokeWidth={2.6} className="titlebar__dropdown-item-check" />
-                )}
-              </button>
-              <button
-                type="button"
-                className={`titlebar__dropdown-item ${!isAutoLanguage && !isZhLanguage ? 'active' : ''}`}
-                onClick={() => handleSelectLanguage('en-US')}
-              >
-                <div className="titlebar__dropdown-item-left">
-                  <span className="titlebar__dropdown-item-badge">EN</span>
-                  <span className="titlebar__dropdown-item-title">{t('general.langEn')}</span>
-                </div>
-                {!isAutoLanguage && !isZhLanguage && (
-                  <Check size={13} strokeWidth={2.6} className="titlebar__dropdown-item-check" />
-                )}
-              </button>
+              {SUPPORTED_LANGUAGES.map((langOpt) => {
+                const isSelected = !isAutoLanguage && langPreference === langOpt.code;
+                return (
+                  <button
+                    key={langOpt.code}
+                    type="button"
+                    className={`titlebar__dropdown-item ${isSelected ? 'active' : ''}`}
+                    onClick={() => handleSelectLanguage(langOpt.code)}
+                  >
+                    <div className="titlebar__dropdown-item-left">
+                      <span className="titlebar__dropdown-item-badge">{langOpt.badge}</span>
+                      <span className="titlebar__dropdown-item-title">{langOpt.nativeName}</span>
+                    </div>
+                    {isSelected && (
+                      <Check size={13} strokeWidth={2.6} className="titlebar__dropdown-item-check" />
+                    )}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

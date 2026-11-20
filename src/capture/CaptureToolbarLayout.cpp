@@ -1,4 +1,5 @@
 #include "capture/CaptureToolbarLayout.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/CaptureDropdownMenu.h"
 #include "capture/ShortcutHintOverlay.h"
 
@@ -73,17 +74,15 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
         const bool autoZoomOn = state.recordSetup.studioMode && (state.recordSetup.zoomEffectMode != 0);
         std::wstring clickText;
         if (!state.recordSetup.studioMode) {
-            clickText = zh ? L"原样直出" : L"Raw Direct";
-        } else if (zh) {
-            clickText = (autoZoomOn && state.recordSetup.showClickEffects) ? L"波纹+运镜"
-                      : autoZoomOn ? L"自动运镜"
-                      : state.recordSetup.showClickEffects ? L"点击波纹"
-                      : L"演播室·无特效";
+            clickText = tools3000::core::trWCstrFor(zh, L"原样直出", L"Raw Direct");
+        } else if (autoZoomOn && state.recordSetup.showClickEffects) {
+            clickText = tools3000::core::trWCstrFor(zh, L"波纹+运镜", L"Ripple+Zoom");
+        } else if (autoZoomOn) {
+            clickText = tools3000::core::trWCstrFor(zh, L"自动运镜", L"Auto Zoom");
+        } else if (state.recordSetup.showClickEffects) {
+            clickText = tools3000::core::trWCstrFor(zh, L"点击波纹", L"Click Ripple");
         } else {
-            clickText = (autoZoomOn && state.recordSetup.showClickEffects) ? L"Ripple+Zoom"
-                      : autoZoomOn ? L"Auto Zoom"
-                      : state.recordSetup.showClickEffects ? L"Click Ripple"
-                      : L"Studio · Raw";
+            clickText = tools3000::core::trWCstrFor(zh, L"演播室·无特效", L"Studio · Raw");
         }
         specs.push_back({
             ToolbarCommand::RecordCycleClickEffect, MarkupTool::Rectangle, {},
@@ -109,7 +108,7 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
         });
 
         // 7. 麦克风一体化分体双舱胶囊 [ 图标开关 | ▾ 选择来源 ] (GIF 格式下置灰/不可选)
-        std::wstring micHint = zh ? L"系统默认" : L"System Default";
+        std::wstring micHint = tools3000::core::trWCstrFor(zh, L"系统默认", L"System Default");
         if (state.recordSetup.microphoneDeviceId.empty()) {
             if (!state.recordSetup.cachedDefaultMicName.empty()) {
                 const std::wstring defShort = state.recordSetup.cachedDefaultMicName.size() > 16
@@ -120,7 +119,7 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
                     : std::format(L"Default · {}", defShort);
             }
         } else {
-            micHint = zh ? L"已选外接设备" : L"Custom Device";
+            micHint = tools3000::core::trWCstrFor(zh, L"已选外接设备", L"Custom Device");
             for (const auto& kv : state.recordSetup.cachedMicDevices) {
                 if (kv.first == state.recordSetup.microphoneDeviceId && !kv.second.empty()) {
                     micHint = kv.second.size() > 20 ? (kv.second.substr(0, 19) + L"…") : kv.second;
@@ -162,7 +161,7 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
         // 9. 正式开始录制 (纯矢量双层呼吸圆点 + 居中标签，摒弃高低错位的字体符号 ●)
         specs.push_back({
             ToolbarCommand::RecordStartConfirm, MarkupTool::Rectangle, {},
-            zh ? L"开始录制" : L"Start",
+            tools3000::core::trWCstrFor(zh, L"开始录制", L"Start"),
             zh ? 98.0f : 84.0f, 0, LineStyle::Solid, ArrowStyle::Standard,
             true, false, false, false
         });
@@ -295,7 +294,7 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
                 specs.push_back({ToolbarCommand::SelectTool, MarkupTool::Line, {}, L"", 28.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
 
                 // 填充 Toggle（PixPin 风格：左侧圆角复选框 + 右侧「填充 / Fill」文字，与左侧子形状切换器通过微刻痕分隔）
-                specs.push_back({ToolbarCommand::ToggleFill, state.currentTool, {}, zh ? L"填充" : L"Fill", zh ? 58.0f : 56.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentFillMode, false, true, true});
+                specs.push_back({ToolbarCommand::ToggleFill, state.currentTool, {}, tools3000::core::trWCstrFor(zh, L"填充", L"Fill"), zh ? 58.0f : 56.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentFillMode, false, true, true});
 
                 // 线条样式下拉
                 specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, false});
@@ -445,7 +444,7 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
                 specs.push_back({ToolbarCommand::ToggleCurveMode, state.currentTool, {}, L"", 28.0f, 2, LineStyle::Solid, ArrowStyle::Standard, state.currentSmoothCurve, false, true, false});
                 specs.push_back({ToolbarCommand::ToggleLineStyleDropdown, state.currentTool, {}, L"", 38.0f, 0, state.currentLineStyle, ArrowStyle::Standard, false, true, true, true});
                 specs.push_back({ToolbarCommand::CycleStrokeWidth, state.currentTool, {}, std::format(L"{}", state.currentStrokeWidth), 46.0f, state.currentStrokeWidth, LineStyle::Solid, ArrowStyle::Standard, false, false, true, false});
-                specs.push_back({ToolbarCommand::ToggleLineArrow, state.currentTool, {}, zh ? L"箭头" : L"Arrow", zh ? 58.0f : 64.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentLineArrowEnabled, false, true, true});
+                specs.push_back({ToolbarCommand::ToggleLineArrow, state.currentTool, {}, tools3000::core::trWCstrFor(zh, L"箭头", L"Arrow"), zh ? 58.0f : 64.0f, 0, LineStyle::Solid, ArrowStyle::Standard, state.currentLineArrowEnabled, false, true, true});
                 if (state.currentLineArrowEnabled) {
                     specs.push_back({ToolbarCommand::ToggleStartCapDropdown, state.currentTool, {}, L"", 38.0f, static_cast<int>(state.currentStartCap), LineStyle::Solid, ArrowStyle::Standard, false, true, true, false});
                     specs.push_back({ToolbarCommand::ToggleEndCapDropdown, state.currentTool, {}, L"", 38.0f, static_cast<int>(state.currentEndCap), LineStyle::Solid, ArrowStyle::Standard, false, true, true, false});
@@ -497,11 +496,11 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
                     : state.currentMagnifierCalloutStyle;
                 auto calloutStyleShortLabel = [&](MagnifierCalloutStyle st) -> std::wstring {
                     switch (st) {
-                        case MagnifierCalloutStyle::TangentFrustum: return zh ? L"双切线" : L"Tangent";
-                        case MagnifierCalloutStyle::ElbowLeader:    return zh ? L"折线"   : L"Elbow";
-                        case MagnifierCalloutStyle::DashedDirect:   return zh ? L"虚线"   : L"Dashed";
-                        case MagnifierCalloutStyle::CenterPointer:  return zh ? L"单线"   : L"Single";
-                        default:                                    return zh ? L"双切线" : L"Tangent";
+                        case MagnifierCalloutStyle::TangentFrustum: return tools3000::core::trWCstrFor(zh, L"双切线", L"Tangent");
+                        case MagnifierCalloutStyle::ElbowLeader:    return tools3000::core::trWCstrFor(zh, L"折线", L"Elbow");
+                        case MagnifierCalloutStyle::DashedDirect:   return tools3000::core::trWCstrFor(zh, L"虚线", L"Dashed");
+                        case MagnifierCalloutStyle::CenterPointer:  return tools3000::core::trWCstrFor(zh, L"单线", L"Single");
+                        default:                                    return tools3000::core::trWCstrFor(zh, L"双切线", L"Tangent");
                     }
                 };
 
@@ -524,24 +523,37 @@ std::vector<ButtonSpec> secondaryButtonSpecs(const CaptureState& state, bool zh)
     if (state.beautyShell.enabled) {
         const bool standaloneBeauty = !state.isMarkupToolActive;
         std::wstring bgName;
-        if (zh) {
-            switch (state.beautyShell.bgType) {
-                case BeautyBackgroundType::StudioSlate: bgName = standaloneBeauty ? L"极光紫" : L"极光"; break;
-                case BeautyBackgroundType::PaperChalk: bgName = standaloneBeauty ? L"日落珊瑚" : L"珊瑚"; break;
-                case BeautyBackgroundType::SilkMist: bgName = standaloneBeauty ? L"翡翠海" : L"翡翠"; break;
-                case BeautyBackgroundType::MidnightGraphite: bgName = standaloneBeauty ? L"曜石黑" : L"曜石"; break;
-                case BeautyBackgroundType::PureMinimal: bgName = standaloneBeauty ? L"极简浅灰" : L"浅灰"; break;
-                default: bgName = standaloneBeauty ? L"美化背景" : L"背景"; break;
-            }
-        } else {
-            switch (state.beautyShell.bgType) {
-                case BeautyBackgroundType::StudioSlate: bgName = standaloneBeauty ? L"Aurora Purple" : L"Aurora"; break;
-                case BeautyBackgroundType::PaperChalk: bgName = standaloneBeauty ? L"Sunrise Coral" : L"Coral"; break;
-                case BeautyBackgroundType::SilkMist: bgName = standaloneBeauty ? L"Emerald Sea" : L"Emerald"; break;
-                case BeautyBackgroundType::MidnightGraphite: bgName = standaloneBeauty ? L"Obsidian Dark" : L"Obsidian"; break;
-                case BeautyBackgroundType::PureMinimal: bgName = standaloneBeauty ? L"Minimal Light" : L"Minimal"; break;
-                default: bgName = L"Theme"; break;
-            }
+        switch (state.beautyShell.bgType) {
+            case BeautyBackgroundType::StudioSlate:
+                bgName = standaloneBeauty
+                    ? tools3000::core::trWCstrFor(zh, L"极光紫", L"Aurora Purple")
+                    : tools3000::core::trWCstrFor(zh, L"极光", L"Aurora");
+                break;
+            case BeautyBackgroundType::PaperChalk:
+                bgName = standaloneBeauty
+                    ? tools3000::core::trWCstrFor(zh, L"日落珊瑚", L"Sunrise Coral")
+                    : tools3000::core::trWCstrFor(zh, L"珊瑚", L"Coral");
+                break;
+            case BeautyBackgroundType::SilkMist:
+                bgName = standaloneBeauty
+                    ? tools3000::core::trWCstrFor(zh, L"翡翠海", L"Emerald Sea")
+                    : tools3000::core::trWCstrFor(zh, L"翡翠", L"Emerald");
+                break;
+            case BeautyBackgroundType::MidnightGraphite:
+                bgName = standaloneBeauty
+                    ? tools3000::core::trWCstrFor(zh, L"曜石黑", L"Obsidian Dark")
+                    : tools3000::core::trWCstrFor(zh, L"曜石", L"Obsidian");
+                break;
+            case BeautyBackgroundType::PureMinimal:
+                bgName = standaloneBeauty
+                    ? tools3000::core::trWCstrFor(zh, L"极简浅灰", L"Minimal Light")
+                    : tools3000::core::trWCstrFor(zh, L"浅灰", L"Minimal");
+                break;
+            default:
+                bgName = standaloneBeauty
+                    ? tools3000::core::trWCstrFor(zh, L"美化背景", L"Theme")
+                    : tools3000::core::trWCstrFor(zh, L"背景", L"Theme");
+                break;
         }
         const float bgWidth = standaloneBeauty ? (zh ? 88.0f : 132.0f) : (zh ? 66.0f : 90.0f);
         specs.push_back({
@@ -1314,7 +1326,7 @@ void transitionToRecordMode(CaptureState& state) {
     }
     const bool zh = tools3000::core::isUiLanguageChinese();
     state.loupeToastUntil = GetTickCount() + 1500;
-    state.loupeToastMessage = zh ? L"已切换至区域录屏模式" : L"Switched to Record Mode";
+    state.loupeToastMessage = tools3000::core::trWCstrFor(zh, L"已切换至区域录屏模式", L"Switched to Record Mode");
 }
 
 SizeMenuLayout computeSizeMenuLayoutFromRect(const D2D1_RECT_F& menuRect, float scale) {

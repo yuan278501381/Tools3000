@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/config/ConfigManager.h"
+#include "core/i18n/UiI18n.h"
 #include "core/utils/WinUtils.h"
 
 #include <string>
@@ -93,14 +94,15 @@ struct NativeThemePalette {
         return getAccentColorRGB(accent);
     }
 
-    /// 结合 /general/language 与系统语言判定原生界面是否应使用中文文案
+    /// 结合 /general/language 与系统语言判定原生界面是否应使用中文系文案 (zh-CN / zh-TW)
     static bool isUiLanguageChinese() {
-        const std::string lang = ConfigManager::instance().get<std::string>("/general/language", "auto");
-        if (lang.rfind("zh", 0) == 0 || lang.rfind("ZH", 0) == 0) return true;
-        if (lang.empty() || lang == "auto" || lang == "system") {
-            return WinUtils::isSystemLanguageChinese();
-        }
-        return false;
+        const UiLanguage lang = UiI18n::getEffectiveLanguage();
+        return lang == UiLanguage::ZhCN || lang == UiLanguage::ZhTW;
+    }
+
+    /// 结合 /general/language 与系统语言解析当前有效界面语言枚举 (8 语种单一事实源)
+    static UiLanguage getEffectiveUiLanguage() {
+        return UiI18n::getEffectiveLanguage();
     }
 };
 

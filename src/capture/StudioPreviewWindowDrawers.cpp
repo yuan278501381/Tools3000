@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/StudioPreviewWindowInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/StudioBackdropCatalog.h"
 #include "../resource.h"
 #include "core/config/ConfigManager.h"
@@ -85,27 +86,27 @@ void StudioPreviewWindow::insertAnnotationCardPreset(int cardIndex, const float*
         case 0:
             ann.kind = StudioAnnotationKind::TextPlain;
             ann.colorHex = "#F59E0B";
-            ann.text = isZh ? "重点说明" : "Text";
+            ann.text = tools3000::core::trUtf8CstrFor(isZh, "重点说明", "Text");
             break;
         case 1:
             ann.kind = StudioAnnotationKind::Text;
             ann.colorHex = "#1E293B";
-            ann.text = isZh ? "操作提示" : "Text";
+            ann.text = tools3000::core::trUtf8CstrFor(isZh, "操作提示", "Text");
             break;
         case 2:
             ann.kind = StudioAnnotationKind::TextBubble;
             ann.colorHex = "#A855F7";
-            ann.text = isZh ? "点击这里" : "Text";
+            ann.text = tools3000::core::trUtf8CstrFor(isZh, "点击这里", "Text");
             break;
         case 3:
             ann.kind = StudioAnnotationKind::TextDashed;
             ann.colorHex = "#94A3B8";
-            ann.text = isZh ? "补充备注" : "Text";
+            ann.text = tools3000::core::trUtf8CstrFor(isZh, "补充备注", "Text");
             break;
         case 4:
             ann.kind = StudioAnnotationKind::TextNeon;
             ann.colorHex = "#EC4899";
-            ann.text = isZh ? "关键步骤" : "Text";
+            ann.text = tools3000::core::trUtf8CstrFor(isZh, "关键步骤", "Text");
             break;
         case 5:
             ann.kind = StudioAnnotationKind::StepBadge;
@@ -235,7 +236,7 @@ void StudioPreviewWindow::renderAnnotationDrawer(
     const float tilePhase = static_cast<float>(GetTickCount64() % 1400ULL) / 1400.0f;
     const float tileSin = std::sin(tilePhase * 6.2831853f);
 
-    drawTxt(isZh ? L"文本" : L"Text", m_sectionFmt.Get(), D2D1::RectF(padL, y, padR, y + 18.0f), colPrimary);
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"文本", L"Text"), m_sectionFmt.Get(), D2D1::RectF(padL, y, padR, y + 18.0f), colPrimary);
     y += 21.0f;
     {
         const float gap = 6.0f;
@@ -304,7 +305,7 @@ void StudioPreviewWindow::renderAnnotationDrawer(
         y += ch * 2.0f + gap + 9.0f;
     }
 
-    drawTxt(isZh ? L"形状" : L"Shapes", m_sectionFmt.Get(), D2D1::RectF(padL, y, padR, y + 18.0f), colPrimary);
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"形状", L"Shapes"), m_sectionFmt.Get(), D2D1::RectF(padL, y, padR, y + 18.0f), colPrimary);
     y += 21.0f;
     {
         const float gap = 6.0f;
@@ -460,7 +461,7 @@ void StudioPreviewWindow::renderAnnotationDrawer(
         y += ch * 3.0f + gap * 2.0f + 9.0f;
     }
 
-    drawTxt(isZh ? L"遮罩" : L"Mask & Zoom", m_sectionFmt.Get(), D2D1::RectF(padL, y, padR, y + 18.0f), colPrimary);
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"遮罩", L"Mask & Zoom"), m_sectionFmt.Get(), D2D1::RectF(padL, y, padR, y + 18.0f), colPrimary);
     y += 21.0f;
     {
         static const wchar_t* maskZh[4] = { L"聚光灯", L"马赛克", L"放大镜", L"局部缩放" };
@@ -510,7 +511,7 @@ void StudioPreviewWindow::renderAnnotationDrawer(
                 m_renderTarget->FillRoundedRectangle(
                     D2D1::RoundedRect(D2D1::RectF(cx - 4.0f, iy - 2.5f, cx + 5.0f, iy + 3.5f), 1.5f, 1.5f), brush);
             }
-            drawTxt(isZh ? maskZh[m] : maskEn[m], m_captionFmt.Get(),
+            drawTxt(tools3000::core::trWCstrFor(isZh, maskZh[m], maskEn[m]), m_captionFmt.Get(),
                     D2D1::RectF(rc.left, rc.bottom - 18.0f, rc.right, rc.bottom - 2.0f),
                     colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
         }
@@ -524,7 +525,7 @@ void StudioPreviewWindow::renderAnnotationDrawer(
     if (m_selectedAnnIdx >= 0 && m_selectedAnnIdx < static_cast<int>(m_timeline.annotations.size()) &&
         y + 52.0f <= bottomLimit) {
         auto& ann = m_timeline.annotations[static_cast<size_t>(m_selectedAnnIdx)];
-        drawTxt(isZh ? L"选中标注样式 (可在右侧画面直接拖拽移位)" : L"Selected Style (Drag on stage to move)",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"选中标注样式 (可在右侧画面直接拖拽移位)", L"Selected Style (Drag on stage to move)"),
                 m_captionFmt.Get(), D2D1::RectF(padL, y, padR, y + 18.0f), colSecondary);
         y += 22.0f;
 
@@ -554,11 +555,11 @@ void StudioPreviewWindow::renderAnnotationDrawer(
             if (m_editingAnnotationText && ((GetTickCount() / 500) % 2 == 0)) {
                 shown.push_back(L'|');
             }
-            drawTxt(shown.empty() ? (isZh ? L"点击输入文字..." : L"Click to type...") : shown,
+            drawTxt(shown.empty() ? (tools3000::core::trWCstrFor(isZh, L"点击输入文字...", L"Click to type...")) : shown,
                     m_bodyFmt.Get(), D2D1::RectF(txtBox.left + 8.0f, txtBox.top, txtBox.right - 8.0f, txtBox.bottom), colPrimary);
         }
     } else if (y + 24.0f <= bottomLimit) {
-        drawTxt(isZh ? L"点击或拖拽图标到右侧画面即可添加" : L"Click or drag icon onto video stage",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"点击或拖拽图标到右侧画面即可添加", L"Click or drag icon onto video stage"),
                 m_captionFmt.Get(), D2D1::RectF(padL, y, padR, y + 22.0f), colSecondary);
     }
 
@@ -650,7 +651,7 @@ void StudioPreviewWindow::renderWatermarkDrawer(
     auto& wm = m_config.watermark;
 
     // 1. 顶部开关行（支持企业组策略只读锁定徽章）
-    drawTxt(isZh ? L"启用画面水印" : L"Enable Watermark", m_sectionFmt.Get(),
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"启用画面水印", L"Enable Watermark"), m_sectionFmt.Get(),
             D2D1::RectF(padL, y, padR - 46.0f, y + 20.0f), colPrimary);
     {
         const D2D1_RECT_F swRc = D2D1::RectF(padR - 36.0f, y + 0.5f, padR, y + 19.5f);
@@ -668,7 +669,7 @@ void StudioPreviewWindow::renderWatermarkDrawer(
     y += 25.0f;
 
     if (wm.policyForced) {
-        drawTxt(isZh ? L"[企业合规策略已强制锁定开启]" : L"[Enforced by Enterprise Policy]",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"[企业合规策略已强制锁定开启]", L"[Enforced by Enterprise Policy]"),
                 m_captionFmt.Get(), D2D1::RectF(padL, y - 3.0f, padR, y + 15.0f), colAccent);
         y += 18.0f;
     }
@@ -700,7 +701,7 @@ void StudioPreviewWindow::renderWatermarkDrawer(
                 setBrush(dark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f) : D2D1::ColorF(0.06f, 0.10f, 0.20f, 0.09f));
                 m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(crc, 5.5f, 5.5f), brush, 0.9f);
             }
-            drawTxt(isZh ? modeZh[m] : modeEn[m], m_captionFmt.Get(), crc,
+            drawTxt(tools3000::core::trWCstrFor(isZh, modeZh[m], modeEn[m]), m_captionFmt.Get(), crc,
                     act ? colPrimary : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
         }
     }
@@ -717,11 +718,11 @@ void StudioPreviewWindow::renderWatermarkDrawer(
         setBrush(hovPick ? colAccent : colBorder);
         m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(pickBtn, 7.0f, 7.0f), brush, hovPick ? 1.4f : 1.0f);
 
-        std::wstring btnText = isZh ? L"+ 导入透明图片 / 企业 Logo" : L"+ Import Transparent Logo";
+        std::wstring btnText = tools3000::core::trWCstrFor(isZh, L"+ 导入透明图片 / 企业 Logo", L"+ Import Transparent Logo");
         if (!wm.imagePathUtf8.empty()) {
             const std::wstring fname = std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(wm.imagePathUtf8)).filename().wstring();
             if (!fname.empty()) {
-                btnText = (isZh ? L"更换图片: " : L"Change: ") + fname;
+                btnText = (tools3000::core::trWCstrFor(isZh, L"更换图片: ", L"Change: ")) + fname;
             }
         }
         drawTxt(btnText, m_captionFmt.Get(), D2D1::RectF(pickBtn.left + 10.0f, pickBtn.top, pickBtn.right - 10.0f, pickBtn.bottom),
@@ -730,7 +731,7 @@ void StudioPreviewWindow::renderWatermarkDrawer(
 
         // 历史常用 Logo 快捷缩略图宫格 (最多 6 张) 或空状态引导提示
         if (!m_recentLogoPaths.empty()) {
-            drawTxt(isZh ? L"最近使用的图片徽标" : L"Recent Logos", m_captionFmt.Get(),
+            drawTxt(tools3000::core::trWCstrFor(isZh, L"最近使用的图片徽标", L"Recent Logos"), m_captionFmt.Get(),
                     D2D1::RectF(padL, y, padR, y + 17.0f), colSecondary);
             y += 20.0f;
             const float gap = 6.0f;
@@ -753,13 +754,13 @@ void StudioPreviewWindow::renderWatermarkDrawer(
             }
             y += cellSz + 10.0f;
         } else if (wm.imagePathUtf8.empty()) {
-            drawTxt(isZh ? L"[提示] 请先点击上方按钮选择 PNG / WebP 水印图片" : L"[Info] Import a PNG / WebP image above first",
+            drawTxt(tools3000::core::trWCstrFor(isZh, L"[提示] 请先点击上方按钮选择 PNG / WebP 水印图片", L"[Info] Import a PNG / WebP image above first"),
                     m_captionFmt.Get(), D2D1::RectF(padL, y, padR, y + 19.0f), colAccent);
             y += 24.0f;
         }
     } else {
         // 文字模板编辑框 + 动态占位符智能双向切换胶囊
-        drawTxt(isZh ? L"水印文字内容 (支持动态变量)" : L"Watermark Text & Tokens", m_captionFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"水印文字内容 (支持动态变量)", L"Watermark Text & Tokens"), m_captionFmt.Get(),
                 D2D1::RectF(padL, y, padR, y + 17.0f), colSecondary);
         y += 20.0f;
 
@@ -781,7 +782,7 @@ void StudioPreviewWindow::renderWatermarkDrawer(
         if (m_editingWatermarkText && ((GetTickCount() / 500) % 2 == 0)) {
             shown.push_back(L'|');
         }
-        drawTxt(shown.empty() ? (isZh ? L"点击输入文字或点下方变量..." : L"Type text or toggle token...") : shown,
+        drawTxt(shown.empty() ? (tools3000::core::trWCstrFor(isZh, L"点击输入文字或点下方变量...", L"Type text or toggle token...")) : shown,
                 m_bodyFmt.Get(), D2D1::RectF(txtBox.left + 8.0f, txtBox.top, txtBox.right - 8.0f, txtBox.bottom), colPrimary);
         y += 35.0f;
 
@@ -811,8 +812,8 @@ void StudioPreviewWindow::renderWatermarkDrawer(
             m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(krc, 5.5f, 5.5f), brush);
             setBrush((tokOn || hov) ? colAccent : colBorder);
             m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(krc, 5.5f, 5.5f), brush, tokOn ? 1.2f : 0.9f);
-            const wchar_t* label = tokOn ? (isZh ? tokActZh[k] : tokActEn[k])
-                                         : (isZh ? tokLblZh[k] : tokLblEn[k]);
+            const wchar_t* label = tokOn ? tools3000::core::trWCstrFor(isZh, tokActZh[k], tokActEn[k])
+                                         : tools3000::core::trWCstrFor(isZh, tokLblZh[k], tokLblEn[k]);
             drawTxt(label, m_captionFmt.Get(), krc,
                     (tokOn || hov) ? colAccent : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
         }
@@ -832,7 +833,7 @@ void StudioPreviewWindow::renderWatermarkDrawer(
         m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(nlRc, 5.5f, 5.5f), brush);
         setBrush(nlHov ? colAccent : colBorder);
         m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(nlRc, 5.5f, 5.5f), brush, 0.9f);
-        drawTxt(isZh ? L"+换行 (\\n)" : L"+Newline (\\n)", m_captionFmt.Get(), nlRc,
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"+换行 (\\n)", L"+Newline (\\n)"), m_captionFmt.Get(), nlRc,
                 nlHov ? colAccent : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
 
         setBrush(isDualLine
@@ -841,14 +842,14 @@ void StudioPreviewWindow::renderWatermarkDrawer(
         m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(dualRc, 5.5f, 5.5f), brush);
         setBrush((isDualLine || dualHov) ? colAccent : colBorder);
         m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(dualRc, 5.5f, 5.5f), brush, isDualLine ? 1.2f : 0.9f);
-        drawTxt(isZh ? L"企业双行 (账号/时间)" : L"2-Line (User / Time)", m_captionFmt.Get(), dualRc,
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"企业双行 (账号/时间)", L"2-Line (User / Time)"), m_captionFmt.Get(), dualRc,
                 (isDualLine || dualHov) ? colAccent : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
         y += 31.0f;
     }
 
     // 3. 锚定位置一体式分段器（仅在单点图片或文字角标模式下展示，同时支持右侧画面直接拖拽自由定位）
     if (wm.mode != WatermarkMode::TiledTraceability) {
-        drawTxt(isZh ? L"对齐位置 (亦可直接在右侧画面拖拽)" : L"Position (Or drag directly on stage)",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"对齐位置 (亦可直接在右侧画面拖拽)", L"Position (Or drag directly on stage)"),
                 m_captionFmt.Get(), D2D1::RectF(padL, y, padR, y + 17.0f), colSecondary);
         y += 20.0f;
         const D2D1_RECT_F trough = D2D1::RectF(padL, y, padR, y + 26.0f);
@@ -870,7 +871,7 @@ void StudioPreviewWindow::renderWatermarkDrawer(
                 setBrush(colBorder);
                 m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(prc, 4.8f, 4.8f), brush, 0.85f);
             }
-            drawTxt(isZh ? posZh[p] : posEn[p], m_captionFmt.Get(), prc,
+            drawTxt(tools3000::core::trWCstrFor(isZh, posZh[p], posEn[p]), m_captionFmt.Get(), prc,
                     act ? colPrimary : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
         }
         y += 33.0f;
@@ -907,19 +908,17 @@ void StudioPreviewWindow::renderWatermarkDrawer(
     wchar_t sVal[24]{};
     std::swprintf(sVal, std::size(sVal), L"%d%%", static_cast<int>(std::round(wm.scale * 100.0f)));
     drawWmSlider(SliderDragKind::WatermarkScale, Hit_WatermarkSliderScale,
-                 isZh ? L"水印大小" : L"Scale", (wm.scale - 0.35f) / (2.80f - 0.35f), sVal);
+                 tools3000::core::trWCstrFor(isZh, L"水印大小", L"Scale"), (wm.scale - 0.35f) / (2.80f - 0.35f), sVal);
 
     std::swprintf(sVal, std::size(sVal), L"%d%%", static_cast<int>(std::round(wm.opacity * 100.0f)));
     drawWmSlider(SliderDragKind::WatermarkOpacity, Hit_WatermarkSliderOpacity,
-                 isZh ? L"不透明度" : L"Opacity", (wm.opacity - 0.04f) / (1.0f - 0.04f), sVal);
+                 tools3000::core::trWCstrFor(isZh, L"不透明度", L"Opacity"), (wm.opacity - 0.04f) / (1.0f - 0.04f), sVal);
 
     if (y + 36.0f <= bottomLimit) {
         y += 4.0f;
         const std::wstring hint = (wm.mode == WatermarkMode::TiledTraceability)
-            ? (isZh ? L"平铺水印可自动适应深色与浅色画面背景，始终保持清晰柔和，且固定在顶层不随镜头缩放晃动。"
-                    : L"Tiled watermark automatically adapts to both light and dark backgrounds, staying clear, subtle, and fixed above camera zoom.")
-            : (isZh ? L"可在右侧预览画面直接按住鼠标拖拽水印至任意位置，或拖拽水印右下角控制点无级缩放；导出 MP4 与 GIF 均完整保留。"
-                    : L"Drag the watermark directly on the preview stage to reposition, or drag its bottom-right handle to resize.");
+            ? (tools3000::core::trWCstrFor(isZh, L"平铺水印可自动适应深色与浅色画面背景，始终保持清晰柔和，且固定在顶层不随镜头缩放晃动。", L"Tiled watermark automatically adapts to both light and dark backgrounds, staying clear, subtle, and fixed above camera zoom."))
+            : (tools3000::core::trWCstrFor(isZh, L"可在右侧预览画面直接按住鼠标拖拽水印至任意位置，或拖拽水印右下角控制点无级缩放；导出 MP4 与 GIF 均完整保留。", L"Drag the watermark directly on the preview stage to reposition, or drag its bottom-right handle to resize."));
         drawTxt(hint, m_captionWrapFmt.Get(), D2D1::RectF(padL, y, padR, bottomLimit), colSecondary);
     }
 }
@@ -1024,7 +1023,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
             m_renderTarget->DrawLine({icx - 4.5f, icy + 1.6f}, {icx + 4.5f, icy + 1.6f}, brush, 1.5f, roundSt.Get());
             m_renderTarget->DrawLine({icx - 4.5f, icy - 1.6f}, {icx + 1.5f, icy - 1.6f}, brush, 1.4f, roundSt.Get());
         }
-        drawTxt(isZh ? tabShortZh[t] : tabShortEn[t], m_captionFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, tabShortZh[t], tabShortEn[t]), m_captionFmt.Get(),
                 D2D1::RectF(brc.left, brc.bottom - 17.5f, brc.right, brc.bottom - 1.5f),
                 active ? colPrimary : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
@@ -1081,7 +1080,8 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
 
     // macOS Sequoia / Linear 级一体式凹槽分段控制器 (Unified Recessed Segmented Control)
     auto drawSegmentedGroup = [&](float topY, float height, int count,
-                                  const int* hitIds, const wchar_t* const* labels, int activeIndex) {
+                                  const int* hitIds, const wchar_t* const* labelsZh,
+                                  const wchar_t* const* labelsEn, int activeIndex) {
         const D2D1_RECT_F trough = D2D1::RectF(padL, topY, padR, topY + height);
         setBrush(dark ? D2D1::ColorF(0.048f, 0.060f, 0.094f, 0.96f) : D2D1::ColorF(0.922f, 0.938f, 0.964f, 1.0f));
         m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(trough, 7.0f, 7.0f), brush);
@@ -1109,7 +1109,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
                 setBrush(dark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.045f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.45f));
                 m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(crc, 5.2f, 5.2f), brush);
             }
-            drawTxt(labels[i], m_captionFmt.Get(), crc, act ? colPrimary : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
+            drawTxt(tools3000::core::trWCstrFor(isZh, labelsZh[i], labelsEn[i]), m_captionFmt.Get(), crc, act ? colPrimary : colSecondary, DWRITE_TEXT_ALIGNMENT_CENTER);
         }
     };
 
@@ -1164,7 +1164,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
     }
 
     if (m_activeTab == LeftRailTab::CameraCursor) {
-        drawTxt(isZh ? L"鼠标自动运镜" : L"Auto Zoom", m_sectionFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"鼠标自动运镜", L"Auto Zoom"), m_sectionFmt.Get(),
                 D2D1::RectF(padL, curY, padR, curY + 19.0f), colPrimary);
         curY += 22.0f;
         {
@@ -1173,11 +1173,11 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
             static const wchar_t* lblEn[3] = { L"Off", L"2D Zoom", L"3D Motion" };
             const int actIdx = (!m_config.autoZoomEnabled || m_config.zoomMode == StudioZoomMode::None)
                 ? 0 : (m_config.zoomMode == StudioZoomMode::Motion3D ? 2 : 1);
-            drawSegmentedGroup(curY, 26.0f, 3, ids, isZh ? lblZh : lblEn, actIdx);
+            drawSegmentedGroup(curY, 26.0f, 3, ids, lblZh, lblEn, actIdx);
         }
         curY += 32.0f;
 
-        drawTxt(isZh ? L"运镜档位" : L"Preset", m_sectionFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"运镜档位", L"Preset"), m_sectionFmt.Get(),
                 D2D1::RectF(padL, curY, padR, curY + 19.0f), colPrimary);
         curY += 21.0f;
         {
@@ -1185,7 +1185,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
             static const wchar_t* lblZh[3] = { L"柔和", L"标准", L"动感" };
             static const wchar_t* lblEn[3] = { L"Gentle", L"Balanced", L"Dynamic" };
             const int actIdx = detectStudioZoomPreset(m_config);
-            drawSegmentedGroup(curY, 25.0f, 3, ids, isZh ? lblZh : lblEn, actIdx);
+            drawSegmentedGroup(curY, 25.0f, 3, ids, lblZh, lblEn, actIdx);
         }
         curY += 31.0f;
 
@@ -1199,32 +1199,32 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
         wchar_t zvBuf[32]{};
         std::swprintf(zvBuf, std::size(zvBuf), L"%.2fx", std::clamp(shownZoom, 1.00f, 2.60f));
         drawSliderRow(SliderDragKind::ZoomFactor, Hit_SliderZoomFactor, curY,
-                      editingSelectedZoomSeg ? (isZh ? L"此段倍率" : L"Seg Zoom")
-                                             : (isZh ? L"放大倍率" : L"Zoom"),
+                      editingSelectedZoomSeg ? (tools3000::core::trWCstrFor(isZh, L"此段倍率", L"Seg Zoom"))
+                                             : (tools3000::core::trWCstrFor(isZh, L"放大倍率", L"Zoom")),
                       (std::clamp(shownZoom, 1.00f, 2.60f) - 1.00f) / 1.60f, zvBuf);
         curY += 22.5f;
 
         std::swprintf(zvBuf, std::size(zvBuf), L"%d%%", static_cast<int>(std::round(m_config.zoomPacing * 100.0f)));
         drawSliderRow(SliderDragKind::ZoomPacing, Hit_SliderZoomPacing, curY,
-                      isZh ? L"运镜节奏" : L"Pacing", m_config.zoomPacing, zvBuf);
+                      tools3000::core::trWCstrFor(isZh, L"运镜节奏", L"Pacing"), m_config.zoomPacing, zvBuf);
         curY += 22.5f;
 
         std::swprintf(zvBuf, std::size(zvBuf), L"%d%%", static_cast<int>(std::round(m_config.autoZoomSensitivity * 100.0f)));
         drawSliderRow(SliderDragKind::ZoomSensitivity, Hit_SliderZoomSensitivity, curY,
-                      isZh ? L"触发频率" : L"Density", m_config.autoZoomSensitivity, zvBuf);
+                      tools3000::core::trWCstrFor(isZh, L"触发频率", L"Density"), m_config.autoZoomSensitivity, zvBuf);
         curY += 22.5f;
 
         std::swprintf(zvBuf, std::size(zvBuf), L"%d%%", static_cast<int>(std::round(m_config.focusSpotlightDim * 100.0f)));
         drawSliderRow(SliderDragKind::FocusSpotlight, Hit_SliderFocusSpotlight, curY,
-                      isZh ? L"聚焦暗角" : L"Dimming", m_config.focusSpotlightDim / 0.65f, zvBuf);
+                      tools3000::core::trWCstrFor(isZh, L"聚焦暗角", L"Dimming"), m_config.focusSpotlightDim / 0.65f, zvBuf);
         curY += 25.0f;
 
-        drawTxt(isZh ? L"锁定视角 (防晃)" : L"Lock View (Steady)", m_bodyFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"锁定视角 (防晃)", L"Lock View (Steady)"), m_bodyFmt.Get(),
                 D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
         drawTogglePill(Hit_ToggleLockCamera, padR, curY, m_config.lockCameraWhileZoomed);
         curY += 25.0f;
 
-        drawTxt(isZh ? L"推拉运动模糊" : L"Motion Blur", m_bodyFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"推拉运动模糊", L"Motion Blur"), m_bodyFmt.Get(),
                 D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
         drawTogglePill(Hit_ToggleMotionBlur, padR, curY, m_config.motionBlurEnabled);
         curY += 26.0f;
@@ -1233,7 +1233,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
         m_renderTarget->DrawLine({padL, curY}, {padR, curY}, brush, 1.0f);
         curY += 10.0f;
 
-        drawTxt(isZh ? L"平滑矢量光标" : L"Smooth Vector Cursor", m_sectionFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"平滑矢量光标", L"Smooth Vector Cursor"), m_sectionFmt.Get(),
                 D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
         drawTogglePill(Hit_ToggleSmoothCursor, padR, curY, m_config.smoothCursorEnabled);
         curY += 23.0f;
@@ -1243,11 +1243,11 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
             const int actIdx = !m_config.smoothCursorEnabled ? -1
                 : (std::abs(m_config.cursorScale - 1.00f) < 0.15f ? 0
                    : (std::abs(m_config.cursorScale - 1.70f) < 0.15f ? 2 : 1));
-            drawSegmentedGroup(curY, 25.0f, 3, ids, lbls, actIdx);
+            drawSegmentedGroup(curY, 25.0f, 3, ids, lbls, lbls, actIdx);
         }
         curY += 31.0f;
 
-        drawTxt(isZh ? L"光标聚光环跟随" : L"Cursor Highlight Halo", m_bodyFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"光标聚光环跟随", L"Cursor Highlight Halo"), m_bodyFmt.Get(),
                 D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
         drawTogglePill(Hit_ToggleCursorHalo, padR, curY, m_config.cursorHighlightHalo);
         curY += 26.0f;
@@ -1256,7 +1256,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
         m_renderTarget->DrawLine({padL, curY}, {padR, curY}, brush, 1.0f);
         curY += 10.0f;
 
-        drawTxt(isZh ? L"鼠标点击动效" : L"Click Effect", m_sectionFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"鼠标点击动效", L"Click Effect"), m_sectionFmt.Get(),
                 D2D1::RectF(padL, curY, padR, curY + 19.0f), colPrimary);
         curY += 22.0f;
         {
@@ -1266,75 +1266,73 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
                 : StudioClickEffectStyle::TactileOnly;
             drawOptionChip(Hit_ClickStyleBase + 0,
                            D2D1::RectF(padL, curY, padL + w2, curY + 25.0f),
-                           isZh ? L"微晶单波 (默认)" : L"Crystal (Def)",
+                           tools3000::core::trWCstrFor(isZh, L"微晶单波 (默认)", L"Crystal (Def)"),
                            effStyle == StudioClickEffectStyle::CrystalPulse);
             drawOptionChip(Hit_ClickStyleBase + 1,
                            D2D1::RectF(padL + w2 + 6.0f, curY, padR, curY + 25.0f),
-                           isZh ? L"柔雾触点" : L"Soft Touch",
+                           tools3000::core::trWCstrFor(isZh, L"柔雾触点", L"Soft Touch"),
                            effStyle == StudioClickEffectStyle::SoftTouch);
             curY += 30.0f;
             drawOptionChip(Hit_ClickStyleBase + 2,
                            D2D1::RectF(padL, curY, padL + w2, curY + 25.0f),
-                           isZh ? L"错峰涟漪" : L"Dual Ripple",
+                           tools3000::core::trWCstrFor(isZh, L"错峰涟漪", L"Dual Ripple"),
                            effStyle == StudioClickEffectStyle::DualRipple);
             drawOptionChip(Hit_ClickStyleBase + 3,
                            D2D1::RectF(padL + w2 + 6.0f, curY, padR, curY + 25.0f),
-                           isZh ? L"仅物理按压" : L"Tactile Only",
+                           tools3000::core::trWCstrFor(isZh, L"仅物理按压", L"Tactile Only"),
                            effStyle == StudioClickEffectStyle::TactileOnly);
             curY += 30.0f;
         }
         if (curY + 34.0f <= drawerRc.bottom) {
-            drawTxt(isZh ? L"可将倍率拉至 1.00x 并调节聚焦暗角，实现零放大静稳聚焦。"
-                         : L"Set zoom to 1.00x with dimming for steady zero-zoom spotlight focus.",
+            drawTxt(tools3000::core::trWCstrFor(isZh, L"可将倍率拉至 1.00x 并调节聚焦暗角，实现零放大静稳聚焦。", L"Set zoom to 1.00x with dimming for steady zero-zoom spotlight focus."),
                     m_captionWrapFmt.Get(), D2D1::RectF(padL, curY, padR, curY + 34.0f), colSecondary);
         }
         return;
     }
 
     if (m_activeTab == LeftRailTab::Captions) {
-        drawTxt(isZh ? L"离线语音字幕对齐" : L"Offline Auto Captions", m_sectionFmt.Get(),
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"离线语音字幕对齐", L"Offline Auto Captions"), m_sectionFmt.Get(),
                 D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
         drawTogglePill(Hit_ToggleCaptions, padR, curY, m_config.autoCaptionsEnabled);
         curY += 30.0f;
-        drawTxt(isZh ? L"开启麦克风录制时，自动识别语音生成底部字幕并导出同名 .srt 文件。"
-                     : L"Transcribes mic audio into synced bottom captions and .srt file.",
+        drawTxt(tools3000::core::trWCstrFor(isZh, L"开启麦克风录制时，自动识别语音生成底部字幕并导出同名 .srt 文件。", L"Transcribes mic audio into synced bottom captions and .srt file."),
                 m_captionWrapFmt.Get(), D2D1::RectF(padL, curY, padR, curY + 46.0f), colSecondary);
         return;
     }
 
-    drawTxt(isZh ? L"视频尺寸" : L"Video Size", m_sectionFmt.Get(), D2D1::RectF(padL, curY, padR, curY + 19.0f), colPrimary);
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"视频尺寸", L"Video Size"), m_sectionFmt.Get(), D2D1::RectF(padL, curY, padR, curY + 19.0f), colPrimary);
     curY += 22.0f;
     {
         const int aspIds[5] = { Hit_AspectBase + 0, Hit_AspectBase + 1, Hit_AspectBase + 2, Hit_AspectBase + 3, Hit_AspectBase + 4 };
         static const wchar_t* aspZh[5] = { L"原始", L"16:9", L"9:16", L"4:3", L"1:1" };
         static const wchar_t* aspEn[5] = { L"Orig", L"16:9", L"9:16", L"4:3", L"1:1" };
-        drawSegmentedGroup(curY, 25.0f, 5, aspIds, isZh ? aspZh : aspEn, static_cast<int>(m_config.aspectRatio));
+        drawSegmentedGroup(curY, 25.0f, 5, aspIds, aspZh, aspEn, static_cast<int>(m_config.aspectRatio));
     }
     curY += 30.0f;
 
-    drawTxt(isZh ? L"样式" : L"Style", m_sectionFmt.Get(), D2D1::RectF(padL, curY, padR - 44.0f, curY + 19.0f), colPrimary);
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"样式", L"Style"), m_sectionFmt.Get(), D2D1::RectF(padL, curY, padR - 44.0f, curY + 19.0f), colPrimary);
     drawTogglePill(Hit_ToggleAutoFrame, padR, curY, m_config.autoFrameEnabled);
     curY += 23.0f;
 
     wchar_t vBuf[32]{};
     std::swprintf(vBuf, std::size(vBuf), L"%d%%", static_cast<int>(std::round(m_config.paddingRatio * 100.0f)));
-    drawSliderRow(SliderDragKind::Padding, Hit_SliderPadding, curY, isZh ? L"内边距" : L"Padding", m_config.paddingRatio / 0.22f, vBuf);
+    drawSliderRow(SliderDragKind::Padding, Hit_SliderPadding, curY, tools3000::core::trWCstrFor(isZh, L"内边距", L"Padding"), m_config.paddingRatio / 0.22f, vBuf);
     curY += 22.5f;
 
     std::swprintf(vBuf, std::size(vBuf), L"%dpx", static_cast<int>(std::round(m_config.insetBorderWidth)));
-    drawSliderRow(SliderDragKind::InsetBorder, Hit_SliderInsetBorder, curY, isZh ? L"水晶框" : L"Glass", m_config.insetBorderWidth / 16.0f, vBuf, true);
+    drawSliderRow(SliderDragKind::InsetBorder, Hit_SliderInsetBorder, curY, tools3000::core::trWCstrFor(isZh, L"水晶框", L"Glass"), m_config.insetBorderWidth / 16.0f, vBuf, true);
     curY += 22.5f;
 
     std::swprintf(vBuf, std::size(vBuf), L"%dpx", static_cast<int>(std::round(m_config.cornerRadius)));
-    drawSliderRow(SliderDragKind::Radius, Hit_SliderRadius, curY, isZh ? L"圆角" : L"Radius", m_config.cornerRadius / 36.0f, vBuf);
+    drawSliderRow(SliderDragKind::Radius, Hit_SliderRadius, curY, tools3000::core::trWCstrFor(isZh, L"圆角", L"Radius"), m_config.cornerRadius / 36.0f, vBuf);
     curY += 22.5f;
 
     std::swprintf(vBuf, std::size(vBuf), L"%d%%", static_cast<int>(std::round(m_config.shadowIntensity * 100.0f)));
-    drawSliderRow(SliderDragKind::Shadow, Hit_SliderShadow, curY, isZh ? L"阴影" : L"Shadow", m_config.shadowIntensity, vBuf);
+    drawSliderRow(SliderDragKind::Shadow, Hit_SliderShadow, curY, tools3000::core::trWCstrFor(isZh, L"阴影", L"Shadow"), m_config.shadowIntensity, vBuf);
     curY += 22.5f;
 
     std::swprintf(vBuf, std::size(vBuf), L"%dpx", static_cast<int>(std::round(m_config.backgroundBlur)));
-    drawSliderRow(SliderDragKind::BgBlur, Hit_SliderBgBlur, curY, isZh ? L"背景模糊" : L"BG Blur", m_config.backgroundBlur / 40.0f, vBuf);
+    drawSliderRow(SliderDragKind::BgBlur, Hit_SliderBgBlur, curY, tools3000::core::trWCstrFor(isZh, L"背景模糊", L"BG Blur"), m_config.backgroundBlur / 40.0f, vBuf);
     curY += 26.0f;
 
     setBrush(colBorder);
@@ -1347,7 +1345,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
         StudioBackdropCatalog::resolvePreset(m_config.backgroundPresetKey, m_config.backgroundTheme).key);
 
     // 悬停在任意背景缩略图时，在标题旁实时展示该背景雅名；否则显示「背景」
-    std::wstring bgHeaderLabel = isZh ? L"背景" : L"Background";
+    std::wstring bgHeaderLabel = tools3000::core::trWCstrFor(isZh, L"背景", L"Background");
     if (m_hoveredHitId >= Hit_ThemeSlotBase &&
         m_hoveredHitId < Hit_ThemeSlotBase + static_cast<int>(kWallpaperSlotsPerPage)) {
         const size_t hovSlot = static_cast<size_t>(m_hoveredHitId - Hit_ThemeSlotBase);
@@ -1355,7 +1353,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
         if (hovFlt < m_filteredWallpaperIndices.size()) {
             const auto& hovEntry = m_allWallpapers[static_cast<size_t>(m_filteredWallpaperIndices[hovFlt])];
             if (!hovEntry.displayName.empty()) {
-                bgHeaderLabel = (isZh ? L"背景 · " : L"Bg · ") + hovEntry.displayName;
+                bgHeaderLabel = (tools3000::core::trWCstrFor(isZh, L"背景 · ", L"Bg · ")) + hovEntry.displayName;
             }
         }
     }
@@ -1364,7 +1362,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
 
     const D2D1_RECT_F pickRc = D2D1::RectF(padR - (totalPages > 1 ? 132.0f : 56.0f), curY + 1.0f,
                                            padR - (totalPages > 1 ? 78.0f : 0.0f), curY + 20.0f);
-    drawOptionChip(Hit_WallPickCustom, pickRc, isZh ? L"+选图" : L"+Img", false);
+    drawOptionChip(Hit_WallPickCustom, pickRc, tools3000::core::trWCstrFor(isZh, L"+选图", L"+Img"), false);
     if (totalPages > 1) {
         const D2D1_RECT_F prevRc = D2D1::RectF(padR - 72.0f, curY + 1.0f, padR - 53.0f, curY + 20.0f);
         const D2D1_RECT_F nextRc = D2D1::RectF(padR - 19.0f, curY + 1.0f, padR, curY + 20.0f);
@@ -1384,7 +1382,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
         };
         static const wchar_t* catZh[6] = { L"全部", L"沉稳", L"轻盈", L"风景", L"渐变", L"自定义" };
         static const wchar_t* catEn[6] = { L"All", L"Dark", L"Light", L"Scene", L"Mesh", L"Custom" };
-        drawSegmentedGroup(curY, 24.0f, 6, catIds, isZh ? catZh : catEn, m_wallpaperCategory);
+        drawSegmentedGroup(curY, 24.0f, 6, catIds, catZh, catEn, m_wallpaperCategory);
     }
     curY += 29.0f;
 

@@ -1,4 +1,5 @@
 #include "capture/CaptureDropdownMenu.h"
+#include "core/i18n/UiI18n.h"
 
 #include "capture/AudioCapture.h"
 #include "core/config/ConfigManager.h"
@@ -126,7 +127,7 @@ std::vector<DropdownItem> buildMicSourceDropdownItems(CaptureState& state, bool 
             if (dev.systemAudio) continue;
             std::wstring wname = tools3000::core::WinUtils::utf8ToWstring(dev.name);
             if (wname.empty()) {
-                wname = isZh ? L"未知麦克风设备" : L"Microphone Device";
+                wname = tools3000::core::trWCstrFor(isZh, L"未知麦克风设备", L"Microphone Device");
             }
             if (dev.defaultDevice && state.recordSetup.cachedDefaultMicName.empty()) {
                 state.recordSetup.cachedDefaultMicName = wname;
@@ -159,7 +160,7 @@ std::vector<DropdownItem> buildMicSourceDropdownItems(CaptureState& state, bool 
     std::vector<DropdownItem> items;
     items.push_back({
         500,
-        isZh ? L"系统默认" : L"System Default",
+        tools3000::core::trWCstrFor(isZh, L"系统默认", L"System Default"),
         defHint,
         micEnabled && (state.recordSetup.microphoneDeviceId.empty() || !matchedExplicit)
     });
@@ -180,8 +181,8 @@ std::vector<DropdownItem> buildMicSourceDropdownItems(CaptureState& state, bool 
 
     items.push_back({
         499,
-        isZh ? L"不使用麦克风" : L"Mute Microphone",
-        isZh ? L"静音" : L"Off",
+        tools3000::core::trWCstrFor(isZh, L"不使用麦克风", L"Mute Microphone"),
+        tools3000::core::trWCstrFor(isZh, L"静音", L"Off"),
         !micEnabled
     });
     return items;
@@ -192,7 +193,7 @@ bool applyMicSourceDropdownSelection(CaptureState& state, int id, bool isZh) {
     if (id == 499) {
         state.recordSetup.captureMicrophone = false;
         cfg.set<bool>("/recording/captureMicrophone", false);
-        state.loupeToastMessage = isZh ? L"麦克风: 已静音" : L"Microphone: Muted";
+        state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"麦克风: 已静音", L"Microphone: Muted");
         return true;
     }
     if (id == 500) {
@@ -202,7 +203,7 @@ bool applyMicSourceDropdownSelection(CaptureState& state, int id, bool isZh) {
             state.recordSetup.captureMicrophone = true;
             cfg.set<bool>("/recording/captureMicrophone", true);
         }
-        state.loupeToastMessage = isZh ? L"麦克风: 系统默认" : L"Microphone: System Default";
+        state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"麦克风: 系统默认", L"Microphone: System Default");
         return true;
     }
     if (id >= 501) {
@@ -217,7 +218,7 @@ bool applyMicSourceDropdownSelection(CaptureState& state, int id, bool isZh) {
             }
             const auto [devMain, devSub] = splitCleanMicDeviceName(chosen.second);
             const std::wstring disp = devSub.empty() ? devMain : std::format(L"{} ({})", devMain, devSub);
-            state.loupeToastMessage = (isZh ? L"麦克风: " : L"Microphone: ") + truncateMicLabel(disp, 26);
+            state.loupeToastMessage = (tools3000::core::trWCstrFor(isZh, L"麦克风: ", L"Microphone: ")) + truncateMicLabel(disp, 26);
             return true;
         }
     }
@@ -229,33 +230,33 @@ void populateRecordMoreSettingsItems(CaptureState& state, bool isZh) {
 
     DropdownItem zoomParent{};
     zoomParent.id = 10;
-    zoomParent.label = isZh ? L"自动运镜" : L"Auto Zoom";
+    zoomParent.label = tools3000::core::trWCstrFor(isZh, L"自动运镜", L"Auto Zoom");
     zoomParent.hasChildMenu = true;
     zoomParent.childItems = {
-        { 100, isZh ? L"关闭"    : L"Off",       L"", state.recordSetup.zoomEffectMode == 0 },
-        { 101, isZh ? L"2D 运镜" : L"2D Zoom",   L"", state.recordSetup.zoomEffectMode == 1 },
-        { 102, isZh ? L"3D 运镜" : L"3D Motion", L"", state.recordSetup.zoomEffectMode == 2 }
+        { 100, tools3000::core::trWCstrFor(isZh, L"关闭", L"Off"),       L"", state.recordSetup.zoomEffectMode == 0 },
+        { 101, tools3000::core::trWCstrFor(isZh, L"2D 运镜", L"2D Zoom"),   L"", state.recordSetup.zoomEffectMode == 1 },
+        { 102, tools3000::core::trWCstrFor(isZh, L"3D 运镜", L"3D Motion"), L"", state.recordSetup.zoomEffectMode == 2 }
     };
     state.dropdownMenu.items.push_back(std::move(zoomParent));
 
     DropdownItem outputParent{};
     outputParent.id = 5;
-    outputParent.label = isZh ? L"录后输出模式" : L"After Recording";
+    outputParent.label = tools3000::core::trWCstrFor(isZh, L"录后输出模式", L"After Recording");
     outputParent.hasChildMenu = true;
     outputParent.childItems = {
-        { 50, isZh ? L"原样直接保存（无运镜/无边框）" : L"Save Raw Directly (No Studio)", L"", !state.recordSetup.studioMode },
-        { 51, isZh ? L"进入演播室精修（可调背景/运镜）" : L"Open Studio Editor",             L"", state.recordSetup.studioMode }
+        { 50, tools3000::core::trWCstrFor(isZh, L"原样直接保存（无运镜/无边框）", L"Save Raw Directly (No Studio)"), L"", !state.recordSetup.studioMode },
+        { 51, tools3000::core::trWCstrFor(isZh, L"进入演播室精修（可调背景/运镜）", L"Open Studio Editor"),             L"", state.recordSetup.studioMode }
     };
     state.dropdownMenu.items.push_back(std::move(outputParent));
 
     DropdownItem cdParent{};
     cdParent.id = 20;
-    cdParent.label = isZh ? L"录制倒计时" : L"Countdown";
+    cdParent.label = tools3000::core::trWCstrFor(isZh, L"录制倒计时", L"Countdown");
     cdParent.hasChildMenu = true;
     cdParent.childItems = {
-        { 200, isZh ? L"无"   : L"None", L"", state.recordSetup.countdownSeconds <= 0 },
-        { 203, isZh ? L"3 秒" : L"3 s",  L"", state.recordSetup.countdownSeconds == 3 },
-        { 205, isZh ? L"5 秒" : L"5 s",  L"", state.recordSetup.countdownSeconds >= 5 }
+        { 200, tools3000::core::trWCstrFor(isZh, L"无", L"None"), L"", state.recordSetup.countdownSeconds <= 0 },
+        { 203, tools3000::core::trWCstrFor(isZh, L"3 秒", L"3 s"),  L"", state.recordSetup.countdownSeconds == 3 },
+        { 205, tools3000::core::trWCstrFor(isZh, L"5 秒", L"5 s"),  L"", state.recordSetup.countdownSeconds >= 5 }
     };
     state.dropdownMenu.items.push_back(std::move(cdParent));
 
@@ -263,16 +264,16 @@ void populateRecordMoreSettingsItems(CaptureState& state, bool isZh) {
     sep1.isSeparator = true;
     state.dropdownMenu.items.push_back(sep1);
 
-    state.dropdownMenu.items.push_back({ 301, isZh ? L"隐藏桌面图标" : L"Hide Desktop Icons",   L"", state.recordSetup.hideDesktopIcons });
-    state.dropdownMenu.items.push_back({ 302, isZh ? L"隐藏任务栏"   : L"Hide Taskbar",         L"", state.recordSetup.hideTaskbar });
-    state.dropdownMenu.items.push_back({ 303, isZh ? L"打字自动运镜" : L"Auto Zoom on Typing",  L"", state.recordSetup.typingAutoZoom });
-    state.dropdownMenu.items.push_back({ 304, isZh ? L"麦克风人声降噪" : L"Mic Noise Suppression", L"", state.recordSetup.voiceEnhance });
+    state.dropdownMenu.items.push_back({ 301, tools3000::core::trWCstrFor(isZh, L"隐藏桌面图标", L"Hide Desktop Icons"),   L"", state.recordSetup.hideDesktopIcons });
+    state.dropdownMenu.items.push_back({ 302, tools3000::core::trWCstrFor(isZh, L"隐藏任务栏", L"Hide Taskbar"),         L"", state.recordSetup.hideTaskbar });
+    state.dropdownMenu.items.push_back({ 303, tools3000::core::trWCstrFor(isZh, L"打字自动运镜", L"Auto Zoom on Typing"),  L"", state.recordSetup.typingAutoZoom });
+    state.dropdownMenu.items.push_back({ 304, tools3000::core::trWCstrFor(isZh, L"麦克风人声降噪", L"Mic Noise Suppression"), L"", state.recordSetup.voiceEnhance });
 
     DropdownItem sep2{};
     sep2.isSeparator = true;
     state.dropdownMenu.items.push_back(sep2);
 
-    state.dropdownMenu.items.push_back({ 400, isZh ? L"更多设置" : L"More Settings", L"", false });
+    state.dropdownMenu.items.push_back({ 400, tools3000::core::trWCstrFor(isZh, L"更多设置", L"More Settings"), L"", false });
 }
 
 } // namespace
@@ -347,19 +348,19 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
     switch (type) {
         case DropdownType::BeautyShellBg: {
             state.dropdownMenu.items = {
-                { 0, isZh ? L"极光紫" : L"Aurora", L"",
+                { 0, tools3000::core::trWCstrFor(isZh, L"极光紫", L"Aurora"), L"",
                   state.beautyShell.bgType == BeautyBackgroundType::StudioSlate, false, {},
                   true, D2D1::ColorF(99.0f/255.0f, 102.0f/255.0f, 241.0f/255.0f), D2D1::ColorF(236.0f/255.0f, 72.0f/255.0f, 153.0f/255.0f) },
-                { 1, isZh ? L"日落珊瑚" : L"Coral", L"",
+                { 1, tools3000::core::trWCstrFor(isZh, L"日落珊瑚", L"Coral"), L"",
                   state.beautyShell.bgType == BeautyBackgroundType::PaperChalk, false, {},
                   true, D2D1::ColorF(251.0f/255.0f, 113.0f/255.0f, 133.0f/255.0f), D2D1::ColorF(250.0f/255.0f, 204.0f/255.0f, 21.0f/255.0f) },
-                { 2, isZh ? L"翡翠海" : L"Emerald", L"",
+                { 2, tools3000::core::trWCstrFor(isZh, L"翡翠海", L"Emerald"), L"",
                   state.beautyShell.bgType == BeautyBackgroundType::SilkMist, false, {},
                   true, D2D1::ColorF(14.0f/255.0f, 165.0f/255.0f, 233.0f/255.0f), D2D1::ColorF(16.0f/255.0f, 185.0f/255.0f, 129.0f/255.0f) },
-                { 3, isZh ? L"曜石黑" : L"Obsidian", L"",
+                { 3, tools3000::core::trWCstrFor(isZh, L"曜石黑", L"Obsidian"), L"",
                   state.beautyShell.bgType == BeautyBackgroundType::MidnightGraphite, false, {},
                   true, D2D1::ColorF(51.0f/255.0f, 65.0f/255.0f, 85.0f/255.0f), D2D1::ColorF(9.0f/255.0f, 13.0f/255.0f, 22.0f/255.0f) },
-                { 4, isZh ? L"极简浅灰" : L"Minimal", L"",
+                { 4, tools3000::core::trWCstrFor(isZh, L"极简浅灰", L"Minimal"), L"",
                   state.beautyShell.bgType == BeautyBackgroundType::PureMinimal, false, {},
                   true, D2D1::ColorF(248.0f/255.0f, 250.0f/255.0f, 252.0f/255.0f), D2D1::ColorF(203.0f/255.0f, 213.0f/255.0f, 225.0f/255.0f) }
             };
@@ -368,12 +369,12 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
 
         case DropdownType::BeautyShellPadding: {
             state.dropdownMenu.items = {
-                { 16, isZh ? L"紧凑" : L"Compact",  L"16 px", state.beautyShell.padding == 16 },
-                { 24, isZh ? L"适中" : L"Medium",   L"24 px", state.beautyShell.padding == 24 },
-                { 32, isZh ? L"标准" : L"Standard", L"32 px", state.beautyShell.padding == 32 },
-                { 48, isZh ? L"舒适" : L"Relaxed",  L"48 px", state.beautyShell.padding == 48 },
-                { 64, isZh ? L"宽阔" : L"Wide",     L"64 px", state.beautyShell.padding == 64 },
-                { 72, isZh ? L"超宽" : L"Spacious", L"72 px", state.beautyShell.padding == 72 }
+                { 16, tools3000::core::trWCstrFor(isZh, L"紧凑", L"Compact"),  L"16 px", state.beautyShell.padding == 16 },
+                { 24, tools3000::core::trWCstrFor(isZh, L"适中", L"Medium"),   L"24 px", state.beautyShell.padding == 24 },
+                { 32, tools3000::core::trWCstrFor(isZh, L"标准", L"Standard"), L"32 px", state.beautyShell.padding == 32 },
+                { 48, tools3000::core::trWCstrFor(isZh, L"舒适", L"Relaxed"),  L"48 px", state.beautyShell.padding == 48 },
+                { 64, tools3000::core::trWCstrFor(isZh, L"宽阔", L"Wide"),     L"64 px", state.beautyShell.padding == 64 },
+                { 72, tools3000::core::trWCstrFor(isZh, L"超宽", L"Spacious"), L"72 px", state.beautyShell.padding == 72 }
             };
             break;
         }
@@ -381,40 +382,40 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
         case DropdownType::BeautyShellRadius: {
             int curR = static_cast<int>(std::round(state.beautyShell.cornerRadius));
             state.dropdownMenu.items = {
-                { 0,  isZh ? L"直角" : L"Sharp",    L"0 px",  curR == 0 },
-                { 8,  isZh ? L"微圆" : L"Crisp",    L"8 px",  curR == 8 },
-                { 10, isZh ? L"小圆" : L"Subtle",   L"10 px", curR == 10 },
-                { 12, isZh ? L"柔和" : L"Soft",     L"12 px", curR == 12 },
-                { 16, isZh ? L"标准" : L"Standard", L"16 px", curR == 16 },
-                { 24, isZh ? L"大圆" : L"Rounded",  L"24 px", curR == 24 },
-                { 32, isZh ? L"超大" : L"Curved",   L"32 px", curR == 32 }
+                { 0,  tools3000::core::trWCstrFor(isZh, L"直角", L"Sharp"),    L"0 px",  curR == 0 },
+                { 8,  tools3000::core::trWCstrFor(isZh, L"微圆", L"Crisp"),    L"8 px",  curR == 8 },
+                { 10, tools3000::core::trWCstrFor(isZh, L"小圆", L"Subtle"),   L"10 px", curR == 10 },
+                { 12, tools3000::core::trWCstrFor(isZh, L"柔和", L"Soft"),     L"12 px", curR == 12 },
+                { 16, tools3000::core::trWCstrFor(isZh, L"标准", L"Standard"), L"16 px", curR == 16 },
+                { 24, tools3000::core::trWCstrFor(isZh, L"大圆", L"Rounded"),  L"24 px", curR == 24 },
+                { 32, tools3000::core::trWCstrFor(isZh, L"超大", L"Curved"),   L"32 px", curR == 32 }
             };
             break;
         }
 
         case DropdownType::RecordFormat: {
             const RecordFormat prefVideo = resolveRememberedVideoFormat(state);
-            std::wstring videoLabel = isZh ? L"MP4 视频" : L"MP4 Video";
+            std::wstring videoLabel = tools3000::core::trWCstrFor(isZh, L"MP4 视频", L"MP4 Video");
             std::wstring videoHint = L"H.264";
             if (prefVideo == RecordFormat::MP4_H265) {
-                videoLabel = isZh ? L"MP4 (HEVC)" : L"MP4 (HEVC)";
+                videoLabel = tools3000::core::trWCstrFor(isZh, L"MP4 (HEVC)", L"MP4 (HEVC)");
                 videoHint = L"H.265";
             } else if (prefVideo == RecordFormat::WebM_VP9) {
-                videoLabel = isZh ? L"WebM 视频" : L"WebM Video";
+                videoLabel = tools3000::core::trWCstrFor(isZh, L"WebM 视频", L"WebM Video");
                 videoHint = L"VP9";
             }
             state.dropdownMenu.items = {
                 { 0, videoLabel, videoHint, state.recordSetup.format != RecordFormat::GIF },
-                { 1, isZh ? L"GIF 动图" : L"GIF", L"", state.recordSetup.format == RecordFormat::GIF }
+                { 1, tools3000::core::trWCstrFor(isZh, L"GIF 动图", L"GIF"), L"", state.recordSetup.format == RecordFormat::GIF }
             };
             break;
         }
 
         case DropdownType::RecordFps: {
             state.dropdownMenu.items = {
-                { 15, L"15 fps", isZh ? L"省流" : L"Low",      state.recordSetup.fps == 15 },
-                { 30, L"30 fps", isZh ? L"标准" : L"Standard", state.recordSetup.fps == 30 },
-                { 60, L"60 fps", isZh ? L"高刷" : L"Smooth",   state.recordSetup.fps == 60 }
+                { 15, L"15 fps", tools3000::core::trWCstrFor(isZh, L"省流", L"Low"),      state.recordSetup.fps == 15 },
+                { 30, L"30 fps", tools3000::core::trWCstrFor(isZh, L"标准", L"Standard"), state.recordSetup.fps == 30 },
+                { 60, L"60 fps", tools3000::core::trWCstrFor(isZh, L"高刷", L"Smooth"),   state.recordSetup.fps == 60 }
             };
             break;
         }
@@ -422,10 +423,10 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
         case DropdownType::RecordQuality: {
             const int curMbps = state.recordSetup.bitrateMbps;
             state.dropdownMenu.items = {
-                { 0, isZh ? L"流畅" : L"Smooth",   L"4 Mbps",  curMbps == 4 || (curMbps <= 0 && state.recordSetup.qualityLevel == 0) },
-                { 1, isZh ? L"高清" : L"HD",       L"8 Mbps",  curMbps == 8 || (curMbps <= 0 && state.recordSetup.qualityLevel == 1) },
-                { 2, isZh ? L"超清" : L"Ultra HD", L"16 Mbps", curMbps == 16 || (curMbps <= 0 && state.recordSetup.qualityLevel == 2) },
-                { 3, isZh ? L"原画" : L"Lossless", L"32 Mbps", curMbps == 32 || (curMbps <= 0 && state.recordSetup.qualityLevel >= 3) }
+                { 0, tools3000::core::trWCstrFor(isZh, L"流畅", L"Smooth"),   L"4 Mbps",  curMbps == 4 || (curMbps <= 0 && state.recordSetup.qualityLevel == 0) },
+                { 1, tools3000::core::trWCstrFor(isZh, L"高清", L"HD"),       L"8 Mbps",  curMbps == 8 || (curMbps <= 0 && state.recordSetup.qualityLevel == 1) },
+                { 2, tools3000::core::trWCstrFor(isZh, L"超清", L"Ultra HD"), L"16 Mbps", curMbps == 16 || (curMbps <= 0 && state.recordSetup.qualityLevel == 2) },
+                { 3, tools3000::core::trWCstrFor(isZh, L"原画", L"Lossless"), L"32 Mbps", curMbps == 32 || (curMbps <= 0 && state.recordSetup.qualityLevel >= 3) }
             };
             break;
         }
@@ -436,11 +437,11 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
             const bool zoom = studioOn && (state.recordSetup.zoomEffectMode != 0);
             const int curMode = !studioOn ? -1 : ((!ripple && !zoom) ? 0 : (ripple && !zoom ? 1 : (!ripple && zoom ? 2 : 3)));
             state.dropdownMenu.items = {
-                { -1, isZh ? L"原样直出（跳过演播室）" : L"Raw Direct (Skip Studio)", L"", curMode == -1 },
-                {  0, isZh ? L"演播室 · 无特效"       : L"Studio · No FX",           L"", curMode == 0 },
-                {  1, isZh ? L"点击波纹"              : L"Click Ripple",             L"", curMode == 1 },
-                {  2, isZh ? L"自动运镜"              : L"Auto Zoom",                L"", curMode == 2 },
-                {  3, isZh ? L"波纹+运镜"             : L"Ripple + Zoom",            L"", curMode == 3 }
+                { -1, tools3000::core::trWCstrFor(isZh, L"原样直出（跳过演播室）", L"Raw Direct (Skip Studio)"), L"", curMode == -1 },
+                {  0, tools3000::core::trWCstrFor(isZh, L"演播室 · 无特效", L"Studio · No FX"),           L"", curMode == 0 },
+                {  1, tools3000::core::trWCstrFor(isZh, L"点击波纹", L"Click Ripple"),             L"", curMode == 1 },
+                {  2, tools3000::core::trWCstrFor(isZh, L"自动运镜", L"Auto Zoom"),                L"", curMode == 2 },
+                {  3, tools3000::core::trWCstrFor(isZh, L"波纹+运镜", L"Ripple + Zoom"),            L"", curMode == 3 }
             };
             break;
         }
@@ -462,8 +463,8 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
                  state.currentTool == MarkupTool::Ellipse ||
                  state.currentTool == MarkupTool::Line));
             state.dropdownMenu.items = {
-                { 0, isZh ? L"几何图形" : L"Shapes",    L"Shift+1", isGeoShape },
-                { 1, isZh ? L"聚光灯"   : L"Spotlight", L"Shift+0", isSpotlight }
+                { 0, tools3000::core::trWCstrFor(isZh, L"几何图形", L"Shapes"),    L"Shift+1", isGeoShape },
+                { 1, tools3000::core::trWCstrFor(isZh, L"聚光灯", L"Spotlight"), L"Shift+0", isSpotlight }
             };
             break;
         }
@@ -483,7 +484,7 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
                 { static_cast<int>(NumberFormat::UpperAlpha), numberFormatMenuLabel(NumberFormat::UpperAlpha, isZh), fmtSubLabel(NumberFormat::UpperAlpha, L"A, B, C"),  state.currentNumberFormat == NumberFormat::UpperAlpha },
                 { static_cast<int>(NumberFormat::LowerAlpha), numberFormatMenuLabel(NumberFormat::LowerAlpha, isZh), fmtSubLabel(NumberFormat::LowerAlpha, L"a, b, c"),  state.currentNumberFormat == NumberFormat::LowerAlpha },
                 { static_cast<int>(NumberFormat::Roman),      numberFormatMenuLabel(NumberFormat::Roman, isZh),      fmtSubLabel(NumberFormat::Roman, L"I, II, III"), state.currentNumberFormat == NumberFormat::Roman },
-                { static_cast<int>(NumberFormat::Chinese),    numberFormatMenuLabel(NumberFormat::Chinese, isZh),    fmtSubLabel(NumberFormat::Chinese, isZh ? L"一, 二, 三" : L"一, 二, 三"), state.currentNumberFormat == NumberFormat::Chinese }
+                { static_cast<int>(NumberFormat::Chinese),    numberFormatMenuLabel(NumberFormat::Chinese, isZh),    fmtSubLabel(NumberFormat::Chinese, tools3000::core::trWCstrFor(isZh, L"一, 二, 三", L"一, 二, 三")), state.currentNumberFormat == NumberFormat::Chinese }
             };
             break;
         }
@@ -494,19 +495,19 @@ void openDropdownMenu(CaptureState& state, DropdownType type, const D2D1_RECT_F&
                 : state.currentMagnifierCalloutStyle;
             state.dropdownMenu.items = {
                 { static_cast<int>(MagnifierCalloutStyle::DashedDirect),
-                  isZh ? L"虚线" : L"Dashed",
+                  tools3000::core::trWCstrFor(isZh, L"虚线", L"Dashed"),
                   L"",
                   curStyle == MagnifierCalloutStyle::DashedDirect },
                 { static_cast<int>(MagnifierCalloutStyle::TangentFrustum),
-                  isZh ? L"双切线" : L"Tangent",
+                  tools3000::core::trWCstrFor(isZh, L"双切线", L"Tangent"),
                   L"",
                   curStyle == MagnifierCalloutStyle::TangentFrustum },
                 { static_cast<int>(MagnifierCalloutStyle::ElbowLeader),
-                  isZh ? L"折线" : L"Elbow",
+                  tools3000::core::trWCstrFor(isZh, L"折线", L"Elbow"),
                   L"",
                   curStyle == MagnifierCalloutStyle::ElbowLeader },
                 { static_cast<int>(MagnifierCalloutStyle::CenterPointer),
-                  isZh ? L"单线" : L"Single",
+                  tools3000::core::trWCstrFor(isZh, L"单线", L"Single"),
                   L"",
                   curStyle == MagnifierCalloutStyle::CenterPointer }
             };
@@ -543,7 +544,7 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
                 tools3000::core::ConfigManager::instance().set<bool>("/capture/beautyShellEnabled", true);
                 static const wchar_t* bgNames[] = { L"极光紫", L"日落珊瑚", L"翡翠海", L"曜石黑", L"极简浅灰" };
                 static const wchar_t* bgNamesEn[] = { L"Aurora Purple", L"Sunrise Coral", L"Emerald Sea", L"Obsidian Dark", L"Minimal Light" };
-                state.loupeToastMessage = (isZh ? L"外壳质感: " : L"Shell Theme: ") + std::wstring(isZh ? bgNames[id] : bgNamesEn[id]);
+                state.loupeToastMessage = (tools3000::core::trWCstrFor(isZh, L"外壳质感: ", L"Shell Theme: ")) + std::wstring(tools3000::core::trWCstrFor(isZh, bgNames[id], bgNamesEn[id]));
             }
             break;
         }
@@ -553,7 +554,8 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
             state.beautyShell.enabled = true;
             tools3000::core::ConfigManager::instance().set<int>("/capture/beautyShellPadding", id);
             tools3000::core::ConfigManager::instance().set<bool>("/capture/beautyShellEnabled", true);
-            state.loupeToastMessage = isZh ? std::format(L"外壳留白: {} px", id) : std::format(L"Shell Padding: {} px", id);
+            const std::wstring idStr = std::to_wstring(id);
+            state.loupeToastMessage = tools3000::core::trFmtW(L"外壳留白: {0} px", L"Shell Padding: {0} px", {idStr});
             break;
         }
 
@@ -562,7 +564,8 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
             state.beautyShell.enabled = true;
             tools3000::core::ConfigManager::instance().set<int>("/capture/beautyShellRadius", id);
             tools3000::core::ConfigManager::instance().set<bool>("/capture/beautyShellEnabled", true);
-            state.loupeToastMessage = isZh ? std::format(L"外壳圆角: {} px", id) : std::format(L"Shell Radius: {} px", id);
+            const std::wstring idStr = std::to_wstring(id);
+            state.loupeToastMessage = tools3000::core::trFmtW(L"外壳圆角: {0} px", L"Shell Radius: {0} px", {idStr});
             break;
         }
 
@@ -575,18 +578,18 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
                 }
                 state.recordSetup.format = RecordFormat::GIF;
                 cfg.set<std::string>("/recording/format", "gif");
-                state.loupeToastMessage = isZh ? L"录屏格式: GIF 动图" : L"Format: GIF";
+                state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"录屏格式: GIF 动图", L"Format: GIF");
             } else {
                 const RecordFormat restored = resolveRememberedVideoFormat(state);
                 state.recordSetup.preferredVideoFormat = restored;
                 state.recordSetup.format = restored;
                 cfg.set<std::string>("/recording/format", recordFormatConfigId(restored));
                 if (restored == RecordFormat::MP4_H265) {
-                    state.loupeToastMessage = isZh ? L"录屏格式: MP4 (HEVC)" : L"Format: MP4 (HEVC)";
+                    state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"录屏格式: MP4 (HEVC)", L"Format: MP4 (HEVC)");
                 } else if (restored == RecordFormat::WebM_VP9) {
-                    state.loupeToastMessage = isZh ? L"录屏格式: WebM (VP9)" : L"Format: WebM (VP9)";
+                    state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"录屏格式: WebM (VP9)", L"Format: WebM (VP9)");
                 } else {
-                    state.loupeToastMessage = isZh ? L"录屏格式: MP4 视频" : L"Format: MP4";
+                    state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"录屏格式: MP4 视频", L"Format: MP4");
                 }
             }
             break;
@@ -595,7 +598,8 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
         case DropdownType::RecordFps: {
             state.recordSetup.fps = id;
             tools3000::core::ConfigManager::instance().set<int>("/recording/fps", id);
-            state.loupeToastMessage = isZh ? std::format(L"录制帧率: {} fps", id) : std::format(L"Frame Rate: {} fps", id);
+            const std::wstring idStr = std::to_wstring(id);
+            state.loupeToastMessage = tools3000::core::trFmtW(L"录制帧率: {0} fps", L"Frame Rate: {0} fps", {idStr});
             break;
         }
 
@@ -607,7 +611,7 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
             tools3000::core::ConfigManager::instance().set<int>("/recording/bitrate", bitrate);
             static const wchar_t* qNames[] = { L"流畅 4Mbps", L"高清 8Mbps", L"超清 16Mbps", L"原画 32Mbps" };
             static const wchar_t* qNamesEn[] = { L"4 Mbps", L"8 Mbps", L"16 Mbps", L"32 Mbps" };
-            state.loupeToastMessage = (isZh ? L"录制码率: " : L"Bitrate: ") + std::wstring(isZh ? qNames[clampedLevel] : qNamesEn[clampedLevel]);
+            state.loupeToastMessage = (tools3000::core::trWCstrFor(isZh, L"录制码率: ", L"Bitrate: ")) + std::wstring(tools3000::core::trWCstrFor(isZh, qNames[clampedLevel], qNamesEn[clampedLevel]));
             break;
         }
 
@@ -622,21 +626,21 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
                 cfg.set<bool>("/recording/studioMode", false);
                 cfg.set<bool>("/recording/studioAutoZoom", false);
                 cfg.set<int>("/recording/studioZoomMode", 0);
-                state.loupeToastMessage = isZh ? L"已切换并记住：原样直出（录完直接保存原片）" : L"Saved preference: Raw Direct (Skip Studio)";
+                state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"已切换并记住：原样直出（录完直接保存原片）", L"Saved preference: Raw Direct (Skip Studio)");
             } else if (id == 0) {
                 state.recordSetup.studioMode = true;
                 state.recordSetup.showClickEffects = false;
                 state.recordSetup.showClickZoom = false;
                 state.recordSetup.zoomEffectMode = 0;
                 cfg.set<bool>("/recording/studioMode", true);
-                state.loupeToastMessage = isZh ? L"演播室模式：已关闭运镜与波纹" : L"Studio Mode: No FX";
+                state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"演播室模式：已关闭运镜与波纹", L"Studio Mode: No FX");
             } else if (id == 1) {
                 state.recordSetup.studioMode = true;
                 state.recordSetup.showClickEffects = true;
                 state.recordSetup.showClickZoom = false;
                 state.recordSetup.zoomEffectMode = 0;
                 cfg.set<bool>("/recording/studioMode", true);
-                state.loupeToastMessage = isZh ? L"点击效果: 点击波纹" : L"Click Effect: Click Ripple";
+                state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"点击效果: 点击波纹", L"Click Effect: Click Ripple");
             } else if (id == 2) {
                 state.recordSetup.studioMode = true;
                 state.recordSetup.showClickEffects = false;
@@ -645,7 +649,7 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
                     state.recordSetup.zoomEffectMode = savedMode;
                 }
                 cfg.set<bool>("/recording/studioMode", true);
-                state.loupeToastMessage = isZh ? L"鼠标自动运镜: 已开启" : L"Auto Zoom: ON";
+                state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"鼠标自动运镜: 已开启", L"Auto Zoom: ON");
             } else {
                 state.recordSetup.studioMode = true;
                 state.recordSetup.showClickEffects = true;
@@ -654,7 +658,7 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
                     state.recordSetup.zoomEffectMode = savedMode;
                 }
                 cfg.set<bool>("/recording/studioMode", true);
-                state.loupeToastMessage = isZh ? L"已开启: 点击波纹 + 自动运镜" : L"Ripple + Auto Zoom: ON";
+                state.loupeToastMessage = tools3000::core::trWCstrFor(isZh, L"已开启: 点击波纹 + 自动运镜", L"Ripple + Auto Zoom: ON");
             }
             cfg.set<bool>("/recording/showClickEffects", state.recordSetup.showClickEffects);
             cfg.set<bool>("/recording/showClickZoom", state.recordSetup.showClickZoom);
@@ -680,8 +684,8 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
                     cfg.set<bool>("/recording/showClickZoom", false);
                 }
                 state.loupeToastMessage = useStudio
-                    ? (isZh ? L"已记住：录后进入演播室精修" : L"Saved: Open Studio Editor")
-                    : (isZh ? L"已记住：录后原样直接保存" : L"Saved: Save Raw Directly");
+                    ? (tools3000::core::trWCstrFor(isZh, L"已记住：录后进入演播室精修", L"Saved: Open Studio Editor"))
+                    : (tools3000::core::trWCstrFor(isZh, L"已记住：录后原样直接保存", L"Saved: Save Raw Directly"));
             } else if (id >= 100 && id <= 102) {
                 const int mode = id - 100;
                 state.recordSetup.zoomEffectMode = mode;
@@ -695,38 +699,39 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
                 }
                 static const wchar_t* zNamesZh[] = { L"关闭", L"2D 运镜", L"3D 运镜" };
                 static const wchar_t* zNamesEn[] = { L"Off", L"2D Zoom", L"3D Motion" };
-                state.loupeToastMessage = (isZh ? L"自动运镜: " : L"Auto Zoom: ") + std::wstring(isZh ? zNamesZh[mode] : zNamesEn[mode]);
+                state.loupeToastMessage = (tools3000::core::trWCstrFor(isZh, L"自动运镜: ", L"Auto Zoom: ")) + std::wstring(tools3000::core::trWCstrFor(isZh, zNamesZh[mode], zNamesEn[mode]));
             } else if (id == 200 || id == 203 || id == 205) {
                 const int sec = id - 200;
                 state.recordSetup.countdownSeconds = sec;
                 cfg.set<int>("/recording/countdownSeconds", sec);
+                const std::wstring secStr = std::to_wstring(sec);
                 state.loupeToastMessage = (sec <= 0)
-                    ? (isZh ? L"录制倒计时: 无" : L"Countdown: Off")
-                    : (isZh ? std::format(L"录制倒计时: {} 秒", sec) : std::format(L"Countdown: {} s", sec));
+                    ? std::wstring(tools3000::core::trWCstrFor(isZh, L"录制倒计时: 无", L"Countdown: Off"))
+                    : tools3000::core::trFmtW(L"录制倒计时: {0} 秒", L"Countdown: {0} s", {secStr});
             } else if (id == 301) {
                 state.recordSetup.hideDesktopIcons = !state.recordSetup.hideDesktopIcons;
                 cfg.set<bool>("/recording/hideDesktopIcons", state.recordSetup.hideDesktopIcons);
                 state.loupeToastMessage = state.recordSetup.hideDesktopIcons
-                    ? (isZh ? L"隐藏桌面图标: 已开启" : L"Hide Desktop Icons: ON")
-                    : (isZh ? L"隐藏桌面图标: 已关闭" : L"Hide Desktop Icons: OFF");
+                    ? (tools3000::core::trWCstrFor(isZh, L"隐藏桌面图标: 已开启", L"Hide Desktop Icons: ON"))
+                    : (tools3000::core::trWCstrFor(isZh, L"隐藏桌面图标: 已关闭", L"Hide Desktop Icons: OFF"));
             } else if (id == 302) {
                 state.recordSetup.hideTaskbar = !state.recordSetup.hideTaskbar;
                 cfg.set<bool>("/recording/hideTaskbar", state.recordSetup.hideTaskbar);
                 state.loupeToastMessage = state.recordSetup.hideTaskbar
-                    ? (isZh ? L"隐藏任务栏: 已开启" : L"Hide Taskbar: ON")
-                    : (isZh ? L"隐藏任务栏: 已关闭" : L"Hide Taskbar: OFF");
+                    ? (tools3000::core::trWCstrFor(isZh, L"隐藏任务栏: 已开启", L"Hide Taskbar: ON"))
+                    : (tools3000::core::trWCstrFor(isZh, L"隐藏任务栏: 已关闭", L"Hide Taskbar: OFF"));
             } else if (id == 303) {
                 state.recordSetup.typingAutoZoom = !state.recordSetup.typingAutoZoom;
                 cfg.set<bool>("/recording/typingAutoZoom", state.recordSetup.typingAutoZoom);
                 state.loupeToastMessage = state.recordSetup.typingAutoZoom
-                    ? (isZh ? L"打字自动运镜: 已开启" : L"Auto Zoom on Typing: ON")
-                    : (isZh ? L"打字自动运镜: 已关闭" : L"Auto Zoom on Typing: OFF");
+                    ? (tools3000::core::trWCstrFor(isZh, L"打字自动运镜: 已开启", L"Auto Zoom on Typing: ON"))
+                    : (tools3000::core::trWCstrFor(isZh, L"打字自动运镜: 已关闭", L"Auto Zoom on Typing: OFF"));
             } else if (id == 304) {
                 state.recordSetup.voiceEnhance = !state.recordSetup.voiceEnhance;
                 cfg.set<bool>("/recording/voiceEnhance", state.recordSetup.voiceEnhance);
                 state.loupeToastMessage = state.recordSetup.voiceEnhance
-                    ? (isZh ? L"麦克风人声降噪: 已开启" : L"Mic Noise Suppression: ON")
-                    : (isZh ? L"麦克风人声降噪: 已关闭" : L"Mic Noise Suppression: OFF");
+                    ? (tools3000::core::trWCstrFor(isZh, L"麦克风人声降噪: 已开启", L"Mic Noise Suppression: ON"))
+                    : (tools3000::core::trWCstrFor(isZh, L"麦克风人声降噪: 已关闭", L"Mic Noise Suppression: OFF"));
             } else if (id == 400) {
                 state.recordSetup.requestOpenMoreSettings = true;
                 state.loupeToastUntil = 0;
@@ -756,8 +761,8 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
             state.sliderPopup.type = SliderPopupType::None;
             state.openSubmenu = SubmenuType::None;
             state.loupeToastMessage = (id == 1)
-                ? (isZh ? L"聚光灯模式 (Shift+0)" : L"Spotlight Mode (Shift+0)")
-                : (isZh ? L"几何图形模式 (Shift+1)" : L"Shapes Mode (Shift+1)");
+                ? (tools3000::core::trWCstrFor(isZh, L"聚光灯模式 (Shift+0)", L"Spotlight Mode (Shift+0)"))
+                : (tools3000::core::trWCstrFor(isZh, L"几何图形模式 (Shift+1)", L"Shapes Mode (Shift+1)"));
             break;
         }
 
@@ -791,7 +796,7 @@ void commitDropdownSelection(CaptureState& state, DropdownType type, int id) {
             tools3000::core::ConfigManager::instance().set<int>("/capture/markup/magnifier/calloutStyle", clamped);
             static const wchar_t* stNamesZh[] = { L"双切线", L"折线", L"虚线", L"单线" };
             static const wchar_t* stNamesEn[] = { L"Tangent", L"Elbow", L"Dashed", L"Single" };
-            state.loupeToastMessage = (isZh ? L"连线样式: " : L"Line Style: ") + std::wstring(isZh ? stNamesZh[clamped] : stNamesEn[clamped]);
+            state.loupeToastMessage = (tools3000::core::trWCstrFor(isZh, L"连线样式: ", L"Line Style: ")) + std::wstring(tools3000::core::trWCstrFor(isZh, stNamesZh[clamped], stNamesEn[clamped]));
             break;
         }
 

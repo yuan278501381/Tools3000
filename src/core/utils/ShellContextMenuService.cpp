@@ -1,4 +1,5 @@
 #include "core/utils/ShellContextMenuService.h"
+#include "core/i18n/UiI18n.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/UiThreadJoin.h"
@@ -48,16 +49,16 @@ HMENU createFallbackMenu(const std::wstring& /*path*/, bool isDir) {
 
     const bool isZh = isUiLanguageChinese();
     AppendMenuW(menu, MF_STRING, CMD_FALLBACK_OPEN,
-                isDir ? (isZh ? L"打开文件夹(&O)" : L"&Open Folder")
-                      : (isZh ? L"打开(&O)" : L"&Open"));
+                isDir ? (tools3000::core::trWCstrFor(isZh, L"打开文件夹(&O)", L"&Open Folder"))
+                      : (tools3000::core::trWCstrFor(isZh, L"打开(&O)", L"&Open")));
     AppendMenuW(menu, MF_STRING, CMD_FALLBACK_EXPLORE,
-                isZh ? L"在文件资源管理器中定位(&E)" : L"Reveal in File &Explorer");
+                tools3000::core::trWCstrFor(isZh, L"在文件资源管理器中定位(&E)", L"Reveal in File &Explorer"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_FALLBACK_COPY_PATH,
-                isZh ? L"复制文件路径(&C)" : L"&Copy File Path");
+                tools3000::core::trWCstrFor(isZh, L"复制文件路径(&C)", L"&Copy File Path"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_FALLBACK_PROPERTIES,
-                isZh ? L"属性(&R)" : L"P&roperties");
+                tools3000::core::trWCstrFor(isZh, L"属性(&R)", L"P&roperties"));
     return menu;
 }
 

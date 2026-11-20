@@ -1,6 +1,7 @@
 #pragma once
 
 #include "capture/CaptureState.h"
+#include "core/i18n/UiI18n.h"
 #include "core/config/ConfigManager.h"
 
 namespace tools3000::capture {
@@ -12,110 +13,110 @@ inline std::wstring toolbarButtonAccessibleName(const ToolbarButton& button, boo
     switch (button.command) {
         case ToolbarCommand::SelectTool:
             switch (button.tool) {
-                case MarkupTool::Rectangle: return zh ? L"矩形标注" : L"Rectangle Annotation";
-                case MarkupTool::Line: return zh ? L"直线标注" : L"Line Annotation";
-                case MarkupTool::Arrow: return zh ? L"箭头标注" : L"Arrow Annotation";
-                case MarkupTool::Ellipse: return zh ? L"椭圆标注" : L"Ellipse Annotation";
-                case MarkupTool::Pen: return zh ? L"画笔标注" : L"Pen Annotation";
-                case MarkupTool::Highlight: return zh ? L"高亮标注" : L"Highlighter Annotation";
-                case MarkupTool::Mosaic: return zh ? L"马赛克标注" : L"Mosaic Annotation";
-                case MarkupTool::Text: return zh ? L"文字标注" : L"Text Annotation";
-                case MarkupTool::Number: return zh ? L"编号标注" : L"Step Badge Annotation";
-                case MarkupTool::Magnifier: return zh ? L"放大镜标注" : L"Magnifier Annotation";
-                case MarkupTool::Spotlight: return zh ? L"聚光灯标注" : L"Spotlight Annotation";
-                case MarkupTool::Watermark: return zh ? L"水印标注" : L"Watermark Annotation";
-                case MarkupTool::Inpaint: return zh ? L"修复标注" : L"Smart Eraser Annotation";
-                case MarkupTool::Blur: return zh ? L"模糊标注" : L"Blur Annotation";
+                case MarkupTool::Rectangle: return tools3000::core::trWCstrFor(zh, L"矩形标注", L"Rectangle Annotation");
+                case MarkupTool::Line: return tools3000::core::trWCstrFor(zh, L"直线标注", L"Line Annotation");
+                case MarkupTool::Arrow: return tools3000::core::trWCstrFor(zh, L"箭头标注", L"Arrow Annotation");
+                case MarkupTool::Ellipse: return tools3000::core::trWCstrFor(zh, L"椭圆标注", L"Ellipse Annotation");
+                case MarkupTool::Pen: return tools3000::core::trWCstrFor(zh, L"画笔标注", L"Pen Annotation");
+                case MarkupTool::Highlight: return tools3000::core::trWCstrFor(zh, L"高亮标注", L"Highlighter Annotation");
+                case MarkupTool::Mosaic: return tools3000::core::trWCstrFor(zh, L"马赛克标注", L"Mosaic Annotation");
+                case MarkupTool::Text: return tools3000::core::trWCstrFor(zh, L"文字标注", L"Text Annotation");
+                case MarkupTool::Number: return tools3000::core::trWCstrFor(zh, L"编号标注", L"Step Badge Annotation");
+                case MarkupTool::Magnifier: return tools3000::core::trWCstrFor(zh, L"放大镜标注", L"Magnifier Annotation");
+                case MarkupTool::Spotlight: return tools3000::core::trWCstrFor(zh, L"聚光灯标注", L"Spotlight Annotation");
+                case MarkupTool::Watermark: return tools3000::core::trWCstrFor(zh, L"水印标注", L"Watermark Annotation");
+                case MarkupTool::Inpaint: return tools3000::core::trWCstrFor(zh, L"修复标注", L"Smart Eraser Annotation");
+                case MarkupTool::Blur: return tools3000::core::trWCstrFor(zh, L"模糊标注", L"Blur Annotation");
             }
-            return zh ? L"标注工具" : L"Annotation Tool";
-        case ToolbarCommand::SelectColor: return zh ? L"标注颜色" : L"Annotation Color";
-        case ToolbarCommand::ChooseCustomColor: return zh ? L"选择自定义颜色" : L"Choose Custom Color";
-        case ToolbarCommand::Undo: return zh ? L"撤销" : L"Undo";
-        case ToolbarCommand::Redo: return zh ? L"重做" : L"Redo";
-        case ToolbarCommand::Clear: return zh ? L"清空标注" : L"Clear Annotations";
-        case ToolbarCommand::ToggleCornerRadius: return zh ? L"调节选区圆角" : L"Adjust Selection Corner Radius";
-        case ToolbarCommand::SideToggleCornerRadius: return zh ? L"调节选区圆角半径" : L"Adjust Selection Corner Radius";
-        case ToolbarCommand::SideCycleAspectRatio: return zh ? L"选区比例锁定" : L"Lock Aspect Ratio";
-        case ToolbarCommand::SideInvertSelection: return zh ? L"扩展至全屏或还原选区" : L"Expand to Full Screen or Restore";
-        case ToolbarCommand::SideResetSelection: return zh ? L"重置直角与自由比例" : L"Reset Corner Radius and Aspect Ratio";
-        case ToolbarCommand::ExtractText: return zh ? L"提取文本" : L"Extract Text (OCR)";
-        case ToolbarCommand::PinWindow: return zh ? L"置顶到屏幕" : L"Pin to Screen";
-        case ToolbarCommand::ScrollCapture: return zh ? L"开始长截图" : L"Scrolling Capture";
-        case ToolbarCommand::StartRecord: return zh ? L"区域录屏" : L"Record Region";
-        case ToolbarCommand::ToggleBeautyShell: return zh ? L"美化外壳分享模式" : L"Beauty Shell Mode";
-        case ToolbarCommand::CycleBeautyBg: return zh ? L"切换美化外壳背景" : L"Switch Beauty Shell Background";
-        case ToolbarCommand::CycleBeautyPadding: return zh ? L"调节美化外壳边距" : L"Adjust Beauty Shell Padding";
-        case ToolbarCommand::CycleBeautyRadius: return zh ? L"调节美化外壳圆角" : L"Adjust Beauty Shell Radius";
+            return tools3000::core::trWCstrFor(zh, L"标注工具", L"Annotation Tool");
+        case ToolbarCommand::SelectColor: return tools3000::core::trWCstrFor(zh, L"标注颜色", L"Annotation Color");
+        case ToolbarCommand::ChooseCustomColor: return tools3000::core::trWCstrFor(zh, L"选择自定义颜色", L"Choose Custom Color");
+        case ToolbarCommand::Undo: return tools3000::core::trWCstrFor(zh, L"撤销", L"Undo");
+        case ToolbarCommand::Redo: return tools3000::core::trWCstrFor(zh, L"重做", L"Redo");
+        case ToolbarCommand::Clear: return tools3000::core::trWCstrFor(zh, L"清空标注", L"Clear Annotations");
+        case ToolbarCommand::ToggleCornerRadius: return tools3000::core::trWCstrFor(zh, L"调节选区圆角", L"Adjust Selection Corner Radius");
+        case ToolbarCommand::SideToggleCornerRadius: return tools3000::core::trWCstrFor(zh, L"调节选区圆角半径", L"Adjust Selection Corner Radius");
+        case ToolbarCommand::SideCycleAspectRatio: return tools3000::core::trWCstrFor(zh, L"选区比例锁定", L"Lock Aspect Ratio");
+        case ToolbarCommand::SideInvertSelection: return tools3000::core::trWCstrFor(zh, L"扩展至全屏或还原选区", L"Expand to Full Screen or Restore");
+        case ToolbarCommand::SideResetSelection: return tools3000::core::trWCstrFor(zh, L"重置直角与自由比例", L"Reset Corner Radius and Aspect Ratio");
+        case ToolbarCommand::ExtractText: return tools3000::core::trWCstrFor(zh, L"提取文本", L"Extract Text (OCR)");
+        case ToolbarCommand::PinWindow: return tools3000::core::trWCstrFor(zh, L"置顶到屏幕", L"Pin to Screen");
+        case ToolbarCommand::ScrollCapture: return tools3000::core::trWCstrFor(zh, L"开始长截图", L"Scrolling Capture");
+        case ToolbarCommand::StartRecord: return tools3000::core::trWCstrFor(zh, L"区域录屏", L"Record Region");
+        case ToolbarCommand::ToggleBeautyShell: return tools3000::core::trWCstrFor(zh, L"美化外壳分享模式", L"Beauty Shell Mode");
+        case ToolbarCommand::CycleBeautyBg: return tools3000::core::trWCstrFor(zh, L"切换美化外壳背景", L"Switch Beauty Shell Background");
+        case ToolbarCommand::CycleBeautyPadding: return tools3000::core::trWCstrFor(zh, L"调节美化外壳边距", L"Adjust Beauty Shell Padding");
+        case ToolbarCommand::CycleBeautyRadius: return tools3000::core::trWCstrFor(zh, L"调节美化外壳圆角", L"Adjust Beauty Shell Radius");
         case ToolbarCommand::CycleStrokeWidth:
-            if (button.tool == MarkupTool::Text) return zh ? L"调节文本字号" : L"Adjust Font Size";
-            if (button.tool == MarkupTool::Mosaic) return zh ? L"调节马赛克粒度" : L"Adjust Mosaic Size";
-            if (button.tool == MarkupTool::Blur) return zh ? L"调节模糊强度" : L"Adjust Blur Strength";
-            if (button.tool == MarkupTool::Inpaint) return zh ? L"调节涂抹笔刷大小" : L"Adjust Eraser Brush Size";
-            if (button.tool == MarkupTool::Number) return zh ? L"调节序号尺寸" : L"Adjust Badge Size";
-            if (button.tool == MarkupTool::Magnifier) return zh ? L"调节镜框粗细" : L"Adjust Lens Border Width";
-            return zh ? L"调节线条粗细" : L"Adjust Stroke Width";
+            if (button.tool == MarkupTool::Text) return tools3000::core::trWCstrFor(zh, L"调节文本字号", L"Adjust Font Size");
+            if (button.tool == MarkupTool::Mosaic) return tools3000::core::trWCstrFor(zh, L"调节马赛克粒度", L"Adjust Mosaic Size");
+            if (button.tool == MarkupTool::Blur) return tools3000::core::trWCstrFor(zh, L"调节模糊强度", L"Adjust Blur Strength");
+            if (button.tool == MarkupTool::Inpaint) return tools3000::core::trWCstrFor(zh, L"调节涂抹笔刷大小", L"Adjust Eraser Brush Size");
+            if (button.tool == MarkupTool::Number) return tools3000::core::trWCstrFor(zh, L"调节序号尺寸", L"Adjust Badge Size");
+            if (button.tool == MarkupTool::Magnifier) return tools3000::core::trWCstrFor(zh, L"调节镜框粗细", L"Adjust Lens Border Width");
+            return tools3000::core::trWCstrFor(zh, L"调节线条粗细", L"Adjust Stroke Width");
         case ToolbarCommand::ToggleFill:
-            if (button.tool == MarkupTool::Text) return zh ? L"文字背景底衬开关" : L"Toggle Text Background";
-            if (button.tool == MarkupTool::Magnifier) return zh ? L"倍率角标显隐开关" : L"Toggle Zoom Badge";
-            if (button.tool == MarkupTool::Spotlight) return zh ? L"聚光区域描边开关" : L"Toggle Spotlight Border";
-            return zh ? L"切换填充模式" : L"Toggle Fill Mode";
-        case ToolbarCommand::CycleElementCornerRadius: return zh ? L"调节标注圆角" : L"Adjust Element Corner Radius";
-        case ToolbarCommand::ToggleLineStyleDropdown: return zh ? L"选择线条样式" : L"Select Line Style";
-        case ToolbarCommand::SelectLineStyle: return zh ? L"切换线条样式" : L"Switch Line Style";
-        case ToolbarCommand::ToggleArrowStyleDropdown: return zh ? L"选择箭头样式" : L"Select Arrow Style";
-        case ToolbarCommand::SelectArrowStyle: return zh ? L"切换箭头样式" : L"Switch Arrow Style";
+            if (button.tool == MarkupTool::Text) return tools3000::core::trWCstrFor(zh, L"文字背景底衬开关", L"Toggle Text Background");
+            if (button.tool == MarkupTool::Magnifier) return tools3000::core::trWCstrFor(zh, L"倍率角标显隐开关", L"Toggle Zoom Badge");
+            if (button.tool == MarkupTool::Spotlight) return tools3000::core::trWCstrFor(zh, L"聚光区域描边开关", L"Toggle Spotlight Border");
+            return tools3000::core::trWCstrFor(zh, L"切换填充模式", L"Toggle Fill Mode");
+        case ToolbarCommand::CycleElementCornerRadius: return tools3000::core::trWCstrFor(zh, L"调节标注圆角", L"Adjust Element Corner Radius");
+        case ToolbarCommand::ToggleLineStyleDropdown: return tools3000::core::trWCstrFor(zh, L"选择线条样式", L"Select Line Style");
+        case ToolbarCommand::SelectLineStyle: return tools3000::core::trWCstrFor(zh, L"切换线条样式", L"Switch Line Style");
+        case ToolbarCommand::ToggleArrowStyleDropdown: return tools3000::core::trWCstrFor(zh, L"选择箭头样式", L"Select Arrow Style");
+        case ToolbarCommand::SelectArrowStyle: return tools3000::core::trWCstrFor(zh, L"切换箭头样式", L"Switch Arrow Style");
         case ToolbarCommand::SelectMosaicType:
             return button.intParam == 0
-                ? (zh ? L"像素马赛克模式" : L"Pixel Mosaic Mode")
-                : (zh ? L"高斯模糊模式" : L"Gaussian Blur Mode");
+                ? (tools3000::core::trWCstrFor(zh, L"像素马赛克模式", L"Pixel Mosaic Mode"))
+                : (tools3000::core::trWCstrFor(zh, L"高斯模糊模式", L"Gaussian Blur Mode"));
         case ToolbarCommand::SelectTextMarkupMode: {
             switch (static_cast<TextMarkupMode>(button.intParam)) {
-                case TextMarkupMode::Highlight: return zh ? L"选中文字荧光笔" : L"Text Highlighter";
-                case TextMarkupMode::WavyUnderline: return zh ? L"选中文字波浪线" : L"Text Wavy Underline";
-                case TextMarkupMode::StraightUnderline: return zh ? L"选中文字直线" : L"Text Underline";
-                default: return zh ? L"自由矩形高亮" : L"Rectangle Highlight";
+                case TextMarkupMode::Highlight: return tools3000::core::trWCstrFor(zh, L"选中文字荧光笔", L"Text Highlighter");
+                case TextMarkupMode::WavyUnderline: return tools3000::core::trWCstrFor(zh, L"选中文字波浪线", L"Text Wavy Underline");
+                case TextMarkupMode::StraightUnderline: return tools3000::core::trWCstrFor(zh, L"选中文字直线", L"Text Underline");
+                default: return tools3000::core::trWCstrFor(zh, L"自由矩形高亮", L"Rectangle Highlight");
             }
         }
         case ToolbarCommand::ToggleNumberShape:
             return button.tool == MarkupTool::Magnifier
-                ? (zh ? L"切换放大透镜形状" : L"Switch Lens Shape")
-                : (zh ? L"切换序号徽章形状" : L"Switch Badge Shape");
-        case ToolbarCommand::ToggleNumberFormatDropdown: return zh ? L"选择序号编号制式" : L"Select Numbering Format";
-        case ToolbarCommand::ToggleSpotlightShape: return zh ? L"切换聚光灯形状" : L"Switch Spotlight Shape";
-        case ToolbarCommand::CycleSpotlightDim: return zh ? L"调节聚光灯背景弱化度" : L"Adjust Spotlight Dimming";
-        case ToolbarCommand::CycleMagnifierScale: return zh ? L"调节局部放大倍率" : L"Adjust Magnifier Zoom";
-        case ToolbarCommand::ToggleMagnifierCallout: return zh ? L"切换引出式详图放大模式" : L"Toggle Callout Magnifier Mode";
-        case ToolbarCommand::ToggleMagnifierCalloutStyleDropdown: return zh ? L"选择放大镜引出线样式" : L"Select Magnifier Leader Style";
-        case ToolbarCommand::ResetNumberCounter: return zh ? L"重置序号计数器" : L"Reset Step Counter";
+                ? (tools3000::core::trWCstrFor(zh, L"切换放大透镜形状", L"Switch Lens Shape"))
+                : (tools3000::core::trWCstrFor(zh, L"切换序号徽章形状", L"Switch Badge Shape"));
+        case ToolbarCommand::ToggleNumberFormatDropdown: return tools3000::core::trWCstrFor(zh, L"选择序号编号制式", L"Select Numbering Format");
+        case ToolbarCommand::ToggleSpotlightShape: return tools3000::core::trWCstrFor(zh, L"切换聚光灯形状", L"Switch Spotlight Shape");
+        case ToolbarCommand::CycleSpotlightDim: return tools3000::core::trWCstrFor(zh, L"调节聚光灯背景弱化度", L"Adjust Spotlight Dimming");
+        case ToolbarCommand::CycleMagnifierScale: return tools3000::core::trWCstrFor(zh, L"调节局部放大倍率", L"Adjust Magnifier Zoom");
+        case ToolbarCommand::ToggleMagnifierCallout: return tools3000::core::trWCstrFor(zh, L"切换引出式详图放大模式", L"Toggle Callout Magnifier Mode");
+        case ToolbarCommand::ToggleMagnifierCalloutStyleDropdown: return tools3000::core::trWCstrFor(zh, L"选择放大镜引出线样式", L"Select Magnifier Leader Style");
+        case ToolbarCommand::ResetNumberCounter: return tools3000::core::trWCstrFor(zh, L"重置序号计数器", L"Reset Step Counter");
         case ToolbarCommand::ToggleTextOutline:
-            if (button.tool != MarkupTool::Text) return zh ? L"调节边框粗细与边框颜色" : L"Adjust Border Width and Color";
-            return zh ? L"文字高反差描边" : L"Toggle Text Outline";
-        case ToolbarCommand::SelectTextOutlineColor: return zh ? L"文字描边颜色" : L"Select Text Outline Color";
+            if (button.tool != MarkupTool::Text) return tools3000::core::trWCstrFor(zh, L"调节边框粗细与边框颜色", L"Adjust Border Width and Color");
+            return tools3000::core::trWCstrFor(zh, L"文字高反差描边", L"Toggle Text Outline");
+        case ToolbarCommand::SelectTextOutlineColor: return tools3000::core::trWCstrFor(zh, L"文字描边颜色", L"Select Text Outline Color");
         case ToolbarCommand::ToggleCurveMode:
-            if (button.intParam == 1) return zh ? L"多点折线连接模式" : L"Multi-point Polyline Mode";
-            if (button.intParam == 2) return zh ? L"美感平滑曲线连接模式" : L"Smooth Curve Mode";
-            return zh ? L"切换平滑曲线" : L"Toggle Smooth Curve";
-        case ToolbarCommand::ToggleLineArrow: return zh ? L"折线端点箭头开关" : L"Toggle Line Endpoint Arrow";
-        case ToolbarCommand::ToggleStartCapDropdown: return zh ? L"选择起点端点样式" : L"Select Start Cap Style";
-        case ToolbarCommand::SelectStartCap: return zh ? L"切换起点端点样式" : L"Switch Start Cap Style";
-        case ToolbarCommand::ToggleEndCapDropdown: return zh ? L"选择终点端点样式" : L"Select End Cap Style";
-        case ToolbarCommand::SelectEndCap: return zh ? L"切换终点端点样式" : L"Switch End Cap Style";
-        case ToolbarCommand::RecordToggleFormat: return zh ? L"录屏格式设置" : L"Recording Format";
-        case ToolbarCommand::RecordCycleFps: return zh ? L"录屏帧率设置" : L"Recording Frame Rate";
-        case ToolbarCommand::RecordCycleQuality: return zh ? L"录屏画质设置" : L"Recording Quality";
-        case ToolbarCommand::RecordCycleClickEffect: return zh ? L"鼠标自动运镜与点击波纹设置" : L"Auto Zoom & Click Ripple";
-        case ToolbarCommand::RecordToggleKeycast: return zh ? L"录屏按键回显开关" : L"Toggle Keycast";
-        case ToolbarCommand::RecordToggleSystemAudio: return zh ? L"录屏系统声音开关" : L"Toggle System Audio";
-        case ToolbarCommand::RecordToggleMicrophone: return zh ? L"录屏麦克风开关" : L"Toggle Microphone";
-        case ToolbarCommand::RecordSelectMicSource: return zh ? L"选择录屏麦克风来源" : L"Select Microphone Source";
-        case ToolbarCommand::RecordToggleSettingsMenu: return zh ? L"录屏更多设置" : L"More Recording Settings";
-        case ToolbarCommand::RecordStartConfirm: return zh ? L"正式开始录屏" : L"Start Recording";
-        case ToolbarCommand::Copy: return zh ? L"复制到剪贴板" : L"Copy to Clipboard";
-        case ToolbarCommand::Confirm: return zh ? L"确认截图" : L"Confirm Capture";
-        case ToolbarCommand::Cancel: return zh ? L"取消截图" : L"Cancel Capture";
+            if (button.intParam == 1) return tools3000::core::trWCstrFor(zh, L"多点折线连接模式", L"Multi-point Polyline Mode");
+            if (button.intParam == 2) return tools3000::core::trWCstrFor(zh, L"美感平滑曲线连接模式", L"Smooth Curve Mode");
+            return tools3000::core::trWCstrFor(zh, L"切换平滑曲线", L"Toggle Smooth Curve");
+        case ToolbarCommand::ToggleLineArrow: return tools3000::core::trWCstrFor(zh, L"折线端点箭头开关", L"Toggle Line Endpoint Arrow");
+        case ToolbarCommand::ToggleStartCapDropdown: return tools3000::core::trWCstrFor(zh, L"选择起点端点样式", L"Select Start Cap Style");
+        case ToolbarCommand::SelectStartCap: return tools3000::core::trWCstrFor(zh, L"切换起点端点样式", L"Switch Start Cap Style");
+        case ToolbarCommand::ToggleEndCapDropdown: return tools3000::core::trWCstrFor(zh, L"选择终点端点样式", L"Select End Cap Style");
+        case ToolbarCommand::SelectEndCap: return tools3000::core::trWCstrFor(zh, L"切换终点端点样式", L"Switch End Cap Style");
+        case ToolbarCommand::RecordToggleFormat: return tools3000::core::trWCstrFor(zh, L"录屏格式设置", L"Recording Format");
+        case ToolbarCommand::RecordCycleFps: return tools3000::core::trWCstrFor(zh, L"录屏帧率设置", L"Recording Frame Rate");
+        case ToolbarCommand::RecordCycleQuality: return tools3000::core::trWCstrFor(zh, L"录屏画质设置", L"Recording Quality");
+        case ToolbarCommand::RecordCycleClickEffect: return tools3000::core::trWCstrFor(zh, L"鼠标自动运镜与点击波纹设置", L"Auto Zoom & Click Ripple");
+        case ToolbarCommand::RecordToggleKeycast: return tools3000::core::trWCstrFor(zh, L"录屏按键回显开关", L"Toggle Keycast");
+        case ToolbarCommand::RecordToggleSystemAudio: return tools3000::core::trWCstrFor(zh, L"录屏系统声音开关", L"Toggle System Audio");
+        case ToolbarCommand::RecordToggleMicrophone: return tools3000::core::trWCstrFor(zh, L"录屏麦克风开关", L"Toggle Microphone");
+        case ToolbarCommand::RecordSelectMicSource: return tools3000::core::trWCstrFor(zh, L"选择录屏麦克风来源", L"Select Microphone Source");
+        case ToolbarCommand::RecordToggleSettingsMenu: return tools3000::core::trWCstrFor(zh, L"录屏更多设置", L"More Recording Settings");
+        case ToolbarCommand::RecordStartConfirm: return tools3000::core::trWCstrFor(zh, L"正式开始录屏", L"Start Recording");
+        case ToolbarCommand::Copy: return tools3000::core::trWCstrFor(zh, L"复制到剪贴板", L"Copy to Clipboard");
+        case ToolbarCommand::Confirm: return tools3000::core::trWCstrFor(zh, L"确认截图", L"Confirm Capture");
+        case ToolbarCommand::Cancel: return tools3000::core::trWCstrFor(zh, L"取消截图", L"Cancel Capture");
         default: break;
     }
-    return zh ? L"截图工具栏操作" : L"Capture Toolbar Action";
+    return tools3000::core::trWCstrFor(zh, L"截图工具栏操作", L"Capture Toolbar Action");
 }
 
 inline std::wstring toolbarButtonAccessibleName(const ToolbarButton& button) {

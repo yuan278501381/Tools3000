@@ -8,6 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/PinWindowInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/CaptureVectorIcons.h"
 #include "capture/FloatingGlassBar.h"
 #include "capture/PinGroupManager.h"
@@ -56,7 +57,7 @@ bool PinWindow::ensureTextResources(float dpiScale) {
     }
 
     const wchar_t* uiFont = tools3000::core::resolveInstalledUiFontFamily(m_dwriteFactory.Get());
-    const wchar_t* localeName = isZh ? L"zh-CN" : L"en-US";
+    const wchar_t* localeName = tools3000::core::trWCstrFor(isZh, L"zh-CN", L"en-US");
     const float fontPx = (std::max)(12.0f, 12.0f * safeScale);
 
     ComPtr<IDWriteTextFormat> leadFmt;
@@ -121,7 +122,7 @@ float PinWindow::measureUiTextWidth(const std::wstring& text, float dpiScale) {
 SIZE PinWindow::computeFoldCapsuleSize(float dpiScale) {
     const float safeScale = (dpiScale > 0.0f) ? dpiScale : 1.0f;
     const bool isZh = tools3000::core::isUiLanguageChinese();
-    const wchar_t* txt = isZh ? L"贴图 (双击展开)" : L"Pinned (Folded)";
+    const wchar_t* txt = tools3000::core::trWCstrFor(isZh, L"贴图 (双击展开)", L"Pinned (Folded)");
     const float textW = measureUiTextWidth(txt, safeScale);
     const int foldW = static_cast<int>(std::ceil(
         (std::max)(148.0f * safeScale, 34.0f * safeScale + textW + 14.0f * safeScale)));
@@ -234,32 +235,32 @@ void PinWindow::drawHoverToolbar() {
     const wchar_t* tipText = nullptr;
     float anchorX = 0.0f;
     if (m_hoverFold) {
-        tipText = isZh ? L"折叠胶囊 (M)" : L"Fold Capsule (M)";
+        tipText = tools3000::core::trWCstrFor(isZh, L"折叠胶囊 (M)", L"Fold Capsule (M)");
         anchorX = (m_btnFoldRect.left + m_btnFoldRect.right) * 0.5f;
     } else if (m_hoverRotate) {
-        tipText = isZh ? L"旋转 90° (R / 1·2)" : L"Rotate 90° (R / 1·2)";
+        tipText = tools3000::core::trWCstrFor(isZh, L"旋转 90° (R / 1·2)", L"Rotate 90° (R / 1·2)");
         anchorX = (m_btnRotateRect.left + m_btnRotateRect.right) * 0.5f;
     } else if (m_hoverInvert) {
-        tipText = isZh ? L"色彩反转 (I)" : L"Invert Colors (I)";
+        tipText = tools3000::core::trWCstrFor(isZh, L"色彩反转 (I)", L"Invert Colors (I)");
         anchorX = (m_btnInvertRect.left + m_btnInvertRect.right) * 0.5f;
     } else if (m_hoverEdit) {
-        tipText = isZh ? L"二次标注 (E)" : L"Annotate (E)";
+        tipText = tools3000::core::trWCstrFor(isZh, L"二次标注 (E)", L"Annotate (E)");
         anchorX = (m_btnEditRect.left + m_btnEditRect.right) * 0.5f;
     } else if (m_hoverText) {
         if (!m_pinnedSourceText.empty()) {
-            tipText = isZh ? L"复制原文 (Ctrl+C)" : L"Copy Text (Ctrl+C)";
+            tipText = tools3000::core::trWCstrFor(isZh, L"复制原文 (Ctrl+C)", L"Copy Text (Ctrl+C)");
         } else {
-            tipText = isZh ? L"识别文字 / 划词 (Alt)" : L"Recognize Text (Alt)";
+            tipText = tools3000::core::trWCstrFor(isZh, L"识别文字 / 划词 (Alt)", L"Recognize Text (Alt)");
         }
         anchorX = (m_btnTextRect.left + m_btnTextRect.right) * 0.5f;
     } else if (m_hoverCopy) {
-        tipText = isZh ? L"复制贴图 (Ctrl+C)" : L"Copy Pin (Ctrl+C)";
+        tipText = tools3000::core::trWCstrFor(isZh, L"复制贴图 (Ctrl+C)", L"Copy Pin (Ctrl+C)");
         anchorX = (m_btnCopyRect.left + m_btnCopyRect.right) * 0.5f;
     } else if (m_hoverSave) {
-        tipText = isZh ? L"保存图片 (Ctrl+S)" : L"Save Image (Ctrl+S)";
+        tipText = tools3000::core::trWCstrFor(isZh, L"保存图片 (Ctrl+S)", L"Save Image (Ctrl+S)");
         anchorX = (m_btnSaveRect.left + m_btnSaveRect.right) * 0.5f;
     } else if (m_hoverClose) {
-        tipText = isZh ? L"关闭贴图 (Esc)" : L"Close Pin (Esc)";
+        tipText = tools3000::core::trWCstrFor(isZh, L"关闭贴图 (Esc)", L"Close Pin (Esc)");
         anchorX = (m_btnCloseRect.left + m_btnCloseRect.right) * 0.5f;
     }
 
@@ -474,7 +475,7 @@ void PinWindow::render() {
         // 文字居右（复用缓存 DWrite 12px 格式，强制 NO_WRAP）
         if (ensureTextResources(dpiScale) && m_uiLeadTextFormat && textBrush) {
             const bool isZh = tools3000::core::isUiLanguageChinese();
-            const wchar_t* txt = isZh ? L"贴图 (双击展开)" : L"Pinned (Folded)";
+            const wchar_t* txt = tools3000::core::trWCstrFor(isZh, L"贴图 (双击展开)", L"Pinned (Folded)");
             const D2D1_RECT_F textRect = D2D1::RectF(
                 34.0f * dpiScale, 0.0f,
                 (std::max)(34.0f * dpiScale, size.width - 6.0f * dpiScale),
@@ -747,14 +748,14 @@ void PinWindow::render() {
                 const bool isZh = tools3000::core::isUiLanguageChinese();
                 const bool floatingCopyAsImage = (m_ocrMarkupPreviewClean && m_pinnedSourceText.empty());
                 const wchar_t* lblCopy = floatingCopyAsImage
-                    ? (isZh ? L"复制图" : L"Copy Img")
-                    : (isZh ? L"复制" : L"Copy");
-                const wchar_t* lblTable = isZh ? L"复制表格" : L"Table";
-                const wchar_t* lblPanel = isZh ? L"对照" : L"Panel";
-                const wchar_t* lblHl = isZh ? L"荧光笔" : L"Highlight";
-                const wchar_t* lblWavy = isZh ? L"波浪线" : L"Wavy";
-                const wchar_t* lblLine = isZh ? L"直线" : L"Line";
-                const wchar_t* lblReplace = isZh ? L"改字" : L"Edit";
+                    ? (tools3000::core::trWCstrFor(isZh, L"复制图", L"Copy Img"))
+                    : (tools3000::core::trWCstrFor(isZh, L"复制", L"Copy"));
+                const wchar_t* lblTable = tools3000::core::trWCstrFor(isZh, L"复制表格", L"Table");
+                const wchar_t* lblPanel = tools3000::core::trWCstrFor(isZh, L"对照", L"Panel");
+                const wchar_t* lblHl = tools3000::core::trWCstrFor(isZh, L"荧光笔", L"Highlight");
+                const wchar_t* lblWavy = tools3000::core::trWCstrFor(isZh, L"波浪线", L"Wavy");
+                const wchar_t* lblLine = tools3000::core::trWCstrFor(isZh, L"直线", L"Line");
+                const wchar_t* lblReplace = tools3000::core::trWCstrFor(isZh, L"改字", L"Edit");
 
                 auto calcBtnW = [&](const wchar_t* txt, float minDip = 54.0f) -> float {
                     const float tw = measureUiTextWidth(txt, dpiScale);
@@ -1372,21 +1373,21 @@ void PinWindow::render() {
                 (void)barBelow;
 
                 const std::wstring sizeStr = std::format(L"{:.1f}", ed.fontSize);
-                const wchar_t* weightLbl = (ed.replaceFontWeight >= 650) ? (isZh ? L"粗体" : L"Bold")
-                    : ((ed.replaceFontWeight >= 550) ? (isZh ? L"半粗" : L"Semi")
-                    : ((ed.replaceFontWeight >= 460) ? (isZh ? L"中等" : L"Med")
-                    : (isZh ? L"常规" : L"Reg")));
-                const wchar_t* famLbl = (ed.replaceFontClass == 1) ? (isZh ? L"等宽" : L"Mono")
-                    : ((ed.replaceFontClass == 2) ? (isZh ? L"宋体" : L"Serif")
-                    : (isZh ? L"无衬线" : L"Sans"));
-                const wchar_t* bgLbl = (ed.replaceBgMode == 1) ? (isZh ? L"平面底" : L"Plane")
-                    : ((ed.replaceBgMode == 2) ? (isZh ? L"AI修复" : L"AI Fill")
-                    : (isZh ? L"智能底" : L"Auto"));
+                const wchar_t* weightLbl = (ed.replaceFontWeight >= 650) ? (tools3000::core::trWCstrFor(isZh, L"粗体", L"Bold"))
+                    : ((ed.replaceFontWeight >= 550) ? (tools3000::core::trWCstrFor(isZh, L"半粗", L"Semi"))
+                    : ((ed.replaceFontWeight >= 460) ? (tools3000::core::trWCstrFor(isZh, L"中等", L"Med"))
+                    : (tools3000::core::trWCstrFor(isZh, L"常规", L"Reg"))));
+                const wchar_t* famLbl = (ed.replaceFontClass == 1) ? (tools3000::core::trWCstrFor(isZh, L"等宽", L"Mono"))
+                    : ((ed.replaceFontClass == 2) ? (tools3000::core::trWCstrFor(isZh, L"宋体", L"Serif"))
+                    : (tools3000::core::trWCstrFor(isZh, L"无衬线", L"Sans")));
+                const wchar_t* bgLbl = (ed.replaceBgMode == 1) ? (tools3000::core::trWCstrFor(isZh, L"平面底", L"Plane"))
+                    : ((ed.replaceBgMode == 2) ? (tools3000::core::trWCstrFor(isZh, L"AI修复", L"AI Fill"))
+                    : (tools3000::core::trWCstrFor(isZh, L"智能底", L"Auto")));
                 const bool showReflowBtn = (ed.replaceRightTailRect.width > 0 && ed.replaceRightTailRect.height > 0);
                 const wchar_t* reflowLbl = ed.replaceReflowRight
-                    ? (isZh ? L"顺延" : L"Reflow")
-                    : (isZh ? L"原位" : L"Fixed");
-                const wchar_t* doneLbl = isZh ? L"完成" : L"Done";
+                    ? (tools3000::core::trWCstrFor(isZh, L"顺延", L"Reflow"))
+                    : (tools3000::core::trWCstrFor(isZh, L"原位", L"Fixed"));
+                const wchar_t* doneLbl = tools3000::core::trWCstrFor(isZh, L"完成", L"Done");
 
                 const float wDec = 24.0f * dpiScale;
                 const float wSize = 36.0f * dpiScale;
@@ -1493,7 +1494,7 @@ void PinWindow::render() {
                 }
 
                 const bool isZh = tools3000::core::isUiLanguageChinese();
-                const wchar_t* qrLabel = isZh ? L"复制二维码" : L"Copy QR";
+                const wchar_t* qrLabel = tools3000::core::trWCstrFor(isZh, L"复制二维码", L"Copy QR");
                 const float qrTw = measureUiTextWidth(qrLabel, dpiScale);
                 const float qrW = (std::min)(
                     std::ceil((std::max)(72.0f * dpiScale, 24.0f * dpiScale + qrTw + 10.0f * dpiScale)),
@@ -1702,7 +1703,7 @@ void PinWindow::render() {
 
                 if (ocrWaiting) {
                     const bool isZh = tools3000::core::isUiLanguageChinese();
-                    const std::wstring waitText = isZh ? L"正在识别..." : L"Recognizing...";
+                    const std::wstring waitText = tools3000::core::trWCstrFor(isZh, L"正在识别...", L"Recognizing...");
                     const float topAnchor = (m_hoverAlpha > 0.05f && m_toolbarRect.bottom > m_toolbarRect.top)
                         ? (m_toolbarRect.bottom + 16.0f * hudScale)
                         : (size.height * 0.5f);

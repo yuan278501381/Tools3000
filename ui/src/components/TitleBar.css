@@ -141,7 +141,9 @@
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  min-width: 184px;
+  min-width: 210px;
+  max-height: 360px;
+  overflow-y: auto;
   width: max-content;
   padding: 6px;
   border-radius: var(--radius-md, 10px);

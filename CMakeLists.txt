@@ -617,6 +617,16 @@ if(BUILD_TESTING)
         user32 shell32 shlwapi ole32 UIAutomationCore)
 endif()
 
+if(EXISTS "${CMAKE_SOURCE_DIR}/resources/locales")
+    add_custom_command(TARGET Tools3000 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Tools3000>/resources/locales"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/resources/locales"
+            "$<TARGET_FILE_DIR:Tools3000>/resources/locales"
+        COMMENT "Syncing native i18n locale catalogs..."
+    )
+endif()
+
 if(EXISTS "${CMAKE_SOURCE_DIR}/ui/dist")
     add_custom_command(TARGET Tools3000 POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Tools3000>/ui"
