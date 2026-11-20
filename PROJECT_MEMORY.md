@@ -6,6 +6,18 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 全场景世界级离线 OCR 五大硬核进阶、三合一单次切屏鼠标手势 E2E 门禁合并与 GitHub 全功能动图首屏焕新
+- **离线 OCR 五大能力闭环 (`DeepOcrEngine.{h,cpp}`, `DeepOcrEngineModel.cpp`, `DeepOcrEnginePostprocess.cpp`, `OcrEngine.{h,cpp}`, `PluginEntry.cpp`, `OcrPage.tsx`)**：
+  1. **合同/发票红章压字穿透滤除 (`suppressRedStampForOcr`)**：仅在浅色纸面定位与黑色墨水产生真实交叉的高饱和红色印章连通域，柔和中和至周边底色，100% 保留黑字核心笔画与独立纯红警示文字；
+  2. **手写/纸质拍照阴影光照归一化 (`isShadowedDocumentPhoto` / `enhanceDocumentPhoto`)**：大核背景估计除法抹平手影与台灯光照梯度，仅服务 DBNet 检测分支（不污染原图识别锐度，严守对 `packing_card_photo.jpg` 等白底贴纸零回归）+ 整图 `90°/270°` 拍歪逻辑阅读序自动校正（零额外推理开销）；
+  3. **一维工业/商品条形码联合解码 (`OcrEngine::detectQrCodes`)**：接入 OpenCV 4.12 原生 `cv::barcode::BarcodeDetector::detectAndDecodeWithType` + 紧贴裁剪小图 `<1ms` 整图四顶点 `decodeWithType` 直解兜底，为 `OcrQrResult` 新增 `format` 字段区分 `QR_CODE` / `EAN_13` / `CODE_128` 等；
+  4. **长 URL 与 Windows 本地/UNC 路径软折行无缝续接**：扩展 `shouldSeamlessJoinSoftWrappedJsonLine`，无损续接被编辑器或窗口折行的 `https://...`、`C:\...` 与 `\\host\...`，并防误粘相邻独立链接/盘符；
+  5. **按需可选高精度识别模型档位 (`mobile` / `server`)**：支持在设置页自由切换 `极速轻量版 (~16 MB)` 与 `高精度增强版 (+90 MB, ch_PP-OCRv4_rec_server.onnx)`，默认安装包保持零膨胀，支持国内多源增量下载（复用已有 `det`/`cls`/`dict`）、未装优雅回退 `mobile`、结果缓存 `routeTag` 档位隔离与一键移除释放磁盘空间；
+- **鼠标手势三合一单次切屏 E2E 门禁 (`scripts/test_gesture_suite_e2e.ps1`, `deploy.ps1`, `scripts/test_capture_recording_e2e.ps1`)**：
+  - 将原 `deploy.ps1` 中连续 3 次强制切屏的 `test_gesture_e2e.ps1`、`stress_gesture_1000hz.ps1`、`adversarial_stress_gesture.ps1` 合并为单进程、单次切屏的 `test_gesture_suite_e2e.ps1`，测试输入全部安全落入无副作用空白靶板窗，100% 保留全部原始断言与吞吐量校验，并在结束后自动归还鼠标坐标与用户原前台窗口焦点；
+- **GitHub 中英双语 README 全动图与视觉焕新 (`README.md`, `README.en.md`, `docs/images/{zh-CN,en-US}/`)**：
+  - 顶部首屏直接以 2×2 高清动态 WebP 展示核心场景（文件搜索+空格预览、离线高精度文本识别/批注/改字、滚动长截图、高清录屏与自动运镜演播室），新增中英双语 Apple/Linear Bento 风格「七大核心功能一图速览」海报 `feature_bento_overview.png` 及文档内容搜索 / 精准截图标注 / 离线选字批注 / 录屏自动运镜演播室 4 组双语动图，保证全部 7 大核心功能均有直观自动播放动图；严守产品克制要求，不在 README 中铺陈去阴影/红章/条形码/高精度模型等底层实现细节。
+
 ### [2026-11-21] 全库 9 大巨石源文件零回归纯物理拆分收官（全库业务源码 100% < 3,000 行）与实景 OCR 样本集入库 (`tests/fixtures/ocr/`) + 小型倾斜二维码 2x 强透视召回
 - **全库巨石文件零回归纯物理拆分总账（严守零语义改动 / 严格 ODR / 公开 ABI 零破坏 / 纯净单 CRLF / 逐个编译单测门禁原子提交）**：
   1. `src/capture/PinWindow.cpp`（7,185 行 -> 5 文件 + `PinWindowInternal.h`，主文件 1,812 行）；
