@@ -6,6 +6,23 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 全库 9 大巨石源文件零回归纯物理拆分收官（全库业务源码 100% < 3,000 行）与实景 OCR 样本集入库 (`tests/fixtures/ocr/`) + 小型倾斜二维码 2x 强透视召回
+- **全库巨石文件零回归纯物理拆分总账（严守零语义改动 / 严格 ODR / 公开 ABI 零破坏 / 纯净单 CRLF / 逐个编译单测门禁原子提交）**：
+  1. `src/capture/PinWindow.cpp`（7,185 行 -> 5 文件 + `PinWindowInternal.h`，主文件 1,812 行）；
+  2. `src/capture/StudioPreviewWindow.cpp`（10,506 行 -> 6 文件 + `StudioPreviewWindowInternal.h`，主文件 1,881 行）；
+  3. `src/capture/CaptureRenderer.cpp`（7,805 行 -> 4 文件 + `CaptureRendererInternal.h`，主文件 1,562 行）；
+  4. `src/capture/CaptureInput.cpp`（6,790 行 -> 4 文件 + `CaptureInputInternal.h`，主文件 1,983 行）；
+  5. `src/capture/MarkupEngine.cpp`（5,831 行 -> 3 文件 + `MarkupEngineInternal.h`，主文件 1,398 行）；
+  6. `src/capture/StudioVideoCompositor.cpp`（4,883 行 -> 3 文件 + `StudioVideoCompositorInternal.h`，主文件 1,766 行）；
+  7. `src/ocr/DeepOcrEngine.cpp`（3,592 行 -> 3 文件 + `DeepOcrEngineInternal.h`：`DeepOcrEngine.cpp` 1,410 行、`DeepOcrEngineModel.cpp` 931 行、`DeepOcrEnginePostprocess.cpp` 1,334 行）；
+  8. `ui/src/SearchApp.css`（3,399 行 -> 10 行顺序 `@import` 入口 + `ui/src/styles/search/` 下 5 个子样式模块，保持选择器层叠顺序 100% 等价）；
+  9. `src/service/MftParser.cpp`（3,029 行 -> `MftParser.cpp` 1,342 行 + `MftParserQuery.cpp` 1,713 行）。
+  - *治理成果*：除静态汉字拼音数据表 `src/service/UnicodePinyinData.h`（3,842 行）外，全库全部 C++ / TypeScript / CSS / Rust 业务源码文件均已控制在 `< 3,000` 行以内。
+- **用户实景 OCR 样本集入库与端到端回归测试矩阵 (`tests/fixtures/ocr/`, `tests/unit/test_live_ocr.inc`, `src/ocr/OcrEngine.cpp`)**：
+  1. **8 张真实场景样本纳入 Git 版本管理**（经项目负责人确认无泄密风险，合计 ~1.63 MB）：`sap_form_table.jpg`、`release_notes_dense_doc.png`、`pda_screen_photo.jpg`、`meeting_tv_photo.jpg`、`erp_table_screen_photo.jpg`、`packing_card_photo.jpg`、`apifox_json_pretty.png`、`apifox_json_compact.jpg`，并附 `tests/fixtures/ocr/README.md` 清单；
+  2. **5 大自动化防回退用例接入 `Tools3000Tests.exe`**：`RealWorldOcrFixtureCatalogIntegrity`（全环境强制校验 8 张样本文件完整可读）、`FixtureApifoxPrettyJsonAndDropdownChevronRegression`、`FixtureApifoxCompactWideJsonRegression`、`FixtureRealWorldScreenPhotosAndQrRegression`（覆盖 PDA 强摩尔纹防 `乙乙` 回退、ERP 深灰表头 90+ 行召回、装箱卡双层表格 + QR 码 `ZZ00444040` 解码，以及真实 PPT 图 `TextReplaceEngine` 原位改字 `5% -> 10%` 紧邻字 `余` 零抹除实测）、`FixtureDenseDocAndSapMultiColumnRegression`（SAP 多栏防跨栏合并 + 高密度文档 2000+ 字符召回）；无 PP-OCRv4 模型包环境优雅 `GTEST_SKIP()`；
+  3. **实景回归捕获并修复 `OcrEngine::detectQrCodes` 小型倾斜二维码漏检**：复杂背景图中占画面不足 2% 的工业装箱卡 QR 码（~75×75px，单模块 ~2.5px）在 1× `detectAndDecodeMulti` 下漏检；新增 1× `detectAndDecode` + 2× `INTER_CUBIC` 单码强透视兜底（仅 1× 未检出且分辨率适中时执行，且在 `extractPage` 中与 OCR 并行运行实现 0ms 感知开销），实测成功解出 `ZZ00444040`。
+
 ### [2026-11-20] 代码/JSON 截图高精度 OCR 架构升级：彻底废除多行横向拼接串扰 + 墨水感知标点挽救 + 重叠滑窗谷底拼接 + 像素级 UI 下拉箭头剥离 (`DeepOcrEngine.{h,cpp}`)
 - **实测五大深水区根因与终局重构**：
   1. **SVTR 全局自注意力多行串扰与边列涂抹根治**：旧版 FFD 多行横向拼接（`960px` 条带 + `128,128,128` 暗灰隔断墙 + 复制 `col(rw-1)` 边列延展）既引发 Transformer 跨行注意力串扰（将 `"DocTotalFC"` / `"U_BillType"` / `$filter` / `$orderby` 扭曲为 `"DocTota1FC"` / `"U_Bi11Type"` / `Sfilter` / `Sorderby`），又把贴边逗号 `,` 横向涂抹成 `_` / `-`（导致 `"Comments" : "-` 与 `"U_Bi11Type" : "Y"_`）。现升级为 **单行隔离 3 档宽度分桶微批次推理**（`W=320 / 640 / 960`，每行独占独立 Batch 行，洁净估计背景色留白 + 小字号贴边行 `1~2px` 呼吸边距），实测 896×632 JSON 截图热运行耗时反而由 `1273ms` 降至 **`892ms`**（快 30%）且彻底消除跨行串扰；
