@@ -83,17 +83,25 @@ public:
         double durationSec,
         const StudioExportOptions& exportOpts) noexcept;
 
-    /// 渲染指定高定背景主题或本地真实壁纸图片的 BGR 艺术画布（供合成底板与 UI 缩略图预览共用）
+    /// 渲染指定高定背景预设、枚举主题或本地真实壁纸图片的 BGR 艺术画布（供合成底板与 UI 缩略图预览共用）
     static void renderArtisticBackdropBgr(
         cv::Mat& outBgr,
         int width,
         int height,
         BeautyBackgroundType theme,
-        const std::string& customPathUtf8 = "");
+        const std::string& customPathUtf8 = "",
+        const std::string& presetKey = "");
 
-    /// 生成供 Direct2D UI 按钮直接显示的 BGRA 缩略预览图
+    /// 生成供 Direct2D UI 按钮直接显示的 BGRA 缩略预览图（按枚举兼容入口）
     static cv::Mat renderThemeThumbnailBgra(
         BeautyBackgroundType theme,
+        int width,
+        int height);
+
+    /// 生成高定背景目录预设（原创壁纸或零体积渐变/纯色）的 BGRA 缩略预览图（内置低内存极速缓存）
+    static cv::Mat renderPresetThumbnailBgra(
+        const std::string& presetKey,
+        BeautyBackgroundType fallbackTheme,
         int width,
         int height);
 
@@ -155,9 +163,12 @@ private:
         int outW, int outH,
         bool autoFrame,
         BeautyBackgroundType theme,
+        const std::string& presetKey,
         const std::string& customBgPath,
         float bgBlur,
         float shadowIntensity,
+        float glassBezelWidth,
+        const std::string& glassTintHex,
         int padX, int padY,
         int innerW, int innerH,
         float radius);
@@ -189,9 +200,12 @@ private:
     int m_cacheH = 0;
     bool m_cacheAutoFrame = false;
     BeautyBackgroundType m_cacheTheme = BeautyBackgroundType::StudioSlate;
+    std::string m_cachePresetKey;
     std::string m_cacheCustomBgPath;
     float m_cacheBgBlur = -1.0f;
     float m_cacheShadowIntensity = -1.0f;
+    float m_cacheGlassBezel = -1.0f;
+    std::string m_cacheGlassTintHex;
     int m_cachePadX = 0;
     int m_cachePadY = 0;
     int m_cacheInnerW = 0;

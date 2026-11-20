@@ -13,6 +13,7 @@
 #include "capture/ClipboardUtils.h"
 #include "capture/ScreenRecorder.h"
 #include "capture/RecordingIndicator.h"
+#include "capture/StudioBackdropCatalog.h"
 #include "capture/StudioPreviewWindow.h"
 #include "capture/WatermarkRenderer.h"
 #include "capture/PinWindow.h"
@@ -142,8 +143,32 @@ bool isAutomatedTestSession() {
     return len > 0 && std::wstring_view(buf, len) == L"1";
 }
 
+void ensureStudioStageDefaultsV2(tools3000::core::ConfigManager& config) {
+    if (config.get<int>("/recording/studioStageSchemaVersion", 0) >= 2) {
+        return;
+    }
+    if (config.get<double>("/recording/studioInsetBorder", 0.0) <= 0.01) {
+        config.set<double>("/recording/studioInsetBorder", 7.0);
+    }
+    if (config.get<double>("/recording/studioPaddingRatio", 0.070) <= 0.072) {
+        config.set<double>("/recording/studioPaddingRatio", 0.092);
+    }
+    if (config.get<double>("/recording/studioShadow", 0.65) <= 0.66) {
+        config.set<double>("/recording/studioShadow", 0.72);
+    }
+    if (std::abs(config.get<double>("/recording/studioCornerRadius", 16.0) - 16.0) < 0.01) {
+        config.set<double>("/recording/studioCornerRadius", 18.0);
+    }
+    const std::string curTheme = config.get<std::string>("/recording/studioTheme", "");
+    if (curTheme.empty() || curTheme == "aurora_purple" || curTheme == "studio_slate") {
+        config.set<std::string>("/recording/studioTheme", "blossom_silk");
+    }
+    config.set<int>("/recording/studioStageSchemaVersion", 2);
+}
+
 RecordOptions configuredRecordOptions(const CaptureRegion& region) {
     auto& config = tools3000::core::ConfigManager::instance();
+    ensureStudioStageDefaultsV2(config);
     RecordOptions options;
     options.regionX = region.x;
     options.regionY = region.y;
@@ -197,17 +222,17 @@ RecordOptions configuredRecordOptions(const CaptureRegion& region) {
         static_cast<float>(config.get<double>("/recording/studioCursorScale", 1.35)), 0.80f, 2.20f);
     options.studioConfig.autoFrameEnabled = config.get<bool>("/recording/studioAutoFrame", true);
     options.studioConfig.paddingRatio = std::clamp(
-        static_cast<float>(config.get<double>("/recording/studioPaddingRatio", 0.070)), 0.0f, 0.20f);
+        static_cast<float>(config.get<double>("/recording/studioPaddingRatio", 0.092)), 0.0f, 0.22f);
     options.studioConfig.cornerRadius = std::clamp(
-        static_cast<float>(config.get<double>("/recording/studioCornerRadius", 16.0)), 0.0f, 48.0f);
+        static_cast<float>(config.get<double>("/recording/studioCornerRadius", 18.0)), 0.0f, 48.0f);
     options.studioConfig.insetBorderWidth = std::clamp(
-        static_cast<float>(config.get<double>("/recording/studioInsetBorder", 0.0)), 0.0f, 12.0f);
+        static_cast<float>(config.get<double>("/recording/studioInsetBorder", 7.0)), 0.0f, 16.0f);
     options.studioConfig.insetBorderColorHex =
         config.get<std::string>("/recording/studioInsetBorderColor", "#FFFFFF");
     options.studioConfig.backgroundBlur = std::clamp(
         static_cast<float>(config.get<double>("/recording/studioBgBlur", 0.0)), 0.0f, 40.0f);
     options.studioConfig.shadowIntensity = std::clamp(
-        static_cast<float>(config.get<double>("/recording/studioShadow", 0.65)), 0.0f, 1.0f);
+        static_cast<float>(config.get<double>("/recording/studioShadow", 0.72)), 0.0f, 1.0f);
     options.studioConfig.motionBlurEnabled = config.get<bool>("/recording/studioMotionBlur", false);
     options.studioConfig.cursorHighlightHalo = config.get<bool>("/recording/studioCursorHalo", false);
     const int clickStyleInt = std::clamp(config.get<int>("/recording/studioClickStyle", 0), 0, 3);
@@ -219,8 +244,10 @@ RecordOptions configuredRecordOptions(const CaptureRegion& region) {
         options.studioConfig.showClickRipple = true;
     }
     options.studioConfig.customBackgroundPath = config.get<std::string>("/recording/studioCustomBg", "");
-    options.studioConfig.backgroundTheme = studioThemeFromConfig(
-        config.get<std::string>("/recording/studioTheme", "aurora_purple"));
+    const std::string rawStudioTheme = config.get<std::string>("/recording/studioTheme", "blossom_silk");
+    const auto& resolvedBackdrop = StudioBackdropCatalog::resolvePreset(rawStudioTheme, studioThemeFromConfig(rawStudioTheme));
+    options.studioConfig.backgroundPresetKey = resolvedBackdrop.key;
+    options.studioConfig.backgroundTheme = resolvedBackdrop.legacyTheme;
     options.studioConfig.autoCaptionsEnabled = config.get<bool>("/recording/studioAutoCaptions", false);
     options.studioConfig.watermark = WatermarkRenderer::loadStudioWatermarkConfig();
     const auto directory = config.get<std::string>(
@@ -1152,6 +1179,7 @@ public:
 
         mb.registerHandler("recording.getSettings", [](const nlohmann::json&) -> nlohmann::json {
             auto& config = tools3000::core::ConfigManager::instance();
+            ensureStudioStageDefaultsV2(config);
             const auto studioWm = tools3000::capture::WatermarkRenderer::loadStudioWatermarkConfig();
             return {
                 {"format", config.get<std::string>("/recording/format", "mp4_h264")},
@@ -1185,11 +1213,13 @@ public:
                 {"studioSmoothCursor", config.get<bool>("/recording/studioSmoothCursor", true)},
                 {"studioCursorScale", config.get<double>("/recording/studioCursorScale", 1.35)},
                 {"studioAutoFrame", config.get<bool>("/recording/studioAutoFrame", true)},
-                {"studioTheme", config.get<std::string>("/recording/studioTheme", "aurora_purple")},
+                {"studioPaddingRatio", config.get<double>("/recording/studioPaddingRatio", 0.092)},
+                {"studioInsetBorder", config.get<double>("/recording/studioInsetBorder", 7.0)},
+                {"studioTheme", config.get<std::string>("/recording/studioTheme", "blossom_silk")},
                 {"studioAutoCaptions", config.get<bool>("/recording/studioAutoCaptions", false)},
                 {"studioBgBlur", config.get<double>("/recording/studioBgBlur", 0.0)},
-                {"studioShadow", config.get<double>("/recording/studioShadow", 0.65)},
-                {"studioCornerRadius", config.get<double>("/recording/studioCornerRadius", 16.0)},
+                {"studioShadow", config.get<double>("/recording/studioShadow", 0.72)},
+                {"studioCornerRadius", config.get<double>("/recording/studioCornerRadius", 18.0)},
                 {"studioMotionBlur", config.get<bool>("/recording/studioMotionBlur", false)},
                 {"studioCursorHalo", config.get<bool>("/recording/studioCursorHalo", false)},
                 {"studioClickStyle", config.get<int>("/recording/studioClickStyle", 0)},
@@ -1287,11 +1317,6 @@ public:
 
         mb.registerHandler("recording.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
             static const std::unordered_set<std::string> formats = {"mp4_h264", "mp4_h265", "webm_vp9", "gif"};
-            static const std::unordered_set<std::string> studioThemes = {
-                "aurora_purple", "sunrise_coral", "emerald_sea", "obsidian_dark", "minimal_light",
-                "studio_slate", "paper_chalk", "silk_mist", "midnight_graphite", "pure_minimal",
-                "airy_glacier", "dusk_mountains", "misty_lake_dawn"
-            };
             static const std::unordered_set<int> countdowns = {0, 3, 5, 10};
             if (!params.is_object() || params.empty()) return {{"success", false}, {"error", "no settings supplied"}};
             auto curStudioWm = tools3000::capture::WatermarkRenderer::loadStudioWatermarkConfig();
@@ -1316,8 +1341,13 @@ public:
                 if ((key == "systemAudioVolume" || key == "microphoneVolume") &&
                     (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 200))
                     return {{"success", false}, {"error", "audio volume must be between 0 and 200"}};
-                if (key == "studioTheme" && (!value.is_string() || !studioThemes.contains(value.get<std::string>())))
+                if (key == "studioTheme" && (!value.is_string() ||
+                    tools3000::capture::StudioBackdropCatalog::findByKey(value.get<std::string>()) == nullptr))
                     return {{"success", false}, {"error", "invalid studioTheme"}};
+                if (key == "studioPaddingRatio" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 0.22))
+                    return {{"success", false}, {"error", "studioPaddingRatio must be between 0 and 0.22"}};
+                if (key == "studioInsetBorder" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 16.0))
+                    return {{"success", false}, {"error", "studioInsetBorder must be between 0 and 16"}};
                 if (key == "studioZoomFactor" && (!value.is_number() || value.get<double>() < 1.0 || value.get<double>() > 2.8))
                     return {{"success", false}, {"error", "studioZoomFactor must be between 1.0 and 2.8"}};
                 if (key == "studioZoomPacing" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 1.0))
@@ -1435,6 +1465,7 @@ public:
                     key != "studioZoomSensitivity" && key != "studioFocusSpotlightDim" &&
                     key != "studioLockCameraHold" && key != "studioSmoothCursor" &&
                     key != "studioCursorScale" && key != "studioAutoFrame" &&
+                    key != "studioPaddingRatio" && key != "studioInsetBorder" &&
                     key != "studioTheme" && key != "studioAutoCaptions" &&
                     key != "studioBgBlur" && key != "studioShadow" &&
                     key != "studioCornerRadius" && key != "studioMotionBlur" &&

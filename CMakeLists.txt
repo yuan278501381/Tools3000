@@ -189,6 +189,7 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/MarkupEngine.cpp
     src/capture/CursorOverlay.cpp
     src/capture/ScreenRecorder.cpp
+    src/capture/StudioBackdropCatalog.cpp
     src/capture/StudioTimeline.cpp
     src/capture/StudioVideoCompositor.cpp
     src/capture/StudioPreviewWindow.cpp

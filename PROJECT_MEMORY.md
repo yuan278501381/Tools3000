@@ -6,15 +6,27 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
-### [2026-11-20] 安装向导无故拦截「必须重启计算机」根治（`wpPreparing` 前置 PFRO 精准成对自愈引擎）与 `ChineseSimplified.isl` 翻译错位修复
-- **权威底层根因与三大暗坑 (`installer.iss`, `resources/installer/ChineseSimplified.isl`)**：
-  1. *Inno Setup `wpPreparing` 硬门禁时序暗坑*：进入 `wpPreparing` 页面瞬间，**严格早于** `[Code]` 中的 `PrepareToInstall()` 事件，Inno Setup 会扫描 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations` 及 `PendingFileRenameOperations2`；只要存在哪怕 1 条指向 `[Files]` / `[InstallDelete]` 目标目录的待重启删除/替换项（例如上次卸载或升级时被杀软/慢释放句柄短暂占用了 50ms 被 `uninsrestartdelete`/`restartreplace` 写入），即便此刻文件早已解锁或已消失，Inno Setup 也会直接阻断弹出「先前程序的安装/删除未完成，必须重启计算机」；
-  2. *`RegWriteMultiStringValue` 吞掉末尾空串的致命暗坑*：实测 Inno Setup 6 内置 `RegWriteMultiStringValue` 在末尾字符串为空串 `""`（Windows PFRO 用空目标串表示待重启删除操作，UTF-16LE 末尾需 `\0\0\0`）时会吞掉尾部空串，导致其他软件（如 Edge/Copilot/Windows Update）的 `(Src, Dst)` 奇偶配对错位！因此严禁使用 `RegWriteMultiStringValue` 回写 PFRO，必须通过 Win32 原生 `RegQueryValueExW` / `RegSetValueExW` / `RegDeleteValueW`（`KEY_WOW64_64KEY`）按字节精确读写 `REG_MULTI_SZ`；
-  3. *源头漏杀早退与翻译错位*：① 旧版 `StopAndKillAllTools3000Processes()` 当互斥体/窗口/SCM 已释放但 `AreAppFilesLocked()` 仍为真时漏执行 `taskkill` 与停服，且卸载 `WaitForProcessesAndFilesReleased(1000)` 对慢机/杀软扫描偏短；② `ChineseSimplified.isl` 第 243~244 行错将重启单选按钮 `YesRadio`/`NoRadio` 粘贴为「我同意此协议 / 我不同意此协议」。
-- **三道铁闸终局方案**：
-  1. **前置 PFRO 精准自愈 (`NextButtonClick(wpReady)` -> `ClearStaleAppPendingFileRenames(WizardDirValue)`)**：实测证实 `NextButtonClick(wpReady)` 在交互点击「安装」及 `/VERYSILENT` 静默模式下均严格先于 `wpPreparing` 触发，且 `WizardDirValue` 已是最终目录；仅对通过 `tools3000` 安全白名单的目标目录（兼容长路径与 8.3 短路径及目录本身）执行现场解锁清理（已不存在直接摘除、已解锁现场删旧文件/过期 `.tmp` 后摘除、真正被外部进程死锁的条目诚实保留），其余所有系统与第三方软件条目 100% 字节无损原样保留；冷路径（无残留）0 进程创建、0 注册表写入瞬过；
-  2. **源头止血加固**：修复 `StopAndKillAllTools3000ProcessesForDir` 在 `FilesLocked = True` 时同步补杀主进程与搜索服务，将 `PrepareToInstall` 释放轮询扩至 `15×200ms = 3000ms`、卸载释放等待扩至 `3500ms`（无锁仍 0ms 立即跳出）；
-  3. **语言包纠偏与防回退门禁**：将 `ChineseSimplified.isl` `YesRadio` / `NoRadio` 修正为「是，立即重新启动计算机(&Y)」/「否，稍后我将自己重新启动计算机(&N)」，并在 `tests/unit/test_core.inc` 补充 `InstallerRebootGuardAndI18nTest`。
+### [2026-11-20] 演播室世界级美学舞台与大师配色系统：Apple VisionOS 物理折射磨砂水晶外托框 + 三层 152px 空气悬浮深影 + 二维流体旋流丝绸极光 + 49 款策展首屏置顶 (`StudioBackdropCatalog`, `StudioVideoCompositor`)
+- **用户实机发现的两重现象与视觉第一原理根因**：
+  1. *数量差异根因*：旧版 [StudioPreviewWindow.cpp](file:///c:/repo/Tools3000/src/capture/StudioPreviewWindow.cpp) 遗留了扫描 `%APPDATA%\iMobie\FocuSee\BackgroundData\source` 的调试代码，导致装过 FocuSee 的开发机多出 81 张外部图，而纯净测试机仅显示 8 张；
+  2. *第一版“缺乏惊叹美感”的光学合成层真凶*：单纯替换底图无法消除廉价感——旧版合成层把录屏窗口直贴在背景上（“PPT 贴纸感”），仅用单层窄核（`49px`）黑影、缺少 **磨砂水晶玻璃折射外托框**、`insetBorderWidth` 竟向画面内部画 72% 死白粗线遮挡内容、外沿 `1px` `cv::line + cv::ellipse` 圆角拼线错位、且算法渐变仅为静态圆斑。
+- **世界级终局光学舞台与色彩体系**：
+  1. **Apple VisionOS 级三阶光学合成舞台 (`StudioVideoCompositor::ensureBackdropCache`)**：
+     - **三层画廊空气悬浮深影**：第 1 层全分接触紧影（锚定底边防飘）+ 第 2 层 `1/4` 低分合成 `46px` 立体中影 + 第 3 层 `1/4` 低分合成 **`152px` 超广域空气漫射深影**（向下偏移模拟真实顶光），耗时 `< 1.5ms` 且全程缓存复用；
+     - **真实物理折射磨砂水晶外托框 (`insetBorderWidth` 升级为「水晶框 / Glass」，默认 `7px`，范围 `0~16px`)**：采样未加阴影的纯净流光底图做 `31px` 高斯磨砂折射，叠加左上 45° 天光方向性提亮与高定微染色，包裹在录屏画面外围同心外圆角（`radius + bezelPx`）上，透出背后丝绸壁纸的朦胧流光；
+     - **解析式圆角矩形 SDF 亚像素方向性镜面高光棱线**：为水晶框外棱与内屏边界同时绘制左上亮、右下温润收暗的 `1.2px` 亚像素抗锯齿镜面高光倒角（彻底根除 `cv::line + cv::ellipse` 拼缝错位），默认留白提升至 `9.2%`（上限 `22%`），并通过 `/recording/studioStageSchemaVersion = 2` 对旧配置做一次性无损平滑升级；
+  2. **二维光滑旋流域扭曲流体丝绸着色器 (`renderArtisticBackdropBgr`)**：为 21 款 `mesh_*` 预设注入无散度双频三角旋流场（Domain Warping）与斜向丝绸波峰光泽调制 + `4×4 Bayer` / TPDF 磨砂微颗粒，呈现 Apple Display P3 灵感大师配色（克莱因流光、马尔代夫、莫奈睡莲、京都晚樱、加州落日、托斯卡纳、黑曜蓝宝、午夜紫晶等）；
+  3. **首屏殿堂级主视觉策展置顶 (`StudioBackdropCatalog.{h,cpp}` + `resources/wallpapers/*.jpg`)**：21 张 100% 原创高清壁纸（首屏第 1~2 行置顶蔚蓝流金、琉璃花语、流金棱镜、深海液态镜、全息霞光、云海圣光、暮雪镜湖、幻彩贝母等高通透体积光作品）+ 28 款流体丝绸/纯色 = 49 款，演播室 6 分类 Tab（`全部 / 沉稳 / 轻盈 / 风景 / 渐变 / 自定义`）+ `1/8 DCT` `0ms` 缩略图缓存，100% 零第三方路径依赖。
+
+### [2026-11-20] 彻底根治虚拟机/任何机器安装完成后自动重启：移除 `restartreplace` + 全目录无条件清场 + NTFS 原地改名腾位 (`EvacuateLockedFilesInTree`) + 前置 PFRO 自愈
+- **权威底层根因链 (`installer.iss`, `ISetup.chm`)**：
+  1. *虚拟机安装完成后自动重启的真凶*：查阅官方 `ISetup.chm` 证实，Inno Setup 的 `NeedRestart()` 与内部重启标志是 **逻辑或（OR）** 关系，无法否决 `[Files]` 中 `restartreplace` 触发的重启！当用户在虚拟机直接双击运行 `Tools3000-Setup.exe`（无外层 `deploy.ps1` 代杀、无 `/NORESTART`）覆盖升级时，旧版 `CheckDirFilesLocked` 仅检查 `{app}` 根与 `plugins` 下的 `.dll/.exe`（漏检被孤儿 `msedgewebview2.exe` 锁住的 `ui\assets\*.woff2` 等子目录文件）且跨 UAC 会话存在互斥体盲区，导致跳过 `taskkill`；拷贝撞锁后 `restartreplace` 置位重启标志——静默模式结束直接 `ExitWindowsEx` 自动重启，交互模式 `wpFinished` 默认勾选第 1 项 `YesRadio`（立即重启），点「完成」即刻重启；
+  2. *前置 `wpPreparing` 拦截暗坑与 `RegWriteMultiStringValue` 吞空串陷阱*：进入 `wpPreparing` 瞬间早于 `PrepareToInstall()` 扫描 `PendingFileRenameOperations`/`2`；且 Inno Setup 内置 `RegWriteMultiStringValue` 会吞掉 `REG_MULTI_SZ` 末尾空目标串 `""`，必须使用 Win32 原生 `RegQueryValueExW` / `RegSetValueExW` 按精确字节读写。
+- **100% 物理零重启四重铁闸终局架构**：
+  1. **`[Files]` 全量物理移除 `restartreplace`（保留 `ignoreversion uninsrestartdelete`）**：从编译期根源斩断 Inno Setup 置位内部重启标志与写入 PFRO 的通道；
+  2. **覆盖升级无条件全进程树清场 (`StopAndKillAllTools3000ProcessesForDir`)**：只要目标目录已存在旧版（`ExistingInstallPresent = True`），无视跨会话互斥体盲区，无条件发送关闭消息、停服并执行 `taskkill /f /t /im Tools3000.exe`（`/t` 连同子 `msedgewebview2.exe` 整树终结）与 `Tools3000_Service.exe`；`CheckDirFilesLocked` 升级为递归扫描 `{app}` 全目录树全文件类型；
+  3. **NTFS 原地改名腾位热覆盖引擎 (`CurStepChanged(ssInstall)` -> `EvacuateLockedFilesInTree`)**：利用 Windows NTFS 允许对映射运行中的 `.exe`/`.dll` 同目录 `MoveFileExW` 改名的内核特性，将任何仍被外部杀软/跨会话进程锁住的旧文件原地改名为 `.old_del_<tick>` 腾出原路径（并在后续升级与 `[UninstallDelete]` 自动清扫），经 Inno Setup 6.7.3 真锁探针实测在不传 `/NORESTART` 下 `INSTALL_EXIT_CODE=0`、`Need to restart Windows? No`；
+  4. **前置 PFRO 自愈 (`NextButtonClick(wpReady)`) + `wpFinished` `NoRadio` 防呆锁 + 单测红线门禁**：安装前自动摘除已解锁历史 PFRO 残留，完成页若因外部环境显示单选框亦强制选中 `NoRadio`，并在 `InstallerRebootGuardAndI18nTest` 硬断言 `[Files]` 段 0 `restartreplace`。
 
 ### [2026-11-20] 演播室认知友好型自动运镜引擎（三档预置 + 四维无级微调 + 因果聚焦 + 锁定视角 + 聚焦暗角）与侧边栏搜索框内嵌直角焦点框根治
 - **世界级认知友好型自动运镜引擎 (`StudioTimeline.{h,cpp}`, `StudioVideoCompositor.cpp`, `StudioPreviewWindow.{h,cpp}`, `PluginEntry.cpp`, `CapturePage.tsx`)**：

@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/ScreenRecorder.h"
+#include "capture/StudioBackdropCatalog.h"
 #include "capture/StudioTimeline.h"
 #include "capture/StudioVideoCompositor.h"
 #include "capture/StudioPreviewWindow.h"
@@ -2351,4 +2352,145 @@ TEST(StudioRecorderTest, CognitiveFriendlyAutoZoomPresetsCausalFocusTripodHoldAn
     }
     EXPECT_TRUE(foundManual);
     EXPECT_GE(rebuildTl.zoomSegments.size(), 2u);
+}
+
+TEST(StudioRecorderTest, StudioBackdropCatalogFullCoverageAndZeroCopyrightLeak) {
+    using namespace tools3000::capture;
+
+    const auto& presets = StudioBackdropCatalog::presets();
+    ASSERT_EQ(presets.size(), 49u);
+
+    std::error_code ec;
+    auto locateRepoRoot = [&]() -> std::filesystem::path {
+        std::filesystem::path probe = std::filesystem::current_path(ec);
+        for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+            if (std::filesystem::exists(probe / L"resources" / L"wallpapers", ec)) {
+                return probe;
+            }
+            probe = probe.parent_path();
+        }
+        wchar_t exeBuf[MAX_PATH]{};
+        const DWORD len = GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            probe = std::filesystem::path(exeBuf).parent_path();
+            for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+                if (std::filesystem::exists(probe / L"resources" / L"wallpapers", ec)) {
+                    return probe;
+                }
+                probe = probe.parent_path();
+            }
+        }
+        return {};
+    };
+
+    const auto repoRoot = locateRepoRoot();
+    ASSERT_FALSE(repoRoot.empty()) << "Unable to locate resources/wallpapers directory";
+
+    std::set<std::string> seenKeys;
+    size_t wallpaperCount = 0;
+    size_t proceduralCount = 0;
+    size_t darkCount = 0;
+    size_t lightCount = 0;
+    size_t sceneCount = 0;
+    size_t meshCount = 0;
+
+    for (const auto& p : presets) {
+        ASSERT_NE(p.key, nullptr);
+        ASSERT_STRNE(p.key, "");
+        EXPECT_TRUE(seenKeys.insert(p.key).second) << "Duplicate backdrop preset key: " << p.key;
+        EXPECT_NE(p.nameZh, nullptr);
+        EXPECT_NE(p.nameEn, nullptr);
+
+        if (StudioBackdropCatalog::matchesCategoryTab(p, 1)) ++darkCount;
+        if (StudioBackdropCatalog::matchesCategoryTab(p, 2)) ++lightCount;
+        if (StudioBackdropCatalog::matchesCategoryTab(p, 3)) ++sceneCount;
+        if (StudioBackdropCatalog::matchesCategoryTab(p, 4)) ++meshCount;
+
+        if (p.wallpaperFilename && p.wallpaperFilename[0] != L'\0') {
+            ++wallpaperCount;
+            const auto fp = repoRoot / L"resources" / L"wallpapers" / p.wallpaperFilename;
+            EXPECT_TRUE(std::filesystem::exists(fp, ec))
+                << "Missing original wallpaper file for preset: " << p.key;
+            EXPECT_GT(std::filesystem::file_size(fp, ec), 10'000u);
+        } else {
+            ++proceduralCount;
+        }
+    }
+
+    EXPECT_EQ(wallpaperCount, 21u);
+    EXPECT_EQ(proceduralCount, 28u);
+    EXPECT_GE(darkCount, 14u);
+    EXPECT_GE(lightCount, 14u);
+    EXPECT_GE(sceneCount, 7u);
+    EXPECT_EQ(meshCount, 28u);
+    EXPECT_STREQ(presets.front().key, "blossom_silk");
+
+    // 历史别名 100% 兼容映射
+    EXPECT_STREQ(StudioBackdropCatalog::resolvePreset("aurora_purple", BeautyBackgroundType::StudioSlate).key, "studio_slate");
+    EXPECT_STREQ(StudioBackdropCatalog::resolvePreset("obsidian_dark", BeautyBackgroundType::StudioSlate).key, "midnight_graphite");
+    EXPECT_STREQ(StudioBackdropCatalog::resolvePreset("minimal_light", BeautyBackgroundType::StudioSlate).key, "pure_minimal");
+    EXPECT_STREQ(StudioBackdropCatalog::resolvePreset("sunrise_coral", BeautyBackgroundType::StudioSlate).key, "paper_chalk");
+    EXPECT_STREQ(StudioBackdropCatalog::resolvePreset("emerald_sea", BeautyBackgroundType::StudioSlate).key, "silk_mist");
+
+    // 实测渲染：原创壁纸、二维流体丝绸极光渐变与极简纯色 + 缩略图缓存
+    cv::Mat wallThumb = StudioVideoCompositor::renderPresetThumbnailBgra("obsidian_gold", BeautyBackgroundType::MidnightGraphite, 64, 64);
+    ASSERT_EQ(wallThumb.cols, 64);
+    ASSERT_EQ(wallThumb.rows, 64);
+    EXPECT_EQ(wallThumb.type(), CV_8UC4);
+
+    cv::Mat meshCanvas;
+    StudioVideoCompositor::renderArtisticBackdropBgr(meshCanvas, 320, 180, BeautyBackgroundType::StudioSlate, "", "mesh_indigo_pulse");
+    ASSERT_EQ(meshCanvas.cols, 320);
+    ASSERT_EQ(meshCanvas.rows, 180);
+    const cv::Scalar meshMean = cv::mean(meshCanvas);
+    EXPECT_GT(meshMean[0], 90.0); // 蓝紫高饱和主色 B 通道充沛
+
+    // 实测 VisionOS 真实物理折射水晶玻璃外托框：insetBorderWidth = 8px 在内框外侧环带产生真实折射玻璃提亮
+    {
+        cv::Mat dummyFrame(360, 640, CV_8UC3, cv::Scalar(32, 36, 44));
+        StudioEvaluatedFrame eval{};
+        eval.camera.zoom = 1.0f;
+        eval.camera.cropX = 0.0f;
+        eval.camera.cropY = 0.0f;
+        eval.camera.cropW = 640.0f;
+        eval.camera.cropH = 360.0f;
+
+        StudioRenderConfig noGlassCfg;
+        noGlassCfg.autoFrameEnabled = true;
+        noGlassCfg.backgroundPresetKey = "blossom_silk";
+        noGlassCfg.paddingRatio = 0.10f;
+        noGlassCfg.cornerRadius = 18.0f;
+        noGlassCfg.shadowIntensity = 0.72f;
+        noGlassCfg.insetBorderWidth = 0.0f;
+
+        StudioRenderConfig glassCfg = noGlassCfg;
+        glassCfg.insetBorderWidth = 8.0f;
+
+        StudioVideoCompositor compA;
+        StudioVideoCompositor compB;
+        const cv::Mat outNoGlass = compA.composeFrame(dummyFrame, eval, noGlassCfg, cv::Size(640, 360), nullptr);
+        const cv::Mat outWithGlass = compB.composeFrame(dummyFrame, eval, glassCfg, cv::Size(640, 360), nullptr);
+        ASSERT_EQ(outNoGlass.size(), outWithGlass.size());
+        // 内框上方外侧紧邻的 6px 水晶外托框区域必然发生显著光学磨砂折射提亮
+        const cv::Rect topBezelStrip(outWithGlass.cols / 2 - 60, 36 - 6, 120, 5);
+        EXPECT_GT(cv::norm(outNoGlass(topBezelStrip), outWithGlass(topBezelStrip), cv::NORM_L1), 800.0);
+    }
+
+    cv::Mat solidCanvas;
+    StudioVideoCompositor::renderArtisticBackdropBgr(solidCanvas, 320, 180, BeautyBackgroundType::PureMinimal, "", "solid_snow_white");
+    ASSERT_EQ(solidCanvas.cols, 320);
+    ASSERT_EQ(solidCanvas.rows, 180);
+    const cv::Scalar solidMean = cv::mean(solidCanvas);
+    EXPECT_GT(solidMean[0], 235.0);
+    EXPECT_GT(solidMean[1], 235.0);
+    EXPECT_GT(solidMean[2], 235.0);
+
+    // 合规门禁：彻底移除扫描外部商业软件 FocuSee / iMobie 路径的残留代码
+    const auto previewCpp = repoRoot / L"src" / L"capture" / L"StudioPreviewWindow.cpp";
+    ASSERT_TRUE(std::filesystem::exists(previewCpp, ec));
+    std::ifstream ifs(previewCpp, std::ios::binary);
+    ASSERT_TRUE(ifs.is_open());
+    const std::string src((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(src.find("iMobie"), std::string::npos) << "StudioPreviewWindow.cpp must not scan third-party commercial app folders";
+    EXPECT_EQ(src.find("BackgroundData"), std::string::npos) << "StudioPreviewWindow.cpp must not scan third-party FocuSee folders";
 }

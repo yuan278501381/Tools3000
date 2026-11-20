@@ -4614,9 +4614,32 @@ TEST(InstallerRebootGuardAndI18nTest, PfroSelfHealAndChineseRestartRadioContract
         EXPECT_NE(content.find("ReadExactMultiStringValue("), std::string::npos);
         EXPECT_EQ(content.find("RegWriteMultiStringValue("), std::string::npos)
             << "RegWriteMultiStringValue truncates trailing empty REG_MULTI_SZ items in PFRO; must use WriteExactMultiStringValue";
-        EXPECT_NE(content.find("if NeedKillApp or FilesLocked then"), std::string::npos);
-        EXPECT_NE(content.find("if NeedKillService or FilesLocked then"), std::string::npos);
+        EXPECT_NE(content.find("if (not ExistingInstallPresent) and (not NeedKillApp) and (not NeedKillService) and (not FilesLocked) then"), std::string::npos);
+        EXPECT_NE(content.find("EvacuateLockedFilesInTree("), std::string::npos);
+        EXPECT_NE(content.find("MoveFileExW("), std::string::npos);
+        EXPECT_NE(content.find("WizardForm.NoRadio.Checked := True;"), std::string::npos);
         EXPECT_NE(content.find("WaitForProcessesAndFilesReleased(3500);"), std::string::npos);
+
+        // 严苛红线：[Files] 段 100% 禁用 restartreplace，从物理根源阻断 Inno Setup 置位重启标志与自动重启！
+        std::istringstream issStream(content);
+        bool inFilesSection = false;
+        int filesEntriesChecked = 0;
+        std::string issLine;
+        while (std::getline(issStream, issLine)) {
+            if (!issLine.empty() && issLine.back() == '\r') issLine.pop_back();
+            const auto firstChar = issLine.find_first_not_of(" \t");
+            if (firstChar == std::string::npos || issLine[firstChar] == ';') continue;
+            const std::string trimmed = issLine.substr(firstChar);
+            if (trimmed.front() == '[') {
+                inFilesSection = (trimmed == "[Files]");
+                continue;
+            }
+            if (!inFilesSection) continue;
+            ++filesEntriesChecked;
+            EXPECT_EQ(trimmed.find("restartreplace"), std::string::npos)
+                << "[Files] entry MUST NOT use restartreplace (causes forced VM/silent reboot): " << trimmed;
+        }
+        EXPECT_GE(filesEntriesChecked, 5);
     }
 
     // 2. 校验 ChineseSimplified.isl：重启单选按钮不得再错译为“我同意此协议 / 我不同意此协议”

@@ -1,4 +1,5 @@
 #include "capture/StudioPreviewWindow.h"
+#include "capture/StudioBackdropCatalog.h"
 #include "../resource.h"
 #include "core/config/ConfigManager.h"
 #include "core/events/EventBus.h"
@@ -93,10 +94,10 @@ enum HitId : int {
     Hit_SliderFocusSpotlight = 65,
 
     // 背景分类、翻页、选图与 28 宫格正方形缩略图
-    Hit_WallCatBase = 70,      // 70..74 (默认 / 沉稳 / 轻盈 / 风景 / 自定义)
-    Hit_WallPickCustom = 75,
-    Hit_WallPrevPage = 76,
-    Hit_WallNextPage = 77,
+    Hit_WallCatBase = 70,      // 70..75 (全部 / 沉稳 / 轻盈 / 风景 / 渐变 / 自定义)
+    Hit_WallPickCustom = 80,
+    Hit_WallPrevPage = 81,
+    Hit_WallNextPage = 82,
     Hit_ThemeSlotBase = 100,   // 100..127 当前页 28 槽正方形缩略图
 
     // 离线字幕页与顶栏导出按钮
@@ -167,17 +168,6 @@ enum HitId : int {
     Hit_AnnSegmentBase  = 3000, // 3000 + idx
 };
 
-static constexpr std::array<BeautyBackgroundType, 8> kOrderedStudioThemes = {{
-    BeautyBackgroundType::MidnightGraphite, // [沉稳] 深海曜石
-    BeautyBackgroundType::StudioSlate,      // [沉稳] 暮夜星云
-    BeautyBackgroundType::SilkMist,         // [沉稳] 丝绸青雾
-    BeautyBackgroundType::PureMinimal,      // [轻盈] 极简云白
-    BeautyBackgroundType::PaperChalk,       // [轻盈] 暖杏羊绒
-    BeautyBackgroundType::AiryGlacier,      // [轻盈] 冰川薄荷
-    BeautyBackgroundType::DuskMountains,    // [风景] 暮色群峰
-    BeautyBackgroundType::MistyLakeDawn,    // [风景] 拂晓晨湖
-}};
-
 static constexpr std::array<const char*, 8> kAnnotationPaletteHex = {{
     "#EC4899", // 醒目玫粉
     "#EF4444", // 珊瑚红
@@ -221,34 +211,6 @@ D2D1_COLOR_F hexToD2DColor(const std::string& hex, float alpha = 1.0f) noexcept 
         return D2D1::ColorF(r / 255.0f, g / 255.0f, b / 255.0f, alpha);
     }
     return D2D1::ColorF(0.93f, 0.28f, 0.60f, alpha);
-}
-
-const wchar_t* themeDisplayName(BeautyBackgroundType t, bool isZh) noexcept {
-    switch (t) {
-        case BeautyBackgroundType::MidnightGraphite: return isZh ? L"深海曜石" : L"Nordic Obsidian";
-        case BeautyBackgroundType::StudioSlate:      return isZh ? L"暮夜星云" : L"Velvet Dusk";
-        case BeautyBackgroundType::SilkMist:         return isZh ? L"丝绸青雾" : L"Silk Mist";
-        case BeautyBackgroundType::PureMinimal:      return isZh ? L"极简云白" : L"Pure Minimal";
-        case BeautyBackgroundType::PaperChalk:       return isZh ? L"暖杏羊绒" : L"Warm Cashmere";
-        case BeautyBackgroundType::AiryGlacier:      return isZh ? L"冰川薄荷" : L"Airy Glacier";
-        case BeautyBackgroundType::DuskMountains:    return isZh ? L"暮色群峰" : L"Dusk Peaks";
-        case BeautyBackgroundType::MistyLakeDawn:    return isZh ? L"拂晓晨湖" : L"Misty Lake";
-        default:                                     return isZh ? L"深海曜石" : L"Nordic Obsidian";
-    }
-}
-
-std::string themeKeyFromEnum(BeautyBackgroundType t) {
-    switch (t) {
-        case BeautyBackgroundType::PaperChalk:       return "sunrise_coral";
-        case BeautyBackgroundType::SilkMist:         return "emerald_sea";
-        case BeautyBackgroundType::MidnightGraphite: return "obsidian_dark";
-        case BeautyBackgroundType::PureMinimal:      return "minimal_light";
-        case BeautyBackgroundType::AiryGlacier:      return "airy_glacier";
-        case BeautyBackgroundType::DuskMountains:    return "dusk_mountains";
-        case BeautyBackgroundType::MistyLakeDawn:    return "misty_lake_dawn";
-        case BeautyBackgroundType::StudioSlate:
-        default:                                     return "aurora_purple";
-    }
 }
 
 const wchar_t* formatLabel(StudioExportFormat f, bool isZh) noexcept {
@@ -382,7 +344,8 @@ void persistStudioConfigToSettings(const StudioRenderConfig& cfg) {
     cm.set<bool>("/recording/studioCursorHalo", cfg.cursorHighlightHalo);
     cm.set<int>("/recording/studioClickStyle", static_cast<int>(cfg.clickEffectStyle));
     cm.set<std::string>("/recording/studioCustomBg", cfg.customBackgroundPath);
-    cm.set<std::string>("/recording/studioTheme", themeKeyFromEnum(cfg.backgroundTheme));
+    const auto& resolvedBackdrop = StudioBackdropCatalog::resolvePreset(cfg.backgroundPresetKey, cfg.backgroundTheme);
+    cm.set<std::string>("/recording/studioTheme", resolvedBackdrop.key);
     cm.set<bool>("/recording/studioAutoCaptions", cfg.autoCaptionsEnabled);
     WatermarkRenderer::saveStudioWatermarkConfig(cfg.watermark);
 }
@@ -763,37 +726,36 @@ void StudioPreviewWindow::discoverLocalWallpapers() {
     m_allWallpapers.clear();
     const bool isZh = tools3000::core::NativeThemePalette::isUiLanguageChinese();
 
-    for (size_t i = 0; i < kOrderedStudioThemes.size(); ++i) {
+    // 1. 装载单一事实源内置 49 款高定背景（21 款原创高清壁纸 + 28 款零体积多光源渐变/纯色）
+    const auto& catalog = StudioBackdropCatalog::presets();
+    m_allWallpapers.reserve(catalog.size() + 8);
+    for (const auto& preset : catalog) {
         WallpaperEntry entry{};
         entry.isBuiltin = true;
-        entry.builtinTheme = kOrderedStudioThemes[i];
-        entry.displayName = themeDisplayName(entry.builtinTheme, isZh);
+        entry.builtinTheme = preset.legacyTheme;
+        entry.presetKey = preset.key;
+        entry.categoryMask = preset.categoryMask;
+        entry.displayName = isZh ? preset.nameZh : preset.nameEn;
         entry.category = 0;
         m_allWallpapers.push_back(std::move(entry));
     }
 
-    std::vector<std::filesystem::path> scanDirs;
-    const std::wstring localAppData = queryKnownFolderPath(FOLDERID_LocalAppData);
-    const std::wstring roamingAppData = queryKnownFolderPath(FOLDERID_RoamingAppData);
-    if (!localAppData.empty()) {
-        scanDirs.push_back(std::filesystem::path(localAppData) / L"Tools3000" / L"wallpapers");
-    }
-    if (!roamingAppData.empty()) {
-        scanDirs.push_back(std::filesystem::path(roamingAppData) / L"iMobie" / L"FocuSee" / L"BackgroundData" / L"source");
-    }
-
+    // 2. 扫描用户本地扩展壁纸目录 (%LOCALAPPDATA%\Tools3000\wallpapers)，统一归入「自定义」分类
     std::set<std::wstring> seenNames;
     std::vector<std::filesystem::path> foundFiles;
     std::error_code ec;
-    for (const auto& dir : scanDirs) {
-        if (!std::filesystem::is_directory(dir, ec)) continue;
-        for (const auto& de : std::filesystem::directory_iterator(dir, ec)) {
-            if (!de.is_regular_file(ec)) continue;
-            const std::wstring ext = tools3000::core::WinUtils::toLower(de.path().extension().wstring());
-            if (ext != L".jpg" && ext != L".jpeg" && ext != L".png" && ext != L".webp") continue;
-            const std::wstring fnameLower = tools3000::core::WinUtils::toLower(de.path().filename().wstring());
-            if (seenNames.insert(fnameLower).second) {
-                foundFiles.push_back(de.path());
+    const std::wstring localAppData = queryKnownFolderPath(FOLDERID_LocalAppData);
+    if (!localAppData.empty()) {
+        const auto userWallDir = std::filesystem::path(localAppData) / L"Tools3000" / L"wallpapers";
+        if (std::filesystem::is_directory(userWallDir, ec)) {
+            for (const auto& de : std::filesystem::directory_iterator(userWallDir, ec)) {
+                if (!de.is_regular_file(ec)) continue;
+                const std::wstring ext = tools3000::core::WinUtils::toLower(de.path().extension().wstring());
+                if (ext != L".jpg" && ext != L".jpeg" && ext != L".png" && ext != L".webp") continue;
+                const std::wstring fnameLower = tools3000::core::WinUtils::toLower(de.path().filename().wstring());
+                if (seenNames.insert(fnameLower).second) {
+                    foundFiles.push_back(de.path());
+                }
             }
         }
     }
@@ -803,27 +765,11 @@ void StudioPreviewWindow::discoverLocalWallpapers() {
     });
 
     for (const auto& fp : foundFiles) {
-        const std::wstring stem = fp.stem().wstring();
-        const std::wstring lower = tools3000::core::WinUtils::toLower(stem);
-        int cat = 1;
-        if (lower.find(L"daytime") != std::wstring::npos ||
-            lower.find(L"light") != std::wstring::npos ||
-            lower.find(L"paper") != std::wstring::npos) {
-            cat = 2;
-        } else if (lower.find(L"landscape") != std::wstring::npos ||
-                   lower.find(L"mountain") != std::wstring::npos ||
-                   lower.find(L"lake") != std::wstring::npos ||
-                   lower.find(L"nature") != std::wstring::npos) {
-            cat = 3;
-        } else {
-            cat = 1;
-        }
-
         WallpaperEntry entry{};
         entry.isBuiltin = false;
         entry.filePathUtf8 = tools3000::core::WinUtils::wstringToUtf8(fp.wstring());
-        entry.displayName = stem;
-        entry.category = cat;
+        entry.displayName = fp.stem().wstring();
+        entry.category = 5; // 自定义
         m_allWallpapers.push_back(std::move(entry));
     }
 
@@ -842,7 +788,7 @@ void StudioPreviewWindow::discoverLocalWallpapers() {
                 customEntry.isBuiltin = false;
                 customEntry.filePathUtf8 = m_config.customBackgroundPath;
                 customEntry.displayName = cp.stem().wstring();
-                customEntry.category = 4;
+                customEntry.category = 5; // 自定义
                 m_allWallpapers.push_back(std::move(customEntry));
             }
         }
@@ -855,37 +801,30 @@ void StudioPreviewWindow::discoverLocalWallpapers() {
 void StudioPreviewWindow::rebuildFilteredWallpapers() {
     m_filteredWallpaperIndices.clear();
     if (m_wallpaperCategory == 0) {
+        // 「全部」优先完整呈现官方 49 款高定内置背景（21 原创壁纸 + 28 渐变纯色，整 2 页排布）
         for (int i = 0; i < static_cast<int>(m_allWallpapers.size()); ++i) {
             if (m_allWallpapers[static_cast<size_t>(i)].isBuiltin) {
                 m_filteredWallpaperIndices.push_back(i);
             }
         }
+    } else if (m_wallpaperCategory >= 1 && m_wallpaperCategory <= 4) {
+        // 1=沉稳, 2=轻盈, 3=风景, 4=渐变
+        const uint32_t bit =
+            (m_wallpaperCategory == 1) ? BackdropCat_Dark
+          : (m_wallpaperCategory == 2) ? BackdropCat_Light
+          : (m_wallpaperCategory == 3) ? BackdropCat_Scene
+          : BackdropCat_Mesh;
         for (int i = 0; i < static_cast<int>(m_allWallpapers.size()); ++i) {
-            if (!m_allWallpapers[static_cast<size_t>(i)].isBuiltin) {
+            const auto& w = m_allWallpapers[static_cast<size_t>(i)];
+            if (w.isBuiltin && (w.categoryMask & bit) != 0u) {
                 m_filteredWallpaperIndices.push_back(i);
             }
         }
     } else {
+        // 5=自定义（+选图 导入与 %LOCALAPPDATA%\Tools3000\wallpapers 用户扩展图）
         for (int i = 0; i < static_cast<int>(m_allWallpapers.size()); ++i) {
-            const auto& w = m_allWallpapers[static_cast<size_t>(i)];
-            if (w.category == m_wallpaperCategory) {
+            if (!m_allWallpapers[static_cast<size_t>(i)].isBuiltin) {
                 m_filteredWallpaperIndices.push_back(i);
-            } else if (w.isBuiltin) {
-                if (m_wallpaperCategory == 1 &&
-                    (w.builtinTheme == BeautyBackgroundType::MidnightGraphite ||
-                     w.builtinTheme == BeautyBackgroundType::StudioSlate ||
-                     w.builtinTheme == BeautyBackgroundType::SilkMist)) {
-                    m_filteredWallpaperIndices.push_back(i);
-                } else if (m_wallpaperCategory == 2 &&
-                           (w.builtinTheme == BeautyBackgroundType::PureMinimal ||
-                            w.builtinTheme == BeautyBackgroundType::PaperChalk ||
-                            w.builtinTheme == BeautyBackgroundType::AiryGlacier)) {
-                    m_filteredWallpaperIndices.push_back(i);
-                } else if (m_wallpaperCategory == 3 &&
-                           (w.builtinTheme == BeautyBackgroundType::DuskMountains ||
-                            w.builtinTheme == BeautyBackgroundType::MistyLakeDawn)) {
-                    m_filteredWallpaperIndices.push_back(i);
-                }
             }
         }
     }
@@ -1059,10 +998,10 @@ void StudioPreviewWindow::onCustomWallpaperPicked() {
         customEntry.isBuiltin = false;
         customEntry.filePathUtf8 = utf8;
         customEntry.displayName = std::filesystem::path(picked).stem().wstring();
-        customEntry.category = 4;
+        customEntry.category = 5;
         m_allWallpapers.push_back(std::move(customEntry));
     }
-    m_wallpaperCategory = 4;
+    m_wallpaperCategory = 5;
     m_wallpaperPage = 0;
     rebuildFilteredWallpapers();
     updateCurrentComposedBitmap();
@@ -1652,6 +1591,12 @@ bool StudioPreviewWindow::showSession(
         m_timeline.durationMs = static_cast<int64_t>(std::round(durSec * 1000.0));
     }
     m_config = initialConfig;
+    {
+        const auto& resolvedBackdrop = StudioBackdropCatalog::resolvePreset(
+            m_config.backgroundPresetKey, m_config.backgroundTheme);
+        m_config.backgroundPresetKey = resolvedBackdrop.key;
+        m_config.backgroundTheme = resolvedBackdrop.legacyTheme;
+    }
     if (!m_config.autoZoomEnabled) {
         m_config.zoomMode = StudioZoomMode::None;
     } else if (m_config.zoomMode == StudioZoomMode::None) {
@@ -1936,7 +1881,7 @@ void StudioPreviewWindow::updateCurrentComposedBitmap() {
     const bool hasAspectPad = (m_config.aspectRatio != StudioAspectRatio::Original);
     if (m_config.autoFrameEnabled || hasAspectPad) {
         const float safeRatio = m_config.autoFrameEnabled
-            ? std::clamp(m_config.paddingRatio, 0.0f, 0.18f)
+            ? std::clamp(m_config.paddingRatio, 0.0f, 0.22f)
             : 0.0f;
         const int basePad = (safeRatio > 0.002f)
             ? (std::max)(8, static_cast<int>(std::round((std::min)(outW, outH) * safeRatio)))
@@ -2175,7 +2120,7 @@ bool StudioPreviewWindow::ensureRenderResources() {
             if (fltPos >= m_filteredWallpaperIndices.size()) continue;
             const auto& entry = m_allWallpapers[static_cast<size_t>(m_filteredWallpaperIndices[fltPos])];
             cv::Mat thumb = entry.isBuiltin
-                ? StudioVideoCompositor::renderThemeThumbnailBgra(entry.builtinTheme, 64, 64)
+                ? StudioVideoCompositor::renderPresetThumbnailBgra(entry.presetKey, entry.builtinTheme, 64, 64)
                 : StudioVideoCompositor::renderCustomWallpaperThumbnailBgra(entry.filePathUtf8, 64, 64);
             if (!thumb.empty()) {
                 m_renderTarget->CreateBitmap(
@@ -3590,11 +3535,11 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
 
     wchar_t vBuf[32]{};
     std::swprintf(vBuf, std::size(vBuf), L"%d%%", static_cast<int>(std::round(m_config.paddingRatio * 100.0f)));
-    drawSliderRow(SliderDragKind::Padding, Hit_SliderPadding, curY, isZh ? L"内边距" : L"Padding", m_config.paddingRatio / 0.16f, vBuf);
+    drawSliderRow(SliderDragKind::Padding, Hit_SliderPadding, curY, isZh ? L"内边距" : L"Padding", m_config.paddingRatio / 0.22f, vBuf);
     curY += 22.5f;
 
     std::swprintf(vBuf, std::size(vBuf), L"%dpx", static_cast<int>(std::round(m_config.insetBorderWidth)));
-    drawSliderRow(SliderDragKind::InsetBorder, Hit_SliderInsetBorder, curY, isZh ? L"内边框" : L"Border", m_config.insetBorderWidth / 12.0f, vBuf, true);
+    drawSliderRow(SliderDragKind::InsetBorder, Hit_SliderInsetBorder, curY, isZh ? L"水晶框" : L"Glass", m_config.insetBorderWidth / 16.0f, vBuf, true);
     curY += 22.5f;
 
     std::swprintf(vBuf, std::size(vBuf), L"%dpx", static_cast<int>(std::round(m_config.cornerRadius)));
@@ -3615,7 +3560,24 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
 
     const int perPage = static_cast<int>(kWallpaperSlotsPerPage);
     const int totalPages = (std::max)(1, static_cast<int>((static_cast<int>(m_filteredWallpaperIndices.size()) + perPage - 1) / perPage));
-    drawTxt(isZh ? L"背景" : L"Background", m_sectionFmt.Get(), D2D1::RectF(padL, curY, padL + 80.0f, curY + 20.0f), colPrimary);
+    const std::string effectiveActivePresetKey(
+        StudioBackdropCatalog::resolvePreset(m_config.backgroundPresetKey, m_config.backgroundTheme).key);
+
+    // 悬停在任意背景缩略图时，在标题旁实时展示该背景雅名；否则显示「背景」
+    std::wstring bgHeaderLabel = isZh ? L"背景" : L"Background";
+    if (m_hoveredHitId >= Hit_ThemeSlotBase &&
+        m_hoveredHitId < Hit_ThemeSlotBase + static_cast<int>(kWallpaperSlotsPerPage)) {
+        const size_t hovSlot = static_cast<size_t>(m_hoveredHitId - Hit_ThemeSlotBase);
+        const size_t hovFlt = static_cast<size_t>(m_wallpaperPage) * kWallpaperSlotsPerPage + hovSlot;
+        if (hovFlt < m_filteredWallpaperIndices.size()) {
+            const auto& hovEntry = m_allWallpapers[static_cast<size_t>(m_filteredWallpaperIndices[hovFlt])];
+            if (!hovEntry.displayName.empty()) {
+                bgHeaderLabel = (isZh ? L"背景 · " : L"Bg · ") + hovEntry.displayName;
+            }
+        }
+    }
+    const float bgHeaderRight = padR - (totalPages > 1 ? 136.0f : 60.0f);
+    drawTxt(bgHeaderLabel, m_sectionFmt.Get(), D2D1::RectF(padL, curY, (std::max)(padL + 60.0f, bgHeaderRight), curY + 20.0f), colPrimary);
 
     const D2D1_RECT_F pickRc = D2D1::RectF(padR - (totalPages > 1 ? 132.0f : 56.0f), curY + 1.0f,
                                            padR - (totalPages > 1 ? 78.0f : 0.0f), curY + 20.0f);
@@ -3633,10 +3595,13 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
     curY += 24.0f;
 
     {
-        const int catIds[5] = { Hit_WallCatBase + 0, Hit_WallCatBase + 1, Hit_WallCatBase + 2, Hit_WallCatBase + 3, Hit_WallCatBase + 4 };
-        static const wchar_t* catZh[5] = { L"默认", L"沉稳", L"轻盈", L"风景", L"自定义" };
-        static const wchar_t* catEn[5] = { L"All", L"Dark", L"Light", L"Scene", L"Custom" };
-        drawSegmentedGroup(curY, 24.0f, 5, catIds, isZh ? catZh : catEn, m_wallpaperCategory);
+        const int catIds[6] = {
+            Hit_WallCatBase + 0, Hit_WallCatBase + 1, Hit_WallCatBase + 2,
+            Hit_WallCatBase + 3, Hit_WallCatBase + 4, Hit_WallCatBase + 5
+        };
+        static const wchar_t* catZh[6] = { L"全部", L"沉稳", L"轻盈", L"风景", L"渐变", L"自定义" };
+        static const wchar_t* catEn[6] = { L"All", L"Dark", L"Light", L"Scene", L"Mesh", L"Custom" };
+        drawSegmentedGroup(curY, 24.0f, 6, catIds, isZh ? catZh : catEn, m_wallpaperCategory);
     }
     curY += 29.0f;
 
@@ -3654,7 +3619,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
             const float ty = curY + static_cast<float>(row) * (boxSize + gap);
             const D2D1_RECT_F trc = D2D1::RectF(tx, ty, tx + boxSize, ty + boxSize);
 
-            if (m_wallpaperCategory == 4 && slot == 0 && m_filteredWallpaperIndices.empty()) {
+            if (m_wallpaperCategory == 5 && slot == 0 && m_filteredWallpaperIndices.empty()) {
                 m_hitZones.push_back({Hit_WallPickCustom, trc, -1});
                 setBrush(colChipBg);
                 m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(trc, 6.0f, 6.0f), brush);
@@ -3680,7 +3645,7 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
                 }
             }
             const bool selected = entry.isBuiltin
-                ? (m_config.customBackgroundPath.empty() && m_config.backgroundTheme == entry.builtinTheme)
+                ? (m_config.customBackgroundPath.empty() && effectiveActivePresetKey == entry.presetKey)
                 : (!m_config.customBackgroundPath.empty() && m_config.customBackgroundPath == entry.filePathUtf8);
             if (selected) {
                 setBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.92f));
@@ -8233,10 +8198,10 @@ void StudioPreviewWindow::applySliderAtX(SliderDragKind kind, float lx) {
     const float ratio = std::clamp((lx - trk.left) / w, 0.0f, 1.0f);
 
     if (kind == SliderDragKind::Padding) {
-        m_config.paddingRatio = ratio * 0.16f;
+        m_config.paddingRatio = ratio * 0.22f;
         m_config.autoFrameEnabled = true;
     } else if (kind == SliderDragKind::InsetBorder) {
-        m_config.insetBorderWidth = std::round(ratio * 12.0f);
+        m_config.insetBorderWidth = std::round(ratio * 16.0f);
         m_config.autoFrameEnabled = true;
     } else if (kind == SliderDragKind::Radius) {
         m_config.cornerRadius = std::round(ratio * 36.0f);
@@ -9340,7 +9305,7 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
             applySliderAtX(m_activeSlider, lx);
             return;
         }
-        if (id >= Hit_WallCatBase && id < Hit_WallCatBase + 5) {
+        if (id >= Hit_WallCatBase && id < Hit_WallCatBase + 6) {
             m_wallpaperCategory = id - Hit_WallCatBase;
             m_wallpaperPage = 0;
             rebuildFilteredWallpapers();
@@ -9366,6 +9331,7 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
             if (entryIdx >= 0 && entryIdx < static_cast<int>(m_allWallpapers.size())) {
                 const auto& entry = m_allWallpapers[static_cast<size_t>(entryIdx)];
                 if (entry.isBuiltin) {
+                    m_config.backgroundPresetKey = entry.presetKey;
                     m_config.backgroundTheme = entry.builtinTheme;
                     m_config.customBackgroundPath.clear();
                 } else {

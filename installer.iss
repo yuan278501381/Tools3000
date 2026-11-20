@@ -141,15 +141,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "autostart"; Description: "{cm:AutoStartProgram}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; 核心可执行文件与主程序根目录共享运行库（显式排除测试库 *gtest*/*gmock* 与插件本体 Plugin_*.dll）
-Source: "{#DeployDir}\*.dll"; DestDir: "{app}"; Excludes: "*gtest*.dll,*gmock*.dll,Plugin_*.dll"; Flags: ignoreversion restartreplace uninsrestartdelete
+; 核心可执行文件与主程序根目录共享运行库（显式排除测试库 *gtest*/*gmock* 与插件本体 Plugin_*.dll；禁用 restartreplace，改由全目录清场 + NTFS Rename-Aside 实现 100% 物理零重启覆盖）
+Source: "{#DeployDir}\*.dll"; DestDir: "{app}"; Excludes: "*gtest*.dll,*gmock*.dll,Plugin_*.dll"; Flags: ignoreversion uninsrestartdelete
 ; 插件目录严格仅打包 Plugin_*.dll 与 *.plugin.json（共享运行库统一复用 {app} 根目录唯一副本）
-Source: "{#DeployDir}\plugins\Plugin_*.dll"; DestDir: "{app}\plugins"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "{#DeployDir}\plugins\*.plugin.json"; DestDir: "{app}\plugins"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "{#DeployDir}\Tools3000.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "{#DeployDir}\Tools3000_Service.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
-; 其余全量资源与依赖文件（保持递归与 restartreplace 双保险，排除已明确声明的 DLL/EXE/JSON 避免二次拷贝冲突，且绝不配置 ProgramData users-modify）
-Source: "{#DeployDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace uninsrestartdelete; Excludes: "*.pdb,Tools3000Tests.*,*Preview.*,*Integration.*,*.flag,debug.flag,*.dll,*.plugin.json,Tools3000.exe,Tools3000_Service.exe"
+Source: "{#DeployDir}\plugins\Plugin_*.dll"; DestDir: "{app}\plugins"; Flags: ignoreversion uninsrestartdelete
+Source: "{#DeployDir}\plugins\*.plugin.json"; DestDir: "{app}\plugins"; Flags: ignoreversion uninsrestartdelete
+Source: "{#DeployDir}\Tools3000.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
+Source: "{#DeployDir}\Tools3000_Service.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
+; 其余全量资源与依赖文件（排除已明确声明的 DLL/EXE/JSON 避免二次拷贝冲突，且绝不配置 ProgramData users-modify）
+Source: "{#DeployDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs uninsrestartdelete; Excludes: "*.pdb,Tools3000Tests.*,*Preview.*,*Integration.*,*.flag,debug.flag,*.dll,*.plugin.json,Tools3000.exe,Tools3000_Service.exe"
 
 [InstallDelete]
 Type: files; Name: "{app}\*gtest*.dll"
@@ -166,6 +166,10 @@ Type: filesandordirs; Name: "{userprograms}\Tools3000"
 Type: filesandordirs; Name: "{commonprograms}\Tools3000"
 Type: files; Name: "{app}\initial_modules.json"
 Type: files; Name: "{app}\*.log"
+Type: files; Name: "{app}\*.old_del_*"
+Type: files; Name: "{app}\plugins\*.old_del_*"
+Type: files; Name: "{app}\ui\assets\*.old_del_*"
+Type: dirifempty; Name: "{app}\resources\wallpapers"
 Type: dirifempty; Name: "{app}\plugins"
 Type: dirifempty; Name: "{app}\resources\scripts"
 Type: dirifempty; Name: "{app}\resources"
@@ -251,6 +255,7 @@ const
   KEY_SET_VALUE_FLAG = $0002;
   KEY_WOW64_64KEY_FLAG = $0100;
   REG_MULTI_SZ_TYPE = 7;
+  MOVEFILE_REPLACE_EXISTING_FLAG = $0001;
   SESSION_MANAGER_SUBKEY = 'SYSTEM\CurrentControlSet\Control\Session Manager';
 
 type
@@ -288,6 +293,8 @@ function RegDeleteValueW(hKey: THandle; lpValueName: String): LongInt;
   external 'RegDeleteValueW@advapi32.dll stdcall';
 function RegCloseKey(hKey: THandle): LongInt;
   external 'RegCloseKey@advapi32.dll stdcall';
+function MoveFileExW(lpExistingFileName, lpNewFileName: String; dwFlags: DWORD): BOOL;
+  external 'MoveFileExW@kernel32.dll stdcall';
 function GetLastError(): DWORD;
   external 'GetLastError@kernel32.dll stdcall';
 
@@ -314,7 +321,7 @@ end;
 function CheckDirFilesLocked(const DirPath: String): Boolean;
 var
   FindRec: TFindRec;
-  Ext, FileNameLower, UninstallerName: String;
+  FullPath, FileNameLower, UninstallerName: String;
 begin
   Result := False;
   if (DirPath = '') or (not DirExists(DirPath)) then Exit;
@@ -328,22 +335,34 @@ begin
   begin
     try
       repeat
-        if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
+        if (FindRec.Name = '.') or (FindRec.Name = '..') then
+          Continue;
+
+        FullPath := DirPath + '\' + FindRec.Name;
+        FileNameLower := Lowercase(FindRec.Name);
+
+        if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
         begin
-          FileNameLower := Lowercase(FindRec.Name);
-          // 绝对排除卸载程序自身与其数据文件 (unins*)，彻底杜绝自锁误报与假死超时
-          if (Pos('unins', FileNameLower) = 1) or ((UninstallerName <> '') and (FileNameLower = UninstallerName)) then
+          if CheckDirFilesLocked(FullPath) then
+          begin
+            Result := True;
+            Exit;
+          end;
+        end
+        else
+        begin
+          // 绝对排除卸载程序自身 (unins*) 与已移开的旧版本占位壳 (.old_del_*)
+          if (Pos('unins', FileNameLower) = 1) or
+             ((UninstallerName <> '') and (FileNameLower = UninstallerName)) or
+             (Pos('.old_del_', FileNameLower) > 0) then
             Continue;
 
-          Ext := Lowercase(ExtractFileExt(FindRec.Name));
-          if (Ext = '.dll') or (Ext = '.exe') then
+          // 覆盖全文件类型（含 .dll/.exe/.woff2/.js/.html），确保孤儿 WebView2 锁住字体/前端资源时也能 100% 捕获
+          if IsFileLocked(FullPath) then
           begin
-            if IsFileLocked(DirPath + '\' + FindRec.Name) then
-            begin
-              Log(Format('CheckDirFilesLocked: File is locked -> %s\%s', [DirPath, FindRec.Name]));
-              Result := True;
-              Exit;
-            end;
+            Log('CheckDirFilesLocked: File is locked -> ' + FullPath);
+            Result := True;
+            Exit;
           end;
         end;
       until not FindNext(FindRec);
@@ -363,7 +382,7 @@ begin
     Result := False;
     Exit;
   end;
-  Result := CheckDirFilesLocked(NormalizedDir) or CheckDirFilesLocked(NormalizedDir + '\plugins');
+  Result := CheckDirFilesLocked(NormalizedDir);
 end;
 
 function AreAppFilesLocked(): Boolean;
@@ -603,37 +622,37 @@ var
   NeedKillApp: Boolean;
   NeedKillService: Boolean;
   FilesLocked: Boolean;
+  ExistingInstallPresent: Boolean;
+  NormDir: String;
 begin
+  NormDir := RemoveBackslashUnlessRoot(Trim(TargetAppDir));
+  ExistingInstallPresent := (NormDir <> '') and
+                            (FileExists(NormDir + '\Tools3000.exe') or FileExists(NormDir + '\Tools3000_Service.exe'));
   NeedKillApp := IsTools3000Running();
   NeedKillService := IsSearchServiceRunning();
-  FilesLocked := AreAppFilesLockedInDir(TargetAppDir);
+  FilesLocked := AreAppFilesLockedInDir(NormDir);
 
-  // 若均未运行且关键文件未锁定，毫秒级直接跳过，杜绝空转执行 taskkill/sc 造成的 500ms~1000ms 进程创建开销
-  if (not NeedKillApp) and (not NeedKillService) and (not FilesLocked) then
+  // 全新安装（目标目录尚不存在旧版可执行文件）且全局无活跃实例时快速跳过；
+  // 只要是覆盖升级或卸载（ExistingInstallPresent = True），无条件执行清场终止，彻底消除跨会话/跨桌面互斥体盲区漏杀！
+  if (not ExistingInstallPresent) and (not NeedKillApp) and (not NeedKillService) and (not FilesLocked) then
   begin
-    Log('StopAndKillAllTools3000ProcessesForDir: No running Tools3000 instances or file locks detected, skipping process kills.');
+    Log('StopAndKillAllTools3000ProcessesForDir: Fresh target dir with no active Tools3000 instances, skipping process kills.');
     Exit;
   end;
 
-  Log(Format('StopAndKillAllTools3000ProcessesForDir: Terminating active processes (app=%d, service=%d, locked=%d)...', [Ord(NeedKillApp), Ord(NeedKillService), Ord(FilesLocked)]));
+  Log(Format('StopAndKillAllTools3000ProcessesForDir: Unconditionally clearing processes (existing=%d, app=%d, service=%d, locked=%d)...', [Ord(ExistingInstallPresent), Ord(NeedKillApp), Ord(NeedKillService), Ord(FilesLocked)]));
 
-  // 当检测到文件仍被锁定（如主程序刚释放互斥体/窗口但尚未卸载 DLL）时，必须同步补杀主进程与服务进程
-  if NeedKillApp or FilesLocked then
+  MsgHwnd := FindWindowByClassName('Tools3000_MessageWindow');
+  if MsgHwnd <> 0 then
   begin
-    MsgHwnd := FindWindowByClassName('Tools3000_MessageWindow');
-    if MsgHwnd <> 0 then
-    begin
-      PostMessage(MsgHwnd, WM_CLOSE_MSG, 0, 0);
-      Sleep(20);
-    end;
-    // 强杀主程序进程树（包含子 WebView2 进程）
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    PostMessage(MsgHwnd, WM_CLOSE_MSG, 0, 0);
+    Sleep(30);
   end;
 
-  if NeedKillService or FilesLocked then
-  begin
-    StopSearchServiceNativeForDir(TargetAppDir);
-  end;
+  // 无条件强杀主程序进程树（包含子 WebView2 进程）与后台服务进程，杜绝跨桌面残留锁
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  StopSearchServiceNativeForDir(NormDir);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure StopAndKillAllTools3000Processes();
@@ -1119,6 +1138,15 @@ begin
   begin
     ApplyComponentsListStyles();
   end;
+  // 终极防呆安全锁：即便极端外部环境令完成页展示重启单选框，也强制默认选中「否，稍后重启」，杜绝点击完成误触发重启
+  if CurPageID = wpFinished then
+  begin
+    if WizardForm.NoRadio.Visible then
+    begin
+      WizardForm.YesRadio.Checked := False;
+      WizardForm.NoRadio.Checked := True;
+    end;
+  end;
   if CurPageID = wpInstalling then
   begin
     if (ExtractTimerId = 0) and (TimerCallbackAddr <> 0) then
@@ -1397,8 +1425,56 @@ begin
     Log(Format('Failed to update shortcuts, exit code %d', [ResultCode]));
 end;
 
+// NTFS 原地改名腾位引擎：清理上次遗留的 .old_del_*，并将任何仍被外部进程映射占用的目标文件
+// 原地重命名为 .old_del_<tick>，使新版本文件无需 restartreplace、100% 物理零重启当场写入生效
+procedure EvacuateLockedFilesInTree(const DirPath: String);
+var
+  FindRec: TFindRec;
+  FullPath, LowerName, AsidePath: String;
+begin
+  if (DirPath = '') or (not DirExists(DirPath)) then Exit;
+  if FindFirst(DirPath + '\*.*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name = '.') or (FindRec.Name = '..') then Continue;
+        FullPath := DirPath + '\' + FindRec.Name;
+        LowerName := Lowercase(FindRec.Name);
+        if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+        begin
+          EvacuateLockedFilesInTree(FullPath);
+        end
+        else
+        begin
+          if Pos('unins', LowerName) = 1 then Continue;
+          if Pos('.old_del_', LowerName) > 0 then
+          begin
+            if DeleteFile(FullPath) then
+              Log('EvacuateLockedFilesInTree: Purged previous old_del file -> ' + FullPath);
+            Continue;
+          end;
+          if IsFileLocked(FullPath) then
+          begin
+            AsidePath := Format('%s.old_del_%u', [FullPath, GetTickCount()]);
+            if MoveFileExW(FullPath, AsidePath, MOVEFILE_REPLACE_EXISTING_FLAG) then
+              Log('EvacuateLockedFilesInTree: Renamed locked file aside -> ' + AsidePath)
+            else
+              Log(Format('EvacuateLockedFilesInTree: MoveFileExW failed (%d) for %s', [GetLastError(), FullPath]));
+          end;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssInstall then
+  begin
+    EvacuateLockedFilesInTree(ExpandConstant('{app}'));
+  end;
   if CurStep = ssPostInstall then
   begin
     PurgeLegacyDuplicatePluginDlls();
