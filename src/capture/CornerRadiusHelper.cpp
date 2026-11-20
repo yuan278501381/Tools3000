@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "CornerRadiusHelper.h"
+#include "core/i18n/UiI18n.h"
 #include <d2d1.h>
 #include <wrl/client.h>
 #include <cstdint>
@@ -231,15 +232,26 @@ float CornerRadiusHelper::applyIncrementalDrag(
 
 std::wstring CornerRadiusHelper::getToastMessage(CornerRadiusTarget target, float radius, bool isZh) {
     const int rVal = static_cast<int>(std::round(radius));
+    const auto lang = tools3000::core::UiI18n::getEffectiveLanguage();
+    const bool useDirect = (lang == tools3000::core::UiLanguage::ZhCN || lang == tools3000::core::UiLanguage::EnUS);
+    const std::wstring rStr = std::to_wstring(rVal);
     switch (target) {
         case CornerRadiusTarget::Selection:
-            return isZh ? std::format(L"选区圆角: {} px", rVal) : std::format(L"Selection Radius: {} px", rVal);
+            return useDirect
+                ? (isZh ? std::format(L"选区圆角: {} px", rVal) : std::format(L"Selection Radius: {} px", rVal))
+                : tools3000::core::trFmtW(L"选区圆角: {0} px", L"Selection Radius: {0} px", {rStr});
         case CornerRadiusTarget::BeautifyShell:
-            return isZh ? std::format(L"美化外壳圆角: {} px", rVal) : std::format(L"Beauty Shell Radius: {} px", rVal);
+            return useDirect
+                ? (isZh ? std::format(L"美化外壳圆角: {} px", rVal) : std::format(L"Beauty Shell Radius: {} px", rVal))
+                : tools3000::core::trFmtW(L"美化外壳圆角: {0} px", L"Beauty Shell Radius: {0} px", {rStr});
         case CornerRadiusTarget::RectangleMarkup:
-            return isZh ? std::format(L"矩形圆角: {} px", rVal) : std::format(L"Corner Radius: {} px", rVal);
+            return useDirect
+                ? (isZh ? std::format(L"矩形圆角: {} px", rVal) : std::format(L"Corner Radius: {} px", rVal))
+                : tools3000::core::trFmtW(L"矩形圆角: {0} px", L"Corner Radius: {0} px", {rStr});
         default:
-            return isZh ? std::format(L"圆角半径: {} px", rVal) : std::format(L"Radius: {} px", rVal);
+            return useDirect
+                ? (isZh ? std::format(L"圆角半径: {} px", rVal) : std::format(L"Radius: {} px", rVal))
+                : tools3000::core::trFmtW(L"圆角半径: {0} px", L"Radius: {0} px", {rStr});
     }
 }
 

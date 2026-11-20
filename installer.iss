@@ -51,7 +51,7 @@ PrivilegesRequired=admin
 ; 进程管理由 Tools3000 原生互斥体与消息循环毫秒级接管；禁用重启管理器以消除 1000ms 开销
 CloseApplications=no
 RestartApplications=no
-; 默认严格跟随系统 UI 语言，非中文环境一律纯英文兜底，零弹窗干扰
+; 默认严格跟随系统 UI 语言（支持 8 大语种，未知系统语种一律纯英文兜底），零弹窗干扰
 ShowLanguageDialog=no
 LanguageDetectionMethod=uilanguage
 ; 通知 Explorer 刷新文件关联与图标缓存
@@ -60,64 +60,265 @@ ChangesAssociations=yes
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimplified"; MessagesFile: "resources\installer\ChineseSimplified.isl"
+Name: "chinesetraditional"; MessagesFile: "resources\installer\ChineseTraditional.isl"
+Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
+Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
+Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 
 [CustomMessages]
 chinesesimplified.AppRunningPrompt=安装程序检测到 Tools3000 正在运行。%n%n是否自动关闭正在运行的 Tools3000 并继续安装？
+chinesetraditional.AppRunningPrompt=安裝程式偵測到 Tools3000 正在執行。%n%n是否自動關閉正在執行的 Tools3000 並繼續安裝？
 english.AppRunningPrompt=Setup detected that Tools3000 is currently running.%n%nWould you like to automatically close running instances of Tools3000 and continue with the installation?
+japanese.AppRunningPrompt=Tools3000 が現在実行中であることを検出しました。%n%n実行中の Tools3000 を自動的に終了してインストールを続行しますか？
+korean.AppRunningPrompt=Tools3000이 현재 실행 중입니다.%n%n실행 중인 Tools3000을 자동으로 종료하고 설치를 계속하시겠습니까?
+russian.AppRunningPrompt=Установщик обнаружил, что Tools3000 сейчас запущен.%n%nАвтоматически закрыть запущенные копии Tools3000 и продолжить установку?
+brazilianportuguese.AppRunningPrompt=O instalador detectou que o Tools3000 está em execução.%n%nDeseja fechar automaticamente o Tools3000 e continuar a instalação?
+spanish.AppRunningPrompt=El instalador detectó que Tools3000 está en ejecución.%n%n¿Desea cerrar automáticamente Tools3000 y continuar con la instalación?
+
 chinesesimplified.InstallationAbortedByUser=安装已由用户取消。请关闭 Tools3000 后重新运行安装程序。
+chinesetraditional.InstallationAbortedByUser=安裝已由使用者取消。請關閉 Tools3000 後重新執行安裝程式。
 english.InstallationAbortedByUser=Installation was cancelled by the user. Please close Tools3000 and rerun setup.
+japanese.InstallationAbortedByUser=インストールはユーザーによってキャンセルされました。Tools3000 を終了してから再度セットアップを実行してください。
+korean.InstallationAbortedByUser=사용자가 설치를 취소했습니다. Tools3000을 종료한 후 설치 프로그램을 다시 실행해 주세요.
+russian.InstallationAbortedByUser=Установка отменена пользователем. Закройте Tools3000 и запустите установщик снова.
+brazilianportuguese.InstallationAbortedByUser=A instalação foi cancelada pelo usuário. Feche o Tools3000 e execute o instalador novamente.
+spanish.InstallationAbortedByUser=La instalación fue cancelada por el usuario. Cierre Tools3000 y vuelva a ejecutar el instalador.
+
 chinesesimplified.AppRunningUninstallPrompt=卸载程序检测到 Tools3000 正在运行。%n%n是否自动关闭 Tools3000 并继续卸载？
+chinesetraditional.AppRunningUninstallPrompt=解除安裝程式偵測到 Tools3000 正在執行。%n%n是否自動關閉 Tools3000 並繼續解除安裝？
 english.AppRunningUninstallPrompt=Uninstall detected that Tools3000 is currently running.%n%nWould you like to automatically close running instances of Tools3000 and continue?
+japanese.AppRunningUninstallPrompt=Tools3000 が現在実行中であることを検出しました。%n%n実行中の Tools3000 を自動的に終了してアンインストールを続行しますか？
+korean.AppRunningUninstallPrompt=Tools3000이 현재 실행 중입니다.%n%n실행 중인 Tools3000을 자동으로 종료하고 제거를 계속하시겠습니까?
+russian.AppRunningUninstallPrompt=Программа удаления обнаружила, что Tools3000 запущен.%n%nАвтоматически закрыть Tools3000 и продолжить удаление?
+brazilianportuguese.AppRunningUninstallPrompt=O desinstalador detectou que o Tools3000 está em execução.%n%nDeseja fechar o Tools3000 automaticamente e continuar a desinstalação?
+spanish.AppRunningUninstallPrompt=El desinstalador detectó que Tools3000 está en ejecución.%n%n¿Desea cerrar automáticamente Tools3000 y continuar con la desinstalación?
+
 chinesesimplified.UninstallAbortedByUser=卸载已由用户取消。请关闭 Tools3000 后重新运行卸载程序。
+chinesetraditional.UninstallAbortedByUser=解除安裝已由使用者取消。請關閉 Tools3000 後重新執行解除安裝程式。
 english.UninstallAbortedByUser=Uninstall was cancelled by the user. Please close Tools3000 and rerun uninstall.
+japanese.UninstallAbortedByUser=アンインストールはユーザーによってキャンセルされました。Tools3000 を終了してから再度実行してください。
+korean.UninstallAbortedByUser=사용자가 제거를 취소했습니다. Tools3000을 종료한 후 다시 실행해 주세요.
+russian.UninstallAbortedByUser=Удаление отменено пользователем. Закройте Tools3000 и повторите удаление.
+brazilianportuguese.UninstallAbortedByUser=A desinstalação foi cancelada pelo usuário. Feche o Tools3000 e tente novamente.
+spanish.UninstallAbortedByUser=La desinstalación fue cancelada por el usuario. Cierre Tools3000 y vuelva a intentarlo.
+
 chinesesimplified.InstallingService=正在安装快速文件索引服务...
+chinesetraditional.InstallingService=正在安裝極速檔案索引服務...
 english.InstallingService=Installing fast file search index service...
+japanese.InstallingService=高速ファイル検索インデックスサービスをインストールしています...
+korean.InstallingService=초고속 파일 검색 인덱스 서비스를 설치하는 중...
+russian.InstallingService=Установка службы быстрого индексирования файлов...
+brazilianportuguese.InstallingService=Instalando serviço de indexação rápida de arquivos...
+spanish.InstallingService=Instalando el servicio de indexación rápida de archivos...
+
 chinesesimplified.ShowDetails=详细信息(&D)
+chinesetraditional.ShowDetails=詳細資訊(&D)
 english.ShowDetails=Show &Details
+japanese.ShowDetails=詳細を表示(&D)
+korean.ShowDetails=자세히 보기(&D)
+russian.ShowDetails=&Подробности
+brazilianportuguese.ShowDetails=Mostrar &detalhes
+spanish.ShowDetails=Mostrar &detalles
+
 chinesesimplified.HideDetails=隐藏信息(&D)
+chinesetraditional.HideDetails=隱藏資訊(&D)
 english.HideDetails=Hide &Details
+japanese.HideDetails=詳細を隠す(&D)
+korean.HideDetails=자세히 숨기기(&D)
+russian.HideDetails=&Скрыть
+brazilianportuguese.HideDetails=Ocultar &detalhes
+spanish.HideDetails=Ocultar &detalles
+
 chinesesimplified.PersonalDataTitle=个人数据与配置处理
+chinesetraditional.PersonalDataTitle=個人資料與設定處理
 english.PersonalDataTitle=Personal Data & Preferences
+japanese.PersonalDataTitle=個人データと設定の扱い
+korean.PersonalDataTitle=개인 데이터 및 설정 처리
+russian.PersonalDataTitle=Личные данные и настройки
+brazilianportuguese.PersonalDataTitle=Dados pessoais e preferências
+spanish.PersonalDataTitle=Datos personales y preferencias
+
 chinesesimplified.PersonalDataDescription=请选择卸载 Tools3000 时的个人数据处理方式：
+chinesetraditional.PersonalDataDescription=請選擇解除安裝 Tools3000 時的個人資料處理方式：
 english.PersonalDataDescription=Choose how your personal data and configuration should be handled:
+japanese.PersonalDataDescription=Tools3000 をアンインストールする際の個人データの扱いを選択してください：
+korean.PersonalDataDescription=Tools3000 제거 시 개인 데이터 및 설정 처리 방법을 선택하세요:
+russian.PersonalDataDescription=Выберите, как поступить с личными данными и настройками при удалении Tools3000:
+brazilianportuguese.PersonalDataDescription=Escolha como seus dados pessoais e configurações devem ser tratados ao desinstalar:
+spanish.PersonalDataDescription=Elija cómo gestionar sus datos personales y configuración al desinstalar Tools3000:
+
 chinesesimplified.UninstallModeStandard=保留个人配置与媒体 (推荐)
+chinesetraditional.UninstallModeStandard=保留個人設定與媒體（建議）
 english.UninstallModeStandard=Keep personal configuration and media (Recommended)
+japanese.UninstallModeStandard=個人設定とメディアを保持する（推奨）
+korean.UninstallModeStandard=개인 설정 및 미디어 유지 (권장)
+russian.UninstallModeStandard=Сохранить настройки и медиафайлы (рекомендуется)
+brazilianportuguese.UninstallModeStandard=Manter configurações pessoais e mídia (Recomendado)
+spanish.UninstallModeStandard=Conservar configuración personal y multimedia (Recomendado)
+
 chinesesimplified.UninstallModeStandardDesc=仅移除应用程序与后台服务。保留您的偏好设置、手势方案以及截图/录屏作品，便于以后重新安装。
+chinesetraditional.UninstallModeStandardDesc=僅移除應用程式與背景服務。保留您的偏好設定、手勢方案以及擷圖／錄影檔案，方便日後重新安裝。
 english.UninstallModeStandardDesc=Removes only the application and services. Retains your preferences, gestures, and screenshots/recordings for future installations.
+japanese.UninstallModeStandardDesc=アプリ本体とバックグラウンドサービスのみを削除します。設定・ジェスチャー・キャプチャ／録画データは保持されます。
+korean.UninstallModeStandardDesc=애플리케이션과 백그라운드 서비스만 제거합니다. 환경 설정, 제스처, 스크린샷/녹화 파일은 보존됩니다.
+russian.UninstallModeStandardDesc=Удаляет только программу и службы. Сохраняет настройки, жесты, скриншоты и записи для будущей установки.
+brazilianportuguese.UninstallModeStandardDesc=Remove apenas o aplicativo e os serviços. Mantém suas preferências, gestos e capturas/gravações para reinstalações futuras.
+spanish.UninstallModeStandardDesc=Elimina solo la aplicación y los servicios. Conserva sus preferencias, gestos y capturas/grabaciones para futuras instalaciones.
+
 chinesesimplified.UninstallModeClean=清理全部配置与运行缓存
+chinesetraditional.UninstallModeClean=清理全部設定與執行快取
 english.UninstallModeClean=Clear all configuration and runtime caches
+japanese.UninstallModeClean=すべての設定とキャッシュを削除する
+korean.UninstallModeClean=모든 설정 및 런타임 캐시 삭제
+russian.UninstallModeClean=Удалить все настройки и кэши
+brazilianportuguese.UninstallModeClean=Limpar todas as configurações e caches
+spanish.UninstallModeClean=Borrar toda la configuración y cachés
+
 chinesesimplified.UninstallModeCleanDesc=删除偏好设置、窗口记忆、运行历史、诊断日志与搜索索引缓存。
+chinesetraditional.UninstallModeCleanDesc=刪除偏好設定、視窗記憶、執行歷程、診斷日誌與搜尋索引快取。
 english.UninstallModeCleanDesc=Removes user preferences, window state, run history, diagnostic logs, and search index caches.
+japanese.UninstallModeCleanDesc=設定・ウィンドウ状態・実行履歴・診断ログ・検索インデックスキャッシュをすべて削除します。
+korean.UninstallModeCleanDesc=사용자 설정, 창 상태, 실행 기록, 진단 로그 및 검색 인덱스 캐시를 삭제합니다.
+russian.UninstallModeCleanDesc=Удаляет настройки, состояние окон, историю, диагностические логи и кэш поискового индекса.
+brazilianportuguese.UninstallModeCleanDesc=Remove preferências, estado das janelas, histórico, logs de diagnóstico e caches do índice de busca.
+spanish.UninstallModeCleanDesc=Elimina preferencias, estado de ventanas, historial, registros de diagnóstico y cachés del índice de búsqueda.
+
 chinesesimplified.DeleteMediaCaptures=同时永久删除“截图和录屏”媒体文件
+chinesetraditional.DeleteMediaCaptures=同時永久刪除「擷圖與錄影」媒體檔案
 english.DeleteMediaCaptures=Permanently delete screenshot and recording files as well
+japanese.DeleteMediaCaptures=スクリーンショットと録画ファイルも完全に削除する
+korean.DeleteMediaCaptures=스크린샷 및 녹화 미디어 파일도 영구 삭제
+russian.DeleteMediaCaptures=Также навсегда удалить файлы скриншотов и записей
+brazilianportuguese.DeleteMediaCaptures=Excluir permanentemente também arquivos de captura e gravação
+spanish.DeleteMediaCaptures=Eliminar también de forma permanente las capturas y grabaciones
+
 chinesesimplified.DeleteMediaCapturesNote=注意：此操作将清空默认媒体保存目录，删除后无法恢复。
+chinesetraditional.DeleteMediaCapturesNote=注意：此操作將清空預設媒體儲存資料夾，刪除後無法復原。
 english.DeleteMediaCapturesNote=Notice: This permanently removes files in the default capture folders and cannot be undone.
+japanese.DeleteMediaCapturesNote=注意：既定の保存フォルダー内のファイルが完全に削除され、元に戻せません。
+korean.DeleteMediaCapturesNote=주의: 기본 저장 폴더의 파일이 영구 삭제되며 복구할 수 없습니다.
+russian.DeleteMediaCapturesNote=Внимание: файлы в папках сохранения по умолчанию будут удалены без возможности восстановления.
+brazilianportuguese.DeleteMediaCapturesNote=Atenção: isso remove permanentemente os arquivos das pastas padrão e não pode ser desfeito.
+spanish.DeleteMediaCapturesNote=Aviso: esto elimina permanentemente los archivos de las carpetas predeterminadas y no se puede deshacer.
+
 chinesesimplified.ContinueUninstall=继续卸载
+chinesetraditional.ContinueUninstall=繼續解除安裝
 english.ContinueUninstall=Continue Uninstall
+japanese.ContinueUninstall=アンインストールを続行
+korean.ContinueUninstall=제거 계속
+russian.ContinueUninstall=Продолжить удаление
+brazilianportuguese.ContinueUninstall=Continuar desinstalação
+spanish.ContinueUninstall=Continuar desinstalación
+
 chinesesimplified.AutoStartProgram=开机自动启动 Tools3000
+chinesetraditional.AutoStartProgram=開機自動啟動 Tools3000
 english.AutoStartProgram=Start Tools3000 automatically on Windows startup
+japanese.AutoStartProgram=Windows 起動時に Tools3000 を自動起動する
+korean.AutoStartProgram=Windows 시작 시 Tools3000 자동 실행
+russian.AutoStartProgram=Запускать Tools3000 автоматически при старте Windows
+brazilianportuguese.AutoStartProgram=Iniciar o Tools3000 automaticamente com o Windows
+spanish.AutoStartProgram=Iniciar Tools3000 automáticamente con Windows
+
 chinesesimplified.TypeFull=完整体验安装 (推荐 · 默认启用全部 7 大核心模块)
-english.TypeFull=Full Installation (Recommended - All 7 Core Modules Enabled)
+chinesetraditional.TypeFull=完整體驗安裝（建議 · 預設啟用全部核心模組）
+english.TypeFull=Full Installation (Recommended - All Core Modules Enabled)
+japanese.TypeFull=フルインストール（推奨・すべてのコアモジュールを有効化）
+korean.TypeFull=전체 설치 (권장 · 모든 핵심 모듈 활성화)
+russian.TypeFull=Полная установка (рекомендуется · все модули)
+brazilianportuguese.TypeFull=Instalação completa (Recomendado - Todos os módulos)
+spanish.TypeFull=Instalación completa (Recomendado - Todos los módulos)
+
 chinesesimplified.TypeCompact=极简轻量安装
+chinesetraditional.TypeCompact=極簡輕量安裝
 english.TypeCompact=Compact Installation
+japanese.TypeCompact=コンパクトインストール
+korean.TypeCompact=간편 설치
+russian.TypeCompact=Компактная установка
+brazilianportuguese.TypeCompact=Instalação compacta
+spanish.TypeCompact=Instalación compacta
+
 chinesesimplified.TypeCustom=自定义模块选择
+chinesetraditional.TypeCustom=自訂模組選擇
 english.TypeCustom=Custom Module Selection
+japanese.TypeCustom=カスタムモジュール選択
+korean.TypeCustom=사용자 지정 모듈 선택
+russian.TypeCustom=Выборочная установка модулей
+brazilianportuguese.TypeCustom=Seleção personalizada de módulos
+spanish.TypeCustom=Selección personalizada de módulos
+
 chinesesimplified.CompSearch=超级文件检索 (Search) — 全盘秒级索引与极速文件启动
+chinesetraditional.CompSearch=極速檔案檢索 (Search) — 全磁碟毫秒索引與快速預覽
 english.CompSearch=Fast File Search (Search) — Instant disk indexing & launcher
+japanese.CompSearch=高速ファイル検索 (Search) — ミリ秒インデックス＆クイックプレビュー
+korean.CompSearch=초고속 파일 검색 (Search) — 전체 디스크 즉시 인덱싱 및 빠른 미리보기
+russian.CompSearch=Быстрый поиск файлов (Search) — мгновенный индекс и QuickLook
+brazilianportuguese.CompSearch=Busca Rápida de Arquivos (Search) — indexação instantânea e QuickLook
+spanish.CompSearch=Búsqueda Rápida de Archivos (Search) — indexación instantánea y QuickLook
+
 chinesesimplified.CompCapture=截图贴图与录屏 (Capture) — 智能贴图、长截图、拾色器与高清录屏
+chinesetraditional.CompCapture=擷圖貼圖與錄影 (Capture) — 智慧貼圖、長擷圖、取色器與高畫質錄影
 english.CompCapture=Screenshot, Pin & Recording (Capture) — Smart pin, OCR & HD recording
-chinesesimplified.CompOcrOfflinePack=微信级离线高精度文字识别引擎包 (PP-OCRv4 · 约 16MB) — 勾选后首次启动后台自动部署，大幅增强小字、中英代码混排、表格与倾斜文本识别精度
+japanese.CompCapture=キャプチャ・ピン留め・録画 (Capture) — 注釈・OCR・60 FPS 録画
+korean.CompCapture=캡처·화면 고정·녹화 (Capture) — 스마트 핀, OCR 및 고화질 녹화
+russian.CompCapture=Скриншоты, закрепление и запись (Capture) — разметка, OCR и 60 FPS
+brazilianportuguese.CompCapture=Captura, Pins e Gravação (Capture) — pins inteligentes, OCR e 60 FPS
+spanish.CompCapture=Captura, Pines y Grabación (Capture) — pines inteligentes, OCR y 60 FPS
+
+chinesesimplified.CompOcrOfflinePack=离线高精度文字识别引擎包 (PP-OCRv4 · 约 16MB) — 勾选后首次启动后台自动部署，大幅增强小字、中英代码混排、表格与倾斜文本识别精度
+chinesetraditional.CompOcrOfflinePack=離線高精度文字辨識引擎包 (PP-OCRv4 · 約 16MB) — 勾選後首次啟動背景自動部署，大幅提升小字、程式碼與表格辨識精度
 english.CompOcrOfflinePack=High-Precision Offline OCR Engine Pack (PP-OCRv4, ~16 MB) — Auto-downloads in background on first launch for superior table, code & small-text accuracy
+japanese.CompOcrOfflinePack=高精度オフライン OCR パック (PP-OCRv4・約 16MB) — 初回起動時にバックグラウンド自動取得し、コード・表・小文字の認識精度を向上
+korean.CompOcrOfflinePack=고정밀 오프라인 OCR 엔진 팩 (PP-OCRv4 · 약 16MB) — 첫 실행 시 백그라운드 자동 다운로드로 코드·표·작은 글자 인식 향상
+russian.CompOcrOfflinePack=Офлайн-пакет OCR высокой точности (PP-OCRv4, ~16 МБ) — автозагрузка при первом запуске для кода, таблиц и мелкого текста
+brazilianportuguese.CompOcrOfflinePack=Pacote OCR Offline de Alta Precisão (PP-OCRv4, ~16 MB) — download automático em segundo plano para tabelas, código e textos pequenos
+spanish.CompOcrOfflinePack=Paquete OCR Offline de Alta Precisión (PP-OCRv4, ~16 MB) — descarga automática en segundo plano para tablas, código y texto pequeño
+
 chinesesimplified.CompGesture=鼠标手势与触发角 (Gesture) — 右键手势轨迹、屏幕四角触发与边缘滚轮
+chinesetraditional.CompGesture=滑鼠手勢與觸發角 (Gesture) — 右鍵手勢軌跡、螢幕四角觸發與邊緣滾輪
 english.CompGesture=Mouse Gestures & Hot Corners (Gesture) — Trailing gestures, hot corners & edge wheel
+japanese.CompGesture=マウスジェスチャー＆ホットコーナー (Gesture) — 右ドラッグ軌跡・画面端ホイール
+korean.CompGesture=마우스 제스처 및 핫 코너 (Gesture) — 우클릭 궤적, 화면 모서리 및 가장자리 휠
+russian.CompGesture=Жесты мышью и углы экрана (Gesture) — траектории ПКМ, углы и колесо у края
+brazilianportuguese.CompGesture=Gestos do Mouse e Cantos Ativos (Gesture) — gestos com botão direito e roda na borda
+spanish.CompGesture=Gestos de Ratón y Esquinas Activas (Gesture) — gestos con clic derecho y rueda en borde
+
 chinesesimplified.CompKeycast=按键回显 (Keycast) — 屏幕实时按键显示、机械键帽动效
+chinesetraditional.CompKeycast=按鍵回顯 (Keycast) — 螢幕即時按鍵顯示與鍵帽動效
 english.CompKeycast=Keycast Overlay (Keycast) — Real-time keystroke visualization
+japanese.CompKeycast=キー入力表示 (Keycast) — リアルタイムキーキャップオーバーレイ
+korean.CompKeycast=키 입력 표시 (Keycast) — 실시간 키캡 오버레이 시각화
+russian.CompKeycast=Отображение клавиш (Keycast) — показ нажатий в реальном времени
+brazilianportuguese.CompKeycast=Exibição de Teclas (Keycast) — visualização de teclas em tempo real
+spanish.CompKeycast=Visualizador de Teclas (Keycast) — pulsaciones en pantalla en tiempo real
+
 chinesesimplified.CompDialog=文件对话框增强 (Dialog Enhancer) — 常用目录快速跳转、历史路径记忆
+chinesetraditional.CompDialog=檔案對話方塊增強 (Dialog Enhancer) — 常用資料夾快速跳轉與路徑記憶
 english.CompDialog=File Dialog Enhancer (Dialog) — Quick folders & path memory
+japanese.CompDialog=ファイルダイアログ拡張 (Dialog) — よく使うフォルダーへ瞬時移動
+korean.CompDialog=파일 대화 상자 향상 (Dialog) — 자주 쓰는 폴더 빠른 이동 및 경로 기억
+russian.CompDialog=Улучшение диалогов файлов (Dialog) — быстрые папки и история путей
+brazilianportuguese.CompDialog=Aprimorador de Diálogos (Dialog) — pastas rápidas e memória de caminhos
+spanish.CompDialog=Mejora de Cuadros de Archivo (Dialog) — carpetas rápidas y memoria de rutas
+
 chinesesimplified.CompSpotlight=演示专用特效 (Spotlight) — 屏幕聚光灯聚焦、点击水波纹与流光轨迹
+chinesetraditional.CompSpotlight=簡報專用特效 (Spotlight) — 螢幕聚光燈聚焦、點擊波紋與流光軌跡
 english.CompSpotlight=Presentation FX (Spotlight) — Screen spotlight focus, click ripple & mouse trails
+japanese.CompSpotlight=プレゼン演出エフェクト (Spotlight) — スポットライト・クリック波紋・軌跡
+korean.CompSpotlight=프레젠테이션 효과 (Spotlight) — 화면 스포트라이트, 클릭 파문 및 커서 궤적
+russian.CompSpotlight=Эффекты презентации (Spotlight) — прожектор курсора, круги кликов и след
+brazilianportuguese.CompSpotlight=Efeitos de Apresentação (Spotlight) — holofote, ondas de clique e rastros
+spanish.CompSpotlight=Efectos de Presentación (Spotlight) — foco de cursor, ondas de clic y estelas
+
 chinesesimplified.CompRemote=远程协助增强 (Remote Boost) — 主控端热键直通、修饰键急救冲刷与输入法脱敏
+chinesetraditional.CompRemote=遠端協助增強 (Remote Boost) — 主控端熱鍵直通、修飾鍵釋放與輸入法保護
 english.CompRemote=Remote Boost (Remote) — Immersive hotkey tunnel, emergency flush & smart IME sanitizing
+japanese.CompRemote=リモート操作支援 (Remote) — ホットキー透過・修飾キー固着解除
+korean.CompRemote=원격 제어 도우미 (Remote) — 단축키 패스스루 및 조합 키 걸림 해제
+russian.CompRemote=Помощник удалённого доступа (Remote) — проброс горячих клавиш и сброс залипаний
+brazilianportuguese.CompRemote=Acelerador Remoto (Remote) — passagem de atalhos e desbloqueio de teclas presas
+spanish.CompRemote=Asistente Remoto (Remote) — paso de atajos y liberación de teclas bloqueadas
 
 [Types]
 Name: "full"; Description: "{cm:TypeFull}"
@@ -169,6 +370,8 @@ Type: files; Name: "{app}\*.log"
 Type: files; Name: "{app}\*.old_del_*"
 Type: files; Name: "{app}\plugins\*.old_del_*"
 Type: files; Name: "{app}\ui\assets\*.old_del_*"
+Type: dirifempty; Name: "{app}\resources\locales\native"
+Type: dirifempty; Name: "{app}\resources\locales"
 Type: dirifempty; Name: "{app}\resources\wallpapers"
 Type: dirifempty; Name: "{app}\plugins"
 Type: dirifempty; Name: "{app}\resources\scripts"

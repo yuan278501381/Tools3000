@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/CaptureRendererInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/TextAnnotationHelper.h"
 #include "capture/MarkupCurveGeometry.h"
 #include "capture/CaptureHudRimStyle.h"
@@ -442,7 +443,7 @@ void CaptureRenderer::drawSelectionLoupe(float cx, float cy, CaptureState& state
 
         // 第 3 行：PixPin 同款 100% 纯白实心圆角小键帽 + 纯白清晰说明 / 复制成功翡翠绿胶囊
         const bool toast = (state.loupeToastUntil != 0 && GetTickCount() < state.loupeToastUntil);
-        const std::wstring fallbackOk = zh ? L"已复制到剪贴板" : L"Copied to clipboard";
+        const std::wstring fallbackOk = tools3000::core::trWCstrFor(zh, L"已复制到剪贴板", L"Copied to clipboard");
         const std::wstring cleanedToast = std::wstring(
             tools3000::ui::ToastStyle::stripMachineStatusPrefix(state.loupeToastMessage));
 
@@ -474,9 +475,9 @@ void CaptureRenderer::drawSelectionLoupe(float cx, float cy, CaptureState& state
             m_renderTarget->CreateSolidColorBrush(CaptureHudPalette::kLoupeKeycapText, keycapTextBrush.GetAddressOf());
 
             const std::wstring k1 = L"Shift";
-            const std::wstring d1 = zh ? L"切换格式" : L"Fmt";
+            const std::wstring d1 = tools3000::core::trWCstrFor(zh, L"切换格式", L"Fmt");
             const std::wstring k2 = L"C";
-            const std::wstring d2 = zh ? L"复制色值" : L"Copy";
+            const std::wstring d2 = tools3000::core::trWCstrFor(zh, L"复制色值", L"Copy");
 
             const float k1W = 34.0f * scale;
             const float k2W = 16.0f * scale;
@@ -574,7 +575,7 @@ void CaptureRenderer::drawQrChip(const D2D1_RECT_F& selRect, CaptureState& state
     float pad = 8.0f * scale;
     const bool zh = isCaptureUiChinese();
 
-    std::wstring displayMsg = (zh ? L"二维码: " : L"QR: ") + tools3000::core::WinUtils::utf8ToWstring(state.detectedQrText);
+    std::wstring displayMsg = (tools3000::core::trWCstrFor(zh, L"二维码: ", L"QR: ")) + tools3000::core::WinUtils::utf8ToWstring(state.detectedQrText);
     if (displayMsg.size() > 28) {
         displayMsg = displayMsg.substr(0, 26) + L"...";
     }
@@ -1012,23 +1013,19 @@ void CaptureRenderer::drawLongCanvasTopHeader(const D2D1_RECT_F& docSelRect, Cap
     const int zoomPct = static_cast<int>(std::lround(state.longCanvas.zoom * 100.0f));
     const bool near100 = std::abs(state.longCanvas.zoom - 1.0f) < 0.03f;
 
-    const std::wstring titleText = zh
-        ? (state.longCanvas.frameCount > 1
-               ? std::format(L"长截图精修 ({} 帧)", state.longCanvas.frameCount)
-               : L"长截图精修")
-        : (state.longCanvas.frameCount > 1
-               ? std::format(L"Long Capture ({} frames)", state.longCanvas.frameCount)
-               : L"Long Capture");
+    const std::wstring frameCntStr = std::to_wstring(state.longCanvas.frameCount);
+    const std::wstring titleText = state.longCanvas.frameCount > 1
+        ? tools3000::core::trFmtW(L"长截图精修 ({0} 帧)", L"Long Capture ({0} frames)", {frameCntStr})
+        : std::wstring(tools3000::core::trWCstrFor(zh, L"长截图精修", L"Long Capture"));
     const std::wstring sizeBadge = isCropped
-        ? (zh ? std::format(L"{} × {} px (已裁 -{}px)", netW, netH, trimmedPx)
-              : std::format(L"{} × {} px (-{}px)", netW, netH, trimmedPx))
+        ? std::format(L"{} × {} px (-{}px)", netW, netH, trimmedPx)
         : std::format(L"{} × {} px", netW, netH);
 
-    const std::wstring lblTop = zh ? L"头部 Home" : L"Top";
-    const std::wstring lblBot = zh ? L"尾部 End" : L"Bottom";
-    const std::wstring lblReset = zh ? L"重置裁切" : L"Reset Crop";
+    const std::wstring lblTop = tools3000::core::trWCstrFor(zh, L"头部 Home", L"Top");
+    const std::wstring lblBot = tools3000::core::trWCstrFor(zh, L"尾部 End", L"Bottom");
+    const std::wstring lblReset = tools3000::core::trWCstrFor(zh, L"重置裁切", L"Reset Crop");
     const std::wstring lblZoom = near100
-        ? (zh ? std::format(L"{}% · 适宽", zoomPct) : std::format(L"{}% · Fit", zoomPct))
+        ? std::format(L"{}% · {}", zoomPct, tools3000::core::trWCstrFor(zh, L"适宽", L"Fit"))
         : std::format(L"{}% · 1:1", zoomPct);
 
     IDWriteTextFormat* badgeFmt = m_hudBadgeFormat ? m_hudBadgeFormat.Get() : m_infoTextFormat.Get();
@@ -1457,9 +1454,10 @@ void CaptureRenderer::renderLongImageStudio(CaptureState& state) {
             const int cutPx = isTop
                 ? (std::max)(0, static_cast<int>(std::lround(docSelRect.top)))
                 : (std::max)(0, state.longCanvas.docHeight - static_cast<int>(std::lround(docSelRect.bottom)));
+            const std::wstring cutStr = std::to_wstring(cutPx);
             const std::wstring tip = isTop
-                ? (zh ? std::format(L"顶部裁去 {} px", cutPx) : std::format(L"Trim Top {} px", cutPx))
-                : (zh ? std::format(L"底部裁去 {} px", cutPx) : std::format(L"Trim Bottom {} px", cutPx));
+                ? tools3000::core::trFmtW(L"顶部裁去 {0} px", L"Trim Top {0} px", {cutStr})
+                : tools3000::core::trFmtW(L"底部裁去 {0} px", L"Trim Bottom {0} px", {cutStr});
             const float tw = measureText(tip, m_hudBadgeFormat.Get(), 260.0f * scale, 28.0f * scale).width + 18.0f * scale;
             const float th = 24.0f * scale;
             const float ty = isTop ? (pill.bottom + 6.0f * scale) : (pill.top - th - 6.0f * scale);
@@ -1620,7 +1618,7 @@ void CaptureRenderer::render(CaptureState& state) {
                                          m_infoTextBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
             }
         } else {
-            const std::wstring info = zh ? L"暂无历史截图" : L"No capture history";
+            const std::wstring info = tools3000::core::trWCstrFor(zh, L"暂无历史截图", L"No capture history");
             if (m_infoTextFormat && m_infoTextBrush) {
                 TextFormatScope scope(m_infoTextFormat.Get(), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP);
                 m_renderTarget->DrawText(info.c_str(), static_cast<UINT32>(info.size()), m_infoTextFormat.Get(),

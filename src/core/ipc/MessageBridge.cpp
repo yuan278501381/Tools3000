@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "core/ipc/MessageBridge.h"
+#include "core/i18n/UiI18n.h"
 #include "core/ipc/SystemInteractionHandlers.h"
 #include "core/ipc/AutoStartPolicy.h"
 #include "core/logger/Logger.h"
@@ -262,18 +263,18 @@ std::optional<std::filesystem::path> choosePath(bool save, bool folder = false) 
         DWORD options = 0;
         dialog->GetOptions(&options);
         dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        dialog->SetTitle(isZh ? L"选择保存目录" : L"Select Save Directory");
+        dialog->SetTitle(tools3000::core::trWCstrFor(isZh, L"选择保存目录", L"Select Save Directory"));
     } else {
         const COMDLG_FILTERSPEC filters[] = {
-            {isZh ? L"Tools3000 配置 (*.json)" : L"Tools3000 Configuration (*.json)", L"*.json"},
-            {isZh ? L"所有文件 (*.*)" : L"All Files (*.*)", L"*.*"},
+            {tools3000::core::trWCstrFor(isZh, L"Tools3000 配置 (*.json)", L"Tools3000 Configuration (*.json)"), L"*.json"},
+            {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
         };
         dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
         dialog->SetDefaultExtension(L"json");
         dialog->SetFileName(save ? L"Tools3000-config.json" : L"");
         dialog->SetTitle(save
-            ? (isZh ? L"导出 Tools3000 配置" : L"Export Tools3000 Configuration")
-            : (isZh ? L"导入 Tools3000 配置" : L"Import Tools3000 Configuration"));
+            ? (tools3000::core::trWCstrFor(isZh, L"导出 Tools3000 配置", L"Export Tools3000 Configuration"))
+            : (tools3000::core::trWCstrFor(isZh, L"导入 Tools3000 配置", L"Import Tools3000 Configuration")));
     }
 
     std::optional<std::filesystem::path> result;
@@ -839,6 +840,7 @@ void syncRuntimeSettingsFromConfig(const char* source) {
     setAutoStart(desiredAutoStart);
 
     const std::string language = config.get<std::string>("/general/language", "auto");
+    tools3000::core::UiI18n::setConfiguredLanguage(language);
     tools3000::core::Logger::setLanguage(language);
     applyLogLevel(config.get<std::string>("/general/logLevel", "info"));
     tools3000::core::Logger::setRetentionDays(config.get<uint32_t>("/general/logRetentionDays", 7));
@@ -2204,6 +2206,8 @@ void MessageBridge::registerBuiltinHandlers() {
             {"isPortableMode", WinUtils::isPortableMode()},
             {"dataDirectory", WinUtils::wstringToUtf8(WinUtils::getAppDataDirectory().wstring())},
             {"language", config.get<std::string>("/general/language", "auto")},
+            {"systemLanguage", UiI18n::getSystemLanguageTag()},
+            {"resolvedLanguage", UiI18n::getEffectiveLanguageTag()},
             {"fontFamily", config.get<std::string>("/general/fontFamily", "auto")},
             {"logLevel", config.get<std::string>("/general/logLevel", "info")},
             {"logRetentionDays", config.get<uint32_t>("/general/logRetentionDays", 7)},
@@ -2243,7 +2247,7 @@ void MessageBridge::registerBuiltinHandlers() {
             "violet", "cyan", "amber", "blue", "mint", "coral"
         };
         static const std::unordered_set<std::string> languages = {
-            "auto", "zh-CN", "en-US", "zh-TW", "zh-HK", "ja-JP", "ko-KR", "de-DE", "fr-FR", "es-ES"
+            "auto", "system", "zh-CN", "zh-TW", "zh-HK", "en-US", "ja-JP", "ko-KR", "ru-RU", "pt-BR", "es-ES"
         };
         if (!params.is_object() || params.empty()) {
             return {{"success", false}, {"error", "no settings supplied"}};
@@ -2316,7 +2320,9 @@ void MessageBridge::registerBuiltinHandlers() {
             syncFullscreenRuntimeState();
         }
         if (sanitizedPatch.contains("language")) {
-            Logger::setLanguage(sanitizedPatch["language"].get<std::string>());
+            const std::string newLang = sanitizedPatch["language"].get<std::string>();
+            UiI18n::setConfiguredLanguage(newLang);
+            Logger::setLanguage(newLang);
         }
         if (sanitizedPatch.contains("logLevel")) applyLogLevel(sanitizedPatch["logLevel"].get<std::string>());
         if (sanitizedPatch.contains("logRetentionDays")) {
@@ -2339,6 +2345,8 @@ void MessageBridge::registerBuiltinHandlers() {
                 {"accentColor", config.get<std::string>("/general/accentColor", "blue")},
                 {"trayIconTheme", config.get<std::string>("/general/trayIconTheme", "system")},
                 {"language", config.get<std::string>("/general/language", "auto")},
+                {"systemLanguage", UiI18n::getSystemLanguageTag()},
+                {"resolvedLanguage", UiI18n::getEffectiveLanguageTag()},
                 {"fontFamily", config.get<std::string>("/general/fontFamily", "auto")}
             });
         }
@@ -2392,7 +2400,7 @@ void MessageBridge::registerBuiltinHandlers() {
             return {
                 {"success", false},
                 {"path", resolvedUtf8},
-                {"error", isUiLanguageChinese() ? "无法创建保存目录" : "Failed to create save directory"}
+                {"error", tools3000::core::trUtf8Cstr("无法创建保存目录", "Failed to create save directory")}
             };
         }
 
@@ -2407,7 +2415,7 @@ void MessageBridge::registerBuiltinHandlers() {
             return {
                 {"success", false},
                 {"path", resolvedUtf8},
-                {"error", isUiLanguageChinese() ? "无法打开保存目录" : "Failed to open save directory"}
+                {"error", tools3000::core::trUtf8Cstr("无法打开保存目录", "Failed to open save directory")}
             };
         }
         return {{"success", true}, {"path", resolvedUtf8}};

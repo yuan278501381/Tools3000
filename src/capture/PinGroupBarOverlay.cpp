@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/PinGroupBarOverlay.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/PinWindow.h"
 #include "capture/CaptureHudPalette.h"
 #include "capture/FloatingGlassBar.h"
@@ -418,7 +419,7 @@ bool PinGroupBarOverlay::ensureResources(float scale) {
         if (FAILED(m_dwriteFactory->CreateTextFormat(
                 fontFamily, nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                fontPx, isZh ? L"zh-CN" : L"en-US", m_textFormat.GetAddressOf()))) {
+                fontPx, tools3000::core::trWCstrFor(isZh, L"zh-CN", L"en-US"), m_textFormat.GetAddressOf()))) {
             return false;
         }
         m_textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -538,7 +539,7 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
         BarChip allChip;
         allChip.kind = ChipKind::FilterGroup;
         allChip.groupParam = PinGroupConstants::kFilterAllGroups;
-        allChip.label = zh ? std::format(L"全部 {}", m_totalCount) : std::format(L"All {}", m_totalCount);
+        allChip.label = std::wstring(tools3000::core::trWCstrFor(zh, L"全部", L"All")) + L" " + std::to_wstring(m_totalCount);
         allChip.isActive = (m_activeFilter == PinGroupConstants::kFilterAllGroups);
         m_chips.push_back(std::move(allChip));
     }
@@ -567,8 +568,7 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
         BarChip unChip;
         unChip.kind = ChipKind::FilterGroup;
         unChip.groupParam = PinGroupConstants::kUngroupedId;
-        unChip.label = zh ? std::format(L"未分组 {}", m_ungroupedCount)
-                          : std::format(L"Ungrouped {}", m_ungroupedCount);
+        unChip.label = std::wstring(tools3000::core::trWCstrFor(zh, L"未分组", L"Ungrouped")) + L" " + std::to_wstring(m_ungroupedCount);
         unChip.isActive = (m_activeFilter == PinGroupConstants::kUngroupedId);
         m_chips.push_back(std::move(unChip));
     }
@@ -578,7 +578,7 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
     if (hasFreeGroupSlot) {
         BarChip newChip;
         newChip.kind = ChipKind::CreateNewGroup;
-        newChip.label = zh ? L"+ 新组" : L"+ Group";
+        newChip.label = tools3000::core::trWCstrFor(zh, L"+ 新组", L"+ Group");
         newChip.isSeparatorBefore = !addedSeparator;
         addedSeparator = true;
         m_chips.push_back(std::move(newChip));
@@ -587,7 +587,7 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
     if (m_ungroupedCount >= 2) {
         BarChip autoChip;
         autoChip.kind = ChipKind::AutoGroupUngrouped;
-        autoChip.label = zh ? L"一键编组" : L"Auto Group";
+        autoChip.label = tools3000::core::trWCstrFor(zh, L"一键编组", L"Auto Group");
         autoChip.isSeparatorBefore = !addedSeparator;
         addedSeparator = true;
         m_chips.push_back(std::move(autoChip));
@@ -599,7 +599,7 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
             BarChip renChip;
             renChip.kind = ChipKind::RenameActiveGroup;
             renChip.groupParam = m_activeFilter;
-            renChip.label = zh ? L"改名" : L"Rename";
+            renChip.label = tools3000::core::trWCstrFor(zh, L"改名", L"Rename");
             renChip.isActive = (m_editingGroupId == m_activeFilter);
             renChip.isSeparatorBefore = !addedSeparator;
             addedSeparator = true;
@@ -610,7 +610,7 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
             BarChip arrChip;
             arrChip.kind = ChipKind::ArrangeActiveGroup;
             arrChip.groupParam = m_activeFilter;
-            arrChip.label = zh ? L"整理本组" : L"Arrange";
+            arrChip.label = tools3000::core::trWCstrFor(zh, L"整理本组", L"Arrange");
             arrChip.isSeparatorBefore = !addedSeparator;
             addedSeparator = true;
             m_chips.push_back(std::move(arrChip));
@@ -619,7 +619,7 @@ void PinGroupBarOverlay::rebuildAndRender(int retryDepth) {
         BarChip disChip;
         disChip.kind = ChipKind::DissolveActiveGroup;
         disChip.groupParam = m_activeFilter;
-        disChip.label = zh ? L"移除分组" : L"Ungroup";
+        disChip.label = tools3000::core::trWCstrFor(zh, L"移除分组", L"Ungroup");
         disChip.isSeparatorBefore = !addedSeparator;
         addedSeparator = true;
         m_chips.push_back(std::move(disChip));
@@ -913,13 +913,13 @@ void PinGroupBarOverlay::handleGroupContextMenu(int groupId, POINT screenPt) {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
 
-    const std::wstring renameLabel = zh ? L"重命名本组..." : L"Rename Group...";
+    const std::wstring renameLabel = tools3000::core::trWCstrFor(zh, L"重命名本组...", L"Rename Group...");
     const std::wstring onlyLabel = zh
         ? std::format(L"仅查看{}", PinGroupPalette::shortLabel(groupId, true))
         : std::format(L"View Only {}", PinGroupPalette::shortLabel(groupId, false));
-    const std::wstring arrangeLabel = zh ? L"网格整理本组贴图" : L"Arrange Group in Grid";
-    const std::wstring dissolveLabel = zh ? L"移除本组标记（保留贴图）" : L"Ungroup All (Keep Pins)";
-    const std::wstring closeGroupLabel = zh ? L"关闭本组全部贴图" : L"Close All Pins in Group";
+    const std::wstring arrangeLabel = tools3000::core::trWCstrFor(zh, L"网格整理本组贴图", L"Arrange Group in Grid");
+    const std::wstring dissolveLabel = tools3000::core::trWCstrFor(zh, L"移除本组标记（保留贴图）", L"Ungroup All (Keep Pins)");
+    const std::wstring closeGroupLabel = tools3000::core::trWCstrFor(zh, L"关闭本组全部贴图", L"Close All Pins in Group");
 
     AppendMenuW(menu, MF_STRING, 5, renameLabel.c_str());
     AppendMenuW(menu, MF_STRING, 1, onlyLabel.c_str());
@@ -940,10 +940,10 @@ void PinGroupBarOverlay::handleGroupContextMenu(int groupId, POINT screenPt) {
         }
         if (PinGroupPalette::hasCustomization(groupId)) {
             AppendMenuW(colorSubMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(colorSubMenu, MF_STRING, 100, zh ? L"恢复默认名称与颜色" : L"Reset Name & Color");
+            AppendMenuW(colorSubMenu, MF_STRING, 100, tools3000::core::trWCstrFor(zh, L"恢复默认名称与颜色", L"Reset Name & Color"));
         }
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(colorSubMenu),
-                    zh ? L"切换本组颜色" : L"Group Color");
+                    tools3000::core::trWCstrFor(zh, L"切换本组颜色", L"Group Color"));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     }
     AppendMenuW(menu, MF_STRING, 4, closeGroupLabel.c_str());

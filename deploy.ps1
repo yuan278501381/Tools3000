@@ -648,7 +648,10 @@ if (Test-Path "resources\scripts") {
 if (Test-Path "resources\wallpapers") {
     Copy-Item "resources\wallpapers" -Destination $TargetResourcesDir -Recurse
 }
-Write-Log "已通过白名单注入运行必需资源 (ico, png, scripts/, wallpapers/)"
+if (Test-Path "resources\locales") {
+    Copy-Item "resources\locales" -Destination $TargetResourcesDir -Recurse
+}
+Write-Log "已通过白名单注入运行必需资源 (ico, png, scripts/, wallpapers/, locales/)"
 
 if (Test-Path "ui/dist") {
     $UiDeployDir = Join-Path $StagingDir "ui"

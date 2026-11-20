@@ -1,6 +1,11 @@
 import { useCallback, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { bridgeRequest, useBridgeEvent } from './useBridge';
+import {
+  applyHtmlLanguageAttribute,
+  resolveI18nBundle,
+  setDetectedSystemLanguage,
+} from '../i18n/languages';
 
 export type Theme = 'light' | 'dark';
 export type ThemePreference = Theme | 'system';
@@ -10,6 +15,8 @@ export interface AppearancePayload {
   theme?: unknown;
   accentColor?: unknown;
   language?: unknown;
+  systemLanguage?: unknown;
+  resolvedLanguage?: unknown;
   elevated?: boolean;
 }
 
@@ -180,13 +187,14 @@ export function useAppearance(onSettingsHydrated?: (settings: AppearancePayload)
     lastAppliedSigRef.current = `${preferenceRef.current}|${currentAccent}|${langPrefRef.current}`;
   }, []);
 
-  const syncLanguage = useCallback((lang?: unknown) => {
+  const syncLanguage = useCallback((lang?: unknown, systemLang?: unknown) => {
+    if (typeof systemLang === 'string' && systemLang) {
+      setDetectedSystemLanguage(systemLang);
+    }
     if (typeof lang !== 'string' || !lang) return;
     langPrefRef.current = lang;
-    const lower = lang.toLowerCase();
-    const targetLang = lower === 'auto'
-      ? (navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en')
-      : (lower.startsWith('zh') ? 'zh' : 'en');
+    const targetLang = resolveI18nBundle(lang, systemLang);
+    applyHtmlLanguageAttribute(targetLang);
     if (i18n.language !== targetLang) {
       void i18n.changeLanguage(targetLang);
     }
@@ -217,7 +225,7 @@ export function useAppearance(onSettingsHydrated?: (settings: AppearancePayload)
       }
       applyTheme(preferenceRef.current);
       applyAccent(nextAccent);
-      syncLanguage(payload.language);
+      syncLanguage(payload.language, payload.systemLanguage);
       lastAppliedSigRef.current = sig;
     }
 

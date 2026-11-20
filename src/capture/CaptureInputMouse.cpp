@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <algorithm>
+#include "core/i18n/UiI18n.h"
 #include <windowsx.h>
 #include "capture/CaptureInputInternal.h"
 #include "capture/CaptureOverlay.h"
@@ -413,7 +414,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             m_state->dragEnd = {m_state->longCanvas.docWidth, m_state->longCanvas.docHeight};
                             prepareMarkupBase();
                             const bool zh = tools3000::core::isUiLanguageChinese();
-                            m_state->loupeToastMessage = zh ? L"已无损恢复完整长图" : L"Restored full long image";
+                            m_state->loupeToastMessage = tools3000::core::trWCstrFor(zh, L"已无损恢复完整长图", L"Restored full long image");
                             m_state->loupeToastUntil = GetTickCount() + 1400;
                             SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                             m_state->toolbarLayoutValid = false;
@@ -491,9 +492,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         py >= m_state->qrChipRect.top && py <= m_state->qrChipRect.bottom) {
                         tools3000::core::WinUtils::copyToClipboard(tools3000::core::WinUtils::utf8ToWstring(m_state->detectedQrText), hwnd);
                         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                            tools3000::core::isUiLanguageChinese()
-                                ? L"已复制二维码内容到剪贴板"
-                                : L"Copied QR code content to clipboard"});
+                            tools3000::core::trWCstr(L"已复制二维码内容到剪贴板", L"Copied QR code content to clipboard")});
                         return 0;
                     }
                 }
@@ -1652,7 +1651,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     m_state->toolbarLayoutValid = false;
                     const bool zh = tools3000::core::isUiLanguageChinese();
                     m_state->loupeToastUntil = GetTickCount() + 1400;
-                    m_state->loupeToastMessage = zh ? L"已恢复工具栏自动跟随" : L"Toolbar auto-follow restored";
+                    m_state->loupeToastMessage = tools3000::core::trWCstrFor(zh, L"已恢复工具栏自动跟随", L"Toolbar auto-follow restored");
                     m_renderer->invalidate();
                     updateHoverCursor(pt);
                     return 0;

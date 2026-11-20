@@ -1,4 +1,5 @@
 #include "core/remote/RemoteMasterEngine.h"
+#include "core/i18n/UiI18n.h"
 #include "core/config/ConfigManager.h"
 #include "core/hotkey/HotkeyManager.h"
 #include "core/logger/Logger.h"
@@ -932,8 +933,7 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd, bool manualRescue) {
         }
         // 单测 Mock 远控前台模式：完成状态机复位并发布通知，避免调用真实硬件 SendInput 干扰开发环境
         EventBus::instance().publish(ShowToastEvent{
-            isUiLanguageChinese() ? L"已释放卡住的修饰键与鼠标按键"
-                                  : L"Released stuck modifier keys and mouse buttons"
+            tools3000::core::trWCstr(L"已释放卡住的修饰键与鼠标按键", L"Released stuck modifier keys and mouse buttons")
         });
         LOG_INFO("[RemoteMaster] [Mock] Emergency flush executed: state reset completed");
         return;
@@ -1061,8 +1061,7 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd, bool manualRescue) {
 
     // 4. 触发全局轻量通知反馈
     EventBus::instance().publish(ShowToastEvent{
-        isUiLanguageChinese() ? L"已释放卡住的修饰键与鼠标按键"
-                              : L"Released stuck modifier keys and mouse buttons"
+        tools3000::core::trWCstr(L"已释放卡住的修饰键与鼠标按键", L"Released stuck modifier keys and mouse buttons")
     });
     LOG_INFO("[RemoteMaster] Emergency flush executed: 8 modifier keys and 3 mouse buttons released");
 }

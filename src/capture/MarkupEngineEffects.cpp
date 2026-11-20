@@ -7,6 +7,7 @@
 #endif
 
 #include "capture/MarkupEngineInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/TextAnnotationHelper.h"
 #include "capture/TextReplaceEngine.h"
 #include "capture/MarkupCurveGeometry.h"
@@ -119,9 +120,7 @@ namespace {
         Gdiplus::Bitmap tmpBmp(1, 1, PixelFormat32bppARGB);
         Gdiplus::Graphics g(&tmpBmp);
         Gdiplus::RectF boundRect;
-        const std::wstring placeholder = tools3000::core::isUiLanguageChinese()
-            ? L"点击输入文字..."
-            : L"Click to enter text...";
+        const std::wstring placeholder = tools3000::core::trWCstr(L"点击输入文字...", L"Click to enter text...");
         std::wstring measureStr = text.empty() ? placeholder : text;
         if (!measureStr.empty() && measureStr.back() == L'\n') {
             // GDI+ MeasureString 会忽略末尾单独的换行符，附加占位空格以准确计算新空行高度
@@ -303,9 +302,7 @@ namespace {
                 }
             } else if (isEditing || isSelected) {
                 // 空文本编辑态：绘制提示占位文字（严格遵循字重 >= 500 Bold 与字号 >= 12px 排版红线）
-                const std::wstring placeholder = tools3000::core::isUiLanguageChinese()
-                    ? L"点击输入文字..."
-                    : L"Click to enter text...";
+                const std::wstring placeholder = tools3000::core::trWCstr(L"点击输入文字...", L"Click to enter text...");
                 Gdiplus::Font placeholderFont(activeFamily, static_cast<Gdiplus::REAL>((std::max)(12.0f, safeFontSize * 0.88f)), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
                 Gdiplus::SolidBrush placeholderBrush(Gdiplus::Color(180, 148, 163, 184));
                 g.DrawString(placeholder.c_str(), -1, &placeholderFont, Gdiplus::PointF(textX + 2.0f, textY + 1.0f), &format, &placeholderBrush);

@@ -8,6 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/ScreenCapture.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/ClipboardUtils.h"
 #include "capture/WatermarkRenderer.h"
 #include "capture/CaptureBackend.h"
@@ -99,8 +100,8 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                 if (decision.shouldSaveExplicitly) {
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                         result.filePath.empty()
-                            ? (isZh ? L"截图保存失败" : L"Failed to save screenshot")
-                            : (isZh ? L"截图已保存" : L"Screenshot saved")});
+                            ? (tools3000::core::trWCstrFor(isZh, L"截图保存失败", L"Failed to save screenshot"))
+                            : (tools3000::core::trWCstrFor(isZh, L"截图已保存", L"Screenshot saved"))});
                 }
             }
         }
@@ -112,14 +113,14 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
             int padY = (deliverableImage.rows > region.height && region.height > 0) ? (deliverableImage.rows - region.height) / 2 : 0;
             copyToClipboard(deliverableImage, widePath, &region, padX, padY);
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                isZh ? L"截图已复制到剪贴板" : L"Screenshot copied to clipboard"});
+                tools3000::core::trWCstrFor(isZh, L"截图已复制到剪贴板", L"Screenshot copied to clipboard")});
         } else if (!decision.shouldSaveExplicitly &&
                    decision.shouldSaveAutomatically &&
                    !decision.shouldInvokeMemoryCallback) {
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                 result.filePath.empty()
-                    ? (isZh ? L"截图保存失败" : L"Failed to save screenshot")
-                    : (isZh ? L"截图已保存" : L"Screenshot saved")});
+                    ? (tools3000::core::trWCstrFor(isZh, L"截图保存失败", L"Failed to save screenshot"))
+                    : (tools3000::core::trWCstrFor(isZh, L"截图已保存", L"Screenshot saved"))});
         }
 
         // 当用户同时关闭了自动复制与自动保存（且非内存直达回调）时，弹出系统另存为对话框兜底防丢图
@@ -169,8 +170,8 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                             const bool zh = useChineseCaptureToast();
                             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                                 chosenSavedPath.empty()
-                                    ? (zh ? L"截图保存失败" : L"Failed to save screenshot")
-                                    : (zh ? L"截图已保存" : L"Screenshot saved")});
+                                    ? (tools3000::core::trWCstrFor(zh, L"截图保存失败", L"Failed to save screenshot"))
+                                    : (tools3000::core::trWCstrFor(zh, L"截图已保存", L"Screenshot saved"))});
                         }
                     }
                     if (recordHist) {
@@ -231,11 +232,11 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
 
         if (showResultWindow) {
             tools3000::ocr::OcrResultWindow::instance().showResult(
-                isZh ? "正在识别..." : "Recognizing...",
+                tools3000::core::trUtf8CstrFor(isZh, "正在识别...", "Recognizing..."),
                 &anchorRc);
         } else if (!pinLiveTextOnCapture) {
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                isZh ? L"正在识别..." : L"Recognizing..."});
+                tools3000::core::trWCstrFor(isZh, L"正在识别...", L"Recognizing...")});
         }
 
         std::string traceId = tools3000::core::TraceId::current();
@@ -276,14 +277,14 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                     displayText = std::move(fullText);
                 } else {
                     LOG_WARN("OCR 未提取到文字");
-                    displayText = zh ? "未识别到文字" : "No text recognized";
+                    displayText = tools3000::core::trUtf8CstrFor(zh, "未识别到文字", "No text recognized");
                 }
             } catch (const std::exception& e) {
                 LOG_ERROR("OCR(覆盖层) 异常: {}", e.what());
-                displayText = zh ? "识别失败" : "Recognition failed";
+                displayText = tools3000::core::trUtf8CstrFor(zh, "识别失败", "Recognition failed");
             } catch (...) {
                 LOG_ERROR("OCR(覆盖层) 未知异常");
-                displayText = zh ? "识别失败" : "Recognition failed";
+                displayText = tools3000::core::trUtf8CstrFor(zh, "识别失败", "Recognition failed");
             }
 
             if (m_ocrGeneration.load(std::memory_order_acquire) != myGen) {
@@ -330,8 +331,8 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                 const bool copied = tools3000::core::ConfigManager::instance().get<bool>("/ocr/copyResult", true);
                 tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                     copied
-                        ? (zh ? L"OCR 识别完成并已复制" : L"OCR completed and copied")
-                        : (zh ? L"OCR 识别完成" : L"OCR completed")});
+                        ? (tools3000::core::trWCstrFor(zh, L"OCR 识别完成并已复制", L"OCR completed and copied"))
+                        : (tools3000::core::trWCstrFor(zh, L"OCR 识别完成", L"OCR completed"))});
                 tools3000::core::WinUtils::trimWorkingSet();
             }
         });
@@ -456,8 +457,8 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
         });
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
             copied
-                ? (isZh ? L"长截图已贴图并复制" : L"Long screenshot pinned and copied")
-                : (isZh ? L"长截图已贴图" : L"Long screenshot pinned")});
+                ? (tools3000::core::trWCstrFor(isZh, L"长截图已贴图并复制", L"Long screenshot pinned and copied"))
+                : (tools3000::core::trWCstrFor(isZh, L"长截图已贴图", L"Long screenshot pinned"))});
         LOG_INFO("长截图已保存，共 {} 帧", frameCount);
         return;
     }
@@ -513,9 +514,9 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
         savedPath.empty()
             ? (copied
-                ? (isZh ? L"长截图已复制到剪贴板" : L"Long screenshot copied to clipboard")
-                : (isZh ? L"长截图已完成" : L"Long screenshot completed"))
-            : (isZh ? L"长截图已保存" : L"Long screenshot saved")});
+                ? (tools3000::core::trWCstrFor(isZh, L"长截图已复制到剪贴板", L"Long screenshot copied to clipboard"))
+                : (tools3000::core::trWCstrFor(isZh, L"长截图已完成", L"Long screenshot completed")))
+            : (tools3000::core::trWCstrFor(isZh, L"长截图已保存", L"Long screenshot saved"))});
     LOG_INFO("长截图已保存，共 {} 帧", frameCount);
     releaseScrollCaptureWorkingSet();
 }

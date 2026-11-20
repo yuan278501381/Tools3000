@@ -4808,3 +4808,97 @@ TEST(SessionIsolationTest, MultiSessionMutexWebViewSlotLeasesAndConcurrentAtomic
 
     std::filesystem::remove_all(tempRoot, ec);
 }
+
+TEST(UiI18nTest, EightLanguageResolutionCatalogLoadingAndInstallerContract) {
+    using namespace tools3000::core;
+
+    struct ScopedUiI18nGuard {
+        ~ScopedUiI18nGuard() {
+            UiI18n::setLanguageOverrideForTest("");
+            UiI18n::setCatalogDirectoryForTest({});
+        }
+    } guard;
+
+    // 1. 跟随系统标识与受支持语言设置校验
+    EXPECT_TRUE(UiI18n::isFollowSystemSetting(""));
+    EXPECT_TRUE(UiI18n::isFollowSystemSetting("auto"));
+    EXPECT_TRUE(UiI18n::isFollowSystemSetting("system"));
+    EXPECT_FALSE(UiI18n::isFollowSystemSetting("ja-JP"));
+
+    for (const char* valid : {"auto", "system", "zh-CN", "zh-TW", "zh-HK", "en-US", "ja-JP", "ko-KR", "ru-RU", "pt-BR", "es-ES"}) {
+        EXPECT_TRUE(UiI18n::isSupportedLanguageSetting(valid)) << valid;
+    }
+    EXPECT_FALSE(UiI18n::isSupportedLanguageSetting("invalid-lang"));
+
+    // 2. 区域标签精确归一化与未知语种英文兜底
+    EXPECT_EQ(UiI18n::parseLanguageTag("zh-CN"), UiLanguage::ZhCN);
+    EXPECT_EQ(UiI18n::parseLanguageTag("zh-SG"), UiLanguage::ZhCN);
+    EXPECT_EQ(UiI18n::parseLanguageTag("zh-Hans"), UiLanguage::ZhCN);
+    EXPECT_EQ(UiI18n::parseLanguageTag("zh-TW"), UiLanguage::ZhTW);
+    EXPECT_EQ(UiI18n::parseLanguageTag("zh-HK"), UiLanguage::ZhTW);
+    EXPECT_EQ(UiI18n::parseLanguageTag("zh-MO"), UiLanguage::ZhTW);
+    EXPECT_EQ(UiI18n::parseLanguageTag("zh-Hant-TW"), UiLanguage::ZhTW);
+    EXPECT_EQ(UiI18n::parseLanguageTag("ja"), UiLanguage::JaJP);
+    EXPECT_EQ(UiI18n::parseLanguageTag("ja-JP"), UiLanguage::JaJP);
+    EXPECT_EQ(UiI18n::parseLanguageTag("ko-KR"), UiLanguage::KoKR);
+    EXPECT_EQ(UiI18n::parseLanguageTag("ru-RU"), UiLanguage::RuRU);
+    EXPECT_EQ(UiI18n::parseLanguageTag("pt-BR"), UiLanguage::PtBR);
+    EXPECT_EQ(UiI18n::parseLanguageTag("pt-PT"), UiLanguage::PtBR);
+    EXPECT_EQ(UiI18n::parseLanguageTag("es-ES"), UiLanguage::EsES);
+    EXPECT_EQ(UiI18n::parseLanguageTag("es-MX"), UiLanguage::EsES);
+    EXPECT_EQ(UiI18n::parseLanguageTag("de-DE"), UiLanguage::EnUS);
+    EXPECT_EQ(UiI18n::parseLanguageTag("fr-FR"), UiLanguage::EnUS);
+
+    // 3. 定位仓库根并断言 6 套原生词典完整载入、有效翻译且占位符安全替换
+    std::error_code ec;
+    std::filesystem::path probe = std::filesystem::current_path(ec);
+    std::filesystem::path repoRoot;
+    for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+        if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+            repoRoot = probe;
+            break;
+        }
+        probe = probe.parent_path();
+    }
+    ASSERT_FALSE(repoRoot.empty());
+    UiI18n::setCatalogDirectoryForTest(repoRoot / L"resources" / L"locales" / L"native");
+
+    const std::array<std::pair<const char*, UiLanguage>, 6> kCatalogLangs = {{
+        {"zh-TW", UiLanguage::ZhTW},
+        {"ja-JP", UiLanguage::JaJP},
+        {"ko-KR", UiLanguage::KoKR},
+        {"ru-RU", UiLanguage::RuRU},
+        {"pt-BR", UiLanguage::PtBR},
+        {"es-ES", UiLanguage::EsES},
+    }};
+    for (const auto& [tag, langEnum] : kCatalogLangs) {
+        UiI18n::setLanguageOverrideForTest(tag);
+        EXPECT_EQ(UiI18n::getEffectiveLanguage(), langEnum) << tag;
+        EXPECT_GT(UiI18n::getLoadedEntryCount(langEnum), 500u) << tag;
+        const std::wstring translated = trW(L"自动运镜", L"Auto Zoom");
+        EXPECT_FALSE(translated.empty()) << tag;
+        EXPECT_NE(translated, L"Auto Zoom") << "Expected localized translation for " << tag;
+        const std::wstring formatted = trFmtW(L"外壳留白: {0} px", L"Shell Padding: {0} px", {L"24"});
+        EXPECT_NE(formatted.find(L"24"), std::wstring::npos) << tag;
+    }
+
+    // 4. 简体中文与英文零回退直通 + trWCstrFor 单测兼容性校验
+    UiI18n::setLanguageOverrideForTest("zh-CN");
+    EXPECT_EQ(trW(L"自动运镜", L"Auto Zoom"), L"自动运镜");
+    EXPECT_STREQ(trWCstrFor(false, L"自动运镜", L"Auto Zoom"), L"Auto Zoom");
+    UiI18n::setLanguageOverrideForTest("en-US");
+    EXPECT_EQ(trW(L"自动运镜", L"Auto Zoom"), L"Auto Zoom");
+    EXPECT_STREQ(trWCstrFor(true, L"自动运镜", L"Auto Zoom"), L"自动运镜");
+
+    // 5. Inno Setup 8 语种安装器契约校验
+    std::ifstream issIfs(repoRoot / L"installer.iss", std::ios::binary);
+    ASSERT_TRUE(issIfs.is_open());
+    const std::string issSrc((std::istreambuf_iterator<char>(issIfs)), std::istreambuf_iterator<char>());
+    for (const char* issLang : {
+             "Name: \"english\"", "Name: \"chinesesimplified\"", "Name: \"chinesetraditional\"",
+             "Name: \"japanese\"", "Name: \"korean\"", "Name: \"russian\"",
+             "Name: \"brazilianportuguese\"", "Name: \"spanish\""}) {
+        EXPECT_NE(issSrc.find(issLang), std::string::npos) << issLang;
+    }
+    EXPECT_TRUE(std::filesystem::exists(repoRoot / L"resources" / L"installer" / L"ChineseTraditional.isl", ec));
+}

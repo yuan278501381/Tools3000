@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <algorithm>
+#include "core/i18n/UiI18n.h"
 #include <windowsx.h>
 #include "capture/CaptureInputInternal.h"
 #include "capture/CaptureOverlay.h"
@@ -1085,7 +1086,7 @@ void CaptureInput::stepDetectedWindowHierarchy(HWND hwnd, int delta) {
         const bool zh = tools3000::core::isUiLanguageChinese();
         const std::wstring desc = (idx >= 0 && idx < static_cast<int>(m_state->detectedWindowHierarchyDescriptions.size()))
             ? m_state->detectedWindowHierarchyDescriptions[idx]
-            : (zh ? L"选区" : L"Region");
+            : (tools3000::core::trWCstrFor(zh, L"选区", L"Region"));
         m_state->hierarchyBadgeText = L"[" + std::to_wstring(idx + 1) + L"/" + std::to_wstring(count) + L"] " + desc;
 
         if (hwnd) SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
@@ -1332,9 +1333,7 @@ void CaptureInput::finishMarkup(POINT point) {
         MultiPointLinePolicy::startFromFirstClick(*m_state, m_state->markupStart);
         const bool zh = tools3000::core::isUiLanguageChinese();
         m_state->loupeToastUntil = GetTickCount() + 2400;
-        m_state->loupeToastMessage = zh
-            ? L"多点连线：继续点击添加节点 · 双击 / 右键 / Enter 完成"
-            : L"Multi-point: Click to add points · Double/Right-click or Enter to finish";
+        m_state->loupeToastMessage = tools3000::core::trWCstrFor(zh, L"多点连线：继续点击添加节点 · 双击 / 右键 / Enter 完成", L"Multi-point: Click to add points · Double/Right-click or Enter to finish");
         if (m_hwnd) {
             SetTimer(m_hwnd, RENDER_TIMER_ID, 16, nullptr);
         }
@@ -1818,18 +1817,18 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
                     GetClassNameW(curr, className, 64);
                     wchar_t title[64] = {};
                     GetWindowTextW(curr, title, 64);
-                    std::wstring typeName = isZh ? L"控件" : L"Control";
+                    std::wstring typeName = tools3000::core::trWCstrFor(isZh, L"控件", L"Control");
                     std::wstring cls = className;
                     for (auto& ch : cls) ch = towlower(ch);
-                    if (cls.find(L"button") != std::wstring::npos) typeName = isZh ? L"按钮" : L"Button";
-                    else if (cls.find(L"edit") != std::wstring::npos) typeName = isZh ? L"输入框" : L"Input";
-                    else if (cls.find(L"static") != std::wstring::npos) typeName = isZh ? L"文本" : L"Label";
-                    else if (cls.find(L"combo") != std::wstring::npos) typeName = isZh ? L"下拉框" : L"ComboBox";
-                    else if (cls.find(L"list") != std::wstring::npos) typeName = isZh ? L"列表" : L"List";
-                    else if (cls.find(L"tree") != std::wstring::npos) typeName = isZh ? L"树形控件" : L"TreeView";
-                    else if (cls.find(L"tab") != std::wstring::npos) typeName = isZh ? L"选项卡" : L"Tab";
-                    else if (cls.find(L"toolbar") != std::wstring::npos) typeName = isZh ? L"工具栏" : L"Toolbar";
-                    else if (GetParent(curr) == nullptr || curr == hTop) typeName = isZh ? L"窗口" : L"Window";
+                    if (cls.find(L"button") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"按钮", L"Button");
+                    else if (cls.find(L"edit") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"输入框", L"Input");
+                    else if (cls.find(L"static") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"文本", L"Label");
+                    else if (cls.find(L"combo") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"下拉框", L"ComboBox");
+                    else if (cls.find(L"list") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"列表", L"List");
+                    else if (cls.find(L"tree") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"树形控件", L"TreeView");
+                    else if (cls.find(L"tab") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"选项卡", L"Tab");
+                    else if (cls.find(L"toolbar") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"工具栏", L"Toolbar");
+                    else if (GetParent(curr) == nullptr || curr == hTop) typeName = tools3000::core::trWCstrFor(isZh, L"窗口", L"Window");
 
                     int w = rc.right - rc.left;
                     int h = rc.bottom - rc.top;
@@ -1870,7 +1869,7 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
             if (!exists) {
                 hierarchy.push_back(monRc);
                 hierarchyDescriptions.push_back(
-                    (isZh ? L"屏幕 (" : L"Display (") +
+                    (tools3000::core::trWCstrFor(isZh, L"屏幕 (", L"Display (")) +
                     std::to_wstring(monRc.right - monRc.left) + L"x" +
                     std::to_wstring(monRc.bottom - monRc.top) + L")");
             }
@@ -1882,7 +1881,7 @@ std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
         RECT fullRc{0, 0, GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)};
         hierarchy.push_back(fullRc);
         hierarchyDescriptions.push_back(
-            (isZh ? L"全屏 (" : L"Full Screen (") +
+            (tools3000::core::trWCstrFor(isZh, L"全屏 (", L"Full Screen (")) +
             std::to_wstring(fullRc.right - fullRc.left) + L"x" +
             std::to_wstring(fullRc.bottom - fullRc.top) + L")");
     }

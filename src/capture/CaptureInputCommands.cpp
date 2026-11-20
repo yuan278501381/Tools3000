@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <algorithm>
+#include "core/i18n/UiI18n.h"
 #include <windowsx.h>
 #include "capture/CaptureInputInternal.h"
 #include "capture/CaptureOverlay.h"
@@ -403,8 +404,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 }
                 m_state->loupeToastUntil = GetTickCount() + 1500;
                 m_state->loupeToastMessage = m_state->currentTextOutline
-                    ? (zh ? L"文字描边: 已开启" : L"Text Outline: ON")
-                    : (zh ? L"文字描边: 已关闭" : L"Text Outline: OFF");
+                    ? (tools3000::core::trWCstrFor(zh, L"文字描边: 已开启", L"Text Outline: ON"))
+                    : (tools3000::core::trWCstrFor(zh, L"文字描边: 已关闭", L"Text Outline: OFF"));
             } else {
                 m_state->isEditingOutlineColor = !m_state->isEditingOutlineColor;
                 if (m_state->isEditingOutlineColor) {
@@ -425,9 +426,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 }
                 m_state->loupeToastUntil = GetTickCount() + 1800;
                 m_state->loupeToastMessage = m_state->isEditingOutlineColor
-                    ? (zh ? L"边框模式已开启：右侧色块改边框色，拖动滑块或滚轮调边框粗细"
-                          : L"Border Mode ON: Pick border color on right, scroll/drag for border width")
-                    : (zh ? L"已切回主填充色模式" : L"Switched back to Fill Color mode");
+                    ? (tools3000::core::trWCstrFor(zh, L"边框模式已开启：右侧色块改边框色，拖动滑块或滚轮调边框粗细", L"Border Mode ON: Pick border color on right, scroll/drag for border width"))
+                    : (tools3000::core::trWCstrFor(zh, L"已切回主填充色模式", L"Switched back to Fill Color mode"));
             }
             m_state->toolbarLayoutValid = false;
             m_renderer->invalidate();
@@ -498,7 +498,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 m_state->dragStart = {0, 0};
                 m_state->dragEnd = {m_state->longCanvas.docWidth, m_state->longCanvas.docHeight};
                 const bool zh = tools3000::core::isUiLanguageChinese();
-                m_state->loupeToastMessage = zh ? L"已恢复完整长图与直角输出" : L"Restored full long image";
+                m_state->loupeToastMessage = tools3000::core::trWCstrFor(zh, L"已恢复完整长图与直角输出", L"Restored full long image");
                 m_state->loupeToastUntil = GetTickCount() + 1400;
             }
             closeAllCapturePopups(*m_state, false);
@@ -548,13 +548,13 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 m_state->dragStart = {m_state->savedSelectionBeforeInvert.left, m_state->savedSelectionBeforeInvert.top};
                 m_state->dragEnd = {m_state->savedSelectionBeforeInvert.right, m_state->savedSelectionBeforeInvert.bottom};
                 m_state->hasSavedSelectionBeforeInvert = false;
-                m_state->loupeToastMessage = zh ? L"已还原上次选区" : L"Restored previous selection";
+                m_state->loupeToastMessage = tools3000::core::trWCstrFor(zh, L"已还原上次选区", L"Restored previous selection");
             } else {
                 m_state->savedSelectionBeforeInvert = {curLeft, curTop, curRight, curBottom};
                 m_state->hasSavedSelectionBeforeInvert = true;
                 m_state->dragStart = {fullLocal.left, fullLocal.top};
                 m_state->dragEnd = {fullLocal.right, fullLocal.bottom};
-                m_state->loupeToastMessage = zh ? L"已选中当前屏幕" : L"Selected current screen";
+                m_state->loupeToastMessage = tools3000::core::trWCstrFor(zh, L"已选中当前屏幕", L"Selected current screen");
             }
             m_state->loupeToastUntil = GetTickCount() + 1400;
             m_state->toolbarLayoutValid = false;
@@ -792,8 +792,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             const bool zh = tools3000::core::isUiLanguageChinese();
             m_state->loupeToastUntil = GetTickCount() + 1500;
             m_state->loupeToastMessage = m_state->beautyShell.enabled
-                ? (zh ? L"已开启美化外壳" : L"Beauty Shell enabled")
-                : (zh ? L"已关闭美化外壳" : L"Beauty Shell disabled");
+                ? (tools3000::core::trWCstrFor(zh, L"已开启美化外壳", L"Beauty Shell enabled"))
+                : (tools3000::core::trWCstrFor(zh, L"已关闭美化外壳", L"Beauty Shell disabled"));
             m_state->toolbarLayoutValid = false;
             m_renderer->invalidate();
             break;
@@ -841,8 +841,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             const bool zh = tools3000::core::isUiLanguageChinese();
             m_state->loupeToastUntil = GetTickCount() + 1500;
             m_state->loupeToastMessage = m_state->recordSetup.includeKeycast
-                ? (zh ? L"按键回显: 已开启" : L"Keycast: ON")
-                : (zh ? L"按键回显: 已关闭" : L"Keycast: OFF");
+                ? (tools3000::core::trWCstrFor(zh, L"按键回显: 已开启", L"Keycast: ON"))
+                : (tools3000::core::trWCstrFor(zh, L"按键回显: 已关闭", L"Keycast: OFF"));
             m_state->toolbarLayoutValid = false;
             m_renderer->invalidate();
             break;
@@ -856,8 +856,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 const bool zh = tools3000::core::isUiLanguageChinese();
                 m_state->loupeToastUntil = GetTickCount() + 1500;
                 m_state->loupeToastMessage = m_state->recordSetup.captureSystemAudio
-                    ? (zh ? L"系统声音: 已开启" : L"System Audio: ON")
-                    : (zh ? L"系统声音: 已关闭" : L"System Audio: OFF");
+                    ? (tools3000::core::trWCstrFor(zh, L"系统声音: 已开启", L"System Audio: ON"))
+                    : (tools3000::core::trWCstrFor(zh, L"系统声音: 已关闭", L"System Audio: OFF"));
                 m_state->toolbarLayoutValid = false;
                 m_renderer->invalidate();
             }
@@ -872,8 +872,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 const bool zh = tools3000::core::isUiLanguageChinese();
                 m_state->loupeToastUntil = GetTickCount() + 1500;
                 m_state->loupeToastMessage = m_state->recordSetup.captureMicrophone
-                    ? (zh ? L"麦克风: 已开启" : L"Microphone: ON")
-                    : (zh ? L"麦克风: 已静音" : L"Microphone: Muted");
+                    ? (tools3000::core::trWCstrFor(zh, L"麦克风: 已开启", L"Microphone: ON"))
+                    : (tools3000::core::trWCstrFor(zh, L"麦克风: 已静音", L"Microphone: Muted"));
                 m_state->toolbarLayoutValid = false;
                 m_renderer->invalidate();
             }
@@ -914,10 +914,10 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             static const wchar_t* ratioNamesZh[] = { L"自由比例", L"16:9 宽屏", L"4:3 标清", L"1:1 正方形", L"黄金比例 (1.618:1)" };
             static const wchar_t* ratioNamesEn[] = { L"Free", L"16:9 Widescreen", L"4:3 Standard", L"1:1 Square", L"Golden Ratio (1.618:1)" };
             const wchar_t* rname = (next >= 0 && next < 5)
-                ? (zh ? ratioNamesZh[next] : ratioNamesEn[next])
-                : (zh ? L"自由比例" : L"Free");
+                ? tools3000::core::trWCstrFor(zh, ratioNamesZh[next], ratioNamesEn[next])
+                : tools3000::core::trWCstrFor(zh, L"自由比例", L"Free");
             m_state->loupeToastUntil = GetTickCount() + 1500;
-            m_state->loupeToastMessage = (zh ? L"选区比例: " : L"Aspect Ratio: ") + std::wstring(rname);
+            m_state->loupeToastMessage = (tools3000::core::trWCstrFor(zh, L"选区比例: ", L"Aspect Ratio: ")) + std::wstring(rname);
             m_state->toolbarLayoutValid = false;
             m_renderer->invalidate();
             break;
@@ -1051,8 +1051,8 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                 "/capture/markup/magnifier/calloutMode", m_state->magnifierCalloutMode);
             m_state->loupeToastUntil = GetTickCount() + 1500;
             m_state->loupeToastMessage = m_state->magnifierCalloutMode
-                ? (zh ? L"已切换为引出放大镜" : L"Callout magnifier")
-                : (zh ? L"已切换为原位放大镜" : L"In-place magnifier");
+                ? (tools3000::core::trWCstrFor(zh, L"已切换为引出放大镜", L"Callout magnifier"))
+                : (tools3000::core::trWCstrFor(zh, L"已切换为原位放大镜", L"In-place magnifier"));
             m_state->toolbarLayoutValid = false;
             m_renderer->invalidate();
             break;

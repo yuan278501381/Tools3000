@@ -8,6 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/PinWindowInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/PinPasteCoordinator.h"
 #include "capture/TextAnnotationHelper.h"
 #include "capture/TextReplaceEngine.h"
@@ -388,13 +389,11 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
                 }
                 const bool isZh = tools3000::core::isUiLanguageChinese();
                 tools3000::core::EventBus::instance().publish(
-                    tools3000::core::ShowToastEvent{isZh ? L"已全选文字，按 Ctrl+C 复制"
-                                                         : L"All text selected, press Ctrl+C to copy"});
+                    tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已全选文字，按 Ctrl+C 复制", L"All text selected, press Ctrl+C to copy")});
             } else {
                 const bool isZh = tools3000::core::isUiLanguageChinese();
                 tools3000::core::EventBus::instance().publish(
-                    tools3000::core::ShowToastEvent{isZh ? L"未识别到文字"
-                                                         : L"No text recognized"});
+                    tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"未识别到文字", L"No text recognized")});
             }
         }
 
@@ -408,19 +407,17 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
                     const std::wstring wtext = tools3000::core::WinUtils::utf8ToWstring(fullText);
                     tools3000::core::WinUtils::copyToClipboard(wtext);
                     tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{isZh ? L"已提取文本并复制到剪贴板"
-                                                             : L"Text extracted and copied to clipboard"});
+                        tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已提取文本并复制到剪贴板", L"Text extracted and copied to clipboard")});
                 } else {
                     tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{isZh ? L"未识别到文字"
-                                                             : L"No text recognized"});
+                        tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"未识别到文字", L"No text recognized")});
                 }
             }
             if (wantOpenPanel) {
                 RECT pinRc{};
                 const bool hasRc = (self->m_hwnd && IsWindow(self->m_hwnd) && GetWindowRect(self->m_hwnd, &pinRc) != FALSE);
                 const std::string display = fullText.empty()
-                    ? (isZh ? "未识别到文字" : "No text recognized")
+                    ? (tools3000::core::trUtf8CstrFor(isZh, "未识别到文字", "No text recognized"))
                     : fullText;
                 tools3000::ocr::OcrResultWindow::instance().showResult(display, hasRc ? &pinRc : nullptr);
             }
@@ -561,13 +558,11 @@ void PinWindow::selectAllText() {
     const bool isZh = tools3000::core::isUiLanguageChinese();
     if (countSelected > 0) {
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{isZh ? L"已全选文字，按 Ctrl+C 复制"
-                                                 : L"All text selected, press Ctrl+C to copy"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已全选文字，按 Ctrl+C 复制", L"All text selected, press Ctrl+C to copy")});
         render();
     } else {
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{isZh ? L"未识别到文字"
-                                                 : L"No text recognized"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"未识别到文字", L"No text recognized")});
     }
 }
 
@@ -683,8 +678,8 @@ void PinWindow::toggleTextSelectionMode() {
     const bool isZh = tools3000::core::isUiLanguageChinese();
     tools3000::core::EventBus::instance().publish(
         tools3000::core::ShowToastEvent{m_textSelectionMode
-            ? (isZh ? L"已进入文字划选模式（拖拽选择文字，按 Esc 退出）" : L"Text selection mode (Drag to select, Esc to exit)")
-            : (isZh ? L"已退出文字划选模式" : L"Exited text selection mode")});
+            ? (tools3000::core::trWCstrFor(isZh, L"已进入文字划选模式（拖拽选择文字，按 Esc 退出）", L"Text selection mode (Drag to select, Esc to exit)"))
+            : (tools3000::core::trWCstrFor(isZh, L"已退出文字划选模式", L"Exited text selection mode"))});
     render();
 }
 
@@ -716,7 +711,7 @@ void PinWindow::copySelectedText() {
         tools3000::core::WinUtils::copyToClipboard(wtext);
         bool isZh = tools3000::core::isUiLanguageChinese();
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{isZh ? L"已复制文字" : L"Text copied"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已复制文字", L"Text copied")});
     }
     render();
 }
@@ -758,12 +753,15 @@ void PinWindow::copySelectedOrAllAsTable() {
         }
     }
 
-    const bool isZh = tools3000::core::isUiLanguageChinese();
     if (tableGrid.isTable && tools3000::ocr::OcrTableReconstructor::copyTableToClipboard(tableGrid, m_hwnd)) {
+        const std::wstring rowsStr = std::to_wstring(tableGrid.rowCount);
+        const std::wstring colsStr = std::to_wstring(tableGrid.colCount);
         tools3000::core::EventBus::instance().publish(
             tools3000::core::ShowToastEvent{
-                isZh ? std::format(L"已复制 {}×{} 表格，可直接粘贴至 Excel / 飞书", tableGrid.rowCount, tableGrid.colCount)
-                     : std::format(L"Copied {}x{} table, ready to paste into Excel", tableGrid.rowCount, tableGrid.colCount)});
+                tools3000::core::trFmtW(
+                    L"已复制 {0}×{1} 表格，可直接粘贴至 Excel / 飞书",
+                    L"Copied {0}x{1} table, ready to paste into Excel",
+                    {rowsStr, colsStr})});
         render();
     } else {
         copySelectedText();
@@ -776,7 +774,7 @@ void PinWindow::openOcrComparisonPanel() {
     if (!m_ocrReady.load() && m_pinnedSourceText.empty()) {
         const bool isZh = tools3000::core::isUiLanguageChinese();
         tools3000::ocr::OcrResultWindow::instance().showResult(
-            isZh ? "正在识别..." : "Recognizing...",
+            tools3000::core::trUtf8CstrFor(isZh, "正在识别...", "Recognizing..."),
             hasRc ? &pinRc : nullptr);
         m_pendingOpenPanelOcr.store(true, std::memory_order_release);
         ensureOcrExecutedAsync(false);
@@ -825,7 +823,7 @@ void PinWindow::copyQrCodeText(size_t qrIndex) {
         const bool isZh = tools3000::core::isUiLanguageChinese();
         tools3000::core::EventBus::instance().publish(
             tools3000::core::ShowToastEvent{
-                isZh ? L"已复制二维码内容" : L"QR code copied"});
+                tools3000::core::trWCstrFor(isZh, L"已复制二维码内容", L"QR code copied")});
     }
 }
 
@@ -834,7 +832,7 @@ void PinWindow::copyAllText() {
         tools3000::core::WinUtils::copyToClipboard(m_pinnedSourceText);
         const bool isZh = tools3000::core::isUiLanguageChinese();
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{isZh ? L"已复制贴图文字" : L"Copied note text"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已复制贴图文字", L"Copied note text")});
         return;
     }
 
@@ -866,7 +864,7 @@ void PinWindow::copyAllText() {
         tools3000::core::WinUtils::copyToClipboard(wtext);
         bool isZh = tools3000::core::isUiLanguageChinese();
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{isZh ? L"已复制贴图全部文字" : L"Copied all text from pin"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已复制贴图全部文字", L"Copied all text from pin")});
     } else {
         extractText();
     }
@@ -877,7 +875,7 @@ void PinWindow::extractText() {
         tools3000::core::WinUtils::copyToClipboard(m_pinnedSourceText);
         const bool isZh = tools3000::core::isUiLanguageChinese();
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{isZh ? L"已复制贴图文字" : L"Copied note text"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已复制贴图文字", L"Copied note text")});
         return;
     }
     if (s_ocrShuttingDown.load(std::memory_order_acquire) || !isAlive() || m_sourceImage.empty()) return;
@@ -913,10 +911,10 @@ void PinWindow::extractText() {
             const std::wstring wtext = tools3000::core::WinUtils::utf8ToWstring(combined);
             tools3000::core::WinUtils::copyToClipboard(wtext);
             tools3000::core::EventBus::instance().publish(
-                tools3000::core::ShowToastEvent{isZh ? L"已提取文本并复制到剪贴板" : L"Text extracted and copied to clipboard"});
+                tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已提取文本并复制到剪贴板", L"Text extracted and copied to clipboard")});
         } else {
             tools3000::core::EventBus::instance().publish(
-                tools3000::core::ShowToastEvent{isZh ? L"未识别到文字" : L"No text recognized"});
+                tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"未识别到文字", L"No text recognized")});
         }
         return;
     }

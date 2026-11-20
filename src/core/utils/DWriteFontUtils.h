@@ -21,28 +21,66 @@
 
 namespace tools3000::core {
 
-/// 探测系统真实已安装的无衬线 UI 字体家族（优先思源黑体，平滑降级微软雅黑 UI / Segoe UI）
+/// 探测系统真实已安装的无衬线 UI 字体家族（按当前 8 语种智能优选原生字体，0 安装包膨胀）
 inline const wchar_t* resolveInstalledUiFontFamily(IDWriteFactory* dwriteFactory) noexcept {
-    if (dwriteFactory) {
-        Microsoft::WRL::ComPtr<IDWriteFontCollection> fontCollection;
-        if (SUCCEEDED(dwriteFactory->GetSystemFontCollection(fontCollection.GetAddressOf(), FALSE)) && fontCollection) {
-            static constexpr const wchar_t* kUiCandidates[] = {
-                L"Noto Sans SC",
-                L"Source Han Sans SC",
-                L"Microsoft YaHei UI",
-                L"Segoe UI Variable Text",
-                L"Segoe UI"
-            };
-            for (const wchar_t* candidate : kUiCandidates) {
-                UINT32 index = 0;
-                BOOL exists = FALSE;
-                if (SUCCEEDED(fontCollection->FindFamilyName(candidate, &index, &exists)) && exists) {
-                    return candidate;
+    const UiLanguage lang = UiI18n::getEffectiveLanguage();
+    auto findFirstInstalled = [&](const wchar_t* const* candidates, std::size_t count, const wchar_t* fallback) noexcept {
+        if (dwriteFactory) {
+            Microsoft::WRL::ComPtr<IDWriteFontCollection> fontCollection;
+            if (SUCCEEDED(dwriteFactory->GetSystemFontCollection(fontCollection.GetAddressOf(), FALSE)) && fontCollection) {
+                for (std::size_t i = 0; i < count; ++i) {
+                    UINT32 index = 0;
+                    BOOL exists = FALSE;
+                    if (SUCCEEDED(fontCollection->FindFamilyName(candidates[i], &index, &exists)) && exists) {
+                        return candidates[i];
+                    }
                 }
             }
         }
+        return fallback;
+    };
+
+    switch (lang) {
+        case UiLanguage::ZhTW: {
+            static constexpr const wchar_t* kTw[] = {
+                L"Microsoft JhengHei UI", L"Noto Sans TC", L"Segoe UI Variable Text", L"Segoe UI", L"Microsoft YaHei UI"
+            };
+            return findFirstInstalled(kTw, std::size(kTw), L"Microsoft JhengHei UI");
+        }
+        case UiLanguage::JaJP: {
+            static constexpr const wchar_t* kJa[] = {
+                L"Yu Gothic UI", L"Meiryo UI", L"Noto Sans JP", L"Segoe UI Variable Text", L"Segoe UI"
+            };
+            return findFirstInstalled(kJa, std::size(kJa), L"Yu Gothic UI");
+        }
+        case UiLanguage::KoKR: {
+            static constexpr const wchar_t* kKo[] = {
+                L"Malgun Gothic", L"Noto Sans KR", L"Segoe UI Variable Text", L"Segoe UI"
+            };
+            return findFirstInstalled(kKo, std::size(kKo), L"Malgun Gothic");
+        }
+        case UiLanguage::EnUS:
+        case UiLanguage::RuRU:
+        case UiLanguage::PtBR:
+        case UiLanguage::EsES: {
+            static constexpr const wchar_t* kLatinCyr[] = {
+                L"Segoe UI Variable Text", L"Segoe UI", L"Noto Sans SC", L"Microsoft YaHei UI"
+            };
+            return findFirstInstalled(kLatinCyr, std::size(kLatinCyr), L"Segoe UI");
+        }
+        case UiLanguage::ZhCN:
+        default: {
+            static constexpr const wchar_t* kZh[] = {
+                L"Noto Sans SC", L"Source Han Sans SC", L"Microsoft YaHei UI", L"Segoe UI Variable Text", L"Segoe UI"
+            };
+            return findFirstInstalled(kZh, std::size(kZh), L"Microsoft YaHei UI");
+        }
     }
-    return L"Microsoft YaHei UI";
+}
+
+/// 返回供 DirectWrite CreateTextFormat 使用的当前有效 BCP-47 区域名（保障简繁/日韩本地字形整形）
+inline const wchar_t* resolveInstalledUiLocaleNameW() noexcept {
+    return UiI18n::toLocaleNameW(UiI18n::getEffectiveLanguage());
 }
 
 /// 探测系统真实已安装的现代等宽字体家族（仅用于纯英文/数字码值展示；含中文文案请使用 resolveInstalledUiFontFamily）

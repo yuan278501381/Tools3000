@@ -1,4 +1,5 @@
 #include "OcrResultWindow.h"
+#include "core/i18n/UiI18n.h"
 
 #include "OcrEngine.h"
 #include "OcrResultStyle.h"
@@ -266,7 +267,7 @@ bool OcrResultWindow::createTextResources(float scale) {
     Microsoft::WRL::ComPtr<IDWriteTextFormat> buttonFormat;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> hintFormat;
     const wchar_t* uiFont = tools3000::core::resolveInstalledUiFontFamily(m_dwriteFactory.Get());
-    const wchar_t* localeName = tools3000::core::isUiLanguageChinese() ? L"zh-CN" : L"en-US";
+    const wchar_t* localeName = tools3000::core::trWCstr(L"zh-CN", L"en-US");
     const auto createFormat = [&](float size, DWRITE_FONT_WEIGHT weight,
                                   IDWriteTextFormat** output) {
         return m_dwriteFactory->CreateTextFormat(

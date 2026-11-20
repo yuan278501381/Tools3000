@@ -8,6 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/PinWindow.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/PinWindowInternal.h"
 #include "capture/WatermarkRenderer.h"
 #include "capture/ScreenCapture.h"
@@ -606,7 +607,7 @@ void PinWindow::setGroupId(int groupId) {
     const bool zh = tools3000::core::isUiLanguageChinese();
     std::wstring msg;
     if (m_groupId == PinGroupConstants::kUngroupedId) {
-        msg = zh ? L"已移出分组" : L"Removed from group";
+        msg = tools3000::core::trWCstrFor(zh, L"已移出分组", L"Removed from group");
     } else {
         msg = zh
             ? std::format(L"已归入{}", PinGroupPalette::fullLabel(m_groupId, true))
@@ -993,10 +994,10 @@ void PinWindow::setClickThrough(bool enable) {
     LOG_INFO("贴图鼠标穿透: {}", enable ? "开启" : "关闭");
     const bool isZh = tools3000::core::isUiLanguageChinese();
     tools3000::core::EventBus::instance().publish(
-        tools3000::core::ShowToastEvent{isZh ? (enable ? L"贴图已开启鼠标穿透 (按 F4 或悬浮按 Ctrl+Alt+Shift+X 恢复)"
-                                                  : L"贴图已退出鼠标穿透模式")
-                                        : (enable ? L"Click-through enabled (F4 or Ctrl+Alt+Shift+X to restore)"
-                                                  : L"Click-through disabled")});
+        tools3000::core::ShowToastEvent{
+            enable
+                ? std::wstring(tools3000::core::trWCstrFor(isZh, L"贴图已开启鼠标穿透 (按 F4 或悬浮按 Ctrl+Alt+Shift+X 恢复)", L"Click-through enabled (F4 or Ctrl+Alt+Shift+X to restore)"))
+                : std::wstring(tools3000::core::trWCstrFor(isZh, L"贴图已退出鼠标穿透模式", L"Click-through disabled"))});
 }
 
 bool PinWindow::toggleClickThroughUnderCursor() {
@@ -1049,15 +1050,15 @@ bool savePinnedImage(HWND owner, const cv::Mat& image) {
     if (FAILED(hr)) {
         LOG_ERROR("贴图保存对话框创建失败: hr=0x{:08X}", static_cast<unsigned>(hr));
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{zh ? L"无法打开保存对话框" : L"Unable to open save dialog"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(zh, L"无法打开保存对话框", L"Unable to open save dialog")});
         return false;
     }
 
     const COMDLG_FILTERSPEC filters[] = {
-        {zh ? L"PNG 图片 (*.png)" : L"PNG Image (*.png)", L"*.png"},
-        {zh ? L"JPEG 图片 (*.jpg;*.jpeg)" : L"JPEG Image (*.jpg;*.jpeg)", L"*.jpg;*.jpeg"},
-        {zh ? L"WebP 图片 (*.webp)" : L"WebP Image (*.webp)", L"*.webp"},
-        {zh ? L"BMP 图片 (*.bmp)" : L"BMP Image (*.bmp)", L"*.bmp"},
+        {tools3000::core::trWCstrFor(zh, L"PNG 图片 (*.png)", L"PNG Image (*.png)"), L"*.png"},
+        {tools3000::core::trWCstrFor(zh, L"JPEG 图片 (*.jpg;*.jpeg)", L"JPEG Image (*.jpg;*.jpeg)"), L"*.jpg;*.jpeg"},
+        {tools3000::core::trWCstrFor(zh, L"WebP 图片 (*.webp)", L"WebP Image (*.webp)"), L"*.webp"},
+        {tools3000::core::trWCstrFor(zh, L"BMP 图片 (*.bmp)", L"BMP Image (*.bmp)"), L"*.bmp"},
     };
     dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
     dialog->SetDefaultExtension(L"png");
@@ -1096,7 +1097,7 @@ bool savePinnedImage(HWND owner, const cv::Mat& image) {
                            encodeExt == ".webp" || encodeExt == ".bmp";
     if (!supported) {
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{zh ? L"不支持该图片格式" : L"Unsupported image format"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(zh, L"不支持该图片格式", L"Unsupported image format")});
         return false;
     }
 
@@ -1114,12 +1115,12 @@ bool savePinnedImage(HWND owner, const cv::Mat& image) {
         if (!file) throw std::runtime_error("write failed");
         LOG_INFO("贴图已保存: {}", tools3000::core::WinUtils::wstringToUtf8(path.wstring()));
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{zh ? L"贴图已保存" : L"Pinned image saved"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(zh, L"贴图已保存", L"Pinned image saved")});
         return true;
     } catch (const std::exception& e) {
         LOG_ERROR("贴图保存失败: {}", e.what());
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{zh ? L"贴图保存失败" : L"Failed to save pinned image"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(zh, L"贴图保存失败", L"Failed to save pinned image")});
         return false;
     }
 }
@@ -1746,11 +1747,10 @@ std::shared_ptr<PinWindow> PinWindow::pasteNextHistoryOrClipboard() {
         const bool isZh = tools3000::core::isUiLanguageChinese();
         std::wstring toastMsg;
         if (d.totalCount <= 1) {
-            toastMsg = isZh ? L"该贴图已在桌面显示（暂无更多历史截图）"
-                            : L"Already pinned on desktop (no more history)";
+            toastMsg = tools3000::core::trWCstrFor(isZh, L"该贴图已在桌面显示（暂无更多历史截图）", L"Already pinned on desktop (no more history)");
         } else {
-            toastMsg = isZh ? std::format(L"全部 {} 张历史贴图均已在桌面显示", d.totalCount)
-                            : std::format(L"All {} history pins are already on desktop", d.totalCount);
+            const std::wstring cntStr = std::to_wstring(d.totalCount);
+            toastMsg = tools3000::core::trFmtW(L"全部 {0} 张历史贴图均已在桌面显示", L"All {0} history pins are already on desktop", {cntStr});
         }
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
         return existingPin;
@@ -1760,10 +1760,9 @@ std::shared_ptr<PinWindow> PinWindow::pasteNextHistoryOrClipboard() {
                       d.candidate.cardCornerRadius, d.candidate.sourceText);
 
     if (d.totalCount > 1 && d.targetIndex > 0) {
-        bool isZh = tools3000::core::isUiLanguageChinese();
-        std::wstring toastMsg = isZh
-            ? std::format(L"历史贴图 {}/{}", d.targetIndex + 1, d.totalCount)
-            : std::format(L"Pin history {}/{}", d.targetIndex + 1, d.totalCount);
+        const std::wstring idxStr = std::to_wstring(d.targetIndex + 1);
+        const std::wstring totStr = std::to_wstring(d.totalCount);
+        std::wstring toastMsg = tools3000::core::trFmtW(L"历史贴图 {0}/{1}", L"Pin history {0}/{1}", {idxStr, totStr});
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
     }
 

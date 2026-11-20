@@ -7,6 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/ScreenRecorder.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/RecordingEnvironmentGuard.h"
 #include "capture/ScreenCapture.h"
 #include "capture/ClipboardUtils.h"
@@ -2298,10 +2299,10 @@ void ScreenRecorder::dispatchSnapshotSave(
             const bool isZh = tools3000::core::isUiLanguageChinese();
             if (savedOk) {
                 tools3000::core::EventBus::instance().publish(
-                    tools3000::core::ShowToastEvent{isZh ? L"已保存录屏截图并复制到剪贴板" : L"Frame saved and copied to clipboard"});
+                    tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已保存录屏截图并复制到剪贴板", L"Frame saved and copied to clipboard")});
             } else {
                 tools3000::core::EventBus::instance().publish(
-                    tools3000::core::ShowToastEvent{isZh ? L"录屏截图已复制到剪贴板（保存文件失败）" : L"Frame copied to clipboard (file save failed)"});
+                    tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"录屏截图已复制到剪贴板（保存文件失败）", L"Frame copied to clipboard (file save failed)")});
             }
         };
         auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();

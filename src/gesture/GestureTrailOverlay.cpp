@@ -11,6 +11,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "gesture/GestureTrailOverlay.h"
+#include "core/i18n/UiI18n.h"
 #include "gesture/GestureInputPolicy.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
@@ -1420,7 +1421,7 @@ bool GestureTrailOverlay::updateTextFormat(float dpiScale) {
     if (!m_dwriteFactory) return false;
 
     const wchar_t* fontFamily = tools3000::core::resolveInstalledUiFontFamily(m_dwriteFactory.Get());
-    const wchar_t* localeName = tools3000::core::isUiLanguageChinese() ? L"zh-CN" : L"en-US";
+    const wchar_t* localeName = tools3000::core::trWCstr(L"zh-CN", L"en-US");
     ComPtr<IDWriteTextFormat> format;
     const HRESULT hr = m_dwriteFactory->CreateTextFormat(
         fontFamily,

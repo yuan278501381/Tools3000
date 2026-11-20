@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/PinContextMenu.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/FloatingGlassBar.h"
 #include "capture/PinInputController.h"
 #include "core/utils/DpiUtils.h"
@@ -149,7 +150,7 @@ bool PinContextMenu::ensureGraphicsResources(float dpiScale, bool isChinese) {
     m_badgeFmt.Reset();
 
     const wchar_t* uiFont = tools3000::core::resolveInstalledUiFontFamily(m_dwriteFactory.Get());
-    const wchar_t* locale = isChinese ? L"zh-CN" : L"en-US";
+    const wchar_t* locale = tools3000::core::trWCstrFor(isChinese, L"zh-CN", L"en-US");
 
     const float headerPx   = (std::max)(PinContextMenuMetrics::kMinUiFontPx, PinContextMenuMetrics::kHeaderLabelFontDip * safeScale);
     const float itemPx     = (std::max)(PinContextMenuMetrics::kMinUiFontPx, PinContextMenuMetrics::kItemLabelFontDip * safeScale);

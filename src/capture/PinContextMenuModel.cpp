@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/PinContextMenuModel.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/PinGroupManager.h"
 #include "capture/PinInputController.h"
 
@@ -41,11 +42,14 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
         item.hasColorDot = true;
         item.dotColor = g.accentColor;
         item.isChecked = (snap.currentGroupId == g.groupId);
-        item.label = zh
-            ? std::format(L"归入 {}", g.fullLabel)
-            : std::format(L"Assign to {}", g.fullLabel);
+        item.label = tools3000::core::trFmtW(L"归入 {0}", L"Assign to {0}", {g.fullLabel});
         if (g.count > 0) {
-            item.statusBadge = zh ? std::format(L"{} 张", g.count) : std::format(L"{}", g.count);
+            const std::wstring cntStr = std::to_wstring(g.count);
+            item.statusBadge = zh ? std::format(L"{} 张", g.count) : cntStr;
+            if (tools3000::core::UiI18n::getEffectiveLanguage() != tools3000::core::UiLanguage::ZhCN &&
+                tools3000::core::UiI18n::getEffectiveLanguage() != tools3000::core::UiLanguage::EnUS) {
+                item.statusBadge = cntStr;
+            }
         }
         if (g.groupId >= PinGroupConstants::kMinGroupId &&
             g.groupId <= PinGroupConstants::kMaxShortcutGroupId) {
@@ -59,18 +63,15 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
         snap.nextAvailableGroupId <= PinGroupConstants::kMaxGroupId) {
         PinMenuItem createItem;
         createItem.icon = CaptureIconId::ActionPinGroup;
-        std::wstring nextLabel = zh
-            ? std::format(L"{}组", snap.nextAvailableGroupId)
-            : std::format(L"Group {}", snap.nextAvailableGroupId);
+        const std::wstring nextIdStr = std::to_wstring(snap.nextAvailableGroupId);
+        std::wstring nextLabel = tools3000::core::trFmtW(L"{0}组", L"Group {0}", {nextIdStr});
         for (const auto& g : snap.groups) {
             if (g.groupId == snap.nextAvailableGroupId && !g.fullLabel.empty()) {
                 nextLabel = g.fullLabel;
                 break;
             }
         }
-        createItem.label = zh
-            ? std::format(L"新建分组并归入 ({})", nextLabel)
-            : std::format(L"New Group & Assign ({})", nextLabel);
+        createItem.label = tools3000::core::trFmtW(L"新建分组并归入 ({0})", L"New Group & Assign ({0})", {nextLabel});
         createItem.command = {PinMenuAction::GroupCreateAndAssign, snap.nextAvailableGroupId};
         sub.push_back(std::move(createItem));
     }
@@ -78,7 +79,7 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
     if (snap.currentGroupId >= PinGroupConstants::kMinGroupId) {
         PinMenuItem removeItem;
         removeItem.icon = CaptureIconId::ActionCancel;
-        removeItem.label = zh ? L"移出当前分组" : L"Remove from Group";
+        removeItem.label = tools3000::core::trWCstrFor(zh, L"移出当前分组", L"Remove from Group");
         removeItem.shortcutText = L"Ctrl+0";
         removeItem.command = {PinMenuAction::GroupRemoveCurrent, 0};
         sub.push_back(std::move(removeItem));
@@ -87,7 +88,7 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
     if (snap.ungroupedPinCount >= 1) {
         PinMenuItem autoItem;
         autoItem.icon = CaptureIconId::ActionPinGroup;
-        autoItem.label = zh ? L"一键编组未分组贴图" : L"Auto-Group Ungrouped";
+        autoItem.label = tools3000::core::trWCstrFor(zh, L"一键编组未分组贴图", L"Auto-Group Ungrouped");
         autoItem.statusBadge = zh
             ? std::format(L"{} 张", snap.ungroupedPinCount)
             : std::format(L"{}", snap.ungroupedPinCount);
@@ -102,7 +103,7 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
         PinMenuItem viewAll;
         viewAll.icon = CaptureIconId::ActionArrangeGrid;
         viewAll.isChecked = (snap.activeGroupFilter == PinGroupConstants::kFilterAllGroups);
-        viewAll.label = zh ? L"按组查看：全部贴图" : L"View: All Pins";
+        viewAll.label = tools3000::core::trWCstrFor(zh, L"按组查看：全部贴图", L"View: All Pins");
         viewAll.shortcutText = L"Alt+0";
         viewAll.command = {PinMenuAction::GroupViewAll, 0};
         sub.push_back(std::move(viewAll));
@@ -114,10 +115,10 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
         viewItem.hasColorDot = true;
         viewItem.dotColor = g.accentColor;
         viewItem.isChecked = (snap.activeGroupFilter == g.groupId);
-        viewItem.label = zh
-            ? std::format(L"仅查看 {}", g.shortLabel)
-            : std::format(L"View Only {}", g.shortLabel);
-        viewItem.statusBadge = zh ? std::format(L"{} 张", g.count) : std::format(L"{}", g.count);
+        viewItem.label = tools3000::core::trFmtW(L"仅查看 {0}", L"View Only {0}", {g.shortLabel});
+        viewItem.statusBadge = (tools3000::core::UiI18n::getEffectiveLanguage() == tools3000::core::UiLanguage::ZhCN && zh)
+            ? std::format(L"{} 张", g.count)
+            : std::to_wstring(g.count);
         if (g.groupId >= PinGroupConstants::kMinGroupId &&
             g.groupId <= PinGroupConstants::kMaxShortcutGroupId) {
             viewItem.shortcutText = std::format(L"Alt+{}", g.groupId);
@@ -131,13 +132,13 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
 
         PinMenuItem arrangeGrp;
         arrangeGrp.icon = CaptureIconId::ActionArrangeGrid;
-        arrangeGrp.label = zh ? L"网格整理本组贴图" : L"Arrange Group in Grid";
+        arrangeGrp.label = tools3000::core::trWCstrFor(zh, L"网格整理本组贴图", L"Arrange Group in Grid");
         arrangeGrp.command = {PinMenuAction::GroupArrangeCurrent, snap.currentGroupId};
         sub.push_back(std::move(arrangeGrp));
 
         PinMenuItem renameGrp;
         renameGrp.icon = CaptureIconId::ToolPen;
-        renameGrp.label = zh ? L"重命名本组..." : L"Rename Group...";
+        renameGrp.label = tools3000::core::trWCstrFor(zh, L"重命名本组...", L"Rename Group...");
         renameGrp.command = {PinMenuAction::GroupRenameCurrent, snap.currentGroupId};
         sub.push_back(std::move(renameGrp));
 
@@ -145,7 +146,7 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
             PinMenuItem colorParent;
             colorParent.hasColorDot = true;
             colorParent.dotColor = snap.currentGroupAccentColor;
-            colorParent.label = zh ? L"切换本组颜色" : L"Set Group Color";
+            colorParent.label = tools3000::core::trWCstrFor(zh, L"切换本组颜色", L"Set Group Color");
             for (const auto& preset : snap.currentGroupColorPresets) {
                 PinMenuItem cItem;
                 cItem.hasColorDot = true;
@@ -161,7 +162,7 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
         if (snap.currentGroupHasCustomization) {
             PinMenuItem resetMeta;
             resetMeta.icon = CaptureIconId::ActionResetSelection;
-            resetMeta.label = zh ? L"恢复默认组名与颜色" : L"Reset Name & Color";
+            resetMeta.label = tools3000::core::trWCstrFor(zh, L"恢复默认组名与颜色", L"Reset Name & Color");
             resetMeta.command = {PinMenuAction::GroupResetMeta, snap.currentGroupId};
             sub.push_back(std::move(resetMeta));
         }
@@ -170,14 +171,14 @@ std::vector<PinMenuItem> buildGroupSubmenuItems(const PinContextMenuSnapshot& sn
 
         PinMenuItem dissolveGrp;
         dissolveGrp.icon = CaptureIconId::ActionPinGroup;
-        dissolveGrp.label = zh ? L"解散本组 (保留贴图)" : L"Ungroup (Keep Pins)";
+        dissolveGrp.label = tools3000::core::trWCstrFor(zh, L"解散本组 (保留贴图)", L"Ungroup (Keep Pins)");
         dissolveGrp.command = {PinMenuAction::GroupDissolveCurrent, snap.currentGroupId};
         sub.push_back(std::move(dissolveGrp));
 
         PinMenuItem closeGrp;
         closeGrp.icon = CaptureIconId::ActionCancel;
         closeGrp.isDanger = true;
-        closeGrp.label = zh ? L"关闭本组全部贴图" : L"Close Group Pins";
+        closeGrp.label = tools3000::core::trWCstrFor(zh, L"关闭本组全部贴图", L"Close Group Pins");
         closeGrp.command = {PinMenuAction::GroupCloseCurrent, snap.currentGroupId};
         sub.push_back(std::move(closeGrp));
     }
@@ -192,7 +193,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
     PinContextMenuData data;
     data.hasHeaderBar = true;
     data.hasOpacitySlider = true;
-    data.opacityLabel = zh ? L"不透明度" : L"Opacity";
+    data.opacityLabel = tools3000::core::trWCstrFor(zh, L"不透明度", L"Opacity");
     data.initialOpacity = std::clamp(
         snap.opacity, PinInteractionConstants::kMinPinOpacity, PinInteractionConstants::kMaxPinOpacity);
 
@@ -201,42 +202,42 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         snap.hasPinnedSourceText ? PinMenuAction::CopyNoteText : PinMenuAction::CopyImage;
     data.headerButtons[0] = {
         CaptureIconId::ActionCopy,
-        zh ? L"复制" : L"Copy",
+        tools3000::core::trWCstrFor(zh, L"复制", L"Copy"),
         {primaryCopyAction, 0},
         {primaryCopyAction, 0},
         false
     };
     data.headerButtons[1] = {
         CaptureIconId::ToolPen,
-        zh ? L"标注" : L"Edit",
+        tools3000::core::trWCstrFor(zh, L"标注", L"Edit"),
         {PinMenuAction::EditMarkup, 0},
         {PinMenuAction::EditMarkup, 0},
         false
     };
     data.headerButtons[2] = {
         CaptureIconId::ActionExtractText,
-        zh ? L"识字" : L"OCR",
+        tools3000::core::trWCstrFor(zh, L"识字", L"OCR"),
         {PinMenuAction::ExtractTextDialog, 0},
         {PinMenuAction::ExtractTextDialog, 0},
         false
     };
     data.headerButtons[3] = {
         CaptureIconId::ActionRotate,
-        zh ? L"旋转" : L"Rotate",
+        tools3000::core::trWCstrFor(zh, L"旋转", L"Rotate"),
         {PinMenuAction::RotateRight90, 0},
         {PinMenuAction::RotateLeft90, 0}, // Shift+点击直接逆时针旋转 90°
         false
     };
     data.headerButtons[4] = {
         CaptureIconId::ActionInvert,
-        zh ? L"反色" : L"Invert",
+        tools3000::core::trWCstrFor(zh, L"反色", L"Invert"),
         {PinMenuAction::ToggleInvert, 0},
         {PinMenuAction::ToggleInvert, 0},
         snap.isInverted
     };
     data.headerButtons[5] = {
         CaptureIconId::ActionSave,
-        zh ? L"保存" : L"Save",
+        tools3000::core::trWCstrFor(zh, L"保存", L"Save"),
         {PinMenuAction::SaveImage, 0},
         {PinMenuAction::SaveImage, 0},
         false
@@ -246,7 +247,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
     if (snap.hasSelectedText) {
         PinMenuItem copySel;
         copySel.icon = CaptureIconId::ActionCopy;
-        copySel.label = zh ? L"复制所选文字" : L"Copy Selected Text";
+        copySel.label = tools3000::core::trWCstrFor(zh, L"复制所选文字", L"Copy Selected Text");
         copySel.shortcutText = L"Ctrl+C";
         copySel.command = {PinMenuAction::CopySelectedText, 0};
         data.items.push_back(std::move(copySel));
@@ -259,8 +260,8 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         foldItem.icon = CaptureIconId::ActionFold;
         foldItem.isChecked = snap.isFolded;
         foldItem.label = snap.isFolded
-            ? (zh ? L"展开迷你贴图" : L"Expand Pin")
-            : (zh ? L"折叠为迷你条" : L"Collapse to Bar");
+            ? (tools3000::core::trWCstrFor(zh, L"展开迷你贴图", L"Expand Pin"))
+            : (tools3000::core::trWCstrFor(zh, L"折叠为迷你条", L"Collapse to Bar"));
         foldItem.shortcutText = L"M";
         foldItem.command = {PinMenuAction::ToggleFold, 0};
         data.items.push_back(std::move(foldItem));
@@ -269,7 +270,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         PinMenuItem ghostItem;
         ghostItem.icon = CaptureIconId::ActionClickThrough;
         ghostItem.isChecked = snap.isClickThrough;
-        ghostItem.label = zh ? L"鼠标穿透 (幽灵模式)" : L"Click-Through (Ghost)";
+        ghostItem.label = tools3000::core::trWCstrFor(zh, L"鼠标穿透 (幽灵模式)", L"Click-Through (Ghost)");
         ghostItem.shortcutText = L"T";
         ghostItem.command = {PinMenuAction::ToggleClickThrough, 0};
         data.items.push_back(std::move(ghostItem));
@@ -281,21 +282,21 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
     {
         PinMenuItem ocrParent;
         ocrParent.icon = CaptureIconId::ActionExtractText;
-        ocrParent.label = zh ? L"文字划选与复制" : L"Text & OCR";
+        ocrParent.label = tools3000::core::trWCstrFor(zh, L"文字划选与复制", L"Text & OCR");
         if (snap.isTextSelectionMode) {
-            ocrParent.statusBadge = zh ? L"划选中" : L"Active";
+            ocrParent.statusBadge = tools3000::core::trWCstrFor(zh, L"划选中", L"Active");
         }
 
         PinMenuItem openOcr;
         openOcr.icon = CaptureIconId::ActionExtractText;
-        openOcr.label = zh ? L"提取全文并复制 (OCR)" : L"Extract & Copy Text (OCR)";
+        openOcr.label = tools3000::core::trWCstrFor(zh, L"提取全文并复制 (OCR)", L"Extract & Copy Text (OCR)");
         openOcr.shortcutText = L"Ctrl+T";
         openOcr.command = {PinMenuAction::ExtractTextDialog, 0};
         ocrParent.submenu.push_back(std::move(openOcr));
 
         PinMenuItem copyAllTxt;
         copyAllTxt.icon = CaptureIconId::ActionCopy;
-        copyAllTxt.label = zh ? L"快速复制已识文字" : L"Quick Copy Recognized Text";
+        copyAllTxt.label = tools3000::core::trWCstrFor(zh, L"快速复制已识文字", L"Quick Copy Recognized Text");
         copyAllTxt.shortcutText = L"Ctrl+Shift+C";
         copyAllTxt.command = {PinMenuAction::CopyAllText, 0};
         ocrParent.submenu.push_back(std::move(copyAllTxt));
@@ -303,7 +304,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         if (snap.hasPinnedSourceText) {
             PinMenuItem copyImg;
             copyImg.icon = CaptureIconId::ActionSnapshot;
-            copyImg.label = zh ? L"复制卡片为图片" : L"Copy Card as Image";
+            copyImg.label = tools3000::core::trWCstrFor(zh, L"复制卡片为图片", L"Copy Card as Image");
             copyImg.command = {PinMenuAction::CopyImage, 0};
             ocrParent.submenu.push_back(std::move(copyImg));
         }
@@ -313,14 +314,14 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         PinMenuItem selMode;
         selMode.icon = CaptureIconId::ToolText;
         selMode.isChecked = snap.isTextSelectionMode;
-        selMode.label = zh ? L"鼠标划选文字模式" : L"Text Selection Mode";
+        selMode.label = tools3000::core::trWCstrFor(zh, L"鼠标划选文字模式", L"Text Selection Mode");
         selMode.shortcutText = L"Alt";
         selMode.command = {PinMenuAction::ToggleTextSelectionMode, 0};
         ocrParent.submenu.push_back(std::move(selMode));
 
         PinMenuItem selAll;
         selAll.icon = CaptureIconId::ActionInvertSelection;
-        selAll.label = zh ? L"全选贴图文字" : L"Select All Text";
+        selAll.label = tools3000::core::trWCstrFor(zh, L"全选贴图文字", L"Select All Text");
         selAll.shortcutText = L"Ctrl+A";
         selAll.command = {PinMenuAction::SelectAllText, 0};
         ocrParent.submenu.push_back(std::move(selAll));
@@ -332,7 +333,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
     {
         PinMenuItem transformParent;
         transformParent.icon = CaptureIconId::ActionRotate;
-        transformParent.label = zh ? L"旋转翻转与滤镜" : L"Transform & Filters";
+        transformParent.label = tools3000::core::trWCstrFor(zh, L"旋转翻转与滤镜", L"Transform & Filters");
 
         const int scalePct = static_cast<int>(std::lround(snap.scale * 100.0f));
         std::wstring badge;
@@ -341,17 +342,17 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         }
         if (snap.isGrayscale) {
             if (!badge.empty()) badge += L" · ";
-            badge += zh ? L"灰度" : L"Gray";
+            badge += tools3000::core::trWCstrFor(zh, L"灰度", L"Gray");
         } else if (snap.isInverted) {
             if (!badge.empty()) badge += L" · ";
-            badge += zh ? L"反色" : L"Inv";
+            badge += tools3000::core::trWCstrFor(zh, L"反色", L"Inv");
         }
         transformParent.statusBadge = std::move(badge);
 
         PinMenuItem reset1x;
         reset1x.icon = CaptureIconId::ActionResetScale;
         reset1x.isChecked = (std::abs(snap.scale - 1.0f) < 0.015f);
-        reset1x.label = zh ? L"1:1 原始尺寸" : L"1:1 Original Scale";
+        reset1x.label = tools3000::core::trWCstrFor(zh, L"1:1 原始尺寸", L"1:1 Original Scale");
         if (std::abs(snap.scale - 1.0f) >= 0.015f) {
             reset1x.statusBadge = std::format(L"{}%", scalePct);
         }
@@ -363,28 +364,28 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
 
         PinMenuItem rotCw;
         rotCw.icon = CaptureIconId::ActionRotate;
-        rotCw.label = zh ? L"顺时针旋转 90°" : L"Rotate Right 90°";
+        rotCw.label = tools3000::core::trWCstrFor(zh, L"顺时针旋转 90°", L"Rotate Right 90°");
         rotCw.shortcutText = L"R";
         rotCw.command = {PinMenuAction::RotateRight90, 0};
         transformParent.submenu.push_back(std::move(rotCw));
 
         PinMenuItem rotCcw;
         rotCcw.icon = CaptureIconId::ActionRotateLeft;
-        rotCcw.label = zh ? L"逆时针旋转 90°" : L"Rotate Left 90°";
+        rotCcw.label = tools3000::core::trWCstrFor(zh, L"逆时针旋转 90°", L"Rotate Left 90°");
         rotCcw.shortcutText = L"L";
         rotCcw.command = {PinMenuAction::RotateLeft90, 0};
         transformParent.submenu.push_back(std::move(rotCcw));
 
         PinMenuItem flipH;
         flipH.icon = CaptureIconId::ActionFlipHorizontal;
-        flipH.label = zh ? L"水平翻转" : L"Flip Horizontal";
+        flipH.label = tools3000::core::trWCstrFor(zh, L"水平翻转", L"Flip Horizontal");
         flipH.shortcutText = L"H";
         flipH.command = {PinMenuAction::FlipHorizontal, 0};
         transformParent.submenu.push_back(std::move(flipH));
 
         PinMenuItem flipV;
         flipV.icon = CaptureIconId::ActionFlipVertical;
-        flipV.label = zh ? L"垂直翻转" : L"Flip Vertical";
+        flipV.label = tools3000::core::trWCstrFor(zh, L"垂直翻转", L"Flip Vertical");
         flipV.shortcutText = L"V";
         flipV.command = {PinMenuAction::FlipVertical, 0};
         transformParent.submenu.push_back(std::move(flipV));
@@ -394,7 +395,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         PinMenuItem invItem;
         invItem.icon = CaptureIconId::ActionInvert;
         invItem.isChecked = snap.isInverted;
-        invItem.label = zh ? L"色彩反转" : L"Invert Colors";
+        invItem.label = tools3000::core::trWCstrFor(zh, L"色彩反转", L"Invert Colors");
         invItem.shortcutText = L"I";
         invItem.command = {PinMenuAction::ToggleInvert, 0};
         transformParent.submenu.push_back(std::move(invItem));
@@ -402,7 +403,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         PinMenuItem grayItem;
         grayItem.icon = CaptureIconId::ActionGrayscale;
         grayItem.isChecked = snap.isGrayscale;
-        grayItem.label = zh ? L"灰度黑白" : L"Grayscale";
+        grayItem.label = tools3000::core::trWCstrFor(zh, L"灰度黑白", L"Grayscale");
         grayItem.shortcutText = L"G";
         grayItem.command = {PinMenuAction::ToggleGrayscale, 0};
         transformParent.submenu.push_back(std::move(grayItem));
@@ -416,11 +417,11 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         if (snap.currentGroupId >= PinGroupConstants::kMinGroupId) {
             groupParent.hasColorDot = true;
             groupParent.dotColor = snap.currentGroupAccentColor;
-            groupParent.label = zh ? L"贴图分组" : L"Pin Group";
+            groupParent.label = tools3000::core::trWCstrFor(zh, L"贴图分组", L"Pin Group");
             groupParent.statusBadge = snap.currentGroupShortLabel;
         } else {
             groupParent.icon = CaptureIconId::ActionPinGroup;
-            groupParent.label = zh ? L"贴图分组" : L"Pin Group";
+            groupParent.label = tools3000::core::trWCstrFor(zh, L"贴图分组", L"Pin Group");
         }
         groupParent.shortcutText = L"Ctrl+1~9";
         groupParent.submenu = buildGroupSubmenuItems(snap);
@@ -431,14 +432,14 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
     if (snap.totalPinCount >= 2 || snap.allPinsHidden) {
         PinMenuItem multiParent;
         multiParent.icon = CaptureIconId::ActionArrangeGrid;
-        multiParent.label = zh ? L"多贴图批量管理" : L"Manage All Pins";
+        multiParent.label = tools3000::core::trWCstrFor(zh, L"多贴图批量管理", L"Manage All Pins");
         multiParent.statusBadge = zh
             ? std::format(L"{} 张", snap.totalPinCount)
             : std::format(L"{}", snap.totalPinCount);
 
         PinMenuItem arrangeAll;
         arrangeAll.icon = CaptureIconId::ActionArrangeGrid;
-        arrangeAll.label = zh ? L"网格整理全部贴图" : L"Arrange All Pins";
+        arrangeAll.label = tools3000::core::trWCstrFor(zh, L"网格整理全部贴图", L"Arrange All Pins");
         arrangeAll.command = {PinMenuAction::ArrangeAllPins, 0};
         multiParent.submenu.push_back(std::move(arrangeAll));
 
@@ -446,8 +447,8 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         hideAll.icon = CaptureIconId::ActionClickThrough;
         hideAll.isChecked = snap.allPinsHidden;
         hideAll.label = snap.allPinsHidden
-            ? (zh ? L"显示全部贴图" : L"Show All Pins")
-            : (zh ? L"隐藏全部贴图" : L"Hide All Pins");
+            ? (tools3000::core::trWCstrFor(zh, L"显示全部贴图", L"Show All Pins"))
+            : (tools3000::core::trWCstrFor(zh, L"隐藏全部贴图", L"Hide All Pins"));
         hideAll.shortcutText = L"Ctrl+Alt+Shift+H";
         hideAll.command = {PinMenuAction::ToggleHideAllPins, 0};
         multiParent.submenu.push_back(std::move(hideAll));
@@ -457,7 +458,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         if (snap.totalPinCount >= 2) {
             PinMenuItem closeOthers;
             closeOthers.icon = CaptureIconId::ActionCancel;
-            closeOthers.label = zh ? L"关闭其他贴图" : L"Close Other Pins";
+            closeOthers.label = tools3000::core::trWCstrFor(zh, L"关闭其他贴图", L"Close Other Pins");
             closeOthers.command = {PinMenuAction::CloseOtherPins, 0};
             multiParent.submenu.push_back(std::move(closeOthers));
         }
@@ -465,7 +466,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         PinMenuItem closeAll;
         closeAll.icon = CaptureIconId::ActionCancel;
         closeAll.isDanger = true;
-        closeAll.label = zh ? L"关闭全部贴图" : L"Close All Pins";
+        closeAll.label = tools3000::core::trWCstrFor(zh, L"关闭全部贴图", L"Close All Pins");
         closeAll.command = {PinMenuAction::CloseAllPins, 0};
         multiParent.submenu.push_back(std::move(closeAll));
 
@@ -479,7 +480,7 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         PinMenuItem closeItem;
         closeItem.icon = CaptureIconId::ActionCancel;
         closeItem.isDanger = true;
-        closeItem.label = zh ? L"关闭贴图" : L"Close Pin";
+        closeItem.label = tools3000::core::trWCstrFor(zh, L"关闭贴图", L"Close Pin");
         closeItem.shortcutText = L"Esc";
         closeItem.command = {PinMenuAction::ClosePin, 0};
         data.items.push_back(std::move(closeItem));

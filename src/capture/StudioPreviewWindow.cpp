@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/StudioPreviewWindowInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/StudioBackdropCatalog.h"
 #include "../resource.h"
 #include "core/config/ConfigManager.h"
@@ -70,24 +71,24 @@ D2D1_COLOR_F hexToD2DColor(const std::string& hex, float alpha) noexcept {
 
 const wchar_t* formatLabel(StudioExportFormat f, bool isZh) noexcept {
     switch (f) {
-        case StudioExportFormat::MP4_H264:      return isZh ? L"MP4 (通用视频 · 可放大)" : L"MP4 (H.264 Video)";
-        case StudioExportFormat::MP4_HEVC:      return isZh ? L"MP4 (HEVC 超清 · 可放大)" : L"MP4 (HEVC Video)";
-        case StudioExportFormat::GIF_WeChat:    return isZh ? L"GIF (微信表情 · 免点直播)" : L"GIF (WeChat Sticker)";
-        case StudioExportFormat::GIF_HD:        return isZh ? L"GIF (高清大图 · 可双击放大)" : L"GIF (HD · Zoomable)";
-        case StudioExportFormat::WebP_Animated: return isZh ? L"WebP (网页真彩动图)" : L"WebP (Web Animated)";
-        case StudioExportFormat::WebM_VP9:      return isZh ? L"WebM (VP9 视频)" : L"WebM (VP9)";
+        case StudioExportFormat::MP4_H264:      return tools3000::core::trWCstrFor(isZh, L"MP4 (通用视频 · 可放大)", L"MP4 (H.264 Video)");
+        case StudioExportFormat::MP4_HEVC:      return tools3000::core::trWCstrFor(isZh, L"MP4 (HEVC 超清 · 可放大)", L"MP4 (HEVC Video)");
+        case StudioExportFormat::GIF_WeChat:    return tools3000::core::trWCstrFor(isZh, L"GIF (微信表情 · 免点直播)", L"GIF (WeChat Sticker)");
+        case StudioExportFormat::GIF_HD:        return tools3000::core::trWCstrFor(isZh, L"GIF (高清大图 · 可双击放大)", L"GIF (HD · Zoomable)");
+        case StudioExportFormat::WebP_Animated: return tools3000::core::trWCstrFor(isZh, L"WebP (网页真彩动图)", L"WebP (Web Animated)");
+        case StudioExportFormat::WebM_VP9:      return tools3000::core::trWCstrFor(isZh, L"WebM (VP9 视频)", L"WebM (VP9)");
         default:                                return L"MP4";
     }
 }
 
 const wchar_t* resolutionLabel(StudioExportResolution r, bool isZh) noexcept {
     switch (r) {
-        case StudioExportResolution::Original: return isZh ? L"原始尺寸" : L"Original";
+        case StudioExportResolution::Original: return tools3000::core::trWCstrFor(isZh, L"原始尺寸", L"Original");
         case StudioExportResolution::Res2160P: return L"4K (2160P)";
         case StudioExportResolution::Res1440P: return L"2K (1440P)";
         case StudioExportResolution::Res1080P: return L"1080P";
         case StudioExportResolution::Res720P:  return L"720P";
-        case StudioExportResolution::Res640P:  return isZh ? L"640P (微信推荐)" : L"640P (WeChat Fit)";
+        case StudioExportResolution::Res640P:  return tools3000::core::trWCstrFor(isZh, L"640P (微信推荐)", L"640P (WeChat Fit)");
         case StudioExportResolution::Res480P:  return L"480P";
         default:                               return L"1080P";
     }
@@ -95,10 +96,10 @@ const wchar_t* resolutionLabel(StudioExportResolution r, bool isZh) noexcept {
 
 const wchar_t* qualityLabel(StudioExportQuality q, bool isZh) noexcept {
     switch (q) {
-        case StudioExportQuality::High:    return isZh ? L"高画质" : L"High Quality";
-        case StudioExportQuality::Compact: return isZh ? L"轻量小体积" : L"Compact Size";
+        case StudioExportQuality::High:    return tools3000::core::trWCstrFor(isZh, L"高画质", L"High Quality");
+        case StudioExportQuality::Compact: return tools3000::core::trWCstrFor(isZh, L"轻量小体积", L"Compact Size");
         case StudioExportQuality::Recommended:
-        default:                           return isZh ? L"推荐" : L"Recommended";
+        default:                           return tools3000::core::trWCstrFor(isZh, L"推荐", L"Recommended");
     }
 }
 
@@ -154,7 +155,7 @@ std::wstring formatCompactDurationBadge(double sec, bool isZh) {
         }
     } else if (sec >= 120.0) {
         const int totalSecs = static_cast<int>(std::round(sec));
-        std::swprintf(buf, std::size(buf), isZh ? L"%d分%02d秒" : L"%dm %02ds", totalSecs / 60, totalSecs % 60);
+        std::swprintf(buf, std::size(buf), tools3000::core::trWCstrFor(isZh, L"%d分%02d秒", L"%dm %02ds"), totalSecs / 60, totalSecs % 60);
     } else {
         std::swprintf(buf, std::size(buf), L"%.1fs", sec);
     }
@@ -377,8 +378,8 @@ const wchar_t* annotationCardDisplayName(int cardIndex, bool isZh) noexcept {
         L"Marker Circle",L"Bold Arrow",   L"Click Hand",    L"Spotlight",   L"Mosaic Blur",  L"Magnifier",
         L"Camera Zoom"
     };
-    if (cardIndex < 0 || cardIndex >= 19) return isZh ? L"标注" : L"Mark";
-    return isZh ? kZh[cardIndex] : kEn[cardIndex];
+    if (cardIndex < 0 || cardIndex >= 19) return tools3000::core::trWCstrFor(isZh, L"标注", L"Mark");
+    return tools3000::core::trWCstrFor(isZh, kZh[cardIndex], kEn[cardIndex]);
 }
 
 
@@ -591,7 +592,7 @@ void StudioPreviewWindow::discoverLocalWallpapers() {
         entry.builtinTheme = preset.legacyTheme;
         entry.presetKey = preset.key;
         entry.categoryMask = preset.categoryMask;
-        entry.displayName = isZh ? preset.nameZh : preset.nameEn;
+        entry.displayName = tools3000::core::trWCstrFor(isZh, preset.nameZh, preset.nameEn);
         entry.category = 0;
         m_allWallpapers.push_back(std::move(entry));
     }

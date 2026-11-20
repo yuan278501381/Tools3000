@@ -1,4 +1,5 @@
 #include "KeycastOverlay.h"
+#include "core/i18n/UiI18n.h"
 #include "KeycastStyle.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
@@ -100,7 +101,7 @@ Microsoft::WRL::ComPtr<IDWriteTextFormat> createKeycastFormat(
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
     if (!factory || fontSize <= 0.0f) return fmt;
     const wchar_t* fontFamily = tools3000::core::resolveInstalledUiFontFamily(factory);
-    const wchar_t* localeName = tools3000::core::isUiLanguageChinese() ? L"zh-CN" : L"en-US";
+    const wchar_t* localeName = tools3000::core::trWCstr(L"zh-CN", L"en-US");
     factory->CreateTextFormat(
         fontFamily,
         nullptr,

@@ -1,5 +1,6 @@
 #pragma once
 #include "capture/ScrollCapture.h"
+#include "core/i18n/UiI18n.h"
 #include "core/hotkey/HotkeyManager.h"
 #include "core/utils/DWriteFontUtils.h"
 #include <windows.h>
@@ -133,7 +134,7 @@ public:
 
         const wchar_t* uiFont = tools3000::core::resolveInstalledUiFontFamily(dw);
         const wchar_t* monoFont = tools3000::core::resolveInstalledMonoFontFamily(dw);
-        const wchar_t* localeName = isChinese ? L"zh-CN" : L"en-US";
+        const wchar_t* localeName = tools3000::core::trWCstrFor(isChinese, L"zh-CN", L"en-US");
 
         auto ensureFmt = [&](IDWriteTextFormat* ext, Microsoft::WRL::ComPtr<IDWriteTextFormat>& slot,
                              const wchar_t* family, DWRITE_FONT_WEIGHT weight, float px) -> IDWriteTextFormat* {
@@ -173,14 +174,14 @@ public:
         const float dotGap = 7.0f * s;
 
         float maxStatusW = (std::max)(
-            measureW(isChinese ? L"正在自动滚动采集" : L"Auto scrolling", statusFmt),
-            measureW(isChinese ? L"已暂停 · 可手滚补截" : L"Stopped · Wheel ready", statusFmt));
+            measureW(tools3000::core::trWCstrFor(isChinese, L"正在自动滚动采集", L"Auto scrolling"), statusFmt),
+            measureW(tools3000::core::trWCstrFor(isChinese, L"已暂停 · 可手滚补截", L"Stopped · Wheel ready"), statusFmt));
         if (!liveStatusText.empty()) {
             maxStatusW = (std::max)(maxStatusW, measureW(liveStatusText, statusFmt));
         }
 
         float maxMetricsW = measureW(
-            isChinese ? L"99 帧 · 3840 × 9999 px" : L"99 f · 3840 × 9999 px", metricsFmt);
+            tools3000::core::trWCstrFor(isChinese, L"99 帧 · 3840 × 9999 px", L"99 f · 3840 × 9999 px"), metricsFmt);
         if (!liveMetricsText.empty()) {
             maxMetricsW = (std::max)(maxMetricsW, measureW(liveMetricsText, metricsFmt));
         }
@@ -206,13 +207,13 @@ public:
         };
 
         std::array<BtnSpec, 5> specs = {{
-            {isPausedOrHold ? (isChinese ? L"继续" : L"Resume") : (isChinese ? L"暂停" : L"Pause"),
-             isPausedOrHold ? (isChinese ? L"暂停" : L"Pause") : (isChinese ? L"继续" : L"Resume"),
+            {isPausedOrHold ? (tools3000::core::trWCstrFor(isChinese, L"继续", L"Resume")) : (tools3000::core::trWCstrFor(isChinese, L"暂停", L"Pause")),
+             isPausedOrHold ? (tools3000::core::trWCstrFor(isChinese, L"暂停", L"Pause")) : (tools3000::core::trWCstrFor(isChinese, L"继续", L"Resume")),
              isPausedOrHold ? L"" : L"Space"},
-            {isChinese ? L"贴图" : L"Pin", L"", L"Ctrl+T"},
-            {isChinese ? L"保存" : L"Save", L"", L"Ctrl+S"},
+            {tools3000::core::trWCstrFor(isChinese, L"贴图", L"Pin"), L"", L"Ctrl+T"},
+            {tools3000::core::trWCstrFor(isChinese, L"保存", L"Save"), L"", L"Ctrl+S"},
             {L"", L"", L"Esc"},
-            {isChinese ? L"完成" : L"Done", L"", L"Enter"}
+            {tools3000::core::trWCstrFor(isChinese, L"完成", L"Done"), L"", L"Enter"}
         }};
 
         auto evaluateSpecs = [&](float curDividerX) -> int {

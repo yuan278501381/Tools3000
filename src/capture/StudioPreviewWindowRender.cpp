@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/StudioPreviewWindowInternal.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/StudioBackdropCatalog.h"
 #include "../resource.h"
 #include "core/config/ConfigManager.h"
@@ -122,19 +123,16 @@ void StudioPreviewWindow::renderPreparingOverlay(
     m_renderTarget->DrawEllipse(D2D1::Ellipse({cx, ringCy}, 9.5f, 9.5f), brush, 1.5f);
 
     // 主标题与三阶段实时进度说明
-    drawTxt(isZh ? L"正在准备录屏演播室工程..." : L"Preparing Studio Workspace...",
+    drawTxt(tools3000::core::trWCstrFor(isZh, L"正在准备录屏演播室工程...", L"Preparing Studio Workspace..."),
             m_titleFmt.Get(), D2D1::RectF(cardRc.left + 24.0f, cardRc.top + 114.0f, cardRc.right - 24.0f, cardRc.top + 140.0f), colPrimary);
 
     const wchar_t* stageMsg = nullptr;
     if (elapsedMs < 750) {
-        stageMsg = isZh ? L"正在高速封装超清录屏母带并校验音画同步索引..."
-                        : L"Finalizing lossless master video and A/V sync index...";
+        stageMsg = tools3000::core::trWCstrFor(isZh, L"正在高速封装超清录屏母带并校验音画同步索引...", L"Finalizing lossless master video and A/V sync index...");
     } else if (elapsedMs < 1900) {
-        stageMsg = isZh ? L"正在构建声学山峦音轨、电影胶片缩略图与自动运镜曲线..."
-                        : L"Building sculpted audio waveform, filmstrip & smart camera...";
+        stageMsg = tools3000::core::trWCstrFor(isZh, L"正在构建声学山峦音轨、电影胶片缩略图与自动运镜曲线...", L"Building sculpted audio waveform, filmstrip & smart camera...");
     } else {
-        stageMsg = isZh ? L"正在初始化视网膜超清预览画布，即将就绪..."
-                        : L"Initializing Retina preview stage, almost ready...";
+        stageMsg = tools3000::core::trWCstrFor(isZh, L"正在初始化视网膜超清预览画布，即将就绪...", L"Initializing Retina preview stage, almost ready...");
     }
     drawTxt(stageMsg, m_bodyFmt.Get(),
             D2D1::RectF(cardRc.left + 24.0f, cardRc.top + 144.0f, cardRc.right - 24.0f, cardRc.top + 168.0f), colSecondary);
@@ -242,7 +240,7 @@ void StudioPreviewWindow::render() {
         m_renderTarget->FillEllipse(D2D1::Ellipse({logoBadge.right - 4.8f, logoBadge.top + 4.8f}, 1.9f, 1.9f), brush.Get());
     }
 
-    const std::wstring headerTitle = isZh ? L"Tools3000 录屏演播室" : L"Tools3000 Studio";
+    const std::wstring headerTitle = tools3000::core::trWCstrFor(isZh, L"Tools3000 录屏演播室", L"Tools3000 Studio");
     const float titleRight = isZh ? 236.0f : 196.0f;
     drawTextAligned(headerTitle, m_titleFmt.Get(), D2D1::RectF(46.0f, 0.0f, titleRight, headerH), colPrimary);
 
@@ -354,7 +352,7 @@ void StudioPreviewWindow::render() {
         } else {
             m_renderTarget->DrawEllipse(D2D1::Ellipse({rawModeBtnRc.left + 13.0f, dotCy}, 3.3f, 3.3f), brush.Get(), 1.35f);
         }
-        drawTextAligned(isZh ? L"原样模式" : L"Raw Mode", m_captionFmt.Get(),
+        drawTextAligned(tools3000::core::trWCstrFor(isZh, L"原样模式", L"Raw Mode"), m_captionFmt.Get(),
                         D2D1::RectF(rawModeBtnRc.left + 21.0f, rawModeBtnRc.top, rawModeBtnRc.right - 5.0f, rawModeBtnRc.bottom),
                         rawActive ? (dark ? D2D1::ColorF(0.55f, 0.96f, 0.76f, 1.0f) : D2D1::ColorF(0.05f, 0.45f, 0.28f, 1.0f))
                                   : (hovRaw ? colPrimary : colSecondary),
@@ -372,7 +370,7 @@ void StudioPreviewWindow::render() {
                  : D2D1::ColorF(0.952f, 0.965f, 0.985f, 1.0f));
         setBrush(hovKeep ? colAccent : colBorder);
         m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(keepBtnRc, 7.5f, 7.5f), brush.Get(), hovKeep ? 1.15f : 0.95f);
-        drawTextAligned(isZh ? L"保留原片" : L"Keep Raw", m_captionFmt.Get(), keepBtnRc,
+        drawTextAligned(tools3000::core::trWCstrFor(isZh, L"保留原片", L"Keep Raw"), m_captionFmt.Get(), keepBtnRc,
                         hovKeep ? colPrimary : (dark ? colPrimary : D2D1::ColorF(0.16f, 0.22f, 0.32f, 1.0f)),
                         DWRITE_TEXT_ALIGNMENT_CENTER);
     }
@@ -394,7 +392,7 @@ void StudioPreviewWindow::render() {
                                  {exportBtnRc.right - 7.0f, exportBtnRc.top + 0.8f}, brush.Get(), 0.9f);
         setBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f));
         drawCrispExportIcon(m_renderTarget.Get(), brush.Get(), exportBtnRc.left + 21.0f, (exportBtnRc.top + exportBtnRc.bottom) * 0.5f, roundStroke.Get());
-        drawTextAligned(isZh ? L"导出" : L"Export", m_sectionFmt.Get(),
+        drawTextAligned(tools3000::core::trWCstrFor(isZh, L"导出", L"Export"), m_sectionFmt.Get(),
                         D2D1::RectF(exportBtnRc.left + 31.0f, exportBtnRc.top, exportBtnRc.right - 6.0f, exportBtnRc.bottom),
                         D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), DWRITE_TEXT_ALIGNMENT_CENTER);
     }
@@ -584,7 +582,7 @@ void StudioPreviewWindow::render() {
 
                         wchar_t vfBadge[48]{};
                         std::swprintf(vfBadge, std::size(vfBadge),
-                                      isZh ? L"运镜特写视野 %.1fx" : L"Zoom Frame %.1fx", effZoom);
+                                      tools3000::core::trWCstrFor(isZh, L"运镜特写视野 %.1fx", L"Zoom Frame %.1fx"), effZoom);
                         const float pillY = (viewRc.top - 24.0f >= fullSrcRc.top) ? (viewRc.top - 22.0f) : (viewRc.top + 6.0f);
                         const D2D1_RECT_F vfPill = D2D1::RectF(viewRc.left + 4.0f, pillY, (std::min)(viewRc.right - 4.0f, viewRc.left + 124.0f), pillY + 18.5f);
                         if (vfPill.right > vfPill.left + 48.0f) {
@@ -786,8 +784,8 @@ void StudioPreviewWindow::render() {
         wchar_t spdLabel[24]{};
         std::swprintf(spdLabel, std::size(spdLabel), L"%.1fx", curClipSpd);
 
-        drawPodButton(Hit_SplitAtPlayhead, splitBtnRc, isZh ? L"拆分(S)" : L"Split(S)", 0, true, false, false, false);
-        drawPodButton(Hit_DeleteSelectedItem, delBtnRc, isZh ? L"删除" : L"Delete", 1, canDeleteAny, false, true, false);
+        drawPodButton(Hit_SplitAtPlayhead, splitBtnRc, tools3000::core::trWCstrFor(isZh, L"拆分(S)", L"Split(S)"), 0, true, false, false, false);
+        drawPodButton(Hit_DeleteSelectedItem, delBtnRc, tools3000::core::trWCstrFor(isZh, L"删除", L"Delete"), 1, canDeleteAny, false, true, false);
         drawPodButton(Hit_CycleClipSpeed, spdRc, spdLabel, 2, !m_videoClips.empty(), std::abs(curClipSpd - 1.0f) > 0.03f, false, true);
         curX = pod1R + 7.0f;
     }
@@ -801,8 +799,8 @@ void StudioPreviewWindow::render() {
         drawToolbarPod(pod2L, pod2R);
         drawPodDivider(undoRc.right + 1.5f);
 
-        drawPodButton(Hit_UndoBtn, undoRc, isZh ? L"撤销" : L"Undo", 3, !m_undoStack.empty());
-        drawPodButton(Hit_RedoBtn, redoRc, isZh ? L"重做" : L"Redo", 4, !m_redoStack.empty());
+        drawPodButton(Hit_UndoBtn, undoRc, tools3000::core::trWCstrFor(isZh, L"撤销", L"Undo"), 3, !m_undoStack.empty());
+        drawPodButton(Hit_RedoBtn, redoRc, tools3000::core::trWCstrFor(isZh, L"重做", L"Redo"), 4, !m_redoStack.empty());
         curX = pod2R + 7.0f;
     }
 
@@ -815,8 +813,8 @@ void StudioPreviewWindow::render() {
         drawToolbarPod(pod3L, pod3R);
         drawPodDivider(markQuickRc.right + 1.5f);
 
-        drawPodButton(Hit_QuickOpenAnnotations, markQuickRc, isZh ? L"标注" : L"Mark", 5, true, m_activeTab == LeftRailTab::Annotations);
-        drawPodButton(Hit_AddZoomAtPlayhead, addZoomRc, isZh ? L"运镜" : L"Zoom", 6, true, false);
+        drawPodButton(Hit_QuickOpenAnnotations, markQuickRc, tools3000::core::trWCstrFor(isZh, L"标注", L"Mark"), 5, true, m_activeTab == LeftRailTab::Annotations);
+        drawPodButton(Hit_AddZoomAtPlayhead, addZoomRc, tools3000::core::trWCstrFor(isZh, L"运镜", L"Zoom"), 6, true, false);
         curX = pod3R + 8.0f;
     }
 
@@ -849,7 +847,7 @@ void StudioPreviewWindow::render() {
         if (zoomedIn) {
             std::swprintf(fitLbl, std::size(fitLbl), L"%.1fx", m_timelineZoom);
         } else {
-            std::swprintf(fitLbl, std::size(fitLbl), isZh ? L"全览" : L"Fit");
+            std::swprintf(fitLbl, std::size(fitLbl), tools3000::core::trWCstrFor(isZh, L"全览", L"Fit"));
         }
 
         if (wideZoomPod) {
@@ -968,7 +966,7 @@ void StudioPreviewWindow::render() {
         m_renderTarget->DrawLine({icx - 1.8f, icy - 5.6f}, {icx - 1.8f, icy + 5.6f}, brush.Get(), 1.5f, roundStroke.Get());
         m_renderTarget->DrawLine({icx + 1.8f, icy - 3.8f}, {icx + 1.8f, icy + 3.8f}, brush.Get(), 1.5f, roundStroke.Get());
         m_renderTarget->DrawLine({icx + 5.2f, icy - 1.8f}, {icx + 5.2f, icy + 1.8f}, brush.Get(), 1.5f, roundStroke.Get());
-        drawTextAligned(isZh ? L"视频/音轨" : L"Video/Aud", m_captionFmt.Get(),
+        drawTextAligned(tools3000::core::trWCstrFor(isZh, L"视频/音轨", L"Video/Aud"), m_captionFmt.Get(),
                         D2D1::RectF(tlCard.left + 10.0f, m_cutLaneRect.top + 28.0f, laneLeft - 6.0f, m_cutLaneRect.bottom - 4.0f),
                         colSecondary);
     }
@@ -1023,7 +1021,7 @@ void StudioPreviewWindow::render() {
 
     // 轨道 2: 低饱和宝石深靛蓝自动运镜轨 (128.5..154.5)
     m_zoomLaneRect = D2D1::RectF(laneLeft, tlCard.top + 128.5f, laneRight, tlCard.top + 154.5f);
-    drawTextAligned(isZh ? L"自动运镜" : L"Auto Zoom", m_captionFmt.Get(),
+    drawTextAligned(tools3000::core::trWCstrFor(isZh, L"自动运镜", L"Auto Zoom"), m_captionFmt.Get(),
                     D2D1::RectF(tlCard.left + 10.0f, m_zoomLaneRect.top, laneLeft - 6.0f, m_zoomLaneRect.bottom), colSecondary);
     m_hitZones.push_back({Hit_ZoomLaneEmpty, m_zoomLaneRect, -1});
     setBrush(grooveFill);
@@ -1081,12 +1079,12 @@ void StudioPreviewWindow::render() {
             wchar_t zLbl[32]{};
             if (effZoom <= 1.02f && m_config.focusSpotlightDim > 0.005f) {
                 if (zw >= 74.0f) {
-                    std::swprintf(zLbl, std::size(zLbl), isZh ? L"聚光 1.0x" : L"Focus 1.0x");
+                    std::swprintf(zLbl, std::size(zLbl), tools3000::core::trWCstrFor(isZh, L"聚光 1.0x", L"Focus 1.0x"));
                 } else {
                     std::swprintf(zLbl, std::size(zLbl), L"1.0x");
                 }
             } else if (zw >= 74.0f) {
-                std::swprintf(zLbl, std::size(zLbl), isZh ? L"运镜 %.2fx" : L"Zoom %.2fx", effZoom);
+                std::swprintf(zLbl, std::size(zLbl), tools3000::core::trWCstrFor(isZh, L"运镜 %.2fx", L"Zoom %.2fx"), effZoom);
             } else {
                 std::swprintf(zLbl, std::size(zLbl), L"%.1fx", effZoom);
             }
@@ -1096,7 +1094,7 @@ void StudioPreviewWindow::render() {
     }
     m_renderTarget->PopAxisAlignedClip();
     if (!drewAnyZoom) {
-        drawTextAligned(isZh ? L"点击此轨空白处直接插入自动运镜" : L"Click anywhere on track to add zoom",
+        drawTextAligned(tools3000::core::trWCstrFor(isZh, L"点击此轨空白处直接插入自动运镜", L"Click anywhere on track to add zoom"),
                         m_captionFmt.Get(),
                         D2D1::RectF(laneLeft + 8.0f, m_zoomLaneRect.top, laneRight - 8.0f, m_zoomLaneRect.bottom),
                         D2D1::ColorF(colSecondary.r, colSecondary.g, colSecondary.b, 0.72f));
@@ -1104,7 +1102,7 @@ void StudioPreviewWindow::render() {
 
     // 轨道 3: 高定深石墨钛灰微晶标注与字幕轨 (158.0..184.0)
     m_annLaneRect = D2D1::RectF(laneLeft, tlCard.top + 158.0f, laneRight, tlCard.top + 184.0f);
-    drawTextAligned(isZh ? L"标注/字幕" : L"Mark", m_captionFmt.Get(),
+    drawTextAligned(tools3000::core::trWCstrFor(isZh, L"标注/字幕", L"Mark"), m_captionFmt.Get(),
                     D2D1::RectF(tlCard.left + 10.0f, m_annLaneRect.top, laneLeft - 6.0f, m_annLaneRect.bottom), colSecondary);
     setBrush(grooveFill);
     m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(m_annLaneRect, 5.5f, 5.5f), brush.Get());
@@ -1222,8 +1220,7 @@ void StudioPreviewWindow::render() {
     m_renderTarget->PopAxisAlignedClip();
 
     if (!drewAnyAnnOrCap) {
-        drawTextAligned(isZh ? L"从左侧「标注」点击或拖入图标，名称与步骤序号将在此显示"
-                             : L"Add or drag marks from Annotations panel",
+        drawTextAligned(tools3000::core::trWCstrFor(isZh, L"从左侧「标注」点击或拖入图标，名称与步骤序号将在此显示", L"Add or drag marks from Annotations panel"),
                         m_captionFmt.Get(),
                         D2D1::RectF(laneLeft + 8.0f, m_annLaneRect.top, laneRight - 8.0f, m_annLaneRect.bottom),
                         D2D1::ColorF(colSecondary.r, colSecondary.g, colSecondary.b, 0.72f));
@@ -1342,12 +1339,12 @@ void StudioPreviewWindow::render() {
             m_renderTarget->FillEllipse(D2D1::Ellipse({snapX, topY}, 2.6f, 2.6f), brush.Get());
             m_renderTarget->FillEllipse(D2D1::Ellipse({snapX, botY}, 2.6f, 2.6f), brush.Get());
 
-            const wchar_t* kindLbl = isZh ? L"对齐" : L"Snap";
+            const wchar_t* kindLbl = tools3000::core::trWCstrFor(isZh, L"对齐", L"Snap");
             switch (m_timelineSnapTargetKind) {
-                case TimelineSnapTargetKind::ClipSplit:    kindLbl = isZh ? L"吸附拆分点" : L"Snap Split"; break;
-                case TimelineSnapTargetKind::Playhead:     kindLbl = isZh ? L"吸附指针"   : L"Snap Head";  break;
-                case TimelineSnapTargetKind::ZoomBoundary: kindLbl = isZh ? L"吸附运镜"   : L"Snap Zoom";  break;
-                case TimelineSnapTargetKind::AnnBoundary:  kindLbl = isZh ? L"吸附标注"   : L"Snap Mark";  break;
+                case TimelineSnapTargetKind::ClipSplit:    kindLbl = tools3000::core::trWCstrFor(isZh, L"吸附拆分点", L"Snap Split"); break;
+                case TimelineSnapTargetKind::Playhead:     kindLbl = tools3000::core::trWCstrFor(isZh, L"吸附指针", L"Snap Head");  break;
+                case TimelineSnapTargetKind::ZoomBoundary: kindLbl = tools3000::core::trWCstrFor(isZh, L"吸附运镜", L"Snap Zoom");  break;
+                case TimelineSnapTargetKind::AnnBoundary:  kindLbl = tools3000::core::trWCstrFor(isZh, L"吸附标注", L"Snap Mark");  break;
                 default: break;
             }
             const std::wstring snapTimeTxt = formatCompactDurationBadge(static_cast<double>(m_timelineSnapLineKeptMs) / 1000.0, isZh);
@@ -1379,7 +1376,7 @@ void StudioPreviewWindow::render() {
         wchar_t spanBuf[96]{};
         if (altFree) {
             std::swprintf(spanBuf, std::size(spanBuf),
-                          isZh ? L"%.1fs - %.1fs (%.1fs · 自由微调)" : L"%.1fs - %.1fs (%.1fs · Free)",
+                          tools3000::core::trWCstrFor(isZh, L"%.1fs - %.1fs (%.1fs · 自由微调)", L"%.1fs - %.1fs (%.1fs · Free)"),
                           stSec, edSec, durSec);
         } else {
             std::swprintf(spanBuf, std::size(spanBuf), L"%.1fs - %.1fs (%.1fs)", stSec, edSec, durSec);

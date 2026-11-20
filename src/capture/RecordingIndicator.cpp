@@ -8,6 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/RecordingIndicator.h"
+#include "core/i18n/UiI18n.h"
 #include "capture/CaptureHudPalette.h"
 #include "capture/CaptureVectorIcons.h"
 #include "capture/FloatingGlassBar.h"
@@ -78,17 +79,21 @@ RecordingIndicator& RecordingIndicator::instance() {
 }
 
 bool RecordingIndicator::isChineseLanguagePreferred() {
-    const std::string lang = tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "auto");
-    if (lang.rfind("zh", 0) == 0) return true;
-    if (lang.rfind("en", 0) == 0) return false;
-    return tools3000::core::WinUtils::isSystemLanguageChinese();
+    return tools3000::core::isUiLanguageChinese();
 }
 
 std::wstring RecordingIndicator::formatFrameCounterText(int frames, bool isChinese) {
-    if (isChinese) {
-        return std::format(L"{}帧", frames);
+    const auto lang = tools3000::core::UiI18n::getEffectiveLanguage();
+    if (lang == tools3000::core::UiLanguage::ZhCN || lang == tools3000::core::UiLanguage::EnUS) {
+        if (isChinese) {
+            return std::format(L"{}帧", frames);
+        }
+        return (frames == 1) ? L"1 frame" : std::format(L"{} frames", frames);
     }
-    return (frames == 1) ? L"1 frame" : std::format(L"{} frames", frames);
+    const std::wstring fStr = std::to_wstring(frames);
+    return (frames == 1)
+        ? tools3000::core::trFmtW(L"{0}帧", L"{0} frame", {fStr})
+        : tools3000::core::trFmtW(L"{0}帧", L"{0} frames", {fStr});
 }
 
 bool RecordingIndicator::ensureDWriteReady() const {
@@ -472,9 +477,9 @@ void RecordingIndicator::showSaving() {
     m_hoverMic = false;
 
     const bool isZh = isChineseLanguagePreferred();
-    const std::wstring statusStr = isZh ? L"保存中..." : L"SAVING...";
+    const std::wstring statusStr = tools3000::core::trWCstrFor(isZh, L"保存中...", L"SAVING...");
     const std::wstring timeStr = formatDuration(m_duration);
-    const std::wstring detailStr = isZh ? L"正在封装落盘" : L"Finalizing file";
+    const std::wstring detailStr = tools3000::core::trWCstrFor(isZh, L"正在封装落盘", L"Finalizing file");
     const int desiredW = std::max(
         268,
         static_cast<int>(std::ceil(38.0f + measureLogicalTextWidth(statusStr) + 12.0f +
@@ -834,7 +839,7 @@ void RecordingIndicator::render() {
             m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(18.0f, size.height * 0.5f), 4.5f, 4.5f), saveDotBrush.Get());
         }
 
-        const std::wstring savingLabel = isZh ? L"保存中..." : L"SAVING...";
+        const std::wstring savingLabel = tools3000::core::trWCstrFor(isZh, L"保存中...", L"SAVING...");
         const float labelW = measureLogicalTextWidth(savingLabel) + 6.0f;
         m_renderTarget->DrawText(
             savingLabel.c_str(), static_cast<UINT32>(savingLabel.size()),
@@ -854,7 +859,7 @@ void RecordingIndicator::render() {
         const float sepX = timeLeft + timeW + 6.0f;
         FloatingGlassBar::drawSeparator(m_renderTarget.Get(), sepX, 11.0f, size.height - 11.0f, 1.0f, isDark);
 
-        const std::wstring detailLabel = isZh ? L"正在封装落盘" : L"Finalizing file";
+        const std::wstring detailLabel = tools3000::core::trWCstrFor(isZh, L"正在封装落盘", L"Finalizing file");
         m_renderTarget->DrawText(
             detailLabel.c_str(), static_cast<UINT32>(detailLabel.size()),
             secondaryFormat,
@@ -873,7 +878,7 @@ void RecordingIndicator::render() {
             m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(18, size.height / 2), 4.5f, 4.5f), doneDotBrush.Get());
         }
 
-        std::wstring statusText = isZh ? L"已保存" : L"SAVED";
+        std::wstring statusText = tools3000::core::trWCstrFor(isZh, L"已保存", L"SAVED");
         m_renderTarget->DrawText(statusText.c_str(), static_cast<UINT32>(statusText.size()),
                                  m_textFormat.Get(),
                                  D2D1::RectF(31, 0, 88, size.height),
@@ -891,11 +896,11 @@ void RecordingIndicator::render() {
         std::wstring doneSecondaryText;
         bool hasDoneHoverHint = true;
         if (m_hoverOpenFolder) {
-            doneSecondaryText = isZh ? L"打开所在文件夹" : L"Show in Folder";
+            doneSecondaryText = tools3000::core::trWCstrFor(isZh, L"打开所在文件夹", L"Show in Folder");
         } else if (m_hoverCopyFile) {
-            doneSecondaryText = isZh ? L"复制录屏文件" : L"Copy Video File";
+            doneSecondaryText = tools3000::core::trWCstrFor(isZh, L"复制录屏文件", L"Copy Video File");
         } else if (m_hoverClose) {
-            doneSecondaryText = isZh ? L"关闭提示条" : L"Dismiss";
+            doneSecondaryText = tools3000::core::trWCstrFor(isZh, L"关闭提示条", L"Dismiss");
         } else {
             hasDoneHoverHint = false;
             if (!m_completedFilePath.empty()) {
@@ -903,7 +908,7 @@ void RecordingIndicator::render() {
                 doneSecondaryText = p.filename().wstring();
             }
             if (doneSecondaryText.empty()) {
-                doneSecondaryText = isZh ? L"录屏文件就绪" : L"Video Ready";
+                doneSecondaryText = tools3000::core::trWCstrFor(isZh, L"录屏文件就绪", L"Video Ready");
             }
         }
         const float doneSepX = static_cast<float>(m_openFolderBtn.left) - 6.0f;
@@ -1014,22 +1019,22 @@ void RecordingIndicator::render() {
         std::wstring liveHoverHint;
         if (m_hoverSysAudio && m_systemAudioActive) {
             liveHoverHint = m_systemAudioMuted
-                ? (isZh ? L"取消系统静音" : L"Unmute Audio")
-                : (isZh ? L"静音系统声音" : L"Mute Audio");
+                ? (tools3000::core::trWCstrFor(isZh, L"取消系统静音", L"Unmute Audio"))
+                : (tools3000::core::trWCstrFor(isZh, L"静音系统声音", L"Mute Audio"));
         } else if (m_hoverMic && m_microphoneActive) {
             liveHoverHint = m_microphoneMuted
-                ? (isZh ? L"取消麦克风静音" : L"Unmute Mic")
-                : (isZh ? L"静音麦克风" : L"Mute Mic");
+                ? (tools3000::core::trWCstrFor(isZh, L"取消麦克风静音", L"Unmute Mic"))
+                : (tools3000::core::trWCstrFor(isZh, L"静音麦克风", L"Mute Mic"));
         } else if (m_hoverSnapshot && !m_countingDown) {
-            liveHoverHint = isZh ? L"抓拍高清截图" : L"Take Snapshot";
+            liveHoverHint = tools3000::core::trWCstrFor(isZh, L"抓拍高清截图", L"Take Snapshot");
         } else if (m_hoverPause && !m_countingDown) {
             liveHoverHint = m_paused
-                ? (isZh ? L"继续录制" : L"Resume")
-                : (isZh ? L"暂停录制" : L"Pause");
+                ? (tools3000::core::trWCstrFor(isZh, L"继续录制", L"Resume"))
+                : (tools3000::core::trWCstrFor(isZh, L"暂停录制", L"Pause"));
         } else if (m_hoverStop) {
             liveHoverHint = m_countingDown
-                ? (isZh ? L"取消倒计时" : L"Cancel Countdown")
-                : (isZh ? L"结束并保存" : L"Stop & Save");
+                ? (tools3000::core::trWCstrFor(isZh, L"取消倒计时", L"Cancel Countdown"))
+                : (tools3000::core::trWCstrFor(isZh, L"结束并保存", L"Stop & Save"));
         }
 
         if (!liveHoverHint.empty()) {
@@ -1209,13 +1214,11 @@ LRESULT CALLBACK RecordingIndicator::indicatorWndProc(HWND hwnd, UINT msg, WPARA
                     if (isGif) {
                         tools3000::core::WinUtils::copyGifToClipboard(tools3000::core::WinUtils::utf8ToWstring(self->m_completedFilePath));
                         tools3000::core::EventBus::instance().publish(
-                            tools3000::core::ShowToastEvent{isZh ? L"GIF 已复制，可直接粘贴发送"
-                                                                 : L"GIF copied to clipboard"});
+                            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"GIF 已复制，可直接粘贴发送", L"GIF copied to clipboard")});
                     } else {
                         tools3000::core::WinUtils::copyFileToClipboard(tools3000::core::WinUtils::utf8ToWstring(self->m_completedFilePath));
                         tools3000::core::EventBus::instance().publish(
-                            tools3000::core::ShowToastEvent{isZh ? L"录屏已复制到剪贴板"
-                                                                 : L"Recording copied to clipboard"});
+                            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"录屏已复制到剪贴板", L"Recording copied to clipboard")});
                     }
                     return 0;
                 }
@@ -1564,26 +1567,18 @@ static std::wstring resolveCountdownEffectTip(bool isZh) {
         const bool zoomOn = studioCfg.autoZoomEnabled && studioCfg.zoomMode != StudioZoomMode::None;
         if (zoomOn) {
             if (studioCfg.zoomMode == StudioZoomMode::Motion3D) {
-                return isZh
-                    ? L"点击鼠标 3D 立体缩放 · 录后可调"
-                    : L"Click for 3D zoom · Editable";
+                return tools3000::core::trWCstrFor(isZh, L"点击鼠标 3D 立体缩放 · 录后可调", L"Click for 3D zoom · Editable");
             }
-            return isZh
-                ? L"点击鼠标自动平滑缩放 · 录后可调"
-                : L"Click to auto-zoom · Editable";
+            return tools3000::core::trWCstrFor(isZh, L"点击鼠标自动平滑缩放 · 录后可调", L"Click to auto-zoom · Editable");
         }
-        return isZh
-            ? L"鼠标平滑轨迹 · 录后可加缩放"
-            : L"Smooth cursor · Zoom editable";
+        return tools3000::core::trWCstrFor(isZh, L"鼠标平滑轨迹 · 录后可加缩放", L"Smooth cursor · Zoom editable");
     }
 
     auto& cfg = tools3000::core::ConfigManager::instance();
     const bool clickZoom = cfg.get<bool>("/recording/showClickZoom", true);
     const bool clickRipple = cfg.get<bool>("/recording/showClickEffects", false);
     if (clickZoom || clickRipple) {
-        return isZh
-            ? L"鼠标点击动效已开启"
-            : L"Click effects active";
+        return tools3000::core::trWCstrFor(isZh, L"鼠标点击动效已开启", L"Click effects active");
     }
     return {};
 }
@@ -1908,7 +1903,7 @@ void RecordingIndicator::renderCountdownLayered() {
                 pillFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 pillFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
-                const wchar_t* pillStr = isZh ? L"Space 跳过" : L"Space";
+                const wchar_t* pillStr = tools3000::core::trWCstrFor(isZh, L"Space 跳过", L"Space");
                 const D2D1_ROUNDED_RECT pillRc = D2D1::RoundedRect(
                     D2D1::RectF(cx - 45.0f, cy + 28.0f, cx + 45.0f, cy + 48.0f),
                     10.0f,
@@ -1946,7 +1941,7 @@ void RecordingIndicator::renderCountdownLayered() {
                         DWRITE_FONT_STYLE_NORMAL,
                         DWRITE_FONT_STRETCH_NORMAL,
                         11.8f,
-                        isZh ? L"zh-CN" : L"en-US",
+                        tools3000::core::trWCstrFor(isZh, L"zh-CN", L"en-US"),
                         &tipFmt))) {
                     tipFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                     tipFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);

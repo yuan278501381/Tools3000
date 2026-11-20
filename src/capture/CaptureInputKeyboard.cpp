@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <algorithm>
+#include "core/i18n/UiI18n.h"
 #include <windowsx.h>
 #include "capture/CaptureInputInternal.h"
 #include "capture/CaptureOverlay.h"
@@ -276,58 +277,58 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     switch (outcome.kind) {
                         case WheelAdjustedKind::MagnifierRadius:
                             showWheelFeedbackToast(
-                                (zh ? L"放大镜半径: " : L"Magnifier Radius: ") +
+                                (tools3000::core::trWCstrFor(zh, L"放大镜半径: ", L"Magnifier Radius: ")) +
                                 std::to_wstring(outcome.intValue) + L" px");
                             break;
                         case WheelAdjustedKind::MagnifierScale: {
                             wchar_t scaleBuf[32]{};
                             swprintf_s(scaleBuf, L"%.2fx", outcome.floatValue);
-                            showWheelFeedbackToast((zh ? L"放大倍率: " : L"Magnifier: ") + std::wstring(scaleBuf));
+                            showWheelFeedbackToast((tools3000::core::trWCstrFor(zh, L"放大倍率: ", L"Magnifier: ")) + std::wstring(scaleBuf));
                             break;
                         }
                         case WheelAdjustedKind::CornerRadius:
                             showWheelFeedbackToast(
-                                (zh ? L"圆角半径: " : L"Corner Radius: ") +
+                                (tools3000::core::trWCstrFor(zh, L"圆角半径: ", L"Corner Radius: ")) +
                                 std::to_wstring(outcome.intValue) + L" px");
                             break;
                         case WheelAdjustedKind::SpotlightDim:
                             showWheelFeedbackToast(
-                                (zh ? L"聚光灯暗度: " : L"Spotlight Dim: ") +
+                                (tools3000::core::trWCstrFor(zh, L"聚光灯暗度: ", L"Spotlight Dim: ")) +
                                 std::to_wstring(outcome.intValue) + L"%");
                             break;
                         case WheelAdjustedKind::TextFontSize:
                         case WheelAdjustedKind::TextReplaceFontSize:
                             showWheelFeedbackToast(
-                                (zh ? L"文字字号: " : L"Font Size: ") +
+                                (tools3000::core::trWCstrFor(zh, L"文字字号: ", L"Font Size: ")) +
                                 std::to_wstring(outcome.intValue) + L" px");
                             break;
                         case WheelAdjustedKind::StepSize:
                             showWheelFeedbackToast(
-                                (zh ? L"序号大小: " : L"Step Size: ") + std::to_wstring(outcome.intValue));
+                                (tools3000::core::trWCstrFor(zh, L"序号大小: ", L"Step Size: ")) + std::to_wstring(outcome.intValue));
                             break;
                         case WheelAdjustedKind::MosaicSize:
                             showWheelFeedbackToast(
-                                (zh ? L"马赛克强度: " : L"Mosaic Size: ") +
+                                (tools3000::core::trWCstrFor(zh, L"马赛克强度: ", L"Mosaic Size: ")) +
                                 std::to_wstring(outcome.intValue) + L" px");
                             break;
                         case WheelAdjustedKind::BlurStrength:
                             showWheelFeedbackToast(
-                                (zh ? L"模糊强度: " : L"Blur Strength: ") +
+                                (tools3000::core::trWCstrFor(zh, L"模糊强度: ", L"Blur Strength: ")) +
                                 std::to_wstring(outcome.intValue) + L" px");
                             break;
                         case WheelAdjustedKind::InpaintRadius:
                             showWheelFeedbackToast(
-                                (zh ? L"消除笔半径: " : L"Inpaint Radius: ") +
+                                (tools3000::core::trWCstrFor(zh, L"消除笔半径: ", L"Inpaint Radius: ")) +
                                 std::to_wstring(outcome.intValue) + L" px");
                             break;
                         case WheelAdjustedKind::WatermarkSize:
                             showWheelFeedbackToast(
-                                (zh ? L"水印大小: " : L"Watermark Size: ") +
+                                (tools3000::core::trWCstrFor(zh, L"水印大小: ", L"Watermark Size: ")) +
                                 std::to_wstring(outcome.intValue) + L" px");
                             break;
                         case WheelAdjustedKind::StrokeWidth:
                             showWheelFeedbackToast(
-                                (zh ? L"线条粗细: " : L"Stroke Width: ") +
+                                (tools3000::core::trWCstrFor(zh, L"线条粗细: ", L"Stroke Width: ")) +
                                 std::to_wstring(outcome.intValue) + L" px");
                             break;
                         case WheelAdjustedKind::None:
@@ -451,7 +452,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     }
                     if (showWheelToast) {
                         showWheelFeedbackToast(
-                            (zh ? L"圆角半径: " : L"Corner Radius: ") +
+                            (tools3000::core::trWCstrFor(zh, L"圆角半径: ", L"Corner Radius: ")) +
                             std::to_wstring(static_cast<int>(std::lround(newRad))) + L" px");
                     }
                 } else if (m_state->sliderPopup.type == SliderPopupType::SpotlightDim ||
@@ -470,7 +471,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     }
                     if (showWheelToast) {
                         showWheelFeedbackToast(
-                            (zh ? L"聚光灯暗度: " : L"Spotlight Dim: ") +
+                            (tools3000::core::trWCstrFor(zh, L"聚光灯暗度: ", L"Spotlight Dim: ")) +
                             std::to_wstring(newPct) + L"%");
                     }
                 } else if (m_state->sliderPopup.type == SliderPopupType::OutlineWidth ||
@@ -532,7 +533,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                             "/capture/markup/text/fontSize", logicalSize);
                         if (showWheelToast) {
                             showWheelFeedbackToast(
-                                (zh ? L"文字字号: " : L"Font Size: ") +
+                                (tools3000::core::trWCstrFor(zh, L"文字字号: ", L"Font Size: ")) +
                                 std::to_wstring(static_cast<int>(std::lround(logicalSize))) + L" px");
                         }
                     } else if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::TextReplace) {
@@ -543,7 +544,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                         m_state->activeElement->fontSize = newPhysSize;
                         if (showWheelToast) {
                             showWheelFeedbackToast(
-                                (zh ? L"文字字号: " : L"Font Size: ") +
+                                (tools3000::core::trWCstrFor(zh, L"文字字号: ", L"Font Size: ")) +
                                 std::to_wstring(static_cast<int>(std::lround(newPhysSize))) + L" px");
                         }
                     } else {
@@ -585,22 +586,22 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     if (showWheelToast) {
                         if (effectiveTool == MarkupTool::Number) {
                             showWheelFeedbackToast(
-                                (zh ? L"序号大小: " : L"Step Size: ") + std::to_wstring(newW));
+                                (tools3000::core::trWCstrFor(zh, L"序号大小: ", L"Step Size: ")) + std::to_wstring(newW));
                         } else if (effectiveTool == MarkupTool::Mosaic) {
                             showWheelFeedbackToast(
-                                (zh ? L"马赛克强度: " : L"Mosaic Size: ") +
+                                (tools3000::core::trWCstrFor(zh, L"马赛克强度: ", L"Mosaic Size: ")) +
                                 std::to_wstring((std::max)(4, newW * 2)) + L" px");
                         } else if (effectiveTool == MarkupTool::Blur) {
                             showWheelFeedbackToast(
-                                (zh ? L"模糊强度: " : L"Blur Strength: ") +
+                                (tools3000::core::trWCstrFor(zh, L"模糊强度: ", L"Blur Strength: ")) +
                                 std::to_wstring((std::max)(5, newW * 3)) + L" px");
                         } else if (effectiveTool == MarkupTool::Inpaint) {
                             showWheelFeedbackToast(
-                                (zh ? L"消除笔半径: " : L"Inpaint Radius: ") +
+                                (tools3000::core::trWCstrFor(zh, L"消除笔半径: ", L"Inpaint Radius: ")) +
                                 std::to_wstring(std::clamp(newW, 2, 16)) + L" px");
                         } else {
                             showWheelFeedbackToast(
-                                (zh ? L"线条粗细: " : L"Stroke Width: ") +
+                                (tools3000::core::trWCstrFor(zh, L"线条粗细: ", L"Stroke Width: ")) +
                                 std::to_wstring(newW) + L" px");
                         }
                     }
@@ -629,7 +630,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                 const bool zh = tools3000::core::isUiLanguageChinese();
                 const wchar_t* fmtName = CaptureShortcutPolicy::colorFormatShortName(m_state->colorFormat);
                 m_state->loupeToastUntil = GetTickCount() + 1200;
-                m_state->loupeToastMessage = (zh ? L"取色格式: " : L"Color Format: ") +
+                m_state->loupeToastMessage = (tools3000::core::trWCstrFor(zh, L"取色格式: ", L"Color Format: ")) +
                                              std::wstring(fmtName);
                 SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                 m_renderer->invalidate();
@@ -854,7 +855,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                         const bool zh = tools3000::core::isUiLanguageChinese();
                         const std::wstring wColorText = tools3000::core::WinUtils::utf8ToWstring(colorText);
                         const wchar_t* fmtName = CaptureShortcutPolicy::colorFormatShortName(fmt);
-                        m_state->loupeToastMessage = (zh ? L"已复制 " : L"Copied ") +
+                        m_state->loupeToastMessage = (tools3000::core::trWCstrFor(zh, L"已复制 ", L"Copied ")) +
                                                      std::wstring(fmtName) + L": " + wColorText;
                         if (hasSelection) {
                             m_state->currentColor = MarkupColor(
@@ -911,7 +912,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     const bool zh = tools3000::core::isUiLanguageChinese();
                     const std::wstring shownLabel = formatNumberBadgeLabel(shownNum, targetFmt);
                     m_state->loupeToastUntil = GetTickCount() + 1200;
-                    m_state->loupeToastMessage = (zh ? L"当前序号: " : L"Step ") + shownLabel;
+                    m_state->loupeToastMessage = (tools3000::core::trWCstrFor(zh, L"当前序号: ", L"Step ")) + shownLabel;
                     SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                     m_state->toolbarLayoutValid = false;
                     m_renderer->invalidate();
@@ -1067,8 +1068,8 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     }
                     m_state->loupeToastUntil = GetTickCount() + 1500;
                     m_state->loupeToastMessage = m_state->beautyShell.enabled
-                        ? (zh ? L"已开启美化外壳" : L"Beauty Shell enabled")
-                        : (zh ? L"已关闭美化外壳" : L"Beauty Shell disabled");
+                        ? (tools3000::core::trWCstrFor(zh, L"已开启美化外壳", L"Beauty Shell enabled"))
+                        : (tools3000::core::trWCstrFor(zh, L"已关闭美化外壳", L"Beauty Shell disabled"));
                     SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                     m_state->toolbarLayoutValid = false;
                     m_renderer->invalidate();
@@ -1090,10 +1091,10 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     static const wchar_t* bgNamesZh[] = { L"极光紫", L"日落珊瑚", L"翡翠海", L"曜石黑", L"极简浅灰" };
                     static const wchar_t* bgNamesEn[] = { L"Aurora Purple", L"Sunrise Coral", L"Emerald Sea", L"Obsidian Dark", L"Minimal Light" };
                     const std::wstring name = (next >= 0 && next < 5)
-                        ? (zh ? bgNamesZh[next] : bgNamesEn[next])
-                        : (zh ? L"自定义" : L"Custom");
+                        ? tools3000::core::trWCstrFor(zh, bgNamesZh[next], bgNamesEn[next])
+                        : tools3000::core::trWCstrFor(zh, L"自定义", L"Custom");
                     m_state->loupeToastUntil = GetTickCount() + 1500;
-                    m_state->loupeToastMessage = (zh ? L"外壳质感: " : L"Shell Theme: ") + name;
+                    m_state->loupeToastMessage = (tools3000::core::trWCstrFor(zh, L"外壳质感: ", L"Shell Theme: ")) + name;
                     SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                     m_state->toolbarLayoutValid = false;
                     m_renderer->invalidate();
@@ -1118,7 +1119,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     tools3000::core::ConfigManager::instance().set<int>("/capture/beautyShellPadding", nextPad);
                     tools3000::core::ConfigManager::instance().set<bool>("/capture/beautyShellEnabled", true);
                     m_state->loupeToastUntil = GetTickCount() + 1400;
-                    m_state->loupeToastMessage = (zh ? L"外壳留白: " : L"Shell Padding: ") +
+                    m_state->loupeToastMessage = (tools3000::core::trWCstrFor(zh, L"外壳留白: ", L"Shell Padding: ")) +
                                                  std::to_wstring(nextPad) + L"px";
                     SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                     m_state->toolbarLayoutValid = false;
@@ -1396,14 +1397,14 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                             if (!sub.empty()) {
                                 tools3000::core::WinUtils::copyToClipboard(sub, hwnd);
                                 m_state->loupeToastUntil = GetTickCount() + 1400;
-                                m_state->loupeToastMessage = zh ? L"已复制选中文字" : L"Selected text copied";
+                                m_state->loupeToastMessage = tools3000::core::trWCstrFor(zh, L"已复制选中文字", L"Selected text copied");
                                 SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                                 m_renderer->invalidate();
                             }
                         } else if (!wstr.empty()) {
                             tools3000::core::WinUtils::copyToClipboard(wstr, hwnd);
                             m_state->loupeToastUntil = GetTickCount() + 1400;
-                            m_state->loupeToastMessage = zh ? L"已复制标注文字" : L"Annotation text copied";
+                            m_state->loupeToastMessage = tools3000::core::trWCstrFor(zh, L"已复制标注文字", L"Annotation text copied");
                             SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                             m_renderer->invalidate();
                         }
@@ -1423,7 +1424,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                                 elem.textLastCaretTick = GetTickCount();
                                 m_state->textPreferredCaretX = -1.0f;
                                 m_state->loupeToastUntil = GetTickCount() + 1400;
-                                m_state->loupeToastMessage = zh ? L"已剪切选中文字" : L"Selected text cut";
+                                m_state->loupeToastMessage = tools3000::core::trWCstrFor(zh, L"已剪切选中文字", L"Selected text cut");
                                 SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                                 m_renderer->markMarkupDirty();
                                 m_renderer->invalidate();

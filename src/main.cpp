@@ -23,6 +23,7 @@
 #endif
 
 #include <windows.h>
+#include "core/i18n/UiI18n.h"
 #include <objbase.h>
 #include <sddl.h>
 #include <shellapi.h>
@@ -518,6 +519,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
             OutputDebugStringA("[Tools3000 Startup] Unknown exception occurred while parsing startup language\n");
         }
     }
+    tools3000::core::UiI18n::setConfiguredLanguage(startupLanguage);
     tools3000::core::Logger::setLanguage(startupLanguage);
 
     // ── 4b. 日志系统初始化 ──────────────────────────────────────────────
@@ -552,10 +554,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     // 同步 Win32 原生弹出菜单 (CreatePopupMenu / uxtheme) 明暗主题模式，消除深色下惨白右键菜单
     tools3000::core::WinUtils::applyNativeMenuTheme();
 
-    // 同步用户语言设置与日志保留天数到日志系统 (0 锁动态切换)
-    tools3000::core::Logger::setLanguage(
-        tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "auto")
-    );
+    // 同步用户语言设置与日志保留天数到原生多语言目录与日志系统 (0 锁动态切换)
+    const std::string configuredLanguage =
+        tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "auto");
+    tools3000::core::UiI18n::setConfiguredLanguage(configuredLanguage);
+    tools3000::core::Logger::setLanguage(configuredLanguage);
     tools3000::core::Logger::setRetentionDays(
         tools3000::core::ConfigManager::instance().get<uint32_t>("/general/logRetentionDays", 7)
     );
@@ -689,7 +692,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
         // 仅用户主动启动时反馈成功；登录自启动的 --silent 必须真正安静。
         tools3000::core::EventBus::instance().publish(
             tools3000::core::ShowToastEvent{
-                tools3000::core::isUiLanguageChinese() ? L"Tools3000 已启动" : L"Tools3000 started"});
+                tools3000::core::trWCstr(L"Tools3000 已启动", L"Tools3000 started")});
     }
 
     LOG_INFO("程序启动完成，进入消息循环");
@@ -1051,9 +1054,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         const auto firstNotSpace = selected.find_first_not_of(" \t\n\r");
         if (firstNotSpace == std::string::npos) {
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                tools3000::core::isUiLanguageChinese()
-                    ? L"请先划选文字或复制文本后再按 Alt+X"
-                    : L"Select or copy text first before pressing Alt+X"});
+                tools3000::core::trWCstr(L"请先划选文字或复制文本后再按 Alt+X", L"Select or copy text first before pressing Alt+X")});
             return;
         }
         const auto lastNotSpace = selected.find_last_not_of(" \t\n\r");
@@ -1095,9 +1096,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         std::string url = std::string("https://translate.google.com/?sl=auto&tl=") + targetLang + "&op=translate&text=" + encoded;
         tools3000::core::WinUtils::openUrl(tools3000::core::WinUtils::utf8ToWstring(url));
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            tools3000::core::isUiLanguageChinese()
-                ? L"正在打开划词翻译"
-                : L"Opening selection translation"});
+            tools3000::core::trWCstr(L"正在打开划词翻译", L"Opening selection translation")});
     });
 
     // 注册核心基础 IPC 处理器
@@ -1204,16 +1203,11 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 Microsoft::WRL::ComPtr<IFileDialog> dialog;
                 HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
                 if (SUCCEEDED(hr) && dialog) {
-                    const bool isZh = tools3000::core::isUiLanguageChinese();
-                    static const COMDLG_FILTERSPEC filtersZh[] = {
-                        {L"日志文件 (*.log;*.txt)", L"*.log;*.txt"},
-                        {L"所有文件 (*.*)", L"*.*"},
+                    const COMDLG_FILTERSPEC filters[] = {
+                        {tools3000::core::trWCstr(L"日志文件 (*.log;*.txt)", L"Log Files (*.log;*.txt)"), L"*.log;*.txt"},
+                        {tools3000::core::trWCstr(L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
                     };
-                    static const COMDLG_FILTERSPEC filtersEn[] = {
-                        {L"Log Files (*.log;*.txt)", L"*.log;*.txt"},
-                        {L"All Files (*.*)", L"*.*"},
-                    };
-                    dialog->SetFileTypes(static_cast<UINT>(std::size(filtersZh)), isZh ? filtersZh : filtersEn);
+                    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
                     dialog->SetDefaultExtension(L"log");
 
                     auto now = std::chrono::system_clock::now();
@@ -1228,7 +1222,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                                tmBuffer.tm_hour, tmBuffer.tm_min, tmBuffer.tm_sec);
 
                     dialog->SetFileName(defaultName);
-                    dialog->SetTitle(isZh ? L"导出 Tools3000 诊断日志" : L"Export Tools3000 Diagnostic Logs");
+                    dialog->SetTitle(tools3000::core::trWCstr(L"导出 Tools3000 诊断日志", L"Export Tools3000 Diagnostic Logs"));
 
                     // 后台 STA 工作线程严禁将主 UI 线程窗口作为模态 owner 硬挂接，防止跨线程输入队列互锁
                     if (SUCCEEDED(dialog->Show(nullptr))) {
@@ -1259,9 +1253,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         if (!out.is_open()) {
             return {
                 {"success", false},
-                {"error", tools3000::core::isUiLanguageChinese()
-                              ? "无法创建目标导出文件"
-                              : "Failed to create target export file"}
+                {"error", tools3000::core::trUtf8Cstr("无法创建目标导出文件", "Failed to create target export file")}
             };
         }
 

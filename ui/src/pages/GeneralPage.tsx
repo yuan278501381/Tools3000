@@ -17,6 +17,13 @@ import {
   readStoredAccent,
   readStoredTheme,
 } from '../hooks/useAppearance';
+import {
+  SUPPORTED_LANGUAGES,
+  applyHtmlLanguageAttribute,
+  normalizeLanguagePreference,
+  resolveI18nBundle,
+  setDetectedSystemLanguage,
+} from '../i18n/languages';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { Settings, Zap, Globe, Database, Keyboard, Download, Upload, RotateCcw, RefreshCw, CheckCircle2, AlertTriangle, AlertOctagon, FolderOpen, Disc, MinusCircle, Package, HardDrive } from 'lucide-react';
@@ -34,6 +41,8 @@ interface GeneralSettings {
   isPortableMode?: boolean;
   dataDirectory?: string;
   language: string;
+  systemLanguage?: string;
+  resolvedLanguage?: string;
   logLevel: string;
   logRetentionDays?: number;
   theme: string;
@@ -106,20 +115,23 @@ export const GeneralPage: FC = () => {
     }
   }, [accent, settings.theme, t]);
 
-  const applyLanguagePreference = useCallback((langValue?: string) => {
+  const applyLanguagePreference = useCallback((langValue?: string, systemLang?: string) => {
+    if (systemLang) {
+      setDetectedSystemLanguage(systemLang);
+    }
     if (!langValue) return;
+    const normalizedPref = normalizeLanguagePreference(langValue);
     try {
-      localStorage.setItem('tools3000:language', langValue);
+      localStorage.setItem('tools3000:language', normalizedPref);
     } catch (e) {
       void e;
     }
-    const targetLang = langValue === 'auto'
-      ? (navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en')
-      : (langValue.toLowerCase().startsWith('zh') ? 'zh' : 'en');
+    const targetLang = resolveI18nBundle(normalizedPref, systemLang);
+    applyHtmlLanguageAttribute(targetLang);
     if (i18n.language !== targetLang) {
       void i18n.changeLanguage(targetLang);
     }
-    window.dispatchEvent(new CustomEvent('tools3000:language-changed', { detail: langValue }));
+    window.dispatchEvent(new CustomEvent('tools3000:language-changed', { detail: normalizedPref }));
   }, [i18n]);
 
   // 初始化获取设置
@@ -138,11 +150,15 @@ export const GeneralPage: FC = () => {
         { theme: res.theme, accentColor: res.accentColor },
         { dispatchEvents: false },
       );
-      if (res.language && res.language !== 'auto') {
-        const targetLang = res.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
-        if (i18n.language !== targetLang) {
-          void i18n.changeLanguage(targetLang);
-        }
+      if (res.systemLanguage) {
+        setDetectedSystemLanguage(res.systemLanguage);
+      }
+      const normalizedLang = normalizeLanguagePreference(res.language);
+      setSettings(prev => ({ ...prev, language: normalizedLang }));
+      const targetLang = resolveI18nBundle(normalizedLang, res.systemLanguage);
+      applyHtmlLanguageAttribute(targetLang);
+      if (i18n.language !== targetLang) {
+        void i18n.changeLanguage(targetLang);
       }
       setHotkeys(Array.isArray(hotkeyData) ? hotkeyData : []);
     })
@@ -467,12 +483,14 @@ export const GeneralPage: FC = () => {
           <SettingRow label={t('general.language')} description={t('general.languageDesc')}>
             <Select
               id="language"
-              value={settings.language}
+              value={normalizeLanguagePreference(settings.language)}
               onChange={(v) => updateSetting('language', v)}
               options={[
                 { value: 'auto', label: t('general.langAuto') },
-                { value: 'zh-CN', label: t('general.langZh') },
-                { value: 'en-US', label: t('general.langEn') }
+                ...SUPPORTED_LANGUAGES.map((opt) => ({
+                  value: opt.code,
+                  label: opt.nativeName,
+                })),
               ]}
             />
           </SettingRow>

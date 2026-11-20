@@ -1,4 +1,5 @@
 #include "core/plugin/IPlugin.h"
+#include "core/i18n/UiI18n.h"
 #include "Tools3000Version.h"
 #include "core/logger/Logger.h"
 #include "core/ipc/MessageBridge.h"
@@ -299,15 +300,15 @@ void configureRecorderStateCallback() {
                                         const bool diskFailure = stopReason == "low_disk_space" ||
                                             stopReason == "disk_space_query_failed";
                                         std::wstring toastMsg = isWeChatLimit
-                                            ? (isZh ? L"GIF 已达 20MB 上限并自动保存" : L"GIF reached 20 MB limit and saved")
+                                            ? (tools3000::core::trWCstrFor(isZh, L"GIF 已达 20MB 上限并自动保存", L"GIF reached 20 MB limit and saved"))
                                             : (diskFailure
-                                                ? (isZh ? L"磁盘空间不足，已保存当前录屏" : L"Low disk space, recording saved")
-                                                : (isZh ? L"录屏已停止并保存" : L"Recording stopped and saved"));
+                                                ? (tools3000::core::trWCstrFor(isZh, L"磁盘空间不足，已保存当前录屏", L"Low disk space, recording saved"))
+                                                : (tools3000::core::trWCstrFor(isZh, L"录屏已停止并保存", L"Recording stopped and saved")));
                                         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
                                     } else {
                                         ind.hide();
                                         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                                            isZh ? L"录屏已停止，未生成有效内容" : L"Recording stopped, no content saved"});
+                                            tools3000::core::trWCstrFor(isZh, L"录屏已停止，未生成有效内容", L"Recording stopped, no content saved")});
                                     }
                                 });
                         });
@@ -416,14 +417,14 @@ void stopRecordingWithFeedback() {
                                 if (savedPath.empty()) {
                                     RecordingIndicator::instance().hide();
                                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                                        zh ? L"已不保存退出，未保留本次录屏" : L"Closed without saving recording"});
+                                        tools3000::core::trWCstrFor(zh, L"已不保存退出，未保留本次录屏", L"Closed without saving recording")});
                                     return;
                                 }
                                 RecordingIndicator::instance().showCompleted(savedPath, savedDur);
                                 tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                                     studioExported
-                                        ? (zh ? L"演播室成片已导出并保存" : L"Studio export completed and saved")
-                                        : (zh ? L"录屏已保存" : L"Recording saved")});
+                                        ? (tools3000::core::trWCstrFor(zh, L"演播室成片已导出并保存", L"Studio export completed and saved"))
+                                        : (tools3000::core::trWCstrFor(zh, L"录屏已保存", L"Recording saved"))});
                             },
                             std::move(deck));
                         return;
@@ -431,12 +432,12 @@ void stopRecordingWithFeedback() {
                     StudioPreviewWindow::instance().dismissPreparingOverlay();
                     ind.showCompleted(path, dur);
                     tools3000::core::EventBus::instance().publish(
-                        tools3000::core::ShowToastEvent{isZh ? L"录屏已保存" : L"Recording saved"});
+                        tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"录屏已保存", L"Recording saved")});
                 } else {
                     StudioPreviewWindow::instance().dismissPreparingOverlay();
                     ind.hide();
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                        isZh ? L"录屏已停止，未生成有效内容" : L"Recording stopped, no content saved"});
+                        tools3000::core::trWCstrFor(isZh, L"录屏已停止，未生成有效内容", L"Recording stopped, no content saved")});
                 }
             });
     });
@@ -448,13 +449,13 @@ bool toggleRecordingPauseWithFeedback() {
     if (recorder.state() == RecordState::Recording) {
         recorder.pauseRecording();
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{isZh ? L"录屏已暂停" : L"Recording paused"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"录屏已暂停", L"Recording paused")});
         return true;
     }
     if (recorder.state() == RecordState::Paused) {
         recorder.resumeRecording();
         tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{isZh ? L"录屏已继续" : L"Recording resumed"});
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"录屏已继续", L"Recording resumed")});
         return true;
     }
     return false;
@@ -467,8 +468,8 @@ void toggleSystemAudioMuteWithFeedback() {
     const bool isZh = tools3000::core::isUiLanguageChinese();
     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
         muted
-            ? (isZh ? L"系统声音已静音" : L"System audio muted")
-            : (isZh ? L"系统声音已恢复" : L"System audio unmuted")});
+            ? (tools3000::core::trWCstrFor(isZh, L"系统声音已静音", L"System audio muted"))
+            : (tools3000::core::trWCstrFor(isZh, L"系统声音已恢复", L"System audio unmuted"))});
 }
 
 void toggleMicrophoneMuteWithFeedback() {
@@ -478,8 +479,8 @@ void toggleMicrophoneMuteWithFeedback() {
     const bool isZh = tools3000::core::isUiLanguageChinese();
     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
         muted
-            ? (isZh ? L"麦克风已静音" : L"Microphone muted")
-            : (isZh ? L"麦克风已恢复" : L"Microphone unmuted")});
+            ? (tools3000::core::trWCstrFor(isZh, L"麦克风已静音", L"Microphone muted"))
+            : (tools3000::core::trWCstrFor(isZh, L"麦克风已恢复", L"Microphone unmuted"))});
 }
 
 void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOptions& setup) {
@@ -493,8 +494,7 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
         }
         const bool isZh = tools3000::core::isUiLanguageChinese();
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            isZh ? L"正在录屏中，请点击顶部红色停止按钮或按 Ctrl+Shift+R 结束保存"
-                 : L"Recording in progress — click the red Stop button or press Ctrl+Shift+R"});
+            tools3000::core::trWCstrFor(isZh, L"正在录屏中，请点击顶部红色停止按钮或按 Ctrl+Shift+R 结束保存", L"Recording in progress — click the red Stop button or press Ctrl+Shift+R")});
         return;
     }
 
@@ -561,12 +561,12 @@ void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOp
         const bool isZh = tools3000::core::isUiLanguageChinese();
         const wchar_t* message = (reason == "output_directory_unavailable" ||
                                   reason == "output_directory_not_writable")
-            ? (isZh ? L"无法写入录屏保存目录" : L"Cannot write to recording output directory")
+            ? (tools3000::core::trWCstrFor(isZh, L"无法写入录屏保存目录", L"Cannot write to recording output directory"))
             : reason == "insufficient_disk_space"
-                ? (isZh ? L"剩余空间不足，无法开始录屏" : L"Insufficient disk space to start recording")
+                ? (tools3000::core::trWCstrFor(isZh, L"剩余空间不足，无法开始录屏", L"Insufficient disk space to start recording"))
                 : reason == "disk_space_query_failed"
-                    ? (isZh ? L"无法检查保存目录的剩余空间" : L"Failed to check available disk space")
-                    : (isZh ? L"无法开始录屏，请查看日志" : L"Failed to start recording, check logs");
+                    ? (tools3000::core::trWCstrFor(isZh, L"无法检查保存目录的剩余空间", L"Failed to check available disk space"))
+                    : (tools3000::core::trWCstrFor(isZh, L"无法开始录屏，请查看日志", L"Failed to start recording, check logs"));
         tools3000::core::EventBus::instance().publish(
             tools3000::core::ShowToastEvent{message});
     }
@@ -690,12 +690,12 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage, const CaptureRegion
     if (showResultWindow) {
         tools3000::core::MainThreadDispatcher::instance().post([isZh, hasAnchor, anchorRc]() {
             tools3000::ocr::OcrResultWindow::instance().showResult(
-                isZh ? "正在识别..." : "Recognizing...",
+                tools3000::core::trUtf8CstrFor(isZh, "正在识别...", "Recognizing..."),
                 hasAnchor ? &anchorRc : nullptr);
         });
     } else {
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            isZh ? L"正在识别..." : L"Recognizing..."});
+            tools3000::core::trWCstrFor(isZh, L"正在识别...", L"Recognizing...")});
     }
 
     cv::Mat img = capturedImage.clone();
@@ -721,12 +721,12 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage, const CaptureRegion
                 if (tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true)) {
                     tools3000::core::MainThreadDispatcher::instance().post([zh, hasAnchor, anchorRc]() {
                         tools3000::ocr::OcrResultWindow::instance().showResult(
-                            zh ? "未识别到文字" : "No text recognized",
+                            tools3000::core::trUtf8CstrFor(zh, "未识别到文字", "No text recognized"),
                             hasAnchor ? &anchorRc : nullptr);
                     });
                 } else {
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                        zh ? L"未识别到文字" : L"No text recognized"});
+                        tools3000::core::trWCstrFor(zh, L"未识别到文字", L"No text recognized")});
                 }
             } else {
                 const bool copy = tools3000::core::ConfigManager::instance().get<bool>("/ocr/copyResult", true);
@@ -742,19 +742,19 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage, const CaptureRegion
                 } else {
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                         copy
-                            ? (zh ? L"文字已复制到剪贴板" : L"Text copied to clipboard")
-                            : (zh ? L"文字识别完成" : L"Text recognition completed")});
+                            ? (tools3000::core::trWCstrFor(zh, L"文字已复制到剪贴板", L"Text copied to clipboard"))
+                            : (tools3000::core::trWCstrFor(zh, L"文字识别完成", L"Text recognition completed"))});
                     releaseOcrTransientMemory();
                 }
             }
         } catch (const std::exception& e) {
             LOG_ERROR("OCR 后台线程异常: {}", e.what());
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                zh ? L"OCR 识别失败" : L"OCR recognition failed"});
+                tools3000::core::trWCstrFor(zh, L"OCR 识别失败", L"OCR recognition failed")});
         } catch (...) {
             LOG_ERROR("OCR 后台线程未知异常");
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                zh ? L"OCR 识别失败" : L"OCR recognition failed"});
+                tools3000::core::trWCstrFor(zh, L"OCR 识别失败", L"OCR recognition failed")});
         }
         if (g_ocrTaskGeneration.load(std::memory_order_acquire) == myGen) {
             g_ocrRunning.store(false, std::memory_order_release);
@@ -772,12 +772,12 @@ static void onCaptureCompletedForOcr(const tools3000::capture::CaptureResult& re
         std::error_code ec;
         std::filesystem::remove(path, ec);
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            isZh ? L"OCR 正在识别，请稍候" : L"OCR recognition in progress, please wait"});
+            tools3000::core::trWCstrFor(isZh, L"OCR 正在识别，请稍候", L"OCR recognition in progress, please wait")});
         return;
     }
     if (!tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true)) {
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            isZh ? L"正在识别..." : L"Recognizing..."});
+            tools3000::core::trWCstrFor(isZh, L"正在识别...", L"Recognizing...")});
     }
     if (g_ocrWorker.joinable()) g_ocrWorker.join();
     g_ocrWorker = std::jthread([path]() {
@@ -786,7 +786,7 @@ static void onCaptureCompletedForOcr(const tools3000::capture::CaptureResult& re
             std::string text = tools3000::ocr::OcrEngine::instance().recognizeImageFile(path);
             if (text.empty()) {
                 tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                    zh ? L"未识别到文字" : L"No text recognized"});
+                    tools3000::core::trWCstrFor(zh, L"未识别到文字", L"No text recognized")});
             } else {
                 const bool copy = tools3000::core::ConfigManager::instance().get<bool>("/ocr/copyResult", true);
                 const bool showResult = tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true);
@@ -798,18 +798,18 @@ static void onCaptureCompletedForOcr(const tools3000::capture::CaptureResult& re
                 } else {
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                         copy
-                            ? (zh ? L"文字已复制到剪贴板" : L"Text copied to clipboard")
-                            : (zh ? L"文字识别完成" : L"Text recognition completed")});
+                            ? (tools3000::core::trWCstrFor(zh, L"文字已复制到剪贴板", L"Text copied to clipboard"))
+                            : (tools3000::core::trWCstrFor(zh, L"文字识别完成", L"Text recognition completed"))});
                 }
             }
         } catch (const std::exception& e) {
             LOG_ERROR("OCR 后台线程异常: {}", e.what());
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                zh ? L"OCR 识别失败" : L"OCR recognition failed"});
+                tools3000::core::trWCstrFor(zh, L"OCR 识别失败", L"OCR recognition failed")});
         } catch (...) {
             LOG_ERROR("OCR 后台线程未知异常");
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                zh ? L"OCR 识别失败" : L"OCR recognition failed"});
+                tools3000::core::trWCstrFor(zh, L"OCR 识别失败", L"OCR recognition failed")});
         }
         std::error_code ec;
         std::filesystem::remove(path, ec);
@@ -830,7 +830,7 @@ static void triggerOcrCapture() {
     if (!ocr.isAvailable()) {
         const bool isZh = tools3000::core::isUiLanguageChinese();
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            isZh ? L"未找到 OCR 语言包" : L"No OCR language pack installed"});
+            tools3000::core::trWCstrFor(isZh, L"未找到 OCR 语言包", L"No OCR language pack installed")});
         return;
     }
     LOG_INFO("OCR Capture Triggered");
@@ -1082,12 +1082,12 @@ public:
             }
             const bool isZh = tools3000::core::isUiLanguageChinese();
             const COMDLG_FILTERSPEC spec[] = {
-                {isZh ? L"图片文件 (*.png;*.webp;*.jpg;*.jpeg;*.bmp)" : L"Image Files (*.png;*.webp;*.jpg;*.jpeg;*.bmp)",
+                {tools3000::core::trWCstrFor(isZh, L"图片文件 (*.png;*.webp;*.jpg;*.jpeg;*.bmp)", L"Image Files (*.png;*.webp;*.jpg;*.jpeg;*.bmp)"),
                  L"*.png;*.webp;*.jpg;*.jpeg;*.bmp"},
-                {isZh ? L"所有文件 (*.*)" : L"All Files (*.*)", L"*.*"}
+                {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"}
             };
             dlg->SetFileTypes(static_cast<UINT>(std::size(spec)), spec);
-            dlg->SetTitle(isZh ? L"选择水印图片 / 企业 Logo" : L"Select Watermark Logo Image");
+            dlg->SetTitle(tools3000::core::trWCstrFor(isZh, L"选择水印图片 / 企业 Logo", L"Select Watermark Logo Image"));
             DWORD fos = 0;
             if (SUCCEEDED(dlg->GetOptions(&fos))) {
                 dlg->SetOptions(fos | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
