@@ -1,6 +1,7 @@
 #include "capture/StudioTimeline.h"
 #include "common/AtomicFile.h"
 #include "core/utils/WinUtils.h"
+#include <opencv2/imgproc.hpp>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -108,13 +109,26 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
     const StudioTimelineData& timeline,
     float defaultZoom,
     bool includeTypingFocus) {
+    // 兼容历史 3 参数调用，默认高灵敏度 0.88 以保持既有聚类契约
+    return buildAutoZoomSegments(timeline, defaultZoom, includeTypingFocus, 0.88f);
+}
+
+std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
+    const StudioTimelineData& timeline,
+    float defaultZoom,
+    bool includeTypingFocus,
+    float sensitivity) {
     struct RawAnchor {
         int64_t ptsMs = 0;
         float x = 0.0f;
         float y = 0.0f;
+        bool isFocusTyping = false;
+        bool triggeredPopup = false;
+        float dwellBonus = 0.0f;
     };
 
-    const float clampedZoom = std::clamp(defaultZoom, 1.25f, 2.80f);
+    const float clampedZoom = std::clamp(defaultZoom, 1.00f, 2.80f);
+    const float sens = std::clamp(sensitivity, 0.0f, 1.0f);
     const float w = static_cast<float>((std::max)(1, timeline.sourceWidth));
     const float h = static_cast<float>((std::max)(1, timeline.sourceHeight));
     const float flyByDistThresh = (std::max)(280.0f, w * 0.17f);
@@ -122,7 +136,6 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
 
     auto isTransientFlyByClick = [&](const StudioClickEvent& clk, size_t clkIdx) -> bool {
         if (!hasRichCursorTrack) return false;
-        // 若紧接着 650ms 内在附近有连续操作，说明是目标区域双击/连击，保留放大
         if (clkIdx + 1 < timeline.clickEvents.size()) {
             const auto& nxt = timeline.clickEvents[clkIdx + 1];
             if (nxt.ptsMs - clk.ptsMs <= 650 &&
@@ -130,7 +143,6 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
                 return false;
             }
         }
-        // 检查点击后 220ms~260ms 鼠标是否已高速飞掠离开目标区域（如顺手关弹窗/点遮罩）
         const int64_t probeMs = clk.ptsMs + 230;
         auto it = std::lower_bound(
             timeline.cursorSamples.begin(), timeline.cursorSamples.end(), probeMs,
@@ -138,6 +150,60 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
         if (it != timeline.cursorSamples.end() && it->ptsMs <= clk.ptsMs + 360) {
             const float dist = std::hypot(it->x - clk.x, it->y - clk.y);
             if (dist > flyByDistThresh) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    auto estimateDwellBonus = [&](int64_t ptsMs, float cx, float cy) -> float {
+        if (!hasRichCursorTrack) return 0.0f;
+        const float dwellRadius = (std::max)(110.0f, w * 0.105f);
+        const float leaveRadius = (std::max)(260.0f, w * 0.22f);
+        auto it = std::lower_bound(
+            timeline.cursorSamples.begin(), timeline.cursorSamples.end(), ptsMs,
+            [](const StudioCursorSample& s, int64_t target) { return s.ptsMs < target; });
+        int totalSamples = 0;
+        int stayedSamples = 0;
+        bool leftQuickly = false;
+        for (; it != timeline.cursorSamples.end() && it->ptsMs <= ptsMs + 750; ++it) {
+            ++totalSamples;
+            const float d = std::hypot(it->x - cx, it->y - cy);
+            if (d <= dwellRadius) {
+                ++stayedSamples;
+            } else if (it->ptsMs <= ptsMs + 480 && d >= leaveRadius) {
+                leftQuickly = true;
+            }
+        }
+        if (totalSamples < 3) return 0.0f;
+        const float ratio = static_cast<float>(stayedSamples) / static_cast<float>(totalSamples);
+        if (ratio >= 0.58f) return 0.34f;
+        if (leftQuickly && ratio < 0.30f) return -0.18f;
+        return 0.0f;
+    };
+
+    // 结合录制期捕获的前景弹窗变化，修正“点左侧菜单 A -> 屏幕中间弹出对话框 B”的因果焦点割裂
+    auto resolvePopupCausalAnchor = [&](int64_t clickMs, float& ioX, float& ioY) -> bool {
+        if (timeline.windowEvents.empty()) return false;
+        const float recArea = (std::max)(1.0f, w * h);
+        for (const auto& we : timeline.windowEvents) {
+            if (we.ptsMs < clickMs + 40) continue;
+            if (we.ptsMs > clickMs + 580) break;
+            const float areaRatio = (we.w * we.h) / recArea;
+            if (areaRatio < 0.02f || areaRatio > 0.78f) continue;
+            const bool clickInsidePopup =
+                (ioX >= we.x && ioX <= we.x + we.w && ioY >= we.y && ioY <= we.y + we.h);
+            const float popCx = std::clamp(we.x + we.w * 0.5f, 0.0f, w);
+            const float popCy = std::clamp(we.y + we.h * 0.5f, 0.0f, h);
+            if (!clickInsidePopup && std::hypot(popCx - ioX, popCy - ioY) > (std::max)(120.0f, w * 0.14f)) {
+                ioX = popCx;
+                ioY = popCy;
+                return true;
+            }
+            if (clickInsidePopup && areaRatio <= 0.58f) {
+                // 点击已在紧凑子弹窗内：向弹窗几何中心温和居中，稳稳框全对话框
+                ioX = ioX * 0.35f + popCx * 0.65f;
+                ioY = ioY * 0.35f + popCy * 0.65f;
                 return true;
             }
         }
@@ -152,13 +218,17 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
             if (isTransientFlyByClick(clk, i)) {
                 continue;
             }
-            anchors.push_back({clk.ptsMs, clk.x, clk.y});
+            float ax = clk.x;
+            float ay = clk.y;
+            const bool hitPopup = resolvePopupCausalAnchor(clk.ptsMs, ax, ay);
+            const float dwell = estimateDwellBonus(clk.ptsMs, clk.x, clk.y);
+            anchors.push_back({clk.ptsMs, ax, ay, false, hitPopup, dwell});
         }
     }
     if (includeTypingFocus) {
         for (const auto& foc : timeline.focusEvents) {
             if (foc.x >= 0.0f && foc.x <= w && foc.y >= 0.0f && foc.y <= h) {
-                anchors.push_back({foc.ptsMs, foc.x, foc.y});
+                anchors.push_back({foc.ptsMs, foc.x, foc.y, true, false, 0.25f});
             }
         }
     }
@@ -181,9 +251,10 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
             const auto& cur = anchors[i];
             const auto& nxt = anchors[i + 1];
             if (nxt.ptsMs - prev.ptsMs <= 1400 &&
+                !cur.triggeredPopup &&
                 std::hypot(cur.x - prev.x, cur.y - prev.y) > scatterJumpThresh &&
                 std::hypot(nxt.x - cur.x, nxt.y - cur.y) > scatterJumpThresh) {
-                continue; // 剔除夹在中间的零碎跨屏跳跃点，防镜头剧烈横甩
+                continue;
             }
         }
         cleanAnchors.push_back(anchors[i]);
@@ -192,37 +263,255 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
         return {};
     }
 
-    constexpr int64_t kLeadInMs = 220;
-    constexpr int64_t kHoldTailMs = 1400;
-    constexpr int64_t kMergeGapMs = 1050; // 2.67s 内的相邻操作平滑桥接摇移，杜绝频繁“放大-缩回-再放大”抽搐
-    const int64_t maxDur = (std::max<int64_t>)(timeline.durationMs, cleanAnchors.back().ptsMs + kHoldTailMs);
+    const int64_t leadInMs = static_cast<int64_t>(std::llround(250.0f - sens * 30.0f));
+    const int64_t holdTailMs = 1400;
+    // 同区域连续操作采用宽容桥接窗口杜绝“拉近-退回-再拉近”抽搐；跨区域远距操作仅在极紧迫窗口内桥接，保留场景独立性与全景呼吸感
+    const int64_t localMergeGapMs = static_cast<int64_t>(std::llround(1050.0f + (1.0f - sens) * 800.0f));
+    constexpr int64_t kFarMergeGapMs = 420;
+    // 片头建立镜头全景保护：低/中灵敏度时保护片头空间认知建立，防止开场 0.5 秒急推脸
+    const int64_t establishingGuardMs = (sens < 0.72f)
+        ? static_cast<int64_t>(std::llround(((0.72f - sens) / 0.72f) * 1350.0f))
+        : 0;
+    const float minKeepScore = 0.80f - sens * 0.68f;
+    const int64_t maxDur = (std::max<int64_t>)(timeline.durationMs, cleanAnchors.back().ptsMs + holdTailMs);
 
-    std::vector<StudioZoomSegment> segments;
+    struct CandidateCluster {
+        StudioZoomSegment seg;
+        int64_t firstAnchorMs = 0;
+        int count = 0;
+        float sumX = 0.0f;
+        float sumY = 0.0f;
+        bool hasTyping = false;
+        bool hasPopup = false;
+        float bestDwell = -1.0f;
+    };
+
+    std::vector<CandidateCluster> clusters;
     for (const auto& a : cleanAnchors) {
-        const int64_t segStart = (std::max<int64_t>)(0, a.ptsMs - kLeadInMs);
-        const int64_t segEnd = (std::min<int64_t>)(maxDur, a.ptsMs + kHoldTailMs);
+        const int64_t segStart = (std::max<int64_t>)(0, a.ptsMs - leadInMs);
+        const int64_t segEnd = (std::min<int64_t>)(maxDur, a.ptsMs + holdTailMs);
         if (segEnd <= segStart + 120) continue;
 
-        if (!segments.empty() && segStart <= segments.back().endMs + kMergeGapMs) {
-            segments.back().endMs = (std::max)(segments.back().endMs, segEnd);
-            if (std::hypot(a.x - segments.back().focusX, a.y - segments.back().focusY) < w * 0.28f) {
-                segments.back().focusX = segments.back().focusX * 0.40f + a.x * 0.60f;
-                segments.back().focusY = segments.back().focusY * 0.40f + a.y * 0.60f;
+        bool canMergePrev = false;
+        if (!clusters.empty()) {
+            const auto& prevC = clusters.back();
+            const float distFromPrev = std::hypot(a.x - prevC.seg.focusX, a.y - prevC.seg.focusY);
+            const bool isSpatiallyNear = (distFromPrev < w * 0.28f);
+            const int64_t allowedGap = (isSpatiallyNear && !a.triggeredPopup) ? localMergeGapMs : kFarMergeGapMs;
+            canMergePrev = (segStart <= prevC.seg.endMs + allowedGap);
+        }
+
+        if (canMergePrev) {
+            auto& c = clusters.back();
+            c.seg.endMs = (std::max)(c.seg.endMs, segEnd);
+            if (std::hypot(a.x - c.seg.focusX, a.y - c.seg.focusY) < w * 0.28f || a.triggeredPopup) {
+                c.sumX += a.x;
+                c.sumY += a.y;
+                ++c.count;
+                if (a.triggeredPopup) {
+                    c.seg.focusX = c.seg.focusX * 0.25f + a.x * 0.75f;
+                    c.seg.focusY = c.seg.focusY * 0.25f + a.y * 0.75f;
+                } else {
+                    c.seg.focusX = c.sumX / static_cast<float>(c.count);
+                    c.seg.focusY = c.sumY / static_cast<float>(c.count);
+                }
+            } else {
+                ++c.count;
             }
+            c.hasTyping = c.hasTyping || a.isFocusTyping;
+            c.hasPopup = c.hasPopup || a.triggeredPopup;
+            c.bestDwell = (std::max)(c.bestDwell, a.dwellBonus);
         } else {
-            StudioZoomSegment seg;
-            seg.startMs = segStart;
-            seg.endMs = segEnd;
-            seg.focusX = a.x;
-            seg.focusY = a.y;
-            seg.targetZoom = clampedZoom;
-            seg.enabled = true;
-            seg.manualInserted = false;
-            segments.push_back(seg);
+            CandidateCluster c;
+            c.seg.startMs = segStart;
+            c.seg.endMs = segEnd;
+            c.seg.focusX = a.x;
+            c.seg.focusY = a.y;
+            c.seg.targetZoom = clampedZoom;
+            c.seg.enabled = true;
+            c.seg.manualInserted = false;
+            c.firstAnchorMs = a.ptsMs;
+            c.count = 1;
+            c.sumX = a.x;
+            c.sumY = a.y;
+            c.hasTyping = a.isFocusTyping;
+            c.hasPopup = a.triggeredPopup;
+            c.bestDwell = a.dwellBonus;
+            clusters.push_back(c);
+        }
+    }
+
+    std::vector<StudioZoomSegment> segments;
+    segments.reserve(clusters.size());
+    for (auto& c : clusters) {
+        float score = 0.34f;
+        if (c.count >= 2) score += 0.36f;
+        if (c.count >= 3) score += 0.16f;
+        if (c.hasTyping) score += 0.50f;
+        if (c.hasPopup) score += 0.55f;
+        if (c.bestDwell > -0.5f) score += c.bestDwell;
+        if (establishingGuardMs > 0 && c.firstAnchorMs < establishingGuardMs &&
+            c.count == 1 && !c.hasPopup && !c.hasTyping) {
+            score -= 0.35f;
+        }
+        if (score >= minKeepScore) {
+            if (establishingGuardMs > 0 && c.seg.startMs < establishingGuardMs &&
+                c.seg.endMs > establishingGuardMs + 600 && !c.hasPopup) {
+                c.seg.startMs = (std::min)(c.seg.startMs + 220, c.seg.endMs - 500);
+            }
+            segments.push_back(c.seg);
         }
     }
 
     return segments;
+}
+
+void StudioTimelineAnalyzer::refineZoomSegmentsWithVisualDiff(
+    StudioTimelineData& timeline,
+    const std::vector<cv::Mat>& previewDeckBgr,
+    double durationSec,
+    float sensitivity) {
+    if (timeline.zoomSegments.empty() || previewDeckBgr.size() < 4 || durationSec <= 0.15) {
+        return;
+    }
+    const float srcW = static_cast<float>((std::max)(1, timeline.sourceWidth));
+    const float srcH = static_cast<float>((std::max)(1, timeline.sourceHeight));
+    const float sens = std::clamp(sensitivity, 0.0f, 1.0f);
+    const size_t deckCount = previewDeckBgr.size();
+    const double durMs = durationSec * 1000.0;
+
+    constexpr int kProbeW = 160;
+    constexpr int kProbeH = 90;
+    auto sampleGraySmall = [&](int64_t targetMs, cv::Mat& outGray) -> bool {
+        const double norm = std::clamp(static_cast<double>(targetMs) / durMs, 0.0, 1.0);
+        const size_t idx = (std::min)(deckCount - 1, static_cast<size_t>(std::llround(norm * static_cast<double>(deckCount - 1))));
+        const cv::Mat& frame = previewDeckBgr[idx];
+        if (frame.empty()) return false;
+        cv::Mat small;
+        cv::resize(frame, small, cv::Size(kProbeW, kProbeH), 0.0, 0.0, cv::INTER_AREA);
+        if (small.channels() == 3) {
+            cv::cvtColor(small, outGray, cv::COLOR_BGR2GRAY);
+        } else if (small.channels() == 4) {
+            cv::cvtColor(small, outGray, cv::COLOR_BGRA2GRAY);
+        } else {
+            outGray = small;
+        }
+        return !outGray.empty();
+    };
+
+    std::vector<StudioZoomSegment> refined;
+    refined.reserve(timeline.zoomSegments.size());
+    cv::Mat gPre, gPost, diff;
+
+    for (auto seg : timeline.zoomSegments) {
+        if (seg.manualInserted || !seg.enabled) {
+            refined.push_back(seg);
+            continue;
+        }
+        // 查找该段触发时刻附近的前后帧对比（段起前 ~140ms vs 触发后 ~320ms）
+        const int64_t triggerMs = seg.startMs + 220;
+        const int64_t preMs = (std::max<int64_t>)(0, triggerMs - 260);
+        const int64_t postMs = (std::min<int64_t>)(static_cast<int64_t>(durMs), triggerMs + 340);
+        if (postMs <= preMs + 80 || !sampleGraySmall(preMs, gPre) || !sampleGraySmall(postMs, gPost)) {
+            refined.push_back(seg);
+            continue;
+        }
+
+        cv::absdiff(gPre, gPost, diff);
+        const int totalPx = kProbeW * kProbeH;
+        int changedPx = 0;
+        int localChangedPx = 0;
+        double sumX = 0.0;
+        double sumY = 0.0;
+        double sumW = 0.0;
+
+        const float focusProbeX = (seg.focusX / srcW) * static_cast<float>(kProbeW);
+        const float focusProbeY = (seg.focusY / srcH) * static_cast<float>(kProbeH);
+        const float localRadSq = (static_cast<float>(kProbeW) * 0.16f) * (static_cast<float>(kProbeW) * 0.16f);
+
+        for (int y = 0; y < kProbeH; ++y) {
+            const uchar* row = diff.ptr<uchar>(y);
+            for (int x = 0; x < kProbeW; ++x) {
+                const int d = static_cast<int>(row[x]);
+                if (d >= 18) {
+                    ++changedPx;
+                    const double weight = static_cast<double>(d);
+                    sumX += static_cast<double>(x) * weight;
+                    sumY += static_cast<double>(y) * weight;
+                    sumW += weight;
+                    const float dx = static_cast<float>(x) - focusProbeX;
+                    const float dy = static_cast<float>(y) - focusProbeY;
+                    if (dx * dx + dy * dy <= localRadSq) {
+                        ++localChangedPx;
+                    }
+                }
+            }
+        }
+
+        const float changedRatio = static_cast<float>(changedPx) / static_cast<float>(totalPx);
+        // 1. 整页大跳转/全屏视图切换 (> 62% 画面突变)：低/中灵敏度时主动抑制放大，保留全景建立空间地图
+        if (changedRatio > 0.62f && sens < 0.75f && (seg.endMs - seg.startMs) <= 2300) {
+            continue;
+        }
+        // 2. 异地因果校正（点左栏 A -> 右侧面板/弹窗 B 局部刷新）：将焦点顺滑校准至真正变化重心 B
+        if (changedRatio >= 0.022f && changedRatio <= 0.52f && sumW > 1.0) {
+            const float diffX = static_cast<float>((sumX / sumW) / static_cast<double>(kProbeW)) * srcW;
+            const float diffY = static_cast<float>((sumY / sumW) / static_cast<double>(kProbeH)) * srcH;
+            const float localShare = static_cast<float>(localChangedPx) / static_cast<float>((std::max)(1, changedPx));
+            const float distFromClick = std::hypot(diffX - seg.focusX, diffY - seg.focusY);
+            if (localShare < 0.16f && distFromClick > srcW * 0.22f) {
+                seg.focusX = std::clamp(diffX, 0.0f, srcW);
+                seg.focusY = std::clamp(diffY, 0.0f, srcH);
+            }
+        }
+        refined.push_back(seg);
+    }
+
+    timeline.zoomSegments = std::move(refined);
+}
+
+void StudioTimelineAnalyzer::rebuildAutoZoomSegmentsPreservingManual(
+    StudioTimelineData& timeline,
+    const StudioRenderConfig& config,
+    const std::vector<cv::Mat>* previewDeckBgr,
+    double durationSec) {
+    std::vector<StudioZoomSegment> manualSegs;
+    for (const auto& seg : timeline.zoomSegments) {
+        if (seg.manualInserted) {
+            manualSegs.push_back(seg);
+        }
+    }
+
+    timeline.zoomSegments = buildAutoZoomSegments(
+        timeline, config.defaultZoomFactor, config.typingAutoZoom, config.autoZoomSensitivity);
+    if (previewDeckBgr != nullptr && !previewDeckBgr->empty() && durationSec > 0.15) {
+        refineZoomSegmentsWithVisualDiff(timeline, *previewDeckBgr, durationSec, config.autoZoomSensitivity);
+    }
+
+    // 剔除与用户手动插入运镜块发生时间重叠的自动段，确保手动意图永远最高优先
+    if (!manualSegs.empty()) {
+        std::vector<StudioZoomSegment> merged;
+        merged.reserve(timeline.zoomSegments.size() + manualSegs.size());
+        for (const auto& autoSeg : timeline.zoomSegments) {
+            bool overlapsManual = false;
+            for (const auto& man : manualSegs) {
+                if (autoSeg.startMs < man.endMs + 120 && autoSeg.endMs > man.startMs - 120) {
+                    overlapsManual = true;
+                    break;
+                }
+            }
+            if (!overlapsManual) {
+                merged.push_back(autoSeg);
+            }
+        }
+        for (const auto& man : manualSegs) {
+            merged.push_back(man);
+        }
+        std::sort(merged.begin(), merged.end(), [](const StudioZoomSegment& a, const StudioZoomSegment& b) {
+            return a.startMs < b.startMs;
+        });
+        timeline.zoomSegments = std::move(merged);
+    }
 }
 
 std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
@@ -240,18 +529,31 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
     const float centerDefaultX = srcW * 0.5f;
     const float centerDefaultY = srcH * 0.5f;
 
+    // 电影级无级节奏映射：出镜永远比进镜柔缓 22%，让观众眼睛拥有从容回神缓冲
+    const double pacing = static_cast<double>(std::clamp(config.zoomPacing, 0.0f, 1.0f));
+    const double omegaZoomIn = 2.6 + pacing * 4.8;
+    const double omegaZoomOut = omegaZoomIn * 0.78;
+    const double omegaPan = 3.0 + pacing * 4.6;
+    const double omegaTilt = 2.4 + pacing * 3.6;
+
     // 高响应低相位滞后参数 (minCutoff=3.6Hz, beta=0.140)：慢速消抖丝滑，高速移动零拖尾
     OneEuroFilter2D cursorFilter(3.60, 0.140, 1.0);
-    CriticallyDampedSpring1D springX(6.2);
-    CriticallyDampedSpring1D springY(6.2);
-    CriticallyDampedSpring1D springZoom(5.6);
-    CriticallyDampedSpring1D springYaw(4.8);
-    CriticallyDampedSpring1D springPitch(4.8);
+    CriticallyDampedSpring1D springX(omegaPan);
+    CriticallyDampedSpring1D springY(omegaPan);
+    CriticallyDampedSpring1D springZoom(omegaZoomIn);
+    CriticallyDampedSpring1D springYaw(omegaTilt);
+    CriticallyDampedSpring1D springPitch(omegaTilt);
+    CriticallyDampedSpring1D springSpotAlpha(omegaZoomIn);
+    CriticallyDampedSpring1D springSpotX(omegaPan);
+    CriticallyDampedSpring1D springSpotY(omegaPan);
     springX.reset(centerDefaultX);
     springY.reset(centerDefaultY);
     springZoom.reset(1.0);
     springYaw.reset(0.0);
     springPitch.reset(0.0);
+    springSpotAlpha.reset(0.0);
+    springSpotX.reset(centerDefaultX);
+    springSpotY.reset(centerDefaultY);
 
     float anchorFocusX = centerDefaultX;
     float anchorFocusY = centerDefaultY;
@@ -374,6 +676,9 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
         float desiredCenterY = centerDefaultY;
         float desiredYawDeg = 0.0f;
         float desiredPitchDeg = 0.0f;
+        float desiredSpotAlpha = 0.0f;
+        float desiredSpotX = centerDefaultX;
+        float desiredSpotY = centerDefaultY;
 
         if (config.autoZoomEnabled && config.zoomMode != StudioZoomMode::None) {
             const StudioZoomSegment* activeSeg = nullptr;
@@ -386,11 +691,12 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
             if (activeSeg) {
                 desiredZoom = std::clamp(
                     activeSeg->manualInserted ? activeSeg->targetZoom : config.defaultZoomFactor,
-                    1.25f, 2.80f);
-                // 查找该放大区间内最近的点击或焦点事件；手动插入的运镜块严格锚定用户设置的焦点
+                    1.00f, 2.80f);
+                desiredSpotAlpha = std::clamp(config.focusSpotlightDim, 0.0f, 0.65f);
+                // 锁定视角防晃模式下直接锁定语义聚类中心（零漂移）；自由跟鼠模式才随点击/鼠标摇移
                 float refX = activeSeg->focusX;
                 float refY = activeSeg->focusY;
-                if (!activeSeg->manualInserted) {
+                if (!activeSeg->manualInserted && !config.lockCameraWhileZoomed) {
                     while (clickZoomCursor < clicksRef.size() && clicksRef[clickZoomCursor].ptsMs < activeSeg->startMs) {
                         ++clickZoomCursor;
                     }
@@ -423,30 +729,47 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
                     }
                 }
 
-                // 舒适区死区融合：光标在视口中心 38% 范围内不牵引镜头，超出时温和牵引
-                const float viewHalfW = (srcW / desiredZoom) * 0.5f;
-                const float viewHalfH = (srcH / desiredZoom) * 0.5f;
-                const float deadX = viewHalfW * 0.38f;
-                const float deadY = viewHalfH * 0.38f;
+                const float viewHalfW = (srcW / (std::max)(1.0f, desiredZoom)) * 0.5f;
+                const float viewHalfH = (srcH / (std::max)(1.0f, desiredZoom)) * 0.5f;
 
                 anchorFocusX = refX;
                 anchorFocusY = refY;
                 if (!activeSeg->manualInserted) {
-                    if (std::abs(smoothCurX - anchorFocusX) > deadX) {
-                        const float sign = (smoothCurX > anchorFocusX) ? 1.0f : -1.0f;
-                        anchorFocusX += (std::abs(smoothCurX - anchorFocusX) - deadX) * sign;
-                    }
-                    if (std::abs(smoothCurY - anchorFocusY) > deadY) {
-                        const float sign = (smoothCurY > anchorFocusY) ? 1.0f : -1.0f;
-                        anchorFocusY += (std::abs(smoothCurY - anchorFocusY) - deadY) * sign;
+                    if (config.lockCameraWhileZoomed) {
+                        // 三脚架锁镜防晃：聚焦期间死区高达 84%，文字纹丝不动；仅当光标大幅甩出视口外时轻柔保底补位
+                        const float guardX = viewHalfW * 0.84f;
+                        const float guardY = viewHalfH * 0.84f;
+                        if (std::abs(smoothCurX - anchorFocusX) > guardX) {
+                            const float sign = (smoothCurX > anchorFocusX) ? 1.0f : -1.0f;
+                            anchorFocusX += (std::abs(smoothCurX - anchorFocusX) - guardX) * 0.45f * sign;
+                        }
+                        if (std::abs(smoothCurY - anchorFocusY) > guardY) {
+                            const float sign = (smoothCurY > anchorFocusY) ? 1.0f : -1.0f;
+                            anchorFocusY += (std::abs(smoothCurY - anchorFocusY) - guardY) * 0.45f * sign;
+                        }
+                    } else {
+                        // 舒适区死区融合：光标在视口中心 38% 范围内不牵引镜头，超出时温和牵引
+                        const float deadX = viewHalfW * 0.38f;
+                        const float deadY = viewHalfH * 0.38f;
+                        if (std::abs(smoothCurX - anchorFocusX) > deadX) {
+                            const float sign = (smoothCurX > anchorFocusX) ? 1.0f : -1.0f;
+                            anchorFocusX += (std::abs(smoothCurX - anchorFocusX) - deadX) * sign;
+                        }
+                        if (std::abs(smoothCurY - anchorFocusY) > deadY) {
+                            const float sign = (smoothCurY > anchorFocusY) ? 1.0f : -1.0f;
+                            anchorFocusY += (std::abs(smoothCurY - anchorFocusY) - deadY) * sign;
+                        }
                     }
                 }
+
+                desiredSpotX = std::clamp(anchorFocusX, 0.0f, srcW);
+                desiredSpotY = std::clamp(anchorFocusY, 0.0f, srcH);
 
                 // 提前对目标中心做视口边界钳制，避免弹簧向屏幕外无效蓄力
                 desiredCenterX = std::clamp(anchorFocusX, viewHalfW, (std::max)(viewHalfW, srcW - viewHalfW));
                 desiredCenterY = std::clamp(anchorFocusY, viewHalfH, (std::max)(viewHalfH, srcH - viewHalfH));
 
-                if (config.zoomMode == StudioZoomMode::Motion3D) {
+                if (config.zoomMode == StudioZoomMode::Motion3D && desiredZoom > 1.02f) {
                     const float normDx = std::clamp((anchorFocusX - centerDefaultX) / (srcW * 0.45f), -1.0f, 1.0f);
                     const float normDy = std::clamp((anchorFocusY - centerDefaultY) / (srcH * 0.45f), -1.0f, 1.0f);
                     if (std::abs(normDx) < 0.14f && std::abs(normDy) < 0.14f) {
@@ -460,7 +783,10 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
             }
         }
 
-        // 3. 临界阻尼弹簧步进
+        // 3. 非对称临界阻尼弹簧步进（进镜沉稳、出镜柔缓 22%，零超调）
+        springZoom.setOmega((static_cast<double>(desiredZoom) >= springZoom.position()) ? omegaZoomIn : omegaZoomOut);
+        springSpotAlpha.setOmega((static_cast<double>(desiredSpotAlpha) >= springSpotAlpha.position()) ? omegaZoomIn : omegaZoomOut);
+
         const float curZoom = (f == 0)
             ? 1.0f
             : static_cast<float>(std::clamp(springZoom.step(desiredZoom, dtSec), 1.0, 3.0));
@@ -476,11 +802,24 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
         const float curPitch = (f == 0)
             ? 0.0f
             : static_cast<float>(std::clamp(springPitch.step(desiredPitchDeg, dtSec), -6.0, 6.0));
+        const float curSpotAlpha = (f == 0)
+            ? 0.0f
+            : static_cast<float>(std::clamp(springSpotAlpha.step(desiredSpotAlpha, dtSec), 0.0, 0.65));
+        const float curSpotX = (f == 0)
+            ? centerDefaultX
+            : static_cast<float>(std::clamp(springSpotX.step(desiredSpotX, dtSec), 0.0, static_cast<double>(srcW)));
+        const float curSpotY = (f == 0)
+            ? centerDefaultY
+            : static_cast<float>(std::clamp(springSpotY.step(desiredSpotY, dtSec), 0.0, static_cast<double>(srcH)));
 
         const float cropW = std::clamp(srcW / curZoom, 16.0f, srcW);
         const float cropH = std::clamp(srcH / curZoom, 16.0f, srcH);
         const float cropX = std::clamp(curCx - cropW * 0.5f, 0.0f, (std::max)(0.0f, srcW - cropW));
         const float cropY = std::clamp(curCy - cropH * 0.5f, 0.0f, (std::max)(0.0f, srcH - cropH));
+        // 聚光亮窗随缩放平滑自适应：1.0x 纯聚光时框出宽幅舒适核心区 (约 60%×64%)，放大时框出视口核心工作区
+        const float spotZoomBlend = std::clamp((curZoom - 1.0f) / 0.6f, 0.0f, 1.0f);
+        const float spotHalfW = (0.30f * (1.0f - spotZoomBlend) + 0.42f * spotZoomBlend) * cropW;
+        const float spotHalfH = (0.32f * (1.0f - spotZoomBlend) + 0.44f * spotZoomBlend) * cropH;
 
         // 4. Screen Studio 级二阶物理触感按压 (Tactile Squish + Micro-Tilt) 与 SDF 光学波纹进度计算
         float clickScale = 1.0f;
@@ -579,6 +918,11 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
         ef.rippleSrcX = rippleSrcX;
         ef.rippleSrcY = rippleSrcY;
         ef.rippleIsRight = rippleRight;
+        ef.spotlightAlpha = (curSpotAlpha > 0.003f) ? curSpotAlpha : 0.0f;
+        ef.spotlightCenterX = curSpotX;
+        ef.spotlightCenterY = curSpotY;
+        ef.spotlightHalfW = spotHalfW;
+        ef.spotlightHalfH = spotHalfH;
         ef.activeCaption = std::move(captionText);
     }
 
@@ -1117,13 +1461,14 @@ void StudioTimelineRecorder::stop() {
 StudioTimelineData StudioTimelineRecorder::takeTimelineData(
     int64_t finalDurationMs,
     float defaultZoom,
-    bool includeTypingFocus) {
+    bool includeTypingFocus,
+    float sensitivity) {
     stop();
     std::lock_guard lock(m_dataMutex);
     m_data.durationMs = (std::max<int64_t>)(finalDurationMs,
         m_data.cursorSamples.empty() ? 0 : m_data.cursorSamples.back().ptsMs);
     m_data.zoomSegments = StudioTimelineAnalyzer::buildAutoZoomSegments(
-        m_data, defaultZoom, includeTypingFocus);
+        m_data, defaultZoom, includeTypingFocus, sensitivity);
     return std::move(m_data);
 }
 
@@ -1144,6 +1489,8 @@ void StudioTimelineRecorder::samplingLoop() {
 
     POINT prevCaretScreen{LONG_MIN, LONG_MIN};
     int caretPollTick = 0;
+    HWND prevFgHwnd = nullptr;
+    RECT prevFgRect{};
 
     // 供零阻塞检测真实键盘文字输入（排除 Ctrl/Alt/Win 组合快捷键）的扫描键表
     static constexpr int kTypingVkList[] = {
@@ -1321,11 +1668,41 @@ void StudioTimelineRecorder::samplingLoop() {
             }
         }
 
-        // 2) 每 60ms 轻量探测传统 Win32 插入符位置（兼容经典记事本/ERP 输入框）
+        // 2) 每 60ms 轻量探测前景弹窗切换（因果聚焦校正）与传统 Win32 插入符位置（兼容经典记事本/ERP 输入框）
         if ((caretPollTick % 30) == 0) {
             HWND fg = GetForegroundWindow();
             if (fg) {
-                const DWORD tid = GetWindowThreadProcessId(fg, nullptr);
+                DWORD fgPid = 0;
+                const DWORD tid = GetWindowThreadProcessId(fg, &fgPid);
+                if (fgPid != selfPid) {
+                    RECT fgRc{};
+                    if (GetWindowRect(fg, &fgRc) && fgRc.right > fgRc.left && fgRc.bottom > fgRc.top) {
+                        const bool hwndChanged = (fg != prevFgHwnd);
+                        const bool geomShifted =
+                            std::abs(fgRc.left - prevFgRect.left) > 36 ||
+                            std::abs(fgRc.top - prevFgRect.top) > 36 ||
+                            std::abs((fgRc.right - fgRc.left) - (prevFgRect.right - prevFgRect.left)) > 48 ||
+                            std::abs((fgRc.bottom - fgRc.top) - (prevFgRect.bottom - prevFgRect.top)) > 48;
+                        if (hwndChanged || geomShifted) {
+                            const float ix0 = static_cast<float>((std::max)(fgRc.left, static_cast<LONG>(m_regionX)) - m_regionX);
+                            const float iy0 = static_cast<float>((std::max)(fgRc.top, static_cast<LONG>(m_regionY)) - m_regionY);
+                            const float ix1 = static_cast<float>((std::min)(fgRc.right, static_cast<LONG>(m_regionX + m_width)) - m_regionX);
+                            const float iy1 = static_cast<float>((std::min)(fgRc.bottom, static_cast<LONG>(m_regionY + m_height)) - m_regionY);
+                            if (ix1 - ix0 >= 64.0f && iy1 - iy0 >= 48.0f) {
+                                std::lock_guard lock(m_dataMutex);
+                                if (m_data.windowEvents.size() < 4096) {
+                                    m_data.windowEvents.push_back({
+                                        pts,
+                                        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(fg)),
+                                        ix0, iy0, ix1 - ix0, iy1 - iy0
+                                    });
+                                }
+                            }
+                            prevFgHwnd = fg;
+                            prevFgRect = fgRc;
+                        }
+                    }
+                }
                 GUITHREADINFO gti{};
                 gti.cbSize = sizeof(gti);
                 if (tid != 0 && GetGUIThreadInfo(tid, &gti) && gti.hwndCaret &&

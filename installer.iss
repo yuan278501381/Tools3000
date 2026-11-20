@@ -126,7 +126,9 @@ Name: "custom"; Description: "{cm:TypeCustom}"; Flags: iscustom
 
 [Components]
 Name: "search"; Description: "{cm:CompSearch}"; Types: full compact
-Name: "capture"; Description: "{cm:CompCapture}"; Types: full compact
+; 注意：capture 拥有可选子组件 capture\ocr_models (dontinheritcheck)，必须显式声明 Flags: checkablealone，
+; 否则 Inno Setup 在所有子组件默认未勾选时会自动取消勾选父组件 capture，导致全新安装默认关闭截图功能。
+Name: "capture"; Description: "{cm:CompCapture}"; Types: full compact; Flags: checkablealone
 Name: "capture\ocr_models"; Description: "{cm:CompOcrOfflinePack}"; Flags: dontinheritcheck
 Name: "gesture"; Description: "{cm:CompGesture}"; Types: full compact
 Name: "keycast"; Description: "{cm:CompKeycast}"; Types: full
@@ -244,6 +246,12 @@ const
   SERVICE_CONTROL_STOP = 1;
   ERROR_SHARING_VIOLATION = 32;
   ERROR_LOCK_VIOLATION = 33;
+  WIN32_HKEY_LOCAL_MACHINE = $80000002;
+  KEY_QUERY_VALUE_FLAG = $0001;
+  KEY_SET_VALUE_FLAG = $0002;
+  KEY_WOW64_64KEY_FLAG = $0100;
+  REG_MULTI_SZ_TYPE = 7;
+  SESSION_MANAGER_SUBKEY = 'SYSTEM\CurrentControlSet\Control\Session Manager';
 
 type
   TServiceStatus = record
@@ -268,6 +276,18 @@ function DeleteService(hService: THandle): BOOL;
   external 'DeleteService@advapi32.dll stdcall';
 function CloseServiceHandle(hSCObject: THandle): BOOL;
   external 'CloseServiceHandle@advapi32.dll stdcall';
+function RegOpenKeyExW(hKey: Cardinal; lpSubKey: String; ulOptions: DWORD; samDesired: DWORD; var phkResult: THandle): LongInt;
+  external 'RegOpenKeyExW@advapi32.dll stdcall';
+function RegQueryValueExWLen(hKey: THandle; lpValueName: String; lpReserved: Cardinal; var lpType: DWORD; lpData: Cardinal; var lpcbData: DWORD): LongInt;
+  external 'RegQueryValueExW@advapi32.dll stdcall';
+function RegQueryValueExWStr(hKey: THandle; lpValueName: String; lpReserved: Cardinal; var lpType: DWORD; lpData: String; var lpcbData: DWORD): LongInt;
+  external 'RegQueryValueExW@advapi32.dll stdcall';
+function RegSetValueExWStr(hKey: THandle; lpValueName: String; Reserved: DWORD; dwType: DWORD; lpData: String; cbData: DWORD): LongInt;
+  external 'RegSetValueExW@advapi32.dll stdcall';
+function RegDeleteValueW(hKey: THandle; lpValueName: String): LongInt;
+  external 'RegDeleteValueW@advapi32.dll stdcall';
+function RegCloseKey(hKey: THandle): LongInt;
+  external 'RegCloseKey@advapi32.dll stdcall';
 function GetLastError(): DWORD;
   external 'GetLastError@kernel32.dll stdcall';
 
@@ -297,9 +317,12 @@ var
   Ext, FileNameLower, UninstallerName: String;
 begin
   Result := False;
-  if not DirExists(DirPath) then Exit;
+  if (DirPath = '') or (not DirExists(DirPath)) then Exit;
 
-  UninstallerName := Lowercase(ExtractFileName(ExpandConstant('{uninstallexe}')));
+  if IsUninstaller then
+    UninstallerName := Lowercase(ExtractFileName(ExpandConstant('{uninstallexe}')))
+  else
+    UninstallerName := '';
 
   if FindFirst(DirPath + '\*.*', FindRec) then
   begin
@@ -330,12 +353,22 @@ begin
   end;
 end;
 
-function AreAppFilesLocked(): Boolean;
+function AreAppFilesLockedInDir(const TargetAppDir: String): Boolean;
 var
-  AppDir: String;
+  NormalizedDir: String;
 begin
-  AppDir := ExpandConstant('{app}');
-  Result := CheckDirFilesLocked(AppDir) or CheckDirFilesLocked(AppDir + '\plugins');
+  NormalizedDir := RemoveBackslashUnlessRoot(Trim(TargetAppDir));
+  if NormalizedDir = '' then
+  begin
+    Result := False;
+    Exit;
+  end;
+  Result := CheckDirFilesLocked(NormalizedDir) or CheckDirFilesLocked(NormalizedDir + '\plugins');
+end;
+
+function AreAppFilesLocked(): Boolean;
+begin
+  Result := AreAppFilesLockedInDir(ExpandConstant('{app}'));
 end;
 
 function AreCriticalDllsLocked(): Boolean;
@@ -416,11 +449,12 @@ begin
   end;
 end;
 
-procedure StopSearchServiceNative();
+procedure StopSearchServiceNativeForDir(const TargetAppDir: String);
 var
   hSCM, hSvc: THandle;
   Status: TServiceStatus;
   Dummy: Integer;
+  ServiceExePath: String;
 begin
   hSCM := OpenSCManager('', '', SC_MANAGER_CONNECT);
   if hSCM <> 0 then
@@ -431,7 +465,7 @@ begin
       begin
         try
           ControlService(hSvc, SERVICE_CONTROL_STOP, Status);
-          Log('StopSearchServiceNative: Sent SERVICE_CONTROL_STOP via Win32 SCM API.');
+          Log('StopSearchServiceNativeForDir: Sent SERVICE_CONTROL_STOP via Win32 SCM API.');
         finally
           CloseServiceHandle(hSvc);
         end;
@@ -440,12 +474,20 @@ begin
       CloseServiceHandle(hSCM);
     end;
   end;
-  // 仅当服务仍在运行或文件锁定时才执行兜底 taskkill，绝不在已停止状态下空转创建外部进程
-  if IsSearchServiceRunning() or IsFileLocked(ExpandConstant('{app}\Tools3000_Service.exe')) then
+  ServiceExePath := '';
+  if Trim(TargetAppDir) <> '' then
+    ServiceExePath := RemoveBackslashUnlessRoot(Trim(TargetAppDir)) + '\Tools3000_Service.exe';
+  // 仅当服务仍在运行或服务可执行文件仍锁定时才执行兜底 taskkill，绝不在已停止状态下空转创建外部进程
+  if IsSearchServiceRunning() or ((ServiceExePath <> '') and IsFileLocked(ServiceExePath)) then
   begin
-    Log('StopSearchServiceNative: Service process still active, issuing taskkill...');
+    Log('StopSearchServiceNativeForDir: Service process still active, issuing taskkill...');
     Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
   end;
+end;
+
+procedure StopSearchServiceNative();
+begin
+  StopSearchServiceNativeForDir(ExpandConstant('{app}'));
 end;
 
 procedure DeleteSearchServiceNative();
@@ -554,26 +596,29 @@ begin
   end;
 end;
 
-procedure StopAndKillAllTools3000Processes();
+procedure StopAndKillAllTools3000ProcessesForDir(const TargetAppDir: String);
 var
   ResultCode: Integer;
   MsgHwnd: LongWord;
   NeedKillApp: Boolean;
   NeedKillService: Boolean;
+  FilesLocked: Boolean;
 begin
   NeedKillApp := IsTools3000Running();
   NeedKillService := IsSearchServiceRunning();
+  FilesLocked := AreAppFilesLockedInDir(TargetAppDir);
 
   // 若均未运行且关键文件未锁定，毫秒级直接跳过，杜绝空转执行 taskkill/sc 造成的 500ms~1000ms 进程创建开销
-  if (not NeedKillApp) and (not NeedKillService) and (not AreAppFilesLocked()) then
+  if (not NeedKillApp) and (not NeedKillService) and (not FilesLocked) then
   begin
-    Log('StopAndKillAllTools3000Processes: No running Tools3000 instances or file locks detected, skipping process kills.');
+    Log('StopAndKillAllTools3000ProcessesForDir: No running Tools3000 instances or file locks detected, skipping process kills.');
     Exit;
   end;
 
-  Log('StopAndKillAllTools3000Processes: Initiating graceful and forceful termination of active processes and services...');
+  Log(Format('StopAndKillAllTools3000ProcessesForDir: Terminating active processes (app=%d, service=%d, locked=%d)...', [Ord(NeedKillApp), Ord(NeedKillService), Ord(FilesLocked)]));
 
-  if NeedKillApp then
+  // 当检测到文件仍被锁定（如主程序刚释放互斥体/窗口但尚未卸载 DLL）时，必须同步补杀主进程与服务进程
+  if NeedKillApp or FilesLocked then
   begin
     MsgHwnd := FindWindowByClassName('Tools3000_MessageWindow');
     if MsgHwnd <> 0 then
@@ -585,13 +630,18 @@ begin
     Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 
-  if NeedKillService then
+  if NeedKillService or FilesLocked then
   begin
-    StopSearchServiceNative();
+    StopSearchServiceNativeForDir(TargetAppDir);
   end;
 end;
 
-function WaitForProcessesAndFilesReleased(MaxWaitMs: Integer): Boolean;
+procedure StopAndKillAllTools3000Processes();
+begin
+  StopAndKillAllTools3000ProcessesForDir(ExpandConstant('{app}'));
+end;
+
+function WaitForProcessesAndFilesReleasedInDir(const TargetAppDir: String; MaxWaitMs: Integer): Boolean;
 var
   StartTick: DWORD;
   Elapsed: DWORD;
@@ -604,10 +654,10 @@ begin
   begin
     if (not IsTools3000Running()) and
        (not IsSearchServiceRunning()) and
-       (not AreAppFilesLocked()) then
+       (not AreAppFilesLockedInDir(TargetAppDir)) then
     begin
       Elapsed := GetTickCount() - StartTick;
-      Log(Format('WaitForProcessesAndFilesReleased: All processes exited and file locks released in %d ms', [Elapsed]));
+      Log(Format('WaitForProcessesAndFilesReleasedInDir: All processes exited and file locks released in %d ms', [Elapsed]));
       Result := True;
       Exit;
     end;
@@ -618,10 +668,10 @@ begin
 
     Sleep(30);
 
-    // 超过 500ms 仍未释放时重试一次 taskkill 确保彻底干掉残留进程
+    // 超过 500ms 仍未释放时周期性补发 taskkill 确保彻底干掉残留进程
     if (Elapsed > 500) and ((Elapsed mod 500) < 40) then
     begin
-      Log('WaitForProcessesAndFilesReleased: Locks or processes still active, re-issuing taskkill /f /t...');
+      Log('WaitForProcessesAndFilesReleasedInDir: Locks or processes still active, re-issuing taskkill /f /t...');
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
     end;
@@ -629,12 +679,349 @@ begin
 
   Result := (not IsTools3000Running()) and
             (not IsSearchServiceRunning()) and
-            (not AreAppFilesLocked());
+            (not AreAppFilesLockedInDir(TargetAppDir));
   Elapsed := GetTickCount() - StartTick;
   if Result then
-    Log(Format('WaitForProcessesAndFilesReleased: Released at final check (%d ms)', [Elapsed]))
+    Log(Format('WaitForProcessesAndFilesReleasedInDir: Released at final check (%d ms)', [Elapsed]))
   else
-    Log(Format('WaitForProcessesAndFilesReleased: Timed out after %d ms. Files or processes may still be locked.', [Elapsed]));
+    Log(Format('WaitForProcessesAndFilesReleasedInDir: Timed out after %d ms. Files or processes may still be locked.', [Elapsed]));
+end;
+
+function WaitForProcessesAndFilesReleased(MaxWaitMs: Integer): Boolean;
+begin
+  Result := WaitForProcessesAndFilesReleasedInDir(ExpandConstant('{app}'), MaxWaitMs);
+end;
+
+// ============================================================================
+// 安装前 PendingFileRenameOperations (PFRO) 精确成对自愈引擎
+// 说明：Inno Setup 在进入 wpPreparing 瞬间（早于 PrepareToInstall()）会扫描
+//       HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations(2)。
+//       若上次卸载/升级有任意旧文件短暂被占用写入了 PFRO，即使此刻早已解锁，
+//       Inno Setup 也会直接阻断并强制要求重启电脑。
+//       本引擎严格在 wpReady 点击“安装”瞬间（进入 wpPreparing 之前）仅针对目标
+//       Tools3000 目录进行现场解锁与精准成对摘除，100% 字节无损保留系统及其他软件条目。
+// ============================================================================
+
+function ReadExactMultiStringValue(Win32RootKey: Cardinal; const SubKey, ValueName: String; var RawPayload: String): Boolean;
+var
+  hKey: THandle;
+  ValType, CbData: DWORD;
+  Res: LongInt;
+begin
+  Result := False;
+  RawPayload := '';
+  Res := RegOpenKeyExW(Win32RootKey, SubKey, 0, KEY_QUERY_VALUE_FLAG or KEY_WOW64_64KEY_FLAG, hKey);
+  if Res <> 0 then Exit;
+  try
+    ValType := 0;
+    CbData := 0;
+    Res := RegQueryValueExWLen(hKey, ValueName, 0, ValType, 0, CbData);
+    if (Res <> 0) or (ValType <> REG_MULTI_SZ_TYPE) or (CbData < 2) then Exit;
+    SetLength(RawPayload, (CbData + 1) div 2);
+    Res := RegQueryValueExWStr(hKey, ValueName, 0, ValType, RawPayload, CbData);
+    if (Res = 0) and (ValType = REG_MULTI_SZ_TYPE) then
+    begin
+      SetLength(RawPayload, CbData div 2);
+      Result := True;
+    end;
+  finally
+    RegCloseKey(hKey);
+  end;
+end;
+
+function WriteExactMultiStringValue(Win32RootKey: Cardinal; const SubKey, ValueName, MultiStrPayload: String): Boolean;
+var
+  hKey: THandle;
+  Payload: String;
+  Res: LongInt;
+begin
+  Result := False;
+  // REG_MULTI_SZ UTF-16LE 精确格式：每条字符串（含空目标串）以 #0 终止，列表末尾追加 1 个 #0 终止符
+  Payload := MultiStrPayload + #0;
+  Res := RegOpenKeyExW(Win32RootKey, SubKey, 0, KEY_SET_VALUE_FLAG or KEY_WOW64_64KEY_FLAG, hKey);
+  if Res <> 0 then
+  begin
+    Log(Format('WriteExactMultiStringValue: RegOpenKeyExW failed (%d) for %s', [Res, ValueName]));
+    Exit;
+  end;
+  try
+    Res := RegSetValueExWStr(hKey, ValueName, 0, REG_MULTI_SZ_TYPE, Payload, DWORD(Length(Payload) * 2));
+    Result := (Res = 0);
+    if not Result then
+      Log(Format('WriteExactMultiStringValue: RegSetValueExW failed (%d) for %s', [Res, ValueName]));
+  finally
+    RegCloseKey(hKey);
+  end;
+end;
+
+function DeleteExactRegValue(Win32RootKey: Cardinal; const SubKey, ValueName: String): Boolean;
+var
+  hKey: THandle;
+  Res: LongInt;
+begin
+  Result := False;
+  Res := RegOpenKeyExW(Win32RootKey, SubKey, 0, KEY_SET_VALUE_FLAG or KEY_WOW64_64KEY_FLAG, hKey);
+  if Res <> 0 then Exit;
+  try
+    Res := RegDeleteValueW(hKey, ValueName);
+    Result := (Res = 0);
+  finally
+    RegCloseKey(hKey);
+  end;
+end;
+
+function ParseExactMultiStringItems(const RawPayload: String; var Items: TArrayOfString): Integer;
+var
+  EffLen, I, N: Integer;
+  Token: String;
+begin
+  N := 0;
+  SetArrayLength(Items, 0);
+  EffLen := Length(RawPayload);
+  if EffLen = 0 then
+  begin
+    Result := 0;
+    Exit;
+  end;
+
+  // 去掉 REG_MULTI_SZ 末尾最后一个代表整个列表结束的 #0，完整保留末尾空串项
+  if RawPayload[EffLen] = #0 then
+    EffLen := EffLen - 1;
+
+  Token := '';
+  for I := 1 to EffLen do
+  begin
+    if RawPayload[I] = #0 then
+    begin
+      SetArrayLength(Items, N + 1);
+      Items[N] := Token;
+      N := N + 1;
+      Token := '';
+    end
+    else
+      Token := Token + RawPayload[I];
+  end;
+
+  if Token <> '' then
+  begin
+    SetArrayLength(Items, N + 1);
+    Items[N] := Token;
+    N := N + 1;
+  end;
+
+  // 若遭遇奇数字节尾残留单个空串，对齐为合法 (Src, Dst) 成对结构
+  if ((N mod 2) = 1) and (Items[N - 1] = '') then
+  begin
+    N := N - 1;
+    SetArrayLength(Items, N);
+  end;
+
+  Result := N;
+end;
+
+function CleanPfroPath(const Raw: String): String;
+var
+  S: String;
+  P: Integer;
+begin
+  S := Trim(Raw);
+  P := Pos('\??\', S);
+  if P > 0 then
+    Delete(S, 1, P + 3)
+  else
+  begin
+    P := Pos('\\?\', S);
+    if P > 0 then
+      Delete(S, 1, P + 3);
+  end;
+  StringChangeEx(S, '/', '\', True);
+  Result := RemoveBackslashUnlessRoot(S);
+end;
+
+function IsSafeTools3000TargetDir(const DirPath: String): Boolean;
+var
+  NormLower: String;
+begin
+  NormLower := Lowercase(RemoveBackslashUnlessRoot(Trim(DirPath)));
+  // 安全白名单守卫：必须是绝对盘符目录、深度合理且包含 tools3000，严防误伤系统/根目录
+  Result := (Length(NormLower) >= 10) and
+            (Pos(':\', NormLower) = 2) and
+            (Pos('tools3000', NormLower) > 0);
+end;
+
+function IsPathUnderOrEqualTargetDir(const RawPfroPath, TargetLower, ShortLower: String): Boolean;
+var
+  CleanLower: String;
+begin
+  Result := False;
+  if RawPfroPath = '' then Exit;
+  CleanLower := Lowercase(CleanPfroPath(RawPfroPath));
+  if (CleanLower = TargetLower) or (Pos(TargetLower + '\', CleanLower) = 1) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if (ShortLower <> '') and (ShortLower <> TargetLower) and (Length(ShortLower) >= 10) then
+  begin
+    if (CleanLower = ShortLower) or (Pos(ShortLower + '\', CleanLower) = 1) then
+      Result := True;
+  end;
+end;
+
+function IsPfroPairOwnedByTargetDir(const Src, Dst, TargetLower, ShortLower: String): Boolean;
+begin
+  if Dst = '' then
+    Result := IsPathUnderOrEqualTargetDir(Src, TargetLower, ShortLower)
+  else
+    // 重命名/替换对严格要求目标文件必须位于 Tools3000 目录内，绝不触碰跨向外部目录的条目
+    Result := IsPathUnderOrEqualTargetDir(Dst, TargetLower, ShortLower) and
+              (IsPathUnderOrEqualTargetDir(Src, TargetLower, ShortLower) or
+               (Lowercase(ExtractFileExt(CleanPfroPath(Src))) = '.tmp'));
+end;
+
+function TryResolveStalePfroPair(const Src, Dst: String): Boolean;
+var
+  CleanSrc, CleanDst: String;
+begin
+  Result := False;
+  CleanSrc := CleanPfroPath(Src);
+  CleanDst := CleanPfroPath(Dst);
+
+  if Dst = '' then
+  begin
+    // 待重启删除条目：目录清理或尝试现场删除旧文件；已不存在视为僵尸条目直接摘除
+    if DirExists(CleanSrc) then
+    begin
+      RemoveDir(CleanSrc);
+      Result := True;
+      Exit;
+    end;
+    if FileExists(CleanSrc) then
+    begin
+      DeleteFile(CleanSrc);
+      Result := not FileExists(CleanSrc);
+      Exit;
+    end;
+    Result := True;
+  end
+  else
+  begin
+    // 待重启替换条目（如上次残留 is-XXXXX.tmp -> Tools3000Core.dll）：
+    // 先清理过时临时文件，仅当临时文件已移除且目标文件当前未被进程锁定时才摘除
+    if FileExists(CleanSrc) then
+      DeleteFile(CleanSrc);
+    if (not FileExists(CleanSrc)) and (not IsFileLocked(CleanDst)) then
+      Result := True;
+  end;
+end;
+
+procedure ClearStaleAppPendingFileRenamesInValue(
+  const TargetAppDir, TargetLower, ShortLower, ValueName: String;
+  var KilledOnce: Boolean);
+var
+  RawVal, Src, Dst, NewPayload: String;
+  Items: TArrayOfString;
+  N, I, KeptPairs, RemovedPairs, RetainedLocked: Integer;
+  HasTargetMatch: Boolean;
+begin
+  if not ReadExactMultiStringValue(WIN32_HKEY_LOCAL_MACHINE, SESSION_MANAGER_SUBKEY, ValueName, RawVal) then
+    Exit;
+
+  N := ParseExactMultiStringItems(RawVal, Items);
+  if N < 2 then Exit;
+
+  // 第一遍只读快速扫描：若无 Tools3000 相关残留条目，零开销直接放行
+  HasTargetMatch := False;
+  I := 0;
+  while I + 1 < N do
+  begin
+    if IsPfroPairOwnedByTargetDir(Items[I], Items[I + 1], TargetLower, ShortLower) then
+    begin
+      HasTargetMatch := True;
+      Break;
+    end;
+    I := I + 2;
+  end;
+
+  if not HasTargetMatch then Exit;
+
+  Log(Format('ClearStaleAppPendingFileRenames: Detected stale Tools3000 entries in %s (total items=%d). Attempting self-heal...', [ValueName, N]));
+
+  // 仅在首次命中 PFRO 残留时终止残留进程并等待句柄释放，确保旧文件可被现场安全清理
+  if not KilledOnce then
+  begin
+    KilledOnce := True;
+    StopAndKillAllTools3000ProcessesForDir(TargetAppDir);
+    WaitForProcessesAndFilesReleasedInDir(TargetAppDir, 3000);
+  end;
+
+  NewPayload := '';
+  KeptPairs := 0;
+  RemovedPairs := 0;
+  RetainedLocked := 0;
+  I := 0;
+  while I + 1 < N do
+  begin
+    Src := Items[I];
+    Dst := Items[I + 1];
+    if IsPfroPairOwnedByTargetDir(Src, Dst, TargetLower, ShortLower) then
+    begin
+      if TryResolveStalePfroPair(Src, Dst) then
+      begin
+        RemovedPairs := RemovedPairs + 1;
+        Log(Format('ClearStaleAppPendingFileRenames: Cleared stale pair [%s] -> [%s]', [Src, Dst]));
+      end
+      else
+      begin
+        NewPayload := NewPayload + Src + #0 + Dst + #0;
+        KeptPairs := KeptPairs + 1;
+        RetainedLocked := RetainedLocked + 1;
+        Log(Format('ClearStaleAppPendingFileRenames: Retained actively locked pair [%s] -> [%s]', [Src, Dst]));
+      end;
+    end
+    else
+    begin
+      NewPayload := NewPayload + Src + #0 + Dst + #0;
+      KeptPairs := KeptPairs + 1;
+    end;
+    I := I + 2;
+  end;
+
+  if RemovedPairs > 0 then
+  begin
+    if KeptPairs = 0 then
+    begin
+      if DeleteExactRegValue(WIN32_HKEY_LOCAL_MACHINE, SESSION_MANAGER_SUBKEY, ValueName) then
+        Log(Format('ClearStaleAppPendingFileRenames: Removed all %d stale Tools3000 pairs and deleted empty %s.', [RemovedPairs, ValueName]));
+    end
+    else
+    begin
+      if WriteExactMultiStringValue(WIN32_HKEY_LOCAL_MACHINE, SESSION_MANAGER_SUBKEY, ValueName, NewPayload) then
+        Log(Format('ClearStaleAppPendingFileRenames: Updated %s (removed=%d, kept=%d, retainedLocked=%d).', [ValueName, RemovedPairs, KeptPairs, RetainedLocked]));
+    end;
+  end;
+end;
+
+procedure ClearStaleAppPendingFileRenames(const TargetAppDir: String);
+var
+  NormalizedDir, TargetLower, ShortLower: String;
+  KilledOnce: Boolean;
+begin
+  NormalizedDir := RemoveBackslashUnlessRoot(Trim(TargetAppDir));
+  if not IsSafeTools3000TargetDir(NormalizedDir) then
+  begin
+    Log('ClearStaleAppPendingFileRenames: Skipped due to non-Tools3000 target dir: ' + NormalizedDir);
+    Exit;
+  end;
+
+  TargetLower := Lowercase(NormalizedDir);
+  ShortLower := '';
+  if DirExists(NormalizedDir) then
+    ShortLower := Lowercase(RemoveBackslashUnlessRoot(GetShortName(NormalizedDir)));
+
+  KilledOnce := False;
+  ClearStaleAppPendingFileRenamesInValue(NormalizedDir, TargetLower, ShortLower, 'PendingFileRenameOperations', KilledOnce);
+  ClearStaleAppPendingFileRenamesInValue(NormalizedDir, TargetLower, ShortLower, 'PendingFileRenameOperations2', KilledOnce);
 end;
 
 
@@ -713,6 +1100,17 @@ begin
   DetailsMemo.Visible := False;
 
   TimerCallbackAddr := CreateCallback(@OnExtractTimer);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  // 在用户点击“安装”(wpReady) 或静默安装进入 wpPreparing 之前瞬间执行 PFRO 自愈清理，
+  // 抢在 Inno Setup 内置 wpPreparing PendingFileRenameOperations 阻断门禁之前解除过期重启拦截。
+  if CurPageID = wpReady then
+  begin
+    ClearStaleAppPendingFileRenames(WizardDirValue);
+  end;
+  Result := True;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -1333,8 +1731,8 @@ begin
   // 1. 【强制终止进程树】：在 PrepareToInstall 阶段无条件执行 taskkill 和停止服务
   StopAndKillAllTools3000Processes();
 
-  // 2. 【句柄释放重试轮询】：在强杀后循环探测（最多重试 5 次，每次 Sleep 200ms）确保关键 DLL 文件（如 avcodec-62.dll）不再处于锁定状态
-  for RetryCount := 1 to 5 do
+  // 2. 【句柄释放重试轮询】：在强杀后循环探测（最多重试 15 次，每次 Sleep 200ms，无锁时第 1 次 0ms 立即跳出）确保关键 DLL 文件不再处于锁定状态
+  for RetryCount := 1 to 15 do
   begin
     DllsLocked := AreCriticalDllsLocked();
     if not DllsLocked then
@@ -1343,13 +1741,13 @@ begin
       Break;
     end;
 
-    Log(Format('PrepareToInstall: Critical DLL files still locked, waiting 200ms (attempt %d/5)...', [RetryCount]));
+    Log(Format('PrepareToInstall: Critical DLL files still locked, waiting 200ms (attempt %d/15)...', [RetryCount]));
     Sleep(200);
 
-    // 第3次探测若仍有锁定，补发一次 taskkill /f /t 确保彻底杀绝
-    if (RetryCount = 3) and DllsLocked then
+    // 第 3 次与第 8 次探测若仍有锁定，补发一次 taskkill /f /t 确保彻底杀绝
+    if ((RetryCount = 3) or (RetryCount = 8)) and DllsLocked then
     begin
-      Log('PrepareToInstall: Locks still detected at attempt 3, re-issuing taskkill...');
+      Log(Format('PrepareToInstall: Locks still detected at attempt %d, re-issuing taskkill...', [RetryCount]));
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;
@@ -1357,7 +1755,7 @@ begin
 
   if AreCriticalDllsLocked() then
   begin
-    Log('PrepareToInstall: Warning - File locks still present after 5 retries. Inno Setup restartreplace will handle update on reboot.');
+    Log('PrepareToInstall: Warning - File locks still present after 15 retries. Inno Setup restartreplace will handle update on reboot.');
   end
   else
   begin
@@ -1369,11 +1767,11 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
-    // 1. 毫秒级停止并清理后台搜索服务，终止进程树
+    // 1. 毫秒级停止并清理后台搜索服务，终止进程树并留足句柄释放窗口（无锁 0ms 瞬过，慢机最多 3.5s 避免写入 PFRO）
     StopAndKillAllTools3000Processes();
     DeleteSearchServiceNative();
     DeleteFile(ExpandConstant('{app}\initial_modules.json'));
-    WaitForProcessesAndFilesReleased(1000);
+    WaitForProcessesAndFilesReleased(3500);
   end;
   if CurUninstallStep = usPostUninstall then
   begin
@@ -1412,7 +1810,7 @@ begin
     if SuppressibleMsgBox(CustomMessage('AppRunningUninstallPrompt'), mbConfirmation, MB_YESNO, IDYES) = IDYES then
     begin
       StopAndKillAllTools3000Processes();
-      WaitForProcessesAndFilesReleased(1000);
+      WaitForProcessesAndFilesReleased(3500);
     end
     else
     begin

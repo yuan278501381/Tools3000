@@ -3378,7 +3378,7 @@ public:
             return HitArea::None;
         }
         if (element.isActive) {
-            int hw = 8;
+            const int hw = (std::max)(8, padding);
             if (element.isMultiPoint && element.penPoints.size() >= 2) {
                 for (size_t i = element.penPoints.size(); i-- > 0;) {
                     const auto& v = element.penPoints[i];
@@ -3563,7 +3563,7 @@ public:
 
     HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
         if (element.isActive) {
-            int hw = 8;
+            const int hw = (std::max)(8, padding);
             cv::Rect h1(element.startPt.x - hw, element.startPt.y - hw, hw * 2, hw * 2);
             if (h1.contains(pt)) return HitArea::LT; // Tail handle
             cv::Rect h2(element.endPt.x - hw, element.endPt.y - hw, hw * 2, hw * 2);
@@ -4220,12 +4220,12 @@ public:
         const auto [halfW, halfH] = computeBadgeHalfExtents(element);
         if (element.isActive) {
             if (element.hasLeaderArrow) {
-                int hw = 8;
+                const int hw = (std::max)(8, padding);
                 cv::Rect h2(element.endPt.x - hw, element.endPt.y - hw, hw * 2, hw * 2);
                 if (h2.contains(pt)) return HitArea::RB; // 箭头尖端控制柄
             }
             const cv::Point scalePt = computeScaleHandlePt(element);
-            if (std::hypot(pt.x - scalePt.x, pt.y - scalePt.y) <= 7.5) {
+            if (std::hypot(pt.x - scalePt.x, pt.y - scalePt.y) <= (std::max)(7.5, static_cast<double>(padding))) {
                 return HitArea::RT; // 外环缩放控制柄
             }
         }

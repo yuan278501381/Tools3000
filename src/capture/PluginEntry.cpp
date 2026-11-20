@@ -182,7 +182,15 @@ RecordOptions configuredRecordOptions(const CaptureRegion& region) {
         : (zoomModeInt == 1 ? StudioZoomMode::Zoom2D : StudioZoomMode::None);
     options.studioConfig.typingAutoZoom = config.get<bool>("/recording/typingAutoZoom", false);
     options.studioConfig.defaultZoomFactor = std::clamp(
-        static_cast<float>(config.get<double>("/recording/studioZoomFactor", 1.50)), 1.25f, 2.80f);
+        static_cast<float>(config.get<double>("/recording/studioZoomFactor", 1.32)), 1.00f, 2.80f);
+    options.studioConfig.zoomPacing = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioZoomPacing", 0.32)), 0.0f, 1.0f);
+    options.studioConfig.autoZoomSensitivity = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioZoomSensitivity", 0.32)), 0.0f, 1.0f);
+    options.studioConfig.focusSpotlightDim = std::clamp(
+        static_cast<float>(config.get<double>("/recording/studioFocusSpotlightDim", 0.18)), 0.0f, 0.65f);
+    options.studioConfig.lockCameraWhileZoomed =
+        config.get<bool>("/recording/studioLockCameraHold", true);
     options.studioConfig.smoothCursorEnabled =
         options.includeCursor && config.get<bool>("/recording/studioSmoothCursor", true);
     options.studioConfig.cursorScale = std::clamp(
@@ -1169,7 +1177,11 @@ public:
                 {"studioMode", config.get<bool>("/recording/studioMode", true)},
                 {"studioAutoZoom", config.get<bool>("/recording/studioAutoZoom", true)},
                 {"studioZoomMode", config.get<int>("/recording/studioZoomMode", 1)},
-                {"studioZoomFactor", config.get<double>("/recording/studioZoomFactor", 1.50)},
+                {"studioZoomFactor", config.get<double>("/recording/studioZoomFactor", 1.32)},
+                {"studioZoomPacing", config.get<double>("/recording/studioZoomPacing", 0.32)},
+                {"studioZoomSensitivity", config.get<double>("/recording/studioZoomSensitivity", 0.32)},
+                {"studioFocusSpotlightDim", config.get<double>("/recording/studioFocusSpotlightDim", 0.18)},
+                {"studioLockCameraHold", config.get<bool>("/recording/studioLockCameraHold", true)},
                 {"studioSmoothCursor", config.get<bool>("/recording/studioSmoothCursor", true)},
                 {"studioCursorScale", config.get<double>("/recording/studioCursorScale", 1.35)},
                 {"studioAutoFrame", config.get<bool>("/recording/studioAutoFrame", true)},
@@ -1306,8 +1318,16 @@ public:
                     return {{"success", false}, {"error", "audio volume must be between 0 and 200"}};
                 if (key == "studioTheme" && (!value.is_string() || !studioThemes.contains(value.get<std::string>())))
                     return {{"success", false}, {"error", "invalid studioTheme"}};
-                if (key == "studioZoomFactor" && (!value.is_number() || value.get<double>() < 1.2 || value.get<double>() > 2.8))
-                    return {{"success", false}, {"error", "studioZoomFactor must be between 1.2 and 2.8"}};
+                if (key == "studioZoomFactor" && (!value.is_number() || value.get<double>() < 1.0 || value.get<double>() > 2.8))
+                    return {{"success", false}, {"error", "studioZoomFactor must be between 1.0 and 2.8"}};
+                if (key == "studioZoomPacing" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 1.0))
+                    return {{"success", false}, {"error", "studioZoomPacing must be between 0 and 1"}};
+                if (key == "studioZoomSensitivity" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 1.0))
+                    return {{"success", false}, {"error", "studioZoomSensitivity must be between 0 and 1"}};
+                if (key == "studioFocusSpotlightDim" && (!value.is_number() || value.get<double>() < 0.0 || value.get<double>() > 0.65))
+                    return {{"success", false}, {"error", "studioFocusSpotlightDim must be between 0 and 0.65"}};
+                if (key == "studioLockCameraHold" && !value.is_boolean())
+                    return {{"success", false}, {"error", "studioLockCameraHold must be a boolean"}};
                 if (key == "studioCursorScale" && (!value.is_number() || value.get<double>() < 0.8 || value.get<double>() > 2.2))
                     return {{"success", false}, {"error", "studioCursorScale must be between 0.8 and 2.2"}};
                 if (key == "studioZoomMode" && (!value.is_number_integer() || value.get<int>() < 0 || value.get<int>() > 2))
@@ -1411,7 +1431,9 @@ public:
                     key != "hideTaskbar" && key != "typingAutoZoom" &&
                     key != "hideIndicatorInCapture" &&
                     key != "studioMode" && key != "studioAutoZoom" && key != "studioZoomMode" &&
-                    key != "studioZoomFactor" && key != "studioSmoothCursor" &&
+                    key != "studioZoomFactor" && key != "studioZoomPacing" &&
+                    key != "studioZoomSensitivity" && key != "studioFocusSpotlightDim" &&
+                    key != "studioLockCameraHold" && key != "studioSmoothCursor" &&
                     key != "studioCursorScale" && key != "studioAutoFrame" &&
                     key != "studioTheme" && key != "studioAutoCaptions" &&
                     key != "studioBgBlur" && key != "studioShadow" &&

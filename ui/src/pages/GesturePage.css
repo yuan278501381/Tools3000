@@ -800,8 +800,11 @@
   transition: border-color var(--transition-fast);
 }
 
-.gesture-search-input:focus {
+.gesture-search-input:focus,
+.gesture-search-input:focus-visible {
   border-color: var(--primary);
+  box-shadow: 0 0 0 2.5px var(--primary-dim);
+  outline: none !important;
 }
 
 /* ── 列表列与交互定义 ───────────────────────────────────────────────────────────── */
@@ -1073,14 +1076,22 @@
 
 .gesture-number-input {
   width: 72px;
-  border: none;
-  outline: none;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
   background: transparent;
   color: var(--text-primary);
   font-size: 0.88rem;
   font-family: inherit;
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+.gesture-number-input:focus,
+.gesture-number-input:focus-visible {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .gesture-number-input::-webkit-inner-spin-button,

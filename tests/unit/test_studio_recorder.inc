@@ -2187,3 +2187,168 @@ TEST(StudioRecorderTest, MagneticTimelineSnappingToClipSplitPlayheadAndBoundarie
     EXPECT_EQ(StudioTimelineAnalyzer::findNextTimelineKeyframeMs(7500, +1, anchors), 8400);
     EXPECT_EQ(StudioTimelineAnalyzer::findNextTimelineKeyframeMs(8400, -1, anchors), 7500);
 }
+
+TEST(StudioRecorderTest, CognitiveFriendlyAutoZoomPresetsCausalFocusTripodHoldAndSpotlight) {
+    using namespace tools3000::capture;
+
+    // 1. 三档预置应用与自定义微调态探测
+    StudioRenderConfig cfg;
+    applyStudioZoomPreset(cfg, StudioZoomPreset::Gentle);
+    EXPECT_EQ(detectStudioZoomPreset(cfg), 0);
+    EXPECT_NEAR(cfg.defaultZoomFactor, 1.32f, 0.001f);
+    EXPECT_TRUE(cfg.lockCameraWhileZoomed);
+    EXPECT_GT(cfg.focusSpotlightDim, 0.10f);
+
+    applyStudioZoomPreset(cfg, StudioZoomPreset::Balanced);
+    EXPECT_EQ(detectStudioZoomPreset(cfg), 1);
+    EXPECT_NEAR(cfg.defaultZoomFactor, 1.60f, 0.001f);
+    EXPECT_TRUE(cfg.lockCameraWhileZoomed);
+
+    applyStudioZoomPreset(cfg, StudioZoomPreset::Dynamic);
+    EXPECT_EQ(detectStudioZoomPreset(cfg), 2);
+    EXPECT_NEAR(cfg.defaultZoomFactor, 1.95f, 0.001f);
+    EXPECT_FALSE(cfg.lockCameraWhileZoomed);
+
+    // 手动无级微调后应识别为自定义态 (-1)
+    cfg.defaultZoomFactor = 1.45f;
+    EXPECT_EQ(detectStudioZoomPreset(cfg), -1);
+
+    // 2. 片头建立镜头保护 + 触发频率分级 + 弹窗因果聚焦校正（点左栏 A -> 弹中间弹窗 B 自动锁 B）
+    StudioTimelineData tl;
+    tl.sourceWidth = 1920;
+    tl.sourceHeight = 1080;
+    tl.fps = 30;
+    tl.durationMs = 12000;
+    // 片头 400ms 孤立单点（应被柔和档片头建立镜头 + 精选门槛过滤）
+    tl.clickEvents.push_back({400, 120.0f, 120.0f, false});
+    // 4000ms 点击左侧导航菜单 A (110, 420)，160ms 后屏幕正中弹出对话框 B [560, 240, 800x600]
+    tl.clickEvents.push_back({4000, 110.0f, 420.0f, false});
+    tl.windowEvents.push_back({4160, 0xCAFEBABEu, 560.0f, 240.0f, 800.0f, 600.0f});
+    // 8500ms 同一区域连续双击（高价值操作簇）
+    tl.clickEvents.push_back({8500, 1450.0f, 620.0f, false});
+    tl.clickEvents.push_back({8920, 1470.0f, 635.0f, false});
+
+    const auto gentleSegs = StudioTimelineAnalyzer::buildAutoZoomSegments(tl, 1.32f, false, 0.32f);
+    const auto dynamicSegs = StudioTimelineAnalyzer::buildAutoZoomSegments(tl, 1.95f, false, 0.88f);
+    ASSERT_EQ(gentleSegs.size(), 2u);
+    EXPECT_GT(dynamicSegs.size(), gentleSegs.size());
+    // 4000ms 段必须因弹窗因果校正将焦点从左侧 (110, 420) 迁移到对话框中心 (960, 540)
+    EXPECT_NEAR(gentleSegs[0].focusX, 960.0f, 5.0f);
+    EXPECT_NEAR(gentleSegs[0].focusY, 540.0f, 5.0f);
+
+    // 3. 视觉差分因果校正：点左栏刷新右面板 -> 焦点自动迁右；全屏大刷新 -> 柔和档抑制放大
+    StudioTimelineData diffTl;
+    diffTl.sourceWidth = 1920;
+    diffTl.sourceHeight = 1080;
+    diffTl.fps = 30;
+    diffTl.durationMs = 6000;
+    StudioZoomSegment leftClickSeg;
+    leftClickSeg.startMs = 1500;
+    leftClickSeg.endMs = 3400;
+    leftClickSeg.focusX = 120.0f;
+    leftClickSeg.focusY = 300.0f;
+    leftClickSeg.targetZoom = 1.35f;
+    StudioZoomSegment pageJumpSeg;
+    pageJumpSeg.startMs = 4200;
+    pageJumpSeg.endMs = 5600;
+    pageJumpSeg.focusX = 200.0f;
+    pageJumpSeg.focusY = 200.0f;
+    pageJumpSeg.targetZoom = 1.35f;
+    diffTl.zoomSegments = {leftClickSeg, pageJumpSeg};
+
+    // 构造 60 帧 (0..6s, 每帧 100ms) 代理帧序列
+    std::vector<cv::Mat> deck(61);
+    for (int i = 0; i < 61; ++i) {
+        cv::Mat frame(180, 320, CV_8UC3, cv::Scalar(32, 32, 36));
+        if (i >= 19 && i < 45) {
+            // t >= 1.9s：右侧局部面板刷新 (约 22% 面积)
+            cv::rectangle(frame, cv::Rect(195, 30, 105, 115), cv::Scalar(225, 228, 235), cv::FILLED);
+        } else if (i >= 45) {
+            // t >= 4.5s：整屏大跳转（全屏颜色剧变 > 75%）
+            frame.setTo(cv::Scalar(235, 238, 244));
+        }
+        deck[static_cast<size_t>(i)] = std::move(frame);
+    }
+    StudioTimelineAnalyzer::refineZoomSegmentsWithVisualDiff(diffTl, deck, 6.0, 0.32f);
+    ASSERT_EQ(diffTl.zoomSegments.size(), 1u); // 全屏大跳转段被柔和档抑制
+    EXPECT_GT(diffTl.zoomSegments[0].focusX, 1300.0f); // 焦点从左侧 120 校准至右侧刷新面板重心
+
+    // 4. 三脚架锁镜防晃 (lockCameraWhileZoomed=true) vs 自由跟鼠 (false)
+    StudioTimelineData holdTl;
+    holdTl.sourceWidth = 1920;
+    holdTl.sourceHeight = 1080;
+    holdTl.fps = 30;
+    holdTl.durationMs = 4000;
+    StudioZoomSegment holdSeg;
+    holdSeg.startMs = 300;
+    holdSeg.endMs = 3500;
+    holdSeg.focusX = 960.0f;
+    holdSeg.focusY = 540.0f;
+    holdSeg.targetZoom = 1.60f;
+    holdTl.zoomSegments.push_back(holdSeg);
+    // 聚焦期间鼠标在中心周围 280px 范围内移动（超出自由跟鼠 38% 死区，但在锁镜 84% 安全区内）
+    for (int t = 0; t <= 4000; t += 50) {
+        const float cx = (t >= 1200 && t <= 2800) ? (960.0f + 280.0f) : 960.0f;
+        holdTl.cursorSamples.push_back({t, cx, 540.0f, StudioCursorKind::Arrow, false, false});
+    }
+
+    StudioRenderConfig lockCfg;
+    applyStudioZoomPreset(lockCfg, StudioZoomPreset::Balanced);
+    lockCfg.lockCameraWhileZoomed = true;
+    const auto bakedLocked = StudioTimelineAnalyzer::bakeEvaluatedFrames(holdTl, lockCfg, 30, 120);
+
+    StudioRenderConfig freeCfg = lockCfg;
+    freeCfg.lockCameraWhileZoomed = false;
+    const auto bakedFree = StudioTimelineAnalyzer::bakeEvaluatedFrames(holdTl, freeCfg, 30, 120);
+
+    // 在 t = 2.4s (第 72 帧) 处，锁镜应纹丝不动停在 960，自由跟鼠应明显右漂
+    EXPECT_NEAR(bakedLocked[72].camera.centerX, 960.0f, 3.0f);
+    EXPECT_GT(bakedFree[72].camera.centerX, 1005.0f);
+
+    // 5. 零缩放纯聚光模式 (defaultZoomFactor = 1.00x + focusSpotlightDim = 0.40) + 真实合成暗角像素验证
+    StudioRenderConfig spotCfg;
+    spotCfg.autoZoomEnabled = true;
+    spotCfg.zoomMode = StudioZoomMode::Zoom2D;
+    spotCfg.defaultZoomFactor = 1.00f;
+    spotCfg.focusSpotlightDim = 0.40f;
+    spotCfg.autoFrameEnabled = false;
+    spotCfg.smoothCursorEnabled = false;
+    spotCfg.showClickRipple = false;
+    const auto bakedSpot = StudioTimelineAnalyzer::bakeEvaluatedFrames(holdTl, spotCfg, 30, 120);
+    EXPECT_NEAR(bakedSpot[60].camera.zoom, 1.00f, 0.001f);
+    EXPECT_GT(bakedSpot[60].spotlightAlpha, 0.30f);
+
+    cv::Mat brightSrc(360, 640, CV_8UC3, cv::Scalar(200, 200, 200));
+    StudioVideoCompositor compositor;
+    const cv::Mat composed = compositor.composeFrame(
+        brightSrc, bakedSpot[60], spotCfg, cv::Size(640, 360));
+    ASSERT_FALSE(composed.empty());
+    const cv::Vec3b centerPx = composed.at<cv::Vec3b>(180, 320);
+    const cv::Vec3b cornerPx = composed.at<cv::Vec3b>(8, 8);
+    EXPECT_GT(centerPx[0], 190); // 焦点中心保持原亮度
+    EXPECT_LT(cornerPx[0], 155); // 外围明显柔和压暗
+
+    // 6. rebuildAutoZoomSegmentsPreservingManual 严格保留手动运镜块且零重叠
+    StudioTimelineData rebuildTl = tl;
+    StudioZoomSegment userManual;
+    userManual.startMs = 3800;
+    userManual.endMs = 5200;
+    userManual.focusX = 500.0f;
+    userManual.focusY = 500.0f;
+    userManual.targetZoom = 2.10f;
+    userManual.manualInserted = true;
+    rebuildTl.zoomSegments = {userManual};
+
+    StudioRenderConfig dynCfg;
+    applyStudioZoomPreset(dynCfg, StudioZoomPreset::Dynamic);
+    StudioTimelineAnalyzer::rebuildAutoZoomSegmentsPreservingManual(rebuildTl, dynCfg);
+    bool foundManual = false;
+    for (const auto& seg : rebuildTl.zoomSegments) {
+        if (seg.manualInserted) {
+            foundManual = true;
+            EXPECT_FLOAT_EQ(seg.targetZoom, 2.10f);
+        }
+    }
+    EXPECT_TRUE(foundManual);
+    EXPECT_GE(rebuildTl.zoomSegments.size(), 2u);
+}

@@ -4484,3 +4484,159 @@ TEST(OfficeAndPdfPreviewTest, ExtractsXlsxDocxPptxAndRendersPdfZeroLock) {
 
     std::filesystem::remove_all(tempDir, ec);
 }
+
+TEST(CaptureDefaultEnabledContractTest, FreshInstallConfigAndInstallerCheckableAloneGuard) {
+    // 1. 验证空白配置下 PluginManager::reconcilePluginConfigs 显式启用 capture，
+    //    且当用户显式禁用 capture 时严格保留 false 不反向覆盖。
+    std::error_code ec;
+    const auto tempDir = std::filesystem::temp_directory_path(ec) /
+                         (L"tools3000_capture_default_test_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(tempDir, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(tempDir, ec));
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tempDir, "config.json"));
+    tools3000::core::PluginManager::instance().reconcilePluginConfigs();
+    EXPECT_TRUE(cfg.has("/plugins/capture/enabled"));
+    EXPECT_TRUE(cfg.get<bool>("/plugins/capture/enabled", false));
+
+    cfg.set("/plugins/capture/enabled", false);
+    tools3000::core::PluginManager::instance().reconcilePluginConfigs();
+    EXPECT_FALSE(cfg.get<bool>("/plugins/capture/enabled", true));
+
+    cfg.shutdown();
+    std::filesystem::remove_all(tempDir, ec);
+
+    // 2. 防回退门禁：校验仓库根 installer.iss 中 capture 父组件在挂载可选子组件时必须声明
+    //    Types: full compact 与 Flags: checkablealone，防止 Inno Setup 全新安装自动取消勾选截图模块。
+    std::filesystem::path probe = std::filesystem::current_path(ec);
+    std::filesystem::path issPath;
+    for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+        if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+            issPath = probe / L"installer.iss";
+            break;
+        }
+        probe = probe.parent_path();
+    }
+    if (issPath.empty()) {
+        wchar_t exeBuf[MAX_PATH]{};
+        const DWORD len = GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            probe = std::filesystem::path(exeBuf).parent_path();
+            for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+                if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+                    issPath = probe / L"installer.iss";
+                    break;
+                }
+                probe = probe.parent_path();
+            }
+        }
+    }
+    ASSERT_FALSE(issPath.empty()) << "Unable to locate installer.iss for component default regression guard";
+
+    std::ifstream ifs(issPath);
+    ASSERT_TRUE(ifs.is_open());
+    bool inComponents = false;
+    bool foundCapture = false;
+    bool captureHasFull = false;
+    bool captureHasCompact = false;
+    bool captureHasCheckableAlone = false;
+    bool foundOcrChild = false;
+    std::string line;
+    while (std::getline(ifs, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const auto firstNonWs = line.find_first_not_of(" \t");
+        if (firstNonWs == std::string::npos || line[firstNonWs] == ';') continue;
+        const std::string trimmed = line.substr(firstNonWs);
+        if (trimmed.front() == '[') {
+            inComponents = (trimmed == "[Components]");
+            continue;
+        }
+        if (!inComponents) continue;
+        if (trimmed.find("Name: \"capture\"") != std::string::npos) {
+            foundCapture = true;
+            captureHasFull = trimmed.find("full") != std::string::npos;
+            captureHasCompact = trimmed.find("compact") != std::string::npos;
+            captureHasCheckableAlone = trimmed.find("checkablealone") != std::string::npos;
+        } else if (trimmed.find("Name: \"capture\\ocr_models\"") != std::string::npos) {
+            foundOcrChild = true;
+        }
+    }
+    EXPECT_TRUE(foundCapture);
+    EXPECT_TRUE(captureHasFull);
+    EXPECT_TRUE(captureHasCompact);
+    EXPECT_TRUE(foundOcrChild);
+    EXPECT_TRUE(captureHasCheckableAlone)
+        << "Parent component 'capture' has optional child 'capture\\ocr_models' and MUST set Flags: checkablealone";
+}
+
+TEST(InstallerRebootGuardAndI18nTest, PfroSelfHealAndChineseRestartRadioContract) {
+    std::error_code ec;
+    auto locateRepoRoot = [&]() -> std::filesystem::path {
+        std::filesystem::path probe = std::filesystem::current_path(ec);
+        for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+            if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+                return probe;
+            }
+            probe = probe.parent_path();
+        }
+        wchar_t exeBuf[MAX_PATH]{};
+        const DWORD len = GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            probe = std::filesystem::path(exeBuf).parent_path();
+            for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+                if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+                    return probe;
+                }
+                probe = probe.parent_path();
+            }
+        }
+        return {};
+    };
+
+    const auto repoRoot = locateRepoRoot();
+    ASSERT_FALSE(repoRoot.empty()) << "Unable to locate repository root for installer regression guard";
+
+    // 1. 校验 installer.iss：必须在 NextButtonClick(wpReady)（早于 wpPreparing PFRO 扫描）调用自愈引擎，
+    //    采用 Win32 原生 WriteExactMultiStringValue（绝不回退到会截断末尾空串的 RegWriteMultiStringValue），
+    //    覆盖 PendingFileRenameOperations 与 PendingFileRenameOperations2，修复 FilesLocked 漏杀并拉长卸载等待窗口。
+    {
+        std::ifstream ifs(repoRoot / L"installer.iss", std::ios::binary);
+        ASSERT_TRUE(ifs.is_open());
+        const std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+
+        EXPECT_NE(content.find("function NextButtonClick(CurPageID: Integer): Boolean;"), std::string::npos);
+        EXPECT_NE(content.find("if CurPageID = wpReady then"), std::string::npos);
+        EXPECT_NE(content.find("ClearStaleAppPendingFileRenames(WizardDirValue);"), std::string::npos);
+        EXPECT_NE(content.find("'PendingFileRenameOperations'"), std::string::npos);
+        EXPECT_NE(content.find("'PendingFileRenameOperations2'"), std::string::npos);
+        EXPECT_NE(content.find("WriteExactMultiStringValue("), std::string::npos);
+        EXPECT_NE(content.find("ReadExactMultiStringValue("), std::string::npos);
+        EXPECT_EQ(content.find("RegWriteMultiStringValue("), std::string::npos)
+            << "RegWriteMultiStringValue truncates trailing empty REG_MULTI_SZ items in PFRO; must use WriteExactMultiStringValue";
+        EXPECT_NE(content.find("if NeedKillApp or FilesLocked then"), std::string::npos);
+        EXPECT_NE(content.find("if NeedKillService or FilesLocked then"), std::string::npos);
+        EXPECT_NE(content.find("WaitForProcessesAndFilesReleased(3500);"), std::string::npos);
+    }
+
+    // 2. 校验 ChineseSimplified.isl：重启单选按钮不得再错译为“我同意此协议 / 我不同意此协议”
+    {
+        std::ifstream ifs(repoRoot / L"resources" / L"installer" / L"ChineseSimplified.isl", std::ios::binary);
+        ASSERT_TRUE(ifs.is_open());
+        std::string yesLine;
+        std::string noLine;
+        std::string line;
+        while (std::getline(ifs, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.rfind("YesRadio=", 0) == 0) yesLine = line;
+            if (line.rfind("NoRadio=", 0) == 0) noLine = line;
+        }
+        ASSERT_FALSE(yesLine.empty());
+        ASSERT_FALSE(noLine.empty());
+        const auto asUtf8 = [](const char8_t* s) { return reinterpret_cast<const char*>(s); };
+        EXPECT_EQ(yesLine.find(asUtf8(u8"同意此协议")), std::string::npos) << "YesRadio must not contain license agreement wording";
+        EXPECT_EQ(noLine.find(asUtf8(u8"不同意此协议")), std::string::npos) << "NoRadio must not contain license agreement wording";
+        EXPECT_NE(yesLine.find(asUtf8(u8"重新启动计算机")), std::string::npos);
+        EXPECT_NE(noLine.find(asUtf8(u8"重新启动计算机")), std::string::npos);
+    }
+}

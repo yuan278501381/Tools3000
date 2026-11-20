@@ -138,6 +138,10 @@ private:
         WatermarkOpacity = 7,
         TimelineZoom     = 8,
         TimelinePan      = 9,
+        ZoomFactor       = 10,
+        ZoomPacing       = 11,
+        ZoomSensitivity  = 12,
+        FocusSpotlight   = 13,
     };
 
     struct WallpaperEntry {
@@ -190,6 +194,8 @@ private:
     bool mapStagePointToSourceNorm(float lx, float ly, float& outNormX, float& outNormY) const;
     bool mapSourceNormToStagePoint(float normX, float normY, float& outLx, float& outLy) const;
     void applySliderAtX(SliderDragKind kind, float lx);
+    void applyZoomPreset(StudioZoomPreset preset);
+    void rebuildAutoZoomSegmentsLive();
     void initExportModalDefaults();
     void applyFormatSmartDefaults(StudioExportFormat newFmt);
     void ensureNonCollidingExportStem();
@@ -348,7 +354,7 @@ private:
 
     // 无级滑块与 28 宫格背景缩略图状态
     SliderDragKind m_activeSlider = SliderDragKind::None;
-    std::array<D2D1_RECT_F, 11> m_sliderTrackRects{};
+    std::array<D2D1_RECT_F, 15> m_sliderTrackRects{};
     int m_wallpaperCategory = 0;
     int m_wallpaperPage = 0;
     std::vector<WallpaperEntry> m_allWallpapers;

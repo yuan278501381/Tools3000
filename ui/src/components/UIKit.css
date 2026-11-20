@@ -1494,6 +1494,69 @@
   flex-shrink: 0;
 }
 
+/* ── 通用无级滑块与分段预置胶囊 (Continuous Slider & Segmented Presets) ─────── */
+.uikit-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  border: 1px solid var(--card-border);
+}
+
+.uikit-segmented__btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.uikit-segmented__btn:hover:not(.uikit-segmented__btn--active) {
+  color: var(--text-primary);
+  background: var(--card-bg);
+}
+
+.uikit-segmented__btn--active {
+  background: var(--primary);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+}
+
+.uikit-slider-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 196px;
+}
+
+.uikit-slider-input {
+  flex: 1;
+  min-width: 120px;
+  height: 5px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.uikit-slider-value {
+  min-width: 48px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+
 
 
 

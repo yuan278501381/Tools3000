@@ -178,6 +178,13 @@ void PluginManager::reconcilePluginConfigs() {
     patch["search"]["enabled"] = searchEnabled;
     patch["plugins"]["search"]["enabled"] = searchEnabled;
 
+    // 7. capture: /plugins/capture/enabled 默认开启，全新冷启动显式落盘同构状态，同时尊重用户显式禁用
+    bool captureEnabled = true;
+    if (cfg.has("/plugins/capture/enabled")) {
+        captureEnabled = cfg.get<bool>("/plugins/capture/enabled", true);
+    }
+    patch["plugins"]["capture"]["enabled"] = captureEnabled;
+
     cfg.mergePatch(patch, "/plugins");
 }
 

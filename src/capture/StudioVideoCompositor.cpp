@@ -3740,6 +3740,53 @@ cv::Mat StudioVideoCompositor::composeFrame(
         }
     }
 
+    // 0.8 聚焦区间光学羽化聚光暗角 (Focus Spotlight Vignette)：保持焦点区域 100% 通透，柔和压暗外围上下文零空间割裂引导视线
+    if (eval.spotlightAlpha > 0.004f && eval.spotlightHalfW > 1.0f && eval.spotlightHalfH > 1.0f &&
+        !zoomedInner.empty() && zoomedInner.channels() == 3) {
+        const float safeCropW = (eval.camera.cropW > 0.5f) ? eval.camera.cropW : refSrcW;
+        const float safeCropH = (eval.camera.cropH > 0.5f) ? eval.camera.cropH : refSrcH;
+        const float cxNorm = (eval.spotlightCenterX - eval.camera.cropX) / (std::max)(1.0f, safeCropW);
+        const float cyNorm = (eval.spotlightCenterY - eval.camera.cropY) / (std::max)(1.0f, safeCropH);
+        const float hwNorm = eval.spotlightHalfW / (std::max)(1.0f, safeCropW);
+        const float hhNorm = eval.spotlightHalfH / (std::max)(1.0f, safeCropH);
+
+        constexpr int kMaskW = 128;
+        const int kMaskH = std::clamp(
+            static_cast<int>(std::lround(static_cast<double>(kMaskW) * innerH / (std::max)(1, innerW))), 48, 128);
+        cv::Mat maskSmall(kMaskH, kMaskW, CV_8UC1, cv::Scalar(0));
+
+        const int mx0 = static_cast<int>(std::lround((cxNorm - hwNorm) * kMaskW));
+        const int my0 = static_cast<int>(std::lround((cyNorm - hhNorm) * kMaskH));
+        const int mx1 = static_cast<int>(std::lround((cxNorm + hwNorm) * kMaskW));
+        const int my1 = static_cast<int>(std::lround((cyNorm + hhNorm) * kMaskH));
+        const int rx0 = std::clamp(mx0, 0, kMaskW - 1);
+        const int ry0 = std::clamp(my0, 0, kMaskH - 1);
+        const int rx1 = std::clamp(mx1, rx0 + 1, kMaskW);
+        const int ry1 = std::clamp(my1, ry0 + 1, kMaskH);
+        const float mRad = (std::min)(14.0f, static_cast<float>((std::min)(rx1 - rx0, ry1 - ry0)) * 0.28f);
+        fillRoundedRectMask(maskSmall, cv::Rect(rx0, ry0, rx1 - rx0, ry1 - ry0), mRad);
+        cv::GaussianBlur(maskSmall, maskSmall, cv::Size(25, 25), 0.0, 0.0, cv::BORDER_REPLICATE);
+
+        cv::Mat maskFull;
+        cv::resize(maskSmall, maskFull, cv::Size(innerW, innerH), 0.0, 0.0, cv::INTER_LINEAR);
+
+        const int dim256 = std::clamp(static_cast<int>(std::lround(eval.spotlightAlpha * 256.0f)), 0, 176);
+        if (dim256 > 0) {
+            for (int r = 0; r < innerH; ++r) {
+                cv::Vec3b* dstRow = zoomedInner.ptr<cv::Vec3b>(r);
+                const uchar* mRow = maskFull.ptr<uchar>(r);
+                for (int c = 0; c < innerW; ++c) {
+                    const int outside = 255 - static_cast<int>(mRow[c]);
+                    if (outside <= 0) continue;
+                    const int gain = 256 - ((dim256 * outside) >> 8);
+                    dstRow[c][0] = static_cast<uchar>((static_cast<int>(dstRow[c][0]) * gain) >> 8);
+                    dstRow[c][1] = static_cast<uchar>((static_cast<int>(dstRow[c][1]) * gain) >> 8);
+                    dstRow[c][2] = static_cast<uchar>((static_cast<int>(dstRow[c][2]) * gain) >> 8);
+                }
+            }
+        }
+    }
+
     // 1. 渲染时间轴动态重点标注与隐私遮罩/光学放大镜（锚定源坐标，跟随 2D/3D 运镜无缝缩放平移）
     if (annotations && !annotations->empty()) {
         renderTimelineAnnotationsOnInner(
