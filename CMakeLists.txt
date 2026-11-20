@@ -362,6 +362,9 @@ set_target_properties(Plugin_Gesture PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAK
 # ── 3. Plugin_Capture (动态库) ────────────────────────────────────────────────
 set(CAPTURE_OTHER_SOURCES
     src/capture/CaptureInput.cpp
+    src/capture/CaptureInputCommands.cpp
+    src/capture/CaptureInputKeyboard.cpp
+    src/capture/CaptureInputMouse.cpp
     src/capture/CaptureOverlay.cpp
     src/capture/CaptureRenderer.cpp
     src/capture/CaptureRendererHud.cpp
