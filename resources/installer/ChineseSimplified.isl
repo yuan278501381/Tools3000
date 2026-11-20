@@ -240,8 +240,8 @@ ClickFinish=单击“完成”退出安装程序。
 FinishedRestartLabel=要完成 [name] 的安装，安装程序必须重启您的计算机。您现在想要重启吗？
 FinishedRestartMessage=要完成 [name] 的安装，安装程序必须重启您的计算机。%n%n您现在想要重启吗？
 ShowReadmeCheck=是的，我想查看 README 文件
-YesRadio=我同意此协议(&A)
-NoRadio=我不同意此协议(&D)
+YesRadio=是，立即重新启动计算机(&Y)
+NoRadio=否，稍后我将自己重新启动计算机(&N)
 ; used for example as 'Run MyProg.exe'
 RunEntryExec=正在运行: %1
 ; used for example as 'View Readme.txt'

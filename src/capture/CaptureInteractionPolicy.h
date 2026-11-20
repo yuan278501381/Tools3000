@@ -375,6 +375,267 @@ struct MultiPointLinePolicy {
     }
 };
 
+/// 判定某类标注图元是否支持通过滚轮调节其视觉属性（粗细 / 字号 / 块大小 / 暗度 / 倍率）
+inline bool supportsWheelAttributeAdjustment(MarkupTool tool) noexcept {
+    switch (tool) {
+        case MarkupTool::Rectangle:
+        case MarkupTool::Ellipse:
+        case MarkupTool::Line:
+        case MarkupTool::Arrow:
+        case MarkupTool::Pen:
+        case MarkupTool::Text:
+        case MarkupTool::TextReplace:
+        case MarkupTool::Number:
+        case MarkupTool::Mosaic:
+        case MarkupTool::Blur:
+        case MarkupTool::Inpaint:
+        case MarkupTool::Spotlight:
+        case MarkupTool::Watermark:
+        case MarkupTool::Magnifier:
+            return true;
+        case MarkupTool::Highlight:
+        default:
+            return false;
+    }
+}
+
+/// 判定某类标注图元是否支持通过 Shift+滚轮 调节圆角半径
+inline bool supportsWheelCornerRadiusAdjustment(MarkupTool tool) noexcept {
+    return tool == MarkupTool::Rectangle || tool == MarkupTool::Spotlight;
+}
+
+/// 计算长图缩放视图下命中选中标注图元的文档像素容差：
+/// 保证屏幕上恒定约 11 DIP 舒适瞄准带，并夹紧至 [6, 36] 避免极低倍率误拦截大片画布
+inline int computeLongCanvasElementWheelHitPadding(float dpiScale, float longZoom) noexcept {
+    const float safeDpi = (dpiScale > 0.0f) ? dpiScale : 1.0f;
+    const float safeZoom = std::clamp(longZoom, 0.15f, 4.0f);
+    const int docPad = static_cast<int>(std::ceil((11.0f * safeDpi) / safeZoom));
+    return std::clamp(docPad, 6, 36);
+}
+
+/// 将屏幕客户区坐标无钳制映射为标注画布局部坐标，杜绝长图外侧留白区因边界 clamp 误命中靠边图元
+inline cv::Point screenToUnclampedMarkupPoint(const CaptureState& state, POINT screenPt) noexcept {
+    const auto doc = state.screenToDoc(static_cast<float>(screenPt.x), static_cast<float>(screenPt.y));
+    const int selLeft = (std::min)(state.dragStart.x, state.dragEnd.x);
+    const int selTop = (std::min)(state.dragStart.y, state.dragEnd.y);
+    return cv::Point(
+        static_cast<int>(std::lround(doc.x)) - selLeft,
+        static_cast<int>(std::lround(doc.y)) - selTop);
+}
+
+/// 判定屏幕坐标是否落在长图模式下“当前已选中”的标注图元之上（不含未选中图元，空心框不拦截内部留白）
+inline bool isPointOnActiveLongImageElement(const CaptureState& state, POINT screenPt) noexcept {
+    if (!state.isLongImageMode()) {
+        return false;
+    }
+    const MarkupElement* elem = state.activeElement;
+    if (!elem || !elem->isActive || !supportsWheelAttributeAdjustment(elem->tool)) {
+        return false;
+    }
+    const auto& stg = state.longCanvas.stageRect;
+    if (stg.right > stg.left && stg.bottom > stg.top) {
+        if (screenPt.x < stg.left || screenPt.x > stg.right ||
+            screenPt.y < stg.top || screenPt.y > stg.bottom) {
+            return false;
+        }
+    }
+
+    const cv::Point localPt = screenToUnclampedMarkupPoint(state, screenPt);
+    const int docPad = computeLongCanvasElementWheelHitPadding(state.dpiScale, state.longCanvas.zoom);
+    if (elem->hitTestEx(localPt, docPad) != HitArea::None) {
+        return true;
+    }
+    if (elem->tool == MarkupTool::Magnifier) {
+        const float safeDpi = (state.dpiScale > 0.0f) ? state.dpiScale : 1.0f;
+        const float safeZoom = std::clamp(state.longCanvas.zoom, 0.15f, 4.0f);
+        const float effEditDpi = std::clamp(safeDpi / safeZoom, 1.0f, 3.0f);
+        return isPointNearMagnifierEditZone(*elem, localPt, effEditDpi);
+    }
+    return false;
+}
+
+/// 长图编辑模式滚轮路由决策结果（单一事实源）
+enum class LongImageWheelRoute {
+    ToolbarOrPopupAttribute, // 悬停工具栏或展开滑块：调工具/弹窗属性
+    CanvasZoom,              // Ctrl+滚轮：以光标为锚点无级缩放长图画布
+    ActiveMagnifier,         // 悬停在已选中的放大镜上：调倍率 / Shift 调半径
+    ActiveElementAttribute,  // 悬停在已选中的普通标注上：调粗细/字号/强度/圆角
+    CanvasScrollHorizontal,  // Shift+滚轮（非圆角图元或空白处）：横向滚动长图
+    CanvasScrollVertical,    // 普通滚轮（空白处或未选中图元）：丝滑上下翻阅长图
+};
+
+inline LongImageWheelRoute resolveLongImageWheelRoute(
+    const CaptureState& state,
+    POINT screenPt,
+    bool hasHoveredToolbar,
+    bool ctrlDown,
+    bool shiftDown) noexcept {
+    if (state.sliderPopup.type != SliderPopupType::None || hasHoveredToolbar) {
+        return LongImageWheelRoute::ToolbarOrPopupAttribute;
+    }
+    if (ctrlDown) {
+        return LongImageWheelRoute::CanvasZoom;
+    }
+    if (isPointOnActiveLongImageElement(state, screenPt)) {
+        const MarkupTool activeTool = state.activeElement->tool;
+        if (activeTool == MarkupTool::Magnifier) {
+            return LongImageWheelRoute::ActiveMagnifier;
+        }
+        if (shiftDown && !supportsWheelCornerRadiusAdjustment(activeTool)) {
+            return LongImageWheelRoute::CanvasScrollHorizontal;
+        }
+        return LongImageWheelRoute::ActiveElementAttribute;
+    }
+    return shiftDown
+        ? LongImageWheelRoute::CanvasScrollHorizontal
+        : LongImageWheelRoute::CanvasScrollVertical;
+}
+
+/// 以被选中图元自身当前参数作为滚轮步进基值，防止点选历史细标注时被全局粗细带偏突跳
+inline int resolveActiveElementStrokeBaseWidth(
+    const MarkupElement& elem, int fallbackStrokeWidth, int maxW) noexcept {
+    if (elem.tool == MarkupTool::Mosaic && elem.mosaicBlockSize > 0) {
+        return std::clamp(static_cast<int>(std::lround(elem.mosaicBlockSize / 2.0f)), 1, maxW);
+    }
+    if (elem.tool == MarkupTool::Blur && elem.mosaicBlockSize > 0) {
+        return std::clamp(static_cast<int>(std::lround(elem.mosaicBlockSize / 3.0f)), 1, maxW);
+    }
+    if (elem.tool == MarkupTool::Inpaint && elem.inpaintRadius > 0) {
+        return std::clamp(elem.inpaintRadius, 1, maxW);
+    }
+    if (elem.thickness > 0.0f) {
+        return std::clamp(static_cast<int>(std::lround(elem.thickness)), 1, maxW);
+    }
+    return std::clamp(fallbackStrokeWidth, 1, maxW);
+}
+
+enum class WheelAdjustedKind {
+    None,
+    StrokeWidth,
+    StepSize,
+    MosaicSize,
+    BlurStrength,
+    InpaintRadius,
+    CornerRadius,
+    SpotlightDim,
+    TextFontSize,
+    TextReplaceFontSize,
+    MagnifierScale,
+    MagnifierRadius,
+    WatermarkSize,
+};
+
+struct WheelAdjustmentOutcome {
+    WheelAdjustedKind kind = WheelAdjustedKind::None;
+    int intValue = 0;
+    float floatValue = 0.0f;
+};
+
+/// 单一事实源：按“已选中标注元素自身的实际类型”执行单步滚轮属性调节（供 CaptureInput 与单测共用）
+inline WheelAdjustmentOutcome applyWheelAdjustmentToActiveElement(
+    CaptureState& state,
+    MarkupElement& elem,
+    int delta,
+    bool shiftDown,
+    float dpiScale) noexcept {
+    WheelAdjustmentOutcome out{};
+    if (delta == 0 || !supportsWheelAttributeAdjustment(elem.tool)) {
+        return out;
+    }
+    const float safeDpi = (dpiScale > 0.0f) ? dpiScale : 1.0f;
+
+    if (elem.tool == MarkupTool::Magnifier) {
+        if (shiftDown) {
+            const int stepPx = (std::max)(4, static_cast<int>(std::lround(6.0f * safeDpi)));
+            const int minR = static_cast<int>(std::lround(24.0f * safeDpi));
+            const int oldRx = elem.effectiveMagnifierRx();
+            const int oldRy = elem.effectiveMagnifierRy();
+            const int deltaR = (delta > 0) ? stepPx : -stepPx;
+            elem.magnifierRadius = std::clamp(oldRx + deltaR, minR, 420);
+            elem.magnifierRadiusY = std::clamp(oldRy + deltaR, minR, 420);
+            out.kind = WheelAdjustedKind::MagnifierRadius;
+            out.intValue = elem.magnifierRadius;
+            return out;
+        }
+        elem.magnifierScale = std::clamp(
+            elem.magnifierScale + ((delta > 0) ? 0.25f : -0.25f), 1.5f, 6.0f);
+        state.dynamicMagnifierScale = elem.magnifierScale;
+        out.kind = WheelAdjustedKind::MagnifierScale;
+        out.floatValue = elem.magnifierScale;
+        return out;
+    }
+
+    if (shiftDown && supportsWheelCornerRadiusAdjustment(elem.tool)) {
+        const float newRad = std::clamp(elem.cornerRadius + static_cast<float>(delta * 2), 0.0f, 40.0f);
+        elem.cornerRadius = newRad;
+        state.currentElementCornerRadius = newRad;
+        out.kind = WheelAdjustedKind::CornerRadius;
+        out.intValue = static_cast<int>(std::lround(newRad));
+        return out;
+    }
+
+    if (elem.tool == MarkupTool::Spotlight) {
+        const int curPct = static_cast<int>(std::round(elem.spotlightDimAlpha * 100.0f));
+        const int newPct = std::clamp(curPct + delta * 3, 15, 85);
+        elem.spotlightDimAlpha = static_cast<float>(newPct) / 100.0f;
+        state.currentSpotlightDimAlpha = elem.spotlightDimAlpha;
+        out.kind = WheelAdjustedKind::SpotlightDim;
+        out.intValue = newPct;
+        return out;
+    }
+
+    if (elem.tool == MarkupTool::Text) {
+        const float newPhysSize = std::clamp(
+            elem.fontSize + static_cast<float>(delta * 2), 10.0f, 144.0f * safeDpi);
+        elem.fontSize = newPhysSize;
+        elem.textRenderSize = cv::Size(0, 0);
+        out.kind = WheelAdjustedKind::TextFontSize;
+        out.floatValue = std::clamp(newPhysSize / safeDpi, 10.0f, 144.0f);
+        out.intValue = static_cast<int>(std::lround(out.floatValue));
+        return out;
+    }
+
+    if (elem.tool == MarkupTool::TextReplace) {
+        const float newPhysSize = std::clamp(
+            elem.fontSize + static_cast<float>(delta), 8.0f, 144.0f * safeDpi);
+        elem.fontSize = newPhysSize;
+        out.kind = WheelAdjustedKind::TextReplaceFontSize;
+        out.floatValue = newPhysSize;
+        out.intValue = static_cast<int>(std::lround(newPhysSize));
+        return out;
+    }
+
+    const int maxW = (elem.tool == MarkupTool::Mosaic || elem.tool == MarkupTool::Blur) ? 32 : 28;
+    const int baseW = resolveActiveElementStrokeBaseWidth(elem, state.currentStrokeWidth, maxW);
+    const int newW = std::clamp(baseW + delta, 1, maxW);
+    state.currentStrokeWidth = newW;
+    elem.thickness = static_cast<float>(newW);
+    if (elem.tool == MarkupTool::Mosaic) {
+        elem.mosaicBlockSize = (std::max)(4, newW * 2);
+        out.kind = WheelAdjustedKind::MosaicSize;
+        out.intValue = elem.mosaicBlockSize;
+    } else if (elem.tool == MarkupTool::Blur) {
+        elem.mosaicBlockSize = (std::max)(5, newW * 3);
+        out.kind = WheelAdjustedKind::BlurStrength;
+        out.intValue = elem.mosaicBlockSize;
+    } else if (elem.tool == MarkupTool::Inpaint) {
+        elem.inpaintRadius = std::clamp(newW, 2, 16);
+        out.kind = WheelAdjustedKind::InpaintRadius;
+        out.intValue = elem.inpaintRadius;
+    } else if (elem.tool == MarkupTool::Watermark) {
+        elem.fontSize = std::clamp(12.0f + static_cast<float>(newW) * 1.5f, 12.0f, 64.0f) * safeDpi;
+        out.kind = WheelAdjustedKind::WatermarkSize;
+        out.intValue = static_cast<int>(std::lround(elem.fontSize / safeDpi));
+    } else if (elem.tool == MarkupTool::Number) {
+        out.kind = WheelAdjustedKind::StepSize;
+        out.intValue = newW;
+    } else {
+        out.kind = WheelAdjustedKind::StrokeWidth;
+        out.intValue = newW;
+    }
+    return out;
+}
+
 } // namespace tools3000::capture
 
 #endif // TOOLS3000_CAPTURE_CAPTUREINTERACTIONPOLICY_H

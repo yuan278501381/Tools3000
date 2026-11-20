@@ -65,6 +65,10 @@ interface RecordingSettings {
   studioAutoZoom?: boolean;
   studioZoomMode?: number;
   studioZoomFactor?: number;
+  studioZoomPacing?: number;
+  studioZoomSensitivity?: number;
+  studioFocusSpotlightDim?: number;
+  studioLockCameraHold?: boolean;
   studioMotionBlur?: boolean;
   studioSmoothCursor?: boolean;
   studioCursorScale?: number;
@@ -144,7 +148,9 @@ export const CapturePage: FC = () => {
     countdownSeconds: 3,
     voiceEnhance: true, hideIndicatorInCapture: true,
     hideDesktopIcons: false, hideTaskbar: false, typingAutoZoom: false,
-    studioMode: true, studioAutoZoom: true, studioZoomMode: 1, studioZoomFactor: 1.50,
+    studioMode: true, studioAutoZoom: true, studioZoomMode: 1, studioZoomFactor: 1.32,
+    studioZoomPacing: 0.32, studioZoomSensitivity: 0.32, studioFocusSpotlightDim: 0.18,
+    studioLockCameraHold: true,
     studioMotionBlur: false,
     studioSmoothCursor: true, studioCursorScale: 1.35, studioClickStyle: 0,
     studioAutoFrame: true, studioTheme: 'aurora_purple', studioAutoCaptions: false,
@@ -239,6 +245,16 @@ export const CapturePage: FC = () => {
   const updateRecording = useCallback((key: keyof RecordingSettings, value: unknown) => {
     setRecording(prev => ({ ...prev, [key]: value }));
     bridgeRequest<OperationResult>('recording.updateSettings', { [key]: value })
+      .then(result => { if (!result.success) throw new Error(result.error || 'update failed'); })
+      .catch(async (error) => {
+        toast.error(t('capture.saveFailed'), { description: String(error) });
+        try { setRecording(await bridgeRequest<RecordingSettings>('recording.getSettings')); } catch { /* keep usable */ }
+      });
+  }, [t]);
+
+  const updateRecordingPatch = useCallback((patch: Partial<RecordingSettings>) => {
+    setRecording(prev => ({ ...prev, ...patch }));
+    bridgeRequest<OperationResult>('recording.updateSettings', patch)
       .then(result => { if (!result.success) throw new Error(result.error || 'update failed'); })
       .catch(async (error) => {
         toast.error(t('capture.saveFailed'), { description: String(error) });
@@ -1073,24 +1089,148 @@ export const CapturePage: FC = () => {
                       ]}
                     />
                   </SettingRow>
-                  <SettingRow label={t('recording.studioZoomFactor')} description={t('recording.studioZoomFactorDesc')}>
-                    <Select
-                      id="record-studio-zoom-factor"
-                      value={
-                        Math.abs((recording.studioZoomFactor ?? 1.5) - 1.5) < 0.12
-                          ? '1.5'
-                          : Math.abs((recording.studioZoomFactor ?? 1.5) - 2.2) < 0.15
-                            ? '2.2'
-                            : '1.85'
-                      }
-                      onChange={(v) => updateRecording('studioZoomFactor', parseFloat(v))}
-                      options={[
-                        { value: '1.5', label: t('recording.studioZoom150') },
-                        { value: '1.85', label: t('recording.studioZoom185') },
-                        { value: '2.2', label: t('recording.studioZoom220') },
-                      ]}
-                    />
+                  <SettingRow label={t('recording.studioZoomPreset')} description={t('recording.studioZoomPresetDesc')}>
+                    {(() => {
+                      const presets = [
+                        {
+                          id: 'gentle',
+                          label: t('recording.studioZoomPresetGentle'),
+                          patch: {
+                            studioZoomFactor: 1.32,
+                            studioZoomPacing: 0.32,
+                            studioZoomSensitivity: 0.32,
+                            studioFocusSpotlightDim: 0.18,
+                            studioLockCameraHold: true,
+                          },
+                        },
+                        {
+                          id: 'balanced',
+                          label: t('recording.studioZoomPresetBalanced'),
+                          patch: {
+                            studioZoomFactor: 1.60,
+                            studioZoomPacing: 0.55,
+                            studioZoomSensitivity: 0.60,
+                            studioFocusSpotlightDim: 0.10,
+                            studioLockCameraHold: true,
+                          },
+                        },
+                        {
+                          id: 'dynamic',
+                          label: t('recording.studioZoomPresetDynamic'),
+                          patch: {
+                            studioZoomFactor: 1.95,
+                            studioZoomPacing: 0.82,
+                            studioZoomSensitivity: 0.88,
+                            studioFocusSpotlightDim: 0.0,
+                            studioLockCameraHold: false,
+                          },
+                        },
+                      ];
+                      const curZoom = recording.studioZoomFactor ?? 1.32;
+                      const curPacing = recording.studioZoomPacing ?? 0.32;
+                      const curSens = recording.studioZoomSensitivity ?? 0.32;
+                      const curDim = recording.studioFocusSpotlightDim ?? 0.18;
+                      const curLock = recording.studioLockCameraHold ?? true;
+                      return (
+                        <div className="uikit-segmented" role="group" aria-label={t('recording.studioZoomPreset')}>
+                          {presets.map((p) => {
+                            const active =
+                              Math.abs(curZoom - p.patch.studioZoomFactor) <= 0.045 &&
+                              Math.abs(curPacing - p.patch.studioZoomPacing) <= 0.045 &&
+                              Math.abs(curSens - p.patch.studioZoomSensitivity) <= 0.045 &&
+                              Math.abs(curDim - p.patch.studioFocusSpotlightDim) <= 0.035 &&
+                              curLock === p.patch.studioLockCameraHold;
+                            return (
+                              <button
+                                key={p.id}
+                                type="button"
+                                className={`uikit-segmented__btn${active ? ' uikit-segmented__btn--active' : ''}`}
+                                aria-pressed={active}
+                                onClick={() => updateRecordingPatch(p.patch)}
+                              >
+                                {p.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </SettingRow>
+                  <SettingRow label={t('recording.studioZoomFactor')} description={t('recording.studioZoomFactorDesc')}>
+                    <div className="uikit-slider-control">
+                      <input
+                        id="record-studio-zoom-factor"
+                        type="range"
+                        className="uikit-slider-input"
+                        min={1.0}
+                        max={2.6}
+                        step={0.05}
+                        value={recording.studioZoomFactor ?? 1.32}
+                        onChange={(e) => setRecording(prev => ({ ...prev, studioZoomFactor: parseFloat(e.target.value) }))}
+                        onPointerUp={(e) => updateRecording('studioZoomFactor', parseFloat((e.target as HTMLInputElement).value))}
+                        onKeyUp={(e) => updateRecording('studioZoomFactor', parseFloat((e.target as HTMLInputElement).value))}
+                      />
+                      <span className="uikit-slider-value">{(recording.studioZoomFactor ?? 1.32).toFixed(2)}x</span>
+                    </div>
+                  </SettingRow>
+                  <SettingRow label={t('recording.studioZoomPacing')} description={t('recording.studioZoomPacingDesc')}>
+                    <div className="uikit-slider-control">
+                      <input
+                        id="record-studio-zoom-pacing"
+                        type="range"
+                        className="uikit-slider-input"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={Math.round((recording.studioZoomPacing ?? 0.32) * 100)}
+                        onChange={(e) => setRecording(prev => ({ ...prev, studioZoomPacing: parseInt(e.target.value) / 100 }))}
+                        onPointerUp={(e) => updateRecording('studioZoomPacing', parseInt((e.target as HTMLInputElement).value) / 100)}
+                        onKeyUp={(e) => updateRecording('studioZoomPacing', parseInt((e.target as HTMLInputElement).value) / 100)}
+                      />
+                      <span className="uikit-slider-value">{Math.round((recording.studioZoomPacing ?? 0.32) * 100)}%</span>
+                    </div>
+                  </SettingRow>
+                  <SettingRow label={t('recording.studioZoomSensitivity')} description={t('recording.studioZoomSensitivityDesc')}>
+                    <div className="uikit-slider-control">
+                      <input
+                        id="record-studio-zoom-sensitivity"
+                        type="range"
+                        className="uikit-slider-input"
+                        min={0}
+                        max={100}
+                        step={2}
+                        value={Math.round((recording.studioZoomSensitivity ?? 0.32) * 100)}
+                        onChange={(e) => setRecording(prev => ({ ...prev, studioZoomSensitivity: parseInt(e.target.value) / 100 }))}
+                        onPointerUp={(e) => updateRecording('studioZoomSensitivity', parseInt((e.target as HTMLInputElement).value) / 100)}
+                        onKeyUp={(e) => updateRecording('studioZoomSensitivity', parseInt((e.target as HTMLInputElement).value) / 100)}
+                      />
+                      <span className="uikit-slider-value">{Math.round((recording.studioZoomSensitivity ?? 0.32) * 100)}%</span>
+                    </div>
+                  </SettingRow>
+                  <SettingRow label={t('recording.studioFocusSpotlightDim')} description={t('recording.studioFocusSpotlightDimDesc')}>
+                    <div className="uikit-slider-control">
+                      <input
+                        id="record-studio-focus-dim"
+                        type="range"
+                        className="uikit-slider-input"
+                        min={0}
+                        max={65}
+                        step={1}
+                        value={Math.round((recording.studioFocusSpotlightDim ?? 0.18) * 100)}
+                        onChange={(e) => setRecording(prev => ({ ...prev, studioFocusSpotlightDim: parseInt(e.target.value) / 100 }))}
+                        onPointerUp={(e) => updateRecording('studioFocusSpotlightDim', parseInt((e.target as HTMLInputElement).value) / 100)}
+                        onKeyUp={(e) => updateRecording('studioFocusSpotlightDim', parseInt((e.target as HTMLInputElement).value) / 100)}
+                      />
+                      <span className="uikit-slider-value">{Math.round((recording.studioFocusSpotlightDim ?? 0.18) * 100)}%</span>
+                    </div>
+                  </SettingRow>
+                  <Toggle
+                    id="record-studio-lock-camera"
+                    label={t('recording.studioLockCameraHold')}
+                    description={t('recording.studioLockCameraHoldDesc')}
+                    checked={recording.studioLockCameraHold ?? true}
+                    onChange={(v) => updateRecording('studioLockCameraHold', v)}
+                  />
                   <Toggle
                     id="record-studio-motion-blur"
                     label={t('recording.studioMotionBlur')}

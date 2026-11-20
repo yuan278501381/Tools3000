@@ -14186,6 +14186,221 @@ TEST(ScrollCaptureTest, SplitPaneStaticSidebarStitchesScrollingRightContentAccur
     EXPECT_EQ(stitched.cols, W);
 }
 
+TEST(LongImageWheelActiveElementAdjustmentTest, HoverActiveElementAdjustsSizeWhileCanvasScrollsCleanly) {
+    using namespace tools3000::capture;
+
+    CaptureState state;
+    state.state = OverlayState::Selected;
+    state.dpiScale = 1.5f;
+    state.dragStart = {0, 0};
+    state.dragEnd = {900, 3200};
+    state.longCanvas.active = true;
+    state.longCanvas.docWidth = 900;
+    state.longCanvas.docHeight = 3200;
+    state.longCanvas.zoom = 0.5f; // 常见长图缩小展示视图
+    state.longCanvas.stageRect = D2D1::RectF(0.0f, 56.0f, 1200.0f, 860.0f);
+    state.longCanvas.scrollX = 0.0f;
+    state.longCanvas.scrollY = 200.0f;
+    state.clampLongCanvasScroll();
+    state.currentTool = MarkupTool::Arrow;
+    state.currentStrokeWidth = 10; // 故意与历史细箭头 2px 不同，验证平滑递增不突跳
+
+    auto docToScreenPt = [&](float docX, float docY) -> POINT {
+        const auto s = state.docToScreen(docX, docY);
+        return POINT{static_cast<LONG>(std::lround(s.x)), static_cast<LONG>(std::lround(s.y))};
+    };
+
+    // 1. 构造两条箭头：一条已选中(2px，靠右边缘测试无 clamp 误命中)，一条未选中(4px)
+    auto activeArrow = std::make_unique<MarkupElement>();
+    activeArrow->tool = MarkupTool::Arrow;
+    activeArrow->startPt = {500, 600};
+    activeArrow->endPt = {895, 600};
+    activeArrow->thickness = 2.0f;
+    activeArrow->isActive = true;
+    MarkupElement* activeArrowPtr = state.markup.addElement(std::move(activeArrow));
+
+    auto inactiveArrow = std::make_unique<MarkupElement>();
+    inactiveArrow->tool = MarkupTool::Arrow;
+    inactiveArrow->startPt = {120, 900};
+    inactiveArrow->endPt = {420, 900};
+    inactiveArrow->thickness = 4.0f;
+    inactiveArrow->isActive = false;
+    MarkupElement* inactiveArrowPtr = state.markup.addElement(std::move(inactiveArrow));
+
+    state.activeElement = activeArrowPtr;
+
+    auto dispatchLongWheel = [&](POINT screenPt, int wheelDelta, bool ctrlDown = false, bool shiftDown = false,
+                                 bool hasHoveredToolbar = false) -> LongImageWheelRoute {
+        const auto route = resolveLongImageWheelRoute(state, screenPt, hasHoveredToolbar, ctrlDown, shiftDown);
+        const float wheelDpi = state.dpiScale;
+        if (route == LongImageWheelRoute::CanvasZoom) {
+            const float wx = static_cast<float>(screenPt.x);
+            const float wy = static_cast<float>(screenPt.y);
+            const auto anchorDoc = state.screenToDoc(wx, wy);
+            const float factor = (wheelDelta > 0) ? 1.15f : (1.0f / 1.15f);
+            const float newZoom = std::clamp(state.longCanvas.zoom * factor, 0.15f, 4.0f);
+            state.longCanvas.zoom = newZoom;
+            const auto& stg = state.longCanvas.stageRect;
+            const float pad = 20.0f * wheelDpi;
+            state.longCanvas.scrollX = stg.left + pad + anchorDoc.x * newZoom - wx;
+            state.longCanvas.scrollY = stg.top + pad + anchorDoc.y * newZoom - wy;
+            state.clampLongCanvasScroll();
+        } else if (route == LongImageWheelRoute::CanvasScrollHorizontal) {
+            state.longCanvas.scrollX -= (static_cast<float>(wheelDelta) / 120.0f) * 148.0f * wheelDpi;
+            state.clampLongCanvasScroll();
+        } else if (route == LongImageWheelRoute::CanvasScrollVertical) {
+            state.longCanvas.scrollY -= (static_cast<float>(wheelDelta) / 120.0f) * 148.0f * wheelDpi;
+            state.clampLongCanvasScroll();
+        } else if ((route == LongImageWheelRoute::ActiveMagnifier ||
+                    route == LongImageWheelRoute::ActiveElementAttribute) &&
+                   state.activeElement != nullptr && wheelDelta != 0) {
+            applyWheelAdjustmentToActiveElement(
+                state, *state.activeElement, (wheelDelta > 0) ? 1 : -1, shiftDown, wheelDpi);
+        }
+        return route;
+    };
+
+    // A. 鼠标落在已选中箭头杆身附近（屏幕偏移 8 DIP，位于低缩放动态舒适命中带内）-> 调粗细 2 -> 3，长图不滚页
+    const POINT onArrowMid = docToScreenPt(700.0f, 600.0f);
+    const POINT nearArrowScreen = {onArrowMid.x, onArrowMid.y + 8};
+    const float scrollBefore = state.longCanvas.scrollY;
+    EXPECT_EQ(dispatchLongWheel(nearArrowScreen, WHEEL_DELTA),
+              LongImageWheelRoute::ActiveElementAttribute);
+    EXPECT_FLOAT_EQ(activeArrowPtr->thickness, 3.0f);
+    EXPECT_EQ(state.currentStrokeWidth, 3);
+    EXPECT_FLOAT_EQ(state.longCanvas.scrollY, scrollBefore);
+
+    // B. 鼠标移到靠右边缘箭头外侧的工作台黑色留白处（doc.x = 1040 > docWidth 900）-> 绝不因 clamp 误命中箭头，正常翻页
+    const POINT outsideRightMargin = docToScreenPt(1040.0f, 600.0f);
+    EXPECT_EQ(dispatchLongWheel(outsideRightMargin, -WHEEL_DELTA),
+              LongImageWheelRoute::CanvasScrollVertical);
+    EXPECT_GT(state.longCanvas.scrollY, scrollBefore);
+    EXPECT_FLOAT_EQ(activeArrowPtr->thickness, 3.0f);
+
+    // C. 鼠标落在“未选中”的另一条箭头上 -> 不截流，正常翻页且不改动任何箭头
+    const POINT onInactiveArrow = docToScreenPt(260.0f, 900.0f);
+    const float scrollBeforeInactive = state.longCanvas.scrollY;
+    EXPECT_EQ(dispatchLongWheel(onInactiveArrow, -WHEEL_DELTA),
+              LongImageWheelRoute::CanvasScrollVertical);
+    EXPECT_GT(state.longCanvas.scrollY, scrollBeforeInactive);
+    EXPECT_FLOAT_EQ(inactiveArrowPtr->thickness, 4.0f);
+    EXPECT_FLOAT_EQ(activeArrowPtr->thickness, 3.0f);
+
+    // D. 鼠标落在已选中箭头上按 Ctrl+滚轮 -> 优先无级缩放长图画布，不误改箭头粗细
+    const POINT onArrowNow = docToScreenPt(700.0f, 600.0f);
+    const float zoomBefore = state.longCanvas.zoom;
+    EXPECT_EQ(dispatchLongWheel(onArrowNow, WHEEL_DELTA, true, false),
+              LongImageWheelRoute::CanvasZoom);
+    EXPECT_GT(state.longCanvas.zoom, zoomBefore);
+    EXPECT_FLOAT_EQ(activeArrowPtr->thickness, 3.0f);
+
+    // E. 鼠标落在已选中箭头上按 Shift+滚轮 -> 箭头无圆角概念，路由为横向滚图不篡改圆角
+    const POINT onArrowAfterZoom = docToScreenPt(700.0f, 600.0f);
+    EXPECT_EQ(resolveLongImageWheelRoute(state, onArrowAfterZoom, false, false, true),
+              LongImageWheelRoute::CanvasScrollHorizontal);
+
+    // F. 鼠标在顶栏（stageRect 之外）绝不误命中画布内选中标注；悬停工具栏路由至 ToolbarOrPopupAttribute
+    const POINT onTopHeader = {onArrowAfterZoom.x, 20};
+    EXPECT_FALSE(isPointOnActiveLongImageElement(state, onTopHeader));
+    EXPECT_EQ(resolveLongImageWheelRoute(state, onTopHeader, true, false, false),
+              LongImageWheelRoute::ToolbarOrPopupAttribute);
+
+    // G. 切换到已选中“空心矩形”：边框上普通滚轮调粗细、Shift+滚轮调圆角；内部大片留白恢复滚页
+    activeArrowPtr->isActive = false;
+    auto rectElem = std::make_unique<MarkupElement>();
+    rectElem->tool = MarkupTool::Rectangle;
+    rectElem->startPt = {100, 1200};
+    rectElem->endPt = {760, 1700};
+    rectElem->fill = false;
+    rectElem->thickness = 3.0f;
+    rectElem->cornerRadius = 6.0f;
+    rectElem->isActive = true;
+    MarkupElement* rectPtr = state.markup.addElement(std::move(rectElem));
+    state.activeElement = rectPtr;
+    state.longCanvas.zoom = 0.5f;
+    state.longCanvas.scrollY = 500.0f;
+    state.clampLongCanvasScroll();
+
+    const POINT onRectEdge = docToScreenPt(400.0f, 1200.0f);
+    const POINT insideHollowRect = docToScreenPt(430.0f, 1450.0f);
+    EXPECT_EQ(resolveLongImageWheelRoute(state, onRectEdge, false, false, false),
+              LongImageWheelRoute::ActiveElementAttribute);
+    EXPECT_EQ(resolveLongImageWheelRoute(state, onRectEdge, false, false, true),
+              LongImageWheelRoute::ActiveElementAttribute);
+    EXPECT_EQ(resolveLongImageWheelRoute(state, insideHollowRect, false, false, false),
+              LongImageWheelRoute::CanvasScrollVertical);
+
+    EXPECT_EQ(dispatchLongWheel(onRectEdge, WHEEL_DELTA), LongImageWheelRoute::ActiveElementAttribute);
+    EXPECT_FLOAT_EQ(rectPtr->thickness, 4.0f);
+    EXPECT_EQ(dispatchLongWheel(onRectEdge, WHEEL_DELTA, false, true), LongImageWheelRoute::ActiveElementAttribute);
+    EXPECT_FLOAT_EQ(rectPtr->cornerRadius, 8.0f);
+
+    // H. 工具栏仍选着 Arrow，但用户点选了已有的 Text 标注 -> 按被选中元素实际类型 Text 调字号（不误当箭头调线宽）
+    rectPtr->isActive = false;
+    auto textElem = std::make_unique<MarkupElement>();
+    textElem->tool = MarkupTool::Text;
+    textElem->startPt = {180, 1400};
+    textElem->text = "Hello";
+    textElem->fontSize = 24.0f;
+    textElem->textRenderSize = cv::Size(120, 36);
+    textElem->isActive = true;
+    MarkupElement* textPtr = state.markup.addElement(std::move(textElem));
+    state.activeElement = textPtr;
+    state.currentTool = MarkupTool::Arrow;
+
+    const POINT onTextBox = docToScreenPt(230.0f, 1418.0f);
+    EXPECT_EQ(dispatchLongWheel(onTextBox, WHEEL_DELTA), LongImageWheelRoute::ActiveElementAttribute);
+    EXPECT_FLOAT_EQ(textPtr->fontSize, 26.0f);
+
+    // I. 已选中序号标记（Number）与已选中放大镜（Magnifier）验证
+    textPtr->isActive = false;
+    auto numElem = std::make_unique<MarkupElement>();
+    numElem->tool = MarkupTool::Number;
+    numElem->startPt = {300, 1500};
+    numElem->endPt = {420, 1480};
+    numElem->hasLeaderArrow = true;
+    numElem->thickness = 4.0f;
+    numElem->isActive = true;
+    MarkupElement* numPtr = state.markup.addElement(std::move(numElem));
+    state.activeElement = numPtr;
+    EXPECT_EQ(dispatchLongWheel(docToScreenPt(300.0f, 1500.0f), WHEEL_DELTA),
+              LongImageWheelRoute::ActiveElementAttribute);
+    EXPECT_FLOAT_EQ(numPtr->thickness, 5.0f);
+
+    numPtr->isActive = false;
+    auto magElem = std::make_unique<MarkupElement>();
+    magElem->tool = MarkupTool::Magnifier;
+    magElem->startPt = {450, 1500};
+    magElem->endPt = {450, 1500};
+    magElem->magnifierRadius = 70;
+    magElem->magnifierRadiusY = 70;
+    magElem->magnifierScale = 2.0f;
+    magElem->isActive = true;
+    MarkupElement* magPtr = state.markup.addElement(std::move(magElem));
+    state.activeElement = magPtr;
+
+    const POINT onMag = docToScreenPt(450.0f, 1500.0f);
+    const POINT awayFromMag = docToScreenPt(120.0f, 1500.0f);
+    EXPECT_EQ(dispatchLongWheel(onMag, WHEEL_DELTA), LongImageWheelRoute::ActiveMagnifier);
+    EXPECT_NEAR(magPtr->magnifierScale, 2.25f, 0.001f);
+    EXPECT_EQ(dispatchLongWheel(onMag, WHEEL_DELTA, false, true), LongImageWheelRoute::ActiveMagnifier);
+    EXPECT_GT(magPtr->magnifierRadius, 70);
+    EXPECT_EQ(resolveLongImageWheelRoute(state, awayFromMag, false, false, false),
+              LongImageWheelRoute::CanvasScrollVertical);
+
+    // J. 选中不支持滚轮粗细/字号的 Highlight 元素 -> 不截流滚页
+    magPtr->isActive = false;
+    auto hlElem = std::make_unique<MarkupElement>();
+    hlElem->tool = MarkupTool::Highlight;
+    hlElem->startPt = {200, 1500};
+    hlElem->endPt = {400, 1560};
+    hlElem->isActive = true;
+    MarkupElement* hlPtr = state.markup.addElement(std::move(hlElem));
+    state.activeElement = hlPtr;
+    EXPECT_EQ(resolveLongImageWheelRoute(state, docToScreenPt(300.0f, 1530.0f), false, false, false),
+              LongImageWheelRoute::CanvasScrollVertical);
+}
+
 #include "test_studio_recorder.inc"
 
 

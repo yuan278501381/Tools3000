@@ -1150,7 +1150,8 @@ std::string ScreenRecorder::stopRecording() {
         auto capturedTimeline = m_studioRecorder.takeTimelineData(
             durMs,
             m_options.studioConfig.defaultZoomFactor,
-            m_options.studioConfig.typingAutoZoom);
+            m_options.studioConfig.typingAutoZoom,
+            m_options.studioConfig.autoZoomSensitivity);
         if (m_audioPeakSubCounter > 0) {
             m_liveAudioWaveformPeaks.push_back(m_audioPeakPendingMax);
             m_audioPeakSubCounter = 0;

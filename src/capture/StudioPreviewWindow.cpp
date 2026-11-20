@@ -67,15 +67,16 @@ enum HitId : int {
     Hit_ZoomMode_2D = 31,
     Hit_ZoomMode_3D = 32,
     Hit_ToggleMotionBlur = 33,
-    Hit_ZoomPreset_150 = 34,
-    Hit_ZoomPreset_185 = 35,
-    Hit_ZoomPreset_220 = 36,
+    Hit_ZoomPreset_Gentle = 34,
+    Hit_ZoomPreset_Balanced = 35,
+    Hit_ZoomPreset_Dynamic = 36,
     Hit_ToggleSmoothCursor = 37,
     Hit_CursorScale_100 = 38,
     Hit_CursorScale_135 = 39,
     Hit_CursorScale_170 = 40,
     Hit_ToggleCursorHalo = 41,
     Hit_ClickStyleBase = 42, // 42..45 对应 StudioClickEffectStyle 0..3 (微晶单波 / 柔雾触点 / 错峰涟漪 / 仅按压)
+    Hit_ToggleLockCamera = 46,
 
     // 画布比例与五维精调控制
     Hit_ToggleAutoFrame = 50,
@@ -86,6 +87,10 @@ enum HitId : int {
     Hit_SliderRadius = 59,
     Hit_SliderShadow = 60,
     Hit_SliderBgBlur = 61,
+    Hit_SliderZoomFactor = 62,
+    Hit_SliderZoomPacing = 63,
+    Hit_SliderZoomSensitivity = 64,
+    Hit_SliderFocusSpotlight = 65,
 
     // 背景分类、翻页、选图与 28 宫格正方形缩略图
     Hit_WallCatBase = 70,      // 70..74 (默认 / 沉稳 / 轻盈 / 风景 / 自定义)
@@ -360,6 +365,10 @@ void persistStudioConfigToSettings(const StudioRenderConfig& cfg) {
     cm.set<int>("/recording/studioZoomMode",
                 !cfg.autoZoomEnabled ? 0 : (cfg.zoomMode == StudioZoomMode::Motion3D ? 2 : 1));
     cm.set<double>("/recording/studioZoomFactor", static_cast<double>(cfg.defaultZoomFactor));
+    cm.set<double>("/recording/studioZoomPacing", static_cast<double>(cfg.zoomPacing));
+    cm.set<double>("/recording/studioZoomSensitivity", static_cast<double>(cfg.autoZoomSensitivity));
+    cm.set<double>("/recording/studioFocusSpotlightDim", static_cast<double>(cfg.focusSpotlightDim));
+    cm.set<bool>("/recording/studioLockCameraHold", cfg.lockCameraWhileZoomed);
     cm.set<bool>("/recording/studioSmoothCursor", cfg.smoothCursorEnabled);
     cm.set<double>("/recording/studioCursorScale", static_cast<double>(cfg.cursorScale));
     cm.set<bool>("/recording/studioAutoFrame", cfg.autoFrameEnabled);
@@ -1648,10 +1657,6 @@ bool StudioPreviewWindow::showSession(
     } else if (m_config.zoomMode == StudioZoomMode::None) {
         m_config.zoomMode = StudioZoomMode::Zoom2D;
     }
-    if (m_timeline.zoomSegments.empty()) {
-        m_timeline.zoomSegments = StudioTimelineAnalyzer::buildAutoZoomSegments(
-            m_timeline, m_config.defaultZoomFactor, m_config.typingAutoZoom);
-    }
 
     m_bitrateMbps = std::clamp(bitrateMbps, 2, 80);
     m_durationSec = (durSec > 0.05) ? durSec : (std::max)(0.1, m_timeline.durationMs / 1000.0);
@@ -1660,6 +1665,13 @@ bool StudioPreviewWindow::showSession(
     m_filmstripDirty = true;
     m_origWidth = origW;
     m_origHeight = origH;
+
+    if (m_timeline.zoomSegments.empty()) {
+        m_timeline.zoomSegments = StudioTimelineAnalyzer::buildAutoZoomSegments(
+            m_timeline, m_config.defaultZoomFactor, m_config.typingAutoZoom, m_config.autoZoomSensitivity);
+    }
+    StudioTimelineAnalyzer::refineZoomSegmentsWithVisualDiff(
+        m_timeline, m_previewDeckBgr, m_durationSec, m_config.autoZoomSensitivity);
 
     const int64_t rawTotalMs = (std::max<int64_t>)(100, static_cast<int64_t>(std::llround(m_durationSec * 1000.0)));
     if (m_timeline.audioWaveformPeaks.empty()) {
@@ -1865,6 +1877,11 @@ void StudioPreviewWindow::updateCurrentComposedBitmap() {
             eval.camera.tiltPitchDeg = lerpF(eval.camera.tiltPitchDeg, e1.camera.tiltPitchDeg);
             eval.smoothCursorX = lerpF(eval.smoothCursorX, e1.smoothCursorX);
             eval.smoothCursorY = lerpF(eval.smoothCursorY, e1.smoothCursorY);
+            eval.spotlightAlpha = lerpF(eval.spotlightAlpha, e1.spotlightAlpha);
+            eval.spotlightCenterX = lerpF(eval.spotlightCenterX, e1.spotlightCenterX);
+            eval.spotlightCenterY = lerpF(eval.spotlightCenterY, e1.spotlightCenterY);
+            eval.spotlightHalfW = lerpF(eval.spotlightHalfW, e1.spotlightHalfW);
+            eval.spotlightHalfH = lerpF(eval.spotlightHalfH, e1.spotlightHalfH);
         }
     }
 
@@ -2309,7 +2326,8 @@ void StudioPreviewWindow::insertAnnotationCardPreset(int cardIndex, const float*
         const float cyNorm = dropNormY ? std::clamp(*dropNormY, 0.08f, 0.92f) : 0.5f;
         z.focusX = static_cast<float>(m_timeline.sourceWidth) * cxNorm;
         z.focusY = static_cast<float>(m_timeline.sourceHeight) * cyNorm;
-        z.targetZoom = (std::max)(1.65f, m_config.defaultZoomFactor);
+        z.targetZoom = (m_config.defaultZoomFactor >= 1.05f || m_config.focusSpotlightDim > 0.01f)
+            ? m_config.defaultZoomFactor : 1.32f;
         z.enabled = true;
         z.manualInserted = true;
         m_config.autoZoomEnabled = true;
@@ -3419,92 +3437,129 @@ void StudioPreviewWindow::renderLeftRailAndDrawer(
 
     if (m_activeTab == LeftRailTab::CameraCursor) {
         drawTxt(isZh ? L"鼠标自动运镜" : L"Auto Zoom", m_sectionFmt.Get(),
-                D2D1::RectF(padL, curY, padR, curY + 20.0f), colPrimary);
-        curY += 23.0f;
+                D2D1::RectF(padL, curY, padR, curY + 19.0f), colPrimary);
+        curY += 22.0f;
         {
             const int ids[3] = { Hit_ZoomMode_None, Hit_ZoomMode_2D, Hit_ZoomMode_3D };
             static const wchar_t* lblZh[3] = { L"关闭", L"2D 运镜", L"3D 运镜" };
             static const wchar_t* lblEn[3] = { L"Off", L"2D Zoom", L"3D Motion" };
             const int actIdx = (!m_config.autoZoomEnabled || m_config.zoomMode == StudioZoomMode::None)
                 ? 0 : (m_config.zoomMode == StudioZoomMode::Motion3D ? 2 : 1);
-            drawSegmentedGroup(curY, 27.0f, 3, ids, isZh ? lblZh : lblEn, actIdx);
-        }
-        curY += 35.0f;
-
-        drawTxt(isZh ? L"默认放大倍率" : L"Zoom Factor", m_sectionFmt.Get(),
-                D2D1::RectF(padL, curY, padR, curY + 20.0f), colPrimary);
-        curY += 23.0f;
-        {
-            const int ids[3] = { Hit_ZoomPreset_150, Hit_ZoomPreset_185, Hit_ZoomPreset_220 };
-            static const wchar_t* lblZh[3] = { L"温和 1.5x", L"标准 1.85x", L"特写 2.2x" };
-            static const wchar_t* lblEn[3] = { L"1.5x", L"1.85x", L"2.2x" };
-            const int actIdx = (std::abs(m_config.defaultZoomFactor - 1.50f) < 0.12f)
-                ? 0 : ((std::abs(m_config.defaultZoomFactor - 2.20f) < 0.15f) ? 2 : 1);
             drawSegmentedGroup(curY, 26.0f, 3, ids, isZh ? lblZh : lblEn, actIdx);
         }
-        curY += 34.0f;
+        curY += 32.0f;
 
-        drawTxt(isZh ? L"推拉运动模糊" : L"Motion Blur", m_bodyFmt.Get(), D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
+        drawTxt(isZh ? L"运镜档位" : L"Preset", m_sectionFmt.Get(),
+                D2D1::RectF(padL, curY, padR, curY + 19.0f), colPrimary);
+        curY += 21.0f;
+        {
+            const int ids[3] = { Hit_ZoomPreset_Gentle, Hit_ZoomPreset_Balanced, Hit_ZoomPreset_Dynamic };
+            static const wchar_t* lblZh[3] = { L"柔和", L"标准", L"动感" };
+            static const wchar_t* lblEn[3] = { L"Gentle", L"Balanced", L"Dynamic" };
+            const int actIdx = detectStudioZoomPreset(m_config);
+            drawSegmentedGroup(curY, 25.0f, 3, ids, isZh ? lblZh : lblEn, actIdx);
+        }
+        curY += 31.0f;
+
+        const bool editingSelectedZoomSeg =
+            (m_selectedZoomIdx >= 0 && m_selectedZoomIdx < static_cast<int>(m_timeline.zoomSegments.size()));
+        const float shownZoom = editingSelectedZoomSeg
+            ? (m_timeline.zoomSegments[static_cast<size_t>(m_selectedZoomIdx)].manualInserted
+                   ? m_timeline.zoomSegments[static_cast<size_t>(m_selectedZoomIdx)].targetZoom
+                   : m_config.defaultZoomFactor)
+            : m_config.defaultZoomFactor;
+        wchar_t zvBuf[32]{};
+        std::swprintf(zvBuf, std::size(zvBuf), L"%.2fx", std::clamp(shownZoom, 1.00f, 2.60f));
+        drawSliderRow(SliderDragKind::ZoomFactor, Hit_SliderZoomFactor, curY,
+                      editingSelectedZoomSeg ? (isZh ? L"此段倍率" : L"Seg Zoom")
+                                             : (isZh ? L"放大倍率" : L"Zoom"),
+                      (std::clamp(shownZoom, 1.00f, 2.60f) - 1.00f) / 1.60f, zvBuf);
+        curY += 22.5f;
+
+        std::swprintf(zvBuf, std::size(zvBuf), L"%d%%", static_cast<int>(std::round(m_config.zoomPacing * 100.0f)));
+        drawSliderRow(SliderDragKind::ZoomPacing, Hit_SliderZoomPacing, curY,
+                      isZh ? L"运镜节奏" : L"Pacing", m_config.zoomPacing, zvBuf);
+        curY += 22.5f;
+
+        std::swprintf(zvBuf, std::size(zvBuf), L"%d%%", static_cast<int>(std::round(m_config.autoZoomSensitivity * 100.0f)));
+        drawSliderRow(SliderDragKind::ZoomSensitivity, Hit_SliderZoomSensitivity, curY,
+                      isZh ? L"触发频率" : L"Density", m_config.autoZoomSensitivity, zvBuf);
+        curY += 22.5f;
+
+        std::swprintf(zvBuf, std::size(zvBuf), L"%d%%", static_cast<int>(std::round(m_config.focusSpotlightDim * 100.0f)));
+        drawSliderRow(SliderDragKind::FocusSpotlight, Hit_SliderFocusSpotlight, curY,
+                      isZh ? L"聚焦暗角" : L"Dimming", m_config.focusSpotlightDim / 0.65f, zvBuf);
+        curY += 25.0f;
+
+        drawTxt(isZh ? L"锁定视角 (防晃)" : L"Lock View (Steady)", m_bodyFmt.Get(),
+                D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
+        drawTogglePill(Hit_ToggleLockCamera, padR, curY, m_config.lockCameraWhileZoomed);
+        curY += 25.0f;
+
+        drawTxt(isZh ? L"推拉运动模糊" : L"Motion Blur", m_bodyFmt.Get(),
+                D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
         drawTogglePill(Hit_ToggleMotionBlur, padR, curY, m_config.motionBlurEnabled);
-        curY += 30.0f;
+        curY += 26.0f;
 
         setBrush(colBorder);
         m_renderTarget->DrawLine({padL, curY}, {padR, curY}, brush, 1.0f);
-        curY += 12.0f;
+        curY += 10.0f;
 
         drawTxt(isZh ? L"平滑矢量光标" : L"Smooth Vector Cursor", m_sectionFmt.Get(),
                 D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
         drawTogglePill(Hit_ToggleSmoothCursor, padR, curY, m_config.smoothCursorEnabled);
-        curY += 25.0f;
+        curY += 23.0f;
         {
             const int ids[3] = { Hit_CursorScale_100, Hit_CursorScale_135, Hit_CursorScale_170 };
             static const wchar_t* lbls[3] = { L"1.0x", L"1.35x", L"1.7x" };
             const int actIdx = !m_config.smoothCursorEnabled ? -1
                 : (std::abs(m_config.cursorScale - 1.00f) < 0.15f ? 0
                    : (std::abs(m_config.cursorScale - 1.70f) < 0.15f ? 2 : 1));
-            drawSegmentedGroup(curY, 26.0f, 3, ids, lbls, actIdx);
+            drawSegmentedGroup(curY, 25.0f, 3, ids, lbls, actIdx);
         }
-        curY += 34.0f;
+        curY += 31.0f;
 
         drawTxt(isZh ? L"光标聚光环跟随" : L"Cursor Highlight Halo", m_bodyFmt.Get(),
                 D2D1::RectF(padL, curY, padR - 44.0f, curY + 20.0f), colPrimary);
         drawTogglePill(Hit_ToggleCursorHalo, padR, curY, m_config.cursorHighlightHalo);
-        curY += 28.0f;
+        curY += 26.0f;
 
         setBrush(colBorder);
         m_renderTarget->DrawLine({padL, curY}, {padR, curY}, brush, 1.0f);
-        curY += 12.0f;
+        curY += 10.0f;
 
         drawTxt(isZh ? L"鼠标点击动效" : L"Click Effect", m_sectionFmt.Get(),
-                D2D1::RectF(padL, curY, padR, curY + 20.0f), colPrimary);
-        curY += 24.0f;
+                D2D1::RectF(padL, curY, padR, curY + 19.0f), colPrimary);
+        curY += 22.0f;
         {
             const float w2 = (fullW - 6.0f) * 0.5f;
             const StudioClickEffectStyle effStyle = m_config.showClickRipple
                 ? m_config.clickEffectStyle
                 : StudioClickEffectStyle::TactileOnly;
             drawOptionChip(Hit_ClickStyleBase + 0,
-                           D2D1::RectF(padL, curY, padL + w2, curY + 26.0f),
+                           D2D1::RectF(padL, curY, padL + w2, curY + 25.0f),
                            isZh ? L"微晶单波 (默认)" : L"Crystal (Def)",
                            effStyle == StudioClickEffectStyle::CrystalPulse);
             drawOptionChip(Hit_ClickStyleBase + 1,
-                           D2D1::RectF(padL + w2 + 6.0f, curY, padR, curY + 26.0f),
+                           D2D1::RectF(padL + w2 + 6.0f, curY, padR, curY + 25.0f),
                            isZh ? L"柔雾触点" : L"Soft Touch",
                            effStyle == StudioClickEffectStyle::SoftTouch);
-            curY += 32.0f;
+            curY += 30.0f;
             drawOptionChip(Hit_ClickStyleBase + 2,
-                           D2D1::RectF(padL, curY, padL + w2, curY + 26.0f),
+                           D2D1::RectF(padL, curY, padL + w2, curY + 25.0f),
                            isZh ? L"错峰涟漪" : L"Dual Ripple",
                            effStyle == StudioClickEffectStyle::DualRipple);
             drawOptionChip(Hit_ClickStyleBase + 3,
-                           D2D1::RectF(padL + w2 + 6.0f, curY, padR, curY + 26.0f),
+                           D2D1::RectF(padL + w2 + 6.0f, curY, padR, curY + 25.0f),
                            isZh ? L"仅物理按压" : L"Tactile Only",
                            effStyle == StudioClickEffectStyle::TactileOnly);
-            curY += 32.0f;
+            curY += 30.0f;
         }
-        drawTxt(isZh ? L"点击上方卡片可在右侧舞台实时预览光标轻叩与光学波纹反馈。"
-                     : L"Click any style above to preview live cursor press & optical pulse.",
-                m_captionWrapFmt.Get(), D2D1::RectF(padL, curY, padR, curY + 38.0f), colSecondary);
+        if (curY + 34.0f <= drawerRc.bottom) {
+            drawTxt(isZh ? L"可将倍率拉至 1.00x 并调节聚焦暗角，实现零放大静稳聚焦。"
+                         : L"Set zoom to 1.00x with dimming for steady zero-zoom spotlight focus.",
+                    m_captionWrapFmt.Get(), D2D1::RectF(padL, curY, padR, curY + 34.0f), colSecondary);
+        }
         return;
     }
 
@@ -6653,7 +6708,7 @@ void StudioPreviewWindow::render() {
                 if (m_draggingZoomFocus) {
                     // 100% 全景光学取景框模式 (Panoramic Optical Viewfinder)：0ms GPU 直绘放大视野框 + 四周柔和暗角 + 1:1 贴手准星
                     const float effZoom = std::clamp(
-                        zseg.manualInserted ? zseg.targetZoom : m_config.defaultZoomFactor, 1.25f, 2.80f);
+                        zseg.manualInserted ? zseg.targetZoom : m_config.defaultZoomFactor, 1.00f, 2.80f);
                     const float halfSpan = 0.5f / effZoom;
                     const float cropNormCx = std::clamp(normFx, halfSpan, 1.0f - halfSpan);
                     const float cropNormCy = std::clamp(normFy, halfSpan, 1.0f - halfSpan);
@@ -7187,10 +7242,17 @@ void StudioPreviewWindow::render() {
             m_renderTarget->DrawLine({segRc.right - 3.4f, segRc.top + 5.8f}, {segRc.right - 3.4f, segRc.bottom - 5.8f}, brush.Get(), 1.15f);
         }
         if (zw >= 42.0f) {
-            const float effZoom = seg.manualInserted ? seg.targetZoom : m_config.defaultZoomFactor;
+            const float effZoom = std::clamp(
+                seg.manualInserted ? seg.targetZoom : m_config.defaultZoomFactor, 1.00f, 2.80f);
             wchar_t zLbl[32]{};
-            if (zw >= 74.0f) {
-                std::swprintf(zLbl, std::size(zLbl), isZh ? L"运镜 %.1fx" : L"Zoom %.1fx", effZoom);
+            if (effZoom <= 1.02f && m_config.focusSpotlightDim > 0.005f) {
+                if (zw >= 74.0f) {
+                    std::swprintf(zLbl, std::size(zLbl), isZh ? L"聚光 1.0x" : L"Focus 1.0x");
+                } else {
+                    std::swprintf(zLbl, std::size(zLbl), L"1.0x");
+                }
+            } else if (zw >= 74.0f) {
+                std::swprintf(zLbl, std::size(zLbl), isZh ? L"运镜 %.2fx" : L"Zoom %.2fx", effZoom);
             } else {
                 std::swprintf(zLbl, std::size(zLbl), L"%.1fx", effZoom);
             }
@@ -8193,6 +8255,50 @@ void StudioPreviewWindow::applySliderAtX(SliderDragKind kind, float lx) {
         m_config.watermark.opacity = 0.04f + ratio * (1.00f - 0.04f);
         m_config.watermark.enabled = true;
         WatermarkRenderer::saveStudioWatermarkConfig(m_config.watermark);
+    } else if (kind == SliderDragKind::ZoomFactor) {
+        const float rawZ = 1.00f + ratio * 1.60f;
+        const float snappedZ = std::clamp(std::round(rawZ * 20.0f) / 20.0f, 1.00f, 2.60f);
+        m_config.autoZoomEnabled = true;
+        if (m_config.zoomMode == StudioZoomMode::None) {
+            m_config.zoomMode = StudioZoomMode::Zoom2D;
+        }
+        if (m_selectedZoomIdx >= 0 && m_selectedZoomIdx < static_cast<int>(m_timeline.zoomSegments.size())) {
+            auto& seg = m_timeline.zoomSegments[static_cast<size_t>(m_selectedZoomIdx)];
+            seg.targetZoom = snappedZ;
+            seg.manualInserted = true;
+        } else {
+            m_config.defaultZoomFactor = snappedZ;
+            for (auto& seg : m_timeline.zoomSegments) {
+                if (!seg.manualInserted) {
+                    seg.targetZoom = snappedZ;
+                }
+            }
+        }
+        rebakeTimelinePreview();
+    } else if (kind == SliderDragKind::ZoomPacing) {
+        m_config.zoomPacing = std::clamp(std::round(ratio * 100.0f) / 100.0f, 0.0f, 1.0f);
+        m_config.autoZoomEnabled = true;
+        if (m_config.zoomMode == StudioZoomMode::None) {
+            m_config.zoomMode = StudioZoomMode::Zoom2D;
+        }
+        rebakeTimelinePreview();
+    } else if (kind == SliderDragKind::ZoomSensitivity) {
+        const float nextSens = std::clamp(std::round(ratio * 50.0f) / 50.0f, 0.0f, 1.0f);
+        if (std::abs(nextSens - m_config.autoZoomSensitivity) >= 0.015f) {
+            m_config.autoZoomSensitivity = nextSens;
+            m_config.autoZoomEnabled = true;
+            if (m_config.zoomMode == StudioZoomMode::None) {
+                m_config.zoomMode = StudioZoomMode::Zoom2D;
+            }
+            rebuildAutoZoomSegmentsLive();
+        }
+    } else if (kind == SliderDragKind::FocusSpotlight) {
+        m_config.focusSpotlightDim = std::clamp(std::round(ratio * 65.0f) / 100.0f, 0.0f, 0.65f);
+        m_config.autoZoomEnabled = true;
+        if (m_config.zoomMode == StudioZoomMode::None) {
+            m_config.zoomMode = StudioZoomMode::Zoom2D;
+        }
+        rebakeTimelinePreview();
     } else if (kind == SliderDragKind::TimelineZoom) {
         const double keptDurSec = computeEffectiveDurationSec();
         const float targetZ = std::pow(24.0f, ratio);
@@ -8212,6 +8318,28 @@ void StudioPreviewWindow::applySliderAtX(SliderDragKind kind, float lx) {
         return;
     }
     requestImmediatePreviewRefresh(false);
+}
+
+void StudioPreviewWindow::rebuildAutoZoomSegmentsLive() {
+    StudioTimelineAnalyzer::rebuildAutoZoomSegmentsPreservingManual(
+        m_timeline, m_config,
+        m_previewDeckBgr.empty() ? nullptr : &m_previewDeckBgr,
+        m_durationSec);
+    if (m_selectedZoomIdx >= static_cast<int>(m_timeline.zoomSegments.size())) {
+        m_selectedZoomIdx = -1;
+    }
+    rebakeTimelinePreview();
+}
+
+void StudioPreviewWindow::applyZoomPreset(StudioZoomPreset preset) {
+    applyStudioZoomPreset(m_config, preset);
+    m_config.autoZoomEnabled = true;
+    if (m_config.zoomMode == StudioZoomMode::None) {
+        m_config.zoomMode = StudioZoomMode::Zoom2D;
+    }
+    rebuildAutoZoomSegmentsLive();
+    persistStudioConfigToSettings(m_config);
+    requestImmediatePreviewRefresh(true);
 }
 
 void StudioPreviewWindow::handleMouseWheel(float lx, float ly, int wheelDelta) {
@@ -9112,25 +9240,34 @@ void StudioPreviewWindow::handleMouseDown(float lx, float ly, bool isDoubleClick
             requestImmediatePreviewRefresh(true);
             return;
         }
+        if (id == Hit_ToggleLockCamera) {
+            m_config.lockCameraWhileZoomed = !m_config.lockCameraWhileZoomed;
+            persistStudioConfigToSettings(m_config);
+            rebakeTimelinePreview();
+            requestImmediatePreviewRefresh(true);
+            return;
+        }
         if (id == Hit_ToggleMotionBlur) {
             m_config.motionBlurEnabled = !m_config.motionBlurEnabled;
             persistStudioConfigToSettings(m_config);
             requestImmediatePreviewRefresh(true);
             return;
         }
-        if (id == Hit_ZoomPreset_150 || id == Hit_ZoomPreset_185 || id == Hit_ZoomPreset_220) {
-            const float z = (id == Hit_ZoomPreset_150) ? 1.50f : ((id == Hit_ZoomPreset_185) ? 1.85f : 2.20f);
-            m_config.defaultZoomFactor = z;
-            m_config.autoZoomEnabled = true;
-            if (m_config.zoomMode == StudioZoomMode::None) m_config.zoomMode = StudioZoomMode::Zoom2D;
-            if (m_selectedZoomIdx >= 0 && m_selectedZoomIdx < static_cast<int>(m_timeline.zoomSegments.size())) {
-                m_timeline.zoomSegments[static_cast<size_t>(m_selectedZoomIdx)].targetZoom = z;
-            } else {
-                for (auto& seg : m_timeline.zoomSegments) seg.targetZoom = z;
-            }
-            persistStudioConfigToSettings(m_config);
-            rebakeTimelinePreview();
-            requestImmediatePreviewRefresh(true);
+        if (id == Hit_ZoomPreset_Gentle || id == Hit_ZoomPreset_Balanced || id == Hit_ZoomPreset_Dynamic) {
+            const StudioZoomPreset chosen = (id == Hit_ZoomPreset_Gentle)
+                ? StudioZoomPreset::Gentle
+                : ((id == Hit_ZoomPreset_Balanced) ? StudioZoomPreset::Balanced : StudioZoomPreset::Dynamic);
+            applyZoomPreset(chosen);
+            return;
+        }
+        if (id == Hit_SliderZoomFactor || id == Hit_SliderZoomPacing ||
+            id == Hit_SliderZoomSensitivity || id == Hit_SliderFocusSpotlight) {
+            m_activeSlider = (id == Hit_SliderZoomFactor) ? SliderDragKind::ZoomFactor
+                : (id == Hit_SliderZoomPacing) ? SliderDragKind::ZoomPacing
+                : (id == Hit_SliderZoomSensitivity) ? SliderDragKind::ZoomSensitivity
+                : SliderDragKind::FocusSpotlight;
+            SetCapture(m_hwnd);
+            applySliderAtX(m_activeSlider, lx);
             return;
         }
         if (id == Hit_ToggleSmoothCursor) {
@@ -9782,6 +9919,7 @@ void StudioPreviewWindow::handleMouseUp() {
 
     const bool hadWmDrag = (m_watermarkStageDragMode != 0);
     const bool hadZoomFocusDrag = m_draggingZoomFocus;
+    const SliderDragKind endedSlider = m_activeSlider;
     const bool hadCapture = m_scrubbingTimeline || m_draggingWindow ||
                             m_activeSlider != SliderDragKind::None ||
                             m_trackDragKind != TrackDragKind::None ||
@@ -9801,6 +9939,17 @@ void StudioPreviewWindow::handleMouseUp() {
     m_watermarkStageDragMode = 0;
     if (hadWmDrag) {
         WatermarkRenderer::saveStudioWatermarkConfig(m_config.watermark);
+    }
+    if (endedSlider == SliderDragKind::Padding ||
+        endedSlider == SliderDragKind::InsetBorder ||
+        endedSlider == SliderDragKind::Radius ||
+        endedSlider == SliderDragKind::Shadow ||
+        endedSlider == SliderDragKind::BgBlur ||
+        endedSlider == SliderDragKind::ZoomFactor ||
+        endedSlider == SliderDragKind::ZoomPacing ||
+        endedSlider == SliderDragKind::ZoomSensitivity ||
+        endedSlider == SliderDragKind::FocusSpotlight) {
+        persistStudioConfigToSettings(m_config);
     }
     if (hadZoomFocusDrag) {
         rebakeTimelinePreview();

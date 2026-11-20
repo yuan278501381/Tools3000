@@ -18,6 +18,10 @@
 #include <thread>
 #include <vector>
 
+namespace cv {
+class Mat;
+}
+
 namespace tools3000::capture {
 
 enum class StudioCursorKind : uint8_t {
@@ -50,6 +54,15 @@ struct StudioFocusEvent {
     float y = 0.0f;
 };
 
+struct StudioWindowChangeEvent {
+    int64_t ptsMs = 0;
+    uint64_t windowId = 0;
+    float x = 0.0f; // 相对于录制区左上角的交集窗口矩形
+    float y = 0.0f;
+    float w = 0.0f;
+    float h = 0.0f;
+};
+
 struct StudioCaptionSegment {
     int64_t startMs = 0;
     int64_t endMs = 0;
@@ -60,6 +73,13 @@ enum class StudioZoomMode : int {
     None     = 0, // 无缩放
     Zoom2D   = 1, // 2D 平滑缩放
     Motion3D = 2, // 3D 空间透视运镜
+};
+
+/// 演播室自动运镜三档预置（点击一键套用整组参数，亦支持下方所有滑块与开关手动无级微调）
+enum class StudioZoomPreset : int {
+    Gentle   = 0, // 柔和（默认）：克制倍率 + 慢入慢出 + 精选触发 + 锁定视角防晃 + 轻柔聚焦暗角
+    Balanced = 1, // 标准：平衡倍率与触发频率 + 锁定视角防晃 + 极轻暗角
+    Dynamic  = 2, // 动感：高张力倍率 + 迅捷节奏 + 灵敏触发 + 自由跟鼠
 };
 
 /// 演播室录屏专属高定鼠标点击动效（彻底解耦会议投屏花哨靶心，采用解析式 SDF 光学着色与二阶物理按压弹簧）
@@ -152,28 +172,81 @@ struct StudioVideoClip {
 struct StudioRenderConfig {
     bool autoZoomEnabled = true;
     StudioZoomMode zoomMode = StudioZoomMode::Zoom2D;
-    bool typingAutoZoom = false;       // 打字/焦点切换自动缩放（默认关闭，对齐 FocuSee 防零碎乱跳）
-    float defaultZoomFactor = 1.50f;   // 1.35 ~ 2.60
-    bool motionBlurEnabled = true;     // 镜头快速推拉摇移时的柔和动态模糊 (Motion Blur)
+    bool typingAutoZoom = false;          // 打字/焦点切换自动缩放（默认关闭，防零碎乱跳）
+    float defaultZoomFactor = 1.32f;      // 1.00 ~ 2.60 无级放大倍率（1.00x 配合聚焦暗角可实现零缩放纯聚光引导）
+    float zoomPacing = 0.32f;             // 0.00 ~ 1.00 无级运镜节奏（0 舒缓电影慢推 ~ 1 迅捷干脆，出镜恒比进镜柔缓 22%）
+    float autoZoomSensitivity = 0.32f;    // 0.00 ~ 1.00 无级自动触发频率（0 仅精选重点 ~ 1 灵敏捕获所有操作）
+    float focusSpotlightDim = 0.18f;      // 0.00 ~ 0.65 无级聚焦暗角压暗强度（聚焦区间柔和压暗外围，零空间割裂引导视线）
+    bool lockCameraWhileZoomed = true;    // 锁定视角防晃（三脚架模式：放大后锁定语义中心零漂移，消除跟鼠眩晕）
+    bool motionBlurEnabled = true;        // 镜头快速推拉摇移时的柔和动态模糊 (Motion Blur)
     bool smoothCursorEnabled = true;
-    float cursorScale = 1.35f;         // 1.00 ~ 2.00
-    bool cursorHighlightHalo = false;  // 光标周围柔和聚光环跟随
+    float cursorScale = 1.35f;            // 1.00 ~ 2.00
+    bool cursorHighlightHalo = false;     // 光标周围柔和聚光环跟随
     bool showClickRipple = true;
     StudioClickEffectStyle clickEffectStyle = StudioClickEffectStyle::CrystalPulse;
     bool autoFrameEnabled = true;
     StudioAspectRatio aspectRatio = StudioAspectRatio::Original;
     BeautyBackgroundType backgroundTheme = BeautyBackgroundType::AuroraPurple;
-    std::string customBackgroundPath;  // 本地自定义/扩展超清壁纸路径（非空时优先于枚举主题）
-    float paddingRatio = 0.065f;       // 画布四周背景留白占短边比例 (0.0 ~ 0.16)
-    float insetBorderWidth = 0.0f;     // 内边框粗细 (0.0 ~ 12.0 px)
+    std::string customBackgroundPath;     // 本地自定义/扩展超清壁纸路径（非空时优先于枚举主题）
+    float paddingRatio = 0.065f;          // 画布四周背景留白占短边比例 (0.0 ~ 0.16)
+    float insetBorderWidth = 0.0f;        // 内边框粗细 (0.0 ~ 12.0 px)
     std::string insetBorderColorHex = "#FFFFFF"; // 内边框颜色 (默认微晶白)
-    float backgroundBlur = 0.0f;       // 背景高斯景深虚化半径 (0.0 ~ 40.0 px)
-    float cornerRadius = 16.0f;        // 内嵌画面圆角半径 (0.0 ~ 36.0 px)
-    float shadowIntensity = 0.55f;     // 内嵌画面立体阴影强度 (0.0 ~ 1.0)
+    float backgroundBlur = 0.0f;          // 背景高斯景深虚化半径 (0.0 ~ 40.0 px)
+    float cornerRadius = 16.0f;           // 内嵌画面圆角半径 (0.0 ~ 36.0 px)
+    float shadowIntensity = 0.55f;        // 内嵌画面立体阴影强度 (0.0 ~ 1.0)
     bool autoCaptionsEnabled = false;
     bool exportSrtSidecar = true;
     WatermarkConfig watermark{};
 };
+
+/// 单一事实源：应用三档运镜预置参数（柔和 / 标准 / 动感）
+inline void applyStudioZoomPreset(StudioRenderConfig& cfg, StudioZoomPreset preset) noexcept {
+    switch (preset) {
+        case StudioZoomPreset::Gentle:
+            cfg.defaultZoomFactor = 1.32f;
+            cfg.zoomPacing = 0.32f;
+            cfg.autoZoomSensitivity = 0.32f;
+            cfg.focusSpotlightDim = 0.18f;
+            cfg.lockCameraWhileZoomed = true;
+            break;
+        case StudioZoomPreset::Balanced:
+            cfg.defaultZoomFactor = 1.60f;
+            cfg.zoomPacing = 0.55f;
+            cfg.autoZoomSensitivity = 0.60f;
+            cfg.focusSpotlightDim = 0.10f;
+            cfg.lockCameraWhileZoomed = true;
+            break;
+        case StudioZoomPreset::Dynamic:
+            cfg.defaultZoomFactor = 1.95f;
+            cfg.zoomPacing = 0.82f;
+            cfg.autoZoomSensitivity = 0.88f;
+            cfg.focusSpotlightDim = 0.00f;
+            cfg.lockCameraWhileZoomed = false;
+            break;
+    }
+}
+
+/// 检测当前无级参数是否严格吻合三档预置之一；若用户已手动微调返回 -1（自定义态）
+inline int detectStudioZoomPreset(const StudioRenderConfig& cfg) noexcept {
+    if (!cfg.autoZoomEnabled || cfg.zoomMode == StudioZoomMode::None) {
+        return -1;
+    }
+    constexpr StudioZoomPreset kPresets[3] = {
+        StudioZoomPreset::Gentle, StudioZoomPreset::Balanced, StudioZoomPreset::Dynamic
+    };
+    for (int i = 0; i < 3; ++i) {
+        StudioRenderConfig ref{};
+        applyStudioZoomPreset(ref, kPresets[i]);
+        if (std::abs(cfg.defaultZoomFactor - ref.defaultZoomFactor) <= 0.045f &&
+            std::abs(cfg.zoomPacing - ref.zoomPacing) <= 0.045f &&
+            std::abs(cfg.autoZoomSensitivity - ref.autoZoomSensitivity) <= 0.045f &&
+            std::abs(cfg.focusSpotlightDim - ref.focusSpotlightDim) <= 0.035f &&
+            cfg.lockCameraWhileZoomed == ref.lockCameraWhileZoomed) {
+            return i;
+        }
+    }
+    return -1;
+}
 
 struct StudioTimelineData {
     int regionX = 0;
@@ -185,6 +258,7 @@ struct StudioTimelineData {
     std::vector<StudioCursorSample> cursorSamples;
     std::vector<StudioClickEvent> clickEvents;
     std::vector<StudioFocusEvent> focusEvents;
+    std::vector<StudioWindowChangeEvent> windowEvents;
     std::vector<StudioCaptionSegment> captions;
     std::vector<StudioZoomSegment> zoomSegments;
     std::vector<StudioCutSegment> cutSegments;          // 非破坏性剪除或倍速快放区间
@@ -294,6 +368,11 @@ struct StudioEvaluatedFrame {
     float rippleSrcX = 0.0f;    // 水波纹锚定的真实点击源坐标 X (原地扩散不随光标漂移)
     float rippleSrcY = 0.0f;    // 水波纹锚定的真实点击源坐标 Y
     bool rippleIsRight = false;
+    float spotlightAlpha = 0.0f;   // 聚焦区间柔和聚光暗角外围压暗强度 [0.0 .. 0.65]
+    float spotlightCenterX = 0.0f; // 源画面空间聚光亮窗中心 X
+    float spotlightCenterY = 0.0f; // 源画面空间聚光亮窗中心 Y
+    float spotlightHalfW = 0.0f;   // 源画面空间聚光亮窗半宽
+    float spotlightHalfH = 0.0f;   // 源画面空间聚光亮窗半高
     std::string activeCaption;
 };
 
@@ -329,11 +408,32 @@ struct TimelineSnapResult {
 
 class StudioTimelineAnalyzer {
 public:
-    /// 基于意图过滤后的点击事件与可选打字焦点自动聚类生成平滑关键帧放大区间
+    /// 基于意图过滤后的点击事件与可选打字焦点自动聚类生成平滑关键帧放大区间（兼容旧签名，默认灵敏度 0.88）
     static std::vector<StudioZoomSegment> buildAutoZoomSegments(
         const StudioTimelineData& timeline,
         float defaultZoom = 1.85f,
         bool includeTypingFocus = true);
+
+    /// 认知友好型自动运镜分析：结合触发频率 sensitivity [0..1]、片头建立镜头、意图聚簇评分与窗口弹出因果校正
+    static std::vector<StudioZoomSegment> buildAutoZoomSegments(
+        const StudioTimelineData& timeline,
+        float defaultZoom,
+        bool includeTypingFocus,
+        float sensitivity);
+
+    /// 基于预览帧序列执行微秒级视觉差分因果校正：抑制整页大跳转误放，将“点 A 刷新 B”自动校准至视觉变化重心 B
+    static void refineZoomSegmentsWithVisualDiff(
+        StudioTimelineData& timeline,
+        const std::vector<cv::Mat>& previewDeckBgr,
+        double durationSec,
+        float sensitivity);
+
+    /// 按当前配置实时重建自动运镜段，严格保留所有用户手动插入 (manualInserted) 的运镜块并防重叠合并
+    static void rebuildAutoZoomSegmentsPreservingManual(
+        StudioTimelineData& timeline,
+        const StudioRenderConfig& config,
+        const std::vector<cv::Mat>* previewDeckBgr = nullptr,
+        double durationSec = 0.0);
 
     /// 预计算整条时间轴在指定帧率下的平滑光标与弹簧摄像机轨迹，支持预览拖拽任意跳转 O(1) 查询
     static std::vector<StudioEvaluatedFrame> bakeEvaluatedFrames(
@@ -483,8 +583,9 @@ public:
 
     StudioTimelineData takeTimelineData(
         int64_t finalDurationMs,
-        float defaultZoom = 1.85f,
-        bool includeTypingFocus = false);
+        float defaultZoom = 1.32f,
+        bool includeTypingFocus = false,
+        float sensitivity = 0.32f);
 
 private:
     void samplingLoop();

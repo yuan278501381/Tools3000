@@ -6,6 +6,41 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-20] 安装向导无故拦截「必须重启计算机」根治（`wpPreparing` 前置 PFRO 精准成对自愈引擎）与 `ChineseSimplified.isl` 翻译错位修复
+- **权威底层根因与三大暗坑 (`installer.iss`, `resources/installer/ChineseSimplified.isl`)**：
+  1. *Inno Setup `wpPreparing` 硬门禁时序暗坑*：进入 `wpPreparing` 页面瞬间，**严格早于** `[Code]` 中的 `PrepareToInstall()` 事件，Inno Setup 会扫描 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations` 及 `PendingFileRenameOperations2`；只要存在哪怕 1 条指向 `[Files]` / `[InstallDelete]` 目标目录的待重启删除/替换项（例如上次卸载或升级时被杀软/慢释放句柄短暂占用了 50ms 被 `uninsrestartdelete`/`restartreplace` 写入），即便此刻文件早已解锁或已消失，Inno Setup 也会直接阻断弹出「先前程序的安装/删除未完成，必须重启计算机」；
+  2. *`RegWriteMultiStringValue` 吞掉末尾空串的致命暗坑*：实测 Inno Setup 6 内置 `RegWriteMultiStringValue` 在末尾字符串为空串 `""`（Windows PFRO 用空目标串表示待重启删除操作，UTF-16LE 末尾需 `\0\0\0`）时会吞掉尾部空串，导致其他软件（如 Edge/Copilot/Windows Update）的 `(Src, Dst)` 奇偶配对错位！因此严禁使用 `RegWriteMultiStringValue` 回写 PFRO，必须通过 Win32 原生 `RegQueryValueExW` / `RegSetValueExW` / `RegDeleteValueW`（`KEY_WOW64_64KEY`）按字节精确读写 `REG_MULTI_SZ`；
+  3. *源头漏杀早退与翻译错位*：① 旧版 `StopAndKillAllTools3000Processes()` 当互斥体/窗口/SCM 已释放但 `AreAppFilesLocked()` 仍为真时漏执行 `taskkill` 与停服，且卸载 `WaitForProcessesAndFilesReleased(1000)` 对慢机/杀软扫描偏短；② `ChineseSimplified.isl` 第 243~244 行错将重启单选按钮 `YesRadio`/`NoRadio` 粘贴为「我同意此协议 / 我不同意此协议」。
+- **三道铁闸终局方案**：
+  1. **前置 PFRO 精准自愈 (`NextButtonClick(wpReady)` -> `ClearStaleAppPendingFileRenames(WizardDirValue)`)**：实测证实 `NextButtonClick(wpReady)` 在交互点击「安装」及 `/VERYSILENT` 静默模式下均严格先于 `wpPreparing` 触发，且 `WizardDirValue` 已是最终目录；仅对通过 `tools3000` 安全白名单的目标目录（兼容长路径与 8.3 短路径及目录本身）执行现场解锁清理（已不存在直接摘除、已解锁现场删旧文件/过期 `.tmp` 后摘除、真正被外部进程死锁的条目诚实保留），其余所有系统与第三方软件条目 100% 字节无损原样保留；冷路径（无残留）0 进程创建、0 注册表写入瞬过；
+  2. **源头止血加固**：修复 `StopAndKillAllTools3000ProcessesForDir` 在 `FilesLocked = True` 时同步补杀主进程与搜索服务，将 `PrepareToInstall` 释放轮询扩至 `15×200ms = 3000ms`、卸载释放等待扩至 `3500ms`（无锁仍 0ms 立即跳出）；
+  3. **语言包纠偏与防回退门禁**：将 `ChineseSimplified.isl` `YesRadio` / `NoRadio` 修正为「是，立即重新启动计算机(&Y)」/「否，稍后我将自己重新启动计算机(&N)」，并在 `tests/unit/test_core.inc` 补充 `InstallerRebootGuardAndI18nTest`。
+
+### [2026-11-20] 演播室认知友好型自动运镜引擎（三档预置 + 四维无级微调 + 因果聚焦 + 锁定视角 + 聚焦暗角）与侧边栏搜索框内嵌直角焦点框根治
+- **世界级认知友好型自动运镜引擎 (`StudioTimeline.{h,cpp}`, `StudioVideoCompositor.cpp`, `StudioPreviewWindow.{h,cpp}`, `PluginEntry.cpp`, `CapturePage.tsx`)**：
+  1. *三档中性预置 + 四维无级滑块 + 三脚架锁镜开关（演播室与主设置页 SSOT 同构持久化）*：预置 **`柔和`**（默认：`1.32x` / 节奏 `32%` / 频率 `32%` / 暗角 `18%` / 锁镜开）、**`标准`**（`1.60x` / `55%` / `60%` / `10%` / 锁镜开）、**`动感`**（`1.95x` / `82%` / `88%` / `0%` / 锁镜关）；任意滑块微调即时切入自定义态，且放大倍率下探至 **`1.00x`**（配合聚焦暗角即可实现零裁切全局、纯语义聚光引导）；
+  2. *根治 FocuSee 式思路打断的四大底层引擎*：① **片头建立镜头 + 意图聚类评分**：按无级 `autoZoomSensitivity` 连续过滤片头零碎首点与孤立导航点击，拉宽低频桥接间隙杜绝呼吸抽搐，拖动触发频率实时重算非手动块并 100% 保护 `manualInserted` 自定义段；② **窗口弹出 + 视觉差分双重因果校正 (`windowEvents` + `refineZoomSegmentsWithVisualDiff`)**：录制期轻量采集前景弹窗并结合打开演播室后的 `160×90` 代理帧像素差分，自动抑制整屏页面大跳转误放，并将「点左侧菜单 A -> 右侧面板/中间弹窗 B 刷新」自动校准至真正视觉变化重心 B；③ **电影级非对称物理弹簧 + 三脚架锁镜防晃 (`lockCameraWhileZoomed`)**：由 `zoomPacing` 连续映射弹簧刚度且出镜恒比进镜柔缓 `22%`，锁镜态将死区拉升至 `84%` 彻底消灭放大期文字漂移晃动；④ **微秒级低分羽化光学聚光暗角 (`StudioVideoCompositor::composeFrame`)**：在 `zoomedInner` 与标注/光标之间渲染 `128×72` 高斯羽化圆角聚光层，焦点核心与光标 100% 明亮锐利，外围上下文柔和压暗引导视线。
+- **侧边栏搜索框内部丑陋直角蓝框根治 (`Sidebar.css`, `GesturePage.css`)**：
+  - *暗坑真凶*：`index.css:442` 全局 `:where(button, input, ...):focus-visible { outline: 2px solid var(--primary-hover) !important; outline-offset: 2px !important; }` 强行覆盖了外层胶囊 `:focus-within` 包裹的内部裸 `<input>`（`.sidebar__search-input`、`.gesture-number-input` 与 `.gesture-search-input`），在圆角搜索框内叠加了刺眼的直角蓝框；
+  - *修复*：为 `.sidebar__search-input`、`.gesture-number-input` 与 `.gesture-search-input` 的 `:focus` / `:focus-visible` 显式清除内框 `outline: none !important; box-shadow: none !important;`，统一由外层圆角胶囊 `:focus-within` 呈现平滑品牌色柔光焦点环并点亮搜索图标。
+
+### [2026-11-20] 长截图编辑器「悬停已选中标注滚轮精准调大小」与空白/未选中零误触翻页协同
+- **交互痛点与核心路由契约 (`CaptureInteractionPolicy.h`, `CaptureInput.cpp`, `MarkupEngine.cpp`)**：
+  1. *旧版痛点*：长图模式（`isLongImageMode()`）将画布内除放大镜与工具栏外的所有 `WM_MOUSEWHEEL` 一刀切截流给长图滚动，导致画完箭头/矩形/文字/序号/马赛克后无法像普通截图一样用滚轮快速调节大小；
+  2. *单一事实源滚轮路由 (`resolveLongImageWheelRoute` + `isPointOnActiveLongImageElement`)*：
+     - **仅命中「当前已选中（`activeElement`）」且支持属性调节的标注图元**才接管普通滚轮调粗细/字号/强度/倍率（同时支持按元素实际类型路由与以元素自身当前值为基准防突跳，并闪现 `950ms` 暗房微胶囊数值提示）；
+     - **空白画布、未选中旧标注、空心矩形/椭圆大片内部留白及无滚轮属性的 `Highlight`** 均不截流，始终保持丝滑翻页；`Ctrl+滚轮` 恒定优先无级缩放长图画布；`Shift+滚轮` 仅在矩形/聚光灯等圆角图元上调圆角，其余情况横向滚图；
+     - **防两大隐蔽暗坑**：① 命中坐标必须采用非钳制 `screenToUnclampedMarkupPoint`（杜绝 `calculateMarkupPoint` 边界 clamp 把右侧黑色工作台留白误命中成靠边箭头）；② 命中容差按 `computeLongCanvasElementWheelHitPadding` 随 `dpiScale / longCanvas.zoom` 动态换算（`11 DIP` 屏幕恒定带，夹紧 `[6, 36]` 文档像素）并透传至 `Arrow/Line/Number` 控制手柄，低倍率缩小长图下瞄准细箭头依然一滚即中。
+
+### [2026-11-20] Inno Setup 父子组件未声明 `checkablealone` 导致全新安装默认关闭截图功能根治
+- **实证暗坑真凶 (`installer.iss`, `PluginManager.cpp`)**：
+  1. `installer.iss` `[Components]` 中 `capture` 挂载了按需可选子组件 `capture\ocr_models`（故意未绑定 `Types: full compact` 且带 `Flags: dontinheritcheck`），但父组件 `capture` 漏写 `Flags: checkablealone`；
+  2. 根据 Inno Setup 官方组件继承规则，凡存在子组件且无任何子组件处于选中状态的父组件，若未声明 `Flags: checkablealone`，安装向导（无论交互式还是静默全新安装）都会自动取消勾选该父组件，导致 `WizardIsComponentSelected('capture')` 返回 `False`，进而向 `{app}\initial_modules.json` 写入 `"plugins": { "capture": { "enabled": false } }`，令所有全新安装用户的截图与录屏功能默认关闭；
+- **终局修复与防回退门禁**：
+  1. 在 [installer.iss](file:///c:/repo/Tools3000/installer.iss#L129) 为 `capture` 显式补齐 `Flags: checkablealone`（`Types: full compact; Flags: checkablealone`），确保全新安装 `full`/`compact` 默认勾选并开启截图贴图与录屏，同时 `capture\ocr_models` 依然保持独立按需勾选不强绑；
+  2. 在 `PluginManager::reconcilePluginConfigs()` 补齐第 7 项 `capture` 同构对账（空白配置默认落盘 `true`，用户显式禁用严格保留 `false`）；
+  3. 在 `tests/unit/test_core.inc` 新增 `CaptureDefaultEnabledContractTest` 防回退门禁，强制校验 `installer.iss` 父子组件契约与空白配置默认启用行为。
+
 ### [2026-11-19] 长截图悬浮控制台点击失效根治与 MECE 八维防重复拼接引擎重构
 - **实机日志 + 像素级双实证根因与终局修复**：
   1. **悬浮控制台「点击完成/暂停/贴图/保存/取消全部没反应，仅 Enter 有效」致命真凶 (`ScrollCaptureOverlay.{h,cpp}`)**：
