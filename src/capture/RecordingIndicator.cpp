@@ -396,7 +396,7 @@ void RecordingIndicator::show() {
                  SWP_SHOWWINDOW | SWP_NOACTIVATE);
     const bool hideFromRec = tools3000::core::ConfigManager::instance().get<bool>(
         "/recording/hideIndicatorInCapture", true);
-    SetWindowDisplayAffinity(m_hwnd, hideFromRec ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
+    tools3000::core::WinUtils::applyCaptureExclusionIfSafe(m_hwnd, hideFromRec);
     tools3000::core::WinUtils::applyUniversalRoundedCorners(
         m_hwnd, width, height, scaledIndicatorMetric(INDICATOR_CORNER_RADIUS, m_dpiScale));
     if (m_renderTarget) {
@@ -584,9 +584,7 @@ void RecordingIndicator::showCompleted(const std::string& filePath, double durat
 
     SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, width, height,
                  SWP_SHOWWINDOW | SWP_NOACTIVATE);
-    const bool hideFromRec = tools3000::core::ConfigManager::instance().get<bool>(
-        "/recording/hideIndicatorInCapture", true);
-    SetWindowDisplayAffinity(m_hwnd, hideFromRec ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
+    tools3000::core::WinUtils::allowWindowCapture(m_hwnd);
     tools3000::core::WinUtils::applyUniversalRoundedCorners(
         m_hwnd, width, height, scaledIndicatorMetric(INDICATOR_CORNER_RADIUS, m_dpiScale));
 
@@ -600,14 +598,13 @@ void RecordingIndicator::showCompleted(const std::string& filePath, double durat
 }
 
 void RecordingIndicator::refreshCaptureAffinity() {
-    const bool hideFromRec = tools3000::core::ConfigManager::instance().get<bool>(
+    const bool hideFromRec = !m_completed && tools3000::core::ConfigManager::instance().get<bool>(
         "/recording/hideIndicatorInCapture", true);
-    const DWORD affinity = hideFromRec ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE;
     if (m_hwnd && IsWindow(m_hwnd)) {
-        SetWindowDisplayAffinity(m_hwnd, affinity);
+        tools3000::core::WinUtils::applyCaptureExclusionIfSafe(m_hwnd, hideFromRec);
     }
     if (m_borderHwnd && IsWindow(m_borderHwnd)) {
-        SetWindowDisplayAffinity(m_borderHwnd, affinity);
+        tools3000::core::WinUtils::applyCaptureExclusionIfSafe(m_borderHwnd, hideFromRec);
     }
 }
 
@@ -653,10 +650,16 @@ bool RecordingIndicator::createWindow(HINSTANCE hInstance) {
     SetLayeredWindowAttributes(m_hwnd, 0, 252, LWA_ALPHA);
     tools3000::core::WinUtils::applyUniversalRoundedCorners(
         m_hwnd, initPhysW, initPhysH, scaledIndicatorMetric(INDICATOR_CORNER_RADIUS, m_dpiScale));
-    if (tools3000::core::ConfigManager::instance().get<bool>("/recording/hideIndicatorInCapture", true)) {
-        SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
-    } else {
-        tools3000::core::WinUtils::excludeWindowFromCapture(m_hwnd);
+    const bool hideFromRec = tools3000::core::ConfigManager::instance().get<bool>(
+        "/recording/hideIndicatorInCapture", true);
+    tools3000::core::WinUtils::applyCaptureExclusionIfSafe(m_hwnd, hideFromRec);
+
+    // 动态订阅当前会话切换通知 (WM_WTSSESSION_CHANGE)，保障物理控制台与 RDP 远程桌面热切换时实时刷新可见性
+    if (HMODULE wtsMod = LoadLibraryW(L"wtsapi32.dll")) {
+        using WtsRegFn = BOOL(WINAPI*)(HWND, DWORD);
+        if (const auto regFn = reinterpret_cast<WtsRegFn>(GetProcAddress(wtsMod, "WTSRegisterSessionNotification"))) {
+            regFn(m_hwnd, 0 /* NOTIFY_FOR_THIS_SESSION */);
+        }
     }
 
     const int btnY = (INDICATOR_HEIGHT - BTN_SIZE) / 2;
@@ -1434,6 +1437,13 @@ LRESULT CALLBACK RecordingIndicator::indicatorWndProc(HWND hwnd, UINT msg, WPARA
             return 0;
         }
 
+        case 0x02B1 /* WM_WTSSESSION_CHANGE */: {
+            if (self) {
+                self->refreshCaptureAffinity();
+            }
+            return 0;
+        }
+
         default:
             return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
@@ -1515,12 +1525,10 @@ bool RecordingIndicator::createBorderWindow(HINSTANCE hInstance) {
 
     SetLayeredWindowAttributes(m_borderHwnd, 0, 220, LWA_ALPHA);
 
-    // 必须从录屏捕获中彻底剔除此发光线框窗口，防止录出的成片包含红框
-    if (tools3000::core::ConfigManager::instance().get<bool>("/recording/hideIndicatorInCapture", true)) {
-        SetWindowDisplayAffinity(m_borderHwnd, WDA_EXCLUDEFROMCAPTURE);
-    } else {
-        tools3000::core::WinUtils::excludeWindowFromCapture(m_borderHwnd);
-    }
+    // 在本地支持环境下从录屏捕获中剔除此发光线框；若处于 RDP 远程桌面或旧版 Server 则自动回退 WDA_NONE 确保用户肉眼可见
+    const bool hideFromRec = tools3000::core::ConfigManager::instance().get<bool>(
+        "/recording/hideIndicatorInCapture", true);
+    tools3000::core::WinUtils::applyCaptureExclusionIfSafe(m_borderHwnd, hideFromRec);
 
     ShowWindow(m_borderHwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(m_borderHwnd);

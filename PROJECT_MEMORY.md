@@ -6,6 +6,26 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-20] Windows Server 多管理员并发会话隔离引擎 (`SessionIsolation`) 与多 Provider 公网可信代码签名体系 (`Azure Trusted Signing` + `SignPath`)
+- **架构痛点与终局决策**：
+  1. **Windows Server 多会话并发隔离 (`SessionIsolation.{h,cpp}`, `main.cpp`, `WebViewEnvironmentManager.{h,cpp}`, `AtomicFile.h`, `StatsManager.cpp`, `ConfigManager.cpp`, `installer.iss`)**：
+     - *旧版瓶颈*：`main.cpp` 使用内核全局命名空间 `Global\Tools3000_SingleInstance_Mutex`，导致同一台 Windows Server 上 Console 会话与多个 RDP 管理员会话并发登录时第二个会话被直接锁死退出；即便放开互斥体，同账号多会话共享 `%LOCALAPPDATA%\Tools3000\webview2_data` 也会触发 Chromium `SingletonLock` 冲突导致 WebView2 白屏；
+     - *世界级终局方案*：① 单实例锁切换至会话级 `Local\Tools3000_SingleInstance_Mutex`（同会话内保持严格单实例与 UAC 提权交接，跨会话完全独立并行；`installer.iss` 同步兼容探测 `Local\` + `Global\`）；② 构建基于 OS 内核托管独占文件锁（`dwShareMode=0` + `FILE_FLAG_DELETE_ON_CLOSE`）的 **WebView2 主/副槽位租约 (`acquireWebViewProfileSlot`)**——Slot 0 (`webview2_data`) 优先抢占保证单机零迁移、并发会话平滑降级复用 Slot 1..15 (`webview2_data_slot_<N>`)、强杀 0 僵尸锁、主槽位自动冷清理超 7 天过期未锁副槽位；③ `AtomicFile.h` 增加 `MoveFileExW` 3 次短退避重试，并将 `StatsManager` / `ConfigManager::exportTo` 固定 `.tmp` 收归 `WinUtils::atomicWriteFileWithFlush` 单一事实源，消除多会话同时落盘共享冲突。
+  2. **多 Provider 公网可信代码签名与 SmartScreen 零拦截门禁 (`scripts/sign-artifacts.ps1`, `deploy.ps1`, `.github/workflows/release.yml`, `docs/CODE_SIGNING_AND_MULTI_SESSION.md`)**：
+     - 重构 `sign-artifacts.ps1` 为策略分发签名引擎，原生支持 **`azure-trusted-signing`（微软官方 Artifact Signing / OIDC 无私钥短效公网可信证书）**、**`pfx`**、**`cert-store`** 与 **`-VerifyOnly` 只读信任审计模式**；
+     - 内置多 RFC 3161 TSA 自动故障切换（`timestamp.acs.microsoft.com` / `digicert` / `sectigo` / `globalsign`）及 **`-RequirePublicTrust` 公网根 CA 强断言**（严禁自签名证书 `Subject == Issuer` 外泄至公网）；
+     - `.github/workflows/release.yml` 升级为 `Azure Trusted Signing (OIDC) -> SignPath (开源计划)` 双云端公网双轮签名矩阵，并在发版出口强制执行 `-VerifyOnly -Required -RequirePublicTrust` 门禁。
+
+### [2026-11-20] Windows Server / RDP 与 RustDesk / 向日葵 / ToDesk 远控录屏「点了没反应、控制条与停止按钮彻底隐身」根治 (`WDA_EXCLUDEFROMCAPTURE` 远程抓屏冲突全自动防御)
+- **实机诊断日志复盘 (`Tools3000_Logs_v1.0.8_20261120_132552.log`) 与复合根因**：
+  1. *表象与真相反差*：用户通过 **RustDesk** 远程连入 Windows Server 点击开始录屏后感觉“完全没反应”，18 秒后再次按 `F1` 点击录屏触发 `[warning] 已在录制中, 请先停止当前录制`。日志证实第一次点击已在当前会话成功启动 DXGI 录屏写入 MP4，并非跑到了其他 Administrator 会话；
+  2. *底层致命冲突 (`WDA_EXCLUDEFROMCAPTURE` vs RustDesk / RDP 远程抓屏流)*：无论是微软 RDP 还是 **RustDesk / 向日葵 / ToDesk**（本身通过 DXGI Desktop Duplication 抓取被控机画面），只要窗口硬设了 `SetWindowDisplayAffinity(..., WDA_EXCLUDEFROMCAPTURE)`，远控软件就会把顶部录制状态控制条 (`m_hwnd`)、计时器、红色「停止」按钮与呼吸红框 (`m_borderHwnd`) 从传给远控端的画面中 **100% 抹除隐形**；
+  3. *二次点击状态污染*：录制中用户再次通过 `F1` 点击开始录屏时，旧版 `PluginEntry::startRecordingForRegion` 先覆写了正在录制的 `Keycast` 停靠区，撞上 `startRecording() == false` 后又关闭了 `Keycast` 停靠并弹出含糊的「无法开始录屏，请查看日志」。
+- **终局根治与全链路加固 (`WinUtils.{h,cpp}`, `RecordingIndicator.cpp`, `ScrollCaptureOverlay.cpp`, `StudioPreviewWindow.cpp`, `PluginEntry.cpp`)**：
+  1. 建立单一事实源 `WinUtils::canSafelyExcludeWindowFromCapture()` 与 `applyCaptureExclusionIfSafe()`：实时检测 ① 系统 `SM_REMOTESESSION / SM_REMOTECONTROL`；② **第三方远控被控端活跃连接精准识别**（通过只读低权限 `PROCESS_QUERY_LIMITED_INFORMATION` + `NtQueryInformationProcess(ProcessCommandLineInformation=60)` 检测当前 Session 是否存在 RustDesk 被控连接进程 `rustdesk.exe --cm`、向日葵 `--mod=desktop` 或 ToDesk 被控工作进程——本机仅装服务待机或主控连别人时 0 误判，被别人连入控制时 100% 自动回退 `WDA_NONE`）；③ `RtlGetVersion >= Build 19041`；确保远程控制下无需手动改任何设置，录屏控制条、停止按钮、呼吸红框与长截图悬浮栏 100% 自动清晰显现；
+  2. `RecordingIndicator` 订阅 `WTSRegisterSessionNotification` (`WM_WTSSESSION_CHANGE`)，支持物理控制台与 RDP 会话中途热切换实时刷新可见性；
+  3. `startRecordingForRegion` 入口前置拦截非 `Idle` 状态，零破坏当前 `Keycast` 停靠区，当场刷新置顶录制控制条并弹出明确指引「正在录屏中，请点击顶部红色停止按钮或按 Ctrl+Shift+R 结束保存」。
+
 ### [2026-11-20] 演播室世界级美学舞台与大师配色系统：Apple VisionOS 物理折射磨砂水晶外托框 + 三层 152px 空气悬浮深影 + 二维流体旋流丝绸极光 + 49 款策展首屏置顶 (`StudioBackdropCatalog`, `StudioVideoCompositor`)
 - **用户实机发现的两重现象与视觉第一原理根因**：
   1. *数量差异根因*：旧版 [StudioPreviewWindow.cpp](file:///c:/repo/Tools3000/src/capture/StudioPreviewWindow.cpp) 遗留了扫描 `%APPDATA%\iMobie\FocuSee\BackgroundData\source` 的调试代码，导致装过 FocuSee 的开发机多出 81 张外部图，而纯净测试机仅显示 8 张；

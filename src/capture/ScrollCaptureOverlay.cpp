@@ -195,7 +195,7 @@ bool ScrollCaptureOverlay::initialize() {
         // 采用与 RecordingIndicator 主条同构的 LWA_ALPHA + ID2D1HwndRenderTarget + UniversalRoundedCorners + WDA_EXCLUDEFROMCAPTURE：
         // 在 Windows 10/11 下对用户肉眼 100% 清晰可见可点击，同时在 DWM 硬件层对全屏/最大化选区长截图抓帧 100% 自动隐形剔除！
         SetLayeredWindowAttributes(m_controlHwnd, 0, 250, LWA_ALPHA);
-        m_controlCaptureExcluded = (SetWindowDisplayAffinity(m_controlHwnd, WDA_EXCLUDEFROMCAPTURE) != FALSE);
+        m_controlCaptureExcluded = tools3000::core::WinUtils::applyCaptureExclusionIfSafe(m_controlHwnd, true);
     }
 
     if (!createResources()) return false;
@@ -717,6 +717,9 @@ void ScrollCaptureOverlay::show(RECT captureRect) {
         hide();
     }
     if (!initialize()) return;
+    if (m_controlHwnd) {
+        m_controlCaptureExcluded = tools3000::core::WinUtils::applyCaptureExclusionIfSafe(m_controlHwnd, true);
+    }
 
     applyTransientOverlayShield(true);
     registerTransientHotkeys();

@@ -483,6 +483,21 @@ void toggleMicrophoneMuteWithFeedback() {
 }
 
 void startRecordingForRegion(const CaptureRegion& rawRegion, const RecordSetupOptions& setup) {
+    // 若后台已处于倒计时或录制状态，严禁覆盖当前录制的 Keycast 停靠区，立即刷新置顶录制控制条并给出明确操作指引
+    if (ScreenRecorder::instance().state() != RecordState::Idle ||
+        ScreenRecorder::instance().isStopping()) {
+        RecordingIndicator::instance().refreshCaptureAffinity();
+        if (HWND indHwnd = FindWindowW(L"Tools3000_RecordingIndicator", nullptr)) {
+            SetWindowPos(indHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+        }
+        const bool isZh = tools3000::core::isUiLanguageChinese();
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            isZh ? L"正在录屏中，请点击顶部红色停止按钮或按 Ctrl+Shift+R 结束保存"
+                 : L"Recording in progress — click the red Stop button or press Ctrl+Shift+R"});
+        return;
+    }
+
     // 录屏开始前统一将选区宽高对齐偶像素 (>= 2)，消除编码器偶像素裁切导致的与外部呼吸红框/Keycast 停靠区 1px 偏差
     CaptureRegion region = rawRegion;
     if (region.width > 1) region.width &= ~1;

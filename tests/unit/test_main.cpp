@@ -102,6 +102,7 @@
 #include "core/utils/DpiUtils.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
+#include "core/utils/SessionIsolation.h"
 #include "core/utils/TextFilePreviewDecoder.h"
 #include "core/utils/OfficeAndPdfPreview.h"
 #include "core/utils/DesignAndCadPreview.h"

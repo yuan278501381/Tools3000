@@ -1489,8 +1489,8 @@ bool StudioPreviewWindow::showPreparingOverlay(double recordedDurationSec) {
     if (IsZoomed(m_hwnd) && !m_isMaximized) {
         ShowWindow(m_hwnd, SW_RESTORE);
     }
-    // 等待过渡层开启硬件级防截隐身，并预先提交首帧 D2D 缓冲后再亮出窗口，根除未初始化表面闪烁
-    SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
+    // 等待过渡层在支持环境下开启硬件级防截隐身（RDP / 旧版 Server 自动回退 WDA_NONE 保可见），并预先提交首帧 D2D 缓冲后再亮出窗口
+    tools3000::core::WinUtils::applyCaptureExclusionIfSafe(m_hwnd, true);
     SetWindowPos(m_hwnd, nullptr, normX, normY, initWinW, initWinH, SWP_NOZORDER | SWP_NOACTIVATE);
     render();
     SetWindowPos(m_hwnd, HWND_TOPMOST, normX, normY, fitted.cx, fitted.cy,

@@ -414,8 +414,9 @@ end;
 
 function IsTools3000Running(): Boolean;
 begin
-  // 1. 全局单实例互斥体秒级探测 (0.001ms)：Tools3000 进程存活之唯一底层真相
-  if CheckForMutexes('Global\Tools3000_SingleInstance_Mutex') or
+  // 1. 会话级 (Local\) 与旧版全局 (Global\) 单实例互斥体秒级探测 (0.001ms)
+  if CheckForMutexes('Local\Tools3000_SingleInstance_Mutex') or
+     CheckForMutexes('Global\Tools3000_SingleInstance_Mutex') or
      CheckForMutexes('Tools3000_SingleInstance_Mutex') then
   begin
     Result := True;

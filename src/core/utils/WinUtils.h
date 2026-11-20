@@ -145,6 +145,17 @@ public:
     /// 保证 Tools3000 所有 UI 均支持被截图抓取，显式设置 WDA_NONE
     static bool allowWindowCapture(HWND hwnd);
 
+    /// 判断当前会话是否为远程桌面 / 远程协助会话 (RDP / RemoteControl)
+    static bool isRemoteDesktopSession();
+
+    /// 判断当前环境是否可安全对录屏/长截图控制栏启用 WDA_EXCLUDEFROMCAPTURE：
+    /// 要求非远程桌面会话 (SM_REMOTESESSION == 0，否则控制条在 RDP 画面流中对用户肉眼彻底隐身)
+    /// 且系统内核 >= Windows 10 2004 / Server 2022 (Build 19041，防止旧版 Server 2016/2019 退化黑块)
+    static bool canSafelyExcludeWindowFromCapture();
+
+    /// 在安全环境下按需应用 WDA_EXCLUDEFROMCAPTURE，若处于 RDP 或旧版 Server 则自动回退 WDA_NONE 保可见
+    static bool applyCaptureExclusionIfSafe(HWND hwnd, bool wantExclude);
+
     /// 向后兼容接口：执行零隐私防截策略，强制设置 WDA_NONE 确保能被截图
     static bool excludeWindowFromCapture(HWND hwnd);
 

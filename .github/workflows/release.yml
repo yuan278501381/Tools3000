@@ -139,16 +139,49 @@ jobs:
         id: signing-config
         if: github.event_name == 'workflow_dispatch'
         env:
-          HAS_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
-          HAS_ORG: ${{ secrets.SIGNPATH_ORGANIZATION_ID != '' }}
+          HAS_AZURE_OIDC: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' }}
+          HAS_AZURE_SIGN: ${{ vars.AZURE_SIGNING_ENDPOINT != '' && vars.AZURE_SIGNING_ACCOUNT != '' && vars.AZURE_SIGNING_PROFILE != '' }}
+          HAS_SIGNPATH_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+          HAS_SIGNPATH_ORG: ${{ secrets.SIGNPATH_ORGANIZATION_ID != '' }}
         run: |
-          $Enabled = ($env:HAS_TOKEN -eq 'true' -and $env:HAS_ORG -eq 'true')
-          "enabled=$($Enabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          $Provider = "none"
+          if ($env:HAS_AZURE_OIDC -eq 'true' -and $env:HAS_AZURE_SIGN -eq 'true') {
+            $Provider = "azure"
+          } elseif ($env:HAS_SIGNPATH_TOKEN -eq 'true' -and $env:HAS_SIGNPATH_ORG -eq 'true') {
+            $Provider = "signpath"
+          }
+          Write-Host "[SIGN] Resolved CI cloud signing provider: $Provider" -ForegroundColor Cyan
+          "provider=$Provider" >> $env:GITHUB_OUTPUT
+          "enabled=$(($Provider -ne 'none').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
         shell: pwsh
 
-      # 第一轮签名：若启用云端签名，先对 deploy_dist 内的 .exe/.dll 二进制签名，再制作便携 ZIP 与 Setup.exe
+      - name: Azure OIDC Login for Trusted Signing (Zero Static Secrets)
+        if: steps.signing-config.outputs.provider == 'azure'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # 第一轮签名 (Azure Trusted Signing): 对 deploy_dist 内所有未签 .exe/.dll 执行微软公网信任签名
+      - name: First-Pass Inner Binary Signing via Azure Trusted Signing
+        if: steps.signing-config.outputs.provider == 'azure'
+        uses: azure/trusted-signing-action@v0.5
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files-folder: deploy_dist
+          files-folder-filter: exe,dll
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Tools3000
+
+      # 第一轮签名 (SignPath): 若启用 SignPath 开源云端签名，先对 deploy_dist 内的 .exe/.dll 二进制签名，再制作便携 ZIP 与 Setup.exe
       - name: Package Unsigned Inner Binaries for First-Pass SignPath Signing
-        if: steps.signing-config.outputs.enabled == 'true'
+        if: steps.signing-config.outputs.provider == 'signpath'
         run: |
           $InnerStage = "Output\UnsignedInner"
           if (Test-Path $InnerStage) { Remove-Item -Recurse -Force $InnerStage }
@@ -166,7 +199,7 @@ jobs:
         shell: pwsh
 
       - name: Upload Unsigned Inner Binaries for SignPath
-        if: steps.signing-config.outputs.enabled == 'true'
+        if: steps.signing-config.outputs.provider == 'signpath'
         uses: actions/upload-artifact@v4
         id: upload-unsigned-inner
         with:
@@ -175,7 +208,7 @@ jobs:
           retention-days: 1
 
       - name: Submit First-Pass Inner Binary Signing Request to SignPath
-        if: steps.signing-config.outputs.enabled == 'true'
+        if: steps.signing-config.outputs.provider == 'signpath'
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -187,7 +220,7 @@ jobs:
           output-artifact-directory: 'Output\SignedInner'
 
       - name: Apply Signed Inner Binaries Back to deploy_dist
-        if: steps.signing-config.outputs.enabled == 'true'
+        if: steps.signing-config.outputs.provider == 'signpath'
         run: |
           $SignedZip = Get-ChildItem "Output\SignedInner\*.zip" -Recurse | Select-Object -First 1
           $ExtractDir = "Output\SignedInner\extracted"
@@ -238,9 +271,29 @@ jobs:
           Write-Host "[OK] Portable ZIP and Setup.exe built successfully." -ForegroundColor Green
         shell: pwsh
 
-      # 第二轮签名：对生成的 Tools3000-Setup.exe 进行外层签名
+      # 第二轮签名 (Azure Trusted Signing): 对生成的 Tools3000-Setup.exe 进行外层签名
+      - name: Second-Pass Outer Installer Signing via Azure Trusted Signing
+        if: steps.signing-config.outputs.provider == 'azure'
+        uses: azure/trusted-signing-action@v0.5
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files: Output\Tools3000-Setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Tools3000 Installer
+
+      - name: Sync Azure Signed Installer Artifact
+        if: steps.signing-config.outputs.provider == 'azure'
+        run: |
+          Copy-Item -LiteralPath "Output\Tools3000-Setup.exe" -Destination "Output\Tools3000-$($env:RELEASE_TAG)-Setup.exe" -Force
+        shell: pwsh
+
+      # 第二轮签名 (SignPath): 对生成的 Tools3000-Setup.exe 进行外层签名
       - name: Upload Unsigned Outer Installer for SignPath
-        if: steps.signing-config.outputs.enabled == 'true'
+        if: steps.signing-config.outputs.provider == 'signpath'
         uses: actions/upload-artifact@v4
         id: upload-unsigned-installer
         with:
@@ -249,7 +302,7 @@ jobs:
           retention-days: 1
 
       - name: Submit Outer Installer Signing Request to SignPath
-        if: steps.signing-config.outputs.enabled == 'true'
+        if: steps.signing-config.outputs.provider == 'signpath'
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -261,7 +314,7 @@ jobs:
           output-artifact-directory: 'Output\SignedOuter'
 
       - name: Replace Outer Installer with Official Signed Artifact
-        if: steps.signing-config.outputs.enabled == 'true'
+        if: steps.signing-config.outputs.provider == 'signpath'
         run: |
           $SignedFile = Get-ChildItem "Output\SignedOuter\*.exe" -Recurse | Select-Object -First 1
           if (-not $SignedFile) {
@@ -278,6 +331,18 @@ jobs:
           } else {
             throw "SignPath outer signing request completed without producing a signed .exe installer!"
           }
+        shell: pwsh
+
+      # 公网信任链终极强断言门禁（确保无自签名外泄、带有效 RFC 3161 时间戳与微软公网信任根）
+      - name: Verify Public Trust Chain and RFC 3161 Timestamp Gate
+        if: steps.signing-config.outputs.enabled == 'true'
+        run: |
+          pwsh -File .\scripts\sign-artifacts.ps1 -VerifyOnly -Required -RequirePublicTrust -Paths @(
+            "deploy_dist\Tools3000.exe",
+            "deploy_dist\Tools3000_Service.exe",
+            "deploy_dist\Tools3000Core.dll",
+            "Output\Tools3000-Setup.exe"
+          )
         shell: pwsh
 
       - name: Generate SHA256SUMS Manifest

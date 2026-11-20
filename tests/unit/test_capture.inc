@@ -9833,7 +9833,10 @@ TEST(CaptureToolbarLayoutTest, ScrollCaptureControlBarExcludedFromScreenCaptureO
 
     DWORD affinity = WDA_NONE;
     if (GetWindowDisplayAffinity(ctrlHwnd, &affinity)) {
-        EXPECT_EQ(affinity, static_cast<DWORD>(WDA_EXCLUDEFROMCAPTURE));
+        const DWORD expectedAffinity = tools3000::core::WinUtils::canSafelyExcludeWindowFromCapture()
+            ? static_cast<DWORD>(WDA_EXCLUDEFROMCAPTURE)
+            : static_cast<DWORD>(WDA_NONE);
+        EXPECT_EQ(affinity, expectedAffinity);
     }
     overlay.hide();
 }
