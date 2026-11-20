@@ -361,6 +361,7 @@ set(CAPTURE_OTHER_SOURCES
     src/capture/CaptureRenderer.cpp
     src/capture/PinGroupBarOverlay.cpp
     src/capture/PinWindow.cpp
+    src/capture/PinWindowInput.cpp
     src/capture/PinWindowOcr.cpp
     src/capture/PinWindowRender.cpp
     src/capture/PinWindowTextReplace.cpp

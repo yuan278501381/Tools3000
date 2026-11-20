@@ -6,6 +6,13 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-20] 巨石文件零回归纯物理拆分范式试点完成：`PinWindow.cpp`（7,185 行 -> 5 个高内聚子域 + 私有内部协作头）
+- **四条零回归铁律（后续拆分 `StudioPreviewWindow.cpp` 等巨石文件统一沿用）**：
+  1. **纯物理搬家、零语义改动（Zero Behavior Change）**：拆分 commit 中绝不夹带逻辑改写、算法微调、顺手修 Bug 或字段重命名；公开头文件 `PinWindow.h` ABI 与外部调用方 0 改动；
+  2. **严格 ODR 单一事实源 (`PinWindowInternal.h`)**：绝不把可变 `static` 状态或大函数放进头文件；唯一跨编译单元可变原子量（`s_ocrShuttingDown`、`s_globalActiveOcrWorkers`）留在主文件 `PinWindow.cpp` 唯一定义，在私有协作头 `src/capture/PinWindowInternal.h`（104 行）以 `extern` 声明；
+  3. **按业务子域分步渐进 + 每步编译/单测/静态门禁原子提交**：共 4 步原子推进，主文件 `src/capture/PinWindow.cpp` 从 7,185 行瘦身至 **1,812 行**（生命周期/分组/变换/磁吸/剪贴板调度），并拆出 `PinWindowTextReplace.cpp`（486 行，原位改字）、`PinWindowOcr.cpp`（1,251 行，实景 OCR 与批注）、`PinWindowRender.cpp`（1,734 行，Direct2D 渲染管线）、`PinWindowInput.cpp`（2,013 行，右键菜单/热区命中/Win32 `pinWndProc` 消息循环）；
+  4. **全量真机门禁收口**：最终完整通过 `Plugin_Capture` / `Tools3000` / `Tools3000Tests` 编译、`Tools3000Tests.exe` 全量 **767/767** 通过（1 项需环境变量的外部基准测试跳过）、`logger-check`（728 条 100% 对齐）与 `trim-workingset-check`（24 处调用点 100% 合规）。
+
 ### [2026-11-20] Windows Server 多管理员并发会话隔离引擎 (`SessionIsolation`) 与多 Provider 公网可信代码签名体系 (`Azure Trusted Signing` + `SignPath`)
 - **架构痛点与终局决策**：
   1. **Windows Server 多会话并发隔离 (`SessionIsolation.{h,cpp}`, `main.cpp`, `WebViewEnvironmentManager.{h,cpp}`, `AtomicFile.h`, `StatsManager.cpp`, `ConfigManager.cpp`, `installer.iss`)**：
