@@ -52,6 +52,7 @@ namespace DeepOcrConstants {
 
     inline constexpr int kRecImgHeight = 48;
     inline constexpr int kRecShortBucketWidth = 320;
+    inline constexpr int kRecMediumBucketWidth = 640;
     inline constexpr int kRecLongBucketWidth = 960;
     inline constexpr int kRecFixedStripWidth = 960;
     inline constexpr int kRecMaxBatchSize = 32;
@@ -190,6 +191,34 @@ public:
         const cv::Rect& fallbackLineBox,
         int maxImageWidth,
         int maxImageHeight);
+
+    /// 合并同一水平基线上被 DBNet 切碎的极小标点/短值碎片（如 `:`、`"-"`），同时跳过像素级下拉箭头图标
+    static void coalesceSameLineTinyFragments(
+        std::vector<DbDetectedQuad>& quads,
+        const cv::Mat& bgr);
+
+    /// 对轴对齐水平文本框执行防碰撞墨水感知边界校准：挽救贴边标点（如尾随 `,` 与首部 `{`）并估算局部干净背景色
+    static cv::Rect refineAxisAlignedLineBox(
+        const cv::Mat& bgr,
+        const cv::Rect& box,
+        const std::vector<cv::Rect>& allBoxes,
+        size_t selfIdx,
+        cv::Vec3b* outBgColor = nullptr,
+        bool* outUniformBg = nullptr);
+
+    /// 像素级验证候选区域是否为 UI 下拉框 V/^ 形对称箭头图标（零误伤真实字母 v/V 与勾选符）
+    static bool isUiDropdownChevronPatch(
+        const cv::Mat& bgr,
+        const cv::Rect& candidateRect,
+        const cv::Rect* prevTextInkRect = nullptr);
+
+    /// 从识别结果中剥离经像素几何验证的按钮尾部/独立 UI 下拉箭头图标，并严格保持 text 与 charBoxes 1:1 同步
+    static void stripUiDropdownChevrons(
+        const cv::Mat& bgr,
+        std::vector<OcrResult>& blocks);
+
+    /// 针对明确 JSON 键值语法行将结构位上的中文全角引号/冒号/逗号及失真括号规整为标准 ASCII（保留中文值内部标点及 charBoxes 1:1 对齐）
+    static void normalizeStructuredJsonPunctuation(OcrResult& item);
 
     /// 校验 ONNX 模型二进制头部合法性 (Protobuf ModelProto 魔数与体积阈值)
     static bool isValidOnnxBuffer(const uint8_t* data, size_t byteSize, size_t minBytes = 256) noexcept;

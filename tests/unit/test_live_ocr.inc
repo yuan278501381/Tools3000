@@ -2391,3 +2391,194 @@ TEST(LiveTextOcrTest, HighResLargeFontAspectRatioPreservation) {
     for (const auto& l : lines) joined += l.text;
     EXPECT_NE(joined.find("ZZ30003665"), std::string::npos) << "Recognized text was: " << joined;
 }
+
+TEST(LiveTextOcrTest, DeepOcrFragmentCoalescingAndInkEdgeRescue) {
+    using namespace tools3000::ocr;
+
+    // 1. 同一水平基线上被 DBNet 切碎的极小标点/短值碎片（模拟 "WddStatus" + ":" + "\"-\""）必须自动合并，
+    //    同时跳过右侧独立对称 UI 下拉箭头图标，绝不把按钮旁的下拉箭头吸进标签框。
+    cv::Mat canvas(80, 360, CV_8UC3, cv::Scalar(255, 255, 255));
+    // 绘制紧邻按钮右侧的一个 9x5 对称向下下拉箭头 V（x=270..278, y=24..28）
+    const cv::Vec3b chevCol(120, 120, 120);
+    for (int k = 0; k < 5; ++k) {
+        canvas.at<cv::Vec3b>(24 + k, 270 + k) = chevCol;
+        canvas.at<cv::Vec3b>(24 + k, 278 - k) = chevCol;
+    }
+
+    auto makeRectQuad = [](float x, float y, float w, float h, float score = 0.95f) {
+        DbDetectedQuad q;
+        q.corners = {
+            cv::Point2f(x, y),
+            cv::Point2f(x + w, y),
+            cv::Point2f(x + w, y + h),
+            cv::Point2f(x, y + h),
+        };
+        q.score = score;
+        return q;
+    };
+
+    std::vector<DbDetectedQuad> quads = {
+        makeRectQuad(20.0f, 20.0f, 77.0f, 12.0f),   // "WddStatus"
+        makeRectQuad(96.0f, 24.0f, 10.0f, 5.0f),    // ":"
+        makeRectQuad(110.0f, 21.0f, 20.0f, 6.0f),   // "\"-\","
+        makeRectQuad(220.0f, 18.0f, 38.0f, 18.0f),  // "保存"
+        makeRectQuad(268.0f, 24.0f, 13.0f, 5.0f),   // 独立下拉箭头 v
+    };
+    DeepOcrEngine::coalesceSameLineTinyFragments(quads, canvas);
+    ASSERT_EQ(quads.size(), 3u) << "Three JSON fragments should coalesce into 1 quad while chevron stays separate";
+    EXPECT_NEAR(quads[0].corners[0].x, 20.0f, 0.5f);
+    EXPECT_NEAR(quads[0].corners[1].x, 130.0f, 0.5f);
+    EXPECT_NEAR(quads[1].corners[0].x, 220.0f, 0.5f);
+    EXPECT_NEAR(quads[1].corners[1].x, 258.0f, 0.5f);
+
+    // 2. 墨水感知防碰撞边界精修：DBNet 盒右缘漏掉 2px 外的逗号 `,` 且左缘漏掉 2px 外的 `{`，
+    //    必须精准双向扩张包裹首尾标点，同时严格止步于相邻列框之前。
+    cv::Mat jsonStrip(40, 260, CV_8UC3, cv::Scalar(255, 255, 255));
+    const cv::Scalar darkInk(20, 20, 20);
+    // 左缘外 2px 处的 `{`（x=36..38）
+    cv::rectangle(jsonStrip, cv::Rect(36, 13, 3, 10), darkInk, cv::FILLED);
+    // 主体文字（x=41..138）
+    cv::rectangle(jsonStrip, cv::Rect(41, 14, 98, 9), darkInk, cv::FILLED);
+    // 右缘外 2px 处的尾随逗号 `,`（x=141..143）
+    cv::rectangle(jsonStrip, cv::Rect(141, 20, 3, 4), darkInk, cv::FILLED);
+    // 右侧紧邻列（x=148..210）
+    cv::rectangle(jsonStrip, cv::Rect(148, 14, 40, 9), darkInk, cv::FILLED);
+
+    const std::vector<cv::Rect> allBoxes = {
+        cv::Rect(40, 12, 100, 14),
+        cv::Rect(147, 12, 50, 14),
+    };
+    cv::Vec3b estBg(0, 0, 0);
+    bool uniformBg = false;
+    const cv::Rect refined = DeepOcrEngine::refineAxisAlignedLineBox(
+        jsonStrip, allBoxes[0], allBoxes, 0, &estBg, &uniformBg);
+    EXPECT_TRUE(uniformBg);
+    EXPECT_EQ(estBg, cv::Vec3b(255, 255, 255));
+    EXPECT_LE(refined.x, 36) << "Must rescue leading '{' at x=36";
+    EXPECT_GE(refined.x + refined.width, 144) << "Must rescue trailing ',' at x=141..143";
+    EXPECT_LT(refined.x + refined.width, 147) << "Must never encroach onto neighbor box at x=147";
+}
+
+TEST(LiveTextOcrTest, DeepOcrDropdownChevronSuppressionPrecisionAndZeroFalsePositives) {
+    using namespace tools3000::ocr;
+
+    cv::Mat uiImg(120, 360, CV_8UC3, cv::Scalar(255, 255, 255));
+
+    // 场景 A：绿色按钮 "GET" + 6px 空白 + 7x4 绿色对称下拉箭头（模拟 `GET v`）
+    cv::rectangle(uiImg, cv::Rect(10, 10, 72, 24), cv::Scalar(235, 248, 238), cv::FILLED);
+    const cv::Scalar greenInk(108, 185, 42);
+    // 模拟 "GET" 三个满高字母（y=17..26, height=10）
+    cv::rectangle(uiImg, cv::Rect(16, 17, 7, 10), greenInk, cv::FILLED);
+    cv::rectangle(uiImg, cv::Rect(25, 17, 7, 10), greenInk, cv::FILLED);
+    cv::rectangle(uiImg, cv::Rect(34, 17, 7, 10), greenInk, cv::FILLED);
+    // 6px 空白后绘制 7x4 对称向下箭头（x=47..53, y=20..23, 居中悬浮）
+    for (int k = 0; k < 4; ++k) {
+        uiImg.at<cv::Vec3b>(20 + k, 47 + k) = cv::Vec3b(120, 196, 80);
+        uiImg.at<cv::Vec3b>(20 + k, 53 - k) = cv::Vec3b(120, 196, 80);
+    }
+
+    // 场景 B："Body" 后紧跟浅灰 10x6 对称下拉箭头（模拟 `Body~`，即使前字高对比度微悬垂也不能屏蔽浅灰箭头）
+    const cv::Scalar darkText(30, 35, 45);
+    cv::rectangle(uiImg, cv::Rect(120, 16, 30, 12), darkText, cv::FILLED);
+    for (int k = 0; k < 5; ++k) {
+        uiImg.at<cv::Vec3b>(19 + k, 155 + k) = cv::Vec3b(200, 200, 200);
+        uiImg.at<cv::Vec3b>(19 + k, 164 - k) = cv::Vec3b(200, 200, 200);
+    }
+
+    // 场景 C：独立下拉箭头块（模拟保存按钮旁独立 `√`）
+    for (int k = 0; k < 5; ++k) {
+        uiImg.at<cv::Vec3b>(20 + k, 220 + k) = cv::Vec3b(110, 110, 110);
+        uiImg.at<cv::Vec3b>(20 + k, 228 - k) = cv::Vec3b(110, 110, 110);
+    }
+
+    // 场景 D（负例防误伤）：基线对齐的正常英文字母 "A v"（高 9px、宽 7px，高宽比不满足扁平下拉箭头）
+    cv::rectangle(uiImg, cv::Rect(16, 62, 8, 11), darkText, cv::FILLED); // "A" (y=62..72)
+    // 绘制正常窄高小写 'v'，底部落在基线 y=72（x=30..36, y=64..72, cw=7, ch=9）
+    cv::line(uiImg, cv::Point(30, 64), cv::Point(33, 72), darkText, 1);
+    cv::line(uiImg, cv::Point(36, 64), cv::Point(33, 72), darkText, 1);
+
+    // 场景 E（负例防误伤）：非对称真实勾选符 "√"（左短右长，不满足左右镜像对称）
+    cv::line(uiImg, cv::Point(120, 69), cv::Point(123, 73), darkText, 1);
+    cv::line(uiImg, cv::Point(123, 73), cv::Point(130, 62), darkText, 1);
+
+    OcrResult getBtn;
+    getBtn.text = "GET v";
+    getBtn.box = cv::Rect(14, 14, 44, 16);
+    getBtn.charBoxes = {
+        cv::Rect(16, 14, 8, 16), cv::Rect(25, 14, 8, 16), cv::Rect(34, 14, 8, 16),
+        cv::Rect(42, 14, 4, 16), cv::Rect(47, 14, 8, 16),
+    };
+
+    OcrResult bodyBtn;
+    bodyBtn.text = "Body~";
+    bodyBtn.box = cv::Rect(118, 14, 50, 16);
+    bodyBtn.charBoxes = {
+        cv::Rect(120, 14, 8, 16), cv::Rect(128, 14, 8, 16),
+        cv::Rect(136, 14, 7, 16), cv::Rect(143, 14, 8, 16), cv::Rect(154, 14, 12, 16),
+    };
+
+    OcrResult loneChev;
+    loneChev.text = "\xE2\x88\x9A"; // √
+    loneChev.box = cv::Rect(218, 18, 13, 9);
+    loneChev.charBoxes = {loneChev.box};
+
+    OcrResult realLetterV;
+    realLetterV.text = "A v";
+    realLetterV.box = cv::Rect(14, 60, 26, 15);
+    realLetterV.charBoxes = {
+        cv::Rect(16, 60, 8, 15), cv::Rect(24, 60, 5, 15), cv::Rect(29, 60, 9, 15),
+    };
+
+    OcrResult realCheckmark;
+    realCheckmark.text = "\xE2\x88\x9A"; // √
+    realCheckmark.box = cv::Rect(118, 60, 15, 15);
+    realCheckmark.charBoxes = {realCheckmark.box};
+
+    std::vector<OcrResult> blocks = {getBtn, bodyBtn, loneChev, realLetterV, realCheckmark};
+    DeepOcrEngine::stripUiDropdownChevrons(uiImg, blocks);
+
+    ASSERT_EQ(blocks.size(), 4u) << "Standalone dropdown chevron must be removed while real checkmark stays";
+    EXPECT_EQ(blocks[0].text, "GET");
+    EXPECT_EQ(blocks[0].charBoxes.size(), 3u);
+    EXPECT_LT(blocks[0].box.width, getBtn.box.width);
+
+    EXPECT_EQ(blocks[1].text, "Body");
+    EXPECT_EQ(blocks[1].charBoxes.size(), 4u);
+
+    EXPECT_EQ(blocks[2].text, "A v") << "Baseline-aligned real letter 'v' must never be stripped";
+    EXPECT_EQ(blocks[2].charBoxes.size(), 3u);
+
+    EXPECT_EQ(blocks[3].text, "\xE2\x88\x9A") << "Asymmetric real checkmark must never be stripped";
+}
+
+TEST(LiveTextOcrTest, DeepOcrStructuredJsonPunctuationNormalization) {
+    using namespace tools3000::ocr;
+
+    // 1. JSON 键值对含中文字符串值：仅规整 JSON 结构位上的全角引号/冒号/逗号及误识圆括号，
+    //    严格保全中文值内部的中文逗号/冒号/括号，且 text 与 charBoxes 严格 1:1 保持长度同步。
+    OcrResult jsonLine;
+    jsonLine.text =
+        "(\xE2\x80\x9C" "U_PLM_Categ1\xE2\x80\x9D\xEF\xBC\x9A\xE2\x80\x9C\xE5\x8D\x8A\xE6\x88\x90\xE5\x93\x81\xE2\x80\x9D\xEF\xBC\x8C"
+        "\"User_Text\"\xEF\xBC\x9A\xE2\x80\x9C" "C\xE7\xB1\xBB\xE5\x8F\x97\xE6\x8E\xA7\xEF\xBC\x8C\xE5\x8E\x82\xE5\xAE\xB6\xEF\xBC\x9A\xE5\x8D\x97\xE9\x80\x9A\xE2\x80\x9D\xEF\xBC\x8C"
+        "\"ItemPrices\":[(\"Currency\":\"RMB\",\"PriceList\":1)]}";
+    const size_t origCpCount = OcrEngine::countUtf8Codepoints(jsonLine.text);
+    jsonLine.charBoxes = OcrEngine::buildProportionalCharBoxes(jsonLine.text, cv::Rect(0, 0, 800, 16));
+    ASSERT_EQ(jsonLine.charBoxes.size(), origCpCount);
+
+    DeepOcrEngine::normalizeStructuredJsonPunctuation(jsonLine);
+
+    const std::string expectedJson =
+        "{\"U_PLM_Categ1\":\"\xE5\x8D\x8A\xE6\x88\x90\xE5\x93\x81\","
+        "\"User_Text\":\"C\xE7\xB1\xBB\xE5\x8F\x97\xE6\x8E\xA7\xEF\xBC\x8C\xE5\x8E\x82\xE5\xAE\xB6\xEF\xBC\x9A\xE5\x8D\x97\xE9\x80\x9A\","
+        "\"ItemPrices\":[{\"Currency\":\"RMB\",\"PriceList\":1}]}";
+    EXPECT_EQ(jsonLine.text, expectedJson);
+    EXPECT_EQ(OcrEngine::countUtf8Codepoints(jsonLine.text), origCpCount);
+    EXPECT_EQ(jsonLine.charBoxes.size(), origCpCount);
+
+    // 2. 普通中文自然语言散文含中式引号/冒号/逗号：必须 100% 原样零改动！
+    OcrResult chineseProse;
+    chineseProse.text = "\xE2\x80\x9C\xE4\xBD\xA0\xE5\xA5\xBD\xE2\x80\x9D\xEF\xBC\x8C\xE5\xA5\xB9\xE8\xAF\xB4\xEF\xBC\x9A\xE2\x80\x9C\xE4\xBB\x8A\xE5\xA4\xA9\xE5\xA4\xA9\xE6\xB0\x94\xE5\xBE\x88\xE5\xA5\xBD\xE3\x80\x82\xE2\x80\x9D";
+    const std::string proseBefore = chineseProse.text;
+    DeepOcrEngine::normalizeStructuredJsonPunctuation(chineseProse);
+    EXPECT_EQ(chineseProse.text, proseBefore);
+}
