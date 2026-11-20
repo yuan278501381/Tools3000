@@ -155,6 +155,19 @@ public:
     /// 面向 DBNet 检测分支的轻量 LAB 色度去彩纹 + 局部 CLAHE 自适应增强（原生清晰截图零改动直通）
     static cv::Mat enhanceLowContrastForDetection(const cv::Mat& bgr);
 
+    /// 合同/发票/发货单红章压字穿透滤除：仅在浅色纸面上定位与黑色文字墨水产生真实交叉压覆的高饱和红色印章连通域，
+    /// 将红章柔和中和至周边纸面底色同时 100% 保护黑字核心笔画与独立红色警示文字（零误伤）
+    static cv::Mat suppressRedStampForOcr(const cv::Mat& bgr, bool* outSuppressed = nullptr);
+
+    /// 检测存在明显手影/台灯光照不均的纸质单据/手写笔记本/白板实拍照片（原生数字截图与含大块暗前景场景直接返回 false）
+    static bool isShadowedDocumentPhoto(const cv::Mat& bgr);
+
+    /// 纸面/手写拍照光照归一化去阴影漂白：大核背景估计除法抹平手影暗角并凸显淡笔迹反差，数字截图原样透传
+    static cv::Mat enhanceDocumentPhoto(const cv::Mat& bgr);
+
+    /// 统一 OCR 检测前自适应视觉增强管线（红章穿透 + 手写纸面去阴影 / 拍屏摩尔纹抑制）
+    static cv::Mat preprocessImageForDetection(const cv::Mat& bgr, bool* outApplyToRecognition = nullptr);
+
     /// DBNet 概率图后处理：二值化、轮廓过滤、多边形均分校验、Unclip 外扩与四点正交排序
     static std::vector<DbDetectedQuad> postprocessDbMap(
         const cv::Mat& probMap,

@@ -3089,3 +3089,114 @@ TEST(LiveTextOcrTest, FixtureDenseDocAndSapMultiColumnRegression) {
         EXPECT_NE(allText.find("MP4 / GIF / WebP"), std::string::npos) << allText;
     }
 }
+
+TEST(LiveTextOcrTest, DeepOcrRedStampSuppressionShadowNormalizationAndRotatedPageOrder) {
+    using namespace tools3000::ocr;
+
+    // 1. 红章压黑字穿透：半透明大红公章圆环直接压在黑色正文上 -> 印章红墨水被穿透滤除，黑字 100% 保留；
+    //    同时独立的纯红警示文字（不与黑字交叉）严禁被误抹除！
+    {
+        cv::Mat doc(220, 480, CV_8UC3, cv::Scalar(248, 248, 248));
+        cv::putText(doc, "INV-2026-8899", cv::Point(40, 96),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.05, cv::Scalar(22, 22, 22), 2, cv::LINE_AA);
+        // 叠加一个半透明大红圆形财务印章直接盖在 "INV-2026-8899" 上
+        cv::Mat overlay = doc.clone();
+        cv::circle(overlay, cv::Point(180, 90), 54, cv::Scalar(25, 28, 228), 5, cv::LINE_AA);
+        cv::circle(overlay, cv::Point(180, 90), 36, cv::Scalar(25, 28, 228), 3, cv::LINE_AA);
+        cv::line(overlay, cv::Point(132, 90), cv::Point(228, 90), cv::Scalar(25, 28, 228), 4, cv::LINE_AA);
+        cv::addWeighted(overlay, 0.72, doc, 0.28, 0.0, doc);
+
+        // 下方远离黑字区域放置独立的纯红警示文字（无黑字交叉），必须 100% 完整保留
+        cv::putText(doc, "WARNING 404", cv::Point(40, 195),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.85, cv::Scalar(28, 30, 224), 2, cv::LINE_AA);
+
+        bool suppressed = false;
+        const cv::Mat cleaned = DeepOcrEngine::suppressRedStampForOcr(doc, &suppressed);
+        EXPECT_TRUE(suppressed);
+
+        // 校验红章顶部纯红弧线（非黑字处）已被漂白至接近纸面白底
+        const cv::Vec3b stampTopPx = cleaned.at<cv::Vec3b>(36, 180);
+        EXPECT_GT(static_cast<int>(stampTopPx[1]), 175) << "Red stamp green channel should be neutralized near white";
+        EXPECT_LT(std::abs(static_cast<int>(stampTopPx[2]) - static_cast<int>(stampTopPx[1])), 16);
+
+        // 校验独立纯红警示文字 "WARNING 404" 像素 100% 保留红字特征未被误伤
+        int preservedRedWarningPixels = 0;
+        for (int y = 172; y < 204; ++y) {
+            for (int x = 36; x < 240; ++x) {
+                const auto& p = cleaned.at<cv::Vec3b>(y, x);
+                if (static_cast<int>(p[2]) - static_cast<int>(p[1]) >= 80) {
+                    ++preservedRedWarningPixels;
+                }
+            }
+        }
+        EXPECT_GT(preservedRedWarningPixels, 120) << "Standalone red warning text must never be erased";
+
+        // 模型已安装时，端到端实测穿透后能正确读出被红章覆盖的 "INV-2026-8899" 与独立红字 "WARNING 404"
+        if (DeepOcrEngine::instance().getModelStatus().installed) {
+            const auto lines = DeepOcrEngine::instance().extractText(doc);
+            const std::string allText = joinOcrLines(lines);
+            EXPECT_NE(allText.find("INV-2026-8899"), std::string::npos) << allText;
+            EXPECT_NE(allText.find("WARNING"), std::string::npos) << allText;
+        }
+    }
+
+    // 2. 纸面/手写拍照光照阴影归一化：左暗右亮手影梯度 + 轻微相机颗粒噪声 -> 精准判定并拉平纸面光照，
+    //    同时对清晰纯白数字截图 100% 返回 false 零干预！
+    {
+        cv::Mat cleanScreen(200, 320, CV_8UC3, cv::Scalar(255, 255, 255));
+        cv::putText(cleanScreen, "Clean Digital UI", cv::Point(20, 100),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(20, 20, 20), 2, cv::LINE_AA);
+        EXPECT_FALSE(DeepOcrEngine::isShadowedDocumentPhoto(cleanScreen));
+
+        cv::Mat shadowedPaper(260, 420, CV_8UC3);
+        cv::RNG rng(20261121);
+        for (int y = 0; y < shadowedPaper.rows; ++y) {
+            auto* row = shadowedPaper.ptr<cv::Vec3b>(y);
+            for (int x = 0; x < shadowedPaper.cols; ++x) {
+                const float t = static_cast<float>(x) / static_cast<float>(shadowedPaper.cols);
+                const int base = static_cast<int>(108.0f + 122.0f * t);
+                const int noise = rng.uniform(-7, 8);
+                const uint8_t b = static_cast<uint8_t>(std::clamp(base - 8 + noise, 0, 255));
+                const uint8_t g = static_cast<uint8_t>(std::clamp(base - 2 + noise, 0, 255));
+                const uint8_t r = static_cast<uint8_t>(std::clamp(base + 4 + noise, 0, 255));
+                row[x] = cv::Vec3b(b, g, r);
+            }
+        }
+        cv::putText(shadowedPaper, "NOTE 2026-11-21", cv::Point(32, 130),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(48, 52, 58), 2, cv::LINE_AA);
+        EXPECT_TRUE(DeepOcrEngine::isShadowedDocumentPhoto(shadowedPaper));
+
+        const cv::Mat normalized = DeepOcrEngine::enhanceDocumentPhoto(shadowedPaper);
+        // 左侧原暗影区 (base~110) 应被提亮至接近纸面白底 (>= 195)，大幅缩小左右亮度极差
+        const cv::Scalar leftMean = cv::mean(normalized(cv::Rect(10, 10, 40, 40)));
+        const cv::Scalar rightMean = cv::mean(normalized(cv::Rect(360, 10, 40, 40)));
+        EXPECT_GT(leftMean[1], 195.0);
+        EXPECT_LT(std::abs(rightMean[1] - leftMean[1]), 35.0);
+    }
+
+    // 3. 整图顺时针拍歪 90° 横向文档端到端识别与阅读序校正
+    if (DeepOcrEngine::instance().getModelStatus().installed) {
+        cv::Mat horiz(240, 520, CV_8UC3, cv::Scalar(252, 252, 252));
+        cv::putText(horiz, "LINE-ONE-ALPHA", cv::Point(40, 62),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(20, 20, 20), 2, cv::LINE_AA);
+        cv::putText(horiz, "LINE-TWO-BETA", cv::Point(40, 132),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(20, 20, 20), 2, cv::LINE_AA);
+        cv::putText(horiz, "LINE-THREE-GAMMA", cv::Point(40, 202),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(20, 20, 20), 2, cv::LINE_AA);
+
+        cv::Mat rot90;
+        cv::rotate(horiz, rot90, cv::ROTATE_90_CLOCKWISE);
+        const auto lines = DeepOcrEngine::instance().extractText(rot90);
+        const std::string allText = joinOcrLines(lines);
+        const size_t pos1 = allText.find("ALPHA");
+        const size_t pos2 = allText.find("BETA");
+        const size_t pos3 = allText.find("GAMMA");
+        EXPECT_NE(pos1, std::string::npos) << allText;
+        EXPECT_NE(pos2, std::string::npos) << allText;
+        EXPECT_NE(pos3, std::string::npos) << allText;
+        if (pos1 != std::string::npos && pos2 != std::string::npos && pos3 != std::string::npos) {
+            EXPECT_LT(pos1, pos2) << "90-degree rotated page must restore logical top-to-bottom reading order:\n" << allText;
+            EXPECT_LT(pos2, pos3) << "90-degree rotated page must restore logical top-to-bottom reading order:\n" << allText;
+        }
+    }
+}
