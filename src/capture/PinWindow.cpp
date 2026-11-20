@@ -2917,6 +2917,7 @@ void PinWindow::clearTextSelection() {
     m_hoveredBlockIndex = -1;
     m_isSelectingText = false;
     m_isCharStreamSelecting = false;
+    m_showCrossRegionRectGuide = false;
     m_anchorBlockIndex = -1;
     m_anchorCharIndex = 0;
     m_ocrMarkupPreviewClean = false;
@@ -4743,8 +4744,8 @@ void PinWindow::render() {
                 ? (sumSelCenterX / static_cast<float>(selRectCount))
                 : (size.width * 0.5f);
 
-            // 3. Alt 矩形框选模式时绘制橡皮筋框（流式逐字拖选紧贴文字本身，无需画矩形外框）
-            if (m_isSelectingText && !m_isCharStreamSelecting) {
+            // 3. Alt 矩形框选模式或真正跨左右双栏围选时绘制橡皮筋引导框，确保所见即所得（杜绝无视觉提示的“隐形竖刀”截断）
+            if (m_isSelectingText && (!m_isCharStreamSelecting || m_showCrossRegionRectGuide)) {
                 float sx1 = static_cast<float>((std::min)(m_selectStart.x, m_selectEnd.x));
                 float sy1 = static_cast<float>((std::min)(m_selectStart.y, m_selectEnd.y));
                 float sx2 = static_cast<float>((std::max)(m_selectStart.x, m_selectEnd.x));
@@ -6570,6 +6571,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
                                 std::vector<size_t> newIndices;
                                 std::vector<PinBlockCharSpan> newSpans;
+                                self->m_showCrossRegionRectGuide = false;
 
                                 if (targetBlock == self->m_anchorBlockIndex) {
                                     const auto& blk = self->m_ocrBlocks[static_cast<size_t>(targetBlock)];
@@ -6656,35 +6658,90 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                                         }
                                     }
                                 } else if (targetBlock >= 0) {
-                                    // 跨不同版面分栏拖选时自动转为二维几何包围框选字，绝不跨栏卷入整列无关行
-                                    const float sx1 = (std::min)(startMx, curMx);
-                                    const float sy1 = (std::min)(startMy, curMy);
-                                    const float sx2 = (std::max)(startMx, curMx);
-                                    const float sy2 = (std::max)(startMy, curMy);
-                                    for (size_t i = 0; i < self->m_ocrBlocks.size(); ++i) {
-                                        const auto& blk = self->m_ocrBlocks[i];
-                                        const auto& b = blk.origBox;
-                                        if (static_cast<float>(b.x + b.width) < sx1 ||
-                                            static_cast<float>(b.x) > sx2 ||
-                                            static_cast<float>(b.y + b.height) < sy1 ||
-                                            static_cast<float>(b.y) > sy2) {
-                                            continue;
-                                        }
-                                        size_t firstC = blk.charBoxes.size();
-                                        size_t lastC = 0;
-                                        for (size_t c = 0; c < blk.charBoxes.size(); ++c) {
-                                            const auto& cb = blk.charBoxes[c];
-                                            const float cx = static_cast<float>(cb.x) + static_cast<float>(cb.width) * 0.5f;
-                                            if (cx >= sx1 && cx <= sx2 &&
-                                                static_cast<float>(cb.y + cb.height) >= sy1 &&
-                                                static_cast<float>(cb.y) <= sy2) {
-                                                firstC = (std::min)(firstC, c);
-                                                lastC = (std::max)(lastC, c + 1);
+                                    // 判断起止分区是否为真正的「左右并排双栏」：
+                                    // - 仅左右并排双栏（垂直显著重叠且水平分离）采用带可见引导框的二维围选，防止跨栏误卷无关列；
+                                    // - 上下堆叠分段（如上方表格 + 下方装箱卡/标题 + 正文）维持自然阅读序流式选字，绝不静默腰斩右侧文字！
+                                    const int targetRegId = self->m_ocrBlocks[static_cast<size_t>(targetBlock)].layoutRegionId;
+                                    auto computeRegionBounds = [&](int rid) {
+                                        float rx1 = FLT_MAX, ry1 = FLT_MAX, rx2 = -FLT_MAX, ry2 = -FLT_MAX;
+                                        for (const auto& rb : self->m_ocrBlocks) {
+                                            if (rb.layoutRegionId == rid) {
+                                                rx1 = (std::min)(rx1, static_cast<float>(rb.origBox.x));
+                                                ry1 = (std::min)(ry1, static_cast<float>(rb.origBox.y));
+                                                rx2 = (std::max)(rx2, static_cast<float>(rb.origBox.x + rb.origBox.width));
+                                                ry2 = (std::max)(ry2, static_cast<float>(rb.origBox.y + rb.origBox.height));
                                             }
                                         }
-                                        if (firstC < lastC) {
-                                            newIndices.push_back(i);
-                                            newSpans.push_back(PinBlockCharSpan{i, firstC, lastC});
+                                        return std::array<float, 4>{rx1, ry1, rx2, ry2};
+                                    };
+                                    const auto aB = computeRegionBounds(anchorRegId);
+                                    const auto tB = computeRegionBounds(targetRegId);
+                                    const float aW = (std::max)(1.0f, aB[2] - aB[0]);
+                                    const float aH = (std::max)(1.0f, aB[3] - aB[1]);
+                                    const float tW = (std::max)(1.0f, tB[2] - tB[0]);
+                                    const float tH = (std::max)(1.0f, tB[3] - tB[1]);
+                                    const float overlapX = (std::max)(0.0f, (std::min)(aB[2], tB[2]) - (std::max)(aB[0], tB[0]));
+                                    const float overlapY = (std::max)(0.0f, (std::min)(aB[3], tB[3]) - (std::max)(aB[1], tB[1]));
+                                    const bool sideBySideColumns =
+                                        (overlapY / (std::min)(aH, tH) >= 0.40f) &&
+                                        (overlapX / (std::min)(aW, tW) < 0.25f);
+
+                                    if (sideBySideColumns) {
+                                        self->m_showCrossRegionRectGuide = true;
+                                        const float sx1 = (std::min)(startMx, curMx);
+                                        const float sy1 = (std::min)(startMy, curMy);
+                                        const float sx2 = (std::max)(startMx, curMx);
+                                        const float sy2 = (std::max)(startMy, curMy);
+                                        for (size_t i = 0; i < self->m_ocrBlocks.size(); ++i) {
+                                            const auto& blk = self->m_ocrBlocks[i];
+                                            const auto& b = blk.origBox;
+                                            if (static_cast<float>(b.x + b.width) < sx1 ||
+                                                static_cast<float>(b.x) > sx2 ||
+                                                static_cast<float>(b.y + b.height) < sy1 ||
+                                                static_cast<float>(b.y) > sy2) {
+                                                continue;
+                                            }
+                                            size_t firstC = blk.charBoxes.size();
+                                            size_t lastC = 0;
+                                            for (size_t c = 0; c < blk.charBoxes.size(); ++c) {
+                                                const auto& cb = blk.charBoxes[c];
+                                                const float cx = static_cast<float>(cb.x) + static_cast<float>(cb.width) * 0.5f;
+                                                if (cx >= sx1 && cx <= sx2 &&
+                                                    static_cast<float>(cb.y + cb.height) >= sy1 &&
+                                                    static_cast<float>(cb.y) <= sy2) {
+                                                    firstC = (std::min)(firstC, c);
+                                                    lastC = (std::max)(lastC, c + 1);
+                                                }
+                                            }
+                                            if (firstC < lastC) {
+                                                newIndices.push_back(i);
+                                                newSpans.push_back(PinBlockCharSpan{i, firstC, lastC});
+                                            }
+                                        }
+                                    } else {
+                                        // 上下堆叠跨区流式选字：按阅读序自然跨过全行内容，右侧字符完整保留
+                                        const size_t caretChar = locateNearestCharInBlock(
+                                            self->m_ocrBlocks[static_cast<size_t>(targetBlock)], curMx);
+                                        int b1 = self->m_anchorBlockIndex;
+                                        size_t c1 = self->m_anchorCharIndex;
+                                        int b2 = targetBlock;
+                                        size_t c2 = caretChar;
+                                        if (b1 > b2) {
+                                            std::swap(b1, b2);
+                                            std::swap(c1, c2);
+                                        }
+                                        for (int b = b1; b <= b2; ++b) {
+                                            const auto& blk = self->m_ocrBlocks[static_cast<size_t>(b)];
+                                            const size_t totalC = blk.charBoxes.size();
+                                            if (totalC == 0) continue;
+                                            size_t sc = 0;
+                                            size_t ec = totalC;
+                                            if (b == b1) sc = (std::min)(c1, totalC - 1);
+                                            if (b == b2) ec = (std::min)(totalC, c2 + 1);
+                                            if (sc < ec) {
+                                                newIndices.push_back(static_cast<size_t>(b));
+                                                newSpans.push_back(PinBlockCharSpan{static_cast<size_t>(b), sc, ec});
+                                            }
                                         }
                                     }
                                 }
@@ -6847,6 +6904,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 self->m_isSelectingReplaceText = false;
                 self->m_isDraggingReplacePos = false;
                 self->m_isCharStreamSelecting = false;
+                self->m_showCrossRegionRectGuide = false;
             }
             return 0;
         }
@@ -6871,6 +6929,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 if (self->m_isSelectingText) {
                     self->m_isSelectingText = false;
                     self->m_isCharStreamSelecting = false;
+                    self->m_showCrossRegionRectGuide = false;
                     ReleaseCapture();
                     self->render();
                     return 0;

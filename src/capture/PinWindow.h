@@ -413,6 +413,7 @@ private:
     bool m_isSelectingText = false;
     bool m_isSelectingReplaceText = false;
     bool m_isCharStreamSelecting = false;
+    bool m_showCrossRegionRectGuide = false;
     int m_anchorBlockIndex = -1;
     size_t m_anchorCharIndex = 0;
     POINT m_selectStart{};

@@ -1085,6 +1085,82 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
     }
 }
 
+bool DeepOcrEngine::isLowContrastScreenPhoto(const cv::Mat& bgr) {
+    if (bgr.empty() || bgr.cols < 64 || bgr.rows < 64 || bgr.type() != CV_8UC3) {
+        return false;
+    }
+
+    // 4px 步长快采样 (< 0.2ms)，精准区分原生数字渲染截图与手机实拍/屏摄低反差摩尔纹照片
+    constexpr int kStep = 4;
+    uint32_t sampled = 0;
+    uint32_t midGrayCount = 0;
+    uint32_t pureWhiteCount = 0;
+    uint32_t flatPairs = 0;
+    uint32_t totalPairs = 0;
+
+    for (int y = 0; y < bgr.rows; y += kStep) {
+        const auto* row = bgr.ptr<cv::Vec3b>(y);
+        int prevLum = -1;
+        for (int x = 0; x < bgr.cols; x += kStep) {
+            const int lum = (static_cast<int>(row[x][0]) * 29 +
+                             static_cast<int>(row[x][1]) * 150 +
+                             static_cast<int>(row[x][2]) * 77) >> 8;
+            ++sampled;
+            if (lum >= 50 && lum <= 200) ++midGrayCount;
+            if (lum >= 242) ++pureWhiteCount;
+            if (x + 1 < bgr.cols) {
+                const int nextLum = (static_cast<int>(row[x + 1][0]) * 29 +
+                                     static_cast<int>(row[x + 1][1]) * 150 +
+                                     static_cast<int>(row[x + 1][2]) * 77) >> 8;
+                ++totalPairs;
+                if (nextLum == lum) ++flatPairs;
+            }
+            prevLum = lum;
+        }
+        (void)prevLum;
+    }
+
+    if (sampled < 64 || totalPairs < 64) {
+        return false;
+    }
+
+    const float flatRatio = static_cast<float>(flatPairs) / static_cast<float>(totalPairs);
+    const float midGrayRatio = static_cast<float>(midGrayCount) / static_cast<float>(sampled);
+    const float pureWhiteRatio = static_cast<float>(pureWhiteCount) / static_cast<float>(sampled);
+
+    // 原生数字截图平坦度通常 >= 0.70 或具有大片纯白底色；实拍/屏摄照片通常平坦度 < 0.45 且大面积挤在中灰区间
+    return (flatRatio < 0.45f) && (midGrayRatio >= 0.45f) && (pureWhiteRatio < 0.15f);
+}
+
+cv::Mat DeepOcrEngine::enhanceLowContrastForDetection(const cv::Mat& bgr) {
+    if (!isLowContrastScreenPhoto(bgr)) {
+        return bgr;
+    }
+
+    // LAB 空间分离亮度和色度：平滑 a/b 色度通道压制手机拍屏 RGB 彩色摩尔纹，
+    // 对 L 亮度通道执行受限局部直方图均衡 (CLAHE) 并与原图柔和融合，避免过度锐化振铃伪影。
+    cv::Mat lab;
+    cv::cvtColor(bgr, lab, cv::COLOR_BGR2Lab);
+    std::vector<cv::Mat> channels;
+    cv::split(lab, channels);
+    if (channels.size() != 3) {
+        return bgr;
+    }
+
+    cv::GaussianBlur(channels[1], channels[1], cv::Size(5, 5), 1.2);
+    cv::GaussianBlur(channels[2], channels[2], cv::Size(5, 5), 1.2);
+
+    auto clahe = cv::createCLAHE(2.2, cv::Size(8, 8));
+    cv::Mat lEq;
+    clahe->apply(channels[0], lEq);
+    cv::addWeighted(lEq, 0.68, channels[0], 0.32, 0.0, channels[0]);
+
+    cv::Mat enhancedLab, enhancedBgr;
+    cv::merge(channels, enhancedLab);
+    cv::cvtColor(enhancedLab, enhancedBgr, cv::COLOR_Lab2BGR);
+    return enhancedBgr;
+}
+
 std::vector<DbDetectedQuad> DeepOcrEngine::postprocessDbMap(
     const cv::Mat& probMapInput,
     int origWidth,
@@ -1620,6 +1696,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             cv::Mat detValid;
             cv::resize(bgr, detValid, cv::Size(validW, validH), 0.0, 0.0,
                        fitScale < 1.0f ? cv::INTER_AREA : cv::INTER_LINEAR);
+            detValid = enhanceLowContrastForDetection(detValid);
 
             cv::Mat detCanvas;
             if (validW == canvasW && validH == canvasH) {
@@ -1703,6 +1780,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             cv::Mat detResized;
             cv::resize(bgr, detResized, cv::Size(alignW, alignH), 0.0, 0.0,
                        desiredRatio < 1.0f ? cv::INTER_AREA : cv::INTER_LINEAR);
+            detResized = enhanceLowContrastForDetection(detResized);
             cv::Mat detBlob = makeDbNetBlob(detResized);
             m_detNet.setInput(detBlob);
             probOut = m_detNet.forward();
@@ -1882,8 +1960,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
         };
 
         // 弱对比度屏摄/反光灰字条带自适应提纯：
-        // 仅在送入 SVTR 前的 48px 高度条带灰度动态范围 (P95 - P05) 落在 [16, 112) 时生效，
-        // 通过查表平滑拉伸动态范围（增益上限 2.35x），正常高对比度截图 (>=112) 100% 零改动直通。
+        // 仅在送入 SVTR 前的 48px 高度条带灰度动态范围 (P95 - P05) 落在 [16, 132) 时生效，
+        // 通过查表平滑拉伸动态范围（增益上限 2.35x），正常高对比度截图 (>=132) 100% 零改动直通。
         auto enhanceLowContrastStripCrop = [](cv::Mat& bgr48) {
             if (bgr48.empty() || bgr48.type() != CV_8UC3) return;
             std::array<uint32_t, 256> hist{};
@@ -1913,7 +1991,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             const int p95 = pctBin((total * 95u) / 100u);
             const int p98 = pctBin((total * 98u) / 100u);
             const int dynRange = p95 - p05;
-            if (dynRange < 16 || dynRange >= 112) return;
+            if (dynRange < 16 || dynRange >= 132) return;
 
             const float lo = static_cast<float>(p02);
             const float hi = static_cast<float>((std::max)(p98, p02 + 16));

@@ -2164,3 +2164,16 @@
   6. **搜索服务策略 B（C++ SEH/MFT 安全壳 + Rust 7 模块物理分层 SIMD 全文检索静态库 `tools3000_content_rs`）**：
      - 保留 `Tools3000_Service` 的 Win32 SCM `DEMAND_START` 服务生命周期、USN 实时监听、SQLite WAL、PDF/Office/IFilter 提取器及 `PlainTextExtractor` 的 `__try / __except (EXCEPTION_IN_PAGE_ERROR)` 内存映射抗硬件断联保护壳；
      - 将 CPU 密集的编码嗅探、SIMD 换行跳跃、多词 AND 大小写折叠匹配与 UTF-16 代理对安全摘要裁剪下沉至 Rust 静态库 `src/service/rust_content/`，并严格遵循物理分层拆分为 7 个职责单一模块（`constants.rs`、`encoding.rs`、`simd.rs`、`snippet.rs`、`matcher.rs`、`ffi.rs`、`lib.rs`）。
+
+
+---
+
+## 2026-11-20 离线 OCR 拍屏低反差增强、贴图跨区流式选字修复与双语精装 README 演进
+1. **PP-OCRv4 检测/识别双分支低反差拍屏摩尔纹增强 (`src/ocr/DeepOcrEngine.{h,cpp}`)**:
+   - **根因**：手机翻拍 ERP 屏幕时存在深灰表头低反差与 RGB 彩色摩尔纹，导致 DBNet 检测漏掉表头与紧邻黑线的短数字（如 `77` 漏成 `7`），同时若在识别阶段强锐化会给高清晰小字引入振铃误识。
+   - **架构解法**：新增 `DeepOcrEngine::isLowContrastScreenPhoto()`（4px 快采样判定平坦度 `< 0.45`、中灰占比 `>= 0.45` 且纯白 `< 0.15`，原生清晰桌面截图 0ms 零改动直通）与 `enhanceLowContrastForDetection()`（LAB 空间 `a/b` 通道 `5x5` 高斯压彩纹 + `L` 通道温和 `CLAHE(2.2, 8x8)` 68/32 融合），仅作用于检测输入，识别切片仍从纯净原图裁剪并将 `enhanceLowContrastStripCrop` 动态范围上限由 `112` 调优至 `132`。配套 `DeepOcrLowContrastScreenPhotoEnhancementTest`。
+2. **贴图上下跨区流式选字修复 (`src/capture/PinWindow.{h,cpp}`)**:
+   - **根因**：在“上方大表 + 下方装箱卡”等上下堆叠多版面分区图片上普通左键从上往下流式拖选时，跨入不同 `layoutRegionId` 会静默退化为无视觉引导框的二维矩形围选，将终点 X 右侧所有已识别文字（甚至单个词后半段）一刀切掉，造成右侧漏识别错觉。
+   - **架构解法**：区分起止分区是否为真正左右并排双栏（`sideBySideColumns`：垂直重叠 `>= 40%` 且水平重叠 `< 25%`）；仅左右并排双栏走带可见橡皮筋引导框（`m_showCrossRegionRectGuide`）的二维围选，上下堆叠分区保持完整阅读序流式选字，杜绝右侧腰斩。配套真窗口回归测试 `PinWindowCrossRegionVerticalFlowSelectionTest`。
+3. **中英双语精装 README 与原位改字视觉资产 (`README.md`, `README.en.md`, `docs/DEVELOPER.md`, `docs/images/{zh-CN,en-US}/scene_pin_live_text_wavy.png`)**:
+   - README 瘦身至 118 行极简名片风，研发/架构/构建文档外链收口至 `docs/DEVELOPER.md`；调用真实 `TextReplaceEngine` + `MarkupEngine` + `FloatingGlassBar` + `CaptureVectorIcons` 产出含错别字原位编辑（`新版本发[不|]前核对清单` + `bu | 1. 布 2. 步 3. 部`）、波浪线、荧光笔、直线与划选复制的 1.5x 双语实景展示图。

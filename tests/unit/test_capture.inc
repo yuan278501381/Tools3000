@@ -14404,6 +14404,144 @@ TEST(LongImageWheelActiveElementAdjustmentTest, HoverActiveElementAdjustsSizeWhi
               LongImageWheelRoute::CanvasScrollVertical);
 }
 
+TEST(DeepOcrLowContrastScreenPhotoEnhancementTest, CleanScreenshotPassthroughAndMoireGrayHeaderBoost) {
+    using tools3000::ocr::DeepOcrEngine;
+
+    // 1. 纯净数字桌面截图（高平坦度 + 纯白底色）必须 100% 零改动直通
+    cv::Mat cleanUi(320, 480, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::rectangle(cleanUi, cv::Rect(30, 30, 420, 44), cv::Scalar(246, 248, 252), cv::FILLED);
+    cv::putText(cleanUi, "Tools3000 Clean UI 77", cv::Point(48, 62),
+                cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(20, 24, 32), 2);
+    EXPECT_FALSE(DeepOcrEngine::isLowContrastScreenPhoto(cleanUi));
+    cv::Mat passOut = DeepOcrEngine::enhanceLowContrastForDetection(cleanUi);
+    EXPECT_DOUBLE_EQ(cv::norm(passOut, cleanUi, cv::NORM_INF), 0.0);
+
+    // 2. 模拟低反差深灰表头 + 手机拍屏 RGB 彩色摩尔纹照片 -> 自动触发 LAB 去彩纹 + CLAHE 增强
+    cv::Mat screenPhoto(320, 480, CV_8UC3, cv::Scalar(148, 150, 152));
+    // 上方深灰表头区域 (#7A7E84) + 低反差暗字
+    cv::rectangle(screenPhoto, cv::Rect(0, 0, 480, 96), cv::Scalar(124, 126, 130), cv::FILLED);
+    cv::putText(screenPhoto, "HEADER 77 QTY", cv::Point(36, 62),
+                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(66, 68, 72), 2);
+    cv::putText(screenPhoto, "ROW 400 CK0022", cv::Point(36, 190),
+                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(82, 84, 88), 2);
+    // 叠加典型手机拍屏周期彩纹与镜头微噪
+    for (int y = 0; y < screenPhoto.rows; ++y) {
+        auto* row = screenPhoto.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < screenPhoto.cols; ++x) {
+            const int waveB = static_cast<int>(10.0 * std::sin(x * 0.85 + y * 0.35));
+            const int waveG = static_cast<int>(9.0 * std::sin(x * 0.85 + y * 0.35 + 2.1));
+            const int waveR = static_cast<int>(10.0 * std::sin(x * 0.85 + y * 0.35 + 4.2));
+            row[x][0] = static_cast<uint8_t>(std::clamp(static_cast<int>(row[x][0]) + waveB, 0, 255));
+            row[x][1] = static_cast<uint8_t>(std::clamp(static_cast<int>(row[x][1]) + waveG, 0, 255));
+            row[x][2] = static_cast<uint8_t>(std::clamp(static_cast<int>(row[x][2]) + waveR, 0, 255));
+        }
+    }
+
+    EXPECT_TRUE(DeepOcrEngine::isLowContrastScreenPhoto(screenPhoto));
+    cv::Mat enhanced = DeepOcrEngine::enhanceLowContrastForDetection(screenPhoto);
+    ASSERT_EQ(enhanced.size(), screenPhoto.size());
+    ASSERT_EQ(enhanced.type(), CV_8UC3);
+
+    // 验证顶部深灰表头区域亮度对比度显著提升（StdDev 拉升 >= 20%）
+    cv::Mat rawHdrGray, enhHdrGray;
+    cv::cvtColor(screenPhoto(cv::Rect(0, 0, 480, 96)), rawHdrGray, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(enhanced(cv::Rect(0, 0, 480, 96)), enhHdrGray, cv::COLOR_BGR2GRAY);
+    cv::Scalar rawMean, rawStd, enhMean, enhStd;
+    cv::meanStdDev(rawHdrGray, rawMean, rawStd);
+    cv::meanStdDev(enhHdrGray, enhMean, enhStd);
+    EXPECT_GT(enhStd[0], rawStd[0] * 1.20);
+
+    // 验证 LAB 色度平滑有效压制 RGB 彩色摩尔纹（a/b 通道方差下降）
+    cv::Mat rawLab, enhLab;
+    cv::cvtColor(screenPhoto, rawLab, cv::COLOR_BGR2Lab);
+    cv::cvtColor(enhanced, enhLab, cv::COLOR_BGR2Lab);
+    std::vector<cv::Mat> rawCh, enhCh;
+    cv::split(rawLab, rawCh);
+    cv::split(enhLab, enhCh);
+    cv::Scalar rMa, rSa, eMa, eSa;
+    cv::meanStdDev(rawCh[1], rMa, rSa);
+    cv::meanStdDev(enhCh[1], eMa, eSa);
+    EXPECT_LT(eSa[0], rSa[0]);
+}
+
+TEST(PinWindowCrossRegionVerticalFlowSelectionTest, VerticalStackedRegionsKeepRightSideTextOnStreamDrag) {
+    // 真实 PinWindow 行为回归测试：当上方大表 (region 0) 与下方装箱卡 (region 1) 上下堆叠时，
+    // 从左上文字块流式拖选至下方卡片中间，必须完整保留位于终点 X 右侧的 "502011884AA"，绝不隐形腰斩。
+    std::array<wchar_t, 4096> executablePath{};
+    ASSERT_GT(GetModuleFileNameW(nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size())), 0u);
+    const auto executableDir = std::filesystem::path(executablePath.data()).parent_path();
+    const auto pluginDllPath = executableDir.parent_path() / L"plugins" / executableDir.filename() / L"Plugin_Capture.dll";
+    ASSERT_TRUE(std::filesystem::exists(pluginDllPath));
+
+    HMODULE hMod = LoadLibraryExW(
+        pluginDllPath.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    ASSERT_NE(hMod, nullptr);
+    using CreatePluginFunc = tools3000::core::IPlugin* (*)();
+    auto createPlugin = reinterpret_cast<CreatePluginFunc>(GetProcAddress(hMod, "CreatePlugin"));
+    ASSERT_NE(createPlugin, nullptr);
+    tools3000::core::IPlugin* capturePlugin = createPlugin();
+    ASSERT_NE(capturePlugin, nullptr);
+    ASSERT_TRUE(capturePlugin->initialize());
+
+    struct Cleanup {
+        HMODULE mod = nullptr;
+        tools3000::core::IPlugin* plugin = nullptr;
+        HWND ownPin = nullptr;
+        ~Cleanup() {
+            if (ownPin && IsWindow(ownPin)) DestroyWindow(ownPin);
+            if (plugin) plugin->shutdown();
+            if (mod) FreeLibrary(mod);
+        }
+    } guard{hMod, capturePlugin, nullptr};
+
+    cv::Mat canvas(420, 480, CV_8UC3, cv::Scalar(255, 255, 255));
+    const auto tempPng = std::filesystem::temp_directory_path() /
+                         (L"tools3000_pin_vflow_" + std::to_wstring(GetCurrentProcessId()) + L".png");
+    ASSERT_TRUE(cv::imwrite(tools3000::core::WinUtils::wstringToUtf8(tempPng.wstring()), canvas));
+    struct FileGuard {
+        std::filesystem::path p;
+        ~FileGuard() { std::error_code ec; std::filesystem::remove(p, ec); }
+    } fguard{tempPng};
+
+    auto& bridge = tools3000::core::MessageBridge::instance();
+    auto rpc = [&](int id, const char* method, const nlohmann::json& params) -> nlohmann::json {
+        nlohmann::json req = {{"id", id}, {"method", method}, {"params", params}};
+        auto parsed = nlohmann::json::parse(bridge.handleMessage(req.dump()), nullptr, false);
+        return (parsed.is_object() && parsed.contains("result")) ? parsed["result"] : parsed;
+    };
+
+    ASSERT_TRUE(rpc(1, "capture.pinImageFile", {
+        {"path", tools3000::core::WinUtils::wstringToUtf8(tempPng.wstring())}
+    }).value("success", false));
+
+    // 上方表格 region 0 (y=20..120)，下方卡片 region 1 (y=260..360) -> 典型上下堆叠结构
+    auto st = rpc(2, "capture.inspectPinOcrState", {
+        {"mockBlocks", nlohmann::json::array({
+            {{"text", "502009390AA"}, {"x", 20},  {"y", 24},  {"w", 120}, {"h", 22}, {"layoutRegionId", 0}, {"alignedRowId", 0}},
+            {{"text", "502011884AA"}, {"x", 300}, {"y", 64},  {"w", 150}, {"h", 22}, {"layoutRegionId", 0}, {"alignedRowId", 1}},
+            {{"text", "ZZ30001332"},  {"x", 180}, {"y", 300}, {"w", 130}, {"h", 22}, {"layoutRegionId", 1}, {"alignedRowId", 2}},
+        })},
+        {"toggleSelectionMode", true}
+    });
+    ASSERT_TRUE(st.value("success", false));
+    HWND pinHwnd = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(st.value("pinHwnd", 0ull)));
+    ASSERT_NE(pinHwnd, nullptr);
+    guard.ownPin = pinHwnd;
+
+    // 从左上角 (30, 35) 流式拖选到下方卡片末尾 (305, 310)（注意 305 < 450，处于 "502011884AA" 右侧区间之前）
+    SendMessageW(pinHwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(30, 35));
+    SendMessageW(pinHwnd, WM_MOUSEMOVE,   MK_LBUTTON, MAKELPARAM(305, 310));
+    SendMessageW(pinHwnd, WM_LBUTTONUP,   0,          MAKELPARAM(305, 310));
+
+    auto after = rpc(3, "capture.inspectPinOcrState", {});
+    const std::string selected = after.value("selectedText", std::string{});
+    EXPECT_NE(selected.find("502009390AA"), std::string::npos);
+    EXPECT_NE(selected.find("502011884AA"), std::string::npos)
+        << "Vertical cross-region stream selection must NOT slice right-side text! got: " << selected;
+    EXPECT_NE(selected.find("ZZ30001332"), std::string::npos);
+}
+
 #include "test_studio_recorder.inc"
 
 

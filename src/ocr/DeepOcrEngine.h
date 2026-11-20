@@ -148,6 +148,12 @@ public:
 
     // ── 纯算法核心原语（供生产推理与高覆盖率离线单元测试直接调用） ───────────
 
+    /// 检测图像是否属于低反差/深灰底/摩尔纹屏摄或实拍照片（原生清晰桌面截图快速返回 false，零开销直通）
+    static bool isLowContrastScreenPhoto(const cv::Mat& bgr);
+
+    /// 面向 DBNet 检测分支的轻量 LAB 色度去彩纹 + 局部 CLAHE 自适应增强（原生清晰截图零改动直通）
+    static cv::Mat enhanceLowContrastForDetection(const cv::Mat& bgr);
+
     /// DBNet 概率图后处理：二值化、轮廓过滤、多边形均分校验、Unclip 外扩与四点正交排序
     static std::vector<DbDetectedQuad> postprocessDbMap(
         const cv::Mat& probMap,
