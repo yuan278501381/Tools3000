@@ -35,6 +35,7 @@ namespace DeepOcrConstants {
     inline constexpr const wchar_t* kDetModelFileName = L"ch_PP-OCRv4_det.onnx";
     inline constexpr const wchar_t* kClsModelFileName = L"ch_ppocr_mobile_v2.0_cls.onnx";
     inline constexpr const wchar_t* kRecModelFileName = L"ch_PP-OCRv4_rec.onnx";
+    inline constexpr const wchar_t* kRecServerModelFileName = L"ch_PP-OCRv4_rec_server.onnx";
     inline constexpr const wchar_t* kKeysDictFileName = L"ppocr_keys_v1.txt";
 
     inline constexpr int kDetMaxSideLen = 1280;
@@ -70,16 +71,23 @@ namespace DeepOcrConstants {
     inline constexpr size_t kMinDetModelBytes = 512 * 1024;      // >= 512 KiB
     inline constexpr size_t kMinClsModelBytes = 64 * 1024;       // >= 64 KiB
     inline constexpr size_t kMinRecModelBytes = 1024 * 1024;     // >= 1 MiB
+    inline constexpr size_t kMinRecServerModelBytes = 20ULL * 1024ULL * 1024ULL; // >= 20 MiB
     inline constexpr size_t kMinDictKeyLines  = 1000;
-    inline constexpr uint64_t kEstimatedBundleBytes = 16600000ULL; // ~16.6 MB
+    inline constexpr uint64_t kEstimatedBundleBytes = 16600000ULL;       // ~16.6 MB (mobile)
+    inline constexpr uint64_t kEstimatedServerAddOnBytes = 90530732ULL;  // ~90.5 MB (server rec)
 } // namespace DeepOcrConstants
 
 struct DeepOcrModelStatus {
     bool installed = false;
+    bool serverInstalled = false;
     bool downloading = false;
+    bool downloadingServer = false;
     int progressPercent = 0;
     uint64_t downloadedBytes = 0;
     uint64_t totalBytes = DeepOcrConstants::kEstimatedBundleBytes;
+    uint64_t serverTotalBytes = DeepOcrConstants::kEstimatedServerAddOnBytes;
+    std::string modelTier = "mobile";       // "mobile" | "server" (configured preference)
+    std::string activeModelTier = "mobile"; // "mobile" | "server" (actually effective tier)
     std::string state; // "installed" | "downloading" | "not_installed" | "error"
     std::string currentFile;
     std::string modelDir;
@@ -111,8 +119,17 @@ class DeepOcrEngine {
 public:
     static DeepOcrEngine& instance();
 
-    /// 检查本地是否已完整安装 PP-OCRv4 模型包 (4 个核心文件齐全且合法)
+    /// 检查本地是否已完整安装 PP-OCRv4 基础模型包 (4 个核心文件齐全且合法)
     bool isModelInstalled() const;
+
+    /// 检查本地是否已安装高精度 Server 识别增强模型 (ch_PP-OCRv4_rec_server.onnx)
+    bool isServerModelInstalled() const;
+
+    /// 读取当前配置的模型精度档位偏好 ("mobile" | "server")
+    std::string configuredModelTier() const;
+
+    /// 计算当前实际生效的模型精度档位（未装 server 增强模型时自动优雅回退 "mobile"）
+    std::string effectiveModelTier() const;
 
     /// 返回当前生效的模型目录（若未安装则返回默认目标安装目录 <DataDir>/models/ocr）
     std::filesystem::path resolveModelDirectory(bool* outInstalled = nullptr) const;
@@ -129,11 +146,14 @@ public:
     /// 查询模型安装与后台下载实时状态
     DeepOcrModelStatus getModelStatus() const;
 
-    /// 启动后台安全 HTTPS 模型包流式下载
-    bool startModelDownload();
+    /// 启动后台安全 HTTPS 模型包流式下载（tier: "mobile" 极速轻量版 | "server" 高精度增强版）
+    bool startModelDownload(const std::string& tier = "mobile");
 
     /// 取消正在进行的后台模型下载
     void cancelModelDownload();
+
+    /// 安全卸载并删除高精度 Server 识别增强模型以释放磁盘空间（保留基础轻量包完整可用）
+    bool deleteServerModel();
 
     /// 释放内存中的 cv::dnn::Net 权重缓存（冷路径回收物理内存）
     void releaseLoadedModels();
@@ -264,7 +284,7 @@ private:
 
     bool ensureModelsLoadedLocked(const std::filesystem::path& modelDir);
     void precompileFixedBucketsLocked();
-    void downloadWorkerLoop(std::stop_token stopToken, std::filesystem::path targetDir);
+    void downloadWorkerLoop(std::stop_token stopToken, std::filesystem::path targetDir, bool includeServerRec);
 
     mutable std::mutex m_inferMutex;
     std::atomic<bool> m_modelsLoadedAtomic{false};
@@ -272,6 +292,7 @@ private:
     bool m_bucketsPrecompiled = false;
     bool m_useWinMl = false;
     std::filesystem::path m_loadedModelDir;
+    std::string m_loadedModelTier;
     std::unique_ptr<WinMlContext> m_winMl;
     cv::dnn::Net m_detNet;
     cv::dnn::Net m_clsNet;
@@ -289,6 +310,7 @@ private:
     mutable std::mutex m_downloadMutex;
     std::jthread m_downloadThread;
     std::atomic<bool> m_downloading{false};
+    std::atomic<bool> m_downloadingServer{false};
     std::atomic<bool> m_cancelRequested{false};
     std::atomic<int> m_progressPercent{0};
     std::atomic<uint64_t> m_downloadedBytes{0};

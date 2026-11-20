@@ -1970,7 +1970,8 @@ std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image) {
         langPref = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/language", "auto");
     } catch (...) {
     }
-    const std::string routeTag = ((allowDeepOcr && deepInstalled) ? "deep:" : "win:") + enginePref + ":" + langPref;
+    const std::string tierTag = deepInstalled ? DeepOcrEngine::instance().effectiveModelTier() : "none";
+    const std::string routeTag = ((allowDeepOcr && deepInstalled) ? ("deep:" + tierTag + ":") : "win:") + enginePref + ":" + langPref;
     const uint64_t cacheKey = computeImageOcrCacheKey(image, routeTag);
 
     OcrPageExtraction cached{};
@@ -2021,7 +2022,8 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image) {
         langPref = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/language", "auto");
     } catch (...) {
     }
-    const std::string routeTag = (preferDeep ? "deep:" : "win:") + enginePref + ":" + langPref;
+    const std::string tierTag = preferDeep ? DeepOcrEngine::instance().effectiveModelTier() : "none";
+    const std::string routeTag = (preferDeep ? ("deep:" + tierTag + ":") : "win:") + enginePref + ":" + langPref;
     const uint64_t cacheKey = computeImageOcrCacheKey(image, routeTag);
 
     if (lookupRecentOcrCache(cacheKey, image.cols, image.rows, /*requireQr=*/true, page)) {

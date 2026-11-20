@@ -261,7 +261,11 @@ DeepOcrEngine& DeepOcrEngine::instance() {
 }
 
 bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelDir) {
-    if (m_modelsLoaded && m_loadedModelDir == modelDir && !m_dictKeys.empty() &&
+    const std::string desiredTier =
+        (configuredModelTier() == "server" && isServerRecModelPresent(modelDir)) ? "server" : "mobile";
+
+    if (m_modelsLoaded && m_loadedModelDir == modelDir && m_loadedModelTier == desiredTier &&
+        !m_dictKeys.empty() &&
         ((m_useWinMl && m_winMl != nullptr) ||
          (!m_detNet.empty() && !m_recNetShort.empty() && !m_recNetLong.empty()))) {
         return true;
@@ -271,6 +275,7 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
     m_modelsLoadedAtomic.store(false, std::memory_order_release);
     m_bucketsPrecompiled = false;
     m_useWinMl = false;
+    m_loadedModelTier.clear();
     m_winMl.reset();
     m_detNet = cv::dnn::Net{};
     m_clsNet = cv::dnn::Net{};
@@ -281,7 +286,8 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
     try {
         const auto detPath = modelDir / DeepOcrConstants::kDetModelFileName;
         const auto clsPath = modelDir / DeepOcrConstants::kClsModelFileName;
-        const auto recPath = modelDir / DeepOcrConstants::kRecModelFileName;
+        const auto mobileRecPath = modelDir / DeepOcrConstants::kRecModelFileName;
+        const auto serverRecPath = modelDir / DeepOcrConstants::kRecServerModelFileName;
         const auto dictPath = modelDir / DeepOcrConstants::kKeysDictFileName;
 
         std::vector<uint8_t> detBytes, clsBytes, recBytes;
@@ -295,10 +301,25 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
             LOG_WARN("DeepOcrEngine: invalid or missing cls ONNX model");
             return false;
         }
+
+        std::string actualTier = desiredTier;
+        std::filesystem::path recPath = (desiredTier == "server") ? serverRecPath : mobileRecPath;
         if (!readFileBytes(recPath, recBytes) ||
             !isValidOnnxBuffer(recBytes.data(), recBytes.size(), 256)) {
-            LOG_WARN("DeepOcrEngine: invalid or missing rec ONNX model");
-            return false;
+            if (desiredTier == "server") {
+                LOG_WARN("DeepOcrEngine: server rec ONNX model invalid or unreadable, gracefully falling back to mobile tier");
+                actualTier = "mobile";
+                recPath = mobileRecPath;
+                recBytes.clear();
+                if (!readFileBytes(recPath, recBytes) ||
+                    !isValidOnnxBuffer(recBytes.data(), recBytes.size(), 256)) {
+                    LOG_WARN("DeepOcrEngine: invalid or missing mobile rec ONNX model");
+                    return false;
+                }
+            } else {
+                LOG_WARN("DeepOcrEngine: invalid or missing rec ONNX model");
+                return false;
+            }
         }
         if (!loadDictionaryLines(dictPath, m_dictKeys)) {
             if (!extractEmbeddedCharacterDictFromOnnx(recBytes.data(), recBytes.size(), m_dictKeys)) {
@@ -386,11 +407,13 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                 m_winMl = std::move(ctx);
                 m_useWinMl = true;
                 m_loadedModelDir = modelDir;
+                m_loadedModelTier = actualTier;
                 m_modelsLoaded = true;
                 m_modelsLoadedAtomic.store(true, std::memory_order_release);
-                LOG_INFO("DeepOcrEngine: PP-OCRv4 loaded with native WinML ONNX Runtime ({}{}, dict={} keys)",
+                LOG_INFO("DeepOcrEngine: PP-OCRv4 loaded with native WinML ONNX Runtime ({}{}, tier={}, dict={} keys)",
                          m_winMl->usingDirectMLGpu ? "DirectML GPU" : "CPU SIMD",
                          m_winMl->supportsBatchEval ? " + StaticBatchFusion" : "",
+                         m_loadedModelTier,
                          m_dictKeys.size());
                 return true;
             }
@@ -434,9 +457,10 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
         }
 
         m_loadedModelDir = modelDir;
+        m_loadedModelTier = actualTier;
         m_modelsLoaded = true;
         m_modelsLoadedAtomic.store(true, std::memory_order_release);
-        LOG_INFO("DeepOcrEngine: PP-OCRv4 ONNX models loaded (dict={} keys)", m_dictKeys.size());
+        LOG_INFO("DeepOcrEngine: PP-OCRv4 ONNX models loaded (tier={}, dict={} keys)", m_loadedModelTier, m_dictKeys.size());
         return true;
     } catch (const std::exception& e) {
         LOG_ERROR("DeepOcrEngine: exception loading PP-OCRv4 models: {}", e.what());
@@ -1429,6 +1453,7 @@ void DeepOcrEngine::releaseLoadedModels() {
         m_bucketsPrecompiled = false;
         m_useWinMl = false;
         m_loadedModelDir.clear();
+        m_loadedModelTier.clear();
         m_winMl.reset();
         m_detNet = cv::dnn::Net{};
         m_clsNet = cv::dnn::Net{};
@@ -1456,6 +1481,7 @@ void DeepOcrEngine::shutdown() {
             m_downloadThread.join();
         }
     }
+    m_downloadingServer.store(false, std::memory_order_release);
     m_downloading.store(false, std::memory_order_release);
     releaseLoadedModels();
 }

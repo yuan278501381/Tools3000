@@ -3291,3 +3291,88 @@ TEST(LiveTextOcrTest, DeepOcrRedStampSuppressionShadowNormalizationAndRotatedPag
         }
     }
 }
+
+TEST(LiveTextOcrTest, DeepOcrModelTierFallbackAndServerRemoval) {
+    using namespace tools3000::ocr;
+    namespace fs = std::filesystem;
+
+    auto& deep = DeepOcrEngine::instance();
+    auto& cfg = tools3000::core::ConfigManager::instance();
+
+    const fs::path tempRoot = fs::temp_directory_path() / L"tools3000_ocr_tier_test_dir";
+    const fs::path tempDir = tempRoot / L"models";
+    const fs::path tempCfgDir = tempRoot / L"config";
+    std::error_code ec;
+    fs::remove_all(tempRoot, ec);
+    ASSERT_TRUE(fs::create_directories(tempDir, ec) || fs::is_directory(tempDir));
+    ASSERT_TRUE(fs::create_directories(tempCfgDir, ec) || fs::is_directory(tempCfgDir));
+    ASSERT_TRUE(cfg.initialize(tempCfgDir));
+
+    struct TierTestGuard {
+        DeepOcrEngine& engine;
+        tools3000::core::ConfigManager& config;
+        fs::path rootDir;
+        ~TierTestGuard() {
+            engine.setCustomModelDirectoryForTest({});
+            try {
+                config.mergePatch({{"ocr", {{"modelTier", "mobile"}}}}, "/ocr");
+            } catch (...) {
+            }
+            std::error_code cleanEc;
+            fs::remove_all(rootDir, cleanEc);
+        }
+    } guard{deep, cfg, tempRoot};
+
+    auto writeDummyFile = [](const fs::path& p, size_t size, uint8_t firstByte) {
+        std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(ofs.good());
+        std::vector<uint8_t> buf(size, 0x20);
+        buf[0] = firstByte;
+        ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+    };
+
+    // 1. 仅安装基础 mobile 四件套
+    writeDummyFile(tempDir / DeepOcrConstants::kDetModelFileName, 512, 0x08);
+    writeDummyFile(tempDir / DeepOcrConstants::kClsModelFileName, 512, 0x08);
+    writeDummyFile(tempDir / DeepOcrConstants::kRecModelFileName, 512, 0x08);
+    writeDummyFile(tempDir / DeepOcrConstants::kKeysDictFileName, 128, 'a');
+
+    deep.setCustomModelDirectoryForTest(tempDir);
+    EXPECT_TRUE(deep.isModelInstalled());
+    EXPECT_FALSE(deep.isServerModelInstalled());
+
+    // 未安装 server 模型时配置为 server，必须优雅回退 mobile 不瘫痪
+    ASSERT_TRUE(cfg.mergePatch({{"ocr", {{"modelTier", "server"}}}}, "/ocr"));
+    EXPECT_EQ(deep.configuredModelTier(), "server");
+    EXPECT_EQ(deep.effectiveModelTier(), "mobile");
+    {
+        const auto st = deep.getModelStatus();
+        EXPECT_TRUE(st.installed);
+        EXPECT_FALSE(st.serverInstalled);
+        EXPECT_EQ(st.modelTier, "server");
+        EXPECT_EQ(st.activeModelTier, "mobile");
+    }
+
+    // 2. 落地高精度 server 识别模型文件后自动生效
+    writeDummyFile(tempDir / DeepOcrConstants::kRecServerModelFileName, 1024, 0x08);
+    EXPECT_TRUE(deep.isServerModelInstalled());
+    EXPECT_EQ(deep.effectiveModelTier(), "server");
+    {
+        const auto st = deep.getModelStatus();
+        EXPECT_TRUE(st.serverInstalled);
+        EXPECT_EQ(st.activeModelTier, "server");
+    }
+
+    // 切回 mobile 后 server 文件保留但生效档位切回 mobile
+    ASSERT_TRUE(cfg.mergePatch({{"ocr", {{"modelTier", "mobile"}}}}, "/ocr"));
+    EXPECT_TRUE(deep.isServerModelInstalled());
+    EXPECT_EQ(deep.effectiveModelTier(), "mobile");
+
+    // 3. 选中 server 后执行 deleteServerModel()：释放 server 文件、基础包完好且配置回落 mobile
+    ASSERT_TRUE(cfg.mergePatch({{"ocr", {{"modelTier", "server"}}}}, "/ocr"));
+    EXPECT_TRUE(deep.deleteServerModel());
+    EXPECT_FALSE(deep.isServerModelInstalled());
+    EXPECT_TRUE(deep.isModelInstalled());
+    EXPECT_EQ(deep.configuredModelTier(), "mobile");
+    EXPECT_EQ(deep.effectiveModelTier(), "mobile");
+}
