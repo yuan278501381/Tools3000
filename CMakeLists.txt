@@ -558,6 +558,8 @@ if(BUILD_TESTING)
         tests/unit/test_main.cpp
         src/ocr/OcrEngine.cpp
         src/ocr/DeepOcrEngine.cpp
+        src/ocr/DeepOcrEngineModel.cpp
+        src/ocr/DeepOcrEnginePostprocess.cpp
         src/ocr/OcrTableReconstructor.cpp
         src/ocr/OcrResultWindow.cpp
         $<TARGET_OBJECTS:capture_objects>
