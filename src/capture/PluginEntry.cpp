@@ -887,15 +887,7 @@ public:
                 tools3000::ocr::DeepOcrEngine::instance().startModelDownload();
             }
         }
-        {
-            wchar_t testEnvBuf[8]{};
-            const DWORD envLen = GetEnvironmentVariableW(
-                L"TOOLS3000_TEST_MODE", testEnvBuf, static_cast<DWORD>(std::size(testEnvBuf)));
-            const bool inTestMode = (envLen > 0 && testEnvBuf[0] == L'1');
-            if (!inTestMode && tools3000::ocr::DeepOcrEngine::instance().isModelInstalled()) {
-                tools3000::ocr::DeepOcrEngine::instance().warmupAsync();
-            }
-        }
+        // OCR 模型改为首次识字按需懒加载 + 60s 闲置自动卸载，彻底避免开机空跑预占 DirectML 显存与私有提交内存
 
         
         auto& mb = tools3000::core::MessageBridge::instance();
@@ -1581,10 +1573,8 @@ public:
             const bool saved = tools3000::core::ConfigManager::instance().mergePatch(
                 {{"ocr", params}}, "/ocr");
             if (saved && params.contains("modelTier")) {
-                auto& deep = tools3000::ocr::DeepOcrEngine::instance();
-                if (deep.isModelInstalled()) {
-                    deep.warmupAsync(100);
-                }
+                // 切换识别档位时先清理已驻留会话，下次识别立即按新档位按需懒加载，避免空占显存
+                tools3000::ocr::DeepOcrEngine::instance().releaseLoadedModels();
             }
             return {{"success", saved}, {"error", saved ? "" : "failed to persist settings"}};
         });

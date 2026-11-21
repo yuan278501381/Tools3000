@@ -1065,9 +1065,11 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
 
     m_downloadingServer.store(false, std::memory_order_release);
     m_downloading.store(false, std::memory_order_release);
-    deep_ocr_detail::cleanupDeepOcrWorkingSet();
     if (allSucceeded && !m_shuttingDown.load(std::memory_order_acquire)) {
-        warmupAsync(100);
+        // 清空旧档位驻留会话，下次识别自动按新档位按需懒加载，杜绝后台空占显存
+        releaseLoadedModels();
+    } else {
+        deep_ocr_detail::cleanupDeepOcrWorkingSet();
     }
 }
 

@@ -19,6 +19,8 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -52,14 +54,25 @@ namespace DeepOcrConstants {
     inline constexpr float kClsRotate180Thresh = 0.90f;
 
     inline constexpr int kRecImgHeight = 48;
+    inline constexpr int kRecTinyBucketWidth = 160;
     inline constexpr int kRecShortBucketWidth = 320;
     inline constexpr int kRecMediumBucketWidth = 640;
     inline constexpr int kRecLongBucketWidth = 960;
     inline constexpr int kRecFixedStripWidth = 960;
-    inline constexpr int kRecMaxBatchSize = 32;
+    inline constexpr int kRecMaxBatchSize = 16;
     inline constexpr int kRecMinWidth = 32;
     inline constexpr int kRecMaxWidth = 3200;
     inline constexpr float kRecMinLineConfidence = 0.42f;
+
+    // 双阶混合精度级联（极速 Mobile 主力 + 按需单一甜点 Server 会话疑难行精准复核）阈值与闲置内存回收常量
+    inline constexpr float kServerRefineAvgConfThresh = 0.85f;
+    inline constexpr float kServerRefineMinCharConfThresh = 0.68f;
+    inline constexpr float kServerRefineShortLineConfThresh = 0.88f;
+    inline constexpr size_t kServerRefineMaxPiecesPerImage = 12;
+    inline constexpr size_t kServerRefineMaxPiecesCpuFallback = 6;
+    inline constexpr int kServerRefineGpuBatchSize = 2;
+    inline constexpr int kServerRefineGpuBucketWidth = 640;
+    inline constexpr int kIdleUnloadTimeoutSeconds = 120;
 
     inline constexpr float kAxisAlignedMaxSkewPx = 1.8f;
     inline constexpr size_t kWatermarkFilterMinOrthoQuads = 4;
@@ -92,6 +105,19 @@ struct DeepOcrModelStatus {
     std::string currentFile;
     std::string modelDir;
     std::string error;
+};
+
+struct DeepOcrRunStats {
+    long long totalMs = 0;
+    long long detMs = 0;
+    long long packMs = 0;
+    long long recMs = 0;
+    long long refineMs = 0;
+    size_t detectedQuads = 0;
+    size_t stripCount = 0;
+    size_t serverRefinedCount = 0;
+    size_t activeSessions = 0;
+    std::string bucketProfile;
 };
 
 struct DbDetectedQuad {
@@ -163,6 +189,15 @@ public:
 
     /// 当前模型与 GPU 固定桶管线是否已完成内存加载
     bool isWarmAndLoaded() const noexcept;
+
+    /// 查询当前驻留的 WinML 推理会话总数（用于内存瘦身可观测性与防回退测试）
+    size_t activeSessionCount() const noexcept;
+
+    /// 查询最近一次端到端 OCR 识别的分阶段耗时与复核统计
+    DeepOcrRunStats lastRunStats() const noexcept;
+
+    /// 供自动化测试调整闲置自动卸载超时秒数（<=0 表示立即禁用自动定时，默认 60s）
+    void setIdleUnloadTimeoutForTest(int seconds) noexcept;
 
     /// 停机并安全等待后台下载/预热线程退出
     void shutdown();
@@ -284,10 +319,13 @@ private:
 
     bool ensureModelsLoadedLocked(const std::filesystem::path& modelDir);
     void precompileFixedBucketsLocked();
+    void touchActivityAndScheduleIdleUnload();
+    void idleUnloadWorkerLoop(std::stop_token stopToken);
     void downloadWorkerLoop(std::stop_token stopToken, std::filesystem::path targetDir, bool includeServerRec);
 
     mutable std::mutex m_inferMutex;
     std::atomic<bool> m_modelsLoadedAtomic{false};
+    std::atomic<size_t> m_activeSessionCountAtomic{0};
     bool m_modelsLoaded = false;
     bool m_bucketsPrecompiled = false;
     bool m_useWinMl = false;
@@ -302,10 +340,18 @@ private:
 
     mutable std::mutex m_warmupMutex;
     std::jthread m_warmupThread;
+    mutable std::mutex m_idleMutex;
+    std::condition_variable m_idleCv;
+    std::jthread m_idleUnloadThread;
+    std::chrono::steady_clock::time_point m_lastActivityTime{};
+    std::atomic<int> m_idleUnloadTimeoutSec{DeepOcrConstants::kIdleUnloadTimeoutSeconds};
     std::atomic<bool> m_shuttingDown{false};
 
     mutable std::mutex m_pathMutex;
     std::filesystem::path m_customTestModelDir;
+
+    mutable std::mutex m_statsMutex;
+    DeepOcrRunStats m_lastRunStats{};
 
     mutable std::mutex m_downloadMutex;
     std::jthread m_downloadThread;

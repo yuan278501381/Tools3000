@@ -1527,6 +1527,19 @@ TEST(LiveTextOcrTest, EnvRealImageOcrBenchmark) {
     auto& deep = tools3000::ocr::DeepOcrEngine::instance();
     ASSERT_TRUE(deep.getModelStatus().installed) << "DeepOcrEngine models not installed";
 
+    wchar_t tierEnv[32]{};
+    const DWORD tierLen = GetEnvironmentVariableW(L"TOOLS3000_OCR_BENCH_TIER", tierEnv, static_cast<DWORD>(std::size(tierEnv)));
+    std::filesystem::path tmpCfgDir;
+    if (tierLen > 0 && tierLen < std::size(tierEnv)) {
+        const std::string tierStr = tools3000::core::WinUtils::wstringToUtf8(std::wstring(tierEnv, tierLen));
+        tmpCfgDir = std::filesystem::temp_directory_path() / L"tools3000_ocr_bench_cfg";
+        std::error_code cfgEc;
+        std::filesystem::create_directories(tmpCfgDir, cfgEc);
+        tools3000::core::ConfigManager::instance().initialize(tmpCfgDir);
+        tools3000::core::ConfigManager::instance().mergePatch({{"ocr", {{"modelTier", tierStr}}}}, "/ocr");
+        deep.releaseLoadedModels();
+    }
+
     // 预热一次固定桶（模拟主程序启动后的常驻暖机状态），再测一次真实运行耗时
     const auto tCold0 = std::chrono::steady_clock::now();
     const auto warmRes = deep.extractText(img);
@@ -1549,8 +1562,12 @@ TEST(LiveTextOcrTest, EnvRealImageOcrBenchmark) {
                         i, r.box.x, r.box.y, r.box.width, r.box.height, r.confidence, r.text.c_str());
         }
     }
-    std::printf("[OCR-BENCH] image=%dx%d lines=%zu chars=%zu firstRun=%lldms warmRun=%lldms\n",
-                img.cols, img.rows, hotRes.size(), totalChars, coldMs, hotMs);
+    const auto st = deep.lastRunStats();
+    std::printf("[OCR-BENCH] image=%dx%d tier=%s sessions=%zu lines=%zu chars=%zu firstRun=%lldms warmRun=%lldms (det=%lld pack=%lld rec=%lld refine=%lld srvN=%zu) [%s]\n",
+                img.cols, img.rows, deep.effectiveModelTier().c_str(), st.activeSessions,
+                hotRes.size(), totalChars, coldMs, hotMs,
+                st.detMs, st.packMs, st.recMs, st.refineMs, st.serverRefinedCount,
+                st.bucketProfile.c_str());
     EXPECT_GT(hotRes.size(), 0u);
 
     wchar_t outDirBuf[1024]{};
@@ -3375,4 +3392,69 @@ TEST(LiveTextOcrTest, DeepOcrModelTierFallbackAndServerRemoval) {
     EXPECT_TRUE(deep.isModelInstalled());
     EXPECT_EQ(deep.configuredModelTier(), "mobile");
     EXPECT_EQ(deep.effectiveModelTier(), "mobile");
+}
+
+TEST(LiveTextOcrTest, DeepOcrIdleUnloadAndCompactSessionBudget) {
+    using namespace tools3000::ocr;
+    auto& deep = DeepOcrEngine::instance();
+    if (!deep.isModelInstalled()) {
+        GTEST_SKIP() << "PP-OCRv4 model bundle not installed";
+    }
+
+    struct TimeoutRestoreGuard {
+        DeepOcrEngine& engine;
+        ~TimeoutRestoreGuard() {
+            engine.setIdleUnloadTimeoutForTest(DeepOcrConstants::kIdleUnloadTimeoutSeconds);
+        }
+    } restoreGuard{deep};
+
+    // 设置 1 秒极速闲置回收用于自动化验证
+    deep.setIdleUnloadTimeoutForTest(1);
+
+    cv::Mat sample(120, 420, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::putText(sample, "Tools3000 OCR 2026", cv::Point(24, 76),
+                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(20, 20, 20), 2, cv::LINE_AA);
+
+    const auto queryPrivateAndWsMb = []() -> std::pair<double, double> {
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (::K32GetProcessMemoryInfo(::GetCurrentProcess(),
+                                      reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                                      sizeof(pmc))) {
+            return {static_cast<double>(pmc.PrivateUsage) / (1024.0 * 1024.0),
+                    static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0)};
+        }
+        return {0.0, 0.0};
+    };
+
+    const auto [basePrivMb, baseWsMb] = queryPrivateAndWsMb();
+    const auto lines = deep.extractText(sample);
+    ASSERT_FALSE(lines.empty());
+    EXPECT_TRUE(deep.isWarmAndLoaded());
+    // 紧凑会话池上限约束：单次简单识别绝不允许初始化十余个冗余 DirectML 会话
+    EXPECT_LE(deep.activeSessionCount(), 6u);
+    const auto [peakPrivMb, peakWsMb] = queryPrivateAndWsMb();
+
+    // 等待闲置看门狗在 1 秒后自动释放全部 WinML/DirectML 会话及独占 D3D11 设备，真正归还操作系统私有提交内存
+    bool unloaded = false;
+    for (int i = 0; i < 40; ++i) {
+        if (!deep.isWarmAndLoaded() && deep.activeSessionCount() == 0u) {
+            unloaded = true;
+            break;
+        }
+        Sleep(100);
+    }
+    EXPECT_TRUE(unloaded) << "DeepOcrEngine did not auto-release models after idle timeout";
+    EXPECT_EQ(deep.activeSessionCount(), 0u);
+    Sleep(200);
+    const auto [afterPrivMb, afterWsMb] = queryPrivateAndWsMb();
+    std::printf("[OCR-MEM] base=(priv=%.1fMB ws=%.1fMB) peak=(priv=%.1fMB ws=%.1fMB) afterIdle=(priv=%.1fMB ws=%.1fMB)\n",
+                basePrivMb, baseWsMb, peakPrivMb, peakWsMb, afterPrivMb, afterWsMb);
+    // 防回退硬门禁：当 DirectML GPU 推理将专用私有内存推升超 250MB 时，独占 D3D11 释放后必须真正归还至少 55% 增量私有提交
+    const double peakDeltaMb = peakPrivMb - basePrivMb;
+    if (peakDeltaMb > 250.0) {
+        const double reclaimedMb = peakPrivMb - afterPrivMb;
+        EXPECT_GE(reclaimedMb, peakDeltaMb * 0.55)
+            << "Owned D3D11 + WinML idle unload must reclaim DirectML private commit back to OS";
+    }
 }
