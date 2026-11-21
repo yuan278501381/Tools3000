@@ -15,11 +15,25 @@
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#download--install)
 [![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
 
-**[Download Latest](#download--install)** · [Why Tools3000](#why-i-built-tools3000) · [What It Replaces](#what-it-replaces) · [At a Glance](#at-a-glance) · [Security & Trust](#security-verification--trust) · [Live Demos](#live-feature-demos) · [Contribute](#feedback--co-creation) · [Developer Guide](docs/DEVELOPER.md)
+**[Download Latest](#download--install)** · [At a Glance](#at-a-glance) · [Live Demos](#live-feature-demos) · [Security & Trust](#security-verification--trust) · [Why Tools3000](#why-i-built-tools3000) · [What It Replaces](#what-it-replaces) · [Contribute](#feedback--co-creation) · [Developer Guide](docs/DEVELOPER.md)
 
 </div>
 
 <br />
+
+Tools3000 unifies everyday **file search, document content search, scrolling capture, precision markup, grouped desktop pins, high-accuracy offline OCR, screen recording with auto-zoom Studio (exporting MP4, WeChat-ready GIF, and animated WebP), and global mouse gestures** into one native Windows app. It idles at around a dozen MB of RAM, runs 100% offline, and supports personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
+
+---
+
+## At a Glance
+
+<p align="center">
+  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Eight Core Capabilities Overview" width="100%" />
+</p>
+
+---
+
+## Live Feature Demos
 
 <table>
   <tr>
@@ -38,47 +52,43 @@
       <sub><b>Scrolling Capture</b> · Auto-scroll seamless stitching with live sidebar preview and lossless head/tail trim</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/screen_recording_demo.webp" alt="60 FPS screen recording and auto-zoom Studio" width="100%" /><br />
-      <sub><b>60 FPS Recorder &amp; Auto-Zoom Studio</b> · Smart cursor-follow zoom, export MP4, WeChat-ready GIF, and animated WebP</sub>
+      <img src="docs/images/en-US/screen_recording_demo.webp" alt="Screen recording and auto-zoom Studio" width="100%" /><br />
+      <sub><b>Screen Recorder &amp; Auto-Zoom Studio</b> · Smart cursor-follow zoom, export MP4, WeChat-ready GIF, and animated WebP</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/content_search_demo.webp" alt="Full-text document content search with one-click line copy" width="100%" /><br />
+      <sub><b>Document Content Search</b> · Search inside PDF, Word, Excel, and source code with highlighted context</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/capture_markup_demo.webp" alt="Precision screenshot annotation and dashed magnifier" width="100%" /><br />
+      <sub><b>Precision Screenshot Markup</b> · Smart element snapping, dashed optical magnifier, privacy mosaic, and auto-healing steps</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/pin_groups_demo.webp" alt="Grouped desktop pins with quick switching and snap tiling" width="100%" /><br />
+      <sub><b>Desktop Pins &amp; Pin Groups</b> · F3 always-on-top pins with color groups, top bar switching, and one-click tiling</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/mouse_gesture_demo.webp" alt="Global mouse gestures and screen-edge wheel volume control" width="100%" /><br />
+      <sub><b>Global Mouse Gestures</b> · Right-drag to close tabs, instant trigger without release, and edge-wheel volume</sub>
     </td>
   </tr>
 </table>
 
-Tools3000 unifies everyday **file search, document content search, scrolling capture, precision markup, grouped desktop pins, high-accuracy offline OCR, 60 FPS screen recording with auto-zoom Studio (exporting MP4, WeChat-ready GIF, and animated WebP), and global mouse gestures** into one native Windows app. It idles at around a dozen MB of RAM, runs 100% offline, and supports personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
-
----
-
-## Why I Built Tools3000
-
-I have been a heavy **Everything** user for over ten years. For screenshots, I started with the built-in **QQ / WeChat** capture tools, moved to **FastStone Capture** for its convenient annotation tools, then switched to **Snipaste** for pinning screenshots on screen, and later migrated to **PixPin** for scrolling capture, magnifier annotations, and OCR. For mouse gestures, I went from **WGestures** to **WGestures 2**, and I cycled through plenty of screen recorders along the way — and even gave Microsoft **PowerToys** a try in between, yet it still missed several daily essentials, leaving me back with a row of separate apps.
-
-One day I looked at the row of icons sitting in my Windows system tray and thought: **what if all of these lived in a single app?** On top of tray clutter, a couple of daily annoyances kept nagging at me — PixPin's OCR still lagged behind WeChat in both accuracy and speed, and WGestures started leaving a stubborn tiny text box stuck on screen that only went away after restarting the app. With AI now making ambitious solo builds possible, I rolled up my sleeves and built **Tools3000** as an all-in-one replacement.
-
-To be completely transparent with new users: I have been **dogfooding Tools3000 daily for 4 months**, progressively adding features and fixing issues as they came up. Early on I kept the old apps running as fallbacks whenever something broke; **today, my system tray is finally clean — Tools3000 is the only one left running.**
-
-Of course, real-world Windows setups are endlessly varied and new edge cases will inevitably appear. In the AI era, improving open-source tools together is easier than ever — whether you **[open an issue](https://github.com/yuan278501381/Tools3000/issues)** to report a bug or **co-create via Pull Requests**, your feedback and contributions are warmly welcome.
-
----
-
-## What It Replaces
-
-Dedicated single-purpose tools each excel at deep niche workflows. Tools3000 is built to cover 90%+ of everyday desktop tasks inside **one consistent, ad-free, GPL-3.0 open-source native app**, while staying honest about where specialized tools still shine:
-
-| Classic Utility | Everyday Workflows Covered by Tools3000 | When to Keep the Dedicated Tool |
-| :--- | :--- | :--- |
-| **Everything** | `Alt + Space` millisecond NTFS filename, phonetic, and `content:` full-text document search, starting strictly on demand | When you need HTTP/ETP network file servers, full EXIF/media property column indexing, or the `es.exe` CLI ecosystem |
-| **QuickLook** | Press `Space` directly in search results to preview images, Office docs, PDF, code, CAD, PSD, and 3D models without opening heavy apps | When you need global Spacebar previews directly inside Windows Desktop / Explorer folders or niche third-party `.qlplugin` extensions |
-| **Snipaste / PixPin** | `F1` zero-flicker region capture, dashed magnifier, scrolling capture, `F3` grouped desktop pins, and fast local offline OCR with in-place text replacement | When you rely on Snipaste's ultra-specialized legacy GUI element snapping or custom CLI screenshot chains |
-| **WGestures / StrokesPlus** | Right-drag gestures for tabs/back/close, instant trigger without release, screen-edge wheel volume, hot corners, fullscreen game bypass, and Lua scripting | When you need multi-button chord gestures (e.g., left-hold + right-gesture), intricate window-region conditions, or years of recorded macros |
-| **Screen Recorders (e.g. ShareX)** | 60 FPS capture, keystroke overlay, instant auto-zoom Studio with audio waveform trimming, exporting MP4, messenger-ready GIF, and animated WebP | When you need 80+ cloud/S3/FTP/Webhook auto-upload workflows or heavily customized FFmpeg post-capture pipelines |
-
----
-
-## At a Glance
-
-<p align="center">
-  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Eight Core Capabilities Overview" width="100%" />
-</p>
+| Module | Core Experience |
+| :--- | :--- |
+| **Instant File Search** | `Alt + Space` searches millions of files in milliseconds with full-pinyin & initials support; hit `Space` on any result for QuickLook preview (images, Office, PDF, code, CAD, PSD, and 3D models). |
+| **Document Content Search** | Prefix `content:` to search directly inside Word, Excel, PDF, PowerPoint, CAD, and source code with live highlighted snippets and one-click line copying. |
+| **Scrolling Capture** | Auto-scroll seamless stitching for web pages, documents, and chats with live side preview, lossless head/tail trim, and in-place annotation. |
+| **Precision Screenshot Markup** | `F1` snaps directly to windows and UI elements with pixel color picker, default dashed optical magnifier, 6 arrow styles, self-healing step badges, mosaic, and sharing frames. |
+| **Desktop Pins & Pin Groups** | `F3` pins screenshots or clipboard content always-on-top with scroll zoom, opacity, and click-through; organize multiple pins into color groups and snap-tile with one click. |
+| **High-Accuracy Offline OCR** | Pure local offline recognition beating WeChat screenshot OCR on dense code, JSON, and complex tables; select/copy text directly on pins, highlight/underline, replace text in place, and extract tables/QR codes. |
+| **Screen Recorder & Auto-Zoom Studio** | Screen recording with keystroke overlay flows directly into Studio — automatic click-focus zoom, curated wallpapers, audio waveform timeline, and one-click export to **MP4**, **WeChat-ready GIF**, and **animated WebP**. |
+| **Global Mouse Gestures** | Right-drag to switch tabs, navigate back, or close windows; supports instant trigger without releasing, screen-edge wheel volume, per-app profiles, and automatic fullscreen game bypass. |
+| **Presenter & Remote Boost** | Crisp keystroke OSD and double-`Ctrl` spotlight; File Dialog quick-jump bar; remote desktop (`mstsc`, RustDesk, ToDesk) hotkey passthrough and one-key stuck-modifier recovery. |
 
 ---
 
@@ -119,42 +129,29 @@ Tools3000 is built for complete zero-black-box transparency (full details in **[
 
 ---
 
-## Live Feature Demos
+## Why I Built Tools3000
 
-<table>
-  <tr>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/content_search_demo.webp" alt="Full-text document content search with one-click line copy" width="100%" /><br />
-      <sub><b>Document Content Search</b> · Search inside PDF, Word, Excel, and source code with highlighted context</sub>
-    </td>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/capture_markup_demo.webp" alt="Precision screenshot annotation and dashed magnifier" width="100%" /><br />
-      <sub><b>Precision Screenshot Markup</b> · Zero-flicker freeze, dashed optical magnifier, privacy mosaic, and auto-healing steps</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/pin_groups_demo.webp" alt="Grouped desktop pins with quick switching and snap tiling" width="100%" /><br />
-      <sub><b>Desktop Pins &amp; Pin Groups</b> · F3 always-on-top pins with color groups, top bar switching, and one-click tiling</sub>
-    </td>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/mouse_gesture_demo.webp" alt="Global mouse gestures and screen-edge wheel volume control" width="100%" /><br />
-      <sub><b>Global Mouse Gestures</b> · Right-drag to close tabs, instant trigger without release, and edge-wheel volume</sub>
-    </td>
-  </tr>
-</table>
+I have been a heavy **Everything** user for over ten years. For screenshots, I started with the built-in **QQ / WeChat** capture tools, moved to **FastStone Capture** for its convenient annotation tools, then switched to **Snipaste** for pinning screenshots on screen, and later migrated to **PixPin** for scrolling capture, magnifier annotations, and OCR. For mouse gestures, I went from **WGestures** to **WGestures 2**, and I cycled through plenty of screen recorders along the way — and even gave Microsoft **PowerToys** a try in between, yet it still missed several daily essentials, leaving me back with a row of separate apps.
 
-| Module | Core Experience |
-| :--- | :--- |
-| **Instant File Search** | `Alt + Space` searches millions of files in milliseconds with full-pinyin & initials support; hit `Space` on any result for QuickLook preview (images, Office, PDF, code, CAD, PSD, and 3D models). |
-| **Document Content Search** | Prefix `content:` to search directly inside Word, Excel, PDF, PowerPoint, CAD, and source code with live highlighted snippets and one-click line copying. |
-| **Scrolling Capture** | Auto-scroll seamless stitching for web pages, documents, and chats with live side preview, lossless head/tail trim, and in-place annotation. |
-| **Precision Screenshot Markup** | `F1` freezes the screen cleanly with window-element snapping, pixel color picker, default dashed optical magnifier, 6 arrow styles, self-healing step badges, mosaic, and sharing frames. |
-| **Desktop Pins & Pin Groups** | `F3` pins screenshots or clipboard content always-on-top with scroll zoom, opacity, and click-through; organize multiple pins into color groups and snap-tile with one click. |
-| **High-Accuracy Offline OCR** | Pure local offline recognition beating WeChat screenshot OCR on dense code, JSON, and complex tables; select/copy text directly on pins, highlight/underline, replace text in place, and extract tables/QR codes. |
-| **60 FPS Recorder & Auto-Zoom Studio** | Smooth 60 FPS capture with keystroke overlay flows directly into Studio — automatic click-focus zoom, curated wallpapers, audio waveform timeline, and one-click export to **MP4**, **WeChat-ready GIF**, and **animated WebP**. |
-| **Global Mouse Gestures** | Right-drag to switch tabs, navigate back, or close windows; supports instant trigger without releasing, screen-edge wheel volume, per-app profiles, and automatic fullscreen game bypass. |
-| **Presenter & Remote Boost** | Crisp keystroke OSD and double-`Ctrl` spotlight; File Dialog quick-jump bar; remote desktop (`mstsc`, RustDesk, ToDesk) hotkey passthrough and one-key stuck-modifier recovery. |
+One day I looked at the row of icons sitting in my Windows system tray and thought: **what if all of these lived in a single app?** On top of tray clutter, a couple of daily annoyances kept nagging at me — PixPin's OCR still lagged behind WeChat in both accuracy and speed, and WGestures started leaving a stubborn tiny text box stuck on screen that only went away after restarting the app. With AI now making ambitious solo builds possible, I rolled up my sleeves and built **Tools3000** as an all-in-one replacement.
+
+To be completely transparent with new users: I have been **dogfooding Tools3000 daily for 4 months**, progressively adding features and fixing issues as they came up. Early on I kept the old apps running as fallbacks whenever something broke; **today, my system tray is finally clean — Tools3000 is the only one left running.**
+
+Of course, real-world Windows setups are endlessly varied and new edge cases will inevitably appear. In the AI era, improving open-source tools together is easier than ever — whether you **[open an issue](https://github.com/yuan278501381/Tools3000/issues)** to report a bug or **co-create via Pull Requests**, your feedback and contributions are warmly welcome.
+
+---
+
+## What It Replaces
+
+Dedicated single-purpose tools each excel at deep niche workflows. Tools3000 is built to cover 90%+ of everyday desktop tasks inside **one consistent, ad-free, GPL-3.0 open-source native app**, while staying honest about where specialized tools still shine:
+
+| Classic Utility | Everyday Workflows Covered by Tools3000 | When to Keep the Dedicated Tool |
+| :--- | :--- | :--- |
+| **Everything** | `Alt + Space` millisecond NTFS filename, phonetic, and `content:` full-text document search, starting strictly on demand | When you need HTTP/ETP network file servers, full EXIF/media property column indexing, or the `es.exe` CLI ecosystem |
+| **QuickLook** | Press `Space` directly in search results to preview images, Office docs, PDF, code, CAD, PSD, and 3D models without opening heavy apps | When you need global Spacebar previews directly inside Windows Desktop / Explorer folders or niche third-party `.qlplugin` extensions |
+| **Snipaste / PixPin** | `F1` region capture & markup, dashed magnifier, scrolling capture, `F3` grouped desktop pins, and fast local offline OCR with in-place text replacement | When you rely on Snipaste's ultra-specialized legacy GUI element snapping or custom CLI screenshot chains |
+| **WGestures / StrokesPlus** | Right-drag gestures for tabs/back/close, instant trigger without release, screen-edge wheel volume, hot corners, fullscreen game bypass, and Lua scripting | When you need multi-button chord gestures (e.g., left-hold + right-gesture), intricate window-region conditions, or years of recorded macros |
+| **Screen Recorders (e.g. ShareX)** | Screen recording, keystroke overlay, instant auto-zoom Studio (waveform trimming & cursor auto-zoom), exporting MP4, messenger-ready GIF, and animated WebP | When you need 80+ cloud/S3/FTP/Webhook auto-upload workflows or heavily customized FFmpeg post-capture pipelines |
 
 ---
 
