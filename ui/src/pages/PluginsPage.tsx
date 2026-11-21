@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FC } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FC } from 'react';
 import {
   Camera,
   Cast,
+  ChevronDown,
   FileSearch,
   FolderSymlink,
   Keyboard,
@@ -14,9 +15,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { Badge, Button, Toggle, CodeBadge } from '../components/UIKit';
+import { Button, Toggle, CodeBadge } from '../components/UIKit';
 import type { NavId } from '../components/Sidebar';
-import { ROUTE_MAP } from '../config/routes';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import './PluginsPage.css';
 
@@ -253,79 +253,102 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
           const Icon = ICONS[plugin.id as keyof typeof ICONS] ?? Puzzle;
           const failed = plugin.state === 'failed';
           const isUnavailable = plugin.state === 'unavailable';
-          const badgeVariant = failed ? 'danger' : isUnavailable ? 'muted' : plugin.restartRequired ? 'warning' : plugin.active ? 'success' : 'muted';
-          const mappedNav = PLUGIN_NAV_MAP[plugin.id];
-          const routeMeta = mappedNav ? ROUTE_MAP.get(mappedNav) : undefined;
-          const cardToneStyle = routeMeta
-            ? ({ '--plugin-tone-start': routeMeta.toneStart, '--plugin-tone-end': routeMeta.toneEnd } as CSSProperties)
-            : undefined;
+          const isRunning = plugin.active && !failed && !isUnavailable && !plugin.restartRequired;
+          const statusTone = failed
+            ? 'danger'
+            : isUnavailable
+              ? 'muted'
+              : plugin.restartRequired
+                ? 'warning'
+                : plugin.active
+                  ? 'success'
+                  : 'muted';
 
           return (
             <article
-              className={`plugin-card ${failed ? 'plugin-card--failed' : ''} ${isUnavailable ? 'plugin-card--unavailable' : ''}`}
-              style={cardToneStyle}
+              className={`plugin-card ${isRunning ? 'plugin-card--active' : ''} ${failed ? 'plugin-card--failed' : ''} ${isUnavailable ? 'plugin-card--unavailable' : ''}`}
               key={plugin.id}
             >
               <div className="plugin-card__header">
-                <span className="plugin-card__icon" aria-hidden="true"><Icon size={20} strokeWidth={2.15} /></span>
+                <span className="plugin-card__icon" aria-hidden="true">
+                  <Icon size={17} strokeWidth={1.85} />
+                </span>
                 <div className="plugin-card__identity">
                   <div className="plugin-card__title-row">
                     <h2>{t(`plugins.items.${plugin.id}.name`, { defaultValue: plugin.name })}</h2>
-                    <div className="plugin-card__header-badges">
-                      <Badge text={t(`plugins.state.${plugin.state}`)} variant={badgeVariant} />
-                    </div>
                   </div>
-                  <div className="plugin-card__version">
-                    <span>v{plugin.version || '—'} · </span>
-                    <CodeBadge>{plugin.fileName}</CodeBadge>
+                  <div className="plugin-card__status-line">
+                    <span className={`plugin-card__status-dot plugin-card__status-dot--${statusTone}`} aria-hidden="true" />
+                    <span className={`plugin-card__status-text plugin-card__status-text--${statusTone}`}>
+                      {t(`plugins.state.${plugin.state}`)}
+                    </span>
+                    <span className="plugin-card__status-sep" aria-hidden="true">·</span>
+                    <span className="plugin-card__version-inline">v{plugin.version || '—'}</span>
                   </div>
                 </div>
+                <div className="plugin-card__switch">
+                  <Toggle
+                    id={`plugin-${plugin.id}`}
+                    checked={plugin.enabled}
+                    disabled={savingId === plugin.id || (failed && !plugin.enabled) || isUnavailable}
+                    onChange={(value) => void setEnabled(plugin, value)}
+                  />
+                </div>
               </div>
+
               <p className="plugin-card__description">
                 {t(`plugins.items.${plugin.id}.description`, { defaultValue: plugin.name })}
               </p>
-              <div className="plugin-card__manifest" aria-label={t('plugins.capabilities')}>
-                <CodeBadge variant="muted">{t('plugins.abi', { version: plugin.abiVersion || '—' })}</CodeBadge>
-                {(plugin.capabilities || []).slice(0, 4).map((capability) => (
-                  <CodeBadge key={capability}>{capability}</CodeBadge>
-                ))}
-                {(plugin.capabilities || []).length > 4 && (
-                  <span>+{plugin.capabilities.length - 4}</span>
-                )}
-              </div>
-              {(plugin.permissions || []).length > 0 && (
-                <details className="plugin-card__permissions">
-                  <summary><ShieldCheck size={14} aria-hidden="true" />{t('plugins.permissions')}</summary>
-                  <div>
-                    {plugin.executionModel === 'trusted-native-in-process' && (
-                      <span>{t('plugins.fullTrustWarning')}</span>
+
+              {plugin.error && <p className="plugin-card__error" role="alert">{plugin.error}</p>}
+
+              <div className="plugin-card__footer">
+                <details className="plugin-card__details">
+                  <summary className="plugin-card__details-trigger">
+                    <ShieldCheck size={13} strokeWidth={1.9} aria-hidden="true" />
+                    <span>{t('plugins.permissions')}</span>
+                    <ChevronDown size={13} strokeWidth={2} className="plugin-card__details-chevron" aria-hidden="true" />
+                  </summary>
+                  <div className="plugin-card__details-body">
+                    <div className="plugin-card__meta-row">
+                      <CodeBadge>{plugin.fileName}</CodeBadge>
+                      <CodeBadge variant="muted">{t('plugins.abi', { version: plugin.abiVersion || '—' })}</CodeBadge>
+                      <span className="plugin-card__runtime-note">
+                        {plugin.active ? t('plugins.resourceActive') : t('plugins.resourceInactive')}
+                      </span>
+                    </div>
+                    {(plugin.capabilities || []).length > 0 && (
+                      <div className="plugin-card__meta-group" aria-label={t('plugins.capabilities')}>
+                        {(plugin.capabilities || []).map((capability) => (
+                          <CodeBadge key={capability}>{capability}</CodeBadge>
+                        ))}
+                      </div>
                     )}
-                    {plugin.permissions.map((permission) => <CodeBadge key={permission}>{permission}</CodeBadge>)}
+                    {(plugin.permissions || []).length > 0 && (
+                      <div className="plugin-card__meta-group">
+                        {plugin.executionModel === 'trusted-native-in-process' && (
+                          <span className="plugin-card__trust-note">{t('plugins.fullTrustWarning')}</span>
+                        )}
+                        <div className="plugin-card__perm-chips">
+                          {plugin.permissions.map((permission) => <CodeBadge key={permission} variant="muted">{permission}</CodeBadge>)}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </details>
-              )}
-              {plugin.error && <p className="plugin-card__error" role="alert">{plugin.error}</p>}
-              <div className="plugin-card__footer">
-                <div className="plugin-card__footer-status">
-                  <span>{plugin.active ? t('plugins.resourceActive') : t('plugins.resourceInactive')}</span>
-                  {onNavigate && plugin.enabled && plugin.active && PLUGIN_NAV_MAP[plugin.id] && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => onNavigate(PLUGIN_NAV_MAP[plugin.id])}
-                      title={t('plugins.configure')}
-                    >
-                      <SlidersHorizontal size={13} />
-                      {t('plugins.configure')}
-                    </Button>
-                  )}
-                </div>
-                <Toggle
-                  id={`plugin-${plugin.id}`}
-                  checked={plugin.enabled}
-                  disabled={savingId === plugin.id || (failed && !plugin.enabled) || isUnavailable}
-                  onChange={(value) => void setEnabled(plugin, value)}
-                />
+
+                {onNavigate && plugin.enabled && plugin.active && PLUGIN_NAV_MAP[plugin.id] && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="plugin-card__config-btn"
+                    onClick={() => onNavigate(PLUGIN_NAV_MAP[plugin.id])}
+                    title={t('plugins.configure')}
+                  >
+                    <SlidersHorizontal size={13} strokeWidth={1.9} />
+                    <span>{t('plugins.configure')}</span>
+                  </Button>
+                )}
               </div>
             </article>
           );

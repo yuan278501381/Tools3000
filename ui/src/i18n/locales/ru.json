@@ -1247,7 +1247,15 @@
     "clearToday": "Сбросить день",
     "confirmClearToday": "Обнулить сегодняшнюю статистику нажатий и кликов?",
     "clearTodaySuccess": "Статистика за сегодня сброшена",
-    "clearTodayFailed": "Не удалось сбросить статистику за сегодня"
+    "clearTodayFailed": "Не удалось сбросить статистику за сегодня",
+    "range7d": "7 дней",
+    "rangeMonth": "Этот месяц",
+    "rangeYear": "Этот год",
+    "periodTotal": "Итого за период",
+    "dailyAvg": "В среднем/день",
+    "peakValue": "Пик",
+    "activeDays": "Активно",
+    "daysUnit": "дн."
   },
   "about": {
     "title": "О программе Tools3000",
@@ -1992,7 +2000,7 @@
     "holdDurationLong": "5000 мс",
     "holdDurationCustom": "{{ms}} мс (своё)",
     "shakeThreshold": "Порог встряхивания",
-    "shakeThresholdDesc": "Чувствительность распознавания встряхивания (по умолчанию 7).",
+    "shakeThresholdDesc": "Чувствительность распознавания встряхивания (по умолчанию 4).",
     "mouseFxSection": "Эффекты кликов и движения",
     "clickRipple": "Показывать волны кликов",
     "clickRippleDesc": "Отображать кратковременную анимацию в точке клика мыши.",

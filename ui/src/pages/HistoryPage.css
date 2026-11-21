@@ -48,11 +48,11 @@
 .history-card {
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: 13px;
+  border-radius: 12px;
   overflow: hidden;
   cursor: pointer;
   box-shadow: var(--shadow-sm), var(--card-highlight);
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform 180ms var(--ease-spring);
   display: flex;
   flex-direction: column;
   text-align: left;
@@ -61,7 +61,8 @@
 
 .history-card:hover {
   box-shadow: var(--shadow-md), var(--card-highlight);
-  border-color: color-mix(in srgb, var(--primary) 45%, var(--card-border));
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--card-border));
+  transform: translateY(-1px);
 }
 
 .history-card:focus-visible {
@@ -161,7 +162,16 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
+  min-width: 0;
+}
+
+.history-card-file-row .uikit-code-badge {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
 }
 
 .history-card-actions {

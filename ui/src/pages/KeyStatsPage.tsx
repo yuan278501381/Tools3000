@@ -1,19 +1,26 @@
-import { useEffect, useState, useMemo, useCallback, type FC } from 'react';
-import { Card, SettingGroup, Badge, Button, ConfirmModal, PageSkeleton } from '../components/UIKit';
+import { useEffect, useState, useMemo, useCallback, useRef, useId, type FC } from 'react';
+import { Card, SettingGroup, Button, ConfirmModal, PageSkeleton } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { KeyboardHeatmap } from '../components/KeyboardHeatmap';
 import { LineChart as LineChartIcon, Flame, Trophy, RefreshCw, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  type ActivityRange,
+  type ActivityPoint,
+  type DailyStat,
+  type SvgPoint,
+  localDateKey,
+  getRequiredDaysForRange,
+  buildActivitySeries,
+  summarizeActivitySeries,
+  computeNiceYAxisMax,
+  formatAxisNumber,
+  computeVisibleXTickIndices,
+  buildMonotoneCurvePath,
+  buildMonotoneAreaPath,
+} from './keyStatsModel';
 import './KeyStatsPage.css';
-
-interface DailyStat {
-  date: string;
-  keystrokes: number;
-  mouseClicks: number;
-  mouseDistance: number;
-  keyMap: Record<number, number>;
-}
 
 interface TotalStat {
   totalKeystrokes: number;
@@ -30,13 +37,6 @@ interface HistoryStat {
 const safeCount = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 
-const localDateKey = (date = new Date()): string => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
 const normalizeKeyMap = (value: unknown): Record<number, number> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
 
@@ -47,106 +47,107 @@ const normalizeKeyMap = (value: unknown): Record<number, number> => {
   );
 };
 
-interface ChartPoint {
-  date: string;
-  keys: number;
+interface ActivityChartProps {
+  data: ActivityPoint[];
+  range: ActivityRange;
+  keysLabel: string;
+  clicksLabel: string;
+  dailyAvgLabel: string;
+  activeDaysLabel: string;
+  daysUnit: string;
+  ariaLabel: string;
 }
 
-interface Point {
-  x: number;
-  y: number;
-}
+const CHART_HEIGHT = 248;
 
-/**
- * 生成平滑单调三次贝塞尔曲线 SVG 路径 (Monotone Cubic Spline)
- * 达到 C1 级平滑度，同时在水平基准处严防下潜穿底或极值外溢。
- */
-function getSmoothCurvePath(points: Point[]): string {
-  if (points.length === 0) return '';
-  if (points.length === 1) return `M ${points[0].x.toFixed(2)},${points[0].y.toFixed(2)}`;
-  if (points.length === 2) {
-    return `M ${points[0].x.toFixed(2)},${points[0].y.toFixed(2)} L ${points[1].x.toFixed(2)},${points[1].y.toFixed(2)}`;
-  }
-
-  const n = points.length;
-  let d = `M ${points[0].x.toFixed(2)},${points[0].y.toFixed(2)}`;
-
-  for (let i = 0; i < n - 1; i++) {
-    const p0 = i > 0 ? points[i - 1] : points[i];
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const p3 = i < n - 2 ? points[i + 2] : p2;
-
-    const tension = 0.22;
-    const cp1x = p1.x + (p2.x - p0.x) * tension;
-    let cp1y = p1.y + (p2.y - p0.y) * tension;
-
-    const cp2x = p2.x - (p3.x - p1.x) * tension;
-    let cp2y = p2.y - (p3.y - p1.y) * tension;
-
-    if (p1.y === p2.y) {
-      cp1y = p1.y;
-      cp2y = p2.y;
-    } else {
-      const minY = Math.min(p1.y, p2.y);
-      const maxY = Math.max(p1.y, p2.y);
-      cp1y = Math.min(Math.max(cp1y, minY), maxY);
-      cp2y = Math.min(Math.max(cp2y, minY), maxY);
-    }
-
-    d += ` C ${cp1x.toFixed(2)},${cp1y.toFixed(2)} ${cp2x.toFixed(2)},${cp2y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)}`;
-  }
-
-  return d;
-}
-
-function getSmoothAreaPath(points: Point[], baselineY: number): string {
-  if (points.length === 0) return '';
-  const curve = getSmoothCurvePath(points);
-  const first = points[0];
-  const last = points[points.length - 1];
-  return `${curve} L ${last.x.toFixed(2)},${baselineY.toFixed(2)} L ${first.x.toFixed(2)},${baselineY.toFixed(2)} Z`;
-}
-
-const ActivityChart: FC<{ data: ChartPoint[]; label: string }> = ({ data, label }) => {
+const ActivityChart: FC<ActivityChartProps> = ({
+  data,
+  range,
+  keysLabel,
+  clicksLabel,
+  dailyAvgLabel,
+  activeDaysLabel,
+  daysUnit,
+  ariaLabel,
+}) => {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [stageWidth, setStageWidth] = useState(860);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const width = 720;
-  const height = 260;
-  const padding = { top: 22, right: 24, bottom: 36, left: 54 };
-  const plotWidth = width - padding.left - padding.right;
+  const gradientUid = useId().replace(/:/g, '');
+
+  // 真实物理像素宽度自适应：ResizeObserver 1:1 驱动 SVG 坐标系，杜绝左右大白边与文字拉伸
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const syncWidth = () => {
+      const next = Math.round(el.getBoundingClientRect().width);
+      if (next > 120) {
+        setStageWidth((prev) => (Math.abs(prev - next) >= 2 ? next : prev));
+      }
+    };
+    syncWidth();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const w = Math.round(entries[0]?.contentRect?.width ?? 0);
+      if (w > 120) {
+        setStageWidth((prev) => (Math.abs(prev - w) >= 2 ? w : prev));
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // 切换周期时复位悬停态，避免越界
+  const safeHoverIndex = hoverIndex !== null && hoverIndex < data.length ? hoverIndex : null;
+
+  const width = Math.max(320, stageWidth);
+  const height = CHART_HEIGHT;
+  const padding = { top: 20, right: 18, bottom: 32, left: 54 };
+  const plotWidth = Math.max(120, width - padding.left - padding.right);
   const plotHeight = height - padding.top - padding.bottom;
   const baselineY = padding.top + plotHeight;
 
-  const rawMax = Math.max(1, ...data.map(item => item.keys));
-  const magnitude = 10 ** Math.max(0, Math.floor(Math.log10(rawMax)) - 1);
-  const yMax = Math.max(magnitude * 4, Math.ceil(rawMax / (magnitude * 4)) * magnitude * 4);
+  const rawMax = Math.max(0, ...data.map((item) => item.keys));
+  const yMax = computeNiceYAxisMax(rawMax);
+  const yTicks = useMemo(() => Array.from({ length: 5 }, (_, index) => (yMax * index) / 4), [yMax]);
 
-  const yAt = (value: number) => padding.top + plotHeight - (value / yMax) * plotHeight;
-  const chartPoints: Point[] = useMemo(() => {
-    const xFn = (index: number) => padding.left + (data.length <= 1 ? plotWidth / 2 : (index * plotWidth) / (data.length - 1));
-    const yFn = (value: number) => padding.top + plotHeight - (value / yMax) * plotHeight;
-    return data.map((item, index) => ({ x: xFn(index), y: yFn(item.keys) }));
-  }, [data, yMax, padding.left, padding.top, plotWidth, plotHeight]);
+  const yAt = useCallback(
+    (value: number) => padding.top + plotHeight - (value / yMax) * plotHeight,
+    [padding.top, plotHeight, yMax],
+  );
 
-  const smoothCurvePath = useMemo(() => getSmoothCurvePath(chartPoints), [chartPoints]);
-  const smoothAreaPath = useMemo(() => getSmoothAreaPath(chartPoints, baselineY), [chartPoints, baselineY]);
+  const chartPoints: SvgPoint[] = useMemo(() => {
+    const xFn = (index: number) =>
+      padding.left + (data.length <= 1 ? plotWidth / 2 : (index * plotWidth) / (data.length - 1));
+    return data.map((item, index) => ({ x: xFn(index), y: yAt(item.keys) }));
+  }, [data, padding.left, plotWidth, yAt]);
 
-  const yTicks = Array.from({ length: 5 }, (_, index) => (yMax * index) / 4);
+  const smoothCurvePath = useMemo(() => buildMonotoneCurvePath(chartPoints), [chartPoints]);
+  const smoothAreaPath = useMemo(() => buildMonotoneAreaPath(chartPoints, baselineY), [chartPoints, baselineY]);
+
+  const visibleXIndices = useMemo(
+    () => computeVisibleXTickIndices(data.length, plotWidth, range === 'month' ? 62 : 54),
+    [data.length, plotWidth, range],
+  );
+
+  // 月视图点数多（最多31天）时隐藏常态密集圆点，保留丝绸般平滑渐变曲线，悬停即刻点亮锚点
+  const showAllStaticDots = data.length <= 12;
 
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (data.length === 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
     const svgX = ((e.clientX - rect.left) / rect.width) * width;
 
     let closest = 0;
     let minDiff = Infinity;
-    chartPoints.forEach((pt, idx) => {
-      const diff = Math.abs(pt.x - svgX);
+    for (let idx = 0; idx < chartPoints.length; idx++) {
+      const diff = Math.abs(chartPoints[idx].x - svgX);
       if (diff < minDiff) {
         minDiff = diff;
         closest = idx;
       }
-    });
+    }
     setHoverIndex(closest);
   };
 
@@ -154,175 +155,258 @@ const ActivityChart: FC<{ data: ChartPoint[]; label: string }> = ({ data, label 
     setHoverIndex(null);
   };
 
-  const activePt = hoverIndex !== null ? chartPoints[hoverIndex] : null;
-  const activeData = hoverIndex !== null ? data[hoverIndex] : null;
+  const activePt = safeHoverIndex !== null ? chartPoints[safeHoverIndex] : null;
+  const activeData = safeHoverIndex !== null ? data[safeHoverIndex] : null;
+
+  const areaGradId = `activity-area-grad-${gradientUid}`;
+  const lineGradId = `activity-line-grad-${gradientUid}`;
+
+  // 浮动毛玻璃 Tooltip 边缘安全定位（左/右自动防裁切，高点自动翻转至节点下方）
+  const tooltipStyle = useMemo(() => {
+    if (!activePt) return undefined;
+    const halfW = 92;
+    const clampedX = Math.max(padding.left + halfW - 12, Math.min(width - halfW - 6, activePt.x));
+    const placeBelow = activePt.y < 84;
+    const topPx = placeBelow ? Math.min(baselineY - 12, activePt.y + 16) : Math.max(8, activePt.y - 14);
+    return {
+      left: `${clampedX}px`,
+      top: `${topPx}px`,
+      transform: placeBelow ? 'translate(-50%, 0)' : 'translate(-50%, -100%)',
+    };
+  }, [activePt, baselineY, padding.left, width]);
 
   return (
-    <svg
-      className="activity-chart"
-      viewBox={`0 0 ${width} ${height}`}
-      role="img"
-      aria-label={label}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-    >
-      <defs>
-        <linearGradient id="activity-area-gradient" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.35" />
-          <stop offset="50%" stopColor="var(--primary)" stopOpacity="0.10" />
-          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0.00" />
-        </linearGradient>
-      </defs>
+    <div className="activity-chart-stage" ref={stageRef}>
+      <svg
+        className="activity-chart"
+        viewBox={`0 0 ${width} ${height}`}
+        width={width}
+        height={height}
+        role="img"
+        aria-label={ariaLabel}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+      >
+        <defs>
+          {/* 三段式建筑流光渐变面积填充 */}
+          <linearGradient id={areaGradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" className="activity-chart__grad-top" />
+            <stop offset="48%" className="activity-chart__grad-mid" />
+            <stop offset="88%" className="activity-chart__grad-low" />
+            <stop offset="100%" className="activity-chart__grad-end" />
+          </linearGradient>
+          {/* 曲线水平微流光渐变 */}
+          <linearGradient id={lineGradId} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.88" />
+            <stop offset="50%" stopColor="var(--primary)" stopOpacity="1" />
+            <stop offset="100%" stopColor="var(--primary-hover)" stopOpacity="0.96" />
+          </linearGradient>
+        </defs>
 
-      {/* 水平刻度网格线与 Y 轴标签 */}
-      {yTicks.map(value => {
-        const y = yAt(value);
-        return (
-          <g key={value}>
-            <line className="activity-chart__grid" x1={padding.left} x2={width - padding.right} y1={y} y2={y} />
-            <text className="activity-chart__axis" x={padding.left - 12} y={y + 4} textAnchor="end">
-              {Math.round(value).toLocaleString()}
-            </text>
-          </g>
-        );
-      })}
+        {/* 水平虚线网格与 Y 轴刻度 */}
+        {yTicks.map((value, idx) => {
+          const y = yAt(value);
+          const isBaseline = idx === 0;
+          return (
+            <g key={value}>
+              <line
+                className={isBaseline ? 'activity-chart__baseline' : 'activity-chart__grid'}
+                x1={padding.left}
+                x2={width - padding.right}
+                y1={y}
+                y2={y}
+              />
+              <text className="activity-chart__axis" x={padding.left - 12} y={y + 4} textAnchor="end">
+                {formatAxisNumber(value)}
+              </text>
+            </g>
+          );
+        })}
 
-      {/* 平滑面积渐变 */}
-      {smoothAreaPath && <path className="activity-chart__area" d={smoothAreaPath} fill="url(#activity-area-gradient)" />}
+        {/* 渐变面积主体 */}
+        {smoothAreaPath && (
+          <path className="activity-chart__area" d={smoothAreaPath} fill={`url(#${areaGradId})`} />
+        )}
 
-      {/* 悬停竖向对齐指示虚线 */}
-      {activePt && (
-        <line
-          className="activity-chart__guide"
-          x1={activePt.x}
-          x2={activePt.x}
-          y1={padding.top}
-          y2={baselineY}
-        />
-      )}
-
-      {/* 平滑主折线 */}
-      {smoothCurvePath && <path className="activity-chart__line" d={smoothCurvePath} />}
-
-      {/* 数据节点与 X 轴日期 */}
-      {data.map((item, index) => {
-        const pt = chartPoints[index];
-        const isHovered = hoverIndex === index;
-        return (
-          <g key={`${item.date}-${index}`} className="activity-chart__node">
-            <circle
-              className={`activity-chart__point ${isHovered ? 'activity-chart__point--hover' : ''}`}
-              cx={pt.x}
-              cy={pt.y}
-              r={isHovered ? 5.5 : 4}
-            />
-            <text
-              className={`activity-chart__axis ${isHovered ? 'activity-chart__axis--active' : ''}`}
-              x={pt.x}
-              y={height - 10}
-              textAnchor="middle"
-            >
-              {item.date}
-            </text>
-          </g>
-        );
-      })}
-
-      {/* 激活节点的高亮发光环 */}
-      {activePt && (
-        <g className="activity-chart__active-marker" pointerEvents="none">
-          <circle className="activity-chart__point-halo" cx={activePt.x} cy={activePt.y} r="9" />
-          <circle className="activity-chart__point-active" cx={activePt.x} cy={activePt.y} r="5" />
-        </g>
-      )}
-
-      {/* 浮动提示卡片 */}
-      {activePt && activeData && (
-        <g
-          className="activity-chart__tooltip"
-          transform={`translate(${Math.max(padding.left + 58, Math.min(width - padding.right - 58, activePt.x))}, ${Math.max(padding.top + 42, activePt.y - 14)})`}
-          pointerEvents="none"
-        >
-          <rect
-            className="activity-chart__tooltip-bg"
-            x={-56}
-            y={-42}
-            width={112}
-            height={38}
-            rx={8}
+        {/* 悬停纵向对齐引导线 */}
+        {activePt && (
+          <line
+            className="activity-chart__guide"
+            x1={activePt.x}
+            x2={activePt.x}
+            y1={padding.top}
+            y2={baselineY}
           />
-          <text className="activity-chart__tooltip-date" x={0} y={-25} textAnchor="middle">
-            {activeData.date}
-          </text>
-          <text className="activity-chart__tooltip-value" x={0} y={-10} textAnchor="middle">
-            {activeData.keys.toLocaleString()} {label}
-          </text>
-        </g>
+        )}
+
+        {/* 单调平滑流光主曲线 */}
+        {smoothCurvePath && data.length > 1 && (
+          <path className="activity-chart__line" d={smoothCurvePath} stroke={`url(#${lineGradId})`} />
+        )}
+
+        {/* 数据节点与 X 轴刻度 */}
+        {data.map((item, index) => {
+          const pt = chartPoints[index];
+          const isHovered = safeHoverIndex === index;
+          const showLabel = visibleXIndices.has(index);
+          const textAnchor =
+            data.length > 1 && index === 0
+              ? 'start'
+              : data.length > 1 && index === data.length - 1
+                ? 'end'
+                : 'middle';
+          const labelX =
+            textAnchor === 'start'
+              ? Math.max(padding.left, pt.x - 4)
+              : textAnchor === 'end'
+                ? Math.min(width - padding.right, pt.x + 4)
+                : pt.x;
+
+          return (
+            <g key={item.key} className="activity-chart__node">
+              {(showAllStaticDots || isHovered) && (
+                <circle
+                  className={`activity-chart__point ${isHovered ? 'activity-chart__point--hover' : ''}`}
+                  cx={pt.x}
+                  cy={pt.y}
+                  r={isHovered ? 5 : 3.6}
+                />
+              )}
+              {showLabel && (
+                <text
+                  className={`activity-chart__axis ${isHovered ? 'activity-chart__axis--active' : ''}`}
+                  x={labelX}
+                  y={height - 8}
+                  textAnchor={textAnchor}
+                >
+                  {item.axisLabel}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {/* 激活节点的双层脉冲光环 */}
+        {activePt && (
+          <g className="activity-chart__active-marker" pointerEvents="none">
+            <circle className="activity-chart__point-halo" cx={activePt.x} cy={activePt.y} r="10" />
+            <circle className="activity-chart__point-active" cx={activePt.x} cy={activePt.y} r="4.8" />
+          </g>
+        )}
+      </svg>
+
+      {/* 雕塑白瓷/曜石毛玻璃悬浮详情卡片 */}
+      {activePt && activeData && (
+        <div className="activity-chart__popover" style={tooltipStyle} aria-hidden="true">
+          <div className="activity-chart__popover-date">{activeData.tooltipTitle}</div>
+          <div className="activity-chart__popover-primary">
+            <span className="activity-chart__popover-num">{activeData.keys.toLocaleString()}</span>
+            <span className="activity-chart__popover-unit">{keysLabel}</span>
+          </div>
+          <div className="activity-chart__popover-meta">
+            {activeData.isMonthly ? (
+              <>
+                <span>
+                  {dailyAvgLabel} {Math.round(activeData.keys / Math.max(1, activeData.daysSpan)).toLocaleString()}
+                </span>
+                <span className="activity-chart__popover-sep">·</span>
+                <span>
+                  {activeDaysLabel} {activeData.activeDays}
+                  {daysUnit}
+                </span>
+              </>
+            ) : (
+              <span>
+                {activeData.clicks.toLocaleString()} {clicksLabel}
+              </span>
+            )}
+          </div>
+        </div>
       )}
-    </svg>
+    </div>
   );
 };
 
 export const KeyStatsPage: FC = () => {
-  const [dailyStats, setDailyStats] = useState<DailyStat[]>([]);
+  const [dailyMap, setDailyMap] = useState<Record<string, DailyStat>>({});
   const [totalStats, setTotalStats] = useState<TotalStat>({ totalKeystrokes: 0 });
+  const [range, setRange] = useState<ActivityRange>('7d');
   const [loading, setLoading] = useState(true);
+  const [rangeLoading, setRangeLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const { t } = useTranslation();
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const loadedDaysRef = useRef(0);
+  const { t, i18n } = useTranslation();
 
-  const chartData = useMemo(() => dailyStats.map(s => ({
-    date: s.date.split('-').slice(1).join('/'),
-    keys: s.keystrokes
-  })), [dailyStats]);
-
-  const todayStats = useMemo(() => {
-    const today = localDateKey();
-    return dailyStats.find(s => s.date === today) || { keystrokes: 0, mouseClicks: 0, mouseDistance: 0, keyMap: {} };
-  }, [dailyStats]);
-
-  const totalOverview = useMemo(() => ({
-    totalKeystrokes: totalStats.totalKeystrokes
-  }), [totalStats]);
-
-  const applyStatsPayload = useCallback((historyMap: Record<string, HistoryStat> | undefined, total: TotalStat | undefined) => {
-    const history = historyMap && typeof historyMap === 'object' && !Array.isArray(historyMap)
-      ? historyMap
-      : {};
-    const daily = Object.entries(history).map(([date, data]) => ({
-      date,
-      keystrokes: safeCount(data?.totalKeys),
-      mouseClicks: safeCount(data?.leftClicks) + safeCount(data?.rightClicks),
-      mouseDistance: safeCount(data?.mouseDistance),
-      keyMap: normalizeKeyMap(data?.keyMap)
-    })).sort((a, b) => a.date.localeCompare(b.date));
-
-    setDailyStats(daily);
-    setTotalStats({ totalKeystrokes: safeCount(total?.totalKeystrokes) });
-  }, []);
+  const applyStatsPayload = useCallback(
+    (historyMap: Record<string, HistoryStat> | undefined, total: TotalStat | undefined, replaceAll = false) => {
+      const history = historyMap && typeof historyMap === 'object' && !Array.isArray(historyMap) ? historyMap : {};
+      const nextEntries: Record<string, DailyStat> = {};
+      for (const [date, data] of Object.entries(history)) {
+        nextEntries[date] = {
+          date,
+          keystrokes: safeCount(data?.totalKeys),
+          mouseClicks: safeCount(data?.leftClicks) + safeCount(data?.rightClicks),
+          mouseDistance: safeCount(data?.mouseDistance),
+          keyMap: normalizeKeyMap(data?.keyMap),
+        };
+      }
+      setDailyMap((prev) => (replaceAll ? nextEntries : { ...prev, ...nextEntries }));
+      if (total !== undefined) {
+        setTotalStats({ totalKeystrokes: safeCount(total?.totalKeystrokes) });
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
+    const initialDays = getRequiredDaysForRange('7d');
     Promise.all([
-      bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days: 7 }),
-      bridgeRequest<TotalStat>('stats.getTotal')
-    ]).then(([historyMap, total]) => {
-      applyStatsPayload(historyMap, total);
-      setLoading(false);
-    }).catch(err => {
-      console.error('Failed to load stats:', err);
-      setLoading(false);
-    });
+      bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days: initialDays }),
+      bridgeRequest<TotalStat>('stats.getTotal'),
+    ])
+      .then(([historyMap, total]) => {
+        loadedDaysRef.current = Math.max(loadedDaysRef.current, initialDays);
+        applyStatsPayload(historyMap, total, true);
+        setLoading(false);
+      })
+      .catch((err) => {
+        console.error('Failed to load stats:', err);
+        setLoading(false);
+      });
   }, [applyStatsPayload]);
+
+  const handleRangeChange = useCallback(
+    async (nextRange: ActivityRange) => {
+      setRange(nextRange);
+      const neededDays = getRequiredDaysForRange(nextRange);
+      if (loadedDaysRef.current >= neededDays) return;
+      setRangeLoading(true);
+      try {
+        const historyMap = await bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days: neededDays });
+        loadedDaysRef.current = Math.max(loadedDaysRef.current, neededDays);
+        applyStatsPayload(historyMap, undefined, false);
+      } catch (err) {
+        console.error('Failed to load activity range:', err);
+      } finally {
+        setRangeLoading(false);
+      }
+    },
+    [applyStatsPayload],
+  );
 
   const handleRefresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
+      const days = Math.max(loadedDaysRef.current, getRequiredDaysForRange(range));
       const [historyMap, total] = await Promise.all([
-        bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days: 7 }),
-        bridgeRequest<TotalStat>('stats.getTotal')
+        bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days }),
+        bridgeRequest<TotalStat>('stats.getTotal'),
       ]);
-      applyStatsPayload(historyMap, total);
+      loadedDaysRef.current = Math.max(loadedDaysRef.current, days);
+      applyStatsPayload(historyMap, total, true);
     } catch (err) {
       console.error('Failed to refresh stats:', err);
     } finally {
@@ -330,19 +414,19 @@ export const KeyStatsPage: FC = () => {
     }
   };
 
-  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
-
   const handleClearToday = async () => {
     if (clearing) return;
     setConfirmClearOpen(false);
     setClearing(true);
     try {
       await bridgeRequest('stats.clearToday');
+      const days = Math.max(loadedDaysRef.current, getRequiredDaysForRange(range));
       const [historyMap, total] = await Promise.all([
-        bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days: 7 }),
-        bridgeRequest<TotalStat>('stats.getTotal')
+        bridgeRequest<Record<string, HistoryStat>>('stats.getHistory', { days }),
+        bridgeRequest<TotalStat>('stats.getTotal'),
       ]);
-      applyStatsPayload(historyMap, total);
+      loadedDaysRef.current = Math.max(loadedDaysRef.current, days);
+      applyStatsPayload(historyMap, total, true);
       toast.success(t('stats.clearTodaySuccess'));
     } catch (err) {
       toast.error(t('stats.clearTodayFailed'), { description: String(err) });
@@ -351,9 +435,34 @@ export const KeyStatsPage: FC = () => {
     }
   };
 
+  const locale = i18n.resolvedLanguage || i18n.language || 'zh-CN';
+
+  const chartData = useMemo(
+    () => buildActivitySeries(dailyMap, range, locale),
+    [dailyMap, range, locale],
+  );
+
+  const chartSummary = useMemo(() => summarizeActivitySeries(chartData), [chartData]);
+
+  const todayStats = useMemo(() => {
+    const today = localDateKey();
+    return dailyMap[today] || { keystrokes: 0, mouseClicks: 0, mouseDistance: 0, keyMap: {} };
+  }, [dailyMap]);
+
+  const totalOverview = useMemo(
+    () => ({ totalKeystrokes: totalStats.totalKeystrokes }),
+    [totalStats],
+  );
+
   if (loading) {
     return <PageSkeleton cards={2} rowsPerCard={2} />;
   }
+
+  const rangeOptions: Array<{ id: ActivityRange; label: string }> = [
+    { id: '7d', label: t('stats.range7d', '7 Days') },
+    { id: 'month', label: t('stats.rangeMonth', 'This Month') },
+    { id: 'year', label: t('stats.rangeYear', 'This Year') },
+  ];
 
   return (
     <div className="stats-page" style={{ animation: 'fadeIn 0.3s ease' }}>
@@ -381,9 +490,62 @@ export const KeyStatsPage: FC = () => {
       </div>
 
       <SettingGroup title={t('stats.dailyTitle')} icon={<LineChartIcon size={20} strokeWidth={2.5} />}>
-        <Card>
-          <div style={{ height: '300px', width: '100%', marginTop: '16px' }}>
-            <ActivityChart data={chartData} label={t('stats.keys')} />
+        <Card className="activity-chart-card">
+          <div className="activity-chart-card__header">
+            <div className="activity-chart-summary">
+              <div className="activity-chart-summary__item">
+                <span className="activity-chart-summary__label">{t('stats.periodTotal', 'Period Total')}</span>
+                <span className="activity-chart-summary__value">
+                  {chartSummary.totalKeys.toLocaleString()} {t('stats.keys')}
+                </span>
+              </div>
+              <span className="activity-chart-summary__divider" aria-hidden="true" />
+              <div className="activity-chart-summary__item">
+                <span className="activity-chart-summary__label">{t('stats.dailyAvg', 'Daily Avg')}</span>
+                <span className="activity-chart-summary__value">
+                  {chartSummary.dailyAvg.toLocaleString()} {t('stats.keys')}
+                </span>
+              </div>
+              <span className="activity-chart-summary__divider" aria-hidden="true" />
+              <div className="activity-chart-summary__item">
+                <span className="activity-chart-summary__label">{t('stats.peakValue', 'Peak')}</span>
+                <span className="activity-chart-summary__value">
+                  {chartSummary.peakKeys.toLocaleString()} {t('stats.keys')}
+                </span>
+              </div>
+            </div>
+
+            <div className="activity-range-switch" role="tablist" aria-label={t('stats.dailyTitle')}>
+              {rangeOptions.map((opt) => {
+                const active = range === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    className={`activity-range-switch__btn ${active ? 'activity-range-switch__btn--active' : ''}`}
+                    onClick={() => void handleRangeChange(opt.id)}
+                    disabled={rangeLoading && active}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className={`activity-chart-wrap ${rangeLoading ? 'activity-chart-wrap--loading' : ''}`}>
+            <ActivityChart
+              data={chartData}
+              range={range}
+              keysLabel={t('stats.keys')}
+              clicksLabel={t('stats.clicks')}
+              dailyAvgLabel={t('stats.dailyAvg', 'Daily Avg')}
+              activeDaysLabel={t('stats.activeDays', 'Active')}
+              daysUnit={t('stats.daysUnit', 'd')}
+              ariaLabel={t('stats.dailyTitle')}
+            />
           </div>
         </Card>
       </SettingGroup>
@@ -393,53 +555,62 @@ export const KeyStatsPage: FC = () => {
       </SettingGroup>
 
       <SettingGroup title={t('stats.totalOverview')} icon={<Trophy size={20} strokeWidth={2.5} />}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
+        <div className="stats-kpi-grid">
           <Card>
-            <div style={{ padding: '16px', textAlign: 'center' }}>
-              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--primary)' }}>
+            <div className="stats-kpi-card">
+              <div className="stats-kpi-label">
+                <span className="stats-kpi-dot stats-kpi-dot--primary" aria-hidden="true" />
+                <span>{t('stats.allTimeKeys')}</span>
+              </div>
+              <div className="stats-page__counter stats-kpi-value">
                 {totalOverview.totalKeystrokes.toLocaleString()}
               </div>
-              <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '8px' }}>{t('stats.allTimeKeys')}</div>
             </div>
           </Card>
           <Card>
-            <div style={{ padding: '16px', textAlign: 'center' }}>
-              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--primary-hover)' }}>
+            <div className="stats-kpi-card">
+              <div className="stats-kpi-label">
+                <span className="stats-kpi-dot stats-kpi-dot--accent" aria-hidden="true" />
+                <span>{t('stats.totalKeys')}</span>
+              </div>
+              <div className="stats-page__counter stats-kpi-value">
                 {todayStats.keystrokes.toLocaleString()}
               </div>
-              <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '8px' }}>{t('stats.totalKeys')}</div>
             </div>
           </Card>
           <Card>
-            <div style={{ padding: '16px', textAlign: 'center' }}>
-              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--success)' }}>
+            <div className="stats-kpi-card">
+              <div className="stats-kpi-label">
+                <span className="stats-kpi-dot stats-kpi-dot--success" aria-hidden="true" />
+                <span>{t('stats.mouseClicks')}</span>
+              </div>
+              <div className="stats-page__counter stats-kpi-value">
                 {todayStats.mouseClicks.toLocaleString()}
               </div>
-              <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '8px' }}>{t('stats.mouseClicks')}</div>
             </div>
           </Card>
           <Card>
             <div
-              style={{ padding: '16px', textAlign: 'center' }}
+              className="stats-kpi-card"
               title={`${Math.round(todayStats.mouseDistance).toLocaleString()} ${t('stats.pixels', 'Pixels')}`}
             >
-              <div className="stats-page__counter" style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--info)', display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: '4px' }}>
-                <span>{(todayStats.mouseDistance * (0.0254 / 96)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
-                <span style={{ fontSize: '1.1rem', fontWeight: 600, opacity: 0.85 }}>m</span>
+              <div className="stats-kpi-label">
+                <span className="stats-kpi-dot stats-kpi-dot--info" aria-hidden="true" />
+                <span>{t('stats.mouseDistance')}</span>
               </div>
-              <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-                {t('stats.mouseDistance')} ({t('stats.meters', 'Meters')})
+              <div className="stats-page__counter stats-kpi-value">
+                <span>
+                  {(todayStats.mouseDistance * (0.0254 / 96)).toLocaleString(undefined, {
+                    minimumFractionDigits: 1,
+                    maximumFractionDigits: 1,
+                  })}
+                </span>
+                <span className="stats-kpi-unit">m</span>
               </div>
             </div>
           </Card>
         </div>
       </SettingGroup>
-
-      <div style={{ textAlign: 'center', marginTop: '2rem' }}>
-        <p className="stats-page__counter" style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          {t('stats.allTimeKeysSummary')}: <Badge text={totalStats.totalKeystrokes.toLocaleString() + ' ' + t('stats.times')} variant="primary" />
-        </p>
-      </div>
 
       <ConfirmModal
         open={confirmClearOpen}

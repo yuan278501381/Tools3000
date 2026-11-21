@@ -9,7 +9,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Button, CodeBadge, PageSkeleton } from '../components/UIKit';
+import { Card, Toggle, SettingRow, Button, CodeBadge, PageSkeleton } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
@@ -271,7 +271,7 @@ export const RemoteBoostPage: FC = () => {
               id="remote-master-toggle"
               checked={settings.enabled}
               onChange={(checked) => void updateSettings({ enabled: checked })}
-              size="lg"
+              size="md"
             />
           </div>
         </div>
@@ -314,7 +314,7 @@ export const RemoteBoostPage: FC = () => {
         )}
         className="remote-boost-card"
       >
-        <SettingGroup title={t('remoteBoost.hotkeyTunnelTitle', 'Enable System Hotkey Tunnel')}>
+        <div className="remote-boost-card__stack">
           <SettingRow
             label={t('remoteBoost.hotkeyTunnelTitle', 'Enable System Hotkey Tunnel')}
             description={t(
@@ -336,13 +336,13 @@ export const RemoteBoostPage: FC = () => {
               {t('remoteBoost.interceptedKeysLabel', 'Intercepted & Tunneled Keys:')}
             </span>
             <div className="remote-boost-key-chips">
-              <CodeBadge variant="primary">Win</CodeBadge>
-              <CodeBadge variant="primary">Win + R</CodeBadge>
-              <CodeBadge variant="primary">Win + E</CodeBadge>
-              <CodeBadge variant="primary">Win + D</CodeBadge>
-              <CodeBadge variant="primary">Win + X</CodeBadge>
-              <CodeBadge variant="primary">Alt + Tab</CodeBadge>
-              <CodeBadge variant="primary">Ctrl + Shift + Esc</CodeBadge>
+              <CodeBadge>Win</CodeBadge>
+              <CodeBadge>Win + R</CodeBadge>
+              <CodeBadge>Win + E</CodeBadge>
+              <CodeBadge>Win + D</CodeBadge>
+              <CodeBadge>Win + X</CodeBadge>
+              <CodeBadge>Alt + Tab</CodeBadge>
+              <CodeBadge>Ctrl + Shift + Esc</CodeBadge>
             </div>
           </div>
 
@@ -432,7 +432,7 @@ export const RemoteBoostPage: FC = () => {
               </Button>
             </div>
           </div>
-        </SettingGroup>
+        </div>
       </Card>
 
       {/* ── 引擎 2: 远程修饰键卡死一键急救 ───────────────────────────────────── */}
@@ -444,7 +444,7 @@ export const RemoteBoostPage: FC = () => {
         )}
         className="remote-boost-card"
       >
-        <SettingGroup title={t('remoteBoost.emergencyFlushTitle', 'Emergency Flush Engine')}>
+        <div className="remote-boost-card__stack">
           <SettingRow
             label={t('remoteBoost.emergencyFlushTitle', 'Emergency Flush Engine')}
             description={t(
@@ -499,16 +499,16 @@ export const RemoteBoostPage: FC = () => {
             </div>
             <Button
               variant="primary"
-              size="md"
+              size="sm"
               disabled={flushing}
               onClick={() => void handleEmergencyFlush()}
               className="remote-boost-flush-btn"
             >
-              <Zap size={15} />
+              <Zap size={14} />
               <span>{flushing ? t('remoteBoost.flushing', 'Flushing...') : t('remoteBoost.flushNow', 'Flush Now')}</span>
             </Button>
           </div>
-        </SettingGroup>
+        </div>
       </Card>
 
       {/* ── 引擎 3: 远控输入法智能脱敏 ───────────────────────────────────────── */}
@@ -520,7 +520,7 @@ export const RemoteBoostPage: FC = () => {
         )}
         className="remote-boost-card"
       >
-        <SettingGroup title={t('remoteBoost.imeSanitizerTitle', 'Auto Switch to US English on Focus')}>
+        <div className="remote-boost-card__stack">
           <SettingRow
             label={t('remoteBoost.imeSanitizerTitle', 'Auto Switch to US English on Focus')}
             description={t(
@@ -535,7 +535,7 @@ export const RemoteBoostPage: FC = () => {
               onChange={(checked) => void updateSettings({ imeSanitizerEnabled: checked })}
             />
           </SettingRow>
-        </SettingGroup>
+        </div>
       </Card>
 
       {/* ── 底部操作栏 ──────────────────────────────────────────────────────── */}

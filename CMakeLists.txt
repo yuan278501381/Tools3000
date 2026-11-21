@@ -213,6 +213,7 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/ScrollCaptureOverlay.cpp
     src/capture/ShortcutHintOverlay.cpp
     src/capture/HudAvoidanceEngine.cpp
+    src/capture/WindowElementDetector.cpp
     src/capture/PinSpawnCalculator.cpp
     src/capture/PinPasteCoordinator.cpp
     src/capture/PinInputController.cpp

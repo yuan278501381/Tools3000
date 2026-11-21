@@ -7,7 +7,7 @@
  *   - 底部有版本信息和主题切换
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useState, useMemo, useRef, useEffect, type CSSProperties, type FC, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useState, useMemo, useRef, useEffect, type FC, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, X, CornerDownRight, Power } from 'lucide-react';
 import { toast } from 'sonner';
@@ -366,16 +366,11 @@ export const Sidebar: FC<SidebarProps> = ({
     const unavailable = !isItemAvailable(item);
     const IconComponent = item.icon;
     const isActive = activeNav === item.id;
-    const toneStyle = {
-      '--nav-tone-start': item.toneStart,
-      '--nav-tone-end': item.toneEnd,
-    } as CSSProperties;
     return (
       <button
         key={item.id}
         id={`nav-${item.id}`}
         className={`sidebar__item ${isActive ? 'sidebar__item--active' : ''}`}
-        style={toneStyle}
         onClick={() => onNavigate(item.id)}
         disabled={unavailable}
         title={unavailable ? t('sidebar.pluginDisabled') : undefined}
@@ -383,7 +378,7 @@ export const Sidebar: FC<SidebarProps> = ({
       >
         <span className="sidebar__item-indicator" />
         <span className="sidebar__item-icon" aria-hidden="true">
-          <IconComponent size={14} strokeWidth={2.25} />
+          <IconComponent size={15} strokeWidth={isActive ? 2.1 : 1.75} />
         </span>
         <span className="sidebar__item-label">
           {customLabel ?? t(item.labelKey as unknown as TemplateStringsArray)}

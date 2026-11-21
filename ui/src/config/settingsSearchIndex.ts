@@ -57,7 +57,6 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'gen-theme', navId: 'general', labelKey: 'general.theme', descKey: 'general.themeDesc', keywords: 'dark light appearance mode zhuti shense qianse' },
   { id: 'gen-accent', navId: 'general', labelKey: 'general.accentColor', descKey: 'general.accentColorDesc', keywords: 'brand color violet blue cyan mint coral zhutise' },
   { id: 'gen-lang', navId: 'general', labelKey: 'general.language', descKey: 'general.languageDesc', keywords: 'english chinese locale i18n yuyan' },
-  { id: 'gen-font', navId: 'general', labelKey: 'general.fontFamily', descKey: 'general.fontFamilyDesc', keywords: 'font typography noto harmony yahei ziti' },
   { id: 'gen-hotkeys', navId: 'general', labelKey: 'general.keyboardShortcuts', descKey: 'general.keyboardShortcutsDesc', keywords: 'shortcut keybind conflict kuaijiejian rejian' },
   { id: 'gen-portable', navId: 'general', labelKey: 'general.portableMode', descKey: 'general.portableModeDesc', keywords: 'portable appdata folder bianxie' },
   { id: 'gen-logs', navId: 'general', labelKey: 'general.exportLogs', descKey: 'general.exportLogsDesc', keywords: 'log diagnostic debug export rizhi' },
@@ -66,7 +65,6 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   // Search & Sub-tabs
   { id: 'srch-hotkey', navId: 'search', tabId: 'settings', labelKey: 'searchPage.toggleHotkey', descKey: 'searchPage.toggleHotkeyDesc', keywords: 'alt space summon search shortcut' },
   { id: 'srch-pinyin', navId: 'search', tabId: 'settings', labelKey: 'searchPage.pinyinTitle', descKey: 'searchPage.pinyinDesc', keywords: 'pinyin initials fuzzy chinese' },
-  { id: 'srch-content', navId: 'search', tabId: 'settings', labelKey: 'searchPage.contentCategoriesGroup', descKey: 'searchPage.contentCategoriesGroupDesc', keywords: 'content fulltext office code cad' },
   { id: 'srch-syntax', navId: 'search', tabId: 'syntax', labelKey: 'searchPage.tabSyntax', descKey: 'searchPage.modifiersTitle', keywords: 'syntax manual wildcard operator ext folder' },
   { id: 'srch-regex', navId: 'search', tabId: 'regex', labelKey: 'searchPage.tabRegex', descKey: 'searchPage.regexHint', keywords: 'regex regular expression pattern zhengze' },
   { id: 'srch-status', navId: 'search', tabId: 'status', labelKey: 'searchPage.tabStatus', descKey: 'searchPage.serviceMonitor', keywords: 'ntfs mft usn pipe service index daemon suoyin' },

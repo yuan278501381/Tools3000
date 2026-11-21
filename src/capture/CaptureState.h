@@ -308,6 +308,7 @@ public:
     RECT detectedWindow{};
     std::vector<RECT> detectedWindowHierarchy;
     std::vector<std::wstring> detectedWindowHierarchyDescriptions;
+    std::vector<float> detectedWindowHierarchyRadii;
     int detectedWindowHierarchyIndex = 0;
     POINT lastMousePos{};
 

@@ -26,7 +26,7 @@ import {
 } from '../i18n/languages';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { Settings, Zap, Globe, Database, Keyboard, Download, Upload, RotateCcw, RefreshCw, CheckCircle2, AlertTriangle, AlertOctagon, FolderOpen, Disc, MinusCircle, Package, HardDrive } from 'lucide-react';
+import { Settings, Zap, Globe, Database, Keyboard, Download, Upload, RotateCcw, RefreshCw, Check, CheckCircle2, AlertTriangle, AlertOctagon, FolderOpen, Disc, MinusCircle, Package, HardDrive } from 'lucide-react';
 import './GeneralPage.css';
 
 interface GeneralSettings {
@@ -503,6 +503,26 @@ export const GeneralPage: FC = () => {
                 { value: 'dark',   labelKey: 'general.themeDark',   previewClass: 'is-dark' },
               ] as const).map((opt) => {
                 const isSelected = (settings.theme || 'system') === opt.value;
+                const renderWireframe = (surface: 'light' | 'dark', extraClass = '') => (
+                  <span className={`general-theme-preview__scene general-theme-preview__scene--${surface} ${extraClass}`}>
+                    <span className="general-theme-preview__sidebar">
+                      <span className="general-theme-preview__brand-bar" />
+                      <span className="general-theme-preview__nav-pill is-accent" />
+                      <span className="general-theme-preview__nav-pill" />
+                      <span className="general-theme-preview__nav-pill is-short" />
+                    </span>
+                    <span className="general-theme-preview__canvas">
+                      <span className="general-theme-preview__heading" />
+                      <span className="general-theme-preview__card">
+                        <span className="general-theme-preview__line" />
+                        <span className="general-theme-preview__toggle-dot" />
+                      </span>
+                      <span className="general-theme-preview__card is-short">
+                        <span className="general-theme-preview__line is-muted" />
+                      </span>
+                    </span>
+                  </span>
+                );
                 return (
                   <button
                     key={opt.value}
@@ -513,26 +533,21 @@ export const GeneralPage: FC = () => {
                     onClick={() => updateSetting('theme', opt.value)}
                   >
                     <span className={`general-theme-preview ${opt.previewClass}`} aria-hidden="true">
-                      <span className="general-theme-preview__chrome">
-                        <span className="general-theme-preview__dot" />
-                        <span className="general-theme-preview__dot" />
-                        <span className="general-theme-preview__dot" />
-                      </span>
-                      <span className="general-theme-preview__body">
-                        <span className="general-theme-preview__sidebar">
-                          <span className="general-theme-preview__nav-pill is-accent" />
-                          <span className="general-theme-preview__nav-pill" />
-                          <span className="general-theme-preview__nav-pill" />
-                        </span>
-                        <span className="general-theme-preview__canvas">
-                          <span className="general-theme-preview__card" />
-                          <span className="general-theme-preview__card is-short" />
-                        </span>
-                      </span>
+                      {opt.value === 'system' ? (
+                        <>
+                          {renderWireframe('light')}
+                          {renderWireframe('dark', 'general-theme-preview__scene--split-right')}
+                          <span className="general-theme-preview__split-seam" />
+                        </>
+                      ) : (
+                        renderWireframe(opt.value)
+                      )}
                     </span>
                     <span className="general-theme-card__footer">
                       <span className="general-theme-card__label">{t(opt.labelKey)}</span>
-                      <span className="general-theme-card__radio" aria-hidden="true" />
+                      <span className="general-theme-card__radio" aria-hidden="true">
+                        {isSelected && <Check size={10} strokeWidth={3} />}
+                      </span>
                     </span>
                   </button>
                 );
@@ -581,9 +596,11 @@ export const GeneralPage: FC = () => {
                   >
                     <span
                       className="general-accent-dot"
-                      style={{ color: preset.color, backgroundColor: preset.color }}
-                    />
-                    <span>{label}</span>
+                      style={{ backgroundColor: preset.color }}
+                    >
+                      {isSelected && <Check size={13} strokeWidth={2.9} className="general-accent-check" aria-hidden="true" />}
+                    </span>
+                    <span className="general-accent-label">{label}</span>
                   </button>
                 );
               })}
@@ -748,33 +765,22 @@ export const GeneralPage: FC = () => {
             description={t('general.portableModeDesc')}
             layout="vertical"
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', width: '100%', gap: '12px', marginTop: '6px' }}>
-              <span style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '4px 10px',
-                borderRadius: '6px',
-                fontSize: '0.83rem',
-                fontWeight: 600,
-                backgroundColor: settings.isPortableMode ? 'rgba(16, 185, 129, 0.15)' : 'rgba(59, 130, 246, 0.12)',
-                color: settings.isPortableMode ? '#10b981' : '#3b82f6',
-                border: `1px solid ${settings.isPortableMode ? 'rgba(16, 185, 129, 0.3)' : 'rgba(59, 130, 246, 0.25)'}`
-              }}>
+            <div className="general-page__portable-bar">
+              <span className={`general-page__mode-pill ${settings.isPortableMode ? 'is-portable' : ''}`}>
                 {settings.isPortableMode ? (
                   <>
-                    <Package size={14} strokeWidth={2.2} />
+                    <Package size={13} strokeWidth={2} />
                     <span>{t('general.portableModeActive')}</span>
                   </>
                 ) : (
                   <>
-                    <HardDrive size={14} strokeWidth={2.2} />
+                    <HardDrive size={13} strokeWidth={2} />
                     <span>{t('general.portableModeStandard')}</span>
                   </>
                 )}
               </span>
               {settings.dataDirectory && (
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <div className="general-page__data-dir-actions">
                   <CodeBadge title={settings.dataDirectory}>{settings.dataDirectory}</CodeBadge>
                   <Button
                     variant="ghost"

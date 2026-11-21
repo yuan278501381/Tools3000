@@ -6,9 +6,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 38px;
+  height: 40px;
   width: 100%;
-  padding: 0 0 0 16px;
+  padding: 0 0 0 14px;
   background: transparent;
   user-select: none;
   -webkit-user-select: none;
@@ -27,34 +27,39 @@
 }
 
 .titlebar__logo {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--primary);
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--icon-tile-bg);
+  border: 1px solid var(--icon-tile-border);
+  box-shadow: var(--icon-tile-shadow);
+  color: var(--text-primary);
+}
+
+.titlebar__logo svg {
+  filter: drop-shadow(0 1px 2px rgba(214, 65, 50, 0.24));
 }
 
 .titlebar__title {
-  font-size: 0.84rem;
-  font-weight: 600;
+  font-size: 0.88rem;
+  font-weight: 650;
   color: var(--text-primary);
-  letter-spacing: 0.2px;
+  letter-spacing: -0.018em;
 }
 
 .titlebar__admin-badge {
   font-size: var(--text-xs, 0.84rem);
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(59, 130, 246, 0.14);
-  color: #3b82f6;
-  border: 1px solid rgba(59, 130, 246, 0.28);
-  line-height: 1.3;
-}
-
-[data-theme='dark'] .titlebar__admin-badge {
-  background: rgba(59, 130, 246, 0.22);
-  color: #60a5fa;
-  border-color: rgba(96, 165, 250, 0.35);
+  font-weight: 550;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--well-bg);
+  color: var(--text-muted);
+  border: 1px solid var(--well-border);
+  line-height: 1.45;
+  letter-spacing: 0.01em;
 }
 
 .titlebar__drag-region {
@@ -63,12 +68,12 @@
   -webkit-app-region: drag;
 }
 
-/* ── 顶部微晶快捷工具矩阵 ────────────────────────────────────────── */
+/* ── 顶部极简幽灵快捷工具矩阵 (Linear / Raycast Ghost Micro-Triggers) ─────── */
 .titlebar__quick-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-right: 10px;
+  gap: 4px;
+  margin-right: 8px;
   -webkit-app-region: no-drag;
 }
 
@@ -83,31 +88,31 @@
   align-items: center;
   gap: 6px;
   height: 26px;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--card-border);
-  background: var(--thumb-bg);
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--text-secondary);
   font-size: 0.83rem;
   font-weight: 550;
   cursor: pointer;
   outline: none;
-  box-shadow: var(--shadow-sm);
-  transition: all 0.16s ease;
+  box-shadow: none;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
   user-select: none;
 }
 
 .titlebar__pill-btn:hover {
-  border-color: var(--input-border);
-  background: var(--card-bg);
+  border-color: var(--well-border);
+  background: var(--ghost-hover-bg);
   color: var(--text-primary);
 }
 
 .titlebar__pill-btn--active {
-  border-color: color-mix(in srgb, var(--primary) 45%, var(--card-border));
-  background: color-mix(in srgb, var(--primary) 9%, var(--card-bg));
+  border-color: var(--nav-active-border);
+  background: var(--nav-active-bg);
   color: var(--text-primary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--nav-active-shadow);
 }
 
 .titlebar__pill-icon {
@@ -117,14 +122,14 @@
 
 .titlebar__pill-btn:hover .titlebar__pill-icon,
 .titlebar__pill-btn--active .titlebar__pill-icon {
-  color: var(--primary);
+  color: var(--text-primary);
 }
 
 .titlebar__accent-preview-dot {
-  width: 7.5px;
-  height: 7.5px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--bg-surface) 75%, transparent);
   flex-shrink: 0;
 }
 

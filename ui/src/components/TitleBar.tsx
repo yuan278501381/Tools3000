@@ -239,7 +239,7 @@ export const TitleBar: FC<TitleBarProps> = ({
       {/* ── 左侧品牌标识与标题 ────────────────────────────────────── */}
       <div className="titlebar__brand">
         <span className="titlebar__logo">
-          <LogoGlyph size={18} fill="var(--primary)" />
+          <LogoGlyph size={16} colorVariant />
         </span>
         <span className="titlebar__title">{t('app.title', 'Tools3000')}</span>
         {isElevated && (
@@ -266,9 +266,9 @@ export const TitleBar: FC<TitleBarProps> = ({
             title={t('general.language')}
             aria-label={t('general.language')}
           >
-            <Globe size={13} strokeWidth={2.2} className="titlebar__pill-icon" />
+            <Globe size={13} strokeWidth={1.8} className="titlebar__pill-icon" />
             <span className="titlebar__pill-text">{currentLangLabel}</span>
-            <ChevronDown size={11} strokeWidth={2.2} className="titlebar__pill-chevron" />
+            <ChevronDown size={11} strokeWidth={1.9} className="titlebar__pill-chevron" />
           </button>
 
           {langMenuOpen && (
@@ -322,18 +322,18 @@ export const TitleBar: FC<TitleBarProps> = ({
             aria-label={t('sidebar.appearanceTitle')}
           >
             {themePreference === 'light' ? (
-              <Sun size={13} strokeWidth={2.2} className="titlebar__pill-icon" />
+              <Sun size={13} strokeWidth={1.85} className="titlebar__pill-icon" />
             ) : themePreference === 'dark' ? (
-              <Moon size={13} strokeWidth={2.2} className="titlebar__pill-icon" />
+              <Moon size={13} strokeWidth={1.85} className="titlebar__pill-icon" />
             ) : (
-              <Monitor size={13} strokeWidth={2.2} className="titlebar__pill-icon" />
+              <Monitor size={13} strokeWidth={1.85} className="titlebar__pill-icon" />
             )}
             <span
               className="titlebar__accent-preview-dot"
               style={{ backgroundColor: currentAccent.color }}
             />
             <span className="titlebar__pill-text">{currentThemeLabel}</span>
-            <ChevronDown size={11} strokeWidth={2.2} className="titlebar__pill-chevron" />
+            <ChevronDown size={11} strokeWidth={1.9} className="titlebar__pill-chevron" />
           </button>
 
           {themeMenuOpen && (
@@ -417,7 +417,7 @@ export const TitleBar: FC<TitleBarProps> = ({
           title={t('window.minimize', 'Minimize')}
           aria-label={t('window.minimize', 'Minimize')}
         >
-          <Minus size={13} strokeWidth={2.2} />
+          <Minus size={13} strokeWidth={1.8} />
         </button>
 
         <button
@@ -428,9 +428,9 @@ export const TitleBar: FC<TitleBarProps> = ({
           aria-label={isMaximized ? t('window.restore', 'Restore') : t('window.maximize', 'Maximize')}
         >
           {isMaximized ? (
-            <Copy size={11} strokeWidth={2.2} style={{ transform: 'rotate(90deg)' }} />
+            <Copy size={11} strokeWidth={1.8} style={{ transform: 'rotate(90deg)' }} />
           ) : (
-            <Square size={11} strokeWidth={2.2} />
+            <Square size={11} strokeWidth={1.8} />
           )}
         </button>
 
@@ -441,7 +441,7 @@ export const TitleBar: FC<TitleBarProps> = ({
           title={t('window.close', 'Close')}
           aria-label={t('window.close', 'Close')}
         >
-          <X size={13} strokeWidth={2.2} />
+          <X size={13} strokeWidth={1.8} />
         </button>
       </div>
     </header>

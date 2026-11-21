@@ -1068,6 +1068,10 @@ void CaptureInput::stepDetectedWindowHierarchy(HWND hwnd, int delta) {
     if (m_state->detectedWindowHierarchyIndex != prevIdx) {
         const RECT targetRc = m_state->detectedWindowHierarchy[m_state->detectedWindowHierarchyIndex];
         m_state->detectedWindow = targetRc;
+        if (m_state->detectedWindowHierarchyIndex >= 0 &&
+            m_state->detectedWindowHierarchyIndex < static_cast<int>(m_state->detectedWindowHierarchyRadii.size())) {
+            m_state->detectedWindowCornerRadius = m_state->detectedWindowHierarchyRadii[m_state->detectedWindowHierarchyIndex];
+        }
 
         if (m_state->animDetectedWindowRect.right <= m_state->animDetectedWindowRect.left) {
             const RECT prevRc = m_state->detectedWindowHierarchy[prevIdx];
@@ -1713,183 +1717,138 @@ void CaptureInput::ensureSelectionOcrForTextMarkup() {
     }).detach();
 }
 
+void CaptureInput::beginDetectionSession(
+    int originX,
+    int originY,
+    int width,
+    int height,
+    const cv::Mat* frozenScreen) {
+    m_elementDetector.beginSession(m_hwnd, originX, originY, width, height, frozenScreen);
+}
+
+void CaptureInput::endDetectionSession() {
+    m_elementDetector.endSession();
+}
+
+void CaptureInput::applyDetectedCandidates(
+    const std::vector<DetectedElementCandidate>& candidates,
+    bool animate,
+    HWND hwnd) {
+    if (!m_state) return;
+
+    const RECT prevRect = m_state->detectedWindow;
+    const bool hadPrev = (prevRect.right > prevRect.left && prevRect.bottom > prevRect.top);
+
+    m_state->detectedWindowHierarchy.clear();
+    m_state->detectedWindowHierarchyDescriptions.clear();
+    m_state->detectedWindowHierarchyRadii.clear();
+    m_state->detectedWindowHierarchy.reserve(candidates.size());
+    m_state->detectedWindowHierarchyDescriptions.reserve(candidates.size());
+    m_state->detectedWindowHierarchyRadii.reserve(candidates.size());
+
+    for (const auto& cand : candidates) {
+        m_state->detectedWindowHierarchy.push_back(cand.rect);
+        m_state->detectedWindowHierarchyDescriptions.push_back(cand.description);
+        m_state->detectedWindowHierarchyRadii.push_back(cand.cornerRadius);
+    }
+
+    m_state->detectedWindowHierarchyIndex = 0;
+    if (m_state->detectedWindowHierarchy.empty()) {
+        m_state->detectedWindow = {};
+        m_state->detectedWindowCornerRadius = 0.0f;
+        m_state->animDetectedWindowRect = {};
+        m_state->targetDetectedWindowRect = {};
+        m_state->isHierarchyAnimating = false;
+        return;
+    }
+
+    const RECT nextRect = m_state->detectedWindowHierarchy.front();
+    m_state->detectedWindow = nextRect;
+    m_state->detectedWindowCornerRadius = m_state->detectedWindowHierarchyRadii.front();
+
+    const D2D1_RECT_F targetF = D2D1::RectF(
+        static_cast<float>(nextRect.left),
+        static_cast<float>(nextRect.top),
+        static_cast<float>(nextRect.right),
+        static_cast<float>(nextRect.bottom));
+
+    const bool rectChanged =
+        !hadPrev ||
+        std::abs(prevRect.left - nextRect.left) > 2 ||
+        std::abs(prevRect.top - nextRect.top) > 2 ||
+        std::abs(prevRect.right - nextRect.right) > 2 ||
+        std::abs(prevRect.bottom - nextRect.bottom) > 2;
+
+    if (animate && hadPrev && rectChanged) {
+        if (m_state->animDetectedWindowRect.right <= m_state->animDetectedWindowRect.left) {
+            m_state->animDetectedWindowRect = D2D1::RectF(
+                static_cast<float>(prevRect.left),
+                static_cast<float>(prevRect.top),
+                static_cast<float>(prevRect.right),
+                static_cast<float>(prevRect.bottom));
+        }
+        m_state->targetDetectedWindowRect = targetF;
+        m_state->animVelocity = D2D1::RectF(0, 0, 0, 0);
+        m_state->isHierarchyAnimating = true;
+        if (hwnd) SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
+    } else {
+        m_state->animDetectedWindowRect = targetF;
+        m_state->targetDetectedWindowRect = targetF;
+        m_state->animVelocity = D2D1::RectF(0, 0, 0, 0);
+        m_state->isHierarchyAnimating = false;
+    }
+}
+
+void CaptureInput::updateWindowDetectionAtCursor(HWND hwnd, POINT screenPt, bool allowAsyncRefine) {
+    if (!m_state) return;
+    HWND topHwnd = nullptr;
+    auto syncCandidates = m_elementDetector.querySync(screenPt, &topHwnd);
+    applyDetectedCandidates(syncCandidates, /*animate=*/true, hwnd);
+    if (allowAsyncRefine && hwnd && topHwnd) {
+        m_elementDetector.requestAsyncRefine(hwnd, screenPt, topHwnd, syncCandidates);
+    }
+}
+
+void CaptureInput::handleAsyncElementRefined(HWND hwnd) {
+    if (!m_state || m_state->state.load() != OverlayState::Selecting ||
+        m_state->dragging || !m_state->options.autoDetectWindow) {
+        return;
+    }
+    // 若用户已通过滚轮或 Tab 手动锁定至高层级，则不打断用户当前层级选择
+    if (m_state->detectedWindowHierarchyIndex > 0) {
+        return;
+    }
+    AsyncRefinedHierarchyResult result{};
+    if (!m_elementDetector.consumeRefinedResult(result)) {
+        return;
+    }
+    applyDetectedCandidates(result.candidates, /*animate=*/true, hwnd);
+    if (m_renderer) {
+        m_renderer->invalidate();
+    }
+}
+
 std::vector<RECT> CaptureInput::detectWindowHierarchy(POINT cursorPos) {
-    std::vector<RECT> hierarchy;
-    std::vector<std::wstring> hierarchyDescriptions;
-    int offsetX = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    int offsetY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-
-    // 1. 穿透覆盖层查找真实窗口
-    HWND hTop = nullptr;
-    struct SearchParam {
-        POINT pt;
-        HWND exclude;
-        HWND found;
-    } param{cursorPos, m_hwnd, nullptr};
-
-    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-        auto* p = reinterpret_cast<SearchParam*>(lParam);
-        if (hwnd == p->exclude ||
-            !tools3000::core::WinUtils::isWindowVisibleOnCurrentDesktop(hwnd)) {
-            return TRUE;
-        }
-        const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        // 跳过全透明鼠标穿透浮层（例如其它覆盖层/点击穿透贴图）
-        if ((exStyle & (WS_EX_LAYERED | WS_EX_TRANSPARENT)) == (WS_EX_LAYERED | WS_EX_TRANSPARENT)) {
-            return TRUE;
-        }
-        wchar_t cls[64] = {};
-        if (GetClassNameW(hwnd, cls, 64) > 0) {
-            if (wcscmp(cls, L"Tools3000_ShortcutHintOverlay") == 0 ||
-                wcscmp(cls, L"Progman") == 0 ||
-                wcscmp(cls, L"WorkerW") == 0) {
-                return TRUE;
-            }
-        }
-        RECT r{};
-        if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(r)))) {
-            if (!GetWindowRect(hwnd, &r)) return TRUE;
-        }
-        if ((r.right - r.left) <= 8 || (r.bottom - r.top) <= 8) return TRUE;
-        if (PtInRect(&r, p->pt)) {
-            p->found = hwnd;
-            return FALSE;
-        }
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&param));
-    hTop = param.found;
-
-    if (hTop && hTop != m_hwnd) {
-        // 2. 深入获取真实子控件
-        POINT clientPt = cursorPos;
-        ScreenToClient(hTop, &clientPt);
-        HWND hChild = RealChildWindowFromPoint(hTop, clientPt);
-        if (!hChild) hChild = hTop;
-
-        // 3. 从内到外依次收集子控件与父窗口
-        HWND curr = hChild;
-        while (curr && curr != GetDesktopWindow()) {
-            RECT rc{};
-            bool gotRect = false;
-            // 优先使用 DWM 扩展客户边界，剔除 Win10/Win11 隐形阴影边
-            RECT frameBounds{};
-            if (SUCCEEDED(DwmGetWindowAttribute(curr, DWMWA_EXTENDED_FRAME_BOUNDS, &frameBounds, sizeof(frameBounds)))) {
-                rc = frameBounds;
-                gotRect = true;
-            } else if (GetWindowRect(curr, &rc)) {
-                gotRect = true;
-            }
-
-            if (gotRect && (rc.right - rc.left > 8) && (rc.bottom - rc.top > 8)) {
-                rc.left -= offsetX;
-                rc.top -= offsetY;
-                rc.right -= offsetX;
-                rc.bottom -= offsetY;
-
-                if (!m_state->frozenScreen.empty()) {
-                    cv::Rect clamped = clampToScreenBounds(rc, m_state->frozenScreen.cols, m_state->frozenScreen.rows);
-                    rc.left = clamped.x;
-                    rc.top = clamped.y;
-                    rc.right = clamped.x + clamped.width;
-                    rc.bottom = clamped.y + clamped.height;
-                    if (clamped.width <= 8 || clamped.height <= 8) {
-                        curr = GetParent(curr);
-                        continue;
-                    }
-                }
-
-                bool exists = false;
-                for (const auto& existing : hierarchy) {
-                    if (std::abs(existing.left - rc.left) <= 2 &&
-                        std::abs(existing.top - rc.top) <= 2 &&
-                        std::abs(existing.right - rc.right) <= 2 &&
-                        std::abs(existing.bottom - rc.bottom) <= 2) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (!exists) {
-                    hierarchy.push_back(rc);
-
-                    // 生成层级微晶徽章友好描述
-                    const bool isZh = tools3000::core::isUiLanguageChinese();
-                    wchar_t className[64] = {};
-                    GetClassNameW(curr, className, 64);
-                    wchar_t title[64] = {};
-                    GetWindowTextW(curr, title, 64);
-                    std::wstring typeName = tools3000::core::trWCstrFor(isZh, L"控件", L"Control");
-                    std::wstring cls = className;
-                    for (auto& ch : cls) ch = towlower(ch);
-                    if (cls.find(L"button") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"按钮", L"Button");
-                    else if (cls.find(L"edit") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"输入框", L"Input");
-                    else if (cls.find(L"static") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"文本", L"Label");
-                    else if (cls.find(L"combo") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"下拉框", L"ComboBox");
-                    else if (cls.find(L"list") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"列表", L"List");
-                    else if (cls.find(L"tree") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"树形控件", L"TreeView");
-                    else if (cls.find(L"tab") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"选项卡", L"Tab");
-                    else if (cls.find(L"toolbar") != std::wstring::npos) typeName = tools3000::core::trWCstrFor(isZh, L"工具栏", L"Toolbar");
-                    else if (GetParent(curr) == nullptr || curr == hTop) typeName = tools3000::core::trWCstrFor(isZh, L"窗口", L"Window");
-
-                    int w = rc.right - rc.left;
-                    int h = rc.bottom - rc.top;
-                    std::wstring desc = typeName;
-                    if (title[0] != L'\0') {
-                        std::wstring t = title;
-                        if (t.size() > 10) t = t.substr(0, 8) + L"...";
-                        desc += L": " + t;
-                    }
-                    desc += L" (" + std::to_wstring(w) + L"x" + std::to_wstring(h) + L")";
-                    hierarchyDescriptions.push_back(desc);
-                }
-            }
-            curr = GetParent(curr);
-        }
+    auto candidates = m_elementDetector.querySync(cursorPos, nullptr);
+    std::vector<RECT> rects;
+    std::vector<std::wstring> descriptions;
+    std::vector<float> radii;
+    rects.reserve(candidates.size());
+    descriptions.reserve(candidates.size());
+    radii.reserve(candidates.size());
+    for (const auto& cand : candidates) {
+        rects.push_back(cand.rect);
+        descriptions.push_back(cand.description);
+        radii.push_back(cand.cornerRadius);
     }
-
-    // 4. 追加当前光标所在的单屏全屏区域
-    const bool isZh = tools3000::core::isUiLanguageChinese();
-    HMONITOR hMon = MonitorFromPoint(cursorPos, MONITOR_DEFAULTTONEAREST);
-    if (hMon) {
-        MONITORINFO mi{sizeof(mi)};
-        if (GetMonitorInfoW(hMon, &mi)) {
-            RECT monRc = mi.rcMonitor;
-            monRc.left -= offsetX;
-            monRc.top -= offsetY;
-            monRc.right -= offsetX;
-            monRc.bottom -= offsetY;
-
-            bool exists = false;
-            for (const auto& existing : hierarchy) {
-                if (existing.left == monRc.left && existing.top == monRc.top &&
-                    existing.right == monRc.right && existing.bottom == monRc.bottom) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) {
-                hierarchy.push_back(monRc);
-                hierarchyDescriptions.push_back(
-                    (tools3000::core::trWCstrFor(isZh, L"屏幕 (", L"Display (")) +
-                    std::to_wstring(monRc.right - monRc.left) + L"x" +
-                    std::to_wstring(monRc.bottom - monRc.top) + L")");
-            }
-        }
-    }
-
-    // 5. 兜底全屏
-    if (hierarchy.empty()) {
-        RECT fullRc{0, 0, GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)};
-        hierarchy.push_back(fullRc);
-        hierarchyDescriptions.push_back(
-            (tools3000::core::trWCstrFor(isZh, L"全屏 (", L"Full Screen (")) +
-            std::to_wstring(fullRc.right - fullRc.left) + L"x" +
-            std::to_wstring(fullRc.bottom - fullRc.top) + L")");
-    }
-
     if (m_state) {
-        m_state->detectedWindowHierarchyDescriptions = hierarchyDescriptions;
+        m_state->detectedWindowHierarchyDescriptions = std::move(descriptions);
+        m_state->detectedWindowHierarchyRadii = std::move(radii);
+        if (!m_state->detectedWindowHierarchyRadii.empty()) {
+            m_state->detectedWindowCornerRadius = m_state->detectedWindowHierarchyRadii.front();
+        }
     }
-    return hierarchy;
+    return rects;
 }
 
 RECT CaptureInput::detectWindowUnderCursor(POINT cursorPos) {
@@ -1937,6 +1896,7 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             case WM_IME_STARTCOMPOSITION:
             case WM_IME_COMPOSITION:
             case WM_IME_ENDCOMPOSITION:
+            case WM_CAPTURE_ELEMENT_REFINED:
                 return 0;
             default:
                 break;
@@ -1947,6 +1907,9 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     // Win32 派发层（否则 std::terminate 崩溃）。
     try {
     switch (msg) {
+        case WM_CAPTURE_ELEMENT_REFINED:
+            handleAsyncElementRefined(hwnd);
+            return 0;
         case WM_SETCURSOR:
         case WM_MBUTTONDOWN:
         case WM_MBUTTONUP:

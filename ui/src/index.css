@@ -13,13 +13,13 @@
        url('./assets/fonts/noto-sans-sc-500.woff2') format('woff2');
 }
 
-/* ── CSS 变量 (暗色主题 = 默认 · 中性丝绒曜石 Neutral Obsidian) ────────────── */
+/* ── CSS 变量 (暗色主题 = 默认 · 曜石工坊 Obsidian Atelier) ──────────────── */
 :root {
-  /* 主色调: 鲜活的紫色系 */
+  /* 主色调: 温润紫罗兰 (动态强调色会覆写) */
   --primary: #8b5cf6;
   --primary-hover: #a78bfa;
-  --primary-dim: rgba(139, 92, 246, 0.15);
-  --primary-glow: rgba(139, 92, 246, 0.32);
+  --primary-dim: rgba(139, 92, 246, 0.14);
+  --primary-glow: rgba(139, 92, 246, 0.28);
 
   /* 语义色 */
   --success: #34d399;
@@ -27,41 +27,53 @@
   --danger: #f87171;
   --info: #60a5fa;
 
-  /* 背景层级 (深邃中性炭黑曜石，三层空间对比清晰且完美兼容全部 6 款动态主题色) */
-  --bg-base: #101218;
-  --bg-surface: #0a0b0f;
-  --bg-elevated: #1b1e28;
-  --bg-overlay: rgba(5, 6, 10, 0.74);
+  /* 建筑级中性炭黑三层表面 (Linear / Raycast 级沉静温润对比) */
+  --bg-base: #111216;
+  --bg-surface: #0b0c0f;
+  --bg-elevated: #1c1e26;
+  --bg-overlay: rgba(5, 6, 9, 0.72);
 
   /* 卡片层级 */
-  --card-bg: #161922;
-  --card-border: rgba(255, 255, 255, 0.082);
-  --card-hover: #1d212e;
+  --card-bg: #17191f;
+  --card-border: rgba(255, 255, 255, 0.072);
+  --card-hover: #1e212a;
 
-  /* 物理触感沉降槽与微立体滑块令牌 (Apple / Linear Tactile Surface) */
-  --well-bg: rgba(0, 0, 0, 0.38);
-  --well-border: rgba(255, 255, 255, 0.075);
-  --well-shadow: inset 0 1px 2.5px rgba(0, 0, 0, 0.42);
-  --thumb-bg: #262a38;
-  --thumb-border: rgba(255, 255, 255, 0.13);
-  --thumb-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.12);
-  --ghost-hover-bg: rgba(255, 255, 255, 0.055);
-  --hairline: rgba(255, 255, 255, 0.068);
+  /* 物理触感沉降槽与微立体滑块令牌 */
+  --well-bg: rgba(0, 0, 0, 0.34);
+  --well-border: rgba(255, 255, 255, 0.068);
+  --well-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.42);
+  --thumb-bg: #232631;
+  --thumb-border: rgba(255, 255, 255, 0.11);
+  --thumb-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.44), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  --ghost-hover-bg: rgba(255, 255, 255, 0.048);
+  --hairline: rgba(255, 255, 255, 0.062);
 
-  /* 文本 (高清晰度克制对比度) */
-  --text-primary: #f3f4f8;
-  --text-secondary: #b4b9c8;
-  --text-muted: #7f8699;
-  --text-disabled: #505668;
+  /* 温润精工氛围与单色微刻图标令牌 (Warm Precision) */
+  --surface-sheen: radial-gradient(640px 210px at 14% -40px, color-mix(in srgb, var(--primary) 11%, transparent) 0%, transparent 72%);
+  --icon-tile-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.025) 100%);
+  --icon-tile-border: rgba(255, 255, 255, 0.095);
+  --icon-tile-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.35);
+  --nav-active-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.075) 0%, rgba(255, 255, 255, 0.045) 100%);
+  --nav-active-border: rgba(255, 255, 255, 0.095);
+  --nav-active-shadow: 0 1px 3px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --content-max-width-reading: 960px;
+  --content-max-width-workspace: 1280px;
+  --content-max-width: var(--content-max-width-reading);
+
+  /* 文本 (高清晰度克制中性阶梯) */
+  --text-primary: #f4f4f6;
+  --text-secondary: #a8acb8;
+  --text-muted: #787d8c;
+  --text-disabled: #4e5361;
 
   /* 输入框 */
-  --input-bg: rgba(0, 0, 0, 0.28);
-  --input-border: rgba(255, 255, 255, 0.10);
+  --input-bg: rgba(0, 0, 0, 0.26);
+  --input-border: rgba(255, 255, 255, 0.095);
   --input-focus: var(--primary);
 
   /* 滚动条 */
-  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
-  --scrollbar-hover: rgba(255, 255, 255, 0.26);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.13);
+  --scrollbar-hover: rgba(255, 255, 255, 0.24);
 
   /* 间距 */
   --spacing-xs: 4px;
@@ -72,13 +84,13 @@
 
   /* 圆角 */
   --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  --radius-md: 11px;
+  --radius-lg: 14px;
   --radius-full: 9999px;
 
   /* 阴影 (多层空气深度) */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32), 0 0 0 1px rgba(255, 255, 255, 0.025);
-  --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.48), 0 2px 6px rgba(0, 0, 0, 0.28);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.02);
+  --shadow-md: 0 8px 24px -6px rgba(0, 0, 0, 0.46), 0 2px 6px rgba(0, 0, 0, 0.26);
   --shadow-lg: 0 24px 56px -12px rgba(0, 0, 0, 0.65), 0 8px 20px rgba(0, 0, 0, 0.35);
 
   /* 动画 & 物理弹簧曲线 */
@@ -89,10 +101,10 @@
   --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* 物理高光边 (Specular Inset Line) */
-  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.055);
 
   /* 侧边栏 */
-  --sidebar-width: 232px;
+  --sidebar-width: 224px;
   --sidebar-collapsed-width: 64px;
 
   /* 字体栈: 方案 B 单字重无损思源黑体优先 (Noto Sans SC · 饱满现代几何大中宫) */
@@ -173,12 +185,12 @@
   line-height: 1.5;
 }
 
-/* ── 亮色主题 (Apple Porcelain / Linear Alabaster · 温润瓷白三层表面) ────── */
+/* ── 亮色主题 (Studio Alabaster / Warm Precision · 温润瓷白三层表面) ──────── */
 [data-theme="light"] {
   --primary: #7c3aed;
   --primary-hover: #6d28d9;
-  --primary-dim: rgba(124, 58, 237, 0.10);
-  --primary-glow: rgba(124, 58, 237, 0.22);
+  --primary-dim: rgba(124, 58, 237, 0.09);
+  --primary-glow: rgba(124, 58, 237, 0.20);
 
   /* 高对比度亮色语义色 (WCAG AA >= 4.8:1) */
   --success: #047857;
@@ -186,40 +198,50 @@
   --danger: #dc2626;
   --info: #1d4ed8;
 
-  /* 建筑级冷雾铝灰三层深度: 侧栏外壳 (#e8ecf3) -> 浅瓷画布 (#f3f5f9) -> 纯白雕塑卡片 (#ffffff) */
-  --bg-base: #f3f5f9;
-  --bg-surface: #e8ecf3;
+  /* 建筑级温润暖灰三层深度: 侧栏外壳 (#f3f3f5) -> 净白画布 (#fafafa) -> 雕塑白瓷卡片 (#ffffff) */
+  --bg-base: #fafafa;
+  --bg-surface: #f2f3f5;
   --bg-elevated: #ffffff;
-  --bg-overlay: rgba(15, 23, 42, 0.38);
+  --bg-overlay: rgba(24, 24, 27, 0.36);
 
   --card-bg: #ffffff;
-  --card-border: rgba(15, 23, 42, 0.088);
-  --card-hover: #f8fafd;
+  --card-border: rgba(24, 24, 27, 0.075);
+  --card-hover: #fbfbfc;
 
   /* 物理触感沉降槽与白瓷微立体滑块令牌 */
-  --well-bg: rgba(15, 23, 42, 0.058);
-  --well-border: rgba(15, 23, 42, 0.08);
-  --well-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.07);
+  --well-bg: rgba(24, 24, 27, 0.044);
+  --well-border: rgba(24, 24, 27, 0.068);
+  --well-shadow: inset 0 1px 1.5px rgba(24, 24, 27, 0.055);
   --thumb-bg: #ffffff;
-  --thumb-border: rgba(15, 23, 42, 0.09);
-  --thumb-shadow: 0 1.5px 4px rgba(15, 23, 42, 0.11), 0 1px 1.5px rgba(15, 23, 42, 0.06);
-  --ghost-hover-bg: rgba(15, 23, 42, 0.048);
-  --hairline: rgba(15, 23, 42, 0.068);
+  --thumb-border: rgba(24, 24, 27, 0.085);
+  --thumb-shadow: 0 1px 3px rgba(24, 24, 27, 0.08), 0 1px 1px rgba(24, 24, 27, 0.04);
+  --ghost-hover-bg: rgba(24, 24, 27, 0.042);
+  --hairline: rgba(24, 24, 27, 0.062);
 
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #64748b;
-  --text-disabled: #94a3b8;
+  /* 温润精工氛围与单色微刻图标令牌 */
+  --surface-sheen: radial-gradient(640px 210px at 14% -40px, color-mix(in srgb, var(--primary) 6.5%, transparent) 0%, transparent 72%);
+  --icon-tile-bg: linear-gradient(180deg, #ffffff 0%, #f6f6f8 100%);
+  --icon-tile-border: rgba(24, 24, 27, 0.09);
+  --icon-tile-shadow: 0 1px 2px rgba(24, 24, 27, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --nav-active-bg: #ffffff;
+  --nav-active-border: rgba(24, 24, 27, 0.08);
+  --nav-active-shadow: 0 1px 3px rgba(24, 24, 27, 0.06), 0 0.5px 1px rgba(24, 24, 27, 0.04);
+
+  /* 暖墨黑中性文本阶梯 */
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #71717a;
+  --text-disabled: #a1a1aa;
 
   --input-bg: #ffffff;
-  --input-border: rgba(15, 23, 42, 0.14);
+  --input-border: rgba(24, 24, 27, 0.12);
 
-  --scrollbar-thumb: rgba(15, 23, 42, 0.16);
-  --scrollbar-hover: rgba(15, 23, 42, 0.28);
+  --scrollbar-thumb: rgba(24, 24, 27, 0.14);
+  --scrollbar-hover: rgba(24, 24, 27, 0.25);
 
-  --shadow-sm: 0 1px 2.5px rgba(15, 23, 42, 0.05), 0 0 0 1px rgba(15, 23, 42, 0.035);
-  --shadow-md: 0 8px 24px -6px rgba(15, 23, 42, 0.10), 0 2px 6px -1px rgba(15, 23, 42, 0.05);
-  --shadow-lg: 0 22px 54px -12px rgba(15, 23, 42, 0.18), 0 4px 16px rgba(15, 23, 42, 0.07);
+  --shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.035), 0 2px 8px -4px rgba(24, 24, 27, 0.04);
+  --shadow-md: 0 8px 24px -6px rgba(24, 24, 27, 0.08), 0 2px 6px -1px rgba(24, 24, 27, 0.04);
+  --shadow-lg: 0 20px 48px -12px rgba(24, 24, 27, 0.15), 0 4px 16px rgba(24, 24, 27, 0.06);
   --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.95);
 
   /* 兼容与层级别名 (Foundational Token Aliases) */
@@ -230,15 +252,15 @@
   --bg-surface-hover: var(--card-hover);
   --border: var(--card-border);
   --border-subtle: var(--card-border);
-  --border-dark: rgba(203, 213, 225, 0.9);
-  --border-light: rgba(241, 245, 249, 0.8);
-  --card-border-hover: color-mix(in srgb, var(--primary) 35%, transparent);
+  --border-dark: rgba(212, 212, 216, 0.9);
+  --border-light: rgba(244, 244, 245, 0.8);
+  --card-border-hover: color-mix(in srgb, var(--primary) 32%, transparent);
   --card-bg-hover: var(--card-hover);
   --accent-dot-color: var(--primary);
-  --code-badge-bg: rgba(15, 23, 42, 0.055);
-  --code-badge-border: rgba(15, 23, 42, 0.12);
-  --code-badge-muted-bg: rgba(15, 23, 42, 0.035);
-  --code-badge-muted-border: rgba(15, 23, 42, 0.08);
+  --code-badge-bg: rgba(24, 24, 27, 0.048);
+  --code-badge-border: rgba(24, 24, 27, 0.095);
+  --code-badge-muted-bg: rgba(24, 24, 27, 0.03);
+  --code-badge-muted-border: rgba(24, 24, 27, 0.07);
 
   /* Keyboard Heatmap (Light Theme) */
   --key-bg: rgba(0, 0, 0, 0.04);

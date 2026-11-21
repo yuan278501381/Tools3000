@@ -198,55 +198,6 @@
     box-shadow: var(--thumb-shadow);
 }
 
-/* ── 默认初始筛选分类：工整有序的 3 列微晶标签网格 ─────────────────────────── */
-.popover-category-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-}
-
-.popover-category-chip {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    padding: 6px 8px;
-    border-radius: 8px;
-    background: var(--well-bg);
-    border: 1px solid var(--well-border);
-    color: var(--search-text-sub);
-    font-size: 12px;
-    font-weight: 550;
-    cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
-}
-
-.popover-category-chip:hover:not(.popover-category-chip--active) {
-    background: var(--search-surface-pill-hover);
-    border-color: var(--input-border);
-    color: var(--search-text-main);
-}
-
-.popover-category-chip--active {
-    background: var(--thumb-bg);
-    border-color: color-mix(in srgb, var(--primary) 38%, var(--thumb-border));
-    color: var(--search-text-main);
-    font-weight: 650;
-    box-shadow: var(--thumb-shadow);
-}
-
-.popover-category-dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--primary);
-    box-shadow: 0 0 6px var(--primary-glow);
-    flex-shrink: 0;
-}
-
 /* ── 默认搜索模式：高定图标托盘 + 同心圆 Radio 卡片组 ──────────────────────── */
 .popover-search-modes-grid {
     display: flex;
@@ -554,8 +505,19 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--primary);
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    background: var(--icon-tile-bg);
+    border: 1px solid var(--icon-tile-border);
+    color: var(--search-text-muted);
     flex-shrink: 0;
+    transition: color 140ms ease, border-color 140ms ease;
+}
+
+.popover-drive-card--active .drive-card-icon {
+    color: var(--primary);
+    border-color: color-mix(in srgb, var(--primary) 26%, var(--icon-tile-border));
 }
 
 .drive-card-details {
@@ -887,7 +849,7 @@
     cursor: ns-resize;
 }
 
-/* ── 文档内容检索格式定制 (Content Formats Customization) ── */
+/* ── 文档内容检索格式定制 (Warm Precision 可折叠手风琴 + 纯净单层微刻芯片) ── */
 .popover-section-title-left {
     display: flex;
     align-items: center;
@@ -895,53 +857,88 @@
 }
 
 .popover-title-icon {
-    color: var(--primary);
+    color: var(--text-muted);
 }
 
 .popover-title-badge {
     display: inline-flex;
     align-items: center;
     font-size: 12px;
-    font-family: var(--font-mono, monospace);
-    padding: 1px 5px;
-    border-radius: 4px;
-    background: var(--primary-dim);
-    color: var(--primary);
+    font-family: var(--font-mono);
+    padding: 1px 6px;
+    border-radius: 5px;
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    color: var(--search-text-sub);
     font-weight: 600;
 }
 
 .popover-format-categories {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    margin-top: 8px;
+    gap: 7px;
+    margin-top: 2px;
 }
 
 .popover-format-cat-block {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 10px 12px;
-    background: var(--search-drawer-bg);
-    border: 1px solid var(--search-border);
-    border-radius: 9px;
-    transition: border-color 0.15s ease;
+    padding: 9px 11px;
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    border-radius: 10px;
+    transition: border-color 140ms ease, background 140ms ease;
 }
 
 .popover-format-cat-block:hover {
-    border-color: var(--search-surface-pill-hover);
+    border-color: var(--input-border);
+}
+
+.popover-format-cat-block--open {
+    background: color-mix(in srgb, var(--well-bg) 75%, var(--thumb-bg));
+    border-color: var(--card-border);
 }
 
 .popover-format-cat-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
+}
+
+.popover-format-cat-trigger {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+}
+
+.popover-format-chevron {
+    color: var(--search-text-muted);
+    flex-shrink: 0;
+    transition: transform 160ms var(--ease-smooth), color 140ms ease;
+}
+
+.popover-format-chevron--open {
+    transform: rotate(90deg);
+    color: var(--search-text-main);
 }
 
 .popover-format-cat-title-wrap {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 7px;
+    min-width: 0;
 }
 
 .format-cat-icon-badge {
@@ -952,35 +949,19 @@
     height: 22px;
     border-radius: 6px;
     flex-shrink: 0;
+    background: var(--icon-tile-bg);
+    border: 1px solid var(--icon-tile-border);
+    box-shadow: var(--icon-tile-shadow);
+    color: var(--search-text-sub);
 }
 
-.format-cat-icon-badge--code {
-    background: rgba(59, 130, 246, 0.12);
-    color: #60a5fa;
-}
-
-.format-cat-icon-badge--doc {
-    background: rgba(245, 158, 11, 0.12);
-    color: #fbbf24;
-}
-
-.format-cat-icon-badge--config {
-    background: rgba(16, 185, 129, 0.12);
-    color: #34d399;
-}
-
-.format-cat-icon-badge--design {
-    background: rgba(168, 85, 247, 0.12);
-    color: #c084fc;
-}
-
-.format-cat-icon-badge--custom {
-    background: rgba(99, 102, 241, 0.12);
-    color: #818cf8;
+.popover-format-cat-block--open .format-cat-icon-badge,
+.popover-format-cat-block--custom .format-cat-icon-badge {
+    color: var(--primary);
 }
 
 .popover-format-cat-name {
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 600;
     color: var(--search-text-main);
     letter-spacing: -0.01em;
@@ -988,13 +969,15 @@
 
 .popover-format-badge-count {
     font-size: 12px;
-    font-family: var(--font-mono, monospace);
-    font-weight: 500;
+    font-family: var(--font-mono);
+    font-weight: 550;
     color: var(--search-text-muted);
-    background: var(--search-surface-pill);
+    background: var(--thumb-bg);
     padding: 1px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--search-item-border);
+    border-radius: 5px;
+    border: 1px solid var(--card-border);
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
 }
 
 .popover-cat-toggle-btn {
@@ -1002,11 +985,11 @@
     border: none;
     color: var(--primary);
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 550;
     cursor: pointer;
     padding: 2px 6px;
-    border-radius: 4px;
-    transition: all 0.12s ease;
+    border-radius: 5px;
+    transition: background 140ms ease;
 }
 
 .popover-cat-toggle-btn:hover {
@@ -1017,73 +1000,91 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 2px 8px;
+    padding: 3px 8px;
     border-radius: 6px;
-    background: var(--search-surface-pill);
-    border: 1px solid var(--search-surface-pill-border);
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
     color: var(--search-text-sub);
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 550;
     cursor: pointer;
-    transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
     user-select: none;
-    line-height: 1;
+    line-height: 1.2;
 }
 
 .popover-quick-action:hover {
-    background: var(--primary-dim);
-    border-color: var(--primary);
-    color: var(--primary);
-    transform: translateY(-0.5px);
-}
-
-.popover-quick-action:active {
-    transform: translateY(0.5px);
+    background: var(--thumb-bg);
+    border-color: var(--input-border);
+    color: var(--search-text-main);
 }
 
 .popover-format-chips {
     display: flex;
     flex-wrap: wrap;
     gap: 5px;
+    padding-top: 6px;
+    border-top: 1px solid var(--hairline);
 }
 
+/* 纯净单层等宽微刻芯片 (消灭双层蓝框套娃) */
 .format-chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
+    gap: 5px;
+    padding: 3px 8px;
     font-size: 12px;
-    font-family: var(--font-mono, monospace);
-    border-radius: 5px;
+    font-family: var(--font-mono);
+    line-height: 1.35;
+    border-radius: 6px;
     cursor: pointer;
-    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease;
     user-select: none;
     border: 1px solid transparent;
 }
 
+.format-chip-dot {
+    width: 4.5px;
+    height: 4.5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
 .format-chip--enabled {
-    background: var(--primary-dim);
-    color: var(--primary);
-    border-color: var(--primary);
-    font-weight: 600;
+    background: var(--thumb-bg);
+    color: var(--search-text-main);
+    border-color: var(--card-border);
+    box-shadow: var(--shadow-sm);
+    font-weight: 550;
+}
+
+.format-chip--enabled .format-chip-dot {
+    background: var(--primary);
+    box-shadow: 0 0 5px var(--primary-glow);
 }
 
 .format-chip--enabled:hover {
-    background: var(--primary);
-    color: #ffffff;
+    border-color: color-mix(in srgb, var(--primary) 42%, var(--card-border));
+    background: color-mix(in srgb, var(--primary) 6%, var(--thumb-bg));
+    color: var(--primary);
 }
 
 .format-chip--disabled {
-    background: var(--search-surface-pill);
+    background: transparent;
     color: var(--search-text-muted);
-    border-color: var(--search-border);
-    opacity: 0.6;
+    border-color: var(--well-border);
+    opacity: 0.62;
     text-decoration: line-through;
+}
+
+.format-chip--disabled .format-chip-dot {
+    background: var(--text-disabled);
 }
 
 .format-chip--disabled:hover {
     opacity: 1;
-    border-color: var(--search-text-muted);
+    border-color: var(--input-border);
+    color: var(--search-text-sub);
 }
 
 .format-chip--custom {
@@ -1091,6 +1092,9 @@
 }
 
 .format-chip-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     cursor: pointer;
 }
 
@@ -1142,21 +1146,23 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    height: 26px;
+    height: 28px;
     padding: 0 10px;
     font-size: 12px;
-    font-weight: 500;
-    background: var(--primary-dim);
-    color: var(--primary);
-    border: 1px solid var(--primary);
-    border-radius: 6px;
+    font-weight: 600;
+    background: var(--thumb-bg);
+    color: var(--search-text-main);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--shadow-sm);
+    border-radius: 7px;
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
 .popover-format-add-btn:hover {
-    background: var(--primary);
-    color: #ffffff;
+    border-color: color-mix(in srgb, var(--primary) 42%, var(--card-border));
+    background: color-mix(in srgb, var(--primary) 6%, var(--thumb-bg));
+    color: var(--primary);
 }
 
 .popover-format-add-tip {

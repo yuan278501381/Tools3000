@@ -7,7 +7,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useRef, useCallback, type FC } from 'react';
-import { CheckCircle2, AlertCircle, AlertTriangle, Info } from 'lucide-react';
+import { Check, AlertCircle, AlertTriangle, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { type SavedToastType, type SavedToastDetail } from './savedToastModel';
 import './SavedToast.css';
@@ -117,14 +117,14 @@ export const SavedToast: FC = () => {
   const renderIcon = () => {
     switch (toastData.type) {
       case 'error':
-        return <AlertCircle size={16} strokeWidth={2.5} />;
+        return <AlertCircle size={12.5} strokeWidth={2.35} />;
       case 'warning':
-        return <AlertTriangle size={16} strokeWidth={2.5} />;
+        return <AlertTriangle size={12.5} strokeWidth={2.35} />;
       case 'info':
-        return <Info size={16} strokeWidth={2.5} />;
+        return <Info size={12.5} strokeWidth={2.35} />;
       case 'success':
       default:
-        return <CheckCircle2 size={16} strokeWidth={2.5} />;
+        return <Check size={12.5} strokeWidth={2.75} />;
     }
   };
 

@@ -18,7 +18,8 @@ import {
   Plus,
   FolderHeart,
   Pin,
-  PinOff
+  PinOff,
+  X
 } from 'lucide-react';
 import './DialogEnhancerPage.css';
 
@@ -455,7 +456,7 @@ export const DialogEnhancerPage: FC = () => {
                   aria-label={t('common.delete')}
                   onClick={() => handleRemoveBlacklist(proc)}
                 >
-                  ×
+                  <X size={13} aria-hidden="true" />
                 </button>
               </div>
             ))}

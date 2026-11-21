@@ -5,7 +5,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, TextInput, Select, Button, CodeBadge } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, TextInput, Select, Button, PageSkeleton } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { Camera, Video, Palette, FolderOpen, Sparkles, ShieldCheck } from 'lucide-react';
@@ -13,7 +13,6 @@ import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { toast } from 'sonner';
 import { PinGroupSettingsCard } from '../components/PinGroupSettingsCard';
-import { STUDIO_BACKDROP_OPTIONS, normalizeStudioBackdropKey } from '../constants/studioBackdrops';
 
 interface CaptureSettings {
   format: string;
@@ -503,7 +502,7 @@ export const CapturePage: FC = () => {
   };
 
   if (loading) {
-    return <div style={{ padding: '2rem', opacity: 0.5 }}>{t('common.loading')}</div>;
+    return <PageSkeleton cards={3} rowsPerCard={4} />;
   }
 
   return (
@@ -756,15 +755,16 @@ export const CapturePage: FC = () => {
                         ['{time}', t('capture.watermarkTokenTime')],
                         ['\\n', t('capture.watermarkTokenNewline')],
                       ] as const).map(([tok, label]) => (
-                        <Button
+                        <button
                           key={tok}
-                          variant="ghost"
+                          type="button"
+                          className="uikit-token-chip"
                           disabled={Boolean(capture.watermarkPolicyForced)}
                           onClick={() => handleInsertWatermarkToken(tok)}
                         >
                           <span>{label}</span>
-                          <CodeBadge>{tok}</CodeBadge>
-                        </Button>
+                          <span className="uikit-token-chip__code">{tok}</span>
+                        </button>
                       ))}
                       <Button
                         variant="secondary"
@@ -941,13 +941,15 @@ export const CapturePage: FC = () => {
             checked={recording.showClickEffects}
             onChange={(v) => updateRecording('showClickEffects', v)}
           />
-          <Toggle
-            id="record-click-zoom"
-            label={t('recording.showClickZoom')}
-            description={t('recording.showClickZoomDesc')}
-            checked={recording.showClickZoom ?? true}
-            onChange={(v) => updateRecording('showClickZoom', v)}
-          />
+          {(!(recording.studioMode ?? true) || recording.format === 'gif') && (
+            <Toggle
+              id="record-click-zoom"
+              label={t('recording.showClickZoom')}
+              description={t('recording.showClickZoomDesc')}
+              checked={recording.showClickZoom ?? true}
+              onChange={(v) => updateRecording('showClickZoom', v)}
+            />
+          )}
           <Toggle
             id="record-include-keycast"
             label={t('recording.includeKeycast')}
@@ -1157,88 +1159,6 @@ export const CapturePage: FC = () => {
                       );
                     })()}
                   </SettingRow>
-                  <SettingRow label={t('recording.studioZoomFactor')} description={t('recording.studioZoomFactorDesc')}>
-                    <div className="uikit-slider-control">
-                      <input
-                        id="record-studio-zoom-factor"
-                        type="range"
-                        className="uikit-slider-input"
-                        min={1.0}
-                        max={2.6}
-                        step={0.05}
-                        value={recording.studioZoomFactor ?? 1.32}
-                        onChange={(e) => setRecording(prev => ({ ...prev, studioZoomFactor: parseFloat(e.target.value) }))}
-                        onPointerUp={(e) => updateRecording('studioZoomFactor', parseFloat((e.target as HTMLInputElement).value))}
-                        onKeyUp={(e) => updateRecording('studioZoomFactor', parseFloat((e.target as HTMLInputElement).value))}
-                      />
-                      <span className="uikit-slider-value">{(recording.studioZoomFactor ?? 1.32).toFixed(2)}x</span>
-                    </div>
-                  </SettingRow>
-                  <SettingRow label={t('recording.studioZoomPacing')} description={t('recording.studioZoomPacingDesc')}>
-                    <div className="uikit-slider-control">
-                      <input
-                        id="record-studio-zoom-pacing"
-                        type="range"
-                        className="uikit-slider-input"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={Math.round((recording.studioZoomPacing ?? 0.32) * 100)}
-                        onChange={(e) => setRecording(prev => ({ ...prev, studioZoomPacing: parseInt(e.target.value) / 100 }))}
-                        onPointerUp={(e) => updateRecording('studioZoomPacing', parseInt((e.target as HTMLInputElement).value) / 100)}
-                        onKeyUp={(e) => updateRecording('studioZoomPacing', parseInt((e.target as HTMLInputElement).value) / 100)}
-                      />
-                      <span className="uikit-slider-value">{Math.round((recording.studioZoomPacing ?? 0.32) * 100)}%</span>
-                    </div>
-                  </SettingRow>
-                  <SettingRow label={t('recording.studioZoomSensitivity')} description={t('recording.studioZoomSensitivityDesc')}>
-                    <div className="uikit-slider-control">
-                      <input
-                        id="record-studio-zoom-sensitivity"
-                        type="range"
-                        className="uikit-slider-input"
-                        min={0}
-                        max={100}
-                        step={2}
-                        value={Math.round((recording.studioZoomSensitivity ?? 0.32) * 100)}
-                        onChange={(e) => setRecording(prev => ({ ...prev, studioZoomSensitivity: parseInt(e.target.value) / 100 }))}
-                        onPointerUp={(e) => updateRecording('studioZoomSensitivity', parseInt((e.target as HTMLInputElement).value) / 100)}
-                        onKeyUp={(e) => updateRecording('studioZoomSensitivity', parseInt((e.target as HTMLInputElement).value) / 100)}
-                      />
-                      <span className="uikit-slider-value">{Math.round((recording.studioZoomSensitivity ?? 0.32) * 100)}%</span>
-                    </div>
-                  </SettingRow>
-                  <SettingRow label={t('recording.studioFocusSpotlightDim')} description={t('recording.studioFocusSpotlightDimDesc')}>
-                    <div className="uikit-slider-control">
-                      <input
-                        id="record-studio-focus-dim"
-                        type="range"
-                        className="uikit-slider-input"
-                        min={0}
-                        max={65}
-                        step={1}
-                        value={Math.round((recording.studioFocusSpotlightDim ?? 0.18) * 100)}
-                        onChange={(e) => setRecording(prev => ({ ...prev, studioFocusSpotlightDim: parseInt(e.target.value) / 100 }))}
-                        onPointerUp={(e) => updateRecording('studioFocusSpotlightDim', parseInt((e.target as HTMLInputElement).value) / 100)}
-                        onKeyUp={(e) => updateRecording('studioFocusSpotlightDim', parseInt((e.target as HTMLInputElement).value) / 100)}
-                      />
-                      <span className="uikit-slider-value">{Math.round((recording.studioFocusSpotlightDim ?? 0.18) * 100)}%</span>
-                    </div>
-                  </SettingRow>
-                  <Toggle
-                    id="record-studio-lock-camera"
-                    label={t('recording.studioLockCameraHold')}
-                    description={t('recording.studioLockCameraHoldDesc')}
-                    checked={recording.studioLockCameraHold ?? true}
-                    onChange={(v) => updateRecording('studioLockCameraHold', v)}
-                  />
-                  <Toggle
-                    id="record-studio-motion-blur"
-                    label={t('recording.studioMotionBlur')}
-                    description={t('recording.studioMotionBlurDesc')}
-                    checked={recording.studioMotionBlur ?? false}
-                    onChange={(v) => updateRecording('studioMotionBlur', v)}
-                  />
                   <Toggle
                     id="record-typing-auto-zoom"
                     label={t('recording.typingAutoZoom')}
@@ -1255,82 +1175,12 @@ export const CapturePage: FC = () => {
                 checked={recording.studioSmoothCursor ?? true}
                 onChange={(v) => updateRecording('studioSmoothCursor', v)}
               />
-              {(recording.studioSmoothCursor ?? true) && (
-                <>
-                  <SettingRow label={t('recording.studioCursorScale')} description={t('recording.studioCursorScaleDesc')}>
-                    <Select
-                      id="record-studio-cursor-scale"
-                      value={
-                        Math.abs((recording.studioCursorScale ?? 1.35) - 1.0) < 0.16
-                          ? '1.0'
-                          : Math.abs((recording.studioCursorScale ?? 1.35) - 1.7) < 0.20
-                            ? '1.7'
-                            : '1.35'
-                      }
-                      onChange={(v) => updateRecording('studioCursorScale', parseFloat(v))}
-                      options={[
-                        { value: '1.0', label: t('recording.studioCursor100') },
-                        { value: '1.35', label: t('recording.studioCursor135') },
-                        { value: '1.7', label: t('recording.studioCursor170') },
-                      ]}
-                    />
-                  </SettingRow>
-                  <SettingRow label={t('recording.studioClickStyle')} description={t('recording.studioClickStyleDesc')}>
-                    <Select
-                      id="record-studio-click-style"
-                      value={String(Math.min(3, Math.max(0, recording.studioClickStyle ?? 0)))}
-                      onChange={(v) => updateRecording('studioClickStyle', parseInt(v, 10))}
-                      options={[
-                        { value: '0', label: t('recording.studioClickCrystal') },
-                        { value: '1', label: t('recording.studioClickDual') },
-                        { value: '2', label: t('recording.studioClickSoft') },
-                        { value: '3', label: t('recording.studioClickTactile') },
-                      ]}
-                    />
-                  </SettingRow>
-                </>
-              )}
               <Toggle
                 id="record-studio-auto-frame"
                 label={t('recording.studioAutoFrame')}
                 description={t('recording.studioAutoFrameDesc')}
                 checked={recording.studioAutoFrame ?? true}
                 onChange={(v) => updateRecording('studioAutoFrame', v)}
-              />
-              {(recording.studioAutoFrame ?? true) && (
-                <SettingRow label={t('recording.studioTheme')} description={t('recording.studioThemeDesc')}>
-                  <Select
-                    id="record-studio-theme"
-                    value={normalizeStudioBackdropKey(recording.studioTheme)}
-                    onChange={(v) => updateRecording('studioTheme', v)}
-                    options={STUDIO_BACKDROP_OPTIONS.map((item) => ({
-                      value: item.value,
-                      label: t(item.labelKey),
-                    }))}
-                  />
-                </SettingRow>
-              )}
-              <SettingRow label={t('recording.studioExportFormat')} description={t('recording.studioExportFormatDesc')}>
-                <Select
-                  id="record-studio-export-format"
-                  value={String(Math.min(5, Math.max(0, recording.studioExportFormat ?? 0)))}
-                  onChange={(v) => updateRecording('studioExportFormat', parseInt(v, 10))}
-                  options={[
-                    { value: '0', label: t('recording.studioExportMp4H264') },
-                    { value: '1', label: t('recording.studioExportMp4Hevc') },
-                    { value: '3', label: t('recording.studioExportGifHd') },
-                    { value: '2', label: t('recording.studioExportGifWeChat') },
-                    { value: '4', label: t('recording.studioExportWebp') },
-                    { value: '5', label: t('recording.studioExportWebm') },
-                  ]}
-                />
-              </SettingRow>
-              <Toggle
-                id="record-studio-export-autoclose"
-                label={t('recording.studioExportAutoClose')}
-                description={t('recording.studioExportAutoCloseDesc')}
-                checked={recording.studioExportAutoClose ?? false}
-                onChange={(v) => updateRecording('studioExportAutoClose', v)}
               />
               <Toggle
                 id="record-studio-watermark-enabled"
@@ -1407,15 +1257,16 @@ export const CapturePage: FC = () => {
                             ['{time}', t('capture.watermarkTokenTime')],
                             ['\\n', t('capture.watermarkTokenNewline')],
                           ] as const).map(([tok, label]) => (
-                            <Button
+                            <button
                               key={tok}
-                              variant="ghost"
+                              type="button"
+                              className="uikit-token-chip"
                               disabled={Boolean(recording.studioWatermarkPolicyForced)}
                               onClick={() => handleInsertStudioWatermarkToken(tok)}
                             >
                               <span>{label}</span>
-                              <CodeBadge>{tok}</CodeBadge>
-                            </Button>
+                              <span className="uikit-token-chip__code">{tok}</span>
+                            </button>
                           ))}
                           <Button
                             variant="secondary"
@@ -1466,13 +1317,15 @@ export const CapturePage: FC = () => {
                   </SettingRow>
                 </>
               )}
-              <Toggle
-                id="record-studio-captions"
-                label={t('recording.studioAutoCaptions')}
-                description={t('recording.studioAutoCaptionsDesc')}
-                checked={recording.studioAutoCaptions ?? false}
-                onChange={(v) => updateRecording('studioAutoCaptions', v)}
-              />
+              {recording.captureMicrophone && (
+                <Toggle
+                  id="record-studio-captions"
+                  label={t('recording.studioAutoCaptions')}
+                  description={t('recording.studioAutoCaptionsDesc')}
+                  checked={recording.studioAutoCaptions ?? false}
+                  onChange={(v) => updateRecording('studioAutoCaptions', v)}
+                />
+              )}
             </>
           )}
         </Card>

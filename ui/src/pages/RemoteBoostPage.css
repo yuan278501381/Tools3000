@@ -83,8 +83,8 @@
 }
 
 .remote-boost-dot--active {
-  background-color: #10b981;
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
+  background-color: var(--success);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--success) 55%, transparent);
   animation: pulse-dot 2s infinite ease-in-out;
 }
 
@@ -128,20 +128,26 @@
   border-radius: var(--radius-full);
 }
 
+.remote-boost-card__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 /* ── 直通按键胶囊清单 ────────────────────────────────────────────────────── */
 
 .remote-boost-tags-container {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem 1rem;
-  background: var(--bg-surface);
-  border-radius: var(--radius-sm);
-  margin-bottom: 0.75rem;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  border-radius: 9px;
 }
 
 .remote-boost-tags-label {
-  font-size: 0.85rem;
+  font-size: 0.84rem;
   font-weight: 600;
   line-height: 1.4;
   color: var(--text-secondary);
@@ -150,7 +156,7 @@
 .remote-boost-key-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 6px;
 }
 
 /* ── 进程列表与输入 ──────────────────────────────────────────────────────── */
@@ -158,10 +164,11 @@
 .remote-boost-process-section {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  background: var(--bg-surface);
-  border-radius: var(--radius-sm);
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  border-radius: 9px;
 }
 
 .remote-boost-process-header {
@@ -173,17 +180,24 @@
 .remote-boost-process-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 6px;
 }
 
 .remote-boost-process-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.15rem 0.35rem;
+  gap: 4px;
+  padding: 2px 5px 2px 7px;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: var(--radius-sm);
+  border-radius: 7px;
+}
+
+.remote-boost-process-chip .uikit-code-badge {
+  background: transparent;
+  border-color: transparent;
+  padding: 0;
+  color: var(--text-secondary);
 }
 
 .remote-boost-process-chip__remove {
@@ -193,15 +207,17 @@
   padding: 2px;
   background: transparent;
   border: none;
-  border-radius: 3px;
+  border-radius: 4px;
   color: var(--text-muted);
+  opacity: 0.65;
   cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
+  transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
 }
 
 .remote-boost-process-chip__remove:hover {
-  color: var(--text-primary);
-  background: rgba(239, 68, 68, 0.15);
+  opacity: 1;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .remote-boost-add-row {
@@ -237,11 +253,11 @@
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.85rem 1rem;
-  margin-top: 0.75rem;
-  background: var(--bg-surface);
-  border-radius: var(--radius-sm);
-  border-left: 3px solid var(--primary);
+  padding: 12px 14px;
+  margin-top: 6px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  border-radius: 9px;
 }
 
 .remote-boost-flush-desc {
@@ -283,5 +299,5 @@
 }
 
 .remote-boost-footer__check {
-  color: #10b981;
+  color: var(--success);
 }

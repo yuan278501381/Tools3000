@@ -1384,31 +1384,17 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         }
 
                         if (!preserveHierarchy) {
-                            m_state->detectedWindowHierarchy = detectWindowHierarchy(screenPt);
-                            m_state->detectedWindowHierarchyIndex = 0;
-                            if (!m_state->detectedWindowHierarchy.empty()) {
-                                m_state->detectedWindow = m_state->detectedWindowHierarchy[0];
-                                m_state->animDetectedWindowRect = D2D1::RectF(
-                                    static_cast<float>(m_state->detectedWindow.left),
-                                    static_cast<float>(m_state->detectedWindow.top),
-                                    static_cast<float>(m_state->detectedWindow.right),
-                                    static_cast<float>(m_state->detectedWindow.bottom));
-                                m_state->targetDetectedWindowRect = m_state->animDetectedWindowRect;
-                                m_state->isHierarchyAnimating = false;
-                            } else {
-                                m_state->detectedWindow = {};
-                                m_state->animDetectedWindowRect = {};
-                                m_state->targetDetectedWindowRect = {};
-                                m_state->isHierarchyAnimating = false;
-                            }
+                            updateWindowDetectionAtCursor(hwnd, screenPt, /*allowAsyncRefine=*/true);
                         }
                     } else {
                         m_state->detectedWindow = {};
+                        m_state->detectedWindowCornerRadius = 0.0f;
                         m_state->animDetectedWindowRect = {};
                         m_state->targetDetectedWindowRect = {};
                         m_state->isHierarchyAnimating = false;
                         m_state->detectedWindowHierarchy.clear();
                         m_state->detectedWindowHierarchyDescriptions.clear();
+                        m_state->detectedWindowHierarchyRadii.clear();
                     }
                 }
 

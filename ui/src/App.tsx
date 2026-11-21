@@ -12,7 +12,7 @@
  *   └──────────┴──────────────────────────────┘
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo, type CSSProperties } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { TitleBar } from './components/TitleBar';
 import { Sidebar, type NavId } from './components/Sidebar';
 import type { PluginStatus } from './pages/PluginsPage';
@@ -36,7 +36,7 @@ import {
   type ThemePreference,
 } from './hooks/useAppearance';
 import { shouldShowOnboarding } from './onboardingGate';
-import { Toaster } from 'sonner';
+import { AppToaster } from './components/AppToaster';
 import { useTranslation } from 'react-i18next';
 import './App.css';
 
@@ -402,10 +402,6 @@ function App() {
   const pageMeta = getPageMetadata(activeNav);
   const activeRoute = resolveExtensionRoute(activeNav, activePluginMeta?.name);
   const ActiveHeaderIcon = activeRoute.icon;
-  const headerToneStyle = {
-    '--page-tone-start': activeRoute.toneStart,
-    '--page-tone-end': activeRoute.toneEnd,
-  } as CSSProperties;
 
   return (
     <div className="app">
@@ -433,28 +429,32 @@ function App() {
           installedExtensions={installedExtensions}
         />
         <main className="app__main" aria-labelledby="app-page-title">
-          <Toaster position="bottom-right" theme={theme} richColors expand={true} />
-          {/* ── 旗舰页面头部 (全 14 模块同源宝石 Squircle 徽标 + 克制光氛顶衬) ── */}
-          <header className="app__header" style={headerToneStyle}>
-            <div className="app__header-inner">
-              <div className="app__header-badge" aria-hidden="true">
-                <ActiveHeaderIcon size={21} strokeWidth={2.15} />
-              </div>
-              <div className="app__header-text">
-                <h1 id="app-page-title" ref={pageTitleRef} tabIndex={-1} className="app__header-title">
-                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                  {activePluginMeta ? t(pageMeta.titleKey as any, { defaultValue: activePluginMeta.name }) : t(pageMeta.titleKey as any)}
-                </h1>
-                <p className="app__header-subtitle">
-                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                  {activePluginMeta ? t(pageMeta.subtitleKey as any, { defaultValue: activePluginMeta.fileName }) : t(pageMeta.subtitleKey as any)}
-                </p>
-              </div>
-            </div>
-          </header>
+          <AppToaster theme={theme} surface="settings" />
 
-          {/* ── 页面内容 ────────────────────────────────────── */}
-          <div className="app__content" ref={contentContainerRef} key={activeNav}>
+          {/* ── 页面滚动流 (流体自适应双阶画布：表单 960px / 工作台 1280px + @container 感知) ── */}
+          <div
+            className={`app__content ${activeRoute.canvasWidth === 'workspace' ? 'app__content--workspace' : 'app__content--reading'}`}
+            ref={contentContainerRef}
+            key={activeNav}
+          >
+            <header className="app__header">
+              <div className="app__header-inner">
+                <div className="app__header-badge" aria-hidden="true">
+                  <ActiveHeaderIcon size={17} strokeWidth={1.85} />
+                </div>
+                <div className="app__header-text">
+                  <h1 id="app-page-title" ref={pageTitleRef} tabIndex={-1} className="app__header-title">
+                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                    {activePluginMeta ? t(pageMeta.titleKey as any, { defaultValue: activePluginMeta.name }) : t(pageMeta.titleKey as any)}
+                  </h1>
+                  <p className="app__header-subtitle">
+                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                    {activePluginMeta ? t(pageMeta.subtitleKey as any, { defaultValue: activePluginMeta.fileName }) : t(pageMeta.subtitleKey as any)}
+                  </p>
+                </div>
+              </div>
+            </header>
+
             <Suspense fallback={<div role="status" aria-live="polite" className="surface-loading">{t('common.loading')}</div>}>
               {renderPage()}
             </Suspense>

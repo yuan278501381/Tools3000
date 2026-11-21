@@ -6,6 +6,44 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 全站统一 Warm Precision Toast 体系 (`AppToaster`) + 标题栏彩色 Logo + 1:1 自适应渐变面积活动图 (`7天/本月/本年`) + 搜索模式/初始分类 MECE 正交解耦
+- **全站 Toast 与悬浮气泡统一 (`AppToaster.{tsx,css}`, `SavedToast.{tsx,css}`, `HotkeyRecorder.css`, `App.tsx`, `SearchApp.tsx`)**：
+  - 废除 `sonner` 默认 `richColors` 高饱和大色块与 `356px` 固定空旷宽盒，建立单一事实源 `<AppToaster />`（覆盖主设置窗与搜文件浮窗，搜文件底偏 `44px` 自动避让底部快捷键栏）；
+  - 采用白瓷/曜石毛玻璃承载 + 内容自适应紧凑宽（`max-content`, `min 196px`, `max 380px`）+ 左侧 `22×22px` 微晶语义图标托盘 + Hover 浮现关闭钮；同步统一 `SavedToast` 与 `HotkeyRecorder` 警示气泡材质；
+- **标题栏品牌视觉统一 (`TitleBar.{tsx,css}`)**：标题栏左上角默认启用 `<LogoGlyph size={16} colorVariant />`（三面立体暖橘红 T-Ribbon 矢量标识 + 柔和暖影），与托盘菜单及「关于」页 100% 品牌一致；
+- **数据统计 1:1 自适应流光渐变面积图 (`keyStatsModel.{ts,test.ts}`, `KeyStatsPage.{tsx,css}`, 8 套 `locales/*.json`)**：
+  - 引入 `ResizeObserver` 实时驱动 SVG 1:1 物理像素坐标系（彻底消除固定 `viewBox=720×260` 在宽工作台卡片中导致的左右大白边与文字拉伸）；
+  - 支持「**近 7 天 / 本月 / 本年**」沉降凹槽切换（复用后端 `stats.getHistory(1..366)` 并按需缓存，`本年` 自动按自然月聚合展示月总/日均/活跃天数）+ 四阶通透渐变面积填充 + Fritsch-Carlson 单调防过冲三次样条 + 防重叠 X 轴步长 + 雕塑毛玻璃 HTML Tooltip；
+- **搜索模式与默认初始筛选分类 MECE 正交解耦 (`SearchPage.tsx`, `SearchViewSettingsModal.tsx`, `SearchApp.tsx`, `popover-formats.css`)**：
+  - 根除 `defaultCategory='content'` 与 `searchMode='name'|'both'|'content'` 的概念重叠与覆盖打架：将「文档内容」彻底移出默认分类选项，老配置自动迁移归一化；
+  - `SearchPage` 增补「默认搜索模式」并与搜文件抽屉通过 `/search/uiPreferences` + `localStorage` + `storage` 事件双端实时同步，当选定「仅搜文件内容」时自动隐藏文件类型筛选从 UI 物理防呆；搜文件抽屉移除重复占地 9 格默认分类网格。
+
+### [2026-11-21] MECE 四维世界级截图自动捕捉窗口与控件引擎 (`WindowElementDetector`) + 全站 Calm Technology 无噪微点状态语法 & 死设置清扫
+- **世界级截图自动捕捉引擎架构 (`src/capture/WindowElementDetector.{h,cpp}`, `CaptureInput.{h,cpp}`, `CaptureInputMouse.cpp`, `CaptureInputKeyboard.cpp`, `CaptureOverlay.cpp`, `CaptureState.h`, `tests/unit/test_capture.inc`)**：
+  - *旧实现暗坑*：仅靠单次 `EnumWindows` 外框 + 一层 `RealChildWindowFromPoint`，遇 Electron / Chromium / WebView2 / WinUI3 / WPF 仅剩一整块大窗口；遇 UWP Cloaked 窗与无形透明覆层易乱跳；且全屏截图遮罩盖顶后无法直接做屏幕级 `ElementFromPoint`；
+  - *MECE 四维架构落地*：
+    1. **维度 1（冻结瞬间零卡顿拓扑快照）**：在 `CaptureOverlay::start()` 冻屏后、遮罩升起前执行单次 Z-Order `EnumWindows` 采集，严格剔除 `DWMWA_CLOAKED`、鼠标穿透层（`WS_EX_TRANSPARENT`）、全透明幽灵窗（`LWA_ALPHA == 0`）与系统隐形宿主窗（精准保留 `Shell_TrayWnd` 任务栏）；采集 DWM 无阴影外框 (`DWMWA_EXTENDED_FRAME_BOUNDS`)、真实内容客户区（去边框/标题栏）与 Win11 真实圆角/最大化直角；对鼠标命中窗懒扫描深层递归子 `HWND`（取代单层 `RealChildWindowFromPoint`），保证 `WM_MOUSEMOVE` 热路径 0ms 纯内存命中；
+    2. **维度 2（免疫遮罩的冻结画布懒缓存空间剪枝 UIA 引擎）**：常驻专属 MTA 后台线程 + `IUIAutomation2` `40ms/60ms` 事务/连接硬超时彻底防卡死；基于维度 1 命中的底层真实 `HWND` 调用 `ElementFromHandle` + `FindAllBuildCache(TreeScope_Children)` 自顶向下按光标坐标空间剪枝展开（深度上限 16、单节点子上限 160、时间预算 45ms），100% 穿透全屏截图遮罩直达浏览器标签/输入栏/文档区/侧栏/按钮；会话级内存缓存使同窗二次移动 `~0.05ms` 命中；通过 `generation` 版本号 + `WM_CAPTURE_ELEMENT_REFINED` (`WM_APP + 76`) 零撕裂回传主线程；
+    3. **维度 3（无障碍盲区视觉闭合卡片补全）**：当最内层语义候选仍为超大盲区（`>= 280×200`，如纯图/Canvas/远程桌面/游戏画面）时，在冻结画布局部 ROI 内以 OpenCV Canny + 形态学闭运算提取高置信度视觉矩形（矩形度 `>= 0.84`、周长紧凑度 `<= 1.22`），0 误报补全视觉边界；
+    4. **维度 4（确定性归一化 + 利落弹簧切换）**：`normalizeDetectedHierarchy` 面积升序、四边差 `<= 3px` 或 `IoU >= 0.94` 时按源优先级仲裁去重（优先保留 UIA/子控件/客户区语义）、超 `10` 层保留关键锚点（最细元素 + 客户端 + 主窗口 + 全屏）、按层级匹配自适应圆角（小控件 `4px` / 顶层窗 `8px` / 最大化与屏幕 `0px`），选框弹簧过渡提速至 `k=380, d=36` 兼顾利落跟手与丝滑阻尼；`WindowElementDetectorTest` 4 项防回退单测 100% 通过。
+- **Calm Technology 无噪微点状态体系 + F1 语法速查根治 + 死/失效设置清扫 (`HotkeyStatusBadge`, `UIKit.css`, `filters-syntax.css`, `GesturePage`, `OcrPage`, `CapturePage`, `KeycastPage`, `SpotlightPage`, `SearchApp`, `SearchPage`, `HotCornerPage`, `AboutPage`, `TrayApp`, `SearchPlugin.cpp`, `CaptureOverlay.cpp`)**：
+  1. **状态语法减噪（Calm Technology）**：废除全站高饱和绿底绿框大药丸与 20 字冗余管理员绿提示卡（`elevated === true` 时静默隐藏，仅非提权态低噪音提示），常态 `正常生效 / 已就绪 / 模型已就绪 / 已提权` 统一收束为 `6px` 翡翠微点 + 中性次级文字，仅冲突/异常展示柔和琥珀/珊瑚警示芯片；
+  2. **F1 语法速查单行拉伸根治**：`.syntax-drawer-list` 缺失 `align-content: start;` 导致 `flex: 1` 容器在仅有 4 张卡（「通配扩展」）时将隐式单行垂直拉成 500px 柱子；补齐后全站 4 卡精准稳定 `72px`；顺带修复 `.sort-composite-option` 原生丑绿 Radio 与 `.app-picker-grid` 缺 `align-content: start`；
+  3. **前后端真实断链与死设置清理**：修复 `SearchApp`/`useSearchEngine` 调用 `config.get/set` 错传 `pointer` 导致 `/search/uiPreferences` 持久化失效、`SearchPlugin.cpp` 旧键 `/search/contentCategory_*` 幽灵覆盖新版禁用格式与 `excludeSystem` 缺失兜底、`CaptureOverlay.cpp` 缺失 3 款美壳主题映射、`GesturePage` `'all' -> 'both'` 归一化与下层药丸协同放行顶层触发门禁、`AboutPage` 移除恒显 `0.0 ms` 的未采集假手势延迟指标、`OcrPage` 在 PP-OCRv4 生效时自动隐藏无效语种框、`CapturePage` 瘦身 20+ 无预览盲调演播室项并改单层 `.uikit-token-chip`、`HotCornerPage` 过滤空命令 `17` 与重复项 `6`。
+
+### [2026-11-21] 全站 WebUI「Warm Precision 温润精工」视觉重构 + 流体双阶自适应画布架构 (`Reading 960px` / `Workspace 1280px` + `@container`)
+- **产品决策与核心视觉铁律（经项目负责人实机多轮校准）**：
+  1. **告别高饱和彩虹主图标，全面升级至 Linear / Raycast / Cursor 级「Warm Precision 温润精工」体系 (`index.css`, `App.{tsx,css}`, `TitleBar.{tsx,css}`, `Sidebar.{tsx,css}`, `UIKit.css`)**：
+     - 暗色升级为中性曜石工坊（`#0b0c0f` / `#111216` / `#17191f`），亮色升级为温润白瓷（`#f2f3f5` / `#fafafa` / `#ffffff`，暖墨字梯 `#18181b` / `#52525b` / `#71717a`）；新增统一氛围与微刻原语令牌 `--surface-sheen`、`--icon-tile-bg/border/shadow`、`--nav-active-bg/border/shadow`；
+     - 侧边栏彻底去除 14 个高饱和彩虹方块图标，改为 `15px` 纯净单色线性图标 + 浮雕白瓷/曜石激活胶囊 + 左侧 `2.5px` 主题色微光针；页头移入 `.app__content` 一体化滚动（消除吸顶横切条）；标准 `Toggle` 瘦身至 `36×20px`；`GeneralPage` 外观三联卡去除山寨红黄绿灯，主题色升级为悬浮双环色珠；`PluginsPage` 改为单色微刻图标 + `6px` 呼吸点 + 底部全宽 `<details>` 权限抽屉；
+  2. **流体双阶自适应画布 + `@container` 容器查询（根治固定窄栏挤压宽工作台暗坑）(`routes.ts`, `App.{tsx,css}`, `GesturePage.css`, `ScopeTargetsSidebar.css`, `KeyboardHeatmap.css`, `KeyStatsPage.{tsx,css}`)**：
+     - *暗坑复盘*：将 `.app__content` 一刀切锁死在 `max-width: 760px` 后，桌面常规宽窗下两侧产生大片无意义空白，且直接把双栏 `GesturePage` 手势表（右侧编辑/删除按钮被裁出卡外、即时/静默折成两行）和 `KeyStatsPage` 104 键全尺寸键盘（`Home`/`PgUp`/`Enter` 截成 `Ho..`/`Pg..`/`En..`、下方 4 卡变 3+1 孤儿行）挤残；
+     - *终局架构*：在单一事实源 `ui/src/config/routes.ts` 引入 `canvasWidth: 'reading' | 'workspace'`，定义两档天花板令牌 `--content-max-width-reading: 960px`（普通表单页常规窗铺满、超宽屏温柔收拢）与 `--content-max-width-workspace: 1280px`（`gesture`、`stats`、`history`、`plugins`、`search`、`capture` 宽工作台）；在 `.app__content` 挂载 `container-type: inline-size; container-name: app-canvas;`；`GesturePage` 表格改用精准 CSS Grid 6 列且在 `@container app-canvas (max-width: 840px)` 自动把作用域侧栏折叠至顶部，`KeyboardHeatmap` 全面改用 `cqw` 容器比例，4 张 KPI 卡片锁定 4×1 / 2×2 对称矩阵；
+  3. **全站独立浮窗与隐藏子抽屉地毯式统一与缺陷清扫 (`SearchApp`, `TrayApp`, `QuickLookApp`, `OnboardingModal`, `AboutPage`, `OcrPage`, `HistoryPage`, `HotCornerPage`, `RemoteBoostPage`, `SearchPage`)**：
+     - `SearchViewSettingsModal`：彻底消除 `content:` 格式 74+ 个 `<button><CodeBadge>` 双层蓝框套娃，升级为**可折叠手风琴分类（默认折叠）+ 纯净单层微刻芯片（4.5px 状态点）**；
+     - `SearchApp` F1 语法速查抽屉 (`SearchSyntaxModal`)：展开时独占主内容槽（隐藏空态与结果列表），根治此前与加载旋转图标穿模重叠 Bug；
+     - `SearchPage` 清除硬编码内联大蓝块图标风格按钮改用标准 `.uikit-segmented`；`AboutPage` 合并双品牌头为单体 Studio 名片卡；`OcrPage` 底部特性改为 `layout="vertical"` + `flex-wrap: wrap` 根治 5 芯片右溢出；`HistoryPage` 长文件名施加弹性截断修复操作按钮被裁切；`RemoteBoostPage` 消除三卡内重复嵌套 `<SettingGroup>`；`UIKit.css` 修复 `.uikit-setting-row::before` 负偏移导致的 `+10px` 隐形水平滚动溢出。
+
 ### [2026-11-21] 正式升级开源协议至 GNU GPL v3.0（附 Windows/WebView2 链接豁免）+ 「关于」页构建日期穿透 + 历史仓库重写对齐
 - **产品与开源法务决策**：
   - 针对独立桌面效率软件防换皮闭源收割的定位，在 `v1.2.0` 正式推广前将项目全仓许可证由 `MIT` 切换为 **GNU General Public License v3.0 (`GPL-3.0-only`)**，根目录 `LICENSE` 保留 100% FSF 逐字原文以确保 GitHub Licensee 自动识别为 `GPL-3.0 license`，同级新增 [LICENSE-EXCEPTION.md](file:///c:/repo/Tools3000/LICENSE-EXCEPTION.md) 声明 GPLv3 Section 7 标准 *Windows System & Microsoft Edge WebView2 Linking Exception*；

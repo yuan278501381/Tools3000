@@ -86,7 +86,9 @@ export const GestureEditorModal: FC<Props> = ({
   const initialId = initialMap?.id;
   const isEdit = Boolean(initialMap);
 
-  const [advancedOpen, setAdvancedOpen] = useState(Boolean(initialFocusTarget));
+  const [advancedOpen, setAdvancedOpen] = useState(
+    initialFocusTarget === 'instant' || initialFocusTarget === 'silent'
+  );
   const [replaceSimilarTracks, setReplaceSimilarTracks] = useState(true);
 
   const actionTypeRef = useRef<HTMLDivElement>(null);
@@ -96,6 +98,26 @@ export const GestureEditorModal: FC<Props> = ({
   const silentCardRef = useRef<HTMLDivElement>(null);
 
   const code = draft.gestureCode.trim().toUpperCase();
+
+  // 根据传入的 initialFocusTarget 精准滚动定位到目标字段
+  useEffect(() => {
+    if (!initialFocusTarget) return;
+    const refMap: Record<string, React.RefObject<HTMLDivElement | null>> = {
+      action_type: actionTypeRef,
+      action_detail: actionDetailRef,
+      hotkey: actionDetailRef,
+      builtin: actionDetailRef,
+      lua: actionDetailRef,
+      program: actionDetailRef,
+      instant: instantCardRef,
+      silent: silentCardRef,
+    };
+    const targetRef = refMap[initialFocusTarget];
+    const timer = window.setTimeout(() => {
+      targetRef?.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [initialFocusTarget]);
 
   // 弹窗挂载时开启录制免打扰保护模式，关闭时自动恢复全局拦截
   useEffect(() => {
@@ -395,8 +417,8 @@ export const GestureEditorModal: FC<Props> = ({
                   value={String(draft.action.builtinCmd ?? 0)}
                   options={BUILTIN_COMMAND_KEYS
                     .map((key, i) => ({ value: String(i), label: t(key) }))
-                    // C-01: 过滤下标 17 (已下线的 radialMenu)，保持其余枚举下标与 C++ 1:1 严格对齐
-                    .filter((opt) => opt.value !== '17')}
+                    // C-01: 过滤下标 17 (已下线的 radialMenu) 与与 26 重复的 6 (仅老配置仍可回显)
+                    .filter((opt) => opt.value !== '17' && (opt.value !== '6' || draft.action.builtinCmd === 6))}
                   onChange={(v: string) => setAction({ builtinCmd: Number(v) })}
                   placement="auto"
                   portal

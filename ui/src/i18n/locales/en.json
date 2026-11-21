@@ -1247,7 +1247,15 @@
     "clearToday": "Reset Today",
     "confirmClearToday": "Are you sure you want to reset today's activity statistics?",
     "clearTodaySuccess": "Today's statistics have been reset",
-    "clearTodayFailed": "Failed to reset today's statistics"
+    "clearTodayFailed": "Failed to reset today's statistics",
+    "range7d": "7 Days",
+    "rangeMonth": "This Month",
+    "rangeYear": "This Year",
+    "periodTotal": "Period Total",
+    "dailyAvg": "Daily Avg",
+    "peakValue": "Peak",
+    "activeDays": "Active",
+    "daysUnit": "d"
   },
   "about": {
     "title": "About Tools3000",
@@ -1992,7 +2000,7 @@
     "holdDurationLong": "5000 ms",
     "holdDurationCustom": "{{ms}} ms (Custom)",
     "shakeThreshold": "Shake Threshold",
-    "shakeThresholdDesc": "Shake detection sensitivity (default 7).",
+    "shakeThresholdDesc": "Shake detection sensitivity (default 4).",
     "mouseFxSection": "Click & Motion Effects",
     "clickRipple": "Show Click Ripples",
     "clickRippleDesc": "Display temporary ripple circles at mouse click positions.",

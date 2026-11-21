@@ -1247,7 +1247,15 @@
     "clearToday": "重設今日",
     "confirmClearToday": "確定要歸零今日的按鍵與滑鼠統計資料嗎？",
     "clearTodaySuccess": "今日統計資料已歸零",
-    "clearTodayFailed": "重設今日統計失敗"
+    "clearTodayFailed": "重設今日統計失敗",
+    "range7d": "近 7 天",
+    "rangeMonth": "本月",
+    "rangeYear": "本年",
+    "periodTotal": "區間總計",
+    "dailyAvg": "日均",
+    "peakValue": "峰值",
+    "activeDays": "活躍",
+    "daysUnit": "天"
   },
   "about": {
     "title": "關於 Tools3000",
@@ -1992,7 +2000,7 @@
     "holdDurationLong": "5000 毫秒",
     "holdDurationCustom": "{{ms}} 毫秒 (自訂)",
     "shakeThreshold": "搖晃閾值",
-    "shakeThresholdDesc": "搖晃偵測靈敏度（預設 7）。",
+    "shakeThresholdDesc": "搖晃偵測靈敏度（預設 4）。",
     "mouseFxSection": "滑鼠點擊與軌跡特效",
     "clickRipple": "顯示點擊光圈",
     "clickRippleDesc": "在滑鼠點擊位置顯示短暫的點擊光圈。",

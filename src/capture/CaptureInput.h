@@ -4,6 +4,7 @@
 
 #include "capture/CaptureState.h"
 #include "capture/CaptureRenderer.h"
+#include "capture/WindowElementDetector.h"
 #include <windows.h>
 #include <functional>
 
@@ -14,6 +15,9 @@ public:
     void initialize(HWND hwnd, CaptureState& state, CaptureRenderer& renderer,
                     std::function<void()> cancelCb,
                     std::function<void(CaptureCompletion)> confirmCb);
+    void beginDetectionSession(int originX, int originY, int width, int height, const cv::Mat* frozenScreen);
+    void endDetectionSession();
+    void updateWindowDetectionAtCursor(HWND hwnd, POINT screenPt, bool allowAsyncRefine);
     LRESULT handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     /// Invokes the current toolbar item on the overlay UI thread. UI Automation
@@ -56,6 +60,8 @@ private:
     
     RECT detectWindowUnderCursor(POINT cursorPos);
     std::vector<RECT> detectWindowHierarchy(POINT cursorPos);
+    void applyDetectedCandidates(const std::vector<DetectedElementCandidate>& candidates, bool animate, HWND hwnd);
+    void handleAsyncElementRefined(HWND hwnd);
     D2D1_RECT_F currentSelectionRect() const;
 
     LRESULT handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -66,6 +72,7 @@ private:
     CaptureRenderer* m_renderer = nullptr;
     std::function<void()> m_cancelCb;
     std::function<void(CaptureCompletion)> m_confirmCb;
+    WindowElementDetector m_elementDetector;
     
     void enableIME(bool enable);
     HIMC m_defaultImc = nullptr;

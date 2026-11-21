@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * App.css — 主布局样式
+ * App.css — 主布局样式 (Warm Precision · 温润精工内嵌画布与一体滚动编辑部页头)
  * ───────────────────────────────────────────────────────────────────────────── */
 
 .app {
@@ -22,72 +22,87 @@
   padding-right: 0;
 }
 
-/* ── 主内容区 (Linear / macOS 沉浸式圆角内容面板) ─────────────────────────── */
+/* ── 主内容区 (Linear / Cursor 级内嵌温润工作画布 + 极轻顶部微光漫射) ────── */
 .app__main {
   position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;  /* 防止 flex 子元素溢出 */
-  background: var(--bg-base);
+  background-color: var(--bg-base);
+  background-image: var(--surface-sheen);
+  background-repeat: no-repeat;
   border-top: 1px solid var(--card-border);
   border-left: 1px solid var(--card-border);
-  border-top-left-radius: 14px;
+  border-top-left-radius: 12px;
   overflow: hidden;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 
 [data-theme="light"] .app__main {
-  box-shadow: -2px 0 16px -8px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  box-shadow: -1px 0 14px -8px rgba(24, 24, 27, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
-/* ── 页面旗舰 Hero 头部 (全 14 模块统一高质感仪式感) ───────────────────────── */
+/* ── 滚动内容流 (流体自适应双阶画布 + @container 感知，彻底解放宽工作台) ─── */
+.app__content {
+  container-type: inline-size;
+  container-name: app-canvas;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 26px clamp(20px, 3vw, 36px) 40px;
+  animation: fadeIn 0.16s var(--ease-smooth);
+  box-sizing: border-box;
+}
+
+.app__content > * {
+  width: 100%;
+  max-width: var(--content-max-width-reading);
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+
+.app__content--workspace > * {
+  max-width: var(--content-max-width-workspace);
+}
+
+/* ── 编辑部精工页头 (无厚重吸顶条、无彩虹大色块、单色微刻图标底座) ────────── */
 .app__header {
-  --page-tone-start: var(--primary);
-  --page-tone-end: var(--primary-hover);
-  position: relative;
-  display: flex;
-  align-items: center;
-  padding: 20px 32px 17px;
+  padding: 0 0 20px;
+  margin-bottom: 22px;
   border-bottom: 1px solid var(--hairline);
-  background:
-    radial-gradient(
-      520px 140px at 8% -20%,
-      color-mix(in srgb, var(--page-tone-start) 11%, transparent) 0%,
-      transparent 72%
-    ),
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--card-bg) 82%, var(--bg-base)) 0%,
-      var(--bg-base) 100%
-    );
-  flex-shrink: 0;
 }
 
 .app__header-inner {
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 14px;
   width: 100%;
-  max-width: 880px;
-  margin: 0 auto;
 }
 
 .app__header-badge {
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #ffffff;
-  background: linear-gradient(145deg, var(--page-tone-start) 0%, var(--page-tone-end) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.36),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.14),
-    0 6px 16px -4px color-mix(in srgb, var(--page-tone-start) 44%, transparent),
-    0 2px 4px rgba(15, 23, 42, 0.12);
+  color: var(--primary);
+  background: var(--icon-tile-bg);
+  border: 1px solid var(--icon-tile-border);
+  box-shadow: var(--icon-tile-shadow);
+  position: relative;
+}
+
+.app__header-badge::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--primary) 14%, transparent), transparent 72%);
+  pointer-events: none;
 }
 
 .app__header-text {
@@ -96,10 +111,10 @@
 }
 
 .app__header-title {
-  font-size: 1.36rem;
+  font-size: 1.38rem;
   font-weight: 700;
   color: var(--text-primary);
-  letter-spacing: -0.025em;
+  letter-spacing: -0.028em;
   line-height: 1.24;
   outline: none;
 }
@@ -110,20 +125,6 @@
   color: var(--text-muted);
   margin-top: 3px;
   line-height: 1.46;
-}
-
-.app__content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 22px 32px 32px;
-  animation: fadeIn 0.14s var(--ease-smooth);
-}
-
-.app__content > * {
-  max-width: 880px;
-  margin-left: auto;
-  margin-right: auto;
 }
 
 .app__deep-highlight {
@@ -137,20 +138,20 @@
 /* ── 响应式适配 ───────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   .app__content {
-    padding: var(--spacing-md);
+    padding: 20px 20px 32px;
   }
 }
 
-/* 1080p @ 150% 等工作区高度不够「黄金 750」时，压缩页头留出滚动空间 */
+/* 1080p @ 150% 等工作区高度紧凑时，适度收紧页头间距 */
 @media (max-height: 720px) {
+  .app__content {
+    padding: 20px 28px 28px;
+  }
   .app__header {
-    padding: var(--spacing-md) var(--spacing-lg);
-    padding-bottom: var(--spacing-sm);
+    padding-bottom: 14px;
+    margin-bottom: 16px;
   }
   .app__header-title {
-    font-size: 1.15rem;
-  }
-  .app__content {
-    padding: var(--spacing-md) var(--spacing-lg);
+    font-size: 1.22rem;
   }
 }

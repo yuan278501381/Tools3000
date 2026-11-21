@@ -3,7 +3,8 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Toaster, toast } from 'sonner';
+import { toast } from 'sonner';
+import { AppToaster } from './components/AppToaster';
 import { bridgeRequest } from './hooks/useBridge';
 import { useAppearance } from './hooks/useAppearance';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
@@ -93,7 +94,8 @@ export default function SearchApp() {
   });
 
   const [defaultCategory, setDefaultCategory] = useState<string>(() => {
-    return localStorage.getItem('tools3000_search_default_category') || 'all';
+    const saved = localStorage.getItem('tools3000_search_default_category') || 'all';
+    return saved === 'content' ? 'all' : saved;
   });
 
   const [excludeGitAndModules, setExcludeGitAndModules] = useState<boolean>(() => {
@@ -109,18 +111,18 @@ export default function SearchApp() {
   });
 
   const persistUiPreferencesPatch = useCallback((patch: Record<string, unknown>) => {
-    void bridgeRequest<{ value?: unknown }>('config.get', { pointer: '/search/uiPreferences' })
+    void bridgeRequest<{ value?: unknown }>('config.get', { key: '/search/uiPreferences' })
       .then((res) => {
         const prevObj = res && typeof res === 'object' && 'value' in res && res.value && typeof res.value === 'object'
           ? (res.value as Record<string, unknown>)
           : (res && typeof res === 'object' && !('value' in res) ? (res as Record<string, unknown>) : {});
         return bridgeRequest('config.set', {
-          pointer: '/search/uiPreferences',
+          key: '/search/uiPreferences',
           value: { ...prevObj, ...patch },
         });
       })
       .catch(() => {
-        void bridgeRequest('config.set', { pointer: '/search/uiPreferences', value: patch }).catch(() => undefined);
+        void bridgeRequest('config.set', { key: '/search/uiPreferences', value: patch }).catch(() => undefined);
       });
   }, []);
 
@@ -181,7 +183,10 @@ export default function SearchApp() {
     }
     const trimmed = query.trimStart().toLowerCase();
     if (!trimmed) {
-      return defaultCategory || 'all';
+      if (searchMode === 'content') {
+        return 'content';
+      }
+      return defaultCategory && defaultCategory !== 'content' ? defaultCategory : 'all';
     }
     if (trimmed.startsWith('folder:') || trimmed.startsWith('dir:')) {
       return 'folder';
@@ -205,7 +210,7 @@ export default function SearchApp() {
       return 'code';
     }
     return 'all';
-  }, [defaultCategory, query]);
+  }, [defaultCategory, query, searchMode]);
 
   const {
     snapshot,
@@ -495,8 +500,9 @@ export default function SearchApp() {
             localStorage.setItem('tools3000_search_icon_style', res.iconStyle);
           }
           if (typeof res.defaultCategory === 'string' && res.defaultCategory) {
-            setDefaultCategory(res.defaultCategory);
-            localStorage.setItem('tools3000_search_default_category', res.defaultCategory);
+            const normalizedCat = res.defaultCategory === 'content' ? 'all' : res.defaultCategory;
+            setDefaultCategory(normalizedCat);
+            localStorage.setItem('tools3000_search_default_category', normalizedCat);
           }
           if (typeof res.excludeHidden === 'boolean') {
             setExcludeHidden(res.excludeHidden);
@@ -518,7 +524,7 @@ export default function SearchApp() {
         })
         .catch(() => undefined);
 
-      bridgeRequest<{ value?: unknown }>('config.get', { pointer: '/search/uiPreferences' })
+      bridgeRequest<{ value?: unknown }>('config.get', { key: '/search/uiPreferences' })
         .then((raw) => {
           if (!active || !raw || typeof raw !== 'object') return;
           const prefs = ('value' in raw && raw.value && typeof raw.value === 'object'
@@ -562,13 +568,24 @@ export default function SearchApp() {
         syncRemoteSettings(true);
       }
     };
+    const onStorageSync = (e: StorageEvent) => {
+      if (e.key === 'tools3000_search_default_mode' && (e.newValue === 'name' || e.newValue === 'both' || e.newValue === 'content')) {
+        setSearchMode(e.newValue);
+      } else if (e.key === 'tools3000_search_default_category' && e.newValue) {
+        setDefaultCategory(e.newValue === 'content' ? 'all' : e.newValue);
+      } else if (e.key === 'tools3000_search_icon_style' && (e.newValue === 'native' || e.newValue === 'vector')) {
+        setIconStyle(e.newValue);
+      }
+    };
     window.addEventListener('tools3000:focusSearch', onSyncEvt);
     window.addEventListener('focus', onSyncEvt);
+    window.addEventListener('storage', onStorageSync);
     document.addEventListener('visibilitychange', onVisibilitySync);
     return () => {
       active = false;
       window.removeEventListener('tools3000:focusSearch', onSyncEvt);
       window.removeEventListener('focus', onSyncEvt);
+      window.removeEventListener('storage', onStorageSync);
       document.removeEventListener('visibilitychange', onVisibilitySync);
     };
   }, [refreshQuery]);
@@ -1144,17 +1161,6 @@ export default function SearchApp() {
     inputRef.current?.focus();
   }, [query, updateQuery, setResults, setSelectedIndex]);
 
-  const changeDefaultCategory = useCallback((catId: string) => {
-    setDefaultCategory(catId);
-    localStorage.setItem('tools3000_search_default_category', catId);
-    void bridgeRequest('search.saveSettings', { defaultCategory: catId }).catch(() => undefined);
-    persistUiPreferencesPatch({ defaultCategory: catId });
-    const matched = categories.find(c => c.id === catId);
-    if (matched && !query.trim()) {
-      selectCategory(matched);
-    }
-  }, [categories, persistUiPreferencesPatch, query, selectCategory]);
-
   const applySyntaxExample = (syntax: string) => {
     updateQuery(syntax);
     setShowSyntaxHelp(false);
@@ -1292,7 +1298,7 @@ export default function SearchApp() {
 
   return (
     <main className={`search-app ${showViewSettings ? 'search-app--view-settings-open' : ''}`}>
-      <Toaster position="bottom-right" theme={toasterTheme} richColors />
+      <AppToaster theme={toasterTheme} surface="search" />
       <section className="search-container" aria-label={t('search.title', 'Quick file search')}>
         <SearchHeader
           inputRef={inputRef}
@@ -1438,8 +1444,6 @@ export default function SearchApp() {
           onRebuildIndex={rebuildIndex}
           searchMode={searchMode}
           onChangeSearchMode={changeSearchMode}
-          defaultCategory={defaultCategory}
-          onChangeDefaultCategory={changeDefaultCategory}
           density={density}
           onChangeDensity={changeDensity}
           iconStyle={iconStyle}
@@ -1470,7 +1474,7 @@ export default function SearchApp() {
           onSetExcludeHidden={(val) => {
             setExcludeHidden(val);
             localStorage.setItem('tools3000_search_exclude_hidden', String(val));
-            void bridgeRequest('search.saveSettings', { excludeHidden: val }).catch(() => undefined);
+            void bridgeRequest('search.saveSettings', { excludeHidden: val, excludeSystem: val }).catch(() => undefined);
             persistUiPreferencesPatch({ excludeHidden: val });
           }}
           disabledContentFormats={disabledContentFormats}
@@ -1540,7 +1544,7 @@ export default function SearchApp() {
           }}
         />
 
-        {/* ── 语法帮助快速指南弹窗 ── */}
+        {/* ── 语法帮助快速指南抽屉 (展开时独占主内容槽，彻底杜绝与空态/加载态重叠穿模) ── */}
         <SearchSyntaxModal
           visible={showSyntaxHelp}
           onClose={() => setShowSyntaxHelp(false)}
@@ -1550,27 +1554,29 @@ export default function SearchApp() {
         />
 
         {/* ── 状态与空结果显示 ── */}
-        <SearchEmptyState
-          isInitialIndexing={isInitialIndexing}
-          isServiceStarting={isServiceStarting}
-          serviceAvailable={serviceAvailable}
-          loading={loading}
-          activeCategory={activeCategory}
-          searchMode={searchMode}
-          query={query}
-          sortedResults={sortedResults}
-          searchHistoryLength={searchHistory.length}
-          scanElapsedSeconds={scanElapsedSeconds}
-          lastColdScanDurationSec={lastColdScanDurationSec}
-          actionError={actionError}
-          categories={categories}
-          onSelectCategory={selectCategory}
-          onUpdateQuery={(tag) => {
-            updateQuery(tag);
-            inputRef.current?.focus();
-          }}
-          inputRef={inputRef}
-        />
+        {!showSyntaxHelp && (
+          <SearchEmptyState
+            isInitialIndexing={isInitialIndexing}
+            isServiceStarting={isServiceStarting}
+            serviceAvailable={serviceAvailable}
+            loading={loading}
+            activeCategory={activeCategory}
+            searchMode={searchMode}
+            query={query}
+            sortedResults={sortedResults}
+            searchHistoryLength={searchHistory.length}
+            scanElapsedSeconds={scanElapsedSeconds}
+            lastColdScanDurationSec={lastColdScanDurationSec}
+            actionError={actionError}
+            categories={categories}
+            onSelectCategory={selectCategory}
+            onUpdateQuery={(tag) => {
+              updateQuery(tag);
+              inputRef.current?.focus();
+            }}
+            inputRef={inputRef}
+          />
+        )}
 
         {/* ── 虚拟列表结果展示 (常驻单例稳定挂载) ── */}
         <VirtualSearchResults
@@ -1587,6 +1593,7 @@ export default function SearchApp() {
           onOpen={handleRowOpen}
           onContextMenu={handleRowContextMenu}
           hidden={
+            showSyntaxHelp ||
             isInitialIndexing ||
             isServiceStarting ||
             sortedResults.length === 0

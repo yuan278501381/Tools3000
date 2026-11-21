@@ -3,40 +3,40 @@
    ───────────────────────────────────────────────────────────────────────────── */
 
 :root {
-  --ql-bg: rgba(22, 24, 30, 0.94);
-  --ql-header-bg: rgba(30, 34, 44, 0.7);
-  --ql-border: rgba(255, 255, 255, 0.08);
-  --ql-text-main: #f8fafc;
-  --ql-text-sub: #94a3b8;
-  --ql-text-muted: #64748b;
-  --ql-surface-btn: rgba(255, 255, 255, 0.06);
-  --ql-surface-btn-border: rgba(255, 255, 255, 0.12);
-  --ql-surface-btn-hover: rgba(255, 255, 255, 0.12);
-  --ql-footer-bg: rgba(18, 20, 26, 0.9);
-  --ql-code-bg: rgba(15, 17, 23, 0.75);
+  --ql-bg: rgba(17, 18, 22, 0.96);
+  --ql-header-bg: rgba(23, 25, 31, 0.85);
+  --ql-border: rgba(255, 255, 255, 0.082);
+  --ql-text-main: #f4f4f6;
+  --ql-text-sub: #a8acb8;
+  --ql-text-muted: #787d8c;
+  --ql-surface-btn: rgba(255, 255, 255, 0.05);
+  --ql-surface-btn-border: rgba(255, 255, 255, 0.095);
+  --ql-surface-btn-hover: rgba(255, 255, 255, 0.095);
+  --ql-footer-bg: rgba(12, 13, 16, 0.94);
+  --ql-code-bg: rgba(12, 13, 17, 0.78);
   --ql-code-line-height: 21px;
   --ql-gutter-width: 48px;
-  --ql-scrollbar-silent: rgba(148, 163, 184, 0.32);
-  --ql-scrollbar-thumb: rgba(148, 163, 184, 0.54);
-  --ql-scrollbar-hover: rgba(226, 232, 240, 0.84);
+  --ql-scrollbar-silent: rgba(161, 161, 170, 0.28);
+  --ql-scrollbar-thumb: rgba(161, 161, 170, 0.48);
+  --ql-scrollbar-hover: rgba(228, 228, 231, 0.78);
   --ql-scrollbar-active: var(--primary);
 }
 
 [data-theme="light"] {
-  --ql-bg: #ffffff;
-  --ql-header-bg: #f8f8fc;
-  --ql-border: rgba(0, 0, 0, 0.08);
-  --ql-text-main: #111118;
-  --ql-text-sub: #4b4b5e;
-  --ql-text-muted: #78788a;
-  --ql-surface-btn: rgba(0, 0, 0, 0.05);
-  --ql-surface-btn-border: rgba(0, 0, 0, 0.12);
-  --ql-surface-btn-hover: rgba(0, 0, 0, 0.09);
-  --ql-footer-bg: #f4f4f8;
-  --ql-code-bg: #f8f8fc;
-  --ql-scrollbar-silent: rgba(100, 116, 139, 0.28);
-  --ql-scrollbar-thumb: rgba(100, 116, 139, 0.50);
-  --ql-scrollbar-hover: rgba(51, 65, 85, 0.78);
+  --ql-bg: #fafafa;
+  --ql-header-bg: #f4f4f6;
+  --ql-border: rgba(24, 24, 27, 0.082);
+  --ql-text-main: #18181b;
+  --ql-text-sub: #52525b;
+  --ql-text-muted: #71717a;
+  --ql-surface-btn: rgba(24, 24, 27, 0.042);
+  --ql-surface-btn-border: rgba(24, 24, 27, 0.09);
+  --ql-surface-btn-hover: rgba(24, 24, 27, 0.075);
+  --ql-footer-bg: #f4f4f6;
+  --ql-code-bg: #f6f6f8;
+  --ql-scrollbar-silent: rgba(113, 113, 122, 0.24);
+  --ql-scrollbar-thumb: rgba(113, 113, 122, 0.45);
+  --ql-scrollbar-hover: rgba(63, 63, 70, 0.72);
   --ql-scrollbar-active: var(--primary);
 }
 
@@ -58,11 +58,13 @@ html[data-surface="quicklook"] #root {
   flex-direction: column;
   height: 100vh;
   width: 100vw;
-  background: var(--ql-bg);
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  background-color: var(--ql-bg);
+  background-image: var(--surface-sheen);
+  background-repeat: no-repeat;
+  backdrop-filter: blur(22px) saturate(165%);
+  -webkit-backdrop-filter: blur(22px) saturate(165%);
   border: 1px solid var(--ql-border);
-  border-radius: 10px;
+  border-radius: 12px;
   color: var(--ql-text-main);
   font-family: var(--font-sans);
   overflow: hidden;
@@ -77,21 +79,33 @@ html[data-surface="quicklook"] #root {
 }
 
 .ql-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   text-align: center;
-  max-width: 480px;
+  max-width: 460px;
   padding: 40px;
 }
 
 .ql-empty-icon {
-  font-size: 56px;
-  margin-bottom: 16px;
-  filter: drop-shadow(0 8px 24px var(--primary-dim));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  margin-bottom: 18px;
+  color: var(--primary);
+  background: var(--icon-tile-bg);
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--icon-tile-border));
+  box-shadow: var(--icon-tile-shadow), 0 8px 24px -8px color-mix(in srgb, var(--primary) 24%, transparent);
 }
 
 .ql-empty-title {
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 650;
   color: var(--ql-text-main);
+  letter-spacing: -0.018em;
   margin-bottom: 8px;
 }
 
@@ -152,12 +166,13 @@ html[data-surface="quicklook"] #root {
 
 .ql-file-badge {
   font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 9999px;
-  background: var(--primary-dim, rgba(59, 130, 246, 0.16));
-  color: var(--primary, #60a5fa);
-  border: 1px solid var(--primary);
-  font-weight: 500;
+  padding: 1.5px 7px;
+  border-radius: 6px;
+  background: var(--well-bg);
+  color: var(--ql-text-sub);
+  border: 1px solid var(--well-border);
+  font-family: var(--font-mono);
+  font-weight: 550;
   white-space: nowrap;
 }
 
@@ -266,15 +281,16 @@ html[data-surface="quicklook"] #root {
 }
 
 .ql-btn-close {
-  background: rgba(239, 68, 68, 0.12);
-  color: #ef4444;
-  border: 1px solid rgba(239, 68, 68, 0.24);
-  padding: 6px 10px;
+  background: transparent;
+  color: var(--ql-text-muted);
+  border: 1px solid transparent;
+  padding: 6px 9px;
 }
 
 .ql-btn-close:hover {
-  background: rgba(239, 68, 68, 0.25);
-  color: #ffffff;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+  color: var(--danger);
 }
 
 /* ── 主体内容区（右侧 6px 透明隔离带物理避开 WindowResizeHandles 边缘拉伸区，14px 宽微晶滚动条落于 6px~20px 黄金交互带） ── */

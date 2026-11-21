@@ -800,14 +800,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                             }
                         }
                         if (!preserveHierarchy) {
-                            m_state->detectedWindowHierarchy = detectWindowHierarchy(screenPt);
-                            m_state->detectedWindowHierarchyIndex = 0;
-                            if (!m_state->detectedWindowHierarchy.empty()) {
-                                m_state->detectedWindow = m_state->detectedWindowHierarchy.front();
-                            }
-                            m_state->isHierarchyAnimating = false;
-                            m_state->animDetectedWindowRect = {};
-                            m_state->targetDetectedWindowRect = {};
+                            updateWindowDetectionAtCursor(hwnd, screenPt, /*allowAsyncRefine=*/true);
                         }
                         m_state->lastMousePos = clientPt;
                     }
@@ -1552,10 +1545,10 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     return 0;
                 }
 
-                // 智能选区阻尼弹簧微动效 (Spring Damping Lerp)
+                // 智能选区阻尼弹簧微动效 (高频利落 Spring Damping Lerp，跟手不粘滞)
                 if (m_state->isHierarchyAnimating) {
-                    constexpr float k = 280.0f;
-                    constexpr float d = 30.0f;
+                    constexpr float k = 380.0f;
+                    constexpr float d = 36.0f;
                     constexpr float dt = 0.016f;
 
                     auto stepSpring = [&](float& pos, float target, float& vel) -> bool {
