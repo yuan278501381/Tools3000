@@ -122,6 +122,12 @@ public:
         int64_t annotationPreviewElapsedMs = -1,
         int previewTargetAnnIndex = -1);
 
+    /// 释放当前合成器实例持有的底板与字幕缓存（关闭演播室窗口时调用）
+    void clearCaches() noexcept;
+
+    /// 释放全局共享的高清壁纸原图解码缓存与缩略图缓存（冷路径关闭演播室后调用，避免多张 4K 壁纸常驻堆内存）
+    static void clearGlobalCaches() noexcept;
+
     /// 多格式全参数导出入口（支持 MP4 / HEVC / 微信自动播放 GIF / 高清 GIF / 网页动图 WebP / WebM）
     static bool exportStudioMedia(
         const std::string& rawInputPathUtf8,

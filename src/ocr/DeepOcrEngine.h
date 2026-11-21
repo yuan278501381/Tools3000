@@ -166,6 +166,9 @@ public:
     /// 供离线单元测试注入临时模型目录（传空恢复默认探测）
     void setCustomModelDirectoryForTest(const std::filesystem::path& customDir);
 
+    /// 供独立短命 Worker 进程或测试在纯内存中覆盖模型档位（零触碰磁盘 config.json）
+    void setModelTierOverrideForWorker(const std::string& tier);
+
     /// 使用 PP-OCRv4 执行端到端离线高精度文字检测 + 方向矫正 + CTC 字符级识别
     std::vector<OcrResult> extractText(const cv::Mat& image);
 
@@ -349,6 +352,7 @@ private:
 
     mutable std::mutex m_pathMutex;
     std::filesystem::path m_customTestModelDir;
+    std::string m_workerModelTierOverride;
 
     mutable std::mutex m_statsMutex;
     DeepOcrRunStats m_lastRunStats{};

@@ -419,6 +419,44 @@ bool launchUnelevatedSuccessor(bool includeWindowPos) {
 // ─────────────────────────────────────────────────────────────────────────────
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
                     LPWSTR /*lpCmdLine*/, int /*nCmdShow*/) {
+    // 独立短命重型任务 Worker 子进程模式 (--worker=ocr|studio-export|record-encode)
+    // 跳过单实例互斥锁、全局钩子、托盘、WebView2 与主日志锁，由 OS 在退场后 100% 物理+虚拟双归零。
+    if (const auto workerMode = commandLineStringValue(L"--worker="); workerMode.has_value() && !workerMode->empty()) {
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+        SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+        const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        int exitCode = 1;
+
+        wchar_t exePathBuf[MAX_PATH * 4]{};
+        const DWORD exeLen = GetModuleFileNameW(nullptr, exePathBuf, static_cast<DWORD>(std::size(exePathBuf)));
+        if (exeLen > 0 && exeLen < std::size(exePathBuf)) {
+            const std::filesystem::path exeDir = std::filesystem::path(exePathBuf).parent_path();
+            const std::filesystem::path pluginDll = exeDir / L"plugins" / L"Plugin_Capture.dll";
+            // 确保依赖 DLL（Tools3000Core.dll / OpenCV / FFmpeg 等）从 exeDir 准确解析
+            SetDllDirectoryW(exeDir.c_str());
+            if (HMODULE hPlugin = LoadLibraryW(pluginDll.c_str())) {
+                using RunWorkerFn = int (*)(int, const wchar_t* const*);
+                auto* runFn = reinterpret_cast<RunWorkerFn>(
+                    GetProcAddress(hPlugin, "Tools3000RunCaptureWorker"));
+                if (runFn) {
+                    int argc = 0;
+                    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+                    if (argv && argc > 0) {
+                        std::vector<const wchar_t*> constArgv(static_cast<size_t>(argc));
+                        for (int i = 0; i < argc; ++i) constArgv[static_cast<size_t>(i)] = argv[i];
+                        exitCode = runFn(argc, constArgv.data());
+                        LocalFree(argv);
+                    }
+                }
+                FreeLibrary(hPlugin);
+            }
+        }
+        if (SUCCEEDED(comHr)) {
+            CoUninitialize();
+        }
+        return exitCode;
+    }
+
     // 提升进程优先级为 HIGH_PRIORITY_CLASS，确保在高负荷系统下鼠标手势与全局热键调度不被饿死
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 

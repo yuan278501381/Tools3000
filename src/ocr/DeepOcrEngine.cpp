@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "ocr/DeepOcrEngineInternal.h"
+#include "ocr/OcrWorkerClient.h"
 #include "core/logger/Logger.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
@@ -683,6 +684,27 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
 
     cv::Mat bgr = ensureBgr3(image);
     if (bgr.empty()) return {};
+
+    // 生产宿主环境优先通过独立短命 Worker 子进程 (--worker=ocr) 执行 DirectML GPU 推理：
+    // 主进程 0 加载 DirectML/ONNX Runtime/显卡内核驱动，子进程闲置 60s 后由 OS 100% 物理+虚拟双归零。
+    if (OcrWorkerClient::instance().isOutOfProcessAvailable()) {
+        std::vector<OcrResult> workerResults;
+        DeepOcrRunStats workerStats{};
+        std::string workerActiveTier;
+        if (OcrWorkerClient::instance().extractText(
+                bgr,
+                modelDir,
+                effectiveModelTier(),
+                workerResults,
+                workerStats,
+                workerActiveTier)) {
+            {
+                std::lock_guard<std::mutex> statsLock(m_statsMutex);
+                m_lastRunStats = workerStats;
+            }
+            return workerResults;
+        }
+    }
 
     std::lock_guard<std::mutex> lock(m_inferMutex);
     if (!ensureModelsLoadedLocked(modelDir)) {
@@ -2087,8 +2109,6 @@ void DeepOcrEngine::idleUnloadWorkerLoop(std::stop_token stopToken) {
                 m_modelsLoaded &&
                 (std::chrono::steady_clock::now() >= m_lastActivityTime + std::chrono::seconds(curTimeout))) {
                 m_modelsLoaded = false;
-                m_modelsLoadedAtomic.store(false, std::memory_order_release);
-                m_activeSessionCountAtomic.store(0, std::memory_order_release);
                 m_bucketsPrecompiled = false;
                 m_useWinMl = false;
                 m_loadedModelDir.clear();
@@ -2104,6 +2124,9 @@ void DeepOcrEngine::idleUnloadWorkerLoop(std::stop_token stopToken) {
         }
         if (released) {
             deep_ocr_detail::cleanupDeepOcrWorkingSet();
+            // 严格在 WinML/D3D11 析构与工作集修剪全部完成后再发布卸载完成状态
+            m_activeSessionCountAtomic.store(0, std::memory_order_release);
+            m_modelsLoadedAtomic.store(false, std::memory_order_release);
             LOG_INFO("DeepOcrEngine: idle timeout reached, released WinML/DirectML sessions and reclaimed memory");
         }
     }
@@ -2181,11 +2204,10 @@ void DeepOcrEngine::warmupAsync(int delayMs) {
 }
 
 void DeepOcrEngine::releaseLoadedModels() {
+    OcrWorkerClient::instance().shutdownWorker();
     {
         std::lock_guard<std::mutex> lock(m_inferMutex);
         m_modelsLoaded = false;
-        m_modelsLoadedAtomic.store(false, std::memory_order_release);
-        m_activeSessionCountAtomic.store(0, std::memory_order_release);
         m_bucketsPrecompiled = false;
         m_useWinMl = false;
         m_loadedModelDir.clear();
@@ -2199,6 +2221,9 @@ void DeepOcrEngine::releaseLoadedModels() {
     }
     m_idleCv.notify_all();
     deep_ocr_detail::cleanupDeepOcrWorkingSet();
+    // 严格在 WinML/D3D11 析构与 COM/工作集修剪全部完成后再发布卸载完成状态，消除并发观测竞态
+    m_activeSessionCountAtomic.store(0, std::memory_order_release);
+    m_modelsLoadedAtomic.store(false, std::memory_order_release);
 }
 
 void DeepOcrEngine::shutdown() {

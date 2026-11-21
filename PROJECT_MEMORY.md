@@ -6,6 +6,17 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 方案 B 终局架构：重型 AI / 视频硬件编码短命子进程隔离 (`--worker=ocr|studio-export|record-encode`) + 演播室壁纸缓存闭环
+- **实机全功能压测发现的残余内存大头与根因**：
+  - 虽此前已实现 OCR 120s 闲置卸载回收 96.3% 增量私有提交（`2,841.8 MB -> 1,080.7 MB`, `WS = 21.2 MB`），但全功能实机运行仍暴露两大主进程驻留源：① 录屏与演播室导出直接在主进程初始化 Intel QSV (`libmfxhw64.dll`、`mfx_mft_h264ve_64.dll`) 与 NVIDIA NVENC (`nvEncMFTH264x.dll`) 硬件编码 MFT 及 Media Foundation 线程池，且 `StudioVideoCompositor.cpp` 内 8 张 4K 壁纸原图静态缓存 `s_slots` 与 `s_thumbCache` 关窗不释放，导致录一次屏主进程专用私有提交即永久抬升 `+905 MB`（`109 MB -> 1,013.9 MB`）；② OCR 活跃期 6~7 个 DirectML 会话仍会在宿主进程拉起 `~1.8–2.0 GB` 驱动虚拟提交与 ~65 个驱动线程；
+- **世界级进程隔离架构落地 (`CaptureWorkerCommon.h`, `CaptureWorkerEntry.cpp`, `main.cpp`, `OcrWorkerProtocol.h`, `OcrWorkerClient.{h,cpp}`, `OcrWorkerHost.{h,cpp}`, `StudioExportWorker.{h,cpp}`, `RecordEncodeWorker.{h,cpp}`, `DeepOcrEngine.{h,cpp}`, `ScreenRecorder.{h,cpp}`, `StudioPreviewWindow*.cpp`, `SpotlightOverlay.cpp`)**：
+  1. **零额外二进制与零包体膨胀引导 (`main.cpp` -> `Plugin_Capture.dll::Tools3000RunCaptureWorker`)**：复利用主程序 `Tools3000.exe --worker=<mode>`，在 `wWinMain` 首行跳过单实例互斥锁、全局钩子、托盘、WebView2 与主日志锁，直接 `NORMAL_PRIORITY_CLASS` 加载 `Plugin_Capture.dll` 按策略表多态分发，冷启 `<25 ms`；结合宿主 Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) 与子进程 `ParentProcessWatchdog` 双重防僵尸进程保证；
+  2. **独立短命 OCR Worker (`--worker=ocr`)**：通过一次性按需命名共享内存零拷贝传图 + 命名管道回传 `OcrResult`（含 `charBoxes`/`layoutRegionId`/`alignedRowId`）与 `DeepOcrRunStats`，`setModelTierOverrideForWorker` 纯内存透传档位（0 触碰磁盘 `config.json`）；**闲置 60 秒自动退出进程**（或随 `releaseLoadedModels()`/`shutdown()` 立即退场），失败时自动无缝回退进程内引擎；
+  3. **独立短命录屏编码 Worker (`--worker=record-encode`)**：将 MP4 H.264 / HEVC / WebM VP9 的 FFmpeg 硬件编码 MFT 与音频编码封装迁移至短命子进程，通过精确尺寸单帧共享内存（`stageVideoFrame` 在捕获锁内 `<0.5ms` 完成拷贝随即放锁 -> `commitStagedVideoFrame` 异步编码确认）+ 管道音频 PCM 传输，停止录屏写完 trailer 子进程即刻退出，主进程 0 加载显卡编码驱动；
+  4. **独立短命演播室导出 Worker (`--worker=studio-export`)**：完整无损 JSON 序列化 `StudioTimelineData` + `StudioRenderConfig`（含 `WatermarkConfig`）+ `StudioExportOptions`，通过双向命名管道实时回传 `progress01` + 命名事件毫秒级取消，导完即退由 OS 100% 物理+虚拟双归零；
+  5. **主进程侧残留清扫与并发竞态修复**：`StudioVideoCompositor::clearCaches()` & `clearGlobalCaches()` 在 `StudioPreviewWindow::closeSessionAndCleanup()` 彻底清空 8 张 4K 壁纸全尺寸缓存与缩略图缓存并执行 `CoFreeUnusedLibrariesEx(0, 0)`；修正 `DeepOcrEngine::releaseLoadedModels()` 原子状态发布顺序（必须在 `m_winMl.reset()` 与 `cleanupDeepOcrWorkingSet()` 之后发布 `m_modelsLoadedAtomic=false` 消除并发竞态）；将 `SpotlightOverlay.cpp` 点击特效结束刷屏日志降级为 `LOG_DEBUG`；
+  6. **端到端硬实证 (`WorkerIsolationTest.*`)**：新增 3 项跨进程端到端回归测试，完整跑完 2 次 PP-OCRv4 DirectML 识别（含 2s 闲置自动退场与重建新 PID）+ 独立录屏硬件 MP4 编码 + 独立演播室美化导出后，实测宿主进程全过程峰值私有提交仅 **`18.0 MB`**、峰值工作集仅 **`6.8 MB`**，加载 `DirectML/onnxruntime/nvdxdlkernels/nvEncMFT/libmfxhw/mfx_mft/nvcuda` 数量 = **`0`**。
+
 ### [2026-11-21] 开源分发与高星项目信任基础设施（Scoop 自托管 Bucket + Winget 1.10.0 官方清单 + SHA-256/VirusTotal 自动化 + 8 语种 README 转化漏斗重构）
 - **包管理器一键安装单一事实源 (`scripts/update-package-manifests.ps1`, `bucket/tools3000.json`, `packaging/winget/`, `packaging/README.md`, `scripts/release.ps1`)**：
   1. **Scoop 即刻可用自托管 Bucket (`bucket/tools3000.json`)**：兼容 `ScoopInstaller/Extras` 官方规范（含 `checkver.github` 与 `autoupdate` 指向 `SHA256SUMS.txt`），强制声明 `"persist": "data"` 天然激活 `WinUtils::isPortableMode()` 绿色便携模式，确保升级零丢配置，且无需审核即支持 `scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000 && scoop install tools3000/tools3000`；

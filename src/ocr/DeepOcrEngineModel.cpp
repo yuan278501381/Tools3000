@@ -352,7 +352,22 @@ bool DeepOcrEngine::isServerModelInstalled() const {
     return installed && isServerRecModelPresent(dir);
 }
 
+void DeepOcrEngine::setModelTierOverrideForWorker(const std::string& tier) {
+    std::lock_guard<std::mutex> lock(m_pathMutex);
+    std::string normalized = tier;
+    for (char& ch : normalized) {
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    }
+    m_workerModelTierOverride = (normalized == "server" || normalized == "mobile") ? normalized : std::string{};
+}
+
 std::string DeepOcrEngine::configuredModelTier() const {
+    {
+        std::lock_guard<std::mutex> lock(m_pathMutex);
+        if (!m_workerModelTierOverride.empty()) {
+            return m_workerModelTierOverride;
+        }
+    }
     try {
         std::string tier = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/modelTier", "mobile");
         for (char& ch : tier) {

@@ -1919,7 +1919,16 @@ void StudioPreviewWindow::closeSessionAndCleanup() {
     m_evaluatedFrames.clear();
     m_evaluatedFrames.shrink_to_fit();
     m_currentComposedBgra.release();
+    m_previewCompositor.clearCaches();
+    StudioVideoCompositor::clearGlobalCaches();
+    m_allWallpapers.clear();
+    m_allWallpapers.shrink_to_fit();
+    m_filteredWallpaperIndices.clear();
+    m_filteredWallpaperIndices.shrink_to_fit();
+    m_wallpapersDiscovered = false;
+    m_wallpaperThumbsDirty = true;
     discardDeviceResources();
+    CoFreeUnusedLibrariesEx(0, 0);
     tools3000::core::WinUtils::trimWorkingSet();
 }
 

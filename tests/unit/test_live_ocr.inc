@@ -3458,3 +3458,269 @@ TEST(LiveTextOcrTest, DeepOcrIdleUnloadAndCompactSessionBudget) {
             << "Owned D3D11 + WinML idle unload must reclaim DirectML private commit back to OS";
     }
 }
+
+TEST(WorkerIsolationTest, StudioExportWorkerJobJsonRoundTrip) {
+    using namespace tools3000::capture;
+
+    StudioExportJobPayload src{};
+    src.rawInputPathUtf8 = "C:/temp/raw_input.mp4";
+    src.finalOutputPathUtf8 = "C:/temp/final_studio.mp4";
+    src.traceId = "20261121-140000-ABCD";
+    src.exportOpts.format = StudioExportFormat::MP4_HEVC;
+    src.exportOpts.resolution = StudioExportResolution::Res1440P;
+    src.exportOpts.fps = 60;
+    src.exportOpts.quality = StudioExportQuality::High;
+    src.exportOpts.baseBitrateMbps = 18;
+
+    src.config.autoZoomEnabled = true;
+    src.config.zoomMode = StudioZoomMode::Motion3D;
+    src.config.typingAutoZoom = true;
+    src.config.defaultZoomFactor = 1.65f;
+    src.config.zoomPacing = 0.55f;
+    src.config.autoZoomSensitivity = 0.62f;
+    src.config.focusSpotlightDim = 0.24f;
+    src.config.lockCameraWhileZoomed = false;
+    src.config.motionBlurEnabled = true;
+    src.config.smoothCursorEnabled = true;
+    src.config.cursorScale = 1.5f;
+    src.config.cursorHighlightHalo = true;
+    src.config.showClickRipple = true;
+    src.config.clickEffectStyle = StudioClickEffectStyle::DualRipple;
+    src.config.autoFrameEnabled = true;
+    src.config.aspectRatio = StudioAspectRatio::Ratio16_9;
+    src.config.backgroundTheme = BeautyBackgroundType::MidnightGraphite;
+    src.config.backgroundPresetKey = "blossom_silk";
+    src.config.customBackgroundPath = "C:/wall/custom.jpg";
+    src.config.paddingRatio = 0.11f;
+    src.config.insetBorderWidth = 9.0f;
+    src.config.insetBorderColorHex = "#E2E8F0";
+    src.config.backgroundBlur = 12.5f;
+    src.config.cornerRadius = 22.0f;
+    src.config.shadowIntensity = 0.8f;
+    src.config.autoCaptionsEnabled = true;
+    src.config.exportSrtSidecar = false;
+    src.config.watermark.enabled = true;
+    src.config.watermark.mode = WatermarkMode::CornerText;
+    src.config.watermark.textTemplate = "Tools3000 {date}";
+    src.config.watermark.anchor = WatermarkAnchor::CustomFree;
+    src.config.watermark.customNormX = 0.77f;
+    src.config.watermark.customNormY = 0.84f;
+    src.config.watermark.scale = 1.25f;
+    src.config.watermark.opacity = 0.45f;
+
+    src.timeline.regionX = 100;
+    src.timeline.regionY = 200;
+    src.timeline.sourceWidth = 1920;
+    src.timeline.sourceHeight = 1080;
+    src.timeline.fps = 60;
+    src.timeline.durationMs = 5400;
+    src.timeline.cursorSamples.push_back({120, 320.5f, 410.25f, StudioCursorKind::Hand, true, false});
+    src.timeline.clickEvents.push_back({450, 500.0f, 300.0f, true});
+    src.timeline.focusEvents.push_back({600, 640.0f, 360.0f});
+    src.timeline.windowEvents.push_back({800, 0x123456ULL, 10.0f, 20.0f, 800.0f, 600.0f});
+    src.timeline.captions.push_back({100, 1500, "Hello Tools3000"});
+    src.timeline.zoomSegments.push_back({300, 1800, 512.0f, 384.0f, 1.75f, true, true});
+    src.timeline.cutSegments.push_back({2000, 2600, 2.0f, true});
+    src.timeline.annotations.push_back({StudioAnnotationKind::TextBubble, 400, 2200, 0.2f, 0.3f, 0.6f, 0.5f, "#3B82F6", "Key Step", 4.0f, true, true});
+
+    const std::string encoded = serializeStudioExportJobJson(src);
+    StudioExportJobPayload dst{};
+    ASSERT_TRUE(deserializeStudioExportJobJson(encoded, dst));
+
+    EXPECT_EQ(dst.rawInputPathUtf8, src.rawInputPathUtf8);
+    EXPECT_EQ(dst.finalOutputPathUtf8, src.finalOutputPathUtf8);
+    EXPECT_EQ(dst.traceId, src.traceId);
+    EXPECT_EQ(dst.exportOpts.format, src.exportOpts.format);
+    EXPECT_EQ(dst.exportOpts.resolution, src.exportOpts.resolution);
+    EXPECT_EQ(dst.exportOpts.fps, src.exportOpts.fps);
+    EXPECT_EQ(dst.exportOpts.quality, src.exportOpts.quality);
+    EXPECT_EQ(dst.exportOpts.baseBitrateMbps, src.exportOpts.baseBitrateMbps);
+    EXPECT_EQ(dst.config.zoomMode, src.config.zoomMode);
+    EXPECT_FLOAT_EQ(dst.config.defaultZoomFactor, src.config.defaultZoomFactor);
+    EXPECT_EQ(dst.config.backgroundPresetKey, src.config.backgroundPresetKey);
+    EXPECT_EQ(dst.config.watermark.textTemplate, src.config.watermark.textTemplate);
+    EXPECT_FLOAT_EQ(dst.config.watermark.customNormX, src.config.watermark.customNormX);
+    ASSERT_EQ(dst.timeline.cursorSamples.size(), 1u);
+    EXPECT_EQ(dst.timeline.cursorSamples[0].kind, StudioCursorKind::Hand);
+    EXPECT_TRUE(dst.timeline.cursorSamples[0].leftDown);
+    ASSERT_EQ(dst.timeline.zoomSegments.size(), 1u);
+    EXPECT_FLOAT_EQ(dst.timeline.zoomSegments[0].targetZoom, 1.75f);
+    ASSERT_EQ(dst.timeline.annotations.size(), 1u);
+    EXPECT_EQ(dst.timeline.annotations[0].text, "Key Step");
+    EXPECT_EQ(dst.timeline.annotations[0].kind, StudioAnnotationKind::TextBubble);
+}
+
+TEST(WorkerIsolationTest, OcrWorkerOutOfProcessIsolationAndIdleExit) {
+    using namespace tools3000::ocr;
+
+    std::array<wchar_t, 4096> exeBuf{};
+    const DWORD len = GetModuleFileNameW(nullptr, exeBuf.data(), static_cast<DWORD>(exeBuf.size()));
+    ASSERT_GT(len, 0u);
+    const std::filesystem::path hostExe = std::filesystem::path(exeBuf.data()).parent_path() / L"Tools3000.exe";
+    if (!std::filesystem::is_regular_file(hostExe)) {
+        GTEST_SKIP() << "Tools3000.exe not found beside test binary";
+    }
+
+    auto& deep = DeepOcrEngine::instance();
+    if (!deep.isModelInstalled()) {
+        GTEST_SKIP() << "PP-OCRv4 model bundle not installed";
+    }
+
+    deep.releaseLoadedModels();
+    ASSERT_EQ(deep.activeSessionCount(), 0u);
+
+    struct WorkerOverrideGuard {
+        ~WorkerOverrideGuard() {
+            OcrWorkerClient::instance().setTestOverride(false);
+        }
+    } guard;
+    OcrWorkerClient::instance().setTestOverride(true, hostExe, /*idleSecondsOverride=*/2);
+
+    cv::Mat sample(140, 480, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::putText(sample, "WorkerOCR 2026", cv::Point(24, 88),
+                cv::FONT_HERSHEY_SIMPLEX, 1.15, cv::Scalar(16, 16, 16), 3, cv::LINE_AA);
+
+    const auto lines1 = deep.extractText(sample);
+    ASSERT_FALSE(lines1.empty());
+    EXPECT_EQ(deep.activeSessionCount(), 0u) << "Host process must keep 0 in-process DirectML sessions";
+    EXPECT_TRUE(OcrWorkerClient::instance().isWorkerRunning());
+    const DWORD pid1 = OcrWorkerClient::instance().activeWorkerPid();
+    ASSERT_NE(pid1, 0u);
+    ASSERT_NE(pid1, GetCurrentProcessId());
+
+    // 等待 2 秒闲置超时触发子进程自动退场，操作系统 100% 物理+虚拟双归零
+    bool exited = false;
+    for (int i = 0; i < 60; ++i) {
+        if (!OcrWorkerClient::instance().isWorkerRunning()) {
+            exited = true;
+            break;
+        }
+        Sleep(100);
+    }
+    EXPECT_TRUE(exited) << "Isolated OCR worker must self-exit after idle timeout";
+
+    // 二次识别自动透明拉起新子进程
+    const auto lines2 = deep.extractText(sample);
+    ASSERT_FALSE(lines2.empty());
+    EXPECT_TRUE(OcrWorkerClient::instance().isWorkerRunning());
+    const DWORD pid2 = OcrWorkerClient::instance().activeWorkerPid();
+    EXPECT_NE(pid2, 0u);
+    EXPECT_NE(pid2, pid1);
+
+    // 主动释放立即停机
+    deep.releaseLoadedModels();
+    EXPECT_FALSE(OcrWorkerClient::instance().isWorkerRunning());
+}
+
+TEST(WorkerIsolationTest, RecordEncodeAndStudioExportWorkersOutOfProcessEndToEnd) {
+    using namespace tools3000::capture;
+
+    std::array<wchar_t, 4096> exeBuf{};
+    const DWORD len = GetModuleFileNameW(nullptr, exeBuf.data(), static_cast<DWORD>(exeBuf.size()));
+    ASSERT_GT(len, 0u);
+    const std::filesystem::path hostExe = std::filesystem::path(exeBuf.data()).parent_path() / L"Tools3000.exe";
+    if (!std::filesystem::is_regular_file(hostExe)) {
+        GTEST_SKIP() << "Tools3000.exe not found beside test binary";
+    }
+
+    const auto tmpDir = std::filesystem::temp_directory_path() /
+        (L"tools3000_worker_e2e_" + std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64()));
+    std::error_code ec;
+    std::filesystem::create_directories(tmpDir, ec);
+    struct TempDirCleanup {
+        std::filesystem::path dir;
+        ~TempDirCleanup() {
+            std::error_code rmEc;
+            std::filesystem::remove_all(dir, rmEc);
+        }
+    } dirGuard{tmpDir};
+
+    const std::filesystem::path rawMp4 = tmpDir / L"raw_isolated.mp4";
+    const std::filesystem::path studioMp4 = tmpDir / L"studio_isolated.mp4";
+    const std::string rawMp4Utf8 = tools3000::core::WinUtils::wstringToUtf8(rawMp4.wstring());
+    const std::string studioMp4Utf8 = tools3000::core::WinUtils::wstringToUtf8(studioMp4.wstring());
+
+    // 1. 通过独立短命 record-encode 子进程编码 12 帧 640x360 BGRA + 立体声 PCM
+    RecordEncodeWorkerClient recWorker;
+    RecordEncodeInitConfig initCfg{};
+    initCfg.format = RecordFormat::MP4_H264;
+    initCfg.width = 640;
+    initCfg.height = 360;
+    initCfg.fps = 30;
+    initCfg.bitrateMbps = 4;
+    initCfg.enableAudio = true;
+    initCfg.audioSampleRate = 48000;
+    initCfg.audioChannels = 2;
+    initCfg.workingOutputPathUtf8 = rawMp4Utf8;
+
+    RecordEncodeInitResult initRes{};
+    ASSERT_TRUE(recWorker.start(initCfg, initRes, hostExe));
+    ASSERT_TRUE(initRes.ok);
+    EXPECT_FALSE(initRes.encoderName.empty());
+    EXPECT_NE(recWorker.childPid(), 0u);
+    EXPECT_NE(recWorker.childPid(), GetCurrentProcessId());
+
+    cv::Mat frameBgra(360, 640, CV_8UC4, cv::Scalar(48, 84, 180, 255));
+    for (int f = 0; f < 12; ++f) {
+        cv::rectangle(frameBgra, cv::Rect(30 + f * 18, 80, 120, 90), cv::Scalar(240, 200, 60, 255), -1);
+        ASSERT_TRUE(recWorker.sendVideoFrame(
+            frameBgra.data, frameBgra.cols, frameBgra.rows,
+            static_cast<int>(frameBgra.step[0]), CapturePixelFormat::Bgra32,
+            f, f == 0));
+    }
+    if (initRes.audioEnabled) {
+        std::vector<float> pcm(static_cast<size_t>(initRes.audioFrameSamples) * 2u, 0.01f);
+        ASSERT_TRUE(recWorker.sendAudioSamples(pcm.data(), initRes.audioFrameSamples, 2, 0));
+    }
+    bool closeOk = false;
+    ASSERT_TRUE(recWorker.finalize(closeOk));
+    EXPECT_TRUE(closeOk);
+    EXPECT_FALSE(recWorker.isActive());
+    ASSERT_TRUE(std::filesystem::is_regular_file(rawMp4, ec));
+    EXPECT_GT(std::filesystem::file_size(rawMp4, ec), 1024u);
+
+    // 2. 通过独立短命 studio-export 子进程把上述原片合成为美化 MP4
+    StudioTimelineData timeline{};
+    timeline.sourceWidth = 640;
+    timeline.sourceHeight = 360;
+    timeline.fps = 30;
+    timeline.durationMs = 400;
+    StudioRenderConfig cfg{};
+    cfg.autoFrameEnabled = true;
+    cfg.backgroundPresetKey = "studio_slate";
+    StudioExportOptions exportOpts{};
+    exportOpts.format = StudioExportFormat::MP4_H264;
+    exportOpts.resolution = StudioExportResolution::Res720P;
+    exportOpts.fps = 30;
+    exportOpts.quality = StudioExportQuality::Compact;
+
+    double maxProgress = 0.0;
+    int progressCalls = 0;
+    const auto exportOutcome = exportStudioMediaOutOfProcess(
+        rawMp4Utf8,
+        studioMp4Utf8,
+        timeline,
+        cfg,
+        exportOpts,
+        [&](double p) {
+            ++progressCalls;
+            if (p > maxProgress) maxProgress = p;
+        },
+        nullptr,
+        hostExe);
+    EXPECT_TRUE(exportOutcome.handledOutOfProcess);
+    EXPECT_TRUE(exportOutcome.succeeded);
+    EXPECT_GT(progressCalls, 0);
+    EXPECT_GE(maxProgress, 0.99);
+    ASSERT_TRUE(std::filesystem::is_regular_file(studioMp4, ec));
+    EXPECT_GT(std::filesystem::file_size(studioMp4, ec), 1024u);
+
+    // 3. 验证导出的成片可被 StudioHiResFrameReader 正常解码，且全局缓存可安全释放
+    StudioHiResFrameReader reader;
+    ASSERT_TRUE(reader.open(studioMp4Utf8, 1280));
+    cv::Mat decodedFrame;
+    EXPECT_TRUE(reader.decodeFrameAt(0.05, decodedFrame, false));
+    EXPECT_FALSE(decodedFrame.empty());
+    reader.close();
+    StudioVideoCompositor::clearGlobalCaches();
+}

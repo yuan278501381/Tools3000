@@ -190,8 +190,10 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/MarkupEngineEffects.cpp
     src/capture/MarkupEngineShapes.cpp
     src/capture/CursorOverlay.cpp
+    src/capture/RecordEncodeWorker.cpp
     src/capture/ScreenRecorder.cpp
     src/capture/StudioBackdropCatalog.cpp
+    src/capture/StudioExportWorker.cpp
     src/capture/StudioTimeline.cpp
     src/capture/StudioVideoCompositor.cpp
     src/capture/StudioVideoCompositorAnnotations.cpp
@@ -371,6 +373,7 @@ set(CAPTURE_OTHER_SOURCES
     src/capture/CaptureInputKeyboard.cpp
     src/capture/CaptureInputMouse.cpp
     src/capture/CaptureOverlay.cpp
+    src/capture/CaptureWorkerEntry.cpp
     src/capture/CaptureRenderer.cpp
     src/capture/CaptureRendererHud.cpp
     src/capture/CaptureRendererMarkup.cpp
@@ -561,6 +564,8 @@ if(BUILD_TESTING)
         src/ocr/DeepOcrEngine.cpp
         src/ocr/DeepOcrEngineModel.cpp
         src/ocr/DeepOcrEnginePostprocess.cpp
+        src/ocr/OcrWorkerClient.cpp
+        src/ocr/OcrWorkerHost.cpp
         src/ocr/OcrTableReconstructor.cpp
         src/ocr/OcrResultWindow.cpp
         $<TARGET_OBJECTS:capture_objects>
@@ -582,7 +587,7 @@ if(BUILD_TESTING)
     target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 msimg32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 oleaut32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm winhttp windowsapp ntdll userenv ws2_32 dbghelp
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY} ${WEBP_LIBRARY} ${WEBPMUX_LIBRARY} ${OpenCV_LIBS})
-    add_dependencies(Tools3000Tests tools3000_content_rs_target Plugin_Gesture Plugin_Capture Plugin_Keycast Plugin_Search Plugin_DialogEnhancer)
+    add_dependencies(Tools3000Tests tools3000_content_rs_target Tools3000 Plugin_Gesture Plugin_Capture Plugin_Keycast Plugin_Search Plugin_DialogEnhancer)
     add_test(NAME Tools3000.Unit COMMAND Tools3000Tests)
 
     # Manual visual QA helper. It uses the production Direct2D renderer, writes

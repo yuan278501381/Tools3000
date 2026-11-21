@@ -7,6 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/ScreenRecorder.h"
+#include "capture/RecordEncodeWorker.h"
 #include "core/i18n/UiI18n.h"
 #include "capture/RecordingEnvironmentGuard.h"
 #include "capture/ScreenCapture.h"
@@ -49,6 +50,21 @@ extern "C" {
 namespace tools3000::capture {
 
 namespace {
+
+std::mutex& recordWorkerOverrideMutex() {
+    static std::mutex mtx;
+    return mtx;
+}
+
+std::filesystem::path& recordWorkerOverridePath() {
+    static std::filesystem::path path;
+    return path;
+}
+
+std::filesystem::path currentRecordWorkerOverride() {
+    std::lock_guard<std::mutex> lock(recordWorkerOverrideMutex());
+    return recordWorkerOverridePath();
+}
 
 constexpr std::uint64_t StorageReserveBytes = 256ULL * 1024 * 1024;
 constexpr std::int64_t StorageWarningSeconds = 5 * 60;
@@ -1573,7 +1589,28 @@ void ScreenRecorder::notifyState(RecordState state) {
     if (callback) callback(state, stats());
 }
 
+ScreenRecorder::~ScreenRecorder() {
+    waitForAsyncStop();
+    reapFinishedSnapshots(true);
+}
+
+void ScreenRecorder::setOutOfProcessWorkerOverrideForTest(const std::filesystem::path& exePath) {
+    std::lock_guard<std::mutex> lock(recordWorkerOverrideMutex());
+    recordWorkerOverridePath() = exePath;
+}
+
 bool ScreenRecorder::finalizeEncoder() {
+    if (m_remoteEncoder && m_remoteEncoder->isActive()) {
+        m_audioCapture.stop();
+        encodeAvailableAudio();
+        bool remoteCloseOk = true;
+        const bool remoteOk = m_remoteEncoder->finalize(remoteCloseOk);
+        bool localCloseOk = true;
+        cleanupEncoder(localCloseOk);
+        m_finalizePending = false;
+        return remoteOk && remoteCloseOk && localCloseOk;
+    }
+
     auto* codecCtx = static_cast<AVCodecContext*>(m_codecCtx);
     auto* audioCodecCtx = static_cast<AVCodecContext*>(m_audioCodecCtx);
     auto* fmtCtx = static_cast<AVFormatContext*>(m_fmtCtx);
@@ -1712,6 +1749,53 @@ bool ScreenRecorder::updateOutputStorageStatus() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool ScreenRecorder::initializeEncoder(const RecordOptions& options) {
+    const std::filesystem::path workerOverride = currentRecordWorkerOverride();
+    if (RecordEncodeWorkerClient::isAvailableForFormat(options.format, workerOverride)) {
+        auto remote = std::make_unique<RecordEncodeWorkerClient>();
+        RecordEncodeInitConfig initCfg{};
+        initCfg.format = options.format;
+        initCfg.width = options.width;
+        initCfg.height = options.height;
+        initCfg.fps = options.fps;
+        initCfg.bitrateMbps = options.bitrateMbps;
+        initCfg.enableAudio = options.captureSystemAudio || options.captureMicrophone;
+        initCfg.audioSampleRate = AudioCapture::SampleRate;
+        initCfg.audioChannels = AudioCapture::Channels;
+        initCfg.workingOutputPathUtf8 = m_workingOutputPath;
+        initCfg.traceId = tools3000::core::TraceId::current();
+
+        RecordEncodeInitResult initRes{};
+        if (remote->start(initCfg, initRes, workerOverride)) {
+            m_remoteEncoder = std::move(remote);
+            m_headerWritten = true;
+            {
+                std::lock_guard lock(m_statsMutex);
+                m_stats.encoderName = initRes.encoderName;
+                m_stats.hardwareEncoder = initRes.hardwareEncoder;
+            }
+            if (initCfg.enableAudio) {
+                if (initRes.audioEnabled) {
+                    m_audioInput.reserve(static_cast<std::size_t>(initRes.audioFrameSamples) * AudioCapture::Channels);
+                    {
+                        std::lock_guard lock(m_statsMutex);
+                        m_stats.audioEncoderName = initRes.audioEncoderName;
+                    }
+                    LOG_INFO("录屏音频已启用: codec={}, rate={}, channels={}",
+                             initRes.audioEncoderName, AudioCapture::SampleRate, AudioCapture::Channels);
+                } else {
+                    LOG_WARN("音频编码器不可用, 已降级为仅视频录制");
+                    m_audioCapture.stop();
+                    std::lock_guard lock(m_statsMutex);
+                    m_stats.systemAudioActive = false;
+                    m_stats.microphoneActive = false;
+                    if (m_stats.audioError.empty()) m_stats.audioError = "audio encoder unavailable";
+                }
+            }
+            return true;
+        }
+        LOG_WARN("RecordEncodeWorker: isolated encoder launch failed, falling back to in-process encoder");
+    }
+
     const char* formatName = nullptr;
 
     switch (options.format) {
@@ -2084,11 +2168,13 @@ bool ScreenRecorder::initializeAudioEncoder(const RecordOptions& options) {
 }
 
 bool ScreenRecorder::encodeAvailableAudio() {
-    if (!m_audioCodecCtx || m_audioEncodingFailed) return true;
+    const bool useRemote = (m_remoteEncoder && m_remoteEncoder->isActive() && m_remoteEncoder->isAudioEnabled());
+    if ((!useRemote && !m_audioCodecCtx) || m_audioEncodingFailed) return true;
     auto* codecCtx = static_cast<AVCodecContext*>(m_audioCodecCtx);
     auto* frame = static_cast<AVFrame*>(m_audioFrame);
     auto* resampler = static_cast<SwrContext*>(m_audioSwrCtx);
-    if (!codecCtx || !frame || !resampler) return true;
+    if (!useRemote && (!codecCtx || !frame || !resampler)) return true;
+    const int nbAudioSamples = useRemote ? m_remoteEncoder->audioFrameSamples() : frame->nb_samples;
 
     auto pushLiveAudioPeakSample = [this](float peak) {
         m_audioPeakPendingMax = (std::max)(m_audioPeakPendingMax, std::clamp(peak, 0.0f, 1.0f));
@@ -2123,7 +2209,7 @@ bool ScreenRecorder::encodeAvailableAudio() {
         }
     }
 
-    while (m_audioCapture.readFrames(frame->nb_samples, m_audioInput)) {
+    while (m_audioCapture.readFrames(nbAudioSamples, m_audioInput)) {
         const size_t chs = (std::max<size_t>)(1, AudioCapture::Channels);
         const size_t totalFramesRead = m_audioInput.size() / chs;
         for (size_t f0 = 0; f0 < totalFramesRead; f0 += static_cast<size_t>(kSubWinFrames)) {
@@ -2144,25 +2230,34 @@ bool ScreenRecorder::encodeAvailableAudio() {
             pushLiveAudioPeakSample(perceptualEnv);
         }
 
-        if (av_frame_make_writable(frame) < 0) {
-            m_audioEncodingFailed = true;
-            return false;
-        }
-        const std::uint8_t* input[]{
-            reinterpret_cast<const std::uint8_t*>(m_audioInput.data())
-        };
-        const int converted = swr_convert(resampler, frame->data, frame->nb_samples,
-                                          input, frame->nb_samples);
-        if (converted != frame->nb_samples) {
-            m_audioEncodingFailed = true;
-            return false;
-        }
-        frame->pts = m_audioFrameIndex;
-        frame->duration = converted;
-        m_audioFrameIndex += converted;
-        if (avcodec_send_frame(codecCtx, frame) < 0 || !writeAvailableAudioPackets()) {
-            m_audioEncodingFailed = true;
-            return false;
+        if (useRemote) {
+            const int64_t pts = m_audioFrameIndex;
+            m_audioFrameIndex += nbAudioSamples;
+            if (!m_remoteEncoder->sendAudioSamples(m_audioInput.data(), nbAudioSamples, AudioCapture::Channels, pts)) {
+                m_audioEncodingFailed = true;
+                return false;
+            }
+        } else {
+            if (av_frame_make_writable(frame) < 0) {
+                m_audioEncodingFailed = true;
+                return false;
+            }
+            const std::uint8_t* input[]{
+                reinterpret_cast<const std::uint8_t*>(m_audioInput.data())
+            };
+            const int converted = swr_convert(resampler, frame->data, frame->nb_samples,
+                                              input, frame->nb_samples);
+            if (converted != frame->nb_samples) {
+                m_audioEncodingFailed = true;
+                return false;
+            }
+            frame->pts = m_audioFrameIndex;
+            frame->duration = converted;
+            m_audioFrameIndex += converted;
+            if (avcodec_send_frame(codecCtx, frame) < 0 || !writeAvailableAudioPackets()) {
+                m_audioEncodingFailed = true;
+                return false;
+            }
         }
     }
 
@@ -2324,10 +2419,11 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         return false;
     }
     const auto pipelineStarted = clock::now();
+    const bool useRemote = (m_remoteEncoder && m_remoteEncoder->isActive());
     auto* codecCtx = static_cast<AVCodecContext*>(m_codecCtx);
     auto* frame = static_cast<AVFrame*>(m_frame);
 
-    if (!codecCtx || !frame) return false;
+    if (!useRemote && (!codecCtx || !frame)) return false;
 
     std::unique_lock captureLock(m_inFlightCaptureMutex);
     if (m_captureFrozen.load(std::memory_order_acquire) ||
@@ -2347,7 +2443,13 @@ bool ScreenRecorder::captureAndEncodeFrame() {
             if (!m_hasEncodedVideoFrame) {
                 const std::size_t rowBytes = static_cast<std::size_t>(m_options.width) * 3ULL;
                 std::vector<uint8_t> blackBgr(rowBytes * static_cast<std::size_t>(m_options.height), 0);
-                if (m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8) {
+                if (useRemote) {
+                    if (!m_remoteEncoder->stageVideoFrame(
+                            blackBgr.data(), m_options.width, m_options.height,
+                            static_cast<int>(rowBytes), CapturePixelFormat::Bgr24)) {
+                        return false;
+                    }
+                } else if (m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8) {
                     if (!m_gifOptimizer) {
                         m_gifOptimizer = std::make_unique<GifPaletteOptimizer>();
                     }
@@ -2375,9 +2477,15 @@ bool ScreenRecorder::captureAndEncodeFrame() {
                 m_hasEncodedVideoFrame = true;
             }
             const auto convertedAt = clock::now();
-            frame->pts = m_frameIndex++;
-            if (avcodec_send_frame(codecCtx, frame) < 0) return false;
-            const bool written = writeAvailablePackets();
+            const int64_t secPts = m_frameIndex++;
+            bool written = false;
+            if (useRemote) {
+                written = m_remoteEncoder->commitStagedVideoFrame(secPts, false);
+            } else {
+                frame->pts = secPts;
+                if (avcodec_send_frame(codecCtx, frame) < 0) return false;
+                written = writeAvailablePackets();
+            }
             const auto encodedAt = clock::now();
             const auto milliseconds = [](auto duration) {
                 return std::chrono::duration<double, std::milli>(duration).count();
@@ -2421,7 +2529,7 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         {m_options.regionX, m_options.regionY, m_options.width, m_options.height},
         bakeCursorIntoPlate, bakeEffectsIntoPlate, bakeZoomIntoPlate);
 
-    const bool isPal8Gif = (m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8);
+    const bool isPal8Gif = (!useRemote && m_options.format == RecordFormat::GIF && codecCtx->pix_fmt == AV_PIX_FMT_PAL8);
     if (!cleanPlateStudio && m_directSessionWatermark.enabled && m_directSessionWatermark.policyForced &&
         captured.data && m_options.width > 0 && m_options.height > 0) {
         const int wmType = (captured.format == CapturePixelFormat::Bgra32) ? CV_8UC4 : CV_8UC3;
@@ -2450,7 +2558,12 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         }
     }
 
-    if (isPal8Gif) {
+    if (useRemote) {
+        if (!m_remoteEncoder->stageVideoFrame(
+                captured.data, m_options.width, m_options.height, captured.stride, captured.format)) {
+            return false;
+        }
+    } else if (isPal8Gif) {
         if (!m_gifOptimizer) {
             m_gifOptimizer = std::make_unique<GifPaletteOptimizer>();
         }
@@ -2532,23 +2645,29 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         captureLock.unlock();
     }
 
+    int64_t nextPts = 0;
     if (cleanPlateStudio && m_sessionEpoch != clock::time_point{}) {
         const auto activeElapsed = capturedAt - m_sessionEpoch -
             std::chrono::nanoseconds(m_pausedAccumulatedNs.load(std::memory_order_acquire));
         const double activeSec = (std::max)(0.0, std::chrono::duration<double>(activeElapsed).count());
         const int64_t wallPts = static_cast<int64_t>(std::llround(activeSec * static_cast<double>(m_options.fps)));
-        frame->pts = (std::max)(m_frameIndex, wallPts);
-        m_frameIndex = frame->pts + 1;
+        nextPts = (std::max)(m_frameIndex, wallPts);
+        m_frameIndex = nextPts + 1;
     } else {
-        frame->pts = m_frameIndex++;
+        nextPts = m_frameIndex++;
     }
-    frame->pict_type = (!m_hasEncodedVideoFrame && !isPal8Gif) ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    const bool isKeyFrame = (!m_hasEncodedVideoFrame && !isPal8Gif);
 
-    // 编码
-    int ret = avcodec_send_frame(codecCtx, frame);
-    if (ret < 0) return false;
-
-    const bool written = writeAvailablePackets();
+    bool written = false;
+    if (useRemote) {
+        written = m_remoteEncoder->commitStagedVideoFrame(nextPts, isKeyFrame);
+    } else {
+        frame->pts = nextPts;
+        frame->pict_type = isKeyFrame ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+        int ret = avcodec_send_frame(codecCtx, frame);
+        if (ret < 0) return false;
+        written = writeAvailablePackets();
+    }
     if (written) {
         m_hasEncodedVideoFrame = true;
     }
@@ -2641,6 +2760,10 @@ void ScreenRecorder::cleanupEncoder() {
 void ScreenRecorder::cleanupEncoder(bool& closeOk) {
     cleanupCaptureResources();
     m_audioCapture.stop();
+    if (m_remoteEncoder) {
+        m_remoteEncoder->abortAndClose();
+        m_remoteEncoder.reset();
+    }
     if (m_audioPacket) {
         av_packet_free(reinterpret_cast<AVPacket**>(&m_audioPacket));
         m_audioPacket = nullptr;

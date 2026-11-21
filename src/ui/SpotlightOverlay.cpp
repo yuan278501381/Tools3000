@@ -353,7 +353,7 @@ void SpotlightOverlay::hideNow() {
     }
 
     requestHide();
-    LOG_INFO("SpotlightOverlay: 聚光灯已完全隐藏并完成物理内存收缩 (DirectComposition GPU 直通)");
+    LOG_DEBUG("SpotlightOverlay: 聚光灯已完全隐藏并完成物理内存收缩 (DirectComposition GPU 直通)");
 }
 
 void SpotlightOverlay::wakeRenderThread() {

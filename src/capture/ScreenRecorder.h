@@ -21,6 +21,7 @@
 
 #include <opencv2/core.hpp>
 #include <windows.h>
+#include <filesystem>
 #include <string>
 #include <atomic>
 #include <thread>
@@ -30,6 +31,8 @@
 #include <vector>
 
 namespace tools3000::capture {
+
+class RecordEncodeWorkerClient;
 
 /// 录制格式
 enum class RecordFormat {
@@ -244,6 +247,9 @@ public:
     static void setMaxGifBytesForTesting(std::uint64_t bytes);
     static std::uint64_t maxGifBytesForTesting();
 
+    /// 测试专用：显式注入 Tools3000.exe 路径以验证独立短命录屏编码子进程 (--worker=record-encode)
+    static void setOutOfProcessWorkerOverrideForTest(const std::filesystem::path& exePath);
+
     /// 查询并提取最近一次 Studio 演播室录制会话的时间轴、配置与内存实时预览牌组快照
     bool wasLastSessionStudioMode() const noexcept { return m_lastSessionWasStudioMode.load(std::memory_order_acquire); }
     int lastSessionBitrateMbps() const noexcept { return m_lastSessionBitrateMbps.load(std::memory_order_acquire); }
@@ -260,7 +266,7 @@ private:
     };
 
     ScreenRecorder() = default;
-    ~ScreenRecorder() { waitForAsyncStop(); reapFinishedSnapshots(true); }
+    ~ScreenRecorder();
     ScreenRecorder(const ScreenRecorder&) = delete;
     ScreenRecorder& operator=(const ScreenRecorder&) = delete;
 
@@ -331,6 +337,7 @@ private:
     void* m_audioFrame = nullptr;    // AVFrame*
     void* m_audioSwrCtx = nullptr;   // SwrContext*
     void* m_audioPacket = nullptr;   // AVPacket*
+    std::unique_ptr<RecordEncodeWorkerClient> m_remoteEncoder;
     bool m_headerWritten = false;
     bool m_hasEncodedVideoFrame = false;
     bool m_audioEncodingFailed = false;
