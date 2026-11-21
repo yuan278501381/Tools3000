@@ -315,8 +315,10 @@ export const AboutPage: FC = () => {
           <div className="about-deps">
             {DEPENDENCIES.map((dep) => (
               <div key={dep.name} className="about-dep-item">
-                <span className="about-dep-name">{dep.name}</span>
-                <Badge text={dep.version} variant="muted" />
+                <div className="about-dep-item__top">
+                  <span className="about-dep-name">{dep.name}</span>
+                  <Badge text={dep.version} variant="muted" />
+                </div>
                 <span className="about-dep-purpose">{t(dep.purpose)}</span>
               </div>
             ))}
@@ -337,23 +339,25 @@ export const AboutPage: FC = () => {
             }}
           />
           {geekMode && metrics && (
-            <div className="about-perf-panel" style={{ marginTop: '1rem', padding: '1rem', background: 'var(--bg-secondary)', borderRadius: '8px' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfMemory')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{((metrics.privateMemoryMB && metrics.privateMemoryMB > 0) ? metrics.privateMemoryMB : metrics.memoryMB).toFixed(1)} MB</div>
+            <div className="about-perf-panel">
+              <div className="about-perf-grid">
+                <div className="about-perf-tile">
+                  <div className="about-perf-tile__label">{t('about.perfMemory')}</div>
+                  <div className="about-perf-tile__value">
+                    {((metrics.privateMemoryMB && metrics.privateMemoryMB > 0) ? metrics.privateMemoryMB : metrics.memoryMB).toFixed(1)} MB
+                  </div>
                 </div>
-                <div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfWorkingSet')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{metrics.memoryMB.toFixed(1)} MB</div>
+                <div className="about-perf-tile">
+                  <div className="about-perf-tile__label">{t('about.perfWorkingSet')}</div>
+                  <div className="about-perf-tile__value">{metrics.memoryMB.toFixed(1)} MB</div>
                 </div>
-                <div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfCpu')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{metrics.cpuPercent.toFixed(1)} %</div>
+                <div className="about-perf-tile">
+                  <div className="about-perf-tile__label">{t('about.perfCpu')}</div>
+                  <div className="about-perf-tile__value">{metrics.cpuPercent.toFixed(1)} %</div>
                 </div>
-                <div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfGestureLatency')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{metrics.gestureLatencyMs.toFixed(1)} ms</div>
+                <div className="about-perf-tile">
+                  <div className="about-perf-tile__label">{t('about.perfGestureLatency')}</div>
+                  <div className="about-perf-tile__value">{metrics.gestureLatencyMs.toFixed(1)} ms</div>
                 </div>
               </div>
             </div>

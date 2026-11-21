@@ -55,10 +55,47 @@
 }
 
 .uikit-card__body {
-  padding: 14px 22px 16px;
+  padding: 10px 22px 12px;
 }
 
-/* ── 世界级统一 3D 拟物胶囊开关 (Unified 3D Capsule Toggle) ───────────────── */
+/* ── Apple Grouped Inset List 旗舰内缩分隔线与圆角柔光行悬停 ──────────────── */
+.uikit-card__body > .uikit-toggle--with-text,
+.uikit-card__body > .uikit-setting-row {
+  position: relative;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.uikit-card__body > .uikit-toggle--with-text::before,
+.uikit-card__body > .uikit-setting-row::before {
+  content: '';
+  position: absolute;
+  inset: 2px -12px;
+  border-radius: 10px;
+  background: transparent;
+  pointer-events: none;
+  transition: background 140ms ease;
+}
+
+.uikit-card__body > .uikit-toggle--with-text:hover::before,
+.uikit-card__body > .uikit-setting-row:hover::before {
+  background: var(--ghost-hover-bg);
+}
+
+.uikit-card__body > .uikit-toggle--with-text > *,
+.uikit-card__body > .uikit-setting-row > * {
+  position: relative;
+  z-index: 1;
+}
+
+.uikit-toggle--with-text + .uikit-toggle--with-text,
+.uikit-toggle--with-text + .uikit-setting-row,
+.uikit-setting-row + .uikit-toggle--with-text,
+.uikit-setting-row + .uikit-setting-row {
+  border-top: 1px solid var(--hairline);
+}
+
+/* ── macOS Sonoma 级温润阻尼胶囊开关 (Refined Tactile Capsule Toggle) ─────── */
 .uikit-toggle {
   display: flex;
   align-items: center;
@@ -67,8 +104,8 @@
 }
 
 .uikit-toggle--with-text {
-  padding: var(--spacing-sm) 0;
-  min-height: 42px;
+  padding: 11px 0;
+  min-height: 46px;
   gap: var(--spacing-md);
 }
 
@@ -92,10 +129,10 @@
 }
 
 .uikit-toggle__label {
-  font-size: 0.94rem;
+  font-size: 0.93rem;
   color: var(--text-primary);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.012em;
   cursor: pointer;
 }
 
@@ -105,7 +142,7 @@
   line-height: 1.5;
 }
 
-/* ── 开关外壳与导轨槽 (3D Track Groove) ──────────────────────────────────── */
+/* ── 开关外壳与导轨槽 (Refined Recessed Groove) ──────────────────────────── */
 .uikit-toggle__switch {
   position: relative;
   display: inline-block;
@@ -127,33 +164,34 @@
   position: absolute;
   inset: 0;
   border-radius: 9999px;
-  background: var(--input-border, #cbd5e1);
-  box-shadow: inset 0 1.5px 3px rgba(0, 0, 0, 0.14), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
-  transition: background 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  background: color-mix(in srgb, var(--text-muted) 26%, var(--well-bg));
+  box-shadow: inset 0 1px 2.5px rgba(15, 23, 42, 0.16), inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+  transition: background 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   overflow: hidden;
 }
 
 [data-theme="dark"] .uikit-toggle__slider {
-  background: rgba(255, 255, 255, 0.12);
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1.5px 3px rgba(0, 0, 0, 0.48), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
-/* 激活态（主题色 3D 渐变与能量辉光） */
+/* 激活态（克制温润立体色轨，杜绝廉价霓虹外发晕） */
 .uikit-toggle__switch input:checked + .uikit-toggle__slider {
-  background: linear-gradient(180deg, var(--primary) 0%, var(--primary-hover) 100%);
-  box-shadow: inset 0 1px 1.5px rgba(255, 255, 255, 0.4),
-              0 0 12px var(--primary-glow),
-              inset 0 -1px 2px rgba(0, 0, 0, 0.15);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, #ffffff 8%, var(--primary)) 0%,
+    var(--primary) 100%
+  );
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.28),
+              inset 0 -1px 1.5px rgba(0, 0, 0, 0.14);
 }
 
 /* 激活态（语义翡翠绿） */
 .uikit-toggle--success .uikit-toggle__switch input:checked + .uikit-toggle__slider {
   background: linear-gradient(180deg, #10b981 0%, #059669 100%);
-  box-shadow: inset 0 1px 1.5px rgba(255, 255, 255, 0.45),
-              0 0 12px rgba(16, 185, 129, 0.45),
-              inset 0 -1px 2px rgba(0, 0, 0, 0.18);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.3),
+              inset 0 -1px 1.5px rgba(0, 0, 0, 0.16);
 }
 
 /* 全键盘焦点可访问性光环 */
@@ -162,28 +200,25 @@
   outline-offset: 2px;
 }
 
-/* ── 3D 悬浮微晶体滑块 (3D Floating Thumb) ────────────────────────────────── */
+/* ── 悬浮微晶体滑块 (Precision Tactile Thumb) ─────────────────────────────── */
 .uikit-toggle__thumb {
   position: absolute;
   top: 2px;
   left: 2px;
   border-radius: 50%;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.22),
-              0 1px 1.5px rgba(0, 0, 0, 0.14),
-              inset 0 1px 1px #ffffff,
-              inset 0 -1px 1px rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+  box-shadow: 0 1.5px 3px rgba(15, 23, 42, 0.24),
+              0 0.5px 1px rgba(15, 23, 42, 0.14);
   will-change: transform, width;
-  transition: transform 0.36s cubic-bezier(0.34, 1.56, 0.64, 1),
-              width 0.22s ease,
-              background 0.25s ease;
+  transition: transform 0.28s cubic-bezier(0.32, 1.32, 0.64, 1),
+              width 0.18s ease,
+              background 0.2s ease;
 }
 
 [data-theme="dark"] .uikit-toggle__thumb {
-  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
-  box-shadow: 0 2.5px 5px rgba(0, 0, 0, 0.5),
-              0 1px 1.5px rgba(0, 0, 0, 0.3),
-              inset 0 1px 1px rgba(255, 255, 255, 0.9);
+  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5),
+              0 1px 1px rgba(0, 0, 0, 0.28);
 }
 
 /* ── 尺寸规格矩阵 (Size Matrix) ────────────────────────────────────────── */
@@ -306,27 +341,44 @@
   width: 100%;
 }
 
-/* ── Setting Group ────────────────────────────────────────────────────────── */
+/* ── Setting Group (精工微晶分组徽章与沉稳眉标) ─────────────────────────── */
 .uikit-group {
-  margin-bottom: var(--spacing-lg);
+  margin-bottom: 24px;
 }
 
 .uikit-group__header {
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
-  margin-bottom: var(--spacing-md);
+  gap: 10px;
+  margin-bottom: 11px;
+  padding-left: 2px;
 }
 
 .uikit-group__icon {
-  font-size: 1.1rem;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--card-bg));
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--card-border));
+  box-shadow: var(--shadow-sm);
+}
+
+.uikit-group__icon svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.2;
 }
 
 .uikit-group__title {
-  font-size: 1rem;
-  font-weight: 600;
+  font-size: 0.96rem;
+  font-weight: 650;
   color: var(--text-primary);
-  letter-spacing: 0.01em;
+  letter-spacing: -0.015em;
 }
 
 .uikit-group__content {

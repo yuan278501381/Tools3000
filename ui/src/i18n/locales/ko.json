@@ -1310,6 +1310,9 @@
     "authorBadge": "개발자 · Yy1 (@yuan278501381)"
   },
   "sidebar": {
+    "groupSystem": "시스템",
+    "groupCoreTools": "핵심 도구",
+    "groupInsights": "인사이트",
     "themeToggleLight": "라이트 테마로 전환",
     "themeToggleDark": "다크 테마로 전환",
     "appearanceTitle": "외관 및 테마 설정",

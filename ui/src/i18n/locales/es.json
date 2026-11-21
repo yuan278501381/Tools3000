@@ -1310,6 +1310,9 @@
     "authorBadge": "Autor · Yy1 (@yuan278501381)"
   },
   "sidebar": {
+    "groupSystem": "Sistema",
+    "groupCoreTools": "Herramientas",
+    "groupInsights": "Información",
     "themeToggleLight": "Cambiar a tema claro",
     "themeToggleDark": "Cambiar a tema oscuro",
     "appearanceTitle": "Apariencia y temas",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FC } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FC } from 'react';
 import {
   Camera,
   Cast,
@@ -16,6 +16,7 @@ import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { Badge, Button, Toggle, CodeBadge } from '../components/UIKit';
 import type { NavId } from '../components/Sidebar';
+import { ROUTE_MAP } from '../config/routes';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import './PluginsPage.css';
 
@@ -253,11 +254,20 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
           const failed = plugin.state === 'failed';
           const isUnavailable = plugin.state === 'unavailable';
           const badgeVariant = failed ? 'danger' : isUnavailable ? 'muted' : plugin.restartRequired ? 'warning' : plugin.active ? 'success' : 'muted';
+          const mappedNav = PLUGIN_NAV_MAP[plugin.id];
+          const routeMeta = mappedNav ? ROUTE_MAP.get(mappedNav) : undefined;
+          const cardToneStyle = routeMeta
+            ? ({ '--plugin-tone-start': routeMeta.toneStart, '--plugin-tone-end': routeMeta.toneEnd } as CSSProperties)
+            : undefined;
 
           return (
-            <article className={`plugin-card ${failed ? 'plugin-card--failed' : ''} ${isUnavailable ? 'plugin-card--unavailable' : ''}`} key={plugin.id}>
+            <article
+              className={`plugin-card ${failed ? 'plugin-card--failed' : ''} ${isUnavailable ? 'plugin-card--unavailable' : ''}`}
+              style={cardToneStyle}
+              key={plugin.id}
+            >
               <div className="plugin-card__header">
-                <span className="plugin-card__icon"><Icon size={22} strokeWidth={2.1} /></span>
+                <span className="plugin-card__icon" aria-hidden="true"><Icon size={20} strokeWidth={2.15} /></span>
                 <div className="plugin-card__identity">
                   <div className="plugin-card__title-row">
                     <h2>{t(`plugins.items.${plugin.id}.name`, { defaultValue: plugin.name })}</h2>

@@ -7,7 +7,7 @@
  *   - 底部有版本信息和主题切换
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useState, useMemo, useRef, useEffect, type FC, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useState, useMemo, useRef, useEffect, type CSSProperties, type FC, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, X, CornerDownRight, Power } from 'lucide-react';
 import { toast } from 'sonner';
@@ -362,24 +362,32 @@ export const Sidebar: FC<SidebarProps> = ({
     }
   };
 
-  const renderNavItem = (item: RouteItemConfig) => {
+  const renderNavItem = (item: RouteItemConfig, customLabel?: string) => {
     const unavailable = !isItemAvailable(item);
     const IconComponent = item.icon;
+    const isActive = activeNav === item.id;
+    const toneStyle = {
+      '--nav-tone-start': item.toneStart,
+      '--nav-tone-end': item.toneEnd,
+    } as CSSProperties;
     return (
       <button
         key={item.id}
         id={`nav-${item.id}`}
-        className={`sidebar__item ${activeNav === item.id ? 'sidebar__item--active' : ''}`}
+        className={`sidebar__item ${isActive ? 'sidebar__item--active' : ''}`}
+        style={toneStyle}
         onClick={() => onNavigate(item.id)}
         disabled={unavailable}
         title={unavailable ? t('sidebar.pluginDisabled') : undefined}
-        aria-current={activeNav === item.id ? 'page' : undefined}
+        aria-current={isActive ? 'page' : undefined}
       >
         <span className="sidebar__item-indicator" />
-        <span className="sidebar__item-icon">
-          <IconComponent size={20} strokeWidth={2.2} />
+        <span className="sidebar__item-icon" aria-hidden="true">
+          <IconComponent size={14} strokeWidth={2.25} />
         </span>
-        <span className="sidebar__item-label">{t(item.labelKey as unknown as TemplateStringsArray)}</span>
+        <span className="sidebar__item-label">
+          {customLabel ?? t(item.labelKey as unknown as TemplateStringsArray)}
+        </span>
       </button>
     );
   };
@@ -439,36 +447,25 @@ export const Sidebar: FC<SidebarProps> = ({
         ) : (
           <>
             {/* 1. 系统总控组 */}
-            {filteredSystem.map(renderNavItem)}
+            {filteredSystem.length > 0 && (
+              <div className="sidebar__section-label">{t('sidebar.groupSystem')}</div>
+            )}
+            {filteredSystem.map((item) => renderNavItem(item))}
 
             {/* 分割线 1 */}
             {showCoreDivider && <div className="sidebar__divider" role="separator" />}
 
             {/* 2. 核心效率工具组 (仅展示当前已启用的功能) */}
-            {filteredCoreTools.map(renderNavItem)}
+            {filteredCoreTools.length > 0 && (
+              <div className="sidebar__section-label">{t('sidebar.groupCoreTools')}</div>
+            )}
+            {filteredCoreTools.map((item) => renderNavItem(item))}
 
             {/* 3. 动态扩展模块导航 */}
             {filteredExtensions.length > 0 && (
               <>
                 {showExtDivider && <div className="sidebar__divider" role="separator" />}
-                {filteredExtensions.map((route) => {
-                  const IconComponent = route.icon;
-                  return (
-                    <button
-                      key={route.id}
-                      id={`nav-${route.id}`}
-                      className={`sidebar__item ${activeNav === route.id ? 'sidebar__item--active' : ''}`}
-                      onClick={() => onNavigate(route.id)}
-                      aria-current={activeNav === route.id ? 'page' : undefined}
-                    >
-                      <span className="sidebar__item-indicator" />
-                      <span className="sidebar__item-icon">
-                        <IconComponent size={20} strokeWidth={2.2} />
-                      </span>
-                      <span className="sidebar__item-label">{resolveRouteLabel(route)}</span>
-                    </button>
-                  );
-                })}
+                {filteredExtensions.map((route) => renderNavItem(route, resolveRouteLabel(route)))}
               </>
             )}
 
@@ -476,7 +473,10 @@ export const Sidebar: FC<SidebarProps> = ({
             {showInsightDivider && <div className="sidebar__divider" role="separator" />}
 
             {/* 4. 统计与关于 */}
-            {filteredInsights.map(renderNavItem)}
+            {filteredInsights.length > 0 && (
+              <div className="sidebar__section-label">{t('sidebar.groupInsights')}</div>
+            )}
+            {filteredInsights.map((item) => renderNavItem(item))}
 
             {/* 5. 细粒度设置项与子 Tab 直达结果 */}
             {matchedDeepEnabled.length > 0 && (

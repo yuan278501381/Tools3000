@@ -1310,6 +1310,9 @@
     "authorBadge": "Автор · Yy1 (@yuan278501381)"
   },
   "sidebar": {
+    "groupSystem": "Система",
+    "groupCoreTools": "Инструменты",
+    "groupInsights": "Аналитика",
     "themeToggleLight": "Переключить на светлую тему",
     "themeToggleDark": "Переключить на тёмную тему",
     "appearanceTitle": "Внешний вид и тема",

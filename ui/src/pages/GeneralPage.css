@@ -236,54 +236,296 @@
   font-size: 0.85rem;
 }
 
-/* ── 主题强调色选择器 ──────────────────────────────────────────────────────── */
-.general-accent-swatches {
+/* ── macOS 级三连迷你桌面外观主题卡片 ─────────────────────────────────────── */
+.general-theme-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  padding-top: 4px;
+}
+
+.general-theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 9px;
+  border-radius: 12px;
+  border: 1.5px solid var(--card-border);
+  background: var(--well-bg);
+  color: var(--text-secondary);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.general-theme-card:hover {
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--card-border));
+  background: var(--card-hover);
+  color: var(--text-primary);
+}
+
+.general-theme-card.is-active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 6%, var(--card-bg));
+  color: var(--text-primary);
+  box-shadow: 0 0 0 3px var(--primary-dim), var(--shadow-sm);
+}
+
+.general-theme-preview {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 76px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.general-theme-preview.is-light {
+  background: #f1f5f9;
+}
+
+.general-theme-preview.is-dark {
+  background: #0d111a;
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+.general-theme-preview.is-system {
+  background: linear-gradient(90deg, #f1f5f9 0%, #f1f5f9 50%, #0d111a 50%, #0d111a 100%);
+}
+
+.general-theme-preview__chrome {
   display: flex;
   align-items: center;
+  gap: 4px;
+  height: 15px;
+  padding: 0 7px;
+  background: rgba(15, 23, 42, 0.05);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.general-theme-preview.is-dark .general-theme-preview__chrome {
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+}
+
+.general-theme-preview__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(100, 116, 139, 0.45);
+}
+
+.general-theme-preview__dot:nth-child(1) { background: #f87171; }
+.general-theme-preview__dot:nth-child(2) { background: #fbbf24; }
+.general-theme-preview__dot:nth-child(3) { background: #34d399; }
+
+.general-theme-preview__body {
+  flex: 1;
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+}
+
+.general-theme-preview__sidebar {
+  width: 30%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.05);
+}
+
+.general-theme-preview.is-dark .general-theme-preview__sidebar {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.general-theme-preview__nav-pill {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(100, 116, 139, 0.28);
+}
+
+.general-theme-preview__nav-pill.is-accent {
+  background: var(--primary);
+  opacity: 0.92;
+}
+
+.general-theme-preview__canvas {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.general-theme-preview__card {
+  flex: 1;
+  border-radius: 5px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+.general-theme-preview__card.is-short {
+  flex: 0.65;
+}
+
+.general-theme-preview.is-dark .general-theme-preview__card {
+  background: #171c28;
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
+.general-theme-preview.is-system .general-theme-preview__card {
+  background: linear-gradient(90deg, #ffffff 0%, #ffffff 25.5%, #171c28 25.5%, #171c28 100%);
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+.general-theme-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+
+.general-theme-card__label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.general-theme-card__radio {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid var(--input-border);
+  background: var(--card-bg);
+  position: relative;
+  flex-shrink: 0;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.general-theme-card.is-active .general-theme-card__radio {
+  border-color: var(--primary);
+  background: var(--primary);
+  box-shadow: inset 0 0 0 3px var(--card-bg);
+}
+
+/* ── Apple 沉降凹槽分段控制器 (Segmented Control) ─────────────────────────── */
+.general-segmented {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  box-shadow: var(--well-shadow);
+  margin-top: 2px;
+}
+
+.general-segmented__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.84rem;
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.general-segmented__btn:hover:not(.is-active) {
+  color: var(--text-primary);
+  background: var(--ghost-hover-bg);
+}
+
+.general-segmented__btn.is-active {
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
+  color: var(--text-primary);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
+}
+
+/* ── 主题强调色选择器 (双环精工宝石色珠) ──────────────────────────────────── */
+.general-accent-swatches {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
-  flex-wrap: wrap;
   width: 100%;
   padding-top: 4px;
 }
 
 .general-accent-btn {
+  --accent-dot-color: var(--primary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  padding: 7px 12px;
-  border-radius: 9px;
+  padding: 8px 10px;
+  border-radius: 10px;
   border: 1px solid var(--card-border);
-  background: var(--card-bg);
+  background: var(--well-bg);
   color: var(--text-secondary);
+  font-family: inherit;
   font-size: 0.84rem;
   font-weight: 550;
   cursor: pointer;
-  box-shadow: var(--shadow-sm);
-  transition: all var(--transition-fast);
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease, box-shadow 150ms ease;
   user-select: none;
-  flex: 1 1 auto;
-  min-width: 100px;
+  min-width: 0;
 }
 
 .general-accent-btn:hover {
-  border-color: color-mix(in srgb, var(--accent-dot-color, var(--primary)) 45%, var(--card-border));
+  border-color: color-mix(in srgb, var(--accent-dot-color) 48%, var(--card-border));
   background: var(--card-hover);
   color: var(--text-primary);
 }
 
 .general-accent-btn.active {
-  border-color: color-mix(in srgb, var(--accent-dot-color, var(--primary)) 55%, var(--card-border));
-  background: color-mix(in srgb, var(--accent-dot-color, var(--primary)) 8%, var(--card-bg));
+  border-color: var(--accent-dot-color);
+  background: color-mix(in srgb, var(--accent-dot-color) 9%, var(--card-bg));
   color: var(--text-primary);
   font-weight: 650;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-dot-color, var(--primary)) 22%, transparent), var(--shadow-sm);
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--accent-dot-color) 20%, transparent), var(--shadow-sm);
 }
 
 .general-accent-dot {
-  width: 12px;
-  height: 12px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   flex-shrink: 0;
-  box-shadow: 0 0 4px currentColor;
+  box-shadow:
+    inset 0 1.5px 2px rgba(255, 255, 255, 0.42),
+    inset 0 -1px 1.5px rgba(0, 0, 0, 0.22),
+    0 1px 2px rgba(15, 23, 42, 0.18);
+}
+
+@media (max-width: 720px) {
+  .general-theme-cards {
+    grid-template-columns: 1fr;
+  }
+  .general-segmented {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .general-accent-swatches {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }

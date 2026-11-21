@@ -6,6 +6,28 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 主设置界面与全 14 菜单页旗舰级视觉架构重塑（macOS Sequoia 宝石色盘 SSOT + 统一 Hero 页眉 + Apple Grouped Inset List + Bento/Telemetry）
+- **美学升维与架构收敛 (`index.css`, `config/routes.ts`, `Sidebar.{tsx,css}`, `App.{tsx,css}`, `UIKit.css`, `GeneralPage.{tsx,css}`, `AboutPage.{tsx,css}`, `PluginsPage.{tsx,css}`, `Gesture/History/HotCorner/Keycast/SpotlightPage.css`, `locales/*.json`)**：
+  1. **建筑级三层冷雾铝灰 / 曜石暗黑对比体系 (`index.css`)**：浅色外壳 `#e8ecf3` -> 画布 `#f3f5f9` -> 白瓷卡片 `#ffffff`；深色外壳 `#0a0b0f` -> 画布 `#101218` -> 曜石卡片 `#161922`；侧栏收窄至 `232px`；
+  2. **全 14 模块宝石色盘单一事实源 (`routes.ts`) + 侧边栏与全页 Hero 双源同色**：为 14 个菜单项定义 `toneStart` / `toneEnd` 宝石渐变令牌；侧边栏升级为 3 组精致眉标（系统总控 / 效率工具 / 洞察与关于，8 语种全同步）+ 24×24 彩色宝石 Squircle 图标徽标 + 浮雕激活胶囊；主内容区为全部 14 页统一升级 42×42 同源宝石 Squircle 旗舰 Hero 页眉与模块色顶部极微径向柔光顶衬（居中 `max-width: 880px` 与正文卡片轴线像素对齐）；
+  3. **Apple Grouped Inset List 精工列表与核心页面质感重塑**：`UIKit.css` 补全全部 4 种相邻设置行发丝分隔线与圆角 Hover 柔光带、`SettingGroup` 26×26 微晶图标徽章与去霓虹发光温润阻尼 `Toggle`；`GeneralPage` 升级三联 macOS 迷你桌面预览卡（`跟随系统` 精准 `90deg` 50%/50% 左右分屏）、全宽 4 格沉降凹槽托盘风格分段控制器与 6 格双环精工宝石色珠；`AboutPage` 21 项技术栈升级 2 列 Bento 微卡片网格 + 4 格 Telemetry 仪表盘；`PluginsPage` 卡片统一接入同源宝石 Squircle 图标；清除 5 个子页残余 `translateY` 跳动与旧紫 `#8b5cf6` 硬编码；
+  4. **全量质量门禁与 Playwright 双主题审片**：7 重前端门禁（190 个 CSS 变量 0 悬空 + 8 语种 2,314 键 100% 同构 + 排版字号字重底线）、Vitest `26/26` 全绿、Vite 生产构建（701ms）及 12 张浅/深双主题高清实拍人工审片全部通过。
+
+### [2026-11-21] 世界级 OCR 提速 5.5 倍与 5.93 GB 幽灵私有内存彻底根治（DirectML 甜点桶 + 双阶 GPU 级联 + 独占 D3D11 120s 闲置真回收）
+- **实机痛点与底层真相 (`DeepOcrEngine.{h,cpp}`, `DeepOcrEngineModel.cpp`, `DeepOcrEnginePostprocess.cpp`, `PluginEntry.cpp`, `tests/unit/test_live_ocr.inc`)**：
+  1. **5.93 GB 幽灵专用私有内存双元凶与终局真回收**：
+     - *暗坑真相*：① 旧版在 `tier=server` 下将 90.5 MB `ch_PP-OCRv4_rec_server.onnx` 编译为 7 个 DirectML 固定大桶并在开机预热，瞬间推升 2.75 GB 峰值工作集与 5.93 GB 专用私有内存；② 更隐蔽的是 `LearningModelDevice(DirectXHighPerformance)` 绑定 WinML 进程级全局单例 D3D12/DirectML 设备，即便释放所有 `LearningModelSession` 仍永久扣留 ~844 MB–1.4 GB `PrivateUsage` 直至进程退出；
+     - *终局方案*：取消开机自动预热（开机 0 MB OCR 占用）；改为 DXGI 枚举最高独显 -> 自建独占 `ID3D11Device` -> `LearningModelDevice::CreateFromDirect3D11Device`，配合 **120 秒闲置自动卸载守护线程 (`idleUnloadWorkerLoop`)** 在停止识字后按严格逆序执行 `LearningModelSession::Close()` -> `LearningModel::Close()` -> `IDirect3DDevice::Close()` -> `IDXGIDevice3::Trim()` -> `winrt::clear_factory_cache()` -> `CoFreeUnusedLibrariesEx(0, 0)` -> `trimWorkingSet()`；实机压测单次识别后 `PrivateUsage` 由 `913.1 MB` 回落至 **`75.0 MB`**（回收 93.5% 增量私有提交，工作集 **`2.4 MB`**），跑完 44 个全量 OCR 测试后由 `955.6 MB` 回落至 **`111.5 MB`**（低于基线 `113.7 MB`，实现 0 泄漏净归零；注：`TextReplaceEngine.cpp` 内 `AiInpaintEngine` 后续若需长期频繁改字可复用同款独占 D3D11 回收范式）；
+  2. **DirectML SVTR 显存甜点律 (`B * W^2 < 1.9M`) 与双阶混合精度 GPU 级联**：
+     - 实机验证 4GB 独显上单桶超过 `B * W^2 >= 3.2M`（如 `8x640`、`4x960`）会触发 DirectML 工作区换页悬崖（冷启飙升至 21~37s）；锁定 4 档零悬崖甜点桶 **`16x160 / 16x320 / 4x640 / 2x960`**（按需懒加载，`<=8` 条超短词自动并入 `16x320` 省 1 个会话）；
+     - `tier=server` 升级为 **一阶极速 10.8 MB `mobile` 全量推理 + 二阶疑难行筛选（`avgConf < 0.85` / `minCharConf < 0.68` / 短行 `< 0.88`，GPU 上限 12 条）按需创建唯一 `2x640` `server` 甜点会话单向择优复核**（`CloseModelOnSessionCreation(true)` 即建即释放 90.5 MB 模型副本）；
+     - 90°/270° 竖排方向检测 `clsSession` 改为按需在 CPU 懒加载（0.58 MB，横屏 0 GPU 占用）+ 竖框 `>= 4` 时面积 Top-5 代表投票 `>= 80%` 共识直通（`pack` 由 `182 ms` 降至 `16–20 ms`）；`decodeCtcGreedy` 实现 Softmax 概率分布 `row[0] > 0.5f` / `v > 0.5f` 数学精确提前终止（0.000% 精度误差，CPU 解码降至 **`0 ms`**）；
+     - 实测三张用户高难原图（`tier=server`）：密集多栏 141 行 / 1,945 字由旧版 `8,823 ms` 骤降至 **`1,605 ms`（快 5.5 倍，二阶复核仅 `170 ms`）**，红手写压字装箱卡 **`861 ms`**（86 行），90° 竖拍蓝红手写压字装箱卡 **`484 ms`**（23 行工业编码全中）；
+  3. **DirectML 两大严禁踩踏暗坑铁律**：
+     - **严禁跨 `Evaluate` 复用绑定过 DirectML GPU 的 `TensorFloat`**：通过 `IMemoryBufferByteAccess` 裸指针覆写主机内存不会清除 WinML 内部 GPU-resident 缓存标记，会导致后续批次静默喂入旧帧（甚至全 0 探测张量永久锁死 `16x320` 桶）；必须每次 `Evaluate` 创建全新 `TensorFloat::Create(...)` 并零拷贝原位直写；
+     - **弃用 ONNX 图尾追加 `ArgMax + GatherElements`**：虽可缩减输出 2,208 倍，但使 DirectML 首次编译耗时暴涨 2.5–3 倍（+4~9s），远不如零拷贝映射 + `0 ms` 数学提前终止 CTC 解码综合体验优异；
+  4. **防回退单测门禁**：`DeepOcrIdleUnloadAndCompactSessionBudget` 接入真实 `K32GetProcessMemoryInfo` 增量私有提交 `>= 55%` 回收硬断言，全套 `*Ocr*` 单测 **44/44 PASSED**（含全部 8 张实景回归样本）。
+
 ### [2026-11-21] 录屏演播室两大核心内存瘦身（进程驻留内存由 ~500-800 MiB 降至 ~100-150 MiB）
 - **演播室高内存占用的两大核心根源与终局收敛 (`StudioTimeline.h`, `StudioTimeline.cpp`, `ScreenRecorder.cpp`, `PluginEntry.cpp`, `StudioVideoCompositor.h`, `StudioVideoCompositorExport.cpp`, `StudioPreviewWindow.{h,cpp}`, `StudioPreviewWindowInput.cpp`)**：
   1. **代理预览牌组极致瘦身 (`StudioVideoCompositor::compressPreviewDeck`)**：将代理牌组统一收敛至单一事实源常量 `kStudioProxyMaxLongSide = 640`、`kStudioProxyMaxFrames = 112`、`kStudioProxyJpegQuality = 78`；录屏热路径降采样为 `<= 112` 帧 `640px`（不编码，0 挤占 60FPS 录屏帧预算），进入 `StudioPreviewWindow::showSession()` 后立刻压缩为内存 JPEG 字节流（`m_previewDeckJpeg`，112 帧仅 ~2.5–4 MiB，按需 `<0.5ms` 解码并保留单帧 `m_lastDecodedProxyBgr` 槽位）+ 紧凑 `160×90` 单通道灰度差分牌组（`m_visualDiffDeckGray`，仅 ~1.54 MiB，供 `refineZoomSegmentsWithVisualDiff` 零拷贝零重解码复用），随后立即释放未压缩 BGR 牌组，直接削减 **260–645 MiB**；

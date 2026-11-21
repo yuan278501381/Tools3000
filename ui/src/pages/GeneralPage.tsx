@@ -495,31 +495,74 @@ export const GeneralPage: FC = () => {
             />
           </SettingRow>
 
-          <SettingRow label={t('general.theme')} description={t('general.themeDesc')}>
-            <Select
-              id="theme"
-              value={settings.theme}
-              onChange={(v) => updateSetting('theme', v)}
-              options={[
-                { value: 'system', label: t('general.themeSystem') },
-                { value: 'light', label: t('general.themeLight') },
-                { value: 'dark', label: t('general.themeDark') }
-              ]}
-            />
+          <SettingRow label={t('general.theme')} description={t('general.themeDesc')} layout="vertical">
+            <div id="theme" className="general-theme-cards" role="radiogroup" aria-label={t('general.theme')}>
+              {([
+                { value: 'system', labelKey: 'general.themeSystem', previewClass: 'is-system' },
+                { value: 'light',  labelKey: 'general.themeLight',  previewClass: 'is-light' },
+                { value: 'dark',   labelKey: 'general.themeDark',   previewClass: 'is-dark' },
+              ] as const).map((opt) => {
+                const isSelected = (settings.theme || 'system') === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    className={`general-theme-card ${isSelected ? 'is-active' : ''}`}
+                    onClick={() => updateSetting('theme', opt.value)}
+                  >
+                    <span className={`general-theme-preview ${opt.previewClass}`} aria-hidden="true">
+                      <span className="general-theme-preview__chrome">
+                        <span className="general-theme-preview__dot" />
+                        <span className="general-theme-preview__dot" />
+                        <span className="general-theme-preview__dot" />
+                      </span>
+                      <span className="general-theme-preview__body">
+                        <span className="general-theme-preview__sidebar">
+                          <span className="general-theme-preview__nav-pill is-accent" />
+                          <span className="general-theme-preview__nav-pill" />
+                          <span className="general-theme-preview__nav-pill" />
+                        </span>
+                        <span className="general-theme-preview__canvas">
+                          <span className="general-theme-preview__card" />
+                          <span className="general-theme-preview__card is-short" />
+                        </span>
+                      </span>
+                    </span>
+                    <span className="general-theme-card__footer">
+                      <span className="general-theme-card__label">{t(opt.labelKey)}</span>
+                      <span className="general-theme-card__radio" aria-hidden="true" />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </SettingRow>
 
-          <SettingRow label={t('general.trayIconTheme')} description={t('general.trayIconThemeDesc')}>
-            <Select
-              id="trayIconTheme"
-              value={settings.trayIconTheme || 'system'}
-              onChange={(v) => updateSetting('trayIconTheme', v)}
-              options={[
-                { value: 'system', label: t('general.trayIconThemeSystem') },
-                { value: 'light', label: t('general.trayIconThemeLight') },
-                { value: 'dark', label: t('general.trayIconThemeDark') },
-                { value: 'color', label: t('general.trayIconThemeColor') }
-              ]}
-            />
+          <SettingRow label={t('general.trayIconTheme')} description={t('general.trayIconThemeDesc')} layout="vertical">
+            <div id="trayIconTheme" className="general-segmented" role="radiogroup" aria-label={t('general.trayIconTheme')}>
+              {([
+                { value: 'system', labelKey: 'general.trayIconThemeSystem' },
+                { value: 'light',  labelKey: 'general.trayIconThemeLight' },
+                { value: 'dark',   labelKey: 'general.trayIconThemeDark' },
+                { value: 'color',  labelKey: 'general.trayIconThemeColor' },
+              ] as const).map((opt) => {
+                const isSelected = (settings.trayIconTheme || 'system') === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    className={`general-segmented__btn ${isSelected ? 'is-active' : ''}`}
+                    onClick={() => updateSetting('trayIconTheme', opt.value)}
+                  >
+                    {t(opt.labelKey)}
+                  </button>
+                );
+              })}
+            </div>
           </SettingRow>
           <SettingRow label={t('general.accentColor')} description={t('general.accentColorDesc')} layout="vertical">
             <div className="general-accent-swatches">

@@ -1310,6 +1310,9 @@
     "authorBadge": "作者 · Yy1 (@yuan278501381)"
   },
   "sidebar": {
+    "groupSystem": "系统总控",
+    "groupCoreTools": "效率工具",
+    "groupInsights": "洞察与关于",
     "themeToggleLight": "切换到亮色主题",
     "themeToggleDark": "切换到暗色主题",
     "appearanceTitle": "外观与主题偏好",

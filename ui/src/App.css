@@ -41,35 +41,75 @@
   box-shadow: -2px 0 16px -8px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
-/* ── 页面头部 ─────────────────────────────────────────────────────────────── */
+/* ── 页面旗舰 Hero 头部 (全 14 模块统一高质感仪式感) ───────────────────────── */
 .app__header {
+  --page-tone-start: var(--primary);
+  --page-tone-end: var(--primary-hover);
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 22px 32px 16px;
+  padding: 20px 32px 17px;
   border-bottom: 1px solid var(--hairline);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--card-bg) 72%, var(--bg-base)) 0%,
-    var(--bg-base) 100%
-  );
+  background:
+    radial-gradient(
+      520px 140px at 8% -20%,
+      color-mix(in srgb, var(--page-tone-start) 11%, transparent) 0%,
+      transparent 72%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--card-bg) 82%, var(--bg-base)) 0%,
+      var(--bg-base) 100%
+    );
   flex-shrink: 0;
 }
 
+.app__header-inner {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.app__header-badge {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  background: linear-gradient(145deg, var(--page-tone-start) 0%, var(--page-tone-end) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.36),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.14),
+    0 6px 16px -4px color-mix(in srgb, var(--page-tone-start) 44%, transparent),
+    0 2px 4px rgba(15, 23, 42, 0.12);
+}
+
+.app__header-text {
+  min-width: 0;
+  flex: 1;
+}
+
 .app__header-title {
-  font-size: 1.38rem;
+  font-size: 1.36rem;
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.025em;
-  line-height: 1.25;
+  line-height: 1.24;
+  outline: none;
 }
 
 .app__header-subtitle {
   font-size: var(--text-sm);
   font-weight: 500;
   color: var(--text-muted);
-  margin-top: 4px;
-  line-height: 1.48;
+  margin-top: 3px;
+  line-height: 1.46;
 }
 
 .app__content {

@@ -1310,6 +1310,9 @@
     "authorBadge": "開発者 · Yy1 (@yuan278501381)"
   },
   "sidebar": {
+    "groupSystem": "システム",
+    "groupCoreTools": "コアツール",
+    "groupInsights": "インサイト",
     "themeToggleLight": "ライトテーマに切り替え",
     "themeToggleDark": "ダークテーマに切り替え",
     "appearanceTitle": "外観とテーマ設定",

@@ -1310,6 +1310,9 @@
     "authorBadge": "Author · Yy1 (@yuan278501381)"
   },
   "sidebar": {
+    "groupSystem": "System",
+    "groupCoreTools": "Core Tools",
+    "groupInsights": "Insights",
     "themeToggleLight": "Switch to Light Theme",
     "themeToggleDark": "Switch to Dark Theme",
     "appearanceTitle": "Appearance & Themes",
