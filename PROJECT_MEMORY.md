@@ -6,6 +6,15 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 开源分发与高星项目信任基础设施（Scoop 自托管 Bucket + Winget 1.10.0 官方清单 + SHA-256/VirusTotal 自动化 + 8 语种 README 转化漏斗重构）
+- **包管理器一键安装单一事实源 (`scripts/update-package-manifests.ps1`, `bucket/tools3000.json`, `packaging/winget/`, `packaging/README.md`, `scripts/release.ps1`)**：
+  1. **Scoop 即刻可用自托管 Bucket (`bucket/tools3000.json`)**：兼容 `ScoopInstaller/Extras` 官方规范（含 `checkver.github` 与 `autoupdate` 指向 `SHA256SUMS.txt`），强制声明 `"persist": "data"` 天然激活 `WinUtils::isPortableMode()` 绿色便携模式，确保升级零丢配置，且无需审核即支持 `scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000 && scoop install tools3000/tools3000`；
+  2. **Winget 官方 1.10.0 多文件清单 (`packaging/winget/Yy1.Tools3000*.yaml`)**：精准绑定实机注册表卸载键 `ProductCode: Tools3000_is1`、`InstallerType: inno`、`Scope: machine`、`ElevationRequirement: elevationRequired` 及 `en-US` / `zh-CN` 双语 Locale，并实机通过微软官方 `winget validate --manifest packaging/winget` 校验；
+  3. **全自动发版联动 (`scripts/release.ps1`)**：每次发版自动在 GitHub Release Notes 追加真实 SHA-256 与可点击 VirusTotal 哈希查验直链表，并自动执行 `update-package-manifests.ps1 -Validate` 同步提交 `bucket/tools3000.json` 与 `packaging/winget/` 至主干与 Tag；
+- **安全信任零黑盒配套与全球 8 语种 README 黄金漏斗 (`SECURITY.md`, `.github/ISSUE_TEMPLATE/`, `README*.md`)**：
+  - 新增 `SECURITY.md` 安全策略与 `.github/ISSUE_TEMPLATE/`（Bug Report / Feature Request / Discussions 引导）；
+  - 全 8 语种 README 统一升级为高转化漏斗：顶部补 `Stars`/`Downloads`/`Arch: x64 | ARM64` 徽章与直达下载入口 -> 首屏 2×2 动图 -> 真诚开发初衷（含 Everything / FastStone / Snipaste / PixPin / WGestures / PowerToys 替换历程与 4 个月自用托盘清净）-> 克制客观「一软替代清单」-> Bento 全览 -> **前置「安装与下载」（Scoop + Winget + Releases + 四重安全校验与 SmartScreen 透明说明）** -> 全功能演示 -> 快捷键 -> 隐私 -> 参与共创与许可。
+
 ### [2026-11-21] 主设置界面与全 14 菜单页旗舰级视觉架构重塑（macOS Sequoia 宝石色盘 SSOT + 统一 Hero 页眉 + Apple Grouped Inset List + Bento/Telemetry）
 - **美学升维与架构收敛 (`index.css`, `config/routes.ts`, `Sidebar.{tsx,css}`, `App.{tsx,css}`, `UIKit.css`, `GeneralPage.{tsx,css}`, `AboutPage.{tsx,css}`, `PluginsPage.{tsx,css}`, `Gesture/History/HotCorner/Keycast/SpotlightPage.css`, `locales/*.json`)**：
   1. **建筑级三层冷雾铝灰 / 曜石暗黑对比体系 (`index.css`)**：浅色外壳 `#e8ecf3` -> 画布 `#f3f5f9` -> 白瓷卡片 `#ffffff`；深色外壳 `#0a0b0f` -> 画布 `#101218` -> 曜石卡片 `#161922`；侧栏收窄至 `232px`；

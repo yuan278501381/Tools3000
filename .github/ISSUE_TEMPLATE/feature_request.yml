@@ -1,0 +1,30 @@
+name: 功能建议与共创 / Feature Request
+description: 提出新功能想法、交互优化建议，或希望一起共创的新模块
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提出任何能提升 Windows 日常效率的实用建议！也欢迎直接提交 Pull Request 一起共创。
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景与痛点
+      description: 您在什么高频场景下需要这个能力？目前是如何绕过的？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的实现方式或参考交互
+      description: 您理想中的快捷键、交互流程或配置项是什么样的？
+    validations:
+      required: true
+  - type: checkboxes
+    id: cocreate
+    attributes:
+      label: 参与方式
+      options:
+        - label: 我愿意提供测试样本或帮忙实机验证修复版
+        - label: 我计划自行或借助 AI 提交 Pull Request 参与共创
