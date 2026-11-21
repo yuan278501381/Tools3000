@@ -15,11 +15,25 @@
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#descarga-e-instalación)
 [![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
 
-**[Descargar última versión](#descarga-e-instalación)** · [Por qué lo creé](#por-qué-creé-tools3000) · [Qué reemplaza](#qué-reemplaza-tools3000) · [Vista general](#vista-general) · [Seguridad y verificación](#verificación-de-seguridad-y-confianza) · [Demostraciones](#demostraciones) · [Contribuir](#comentarios-y-cocreación) · [Guía para desarrolladores](docs/DEVELOPER.md)
+**[Descargar última versión](#descarga-e-instalación)** · [Vista general](#vista-general) · [Demostraciones](#demostraciones) · [Seguridad y verificación](#verificación-de-seguridad-y-confianza) · [Por qué lo creé](#por-qué-creé-tools3000) · [Qué reemplaza](#qué-reemplaza-tools3000) · [Contribuir](#comentarios-y-cocreación) · [Guía para desarrolladores](docs/DEVELOPER.md)
 
 </div>
 
 <br />
+
+Tools3000 integra en una sola aplicación nativa para Windows las herramientas esenciales de uso diario: **búsqueda instantánea de archivos, búsqueda de contenido en documentos, captura con desplazamiento, anotación precisa de capturas, fijación en pantalla con grupos de pines, OCR sin conexión de alta precisión, grabación de pantalla con Estudio de zoom automático (exportación a MP4, GIF optimizado para mensajería/WeChat y WebP animado) y gestos globales de ratón**. Consume apenas una docena de MB de RAM en reposo, funciona 100% sin conexión y es compatible tanto con PCs personales (`x64` y `ARM64`) como con entornos Windows Server multiusuario concurrentes.
+
+---
+
+## Vista general
+
+<p align="center">
+  <img src="docs/images/es-ES/feature_bento_overview.png" alt="Resumen de las ocho capacidades principales de Tools3000" width="100%" />
+</p>
+
+---
+
+## Demostraciones
 
 <table>
   <tr>
@@ -38,47 +52,43 @@
       <sub><b>Captura con Desplazamiento</b> · Unión automática con vista previa en vivo y recorte no destructivo</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/screen_recording_demo.webp" alt="Grabación de pantalla a 60 FPS y Estudio con zoom automático" width="100%" /><br />
-      <sub><b>Grabación 60 FPS y Estudio Auto-Zoom</b> · Zoom inteligente en clics y exportación a MP4, GIF y WebP animado</sub>
+      <img src="docs/images/es-ES/screen_recording_demo.webp" alt="Grabación de pantalla y Estudio con zoom automático" width="100%" /><br />
+      <sub><b>Grabación y Estudio Auto-Zoom</b> · Zoom inteligente en clics y exportación a MP4, GIF y WebP animado</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/content_search_demo.webp" alt="Búsqueda en contenido de documentos con copia en un clic" width="100%" /><br />
+      <sub><b>Búsqueda de Contenido</b> · Busca dentro de PDF, Word, Excel y código fuente con copia de línea en un clic</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/capture_markup_demo.webp" alt="Anotación precisa con lupa óptica discontinua y mosaico" width="100%" /><br />
+      <sub><b>Anotación Precisa</b> · Ajuste automático a controles, lupa óptica discontinua, mosaico de privacidad y pasos numerados</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/pin_groups_demo.webp" alt="Pines en pantalla con filtrado por grupos y mosaico automático" width="100%" /><br />
+      <sub><b>Pines en Pantalla y Grupos</b> · Fija referencias arriba (F3), filtra por color de grupo y ordena en cuadrícula en un clic</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/es-ES/mouse_gesture_demo.webp" alt="Gestos globales de ratón y volumen con rueda en el borde" width="100%" /><br />
+      <sub><b>Gestos Globales de Ratón</b> · Arrastra con clic derecho para cerrar pestañas, disparo instantáneo y volumen en el borde</sub>
     </td>
   </tr>
 </table>
 
-Tools3000 integra en una sola aplicación nativa para Windows las herramientas esenciales de uso diario: **búsqueda instantánea de archivos, búsqueda de contenido en documentos, captura con desplazamiento, anotación precisa de capturas, fijación en pantalla con grupos de pines, OCR sin conexión de alta precisión, grabación de pantalla a 60 FPS con Estudio de zoom automático (exportación a MP4, GIF optimizado para mensajería/WeChat y WebP animado) y gestos globales de ratón**. Consume apenas una docena de MB de RAM en reposo, funciona 100% sin conexión y es compatible tanto con PCs personales (`x64` y `ARM64`) como con entornos Windows Server multiusuario concurrentes.
-
----
-
-## Por qué creé Tools3000
-
-Llevo más de diez años usando **Everything** a diario. En capturas de pantalla empecé con las herramientas integradas de **QQ y WeChat**, pasé a **FastStone Capture** por lo cómodas que eran sus anotaciones, luego cambié a **Snipaste** para poder fijar capturas en pantalla, y más tarde migré a **PixPin** por la captura con desplazamiento, el efecto lupa y el OCR; en gestos de ratón utilicé **WGestures** y **WGestures 2**, además de probar muchos grabadores de pantalla — a mitad de camino incluso probé Microsoft **PowerToys**, pero seguían faltando varias piezas clave de mi día a día y acabé de nuevo con varias utilidades residentes.
-
-Un día, mirando la fila de iconos acumulados en la bandeja del sistema de Windows, pensé: **qué bien sería unir todo esto en una sola aplicación.** A eso se sumaban dos molestias cotidianas — el OCR de PixPin seguía por detrás de WeChat en precisión y velocidad, y WGestures empezó a dejar un pequeño cuadro de texto atascado en pantalla que solo desaparecía al reiniciar el programa. Aprovechando la llegada de la IA, decidí crear esta suite todo-en-uno por mi cuenta: **Tools3000**.
-
-Para ser totalmente sincero con quienes lo prueben: llevo **4 meses usándolo a diario**, añadiendo funciones de forma gradual y corrigiendo fallos sobre la marcha. Al principio mantenía las apps anteriores abiertas por si algo fallaba y volvía a ellas mientras lo arreglaba; **hoy mi bandeja del sistema por fin está limpia, con Tools3000 como única herramienta residente.**
-
-Por supuesto, los entornos reales de Windows son muy complejos y seguro aparecerán nuevos casos límite. En la era de la IA podemos mejorar el proyecto juntos con mucha más agilidad — tanto si quieres **[reportar un problema en GitHub Issues](https://github.com/yuan278501381/Tools3000/issues)** como **cocrear mediante Pull Requests**, toda ayuda es bienvenida.
-
----
-
-## Qué reemplaza Tools3000
-
-Cada utilidad especializada destaca en flujos muy concretos. Tools3000 cubre más del 90% de las tareas diarias en **una sola app nativa, gratuita y GPL-3.0**, reconociendo con honestidad dónde las herramientas dedicadas siguen brillando:
-
-| Utilidad Clásica | Flujos cotidianos cubiertos por Tools3000 | Cuándo conviene mantener la herramienta dedicada |
-| :--- | :--- | :--- |
-| **Everything** | `Alt + Space` para búsqueda NTFS instantánea por nombre y `content:` dentro de documentos, arrancando bajo demanda | Si necesitas servidores HTTP/ETP, indexación de propiedades EXIF/multimedia o el ecosistema CLI `es.exe` |
-| **QuickLook** | Pulsa `Space` en los resultados para previsualizar imágenes, Office, PDF, código, CAD, PSD y 3D al instante | Si buscas vista previa global con Espacio directo en el Explorador de Windows o plugins `.qlplugin` de terceros |
-| **Snipaste / PixPin** | `F1` captura sin parpadeos, lupa discontinua, captura con desplazamiento, `F3` grupos de pines y OCR local con edición directa | Si dependes del ajuste extremo a controles GUI heredados o flujos CLI personalizados |
-| **WGestures / StrokesPlus** | Gestos con botón derecho, disparo inmediato, volumen en bordes, esquinas activas, pausa en juegos y scripts Lua | Si empleas gestos con múltiples botones simultáneos, condiciones complejas de ventana o macros históricos |
-| **Grabadores (ej. ShareX)** | 60 FPS, teclas en pantalla, Estudio con zoom automático y audio, exportación a MP4, GIF y WebP | Si necesitas subida automática a 80+ nubes/S3/FTP/Webhook o pipelines FFmpeg muy personalizados |
-
----
-
-## Vista general
-
-<p align="center">
-  <img src="docs/images/es-ES/feature_bento_overview.png" alt="Resumen de las ocho capacidades principales de Tools3000" width="100%" />
-</p>
+| Módulo | Qué ofrece |
+| :--- | :--- |
+| **Búsqueda Instantánea de Archivos** | Pulsa `Alt + Space` para buscar entre millones de archivos en milisegundos; pulsa `Space` para previsualizar imágenes, Office, PDF, código, CAD, PSD y modelos 3D sin abrir aplicaciones pesadas. |
+| **Búsqueda de Contenido** | Usa `content:` para buscar directamente dentro de Word, Excel, PDF, PowerPoint, CAD y código fuente con fragmentos resaltados y copia de línea en un clic. |
+| **Captura con Desplazamiento** | Une automáticamente páginas web largas, chats y documentos con vista previa lateral en tiempo real, recorte superior/inferior no destructivo y anotación directa sobre la imagen larga. |
+| **Anotación Precisa** | `F1` se ajusta automáticamente a ventanas y controles de interfaz; incluye selector de color por píxel, lupa óptica discontinua, 6 tipos de flecha, numeración autoajustable, mosaico y marcos. |
+| **Pines en Pantalla y Grupos** | Fija capturas o contenido del portapapeles siempre encima (`F3`) con zoom por rueda, opacidad y paso de clics; organízalos en grupos de color, alterna visibilidad desde la barra superior o alinéalos en cuadrícula en un clic. |
+| **OCR Sin Conexión de Alta Precisión** | Reconocimiento 100% local con alta precisión en código, JSON y diseños densos: selecciona y copia directamente sobre imágenes fijadas, subraya con línea ondulada, resalta, edita texto en el sitio y extrae tablas o códigos QR. |
+| **Grabación de pantalla y Estudio** | Graba la pantalla con superposición de teclas y clics y pasa al instante al Estudio: zoom automático inteligente en clics, fondos seleccionados, edición por forma de onda y exportación a **MP4**, **GIF listo para mensajería/WeChat** y **WebP animado**. |
+| **Gestos Globales de Ratón** | Mantén el botón derecho y desliza para cambiar pestañas, retroceder o cerrar ventanas; admite ejecución instantánea, control de volumen en el borde de la pantalla, reglas por aplicación y pausa automática en juegos a pantalla completa. |
+| **Presentación y Escritorio Remoto** | Visualización limpia de teclas y foco de cursor con doble toque en `Ctrl`; barra de acceso rápido en los cuadros Abrir/Guardar de Windows; paso directo de atajos en mstsc, RustDesk, ToDesk y AnyDesk con liberación de teclas bloqueadas. |
 
 ---
 
@@ -119,42 +129,29 @@ Transparencia total sin cajas negras (detalles completos en **[SECURITY.md](SECU
 
 ---
 
-## Demostraciones
+## Por qué creé Tools3000
 
-<table>
-  <tr>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/content_search_demo.webp" alt="Búsqueda en contenido de documentos con copia en un clic" width="100%" /><br />
-      <sub><b>Búsqueda de Contenido</b> · Busca dentro de PDF, Word, Excel y código fuente con copia de línea en un clic</sub>
-    </td>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/capture_markup_demo.webp" alt="Anotación precisa con lupa óptica discontinua y mosaico" width="100%" /><br />
-      <sub><b>Anotación Precisa</b> · Congelado sin parpadeos, lupa óptica discontinua, mosaico de privacidad y pasos numerados</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/pin_groups_demo.webp" alt="Pines en pantalla con filtrado por grupos y mosaico automático" width="100%" /><br />
-      <sub><b>Pines en Pantalla y Grupos</b> · Fija referencias arriba (F3), filtra por color de grupo y ordena en cuadrícula en un clic</sub>
-    </td>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/mouse_gesture_demo.webp" alt="Gestos globales de ratón y volumen con rueda en el borde" width="100%" /><br />
-      <sub><b>Gestos Globales de Ratón</b> · Arrastra con clic derecho para cerrar pestañas, disparo instantáneo y volumen en el borde</sub>
-    </td>
-  </tr>
-</table>
+Llevo más de diez años usando **Everything** a diario. En capturas de pantalla empecé con las herramientas integradas de **QQ y WeChat**, pasé a **FastStone Capture** por lo cómodas que eran sus anotaciones, luego cambié a **Snipaste** para poder fijar capturas en pantalla, y más tarde migré a **PixPin** por la captura con desplazamiento, el efecto lupa y el OCR; en gestos de ratón utilicé **WGestures** y **WGestures 2**, además de probar muchos grabadores de pantalla — a mitad de camino incluso probé Microsoft **PowerToys**, pero seguían faltando varias piezas clave de mi día a día y acabé de nuevo con varias utilidades residentes.
 
-| Módulo | Qué ofrece |
-| :--- | :--- |
-| **Búsqueda Instantánea de Archivos** | Pulsa `Alt + Space` para buscar entre millones de archivos en milisegundos; pulsa `Space` para previsualizar imágenes, Office, PDF, código, CAD, PSD y modelos 3D sin abrir aplicaciones pesadas. |
-| **Búsqueda de Contenido** | Usa `content:` para buscar directamente dentro de Word, Excel, PDF, PowerPoint, CAD y código fuente con fragmentos resaltados y copia de línea en un clic. |
-| **Captura con Desplazamiento** | Une automáticamente páginas web largas, chats y documentos con vista previa lateral en tiempo real, recorte superior/inferior no destructivo y anotación directa sobre la imagen larga. |
-| **Anotación Precisa** | `F1` congela la pantalla sin destellos negros y se ajusta automáticamente a ventanas y controles; incluye selector de color por píxel, lupa óptica discontinua, 6 tipos de flecha, numeración autoajustable, mosaico y marcos. |
-| **Pines en Pantalla y Grupos** | Fija capturas o contenido del portapapeles siempre encima (`F3`) con zoom por rueda, opacidad y paso de clics; organízalos en grupos de color, alterna visibilidad desde la barra superior o alinéalos en cuadrícula en un clic. |
-| **OCR Sin Conexión de Alta Precisión** | Reconocimiento 100% local con alta precisión en código, JSON y diseños densos: selecciona y copia directamente sobre imágenes fijadas, subraya con línea ondulada, resalta, edita texto en el sitio y extrae tablas o códigos QR. |
-| **Grabación 60 FPS y Estudio** | Graba a 60 FPS con superposición de teclas y clics y pasa al instante al Estudio: zoom automático inteligente en clics, fondos seleccionados, edición por forma de onda y exportación a **MP4**, **GIF listo para mensajería/WeChat** y **WebP animado**. |
-| **Gestos Globales de Ratón** | Mantén el botón derecho y desliza para cambiar pestañas, retroceder o cerrar ventanas; admite ejecución instantánea, control de volumen en el borde de la pantalla, reglas por aplicación y pausa automática en juegos a pantalla completa. |
-| **Presentación y Escritorio Remoto** | Visualización limpia de teclas y foco de cursor con doble toque en `Ctrl`; barra de acceso rápido en los cuadros Abrir/Guardar de Windows; paso directo de atajos en mstsc, RustDesk, ToDesk y AnyDesk con liberación de teclas bloqueadas. |
+Un día, mirando la fila de iconos acumulados en la bandeja del sistema de Windows, pensé: **qué bien sería unir todo esto en una sola aplicación.** A eso se sumaban dos molestias cotidianas — el OCR de PixPin seguía por detrás de WeChat en precisión y velocidad, y WGestures empezó a dejar un pequeño cuadro de texto atascado en pantalla que solo desaparecía al reiniciar el programa. Aprovechando la llegada de la IA, decidí crear esta suite todo-en-uno por mi cuenta: **Tools3000**.
+
+Para ser totalmente sincero con quienes lo prueben: llevo **4 meses usándolo a diario**, añadiendo funciones de forma gradual y corrigiendo fallos sobre la marcha. Al principio mantenía las apps anteriores abiertas por si algo fallaba y volvía a ellas mientras lo arreglaba; **hoy mi bandeja del sistema por fin está limpia, con Tools3000 como única herramienta residente.**
+
+Por supuesto, los entornos reales de Windows son muy complejos y seguro aparecerán nuevos casos límite. En la era de la IA podemos mejorar el proyecto juntos con mucha más agilidad — tanto si quieres **[reportar un problema en GitHub Issues](https://github.com/yuan278501381/Tools3000/issues)** como **cocrear mediante Pull Requests**, toda ayuda es bienvenida.
+
+---
+
+## Qué reemplaza Tools3000
+
+Cada utilidad especializada destaca en flujos muy concretos. Tools3000 cubre más del 90% de las tareas diarias en **una sola app nativa, gratuita y GPL-3.0**, reconociendo con honestidad dónde las herramientas dedicadas siguen brillando:
+
+| Utilidad Clásica | Flujos cotidianos cubiertos por Tools3000 | Cuándo conviene mantener la herramienta dedicada |
+| :--- | :--- | :--- |
+| **Everything** | `Alt + Space` para búsqueda NTFS instantánea por nombre y `content:` dentro de documentos, arrancando bajo demanda | Si necesitas servidores HTTP/ETP, indexación de propiedades EXIF/multimedia o el ecosistema CLI `es.exe` |
+| **QuickLook** | Pulsa `Space` en los resultados para previsualizar imágenes, Office, PDF, código, CAD, PSD y 3D al instante | Si buscas vista previa global con Espacio directo en el Explorador de Windows o plugins `.qlplugin` de terceros |
+| **Snipaste / PixPin** | `F1` captura y anotación, lupa discontinua, captura con desplazamiento, `F3` grupos de pines y OCR local con edición directa | Si dependes del ajuste extremo a controles GUI heredados o flujos CLI personalizados |
+| **WGestures / StrokesPlus** | Gestos con botón derecho, disparo inmediato, volumen en bordes, esquinas activas, pausa en juegos y scripts Lua | Si empleas gestos con múltiples botones simultáneos, condiciones complejas de ventana o macros históricos |
+| **Grabadores (ej. ShareX)** | Grabación de pantalla, teclas en pantalla, Estudio (edición por forma de onda y zoom de cursor), exportación a MP4, GIF y WebP | Si necesitas subida automática a 80+ nubes/S3/FTP/Webhook o pipelines FFmpeg muy personalizados |
 
 ---
 
