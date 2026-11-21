@@ -1,10 +1,71 @@
 # Tools3000 工程活记忆 (Project Memory)
 
-> Copyright (c) 2026 Yy1 (yuan278501381). All rights reserved. | MIT License
+> Copyright (c) 2026 Yy1 (yuan278501381). All rights reserved. | GPL-3.0 License
 
 ---
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
+
+### [2026-11-21] 正式升级开源协议至 GNU GPL v3.0（附 Windows/WebView2 链接豁免）+ 「关于」页构建日期穿透 + 历史仓库重写对齐
+- **产品与开源法务决策**：
+  - 针对独立桌面效率软件防换皮闭源收割的定位，在 `v1.2.0` 正式推广前将项目全仓许可证由 `MIT` 切换为 **GNU General Public License v3.0 (`GPL-3.0-only`)**，根目录 `LICENSE` 保留 100% FSF 逐字原文以确保 GitHub Licensee 自动识别为 `GPL-3.0 license`，同级新增 [LICENSE-EXCEPTION.md](file:///c:/repo/Tools3000/LICENSE-EXCEPTION.md) 声明 GPLv3 Section 7 标准 *Windows System & Microsoft Edge WebView2 Linking Exception*；
+  - 同步更新 8 语种 README、8 套前端国际化词典、`AboutPage.tsx`、Scoop (`bucket/tools3000.json`)、WinGet (`packaging/winget/*.yaml` 实机 `winget validate` 通过)、SBOM 生成器 (`generate-third-party-notices.ps1`) 及 41 份源码/文档头声明；
+  - 全链路打通真实编译构建日期（`CMakeLists.txt` `TOOLS3000_BUILD_DATE` -> `Version.h.in` -> `app.getSystemInfo` -> `AboutPage` 展示 `v1.2.0 · YYYY-MM-DD`）。
+
+### [2026-11-21] 方案 B 终局架构：重型 AI / 视频硬件编码短命子进程隔离 (`--worker=ocr|studio-export|record-encode`) + 演播室壁纸缓存闭环
+- **实机全功能压测发现的残余内存大头与根因**：
+  - 虽此前已实现 OCR 120s 闲置卸载回收 96.3% 增量私有提交（`2,841.8 MB -> 1,080.7 MB`, `WS = 21.2 MB`），但全功能实机运行仍暴露两大主进程驻留源：① 录屏与演播室导出直接在主进程初始化 Intel QSV (`libmfxhw64.dll`、`mfx_mft_h264ve_64.dll`) 与 NVIDIA NVENC (`nvEncMFTH264x.dll`) 硬件编码 MFT 及 Media Foundation 线程池，且 `StudioVideoCompositor.cpp` 内 8 张 4K 壁纸原图静态缓存 `s_slots` 与 `s_thumbCache` 关窗不释放，导致录一次屏主进程专用私有提交即永久抬升 `+905 MB`（`109 MB -> 1,013.9 MB`）；② OCR 活跃期 6~7 个 DirectML 会话仍会在宿主进程拉起 `~1.8–2.0 GB` 驱动虚拟提交与 ~65 个驱动线程；
+- **世界级进程隔离架构落地 (`CaptureWorkerCommon.h`, `CaptureWorkerEntry.cpp`, `main.cpp`, `OcrWorkerProtocol.h`, `OcrWorkerClient.{h,cpp}`, `OcrWorkerHost.{h,cpp}`, `StudioExportWorker.{h,cpp}`, `RecordEncodeWorker.{h,cpp}`, `DeepOcrEngine.{h,cpp}`, `ScreenRecorder.{h,cpp}`, `StudioPreviewWindow*.cpp`, `SpotlightOverlay.cpp`)**：
+  1. **零额外二进制与零包体膨胀引导 (`main.cpp` -> `Plugin_Capture.dll::Tools3000RunCaptureWorker`)**：复利用主程序 `Tools3000.exe --worker=<mode>`，在 `wWinMain` 首行跳过单实例互斥锁、全局钩子、托盘、WebView2 与主日志锁，直接 `NORMAL_PRIORITY_CLASS` 加载 `Plugin_Capture.dll` 按策略表多态分发，冷启 `<25 ms`；结合宿主 Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) 与子进程 `ParentProcessWatchdog` 双重防僵尸进程保证；
+  2. **独立短命 OCR Worker (`--worker=ocr`)**：通过一次性按需命名共享内存零拷贝传图 + 命名管道回传 `OcrResult`（含 `charBoxes`/`layoutRegionId`/`alignedRowId`）与 `DeepOcrRunStats`，`setModelTierOverrideForWorker` 纯内存透传档位（0 触碰磁盘 `config.json`）；**闲置 60 秒自动退出进程**（或随 `releaseLoadedModels()`/`shutdown()` 立即退场），失败时自动无缝回退进程内引擎；
+  3. **独立短命录屏编码 Worker (`--worker=record-encode`)**：将 MP4 H.264 / HEVC / WebM VP9 的 FFmpeg 硬件编码 MFT 与音频编码封装迁移至短命子进程，通过精确尺寸单帧共享内存（`stageVideoFrame` 在捕获锁内 `<0.5ms` 完成拷贝随即放锁 -> `commitStagedVideoFrame` 异步编码确认）+ 管道音频 PCM 传输，停止录屏写完 trailer 子进程即刻退出，主进程 0 加载显卡编码驱动；
+  4. **独立短命演播室导出 Worker (`--worker=studio-export`)**：完整无损 JSON 序列化 `StudioTimelineData` + `StudioRenderConfig`（含 `WatermarkConfig`）+ `StudioExportOptions`，通过双向命名管道实时回传 `progress01` + 命名事件毫秒级取消，导完即退由 OS 100% 物理+虚拟双归零；
+  5. **主进程侧残留清扫与并发竞态修复**：`StudioVideoCompositor::clearCaches()` & `clearGlobalCaches()` 在 `StudioPreviewWindow::closeSessionAndCleanup()` 彻底清空 8 张 4K 壁纸全尺寸缓存与缩略图缓存并执行 `CoFreeUnusedLibrariesEx(0, 0)`；修正 `DeepOcrEngine::releaseLoadedModels()` 原子状态发布顺序（必须在 `m_winMl.reset()` 与 `cleanupDeepOcrWorkingSet()` 之后发布 `m_modelsLoadedAtomic=false` 消除并发竞态）；将 `SpotlightOverlay.cpp` 点击特效结束刷屏日志降级为 `LOG_DEBUG`；
+  6. **端到端硬实证 (`WorkerIsolationTest.*`)**：新增 3 项跨进程端到端回归测试，完整跑完 2 次 PP-OCRv4 DirectML 识别（含 2s 闲置自动退场与重建新 PID）+ 独立录屏硬件 MP4 编码 + 独立演播室美化导出后，实测宿主进程全过程峰值私有提交仅 **`18.0 MB`**、峰值工作集仅 **`6.8 MB`**，加载 `DirectML/onnxruntime/nvdxdlkernels/nvEncMFT/libmfxhw/mfx_mft/nvcuda` 数量 = **`0`**。
+
+### [2026-11-21] 开源分发与高星项目信任基础设施（Scoop 自托管 Bucket + Winget 1.10.0 官方清单 + SHA-256/VirusTotal 自动化 + 8 语种 README 转化漏斗重构）
+- **包管理器一键安装单一事实源 (`scripts/update-package-manifests.ps1`, `bucket/tools3000.json`, `packaging/winget/`, `packaging/README.md`, `scripts/release.ps1`)**：
+  1. **Scoop 即刻可用自托管 Bucket (`bucket/tools3000.json`)**：兼容 `ScoopInstaller/Extras` 官方规范（含 `checkver.github` 与 `autoupdate` 指向 `SHA256SUMS.txt`），强制声明 `"persist": "data"` 天然激活 `WinUtils::isPortableMode()` 绿色便携模式，确保升级零丢配置，且无需审核即支持 `scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000 && scoop install tools3000/tools3000`；
+  2. **Winget 官方 1.10.0 多文件清单 (`packaging/winget/Yy1.Tools3000*.yaml`)**：精准绑定实机注册表卸载键 `ProductCode: Tools3000_is1`、`InstallerType: inno`、`Scope: machine`、`ElevationRequirement: elevationRequired` 及 `en-US` / `zh-CN` 双语 Locale，并实机通过微软官方 `winget validate --manifest packaging/winget` 校验；
+  3. **全自动发版联动 (`scripts/release.ps1`)**：每次发版自动在 GitHub Release Notes 追加真实 SHA-256 与可点击 VirusTotal 哈希查验直链表，并自动执行 `update-package-manifests.ps1 -Validate` 同步提交 `bucket/tools3000.json` 与 `packaging/winget/` 至主干与 Tag；
+- **安全信任零黑盒配套与全球 8 语种 README 黄金漏斗 (`SECURITY.md`, `.github/ISSUE_TEMPLATE/`, `README*.md`)**：
+  - 新增 `SECURITY.md` 安全策略与 `.github/ISSUE_TEMPLATE/`（Bug Report / Feature Request / Discussions 引导）；
+  - 全 8 语种 README 统一升级为高转化漏斗：顶部补 `Stars`/`Downloads`/`Arch: x64 | ARM64` 徽章与直达下载入口 -> 首屏 2×2 动图 -> 真诚开发初衷（含 Everything / FastStone / Snipaste / PixPin / WGestures / PowerToys 替换历程与 4 个月自用托盘清净）-> 克制客观「一软替代清单」-> Bento 全览 -> **前置「安装与下载」（Scoop + Winget + Releases + 四重安全校验与 SmartScreen 透明说明）** -> 全功能演示 -> 快捷键 -> 隐私 -> 参与共创与许可。
+
+### [2026-11-21] 主设置界面与全 14 菜单页旗舰级视觉架构重塑（macOS Sequoia 宝石色盘 SSOT + 统一 Hero 页眉 + Apple Grouped Inset List + Bento/Telemetry）
+- **美学升维与架构收敛 (`index.css`, `config/routes.ts`, `Sidebar.{tsx,css}`, `App.{tsx,css}`, `UIKit.css`, `GeneralPage.{tsx,css}`, `AboutPage.{tsx,css}`, `PluginsPage.{tsx,css}`, `Gesture/History/HotCorner/Keycast/SpotlightPage.css`, `locales/*.json`)**：
+  1. **建筑级三层冷雾铝灰 / 曜石暗黑对比体系 (`index.css`)**：浅色外壳 `#e8ecf3` -> 画布 `#f3f5f9` -> 白瓷卡片 `#ffffff`；深色外壳 `#0a0b0f` -> 画布 `#101218` -> 曜石卡片 `#161922`；侧栏收窄至 `232px`；
+  2. **全 14 模块宝石色盘单一事实源 (`routes.ts`) + 侧边栏与全页 Hero 双源同色**：为 14 个菜单项定义 `toneStart` / `toneEnd` 宝石渐变令牌；侧边栏升级为 3 组精致眉标（系统总控 / 效率工具 / 洞察与关于，8 语种全同步）+ 24×24 彩色宝石 Squircle 图标徽标 + 浮雕激活胶囊；主内容区为全部 14 页统一升级 42×42 同源宝石 Squircle 旗舰 Hero 页眉与模块色顶部极微径向柔光顶衬（居中 `max-width: 880px` 与正文卡片轴线像素对齐）；
+  3. **Apple Grouped Inset List 精工列表与核心页面质感重塑**：`UIKit.css` 补全全部 4 种相邻设置行发丝分隔线与圆角 Hover 柔光带、`SettingGroup` 26×26 微晶图标徽章与去霓虹发光温润阻尼 `Toggle`；`GeneralPage` 升级三联 macOS 迷你桌面预览卡（`跟随系统` 精准 `90deg` 50%/50% 左右分屏）、全宽 4 格沉降凹槽托盘风格分段控制器与 6 格双环精工宝石色珠；`AboutPage` 21 项技术栈升级 2 列 Bento 微卡片网格 + 4 格 Telemetry 仪表盘；`PluginsPage` 卡片统一接入同源宝石 Squircle 图标；清除 5 个子页残余 `translateY` 跳动与旧紫 `#8b5cf6` 硬编码；
+  4. **全量质量门禁与 Playwright 双主题审片**：7 重前端门禁（190 个 CSS 变量 0 悬空 + 8 语种 2,314 键 100% 同构 + 排版字号字重底线）、Vitest `26/26` 全绿、Vite 生产构建（701ms）及 12 张浅/深双主题高清实拍人工审片全部通过。
+
+### [2026-11-21] 世界级 OCR 提速 5.5 倍与 5.93 GB 幽灵私有内存彻底根治（DirectML 甜点桶 + 双阶 GPU 级联 + 独占 D3D11 120s 闲置真回收）
+- **实机痛点与底层真相 (`DeepOcrEngine.{h,cpp}`, `DeepOcrEngineModel.cpp`, `DeepOcrEnginePostprocess.cpp`, `PluginEntry.cpp`, `tests/unit/test_live_ocr.inc`)**：
+  1. **5.93 GB 幽灵专用私有内存双元凶与终局真回收**：
+     - *暗坑真相*：① 旧版在 `tier=server` 下将 90.5 MB `ch_PP-OCRv4_rec_server.onnx` 编译为 7 个 DirectML 固定大桶并在开机预热，瞬间推升 2.75 GB 峰值工作集与 5.93 GB 专用私有内存；② 更隐蔽的是 `LearningModelDevice(DirectXHighPerformance)` 绑定 WinML 进程级全局单例 D3D12/DirectML 设备，即便释放所有 `LearningModelSession` 仍永久扣留 ~844 MB–1.4 GB `PrivateUsage` 直至进程退出；
+     - *终局方案*：取消开机自动预热（开机 0 MB OCR 占用）；改为 DXGI 枚举最高独显 -> 自建独占 `ID3D11Device` -> `LearningModelDevice::CreateFromDirect3D11Device`，配合 **120 秒闲置自动卸载守护线程 (`idleUnloadWorkerLoop`)** 在停止识字后按严格逆序执行 `LearningModelSession::Close()` -> `LearningModel::Close()` -> `IDirect3DDevice::Close()` -> `IDXGIDevice3::Trim()` -> `winrt::clear_factory_cache()` -> `CoFreeUnusedLibrariesEx(0, 0)` -> `trimWorkingSet()`；实机压测单次识别后 `PrivateUsage` 由 `913.1 MB` 回落至 **`75.0 MB`**（回收 93.5% 增量私有提交，工作集 **`2.4 MB`**），跑完 44 个全量 OCR 测试后由 `955.6 MB` 回落至 **`111.5 MB`**（低于基线 `113.7 MB`，实现 0 泄漏净归零；注：`TextReplaceEngine.cpp` 内 `AiInpaintEngine` 后续若需长期频繁改字可复用同款独占 D3D11 回收范式）；
+  2. **DirectML SVTR 显存甜点律 (`B * W^2 < 1.9M`) 与双阶混合精度 GPU 级联**：
+     - 实机验证 4GB 独显上单桶超过 `B * W^2 >= 3.2M`（如 `8x640`、`4x960`）会触发 DirectML 工作区换页悬崖（冷启飙升至 21~37s）；锁定 4 档零悬崖甜点桶 **`16x160 / 16x320 / 4x640 / 2x960`**（按需懒加载，`<=8` 条超短词自动并入 `16x320` 省 1 个会话）；
+     - `tier=server` 升级为 **一阶极速 10.8 MB `mobile` 全量推理 + 二阶疑难行筛选（`avgConf < 0.85` / `minCharConf < 0.68` / 短行 `< 0.88`，GPU 上限 12 条）按需创建唯一 `2x640` `server` 甜点会话单向择优复核**（`CloseModelOnSessionCreation(true)` 即建即释放 90.5 MB 模型副本）；
+     - 90°/270° 竖排方向检测 `clsSession` 改为按需在 CPU 懒加载（0.58 MB，横屏 0 GPU 占用）+ 竖框 `>= 4` 时面积 Top-5 代表投票 `>= 80%` 共识直通（`pack` 由 `182 ms` 降至 `16–20 ms`）；`decodeCtcGreedy` 实现 Softmax 概率分布 `row[0] > 0.5f` / `v > 0.5f` 数学精确提前终止（0.000% 精度误差，CPU 解码降至 **`0 ms`**）；
+     - 实测三张用户高难原图（`tier=server`）：密集多栏 141 行 / 1,945 字由旧版 `8,823 ms` 骤降至 **`1,605 ms`（快 5.5 倍，二阶复核仅 `170 ms`）**，红手写压字装箱卡 **`861 ms`**（86 行），90° 竖拍蓝红手写压字装箱卡 **`484 ms`**（23 行工业编码全中）；
+  3. **DirectML 两大严禁踩踏暗坑铁律**：
+     - **严禁跨 `Evaluate` 复用绑定过 DirectML GPU 的 `TensorFloat`**：通过 `IMemoryBufferByteAccess` 裸指针覆写主机内存不会清除 WinML 内部 GPU-resident 缓存标记，会导致后续批次静默喂入旧帧（甚至全 0 探测张量永久锁死 `16x320` 桶）；必须每次 `Evaluate` 创建全新 `TensorFloat::Create(...)` 并零拷贝原位直写；
+     - **弃用 ONNX 图尾追加 `ArgMax + GatherElements`**：虽可缩减输出 2,208 倍，但使 DirectML 首次编译耗时暴涨 2.5–3 倍（+4~9s），远不如零拷贝映射 + `0 ms` 数学提前终止 CTC 解码综合体验优异；
+  4. **防回退单测门禁**：`DeepOcrIdleUnloadAndCompactSessionBudget` 接入真实 `K32GetProcessMemoryInfo` 增量私有提交 `>= 55%` 回收硬断言，全套 `*Ocr*` 单测 **44/44 PASSED**（含全部 8 张实景回归样本）。
+
+### [2026-11-21] 录屏演播室两大核心内存瘦身（进程驻留内存由 ~500-800 MiB 降至 ~100-150 MiB）
+- **演播室高内存占用的两大核心根源与终局收敛 (`StudioTimeline.h`, `StudioTimeline.cpp`, `ScreenRecorder.cpp`, `PluginEntry.cpp`, `StudioVideoCompositor.h`, `StudioVideoCompositorExport.cpp`, `StudioPreviewWindow.{h,cpp}`, `StudioPreviewWindowInput.cpp`)**：
+  1. **代理预览牌组极致瘦身 (`StudioVideoCompositor::compressPreviewDeck`)**：将代理牌组统一收敛至单一事实源常量 `kStudioProxyMaxLongSide = 640`、`kStudioProxyMaxFrames = 112`、`kStudioProxyJpegQuality = 78`；录屏热路径降采样为 `<= 112` 帧 `640px`（不编码，0 挤占 60FPS 录屏帧预算），进入 `StudioPreviewWindow::showSession()` 后立刻压缩为内存 JPEG 字节流（`m_previewDeckJpeg`，112 帧仅 ~2.5–4 MiB，按需 `<0.5ms` 解码并保留单帧 `m_lastDecodedProxyBgr` 槽位）+ 紧凑 `160×90` 单通道灰度差分牌组（`m_visualDiffDeckGray`，仅 ~1.54 MiB，供 `refineZoomSegmentsWithVisualDiff` 零拷贝零重解码复用），随后立即释放未压缩 BGR 牌组，直接削减 **260–645 MiB**；
+  2. **`StudioHiResFrameReader` 顺序播放免写多帧 LRU 与预算硬封顶**：将多帧 LRU 上限由 `128 MiB / 20 帧` 收敛至 `28 MiB / 4 帧`（`kMaxLruCacheBytes` / `kMaxLruCacheEntries`）；顺序播放态调用 `decodeFrameAt(..., /*cacheInLru=*/false)` 仅刷新单帧 `lastDecodedBgr`（0 污染多帧 LRU），并在 `tryGetCachedFrame()` 兜底命中 `lastDecodedBgr`（确保随时空格暂停调参 0ms 瞬时响应），再削减 **95–115 MiB**；
+  3. **防回退单测门禁 (`tests/unit/test_studio_recorder.inc`)**：新增 `CompactProxyDeckAndHiResReaderLruMemoryBudget` 硬核单测（覆盖 180 帧 1280×720 压缩、160×90 灰度差分等价性、顺序播放 `cachedMemoryBytes() == 0` 且暂停 `tryGetCachedFrame()` 0ms 命中，以及 1600×900 4 帧条目上限与 2560×1440 28 MiB 字节上限双压测），`*Studio*` 全套 32/32 通过，`check-logger.js` 与 `check-trim-workingset.js` 100% 通过。
+
+### [2026-11-21] 全局视觉设计系统升维（Apple Porcelain / Neutral Obsidian 三层表面体系 + 主设置界面、搜索中心与偏好抽屉高级化重塑）
+- **审美诊断与设计第一性原理重构 (`index.css`, `App.css`, `Sidebar.css`, `TitleBar.css`, `UIKit.css`, `GeneralPage.css`, `SearchPage.css`, `SearchViewSettingsModal.tsx`, `styles/search/*.css`)**：
+  1. **三层中性表面与双主题高阶调校**：浅色模式建立「霜灰外壳 `#eff1f6` -> 浅瓷画布 `#f6f7fa` -> 白瓷卡片 `#ffffff` + 超细发丝线 `rgba(15,23,42,0.075)`」三层呼吸深度；深色模式彻底淘汰偏闷暗紫底（`#12111a`/`#211e30`），切换为中性丝绒曜石炭黑（`#0c0d11` / `#111217` / `#161820` + 顶部 `1px` 玻璃镜面微光），确保 6 款动态主题色均不冲突；主内容区采用圆角嵌入式面板（`border-top-left-radius: 14px`）与无双线侧边栏一体衔接；
+  2. **彻底终结“高饱和蓝砖轰炸”与冗余噪音**：新增全局物理触感令牌 `--well-bg`/`--well-border`/`--well-shadow` 与 `--thumb-bg`/`--thumb-border`/`--thumb-shadow`，将全站所有分段控制器（`uikit-segmented`、`uikit-tabs`、`popover-segmented-control`、`titlebar__theme-modes`）统一升级为「沉降微凹槽 + 纯白/曜石立体悬浮滑块」；移除搜索偏好抽屉中 5 处重复念值的蓝底胶囊与 `text-transform: uppercase` 强制大写（消除 `WINDOWS 原生` 噪音）；顶部维护卡由巨型亮蓝横条收敛为克制中性工具卡配立体白瓷/曜石按钮；默认搜索模式升级为统一图标托盘 + 同心圆 Radio 指示器；默认筛选分类升级为工整 3 列微晶网格；
+  3. **搜索主界面与控件微观打磨**：搜索顶栏按钮切换为 Ghost 无框呼吸态（仅激活/置顶态点亮柔和微光底）；分类筛选条切换为无框丝滑 Tabs 轨道；搜索结果行改为左右内嵌 `8px` 悬浮圆角条 + 选中态左侧 `3px` 圆头主题微光针 + 去外框干净等宽路径 + 3D 微立体 `<kbd>` 键帽底栏；设置大卡片消除无意义 `:hover` 上跳抖动，全站 `range` 滑块定制为白瓷圆珠拇指，`[tabindex="-1"]:focus` 消除非交互标题程序聚焦蓝框；
+  4. **全量门禁与真机实拍验证**：全部 7 重前端静态门禁（183 个 CSS 变量 0 悬空 + 排版字号字重底线）、Vitest `26/26` 文件 `196/196` 用例、Vite 生产构建及 Playwright 浅色/深色双主题实拍审片 100% 通过。
 
 ### [2026-11-21] 全软件 8 语种国际化引擎 (`UiI18n` + 855 原生词条 + 2,311 前端词条 + 8 语种安装程序) 与 8×9=72 份本地化视觉资产全栈交付
 - **产品决策与零体积膨胀架构基线**：

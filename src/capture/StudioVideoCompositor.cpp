@@ -266,20 +266,46 @@ std::filesystem::path resolveBuiltinWallpaperPathByName(const wchar_t* fname) {
     return {};
 }
 
+struct WallpaperCacheSlot {
+    std::wstring path;
+    cv::Mat bgr;
+};
+
+std::mutex& globalWallpaperCacheMutex() {
+    static std::mutex mtx;
+    return mtx;
+}
+
+std::array<WallpaperCacheSlot, 8>& globalWallpaperCacheSlots() {
+    static std::array<WallpaperCacheSlot, 8> slots;
+    return slots;
+}
+
+size_t& globalWallpaperCacheNextSlot() {
+    static size_t nextSlot = 0;
+    return nextSlot;
+}
+
+std::mutex& globalThumbCacheMutex() {
+    static std::mutex mtx;
+    return mtx;
+}
+
+std::unordered_map<std::string, cv::Mat>& globalThumbCacheMap() {
+    static std::unordered_map<std::string, cv::Mat> cache;
+    return cache;
+}
+
 cv::Mat decodeWallpaperFileCached(const std::filesystem::path& filePath) {
     if (filePath.empty()) return {};
-    static std::mutex s_wallMtx;
-    struct CacheSlot {
-        std::wstring path;
-        cv::Mat bgr;
-    };
-    static std::array<CacheSlot, 8> s_slots;
-    static size_t s_nextSlot = 0;
+    auto& wallMtx = globalWallpaperCacheMutex();
+    auto& slots = globalWallpaperCacheSlots();
+    auto& nextSlot = globalWallpaperCacheNextSlot();
 
     const std::wstring key = filePath.wstring();
     {
-        std::lock_guard<std::mutex> lk(s_wallMtx);
-        for (const auto& sl : s_slots) {
+        std::lock_guard<std::mutex> lk(wallMtx);
+        for (const auto& sl : slots) {
             if (sl.path == key && !sl.bgr.empty()) {
                 return sl.bgr;
             }
@@ -298,9 +324,9 @@ cv::Mat decodeWallpaperFileCached(const std::filesystem::path& filePath) {
     if (decoded.empty()) return {};
 
     {
-        std::lock_guard<std::mutex> lk(s_wallMtx);
-        s_slots[s_nextSlot] = {key, decoded};
-        s_nextSlot = (s_nextSlot + 1) % s_slots.size();
+        std::lock_guard<std::mutex> lk(wallMtx);
+        slots[nextSlot] = {key, decoded};
+        nextSlot = (nextSlot + 1) % slots.size();
     }
     return decoded;
 }
@@ -623,12 +649,12 @@ cv::Mat StudioVideoCompositor::renderPresetThumbnailBgra(
     const StudioBackdropPreset& preset = StudioBackdropCatalog::resolvePreset(presetKey, fallbackTheme);
     const std::string cacheKey = std::string(preset.key) + "#" + std::to_string(safeW) + "x" + std::to_string(safeH);
 
-    static std::mutex s_thumbMtx;
-    static std::unordered_map<std::string, cv::Mat> s_thumbCache;
+    auto& thumbMtx = globalThumbCacheMutex();
+    auto& thumbCache = globalThumbCacheMap();
     {
-        std::lock_guard<std::mutex> lk(s_thumbMtx);
-        const auto it = s_thumbCache.find(cacheKey);
-        if (it != s_thumbCache.end() && !it->second.empty()) {
+        std::lock_guard<std::mutex> lk(thumbMtx);
+        const auto it = thumbCache.find(cacheKey);
+        if (it != thumbCache.end() && !it->second.empty()) {
             return it->second;
         }
     }
@@ -651,13 +677,42 @@ cv::Mat StudioVideoCompositor::renderPresetThumbnailBgra(
     cv::cvtColor(bgr, bgra, cv::COLOR_BGR2BGRA);
 
     {
-        std::lock_guard<std::mutex> lk(s_thumbMtx);
-        if (s_thumbCache.size() >= 128) {
-            s_thumbCache.clear();
+        std::lock_guard<std::mutex> lk(thumbMtx);
+        if (thumbCache.size() >= 128) {
+            thumbCache.clear();
         }
-        s_thumbCache[cacheKey] = bgra;
+        thumbCache[cacheKey] = bgra;
     }
     return bgra;
+}
+
+void StudioVideoCompositor::clearCaches() noexcept {
+    m_cachedBackdropBgr.release();
+    m_cacheW = 0;
+    m_cacheH = 0;
+    m_cachePresetKey.clear();
+    m_cachePresetKey.shrink_to_fit();
+    m_cacheCustomBgPath.clear();
+    m_cacheCustomBgPath.shrink_to_fit();
+    m_cacheGlassTintHex.clear();
+    m_cachedCaptionText.clear();
+    m_cachedCaptionCanvasW = 0;
+    m_cachedCaptionBgra.release();
+}
+
+void StudioVideoCompositor::clearGlobalCaches() noexcept {
+    {
+        std::lock_guard<std::mutex> lk(globalWallpaperCacheMutex());
+        for (auto& sl : globalWallpaperCacheSlots()) {
+            sl.path.clear();
+            sl.bgr.release();
+        }
+        globalWallpaperCacheNextSlot() = 0;
+    }
+    {
+        std::lock_guard<std::mutex> lk(globalThumbCacheMutex());
+        globalThumbCacheMap().clear();
+    }
 }
 
 cv::Mat StudioVideoCompositor::renderCustomWallpaperThumbnailBgra(

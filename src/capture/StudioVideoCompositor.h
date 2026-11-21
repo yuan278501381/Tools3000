@@ -122,6 +122,12 @@ public:
         int64_t annotationPreviewElapsedMs = -1,
         int previewTargetAnnIndex = -1);
 
+    /// 释放当前合成器实例持有的底板与字幕缓存（关闭演播室窗口时调用）
+    void clearCaches() noexcept;
+
+    /// 释放全局共享的高清壁纸原图解码缓存与缩略图缓存（冷路径关闭演播室后调用，避免多张 4K 壁纸常驻堆内存）
+    static void clearGlobalCaches() noexcept;
+
     /// 多格式全参数导出入口（支持 MP4 / HEVC / 微信自动播放 GIF / 高清 GIF / 网页动图 WebP / WebM）
     static bool exportStudioMedia(
         const std::string& rawInputPathUtf8,
@@ -151,6 +157,18 @@ public:
         int& outOrigWidth,
         int& outOrigHeight,
         double& outDurationSec);
+
+    /// 将未压缩 BGR 代理牌组压缩为紧凑内存 JPEG 字节流（默认长边 <= 640px、<= 112 帧，~2.5-4 MiB）
+    /// 与 160x90 单通道灰度视觉差分牌组（~1.5 MiB，供切换运镜预设零重解码复用），返回 JPEG 总字节数
+    static size_t compressPreviewDeck(
+        const std::vector<cv::Mat>& rawDeckBgr,
+        std::vector<std::vector<uint8_t>>& outJpegDeck,
+        std::vector<cv::Mat>& outVisualDiffGrayDeck,
+        int& outProxyWidth,
+        int& outProxyHeight,
+        int maxLongSide = kStudioProxyMaxLongSide,
+        int maxFrames = kStudioProxyMaxFrames,
+        int jpegQuality = kStudioProxyJpegQuality);
 
     /// 从视频文件音轨中极速解码提取归一化音频声波包络峰值序列（跳过视频流，仅数毫秒耗时；无音轨时返回 false 并清空 outPeaks）
     static bool extractAudioWaveformPeaks(
@@ -221,10 +239,13 @@ private:
 };
 
 /// 演播室驻留式原生全分辨率原片帧解码器（Dual-Tier Retina Preview Engine 核心组件）
-/// - 顺序播放时免 Seek 流式推进解码（单帧 1080p 耗时 ~1.5ms）
-/// - 暂停精修/放大窗口/特写运镜时按需随机精准 Seek 并通过字节受限 LRU 缓存提供 0ms 重复合成命中
+/// - 顺序播放时免 Seek 流式推进解码（单帧 1080p 耗时 ~1.5ms），支持 cacheInLru=false 免污染多帧 LRU
+/// - 暂停精修/放大窗口/特写运镜时按需随机精准 Seek 并通过 28 MiB / 4 帧受限 LRU 缓存提供 0ms 重复合成命中
 class StudioHiResFrameReader {
 public:
+    static constexpr size_t kMaxLruCacheBytes = 28ULL * 1024ULL * 1024ULL;
+    static constexpr size_t kMaxLruCacheEntries = 4;
+
     StudioHiResFrameReader();
     ~StudioHiResFrameReader();
 
@@ -238,11 +259,16 @@ public:
     int nativeWidth() const noexcept;
     int nativeHeight() const noexcept;
 
-    /// 0ms 查询内存 LRU 原生全分辨率帧缓存（调整壁纸/圆角/标注/水印时零重解码直接命中）
+    /// 查询当前驻留在多帧 LRU 缓存中的帧数与字节占用（用于内存预算可观测性与防回退测试）
+    size_t cachedFrameCount() const noexcept;
+    size_t cachedMemoryBytes() const noexcept;
+
+    /// 0ms 查询内存原生全分辨率帧缓存（优先命中多帧 LRU，亦兜底命中顺序播放最近解码单帧）
     bool tryGetCachedFrame(double targetSec, cv::Mat& outBgr, double toleranceSec = 0.020) noexcept;
 
     /// 解码指定源视频秒数的原生高分辨率 BGR 帧（自动选择流式前滚或关键帧回退精准 Seek）
-    bool decodeFrameAt(double targetSec, cv::Mat& outBgr);
+    /// @param cacheInLru true=写入受限多帧 LRU（适合暂停精修/停稳升格）；false=仅刷新单帧缓存（适合顺序播放防 LRU 膨胀）
+    bool decodeFrameAt(double targetSec, cv::Mat& outBgr, bool cacheInLru = true);
 
 private:
     struct Impl;

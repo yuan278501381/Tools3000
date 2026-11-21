@@ -744,9 +744,8 @@
 }
 
 .trigger-pill-btn--active:hover {
-  background: rgba(16, 185, 129, 0.22);
+  background: rgba(16, 185, 129, 0.20);
   border-color: #10b981;
-  transform: translateY(-1px);
 }
 
 [data-theme="dark"] .trigger-pill-btn--active {
@@ -764,9 +763,9 @@
 
 .trigger-pill-btn--inactive:hover {
   opacity: 1;
-  border-color: var(--text-secondary);
+  border-color: var(--input-border);
+  background: var(--card-hover);
   color: var(--text-primary);
-  transform: translateY(-1px);
 }
 
 .trigger-pill-icon {
@@ -932,30 +931,29 @@
 }
 
 .gesture-flag-badge--clickable:hover {
-  transform: translateY(-1px) scale(1.06);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-sm);
 }
 
 .gesture-flag-badge--instant.gesture-flag-badge--clickable:hover {
-  border-color: #f59e0b;
-  background: rgba(245, 158, 11, 0.28);
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
 }
 
 .gesture-flag-badge--silent.gesture-flag-badge--clickable:hover {
-  border-color: #8b5cf6;
-  background: rgba(139, 92, 246, 0.28);
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 22%, transparent);
 }
 
 .gesture-flag-badge--instant {
-  background: rgba(245, 158, 11, 0.15);
-  color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: color-mix(in srgb, var(--warning) 13%, transparent);
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, transparent);
 }
 
 .gesture-flag-badge--silent {
-  background: rgba(139, 92, 246, 0.15);
-  color: #8b5cf6;
-  border: 1px solid rgba(139, 92, 246, 0.35);
+  background: var(--primary-dim);
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
 }
 
 .gesture-flag-badge--normal {

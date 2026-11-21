@@ -9,6 +9,8 @@ const tools3000Version = fs.readFileSync(versionFile, 'utf-8').trim()
 if (!/^\d+\.\d+\.\d+$/.test(tools3000Version)) {
   throw new Error(`Invalid Tools3000 VERSION: ${tools3000Version}`)
 }
+const nowDate = new Date()
+const tools3000BuildDate = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(2, '0')}-${String(nowDate.getDate()).padStart(2, '0')}`
 
 // 自定义插件：将 Vite 动态分配的端口写入本地文件，供 C++ 后端在开发模式下动态读取
 function writeDevServerUrl(): Plugin {
@@ -34,6 +36,7 @@ export default defineConfig({
   base: './',
   define: {
     __TOOLS3000_VERSION__: JSON.stringify(tools3000Version),
+    __TOOLS3000_BUILD_DATE__: JSON.stringify(tools3000BuildDate),
   },
   plugins: [react(), writeDevServerUrl()],
   build: {

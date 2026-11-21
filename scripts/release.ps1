@@ -369,13 +369,72 @@ if (Test-Path -LiteralPath $PrebuiltPortableZip) {
 Copy-Item -LiteralPath $TargetZip -Destination $TargetGenericZip -Force
 
 $Checksums = @()
-Get-ChildItem -Path $ReleaseDir -File | ForEach-Object {
+$HashTableRows = @()
+Get-ChildItem -Path $ReleaseDir -File | Sort-Object Name | ForEach-Object {
     $Hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower()
     $Checksums += "$Hash  $($_.Name)"
+    if ($_.Name -like "Tools3000-$TargetTag-*") {
+        $HashTableRows += "| ``$($_.Name)`` | ``$Hash`` | [VirusTotal 查验](https://www.virustotal.com/gui/file/$Hash) |"
+    }
 }
 $ChecksumFile = "$ReleaseDir\SHA256SUMS.txt"
 $Checksums | Out-File -FilePath $ChecksumFile -Encoding utf8
 Write-Host "[OK] 发布资产已就绪并生成 SHA256 校验和" -ForegroundColor Green
+
+# 9.1 在 Release Notes 中自动追加 SHA-256 完整性校验与 VirusTotal 直链
+if ((Test-Path -LiteralPath $NotesFile) -and $HashTableRows.Count -gt 0) {
+    $VerifySection = @"
+
+---
+
+### 文件完整性校验与安全查验 (SHA-256 / VirusTotal)
+
+| 发布文件 | SHA-256 | 安全检测 |
+| :--- | :--- | :--- |
+$($HashTableRows -join "`n")
+
+下载后可在 PowerShell 中快速核对本地文件哈希：
+
+``````powershell
+Get-FileHash .\Tools3000-$TargetTag-Setup.exe -Algorithm SHA256
+``````
+
+> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 `SBOM.spdx.json` 软件物料清单。
+"@
+    Add-Content -LiteralPath $NotesFile -Value $VerifySection -Encoding UTF8
+    Write-Host "[OK] 已向 Release Notes 追加 SHA-256 与 VirusTotal 查验表" -ForegroundColor Green
+}
+
+# 9.2 自动同步 Scoop Bucket 与 Winget 官方清单并校验门禁
+$ManifestUpdater = Join-Path $ScriptDir "scripts\update-package-manifests.ps1"
+if (Test-Path -LiteralPath $ManifestUpdater) {
+    Write-Host "[PKG] 同步更新 Scoop (bucket/tools3000.json) 与 Winget (packaging/winget) 清单..." -ForegroundColor Cyan
+    & pwsh -File $ManifestUpdater `
+        -Version $TargetVersion `
+        -SetupExePath $TargetSetup `
+        -PortableZipPath $TargetZip `
+        -ReleaseDate (Get-Date -Format "yyyy-MM-dd") `
+        -Validate
+    if ($LASTEXITCODE -ne 0) {
+        throw "包管理器清单更新或 winget validate 门禁失败！"
+    }
+    git add bucket/tools3000.json packaging/winget/
+    $PkgDiff = @(git diff --cached --name-only)
+    if ($PkgDiff.Count -gt 0) {
+        $PkgCommitMsg = @"
+同步 $TargetTag 版本 Scoop Bucket 与 Winget 安装清单
+
+[业务角度]
+- 将自托管 Scoop Bucket 与 Winget 安装清单更新至 $TargetTag，确保包管理器用户第一时间获取最新正式版本与精确 SHA-256 校验值
+
+[技术角度]
+- 由 update-package-manifests.ps1 根据实测发布产物哈希幂等更新 bucket/tools3000.json 与 packaging/winget/*.yaml，并通过微软官方 winget validate 门禁校验
+"@
+        git commit -m $PkgCommitMsg
+        if ($LASTEXITCODE -ne 0) { throw "提交包管理器清单更新失败！" }
+        Write-Host "[OK] 已提交 $TargetTag 包管理器清单（发版后可执行 wingetcreate submit packaging/winget 同步微软官方源）" -ForegroundColor Green
+    }
+}
 
 # 10. 创建 Tag 并推送到 GitHub (若 LocalOnly 则跳过推送)
 Write-Host "[GIT] 创建标签 $TargetTag..." -ForegroundColor Cyan

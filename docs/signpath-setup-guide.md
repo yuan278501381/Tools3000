@@ -7,7 +7,7 @@
 ## 1. 申请资格与前提条件 (Eligibility)
 
 根据 SignPath Foundation 政策，Tools3000 (Tools3000) 100% 符合其赞助标准：
-- [x] **开源许可证**：采用 OSI 批准的开源协议（本项目为 **MIT License**，见 [LICENSE](file:///c:/repo/tools3000/LICENSE)）；
+- [x] **开源许可证**：采用 OSI 批准的开源协议（本项目为 **GPL-3.0 License**，见 [LICENSE](file:///c:/repo/tools3000/LICENSE)）；
 - [x] **公开可访问**：代码仓库公开托管于 GitHub (`https://github.com/yuan278501381/tools3000`)；
 - [x] **透明构建**：构建流水线完全由 GitHub 托管的官方虚拟机（GitHub-Hosted Runner）公开执行，杜绝私下构建投毒；
 - [x] **无恶意软件历史**：项目不包含广告插件、挖矿代码或恶意行为。
@@ -21,7 +21,7 @@
 2. **填写申请表单 (参考模板)**：
    * **Project Name**: `Tools3000 (Tools3000)`
    * **Project URL / Repository**: `https://github.com/yuan278501381/tools3000`
-   * **License**: `MIT License`
+   * **License**: `GPL-3.0 License`
    * **Maintainer / Organization**: `Yy1 (yuan278501381)`
    * **Project Description**:
      > Tools3000 is an open-source, lightweight Windows productivity toolkit built with modern C++20 and React. It provides system-wide mouse gestures, screen capture/recording with real-time keycast overlays, and high-performance file indexing services.

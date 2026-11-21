@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // SessionIsolation.h — Windows 多会话并发隔离与 WebView2 槽位租约引擎
 //
-// Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 #pragma once
 

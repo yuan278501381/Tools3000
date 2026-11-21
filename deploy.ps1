@@ -664,6 +664,7 @@ if (Test-Path "ui/dist") {
     Write-Log "已复制纯净前端产物 (ui/)"
 }
 if (Test-Path "LICENSE") { Copy-Item "LICENSE" -Destination $StagingDir }
+if (Test-Path "LICENSE-EXCEPTION.md") { Copy-Item "LICENSE-EXCEPTION.md" -Destination $StagingDir }
 $NoticeScript = Join-Path $ScriptDir "scripts\generate-third-party-notices.ps1"
 if (-not (Test-Path -LiteralPath $NoticeScript)) {
     throw "缺少第三方许可与 SBOM 生成脚本: $NoticeScript"
@@ -682,7 +683,7 @@ $ServiceExeArtifact = "Tools3000_Service.exe"
 
 $RequiredArtifacts = @(
     $MainExeArtifact, $ServiceExeArtifact, "Tools3000Core.dll",
-    "LICENSE", "THIRD_PARTY_NOTICES.txt", "SBOM.spdx.json",
+    "LICENSE", "LICENSE-EXCEPTION.md", "THIRD_PARTY_NOTICES.txt", "SBOM.spdx.json",
     "ui\index.html", "plugins\Plugin_Gesture.dll", "plugins\Plugin_Capture.dll",
     "plugins\Plugin_Keycast.dll", "plugins\Plugin_Search.dll",
     "plugins\Plugin_DialogEnhancer.dll",

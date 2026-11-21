@@ -2494,3 +2494,224 @@ TEST(StudioRecorderTest, StudioBackdropCatalogFullCoverageAndZeroCopyrightLeak) 
     EXPECT_EQ(src.find("iMobie"), std::string::npos) << "StudioPreviewWindow.cpp must not scan third-party commercial app folders";
     EXPECT_EQ(src.find("BackgroundData"), std::string::npos) << "StudioPreviewWindow.cpp must not scan third-party FocuSee folders";
 }
+
+TEST(StudioRecorderTest, CompactProxyDeckAndHiResReaderLruMemoryBudget) {
+    using namespace tools3000::capture;
+
+    // 1. 验证演播室代理牌组极致瘦身：180 帧 1280x720 未压缩 BGR -> 112 帧 640x360 内存 JPEG (<8 MiB) + 160x90 单通道灰度差分牌组 (~1.5 MiB)
+    {
+        cv::Mat sceneBefore(720, 1280, CV_8UC3, cv::Scalar(34, 38, 46));
+        cv::rectangle(sceneBefore, cv::Rect(80, 60, 1120, 600), cv::Scalar(52, 58, 70), cv::FILLED);
+        cv::rectangle(sceneBefore, cv::Rect(160, 140, 320, 180), cv::Scalar(90, 120, 210), cv::FILLED);
+
+        cv::Mat sceneAfter = sceneBefore.clone();
+        // 在点击焦点附近制造显著局部 UI 弹窗突变，用于验证灰度差分牌组与原图视觉差分等价
+        cv::rectangle(sceneAfter, cv::Rect(520, 220, 360, 280), cv::Scalar(242, 245, 250), cv::FILLED);
+        cv::rectangle(sceneAfter, cv::Rect(560, 260, 280, 72), cv::Scalar(228, 120, 48), cv::FILLED);
+
+        std::vector<cv::Mat> rawDeck;
+        rawDeck.reserve(180);
+        for (int i = 0; i < 180; ++i) {
+            rawDeck.push_back(i < 90 ? sceneBefore : sceneAfter);
+        }
+
+        std::vector<std::vector<uint8_t>> jpegDeck;
+        std::vector<cv::Mat> visualDiffGrayDeck;
+        int proxyW = 0;
+        int proxyH = 0;
+        const size_t totalJpegBytes = StudioVideoCompositor::compressPreviewDeck(
+            rawDeck, jpegDeck, visualDiffGrayDeck, proxyW, proxyH);
+
+        EXPECT_EQ(jpegDeck.size(), static_cast<size_t>(kStudioProxyMaxFrames));
+        EXPECT_EQ(visualDiffGrayDeck.size(), jpegDeck.size());
+        EXPECT_EQ(proxyW, kStudioProxyMaxLongSide);
+        EXPECT_EQ(proxyH, 360);
+        EXPECT_GT(totalJpegBytes, 0u);
+        EXPECT_LT(totalJpegBytes, 8ULL * 1024ULL * 1024ULL);
+
+        // 验证首尾 JPEG 代理帧可高速无损尺寸解码
+        const cv::Mat decodedFirst = cv::imdecode(jpegDeck.front(), cv::IMREAD_COLOR);
+        const cv::Mat decodedLast = cv::imdecode(jpegDeck.back(), cv::IMREAD_COLOR);
+        ASSERT_FALSE(decodedFirst.empty());
+        ASSERT_FALSE(decodedLast.empty());
+        EXPECT_EQ(decodedFirst.cols, 640);
+        EXPECT_EQ(decodedFirst.rows, 360);
+        EXPECT_EQ(decodedLast.cols, 640);
+        EXPECT_EQ(decodedLast.rows, 360);
+
+        // 验证 160x90 单通道灰度差分牌组总内存锁定 <= 1.6 MiB
+        size_t totalGrayBytes = 0;
+        for (const auto& gray : visualDiffGrayDeck) {
+            ASSERT_EQ(gray.cols, kStudioVisualDiffProbeWidth);
+            ASSERT_EQ(gray.rows, kStudioVisualDiffProbeHeight);
+            ASSERT_EQ(gray.type(), CV_8UC1);
+            totalGrayBytes += gray.total() * gray.elemSize();
+        }
+        EXPECT_LT(totalGrayBytes, 2ULL * 1024ULL * 1024ULL);
+
+        // 验证将 160x90 灰度差分牌组直接传入 refineZoomSegmentsWithVisualDiff 能零重解码保留真实 UI 交互缩放段
+        StudioTimelineData tlGray;
+        tlGray.sourceWidth = 1280;
+        tlGray.sourceHeight = 720;
+        tlGray.durationMs = 4000;
+        StudioZoomSegment seg{};
+        seg.startMs = 1780;
+        seg.endMs = 3100;
+        seg.focusX = 700.0f;
+        seg.focusY = 360.0f;
+        seg.targetZoom = 1.65f;
+        seg.enabled = true;
+        seg.manualInserted = false;
+        tlGray.zoomSegments.push_back(seg);
+
+        StudioTimelineData tlRaw = tlGray;
+        StudioTimelineAnalyzer::refineZoomSegmentsWithVisualDiff(tlGray, visualDiffGrayDeck, 4.0, 0.55f);
+        StudioTimelineAnalyzer::refineZoomSegmentsWithVisualDiff(tlRaw, rawDeck, 4.0, 0.55f);
+        ASSERT_EQ(tlGray.zoomSegments.size(), tlRaw.zoomSegments.size());
+        EXPECT_FALSE(tlGray.zoomSegments.empty());
+    }
+
+    // 2. 验证 StudioHiResFrameReader 顺序播放免写多帧 LRU + 暂停 0ms 单帧命中 + 28 MiB / 4 帧硬预算防线
+    const auto tmpDir = std::filesystem::temp_directory_path() / L"tools3000_studio_mem_budget_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+
+    auto writeSyntheticMp4 = [](const std::string& pathUtf8, int w, int h, int fps, int totalFrames) -> bool {
+        AVFormatContext* fmt = nullptr;
+        if (avformat_alloc_output_context2(&fmt, nullptr, "mp4", pathUtf8.c_str()) < 0 || !fmt) return false;
+        const AVCodec* codec = avcodec_find_encoder_by_name("libx264");
+        if (!codec) codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+        if (!codec) codec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+        if (!codec) {
+            avformat_free_context(fmt);
+            return false;
+        }
+
+        AVCodecContext* ctx = avcodec_alloc_context3(codec);
+        ctx->width = w; ctx->height = h;
+        ctx->time_base = {1, fps}; ctx->framerate = {fps, 1};
+        ctx->gop_size = 5; ctx->max_b_frames = 0;
+        ctx->bit_rate = 6'000'000; ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+        if (fmt->oformat->flags & AVFMT_GLOBALHEADER) ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        if (avcodec_open2(ctx, codec, nullptr) < 0) {
+            avcodec_free_context(&ctx);
+            avformat_free_context(fmt);
+            return false;
+        }
+
+        AVStream* st = avformat_new_stream(fmt, codec);
+        st->time_base = ctx->time_base;
+        avcodec_parameters_from_context(st->codecpar, ctx);
+        if (avio_open(&fmt->pb, pathUtf8.c_str(), AVIO_FLAG_WRITE) < 0 ||
+            avformat_write_header(fmt, nullptr) < 0) {
+            avcodec_free_context(&ctx);
+            if (fmt->pb) avio_closep(&fmt->pb);
+            avformat_free_context(fmt);
+            return false;
+        }
+
+        SwsContext* sws = sws_getContext(w, h, AV_PIX_FMT_BGR24, w, h, ctx->pix_fmt, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        AVFrame* frm = av_frame_alloc();
+        frm->format = ctx->pix_fmt; frm->width = w; frm->height = h;
+        av_frame_get_buffer(frm, 32);
+        AVPacket* pkt = av_packet_alloc();
+
+        for (int i = 0; i < totalFrames; ++i) {
+            const int bVal = (i * 12) % 240;
+            const int rVal = 240 - bVal;
+            cv::Mat bgr(h, w, CV_8UC3, cv::Scalar(bVal, 64, rVal));
+            cv::rectangle(bgr, cv::Rect(80 + i * 24, 100, 220, 140), cv::Scalar(240, 220, 40), cv::FILLED);
+            av_frame_make_writable(frm);
+            const uint8_t* srcSlice[1] = {bgr.data};
+            int srcStride[1] = {static_cast<int>(bgr.step[0])};
+            sws_scale(sws, srcSlice, srcStride, 0, h, frm->data, frm->linesize);
+            frm->pts = i;
+            avcodec_send_frame(ctx, frm);
+            while (avcodec_receive_packet(ctx, pkt) >= 0) {
+                av_packet_rescale_ts(pkt, ctx->time_base, st->time_base);
+                pkt->stream_index = st->index;
+                av_interleaved_write_frame(fmt, pkt);
+                av_packet_unref(pkt);
+            }
+        }
+        avcodec_send_frame(ctx, nullptr);
+        while (avcodec_receive_packet(ctx, pkt) >= 0) {
+            av_packet_rescale_ts(pkt, ctx->time_base, st->time_base);
+            pkt->stream_index = st->index;
+            av_interleaved_write_frame(fmt, pkt);
+            av_packet_unref(pkt);
+        }
+        av_write_trailer(fmt);
+        sws_freeContext(sws);
+        av_packet_free(&pkt);
+        av_frame_free(&frm);
+        avcodec_free_context(&ctx);
+        avio_closep(&fmt->pb);
+        avformat_free_context(fmt);
+        return true;
+    };
+
+    // 2a. 1600x900（单帧 4.32 MiB）：检验顺序播放 0 污染多帧 LRU + 暂停 0ms 单帧命中 + 4 帧条目上限
+    {
+        const std::string mp4Path = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"seq_1600x900.mp4").wstring());
+        ASSERT_TRUE(writeSyntheticMp4(mp4Path, 1600, 900, 15, 24));
+
+        StudioHiResFrameReader reader;
+        ASSERT_TRUE(reader.open(mp4Path, 3200));
+
+        cv::Mat frame;
+        const double seqTimes[] = {0.067, 0.200, 0.333, 0.467, 0.600, 0.800};
+        for (double t : seqTimes) {
+            ASSERT_TRUE(reader.decodeFrameAt(t, frame, /*cacheInLru=*/false));
+            ASSERT_EQ(frame.cols, 1600);
+            ASSERT_EQ(frame.rows, 900);
+            EXPECT_EQ(reader.cachedFrameCount(), 0u);
+            EXPECT_EQ(reader.cachedMemoryBytes(), 0u);
+        }
+
+        // 顺序播放期间按下空格暂停：即使多帧 LRU 为空，tryGetCachedFrame 必须 0ms 命中最近解码帧
+        cv::Mat pausedCached;
+        EXPECT_TRUE(reader.tryGetCachedFrame(0.800, pausedCached, 0.020));
+        ASSERT_EQ(pausedCached.cols, 1600);
+        EXPECT_EQ(pausedCached.rows, 900);
+        EXPECT_EQ(reader.cachedFrameCount(), 0u);
+
+        // 暂停精修模式连续随机 Seek 6 个不同时刻：严格封顶于 <= 4 帧且 <= 28 MiB
+        const double seekTimes[] = {0.06, 0.26, 0.46, 0.66, 0.86, 1.12};
+        for (double t : seekTimes) {
+            ASSERT_TRUE(reader.decodeFrameAt(t, frame, /*cacheInLru=*/true));
+            EXPECT_LE(reader.cachedFrameCount(), StudioHiResFrameReader::kMaxLruCacheEntries);
+            EXPECT_LE(reader.cachedMemoryBytes(), StudioHiResFrameReader::kMaxLruCacheBytes);
+        }
+        EXPECT_EQ(reader.cachedFrameCount(), StudioHiResFrameReader::kMaxLruCacheEntries);
+
+        cv::Mat lruHit;
+        EXPECT_TRUE(reader.tryGetCachedFrame(1.12, lruHit, 0.040));
+        EXPECT_EQ(lruHit.cols, 1600);
+
+        reader.close();
+        EXPECT_EQ(reader.cachedFrameCount(), 0u);
+        EXPECT_EQ(reader.cachedMemoryBytes(), 0u);
+    }
+
+    // 2b. 2560x1440（单帧 ~11.06 MiB）：检验 28 MiB 字节上限硬淘汰（最多留存 2 帧 ~22.1 MiB，绝不超过 28 MiB）
+    {
+        const std::string mp42kPath = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"seek_2560x1440.mp4").wstring());
+        ASSERT_TRUE(writeSyntheticMp4(mp42kPath, 2560, 1440, 10, 12));
+
+        StudioHiResFrameReader reader2k;
+        ASSERT_TRUE(reader2k.open(mp42kPath, 3200));
+        cv::Mat frame2k;
+        const double seek2kTimes[] = {0.10, 0.30, 0.50, 0.70, 0.90};
+        for (double t : seek2kTimes) {
+            ASSERT_TRUE(reader2k.decodeFrameAt(t, frame2k, /*cacheInLru=*/true));
+            EXPECT_LE(reader2k.cachedMemoryBytes(), StudioHiResFrameReader::kMaxLruCacheBytes);
+            EXPECT_LE(reader2k.cachedFrameCount(), 2u);
+        }
+        EXPECT_EQ(reader2k.cachedFrameCount(), 2u);
+        reader2k.close();
+    }
+
+    std::filesystem::remove_all(tmpDir, ec);
+}

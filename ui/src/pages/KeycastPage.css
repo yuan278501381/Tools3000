@@ -150,8 +150,7 @@
 .keycast-page__restore-capsule:hover {
   background: var(--primary);
   color: #ffffff;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-sm);
 }
 
 .keycast-page__number-input {
@@ -498,9 +497,8 @@
 
 .keycast-page__monitor-pill:hover {
   color: var(--text-primary);
-  border-color: var(--primary-dim);
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--card-border));
   background: var(--card-hover);
-  transform: translateY(-1px);
 }
 
 .keycast-page__monitor-pill.active {

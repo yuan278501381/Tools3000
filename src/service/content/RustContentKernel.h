@@ -1,6 +1,6 @@
 #pragma once
 // Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors.
-// All rights reserved. | MIT License
+// All rights reserved. | GPL-3.0 License
 //
 // C++ FFI declarations for the Rust SIMD content search & linear-time regex kernel (`tools3000_content_rs`).
 

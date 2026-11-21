@@ -1305,11 +1305,14 @@
     "authorGithubTip": "원작자 GitHub 프로필 방문",
     "repository": "오픈소스 저장소",
     "repositoryTip": "GitHub 오픈소스 프로젝트 저장소 방문",
-    "licenseTip": "MIT 라이선스 전문 보기",
+    "licenseTip": "GNU GPL v3.0 라이선스 전문 보기",
     "exportFailed": "내보내기에 실패했습니다",
     "authorBadge": "개발자 · Yy1 (@yuan278501381)"
   },
   "sidebar": {
+    "groupSystem": "시스템",
+    "groupCoreTools": "핵심 도구",
+    "groupInsights": "인사이트",
     "themeToggleLight": "라이트 테마로 전환",
     "themeToggleDark": "다크 테마로 전환",
     "appearanceTitle": "외관 및 테마 설정",

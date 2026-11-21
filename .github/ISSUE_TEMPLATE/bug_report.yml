@@ -1,0 +1,59 @@
+name: 问题反馈 / Bug Report
+description: 反馈在使用 Tools3000 过程中遇到的异常、崩溃、识别/录制偏差或兼容性问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢您反馈问题！越清晰的复现信息与环境参数，越有助于快速定位并修复。
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 简述您遇到的现象，以及您期望的正常行为
+      placeholder: 例如：在 4K 200% 缩放副屏上按 F1 截图时，放大镜偏移约 10px...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请按顺序列出最小复现步骤
+      placeholder: |
+        1. 打开 ...
+        2. 按下快捷键 ...
+        3. 观察到 ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Tools3000 版本
+      description: 可在「设置 -> 关于」查看
+      placeholder: 例如：v1.0.11（标准安装版 / 便携版 / Scoop）
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统与架构
+      options:
+        - Windows 11 (x64)
+        - Windows 11 (ARM64)
+        - Windows 10 (x64)
+        - Windows Server 2019 / 2022 / 2025
+        - 其他
+    validations:
+      required: true
+  - type: input
+    id: display
+    attributes:
+      label: 显示器分辨率与缩放比例（如涉及界面/截图/录屏）
+      placeholder: 例如：主屏 3456x2160 200%，副屏 1920x1080 100%
+  - type: textarea
+    id: logs
+    attributes:
+      label: 截图 / 诊断日志（可选）
+      description: 可在「设置 -> 通用设置 -> 日志目录」中找到最近日志并脱敏后粘贴
+      render: text

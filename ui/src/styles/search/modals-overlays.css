@@ -6,18 +6,18 @@
 .search-context-menu {
     position: fixed;
     z-index: 9999;
-    min-width: 235px;
+    min-width: 240px;
     max-width: 320px;
     max-height: calc(100vh - 20px);
     overflow-y: auto;
     scrollbar-width: thin;
-    background: var(--bg-elevated, #242730);
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
-    border: 1px solid var(--search-item-border, rgba(255, 255, 255, 0.12));
-    border-radius: 10px;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 4px 12px rgba(0, 0, 0, 0.25);
-    padding: 6px;
+    background: var(--bg-elevated);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-lg);
+    padding: 5px;
     user-select: none;
     animation: contextMenuPop 0.14s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -81,18 +81,18 @@
 }
 
 .search-context-menu-item:hover {
-    background: var(--primary);
-    color: #ffffff !important;
+    background: color-mix(in srgb, var(--primary) 11%, transparent);
+    color: var(--search-text-main) !important;
 }
 
 .search-context-menu-item .menu-icon {
     flex-shrink: 0;
-    color: var(--primary);
+    color: var(--search-text-muted);
     transition: color 0.12s ease;
 }
 
 .search-context-menu-item:hover .menu-icon {
-    color: #ffffff !important;
+    color: var(--primary) !important;
 }
 
 .search-context-menu-item .menu-label {
@@ -103,21 +103,22 @@
 }
 
 .search-context-menu-item .menu-shortcut {
-    font-family: inherit;
+    font-family: var(--font-mono);
     font-size: 12px;
     color: var(--search-text-muted);
     background: var(--search-kbd-bg);
     border: 1px solid var(--search-kbd-border);
-    border-radius: 3.5px;
-    padding: 1px 4.5px;
+    box-shadow: var(--search-kbd-shadow);
+    border-radius: 4px;
+    padding: 1px 5px;
     flex-shrink: 0;
     transition: all 0.12s ease;
 }
 
 .search-context-menu-item:hover .menu-shortcut {
-    color: #ffffff !important;
-    background: rgba(255, 255, 255, 0.22);
-    border-color: rgba(255, 255, 255, 0.35);
+    color: var(--primary) !important;
+    background: var(--thumb-bg);
+    border-color: color-mix(in srgb, var(--primary) 30%, var(--search-kbd-border));
 }
 
 /* ── 重命名模态对话框 ────────────────────────────────────────────── */

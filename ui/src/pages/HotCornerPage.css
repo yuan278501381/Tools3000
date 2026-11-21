@@ -126,16 +126,11 @@
 .hotcorner-page__corner:hover,
 .hotcorner-page__corner:focus-within,
 .hotcorner-page__corner:has(.uikit-select-wrapper--open) {
-  transform: translateY(-2px);
   border-color: var(--primary);
   box-shadow:
-    0 12px 30px rgba(0, 0, 0, 0.4),
+    var(--shadow-lg),
     0 0 0 2px var(--primary-dim);
   z-index: 100;
-}
-
-.hotcorner-page__corner:active {
-  transform: translateY(0);
 }
 
 /* 四角定位 (带安全微内缩，防止视口边缘截断) */

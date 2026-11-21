@@ -1,0 +1,39 @@
+{
+  "version": "1.0.11",
+  "description": "Lightweight native Windows all-in-one productivity suite: instant NTFS file & content search, QuickLook, screenshot markup, scrolling capture, offline OCR, screen recorder with auto-zoom Studio, and global mouse gestures.",
+  "homepage": "https://github.com/yuan278501381/Tools3000",
+  "license": "GPL-3.0-only",
+  "notes": [
+    "Tools3000 runs in portable mode under Scoop with user settings persisted in 'data'.",
+    "Run 'tools3000' from terminal or launch Tools3000 from the Start Menu shortcut."
+  ],
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/yuan278501381/Tools3000/releases/download/v1.0.11/Tools3000-v1.0.11-win-x64-portable.zip",
+      "hash": "b9f76978e4a17358519621420e66d1e6f31c2dd947dedc0c5f014ba8f6d17871"
+    }
+  },
+  "bin": [
+    "Tools3000.exe",
+    "tools3000"
+  ],
+  "shortcuts": [
+    "Tools3000.exe",
+    "Tools3000"
+  ],
+  "persist": "data",
+  "checkver": {
+    "github": "https://github.com/yuan278501381/Tools3000"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/yuan278501381/Tools3000/releases/download/v$version/Tools3000-v$version-win-x64-portable.zip",
+        "hash": {
+          "url": "https://github.com/yuan278501381/Tools3000/releases/download/v$version/SHA256SUMS.txt",
+          "mode": "extract"
+        }
+      }
+    }
+  }
+}

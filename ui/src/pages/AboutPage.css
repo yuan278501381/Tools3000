@@ -83,6 +83,8 @@
   font-size: 0.95rem;
   font-weight: 700;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   background: rgba(241, 91, 66, 0.18);
   color: #ff8b62;
   border: 1px solid rgba(241, 91, 66, 0.35);
@@ -316,38 +318,103 @@
   .about-update-spin { animation: none; }
 }
 
-/* ── 依赖列表 ─────────────────────────────────────────────────────────────── */
+/* ── 精工 2 列 Bento 技术栈微卡片矩阵 ──────────────────────────────────────── */
 .about-deps {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 6px 0;
 }
 
 .about-dep-item {
   display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-  padding: var(--spacing-sm) 0;
-  border-bottom: 1px solid var(--card-border);
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  background: var(--well-bg);
+  border: 1px solid var(--card-border);
+  transition: border-color 150ms ease, background 150ms ease;
 }
 
-.about-dep-item:last-child {
-  border-bottom: none;
+.about-dep-item:hover {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--card-border));
+  background: var(--card-hover);
+}
+
+.about-dep-item__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .about-dep-name {
-  width: 220px;
-  min-width: 220px;
-  flex-shrink: 0;
-  font-weight: 600;
-  font-size: 0.88rem;
+  font-weight: 650;
+  font-size: 0.87rem;
   color: var(--text-primary);
   font-family: var(--font-mono);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .about-dep-purpose {
   font-size: 0.83rem;
+  font-weight: 500;
   color: var(--text-muted);
-  margin-left: auto;
+  line-height: 1.45;
+}
+
+/* ── 4 格专业 Telemetry 实时性能仪表盘 ──────────────────────────────────────── */
+.about-perf-panel {
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+
+.about-perf-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.about-perf-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 13px 14px;
+  border-radius: 11px;
+  background: var(--well-bg);
+  border: 1px solid var(--card-border);
+  box-shadow: var(--well-shadow);
+}
+
+.about-perf-tile__label {
+  font-size: 0.83rem;
+  font-weight: 550;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.about-perf-tile__value {
+  font-size: 1.24rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+@media (max-width: 740px) {
+  .about-deps {
+    grid-template-columns: 1fr;
+  }
+  .about-perf-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 /* ── 底部版权署名 ───────────────────────────────────────────────────────────── */

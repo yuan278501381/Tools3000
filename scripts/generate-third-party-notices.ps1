@@ -242,8 +242,8 @@ $RootPackage = [pscustomobject]@{
     versionInfo = $ProjectVersion
     downloadLocation = "https://github.com/yuan278501381/Tools3000"
     filesAnalyzed = $false
-    licenseConcluded = "MIT"
-    licenseDeclared = "MIT"
+    licenseConcluded = "GPL-3.0-only"
+    licenseDeclared = "GPL-3.0-only"
     copyrightText = "Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors"
     sourceInfo = "Project release artifact"
 }

@@ -3,7 +3,7 @@
 > **文档版本**：v1.0.0 (2026-09-01)  
 > **责任架构师**：Yy1 (`@yuan278501381`)  
 > **模块范围**：`Tools3000Core` (`ShellContextMenuService`), `Plugin_Gesture` (`MouseHook`, `GestureEngine`, `GestureTrailOverlay`), `Plugin_Search` (`SearchApp.tsx`)  
-> **开源许可证**：MIT License  
+> **开源许可证**：GPL-3.0 License  
 
 ---
 

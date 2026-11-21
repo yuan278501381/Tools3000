@@ -2,14 +2,14 @@
  * UIKit.css — 通用 UI 组件样式
  * ───────────────────────────────────────────────────────────────────────────── */
 
-/* ── Card ─────────────────────────────────────────────────────────────────── */
+/* ── Card (Apple / Linear 沉稳白瓷/曜石建筑级容器，零无意义悬停跳动) ───────── */
 .uikit-card {
   position: relative;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: var(--radius-md);
+  border-radius: 14px;
   overflow: visible;
-  transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   box-shadow: var(--shadow-sm), var(--card-highlight);
 }
 
@@ -19,18 +19,16 @@
 }
 
 .uikit-card:hover {
-  border-color: color-mix(in srgb, var(--primary) 32%, var(--card-border));
-  box-shadow: var(--shadow-md), var(--card-highlight);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--text-muted) 22%, var(--card-border));
 }
 
 .uikit-card__header {
-  padding: var(--spacing-md) var(--spacing-lg);
-  border-bottom: 1px solid var(--card-border);
+  padding: 15px 22px;
+  border-bottom: 1px solid var(--hairline);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
 }
 
 .uikit-card__titles {
@@ -39,16 +37,16 @@
 }
 
 .uikit-card__title {
-  font-size: 0.96rem;
-  font-weight: 600;
+  font-size: 0.97rem;
+  font-weight: 650;
   color: var(--text-primary);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
 }
 
 .uikit-card__subtitle {
   font-size: 0.84rem;
   color: var(--text-muted);
-  line-height: 1.45;
+  line-height: 1.48;
   margin-top: 2px;
 }
 
@@ -57,10 +55,47 @@
 }
 
 .uikit-card__body {
-  padding: var(--spacing-md) var(--spacing-lg);
+  padding: 10px 22px 12px;
 }
 
-/* ── 世界级统一 3D 拟物胶囊开关 (Unified 3D Capsule Toggle) ───────────────── */
+/* ── Apple Grouped Inset List 旗舰内缩分隔线与圆角柔光行悬停 ──────────────── */
+.uikit-card__body > .uikit-toggle--with-text,
+.uikit-card__body > .uikit-setting-row {
+  position: relative;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.uikit-card__body > .uikit-toggle--with-text::before,
+.uikit-card__body > .uikit-setting-row::before {
+  content: '';
+  position: absolute;
+  inset: 2px -12px;
+  border-radius: 10px;
+  background: transparent;
+  pointer-events: none;
+  transition: background 140ms ease;
+}
+
+.uikit-card__body > .uikit-toggle--with-text:hover::before,
+.uikit-card__body > .uikit-setting-row:hover::before {
+  background: var(--ghost-hover-bg);
+}
+
+.uikit-card__body > .uikit-toggle--with-text > *,
+.uikit-card__body > .uikit-setting-row > * {
+  position: relative;
+  z-index: 1;
+}
+
+.uikit-toggle--with-text + .uikit-toggle--with-text,
+.uikit-toggle--with-text + .uikit-setting-row,
+.uikit-setting-row + .uikit-toggle--with-text,
+.uikit-setting-row + .uikit-setting-row {
+  border-top: 1px solid var(--hairline);
+}
+
+/* ── macOS Sonoma 级温润阻尼胶囊开关 (Refined Tactile Capsule Toggle) ─────── */
 .uikit-toggle {
   display: flex;
   align-items: center;
@@ -69,8 +104,8 @@
 }
 
 .uikit-toggle--with-text {
-  padding: var(--spacing-sm) 0;
-  min-height: 42px;
+  padding: 11px 0;
+  min-height: 46px;
   gap: var(--spacing-md);
 }
 
@@ -94,10 +129,10 @@
 }
 
 .uikit-toggle__label {
-  font-size: 0.94rem;
+  font-size: 0.93rem;
   color: var(--text-primary);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.012em;
   cursor: pointer;
 }
 
@@ -107,7 +142,7 @@
   line-height: 1.5;
 }
 
-/* ── 开关外壳与导轨槽 (3D Track Groove) ──────────────────────────────────── */
+/* ── 开关外壳与导轨槽 (Refined Recessed Groove) ──────────────────────────── */
 .uikit-toggle__switch {
   position: relative;
   display: inline-block;
@@ -129,33 +164,34 @@
   position: absolute;
   inset: 0;
   border-radius: 9999px;
-  background: var(--input-border, #cbd5e1);
-  box-shadow: inset 0 1.5px 3px rgba(0, 0, 0, 0.14), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
-  transition: background 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  background: color-mix(in srgb, var(--text-muted) 26%, var(--well-bg));
+  box-shadow: inset 0 1px 2.5px rgba(15, 23, 42, 0.16), inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+  transition: background 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   overflow: hidden;
 }
 
 [data-theme="dark"] .uikit-toggle__slider {
-  background: rgba(255, 255, 255, 0.12);
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1.5px 3px rgba(0, 0, 0, 0.48), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
-/* 激活态（主题色 3D 渐变与能量辉光） */
+/* 激活态（克制温润立体色轨，杜绝廉价霓虹外发晕） */
 .uikit-toggle__switch input:checked + .uikit-toggle__slider {
-  background: linear-gradient(180deg, var(--primary) 0%, var(--primary-hover) 100%);
-  box-shadow: inset 0 1px 1.5px rgba(255, 255, 255, 0.4),
-              0 0 12px var(--primary-glow),
-              inset 0 -1px 2px rgba(0, 0, 0, 0.15);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, #ffffff 8%, var(--primary)) 0%,
+    var(--primary) 100%
+  );
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.28),
+              inset 0 -1px 1.5px rgba(0, 0, 0, 0.14);
 }
 
 /* 激活态（语义翡翠绿） */
 .uikit-toggle--success .uikit-toggle__switch input:checked + .uikit-toggle__slider {
   background: linear-gradient(180deg, #10b981 0%, #059669 100%);
-  box-shadow: inset 0 1px 1.5px rgba(255, 255, 255, 0.45),
-              0 0 12px rgba(16, 185, 129, 0.45),
-              inset 0 -1px 2px rgba(0, 0, 0, 0.18);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.3),
+              inset 0 -1px 1.5px rgba(0, 0, 0, 0.16);
 }
 
 /* 全键盘焦点可访问性光环 */
@@ -164,28 +200,25 @@
   outline-offset: 2px;
 }
 
-/* ── 3D 悬浮微晶体滑块 (3D Floating Thumb) ────────────────────────────────── */
+/* ── 悬浮微晶体滑块 (Precision Tactile Thumb) ─────────────────────────────── */
 .uikit-toggle__thumb {
   position: absolute;
   top: 2px;
   left: 2px;
   border-radius: 50%;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.22),
-              0 1px 1.5px rgba(0, 0, 0, 0.14),
-              inset 0 1px 1px #ffffff,
-              inset 0 -1px 1px rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+  box-shadow: 0 1.5px 3px rgba(15, 23, 42, 0.24),
+              0 0.5px 1px rgba(15, 23, 42, 0.14);
   will-change: transform, width;
-  transition: transform 0.36s cubic-bezier(0.34, 1.56, 0.64, 1),
-              width 0.22s ease,
-              background 0.25s ease;
+  transition: transform 0.28s cubic-bezier(0.32, 1.32, 0.64, 1),
+              width 0.18s ease,
+              background 0.2s ease;
 }
 
 [data-theme="dark"] .uikit-toggle__thumb {
-  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
-  box-shadow: 0 2.5px 5px rgba(0, 0, 0, 0.5),
-              0 1px 1.5px rgba(0, 0, 0, 0.3),
-              inset 0 1px 1px rgba(255, 255, 255, 0.9);
+  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5),
+              0 1px 1px rgba(0, 0, 0, 0.28);
 }
 
 /* ── 尺寸规格矩阵 (Size Matrix) ────────────────────────────────────────── */
@@ -255,13 +288,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--spacing-sm) 0;
-  min-height: 44px;
+  padding: 11px 0;
+  min-height: 46px;
   gap: var(--spacing-md);
 }
 
 .uikit-setting-row + .uikit-setting-row {
-  border-top: 1px solid var(--card-border);
+  border-top: 1px solid var(--hairline);
 }
 
 .uikit-setting-row__info {
@@ -308,27 +341,44 @@
   width: 100%;
 }
 
-/* ── Setting Group ────────────────────────────────────────────────────────── */
+/* ── Setting Group (精工微晶分组徽章与沉稳眉标) ─────────────────────────── */
 .uikit-group {
-  margin-bottom: var(--spacing-lg);
+  margin-bottom: 24px;
 }
 
 .uikit-group__header {
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
-  margin-bottom: var(--spacing-md);
+  gap: 10px;
+  margin-bottom: 11px;
+  padding-left: 2px;
 }
 
 .uikit-group__icon {
-  font-size: 1.1rem;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--card-bg));
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--card-border));
+  box-shadow: var(--shadow-sm);
+}
+
+.uikit-group__icon svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.2;
 }
 
 .uikit-group__title {
-  font-size: 1rem;
-  font-weight: 600;
+  font-size: 0.96rem;
+  font-weight: 650;
   color: var(--text-primary);
-  letter-spacing: 0.01em;
+  letter-spacing: -0.015em;
 }
 
 .uikit-group__content {
@@ -392,30 +442,30 @@
   gap: 10px;
   width: 100%;
   padding: 7px 12px;
-  border-radius: var(--radius-sm);
+  border-radius: 9px;
   border: 1px solid var(--input-border);
   background: var(--input-bg);
   color: var(--text-primary);
   font-size: var(--text-sm, 0.88rem);
   font-family: inherit;
-  font-weight: 500;
+  font-weight: 550;
   cursor: pointer;
   outline: none;
   user-select: none;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
   box-shadow: var(--shadow-sm);
 }
 
 .uikit-select-trigger:hover:not(:disabled) {
-  background: var(--bg-surface-hover, rgba(255, 255, 255, 0.08));
-  border-color: var(--card-border-hover, rgba(255, 255, 255, 0.18));
+  background: var(--card-hover);
+  border-color: color-mix(in srgb, var(--text-muted) 35%, var(--input-border));
 }
 
 .uikit-select-wrapper--open .uikit-select-trigger,
 .uikit-select-trigger:focus-visible {
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px var(--primary-dim);
-  background: var(--bg-surface-hover, rgba(255, 255, 255, 0.08));
+  box-shadow: 0 0 0 3px var(--primary-dim);
+  background: var(--card-bg);
 }
 
 .uikit-select-trigger:disabled {
@@ -451,13 +501,13 @@
   min-width: 100%;
   max-height: 220px;
   overflow-y: auto;
-  padding: 4px;
+  padding: 5px;
   background: var(--bg-elevated);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid var(--border-dark, rgba(255, 255, 255, 0.12));
-  border-radius: var(--radius-md);
-  box-shadow: 0 16px 36px -4px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--card-border);
+  border-radius: 11px;
+  box-shadow: var(--shadow-lg);
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
@@ -544,62 +594,76 @@
   flex-shrink: 0;
 }
 
-/* ── Button ───────────────────────────────────────────────────────────────── */
+/* ── Button (物理立体折射键帽质感) ─────────────────────────────────────────── */
 .uikit-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: 9px;
   font-family: inherit;
   font-weight: 600;
   cursor: pointer;
   outline: none;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform 110ms ease;
   white-space: nowrap;
 }
 
-.uikit-btn--md { padding: 8px 16px; font-size: 0.85rem; }
-.uikit-btn--sm { padding: 4px 10px; font-size: var(--text-sm, 0.86rem); }
+.uikit-btn:active:not(:disabled) {
+  transform: scale(0.985);
+}
 
-.uikit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.uikit-btn--md { padding: 8px 16px; font-size: 0.86rem; }
+.uikit-btn--sm { padding: 5px 11px; font-size: var(--text-sm, 0.86rem); }
+
+.uikit-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .uikit-btn--primary {
-  background: var(--primary);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, #ffffff 10%, var(--primary)) 0%,
+    var(--primary) 100%
+  );
+  border-color: color-mix(in srgb, #000000 12%, var(--primary));
   color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 1px 2px rgba(0, 0, 0, 0.16);
 }
 .uikit-btn--primary:not(:disabled):hover {
-  box-shadow: 0 0 12px var(--primary-glow);
+  filter: brightness(1.05);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 4px 14px -2px var(--primary-glow);
 }
 
 .uikit-btn--secondary {
-  background: var(--bg-secondary);
-  border-color: var(--card-border);
+  background: var(--thumb-bg);
+  border-color: var(--input-border);
   color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
 }
 .uikit-btn--secondary:not(:disabled):hover {
-  background: var(--bg-tertiary);
-  border-color: var(--primary);
+  background: var(--card-hover);
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--input-border));
 }
 
 .uikit-btn--ghost {
   background: transparent;
   border-color: var(--input-border);
-  color: var(--text-primary);
+  color: var(--text-secondary);
 }
 .uikit-btn--ghost:not(:disabled):hover {
-  border-color: var(--primary);
-  color: var(--primary);
+  background: var(--ghost-hover-bg);
+  border-color: color-mix(in srgb, var(--text-muted) 35%, var(--input-border));
+  color: var(--text-primary);
 }
 
 .uikit-btn--danger {
-  background: transparent;
-  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
   color: var(--danger);
 }
 .uikit-btn--danger:not(:disabled):hover {
   background: var(--danger);
+  border-color: var(--danger);
   color: #fff;
 }
 
@@ -607,20 +671,22 @@
 .uikit-input {
   width: 100%;
   padding: 8px 12px;
-  border-radius: var(--radius-sm);
+  border-radius: 9px;
   border: 1px solid var(--input-border);
   background: var(--input-bg);
   color: var(--text-primary);
-  font-size: 0.85rem;
+  font-size: 0.86rem;
   font-family: inherit;
   outline: none;
-  transition: all var(--transition-fast);
+  box-shadow: var(--well-shadow);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
   box-sizing: border-box;
 }
 
 .uikit-input:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px var(--primary-dim);
+  background: var(--card-bg);
+  box-shadow: 0 0 0 3px var(--primary-dim);
 }
 
 .uikit-input:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -1085,50 +1151,55 @@
   font-size: var(--text-sm, 0.86rem);
 }
 
-/* ── Tabs / Segmented Control ─────────────────────────────────────────────── */
+/* ── Tabs / Segmented Control (Apple / Linear 沉降滑槽 + 立体滑块) ─────────── */
 .uikit-tabs {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px;
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  border-radius: var(--radius-md, 10px);
+  gap: 3px;
+  padding: 3px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  border-radius: 10px;
+  box-shadow: var(--well-shadow);
   width: fit-content;
 }
 
 .uikit-tab {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
-  border-radius: var(--radius-sm, 7px);
+  gap: 7px;
+  padding: 6px 13px;
+  border-radius: 7px;
   background: transparent;
   border: 1px solid transparent;
   color: var(--text-secondary);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 550;
   cursor: pointer;
-  transition: all var(--transition-fast, 0.15s ease);
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
   user-select: none;
 }
 
 .uikit-tab:hover:not(.uikit-tab--active):not(:disabled) {
   color: var(--text-primary);
-  background: var(--card-bg-hover, rgba(255, 255, 255, 0.05));
+  background: var(--ghost-hover-bg);
 }
 
 .uikit-tab--active {
+  color: var(--text-primary);
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
+}
+
+.uikit-tab--active .uikit-tab__icon {
   color: var(--primary);
-  background: var(--primary-dim);
-  border-color: transparent;
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 
 .uikit-tab--active:hover {
-  color: var(--primary-hover, var(--primary));
-  background: var(--primary-dim);
+  color: var(--text-primary);
+  background: var(--thumb-bg);
 }
 
 .uikit-tab:disabled {
@@ -1494,21 +1565,22 @@
   flex-shrink: 0;
 }
 
-/* ── 通用无级滑块与分段预置胶囊 (Continuous Slider & Segmented Presets) ─────── */
+/* ── 通用无级滑块与分段预置胶囊 (Apple / Linear 沉降滑槽 + 白瓷/曜石立体滑块) ── */
 .uikit-segmented {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   padding: 3px;
-  border-radius: var(--radius-md);
-  background: var(--input-bg);
-  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  box-shadow: var(--well-shadow);
 }
 
 .uikit-segmented__btn {
   padding: 5px 12px;
-  border: none;
-  border-radius: calc(var(--radius-md) - 2px);
+  border: 1px solid transparent;
+  border-radius: 7px;
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--font-sans);
@@ -1516,34 +1588,63 @@
   font-weight: 550;
   line-height: 1.4;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .uikit-segmented__btn:hover:not(.uikit-segmented__btn--active) {
   color: var(--text-primary);
-  background: var(--card-bg);
+  background: var(--ghost-hover-bg);
 }
 
 .uikit-segmented__btn--active {
-  background: var(--primary);
-  color: #ffffff;
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
+  color: var(--text-primary);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
 }
 
 .uikit-slider-control {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  min-width: 196px;
+  gap: 12px;
+  min-width: 200px;
 }
 
 .uikit-slider-input {
+  -webkit-appearance: none;
+  appearance: none;
   flex: 1;
   min-width: 120px;
   height: 5px;
-  accent-color: var(--primary);
+  border-radius: 999px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  box-shadow: var(--well-shadow);
+  outline: none;
   cursor: pointer;
+}
+
+.uikit-slider-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid var(--primary);
+  box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.24), 0 0 0 1px rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transition: transform 140ms var(--ease-spring), box-shadow 140ms ease;
+}
+
+.uikit-slider-input::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28), 0 0 0 3.5px var(--primary-dim);
+}
+
+.uikit-slider-input:active::-webkit-slider-thumb {
+  transform: scale(1.04);
 }
 
 .uikit-slider-value {

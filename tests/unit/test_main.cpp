@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <windows.h>
+#include <psapi.h>
 #include <sddl.h>
 // WIN32_LEAN_AND_MEAN removes COM declarations from windows.h. UI Automation
 // MIDL headers need them before their forward declarations.
@@ -59,7 +60,10 @@
 #include "ocr/OcrResultWindow.h"
 #include "ocr/OcrEngine.h"
 #include "ocr/DeepOcrEngine.h"
+#include "ocr/OcrWorkerClient.h"
 #include "ocr/OcrTableReconstructor.h"
+#include "capture/StudioExportWorker.h"
+#include "capture/RecordEncodeWorker.h"
 #include "common/AtomicFile.h"
 #include "service/PipeClientAuth.h"
 #include "service/content/PdfExtractor.h"

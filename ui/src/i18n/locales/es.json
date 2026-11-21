@@ -1305,11 +1305,14 @@
     "authorGithubTip": "Visitar el perfil de GitHub del autor original",
     "repository": "Repositorio",
     "repositoryTip": "Visitar el repositorio de código abierto en GitHub",
-    "licenseTip": "Ver detalles de la licencia MIT",
+    "licenseTip": "Ver detalles de la licencia GNU GPL v3.0",
     "exportFailed": "Error al exportar",
     "authorBadge": "Autor · Yy1 (@yuan278501381)"
   },
   "sidebar": {
+    "groupSystem": "Sistema",
+    "groupCoreTools": "Herramientas",
+    "groupInsights": "Información",
     "themeToggleLight": "Cambiar a tema claro",
     "themeToggleDark": "Cambiar a tema oscuro",
     "appearanceTitle": "Apariencia y temas",

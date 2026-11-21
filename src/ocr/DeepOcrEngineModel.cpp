@@ -352,7 +352,22 @@ bool DeepOcrEngine::isServerModelInstalled() const {
     return installed && isServerRecModelPresent(dir);
 }
 
+void DeepOcrEngine::setModelTierOverrideForWorker(const std::string& tier) {
+    std::lock_guard<std::mutex> lock(m_pathMutex);
+    std::string normalized = tier;
+    for (char& ch : normalized) {
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    }
+    m_workerModelTierOverride = (normalized == "server" || normalized == "mobile") ? normalized : std::string{};
+}
+
 std::string DeepOcrEngine::configuredModelTier() const {
+    {
+        std::lock_guard<std::mutex> lock(m_pathMutex);
+        if (!m_workerModelTierOverride.empty()) {
+            return m_workerModelTierOverride;
+        }
+    }
     try {
         std::string tier = tools3000::core::ConfigManager::instance().get<std::string>("/ocr/modelTier", "mobile");
         for (char& ch : tier) {
@@ -1065,9 +1080,11 @@ void DeepOcrEngine::downloadWorkerLoop(std::stop_token stopToken, std::filesyste
 
     m_downloadingServer.store(false, std::memory_order_release);
     m_downloading.store(false, std::memory_order_release);
-    deep_ocr_detail::cleanupDeepOcrWorkingSet();
     if (allSucceeded && !m_shuttingDown.load(std::memory_order_acquire)) {
-        warmupAsync(100);
+        // 清空旧档位驻留会话，下次识别自动按新档位按需懒加载，杜绝后台空占显存
+        releaseLoadedModels();
+    } else {
+        deep_ocr_detail::cleanupDeepOcrWorkingSet();
     }
 }
 

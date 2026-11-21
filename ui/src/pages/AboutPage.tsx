@@ -95,6 +95,7 @@ export const AboutPage: FC = () => {
   const [geekMode, setGeekMode] = useState(false);
   const [metrics, setMetrics] = useState<PerfMetrics | null>(null);
   const [version, setVersion] = useState(__TOOLS3000_VERSION__);
+  const [buildDate, setBuildDate] = useState(__TOOLS3000_BUILD_DATE__);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateResult | null>(null);
 
@@ -116,9 +117,10 @@ export const AboutPage: FC = () => {
   });
 
   useEffect(() => {
-    void bridgeRequest<{ version?: unknown }>('app.getSystemInfo')
+    void bridgeRequest<{ version?: unknown; buildDate?: unknown }>('app.getSystemInfo')
       .then((info) => {
         if (typeof info.version === 'string' && info.version.trim()) setVersion(info.version);
+        if (typeof info.buildDate === 'string' && info.buildDate.trim()) setBuildDate(info.buildDate.trim());
       })
       .catch(() => undefined);
   }, []);
@@ -202,7 +204,9 @@ export const AboutPage: FC = () => {
         <div className="about-grand-showcase__text">
           <div className="about-grand-showcase__title-row">
             <h1 className="about-grand-showcase__title">Tools3000</h1>
-            <span className="about-grand-showcase__version">v{version}</span>
+            <span className="about-grand-showcase__version">
+              {buildDate ? `v${version} · ${buildDate}` : `v${version}`}
+            </span>
           </div>
           <p className="about-grand-showcase__subtitle">The Ultimate Windows Productivity Suite</p>
         </div>
@@ -218,7 +222,7 @@ export const AboutPage: FC = () => {
               <div className="about-hero__info">
                 <div className="about-hero__title-row">
                   <h2 className="about-hero__title">Tools3000</h2>
-                  <Badge text={`v${version}`} variant="primary" />
+                  <Badge text={buildDate ? `v${version} · ${buildDate}` : `v${version}`} variant="primary" />
                   <Badge text="C++20 · Rust · Direct2D" variant="success" />
                   <Badge text={t('about.authorBadge', 'Author · Yy1 (@yuan278501381)')} variant="muted" />
                 </div>
@@ -300,9 +304,9 @@ export const AboutPage: FC = () => {
                   e.preventDefault();
                   void openExternalUrl('https://github.com/yuan278501381/Tools3000/blob/main/LICENSE');
                 }}
-                title={t('about.licenseTip', 'View MIT License details')}
+                title={t('about.licenseTip', 'View GNU GPL v3.0 license details')}
               >
-                <strong className="about-meta-val">MIT License</strong>
+                <strong className="about-meta-val">GPL-3.0 License</strong>
                 <ExternalLink size={12} className="about-meta-ext" />
               </a>
             </div>
@@ -315,8 +319,10 @@ export const AboutPage: FC = () => {
           <div className="about-deps">
             {DEPENDENCIES.map((dep) => (
               <div key={dep.name} className="about-dep-item">
-                <span className="about-dep-name">{dep.name}</span>
-                <Badge text={dep.version} variant="muted" />
+                <div className="about-dep-item__top">
+                  <span className="about-dep-name">{dep.name}</span>
+                  <Badge text={dep.version} variant="muted" />
+                </div>
                 <span className="about-dep-purpose">{t(dep.purpose)}</span>
               </div>
             ))}
@@ -337,23 +343,25 @@ export const AboutPage: FC = () => {
             }}
           />
           {geekMode && metrics && (
-            <div className="about-perf-panel" style={{ marginTop: '1rem', padding: '1rem', background: 'var(--bg-secondary)', borderRadius: '8px' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfMemory')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{((metrics.privateMemoryMB && metrics.privateMemoryMB > 0) ? metrics.privateMemoryMB : metrics.memoryMB).toFixed(1)} MB</div>
+            <div className="about-perf-panel">
+              <div className="about-perf-grid">
+                <div className="about-perf-tile">
+                  <div className="about-perf-tile__label">{t('about.perfMemory')}</div>
+                  <div className="about-perf-tile__value">
+                    {((metrics.privateMemoryMB && metrics.privateMemoryMB > 0) ? metrics.privateMemoryMB : metrics.memoryMB).toFixed(1)} MB
+                  </div>
                 </div>
-                <div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfWorkingSet')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{metrics.memoryMB.toFixed(1)} MB</div>
+                <div className="about-perf-tile">
+                  <div className="about-perf-tile__label">{t('about.perfWorkingSet')}</div>
+                  <div className="about-perf-tile__value">{metrics.memoryMB.toFixed(1)} MB</div>
                 </div>
-                <div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfCpu')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{metrics.cpuPercent.toFixed(1)} %</div>
+                <div className="about-perf-tile">
+                  <div className="about-perf-tile__label">{t('about.perfCpu')}</div>
+                  <div className="about-perf-tile__value">{metrics.cpuPercent.toFixed(1)} %</div>
                 </div>
-                <div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{t('about.perfGestureLatency')}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1' }}>{metrics.gestureLatencyMs.toFixed(1)} ms</div>
+                <div className="about-perf-tile">
+                  <div className="about-perf-tile__label">{t('about.perfGestureLatency')}</div>
+                  <div className="about-perf-tile__value">{metrics.gestureLatencyMs.toFixed(1)} ms</div>
                 </div>
               </div>
             </div>
@@ -390,7 +398,7 @@ export const AboutPage: FC = () => {
               void openExternalUrl('https://github.com/yuan278501381/Tools3000/blob/main/LICENSE');
             }}
           >
-            <strong>MIT License</strong>
+            <strong>GPL-3.0 License</strong>
           </a>
           . Designed with passion for extreme productivity.
         </p>

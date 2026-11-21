@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors.
-// All rights reserved. | MIT License
+// All rights reserved. | GPL-3.0 License
 //
 // Cross-architecture SIMD byte and substring search primitives:
 // - x86_64: Runtime AVX2 dynamic dispatch (32-byte vectors) with SSE2 baseline (16-byte vectors)

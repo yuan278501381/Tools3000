@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/StudioPreviewWindowInternal.h"
+#include "capture/StudioExportWorker.h"
 #include "core/i18n/UiI18n.h"
 #include "capture/StudioBackdropCatalog.h"
 #include "../resource.h"
@@ -1124,16 +1125,27 @@ void StudioPreviewWindow::startAsyncExport() {
     std::lock_guard lock(m_exportMutex);
     m_exportWorker = std::thread([this, sourceMasterPath, stagingPath, finalPath, timelineCopy, configCopy, exportOptsCopy, durSec]() {
         tools3000::core::TraceId::Scope traceScope;
-        bool ok = StudioVideoCompositor::exportStudioMedia(
+        auto progressCb = [this](double p) {
+            m_exportProgress.store(p, std::memory_order_relaxed);
+        };
+        const auto workerOutcome = exportStudioMediaOutOfProcess(
             sourceMasterPath,
             stagingPath,
             timelineCopy,
             configCopy,
             exportOptsCopy,
-            [this](double p) {
-                m_exportProgress.store(p, std::memory_order_relaxed);
-            },
+            progressCb,
             &m_cancelExport);
+        bool ok = workerOutcome.handledOutOfProcess
+            ? workerOutcome.succeeded
+            : StudioVideoCompositor::exportStudioMedia(
+                sourceMasterPath,
+                stagingPath,
+                timelineCopy,
+                configCopy,
+                exportOptsCopy,
+                progressCb,
+                &m_cancelExport);
 
         const bool canceled = m_cancelExport.load(std::memory_order_acquire);
         const std::filesystem::path stagingFs(tools3000::core::WinUtils::utf8ToWstring(stagingPath));

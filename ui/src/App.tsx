@@ -12,7 +12,7 @@
  *   └──────────┴──────────────────────────────┘
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo, type CSSProperties } from 'react';
 import { TitleBar } from './components/TitleBar';
 import { Sidebar, type NavId } from './components/Sidebar';
 import type { PluginStatus } from './pages/PluginsPage';
@@ -20,6 +20,7 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { SavedToast } from './components/SavedToast';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { getPageMetadata, PAGE_DEFINITIONS } from './pages/registry';
+import { resolveExtensionRoute } from './config/routes';
 import { consumePendingDeepNavigation, type DeepNavigationPayload } from './config/settingsSearchIndex';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
 import {
@@ -399,6 +400,12 @@ function App() {
 
   const activePluginMeta = plugins.find((p) => p.id === activeNav);
   const pageMeta = getPageMetadata(activeNav);
+  const activeRoute = resolveExtensionRoute(activeNav, activePluginMeta?.name);
+  const ActiveHeaderIcon = activeRoute.icon;
+  const headerToneStyle = {
+    '--page-tone-start': activeRoute.toneStart,
+    '--page-tone-end': activeRoute.toneEnd,
+  } as CSSProperties;
 
   return (
     <div className="app">
@@ -427,17 +434,22 @@ function App() {
         />
         <main className="app__main" aria-labelledby="app-page-title">
           <Toaster position="bottom-right" theme={theme} richColors expand={true} />
-          {/* ── 页面头部 ────────────────────────────────────── */}
-          <header className="app__header">
-            <div className="app__header-text">
-              <h1 id="app-page-title" ref={pageTitleRef} tabIndex={-1} className="app__header-title">
-                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                {activePluginMeta ? t(pageMeta.titleKey as any, { defaultValue: activePluginMeta.name }) : t(pageMeta.titleKey as any)}
-              </h1>
-              <p className="app__header-subtitle">
-                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                {activePluginMeta ? t(pageMeta.subtitleKey as any, { defaultValue: activePluginMeta.fileName }) : t(pageMeta.subtitleKey as any)}
-              </p>
+          {/* ── 旗舰页面头部 (全 14 模块同源宝石 Squircle 徽标 + 克制光氛顶衬) ── */}
+          <header className="app__header" style={headerToneStyle}>
+            <div className="app__header-inner">
+              <div className="app__header-badge" aria-hidden="true">
+                <ActiveHeaderIcon size={21} strokeWidth={2.15} />
+              </div>
+              <div className="app__header-text">
+                <h1 id="app-page-title" ref={pageTitleRef} tabIndex={-1} className="app__header-title">
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                  {activePluginMeta ? t(pageMeta.titleKey as any, { defaultValue: activePluginMeta.name }) : t(pageMeta.titleKey as any)}
+                </h1>
+                <p className="app__header-subtitle">
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                  {activePluginMeta ? t(pageMeta.subtitleKey as any, { defaultValue: activePluginMeta.fileName }) : t(pageMeta.subtitleKey as any)}
+                </p>
+              </div>
             </div>
           </header>
 

@@ -186,6 +186,7 @@ private:
     bool hitTestStageAnnotation(float lx, float ly, int& outAnnIdx, StageAnnDragKind& outPart) const;
     HCURSOR resolveDesiredCursor(float lx, float ly) const;
     void rebakeTimelinePreview();
+    const cv::Mat& decodeProxyFrameAt(size_t index);
     void updateCurrentComposedBitmap();
     double computeEffectiveDurationSec() const;
     double visibleTimelineSpanSec(double keptDurSec) const noexcept;
@@ -260,8 +261,13 @@ private:
     std::vector<TimelineUndoSnapshot> m_undoStack;
     std::vector<TimelineUndoSnapshot> m_redoStack;
 
-    // 高帧率轻量预览帧牌组、驻留式原片全清解码器与预烘焙时间轴状态
-    std::vector<cv::Mat> m_previewDeckBgr;
+    // 紧凑内存 JPEG 代理牌组（<=112 帧 / 640px，~2.5-4 MiB）、160x90 灰度视觉差分牌组（~1.5 MiB）与驻留式原片全清解码器
+    std::vector<std::vector<uint8_t>> m_previewDeckJpeg;
+    std::vector<cv::Mat> m_visualDiffDeckGray;
+    int m_proxyFrameWidth = 0;
+    int m_proxyFrameHeight = 0;
+    size_t m_lastDecodedProxyIdx = static_cast<size_t>(-1);
+    cv::Mat m_lastDecodedProxyBgr;
     StudioHiResFrameReader m_hiResReader;
     int m_origWidth = 0;
     int m_origHeight = 0;

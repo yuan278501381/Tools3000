@@ -132,7 +132,7 @@ void StudioPreviewWindow::applySliderAtX(SliderDragKind kind, float lx) {
 void StudioPreviewWindow::rebuildAutoZoomSegmentsLive() {
     StudioTimelineAnalyzer::rebuildAutoZoomSegmentsPreservingManual(
         m_timeline, m_config,
-        m_previewDeckBgr.empty() ? nullptr : &m_previewDeckBgr,
+        m_visualDiffDeckGray.empty() ? nullptr : &m_visualDiffDeckGray,
         m_durationSec);
     if (m_selectedZoomIdx >= static_cast<int>(m_timeline.zoomSegments.size())) {
         m_selectedZoomIdx = -1;
@@ -2283,7 +2283,7 @@ LRESULT CALLBACK StudioPreviewWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam
                 self->m_stageViewportPhysW = (std::max)(320, pw - tools3000::core::dpi::scaleMetric(400, self->m_dpiScale));
                 self->m_stageViewportPhysH = (std::max)(240, ph - tools3000::core::dpi::scaleMetric(256, self->m_dpiScale));
                 self->applyWindowRoundingForCurrentState(pw, ph);
-                if (!self->m_inInteractiveSizing && !self->m_previewDeckBgr.empty()) {
+                if (!self->m_inInteractiveSizing && !self->m_previewDeckJpeg.empty()) {
                     self->updateCurrentComposedBitmap();
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);

@@ -2454,6 +2454,7 @@ void MessageBridge::registerBuiltinHandlers() {
 
         return {
             {"version", UpdateChecker::CurrentVersion},
+            {"buildDate", tools3000::version::BuildDate},
             {"cpuArch", arch},
             {"cpuCores", si.dwNumberOfProcessors},
             {"totalMemoryGB", memInfo.ullTotalPhys / (1024.0 * 1024.0 * 1024.0)},
