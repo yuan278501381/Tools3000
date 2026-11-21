@@ -372,10 +372,23 @@ export default function SearchApp() {
       .catch(() => undefined);
 
     const runPoll = async () => {
+      if (document.hidden) return;
       const isBusy = await checkInitialIndex();
-      if (!active) return;
+      if (!active || document.hidden) return;
       if (isBusy) {
         pollTimer = window.setTimeout(runPoll, 500);
+      }
+    };
+
+    const handlePollVisibility = () => {
+      if (document.hidden) {
+        if (pollTimer) {
+          window.clearTimeout(pollTimer);
+          pollTimer = undefined;
+        }
+      } else if (active) {
+        if (pollTimer) window.clearTimeout(pollTimer);
+        pollTimer = window.setTimeout(runPoll, 120);
       }
     };
 
@@ -394,11 +407,13 @@ export default function SearchApp() {
       refreshOnFocus();
     };
     window.addEventListener('tools3000:focusSearch', onFocusEvt);
+    document.addEventListener('visibilitychange', handlePollVisibility);
 
     return () => {
       active = false;
       if (pollTimer) window.clearTimeout(pollTimer);
       window.removeEventListener('tools3000:focusSearch', onFocusEvt);
+      document.removeEventListener('visibilitychange', handlePollVisibility);
     };
   }, [checkInitialIndex, refreshOnFocus, setTotalIndexedFiles]);
 
@@ -468,11 +483,40 @@ export default function SearchApp() {
     if (saved === 'native' || saved === 'vector') return saved;
     return 'native';
   });
+  const NATIVE_ICON_CACHE_MAX_ENTRIES = 512;
   const [nativeIconCache, setNativeIconCache] = useState<Record<string, string>>({});
-  const nativeIconCacheRef = useRef<Record<string, string>>({});
+  const nativeIconCacheRef = useRef<Map<string, string>>(new Map());
   const inFlightIconsRef = useRef<Set<string>>(new Set());
   const searchSettingsSigRef = useRef<string | null>(null);
   const lastRemoteSyncTickRef = useRef(0);
+
+  const touchAndEvictNativeIcons = useCallback((entries: Array<[string, string]>): Record<string, string> | null => {
+    const map = nativeIconCacheRef.current;
+    let changed = false;
+    for (const [k, v] of entries) {
+      if (map.has(k)) {
+        const prevVal = map.get(k);
+        map.delete(k);
+        map.set(k, v);
+        if (prevVal !== v) changed = true;
+      } else {
+        map.set(k, v);
+        changed = true;
+      }
+    }
+    while (map.size > NATIVE_ICON_CACHE_MAX_ENTRIES) {
+      const oldestKey = map.keys().next().value;
+      if (oldestKey === undefined) break;
+      map.delete(oldestKey);
+      changed = true;
+    }
+    if (!changed) return null;
+    const nextRecord: Record<string, string> = {};
+    map.forEach((v, k) => {
+      nextRecord[k] = v;
+    });
+    return nextRecord;
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -593,8 +637,12 @@ export default function SearchApp() {
   const fetchNativeIcon = useCallback(async (ext: string, isDirectory: boolean, filePath?: string) => {
     const normalizedPath = filePath ? filePath.replace(/\//g, '\\').toLowerCase() : '';
     const key = isDirectory ? '::dir::' : (normalizedPath ? `path:${normalizedPath}` : ext.toLowerCase());
-    if (Object.prototype.hasOwnProperty.call(nativeIconCacheRef.current, key)) {
-      return nativeIconCacheRef.current[key] || undefined;
+    if (nativeIconCacheRef.current.has(key)) {
+      const cached = nativeIconCacheRef.current.get(key) || '';
+      // LRU 访问提升
+      nativeIconCacheRef.current.delete(key);
+      nativeIconCacheRef.current.set(key, cached);
+      return cached || undefined;
     }
     if (inFlightIconsRef.current.has(key)) return undefined;
     inFlightIconsRef.current.add(key);
@@ -608,8 +656,10 @@ export default function SearchApp() {
         return undefined;
       }
       const iconVal = resp.iconBase64 || '';
-      nativeIconCacheRef.current[key] = iconVal;
-      setNativeIconCache(prev => (prev[key] === iconVal ? prev : { ...prev, [key]: iconVal }));
+      const nextSnapshot = touchAndEvictNativeIcons([[key, iconVal]]);
+      if (nextSnapshot) {
+        setNativeIconCache(nextSnapshot);
+      }
       return iconVal || undefined;
     } catch {
       // IPC 异常或超时时不写入永久空串负缓存，允许后续滚动或重绘时重试
@@ -617,7 +667,7 @@ export default function SearchApp() {
       inFlightIconsRef.current.delete(key);
     }
     return undefined;
-  }, []);
+  }, [touchAndEvictNativeIcons]);
 
   const prefetchIcons = useCallback(async (list: SearchResult[]) => {
     if (iconStyle !== 'native' || list.length === 0) return;
@@ -627,7 +677,7 @@ export default function SearchApp() {
       const spec = resolveNativeIconRequest(item);
       const key = spec.cacheKey;
       if (
-        !Object.prototype.hasOwnProperty.call(nativeIconCacheRef.current, key) &&
+        !nativeIconCacheRef.current.has(key) &&
         !inFlightIconsRef.current.has(key) &&
         !missing.has(key)
       ) {
@@ -648,23 +698,24 @@ export default function SearchApp() {
         return;
       }
       const returned = resp.icons;
-      const patch: Record<string, string> = {};
+      const entries: Array<[string, string]> = [];
       for (const key of missing) {
         if (Object.prototype.hasOwnProperty.call(returned, key)) {
-          const val = returned[key] || '';
-          nativeIconCacheRef.current[key] = val;
-          patch[key] = val;
+          entries.push([key, returned[key] || '']);
         }
       }
-      if (Object.keys(patch).length > 0) {
-        setNativeIconCache(prev => ({ ...prev, ...patch }));
+      if (entries.length > 0) {
+        const nextSnapshot = touchAndEvictNativeIcons(entries);
+        if (nextSnapshot) {
+          setNativeIconCache(nextSnapshot);
+        }
       }
     } catch {
       // Allow retry on transient IPC error without poisoning negative cache
     } finally {
       missing.forEach(k => inFlightIconsRef.current.delete(k));
     }
-  }, [iconStyle]);
+  }, [iconStyle, touchAndEvictNativeIcons]);
 
   const changeIconStyle = (newStyle: SearchIconStyle) => {
     setIconStyle(newStyle);

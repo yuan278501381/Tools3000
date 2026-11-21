@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <mutex>
 #include <thread>
+#include "ui/WebViewSuspend.h"
 
 struct ICoreWebView2;
 struct ICoreWebView2Controller;
@@ -46,10 +47,15 @@ private:
 
     static LRESULT CALLBACK windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
+    // 隐藏后 60 秒自动销毁 QuickLook WebView2 与后台异步线程，归还第 4 个渲染进程内存
+    static constexpr UINT_PTR IDT_IDLE_DESTROY = 1002;
+    static constexpr UINT IDLE_DESTROY_TIMEOUT_MS = 60000;
+
     HWND m_hwnd = nullptr;
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_environment;
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_controller;
     Microsoft::WRL::ComPtr<ICoreWebView2> m_webView;
+    WebViewSuspendController m_suspendController;
 
     std::atomic<bool> m_visible{false};
     std::atomic<bool> m_currentIsPdfPreview{false};

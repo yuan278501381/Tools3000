@@ -39,7 +39,7 @@ O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas es
   <tr>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/pt-BR/search_demo.webp" alt="Busca instantânea de arquivos e pré-visualização com Espaço" width="100%" /><br />
-      <sub><b>Busca Instantânea e QuickLook</b> · Encontre arquivos em milissegundos e visualize com a barra de Espaço</sub>
+      <sub><b>Busca Instantânea e Pré-visualização</b> · Encontre arquivos em milissegundos e visualize com a barra de Espaço</sub>
     </td>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/pt-BR/ocr_live_text_demo.webp" alt="OCR offline de alta precisão, seleção de texto e edição no local" width="100%" /><br />
@@ -148,7 +148,6 @@ Cada utilitário clássico tem seus pontos fortes avançados. O Tools3000 reúne
 | Utilitário Clássico | Fluxos cobertos pelo Tools3000 | Quando manter a ferramenta dedicada |
 | :--- | :--- | :--- |
 | **Everything** | `Alt + Space` para busca NTFS instantânea por nome e `content:` no conteúdo de documentos, iniciando sob demanda | Quando precisa de servidor HTTP/ETP, indexação completa de metadados EXIF/mídia ou ecossistema CLI `es.exe` |
-| **QuickLook** | Pressione `Space` nos resultados para visualizar imagens, Office, PDF, código, CAD, PSD e 3D sem abrir apps pesados | Quando precisa de pré-visualização global com barra de espaço direto no Explorador de Arquivos ou plugins `.qlplugin` |
 | **Snipaste / PixPin** | `F1` captura e anotação, lupa tracejada, captura com rolagem, `F3` grupos de pins e OCR offline rápido com edição no local | Quando depende da detecção extrema de controles GUI legados ou automações CLI específicas |
 | **WGestures / StrokesPlus** | Gestos com botão direito, disparo imediato, volume na borda, cantos ativos, pausa automática em jogos e scripts Lua | Quando utiliza gestos com múltiplos botões simultâneos, condições complexas de janela ou macros legados |
 | **Gravadores (ex.: ShareX)** | Gravação de tela, exibição de teclas, Estúdio (edição por forma de onda e zoom do cursor), exportação em MP4, GIF e WebP | Quando depende de upload automático para 80+ serviços de nuvem/S3/FTP/Webhook ou pipelines FFmpeg personalizados |
@@ -161,7 +160,7 @@ Todos os atalhos podem ser personalizados nas Configurações com detecção de 
 
 | Atalho | Ação |
 | :--- | :--- |
-| `Alt + Space` | Abrir / ocultar busca instantânea (`Space` sobre o resultado abre o QuickLook) |
+| `Alt + Space` | Abrir / ocultar busca instantânea (`Space` sobre o resultado abre a pré-visualização) |
 | `F1` | Captura de área e anotação |
 | `F3` | Fixar imagem ou texto da área de transferência no topo |
 | Duplo toque em `Ctrl` | Ativar / desativar holofote do cursor |

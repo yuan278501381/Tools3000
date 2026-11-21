@@ -37,8 +37,9 @@ class TOOLS3000CORE_API MouseFeedbackOverlayBase {
 public:
     virtual ~MouseFeedbackOverlayBase();
 
-    /// 初始化独立渲染管线与硬件覆盖层窗口
-    bool initializeBase(HINSTANCE hInstance, const wchar_t* windowClassName, const wchar_t* helperOwnerName);
+    /// 初始化独立渲染管线与硬件覆盖层窗口（lazyCompositor=true 时冷启动不预建 D3D11/D2D1 设备，首次绘制按需初始化且闲置 60s 自动回收）
+    bool initializeBase(HINSTANCE hInstance, const wchar_t* windowClassName, const wchar_t* helperOwnerName,
+                        bool lazyCompositor = false);
 
     /// 关闭并释放所有管线与显存资源 (安全消息泵送退出)
     void shutdownBase();
@@ -81,6 +82,7 @@ protected:
     /// 硬件合成上下文管理 (需在渲染线程内部调用)
     bool initCompositorLocked();
     void releaseCompositorLocked();
+    void releaseIdleCompositor();
     bool ensureDcompSurfaceLocked(int width, int height);
     void releaseDcompSurfaceLocked();
 
@@ -123,6 +125,8 @@ protected:
 
     int m_surfaceWidth = 0;
     int m_surfaceHeight = 0;
+    bool m_lazyCompositor = false;
+    std::chrono::steady_clock::time_point m_idleSince{};
     std::atomic<bool> m_compositorReady{false};
     std::atomic<bool> m_hasDcompSurface{false};
     MouseViewportRect m_currentViewport;

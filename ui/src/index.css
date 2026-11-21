@@ -649,3 +649,10 @@ textarea,
 code, kbd, samp, pre, tt, var {
   font-family: var(--font-mono);
 }
+
+/* 隐藏/最小化态零 CPU 门控：全局暂停一切无限 CSS 动画（含 SVG 路径、雷达波、脉冲呼吸等） */
+html.t3k-page-hidden *,
+html.t3k-page-hidden *::before,
+html.t3k-page-hidden *::after {
+  animation-play-state: paused !important;
+}

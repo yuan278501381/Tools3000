@@ -2035,9 +2035,12 @@ bool ScrollCapture::appendSpilledSegment(const cv::Mat& segment) {
 void ScrollCapture::clearStorage() {
     std::lock_guard<std::recursive_mutex> lock(m_captureMutex);
     m_segments.clear();
+    m_segments.shrink_to_fit();
+    m_lastFrame.release();
     m_segmentBytes = 0;
     m_residentSegmentBytes = 0;
     m_spilledSegments.clear();
+    m_spilledSegments.shrink_to_fit();
     m_spillWriteOffset = 0;
     m_segmentWidth.store(0, std::memory_order_release);
     m_totalRows.store(0, std::memory_order_release);

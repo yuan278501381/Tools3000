@@ -542,15 +542,20 @@ void SearchWindow::initializeWebView2() {
                                     }
                                 ).Get(), nullptr);
 
-                            // 导航完成后标记就绪。后台 preload 不得发送聚焦事件；
-                            // 只有可见窗口才应同步查询状态并聚焦输入框。
+                            // 导航完成后标记就绪。后台 preload 不得发送聚焦事件，且应立即挂起
+                            // Chromium renderer 以确保隐藏态零 CPU；只有可见窗口才同步聚焦输入框。
                             m_webView->add_NavigationCompleted(
                                 Callback<ICoreWebView2NavigationCompletedEventHandler>(
                                     [this, generation](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
                                         if (generation != m_generation.load()) return S_OK;
                                         m_webViewReady = true;
                                         hookWebViewChildWindows(m_hwnd);
-                                        focusSearchIfVisible();
+                                        if (m_visible.load()) {
+                                            focusSearchIfVisible();
+                                        } else if (m_controller && m_webView) {
+                                            m_controller->put_IsVisible(FALSE);
+                                            m_suspendController.requestSuspend(m_webView.Get(), "search");
+                                        }
                                         return S_OK;
                                     }).Get(), nullptr);
 

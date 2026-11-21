@@ -565,6 +565,19 @@ if (Test-Path $ExePath) {
     } else {
         Write-Log "未找到插件构建目录: $PluginsDir" "WARN"
     }
+
+    # 递归补齐 /DELAYLOAD 延迟加载 DLL 及其传递依赖 (防止 vcpkg applocal 漏拷贝)
+    $DelaySyncScript = Join-Path $ScriptDir "scripts\sync-delayed-dlls.ps1"
+    if (Test-Path -LiteralPath $DelaySyncScript) {
+        $VcpkgSubBin = if ($Configuration -eq "Debug") { "debug\bin" } else { "bin" }
+        $SearchPool = @(
+            (Join-Path $ScriptDir "vcpkg_installed\$VcpkgTargetTriplet\$VcpkgSubBin"),
+            (Join-Path $BuildDir "vcpkg_installed\$VcpkgTargetTriplet\$VcpkgSubBin"),
+            $BinDir,
+            $PluginsDir
+        )
+        & $DelaySyncScript -TargetDir $StagingDir -SearchDirs ($SearchPool -join ';')
+    }
 } else {
     throw "找不到编译后的 Tools3000.exe"
 }

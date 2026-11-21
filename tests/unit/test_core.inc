@@ -2536,6 +2536,26 @@ TEST(MouseFeedbackOverlayBaseTest, LifecycleAndSleepContract) {
     EXPECT_EQ(overlay.hwnd(), nullptr);
 }
 
+TEST(MouseFeedbackOverlayBaseTest, LazyCompositorStaysUnallocatedUntilDraw) {
+    TestMouseOverlay overlay;
+    EXPECT_FALSE(overlay.isCompositorReady());
+
+    const bool inited = overlay.initializeBase(
+        GetModuleHandleW(nullptr),
+        L"Tools3000_TestLazyMouseFeedbackOverlay",
+        L"Tools3000_TestLazyMouseHelperOwner",
+        /*lazyCompositor=*/true
+    );
+    EXPECT_TRUE(inited);
+    EXPECT_NE(overlay.hwnd(), nullptr);
+    // 惰性模式下冷启动不得预建第二套 D3D11/D2D1/DComp 设备
+    EXPECT_FALSE(overlay.isCompositorReady());
+
+    overlay.shutdownBase();
+    EXPECT_FALSE(overlay.isCompositorReady());
+    EXPECT_EQ(overlay.hwnd(), nullptr);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WideUniversalRotatingFileSink & Logger 日志管家体系单元测试集
 // ─────────────────────────────────────────────────────────────────────────────

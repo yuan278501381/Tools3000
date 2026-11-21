@@ -39,7 +39,7 @@ Tools3000 integra en una sola aplicación nativa para Windows las herramientas e
   <tr>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/es-ES/search_demo.webp" alt="Búsqueda instantánea de archivos y vista previa con Espacio" width="100%" /><br />
-      <sub><b>Búsqueda Instantánea y QuickLook</b> · Encuentra archivos en milisegundos y previsualízalos con Espacio</sub>
+      <sub><b>Búsqueda Instantánea y Vista Previa</b> · Encuentra archivos en milisegundos y previsualízalos con Espacio</sub>
     </td>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/es-ES/ocr_live_text_demo.webp" alt="OCR sin conexión de alta precisión, selección y edición directa" width="100%" /><br />
@@ -148,7 +148,6 @@ Cada utilidad especializada destaca en flujos muy concretos. Tools3000 cubre má
 | Utilidad Clásica | Flujos cotidianos cubiertos por Tools3000 | Cuándo conviene mantener la herramienta dedicada |
 | :--- | :--- | :--- |
 | **Everything** | `Alt + Space` para búsqueda NTFS instantánea por nombre y `content:` dentro de documentos, arrancando bajo demanda | Si necesitas servidores HTTP/ETP, indexación de propiedades EXIF/multimedia o el ecosistema CLI `es.exe` |
-| **QuickLook** | Pulsa `Space` en los resultados para previsualizar imágenes, Office, PDF, código, CAD, PSD y 3D al instante | Si buscas vista previa global con Espacio directo en el Explorador de Windows o plugins `.qlplugin` de terceros |
 | **Snipaste / PixPin** | `F1` captura y anotación, lupa discontinua, captura con desplazamiento, `F3` grupos de pines y OCR local con edición directa | Si dependes del ajuste extremo a controles GUI heredados o flujos CLI personalizados |
 | **WGestures / StrokesPlus** | Gestos con botón derecho, disparo inmediato, volumen en bordes, esquinas activas, pausa en juegos y scripts Lua | Si empleas gestos con múltiples botones simultáneos, condiciones complejas de ventana o macros históricos |
 | **Grabadores (ej. ShareX)** | Grabación de pantalla, teclas en pantalla, Estudio (edición por forma de onda y zoom de cursor), exportación a MP4, GIF y WebP | Si necesitas subida automática a 80+ nubes/S3/FTP/Webhook o pipelines FFmpeg muy personalizados |
@@ -161,7 +160,7 @@ Todos los atajos se pueden personalizar desde Configuración con detección de c
 
 | Atajo | Acción |
 | :--- | :--- |
-| `Alt + Space` | Mostrar / ocultar búsqueda instantánea (`Space` sobre un resultado abre QuickLook) |
+| `Alt + Space` | Mostrar / ocultar búsqueda instantánea (`Space` sobre un resultado abre la vista previa) |
 | `F1` | Captura de región y anotación |
 | `F3` | Fijar imagen o texto del portapapeles siempre encima |
 | Doble toque en `Ctrl` | Activar / desactivar foco del cursor |

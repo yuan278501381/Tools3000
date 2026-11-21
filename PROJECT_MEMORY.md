@@ -6,6 +6,26 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 全链路内存驻留治理、WebView2 隐藏零 CPU、`/DELAYLOAD` 12 库与传递依赖闭包同步 & CPU 满载手势 `timeBeginPeriod(1)` 铁律
+- **核心架构改进与已实测验收成果**：
+  1. **WebView2 全宿主生命周期静默零 CPU 与防唤醒闭环 (`TrayWindow.cpp`, `SearchWindow.cpp`, `SettingsWindow.{h,cpp}`, `QuickLookWindow.{h,cpp}`, `ui/src/main.tsx`, `index.css`, `GestureGuide.tsx`, `AboutPage.tsx`, `SearchApp.tsx`, `useSearchEngine.ts`)**：
+     - 修复 `TrayWindow` 在 `Navigate()` 之前调用 `requestSuspend()` 立即失效与 `SearchWindow` 预载从未调用 `TrySuspend` 的缺陷，统一在 `NavigationCompleted` 末尾检测 `!m_visible` 立即挂起；
+     - `TrayWindow` 隐藏态跳过 `"tray"` 推送（依赖 `tray:show` 全量 `refreshState()`）；`SettingsWindow` 隐藏/最小化态将事件按 `eventName` 合批暂存 `m_pendingEvents`，严禁唤醒挂起 renderer，并在 `smoothPresent()` / 还原时 `flushPendingEvents()` 100% 无损送达；最小化仅执行 `TrySuspend` 绝不销毁，保护表单草稿；
+     - `QuickLookWindow` 接入 `WebViewSuspendController` + 60 秒 `IDT_IDLE_DESTROY` 闲置销毁（销毁第 4 个 renderer 与 `m_asyncWorker` 并冷路径 `trimWorkingSet()`）；
+     - 前端 `main.tsx` + `index.css` 挂载全局 `html.t3k-page-hidden` 规则在不可见时统一暂停一切无限 CSS 动画（含 `GestureGuide` SVG 路径动画），`GestureGuide` / `AboutPage` / `SearchApp` / `useSearchEngine` 全部接入 `document.hidden` 轮询暂停，`SearchApp` 的 `nativeIconCache` 升级为 512 条上限 LRU；
+  2. **`Plugin_Capture.dll` 12 个重型多媒体/AI 库 `/DELAYLOAD` + 传递依赖闭包防漏门禁 (`CMakeLists.txt`, `CaptureDelayLoadHook.cpp`, `scripts/sync-delayed-dlls.ps1`, `deploy.ps1`)**：
+     - PE 导入表实证 FFmpeg 5 库、WebP 2 库与 OpenCV 非 core 5 库（12 库共 ~47 MB）100% 为纯函数导入、冷启动 0 调用，挂载 `CaptureDelayLoadHook.cpp` 以 `LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` 防劫持解析；
+     - *关键工程暗坑预防*：vcpkg `applocal.ps1` 仅扫描常规导入表，会漏拷贝延迟加载 DLL 及其传递依赖（如 `openh264-7.dll`、`libprotobuf.dll`、`abseil_dll.dll` 等）。新增纯 .NET PE Directory[1]+Directory[13] 递归解析脚本 `scripts/sync-delayed-dlls.ps1`，作为 SSOT 同时接入 `CMakeLists.txt` `POST_BUILD` 与 `deploy.ps1`，确保全新洁净编译与发包 100% 齐备全部延迟依赖；
+  3. **主进程 C++ 滞留源清理与 `PinWindow` 写时复制 COW (`ScrollCapture.cpp`, `ScreenRecorder.{h,cpp}`, `PluginEntry.cpp`, `StudioPreviewWindow.cpp`, `PinWindow.cpp`, `PinWindowOcr.cpp`, `TextReplaceEngine.{h,cpp}`, `MouseFeedbackOverlayBase.{h,cpp}`, `SpotlightOverlay.{cpp,Renderer.cpp}`)**：
+     - 补齐 `ScrollCapture::clearStorage()` 漏清 `m_lastFrame`、`ScreenRecorder::cleanupEncoder()` 非演播室/异常路径调用 `clearStudioTransientData()` 清理 `m_livePreviewDeck`（严保正常演播室消费时序不被破坏）、`StudioPreviewWindow::closeSessionAndCleanup()` 补清 `m_timeline` 与 `m_videoClips`；
+     - `PinWindow` 改用 `cv::Mat` 原子引用计数写时复制（COW）共享 `m_cleanBaseImage` 与 `m_sourceImage`，原地反色/灰度前自动分离，单张 4K 贴图立省 ~33 MB；
+     - `AiInpaintEngine` 接入 90 秒闲置可中断回收守护；`SpotlightOverlay` 接入 `MouseFeedbackOverlayBase` 惰性 D3D11/D2D1/DComp 初始化与 60 秒闲置 `releaseIdleCompositor()`；
+  4. **CPU 100% 满载手势跟手红线（经项目负责人一线对比 WGestures 2 明确锚定）**：
+     - **严禁**为了微小待机功耗移除或作用域化 `GestureEngine.cpp` 与 `GestureTrailOverlay.cpp` 中的全生命周期 `timeBeginPeriod(1)`；在 CPU 100% 满载高压下，全生命周期 1ms 系统时钟精度配合 `HIGH_PRIORITY_CLASS` 与 MMCSS CRITICAL 是保证鼠标手势起手首帧 0 断线、0 迟滞的刚性防线；
+  5. **全进程树基准脚本升级与 Winget 官方源过审**：
+     - `scripts/collect-performance-baseline.ps1` 新增 `SnapshotProcessTree`（全进程树角色分组）与 `CheckColdModules`（14 个重型 DLL 零预载门禁），新增 `scripts/test_memory_lifecycle_e2e.ps1`；
+     - `microsoft/winget-pkgs` PR #485809（`Yy1.Tools3000` v1.2.1）已一次性 **11/11 全绿通过**微软全部自动化检查与沙盒静默安装验证（`Azure-Pipeline-Passed` + `Validation-Completed`）。
+
 ### [2026-11-21] 全站统一 Warm Precision Toast 体系 (`AppToaster`) + 标题栏彩色 Logo + 1:1 自适应渐变面积活动图 (`7天/本月/本年`) + 搜索模式/初始分类 MECE 正交解耦
 - **全站 Toast 与悬浮气泡统一 (`AppToaster.{tsx,css}`, `SavedToast.{tsx,css}`, `HotkeyRecorder.css`, `App.tsx`, `SearchApp.tsx`)**：
   - 废除 `sonner` 默认 `richColors` 高饱和大色块与 `356px` 固定空旷宽盒，建立单一事实源 `<AppToaster />`（覆盖主设置窗与搜文件浮窗，搜文件底偏 `44px` 自动避让底部快捷键栏）；

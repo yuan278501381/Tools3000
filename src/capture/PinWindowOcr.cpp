@@ -941,7 +941,8 @@ void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {
         m_pinnedSourceText.clear();
     }
     m_sourceImage = newImage.clone();
-    m_cleanBaseImage = newImage.clone();
+    // COW 共享底图引用，未产生标注/滤镜原地修改前零冗余拷贝
+    m_cleanBaseImage = m_sourceImage;
     m_markupElements.clear();
     m_pinUndoStack.clear();
     m_pinRedoStack.clear();
@@ -996,7 +997,7 @@ void PinWindow::applyEditedMarkup(
         precomposited.rows == m_cleanBaseImage.rows) {
         composited = precomposited.clone();
     } else if (m_markupElements.empty()) {
-        composited = m_cleanBaseImage.clone();
+        composited = m_cleanBaseImage;
     } else {
         MarkupEngine engine;
         cv::Mat baseBgr = m_cleanBaseImage;
@@ -1010,7 +1011,7 @@ void PinWindow::applyEditedMarkup(
         composited = engine.getCompositeImage();
     }
     if (composited.empty()) {
-        composited = m_cleanBaseImage.clone();
+        composited = m_cleanBaseImage;
     }
 
     m_sourceImage = std::move(composited);
@@ -1092,7 +1093,7 @@ void PinWindow::recompositeMarkupPreservingOcr() {
         }
     }
     if (composited.empty()) {
-        composited = m_cleanBaseImage.clone();
+        composited = m_cleanBaseImage;
     }
 
     m_sourceImage = std::move(composited);

@@ -104,6 +104,7 @@ GestureTrailOverlay& GestureTrailOverlay::instance() {
 bool GestureTrailOverlay::initialize(HINSTANCE hInstance) {
     tools3000::core::TraceId::Scope scope;
     m_hInstance = hInstance;
+    // 保持全生命周期 1ms 高精度时钟，保障 CPU 满载下手势轨迹起手首帧 0 掉帧、0 断线
     if (!m_timerPeriodActive) {
         m_timerPeriodActive = (timeBeginPeriod(1) == TIMERR_NOERROR);
     }

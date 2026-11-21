@@ -38,8 +38,8 @@ Tools3000 unifies everyday **file search, document content search, scrolling cap
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/search_demo.webp" alt="Millisecond file search and QuickLook preview" width="100%" /><br />
-      <sub><b>Instant File Search &amp; QuickLook</b> · Search millions of files in milliseconds and press Space to preview</sub>
+      <img src="docs/images/en-US/search_demo.webp" alt="Millisecond file search and instant Spacebar preview" width="100%" /><br />
+      <sub><b>Instant File Search &amp; Spacebar Preview</b> · Search millions of files in milliseconds and press Space to preview</sub>
     </td>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/en-US/ocr_live_text_demo.webp" alt="High-accuracy offline OCR, Live Text selection, and in-place text replacement" width="100%" /><br />
@@ -80,7 +80,7 @@ Tools3000 unifies everyday **file search, document content search, scrolling cap
 
 | Module | Core Experience |
 | :--- | :--- |
-| **Instant File Search** | `Alt + Space` searches millions of files in milliseconds with full-pinyin & initials support; hit `Space` on any result for QuickLook preview (images, Office, PDF, code, CAD, PSD, and 3D models). |
+| **Instant File Search** | `Alt + Space` searches millions of files in milliseconds with full-pinyin & initials support; hit `Space` on any result for instant preview (images, Office, PDF, code, CAD, PSD, and 3D models). |
 | **Document Content Search** | Prefix `content:` to search directly inside Word, Excel, PDF, PowerPoint, CAD, and source code with live highlighted snippets and one-click line copying. |
 | **Scrolling Capture** | Auto-scroll seamless stitching for web pages, documents, and chats with live side preview, lossless head/tail trim, and in-place annotation. |
 | **Precision Screenshot Markup** | `F1` snaps directly to windows and UI elements with pixel color picker, default dashed optical magnifier, 6 arrow styles, self-healing step badges, mosaic, and sharing frames. |
@@ -148,7 +148,6 @@ Dedicated single-purpose tools each excel at deep niche workflows. Tools3000 is 
 | Classic Utility | Everyday Workflows Covered by Tools3000 | When to Keep the Dedicated Tool |
 | :--- | :--- | :--- |
 | **Everything** | `Alt + Space` millisecond NTFS filename, phonetic, and `content:` full-text document search, starting strictly on demand | When you need HTTP/ETP network file servers, full EXIF/media property column indexing, or the `es.exe` CLI ecosystem |
-| **QuickLook** | Press `Space` directly in search results to preview images, Office docs, PDF, code, CAD, PSD, and 3D models without opening heavy apps | When you need global Spacebar previews directly inside Windows Desktop / Explorer folders or niche third-party `.qlplugin` extensions |
 | **Snipaste / PixPin** | `F1` region capture & markup, dashed magnifier, scrolling capture, `F3` grouped desktop pins, and fast local offline OCR with in-place text replacement | When you rely on Snipaste's ultra-specialized legacy GUI element snapping or custom CLI screenshot chains |
 | **WGestures / StrokesPlus** | Right-drag gestures for tabs/back/close, instant trigger without release, screen-edge wheel volume, hot corners, fullscreen game bypass, and Lua scripting | When you need multi-button chord gestures (e.g., left-hold + right-gesture), intricate window-region conditions, or years of recorded macros |
 | **Screen Recorders (e.g. ShareX)** | Screen recording, keystroke overlay, instant auto-zoom Studio (waveform trimming & cursor auto-zoom), exporting MP4, messenger-ready GIF, and animated WebP | When you need 80+ cloud/S3/FTP/Webhook auto-upload workflows or heavily customized FFmpeg post-capture pipelines |
@@ -161,7 +160,7 @@ All shortcuts can be customized in Settings with real-time conflict detection:
 
 | Shortcut | Action |
 | :--- | :--- |
-| `Alt + Space` | Toggle instant search (`Space` on a result opens QuickLook) |
+| `Alt + Space` | Toggle instant search (`Space` on a result opens instant preview) |
 | `F1` | Region screenshot & annotation |
 | `F3` | Pin clipboard image or text always-on-top |
 | Double-tap `Ctrl` | Toggle cursor spotlight |

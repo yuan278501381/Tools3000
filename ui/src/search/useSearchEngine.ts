@@ -181,6 +181,7 @@ export function useSearchEngine({
     setScanElapsedSeconds(0);
     const startTime = Date.now();
     const intervalId = window.setInterval(() => {
+      if (document.hidden) return;
       if (scanTimerRef.current?.sequence === sequence) {
         setScanElapsedSeconds(Number(((Date.now() - startTime) / 1000).toFixed(1)));
       }

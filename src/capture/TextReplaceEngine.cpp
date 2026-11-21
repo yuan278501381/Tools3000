@@ -1399,6 +1399,11 @@ bool downloadUrlToFileWithProgress(const std::wstring& url,
     return true;
 }
 
+void releaseIdleModelMemoryColdPath() {
+    TextReplaceEngine::clearPatchCache();
+    tools3000::core::WinUtils::trimWorkingSet();
+}
+
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1437,6 +1442,7 @@ AiInpaintEngine::~AiInpaintEngine() {
     if (m_downloadWorker.joinable()) {
         m_downloadWorker.join();
     }
+    stopIdleReaper();
     releaseResources();
 }
 
@@ -1568,10 +1574,98 @@ bool AiInpaintEngine::deleteModel() {
     return !isModelInstalled();
 }
 
-void AiInpaintEngine::releaseResources() {
+bool AiInpaintEngine::isSessionLoaded() const {
     std::lock_guard<std::mutex> lock(m_inferMutex);
-    m_winMl.reset();
-    m_usingGpu.store(false, std::memory_order_release);
+    return m_winMl && static_cast<bool>(m_winMl->session);
+}
+
+void AiInpaintEngine::ensureIdleReaperStarted() {
+    if (m_idleReaperRunning.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::jthread oldWorker;
+    {
+        std::lock_guard<std::mutex> lock(m_idleMutex);
+        if (m_idleReaperRunning.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (m_idleReaper.joinable() && m_idleReaper.get_id() != std::this_thread::get_id()) {
+            oldWorker = std::move(m_idleReaper);
+        }
+        m_idleReaperRunning.store(true, std::memory_order_release);
+        m_idleReaper = std::jthread([this](std::stop_token st) {
+            struct RunningGuard {
+                std::atomic<bool>& flag;
+                ~RunningGuard() { flag.store(false, std::memory_order_release); }
+            } guard{m_idleReaperRunning};
+
+            while (!st.stop_requested()) {
+                const uint64_t timeoutMs = (std::max<uint64_t>)(1000ULL, m_idleUnloadTimeoutMs.load(std::memory_order_acquire));
+                const uint64_t pollMs = (std::min<uint64_t>)(15000ULL, (std::max<uint64_t>)(200ULL, timeoutMs / 3ULL));
+                {
+                    std::unique_lock<std::mutex> waitLock(m_idleMutex);
+                    m_idleCv.wait_for(waitLock, st, std::chrono::milliseconds(pollMs), [&st]() {
+                        return st.stop_requested();
+                    });
+                }
+                if (st.stop_requested()) break;
+
+                const uint64_t lastTick = m_lastUsedTick.load(std::memory_order_acquire);
+                const uint64_t nowTick = GetTickCount64();
+                if (lastTick == 0 || nowTick < lastTick || (nowTick - lastTick) < timeoutMs) {
+                    continue;
+                }
+
+                bool released = false;
+                {
+                    std::lock_guard<std::mutex> inferLock(m_inferMutex);
+                    const uint64_t recheckLast = m_lastUsedTick.load(std::memory_order_acquire);
+                    const uint64_t recheckNow = GetTickCount64();
+                    if (!m_winMl) {
+                        break;
+                    }
+                    if (recheckLast == 0 || (recheckNow >= recheckLast && (recheckNow - recheckLast) >= timeoutMs)) {
+                        m_winMl.reset();
+                        m_usingGpu.store(false, std::memory_order_release);
+                        released = true;
+                    }
+                }
+                if (released) {
+                    releaseIdleModelMemoryColdPath();
+                    LOG_INFO("AiInpaintEngine: idle timeout reached, released WinML session and trimmed memory");
+                    break;
+                }
+            }
+        });
+    }
+    if (oldWorker.joinable()) {
+        oldWorker.join();
+    }
+}
+
+void AiInpaintEngine::stopIdleReaper() {
+    std::jthread worker;
+    {
+        std::lock_guard<std::mutex> lock(m_idleMutex);
+        if (m_idleReaper.joinable() && m_idleReaper.get_id() != std::this_thread::get_id()) {
+            m_idleReaper.request_stop();
+            m_idleCv.notify_all();
+            worker = std::move(m_idleReaper);
+        }
+    }
+    if (worker.joinable()) {
+        worker.join();
+    }
+}
+
+void AiInpaintEngine::releaseResources() {
+    stopIdleReaper();
+    {
+        std::lock_guard<std::mutex> lock(m_inferMutex);
+        m_winMl.reset();
+        m_usingGpu.store(false, std::memory_order_release);
+    }
+    TextReplaceEngine::clearPatchCache();
 }
 
 bool AiInpaintEngine::ensureSessionLoadedLocked(const std::filesystem::path& modelPath) {
@@ -1636,12 +1730,15 @@ bool AiInpaintEngine::inpaintRegion(const cv::Mat& bgrCanvas,
     if (safeRoi.width < 16 || safeRoi.height < 16) return false;
     if (eraseMask255.cols != safeRoi.width || eraseMask255.rows != safeRoi.height) return false;
 
-    std::lock_guard<std::mutex> lock(m_inferMutex);
-    if (!ensureSessionLoadedLocked(dir / kInpaintModelFileName)) {
-        return false;
-    }
+    bool ok = false;
+    {
+        std::lock_guard<std::mutex> lock(m_inferMutex);
+        m_lastUsedTick.store(GetTickCount64(), std::memory_order_release);
+        if (!ensureSessionLoadedLocked(dir / kInpaintModelFileName)) {
+            return false;
+        }
 
-    try {
+        try {
         // MI-GAN pipeline v2 接受任意 8px 对齐 (建议封顶 512x512) uint8 RGB [1,3,H,W] 与 mask [1,1,H,W] (255=保留, 0=修复)
         const cv::Mat cropBgr = bgrCanvas(safeRoi);
         const int maxSide = (std::max)(safeRoi.width, safeRoi.height);
@@ -1734,14 +1831,20 @@ bool AiInpaintEngine::inpaintRegion(const cv::Mat& bgrCanvas,
         } else {
             outRepairedRoiBgr = std::move(outBgr);
         }
-        return !outRepairedRoiBgr.empty();
+        ok = !outRepairedRoiBgr.empty();
     } catch (const winrt::hresult_error& e) {
         LOG_WARN("AiInpaintEngine: evaluate failed: hr=0x{:08X}", static_cast<uint32_t>(e.code()));
-        return false;
+        ok = false;
     } catch (const std::exception& e) {
         LOG_WARN("AiInpaintEngine: evaluate exception: {}", e.what());
-        return false;
+        ok = false;
     }
+        m_lastUsedTick.store(GetTickCount64(), std::memory_order_release);
+    }
+    if (isSessionLoaded()) {
+        ensureIdleReaperStarted();
+    }
+    return ok;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

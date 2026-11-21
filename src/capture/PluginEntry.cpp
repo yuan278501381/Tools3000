@@ -391,7 +391,10 @@ void stopRecordingWithFeedback() {
             } else {
                 preparedDeck.clear();
                 preparedDeck.shrink_to_fit();
+                rec.clearStudioTransientData();
             }
+        } else {
+            ScreenRecorder::instance().clearStudioTransientData();
         }
 
         tools3000::core::MainThreadDispatcher::instance().post(

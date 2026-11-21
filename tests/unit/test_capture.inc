@@ -14657,6 +14657,28 @@ TEST(WindowElementDetectorTest, SessionLifecycleAndGenerationInvalidation) {
     EXPECT_FALSE(detector.consumeRefinedResult(res));
 }
 
+TEST(MemoryHygieneRegressionTest, ScreenRecorderScrollCaptureAndAiInpaintCleanup) {
+    using namespace tools3000::capture;
+
+    // 1. 验证 ScreenRecorder::clearStudioTransientData 在空闲态幂等且清空预览帧/时间轴
+    auto& recorder = ScreenRecorder::instance();
+    recorder.clearStudioTransientData();
+    EXPECT_TRUE(recorder.takeLastStudioPreviewDeck().empty());
+
+    // 2. 验证 AiInpaintEngine 闲置回收接口在未加载会话时安全幂等
+    auto& inpaint = AiInpaintEngine::instance();
+    inpaint.releaseResources();
+    EXPECT_FALSE(inpaint.isSessionLoaded());
+
+    // 3. 验证 ScrollCapture 取消/清理路径清空拼接状态
+    auto& sc = ScrollCapture::instance();
+    sc.cancel();
+    const SIZE dims = sc.stitchedDimensions();
+    EXPECT_EQ(dims.cx, 0);
+    EXPECT_EQ(dims.cy, 0);
+    EXPECT_FALSE(sc.isRunning());
+}
+
 
 
 

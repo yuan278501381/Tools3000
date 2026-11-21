@@ -279,8 +279,9 @@ void TrayWindow::initializeWebView2() {
                                 m_controller->put_IsVisible(TRUE);
                                 m_suspendController.resume(m_controller.Get());
                             } else {
+                                // 导航尚未开始，此处仅设不可见；待 NavigationCompleted 后再执行 TrySuspend，
+                                // 避免后续 Navigate() 立即解除挂起态。
                                 m_controller->put_IsVisible(FALSE);
-                                m_suspendController.requestSuspend(m_controller.Get(), m_webView.Get());
                             }
                             
                             // 开启真正完全透明背景 (ARGB = 0x00000000)
@@ -388,7 +389,9 @@ void TrayWindow::initializeWebView2() {
                             tools3000::core::MessageBridge::instance().registerEventPusher("tray",
                                 [this](const std::string& eventName, const nlohmann::json& data) {
                                     tools3000::core::MainThreadDispatcher::instance().post([this, eventName, data]() {
-                                        if (!m_webView || !m_webViewReady.load()) return;
+                                        // 隐藏态跳过事件推送以免唤醒已挂起的 Chromium renderer；
+                                        // TrayApp 每次 tray:show 均会主动执行 refreshState() 全量同步。
+                                        if (!m_webView || !m_webViewReady.load() || !m_visible.load()) return;
                                         const nlohmann::json envelope = {
                                             {"type", "event"}, {"event", eventName}, {"data", data}
                                         };
@@ -411,6 +414,14 @@ void TrayWindow::initializeWebView2() {
                                             LOG_ERROR("TrayWindow: WebView2 导航失败, status={}", static_cast<int>(status));
                                         }
                                         m_webViewReady = true;
+                                        if (m_visible.load()) {
+                                            if (m_webView) {
+                                                m_webView->ExecuteScript(L"window.dispatchEvent(new CustomEvent('tray:show'));", nullptr);
+                                            }
+                                        } else if (m_controller && m_webView) {
+                                            m_controller->put_IsVisible(FALSE);
+                                            m_suspendController.requestSuspend(m_controller.Get(), m_webView.Get());
+                                        }
                                         return S_OK;
                                     }
                                 ).Get(), &token);

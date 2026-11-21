@@ -123,7 +123,9 @@ std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
         pin->m_cleanBaseImage = cleanBaseImage.clone();
         pin->m_markupElements = std::move(markupElements);
     } else {
-        pin->m_cleanBaseImage = image.clone();
+        // 写时复制 (COW)：未产生标注/原地滤镜修改前与 m_sourceImage 共享同一 cv::Mat 像素缓冲区，
+        // 单张 4K 贴图立省 ~33 MB CPU 内存，任何原地修改前均会分离拷贝。
+        pin->m_cleanBaseImage = pin->m_sourceImage;
         pin->m_markupElements.clear();
     }
     pin->m_cardCornerRadius = (std::max)(0.0f, cardCornerRadius);
@@ -232,7 +234,6 @@ void PinWindow::close() {
         s_activeGroupFilter = PinGroupConstants::kFilterAllGroups;
         PinGroupBarOverlay::instance().shutdown();
         broadcastGroupStateChanged();
-        tools3000::core::WinUtils::trimWorkingSet();
     } else {
         if (closedGroup >= PinGroupConstants::kMinGroupId &&
             s_activeGroupFilter == closedGroup &&
@@ -242,6 +243,8 @@ void PinWindow::close() {
             refreshGroupBar();
         }
     }
+    // 单张贴图关闭属于明确冷路径（4K 贴图含 CPU+GPU 可达 60~100 MB），及时归还系统工作集
+    tools3000::core::WinUtils::trimWorkingSet();
 }
 
 void PinWindow::closeAll() {
@@ -1166,10 +1169,13 @@ void PinWindow::rotate(int angleDeg) {
 
     const int prevOrigW = m_origWidth;
     const int prevOrigH = m_origHeight;
+    const bool sharedCleanBase = (!m_cleanBaseImage.empty() && m_cleanBaseImage.data == m_sourceImage.data);
     if (!PinInputController::applyRotation(m_sourceImage, m_colorBackup, m_origWidth, m_origHeight, angleDeg)) {
         return;
     }
-    if (!m_cleanBaseImage.empty()) {
+    if (sharedCleanBase) {
+        m_cleanBaseImage = m_sourceImage;
+    } else if (!m_cleanBaseImage.empty()) {
         cv::Mat dummyBackup;
         int cleanW = m_cleanBaseImage.cols;
         int cleanH = m_cleanBaseImage.rows;
@@ -1236,10 +1242,13 @@ void PinWindow::rotate(int angleDeg) {
 
 void PinWindow::flip(bool horizontal) {
     if (m_sourceImage.empty() || !m_hwnd) return;
+    const bool sharedCleanBase = (!m_cleanBaseImage.empty() && m_cleanBaseImage.data == m_sourceImage.data);
     if (!PinInputController::applyFlip(m_sourceImage, m_colorBackup, horizontal)) {
         return;
     }
-    if (!m_cleanBaseImage.empty()) {
+    if (sharedCleanBase) {
+        m_cleanBaseImage = m_sourceImage;
+    } else if (!m_cleanBaseImage.empty()) {
         cv::Mat dummyBackup;
         PinInputController::applyFlip(m_cleanBaseImage, dummyBackup, horizontal);
     }
@@ -1294,6 +1303,10 @@ void PinWindow::flip(bool horizontal) {
 
 void PinWindow::invertColors() {
     if (m_sourceImage.empty() || !m_hwnd) return;
+    // COW 写前分离：防止原地像素反色污染共享的纯净底图 m_cleanBaseImage
+    if (!m_cleanBaseImage.empty() && m_cleanBaseImage.data == m_sourceImage.data) {
+        m_sourceImage = m_sourceImage.clone();
+    }
     auto invertMat = [](cv::Mat& mat) {
         if (mat.channels() == 4) {
             std::vector<cv::Mat> channels;
@@ -1318,6 +1331,10 @@ void PinWindow::invertColors() {
 void PinWindow::toggleGrayscale() {
     if (m_sourceImage.empty() || !m_hwnd) return;
     if (!m_grayscale) {
+        // COW 写前分离：防止原地灰度写回污染共享的纯净底图 m_cleanBaseImage
+        if (!m_cleanBaseImage.empty() && m_cleanBaseImage.data == m_sourceImage.data) {
+            m_sourceImage = m_sourceImage.clone();
+        }
         m_colorBackup = m_sourceImage.clone();
         if (m_sourceImage.channels() == 4) {
             cv::Mat bgr, gray, grayBgra;

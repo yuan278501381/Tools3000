@@ -1,6 +1,6 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Stop', 'Sample', 'Summarize', 'MeasureColdStart', 'MeasureSearchFirstOpen')]
+    [ValidateSet('Start', 'Stop', 'Sample', 'Summarize', 'MeasureColdStart', 'MeasureSearchFirstOpen', 'SnapshotProcessTree', 'CheckColdModules')]
     [string]$Action = 'Start',
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\artifacts\performance-baseline'),
     [ValidateRange(250, 60000)]
@@ -10,7 +10,8 @@ param(
         if (Test-Path $t3000) { $t3000 } else { (Join-Path $PSScriptRoot '..\build\bin\Release\Tools3000.exe') }
     ),
     [ValidateRange(1, 30)]
-    [int]$Iterations = 5
+    [int]$Iterations = 5,
+    [int]$TargetPid = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -226,8 +227,144 @@ public static class Tools3000BaselineNative {
     }
 }
 
+function Get-Tools3000ProcessTreeSnapshot {
+    param([int]$RootPid = 0)
+
+    $cimProcs = @(Get-CimInstance Win32_Process -Filter "Name='Tools3000.exe' OR Name='msedgewebview2.exe' OR Name='Tools3000_Service.exe'" -ErrorAction SilentlyContinue)
+    $byId = @{}
+    foreach ($p in $cimProcs) { $byId[[int]$p.ProcessId] = $p }
+
+    $roots = if ($RootPid -gt 0 -and $byId.ContainsKey($RootPid)) {
+        @($byId[$RootPid])
+    } else {
+        @($cimProcs | Where-Object { $_.Name -ieq 'Tools3000.exe' -and ([string]$_.CommandLine) -notmatch '--worker=' })
+    }
+    $rootIdSet = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($r in $roots) { [void]$rootIdSet.Add([int]$r.ProcessId) }
+
+    # 递归收拢归属于目标 Tools3000 主进程的所有子孙进程 (msedgewebview2 / --worker=*)
+    $treeIds = [System.Collections.Generic.HashSet[int]]::new($rootIdSet)
+    if ($RootPid -gt 0) {
+        # WebView2 browser 进程可能经由独立用户数据目录启动，先通过命令行 user-data-dir 锚点补齐再递归子进程
+        foreach ($r in $roots) {
+            $rCmd = [string]$r.CommandLine
+            foreach ($p in $cimProcs) {
+                if ([int]$p.ParentProcessId -eq [int]$r.ProcessId) {
+                    [void]$treeIds.Add([int]$p.ProcessId)
+                }
+            }
+        }
+    }
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($p in $cimProcs) {
+            $pidInt = [int]$p.ProcessId
+            $ppidInt = [int]$p.ParentProcessId
+            if (-not $treeIds.Contains($pidInt) -and $treeIds.Contains($ppidInt)) {
+                [void]$treeIds.Add($pidInt)
+                $changed = $true
+            }
+        }
+    }
+
+    $entries = @()
+    foreach ($p in $cimProcs) {
+        $pidInt = [int]$p.ProcessId
+        $isService = $p.Name -ieq 'Tools3000_Service.exe'
+        if (-not $isService -and $rootIdSet.Count -gt 0 -and -not $treeIds.Contains($pidInt)) {
+            continue
+        }
+        $procObj = Get-Process -Id $pidInt -ErrorAction SilentlyContinue
+        if (-not $procObj) { continue }
+        $cmd = [string]$p.CommandLine
+        $role = if ($p.Name -ieq 'Tools3000_Service.exe') {
+            'search-service'
+        } elseif ($p.Name -ieq 'Tools3000.exe') {
+            if ($cmd -match '--worker=([a-zA-Z0-9_-]+)') { "worker:$($Matches[1])" } else { 'host' }
+        } else {
+            if ($cmd -match '--type=([a-zA-Z0-9_-]+)') { "wv2:$($Matches[1])" } else { 'wv2:browser' }
+        }
+        $entries += [pscustomobject]@{
+            pid = $pidInt
+            parentPid = [int]$p.ParentProcessId
+            name = $p.Name
+            role = $role
+            workingSetMB = [math]::Round($procObj.WorkingSet64 / 1MB, 2)
+            privateMB = [math]::Round($procObj.PrivateMemorySize64 / 1MB, 2)
+            cpuSec = [math]::Round($(try { $procObj.TotalProcessorTime.TotalSeconds } catch { 0 }), 3)
+            handles = $procObj.HandleCount
+        }
+    }
+
+    $groups = @($entries | Group-Object role | Sort-Object Name | ForEach-Object {
+        [pscustomobject]@{
+            role = $_.Name
+            count = $_.Count
+            workingSetMB = [math]::Round(($_.Group | Measure-Object workingSetMB -Sum).Sum, 2)
+            privateMB = [math]::Round(($_.Group | Measure-Object privateMB -Sum).Sum, 2)
+            cpuSec = [math]::Round(($_.Group | Measure-Object cpuSec -Sum).Sum, 3)
+        }
+    })
+
+    return [pscustomobject]@{
+        timestampUtc = [DateTime]::UtcNow.ToString('o')
+        rootPids = @($rootIdSet)
+        processes = $entries
+        groups = $groups
+        totalWithoutService = [pscustomobject]@{
+            count = @($entries | Where-Object { $_.role -ne 'search-service' }).Count
+            workingSetMB = [math]::Round((($entries | Where-Object { $_.role -ne 'search-service' }) | Measure-Object workingSetMB -Sum).Sum, 2)
+            privateMB = [math]::Round((($entries | Where-Object { $_.role -ne 'search-service' }) | Measure-Object privateMB -Sum).Sum, 2)
+        }
+    }
+}
+
+function Invoke-ColdModuleGateCheck {
+    param([int]$RootPid = 0)
+
+    $target = if ($RootPid -gt 0) {
+        Get-Process -Id $RootPid -ErrorAction SilentlyContinue
+    } else {
+        Get-Process -Name 'Tools3000' -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if (-not $target) {
+        throw '未找到运行中的 Tools3000.exe 进程，无法校验冷启动 DLL 加载门禁。'
+    }
+
+    $forbiddenColdDlls = @(
+        'avcodec-62.dll', 'avformat-62.dll', 'avutil-60.dll', 'swscale-9.dll', 'swresample-6.dll',
+        'libwebp.dll', 'libwebpmux.dll',
+        'opencv_imgproc4.dll', 'opencv_imgcodecs4.dll', 'opencv_photo4.dll', 'opencv_dnn4.dll', 'opencv_objdetect4.dll',
+        'libprotobuf.dll', 'directml.dll'
+    )
+    $loadedNames = @($target.Modules | ForEach-Object { $_.ModuleName })
+    $loadedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($n in $loadedNames) { [void]$loadedSet.Add($n) }
+
+    $violations = @($forbiddenColdDlls | Where-Object { $loadedSet.Contains($_) })
+    return [pscustomobject]@{
+        pid = $target.Id
+        totalLoadedModules = $loadedNames.Count
+        checkedDeferredDllCount = $forbiddenColdDlls.Count
+        violations = $violations
+        passed = ($violations.Count -eq 0)
+    }
+}
+
 $paths = Get-BaselinePaths -Directory $OutputDirectory
 switch ($Action) {
+    'SnapshotProcessTree' {
+        $snap = Get-Tools3000ProcessTreeSnapshot -RootPid $TargetPid
+        $snap | ConvertTo-Json -Depth 8
+        exit 0
+    }
+    'CheckColdModules' {
+        $check = Invoke-ColdModuleGateCheck -RootPid $TargetPid
+        $check | ConvertTo-Json -Depth 6
+        if (-not $check.passed) { exit 2 }
+        exit 0
+    }
     'Sample' {
         Start-Sampler -Paths $paths -IntervalMilliseconds $SampleIntervalMilliseconds
         exit 0

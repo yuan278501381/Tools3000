@@ -70,10 +70,13 @@ void MouseFeedbackOverlayBase::raiseZOrderForDraw() noexcept {
     wakeRender();
 }
 
-bool MouseFeedbackOverlayBase::initializeBase(HINSTANCE hInstance, const wchar_t* windowClassName, const wchar_t* helperOwnerName) {
+bool MouseFeedbackOverlayBase::initializeBase(HINSTANCE hInstance, const wchar_t* windowClassName,
+                                              const wchar_t* helperOwnerName, bool lazyCompositor) {
     m_hInstance = hInstance ? hInstance : GetModuleHandleW(nullptr);
     m_windowClassName = windowClassName ? windowClassName : L"Tools3000_MouseFeedbackOverlay";
     m_helperOwnerName = helperOwnerName ? helperOwnerName : L"Tools3000_MouseHelperOwner";
+    m_lazyCompositor = lazyCompositor;
+    m_idleSince = {};
 
     m_wakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!m_wakeEvent) {
@@ -100,7 +103,7 @@ bool MouseFeedbackOverlayBase::initializeBase(HINSTANCE hInstance, const wchar_t
     WaitForSingleObject(readyEvent, 5000);
     CloseHandle(readyEvent);
 
-    if (!m_hwnd || !m_compositorReady) {
+    if (!m_hwnd || (!m_lazyCompositor && !m_compositorReady)) {
         LOG_ERROR("MouseFeedbackOverlayBase: Render thread window or compositor initialization failed");
         shutdownBase();
         return false;
@@ -171,22 +174,43 @@ void MouseFeedbackOverlayBase::baseRenderLoop(std::stop_token st, HANDLE readyEv
         SetWindowLongPtrW(m_hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
         tools3000::core::WinUtils::applyTaskbarSafeOverlayStyle(m_hwnd, false);
         SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
-        std::lock_guard lock(m_baseMutex);
-        initCompositorLocked();
+        if (!m_lazyCompositor) {
+            std::lock_guard lock(m_baseMutex);
+            initCompositorLocked();
+        }
     }
 
     SetEvent(readyEvent);
 
-    if (!m_hwnd || !m_compositorReady) {
+    if (!m_hwnd || (!m_lazyCompositor && !m_compositorReady)) {
         LOG_ERROR("MouseFeedbackOverlayBase: Render thread failed to create window or initialize compositor");
         return;
     }
 
+    static constexpr auto kLazyCompositorIdleRelease = std::chrono::seconds(60);
     MSG msg;
     while (!st.stop_requested()) {
         DWORD waitMs = INFINITE;
-        if (!isOverlayIdle()) {
+        const bool idleNow = isOverlayIdle();
+        if (!idleNow) {
+            m_idleSince = {};
             waitMs = 16; // 动效活跃时保持 60FPS 渲染采样循环
+        } else if (m_lazyCompositor && m_compositorReady.load(std::memory_order_acquire)) {
+            const auto now = std::chrono::steady_clock::now();
+            if (m_idleSince == std::chrono::steady_clock::time_point{}) {
+                m_idleSince = now;
+            }
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_idleSince);
+            const auto limitMs = std::chrono::duration_cast<std::chrono::milliseconds>(kLazyCompositorIdleRelease);
+            if (elapsed >= limitMs) {
+                releaseIdleCompositor();
+                m_idleSince = {};
+                waitMs = INFINITE;
+            } else {
+                waitMs = static_cast<DWORD>((std::max<int64_t>)(1000, (limitMs - elapsed).count()));
+            }
+        } else {
+            m_idleSince = {};
         }
 
         DWORD waitResult = MsgWaitForMultipleObjectsEx(
@@ -347,8 +371,16 @@ void MouseFeedbackOverlayBase::releaseCompositorLocked() {
     m_compositorReady.store(false, std::memory_order_release);
 }
 
+void MouseFeedbackOverlayBase::releaseIdleCompositor() {
+    {
+        std::lock_guard lock(m_baseMutex);
+        releaseCompositorLocked();
+    }
+    tools3000::core::WinUtils::trimWorkingSet();
+}
+
 bool MouseFeedbackOverlayBase::ensureDcompSurfaceLocked(int width, int height) {
-    if (!m_compositorReady) return false;
+    if (!m_compositorReady && !initCompositorLocked()) return false;
     if (width <= 0 || height <= 0) return false;
 
     if (m_dcompSurface && m_surfaceWidth == width && m_surfaceHeight == height) {

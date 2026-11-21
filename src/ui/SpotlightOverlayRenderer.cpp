@@ -34,7 +34,8 @@ void SpotlightOverlay::render() {
 }
 
 void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
-    if (!m_hwnd || !m_compositorReady) return;
+    if (!m_hwnd) return;
+    if (!m_compositorReady.load(std::memory_order_acquire) && !initCompositorLocked()) return;
 
     const ViewportBounds& bounds = snapshot.bounds;
     if (bounds.w <= 0 || bounds.h <= 0) {
