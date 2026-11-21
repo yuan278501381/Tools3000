@@ -50,7 +50,7 @@ Tools3000 unifies everyday **file search, document content search, scrolling cap
 
 ## Why I Built Tools3000
 
-I have been a heavy **Everything** user for over ten years. For screenshots, I moved from **FastStone Capture** to **Snipaste**, and later switched to **PixPin** for scrolling capture, magnifier annotations, and OCR. For mouse gestures, I went from **WGestures** to **WGestures 2**, and I cycled through plenty of screen recorders along the way — and even gave Microsoft **PowerToys** a try in between, yet it still missed several daily essentials, leaving me back with a row of separate apps.
+I have been a heavy **Everything** user for over ten years. For screenshots, I started with the built-in **QQ / WeChat** capture tools, moved to **FastStone Capture** for its convenient annotation tools, then switched to **Snipaste** for pinning screenshots on screen, and later migrated to **PixPin** for scrolling capture, magnifier annotations, and OCR. For mouse gestures, I went from **WGestures** to **WGestures 2**, and I cycled through plenty of screen recorders along the way — and even gave Microsoft **PowerToys** a try in between, yet it still missed several daily essentials, leaving me back with a row of separate apps.
 
 One day I looked at the row of icons sitting in my Windows system tray and thought: **what if all of these lived in a single app?** On top of tray clutter, a couple of daily annoyances kept nagging at me — PixPin's OCR still lagged behind WeChat in both accuracy and speed, and WGestures started leaving a stubborn tiny text box stuck on screen that only went away after restarting the app. With AI now making ambitious solo builds possible, I rolled up my sleeves and built **Tools3000** as an all-in-one replacement.
 

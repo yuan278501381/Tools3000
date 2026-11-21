@@ -50,7 +50,7 @@ Tools3000 integra en una sola aplicación nativa para Windows las herramientas e
 
 ## Por qué creé Tools3000
 
-Llevo más de diez años usando **Everything** a diario. En capturas de pantalla pasé de **FastStone Capture** a **Snipaste**, y luego me cambié a **PixPin** por la captura con desplazamiento, el efecto lupa y el OCR; en gestos de ratón utilicé **WGestures** y **WGestures 2**, además de probar muchos grabadores de pantalla — a mitad de camino incluso probé Microsoft **PowerToys**, pero seguían faltando varias piezas clave de mi día a día y acabé de nuevo con varias utilidades residentes.
+Llevo más de diez años usando **Everything** a diario. En capturas de pantalla empecé con las herramientas integradas de **QQ y WeChat**, pasé a **FastStone Capture** por lo cómodas que eran sus anotaciones, luego cambié a **Snipaste** para poder fijar capturas en pantalla, y más tarde migré a **PixPin** por la captura con desplazamiento, el efecto lupa y el OCR; en gestos de ratón utilicé **WGestures** y **WGestures 2**, además de probar muchos grabadores de pantalla — a mitad de camino incluso probé Microsoft **PowerToys**, pero seguían faltando varias piezas clave de mi día a día y acabé de nuevo con varias utilidades residentes.
 
 Un día, mirando la fila de iconos acumulados en la bandeja del sistema de Windows, pensé: **qué bien sería unir todo esto en una sola aplicación.** A eso se sumaban dos molestias cotidianas — el OCR de PixPin seguía por detrás de WeChat en precisión y velocidad, y WGestures empezó a dejar un pequeño cuadro de texto atascado en pantalla que solo desaparecía al reiniciar el programa. Aprovechando la llegada de la IA, decidí crear esta suite todo-en-uno por mi cuenta: **Tools3000**.
 
