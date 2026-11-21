@@ -14544,5 +14544,119 @@ TEST(PinWindowCrossRegionVerticalFlowSelectionTest, VerticalStackedRegionsKeepRi
 
 #include "test_studio_recorder.inc"
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WindowElementDetector MECE 四维截图自动捕捉引擎防回退回归测试
+// ─────────────────────────────────────────────────────────────────────────────
+#include "capture/WindowElementDetector.h"
+
+TEST(WindowElementDetectorTest, IoUAndDeduplicationPrioritizesSemanticElement) {
+    using namespace tools3000::capture;
+
+    const RECT a{100, 100, 300, 200};
+    const RECT b{102, 101, 299, 200};
+    EXPECT_GT(computeRectIoU(a, b), 0.96);
+    EXPECT_DOUBLE_EQ(computeRectIoU(RECT{0, 0, 50, 50}, RECT{100, 100, 150, 150}), 0.0);
+
+    std::vector<DetectedElementCandidate> raw;
+    // 1. 噪点碎片（应被过滤）
+    raw.push_back({RECT{10, 10, 18, 16}, L"Tiny", 4.0f, DetectedCandidateKind::UiaElement, 60});
+    // 2. 顶层窗口外框
+    raw.push_back({RECT{-20, -10, 1980, 1090}, L"Window", 8.0f, DetectedCandidateKind::WindowFrame, 20});
+    // 3. 与外框近似重合的容器（IoU > 0.94），但语义优先级更高
+    raw.push_back({RECT{100, 100, 300, 200}, L"WinFrameSub", 6.0f, DetectedCandidateKind::WindowFrame, 20});
+    raw.push_back({RECT{101, 101, 299, 199}, L"Button: Send", 4.0f, DetectedCandidateKind::UiaElement, 60});
+    // 4. 显示器全屏
+    raw.push_back({RECT{0, 0, 1920, 1080}, L"Display", 0.0f, DetectedCandidateKind::MonitorDisplay, 10});
+
+    const auto normalized = normalizeDetectedHierarchy(std::move(raw), 1920, 1080, 10);
+    ASSERT_EQ(normalized.size(), 2u);
+    // 第 0 层应为面积最小且语义胜出的 UIA 按钮
+    EXPECT_EQ(normalized[0].kind, DetectedCandidateKind::UiaElement);
+    EXPECT_EQ(normalized[0].description, L"Button: Send");
+    // 第 1 层（窗口外框裁剪到 [0,0,1920,1080] 后与显示器全屏重合，WindowFrame 优先级 20 > MonitorDisplay 10）
+    EXPECT_EQ(normalized[1].kind, DetectedCandidateKind::WindowFrame);
+    EXPECT_EQ(normalized[1].rect.left, 0);
+    EXPECT_EQ(normalized[1].rect.top, 0);
+    EXPECT_EQ(normalized[1].rect.right, 1920);
+    EXPECT_EQ(normalized[1].rect.bottom, 1080);
+}
+
+TEST(WindowElementDetectorTest, HierarchyDepthCapPreservesKeyAnchors) {
+    using namespace tools3000::capture;
+
+    std::vector<DetectedElementCandidate> raw;
+    // 构造 12 层逐渐放大的 DOM 容器 + 客户区 + 窗口外框 + 显示器
+    for (int i = 0; i < 12; ++i) {
+        const int pad = i * 25;
+        raw.push_back({
+            RECT{400 - pad, 300 - pad, 500 + pad, 360 + pad},
+            L"UIA_" + std::to_wstring(i),
+            4.0f,
+            DetectedCandidateKind::UiaElement,
+            60
+        });
+    }
+    raw.push_back({RECT{40, 60, 1400, 900}, L"Client", 0.0f, DetectedCandidateKind::WindowClient, 30});
+    raw.push_back({RECT{30, 20, 1410, 910}, L"Window", 8.0f, DetectedCandidateKind::WindowFrame, 20});
+    raw.push_back({RECT{0, 0, 1920, 1080}, L"Display", 0.0f, DetectedCandidateKind::MonitorDisplay, 10});
+
+    const auto trimmed = normalizeDetectedHierarchy(std::move(raw), 1920, 1080, 6);
+    ASSERT_EQ(trimmed.size(), 6u);
+    EXPECT_EQ(trimmed.front().description, L"UIA_0");
+    EXPECT_EQ(trimmed.back().kind, DetectedCandidateKind::MonitorDisplay);
+
+    bool hasClient = false;
+    bool hasWindow = false;
+    for (const auto& c : trimmed) {
+        if (c.kind == DetectedCandidateKind::WindowClient) hasClient = true;
+        if (c.kind == DetectedCandidateKind::WindowFrame) hasWindow = true;
+    }
+    EXPECT_TRUE(hasClient);
+    EXPECT_TRUE(hasWindow);
+}
+
+TEST(WindowElementDetectorTest, VisualCardFallbackDetectsCleanCardAndRejectsNoise) {
+    using namespace tools3000::capture;
+
+    // 1. 合成带清晰高对比矩形卡片的 800x600 冻结画面
+    cv::Mat canvas(600, 800, CV_8UC4, cv::Scalar(244, 244, 246, 255));
+    cv::rectangle(canvas, cv::Rect(220, 150, 260, 180), cv::Scalar(255, 255, 255, 255), cv::FILLED);
+    cv::rectangle(canvas, cv::Rect(220, 150, 260, 180), cv::Scalar(40, 40, 48, 255), 2);
+
+    RECT detected{};
+    const bool hit = detectVisualCardRegionAtPoint(canvas, POINT{340, 240}, RECT{0, 0, 800, 600}, detected);
+    ASSERT_TRUE(hit);
+    EXPECT_NEAR(detected.left, 220, 6);
+    EXPECT_NEAR(detected.top, 150, 6);
+    EXPECT_NEAR(detected.right, 480, 6);
+    EXPECT_NEAR(detected.bottom, 330, 6);
+
+    // 2. 纯色空白画面必须返回 false（0 误报）
+    cv::Mat blank(600, 800, CV_8UC4, cv::Scalar(240, 240, 240, 255));
+    RECT blankOut{};
+    EXPECT_FALSE(detectVisualCardRegionAtPoint(blank, POINT{340, 240}, RECT{0, 0, 800, 600}, blankOut));
+}
+
+TEST(WindowElementDetectorTest, SessionLifecycleAndGenerationInvalidation) {
+    using namespace tools3000::capture;
+
+    WindowElementDetector detector;
+    const uint64_t g0 = detector.currentGeneration();
+    cv::Mat dummy(400, 400, CV_8UC4, cv::Scalar(20, 20, 20, 255));
+    detector.beginSession(nullptr, 0, 0, 400, 400, &dummy);
+    EXPECT_GT(detector.currentGeneration(), g0);
+
+    auto syncList = detector.querySync(POINT{100, 100}, nullptr);
+    EXPECT_FALSE(syncList.empty());
+
+    const uint64_t g1 = detector.currentGeneration();
+    detector.endSession();
+    EXPECT_GT(detector.currentGeneration(), g1);
+
+    AsyncRefinedHierarchyResult res{};
+    EXPECT_FALSE(detector.consumeRefinedResult(res));
+}
+
+
 
 

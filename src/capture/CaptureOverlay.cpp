@@ -270,6 +270,9 @@ void CaptureOverlay::loadUserMarkupPreferences(bool preserveSavedOutputFrame) {
     else if (shellTheme == "silk_mist" || shellTheme == "emerald_sea") m_state.beautyShell.bgType = BeautyBackgroundType::SilkMist;
     else if (shellTheme == "midnight_graphite" || shellTheme == "obsidian_dark") m_state.beautyShell.bgType = BeautyBackgroundType::MidnightGraphite;
     else if (shellTheme == "pure_minimal" || shellTheme == "minimal_light") m_state.beautyShell.bgType = BeautyBackgroundType::PureMinimal;
+    else if (shellTheme == "airy_glacier") m_state.beautyShell.bgType = BeautyBackgroundType::AiryGlacier;
+    else if (shellTheme == "dusk_mountains") m_state.beautyShell.bgType = BeautyBackgroundType::DuskMountains;
+    else if (shellTheme == "misty_lake_dawn") m_state.beautyShell.bgType = BeautyBackgroundType::MistyLakeDawn;
     m_state.beautyShell.padding = config.get<int>("/capture/beautyShellPadding", 32);
     m_state.beautyShell.cornerRadius = static_cast<float>(config.get<int>("/capture/beautyShellRadius", 16));
 
@@ -441,12 +444,19 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
 
     m_renderer.invalidate();
 
-    SetWindowPos(m_hwnd, HWND_TOPMOST,
-                 GetSystemMetrics(SM_XVIRTUALSCREEN),
-                 GetSystemMetrics(SM_YVIRTUALSCREEN),
-                 GetSystemMetrics(SM_CXVIRTUALSCREEN),
-                 GetSystemMetrics(SM_CYVIRTUALSCREEN),
-                 SWP_SHOWWINDOW);
+    // 在截图全屏遮罩尚未显示前瞬间预采集桌面可见窗口 Z-Order 拓扑快照（零卡顿 + 零遮罩干扰）
+    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (options.autoDetectWindow) {
+        m_input.beginDetectionSession(vx, vy, vw, vh, &m_state.frozenScreen);
+        m_input.updateWindowDetectionAtCursor(m_hwnd, cursorScreen, /*allowAsyncRefine=*/true);
+    } else {
+        m_input.endDetectionSession();
+    }
+
+    SetWindowPos(m_hwnd, HWND_TOPMOST, vx, vy, vw, vh, SWP_SHOWWINDOW);
     tools3000::core::KeyboardHook::instance().setCaptureOverlayVisible(true);
 
     SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
@@ -563,6 +573,7 @@ void CaptureOverlay::startEditPinned(const cv::Mat& image, const CaptureRegion& 
     }
 
     m_renderer.invalidate();
+    m_input.endDetectionSession();
 
     SetWindowPos(m_hwnd, HWND_TOPMOST,
                  GetSystemMetrics(SM_XVIRTUALSCREEN),
@@ -1044,9 +1055,11 @@ void CaptureOverlay::cleanupAfterDelivery(bool trimMemory) {
         m_hwnd = nullptr;
         DestroyWindow(hwndToDestroy);
     }
+    m_input.endDetectionSession();
     m_state.markup.resetSession();
     m_state.detectedWindowHierarchy.clear();
     m_state.detectedWindowHierarchyDescriptions.clear();
+    m_state.detectedWindowHierarchyRadii.clear();
     m_state.detectedWindow = {};
     releaseFrozenSurface();
     if (m_closedCallback) m_closedCallback();
