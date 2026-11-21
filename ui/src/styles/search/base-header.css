@@ -3,62 +3,66 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 :root {
-    --bg-elevated: #211e30;
-    --search-bg: rgba(24, 24, 28, 0.98);
-    --search-border: rgba(255, 255, 255, 0.12);
-    --search-shadow: 0 24px 60px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.08);
-    --search-input-bottom: rgba(255, 255, 255, 0.08);
-    --search-text-main: #f8f8fc;
-    --search-text-sub: #9494a8;
-    --search-text-muted: #6b6b80;
-    --search-surface-pill: rgba(255, 255, 255, 0.06);
-    --search-surface-pill-border: rgba(255, 255, 255, 0.08);
-    --search-surface-pill-hover: rgba(255, 255, 255, 0.12);
-    --search-hover-bg: var(--primary-dim, rgba(139, 92, 246, 0.18));
-    --search-selected-bg: var(--primary-dim, rgba(139, 92, 246, 0.24));
-    --search-item-border: rgba(255, 255, 255, 0.05);
-    --search-footer-bg: rgba(18, 18, 22, 0.95);
-    --search-footer-border: rgba(255, 255, 255, 0.08);
-    --search-kbd-bg: rgba(255, 255, 255, 0.08);
-    --search-kbd-border: rgba(255, 255, 255, 0.15);
-    --search-kbd-text: #f1f5f9;
-    --search-drawer-bg: rgba(20, 20, 24, 0.98);
-    --search-drawer-border: rgba(255, 255, 255, 0.1);
-    --search-snippet-bg: rgba(0, 0, 0, 0.35);
-    --search-snippet-border: rgba(255, 255, 255, 0.07);
-    --search-scrollbar-silent: rgba(255, 255, 255, 0.16);
-    --search-scrollbar-thumb: rgba(255, 255, 255, 0.28);
-    --search-scrollbar-hover: rgba(255, 255, 255, 0.42);
+    --search-bg: rgba(19, 20, 26, 0.985);
+    --search-subbar-bg: rgba(255, 255, 255, 0.018);
+    --search-border: rgba(255, 255, 255, 0.09);
+    --search-shadow: 0 24px 64px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --search-input-bottom: rgba(255, 255, 255, 0.075);
+    --search-text-main: #f3f4f8;
+    --search-text-sub: #a3a9bc;
+    --search-text-muted: #767d92;
+    --search-surface-pill: rgba(255, 255, 255, 0.045);
+    --search-surface-pill-border: rgba(255, 255, 255, 0.075);
+    --search-surface-pill-hover: rgba(255, 255, 255, 0.085);
+    --search-hover-bg: rgba(255, 255, 255, 0.045);
+    --search-selected-bg: color-mix(in srgb, var(--primary) 13%, rgba(255, 255, 255, 0.03));
+    --search-selected-border: color-mix(in srgb, var(--primary) 26%, transparent);
+    --search-item-border: rgba(255, 255, 255, 0.045);
+    --search-footer-bg: rgba(14, 15, 20, 0.96);
+    --search-footer-border: rgba(255, 255, 255, 0.07);
+    --search-kbd-bg: rgba(255, 255, 255, 0.07);
+    --search-kbd-border: rgba(255, 255, 255, 0.13);
+    --search-kbd-shadow: 0 1px 0 rgba(0, 0, 0, 0.45);
+    --search-kbd-text: #e2e8f0;
+    --search-drawer-bg: rgba(22, 24, 32, 0.985);
+    --search-drawer-border: rgba(255, 255, 255, 0.09);
+    --search-snippet-bg: rgba(0, 0, 0, 0.28);
+    --search-snippet-border: rgba(255, 255, 255, 0.065);
+    --search-scrollbar-silent: rgba(255, 255, 255, 0.14);
+    --search-scrollbar-thumb: rgba(255, 255, 255, 0.24);
+    --search-scrollbar-hover: rgba(255, 255, 255, 0.38);
     --search-scrollbar-active: var(--primary, #7c3aed);
 }
 
 [data-theme="light"] {
-    --bg-elevated: #ffffff;
-    --search-bg: #ffffff;
-    --search-border: rgba(0, 0, 0, 0.12);
-    --search-shadow: 0 20px 50px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.06);
-    --search-input-bottom: rgba(0, 0, 0, 0.08);
-    --search-text-main: #111118;
-    --search-text-sub: #4b4b5e;
-    --search-text-muted: #78788a;
-    --search-surface-pill: rgba(0, 0, 0, 0.04);
-    --search-surface-pill-border: rgba(0, 0, 0, 0.08);
-    --search-surface-pill-hover: rgba(0, 0, 0, 0.08);
-    --search-hover-bg: var(--primary-dim, rgba(124, 58, 237, 0.12));
-    --search-selected-bg: var(--primary-dim, rgba(124, 58, 237, 0.16));
-    --search-item-border: rgba(0, 0, 0, 0.05);
-    --search-footer-bg: #f8f8fc;
-    --search-footer-border: rgba(0, 0, 0, 0.08);
-    --search-kbd-bg: rgba(0, 0, 0, 0.06);
-    --search-kbd-border: rgba(0, 0, 0, 0.12);
-    --search-kbd-text: #18181b;
+    --search-bg: #fcfdff;
+    --search-subbar-bg: #f6f7fb;
+    --search-border: rgba(15, 23, 42, 0.09);
+    --search-shadow: 0 24px 60px -12px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(15, 23, 42, 0.06);
+    --search-input-bottom: rgba(15, 23, 42, 0.065);
+    --search-text-main: #0f172a;
+    --search-text-sub: #475569;
+    --search-text-muted: #64748b;
+    --search-surface-pill: rgba(15, 23, 42, 0.038);
+    --search-surface-pill-border: rgba(15, 23, 42, 0.075);
+    --search-surface-pill-hover: rgba(15, 23, 42, 0.068);
+    --search-hover-bg: rgba(15, 23, 42, 0.036);
+    --search-selected-bg: color-mix(in srgb, var(--primary) 8.5%, #ffffff);
+    --search-selected-border: color-mix(in srgb, var(--primary) 22%, transparent);
+    --search-item-border: rgba(15, 23, 42, 0.045);
+    --search-footer-bg: #f6f7fa;
+    --search-footer-border: rgba(15, 23, 42, 0.065);
+    --search-kbd-bg: #ffffff;
+    --search-kbd-border: rgba(15, 23, 42, 0.13);
+    --search-kbd-shadow: 0 1px 0 rgba(15, 23, 42, 0.09);
+    --search-kbd-text: #334155;
     --search-drawer-bg: #ffffff;
-    --search-drawer-border: rgba(0, 0, 0, 0.1);
-    --search-snippet-bg: rgba(0, 0, 0, 0.03);
-    --search-snippet-border: rgba(0, 0, 0, 0.06);
-    --search-scrollbar-silent: rgba(0, 0, 0, 0.12);
-    --search-scrollbar-thumb: rgba(0, 0, 0, 0.22);
-    --search-scrollbar-hover: rgba(0, 0, 0, 0.35);
+    --search-drawer-border: rgba(15, 23, 42, 0.085);
+    --search-snippet-bg: rgba(15, 23, 42, 0.028);
+    --search-snippet-border: rgba(15, 23, 42, 0.06);
+    --search-scrollbar-silent: rgba(15, 23, 42, 0.11);
+    --search-scrollbar-thumb: rgba(15, 23, 42, 0.20);
+    --search-scrollbar-hover: rgba(15, 23, 42, 0.34);
     --search-scrollbar-active: var(--primary, #7c3aed);
 }
 
@@ -124,10 +128,10 @@ html[data-surface="search"] #root {
 .search-input-wrapper {
     display: flex;
     align-items: center;
-    padding: 14px 20px;
+    padding: 15px 18px 15px 20px;
     border-bottom: 1px solid var(--search-input-bottom, rgba(255, 255, 255, 0.08));
     background: transparent;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     position: relative;
 }
 
@@ -136,10 +140,10 @@ html[data-surface="search"] #root {
 }
 
 .search-icon {
-    width: 22px;
-    height: 22px;
+    width: 21px;
+    height: 21px;
     color: var(--search-text-muted);
-    margin-right: 12px;
+    margin-right: 13px;
     flex-shrink: 0;
     transition: color 0.2s ease, transform 0.2s ease;
 }
@@ -155,9 +159,9 @@ html[data-surface="search"] #root {
     outline: none !important;
     box-shadow: none !important;
     color: var(--search-text-main);
-    font-size: 18.5px;
+    font-size: 18px;
     font-weight: 500;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
     padding: 0 !important;
     margin: 0 !important;
 }
@@ -171,33 +175,49 @@ html[data-surface="search"] #root {
 
 .search-input::placeholder {
     color: var(--search-text-muted);
-    font-size: 15.5px;
+    font-size: 15px;
     font-weight: 500;
+    opacity: 0.78;
 }
 
+/* 顶部工具按钮: Ghost 呼吸无框态，告别悬停爆蓝砖 */
 .search-help-btn {
     display: flex;
     align-items: center;
     justify-content: center;
     width: 32px;
     height: 32px;
-    margin-left: 8px;
+    margin-left: 4px;
     border-radius: 8px;
-    background: var(--search-surface-pill);
-    border: 1px solid var(--search-surface-pill-border);
-    color: var(--search-text-sub);
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--search-text-muted);
     cursor: pointer;
-    transition: all 0.18s ease;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 100ms ease;
     flex-shrink: 0;
 }
 
-.search-help-btn:hover,
+.search-help-btn:hover {
+    background: var(--search-surface-pill-hover);
+    color: var(--search-text-main);
+}
+
+.search-help-btn:active {
+    transform: scale(0.94);
+}
+
 .search-help-btn--active,
 .search-help-btn--pinned {
-    background: var(--primary);
-    border-color: var(--primary);
-    color: #fff;
-    box-shadow: 0 2px 8px color-mix(in srgb, var(--primary) 35%, transparent);
+    background: color-mix(in srgb, var(--primary) 12%, transparent);
+    border-color: color-mix(in srgb, var(--primary) 28%, transparent);
+    color: var(--primary);
+    box-shadow: none;
+}
+
+.search-help-btn--active:hover,
+.search-help-btn--pinned:hover {
+    background: color-mix(in srgb, var(--primary) 18%, transparent);
+    color: var(--primary);
 }
 
 .search-pin-icon {

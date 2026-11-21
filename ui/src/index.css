@@ -13,13 +13,13 @@
        url('./assets/fonts/noto-sans-sc-500.woff2') format('woff2');
 }
 
-/* ── CSS 变量 (暗色主题 = 默认) ──────────────────────────────────────────── */
+/* ── CSS 变量 (暗色主题 = 默认 · 中性丝绒曜石 Neutral Obsidian) ────────────── */
 :root {
   /* 主色调: 鲜活的紫色系 */
   --primary: #8b5cf6;
   --primary-hover: #a78bfa;
-  --primary-dim: rgba(139, 92, 246, 0.2);
-  --primary-glow: rgba(139, 92, 246, 0.4);
+  --primary-dim: rgba(139, 92, 246, 0.15);
+  --primary-glow: rgba(139, 92, 246, 0.32);
 
   /* 语义色 */
   --success: #34d399;
@@ -27,31 +27,41 @@
   --danger: #f87171;
   --info: #60a5fa;
 
-  /* 背景层级 */
-  --bg-base: #12111a;
-  --bg-surface: #191724;
-  --bg-elevated: #211e30;
-  --bg-overlay: rgba(0, 0, 0, 0.75);
+  /* 背景层级 (中性炭黑曜石，完美兼容全部 6 款动态主题色) */
+  --bg-base: #111217;
+  --bg-surface: #0c0d11;
+  --bg-elevated: #191b23;
+  --bg-overlay: rgba(6, 7, 11, 0.72);
 
   /* 卡片层级 */
-  --card-bg: #1e1c2c;
-  --card-border: rgba(255, 255, 255, 0.08);
-  --card-hover: #262338;
+  --card-bg: #161820;
+  --card-border: rgba(255, 255, 255, 0.075);
+  --card-hover: #1d202b;
 
-  /* 文本 (高清晰度对比度) */
-  --text-primary: #f8f8fc;
-  --text-secondary: #c4c4d6;
-  --text-muted: #9494aa;
-  --text-disabled: #555568;
+  /* 物理触感沉降槽与微立体滑块令牌 (Apple / Linear Tactile Surface) */
+  --well-bg: rgba(0, 0, 0, 0.34);
+  --well-border: rgba(255, 255, 255, 0.07);
+  --well-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.36);
+  --thumb-bg: #252836;
+  --thumb-border: rgba(255, 255, 255, 0.12);
+  --thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  --ghost-hover-bg: rgba(255, 255, 255, 0.06);
+  --hairline: rgba(255, 255, 255, 0.06);
+
+  /* 文本 (高清晰度克制对比度) */
+  --text-primary: #f3f4f8;
+  --text-secondary: #b4b9c8;
+  --text-muted: #7f8699;
+  --text-disabled: #505668;
 
   /* 输入框 */
-  --input-bg: rgba(15, 15, 25, 0.6);
-  --input-border: rgba(255, 255, 255, 0.1);
+  --input-bg: rgba(0, 0, 0, 0.28);
+  --input-border: rgba(255, 255, 255, 0.10);
   --input-focus: var(--primary);
 
   /* 滚动条 */
-  --scrollbar-thumb: rgba(255, 255, 255, 0.15);
-  --scrollbar-hover: rgba(255, 255, 255, 0.25);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --scrollbar-hover: rgba(255, 255, 255, 0.26);
 
   /* 间距 */
   --spacing-xs: 4px;
@@ -66,10 +76,10 @@
   --radius-lg: 16px;
   --radius-full: 9999px;
 
-  /* 阴影 */
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+  /* 阴影 (多层空气深度) */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32), 0 0 0 1px rgba(255, 255, 255, 0.025);
+  --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.48), 0 2px 6px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 24px 56px -12px rgba(0, 0, 0, 0.65), 0 8px 20px rgba(0, 0, 0, 0.35);
 
   /* 动画 & 物理弹簧曲线 */
   --transition-fast: 150ms cubic-bezier(0.215, 0.61, 0.355, 1);
@@ -79,7 +89,7 @@
   --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* 物理高光边 (Specular Inset Line) */
-  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.065);
 
   /* 侧边栏 */
   --sidebar-width: 220px;
@@ -163,12 +173,12 @@
   line-height: 1.5;
 }
 
-/* ── 亮色主题 (毛玻璃化亮色) ────────────────────────────────────────────── */
+/* ── 亮色主题 (Apple Porcelain / Linear Alabaster · 温润瓷白三层表面) ────── */
 [data-theme="light"] {
   --primary: #7c3aed;
   --primary-hover: #6d28d9;
-  --primary-dim: rgba(124, 58, 237, 0.15);
-  --primary-glow: rgba(124, 58, 237, 0.25);
+  --primary-dim: rgba(124, 58, 237, 0.10);
+  --primary-glow: rgba(124, 58, 237, 0.22);
 
   /* 高对比度亮色语义色 (WCAG AA >= 4.8:1) */
   --success: #047857;
@@ -176,30 +186,41 @@
   --danger: #dc2626;
   --info: #1d4ed8;
 
-  --bg-base: #f8fafc;
-  --bg-surface: #ffffff;
+  /* 温润浅瓷三层深度: 外壳霜灰 (#eff1f6) -> 内容画布 (#f6f7fa) -> 白瓷卡片 (#ffffff) */
+  --bg-base: #f6f7fa;
+  --bg-surface: #eff1f6;
   --bg-elevated: #ffffff;
-  --bg-overlay: rgba(15, 23, 42, 0.4);
+  --bg-overlay: rgba(15, 23, 42, 0.36);
 
   --card-bg: #ffffff;
-  --card-border: rgba(226, 232, 240, 0.9);
-  --card-hover: #f8fafc;
+  --card-border: rgba(15, 23, 42, 0.075);
+  --card-hover: #f8f9fc;
 
-  --text-primary: #111827;
-  --text-secondary: #374151;
-  --text-muted: #6b7280;
-  --text-disabled: #9ca3af;
+  /* 物理触感沉降槽与白瓷微立体滑块令牌 */
+  --well-bg: rgba(15, 23, 42, 0.045);
+  --well-border: rgba(15, 23, 42, 0.065);
+  --well-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05);
+  --thumb-bg: #ffffff;
+  --thumb-border: rgba(15, 23, 42, 0.075);
+  --thumb-shadow: 0 1px 3px rgba(15, 23, 42, 0.10), 0 1px 1.5px rgba(15, 23, 42, 0.05);
+  --ghost-hover-bg: rgba(15, 23, 42, 0.045);
+  --hairline: rgba(15, 23, 42, 0.055);
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --text-disabled: #94a3b8;
 
   --input-bg: #ffffff;
-  --input-border: rgba(203, 213, 225, 0.8);
+  --input-border: rgba(15, 23, 42, 0.12);
 
-  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
-  --scrollbar-hover: rgba(0, 0, 0, 0.3);
+  --scrollbar-thumb: rgba(15, 23, 42, 0.16);
+  --scrollbar-hover: rgba(15, 23, 42, 0.28);
 
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
-  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03);
-  --shadow-lg: 0 12px 30px rgba(0, 0, 0, 0.08);
-  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 0 0 1px rgba(15, 23, 42, 0.025);
+  --shadow-md: 0 6px 20px -4px rgba(15, 23, 42, 0.08), 0 2px 6px -1px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 20px 50px -12px rgba(15, 23, 42, 0.16), 0 4px 16px rgba(15, 23, 42, 0.06);
+  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 
   /* 兼容与层级别名 (Foundational Token Aliases) */
   --bg-primary: var(--bg-base);
@@ -237,89 +258,89 @@
   color: #1b1d23;
 }
 
-/* ── 强调色方案 (Theme Accent Colors) ────────────────────────────────────────── */
+/* ── 强调色方案 (Theme Accent Colors · 克制通透微光比例) ───────────────────── */
 [data-accent="violet"] {
   --primary: #8b5cf6;
   --primary-hover: #a78bfa;
-  --primary-dim: rgba(139, 92, 246, 0.18);
-  --primary-glow: rgba(139, 92, 246, 0.35);
+  --primary-dim: rgba(139, 92, 246, 0.15);
+  --primary-glow: rgba(139, 92, 246, 0.30);
 }
 [data-theme="light"][data-accent="violet"],
 [data-theme="light"] [data-accent="violet"] {
   --primary: #7c3aed;
   --primary-hover: #6d28d9;
-  --primary-dim: rgba(124, 58, 237, 0.15);
-  --primary-glow: rgba(124, 58, 237, 0.25);
+  --primary-dim: rgba(124, 58, 237, 0.10);
+  --primary-glow: rgba(124, 58, 237, 0.22);
 }
 
 [data-accent="cyan"] {
   --primary: #06b6d4;
   --primary-hover: #22d3ee;
-  --primary-dim: rgba(6, 182, 212, 0.18);
-  --primary-glow: rgba(6, 182, 212, 0.35);
+  --primary-dim: rgba(6, 182, 212, 0.15);
+  --primary-glow: rgba(6, 182, 212, 0.30);
 }
 [data-theme="light"][data-accent="cyan"],
 [data-theme="light"] [data-accent="cyan"] {
   --primary: #0891b2;
   --primary-hover: #0e7490;
-  --primary-dim: rgba(8, 145, 178, 0.15);
-  --primary-glow: rgba(8, 145, 178, 0.25);
+  --primary-dim: rgba(8, 145, 178, 0.10);
+  --primary-glow: rgba(8, 145, 178, 0.22);
 }
 
 [data-accent="amber"] {
   --primary: #f59e0b;
   --primary-hover: #fbbf24;
-  --primary-dim: rgba(245, 158, 11, 0.18);
-  --primary-glow: rgba(245, 158, 11, 0.35);
+  --primary-dim: rgba(245, 158, 11, 0.15);
+  --primary-glow: rgba(245, 158, 11, 0.30);
 }
 [data-theme="light"][data-accent="amber"],
 [data-theme="light"] [data-accent="amber"] {
   --primary: #d97706;
   --primary-hover: #b45309;
-  --primary-dim: rgba(217, 119, 6, 0.15);
-  --primary-glow: rgba(217, 119, 6, 0.25);
+  --primary-dim: rgba(217, 119, 6, 0.10);
+  --primary-glow: rgba(217, 119, 6, 0.22);
 }
 
 [data-accent="blue"] {
   --primary: #3b82f6;
   --primary-hover: #60a5fa;
-  --primary-dim: rgba(59, 130, 246, 0.18);
-  --primary-glow: rgba(59, 130, 246, 0.35);
+  --primary-dim: rgba(59, 130, 246, 0.15);
+  --primary-glow: rgba(59, 130, 246, 0.30);
 }
 [data-theme="light"][data-accent="blue"],
 [data-theme="light"] [data-accent="blue"] {
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
-  --primary-dim: rgba(37, 99, 235, 0.15);
-  --primary-glow: rgba(37, 99, 235, 0.25);
+  --primary-dim: rgba(37, 99, 235, 0.10);
+  --primary-glow: rgba(37, 99, 235, 0.22);
 }
 
 [data-accent="mint"] {
   --primary: #10b981;
   --primary-hover: #34d399;
-  --primary-dim: rgba(16, 185, 129, 0.18);
-  --primary-glow: rgba(16, 185, 129, 0.35);
+  --primary-dim: rgba(16, 185, 129, 0.15);
+  --primary-glow: rgba(16, 185, 129, 0.30);
 }
 [data-theme="light"][data-accent="mint"],
 [data-theme="light"] [data-accent="mint"] {
   --primary: #059669;
   --primary-hover: #047857;
-  --primary-dim: rgba(5, 150, 105, 0.15);
-  --primary-glow: rgba(5, 150, 105, 0.25);
+  --primary-dim: rgba(5, 150, 105, 0.10);
+  --primary-glow: rgba(5, 150, 105, 0.22);
 }
 
 [data-accent="coral"] {
   --primary: #f43f5e;
   --primary-hover: #fb7185;
-  --primary-dim: rgba(244, 63, 94, 0.18);
-  --primary-glow: rgba(244, 63, 94, 0.35);
+  --primary-dim: rgba(244, 63, 94, 0.15);
+  --primary-glow: rgba(244, 63, 94, 0.30);
 }
 [data-theme="light"][data-accent="coral"],
 [data-theme="light"] [data-accent="coral"] {
   --primary: #e11d48;
   --primary-hover: #be123c;
-  --primary-dim: rgba(225, 29, 72, 0.15);
-  --primary-glow: rgba(225, 29, 72, 0.25);
+  --primary-dim: rgba(225, 29, 72, 0.10);
+  --primary-glow: rgba(225, 29, 72, 0.22);
 }
 
 /* ── 全局重置 ────────────────────────────────────────────────────────────── */
@@ -350,10 +371,9 @@ body {
   font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
   /* ClearType 硬件加速次像素渲染优化 */
   background-color: var(--bg-base);
-  background-image: 
-    radial-gradient(at 0% 0%, color-mix(in srgb, var(--primary) 8%, transparent) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, color-mix(in srgb, var(--success) 5%, transparent) 0px, transparent 50%),
-    radial-gradient(at 100% 0%, color-mix(in srgb, var(--primary-hover) 6%, transparent) 0px, transparent 50%);
+  background-image:
+    radial-gradient(ellipse 68% 45% at 15% -5%, color-mix(in srgb, var(--primary) 4.5%, transparent) 0%, transparent 70%),
+    radial-gradient(ellipse 55% 40% at 95% 0%, color-mix(in srgb, var(--primary-hover) 3%, transparent) 0%, transparent 65%);
   color: var(--text-primary);
   line-height: 1.5;
   overflow: hidden;
@@ -456,9 +476,13 @@ textarea {
   border: 0 !important;
 }
 
-:where(button, input, select, textarea, [role="button"], [tabindex]):focus-visible {
+:where(button, input, select, textarea, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
   outline: 2px solid var(--primary-hover) !important;
   outline-offset: 2px !important;
+}
+
+[tabindex="-1"]:focus {
+  outline: none;
 }
 
 input,

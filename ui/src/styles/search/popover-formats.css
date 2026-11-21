@@ -2,30 +2,30 @@
  * popover-formats.css — 全局极速搜索：视图偏好气泡、边缘拉伸手柄、文档检索格式与快照卡片
  * ───────────────────────────────────────────────────────────────────────────── */
 
-/* ── 视图与偏好定制右上角悬浮毛玻璃气泡 (Popover) ────────── */
+/* ── 视图与偏好定制右上角悬浮毛玻璃气泡 (Apple / Linear 级高定浮层) ────────── */
 .search-view-settings-popover {
     position: absolute;
-    top: 66px;
-    right: 60px;
-    width: 330px;
-    max-width: calc(100vw - 76px);
-    max-height: calc(100vh - 78px);
+    top: 62px;
+    right: 16px;
+    width: 364px;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 108px);
     display: flex;
     flex-direction: column;
-    background: var(--bg-elevated, #211e30);
+    background: var(--bg-elevated);
     border: 1px solid var(--card-border);
-    border-radius: 12px;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+    border-radius: 14px;
+    box-shadow: var(--shadow-lg), var(--card-highlight);
     z-index: 1000;
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
     animation: popoverSlide 0.18s cubic-bezier(0.16, 1, 0.3, 1);
     overflow: hidden;
     transform-origin: top right;
 }
 
 @keyframes popoverSlide {
-    from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+    from { opacity: 0; transform: translateY(-6px) scale(0.985); }
     to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
@@ -34,14 +34,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 18px;
+    padding: 13px 18px;
     height: 48px;
     min-height: 48px;
     flex-shrink: 0;
-    background: var(--bg-elevated, #211e30);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border-bottom: 1px solid var(--card-border);
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--hairline);
     z-index: 10;
     box-sizing: border-box;
 }
@@ -49,36 +47,41 @@
 .popover-title {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 12.5px;
-    font-weight: 600;
+    gap: 8px;
+    font-size: 13.5px;
+    font-weight: 650;
+    letter-spacing: -0.015em;
     color: var(--text-primary);
+}
+
+.popover-title svg {
+    color: var(--primary);
 }
 
 .popover-close {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 4px;
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
     border: none;
     background: transparent;
     color: var(--text-muted);
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: background 0.14s ease, color 0.14s ease;
 }
 
 .popover-close:hover {
-    background: var(--bg-base);
+    background: var(--ghost-hover-bg);
     color: var(--text-primary);
 }
 
 .popover-body {
-    padding: 14px 18px;
+    padding: 16px 18px 18px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 18px;
     flex: 1;
     min-height: 0;
     overflow-y: auto;
@@ -98,9 +101,9 @@
 
 .popover-body::-webkit-scrollbar-thumb {
     background-color: var(--search-scrollbar-thumb);
-    border: 2px solid transparent;
+    border: 2.5px solid transparent;
     background-clip: padding-box;
-    border-radius: 5px;
+    border-radius: 999px;
     min-height: 28px;
     transition: background-color 0.16s ease;
 }
@@ -112,131 +115,246 @@
 .popover-section {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
 }
 
 .popover-section-title {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    font-size: 12.5px;
+    font-weight: 650;
+    color: var(--text-secondary);
+    letter-spacing: -0.01em;
+}
+
+.popover-metric-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border-radius: 5px;
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    color: var(--text-secondary);
     font-size: 12px;
     font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .popover-badge-curr {
     font-size: 12px;
-    font-weight: 500;
-    color: var(--primary);
-    background: var(--primary-dim);
-    padding: 1px 5px;
-    border-radius: 3px;
+    font-weight: 550;
+    color: var(--text-secondary);
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    padding: 1px 6px;
+    border-radius: 5px;
     font-family: var(--font-mono);
 }
 
+/* ── Apple / Linear 级沉降滑槽 + 白瓷/曜石悬浮立体滑块 ─────────────────────── */
 .popover-segmented-control {
     display: flex;
     align-items: center;
-    background: var(--search-surface-pill);
-    border: 1px solid var(--search-surface-pill-border);
-    border-radius: 6px;
-    padding: 2px;
-    gap: 2px;
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    box-shadow: var(--well-shadow);
+    border-radius: 10px;
+    padding: 3px;
+    gap: 3px;
 }
 
 .popover-segment {
     flex: 1;
-    padding: 4px 6px;
-    border-radius: 4px;
-    border: none;
+    padding: 6px 8px;
+    border-radius: 7px;
+    border: 1px solid transparent;
     background: transparent;
-    color: var(--search-text-muted);
-    font-size: 12px;
+    color: var(--search-text-sub);
+    font-size: 12.5px;
+    font-weight: 550;
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: background 140ms ease, color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
     text-align: center;
+    white-space: nowrap;
 }
 
-.popover-segment:hover {
+.popover-segment:hover:not(.popover-segment--active) {
     color: var(--search-text-main);
+    background: var(--ghost-hover-bg);
 }
 
 .popover-segment--active {
-    background: var(--primary) !important;
-    color: #ffffff !important;
-    font-weight: 600;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    background: var(--thumb-bg) !important;
+    border-color: var(--thumb-border) !important;
+    color: var(--search-text-main) !important;
+    font-weight: 650;
+    box-shadow: var(--thumb-shadow);
 }
 
-.popover-search-modes-grid {
-    display: flex;
-    flex-direction: column;
+/* ── 默认初始筛选分类：工整有序的 3 列微晶标签网格 ─────────────────────────── */
+.popover-category-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
 }
 
-.popover-search-mode-card {
-    padding: 8px 10px;
+.popover-category-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px 8px;
     border-radius: 8px;
-    background: var(--search-surface-pill);
-    border: 1px solid var(--search-surface-pill-border);
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    color: var(--search-text-sub);
+    font-size: 12px;
+    font-weight: 550;
     cursor: pointer;
-    transition: all 0.15s ease;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
 }
 
-.popover-search-mode-card:hover {
+.popover-category-chip:hover:not(.popover-category-chip--active) {
     background: var(--search-surface-pill-hover);
-    border-color: var(--card-border);
+    border-color: var(--input-border);
+    color: var(--search-text-main);
+}
+
+.popover-category-chip--active {
+    background: var(--thumb-bg);
+    border-color: color-mix(in srgb, var(--primary) 38%, var(--thumb-border));
+    color: var(--search-text-main);
+    font-weight: 650;
+    box-shadow: var(--thumb-shadow);
+}
+
+.popover-category-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--primary);
+    box-shadow: 0 0 6px var(--primary-glow);
+    flex-shrink: 0;
+}
+
+/* ── 默认搜索模式：高定图标托盘 + 同心圆 Radio 卡片组 ──────────────────────── */
+.popover-search-modes-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.popover-search-mode-card {
+    width: 100%;
+    text-align: left;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    box-sizing: border-box;
+}
+
+.popover-search-mode-card:hover:not(.popover-search-mode-card--active) {
+    background: var(--search-surface-pill-hover);
+    border-color: var(--input-border);
 }
 
 .popover-search-mode-card--active {
-    background: var(--primary-dim) !important;
-    border-color: var(--primary) !important;
+    background: var(--thumb-bg) !important;
+    border-color: color-mix(in srgb, var(--primary) 42%, var(--thumb-border)) !important;
+    box-shadow: var(--thumb-shadow), 0 0 0 1px color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.search-mode-icon-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--search-surface-pill);
+    border: 1px solid var(--search-surface-pill-border);
+    color: var(--search-text-muted);
+    flex-shrink: 0;
+    margin-top: 1px;
+    transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.popover-search-mode-card--active .search-mode-icon-box {
+    background: color-mix(in srgb, var(--primary) 11%, transparent);
+    border-color: color-mix(in srgb, var(--primary) 24%, transparent);
+    color: var(--primary);
+}
+
+.search-mode-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
 }
 
 .search-mode-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-}
-
-.search-mode-title-wrap {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.search-mode-icon-name {
-    color: #eab308;
-}
-
-.search-mode-icon-both {
-    color: #a855f7;
-}
-
-.search-mode-icon-content {
-    color: #3b82f6;
+    gap: 8px;
 }
 
 .search-mode-title {
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 12.5px;
+    font-weight: 650;
     color: var(--search-text-main);
+    letter-spacing: -0.01em;
 }
 
-.search-mode-check {
-    color: var(--primary);
+.search-mode-radio {
+    position: relative;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    border: 1.5px solid var(--input-border);
+    background: transparent;
+    flex-shrink: 0;
+    transition: border-color 150ms ease, background 150ms ease;
+}
+
+.search-mode-radio--checked {
+    border-color: var(--primary);
+    background: var(--primary);
+}
+
+.search-mode-radio--checked::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #ffffff;
 }
 
 .search-mode-desc {
     font-size: 12px;
     color: var(--search-text-muted);
-    line-height: 1.35;
-    padding-left: 20px;
+    line-height: 1.45;
 }
 
 .popover-section-hint {
@@ -257,27 +375,41 @@
 }
 
 .popover-preset-btn {
-    padding: 5px 8px;
-    background: var(--search-surface-pill);
-    border: 1px solid var(--search-surface-pill-border);
-    border-radius: 6px;
+    padding: 7px 10px;
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    border-radius: 8px;
     color: var(--search-text-main);
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
     text-align: center;
 }
 
-.popover-preset-btn:hover {
+.popover-preset-btn:hover:not(.popover-preset-btn--active) {
     background: var(--search-surface-pill-hover);
-    color: var(--search-text-main);
+    border-color: var(--input-border);
 }
 
 .popover-preset-btn--active {
-    background: var(--primary-dim) !important;
-    border-color: var(--primary) !important;
-    color: var(--primary) !important;
+    background: var(--thumb-bg) !important;
+    border-color: color-mix(in srgb, var(--primary) 40%, var(--thumb-border)) !important;
+    color: var(--search-text-main) !important;
+    font-weight: 650;
+    box-shadow: var(--thumb-shadow);
+}
+
+.preset-name {
+    font-size: 12.5px;
     font-weight: 600;
+}
+
+.preset-dim {
+    font-size: 12px;
+    color: var(--search-text-muted);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
 }
 
 .popover-cols-grid {
@@ -321,10 +453,34 @@
 }
 
 .popover-ratio-slider {
+    -webkit-appearance: none;
+    appearance: none;
     flex: 1;
-    height: 4px;
-    accent-color: var(--primary);
+    height: 5px;
+    border-radius: 999px;
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    box-shadow: var(--well-shadow);
+    outline: none;
     cursor: pointer;
+}
+
+.popover-ratio-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 2px solid var(--primary);
+    box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.22);
+    cursor: pointer;
+    transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.popover-ratio-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.12);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.26), 0 0 0 3px var(--primary-dim);
 }
 
 .popover-drives-actions {
@@ -338,10 +494,13 @@
     border: none;
     padding: 0 2px;
     font-size: 12px;
+    font-weight: 550;
     color: var(--primary);
     cursor: pointer;
     text-transform: none;
     letter-spacing: normal;
+    white-space: nowrap;
+    flex-shrink: 0;
     transition: opacity 0.12s ease;
 }
 
@@ -364,24 +523,25 @@
 .popover-drive-card {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border-radius: 6px;
-    background: var(--search-surface-pill);
-    border: 1px solid var(--search-surface-pill-border);
+    gap: 9px;
+    padding: 8px 10px;
+    border-radius: 9px;
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
     user-select: none;
 }
 
-.popover-drive-card:hover {
+.popover-drive-card:hover:not(.popover-drive-card--active) {
     background: var(--search-surface-pill-hover);
-    border-color: var(--card-border);
+    border-color: var(--input-border);
 }
 
 .popover-drive-card--active {
-    background: var(--primary-dim);
-    border-color: var(--primary);
+    background: var(--thumb-bg);
+    border-color: color-mix(in srgb, var(--primary) 36%, var(--thumb-border));
+    box-shadow: var(--thumb-shadow);
 }
 
 .drive-card-checkbox {
@@ -481,83 +641,99 @@
     color: var(--primary);
 }
 
+/* ── 顶部轻量索引维护卡片 (高定克制中性卡 + 白瓷/曜石微立体刷新按钮) ───────── */
 .popover-top-rebuild-card {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px 12px;
-    margin-bottom: 14px;
-    background: linear-gradient(
-        135deg,
-        color-mix(in srgb, var(--primary) 12%, transparent) 0%,
-        color-mix(in srgb, var(--primary-hover) 5%, transparent) 100%
-    );
-    border: 1px solid color-mix(in srgb, var(--primary) 26%, transparent);
+    gap: 10px;
+    padding: 12px 13px;
+    background: var(--well-bg);
+    border: 1px solid var(--well-border);
+    border-radius: 11px;
+    box-shadow: var(--well-shadow);
+}
+
+.popover-top-rebuild-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.popover-top-rebuild-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
     border-radius: 8px;
+    background: var(--thumb-bg);
+    border: 1px solid var(--thumb-border);
+    box-shadow: var(--thumb-shadow);
+    color: var(--primary);
+    flex-shrink: 0;
+    margin-top: 1px;
 }
 
 .popover-top-rebuild-info {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    min-width: 0;
+    flex: 1;
 }
 
 .popover-top-rebuild-title {
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 12.5px;
+    font-weight: 650;
     color: var(--search-text-main);
+    letter-spacing: -0.01em;
 }
 
 .popover-top-rebuild-desc {
     font-size: 12px;
     color: var(--search-text-muted);
-    line-height: 1.4;
+    line-height: 1.42;
 }
 
 .popover-rebuild-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 6px 10px;
-    margin-top: 4px;
-    border-radius: 6px;
-    background: var(--search-surface-pill);
-    border: 1px solid var(--search-surface-pill-border);
+    gap: 7px;
+    padding: 7px 12px;
+    border-radius: 8px;
+    background: var(--thumb-bg);
+    border: 1px solid var(--thumb-border);
+    box-shadow: var(--thumb-shadow);
     color: var(--search-text-main);
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 100ms ease;
     width: 100%;
 }
 
-.popover-rebuild-btn:hover:not(:disabled) {
-    background: var(--primary-dim);
-    border-color: var(--primary);
+.popover-rebuild-btn-icon {
     color: var(--primary);
+    flex-shrink: 0;
+}
+
+.popover-rebuild-btn:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--primary) 42%, var(--thumb-border));
+    background: color-mix(in srgb, var(--primary) 5%, var(--thumb-bg));
+    color: var(--search-text-main);
+}
+
+.popover-rebuild-btn:active:not(:disabled) {
+    transform: scale(0.985);
 }
 
 .popover-rebuild-btn--top {
-    margin-top: 2px;
-    padding: 7px 12px;
-    background: var(--primary);
-    border: 1px solid var(--primary);
-    color: #ffffff;
-    font-weight: 600;
-    border-radius: 6px;
-    box-shadow: 0 2px 6px var(--primary-glow);
-}
-
-.popover-rebuild-btn--top:hover:not(:disabled) {
-    background: var(--primary-hover);
-    border-color: var(--primary-hover);
-    color: #ffffff;
-    box-shadow: 0 4px 10px var(--primary-glow);
+    margin-top: 0;
 }
 
 .popover-rebuild-btn--loading {
-    opacity: 0.7;
+    opacity: 0.72;
     cursor: not-allowed;
 }
 
@@ -593,13 +769,13 @@
 }
 
 .search-match-highlight {
-    background: var(--primary-dim);
+    background: color-mix(in srgb, var(--primary) 16%, transparent);
     color: var(--primary);
-    font-weight: 700;
-    padding: 0 1px;
-    border-radius: 2px;
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    font-weight: 650;
+    padding: 0 3px;
+    margin: 0 0.5px;
+    border-radius: 4px;
+    text-decoration: none;
 }
 
 .popover-footer {
@@ -607,13 +783,11 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    padding: 16px 20px;
+    padding: 12px 18px;
     min-height: 52px;
     flex-shrink: 0;
     background: var(--bg-elevated);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border-top: 1px solid var(--card-border);
+    border-top: 1px solid var(--hairline);
     z-index: 10;
     box-sizing: border-box;
 }
@@ -625,21 +799,21 @@
     gap: 6px;
     width: 100%;
     min-height: 34px;
-    padding: 8px 14px;
-    border-radius: 6px;
-    border: 1px solid var(--card-border);
-    background: var(--search-surface-pill);
+    padding: 7px 14px;
+    border-radius: 9px;
+    border: 1px solid var(--well-border);
+    background: var(--well-bg);
     color: var(--search-text-sub);
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 550;
     cursor: pointer;
-    transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
 .popover-reset-all-btn:hover {
-    background: var(--primary-dim);
-    border-color: var(--primary);
-    color: var(--primary);
+    background: var(--ghost-hover-bg);
+    border-color: var(--input-border);
+    color: var(--search-text-main);
 }
 
 .popover-reset-btn {
@@ -1014,8 +1188,8 @@
 
 /* ── 搜索历史记录气泡容器 ────────────────────────────────────────── */
 .search-history-container {
-    padding: 10px 16px;
-    background: var(--bg-elevated);
+    padding: 10px 18px 12px;
+    background: var(--search-subbar-bg);
     border-bottom: 1px solid var(--search-item-border);
     animation: fadeIn 0.15s ease-out;
 }
@@ -1033,7 +1207,7 @@
     gap: 6px;
     font-size: 12px;
     font-weight: 600;
-    color: var(--search-text-sub);
+    color: var(--search-text-muted);
 }
 
 .search-history-clear-btn {
@@ -1046,7 +1220,7 @@
     color: var(--search-text-muted);
     cursor: pointer;
     padding: 2px 6px;
-    border-radius: 4px;
+    border-radius: 5px;
     transition: all 0.15s ease;
 }
 
@@ -1067,22 +1241,23 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 3px 8px 3px 10px;
-    background: var(--search-surface-pill);
-    border: 1px solid var(--search-border);
-    border-radius: 14px;
+    padding: 4px 8px 4px 10px;
+    background: var(--thumb-bg);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--shadow-sm);
+    border-radius: 999px;
     font-size: 12px;
+    font-weight: 550;
     color: var(--search-text-main);
     cursor: pointer;
-    transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
     user-select: none;
 }
 
 .search-history-chip:hover {
-    background: var(--primary-dim);
-    border-color: var(--primary);
+    border-color: color-mix(in srgb, var(--primary) 38%, var(--card-border));
+    background: color-mix(in srgb, var(--primary) 6%, var(--thumb-bg));
     color: var(--primary);
-    transform: translateY(-1px);
 }
 
 .search-history-chip-icon {

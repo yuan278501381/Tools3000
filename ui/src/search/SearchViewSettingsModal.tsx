@@ -5,7 +5,6 @@ import {
   X,
   RefreshCw,
   Zap,
-  Check,
   Sparkles,
   FileText,
   RotateCcw,
@@ -152,12 +151,17 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
       </div>
 
       <div className="popover-body">
-        {/* 顶部一键全盘重新扫描与快照固化 */}
+        {/* 顶部轻量索引维护工具卡（克制高雅、零高饱和大蓝砖喧宾夺主） */}
         <div className="popover-top-rebuild-card">
-          <div className="popover-top-rebuild-info">
-            <div className="popover-top-rebuild-title">{t('search.rebuildSectionTitle', 'Full-Disk Index & Snapshot Maintenance')}</div>
-            <div className="popover-top-rebuild-desc">
-              {t('search.indexMaintenanceDesc', 'Rescan all NTFS partitions for changes and synchronize snapshot to Tools3000.db (F5 / Ctrl+R)')}
+          <div className="popover-top-rebuild-head">
+            <div className="popover-top-rebuild-icon" aria-hidden="true">
+              <HardDrive size={14} />
+            </div>
+            <div className="popover-top-rebuild-info">
+              <div className="popover-top-rebuild-title">{t('search.rebuildSectionTitle', 'Full-Disk Index & Snapshot Maintenance')}</div>
+              <div className="popover-top-rebuild-desc">
+                {t('search.indexMaintenanceDesc', 'Rescan all NTFS partitions for changes and synchronize snapshot to Tools3000.db (F5 / Ctrl+R)')}
+              </div>
             </div>
           </div>
           <button
@@ -167,7 +171,7 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
             disabled={isRebuilding}
             title={t('search.rebuildButtonTip', 'Rescan all selected disks NTFS MFT partitions and save snapshot (F5 / Ctrl+R)')}
           >
-            <RefreshCw size={13} className={isRebuilding ? 'spin-animation' : ''} />
+            <RefreshCw size={13} className={`popover-rebuild-btn-icon ${isRebuilding ? 'spin-animation' : ''}`} />
             <span>{isRebuilding ? t('search.rebuildingInProgress', 'Rescanning and updating snapshot...') : t('search.rebuildButton', 'Rescan and Update Index & Snapshot (F5)')}</span>
           </button>
         </div>
@@ -176,58 +180,70 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
         <div className="popover-section">
           <div className="popover-section-title">
             <span>{t('search.defaultSearchMode', 'Default Search Mode')}</span>
-            <span className="popover-badge-curr">
-              {searchMode === 'name' ? t('search.modeFileOnlyBadge', 'Name Only') : searchMode === 'both' ? t('search.modeBothBadge', 'Name + Content') : t('search.modeContentOnlyBadge', 'Content Only')}
-            </span>
           </div>
-          <div className="popover-search-modes-grid">
-            <div 
+          <div className="popover-search-modes-grid" role="radiogroup" aria-label={t('search.defaultSearchMode', 'Default Search Mode')}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={searchMode === 'name'}
               className={`popover-search-mode-card ${searchMode === 'name' ? 'popover-search-mode-card--active' : ''}`}
               onClick={() => onChangeSearchMode('name')}
             >
-              <div className="search-mode-header">
-                <div className="search-mode-title-wrap">
-                  <Zap size={14} className="search-mode-icon-name" />
+              <div className="search-mode-icon-box" aria-hidden="true">
+                <Zap size={14} />
+              </div>
+              <div className="search-mode-content">
+                <div className="search-mode-header">
                   <span className="search-mode-title">{t('search.modeFileOnlyTitle', 'Search File Name Only (Fast · Default)')}</span>
+                  <span className={`search-mode-radio ${searchMode === 'name' ? 'search-mode-radio--checked' : ''}`} aria-hidden="true" />
                 </div>
-                {searchMode === 'name' && <Check size={13} className="search-mode-check" />}
+                <div className="search-mode-desc">
+                  {t('search.modeNameDesc', 'Sub-millisecond response (<5ms); to search content, click the top "Content" tab or prefix with content:')}
+                </div>
               </div>
-              <div className="search-mode-desc">
-                {t('search.modeNameDesc', 'Sub-millisecond response (<5ms); to search content, click the top "Content" tab or prefix with content:')}
-              </div>
-            </div>
+            </button>
 
-            <div 
+            <button
+              type="button"
+              role="radio"
+              aria-checked={searchMode === 'both'}
               className={`popover-search-mode-card ${searchMode === 'both' ? 'popover-search-mode-card--active' : ''}`}
               onClick={() => onChangeSearchMode('both')}
             >
-              <div className="search-mode-header">
-                <div className="search-mode-title-wrap">
-                  <Sparkles size={14} className="search-mode-icon-both" />
+              <div className="search-mode-icon-box" aria-hidden="true">
+                <Sparkles size={14} />
+              </div>
+              <div className="search-mode-content">
+                <div className="search-mode-header">
                   <span className="search-mode-title">{t('search.modeHybrid', 'Filename & Content Hybrid')}</span>
+                  <span className={`search-mode-radio ${searchMode === 'both' ? 'search-mode-radio--checked' : ''}`} aria-hidden="true" />
                 </div>
-                {searchMode === 'both' && <Check size={13} className="search-mode-check" />}
+                <div className="search-mode-desc">
+                  {t('search.modeHybridDesc', 'Search both filename and document contents simultaneously')}
+                </div>
               </div>
-              <div className="search-mode-desc">
-                {t('search.modeHybridDesc', 'Search both filename and document contents simultaneously')}
-              </div>
-            </div>
+            </button>
 
-            <div 
+            <button
+              type="button"
+              role="radio"
+              aria-checked={searchMode === 'content'}
               className={`popover-search-mode-card ${searchMode === 'content' ? 'popover-search-mode-card--active' : ''}`}
               onClick={() => onChangeSearchMode('content')}
             >
-              <div className="search-mode-header">
-                <div className="search-mode-title-wrap">
-                  <FileText size={14} className="search-mode-icon-content" />
+              <div className="search-mode-icon-box" aria-hidden="true">
+                <FileText size={14} />
+              </div>
+              <div className="search-mode-content">
+                <div className="search-mode-header">
                   <span className="search-mode-title">{t('search.modeContentOnly', 'Content Only (Full-Text)')}</span>
+                  <span className={`search-mode-radio ${searchMode === 'content' ? 'search-mode-radio--checked' : ''}`} aria-hidden="true" />
                 </div>
-                {searchMode === 'content' && <Check size={13} className="search-mode-check" />}
+                <div className="search-mode-desc">
+                  {t('search.modeContentOnlyDesc', 'Full-text search inside documents, spreadsheets, PDFs, CAD and code files')}
+                </div>
               </div>
-              <div className="search-mode-desc">
-                {t('search.modeContentOnlyDesc', 'Full-text search inside documents, spreadsheets, PDFs, CAD and code files')}
-              </div>
-            </div>
+            </button>
           </div>
         </div>
 
@@ -235,25 +251,19 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
         <div className="popover-section">
           <div className="popover-section-title">
             <span>{t('searchPage.defaultCategoryTitle', 'Default Filter Category')}</span>
-            <span className="popover-badge-curr">
-              {(() => {
-                const matched = CATEGORY_DEFS.find(c => c.id === defaultCategory) ?? CATEGORY_DEFS[0];
-                return t(matched.labelKey, matched.defaultLabel);
-              })()}
-            </span>
           </div>
-          <div className="popover-format-chips">
+          <div className="popover-category-grid">
             {CATEGORY_DEFS.map(cat => {
               const active = defaultCategory === cat.id;
               return (
                 <button
                   key={cat.id}
                   type="button"
-                  className={`popover-segment ${active ? 'popover-segment--active' : ''}`}
-                  style={{ flex: 'none', padding: '4px 10px' }}
+                  className={`popover-category-chip ${active ? 'popover-category-chip--active' : ''}`}
                   onClick={() => onChangeDefaultCategory(cat.id)}
                 >
-                  {t(cat.labelKey, cat.defaultLabel)}
+                  {active && <span className="popover-category-dot" aria-hidden="true" />}
+                  <span>{t(cat.labelKey, cat.defaultLabel)}</span>
                 </button>
               );
             })}
@@ -264,9 +274,6 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
         <div className="popover-section">
           <div className="popover-section-title">
             <span>{t('search.density', 'List Display Density')}</span>
-            <span className="popover-badge-curr">
-              {density === 'compact' ? t('search.densityCompact') : density === 'comfortable' ? t('search.densityComfortable') : t('search.densityStandard')}
-            </span>
           </div>
           <div className="popover-segmented-control">
             <button
@@ -297,9 +304,6 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
         <div className="popover-section">
           <div className="popover-section-title">
             <span>{t('search.iconStyle', 'Icon Display Style')}</span>
-            <span className="popover-badge-curr">
-              {iconStyle === 'native' ? t('search.iconStyleNative', 'Windows Native') : t('search.iconStyleVector', 'Minimalist Vector')}
-            </span>
           </div>
           <div className="popover-segmented-control">
             <button
@@ -323,9 +327,6 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
         <div className="popover-section">
           <div className="popover-section-title">
             <span>{t('search.maxResults')}</span>
-            <span className="popover-badge-curr">
-              {maxResultLimit === 0 ? t('search.maxResultsAll') : t('search.maxResultsCount', '{{count}} items', { count: maxResultLimit })}
-            </span>
           </div>
           <div className="popover-segmented-control">
             {[50, 100, 200, 0].map((lim) => (
@@ -344,7 +345,10 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
         {/* 2. 窗口尺寸与位置管理 */}
         <div className="popover-section">
           <div className="popover-section-title">
-            <span>{t('search.windowSizePlacement', 'Window Size & Placement')} ({windowSize.width} × {windowSize.height})</span>
+            <span className="popover-section-title-left">
+              <span>{t('search.windowSizePlacement', 'Window Size & Placement')}</span>
+              <span className="popover-metric-pill">{windowSize.width} × {windowSize.height}</span>
+            </span>
             <button
               type="button"
               className="popover-mini-link"
@@ -416,7 +420,8 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
         {/* 4. 名称与路径列宽占比 */}
         <div className="popover-section">
           <div className="popover-section-title">
-            <span>{t('search.namePathRatio', 'Name & Path Width Ratio')} ({nameFlex}% : {pathFlex}%)</span>
+            <span>{t('search.namePathRatio', 'Name & Path Width Ratio')}</span>
+            <span className="popover-metric-pill">{nameFlex}% : {pathFlex}%</span>
           </div>
           <div className="popover-slider-row">
             <span className="slider-label">{t('search.narrow', 'Narrow')}</span>

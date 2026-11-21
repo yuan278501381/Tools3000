@@ -19,9 +19,10 @@
   width: 100%;
   min-height: 0;
   overflow: hidden;
+  padding-right: 0;
 }
 
-/* ── 主内容区 ─────────────────────────────────────────────────────────────── */
+/* ── 主内容区 (Linear / macOS 沉浸式圆角内容面板) ─────────────────────────── */
 .app__main {
   position: relative;
   flex: 1;
@@ -29,6 +30,15 @@
   flex-direction: column;
   min-width: 0;  /* 防止 flex 子元素溢出 */
   background: var(--bg-base);
+  border-top: 1px solid var(--card-border);
+  border-left: 1px solid var(--card-border);
+  border-top-left-radius: 14px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+[data-theme="light"] .app__main {
+  box-shadow: -2px 0 16px -8px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 /* ── 页面头部 ─────────────────────────────────────────────────────────────── */
@@ -36,39 +46,42 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--spacing-lg) var(--spacing-xl);
-  padding-bottom: var(--spacing-md);
-  border-bottom: 1px solid var(--card-border);
-  background: var(--bg-surface);
+  padding: 22px 32px 16px;
+  border-bottom: 1px solid var(--hairline);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--card-bg) 72%, var(--bg-base)) 0%,
+    var(--bg-base) 100%
+  );
   flex-shrink: 0;
-
 }
 
 .app__header-title {
-  font-size: var(--text-xl);
+  font-size: 1.38rem;
   font-weight: 700;
   color: var(--text-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
 }
 
 .app__header-subtitle {
   font-size: var(--text-sm);
   font-weight: 500;
   color: var(--text-muted);
-  margin-top: 3px;
-  line-height: 1.45;
+  margin-top: 4px;
+  line-height: 1.48;
 }
 
 .app__content {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 20px 28px;
-  animation: fadeIn 0.12s ease-out;
+  padding: 22px 32px 32px;
+  animation: fadeIn 0.14s var(--ease-smooth);
 }
 
 .app__content > * {
-  max-width: 920px;
+  max-width: 880px;
   margin-left: auto;
   margin-right: auto;
 }

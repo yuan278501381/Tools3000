@@ -6,6 +6,13 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 全局视觉设计系统升维（Apple Porcelain / Neutral Obsidian 三层表面体系 + 主设置界面、搜索中心与偏好抽屉高级化重塑）
+- **审美诊断与设计第一性原理重构 (`index.css`, `App.css`, `Sidebar.css`, `TitleBar.css`, `UIKit.css`, `GeneralPage.css`, `SearchPage.css`, `SearchViewSettingsModal.tsx`, `styles/search/*.css`)**：
+  1. **三层中性表面与双主题高阶调校**：浅色模式建立「霜灰外壳 `#eff1f6` -> 浅瓷画布 `#f6f7fa` -> 白瓷卡片 `#ffffff` + 超细发丝线 `rgba(15,23,42,0.075)`」三层呼吸深度；深色模式彻底淘汰偏闷暗紫底（`#12111a`/`#211e30`），切换为中性丝绒曜石炭黑（`#0c0d11` / `#111217` / `#161820` + 顶部 `1px` 玻璃镜面微光），确保 6 款动态主题色均不冲突；主内容区采用圆角嵌入式面板（`border-top-left-radius: 14px`）与无双线侧边栏一体衔接；
+  2. **彻底终结“高饱和蓝砖轰炸”与冗余噪音**：新增全局物理触感令牌 `--well-bg`/`--well-border`/`--well-shadow` 与 `--thumb-bg`/`--thumb-border`/`--thumb-shadow`，将全站所有分段控制器（`uikit-segmented`、`uikit-tabs`、`popover-segmented-control`、`titlebar__theme-modes`）统一升级为「沉降微凹槽 + 纯白/曜石立体悬浮滑块」；移除搜索偏好抽屉中 5 处重复念值的蓝底胶囊与 `text-transform: uppercase` 强制大写（消除 `WINDOWS 原生` 噪音）；顶部维护卡由巨型亮蓝横条收敛为克制中性工具卡配立体白瓷/曜石按钮；默认搜索模式升级为统一图标托盘 + 同心圆 Radio 指示器；默认筛选分类升级为工整 3 列微晶网格；
+  3. **搜索主界面与控件微观打磨**：搜索顶栏按钮切换为 Ghost 无框呼吸态（仅激活/置顶态点亮柔和微光底）；分类筛选条切换为无框丝滑 Tabs 轨道；搜索结果行改为左右内嵌 `8px` 悬浮圆角条 + 选中态左侧 `3px` 圆头主题微光针 + 去外框干净等宽路径 + 3D 微立体 `<kbd>` 键帽底栏；设置大卡片消除无意义 `:hover` 上跳抖动，全站 `range` 滑块定制为白瓷圆珠拇指，`[tabindex="-1"]:focus` 消除非交互标题程序聚焦蓝框；
+  4. **全量门禁与真机实拍验证**：全部 7 重前端静态门禁（183 个 CSS 变量 0 悬空 + 排版字号字重底线）、Vitest `26/26` 文件 `196/196` 用例、Vite 生产构建及 Playwright 浅色/深色双主题实拍审片 100% 通过。
+
 ### [2026-11-21] 全软件 8 语种国际化引擎 (`UiI18n` + 855 原生词条 + 2,311 前端词条 + 8 语种安装程序) 与 8×9=72 份本地化视觉资产全栈交付
 - **产品决策与零体积膨胀架构基线**：
   - 全面支持 **8 种界面与文档语言**：`zh-CN`（简体中文）、`zh-TW`（繁體中文）、`en-US`（English / 全局兜底）、`ja-JP`（日本語）、`ko-KR`（한국어）、`ru-RU`（Русский）、`pt-BR`（Português (Brasil)）、`es-ES`（Español）；

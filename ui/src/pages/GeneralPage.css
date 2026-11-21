@@ -151,7 +151,7 @@
 }
 
 .general-page__hotkey-item:hover {
-  background: var(--primary-dim);
+  background: var(--ghost-hover-bg);
 }
 
 .general-page__hotkey-item.is-internal {
@@ -250,15 +250,16 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  border: 1.5px solid var(--card-border);
-  background: var(--input-bg);
+  gap: 7px;
+  padding: 7px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
   color: var(--text-secondary);
-  font-size: 0.83rem;
-  font-weight: 500;
+  font-size: 0.84rem;
+  font-weight: 550;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
   transition: all var(--transition-fast);
   user-select: none;
   flex: 1 1 auto;
@@ -266,17 +267,17 @@
 }
 
 .general-accent-btn:hover {
-  border-color: var(--accent-dot-color, var(--primary));
+  border-color: color-mix(in srgb, var(--accent-dot-color, var(--primary)) 45%, var(--card-border));
+  background: var(--card-hover);
   color: var(--text-primary);
-  transform: translateY(-1px);
 }
 
 .general-accent-btn.active {
-  border-color: var(--accent-dot-color, var(--primary));
-  background: var(--primary-dim);
-  color: var(--primary);
-  font-weight: 600;
-  box-shadow: 0 0 0 1px var(--primary-glow);
+  border-color: color-mix(in srgb, var(--accent-dot-color, var(--primary)) 55%, var(--card-border));
+  background: color-mix(in srgb, var(--accent-dot-color, var(--primary)) 8%, var(--card-bg));
+  color: var(--text-primary);
+  font-weight: 650;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-dot-color, var(--primary)) 22%, transparent), var(--shadow-sm);
 }
 
 .general-accent-dot {

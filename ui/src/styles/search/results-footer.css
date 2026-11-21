@@ -67,12 +67,31 @@
 }
 
 .search-result-item {
+    position: relative;
     display: flex;
     align-items: center;
     cursor: pointer;
     color: var(--search-text-main);
-    border-bottom: 1px solid var(--search-item-border);
-    transition: background-color 55ms linear, color 0.1s ease;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    left: 8px !important;
+    right: 8px !important;
+    transition: background-color 80ms ease, border-color 80ms ease, color 0.1s ease;
+}
+
+.search-result-item::before {
+    content: "";
+    position: absolute;
+    left: 3px;
+    top: 50%;
+    transform: translateY(-50%) scaleY(0.4);
+    width: 3px;
+    height: 56%;
+    border-radius: 999px;
+    background: var(--primary);
+    opacity: 0;
+    transition: opacity 120ms ease, transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    pointer-events: none;
 }
 
 .search-result-item:hover {
@@ -81,6 +100,12 @@
 
 .search-result-item.selected {
     background: var(--search-selected-bg);
+    border-color: var(--search-selected-border);
+}
+
+.search-result-item.selected::before {
+    opacity: 1;
+    transform: translateY(-50%) scaleY(1);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -148,9 +173,24 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--search-text-sub);
+    color: var(--search-text-muted);
     font-size: 12px;
     flex: 1;
+}
+
+/* 搜索结果行内路径剥离沉重胶囊外框，回归干净通透的次级等宽层级 */
+.search-result-item .file-path.uikit-code-badge,
+.search-result-item .file-path-text.uikit-code-badge {
+    background: transparent;
+    border-color: transparent;
+    padding: 0;
+    color: var(--search-text-muted);
+    font-weight: 500;
+}
+
+.search-result-item.selected .file-path.uikit-code-badge,
+.search-result-item.selected .file-path-text.uikit-code-badge {
+    color: var(--search-text-sub);
 }
 
 .file-path-wrapper {
@@ -251,23 +291,29 @@
 .meta-size-badge {
     font-size: 12px;
     padding: 1px 6px;
-    border-radius: 4px;
+    border-radius: 5px;
     background: var(--search-surface-pill);
     border: 1px solid var(--search-surface-pill-border);
     color: var(--search-text-sub);
     font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
 }
 
 .meta-date-mod {
     font-size: 12px;
     color: var(--search-text-muted);
     font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
 }
 
 .meta-date-create {
     font-size: 12px;
     color: var(--search-text-muted);
     font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
     flex-shrink: 0;
 }
 
@@ -306,12 +352,12 @@
 
 /* 设置面板打开时给结果真实让位，避免用户勾选属性后刚好被面板遮住。 */
 .search-app--view-settings-open .search-result-item {
-    right: 348px !important;
+    right: 392px !important;
 }
 
 @media (max-width: 720px) {
     .search-app--view-settings-open .search-result-item {
-        right: 0 !important;
+        right: 8px !important;
     }
 }
 .search-results.density-compact .file-row-sub {
@@ -338,17 +384,18 @@
     overflow-y: auto;
 }
 .search-results.density-standard .search-result-item {
-    padding: 8px 12px;
-    border-radius: 8px;
+    padding: 8px 14px;
+    border-radius: 9px;
     min-height: 56px;
     box-sizing: border-box;
 }
 .search-results.density-standard .file-icon {
-    margin-right: 12px;
+    margin-right: 13px;
 }
 .search-results.density-standard .file-name {
-    font-size: 14.5px;
-    font-weight: 500;
+    font-size: 14px;
+    font-weight: 550;
+    letter-spacing: -0.01em;
 }
 
 /* ── 宽松密度 (Comfortable) ── */
@@ -561,25 +608,27 @@
     box-shadow: 0 4px 14px var(--primary-glow);
 }
 
-/* ── 底部双区域状态与统计栏 ────────────────────────────────── */
+/* ── 底部双区域状态与统计栏 (macOS Spotlight / Raycast 级精密底栏) ─────────── */
 .search-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 6px 14px;
+    padding: 6px 16px;
     background: var(--search-footer-bg);
     border-top: 1px solid var(--search-footer-border);
     color: var(--search-text-sub);
     user-select: none;
     font-size: 12px;
-    min-height: 34px;
-    height: 34px;
+    min-height: 36px;
+    height: 36px;
     box-sizing: border-box;
     margin-top: auto;
     flex-shrink: 0;
     overflow: hidden;
     white-space: nowrap;
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
 }
 
 .search-footer-left {
@@ -687,10 +736,13 @@
 .search-hint-btn kbd {
     background: var(--search-kbd-bg);
     border: 1px solid var(--search-kbd-border);
-    border-radius: 3.5px;
-    padding: 1px 4px;
-    font-family: inherit;
+    box-shadow: var(--search-kbd-shadow);
+    border-radius: 4.5px;
+    padding: 1px 5px;
+    font-family: var(--font-mono);
     font-size: 12px;
+    font-weight: 550;
+    color: var(--search-kbd-text);
     flex-shrink: 0;
 }
 
