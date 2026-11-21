@@ -204,7 +204,7 @@ Copyright: Copyright (c) 2026 $PUBLISHER_NAME & Tools3000 contributors
 CopyrightUrl: $REPO_URL/blob/main/LICENSE
 ShortDescription: Lightweight native all-in-one Windows productivity suite with instant file search, offline OCR, screenshot markup, screen recording Studio, and mouse gestures.
 Description: |-
-  Tools3000 unifies everyday Windows desktop utilities into one lightweight native C++ and Rust application: millisecond NTFS file and full-text document search, QuickLook preview, scrolling capture, precision screenshot annotation, grouped desktop pins, high-accuracy offline PP-OCRv4 text recognition, 60 FPS screen recording with auto-zoom Studio, and global mouse gestures. 100% offline, zero telemetry, GPL-3.0 open source.
+  Tools3000 unifies everyday Windows desktop utilities into one lightweight native C++ and Rust application: millisecond NTFS file and full-text document search, QuickLook preview, scrolling capture, precision screenshot annotation, grouped desktop pins, high-accuracy offline PP-OCRv4 text recognition, screen recording with auto-zoom Studio, and global mouse gestures. 100% offline, zero telemetry, GPL-3.0 open source.
 Moniker: tools3000
 Tags:
 - file-search
@@ -242,7 +242,7 @@ Copyright: Copyright (c) 2026 $PUBLISHER_NAME & Tools3000 contributors
 CopyrightUrl: $REPO_URL/blob/main/LICENSE
 ShortDescription: 轻量、原生的 Windows 多合一桌面效率工具集，集成极速文件与内容搜索、高精度离线 OCR、截图标注贴图、自动运镜录屏演播室与全局鼠标手势。
 Description: |-
-  Tools3000 将日常高频的毫秒级 NTFS 文件搜索、文档正文穿透检索、空格快速预览、滚动长截图、精准截图标注、桌面贴图组、高精度离线文本识别、60 FPS 自动运镜录屏演播室与全局鼠标手势整合为单一原生软件。100% 本地离线运行、零遥测无账号、GPL-3.0 开源免费。
+  Tools3000 将日常高频的毫秒级 NTFS 文件搜索、文档正文穿透检索、空格快速预览、滚动长截图、精准截图标注、桌面贴图组、高精度离线文本识别、自动运镜录屏演播室与全局鼠标手势整合为单一原生软件。100% 本地离线运行、零遥测无账号、GPL-3.0 开源免费。
 Tags:
 - 文件搜索
 - 截图
