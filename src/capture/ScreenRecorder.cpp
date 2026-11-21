@@ -2481,14 +2481,17 @@ bool ScreenRecorder::captureAndEncodeFrame() {
     }
     const auto convertedAt = clock::now();
 
-    // 演播室模式下在内存实时留存最多 320 帧 1280px 面积积分抗混叠高清代理牌组，配合 StudioHiResFrameReader 实现 0ms 拖拽跟手与停稳原生超清
+    // 演播室模式下在内存实时留存最多 112 帧 640px 面积积分代理牌组（不执行编码以保障 60FPS 录屏帧预算），
+    // 进入演播室后由 StudioPreviewWindow 立即压缩为紧凑内存 JPEG 字节流并配合 StudioHiResFrameReader 呈现原生超清
     if (cleanPlateStudio && m_frameIndex >= m_nextLiveDeckFrameIdx && captured.data &&
         m_options.width > 0 && m_options.height > 0) {
         const int srcType = (captured.format == CapturePixelFormat::Bgra32) ? CV_8UC4 : CV_8UC3;
         cv::Mat rawWrap(m_options.height, m_options.width, srcType,
                         const_cast<uint8_t*>(captured.data), static_cast<size_t>(captured.stride));
         const int longSide = (std::max)(m_options.width, m_options.height);
-        const double scale = (longSide > 1280) ? (1280.0 / static_cast<double>(longSide)) : 1.0;
+        const double scale = (longSide > kStudioProxyMaxLongSide)
+            ? (static_cast<double>(kStudioProxyMaxLongSide) / static_cast<double>(longSide))
+            : 1.0;
         const int dstW = (std::max)(2, static_cast<int>(std::round(m_options.width * scale)) & ~1);
         const int dstH = (std::max)(2, static_cast<int>(std::round(m_options.height * scale)) & ~1);
         cv::Mat scaled, previewBgr;
@@ -2505,7 +2508,7 @@ bool ScreenRecorder::captureAndEncodeFrame() {
         if (!previewBgr.empty()) {
             std::lock_guard studioLock(m_studioDataMutex);
             while (m_nextLiveDeckFrameIdx <= m_frameIndex) {
-                if (m_livePreviewDeck.size() >= 224) {
+                if (m_livePreviewDeck.size() >= static_cast<size_t>(kStudioProxyMaxFrames)) {
                     size_t dstIdx = 0;
                     for (size_t srcIdx = 0; srcIdx < m_livePreviewDeck.size(); srcIdx += 2) {
                         m_livePreviewDeck[dstIdx++] = std::move(m_livePreviewDeck[srcIdx]);

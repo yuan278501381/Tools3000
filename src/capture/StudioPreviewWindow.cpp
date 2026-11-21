@@ -17,6 +17,7 @@
 #include "core/utils/WinUtils.h"
 #include "ui/KeyboardPipeline.h"
 
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <d2d1_1.h>
 #include <dwmapi.h>
@@ -977,7 +978,8 @@ bool StudioPreviewWindow::showSession(
     double durSec = (timeline.durationMs > 0) ? (timeline.durationMs / 1000.0) : 0.0;
 
     if (deck.empty()) {
-        if (!StudioVideoCompositor::extractPreviewDeck(rawVideoPathUtf8, 1280, 224, deck, origW, origH, durSec) ||
+        if (!StudioVideoCompositor::extractPreviewDeck(
+                rawVideoPathUtf8, kStudioProxyMaxLongSide, kStudioProxyMaxFrames, deck, origW, origH, durSec) ||
             deck.empty()) {
             LOG_WARN("StudioPreviewWindow: failed to extract preview deck from {}, falling back to direct raw completion",
                      rawVideoPathUtf8);
@@ -1029,7 +1031,29 @@ bool StudioPreviewWindow::showSession(
     m_bitrateMbps = std::clamp(bitrateMbps, 2, 80);
     m_durationSec = (durSec > 0.05) ? durSec : (std::max)(0.1, m_timeline.durationMs / 1000.0);
     m_onFinished = std::move(onFinished);
-    m_previewDeckBgr = std::move(deck);
+    m_lastDecodedProxyIdx = static_cast<size_t>(-1);
+    m_lastDecodedProxyBgr.release();
+    const size_t proxyJpegBytes = StudioVideoCompositor::compressPreviewDeck(
+        deck,
+        m_previewDeckJpeg,
+        m_visualDiffDeckGray,
+        m_proxyFrameWidth,
+        m_proxyFrameHeight,
+        kStudioProxyMaxLongSide,
+        kStudioProxyMaxFrames,
+        kStudioProxyJpegQuality);
+    deck.clear();
+    deck.shrink_to_fit();
+    if (m_previewDeckJpeg.empty()) {
+        LOG_WARN("StudioPreviewWindow: failed to compress preview deck from {}, falling back to direct raw completion",
+                 rawVideoPathUtf8);
+        dismissPreparingOverlay();
+        if (m_onFinished) {
+            auto cb = std::move(m_onFinished);
+            cb(rawVideoPathUtf8, m_durationSec, false);
+        }
+        return false;
+    }
     m_filmstripDirty = true;
     m_origWidth = origW;
     m_origHeight = origH;
@@ -1039,7 +1063,7 @@ bool StudioPreviewWindow::showSession(
             m_timeline, m_config.defaultZoomFactor, m_config.typingAutoZoom, m_config.autoZoomSensitivity);
     }
     StudioTimelineAnalyzer::refineZoomSegmentsWithVisualDiff(
-        m_timeline, m_previewDeckBgr, m_durationSec, m_config.autoZoomSensitivity);
+        m_timeline, m_visualDiffDeckGray, m_durationSec, m_config.autoZoomSensitivity);
 
     const int64_t rawTotalMs = (std::max<int64_t>)(100, static_cast<int64_t>(std::llround(m_durationSec * 1000.0)));
     if (m_timeline.audioWaveformPeaks.empty()) {
@@ -1190,8 +1214,8 @@ bool StudioPreviewWindow::showSession(
     SetWindowTextW(m_hwnd, isZhReady ? L"Tools3000 录屏演播室" : L"Tools3000 Studio");
     RedrawWindow(m_hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
 
-    LOG_INFO("StudioPreviewWindow opened: raw={}, deckFrames={}, zoomSegments={}, wallpapers={}",
-             m_rawVideoPath, m_previewDeckBgr.size(),
+    LOG_INFO("StudioPreviewWindow opened: raw={}, deckFrames={}, proxyJpegKB={}, zoomSegments={}, wallpapers={}",
+             m_rawVideoPath, m_previewDeckJpeg.size(), proxyJpegBytes / 1024,
              m_timeline.zoomSegments.size(), m_allWallpapers.size());
     return true;
 }
@@ -1210,16 +1234,37 @@ void StudioPreviewWindow::rebakeTimelinePreview() {
     m_composedDirty = true;
 }
 
+const cv::Mat& StudioPreviewWindow::decodeProxyFrameAt(size_t index) {
+    static const cv::Mat kEmptyMat;
+    if (index >= m_previewDeckJpeg.size()) {
+        return kEmptyMat;
+    }
+    if (m_lastDecodedProxyIdx == index && !m_lastDecodedProxyBgr.empty()) {
+        return m_lastDecodedProxyBgr;
+    }
+    const auto& jpegBytes = m_previewDeckJpeg[index];
+    if (jpegBytes.empty()) {
+        return kEmptyMat;
+    }
+    cv::Mat decoded = cv::imdecode(jpegBytes, cv::IMREAD_COLOR);
+    if (decoded.empty()) {
+        return kEmptyMat;
+    }
+    m_lastDecodedProxyIdx = index;
+    m_lastDecodedProxyBgr = std::move(decoded);
+    return m_lastDecodedProxyBgr;
+}
+
 void StudioPreviewWindow::updateCurrentComposedBitmap() {
-    if (m_previewDeckBgr.empty()) return;
+    if (m_previewDeckJpeg.empty()) return;
 
     const double srcSec = currentDisplayedSourceSec();
     const double norm = (m_durationSec > 1e-4)
         ? std::clamp(srcSec / m_durationSec, 0.0, 1.0)
         : 0.0;
     const size_t deckIdx = (std::min)(
-        m_previewDeckBgr.size() - 1,
-        static_cast<size_t>(std::llround(norm * static_cast<double>(m_previewDeckBgr.size() - 1))));
+        m_previewDeckJpeg.size() - 1,
+        static_cast<size_t>(std::llround(norm * static_cast<double>(m_previewDeckJpeg.size() - 1))));
 
     StudioEvaluatedFrame eval{};
     if (!m_evaluatedFrames.empty()) {
@@ -1253,7 +1298,6 @@ void StudioPreviewWindow::updateCurrentComposedBitmap() {
         }
     }
 
-    const cv::Mat& proxyFrame = m_previewDeckBgr[deckIdx];
     const bool fastTimeScrub = m_hoverSkimming || m_scrubbingTimeline || m_trackDragKind != TrackDragKind::None;
     const bool interactiveControlDrag =
         m_draggingZoomFocus ||
@@ -1267,19 +1311,24 @@ void StudioPreviewWindow::updateCurrentComposedBitmap() {
             m_lastFastScrubTick = GetTickCount64();
             useNative = m_hiResReader.tryGetCachedFrame(srcSec, nativeFrame, 0.020);
         } else if (!m_playing) {
-            useNative = m_hiResReader.decodeFrameAt(srcSec, nativeFrame);
+            useNative = m_hiResReader.decodeFrameAt(srcSec, nativeFrame, /*cacheInLru=*/true);
         } else {
+            const int proxyW = (m_proxyFrameWidth > 0) ? m_proxyFrameWidth : kStudioProxyMaxLongSide;
             const bool needHiResWhilePlaying =
-                (m_stageViewportPhysW > proxyFrame.cols + 24) ||
+                (m_stageViewportPhysW > proxyW + 24) ||
                 (eval.camera.zoom > 1.08f) ||
-                (m_hiResReader.nativeWidth() > proxyFrame.cols);
+                (m_hiResReader.nativeWidth() > proxyW);
             if (needHiResWhilePlaying) {
-                useNative = m_hiResReader.decodeFrameAt(srcSec, nativeFrame);
+                // 顺序播放期间不写入多帧 LRU（仅刷新单帧缓存），杜绝播放几秒后内存膨胀，暂停后仍可 0ms 命中
+                useNative = m_hiResReader.decodeFrameAt(srcSec, nativeFrame, /*cacheInLru=*/false);
             }
         }
     }
     m_lastComposedUsedProxy = (!useNative && m_hiResReader.isOpen()) || interactiveControlDrag;
-    const cv::Mat& srcFrame = (useNative && !nativeFrame.empty()) ? nativeFrame : proxyFrame;
+    const cv::Mat& srcFrame = (useNative && !nativeFrame.empty())
+        ? nativeFrame
+        : decodeProxyFrameAt(deckIdx);
+    if (srcFrame.empty()) return;
 
     // 交互滑块/标注/水印连续拖拽期间采用 1360px 瞬态高速画布保障 120FPS 丝滑跟手，松手瞬间自动升格全清视网膜画布
     const int refOrigW = (std::max)(1, m_origWidth > 0 ? m_origWidth : srcFrame.cols);
@@ -1600,18 +1649,18 @@ bool StudioPreviewWindow::ensureRenderResources() {
 
     if (m_filmstripDirty && m_renderTarget) {
         m_filmstripBitmaps.clear();
-        if (!m_previewDeckBgr.empty()) {
+        if (!m_previewDeckJpeg.empty()) {
             D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(
                 D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
                 96.0f, 96.0f);
-            const size_t totalDeck = m_previewDeckBgr.size();
+            const size_t totalDeck = m_previewDeckJpeg.size();
             const size_t stripCount = (std::min<size_t>)(32, totalDeck);
             m_filmstripBitmaps.reserve(stripCount);
             for (size_t si = 0; si < stripCount; ++si) {
                 const size_t srcIdx = (stripCount <= 1)
                     ? 0
                     : ((si * (totalDeck - 1) + (stripCount - 1) / 2) / (stripCount - 1));
-                const cv::Mat& srcBgr = m_previewDeckBgr[srcIdx];
+                const cv::Mat& srcBgr = decodeProxyFrameAt(srcIdx);
                 if (srcBgr.empty()) continue;
                 constexpr int kStripH = 64;
                 const double aspect = static_cast<double>(srcBgr.cols) / static_cast<double>((std::max)(1, srcBgr.rows));
@@ -1859,8 +1908,14 @@ void StudioPreviewWindow::closeSessionAndCleanup() {
     m_hiResReader.close();
     m_filmstripBitmaps.clear();
     m_filmstripDirty = true;
-    m_previewDeckBgr.clear();
-    m_previewDeckBgr.shrink_to_fit();
+    m_previewDeckJpeg.clear();
+    m_previewDeckJpeg.shrink_to_fit();
+    m_visualDiffDeckGray.clear();
+    m_visualDiffDeckGray.shrink_to_fit();
+    m_lastDecodedProxyBgr.release();
+    m_lastDecodedProxyIdx = static_cast<size_t>(-1);
+    m_proxyFrameWidth = 0;
+    m_proxyFrameHeight = 0;
     m_evaluatedFrames.clear();
     m_evaluatedFrames.shrink_to_fit();
     m_currentComposedBgra.release();

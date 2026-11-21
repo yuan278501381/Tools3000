@@ -381,13 +381,17 @@ void StudioTimelineAnalyzer::refineZoomSegmentsWithVisualDiff(
     const size_t deckCount = previewDeckBgr.size();
     const double durMs = durationSec * 1000.0;
 
-    constexpr int kProbeW = 160;
-    constexpr int kProbeH = 90;
+    constexpr int kProbeW = kStudioVisualDiffProbeWidth;
+    constexpr int kProbeH = kStudioVisualDiffProbeHeight;
     auto sampleGraySmall = [&](int64_t targetMs, cv::Mat& outGray) -> bool {
         const double norm = std::clamp(static_cast<double>(targetMs) / durMs, 0.0, 1.0);
         const size_t idx = (std::min)(deckCount - 1, static_cast<size_t>(std::llround(norm * static_cast<double>(deckCount - 1))));
         const cv::Mat& frame = previewDeckBgr[idx];
         if (frame.empty()) return false;
+        if (frame.cols == kProbeW && frame.rows == kProbeH && frame.channels() == 1) {
+            outGray = frame;
+            return true;
+        }
         cv::Mat small;
         cv::resize(frame, small, cv::Size(kProbeW, kProbeH), 0.0, 0.0, cv::INTER_AREA);
         if (small.channels() == 3) {

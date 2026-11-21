@@ -6,6 +6,12 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 录屏演播室两大核心内存瘦身（进程驻留内存由 ~500-800 MiB 降至 ~100-150 MiB）
+- **演播室高内存占用的两大核心根源与终局收敛 (`StudioTimeline.h`, `StudioTimeline.cpp`, `ScreenRecorder.cpp`, `PluginEntry.cpp`, `StudioVideoCompositor.h`, `StudioVideoCompositorExport.cpp`, `StudioPreviewWindow.{h,cpp}`, `StudioPreviewWindowInput.cpp`)**：
+  1. **代理预览牌组极致瘦身 (`StudioVideoCompositor::compressPreviewDeck`)**：将代理牌组统一收敛至单一事实源常量 `kStudioProxyMaxLongSide = 640`、`kStudioProxyMaxFrames = 112`、`kStudioProxyJpegQuality = 78`；录屏热路径降采样为 `<= 112` 帧 `640px`（不编码，0 挤占 60FPS 录屏帧预算），进入 `StudioPreviewWindow::showSession()` 后立刻压缩为内存 JPEG 字节流（`m_previewDeckJpeg`，112 帧仅 ~2.5–4 MiB，按需 `<0.5ms` 解码并保留单帧 `m_lastDecodedProxyBgr` 槽位）+ 紧凑 `160×90` 单通道灰度差分牌组（`m_visualDiffDeckGray`，仅 ~1.54 MiB，供 `refineZoomSegmentsWithVisualDiff` 零拷贝零重解码复用），随后立即释放未压缩 BGR 牌组，直接削减 **260–645 MiB**；
+  2. **`StudioHiResFrameReader` 顺序播放免写多帧 LRU 与预算硬封顶**：将多帧 LRU 上限由 `128 MiB / 20 帧` 收敛至 `28 MiB / 4 帧`（`kMaxLruCacheBytes` / `kMaxLruCacheEntries`）；顺序播放态调用 `decodeFrameAt(..., /*cacheInLru=*/false)` 仅刷新单帧 `lastDecodedBgr`（0 污染多帧 LRU），并在 `tryGetCachedFrame()` 兜底命中 `lastDecodedBgr`（确保随时空格暂停调参 0ms 瞬时响应），再削减 **95–115 MiB**；
+  3. **防回退单测门禁 (`tests/unit/test_studio_recorder.inc`)**：新增 `CompactProxyDeckAndHiResReaderLruMemoryBudget` 硬核单测（覆盖 180 帧 1280×720 压缩、160×90 灰度差分等价性、顺序播放 `cachedMemoryBytes() == 0` 且暂停 `tryGetCachedFrame()` 0ms 命中，以及 1600×900 4 帧条目上限与 2560×1440 28 MiB 字节上限双压测），`*Studio*` 全套 32/32 通过，`check-logger.js` 与 `check-trim-workingset.js` 100% 通过。
+
 ### [2026-11-21] 全局视觉设计系统升维（Apple Porcelain / Neutral Obsidian 三层表面体系 + 主设置界面、搜索中心与偏好抽屉高级化重塑）
 - **审美诊断与设计第一性原理重构 (`index.css`, `App.css`, `Sidebar.css`, `TitleBar.css`, `UIKit.css`, `GeneralPage.css`, `SearchPage.css`, `SearchViewSettingsModal.tsx`, `styles/search/*.css`)**：
   1. **三层中性表面与双主题高阶调校**：浅色模式建立「霜灰外壳 `#eff1f6` -> 浅瓷画布 `#f6f7fa` -> 白瓷卡片 `#ffffff` + 超细发丝线 `rgba(15,23,42,0.075)`」三层呼吸深度；深色模式彻底淘汰偏闷暗紫底（`#12111a`/`#211e30`），切换为中性丝绒曜石炭黑（`#0c0d11` / `#111217` / `#161820` + 顶部 `1px` 玻璃镜面微光），确保 6 款动态主题色均不冲突；主内容区采用圆角嵌入式面板（`border-top-left-radius: 14px`）与无双线侧边栏一体衔接；

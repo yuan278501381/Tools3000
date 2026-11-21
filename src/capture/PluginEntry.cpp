@@ -376,7 +376,8 @@ void stopRecordingWithFeedback() {
                     int ow = preparedTimeline.sourceWidth;
                     int oh = preparedTimeline.sourceHeight;
                     double dSec = preparedTimeline.durationMs / 1000.0;
-                    StudioVideoCompositor::extractPreviewDeck(path, 1280, 224, preparedDeck, ow, oh, dSec);
+                    StudioVideoCompositor::extractPreviewDeck(
+                        path, kStudioProxyMaxLongSide, kStudioProxyMaxFrames, preparedDeck, ow, oh, dSec);
                     if (preparedTimeline.sourceWidth <= 0) preparedTimeline.sourceWidth = ow;
                     if (preparedTimeline.sourceHeight <= 0) preparedTimeline.sourceHeight = oh;
                     if (preparedTimeline.durationMs <= 0 && dSec > 0.0) {

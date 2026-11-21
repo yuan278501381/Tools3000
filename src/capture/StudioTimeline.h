@@ -24,6 +24,13 @@ class Mat;
 
 namespace tools3000::capture {
 
+/// 演播室代理预览牌组与视觉差分缓存内存预算常量（单一事实源）
+inline constexpr int kStudioProxyMaxLongSide = 640;
+inline constexpr int kStudioProxyMaxFrames = 112;
+inline constexpr int kStudioProxyJpegQuality = 78;
+inline constexpr int kStudioVisualDiffProbeWidth = 160;
+inline constexpr int kStudioVisualDiffProbeHeight = 90;
+
 enum class StudioCursorKind : uint8_t {
     Arrow = 0,
     IBeam = 1,

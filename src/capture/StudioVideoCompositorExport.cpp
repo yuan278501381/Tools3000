@@ -1426,6 +1426,94 @@ bool StudioVideoCompositor::extractPreviewDeck(
     return !outFramesBgr.empty();
 }
 
+size_t StudioVideoCompositor::compressPreviewDeck(
+    const std::vector<cv::Mat>& rawDeckBgr,
+    std::vector<std::vector<uint8_t>>& outJpegDeck,
+    std::vector<cv::Mat>& outVisualDiffGrayDeck,
+    int& outProxyWidth,
+    int& outProxyHeight,
+    int maxLongSide,
+    int maxFrames,
+    int jpegQuality) {
+    outJpegDeck.clear();
+    outVisualDiffGrayDeck.clear();
+    outProxyWidth = 0;
+    outProxyHeight = 0;
+    if (rawDeckBgr.empty()) {
+        return 0;
+    }
+
+    const int safeLongSide = std::clamp(maxLongSide, 160, 1280);
+    const size_t safeMaxFrames = static_cast<size_t>(std::clamp(maxFrames, 8, 224));
+    const int safeQuality = std::clamp(jpegQuality, 45, 95);
+    const std::vector<int> encodeParams = {cv::IMWRITE_JPEG_QUALITY, safeQuality};
+
+    const size_t srcCount = rawDeckBgr.size();
+    const size_t targetCount = (std::min)(srcCount, safeMaxFrames);
+    outJpegDeck.reserve(targetCount);
+    outVisualDiffGrayDeck.reserve(targetCount);
+
+    size_t totalJpegBytes = 0;
+    cv::Mat bgrConverted;
+    cv::Mat scaledBgr;
+    cv::Mat probeBgr;
+
+    for (size_t i = 0; i < targetCount; ++i) {
+        const size_t srcIdx = (targetCount <= 1 || srcCount <= safeMaxFrames)
+            ? i
+            : ((i * (srcCount - 1) + (targetCount - 1) / 2) / (targetCount - 1));
+        const cv::Mat& rawFrame = rawDeckBgr[srcIdx];
+        if (rawFrame.empty()) {
+            continue;
+        }
+
+        const cv::Mat* bgrPtr = &rawFrame;
+        if (rawFrame.channels() == 4) {
+            cv::cvtColor(rawFrame, bgrConverted, cv::COLOR_BGRA2BGR);
+            bgrPtr = &bgrConverted;
+        } else if (rawFrame.channels() == 1) {
+            cv::cvtColor(rawFrame, bgrConverted, cv::COLOR_GRAY2BGR);
+            bgrPtr = &bgrConverted;
+        } else if (rawFrame.channels() != 3) {
+            continue;
+        }
+
+        const int origW = bgrPtr->cols;
+        const int origH = bgrPtr->rows;
+        const int longSide = (std::max)(origW, origH);
+        const cv::Mat* proxyPtr = bgrPtr;
+        if (longSide > safeLongSide) {
+            const double scale = static_cast<double>(safeLongSide) / static_cast<double>(longSide);
+            const int dstW = (std::max)(2, static_cast<int>(std::round(origW * scale)) & ~1);
+            const int dstH = (std::max)(2, static_cast<int>(std::round(origH * scale)) & ~1);
+            cv::resize(*bgrPtr, scaledBgr, cv::Size(dstW, dstH), 0.0, 0.0, cv::INTER_AREA);
+            proxyPtr = &scaledBgr;
+        }
+
+        std::vector<uint8_t> jpegBuf;
+        if (!cv::imencode(".jpg", *proxyPtr, jpegBuf, encodeParams) || jpegBuf.empty()) {
+            continue;
+        }
+        if (outProxyWidth <= 0) {
+            outProxyWidth = proxyPtr->cols;
+            outProxyHeight = proxyPtr->rows;
+        }
+
+        cv::resize(
+            *proxyPtr,
+            probeBgr,
+            cv::Size(kStudioVisualDiffProbeWidth, kStudioVisualDiffProbeHeight),
+            0.0, 0.0, cv::INTER_AREA);
+        cv::Mat probeGray;
+        cv::cvtColor(probeBgr, probeGray, cv::COLOR_BGR2GRAY);
+
+        totalJpegBytes += jpegBuf.size();
+        outJpegDeck.push_back(std::move(jpegBuf));
+        outVisualDiffGrayDeck.push_back(std::move(probeGray));
+    }
+    return totalJpegBytes;
+}
+
 bool StudioVideoCompositor::extractAudioWaveformPeaks(
     const std::string& rawInputPathUtf8,
     size_t bucketCount,
@@ -1664,11 +1752,12 @@ struct StudioHiResFrameReader::Impl {
     double lastDecodedSec = -1e9;
     bool freshAtStreamStart = true;
     cv::Mat lastDecodedBgr;
+    double lastDecodedBgrSec = -1e9;
 
     uint64_t accessCounter = 0;
     size_t cachedBytes = 0;
-    static constexpr size_t kMaxCacheBytes = 128ULL * 1024ULL * 1024ULL; // 严格锁定 <= 128MB 原生帧 LRU 预算
-    static constexpr size_t kMaxCacheEntries = 20;
+    static constexpr size_t kMaxCacheBytes = StudioHiResFrameReader::kMaxLruCacheBytes;
+    static constexpr size_t kMaxCacheEntries = StudioHiResFrameReader::kMaxLruCacheEntries;
     std::vector<CachedEntry> cache;
 
     ~Impl() {
@@ -1677,8 +1766,10 @@ struct StudioHiResFrameReader::Impl {
 
     void reset() noexcept {
         cache.clear();
+        cache.shrink_to_fit();
         cachedBytes = 0;
         lastDecodedBgr.release();
+        lastDecodedBgrSec = -1e9;
         lastDecodedSec = -1e9;
         freshAtStreamStart = true;
         firstPts = AV_NOPTS_VALUE;
@@ -1741,14 +1832,18 @@ struct StudioHiResFrameReader::Impl {
 
     void insertCache(double sec, const cv::Mat& bgr) {
         if (bgr.empty()) return;
+        const size_t frameBytes = bgr.total() * bgr.elemSize();
+        if (frameBytes > kMaxCacheBytes) return;
         for (auto& e : cache) {
             if (std::abs(e.sec - sec) <= 0.012) {
+                const size_t oldBytes = e.bgr.total() * e.bgr.elemSize();
+                cachedBytes = (cachedBytes >= oldBytes) ? (cachedBytes - oldBytes) : 0;
                 e.stamp = ++accessCounter;
                 e.bgr = bgr;
+                cachedBytes += frameBytes;
                 return;
             }
         }
-        const size_t frameBytes = bgr.total() * bgr.elemSize();
         while (!cache.empty() &&
                (cache.size() >= kMaxCacheEntries || (cachedBytes + frameBytes > kMaxCacheBytes))) {
             auto oldestIt = std::min_element(
@@ -1760,6 +1855,23 @@ struct StudioHiResFrameReader::Impl {
         }
         cache.push_back(CachedEntry{sec, ++accessCounter, bgr});
         cachedBytes += frameBytes;
+    }
+
+    bool findInLruCache(double clampedSec, double toleranceSec, cv::Mat& outBgr) noexcept {
+        if (cache.empty()) return false;
+        double bestDiff = toleranceSec + 1.0;
+        CachedEntry* bestEntry = nullptr;
+        for (auto& entry : cache) {
+            const double d = std::abs(entry.sec - clampedSec);
+            if (d <= toleranceSec && d < bestDiff && !entry.bgr.empty()) {
+                bestDiff = d;
+                bestEntry = &entry;
+            }
+        }
+        if (!bestEntry) return false;
+        bestEntry->stamp = ++accessCounter;
+        outBgr = bestEntry->bgr;
+        return true;
     }
 };
 
@@ -1784,6 +1896,14 @@ int StudioHiResFrameReader::nativeWidth() const noexcept {
 
 int StudioHiResFrameReader::nativeHeight() const noexcept {
     return m_impl ? m_impl->dstH : 0;
+}
+
+size_t StudioHiResFrameReader::cachedFrameCount() const noexcept {
+    return m_impl ? m_impl->cache.size() : 0;
+}
+
+size_t StudioHiResFrameReader::cachedMemoryBytes() const noexcept {
+    return m_impl ? m_impl->cachedBytes : 0;
 }
 
 bool StudioHiResFrameReader::open(const std::string& videoPathUtf8, int maxDecodeLongSide) {
@@ -1875,24 +1995,22 @@ bool StudioHiResFrameReader::open(const std::string& videoPathUtf8, int maxDecod
 }
 
 bool StudioHiResFrameReader::tryGetCachedFrame(double targetSec, cv::Mat& outBgr, double toleranceSec) noexcept {
-    if (!m_impl || m_impl->cache.empty()) return false;
+    if (!m_impl) return false;
     const double clampedSec = (std::max)(0.0, targetSec);
-    double bestDiff = toleranceSec + 1.0;
-    Impl::CachedEntry* bestEntry = nullptr;
-    for (auto& entry : m_impl->cache) {
-        const double d = std::abs(entry.sec - clampedSec);
-        if (d <= toleranceSec && d < bestDiff && !entry.bgr.empty()) {
-            bestDiff = d;
-            bestEntry = &entry;
-        }
+    if (m_impl->findInLruCache(clampedSec, toleranceSec, outBgr)) {
+        return true;
     }
-    if (!bestEntry) return false;
-    bestEntry->stamp = ++m_impl->accessCounter;
-    outBgr = bestEntry->bgr;
-    return true;
+    // 兜底命中顺序播放流式解码产出的最近单帧（保证随时暂停调参/掠览 0ms 零重解码）
+    if (!m_impl->lastDecodedBgr.empty() &&
+        m_impl->lastDecodedBgrSec >= -1e-4 &&
+        std::abs(m_impl->lastDecodedBgrSec - clampedSec) <= toleranceSec) {
+        outBgr = m_impl->lastDecodedBgr;
+        return true;
+    }
+    return false;
 }
 
-bool StudioHiResFrameReader::decodeFrameAt(double targetSec, cv::Mat& outBgr) {
+bool StudioHiResFrameReader::decodeFrameAt(double targetSec, cv::Mat& outBgr, bool cacheInLru) {
     if (!isOpen()) return false;
 
     double clampedSec = (std::max)(0.0, targetSec);
@@ -1900,7 +2018,16 @@ bool StudioHiResFrameReader::decodeFrameAt(double targetSec, cv::Mat& outBgr) {
         clampedSec = (std::min)(clampedSec, (std::max)(0.0, m_impl->durationSec - 0.01));
     }
 
-    if (tryGetCachedFrame(clampedSec, outBgr, 0.018)) {
+    if (m_impl->findInLruCache(clampedSec, 0.018, outBgr)) {
+        return true;
+    }
+    if (!m_impl->lastDecodedBgr.empty() &&
+        m_impl->lastDecodedBgrSec >= -1e-4 &&
+        std::abs(m_impl->lastDecodedBgrSec - clampedSec) <= 0.018) {
+        if (cacheInLru) {
+            m_impl->insertCache(m_impl->lastDecodedBgrSec, m_impl->lastDecodedBgr);
+        }
+        outBgr = m_impl->lastDecodedBgr;
         return true;
     }
 
@@ -1912,6 +2039,9 @@ bool StudioHiResFrameReader::decodeFrameAt(double targetSec, cv::Mat& outBgr) {
 
     if (!m_impl->freshAtStreamStart && canRollForward &&
         clampedSec <= m_impl->lastDecodedSec + 0.016 && !m_impl->lastDecodedBgr.empty()) {
+        if (cacheInLru && m_impl->lastDecodedBgrSec >= -1e-4) {
+            m_impl->insertCache(m_impl->lastDecodedBgrSec, m_impl->lastDecodedBgr);
+        }
         outBgr = m_impl->lastDecodedBgr;
         return true;
     }
@@ -1996,7 +2126,10 @@ bool StudioHiResFrameReader::decodeFrameAt(double targetSec, cv::Mat& outBgr) {
     }
 
     m_impl->lastDecodedBgr = decodedBgr;
-    m_impl->insertCache(candidateSec, decodedBgr);
+    m_impl->lastDecodedBgrSec = candidateSec;
+    if (cacheInLru) {
+        m_impl->insertCache(candidateSec, decodedBgr);
+    }
     outBgr = std::move(decodedBgr);
     return true;
 }
