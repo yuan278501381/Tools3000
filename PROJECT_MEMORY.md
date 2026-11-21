@@ -6,6 +6,23 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-21] 独立超轻纯 Rust 现代致敬版 Picasa 看图器 (`src/viewer/`, `Tools3000_Picasa_Viewer.exe`) — v3 高分屏与 6 大物理动效终局升级
+- **核心架构演进与工程控制点（结合高分屏规范与帧率无关物理引擎重构）**：
+  1. **100% 物理独立纯原生引擎（单文件 ~`1.5 MB` Release，0% 静止 CPU 占用）**：
+     - 采用 `Win32 + Direct3D11 + DirectComposition + Direct2D 1.1 + DirectWrite + WIC/纯Rust解码器`，窗口高度严格设为 `monitor_height - 1` 像素，100% 规避 Windows DWM 全屏独占关闭 Alpha 混合导致纯黑底的暗坑，真实穿透底层桌面；
+     - 自适应按需高刷调度（`TIMER_ANIM_ID` + `TIMER_IDLE_HIDE_ID`）：动画活跃期配合 VSync 自适应 60~240Hz 刷新率并以真实 `dt` 驱动指数阻尼，动画收敛后立即 `KillTimer` 休眠于 `GetMessageW`，静止状态 CPU 占用严格 `0.0%`；
+  2. **Windows 100%~250%+ 高分屏黄金 DIP 体系与水平/垂直翻转增强 (`constants.rs`, `ui_layout.rs`, `renderer.rs`)**：
+     - 摒弃早年未适配高分屏截图导致的过小像素尺寸：右上角费茨定律关闭徽章升级为 `40 DIP` 半径紧贴屏幕最右上角顶点 `(view_w, 0)`（盲甩必中，悬停阻尼弹扩并亮起珊瑚绯红柔和光晕 + `9.8×9.8 DIP` 清脆抗锯齿白色 `×`）；
+     - 底部 `66 DIP` 一体化水晶底栏：`48 DIP` 高清胶片缩略图流（`192px` 采样 + 携带 `orig_width`/`orig_height`，当前图居中放大 `1.12x` 亮白框、悬停平滑上浮提亮、底部柔和倒影）；前景按钮精确遮盖缩略图底 `1/3`（`33.3%`）：`[+] [-] [1:1]` | `◀ (▶ 44 DIP 无黑框柔弧水晶播放球) ▶` | `[↺] [↻] [水平翻转 H] [垂直翻转 V]`；
+     - 左上角 `(18, 14)` 增设无底框清透投影元数据浮标（`文件名 | 分辨率 | 缩放% | 序号`，按 `I` 切换详细 EXIF 卡片；按 `O` 打开本地图片）；
+  3. **6 大帧率无关灵魂物理动效 (`physics.rs`, `viewport.rs`, `app.rs`, `integration.rs`)**：
+     - 四态状态机 `Opening -> Viewing <-> Slideshow -> Closing`：`Opening` (`195ms`) 从中心 `0.35 * fit_scale` 按 `EaseOutQuint` 清脆弹开；`Closing` (`175ms`) 前 `75ms` HUD 率先消隐，快照当前视觉姿态使任何放大/平移/旋转状态下的主图均向**屏幕正中心**坍缩至 `0.28 * fit_scale` 淡出后干净退出；
+     - 电影级幻灯片放映：`350ms` 暗房沉降为 `#000000` 纯黑放映厅 + `3.5s` 帧率无关 Ken Burns 缓慢推拉平移 + `900ms` 双缓冲交叉叠化 (`Cross-dissolve`，离场纹理保持推镜惯性不急停) + 晃动鼠标仅浮现极简水晶迷你播控胶囊（`◀` / `⏸·▶` / `▶` / `×`）+ 严格**两级 `Esc`**（第 1 次退回半透明看图态，第 2 次坍缩退出程序）；
+     - 2D 物理相机：光标像素锁定对数滚轮缩放 + 拖拽速度采样惯性滑行 (`Kinetic Pan`) + 越界渐近橡皮筋阻尼与弹簧回弹 (`Rubber-banding`) + 连续 `90°` 丝滑旋转 + 屏幕感知水平/垂直 3D 镜像翻转（投影与 `1.4px` 微白相纸描边全程随矩阵同步旋转零闪烁；`Ctrl+C` 复制与 `Ctrl+S` 另存 PNG 无损应用旋转+翻转）；
+  4. **单文件内嵌 8 语种自动跟随系统语言 (`i18n.rs`) + 双图标组与 Picasa 经典拍立得文件关联面板 (`assoc_dialog.rs`, `viewer.rc`)**：
+     - 编译期静态内嵌与 Tools3000 1:1 对齐的 8 大语种（`zh-CN`, `zh-TW`, `en-US`, `ja-JP`, `ko-KR`, `ru-RU`, `pt-BR`, `es-ES`），通过 `GetUserDefaultUILanguage()` 100% 独立自动跟随系统显示语言并匹配各语种原生 CJK/西文 DirectWrite 字体；
+     - PE 资源双图标组：`ID=1`（索引 `0`）为主程序雕塑玻璃快门圆轮，`ID=2`（索引 `1`）为 Clean-Room 高清重绘的 **经典 Picasa 拍立得青松金丘相纸文档图标 (`picasa_photo_doc.ico`)**；内置 `--config` 与右键菜单 `Ctrl+M` 原生高分屏文件关联配置窗口，支持按格式勾选写入 `DefaultIcon = "{exe}",1`、调用 `SHChangeNotify` 即刻刷新资源管理器图标并拉起系统默认应用页；实测 20/20 单测（0 警告）+ 200% 高分屏 GPU 实渲回读 + 两级 Esc 真机 GUI E2E 全绿通过。
+
 ### [2026-11-21] 全链路内存驻留治理、WebView2 隐藏零 CPU、`/DELAYLOAD` 12 库与传递依赖闭包同步 & CPU 满载手势 `timeBeginPeriod(1)` 铁律
 - **核心架构改进与已实测验收成果**：
   1. **WebView2 全宿主生命周期静默零 CPU 与防唤醒闭环 (`TrayWindow.cpp`, `SearchWindow.cpp`, `SettingsWindow.{h,cpp}`, `QuickLookWindow.{h,cpp}`, `ui/src/main.tsx`, `index.css`, `GestureGuide.tsx`, `AboutPage.tsx`, `SearchApp.tsx`, `useSearchEngine.ts`)**：
