@@ -74,7 +74,7 @@
 
 /* ── 快速检索框 ───────────────────────────────────────────────────────────── */
 .sidebar__search-wrap {
-  padding: 6px 10px 4px;
+  padding: 6px 10px 6px;
   flex-shrink: 0;
 }
 
@@ -82,8 +82,8 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 10px;
-  border-radius: 9px;
+  padding: 5.5px 9px;
+  border-radius: 8px;
   background: var(--well-bg);
   border: 1px solid var(--well-border);
   box-shadow: var(--well-shadow);
@@ -92,7 +92,7 @@
 
 .sidebar__search-box:focus-within {
   background: var(--card-bg);
-  border-color: color-mix(in srgb, var(--primary) 55%, var(--card-border));
+  border-color: color-mix(in srgb, var(--primary) 50%, var(--card-border));
   box-shadow: 0 0 0 3px var(--primary-dim);
 }
 
@@ -170,25 +170,25 @@
   line-height: 1.5;
 }
 
-/* ── 导航区域 (Apple macOS Sequoia / Linear 级呼吸宝石导航) ──────────────── */
+/* ── 导航区域 (Linear / Raycast 级单色线性图标 + 温润浮雕激活胶囊) ────────── */
 .sidebar__nav {
   flex: 1;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 6px 10px 16px;
+  padding: 4px 10px 18px;
   overflow-y: auto;
 }
 
 .sidebar__section-label {
-  padding: 6px 10px 3px;
+  padding: 10px 10px 4px;
   color: var(--text-muted);
   font-size: 0.83rem;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  line-height: 1.4;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
   user-select: none;
-  opacity: 0.84;
+  opacity: 0.78;
 }
 
 .sidebar__section-label:first-child {
@@ -198,27 +198,30 @@
 .sidebar__divider {
   height: 1px;
   background: var(--hairline);
-  margin: 7px 10px 5px;
+  margin: 8px 10px 2px;
   flex-shrink: 0;
 }
 
 .sidebar__item {
-  --nav-tone-start: var(--primary);
-  --nav-tone-end: var(--primary-hover);
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 10px;
-  border-radius: 10px;
+  padding: 7px 10px 7px 12px;
+  border-radius: 8px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
   font-size: 0.90rem;
   font-weight: 550;
   font-family: inherit;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.012em;
   cursor: pointer;
-  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  transition:
+    background 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
   position: relative;
   text-align: left;
   width: 100%;
@@ -230,8 +233,8 @@
 }
 
 .sidebar__item:hover .sidebar__item-icon {
-  opacity: 1;
-  transform: scale(1.03);
+  color: var(--text-primary);
+  transform: translateX(0.5px);
 }
 
 .sidebar__item:disabled {
@@ -246,62 +249,56 @@
 }
 
 .sidebar__item--active {
-  background: var(--thumb-bg);
-  border-color: var(--thumb-border);
+  background: var(--nav-active-bg);
+  border-color: var(--nav-active-border);
   color: var(--text-primary);
   font-weight: 650;
-  box-shadow: var(--thumb-shadow);
+  box-shadow: var(--nav-active-shadow);
 }
 
 .sidebar__item--active:hover {
-  background: var(--thumb-bg);
+  background: var(--nav-active-bg);
   color: var(--text-primary);
 }
 
-/* 左侧精致圆头模块色微光针 */
+/* 左侧温润圆头主题色微光指示针 (与全局动态主题色呼吸联动，克制而不死板) */
 .sidebar__item-indicator {
   position: absolute;
-  left: 2px;
+  left: 3px;
   top: 50%;
   transform: translateY(-50%);
-  width: 3px;
+  width: 2.5px;
   height: 0;
-  background: var(--nav-tone-start);
+  background: var(--primary);
   border-radius: 999px;
   opacity: 0;
-  transition: height 0.28s var(--ease-spring), opacity 0.18s ease;
+  box-shadow: 0 0 8px var(--primary-glow);
+  transition: height 0.26s var(--ease-spring), opacity 0.16s ease;
 }
 
 .sidebar__item--active .sidebar__item-indicator {
-  height: 16px;
+  height: 15px;
   opacity: 1;
 }
 
-/* macOS Sequoia 精工 24x24 宝石 Squircle 模块徽标 */
+/* 纯净单色精工矢量图标 (彻底告别 14 个高饱和彩色方块，专注清晰层次) */
 .sidebar__item-icon {
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #ffffff;
-  background: linear-gradient(145deg, var(--nav-tone-start) 0%, var(--nav-tone-end) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    0 1px 2px rgba(15, 23, 42, 0.16);
-  opacity: 0.90;
-  transition: opacity 150ms ease, transform 180ms var(--ease-spring), box-shadow 180ms ease;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+  transition: color 140ms ease, transform 180ms var(--ease-spring);
 }
 
 .sidebar__item--active .sidebar__item-icon,
 .sidebar__item--active:hover .sidebar__item-icon {
-  opacity: 1;
+  color: var(--primary);
   transform: none;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.38),
-    0 2px 6px color-mix(in srgb, var(--nav-tone-start) 38%, transparent);
 }
 
 .sidebar__item-label {

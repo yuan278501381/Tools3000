@@ -731,8 +731,8 @@ export const KeycastPage: FC = () => {
 
       {/* ── 底部即刻体验栏 ──────────────────────────────────────────── */}
       <div className="keycast-page__action-footer">
-        <Button variant="primary" onClick={handleTestKeycast}>
-          <Play size={14} style={{ marginRight: 6 }} />
+        <Button variant="primary" disabled={!settings.enabled} onClick={handleTestKeycast}>
+          <Play size={14} aria-hidden="true" />
           <span>{t('keycast.testKeycast', 'Try Keycast Now')}</span>
         </Button>
       </div>

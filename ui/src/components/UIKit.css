@@ -2,12 +2,12 @@
  * UIKit.css — 通用 UI 组件样式
  * ───────────────────────────────────────────────────────────────────────────── */
 
-/* ── Card (Apple / Linear 沉稳白瓷/曜石建筑级容器，零无意义悬停跳动) ───────── */
+/* ── Card (Warm Precision 雕塑白瓷/曜石建筑级容器，精炼 12px 圆角) ────────── */
 .uikit-card {
   position: relative;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: 14px;
+  border-radius: 12px;
   overflow: visible;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   box-shadow: var(--shadow-sm), var(--card-highlight);
@@ -19,11 +19,11 @@
 }
 
 .uikit-card:hover {
-  border-color: color-mix(in srgb, var(--text-muted) 22%, var(--card-border));
+  border-color: color-mix(in srgb, var(--text-muted) 18%, var(--card-border));
 }
 
 .uikit-card__header {
-  padding: 15px 22px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--hairline);
   display: flex;
   align-items: center;
@@ -37,7 +37,7 @@
 }
 
 .uikit-card__title {
-  font-size: 0.97rem;
+  font-size: 0.96rem;
   font-weight: 650;
   color: var(--text-primary);
   letter-spacing: -0.015em;
@@ -55,23 +55,22 @@
 }
 
 .uikit-card__body {
-  padding: 10px 22px 12px;
+  padding: 6px 12px 8px;
 }
 
-/* ── Apple Grouped Inset List 旗舰内缩分隔线与圆角柔光行悬停 ──────────────── */
+/* ── Grouped Inset List 精工内缩分隔线与柔光行悬停 (零负外溢像素) ──────────── */
 .uikit-card__body > .uikit-toggle--with-text,
 .uikit-card__body > .uikit-setting-row {
   position: relative;
-  padding-top: 12px;
-  padding-bottom: 12px;
+  padding: 13px 8px;
 }
 
 .uikit-card__body > .uikit-toggle--with-text::before,
 .uikit-card__body > .uikit-setting-row::before {
   content: '';
   position: absolute;
-  inset: 2px -12px;
-  border-radius: 10px;
+  inset: 3px 0;
+  border-radius: 8px;
   background: transparent;
   pointer-events: none;
   transition: background 140ms ease;
@@ -223,24 +222,24 @@
 
 /* ── 尺寸规格矩阵 (Size Matrix) ────────────────────────────────────────── */
 
-/* 1. 标准中号 (Default / md: 40 × 22px, 滑块 18px) */
+/* 1. 标准中号 (Default / md: 36 × 20px, 滑块 16px · Linear / macOS 精工比例) */
 .uikit-toggle--md .uikit-toggle__switch {
-  width: 40px;
-  height: 22px;
+  width: 36px;
+  height: 20px;
 }
 .uikit-toggle--md .uikit-toggle__thumb {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
 }
 .uikit-toggle--md .uikit-toggle__switch input:checked + .uikit-toggle__slider .uikit-toggle__thumb {
-  transform: translate3d(18px, 0, 0);
+  transform: translate3d(16px, 0, 0);
 }
 .uikit-toggle--md .uikit-toggle__switch:active .uikit-toggle__thumb {
-  width: 22px;
+  width: 19px;
 }
 .uikit-toggle--md .uikit-toggle__switch input:checked:active + .uikit-toggle__slider .uikit-toggle__thumb {
-  transform: translate3d(14px, 0, 0);
-  width: 22px;
+  transform: translate3d(13px, 0, 0);
+  width: 19px;
 }
 
 /* 2. 紧凑微型小号 (Micro / sm: 28 × 16px, 滑块 12px) - 专为高密度表格/列表定制 */
@@ -341,44 +340,38 @@
   width: 100%;
 }
 
-/* ── Setting Group (精工微晶分组徽章与沉稳眉标) ─────────────────────────── */
+/* ── Setting Group (克制编辑部眉标 · 去除后台彩色图标方框) ──────────────── */
 .uikit-group {
-  margin-bottom: 24px;
+  margin-bottom: 28px;
 }
 
 .uikit-group__header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 11px;
+  gap: 8px;
+  margin-bottom: 10px;
   padding-left: 2px;
 }
 
 .uikit-group__icon {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  color: var(--primary);
-  background: color-mix(in srgb, var(--primary) 10%, var(--card-bg));
-  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--card-border));
-  box-shadow: var(--shadow-sm);
+  color: var(--text-muted);
 }
 
 .uikit-group__icon svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 2.2;
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.85;
 }
 
 .uikit-group__title {
-  font-size: 0.96rem;
+  font-size: 0.92rem;
   font-weight: 650;
   color: var(--text-primary);
-  letter-spacing: -0.015em;
+  letter-spacing: -0.012em;
 }
 
 .uikit-group__content {
@@ -387,40 +380,123 @@
   gap: var(--spacing-md);
 }
 
-/* ── Badge ────────────────────────────────────────────────────────────────── */
+/* ── Badge (Calm Technology 瑞士微点状态芯片 · 告别满屏绿/彩膏药) ───────────── */
 .uikit-badge {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   padding: 2px 8px;
-  border-radius: var(--radius-full);
+  border-radius: 6px;
+  border: 1px solid var(--well-border);
+  background: var(--well-bg);
+  color: var(--text-secondary);
   font-size: var(--text-xs, 0.84rem);
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  font-weight: 550;
+  line-height: 1.38;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.uikit-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
 }
 
 .uikit-badge--primary {
-  background: var(--primary-dim);
-  color: var(--primary);
+  background: var(--well-bg);
+  border-color: color-mix(in srgb, var(--primary) 26%, var(--well-border));
+  color: var(--text-primary);
+}
+
+.uikit-badge--primary::before {
+  background: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
 }
 
 .uikit-badge--success {
-  background: color-mix(in srgb, var(--success) 14%, transparent);
-  color: var(--success);
+  background: var(--well-bg);
+  border-color: var(--well-border);
+  color: var(--text-secondary);
+}
+
+.uikit-badge--success::before {
+  background: var(--success);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 16%, transparent);
 }
 
 .uikit-badge--warning {
-  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 24%, transparent);
   color: var(--warning);
 }
 
+.uikit-badge--warning::before {
+  background: var(--warning);
+}
+
 .uikit-badge--danger {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 24%, transparent);
   color: var(--danger);
 }
 
+.uikit-badge--danger::before {
+  background: var(--danger);
+}
+
 .uikit-badge--muted {
-  background: rgba(156, 163, 175, 0.15);
+  background: var(--well-bg);
+  border-color: var(--well-border);
   color: var(--text-muted);
+}
+
+.uikit-badge--muted::before {
+  background: color-mix(in srgb, var(--text-muted) 55%, transparent);
+}
+
+/* ── 单层精工变量芯片按钮 (消除按钮里套 CodeBadge 的双层边框套娃) ─────────────── */
+.uikit-token-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--well-border);
+  background: var(--well-bg);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.uikit-token-chip:hover:not(:disabled) {
+  background: var(--thumb-bg);
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--well-border));
+  color: var(--text-primary);
+}
+
+.uikit-token-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.uikit-token-chip__code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.uikit-token-chip:hover:not(:disabled) .uikit-token-chip__code {
+  color: var(--primary);
 }
 
 /* ── 世界级微晶 Select (Custom Glass Floating Select) ────────────────────────── */
@@ -441,8 +517,8 @@
   justify-content: space-between;
   gap: 10px;
   width: 100%;
-  padding: 7px 12px;
-  border-radius: 9px;
+  padding: 6.5px 11px;
+  border-radius: 8px;
   border: 1px solid var(--input-border);
   background: var(--input-bg);
   color: var(--text-primary);
@@ -594,14 +670,14 @@
   flex-shrink: 0;
 }
 
-/* ── Button (物理立体折射键帽质感) ─────────────────────────────────────────── */
+/* ── Button (温润精工键帽质感) ────────────────────────────────────────────── */
 .uikit-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 8px;
   font-family: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -1065,6 +1141,7 @@
 .app-picker-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  align-content: start;
   gap: 6px;
   max-height: 145px;
   overflow-y: auto;

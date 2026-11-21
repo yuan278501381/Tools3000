@@ -1,8 +1,7 @@
 import { useState, useEffect, type FC } from 'react';
-import { Card, SettingGroup, Badge, Toggle, Button } from '../components/UIKit';
+import { Card, SettingGroup, Toggle, Button, CodeBadge } from '../components/UIKit';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Info, Layers, Cpu, RefreshCw, User, ShieldCheck, Download, GitBranch } from 'lucide-react';
-import { LogoGlyph } from '../components/Tools3000Bolt';
+import { ExternalLink, Layers, Cpu, RefreshCw, User, ShieldCheck, Download, GitBranch } from 'lucide-react';
 import { bridgeRequest, useBridgeEvent, openExternalUrl } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import './AboutPage.css';
@@ -66,9 +65,6 @@ const DEPENDENCIES: DependencyInfo[] = [
   { name: 'GoogleTest & Vitest',            version: '1.17 / 4.1',                 purpose: 'about.depPurpose.gtest' },
   { name: 'Inno Setup',                     version: '6.7',                        purpose: 'about.depPurpose.innoSetup' },
 ];
-
-const TECH_STACK = DEPENDENCIES;
-void TECH_STACK;
 
 interface PerfMetrics {
   memoryMB: number;
@@ -169,7 +165,7 @@ export const AboutPage: FC = () => {
 
   const openReleasePage = async () => {
     const url = updateResult?.releaseUrl;
-    if (!url?.startsWith('https://github.com/yuan278501381/Tools3000/')) return;
+    if (!url || !url.toLowerCase().startsWith('https://github.com/yuan278501381/tools3000/')) return;
     const success = await openExternalUrl(url);
     if (!success) toast.error(t('about.openReleaseFailed'));
   };
@@ -187,132 +183,110 @@ export const AboutPage: FC = () => {
 
   return (
     <div className="about-page" style={{ animation: 'fadeIn 0.3s ease' }}>
-
-      <div className="about-grand-showcase">
-        <div className="about-grand-showcase__aura"></div>
-        <div className="about-grand-showcase__logo-container">
-          <img
-            src="/logo.svg"
-            width={180}
-            height={180}
-            className="about-grand-showcase__logo"
-            alt="Tools3000"
-            draggable={false}
-            decoding="async"
-          />
-        </div>
-        <div className="about-grand-showcase__text">
-          <div className="about-grand-showcase__title-row">
-            <h1 className="about-grand-showcase__title">Tools3000</h1>
-            <span className="about-grand-showcase__version">
-              {buildDate ? `v${version} · ${buildDate}` : `v${version}`}
-            </span>
-          </div>
-          <p className="about-grand-showcase__subtitle">The Ultimate Windows Productivity Suite</p>
-        </div>
-      </div>
-
-      <SettingGroup title={t('about.title')} icon={<Info size={20} strokeWidth={2.5} />}>
-        <Card className="about-card-hero">
-          <div className="about-hero">
-            <div className="about-hero__brand">
-              <div className="about-hero__logo-box">
-                <LogoGlyph size={36} colorVariant />
+      {/* ── 单体旗舰品牌名片卡 (去重复双头 · 融合展台/操作/元信息) ── */}
+      <section className="about-showcase-card" aria-label={t('about.title')}>
+        <div className="about-showcase-card__top">
+          <div className="about-showcase-card__brand">
+            <div className="about-showcase-card__logo-frame">
+              <img
+                src="/logo.svg"
+                width={44}
+                height={44}
+                className="about-showcase-card__logo"
+                alt="Tools3000"
+                draggable={false}
+                decoding="async"
+              />
+            </div>
+            <div className="about-showcase-card__identity">
+              <div className="about-showcase-card__title-row">
+                <h2 className="about-showcase-card__title">Tools3000</h2>
+                <span className="about-showcase-card__version">
+                  {buildDate ? `v${version} · ${buildDate}` : `v${version}`}
+                </span>
               </div>
-              <div className="about-hero__info">
-                <div className="about-hero__title-row">
-                  <h2 className="about-hero__title">Tools3000</h2>
-                  <Badge text={buildDate ? `v${version} · ${buildDate}` : `v${version}`} variant="primary" />
-                  <Badge text="C++20 · Rust · Direct2D" variant="success" />
-                  <Badge text={t('about.authorBadge', 'Author · Yy1 (@yuan278501381)')} variant="muted" />
-                </div>
-                <p className="about-hero__subtitle">{t('about.subtitle')}</p>
-              </div>
+              <p className="about-showcase-card__subtitle">{t('about.subtitle')}</p>
             </div>
+          </div>
 
-            <div className="about-hero__actions">
-              <Button variant="secondary" onClick={() => void checkForUpdates()} disabled={checkingUpdate}>
-                <RefreshCw size={14} className={checkingUpdate ? 'about-update-spin' : undefined} />
-                <span>{checkingUpdate ? t('about.checkingUpdate') : t('about.checkUpdate')}</span>
+          <div className="about-hero__actions">
+            <Button variant="secondary" size="sm" onClick={() => void checkForUpdates()} disabled={checkingUpdate}>
+              <RefreshCw size={13} className={checkingUpdate ? 'about-update-spin' : undefined} />
+              <span>{checkingUpdate ? t('about.checkingUpdate') : t('about.checkUpdate')}</span>
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => void handleExportLogs()} title={t('about.exportLogsTip', 'Export system diagnostic logs and environment report')}>
+              <Download size={13} />
+              <span>{t('about.exportLogs', 'Export Logs')}</span>
+            </Button>
+            {updateResult?.status === 'available' && updateResult.releaseUrl && (
+              <Button variant="primary" size="sm" onClick={() => void openReleasePage()}>
+                <ExternalLink size={13} />
+                <span>{t('about.openRelease')}</span>
               </Button>
-              <Button variant="secondary" onClick={() => void handleExportLogs()} title={t('about.exportLogsTip', 'Export system diagnostic logs and environment report')}>
-                <Download size={14} />
-                <span>{t('about.exportLogs', 'Export Logs')}</span>
-              </Button>
-              {updateResult?.status === 'available' && updateResult.releaseUrl && (
-                <Button variant="primary" onClick={() => void openReleasePage()}>
-                  <ExternalLink size={14} />
-                  <span>{t('about.openRelease')}</span>
-                </Button>
-              )}
-            </div>
+            )}
           </div>
+        </div>
 
-          <div className="about-desc-box">
-            <p className="about-desc">
-              {t('about.description')}
-            </p>
-          </div>
+        <p className="about-desc">{t('about.description')}</p>
 
-          <div className="about-meta-row">
-            <div className="about-meta-item">
-              <User size={14} className="about-meta-icon" />
-              <span className="about-meta-label">{t('about.author')}:</span>
-              <a
-                href="https://github.com/yuan278501381"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="about-meta-link"
-                onClick={(e) => {
-                  e.preventDefault();
-                  void openExternalUrl('https://github.com/yuan278501381');
-                }}
-                title={t('about.authorGithubTip', 'Visit original author GitHub profile')}
-              >
-                <strong className="about-meta-val">Yy1</strong>
-                <span className="about-meta-handle">(@yuan278501381)</span>
-                <ExternalLink size={12} className="about-meta-ext" />
-              </a>
-            </div>
-            <div className="about-meta-item">
-              <GitBranch size={14} className="about-meta-icon" />
-              <span className="about-meta-label">{t('about.repository')}:</span>
-              <a
-                href="https://github.com/yuan278501381/Tools3000"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="about-meta-link"
-                onClick={(e) => {
-                  e.preventDefault();
-                  void openExternalUrl('https://github.com/yuan278501381/Tools3000');
-                }}
-                title={t('about.repositoryTip', 'Visit GitHub open source repository')}
-              >
-                <strong className="about-meta-val">yuan278501381/Tools3000</strong>
-                <ExternalLink size={12} className="about-meta-ext" />
-              </a>
-            </div>
-            <div className="about-meta-item">
-              <ShieldCheck size={14} className="about-meta-icon" />
-              <span className="about-meta-label">{t('about.license')}:</span>
-              <a
-                href="https://github.com/yuan278501381/Tools3000/blob/main/LICENSE"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="about-meta-link"
-                onClick={(e) => {
-                  e.preventDefault();
-                  void openExternalUrl('https://github.com/yuan278501381/Tools3000/blob/main/LICENSE');
-                }}
-                title={t('about.licenseTip', 'View GNU GPL v3.0 license details')}
-              >
-                <strong className="about-meta-val">GPL-3.0 License</strong>
-                <ExternalLink size={12} className="about-meta-ext" />
-              </a>
-            </div>
+        <div className="about-meta-row">
+          <div className="about-meta-item">
+            <User size={13} className="about-meta-icon" />
+            <span className="about-meta-label">{t('about.author')}:</span>
+            <a
+              href="https://github.com/yuan278501381"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="about-meta-link"
+              onClick={(e) => {
+                e.preventDefault();
+                void openExternalUrl('https://github.com/yuan278501381');
+              }}
+              title={t('about.authorGithubTip', 'Visit original author GitHub profile')}
+            >
+              <strong className="about-meta-val">Yy1</strong>
+              <span className="about-meta-handle">(@yuan278501381)</span>
+              <ExternalLink size={11} className="about-meta-ext" />
+            </a>
           </div>
-        </Card>
-      </SettingGroup>
+          <div className="about-meta-item">
+            <GitBranch size={13} className="about-meta-icon" />
+            <span className="about-meta-label">{t('about.repository')}:</span>
+            <a
+              href="https://github.com/yuan278501381/Tools3000"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="about-meta-link"
+              onClick={(e) => {
+                e.preventDefault();
+                void openExternalUrl('https://github.com/yuan278501381/Tools3000');
+              }}
+              title={t('about.repositoryTip', 'Visit GitHub open source repository')}
+            >
+              <strong className="about-meta-val">yuan278501381/Tools3000</strong>
+              <ExternalLink size={11} className="about-meta-ext" />
+            </a>
+          </div>
+          <div className="about-meta-item">
+            <ShieldCheck size={13} className="about-meta-icon" />
+            <span className="about-meta-label">{t('about.license')}:</span>
+            <a
+              href="https://github.com/yuan278501381/Tools3000/blob/main/LICENSE"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="about-meta-link"
+              onClick={(e) => {
+                e.preventDefault();
+                void openExternalUrl('https://github.com/yuan278501381/Tools3000/blob/main/LICENSE');
+              }}
+              title={t('about.licenseTip', 'View GNU GPL v3.0 license details')}
+            >
+              <strong className="about-meta-val">GPL-3.0 License</strong>
+              <ExternalLink size={11} className="about-meta-ext" />
+            </a>
+          </div>
+        </div>
+      </section>
 
       <SettingGroup title={t('about.techStack')} icon={<Layers size={20} strokeWidth={2.5} />}>
         <Card>
@@ -321,7 +295,7 @@ export const AboutPage: FC = () => {
               <div key={dep.name} className="about-dep-item">
                 <div className="about-dep-item__top">
                   <span className="about-dep-name">{dep.name}</span>
-                  <Badge text={dep.version} variant="muted" />
+                  <CodeBadge variant="muted">{dep.version}</CodeBadge>
                 </div>
                 <span className="about-dep-purpose">{t(dep.purpose)}</span>
               </div>
@@ -358,10 +332,6 @@ export const AboutPage: FC = () => {
                 <div className="about-perf-tile">
                   <div className="about-perf-tile__label">{t('about.perfCpu')}</div>
                   <div className="about-perf-tile__value">{metrics.cpuPercent.toFixed(1)} %</div>
-                </div>
-                <div className="about-perf-tile">
-                  <div className="about-perf-tile__label">{t('about.perfGestureLatency')}</div>
-                  <div className="about-perf-tile__value">{metrics.gestureLatencyMs.toFixed(1)} ms</div>
                 </div>
               </div>
             </div>

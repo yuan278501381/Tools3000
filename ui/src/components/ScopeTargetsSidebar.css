@@ -3,36 +3,37 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 .scope-targets-sidebar {
-  width: 240px;
+  width: 214px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: var(--radius-md);
+  border-radius: 12px;
   padding: 12px 10px;
-  gap: 14px;
+  gap: 12px;
   user-select: none;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-sm), var(--card-highlight);
   position: sticky;
-  top: 16px;
+  top: 12px;
   max-height: calc(100vh - 120px);
   overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .scope-target-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .scope-target-section__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 6px 4px 6px;
-  font-size: var(--text-sm, 0.85rem);
-  font-weight: 650;
+  padding: 4px 6px 3px 6px;
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
   color: var(--text-muted);
   letter-spacing: 0.02em;
 }
@@ -41,30 +42,30 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   border: 1px solid transparent;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   cursor: pointer;
   transition: all var(--transition-fast);
 }
 
 .scope-target-section__add-btn:hover {
-  background: var(--primary-dim);
-  color: var(--primary);
-  border-color: var(--primary-glow);
+  background: var(--ghost-hover-bg);
+  color: var(--text-primary);
+  border-color: var(--card-border);
 }
 
 .scope-target-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: 6px;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast);
   color: var(--text-secondary);
   background: transparent;
   border: 1px solid transparent;
@@ -73,33 +74,53 @@
 }
 
 .scope-target-item:hover {
-  background: var(--bg-surface-hover, rgba(255, 255, 255, 0.04));
+  background: var(--ghost-hover-bg);
   color: var(--text-primary);
 }
 
 .scope-target-item.active {
-  background: var(--primary-dim);
-  color: var(--primary);
+  background: var(--nav-active-bg);
+  color: var(--text-primary);
   font-weight: 600;
-  border-color: var(--primary-glow);
+  border-color: var(--nav-active-border);
+  box-shadow: var(--nav-active-shadow);
+}
+
+.scope-target-item.active::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 8px;
+  bottom: 8px;
+  width: 2.5px;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 8px var(--primary-glow);
 }
 
 .scope-target-item__icon {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: var(--code-badge-bg, rgba(255, 255, 255, 0.04));
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--icon-tile-bg);
+  border: 1px solid var(--icon-tile-border);
+  box-shadow: var(--icon-tile-shadow);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  color: inherit;
-  transition: all var(--transition-fast);
+  color: var(--text-muted);
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.scope-target-item:hover .scope-target-item__icon {
+  color: var(--text-primary);
 }
 
 .scope-target-item.active .scope-target-item__icon {
-  background: var(--primary);
-  color: #ffffff;
+  background: var(--icon-tile-bg);
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--icon-tile-border));
+  color: var(--primary);
 }
 
 .scope-target-item__content {
@@ -174,8 +195,10 @@
   background: rgba(239, 68, 68, 0.12);
 }
 
-/* Master-Detail Split Container */
+/* Master-Detail Split Container (基于 @container 弹性双栏，永不挤压手势表) */
 .gesture-master-detail-layout {
+  container-type: inline-size;
+  container-name: gesture-workspace;
   display: flex;
   gap: 16px;
   align-items: flex-start;
@@ -197,8 +220,8 @@
   padding: 12px 16px;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm), var(--card-highlight);
   gap: 12px;
 }
 
@@ -210,10 +233,12 @@
 }
 
 .target-header-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  background: var(--primary-dim);
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--icon-tile-bg);
+  border: 1px solid var(--icon-tile-border);
+  box-shadow: var(--icon-tile-shadow);
   color: var(--primary);
   display: flex;
   align-items: center;
@@ -253,23 +278,24 @@
 }
 
 .target-strategy-segmented {
-  display: flex;
-  background: var(--bg-surface);
+  display: inline-flex;
+  background: var(--well-bg);
   padding: 3px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--card-border);
-  gap: 4px;
+  border-radius: 9px;
+  border: 1px solid var(--well-border);
+  box-shadow: var(--well-shadow);
+  gap: 3px;
 }
 
 .target-strategy-btn {
-  font-size: var(--text-sm, 0.86rem);
+  font-size: var(--text-xs, 0.84rem);
   padding: 4px 10px;
-  border-radius: 5px;
-  border: none;
+  border-radius: 6px;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  font-weight: 500;
+  font-weight: 550;
   transition: all var(--transition-fast);
   display: inline-flex;
   align-items: center;
@@ -278,13 +304,15 @@
 
 .target-strategy-btn:hover {
   color: var(--text-primary);
+  background: var(--ghost-hover-bg);
 }
 
 .target-strategy-btn.active {
-  background: var(--primary-dim);
-  color: var(--primary);
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
+  color: var(--text-primary);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
 }
 
 .target-disabled-card {
@@ -357,7 +385,37 @@
   line-height: 1.35;
 }
 
-/* ── 响应式适配 ───────────────────────────────────────────────────────────── */
+/* ── 现代容器响应式适配 (@container app-canvas 感知真实右侧画布宽度) ─────── */
+@container app-canvas (max-width: 840px) {
+  .gesture-master-detail-layout {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .scope-targets-sidebar {
+    width: 100%;
+    position: static;
+    max-height: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 10px 14px;
+  }
+
+  .scope-target-section {
+    flex: 1 1 180px;
+    min-width: 160px;
+  }
+
+  .scope-sidebar-footer {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 8px;
+  }
+}
+
 @media (max-width: 900px) {
   .gesture-master-detail-layout {
     flex-direction: column;

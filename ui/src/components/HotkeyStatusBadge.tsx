@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import { CheckCircle2, AlertTriangle, AlertOctagon, Disc, MinusCircle } from 'lucide-react';
+import { AlertTriangle, AlertOctagon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import './HotkeyStatusBadge.css';
 
@@ -38,7 +38,7 @@ export const HotkeyStatusBadge: FC<HotkeyStatusBadgeProps> = ({
   if (!shortcut) {
     return (
       <span className="hotkey-badge badge-disabled">
-        <MinusCircle size={11} />
+        <span className="hotkey-badge__dot" aria-hidden="true" />
         <span>{t('general.shortcutDisabled', 'Disabled')}</span>
       </span>
     );
@@ -54,7 +54,7 @@ export const HotkeyStatusBadge: FC<HotkeyStatusBadgeProps> = ({
   if (isSessionOnly) {
     return (
       <span className="hotkey-badge badge-session" title={t('general.shortcutRecordingOnly', 'Active while recording')}>
-        <Disc size={11} />
+        <span className="hotkey-badge__dot" aria-hidden="true" />
         <span>{t('general.shortcutRecordingOnly', 'Active while recording')}</span>
       </span>
     );
@@ -63,7 +63,7 @@ export const HotkeyStatusBadge: FC<HotkeyStatusBadgeProps> = ({
   if (isInternal) {
     return (
       <span className="hotkey-badge badge-warning" title={conflictWith || t('general.shortcutConflictInternal', 'Internal Conflict: duplicate with other plugin shortcut')}>
-        <AlertTriangle size={11} />
+        <AlertTriangle size={12} aria-hidden="true" />
         <span>{conflictWith || t('general.shortcutConflictInternal', 'Internal Conflict: duplicate with other plugin shortcut')}</span>
       </span>
     );
@@ -72,7 +72,7 @@ export const HotkeyStatusBadge: FC<HotkeyStatusBadgeProps> = ({
   if (isExternal) {
     return (
       <span className="hotkey-badge badge-danger" title={conflictWith || t('general.shortcutConflictExternal', 'External Conflict: occupied by system or 3rd-party app')}>
-        <AlertOctagon size={11} />
+        <AlertOctagon size={12} aria-hidden="true" />
         <span>{conflictWith || t('general.shortcutConflictExternal', 'External Conflict: occupied by system or 3rd-party app')}</span>
       </span>
     );
@@ -81,7 +81,7 @@ export const HotkeyStatusBadge: FC<HotkeyStatusBadgeProps> = ({
   if (isActive) {
     return (
       <span className="hotkey-badge badge-active" title={t('components.hotkeyActiveTip', 'Hotkey registered and active globally')}>
-        <CheckCircle2 size={11} />
+        <span className="hotkey-badge__dot" aria-hidden="true" />
         <span>{t('general.shortcutActive', 'Active')}</span>
       </span>
     );

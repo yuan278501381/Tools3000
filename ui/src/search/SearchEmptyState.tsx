@@ -10,7 +10,6 @@ import {
   Search,
   Lightbulb,
 } from 'lucide-react';
-import { CodeBadge } from '../components/UIKit';
 import type { CategoryFilter, SearchMode, SearchResult } from './searchTypes';
 import { isEffectiveContentSearch } from './searchUtils';
 
@@ -197,7 +196,7 @@ export const SearchEmptyState: React.FC<SearchEmptyStateProps> = ({
     return (
       <div className="search-empty-container search-empty-container--initial" role="status">
         <div className="search-empty-icon-wrap search-empty-icon-wrap--initial">
-          <Search size={32} className="search-empty-icon" />
+          <Search size={24} strokeWidth={1.8} className="search-empty-icon" />
         </div>
         <div className="search-empty-title">{t('search.readyTitle', 'Instant Full-Disk Index Ready')}</div>
         <div className="search-empty-desc">{t('search.readyDesc', 'Type keywords, wildcards (*.pdf), or extensions (ext:docx) to search instantly')}</div>
@@ -213,7 +212,7 @@ export const SearchEmptyState: React.FC<SearchEmptyStateProps> = ({
               }}
               title={t('search.clickToFill', 'Click to insert into search box')}
             >
-              <CodeBadge variant="muted">{tag}</CodeBadge>
+              <code>{tag}</code>
             </button>
           ))}
         </div>

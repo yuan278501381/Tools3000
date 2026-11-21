@@ -1,0 +1,224 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * AppToaster.css — Warm Precision 温润精工 Toast 视觉系统 (Sonner 深度精雕)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+[data-sonner-toaster].app-toaster {
+  --width: 360px;
+  --border-radius: 12px;
+  font-family: var(--font-sans);
+}
+
+/* ── 雕塑级悬浮容器（自适应紧凑宽度，杜绝短文案右半边空旷白板） ────────── */
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] {
+  width: max-content !important;
+  min-width: 196px;
+  max-width: min(380px, calc(100vw - 32px));
+  padding: 10px 14px 10px 11px !important;
+  gap: 10px !important;
+  align-items: center;
+  border-radius: 12px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 0.86rem !important;
+  line-height: 1.42;
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  transition:
+    transform 320ms var(--ease-smooth),
+    opacity 260ms ease,
+    height 280ms var(--ease-smooth),
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+/* 靠右定位时紧贴右侧边缘，绝不因收缩宽度向左漂移 */
+[data-sonner-toaster].app-toaster[data-x-position='right'] [data-sonner-toast] {
+  right: 0;
+  left: auto;
+}
+
+/* 浅色模式：Studio Alabaster 白瓷悬浮卡片 */
+[data-theme="light"] [data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'],
+[data-sonner-toaster][data-sonner-theme='light'].app-toaster [data-sonner-toast][data-styled='true'] {
+  background: rgba(255, 255, 255, 0.94) !important;
+  border: 1px solid rgba(24, 24, 27, 0.085) !important;
+  color: var(--text-primary) !important;
+  box-shadow:
+    0 12px 32px -8px rgba(24, 24, 27, 0.14),
+    0 3px 10px -2px rgba(24, 24, 27, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96) !important;
+}
+
+/* 深色模式：Obsidian Atelier 曜石丝绒悬浮卡片 */
+[data-theme="dark"] [data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'],
+[data-sonner-toaster][data-sonner-theme='dark'].app-toaster [data-sonner-toast][data-styled='true'] {
+  background: rgba(24, 26, 33, 0.93) !important;
+  border: 1px solid rgba(255, 255, 255, 0.10) !important;
+  color: var(--text-primary) !important;
+  box-shadow:
+    0 16px 40px -8px rgba(0, 0, 0, 0.56),
+    0 4px 12px -2px rgba(0, 0, 0, 0.30),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+
+/* 仅对警告与错误施加极克制微边框提示，严禁整块染色 */
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'][data-type='warning'] {
+  border-color: color-mix(in srgb, var(--warning) 30%, var(--card-border)) !important;
+}
+
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'][data-type='error'] {
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--card-border)) !important;
+}
+
+/* 存在副描述时顶部对齐图标，单行时保持绝对垂直居中 */
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true']:has([data-description]) {
+  align-items: flex-start;
+  padding-top: 11px !important;
+  padding-bottom: 11px !important;
+}
+
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true']:has([data-description]) [data-icon] {
+  margin-top: 1px;
+}
+
+/* ── 左侧 22×22px 冷静微语义图标圆托 ─────────────────────────────────────── */
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] [data-icon] {
+  width: 22px !important;
+  height: 22px !important;
+  margin: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.app-toast__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+
+.app-toast__badge--success {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 20%, transparent);
+}
+
+.app-toast__badge--info {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.app-toast__badge--warning {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 24%, transparent);
+}
+
+.app-toast__badge--error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 24%, transparent);
+}
+
+.app-toast__badge--loading {
+  color: var(--primary);
+  background: var(--well-bg);
+  box-shadow: inset 0 0 0 1px var(--well-border);
+}
+
+.app-toast__spinner {
+  animation: appToastSpin 0.85s linear infinite;
+}
+
+@keyframes appToastSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── 排版层级（严守 >= 0.83rem 与 >= 500 字重底线） ──────────────────────── */
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] [data-content] {
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] [data-title] {
+  color: var(--text-primary) !important;
+  font-size: 0.86rem !important;
+  font-weight: 600 !important;
+  line-height: 1.42 !important;
+  letter-spacing: -0.01em;
+}
+
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] [data-description] {
+  color: var(--text-secondary) !important;
+  font-size: 0.83rem !important;
+  font-weight: 500 !important;
+  line-height: 1.45 !important;
+}
+
+/* ── 动作按钮与 Hover 浮现精致关闭按钮 ───────────────────────────────────── */
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] [data-button] {
+  height: 26px !important;
+  padding: 0 10px !important;
+  border-radius: 7px !important;
+  background: var(--primary) !important;
+  color: #ffffff !important;
+  font-size: 0.83rem !important;
+  font-weight: 600 !important;
+  line-height: 1.4;
+  margin-left: 6px !important;
+  transition: background 140ms ease, opacity 140ms ease;
+}
+
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] [data-button]:hover {
+  background: var(--primary-hover) !important;
+}
+
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] [data-cancel] {
+  background: var(--well-bg) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--well-border) !important;
+}
+
+/* 默认隐藏关闭钮，仅鼠标悬停在 Toast 上时丝滑浮现，保持轮廓纯净 */
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] [data-close-button] {
+  left: auto !important;
+  right: -6px !important;
+  top: -6px !important;
+  transform: scale(0.92) !important;
+  width: 20px !important;
+  height: 20px !important;
+  border-radius: 9999px !important;
+  background: var(--bg-elevated) !important;
+  border: 1px solid var(--card-border) !important;
+  color: var(--text-muted) !important;
+  box-shadow: var(--shadow-sm) !important;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease, transform 150ms ease, color 140ms ease, border-color 140ms ease !important;
+}
+
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true']:hover [data-close-button],
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true']:focus-within [data-close-button] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1) !important;
+}
+
+[data-sonner-toaster].app-toaster [data-sonner-toast][data-styled='true'] [data-close-button]:hover {
+  color: var(--text-primary) !important;
+  border-color: var(--border-dark) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-toast__spinner {
+    animation: none;
+  }
+}

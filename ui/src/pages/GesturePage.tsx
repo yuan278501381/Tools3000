@@ -86,11 +86,11 @@ interface GestureState {
 }
 
 const TRAIL_COLOR_PRESETS = [
-  { name: 'Purple', hex: '#8B5CF6' },
-  { name: 'Cyan', hex: '#06B6D4' },
-  { name: 'Gold', hex: '#F59E0B' },
-  { name: 'Blue', hex: '#3B82F6' },
-  { name: 'Green', hex: '#10B981' },
+  { name: 'Purple', nameKey: 'gesture.colorVioletPurple', hex: '#8B5CF6' },
+  { name: 'Cyan', nameKey: 'gesture.colorNeonCyan', hex: '#06B6D4' },
+  { name: 'Gold', nameKey: 'gesture.colorAmberGold', hex: '#F59E0B' },
+  { name: 'Blue', nameKey: 'gesture.colorSkyBlue', hex: '#3B82F6' },
+  { name: 'Green', nameKey: 'gesture.colorEmeraldGreen', hex: '#10B981' },
   { name: 'Sunset Coral', nameKey: 'gesture.colorSunsetCoral', hex: '#F43F5E' },
 ];
 
@@ -245,7 +245,8 @@ export const GesturePage: FC = () => {
       .then(([state, profileList, ruleList, hotkeyList, cfgEngine]) => {
         if (!isMounted) return;
         setEnabled(state.enabled);
-        setTriggerButton(state.triggerButton ?? 'right');
+        const normalizedTrigger = state.triggerButton === 'all' ? 'both' : (state.triggerButton ?? 'right');
+        setTriggerButton(normalizedTrigger);
         setTrailVisible(state.trailVisible ?? true);
         setAutoBypassFullscreen(state.autoBypassFullscreen ?? true);
         setScribbleCancel(state.enableScribbleCancel ?? true);
@@ -357,6 +358,15 @@ export const GesturePage: FC = () => {
         state: nextState,
       });
       if (!result || !result.success) throw new Error(result?.error || 'Failed to update trigger state');
+      // 协同放行顶层触发门禁，避免在药丸条启用中键/侧键时被旧版 TriggerMode::RightOnly 静默拦截
+      if (
+        nextState === 'enabled' &&
+        (triggerKey === 'middle' || triggerKey === 'xbutton1' || triggerKey === 'xbutton2') &&
+        triggerButton !== 'both'
+      ) {
+        setTriggerButton('both');
+        void bridgeRequest<OperationResult>('gesture.setTriggerButton', { button: 'both' }).catch(() => undefined);
+      }
     } catch (err) {
       setProfiles((prev) => ({ ...prev, [profName]: prevProf }));
       console.error('Failed to set trigger state:', err);
@@ -821,7 +831,7 @@ export const GesturePage: FC = () => {
 
   const renderTargetHeaderIcon = () => {
     if (selectedTarget.kind === 'global') return <Globe size={18} />;
-    if (selectedTarget.kind === 'disabled') return <ShieldAlert size={18} style={{ color: '#ef4444' }} />;
+    if (selectedTarget.kind === 'disabled') return <ShieldAlert size={18} style={{ color: 'var(--danger)' }} />;
     if (selectedTarget.specialType === 'desktop') return <Monitor size={18} />;
     if (selectedTarget.specialType === 'taskbar') return <LayoutTemplate size={18} />;
     const p = (selectedTarget.rule?.processName || '').toLowerCase();
@@ -838,8 +848,8 @@ export const GesturePage: FC = () => {
           <div className={`gesture-status ${enabled ? 'gesture-status--active' : 'gesture-status--paused'}`}>
             <span className="gesture-status__dot" />
             <span className="gesture-status__text">{enabled ? tr('gesture.statusRunning') : tr('gesture.statusPaused')}</span>
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-              <kbd className="gesture-status__hotkey">{pauseHotkey}</kbd>
+            <div className="gesture-status__meta">
+              {pauseHotkey && <kbd className="gesture-status__hotkey">{pauseHotkey}</kbd>}
               <HotkeyStatusBadge entry={getHotkey('Pause Gestures')} />
             </div>
           </div>
@@ -857,20 +867,15 @@ export const GesturePage: FC = () => {
             checked={autoBypassFullscreen}
             onChange={handleToggleAutoBypass}
           />
-          <div className="gesture-admin-hint-card">
-            <ShieldAlert size={18} className="gesture-admin-hint-icon" />
-            <div className="gesture-admin-hint-content">
-              <div className="gesture-admin-hint-title">
-                {tr('gesture.adminHintTitle')}
-                {elevated && <span className="gesture-admin-badge">{tr('gesture.alreadyElevated')}</span>}
-              </div>
-              <div className="gesture-admin-hint-desc">
-                {elevated
-                  ? tr('gesture.adminHintElevatedDesc')
-                  : tr('gesture.adminHintDesc')}
+          {!elevated && (
+            <div className="gesture-admin-hint-card">
+              <ShieldAlert size={16} className="gesture-admin-hint-icon" aria-hidden="true" />
+              <div className="gesture-admin-hint-content">
+                <div className="gesture-admin-hint-title">{tr('gesture.adminHintTitle')}</div>
+                <div className="gesture-admin-hint-desc">{tr('gesture.adminHintDesc')}</div>
               </div>
             </div>
-          </div>
+          )}
           <Toggle
             id="gesture-trail"
             label={tr('gesture.showTrail')}
@@ -911,7 +916,7 @@ export const GesturePage: FC = () => {
                           type="button"
                           className={`gesture-color-swatch ${trailColor.toUpperCase() === preset.hex.toUpperCase() ? 'active' : ''}`}
                           style={{ backgroundColor: preset.hex }}
-                          title={preset.name}
+                          title={t(preset.nameKey as never, preset.name)}
                           onClick={() => void handleTrailColorChange(preset.hex)}
                         />
                       ))}
@@ -1192,7 +1197,10 @@ export const GesturePage: FC = () => {
                   <div className="trigger-pills-row">
                     {TRIGGER_ITEM_DEFINITIONS.map((item) => {
                       const st = getTriggerState(item.key);
-                      const isDefaultEnabled = item.key === 'right';
+                      const isDefaultEnabled =
+                        (item.key === 'right' && (triggerButton === 'right' || triggerButton === 'both')) ||
+                        (item.key === 'middle' && (triggerButton === 'middle' || triggerButton === 'both')) ||
+                        ((item.key === 'xbutton1' || item.key === 'xbutton2') && triggerButton === 'both');
                       const isEffectiveEnabled = st === 'enabled' || (st === 'default' && isDefaultEnabled);
                       const itemName = item.nameKey ? tr(item.nameKey) : item.name;
 
@@ -1321,12 +1329,12 @@ export const GesturePage: FC = () => {
                       )}
 
                       {filteredMappings.map((m: GestureMapping, i: number) => {
-                        const actualIdx = currentMappings.findIndex((x) => x.gestureCode === m.gestureCode);
+                        const actualIdx = currentMappings.findIndex((x) => (m.id ? x.id === m.id : x.gestureCode === m.gestureCode));
                         const isEnabled = m.enabled ?? true;
                         const isDragging = draggedIdx === actualIdx;
                         return (
                           <div
-                            key={m.gestureCode}
+                            key={m.id || `${m.gestureCode}-${i}`}
                             draggable
                             onDragStart={(e) => {
                               setDraggedIdx(actualIdx);

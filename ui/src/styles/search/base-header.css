@@ -3,29 +3,29 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 :root {
-    --search-bg: rgba(19, 20, 26, 0.985);
-    --search-subbar-bg: rgba(255, 255, 255, 0.018);
-    --search-border: rgba(255, 255, 255, 0.09);
+    --search-bg: rgba(17, 18, 22, 0.985);
+    --search-subbar-bg: rgba(255, 255, 255, 0.016);
+    --search-border: rgba(255, 255, 255, 0.085);
     --search-shadow: 0 24px 64px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.06);
-    --search-input-bottom: rgba(255, 255, 255, 0.075);
-    --search-text-main: #f3f4f8;
-    --search-text-sub: #a3a9bc;
-    --search-text-muted: #767d92;
-    --search-surface-pill: rgba(255, 255, 255, 0.045);
+    --search-input-bottom: rgba(255, 255, 255, 0.068);
+    --search-text-main: #f4f4f6;
+    --search-text-sub: #a8acb8;
+    --search-text-muted: #787d8c;
+    --search-surface-pill: rgba(255, 255, 255, 0.042);
     --search-surface-pill-border: rgba(255, 255, 255, 0.075);
-    --search-surface-pill-hover: rgba(255, 255, 255, 0.085);
+    --search-surface-pill-hover: rgba(255, 255, 255, 0.08);
     --search-hover-bg: rgba(255, 255, 255, 0.045);
-    --search-selected-bg: color-mix(in srgb, var(--primary) 13%, rgba(255, 255, 255, 0.03));
-    --search-selected-border: color-mix(in srgb, var(--primary) 26%, transparent);
-    --search-item-border: rgba(255, 255, 255, 0.045);
-    --search-footer-bg: rgba(14, 15, 20, 0.96);
-    --search-footer-border: rgba(255, 255, 255, 0.07);
-    --search-kbd-bg: rgba(255, 255, 255, 0.07);
-    --search-kbd-border: rgba(255, 255, 255, 0.13);
+    --search-selected-bg: color-mix(in srgb, var(--primary) 11%, rgba(255, 255, 255, 0.03));
+    --search-selected-border: color-mix(in srgb, var(--primary) 24%, transparent);
+    --search-item-border: rgba(255, 255, 255, 0.052);
+    --search-footer-bg: rgba(12, 13, 16, 0.96);
+    --search-footer-border: rgba(255, 255, 255, 0.065);
+    --search-kbd-bg: rgba(255, 255, 255, 0.06);
+    --search-kbd-border: rgba(255, 255, 255, 0.11);
     --search-kbd-shadow: 0 1px 0 rgba(0, 0, 0, 0.45);
-    --search-kbd-text: #e2e8f0;
-    --search-drawer-bg: rgba(22, 24, 32, 0.985);
-    --search-drawer-border: rgba(255, 255, 255, 0.09);
+    --search-kbd-text: #d4d4d8;
+    --search-drawer-bg: rgba(22, 24, 30, 0.985);
+    --search-drawer-border: rgba(255, 255, 255, 0.085);
     --search-snippet-bg: rgba(0, 0, 0, 0.28);
     --search-snippet-border: rgba(255, 255, 255, 0.065);
     --search-scrollbar-silent: rgba(255, 255, 255, 0.14);
@@ -35,34 +35,34 @@
 }
 
 [data-theme="light"] {
-    --search-bg: #fcfdff;
-    --search-subbar-bg: #f6f7fb;
-    --search-border: rgba(15, 23, 42, 0.09);
-    --search-shadow: 0 24px 60px -12px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(15, 23, 42, 0.06);
-    --search-input-bottom: rgba(15, 23, 42, 0.065);
-    --search-text-main: #0f172a;
-    --search-text-sub: #475569;
-    --search-text-muted: #64748b;
-    --search-surface-pill: rgba(15, 23, 42, 0.038);
-    --search-surface-pill-border: rgba(15, 23, 42, 0.075);
-    --search-surface-pill-hover: rgba(15, 23, 42, 0.068);
-    --search-hover-bg: rgba(15, 23, 42, 0.036);
-    --search-selected-bg: color-mix(in srgb, var(--primary) 8.5%, #ffffff);
-    --search-selected-border: color-mix(in srgb, var(--primary) 22%, transparent);
-    --search-item-border: rgba(15, 23, 42, 0.045);
-    --search-footer-bg: #f6f7fa;
-    --search-footer-border: rgba(15, 23, 42, 0.065);
+    --search-bg: #fcfcfd;
+    --search-subbar-bg: #f6f6f8;
+    --search-border: rgba(24, 24, 27, 0.085);
+    --search-shadow: 0 24px 60px -12px rgba(24, 24, 27, 0.16), 0 0 0 1px rgba(24, 24, 27, 0.06);
+    --search-input-bottom: rgba(24, 24, 27, 0.065);
+    --search-text-main: #18181b;
+    --search-text-sub: #52525b;
+    --search-text-muted: #71717a;
+    --search-surface-pill: rgba(24, 24, 27, 0.036);
+    --search-surface-pill-border: rgba(24, 24, 27, 0.075);
+    --search-surface-pill-hover: rgba(24, 24, 27, 0.062);
+    --search-hover-bg: rgba(24, 24, 27, 0.035);
+    --search-selected-bg: color-mix(in srgb, var(--primary) 7.5%, #ffffff);
+    --search-selected-border: color-mix(in srgb, var(--primary) 20%, transparent);
+    --search-item-border: rgba(24, 24, 27, 0.055);
+    --search-footer-bg: #f6f6f8;
+    --search-footer-border: rgba(24, 24, 27, 0.062);
     --search-kbd-bg: #ffffff;
-    --search-kbd-border: rgba(15, 23, 42, 0.13);
-    --search-kbd-shadow: 0 1px 0 rgba(15, 23, 42, 0.09);
-    --search-kbd-text: #334155;
+    --search-kbd-border: rgba(24, 24, 27, 0.12);
+    --search-kbd-shadow: 0 1px 0 rgba(24, 24, 27, 0.07);
+    --search-kbd-text: #3f3f46;
     --search-drawer-bg: #ffffff;
-    --search-drawer-border: rgba(15, 23, 42, 0.085);
-    --search-snippet-bg: rgba(15, 23, 42, 0.028);
-    --search-snippet-border: rgba(15, 23, 42, 0.06);
-    --search-scrollbar-silent: rgba(15, 23, 42, 0.11);
-    --search-scrollbar-thumb: rgba(15, 23, 42, 0.20);
-    --search-scrollbar-hover: rgba(15, 23, 42, 0.34);
+    --search-drawer-border: rgba(24, 24, 27, 0.085);
+    --search-snippet-bg: rgba(24, 24, 27, 0.028);
+    --search-snippet-border: rgba(24, 24, 27, 0.06);
+    --search-scrollbar-silent: rgba(24, 24, 27, 0.11);
+    --search-scrollbar-thumb: rgba(24, 24, 27, 0.20);
+    --search-scrollbar-hover: rgba(24, 24, 27, 0.34);
     --search-scrollbar-active: var(--primary, #7c3aed);
 }
 
@@ -103,12 +103,14 @@ html[data-surface="search"] #root {
     max-width: 100%;
     display: flex;
     flex-direction: column;
-    background: var(--search-bg);
+    background-color: var(--search-bg);
+    background-image: var(--surface-sheen);
+    background-repeat: no-repeat;
     backdrop-filter: blur(24px) saturate(180%);
     -webkit-backdrop-filter: blur(24px) saturate(180%);
     border: 1px solid var(--search-border);
     border-radius: 12px;
-    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09);
     overflow: hidden;
     animation: slideDown 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }

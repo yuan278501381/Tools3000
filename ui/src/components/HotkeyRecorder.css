@@ -190,7 +190,7 @@
   transform: scale(1.12);
 }
 
-/* ── 不安全快捷键微晶气泡提示 ─────────────────────────────────────────── */
+/* ── 不安全快捷键微晶气泡提示 (Warm Precision 同源悬浮气泡) ──────────────── */
 .hotkey-recorder__tip {
   position: absolute;
   top: calc(100% + 6px);
@@ -199,16 +199,19 @@
   z-index: 50;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   max-width: min(320px, 80vw);
-  padding: 5px 10px;
-  border-radius: var(--radius-sm, 6px);
-  background: rgba(254, 243, 199, 0.95);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-  color: #92400e;
+  padding: 6px 11px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  border: 1px solid color-mix(in srgb, var(--warning) 34%, var(--card-border));
+  box-shadow:
+    0 10px 26px -6px rgba(24, 24, 27, 0.14),
+    0 2px 6px rgba(24, 24, 27, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  color: var(--text-primary);
   font-size: 0.83rem;
   font-weight: 550;
   line-height: 1.4;
@@ -219,19 +222,18 @@
 }
 
 [data-theme="dark"] .hotkey-recorder__tip {
-  background: rgba(69, 26, 3, 0.9);
-  border-color: rgba(245, 158, 11, 0.35);
-  color: #fde68a;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  background: rgba(24, 26, 33, 0.95);
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--card-border));
+  color: var(--text-primary);
+  box-shadow:
+    0 12px 30px -6px rgba(0, 0, 0, 0.52),
+    0 2px 8px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .hotkey-recorder__tip-icon {
   flex-shrink: 0;
-  color: #d97706;
-}
-
-[data-theme="dark"] .hotkey-recorder__tip-icon {
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 @keyframes hotkey-tip-appear {

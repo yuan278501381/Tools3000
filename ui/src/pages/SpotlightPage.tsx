@@ -308,7 +308,7 @@ export const SpotlightPage: FC = () => {
       {/* ── 顶部操作栏 ──────────────────────────────────────────────── */}
       <div className="spotlight-page__header" style={{ justifyContent: 'flex-end' }}>
         <Button variant="ghost" size="sm" onClick={handleResetDefaults} title={t('spotlight.resetDefaults', 'Reset to Defaults')}>
-          <RotateCcw size={14} style={{ marginRight: 6 }} />
+          <RotateCcw size={14} aria-hidden="true" />
           <span>{t('spotlight.resetDefaults', 'Reset to Defaults')}</span>
         </Button>
       </div>
@@ -524,7 +524,7 @@ export const SpotlightPage: FC = () => {
           <div className="spotlight-page__prop-card">
             <div className="spotlight-page__prop-header">
               <span className="spotlight-page__prop-title">{t('spotlight.shakeThreshold', 'Shake Threshold')}</span>
-              <span className="spotlight-page__prop-desc">{t('spotlight.shakeThresholdDesc', 'Shake detection sensitivity (default 7).')}</span>
+              <span className="spotlight-page__prop-desc">{t('spotlight.shakeThresholdDesc', 'Shake detection sensitivity (default 4).')}</span>
             </div>
             <div className="spotlight-page__prop-body">
               <NumberInput
@@ -563,7 +563,7 @@ export const SpotlightPage: FC = () => {
                   </span>
                   <span className="spotlight-page__section-desc">{t('spotlight.clickStyleDesc', 'Choose visual ripple and feedback style for mouse clicks')}</span>
                 </div>
-                <div className="spotlight-page__style-grid">
+                <div className="spotlight-page__style-grid spotlight-page__style-grid--two">
                   {/* 1. 星芒微粒迸发 (默认) */}
                   <div
                     className={`spotlight-page__style-card ${settings.clickRippleStyle === 'sparkle_burst' ? 'spotlight-page__style-card--active' : ''}`}
@@ -735,7 +735,7 @@ export const SpotlightPage: FC = () => {
                   </span>
                   <span className="spotlight-page__section-desc">{t('spotlight.clickColorsSectionDesc')}</span>
                 </div>
-                <div className="spotlight-page__grid">
+                <div className="spotlight-page__grid spotlight-page__grid--three">
                   {/* 左键颜色 */}
                   <ColorSegmentControl
                     label={t('spotlight.leftClickColor', 'Left Click Color')}
@@ -970,8 +970,8 @@ export const SpotlightPage: FC = () => {
 
       {/* ── 底部即刻体验栏 ──────────────────────────────────────────── */}
       <div className="spotlight-page__action-footer">
-        <Button variant="primary" onClick={handleTestSpotlight}>
-          <Play size={14} style={{ marginRight: 6 }} />
+        <Button variant="primary" disabled={!settings.enabled} onClick={handleTestSpotlight}>
+          <Play size={14} aria-hidden="true" />
           <span>{t('spotlight.testSpotlight', 'Try Spotlight Now')}</span>
         </Button>
       </div>

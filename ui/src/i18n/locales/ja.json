@@ -1247,7 +1247,15 @@
     "clearToday": "本日分をリセット",
     "confirmClearToday": "本日のキーボード・マウス統計データをゼロにリセットしてもよろしいですか？",
     "clearTodaySuccess": "本日の統計データをリセットしました",
-    "clearTodayFailed": "本日分の統計リセットに失敗しました"
+    "clearTodayFailed": "本日分の統計リセットに失敗しました",
+    "range7d": "7日間",
+    "rangeMonth": "今月",
+    "rangeYear": "今年",
+    "periodTotal": "期間合計",
+    "dailyAvg": "1日平均",
+    "peakValue": "ピーク",
+    "activeDays": "稼働",
+    "daysUnit": "日"
   },
   "about": {
     "title": "Tools3000 について",
@@ -1992,7 +2000,7 @@
     "holdDurationLong": "5000 ms",
     "holdDurationCustom": "{{ms}} ms（カスタム）",
     "shakeThreshold": "シェイク検出感度",
-    "shakeThresholdDesc": "マウス振り検出のしきい値（既定 7）。",
+    "shakeThresholdDesc": "マウス振り検出のしきい値（既定 4）。",
     "mouseFxSection": "クリック＆カーソル軌跡エフェクト",
     "clickRipple": "クリック波紋を表示",
     "clickRippleDesc": "マウスをクリックした位置に一時的な波紋エフェクトを表示します。",

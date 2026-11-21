@@ -7,6 +7,7 @@ import { Card, Toggle, SettingRow, SettingGroup, Button, Tabs, Select, PageSkele
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { CATEGORY_DEFS } from '../search/searchConstants';
+import type { SearchMode } from '../search/searchTypes';
 import { consumePendingDeepNavigation, type DeepNavigationPayload } from '../config/settingsSearchIndex';
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
@@ -69,6 +70,10 @@ export const SearchPage: FC = () => {
     iconStyle: 'native',
     autoBypassFullscreen: true,
   });
+  const [searchMode, setSearchMode] = useState<SearchMode>(() => {
+    const saved = localStorage.getItem('tools3000_search_default_mode');
+    return saved === 'both' || saved === 'content' ? saved : 'name';
+  });
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus>({
     available: false,
     pipeName: '\\\\.\\pipe\\Tools3000SearchPipe',
@@ -81,11 +86,31 @@ export const SearchPage: FC = () => {
 
   useEffect(() => {
     let cancelled = false;
+    let remoteHasMode = false;
     void Promise.allSettled([
       bridgeRequest<SearchSettings>('search.getSettings')
         .then(res => {
           if (!cancelled && res && typeof res === 'object') {
-            setSettings(prev => ({ ...prev, ...res }));
+            // 兼容老配置：若 defaultCategory 曾设为 'content'，自动迁移归一化为 searchMode='content' + defaultCategory='all'
+            const normalizedCategory = res.defaultCategory === 'content' ? 'all' : (res.defaultCategory || 'all');
+            setSettings(prev => ({ ...prev, ...res, defaultCategory: normalizedCategory }));
+            if (res.defaultCategory === 'content' && !remoteHasMode) {
+              setSearchMode('content');
+              localStorage.setItem('tools3000_search_default_mode', 'content');
+            }
+          }
+        })
+        .catch(() => undefined),
+      bridgeRequest<{ value?: unknown }>('config.get', { key: '/search/uiPreferences' })
+        .then(raw => {
+          if (cancelled || !raw || typeof raw !== 'object') return;
+          const prefs = ('value' in raw && raw.value && typeof raw.value === 'object'
+            ? raw.value
+            : raw) as Record<string, unknown>;
+          if (prefs.searchMode === 'name' || prefs.searchMode === 'both' || prefs.searchMode === 'content') {
+            remoteHasMode = true;
+            setSearchMode(prefs.searchMode);
+            localStorage.setItem('tools3000_search_default_mode', prefs.searchMode);
           }
         })
         .catch(() => undefined),
@@ -108,10 +133,40 @@ export const SearchPage: FC = () => {
         setLoading(false);
       }
     });
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'tools3000_search_default_mode' && (e.newValue === 'name' || e.newValue === 'both' || e.newValue === 'content')) {
+        setSearchMode(e.newValue);
+      } else if (e.key === 'tools3000_search_default_category' && e.newValue) {
+        setSettings(prev => ({ ...prev, defaultCategory: e.newValue === 'content' ? 'all' : e.newValue! }));
+      }
+    };
+    window.addEventListener('storage', onStorage);
     return () => {
       cancelled = true;
+      window.removeEventListener('storage', onStorage);
     };
   }, []);
+
+  const saveSearchMode = async (mode: SearchMode) => {
+    setSearchMode(mode);
+    localStorage.setItem('tools3000_search_default_mode', mode);
+    try {
+      const raw = await bridgeRequest<{ value?: unknown }>('config.get', { key: '/search/uiPreferences' });
+      const prevObj = raw && typeof raw === 'object' && 'value' in raw && raw.value && typeof raw.value === 'object'
+        ? (raw.value as Record<string, unknown>)
+        : (raw && typeof raw === 'object' && !('value' in raw) ? (raw as Record<string, unknown>) : {});
+      await bridgeRequest('config.set', {
+        key: '/search/uiPreferences',
+        value: { ...prevObj, searchMode: mode },
+      });
+    } catch {
+      void bridgeRequest('config.set', {
+        key: '/search/uiPreferences',
+        value: { searchMode: mode },
+      }).catch(() => undefined);
+    }
+  };
 
   const saveSetting = async <K extends keyof SearchSettings>(key: K, value: SearchSettings[K]) => {
     setSettings(prev => ({ ...prev, [key]: value }));
@@ -192,10 +247,26 @@ export const SearchPage: FC = () => {
     void bridgeRequest('search.toggle').catch(console.error);
   };
 
-  const categoryOptions = CATEGORY_DEFS.map(def => ({
-    value: def.id,
-    label: t(def.labelKey, def.defaultLabel),
-  }));
+  // 文件类型筛选与「搜索模式 (文件名/双搜/全文)」正交解耦：剔除 content，避免与「仅搜文件内容」重叠打架
+  const categoryOptions = CATEGORY_DEFS
+    .filter(def => def.id !== 'content')
+    .map(def => ({
+      value: def.id,
+      label: t(def.labelKey, def.defaultLabel),
+    }));
+
+  const searchModeOptions: Array<{ value: SearchMode; label: string }> = [
+    { value: 'name', label: t('search.modeFilenameOnly', 'Search File Name Only (Fast · Default)') },
+    { value: 'both', label: t('search.modeHybrid', 'Filename & Content Hybrid') },
+    { value: 'content', label: t('search.modeContentOnly', 'Content Only (Full-Text)') },
+  ];
+
+  const searchModeDesc =
+    searchMode === 'both'
+      ? t('search.modeHybridDesc', 'Search both filename and document contents simultaneously')
+      : searchMode === 'content'
+        ? t('search.modeContentOnlyDesc', 'Full-text search inside documents, spreadsheets, PDFs, CAD and code files')
+        : t('search.modeFilenameOnlyDesc', 'Sub-millisecond response (<5ms); to search content, click the top "Content" tab or prefix with content:');
 
   if (loading) {
     return <PageSkeleton cards={2} rowsPerCard={4} />;
@@ -266,16 +337,31 @@ export const SearchPage: FC = () => {
           <SettingGroup title={t('searchPage.searchBehavior', 'Preferences & Behavior')} icon={<FolderSearch size={18} />}>
             <Card>
               <SettingRow
-                label={t('searchPage.defaultCategoryTitle', 'Default Filter Category')}
-                description={t('searchPage.defaultCategoryDesc', 'Initial category pill activated when opening a blank search session')}
+                label={t('search.defaultSearchMode', 'Default Search Mode')}
+                description={searchModeDesc}
               >
                 <Select
-                  id="search-default-category"
-                  value={settings.defaultCategory || 'all'}
-                  onChange={v => void saveSetting('defaultCategory', v)}
-                  options={categoryOptions}
+                  id="search-default-mode"
+                  value={searchMode}
+                  onChange={v => void saveSearchMode(v as SearchMode)}
+                  options={searchModeOptions}
                 />
               </SettingRow>
+
+              {/* 仅在非「纯全文模式」时展示文件类型筛选，从 UI 物理杜绝“全文模式 + 图片/视频/文件夹”逻辑冲突 */}
+              {searchMode !== 'content' && (
+                <SettingRow
+                  label={t('searchPage.defaultCategoryTitle', 'Default Filter Category')}
+                  description={t('searchPage.defaultCategoryDesc', 'Initial category pill activated when opening a blank search session')}
+                >
+                  <Select
+                    id="search-default-category"
+                    value={settings.defaultCategory && settings.defaultCategory !== 'content' ? settings.defaultCategory : 'all'}
+                    onChange={v => void saveSetting('defaultCategory', v)}
+                    options={categoryOptions}
+                  />
+                </SettingRow>
+              )}
 
               <SettingRow
                 label={t('searchPage.pinyinTitle', 'Smart Pinyin Search')}
@@ -314,38 +400,22 @@ export const SearchPage: FC = () => {
                 label={t('searchPage.iconStyleTitle', 'Result Icon Style')}
                 description={t('searchPage.iconStyleDesc', 'Choose between Windows native associated file icons (familiar system look with 0 cognitive overhead) and minimalist vector icons')}
               >
-                <div style={{ display: 'flex', gap: '6px' }}>
+                <div className="uikit-segmented" role="radiogroup" aria-label={t('searchPage.iconStyleTitle', 'Result Icon Style')}>
                   <button
                     type="button"
-                    className={`popover-segment ${(settings.iconStyle ?? 'native') === 'native' ? 'popover-segment--active' : ''}`}
+                    role="radio"
+                    aria-checked={(settings.iconStyle ?? 'native') === 'native'}
+                    className={`uikit-segmented__btn ${(settings.iconStyle ?? 'native') === 'native' ? 'uikit-segmented__btn--active' : ''}`}
                     onClick={() => void saveSetting('iconStyle', 'native')}
-                    style={{
-                      padding: '4px 10px',
-                      borderRadius: '6px',
-                      border: `1px solid ${(settings.iconStyle ?? 'native') === 'native' ? 'var(--primary)' : 'var(--border)'}`,
-                      background: (settings.iconStyle ?? 'native') === 'native' ? 'var(--primary)' : 'var(--bg-elevated)',
-                      color: (settings.iconStyle ?? 'native') === 'native' ? '#ffffff' : 'var(--text-secondary)',
-                      fontSize: '12.5px',
-                      fontWeight: 600,
-                      cursor: 'pointer'
-                    }}
                   >
                     {t('searchPage.iconStyleNative', 'Windows Native')}
                   </button>
                   <button
                     type="button"
-                    className={`popover-segment ${settings.iconStyle === 'vector' ? 'popover-segment--active' : ''}`}
+                    role="radio"
+                    aria-checked={settings.iconStyle === 'vector'}
+                    className={`uikit-segmented__btn ${settings.iconStyle === 'vector' ? 'uikit-segmented__btn--active' : ''}`}
                     onClick={() => void saveSetting('iconStyle', 'vector')}
-                    style={{
-                      padding: '4px 10px',
-                      borderRadius: '6px',
-                      border: `1px solid ${settings.iconStyle === 'vector' ? 'var(--primary)' : 'var(--border)'}`,
-                      background: settings.iconStyle === 'vector' ? 'var(--primary)' : 'var(--bg-elevated)',
-                      color: settings.iconStyle === 'vector' ? '#ffffff' : 'var(--text-secondary)',
-                      fontSize: '12.5px',
-                      fontWeight: 600,
-                      cursor: 'pointer'
-                    }}
                   >
                     {t('searchPage.iconStyleVector', 'Vector Minimalist')}
                   </button>
@@ -578,25 +648,21 @@ export const SearchPage: FC = () => {
                   {!serviceStatus.available && (
                     <Button variant="primary" onClick={() => void wakeService()} disabled={waking || checking}>
                       {waking ? (
-                        <RotateCw size={14} className="uikit-spin-icon" style={{ marginRight: 6 }} aria-hidden="true" />
+                        <RotateCw size={14} className="uikit-spin-icon" aria-hidden="true" />
                       ) : (
-                        <Zap size={14} style={{ marginRight: 6 }} aria-hidden="true" />
+                        <Zap size={14} aria-hidden="true" />
                       )}
                       {t('searchPage.wakeNow', 'Wake Engine Now')}
                     </Button>
                   )}
                   <Button variant="ghost" onClick={() => void checkService()} disabled={checking || waking}>
-                    <RotateCw size={14} className={checking ? 'uikit-spin-icon' : ''} style={{ marginRight: 6 }} aria-hidden="true" />
+                    <RotateCw size={14} className={checking ? 'uikit-spin-icon' : ''} aria-hidden="true" />
                     {t('searchPage.checkNow', 'Check Now')}
                   </Button>
                 </div>
               </div>
 
               <div className="service-details-grid">
-                <div className="detail-item">
-                  <span className="detail-label">{t('searchPage.pipeAddr', 'IPC Pipe Address')}</span>
-                  <span className="detail-value"><CodeBadge>{serviceStatus.pipeName}</CodeBadge></span>
-                </div>
                 <div className="detail-item">
                   <span className="detail-label">{t('searchPage.indexTech', 'Indexing Architecture')}</span>
                   <span className="detail-value">{t('searchPage.indexTechDesc', 'NTFS MFT memory tree + USN Journal incremental monitoring')}</span>

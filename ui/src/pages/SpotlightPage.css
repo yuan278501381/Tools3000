@@ -32,8 +32,24 @@
 
 .spotlight-page__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacing-md);
+}
+
+.spotlight-page__grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@container app-canvas (max-width: 780px) {
+  .spotlight-page__grid--three {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container app-canvas (max-width: 640px) {
+  .spotlight-page__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .spotlight-page__prop-card {
@@ -84,45 +100,53 @@
 
 .spotlight-page__capsule-wrap {
   display: flex;
-  background: var(--input-bg);
+  background: var(--well-bg);
   padding: 3px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--input-border);
-  gap: 4px;
+  border-radius: 9px;
+  border: 1px solid var(--well-border);
+  box-shadow: var(--well-shadow);
+  gap: 3px;
 }
 
 .spotlight-page__capsule-btn {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  border: none;
+  border-radius: 6px;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
   font-size: 0.83rem;
-  font-weight: 500;
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all 0.16s ease;
 }
 
 .spotlight-page__capsule-btn:hover {
   color: var(--text-primary);
+  background: var(--ghost-hover-bg);
 }
 
 .spotlight-page__capsule-btn.active {
-  background: var(--card-bg);
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
   color: var(--text-primary);
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--primary-dim);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
 }
 
 .spotlight-page__capsule-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  flex-shrink: 0;
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.2);
 }
 
@@ -136,21 +160,22 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
-  border-radius: 9999px;
-  border: 1px solid var(--primary-dim);
-  background: var(--primary-dim);
-  color: var(--primary);
-  font-size: var(--text-sm, 0.86rem);
-  font-weight: 600;
+  padding: 2.5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--well-border);
+  background: var(--well-bg);
+  color: var(--text-secondary);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
+  white-space: nowrap;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .spotlight-page__restore-capsule:hover {
-  background: var(--primary);
-  color: #ffffff;
-  box-shadow: var(--shadow-sm);
+  background: var(--thumb-bg);
+  border-color: color-mix(in srgb, var(--primary) 36%, var(--well-border));
+  color: var(--text-primary);
 }
 
 .spotlight-page__number-input {
@@ -220,34 +245,52 @@
 
 .spotlight-page__style-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   width: 100%;
+}
+
+.spotlight-page__style-grid--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@container app-canvas (max-width: 720px) {
+  .spotlight-page__style-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container app-canvas (max-width: 500px) {
+  .spotlight-page__style-grid,
+  .spotlight-page__style-grid--two {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .spotlight-page__style-card {
   display: flex;
   flex-direction: column;
-  background: var(--card-bg);
+  background: var(--well-bg);
   border: 1px solid var(--card-border);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   padding: 12px 14px;
   gap: 6px;
   cursor: pointer;
   text-align: left;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 180ms var(--ease-spring);
   position: relative;
 }
 
 .spotlight-page__style-card:hover {
-  border-color: color-mix(in srgb, var(--primary) 42%, var(--card-border));
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--card-border));
   background: var(--card-hover);
+  transform: translateY(-1px);
 }
 
 .spotlight-page__style-card--active {
   border-color: var(--primary);
-  background: var(--primary-dim);
-  box-shadow: 0 0 0 1px var(--primary);
+  background: color-mix(in srgb, var(--primary) 5.5%, var(--card-bg));
+  box-shadow: 0 0 0 2.5px var(--primary-dim), var(--shadow-sm);
 }
 
 .spotlight-page__style-card-header {

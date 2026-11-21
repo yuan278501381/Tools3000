@@ -139,7 +139,7 @@
 .sort-split-pill {
     display: inline-flex;
     align-items: stretch;
-    border-radius: 8px;
+    border-radius: 7px;
     background: var(--thumb-bg);
     border: 1px solid var(--card-border);
     box-shadow: var(--shadow-sm);
@@ -153,7 +153,7 @@
 
 .sort-split-pill--active {
     background: var(--thumb-bg);
-    border-color: color-mix(in srgb, var(--primary) 34%, var(--card-border));
+    border-color: var(--thumb-border);
 }
 
 .sort-split-main {
@@ -281,7 +281,7 @@
 }
 
 .sort-menu-row--active {
-    background: color-mix(in srgb, var(--primary) 8%, transparent);
+    background: var(--well-bg);
 }
 
 .sort-row-left {
@@ -378,7 +378,8 @@
     color: var(--primary);
 }
 
-.sort-composite-option input[type="checkbox"] {
+.sort-composite-option input[type="checkbox"],
+.sort-composite-option input[type="radio"] {
     accent-color: var(--primary);
     cursor: pointer;
 }
@@ -419,16 +420,16 @@
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 
-/* ── 语法速查抽屉面板 (全局自适应流式网格与高级质感) ──────────────────────── */
+/* ── 语法速查抽屉面板 (Warm Precision 独占主内容槽 · 0 穿模重叠) ────────────── */
 .search-syntax-drawer {
-    background: var(--search-drawer-bg);
-    border-top: 1px solid var(--search-drawer-border);
-    max-height: 360px;
+    background: var(--search-bg);
+    border-top: 1px solid var(--search-item-border);
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-    box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.04);
+    animation: fadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .syntax-drawer-header {
@@ -536,10 +537,12 @@
     transform: rotate(90deg);
 }
 
-/* 全局响应式自适应卡片网格 (Fluid Multi-Column Auto-Fill Grid) */
+/* 全局响应式自适应卡片网格 (Fluid Multi-Column Auto-Fill Grid · 顶部紧凑排列防单行拉伸) */
 .syntax-drawer-list {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    align-content: start;
+    align-items: stretch;
     gap: 10px;
     padding: 14px 18px 18px;
     overflow-y: auto;
@@ -561,32 +564,33 @@
 .syntax-example-item {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    gap: 6px;
-    padding: 10px 12px;
-    background: var(--search-surface-pill);
-    border: 1px solid var(--search-surface-pill-border);
-    border-radius: 8px;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 11px 13px;
+    background: var(--thumb-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
     cursor: pointer;
-    transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
     position: relative;
     user-select: none;
+    box-shadow: var(--shadow-sm);
 }
 
 .syntax-example-item:hover {
-    background: var(--search-surface-pill-hover);
-    border-color: var(--primary);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 14px var(--primary-glow, rgba(99, 102, 241, 0.15));
+    background: var(--thumb-bg);
+    border-color: color-mix(in srgb, var(--primary) 42%, var(--card-border));
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
 }
 
 .syntax-example-item:active {
-    transform: translateY(0) scale(0.98);
+    transform: translateY(0) scale(0.99);
 }
 
 .syntax-example-item--highlight {
-    background: var(--primary-dim);
-    border-color: var(--primary);
+    background: var(--thumb-bg);
+    border-color: color-mix(in srgb, var(--primary) 34%, var(--card-border));
 }
 
 .syntax-example-item-top {
@@ -599,13 +603,18 @@
 .syntax-code {
     font-family: var(--font-mono);
     font-size: 12.5px;
-    color: var(--primary);
-    font-weight: 650;
-    background: var(--primary-dim);
-    padding: 2px 6px;
-    border-radius: 4px;
-    border: 1px solid color-mix(in srgb, var(--primary) 26%, transparent);
+    color: var(--search-text-main);
+    font-weight: 600;
+    background: var(--well-bg);
+    padding: 2px 7px;
+    border-radius: 5px;
+    border: 1px solid var(--well-border);
     letter-spacing: -0.01em;
+}
+
+.syntax-example-item--highlight .syntax-code {
+    color: var(--primary);
+    border-color: color-mix(in srgb, var(--primary) 26%, var(--well-border));
 }
 
 .syntax-example-action-hint {

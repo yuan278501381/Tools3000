@@ -10,11 +10,11 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, useRef, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Select } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, Select, PageSkeleton } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { MonitorUp } from 'lucide-react';
+import { MonitorUp, Power, Timer } from 'lucide-react';
 import { BUILTIN_COMMAND_KEYS } from '../components/gestureModel';
 import './HotCornerPage.css';
 
@@ -136,19 +136,21 @@ export const HotCornerPage: FC = () => {
   }, [persistPatch, settings]);
 
   if (loading) {
-    return <div style={{ padding: '2rem', opacity: 0.5 }}>{t('common.loading')}</div>;
+    return <PageSkeleton cards={2} rowsPerCard={3} />;
   }
 
-  // ── 构建动作选项列表 ───────────────────────────────────────────────────
+  // ── 构建动作选项列表（过滤已下线空命令 17 与与 26 重复的 6，兼容老配置）──
   const actionOptions = [
     { value: '-1', label: t('hotcorner.noAction') },
-    ...BUILTIN_COMMAND_KEYS.map((key, i) => ({ value: String(i), label: t(key) })),
+    ...BUILTIN_COMMAND_KEYS
+      .map((key, i) => ({ value: String(i), label: t(key) }))
+      .filter((opt) => opt.value !== '17' && opt.value !== '6'),
   ];
 
   return (
     <div className="hotcorner-page">
       {/* ── 全局开关 ──────────────────────────────────────────────────── */}
-      <SettingGroup title={t('hotcorner.title')} icon={<MonitorUp size={20} strokeWidth={2.5} />}>
+      <SettingGroup title={t('hotcorner.title')} icon={<Power size={18} strokeWidth={2.2} />}>
         <Card>
           <Toggle
             id="hotcorner-enabled"
@@ -228,7 +230,7 @@ export const HotCornerPage: FC = () => {
       </SettingGroup>
 
       {/* ── 触发延迟 ──────────────────────────────────────────────────── */}
-      <SettingGroup title={t('hotcorner.advanced')} icon={<MonitorUp size={20} strokeWidth={2.5} />}>
+      <SettingGroup title={t('hotcorner.advanced')} icon={<Timer size={18} strokeWidth={2.2} />}>
         <Card>
           <SettingRow
             label={t('hotcorner.delay')}
@@ -242,9 +244,15 @@ export const HotCornerPage: FC = () => {
                 max={1000}
                 step={50}
                 value={settings.delay}
-                onChange={(e) => setSettings(prev => ({ ...prev, delay: parseInt(e.target.value) }))}
-                onPointerUp={() => void persistPatch({ delay: settings.delay }, { ...settings, delay: committedDelayRef.current })}
-                onKeyUp={() => void persistPatch({ delay: settings.delay }, { ...settings, delay: committedDelayRef.current })}
+                onChange={(e) => setSettings(prev => ({ ...prev, delay: parseInt(e.target.value, 10) }))}
+                onPointerUp={(e) => {
+                  const committed = parseInt(e.currentTarget.value, 10);
+                  void persistPatch({ delay: committed }, { ...settings, delay: committedDelayRef.current });
+                }}
+                onKeyUp={(e) => {
+                  const committed = parseInt(e.currentTarget.value, 10);
+                  void persistPatch({ delay: committed }, { ...settings, delay: committedDelayRef.current });
+                }}
               />
               <span className="hotcorner-page__slider-value">{settings.delay}ms</span>
             </div>

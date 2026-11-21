@@ -336,6 +336,7 @@ export function useSearchEngine({
             drives: stableEnabledDrives.length > 0 ? stableEnabledDrives : undefined,
             excludes: excludes.length > 0 ? excludes : undefined,
             excludeHidden,
+            excludeSystem: excludeHidden,
             contentCustomExts: stableCustomFormats,
             contentDisabledExts: stableDisabledFormats,
           });
@@ -422,6 +423,7 @@ export function useSearchEngine({
             drives: stableEnabledDrives.length > 0 ? stableEnabledDrives : undefined,
             excludes: excludes.length > 0 ? excludes : undefined,
             excludeHidden,
+            excludeSystem: excludeHidden,
             contentCustomExts: stableCustomFormats,
             contentDisabledExts: stableDisabledFormats,
           });

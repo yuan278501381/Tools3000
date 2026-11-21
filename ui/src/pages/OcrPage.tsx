@@ -14,7 +14,7 @@ import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusB
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { FileText, Cpu, Download, X, Sparkles, Table2, QrCode, SunMoon, Type, Loader2, Wand2, Trash2, PencilLine } from 'lucide-react';
+import { FileText, Download, X, Sparkles, Loader2, Trash2 } from 'lucide-react';
 
 interface OcrSettings {
   engine: string;
@@ -144,12 +144,10 @@ export const OcrPage: FC = () => {
       bridgeRequest<Partial<OcrSettings>>('ocr.getSettings'),
       bridgeRequest<OcrStatusPayload>('ocr.getStatus'),
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
-      bridgeRequest<string>('config.get', { key: '/ocr/language' }, { silent: true }).catch(() => null),
       bridgeRequest<AiInpaintModelStatus>('capture.getInpaintModelStatus', undefined, { silent: true }).catch(() => null),
-    ]).then(([data, status, hotkeyList, cfgLang, inpaintPayload]) => {
+    ]).then(([data, status, hotkeyList, inpaintPayload]) => {
       const resolvedLanguage =
-        (typeof data?.language === 'string' && data.language.trim() !== '' ? data.language : null) ??
-        (typeof cfgLang === 'string' && cfgLang.trim() !== '' ? cfgLang : 'auto');
+        typeof data?.language === 'string' && data.language.trim() !== '' ? data.language : 'auto';
       const resolvedEngine =
         typeof data?.engine === 'string' && ['auto', 'ppocr_v4', 'windows'].includes(data.engine)
           ? data.engine
@@ -246,19 +244,6 @@ export const OcrPage: FC = () => {
 
   const updateSetting = useCallback((key: keyof OcrSettings, value: unknown) => {
     setSettings(prev => ({ ...prev, [key]: value }));
-    if (key === 'language') {
-      void (async () => {
-        try {
-          const direct = await bridgeRequest<OperationResult>('ocr.updateSettings', { language: value }, { silent: true }).catch(() => null);
-          if (!direct?.success) {
-            await bridgeRequest('config.set', { key: '/ocr/language', value });
-          }
-        } catch (error) {
-          toast.error(t('ocr.saveFailed'), { description: String(error) });
-        }
-      })();
-      return;
-    }
     bridgeRequest<OperationResult>('ocr.updateSettings', { [key]: value })
       .then(result => {
         if (!result.success) throw new Error(result.error || 'update failed');
@@ -523,7 +508,6 @@ export const OcrPage: FC = () => {
             layout="vertical"
             label={
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
-                <Cpu size={16} strokeWidth={2.2} aria-hidden="true" style={{ color: 'var(--primary)' }} />
                 <span>{t('ocr.deepPackTitle')}</span>
                 {renderModelStatusBadge()}
               </div>
@@ -690,7 +674,6 @@ export const OcrPage: FC = () => {
             layout="vertical"
             label={
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
-                <Wand2 size={16} strokeWidth={2.2} aria-hidden="true" style={{ color: 'var(--primary)' }} />
                 <span>{t('ocr.inpaintPackTitle')}</span>
                 {renderInpaintStatusBadge()}
               </div>
@@ -794,21 +777,23 @@ export const OcrPage: FC = () => {
             </div>
           </SettingRow>
 
-          <SettingRow label={t('ocr.language')} description={t('ocr.languageDesc')}>
-            <Select
-              id="ocr-language"
-              value={settings.language || 'auto'}
-              onChange={(val) => updateSetting('language', val)}
-              options={[
-                { value: 'auto', label: t('ocr.langAuto') },
-                { value: 'zh-Hans-CN', label: t('ocr.langZhHans') },
-                { value: 'zh-Hant-TW', label: t('ocr.langZhHant') },
-                { value: 'en-US', label: t('ocr.langEnUs') },
-                { value: 'ja-JP', label: t('ocr.langJaJp') },
-                { value: 'ko-KR', label: t('ocr.langKoKr') },
-              ]}
-            />
-          </SettingRow>
+          {(settings.engine === 'windows' || (settings.engine === 'auto' && !modelStatus.installed)) && (
+            <SettingRow label={t('ocr.language')} description={t('ocr.languageDesc')}>
+              <Select
+                id="ocr-language"
+                value={settings.language || 'auto'}
+                onChange={(val) => updateSetting('language', val)}
+                options={[
+                  { value: 'auto', label: t('ocr.langAuto') },
+                  { value: 'zh-Hans-CN', label: t('ocr.langZhHans') },
+                  { value: 'zh-Hant-TW', label: t('ocr.langZhHant') },
+                  { value: 'en-US', label: t('ocr.langEnUs') },
+                  { value: 'ja-JP', label: t('ocr.langJaJp') },
+                  { value: 'ko-KR', label: t('ocr.langKoKr') },
+                ]}
+              />
+            </SettingRow>
+          )}
         </Card>
       </SettingGroup>
 
@@ -845,31 +830,6 @@ export const OcrPage: FC = () => {
             checked={settings.showResultWindow}
             onChange={(v) => updateSetting('showResultWindow', v)}
           />
-
-          <SettingRow label={t('ocr.capabilitiesLabel')}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
-                <Type size={14} strokeWidth={2.2} aria-hidden="true" />
-                <span>{t('ocr.capCharLevel')}</span>
-              </span>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
-                <Table2 size={14} strokeWidth={2.2} aria-hidden="true" />
-                <span>{t('ocr.capExcelTable')}</span>
-              </span>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
-                <SunMoon size={14} strokeWidth={2.2} aria-hidden="true" />
-                <span>{t('ocr.capDarkCode')}</span>
-              </span>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
-                <QrCode size={14} strokeWidth={2.2} aria-hidden="true" />
-                <span>{t('ocr.capQrCode')}</span>
-              </span>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-xs)', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'var(--bg-elevated)', border: '1px solid var(--card-border)', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', lineHeight: 'var(--leading-normal)', color: 'var(--text-secondary)' }}>
-                <PencilLine size={14} strokeWidth={2.2} aria-hidden="true" />
-                <span>{t('ocr.capInPlaceTextReplace')}</span>
-              </span>
-            </div>
-          </SettingRow>
         </Card>
       </SettingGroup>
     </div>

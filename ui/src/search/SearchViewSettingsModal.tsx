@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   SlidersHorizontal,
@@ -16,12 +16,12 @@ import {
   Plus,
   Trash2,
   Lightbulb,
+  ChevronRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { bridgeRequest } from '../hooks/useBridge';
 import { CodeBadge, Toggle } from '../components/UIKit';
 import {
-  CATEGORY_DEFS,
   CONTENT_FORMAT_CATEGORIES,
   WINDOW_PRESETS,
 } from './searchConstants';
@@ -44,8 +44,6 @@ export interface SearchViewSettingsModalProps {
   onRebuildIndex: () => void;
   searchMode: SearchMode;
   onChangeSearchMode: (mode: SearchMode) => void;
-  defaultCategory: string;
-  onChangeDefaultCategory: (catId: string) => void;
   density: SearchDensity;
   onChangeDensity: (density: SearchDensity) => void;
   iconStyle: SearchIconStyle;
@@ -91,8 +89,6 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
   onRebuildIndex,
   searchMode,
   onChangeSearchMode,
-  defaultCategory,
-  onChangeDefaultCategory,
   density,
   onChangeDensity,
   iconStyle,
@@ -124,12 +120,16 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
   onSetNewFormatInput,
   onAddCustomContentFormat,
   onRemoveCustomContentFormat,
-  onSetDisabledContentFormats,
   dbStats,
   totalIndexedFiles,
   onResetAllViewPreferences,
 }) => {
   const { t } = useTranslation();
+  const [expandedFormatCats, setExpandedFormatCats] = useState<Record<string, boolean>>({});
+
+  const toggleFormatCatExpand = (catId: string) => {
+    setExpandedFormatCats((prev) => ({ ...prev, [catId]: !prev[catId] }));
+  };
 
   if (!visible) return null;
 
@@ -247,29 +247,6 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
           </div>
         </div>
 
-        {/* 1.0b 默认初始分类 */}
-        <div className="popover-section">
-          <div className="popover-section-title">
-            <span>{t('searchPage.defaultCategoryTitle', 'Default Filter Category')}</span>
-          </div>
-          <div className="popover-category-grid">
-            {CATEGORY_DEFS.map(cat => {
-              const active = defaultCategory === cat.id;
-              return (
-                <button
-                  key={cat.id}
-                  type="button"
-                  className={`popover-category-chip ${active ? 'popover-category-chip--active' : ''}`}
-                  onClick={() => onChangeDefaultCategory(cat.id)}
-                >
-                  {active && <span className="popover-category-dot" aria-hidden="true" />}
-                  <span>{t(cat.labelKey, cat.defaultLabel)}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
         {/* 1. 布局密度 */}
         <div className="popover-section">
           <div className="popover-section-title">
@@ -366,6 +343,15 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
           <div className="popover-presets-grid">
             {WINDOW_PRESETS.map((preset) => {
               const isMatch = Math.abs(windowSize.width - preset.width) <= 20 && Math.abs(windowSize.height - preset.height) <= 20;
+              const presetKeyMap: Record<string, 'search.presetStandard' | 'search.presetWide' | 'search.presetLarge' | 'search.presetExtra'> = {
+                standard: 'search.presetStandard',
+                wide: 'search.presetWide',
+                large: 'search.presetLarge',
+                extra: 'search.presetExtra',
+              };
+              const presetKey = presetKeyMap[preset.id];
+              const rawLabel = presetKey ? t(presetKey, preset.label) : preset.label;
+              const shortLabel = rawLabel.replace(/\s*\([^)]*\)\s*$/, '').trim() || rawLabel;
               return (
                 <button
                   key={preset.id}
@@ -378,11 +364,11 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
                       height: preset.height,
                       center: true,
                     });
-                    toast.success(t('search.presetAppliedToast', 'Applied {{label}} preset ({{width}}×{{height}})', { label: preset.label, width: preset.width, height: preset.height }));
+                    toast.success(t('search.presetAppliedToast', 'Applied {{label}} preset ({{width}}×{{height}})', { label: shortLabel, width: preset.width, height: preset.height }));
                   }}
                   title={t('search.applyPresetTooltip', 'Resize window to {{width}}×{{height}}', { width: preset.width, height: preset.height })}
                 >
-                  <div className="preset-name">{preset.label}</div>
+                  <div className="preset-name">{shortLabel}</div>
                   <div className="preset-dim">{preset.width} × {preset.height}</div>
                 </button>
               );
@@ -533,13 +519,12 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
           </div>
         </div>
 
-        {/* 7. 文档内容检索格式定制 (Content Search Formats & Exts) */}
+        {/* 7. 文档内容检索格式定制 (折叠手风琴 + 纯净单层微刻芯片，彻底告别双层蓝框轰炸) */}
         <div className="popover-section">
           <div className="popover-section-title">
             <div className="popover-section-title-left">
-              <SlidersHorizontal size={13} className="popover-title-icon" />
               <span>{t('search.contentFormats', 'Supported Content Search Formats')}</span>
-              <CodeBadge className="popover-title-badge" variant="primary">content:</CodeBadge>
+              <CodeBadge className="popover-title-badge">content:</CodeBadge>
             </div>
             <button
               type="button"
@@ -551,15 +536,26 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
               <span>{t('search.resetDefault')}</span>
             </button>
           </div>
-          
+
           <div className="popover-format-categories">
             {CONTENT_FORMAT_CATEGORIES.map(cat => {
               const enabledCount = cat.extensions.filter(ext => !disabledContentFormats.includes(ext)).length;
+              const isExpanded = Boolean(expandedFormatCats[cat.id]);
               return (
-                <div key={cat.id} className="popover-format-cat-block">
+                <div key={cat.id} className={`popover-format-cat-block ${isExpanded ? 'popover-format-cat-block--open' : ''}`}>
                   <div className="popover-format-cat-header">
-                    <div className="popover-format-cat-title-wrap">
-                      <div className={`format-cat-icon-badge format-cat-icon-badge--${cat.iconName}`}>
+                    <button
+                      type="button"
+                      className="popover-format-cat-trigger"
+                      aria-expanded={isExpanded}
+                      onClick={() => toggleFormatCatExpand(cat.id)}
+                    >
+                      <ChevronRight
+                        size={13}
+                        className={`popover-format-chevron ${isExpanded ? 'popover-format-chevron--open' : ''}`}
+                        aria-hidden="true"
+                      />
+                      <div className={`format-cat-icon-badge format-cat-icon-badge--${cat.iconName}`} aria-hidden="true">
                         {cat.iconName === 'code' && <Code2 size={12} />}
                         {cat.iconName === 'doc' && <FileText size={12} />}
                         {cat.iconName === 'config' && <SlidersHorizontal size={12} />}
@@ -567,7 +563,7 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
                       </div>
                       <span className="popover-format-cat-name">{t(cat.nameKey as unknown as 'search.catAll')}</span>
                       <span className="popover-format-badge-count">{enabledCount} / {cat.extensions.length}</span>
-                    </div>
+                    </button>
                     <Toggle
                       id={`format-cat-toggle-${cat.id}`}
                       checked={enabledCount > 0}
@@ -575,31 +571,34 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
                       onChange={(checked) => onToggleCategoryFormats(cat, checked)}
                     />
                   </div>
-                  <div className="popover-format-chips">
-                    {cat.extensions.map(ext => {
-                      const isEnabled = !disabledContentFormats.includes(ext);
-                      return (
-                        <button
-                          key={ext}
-                          type="button"
-                          className={`format-chip ${isEnabled ? 'format-chip--enabled' : 'format-chip--disabled'}`}
-                          onClick={() => onToggleContentFormat(ext)}
-                          title={isEnabled ? t('search.disableExtTip', 'Click to disable .{{ext}}', { ext }) : t('search.enableExtTip', 'Click to enable .{{ext}}', { ext })}
-                        >
-                          <CodeBadge variant={isEnabled ? 'primary' : 'muted'}>.{ext}</CodeBadge>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  {isExpanded && (
+                    <div className="popover-format-chips">
+                      {cat.extensions.map(ext => {
+                        const isEnabled = !disabledContentFormats.includes(ext);
+                        return (
+                          <button
+                            key={ext}
+                            type="button"
+                            className={`format-chip ${isEnabled ? 'format-chip--enabled' : 'format-chip--disabled'}`}
+                            onClick={() => onToggleContentFormat(ext)}
+                            title={isEnabled ? t('search.disableExtTip', 'Click to disable .{{ext}}', { ext }) : t('search.enableExtTip', 'Click to enable .{{ext}}', { ext })}
+                          >
+                            <span className="format-chip-dot" aria-hidden="true" />
+                            <span>.{ext}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
 
             {/* 用户自定义格式列表 */}
-            <div className="popover-format-cat-block">
+            <div className="popover-format-cat-block popover-format-cat-block--custom">
               <div className="popover-format-cat-header">
                 <div className="popover-format-cat-title-wrap">
-                  <div className="format-cat-icon-badge format-cat-icon-badge--custom">
+                  <div className="format-cat-icon-badge format-cat-icon-badge--custom" aria-hidden="true">
                     <Sparkles size={12} />
                   </div>
                   <span className="popover-format-cat-name">{t('search.customFormats')}</span>
@@ -611,18 +610,10 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
                     checked={customContentFormats.some(ext => !disabledContentFormats.includes(ext))}
                     size="sm"
                     onChange={(checked) => {
-                      onSetDisabledContentFormats(prev => {
-                        let next: string[];
-                        if (checked) {
-                          next = prev.filter(ext => !customContentFormats.includes(ext));
-                        } else {
-                          const addList = customContentFormats.filter(ext => !prev.includes(ext));
-                          next = [...prev, ...addList];
-                        }
-                        localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(next));
-                        localStorage.removeItem('tools3000_search_disabled_content_formats');
-                        return next;
-                      });
+                      onToggleCategoryFormats(
+                        { id: 'custom', nameKey: 'search.catCode', iconName: 'code', extensions: customContentFormats },
+                        checked,
+                      );
                     }}
                   />
                 )}
@@ -637,7 +628,8 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
                         className={`format-chip format-chip--custom ${isEnabled ? 'format-chip--enabled' : 'format-chip--disabled'}`}
                       >
                         <span onClick={() => onToggleContentFormat(ext)} className="format-chip-label">
-                          <CodeBadge variant={isEnabled ? 'primary' : 'muted'}>.{ext}</CodeBadge>
+                          <span className="format-chip-dot" aria-hidden="true" />
+                          <span>.{ext}</span>
                         </span>
                         <button
                           type="button"

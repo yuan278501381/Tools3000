@@ -1247,7 +1247,15 @@
     "clearToday": "Zerar hoje",
     "confirmClearToday": "Tem certeza de que deseja zerar as estatísticas de atividade de hoje?",
     "clearTodaySuccess": "Estatísticas de hoje zeradas",
-    "clearTodayFailed": "Falha ao zerar as estatísticas de hoje"
+    "clearTodayFailed": "Falha ao zerar as estatísticas de hoje",
+    "range7d": "7 dias",
+    "rangeMonth": "Este mês",
+    "rangeYear": "Este ano",
+    "periodTotal": "Total do período",
+    "dailyAvg": "Média diária",
+    "peakValue": "Pico",
+    "activeDays": "Ativo",
+    "daysUnit": "d"
   },
   "about": {
     "title": "Sobre o Tools3000",
@@ -1992,7 +2000,7 @@
     "holdDurationLong": "5000 ms",
     "holdDurationCustom": "{{ms}} ms (Personalizado)",
     "shakeThreshold": "Sensibilidade do agito",
-    "shakeThresholdDesc": "Sensibilidade de detecção ao agitar o mouse (padrão 7).",
+    "shakeThresholdDesc": "Sensibilidade de detecção ao agitar o mouse (padrão 4).",
     "mouseFxSection": "Efeitos de Clique e Movimento",
     "clickRipple": "Exibir ondas de clique",
     "clickRippleDesc": "Exibe círculos de onda breves na posição dos cliques do mouse.",

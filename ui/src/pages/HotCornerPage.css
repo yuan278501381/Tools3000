@@ -31,49 +31,45 @@
 .hotcorner-page__monitor {
   position: relative;
   width: 100%;
-  height: 350px;
-  border-radius: var(--radius-lg);
+  height: 336px;
+  border-radius: 14px;
   background:
-    linear-gradient(135deg,
-      rgba(15, 15, 30, 0.95) 0%,
-      rgba(30, 25, 55, 0.9) 40%,
-      rgba(20, 20, 40, 0.95) 100%
-    );
-  border: 2px solid var(--card-border);
+    radial-gradient(ellipse 70% 55% at 50% 0%, color-mix(in srgb, var(--primary) 12%, transparent) 0%, transparent 72%),
+    linear-gradient(180deg, #16181e 0%, #101116 100%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   box-shadow:
-    var(--shadow-lg),
-    0 12px 36px rgba(0, 0, 0, 0.35),
+    var(--shadow-md),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
   overflow: visible;
   transition: box-shadow var(--transition-normal);
 }
 
 .hotcorner-page__monitor-stand {
-  width: 44px;
-  height: 24px;
-  background: linear-gradient(180deg, var(--card-border) 0%, rgba(255, 255, 255, 0.04) 100%);
+  width: 40px;
+  height: 22px;
+  background: linear-gradient(180deg, var(--well-border) 0%, transparent 100%);
   border-left: 1px solid var(--card-border);
   border-right: 1px solid var(--card-border);
 }
 
 .hotcorner-page__monitor-base {
-  width: 140px;
-  height: 8px;
+  width: 132px;
+  height: 7px;
   border-radius: 4px;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-sm);
 }
 
-/* 亮色主题下屏幕渐变 */
+/* 亮色主题下采用温润磨砂微银屏面，彻底告别老旧紫粉渐变 */
 [data-theme="light"] .hotcorner-page__monitor {
   background:
-    linear-gradient(135deg,
-      rgba(220, 220, 240, 0.95) 0%,
-      rgba(200, 195, 225, 0.9) 40%,
-      rgba(210, 210, 230, 0.95) 100%
-    );
-  border-color: rgba(0, 0, 0, 0.1);
+    radial-gradient(ellipse 70% 55% at 50% 0%, color-mix(in srgb, var(--primary) 7%, transparent) 0%, transparent 72%),
+    linear-gradient(180deg, #f4f4f6 0%, #ececef 100%);
+  border-color: rgba(24, 24, 27, 0.10);
+  box-shadow:
+    0 12px 30px -14px rgba(24, 24, 27, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 /* 屏幕内标签 */
@@ -86,41 +82,37 @@
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  color: rgba(255, 255, 255, 0.2);
+  color: var(--text-muted);
+  opacity: 0.55;
   pointer-events: none;
   user-select: none;
 }
 
-[data-theme="light"] .hotcorner-page__monitor-label {
-  color: rgba(0, 0, 0, 0.15);
-}
-
 .hotcorner-page__monitor-label-icon {
-  opacity: 0.5;
+  opacity: 0.7;
 }
 
 .hotcorner-page__monitor-label-text {
   font-size: 0.83rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-weight: 550;
+  letter-spacing: 0.04em;
 }
 
 /* ── 四角卡片 ─────────────────────────────────────────────────────────────── */
 .hotcorner-page__corner {
   position: absolute;
-  width: clamp(130px, 28%, 165px);
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
+  width: clamp(138px, 29%, 172px);
+  padding: 9px 11px;
+  border-radius: 11px;
   background: var(--card-bg);
-  border: 1.5px solid var(--card-border);
+  border: 1px solid var(--card-border);
   cursor: pointer;
   transition:
     transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow var(--transition-normal),
     border-color var(--transition-fast);
   z-index: 5;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--shadow-md), var(--card-highlight);
 }
 
 .hotcorner-page__corner:hover,

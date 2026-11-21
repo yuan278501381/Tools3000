@@ -19,17 +19,16 @@
 }
 
 .dialog-ribbon-options {
-  margin: 0 1rem 1rem;
-  padding: 0.25rem 0.9rem 0;
-  background: var(--bg-surface);
-  border-left: 3px solid var(--primary);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin: 4px 0 8px;
+  padding: 6px 14px 4px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  border-radius: 10px;
   transition: opacity 0.15s ease, border-color 0.15s ease;
 }
 
 .dialog-ribbon-options--disabled {
-  opacity: 0.58;
-  border-left-color: var(--card-border);
+  opacity: 0.52;
 }
 
 .dialog-ribbon-options__title {
@@ -125,13 +124,13 @@
 
 .dialog-proc-badge {
   display: inline-block;
-  padding: 0.2rem 0.55rem;
+  padding: 2px 8px;
   font-size: 0.83rem;
   font-family: var(--font-mono);
   font-weight: 600;
-  color: var(--primary);
-  background: var(--primary-dim);
-  border: 1px solid var(--primary-glow);
+  color: var(--text-primary);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
   border-radius: 6px;
 }
 
@@ -183,13 +182,24 @@
 }
 
 .dialog-fixed-badge {
-  display: inline-block;
-  margin-left: 0.35rem;
-  padding: 0.15rem 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 0.4rem;
+  padding: 1.5px 7px;
   font-size: var(--text-xs, 0.84rem);
-  font-weight: 600;
-  color: var(--success);
-  background: rgba(52, 211, 153, 0.12);
-  border: 1px solid rgba(52, 211, 153, 0.25);
-  border-radius: 4px;
+  font-weight: 550;
+  color: var(--text-secondary);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  border-radius: 6px;
+}
+
+.dialog-fixed-badge::before {
+  content: '';
+  width: 5.5px;
+  height: 5.5px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
 }

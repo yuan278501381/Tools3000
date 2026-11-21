@@ -949,22 +949,24 @@ static std::vector<std::string> getCustomContentExtsFromConfig() {
 
 static std::vector<std::string> getDisabledContentExtsFromConfig() {
     auto& cfg = tools3000::core::ConfigManager::instance();
+    const auto uiPrefs = cfg.get<nlohmann::json>("/search/uiPreferences", nlohmann::json::object());
+    const bool hasExplicitUiPrefs = uiPrefs.is_object() && uiPrefs.contains("disabledContentFormats");
+
     std::vector<std::string> disabled;
-    for (const auto& [cat, exts] : CONTENT_CATEGORY_EXTS) {
-        const std::string key = "/search/contentCategory_" + cat;
-        const bool enabled = cfg.get<bool>(key, true);
-        if (!enabled) {
-            disabled.insert(disabled.end(), exts.begin(), exts.end());
+    // 仅在尚未迁移至新版 /search/uiPreferences.disabledContentFormats 时，才兼容旧版 contentCategory_* 开关，
+    // 避免老配置里的已下线开关幽灵覆盖用户在新版浮窗中重新开启的扩展名。
+    if (!hasExplicitUiPrefs) {
+        for (const auto& [cat, exts] : CONTENT_CATEGORY_EXTS) {
+            const std::string key = "/search/contentCategory_" + cat;
+            const bool enabled = cfg.get<bool>(key, true);
+            if (!enabled) {
+                disabled.insert(disabled.end(), exts.begin(), exts.end());
+            }
         }
     }
-    auto explicitDisabled = normalizeFormatListJson(
-        cfg.get<nlohmann::json>("/search/disabledContentFormats", nlohmann::json::array()));
-    if (explicitDisabled.empty()) {
-        const auto uiPrefs = cfg.get<nlohmann::json>("/search/uiPreferences", nlohmann::json::object());
-        if (uiPrefs.is_object() && uiPrefs.contains("disabledContentFormats")) {
-            explicitDisabled = normalizeFormatListJson(uiPrefs["disabledContentFormats"]);
-        }
-    }
+    auto explicitDisabled = hasExplicitUiPrefs
+        ? normalizeFormatListJson(uiPrefs["disabledContentFormats"])
+        : normalizeFormatListJson(cfg.get<nlohmann::json>("/search/disabledContentFormats", nlohmann::json::array()));
     for (auto& ext : explicitDisabled) {
         if (std::find(disabled.begin(), disabled.end(), ext) == disabled.end()) {
             disabled.push_back(std::move(ext));
@@ -1067,6 +1069,12 @@ public:
                 }
                 if (!normalized.contains("caseSensitive") || !normalized["caseSensitive"].is_boolean()) {
                     normalized["caseSensitive"] = cfg.get<bool>("/search/caseSensitive", false);
+                }
+                if (!normalized.contains("excludeSystem") || !normalized["excludeSystem"].is_boolean()) {
+                    const bool fallbackExcludeHidden = normalized.contains("excludeHidden") && normalized["excludeHidden"].is_boolean()
+                        ? normalized["excludeHidden"].get<bool>()
+                        : cfg.get<bool>("/search/excludeHidden", false);
+                    normalized["excludeSystem"] = cfg.get<bool>("/search/excludeSystem", fallbackExcludeHidden);
                 }
             }
 

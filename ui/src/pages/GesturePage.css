@@ -66,19 +66,29 @@
   font-weight: 600;
 }
 
-.gesture-status__hotkey {
+.gesture-status__meta {
   margin-left: auto;
-  padding: 3px 8px;
-  border: 1px solid var(--card-border);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.gesture-status__hotkey {
+  padding: 2.5px 8px;
+  border: 1px solid var(--well-border);
+  border-radius: 6px;
+  background: var(--well-bg);
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
 }
 
-/* ── 手势映射表 ───────────────────────────────────────────────────────────── */
+/* ── 手势映射表 (精准 CSS Grid 6 列分布 · 任何宽度 0 右裁切) ──────────────── */
 .gesture-table-container {
+  container-type: inline-size;
+  container-name: gesture-table;
   width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -86,27 +96,33 @@
 
 .gesture-table {
   width: 100%;
-  min-width: min(580px, 100%);
+  min-width: 0;
+}
+
+.gesture-table__header,
+.gesture-table__row {
+  display: grid;
+  grid-template-columns: 88px minmax(150px, 1fr) 78px minmax(104px, 152px) 46px 64px;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .gesture-table__header {
-  display: flex;
-  align-items: center;
-  padding: var(--spacing-sm) 0;
-  border-bottom: 1px solid var(--card-border);
-  font-size: var(--text-sm, 0.86rem);
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: var(--text-xs, 0.84rem);
   color: var(--text-muted);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   white-space: nowrap;
 }
 
 .gesture-table__row {
-  display: flex;
-  align-items: center;
-  padding: 7px 0;
-  border-bottom: 1px solid var(--card-border);
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 8px;
   transition: background var(--transition-fast);
   animation: fadeIn 0.25s ease both;
   cursor: pointer;
@@ -114,8 +130,7 @@
 }
 
 .gesture-table__row:hover {
-  background: var(--primary-dim);
-  border-radius: var(--radius-sm);
+  background: var(--ghost-hover-bg);
 }
 
 .gesture-table__row:last-child {
@@ -125,12 +140,10 @@
 .gesture-table__col {
   font-size: 0.84rem;
   box-sizing: border-box;
-  padding: 0 4px;
+  min-width: 0;
 }
 
 .gesture-table__col--gesture {
-  width: 90px;
-  flex-shrink: 0;
   display: flex;
   align-items: center;
 }
@@ -157,11 +170,10 @@
 }
 
 .gesture-table__col--action {
-  flex: 1 1 150px;
-  min-width: 140px;
   color: var(--text-primary);
   font-weight: 500;
   overflow: hidden;
+  padding-right: 4px;
 }
 
 .gesture-action-name {
@@ -178,15 +190,12 @@
 }
 
 .gesture-table__col--type {
-  width: 72px;
-  flex-shrink: 0;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .gesture-table__col--key {
-  min-width: 90px;
-  max-width: 135px;
-  flex: 0 1 120px;
   display: flex;
   justify-content: flex-end;
   align-items: center;
@@ -194,14 +203,23 @@
 }
 
 .gesture-table__col--actions {
-  width: 64px;
-  flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
-  gap: 3px;
+  align-items: center;
+  gap: 2px;
 }
 
-/* ── 行内图标按钮 ─────────────────────────────────────────────────────────── */
+@container gesture-table (max-width: 560px) {
+  .gesture-table__header,
+  .gesture-table__row {
+    grid-template-columns: 82px minmax(120px, 1fr) 74px 44px 60px;
+  }
+  .gesture-table__col--key {
+    display: none;
+  }
+}
+
+/* ── 行内图标按钮 (柔和常显、悬停锐化，告别盲摸与裁切) ─────────────────────── */
 .gesture-icon-btn {
   width: 28px;
   height: 28px;
@@ -209,24 +227,29 @@
   align-items: center;
   justify-content: center;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: 7px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   font-size: 0.9rem;
-  opacity: 0;
-  transition: all var(--transition-fast);
+  opacity: 0.45;
+  transition: opacity var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
-.gesture-table__row:hover .gesture-icon-btn { opacity: 1; }
+.gesture-table__row:hover .gesture-icon-btn,
+.gesture-icon-btn:focus-visible {
+  opacity: 1;
+}
 
 .gesture-icon-btn:hover {
-  border-color: var(--primary);
+  background: var(--thumb-bg);
+  border-color: var(--card-border);
   color: var(--primary);
 }
 
 .gesture-icon-btn--danger:hover {
-  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger);
 }
 
@@ -235,27 +258,31 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: var(--spacing-sm);
+  gap: 10px 12px;
+  margin-bottom: 12px;
+  padding: 6px 6px 12px;
+  border-bottom: 1px solid var(--hairline);
   flex-wrap: wrap;
 }
 
 .gesture-toolbar__count {
-  font-size: 0.83rem;
-  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
-/* ── 手势列表触发按键过滤标签 ─────────────────────────────────────────────── */
+/* ── 手势列表触发按键过滤标签 (Warm Precision 沉降凹槽 + 白瓷/曜石立体滑块) ─ */
 .gesture-trigger-filter-tabs {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px;
-  background: var(--input-bg);
-  padding: 3px 4px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--card-border);
+  gap: 3px;
+  background: var(--well-bg);
+  padding: 3px;
+  border-radius: 9px;
+  border: 1px solid var(--well-border);
+  box-shadow: var(--well-shadow);
 }
 
 .gesture-trigger-filter-tab {
@@ -263,29 +290,30 @@
   align-items: center;
   gap: 5px;
   padding: 4px 9px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--text-xs, 0.84rem);
-  font-weight: 500;
+  font-weight: 550;
   line-height: 1.4;
-  border-radius: var(--radius-sm);
+  border-radius: 6px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
   font-family: inherit;
   white-space: nowrap;
 }
 
-.gesture-trigger-filter-tab:hover {
+.gesture-trigger-filter-tab:hover:not(.active) {
   color: var(--text-primary);
-  background: var(--bg-elevated);
+  background: var(--ghost-hover-bg);
 }
 
 .gesture-trigger-filter-tab.active {
-  background: var(--primary);
-  color: #fff;
-  font-weight: 600;
-  box-shadow: 0 1px 4px var(--primary-glow);
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
+  color: var(--text-primary);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
 }
 
 /* ── 表格行中触发来源微型纯矢量徽章 (U-11 五分类) ─────────────────────────── */
@@ -469,18 +497,18 @@
 .gesture-kbd {
   display: inline-block;
   max-width: 100%;
-  padding: 2px 7px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-  border: 1px solid var(--card-border);
+  padding: 2.5px 8px;
+  border-radius: 6px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
   font-family: var(--font-mono);
-  font-size: var(--text-sm, 0.86rem);
-  color: var(--text-secondary);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 550;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.35;
+  line-height: 1.38;
   text-align: center;
 }
 
@@ -500,36 +528,39 @@
 .gesture-trail-mode-segmented {
   display: inline-flex;
   padding: 3px;
-  background: var(--bg-primary);
-  border: 1px solid var(--card-border);
-  border-radius: var(--radius-md);
-  gap: 4px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  box-shadow: var(--well-shadow);
+  border-radius: 9px;
+  gap: 3px;
 }
 
 .gesture-trail-mode-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border: none;
+  padding: 5.5px 12px;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 0.83rem;
-  font-weight: 500;
-  border-radius: var(--radius-sm);
+  font-weight: 550;
+  border-radius: 6px;
   cursor: pointer;
   transition: all var(--transition-fast);
 }
 
 .gesture-trail-mode-btn:hover {
   color: var(--text-primary);
+  background: var(--ghost-hover-bg);
 }
 
 .gesture-trail-mode-btn.active {
-  background: var(--primary);
-  color: #ffffff;
-  font-weight: 600;
-  box-shadow: 0 2px 8px var(--primary-glow);
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
+  color: var(--text-primary);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
 }
 
 .gesture-color-picker-row {
@@ -679,29 +710,30 @@
   color: var(--primary);
 }
 
-/* ── 极简单行触发方式横向条 ──────────────────────────────────────────────── */
+/* ── 极简单行触发方式横向条 (Warm Precision 去噪微刻胶囊) ────────────────── */
 .trigger-strip-container {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 12px 16px;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: var(--radius-md);
-  margin-bottom: var(--spacing-sm);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm), var(--card-highlight);
 }
 
 .trigger-strip-label {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  gap: 1px;
-  min-width: 60px;
+  gap: 2px;
+  min-width: 82px;
+  padding-top: 3px;
 }
 
 .trigger-strip-title {
-  font-size: 0.83rem;
-  font-weight: 600;
+  font-size: 0.85rem;
+  font-weight: 650;
   color: var(--text-primary);
   white-space: nowrap;
 }
@@ -716,55 +748,58 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
   flex: 1;
 }
 
 .trigger-pill-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 9px;
+  gap: 5px;
+  padding: 4px 10px;
   font-size: var(--text-xs, 0.84rem);
   font-weight: 550;
-  letter-spacing: 0.015em;
-  border-radius: 12px;
+  letter-spacing: 0.01em;
+  border-radius: 8px;
   border: 1px solid transparent;
   cursor: pointer;
   user-select: none;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
   white-space: nowrap;
 }
 
 .trigger-pill-btn--active {
-  background: rgba(16, 185, 129, 0.12);
-  color: #10b981;
-  border-color: rgba(16, 185, 129, 0.35);
+  background: var(--thumb-bg);
+  color: var(--text-primary);
+  border-color: var(--thumb-border);
+  box-shadow: var(--thumb-shadow);
   font-weight: 600;
 }
 
+.trigger-pill-btn--active .trigger-pill-icon {
+  color: var(--success);
+}
+
 .trigger-pill-btn--active:hover {
-  background: rgba(16, 185, 129, 0.20);
-  border-color: #10b981;
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--thumb-border));
+  background: var(--thumb-bg);
 }
 
 [data-theme="dark"] .trigger-pill-btn--active {
-  color: #34d399;
-  background: rgba(52, 211, 153, 0.15);
-  border-color: rgba(52, 211, 153, 0.45);
+  color: var(--text-primary);
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
 }
 
 .trigger-pill-btn--inactive {
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  border-color: var(--card-border);
-  opacity: 0.90;
+  background: var(--well-bg);
+  color: var(--text-muted);
+  border-color: var(--well-border);
 }
 
 .trigger-pill-btn--inactive:hover {
-  opacity: 1;
   border-color: var(--input-border);
-  background: var(--card-hover);
+  background: var(--ghost-hover-bg);
   color: var(--text-primary);
 }
 
@@ -807,16 +842,7 @@
 }
 
 /* ── 列表列与交互定义 ───────────────────────────────────────────────────────────── */
-.gesture-table__col--gesture {
-  width: 90px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-}
-
 .gesture-table__col--switch {
-  width: 48px;
-  flex-shrink: 0;
   text-align: center;
   display: flex;
   align-items: center;
@@ -917,11 +943,14 @@
 .gesture-flag-badge {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 1px 5px;
+  gap: 3px;
+  padding: 1px 6px;
   font-size: var(--text-xs, 0.84rem);
   font-weight: 600;
-  border-radius: 3px;
+  border-radius: 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.4;
 }
 
 .gesture-flag-badge--clickable {
@@ -1037,16 +1066,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.gesture-admin-badge {
-  font-size: var(--text-xs, 0.84rem);
-  font-weight: 500;
-  padding: 2px 8px;
-  border-radius: 9999px;
-  background: rgba(16, 185, 129, 0.15);
-  color: #10B981;
-  border: 1px solid rgba(16, 185, 129, 0.3);
 }
 
 .gesture-admin-hint-desc {
