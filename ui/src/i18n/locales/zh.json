@@ -1305,7 +1305,7 @@
     "authorGithubTip": "访问原作者 GitHub 主页",
     "repository": "开源仓库",
     "repositoryTip": "访问 GitHub 开源项目仓库",
-    "licenseTip": "查看 MIT 开源协议详情",
+    "licenseTip": "查看 GNU GPL v3.0 开源协议详情",
     "exportFailed": "导出失败",
     "authorBadge": "作者 · Yy1 (@yuan278501381)"
   },

@@ -7,7 +7,7 @@
 //   3. 连续 idleSec 秒（默认 60s）无新请求、收到 Shutdown 或父进程退出时直接结束进程，
 //      由操作系统 100% 彻底回收 DirectML / ONNX Runtime / 显卡驱动全部虚拟提交与线程
 //
-// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "ocr/OcrWorkerHost.h"

@@ -34,6 +34,7 @@ if(MSVC)
     add_compile_options(/FS /utf-8)
 endif()
 
+string(TIMESTAMP TOOLS3000_BUILD_DATE "%Y-%m-%d")
 configure_file(
     "${CMAKE_SOURCE_DIR}/src/core/Version.h.in"
     "${CMAKE_BINARY_DIR}/generated/Tools3000Version.h"

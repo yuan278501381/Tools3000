@@ -502,7 +502,7 @@ function getMockResponse(method: string, params: Record<string, unknown> = {}): 
       return { memoryMB: 42.5, cpuPercent: 0.8, screenshotLatencyMs: 0, gestureLatencyMs: 1.2, uiRenderLatencyMs: 4.1 };
 
     case 'app.getSystemInfo':
-      return { version: __TOOLS3000_VERSION__, cpuArch: 'x64', cpuCores: 12, totalMemoryGB: 32, dpiScale: 1 };
+      return { version: __TOOLS3000_VERSION__, buildDate: __TOOLS3000_BUILD_DATE__, cpuArch: 'x64', cpuCores: 12, totalMemoryGB: 32, dpiScale: 1 };
 
     case 'app.checkForUpdates':
       return { success: true, started: false };

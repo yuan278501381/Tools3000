@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors.
-// All rights reserved. | MIT License
+// All rights reserved. | GPL-3.0 License
 //
 // Tools3000 Rust Content Search Kernel
 // Modular architecture:

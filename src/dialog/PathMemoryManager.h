@@ -1,9 +1,9 @@
-﻿/**
+/**
  * Tools3000 - High Performance Windows Productivity Suite
  * 
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
  * 
- * Licensed under the MIT License.
+ * Licensed under the GPL-3.0 License.
  */
 
 #pragma once

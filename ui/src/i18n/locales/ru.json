@@ -1305,7 +1305,7 @@
     "authorGithubTip": "Открыть профиль автора на GitHub",
     "repository": "Репозиторий",
     "repositoryTip": "Открыть репозиторий проекта на GitHub",
-    "licenseTip": "Посмотреть условия лицензии MIT",
+    "licenseTip": "Посмотреть условия лицензии GNU GPL v3.0",
     "exportFailed": "Ошибка экспорта",
     "authorBadge": "Автор · Yy1 (@yuan278501381)"
   },

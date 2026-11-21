@@ -7,7 +7,7 @@
 //   2. 通过一次性命名共享内存零拷贝传递图像、命名管道回传识别行与字符级 charBoxes
 //   3. 子进程闲置 60s 后自动退出，或响应 shutdownWorker() 立即退场，主进程 0 DirectML 加载与 0 私有内存残留
 //
-// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef TOOLS3000_OCR_OCRWORKERCLIENT_H

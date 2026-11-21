@@ -1,10 +1,16 @@
 # Tools3000 工程活记忆 (Project Memory)
 
-> Copyright (c) 2026 Yy1 (yuan278501381). All rights reserved. | MIT License
+> Copyright (c) 2026 Yy1 (yuan278501381). All rights reserved. | GPL-3.0 License
 
 ---
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
+
+### [2026-11-21] 正式升级开源协议至 GNU GPL v3.0（附 Windows/WebView2 链接豁免）+ 「关于」页构建日期穿透 + 历史仓库重写对齐
+- **产品与开源法务决策**：
+  - 针对独立桌面效率软件防换皮闭源收割的定位，在 `v1.2.0` 正式推广前将项目全仓许可证由 `MIT` 切换为 **GNU General Public License v3.0 (`GPL-3.0-only`)**，根目录 `LICENSE` 保留 100% FSF 逐字原文以确保 GitHub Licensee 自动识别为 `GPL-3.0 license`，同级新增 [LICENSE-EXCEPTION.md](file:///c:/repo/Tools3000/LICENSE-EXCEPTION.md) 声明 GPLv3 Section 7 标准 *Windows System & Microsoft Edge WebView2 Linking Exception*；
+  - 同步更新 8 语种 README、8 套前端国际化词典、`AboutPage.tsx`、Scoop (`bucket/tools3000.json`)、WinGet (`packaging/winget/*.yaml` 实机 `winget validate` 通过)、SBOM 生成器 (`generate-third-party-notices.ps1`) 及 41 份源码/文档头声明；
+  - 全链路打通真实编译构建日期（`CMakeLists.txt` `TOOLS3000_BUILD_DATE` -> `Version.h.in` -> `app.getSystemInfo` -> `AboutPage` 展示 `v1.2.0 · YYYY-MM-DD`）。
 
 ### [2026-11-21] 方案 B 终局架构：重型 AI / 视频硬件编码短命子进程隔离 (`--worker=ocr|studio-export|record-encode`) + 演播室壁纸缓存闭环
 - **实机全功能压测发现的残余内存大头与根因**：

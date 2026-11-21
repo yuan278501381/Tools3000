@@ -2,7 +2,7 @@
   "version": "1.0.11",
   "description": "Lightweight native Windows all-in-one productivity suite: instant NTFS file & content search, QuickLook, screenshot markup, scrolling capture, offline OCR, screen recorder with auto-zoom Studio, and global mouse gestures.",
   "homepage": "https://github.com/yuan278501381/Tools3000",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "notes": [
     "Tools3000 runs in portable mode under Scoop with user settings persisted in 'data'.",
     "Run 'tools3000' from terminal or launch Tools3000 from the Start Menu shortcut."

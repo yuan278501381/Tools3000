@@ -83,6 +83,8 @@
   font-size: 0.95rem;
   font-weight: 700;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   background: rgba(241, 91, 66, 0.18);
   color: #ff8b62;
   border: 1px solid rgba(241, 91, 66, 0.35);

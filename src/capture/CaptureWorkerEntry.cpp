@@ -7,7 +7,7 @@
 //     - studio-export  -> runStudioExportWorkerProcess
 //     - record-encode  -> runRecordEncodeWorkerProcess
 //
-// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/CaptureWorkerCommon.h"

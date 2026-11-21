@@ -7,7 +7,7 @@
 //   2. 宿主侧按需拉起短命子进程执行导出，经命名管道实时同步进度并支持毫秒级取消
 //   3. 导出完毕子进程即刻退出，由 OS 100% 回收 NVENC/QSV/MF 硬件编码驱动与 4K 合成缓冲
 //
-// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef TOOLS3000_CAPTURE_STUDIOEXPORTWORKER_H

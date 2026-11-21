@@ -2,7 +2,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // OcrWorkerProtocol.h — 独立短命 OCR Worker 进程二进制 IPC 与共享内存协议 (SSOT)
 //
-// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef TOOLS3000_OCR_OCRWORKERPROTOCOL_H

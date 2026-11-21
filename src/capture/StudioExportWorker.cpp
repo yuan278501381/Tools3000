@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // StudioExportWorker.cpp — 演播室多格式媒体导出短命子进程隔离实现
 //
-// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/StudioExportWorker.h"

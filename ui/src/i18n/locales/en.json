@@ -1305,7 +1305,7 @@
     "authorGithubTip": "Visit original author GitHub profile",
     "repository": "Repository",
     "repositoryTip": "Visit GitHub open source repository",
-    "licenseTip": "View MIT License details",
+    "licenseTip": "View GNU GPL v3.0 license details",
     "exportFailed": "Export failed",
     "authorBadge": "Author · Yy1 (@yuan278501381)"
   },

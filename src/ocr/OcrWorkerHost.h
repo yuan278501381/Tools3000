@@ -2,7 +2,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // OcrWorkerHost.h — 独立短命 OCR Worker 进程服务端主循环
 //
-// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef TOOLS3000_OCR_OCRWORKERHOST_H

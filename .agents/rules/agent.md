@@ -113,7 +113,7 @@ trigger: always_on
    - 作者官方主页：`https://github.com/yuan278501381`
    - 项目官方仓库：`https://github.com/yuan278501381/tools3000`
 3. **开源协议与法定版权声明规范 (License & Notice Enforcement)**：
-   - 项目默认采用 **MIT License**；
+   - 项目采用 **GNU General Public License v3.0 (GPL-3.0)**（附带 [LICENSE-EXCEPTION.md](file:///c:/repo/Tools3000/LICENSE-EXCEPTION.md) Windows System / Microsoft Edge WebView2 链接豁免）；
    - 在代码仓库的 `LICENSE` 文件、UI 关于界面（About Page）、安装包发布者元数据（Inno Setup `AppPublisher`）以及所有相关文档中，均强制统一保留 `Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` 的法定版权声明。
 
 ---

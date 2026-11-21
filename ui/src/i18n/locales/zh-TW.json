@@ -1305,7 +1305,7 @@
     "authorGithubTip": "造訪原作者 GitHub 主頁",
     "repository": "開源存放庫",
     "repositoryTip": "造訪 GitHub 開源專案存放庫",
-    "licenseTip": "檢視 MIT 開源授權詳情",
+    "licenseTip": "檢視 GNU GPL v3.0 開源授權詳情",
     "exportFailed": "匯出失敗",
     "authorBadge": "作者 · Yy1 (@yuan278501381)"
   },

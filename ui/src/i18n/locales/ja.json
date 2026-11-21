@@ -1305,7 +1305,7 @@
     "authorGithubTip": "原作者の GitHub プロフィールを開く",
     "repository": "リポジトリ",
     "repositoryTip": "GitHub オープンソースリポジトリを開く",
-    "licenseTip": "MIT ライセンスの詳細を表示",
+    "licenseTip": "GNU GPL v3.0 ライセンスの詳細を表示",
     "exportFailed": "エクスポートに失敗しました",
     "authorBadge": "開発者 · Yy1 (@yuan278501381)"
   },

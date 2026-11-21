@@ -103,7 +103,7 @@ PublisherSupportUrl: https://github.com/yuan278501381/tools3000/issues
 Author: Yy1 (yuan278501381) & Tools3000 contributors
 PackageName: Tools3000
 PackageUrl: https://github.com/yuan278501381/tools3000
-License: MIT
+License: GPL-3.0-only
 LicenseUrl: https://github.com/yuan278501381/tools3000/blob/main/LICENSE
 Copyright: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors
 CopyrightUrl: https://github.com/yuan278501381/tools3000/blob/main/LICENSE
@@ -142,7 +142,7 @@ PublisherSupportUrl: https://github.com/yuan278501381/tools3000/issues
 Author: Yy1 (yuan278501381) & Tools3000 contributors
 PackageName: Tools3000
 PackageUrl: https://github.com/yuan278501381/tools3000
-License: MIT
+License: GPL-3.0-only
 LicenseUrl: https://github.com/yuan278501381/tools3000/blob/main/LICENSE
 Copyright: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors
 CopyrightUrl: https://github.com/yuan278501381/tools3000/blob/main/LICENSE

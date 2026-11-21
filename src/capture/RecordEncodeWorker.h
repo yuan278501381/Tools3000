@@ -7,7 +7,7 @@
 //   2. 通过精确尺寸单帧共享内存零拷贝传视频帧、命名管道传音频 PCM 与控制指令
 //   3. 录屏停止并写完 trailer 后子进程即刻退出，主进程 0 残留显卡编码驱动虚拟提交与线程池
 //
-// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef TOOLS3000_CAPTURE_RECORDENCODEWORKER_H

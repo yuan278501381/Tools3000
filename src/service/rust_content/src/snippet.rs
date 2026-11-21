@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors.
-// All rights reserved. | MIT License
+// All rights reserved. | GPL-3.0 License
 //
 // UTF-16 snippet sanitization, surrogate-safe windowing, and match offset alignment.
 

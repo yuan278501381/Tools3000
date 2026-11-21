@@ -7,7 +7,7 @@
 //   2. 提供零泄漏 ScopedHandle、可靠管道精确字节流读写与安全子进程拉起封装
 //   3. 提供父进程死亡内核看门狗 (ParentProcessWatchdog)，配合宿主 Job Object 双重杜绝僵尸进程
 //
-// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. MIT License.
+// 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef TOOLS3000_CAPTURE_CAPTUREWORKERCOMMON_H

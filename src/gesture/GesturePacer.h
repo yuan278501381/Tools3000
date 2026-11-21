@@ -2,7 +2,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // GesturePacer.h — 动态物理显示器刷新率感知与高精度单调 QPC 节拍器引擎
 //
-// 法定版权：Copyright (c) 2026 Yy1 (yuan278501381). All rights reserved. | MIT License
+// 法定版权：Copyright (c) 2026 Yy1 (yuan278501381). All rights reserved. | GPL-3.0 License
 //
 // 职责：
 //   1. Feature F10 动态物理显示器刷新率感知：
