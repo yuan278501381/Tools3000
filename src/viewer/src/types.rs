@@ -141,6 +141,43 @@ impl DecodedImage {
     pub fn memory_bytes(&self) -> usize {
         self.frames.iter().map(|f| f.byte_len()).sum()
     }
+
+    /// 判断指定帧是否仍持有 CPU 像素缓冲（静态图上传 GPU 后可释放 CPU 像素实现零双份驻留）
+    pub fn has_cpu_pixels(&self, frame_idx: usize) -> bool {
+        self.frames
+            .get(frame_idx)
+            .map(|f| {
+                let expected = (f.width as usize)
+                    .saturating_mul(f.height as usize)
+                    .saturating_mul(4);
+                expected > 0 && f.bgra_premul.len() >= expected
+            })
+            .unwrap_or(false)
+    }
+
+    /// 生成仅保留完整图像元信息（尺寸/透明通道/EXIF/格式/文件大小）的轻量对象，释放 CPU 像素内存
+    pub fn clone_metadata_without_pixels(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            format_kind: self.format_kind.clone(),
+            file_size_bytes: self.file_size_bytes,
+            width: self.width,
+            height: self.height,
+            has_alpha: self.has_alpha,
+            frames: self
+                .frames
+                .iter()
+                .map(|f| ImageFrame {
+                    width: f.width,
+                    height: f.height,
+                    delay_ms: f.delay_ms,
+                    bgra_premul: Vec::new(),
+                })
+                .collect(),
+            total_duration_ms: self.total_duration_ms,
+            exif_summary: self.exif_summary.clone(),
+        }
+    }
 }
 
 pub type SharedImage = Arc<DecodedImage>;
@@ -162,6 +199,24 @@ pub enum LifecyclePhase {
     Viewing,
     Slideshow,
     Closing,
+}
+
+/// 窗口形态：经典半透明桌面浮层 vs 标准可缩放独立小窗口（1:1 复刻原版 Picasa 自动切窗体验）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowMode {
+    Overlay,
+    Windowed,
+}
+
+/// 视口适配布局策略：决定默认 Fit 边距、居中基线与自由拖拽边界
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FitLayoutMode {
+    /// 浮层看图态：四周留呼吸边距 + 底部工具栏安全区 + 允许未放大时自由拖拽定位
+    Overlay,
+    /// 标准小窗口态：紧凑满幅居中（贴近客户区边缘）+ 窗口缩放实时重排
+    Windowed,
+    /// 全屏幻灯片态：100% 纯净满屏居中
+    Slideshow,
 }
 
 /// 向心坍缩退出 (`Closing`) 初始快照：

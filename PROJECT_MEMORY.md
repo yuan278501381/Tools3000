@@ -6,6 +6,22 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-22] 手势 3 视觉开关真实 HWND 根治、Rust Picasa 看图器内存瘦身与标准小窗重构、全链路并发与增量打包提速引擎
+- **核心架构决策与实机验证控制点**：
+  1. **鼠标手势 3 视觉开关正交组合与硬件亮度 OSD 彻底根治 (`src/gesture/GestureTrailOverlay.cpp`, `src/gesture/GestureEngine.cpp`, `tests/unit/test_gesture.inc`)**：
+     - *暗坑机理*：① 纯文字提示分支 (`!drawLine || points.empty()`) 在 `m_dcompDevice->Commit()` 后漏掉 `SetWindowPos(..., SWP_SHOWWINDOW)`，导致关闭手势轨迹时实时提示与亮度 OSD 全部画在隐藏窗口上肉眼不可见；② 关闭轨迹线后不调用 `addPoint()`，`setLiveAction()` 未置 `m_wantVisible = true` 且未 `wakeRender()`；③ 关闭渐隐动画时 `renderLoop` 休眠条件未纳入 `m_hideRequested`/`m_dismissPrevious`，导致 `hide()` 落入 `INFINITE` 挂起；④ DComp 淡出同时把 `fadeAlpha` 烘焙进纹理像素与 `IDCompositionEffectGroup::SetOpacity` 引发 `fadeAlpha^2` 阶跃闪烁；
+     - *终局标准*：补齐纯文字 DComp/GDI 双路径显现与清空隐藏、`setLiveAction` 显式唤醒渲染线程、`renderLoop` 完整覆盖隐藏/退出请求、DComp 表面恒以 `1.0f` 烘焙由硬件单次驱动淡出、`BrightnessUp/Down` 滚轮路径跳过冗余 `endTrail` 闪烁，并新增真实 HWND 4 组合矩阵单测 `ThreeVisualSwitchesRealHwndVisibilityMatrix`（213/213 PASS）。
+  2. **Rust Picasa 看图器对标原版 4 项精修 (`src/viewer/src/**`)**：
+     - **内存极致瘦身（`186 MB -> 6~15 MB` 专用工作集，远低于原版 `76.6 MB`）**：收紧解码池至 `36 MB / 3 条目 / 18 MB 预解上限 / PRELOAD_RADIUS = 1 / 128px 缩略图`；静态图与缩略图上传 GPU 后即刻释放 CPU 像素（保留元数据，复制/另存 PNG/设备丢失按需单帧重解，消灭 CPU+GPU 双份驻留）；冷路径 `stop_anim_timer()` 与最小化触发 `IDXGIDevice3::Trim()` + `SetProcessWorkingSetSize`，实测 12 张 2048×2048 相册静置专用工作集 `6.12 MB`（活跃 `7.77 MB`，小窗 `10.35~14.68 MB`，静止 CPU `0.0%`）；
+     - **浮层态图片区内左键 1:1 自由拖拽**：放开未放大 (`scaled <= view`) 时 `max_pan_bounds = 0` 的居中锁死，松手后停留在用户放置位置，以宽松防丢包络柔和回弹且不弹回正中，滚轮缩放严格光标锚点零漂移；点图片外空白区绝不拖拽；
+     - **去白边保留贴边柔和阴影**：移除 `PHOTO_WHITE_MAT_DIP = 4.5` 白色相纸边框及外缘细灰线，仅保留紧贴照片真实边缘的双层高斯 9 宫格投影；
+     - **点击空白或任务栏自动切换标准可缩放小窗口 (`WindowMode::Windowed`)**：单击图片外空白区或失焦 `WM_ACTIVATE(WA_INACTIVE)`（6 处模态弹窗期间 `modal_dialog_active` 免疫）平滑无抢焦切换为 `WS_OVERLAPPEDWINDOW`（不透明干净底色、隐藏右上角四分之一圆 `×`、动态窗口标题 `{文件名} - Tools3000 Picasa Viewer`、保留底部控制条与缩略图、支持 `F5` 幻灯片与 `F11` 全屏浮层往返切换）；51/51 单测 0 警告并通过 `--dump-ui` 双形态视觉验收。
+  3. **世界级打包构建全链路并发与增量提速架构 (`deploy.ps1`, `scripts/release.ps1`, `scripts/Build-FrontendTrack.ps1`, `scripts/Build-RustViewerTrack.ps1`, `scripts/Invoke-ParallelNativeTests.ps1`, `scripts/New-FastZipArchive.ps1`, `scripts/sign-artifacts.ps1`, `ui/scripts/run-static-gates.mjs`, `ui/package.json`, `ui/tsconfig.*.json`, `installer.iss`, `CMakeLists.txt`)**：
+     - **前端零冗余与三路并发（`99s -> ~12s`）**：基于 `package-lock.json` 依赖树规范化 SHA-256 哨兵（剥离顶层自身版本号）智能跳过无变更 `npm ci`，保留 `node_modules/.tmp/.eslintcache`（ESLint `33.7s -> 3.2s`）与开启 `"incremental": true` 后的 `tsconfig.*.tsbuildinfo`（`tsc -b` `45.4s -> 1.18s`）；6 重静态门禁改为 `run-static-gates.mjs` 并发执行（`~0.5s`）；`Build-FrontendTrack.ps1` 三路并发 `lint || test || typecheck` 后直走 `vite:build`（消除原 `npm run build` 重复跑 6 重门禁的纯浪费，且 Windows 下强制规范化盘符大写规避 Vitest 4 `cwd` 大小写错配坑）；
+     - **三轨并发编译 + CMake/资源指纹哨兵增量复用（C++ `280s -> 增量几秒`）**：`deploy.ps1` 将前端 UI、Rust 看图器与 C++ CMake 编排为三轨并发，并通过 `TOOLS3000_SKIP_POSTBUILD_UI_SYNC=ON` 杜绝 `ui/dist` 读写竞态；废除本地每次发版盲删 `build/` 的旧逻辑（新增显式 `-CleanBuild` 开关供全量冷建），结合 `.tools3000_configure_stamp.sha256` 与 `.tools3000_res_stamp.sha256` 在 `CMakeLists.txt`/`VERSION`/源码增删/图标未变化时 0ms 复用构建树与 `.res`；
+     - **4 路 `TOOLS3000_DATA_ROOT` 沙箱隔离并发 C++ 单元测试（`105.5s -> ~48~52s`）**：`Invoke-ParallelNativeTests.ps1` 按互斥无交集静态分组将重型 ONNX DeepOcr (`OCR_CORE`)、插件隔离 (`OCR_PLUGIN`) 与其余 740+ 轻量用例 (`FAST_0`/`FAST_1`) 并发执行，每分片独立分配 `TOOLS3000_DATA_ROOT` 并只读 Junction 共享宿主 `models` 目录，执行完毕数学断言实际运行数 == `--gtest_list_tests` 全量基线（0 漏测）；同时修复 `PinWindowDragFirstAndZeroOcclusionTest` 在独立进程下未初始化 `ConfigManager` 的隐式顺序耦合；
+     - **批量签名/验签 + 第三方不变 DLL 确定性签名缓存 + 多线程 LZMA2 与 `.NET ZipFile` 并发打包**：`sign-artifacts.ps1` 升级单次 `signtool verify` 批量验签与根证书缓存；本地非 CI 迭代下 9 个自有产物始终实时重签，30 个不变第三方 DLL 按 `(签名身份 + 源 SHA-256)` 命中有效签名缓存免重复公网 TSA 往返；`installer.iss` 开启 `LZMANumBlockThreads=8` + `LZMABlockSize=16384` 将 `lzma2/ultra64` 压缩从 `31.6s -> 9.2s`（提速 3.4x），并与后台 `.NET ZipFile` 便携包及 PDB 符号归档完全并发执行。
+
 ### [2026-11-22] v1.3.0 社区实测反馈全量吸收与构建产物 Hygiene 收口（截图独立快速保存、手势渐隐/提示正交开关 + 删除键 + 多屏硬件亮度滚轮、Output 2 件套去重、F1 跨层级拼音速查与关于页技术栈更新）
 - **核心产品决策与工程暗坑控制点**：
   1. **截图工具栏独立「快速保存」按钮 (`src/capture/**`, `tests/unit/test_capture.inc`)**：

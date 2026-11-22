@@ -29,6 +29,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 option(TOOLS3000_ENABLE_MSVC_ANALYSIS "Run MSVC static analysis on security-sensitive targets" OFF)
+option(TOOLS3000_SKIP_POSTBUILD_UI_SYNC "Skip copying ui/dist in Tools3000 POST_BUILD (parallel pipeline syncs after join)" OFF)
 
 if(MSVC)
     add_compile_options(/FS /utf-8)
@@ -664,7 +665,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/resources/locales")
     )
 endif()
 
-if(EXISTS "${CMAKE_SOURCE_DIR}/ui/dist")
+if(EXISTS "${CMAKE_SOURCE_DIR}/ui/dist" AND NOT TOOLS3000_SKIP_POSTBUILD_UI_SYNC)
     add_custom_command(TARGET Tools3000 POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Tools3000>/ui"
         COMMAND ${CMAKE_COMMAND} -E copy_directory

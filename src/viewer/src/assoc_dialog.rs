@@ -386,7 +386,7 @@ fn pt_in_rect(x: f32, y: f32, r: D2D_RECT_F) -> bool {
     x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
 }
 
-fn detect_system_dark_theme() -> bool {
+pub(crate) fn detect_system_dark_theme() -> bool {
     unsafe {
         let sub = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
         let mut hkey = HKEY::default();

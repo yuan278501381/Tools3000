@@ -372,7 +372,8 @@
     "saveToFile": "Auto Save",
     "saveToFileDesc": "Save the image to a file automatically after capture",
     "saveDir": "Save Directory",
-    "saveDirDesc": "Directory for automatically saved screenshots",
+    "saveDirDesc": "Default folder for auto-save and Quick Save (Ctrl+Shift+S); leave empty for the default path",
+    "saveDirPlaceholder": "Default: %LOCALAPPDATA%\\Tools3000\\Screenshots",
     "imageFormat": "Image Format",
     "imageFormatDesc": "Select the format for saved screenshots",
     "pressToBind": "Press any key combination...",
@@ -659,7 +660,8 @@
     "bitrate16": "16 Mbps (HD)",
     "bitrate32": "32 Mbps (Ultra HD)",
     "saveDir": "Recording folder",
-    "saveDirDesc": "Choose where completed recordings are stored"
+    "saveDirDesc": "Choose where completed recordings are stored",
+    "saveDirPlaceholder": "Default: %LOCALAPPDATA%\\Tools3000\\Recordings"
   },
   "ocr": {
     "title": "Text OCR Settings",

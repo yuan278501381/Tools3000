@@ -372,7 +372,8 @@
     "saveToFile": "자동 저장",
     "saveToFileDesc": "캡처 완료 후 이미지를 파일로 자동 저장합니다",
     "saveDir": "저장 폴더",
-    "saveDirDesc": "자동 저장된 스크린샷이 보관되는 기본 폴더",
+    "saveDirDesc": "자동 저장 및 빠른 저장 (Ctrl+Shift+S) 기본 폴더 (비워 두면 기본 경로 사용)",
+    "saveDirPlaceholder": "기본값: %LOCALAPPDATA%\\Tools3000\\Screenshots",
     "imageFormat": "이미지 형식",
     "imageFormatDesc": "자동 저장 시 사용할 이미지 파일 형식",
     "pressToBind": "원하는 키 조합을 누르세요...",
@@ -659,7 +660,8 @@
     "bitrate16": "16 Mbps (고화질)",
     "bitrate32": "32 Mbps (초고화질)",
     "saveDir": "녹화 저장 폴더",
-    "saveDirDesc": "완료된 화면 녹화 파일이 저장될 폴더를 선택합니다"
+    "saveDirDesc": "완료된 화면 녹화 파일이 저장될 폴더를 선택합니다",
+    "saveDirPlaceholder": "기본값: %LOCALAPPDATA%\\Tools3000\\Recordings"
   },
   "ocr": {
     "title": "오프라인 OCR 설정",

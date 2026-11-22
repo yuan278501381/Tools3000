@@ -3,8 +3,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::constants::{
-    MAX_DECODE_CACHE_BYTES, MAX_DECODE_CACHE_ENTRIES, MAX_THUMB_CACHE_ENTRIES, PRELOAD_RADIUS,
-    THUMB_TARGET_SIZE, WORKER_THREAD_COUNT,
+    MAX_DECODE_CACHE_BYTES, MAX_DECODE_CACHE_ENTRIES, MAX_PRELOAD_SINGLE_ENTRY_BYTES,
+    MAX_THUMB_CACHE_ENTRIES, PRELOAD_RADIUS, THUMB_TARGET_SIZE, WORKER_THREAD_COUNT,
 };
 use crate::decode::{decode_image_file, decode_thumbnail};
 use crate::types::{DecodeError, SharedImage, ThumbnailBitmap};
@@ -19,9 +19,6 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 /// 后台解码完成通知消息（唤醒 UI 线程立即重绘）
 pub const WM_VIEWER_IMAGE_READY: u32 = WM_APP + 101;
 pub const WM_VIEWER_THUMB_READY: u32 = WM_APP + 102;
-
-/// 后台邻居预解码单图体积上限（超过 128MB 的超大动图/超长图仅按需现解，防止挤爆 256MB 预算）
-const MAX_PRELOAD_SINGLE_ENTRY_BYTES: usize = MAX_DECODE_CACHE_BYTES / 2;
 
 #[derive(Clone, Debug)]
 enum DecodeTask {
@@ -156,15 +153,32 @@ impl ImageCachePool {
         cv.notify_all();
     }
 
-    /// 查询缩略图缓存；未命中且未标记损坏时自动投递低优先级异步缩略图生成任务
-    pub fn get_or_request_thumb(&self, path: &Path) -> Option<ThumbnailBitmap> {
+    /// 启动早期（渲染器创建前）静默预热首张缩略图，不拷贝像素
+    pub fn prefetch_thumb(&self, path: &Path) {
+        let (lock, cv) = &*self.state;
+        let Ok(mut guard) = lock.lock() else {
+            return;
+        };
+        if guard.thumb_cache.contains_key(path)
+            || guard.thumb_errors.contains(path)
+            || guard.pending_thumb.contains(path)
+        {
+            return;
+        }
+        guard.pending_thumb.insert(path.to_path_buf());
+        guard.queue.push_back(DecodeTask::Thumbnail {
+            path: path.to_path_buf(),
+        });
+        cv.notify_one();
+    }
+
+    /// 取出待上传 GPU 的缩略图并立刻从 CPU 侧 `thumb_cache` 移除像素缓冲，彻底消除 CPU + GPU 双份常驻；
+    /// 若尚未就绪且未标记损坏，则自动投递低优先级异步缩略图解码任务
+    pub fn take_thumb_for_upload(&self, path: &Path) -> Option<ThumbnailBitmap> {
         let (lock, cv) = &*self.state;
         let mut guard = lock.lock().ok()?;
-        guard.lru_tick += 1;
-        let tick = guard.lru_tick;
-        if let Some(entry) = guard.thumb_cache.get_mut(path) {
-            entry.tick = tick;
-            return Some(entry.thumb.clone());
+        if let Some(entry) = guard.thumb_cache.remove(path) {
+            return Some(entry.thumb);
         }
         if guard.thumb_errors.contains(path) {
             return None;
@@ -177,6 +191,14 @@ impl ImageCachePool {
             cv.notify_one();
         }
         None
+    }
+
+    /// 静态当前图成功上传至 GPU `ID2D1Bitmap1` 后，立即从 CPU 全图缓存中释放该像素副本（保留 active_path）
+    pub fn release_full_cache_entry(&self, path: &Path) {
+        let (lock, _) = &*self.state;
+        if let Ok(mut guard) = lock.lock() {
+            release_full_cache_entry_locked(&mut guard, path);
+        }
     }
 
     /// 判断某张缩略图是否已确认解码失败（用于胶片带渲染原版经典暗红无效微标且避免重复重试）
@@ -227,9 +249,15 @@ fn enqueue_full_locked(state: &mut SharedState, path: PathBuf, high_priority: bo
     }
 }
 
+fn release_full_cache_entry_locked(state: &mut SharedState, path: &Path) {
+    if let Some(removed) = state.full_cache.remove(path) {
+        state.full_bytes = state.full_bytes.saturating_sub(removed.bytes);
+    }
+}
+
 /// 将新解码结果纳入预算制缓存：
-/// - 非当前图的超大后台预解码条目（> 128MB）不入长期缓存，防止冲垮 256MB 预算并挤掉当前图；
-/// - 当前图即使单张超大，也会先清空全部非当前条目并仅保留此当前图，一旦切图即被立刻回收。
+/// - 非当前图的超大后台预解码条目（> 18MB）不入长期缓存，防止冲垮 36MB 预算并挤掉当前图；
+/// - 当前图即使单张超大，也会先清空全部非当前条目并仅保留此当前图，一旦切图或上传 GPU 即被立刻回收。
 fn insert_full_with_budget_locked(state: &mut SharedState, path: PathBuf, shared: SharedImage, bytes: usize) {
     let is_active = state.active_path.as_deref() == Some(path.as_path());
     if !is_active && bytes > MAX_PRELOAD_SINGLE_ENTRY_BYTES {
@@ -423,13 +451,13 @@ mod tests {
         let bg_huge = PathBuf::from("bg_huge.png");
         st.active_path = Some(cur.clone());
 
-        insert_full_with_budget_locked(&mut st, cur.clone(), dummy_image("cur.png"), 64 * 1024 * 1024);
-        // 超过 128MB 的后台预解码超大图不得挤入长期缓存或踢掉当前图
+        insert_full_with_budget_locked(&mut st, cur.clone(), dummy_image("cur.png"), 16 * 1024 * 1024);
+        // 超过 18MB 单图上限的后台预解码超大图不得挤入长期缓存或踢掉当前图
         insert_full_with_budget_locked(
             &mut st,
             bg_huge.clone(),
             dummy_image("bg_huge.png"),
-            180 * 1024 * 1024,
+            MAX_PRELOAD_SINGLE_ENTRY_BYTES + 1024,
         );
         assert!(st.full_cache.contains_key(&cur));
         assert!(!st.full_cache.contains_key(&bg_huge));
@@ -444,14 +472,14 @@ mod tests {
         let next = PathBuf::from("next.png");
 
         st.active_path = Some(prev.clone());
-        insert_full_with_budget_locked(&mut st, prev.clone(), dummy_image("prev.png"), 80 * 1024 * 1024);
+        insert_full_with_budget_locked(&mut st, prev.clone(), dummy_image("prev.png"), 12 * 1024 * 1024);
 
         st.active_path = Some(huge_cur.clone());
         insert_full_with_budget_locked(
             &mut st,
             huge_cur.clone(),
             dummy_image("huge_cur.png"),
-            300 * 1024 * 1024,
+            48 * 1024 * 1024,
         );
         // 当前超大单图独占缓存，历史条目立即被清空
         assert_eq!(st.full_cache.len(), 1);
@@ -462,5 +490,60 @@ mod tests {
         evict_full_lru_locked(&mut st, &next);
         assert!(!st.full_cache.contains_key(&huge_cur));
         assert_eq!(st.full_bytes, 0);
+    }
+
+    #[test]
+    fn compact_budget_enforces_36mb_3_entries_and_releases_static_cpu_pixels() {
+        let mut st = empty_state();
+        let p0 = PathBuf::from("a.jpg");
+        let p1 = PathBuf::from("b.jpg");
+        let p2 = PathBuf::from("c.jpg");
+        let p3 = PathBuf::from("d.jpg");
+        st.active_path = Some(p3.clone());
+
+        for p in [&p0, &p1, &p2, &p3] {
+            insert_full_with_budget_locked(&mut st, p.clone(), dummy_image("x.jpg"), 10 * 1024 * 1024);
+        }
+        // 总条目严守 <= MAX_DECODE_CACHE_ENTRIES (3) 且总字节 <= MAX_DECODE_CACHE_BYTES (36MB)
+        assert!(st.full_cache.len() <= MAX_DECODE_CACHE_ENTRIES);
+        assert!(st.full_bytes <= MAX_DECODE_CACHE_BYTES);
+        assert!(st.full_cache.contains_key(&p3));
+        assert!(!st.full_cache.contains_key(&p0));
+
+        // 静态当前图上传至 GPU 后主动释放 CPU 像素副本，计数精准扣减
+        let before = st.full_bytes;
+        release_full_cache_entry_locked(&mut st, &p3);
+        assert!(!st.full_cache.contains_key(&p3));
+        assert_eq!(st.full_bytes, before - 10 * 1024 * 1024);
+        assert_eq!(st.active_path.as_deref(), Some(p3.as_path()));
+    }
+
+    #[test]
+    fn take_thumb_for_upload_removes_cpu_copy_to_prevent_double_residency() {
+        let pool = ImageCachePool::new();
+        let path = PathBuf::from("sample_thumb.jpg");
+        {
+            let (lock, _) = &*pool.state;
+            let mut guard = lock.lock().unwrap();
+            guard.thumb_cache.insert(
+                path.clone(),
+                ThumbEntry {
+                    thumb: ThumbnailBitmap {
+                        width: 128,
+                        height: 96,
+                        orig_width: 1024,
+                        orig_height: 768,
+                        bgra_premul: vec![255; 128 * 96 * 4],
+                    },
+                    tick: 1,
+                },
+            );
+        }
+        // 首次取出命中并返回像素缓冲，同时从 CPU thumb_cache 立即移除
+        let taken = pool.take_thumb_for_upload(&path);
+        assert!(taken.is_some());
+        let (lock, _) = &*pool.state;
+        let guard = lock.lock().unwrap();
+        assert!(!guard.thumb_cache.contains_key(&path));
     }
 }

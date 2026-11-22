@@ -372,7 +372,8 @@
     "saveToFile": "Salvamento automático",
     "saveToFileDesc": "Salva a imagem automaticamente em um arquivo após a captura",
     "saveDir": "Pasta de salvamento",
-    "saveDirDesc": "Pasta padrão para capturas de tela salvas automaticamente",
+    "saveDirDesc": "Pasta padrão para salvamento automático e Salvamento Rápido (Ctrl+Shift+S); deixe vazio para o caminho padrão",
+    "saveDirPlaceholder": "Padrão: %LOCALAPPDATA%\\Tools3000\\Screenshots",
     "imageFormat": "Formato de imagem",
     "imageFormatDesc": "Selecione o formato das capturas de tela salvas",
     "pressToBind": "Pressione uma combinação de teclas...",
@@ -659,7 +660,8 @@
     "bitrate16": "16 Mbps (HD)",
     "bitrate32": "32 Mbps (Ultra HD)",
     "saveDir": "Pasta de gravações",
-    "saveDirDesc": "Escolha onde as gravações concluídas são armazenadas"
+    "saveDirDesc": "Escolha onde as gravações concluídas são armazenadas",
+    "saveDirPlaceholder": "Padrão: %LOCALAPPDATA%\\Tools3000\\Recordings"
   },
   "ocr": {
     "title": "Configurações de OCR de Texto",

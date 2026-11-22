@@ -300,7 +300,7 @@ describe('Batch 3 Regression Suite (P-10 / U-12 / V-08 / C-05)', () => {
         return {
           format: 'png',
           quality: 90,
-          saveToFile: true,
+          saveToFile: false,
           saveDirectory: '',
           copyToClipboard: true,
           includeCursor: false,
@@ -342,6 +342,13 @@ describe('Batch 3 Regression Suite (P-10 / U-12 / V-08 / C-05)', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+
+    const captureSaveDirInput = container.querySelector<HTMLInputElement>('#saveDir');
+    const recordingSaveDirInput = container.querySelector<HTMLInputElement>('#recordSaveDir');
+    expect(captureSaveDirInput).not.toBeNull();
+    expect(recordingSaveDirInput).not.toBeNull();
+    expect(captureSaveDirInput?.placeholder).toBe('capture.saveDirPlaceholder');
+    expect(recordingSaveDirInput?.placeholder).toBe('recording.saveDirPlaceholder');
 
     const captureOpenBtn = container.querySelector<HTMLButtonElement>('#open-capture-save-dir');
     const recordingOpenBtn = container.querySelector<HTMLButtonElement>('#open-recording-save-dir');

@@ -106,6 +106,7 @@ pub fn pick_image_via_dialog(owner: HWND, lang: ViewerLanguage) -> Option<PathBu
 
 fn is_known_bool_flag(arg: &str) -> bool {
     arg.eq_ignore_ascii_case("--slideshow")
+        || arg.eq_ignore_ascii_case("--windowed")
         || arg.eq_ignore_ascii_case("--hover-close")
         || arg.eq_ignore_ascii_case("--show-info")
         || arg.eq_ignore_ascii_case("--zoom-badge")
@@ -151,7 +152,7 @@ fn parse_cli_target_path(args: &[String]) -> Option<PathBuf> {
     None
 }
 
-/// 无窗口离屏 GPU 帧导出器 (`--dump-ui <img_path> <out_png> [--dpi 192] [--slideshow] [--hover-close] [--zoom-badge]`)
+/// 无窗口离屏 GPU 帧导出器 (`--dump-ui <img_path> <out_png> [--dpi 192] [--slideshow] [--windowed] [--hover-close] [--zoom-badge]`)
 #[allow(clippy::too_many_arguments)]
 fn run_offscreen_ui_dump(
     img_path: &Path,
@@ -159,6 +160,7 @@ fn run_offscreen_ui_dump(
     lang: ViewerLanguage,
     dpi: f32,
     is_slideshow: bool,
+    is_windowed: bool,
     hover_close: bool,
     show_info: bool,
     show_zoom_badge: bool,
@@ -176,8 +178,8 @@ fn run_offscreen_ui_dump(
     );
 
     let scale = (dpi / 96.0).clamp(1.0, 3.0);
-    let view_w = 1280.0f32;
-    let view_h = 720.0f32;
+    let view_w = if is_windowed { 840.0f32 } else { 1280.0f32 };
+    let view_h = if is_windowed { 760.0f32 } else { 720.0f32 };
     let phys_w = (view_w * scale).round() as u32;
     let phys_h = (view_h * scale).round() as u32;
 
@@ -189,6 +191,14 @@ fn run_offscreen_ui_dump(
         }
     }
 
+    let fit_mode = if is_slideshow {
+        types::FitLayoutMode::Slideshow
+    } else if is_windowed {
+        types::FitLayoutMode::Windowed
+    } else {
+        types::FitLayoutMode::Overlay
+    };
+
     let mut camera = viewport::ViewportCamera::default();
     camera.set_dpi_scale(scale);
     camera.reset_to_fit_with_mode(
@@ -196,7 +206,7 @@ fn run_offscreen_ui_dump(
         decoded.height as f32,
         view_w,
         view_h,
-        is_slideshow,
+        fit_mode,
     );
 
     let layout = ui_layout::ViewerUiLayout::compute(&ui_layout::LayoutInput {
@@ -208,6 +218,7 @@ fn run_offscreen_ui_dump(
         is_animated: decoded.is_animated(),
         anim_playing: false,
         is_slideshow,
+        is_windowed,
         is_actual_zoom: false,
         is_flipped_h: false,
         is_flipped_v: false,
@@ -220,7 +231,7 @@ fn run_offscreen_ui_dump(
 
     let open_started_at = Instant::now();
     let now = open_started_at + Duration::from_secs(2);
-    let hovered = if hover_close {
+    let hovered = if hover_close && !is_windowed {
         ui_layout::HitTarget::ToolbarButton(types::ToolbarAction::CloseViewer)
     } else {
         ui_layout::HitTarget::None
@@ -244,10 +255,14 @@ fn run_offscreen_ui_dump(
         slide_fast_repeat: false,
         cinema_dim: if is_slideshow { 1.0 } else { 0.0 },
         slideshow_portal: None,
-        close_hover_anim: if hover_close { 1.0 } else { 0.0 },
+        close_hover_anim: if hover_close && !is_windowed { 1.0 } else { 0.0 },
         play_hover_anim: 0.0,
         backdrop: types::BackdropMode::PicasaGlass,
-        simulated_desktop_bg: Some([0.46, 0.48, 0.52, 1.0]),
+        simulated_desktop_bg: if is_windowed {
+            None
+        } else {
+            Some([0.46, 0.48, 0.52, 1.0])
+        },
         camera: &camera,
         image: Some(&decoded),
         fallback_thumb_path: None,
@@ -258,6 +273,7 @@ fn run_offscreen_ui_dump(
         current_index,
         sibling_paths: &siblings,
         is_slideshow,
+        is_windowed,
         layout: &layout,
         hovered,
         anim_speed: 1.0,
@@ -278,6 +294,7 @@ fn main() {
     let mut lang_override: Option<ViewerLanguage> = None;
     let mut dump_dpi: f32 = 96.0;
     let mut dump_slideshow = false;
+    let mut dump_windowed = false;
     let mut dump_hover_close = false;
     let mut dump_show_info = false;
     let mut dump_zoom_badge = false;
@@ -309,6 +326,8 @@ fn main() {
         }
         if a.eq_ignore_ascii_case("--slideshow") {
             dump_slideshow = true;
+        } else if a.eq_ignore_ascii_case("--windowed") {
+            dump_windowed = true;
         } else if a.eq_ignore_ascii_case("--hover-close") {
             dump_hover_close = true;
         } else if a.eq_ignore_ascii_case("--show-info") {
@@ -406,6 +425,7 @@ fn main() {
             lang,
             dump_dpi,
             dump_slideshow,
+            dump_windowed,
             dump_hover_close,
             dump_show_info,
             dump_zoom_badge,

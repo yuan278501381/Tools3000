@@ -372,7 +372,8 @@
     "saveToFile": "ファイルへ自動保存",
     "saveToFileDesc": "キャプチャ完了後、画像を自動的にファイルへ保存します",
     "saveDir": "保存先フォルダー",
-    "saveDirDesc": "スクリーンショットを自動保存する既定フォルダー",
+    "saveDirDesc": "自動保存およびクイック保存 (Ctrl+Shift+S) の既定フォルダー（空欄時は既定パスを使用）",
+    "saveDirPlaceholder": "既定: %LOCALAPPDATA%\\Tools3000\\Screenshots",
     "imageFormat": "画像形式",
     "imageFormatDesc": "自動保存時の画像フォーマットを選択します",
     "pressToBind": "キーの組み合わせを押してください...",
@@ -659,7 +660,8 @@
     "bitrate16": "16 Mbps（HD）",
     "bitrate32": "32 Mbps（Ultra HD）",
     "saveDir": "録画保存フォルダー",
-    "saveDirDesc": "完了した録画ファイルの保存先ディレクトリを選択します"
+    "saveDirDesc": "完了した録画ファイルの保存先ディレクトリを選択します",
+    "saveDirPlaceholder": "既定: %LOCALAPPDATA%\\Tools3000\\Recordings"
   },
   "ocr": {
     "title": "テキスト OCR 設定",

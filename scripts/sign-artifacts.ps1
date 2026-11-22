@@ -86,6 +86,31 @@ function Resolve-TimestampUrls {
     return $DEFAULT_TSA_POOL
 }
 
+$script:LocalMachineRootThumbprints = $null
+
+function Get-LocalMachineRootThumbprints {
+    if ($null -ne $script:LocalMachineRootThumbprints) {
+        return $script:LocalMachineRootThumbprints
+    }
+    $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $lmRoot = New-Object System.Security.Cryptography.X509Certificates.X509Store(
+        [System.Security.Cryptography.X509Certificates.StoreName]::Root,
+        [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
+    )
+    try {
+        $lmRoot.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+        foreach ($c in $lmRoot.Certificates) {
+            if (-not [string]::IsNullOrEmpty($c.Thumbprint)) {
+                [void]$set.Add($c.Thumbprint)
+            }
+        }
+    } finally {
+        $lmRoot.Close()
+    }
+    $script:LocalMachineRootThumbprints = $set
+    return $script:LocalMachineRootThumbprints
+}
+
 function Test-CertificatePubliclyTrusted {
     param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
     if (-not $Cert) { return $false }
@@ -107,21 +132,8 @@ function Test-CertificatePubliclyTrusted {
             return $false
         }
         $rootCert = $elements[$elements.Count - 1].Certificate
-        $lmRoot = New-Object System.Security.Cryptography.X509Certificates.X509Store(
-            [System.Security.Cryptography.X509Certificates.StoreName]::Root,
-            [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
-        )
-        try {
-            $lmRoot.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
-            $matched = $lmRoot.Certificates.Find(
-                [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-                $rootCert.Thumbprint,
-                $false
-            )
-            return ($matched.Count -gt 0)
-        } finally {
-            $lmRoot.Close()
-        }
+        $rootSet = Get-LocalMachineRootThumbprints
+        return $rootSet.Contains($rootCert.Thumbprint)
     } finally {
         $chain.Dispose()
     }
@@ -133,10 +145,11 @@ function Assert-SignedArtifact {
         [string]$SignTool,
         [bool]$ExpectTimestamp,
         [bool]$EnforceRequired,
-        [bool]$EnforcePublicTrust
+        [bool]$EnforcePublicTrust,
+        [bool]$SkipSignToolVerify = $false
     )
 
-    if ($SignTool) {
+    if ($SignTool -and -not $SkipSignToolVerify) {
         if ($ExpectTimestamp) {
             & $SignTool verify /pa /all /tw $FilePath | Out-Null
         } else {
@@ -163,6 +176,38 @@ function Assert-SignedArtifact {
 
     if ($EnforcePublicTrust -and -not $isPublicTrusted) {
         throw "[ERROR] 公网信任门禁阻断 (-RequirePublicTrust): $FilePath 使用的是非公网 CA / 自签名证书 ($($sig.SignerCertificate.Subject))，在外部设备会触发 SmartScreen 警告！请改用 Azure Trusted Signing / SignPath / 商业 EV 证书。"
+    }
+}
+
+function Assert-SignedArtifactsBatch {
+    param(
+        [string[]]$FilePaths,
+        [string]$SignTool,
+        [bool]$ExpectTimestamp,
+        [bool]$EnforceRequired,
+        [bool]$EnforcePublicTrust
+    )
+    if (-not $FilePaths -or $FilePaths.Count -eq 0) { return }
+
+    $batchVerified = $false
+    if ($SignTool -and $FilePaths.Count -gt 1) {
+        $verifyArgs = if ($ExpectTimestamp) {
+            @("verify", "/pa", "/all", "/tw") + $FilePaths
+        } else {
+            @("verify", "/pa", "/all") + $FilePaths
+        }
+        & $SignTool @verifyArgs | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $batchVerified = $true
+        }
+    }
+
+    foreach ($file in $FilePaths) {
+        Assert-SignedArtifact -FilePath $file -SignTool $SignTool `
+            -ExpectTimestamp:$ExpectTimestamp `
+            -EnforceRequired:$EnforceRequired `
+            -EnforcePublicTrust:$EnforcePublicTrust `
+            -SkipSignToolVerify:$batchVerified
     }
 }
 
@@ -308,6 +353,14 @@ $SigningStrategies = @{
         param([hashtable]$Ctx, [string]$SignTool, [string[]]$ResolvedFiles, [string[]]$TsaUrls)
         $identityArgs = @("/f", $Ctx.PfxPath)
         if ($Ctx.PfxPassword) { $identityArgs += @("/p", $Ctx.PfxPassword) }
+        # 优先按批量签名一次提交，显著降低多文件签名进程与 TSA 握手开销
+        foreach ($tsa in $TsaUrls) {
+            Write-Host "[SIGN] [PFX] Batch signing $($ResolvedFiles.Count) file(s) (TSA=$tsa)" -ForegroundColor Cyan
+            $batchArgs = @("sign", "/fd", "SHA256", "/tr", $tsa, "/td", "SHA256", "/d", "Tools3000", "/v") + $identityArgs + $ResolvedFiles
+            & $SignTool @batchArgs | Out-Host
+            if ($LASTEXITCODE -eq 0) { return $true }
+            Write-Host "[SIGN] [WARN] PFX 批量时间戳签名 ($tsa) 未成功，尝试备用 TSA 或逐文件回退..." -ForegroundColor Yellow
+        }
         foreach ($file in $ResolvedFiles) {
             $signedWithTs = $false
             foreach ($tsa in $TsaUrls) {
@@ -371,12 +424,10 @@ $SignToolPath = Resolve-SignToolPath
 
 if ($VerifyOnly) {
     Write-Host "[SIGN] [INFO] 启动只读 Authenticode 信任审计模式 (Files=$($ResolvedPaths.Count), RequirePublicTrust=$RequirePublicTrust)..." -ForegroundColor Cyan
-    foreach ($file in $ResolvedPaths) {
-        Assert-SignedArtifact -FilePath $file -SignTool $SignToolPath `
-            -ExpectTimestamp:($Required -or $RequirePublicTrust) `
-            -EnforceRequired:$Required `
-            -EnforcePublicTrust:$RequirePublicTrust
-    }
+    Assert-SignedArtifactsBatch -FilePaths $ResolvedPaths -SignTool $SignToolPath `
+        -ExpectTimestamp:($Required -or $RequirePublicTrust) `
+        -EnforceRequired:$Required `
+        -EnforcePublicTrust:$RequirePublicTrust
     return
 }
 
@@ -399,9 +450,7 @@ if (-not $Strategy) {
 $RawStrategyResult = & $Strategy $Context $SignToolPath $ResolvedPaths $TsaUrls
 $SignedWithTimestamp = [bool]($RawStrategyResult | Select-Object -Last 1)
 
-foreach ($file in $ResolvedPaths) {
-    Assert-SignedArtifact -FilePath $file -SignTool $SignToolPath `
-        -ExpectTimestamp:$SignedWithTimestamp `
-        -EnforceRequired:$Required `
-        -EnforcePublicTrust:$RequirePublicTrust
-}
+Assert-SignedArtifactsBatch -FilePaths $ResolvedPaths -SignTool $SignToolPath `
+    -ExpectTimestamp:$SignedWithTimestamp `
+    -EnforceRequired:$Required `
+    -EnforcePublicTrust:$RequirePublicTrust

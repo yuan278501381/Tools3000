@@ -16,9 +16,10 @@ param (
     [ValidateSet("x64", "arm64")]
     [string]$Arch = "x64",              # Windows 目标架构；ARM64 使用交叉编译工具链
     [string]$VcpkgRoot = "",
-    [switch]$Quick = $false,             # 极速增量开发模式 (跳过 npm ci，复用 node_modules 直奔编译与测试)
+    [switch]$Quick = $false,             # 极速增量开发模式 (复用 node_modules 与未改动的前端产物)
+    [switch]$CleanBuild = $false,        # 强制全量冷建 (清理 build/、重新 npm ci、清空第三方 DLL 签名缓存)
     [switch]$SkipUI = $false,            # 跳过前端构建，直接复用 ui/dist/index.html 已有产物
-    [switch]$SkipTests = $false,         # 跳过 CTest 单元测试
+    [switch]$SkipTests = $false,         # 跳过单元测试与端到端门禁
     [switch]$SkipInstaller = $false,     # 跳过 Inno Setup 安装包生成
     [switch]$Coverage = $false,          # 启用 C++ 代码覆盖率分析与防回退门禁 (OpenCppCoverage)
     [switch]$StaticAnalysis = $false,    # 对核心、搜索插件和索引服务运行 MSVC /analyze
@@ -29,6 +30,73 @@ param (
 )
 
 $ErrorActionPreference = "Stop"
+$DeployTotalSw = [System.Diagnostics.Stopwatch]::StartNew()
+$PhaseTimings = [System.Collections.Generic.List[object]]::new()
+function Record-PhaseTiming {
+    param([string]$PhaseName, [double]$Seconds)
+    $PhaseTimings.Add([pscustomobject]@{ Phase = $PhaseName; Seconds = [math]::Round($Seconds, 2) })
+}
+
+function Get-StringSha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+        return ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Start-BackgroundPwshTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDir
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = (Get-Command "pwsh.exe" -ErrorAction Stop).Source
+    $psi.WorkingDirectory = $WorkingDir
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    $psi.CreateNoWindow = $true
+    foreach ($arg in $Arguments) {
+        [void]$psi.ArgumentList.Add($arg)
+    }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    return [pscustomobject]@{
+        Name    = $Name
+        Proc    = $proc
+        Sw      = $sw
+        OutTask = $proc.StandardOutput.ReadToEndAsync()
+        ErrTask = $proc.StandardError.ReadToEndAsync()
+    }
+}
+
+function Complete-BackgroundPwshTask {
+    param([Parameter(Mandatory = $true)]$Task)
+    if (-not $Task) { return 0.0 }
+    $Task.Proc.WaitForExit()
+    if ($Task.Sw.IsRunning) { $Task.Sw.Stop() }
+    $elapsedSec = $Task.Sw.Elapsed.TotalSeconds
+    $outText = $Task.OutTask.Result
+    $errText = $Task.ErrTask.Result
+    Write-Log ("--- 并行轨道 [{0}] 输出汇总 ({1:N2}s, exit={2}) ---" -f $Task.Name, $elapsedSec, $Task.Proc.ExitCode)
+    if (-not [string]::IsNullOrWhiteSpace($outText)) {
+        [Console]::Out.WriteLine($outText.TrimEnd())
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errText)) {
+        [Console]::Error.WriteLine($errText.TrimEnd())
+    }
+    if ($Task.Proc.ExitCode -ne 0) {
+        throw "并行轨道 [$($Task.Name)] 执行失败！退出码: $($Task.Proc.ExitCode)"
+    }
+    return $elapsedSec
+}
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $ScriptDir
 $VcpkgTargetTriplet = "$Arch-windows"
@@ -91,9 +159,10 @@ Write-Log "目标架构: $Arch (vcpkg: $VcpkgTargetTriplet)"
 Write-Log "======================================================="
 
 # ------------------------------------------------------------------------------
-# 1. 前端构建 (React + Vite)
+# 1. 前端构建策略判定 (实际编译将与 Rust / C++ 三轨并发执行)
 # ------------------------------------------------------------------------------
 Write-Log "检查前端环境 (ui/)..."
+$ShouldRunFrontendTrack = $false
 if (Test-Path "ui/package.json") {
     $DistIndex = Join-Path $ScriptDir "ui\dist\index.html"
     $SkipFrontend = $false
@@ -105,7 +174,7 @@ if (Test-Path "ui/package.json") {
         } else {
             Write-Log "已指定 -SkipUI 但前端产物不存在 ($DistIndex)，执行必要的前端构建..." "WARN"
         }
-    } elseif ($Quick -and (Test-Path -LiteralPath $DistIndex)) {
+    } elseif ($Quick -and -not $CleanBuild -and (Test-Path -LiteralPath $DistIndex)) {
         $DistTime = (Get-Item -LiteralPath $DistIndex).LastWriteTime
         $UiSourceFiles = @(Get-ChildItem -Path (Join-Path $ScriptDir "ui") -Recurse -File | Where-Object {
             $_.FullName -notlike "*\node_modules\*" -and
@@ -131,35 +200,12 @@ if (Test-Path "ui/package.json") {
                 Pop-Location
             }
         } else {
-            Write-Log "检测到 $($NewerSources.Count) 个前端源码或版本文件有更新，重新执行前端构建..." "INFO"
+            Write-Log "检测到 $($NewerSources.Count) 个前端源码或版本文件有更新，将在并行轨道执行前端构建..." "INFO"
         }
     }
 
     if (-not $SkipFrontend) {
-        Push-Location ui
-        try {
-            if (-not $Quick -or -not (Test-Path "node_modules")) {
-                Write-Log "执行 npm ci (锁定依赖)..."
-                npm ci --prefer-offline --no-audit
-                if ($LASTEXITCODE -ne 0) { throw "npm ci 失败，退出码: $LASTEXITCODE" }
-            } else {
-                Write-Log "[INFO] 极速模式: 复用本地 node_modules 依赖" "INFO"
-            }
-
-            foreach ($Command in @("lint", "test", "build")) {
-                Write-Log "执行 npm run $Command..."
-                npm run $Command
-                if ($LASTEXITCODE -ne 0) {
-                    throw "npm run $Command 失败，退出码: $LASTEXITCODE"
-                }
-            }
-            Write-Log "前端构建完成。" "SUCCESS"
-        } catch {
-            Write-Log "前端构建失败: $_" "ERROR"
-            throw
-        } finally {
-            Pop-Location
-        }
+        $ShouldRunFrontendTrack = $true
     }
 } else {
     Write-Log "未发现前端工程 (ui/package.json)，跳过前端构建。" "WARN"
@@ -350,7 +396,9 @@ if (-not (Get-Command "cmake" -ErrorAction SilentlyContinue)) {
     throw "仍然无法找到 CMake！请确保已安装 C++ 桌面开发工作负载，或尝试在 'Developer PowerShell for VS' 窗口中运行此脚本。"
 }
 
-$CMakeExtraArgs = @()
+$CMakeExtraArgs = @(
+    "-DTOOLS3000_SKIP_POSTBUILD_UI_SYNC=ON"
+)
 if ($StaticAnalysis) {
     $CMakeExtraArgs += "-DTOOLS3000_ENABLE_MSVC_ANALYSIS=ON"
 } else {
@@ -362,69 +410,6 @@ if (Get-Command "sccache" -ErrorAction SilentlyContinue) {
     $CMakeExtraArgs += "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
 }
 
-Write-Log "执行 CMake Configure..."
-$BuildDir = Join-Path $ScriptDir $BuildDirectoryName
-if (-not $Quick -and (Test-Path -LiteralPath $BuildDir)) {
-    $ResolvedBuildDir = [System.IO.Path]::GetFullPath($BuildDir)
-    $WorkspacePrefix = [System.IO.Path]::GetFullPath($ScriptDir).TrimEnd('\') + '\'
-    $AllowedBuildNames = @("build", "build-arm64")
-    if (-not $ResolvedBuildDir.StartsWith($WorkspacePrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
-        (Split-Path -Leaf $ResolvedBuildDir) -notin $AllowedBuildNames) {
-        throw "拒绝清理未经验证的构建目录: $ResolvedBuildDir"
-    }
-    $BuildItem = Get-Item -LiteralPath $ResolvedBuildDir -Force
-    if (($BuildItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "拒绝清理重解析点构建目录: $ResolvedBuildDir"
-    }
-    Write-Log "正式构建使用全新构建树，清理: $ResolvedBuildDir"
-    Remove-Item -LiteralPath $ResolvedBuildDir -Recurse -Force
-}
-if (-not (Test-Path $BuildDir)) {
-    New-Item -ItemType Directory -Path $BuildDir | Out-Null
-}
-
-$CMakePlatformArgs = @()
-if ($Arch -eq "arm64") {
-    # Use a dedicated build tree so CMake never reuses an x64 generator cache.
-    $CMakePlatformArgs = @("-A", "ARM64", "-G", $Arm64Toolchain.Generator,
-        "-DCMAKE_GENERATOR_INSTANCE=$($Arm64Toolchain.InstallationPath)")
-} elseif (-not (Test-Path -LiteralPath (Join-Path $BuildDir 'CMakeCache.txt'))) {
-    $CMakePlatformArgs = @("-A", "x64")
-}
-$VcpkgInstalledDir = Join-Path $ScriptDir "vcpkg_installed"
-cmake -B $BuildDir -S . @CMakePlatformArgs -DCMAKE_TOOLCHAIN_FILE="$VcpkgToolchain" `
-    -DVCPKG_TARGET_TRIPLET="$VcpkgTargetTriplet" -DVCPKG_INSTALLED_DIR="$VcpkgInstalledDir" @CMakeExtraArgs
-if ($LASTEXITCODE -ne 0) {
-    throw "CMake 配置失败！退出码: $LASTEXITCODE"
-}
-
-# 确保全套多分辨率 Windows 图标与托盘图标存在，并清理旧版 .res 确保资源强制重新链接
-$IconScript = "$ScriptDir\resources\build_master_production_icons.py"
-$AppIco = "$ScriptDir\resources\app.ico"
-$TrayIco = "$ScriptDir\resources\tray.ico"
-$TrayDarkIco = "$ScriptDir\resources\tray_dark.ico"
-$TrayColorIco = "$ScriptDir\resources\tray_color.ico"
-$AllIconsExist = (Test-Path $AppIco) -and (Test-Path $TrayIco) -and (Test-Path $TrayDarkIco) -and (Test-Path $TrayColorIco)
-$ScriptNewer = $AllIconsExist -and ((Get-Item $IconScript).LastWriteTime -gt (Get-Item $AppIco).LastWriteTime)
-# 在 CI 环境中，git checkout 文件时间戳为当前时间，微秒差异不应误判母版更新；只要图标均存在即可直接复用
-if (-not $AllIconsExist -or ($ScriptNewer -and -not ($env:GITHUB_ACTIONS -eq 'true' -or $env:CI -eq 'true'))) {
-    Write-Log "检测到图标未初始化或母版脚本已更新，调用母版管道生成 (resources/build_master_production_icons.py)..."
-    python "$ScriptDir\resources\build_master_production_icons.py" 1
-}
-Get-ChildItem -Path $BuildDir -Filter "*.res" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-
-$CpuCount = [Environment]::ProcessorCount
-Write-Log "执行 CMake Build ($Configuration, 并发核心数: $CpuCount)..."
-cmake --build $BuildDir --config $Configuration --parallel $CpuCount
-
-if ($LASTEXITCODE -ne 0) {
-    throw "C++ 编译失败！退出码: $LASTEXITCODE"
-}
-Write-Log "C++ 编译完成。" "SUCCESS"
-
-# ------------------------------------------------------------------------------
-# 4.2 构建 Rust 复刻 Picasa 轻量图片查看器 (Tools3000_Picasa_Viewer.exe)
-# ------------------------------------------------------------------------------
 function Assert-PeMachineArchitecture {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -478,65 +463,172 @@ $CargoCmd = Get-Command "cargo" -ErrorAction SilentlyContinue
 if (-not $CargoCmd -and (Test-Path (Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"))) {
     $CargoCmd = Get-Command (Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe") -ErrorAction SilentlyContinue
 }
-if ($CargoCmd) {
-    $CargoBinDir = Split-Path -Parent $CargoCmd.Source
-    $RustupCmd = Get-Command "rustup" -ErrorAction SilentlyContinue
-    if (-not $RustupCmd -and (Test-Path -LiteralPath (Join-Path $CargoBinDir "rustup.exe"))) {
-        $RustupCmd = Get-Command (Join-Path $CargoBinDir "rustup.exe") -ErrorAction SilentlyContinue
-    }
-    if (-not $RustupCmd -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe"))) {
-        $RustupCmd = Get-Command (Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe") -ErrorAction SilentlyContinue
-    }
-
-    # 构建前强校验目标架构 Rust 工具链（尤其 ARM64 交叉编译目标），防止静默编出宿主架构或半途报错
-    if ($RustupCmd) {
-        $InstalledRustTargets = @(& $RustupCmd.Source target list --installed 2>$null | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        if ($LASTEXITCODE -ne 0) {
-            throw "无法通过 rustup 查询已安装的 Rust 编译目标（退出码: $LASTEXITCODE）。"
-        }
-        if ($ViewerRustTarget -notin $InstalledRustTargets) {
-            throw "未安装 Rust 目标工具链 '$ViewerRustTarget'（当前已安装: $($InstalledRustTargets -join ', ')）。请先执行: rustup target add $ViewerRustTarget"
-        }
-        Write-Log "Rust 目标工具链校验通过: $ViewerRustTarget" "SUCCESS"
-    } elseif ($Arch -eq "arm64") {
-        $RustcCmd = Get-Command "rustc" -ErrorAction SilentlyContinue
-        if (-not $RustcCmd -and (Test-Path -LiteralPath (Join-Path $CargoBinDir "rustc.exe"))) {
-            $RustcCmd = Get-Command (Join-Path $CargoBinDir "rustc.exe") -ErrorAction SilentlyContinue
-        }
-        if (-not $RustcCmd) {
-            throw "ARM64 交叉编译未找到 rustup 或 rustc，无法验证 Rust 目标 '$ViewerRustTarget' 是否已安装。"
-        }
-        $RustSysroot = (& $RustcCmd.Source --print sysroot 2>$null).Trim()
-        if ([string]::IsNullOrWhiteSpace($RustSysroot) -or -not (Test-Path -LiteralPath (Join-Path $RustSysroot "lib\rustlib\$ViewerRustTarget"))) {
-            throw "未安装 Rust ARM64 目标标准库 '$ViewerRustTarget'（sysroot: $RustSysroot）。请先执行: rustup target add $ViewerRustTarget"
-        }
-        Write-Log "Rust ARM64 sysroot 目标工具链校验通过: $ViewerRustTarget" "SUCCESS"
-    }
-
-    Push-Location $ViewerProjectDir
-    try {
-        if (-not $SkipTests -and $Arch -eq "x64") {
-            Write-Log "运行 Rust Picasa 图片查看器单元测试 (cargo test --target $ViewerRustTarget)..."
-            & $CargoCmd.Source test --target $ViewerRustTarget
-            if ($LASTEXITCODE -ne 0) {
-                throw "Rust Picasa 图片查看器单元测试失败！退出码: $LASTEXITCODE"
-            }
-        }
-        Write-Log "编译 Rust Picasa 图片查看器 ($Arch Release, target=$ViewerRustTarget)..."
-        & $CargoCmd.Source build --release --target $ViewerRustTarget
-        if ($LASTEXITCODE -ne 0) {
-            throw "Rust Picasa 图片查看器编译失败！退出码: $LASTEXITCODE"
-        }
-        Write-Log "Rust Picasa 图片查看器编译完成。" "SUCCESS"
-    } finally {
-        Pop-Location
-    }
-} else {
-    if ($RequireSigning -or $RequirePublicTrust) {
-        throw "正式发布门禁 (-RequireSigning / -RequirePublicTrust) 要求必须具备 Rust cargo 工具链以现场编译最新 $ViewerExeName，严禁静默复用过期旧二进制！"
-    }
-    Write-Log "未检测到 cargo 工具链，开发构建尝试复用已有预编译产物: $ViewerExeName" "WARN"
+if (-not $CargoCmd -and ($RequireSigning -or $RequirePublicTrust)) {
+    throw "正式发布门禁 (-RequireSigning / -RequirePublicTrust) 要求必须具备 Rust cargo 工具链以现场编译最新 $ViewerExeName，严禁静默复用过期旧二进制！"
 }
+
+# ── 启动三轨并行编译引擎 (前端 UI || Rust 看图器 || C++ CMake 增量构建) ──────────
+$ParallelBuildSw = [System.Diagnostics.Stopwatch]::StartNew()
+$FrontendTrackTask = $null
+$RustTrackTask = $null
+
+try {
+    if ($ShouldRunFrontendTrack) {
+        $FrontendScript = Join-Path $ScriptDir "scripts\Build-FrontendTrack.ps1"
+        $FrontendArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $FrontendScript, "-UiDir", (Join-Path $ScriptDir "ui"))
+        if ($Quick) { $FrontendArgs += "-Quick" }
+        if ($CleanBuild) { $FrontendArgs += "-CleanBuild" }
+        Write-Log "[PARALLEL] 启动轨道 1/3 (后台): 前端 UI 全量门禁 + Vitest + Vite 打包..." "INFO"
+        $FrontendTrackTask = Start-BackgroundPwshTask -Name "Frontend-UI" -Arguments $FrontendArgs -WorkingDir $ScriptDir
+    }
+
+    if ($CargoCmd) {
+        $RustScript = Join-Path $ScriptDir "scripts\Build-RustViewerTrack.ps1"
+        $RustArgs = @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RustScript,
+            "-ViewerProjectDir", $ViewerProjectDir,
+            "-Arch", $Arch,
+            "-CargoPath", $CargoCmd.Source
+        )
+        if ($SkipTests) { $RustArgs += "-SkipTests" }
+        Write-Log "[PARALLEL] 启动轨道 2/3 (后台): Rust Picasa 看图器单元测试 + Release 编译..." "INFO"
+        $RustTrackTask = Start-BackgroundPwshTask -Name "Rust-PicasaViewer" -Arguments $RustArgs -WorkingDir $ScriptDir
+    } else {
+        Write-Log "未检测到 cargo 工具链，开发构建尝试复用已有预编译产物: $ViewerExeName" "WARN"
+    }
+
+    Write-Log "[PARALLEL] 启动轨道 3/3 (主线): C++ CMake 增量构建 ($Configuration, $Arch)..." "INFO"
+    $CppSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $BuildDir = Join-Path $ScriptDir $BuildDirectoryName
+    if ($CleanBuild -and (Test-Path -LiteralPath $BuildDir)) {
+        $ResolvedBuildDir = [System.IO.Path]::GetFullPath($BuildDir)
+        $WorkspacePrefix = [System.IO.Path]::GetFullPath($ScriptDir).TrimEnd('\') + '\'
+        $AllowedBuildNames = @("build", "build-arm64")
+        if (-not $ResolvedBuildDir.StartsWith($WorkspacePrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+            (Split-Path -Leaf $ResolvedBuildDir) -notin $AllowedBuildNames) {
+            throw "拒绝清理未经验证的构建目录: $ResolvedBuildDir"
+        }
+        $BuildItem = Get-Item -LiteralPath $ResolvedBuildDir -Force
+        if (($BuildItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "拒绝清理重解析点构建目录: $ResolvedBuildDir"
+        }
+        Write-Log "已指定 -CleanBuild，使用全新构建树清理: $ResolvedBuildDir"
+        Remove-Item -LiteralPath $ResolvedBuildDir -Recurse -Force
+    }
+    if (-not (Test-Path $BuildDir)) {
+        New-Item -ItemType Directory -Path $BuildDir | Out-Null
+    }
+
+    $CMakeCachePath = Join-Path $BuildDir "CMakeCache.txt"
+    $VcpkgInstalledDir = Join-Path $ScriptDir "vcpkg_installed"
+    $ConfigureStampPath = Join-Path $BuildDir ".tools3000_configure_stamp.sha256"
+    $CmakeListsHash = (Get-FileHash -LiteralPath (Join-Path $ScriptDir "CMakeLists.txt") -Algorithm SHA256).Hash
+    $VcpkgJsonHash = (Get-FileHash -LiteralPath (Join-Path $ScriptDir "vcpkg.json") -Algorithm SHA256).Hash
+    $SrcFileInventory = @(
+        Get-ChildItem -Path (Join-Path $ScriptDir "src") -Include "*.cpp","*.h","*.in","*.rc" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notlike "*\src\viewer\*" } |
+            ForEach-Object { $_.FullName.Substring($ScriptDir.Length) }
+    ) + @(
+        Get-ChildItem -Path (Join-Path $ScriptDir "plugins") -Filter "*.in" -File -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName.Substring($ScriptDir.Length) }
+    ) | Sort-Object
+    $ConfigureFingerprint = Get-StringSha256Hex -Text (
+        "v2|$ProjectVersion|$Arch|$StaticAnalysis|$VcpkgToolchain|$VcpkgInstalledDir|$($CMakeExtraArgs -join ';')|$CmakeListsHash|$VcpkgJsonHash|" + ($SrcFileInventory -join "`n")
+    )
+    $SavedConfigureFingerprint = if (Test-Path -LiteralPath $ConfigureStampPath) { (Get-Content -LiteralPath $ConfigureStampPath -Raw).Trim() } else { "" }
+
+    if ($CleanBuild -or -not (Test-Path -LiteralPath $CMakeCachePath) -or ($SavedConfigureFingerprint -ne $ConfigureFingerprint)) {
+        Write-Log "执行 CMake Configure (检测到配置/源码清单变化或首次构建)..."
+        $CMakePlatformArgs = @()
+        if ($Arch -eq "arm64") {
+            $CMakePlatformArgs = @("-A", "ARM64", "-G", $Arm64Toolchain.Generator,
+                "-DCMAKE_GENERATOR_INSTANCE=$($Arm64Toolchain.InstallationPath)")
+        } elseif (-not (Test-Path -LiteralPath $CMakeCachePath)) {
+            $CMakePlatformArgs = @("-A", "x64")
+        }
+        cmake -B $BuildDir -S . @CMakePlatformArgs -DCMAKE_TOOLCHAIN_FILE="$VcpkgToolchain" `
+            -DVCPKG_TARGET_TRIPLET="$VcpkgTargetTriplet" -DVCPKG_INSTALLED_DIR="$VcpkgInstalledDir" @CMakeExtraArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "CMake 配置失败！退出码: $LASTEXITCODE"
+        }
+        [System.IO.File]::WriteAllText($ConfigureStampPath, $ConfigureFingerprint, [System.Text.UTF8Encoding]::new($false))
+    } else {
+        Write-Log "[OK] CMake 配置/源码清单指纹未变化，0ms 复用增量构建树 ($BuildDir)" "SUCCESS"
+    }
+
+    # 确保全套多分辨率 Windows 图标与托盘图标存在，仅当版本/图标/rc 指纹变化时才清理 .res 强制重链
+    $IconScript = "$ScriptDir\resources\build_master_production_icons.py"
+    $AppIco = "$ScriptDir\resources\app.ico"
+    $TrayIco = "$ScriptDir\resources\tray.ico"
+    $TrayDarkIco = "$ScriptDir\resources\tray_dark.ico"
+    $TrayColorIco = "$ScriptDir\resources\tray_color.ico"
+    $AllIconsExist = (Test-Path $AppIco) -and (Test-Path $TrayIco) -and (Test-Path $TrayDarkIco) -and (Test-Path $TrayColorIco)
+    $ScriptNewer = $AllIconsExist -and ((Get-Item $IconScript).LastWriteTime -gt (Get-Item $AppIco).LastWriteTime)
+    if (-not $AllIconsExist -or ($ScriptNewer -and -not ($env:GITHUB_ACTIONS -eq 'true' -or $env:CI -eq 'true'))) {
+        Write-Log "检测到图标未初始化或母版脚本已更新，调用母版管道生成 (resources/build_master_production_icons.py)..."
+        python "$ScriptDir\resources\build_master_production_icons.py" 1
+    }
+
+    $ResStampPath = Join-Path $BuildDir ".tools3000_res_stamp.sha256"
+    $ResInputs = @($VersionFile, $AppIco, $TrayIco, $TrayDarkIco, $TrayColorIco,
+        (Join-Path $ScriptDir "src\Tools3000.rc"), (Join-Path $ScriptDir "src\VersionInfo.rc.in"))
+    $ResHashParts = foreach ($rf in $ResInputs) {
+        if (Test-Path -LiteralPath $rf) { (Get-FileHash -LiteralPath $rf -Algorithm SHA256).Hash } else { "MISSING" }
+    }
+    $CurrentResFingerprint = Get-StringSha256Hex -Text ($ResHashParts -join "|")
+    $SavedResFingerprint = if (Test-Path -LiteralPath $ResStampPath) { (Get-Content -LiteralPath $ResStampPath -Raw).Trim() } else { "" }
+    if ($CleanBuild -or $SavedResFingerprint -ne $CurrentResFingerprint) {
+        Write-Log "检测到版本或图标资源变更，刷新 *.res 确保版本号与图标强制重新链接..."
+        Get-ChildItem -Path $BuildDir -Filter "*.res" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        [System.IO.File]::WriteAllText($ResStampPath, $CurrentResFingerprint, [System.Text.UTF8Encoding]::new($false))
+    }
+
+    $CpuCount = [Environment]::ProcessorCount
+    Write-Log "执行 CMake Build ($Configuration, 并发核心数: $CpuCount)..."
+    cmake --build $BuildDir --config $Configuration --parallel $CpuCount
+    if ($LASTEXITCODE -ne 0) {
+        throw "C++ 编译失败！退出码: $LASTEXITCODE"
+    }
+    $CppSw.Stop()
+    Write-Log ("C++ 增量编译完成 ({0:N2}s)。" -f $CppSw.Elapsed.TotalSeconds) "SUCCESS"
+
+    # ── 三轨汇合点 (Join) ────────────────────────────────────────────────────
+    if ($RustTrackTask) {
+        $RustSec = Complete-BackgroundPwshTask -Task $RustTrackTask
+        $RustTrackTask = $null
+        Write-Log ("Rust Picasa 看图器轨道汇合完成 ({0:N2}s)。" -f $RustSec) "SUCCESS"
+    }
+    if ($FrontendTrackTask) {
+        $UiSec = Complete-BackgroundPwshTask -Task $FrontendTrackTask
+        $FrontendTrackTask = $null
+        Write-Log ("前端 UI 轨道汇合完成 ({0:N2}s)。" -f $UiSec) "SUCCESS"
+    }
+} finally {
+    # 任一主线异常退出时确保彻底回收未结束的后台编译子进程，零僵尸残留
+    foreach ($bgTask in @($FrontendTrackTask, $RustTrackTask)) {
+        if ($bgTask -and $bgTask.Proc -and -not $bgTask.Proc.HasExited) {
+            try { $bgTask.Proc.Kill($true) } catch {}
+        }
+    }
+}
+
+$ParallelBuildSw.Stop()
+Record-PhaseTiming -PhaseName "Parallel Build (UI || Rust || C++)" -Seconds $ParallelBuildSw.Elapsed.TotalSeconds
+
+# 三轨汇合后无竞争同步最新 ui/dist 到 build/bin/$Configuration/ui（保障直接运行 build 输出亦为最新前端）
+$BuiltExeCheck = Join-Path $BuildDir "bin\$Configuration\Tools3000.exe"
+if (-not (Test-Path -LiteralPath $BuiltExeCheck)) {
+    $BuiltExeCheck = Join-Path $BuildDir "bin\Tools3000.exe"
+}
+if ((Test-Path -LiteralPath (Join-Path $ScriptDir "ui\dist")) -and (Test-Path -LiteralPath $BuiltExeCheck)) {
+    $BuildUiSyncDir = Join-Path (Split-Path -Parent $BuiltExeCheck) "ui"
+    if (Test-Path -LiteralPath $BuildUiSyncDir) {
+        Remove-Item -LiteralPath $BuildUiSyncDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType Directory -Path $BuildUiSyncDir -Force | Out-Null
+    Copy-Item -Path (Join-Path $ScriptDir "ui\dist\*") -Destination $BuildUiSyncDir -Recurse -Force
+}
+
 $BuiltViewerExe = $ViewerBinCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $BuiltViewerExe) {
     throw "找不到编译后的 $ViewerExeName (架构: $Arch, 目标: $ViewerRustTarget)。请安装 Rust 工具链 (cargo) 后重试。"
@@ -547,6 +639,7 @@ Assert-PeMachineArchitecture -FilePath $BuiltViewerExe -ExpectedArch $Arch
 # 4.5 运行单元测试与代码覆盖率防回退分析 (失败则中断流水线)
 # ------------------------------------------------------------------------------
 if (-not $SkipTests) {
+    $UnitTestSw = [System.Diagnostics.Stopwatch]::StartNew()
     $OpenCppCoverageExe = $null
     if (Get-Command "OpenCppCoverage" -ErrorAction SilentlyContinue) {
         $OpenCppCoverageExe = "OpenCppCoverage"
@@ -557,13 +650,13 @@ if (-not $SkipTests) {
         throw "已要求覆盖率门禁，但找不到 OpenCppCoverage；请安装后重试。"
     }
 
+    $TestExe = Join-Path $BuildDir "bin\$Configuration\Tools3000Tests.exe"
+    if (-not (Test-Path $TestExe)) { $TestExe = Join-Path $BuildDir "bin\Tools3000Tests.exe" }
+
     if ($Coverage) {
         Write-Log "运行 C++ 单元测试与代码覆盖率防回退分析..."
         $CoverageReportDir = Join-Path $ScriptDir "coverage_report\$TraceID"
         if (-not (Test-Path $CoverageReportDir)) { New-Item -ItemType Directory -Path $CoverageReportDir | Out-Null }
-
-        $TestExe = Join-Path $BuildDir "bin\$Configuration\Tools3000Tests.exe"
-        if (-not (Test-Path $TestExe)) { $TestExe = Join-Path $BuildDir "bin\Tools3000Tests.exe" }
 
         if ((Test-Path $TestExe) -and $OpenCppCoverageExe) {
             & $OpenCppCoverageExe --sources "$ScriptDir\src" `
@@ -591,13 +684,24 @@ if (-not $SkipTests) {
             throw "覆盖率门禁缺少待测二进制或工具: $TestExe"
         }
     } else {
-        Write-Log "运行 CTest 测试套件..."
-        ctest --test-dir $BuildDir -C $Configuration --output-on-failure
-        if ($LASTEXITCODE -ne 0) {
-            throw "测试失败！退出码: $LASTEXITCODE"
+        $ParallelTestRunner = Join-Path $ScriptDir "scripts\Invoke-ParallelNativeTests.ps1"
+        if ((Test-Path -LiteralPath $ParallelTestRunner) -and (Test-Path -LiteralPath $TestExe)) {
+            Write-Log "运行 4 路沙箱隔离并发 C++ 单元测试套件..."
+            & pwsh -NoProfile -ExecutionPolicy Bypass -File $ParallelTestRunner -TestExePath $TestExe -TraceId $TraceID
+            if ($LASTEXITCODE -ne 0) {
+                throw "测试失败！退出码: $LASTEXITCODE"
+            }
+        } else {
+            Write-Log "运行 CTest 测试套件..."
+            ctest --test-dir $BuildDir -C $Configuration --output-on-failure
+            if ($LASTEXITCODE -ne 0) {
+                throw "测试失败！退出码: $LASTEXITCODE"
+            }
         }
     }
-    Write-Log "测试套件通过。" "SUCCESS"
+    $UnitTestSw.Stop()
+    Record-PhaseTiming -PhaseName "Native C++ Unit Tests (All)" -Seconds $UnitTestSw.Elapsed.TotalSeconds
+    Write-Log ("测试套件全部通过 ({0:N2}s)。" -f $UnitTestSw.Elapsed.TotalSeconds) "SUCCESS"
 } else {
     Write-Log "已指定 -SkipTests，跳过单测执行。" "WARN"
 }
@@ -615,17 +719,24 @@ if (Test-Path $StagingDir) {
 }
 New-Item -ItemType Directory -Path $StagingDir | Out-Null
 
-# 符号隔离归档 (Symbol Stripping & Independent Archive)
+# 符号隔离归档 (后台 .NET ZipFile Fastest 并发归档，边际壁钟耗时 = 0s)
 if (-not (Test-Path $SymbolsDir)) {
     New-Item -ItemType Directory -Path $SymbolsDir | Out-Null
 }
+$FastZipScript = Join-Path $ScriptDir "scripts\New-FastZipArchive.ps1"
 $SymbolsZip = Join-Path $SymbolsDir "Tools3000-Symbols-v$ProjectVersion.zip"
-$PdbFiles = Get-ChildItem -Path (Join-Path $BuildDir "bin") -Filter "*.pdb" -Recurse -ErrorAction SilentlyContinue
-if ($PdbFiles) {
-    Write-Log "正在将 $($PdbFiles.Count) 个调试符号 (*.pdb) 归档到: $SymbolsZip..."
-    if (Test-Path $SymbolsZip) { Remove-Item -Force $SymbolsZip -ErrorAction SilentlyContinue }
-    Compress-Archive -Path $PdbFiles.FullName -DestinationPath $SymbolsZip -Force
-    Write-Log "调试符号已安全剥离并独立归档至 deploy_symbols/。" "SUCCESS"
+$PdbFiles = @(Get-ChildItem -Path (Join-Path $BuildDir "bin") -Filter "*.pdb" -Recurse -ErrorAction SilentlyContinue)
+$PdbArchiveTask = $null
+if ($PdbFiles.Count -gt 0) {
+    Write-Log "[PARALLEL] 后台启动 $($PdbFiles.Count) 个调试符号 (*.pdb) 高速归档 -> $SymbolsZip..."
+    $pdbFilesJoined = ($PdbFiles | Select-Object -ExpandProperty FullName) -join ';'
+    $pdbZipArgs = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $FastZipScript,
+        "-DestinationPath", $SymbolsZip,
+        "-CompressionLevel", "Fastest",
+        "-SourceFilesList", $pdbFilesJoined
+    )
+    $PdbArchiveTask = Start-BackgroundPwshTask -Name "Symbols-PDB-Zip" -Arguments $pdbZipArgs -WorkingDir $ScriptDir
 }
 
 # 二进制主文件
@@ -873,6 +984,7 @@ if (-not $HasAzureTrustedSigning -and
 $HasSigningIdentity = $HasAzureTrustedSigning -or
                       (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_CERT_SHA1)) -or
                       (-not [string]::IsNullOrWhiteSpace($env:TOOLS3000_SIGNING_PFX))
+$SignSw = [System.Diagnostics.Stopwatch]::StartNew()
 $OwnedArtifacts = @(
     (Join-Path $StagingDir $MainExeArtifact),
     (Join-Path $StagingDir $ServiceExeArtifact),
@@ -887,6 +999,28 @@ foreach ($item in $OwnedArtifacts) {
         $FirstPassSignTargets.Add($item)
     }
 }
+
+# 本地非 CI 环境下为不可变的第三方 vcpkg/CRT DLL 启用确定性 (签名身份 + 源 SHA-256) 签名缓存；
+# 所有 9 个自有构建产物永远强制现场重新签名，绝不走缓存。
+$UseThirdPartySignCache = $HasSigningIdentity -and (-not $CleanBuild) -and ($env:CI -ne 'true') -and ($env:GITHUB_ACTIONS -ne 'true')
+$ThirdPartySignCacheDir = $null
+$PendingThirdPartyCacheWrites = [System.Collections.Generic.List[object]]::new()
+$ThirdPartyCacheHits = 0
+
+if ($UseThirdPartySignCache) {
+    $IdentitySeed = "$($env:TOOLS3000_AZURE_SIGNING_ENDPOINT)|$($env:TOOLS3000_AZURE_SIGNING_ACCOUNT)|$($env:TOOLS3000_AZURE_SIGNING_PROFILE)|$($env:TOOLS3000_SIGNING_CERT_SHA1)|$($env:TOOLS3000_SIGNING_PFX)|$RequireSigning|$RequirePublicTrust"
+    $IdentityKey = (Get-StringSha256Hex -Text $IdentitySeed).Substring(0, 16)
+    $ThirdPartySignCacheDir = Join-Path $BuildDir ".signed_third_party_cache\$IdentityKey"
+    if (-not (Test-Path -LiteralPath $ThirdPartySignCacheDir)) {
+        New-Item -ItemType Directory -Path $ThirdPartySignCacheDir -Force | Out-Null
+    }
+} elseif ($CleanBuild) {
+    $OldSignCacheRoot = Join-Path $BuildDir ".signed_third_party_cache"
+    if (Test-Path -LiteralPath $OldSignCacheRoot) {
+        Remove-Item -LiteralPath $OldSignCacheRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 if ($HasSigningIdentity) {
     # 本地存在签名证书时，对暂存发布区内全部尚未具备有效官方签名的 .exe/.dll 一并完成第一轮签名
     $AllDistBinaries = Get-ChildItem -LiteralPath $StagingDir -Include "*.exe", "*.dll" -Recurse -File
@@ -894,53 +1028,86 @@ if ($HasSigningIdentity) {
         if (-not $FirstPassSignTargets.Contains($bin.FullName)) {
             $existingSig = Get-AuthenticodeSignature -LiteralPath $bin.FullName -ErrorAction SilentlyContinue
             if (-not $existingSig -or $existingSig.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-                $FirstPassSignTargets.Add($bin.FullName)
+                $reusedFromCache = $false
+                if ($UseThirdPartySignCache -and $ThirdPartySignCacheDir) {
+                    $origSha256 = (Get-FileHash -LiteralPath $bin.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                    $cachedSignedPath = Join-Path $ThirdPartySignCacheDir "${origSha256}_$($bin.Name)"
+                    if (Test-Path -LiteralPath $cachedSignedPath -PathType Leaf) {
+                        $cachedSig = Get-AuthenticodeSignature -LiteralPath $cachedSignedPath -ErrorAction SilentlyContinue
+                        $tsOk = (-not $RequireSigning) -or ($null -ne $cachedSig.TimeStamperCertificate)
+                        if ($cachedSig -and $cachedSig.Status -eq [System.Management.Automation.SignatureStatus]::Valid -and $tsOk) {
+                            Copy-Item -LiteralPath $cachedSignedPath -Destination $bin.FullName -Force
+                            $reusedFromCache = $true
+                            $ThirdPartyCacheHits++
+                        } else {
+                            Remove-Item -LiteralPath $cachedSignedPath -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                    if (-not $reusedFromCache) {
+                        $PendingThirdPartyCacheWrites.Add([pscustomobject]@{
+                            StagedPath = $bin.FullName
+                            CachePath  = $cachedSignedPath
+                        })
+                    }
+                }
+                if (-not $reusedFromCache) {
+                    $FirstPassSignTargets.Add($bin.FullName)
+                }
             }
         }
     }
 }
+if ($ThirdPartyCacheHits -gt 0) {
+    Write-Log "[SIGN] 第三方不变 DLL 确定性签名缓存命中 $ThirdPartyCacheHits 个，本轮需实时签名 $($FirstPassSignTargets.Count) 个二进制。" "SUCCESS"
+}
 & $SignScript -Paths $FirstPassSignTargets.ToArray() -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust
+if ($UseThirdPartySignCache -and $PendingThirdPartyCacheWrites.Count -gt 0) {
+    foreach ($entry in $PendingThirdPartyCacheWrites) {
+        if (Test-Path -LiteralPath $entry.StagedPath -PathType Leaf) {
+            Copy-Item -LiteralPath $entry.StagedPath -Destination $entry.CachePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Write-Log "[SIGN] 已回写 $($PendingThirdPartyCacheWrites.Count) 个第三方已签名 DLL 至确定性本地签名缓存。" "INFO"
+}
+$SignSw.Stop()
+Record-PhaseTiming -PhaseName "Authenticode First-Pass Signing" -Seconds $SignSw.Elapsed.TotalSeconds
 
 # ------------------------------------------------------------------------------
 # 6. 优雅关闭及原子交换 (Atomic Swap)
 # ------------------------------------------------------------------------------
 Write-Log "开始执行原子目录交换..."
 
-# 优雅停止可能正在运行的 Tools3000 进程
-$runningProcesses = Get-Process -Name "Tools3000*" -ErrorAction SilentlyContinue
-if ($runningProcesses) {
-    Write-Log "检测到 Tools3000 进程正在运行，尝试发送优雅关闭信号 (CloseMainWindow)..." "WARN"
-    foreach ($p in $runningProcesses) {
-        try {
-            $p.CloseMainWindow() | Out-Null
-        } catch { }
-    }
-    
-    # 等待最多 3 秒让其优雅退出
-    $waited = 0
-    while ((Get-Process -Name "Tools3000*" -ErrorAction SilentlyContinue) -and $waited -lt 3) {
-        Start-Sleep -Seconds 1
-        $waited++
-    }
-    
-    $remaining = Get-Process -Name "Tools3000*" -ErrorAction SilentlyContinue
-    if ($remaining) {
-        Write-Log "进程未在规定时间内退出，执行强制关闭 (Force Stop)..." "WARN"
-        foreach ($p in $remaining) {
-            try {
-                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-            } catch { }
+# 快速停止可能正在运行的 Tools3000 进程（仅有可见主窗时才尝试 CloseMainWindow，无主窗后台服务直接释放锁）
+$runningProcesses = @(Get-Process -Name "Tools3000*" -ErrorAction SilentlyContinue)
+if ($runningProcesses.Count -gt 0) {
+    $guiProcs = @($runningProcesses | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
+    if ($guiProcs.Count -gt 0) {
+        Write-Log "检测到 $($guiProcs.Count) 个可见 Tools3000 窗口进程，发送优雅关闭信号..." "WARN"
+        foreach ($p in $guiProcs) {
+            try { $p.CloseMainWindow() | Out-Null } catch { }
         }
-        Start-Sleep -Seconds 1
+        $waitDeadline = [DateTime]::UtcNow.AddMilliseconds(1200)
+        while ((Get-Process -Name "Tools3000*" -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $waitDeadline) {
+            Start-Sleep -Milliseconds 150
+        }
+    }
+    $remaining = @(Get-Process -Name "Tools3000*" -ErrorAction SilentlyContinue)
+    if ($remaining.Count -gt 0) {
+        Write-Log "正在快速停止 $($remaining.Count) 个后台 Tools3000 进程以释放文件锁..." "WARN"
+        foreach ($p in $remaining) {
+            try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
+        }
     }
 }
 
 $BackupDir = Join-Path $ScriptDir "deploy_dist_backup"
-taskkill /F /T /IM Tools3000.exe 2>$null | Out-Null
-taskkill /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
-taskkill /F /T /IM Tools3000_Picasa_Viewer.exe 2>$null | Out-Null
-Get-Process -Name "Tools3000*", "Tools3000_Service*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 600
+if (Get-Process -Name "Tools3000*", "Tools3000_Service*" -ErrorAction SilentlyContinue) {
+    taskkill /F /T /IM Tools3000.exe 2>$null | Out-Null
+    taskkill /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
+    taskkill /F /T /IM Tools3000_Picasa_Viewer.exe 2>$null | Out-Null
+    Get-Process -Name "Tools3000*", "Tools3000_Service*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 250
+}
 if (Test-Path $DeployDir) {
     if (Test-Path $BackupDir) {
         Remove-Item -Recurse -Force $BackupDir -ErrorAction SilentlyContinue
@@ -952,7 +1119,7 @@ if (Test-Path $DeployDir) {
             $renamed = $true
             break
         } catch {
-            Start-Sleep -Milliseconds 600
+            Start-Sleep -Milliseconds 300
         }
     }
     if ($renamed) {
@@ -992,8 +1159,9 @@ if ($RequireSigning -or $RequirePublicTrust) {
 Write-Log "新版本秒级切换上线完成，发布目录已完成瘦身去污与架构/签名校验。" "SUCCESS"
 
 # ------------------------------------------------------------------------------
-# 7. 生成绿色便携包与 Windows 安装程序 (先内层签名 -> 打包便携 ZIP & Setup.exe -> 外层签名)
+# 7. 并行生成绿色便携包与 Windows 安装程序 (便携 ZIP || 多线程 Inno Setup 6)
 # ------------------------------------------------------------------------------
+$PackSw = [System.Diagnostics.Stopwatch]::StartNew()
 $OutputInstallerDir = Join-Path $ScriptDir "Output"
 if (-not (Test-Path -LiteralPath $OutputInstallerDir)) {
     New-Item -ItemType Directory -Path $OutputInstallerDir -Force | Out-Null
@@ -1001,96 +1169,126 @@ if (-not (Test-Path -LiteralPath $OutputInstallerDir)) {
 $PortableArchivePath = Join-Path $OutputInstallerDir "Tools3000-v$ProjectVersion-win-$Arch-portable.zip"
 $SetupBaseName = if ($Arch -eq "arm64") { "Tools3000-v$ProjectVersion-Setup-arm64" } else { "Tools3000-v$ProjectVersion-Setup" }
 $TargetSetupFile = Join-Path $OutputInstallerDir "$SetupBaseName.exe"
+$PortableZipTask = $null
 
-if (-not $SkipInstaller) {
-    # 每次构建前清理 Output\ 中可能残留的旧版或旧别名打包产物，确保收口为唯一规范 2 件套
-    Get-ChildItem -LiteralPath $OutputInstallerDir -File -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -like "Tools3000-*.exe" -or $_.Name -like "Tools3000-*.zip"
-    } | Remove-Item -Force -ErrorAction SilentlyContinue
-    Write-Log "已清理 Output\ 中的历史残留与旧别名产物 (Tools3000-*.exe / Tools3000-*.zip)"
+try {
+    if (-not $SkipInstaller) {
+        # 每次构建前清理 Output\ 中可能残留的旧版或旧别名打包产物，确保收口为唯一规范 2 件套
+        Get-ChildItem -LiteralPath $OutputInstallerDir -File -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -like "Tools3000-*.exe" -or $_.Name -like "Tools3000-*.zip"
+        } | Remove-Item -Force -ErrorAction SilentlyContinue
+        Write-Log "已清理 Output\ 中的历史残留与旧别名产物 (Tools3000-*.exe / Tools3000-*.zip)"
 
-    Write-Log "正在基于已完成第一轮签名的纯净 deploy_dist 生成便携包: $PortableArchivePath..."
-    Compress-Archive -Path (Join-Path $DeployDir "*") -DestinationPath $PortableArchivePath -CompressionLevel Optimal -Force
-    Write-Log "绿色便携包已生成: $PortableArchivePath" "SUCCESS"
-}
+        Write-Log "[PARALLEL] 后台启动绿色便携包 (.NET ZipFile Optimal) 打包 -> $PortableArchivePath..."
+        $portableZipArgs = @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $FastZipScript,
+            "-DestinationPath", $PortableArchivePath,
+            "-SourceDirectory", $DeployDir,
+            "-CompressionLevel", "Optimal"
+        )
+        $PortableZipTask = Start-BackgroundPwshTask -Name "Portable-ZIP" -Arguments $portableZipArgs -WorkingDir $ScriptDir
+    }
 
-Write-Log "检查是否可以生成安装程序 (Inno Setup)..."
-$InnoSetupDirs = @(
-    "C:\Program Files (x86)\Inno Setup 6",
-    "C:\Program Files\Inno Setup 6",
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6"
-)
-$ISCC = $null
-if (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue) {
-    $ISCC = (Get-Command "ISCC.exe").Source
-} else {
-    foreach ($dir in $InnoSetupDirs) {
-        if (Test-Path "$dir\ISCC.exe") {
-            $ISCC = "$dir\ISCC.exe"
-            break
+    Write-Log "检查是否可以生成安装程序 (Inno Setup)..."
+    $InnoSetupDirs = @(
+        "C:\Program Files (x86)\Inno Setup 6",
+        "C:\Program Files\Inno Setup 6",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6"
+    )
+    $ISCC = $null
+    if (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue) {
+        $ISCC = (Get-Command "ISCC.exe").Source
+    } else {
+        foreach ($dir in $InnoSetupDirs) {
+            if (Test-Path "$dir\ISCC.exe") {
+                $ISCC = "$dir\ISCC.exe"
+                break
+            }
         }
     }
-}
 
-if ($SkipInstaller) {
-    Write-Log "已指定 -SkipInstaller，跳过安装包生成。" "WARN"
-} elseif ($ISCC) {
-    Write-Log "找到 Inno Setup 编译器: $ISCC"
-    $InstallerScript = Join-Path $ScriptDir "installer.iss"
-    
-    if (Test-Path $InstallerScript) {
-        Write-Log "正在编译安装包 ($SetupBaseName.exe)..."
-        if (Test-Path -LiteralPath $TargetSetupFile) {
-            Remove-Item -Force -LiteralPath $TargetSetupFile -ErrorAction SilentlyContinue
-        }
-        $InnoArgs = @(
-            "/DTools3000Version=$ProjectVersion",
-            "/DTools3000Architecture=$Arch",
-            "/DTools3000SetupBaseFilename=$SetupBaseName",
-            "/DDeployDir=$DeployDir"
-        )
-        if ($Quick) {
-            $InnoArgs += "/DCompressionLevel=lzma2/fast"
-        }
-        if ($HasSigningIdentity) {
-            $InnoSignRequiredFlag = if ($RequireSigning) { "-Required " } else { "" }
-            $InnoSignPublicFlag = if ($RequirePublicTrust) { "-RequirePublicTrust " } else { "" }
-            $InnoArgs += "/DTools3000SignedBuild=1"
-            $InnoArgs += "/Stools3000=pwsh.exe -NoProfile -ExecutionPolicy Bypass -File `$q$SignScript`$q ${InnoSignRequiredFlag}${InnoSignPublicFlag}-Paths `$q`$f`$q"
-        }
-        & $ISCC @InnoArgs $InstallerScript
-        if ($LASTEXITCODE -eq 0) {
-            if ($HasSigningIdentity) {
-                $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
-                if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or ($RequireSigning -and -not $SetupSignature.TimeStamperCertificate)) {
-                    Write-Log "正在对生成的安装包执行外层 Authenticode 签名与时间戳加固: $TargetSetupFile"
-                    & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust
-                } elseif ($RequirePublicTrust) {
-                    & $SignScript -Paths $TargetSetupFile -VerifyOnly -Required:$RequireSigning -RequirePublicTrust
-                }
-                $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
-                if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or ($RequireSigning -and -not $SetupSignature.TimeStamperCertificate)) {
-                    throw "Inno Setup 生成的安装包外层签名或时间戳验证失败: $($SetupSignature.Status)"
-                }
-            } else {
-                & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust
+    if ($SkipInstaller) {
+        Write-Log "已指定 -SkipInstaller，跳过安装包生成。" "WARN"
+    } elseif ($ISCC) {
+        Write-Log "找到 Inno Setup 编译器: $ISCC"
+        $InstallerScript = Join-Path $ScriptDir "installer.iss"
+        
+        if (Test-Path $InstallerScript) {
+            $LzmaThreads = [Math]::Min([Math]::Max(2, [Environment]::ProcessorCount), 8)
+            Write-Log "正在多线程编译安装包 ($SetupBaseName.exe, LZMA2 BlockThreads=$LzmaThreads)..."
+            if (Test-Path -LiteralPath $TargetSetupFile) {
+                Remove-Item -Force -LiteralPath $TargetSetupFile -ErrorAction SilentlyContinue
             }
-            Write-Log "安装包已成功生成到: $TargetSetupFile" "SUCCESS"
+            $InnoArgs = @(
+                "/DTools3000Version=$ProjectVersion",
+                "/DTools3000Architecture=$Arch",
+                "/DTools3000SetupBaseFilename=$SetupBaseName",
+                "/DDeployDir=$DeployDir",
+                "/DLZMABlockThreads=$LzmaThreads"
+            )
+            if ($Quick) {
+                $InnoArgs += "/DCompressionLevel=lzma2/fast"
+            }
+            if ($HasSigningIdentity) {
+                $InnoSignRequiredFlag = if ($RequireSigning) { "-Required " } else { "" }
+                $InnoSignPublicFlag = if ($RequirePublicTrust) { "-RequirePublicTrust " } else { "" }
+                $InnoArgs += "/DTools3000SignedBuild=1"
+                $InnoArgs += "/Stools3000=pwsh.exe -NoProfile -ExecutionPolicy Bypass -File `$q$SignScript`$q ${InnoSignRequiredFlag}${InnoSignPublicFlag}-Paths `$q`$f`$q"
+            }
+            & $ISCC @InnoArgs $InstallerScript
+            if ($LASTEXITCODE -eq 0) {
+                if ($HasSigningIdentity) {
+                    $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
+                    if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or ($RequireSigning -and -not $SetupSignature.TimeStamperCertificate)) {
+                        Write-Log "正在对生成的安装包执行外层 Authenticode 签名与时间戳加固: $TargetSetupFile"
+                        & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust
+                    } elseif ($RequirePublicTrust) {
+                        & $SignScript -Paths $TargetSetupFile -VerifyOnly -Required:$RequireSigning -RequirePublicTrust
+                    }
+                    $SetupSignature = Get-AuthenticodeSignature -LiteralPath $TargetSetupFile
+                    if ($SetupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or ($RequireSigning -and -not $SetupSignature.TimeStamperCertificate)) {
+                        throw "Inno Setup 生成的安装包外层签名或时间戳验证失败: $($SetupSignature.Status)"
+                    }
+                } else {
+                    & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust
+                }
+                Write-Log "安装包已成功生成到: $TargetSetupFile" "SUCCESS"
+            } else {
+                throw "安装包编译失败！退出码: $LASTEXITCODE"
+            }
         } else {
-            throw "安装包编译失败！退出码: $LASTEXITCODE"
+            if ($RequireSigning) { throw "正式发布要求生成并签名安装包，但缺少安装脚本: $InstallerScript" }
+            Write-Log "未找到安装脚本 $InstallerScript" "WARN"
         }
     } else {
-        if ($RequireSigning) { throw "正式发布要求生成并签名安装包，但缺少安装脚本: $InstallerScript" }
-        Write-Log "未找到安装脚本 $InstallerScript" "WARN"
+        if ($RequireSigning) { throw "正式发布要求生成并签名安装包，但未找到 Inno Setup 编译器。" }
+        Write-Log "未找到 Inno Setup 编译器，跳过安装包生成步骤。" "WARN"
     }
-} else {
-    if ($RequireSigning) { throw "正式发布要求生成并签名安装包，但未找到 Inno Setup 编译器。" }
-    Write-Log "未找到 Inno Setup 编译器，跳过安装包生成步骤。" "WARN"
+
+    if ($PortableZipTask) {
+        $PortableSec = Complete-BackgroundPwshTask -Task $PortableZipTask
+        $PortableZipTask = $null
+        Write-Log ("绿色便携包已生成: $PortableArchivePath ({0:N2}s)" -f $PortableSec) "SUCCESS"
+    }
+    if ($PdbArchiveTask) {
+        $PdbSec = Complete-BackgroundPwshTask -Task $PdbArchiveTask
+        $PdbArchiveTask = $null
+        Write-Log ("调试符号已安全剥离并独立归档至 deploy_symbols/ ({0:N2}s)。" -f $PdbSec) "SUCCESS"
+    }
+} finally {
+    foreach ($bgZip in @($PortableZipTask, $PdbArchiveTask)) {
+        if ($bgZip -and $bgZip.Proc -and -not $bgZip.Proc.HasExited) {
+            try { $bgZip.Proc.Kill($true) } catch {}
+        }
+    }
 }
+$PackSw.Stop()
+Record-PhaseTiming -PhaseName "Packaging (Portable ZIP || Inno MT)" -Seconds $PackSw.Elapsed.TotalSeconds
 
 # ------------------------------------------------------------------------------
-# 7. 全功能端到端生命周期与防死锁自动化审计门禁 (DevOps Lifecycle Gate)
+# 8. 全功能端到端生命周期与防死锁自动化审计门禁 (DevOps Lifecycle Gate)
 # ------------------------------------------------------------------------------
+$E2eSw = [System.Diagnostics.Stopwatch]::StartNew()
 $MpCmdRun = Join-Path $env:ProgramFiles "Windows Defender\MpCmdRun.exe"
 if ((Test-Path -LiteralPath $MpCmdRun) -and $env:CI -ne 'true' -and $env:GITHUB_ACTIONS -ne 'true') {
     Write-Log "[GATE] 正在执行 Microsoft Defender 隔离沙盒静态防误报扫描门禁 (MpCmdRun)..." "INFO"
@@ -1187,9 +1385,15 @@ if (-not $SkipTests) {
         Write-Log "文件搜索与文档内容全文搜索跨进程端到端门禁全部通过。" "SUCCESS"
     }
 }
+$E2eSw.Stop()
+Record-PhaseTiming -PhaseName "Defender Scan + 5 E2E Gates" -Seconds $E2eSw.Elapsed.TotalSeconds
 
+$DeployTotalSw.Stop()
 Write-Log "======================================================="
-Write-Log "Tools3000 一键原子部署成功！" "SUCCESS"
+Write-Log ("Tools3000 一键原子部署成功！ (总耗时: {0:N1}s)" -f $DeployTotalSw.Elapsed.TotalSeconds) "SUCCESS"
+foreach ($pt in $PhaseTimings) {
+    Write-Log ("  [TIMING] {0,-38}: {1,6:N2}s" -f $pt.Phase, $pt.Seconds) "INFO"
+}
 Write-Log "您的纯净发布版位于: $DeployDir"
 if (Test-Path -LiteralPath $TargetSetupFile) {
     Write-Log "您的安装包位于: $TargetSetupFile"

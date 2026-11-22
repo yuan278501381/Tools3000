@@ -17,10 +17,12 @@ param(
     [string]$ReleaseTitle = "",
     [string]$NextFeatureBranch = "",
     [switch]$LocalOnly = $false,             # 仅本地演练发版 (不推送到远端 Git，不发布 GitHub Release)
-    [switch]$SkipGitHubPublish = $false      # 推送 Git 标签但跳过 GitHub Release 网页发布
+    [switch]$SkipGitHubPublish = $false,     # 推送 Git 标签但跳过 GitHub Release 网页发布
+    [switch]$CleanBuild = $false             # 强制清理 build/、重新 npm ci 并清空第三方 DLL 签名缓存执行全量冷编译
 )
 
 $ErrorActionPreference = "Stop"
+$ReleaseStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $ScriptDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Definition)
@@ -244,8 +246,10 @@ if (-not (Test-Path $NotesFile)) {
     Write-Host "[INFO] 使用已存在的 Release Notes: $NotesFile" -ForegroundColor Cyan
 }
 
-# 4. 更新 VERSION 单一事实源，并同步更新前端与 Rust Picasa 看图器版本元数据
-Set-Content -Path $VersionFile -Value $TargetVersion -NoNewline -Encoding utf8
+# 4. 更新 VERSION 单一事实源，并幂等同步更新前端与 Rust Picasa 看图器版本元数据（内容未变则不重写，保护增量构建时间戳）
+if ($CurrentVersion -ne $TargetVersion) {
+    Set-Content -Path $VersionFile -Value $TargetVersion -NoNewline -Encoding utf8
+}
 Write-Host "[OK] VERSION 已更新为: $TargetVersion" -ForegroundColor Green
 
 if ($TargetVersion -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
@@ -256,6 +260,13 @@ $TargetMinor = [int]$Matches[2]
 $TargetPatch = [int]$Matches[3]
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
+function Write-TextIfChanged {
+    param([string]$Path, [string]$Original, [string]$Updated, [System.Text.Encoding]$Encoding)
+    if ($Updated -cne $Original) {
+        [System.IO.File]::WriteAllText($Path, $Updated, $Encoding)
+    }
+}
+
 $UiPackageJsonPath = Join-Path $ScriptDir "ui\package.json"
 if (Test-Path -LiteralPath $UiPackageJsonPath) {
     $pkgRaw = [System.IO.File]::ReadAllText($UiPackageJsonPath, [System.Text.Encoding]::UTF8)
@@ -263,7 +274,7 @@ if (Test-Path -LiteralPath $UiPackageJsonPath) {
     $firstMatch = [regex]::Match($pkgRaw, '"version"\s*:\s*"[^"]+"')
     if ($firstMatch.Success) {
         $pkgUpdated = $pkgRaw.Substring(0, $firstMatch.Index) + "`"version`": `"$TargetVersion`"" + $pkgRaw.Substring($firstMatch.Index + $firstMatch.Length)
-        [System.IO.File]::WriteAllText($UiPackageJsonPath, $pkgUpdated, $Utf8NoBom)
+        Write-TextIfChanged -Path $UiPackageJsonPath -Original $pkgRaw -Updated $pkgUpdated -Encoding $Utf8NoBom
         Write-Host "[OK] ui/package.json version 已同步为: $TargetVersion" -ForegroundColor Green
     }
 }
@@ -288,7 +299,7 @@ if (Test-Path -LiteralPath $UiPackageLockPath) {
             $replacement = $m.Groups[1].Value + $TargetVersion + $m.Groups[2].Value
             $lockUpdated = $lockUpdated.Substring(0, $m.Index) + $replacement + $lockUpdated.Substring($m.Index + $m.Length)
         }
-        [System.IO.File]::WriteAllText($UiPackageLockPath, $lockUpdated, $Utf8NoBom)
+        Write-TextIfChanged -Path $UiPackageLockPath -Original $lockRaw -Updated $lockUpdated -Encoding $Utf8NoBom
         Write-Host "[OK] ui/package-lock.json 顶层 version 已同步为: $TargetVersion" -ForegroundColor Green
     }
 }
@@ -306,7 +317,7 @@ if (Test-Path -LiteralPath $ViewerCargoTomlPath) {
     if ($cargoUpdated -eq $cargoRaw -and $cargoRaw -notmatch "(?m)^version\s*=\s*`"$([regex]::Escape($TargetVersion))`"") {
         throw "无法在 src/viewer/Cargo.toml 中定位 [package] version 字段！"
     }
-    [System.IO.File]::WriteAllText($ViewerCargoTomlPath, $cargoUpdated, $Utf8NoBom)
+    Write-TextIfChanged -Path $ViewerCargoTomlPath -Original $cargoRaw -Updated $cargoUpdated -Encoding $Utf8NoBom
     Write-Host "[OK] src/viewer/Cargo.toml version 已同步为: $TargetVersion" -ForegroundColor Green
 }
 
@@ -319,7 +330,7 @@ if (Test-Path -LiteralPath $ViewerCargoLockPath) {
         "`${1}$TargetVersion`${2}",
         1
     )
-    [System.IO.File]::WriteAllText($ViewerCargoLockPath, $cargoLockUpdated, $Utf8NoBom)
+    Write-TextIfChanged -Path $ViewerCargoLockPath -Original $cargoLockRaw -Updated $cargoLockUpdated -Encoding $Utf8NoBom
     Write-Host "[OK] src/viewer/Cargo.lock 主包 version 已同步为: $TargetVersion" -ForegroundColor Green
 }
 
@@ -331,7 +342,7 @@ if (Test-Path -LiteralPath $ViewerRcPath) {
     $rcUpdated = [regex]::Replace($rcUpdated, '(?m)(^\s*PRODUCTVERSION\s+)\d+,\d+,\d+,\d+', "`${1}$TargetMajor,$TargetMinor,$TargetPatch,0")
     $rcUpdated = [regex]::Replace($rcUpdated, '(VALUE\s+"FileVersion"\s*,\s*")[^"]+(")', "`${1}$TargetVersion.0`${2}")
     $rcUpdated = [regex]::Replace($rcUpdated, '(VALUE\s+"ProductVersion"\s*,\s*")[^"]+(")', "`${1}$TargetVersion`${2}")
-    [System.IO.File]::WriteAllText($ViewerRcPath, $rcUpdated, $Utf8NoBom)
+    Write-TextIfChanged -Path $ViewerRcPath -Original $rcRaw -Updated $rcUpdated -Encoding $Utf8NoBom
     Write-Host "[OK] src/viewer/viewer.rc 版本资源已同步为: $TargetVersion ($TargetVersion.0)" -ForegroundColor Green
 }
 
@@ -347,7 +358,7 @@ if (Test-Path -LiteralPath $ViewerManifestPath) {
     if ($manifestUpdated -eq $manifestRaw -and $manifestRaw -notmatch "version=`"$([regex]::Escape($TargetVersion))\.0`"[^>]*name=`"Yy1\.Tools3000\.PicasaViewer`"") {
         throw "无法在 src/viewer/viewer.manifest 中定位 Yy1.Tools3000.PicasaViewer 版本字段！"
     }
-    [System.IO.File]::WriteAllText($ViewerManifestPath, $manifestUpdated, $Utf8NoBom)
+    Write-TextIfChanged -Path $ViewerManifestPath -Original $manifestRaw -Updated $manifestUpdated -Encoding $Utf8NoBom
     Write-Host "[OK] src/viewer/viewer.manifest assemblyIdentity 版本已同步为: $TargetVersion.0" -ForegroundColor Green
 }
 
@@ -370,26 +381,61 @@ if ($HasStaged.Count -gt 0) {
     Write-Host "[OK] 版本元数据已在当前分支提交" -ForegroundColor Green
 }
 
-# 6. 合并至 main 分支 (若当前不在 main 分支则执行 --no-ff 显式合并)
+# 6. 合并至 main 分支 (若当前不在 main 分支则执行 --no-ff 显式合并，并对字节未变文件保鲜 mtime 避免无效全量重编)
 if ($OriginalBranch -ne "main") {
+    # 记录将受 main..OriginalBranch 差异影响的源码与构建配置 SHA-256 与 mtime：
+    # checkout main 再 merge 回同内容会无谓刷新文件时间戳，触发 CMake / Cargo / tsc 误判为全量重编；
+    # 仅对合并后 SHA-256 100% 字节一致的文件还原原始 mtime，任何 1 字节变更都严格保持新时间戳触发重编。
+    $MtimeSnapshot = @{}
+    $ChangedRelFiles = @(git diff --name-only "main...$OriginalBranch" 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    foreach ($rel in $ChangedRelFiles) {
+        $absPath = Join-Path $ScriptDir ($rel -replace '/', '\')
+        if (Test-Path -LiteralPath $absPath -PathType Leaf) {
+            $item = Get-Item -LiteralPath $absPath
+            $MtimeSnapshot[$absPath] = @{
+                Hash  = (Get-FileHash -LiteralPath $absPath -Algorithm SHA256).Hash
+                Mtime = $item.LastWriteTimeUtc
+            }
+        }
+    }
+
     Write-Host "[GIT] 切换至 main 分支并执行 --no-ff 显式合并..." -ForegroundColor Cyan
     git checkout main
     if ($LASTEXITCODE -ne 0) { throw "切换至 main 分支失败！" }
 
     git merge --no-ff $OriginalBranch -m "merge($OriginalBranch): 合并 $OriginalBranch 分支至 main 分支，发布 $TargetTag 正式版"
     if ($LASTEXITCODE -ne 0) { throw "合并至 main 分支失败！" }
+
+    $RestoredMtimeCount = 0
+    foreach ($kv in $MtimeSnapshot.GetEnumerator()) {
+        $absPath = $kv.Key
+        if (Test-Path -LiteralPath $absPath -PathType Leaf) {
+            $curHash = (Get-FileHash -LiteralPath $absPath -Algorithm SHA256).Hash
+            if ($curHash -eq $kv.Value.Hash) {
+                [System.IO.File]::SetLastWriteTimeUtc($absPath, $kv.Value.Mtime)
+                $RestoredMtimeCount++
+            }
+        }
+    }
+    if ($RestoredMtimeCount -gt 0) {
+        Write-Host "[OK] 已按 SHA-256 守卫无损保鲜 $RestoredMtimeCount 个同内容文件时间戳（避免 CMake/Cargo/tsc 无效重编）" -ForegroundColor Green
+    }
     Write-Host "[OK] main 分支已成功完成显式非快进合并" -ForegroundColor Green
 } else {
     Write-Host "[GIT] 当前已在 main 分支，直接进入洁净构建与本地权威签名流程..." -ForegroundColor Cyan
 }
 
-# 7. 全量清理并执行本地编译构建与生命周期端到端门禁
-Write-Host "[BUILD] 执行全量编译构建与生命周期测试门禁..." -ForegroundColor Cyan
+# 7. 清理旧产物并执行本地并行编译构建与生命周期端到端门禁
+Write-Host "[BUILD] 执行本地构建与全量生命周期测试门禁 (CleanBuild=$CleanBuild)..." -ForegroundColor Cyan
 foreach ($ArtifactDirectory in @("Output", "deploy_dist", "ui\dist", "release_assets")) {
     Remove-ProjectArtifactDirectorySafely -ProjectRoot $ScriptDir -RelativePath $ArtifactDirectory
 }
 
-& pwsh -ExecutionPolicy Bypass -File .\deploy.ps1 -RequireSigning
+$DeployArgs = @("-ExecutionPolicy", "Bypass", "-File", ".\deploy.ps1", "-RequireSigning")
+if ($CleanBuild) {
+    $DeployArgs += "-CleanBuild"
+}
+& pwsh @DeployArgs
 if ($LASTEXITCODE -ne 0) { throw "构建部署门禁失败，终止发版！" }
 
 $ExpectedSetupExe = "Output\Tools3000-v$TargetVersion-Setup.exe"
@@ -401,13 +447,12 @@ if (-not (Test-Path -LiteralPath $ExpectedSetupExe)) {
 $SignedReleaseInputs = @(
     $ExpectedSetupExe
 ) + @(Get-ChildItem "deploy_dist" -Include "*.exe", "*.dll" -Recurse -File | Select-Object -ExpandProperty FullName)
-foreach ($SignedInput in $SignedReleaseInputs) {
-    $Signature = Get-AuthenticodeSignature -LiteralPath $SignedInput
-    if ($Signature.Status -ne "Valid") {
-        throw "正式发布签名验证失败: $SignedInput ($($Signature.Status))"
-    }
+& (Join-Path $ScriptDir "scripts\sign-artifacts.ps1") `
+    -Paths $SignedReleaseInputs -VerifyOnly -Required
+if ($LASTEXITCODE -ne 0) {
+    throw "正式发布批量签名校验失败！"
 }
-Write-Host "[OK] deploy_dist 全部可执行文件/动态库及外层安装包 Authenticode 签名验证通过" -ForegroundColor Green
+Write-Host "[OK] deploy_dist 全部可执行文件/动态库及外层安装包 Authenticode 签名与时间戳批量验证通过" -ForegroundColor Green
 
 # 8. EXE 二进制版本强校验门禁（覆盖主程序与 Rust Picasa 看图器）
 foreach ($BuiltExe in @("deploy_dist\Tools3000.exe", "deploy_dist\Tools3000_Picasa_Viewer.exe")) {
@@ -605,8 +650,10 @@ if (-not [string]::IsNullOrWhiteSpace($NextFeatureBranch)) {
     $FinalBranch = (git branch --show-current).Trim()
 }
 
+$ReleaseStopwatch.Stop()
+$TotalReleaseSec = [math]::Round($ReleaseStopwatch.Elapsed.TotalSeconds, 1)
 Write-Host "=======================================================" -ForegroundColor Green
-Write-Host " [OK] Tools3000 $TargetTag 本地权威自动化发版流水线执行完毕！" -ForegroundColor Green
+Write-Host " [OK] Tools3000 $TargetTag 本地权威自动化发版流水线执行完毕！ (总耗时: ${TotalReleaseSec}s)" -ForegroundColor Green
 Write-Host " - 最新安装包: $ExpectedSetupExe" -ForegroundColor Green
 Write-Host " - 最新便携包: $ExpectedPortableZip" -ForegroundColor Green
 Write-Host " - 发布资产库: release_assets" -ForegroundColor Green

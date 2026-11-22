@@ -443,8 +443,10 @@ if (-not $SkipUI) {
                     Write-Error-Exit "前端质量门禁失败: npm run $Command"
                 }
             }
+            npm run build:bundle
+        } else {
+            npm run build
         }
-        npm run build
         if ($LASTEXITCODE -ne 0) {
             Write-Error-Exit "UI 构建失败"
         }
