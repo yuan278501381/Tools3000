@@ -2041,6 +2041,7 @@
     "capture": "Снимок области",
     "recording": "Запись экрана",
     "search": "Поиск файлов",
+    "clipboard": "История буфера",
     "resumeGesture": "Возобновить жесты",
     "pauseGesture": "Пауза жестов",
     "restartElevated": "Запуск от админа",

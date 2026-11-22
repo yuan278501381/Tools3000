@@ -6,6 +6,16 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-23] v1.4.0 正式发版收尾：托盘右键菜单双通道接入历史剪贴板 + 全 8 语种 10 核视觉资产与 README 升级 + 贴图 120Hz 缩放回归适配
+- **核心改动与验证控制点**：
+  1. **系统托盘右键菜单双通道加入「历史剪贴板 (`Alt + V`)」 (`src/tray/TrayIcon.{h,cpp}`, `src/main.cpp`, `ui/src/TrayApp.tsx`, `ui/src/TrayApp.test.tsx`, 8 套 `ui/src/i18n/locales/*.json`)**：
+     - 现代 WebView2 托盘弹窗保留 7 格 Bento 控制舱不变，在快捷菜单区「搜索文件」正下方新增「历史剪贴板」入口（矢量 `ClipboardList` 图标、实时同步 `Toggle Clipboard` 快捷键胶囊、订阅 `clipboard:stateChanged` 与 `plugins:changed` 动态显隐，点击派发 `tray.action { action: "clipboard" }`）；
+     - Windows 原生兜底右键菜单新增 `TrayMenuId::Clipboard = 1007` 与 `onClipboard` 回调，双通道统一直接调用 `ClipboardWindow::instance().show(...)`。
+  2. **C++ 贴图缩放单测适配 120Hz 阻尼动画 (`tests/unit/test_capture.inc`)**：
+     - `CaptureBatch2InteractionUpgradeTest` 在连发 12 格 `WM_MOUSEWHEEL` 后，既断言首帧平滑起步（`scale > 1.0f && scale < 3.89f`），又泵 `WM_TIMER(kTimerIdZoomAnim=4)` 收敛至 `>= 3.8955f` 后断言终态 `1.12^12 ~= 3.896x`、像素网格与 `"390%"` HUD 胶囊。
+  3. **全 8 语种视觉资产与 README 同步升级 (`README*.md`, `docs/images/<locale>/{feature_bento_overview.png,translate_demo.webp,clipboard_demo.webp}`)**：
+     - 全部 8 国语言 README 同步补齐 v1.4.0 新功能介绍、对称 5×2 动态演示表（新增截图原位翻译与持久化剪贴板动图）、Ditto/`Win+V` 替代对照与 `Alt + V` 常用快捷键；Playwright 逐帧渲染动图严禁残留 CSS `transition`（否则跨帧截屏产生原文/译文鬼影叠层）。
+
 ### [2026-11-23] 剪贴板桌面级 Shift/Ctrl 固定锚点多选根治 + 搜索分类栏「全部/文档内容」固定与自定义拖拽持久化
 - **核心痛点根治与架构沉淀**：
   1. **剪贴板批量多选 `Shift` 连选 / `Ctrl` 加选实机失灵根治 (`ui/src/clipboardSelection.ts`, `ui/src/ClipboardApp.{tsx,css}`, `ui/src/clipboardSelection.test.tsx`)**：

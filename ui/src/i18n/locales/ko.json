@@ -2041,6 +2041,7 @@
     "capture": "영역 캡처",
     "recording": "화면 녹화",
     "search": "파일 검색",
+    "clipboard": "클립보드 기록",
     "resumeGesture": "제스처 재개",
     "pauseGesture": "제스처 일시 중지",
     "restartElevated": "관리자 권한으로 실행",

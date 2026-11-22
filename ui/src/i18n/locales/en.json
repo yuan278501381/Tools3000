@@ -2041,6 +2041,7 @@
     "capture": "Capture Area",
     "recording": "Record Screen",
     "search": "Search Files",
+    "clipboard": "Clipboard History",
     "resumeGesture": "Resume gestures",
     "pauseGesture": "Pause gestures",
     "restartElevated": "Run as Administrator",

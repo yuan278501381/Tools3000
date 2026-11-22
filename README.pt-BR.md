@@ -21,14 +21,14 @@
 
 <br />
 
-O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas essenciais do dia a dia: **busca instantânea de arquivos, busca no conteúdo de documentos, captura com rolagem, anotação precisa de capturas, fixação na tela com grupos de pins, OCR offline de alta precisão, gravação de tela com Estúdio de zoom automático (exportando MP4, GIF otimizado para mensageiros/WeChat e WebP animado) e gestos globais do mouse**. Consome cerca de uma dúzia de MB de RAM em repouso, funciona 100% offline e atende tanto PCs pessoais (`x64` e `ARM64`) quanto ambientes Windows Server com múltiplos usuários simultâneos.
+O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas essenciais do dia a dia: **busca instantânea de arquivos e favoritos (com CLI / MCP), busca no conteúdo de documentos, histórico persistente da área de transferência, captura com rolagem, anotação precisa de capturas, fixação na tela com grupos de pins, OCR offline de alta precisão e tradução no local, gravação de tela com Estúdio de zoom automático (exportando MP4, GIF otimizado para mensageiros/WeChat e WebP animado), gestos globais do mouse e visualizador leve Picasa em Rust**. Consome cerca de uma dúzia de MB de RAM em repouso, opera localmente sem telemetria e atende tanto PCs pessoais (`x64` e `ARM64`) quanto ambientes Windows Server com múltiplos usuários simultâneos.
 
 ---
 
 ## Visão geral
 
 <p align="center">
-  <img src="docs/images/pt-BR/feature_bento_overview.png" alt="Visão geral dos nove recursos principais do Tools3000" width="100%" />
+  <img src="docs/images/pt-BR/feature_bento_overview.png" alt="Visão geral dos dez recursos principais do Tools3000" width="100%" />
 </p>
 
 ---
@@ -76,16 +76,27 @@ O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas es
       <sub><b>Gestos Globais do Mouse</b> · Arraste com o botão direito para fechar abas, disparo instantâneo e volume na borda</sub>
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/pt-BR/translate_demo.webp" alt="Tradução de captura no local 1:1 com proteção de código" width="100%" /><br />
+      <sub><b>Tradução de Captura no Local</b> · Motores gratuitos sem chave + BYOK, sobreposição 1:1, proteção de código e alternância em 0 ms</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/pt-BR/clipboard_demo.webp" alt="Histórico persistente da área de transferência em Rust com mesclagem Shift/Ctrl" width="100%" /><br />
+      <sub><b>Histórico de Transferência (Alt + V)</b> · Núcleo Rust sobrevive a reinícios, colagem mesclada Shift/Ctrl, Rich Text e grupos</sub>
+    </td>
+  </tr>
 </table>
 
 | Módulo | O que faz |
 | :--- | :--- |
-| **Busca Instantânea de Arquivos** | Pressione `Alt + Space` para localizar arquivos entre milhões de itens em milissegundos; aperte `Space` para visualizar imagens, Office, PDFs, código, CAD, PSD e modelos 3D sem abrir programas pesados. |
+| **Busca Instantânea de Arquivos** | Pressione `Alt + Space` para localizar arquivos entre milhões de itens em ms; inclui favoritos do Chrome/Edge/Firefox (`bm:`), coluna Aberturas padrão, abas de categoria arrastáveis, prévia com `Space` (imagens, Office, PDFs, código, CAD, PSD e 3D) e o binário Rust `tools3000-cli.exe` de 350 KB (CLI e servidor MCP para agentes de IA). |
 | **Busca no Conteúdo** | Use `content:` para pesquisar dentro de Word, Excel, PDF, PowerPoint, CAD e código-fonte com trechos destacados e cópia da linha em um clique. |
+| **Histórico Persistente de Transferência** | Acione com `Alt + V` (ou pelo menu de contexto da bandeja) com armazenamento atômico em Rust que sobrevive a reinícios; suporta seleção com âncora `Shift / Ctrl` para colagem mesclada na ordem e exclusão em lote, HTML/RTF, grupos personalizados, edição no local, colagem rápida `Alt + 1..9` e exclusão de apps sensíveis. |
 | **Captura com Rolagem** | Costure automaticamente páginas longas, chats e documentos com prévia lateral ao vivo, recorte não destrutivo de topo/rodapé e anotação direta na imagem longa. |
 | **Anotação Precisa** | `F1` encaixa automaticamente em janelas e controles de interface; inclui seletor de cor por pixel, lupa óptica tracejada, 6 estilos de seta, numeração autoajustável, mosaico e molduras. |
-| **Pins na Tela e Grupos** | Fixe capturas ou trechos da área de transferência sempre no topo (`F3`) com zoom na roda, opacidade e clique transparente; organize em grupos por cor, alterne visibilidade na barra superior ou alinhe em grade em um clique. |
-| **OCR Offline de Alta Precisão** | Reconhecimento 100% local com alta precisão em código, JSON e layouts densos — selecione e copie texto direto em imagens fixadas, faça marcações onduladas, destaque, edite texto no local e extraia tabelas ou QR Codes. |
+| **Pins na Tela e Grupos** | Fixe capturas ou trechos da área de transferência sempre no topo (`F3`) com zoom fluido 120Hz, opacidade e clique transparente; organize em grupos por cor, alterne visibilidade na barra superior ou alinhe em grade em um clique. |
+| **OCR Offline e Tradução no Local** | Reconhecimento 100% local (copiar texto, marcação ondulada, edição no local, tabelas e QR Codes) somado à **tradução 1:1 diretamente sobre a captura** (dois canais gratuitos sem chave + BYOK compatível com OpenAI), proteção automática de código e alternância em 0 ms com o original. |
 | **Gravador de Tela e Estúdio** | Grave a tela com sobreposição de teclas/cliques e entre direto no Estúdio: zoom automático nos cliques, papéis de parede selecionados, edição por forma de onda e exportação em **MP4**, **GIF pronto para mensageiros/WeChat** e **WebP animado**. |
 | **Gestos Globais do Mouse** | Segure o botão direito e deslize para alternar abas, voltar ou fechar janelas; suporta disparo instantâneo, volume pela roda na borda da tela, regras por aplicativo e pausa automática em jogos em tela cheia. |
 | **Apresentação e Acesso Remoto** | Exibição limpa de teclas e holofote de cursor com duplo toque em `Ctrl`; barra de acesso rápido nas janelas Abrir/Salvar do Windows; passagem de atalhos para mstsc, RustDesk, ToDesk e AnyDesk com desbloqueio de teclas presas. |
@@ -150,8 +161,9 @@ Cada utilitário clássico tem seus pontos fortes avançados. O Tools3000 reúne
 
 | Utilitário Clássico | Fluxos cobertos pelo Tools3000 | Quando manter a ferramenta dedicada |
 | :--- | :--- | :--- |
-| **Everything** | `Alt + Space` para busca NTFS instantânea por nome e `content:` no conteúdo de documentos, iniciando sob demanda | Quando precisa de servidor HTTP/ETP, indexação completa de metadados EXIF/mídia ou ecossistema CLI `es.exe` |
-| **Snipaste / PixPin** | `F1` captura e anotação, lupa tracejada, captura com rolagem, `F3` grupos de pins e OCR offline rápido com edição no local | Quando depende da detecção extrema de controles GUI legados ou automações CLI específicas |
+| **Everything** | `Alt + Space` para busca NTFS instantânea por nome, favoritos `bm:` e `content:` no conteúdo de documentos, mais CLI / MCP em Rust (350 KB), iniciando sob demanda | Quando precisa de servidor HTTP/ETP, indexação completa de metadados EXIF/mídia ou scripts antigos presos à sintaxe do `es.exe` |
+| **Ditto / Windows `Win + V`** | `Alt + V` histórico persistente em Rust (sobrevive a reinícios) com mesclagem ordenada `Shift / Ctrl` e exclusão em lote, HTML/RTF, grupos, edição no local e `Alt + 1..9` | Quando precisa de sincronização de área de transferência em rede local entre vários PCs ou roaming em nuvem |
+| **Snipaste / PixPin** | `F1` captura e anotação, lupa tracejada, captura com rolagem, `F3` grupos de pins 120Hz, tradução 1:1 no local e OCR offline rápido com edição no local | Quando depende da detecção extrema de controles GUI legados ou automações CLI específicas |
 | **WGestures / StrokesPlus** | Gestos com botão direito, disparo imediato, volume na borda, cantos ativos, pausa automática em jogos e scripts Lua | Quando utiliza gestos com múltiplos botões simultâneos, condições complexas de janela ou macros legados |
 | **Gravadores (ex.: ShareX)** | Gravação de tela, exibição de teclas, Estúdio (edição por forma de onda e zoom do cursor), exportação em MP4, GIF e WebP | Quando depende de upload automático para 80+ serviços de nuvem/S3/FTP/Webhook ou pipelines FFmpeg personalizados |
 | **Picasa Photo Viewer / FastStone / Fotos do Windows** | Visualizador leve Picasa opcional em Rust (< 2 MB, zero dependências, executável independente): animações clássicas com 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW e espelhamento sem perdas | Quando precisa da biblioteca de álbuns e reconhecimento facial do Google Picasa completo ou edição RAW avançada em lote |
@@ -164,8 +176,9 @@ Todos os atalhos podem ser personalizados nas Configurações com detecção de 
 
 | Atalho | Ação |
 | :--- | :--- |
-| `Alt + Space` | Abrir / ocultar busca instantânea (`Space` sobre o resultado abre a pré-visualização) |
-| `F1` | Captura de área e anotação |
+| `Alt + Space` | Abrir / ocultar busca instantânea (suporta favoritos `bm:`; `Space` abre pré-visualização) |
+| `Alt + V` | Abrir / ocultar histórico persistente de transferência (`Shift / Ctrl` colagem mesclada e `Alt + 1..9`; também no menu da bandeja) |
+| `F1` | Captura de área, anotação e tradução no local em 1 clique |
 | `F3` | Fixar imagem ou texto da área de transferência no topo |
 | Duplo toque em `Ctrl` | Ativar / desativar holofote do cursor |
 | `Ctrl + Alt + Backspace` | Liberar teclas modificadoras presas em acesso remoto (ou duplo toque no `Ctrl` direito) |
@@ -174,7 +187,7 @@ Todos os atalhos podem ser personalizados nas Configurações com detecção de 
 
 ## Privacidade e princípios
 
-- **100% Offline**: Indexação de arquivos, busca textual, OCR, anotações e estatísticas funcionam estritamente no seu dispositivo — mesmo sem conexão com a internet.
+- **Local Primeiro e Pronto para Offline**: Indexação de arquivos, busca textual, área de transferência persistente, OCR, anotações e estatísticas operam estritamente no seu dispositivo. Apenas quando você aciona explicitamente a tradução de captura o trecho selecionado é enviado ao provedor escolhido.
 - **Zero Telemetria, Sem Contas**: Sem anúncios, sem login e sem envio de arquivos ou digitação para servidores externos.
 - **Leve por Padrão**: Cada módulo pode ser ativado ou desativado individualmente, e o serviço de busca só inicia sob demanda para manter o consumo em repouso mínimo.
 

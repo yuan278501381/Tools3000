@@ -4,6 +4,7 @@ import {
   Crop,
   Video,
   Search,
+  ClipboardList,
   Shield,
   ShieldCheck,
   LogOut,
@@ -38,6 +39,7 @@ interface TrayShortcuts {
   recording: string;
   pinPaste: string;
   search: string;
+  clipboard: string;
   emergencyFlush: string;
 }
 
@@ -46,6 +48,7 @@ const EMPTY_SHORTCUTS: TrayShortcuts = {
   recording: '',
   pinPaste: '',
   search: '',
+  clipboard: '',
   emergencyFlush: '',
 };
 
@@ -81,7 +84,7 @@ export default function TrayApp() {
   const sizeFrameRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const [activePlugins, setActivePlugins] = useState<Set<string>>(() => new Set([
-    'capture', 'search', 'gesture', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost',
+    'capture', 'search', 'clipboard', 'gesture', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost',
   ]));
 
   // 立即同步直接测量并上报尺寸 (force=true 时绕过重复判定)
@@ -171,13 +174,15 @@ export default function TrayApp() {
             recording: byName.get('Record') ?? prev.recording,
             pinPaste: byName.get('Pin Paste') ?? prev.pinPaste,
             search: byName.get('Toggle Search') ?? prev.search,
+            clipboard: byName.get('Toggle Clipboard') ?? prev.clipboard,
             emergencyFlush: prev.emergencyFlush,
           };
           if (
             prev.screenshot === next.screenshot &&
             prev.recording === next.recording &&
             prev.pinPaste === next.pinPaste &&
-            prev.search === next.search
+            prev.search === next.search &&
+            prev.clipboard === next.clipboard
           ) {
             return prev;
           }
@@ -328,6 +333,18 @@ export default function TrayApp() {
         const next = new Set(prev);
         if (payload.enabled) next.add('spotlight');
         else next.delete('spotlight');
+        return next;
+      });
+    }
+  });
+
+  useBridgeEvent('clipboard:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      setActivePlugins((prev) => {
+        const next = new Set(prev);
+        if (payload.enabled) next.add('clipboard');
+        else next.delete('clipboard');
         return next;
       });
     }
@@ -549,6 +566,7 @@ export default function TrayApp() {
 
   const captureActive = activePlugins.has('capture');
   const searchActive = activePlugins.has('search');
+  const clipboardActive = activePlugins.has('clipboard');
 
   // 触发全局命令动作（立即乐观收起托盘，带来零延迟体验）
   const handleAction = async (action: string) => {
@@ -795,6 +813,22 @@ export default function TrayApp() {
             <span className="tray-menu__label">{t('tray.search', 'Search Files')}</span>
             {shortcuts.search && (
               <kbd className="tray-menu__shortcut">{shortcuts.search}</kbd>
+            )}
+          </button>
+        )}
+
+        {clipboardActive && (
+          <button
+            type="button"
+            role="menuitem"
+            className="tray-menu__item"
+            disabled={busy}
+            onClick={() => void handleAction('clipboard')}
+          >
+            <ClipboardList size={15} className="tray-menu__icon" aria-hidden="true" />
+            <span className="tray-menu__label">{t('tray.clipboard', 'Clipboard History')}</span>
+            {shortcuts.clipboard && (
+              <kbd className="tray-menu__shortcut">{shortcuts.clipboard}</kbd>
             )}
           </button>
         )}

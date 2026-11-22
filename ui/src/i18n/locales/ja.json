@@ -2041,6 +2041,7 @@
     "capture": "範囲キャプチャ",
     "recording": "画面録画",
     "search": "ファイル検索",
+    "clipboard": "クリップボード履歴",
     "resumeGesture": "ジェスチャー再開",
     "pauseGesture": "ジェスチャー一時停止",
     "restartElevated": "管理者として実行",

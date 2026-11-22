@@ -1012,6 +1012,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         if (searchWnd.isForegroundActive()) searchWnd.minimize();
         else searchWnd.show(GetModuleHandleW(nullptr));
     });
+    tray.onClipboard([]() {
+        tools3000::ui::ClipboardWindow::instance().show(GetModuleHandleW(nullptr));
+    });
     tray.onPauseGesture([]() { tools3000::core::EventBus::instance().publish(tools3000::core::ActionToggleGesturePauseEvent{}); });
     tray.onRestartElevated([hwnd]() {
         tools3000::core::ConfigManager::instance().set<bool>("/general/runAsAdmin", true);
@@ -1591,6 +1594,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             auto& searchWnd = tools3000::ui::SearchWindow::instance();
             if (searchWnd.isForegroundActive()) searchWnd.minimize();
             else searchWnd.show(GetModuleHandleW(nullptr));
+        } else if (action == "clipboard") {
+            tools3000::ui::ClipboardWindow::instance().show(GetModuleHandleW(nullptr));
         } else if (action == "screenshot") {
             tools3000::core::EventBus::instance().publish(tools3000::core::ActionTriggerScreenshotEvent{});
         } else if (action == "recording") {

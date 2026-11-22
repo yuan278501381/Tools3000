@@ -46,6 +46,7 @@ describe('TrayApp Bento Control Center', () => {
             { name: 'Record', shortcut: 'Ctrl+Shift+R' },
             { name: 'Pin Paste', shortcut: 'F3' },
             { name: 'Toggle Search', shortcut: 'Alt+Space' },
+            { name: 'Toggle Clipboard', shortcut: 'Alt+V' },
           ];
         case 'capture.pinGroupControl':
           return {
@@ -68,6 +69,7 @@ describe('TrayApp Bento Control Center', () => {
             { id: 'keycast', active: true, enabled: true },
             { id: 'capture', active: true, enabled: true },
             { id: 'search', active: true, enabled: true },
+            { id: 'clipboard', active: true, enabled: true },
             { id: 'spotlight', active: true, enabled: true },
             { id: 'dialogenhancer', active: true, enabled: true },
             { id: 'remote_boost', active: true, enabled: true },
@@ -107,6 +109,8 @@ describe('TrayApp Bento Control Center', () => {
     expect(screen.getByText('F1')).toBeDefined();
     expect(screen.getByText('Ctrl+Shift+R')).toBeDefined();
     expect(screen.getByText('Alt+Space')).toBeDefined();
+    expect(screen.getByText('Clipboard History')).toBeDefined();
+    expect(screen.getByText('Alt+V')).toBeDefined();
     expect(screen.getByText('Ctrl+Alt+Bksp')).toBeDefined();
     expect(screen.getByText('Admin')).toBeDefined();
   });
@@ -128,6 +132,13 @@ describe('TrayApp Bento Control Center', () => {
     });
     expect(bridgeSpy).toHaveBeenCalledWith('tray.hide');
     expect(bridgeSpy).toHaveBeenCalledWith('tray.action', { action: 'screenshot' });
+
+    const clipboardItem = screen.getByRole('menuitem', { name: /Clipboard History/i });
+    await act(async () => {
+      fireEvent.click(clipboardItem);
+    });
+    expect(bridgeSpy).toHaveBeenCalledWith('tray.hide');
+    expect(bridgeSpy).toHaveBeenCalledWith('tray.action', { action: 'clipboard' });
   });
 
   it('expands inline Pin Groups drawer and supports groups beyond 6 plus global pin controls', async () => {

@@ -2041,6 +2041,7 @@
     "capture": "区域截图",
     "recording": "屏幕录制",
     "search": "搜索文件",
+    "clipboard": "历史剪贴板",
     "resumeGesture": "恢复手势",
     "pauseGesture": "暂停手势",
     "restartElevated": "以管理员身份运行",

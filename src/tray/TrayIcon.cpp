@@ -835,6 +835,7 @@ void TrayIcon::showNativeContextMenu(POINT pt) {
     }
 
     AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(TrayMenuId::Search), isEn ? L"File Search" : L"文件搜索");
+    AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(TrayMenuId::Clipboard), isEn ? L"Clipboard History" : L"历史剪贴板");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(TrayMenuId::PauseGesture),
                 m_gesturePaused.load(std::memory_order_acquire)

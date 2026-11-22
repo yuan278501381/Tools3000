@@ -13204,15 +13204,30 @@ TEST(CaptureBatch2InteractionUpgradeTest, FourEdgeKeyboardResizeAndPinHudGridAnd
         EXPECT_FALSE(initState.value("lastRenderedPixelGrid", true));
         EXPECT_FALSE(initState.value("lastRenderedOcrBadge", true));
 
-        // 连续滚轮放大 12 档 (1.1^12 ~= 3.14x >= 3.0x)，激活高倍像素网格线与百分比 HUD 胶囊
+        // 连续滚轮放大 12 档 (1.12^12 ~= 3.90x >= 3.0x)：验证 120Hz 对数空间指数阻尼无级平滑起手，
+        // 驱动动画定时器收敛至目标倍率后激活高倍像素网格线与百分比 HUD 胶囊
         for (int step = 0; step < 12; ++step) {
             SendMessageW(pinHwnd, WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), 0);
         }
-        const auto zoomState = inspectPin(2050, {{"forceRender", true}});
+        const auto midZoomState = inspectPin(2050, nlohmann::json::object());
+        ASSERT_TRUE(midZoomState.value("success", false));
+        EXPECT_GT(midZoomState.value("scale", 0.0f), 1.0f);
+        EXPECT_LT(midZoomState.value("scale", 0.0f), 3.0f);
+
+        for (int tick = 0; tick < 80; ++tick) {
+            Sleep(12);
+            SendMessageW(pinHwnd, WM_TIMER, 4 /* PinWindow::kTimerIdZoomAnim */, 0);
+            const auto probe = inspectPin(2054 + tick, nlohmann::json::object());
+            if (probe.value("scale", 0.0f) >= 3.8955f) {
+                break;
+            }
+        }
+        const auto zoomState = inspectPin(2120, {{"forceRender", true}});
         ASSERT_TRUE(zoomState.value("success", false));
         EXPECT_GE(zoomState.value("scale", 0.0f), 3.0f);
+        EXPECT_NEAR(zoomState.value("scale", 0.0f), 3.896f, 0.02f);
         EXPECT_TRUE(zoomState.value("lastRenderedPixelGrid", false));
-        EXPECT_EQ(zoomState.value("activeHudBadgeText", std::string{}), "314%");
+        EXPECT_EQ(zoomState.value("activeHudBadgeText", std::string{}), "390%");
 
         // Ctrl + 滚轮微调不透明度 (100% -> 95%)，激活不透明度百分比 HUD 胶囊
         SendMessageW(pinHwnd, WM_MOUSEWHEEL, MAKEWPARAM(MK_CONTROL, -WHEEL_DELTA), 0);
