@@ -1,39 +1,39 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// decode/gif_decoder.rs — 纯 Rust GIF89a 动图完整画布合成解码器
+// decode/gif_decoder.rs — 纯 Rust GIF89a 动图完整画布合成解码器（安全防 OOM）
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::constants::{
     DEFAULT_FRAME_DELAY_MS, MAX_ANIM_FRAMES, MAX_ANIM_TOTAL_BYTES, MIN_FRAME_DELAY_MS,
 };
-use crate::decode::downscale_bgra_thumbnail;
+use crate::decode::{
+    downscale_bgra_thumbnail, try_alloc_zeroed_buffer, try_clone_buffer, validate_image_dimensions,
+};
 use crate::types::{
-    rgba_straight_to_bgra_premul, DecodedImage, ImageFrame, ThumbnailBitmap,
+    try_rgba_straight_to_bgra_premul, DecodeError, DecodedImage, ExifField, ImageFormatKind,
+    ImageFrame, ThumbnailBitmap,
 };
 use gif::{ColorOutput, DecodeOptions, DisposalMethod};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-pub fn decode_gif(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
-    let file = File::open(path).map_err(|e| format!("打开 GIF 失败: {e}"))?;
+pub fn decode_gif(path: &Path, file_size: u64) -> Result<DecodedImage, DecodeError> {
+    let file = File::open(path).map_err(|e| DecodeError::OpenFile(e.to_string()))?;
     let mut opts = DecodeOptions::new();
     opts.set_color_output(ColorOutput::RGBA);
     let mut decoder = opts
         .read_info(BufReader::new(file))
-        .map_err(|e| format!("解析 GIF 头部失败: {e}"))?;
+        .map_err(|e| DecodeError::DecodeFailed {
+            format: "GIF",
+            detail: e.to_string(),
+        })?;
 
     let canvas_w = decoder.width() as u32;
     let canvas_h = decoder.height() as u32;
-    if canvas_w == 0 || canvas_h == 0 {
-        return Err("GIF 画布尺寸为 0".to_string());
-    }
+    let total_pixels = validate_image_dimensions(canvas_w, canvas_h, "GIF")?;
+    let pixel_bytes = total_pixels.checked_mul(4).ok_or(DecodeError::OutOfMemory)?;
 
-    let pixel_bytes = (canvas_w as usize)
-        .checked_mul(canvas_h as usize)
-        .and_then(|n| n.checked_mul(4))
-        .ok_or_else(|| "GIF 尺寸溢出".to_string())?;
-
-    let mut canvas = vec![0u8; pixel_bytes];
+    let mut canvas = try_alloc_zeroed_buffer(pixel_bytes)?;
     let mut frames = Vec::new();
     let mut total_bytes = 0usize;
     let mut total_duration_ms = 0u64;
@@ -41,10 +41,13 @@ pub fn decode_gif(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
 
     while let Some(frame) = decoder
         .read_next_frame()
-        .map_err(|e| format!("读取 GIF 帧失败: {e}"))?
+        .map_err(|e| DecodeError::DecodeFailed {
+            format: "GIF",
+            detail: e.to_string(),
+        })?
     {
         let prev_backup = if frame.dispose == DisposalMethod::Previous {
-            Some(canvas.clone())
+            Some(try_clone_buffer(&canvas)?)
         } else {
             None
         };
@@ -56,22 +59,22 @@ pub fn decode_gif(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
         let buf = frame.buffer.as_ref();
 
         for fy in 0..fh {
-            let cy = top + fy;
+            let cy = top.saturating_add(fy);
             if cy >= canvas_h {
                 break;
             }
             for fx in 0..fw {
-                let cx = left + fx;
+                let cx = left.saturating_add(fx);
                 if cx >= canvas_w {
                     break;
                 }
-                let si = ((fy * fw + fx) * 4) as usize;
+                let si = ((fy as usize) * (fw as usize) + (fx as usize)) * 4;
                 if si + 3 >= buf.len() {
                     continue;
                 }
                 let a = buf[si + 3];
                 if a > 0 {
-                    let di = ((cy * canvas_w + cx) * 4) as usize;
+                    let di = ((cy as usize) * (canvas_w as usize) + (cx as usize)) * 4;
                     canvas[di] = buf[si];
                     canvas[di + 1] = buf[si + 1];
                     canvas[di + 2] = buf[si + 2];
@@ -80,7 +83,7 @@ pub fn decode_gif(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
             }
         }
 
-        let (bgra, has_alpha) = rgba_straight_to_bgra_premul(&canvas);
+        let (bgra, has_alpha) = try_rgba_straight_to_bgra_premul(&canvas)?;
         if has_alpha {
             any_alpha = true;
         }
@@ -91,8 +94,8 @@ pub fn decode_gif(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
         } else {
             raw_ms
         };
-        total_duration_ms += delay_ms as u64;
-        total_bytes += bgra.len();
+        total_duration_ms = total_duration_ms.saturating_add(delay_ms as u64);
+        total_bytes = total_bytes.saturating_add(bgra.len());
 
         frames.push(ImageFrame {
             width: canvas_w,
@@ -104,16 +107,16 @@ pub fn decode_gif(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
         match frame.dispose {
             DisposalMethod::Background => {
                 for fy in 0..fh {
-                    let cy = top + fy;
+                    let cy = top.saturating_add(fy);
                     if cy >= canvas_h {
                         break;
                     }
                     for fx in 0..fw {
-                        let cx = left + fx;
+                        let cx = left.saturating_add(fx);
                         if cx >= canvas_w {
                             break;
                         }
-                        let di = ((cy * canvas_w + cx) * 4) as usize;
+                        let di = ((cy as usize) * (canvas_w as usize) + (cx as usize)) * 4;
                         canvas[di] = 0;
                         canvas[di + 1] = 0;
                         canvas[di + 2] = 0;
@@ -135,25 +138,31 @@ pub fn decode_gif(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
     }
 
     if frames.is_empty() {
-        return Err("GIF 未包含有效帧".to_string());
+        return Err(DecodeError::NoValidFrames { format: "GIF" });
     }
 
     let is_anim = frames.len() > 1;
+    let format_kind = if is_anim {
+        ImageFormatKind::AnimatedGif
+    } else {
+        ImageFormatKind::Static("GIF".to_string())
+    };
     let mut exif = vec![
-        ("格式".to_string(), if is_anim { "GIF 动图".to_string() } else { "GIF".to_string() }),
-        ("尺寸".to_string(), format!("{} x {}", canvas_w, canvas_h)),
+        ExifField::Format(format_kind.clone()),
+        ExifField::Dimensions(canvas_w, canvas_h),
     ];
     if is_anim {
-        exif.push(("帧数".to_string(), format!("{} 帧", frames.len())));
-        exif.push((
-            "总时长".to_string(),
-            format!("{:.2} s", total_duration_ms as f64 / 1000.0),
-        ));
+        exif.push(ExifField::FrameCount {
+            count: frames.len(),
+            best_selected: false,
+            duration_sec: None,
+        });
+        exif.push(ExifField::DurationSec(total_duration_ms as f64 / 1000.0));
     }
 
     Ok(DecodedImage {
         path: path.to_path_buf(),
-        format_label: if is_anim { "GIF 动图" } else { "GIF" }.to_string(),
+        format_kind,
         file_size_bytes: file_size,
         width: canvas_w,
         height: canvas_h,
@@ -164,41 +173,55 @@ pub fn decode_gif(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
     })
 }
 
-pub fn decode_gif_first_frame_thumb(path: &Path, max_side: u32) -> Result<ThumbnailBitmap, String> {
-    let file = File::open(path).map_err(|e| format!("{e}"))?;
+pub fn decode_gif_first_frame_thumb(
+    path: &Path,
+    max_side: u32,
+) -> Result<ThumbnailBitmap, DecodeError> {
+    let file = File::open(path).map_err(|e| DecodeError::OpenFile(e.to_string()))?;
     let mut opts = DecodeOptions::new();
     opts.set_color_output(ColorOutput::RGBA);
-    let mut decoder = opts.read_info(BufReader::new(file)).map_err(|e| format!("{e}"))?;
+    let mut decoder = opts
+        .read_info(BufReader::new(file))
+        .map_err(|e| DecodeError::DecodeFailed {
+            format: "GIF",
+            detail: e.to_string(),
+        })?;
     let cw = decoder.width() as u32;
     let ch = decoder.height() as u32;
+    let total_pixels = validate_image_dimensions(cw, ch, "GIF")?;
+    let pixel_bytes = total_pixels.checked_mul(4).ok_or(DecodeError::OutOfMemory)?;
+
     let frame = decoder
         .read_next_frame()
-        .map_err(|e| format!("{e}"))?
-        .ok_or_else(|| "empty gif".to_string())?;
-    let mut canvas = vec![0u8; (cw as usize) * (ch as usize) * 4];
+        .map_err(|e| DecodeError::DecodeFailed {
+            format: "GIF",
+            detail: e.to_string(),
+        })?
+        .ok_or(DecodeError::NoValidFrames { format: "GIF" })?;
+    let mut canvas = try_alloc_zeroed_buffer(pixel_bytes)?;
     let left = frame.left as u32;
     let top = frame.top as u32;
     let fw = frame.width as u32;
     let fh = frame.height as u32;
     let buf = frame.buffer.as_ref();
     for fy in 0..fh {
-        let cy = top + fy;
+        let cy = top.saturating_add(fy);
         if cy >= ch {
             break;
         }
         for fx in 0..fw {
-            let cx = left + fx;
+            let cx = left.saturating_add(fx);
             if cx >= cw {
                 break;
             }
-            let si = ((fy * fw + fx) * 4) as usize;
-            let di = ((cy * cw + cx) * 4) as usize;
-            if si + 3 < buf.len() {
+            let si = ((fy as usize) * (fw as usize) + (fx as usize)) * 4;
+            let di = ((cy as usize) * (cw as usize) + (cx as usize)) * 4;
+            if si + 3 < buf.len() && di + 3 < canvas.len() {
                 canvas[di..di + 4].copy_from_slice(&buf[si..si + 4]);
             }
         }
     }
-    let (bgra, _) = rgba_straight_to_bgra_premul(&canvas);
+    let (bgra, _) = try_rgba_straight_to_bgra_premul(&canvas)?;
     Ok(downscale_bgra_thumbnail(&bgra, cw, ch, max_side))
 }
 
@@ -232,6 +255,7 @@ mod tests {
         assert_eq!(img.frames.len(), 3);
         assert_eq!(img.total_duration_ms, 240);
         assert!(img.is_animated());
+        assert_eq!(img.format_kind, ImageFormatKind::AnimatedGif);
         let _ = std::fs::remove_file(&gif_path);
     }
 }

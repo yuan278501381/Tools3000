@@ -89,6 +89,7 @@ Tools3000 将日常高频的**文件搜索、文档内容搜索、滚动长截�
 | **录屏与自动运镜演播室** | 录屏联动键鼠回显，停止即进演播室——光标点击处智能自动运镜聚焦，搭配多款质感壁纸与声波时间轴剪辑；支持一键导出 **MP4**、**微信直发 GIF**（免点直播表情 / 可双击放大高清大图分档）与**高清动态 WebP**。 |
 | **全局鼠标手势** | 按住右键一划即可切标签、后退、关窗口，支持不松键瞬发、屏幕边缘滚轮调音量、分应用专属手势与全屏游戏自动避让。 |
 | **演示特效与远控助手** | 投屏清透键帽与双击 `Ctrl` 聚光灯；系统“打开 / 另存为”弹窗快捷导览条；mstsc、RustDesk、ToDesk、向日葵等远控系统热键直通与卡键一键释放。 |
+| **Picasa 图片查看器（Rust 复刻 · 可选）** | 基于 Rust + Direct2D 复刻的经典 Picasa 轻量图片查看器（**非原版 Google Picasa 全功能套件**）。**单文件不足 2 MB、零外部运行库依赖，既可随 Tools3000 使用也可直接拎出来完全独立使用**；安装默认不勾选，勾选或设置页启用即自动关联全部 41 种支持的图片格式（附经典拍立得图标与原生深浅自适应关联面板）。在高度还原原版丝滑阻尼光标缩放、胶片缩略图涟漪、关闭收拢与整屏交叉叠化幻灯片动效的同时，**补足了原版缺失的现代功能**：4K High-DPI 100%~250%+ 物理像素锐度与 60~240Hz VSync 硬件渲染、WebP / AVIF / HEIC / SVG / QOI / DDS / 主流相机 RAW 解码、动图逐帧/倍速播控、水平与垂直无损镜像翻转及全 8 语种界面。 |
 
 ---
 
@@ -109,8 +110,8 @@ scoop install tools3000/tools3000
 
 前往 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases/latest)** 下载最新版本：
 
-- **标准安装程序（`Tools3000-Setup.exe`）** — 推荐日常使用，支持开机自启、按需组件勾选与无感覆盖升级。
-- **绿色便携版（`Tools3000-Portable-x64.zip`）** — 解压即用，配置与数据均保存在当前目录。
+- **标准安装程序（`Tools3000-vX.Y.Z-Setup.exe`）** — 推荐日常使用，支持开机自启、按需组件勾选与无感覆盖升级。
+- **绿色便携版（`Tools3000-vX.Y.Z-win-x64-portable.zip`）** — 解压即用，配置与数据均保存在当前目录。
 - **校验清单（`SHA256SUMS.txt`）** — 提供每次发布的 SHA-256 完整性校验值。
 
 > **系统要求**：Windows 10（1809 及以上）/ Windows 11 / Windows Server 2019–2025，源码与构建管线原生支持 `x64` 与 `ARM64` 架构（GitHub Releases 当前预编译提供 `x64` 安装包与便携包，ARM64 设备可按[开发者指南](docs/DEVELOPER.md)原生编译或直接运行 `x64` 版本），依赖系统内置 Microsoft Edge WebView2 Runtime。界面原生支持简体中文、繁體中文、English、日本語、한국어、Русский、Português (Brasil)、Español 共 8 种语言，默认自动跟随系统语言。
@@ -121,7 +122,7 @@ scoop install tools3000/tools3000
 
 1. **SHA-256 完整性校验**：下载后可在 PowerShell 中核对本地文件哈希，并与对应版本的 `SHA256SUMS.txt` 比对：
    ```powershell
-   Get-FileHash .\Tools3000-Setup.exe -Algorithm SHA256
+   Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **VirusTotal 公开查毒**：在 **[VirusTotal](https://www.virustotal.com/)** 搜索框输入发布包 SHA-256（后续每个 GitHub Release 说明页也将直接附带可点击的 VirusTotal 哈希直链），即可公开核验 70+ 主流杀毒引擎检测结果。
 3. **关于 Windows Defender SmartScreen 提示**：独立开源项目在尚未配置商业 EV / 公网可信代码签名（SignPath / Trusted Signing 推进中）或新版本刚发布尚未累积云端信誉前，Windows 可能会弹出「Windows 已保护你的电脑（未知发布者）」提示。核对 SHA-256 与 VirusTotal 无误后点击 **「更多信息 -> 仍要运行」** 即可继续；如您更偏好完全自主可控，也可随时依据 **[开发者指南](docs/DEVELOPER.md)** 从源码从零编译。
@@ -132,6 +133,8 @@ scoop install tools3000/tools3000
 ## 开发初衷
 
 我是 **Everything** 十多年的老用户；截图软件最早用 **QQ、微信截图**，后来换到标注方便的 **FastStone Capture**，再之后换到可以贴图的 **Snipaste**，后来因为需要滚动长截图、截图放大镜效果和文本识别，又换到了 **PixPin**；鼠标手势从 **WGestures** 一路用到 **WGestures 2**；录屏软件也前前后后换过很多款，中途还试过微软的 **PowerToys** 工具套件，但总还是缺那么几块核心拼图，最后依然得同时常驻好几个工具。
+
+至于看图软件，国产看图工具大多充斥着弹窗广告与捆绑推广；Google 停更 **Picasa** 之后，我也在网上找过不少替代品——比如 **FastStone Image Viewer**，甚至 **Everything** 官方出品的看图软件（Void Image Viewer）——但实际用下来总觉得没有 Picasa 那种行云流水般顺手的交互与动效，折腾一圈后干脆放弃，退回将就着用 Windows 自带的照片应用。既然在打造自己的效率工具集，便顺手用 Rust + Direct2D 把心心念念的经典 Picasa 轻量看图器亲手复刻回来（不到 2 MB 单文件零依赖、也能直接独立使用），并把原版早已缺席的高分屏锐度、WebP/AVIF/HEIC/SVG/RAW 等现代格式与动图控制一并补齐。
 
 某一天看着 Windows 系统托盘里排成一串的图标，心想：**要是能把它们合并成一个软件就好了。** 再加上日常使用时一直被几个痛点困扰——PixPin 的文本识别在识别率和速度上始终不如微信；WGestures 从某一天起总会在屏幕上残留一个很小的文本框挡住视线，只有重启软件才能消掉。趁着 AI 时代到来，我干脆自己动手，借助 AI 一步步做出了这款多合一效率工具 **Tools3000**。
 
@@ -151,6 +154,7 @@ scoop install tools3000/tools3000
 | **Snipaste / PixPin** | `F1` 截图标注、默认虚线放大镜、滚动长截图、`F3` 多贴图分组管理，以及纯离线高精度 OCR（拖选复制、波浪线批注与原位改字） | 需要 Snipaste 对老旧特殊 GUI 控件的极致单点元素探测，或特定命令行截图工作流 |
 | **WGestures / StrokesPlus** | 按住右键一划切标签/后退/关窗、不松键瞬发、屏幕边缘滚轮调音量、四角触发、全屏游戏自动避让与内置 Lua 扩展 | 需要极复杂的多键组合触发（如左键按住加右键手势）、复杂窗体区域条件或多年沉淀的宏录制脚本 |
 | **各类录屏工具（如 ShareX）** | 录屏、键鼠回显、停止即进自动运镜演播室（声波剪辑与鼠标运镜），一键导出 MP4、微信直发 GIF 与动态 WebP | 需要 80+ 图床/S3/FTP/Webhook 截完自动上传工作流，或高度定制的自定义 FFmpeg 批处理流水线 |
+| **Picasa 看图器 / FastStone / Windows 照片** | 可选内置不足 2 MB 的 Rust 复刻 Picasa 轻量看图器（亦可零依赖独立运行），极速开图、经典跟手动效，并补齐 4K High-DPI、WebP/AVIF/HEIC/SVG/RAW 与无损翻转等现代能力 | 需要原版 Google Picasa 的相册库扫描管理、人脸识别，或专业批量转码/RAW 后期调色修图软件 |
 
 ---
 
@@ -181,6 +185,18 @@ scoop install tools3000/tools3000
 - **报告问题**：遇到任何边界兼容性或识别/录制问题，欢迎通过 **[Bug Report 模板](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** 提交。
 - **需求建议**：有好用的顺手小功能想法，欢迎提交 **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** 或前往 **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)** 交流。
 - **代码共创**：非常欢迎提交 Pull Request（也欢迎借助 AI 共同打磨），构建与开发细节请参阅 **[开发者指南](docs/DEVELOPER.md)** 与 **[包管理器维护说明](packaging/README.md)**。
+
+---
+
+## Star History
+
+<a href="https://www.star-history.com/#yuan278501381/Tools3000&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+ </picture>
+</a>
 
 ---
 

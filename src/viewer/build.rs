@@ -69,31 +69,46 @@ fn main() {
     // 2. 编译并嵌入多尺寸 ICO 图标（16/24/32/48/64/128/256px）与版权版本信息
     let rc_path = manifest_dir.join("viewer.rc");
     let ico_path = manifest_dir.join("assets").join("picasa_viewer.ico");
-    if rc_path.exists() && ico_path.exists() {
-        if let Some(rc_exe) = find_windows_rc_exe() {
-            let res_path = out_dir.join("viewer.res");
-            let status = Command::new(&rc_exe)
-                .current_dir(&manifest_dir)
-                .arg("/nologo")
-                .arg("/c65001")
-                .arg("/fo")
-                .arg(&res_path)
-                .arg(&rc_path)
-                .status();
-            match status {
-                Ok(s) if s.success() && res_path.exists() => {
-                    println!("cargo:rustc-link-arg={}", res_path.display());
-                }
-                Ok(s) => {
-                    println!(
-                        "cargo:warning=rc.exe 编译资源返回非零状态 ({}), 将跳过图标嵌入",
-                        s
-                    );
-                }
-                Err(e) => {
-                    println!("cargo:warning=无法启动 rc.exe ({e}), 将跳过图标嵌入");
-                }
-            }
-        }
+    let doc_ico_path = manifest_dir.join("assets").join("picasa_photo_doc.ico");
+    assert!(
+        rc_path.is_file(),
+        "缺少 Windows 资源脚本 viewer.rc: {}",
+        rc_path.display()
+    );
+    assert!(
+        ico_path.is_file(),
+        "缺少应用主图标 assets/picasa_viewer.ico: {}",
+        ico_path.display()
+    );
+    assert!(
+        doc_ico_path.is_file(),
+        "缺少文档关联图标 assets/picasa_photo_doc.ico: {}",
+        doc_ico_path.display()
+    );
+
+    let rc_exe = find_windows_rc_exe()
+        .expect("未找到 Windows SDK 资源编译器 rc.exe，已阻断构建以防产出无图标 EXE");
+    let res_path = out_dir.join("viewer.res");
+    let status = Command::new(&rc_exe)
+        .current_dir(&manifest_dir)
+        .arg("/nologo")
+        .arg("/c65001")
+        .arg("/fo")
+        .arg(&res_path)
+        .arg(&rc_path)
+        .status()
+        .unwrap_or_else(|e| {
+            panic!(
+                "无法启动资源编译器 rc.exe ({})，已阻断构建以防产出无图标 EXE: {e}",
+                rc_exe.display()
+            )
+        });
+    if !status.success() || !res_path.is_file() {
+        panic!(
+            "rc.exe ({}) 编译 viewer.rc 失败 (状态: {})，已阻断构建以防产出无图标 EXE",
+            rc_exe.display(),
+            status
+        );
     }
+    println!("cargo:rustc-link-arg={}", res_path.display());
 }

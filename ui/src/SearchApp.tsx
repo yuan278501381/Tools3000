@@ -9,18 +9,29 @@ import { bridgeRequest } from './hooks/useBridge';
 import { useAppearance } from './hooks/useAppearance';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { VirtualSearchResults } from './search/VirtualSearchResults';
+import { SearchTableHeader } from './search/SearchTableHeader';
 import { SearchContextMenu } from './search/SearchContextMenu';
 import { SearchRenameModal } from './search/SearchRenameModal';
 import { SearchSyntaxModal } from './search/SearchSyntaxModal';
 import { SearchViewSettingsModal } from './search/SearchViewSettingsModal';
-import { SearchSortDropdown } from './search/SearchSortDropdown';
 import { SearchHistoryBar } from './search/SearchHistoryBar';
 import { SearchEmptyState } from './search/SearchEmptyState';
 import { SearchFooter } from './search/SearchFooter';
 import { SearchHeader } from './search/SearchHeader';
+import { SearchColumnManagerModal } from './search/SearchColumnManagerModal';
+import { SearchPropertyPickerModal } from './search/SearchPropertyPickerModal';
 import { useSearchActions } from './search/useSearchActions';
 import { useSearchKeyboard } from './search/useSearchKeyboard';
 import { useSearchEngine } from './search/useSearchEngine';
+import { useViewportProperties } from './search/useViewportProperties';
+import {
+  DEFAULT_VISIBLE_TABLE_COLUMNS,
+  doesItemRequireBackendProperty,
+  getColumnDisplayLabel,
+  isKnownTableColumnId,
+  resolveColumnDefinition,
+  resolveTableCellText,
+} from './search/columnCatalog';
 import {
   CATEGORY_DEFS,
   DEFAULT_COLUMNS,
@@ -30,31 +41,109 @@ import type {
   ColumnId,
   ColumnLayout,
   ColumnSetting,
+  DbStatsSnapshot,
   DriveInfo,
   FormatCategory,
+  PropertyCacheMap,
   SearchDensity,
   SearchIconStyle,
   SearchMode,
   SearchResult,
-  FileFolderPriority,
   SortDirection,
   SortField,
+  TableColumnId,
 } from './search/searchTypes';
 import {
   buildSmartContentSearchQuery,
+  collectColumnFitSampleRows,
+  DEFAULT_TABLE_COLUMN_ORDER,
+  estimateFittedColumnWidth,
+  extractParentDirectoryPath,
+  formatFileSize,
+  formatWindowsTime,
   getSortedResults,
+  getVisibleTableColumns,
   hasContentSyntaxInQuery,
+  normalizeTableColumnOrder,
+  normalizeVisibleTableColumns,
+  parseExplicitSortDirective,
   resolveNativeIconRequest,
+  sanitizeTableColumnWidths,
   stripContentSyntaxFromQuery,
 } from './search/searchUtils';
+import {
+  safeStorageGetBoolean,
+  safeStorageGetEnum,
+  safeStorageGetItem,
+  safeStorageGetJsonArray,
+  safeStorageGetJsonRecord,
+  safeStorageGetNumber,
+  safeStorageGetString,
+  safeStorageRemoveItem,
+  safeStorageSetItem,
+} from './search/storageUtils';
 import './SearchApp.css';
+
+interface StoredSearchHistoryItem {
+  search: string;
+  searchCount: number;
+  lastSearchDate: number;
+}
+
+const SEARCH_HISTORY_STORAGE_KEY = 'tools3000_search_history_cache';
+const SEARCH_HISTORY_MAX_ITEMS = 25;
+const SEARCH_HISTORY_AUTO_RECORD_DELAY_MS = 1350;
+const REBUILD_POLL_INTERVAL_MS = 350;
+const REBUILD_POLL_TIMEOUT_MS = 120_000;
+const ALLOWED_MAX_RESULT_LIMITS = [0, 50, 100, 200] as const;
+const VALID_COLUMN_IDS: readonly ColumnId[] = ['name', 'path', 'size', 'modified', 'created', 'snippets'];
+const BARE_OPERATOR_PREFIX_REGEX = /^(content|\u5185\u5bb9|c|ext|path|parent|p|file|folder|dir|size|dm|date|modified|regex|r|case|cs|exact|pinyin|py|nopy):$/i;
+const CJK_CHAR_REGEX = /[\u4e00-\u9fff]/;
+
+function isNonEmptyString(val: unknown): val is string {
+  return typeof val === 'string' && val.trim().length > 0;
+}
+
+function isRecordableSearchQuery(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  if (BARE_OPERATOR_PREFIX_REGEX.test(trimmed)) return false;
+  return trimmed.length >= 2 || CJK_CHAR_REGEX.test(trimmed);
+}
+
+function loadCachedSearchHistory(): StoredSearchHistoryItem[] {
+  const rawList = safeStorageGetJsonArray<unknown>(
+    SEARCH_HISTORY_STORAGE_KEY,
+    (v): v is unknown => Boolean(v) && typeof v === 'object',
+    [],
+  );
+  const out: StoredSearchHistoryItem[] = [];
+  for (const item of rawList) {
+    const rec = item as Partial<StoredSearchHistoryItem>;
+    if (typeof rec.search !== 'string' || rec.search.trim().length === 0) continue;
+    out.push({
+      search: rec.search.trim(),
+      searchCount: typeof rec.searchCount === 'number' && Number.isFinite(rec.searchCount) && rec.searchCount > 0 ? rec.searchCount : 1,
+      lastSearchDate: typeof rec.lastSearchDate === 'number' && Number.isFinite(rec.lastSearchDate) ? rec.lastSearchDate : 0,
+    });
+    if (out.length >= SEARCH_HISTORY_MAX_ITEMS) break;
+  }
+  return out;
+}
+
+function saveCachedSearchHistory(items: StoredSearchHistoryItem[]): void {
+  safeStorageSetItem(
+    SEARCH_HISTORY_STORAGE_KEY,
+    JSON.stringify(items.slice(0, SEARCH_HISTORY_MAX_ITEMS)),
+  );
+}
 
 // ── 组件主入口 ──────────────────────────────────────────────────
 export default function SearchApp() {
   useAppearance();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [toasterTheme, setToasterTheme] = useState<'dark' | 'light'>(() =>
-    document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'
+    document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
   );
   useEffect(() => {
     const syncTheme = () => {
@@ -66,11 +155,43 @@ export default function SearchApp() {
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     return () => obs.disconnect();
   }, []);
+
+  const currentLocale = i18n.resolvedLanguage || i18n.language || 'en';
+  const compactCountFormatter = useMemo(() => {
+    try {
+      return new Intl.NumberFormat(currentLocale, {
+        notation: 'compact',
+        maximumFractionDigits: 1,
+      });
+    } catch {
+      return new Intl.NumberFormat('en', {
+        notation: 'compact',
+        maximumFractionDigits: 1,
+      });
+    }
+  }, [currentLocale]);
+
   const [query, setQuery] = useState('');
   const [actionError, setActionError] = useState('');
   const [showSyntaxHelp, setShowSyntaxHelp] = useState(false);
   const [syntaxCat, setSyntaxCat] = useState<string>('all');
   const [showViewSettings, setShowViewSettings] = useState(false);
+  const [showHistoryMenu, setShowHistoryMenu] = useState(false);
+  const [showColumnManager, setShowColumnManager] = useState(false);
+  const [columnManagerDraft, setColumnManagerDraft] = useState<TableColumnId[] | null>(null);
+  const [columnManagerResetPending, setColumnManagerResetPending] = useState(false);
+  const [showPropertyPicker, setShowPropertyPicker] = useState(false);
+  const [propertyPickerSource, setPropertyPickerSource] = useState<'header' | 'manager'>('header');
+  const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>({ start: 0, end: 40 });
+  const headerScrollRef = useRef<HTMLDivElement>(null);
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
     x: number;
@@ -84,98 +205,71 @@ export default function SearchApp() {
   }>({ visible: false, newName: '' });
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [isPinned, setIsPinned] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const [isComposing, setIsComposing] = useState(false);
 
-  const [maxResultLimit, setMaxResultLimit] = useState<number>(() => {
-    const saved = localStorage.getItem('tools3000_search_max_results');
-    return saved !== null ? parseInt(saved, 10) : 0;
-  });
+  const [maxResultLimit, setMaxResultLimit] = useState<number>(() =>
+    safeStorageGetNumber('tools3000_search_max_results', 0, {
+      integer: true,
+      allowedValues: ALLOWED_MAX_RESULT_LIMITS,
+    }),
+  );
 
   const [defaultCategory, setDefaultCategory] = useState<string>(() => {
-    const saved = localStorage.getItem('tools3000_search_default_category') || 'all';
+    const saved = safeStorageGetString('tools3000_search_default_category', 'all');
     return saved === 'content' ? 'all' : saved;
   });
 
-  const [excludeGitAndModules, setExcludeGitAndModules] = useState<boolean>(() => {
-    return localStorage.getItem('tools3000_search_exclude_dev') !== 'false';
-  });
-  const [excludeHidden, setExcludeHidden] = useState<boolean>(() => {
-    return localStorage.getItem('tools3000_search_exclude_hidden') === 'true';
-  });
+  const [excludeGitAndModules, setExcludeGitAndModules] = useState<boolean>(() =>
+    safeStorageGetBoolean('tools3000_search_exclude_dev', true),
+  );
+  const [excludeHidden, setExcludeHidden] = useState<boolean>(() =>
+    safeStorageGetBoolean('tools3000_search_exclude_hidden', false),
+  );
   const [isRebuilding, setIsRebuilding] = useState(false);
+  const rebuildingRef = useRef(false);
 
-  const [searchMode, setSearchMode] = useState<SearchMode>(() => {
-    return (localStorage.getItem('tools3000_search_default_mode') as SearchMode) || 'name';
-  });
+  const [searchMode, setSearchMode] = useState<SearchMode>(() =>
+    safeStorageGetEnum('tools3000_search_default_mode', ['name', 'both', 'content'] as const, 'name'),
+  );
 
   const persistUiPreferencesPatch = useCallback((patch: Record<string, unknown>) => {
-    void bridgeRequest<{ value?: unknown }>('config.get', { key: '/search/uiPreferences' })
-      .then((res) => {
-        const prevObj = res && typeof res === 'object' && 'value' in res && res.value && typeof res.value === 'object'
-          ? (res.value as Record<string, unknown>)
-          : (res && typeof res === 'object' && !('value' in res) ? (res as Record<string, unknown>) : {});
-        return bridgeRequest('config.set', {
-          key: '/search/uiPreferences',
-          value: { ...prevObj, ...patch },
-        });
-      })
-      .catch(() => {
-        void bridgeRequest('config.set', { key: '/search/uiPreferences', value: patch }).catch(() => undefined);
-      });
+    void bridgeRequest('search.saveSettings', { uiPreferences: patch }).catch(() => undefined);
   }, []);
 
   const changeMaxResultLimit = (limit: number) => {
     setMaxResultLimit(limit);
-    localStorage.setItem('tools3000_search_max_results', String(limit));
+    safeStorageSetItem('tools3000_search_max_results', String(limit));
     void bridgeRequest('search.saveSettings', { maxResults: limit }).catch(() => undefined);
     persistUiPreferencesPatch({ maxResultLimit: limit });
   };
 
   const changeSearchMode = (mode: SearchMode) => {
     setSearchMode(mode);
-    localStorage.setItem('tools3000_search_default_mode', mode);
+    safeStorageSetItem('tools3000_search_default_mode', mode);
     persistUiPreferencesPatch({ searchMode: mode });
   };
 
   const [disabledContentFormats, setDisabledContentFormats] = useState<string[]>(() => {
-    try {
-      const saved =
-        localStorage.getItem('tools3000_search_disabled_formats') ??
-        localStorage.getItem('tools3000_search_disabled_content_formats');
-      if (saved) return JSON.parse(saved);
-    } catch {
-      /* ignore */
-    }
-    return [];
+    const primary = safeStorageGetItem('tools3000_search_disabled_formats');
+    const storageKey = primary !== null
+      ? 'tools3000_search_disabled_formats'
+      : 'tools3000_search_disabled_content_formats';
+    return safeStorageGetJsonArray<string>(storageKey, isNonEmptyString, []);
   });
 
-  const [customContentFormats, setCustomContentFormats] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('tools3000_search_custom_formats');
-      if (saved) return JSON.parse(saved);
-    } catch {
-      /* ignore */
-    }
-    return [];
-  });
+  const [customContentFormats, setCustomContentFormats] = useState<string[]>(() =>
+    safeStorageGetJsonArray<string>('tools3000_search_custom_formats', isNonEmptyString, []),
+  );
 
   const [newFormatInput, setNewFormatInput] = useState('');
 
   const [systemDrives, setSystemDrives] = useState<DriveInfo[]>([]);
-  const [enabledDrives, setEnabledDrives] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('tools3000_search_enabled_drives');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    } catch {
-      /* ignore */
-    }
-    return [];
-  });
+  const [enabledDrives, setEnabledDrives] = useState<string[]>(() =>
+    safeStorageGetJsonArray<string>('tools3000_search_enabled_drives', isNonEmptyString, []),
+  );
 
   const activeCategory = useMemo(() => {
     if (hasContentSyntaxInQuery(query)) {
@@ -230,7 +324,9 @@ export default function SearchApp() {
     scanElapsedSeconds,
     lastColdScanDurationSec,
     scanProgress,
+    contentScanPaused,
     stopSearch,
+    resumeContentScan,
     clearResultCache,
     refreshQuery,
     refreshOnFocus,
@@ -255,6 +351,24 @@ export default function SearchApp() {
         }
       })
       .catch(() => {});
+    bridgeRequest<{ maximized?: boolean }>('search.getMaximized')
+      .then(res => {
+        if (res && typeof res.maximized === 'boolean') {
+          setIsMaximized(res.maximized);
+        }
+      })
+      .catch(() => {});
+
+    const onMaximizedChanged = (event: Event) => {
+      const customEvt = event as CustomEvent<boolean>;
+      if (typeof customEvt.detail === 'boolean') {
+        setIsMaximized(customEvt.detail);
+      }
+    };
+    window.addEventListener('tools3000:searchMaximizedChanged', onMaximizedChanged);
+    return () => {
+      window.removeEventListener('tools3000:searchMaximizedChanged', onMaximizedChanged);
+    };
   }, []);
 
   const togglePin = useCallback(async () => {
@@ -263,14 +377,28 @@ export default function SearchApp() {
     try {
       await bridgeRequest('search.setPinned', { pinned: next });
       if (next) {
-        toast.success(t('search.pinnedToast', 'Search window pinned (Keeps open when clicking outside)'));
+        toast.success(t('search.pinnedToast', 'Search window pinned on top'));
       } else {
-        toast.info(t('search.unpinnedToast', 'Search window unpinned (Auto-hides on blur)'));
+        toast.info(t('search.unpinnedToast', 'Search window unpinned from top'));
       }
     } catch {
       setIsPinned(!next);
     }
   }, [isPinned, t]);
+
+  const toggleMaximized = useCallback(async () => {
+    const next = !isMaximized;
+    setIsMaximized(next);
+    try {
+      const res = await bridgeRequest<{ maximized?: boolean }>('search.toggleMaximized');
+      if (res && typeof res.maximized === 'boolean') {
+        setIsMaximized(res.maximized);
+      }
+      inputRef.current?.focus();
+    } catch {
+      setIsMaximized(!next);
+    }
+  }, [isMaximized]);
 
   const categories: CategoryFilter[] = useMemo(() => {
     return CATEGORY_DEFS.map(def => ({
@@ -279,94 +407,132 @@ export default function SearchApp() {
       labelKey: def.labelKey,
       defaultLabel: def.defaultLabel,
       prefix: def.prefix,
-      icon: def.icon
+      icon: def.icon,
     }));
   }, [t]);
 
-  const [searchHistory, setSearchHistory] = useState<{ search: string; searchCount: number; lastSearchDate: number }[]>([]);
+  const [searchHistory, setSearchHistory] = useState<StoredSearchHistoryItem[]>(() => loadCachedSearchHistory());
+  const lastRecordedQueryRef = useRef<string>('');
+  const latestQueryRef = useRef<string>(query);
+  const isComposingRef = useRef<boolean>(isComposing);
+  useEffect(() => {
+    latestQueryRef.current = query;
+    isComposingRef.current = isComposing;
+  }, [isComposing, query]);
   const [isInitialIndexing, setIsInitialIndexing] = useState(false);
   const isInitialIndexingRef = useRef(false);
-  const [dbStats, setDbStats] = useState<{
-    dbPath: string;
-    dbSize: number;
-    timestamp: number;
-    totalRecords: number;
-    volumeCount: number;
-    exists: boolean;
-    indexing?: boolean;
-    runHistoryCount: number;
-    searchHistoryCount: number;
-  } | null>(null);
-  
+  const [dbStats, setDbStats] = useState<DbStatsSnapshot | null>(null);
+
   const refreshHistory = useCallback(async () => {
     try {
-      const res = await bridgeRequest<{ success: boolean; history: { search: string; searchCount: number; lastSearchDate: number }[] }>('search.getSearchHistory', { limit: 20 });
+      const res = await bridgeRequest<{ success: boolean; history: StoredSearchHistoryItem[] }>('search.getSearchHistory', { limit: SEARCH_HISTORY_MAX_ITEMS });
       if (res && res.success && Array.isArray(res.history)) {
-        setSearchHistory(res.history);
+        const sanitized = res.history
+          .filter((item) => typeof item?.search === 'string' && item.search.trim().length > 0)
+          .slice(0, SEARCH_HISTORY_MAX_ITEMS);
+        setSearchHistory(sanitized);
+        saveCachedSearchHistory(sanitized);
       }
     } catch {
-      // ignore
+      // 忽略瞬时通信错误
     }
   }, []);
 
+  const recordSearchHistory = useCallback((rawText: string, options?: { force?: boolean }) => {
+    const trimmed = rawText.trim();
+    if (!isRecordableSearchQuery(trimmed)) return;
+    if (!options?.force && lastRecordedQueryRef.current.toLowerCase() === trimmed.toLowerCase()) {
+      return;
+    }
+    lastRecordedQueryRef.current = trimmed;
+    const now = Date.now();
+    setSearchHistory((prev) => {
+      const existing = prev.find((item) => item.search.toLowerCase() === trimmed.toLowerCase());
+      const nextItem: StoredSearchHistoryItem = {
+        search: trimmed,
+        searchCount: (existing?.searchCount ?? 0) + 1,
+        lastSearchDate: now,
+      };
+      const next = [
+        nextItem,
+        ...prev.filter((item) => item.search.toLowerCase() !== trimmed.toLowerCase()),
+      ].slice(0, SEARCH_HISTORY_MAX_ITEMS);
+      saveCachedSearchHistory(next);
+      return next;
+    });
+    void bridgeRequest('search.recordSearch', { search: trimmed }).catch(() => undefined);
+  }, []);
+
+  // 搜索词在非组字态稳定停留 1.35s 后自动沉淀至历史搜索记录
+  useEffect(() => {
+    if (isComposing || loading) return;
+    const trimmed = query.trim();
+    if (!isRecordableSearchQuery(trimmed)) return;
+    const timer = window.setTimeout(() => {
+      recordSearchHistory(trimmed);
+    }, SEARCH_HISTORY_AUTO_RECORD_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [isComposing, loading, query, recordSearchHistory]);
+
   const checkInitialIndex = useCallback(async (): Promise<boolean> => {
     try {
-      const res = await bridgeRequest<{
-        dbPath: string;
-        dbSize: number;
-        timestamp: number;
-        totalRecords: number;
-        volumeCount: number;
-        exists: boolean;
-        indexing?: boolean;
-        runHistoryCount: number;
-        searchHistoryCount: number;
-        success: boolean;
-      }>('search.getDbStats');
+      const res = await bridgeRequest<DbStatsSnapshot & { success: boolean }>('search.getDbStats');
       if (res && res.success) {
         setDbStats(res);
-        const isIndexing = res.indexing === true || (res.totalRecords === 0 && res.exists === false);
-        if (isIndexing) {
-          setIsInitialIndexing(true);
-          isInitialIndexingRef.current = true;
-          return true;
-        } else {
-          if (isInitialIndexingRef.current) {
-            isInitialIndexingRef.current = false;
-            setIsInitialIndexing(false);
-            setServiceAvailable(true);
-            refreshQuery();
-            toast.success(t('search.indexReadyToast', 'Full disk index built and ready!'));
-          } else {
-            setIsInitialIndexing(false);
-            setServiceAvailable((wasAvailable) => {
-              if (!wasAvailable) {
-                window.setTimeout(() => refreshQuery(), 0);
-              }
-              return true;
-            });
-          }
-          return false;
+        // 只要后端回报了有效索引记录数即立即刷新，绝不被旧值锁死
+        if (typeof res.totalRecords === 'number' && res.totalRecords > 0) {
+          setTotalIndexedFiles(res.totalRecords);
         }
+        const isBusy =
+          res.indexing === true ||
+          res.rebuildInProgress === true ||
+          (res.phase !== undefined && res.phase !== 'idle') ||
+          (res.totalRecords === 0 && res.exists === false);
+
+        // 严格区分「首次空库索引」与「已有数据的后台重建」：后台重建期间绝不白屏遮罩搜索列表
+        const isEmptyInitial = res.totalRecords === 0 && (!res.exists || isBusy);
+
+        if (isBusy) {
+          setIsInitialIndexing(isEmptyInitial);
+          isInitialIndexingRef.current = isEmptyInitial;
+          return true;
+        }
+
+        if (isInitialIndexingRef.current) {
+          isInitialIndexingRef.current = false;
+          setIsInitialIndexing(false);
+          setServiceAvailable(true);
+          refreshQuery();
+          toast.success(t('search.indexReadyToast', 'Full disk index built and ready!'));
+        } else {
+          setIsInitialIndexing(false);
+          setServiceAvailable((wasAvailable) => {
+            if (!wasAvailable) {
+              window.setTimeout(() => refreshQuery(), 0);
+            }
+            return true;
+          });
+        }
+        return false;
       }
     } catch {
-      // ignore
+      // 忽略瞬时轮询错误
     }
     return false;
-  }, [refreshQuery, setServiceAvailable, t]);
-
-  const refreshDbStats = useCallback(async () => {
-    await checkInitialIndex();
-  }, [checkInitialIndex]);
+  }, [refreshQuery, setServiceAvailable, setTotalIndexedFiles, t]);
 
   useEffect(() => {
     let active = true;
     let pollTimer: number | undefined;
 
-    void bridgeRequest<{ success: boolean; history: { search: string; searchCount: number; lastSearchDate: number }[] }>('search.getSearchHistory', { limit: 20 })
+    void bridgeRequest<{ success: boolean; history: StoredSearchHistoryItem[] }>('search.getSearchHistory', { limit: SEARCH_HISTORY_MAX_ITEMS })
       .then((res) => {
         if (active && res && res.success && Array.isArray(res.history)) {
-          setSearchHistory(res.history);
+          const sanitized = res.history
+            .filter((item) => typeof item?.search === 'string' && item.search.trim().length > 0)
+            .slice(0, SEARCH_HISTORY_MAX_ITEMS);
+          setSearchHistory(sanitized);
+          saveCachedSearchHistory(sanitized);
         }
       })
       .catch(() => undefined);
@@ -376,7 +542,7 @@ export default function SearchApp() {
       const isBusy = await checkInitialIndex();
       if (!active || document.hidden) return;
       if (isBusy) {
-        pollTimer = window.setTimeout(runPoll, 500);
+        pollTimer = window.setTimeout(runPoll, REBUILD_POLL_INTERVAL_MS);
       }
     };
 
@@ -397,9 +563,7 @@ export default function SearchApp() {
       const now = Date.now();
       if (now - lastFocusSyncTick > 3000) {
         lastFocusSyncTick = now;
-        // Native SearchWindow::show() is the sole service-start signal.  A
-        // focus event may also occur during WebView lifecycle work, so it must
-        // never start the index service on its own.
+        // Native SearchWindow::show() 为唯一按需拉起索引服务信号，focus 事件绝不自行拉起服务
         void bridgeRequest('search.sync').catch(() => {});
       }
       if (pollTimer) window.clearTimeout(pollTimer);
@@ -415,74 +579,83 @@ export default function SearchApp() {
       window.removeEventListener('tools3000:focusSearch', onFocusEvt);
       document.removeEventListener('visibilitychange', handlePollVisibility);
     };
-  }, [checkInitialIndex, refreshOnFocus, setTotalIndexedFiles]);
+  }, [checkInitialIndex, refreshOnFocus]);
 
   const removeHistoryItem = async (e: React.MouseEvent, s: string) => {
     e.stopPropagation();
-    await bridgeRequest('search.removeSearchHistory', { search: s });
-    setSearchHistory(prev => prev.filter(item => item.search !== s));
+    await bridgeRequest('search.removeSearchHistory', { search: s }).catch(() => undefined);
+    setSearchHistory((prev) => {
+      const next = prev.filter((item) => item.search !== s);
+      saveCachedSearchHistory(next);
+      return next;
+    });
+    if (lastRecordedQueryRef.current.toLowerCase() === s.trim().toLowerCase()) {
+      lastRecordedQueryRef.current = '';
+    }
   };
 
   const clearAllHistory = async () => {
-    await bridgeRequest('search.clearSearchHistory');
+    await bridgeRequest('search.clearSearchHistory').catch(() => undefined);
+    lastRecordedQueryRef.current = '';
     setSearchHistory([]);
+    saveCachedSearchHistory([]);
     toast.success(t('search.historyCleared', 'Search history cleared'));
-    void refreshDbStats();
+    void checkInitialIndex();
     void refreshHistory();
   };
 
   const [sortField, setSortField] = useState<SortField>(() => {
-    const saved = localStorage.getItem('tools3000_search_sort_field');
-    if (saved === 'modified' || saved === 'name' || saved === 'size' || saved === 'created' || saved === 'relevance') {
+    const saved = safeStorageGetItem('tools3000_search_sort_field');
+    if (saved && isKnownTableColumnId(saved)) {
       return saved;
     }
     return 'modified';
   });
 
-  const [sortDirection, setSortDirection] = useState<SortDirection>(() => {
-    const saved = localStorage.getItem('tools3000_search_sort_dir');
-    if (saved === 'asc' || saved === 'desc') {
-      return saved;
-    }
-    return 'desc';
-  });
+  const [sortDirection, setSortDirection] = useState<SortDirection>(() =>
+    safeStorageGetEnum('tools3000_search_sort_dir', ['asc', 'desc'] as const, 'desc'),
+  );
 
-  const [fileFolderPriority, setFileFolderPriority] = useState<FileFolderPriority>(() => {
-    const saved = localStorage.getItem('tools3000_search_folder_priority');
-    if (saved === 'filesFirst' || saved === 'foldersFirst' || saved === 'mixed') {
-      return saved;
-    }
-    const legacy = localStorage.getItem('tools3000_search_sort_folders_first');
-    if (legacy === 'false') return 'mixed';
-    return 'filesFirst'; // 默认：世界级文件优先 (优先按文件排序，然后按文件夹)
-  });
-
-  const [groupByType, setGroupByType] = useState<boolean>(() => {
-    return localStorage.getItem('tools3000_search_sort_group_type') === 'true';
-  });
-
-  const [smartPathPriority, setSmartPathPriority] = useState<boolean>(() => {
-    return localStorage.getItem('tools3000_search_smart_path_priority') !== 'false';
-  });
-
-  const [showSortMenu, setShowSortMenu] = useState(false);
-  const sortDropdownRef = useRef<HTMLDivElement>(null);
   const viewSettingsRef = useRef<HTMLDivElement>(null);
 
   const [windowSize, setWindowSize] = useState<{ width: number; height: number }>({ width: 760, height: 520 });
-  const [density, setDensity] = useState<SearchDensity>(() => {
-    const saved = localStorage.getItem('tools3000_search_density');
-    if (saved === 'compact' || saved === 'standard' || saved === 'comfortable') {
-      return saved;
+  const [tableColumnOrder, setTableColumnOrder] = useState<TableColumnId[]>(() => {
+    const parsed = safeStorageGetJsonArray<string>(
+      'tools3000_search_table_order',
+      (v): v is string => typeof v === 'string',
+      [],
+    );
+    return parsed.length > 0 ? normalizeTableColumnOrder(parsed) : [...DEFAULT_TABLE_COLUMN_ORDER];
+  });
+  const [tableColumnWidths, setTableColumnWidths] = useState<Partial<Record<TableColumnId, number>>>(() => {
+    const raw = safeStorageGetJsonRecord('tools3000_search_table_widths');
+    return raw ? sanitizeTableColumnWidths(raw) : {};
+  });
+  const [visibleTableColumns, setVisibleTableColumns] = useState<TableColumnId[]>(() => {
+    const parsed = safeStorageGetJsonArray<string>(
+      'tools3000_search_visible_table_cols',
+      (v): v is string => typeof v === 'string',
+      [],
+    );
+    if (parsed.length > 0) {
+      return normalizeVisibleTableColumns(parsed);
     }
-    return 'standard';
+    return [...DEFAULT_VISIBLE_TABLE_COLUMNS];
   });
+  const [recentTableColumns, setRecentTableColumns] = useState<TableColumnId[]>(() => {
+    return safeStorageGetJsonArray<string>(
+      'tools3000_search_recent_table_cols',
+      (v): v is string => typeof v === 'string' && isKnownTableColumnId(v),
+      [],
+    ).slice(0, 12);
+  });
+  const [density, setDensity] = useState<SearchDensity>(() =>
+    safeStorageGetEnum('tools3000_search_density', ['compact', 'standard', 'comfortable'] as const, 'standard'),
+  );
 
-  const [iconStyle, setIconStyle] = useState<SearchIconStyle>(() => {
-    const saved = localStorage.getItem('tools3000_search_icon_style');
-    if (saved === 'native' || saved === 'vector') return saved;
-    return 'native';
-  });
+  const [iconStyle, setIconStyle] = useState<SearchIconStyle>(() =>
+    safeStorageGetEnum('tools3000_search_icon_style', ['native', 'vector'] as const, 'native'),
+  );
   const NATIVE_ICON_CACHE_MAX_ENTRIES = 512;
   const [nativeIconCache, setNativeIconCache] = useState<Record<string, string>>({});
   const nativeIconCacheRef = useRef<Map<string, string>>(new Map());
@@ -536,69 +709,95 @@ export default function SearchApp() {
         maxResults?: number;
         excludeHidden?: boolean;
         enabledDrives?: string;
+        uiPreferences?: Record<string, unknown>;
       }>('search.getSettings')
         .then((res) => {
           if (!active || !res) return;
           if (res.iconStyle === 'native' || res.iconStyle === 'vector') {
             setIconStyle(res.iconStyle);
-            localStorage.setItem('tools3000_search_icon_style', res.iconStyle);
+            safeStorageSetItem('tools3000_search_icon_style', res.iconStyle);
           }
           if (typeof res.defaultCategory === 'string' && res.defaultCategory) {
             const normalizedCat = res.defaultCategory === 'content' ? 'all' : res.defaultCategory;
             setDefaultCategory(normalizedCat);
-            localStorage.setItem('tools3000_search_default_category', normalizedCat);
+            safeStorageSetItem('tools3000_search_default_category', normalizedCat);
           }
           if (typeof res.excludeHidden === 'boolean') {
             setExcludeHidden(res.excludeHidden);
-            localStorage.setItem('tools3000_search_exclude_hidden', String(res.excludeHidden));
+            safeStorageSetItem('tools3000_search_exclude_hidden', String(res.excludeHidden));
           }
           if (typeof res.enabledDrives === 'string' && res.enabledDrives.trim()) {
             const parsedDrives = res.enabledDrives.split(',').map(s => s.trim()).filter(Boolean);
             if (parsedDrives.length > 0) {
               setEnabledDrives(parsedDrives);
-              localStorage.setItem('tools3000_search_enabled_drives', JSON.stringify(parsedDrives));
+              safeStorageSetItem('tools3000_search_enabled_drives', JSON.stringify(parsedDrives));
             }
           }
-          const nextSig = `${Boolean(res.pinyinEnabled ?? true)}:${Boolean(res.matchPath ?? false)}:${Boolean(res.caseSensitive ?? false)}`;
+          if (res.uiPreferences && typeof res.uiPreferences === 'object') {
+            const prefs = res.uiPreferences;
+            if (prefs.searchMode === 'name' || prefs.searchMode === 'both' || prefs.searchMode === 'content') {
+              setSearchMode(prefs.searchMode);
+              safeStorageSetItem('tools3000_search_default_mode', prefs.searchMode);
+            }
+            if (
+              typeof prefs.maxResultLimit === 'number' &&
+              Number.isFinite(prefs.maxResultLimit) &&
+              (ALLOWED_MAX_RESULT_LIMITS as readonly number[]).includes(prefs.maxResultLimit)
+            ) {
+              setMaxResultLimit(prefs.maxResultLimit);
+              safeStorageSetItem('tools3000_search_max_results', String(prefs.maxResultLimit));
+            }
+            if (typeof prefs.excludeGitAndModules === 'boolean') {
+              setExcludeGitAndModules(prefs.excludeGitAndModules);
+              safeStorageSetItem('tools3000_search_exclude_dev', String(prefs.excludeGitAndModules));
+            }
+            if (Array.isArray(prefs.disabledContentFormats)) {
+              const clean = prefs.disabledContentFormats.filter(isNonEmptyString);
+              setDisabledContentFormats(clean);
+              safeStorageSetItem('tools3000_search_disabled_formats', JSON.stringify(clean));
+            }
+            if (Array.isArray(prefs.customContentFormats)) {
+              const clean = prefs.customContentFormats.filter(isNonEmptyString);
+              setCustomContentFormats(clean);
+              safeStorageSetItem('tools3000_search_custom_formats', JSON.stringify(clean));
+            }
+            if (prefs.density === 'compact' || prefs.density === 'standard' || prefs.density === 'comfortable') {
+              setDensity(prefs.density);
+              safeStorageSetItem('tools3000_search_density', prefs.density);
+            }
+            if (Array.isArray(prefs.tableColumnOrder)) {
+              const cleanOrder = normalizeTableColumnOrder(
+                prefs.tableColumnOrder.filter((x): x is string => typeof x === 'string'),
+              );
+              setTableColumnOrder(cleanOrder);
+              safeStorageSetItem('tools3000_search_table_order', JSON.stringify(cleanOrder));
+            }
+            if (prefs.tableColumnWidths && typeof prefs.tableColumnWidths === 'object' && !Array.isArray(prefs.tableColumnWidths)) {
+              const cleanWidths = sanitizeTableColumnWidths(prefs.tableColumnWidths as Record<string, unknown>);
+              setTableColumnWidths(cleanWidths);
+              safeStorageSetItem('tools3000_search_table_widths', JSON.stringify(cleanWidths));
+            }
+            if (Array.isArray(prefs.visibleTableColumns) && prefs.visibleTableColumns.length > 0) {
+              const cleanVisible = normalizeVisibleTableColumns(
+                prefs.visibleTableColumns.filter((x): x is string => typeof x === 'string'),
+              );
+              setVisibleTableColumns(cleanVisible);
+              safeStorageSetItem('tools3000_search_visible_table_cols', JSON.stringify(cleanVisible));
+            }
+            if (Array.isArray(prefs.recentTableColumns)) {
+              const cleanRecent = (prefs.recentTableColumns as unknown[])
+                .filter((x): x is string => typeof x === 'string' && isKnownTableColumnId(x))
+                .slice(0, 12);
+              setRecentTableColumns(cleanRecent);
+              safeStorageSetItem('tools3000_search_recent_table_cols', JSON.stringify(cleanRecent));
+            }
+          }
+          const defaultPyByLang = (i18n.resolvedLanguage ?? i18n.language ?? '').toLowerCase().startsWith('zh');
+          const nextSig = `${Boolean(res.pinyinEnabled ?? defaultPyByLang)}:${Boolean(res.matchPath ?? false)}:${Boolean(res.caseSensitive ?? false)}`;
           const prevSig = searchSettingsSigRef.current;
           searchSettingsSigRef.current = nextSig;
           if (triggerRefreshOnDiff && prevSig !== null && prevSig !== nextSig) {
             refreshQuery();
-          }
-        })
-        .catch(() => undefined);
-
-      bridgeRequest<{ value?: unknown }>('config.get', { key: '/search/uiPreferences' })
-        .then((raw) => {
-          if (!active || !raw || typeof raw !== 'object') return;
-          const prefs = ('value' in raw && raw.value && typeof raw.value === 'object'
-            ? raw.value
-            : raw) as Record<string, unknown>;
-          if (prefs.searchMode === 'name' || prefs.searchMode === 'both' || prefs.searchMode === 'content') {
-            setSearchMode(prefs.searchMode);
-            localStorage.setItem('tools3000_search_default_mode', prefs.searchMode);
-          }
-          if (typeof prefs.maxResultLimit === 'number' && Number.isFinite(prefs.maxResultLimit)) {
-            setMaxResultLimit(prefs.maxResultLimit);
-            localStorage.setItem('tools3000_search_max_results', String(prefs.maxResultLimit));
-          }
-          if (typeof prefs.excludeGitAndModules === 'boolean') {
-            setExcludeGitAndModules(prefs.excludeGitAndModules);
-            localStorage.setItem('tools3000_search_exclude_dev', String(prefs.excludeGitAndModules));
-          }
-          if (Array.isArray(prefs.disabledContentFormats)) {
-            const clean = prefs.disabledContentFormats.filter((x): x is string => typeof x === 'string');
-            setDisabledContentFormats(clean);
-            localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(clean));
-          }
-          if (Array.isArray(prefs.customContentFormats)) {
-            const clean = prefs.customContentFormats.filter((x): x is string => typeof x === 'string');
-            setCustomContentFormats(clean);
-            localStorage.setItem('tools3000_search_custom_formats', JSON.stringify(clean));
-          }
-          if (prefs.density === 'compact' || prefs.density === 'standard' || prefs.density === 'comfortable') {
-            setDensity(prefs.density);
-            localStorage.setItem('tools3000_search_density', prefs.density);
           }
         })
         .catch(() => undefined);
@@ -632,14 +831,13 @@ export default function SearchApp() {
       window.removeEventListener('storage', onStorageSync);
       document.removeEventListener('visibilitychange', onVisibilitySync);
     };
-  }, [refreshQuery]);
+  }, [refreshQuery, i18n.resolvedLanguage, i18n.language]);
 
   const fetchNativeIcon = useCallback(async (ext: string, isDirectory: boolean, filePath?: string) => {
     const normalizedPath = filePath ? filePath.replace(/\//g, '\\').toLowerCase() : '';
     const key = isDirectory ? '::dir::' : (normalizedPath ? `path:${normalizedPath}` : ext.toLowerCase());
     if (nativeIconCacheRef.current.has(key)) {
       const cached = nativeIconCacheRef.current.get(key) || '';
-      // LRU 访问提升
       nativeIconCacheRef.current.delete(key);
       nativeIconCacheRef.current.set(key, cached);
       return cached || undefined;
@@ -662,7 +860,7 @@ export default function SearchApp() {
       }
       return iconVal || undefined;
     } catch {
-      // IPC 异常或超时时不写入永久空串负缓存，允许后续滚动或重绘时重试
+      // IPC 异常时不写入永久负缓存，允许下次重绘重试
     } finally {
       inFlightIconsRef.current.delete(key);
     }
@@ -711,7 +909,7 @@ export default function SearchApp() {
         }
       }
     } catch {
-      // Allow retry on transient IPC error without poisoning negative cache
+      // 瞬时 IPC 异常允许后续重试
     } finally {
       missing.forEach(k => inFlightIconsRef.current.delete(k));
     }
@@ -719,30 +917,36 @@ export default function SearchApp() {
 
   const changeIconStyle = (newStyle: SearchIconStyle) => {
     setIconStyle(newStyle);
-    localStorage.setItem('tools3000_search_icon_style', newStyle);
+    safeStorageSetItem('tools3000_search_icon_style', newStyle);
     void bridgeRequest('search.saveSettings', { iconStyle: newStyle });
   };
 
+  // 列配置（仅保留表头核心列 + 正交全文摘要开关，彻底清理卡片专属项）
   const [columns, setColumns] = useState<ColumnSetting[]>(() => {
-    try {
-      const saved = localStorage.getItem('tools3000_search_columns_v2');
-      if (saved) {
-        const parsed = JSON.parse(saved) as ColumnSetting[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const merged = parsed.map(c => {
-            const def = DEFAULT_COLUMNS.find(d => d.id === c.id);
-            return def ? { ...def, ...c } : c;
-          });
-          DEFAULT_COLUMNS.forEach(def => {
-            if (!merged.some(m => m.id === def.id)) {
-              merged.push(def);
-            }
-          });
-          return merged;
+    const parsed = safeStorageGetJsonArray<unknown>(
+      'tools3000_search_columns_v2',
+      (v): v is unknown => Boolean(v) && typeof v === 'object',
+      [],
+    );
+    if (parsed.length > 0) {
+      const byId = new Map<ColumnId, Partial<ColumnSetting>>();
+      for (const item of parsed) {
+        const rec = item as Partial<ColumnSetting>;
+        if (typeof rec.id === 'string' && (VALID_COLUMN_IDS as readonly string[]).includes(rec.id)) {
+          byId.set(rec.id as ColumnId, rec);
         }
       }
-    } catch {
-      // fallback
+      return DEFAULT_COLUMNS.map((def) => {
+        const saved = byId.get(def.id);
+        if (!saved) return def;
+        return {
+          ...def,
+          visible: typeof saved.visible === 'boolean' ? (def.id === 'name' ? true : saved.visible) : def.visible,
+          flex: typeof saved.flex === 'number' && Number.isFinite(saved.flex) && saved.flex >= 10 && saved.flex <= 80
+            ? saved.flex
+            : def.flex,
+        };
+      });
     }
     return DEFAULT_COLUMNS;
   });
@@ -755,7 +959,7 @@ export default function SearchApp() {
           setEnabledDrives((prev) => {
             if (prev.length === 0) {
               const allLetters = drives.map((d) => d.letter);
-              localStorage.setItem('tools3000_search_enabled_drives', JSON.stringify(allLetters));
+              safeStorageSetItem('tools3000_search_enabled_drives', JSON.stringify(allLetters));
               return allLetters;
             }
             return prev;
@@ -767,13 +971,8 @@ export default function SearchApp() {
 
   const toggleDrive = (letter: string) => {
     setEnabledDrives((prev) => {
-      let next: string[];
-      if (prev.includes(letter)) {
-        next = prev.filter((l) => l !== letter);
-      } else {
-        next = [...prev, letter];
-      }
-      localStorage.setItem('tools3000_search_enabled_drives', JSON.stringify(next));
+      const next = prev.includes(letter) ? prev.filter((l) => l !== letter) : [...prev, letter];
+      safeStorageSetItem('tools3000_search_enabled_drives', JSON.stringify(next));
       void bridgeRequest('search.saveSettings', { enabledDrives: next.join(',') }).catch(() => undefined);
       return next;
     });
@@ -782,26 +981,23 @@ export default function SearchApp() {
   const selectAllDrives = () => {
     const all = systemDrives.map((d) => d.letter);
     setEnabledDrives(all);
-    localStorage.setItem('tools3000_search_enabled_drives', JSON.stringify(all));
+    safeStorageSetItem('tools3000_search_enabled_drives', JSON.stringify(all));
     void bridgeRequest('search.saveSettings', { enabledDrives: all.join(',') }).catch(() => undefined);
   };
 
   const deselectAllDrives = () => {
     setEnabledDrives([]);
-    localStorage.setItem('tools3000_search_enabled_drives', JSON.stringify([]));
+    safeStorageSetItem('tools3000_search_enabled_drives', JSON.stringify([]));
     void bridgeRequest('search.saveSettings', { enabledDrives: '' }).catch(() => undefined);
   };
 
   const toggleContentFormat = (ext: string) => {
     const cleanExt = ext.toLowerCase().replace(/^\./, '').trim();
     setDisabledContentFormats(prev => {
-      let next: string[];
-      if (prev.includes(cleanExt)) {
-        next = prev.filter(e => e !== cleanExt);
-      } else {
-        next = [...prev, cleanExt].filter(Boolean);
-      }
-      localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(next));
+      const next = prev.includes(cleanExt)
+        ? prev.filter(e => e !== cleanExt)
+        : [...prev, cleanExt].filter(Boolean);
+      safeStorageSetItem('tools3000_search_disabled_formats', JSON.stringify(next));
       persistUiPreferencesPatch({ disabledContentFormats: next });
       clearResultCache();
       if (next.includes(cleanExt)) {
@@ -827,7 +1023,7 @@ export default function SearchApp() {
           if (!next.includes(ext)) next.push(ext);
         }
       }
-      localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(next));
+      safeStorageSetItem('tools3000_search_disabled_formats', JSON.stringify(next));
       persistUiPreferencesPatch({ disabledContentFormats: next });
       clearResultCache();
       if (!enableAll) {
@@ -846,7 +1042,7 @@ export default function SearchApp() {
 
   const addCustomContentFormat = (rawInput: string) => {
     const parts = rawInput
-      .split(/[,;\s，；、|]+/)
+      .split(/[,;\s\uff0c\uff1b\u3001|]+/)
       .map(p => p.toLowerCase().replace(/^\./, '').trim())
       .filter(Boolean);
     if (parts.length === 0) return;
@@ -855,13 +1051,13 @@ export default function SearchApp() {
       for (const p of parts) {
         if (!next.includes(p)) next.push(p);
       }
-      localStorage.setItem('tools3000_search_custom_formats', JSON.stringify(next));
+      safeStorageSetItem('tools3000_search_custom_formats', JSON.stringify(next));
       persistUiPreferencesPatch({ customContentFormats: next });
       return next;
     });
     setDisabledContentFormats(prev => {
       const next = prev.filter(e => !parts.includes(e));
-      localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(next));
+      safeStorageSetItem('tools3000_search_disabled_formats', JSON.stringify(next));
       persistUiPreferencesPatch({ disabledContentFormats: next });
       return next;
     });
@@ -874,13 +1070,13 @@ export default function SearchApp() {
     const cleanExt = ext.toLowerCase().replace(/^\./, '').trim();
     setCustomContentFormats(prev => {
       const next = prev.filter(e => e !== cleanExt);
-      localStorage.setItem('tools3000_search_custom_formats', JSON.stringify(next));
+      safeStorageSetItem('tools3000_search_custom_formats', JSON.stringify(next));
       persistUiPreferencesPatch({ customContentFormats: next });
       return next;
     });
     setDisabledContentFormats(prev => {
       const next = prev.filter(e => e !== cleanExt);
-      localStorage.setItem('tools3000_search_disabled_formats', JSON.stringify(next));
+      safeStorageSetItem('tools3000_search_disabled_formats', JSON.stringify(next));
       persistUiPreferencesPatch({ disabledContentFormats: next });
       return next;
     });
@@ -890,35 +1086,81 @@ export default function SearchApp() {
   const resetContentFormats = () => {
     setDisabledContentFormats([]);
     setCustomContentFormats([]);
-    localStorage.removeItem('tools3000_search_disabled_formats');
-    localStorage.removeItem('tools3000_search_disabled_content_formats');
-    localStorage.removeItem('tools3000_search_custom_formats');
+    safeStorageRemoveItem('tools3000_search_disabled_formats');
+    safeStorageRemoveItem('tools3000_search_disabled_content_formats');
+    safeStorageRemoveItem('tools3000_search_custom_formats');
     persistUiPreferencesPatch({ disabledContentFormats: [], customContentFormats: [] });
     toast.success(t('search.customExtResetToast', 'Content search format configuration reset to default'));
   };
 
+  // F5 重建索引闭环：等待后台轮询确认 stillBusy === false 后再弹出成功提示并刷新列表（120s 防死锁上限）
   const rebuildIndex = useCallback(async () => {
+    if (rebuildingRef.current) return;
+    rebuildingRef.current = true;
     setIsRebuilding(true);
     toast.loading(t('search.rebuildingToast', 'Rescanning NTFS index and saving snapshot...'), { id: 'rebuild-idx' });
+
+    const deadline = Date.now() + REBUILD_POLL_TIMEOUT_MS;
     try {
       await bridgeRequest('search.rebuildIndex');
-      toast.success(t('search.rebuildSuccessToast', 'Full-disk index rescanned and saved to snapshot!'), { id: 'rebuild-idx' });
-      clearResultCache();
-      refreshQuery();
-      void refreshDbStats();
-      void refreshHistory();
+
+      let completed = false;
+      let sawBusyOnce = false;
+      let initialGracePolls = 0;
+
+      while (isMountedRef.current && Date.now() < deadline) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, REBUILD_POLL_INTERVAL_MS));
+        if (!isMountedRef.current) return;
+        const stillBusy = await checkInitialIndex();
+        if (stillBusy) {
+          sawBusyOnce = true;
+          continue;
+        }
+        // 给服务端状态位切换留出 1 次最小缓冲确认，随后判定真正完成
+        if (!sawBusyOnce && initialGracePolls < 1) {
+          initialGracePolls += 1;
+          continue;
+        }
+        completed = true;
+        break;
+      }
+
+      if (!isMountedRef.current) return;
+
+      if (completed) {
+        toast.success(t('search.rebuildSuccessToast', 'Full-disk index rescanned and saved to snapshot!'), { id: 'rebuild-idx' });
+        clearResultCache();
+        refreshQuery();
+        void refreshHistory();
+      } else {
+        toast.info(
+          t(
+            'search.rebuildBackgroundToast' as never,
+            'Index rebuild is still running in the background and will refresh automatically when finished' as never,
+          ) as unknown as string,
+          { id: 'rebuild-idx' },
+        );
+      }
     } catch {
-      toast.error(t('search.rebuildError', 'Index rebuild and snapshot save failed'), { id: 'rebuild-idx' });
+      if (isMountedRef.current) {
+        toast.error(t('search.rebuildError', 'Index rebuild and snapshot save failed'), { id: 'rebuild-idx' });
+      }
     } finally {
-      setTimeout(() => setIsRebuilding(false), 1500);
+      rebuildingRef.current = false;
+      if (isMountedRef.current) {
+        setIsRebuilding(false);
+      }
     }
-  }, [clearResultCache, refreshDbStats, refreshHistory, refreshQuery, t]);
+  }, [checkInitialIndex, clearResultCache, refreshHistory, refreshQuery, t]);
 
   useEffect(() => {
-    void bridgeRequest<{ width?: number; height?: number }>('search.getWindowSize')
+    void bridgeRequest<{ width?: number; height?: number; maximized?: boolean }>('search.getWindowSize')
       .then((res) => {
         if (res?.width && res?.height) {
           setWindowSize({ width: res.width, height: res.height });
+        }
+        if (res && typeof res.maximized === 'boolean') {
+          setIsMaximized(res.maximized);
         }
       })
       .catch(() => undefined);
@@ -931,32 +1173,343 @@ export default function SearchApp() {
     void bridgeRequest('search.startResize', { edge: 'bottom_right', direction: 'bottom_right' }).catch(() => undefined);
   };
 
-  const toggleColumnVisibility = (id: ColumnId) => {
-    const updated = columns.map(col => col.id === id ? { ...col, visible: !col.visible } : col);
-    setColumns(updated);
-    localStorage.setItem('tools3000_search_columns_v2', JSON.stringify(updated));
-  };
+  const columnLayout = useMemo<ColumnLayout>(() => {
+    const visibleSet = new Set(visibleTableColumns);
+    return {
+      name: true,
+      path: visibleSet.has('path'),
+      size: visibleSet.has('size'),
+      modified: visibleSet.has('modified'),
+      created: visibleSet.has('created'),
+      snippets: columns.find(c => c.id === 'snippets')?.visible ?? true,
+      nameFlex: columns.find(c => c.id === 'name')?.flex ?? 35,
+      pathFlex: columns.find(c => c.id === 'path')?.flex ?? 45,
+      tableOrder: tableColumnOrder,
+      tableWidths: tableColumnWidths,
+      visibleTableColumns,
+    };
+  }, [columns, tableColumnOrder, tableColumnWidths, visibleTableColumns]);
 
-  const updateNameAndPathFlex = (nameVal: number) => {
-    const pathVal = Math.max(15, 80 - nameVal);
-    const updated = columns.map(col => {
-      if (col.id === 'name') return { ...col, flex: nameVal };
-      if (col.id === 'path') return { ...col, flex: pathVal };
-      return col;
+  const activeVisibleTableCols = useMemo(
+    () => getVisibleTableColumns(columnLayout),
+    [columnLayout],
+  );
+
+  // 设置抽屉列清单严格同步表头列单一事实源
+  const settingsDrawerColumns = useMemo<ColumnSetting[]>(() => {
+    const visibleSet = new Set(activeVisibleTableCols);
+    return columns.map((col) => {
+      if (col.id === 'snippets') return col;
+      return {
+        ...col,
+        visible: col.id === 'name' ? true : visibleSet.has(col.id),
+      };
     });
-    setColumns(updated);
-    localStorage.setItem('tools3000_search_columns_v2', JSON.stringify(updated));
-  };
+  }, [activeVisibleTableCols, columns]);
 
-  const resetColumns = () => {
+  // 仅当排序列确实依赖后端扩展属性（或 accessed/attributes 存在原生缺失行）时才将 propertyCacheForSort 纳入重排依赖
+  const [propertyCacheForSort, setPropertyCacheForSort] = useState<PropertyCacheMap>({});
+
+  const sortFieldNeedsBackendProp = useMemo(() => {
+    const def = resolveColumnDefinition(sortField);
+    if (def.requiresBackendProp) return true;
+    if (sortField === 'accessed') {
+      return snapshot.results.some((item) => doesItemRequireBackendProperty(item, 'accessed'));
+    }
+    if (sortField === 'attributes') {
+      return snapshot.results.some((item) => doesItemRequireBackendProperty(item, 'attributes'));
+    }
+    return false;
+  }, [snapshot.results, sortField]);
+
+  const activePropertyCacheForSort = sortFieldNeedsBackendProp ? propertyCacheForSort : undefined;
+
+  const sortedResults = useMemo(() => {
+    return getSortedResults(
+      snapshot.results,
+      sortField,
+      sortDirection,
+      activePropertyCacheForSort,
+      currentLocale,
+    );
+  }, [snapshot.results, sortField, sortDirection, activePropertyCacheForSort, currentLocale]);
+
+  const resultsHidden =
+    showSyntaxHelp ||
+    isInitialIndexing ||
+    isServiceStarting ||
+    sortedResults.length === 0;
+
+  const {
+    propertyCache,
+    getLatestPropertyCache,
+    sortProgress,
+    cancelSortExtraction,
+    ensureColumnLoadedForSort,
+  } = useViewportProperties({
+    sourceResults: snapshot.results,
+    results: sortedResults,
+    visibleColumns: activeVisibleTableCols,
+    visibleRange,
+    enabled: !resultsHidden,
+    onPropertyCacheChange: setPropertyCacheForSort,
+  });
+
+  // 记录用户在当前结果代际中主动取消的扩展列排序，避免后台 effect 立即重拉
+  const userCancelledSortKeyRef = useRef<string>('');
+  const handleCancelSortExtraction = useCallback(() => {
+    userCancelledSortKeyRef.current = `${snapshot.generationId}:${sortField}`;
+    cancelSortExtraction();
+  }, [cancelSortExtraction, snapshot.generationId, sortField]);
+
+  // 切词或从本地存储恢复扩展列 sortField 时，自动拉齐该列全量属性完成排序
+  useEffect(() => {
+    if (resultsHidden || snapshot.results.length === 0 || !sortFieldNeedsBackendProp) {
+      return;
+    }
+    const cancelKey = `${snapshot.generationId}:${sortField}`;
+    if (userCancelledSortKeyRef.current === cancelKey) {
+      return;
+    }
+    const label = getColumnDisplayLabel(
+      sortField,
+      (k, d) => t(k as never, d as never) as unknown as string,
+    );
+    void ensureColumnLoadedForSort(sortField, label, snapshot.results);
+  }, [
+    ensureColumnLoadedForSort,
+    resultsHidden,
+    snapshot.generationId,
+    snapshot.results,
+    sortField,
+    sortFieldNeedsBackendProp,
+    t,
+  ]);
+
+  const recordRecentColumn = useCallback((colId: TableColumnId) => {
+    if (!colId || colId === 'name' || !isKnownTableColumnId(colId)) return;
+    setRecentTableColumns((prev) => {
+      const next = [colId, ...prev.filter((x) => x !== colId)].slice(0, 12);
+      safeStorageSetItem('tools3000_search_recent_table_cols', JSON.stringify(next));
+      persistUiPreferencesPatch({ recentTableColumns: next });
+      return next;
+    });
+  }, [persistUiPreferencesPatch]);
+
+  const fallbackSortIfColumnRemoved = useCallback((remainingCols: readonly TableColumnId[]) => {
+    if (!remainingCols.includes(sortField)) {
+      cancelSortExtraction();
+      setSortField('modified');
+      setSortDirection('desc');
+      safeStorageSetItem('tools3000_search_sort_field', 'modified');
+      safeStorageSetItem('tools3000_search_sort_dir', 'desc');
+    }
+  }, [cancelSortExtraction, sortField]);
+
+  const commitVisibleTableColumns = useCallback(
+    (nextVisible: TableColumnId[], nextOrderOverride?: TableColumnId[]) => {
+      const cleanVisible = normalizeVisibleTableColumns(nextVisible);
+      setVisibleTableColumns(cleanVisible);
+      safeStorageSetItem('tools3000_search_visible_table_cols', JSON.stringify(cleanVisible));
+
+      setColumns((prev) => {
+        const updated = prev.map((col) => {
+          if (col.id === 'path' || col.id === 'size' || col.id === 'modified' || col.id === 'created') {
+            return { ...col, visible: cleanVisible.includes(col.id) };
+          }
+          return col;
+        });
+        safeStorageSetItem('tools3000_search_columns_v2', JSON.stringify(updated));
+        return updated;
+      });
+
+      const mergedOrder = normalizeTableColumnOrder(
+        nextOrderOverride ? [...nextOrderOverride, ...cleanVisible] : [...tableColumnOrder, ...cleanVisible],
+      );
+      setTableColumnOrder(mergedOrder);
+      safeStorageSetItem('tools3000_search_table_order', JSON.stringify(mergedOrder));
+      persistUiPreferencesPatch({
+        visibleTableColumns: cleanVisible,
+        tableColumnOrder: mergedOrder,
+      });
+      fallbackSortIfColumnRemoved(cleanVisible);
+    },
+    [fallbackSortIfColumnRemoved, persistUiPreferencesPatch, tableColumnOrder],
+  );
+
+  const toggleColumnVisibility = useCallback((id: ColumnId) => {
+    if (id === 'name') return;
+    if (id === 'snippets') {
+      setColumns((prev) => {
+        const updated = prev.map((col) => (col.id === 'snippets' ? { ...col, visible: !col.visible } : col));
+        safeStorageSetItem('tools3000_search_columns_v2', JSON.stringify(updated));
+        return updated;
+      });
+      return;
+    }
+    const isCurrentlyVisible = activeVisibleTableCols.includes(id);
+    const nextVisible = isCurrentlyVisible
+      ? activeVisibleTableCols.filter((c) => c !== id)
+      : [...activeVisibleTableCols, id];
+    recordRecentColumn(id);
+    commitVisibleTableColumns(nextVisible);
+  }, [activeVisibleTableCols, commitVisibleTableColumns, recordRecentColumn]);
+
+  const toggleTableColumn = useCallback(
+    (colId: TableColumnId) => {
+      const def = resolveColumnDefinition(colId);
+      if (def.locked) return;
+      const isCurrentlyVisible = activeVisibleTableCols.includes(colId);
+      const nextVisible = isCurrentlyVisible
+        ? activeVisibleTableCols.filter((id) => id !== colId)
+        : [...activeVisibleTableCols, colId];
+      recordRecentColumn(colId);
+      commitVisibleTableColumns(nextVisible);
+    },
+    [activeVisibleTableCols, commitVisibleTableColumns, recordRecentColumn],
+  );
+
+  const removeTableColumn = useCallback(
+    (colId: TableColumnId) => {
+      const def = resolveColumnDefinition(colId);
+      if (def.locked) return;
+      if (!activeVisibleTableCols.includes(colId)) return;
+      recordRecentColumn(colId);
+      commitVisibleTableColumns(activeVisibleTableCols.filter((id) => id !== colId));
+    },
+    [activeVisibleTableCols, commitVisibleTableColumns, recordRecentColumn],
+  );
+
+  const addTableColumns = useCallback(
+    (colIds: TableColumnId[]) => {
+      if (colIds.length === 0) return;
+      const nextVisible = [...activeVisibleTableCols];
+      for (const id of colIds) {
+        if (isKnownTableColumnId(id) && !nextVisible.includes(id)) {
+          nextVisible.push(id);
+          recordRecentColumn(id);
+        }
+      }
+      commitVisibleTableColumns(nextVisible, nextVisible);
+    },
+    [activeVisibleTableCols, commitVisibleTableColumns, recordRecentColumn],
+  );
+
+  const updateNameAndPathFlex = useCallback((nameVal: number) => {
+    const pathVal = Math.max(15, 80 - nameVal);
+    setColumns((prev) => {
+      const updated = prev.map((col) => {
+        if (col.id === 'name') return { ...col, flex: nameVal };
+        if (col.id === 'path') return { ...col, flex: pathVal };
+        return col;
+      });
+      safeStorageSetItem('tools3000_search_columns_v2', JSON.stringify(updated));
+      return updated;
+    });
+    // 调节名称/目录弹性比例时释放两列固定像素锁定，确保窗口缩放自适应铺满
+    setTableColumnWidths((prev) => {
+      if (prev.name === undefined && prev.path === undefined) return prev;
+      const next = { ...prev };
+      delete next.name;
+      delete next.path;
+      safeStorageSetItem('tools3000_search_table_widths', JSON.stringify(next));
+      persistUiPreferencesPatch({ tableColumnWidths: next });
+      return next;
+    });
+  }, [persistUiPreferencesPatch]);
+
+  const updateTableColumnWidth = useCallback(
+    (colId: TableColumnId, widthPx: number | undefined) => {
+      setTableColumnWidths((prev) => {
+        const next = { ...prev };
+        if (widthPx === undefined) {
+          delete next[colId];
+        } else {
+          next[colId] = Math.round(widthPx);
+        }
+        safeStorageSetItem('tools3000_search_table_widths', JSON.stringify(next));
+        persistUiPreferencesPatch({ tableColumnWidths: next });
+        return next;
+      });
+    },
+    [persistUiPreferencesPatch],
+  );
+
+  const reorderTableColumnsOrder = useCallback(
+    (nextOrder: TableColumnId[]) => {
+      const cleanOrder = normalizeTableColumnOrder(nextOrder);
+      setTableColumnOrder(cleanOrder);
+      safeStorageSetItem('tools3000_search_table_order', JSON.stringify(cleanOrder));
+      persistUiPreferencesPatch({ tableColumnOrder: cleanOrder });
+    },
+    [persistUiPreferencesPatch],
+  );
+
+  // 统一以 DEFAULT_VISIBLE_TABLE_COLUMNS 为默认列 SSOT，同时清理最近列并回退失效排序列
+  const resetColumns = useCallback(() => {
+    const defaultCols = [...DEFAULT_VISIBLE_TABLE_COLUMNS];
+    const defaultOrder = [...DEFAULT_TABLE_COLUMN_ORDER];
     setColumns(DEFAULT_COLUMNS);
-    localStorage.setItem('tools3000_search_columns_v2', JSON.stringify(DEFAULT_COLUMNS));
+    safeStorageSetItem('tools3000_search_columns_v2', JSON.stringify(DEFAULT_COLUMNS));
+    setTableColumnOrder(defaultOrder);
+    setTableColumnWidths({});
+    setVisibleTableColumns(defaultCols);
+    setRecentTableColumns([]);
+    safeStorageRemoveItem('tools3000_search_table_order');
+    safeStorageRemoveItem('tools3000_search_table_widths');
+    safeStorageRemoveItem('tools3000_search_visible_table_cols');
+    safeStorageRemoveItem('tools3000_search_recent_table_cols');
+    fallbackSortIfColumnRemoved(defaultCols);
+    persistUiPreferencesPatch({
+      tableColumnOrder: defaultOrder,
+      tableColumnWidths: {},
+      visibleTableColumns: defaultCols,
+      recentTableColumns: [],
+    });
     toast.success(t('search.toastResetLayout', 'Default columns and layout restored'));
-  };
+  }, [fallbackSortIfColumnRemoved, persistUiPreferencesPatch, t]);
+
+  // 严格列管理弹窗草稿事务入口：打开初始化独立草稿，取消完整回滚，确定统一落盘
+  const openColumnManager = useCallback(() => {
+    setColumnManagerDraft([...activeVisibleTableCols]);
+    setColumnManagerResetPending(false);
+    setShowColumnManager(true);
+  }, [activeVisibleTableCols]);
+
+  const closeColumnManager = useCallback(() => {
+    setShowColumnManager(false);
+    setColumnManagerDraft(null);
+    setColumnManagerResetPending(false);
+    window.setTimeout(() => inputRef.current?.focus(), 0);
+  }, []);
+
+  const applyColumnManagerDraft = useCallback(
+    (finalDraft: TableColumnId[], meta?: { resetRequested?: boolean }) => {
+      const shouldFullReset =
+        Boolean(meta?.resetRequested || columnManagerResetPending) &&
+        finalDraft.length === DEFAULT_VISIBLE_TABLE_COLUMNS.length &&
+        finalDraft.every((id, idx) => id === DEFAULT_VISIBLE_TABLE_COLUMNS[idx]);
+
+      if (shouldFullReset) {
+        resetColumns();
+      } else {
+        const prevSet = new Set(activeVisibleTableCols);
+        for (const id of finalDraft) {
+          if (!prevSet.has(id) && id !== 'name') {
+            recordRecentColumn(id);
+          }
+        }
+        commitVisibleTableColumns(finalDraft, finalDraft);
+      }
+      setColumnManagerDraft(null);
+      setColumnManagerResetPending(false);
+    },
+    [activeVisibleTableCols, columnManagerResetPending, commitVisibleTableColumns, recordRecentColumn, resetColumns],
+  );
 
   const changeDensity = (newDensity: SearchDensity) => {
     setDensity(newDensity);
-    localStorage.setItem('tools3000_search_density', newDensity);
+    safeStorageSetItem('tools3000_search_density', newDensity);
     persistUiPreferencesPatch({ density: newDensity });
     inputRef.current?.focus();
   };
@@ -1033,38 +1586,9 @@ export default function SearchApp() {
     };
   }, [cancelPendingSelectTimers]);
 
-  const handleSetFileFolderPriority = (priority: FileFolderPriority) => {
-    setFileFolderPriority(priority);
-    localStorage.setItem('tools3000_search_folder_priority', priority);
-    localStorage.setItem('tools3000_search_sort_folders_first', String(priority === 'foldersFirst'));
-  };
-
-  const toggleFoldersFirst = () => {
-    handleSetFileFolderPriority(fileFolderPriority === 'foldersFirst' ? 'filesFirst' : 'foldersFirst');
-  };
-
-  const toggleGroupByType = () => {
-    setGroupByType(prev => {
-      const next = !prev;
-      localStorage.setItem('tools3000_search_sort_group_type', String(next));
-      return next;
-    });
-  };
-
-  const toggleSmartPathPriority = () => {
-    setSmartPathPriority(prev => {
-      const next = !prev;
-      localStorage.setItem('tools3000_search_smart_path_priority', String(next));
-      return next;
-    });
-  };
-
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
-      if (sortDropdownRef.current && !sortDropdownRef.current.contains(target)) {
-        setShowSortMenu(false);
-      }
       if (viewSettingsRef.current && !viewSettingsRef.current.contains(target)) {
         const helpBtn = document.querySelector('.search-help-btn');
         if (!helpBtn || !helpBtn.contains(target)) {
@@ -1072,15 +1596,54 @@ export default function SearchApp() {
         }
       }
     };
-    if (showSortMenu || showViewSettings) {
+    if (showViewSettings) {
       window.addEventListener('mousedown', handleClickOutside);
       return () => window.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [showSortMenu, showViewSettings]);
+  }, [showViewSettings]);
 
-  const sortedResults = useMemo(() => {
-    return getSortedResults(snapshot.results, sortField, sortDirection, fileFolderPriority, groupByType, smartPathPriority);
-  }, [snapshot.results, sortField, sortDirection, fileFolderPriority, groupByType, smartPathPriority]);
+  // 自适应列宽优先采样当前 visibleRange 可见行
+  const fitColumnToContent = useCallback(
+    (colId: TableColumnId) => {
+      const translateLabel = (key: string, defaultVal?: string) =>
+        t(key as never, defaultVal as never) as unknown as string;
+      const headerLabel = getColumnDisplayLabel(colId, translateLabel);
+      const formatters = { formatFileSize, formatWindowsTime, extractParentDirectoryPath };
+      const sampleRows = collectColumnFitSampleRows(sortedResults, visibleRange, 120);
+      const sample = sampleRows.map((item) =>
+        resolveTableCellText(colId, item, propertyCache[item.path], formatters),
+      );
+      const fitted = estimateFittedColumnWidth(colId, headerLabel, sample);
+      updateTableColumnWidth(colId, fitted);
+    },
+    [propertyCache, sortedResults, t, updateTableColumnWidth, visibleRange],
+  );
+
+  const fitAllColumnsToContent = useCallback(() => {
+    const translateLabel = (key: string, defaultVal?: string) =>
+      t(key as never, defaultVal as never) as unknown as string;
+    const formatters = { formatFileSize, formatWindowsTime, extractParentDirectoryPath };
+    const sampleRows = collectColumnFitSampleRows(sortedResults, visibleRange, 120);
+    setTableColumnWidths((prev) => {
+      const next = { ...prev };
+      for (const colId of activeVisibleTableCols) {
+        const headerLabel = getColumnDisplayLabel(colId, translateLabel);
+        const sample = sampleRows.map((item) =>
+          resolveTableCellText(colId, item, propertyCache[item.path], formatters),
+        );
+        next[colId] = estimateFittedColumnWidth(colId, headerLabel, sample);
+      }
+      safeStorageSetItem('tools3000_search_table_widths', JSON.stringify(next));
+      persistUiPreferencesPatch({ tableColumnWidths: next });
+      return next;
+    });
+  }, [activeVisibleTableCols, persistUiPreferencesPatch, propertyCache, sortedResults, t, visibleRange]);
+
+  const handleTableHorizontalScroll = useCallback((scrollLeft: number) => {
+    if (headerScrollRef.current && headerScrollRef.current.scrollLeft !== scrollLeft) {
+      headerScrollRef.current.scrollLeft = scrollLeft;
+    }
+  }, []);
 
   useEffect(() => {
     if (sortedResults.length === 0) return;
@@ -1101,51 +1664,43 @@ export default function SearchApp() {
     return sortedResults.reduce((acc, item) => acc + (item.isDirectory ? 0 : (Number(item.size) || 0)), 0);
   }, [sortedResults]);
 
-  const handleSetSortDirect = (field: SortField, dir: SortDirection) => {
-    setSortField(field);
-    setSortDirection(dir);
-    localStorage.setItem('tools3000_search_sort_field', field);
-    localStorage.setItem('tools3000_search_sort_dir', dir);
-    setSelectedIndex(0);
-    setShowSortMenu(false);
-    inputRef.current?.focus();
-  };
-
-  const toggleSortDirection = (e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    if (sortField === 'relevance') {
-      setSortField('modified');
-      setSortDirection('desc');
-      localStorage.setItem('tools3000_search_sort_field', 'modified');
-      localStorage.setItem('tools3000_search_sort_dir', 'desc');
-    } else {
-      const nextDir = sortDirection === 'desc' ? 'asc' : 'desc';
-      setSortDirection(nextDir);
-      localStorage.setItem('tools3000_search_sort_dir', nextDir);
-    }
-    setSelectedIndex(0);
-    inputRef.current?.focus();
-  };
-
   const handleSelectSort = useCallback((field: SortField) => {
-    if (field === 'relevance') {
-      setSortField('relevance');
-      localStorage.setItem('tools3000_search_sort_field', 'relevance');
-    } else if (sortField === field) {
+    if (!isKnownTableColumnId(field)) return;
+    userCancelledSortKeyRef.current = '';
+
+    if (sortField === field) {
       const nextDir = sortDirection === 'desc' ? 'asc' : 'desc';
       setSortDirection(nextDir);
-      localStorage.setItem('tools3000_search_sort_dir', nextDir);
+      safeStorageSetItem('tools3000_search_sort_dir', nextDir);
     } else {
       setSortField(field);
-      const defaultDir = (field === 'name' ? 'asc' : 'desc');
+      const def = resolveColumnDefinition(field);
+      const defaultDir = def.defaultSortDir;
       setSortDirection(defaultDir);
-      localStorage.setItem('tools3000_search_sort_field', field);
-      localStorage.setItem('tools3000_search_sort_dir', defaultDir);
+      safeStorageSetItem('tools3000_search_sort_field', field);
+      safeStorageSetItem('tools3000_search_sort_dir', defaultDir);
     }
+
+    const def = resolveColumnDefinition(field);
+    const needsBackend =
+      def.requiresBackendProp ||
+      (field === 'accessed' && snapshot.results.some((item) => doesItemRequireBackendProperty(item, 'accessed'))) ||
+      (field === 'attributes' && snapshot.results.some((item) => doesItemRequireBackendProperty(item, 'attributes')));
+
+    if (needsBackend && snapshot.results.length > 0) {
+      const label = getColumnDisplayLabel(
+        field,
+        (k, d) => t(k as never, d as never) as unknown as string,
+      );
+      void ensureColumnLoadedForSort(field, label, snapshot.results);
+    } else {
+      // 切换回普通原生列排序时主动终止残留的扩展列提取任务
+      cancelSortExtraction();
+    }
+
     setSelectedIndex(0);
-    setShowSortMenu(false);
     inputRef.current?.focus();
-  }, [sortField, sortDirection, setSelectedIndex]);
+  }, [cancelSortExtraction, ensureColumnLoadedForSort, setSelectedIndex, snapshot.results, sortDirection, sortField, t]);
 
   const updateQuery = useCallback((next: string) => {
     setQuery(next);
@@ -1154,25 +1709,13 @@ export default function SearchApp() {
       setIsServiceStarting(false);
     }
 
-    const lower = next.toLowerCase();
-    if (lower.includes('sort:date') || lower.includes('sort:mtime') || lower.includes('sort:time')) {
-      setSortField('modified');
-      setSortDirection('desc');
-    } else if (lower.includes('sort:name')) {
-      setSortField('name');
-      setSortDirection('asc');
-    } else if (lower.includes('sort:size')) {
-      setSortField('size');
-      setSortDirection('desc');
-    } else if (lower.includes('sort:created')) {
-      setSortField('created');
-      setSortDirection('desc');
-    } else if (lower.includes('sort:file')) {
-      handleSetFileFolderPriority('filesFirst');
-    } else if (lower.includes('sort:folder') || lower.includes('sort:dir')) {
-      handleSetFileFolderPriority('foldersFirst');
-    } else if (lower.includes('sort:ext') || lower.includes('sort:type')) {
-      setGroupByType(true);
+    // 精准解析独立 sort:<col> 词元，避免粗糙子串 includes 误判，且绝不篡改已移除的组合排序开关
+    const explicitSort = parseExplicitSortDirective(next);
+    if (explicitSort) {
+      setSortField(explicitSort.field);
+      setSortDirection(explicitSort.direction);
+      safeStorageSetItem('tools3000_search_sort_field', explicitSort.field);
+      safeStorageSetItem('tools3000_search_sort_dir', explicitSort.direction);
     }
 
     if (!next.trim()) {
@@ -1218,9 +1761,28 @@ export default function SearchApp() {
     inputRef.current?.focus();
   };
 
+  const minimizeWindow = useCallback(() => {
+    setShowHistoryMenu(false);
+    if (!isComposingRef.current) {
+      recordSearchHistory(latestQueryRef.current);
+    }
+    void bridgeRequest('search.minimize').catch(() => undefined);
+  }, [recordSearchHistory]);
+
   const hide = useCallback(() => {
+    setShowHistoryMenu(false);
+    if (!isComposingRef.current) {
+      recordSearchHistory(latestQueryRef.current);
+    }
     void bridgeRequest('search.hide').catch(() => undefined);
-  }, []);
+  }, [recordSearchHistory]);
+
+  const handleSelectHistoryItem = useCallback((text: string) => {
+    updateQuery(text);
+    recordSearchHistory(text, { force: true });
+    setShowHistoryMenu(false);
+    inputRef.current?.focus();
+  }, [recordSearchHistory, updateQuery]);
 
   const {
     openResult,
@@ -1248,6 +1810,11 @@ export default function SearchApp() {
     setResults,
     query,
     sortedResults,
+    visibleTableColumns: activeVisibleTableCols,
+    propertyCache,
+    getLatestPropertyCache,
+    ensureColumnLoadedForSort,
+    onRecordSearch: recordSearchHistory,
   });
 
   useSearchKeyboard({
@@ -1263,15 +1830,20 @@ export default function SearchApp() {
     setRenameTarget,
     contextMenu,
     setContextMenu,
-    showSortMenu,
-    setShowSortMenu,
+    showHistoryMenu,
+    setShowHistoryMenu,
     showSyntaxHelp,
     setShowSyntaxHelp,
     showViewSettings,
     setShowViewSettings,
+    showColumnManager,
+    setShowColumnManager,
+    showPropertyPicker,
+    setShowPropertyPicker,
     hide,
     rebuildIndex,
     togglePin,
+    toggleMaximized,
     startRename,
     handleSelectSort,
     openResult,
@@ -1289,22 +1861,6 @@ export default function SearchApp() {
 
   const nameFlex = columns.find(c => c.id === 'name')?.flex ?? 35;
   const pathFlex = columns.find(c => c.id === 'path')?.flex ?? 45;
-
-  const columnLayout = useMemo<ColumnLayout>(() => {
-    const visible = (id: ColumnId) => columns.find(c => c.id === id)?.visible ?? true;
-    return {
-      name: visible('name'),
-      ext: visible('ext'),
-      parent: visible('parent'),
-      path: visible('path'),
-      size: visible('size'),
-      modified: visible('modified'),
-      created: visible('created'),
-      snippets: visible('snippets'),
-      nameFlex: columns.find(c => c.id === 'name')?.flex ?? 35,
-      pathFlex: columns.find(c => c.id === 'path')?.flex ?? 45,
-    };
-  }, [columns]);
 
   const handleRowHover = useCallback((index: number) => {
     setSelectedIndex(index);
@@ -1324,7 +1880,6 @@ export default function SearchApp() {
     event.stopPropagation();
     setSelectedIndex(index);
     if (event.shiftKey) {
-      // 延迟 20ms 确保 Chromium 彻底完成 preventDefault 并释放底层鼠标捕获
       setTimeout(() => {
         void bridgeRequest('search.showShellContextMenu', {
           filepath: result.path,
@@ -1347,10 +1902,19 @@ export default function SearchApp() {
     });
   }, [setSelectedIndex]);
 
+  const formattedTotalIndexed = totalIndexedFiles > 0
+    ? compactCountFormatter.format(totalIndexedFiles)
+    : '--';
+
+  const propertyPickerExistingCols =
+    propertyPickerSource === 'manager' && columnManagerDraft
+      ? columnManagerDraft
+      : activeVisibleTableCols;
+
   return (
-    <main className={`search-app ${showViewSettings ? 'search-app--view-settings-open' : ''}`}>
+    <main className={`search-app ${showViewSettings ? 'search-app--view-settings-open' : ''} ${isMaximized ? 'search-app--maximized' : ''}`}>
       <AppToaster theme={toasterTheme} surface="search" />
-      <section className="search-container" aria-label={t('search.title', 'Quick file search')}>
+      <section className={`search-container ${isMaximized ? 'search-container--maximized' : ''}`} aria-label={t('search.title', 'Quick file search')}>
         <SearchHeader
           inputRef={inputRef}
           query={query}
@@ -1362,23 +1926,45 @@ export default function SearchApp() {
           isServiceStarting={isServiceStarting}
           isPinned={isPinned}
           onTogglePin={() => void togglePin()}
+          isMaximized={isMaximized}
+          onToggleMaximized={() => void toggleMaximized()}
+          onMinimizeWindow={minimizeWindow}
+          onCloseWindow={hide}
           showViewSettings={showViewSettings}
           onToggleViewSettings={() => {
             setShowViewSettings(prev => !prev);
             setShowSyntaxHelp(false);
-            setShowSortMenu(false);
+            setShowHistoryMenu(false);
           }}
           showSyntaxHelp={showSyntaxHelp}
           onToggleSyntaxHelp={() => {
             setShowSyntaxHelp(prev => !prev);
             setShowViewSettings(false);
-            setShowSortMenu(false);
+            setShowHistoryMenu(false);
           }}
           onResetPlacement={() => {
             void bridgeRequest('search.resetPlacement');
+            setIsMaximized(false);
             setWindowSize({ width: 760, height: 520 });
             toast.success(t('search.resetPlacementToast', 'Reset to default center and 760×520 size'));
           }}
+          searchHistory={searchHistory}
+          showHistoryMenu={showHistoryMenu}
+          onToggleHistoryMenu={() => {
+            setShowHistoryMenu((prev) => {
+              const next = !prev;
+              if (next) {
+                setShowViewSettings(false);
+                setShowSyntaxHelp(false);
+                void refreshHistory();
+              }
+              return next;
+            });
+          }}
+          onCloseHistoryMenu={() => setShowHistoryMenu(false)}
+          onSelectHistoryItem={handleSelectHistoryItem}
+          onRemoveHistoryItem={(e, text) => void removeHistoryItem(e, text)}
+          onClearAllHistory={() => void clearAllHistory()}
           resultsCount={results.length}
           hasSelectedResult={!!sortedResults[selectedIndex]}
           selectedIndex={selectedIndex}
@@ -1395,7 +1981,7 @@ export default function SearchApp() {
                 onClick={() => selectCategory(cat)}
                 type="button"
               >
-                {cat.icon && <cat.icon size={13} className="category-pill-icon" />}
+                {cat.icon && <cat.icon size={13} className="category-pill-icon" aria-hidden="true" />}
                 <span>{cat.label}</span>
               </button>
             ))}
@@ -1403,8 +1989,8 @@ export default function SearchApp() {
 
           <div className="search-bar-right-group">
             {/* 全盘已索引总数与耗时统计胶囊 */}
-            <div 
-              className="search-stats-pill" 
+            <div
+              className="search-stats-pill"
               title={
                 loading
                   ? t('search.stopScanTitle', 'Stop active background content scan')
@@ -1427,7 +2013,7 @@ export default function SearchApp() {
                   </strong>
                 </span>
               ) : sortedResults.length > 0 ? (
-                <span><strong>{sortedResults.length}</strong> / {t('search.statsFullDisk', 'Total {{total}} · {{ms}}ms', { total: totalIndexedFiles ? (totalIndexedFiles > 10000 ? (totalIndexedFiles / 10000).toFixed(1) + 'w' : totalIndexedFiles.toString()) : '--', ms: searchElapsedMs })}</span>
+                <span><strong>{sortedResults.length}</strong> / {t('search.statsFullDisk', 'Total {{total}} · {{ms}}ms', { total: formattedTotalIndexed, ms: searchElapsedMs })}</span>
               ) : (
                 <span>{t('search.totalFilesCount', 'Total {{count}} files', { count: totalIndexedFiles || 0 })}</span>
               )}
@@ -1438,36 +2024,13 @@ export default function SearchApp() {
               <button
                 type="button"
                 className="search-action-pill-btn"
-                onClick={exportResultsToCsv}
+                onClick={() => void exportResultsToCsv()}
                 title={t('search.exportCsvTip', 'Export search results to CSV / Excel (Ctrl+E) - {{count}} items', { count: sortedResults.length })}
               >
-                <FileSpreadsheet size={13} />
+                <FileSpreadsheet size={13} aria-hidden="true" />
                 <span>{t('search.exportCsv', 'Export CSV')} ({sortedResults.length})</span>
               </button>
             )}
-
-            {/* ── 极客排序双区域分裂微胶囊 (Split Pill) ── */}
-            <SearchSortDropdown
-              sortDropdownRef={sortDropdownRef}
-              showSortMenu={showSortMenu}
-              onToggleSortMenu={() => {
-                setShowSortMenu(prev => !prev);
-                setShowViewSettings(false);
-                setShowSyntaxHelp(false);
-              }}
-              sortField={sortField}
-              sortDirection={sortDirection}
-              onToggleSortDirection={toggleSortDirection}
-              onSetSortDirect={handleSetSortDirect}
-              folderPriority={fileFolderPriority}
-              onSetFolderPriority={handleSetFileFolderPriority}
-              foldersFirst={fileFolderPriority === 'foldersFirst'}
-              onToggleFoldersFirst={toggleFoldersFirst}
-              groupByType={groupByType}
-              onToggleGroupByType={toggleGroupByType}
-              smartPathPriority={smartPathPriority}
-              onToggleSmartPathPriority={toggleSmartPathPriority}
-            />
           </div>
         </div>
 
@@ -1476,10 +2039,7 @@ export default function SearchApp() {
           query={query}
           searchHistory={searchHistory}
           onClearAllHistory={clearAllHistory}
-          onSelectHistoryItem={(text) => {
-            updateQuery(text);
-            inputRef.current?.focus();
-          }}
+          onSelectHistoryItem={handleSelectHistoryItem}
           onRemoveHistoryItem={(e, text) => void removeHistoryItem(e, text)}
         />
 
@@ -1492,7 +2052,7 @@ export default function SearchApp() {
           }}
           popoverRef={viewSettingsRef}
           isRebuilding={isRebuilding}
-          onRebuildIndex={rebuildIndex}
+          onRebuildIndex={() => void rebuildIndex()}
           searchMode={searchMode}
           onChangeSearchMode={changeSearchMode}
           density={density}
@@ -1502,9 +2062,15 @@ export default function SearchApp() {
           maxResultLimit={maxResultLimit}
           onChangeMaxResultLimit={changeMaxResultLimit}
           windowSize={windowSize}
-          onSetWindowSize={setWindowSize}
-          columns={columns}
+          onSetWindowSize={(nextSize) => {
+            setIsMaximized(false);
+            setWindowSize(nextSize);
+          }}
+          isMaximized={isMaximized}
+          onToggleMaximized={() => void toggleMaximized()}
+          columns={settingsDrawerColumns}
           onToggleColumn={toggleColumnVisibility}
+          onOpenColumnManager={openColumnManager}
           nameFlex={nameFlex}
           pathFlex={pathFlex}
           onUpdateNameAndPathFlex={updateNameAndPathFlex}
@@ -1516,7 +2082,7 @@ export default function SearchApp() {
           excludeGitAndModules={excludeGitAndModules}
           onSetExcludeGitAndModules={(val) => {
             setExcludeGitAndModules(val);
-            localStorage.setItem('tools3000_search_exclude_dev', String(val));
+            safeStorageSetItem('tools3000_search_exclude_dev', String(val));
             const patterns = val ? '$Recycle.Bin,System Volume Information,node_modules,.git,__pycache__' : '$Recycle.Bin,System Volume Information';
             void bridgeRequest('search.saveSettings', { excludePatterns: patterns }).catch(() => undefined);
             persistUiPreferencesPatch({ excludeGitAndModules: val });
@@ -1524,7 +2090,7 @@ export default function SearchApp() {
           excludeHidden={excludeHidden}
           onSetExcludeHidden={(val) => {
             setExcludeHidden(val);
-            localStorage.setItem('tools3000_search_exclude_hidden', String(val));
+            safeStorageSetItem('tools3000_search_exclude_hidden', String(val));
             void bridgeRequest('search.saveSettings', { excludeHidden: val, excludeSystem: val }).catch(() => undefined);
             persistUiPreferencesPatch({ excludeHidden: val });
           }}
@@ -1552,27 +2118,25 @@ export default function SearchApp() {
             setExcludeHidden(false);
             setSortField('modified');
             setSortDirection('desc');
-            setFileFolderPriority('filesFirst');
-            setGroupByType(false);
-            setSmartPathPriority(true);
             const allLetters = systemDrives.map((d) => d.letter);
             if (allLetters.length > 0) {
               setEnabledDrives(allLetters);
-              localStorage.setItem('tools3000_search_enabled_drives', JSON.stringify(allLetters));
+              safeStorageSetItem('tools3000_search_enabled_drives', JSON.stringify(allLetters));
             }
-            localStorage.removeItem('tools3000_search_default_mode');
-            localStorage.removeItem('tools3000_search_default_category');
-            localStorage.removeItem('tools3000_search_density');
-            localStorage.removeItem('tools3000_search_icon_style');
-            localStorage.removeItem('tools3000_search_max_results');
-            localStorage.removeItem('tools3000_search_exclude_dev');
-            localStorage.removeItem('tools3000_search_exclude_hidden');
-            localStorage.removeItem('tools3000_search_sort_field');
-            localStorage.removeItem('tools3000_search_sort_dir');
-            localStorage.removeItem('tools3000_search_folder_priority');
-            localStorage.removeItem('tools3000_search_sort_folders_first');
-            localStorage.removeItem('tools3000_search_sort_group_type');
-            localStorage.removeItem('tools3000_search_smart_path_priority');
+            safeStorageRemoveItem('tools3000_search_default_mode');
+            safeStorageRemoveItem('tools3000_search_default_category');
+            safeStorageRemoveItem('tools3000_search_view_layout');
+            safeStorageRemoveItem('tools3000_search_density');
+            safeStorageRemoveItem('tools3000_search_icon_style');
+            safeStorageRemoveItem('tools3000_search_max_results');
+            safeStorageRemoveItem('tools3000_search_exclude_dev');
+            safeStorageRemoveItem('tools3000_search_exclude_hidden');
+            safeStorageRemoveItem('tools3000_search_sort_field');
+            safeStorageRemoveItem('tools3000_search_sort_dir');
+            safeStorageRemoveItem('tools3000_search_folder_priority');
+            safeStorageRemoveItem('tools3000_search_sort_folders_first');
+            safeStorageRemoveItem('tools3000_search_sort_group_type');
+            safeStorageRemoveItem('tools3000_search_smart_path_priority');
             void bridgeRequest('search.saveSettings', {
               iconStyle: 'native',
               defaultCategory: 'all',
@@ -1584,6 +2148,10 @@ export default function SearchApp() {
             persistUiPreferencesPatch({
               searchMode: 'name',
               defaultCategory: 'all',
+              tableColumnOrder: [...DEFAULT_TABLE_COLUMN_ORDER],
+              tableColumnWidths: {},
+              visibleTableColumns: [...DEFAULT_VISIBLE_TABLE_COLUMNS],
+              recentTableColumns: [],
               density: 'standard',
               maxResultLimit: 0,
               excludeGitAndModules: true,
@@ -1595,7 +2163,7 @@ export default function SearchApp() {
           }}
         />
 
-        {/* ── 语法帮助快速指南抽屉 (展开时独占主内容槽，彻底杜绝与空态/加载态重叠穿模) ── */}
+        {/* ── 语法帮助快速指南抽屉 (独占主内容槽，杜绝与空态/加载态重叠穿模) ── */}
         <SearchSyntaxModal
           visible={showSyntaxHelp}
           onClose={() => setShowSyntaxHelp(false)}
@@ -1610,6 +2178,7 @@ export default function SearchApp() {
             isInitialIndexing={isInitialIndexing}
             isServiceStarting={isServiceStarting}
             serviceAvailable={serviceAvailable}
+            dbStats={dbStats}
             loading={loading}
             activeCategory={activeCategory}
             searchMode={searchMode}
@@ -1629,27 +2198,56 @@ export default function SearchApp() {
           />
         )}
 
-        {/* ── 虚拟列表结果展示 (常驻单例稳定挂载) ── */}
-        <VirtualSearchResults
-          results={sortedResults}
-          selectedIndex={selectedIndex}
-          density={density}
-          iconStyle={iconStyle}
-          iconCache={nativeIconCache}
-          onRequestIcon={fetchNativeIcon}
-          columns={columnLayout}
-          queryKeywords={snapshot.keywords}
-          onHover={handleRowHover}
-          onSelect={handleRowSelect}
-          onOpen={handleRowOpen}
-          onContextMenu={handleRowContextMenu}
-          hidden={
-            showSyntaxHelp ||
-            isInitialIndexing ||
-            isServiceStarting ||
-            sortedResults.length === 0
-          }
-        />
+        {/* ── 单一表格视图容器（外层语义角色 + 吸顶保活表头 + 虚拟列表） ── */}
+        <div
+          className="search-table-shell"
+          role="grid"
+          aria-label={t('search.title', 'Quick file search')}
+          style={{ display: resultsHidden ? 'none' : undefined }}
+        >
+          <SearchTableHeader
+            columns={columnLayout}
+            sortField={sortField}
+            sortDirection={sortDirection}
+            onSelectSort={handleSelectSort}
+            onUpdateNameAndPathFlex={updateNameAndPathFlex}
+            onUpdateTableColumnWidth={updateTableColumnWidth}
+            onReorderTableColumns={reorderTableColumnsOrder}
+            onToggleColumnVisibility={toggleColumnVisibility}
+            onToggleTableColumn={toggleTableColumn}
+            onRemoveTableColumn={removeTableColumn}
+            onFitColumnToContent={fitColumnToContent}
+            onFitAllColumnsToContent={fitAllColumnsToContent}
+            onOpenAddColumns={() => {
+              setPropertyPickerSource('header');
+              setShowPropertyPicker(true);
+            }}
+            onOpenOrganizeColumns={openColumnManager}
+            recentTableColumns={recentTableColumns}
+            onResetColumns={resetColumns}
+            headerScrollRef={headerScrollRef}
+            hidden={resultsHidden}
+          />
+
+          <VirtualSearchResults
+            results={sortedResults}
+            selectedIndex={selectedIndex}
+            density={density}
+            iconStyle={iconStyle}
+            iconCache={nativeIconCache}
+            onRequestIcon={fetchNativeIcon}
+            columns={columnLayout}
+            propertyCache={propertyCache}
+            queryKeywords={snapshot.keywords}
+            onHover={handleRowHover}
+            onSelect={handleRowSelect}
+            onOpen={handleRowOpen}
+            onContextMenu={handleRowContextMenu}
+            onVisibleRangeChange={setVisibleRange}
+            onHorizontalScroll={handleTableHorizontalScroll}
+            hidden={resultsHidden}
+          />
+        </div>
 
         <SearchFooter
           loading={loading}
@@ -1658,25 +2256,82 @@ export default function SearchApp() {
           query={query}
           scanElapsedSeconds={scanElapsedSeconds}
           scanProgress={scanProgress}
+          contentScanPaused={contentScanPaused}
           onStopSearch={stopSearch}
+          onResumeContentScan={resumeContentScan}
           isServiceStarting={isServiceStarting}
           isInitialIndexing={isInitialIndexing}
+          dbStats={dbStats}
+          sortProgress={sortProgress}
+          onCancelSort={handleCancelSortExtraction}
           sortedResults={sortedResults}
           totalIndexedFiles={totalIndexedFiles}
           totalResultSize={totalResultSize}
           selectedIndex={selectedIndex}
           searchElapsedMs={searchElapsedMs}
           isRebuilding={isRebuilding}
-          onRebuildIndex={rebuildIndex}
+          onRebuildIndex={() => void rebuildIndex()}
           onOpenResult={(res) => void openResult(res)}
           onOpenFolderResult={(res) => void openFolderResult(res)}
           onCopyPathResult={(res) => copyPathResult(res)}
-          onExportResultsToCsv={exportResultsToCsv}
+          onExportResultsToCsv={() => void exportResultsToCsv()}
           onToggleSyntaxHelp={() => {
             setShowSyntaxHelp(prev => !prev);
             setShowViewSettings(false);
           }}
           onHide={hide}
+        />
+
+        <SearchColumnManagerModal
+          visible={showColumnManager}
+          activeColumns={activeVisibleTableCols}
+          draftColumns={columnManagerDraft ?? activeVisibleTableCols}
+          onChangeDraft={(nextDraft) => {
+            setColumnManagerDraft(nextDraft);
+            setColumnManagerResetPending(false);
+          }}
+          onMarkResetDraft={() => {
+            setColumnManagerDraft([...DEFAULT_VISIBLE_TABLE_COLUMNS]);
+            setColumnManagerResetPending(true);
+          }}
+          onClose={closeColumnManager}
+          onApply={applyColumnManagerDraft}
+          onOpenAddPicker={(draftCols) => {
+            // 仅保存草稿态，严禁提前持久化；由属性选择器返回后再汇入草稿
+            setColumnManagerDraft([...draftCols]);
+            setPropertyPickerSource('manager');
+            setShowPropertyPicker(true);
+          }}
+        />
+
+        <SearchPropertyPickerModal
+          visible={showPropertyPicker}
+          existingColumns={propertyPickerExistingCols}
+          onClose={() => {
+            setShowPropertyPicker(false);
+            if (propertyPickerSource !== 'manager') {
+              window.setTimeout(() => inputRef.current?.focus(), 0);
+            }
+          }}
+          onAddColumns={(newCols) => {
+            if (propertyPickerSource === 'manager') {
+              setColumnManagerResetPending(false);
+              setColumnManagerDraft((prev) => {
+                const base = prev ? [...prev] : [...activeVisibleTableCols];
+                for (const id of newCols) {
+                  if (isKnownTableColumnId(id) && !base.includes(id)) {
+                    base.push(id);
+                  }
+                }
+                return base;
+              });
+              return;
+            }
+            addTableColumns(newCols);
+            toast.success(
+              t('search.columnsAddedToast', 'Added {{count}} column(s) to table', { count: newCols.length }),
+            );
+          }}
         />
 
         <SearchContextMenu
@@ -1709,19 +2364,23 @@ export default function SearchApp() {
           onConfirm={() => void confirmRename()}
         />
 
-        <div
-          className="search-resize-handle"
-          onMouseDown={handleResizeMouseDown}
-          title={t('search.dragResizeTooltip', 'Drag to resize window')}
-          aria-label={t('search.resizeAria', 'Drag to resize window')}
-        >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-            <line x1="8" y1="2" x2="2" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="8" y1="5.5" x2="5.5" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-        </div>
+        {!isMaximized && (
+          <>
+            <div
+              className="search-resize-handle"
+              onMouseDown={handleResizeMouseDown}
+              title={t('search.dragResizeTooltip', 'Drag to resize window')}
+              aria-label={t('search.resizeAria', 'Drag to resize window')}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                <line x1="8" y1="2" x2="2" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                <line x1="8" y1="5.5" x2="5.5" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </div>
 
-        <WindowResizeHandles method="search.startResize" showMaximizedCheck={false} />
+            <WindowResizeHandles method="search.startResize" showMaximizedCheck={false} />
+          </>
+        )}
       </section>
     </main>
   );

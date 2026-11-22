@@ -9,26 +9,31 @@ use crate::assoc_dialog::{show_file_association_dialog, AssocDialogOutcome};
 use crate::cache::{ImageCachePool, WM_VIEWER_IMAGE_READY, WM_VIEWER_THUMB_READY};
 use crate::constants::{
     ANIM_SPEED_PRESETS, APP_WINDOW_CLASS, APP_WINDOW_TITLE, AUTOREPEAT_INITIAL_DELAY_MS,
-    AUTOREPEAT_INTERVAL_MS, CINEMA_DIM_DAMPING, CLOSE_ANIM_DURATION_SEC, CLOSE_END_SCALE_RATIO,
-    FILMSTRIP_ITEM_GAP_DIP, FILMSTRIP_ITEM_SIZE_DIP, FILMSTRIP_SCROLL_DAMPING, HOVER_ANIM_DAMPING,
-    LOADING_INDICATOR_DELAY_MS, OPEN_ANIM_DURATION_SEC, SLIDESHOW_AUTOHIDE_MS,
-    SLIDESHOW_CROSSFADE_DURATION_SEC, SLIDESHOW_INTERVAL_MS, SLIDE_FAST_REPEAT_DURATION_SEC,
-    SLIDE_TRANSITION_DURATION_SEC, TOAST_DURATION_MS, UI_AUTOHIDE_MS,
+    AUTOREPEAT_INTERVAL_MS, BACKDROP_OPEN_DURATION_SEC, CLOSE_ANIM_DURATION_SEC,
+    CLOSE_END_SCALE_RATIO, FILMSTRIP_ITEM_GAP_DIP, FILMSTRIP_ITEM_SIZE_DIP,
+    FILMSTRIP_SCROLL_DAMPING, HOVER_ANIM_DAMPING, IPC_COPYDATA_OPEN_PATH,
+    LOADING_INDICATOR_DELAY_MS, OPEN_ANIM_DURATION_SEC, SLIDESHOW_CROSSFADE_DURATION_SEC,
+    SLIDESHOW_ENTER_DIM_DURATION_SEC, SLIDESHOW_EXIT_DIM_DURATION_SEC, SLIDESHOW_INTERVAL_MS,
+    SLIDE_FAST_REPEAT_DURATION_SEC, SLIDE_TRANSITION_DURATION_SEC, TOAST_DURATION_MS,
+    ZOOM_BADGE_FADE_MS, ZOOM_BADGE_HOLD_MS,
 };
-use crate::folder::{is_supported_image_path, scan_sibling_images};
+use crate::folder::{is_supported_image_path, normalize_full_path, scan_sibling_images};
 use crate::i18n::ViewerLanguage;
 use crate::integration::{
     copy_frame_and_file_to_clipboard, copy_path_to_clipboard, move_to_recycle_bin,
     open_with_system_dialog, reveal_in_explorer, save_frame_as_png_dialog,
     set_as_desktop_wallpaper, show_native_context_menu, ContextMenuState,
 };
-use crate::physics::{exp_smooth, KenBurnsTrack};
-use crate::renderer::{RenderFrameParams, ViewerRenderer};
+use crate::physics::exp_smooth;
+use crate::renderer::{RenderError, RenderFrameParams, ViewerRenderer};
 use crate::types::{
-    BackdropMode, CloseImplodeSnapshot, LifecyclePhase, RectF, SharedImage, ToolbarAction,
+    BackdropMode, CloseImplodeSnapshot, DecodeError, LifecyclePhase, RectF, SharedImage,
+    SlideshowPortalSnapshot, ToolbarAction,
 };
 use crate::ui_layout::{HitTarget, LayoutInput, ViewerUiLayout};
 use crate::viewport::ViewportCamera;
+use std::collections::HashSet;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
@@ -37,6 +42,7 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, ScreenToClient, MONITORINFO,
     MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext,
@@ -49,21 +55,19 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetClientRect,
-    GetCursorPos, GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, LoadImageW,
-    PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, CS_DBLCLKS, GWLP_USERDATA,
-    HICON, ICON_BIG, ICON_SMALL, IDC_ARROW, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, MSG,
-    SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-    WM_RBUTTONUP, WM_SETICON, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_EX_NOREDIRECTIONBITMAP,
-    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, FindWindowW,
+    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowRect, LoadCursorW,
+    LoadImageW, MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, RegisterClassExW,
+    SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, TranslateMessage, CS_DBLCLKS, GWLP_USERDATA, HICON, ICON_BIG, ICON_SMALL,
+    IDC_ARROW, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, MSG, PM_REMOVE, QS_ALLINPUT, SMTO_ABORTIFHUNG,
+    SMTO_NORMAL, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SWP_NOACTIVATE, SWP_NOZORDER,
+    SW_RESTORE, SW_SHOW, WM_CANCELMODE, WM_CAPTURECHANGED, WM_COPYDATA, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_QUIT,
+    WM_RBUTTONUP, WM_SETICON, WM_SIZE, WNDCLASSEXW, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOPMOST,
+    WS_POPUP, WS_VISIBLE,
 };
-
-const TIMER_ANIM_ID: usize = 1;
-const TIMER_IDLE_HIDE_ID: usize = 2;
-const TIMER_ANIM_MS: u32 = 8;
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -94,8 +98,91 @@ fn compute_next_filmstrip_offset(
     clamped_anchor - target as f32
 }
 
-fn slideshow_ken_burns_span_sec() -> f32 {
-    (SLIDESHOW_INTERVAL_MS as f32 / 1000.0) + SLIDESHOW_CROSSFADE_DURATION_SEC
+/// 计算正中央悬浮缩放倍率胶囊的不透明度（停留 850ms 后在 220ms 内柔和淡出）
+fn compute_zoom_badge_alpha(shown_at: Option<Instant>, now: Instant) -> f32 {
+    let Some(t0) = shown_at else {
+        return 0.0;
+    };
+    let elapsed_ms = now.duration_since(t0).as_secs_f32() * 1000.0;
+    let hold = ZOOM_BADGE_HOLD_MS as f32;
+    let fade = ZOOM_BADGE_FADE_MS as f32;
+    if elapsed_ms <= hold {
+        1.0
+    } else if elapsed_ms < hold + fade {
+        let k = ((elapsed_ms - hold) / fade).clamp(0.0, 1.0);
+        (1.0 - k) * (1.0 - k)
+    } else {
+        0.0
+    }
+}
+
+/// 单实例复用：若已存在运行中的看图器窗口，则通过 `WM_COPYDATA` 转发新图片绝对路径并置前，杜绝叠加多层置顶黑幕
+pub fn try_forward_to_existing_instance(path: &Path) -> bool {
+    let abs = normalize_full_path(path);
+    let wide_class = to_wide(APP_WINDOW_CLASS);
+    let wide_path: Vec<u16> = abs.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        let Ok(existing) = FindWindowW(PCWSTR(wide_class.as_ptr()), PCWSTR::null()) else {
+            return false;
+        };
+        if existing.0.is_null() {
+            return false;
+        }
+        let cds = COPYDATASTRUCT {
+            dwData: IPC_COPYDATA_OPEN_PATH,
+            cbData: (wide_path.len() * 2) as u32,
+            lpData: wide_path.as_ptr() as *mut _,
+        };
+        let mut handled: usize = 0;
+        let sent = SendMessageTimeoutW(
+            existing,
+            WM_COPYDATA,
+            WPARAM(0),
+            LPARAM(&cds as *const COPYDATASTRUCT as isize),
+            SMTO_ABORTIFHUNG | SMTO_NORMAL,
+            2000,
+            Some(&mut handled),
+        );
+        if sent.0 != 0 && handled == 1 {
+            let _ = ShowWindow(existing, SW_RESTORE);
+            let _ = SetForegroundWindow(existing);
+            return true;
+        }
+    }
+    false
+}
+
+/// 判断是否应跳过导航：仅当目标索引与旧索引一致且当前已加载图像路径与目标路径完全一致时才跳过
+/// （彻底修复删除非末尾图片后 `next_idx == old_index` 却误判跳过导致画面僵死）
+fn should_skip_navigation(
+    old_index: usize,
+    target_index: usize,
+    loaded_path: Option<&Path>,
+    target_path: Option<&Path>,
+) -> bool {
+    target_index == old_index
+        && loaded_path.is_some()
+        && loaded_path == target_path
+}
+
+/// 计算删除当前图后的下一个索引（空列表返回 None 表示触发关窗）
+fn next_index_after_delete(remaining_len: usize, removed_index: usize) -> Option<usize> {
+    if remaining_len == 0 {
+        None
+    } else {
+        Some(removed_index.min(remaining_len - 1))
+    }
+}
+
+/// 根据新旧窗口物理屏幕 `RECT` 中心坐标差换算逻辑 DIP 补偿 `(dx_dip, dy_dip)`，
+/// 100% 兼容任务栏位于底部、顶部、左侧、右侧四种方位
+fn compute_window_center_compensation_dip(old_rect: RECT, new_rect: RECT, dpi: f32) -> (f32, f32) {
+    let old_cx = (old_rect.left + old_rect.right) as f32 * 0.5;
+    let old_cy = (old_rect.top + old_rect.bottom) as f32 * 0.5;
+    let new_cx = (new_rect.left + new_rect.right) as f32 * 0.5;
+    let new_cy = (new_rect.top + new_rect.bottom) as f32 * 0.5;
+    let scale = (dpi / 96.0).max(0.5);
+    ((old_cx - new_cx) / scale, (old_cy - new_cy) / scale)
 }
 
 pub struct ViewerApp {
@@ -105,20 +192,30 @@ pub struct ViewerApp {
     view_w: f32,
     view_h: f32,
     is_fullscreen: bool,
+    pre_slideshow_fullscreen: bool,
+    suppress_size_render: bool,
+    recreating_renderer: bool,
+    big_icon: HICON,
+    small_icon: HICON,
     renderer: Option<ViewerRenderer>,
     cache: ImageCachePool,
 
     siblings: Vec<PathBuf>,
     current_index: usize,
     current_image: Option<SharedImage>,
-    current_error: Option<String>,
+    current_error: Option<DecodeError>,
+    user_adjusted_viewport_for_current: bool,
     loading_since: Instant,
     camera: ViewportCamera,
     backdrop: BackdropMode,
     layout: ViewerUiLayout,
 
-    // 四态生命周期与 6 大灵魂物理动效状态
+    // 四态生命周期与原版 Picasa 灵魂物理动效状态
     phase: LifecyclePhase,
+    backdrop_open_started_at: Instant,
+    backdrop_open_progress: f32,
+    open_anim_armed: bool,
+    presented_frames: u32,
     open_started_at: Instant,
     open_progress: f32,
     close_started_at: Option<Instant>,
@@ -133,12 +230,13 @@ pub struct ViewerApp {
     slide_fast_repeat: bool,
 
     cinema_dim: f32,
+    slideshow_portal: Option<SlideshowPortalSnapshot>,
     slideshow_paused: bool,
     slideshow_step_accum_ms: f32,
-    ken_burns: Option<KenBurnsTrack>,
 
     close_hover_anim: f32,
     play_hover_anim: f32,
+    zoom_badge_shown_at: Option<Instant>,
 
     // 动图播放状态
     frame_index: usize,
@@ -201,18 +299,29 @@ impl ViewerApp {
             dpi: 96.0,
             view_w: 1280.0,
             view_h: 720.0,
-            is_fullscreen: true,
+            // 常规看图态默认工作区贴合任务栏上沿（完全还原原版 Picasa），点播放进入幻灯片时自动全屏覆盖任务栏！
+            is_fullscreen: false,
+            pre_slideshow_fullscreen: false,
+            suppress_size_render: false,
+            recreating_renderer: false,
+            big_icon: HICON::default(),
+            small_icon: HICON::default(),
             renderer: None,
             cache,
             siblings,
             current_index,
             current_image: None,
             current_error: None,
+            user_adjusted_viewport_for_current: false,
             loading_since: now,
             camera: ViewportCamera::default(),
             backdrop: BackdropMode::PicasaGlass,
             layout: ViewerUiLayout::default(),
             phase: LifecyclePhase::Opening,
+            backdrop_open_started_at: now,
+            backdrop_open_progress: 0.0,
+            open_anim_armed: false,
+            presented_frames: 0,
             open_started_at: now,
             open_progress: 0.0,
             close_started_at: None,
@@ -225,11 +334,12 @@ impl ViewerApp {
             slide_is_crossfade: false,
             slide_fast_repeat: false,
             cinema_dim: 0.0,
+            slideshow_portal: None,
             slideshow_paused: false,
             slideshow_step_accum_ms: 0.0,
-            ken_burns: None,
             close_hover_anim: 0.0,
             play_hover_anim: 0.0,
+            zoom_badge_shown_at: None,
             frame_index: 0,
             anim_playing: true,
             anim_speed_idx: 2, // 1.0x
@@ -270,7 +380,7 @@ impl ViewerApp {
             let dpi = GetDpiForWindow(hwnd).max(96) as f32;
             app.dpi = dpi;
             app.camera.set_dpi_scale(dpi / 96.0);
-            apply_dpi_matched_window_icons(hwnd, dpi as u32);
+            app.apply_dpi_matched_icons(hwnd, dpi as u32);
             let mut rc = RECT::default();
             let _ = GetClientRect(hwnd, &mut rc);
             let phys_w = (rc.right - rc.left).max(1) as u32;
@@ -281,8 +391,8 @@ impl ViewerApp {
             DragAcceptFiles(hwnd, true);
         }
 
-        // 给后台解码线程最多 18ms 超短快取窗口：本地常规图片首帧直接高清命中，超大图则拿到缩略图兜底
-        let wait_deadline = Instant::now() + Duration::from_millis(18);
+        // 给后台解码线程最多 30ms 超短快取窗口：绝大多数本地图片首帧直接高清命中
+        let wait_deadline = Instant::now() + Duration::from_millis(30);
         while Instant::now() < wait_deadline {
             if let Some(p) = app.current_path() {
                 if app.cache.get_cached_image(p).is_some() {
@@ -292,9 +402,15 @@ impl ViewerApp {
             std::thread::sleep(Duration::from_millis(2));
         }
 
-        // 在窗口真正显现的第一帧锚定 Opening 起跳时钟，确保用户 100% 看到完整的 0.35x -> 1.0x 清脆弹入！
+        // 在窗口真正显现的第一帧先让 DWM 挂载可见，随后在下一 VSync 帧精准起跳 0.16x -> 1.0x 弹开动效，
+        // 彻底杜绝 Windows 首帧显现延迟或大图解码耗时把开场动效吞掉！
         let show_instant = Instant::now();
+        app.backdrop_open_started_at = show_instant;
+        app.backdrop_open_progress = 0.0;
+        app.open_anim_armed = false;
+        app.presented_frames = 0;
         app.open_started_at = show_instant;
+        app.open_progress = 0.0;
         app.last_tick = show_instant;
         app.last_activity = show_instant;
         app.sync_current_from_cache(true);
@@ -311,9 +427,30 @@ impl ViewerApp {
         let raw_ptr = Box::into_raw(app);
         unsafe {
             let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+            // 双模态 VSync 满血消息循环：
+            // - 动画活跃期：PeekMessageW 排空输入消息后由硬件 VSync (Present(1)) 满血推进每一帧，
+            //   彻底消除 Windows 15.6ms SetTimer 抖动与吞帧，60/120/144/240Hz 全程丝绸顺滑！
+            // - 画面静止期：阻塞于 GetMessageW 实现 0.00% 静止 CPU 占用！
+            'main_loop: loop {
+                if (*raw_ptr).anim_timer_running {
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        if msg.message == WM_QUIT {
+                            break 'main_loop;
+                        }
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    if (*raw_ptr).anim_timer_running {
+                        (*raw_ptr).on_tick();
+                    }
+                } else {
+                    let res = GetMessageW(&mut msg, None, 0, 0);
+                    if !res.as_bool() || res.0 == -1 {
+                        break 'main_loop;
+                    }
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
             }
             let _ = Box::from_raw(raw_ptr);
         }
@@ -330,29 +467,13 @@ impl ViewerApp {
 
     fn ensure_anim_timer(&mut self) {
         if !self.hwnd.is_invalid() && !self.anim_timer_running {
-            unsafe {
-                SetTimer(self.hwnd, TIMER_ANIM_ID, TIMER_ANIM_MS, None);
-            }
             self.anim_timer_running = true;
             self.last_tick = Instant::now();
         }
     }
 
     fn stop_anim_timer(&mut self) {
-        if !self.hwnd.is_invalid() && self.anim_timer_running {
-            unsafe {
-                let _ = KillTimer(self.hwnd, TIMER_ANIM_ID);
-            }
-            self.anim_timer_running = false;
-        }
-    }
-
-    fn schedule_idle_autohide_timer(&self, delay_ms: u32) {
-        if !self.hwnd.is_invalid() {
-            unsafe {
-                SetTimer(self.hwnd, TIMER_IDLE_HIDE_ID, delay_ms.max(50), None);
-            }
-        }
+        self.anim_timer_running = false;
     }
 
     fn current_path(&self) -> Option<&PathBuf> {
@@ -378,17 +499,18 @@ impl ViewerApp {
         self.ensure_anim_timer();
     }
 
+    fn show_zoom_badge(&mut self) {
+        self.zoom_badge_shown_at = Some(Instant::now());
+        self.ensure_anim_timer();
+    }
+
     fn touch_activity(&mut self) {
         self.last_activity = Instant::now();
-        if self.ui_opacity < 0.999 {
-            self.ensure_anim_timer();
-        } else {
-            let timeout = if self.is_slideshow() {
-                SLIDESHOW_AUTOHIDE_MS as u32
-            } else {
-                UI_AUTOHIDE_MS as u32
-            };
-            self.schedule_idle_autohide_timer(timeout);
+    }
+
+    fn mark_user_viewport_adjusted(&mut self) {
+        if self.current_image.is_none() {
+            self.user_adjusted_viewport_for_current = true;
         }
     }
 
@@ -405,13 +527,25 @@ impl ViewerApp {
                         .map(|cur| cur.path != img.path)
                         .unwrap_or(true);
                     if is_new || reset_camera {
-                        self.camera.reset_to_fit_with_mode(
-                            img.width as f32,
-                            img.height as f32,
-                            self.view_w,
-                            self.view_h,
-                            self.is_slideshow(),
-                        );
+                        // 若用户在缩略图占位期已手动缩放/拖拽/旋转，原图解码到达时保留其姿态绝不粗暴重置
+                        if !reset_camera && self.user_adjusted_viewport_for_current {
+                            self.camera.clamp_target_pan(
+                                img.width as f32,
+                                img.height as f32,
+                                self.view_w,
+                                self.view_h,
+                            );
+                            self.ensure_anim_timer();
+                        } else {
+                            self.camera.reset_to_fit_with_mode(
+                                img.width as f32,
+                                img.height as f32,
+                                self.view_w,
+                                self.view_h,
+                                self.is_slideshow(),
+                            );
+                        }
+                        self.user_adjusted_viewport_for_current = false;
                         self.frame_index = 0;
                         self.last_frame_step = Instant::now();
                         self.anim_playing = true;
@@ -469,7 +603,7 @@ impl ViewerApp {
         self.render_now();
     }
 
-    fn clear_pointer_captures(&mut self) {
+    fn clear_pointer_captures_without_release(&mut self) {
         self.dragging_image = false;
         self.camera.is_dragging = false;
         self.dragging_minimap = false;
@@ -481,56 +615,94 @@ impl ViewerApp {
         self.held_repeat_action = None;
         self.selecting_zoom_box = false;
         self.selection_box = None;
+    }
+
+    fn clear_pointer_captures(&mut self) {
+        self.clear_pointer_captures_without_release();
         unsafe {
             let _ = ReleaseCapture();
         }
     }
 
     fn enter_slideshow(&mut self) {
-        self.phase = LifecyclePhase::Slideshow;
-        self.slideshow_paused = false;
-        self.slideshow_step_accum_ms = 0.0;
-        self.ken_burns = Some(KenBurnsTrack::for_slide_index(
-            self.current_index,
-            slideshow_ken_burns_span_sec(),
-        ));
-        self.toast = None;
-        self.hovered = HitTarget::None;
-        // 入场即收起常规底栏，沉浸进入 #000000 电影放映厅；移动鼠标再唤醒迷你水晶播控胶囊
-        self.last_activity = Instant::now() - Duration::from_secs(10);
-        if let Some(img) = self.current_image.as_ref() {
-            self.camera.animate_to_fit_mode(
-                img.width as f32,
-                img.height as f32,
-                self.view_w,
-                self.view_h,
-                true,
-            );
+        if self.siblings.len() <= 1 {
+            let s = self.lang.strings();
+            self.show_toast(s.toast_single_image_no_slideshow);
+            self.render_now();
+            return;
         }
+        let mut portal = SlideshowPortalSnapshot {
+            zoom: self.camera.zoom,
+            pan_x: self.camera.pan_x,
+            pan_y: self.camera.pan_y,
+            rotation_deg: self.camera.visual_rotation_deg,
+            flip_x: self.camera.visual_flip_x,
+            flip_y: self.camera.visual_flip_y,
+        };
+
+        self.pre_slideshow_fullscreen = self.is_fullscreen;
+        self.phase = LifecyclePhase::Slideshow;
+        self.is_fullscreen = true;
+        self.slideshow_paused = false;
+        // 1.00s 双场景熄灯叠化完成后首张稳看 ~2.0s 即顺滑触发首场 1.05s 光学叠化切换
+        self.slideshow_step_accum_ms = 1200.0;
+        self.toast = None;
+        self.zoom_badge_shown_at = None;
+        self.hovered = HitTarget::None;
+        self.ui_opacity = 0.0;
+        self.last_activity = Instant::now() - Duration::from_secs(10);
+        let (dx_comp, dy_comp) = self.sync_monitor_bounds_and_dpi(self.hwnd, self.dpi, false);
+
+        // 依据新旧物理 RECT 中心坐标差补偿 X/Y，100% 兼容任务栏位于底/顶/左/右四种方位
+        portal.pan_x += dx_comp;
+        portal.pan_y += dy_comp;
+        self.slideshow_portal = Some(portal);
+
+        let (iw, ih) = self.current_image_dims();
+        if iw > 0.0 && ih > 0.0 {
+            self.camera
+                .snap_to_fit_mode(iw, ih, self.view_w, self.view_h, true);
+        }
+        self.recompute_layout();
         self.ensure_anim_timer();
+        self.render_now();
     }
 
-    /// 第一级 `Esc`：从 `Slideshow` 平滑退回 `Viewing` 半透明看图态，绝不直接退出整个程序！
+    /// 第一级 `Esc` 或单击画面：从 `Slideshow` 以 `0.30s` 逆向双场景叠化平滑退回 `Viewing` 工作区看图态（重新露出任务栏），绝不直接退出程序！
     fn stop_slideshow_gracefully(&mut self) {
         if !self.is_slideshow() {
             return;
         }
+        let mut portal = SlideshowPortalSnapshot {
+            zoom: self.camera.zoom,
+            pan_x: self.camera.pan_x,
+            pan_y: self.camera.pan_y,
+            rotation_deg: self.camera.visual_rotation_deg,
+            flip_x: self.camera.visual_flip_x,
+            flip_y: self.camera.visual_flip_y,
+        };
+
         self.phase = LifecyclePhase::Viewing;
+        self.is_fullscreen = self.pre_slideshow_fullscreen;
         self.slideshow_paused = false;
-        self.ken_burns = None;
         self.hovered = HitTarget::None;
+        self.ui_opacity = 1.0;
         self.last_activity = Instant::now();
-        self.schedule_idle_autohide_timer(UI_AUTOHIDE_MS as u32);
-        if let Some(img) = self.current_image.as_ref() {
-            self.camera.animate_to_fit_mode(
-                img.width as f32,
-                img.height as f32,
-                self.view_w,
-                self.view_h,
-                false,
-            );
+        let (dx_comp, dy_comp) = self.sync_monitor_bounds_and_dpi(self.hwnd, self.dpi, false);
+
+        // 依据新旧物理 RECT 中心坐标差补偿 X/Y，使离场满屏大图在逆向叠化起点 0.00px 零跳动
+        portal.pan_x += dx_comp;
+        portal.pan_y += dy_comp;
+        self.slideshow_portal = Some(portal);
+
+        let (iw, ih) = self.current_image_dims();
+        if iw > 0.0 && ih > 0.0 {
+            self.camera
+                .snap_to_fit_mode(iw, ih, self.view_w, self.view_h, false);
         }
+        self.recompute_layout();
         self.ensure_anim_timer();
+        self.render_now();
     }
 
     fn navigate_to_index(&mut self, next_idx: usize, keep_slideshow: bool) {
@@ -552,7 +724,12 @@ impl ViewerApp {
         let len = self.siblings.len();
         let target = next_idx % len;
         let old_index = self.current_index;
-        if target == old_index && self.current_image.is_some() {
+        if should_skip_navigation(
+            old_index,
+            target,
+            self.current_image.as_ref().map(|i| i.path.as_path()),
+            self.siblings.get(target).map(|p| p.as_path()),
+        ) {
             return;
         }
 
@@ -572,23 +749,18 @@ impl ViewerApp {
         });
 
         let in_slideshow = self.is_slideshow();
-        // 零拷贝接管旧图 GPU 纹理与当时的 Ken Burns 推镜状态，驱动 140ms 微位移或 900ms 电影级双图层叠化
         if let Some(prev_img) = self.current_image.as_ref() {
             if let Some(r) = self.renderer.as_mut() {
-                let outgoing_kb = if in_slideshow { self.ken_burns } else { None };
-                r.capture_outgoing_for_slide(&self.camera, prev_img, outgoing_kb);
+                r.capture_outgoing_for_slide(&self.camera, prev_img);
             }
         }
 
         self.current_index = target;
+        self.user_adjusted_viewport_for_current = false;
+        self.slideshow_portal = None;
         self.loading_since = now;
         self.slideshow_step_accum_ms = 0.0;
-        if in_slideshow {
-            self.ken_burns = Some(KenBurnsTrack::for_slide_index(
-                target,
-                slideshow_ken_burns_span_sec(),
-            ));
-        }
+        self.zoom_badge_shown_at = None;
         self.slide_dir = dir;
         self.slide_is_crossfade = in_slideshow;
         self.slide_fast_repeat = fast_repeat;
@@ -611,13 +783,26 @@ impl ViewerApp {
             if self.cache.get_cached_image(&path).is_some() {
                 self.sync_current_from_cache(true);
             } else {
+                let mut init_dims = (1920.0f32, 1080.0f32);
                 if let Some(tb) = self.cache.get_or_request_thumb(&path) {
+                    init_dims = (tb.orig_width.max(1) as f32, tb.orig_height.max(1) as f32);
+                    let mut protected: HashSet<&Path> = HashSet::new();
+                    protected.insert(path.as_path());
                     if let Some(r) = self.renderer.as_mut() {
-                        r.ensure_thumb_uploaded(&path, &tb);
+                        r.ensure_thumb_uploaded(&path, &tb, &protected);
                     }
+                } else if let Some(dims) =
+                    self.renderer.as_ref().and_then(|r| r.thumb_original_dims(&path))
+                {
+                    init_dims = dims;
                 }
-                self.camera
-                    .reset_to_fit_with_mode(1920.0, 1080.0, self.view_w, self.view_h, in_slideshow);
+                self.camera.reset_to_fit_with_mode(
+                    init_dims.0,
+                    init_dims.1,
+                    self.view_w,
+                    self.view_h,
+                    in_slideshow,
+                );
                 self.current_image = None;
                 if let Some(r) = self.renderer.as_mut() {
                     r.clear_main_bitmap();
@@ -651,15 +836,24 @@ impl ViewerApp {
         if siblings.is_empty() {
             return;
         }
+        // 若当前正处于幻灯片全屏态，先恢复退出前的工作区/全屏边界
+        if self.is_slideshow() {
+            self.is_fullscreen = self.pre_slideshow_fullscreen;
+            self.sync_monitor_bounds_and_dpi(self.hwnd, self.dpi, false);
+        }
         self.siblings = siblings;
         if let Some(r) = self.renderer.as_mut() {
+            r.clear_main_bitmap();
             r.clear_outgoing_slide();
             r.reset_filmstrip_birth_clock();
         }
         let now = Instant::now();
         self.phase = LifecyclePhase::Opening;
         self.current_image = None;
+        self.user_adjusted_viewport_for_current = false;
         self.loading_since = now;
+        self.backdrop_open_progress = 1.0;
+        self.open_anim_armed = false;
         self.open_started_at = now;
         self.open_progress = 0.0;
         self.filmstrip_scroll_offset = 0.0;
@@ -668,8 +862,9 @@ impl ViewerApp {
         self.slide_is_crossfade = false;
         self.slide_fast_repeat = false;
         self.slideshow_paused = false;
-        self.ken_burns = None;
+        self.zoom_badge_shown_at = None;
         self.cinema_dim = 0.0;
+        self.slideshow_portal = None;
         self.current_index = idx;
         self.current_error = None;
         self.frame_index = 0;
@@ -713,7 +908,6 @@ impl ViewerApp {
             is_animated: is_anim,
             anim_playing: self.anim_playing,
             is_slideshow: self.is_slideshow(),
-            slideshow_paused: self.slideshow_paused,
             is_actual_zoom,
             is_flipped_h: self.camera.is_screen_flipped_h(),
             is_flipped_v: self.camera.is_screen_flipped_v(),
@@ -732,11 +926,22 @@ impl ViewerApp {
             .iter()
             .map(|it| it.index)
             .collect();
+        let mut protected: HashSet<&Path> = indices
+            .iter()
+            .filter_map(|&idx| self.siblings.get(idx).map(|p| p.as_path()))
+            .collect();
+        if let Some(cur) = self.siblings.get(self.current_index) {
+            protected.insert(cur.as_path());
+        }
         for idx in indices {
             if let Some(path) = self.siblings.get(idx) {
                 if let Some(thumb) = self.cache.get_or_request_thumb(path) {
                     if let Some(r) = self.renderer.as_mut() {
-                        r.ensure_thumb_uploaded(path, &thumb);
+                        r.ensure_thumb_uploaded(path, &thumb, &protected);
+                    }
+                } else if self.cache.is_thumb_failed(path) {
+                    if let Some(r) = self.renderer.as_mut() {
+                        r.mark_thumb_failed(path);
                     }
                 }
             }
@@ -784,13 +989,13 @@ impl ViewerApp {
                 self.step_image(1, keep_ss);
             }
             ToolbarAction::ToggleSlideshow => {
-                if self.siblings.len() <= 1 {
-                    self.touch_activity();
-                    self.show_toast(s.toast_single_image_no_slideshow);
-                } else if self.is_slideshow() {
+                if self.is_slideshow() {
                     self.stop_slideshow_gracefully();
+                } else if self.siblings.len() <= 1 {
+                    self.show_toast(s.toast_single_image_no_slideshow);
                 } else {
                     self.enter_slideshow();
+                    return;
                 }
             }
             ToolbarAction::SlideshowTogglePause => {
@@ -799,9 +1004,6 @@ impl ViewerApp {
                     self.touch_activity();
                     self.ensure_anim_timer();
                 }
-            }
-            ToolbarAction::ExitSlideshow => {
-                self.stop_slideshow_gracefully();
             }
             ToolbarAction::OpenImageFile => {
                 self.clear_pointer_captures();
@@ -813,8 +1015,12 @@ impl ViewerApp {
             }
             ToolbarAction::ZoomOut => {
                 self.touch_activity();
+                if self.is_slideshow() {
+                    self.stop_slideshow_gracefully();
+                }
                 let (iw, ih) = self.current_image_dims();
                 if iw > 0.0 && ih > 0.0 {
+                    self.mark_user_viewport_adjusted();
                     self.camera.zoom_at_point(
                         -1.5,
                         self.view_w * 0.5,
@@ -824,13 +1030,17 @@ impl ViewerApp {
                         self.view_w,
                         self.view_h,
                     );
-                    self.ensure_anim_timer();
+                    self.show_zoom_badge();
                 }
             }
             ToolbarAction::ZoomIn => {
                 self.touch_activity();
+                if self.is_slideshow() {
+                    self.stop_slideshow_gracefully();
+                }
                 let (iw, ih) = self.current_image_dims();
                 if iw > 0.0 && ih > 0.0 {
+                    self.mark_user_viewport_adjusted();
                     self.camera.zoom_at_point(
                         1.5,
                         self.view_w * 0.5,
@@ -840,13 +1050,17 @@ impl ViewerApp {
                         self.view_w,
                         self.view_h,
                     );
-                    self.ensure_anim_timer();
+                    self.show_zoom_badge();
                 }
             }
             ToolbarAction::ToggleActualSize => {
                 self.touch_activity();
+                if self.is_slideshow() {
+                    self.stop_slideshow_gracefully();
+                }
                 let (iw, ih) = self.current_image_dims();
                 if iw > 0.0 && ih > 0.0 {
+                    self.mark_user_viewport_adjusted();
                     self.camera.toggle_actual_or_fit(
                         self.view_w * 0.5,
                         self.view_h * 0.5,
@@ -855,21 +1069,26 @@ impl ViewerApp {
                         self.view_w,
                         self.view_h,
                     );
-                    self.ensure_anim_timer();
+                    self.show_zoom_badge();
                 }
             }
             ToolbarAction::FitToWidth => {
                 self.touch_activity();
+                if self.is_slideshow() {
+                    self.stop_slideshow_gracefully();
+                }
                 let (iw, ih) = self.current_image_dims();
                 if iw > 0.0 && ih > 0.0 {
+                    self.mark_user_viewport_adjusted();
                     self.camera.fit_to_width(iw, ih, self.view_w, self.view_h);
-                    self.ensure_anim_timer();
+                    self.show_zoom_badge();
                 }
             }
             ToolbarAction::RotateCcw => {
                 self.touch_activity();
                 let (iw, ih) = self.current_image_dims();
                 if iw > 0.0 && ih > 0.0 {
+                    self.mark_user_viewport_adjusted();
                     self.camera.rotate_step(
                         false,
                         iw,
@@ -885,6 +1104,7 @@ impl ViewerApp {
                 self.touch_activity();
                 let (iw, ih) = self.current_image_dims();
                 if iw > 0.0 && ih > 0.0 {
+                    self.mark_user_viewport_adjusted();
                     self.camera.rotate_step(
                         true,
                         iw,
@@ -898,11 +1118,13 @@ impl ViewerApp {
             }
             ToolbarAction::FlipHorizontal => {
                 self.touch_activity();
+                self.mark_user_viewport_adjusted();
                 self.camera.toggle_flip_horizontal();
                 self.ensure_anim_timer();
             }
             ToolbarAction::FlipVertical => {
                 self.touch_activity();
+                self.mark_user_viewport_adjusted();
                 self.camera.toggle_flip_vertical();
                 self.ensure_anim_timer();
             }
@@ -1029,7 +1251,7 @@ impl ViewerApp {
             ToolbarAction::ToggleFullscreen => {
                 self.touch_activity();
                 self.is_fullscreen = !self.is_fullscreen;
-                self.sync_monitor_bounds_and_dpi(self.hwnd, self.dpi);
+                self.sync_monitor_bounds_and_dpi(self.hwnd, self.dpi, true);
                 self.show_toast(if self.is_fullscreen {
                     s.toast_fullscreen_on
                 } else {
@@ -1050,7 +1272,7 @@ impl ViewerApp {
             ToolbarAction::OpenWithDialog => {
                 self.touch_activity();
                 if let Some(path) = self.current_path() {
-                    open_with_system_dialog(path);
+                    open_with_system_dialog(self.hwnd, path);
                 }
             }
             ToolbarAction::RegisterDefaultApp => {
@@ -1072,13 +1294,24 @@ impl ViewerApp {
                     if move_to_recycle_bin(self.hwnd, &path) {
                         self.cache.invalidate_path(&path);
                         self.siblings.remove(self.current_index);
-                        if self.siblings.is_empty() {
+                        // 必须清空当前已删除图及其主纹理/错误态，防止删除非末尾图时索引不变而误判跳过导致画面僵死
+                        self.current_image = None;
+                        self.current_error = None;
+                        self.user_adjusted_viewport_for_current = false;
+                        if let Some(r) = self.renderer.as_mut() {
+                            r.clear_main_bitmap();
+                            r.clear_outgoing_slide();
+                            r.invalidate_thumb(&path);
+                        }
+                        let Some(next_idx) =
+                            next_index_after_delete(self.siblings.len(), self.current_index)
+                        else {
                             self.request_animated_close();
                             return;
-                        }
-                        let next_idx = self.current_index.min(self.siblings.len() - 1);
+                        };
                         self.navigate_to_index_with_dir(next_idx, Some(1.0), false);
                         self.show_toast(s.toast_moved_to_recycle);
+                        return;
                     } else {
                         self.show_toast(s.toast_recycle_cancelled);
                     }
@@ -1118,26 +1351,55 @@ impl ViewerApp {
         let mut keep_ticking = false;
         let mut strip_moved = false;
 
-        // 2. 打开弹入 (`Opening` -> `Viewing`)
-        if self.open_progress < 1.0 {
-            let elapsed = now.duration_since(self.open_started_at).as_secs_f32();
-            self.open_progress = (elapsed / OPEN_ANIM_DURATION_SEC).min(1.0);
+        // 2. 全屏雾灰遮罩淡入 + 照片防吞帧开场弹入 (`Opening` -> `Viewing`)
+        if self.backdrop_open_progress < 1.0 {
+            let b_elapsed = now.duration_since(self.backdrop_open_started_at).as_secs_f32();
+            self.backdrop_open_progress = (b_elapsed / BACKDROP_OPEN_DURATION_SEC).min(1.0);
             dirty = true;
-            if self.open_progress >= 1.0 && self.phase == LifecyclePhase::Opening {
-                self.phase = LifecyclePhase::Viewing;
-            } else {
+            if self.backdrop_open_progress < 1.0 {
                 keep_ticking = true;
             }
         }
 
+        if self.open_progress < 1.0 {
+            if !self.open_anim_armed {
+                let has_thumb = self
+                    .current_path()
+                    .and_then(|p| self.renderer.as_ref().and_then(|r| r.thumb_original_dims(p)))
+                    .is_some();
+                let has_visual = self.current_image.is_some()
+                    || has_thumb
+                    || self.current_error.is_some()
+                    || now.duration_since(self.loading_since) >= Duration::from_millis(260);
+                // 严守双条件防吞帧：窗口完成至少 2 帧 DWM DirectComposition 提交挂屏 + 图像/缩略图已就绪，
+                // 才正式锚定 open_started_at 起跑 420ms 实体弹开与后续缩略图涟漪，人眼 100% 完整观赏开场动效！
+                if self.presented_frames >= 2 && has_visual {
+                    self.open_anim_armed = true;
+                    self.open_started_at = now;
+                    self.open_progress = 0.0;
+                }
+                dirty = true;
+                keep_ticking = true;
+            } else {
+                let elapsed = now.duration_since(self.open_started_at).as_secs_f32();
+                self.open_progress = (elapsed / OPEN_ANIM_DURATION_SEC).min(1.0);
+                dirty = true;
+                if self.open_progress >= 1.0 && self.phase == LifecyclePhase::Opening {
+                    self.phase = LifecyclePhase::Viewing;
+                } else {
+                    keep_ticking = true;
+                }
+            }
+        }
+
         if let Some(r) = self.renderer.as_ref() {
-            if r.has_active_thumb_growth(now, self.open_started_at) {
+            if self.open_anim_armed && r.has_active_thumb_growth(now, self.open_started_at) {
                 dirty = true;
                 keep_ticking = true;
             }
         }
 
-        // 3. 切图微位移 (140ms) / 幻灯片双缓冲交叉叠化 (900ms)
+        // 3. 切图微位移 (165ms) / 幻灯片光学双图层交叉叠化 (1050ms)
         if self.slide_progress < 1.0 {
             let elapsed = now.duration_since(self.slide_started_at).as_secs_f32();
             let dur = if self.slide_is_crossfade {
@@ -1158,35 +1420,34 @@ impl ViewerApp {
             dirty = true;
         }
 
-        // 4. 幻灯片 350ms 暗房沉降与电影级 Ken Burns 微推镜
-        let target_dim = if self.is_slideshow() { 1.0 } else { 0.0 };
-        if (self.cinema_dim - target_dim).abs() > 0.002 {
-            self.cinema_dim = exp_smooth(self.cinema_dim, target_dim, CINEMA_DIM_DAMPING, dt);
-            dirty = true;
-            keep_ticking = true;
-        } else if self.cinema_dim != target_dim {
-            self.cinema_dim = target_dim;
-            dirty = true;
-        }
-
+        // 4. 幻灯片原版实测双向整屏叠化：进入 1.00s 线性双场景交叉叠化，退出 0.30s 利落逆向叠化回工作区
         if self.is_slideshow() {
-            keep_ticking = true;
-            if !self.slideshow_paused {
-                if let Some(kb) = self.ken_burns.as_mut() {
-                    kb.advance(dt);
-                }
-                if let Some(r) = self.renderer.as_mut() {
-                    r.advance_outgoing_ken_burns(dt);
+            if self.cinema_dim < 1.0 {
+                self.cinema_dim = (self.cinema_dim + dt / SLIDESHOW_ENTER_DIM_DURATION_SEC).min(1.0);
+                if self.cinema_dim >= 1.0 {
+                    self.slideshow_portal = None;
                 }
                 dirty = true;
+                keep_ticking = true;
+            }
+        } else if self.cinema_dim > 0.0 {
+            self.cinema_dim = (self.cinema_dim - dt / SLIDESHOW_EXIT_DIM_DURATION_SEC).max(0.0);
+            if self.cinema_dim <= 0.0 {
+                self.slideshow_portal = None;
+            }
+            dirty = true;
+            keep_ticking = true;
+        }
 
-                if self.siblings.len() > 1 && self.current_image.is_some() {
-                    self.slideshow_step_accum_ms += dt * 1000.0;
-                    if self.slideshow_step_accum_ms >= SLIDESHOW_INTERVAL_MS as f32 {
-                        self.slideshow_step_accum_ms = 0.0;
-                        self.step_image(1, true);
-                        return;
-                    }
+        if self.is_slideshow() && !self.slideshow_paused && self.siblings.len() > 1 {
+            keep_ticking = true;
+            // 待 1.00s 熄灯全屏仪式完成且当前帧就绪后再推进轮播计时，确保首场叠化自然从容
+            if self.cinema_dim >= 0.99 && (self.current_image.is_some() || self.current_error.is_some()) {
+                self.slideshow_step_accum_ms += dt * 1000.0;
+                if self.slideshow_step_accum_ms >= SLIDESHOW_INTERVAL_MS as f32 {
+                    self.slideshow_step_accum_ms = 0.0;
+                    self.step_image(1, true);
+                    return;
                 }
             }
         }
@@ -1281,45 +1542,20 @@ impl ViewerApp {
             }
         }
 
-        // 10. 2.5s 静止自动净空模式 (Viewing) / 2.0s 播控胶囊自动隐退 (Slideshow)
-        let idle_timeout_ms = if self.is_slideshow() {
-            SLIDESHOW_AUTOHIDE_MS
-        } else {
-            UI_AUTOHIDE_MS
-        };
-        let keep_ui_pinned = self.dragging_anim_scrubber
-            || self.dragging_filmstrip
-            || (self.ui_opacity > 0.05
-                && matches!(
-                    self.hovered,
-                    HitTarget::ToolbarButton(_)
-                        | HitTarget::AnimScrubber
-                        | HitTarget::ToolbarBackground
-                        | HitTarget::FilmstripItem(_)
-                        | HitTarget::FilmstripBackground
-                ));
+        // 10. 常规看图态底栏与右上角关闭扇形常驻可见；幻灯片放映态全屏纯黑绝对纯净（1:1 还原原版 Picasa）
+        self.ui_opacity = if self.is_slideshow() { 0.0 } else { 1.0 };
 
-        let target_ui_opacity = if keep_ui_pinned {
-            self.last_activity = now;
-            1.0
-        } else if now.duration_since(self.last_activity) >= Duration::from_millis(idle_timeout_ms) {
-            0.0
-        } else {
-            1.0
-        };
-
-        if (self.ui_opacity - target_ui_opacity).abs() > 0.005 {
-            let speed = if target_ui_opacity > self.ui_opacity {
-                18.0 // 120ms 敏捷唤醒
+        if let Some(shown_at) = self.zoom_badge_shown_at {
+            let total_ms = ZOOM_BADGE_HOLD_MS + ZOOM_BADGE_FADE_MS;
+            if now.duration_since(shown_at) >= Duration::from_millis(total_ms) {
+                self.zoom_badge_shown_at = None;
+                dirty = true;
             } else {
-                9.5 // 220ms 柔和净空淡出
-            };
-            self.ui_opacity = exp_smooth(self.ui_opacity, target_ui_opacity, speed, dt);
-            dirty = true;
-            keep_ticking = true;
-        } else if self.ui_opacity != target_ui_opacity {
-            self.ui_opacity = target_ui_opacity;
-            dirty = true;
+                if now.duration_since(shown_at) >= Duration::from_millis(ZOOM_BADGE_HOLD_MS) {
+                    dirty = true;
+                }
+                keep_ticking = true;
+            }
         }
 
         if let Some((_, ts)) = &self.toast {
@@ -1333,6 +1569,17 @@ impl ViewerApp {
 
         if self.current_image.is_none() && self.current_error.is_none() {
             keep_ticking = true;
+            // 仅在超过 LOADING_INDICATOR_DELAY_MS 且无占位缩略图（正在展示旋转加载环）时才持续重绘
+            let has_thumb = self
+                .current_path()
+                .and_then(|p| self.renderer.as_ref().and_then(|r| r.thumb_original_dims(p)))
+                .is_some();
+            if !has_thumb
+                && now.duration_since(self.loading_since)
+                    >= Duration::from_millis(LOADING_INDICATOR_DELAY_MS)
+            {
+                dirty = true;
+            }
         }
 
         if dirty {
@@ -1341,17 +1588,82 @@ impl ViewerApp {
                 self.request_thumbs_for_visible_filmstrip();
             }
             self.render_now();
+        } else if keep_ticking {
+            // 精准计算距下一次帧切换/轮播/连发/提示淡出的剩余时间，用 MsgWaitForMultipleObjects 实现 0 延迟输入唤醒与精准节拍
+            let wait_ms = self.compute_next_idle_wait_ms(now);
+            unsafe {
+                let _ = MsgWaitForMultipleObjects(None, false, wait_ms, QS_ALLINPUT);
+            }
         }
 
         // 自适应休眠：若所有物理动画均已完美收敛，关闭高频 Tick 实现 0.0% 静止 CPU 占用！
         if !keep_ticking {
             self.stop_anim_timer();
-            if self.ui_opacity > 0.5 && !keep_ui_pinned {
-                let elapsed_ms = now.duration_since(self.last_activity).as_millis() as u64;
-                let rem_ms = idle_timeout_ms.saturating_sub(elapsed_ms).max(60) as u32;
-                self.schedule_idle_autohide_timer(rem_ms);
+        }
+    }
+
+    fn compute_next_idle_wait_ms(&self, now: Instant) -> u32 {
+        let mut best_ms: u64 = 50;
+        let mut consider = |ms: u64| {
+            best_ms = best_ms.min(ms.max(1));
+        };
+
+        // 1. 动图下一帧精确到期时间
+        if self.anim_playing && !self.dragging_anim_scrubber {
+            if let Some(img) = self.current_image.as_ref() {
+                if img.is_animated() {
+                    let cur_delay = img.frames[self.frame_index % img.frames.len()].delay_ms;
+                    let scaled_ms = ((cur_delay as f32) / self.anim_speed()).max(12.0) as u64;
+                    let elapsed = now.duration_since(self.last_frame_step).as_millis() as u64;
+                    consider(scaled_ms.saturating_sub(elapsed).max(1));
+                }
             }
         }
+
+        // 2. 幻灯片自动切换精确到期时间
+        if self.is_slideshow() && !self.slideshow_paused && self.siblings.len() > 1 {
+            let rem = (SLIDESHOW_INTERVAL_MS as f32 - self.slideshow_step_accum_ms).max(1.0) as u64;
+            consider(rem);
+        }
+
+        // 3. 按钮长按自动连发精确到期时间
+        if let Some((_, pressed_at, last_rep)) = self.held_repeat_action {
+            let since_press = now.duration_since(pressed_at).as_millis() as u64;
+            if since_press < AUTOREPEAT_INITIAL_DELAY_MS {
+                consider(AUTOREPEAT_INITIAL_DELAY_MS - since_press);
+            } else {
+                let since_rep = now.duration_since(last_rep).as_millis() as u64;
+                consider(AUTOREPEAT_INTERVAL_MS.saturating_sub(since_rep).max(1));
+            }
+        }
+
+        // 4. 缩放倍率胶囊开始淡出/结束时间
+        if let Some(shown_at) = self.zoom_badge_shown_at {
+            let elapsed = now.duration_since(shown_at).as_millis() as u64;
+            if elapsed < ZOOM_BADGE_HOLD_MS {
+                consider(ZOOM_BADGE_HOLD_MS - elapsed);
+            } else {
+                consider(1);
+            }
+        }
+
+        // 5. Toast 淡出到期时间
+        if let Some((_, ts)) = &self.toast {
+            let elapsed = now.duration_since(*ts).as_millis() as u64;
+            consider(TOAST_DURATION_MS.saturating_sub(elapsed).max(1));
+        }
+
+        // 6. 加载指示器延迟出现时间
+        if self.current_image.is_none() && self.current_error.is_none() {
+            let elapsed = now.duration_since(self.loading_since).as_millis() as u64;
+            if elapsed < LOADING_INDICATOR_DELAY_MS {
+                consider(LOADING_INDICATOR_DELAY_MS - elapsed);
+            } else {
+                consider(16);
+            }
+        }
+
+        best_ms.clamp(1, 50) as u32
     }
 
     fn update_anim_scrubber_drag(&mut self, dip_x: f32) {
@@ -1364,98 +1676,211 @@ impl ViewerApp {
                 let idx = (frac * ((img.frames.len() - 1) as f32)).round() as usize;
                 self.anim_playing = false;
                 self.frame_index = idx.min(img.frames.len() - 1);
+                // 拖动进度条暂停后立即同步刷新布局，使播放/暂停按钮图标即时更新
+                self.recompute_layout();
                 self.render_now();
             }
         }
     }
 
     fn update_minimap_drag(&mut self, dip_x: f32, dip_y: f32) {
-        if let (Some(inner), Some(img)) =
-            (self.layout.minimap_image_rect, self.current_image.as_ref())
-        {
+        if let (Some(inner), Some((img_w, img_h))) = (
+            self.layout.minimap_image_rect,
+            self.current_image
+                .as_ref()
+                .map(|img| (img.width as f32, img.height as f32)),
+        ) {
+            self.mark_user_viewport_adjusted();
             let u = (dip_x - inner.left) / inner.width().max(1.0);
             let v = (dip_y - inner.top) / inner.height().max(1.0);
-            self.camera.focus_normalized_point(
-                u,
-                v,
-                img.width as f32,
-                img.height as f32,
-                self.view_w,
-                self.view_h,
-            );
+            self.camera
+                .focus_normalized_point(u, v, img_w, img_h, self.view_w, self.view_h);
             self.recompute_layout();
             self.render_now();
         }
     }
 
-    fn render_now(&mut self) {
-        if self.renderer.is_none() {
-            return;
+    /// 捕获 GPU 设备丢失/重置后安全销毁并重建整个 Direct3D11/DirectComposition/Direct2D 渲染管线
+    fn recreate_renderer(&mut self) -> bool {
+        if self.recreating_renderer || self.hwnd.is_invalid() {
+            return false;
         }
-        let now = Instant::now();
-        let loading_name = self
-            .current_path()
-            .and_then(|p| p.file_name())
-            .map(|s| s.to_string_lossy().to_string());
-        let fallback_thumb_path = if self.current_image.is_none() {
-            self.siblings.get(self.current_index)
+        self.recreating_renderer = true;
+        self.renderer = None;
+        let rebuilt = unsafe {
+            let dpi = GetDpiForWindow(self.hwnd).max(96) as f32;
+            self.dpi = dpi;
+            self.camera.set_dpi_scale(dpi / 96.0);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(self.hwnd, &mut rc);
+            let phys_w = (rc.right - rc.left).max(1) as u32;
+            let phys_h = (rc.bottom - rc.top).max(1) as u32;
+            self.view_w = phys_w as f32 * 96.0 / dpi;
+            self.view_h = phys_h as f32 * 96.0 / dpi;
+            ViewerRenderer::new(self.hwnd, phys_w, phys_h, dpi, self.lang).ok()
+        };
+        self.recreating_renderer = false;
+        if let Some(r) = rebuilt {
+            self.renderer = Some(r);
+            self.recompute_layout();
+            self.request_thumbs_for_visible_filmstrip();
+            true
         } else {
-            None
-        };
-        let show_loading_box =
-            now.duration_since(self.loading_since) >= Duration::from_millis(LOADING_INDICATOR_DELAY_MS);
-        let anim_speed = self.anim_speed();
-        let is_slideshow = self.is_slideshow();
-        let params = RenderFrameParams {
-            now,
-            open_started_at: self.open_started_at,
-            lang: self.lang,
-            view_w: self.view_w,
-            view_h: self.view_h,
-            dpi: self.dpi,
-            open_progress: self.open_progress,
-            close_progress: self.close_progress,
-            close_snapshot: self.close_snapshot,
-            slide_progress: self.slide_progress,
-            slide_dir: self.slide_dir,
-            slide_is_crossfade: self.slide_is_crossfade,
-            slide_fast_repeat: self.slide_fast_repeat,
-            cinema_dim: self.cinema_dim,
-            ken_burns: self.ken_burns,
-            close_hover_anim: self.close_hover_anim,
-            play_hover_anim: self.play_hover_anim,
-            backdrop: self.backdrop,
-            simulated_desktop_bg: None,
-            camera: &self.camera,
-            image: self.current_image.as_ref(),
-            fallback_thumb_path,
-            frame_index: self.frame_index,
-            error_text: self.current_error.as_deref(),
-            loading_name: loading_name.as_deref(),
-            show_loading_box,
-            current_index: self.current_index,
-            sibling_paths: &self.siblings,
-            is_slideshow,
-            slideshow_paused: self.slideshow_paused,
-            layout: &self.layout,
-            ui_opacity: self.ui_opacity,
-            hovered: self.hovered,
-            anim_speed,
-            selection_box: self.selection_box,
-            toast_text: self.toast.as_ref().map(|(s, _)| s.as_str()),
-            show_info: self.show_info,
-        };
-        if let Some(renderer) = self.renderer.as_mut() {
-            let _ = renderer.render(&params);
+            false
         }
     }
 
-    fn sync_monitor_bounds_and_dpi(&mut self, hwnd: HWND, new_dpi: f32) {
+    fn render_now(&mut self) {
+        if self.renderer.is_none() && !self.recreate_renderer() {
+            return;
+        }
+        let mut device_lost = false;
+        {
+            let now = Instant::now();
+            let loading_name = self
+                .current_path()
+                .and_then(|p| p.file_name())
+                .map(|s| s.to_string_lossy().to_string());
+            let fallback_thumb_path = if self.current_image.is_none() {
+                self.siblings.get(self.current_index)
+            } else {
+                None
+            };
+            let show_loading_box = now.duration_since(self.loading_since)
+                >= Duration::from_millis(LOADING_INDICATOR_DELAY_MS);
+            let anim_speed = self.anim_speed();
+            let is_slideshow = self.is_slideshow();
+            let zoom_badge_alpha = compute_zoom_badge_alpha(self.zoom_badge_shown_at, now);
+            let params = RenderFrameParams {
+                now,
+                open_started_at: self.open_started_at,
+                lang: self.lang,
+                view_w: self.view_w,
+                view_h: self.view_h,
+                dpi: self.dpi,
+                backdrop_open_progress: self.backdrop_open_progress,
+                open_anim_armed: self.open_anim_armed,
+                open_progress: self.open_progress,
+                close_progress: self.close_progress,
+                close_snapshot: self.close_snapshot,
+                slide_progress: self.slide_progress,
+                slide_dir: self.slide_dir,
+                slide_is_crossfade: self.slide_is_crossfade,
+                slide_fast_repeat: self.slide_fast_repeat,
+                cinema_dim: self.cinema_dim,
+                slideshow_portal: self.slideshow_portal,
+                close_hover_anim: self.close_hover_anim,
+                play_hover_anim: self.play_hover_anim,
+                backdrop: self.backdrop,
+                simulated_desktop_bg: None,
+                camera: &self.camera,
+                image: self.current_image.as_ref(),
+                fallback_thumb_path,
+                frame_index: self.frame_index,
+                error: self.current_error.as_ref(),
+                loading_name: loading_name.as_deref(),
+                show_loading_box,
+                current_index: self.current_index,
+                sibling_paths: &self.siblings,
+                is_slideshow,
+                layout: &self.layout,
+                hovered: self.hovered,
+                anim_speed,
+                selection_box: self.selection_box,
+                toast_text: self.toast.as_ref().map(|(s, _)| s.as_str()),
+                show_info: self.show_info,
+                zoom_badge_alpha,
+            };
+            if let Some(renderer) = self.renderer.as_mut() {
+                match renderer.render(&params) {
+                    Ok(()) => {
+                        self.presented_frames = self.presented_frames.saturating_add(1);
+                    }
+                    Err(RenderError::DeviceLost(_)) => {
+                        device_lost = true;
+                    }
+                    Err(RenderError::Other(_)) => {}
+                }
+            }
+        }
+        if device_lost && self.recreate_renderer() {
+            // 设备恢复后仅补绘一次当前帧，杜绝无限递归
+            let now = Instant::now();
+            let loading_name = self
+                .current_path()
+                .and_then(|p| p.file_name())
+                .map(|s| s.to_string_lossy().to_string());
+            let fallback_thumb_path = if self.current_image.is_none() {
+                self.siblings.get(self.current_index)
+            } else {
+                None
+            };
+            let show_loading_box = now.duration_since(self.loading_since)
+                >= Duration::from_millis(LOADING_INDICATOR_DELAY_MS);
+            let params = RenderFrameParams {
+                now,
+                open_started_at: self.open_started_at,
+                lang: self.lang,
+                view_w: self.view_w,
+                view_h: self.view_h,
+                dpi: self.dpi,
+                backdrop_open_progress: self.backdrop_open_progress,
+                open_anim_armed: self.open_anim_armed,
+                open_progress: self.open_progress,
+                close_progress: self.close_progress,
+                close_snapshot: self.close_snapshot,
+                slide_progress: self.slide_progress,
+                slide_dir: self.slide_dir,
+                slide_is_crossfade: self.slide_is_crossfade,
+                slide_fast_repeat: self.slide_fast_repeat,
+                cinema_dim: self.cinema_dim,
+                slideshow_portal: self.slideshow_portal,
+                close_hover_anim: self.close_hover_anim,
+                play_hover_anim: self.play_hover_anim,
+                backdrop: self.backdrop,
+                simulated_desktop_bg: None,
+                camera: &self.camera,
+                image: self.current_image.as_ref(),
+                fallback_thumb_path,
+                frame_index: self.frame_index,
+                error: self.current_error.as_ref(),
+                loading_name: loading_name.as_deref(),
+                show_loading_box,
+                current_index: self.current_index,
+                sibling_paths: &self.siblings,
+                is_slideshow: self.is_slideshow(),
+                layout: &self.layout,
+                hovered: self.hovered,
+                anim_speed: self.anim_speed(),
+                selection_box: self.selection_box,
+                toast_text: self.toast.as_ref().map(|(s, _)| s.as_str()),
+                show_info: self.show_info,
+                zoom_badge_alpha: compute_zoom_badge_alpha(self.zoom_badge_shown_at, now),
+            };
+            if let Some(renderer) = self.renderer.as_mut() {
+                if renderer.render(&params).is_ok() {
+                    self.presented_frames = self.presented_frames.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    fn sync_monitor_bounds_and_dpi(
+        &mut self,
+        hwnd: HWND,
+        new_dpi: f32,
+        render_immediately: bool,
+    ) -> (f32, f32) {
         let clamped_dpi = new_dpi.max(96.0);
         self.dpi = clamped_dpi;
         self.camera.set_dpi_scale(clamped_dpi / 96.0);
+        let mut center_comp = (0.0f32, 0.0f32);
+        let mut need_recreate = false;
         unsafe {
-            apply_dpi_matched_window_icons(hwnd, clamped_dpi as u32);
+            self.apply_dpi_matched_icons(hwnd, clamped_dpi as u32);
+            let mut old_wnd_rc = RECT::default();
+            let has_old_rc = GetWindowRect(hwnd, &mut old_wnd_rc).is_ok();
+
             let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             let mut mi = MONITORINFO {
                 cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -1468,12 +1893,14 @@ impl ViewerApp {
                     mi.rcWork
                 };
                 let w = (r.right - r.left).max(640);
-                // 关键防坑：物理高度主动减 1px，100% 保证 Windows DWM 桌面 Alpha 半透明穿透永不失效变黑底！
+                // 覆盖全屏态物理高度减 1px，阻止 DWM 激活 Fullscreen Redirection 吞掉叠化动画
                 let h = if self.is_fullscreen {
                     (r.bottom - r.top - 1).max(480)
                 } else {
                     (r.bottom - r.top).max(480)
                 };
+                // 抑制 SetWindowPos 同步派发 WM_SIZE 抢先渲染错误残影帧
+                self.suppress_size_render = true;
                 let _ = SetWindowPos(
                     hwnd,
                     None,
@@ -1483,29 +1910,67 @@ impl ViewerApp {
                     h,
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
+                self.suppress_size_render = false;
             }
+
+            let mut new_wnd_rc = RECT::default();
+            if has_old_rc && GetWindowRect(hwnd, &mut new_wnd_rc).is_ok() {
+                center_comp =
+                    compute_window_center_compensation_dip(old_wnd_rc, new_wnd_rc, clamped_dpi);
+            }
+
             let mut rc = RECT::default();
             let _ = GetClientRect(hwnd, &mut rc);
             let phys_w = (rc.right - rc.left).max(1) as u32;
             let phys_h = (rc.bottom - rc.top).max(1) as u32;
             self.view_w = phys_w as f32 * 96.0 / clamped_dpi;
             self.view_h = phys_h as f32 * 96.0 / clamped_dpi;
+            if self.presented_frames > 0 && render_immediately {
+                let (dx_comp, dy_comp) = center_comp;
+                if dx_comp.abs() > 0.1 {
+                    self.camera.pan_x += dx_comp;
+                    if !self.camera.is_fit_mode {
+                        self.camera.target_pan_x += dx_comp;
+                    }
+                }
+                if dy_comp.abs() > 0.1 {
+                    self.camera.pan_y += dy_comp;
+                    if !self.camera.is_fit_mode {
+                        self.camera.target_pan_y += dy_comp;
+                    }
+                }
+            }
             if let Some(r) = self.renderer.as_mut() {
-                let _ = r.resize(phys_w, phys_h, clamped_dpi);
+                if let Err(RenderError::DeviceLost(_)) = r.resize(phys_w, phys_h, clamped_dpi) {
+                    need_recreate = true;
+                }
             }
         }
-        let (iw, ih) = self.current_image_dims();
-        if iw > 0.0 && ih > 0.0 {
-            if self.camera.is_fit_mode {
-                self.camera
-                    .refit_preserving_rotation(iw, ih, self.view_w, self.view_h);
-            } else {
-                self.camera
-                    .clamp_target_pan(iw, ih, self.view_w, self.view_h);
-            }
+        if need_recreate {
+            let _ = self.recreate_renderer();
         }
-        self.recompute_layout();
-        self.render_now();
+        if render_immediately {
+            let (iw, ih) = self.current_image_dims();
+            if iw > 0.0 && ih > 0.0 {
+                if self.camera.is_fit_mode {
+                    self.camera.animate_to_fit_mode(
+                        iw,
+                        ih,
+                        self.view_w,
+                        self.view_h,
+                        self.is_slideshow(),
+                    );
+                    self.ensure_anim_timer();
+                } else {
+                    self.camera
+                        .clamp_target_pan(iw, ih, self.view_w, self.view_h);
+                    self.ensure_anim_timer();
+                }
+            }
+            self.recompute_layout();
+            self.render_now();
+        }
+        center_comp
     }
 
     fn to_dip(&self, phys: f32) -> f32 {
@@ -1524,21 +1989,6 @@ impl ViewerApp {
                 self.render_now();
                 None
             }
-            WM_TIMER => {
-                if wparam.0 == TIMER_ANIM_ID {
-                    self.on_tick();
-                    return Some(LRESULT(0));
-                }
-                if wparam.0 == TIMER_IDLE_HIDE_ID {
-                    unsafe {
-                        let _ = KillTimer(hwnd, TIMER_IDLE_HIDE_ID);
-                    }
-                    self.ensure_anim_timer();
-                    self.on_tick();
-                    return Some(LRESULT(0));
-                }
-                None
-            }
             WM_VIEWER_IMAGE_READY => {
                 self.sync_current_from_cache(false);
                 self.recompute_layout();
@@ -1554,31 +2004,102 @@ impl ViewerApp {
                 Some(LRESULT(0))
             }
             WM_SIZE => {
+                if self.suppress_size_render {
+                    return Some(LRESULT(0));
+                }
                 let phys_w = (lparam.0 & 0xFFFF) as u32;
                 let phys_h = ((lparam.0 >> 16) & 0xFFFF) as u32;
                 if phys_w > 0 && phys_h > 0 {
                     let cur_dpi = unsafe { GetDpiForWindow(hwnd).max(96) as f32 };
+                    let old_view_h = self.view_h;
                     self.dpi = cur_dpi;
                     self.camera.set_dpi_scale(cur_dpi / 96.0);
                     self.view_w = phys_w as f32 * 96.0 / self.dpi;
                     self.view_h = phys_h as f32 * 96.0 / self.dpi;
+                    if self.presented_frames > 0 {
+                        let dy_comp = (old_view_h - self.view_h) * 0.5;
+                        if dy_comp.abs() > 0.1 {
+                            self.camera.pan_y += dy_comp;
+                            if !self.camera.is_fit_mode {
+                                self.camera.target_pan_y += dy_comp;
+                            }
+                        }
+                    }
+                    let mut need_recreate = false;
                     if let Some(r) = self.renderer.as_mut() {
-                        let _ = r.resize(phys_w, phys_h, self.dpi);
+                        if let Err(RenderError::DeviceLost(_)) = r.resize(phys_w, phys_h, self.dpi)
+                        {
+                            need_recreate = true;
+                        }
+                    }
+                    if need_recreate {
+                        let _ = self.recreate_renderer();
                     }
                     let (iw, ih) = self.current_image_dims();
                     if iw > 0.0 && ih > 0.0 {
                         if self.camera.is_fit_mode {
-                            self.camera
-                                .refit_preserving_rotation(iw, ih, self.view_w, self.view_h);
+                            self.camera.animate_to_fit_mode(
+                                iw,
+                                ih,
+                                self.view_w,
+                                self.view_h,
+                                self.is_slideshow(),
+                            );
+                            self.ensure_anim_timer();
                         } else {
                             self.camera
                                 .clamp_target_pan(iw, ih, self.view_w, self.view_h);
+                            self.ensure_anim_timer();
                         }
                     }
                     self.recompute_layout();
                     self.request_thumbs_for_visible_filmstrip();
                     self.render_now();
                 }
+                Some(LRESULT(0))
+            }
+            WM_COPYDATA => {
+                // 单实例复用：若正在关闭则拒绝接管，让新进程独立启动；否则无缝切换新图并置前
+                if self.is_closing() || lparam.0 == 0 {
+                    return Some(LRESULT(0));
+                }
+                let cds = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
+                if cds.dwData != IPC_COPYDATA_OPEN_PATH
+                    || cds.lpData.is_null()
+                    || cds.cbData < 2
+                    || cds.cbData % 2 != 0
+                    || cds.cbData > 65536
+                {
+                    return Some(LRESULT(0));
+                }
+                let u16_slice = unsafe {
+                    std::slice::from_raw_parts(cds.lpData as *const u16, (cds.cbData / 2) as usize)
+                };
+                let end = u16_slice
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(u16_slice.len());
+                let path_str = String::from_utf16_lossy(&u16_slice[..end]);
+                let p = PathBuf::from(path_str);
+                if p.is_file() {
+                    self.open_selected_or_dropped_file(p);
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_RESTORE);
+                        let _ = SetForegroundWindow(hwnd);
+                    }
+                    return Some(LRESULT(1));
+                }
+                Some(LRESULT(0))
+            }
+            WM_CAPTURECHANGED => {
+                // Alt+Tab / UAC / 外部弹窗强制夺走鼠标捕获时，立即清空所有拖拽/按压/长按连发状态
+                self.clear_pointer_captures_without_release();
+                self.render_now();
+                Some(LRESULT(0))
+            }
+            WM_KILLFOCUS | WM_CANCELMODE => {
+                self.clear_pointer_captures();
+                self.render_now();
                 Some(LRESULT(0))
             }
             WM_DPICHANGED => {
@@ -1597,12 +2118,12 @@ impl ViewerApp {
                         );
                     }
                 }
-                self.sync_monitor_bounds_and_dpi(hwnd, new_dpi);
+                self.sync_monitor_bounds_and_dpi(hwnd, new_dpi, true);
                 Some(LRESULT(0))
             }
             WM_DISPLAYCHANGE => {
                 let cur_dpi = unsafe { GetDpiForWindow(hwnd).max(96) as f32 };
-                self.sync_monitor_bounds_and_dpi(hwnd, cur_dpi);
+                self.sync_monitor_bounds_and_dpi(hwnd, cur_dpi, true);
                 Some(LRESULT(0))
             }
             WM_MOUSEMOVE => {
@@ -1675,6 +2196,7 @@ impl ViewerApp {
                     self.drag_last_move_at = now;
                     let (iw, ih) = self.current_image_dims();
                     if iw > 0.0 && ih > 0.0 {
+                        self.mark_user_viewport_adjusted();
                         self.camera.pan_by_drag(
                             move_x,
                             move_y,
@@ -1769,8 +2291,8 @@ impl ViewerApp {
                     }
                     HitTarget::ImageCanvas => {
                         if self.is_slideshow() {
-                            // 幻灯片中轻点图片唤醒/切换暂停继续，方便沉浸控制
-                            self.touch_activity();
+                            // 1:1 还原原版 Picasa：幻灯片放映态无底部播控条，单击画面任意处即柔滑亮灯退回常规看图态
+                            self.stop_slideshow_gracefully();
                             self.recompute_layout();
                             self.render_now();
                         } else if ctrl {
@@ -1826,9 +2348,10 @@ impl ViewerApp {
                     let (iw, ih) = self.current_image_dims();
                     if let Some(sel) = self.selection_box.take() {
                         if iw > 0.0 && ih > 0.0 {
+                            self.mark_user_viewport_adjusted();
                             self.camera
                                 .zoom_to_screen_rect(sel, iw, ih, self.view_w, self.view_h);
-                            self.ensure_anim_timer();
+                            self.show_zoom_badge();
                         }
                     }
                     unsafe {
@@ -1904,6 +2427,7 @@ impl ViewerApp {
                     } else {
                         let (iw, ih) = self.current_image_dims();
                         if iw > 0.0 && ih > 0.0 {
+                            self.mark_user_viewport_adjusted();
                             self.camera.toggle_actual_or_fit(
                                 dx,
                                 dy,
@@ -1912,7 +2436,7 @@ impl ViewerApp {
                                 self.view_w,
                                 self.view_h,
                             );
-                            self.ensure_anim_timer();
+                            self.show_zoom_badge();
                         }
                     }
                     self.recompute_layout();
@@ -1956,6 +2480,8 @@ impl ViewerApp {
                             let step = if wheel_delta > 0.0 { -1 } else { 1 };
                             self.frame_index =
                                 (self.frame_index as isize + step).rem_euclid(len) as usize;
+                            // 滚轮步进动图暂停后立即刷新布局同步播放/暂停按钮图标
+                            self.recompute_layout();
                             self.render_now();
                             return Some(LRESULT(0));
                         }
@@ -1979,6 +2505,7 @@ impl ViewerApp {
                         if self.is_slideshow() {
                             self.stop_slideshow_gracefully();
                         }
+                        self.mark_user_viewport_adjusted();
                         self.camera.zoom_at_point(
                             wheel_delta,
                             dx,
@@ -1988,7 +2515,7 @@ impl ViewerApp {
                             self.view_w,
                             self.view_h,
                         );
-                        self.ensure_anim_timer();
+                        self.show_zoom_badge();
                         self.recompute_layout();
                         self.render_now();
                     }
@@ -2035,8 +2562,12 @@ impl ViewerApp {
                         self.execute_action(ToolbarAction::ZoomOut)
                     }
                     x if x == VK_PRIOR.0 => {
+                        if self.is_slideshow() {
+                            self.stop_slideshow_gracefully();
+                        }
                         let (iw, ih) = self.current_image_dims();
                         if iw > 0.0 && ih > 0.0 {
+                            self.mark_user_viewport_adjusted();
                             self.camera.zoom_at_point(
                                 4.0,
                                 self.view_w * 0.5,
@@ -2046,14 +2577,18 @@ impl ViewerApp {
                                 self.view_w,
                                 self.view_h,
                             );
-                            self.ensure_anim_timer();
+                            self.show_zoom_badge();
                             self.recompute_layout();
                             self.render_now();
                         }
                     }
                     x if x == VK_NEXT.0 => {
+                        if self.is_slideshow() {
+                            self.stop_slideshow_gracefully();
+                        }
                         let (iw, ih) = self.current_image_dims();
                         if iw > 0.0 && ih > 0.0 {
+                            self.mark_user_viewport_adjusted();
                             self.camera.zoom_at_point(
                                 -4.0,
                                 self.view_w * 0.5,
@@ -2063,7 +2598,7 @@ impl ViewerApp {
                                 self.view_w,
                                 self.view_h,
                             );
-                            self.ensure_anim_timer();
+                            self.show_zoom_badge();
                             self.recompute_layout();
                             self.render_now();
                         }
@@ -2154,14 +2689,70 @@ impl ViewerApp {
                 Some(LRESULT(0))
             }
             WM_DESTROY => {
+                self.anim_timer_running = false;
+                self.clear_pointer_captures_without_release();
+                // 销毁最后一对动态加载的私有 HICON，确保零 GDI 句柄泄漏
+                self.destroy_owned_icons(hwnd);
                 unsafe {
-                    let _ = KillTimer(hwnd, TIMER_ANIM_ID);
-                    let _ = KillTimer(hwnd, TIMER_IDLE_HIDE_ID);
                     PostQuitMessage(0);
                 }
                 Some(LRESULT(0))
             }
             _ => None,
+        }
+    }
+
+    unsafe fn apply_dpi_matched_icons(&mut self, hwnd: HWND, dpi: u32) {
+        let Ok(hmod) = GetModuleHandleW(None) else {
+            return;
+        };
+        let hinst: HINSTANCE = hmod.into();
+        let d = dpi.max(96);
+        let big_w = GetSystemMetricsForDpi(SM_CXICON, d).max(32);
+        let big_h = GetSystemMetricsForDpi(SM_CYICON, d).max(32);
+        let sm_w = GetSystemMetricsForDpi(SM_CXSMICON, d).max(16);
+        let sm_h = GetSystemMetricsForDpi(SM_CYSMICON, d).max(16);
+
+        let new_big = load_embedded_icon(hinst, big_w, big_h, false);
+        if !new_big.is_invalid() {
+            let _ = SendMessageW(
+                hwnd,
+                WM_SETICON,
+                WPARAM(ICON_BIG as usize),
+                LPARAM(new_big.0 as isize),
+            );
+            if !self.big_icon.is_invalid() && self.big_icon != new_big {
+                let _ = DestroyIcon(self.big_icon);
+            }
+            self.big_icon = new_big;
+        }
+        let new_sm = load_embedded_icon(hinst, sm_w, sm_h, false);
+        if !new_sm.is_invalid() {
+            let _ = SendMessageW(
+                hwnd,
+                WM_SETICON,
+                WPARAM(ICON_SMALL as usize),
+                LPARAM(new_sm.0 as isize),
+            );
+            if !self.small_icon.is_invalid() && self.small_icon != new_sm {
+                let _ = DestroyIcon(self.small_icon);
+            }
+            self.small_icon = new_sm;
+        }
+    }
+
+    fn destroy_owned_icons(&mut self, hwnd: HWND) {
+        unsafe {
+            if !self.big_icon.is_invalid() {
+                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(0));
+                let _ = DestroyIcon(self.big_icon);
+                self.big_icon = HICON::default();
+            }
+            if !self.small_icon.is_invalid() {
+                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(0));
+                let _ = DestroyIcon(self.small_icon);
+                self.small_icon = HICON::default();
+            }
         }
     }
 }
@@ -2176,43 +2767,6 @@ unsafe fn load_embedded_icon(hinst: HINSTANCE, cx: i32, cy: i32, shared: bool) -
     LoadImageW(hinst, res_id, IMAGE_ICON, cx, cy, flags)
         .map(|h| HICON(h.0))
         .unwrap_or_default()
-}
-
-unsafe fn apply_dpi_matched_window_icons(hwnd: HWND, dpi: u32) {
-    let Ok(hmod) = GetModuleHandleW(None) else {
-        return;
-    };
-    let hinst: HINSTANCE = hmod.into();
-    let d = dpi.max(96);
-    let big_w = GetSystemMetricsForDpi(SM_CXICON, d).max(32);
-    let big_h = GetSystemMetricsForDpi(SM_CYICON, d).max(32);
-    let sm_w = GetSystemMetricsForDpi(SM_CXSMICON, d).max(16);
-    let sm_h = GetSystemMetricsForDpi(SM_CYSMICON, d).max(16);
-
-    let big_icon = load_embedded_icon(hinst, big_w, big_h, false);
-    if !big_icon.is_invalid() {
-        let prev = SendMessageW(
-            hwnd,
-            WM_SETICON,
-            WPARAM(ICON_BIG as usize),
-            LPARAM(big_icon.0 as isize),
-        );
-        if prev.0 != 0 {
-            let _ = DestroyIcon(HICON(prev.0 as *mut _));
-        }
-    }
-    let sm_icon = load_embedded_icon(hinst, sm_w, sm_h, false);
-    if !sm_icon.is_invalid() {
-        let prev = SendMessageW(
-            hwnd,
-            WM_SETICON,
-            WPARAM(ICON_SMALL as usize),
-            LPARAM(sm_icon.0 as isize),
-        );
-        if prev.0 != 0 {
-            let _ = DestroyIcon(HICON(prev.0 as *mut _));
-        }
-    }
 }
 
 fn create_overlay_window(app: &mut ViewerApp) -> Result<HWND, String> {
@@ -2304,7 +2858,31 @@ unsafe extern "system" fn viewer_wnd_proc(
 
 #[cfg(test)]
 mod tests {
-    use super::compute_next_filmstrip_offset;
+    use super::{
+        compute_next_filmstrip_offset, compute_window_center_compensation_dip,
+        compute_zoom_badge_alpha, next_index_after_delete, should_skip_navigation,
+    };
+    use crate::constants::{ZOOM_BADGE_FADE_MS, ZOOM_BADGE_HOLD_MS};
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+    use windows::Win32::Foundation::RECT;
+
+    #[test]
+    fn zoom_badge_holds_then_fades_cleanly() {
+        let t0 = Instant::now();
+        assert!((compute_zoom_badge_alpha(None, t0) - 0.0).abs() < 1e-6);
+        assert!((compute_zoom_badge_alpha(Some(t0), t0 + Duration::from_millis(200)) - 1.0).abs() < 1e-6);
+        let mid = compute_zoom_badge_alpha(
+            Some(t0),
+            t0 + Duration::from_millis(ZOOM_BADGE_HOLD_MS + ZOOM_BADGE_FADE_MS / 2),
+        );
+        assert!(mid > 0.05 && mid < 0.95, "淡出中段应在 (0,1) 之间，实际 {mid}");
+        let done = compute_zoom_badge_alpha(
+            Some(t0),
+            t0 + Duration::from_millis(ZOOM_BADGE_HOLD_MS + ZOOM_BADGE_FADE_MS + 10),
+        );
+        assert!((done - 0.0).abs() < 1e-6);
+    }
 
     #[test]
     fn rapid_hold_left_or_right_never_flings_filmstrip_off_center() {
@@ -2329,5 +2907,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn delete_non_last_image_never_freezes_navigation() {
+        // 3 张图删除索引 0 或索引 1 后，目标索引不变，但已加载图像为空或路径已变化，绝不能跳过导航
+        let mut siblings = vec![
+            Path::new("a.png").to_path_buf(),
+            Path::new("b.png").to_path_buf(),
+            Path::new("c.png").to_path_buf(),
+        ];
+        // 删除首图 (index 0)
+        siblings.remove(0);
+        let next = next_index_after_delete(siblings.len(), 0).expect("仍有剩余图片");
+        assert_eq!(next, 0);
+        // 清空 current_image 后必不跳过
+        assert!(!should_skip_navigation(0, next, None, Some(siblings[next].as_path())));
+        // 即使历史 current_image 尚未清空（仍指向 a.png），因路径与新 siblings[0] (b.png) 不同也绝不跳过
+        assert!(!should_skip_navigation(
+            0,
+            next,
+            Some(Path::new("a.png")),
+            Some(siblings[next].as_path())
+        ));
+        // 仅当索引和路径双双匹配时才跳过重复加载
+        assert!(should_skip_navigation(
+            0,
+            0,
+            Some(Path::new("b.png")),
+            Some(siblings[0].as_path())
+        ));
+
+        // 删除末尾图 (index 1 -> 回退到 index 0)
+        siblings.remove(1);
+        assert_eq!(next_index_after_delete(siblings.len(), 1), Some(0));
+
+        // 删除唯一剩余图 -> None (关闭窗口)
+        siblings.remove(0);
+        assert_eq!(next_index_after_delete(siblings.len(), 0), None);
+    }
+
+    #[test]
+    fn window_center_compensation_handles_all_four_taskbar_edges() {
+        let full = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        // 任务栏在底部 (高 48px)
+        let work_bottom = RECT { left: 0, top: 0, right: 1920, bottom: 1032 };
+        let (dx, dy) = compute_window_center_compensation_dip(work_bottom, full, 96.0);
+        assert!((dx - 0.0).abs() < 1e-3 && (dy - (-24.0)).abs() < 1e-3);
+
+        // 任务栏在顶部 (高 48px)
+        let work_top = RECT { left: 0, top: 48, right: 1920, bottom: 1080 };
+        let (dx, dy) = compute_window_center_compensation_dip(work_top, full, 96.0);
+        assert!((dx - 0.0).abs() < 1e-3 && (dy - 24.0).abs() < 1e-3);
+
+        // 任务栏在左侧 (宽 80px，150% DPI = 144)
+        let work_left = RECT { left: 80, top: 0, right: 1920, bottom: 1080 };
+        let (dx, dy) = compute_window_center_compensation_dip(work_left, full, 144.0);
+        assert!((dx - (40.0 / 1.5)).abs() < 1e-2 && (dy - 0.0).abs() < 1e-3);
+
+        // 任务栏在右侧 (宽 80px)
+        let work_right = RECT { left: 0, top: 0, right: 1840, bottom: 1080 };
+        let (dx, dy) = compute_window_center_compensation_dip(work_right, full, 96.0);
+        assert!((dx - (-40.0)).abs() < 1e-3 && (dy - 0.0).abs() < 1e-3);
     }
 }

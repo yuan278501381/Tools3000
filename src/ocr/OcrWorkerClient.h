@@ -5,7 +5,8 @@
 // 职责:
 //   1. 按需拉起 Tools3000.exe --worker=ocr 子进程执行 PP-OCRv4 DirectML 推理
 //   2. 通过一次性命名共享内存零拷贝传递图像、命名管道回传识别行与字符级 charBoxes
-//   3. 子进程闲置 60s 后自动退出，或响应 shutdownWorker() 立即退场，主进程 0 DirectML 加载与 0 私有内存残留
+//   3. 子进程采用两阶段智能热保活：闲置 60s 仅软修剪显存与物理工作集（保留 DirectML Session 0ms 热启），
+//      累计闲置 15 分钟自动退出或响应 shutdownWorker() 立即退场，主进程 0 DirectML 加载与 0 私有内存残留
 //
 // 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ public:
     /// 查询当前活跃 Worker 的 PID（无活跃进程时返回 0）
     DWORD activeWorkerPid() const noexcept;
 
-    /// 测试专用：注入自定义 Tools3000.exe 路径及可选覆盖闲置超时秒数（<=0 保持默认 60s）
+    /// 测试专用：注入自定义 Tools3000.exe 路径及可选覆盖闲置超时秒数（<=0 保持默认 900s 两阶段保活）
     void setTestOverride(bool enabled, const std::filesystem::path& workerExePath = {}, int idleSecondsOverride = 0);
 
 private:

@@ -4,8 +4,11 @@
 // 职责:
 //   1. 连接宿主创建的命名管道，等待零拷贝共享内存图像识别请求
 //   2. 复用进程内 DeepOcrEngine (DirectML GPU + CompactBatchCascade) 完成高精度识别并序列化回传
-//   3. 连续 idleSec 秒（默认 60s）无新请求、收到 Shutdown 或父进程退出时直接结束进程，
-//      由操作系统 100% 彻底回收 DirectML / ONNX Runtime / 显卡驱动全部虚拟提交与线程
+//   3. 两阶段智能热保活：
+//      - 阶段 1（闲置 60s）：不杀进程、不销毁已编译 DirectML Session，仅调用 trimIdleMemory()
+//        执行 DXGI Trim + 物理工作集收缩，实现低内存常驻与 0ms 热启动
+//      - 阶段 2（累计闲置 15 分钟 / 或测试短超时）：仍无新请求、收到 Shutdown 或父进程退出时
+//        优雅结束进程，由操作系统 100% 彻底回收 DirectML / ONNX Runtime / 显卡驱动全部虚拟提交与线程
 //
 // 版权声明: Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors. GPL-3.0 License.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,14 +94,40 @@ int runOcrWorkerProcess(int argc, const wchar_t* const* argv) {
         return 3;
     }
 
-    const DWORD idleTimeoutMs = static_cast<DWORD>(idleSec) * 1000u;
+    const int softTrimSec = worker::Constants::kDefaultOcrWorkerSoftTrimSeconds;
+    const bool enableSoftTrimStage = (idleSec > softTrimSec);
+    const DWORD stage1TimeoutMs = enableSoftTrimStage
+        ? static_cast<DWORD>(softTrimSec) * 1000u
+        : static_cast<DWORD>(idleSec) * 1000u;
+    const DWORD stage2TimeoutMs = enableSoftTrimStage
+        ? static_cast<DWORD>(idleSec - softTrimSec) * 1000u
+        : 0u;
+
+    bool softTrimmedThisIdle = false;
+    std::string lastAppliedModelDirUtf8;
 
     while (true) {
         worker_proto::RequestHeader req{};
-        if (!worker::readPod(pipe.get(), req, /*overlapped=*/true, idleTimeoutMs, abortEvent.get())) {
-            // 超时（60s 无请求）、管道关闭或父进程死亡均视为正常收官退场
+        const DWORD waitTimeoutMs = (!softTrimmedThisIdle) ? stage1TimeoutMs : stage2TimeoutMs;
+        const worker::PipeReadStatus readSt = worker::readPodWithStatus(
+            pipe.get(), req, /*overlapped=*/true, waitTimeoutMs, abortEvent.get());
+
+        if (readSt == worker::PipeReadStatus::Timeout) {
+            if (enableSoftTrimStage && !softTrimmedThisIdle) {
+                // 阶段 1（闲置 60s）：保留进程与已编译 DirectML Session，仅执行 DXGI Trim + 物理工作集软修剪
+                DeepOcrEngine::instance().trimIdleMemory();
+                softTrimmedThisIdle = true;
+                continue;
+            }
+            // 阶段 2（累计闲置达到 idleSec，默认 15 分钟）：仍无新请求则优雅退场，OS 100% 回收物理+虚拟内存
             break;
         }
+        if (readSt != worker::PipeReadStatus::Ok) {
+            // 管道关闭或父进程死亡均视为正常收官退场
+            break;
+        }
+        softTrimmedThisIdle = false;
+
         if (req.magic != worker_proto::kProtocolMagic || req.version != worker_proto::kProtocolVersion) {
             break;
         }
@@ -151,14 +180,15 @@ int runOcrWorkerProcess(int argc, const wchar_t* const* argv) {
             continue;
         }
 
-        // 透传 TraceID、自定义模型目录与档位配置
+        // 透传 TraceID、自定义模型目录（仅路径变化时应用，杜绝重复触发模型释放）与档位配置
         std::optional<tools3000::core::TraceId::Scope> traceScope;
         if (!traceId.empty()) {
             traceScope.emplace(traceId);
         }
-        if (!modelDirUtf8.empty()) {
+        if (!modelDirUtf8.empty() && modelDirUtf8 != lastAppliedModelDirUtf8) {
             DeepOcrEngine::instance().setCustomModelDirectoryForTest(
                 std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(modelDirUtf8)));
+            lastAppliedModelDirUtf8 = modelDirUtf8;
         }
         if (!modelTier.empty()) {
             DeepOcrEngine::instance().setModelTierOverrideForWorker(modelTier);

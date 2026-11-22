@@ -21,17 +21,116 @@ impl ImageFrame {
     }
 }
 
+/// 结构化图像格式标签（与界面语言解耦，由 i18n 模块渲染 8 语种地道文案）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImageFormatKind {
+    Static(String),
+    AnimatedGif,
+    AnimatedWebP,
+    AnimatedApng,
+    SvgVector,
+}
+
+impl ImageFormatKind {
+    /// 供日志与命令行自测使用的无语言耦合标识
+    pub fn short_tag(&self) -> &str {
+        match self {
+            Self::Static(s) => s.as_str(),
+            Self::AnimatedGif => "GIF (Animated)",
+            Self::AnimatedWebP => "WebP (Animated)",
+            Self::AnimatedApng => "APNG (Animated)",
+            Self::SvgVector => "SVG",
+        }
+    }
+}
+
+/// 结构化 EXIF / 图像详情条目（杜绝解码器内硬编码单语种字符串污染）
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExifField {
+    Format(ImageFormatKind),
+    Dimensions(u32, u32),
+    Artboard {
+        orig_w: u32,
+        orig_h: u32,
+        out_w: u32,
+        out_h: u32,
+    },
+    Alpha(bool),
+    FrameCount {
+        count: usize,
+        best_selected: bool,
+        duration_sec: Option<f64>,
+    },
+    DurationSec(f64),
+    OrientationAuto(u16),
+    Camera(String),
+    Lens(String),
+    DateTaken(String),
+    Exposure(String),
+    FocalLengthMm(f64),
+}
+
+/// 结构化解码/上传错误（支持 8 语种完整本地化展示，杜绝非中文环境泄露汉字）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecodeError {
+    ReadMetadata(String),
+    OpenFile(String),
+    ReadFile { format: &'static str, detail: String },
+    ZeroDimensions { format: &'static str },
+    DimensionsTooLarge { width: u32, height: u32 },
+    OutOfMemory,
+    InvalidHeader { format: &'static str },
+    TruncatedData { format: &'static str },
+    UnsupportedFormat { format: &'static str, detail: String },
+    NoValidFrames { format: &'static str },
+    WicFailure(String),
+    SvgParseFailure(String),
+    SvgTooLarge,
+    DecodeFailed { format: &'static str, detail: String },
+    GpuUploadFailed(String),
+}
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadMetadata(d) => write!(f, "Failed to read file metadata: {d}"),
+            Self::OpenFile(d) => write!(f, "Failed to open image file: {d}"),
+            Self::ReadFile { format, detail } => write!(f, "Failed to read {format}: {detail}"),
+            Self::ZeroDimensions { format } => write!(f, "{format} image has zero dimensions"),
+            Self::DimensionsTooLarge { width, height } => {
+                write!(f, "Image dimensions exceed safety limit ({width} x {height})")
+            }
+            Self::OutOfMemory => write!(f, "Insufficient memory to decode this image"),
+            Self::InvalidHeader { format } => write!(f, "Invalid {format} file header"),
+            Self::TruncatedData { format } => write!(f, "Truncated or corrupted {format} pixel data"),
+            Self::UnsupportedFormat { format, detail } => {
+                if detail.is_empty() {
+                    write!(f, "Unsupported {format} sub-format")
+                } else {
+                    write!(f, "Unsupported {format} sub-format: {detail}")
+                }
+            }
+            Self::NoValidFrames { format } => write!(f, "{format} contains no valid frames"),
+            Self::WicFailure(d) => write!(f, "Windows Imaging Codec error: {d}"),
+            Self::SvgParseFailure(d) => write!(f, "Failed to parse SVG vector document: {d}"),
+            Self::SvgTooLarge => write!(f, "Decompressed SVG size exceeds safety limit"),
+            Self::DecodeFailed { format, detail } => write!(f, "Failed to decode {format}: {detail}"),
+            Self::GpuUploadFailed(d) => write!(f, "GPU texture upload failed: {d}"),
+        }
+    }
+}
+
 /// 完整已解码图像（静态图含 1 帧，动态 GIF/WebP/APNG 含多帧）
 pub struct DecodedImage {
     pub path: PathBuf,
-    pub format_label: String,
+    pub format_kind: ImageFormatKind,
     pub file_size_bytes: u64,
     pub width: u32,
     pub height: u32,
     pub has_alpha: bool,
     pub frames: Vec<ImageFrame>,
     pub total_duration_ms: u64,
-    pub exif_summary: Vec<(String, String)>,
+    pub exif_summary: Vec<ExifField>,
 }
 
 impl DecodedImage {
@@ -66,7 +165,7 @@ pub enum LifecyclePhase {
 }
 
 /// 向心坍缩退出 (`Closing`) 初始快照：
-/// 无论关闭前照片处于 1000% 放大、边缘平移还是旋转状态，均能从当前视觉姿态精准向屏幕正中央坍缩至 `0.28 * fit_zoom`
+/// 无论关闭前照片处于 1000% 放大、边缘平移还是旋转状态，均能从当前视觉姿态精准向屏幕正中央坍缩至 `0.10 * fit_zoom`
 #[derive(Clone, Copy, Debug)]
 pub struct CloseImplodeSnapshot {
     pub start_zoom: f32,
@@ -74,6 +173,18 @@ pub struct CloseImplodeSnapshot {
     pub start_pan_x: f32,
     pub start_pan_y: f32,
     pub start_cinema_dim: f32,
+}
+
+/// 进出幻灯片放映整屏双场景叠化快照（1:1 复刻原版 Picasa `1.00s` 熄灯叠化与 `0.30s` 亮灯叠化）：
+/// 记录离场场景的几何姿态，使常规带白框原位图与全屏纯黑满屏图实现精确光学线性交叉叠化 `lerp(Viewing, Slideshow, a)`
+#[derive(Clone, Copy, Debug)]
+pub struct SlideshowPortalSnapshot {
+    pub zoom: f32,
+    pub pan_x: f32,
+    pub pan_y: f32,
+    pub rotation_deg: f32,
+    pub flip_x: f32,
+    pub flip_y: f32,
 }
 
 /// 画布背景幕布模式（按 B 循环切换）
@@ -147,7 +258,6 @@ pub enum ToolbarAction {
     NextImage,
     ToggleSlideshow,
     SlideshowTogglePause,
-    ExitSlideshow,
     ZoomIn,
     ZoomOut,
     ToggleActualSize,
@@ -224,10 +334,16 @@ impl RectF {
     }
 }
 
-/// RGBA8 直通像素原地转换为 Direct2D 所需的预乘 Alpha BGRA8
-pub fn rgba_straight_to_bgra_premul(rgba: &[u8]) -> (Vec<u8>, bool) {
+/// RGBA8 直通像素安全转换为 Direct2D 所需的预乘 Alpha BGRA8（使用 try_reserve_exact 防 OOM Abort）
+pub fn try_rgba_straight_to_bgra_premul(rgba: &[u8]) -> Result<(Vec<u8>, bool), DecodeError> {
     let pixel_count = rgba.len() / 4;
-    let mut out = vec![0u8; pixel_count * 4];
+    let byte_len = pixel_count
+        .checked_mul(4)
+        .ok_or(DecodeError::OutOfMemory)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(byte_len)
+        .map_err(|_| DecodeError::OutOfMemory)?;
+    out.resize(byte_len, 0);
     let mut has_alpha = false;
     for i in 0..pixel_count {
         let s = i * 4;
@@ -248,7 +364,7 @@ pub fn rgba_straight_to_bgra_premul(rgba: &[u8]) -> (Vec<u8>, bool) {
             out[s + 3] = 255;
         }
     }
-    (out, has_alpha)
+    Ok((out, has_alpha))
 }
 
 /// 格式化人类易读字节大小

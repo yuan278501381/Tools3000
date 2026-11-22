@@ -1076,7 +1076,8 @@ bool PlainTextExtractor::searchContentTerms(
     }
 
     // Streaming chunked path for large plain-text files (> 16 MB up to 100 MB):
-    // copies 4 MB slices under pure-POD SEH so zero RAII objects live inside `__try`.
+    // 先对非 UTF-16 大文件做 4 MB 滑窗（256B 重叠）零拷贝 Rust SIMD 预过滤，
+    // 任意 AND 关键词在全文件都不存在时直接毫秒级剪枝，避免慢速逐行解码 100 MB 大日志/JSON。
     size_t bomOffset = 0;
     const DetectedEncoding enc = detectEncoding(headerSample, headerSampleLen, bomOffset);
     if (enc == DetectedEncoding::UnknownBinary || bomOffset >= mapSize) {
@@ -1086,6 +1087,73 @@ bool PlainTextExtractor::searchContentTerms(
     constexpr size_t StreamChunkBytes = 4ULL * 1024ULL * 1024ULL;
     constexpr size_t MaxSingleStreamLineUnits = 1024ULL * 1024ULL;
     std::vector<uint8_t> chunkBuf(StreamChunkBytes);
+
+    if (enc != DetectedEncoding::Utf16Le && enc != DetectedEncoding::Utf16Be) {
+        std::vector<PreparedTermBytePatterns> largePreps;
+        largePreps.reserve(queryTerms.size());
+        size_t maxPatternBytes = 0;
+        for (const auto& t : queryTerms) {
+            if (t.empty()) continue;
+            PreparedTermBytePatterns prep;
+            buildPreparedTermBytePatterns(t, caseSensitive, prep);
+            if (prep.isAscii) {
+                maxPatternBytes = (std::max)(maxPatternBytes, prep.asciiBytes.size());
+            } else {
+                for (const auto& s : prep.variantSlices) {
+                    maxPatternBytes = (std::max)(maxPatternBytes, s.len);
+                }
+            }
+            largePreps.push_back(std::move(prep));
+        }
+        if (largePreps.empty()) {
+            return false;
+        }
+        std::vector<bool> termFound(largePreps.size(), false);
+        size_t remainingTerms = largePreps.size();
+        const size_t overlapBytes = (std::min<size_t>)(4096ULL, maxPatternBytes > 1 ? maxPatternBytes - 1 : 0);
+        size_t scanPos = bomOffset;
+        while (scanPos < mapSize && remainingTerms > 0) {
+            if (isCancelled && isCancelled()) {
+                return false;
+            }
+            const size_t sliceLen = (std::min)(mapSize - scanPos, StreamChunkBytes);
+            bool inPageErr = false;
+            if (!safeMappedMemcpyEx(chunkBuf.data(), pData + scanPos, sliceLen, &inPageErr) || inPageErr) {
+                return false;
+            }
+            for (size_t ti = 0; ti < largePreps.size(); ++ti) {
+                if (termFound[ti]) continue;
+                const auto& prep = largePreps[ti];
+                bool matchedTerm = false;
+                if (prep.isAscii) {
+                    matchedTerm = t3k_rs_find_ascii_pattern(
+                        chunkBuf.data(),
+                        sliceLen,
+                        reinterpret_cast<const uint8_t*>(prep.asciiBytes.data()),
+                        prep.asciiBytes.size(),
+                        caseSensitive ? 1 : 0) != SIZE_MAX;
+                } else {
+                    for (const auto& slice : prep.variantSlices) {
+                        if (t3k_rs_find_exact_bytes(chunkBuf.data(), sliceLen, slice.ptr, slice.len) != SIZE_MAX) {
+                            matchedTerm = true;
+                            break;
+                        }
+                    }
+                }
+                if (matchedTerm) {
+                    termFound[ti] = true;
+                    --remainingTerms;
+                }
+            }
+            if (scanPos + sliceLen >= mapSize) break;
+            const size_t step = sliceLen > overlapBytes ? (sliceLen - overlapBytes) : sliceLen;
+            scanPos += step;
+        }
+        if (remainingTerms > 0) {
+            return false;
+        }
+    }
+
     uint32_t lineNumber = 1;
     size_t offset = bomOffset;
     bool stopEarly = false;

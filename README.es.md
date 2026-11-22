@@ -89,6 +89,7 @@ Tools3000 integra en una sola aplicación nativa para Windows las herramientas e
 | **Grabación de pantalla y Estudio** | Graba la pantalla con superposición de teclas y clics y pasa al instante al Estudio: zoom automático inteligente en clics, fondos seleccionados, edición por forma de onda y exportación a **MP4**, **GIF listo para mensajería/WeChat** y **WebP animado**. |
 | **Gestos Globales de Ratón** | Mantén el botón derecho y desliza para cambiar pestañas, retroceder o cerrar ventanas; admite ejecución instantánea, control de volumen en el borde de la pantalla, reglas por aplicación y pausa automática en juegos a pantalla completa. |
 | **Presentación y Escritorio Remoto** | Visualización limpia de teclas y foco de cursor con doble toque en `Ctrl`; barra de acceso rápido en los cuadros Abrir/Guardar de Windows; paso directo de atajos en mstsc, RustDesk, ToDesk y AnyDesk con liberación de teclas bloqueadas. |
+| **Visor de Fotos Picasa (Rust · Opcional)** | Visor ligero estilo Picasa recreado en Rust + Direct2D (**solo visor, no la suite completa de Google Picasa**). **Ejecutable único de menos de 2 MB y cero dependencias externas: funciona con Tools3000 o completamente independiente en cualquier PC con Windows.** Desmarcado por defecto en el instalador; al activarlo asocia automáticamente los 41 formatos compatibles (con iconos Polaroid y panel nativo Direct2D en modo claro/oscuro). Además del zoom amortiguado en el cursor, tira de miniaturas y presentación con fundido cruzado, **añade funciones que el original nunca tuvo**: nitidez 4K High-DPI (100%–250%+), VSync 60–240 Hz, WebP / AVIF / HEIC / SVG / QOI / DDS / RAW de cámara, control de animaciones, volteo sin pérdidas e interfaz en 8 idiomas. |
 
 ---
 
@@ -109,8 +110,8 @@ scoop install tools3000/tools3000
 
 Obtén la última versión en **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases/latest)**:
 
-- **Instalador estándar (`Tools3000-Setup.exe`)** — Recomendado para el día a día, con componentes opcionales, inicio automático y actualizaciones fluidas sobre la instalación existente.
-- **Archivo portátil (`Tools3000-Portable-x64.zip`)** — Extrae y ejecuta directamente guardando toda la configuración en la misma carpeta.
+- **Instalador estándar (`Tools3000-vX.Y.Z-Setup.exe`)** — Recomendado para el día a día, con componentes opcionales, inicio automático y actualizaciones fluidas sobre la instalación existente.
+- **Archivo portátil (`Tools3000-vX.Y.Z-win-x64-portable.zip`)** — Extrae y ejecuta directamente guardando toda la configuración en la misma carpeta.
 - **Sumas de verificación (`SHA256SUMS.txt`)** — Hashes SHA-256 para comprobar la integridad de cada artefacto publicado.
 
 > **Requisitos del sistema**: Windows 10 (1809+) / Windows 11 / Windows Server 2019–2025, con soporte nativo en código y compilación para `x64` y `ARM64` (GitHub Releases ofrece actualmente instalador y versión portátil precompilados para `x64`; en equipos ARM64 se puede compilar nativamente siguiendo la [Guía para desarrolladores](docs/DEVELOPER.md) o ejecutar la versión `x64`), requiere Microsoft Edge WebView2 Runtime integrado. La interfaz de la aplicación admite de forma nativa 8 idiomas (incluido español) y sigue el idioma del sistema de forma predeterminada.
@@ -121,7 +122,7 @@ Transparencia total sin cajas negras (detalles completos en **[SECURITY.md](SECU
 
 1. **Verificación SHA-256**: comprueba el archivo descargado frente a `SHA256SUMS.txt` en PowerShell:
    ```powershell
-   Get-FileHash .\Tools3000-Setup.exe -Algorithm SHA256
+   Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **Inspección pública en VirusTotal**: introduce el SHA-256 en **[VirusTotal](https://www.virustotal.com/)** (o usa los enlaces directos incluidos en las notas de los próximos lanzamientos) para consultar 70+ motores de seguridad.
 3. **Aviso de Windows Defender SmartScreen**: mientras un proyecto independiente de código abierto no cuente con firma comercial EV/pública de confianza (SignPath / Trusted Signing en trámite) o en versiones recién publicadas, Windows puede mostrar «Editor desconocido». Tras verificar SHA-256 y VirusTotal, haz clic en **Más información -> Ejecutar de todas formas**, o compila desde el código fuente con la **[Guía para desarrolladores](docs/DEVELOPER.md)**.
@@ -132,6 +133,8 @@ Transparencia total sin cajas negras (detalles completos en **[SECURITY.md](SECU
 ## Por qué creé Tools3000
 
 Llevo más de diez años usando **Everything** a diario. En capturas de pantalla empecé con las herramientas integradas de **QQ y WeChat**, pasé a **FastStone Capture** por lo cómodas que eran sus anotaciones, luego cambié a **Snipaste** para poder fijar capturas en pantalla, y más tarde migré a **PixPin** por la captura con desplazamiento, el efecto lupa y el OCR; en gestos de ratón utilicé **WGestures** y **WGestures 2**, además de probar muchos grabadores de pantalla — a mitad de camino incluso probé Microsoft **PowerToys**, pero seguían faltando varias piezas clave de mi día a día y acabé de nuevo con varias utilidades residentes.
+
+Con los visores de imágenes me ocurrió lo mismo: las alternativas gratuitas más extendidas estaban llenas de anuncios y software añadido, y desde que Google dejó de actualizar **Picasa** probé varias opciones — como **FastStone Image Viewer** e incluso el visor oficial del autor de Everything (**Void Image Viewer**) — pero ninguno se sentía tan fluido y natural como Picasa. Al final me rendí y me conformé con la app Fotos integrada de Windows. Así que aproveché para recrear con Rust + Direct2D el clásico visor ligero de Picasa (menos de 2 MB, cero dependencias y totalmente independiente), completando además lo que faltaba en el original: nitidez High-DPI y formatos modernos como WebP/AVIF/HEIC/SVG/RAW.
 
 Un día, mirando la fila de iconos acumulados en la bandeja del sistema de Windows, pensé: **qué bien sería unir todo esto en una sola aplicación.** A eso se sumaban dos molestias cotidianas — el OCR de PixPin seguía por detrás de WeChat en precisión y velocidad, y WGestures empezó a dejar un pequeño cuadro de texto atascado en pantalla que solo desaparecía al reiniciar el programa. Aprovechando la llegada de la IA, decidí crear esta suite todo-en-uno por mi cuenta: **Tools3000**.
 
@@ -151,6 +154,7 @@ Cada utilidad especializada destaca en flujos muy concretos. Tools3000 cubre má
 | **Snipaste / PixPin** | `F1` captura y anotación, lupa discontinua, captura con desplazamiento, `F3` grupos de pines y OCR local con edición directa | Si dependes del ajuste extremo a controles GUI heredados o flujos CLI personalizados |
 | **WGestures / StrokesPlus** | Gestos con botón derecho, disparo inmediato, volumen en bordes, esquinas activas, pausa en juegos y scripts Lua | Si empleas gestos con múltiples botones simultáneos, condiciones complejas de ventana o macros históricos |
 | **Grabadores (ej. ShareX)** | Grabación de pantalla, teclas en pantalla, Estudio (edición por forma de onda y zoom de cursor), exportación a MP4, GIF y WebP | Si necesitas subida automática a 80+ nubes/S3/FTP/Webhook o pipelines FFmpeg muy personalizados |
+| **Picasa Photo Viewer / FastStone / Fotos de Windows** | Visor ligero Picasa opcional en Rust (< 2 MB, cero dependencias, ejecutable independiente): animaciones clásicas con 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW y volteo sin pérdidas | Si necesitas la biblioteca de álbumes y reconocimiento facial de Google Picasa completo o revelado RAW profesional por lotes |
 
 ---
 
@@ -181,6 +185,18 @@ Todos los atajos se pueden personalizar desde Configuración con detección de c
 - **Reportar un error**: utiliza la **[plantilla de Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
 - **Proponer mejoras**: abre un **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** o conversa en **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**.
 - **Cocrear código**: los Pull Requests son bienvenidos — consulta la **[Guía para desarrolladores](docs/DEVELOPER.md)** y la **[Guía de empaquetado](packaging/README.md)**.
+
+---
+
+## Star History
+
+<a href="https://www.star-history.com/#yuan278501381/Tools3000&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+ </picture>
+</a>
 
 ---
 

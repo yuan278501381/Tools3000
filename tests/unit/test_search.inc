@@ -3962,6 +3962,7 @@ TEST(SearchPluginInteractionAndSettingsSyncTest, ReturnsFileNotFoundCodeAndPersi
         {"disabledContentFormats", nlohmann::json::array({".log", "tmp"})},
         {"uiPreferences", {
             {"density", "compact"},
+            {"viewLayout", "table"},
             {"excludeGitAndModules", false}
         }}
     });
@@ -3980,11 +3981,21 @@ TEST(SearchPluginInteractionAndSettingsSyncTest, ReturnsFileNotFoundCodeAndPersi
 
     ASSERT_TRUE(loaded.contains("uiPreferences") && loaded["uiPreferences"].is_object());
     EXPECT_EQ(loaded["uiPreferences"].value("density", ""), "compact");
+    EXPECT_EQ(loaded["uiPreferences"].value("viewLayout", ""), "table");
     EXPECT_EQ(loaded["uiPreferences"].value("searchMode", ""), "both");
     EXPECT_EQ(loaded["uiPreferences"].value("defaultCategory", ""), "code");
     EXPECT_FALSE(loaded["uiPreferences"].value("excludeGitAndModules", true));
     EXPECT_EQ(loaded["uiPreferences"].value("customContentFormats", nlohmann::json::array()), expectedCustom);
     EXPECT_EQ(loaded["uiPreferences"].value("disabledContentFormats", nlohmann::json::array()), expectedDisabled);
+
+    // 3. 验证窗口工作区最大化 IPC 状态机（getMaximized / setMaximized / toggleMaximized / resetPlacement）
+    EXPECT_FALSE(callSync("search.getMaximized", nlohmann::json::object()).value("maximized", true));
+    EXPECT_TRUE(callSync("search.setMaximized", {{"maximized", true}}).value("maximized", false));
+    EXPECT_TRUE(callSync("search.getMaximized", nlohmann::json::object()).value("maximized", false));
+    EXPECT_FALSE(callSync("search.toggleMaximized", nlohmann::json::object()).value("maximized", true));
+    EXPECT_TRUE(callSync("search.toggleMaximized", nlohmann::json::object()).value("maximized", false));
+    EXPECT_FALSE(callSync("search.resetPlacement", nlohmann::json::object()).value("maximized", true));
+    EXPECT_FALSE(callSync("search.getMaximized", nlohmann::json::object()).value("maximized", true));
 }
 
 TEST(SearchServiceWakeupNonBlockingTest, MarkMetadataDirtyAndFastConcurrentDbStats) {
@@ -4087,4 +4098,508 @@ TEST(SearchServiceWakeupNonBlockingTest, MarkMetadataDirtyAndFastConcurrentDbSta
 
     dbMgr.init(prevPath);
     std::filesystem::remove_all(dbDir, ec);
+}
+
+TEST(SlashPathFragmentSeparableTest, PinyinInitialsFullAndWildcardAcrossPathSeparators) {
+    MftParser parser;
+    parser.Initialize('D');
+    parser.setRealTimeValidation(false);
+
+    std::vector<FileRecordInit> records;
+    auto addDir = [&](DWORDLONG frn, DWORDLONG parent, const wchar_t* name) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = frn;
+        r.parentFileReferenceNumber = parent;
+        r.fileName = name;
+        r.isDirectory = true;
+        r.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+        records.push_back(std::move(r));
+    };
+    auto addFile = [&](DWORDLONG frn, DWORDLONG parent, const wchar_t* name) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = frn;
+        r.parentFileReferenceNumber = parent;
+        r.fileName = name;
+        r.isDirectory = false;
+        r.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+        r.fileSize = 4096;
+        r.lastWriteTime = 133450000000000000ULL;
+        records.push_back(std::move(r));
+    };
+
+    // 构建包含中文与英文混合层级的真实目录树 + 2000 个噪音目录与文件：
+    // D:\工作目录\user\说明文档.md
+    // D:\工作目录\测试项目\user\config.json
+    addDir(5, 5, L".");
+    addDir(100, 5, L"工作目录");
+    addDir(101, 100, L"user");
+    addFile(102, 101, L"说明文档.md");
+    addDir(110, 100, L"测试项目");
+    addDir(111, 110, L"user");
+    addFile(112, 111, L"config.json");
+
+    for (DWORDLONG d = 0; d < 20; ++d) {
+        const DWORDLONG dirId = 2000 + d;
+        const std::wstring noiseDir = L"noise_pkg_" + std::to_wstring(d);
+        addDir(dirId, 5, noiseDir.c_str());
+        for (DWORDLONG f = 0; f < 100; ++f) {
+            FileRecordInit nf{};
+            nf.fileReferenceNumber = 20000 + d * 100 + f;
+            nf.parentFileReferenceNumber = dirId;
+            nf.fileName = L"item_" + std::to_wstring(f) + L".txt";
+            nf.isDirectory = false;
+            nf.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+            nf.fileSize = 256;
+            nf.lastWriteTime = 133400000000000000ULL;
+            records.push_back(std::move(nf));
+        }
+    }
+
+    ASSERT_TRUE(parser.importSnapshot(std::move(records), 3000, parser.getVolumeSerialNumber()));
+
+    const SearchExcludeOptions noExcludes{};
+    const SearchParseOptions pinyinOn{true, false, false};
+    const SearchParseOptions pinyinOff{false, false, false};
+
+    // 1. 拼音首字母 + 反斜杠：gzml\user 精准命中 D:\工作目录\user 及其子文件，且 O(1) 淘汰 2000 个无关噪音文件
+    auto hitsInitials = parser.Search(L"gzml\\user", 50, noExcludes, nullptr, pinyinOn);
+    ASSERT_EQ(hitsInitials.size(), 2u);
+    EXPECT_LE(parser.getLastSearchPathBuildCount(), 10u);
+    // 验证目标目录自身 D:\工作目录\user 的 matchRank 优于深层子文件
+    bool foundTargetDir = false;
+    bool foundChildDoc = false;
+    for (const auto& h : hitsInitials) {
+        if (h.fullPath == L"D:\\工作目录\\user") foundTargetDir = true;
+        if (h.fullPath == L"D:\\工作目录\\user\\说明文档.md") foundChildDoc = true;
+    }
+    EXPECT_TRUE(foundTargetDir);
+    EXPECT_TRUE(foundChildDoc);
+    EXPECT_EQ(hitsInitials[0].fullPath, L"D:\\工作目录\\user");
+
+    // 2. 正斜杠与双引号写法：gzml/user 与 "gzml\user"
+    auto hitsForwardSlash = parser.Search(L"gzml/user", 50, noExcludes, nullptr, pinyinOn);
+    EXPECT_EQ(hitsForwardSlash.size(), 2u);
+    auto hitsQuoted = parser.Search(L"\"gzml\\user\"", 50, noExcludes, nullptr, pinyinOn);
+    EXPECT_EQ(hitsQuoted.size(), 2u);
+
+    // 3. 全拼 + 反斜杠：gongzuomulu\user
+    auto hitsFullPy = parser.Search(L"gongzuomulu\\user", 50, noExcludes, nullptr, pinyinOn);
+    EXPECT_EQ(hitsFullPy.size(), 2u);
+    EXPECT_LE(parser.getLastSearchPathBuildCount(), 10u);
+
+    // 4. 跨目录层级的通配符 + 拼音首字母：*gzml*\*user* 同时覆盖直接子级与隔层子级（共 4 条记录），且保持 O(1) 位掩码快筛
+    auto hitsWildcard = parser.Search(L"*gzml*\\*user*", 50, noExcludes, nullptr, pinyinOn);
+    EXPECT_EQ(hitsWildcard.size(), 4u);
+    EXPECT_LE(parser.getLastSearchPathBuildCount(), 12u);
+
+    // 5. 中拼混合与首全混合跨段匹配：工作目录\csxm 与 *工作目录*\*smwd*
+    auto hitsMixedCjkPy = parser.Search(L"工作目录\\csxm", 50, noExcludes, nullptr, pinyinOn);
+    EXPECT_EQ(hitsMixedCjkPy.size(), 3u); // 测试项目, 测试项目\user, 测试项目\user\config.json
+    auto hitsMixedWild = parser.Search(L"*工作目录*\\*smwd*", 50, noExcludes, nullptr, pinyinOn);
+    ASSERT_EQ(hitsMixedWild.size(), 1u);
+    EXPECT_EQ(hitsMixedWild[0].fullPath, L"D:\\工作目录\\user\\说明文档.md");
+
+    // 6. 单文件名通配符拼音与显式 py: 算子：*smwd* / py:*gzml*\*user*
+    auto hitsLeafWildPy = parser.Search(L"*smwd*.md", 50, noExcludes, nullptr, pinyinOn);
+    ASSERT_EQ(hitsLeafWildPy.size(), 1u);
+    EXPECT_EQ(hitsLeafWildPy[0].fullPath, L"D:\\工作目录\\user\\说明文档.md");
+    auto hitsExplicitPyOffGlobal = parser.Search(L"py:*gzml*\\*user*", 50, noExcludes, nullptr, pinyinOff);
+    EXPECT_EQ(hitsExplicitPyOffGlobal.size(), 4u);
+
+    // 7. parent: 拼音路径过滤
+    auto hitsParentPy = parser.Search(L"parent:gzml\\user", 50, noExcludes, nullptr, pinyinOn);
+    ASSERT_EQ(hitsParentPy.size(), 1u);
+    EXPECT_EQ(hitsParentPy[0].fullPath, L"D:\\工作目录\\user\\说明文档.md");
+
+    // 8. 负例门禁：关闭拼音、nopy:、case: 时绝不误匹配拼音路径
+    EXPECT_EQ(parser.Search(L"gzml\\user", 50, noExcludes, nullptr, pinyinOff).size(), 0u);
+    EXPECT_EQ(parser.Search(L"nopy:gzml\\user", 50, noExcludes, nullptr, pinyinOn).size(), 0u);
+    EXPECT_EQ(parser.Search(L"case:gzml\\user", 50, noExcludes, nullptr, pinyinOn).size(), 0u);
+}
+
+#include "search/SearchQueryConfigUtils.h"
+
+TEST(NonChineseLocaleAndNonCjkPinyinIsolationTest, LocaleDefaultPolicyAndZeroWesternOrKanjiConflict) {
+    using tools3000::core::UiLanguage;
+    using tools3000::search::defaultPinyinEnabledForUiLanguage;
+    using tools3000::search::resolveEffectivePinyinEnabled;
+
+    // 1. 语种默认策略门禁：仅简/繁中文默认开启拼音，全部 6 种非中文语境默认关闭
+    EXPECT_TRUE(defaultPinyinEnabledForUiLanguage(UiLanguage::ZhCN));
+    EXPECT_TRUE(defaultPinyinEnabledForUiLanguage(UiLanguage::ZhTW));
+    EXPECT_FALSE(defaultPinyinEnabledForUiLanguage(UiLanguage::EnUS));
+    EXPECT_FALSE(defaultPinyinEnabledForUiLanguage(UiLanguage::JaJP));
+    EXPECT_FALSE(defaultPinyinEnabledForUiLanguage(UiLanguage::KoKR));
+    EXPECT_FALSE(defaultPinyinEnabledForUiLanguage(UiLanguage::RuRU));
+    EXPECT_FALSE(defaultPinyinEnabledForUiLanguage(UiLanguage::PtBR));
+    EXPECT_FALSE(defaultPinyinEnabledForUiLanguage(UiLanguage::EsES));
+
+    // 2. ConfigManager 显式开关覆盖门禁：用户手动开启/关闭始终最高优先
+    const std::filesystem::path tmpCfgDir =
+        std::filesystem::temp_directory_path() /
+        ("Tools3000_LocalePinyinGate_" + std::to_string(GetCurrentProcessId()));
+    std::error_code fsEc;
+    std::filesystem::create_directories(tmpCfgDir, fsEc);
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tmpCfgDir, "locale_pinyin_test.json"));
+    struct RestoreGuard {
+        tools3000::core::ConfigManager& c;
+        std::filesystem::path dir;
+        ~RestoreGuard() {
+            c.shutdown();
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{cfg, tmpCfgDir};
+
+    cfg.remove("/search/pinyinEnabled");
+    EXPECT_TRUE(resolveEffectivePinyinEnabled(cfg, UiLanguage::ZhCN));
+    EXPECT_FALSE(resolveEffectivePinyinEnabled(cfg, UiLanguage::EnUS));
+    EXPECT_FALSE(resolveEffectivePinyinEnabled(cfg, UiLanguage::JaJP));
+
+    ASSERT_TRUE(cfg.set("/search/pinyinEnabled", true));
+    EXPECT_TRUE(resolveEffectivePinyinEnabled(cfg, UiLanguage::EnUS));
+    EXPECT_TRUE(resolveEffectivePinyinEnabled(cfg, UiLanguage::JaJP));
+
+    ASSERT_TRUE(cfg.set("/search/pinyinEnabled", false));
+    EXPECT_FALSE(resolveEffectivePinyinEnabled(cfg, UiLanguage::ZhCN));
+
+    // 3. 构建多语种混合索引：西文含 '-' 与 '\'' 文件、日文汉字 (Kanji) 文件、中文文件
+    MftParser parser;
+    parser.Initialize('D');
+    parser.setRealTimeValidation(false);
+    std::vector<FileRecordInit> records;
+    auto addRec = [&](uint64_t frn, uint64_t parent, const wchar_t* name, bool isDir) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = frn;
+        r.parentFileReferenceNumber = parent;
+        r.fileName = name;
+        r.isDirectory = isDir;
+        r.fileAttributes = isDir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE;
+        r.fileSize = isDir ? 0 : 1024;
+        records.push_back(std::move(r));
+    };
+    addRec(10, 5, L"docs", true);
+    addRec(11, 10, L"email.txt", false);
+    addRec(12, 10, L"e-mail.txt", false);
+    addRec(13, 10, L"dont_delete.txt", false);
+    addRec(14, 10, L"don't_delete.txt", false);
+    addRec(20, 5, L"作業フォルダ", true);        // 日文 Kanji + 片假名 ("作"=zuo, "業"=ye)
+    addRec(21, 20, L"営業資料.pdf", false);      // 日文 Kanji
+    addRec(30, 5, L"星云科技-采购.ch", false);    // 中文带连字符
+    addRec(31, 5, L"同喜.txt", false);           // 中文双音节
+
+    ASSERT_TRUE(parser.importSnapshot(std::move(records), 987654ULL, parser.getVolumeSerialNumber()));
+
+    const SearchExcludeOptions noExcludes{};
+    const SearchParseOptions jaDefaultOpts{
+        defaultPinyinEnabledForUiLanguage(UiLanguage::JaJP), false, false
+    };
+    const SearchParseOptions zhDefaultOpts{
+        defaultPinyinEnabledForUiLanguage(UiLanguage::ZhCN), false, false
+    };
+
+    // 3a. 日本用户在日语默认语境下搜索英文词 'zy' / 'zl'，日文 Kanji 0 假阳性干扰
+    EXPECT_EQ(parser.Search(L"zy", 50, noExcludes, nullptr, jaDefaultOpts).size(), 0u);
+    EXPECT_EQ(parser.Search(L"zl", 50, noExcludes, nullptr, jaDefaultOpts).size(), 0u);
+    EXPECT_EQ(parser.Search(L"営業資料", 50, noExcludes, nullptr, jaDefaultOpts).size(), 1u);
+
+    // 3b. 欧美纯西文文件：即使在开启拼音 (zhDefaultOpts) 下，搜 e-mail / don't / !e-mail / py:email 亦 100% 零误触
+    auto hitsHyphen = parser.Search(L"e-mail", 50, noExcludes, nullptr, zhDefaultOpts);
+    ASSERT_EQ(hitsHyphen.size(), 1u);
+    EXPECT_EQ(hitsHyphen[0].fileName, L"e-mail.txt");
+
+    auto hitsApostrophe = parser.Search(L"don't", 50, noExcludes, nullptr, zhDefaultOpts);
+    ASSERT_EQ(hitsApostrophe.size(), 1u);
+    EXPECT_EQ(hitsApostrophe[0].fileName, L"don't_delete.txt");
+
+    // 排除 !e-mail 时，email.txt 必须安全保留，绝不被误杀
+    auto hitsExcludeHyphen = parser.Search(L"docs\\ !e-mail", 50, noExcludes, nullptr, zhDefaultOpts);
+    bool emailTxtSurvived = false;
+    bool eHyphenMailExcluded = true;
+    for (const auto& item : hitsExcludeHyphen) {
+        if (item.fileName == L"email.txt") emailTxtSurvived = true;
+        if (item.fileName == L"e-mail.txt") eHyphenMailExcluded = false;
+    }
+    EXPECT_TRUE(emailTxtSurvived);
+    EXPECT_TRUE(eHyphenMailExcluded);
+
+    // py: 显式拼音算子绝不把纯英文文件当成拼音结果
+    EXPECT_EQ(parser.Search(L"py:email", 50, noExcludes, nullptr, zhDefaultOpts).size(), 0u);
+
+    // 3c. 中文带连字符首字母 xykj-cg 与拼音分词符 tong'xi 依然 100% 精准命中
+    auto hitsCjkHyphen = parser.Search(L"xykj-cg", 50, noExcludes, nullptr, zhDefaultOpts);
+    ASSERT_EQ(hitsCjkHyphen.size(), 1u);
+    EXPECT_EQ(hitsCjkHyphen[0].fileName, L"星云科技-采购.ch");
+
+    auto hitsCjkApostrophe = parser.Search(L"tong'xi", 50, noExcludes, nullptr, zhDefaultOpts);
+    ASSERT_EQ(hitsCjkApostrophe.size(), 1u);
+    EXPECT_EQ(hitsCjkApostrophe[0].fileName, L"同喜.txt");
+}
+
+// -----------------------------------------------------------------------------
+// 回归防线：QueryThreadPool 禁止跨批次工作窃取引发的同线程 SRWLock Shared->Exclusive 自死锁
+// 复现 2026-11-22 线上事故：多线程并发 Search（持 shared_lock 进 parallelFor + 结束后
+// unique_lock 回写元数据）与外层嵌套 parallelFor 同跑，旧实现下会瞬间触发同线程自死锁。
+// -----------------------------------------------------------------------------
+TEST(MftParserConcurrencyRegressionTest, NestedParallelForAndConcurrentSearchWritebackNeverDeadlocks) {
+    MftParser parser;
+    std::vector<FileRecordInit> records;
+    // 超过 10000 条以真实触发 MftParser::Search 内部 16 核 QueryThreadPool::parallelFor 分片路径
+    constexpr size_t kTotalFiles = 12000;
+    records.reserve(kTotalFiles + 2);
+    {
+        FileRecordInit root{};
+        root.fileReferenceNumber = 5;
+        root.parentFileReferenceNumber = 5;
+        root.fileName = L".";
+        root.isDirectory = true;
+        root.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+        records.push_back(std::move(root));
+    }
+    for (size_t i = 0; i < kTotalFiles; ++i) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = 100 + i;
+        r.parentFileReferenceNumber = 5;
+        r.fileName = (i % 97 == 0)
+            ? (L"建邦_账号密码_" + std::to_wstring(i) + L".txt")
+            : (L"file_item_" + std::to_wstring(i) + L".log");
+        r.isDirectory = false;
+        r.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+        r.fileSize = 0;       // 故意留 0 触发 hydrate / writeLock 路径
+        r.lastWriteTime = 0;
+        records.push_back(std::move(r));
+    }
+    ASSERT_TRUE(parser.importSnapshot(std::move(records), 12345ULL, parser.getVolumeSerialNumber()));
+    EXPECT_EQ(parser.getFileCount(), kTotalFiles + 1);
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> completedQueries{0};
+    std::atomic<int> completedStats{0};
+
+    // 同时模拟外层嵌套 parallelFor + 多线程并发 Search + 无锁 getFileCount 轮询
+    std::vector<std::thread> clients;
+    for (int t = 0; t < 4; ++t) {
+        clients.emplace_back([&, t]() {
+            const SearchExcludeOptions noExcludes{};
+            const SearchParseOptions opts{true, false, false};
+            for (int iter = 0; iter < 15; ++iter) {
+                tools3000::service::QueryThreadPool::instance().parallelFor(2, [&](size_t slot) {
+                    const std::wstring q = ((iter + t + slot) % 2 == 0)
+                        ? L"建邦 账号密码"
+                        : L"file_item_10";
+                    auto hits = parser.Search(q, 50, noExcludes, nullptr, opts);
+                    EXPECT_FALSE(hits.empty());
+                    completedQueries.fetch_add(1, std::memory_order_relaxed);
+                });
+            }
+        });
+    }
+
+    std::thread statsReader([&]() {
+        while (!stop.load(std::memory_order_acquire)) {
+            EXPECT_GT(parser.getFileCount(), 0u);
+            completedStats.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::yield();
+        }
+    });
+
+    for (auto& th : clients) {
+        th.join();
+    }
+    stop.store(true, std::memory_order_release);
+    statsReader.join();
+
+    EXPECT_EQ(completedQueries.load(), 4 * 15 * 2);
+    EXPECT_GT(completedStats.load(), 0);
+}
+
+TEST(SearchPropertyExtractorTest, ExtractsAttributesShellTypeImageDimensionsPeVersionHashesAndCaches) {
+    using tools3000::search::PropertyExtractItem;
+    using tools3000::search::SearchPropertyExtractor;
+
+    auto& extractor = SearchPropertyExtractor::instance();
+    extractor.clearCache();
+
+    // 1. 属性格式化
+    EXPECT_EQ(SearchPropertyExtractor::formatFileAttributes(FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_ARCHIVE), "RA");
+    EXPECT_EQ(SearchPropertyExtractor::formatFileAttributes(FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_DIRECTORY), "HSD");
+
+    // 2. 在临时目录创建文本文件 + 32x18 BMP 图片文件
+    wchar_t tempRoot[MAX_PATH]{};
+    ASSERT_GT(GetTempPathW(MAX_PATH, tempRoot), 0u);
+    const std::filesystem::path workDir =
+        std::filesystem::path(tempRoot) / (L"Tools3000_PropExtTest_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(workDir, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(workDir, ec));
+
+    const std::filesystem::path txtFile = workDir / L"sample_hello.txt";
+    {
+        HANDLE hf = CreateFileW(txtFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        ASSERT_NE(hf, INVALID_HANDLE_VALUE);
+        const char payload[] = "hello";
+        DWORD written = 0;
+        WriteFile(hf, payload, 5, &written, nullptr);
+        CloseHandle(hf);
+    }
+
+    // 构造合法 24-bit 32x18 BMP（WIC 原生 0 外部依赖解码）
+    const std::filesystem::path bmpFile = workDir / L"banner_32x18.bmp";
+    {
+        BITMAPFILEHEADER bfh{};
+        BITMAPINFOHEADER bih{};
+        bih.biSize = sizeof(BITMAPINFOHEADER);
+        bih.biWidth = 32;
+        bih.biHeight = 18;
+        bih.biPlanes = 1;
+        bih.biBitCount = 24;
+        bih.biCompression = BI_RGB;
+        const DWORD rowStride = ((32 * 3 + 3) & ~3u);
+        const DWORD pixelBytes = rowStride * 18;
+        bih.biSizeImage = pixelBytes;
+        bfh.bfType = 0x4D42; // 'BM'
+        bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+        bfh.bfSize = bfh.bfOffBits + pixelBytes;
+
+        std::vector<BYTE> pixels(pixelBytes, 0x88);
+        HANDLE hf = CreateFileW(bmpFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        ASSERT_NE(hf, INVALID_HANDLE_VALUE);
+        DWORD written = 0;
+        WriteFile(hf, &bfh, sizeof(bfh), &written, nullptr);
+        WriteFile(hf, &bih, sizeof(bih), &written, nullptr);
+        WriteFile(hf, pixels.data(), pixelBytes, &written, nullptr);
+        CloseHandle(hf);
+    }
+
+    const std::string txtUtf8 = tools3000::core::WinUtils::wstringToUtf8(txtFile.wstring());
+    const std::string bmpUtf8 = tools3000::core::WinUtils::wstringToUtf8(bmpFile.wstring());
+    const std::string dirUtf8 = tools3000::core::WinUtils::wstringToUtf8(workDir.wstring());
+
+    // 3. 批量提取：验证纯字符串、哈希、Shell 类型、WIC 图片头、文件夹子项数、所有者
+    std::vector<PropertyExtractItem> batchItems = {
+        PropertyExtractItem{txtUtf8, false, 0, 0},
+        PropertyExtractItem{bmpUtf8, false, 0, 0},
+        PropertyExtractItem{dirUtf8, true, 0, 0},
+    };
+    const std::vector<std::string> props = {
+        "type", "ext", "stem", "parentName", "drive", "fullPathLength",
+        "crc32", "md5", "sha256",
+        "dimensions", "width", "height", "aspectRatio", "bitDepth",
+        "childCount", "owner", "attributes"
+    };
+
+    const auto first = extractor.extractBatch(batchItems, props);
+    EXPECT_EQ(first.diskExtractions, 3u);
+    EXPECT_EQ(first.cacheHits, 0u);
+
+    // "hello" 的标准哈希值
+    const auto& txtVals = first.values.at(txtUtf8);
+    EXPECT_EQ(txtVals.at("ext").display, "txt");
+    EXPECT_EQ(txtVals.at("stem").display, "sample_hello");
+    EXPECT_EQ(txtVals.at("crc32").display, "3610a686");
+    EXPECT_EQ(txtVals.at("md5").display, "5d41402abc4b2a76b9719d911017c592");
+    EXPECT_EQ(txtVals.at("sha256").display, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    EXPECT_FALSE(txtVals.at("type").display.empty());
+    EXPECT_FALSE(txtVals.at("owner").display.empty());
+
+    // 32x18 BMP WIC 读头
+    const auto& bmpVals = first.values.at(bmpUtf8);
+    EXPECT_EQ(bmpVals.at("dimensions").display, "32 x 18");
+    EXPECT_EQ(bmpVals.at("width").display, "32 px");
+    EXPECT_EQ(bmpVals.at("height").display, "18 px");
+    EXPECT_EQ(bmpVals.at("aspectRatio").display, "16:9");
+    EXPECT_EQ(bmpVals.at("bitDepth").display, "24");
+
+    // 文件夹直属子项数 = 2（txt + bmp）
+    const auto& dirVals = first.values.at(dirUtf8);
+    EXPECT_EQ(dirVals.at("childCount").display, "2");
+    ASSERT_TRUE(dirVals.at("childCount").sortNumber.has_value());
+    EXPECT_DOUBLE_EQ(*dirVals.at("childCount").sortNumber, 2.0);
+
+    // 4. 第二次相同请求必须 100% 命中进程级 LRU 缓存（0 次磁盘提取）
+    const auto second = extractor.extractBatch(batchItems, props);
+    EXPECT_EQ(second.cacheHits, 3u);
+    EXPECT_EQ(second.diskExtractions, 0u);
+
+    // 5. 测试系统 PE 程序版本信息提取（C:\Windows\System32\kernel32.dll 必存在）
+    wchar_t sysDir[MAX_PATH]{};
+    ASSERT_GT(GetSystemDirectoryW(sysDir, MAX_PATH), 0u);
+    const std::string kernel32Utf8 = tools3000::core::WinUtils::wstringToUtf8(std::wstring(sysDir) + L"\\kernel32.dll");
+    const auto peRes = extractor.extractBatch(
+        {PropertyExtractItem{kernel32Utf8, false, 0, 0}},
+        {"fileVersion", "company", "fileDescription"}
+    );
+    const auto& peVals = peRes.values.at(kernel32Utf8);
+    EXPECT_FALSE(peVals.at("fileVersion").display.empty());
+    EXPECT_FALSE(peVals.at("company").display.empty());
+
+    // 6. 验证 JSON 协议接口
+    const nlohmann::json jsonResp = extractor.handleBatchRequestJson({
+        {"items", nlohmann::json::array({{{"path", bmpUtf8}, {"isDirectory", false}}})},
+        {"properties", nlohmann::json::array({"dimensions", "width"})}
+    });
+    EXPECT_TRUE(jsonResp.value("success", false));
+    ASSERT_TRUE(jsonResp.contains("values"));
+    EXPECT_EQ(jsonResp["values"][bmpUtf8]["dimensions"]["d"].get<std::string>(), "32 x 18");
+    EXPECT_DOUBLE_EQ(jsonResp["values"][bmpUtf8]["width"]["n"].get<double>(), 32.0);
+
+    std::filesystem::remove_all(workDir, ec);
+}
+
+TEST(MftParserTest, ScanPhaseAndHydratedAttributesAndAccessTime) {
+    MftParser parser;
+    EXPECT_EQ(parser.getScanPhase(), MftParser::ScanPhase::Idle);
+
+    wchar_t tempRoot[MAX_PATH]{};
+    ASSERT_GT(GetTempPathW(MAX_PATH, tempRoot), 0u);
+    const std::wstring testFile = std::wstring(tempRoot) + L"Tools3000_Tier1Meta_" + std::to_wstring(GetCurrentProcessId()) + L".txt";
+    {
+        HANDLE hf = CreateFileW(testFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_ARCHIVE, nullptr);
+        ASSERT_NE(hf, INVALID_HANDLE_VALUE);
+        DWORD written = 0;
+        WriteFile(hf, "abc", 3, &written, nullptr);
+        CloseHandle(hf);
+    }
+
+    // 校验 importSnapshot 后 phase 复位为 Idle 且记录计数正确
+    std::vector<FileRecordInit> recs;
+    FileRecordInit item{};
+    item.fileReferenceNumber = 42;
+    item.parentFileReferenceNumber = 0;
+    item.fileName = L"Tier1AttrSample.txt";
+    item.isDirectory = false;
+    item.fileAttributes = FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_READONLY;
+    item.fileSize = 123;
+    recs.push_back(std::move(item));
+
+    ASSERT_TRUE(parser.importSnapshot(std::move(recs), 100ULL, 0u));
+    EXPECT_EQ(parser.getScanPhase(), MftParser::ScanPhase::Idle);
+    EXPECT_EQ(parser.getScannedRecords(), 1u);
+
+    auto hits = parser.Search(L"Tier1AttrSample", 10);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0].fileAttributes, static_cast<uint32_t>(FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_READONLY));
+
+    DeleteFileW(testFile.c_str());
+}
+
+TEST(SearchPropertyExtractorTest, CloudPlaceholderGuardAndGenerationCancellation) {
+    using tools3000::search::PropertyExtractItem;
+    using tools3000::search::SearchPropertyExtractor;
+
+    EXPECT_FALSE(SearchPropertyExtractor::isCloudPlaceholderAttributes(FILE_ATTRIBUTE_ARCHIVE));
+    EXPECT_TRUE(SearchPropertyExtractor::isCloudPlaceholderAttributes(FILE_ATTRIBUTE_OFFLINE));
+    EXPECT_TRUE(SearchPropertyExtractor::isCloudPlaceholderAttributes(0x00400000U)); // RECALL_ON_DATA_ACCESS
+    EXPECT_TRUE(SearchPropertyExtractor::isCloudPlaceholderAttributes(0x00040000U)); // RECALL_ON_OPEN
+
+    auto& extractor = SearchPropertyExtractor::instance();
+    extractor.advanceRequestGeneration(500);
+    const auto cancelledRes = extractor.extractBatch(
+        {PropertyExtractItem{"C:\\Windows\\System32\\kernel32.dll", false, 0, 0}},
+        {"md5"},
+        499
+    );
+    EXPECT_TRUE(cancelledRes.cancelled);
+    EXPECT_TRUE(cancelledRes.values.empty());
 }

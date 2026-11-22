@@ -17,6 +17,9 @@ import {
   Trash2,
   Lightbulb,
   ChevronRight,
+  Columns3,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { bridgeRequest } from '../hooks/useBridge';
@@ -52,8 +55,11 @@ export interface SearchViewSettingsModalProps {
   onChangeMaxResultLimit: (limit: number) => void;
   windowSize: { width: number; height: number };
   onSetWindowSize: (size: { width: number; height: number }) => void;
+  isMaximized?: boolean;
+  onToggleMaximized?: () => void;
   columns: ColumnSetting[];
   onToggleColumn: (colId: ColumnId) => void;
+  onOpenColumnManager?: () => void;
   nameFlex: number;
   pathFlex: number;
   onUpdateNameAndPathFlex: (nameFlex: number) => void;
@@ -97,8 +103,11 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
   onChangeMaxResultLimit,
   windowSize,
   onSetWindowSize,
+  isMaximized = false,
+  onToggleMaximized,
   columns,
   onToggleColumn,
+  onOpenColumnManager,
   nameFlex,
   pathFlex,
   onUpdateNameAndPathFlex,
@@ -145,8 +154,9 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
           onClick={onClose}
           type="button"
           title={t('search.close', 'Close')}
+          aria-label={t('search.close', 'Close')}
         >
-          <X size={14} />
+          <X size={14} aria-hidden="true" />
         </button>
       </div>
 
@@ -247,7 +257,7 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
           </div>
         </div>
 
-        {/* 1. 布局密度 */}
+        {/* 2. 布局密度 */}
         <div className="popover-section">
           <div className="popover-section-title">
             <span>{t('search.density', 'List Display Density')}</span>
@@ -324,7 +334,9 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
           <div className="popover-section-title">
             <span className="popover-section-title-left">
               <span>{t('search.windowSizePlacement', 'Window Size & Placement')}</span>
-              <span className="popover-metric-pill">{windowSize.width} × {windowSize.height}</span>
+              <span className="popover-metric-pill">
+                {isMaximized ? t('search.maximizedBadge', 'Full Workspace') : `${windowSize.width} × ${windowSize.height}`}
+              </span>
             </span>
             <button
               type="button"
@@ -340,9 +352,24 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
               {t('search.resetPlacementBtn', 'Reset to Default Center (760×520)')}
             </button>
           </div>
+          {onToggleMaximized && (
+            <button
+              type="button"
+              className={`popover-rebuild-btn popover-maximize-btn ${isMaximized ? 'popover-preset-btn--active' : ''}`}
+              onClick={onToggleMaximized}
+              style={{ marginBottom: 8 }}
+            >
+              {isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+              <span>
+                {isMaximized
+                  ? t('search.restoreWindowBtn', 'Restore Floating Window (F11)')
+                  : t('search.maximizeWindowBtn', 'Maximize to Full Workspace (F11)')}
+              </span>
+            </button>
+          )}
           <div className="popover-presets-grid">
             {WINDOW_PRESETS.map((preset) => {
-              const isMatch = Math.abs(windowSize.width - preset.width) <= 20 && Math.abs(windowSize.height - preset.height) <= 20;
+              const isMatch = !isMaximized && Math.abs(windowSize.width - preset.width) <= 20 && Math.abs(windowSize.height - preset.height) <= 20;
               const presetKeyMap: Record<string, 'search.presetStandard' | 'search.presetWide' | 'search.presetLarge' | 'search.presetExtra'> = {
                 standard: 'search.presetStandard',
                 wide: 'search.presetWide',
@@ -376,10 +403,23 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
           </div>
         </div>
 
-        {/* 3. 结果列表列显示设置 */}
+        {/* 3. 表头核心列与全文摘要行开关（与表头列单一事实源联动） */}
         <div className="popover-section">
           <div className="popover-section-title">
             <span>{t('search.visibleColumns', 'Visible Columns & Layout')}</span>
+            {onOpenColumnManager && (
+              <button
+                type="button"
+                className="popover-mini-link"
+                onClick={() => {
+                  onClose();
+                  onOpenColumnManager();
+                }}
+              >
+                <Columns3 size={11} style={{ marginRight: 3, verticalAlign: -1 }} aria-hidden="true" />
+                {t('search.organizeColumnsAction', 'Organize Columns...')}
+              </button>
+            )}
           </div>
           <div className="popover-cols-grid">
             {columns.map((col) => (
@@ -391,9 +431,7 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
                   onChange={() => onToggleColumn(col.id)}
                 />
                 <span>{col.id === 'name' ? t('search.colName', 'File Name') :
-                       col.id === 'ext' ? t('search.colType', 'Extension/Type') :
-                       col.id === 'parent' ? t('search.colParent', 'Parent Folder') :
-                       col.id === 'path' ? t('search.colPath', 'Full Path') :
+                       col.id === 'path' ? t('search.colDirectory', 'Directory') :
                        col.id === 'size' ? t('search.colSize', 'File Size') :
                        col.id === 'modified' ? t('search.colModified', 'Modified Time') :
                        col.id === 'created' ? t('search.colCreated', 'Created Time') :
@@ -498,10 +536,7 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
               <input
                 type="checkbox"
                 checked={excludeGitAndModules}
-                onChange={(e) => {
-                  onSetExcludeGitAndModules(e.target.checked);
-                  localStorage.setItem('tools3000_search_exclude_dev', String(e.target.checked));
-                }}
+                onChange={(e) => onSetExcludeGitAndModules(e.target.checked)}
               />
               <span>{t('search.excludeDevTrash', 'Exclude dev dependencies & Recycle Bin (node_modules, .git, $Recycle.Bin)')}</span>
             </label>
@@ -509,10 +544,7 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
               <input
                 type="checkbox"
                 checked={excludeHidden}
-                onChange={(e) => {
-                  onSetExcludeHidden(e.target.checked);
-                  localStorage.setItem('tools3000_search_exclude_hidden', String(e.target.checked));
-                }}
+                onChange={(e) => onSetExcludeHidden(e.target.checked)}
               />
               <span>{t('search.excludeHiddenProtected', 'Exclude hidden & protected system files')}</span>
             </label>
@@ -639,8 +671,9 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
                             onRemoveCustomContentFormat(ext);
                           }}
                           title={t('search.deleteCustomExt', 'Delete this custom format')}
+                          aria-label={t('search.deleteCustomExt', 'Delete this custom format')}
                         >
-                          <Trash2 size={10} />
+                          <Trash2 size={10} aria-hidden="true" />
                         </button>
                       </div>
                     );

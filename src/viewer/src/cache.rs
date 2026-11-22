@@ -7,7 +7,7 @@ use crate::constants::{
     THUMB_TARGET_SIZE, WORKER_THREAD_COUNT,
 };
 use crate::decode::{decode_image_file, decode_thumbnail};
-use crate::types::{SharedImage, ThumbnailBitmap};
+use crate::types::{DecodeError, SharedImage, ThumbnailBitmap};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +19,9 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 /// 后台解码完成通知消息（唤醒 UI 线程立即重绘）
 pub const WM_VIEWER_IMAGE_READY: u32 = WM_APP + 101;
 pub const WM_VIEWER_THUMB_READY: u32 = WM_APP + 102;
+
+/// 后台邻居预解码单图体积上限（超过 128MB 的超大动图/超长图仅按需现解，防止挤爆 256MB 预算）
+const MAX_PRELOAD_SINGLE_ENTRY_BYTES: usize = MAX_DECODE_CACHE_BYTES / 2;
 
 #[derive(Clone, Debug)]
 enum DecodeTask {
@@ -39,9 +42,11 @@ struct ThumbEntry {
 
 struct SharedState {
     full_cache: HashMap<PathBuf, CacheEntry>,
-    full_errors: HashMap<PathBuf, String>,
+    full_errors: HashMap<PathBuf, DecodeError>,
     full_bytes: usize,
+    active_path: Option<PathBuf>,
     thumb_cache: HashMap<PathBuf, ThumbEntry>,
+    thumb_errors: HashSet<PathBuf>,
     pending_full: HashSet<PathBuf>,
     pending_thumb: HashSet<PathBuf>,
     queue: VecDeque<DecodeTask>,
@@ -61,7 +66,9 @@ impl ImageCachePool {
                 full_cache: HashMap::new(),
                 full_errors: HashMap::new(),
                 full_bytes: 0,
+                active_path: None,
                 thumb_cache: HashMap::new(),
+                thumb_errors: HashSet::new(),
                 pending_full: HashSet::new(),
                 pending_thumb: HashSet::new(),
                 queue: VecDeque::new(),
@@ -102,7 +109,7 @@ impl ImageCachePool {
     }
 
     /// 同步查缓存；命中则刷新 LRU 计数直接零延迟返回
-    pub fn get_cached_image(&self, path: &Path) -> Option<Result<SharedImage, String>> {
+    pub fn get_cached_image(&self, path: &Path) -> Option<Result<SharedImage, DecodeError>> {
         let (lock, _) = &*self.state;
         let mut guard = lock.lock().ok()?;
         if let Some(err) = guard.full_errors.get(path) {
@@ -127,6 +134,10 @@ impl ImageCachePool {
             return;
         };
 
+        guard.active_path = Some(current.clone());
+        // 切换当前图后顺手清理超过预算的历史驻留超大图
+        evict_full_lru_locked(&mut guard, current);
+
         // 1. 当前图最高优先级插队到队首
         enqueue_full_locked(&mut guard, current.clone(), true);
 
@@ -135,7 +146,8 @@ impl ImageCachePool {
             for dist in 1..=PRELOAD_RADIUS {
                 let next_idx = (current_index + dist) % siblings.len();
                 enqueue_full_locked(&mut guard, siblings[next_idx].clone(), false);
-                let prev_idx = (current_index + siblings.len() - (dist % siblings.len())) % siblings.len();
+                let prev_idx =
+                    (current_index + siblings.len() - (dist % siblings.len())) % siblings.len();
                 if prev_idx != next_idx {
                     enqueue_full_locked(&mut guard, siblings[prev_idx].clone(), false);
                 }
@@ -144,7 +156,7 @@ impl ImageCachePool {
         cv.notify_all();
     }
 
-    /// 查询缩略图缓存；未命中自动投递低优先级异步缩略图生成任务
+    /// 查询缩略图缓存；未命中且未标记损坏时自动投递低优先级异步缩略图生成任务
     pub fn get_or_request_thumb(&self, path: &Path) -> Option<ThumbnailBitmap> {
         let (lock, cv) = &*self.state;
         let mut guard = lock.lock().ok()?;
@@ -153,6 +165,9 @@ impl ImageCachePool {
         if let Some(entry) = guard.thumb_cache.get_mut(path) {
             entry.tick = tick;
             return Some(entry.thumb.clone());
+        }
+        if guard.thumb_errors.contains(path) {
+            return None;
         }
         if !guard.pending_thumb.contains(path) {
             guard.pending_thumb.insert(path.to_path_buf());
@@ -164,6 +179,14 @@ impl ImageCachePool {
         None
     }
 
+    /// 判断某张缩略图是否已确认解码失败（用于胶片带渲染原版经典暗红无效微标且避免重复重试）
+    pub fn is_thumb_failed(&self, path: &Path) -> bool {
+        let (lock, _) = &*self.state;
+        lock.lock()
+            .map(|g| g.thumb_errors.contains(path) || g.full_errors.contains_key(path))
+            .unwrap_or(false)
+    }
+
     /// 文件被删除或移动后使对应缓存条目失效
     pub fn invalidate_path(&self, path: &Path) {
         let (lock, _) = &*self.state;
@@ -173,6 +196,10 @@ impl ImageCachePool {
             }
             guard.full_errors.remove(path);
             guard.thumb_cache.remove(path);
+            guard.thumb_errors.remove(path);
+            if guard.active_path.as_deref() == Some(path) {
+                guard.active_path = None;
+            }
         }
     }
 }
@@ -200,10 +227,46 @@ fn enqueue_full_locked(state: &mut SharedState, path: PathBuf, high_priority: bo
     }
 }
 
+/// 将新解码结果纳入预算制缓存：
+/// - 非当前图的超大后台预解码条目（> 128MB）不入长期缓存，防止冲垮 256MB 预算并挤掉当前图；
+/// - 当前图即使单张超大，也会先清空全部非当前条目并仅保留此当前图，一旦切图即被立刻回收。
+fn insert_full_with_budget_locked(state: &mut SharedState, path: PathBuf, shared: SharedImage, bytes: usize) {
+    let is_active = state.active_path.as_deref() == Some(path.as_path());
+    if !is_active && bytes > MAX_PRELOAD_SINGLE_ENTRY_BYTES {
+        return;
+    }
+
+    if is_active && bytes > MAX_DECODE_CACHE_BYTES {
+        // 当前超大单图独占缓存，先彻底释放其余条目确保内存峰值收敛
+        state.full_cache.clear();
+        state.full_bytes = 0;
+    }
+
+    state.lru_tick += 1;
+    let tick = state.lru_tick;
+    if let Some(old) = state.full_cache.insert(
+        path.clone(),
+        CacheEntry {
+            image: shared,
+            bytes,
+            tick,
+        },
+    ) {
+        state.full_bytes = state.full_bytes.saturating_sub(old.bytes);
+    }
+    state.full_bytes = state.full_bytes.saturating_add(bytes);
+    state.full_errors.remove(&path);
+
+    let protected = state
+        .active_path
+        .clone()
+        .unwrap_or_else(|| path.clone());
+    evict_full_lru_locked(state, &protected);
+}
+
 fn evict_full_lru_locked(state: &mut SharedState, protected: &Path) {
-    while (state.full_bytes > MAX_DECODE_CACHE_BYTES
-        || state.full_cache.len() > MAX_DECODE_CACHE_ENTRIES)
-        && state.full_cache.len() > 1
+    while state.full_bytes > MAX_DECODE_CACHE_BYTES
+        || state.full_cache.len() > MAX_DECODE_CACHE_ENTRIES
     {
         let victim = state
             .full_cache
@@ -277,21 +340,7 @@ fn worker_loop(state: Arc<(Mutex<SharedState>, Condvar)>, shutdown: Arc<AtomicBo
                         Ok(img) => {
                             let bytes = img.memory_bytes();
                             let shared = Arc::new(img);
-                            guard.lru_tick += 1;
-                            let tick = guard.lru_tick;
-                            if let Some(old) = guard.full_cache.insert(
-                                path.clone(),
-                                CacheEntry {
-                                    image: shared,
-                                    bytes,
-                                    tick,
-                                },
-                            ) {
-                                guard.full_bytes = guard.full_bytes.saturating_sub(old.bytes);
-                            }
-                            guard.full_bytes += bytes;
-                            guard.full_errors.remove(&path);
-                            evict_full_lru_locked(&mut guard, &path);
+                            insert_full_with_budget_locked(&mut guard, path, shared, bytes);
                         }
                         Err(e) => {
                             guard.full_errors.insert(path.clone(), e);
@@ -311,13 +360,107 @@ fn worker_loop(state: Arc<(Mutex<SharedState>, Condvar)>, shutdown: Arc<AtomicBo
                     if let Some(t) = thumb {
                         guard.lru_tick += 1;
                         let tick = guard.lru_tick;
-                        guard.thumb_cache.insert(path, ThumbEntry { thumb: t, tick });
+                        guard.thumb_errors.remove(&path);
+                        guard
+                            .thumb_cache
+                            .insert(path, ThumbEntry { thumb: t, tick });
                         evict_thumb_lru_locked(&mut guard);
+                    } else {
+                        guard.thumb_errors.insert(path);
                     }
                     guard.notify_hwnd
                 };
                 post_ui_signal(notify_hwnd, WM_VIEWER_THUMB_READY);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{DecodedImage, ImageFormatKind, ImageFrame};
+
+    fn dummy_image(path: &str) -> SharedImage {
+        Arc::new(DecodedImage {
+            path: PathBuf::from(path),
+            format_kind: ImageFormatKind::Static("PNG".to_string()),
+            file_size_bytes: 1024,
+            width: 1,
+            height: 1,
+            has_alpha: false,
+            frames: vec![ImageFrame {
+                width: 1,
+                height: 1,
+                delay_ms: 0,
+                bgra_premul: vec![0, 0, 0, 255],
+            }],
+            total_duration_ms: 0,
+            exif_summary: Vec::new(),
+        })
+    }
+
+    fn empty_state() -> SharedState {
+        SharedState {
+            full_cache: HashMap::new(),
+            full_errors: HashMap::new(),
+            full_bytes: 0,
+            active_path: None,
+            thumb_cache: HashMap::new(),
+            thumb_errors: HashSet::new(),
+            pending_full: HashSet::new(),
+            pending_thumb: HashSet::new(),
+            queue: VecDeque::new(),
+            lru_tick: 0,
+            notify_hwnd: 0,
+        }
+    }
+
+    #[test]
+    fn oversized_background_preload_is_rejected_and_active_image_is_protected() {
+        let mut st = empty_state();
+        let cur = PathBuf::from("cur.png");
+        let bg_huge = PathBuf::from("bg_huge.png");
+        st.active_path = Some(cur.clone());
+
+        insert_full_with_budget_locked(&mut st, cur.clone(), dummy_image("cur.png"), 64 * 1024 * 1024);
+        // 超过 128MB 的后台预解码超大图不得挤入长期缓存或踢掉当前图
+        insert_full_with_budget_locked(
+            &mut st,
+            bg_huge.clone(),
+            dummy_image("bg_huge.png"),
+            180 * 1024 * 1024,
+        );
+        assert!(st.full_cache.contains_key(&cur));
+        assert!(!st.full_cache.contains_key(&bg_huge));
+        assert!(st.full_bytes <= MAX_DECODE_CACHE_BYTES);
+    }
+
+    #[test]
+    fn oversized_active_image_evicts_all_other_entries_and_yields_on_switch() {
+        let mut st = empty_state();
+        let prev = PathBuf::from("prev.png");
+        let huge_cur = PathBuf::from("huge_cur.png");
+        let next = PathBuf::from("next.png");
+
+        st.active_path = Some(prev.clone());
+        insert_full_with_budget_locked(&mut st, prev.clone(), dummy_image("prev.png"), 80 * 1024 * 1024);
+
+        st.active_path = Some(huge_cur.clone());
+        insert_full_with_budget_locked(
+            &mut st,
+            huge_cur.clone(),
+            dummy_image("huge_cur.png"),
+            300 * 1024 * 1024,
+        );
+        // 当前超大单图独占缓存，历史条目立即被清空
+        assert_eq!(st.full_cache.len(), 1);
+        assert!(st.full_cache.contains_key(&huge_cur));
+
+        // 切换到下一张图时，原超大图立即被 LRU 回收，预算恢复正常
+        st.active_path = Some(next.clone());
+        evict_full_lru_locked(&mut st, &next);
+        assert!(!st.full_cache.contains_key(&huge_cur));
+        assert_eq!(st.full_bytes, 0);
     }
 }

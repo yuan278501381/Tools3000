@@ -11,7 +11,8 @@
 use crate::constants::{
     FIT_BOTTOM_SAFE_PAD_DIP, FIT_SCREEN_MARGIN_RATIO, FIT_TOP_SAFE_PAD_DIP, FLIP_ANIM_DAMPING,
     KINETIC_FRICTION_DAMPING, MAX_ZOOM, MIN_ZOOM, ROTATION_ANIM_DAMPING, RUBBER_BAND_MAX_DIP,
-    RUBBER_BAND_SPRING_DAMPING, SLIDESHOW_MARGIN_RATIO, ZOOM_ANIM_DAMPING, ZOOM_STEP_FACTOR,
+    RUBBER_BAND_SPRING_DAMPING, SLIDESHOW_MARGIN_RATIO, SLIDESHOW_ZOOM_ANIM_DAMPING,
+    ZOOM_ANIM_DAMPING, ZOOM_STEP_FACTOR,
 };
 use crate::physics::{exp_decay_factor, exp_smooth, rubber_band_offset};
 use crate::types::{RectF, RotationQuarter};
@@ -44,6 +45,11 @@ pub struct ViewportCamera {
     pub visual_flip_y: f32,
 
     pub is_fit_mode: bool,
+    /// 光标锚点缩放自由偏移标记：允许图像在尚未充满屏幕时依然严格锁定鼠标下像素点，
+    /// 不被强制拍回屏幕正中，跨过填满屏幕临界点全程零跳变
+    pub cursor_zoom_free_pan: bool,
+    /// 进出幻灯片放映过渡期启用柔和扩图阻尼（与 1.00s 影院熄灯同频）
+    slideshow_transition_damping: bool,
     /// 当前显示器物理缩放因子（96 DPI = 1.0，144 DPI = 1.5，192 DPI = 2.0）
     pub dpi_scale: f32,
 }
@@ -70,6 +76,8 @@ impl Default for ViewportCamera {
             visual_flip_x: 1.0,
             visual_flip_y: 1.0,
             is_fit_mode: true,
+            cursor_zoom_free_pan: false,
+            slideshow_transition_damping: false,
             dpi_scale: 1.0,
         }
     }
@@ -213,6 +221,8 @@ impl ViewportCamera {
         self.raw_drag_pan_x = 0.0;
         self.raw_drag_pan_y = py;
         self.is_fit_mode = true;
+        self.cursor_zoom_free_pan = false;
+        self.slideshow_transition_damping = false;
     }
 
     /// 进出幻灯片全屏模式时，平滑过渡至对应 Fit 最佳视口而不打断当前旋转/翻转态
@@ -248,9 +258,54 @@ impl ViewportCamera {
         self.target_pan_x = 0.0;
         self.target_pan_y = py;
         self.is_fit_mode = true;
+        self.cursor_zoom_free_pan = false;
+        self.slideshow_transition_damping = true;
+    }
+
+    /// 进出幻灯片整屏叠化时，直接无跳变就位目标 Fit 几何态（视觉过渡完全由双场景光学叠化驱动，1:1 复刻原版 Picasa）
+    pub fn snap_to_fit_mode(
+        &mut self,
+        img_w: f32,
+        img_h: f32,
+        view_w: f32,
+        view_h: f32,
+        slideshow_fullscreen: bool,
+    ) {
+        let fit = Self::compute_fit_zoom_for_mode(
+            img_w,
+            img_h,
+            self.rotation,
+            view_w,
+            view_h,
+            self.dpi_scale,
+            slideshow_fullscreen,
+        );
+        let py = Self::default_fit_pan_y(
+            img_w,
+            img_h,
+            self.rotation,
+            fit,
+            view_h,
+            self.dpi_scale,
+            slideshow_fullscreen,
+        );
+        self.vel_x = 0.0;
+        self.vel_y = 0.0;
+        self.zoom = fit;
+        self.target_zoom = fit;
+        self.pan_x = 0.0;
+        self.pan_y = py;
+        self.target_pan_x = 0.0;
+        self.target_pan_y = py;
+        self.raw_drag_pan_x = 0.0;
+        self.raw_drag_pan_y = py;
+        self.is_fit_mode = true;
+        self.cursor_zoom_free_pan = false;
+        self.slideshow_transition_damping = false;
     }
 
     /// 窗口 DPI 或分辨率变化时，保持现有旋转与翻转状态立即重新适配 Fit 模式
+    #[allow(dead_code)]
     pub fn refit_preserving_rotation(&mut self, img_w: f32, img_h: f32, view_w: f32, view_h: f32) {
         let fit = Self::compute_fit_zoom(
             img_w,
@@ -278,6 +333,8 @@ impl ViewportCamera {
         self.target_pan_x = 0.0;
         self.target_pan_y = py;
         self.is_fit_mode = true;
+        self.cursor_zoom_free_pan = false;
+        self.slideshow_transition_damping = false;
     }
 
     /// 顺时针 / 逆时针 90° 连续丝滑旋转，同步联动重算宽高互换后的新适应倍率
@@ -292,6 +349,7 @@ impl ViewportCamera {
     ) {
         self.vel_x = 0.0;
         self.vel_y = 0.0;
+        self.slideshow_transition_damping = false;
         if clockwise {
             self.rotation = self.rotation.rotate_cw();
             self.target_rotation_deg += 90.0;
@@ -321,7 +379,9 @@ impl ViewportCamera {
             self.target_zoom = fit;
             self.target_pan_x = 0.0;
             self.target_pan_y = py;
+            self.cursor_zoom_free_pan = false;
         } else {
+            self.cursor_zoom_free_pan = false;
             self.clamp_target_pan(img_w, img_h, view_w, view_h);
         }
     }
@@ -369,6 +429,8 @@ impl ViewportCamera {
         }
         self.vel_x = 0.0;
         self.vel_y = 0.0;
+        self.cursor_zoom_free_pan = false;
+        self.slideshow_transition_damping = false;
         let (eff_w, eff_h) = self.effective_dims(img_w, img_h);
         let avail_w_phys = (view_w * 0.90).max(120.0) * self.dpi_scale.max(0.5);
         let target_z = (avail_w_phys / eff_w).min(2.0).clamp(MIN_ZOOM, MAX_ZOOM);
@@ -384,10 +446,12 @@ impl ViewportCamera {
         self.clamp_target_pan(img_w, img_h, view_w, view_h);
     }
 
-    /// 光标像素锁定数学公式（Cursor-Anchored Logarithmic Zoom）：
-    /// 计算鼠标相对于当前图片中心的偏移向量 `rel = cursor - view_center - target_pan`，
-    /// 对数更新目标缩放后按 `new_zoom / old_zoom` 精确反向补偿 `target_pan`，
-    /// 确保连续滚轮缩放过程中鼠标指着的图像像素点纹丝不动零漂移！
+    /// 全倍率光标像素锁定数学公式（True Cursor-Anchored Logarithmic Zoom）：
+    /// - 放大 (`wheel_steps > 0`)：无论图片当前是小于屏幕的 Fit 态、竖图还是大图，
+    ///   均严格锁定鼠标指针正下方的图像像素点零漂移，仅用宽松可见安全包络防止图像滑出视野，
+    ///   绝不因 `scaled_w <= view_w` 强行拍回屏幕正中，跨过填满屏幕临界点全程 100% 连续无跳变；
+    /// - 缩小 (`wheel_steps < 0`)：大于 Fit 倍率时沿光标平滑回缩，同时将超出标准贴边边界的
+    ///   自由漂移余量随接近 Fit 的比例丝滑拉回，到达 Fit 倍率时恰好精准无跳变归回屏幕正中！
     pub fn zoom_at_point(
         &mut self,
         wheel_steps: f32,
@@ -407,17 +471,82 @@ impl ViewportCamera {
 
         self.vel_x = 0.0;
         self.vel_y = 0.0;
+        self.slideshow_transition_damping = false;
+
+        let fit = Self::compute_fit_zoom(
+            img_w,
+            img_h,
+            self.rotation,
+            view_w,
+            view_h,
+            self.dpi_scale,
+        );
+        let fit_py = Self::default_fit_pan_y(
+            img_w,
+            img_h,
+            self.rotation,
+            fit,
+            view_h,
+            self.dpi_scale,
+            false,
+        );
+
         let cx = view_w * 0.5;
         let cy = view_h * 0.5;
         let rel_x = cursor_x - cx - self.target_pan_x;
         let rel_y = cursor_y - cy - self.target_pan_y;
         let ratio = new_zoom / old_zoom;
+        let cand_pan_x = cursor_x - cx - rel_x * ratio;
+        let cand_pan_y = cursor_y - cy - rel_y * ratio;
 
         self.target_zoom = new_zoom;
-        self.target_pan_x = cursor_x - cx - rel_x * ratio;
-        self.target_pan_y = cursor_y - cy - rel_y * ratio;
         self.is_fit_mode = false;
-        self.clamp_target_pan(img_w, img_h, view_w, view_h);
+
+        if new_zoom > old_zoom {
+            // 放大：100% 锁定鼠标光标下的像素点，仅使用宽松可见包络兜底防飞屏
+            let (env_x, env_y) = self.cursor_zoom_envelope(img_w, img_h, view_w, view_h);
+            self.target_pan_x = cand_pan_x.clamp(-env_x, env_x);
+            self.target_pan_y = cand_pan_y.clamp(-env_y, env_y);
+            self.cursor_zoom_free_pan = true;
+        } else {
+            // 缩小：缩回 Fit 及以下时平滑归中；在 Fit 以上缩小时，贴边区内严格锚定光标，
+            // 超出贴边区的自由漂移余量随接近 Fit 的比例无缝收敛回正中
+            if new_zoom <= fit * 1.005 {
+                let small_py = Self::default_fit_pan_y(
+                    img_w,
+                    img_h,
+                    self.rotation,
+                    new_zoom,
+                    view_h,
+                    self.dpi_scale,
+                    false,
+                );
+                self.target_pan_x = 0.0;
+                self.target_pan_y = small_py;
+                self.cursor_zoom_free_pan = false;
+            } else {
+                let (max_c_x, max_c_y) = self.max_pan_bounds(img_w, img_h, view_w, view_h);
+                let (env_x, env_y) = self.cursor_zoom_envelope(img_w, img_h, view_w, view_h);
+                let pull = ((new_zoom - fit) / (old_zoom - fit).max(1e-4)).clamp(0.0, 1.0);
+
+                let base_x = cand_pan_x.clamp(-max_c_x, max_c_x);
+                let next_x = base_x + (cand_pan_x - base_x) * pull;
+
+                let (min_cy, max_cy) = if max_c_y <= 0.0 {
+                    (fit_py, fit_py)
+                } else {
+                    (-max_c_y, max_c_y)
+                };
+                let base_y = cand_pan_y.clamp(min_cy, max_cy);
+                let next_y = base_y + (cand_pan_y - base_y) * pull;
+
+                self.target_pan_x = next_x.clamp(-env_x, env_x);
+                self.target_pan_y = next_y.clamp(-env_y, env_y);
+                let still_free_x = (self.target_pan_x - base_x).abs() > 0.5;
+                let still_free_y = (self.target_pan_y - base_y).abs() > 0.5;
+                self.cursor_zoom_free_pan = still_free_x || still_free_y;
+            }
+        }
     }
 
     /// 双击或点 1:1 键在「适应视口」与「以双击点为锚点的 1:1 物理像素」间丝滑切换
@@ -454,10 +583,12 @@ impl ViewportCamera {
             );
             self.vel_x = 0.0;
             self.vel_y = 0.0;
+            self.slideshow_transition_damping = false;
             self.target_zoom = fit;
             self.target_pan_x = 0.0;
             self.target_pan_y = py;
             self.is_fit_mode = true;
+            self.cursor_zoom_free_pan = false;
         }
     }
 
@@ -480,6 +611,8 @@ impl ViewportCamera {
         }
         self.vel_x = 0.0;
         self.vel_y = 0.0;
+        self.cursor_zoom_free_pan = false;
+        self.slideshow_transition_damping = false;
         let u = ((s.center_x() - img_rc.left) / img_rc.width()).clamp(0.0, 1.0);
         let v = ((s.center_y() - img_rc.top) / img_rc.height()).clamp(0.0, 1.0);
         let factor = ((view_w * 0.86) / s.width())
@@ -495,11 +628,15 @@ impl ViewportCamera {
         self.clamp_target_pan(img_w, img_h, view_w, view_h);
     }
 
-    /// 开始左键拖拽平移：锁定当前位置并清零残余惯性
+    /// 开始左键拖拽平移：冻结当前缩放与位置并清零残余惯性，防止阻尼缩放中途拖拽导致边界错位
     pub fn begin_drag(&mut self) {
         self.is_dragging = true;
+        self.target_zoom = self.zoom;
+        self.target_pan_x = self.pan_x;
+        self.target_pan_y = self.pan_y;
         self.vel_x = 0.0;
         self.vel_y = 0.0;
+        self.slideshow_transition_damping = false;
         self.raw_drag_pan_x = self.pan_x;
         self.raw_drag_pan_y = self.pan_y;
     }
@@ -522,9 +659,22 @@ impl ViewportCamera {
         self.raw_drag_pan_x += dx;
         self.raw_drag_pan_y += dy;
 
-        let (max_x, max_y) = self.max_pan_bounds(img_w, img_h, view_w, view_h);
-        let eff_x = apply_rubber_band_clamp(self.raw_drag_pan_x, max_x, RUBBER_BAND_MAX_DIP);
-        let eff_y = apply_rubber_band_clamp(self.raw_drag_pan_y, max_y, RUBBER_BAND_MAX_DIP);
+        let (max_c_x, max_c_y) = self.max_pan_bounds(img_w, img_h, view_w, view_h);
+        let (eff_max_x, eff_max_y) = if self.cursor_zoom_free_pan && !self.is_fit_mode {
+            let (inner_x, inner_y) = self.inner_viewport_pan_bounds(img_w, img_h, view_w, view_h);
+            (
+                if max_c_x > 0.5 { max_c_x } else { inner_x },
+                if max_c_y > 0.5 { max_c_y } else { inner_y },
+            )
+        } else {
+            (max_c_x, max_c_y)
+        };
+        if max_c_x > 0.5 && max_c_y > 0.5 {
+            self.cursor_zoom_free_pan = false;
+        }
+
+        let eff_x = apply_rubber_band_clamp(self.raw_drag_pan_x, eff_max_x, RUBBER_BAND_MAX_DIP);
+        let eff_y = apply_rubber_band_clamp(self.raw_drag_pan_y, eff_max_y, RUBBER_BAND_MAX_DIP);
 
         let safe_dt = dt_sec.clamp(0.002, 0.05);
         let inst_vx = ((eff_x - self.pan_x) / safe_dt).clamp(-4800.0, 4800.0);
@@ -536,7 +686,7 @@ impl ViewportCamera {
         self.pan_y = eff_y;
         self.target_pan_x = eff_x;
         self.target_pan_y = eff_y;
-        if max_x > 0.5 || max_y > 0.5 {
+        if eff_max_x > 0.5 || eff_max_y > 0.5 {
             self.is_fit_mode = false;
         }
     }
@@ -562,6 +712,8 @@ impl ViewportCamera {
     ) {
         self.vel_x = 0.0;
         self.vel_y = 0.0;
+        self.cursor_zoom_free_pan = false;
+        self.slideshow_transition_damping = false;
         let (eff_w, eff_h) = self.effective_dims(img_w, img_h);
         let dip_per_px = self.dip_per_image_pixel(self.target_zoom);
         let scaled_w = eff_w * dip_per_px;
@@ -586,8 +738,51 @@ impl ViewportCamera {
         (max_pan_x, max_pan_y)
     }
 
-    /// 限制目标平移边界：画面小于视口时归中（Fit 态保留呼吸偏移），大于视口时不拖出失踪
+    /// 图像小于视口时的内切安全平移范围（保证照片边缘不越出视口边界）
+    fn inner_viewport_pan_bounds(
+        &self,
+        img_w: f32,
+        img_h: f32,
+        view_w: f32,
+        view_h: f32,
+    ) -> (f32, f32) {
+        let (eff_w, eff_h) = self.effective_dims(img_w, img_h);
+        let dip_per_px = self.dip_per_image_pixel(self.target_zoom);
+        let scaled_w = eff_w * dip_per_px;
+        let scaled_h = eff_h * dip_per_px;
+        (
+            ((view_w - scaled_w) * 0.5).max(0.0),
+            ((view_h - scaled_h) * 0.5).max(0.0),
+        )
+    }
+
+    /// 光标锚点缩放宽松可见安全包络：任意倍率下保证图像至少保留 120 DIP（或自身全宽）留在屏幕可见区内，绝不跑飞
+    pub fn cursor_zoom_envelope(
+        &self,
+        img_w: f32,
+        img_h: f32,
+        view_w: f32,
+        view_h: f32,
+    ) -> (f32, f32) {
+        let (eff_w, eff_h) = self.effective_dims(img_w, img_h);
+        let dip_per_px = self.dip_per_image_pixel(self.target_zoom);
+        let scaled_w = eff_w * dip_per_px;
+        let scaled_h = eff_h * dip_per_px;
+        let keep_x = scaled_w.min(view_w).min(120.0);
+        let keep_y = scaled_h.min(view_h).min(120.0);
+        let env_x = ((scaled_w + view_w) * 0.5 - keep_x).max(0.0);
+        let env_y = ((scaled_h + view_h) * 0.5 - keep_y).max(0.0);
+        (env_x, env_y)
+    }
+
+    /// 限制目标平移边界：光标自由锚定态使用防飞屏可见包络；常规态/Fit 态归中或贴边
     pub fn clamp_target_pan(&mut self, img_w: f32, img_h: f32, view_w: f32, view_h: f32) {
+        if self.cursor_zoom_free_pan && !self.is_fit_mode {
+            let (env_x, env_y) = self.cursor_zoom_envelope(img_w, img_h, view_w, view_h);
+            self.target_pan_x = self.target_pan_x.clamp(-env_x, env_x);
+            self.target_pan_y = self.target_pan_y.clamp(-env_y, env_y);
+            return;
+        }
         let (max_pan_x, max_pan_y) = self.max_pan_bounds(img_w, img_h, view_w, view_h);
         self.target_pan_x = self.target_pan_x.clamp(-max_pan_x, max_pan_x);
         if max_pan_y <= 0.0 && self.is_fit_mode {
@@ -619,7 +814,20 @@ impl ViewportCamera {
 
         // 1. 松手后的惯性衰减滑行与越界弹簧回弹 (Rubber-banding)
         if !self.is_dragging && img_w > 0.0 && img_h > 0.0 {
-            let (max_x, mut min_y, mut max_y) = {
+            let has_kinetic_vel = self.vel_x.abs() > 2.0 || self.vel_y.abs() > 2.0;
+            let (max_x, mut min_y, mut max_y) = if self.cursor_zoom_free_pan && !self.is_fit_mode {
+                if has_kinetic_vel {
+                    let (mx, my) = self.max_pan_bounds(img_w, img_h, view_w, view_h);
+                    let (ix, iy) = self.inner_viewport_pan_bounds(img_w, img_h, view_w, view_h);
+                    let bx = if mx > 0.5 { mx } else { ix };
+                    let by = if my > 0.5 { my } else { iy };
+                    (bx, -by, by)
+                } else {
+                    // 光标锚点缩放收敛期间绝不偷拉回中，仅用防飞屏安全包络保护
+                    let (ex, ey) = self.cursor_zoom_envelope(img_w, img_h, view_w, view_h);
+                    (ex, -ey, ey)
+                }
+            } else {
                 let (mx, my) = self.max_pan_bounds(img_w, img_h, view_w, view_h);
                 if my <= 0.0 && self.is_fit_mode {
                     let py = Self::default_fit_pan_y(
@@ -640,7 +848,7 @@ impl ViewportCamera {
                 std::mem::swap(&mut min_y, &mut max_y);
             }
 
-            if self.vel_x.abs() > 2.0 || self.vel_y.abs() > 2.0 {
+            if has_kinetic_vel {
                 self.target_pan_x += self.vel_x * dt;
                 self.target_pan_y += self.vel_y * dt;
 
@@ -680,11 +888,34 @@ impl ViewportCamera {
             }
         }
 
-        // 2. 缩放、平移、90° 连续旋转与 3D 镜像翻转指数阻尼趋近
-        self.zoom = exp_smooth(self.zoom, self.target_zoom, ZOOM_ANIM_DAMPING, dt);
-        if !self.is_dragging {
-            self.pan_x = exp_smooth(self.pan_x, self.target_pan_x, ZOOM_ANIM_DAMPING, dt);
-            self.pan_y = exp_smooth(self.pan_y, self.target_pan_y, ZOOM_ANIM_DAMPING, dt);
+        // 2. 对数感知等速无级阻尼缩放 + 精确共轴平移 + 90° 连续旋转与 3D 镜像翻转
+        // 关键物理性质：
+        // - 在对数空间插值 ln(zoom)，使人眼感知的缩放速率从 50% -> 200% -> 800% 绝对均匀丝滑（消除线性前冲后慢）；
+        // - pan 使用精确几何同步比例 alpha = (zoom_next - zoom) / (target_zoom - zoom)，
+        //   保证整个 120Hz/240Hz 无级丝滑缩放动画的每一中间帧，鼠标指针正下方的图像像素严格 0.00px 漂移！
+        let zoom_damping = if self.slideshow_transition_damping {
+            SLIDESHOW_ZOOM_ANIM_DAMPING
+        } else {
+            ZOOM_ANIM_DAMPING
+        };
+        let zoom_f = exp_decay_factor(zoom_damping, dt);
+        let zoom_diff = self.target_zoom - self.zoom;
+        if zoom_diff.abs() > 1e-5 {
+            let cur_ln = self.zoom.max(MIN_ZOOM).ln();
+            let tgt_ln = self.target_zoom.max(MIN_ZOOM).ln();
+            let next_zoom = (cur_ln + (tgt_ln - cur_ln) * zoom_f).exp();
+            if !self.is_dragging {
+                let alpha = ((next_zoom - self.zoom) / zoom_diff).clamp(0.0, 1.0);
+                self.pan_x += (self.target_pan_x - self.pan_x) * alpha;
+                self.pan_y += (self.target_pan_y - self.pan_y) * alpha;
+            }
+            self.zoom = next_zoom;
+        } else {
+            self.zoom = self.target_zoom;
+            if !self.is_dragging {
+                self.pan_x = exp_smooth(self.pan_x, self.target_pan_x, zoom_damping, dt);
+                self.pan_y = exp_smooth(self.pan_y, self.target_pan_y, zoom_damping, dt);
+            }
         }
         self.visual_rotation_deg = exp_smooth(
             self.visual_rotation_deg,
@@ -715,9 +946,21 @@ impl ViewportCamera {
             self.visual_rotation_deg = self.target_rotation_deg;
             self.visual_flip_x = target_fx;
             self.visual_flip_y = target_fy;
+            self.slideshow_transition_damping = false;
             return false;
         }
         true
+    }
+
+    /// 当前相机是否正处于缩放/平移/甩动/旋转运动期（运动期启用硬件单周期 LINEAR 插值跑满 120~240Hz，静止立刻切回高质量立方锐化）
+    pub fn is_camera_animating(&self) -> bool {
+        self.is_dragging
+            || (self.target_zoom - self.zoom).abs() > 0.0012
+            || (self.target_pan_x - self.pan_x).abs() > 0.35
+            || (self.target_pan_y - self.pan_y).abs() > 0.35
+            || self.vel_x.abs() > 2.0
+            || self.vel_y.abs() > 2.0
+            || self.is_transform_animating()
     }
 
     pub fn is_transform_animating(&self) -> bool {
@@ -897,5 +1140,91 @@ mod tests {
         assert!((before_img_x - after_img_x).abs() < 0.5);
         assert!((before_img_y - after_img_y).abs() < 0.5);
         assert!(cam.should_show_minimap(4000.0, 3000.0, 1600.0, 900.0));
+    }
+
+    #[test]
+    fn cursor_anchor_zoom_works_from_first_wheel_step_even_when_smaller_than_screen() {
+        // 复现并永久防回退用户反馈场景：
+        // 竖图在宽屏下初次打开远小于屏幕宽度 (scaled_w < view_w)，鼠标放在左下角执行滚轮放大，
+        // 第一格滚轮开始就必须严格以鼠标光标下的图像像素为锚点缩放，且跨越满屏临界点零跳变！
+        for dpi_scale in [1.0f32, 1.5, 2.0] {
+            let mut cam = ViewportCamera::default();
+            cam.set_dpi_scale(dpi_scale);
+            let img_w = 1200.0;
+            let img_h = 1600.0;
+            let view_w = 1920.0;
+            let view_h = 1080.0;
+            cam.reset_to_fit(img_w, img_h, view_w, view_h);
+
+            let rc0 = cam.image_screen_rect(img_w, img_h, view_w, view_h);
+            assert!(rc0.width() < view_w * 0.6, "初始应为明显小于屏宽的竖图");
+
+            // 鼠标指向照片偏右下角 (u=0.82, v=0.78)
+            let cursor_x = rc0.left + rc0.width() * 0.82;
+            let cursor_y = rc0.top + rc0.height() * 0.78;
+            let initial_img_x = (cursor_x - view_w * 0.5 - cam.target_pan_x)
+                / cam.dip_per_image_pixel(cam.target_zoom);
+            let initial_img_y = (cursor_y - view_h * 0.5 - cam.target_pan_y)
+                / cam.dip_per_image_pixel(cam.target_zoom);
+
+            // 连续向上滚轮 14 格，涵盖「小于屏宽 -> 跨越满屏临界 -> 大于屏宽」完整过程
+            for step in 1..=14 {
+                cam.zoom_at_point(1.0, cursor_x, cursor_y, img_w, img_h, view_w, view_h);
+                // 推进若干动画帧，确认 step_animation 既不把图片偷拉回中，中间帧也不发生锚点漂移
+                for _ in 0..8 {
+                    cam.step_animation(0.016, img_w, img_h, view_w, view_h);
+                    let anim_img_x = (cursor_x - view_w * 0.5 - cam.pan_x)
+                        / cam.dip_per_image_pixel(cam.zoom);
+                    let anim_img_y = (cursor_y - view_h * 0.5 - cam.pan_y)
+                        / cam.dip_per_image_pixel(cam.zoom);
+                    assert!(
+                        (anim_img_x - initial_img_x).abs() < 0.75
+                            && (anim_img_y - initial_img_y).abs() < 0.75,
+                        "dpi={dpi_scale} step={step}: 动画中间帧光标像素漂移 ({anim_img_x},{anim_img_y}) vs ({initial_img_x},{initial_img_y})"
+                    );
+                }
+                let after_img_x = (cursor_x - view_w * 0.5 - cam.target_pan_x)
+                    / cam.dip_per_image_pixel(cam.target_zoom);
+                let after_img_y = (cursor_y - view_h * 0.5 - cam.target_pan_y)
+                    / cam.dip_per_image_pixel(cam.target_zoom);
+                assert!(
+                    (after_img_x - initial_img_x).abs() < 0.5
+                        && (after_img_y - initial_img_y).abs() < 0.5,
+                    "dpi={dpi_scale} step={step}: 目标光标像素漂移 ({after_img_x},{after_img_y}) vs ({initial_img_x},{initial_img_y})"
+                );
+            }
+            // 第 1 格以后就应当有明显的反向位移，而非被清零归中
+            assert!(cam.target_pan_x.abs() > 100.0);
+
+            // 连续向下滚轮缩回 Fit，确认平滑归回屏幕正中而不歪在角落
+            for _ in 0..16 {
+                cam.zoom_at_point(-1.0, cursor_x, cursor_y, img_w, img_h, view_w, view_h);
+            }
+            for _ in 0..90 {
+                cam.step_animation(0.016, img_w, img_h, view_w, view_h);
+            }
+            assert!(
+                cam.pan_x.abs() < 0.5,
+                "dpi={dpi_scale}: 缩回 Fit 以下应平滑居中，实际 pan_x={}",
+                cam.pan_x
+            );
+        }
+    }
+
+    #[test]
+    fn begin_drag_freezes_inflight_zoom_target_preventing_bounds_mismatch() {
+        let mut cam = ViewportCamera::default();
+        cam.reset_to_fit(4000.0, 3000.0, 1280.0, 720.0);
+        cam.zoom_at_point(8.0, 640.0, 360.0, 4000.0, 3000.0, 1280.0, 720.0);
+        // 仅推进 2 帧，zoom 远未追上 target_zoom
+        cam.step_animation(0.016, 4000.0, 3000.0, 1280.0, 720.0);
+        cam.step_animation(0.016, 4000.0, 3000.0, 1280.0, 720.0);
+        assert!((cam.target_zoom - cam.zoom).abs() > 0.1);
+
+        let frozen_zoom = cam.zoom;
+        cam.begin_drag();
+        assert!((cam.target_zoom - frozen_zoom).abs() < 1e-6);
+        assert!((cam.target_pan_x - cam.pan_x).abs() < 1e-6);
+        assert!((cam.target_pan_y - cam.pan_y).abs() < 1e-6);
     }
 }

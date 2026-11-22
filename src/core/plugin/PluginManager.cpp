@@ -91,6 +91,11 @@ bool configuredEnabled(const std::string& id) {
         if (config.has("/search/enabled")) return config.get<bool>("/search/enabled", true);
         return true;
     }
+    if (id == "picasa_viewer" || id == "picasaviewer") {
+        if (config.has("/plugins/picasa_viewer/enabled")) return config.get<bool>("/plugins/picasa_viewer/enabled", false);
+        if (config.has("/picasa_viewer/enabled")) return config.get<bool>("/picasa_viewer/enabled", false);
+        return false;
+    }
     const auto key = pluginConfigKey(id);
     if (config.has(key)) return config.get<bool>(key, true);
     return true;
@@ -184,6 +189,16 @@ void PluginManager::reconcilePluginConfigs() {
         captureEnabled = cfg.get<bool>("/plugins/capture/enabled", true);
     }
     patch["plugins"]["capture"]["enabled"] = captureEnabled;
+
+    // 8. picasa_viewer: Rust 复刻轻量 Picasa 图片查看器，默认关闭；仅当安装器勾选或用户显式启用时开启
+    bool picasaViewerEnabled = false;
+    if (cfg.has("/plugins/picasa_viewer/enabled")) {
+        picasaViewerEnabled = cfg.get<bool>("/plugins/picasa_viewer/enabled", false);
+    } else if (cfg.has("/picasa_viewer/enabled")) {
+        picasaViewerEnabled = cfg.get<bool>("/picasa_viewer/enabled", false);
+    }
+    patch["picasa_viewer"]["enabled"] = picasaViewerEnabled;
+    patch["plugins"]["picasa_viewer"]["enabled"] = picasaViewerEnabled;
 
     cfg.mergePatch(patch, "/plugins");
 }

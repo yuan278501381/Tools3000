@@ -1,9 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // decode/extra_decoder.rs — 零外部依赖纯 Rust 扩展格式解码器（TGA / QOI / PNM）
-// 补齐 WIC 未内置的美术/游戏/开发常见图片格式，几乎 0 KB 二进制增量
+// 补齐 WIC 未内置的美术/游戏/开发常见图片格式，全链路防畸形图 OOM Abort
 // ─────────────────────────────────────────────────────────────────────────────
 
-use crate::types::{rgba_straight_to_bgra_premul, DecodedImage, ImageFrame};
+use crate::decode::{
+    try_alloc_filled_buffer, try_alloc_zeroed_buffer, validate_image_dimensions,
+};
+use crate::types::{
+    try_rgba_straight_to_bgra_premul, DecodeError, DecodedImage, ExifField, ImageFormatKind,
+    ImageFrame,
+};
 use std::path::Path;
 
 fn build_static_image(
@@ -13,19 +19,17 @@ fn build_static_image(
     w: u32,
     h: u32,
     rgba: &[u8],
-) -> DecodedImage {
-    let (bgra_premul, has_alpha) = rgba_straight_to_bgra_premul(rgba);
+) -> Result<DecodedImage, DecodeError> {
+    let (bgra_premul, has_alpha) = try_rgba_straight_to_bgra_premul(rgba)?;
+    let format_kind = ImageFormatKind::Static(format_label.to_string());
     let exif = vec![
-        ("格式".to_string(), format_label.to_string()),
-        ("尺寸".to_string(), format!("{} x {}", w, h)),
-        (
-            "透明通道".to_string(),
-            if has_alpha { "含 Alpha" } else { "不透明" }.to_string(),
-        ),
+        ExifField::Format(format_kind.clone()),
+        ExifField::Dimensions(w, h),
+        ExifField::Alpha(has_alpha),
     ];
-    DecodedImage {
+    Ok(DecodedImage {
         path: path.to_path_buf(),
-        format_label: format_label.to_string(),
+        format_kind,
         file_size_bytes: file_size,
         width: w,
         height: h,
@@ -38,25 +42,39 @@ fn build_static_image(
         }],
         total_duration_ms: 0,
         exif_summary: exif,
-    }
+    })
 }
 
-/// 解码 QOI (Quite OK Image) 现代无损格式（完整规范）
-pub fn decode_qoi(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
-    let data = std::fs::read(path).map_err(|e| format!("读取 QOI 失败: {e}"))?;
+/// 解码 QOI (Quite OK Image) 现代无损格式（完整规范 + 防 OOM 安全边界）
+pub fn decode_qoi(path: &Path, file_size: u64) -> Result<DecodedImage, DecodeError> {
+    let data = std::fs::read(path).map_err(|e| DecodeError::ReadFile {
+        format: "QOI",
+        detail: e.to_string(),
+    })?;
     if data.len() < 22 || &data[0..4] != b"qoif" {
-        return Err("无效的 QOI 文件头".to_string());
+        return Err(DecodeError::InvalidHeader { format: "QOI" });
     }
     let w = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
     let h = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
     let channels = data[12];
-    if w == 0 || h == 0 || (channels != 3 && channels != 4) {
-        return Err("不支持的 QOI 尺寸或通道配置".to_string());
+    if channels != 3 && channels != 4 {
+        return Err(DecodeError::UnsupportedFormat {
+            format: "QOI",
+            detail: format!("channels={channels}"),
+        });
     }
-    let total_pixels = (w as usize)
-        .checked_mul(h as usize)
-        .ok_or_else(|| "QOI 尺寸溢出".to_string())?;
-    let mut out = vec![0u8; total_pixels * 4];
+    let total_pixels = validate_image_dimensions(w, h, "QOI")?;
+    // QOI 单个 OP_RUN 字节最多编码 62 个像素，提前校验畸形小文件宣称超大尺寸
+    let payload_len = data.len().saturating_sub(22);
+    let max_possible_pixels = payload_len.saturating_mul(62);
+    if total_pixels > max_possible_pixels {
+        return Err(DecodeError::TruncatedData { format: "QOI" });
+    }
+    let out_bytes = total_pixels
+        .checked_mul(4)
+        .ok_or(DecodeError::OutOfMemory)?;
+    let mut out = try_alloc_zeroed_buffer(out_bytes)?;
+
     let mut index = [[0u8; 4]; 64];
     let mut px = [0u8, 0, 0, 255];
     let mut p = 14usize;
@@ -100,7 +118,8 @@ pub fn decode_qoi(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
                         let b2 = data[p];
                         p += 1;
                         let vg = (b1 & 0x3F).wrapping_sub(32);
-                        px[0] = px[0].wrapping_add(vg.wrapping_sub(8).wrapping_add((b2 >> 4) & 0x0F));
+                        px[0] =
+                            px[0].wrapping_add(vg.wrapping_sub(8).wrapping_add((b2 >> 4) & 0x0F));
                         px[1] = px[1].wrapping_add(vg);
                         px[2] = px[2].wrapping_add(vg.wrapping_sub(8).wrapping_add(b2 & 0x0F));
                     }
@@ -119,14 +138,17 @@ pub fn decode_qoi(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
         out[i * 4..i * 4 + 4].copy_from_slice(&px);
     }
 
-    Ok(build_static_image(path, file_size, "QOI", w, h, &out))
+    build_static_image(path, file_size, "QOI", w, h, &out)
 }
 
-/// 解码 TGA (Truevision Targa) 常见美术/游戏贴图格式（支持未压缩与 RLE，8/16/24/32-bit）
-pub fn decode_tga(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
-    let data = std::fs::read(path).map_err(|e| format!("读取 TGA 失败: {e}"))?;
+/// 解码 TGA (Truevision Targa) 美术/游戏贴图格式（支持未压缩与 RLE，分配前严格校验剩余字节）
+pub fn decode_tga(path: &Path, file_size: u64) -> Result<DecodedImage, DecodeError> {
+    let data = std::fs::read(path).map_err(|e| DecodeError::ReadFile {
+        format: "TGA",
+        detail: e.to_string(),
+    })?;
     if data.len() < 18 {
-        return Err("无效的 TGA 文件长度".to_string());
+        return Err(DecodeError::InvalidHeader { format: "TGA" });
     }
     let id_len = data[0] as usize;
     let color_map_type = data[1];
@@ -138,32 +160,65 @@ pub fn decode_tga(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
     let bpp = data[16];
     let desc = data[17];
 
-    if w == 0 || h == 0 {
-        return Err("TGA 尺寸为 0".to_string());
-    }
+    let total = validate_image_dimensions(w, h, "TGA")?;
     if color_map_type != 0 {
-        return Err("暂不支持调色板索引型 TGA".to_string());
+        return Err(DecodeError::UnsupportedFormat {
+            format: "TGA",
+            detail: "color-mapped".to_string(),
+        });
     }
     let is_rle = matches!(img_type, 10 | 11);
     let is_gray = matches!(img_type, 3 | 11);
     let is_rgb = matches!(img_type, 2 | 10);
     if !is_gray && !is_rgb {
-        return Err(format!("不支持的 TGA 图像类型: {img_type}"));
+        return Err(DecodeError::UnsupportedFormat {
+            format: "TGA",
+            detail: format!("type={img_type}"),
+        });
     }
     let bytes_per_px = match bpp {
         8 if is_gray => 1usize,
         16 if is_rgb => 2,
         24 if is_rgb => 3,
         32 if is_rgb => 4,
-        _ => return Err(format!("不支持的 TGA 位深: {bpp}")),
+        _ => {
+            return Err(DecodeError::UnsupportedFormat {
+                format: "TGA",
+                detail: format!("bpp={bpp}"),
+            });
+        }
     };
 
-    let mut pos = 18 + id_len + cm_len * ((cm_depth + 7) / 8);
+    let cm_bytes = cm_len
+        .checked_mul(cm_depth.div_ceil(8))
+        .ok_or(DecodeError::InvalidHeader { format: "TGA" })?;
+    let mut pos = 18usize
+        .checked_add(id_len)
+        .and_then(|v| v.checked_add(cm_bytes))
+        .ok_or(DecodeError::InvalidHeader { format: "TGA" })?;
     if pos >= data.len() {
-        return Err("TGA 像素数据截断".to_string());
+        return Err(DecodeError::TruncatedData { format: "TGA" });
     }
-    let total = (w as usize) * (h as usize);
-    let mut raw_rgba = vec![0u8; total * 4];
+
+    let remaining = data.len() - pos;
+    if !is_rle {
+        let need = total
+            .checked_mul(bytes_per_px)
+            .ok_or(DecodeError::OutOfMemory)?;
+        if need > remaining {
+            return Err(DecodeError::TruncatedData { format: "TGA" });
+        }
+    } else {
+        // RLE 单包至少耗费 1 + bytes_per_px 字节、最多编码 128 个像素
+        let min_pkt_bytes = 1 + bytes_per_px;
+        let max_possible = (remaining / min_pkt_bytes).saturating_mul(128);
+        if total > max_possible {
+            return Err(DecodeError::TruncatedData { format: "TGA" });
+        }
+    }
+
+    let rgba_bytes = total.checked_mul(4).ok_or(DecodeError::OutOfMemory)?;
+    let mut raw_rgba = try_alloc_zeroed_buffer(rgba_bytes)?;
 
     let read_px = |src: &[u8]| -> [u8; 4] {
         match bytes_per_px {
@@ -181,10 +236,6 @@ pub fn decode_tga(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
     };
 
     if !is_rle {
-        let need = total * bytes_per_px;
-        if pos + need > data.len() {
-            return Err("TGA 未压缩像素区不足".to_string());
-        }
         for i in 0..total {
             let px = read_px(&data[pos + i * bytes_per_px..]);
             raw_rgba[i * 4..i * 4 + 4].copy_from_slice(&px);
@@ -223,11 +274,15 @@ pub fn decode_tga(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
     let top_origin = (desc & 0x20) != 0;
     let right_origin = (desc & 0x10) != 0;
     if !top_origin || right_origin {
-        let mut flipped = vec![0u8; total * 4];
+        let mut flipped = try_alloc_zeroed_buffer(rgba_bytes)?;
         for y in 0..h as usize {
             let sy = if top_origin { y } else { h as usize - 1 - y };
             for x in 0..w as usize {
-                let sx = if right_origin { w as usize - 1 - x } else { x };
+                let sx = if right_origin {
+                    w as usize - 1 - x
+                } else {
+                    x
+                };
                 let si = (sy * w as usize + sx) * 4;
                 let di = (y * w as usize + x) * 4;
                 flipped[di..di + 4].copy_from_slice(&raw_rgba[si..si + 4]);
@@ -236,16 +291,25 @@ pub fn decode_tga(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
         raw_rgba = flipped;
     }
 
-    Ok(build_static_image(path, file_size, "TGA", w, h, &raw_rgba))
+    build_static_image(path, file_size, "TGA", w, h, &raw_rgba)
 }
 
-/// 解码 Netpbm PNM 家族（PPM P3/P6、PGM P2/P5、PBM P1/P4）
-pub fn decode_pnm(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
-    let data = std::fs::read(path).map_err(|e| format!("读取 PNM 失败: {e}"))?;
+/// 解码 Netpbm PNM 家族（PPM P3/P6、PGM P2/P5、PBM P1/P4，分配前严格校验剩余字节）
+pub fn decode_pnm(path: &Path, file_size: u64) -> Result<DecodedImage, DecodeError> {
+    let data = std::fs::read(path).map_err(|e| DecodeError::ReadFile {
+        format: "PNM",
+        detail: e.to_string(),
+    })?;
     if data.len() < 3 || data[0] != b'P' {
-        return Err("无效的 PNM 魔数".to_string());
+        return Err(DecodeError::InvalidHeader { format: "PNM" });
     }
     let kind = data[1];
+    if !matches!(kind, b'1'..=b'6') {
+        return Err(DecodeError::UnsupportedFormat {
+            format: "PNM",
+            detail: format!("P{}", kind as char),
+        });
+    }
     let mut pos = 2usize;
 
     let next_token = |pos: &mut usize| -> Option<String> {
@@ -274,43 +338,68 @@ pub fn decode_pnm(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
 
     let w: u32 = next_token(&mut pos)
         .and_then(|s| s.parse().ok())
-        .ok_or_else(|| "PNM 宽度解析失败".to_string())?;
+        .ok_or(DecodeError::InvalidHeader { format: "PNM" })?;
     let h: u32 = next_token(&mut pos)
         .and_then(|s| s.parse().ok())
-        .ok_or_else(|| "PNM 高度解析失败".to_string())?;
-    if w == 0 || h == 0 {
-        return Err("PNM 尺寸为 0".to_string());
-    }
+        .ok_or(DecodeError::InvalidHeader { format: "PNM" })?;
+    let total = validate_image_dimensions(w, h, "PNM")?;
+
     let maxval: u32 = if matches!(kind, b'1' | b'4') {
         1
     } else {
         next_token(&mut pos)
             .and_then(|s| s.parse().ok())
-            .ok_or_else(|| "PNM maxval 解析失败".to_string())?
+            .ok_or(DecodeError::InvalidHeader { format: "PNM" })?
     };
-    if maxval == 0 {
-        return Err("PNM maxval 为 0".to_string());
+    if maxval == 0 || maxval > 65535 {
+        return Err(DecodeError::InvalidHeader { format: "PNM" });
     }
     // 二进制模式跳过紧随头部的单个空白字节
     if matches!(kind, b'4' | b'5' | b'6') && pos < data.len() && data[pos].is_ascii_whitespace() {
         pos += 1;
     }
 
-    let total = (w as usize) * (h as usize);
-    let mut rgba = vec![255u8; total * 4];
+    // 分配像素缓冲区之前严格校验剩余字节下界，彻底防御畸形小文件声明超大分辨率触发 OOM
+    let remaining = data.len().saturating_sub(pos);
+    let bpc = if maxval > 255 { 2usize } else { 1usize };
+    let min_required = match kind {
+        b'6' => total
+            .checked_mul(3)
+            .and_then(|v| v.checked_mul(bpc))
+            .ok_or(DecodeError::OutOfMemory)?,
+        b'5' => total.checked_mul(bpc).ok_or(DecodeError::OutOfMemory)?,
+        b'4' => ((w as usize).div_ceil(8))
+            .checked_mul(h as usize)
+            .ok_or(DecodeError::OutOfMemory)?,
+        b'3' => total
+            .checked_mul(6)
+            .map(|v| v.saturating_sub(1))
+            .ok_or(DecodeError::OutOfMemory)?,
+        b'2' => total
+            .checked_mul(2)
+            .map(|v| v.saturating_sub(1))
+            .ok_or(DecodeError::OutOfMemory)?,
+        b'1' => total,
+        _ => 0,
+    };
+    if remaining < min_required {
+        return Err(DecodeError::TruncatedData { format: "PNM" });
+    }
+
+    let rgba_bytes = total.checked_mul(4).ok_or(DecodeError::OutOfMemory)?;
+    let mut rgba = try_alloc_filled_buffer(rgba_bytes, 255)?;
     let scale = |v: u32| -> u8 { ((v.min(maxval) * 255 + maxval / 2) / maxval) as u8 };
 
     match kind {
         b'6' => {
-            let bpc = if maxval > 255 { 2 } else { 1 };
-            let need = total * 3 * bpc;
-            if pos + need > data.len() {
-                return Err("PPM(P6) 像素数据不足".to_string());
-            }
             for i in 0..total {
                 let base = pos + i * 3 * bpc;
                 let (r, g, b) = if bpc == 1 {
-                    (data[base] as u32, data[base + 1] as u32, data[base + 2] as u32)
+                    (
+                        data[base] as u32,
+                        data[base + 1] as u32,
+                        data[base + 2] as u32,
+                    )
                 } else {
                     (
                         u16::from_be_bytes([data[base], data[base + 1]]) as u32,
@@ -324,11 +413,6 @@ pub fn decode_pnm(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
             }
         }
         b'5' => {
-            let bpc = if maxval > 255 { 2 } else { 1 };
-            let need = total * bpc;
-            if pos + need > data.len() {
-                return Err("PGM(P5) 像素数据不足".to_string());
-            }
             for i in 0..total {
                 let base = pos + i * bpc;
                 let v = if bpc == 1 {
@@ -343,10 +427,7 @@ pub fn decode_pnm(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
             }
         }
         b'4' => {
-            let row_bytes = (w as usize + 7) / 8;
-            if pos + row_bytes * h as usize > data.len() {
-                return Err("PBM(P4) 像素数据不足".to_string());
-            }
+            let row_bytes = (w as usize).div_ceil(8);
             for y in 0..h as usize {
                 for x in 0..w as usize {
                     let byte = data[pos + y * row_bytes + x / 8];
@@ -361,9 +442,15 @@ pub fn decode_pnm(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
         }
         b'3' => {
             for i in 0..total {
-                let r: u32 = next_token(&mut pos).and_then(|s| s.parse().ok()).unwrap_or(0);
-                let g: u32 = next_token(&mut pos).and_then(|s| s.parse().ok()).unwrap_or(0);
-                let b: u32 = next_token(&mut pos).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let r: u32 = next_token(&mut pos)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let g: u32 = next_token(&mut pos)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let b: u32 = next_token(&mut pos)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
                 rgba[i * 4] = scale(r);
                 rgba[i * 4 + 1] = scale(g);
                 rgba[i * 4 + 2] = scale(b);
@@ -371,7 +458,9 @@ pub fn decode_pnm(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
         }
         b'2' => {
             for i in 0..total {
-                let v: u32 = next_token(&mut pos).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let v: u32 = next_token(&mut pos)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
                 let g = scale(v);
                 rgba[i * 4] = g;
                 rgba[i * 4 + 1] = g;
@@ -380,14 +469,16 @@ pub fn decode_pnm(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
         }
         b'1' => {
             for i in 0..total {
-                let v: u32 = next_token(&mut pos).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let v: u32 = next_token(&mut pos)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
                 let c = if v != 0 { 0u8 } else { 255u8 };
                 rgba[i * 4] = c;
                 rgba[i * 4 + 1] = c;
                 rgba[i * 4 + 2] = c;
             }
         }
-        _ => return Err(format!("不支持的 PNM 子格式: P{}", kind as char)),
+        _ => unreachable!(),
     }
 
     let label = match kind {
@@ -395,7 +486,7 @@ pub fn decode_pnm(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
         b'2' | b'5' => "PGM",
         _ => "PPM",
     };
-    Ok(build_static_image(path, file_size, label, w, h, &rgba))
+    build_static_image(path, file_size, label, w, h, &rgba)
 }
 
 #[cfg(test)]
@@ -449,5 +540,54 @@ mod tests {
         let _ = std::fs::remove_file(&qoi_path);
         let _ = std::fs::remove_file(&tga_path);
         let _ = std::fs::remove_file(&ppm_path);
+    }
+
+    #[test]
+    fn rejects_malformed_tga_pnm_qoi_headers_without_oom() {
+        let dir = std::env::temp_dir().join("t3k_picasa_viewer_malformed_test");
+        let _ = std::fs::create_dir_all(&dir);
+
+        // 畸形 TGA：仅 24 字节却声明 10000x10000 未压缩像素
+        let bad_tga = dir.join("bad.tga");
+        let mut tga = vec![0u8; 24];
+        tga[2] = 2;
+        tga[12..14].copy_from_slice(&10_000u16.to_le_bytes());
+        tga[14..16].copy_from_slice(&10_000u16.to_le_bytes());
+        tga[16] = 32;
+        std::fs::write(&bad_tga, &tga).unwrap();
+        assert!(matches!(
+            decode_tga(&bad_tga, tga.len() as u64),
+            Err(DecodeError::TruncatedData { format: "TGA" })
+        ));
+
+        // 畸形 RLE TGA：仅 24 字节却声明 10000x10000 RLE 像素
+        tga[2] = 10;
+        std::fs::write(&bad_tga, &tga).unwrap();
+        assert!(matches!(
+            decode_tga(&bad_tga, tga.len() as u64),
+            Err(DecodeError::TruncatedData { format: "TGA" })
+        ));
+
+        // 畸形 PPM：仅 16 字节却声明 50000x50000
+        let bad_ppm = dir.join("bad.ppm");
+        let ppm = b"P6\n50000 50000\n255\nABC";
+        std::fs::write(&bad_ppm, ppm).unwrap();
+        assert!(matches!(
+            decode_pnm(&bad_ppm, ppm.len() as u64),
+            Err(DecodeError::DimensionsTooLarge { .. })
+        ));
+
+        // 畸形截断 PPM：合法像素数内但文件被截断
+        let trunc_ppm = dir.join("trunc.ppm");
+        let ppm2 = b"P6\n4000 4000\n255\nABC";
+        std::fs::write(&trunc_ppm, ppm2).unwrap();
+        assert!(matches!(
+            decode_pnm(&trunc_ppm, ppm2.len() as u64),
+            Err(DecodeError::TruncatedData { format: "PNM" })
+        ));
+
+        let _ = std::fs::remove_file(&bad_tga);
+        let _ = std::fs::remove_file(&bad_ppm);
+        let _ = std::fs::remove_file(&trunc_ppm);
     }
 }

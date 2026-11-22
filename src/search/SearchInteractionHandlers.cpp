@@ -215,15 +215,17 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
     bridge.registerHandler("search.startDrag", [](const json&) -> json {
         const HWND hwnd = currentProcessSearchWindow();
         if (hwnd && IsWindow(hwnd)) {
+            // 原生 WS_OVERLAPPEDWINDOW 通过 WM_SYSCOMMAND(0xF012) 同时支持浮窗拖动与最大化态 Aero Tear-Off 脱离还原
             ReleaseCapture();
-            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            PostMessageW(hwnd, WM_SYSCOMMAND, 0xF012, 0);
         }
         return {{"success", true}};
     });
     bridge.registerHandler("search.startResize", [](const json& params) -> json {
         const std::string edge = params.value("edge", params.value("direction", "bottom_right"));
         const HWND hwnd = currentProcessSearchWindow();
-        if (hwnd && IsWindow(hwnd) && !IsZoomed(hwnd)) {
+        if (hwnd && IsWindow(hwnd) && !IsZoomed(hwnd) &&
+            GetPropW(hwnd, L"Tools3000_SearchMaximized") == nullptr) {
             SetForegroundWindow(hwnd);
             ReleaseCapture();
             WPARAM scSizeParam = 0;
@@ -248,13 +250,17 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
     });
     bridge.registerHandler("search.resetPlacement", [](const json&) -> json {
         auto& config = tools3000::core::ConfigManager::instance();
+        config.set<bool>("/search/windowMaximized", false);
         config.set<int>("/search/windowWidth", 760);
         config.set<int>("/search/windowHeight", 520);
         config.set<int>("/search/windowX", -99999);
         config.set<int>("/search/windowY", -99999);
         const HWND hwnd = currentProcessSearchWindow();
-        if (hwnd && IsWindow(hwnd)) PostMessageW(hwnd, WM_DISPLAYCHANGE, 0, 0);
-        return {{"success", true}};
+        if (hwnd && IsWindow(hwnd)) {
+            RemovePropW(hwnd, L"Tools3000_SearchMaximized");
+            PostMessageW(hwnd, WM_DISPLAYCHANGE, 0, 0);
+        }
+        return {{"success", true}, {"maximized", false}};
     });
     const auto applySearchWindowSize = [](const json& params, bool defaultCenter) -> json {
         if (!params.is_object()) {
@@ -267,6 +273,7 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
         baseHeight = (std::clamp)(baseHeight, 400, 1600);
 
         auto& config = tools3000::core::ConfigManager::instance();
+        config.set<bool>("/search/windowMaximized", false);
         config.set<int>("/search/windowWidth", baseWidth);
         config.set<int>("/search/windowHeight", baseHeight);
         if (center) {
@@ -274,8 +281,11 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
             config.set<int>("/search/windowY", -99999);
         }
         const HWND hwnd = currentProcessSearchWindow();
-        if (hwnd && IsWindow(hwnd)) PostMessageW(hwnd, WM_DISPLAYCHANGE, 0, 0);
-        return {{"success", true}, {"width", baseWidth}, {"height", baseHeight}};
+        if (hwnd && IsWindow(hwnd)) {
+            RemovePropW(hwnd, L"Tools3000_SearchMaximized");
+            PostMessageW(hwnd, WM_DISPLAYCHANGE, 0, 0);
+        }
+        return {{"success", true}, {"width", baseWidth}, {"height", baseHeight}, {"maximized", false}};
     };
     if (!bridge.hasHandler("search.setWindowSize")) {
         bridge.registerHandler("search.setWindowSize", [applySearchWindowSize](const json& params) -> json {
@@ -290,7 +300,51 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
             auto& config = tools3000::core::ConfigManager::instance();
             const int width = config.get<int>("/search/windowWidth", 760);
             const int height = config.get<int>("/search/windowHeight", 520);
-            return {{"success", true}, {"width", width}, {"height", height}};
+            const bool maximized = config.get<bool>("/search/windowMaximized", false);
+            return {{"success", true}, {"width", width}, {"height", height}, {"maximized", maximized}};
+        });
+    }
+    if (!bridge.hasHandler("search.getMaximized")) {
+        bridge.registerHandler("search.getMaximized", [](const json&) -> json {
+            auto& config = tools3000::core::ConfigManager::instance();
+            const HWND hwnd = currentProcessSearchWindow();
+            const bool maximized = (hwnd && IsWindow(hwnd))
+                ? (GetPropW(hwnd, L"Tools3000_SearchMaximized") != nullptr)
+                : config.get<bool>("/search/windowMaximized", false);
+            return {{"success", true}, {"maximized", maximized}};
+        });
+    }
+    if (!bridge.hasHandler("search.setMaximized")) {
+        bridge.registerHandler("search.setMaximized", [](const json& params) -> json {
+            const bool maximized = params.value("maximized", false);
+            tools3000::core::ConfigManager::instance().set<bool>("/search/windowMaximized", maximized);
+            const HWND hwnd = currentProcessSearchWindow();
+            if (hwnd && IsWindow(hwnd)) {
+                if (maximized) {
+                    SetPropW(hwnd, L"Tools3000_SearchMaximized", reinterpret_cast<HANDLE>(1));
+                } else {
+                    RemovePropW(hwnd, L"Tools3000_SearchMaximized");
+                }
+                PostMessageW(hwnd, WM_DISPLAYCHANGE, 0, 0);
+            }
+            return {{"success", true}, {"maximized", maximized}};
+        });
+    }
+    if (!bridge.hasHandler("search.toggleMaximized")) {
+        bridge.registerHandler("search.toggleMaximized", [](const json&) -> json {
+            auto& config = tools3000::core::ConfigManager::instance();
+            const bool next = !config.get<bool>("/search/windowMaximized", false);
+            config.set<bool>("/search/windowMaximized", next);
+            const HWND hwnd = currentProcessSearchWindow();
+            if (hwnd && IsWindow(hwnd)) {
+                if (next) {
+                    SetPropW(hwnd, L"Tools3000_SearchMaximized", reinterpret_cast<HANDLE>(1));
+                } else {
+                    RemovePropW(hwnd, L"Tools3000_SearchMaximized");
+                }
+                PostMessageW(hwnd, WM_DISPLAYCHANGE, 0, 0);
+            }
+            return {{"success", true}, {"maximized", next}};
         });
     }
     bridge.registerHandler("search.setPinned", [](const json& params) -> json {

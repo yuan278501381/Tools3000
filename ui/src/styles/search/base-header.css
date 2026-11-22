@@ -28,6 +28,8 @@
     --search-drawer-border: rgba(255, 255, 255, 0.085);
     --search-snippet-bg: rgba(0, 0, 0, 0.28);
     --search-snippet-border: rgba(255, 255, 255, 0.065);
+    --search-table-even-bg: rgba(255, 255, 255, 0.014);
+    --search-table-col-divider: rgba(255, 255, 255, 0.07);
     --search-scrollbar-silent: rgba(255, 255, 255, 0.14);
     --search-scrollbar-thumb: rgba(255, 255, 255, 0.24);
     --search-scrollbar-hover: rgba(255, 255, 255, 0.38);
@@ -60,6 +62,8 @@
     --search-drawer-border: rgba(24, 24, 27, 0.085);
     --search-snippet-bg: rgba(24, 24, 27, 0.028);
     --search-snippet-border: rgba(24, 24, 27, 0.06);
+    --search-table-even-bg: rgba(24, 24, 27, 0.018);
+    --search-table-col-divider: rgba(24, 24, 27, 0.085);
     --search-scrollbar-silent: rgba(24, 24, 27, 0.11);
     --search-scrollbar-thumb: rgba(24, 24, 27, 0.20);
     --search-scrollbar-hover: rgba(24, 24, 27, 0.34);
@@ -115,6 +119,12 @@ html[data-surface="search"] #root {
     animation: slideDown 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.search-container--maximized {
+    border-radius: 0;
+    border-width: 0;
+    box-shadow: none;
+}
+
 @keyframes slideDown {
     from {
         opacity: 0;
@@ -130,7 +140,7 @@ html[data-surface="search"] #root {
 .search-input-wrapper {
     display: flex;
     align-items: center;
-    padding: 15px 18px 15px 20px;
+    padding: 13px 14px 13px 18px;
     border-bottom: 1px solid var(--search-input-bottom, rgba(255, 255, 255, 0.08));
     background: transparent;
     transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
@@ -156,6 +166,7 @@ html[data-surface="search"] #root {
 
 .search-input {
     flex: 1;
+    min-width: 120px;
     background: transparent !important;
     border: none !important;
     outline: none !important;
@@ -233,6 +244,257 @@ html[data-surface="search"] #root {
     fill: currentColor;
 }
 
+.search-icon-drag-handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: grab;
+    flex-shrink: 0;
+}
+
+.search-icon-drag-handle:active {
+    cursor: grabbing;
+}
+
+.search-history-trigger-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    height: 28px;
+    padding: 0 7px;
+    margin-left: 6px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--search-text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.search-history-trigger-btn:hover {
+    background: var(--search-surface-pill-hover);
+    color: var(--search-text-main);
+}
+
+.search-history-trigger-btn--active {
+    background: color-mix(in srgb, var(--primary) 12%, transparent);
+    border-color: color-mix(in srgb, var(--primary) 28%, transparent);
+    color: var(--primary);
+}
+
+.search-history-chevron {
+    transition: transform 160ms ease;
+}
+
+.search-history-trigger-btn--active .search-history-chevron {
+    transform: rotate(180deg);
+}
+
+.search-history-dropdown {
+    position: absolute;
+    left: 16px;
+    top: calc(100% + 4px);
+    width: min(560px, calc(100% - 32px));
+    max-height: 320px;
+    display: flex;
+    flex-direction: column;
+    border-radius: 11px;
+    background: var(--search-drawer-bg);
+    border: 1px solid var(--search-drawer-border);
+    box-shadow: 0 16px 38px rgba(0, 0, 0, 0.28);
+    z-index: 950;
+    overflow: hidden;
+}
+
+.search-history-dropdown-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--search-border);
+    background: var(--search-subbar-bg);
+}
+
+.search-history-dropdown-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--search-text-sub);
+}
+
+.search-history-dropdown-clear {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--search-text-muted);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease;
+}
+
+.search-history-dropdown-clear:hover {
+    background: var(--search-surface-pill-hover);
+    color: var(--danger, #f87171);
+}
+
+.search-history-dropdown-empty {
+    padding: 18px 14px;
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1.45;
+    color: var(--search-text-muted);
+    text-align: center;
+}
+
+.search-history-dropdown-list {
+    padding: 5px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.search-history-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 7px;
+    color: var(--search-text-main);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: background-color 110ms ease;
+}
+
+.search-history-dropdown-item.is-active,
+.search-history-dropdown-item:hover {
+    background: var(--search-selected-bg);
+}
+
+.search-history-dropdown-item.is-current .search-history-dropdown-item-text {
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.search-history-dropdown-item-icon {
+    flex-shrink: 0;
+    color: var(--search-text-muted);
+}
+
+.search-history-dropdown-item-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.search-history-dropdown-item-count {
+    flex-shrink: 0;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--search-surface-pill);
+    border: 1px solid var(--search-surface-pill-border);
+    color: var(--search-text-muted);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
+}
+
+.search-history-dropdown-item-del {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--search-text-muted);
+    opacity: 0.45;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.search-history-dropdown-item:hover .search-history-dropdown-item-del,
+.search-history-dropdown-item.is-active .search-history-dropdown-item-del {
+    opacity: 1;
+}
+
+.search-history-dropdown-item-del:hover {
+    background: var(--search-surface-pill-hover);
+    color: var(--danger, #f87171);
+}
+
+/* 标准 Windows 窗口三联控制按钮区 (最小化 / 最大化·还原 / 关闭) */
+.search-window-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 8px;
+    padding-left: 8px;
+    border-left: 1px solid var(--search-border);
+    flex-shrink: 0;
+}
+
+.search-win-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 30px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--search-text-sub);
+    cursor: pointer;
+    transition: background-color 130ms ease, color 130ms ease, transform 90ms ease;
+}
+
+.search-win-btn:hover {
+    background: var(--search-surface-pill-hover);
+    color: var(--search-text-main);
+}
+
+.search-win-btn:active {
+    transform: scale(0.94);
+}
+
+.search-win-btn--active {
+    color: var(--primary);
+}
+
+.search-win-btn--close:hover {
+    background: rgba(232, 17, 35, 0.9);
+    color: #ffffff;
+}
+
+.search-win-btn--close:active {
+    background: rgba(200, 14, 30, 0.96);
+    color: #ffffff;
+}
+
 .search-clear-input-btn {
     display: inline-flex;
     align-items: center;
@@ -277,6 +539,29 @@ html[data-surface="search"] #root {
     background: var(--primary-dim);
     border-color: var(--primary);
     color: var(--primary);
+}
+
+.search-resume-scan-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    margin-left: 4px;
+    border-radius: 4px;
+    background: var(--primary-dim);
+    border: 1px solid var(--primary);
+    color: var(--primary);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all 0.15s ease;
+}
+
+.search-resume-scan-btn:hover {
+    background: var(--primary);
+    color: #ffffff;
 }
 
 /* 零 CLS 几何锁定加载插槽与指示器 */
@@ -341,4 +626,55 @@ html[data-surface="search"] #root {
         background-position: -200% 0;
     }
 }
+
+/* 窄窗口（500~640px）顶栏紧凑响应式防裁切 */
+@media (max-width: 640px) {
+    .search-input-wrapper {
+        padding: 10px 10px 10px 12px;
+    }
+
+    .search-icon {
+        width: 18px;
+        height: 18px;
+        margin-right: 8px;
+    }
+
+    .search-input {
+        min-width: 64px;
+        font-size: 16px;
+    }
+
+    .search-input::placeholder {
+        font-size: 13.5px;
+    }
+
+    .search-history-trigger-btn {
+        margin-left: 4px;
+        padding: 0 5px;
+    }
+
+    .search-loading-slot {
+        width: 20px;
+        height: 20px;
+        margin-left: 4px;
+    }
+
+    .search-help-btn {
+        width: 28px;
+        height: 28px;
+        margin-left: 2px;
+    }
+
+    .search-window-controls {
+        margin-left: 4px;
+        padding-left: 4px;
+        gap: 1px;
+    }
+
+    .search-win-btn {
+        width: 28px;
+        height: 28px;
+    }
+}
+
 

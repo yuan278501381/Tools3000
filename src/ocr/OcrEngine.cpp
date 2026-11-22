@@ -1603,7 +1603,8 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
 
         cv::QRCodeDetector detector;
         auto appendDecoded = [&](const std::string& text, const cv::Mat& points, int rowIdx, float passInvScale,
-                                 const std::string& format = "QR_CODE") {
+                                 const std::string& format = "QR_CODE",
+                                 cv::Point2f passOffset = {0.0f, 0.0f}) {
             if (text.empty()) return;
             for (const auto& existing : qrResults) {
                 if (existing.text == text) return;
@@ -1618,8 +1619,8 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
             if (rowIdx >= 0 && points.rows > rowIdx && points.cols == 4 && points.type() == CV_32FC2) {
                 const auto* rowPts = points.ptr<cv::Point2f>(rowIdx);
                 for (size_t k = 0; k < 4; ++k) {
-                    const float px = std::clamp(rowPts[k].x * passInvScale, 0.0f, static_cast<float>(image.cols));
-                    const float py = std::clamp(rowPts[k].y * passInvScale, 0.0f, static_cast<float>(image.rows));
+                    const float px = std::clamp(rowPts[k].x * passInvScale + passOffset.x, 0.0f, static_cast<float>(image.cols));
+                    const float py = std::clamp(rowPts[k].y * passInvScale + passOffset.y, 0.0f, static_cast<float>(image.rows));
                     item.corners[k] = {px, py};
                     minX = (std::min)(minX, px);
                     minY = (std::min)(minY, py);
@@ -1630,8 +1631,8 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
             } else if (points.total() == 4 && points.type() == CV_32FC2) {
                 const auto* rawPts = points.ptr<cv::Point2f>();
                 for (size_t k = 0; k < 4; ++k) {
-                    const float px = std::clamp(rawPts[k].x * passInvScale, 0.0f, static_cast<float>(image.cols));
-                    const float py = std::clamp(rawPts[k].y * passInvScale, 0.0f, static_cast<float>(image.rows));
+                    const float px = std::clamp(rawPts[k].x * passInvScale + passOffset.x, 0.0f, static_cast<float>(image.cols));
+                    const float py = std::clamp(rawPts[k].y * passInvScale + passOffset.y, 0.0f, static_cast<float>(image.rows));
                     item.corners[k] = {px, py};
                     minX = (std::min)(minX, px);
                     minY = (std::min)(minY, py);
@@ -1653,7 +1654,38 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
             qrResults.push_back(std::move(item));
         };
 
-        auto runPass = [&](const cv::Mat& passGray, float passInvScale, bool tryMulti) {
+        auto collectPointBoxes = [](const cv::Mat& pts, int maxW, int maxH, std::vector<cv::Rect>& outBoxes) {
+            if (pts.empty() || pts.type() != CV_32FC2) return;
+            auto addQuad = [&](const cv::Point2f* q) {
+                float minX = FLT_MAX, minY = FLT_MAX, maxX = -FLT_MAX, maxY = -FLT_MAX;
+                for (int k = 0; k < 4; ++k) {
+                    minX = (std::min)(minX, q[k].x);
+                    minY = (std::min)(minY, q[k].y);
+                    maxX = (std::max)(maxX, q[k].x);
+                    maxY = (std::max)(maxY, q[k].y);
+                }
+                if (maxX > minX + 4.0f && maxY > minY + 4.0f) {
+                    const int x0 = std::clamp(static_cast<int>(std::floor(minX)), 0, maxW - 1);
+                    const int y0 = std::clamp(static_cast<int>(std::floor(minY)), 0, maxH - 1);
+                    const int x1 = std::clamp(static_cast<int>(std::ceil(maxX)), x0 + 1, maxW);
+                    const int y1 = std::clamp(static_cast<int>(std::ceil(maxY)), y0 + 1, maxH);
+                    outBoxes.emplace_back(x0, y0, x1 - x0, y1 - y0);
+                }
+            };
+            if (pts.cols == 4 && pts.rows >= 1) {
+                for (int r = 0; r < pts.rows; ++r) {
+                    addQuad(pts.ptr<cv::Point2f>(r));
+                }
+            } else if (pts.total() == 4) {
+                addQuad(pts.ptr<cv::Point2f>());
+            }
+        };
+
+        auto runPass = [&](const cv::Mat& passGray,
+                           float passInvScale,
+                           bool tryMulti,
+                           cv::Point2f passOffset = {0.0f, 0.0f},
+                           std::vector<cv::Rect>* outCandidateBoxes = nullptr) {
             if (tryMulti) {
                 std::vector<std::string> decoded;
                 cv::Mat points;
@@ -1663,7 +1695,10 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
                 }
                 const int numCodes = static_cast<int>(decoded.size());
                 for (int i = 0; i < numCodes; ++i) {
-                    appendDecoded(decoded[static_cast<size_t>(i)], points, i, passInvScale);
+                    appendDecoded(decoded[static_cast<size_t>(i)], points, i, passInvScale, "QR_CODE", passOffset);
+                }
+                if (qrResults.empty() && outCandidateBoxes && !points.empty()) {
+                    collectPointBoxes(points, passGray.cols, passGray.rows, *outCandidateBoxes);
                 }
             }
             if (qrResults.empty()) {
@@ -1673,24 +1708,236 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
                     singleDecoded = detector.detectAndDecode(passGray, singlePoints);
                 } catch (...) {
                 }
-                appendDecoded(singleDecoded, singlePoints, 0, passInvScale);
+                appendDecoded(singleDecoded, singlePoints, 0, passInvScale, "QR_CODE", passOffset);
+                if (qrResults.empty() && outCandidateBoxes && !singlePoints.empty()) {
+                    collectPointBoxes(singlePoints, passGray.cols, passGray.rows, *outCandidateBoxes);
+                }
             }
         };
 
-        runPass(work, invScale, /*tryMulti=*/true);
+        // 轻量级 QR 回字形 Finder Pattern 嵌套方阵簇预筛器（~1.5ms）：
+        // 仅用于大尺寸图像在 1x 未命中时精准定位极小/倾斜 QR 候选局部 ROI，彻底消除无码纯文字大图 2x 全图放大长尾
+        auto findQrCandidateRois = [](const cv::Mat& grayImg) -> std::vector<cv::Rect> {
+            std::vector<cv::Rect> rois;
+            if (grayImg.empty() || grayImg.cols < 48 || grayImg.rows < 48) return rois;
 
-        // 工业实拍/高分屏中占画面面积极小 (< 90px) 的倾斜二维码在 1x 像素下每模块不足 2.5px，
-        // 仅在 1x 未检出时以 2x 三次插值放大配合单码强透视检测器补齐召回（并行于 OCR 零感知延迟）。
-        if (qrResults.empty() && invScale >= 0.99f &&
-            static_cast<int64_t>(work.cols) * static_cast<int64_t>(work.rows) <= 1600LL * 1600LL) {
-            cv::Mat up2;
-            cv::resize(work, up2, cv::Size(), 2.0, 2.0, cv::INTER_CUBIC);
-            runPass(up2, invScale * 0.5f, /*tryMulti=*/false);
+            cv::Mat bin;
+            cv::adaptiveThreshold(grayImg, bin, 255, cv::ADAPTIVE_THRESH_MEAN_C, cv::THRESH_BINARY_INV, 15, 7);
+
+            std::vector<std::vector<cv::Point>> contours;
+            std::vector<cv::Vec4i> hierarchy;
+            cv::findContours(bin, contours, hierarchy, cv::RETR_TREE, cv::CHAIN_APPROX_SIMPLE);
+            if (contours.empty() || hierarchy.size() != contours.size()) return rois;
+
+            struct FinderCand {
+                cv::Rect box;
+                float cx = 0.0f;
+                float cy = 0.0f;
+                float maxSide = 0.0f;
+                int depth = 0; // 2=两层嵌套方框, 3=标准三层黑-白-黑回字形
+            };
+            std::vector<FinderCand> cands;
+            cands.reserve(32);
+
+            for (size_t i = 0; i < contours.size(); ++i) {
+                const int firstChild = hierarchy[i][2];
+                if (firstChild < 0 || contours[i].size() < 4u) continue;
+                const cv::Rect r0 = cv::boundingRect(contours[i]);
+                if (r0.width < 9 || r0.height < 9 || r0.width > 160 || r0.height > 160) continue;
+                const float aspect = static_cast<float>(r0.width) / static_cast<float>(r0.height);
+                if (aspect < 0.42f || aspect > 2.40f) continue;
+
+                const double rectArea0 = static_cast<double>(r0.width) * static_cast<double>(r0.height);
+                const double area0 = std::abs(cv::contourArea(contours[i]));
+                if (area0 < 48.0 || area0 < rectArea0 * 0.35) continue;
+
+                const float cx0 = static_cast<float>(r0.x) + 0.5f * static_cast<float>(r0.width);
+                const float cy0 = static_cast<float>(r0.y) + 0.5f * static_cast<float>(r0.height);
+                const float maxS0 = static_cast<float>((std::max)(r0.width, r0.height));
+
+                int bestDepth = 0;
+                for (int c1 = firstChild; c1 >= 0; c1 = hierarchy[static_cast<size_t>(c1)][0]) {
+                    const cv::Rect r1 = cv::boundingRect(contours[static_cast<size_t>(c1)]);
+                    const double rectArea1 = static_cast<double>(r1.width) * static_cast<double>(r1.height);
+                    const double aRatio1 = rectArea1 / rectArea0;
+                    if (aRatio1 < 0.14 || aRatio1 > 0.82) continue;
+                    const float cx1 = static_cast<float>(r1.x) + 0.5f * static_cast<float>(r1.width);
+                    const float cy1 = static_cast<float>(r1.y) + 0.5f * static_cast<float>(r1.height);
+                    if (std::hypot(cx1 - cx0, cy1 - cy0) > maxS0 * 0.32f) continue;
+
+                    if (bestDepth < 2) bestDepth = 2;
+                    for (int c2 = hierarchy[static_cast<size_t>(c1)][2]; c2 >= 0; c2 = hierarchy[static_cast<size_t>(c2)][0]) {
+                        const cv::Rect r2 = cv::boundingRect(contours[static_cast<size_t>(c2)]);
+                        if (r2.width < 2 || r2.height < 2) continue;
+                        const double rectArea2 = static_cast<double>(r2.width) * static_cast<double>(r2.height);
+                        const double aRatio2 = rectArea2 / (std::max)(1.0, rectArea1);
+                        if (aRatio2 < 0.08 || aRatio2 > 0.80) continue;
+                        const float cx2 = static_cast<float>(r2.x) + 0.5f * static_cast<float>(r2.width);
+                        const float cy2 = static_cast<float>(r2.y) + 0.5f * static_cast<float>(r2.height);
+                        if (std::hypot(cx2 - cx0, cy2 - cy0) <= maxS0 * 0.35f) {
+                            bestDepth = 3;
+                            break;
+                        }
+                    }
+                    if (bestDepth == 3) break;
+                }
+
+                if (bestDepth >= 2) {
+                    cands.push_back({r0, cx0, cy0, maxS0, bestDepth});
+                    if (cands.size() >= 64u) break;
+                }
+            }
+
+            if (cands.size() < 2u) return rois;
+
+            // 将空间邻近且尺度相近的 Finder Pattern 聚类成 QR 码候选簇
+            std::vector<uint8_t> visited(cands.size(), 0);
+            struct ScoredRoi {
+                cv::Rect roi;
+                int score = 0;
+            };
+            std::vector<ScoredRoi> scored;
+            const int64_t imgArea = static_cast<int64_t>(grayImg.cols) * static_cast<int64_t>(grayImg.rows);
+
+            for (size_t i = 0; i < cands.size(); ++i) {
+                if (visited[i]) continue;
+                std::vector<size_t> queue{i};
+                visited[i] = 1;
+                cv::Rect unionBox = cands[i].box;
+                int tripleCount = (cands[i].depth >= 3) ? 1 : 0;
+                float maxFinder = cands[i].maxSide;
+
+                for (size_t qIdx = 0; qIdx < queue.size(); ++qIdx) {
+                    const auto& a = cands[queue[qIdx]];
+                    for (size_t j = 0; j < cands.size(); ++j) {
+                        if (visited[j]) continue;
+                        const auto& b = cands[j];
+                        const float hiS = (std::max)(a.maxSide, b.maxSide);
+                        const float loS = (std::max)(1.0f, (std::min)(a.maxSide, b.maxSide));
+                        if (hiS / loS > 2.4f) continue;
+                        const float dist = std::hypot(a.cx - b.cx, a.cy - b.cy);
+                        if (dist <= hiS * 14.0f) {
+                            visited[j] = 1;
+                            queue.push_back(j);
+                            unionBox |= b.box;
+                            if (b.depth >= 3) ++tripleCount;
+                            maxFinder = (std::max)(maxFinder, b.maxSide);
+                        }
+                    }
+                }
+
+                const int totalCnt = static_cast<int>(queue.size());
+                // 过滤偶发双层文字/UI 图标：需至少包含 2 个三层回字形，或 1 个三层 + 邻近二层，或 >=3 个同尺度嵌套方框
+                if (tripleCount >= 2 || (tripleCount >= 1 && totalCnt >= 2) || totalCnt >= 3) {
+                    const int pad = (std::max)(
+                        static_cast<int>(std::ceil(maxFinder * 2.5f)),
+                        (std::max)(unionBox.width, unionBox.height) / 2) + 20;
+                    const int rx0 = (std::max)(0, unionBox.x - pad);
+                    const int ry0 = (std::max)(0, unionBox.y - pad);
+                    const int rx1 = (std::min)(grayImg.cols, unionBox.x + unionBox.width + pad);
+                    const int ry1 = (std::min)(grayImg.rows, unionBox.y + unionBox.height + pad);
+                    const cv::Rect roi(rx0, ry0, rx1 - rx0, ry1 - ry0);
+                    const int64_t roiArea = static_cast<int64_t>(roi.width) * static_cast<int64_t>(roi.height);
+                    if (roi.width >= 32 && roi.height >= 32 &&
+                        roi.width <= 640 && roi.height <= 640 &&
+                        roiArea * 100LL <= imgArea * 60LL) {
+                        scored.push_back({roi, tripleCount * 4 + totalCnt});
+                    }
+                }
+            }
+
+            std::sort(scored.begin(), scored.end(), [](const ScoredRoi& a, const ScoredRoi& b) {
+                return a.score > b.score;
+            });
+            for (const auto& s : scored) {
+                bool merged = false;
+                for (auto& existing : rois) {
+                    if ((existing & s.roi).area() > 0) {
+                        const cv::Rect u = existing | s.roi;
+                        if (u.width <= 640 && u.height <= 640) {
+                            existing = u;
+                            merged = true;
+                            break;
+                        }
+                    }
+                }
+                if (!merged) {
+                    rois.push_back(s.roi);
+                    if (rois.size() >= 3u) break;
+                }
+            }
+            return rois;
+        };
+
+        auto decodeCandidateRois = [&](const cv::Mat& baseGray,
+                                       const std::vector<cv::Rect>& candidateRois,
+                                       float baseInvScale,
+                                       bool try1xFirst) {
+            for (const auto& rawRoi : candidateRois) {
+                const cv::Rect roi = rawRoi & cv::Rect(0, 0, baseGray.cols, baseGray.rows);
+                if (roi.width < 24 || roi.height < 24) continue;
+                const cv::Mat patch = baseGray(roi);
+                const cv::Point2f offset(
+                    static_cast<float>(roi.x) * baseInvScale,
+                    static_cast<float>(roi.y) * baseInvScale);
+                if (try1xFirst) {
+                    runPass(patch, baseInvScale, /*tryMulti=*/false, offset);
+                    if (!qrResults.empty()) break;
+                }
+                cv::Mat patchUp2;
+                cv::resize(patch, patchUp2, cv::Size(), 2.0, 2.0, cv::INTER_CUBIC);
+                runPass(patchUp2, baseInvScale * 0.5f, /*tryMulti=*/false, offset);
+                if (!qrResults.empty()) break;
+            }
+        };
+
+        std::vector<cv::Rect> pass1DetectedBoxes;
+        runPass(work, invScale, /*tryMulti=*/true, {0.0f, 0.0f}, &pass1DetectedBoxes);
+
+        const bool isCompactSmallImage = (work.cols <= 640 && work.rows <= 640);
+
+        // 若 1x 仅定位出候选方框但未能解码，优先对定位框局部扩边 2x 放大秒解（免整图放大开销）
+        if (qrResults.empty() && !pass1DetectedBoxes.empty()) {
+            std::vector<cv::Rect> expandedBoxes;
+            expandedBoxes.reserve((std::min<size_t>)(pass1DetectedBoxes.size(), 3u));
+            for (size_t bi = 0; bi < pass1DetectedBoxes.size() && expandedBoxes.size() < 3u; ++bi) {
+                const auto& b = pass1DetectedBoxes[bi];
+                const int pad = (std::max)(24, (std::max)(b.width, b.height) / 3);
+                expandedBoxes.emplace_back(b.x - pad, b.y - pad, b.width + pad * 2, b.height + pad * 2);
+            }
+            decodeCandidateRois(work, expandedBoxes, invScale, /*try1xFirst=*/false);
+        }
+
+        // 2x 放大补齐召回门控：
+        // - 先用超轻量回字形预筛器对局部小码 ROI 精准 2x 放大秒解；
+        // - 若工业实拍/倾斜脏污小码仍未检出（例如模块 < 2.5px 且嵌套轮廓粘连），在 <=1600x1600 尺寸上限内执行 2x 单码兜底
+        //   （detectQrCodes 与 GPU OCR 在 extractPage 中完全并行，不影响端到端延迟）。
+        if (qrResults.empty() && invScale >= 0.99f) {
+            if (!isCompactSmallImage) {
+                const auto candidateRois = findQrCandidateRois(work);
+                if (!candidateRois.empty()) {
+                    decodeCandidateRois(work, candidateRois, invScale, /*try1xFirst=*/false);
+                }
+            }
+            if (qrResults.empty() &&
+                static_cast<int64_t>(work.cols) * static_cast<int64_t>(work.rows) <= 1600LL * 1600LL) {
+                cv::Mat up2;
+                cv::resize(work, up2, cv::Size(), 2.0, 2.0, cv::INTER_CUBIC);
+                runPass(up2, invScale * 0.5f, /*tryMulti=*/false);
+            }
         }
 
         if (qrResults.empty() && isDarkBackgroundImage(image)) {
             cv::Mat invWork = 255 - work;
-            runPass(invWork, invScale, /*tryMulti=*/true);
+            if (isCompactSmallImage) {
+                runPass(invWork, invScale, /*tryMulti=*/true);
+            } else {
+                // 大尺寸深色主题纯文字图（如 IDE / 终端）仅在反相预筛命中候选方阵簇时才局部解码，避免整图双遍无谓扫查
+                const auto darkRois = findQrCandidateRois(invWork);
+                if (!darkRois.empty()) {
+                    decodeCandidateRois(invWork, darkRois, invScale, /*try1xFirst=*/true);
+                }
+            }
         }
 
         // 并联扫描一维商品/工业条形码 (OpenCV 4.12 原生 BarcodeDetector: EAN-13 / EAN-8 / UPC-A / UPC-E 等)

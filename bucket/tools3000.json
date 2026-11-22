@@ -14,12 +14,16 @@
     }
   },
   "bin": [
-    "Tools3000.exe",
-    "tools3000"
+    [
+      "Tools3000.exe",
+      "tools3000"
+    ]
   ],
   "shortcuts": [
-    "Tools3000.exe",
-    "Tools3000"
+    [
+      "Tools3000.exe",
+      "Tools3000"
+    ]
   ],
   "persist": "data",
   "checkver": {

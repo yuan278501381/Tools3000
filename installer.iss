@@ -113,6 +113,15 @@ russian.InstallingService=Установка службы быстрого ин�
 brazilianportuguese.InstallingService=Instalando serviço de indexação rápida de arquivos...
 spanish.InstallingService=Instalando el servicio de indexación rápida de archivos...
 
+chinesesimplified.RegisteringPicasaViewer=正在关联 Picasa 图片查看器支持的图片格式...
+chinesetraditional.RegisteringPicasaViewer=正在關聯 Picasa 圖片檢視器支援的圖片格式...
+english.RegisteringPicasaViewer=Associating supported image formats with Picasa Photo Viewer...
+japanese.RegisteringPicasaViewer=Picasa フォトビューアーの対応画像形式を関連付けています...
+korean.RegisteringPicasaViewer=Picasa 이미지 뷰어 지원 이미지 형식을 연결하는 중...
+russian.RegisteringPicasaViewer=Настройка ассоциаций изображений для Picasa Photo Viewer...
+brazilianportuguese.RegisteringPicasaViewer=Associando formatos de imagem ao Visualizador Picasa...
+spanish.RegisteringPicasaViewer=Asociando formatos de imagen al Visor Picasa...
+
 chinesesimplified.ShowDetails=详细信息(&D)
 chinesetraditional.ShowDetails=詳細資訊(&D)
 english.ShowDetails=Show &Details
@@ -320,6 +329,15 @@ russian.CompRemote=Помощник удалённого доступа (Remote)
 brazilianportuguese.CompRemote=Acelerador Remoto (Remote) — passagem de atalhos e desbloqueio de teclas presas
 spanish.CompRemote=Asistente Remoto (Remote) — paso de atajos y liberación de teclas bloqueadas
 
+chinesesimplified.CompPicasaViewer=Picasa 图片查看器 (Rust 复刻 · 可选) — 仅复刻原版经典极速看图与动效（非原版 Picasa 全功能套件），勾选启用后自动关联全部支持的图片格式
+chinesetraditional.CompPicasaViewer=Picasa 圖片檢視器 (Rust 復刻 · 選用) — 僅復刻原版經典極速看圖與動效（非原版 Picasa 全功能套件），勾選啟用後自動關聯全部支援的圖片格式
+english.CompPicasaViewer=Picasa Photo Viewer (Rust Recreation · Optional) — Lightweight image viewer only (not the full Google Picasa suite); automatically associates all supported image formats when enabled
+japanese.CompPicasaViewer=Picasa フォトビューアー (Rust 再現・オプション) — 軽量画像ビューアー専用（オリジナル Picasa 全機能版ではありません）。有効化すると対応画像形式を自動関連付け
+korean.CompPicasaViewer=Picasa 이미지 뷰어 (Rust 재구현 · 선택) — 경량 이미지 뷰어 전용(원본 Picasa 전체 기능 제품군 아님), 활성화 시 지원하는 모든 이미지 형식 자동 연결
+russian.CompPicasaViewer=Просмотрщик фото Picasa (реализация на Rust · опция) — только лёгкий просмотрщик (не полный пакет Google Picasa); при включении автоматически связывает все поддерживаемые форматы
+brazilianportuguese.CompPicasaViewer=Visualizador de Fotos Picasa (Recriação em Rust · Opcional) — Apenas visualizador leve (não é o pacote completo Google Picasa); associa automaticamente todos os formatos de imagem suportados
+spanish.CompPicasaViewer=Visor de Fotos Picasa (Recreación en Rust · Opcional) — Solo visor ligero de imágenes (no la suite completa de Google Picasa); asocia automáticamente todos los formatos compatibles al habilitarlo
+
 [Types]
 Name: "full"; Description: "{cm:TypeFull}"
 Name: "compact"; Description: "{cm:TypeCompact}"
@@ -336,6 +354,8 @@ Name: "keycast"; Description: "{cm:CompKeycast}"; Types: full
 Name: "dialogenhancer"; Description: "{cm:CompDialog}"; Types: full
 Name: "spotlight"; Description: "{cm:CompSpotlight}"; Types: full
 Name: "remote"; Description: "{cm:CompRemote}"; Types: full
+; 可选独立组件：Rust 复刻轻量 Picasa 图片查看器（严禁挂在 full/compact 下，默认安装不勾选；勾选启用时自动关联全部支持图片格式）
+Name: "picasaviewer"; Description: "{cm:CompPicasaViewer}"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -349,14 +369,22 @@ Source: "{#DeployDir}\plugins\Plugin_*.dll"; DestDir: "{app}\plugins"; Flags: ig
 Source: "{#DeployDir}\plugins\*.plugin.json"; DestDir: "{app}\plugins"; Flags: ignoreversion uninsrestartdelete
 Source: "{#DeployDir}\Tools3000.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
 Source: "{#DeployDir}\Tools3000_Service.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
+Source: "{#DeployDir}\Tools3000_Picasa_Viewer.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
 ; 其余全量资源与依赖文件（排除已明确声明的 DLL/EXE/JSON 避免二次拷贝冲突，且绝不配置 ProgramData users-modify）
-Source: "{#DeployDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs uninsrestartdelete; Excludes: "*.pdb,Tools3000Tests.*,*Preview.*,*Integration.*,*.flag,debug.flag,*.dll,*.plugin.json,Tools3000.exe,Tools3000_Service.exe"
+Source: "{#DeployDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs uninsrestartdelete; Excludes: "*.pdb,Tools3000Tests.*,*Preview.*,*Integration.*,*.flag,debug.flag,*.dll,*.plugin.json,Tools3000.exe,Tools3000_Service.exe,Tools3000_Picasa_Viewer.exe"
 
 [InstallDelete]
 Type: files; Name: "{app}\*gtest*.dll"
 Type: files; Name: "{app}\*gmock*.dll"
 Type: files; Name: "{app}\Plugin_*.dll"
 Type: files; Name: "{app}\Tools3000Tests.*"
+; 覆盖升级时顺带清理历史版本遗留的 6 个 0 引用冗余 DLL
+Type: files; Name: "{app}\WebView2Loader.dll"
+Type: files; Name: "{app}\vccorlib140.dll"
+Type: files; Name: "{app}\msvcp140_1.dll"
+Type: files; Name: "{app}\msvcp140_2.dll"
+Type: files; Name: "{app}\msvcp140_codecvt_ids.dll"
+Type: files; Name: "{app}\vcruntime140_threads.dll"
 
 [UninstallDelete]
 Type: files; Name: "{autodesktop}\Tools3000.lnk"
@@ -393,6 +421,8 @@ Filename: "{sys}\sc.exe"; Parameters: "config Tools3000_SearchService binPath= "
 Filename: "{sys}\sc.exe"; Parameters: "description Tools3000_SearchService ""Tools3000 本地文件快速搜索索引"""; Flags: runhidden waituntilterminated; Check: IsSearchComponentSelected
 ; 授予本机交互式登录用户 (IU) 与已认证用户 (AU) 按需启动 (RP / SERVICE_START) 与查询状态 (LC) 权限，不开放配置篡改或删除权限
 Filename: "{sys}\sc.exe"; Parameters: "sdset Tools3000_SearchService ""D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWRPLOCRRC;;;AU)(A;;CCLCSWLOCRRC;;;SU)"""; Flags: runhidden waituntilterminated; Check: ServiceExists
+; 若用户在安装时勾选了可选的 Picasa 图片查看器，则在交互桌面用户上下文静默关联全部支持的图片格式（避免主程序启动后再二次重复注册）
+Filename: "{app}\Tools3000_Picasa_Viewer.exe"; Parameters: "--register-silent"; Flags: runhidden waituntilterminated runasoriginaluser; StatusMsg: "{cm:RegisteringPicasaViewer}"; Check: IsPicasaViewerRegisterNeeded
 ; 使用 runasoriginaluser 兼容多账户 UAC 提权场景，确保客户端运行在发起安装的交互桌面用户上下文中
 Filename: "{app}\Tools3000.exe"; Description: "{cm:LaunchProgram,Tools3000}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
@@ -408,6 +438,17 @@ var
   DeleteDiagnostics: Boolean;
   DeleteCachesIndexes: Boolean;
   DeleteCaptures: Boolean;
+  HasExistingUserConfig: Boolean;
+  InitialCompSearch: Boolean;
+  InitialCompCapture: Boolean;
+  InitialCompOcrPack: Boolean;
+  InitialCompGesture: Boolean;
+  InitialCompKeycast: Boolean;
+  InitialCompDialog: Boolean;
+  InitialCompSpotlight: Boolean;
+  InitialCompRemote: Boolean;
+  InitialCompPicasaViewer: Boolean;
+  UserVisitedComponentsPage: Boolean;
 
 function SetTimer(hWnd: LongWord; nIDEvent, uElapse: LongWord; lpTimerFunc: LongWord): LongWord;
   external 'SetTimer@user32.dll stdcall';
@@ -423,6 +464,13 @@ const
   GENERIC_WRITE_FLAG = $40000000;
   OPEN_EXISTING_FLAG = 3;
   WM_CLOSE_MSG = $0010;
+  PICASA_PROG_ID = 'Tools3000.PicasaViewer';
+  // 与 src/viewer/src/constants.rs SUPPORTED_EXTENSIONS 保持 1:1 对齐的全部 41 个支持的图片扩展名
+  PICASA_SUPPORTED_EXTS =
+    'jpg,jpeg,jpe,jfif,pjpeg,' +
+    'png,apng,webp,gif,bmp,dib,rle,ico,cur,tif,tiff,svg,svgz,' +
+    'avif,heic,heif,hif,wdp,hdp,jxr,tga,qoi,ppm,pgm,pbm,dds,' +
+    'dng,cr2,cr3,nef,arw,orf,rw2,pef,raf,srw';
 
 function CreateFile(
   lpFileName: String;
@@ -606,7 +654,8 @@ begin
      IsFileLocked(AppDir + '\swscale-9.dll') or
      IsFileLocked(AppDir + '\Tools3000Core.dll') or
      IsFileLocked(AppDir + '\Tools3000.exe') or
-     IsFileLocked(AppDir + '\Tools3000_Service.exe') then
+     IsFileLocked(AppDir + '\Tools3000_Service.exe') or
+     IsFileLocked(AppDir + '\Tools3000_Picasa_Viewer.exe') then
   begin
     Result := True;
     Exit;
@@ -768,6 +817,68 @@ begin
   end;
 end;
 
+procedure CleanPicasaAssocInHive(RootKey: Integer; const HivePrefix: String);
+var
+  BasePrefix, Remaining, Ext, DotExt: String;
+  ExtClassKey, OwpKey, BackupRootKey, BackupExtKey: String;
+  CurDefault, BackupVal: String;
+  CommaPos: Integer;
+begin
+  BasePrefix := HivePrefix;
+  if (BasePrefix <> '') and (BasePrefix[Length(BasePrefix)] <> '\') then
+    BasePrefix := BasePrefix + '\';
+
+  BackupRootKey := BasePrefix + 'Software\Tools3000\PicasaViewer\BackupAssoc';
+
+  // 遍历全部 41 个支持的图片扩展名：清理 OpenWithProgids 并还原或删除默认值（绝不留空串遮蔽 HKLM）
+  Remaining := PICASA_SUPPORTED_EXTS;
+  while Remaining <> '' do
+  begin
+    CommaPos := Pos(',', Remaining);
+    if CommaPos > 0 then
+    begin
+      Ext := Copy(Remaining, 1, CommaPos - 1);
+      Delete(Remaining, 1, CommaPos);
+    end
+    else
+    begin
+      Ext := Remaining;
+      Remaining := '';
+    end;
+    Ext := Trim(Ext);
+    if Ext = '' then Continue;
+
+    DotExt := '.' + Ext;
+    ExtClassKey := BasePrefix + 'Software\Classes\' + DotExt;
+    OwpKey := ExtClassKey + '\OpenWithProgids';
+    BackupExtKey := BackupRootKey + '\' + DotExt;
+
+    RegDeleteValue(RootKey, OwpKey, PICASA_PROG_ID);
+
+    CurDefault := '';
+    if RegQueryStringValue(RootKey, ExtClassKey, '', CurDefault) and
+       (CompareText(Trim(CurDefault), PICASA_PROG_ID) = 0) then
+    begin
+      BackupVal := '';
+      // 优先从 Software\Tools3000\PicasaViewer\BackupAssoc\.ext 还原原关联值，同时兼容父键同名字符串值
+      if (not RegQueryStringValue(RootKey, BackupExtKey, '', BackupVal)) or (Trim(BackupVal) = '') then
+        RegQueryStringValue(RootKey, BackupRootKey, DotExt, BackupVal);
+
+      BackupVal := Trim(BackupVal);
+      if (BackupVal <> '') and (CompareText(BackupVal, PICASA_PROG_ID) <> 0) then
+        RegWriteStringValue(RootKey, ExtClassKey, '', BackupVal)
+      else
+        RegDeleteValue(RootKey, ExtClassKey, '');
+    end;
+  end;
+
+  // 全部 41 个扩展名清理还原完毕后，再删除 Picasa 看图器配置与 ProgID 主键
+  RegDeleteValue(RootKey, BasePrefix + 'Software\RegisteredApplications', 'Tools3000 Picasa Viewer');
+  RegDeleteKeyIncludingSubkeys(RootKey, BasePrefix + 'Software\Tools3000\PicasaViewer');
+  RegDeleteKeyIncludingSubkeys(RootKey, BasePrefix + 'Software\Classes\' + PICASA_PROG_ID);
+  RegDeleteKeyIncludingSubkeys(RootKey, BasePrefix + 'Software\Classes\Applications\Tools3000_Picasa_Viewer.exe');
+end;
+
 procedure CleanScheduledTasksAndRegistries();
 var
   TaskService, RootFolder, ToolsFolder, Tasks, TaskItem: Variant;
@@ -808,13 +919,18 @@ begin
       Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "Tools3000\Autorun for ' + InteractiveUser + '" /f', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
   end;
 
-  // 清除当前用户及多账户 UAC 场景下所有已加载用户配置单元的自启动项 (HKCU / HKU Run)
+  // 清除当前用户及多账户 UAC 场景下所有已加载用户配置单元的自启动项 (HKCU / HKU Run) 与 Picasa 看图器全部 41 格式关联
   RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Tools3000');
+  CleanPicasaAssocInHive(HKCU, '');
   if RegGetSubkeyNames(HKU, '', SubKeys) then
   begin
     for I := 0 to GetArrayLength(SubKeys) - 1 do
     begin
+      if (Length(SubKeys[I]) > 8) and
+         (CompareText(Copy(SubKeys[I], Length(SubKeys[I]) - 7, 8), '_Classes') = 0) then
+        Continue;
       RegDeleteValue(HKU, SubKeys[I] + '\Software\Microsoft\Windows\CurrentVersion\Run', 'Tools3000');
+      CleanPicasaAssocInHive(HKU, SubKeys[I]);
     end;
   end;
 end;
@@ -853,8 +969,9 @@ begin
     Sleep(30);
   end;
 
-  // 无条件强杀主程序进程树（包含子 WebView2 进程）与后台服务进程，杜绝跨桌面残留锁
+  // 无条件强杀主程序进程树（包含子 WebView2 进程）、看图器与后台服务进程，杜绝跨桌面残留锁
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Picasa_Viewer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   StopSearchServiceNativeForDir(NormDir);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
@@ -896,6 +1013,7 @@ begin
     begin
       Log('WaitForProcessesAndFilesReleasedInDir: Locks or processes still active, re-issuing taskkill /f /t...');
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Picasa_Viewer.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
     end;
   end;
@@ -1286,11 +1404,346 @@ begin
 end;
 
 function AutoStartTaskExists(): Boolean; forward;
+function HasCommandLinePrefix(const Prefix: String): Boolean; forward;
+function FindExistingUserConfigPath(): String; forward;
+
+// ── 轻量 JSON 布尔值定位解析器（按对象层级精确扫描，严防嵌套同名键误匹配） ──
+function IsJsonWhitespace(Ch: Char): Boolean;
+begin
+  Result := (Ch = ' ') or (Ch = #9) or (Ch = #10) or (Ch = #13);
+end;
+
+procedure JsonSkipWhitespace(const S: String; var P: Integer);
+var
+  Len: Integer;
+begin
+  Len := Length(S);
+  while (P <= Len) and IsJsonWhitespace(S[P]) do
+    P := P + 1;
+end;
+
+function JsonReadString(const S: String; var P: Integer; var OutStr: String): Boolean;
+var
+  Len: Integer;
+  Ch: Char;
+begin
+  Result := False;
+  OutStr := '';
+  Len := Length(S);
+  JsonSkipWhitespace(S, P);
+  if (P > Len) or (S[P] <> '"') then Exit;
+  P := P + 1;
+  while P <= Len do
+  begin
+    Ch := S[P];
+    if Ch = '\' then
+    begin
+      if P + 1 > Len then Exit;
+      OutStr := OutStr + S[P + 1];
+      P := P + 2;
+    end
+    else if Ch = '"' then
+    begin
+      P := P + 1;
+      Result := True;
+      Exit;
+    end
+    else
+    begin
+      OutStr := OutStr + Ch;
+      P := P + 1;
+    end;
+  end;
+end;
+
+function JsonSkipValue(const S: String; var P: Integer): Boolean;
+var
+  Len, Depth: Integer;
+  DummyStr: String;
+  InStr, Escaped: Boolean;
+  OpenCh, CloseCh, Ch: Char;
+begin
+  Result := False;
+  Len := Length(S);
+  JsonSkipWhitespace(S, P);
+  if P > Len then Exit;
+
+  if S[P] = '"' then
+  begin
+    Result := JsonReadString(S, P, DummyStr);
+    Exit;
+  end;
+
+  if (S[P] = '{') or (S[P] = '[') then
+  begin
+    OpenCh := S[P];
+    if OpenCh = '{' then CloseCh := '}' else CloseCh := ']';
+    Depth := 0;
+    InStr := False;
+    Escaped := False;
+    while P <= Len do
+    begin
+      Ch := S[P];
+      P := P + 1;
+      if InStr then
+      begin
+        if Escaped then
+          Escaped := False
+        else if Ch = '\' then
+          Escaped := True
+        else if Ch = '"' then
+          InStr := False;
+      end
+      else
+      begin
+        if Ch = '"' then
+          InStr := True
+        else if Ch = OpenCh then
+          Depth := Depth + 1
+        else if Ch = CloseCh then
+        begin
+          Depth := Depth - 1;
+          if Depth = 0 then
+          begin
+            Result := True;
+            Exit;
+          end;
+        end;
+      end;
+    end;
+    Exit;
+  end;
+
+  // 原子字面量（true / false / null / number）
+  while (P <= Len) and (not IsJsonWhitespace(S[P])) and
+        (S[P] <> ',') and (S[P] <> '}') and (S[P] <> ']') do
+    P := P + 1;
+  Result := True;
+end;
+
+function JsonFindObjectMember(const S: String; ObjStart: Integer; const TargetKey: String; var ValStart: Integer): Boolean;
+var
+  P, Len: Integer;
+  KeyName: String;
+begin
+  Result := False;
+  ValStart := 0;
+  Len := Length(S);
+  P := ObjStart;
+  JsonSkipWhitespace(S, P);
+  if (P > Len) or (S[P] <> '{') then Exit;
+  P := P + 1;
+
+  while P <= Len do
+  begin
+    JsonSkipWhitespace(S, P);
+    if (P > Len) or (S[P] = '}') then Exit;
+    if not JsonReadString(S, P, KeyName) then Exit;
+    JsonSkipWhitespace(S, P);
+    if (P > Len) or (S[P] <> ':') then Exit;
+    P := P + 1;
+    JsonSkipWhitespace(S, P);
+    if P > Len then Exit;
+
+    if KeyName = TargetKey then
+    begin
+      ValStart := P;
+      Result := True;
+      Exit;
+    end;
+
+    if not JsonSkipValue(S, P) then Exit;
+    JsonSkipWhitespace(S, P);
+    if (P <= Len) and (S[P] = ',') then
+      P := P + 1
+    else if (P <= Len) and (S[P] = '}') then
+      Exit
+    else
+      Exit;
+  end;
+end;
+
+function IsJsonTokenBoundary(const S: String; NextPos: Integer): Boolean;
+var
+  Ch: Char;
+begin
+  if NextPos > Length(S) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  Ch := S[NextPos];
+  Result := IsJsonWhitespace(Ch) or (Ch = ',') or (Ch = '}') or (Ch = ']');
+end;
+
+function JsonReadBoolAt(const S: String; ValStart: Integer; var OutVal: Boolean): Boolean;
+var
+  P: Integer;
+begin
+  Result := False;
+  P := ValStart;
+  JsonSkipWhitespace(S, P);
+  if (Copy(S, P, 4) = 'true') and IsJsonTokenBoundary(S, P + 4) then
+  begin
+    OutVal := True;
+    Result := True;
+  end
+  else if (Copy(S, P, 5) = 'false') and IsJsonTokenBoundary(S, P + 5) then
+  begin
+    OutVal := False;
+    Result := True;
+  end;
+end;
+
+function FindJsonRootObjectStart(const S: String): Integer;
+var
+  P, Len: Integer;
+begin
+  Result := 0;
+  Len := Length(S);
+  P := 1;
+  // 跳过可能存在的 UTF-8 BOM
+  if (Len >= 3) and (Ord(S[1]) = $EF) and (Ord(S[2]) = $BB) and (Ord(S[3]) = $BF) then
+    P := 4;
+  JsonSkipWhitespace(S, P);
+  if (P <= Len) and (S[P] = '{') then
+    Result := P;
+end;
+
+function TryReadJsonBool2(const JsonText, Key1, Key2: String; var OutVal: Boolean): Boolean;
+var
+  RootPos, SecPos, ValPos: Integer;
+begin
+  Result := False;
+  RootPos := FindJsonRootObjectStart(JsonText);
+  if RootPos = 0 then Exit;
+  if not JsonFindObjectMember(JsonText, RootPos, Key1, SecPos) then Exit;
+  if not JsonFindObjectMember(JsonText, SecPos, Key2, ValPos) then Exit;
+  Result := JsonReadBoolAt(JsonText, ValPos, OutVal);
+end;
+
+function TryReadJsonBool3(const JsonText, Key1, Key2, Key3: String; var OutVal: Boolean): Boolean;
+var
+  RootPos, Sec1Pos, Sec2Pos, ValPos: Integer;
+begin
+  Result := False;
+  RootPos := FindJsonRootObjectStart(JsonText);
+  if RootPos = 0 then Exit;
+  if not JsonFindObjectMember(JsonText, RootPos, Key1, Sec1Pos) then Exit;
+  if not JsonFindObjectMember(JsonText, Sec1Pos, Key2, Sec2Pos) then Exit;
+  if not JsonFindObjectMember(JsonText, Sec2Pos, Key3, ValPos) then Exit;
+  Result := JsonReadBoolAt(JsonText, ValPos, OutVal);
+end;
+
+procedure ApplyComponentSelectionFlag(const CompName: String; Enabled: Boolean);
+begin
+  if Enabled then
+    WizardSelectComponents(CompName)
+  else
+    WizardSelectComponents('!' + CompName);
+end;
+
+procedure SnapshotInitialComponentSelections();
+begin
+  InitialCompSearch := WizardIsComponentSelected('search');
+  InitialCompCapture := WizardIsComponentSelected('capture');
+  InitialCompOcrPack := WizardIsComponentSelected('capture\ocr_models');
+  InitialCompGesture := WizardIsComponentSelected('gesture');
+  InitialCompKeycast := WizardIsComponentSelected('keycast');
+  InitialCompDialog := WizardIsComponentSelected('dialogenhancer');
+  InitialCompSpotlight := WizardIsComponentSelected('spotlight');
+  InitialCompRemote := WizardIsComponentSelected('remote');
+  InitialCompPicasaViewer := WizardIsComponentSelected('picasaviewer');
+end;
+
+function HaveSelectedComponentsChanged(): Boolean;
+begin
+  Result :=
+    (WizardIsComponentSelected('search') <> InitialCompSearch) or
+    (WizardIsComponentSelected('capture') <> InitialCompCapture) or
+    (WizardIsComponentSelected('capture\ocr_models') <> InitialCompOcrPack) or
+    (WizardIsComponentSelected('gesture') <> InitialCompGesture) or
+    (WizardIsComponentSelected('keycast') <> InitialCompKeycast) or
+    (WizardIsComponentSelected('dialogenhancer') <> InitialCompDialog) or
+    (WizardIsComponentSelected('spotlight') <> InitialCompSpotlight) or
+    (WizardIsComponentSelected('remote') <> InitialCompRemote) or
+    (WizardIsComponentSelected('picasaviewer') <> InitialCompPicasaViewer);
+end;
+
+procedure InheritExistingModuleSelectionsFromConfig();
+var
+  ConfigPath, JsonText: String;
+  RawAnsi: AnsiString;
+  FlagVal: Boolean;
+begin
+  HasExistingUserConfig := False;
+  ConfigPath := FindExistingUserConfigPath();
+  if ConfigPath = '' then Exit;
+
+  HasExistingUserConfig := True;
+  Log('InitializeWizard: Existing user config detected -> ' + ConfigPath);
+
+  // 若命令行显式指定了 /COMPONENTS= 或 /TYPE=，严格尊重命令行参数
+  if HasCommandLinePrefix('/components=') or HasCommandLinePrefix('/type=') then
+    Exit;
+
+  if not LoadStringFromFile(ConfigPath, RawAnsi) then
+  begin
+    Log('InitializeWizard: Failed to read existing config.json, keeping default component selections.');
+    Exit;
+  end;
+  JsonText := String(RawAnsi);
+
+  if TryReadJsonBool3(JsonText, 'plugins', 'search', 'enabled', FlagVal) or
+     TryReadJsonBool2(JsonText, 'search', 'enabled', FlagVal) then
+    ApplyComponentSelectionFlag('search', FlagVal);
+
+  if TryReadJsonBool3(JsonText, 'plugins', 'capture', 'enabled', FlagVal) then
+    ApplyComponentSelectionFlag('capture', FlagVal);
+
+  if WizardIsComponentSelected('capture') and
+     TryReadJsonBool2(JsonText, 'ocr', 'autoDownloadPackOnStartup', FlagVal) then
+    ApplyComponentSelectionFlag('capture\ocr_models', FlagVal);
+
+  if TryReadJsonBool3(JsonText, 'plugins', 'gesture', 'enabled', FlagVal) or
+     TryReadJsonBool2(JsonText, 'gesture', 'enabled', FlagVal) then
+    ApplyComponentSelectionFlag('gesture', FlagVal);
+
+  if TryReadJsonBool3(JsonText, 'plugins', 'keycast', 'enabled', FlagVal) or
+     TryReadJsonBool2(JsonText, 'general', 'keycastEnabled', FlagVal) then
+    ApplyComponentSelectionFlag('keycast', FlagVal);
+
+  if TryReadJsonBool3(JsonText, 'plugins', 'dialogenhancer', 'enabled', FlagVal) or
+     TryReadJsonBool2(JsonText, 'dialog', 'enabled', FlagVal) then
+    ApplyComponentSelectionFlag('dialogenhancer', FlagVal);
+
+  if TryReadJsonBool3(JsonText, 'plugins', 'spotlight', 'enabled', FlagVal) or
+     TryReadJsonBool2(JsonText, 'spotlight', 'enabled', FlagVal) then
+    ApplyComponentSelectionFlag('spotlight', FlagVal);
+
+  if TryReadJsonBool3(JsonText, 'plugins', 'remote_boost', 'enabled', FlagVal) or
+     TryReadJsonBool2(JsonText, 'remote_boost', 'enabled', FlagVal) then
+    ApplyComponentSelectionFlag('remote', FlagVal);
+
+  // 仅当已有配置明确启用了 picasa_viewer 时预勾（新装或旧配置未开启时保持默认不勾选）
+  if TryReadJsonBool3(JsonText, 'plugins', 'picasa_viewer', 'enabled', FlagVal) or
+     TryReadJsonBool2(JsonText, 'picasa_viewer', 'enabled', FlagVal) then
+  begin
+    ApplyComponentSelectionFlag('picasaviewer', FlagVal);
+    if FlagVal then
+      Log('InitializeWizard: Preserved existing enabled state for optional component picasaviewer.');
+  end;
+end;
 
 procedure InitializeWizard();
 begin
   ApplyComponentsListStyles();
   WizardForm.TasksList.ShowLines := False;
+  UserVisitedComponentsPage := False;
+
+  // 覆盖升级继承已有用户模块开关（新装无旧配置时可选组件 picasaviewer 严格保持默认不勾选）
+  InheritExistingModuleSelectionsFromConfig();
+  SnapshotInitialComponentSelections();
 
   // 恢复自启动任务勾选状态：若系统中已存在自启动任务或注册表项，自动保持勾选！
   if AutoStartTaskExists() then
@@ -1338,6 +1791,10 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  if CurPageID = wpSelectComponents then
+  begin
+    UserVisitedComponentsPage := True;
+  end;
   if (CurPageID = wpSelectComponents) or (CurPageID = wpSelectTasks) then
   begin
     ApplyComponentsListStyles();
@@ -1383,6 +1840,57 @@ end;
 function IsSearchComponentSelected(): Boolean;
 begin
   Result := WizardIsComponentSelected('search');
+end;
+
+function IsPicasaViewerComponentSelected(): Boolean;
+begin
+  Result := WizardIsComponentSelected('picasaviewer');
+end;
+
+function IsPicasaViewerRegisteredInAnyUserHive(): Boolean;
+var
+  SubKeys: TArrayOfString;
+  I: Integer;
+begin
+  if RegKeyExists(HKCU, 'Software\Classes\' + PICASA_PROG_ID) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if RegGetSubkeyNames(HKU, '', SubKeys) then
+  begin
+    for I := 0 to GetArrayLength(SubKeys) - 1 do
+    begin
+      if (Length(SubKeys[I]) > 8) and
+         (CompareText(Copy(SubKeys[I], Length(SubKeys[I]) - 7, 8), '_Classes') = 0) then
+        Continue;
+      if RegKeyExists(HKU, SubKeys[I] + '\Software\Classes\' + PICASA_PROG_ID) then
+      begin
+        Result := True;
+        Exit;
+      end;
+    end;
+  end;
+  Result := False;
+end;
+
+function IsPicasaViewerRegisterNeeded(): Boolean;
+begin
+  if not WizardIsComponentSelected('picasaviewer') then
+  begin
+    Result := False;
+    Exit;
+  end;
+  // 全新安装、显式 CLI 组件指定、本次覆盖升级新勾选、或尚未注册关联时执行 --register-silent
+  // 若为覆盖升级且用户之前已启用并完成注册，保留用户自定义格式子集，避免无意义重复注册
+  if (not HasExistingUserConfig) or
+     HasCommandLinePrefix('/components=') or
+     HasCommandLinePrefix('/type=') or
+     (not InitialCompPicasaViewer) or
+     (not IsPicasaViewerRegisteredInAnyUserHive()) then
+    Result := True
+  else
+    Result := False;
 end;
 
 function IsSearchServiceInstallNeeded(): Boolean;
@@ -1521,48 +2029,63 @@ begin
   end;
 end;
 
-function UserConfigAlreadyExists(): Boolean;
+function FindExistingUserConfigPath(): String;
 var
-  InteractiveUser, UsersRoot: String;
+  InteractiveUser, UsersRoot, Candidate: String;
 begin
-  if FileExists(ExpandConstant('{userappdata}\Tools3000\config\config.json')) or
-     FileExists(ExpandConstant('{localappdata}\Tools3000\config\config.json')) then
-  begin
-    Result := True;
-    Exit;
-  end;
+  Result := '';
 
+  // 跨账户 UAC 提权时优先定位原交互桌面用户的 config.json（同时兼容 Local\config\config.json 与 Roaming\config.json）
   InteractiveUser := GetInteractiveUserHint();
-  if InteractiveUser <> '' then
+  if (InteractiveUser <> '') and (CompareText(InteractiveUser, GetUserNameString()) <> 0) then
   begin
     UsersRoot := ExpandConstant('{sd}\Users\') + InteractiveUser + '\AppData\';
-    if FileExists(UsersRoot + 'Roaming\Tools3000\config\config.json') or
-       FileExists(UsersRoot + 'Local\Tools3000\config\config.json') then
-    begin
-      Result := True;
-      Exit;
-    end;
+    Candidate := UsersRoot + 'Local\Tools3000\config\config.json';
+    if FileExists(Candidate) then begin Result := Candidate; Exit; end;
+    Candidate := UsersRoot + 'Roaming\Tools3000\config.json';
+    if FileExists(Candidate) then begin Result := Candidate; Exit; end;
+    Candidate := UsersRoot + 'Roaming\Tools3000\config\config.json';
+    if FileExists(Candidate) then begin Result := Candidate; Exit; end;
+    Candidate := UsersRoot + 'Local\Tools3000\config.json';
+    if FileExists(Candidate) then begin Result := Candidate; Exit; end;
   end;
 
-  Result := False;
+  Candidate := ExpandConstant('{localappdata}\Tools3000\config\config.json');
+  if FileExists(Candidate) then begin Result := Candidate; Exit; end;
+  Candidate := ExpandConstant('{userappdata}\Tools3000\config.json');
+  if FileExists(Candidate) then begin Result := Candidate; Exit; end;
+  Candidate := ExpandConstant('{userappdata}\Tools3000\config\config.json');
+  if FileExists(Candidate) then begin Result := Candidate; Exit; end;
+  Candidate := ExpandConstant('{localappdata}\Tools3000\config.json');
+  if FileExists(Candidate) then begin Result := Candidate; Exit; end;
+end;
+
+function UserConfigAlreadyExists(): Boolean;
+begin
+  Result := FindExistingUserConfigPath() <> '';
 end;
 
 procedure SyncInitialModuleConfig();
 var
   AppDir, InitialModulesPath: String;
-  SearchSel, CaptureSel, OcrPackSel, GestureSel, KeycastSel, DialogSel, SpotlightSel, RemoteSel: Boolean;
-  SearchStr, CaptureStr, OcrPackStr, GestureStr, KeycastStr, DialogStr, SpotlightStr, RemoteStr: String;
+  ExplicitCliSelection, ConfigExists, ComponentsChanged: Boolean;
+  SearchSel, CaptureSel, OcrPackSel, GestureSel, KeycastSel, DialogSel, SpotlightSel, RemoteSel, PicasaViewerSel: Boolean;
+  SearchStr, CaptureStr, OcrPackStr, GestureStr, KeycastStr, DialogStr, SpotlightStr, RemoteStr, PicasaViewerStr: String;
   JsonContent: String;
 begin
   AppDir := ExpandConstant('{app}');
   InitialModulesPath := AppDir + '\initial_modules.json';
 
-  if WizardSilent() and UserConfigAlreadyExists() and
-     (not HasCommandLinePrefix('/components=')) and
-     (not HasCommandLinePrefix('/type=')) then
+  ExplicitCliSelection := HasCommandLinePrefix('/components=') or HasCommandLinePrefix('/type=');
+  ConfigExists := HasExistingUserConfig or UserConfigAlreadyExists();
+  ComponentsChanged := HaveSelectedComponentsChanged();
+
+  // 仅在首次安装（config.json 不存在）、命令行显式指定组件、或用户在组件选择流程中实际变更勾选时写入初始配置；
+  // 静默升级与未变更组件的图形覆盖升级均跳过写入，彻底避免重置用户已手动开启的 Picasa 等模块开关！
+  if ConfigExists and (not ExplicitCliSelection) and (not ComponentsChanged) then
   begin
     DeleteFile(InitialModulesPath);
-    Log('SyncInitialModuleConfig: Existing user config detected during silent upgrade without explicit /COMPONENTS or /TYPE; skipped module reset.');
+    Log('SyncInitialModuleConfig: Existing user config detected with no component selection changes; skipped initial_modules.json write to preserve user toggles.');
     Exit;
   end;
 
@@ -1574,6 +2097,7 @@ begin
   DialogSel := WizardIsComponentSelected('dialogenhancer');
   SpotlightSel := WizardIsComponentSelected('spotlight');
   RemoteSel := WizardIsComponentSelected('remote');
+  PicasaViewerSel := WizardIsComponentSelected('picasaviewer');
 
   if SearchSel then SearchStr := 'true' else SearchStr := 'false';
   if CaptureSel then CaptureStr := 'true' else CaptureStr := 'false';
@@ -1583,6 +2107,7 @@ begin
   if DialogSel then DialogStr := 'true' else DialogStr := 'false';
   if SpotlightSel then SpotlightStr := 'true' else SpotlightStr := 'false';
   if RemoteSel then RemoteStr := 'true' else RemoteStr := 'false';
+  if PicasaViewerSel then PicasaViewerStr := 'true' else PicasaViewerStr := 'false';
 
   JsonContent :=
     '{' + #13#10 +
@@ -1592,7 +2117,9 @@ begin
     '    "gesture": { "enabled": ' + GestureStr + ' },' + #13#10 +
     '    "keycast": { "enabled": ' + KeycastStr + ' },' + #13#10 +
     '    "dialogenhancer": { "enabled": ' + DialogStr + ' },' + #13#10 +
-    '    "remote_boost": { "enabled": ' + RemoteStr + ' }' + #13#10 +
+    '    "spotlight": { "enabled": ' + SpotlightStr + ' },' + #13#10 +
+    '    "remote_boost": { "enabled": ' + RemoteStr + ' },' + #13#10 +
+    '    "picasa_viewer": { "enabled": ' + PicasaViewerStr + ' }' + #13#10 +
     '  },' + #13#10 +
     '  "search": {' + #13#10 +
     '    "enabled": ' + SearchStr + ',' + #13#10 +
@@ -1603,6 +2130,9 @@ begin
     '  "spotlight": { "enabled": ' + SpotlightStr + ' },' + #13#10 +
     '  "remote_boost": {' + #13#10 +
     '    "enabled": ' + RemoteStr + '' + #13#10 +
+    '  },' + #13#10 +
+    '  "picasa_viewer": {' + #13#10 +
+    '    "enabled": ' + PicasaViewerStr + '' + #13#10 +
     '  },' + #13#10 +
     '  "ocr": {' + #13#10 +
     '    "autoDownloadPackOnStartup": ' + OcrPackStr + '' + #13#10 +
@@ -2029,13 +2559,14 @@ begin
     begin
       Log(Format('PrepareToInstall: Locks still detected at attempt %d, re-issuing taskkill...', [RetryCount]));
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Picasa_Viewer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;
   end;
 
   if AreCriticalDllsLocked() then
   begin
-    Log('PrepareToInstall: Warning - File locks still present after 15 retries. Inno Setup restartreplace will handle update on reboot.');
+    Log('PrepareToInstall: Warning - File locks still present after 15 retries. EvacuateLockedFilesInTree will rename locked files aside during install.');
   end
   else
   begin
@@ -2044,11 +2575,17 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  UnregCode: Integer;
+  ViewerExe: String;
 begin
   if CurUninstallStep = usUninstall then
   begin
-    // 1. 毫秒级停止并清理后台搜索服务，终止进程树并留足句柄释放窗口（无锁 0ms 瞬过，慢机最多 3.5s 避免写入 PFRO）
+    // 1. 毫秒级停止并清理后台搜索服务，注销 Picasa 看图器文件关联，终止进程树并留足句柄释放窗口
     StopAndKillAllTools3000Processes();
+    ViewerExe := ExpandConstant('{app}\Tools3000_Picasa_Viewer.exe');
+    if FileExists(ViewerExe) then
+      Exec(ViewerExe, '--unregister-silent', '', SW_HIDE, ewWaitUntilTerminated, UnregCode);
     DeleteSearchServiceNative();
     DeleteFile(ExpandConstant('{app}\initial_modules.json'));
     WaitForProcessesAndFilesReleased(3500);

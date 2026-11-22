@@ -16,15 +16,24 @@ export interface UseSearchKeyboardProps {
   setRenameTarget: React.Dispatch<React.SetStateAction<{ visible: boolean; newName: string; result?: SearchResult }>>;
   contextMenu: { visible: boolean; x: number; y: number; result?: SearchResult };
   setContextMenu: React.Dispatch<React.SetStateAction<{ visible: boolean; x: number; y: number; result?: SearchResult }>>;
-  showSortMenu: boolean;
-  setShowSortMenu: React.Dispatch<React.SetStateAction<boolean>>;
+  /** @deprecated 排序下拉菜单已移除，仅保留可选类型字段以兼容既有键盘测试。 */
+  showSortMenu?: boolean;
+  /** @deprecated 排序下拉菜单已移除，仅保留可选类型字段以兼容既有键盘测试。 */
+  setShowSortMenu?: React.Dispatch<React.SetStateAction<boolean>>;
+  showHistoryMenu?: boolean;
+  setShowHistoryMenu?: React.Dispatch<React.SetStateAction<boolean>>;
   showSyntaxHelp: boolean;
   setShowSyntaxHelp: React.Dispatch<React.SetStateAction<boolean>>;
   showViewSettings: boolean;
   setShowViewSettings: React.Dispatch<React.SetStateAction<boolean>>;
+  showColumnManager?: boolean;
+  setShowColumnManager?: React.Dispatch<React.SetStateAction<boolean>>;
+  showPropertyPicker?: boolean;
+  setShowPropertyPicker?: React.Dispatch<React.SetStateAction<boolean>>;
   hide: () => void;
   rebuildIndex: () => Promise<void>;
   togglePin: () => Promise<void>;
+  toggleMaximized?: () => Promise<void> | void;
   startRename: (result: SearchResult) => void;
   handleSelectSort: (field: SortField) => void;
   openResult: (result?: SearchResult) => Promise<void>;
@@ -35,7 +44,7 @@ export interface UseSearchKeyboardProps {
   copyPathResult: (result?: SearchResult) => void;
   copyFileResult?: (result?: SearchResult) => Promise<void> | void;
   quickLookResult?: (result?: SearchResult, options?: { toggle?: boolean }) => Promise<void> | void;
-  exportResultsToCsv: () => void;
+  exportResultsToCsv: () => void | Promise<void>;
   selectCategory: (cat: CategoryFilter) => void;
   categories: CategoryFilter[];
 }
@@ -53,15 +62,20 @@ export function useSearchKeyboard({
   setRenameTarget,
   contextMenu,
   setContextMenu,
-  showSortMenu,
-  setShowSortMenu,
+  showHistoryMenu = false,
+  setShowHistoryMenu,
   showSyntaxHelp,
   setShowSyntaxHelp,
   showViewSettings,
   setShowViewSettings,
+  showColumnManager = false,
+  setShowColumnManager,
+  showPropertyPicker = false,
+  setShowPropertyPicker,
   hide,
   rebuildIndex,
   togglePin,
+  toggleMaximized,
   startRename,
   handleSelectSort,
   openResult,
@@ -110,14 +124,20 @@ export function useSearchKeyboard({
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      if (renameTarget.visible) {
+      if (showPropertyPicker && setShowPropertyPicker) {
+        setShowPropertyPicker(false);
+        if (!showColumnManager) inputRef.current?.focus();
+      } else if (showColumnManager && setShowColumnManager) {
+        setShowColumnManager(false);
+        inputRef.current?.focus();
+      } else if (renameTarget.visible) {
         setRenameTarget({ visible: false, newName: '' });
         inputRef.current?.focus();
       } else if (contextMenu.visible) {
         setContextMenu({ visible: false, x: 0, y: 0 });
         inputRef.current?.focus();
-      } else if (showSortMenu) {
-        setShowSortMenu(false);
+      } else if (showHistoryMenu && setShowHistoryMenu) {
+        setShowHistoryMenu(false);
         inputRef.current?.focus();
       } else if (showSyntaxHelp) {
         setShowSyntaxHelp(false);
@@ -128,6 +148,22 @@ export function useSearchKeyboard({
       } else {
         hide();
       }
+      return;
+    }
+
+    // 1a. Alt+ArrowDown 或 Ctrl+H 一键展开/收起搜索历史下拉菜单
+    if (
+      setShowHistoryMenu &&
+      !renameTarget.visible &&
+      !showSyntaxHelp &&
+      ((event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === 'ArrowDown') ||
+        (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && (event.key === 'h' || event.key === 'H')))
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      setShowHistoryMenu((prev) => !prev);
+      setShowViewSettings(false);
+      inputRef.current?.focus();
       return;
     }
 
@@ -144,7 +180,7 @@ export function useSearchKeyboard({
       }
       return;
     }
-    if (showViewSettings || contextMenu.visible || showSortMenu) {
+    if (showHistoryMenu || showViewSettings || showColumnManager || showPropertyPicker || contextMenu.visible) {
       return;
     }
 
@@ -166,6 +202,13 @@ export function useSearchKeyboard({
     if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && (event.key === 'p' || event.key === 'P')) {
       event.preventDefault();
       void togglePin();
+      return;
+    }
+
+    // 4a. F11 全局切换搜索窗口工作区全屏最大化 / 浮窗还原
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === 'F11' && toggleMaximized) {
+      event.preventDefault();
+      void toggleMaximized();
       return;
     }
 
@@ -197,7 +240,6 @@ export function useSearchKeyboard({
       if (k === 'd') { event.preventDefault(); handleSelectSort('modified'); return; }
       if (k === 'n') { event.preventDefault(); handleSelectSort('name'); return; }
       if (k === 's') { event.preventDefault(); handleSelectSort('size'); return; }
-      if (k === 'r') { event.preventDefault(); handleSelectSort('relevance'); return; }
       if (k === 'c' && copyFileResult) {
         const current = sortedResults[selectedIndexRef.current];
         if (current) {
@@ -373,7 +415,7 @@ export function useSearchKeyboard({
 
     if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && (event.key === 'e' || event.key === 'E')) {
       event.preventDefault();
-      exportResultsToCsv();
+      void exportResultsToCsv();
       return;
     }
 
@@ -392,8 +434,9 @@ export function useSearchKeyboard({
   }, [
     inputRef, isComposing, sortedResults, setSelectedIndex, query, activeCategory, searchMode,
     renameTarget.visible, setRenameTarget, contextMenu.visible, setContextMenu,
-    showSortMenu, setShowSortMenu, showSyntaxHelp, setShowSyntaxHelp,
-    showViewSettings, setShowViewSettings, hide, rebuildIndex, togglePin,
+    showHistoryMenu, setShowHistoryMenu, showSyntaxHelp, setShowSyntaxHelp,
+    showViewSettings, setShowViewSettings, showColumnManager, setShowColumnManager, showPropertyPicker, setShowPropertyPicker,
+    hide, rebuildIndex, togglePin, toggleMaximized,
     startRename, handleSelectSort, openResult, openFolderResult, pinResult, openResultAsAdmin,
     showFileProperties, copyPathResult, copyFileResult, quickLookResult, exportResultsToCsv, selectCategory, categories,
     moveSelection
@@ -405,7 +448,7 @@ export function useSearchKeyboard({
     };
     window.addEventListener('keydown', handleGlobal, true);
     const handleTriggerQuickLook = () => {
-      if (renameTarget.visible || showSyntaxHelp || showViewSettings || contextMenu.visible || showSortMenu) {
+      if (renameTarget.visible || showHistoryMenu || showSyntaxHelp || showViewSettings || showColumnManager || showPropertyPicker || contextMenu.visible) {
         return;
       }
       const current = sortedResults[selectedIndexRef.current] ?? sortedResults[0];
@@ -414,7 +457,7 @@ export function useSearchKeyboard({
       }
     };
     const handleSyncQuickLook = () => {
-      if (renameTarget.visible || showSyntaxHelp || showViewSettings || contextMenu.visible || showSortMenu) {
+      if (renameTarget.visible || showHistoryMenu || showSyntaxHelp || showViewSettings || showColumnManager || showPropertyPicker || contextMenu.visible) {
         return;
       }
       const current = sortedResults[selectedIndexRef.current] ?? sortedResults[0];
@@ -449,9 +492,11 @@ export function useSearchKeyboard({
     quickLookResult,
     renameTarget.visible,
     setSelectedIndex,
-    showSortMenu,
+    showHistoryMenu,
     showSyntaxHelp,
     showViewSettings,
+    showColumnManager,
+    showPropertyPicker,
     sortedResults,
   ]);
 

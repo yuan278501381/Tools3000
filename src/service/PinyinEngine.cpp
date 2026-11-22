@@ -219,3 +219,100 @@ void PinyinEngine::BuildNormalizedPinyin(
         }
     }
 }
+
+void PinyinEngine::BuildNormalizedInitials(
+    std::wstring_view text,
+    std::string& scratchAsciiInitials,
+    std::wstring& outInitials
+) {
+    scratchAsciiInitials.clear();
+    outInitials.clear();
+    if (text.empty()) {
+        return;
+    }
+
+    if (scratchAsciiInitials.capacity() < text.size()) {
+        scratchAsciiInitials.reserve(text.size());
+    }
+
+    bool pureAsciiOutput = true;
+    size_t splitIdx = 0;
+    for (; splitIdx < text.size(); ++splitIdx) {
+        const wchar_t ch = text[splitIdx];
+        if (ch <= 0x7F) {
+            scratchAsciiInitials.push_back(asciiLowerByte(ch));
+            continue;
+        }
+        if (isHighSurrogate(ch) && splitIdx + 1 < text.size() && isLowSurrogate(text[splitIdx + 1])) {
+            pureAsciiOutput = false;
+            break;
+        }
+        const char* py = LookupSyllableAscii(ch);
+        if (py != nullptr && py[0] != '\0') {
+            scratchAsciiInitials.push_back(py[0]);
+        } else {
+            pureAsciiOutput = false;
+            break;
+        }
+    }
+
+    outInitials.reserve(pureAsciiOutput ? scratchAsciiInitials.size() : text.size());
+    for (char c : scratchAsciiInitials) {
+        outInitials.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+    }
+    if (pureAsciiOutput) {
+        return;
+    }
+
+    for (size_t i = splitIdx; i < text.size(); ++i) {
+        const wchar_t ch = text[i];
+        if (ch <= 0x7F) {
+            outInitials.push_back(asciiLowerWide(ch));
+            continue;
+        }
+        if (isHighSurrogate(ch) && i + 1 < text.size() && isLowSurrogate(text[i + 1])) {
+            const wchar_t lo = text[++i];
+            outInitials.push_back(ch);
+            outInitials.push_back(lo);
+            continue;
+        }
+        const char* py = LookupSyllableAscii(ch);
+        if (py != nullptr && py[0] != '\0') {
+            outInitials.push_back(static_cast<wchar_t>(static_cast<unsigned char>(py[0])));
+        } else {
+            outInitials.push_back(foldNonAsciiBmpChar(ch));
+        }
+    }
+}
+
+void PinyinEngine::BuildNormalizedFull(
+    std::wstring_view text,
+    std::wstring& outFull
+) {
+    outFull.clear();
+    if (text.empty()) {
+        return;
+    }
+    outFull.reserve(text.size() * 4);
+    for (size_t i = 0; i < text.size(); ++i) {
+        const wchar_t ch = text[i];
+        if (ch <= 0x7F) {
+            outFull.push_back(asciiLowerWide(ch));
+            continue;
+        }
+        if (isHighSurrogate(ch) && i + 1 < text.size() && isLowSurrogate(text[i + 1])) {
+            const wchar_t lo = text[++i];
+            outFull.push_back(ch);
+            outFull.push_back(lo);
+            continue;
+        }
+        const char* py = LookupSyllableAscii(ch);
+        if (py != nullptr && py[0] != '\0') {
+            while (*py) {
+                outFull.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*py++)));
+            }
+        } else {
+            outFull.push_back(foldNonAsciiBmpChar(ch));
+        }
+    }
+}

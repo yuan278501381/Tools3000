@@ -19,7 +19,10 @@ if (-not (Test-Path -LiteralPath $TargetDir -PathType Container)) {
 }
 
 if (-not ('Tools3000PeImportInspector' -as [type])) {
-    Add-Type -TypeDefinition @'
+    $savedLibEnv = $env:LIB
+    try {
+        $env:LIB = $null
+        Add-Type -IgnoreWarnings -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -114,6 +117,9 @@ public static class Tools3000PeImportInspector {
     }
 }
 '@
+    } finally {
+        $env:LIB = $savedLibEnv
+    }
 }
 
 $validSearchDirs = @($SearchDirList | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique)

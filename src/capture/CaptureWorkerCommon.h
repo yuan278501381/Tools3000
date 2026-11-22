@@ -51,7 +51,8 @@ namespace Constants {
     inline constexpr DWORD kPipeBufferBytes             = 256 * 1024;
     inline constexpr DWORD kPipeConnectTimeoutMs        = 15000;
     inline constexpr DWORD kWorkerGracefulExitWaitMs    = 4000;
-    inline constexpr int   kDefaultOcrWorkerIdleSeconds = 60;
+    inline constexpr int   kDefaultOcrWorkerSoftTrimSeconds = 60;   // 阶段 1: 闲置 60s 执行软修剪 (DXGI Trim + 工作集收缩)，保留已编译 DirectML Session
+    inline constexpr int   kDefaultOcrWorkerIdleSeconds     = 900;  // 阶段 2: 闲置 15 分钟仍无请求则优雅退出，物理+虚拟内存 100% 归零
     inline constexpr uint32_t kMaxIpcStringBytes        = 16u * 1024u * 1024u;
 } // namespace Constants
 
@@ -238,7 +239,8 @@ inline bool launchHiddenWorkerProcess(
     const std::filesystem::path& exePath,
     const std::vector<std::wstring>& args,
     ScopedHandle& outProcessHandle,
-    DWORD* outPid = nullptr) {
+    DWORD* outPid = nullptr,
+    DWORD priorityClass = NORMAL_PRIORITY_CLASS) {
     outProcessHandle.reset();
     if (outPid) *outPid = 0;
     if (exePath.empty()) return false;
@@ -247,6 +249,19 @@ inline bool launchHiddenWorkerProcess(
     for (const auto& arg : args) {
         cmdLine.push_back(L' ');
         cmdLine.append(quoteWindowsArg(arg));
+    }
+
+    // 前台交互型 --worker=ocr 子进程自动提升至 ABOVE_NORMAL_PRIORITY_CLASS，
+    // 确保前台识图在后台扫描/编译等高负载场景下依然获得优先调度
+    DWORD effectivePriority = priorityClass;
+    if (effectivePriority == NORMAL_PRIORITY_CLASS) {
+        const std::wstring ocrModeFlag = std::wstring(Constants::kFlagWorkerMode) + Constants::kModeOcr;
+        for (const auto& arg : args) {
+            if (arg == ocrModeFlag) {
+                effectivePriority = ABOVE_NORMAL_PRIORITY_CLASS;
+                break;
+            }
+        }
     }
 
     STARTUPINFOW si{};
@@ -266,7 +281,7 @@ inline bool launchHiddenWorkerProcess(
         nullptr,
         nullptr,
         FALSE,
-        CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS,
+        CREATE_NO_WINDOW | effectivePriority,
         nullptr,
         workDir.empty() ? nullptr : workDir.c_str(),
         &si,
@@ -376,21 +391,29 @@ inline bool writeExact(HANDLE handle, const void* data, size_t size, bool overla
     return true;
 }
 
-/// 同步管道精确读满全部字节（支持可选读取超时与外部中断事件，仅 overlappedHandle=true 时生效）
-inline bool readExact(
+/// 命名管道读取结果枚举（支持精确区分空窗超时与管道断开/父进程退出，支撑两阶段保活）
+enum class PipeReadStatus {
+    Ok = 0,
+    Timeout,
+    Aborted,
+    ErrorOrEof,
+};
+
+/// 同步管道精确读满全部字节并返回精细状态（仅 overlappedHandle=true 时支持超时与外部中断事件）
+inline PipeReadStatus readExactWithStatus(
     HANDLE handle,
     void* data,
     size_t size,
     bool overlappedHandle = false,
     DWORD timeoutMs = INFINITE,
     HANDLE abortEvent = nullptr) {
-    if (!handle || handle == INVALID_HANDLE_VALUE) return false;
+    if (!handle || handle == INVALID_HANDLE_VALUE) return PipeReadStatus::ErrorOrEof;
     auto* ptr = static_cast<uint8_t*>(data);
     size_t remaining = size;
     ScopedHandle evt;
     if (overlappedHandle) {
         evt.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-        if (!evt) return false;
+        if (!evt) return PipeReadStatus::ErrorOrEof;
     }
     const uint64_t deadline = (timeoutMs == INFINITE) ? 0ULL : (GetTickCount64() + timeoutMs);
     while (remaining > 0) {
@@ -402,13 +425,20 @@ inline bool readExact(
             ov.hEvent = evt.get();
             if (!ReadFile(handle, ptr, chunk, &got, &ov)) {
                 const DWORD err = GetLastError();
-                if (err != ERROR_IO_PENDING) return false;
+                if (err != ERROR_IO_PENDING) return PipeReadStatus::ErrorOrEof;
                 DWORD waitMs = INFINITE;
                 if (timeoutMs != INFINITE) {
                     const uint64_t now = GetTickCount64();
                     if (now >= deadline) {
                         CancelIoEx(handle, &ov);
-                        return false;
+                        DWORD cancelledGot = 0;
+                        const BOOL completed = GetOverlappedResult(handle, &ov, &cancelledGot, TRUE);
+                        if (completed && cancelledGot > 0) {
+                            ptr += cancelledGot;
+                            remaining -= cancelledGot;
+                            continue;
+                        }
+                        return (remaining == size) ? PipeReadStatus::Timeout : PipeReadStatus::ErrorOrEof;
                     }
                     waitMs = static_cast<DWORD>(deadline - now);
                 }
@@ -417,26 +447,63 @@ inline bool readExact(
                 const DWORD waitRes = WaitForMultipleObjects(count, waitHandles, FALSE, waitMs);
                 if (waitRes != WAIT_OBJECT_0) {
                     CancelIoEx(handle, &ov);
-                    return false;
+                    // 严格同步等待内核取消落地，防止栈上 OVERLAPPED 析构悬空；
+                    // 若临界微秒数据恰已抵达，则平滑续读避免丢包错位
+                    DWORD cancelledGot = 0;
+                    const BOOL completed = GetOverlappedResult(handle, &ov, &cancelledGot, TRUE);
+                    if (waitRes == WAIT_TIMEOUT) {
+                        if (completed && cancelledGot > 0) {
+                            ptr += cancelledGot;
+                            remaining -= cancelledGot;
+                            continue;
+                        }
+                        return (remaining == size) ? PipeReadStatus::Timeout : PipeReadStatus::ErrorOrEof;
+                    }
+                    if (waitRes == WAIT_OBJECT_0 + 1) {
+                        return PipeReadStatus::Aborted;
+                    }
+                    return PipeReadStatus::ErrorOrEof;
                 }
-                if (!GetOverlappedResult(handle, &ov, &got, FALSE)) return false;
+                if (!GetOverlappedResult(handle, &ov, &got, FALSE)) return PipeReadStatus::ErrorOrEof;
             }
         } else {
             if (!ReadFile(handle, ptr, chunk, &got, nullptr)) {
-                return false;
+                return PipeReadStatus::ErrorOrEof;
             }
         }
-        if (got == 0) return false;
+        if (got == 0) return PipeReadStatus::ErrorOrEof;
         ptr += got;
         remaining -= got;
     }
-    return true;
+    return PipeReadStatus::Ok;
+}
+
+/// 同步管道精确读满全部字节（支持可选读取超时与外部中断事件，仅 overlappedHandle=true 时生效）
+inline bool readExact(
+    HANDLE handle,
+    void* data,
+    size_t size,
+    bool overlappedHandle = false,
+    DWORD timeoutMs = INFINITE,
+    HANDLE abortEvent = nullptr) {
+    return readExactWithStatus(handle, data, size, overlappedHandle, timeoutMs, abortEvent) == PipeReadStatus::Ok;
 }
 
 template <typename T>
 inline bool writePod(HANDLE handle, const T& value, bool overlappedHandle = false) {
     static_assert(std::is_trivially_copyable_v<T>);
     return writeExact(handle, &value, sizeof(T), overlappedHandle);
+}
+
+template <typename T>
+inline PipeReadStatus readPodWithStatus(
+    HANDLE handle,
+    T& value,
+    bool overlappedHandle = false,
+    DWORD timeoutMs = INFINITE,
+    HANDLE abortEvent = nullptr) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    return readExactWithStatus(handle, &value, sizeof(T), overlappedHandle, timeoutMs, abortEvent);
 }
 
 template <typename T>

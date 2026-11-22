@@ -455,7 +455,7 @@ tools3000_add_version_resource(Plugin_Search "Tools3000 Search Plugin" "Plugin_S
 tools3000_add_plugin_manifest(Plugin_Search)
 target_compile_definitions(Plugin_Search PRIVATE PLUGIN_EXPORTS)
 target_include_directories(Plugin_Search PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(Plugin_Search PRIVATE Tools3000Core nlohmann_json::nlohmann_json spdlog::spdlog advapi32 shell32 bcrypt)
+target_link_libraries(Plugin_Search PRIVATE Tools3000Core nlohmann_json::nlohmann_json spdlog::spdlog advapi32 shell32 bcrypt version windowscodecs propsys ole32 oleaut32)
 set_target_properties(Plugin_Search PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/plugins")
 
 # ── 3.7. Plugin_DialogEnhancer (动态库) ────────────────────────────────────────
@@ -598,6 +598,7 @@ if(BUILD_TESTING)
         src/ocr/OcrWorkerHost.cpp
         src/ocr/OcrTableReconstructor.cpp
         src/ocr/OcrResultWindow.cpp
+        src/search/SearchPropertyExtractor.cpp
         $<TARGET_OBJECTS:capture_objects>
         $<TARGET_OBJECTS:gesture_objects>
         $<TARGET_OBJECTS:service_objects>
@@ -614,7 +615,7 @@ if(BUILD_TESTING)
     if (MSVC)
         target_compile_options(Tools3000Tests PRIVATE /bigobj)
     endif()
-    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 msimg32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 oleaut32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm winhttp windowsapp ntdll userenv ws2_32 dbghelp
+    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 msimg32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 oleaut32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm winhttp windowsapp ntdll userenv ws2_32 dbghelp version bcrypt propsys
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY} ${WEBP_LIBRARY} ${WEBPMUX_LIBRARY} ${OpenCV_LIBS})
     add_dependencies(Tools3000Tests tools3000_content_rs_target Tools3000 Plugin_Gesture Plugin_Capture Plugin_Keycast Plugin_Search Plugin_DialogEnhancer)

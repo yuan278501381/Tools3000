@@ -94,5 +94,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'rmt-tunnel', navId: 'remote_boost', labelKey: 'remoteBoost.hotkeyTunnelTitle', descKey: 'remoteBoost.hotkeyTunnelDesc', keywords: 'remote rdp mstsc tododesk sunlogin win alt tab yuancheng' },
   { id: 'rmt-flush', navId: 'remote_boost', labelKey: 'remoteBoost.emergencyFlushTitle', descKey: 'remoteBoost.emergencyFlushDesc', keywords: 'stuck modifier keyup flush release kajian' },
   { id: 'rmt-ime', navId: 'remote_boost', labelKey: 'remoteBoost.imeSanitizerTitle', descKey: 'remoteBoost.imeSanitizerDesc', keywords: 'ime english input method shurufa' },
+  { id: 'pv-assoc', navId: 'picasa_viewer', labelKey: 'picasaViewer.associateAllTitle', descKey: 'picasaViewer.heroDesc', keywords: 'picasa photo image picture viewer rust association jpg png webp kantu tupian' },
+  { id: 'pv-custom', navId: 'picasa_viewer', labelKey: 'picasaViewer.customFormatsTitle', descKey: 'picasaViewer.customFormatsDesc', keywords: 'picasa format config default apps extension raw heic avif geshi guanlian' },
   { id: 'stt-heatmap', navId: 'stats', labelKey: 'stats.heatmapTitle', descKey: 'stats.dailyTitle', keywords: 'heatmap keystrokes clicks distance relitu tongji' },
 ];

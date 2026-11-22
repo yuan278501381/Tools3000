@@ -57,10 +57,10 @@ struct DeepOcrEngine::WinMlContext {
     }};
 
     // 4 档严格遵循 DirectML SVTR Attention 显存甜点律 (B * W^2 < 1.9M) 的极速微批次桶：
-    //   实机基准验证：一旦超过 B*W^2 >= 3.2M 悬崖 (如 8x640 / 4x960 / 16x640)，4GB 显存 GPU 会触发 DirectML 工作区换页抖动，
-    //   冷启动暴涨 6~9 倍且出现严重延迟抖动；锁定在 1.6M~1.84M 甜点上限内可实现最快冷热启动、零抖动与极低显存：
+    //   实机基准验证：一旦超过 B*W^2 >= 3.2M 悬崖 (如 8x640 / 4x960 / 16x640)，4GB 显存 GPU 会触发 DirectML 工作区换页抖动；
+    //   保持 4 档紧凑甜点桶，既避免 SVTR Attention 大量右侧零填充引起的字符精度漂移，又借助 15 分钟热保活实现后续 0ms 复用：
     //   [0]=16x160 (B*W^2=0.41M, 超短词/密集表格单元)
-    //   [1]=16x320 (B*W^2=1.64M, 短词主力批桶)
+    //   [1]=16x320 (B*W^2=1.64M, 短词主力批桶，探测阶段即编译并直接复用)
     //   [2]=4x640  (B*W^2=1.64M, 中长句高吞吐零悬崖桶)
     //   [3]=2x960  (B*W^2=1.84M, 超长句零悬崖按需桶)
     static constexpr std::array<StaticBucketSpec, 4> kRecSpecs = {{
@@ -425,40 +425,42 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
         const auto serverRecPath = modelDir / DeepOcrConstants::kRecServerModelFileName;
         const auto dictPath = modelDir / DeepOcrConstants::kKeysDictFileName;
 
-        std::vector<uint8_t> detBytes, clsBytes, recBytes;
-        if (!readFileBytes(detPath, detBytes) ||
-            !isValidOnnxBuffer(detBytes.data(), detBytes.size(), 256)) {
+        // 轻量化 4KB 文件头校验（std::filesystem::file_size + ONNX Protobuf 魔数），
+        // 彻底消灭冷启将 4 个模型（含 86.34 MB server 模型，共 102 MB）整份读盘后立即丢弃的 I/O 浪费
+        if (!isValidOnnxFileHeader(detPath, 256)) {
             LOG_WARN("DeepOcrEngine: invalid or missing det ONNX model");
             return false;
         }
-        if (!readFileBytes(clsPath, clsBytes) ||
-            !isValidOnnxBuffer(clsBytes.data(), clsBytes.size(), 256)) {
+        if (!isValidOnnxFileHeader(clsPath, 256)) {
             LOG_WARN("DeepOcrEngine: invalid or missing cls ONNX model");
             return false;
         }
 
         std::string actualTier = desiredTier;
         // 无论 mobile 还是 server 档位，主力均校验并加载极速轻量的 mobile 识别模型 (10.8 MB)；
-        // 若用户开启 server 高精度增强档，二阶仅对低置信度疑难行按需懒加载单 CPU SIMD Server 会话精准复核，
+        // 若用户开启 server 高精度增强档，二阶仅对低置信度疑难行按需懒加载单一甜点 Server 会话精准复核，
         // 彻底根治 90.5 MB Server 模型多桶 DirectML 显存溢出与 5GB+ Private Commit 暴涨。
-        if (!readFileBytes(mobileRecPath, recBytes) ||
-            !isValidOnnxBuffer(recBytes.data(), recBytes.size(), 256)) {
+        if (!isValidOnnxFileHeader(mobileRecPath, 256)) {
             LOG_WARN("DeepOcrEngine: invalid or missing rec ONNX model");
             return false;
         }
         bool serverModelVerified = false;
         if (desiredTier == "server") {
-            std::vector<uint8_t> serverHeaderCheck;
-            if (readFileBytes(serverRecPath, serverHeaderCheck, DeepOcrConstants::kEstimatedServerAddOnBytes + 16ULL * 1024ULL * 1024ULL) &&
-                isValidOnnxBuffer(serverHeaderCheck.data(), serverHeaderCheck.size(), 256)) {
+            if (isValidOnnxFileHeader(
+                    serverRecPath,
+                    256,
+                    DeepOcrConstants::kEstimatedServerAddOnBytes + 16ULL * 1024ULL * 1024ULL)) {
                 serverModelVerified = true;
             } else {
                 LOG_WARN("DeepOcrEngine: server rec ONNX model invalid or unreadable, gracefully falling back to mobile tier");
                 actualTier = "mobile";
             }
         }
+        // 仅当独立字典文件 ppocr_keys_v1.txt 缺失或非法时，才按需整文件读取 mobile rec ONNX 提取内嵌词典
+        std::vector<uint8_t> recBytesCache;
         if (!loadDictionaryLines(dictPath, m_dictKeys)) {
-            if (!extractEmbeddedCharacterDictFromOnnx(recBytes.data(), recBytes.size(), m_dictKeys)) {
+            if (!readFileBytes(mobileRecPath, recBytesCache) ||
+                !extractEmbeddedCharacterDictFromOnnx(recBytesCache.data(), recBytesCache.size(), m_dictKeys)) {
                 LOG_WARN("DeepOcrEngine: invalid or missing dictionary keys file");
                 return false;
             }
@@ -549,7 +551,7 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
 
                     bool batchOk = false;
                     try {
-                        // 使用甜点主力 16x320 桶 ([1]) 一次性完成批处理探测并复用，永不触发 DirectML 大张量显存悬崖
+                        // 使用甜点主力 16x320 桶 ([1]) 一次性完成批处理探测并直接复用，永不触发 DirectML 大张量显存悬崖
                         const auto& sp1 = WinMlContext::kRecSpecs[1];
                         waml::LearningModelSession s16(ctx->recModel, gpuDev, probeOpts);
                         auto t16 = waml::TensorFloat::Create(winrt::single_threaded_vector<int64_t>({
@@ -626,7 +628,16 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
             m_activeSessionCountAtomic.store(0, std::memory_order_release);
         }
 
-        // 无损回退路径：OpenCV DNN 固定分桶推理引擎
+        // 无损回退路径：OpenCV DNN 固定分桶推理引擎（仅在 WinML 不可用时按需整文件读盘）
+        std::vector<uint8_t> detBytes, clsBytes;
+        if (!readFileBytes(detPath, detBytes) ||
+            !readFileBytes(clsPath, clsBytes) ||
+            (recBytesCache.empty() && !readFileBytes(mobileRecPath, recBytesCache))) {
+            LOG_WARN("DeepOcrEngine: OpenCV DNN fallback failed to read ONNX model files");
+            return false;
+        }
+        const auto& recBytes = recBytesCache;
+
         std::vector<uint8_t> clsFixed, recShortFixed, recLongFixed;
         const bool clsPatched = patchOnnxGraphInputShape(
             clsBytes.data(), clsBytes.size(),
@@ -685,8 +696,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
     cv::Mat bgr = ensureBgr3(image);
     if (bgr.empty()) return {};
 
-    // 生产宿主环境优先通过独立短命 Worker 子进程 (--worker=ocr) 执行 DirectML GPU 推理：
-    // 主进程 0 加载 DirectML/ONNX Runtime/显卡内核驱动，子进程闲置 60s 后由 OS 100% 物理+虚拟双归零。
+    // 生产宿主环境优先通过独立 OCR Worker 子进程 (--worker=ocr) 执行 DirectML GPU 推理：
+    // 主进程 0 加载 DirectML/ONNX Runtime/显卡内核驱动，子进程采用两阶段智能热保活（60s 软修剪 + 15 分钟 OS 双归零退出）。
     if (OcrWorkerClient::instance().isOutOfProcessAvailable()) {
         std::vector<OcrResult> workerResults;
         DeepOcrRunStats workerStats{};
@@ -706,10 +717,16 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
         }
     }
 
+    const auto tTotalStart = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(m_inferMutex);
+    const auto tLoadStart = std::chrono::steady_clock::now();
     if (!ensureModelsLoadedLocked(modelDir)) {
         return {};
     }
+    const auto tInferStart = std::chrono::steady_clock::now();
+    const long long loadMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        tInferStart - tLoadStart).count();
+
     struct ActivityTouchGuard {
         DeepOcrEngine* self = nullptr;
         ~ActivityTouchGuard() {
@@ -721,7 +738,6 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
     }
 
     std::vector<OcrResult> rawBlocks;
-    const auto tTotalStart = std::chrono::steady_clock::now();
     long long detMs = 0;
     long long packMs = 0;
     long long recMs = 0;
@@ -940,11 +956,23 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
 
         auto quads = postprocessDbMap(probOut, origW, origH, ratioW, ratioH);
         detMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - tTotalStart).count();
+            std::chrono::steady_clock::now() - tInferStart).count();
         detectedQuadCount = quads.size();
         if (quads.empty()) {
-            LOG_INFO("DeepOcrEngine: recognized 0 lines on {}x{} in {} ms (det={} ms)",
-                     origW, origH, detMs, detMs);
+            const long long totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - tTotalStart).count();
+            const size_t sessCnt = activeSessionCount();
+            {
+                std::lock_guard<std::mutex> sl(m_statsMutex);
+                DeepOcrRunStats emptyStats{};
+                emptyStats.totalMs = totalMs;
+                emptyStats.loadMs = loadMs;
+                emptyStats.detMs = detMs;
+                emptyStats.activeSessions = sessCnt;
+                m_lastRunStats = std::move(emptyStats);
+            }
+            LOG_INFO("DeepOcrEngine: recognized 0 lines on {}x{} in {} ms (load={} ms, det={} ms)",
+                     origW, origH, totalMs, loadMs, detMs);
             return {};
         }
 
@@ -1420,7 +1448,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
         }
 
         const auto tRecStart = std::chrono::steady_clock::now();
-        packMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRecStart - tTotalStart).count() - detMs;
+        packMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRecStart - tInferStart).count() - detMs;
         packedStripCount = pieces.size();
 
         auto mapIsolatedDecodedToQuad = [&](const RecPiece& pc, const CtcDecodeOutput& dec) {
@@ -1463,7 +1491,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
 
             // 1) 一阶极速 Mobile 识别：
             //    - WinML CPU SIMD 模式：按实际宽度升序排序 + 精确 32 对齐动态微批（仅需单一 recSession，0 多桶显存占用，0 无效 padding）
-            //    - DirectML GPU 模式：4 档紧凑静态桶（16x160 / 4x320 / 16x320 / 4x640 / 2x960）零拷贝直写
+            //    - DirectML GPU 模式：2 档主力静态桶（16x320 / 2x960）零拷贝直写，收敛冷编译 Session 数至 2~3
             std::vector<float> hostOutBuf;
 
             // 统一零拷贝原位解码器：直接映射 TensorFloat 主机缓冲 + 多核并行数学精确提前终止 CTC Greedy 解码
@@ -1587,6 +1615,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                     }
                 }
             } else {
+            // DirectML GPU 4 档紧致甜点桶：[0]=16x160, [1]=16x320, [2]=4x640, [3]=2x960
             std::array<std::vector<size_t>, 4> tierPieces;
             for (size_t pi = 0; pi < pieces.size(); ++pi) {
                 const int cw = pieces[pi].contentW;
@@ -1606,14 +1635,12 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                 tierPieces[0].clear();
             }
 
-            std::array<long long, 4> tierMs{0, 0, 0, 0};
             std::array<long long, 4> tierEvalMs{0, 0, 0, 0};
             std::array<long long, 4> tierDecMs{0, 0, 0, 0};
             std::array<size_t, 4> tierCalls{0, 0, 0, 0};
             for (size_t tier = 0; tier < 4; ++tier) {
                 const auto& indices = tierPieces[tier];
                 if (indices.empty()) continue;
-                const auto tTierStart = std::chrono::steady_clock::now();
 
                 const int netW = (tier == 0)
                     ? DeepOcrConstants::kRecTinyBucketWidth
@@ -1697,8 +1724,6 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
 
                     pos += static_cast<size_t>(actualB);
                 }
-                tierMs[tier] = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - tTierStart).count();
             }
             bucketProfile =
                 "160:" + std::to_string(tierPieces[0].size()) + "/" + std::to_string(tierCalls[0]) + "c/" + std::to_string(tierEvalMs[0]) + "e+" + std::to_string(tierDecMs[0]) + "d " +
@@ -2027,14 +2052,23 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
     const size_t sessCnt = activeSessionCount();
     {
         std::lock_guard<std::mutex> sl(m_statsMutex);
-        m_lastRunStats = DeepOcrRunStats{
-            totalMs, detMs, packMs, recMs - refineMs, refineMs,
-            detectedQuadCount, packedStripCount, serverRefinedCount, sessCnt, bucketProfile
-        };
+        DeepOcrRunStats runStats{};
+        runStats.totalMs = totalMs;
+        runStats.loadMs = loadMs;
+        runStats.detMs = detMs;
+        runStats.packMs = packMs;
+        runStats.recMs = recMs - refineMs;
+        runStats.refineMs = refineMs;
+        runStats.detectedQuads = detectedQuadCount;
+        runStats.stripCount = packedStripCount;
+        runStats.serverRefinedCount = serverRefinedCount;
+        runStats.activeSessions = sessCnt;
+        runStats.bucketProfile = bucketProfile;
+        m_lastRunStats = std::move(runStats);
     }
-    LOG_INFO("DeepOcrEngine: recognized {} lines ({} quads -> {} strips, serverRefined={}) on {}x{} in {} ms (det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={})",
+    LOG_INFO("DeepOcrEngine: recognized {} lines ({} quads -> {} strips, serverRefined={}) on {}x{} in {} ms (load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={})",
              assembled.size(), detectedQuadCount, packedStripCount, serverRefinedCount,
-             bgr.cols, bgr.rows, totalMs, detMs, packMs, recMs - refineMs, refineMs, sessCnt);
+             bgr.cols, bgr.rows, totalMs, loadMs, detMs, packMs, recMs - refineMs, refineMs, sessCnt);
     return assembled;
 }
 
@@ -2135,7 +2169,7 @@ void DeepOcrEngine::idleUnloadWorkerLoop(std::stop_token stopToken) {
 void DeepOcrEngine::precompileFixedBucketsLocked() {
     if (m_bucketsPrecompiled || !m_useWinMl || !m_winMl) return;
     try {
-        // 仅预编译 1 个最常用轻量检测桶 [0](960x640) 与 1 个小批识别桶 [1](4x320)，避免多桶预占显存
+        // 仅预编译 1 个最常用轻量检测桶 [0](960x640) 与 1 个主力识别桶 [0](16x320)，避免多桶预占显存
         if (!m_shuttingDown.load(std::memory_order_acquire)) {
             if (waml::LearningModelSession* dSess = m_winMl->ensureDetSession(0)) {
                 const auto& sp = WinMlContext::kDetSpecs[0];
@@ -2145,7 +2179,10 @@ void DeepOcrEngine::precompileFixedBucketsLocked() {
                 (void)dSess->Evaluate(db, L"");
             }
         }
-        if (!m_shuttingDown.load(std::memory_order_acquire) && m_winMl->supportsBatchEval) {
+        // 注意：若 16x320 主力桶 ([1]) 已在加载探测阶段完成编译与 Evaluate，则直接复用无需重复热身
+        if (!m_shuttingDown.load(std::memory_order_acquire) &&
+            m_winMl->supportsBatchEval &&
+            !m_winMl->recBucketSessions[1]) {
             if (waml::LearningModelSession* rSess = m_winMl->ensureRecSession(1)) {
                 const auto& sp = WinMlContext::kRecSpecs[1];
                 auto rTen = waml::TensorFloat::Create(
@@ -2201,6 +2238,34 @@ void DeepOcrEngine::warmupAsync(int delayMs) {
             LOG_INFO("DeepOcrEngine: background static bucket pre-compilation completed");
         }
     });
+}
+
+void DeepOcrEngine::trimIdleMemory() {
+    bool trimmedGpu = false;
+    {
+        // 非阻塞尝试加锁，绝不与正在进行的 OCR 推理争锁
+        std::unique_lock<std::mutex> lock(m_inferMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            return;
+        }
+        if (m_useWinMl && m_winMl) {
+            if (m_winMl->ownedD3d11Context) {
+                m_winMl->ownedD3d11Context->Flush();
+            }
+            if (m_winMl->ownedDxgiDevice) {
+                m_winMl->ownedDxgiDevice->Trim();
+                trimmedGpu = true;
+            }
+        }
+    }
+    // 阶段 1 软修剪：仅归还暂存显存并收缩当前进程物理工作集，保留全部已编译 DirectML Session 以保障下次 OCR 0ms 热启
+    ::SetProcessWorkingSetSizeEx(
+        ::GetCurrentProcess(),
+        static_cast<SIZE_T>(-1),
+        static_cast<SIZE_T>(-1),
+        0);
+    LOG_INFO("DeepOcrEngine: stage-1 idle soft-trim completed (dxgiTrim={}, sessions={})",
+             trimmedGpu ? "true" : "false", activeSessionCount());
 }
 
 void DeepOcrEngine::releaseLoadedModels() {

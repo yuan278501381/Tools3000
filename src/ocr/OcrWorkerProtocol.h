@@ -18,7 +18,7 @@
 namespace tools3000::ocr::worker_proto {
 
 inline constexpr uint32_t kProtocolMagic   = 0x54334F52u; // "T3OR"
-inline constexpr uint32_t kProtocolVersion = 1u;
+inline constexpr uint32_t kProtocolVersion = 2u;
 inline constexpr uint32_t kMaxOcrLines     = 100000u;
 inline constexpr uint32_t kMaxCharBoxes    = 100000u;
 
@@ -52,6 +52,7 @@ struct ResponseHeader {
 
 struct WireRunStats {
     int64_t totalMs = 0;
+    int64_t loadMs = 0;
     int64_t detMs = 0;
     int64_t packMs = 0;
     int64_t recMs = 0;
@@ -92,6 +93,7 @@ inline bool writeOcrResults(
 
     WireRunStats wireStats{};
     wireStats.totalMs = stats.totalMs;
+    wireStats.loadMs = stats.loadMs;
     wireStats.detMs = stats.detMs;
     wireStats.packMs = stats.packMs;
     wireStats.recMs = stats.recMs;
@@ -152,6 +154,7 @@ inline bool readOcrResults(
     WireRunStats wireStats{};
     if (!worker::readPod(pipe, wireStats, overlappedHandle, timeoutMs)) return false;
     outStats.totalMs = wireStats.totalMs;
+    outStats.loadMs = wireStats.loadMs;
     outStats.detMs = wireStats.detMs;
     outStats.packMs = wireStats.packMs;
     outStats.recMs = wireStats.recMs;

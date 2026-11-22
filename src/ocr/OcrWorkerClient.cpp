@@ -10,6 +10,7 @@
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
 
+#include <chrono>
 #include <cstring>
 
 namespace tools3000::ocr {
@@ -142,7 +143,8 @@ bool OcrWorkerClient::ensureWorkerConnectedLocked(
 
     worker::ScopedHandle childProc;
     DWORD childPid = 0;
-    if (!worker::launchHiddenWorkerProcess(exePath, args, childProc, &childPid)) {
+    if (!worker::launchHiddenWorkerProcess(
+            exePath, args, childProc, &childPid, ABOVE_NORMAL_PRIORITY_CLASS)) {
         LOG_WARN("OcrWorkerClient: failed to spawn OCR worker process (err={})", GetLastError());
         return false;
     }
@@ -258,12 +260,15 @@ bool OcrWorkerClient::extractText(
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
+    const auto tWallStart = std::chrono::steady_clock::now();
     for (int attempt = 0; attempt < 2; ++attempt) {
         if (!ensureWorkerConnectedLocked(exePath, modelTier, modelDir)) {
             return false;
         }
         if (runSingleRequestLocked(bgrImage, modelDir, modelTier, outResults, outStats, outActiveTier)) {
-            LOG_INFO("DeepOcrEngine: isolated worker (pid={}) recognized {} lines ({} quads -> {} strips, serverRefined={}) on {}x{} in {} ms (det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={}, tier={})",
+            const long long wallMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - tWallStart).count();
+            LOG_INFO("DeepOcrEngine: isolated worker (pid={}) recognized {} lines ({} quads -> {} strips, serverRefined={}) on {}x{} in {} ms (wall={} ms, load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={}, tier={})",
                      m_childPid.load(std::memory_order_acquire),
                      outResults.size(),
                      outStats.detectedQuads,
@@ -272,6 +277,8 @@ bool OcrWorkerClient::extractText(
                      bgrImage.cols,
                      bgrImage.rows,
                      outStats.totalMs,
+                     wallMs,
+                     outStats.loadMs,
                      outStats.detMs,
                      outStats.packMs,
                      outStats.recMs,
@@ -280,7 +287,7 @@ bool OcrWorkerClient::extractText(
                      outActiveTier);
             return true;
         }
-        // 子进程可能刚触发 60s 闲置退出，清理句柄并透明重试一次
+        // 子进程可能刚触发闲置退出，清理句柄并透明重试一次
         closeWorkerLocked(/*sendShutdownCmd=*/false);
     }
 

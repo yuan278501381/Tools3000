@@ -7,6 +7,7 @@
 #include "core/utils/WinUtils.h"
 #include "search/ServiceStartupPolicy.h"
 #include "search/SearchInteractionHandlers.h"
+#include "search/SearchPropertyExtractor.h"
 #include "search/SearchQueryConfigUtils.h"
 #include "service/PipeProtocol.h"
 #include "service/PipeEndpoint.h"
@@ -1062,7 +1063,7 @@ public:
             {
                 auto& cfg = tools3000::core::ConfigManager::instance();
                 if (!normalized.contains("pinyinEnabled") || !normalized["pinyinEnabled"].is_boolean()) {
-                    normalized["pinyinEnabled"] = cfg.get<bool>("/search/pinyinEnabled", true);
+                    normalized["pinyinEnabled"] = tools3000::search::resolveEffectivePinyinEnabled(cfg);
                 }
                 if (!normalized.contains("matchPath") || !normalized["matchPath"].is_boolean()) {
                     normalized["matchPath"] = cfg.get<bool>("/search/matchPath", false);
@@ -1143,7 +1144,7 @@ public:
             normalized["query"] = query;
             const std::string payload = normalized.dump();
 
-            const DWORD queryTimeout = isContentSearch ? 1800000 : 120000;
+            const DWORD queryTimeout = isContentSearch ? 1800000 : 25000;
             DWORD pipeError = ERROR_SUCCESS;
             auto response = querySearchService(payload, pipeError, true, queryTimeout);
 
@@ -1180,9 +1181,19 @@ public:
                 };
             }
 
+            const bool isConfirmedReady = g_serviceConfirmedReady.load(std::memory_order_relaxed);
+            if (pipeError == ERROR_TIMEOUT && isConfirmedReady) {
+                return {
+                    {"results", nlohmann::json::array()},
+                    {"available", true},
+                    {"status", "timeout"},
+                    {"error", "search query timed out"}
+                };
+            }
+
             const bool isStarting = pipeError == ERROR_FILE_NOT_FOUND ||
                                     g_warmupInFlight.load(std::memory_order_acquire) ||
-                                    (!g_serviceConfirmedReady.load(std::memory_order_relaxed) &&
+                                    (!isConfirmedReady &&
                                      (pipeError == ERROR_TIMEOUT || g_serviceSpawnedByUs.load()));
             const char* statusError = pipeError == ERROR_NOT_SUPPORTED
                 ? "search service is attached to another Windows user or session"
@@ -1281,9 +1292,21 @@ public:
             return {{"success", true}};
         });
 
-        mb.registerHandler("search.windowHidden", [](const nlohmann::json&) -> nlohmann::json {
-            DWORD error = 0;
-            querySearchService(R"({"action":"cancel"})", error, false, 1500);
+        auto dispatchCancelFast = []() {
+            // 取消指令绝不进入 4 线程共享 WorkerPool 排队，直接走独立快车道毫秒直达搜索服务
+            std::thread([]() {
+                DWORD error = 0;
+                querySearchService(R"({"action":"cancel"})", error, false, 1500);
+            }).detach();
+        };
+
+        mb.registerHandler("search.windowHidden", [dispatchCancelFast](const nlohmann::json&) -> nlohmann::json {
+            dispatchCancelFast();
+            return {{"success", true}};
+        });
+
+        mb.registerHandler("search.cancel", [dispatchCancelFast](const nlohmann::json&) -> nlohmann::json {
+            dispatchCancelFast();
             return {{"success", true}};
         });
 
@@ -1294,7 +1317,7 @@ public:
             std::string defaultCategory = cfg.get<std::string>("/search/defaultCategory", "all");
             bool caseSensitive = cfg.get<bool>("/search/caseSensitive", false);
             bool matchPath = cfg.get<bool>("/search/matchPath", false);
-            bool pinyinEnabled = cfg.get<bool>("/search/pinyinEnabled", true);
+            bool pinyinEnabled = tools3000::search::resolveEffectivePinyinEnabled(cfg);
             std::string enabledDrives = cfg.get<std::string>("/search/enabledDrives", "");
             std::string excludePatterns = cfg.get<std::string>("/search/excludePatterns", "$Recycle.Bin,System Volume Information,node_modules,.git,__pycache__");
             bool excludeHidden = cfg.get<bool>("/search/excludeHidden", false);
@@ -1574,6 +1597,10 @@ public:
             return {{"success", true}, {"icons", result}};
         });
 
+        mb.registerHandler("search.batchGetProperties", [](const nlohmann::json& params) -> nlohmann::json {
+            return SearchPropertyExtractor::instance().handleBatchRequestJson(params);
+        });
+
         mb.registerHandler("search.recordRun", [](const nlohmann::json& params) -> nlohmann::json {
             std::string path = expandClientUserEnvUtf8(
                 params.value("path", ""),
@@ -1668,10 +1695,10 @@ public:
                  "search.clearSearchHistory",
                  "search.recordRun",
                  "search.recordSearch",
-                 "search.windowHidden",
                  "search.getDrives",
                  "search.getFileIcon",
                  "search.batchGetIcons",
+                 "search.batchGetProperties",
                  "search.getDbStats",
                  "search.saveSnapshot",
                  "search.warmup",

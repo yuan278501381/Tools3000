@@ -54,6 +54,7 @@ const KeycastPage = lazy(() => import('./pages/KeycastPage').then((module) => ({
 const SpotlightPage = lazy(() => import('./pages/SpotlightPage').then((module) => ({ default: module.SpotlightPage })));
 const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then((module) => ({ default: module.DialogEnhancerPage })));
 const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((module) => ({ default: module.RemoteBoostPage })));
+const PicasaViewerPage = lazy(() => import('./pages/PicasaViewerPage').then((module) => ({ default: module.PicasaViewerPage })));
 
 const getInitialActivePluginIds = (): string[] | null => {
   try {
@@ -106,11 +107,16 @@ function App() {
   const theme: Theme = themePreference === 'system' ? systemTheme : themePreference;
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
+  const [retainedDisabledNav, setRetainedDisabledNav] = useState<NavId | null>(null);
+  const activeNavRef = useRef<NavId>(activeNav);
+  const picasaWasActiveRef = useRef<boolean>(false);
   const pageTitleRef = useRef<HTMLHeadingElement>(null);
   const contentContainerRef = useRef<HTMLDivElement>(null);
 
   const handleNavSelect = useCallback((nav: NavId) => {
+    activeNavRef.current = nav;
     setActiveNav(nav);
+    setRetainedDisabledNav((prev) => (prev === nav ? prev : null));
     try {
       localStorage.setItem('tools3000:last-nav', nav);
     } catch {
@@ -118,40 +124,37 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    const applyPlugins = (items: PluginStatus[]) => {
-      const safeItems = Array.isArray(items) ? items : [];
-      setPlugins(safeItems);
-      const activeList = safeItems
-        .filter((plugin) => plugin.enabled && plugin.active)
-        .map((p) => p.id);
-      setActivePluginIds(activeList);
-      try {
-        localStorage.setItem('tools3000:active-plugins', JSON.stringify(activeList));
-      } catch {
-        // 忽略本地存储写入异常
-      }
-    };
-    void bridgeRequest<PluginStatus[]>('plugins.getAll').then(applyPlugins).catch(console.error);
-    const handleChange = (event: Event) => applyPlugins((event as CustomEvent<PluginStatus[]>).detail);
-    window.addEventListener('tools3000:plugins-changed', handleChange);
-    return () => window.removeEventListener('tools3000:plugins-changed', handleChange);
+  const applyPluginsSnapshot = useCallback((items: PluginStatus[]) => {
+    const safeItems = Array.isArray(items) ? items : [];
+    setPlugins(safeItems);
+    const activeList = safeItems
+      .filter((plugin) => plugin.enabled && plugin.active)
+      .map((p) => p.id);
+    const picasaNowActive = activeList.includes('picasa_viewer');
+    if (!picasaNowActive && picasaWasActiveRef.current && activeNavRef.current === 'picasa_viewer') {
+      // 用户在 Picasa 图片查看器页面内就地关闭总开关时，保留当前页供查看停用态或直接重开
+      setRetainedDisabledNav('picasa_viewer');
+    } else if (picasaNowActive) {
+      setRetainedDisabledNav((prev) => (prev === 'picasa_viewer' ? null : prev));
+    }
+    picasaWasActiveRef.current = picasaNowActive;
+    setActivePluginIds(activeList);
+    try {
+      localStorage.setItem('tools3000:active-plugins', JSON.stringify(activeList));
+    } catch {
+      // 忽略本地存储写入异常
+    }
   }, []);
 
+  useEffect(() => {
+    void bridgeRequest<PluginStatus[]>('plugins.getAll').then(applyPluginsSnapshot).catch(console.error);
+    const handleChange = (event: Event) => applyPluginsSnapshot((event as CustomEvent<PluginStatus[]>).detail);
+    window.addEventListener('tools3000:plugins-changed', handleChange);
+    return () => window.removeEventListener('tools3000:plugins-changed', handleChange);
+  }, [applyPluginsSnapshot]);
+
   useBridgeEvent('plugins:changed', () => {
-    void bridgeRequest<PluginStatus[]>('plugins.getAll').then((items) => {
-      const safeItems = Array.isArray(items) ? items : [];
-      setPlugins(safeItems);
-      const activeList = safeItems
-        .filter((plugin) => plugin.enabled && plugin.active)
-        .map((p) => p.id);
-      setActivePluginIds(activeList);
-      try {
-        localStorage.setItem('tools3000:active-plugins', JSON.stringify(activeList));
-      } catch {
-        // 忽略本地存储写入异常
-      }
-    }).catch(console.error);
+    void bridgeRequest<PluginStatus[]>('plugins.getAll').then(applyPluginsSnapshot).catch(console.error);
   });
 
   const activePlugins = useMemo(() => {
@@ -330,6 +333,8 @@ function App() {
       'dialog_enhancer',
       'remote_boost',
       'remote',
+      'picasa_viewer',
+      'picasaviewer',
     ]);
     return plugins.filter((p) => !standardPluginIds.has(p.id) && p.enabled && p.active);
   }, [plugins]);
@@ -339,7 +344,6 @@ function App() {
     [installedExtensions],
   );
 
-  // 检查目标页面是否所属插件已启用。若未启用则阻断渲染并触发回退，节省 WebView2 物理内存
   const isNavActive = useCallback((navId: NavId): boolean => {
     const pageDef = PAGE_DEFINITIONS.find((p) => p.id === navId);
     if (pageDef) {
@@ -363,19 +367,21 @@ function App() {
     return installedExtensionIds.includes(navId);
   }, [activePlugins, activePluginIds, installedExtensionIds, plugins.length]);
 
-  // 当插件状态变更或初次加载完毕时，若当前页面已被停用，自动优雅回退到通用设置
+  const currentNavActive = isNavActive(activeNav);
+
+  // 未启用页面（且非 Picasa 就地停用保留态）优雅回退至通用设置
   useEffect(() => {
-    if (!isNavActive(activeNav)) {
+    if (!currentNavActive && retainedDisabledNav !== activeNav) {
       const timer = setTimeout(() => {
         handleNavSelect('general');
       }, 0);
       return () => clearTimeout(timer);
     }
-  }, [activeNav, isNavActive, handleNavSelect]);
+  }, [activeNav, currentNavActive, handleNavSelect, retainedDisabledNav]);
 
-  // 渲染当前页面：未启用页面的组件绝不挂载到 DOM 中，以阻断资源预载并释放内存
+  // 渲染当前页面：未启用页面的组件绝不挂载到 DOM 中（就地停用保留态除外），以阻断资源预载并释放内存
   const renderPage = () => {
-    if (!isNavActive(activeNav)) {
+    if (!currentNavActive && retainedDisabledNav !== activeNav) {
       return <GeneralPage />;
     }
     switch (activeNav) {
@@ -390,6 +396,7 @@ function App() {
       case 'spotlight':       return <SpotlightPage />;
       case 'dialog_enhancer': return <DialogEnhancerPage />;
       case 'remote_boost':    return <RemoteBoostPage />;
+      case 'picasa_viewer':   return <PicasaViewerPage />;
       case 'plugins':         return <PluginsPage initialPlugins={plugins} onNavigate={handleNavSelect} />;
       case 'general':         return <GeneralPage />;
       case 'about':           return <AboutPage />;

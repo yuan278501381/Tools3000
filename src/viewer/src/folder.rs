@@ -35,12 +35,45 @@ pub fn compare_natural_names(a: &str, b: &str) -> Ordering {
     }
 }
 
+/// 将任意相对路径或纯文件名通过 Win32 `GetFullPathNameW` 规范化为绝对路径（兼容长路径与中文空格）
+pub fn normalize_full_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::GetFullPathNameW;
+
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe {
+            let needed = GetFullPathNameW(PCWSTR(wide.as_ptr()), None, None);
+            if needed > 0 {
+                let mut buf = vec![0u16; needed as usize + 1];
+                let written = GetFullPathNameW(PCWSTR(wide.as_ptr()), Some(&mut buf), None);
+                if written > 0 && (written as usize) <= buf.len() {
+                    return PathBuf::from(OsString::from_wide(&buf[..written as usize]));
+                }
+            }
+        }
+    }
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(path)
+    } else {
+        path.to_path_buf()
+    }
+}
+
 /// 扫描目标图片所在目录内的全部同级图片，并定位当前图片索引
 pub fn scan_sibling_images(target_file: &Path) -> (Vec<PathBuf>, usize) {
-    let canonical_target = target_file.to_path_buf();
+    let canonical_target = normalize_full_path(target_file);
     let Some(parent) = canonical_target.parent() else {
         return (vec![canonical_target], 0);
     };
+    if parent.as_os_str().is_empty() {
+        return (vec![canonical_target], 0);
+    }
 
     let mut siblings: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(parent) {
@@ -113,5 +146,16 @@ mod tests {
         assert!(is_supported_image_path(Path::new("photo.avif")));
         assert!(is_supported_image_path(Path::new("vector.svg")));
         assert!(!is_supported_image_path(Path::new("notes.txt")));
+    }
+
+    #[test]
+    fn normalize_full_path_resolves_relative_filename_to_absolute() {
+        let abs = normalize_full_path(Path::new("relative_sample.png"));
+        assert!(abs.is_absolute(), "相对路径应被转为绝对路径: {}", abs.display());
+        assert_eq!(
+            abs.file_name().and_then(|s| s.to_str()),
+            Some("relative_sample.png")
+        );
+        assert!(abs.parent().map(|p| !p.as_os_str().is_empty()).unwrap_or(false));
     }
 }

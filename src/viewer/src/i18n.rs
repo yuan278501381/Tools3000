@@ -11,7 +11,7 @@
 // - 原生调用 Win32 `GetUserDefaultUILanguage()` 自动跟随 Windows 系统显示语言。
 // ─────────────────────────────────────────────────────────────────────────────
 
-use crate::types::BackdropMode;
+use crate::types::{BackdropMode, DecodeError, ExifField, ImageFormatKind};
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -193,6 +193,30 @@ pub struct ViewerStrings {
     pub exif_focal_length: &'static str,
     pub exif_display_scale: &'static str,
     pub exif_1to1_suffix: &'static str,
+    pub fmt_animated_gif: &'static str,
+    pub fmt_animated_webp: &'static str,
+    pub fmt_animated_apng: &'static str,
+    pub fmt_svg_vector: &'static str,
+    pub exif_frames_unit: &'static str,
+    pub exif_best_frame_suffix: &'static str,
+    pub exif_orientation_auto_prefix: &'static str,
+
+    // 结构化解码与 GPU 上传错误提示（8 语种地道化）
+    pub err_read_metadata_prefix: &'static str,
+    pub err_open_file_prefix: &'static str,
+    pub err_read_file_prefix: &'static str,
+    pub err_zero_dimensions: &'static str,
+    pub err_dimensions_too_large: &'static str,
+    pub err_out_of_memory: &'static str,
+    pub err_invalid_header: &'static str,
+    pub err_truncated_data: &'static str,
+    pub err_unsupported_format: &'static str,
+    pub err_no_valid_frames: &'static str,
+    pub err_wic_failure_prefix: &'static str,
+    pub err_svg_parse_prefix: &'static str,
+    pub err_svg_too_large: &'static str,
+    pub err_decode_failed_prefix: &'static str,
+    pub err_gpu_upload_failed_prefix: &'static str,
 
     // 另存为 PNG 对话框
     pub save_png_filter: &'static str,
@@ -225,6 +249,7 @@ pub struct ViewerStrings {
     // 文件关联与默认看图器配置窗口 (8 语种全覆盖)
     pub assoc_dlg_title: &'static str,
     pub assoc_dlg_subtitle: &'static str,
+    pub assoc_scope_badge: &'static str,
     pub assoc_icon_caption: &'static str,
     pub assoc_btn_select_all: &'static str,
     pub assoc_btn_common: &'static str,
@@ -233,6 +258,14 @@ pub struct ViewerStrings {
     pub assoc_btn_remove_all: &'static str,
     pub assoc_btn_close: &'static str,
     pub assoc_unreg_done: &'static str,
+    pub assoc_grp_titles: [&'static str; 8],
+    pub assoc_badge_default: &'static str,
+    pub assoc_badge_locked: &'static str,
+    pub assoc_locked_summary_prefix: &'static str,
+    pub assoc_banner_applied: &'static str,
+    pub assoc_banner_applied_open_settings: &'static str,
+    pub assoc_banner_unregistered: &'static str,
+    pub assoc_banner_failed_prefix: &'static str,
 
     // 轻量瞬态反馈 Toast 与幕布名
     pub toast_single_image_no_slideshow: &'static str,
@@ -267,41 +300,113 @@ impl ViewerStrings {
         }
     }
 
-    /// 将底层解码器产出的 EXIF 键值对动态映射为当前激活语种展示文案
-    pub fn localize_exif_pair(&self, raw_key: &str, raw_val: &str) -> (String, String) {
-        let key = match raw_key {
-            "格式" => self.exif_format,
-            "尺寸" => self.exif_dimensions,
-            "画板尺寸" => self.exif_artboard,
-            "透明通道" => self.exif_alpha,
-            "帧数" | "图像帧数" | "动画帧数" => self.exif_frames,
-            "总时长" => self.exif_duration,
-            "EXIF 方向" => self.exif_orientation,
-            "相机型号" => self.exif_camera,
-            "镜头" => self.exif_lens,
-            "拍摄时间" => self.exif_date_taken,
-            "曝光参数" => self.exif_exposure,
-            "焦距" => self.exif_focal_length,
-            _ => raw_key,
-        };
+    /// 将结构化图像格式渲染为当前激活语种地道文案
+    pub fn format_image_kind(&self, kind: &ImageFormatKind) -> String {
+        match kind {
+            ImageFormatKind::Static(label) => label.clone(),
+            ImageFormatKind::AnimatedGif => self.fmt_animated_gif.to_string(),
+            ImageFormatKind::AnimatedWebP => self.fmt_animated_webp.to_string(),
+            ImageFormatKind::AnimatedApng => self.fmt_animated_apng.to_string(),
+            ImageFormatKind::SvgVector => self.fmt_svg_vector.to_string(),
+        }
+    }
 
-        let val = match raw_val {
-            "含 Alpha" => self.exif_alpha_yes.to_string(),
-            "不透明" => self.exif_alpha_no.to_string(),
-            "GIF 动图" => "Animated GIF".to_string(),
-            "APNG 动图" => "Animated PNG (APNG)".to_string(),
-            "SVG 矢量图" => "SVG Vector".to_string(),
-            other => {
-                if let Some(num) = other.strip_suffix(" 帧") {
-                    format!("{num}")
-                } else if let Some(rest) = other.strip_prefix("已自动纠偏 (") {
-                    format!("Auto ({}", rest)
+    /// 将底层解码器产出的结构化 EXIF 条目渲染为当前激活语种地道键值对（0 英文反向污染，0 汉字泄露）
+    pub fn format_exif_field(&self, field: &ExifField) -> (String, String) {
+        match field {
+            ExifField::Format(kind) => (self.exif_format.to_string(), self.format_image_kind(kind)),
+            ExifField::Dimensions(w, h) => {
+                (self.exif_dimensions.to_string(), format!("{w} x {h}"))
+            }
+            ExifField::Artboard {
+                orig_w,
+                orig_h,
+                out_w,
+                out_h,
+            } => (
+                self.exif_artboard.to_string(),
+                format!("{orig_w} x {orig_h} -> {out_w} x {out_h}"),
+            ),
+            ExifField::Alpha(has_alpha) => (
+                self.exif_alpha.to_string(),
+                if *has_alpha {
+                    self.exif_alpha_yes
                 } else {
-                    other.replace(" 帧（已选最优清晰帧）", "").replace(" 帧（", " (").replace('）', ")")
+                    self.exif_alpha_no
+                }
+                .to_string(),
+            ),
+            ExifField::FrameCount {
+                count,
+                best_selected,
+                duration_sec,
+            } => {
+                let val = if *best_selected {
+                    format!(
+                        "{count} {} ({})",
+                        self.exif_frames_unit, self.exif_best_frame_suffix
+                    )
+                } else if let Some(dur) = duration_sec {
+                    format!("{count} {} ({dur:.2} s)", self.exif_frames_unit)
+                } else {
+                    format!("{count} {}", self.exif_frames_unit)
+                };
+                (self.exif_frames.to_string(), val)
+            }
+            ExifField::DurationSec(sec) => (self.exif_duration.to_string(), format!("{sec:.2} s")),
+            ExifField::OrientationAuto(ori) => (
+                self.exif_orientation.to_string(),
+                format!("{} (#{ori})", self.exif_orientation_auto_prefix),
+            ),
+            ExifField::Camera(v) => (self.exif_camera.to_string(), v.clone()),
+            ExifField::Lens(v) => (self.exif_lens.to_string(), v.clone()),
+            ExifField::DateTaken(v) => (self.exif_date_taken.to_string(), v.clone()),
+            ExifField::Exposure(v) => (self.exif_exposure.to_string(), v.clone()),
+            ExifField::FocalLengthMm(mm) => {
+                (self.exif_focal_length.to_string(), format!("{mm:.0} mm"))
+            }
+        }
+    }
+
+    /// 将结构化解码/上传错误渲染为当前激活语种可读详情（非中文环境 0 汉字泄露）
+    pub fn format_decode_error(&self, err: &DecodeError) -> String {
+        match err {
+            DecodeError::ReadMetadata(d) => format!("{}{d}", self.err_read_metadata_prefix),
+            DecodeError::OpenFile(d) => format!("{}{d}", self.err_open_file_prefix),
+            DecodeError::ReadFile { format, detail } => {
+                format!("{}{format}: {detail}", self.err_read_file_prefix)
+            }
+            DecodeError::ZeroDimensions { format } => {
+                format!("{format}: {}", self.err_zero_dimensions)
+            }
+            DecodeError::DimensionsTooLarge { width, height } => {
+                format!("{} ({width} x {height})", self.err_dimensions_too_large)
+            }
+            DecodeError::OutOfMemory => self.err_out_of_memory.to_string(),
+            DecodeError::InvalidHeader { format } => {
+                format!("{format}: {}", self.err_invalid_header)
+            }
+            DecodeError::TruncatedData { format } => {
+                format!("{format}: {}", self.err_truncated_data)
+            }
+            DecodeError::UnsupportedFormat { format, detail } => {
+                if detail.is_empty() {
+                    format!("{format}: {}", self.err_unsupported_format)
+                } else {
+                    format!("{format}: {} ({detail})", self.err_unsupported_format)
                 }
             }
-        };
-        (key.to_string(), val)
+            DecodeError::NoValidFrames { format } => {
+                format!("{format}: {}", self.err_no_valid_frames)
+            }
+            DecodeError::WicFailure(d) => format!("{}{d}", self.err_wic_failure_prefix),
+            DecodeError::SvgParseFailure(d) => format!("{}{d}", self.err_svg_parse_prefix),
+            DecodeError::SvgTooLarge => self.err_svg_too_large.to_string(),
+            DecodeError::DecodeFailed { format, detail } => {
+                format!("{}{format}: {detail}", self.err_decode_failed_prefix)
+            }
+            DecodeError::GpuUploadFailed(d) => format!("{}{d}", self.err_gpu_upload_failed_prefix),
+        }
     }
 }
 
@@ -361,6 +466,29 @@ pub const STRINGS_ZH_CN: ViewerStrings = ViewerStrings {
     exif_focal_length: "焦距",
     exif_display_scale: "屏幕缩放",
     exif_1to1_suffix: "物理 1:1",
+    fmt_animated_gif: "GIF 动图",
+    fmt_animated_webp: "WebP 动图",
+    fmt_animated_apng: "APNG 动图",
+    fmt_svg_vector: "SVG 矢量图",
+    exif_frames_unit: "帧",
+    exif_best_frame_suffix: "已选最优清晰帧",
+    exif_orientation_auto_prefix: "已自动纠偏",
+
+    err_read_metadata_prefix: "无法读取文件信息: ",
+    err_open_file_prefix: "无法打开图像文件: ",
+    err_read_file_prefix: "读取文件失败: ",
+    err_zero_dimensions: "图像宽高尺寸为 0",
+    err_dimensions_too_large: "图像分辨率超出安全解码上限",
+    err_out_of_memory: "可用内存不足，已中止解码以防崩溃",
+    err_invalid_header: "文件头损坏或无效",
+    err_truncated_data: "像素数据不完整或已截断",
+    err_unsupported_format: "暂不支持此子格式",
+    err_no_valid_frames: "未包含任何有效图像帧",
+    err_wic_failure_prefix: "系统图像编解码器异常: ",
+    err_svg_parse_prefix: "解析 SVG 矢量文档失败: ",
+    err_svg_too_large: "SVG 解压后体积超出安全上限",
+    err_decode_failed_prefix: "图像解码失败: ",
+    err_gpu_upload_failed_prefix: "GPU 纹理上传失败: ",
 
     save_png_filter: "PNG 无损图像 (*.png)",
     save_png_title: "另存当前画面为 PNG",
@@ -390,6 +518,7 @@ pub const STRINGS_ZH_CN: ViewerStrings = ViewerStrings {
 
     assoc_dlg_title: "设为默认图片查看器与文件关联 - Tools3000 Picasa Viewer",
     assoc_dlg_subtitle: "勾选希望用本软件打开的图片格式。关联生效后，文件夹中的图片文件图标将变为经典的 Picasa 拍立得相纸图标：",
+    assoc_scope_badge: "Rust 复刻 · 仅看图（非原版全功能）",
     assoc_icon_caption: "关联后图片文件图标",
     assoc_btn_select_all: "全选",
     assoc_btn_common: "常用格式",
@@ -398,6 +527,23 @@ pub const STRINGS_ZH_CN: ViewerStrings = ViewerStrings {
     assoc_btn_remove_all: "清除关联",
     assoc_btn_close: "关闭",
     assoc_unreg_done: "已清除本软件的图片文件关联",
+    assoc_grp_titles: [
+        "JPEG 照片",
+        "PNG / APNG 无损图",
+        "WebP 现代图像",
+        "GIF 动态图",
+        "BMP / ICO / CUR",
+        "TIFF 印刷图像",
+        "SVG 矢量图",
+        "AVIF / HEIC / RAW 等",
+    ],
+    assoc_badge_default: "已生效",
+    assoc_badge_locked: "系统默认锁定",
+    assoc_locked_summary_prefix: "受 Windows 默认应用锁定: ",
+    assoc_banner_applied: "已写入文件关联与拍立得图标",
+    assoc_banner_applied_open_settings: "已写入关联，请在系统默认应用中确认",
+    assoc_banner_unregistered: "已清除文件关联并还原原有设置",
+    assoc_banner_failed_prefix: "操作失败: ",
 
     toast_single_image_no_slideshow: "当前目录仅 1 张图片，无法播放幻灯片",
     toast_anim_resumed: "动图继续播放",
@@ -478,6 +624,29 @@ pub const STRINGS_ZH_TW: ViewerStrings = ViewerStrings {
     exif_focal_length: "焦距",
     exif_display_scale: "螢幕縮放",
     exif_1to1_suffix: "實體 1:1",
+    fmt_animated_gif: "GIF 動圖",
+    fmt_animated_webp: "WebP 動圖",
+    fmt_animated_apng: "APNG 動圖",
+    fmt_svg_vector: "SVG 向量圖",
+    exif_frames_unit: "影格",
+    exif_best_frame_suffix: "已選最清晰影格",
+    exif_orientation_auto_prefix: "已自動校正",
+
+    err_read_metadata_prefix: "無法讀取檔案資訊: ",
+    err_open_file_prefix: "無法開啟影像檔案: ",
+    err_read_file_prefix: "讀取檔案失敗: ",
+    err_zero_dimensions: "影像寬高尺寸為 0",
+    err_dimensions_too_large: "影像解析度超出安全解碼上限",
+    err_out_of_memory: "可用記憶體不足，已中止解碼",
+    err_invalid_header: "檔案標頭損毀或無效",
+    err_truncated_data: "像素資料不完整或已截斷",
+    err_unsupported_format: "暫不支援此子格式",
+    err_no_valid_frames: "未包含任何有效影像影格",
+    err_wic_failure_prefix: "系統影像轉碼器異常: ",
+    err_svg_parse_prefix: "解析 SVG 向量文件失敗: ",
+    err_svg_too_large: "SVG 解壓後大小超出安全上限",
+    err_decode_failed_prefix: "影像解碼失敗: ",
+    err_gpu_upload_failed_prefix: "GPU 紋理上傳失敗: ",
 
     save_png_filter: "PNG 無損影像 (*.png)",
     save_png_title: "另存目前畫面為 PNG",
@@ -507,6 +676,7 @@ pub const STRINGS_ZH_TW: ViewerStrings = ViewerStrings {
 
     assoc_dlg_title: "設為預設圖片檢視器與檔案關聯 - Tools3000 Picasa Viewer",
     assoc_dlg_subtitle: "勾選希望由本軟體開啟的圖片格式。關聯生效後，資料夾中的圖片檔案圖示將變為經典的 Picasa 拍立得相紙圖示：",
+    assoc_scope_badge: "Rust 復刻 · 僅看圖（非原版全功能）",
     assoc_icon_caption: "關聯後圖片檔案圖示",
     assoc_btn_select_all: "全選",
     assoc_btn_common: "常用格式",
@@ -515,6 +685,23 @@ pub const STRINGS_ZH_TW: ViewerStrings = ViewerStrings {
     assoc_btn_remove_all: "清除關聯",
     assoc_btn_close: "關閉",
     assoc_unreg_done: "已清除本軟體的圖片檔案關聯",
+    assoc_grp_titles: [
+        "JPEG 相片",
+        "PNG / APNG 無損圖",
+        "WebP 現代影像",
+        "GIF 動態圖",
+        "BMP / ICO / CUR",
+        "TIFF 印刷影像",
+        "SVG 向量圖",
+        "AVIF / HEIC / RAW 等",
+    ],
+    assoc_badge_default: "已生效",
+    assoc_badge_locked: "系統預設鎖定",
+    assoc_locked_summary_prefix: "受 Windows 預設應用程式鎖定: ",
+    assoc_banner_applied: "已寫入檔案關聯與拍立得圖示",
+    assoc_banner_applied_open_settings: "已寫入關聯，請在系統預設應用程式中確認",
+    assoc_banner_unregistered: "已清除檔案關聯並還原原有設定",
+    assoc_banner_failed_prefix: "操作失敗: ",
 
     toast_single_image_no_slideshow: "目前資料夾僅 1 張圖片，無法播放投影片",
     toast_anim_resumed: "動圖繼續播放",
@@ -595,6 +782,29 @@ pub const STRINGS_EN_US: ViewerStrings = ViewerStrings {
     exif_focal_length: "Focal Length",
     exif_display_scale: "DPI Scale",
     exif_1to1_suffix: "1:1 Pixel",
+    fmt_animated_gif: "Animated GIF",
+    fmt_animated_webp: "Animated WebP",
+    fmt_animated_apng: "Animated PNG (APNG)",
+    fmt_svg_vector: "SVG Vector",
+    exif_frames_unit: "frames",
+    exif_best_frame_suffix: "best frame",
+    exif_orientation_auto_prefix: "Auto-corrected",
+
+    err_read_metadata_prefix: "Failed to read file metadata: ",
+    err_open_file_prefix: "Failed to open image file: ",
+    err_read_file_prefix: "Failed to read file: ",
+    err_zero_dimensions: "Image dimensions are zero",
+    err_dimensions_too_large: "Image dimensions exceed safety limit",
+    err_out_of_memory: "Insufficient memory to decode this image",
+    err_invalid_header: "Invalid or corrupted file header",
+    err_truncated_data: "Truncated or corrupted pixel data",
+    err_unsupported_format: "Unsupported sub-format",
+    err_no_valid_frames: "No valid image frames found",
+    err_wic_failure_prefix: "Windows Imaging Codec error: ",
+    err_svg_parse_prefix: "Failed to parse SVG document: ",
+    err_svg_too_large: "Decompressed SVG exceeds safety limit",
+    err_decode_failed_prefix: "Failed to decode image: ",
+    err_gpu_upload_failed_prefix: "GPU texture upload failed: ",
 
     save_png_filter: "Lossless PNG Image (*.png)",
     save_png_title: "Save Current View as PNG",
@@ -624,6 +834,7 @@ pub const STRINGS_EN_US: ViewerStrings = ViewerStrings {
 
     assoc_dlg_title: "Default Image Viewer & File Associations - Tools3000 Picasa Viewer",
     assoc_dlg_subtitle: "Select the image formats to open with this viewer. Associated files in Explorer will display the classic Picasa Polaroid photo icon:",
+    assoc_scope_badge: "Rust Recreation · Viewer Only",
     assoc_icon_caption: "Associated File Icon",
     assoc_btn_select_all: "Select All",
     assoc_btn_common: "Common Only",
@@ -632,6 +843,23 @@ pub const STRINGS_EN_US: ViewerStrings = ViewerStrings {
     assoc_btn_remove_all: "Unregister",
     assoc_btn_close: "Close",
     assoc_unreg_done: "Removed image file associations",
+    assoc_grp_titles: [
+        "JPEG Photos",
+        "PNG / APNG Lossless",
+        "WebP Modern",
+        "GIF Animation",
+        "BMP / ICO / CUR",
+        "TIFF Print",
+        "SVG Vector",
+        "AVIF / HEIC / RAW & More",
+    ],
+    assoc_badge_default: "Active",
+    assoc_badge_locked: "Locked by OS",
+    assoc_locked_summary_prefix: "Locked by Windows Default Apps: ",
+    assoc_banner_applied: "Associations and Polaroid icons applied",
+    assoc_banner_applied_open_settings: "Applied; confirm defaults in Windows Settings",
+    assoc_banner_unregistered: "Associations cleared and previous defaults restored",
+    assoc_banner_failed_prefix: "Operation failed: ",
 
     toast_single_image_no_slideshow: "Only 1 image in folder, slideshow unavailable",
     toast_anim_resumed: "Animation resumed",
@@ -712,6 +940,29 @@ pub const STRINGS_JA_JP: ViewerStrings = ViewerStrings {
     exif_focal_length: "焦点距離",
     exif_display_scale: "表示スケール",
     exif_1to1_suffix: "物理 1:1",
+    fmt_animated_gif: "アニメーション GIF",
+    fmt_animated_webp: "アニメーション WebP",
+    fmt_animated_apng: "アニメーション PNG (APNG)",
+    fmt_svg_vector: "SVG ベクター画像",
+    exif_frames_unit: "フレーム",
+    exif_best_frame_suffix: "最適フレーム選択",
+    exif_orientation_auto_prefix: "自動補正済み",
+
+    err_read_metadata_prefix: "ファイル情報の取得に失敗しました: ",
+    err_open_file_prefix: "画像ファイルを開けません: ",
+    err_read_file_prefix: "ファイルの読み込みに失敗しました: ",
+    err_zero_dimensions: "画像の幅または高さが 0 です",
+    err_dimensions_too_large: "画像サイズが安全上限を超えています",
+    err_out_of_memory: "メモリ不足のためデコードを中止しました",
+    err_invalid_header: "ファイルヘッダーが破損または無効です",
+    err_truncated_data: "ピクセルデータが破損または途中で終了しています",
+    err_unsupported_format: "未対応のサブ形式です",
+    err_no_valid_frames: "有効な画像フレームがありません",
+    err_wic_failure_prefix: "Windows イメージコーデックエラー: ",
+    err_svg_parse_prefix: "SVG ドキュメントの解析に失敗しました: ",
+    err_svg_too_large: "展開後の SVG サイズが安全上限を超えています",
+    err_decode_failed_prefix: "画像のデコードに失敗しました: ",
+    err_gpu_upload_failed_prefix: "GPU テクスチャのアップロードに失敗しました: ",
 
     save_png_filter: "PNG 可逆画像 (*.png)",
     save_png_title: "現在の表示を PNG として保存",
@@ -741,6 +992,7 @@ pub const STRINGS_JA_JP: ViewerStrings = ViewerStrings {
 
     assoc_dlg_title: "既定の画像ビューアーとファイルの関連付け - Tools3000 Picasa Viewer",
     assoc_dlg_subtitle: "このビューアーで開く画像形式を選択してください。関連付け後、エクスプローラーの画像アイコンが定番の Picasa ポラロイドアイコンに変わります：",
+    assoc_scope_badge: "Rust 再現・軽量ビューアー専用",
     assoc_icon_caption: "関連付け後の画像アイコン",
     assoc_btn_select_all: "すべて選択",
     assoc_btn_common: "標準形式のみ",
@@ -749,6 +1001,23 @@ pub const STRINGS_JA_JP: ViewerStrings = ViewerStrings {
     assoc_btn_remove_all: "関連付け解除",
     assoc_btn_close: "閉じる",
     assoc_unreg_done: "画像ファイルの関連付けを解除しました",
+    assoc_grp_titles: [
+        "JPEG 写真",
+        "PNG / APNG 可逆画像",
+        "WebP モダン画像",
+        "GIF アニメーション",
+        "BMP / ICO / CUR",
+        "TIFF 印刷画像",
+        "SVG ベクター",
+        "AVIF / HEIC / RAW など",
+    ],
+    assoc_badge_default: "適用済み",
+    assoc_badge_locked: "OS 既定ロック",
+    assoc_locked_summary_prefix: "Windows の既定アプリで保護中: ",
+    assoc_banner_applied: "ファイルの関連付けとアイコンを適用しました",
+    assoc_banner_applied_open_settings: "適用しました。Windows の既定アプリで確認してください",
+    assoc_banner_unregistered: "関連付けを解除し元の設定を復元しました",
+    assoc_banner_failed_prefix: "処理に失敗しました: ",
 
     toast_single_image_no_slideshow: "フォルダ内に画像が1枚のみのため再生できません",
     toast_anim_resumed: "アニメーションを再開しました",
@@ -829,6 +1098,29 @@ pub const STRINGS_KO_KR: ViewerStrings = ViewerStrings {
     exif_focal_length: "초점 거리",
     exif_display_scale: "화면 배율",
     exif_1to1_suffix: "물리 1:1",
+    fmt_animated_gif: "움직이는 GIF",
+    fmt_animated_webp: "움직이는 WebP",
+    fmt_animated_apng: "움직이는 PNG (APNG)",
+    fmt_svg_vector: "SVG 벡터 이미지",
+    exif_frames_unit: "프레임",
+    exif_best_frame_suffix: "최적 프레임 선택",
+    exif_orientation_auto_prefix: "자동 보정됨",
+
+    err_read_metadata_prefix: "파일 정보를 읽지 못했습니다: ",
+    err_open_file_prefix: "이미지 파일을 열 수 없습니다: ",
+    err_read_file_prefix: "파일 읽기 실패: ",
+    err_zero_dimensions: "이미지 가로 또는 세로 크기가 0입니다",
+    err_dimensions_too_large: "이미지 해상도가 안전 한도를 초과했습니다",
+    err_out_of_memory: "메모리가 부족하여 디코딩을 중단했습니다",
+    err_invalid_header: "파일 헤더가 손상되었거나 잘못되었습니다",
+    err_truncated_data: "픽셀 데이터가 손상되었거나 잘렸습니다",
+    err_unsupported_format: "지원하지 않는 하위 형식입니다",
+    err_no_valid_frames: "유효한 이미지 프레임이 없습니다",
+    err_wic_failure_prefix: "Windows 이미지 코덱 오류: ",
+    err_svg_parse_prefix: "SVG 문서 구문 분석 실패: ",
+    err_svg_too_large: "압축 해제된 SVG 크기가 안전 한도를 초과했습니다",
+    err_decode_failed_prefix: "이미지 디코딩 실패: ",
+    err_gpu_upload_failed_prefix: "GPU 텍스처 업로드 실패: ",
 
     save_png_filter: "무손실 PNG 이미지 (*.png)",
     save_png_title: "현재 화면을 PNG로 저장",
@@ -858,6 +1150,7 @@ pub const STRINGS_KO_KR: ViewerStrings = ViewerStrings {
 
     assoc_dlg_title: "기본 이미지 뷰어 및 파일 연결 설정 - Tools3000 Picasa Viewer",
     assoc_dlg_subtitle: "이 뷰어로 열 이미지 형식을 선택하세요. 연결이 적용되면 탐색기의 이미지 아이콘이 클래식 Picasa 폴라로이드 사진 아이콘으로 변경됩니다:",
+    assoc_scope_badge: "Rust 재구현 · 경량 뷰어 전용",
     assoc_icon_caption: "연결된 이미지 파일 아이콘",
     assoc_btn_select_all: "전체 선택",
     assoc_btn_common: "기본 형식",
@@ -866,6 +1159,23 @@ pub const STRINGS_KO_KR: ViewerStrings = ViewerStrings {
     assoc_btn_remove_all: "연결 해제",
     assoc_btn_close: "닫기",
     assoc_unreg_done: "이미지 파일 연결을 해제했습니다",
+    assoc_grp_titles: [
+        "JPEG 사진",
+        "PNG / APNG 무손실",
+        "WebP 최신 이미지",
+        "GIF 움직이는 이미지",
+        "BMP / ICO / CUR",
+        "TIFF 인쇄 이미지",
+        "SVG 벡터",
+        "AVIF / HEIC / RAW 등",
+    ],
+    assoc_badge_default: "적용됨",
+    assoc_badge_locked: "OS 기본 잠금",
+    assoc_locked_summary_prefix: "Windows 기본 앱으로 잠김: ",
+    assoc_banner_applied: "파일 연결 및 폴라로이드 아이콘이 적용되었습니다",
+    assoc_banner_applied_open_settings: "적용됨. Windows 기본 앱 설정에서 확인하세요",
+    assoc_banner_unregistered: "파일 연결을 해제하고 이전 설정을 복원했습니다",
+    assoc_banner_failed_prefix: "작업 실패: ",
 
     toast_single_image_no_slideshow: "폴더에 사진이 1장뿐이어서 슬라이드쇼를 시작할 수 없습니다",
     toast_anim_resumed: "재생을 재개했습니다",
@@ -946,6 +1256,29 @@ pub const STRINGS_RU_RU: ViewerStrings = ViewerStrings {
     exif_focal_length: "Фокусное расст.",
     exif_display_scale: "Масштаб экрана",
     exif_1to1_suffix: "1:1 пикс.",
+    fmt_animated_gif: "Анимация GIF",
+    fmt_animated_webp: "Анимация WebP",
+    fmt_animated_apng: "Анимация PNG (APNG)",
+    fmt_svg_vector: "Вектор SVG",
+    exif_frames_unit: "кадр.",
+    exif_best_frame_suffix: "выбран лучший кадр",
+    exif_orientation_auto_prefix: "Автоповорот",
+
+    err_read_metadata_prefix: "Не удалось прочитать метаданные файла: ",
+    err_open_file_prefix: "Не удалось открыть файл изображения: ",
+    err_read_file_prefix: "Ошибка чтения файла: ",
+    err_zero_dimensions: "Нулевой размер изображения",
+    err_dimensions_too_large: "Размер изображения превышает безопасный лимит",
+    err_out_of_memory: "Недостаточно памяти для декодирования изображения",
+    err_invalid_header: "Некорректный или повреждённый заголовок файла",
+    err_truncated_data: "Данные пикселей повреждены или обрезаны",
+    err_unsupported_format: "Неподдерживаемый подформат",
+    err_no_valid_frames: "Не найдено ни одного корректного кадра",
+    err_wic_failure_prefix: "Ошибка системного кодека WIC: ",
+    err_svg_parse_prefix: "Не удалось разобрать SVG-документ: ",
+    err_svg_too_large: "Распакованный SVG превышает безопасный лимит",
+    err_decode_failed_prefix: "Ошибка декодирования изображения: ",
+    err_gpu_upload_failed_prefix: "Ошибка загрузки текстуры на GPU: ",
 
     save_png_filter: "Изображение PNG без потерь (*.png)",
     save_png_title: "Сохранить текущее изображение как PNG",
@@ -975,6 +1308,7 @@ pub const STRINGS_RU_RU: ViewerStrings = ViewerStrings {
 
     assoc_dlg_title: "Просмотрщик по умолчанию и ассоциации файлов - Tools3000 Picasa Viewer",
     assoc_dlg_subtitle: "Выберите форматы изображений для открытия в этой программе. После применения файлы получат классический значок фотографии Picasa:",
+    assoc_scope_badge: "На Rust · Только просмотрщик",
     assoc_icon_caption: "Значок связанных файлов",
     assoc_btn_select_all: "Выбрать все",
     assoc_btn_common: "Основные",
@@ -983,6 +1317,23 @@ pub const STRINGS_RU_RU: ViewerStrings = ViewerStrings {
     assoc_btn_remove_all: "Сбросить",
     assoc_btn_close: "Закрыть",
     assoc_unreg_done: "Ассоциации файлов изображений удалены",
+    assoc_grp_titles: [
+        "Фото JPEG",
+        "PNG / APNG без потерь",
+        "Современный WebP",
+        "Анимация GIF",
+        "BMP / ICO / CUR",
+        "Печатный TIFF",
+        "Вектор SVG",
+        "AVIF / HEIC / RAW и др.",
+    ],
+    assoc_badge_default: "Активно",
+    assoc_badge_locked: "Занято ОС",
+    assoc_locked_summary_prefix: "Защищено параметрами Windows: ",
+    assoc_banner_applied: "Ассоциации файлов и значки успешно применены",
+    assoc_banner_applied_open_settings: "Применено; подтвердите выбор в параметрах Windows",
+    assoc_banner_unregistered: "Ассоциации удалены, прежние значения восстановлены",
+    assoc_banner_failed_prefix: "Ошибка операции: ",
 
     toast_single_image_no_slideshow: "В папке только 1 файл — слайд-шоу недоступно",
     toast_anim_resumed: "Анимация продолжена",
@@ -1063,6 +1414,29 @@ pub const STRINGS_PT_BR: ViewerStrings = ViewerStrings {
     exif_focal_length: "Dist. focal",
     exif_display_scale: "Escala de tela",
     exif_1to1_suffix: "1:1 real",
+    fmt_animated_gif: "GIF animado",
+    fmt_animated_webp: "WebP animado",
+    fmt_animated_apng: "PNG animado (APNG)",
+    fmt_svg_vector: "Vetor SVG",
+    exif_frames_unit: "quadros",
+    exif_best_frame_suffix: "melhor quadro",
+    exif_orientation_auto_prefix: "Corrigido automaticamente",
+
+    err_read_metadata_prefix: "Falha ao ler metadados do arquivo: ",
+    err_open_file_prefix: "Falha ao abrir arquivo de imagem: ",
+    err_read_file_prefix: "Falha ao ler arquivo: ",
+    err_zero_dimensions: "Dimensões da imagem iguais a zero",
+    err_dimensions_too_large: "Dimensões da imagem excedem o limite de segurança",
+    err_out_of_memory: "Memória insuficiente para decodificar esta imagem",
+    err_invalid_header: "Cabeçalho de arquivo inválido ou corrompido",
+    err_truncated_data: "Dados de pixels truncados ou corrompidos",
+    err_unsupported_format: "Subformato não suportado",
+    err_no_valid_frames: "Nenhum quadro válido encontrado",
+    err_wic_failure_prefix: "Erro do codec de imagem do Windows: ",
+    err_svg_parse_prefix: "Falha ao analisar documento SVG: ",
+    err_svg_too_large: "SVG descompactado excede o limite de segurança",
+    err_decode_failed_prefix: "Falha ao decodificar imagem: ",
+    err_gpu_upload_failed_prefix: "Falha ao enviar textura para a GPU: ",
 
     save_png_filter: "Imagem PNG sem perdas (*.png)",
     save_png_title: "Salvar visualização atual como PNG",
@@ -1092,6 +1466,7 @@ pub const STRINGS_PT_BR: ViewerStrings = ViewerStrings {
 
     assoc_dlg_title: "Visualizador padrão e associações de arquivos - Tools3000 Picasa Viewer",
     assoc_dlg_subtitle: "Selecione os formatos de imagem para abrir neste visualizador. Os arquivos exibirão o clássico ícone Polaroid do Picasa:",
+    assoc_scope_badge: "Recriação Rust · Apenas Visualizador",
     assoc_icon_caption: "Ícone de arquivo associado",
     assoc_btn_select_all: "Marcar tudo",
     assoc_btn_common: "Formatos comuns",
@@ -1100,6 +1475,23 @@ pub const STRINGS_PT_BR: ViewerStrings = ViewerStrings {
     assoc_btn_remove_all: "Remover",
     assoc_btn_close: "Fechar",
     assoc_unreg_done: "Associações de arquivos removidas",
+    assoc_grp_titles: [
+        "Fotos JPEG",
+        "PNG / APNG sem perdas",
+        "WebP Moderno",
+        "Animação GIF",
+        "BMP / ICO / CUR",
+        "TIFF Impressão",
+        "Vetor SVG",
+        "AVIF / HEIC / RAW e mais",
+    ],
+    assoc_badge_default: "Ativo",
+    assoc_badge_locked: "Bloqueado pelo SO",
+    assoc_locked_summary_prefix: "Protegido pelo Apps Padrão do Windows: ",
+    assoc_banner_applied: "Associações e ícones Polaroid aplicados",
+    assoc_banner_applied_open_settings: "Aplicado; confirme nos Apps Padrão do Windows",
+    assoc_banner_unregistered: "Associações removidas e padrões anteriores restaurados",
+    assoc_banner_failed_prefix: "Falha na operação: ",
 
     toast_single_image_no_slideshow: "Apenas 1 imagem na pasta, apresentação indisponível",
     toast_anim_resumed: "Animação retomada",
@@ -1180,6 +1572,29 @@ pub const STRINGS_ES_ES: ViewerStrings = ViewerStrings {
     exif_focal_length: "Dist. focal",
     exif_display_scale: "Escala pantalla",
     exif_1to1_suffix: "1:1 físico",
+    fmt_animated_gif: "GIF animado",
+    fmt_animated_webp: "WebP animado",
+    fmt_animated_apng: "PNG animado (APNG)",
+    fmt_svg_vector: "Vector SVG",
+    exif_frames_unit: "fotogramas",
+    exif_best_frame_suffix: "mejor fotograma",
+    exif_orientation_auto_prefix: "Corregido automáticamente",
+
+    err_read_metadata_prefix: "Error al leer metadatos del archivo: ",
+    err_open_file_prefix: "Error al abrir el archivo de imagen: ",
+    err_read_file_prefix: "Error al leer el archivo: ",
+    err_zero_dimensions: "Las dimensiones de la imagen son cero",
+    err_dimensions_too_large: "Las dimensiones superan el límite de seguridad",
+    err_out_of_memory: "Memoria insuficiente para decodificar esta imagen",
+    err_invalid_header: "Encabezado de archivo inválido o dañado",
+    err_truncated_data: "Datos de píxeles truncados o dañados",
+    err_unsupported_format: "Subformato no compatible",
+    err_no_valid_frames: "No se encontraron fotogramas válidos",
+    err_wic_failure_prefix: "Error del códec de imagen de Windows: ",
+    err_svg_parse_prefix: "Error al analizar documento SVG: ",
+    err_svg_too_large: "El SVG descomprimido supera el límite de seguridad",
+    err_decode_failed_prefix: "Error al decodificar la imagen: ",
+    err_gpu_upload_failed_prefix: "Error al cargar textura en la GPU: ",
 
     save_png_filter: "Imagen PNG sin pérdida (*.png)",
     save_png_title: "Guardar vista actual como PNG",
@@ -1209,6 +1624,7 @@ pub const STRINGS_ES_ES: ViewerStrings = ViewerStrings {
 
     assoc_dlg_title: "Visor predeterminado y asociación de archivos - Tools3000 Picasa Viewer",
     assoc_dlg_subtitle: "Seleccione los formatos de imagen que abrirá este visor. Los archivos mostrarán el clásico icono Polaroid de Picasa:",
+    assoc_scope_badge: "Recreación Rust · Solo Visor",
     assoc_icon_caption: "Icono de archivo asociado",
     assoc_btn_select_all: "Seleccionar todo",
     assoc_btn_common: "Comunes",
@@ -1217,6 +1633,23 @@ pub const STRINGS_ES_ES: ViewerStrings = ViewerStrings {
     assoc_btn_remove_all: "Quitar asociación",
     assoc_btn_close: "Cerrar",
     assoc_unreg_done: "Se eliminaron las asociaciones de imagen",
+    assoc_grp_titles: [
+        "Fotos JPEG",
+        "PNG / APNG sin pérdida",
+        "WebP Moderno",
+        "Animación GIF",
+        "BMP / ICO / CUR",
+        "TIFF Impresión",
+        "Vector SVG",
+        "AVIF / HEIC / RAW y más",
+    ],
+    assoc_badge_default: "Activo",
+    assoc_badge_locked: "Bloqueado por SO",
+    assoc_locked_summary_prefix: "Protegido por Apps predeterminadas: ",
+    assoc_banner_applied: "Asociaciones e iconos Polaroid aplicados",
+    assoc_banner_applied_open_settings: "Aplicado; confirme en Configuración de Windows",
+    assoc_banner_unregistered: "Asociaciones eliminadas y valores previos restaurados",
+    assoc_banner_failed_prefix: "Error en la operación: ",
 
     toast_single_image_no_slideshow: "Solo hay 1 imagen en la carpeta, presentación no disponible",
     toast_anim_resumed: "Animación reanudada",
@@ -1319,6 +1752,67 @@ mod tests {
                     text
                 );
             }
+            for grp in s.assoc_grp_titles {
+                assert!(
+                    !grp.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)),
+                    "Locale {} assoc_grp_titles contains Han: {:?}",
+                    lang.tag(),
+                    grp
+                );
+            }
+            // 验证所有结构化解码错误与 EXIF 在非 CJK 语种下绝对 0 汉字泄露
+            let err_samples = [
+                DecodeError::ZeroDimensions { format: "PNG" },
+                DecodeError::DimensionsTooLarge {
+                    width: 99999,
+                    height: 99999,
+                },
+                DecodeError::OutOfMemory,
+                DecodeError::TruncatedData { format: "TGA" },
+                DecodeError::SvgTooLarge,
+                DecodeError::GpuUploadFailed("E_OUTOFMEMORY".to_string()),
+            ];
+            for e in &err_samples {
+                let txt = s.format_decode_error(e);
+                assert!(
+                    !txt.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)),
+                    "Locale {} DecodeError leaked Han: {:?}",
+                    lang.tag(),
+                    txt
+                );
+            }
+            let exif_samples = [
+                ExifField::Format(ImageFormatKind::AnimatedGif),
+                ExifField::Format(ImageFormatKind::AnimatedWebP),
+                ExifField::Format(ImageFormatKind::AnimatedApng),
+                ExifField::Format(ImageFormatKind::SvgVector),
+                ExifField::OrientationAuto(6),
+                ExifField::FrameCount {
+                    count: 12,
+                    best_selected: true,
+                    duration_sec: None,
+                },
+            ];
+            for f in &exif_samples {
+                let (k, v) = s.format_exif_field(f);
+                assert!(
+                    !k.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c))
+                        && !v.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)),
+                    "Locale {} EXIF leaked Han: ({k:?}, {v:?})",
+                    lang.tag()
+                );
+            }
         }
+    }
+
+    #[test]
+    fn exif_localization_never_pollutes_chinese_with_english_hardcodes() {
+        let zh = ViewerLanguage::ZhCN.strings();
+        let (_, v_gif) = zh.format_exif_field(&ExifField::Format(ImageFormatKind::AnimatedGif));
+        let (_, v_webp) = zh.format_exif_field(&ExifField::Format(ImageFormatKind::AnimatedWebP));
+        let (_, v_ori) = zh.format_exif_field(&ExifField::OrientationAuto(6));
+        assert_eq!(v_gif, "GIF 动图");
+        assert_eq!(v_webp, "WebP 动图");
+        assert!(v_ori.contains("已自动纠偏") && !v_ori.contains("Auto"));
     }
 }

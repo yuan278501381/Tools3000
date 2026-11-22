@@ -94,10 +94,12 @@ struct SearchClause {
     bool slashAllowBranchA = false;
     bool slashAllowBranchB = false;
     bool slashLeafCaseSensitive = false;
+    bool slashLeafAllowPinyin = false;
     uint64_t slashBranchADirMask = 0;
     uint64_t slashBranchBDirMask = 0;
     std::wstring slashLeafPrefix;
     std::wstring slashLeafSuffix;
+    std::wstring slashLeafContains;
 };
 
 struct SearchParseOptions {
@@ -197,6 +199,8 @@ private:
     struct DirSegmentPredicate {
         DirSegMatchOp op = DirSegMatchOp::Contains;
         bool caseSensitive = false;
+        bool allowPinyin = false;
+        bool forcePinyin = false;
         uint8_t bitIndex = 0;
         std::wstring needle;
     };
@@ -206,6 +210,7 @@ private:
     std::wstring m_rawQuery;
     std::wstring m_normalizedQuery;
     std::wstring m_rankingQuery;
+    std::wstring m_slashLeafRankHint;
     std::vector<std::wstring> m_rankingTerms;
     std::wstring m_cleanAsciiQuery;
     std::vector<SearchOrGroup> m_orGroups;

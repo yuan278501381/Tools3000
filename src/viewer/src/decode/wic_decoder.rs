@@ -3,7 +3,11 @@
 // 零额外体积通吃 JPG / PNG / BMP / ICO / TIFF / AVIF / HEIC / RAW
 // ─────────────────────────────────────────────────────────────────────────────
 
-use crate::types::{DecodedImage, ImageFrame, ThumbnailBitmap};
+use crate::decode::{try_alloc_zeroed_buffer, validate_image_dimensions};
+use crate::types::{
+    DecodeError, DecodedImage, ExifField, ImageFormatKind, ImageFrame, ThumbnailBitmap,
+};
+use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
@@ -18,21 +22,57 @@ use windows::Win32::Graphics::Imaging::{
     WICBitmapTransformRotate90, WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 
-fn ensure_thread_com() {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+/// 线程级 WIC 工厂与 COM 生命周期 RAII 守卫：
+/// 后台解码线程仅初始化一次 COM 与 IWICImagingFactory 并复用，线程退出时先释放 COM 对象再 CoUninitialize
+struct WicThreadContext {
+    factory: Option<IWICImagingFactory>,
+    com_inited: bool,
+}
+
+impl WicThreadContext {
+    fn new() -> Self {
+        let com_inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).is_ok() };
+        let factory =
+            unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok() };
+        Self {
+            factory,
+            com_inited,
+        }
+    }
+
+    fn get_or_create_factory(&mut self) -> Result<IWICImagingFactory, DecodeError> {
+        if let Some(f) = self.factory.as_ref() {
+            return Ok(f.clone());
+        }
+        let created: IWICImagingFactory =
+            unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
+                .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
+        self.factory = Some(created.clone());
+        Ok(created)
     }
 }
 
-fn create_wic_factory() -> Result<IWICImagingFactory, String> {
-    ensure_thread_com();
-    unsafe {
-        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
-            .map_err(|e| format!("创建 WIC 工厂失败: {e}"))
+impl Drop for WicThreadContext {
+    fn drop(&mut self) {
+        // 严格顺序：必须在 CoUninitialize 之前释放全部 COM 接口指针
+        self.factory = None;
+        if self.com_inited {
+            unsafe {
+                CoUninitialize();
+            }
+        }
     }
+}
+
+thread_local! {
+    static THREAD_WIC: RefCell<WicThreadContext> = RefCell::new(WicThreadContext::new());
+}
+
+fn get_thread_wic_factory() -> Result<IWICImagingFactory, DecodeError> {
+    THREAD_WIC.with(|cell| cell.borrow_mut().get_or_create_factory())
 }
 
 unsafe fn query_prop(reader: &IWICMetadataQueryReader, queries: &[&str]) -> Option<PROPVARIANT> {
@@ -107,7 +147,7 @@ fn read_exif_orientation(frame: &IWICBitmapFrameDecode) -> u16 {
 }
 
 /// 读取专业摄影 EXIF 元数据（相机型号、镜头、拍摄时间、光圈、快门、ISO、焦距）
-fn read_camera_exif_fields(frame: &IWICBitmapFrameDecode) -> Vec<(String, String)> {
+fn read_camera_exif_fields(frame: &IWICBitmapFrameDecode) -> Vec<ExifField> {
     let mut out = Vec::new();
     unsafe {
         let Ok(reader) = frame.GetMetadataQueryReader() else {
@@ -143,7 +183,7 @@ fn read_camera_exif_fields(frame: &IWICBitmapFrameDecode) -> Vec<(String, String
             (None, None) => String::new(),
         };
         if !camera.is_empty() {
-            out.push(("相机型号".to_string(), camera));
+            out.push(ExifField::Camera(camera));
         }
 
         if let Some(lens) = query_string(
@@ -154,7 +194,7 @@ fn read_camera_exif_fields(frame: &IWICBitmapFrameDecode) -> Vec<(String, String
                 "/ifd/exif/{ushort=42036}",
             ],
         ) {
-            out.push(("镜头".to_string(), lens));
+            out.push(ExifField::Lens(lens));
         }
 
         if let Some(date) = query_string(
@@ -166,7 +206,7 @@ fn read_camera_exif_fields(frame: &IWICBitmapFrameDecode) -> Vec<(String, String
                 "System.Photo.DateTaken",
             ],
         ) {
-            out.push(("拍摄时间".to_string(), date));
+            out.push(ExifField::DateTaken(date));
         }
 
         let mut exposure_parts = Vec::new();
@@ -207,12 +247,12 @@ fn read_camera_exif_fields(frame: &IWICBitmapFrameDecode) -> Vec<(String, String
                 "System.Photo.ISOSpeed",
             ],
         ) {
-            if iso >= 10.0 && iso <= 1_000_000.0 {
+            if (10.0..=1_000_000.0).contains(&iso) {
                 exposure_parts.push(format!("ISO {}", iso.round() as u32));
             }
         }
         if !exposure_parts.is_empty() {
-            out.push(("曝光参数".to_string(), exposure_parts.join(" · ")));
+            out.push(ExifField::Exposure(exposure_parts.join(" · ")));
         }
 
         if let Some(fl) = query_rational_f64(
@@ -224,7 +264,7 @@ fn read_camera_exif_fields(frame: &IWICBitmapFrameDecode) -> Vec<(String, String
             ],
         ) {
             if fl > 0.5 && fl < 5000.0 {
-                out.push(("焦距".to_string(), format!("{fl:.0} mm")));
+                out.push(ExifField::FocalLengthMm(fl));
             }
         }
     }
@@ -272,11 +312,11 @@ fn apply_orientation(
 fn convert_source_to_pbgra(
     factory: &IWICImagingFactory,
     source: &IWICBitmapSource,
-) -> Result<(u32, u32, Vec<u8>, bool), String> {
+) -> Result<(u32, u32, Vec<u8>, bool), DecodeError> {
     unsafe {
         let converter = factory
             .CreateFormatConverter()
-            .map_err(|e| format!("创建 WIC 像素转换器失败: {e}"))?;
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
         converter
             .Initialize(
                 source,
@@ -286,35 +326,36 @@ fn convert_source_to_pbgra(
                 0.0,
                 WICBitmapPaletteTypeCustom,
             )
-            .map_err(|e| format!("转换像素格式至 PBGRA 失败: {e}"))?;
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
 
         let mut w = 0u32;
         let mut h = 0u32;
         converter
             .GetSize(&mut w, &mut h)
-            .map_err(|e| format!("获取图像尺寸失败: {e}"))?;
-        if w == 0 || h == 0 {
-            return Err("图像尺寸为 0".to_string());
-        }
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
+        let total_pixels = validate_image_dimensions(w, h, "WIC")?;
 
         let stride = w
             .checked_mul(4)
-            .ok_or_else(|| "图像步长溢出".to_string())?;
-        let total_len = (stride as usize)
-            .checked_mul(h as usize)
-            .ok_or_else(|| "图像像素缓冲区溢出".to_string())?;
-        let mut pixels = vec![0u8; total_len];
+            .ok_or(DecodeError::DimensionsTooLarge {
+                width: w,
+                height: h,
+            })?;
+        let total_len = total_pixels
+            .checked_mul(4)
+            .ok_or(DecodeError::OutOfMemory)?;
+        let mut pixels = try_alloc_zeroed_buffer(total_len)?;
         converter
             .CopyPixels(std::ptr::null(), stride, &mut pixels)
-            .map_err(|e| format!("拷贝像素数据失败: {e}"))?;
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
 
         let has_alpha = pixels.chunks_exact(4).any(|px| px[3] < 255);
         Ok((w, h, pixels, has_alpha))
     }
 }
 
-pub fn decode_via_wic(path: &Path, file_size: u64) -> Result<DecodedImage, String> {
-    let factory = create_wic_factory()?;
+pub fn decode_via_wic(path: &Path, file_size: u64) -> Result<DecodedImage, DecodeError> {
+    let factory = get_thread_wic_factory()?;
     let wide_path: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
 
     unsafe {
@@ -325,7 +366,7 @@ pub fn decode_via_wic(path: &Path, file_size: u64) -> Result<DecodedImage, Strin
                 GENERIC_READ,
                 WICDecodeMetadataCacheOnDemand,
             )
-            .map_err(|e| format!("WIC 无法打开此图片格式: {e}"))?;
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
 
         let ext = path
             .extension()
@@ -358,37 +399,36 @@ pub fn decode_via_wic(path: &Path, file_size: u64) -> Result<DecodedImage, Strin
 
         let frame = decoder
             .GetFrame(best_frame_idx)
-            .map_err(|e| format!("读取图像主帧失败: {e}"))?;
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
 
         let orientation = read_exif_orientation(&frame);
         let camera_exif = read_camera_exif_fields(&frame);
         let base_source: IWICBitmapSource = windows::core::Interface::cast(&frame)
-            .map_err(|e| format!("WIC 接口转换失败: {e}"))?;
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
         let oriented = apply_orientation(&factory, base_source, orientation);
         let (w, h, bgra_premul, has_alpha) = convert_source_to_pbgra(&factory, &oriented)?;
 
+        let format_kind = ImageFormatKind::Static(ext);
         let mut exif = vec![
-            ("格式".to_string(), ext.clone()),
-            ("尺寸".to_string(), format!("{} x {}", w, h)),
-            (
-                "透明通道".to_string(),
-                if has_alpha { "含 Alpha" } else { "不透明" }.to_string(),
-            ),
+            ExifField::Format(format_kind.clone()),
+            ExifField::Dimensions(w, h),
+            ExifField::Alpha(has_alpha),
         ];
         if frame_count > 1 {
-            exif.push((
-                "图像帧数".to_string(),
-                format!("{} 帧（已选最优清晰帧）", frame_count),
-            ));
+            exif.push(ExifField::FrameCount {
+                count: frame_count as usize,
+                best_selected: true,
+                duration_sec: None,
+            });
         }
         if orientation != 1 {
-            exif.push(("EXIF 方向".to_string(), format!("已自动纠偏 (#{})", orientation)));
+            exif.push(ExifField::OrientationAuto(orientation));
         }
         exif.extend(camera_exif);
 
         Ok(DecodedImage {
             path: path.to_path_buf(),
-            format_label: ext,
+            format_kind,
             file_size_bytes: file_size,
             width: w,
             height: h,
@@ -405,8 +445,11 @@ pub fn decode_via_wic(path: &Path, file_size: u64) -> Result<DecodedImage, Strin
     }
 }
 
-pub fn decode_thumbnail_via_wic(path: &Path, max_side: u32) -> Result<ThumbnailBitmap, String> {
-    let factory = create_wic_factory()?;
+pub fn decode_thumbnail_via_wic(
+    path: &Path,
+    max_side: u32,
+) -> Result<ThumbnailBitmap, DecodeError> {
+    let factory = get_thread_wic_factory()?;
     let wide_path: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
 
     unsafe {
@@ -417,30 +460,33 @@ pub fn decode_thumbnail_via_wic(path: &Path, max_side: u32) -> Result<ThumbnailB
                 GENERIC_READ,
                 WICDecodeMetadataCacheOnDemand,
             )
-            .map_err(|e| format!("{e}"))?;
-        let frame = decoder.GetFrame(0).map_err(|e| format!("{e}"))?;
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
+        let frame = decoder
+            .GetFrame(0)
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
         let orientation = read_exif_orientation(&frame);
         let mut src_w = 0u32;
         let mut src_h = 0u32;
         frame
             .GetSize(&mut src_w, &mut src_h)
-            .map_err(|e| format!("{e}"))?;
-        if src_w == 0 || src_h == 0 {
-            return Err("zero size".to_string());
-        }
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
+        let _ = validate_image_dimensions(src_w, src_h, "WIC")?;
 
         let scale = (max_side as f32 / src_w.max(src_h) as f32).min(1.0);
         let dst_w = ((src_w as f32 * scale).round() as u32).max(1);
         let dst_h = ((src_h as f32 * scale).round() as u32).max(1);
 
-        let base_source: IWICBitmapSource =
-            windows::core::Interface::cast(&frame).map_err(|e| format!("{e}"))?;
+        let base_source: IWICBitmapSource = windows::core::Interface::cast(&frame)
+            .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
         let scaled: IWICBitmapSource = if dst_w < src_w || dst_h < src_h {
-            let scaler = factory.CreateBitmapScaler().map_err(|e| format!("{e}"))?;
+            let scaler = factory
+                .CreateBitmapScaler()
+                .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
             scaler
                 .Initialize(&base_source, dst_w, dst_h, WICBitmapInterpolationModeFant)
-                .map_err(|e| format!("{e}"))?;
-            windows::core::Interface::cast(&scaler).map_err(|e| format!("{e}"))?
+                .map_err(|e| DecodeError::WicFailure(e.to_string()))?;
+            windows::core::Interface::cast(&scaler)
+                .map_err(|e| DecodeError::WicFailure(e.to_string()))?
         } else {
             base_source
         };

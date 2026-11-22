@@ -1,10 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // integration.rs — 独立看图器系统集成模块（100% 与外部宿主解耦）
-// 包含：剪贴板(图像含当前旋转+文件/路径)、回收站安全删除、导出当前帧 PNG(含当前旋转)、
-//       设为壁纸、原生 8 语种右键菜单、Picasa 拍立得文件关联图标注册与默认应用唤起
+// 包含：剪贴板(图像含当前旋转+文件/路径)、现代 COM 回收站安全删除(兼容长路径)、
+//       原生 Shell 定位与打开方式、导出当前帧 PNG(含当前旋转)、设为壁纸、
+//       原生 8 语种右键菜单、注册表关联原值备份还原与 Win10/11 UserChoice 状态检测
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::constants::{APP_PROG_ID, SUPPORTED_EXTENSIONS};
+use crate::folder::normalize_full_path;
 use crate::i18n::ViewerLanguage;
 use crate::types::{ImageFrame, RotationQuarter, ToolbarAction};
 use std::borrow::Cow;
@@ -14,13 +16,12 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GlobalFree, HGLOBAL, HWND};
 use windows::Win32::Graphics::Gdi::{BI_BITFIELDS, BITMAPV5HEADER};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED,
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -34,9 +35,11 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
-    FileSaveDialog, IFileSaveDialog, SHChangeNotify, SHFileOperationW, ShellExecuteW, DROPFILES,
-    FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHCNE_ASSOCCHANGED,
-    SHCNF_IDLIST, SHFILEOPSTRUCTW, SIGDN_FILESYSPATH,
+    FileOperation, FileSaveDialog, IFileOperation, IFileSaveDialog, ILCreateFromPathW, ILFree,
+    IShellItem, SHChangeNotify, SHCreateItemFromParsingName, SHOpenFolderAndSelectItems,
+    SHOpenWithDialog, ShellExecuteW, DROPFILES, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO,
+    FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OPENASINFO,
+    SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, SetForegroundWindow, SystemParametersInfoW,
@@ -46,6 +49,30 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const LCS_SRGB: u32 = 0x7352_4742;
+const VIEWER_REG_ROOT: &str = "Software\\Tools3000\\PicasaViewer";
+const BACKUP_ASSOC_ROOT: &str = "Software\\Tools3000\\PicasaViewer\\BackupAssoc";
+
+/// 线程安全 COM STA 生命周期 RAII 守卫（自动精确配对 CoInitializeEx / CoUninitialize）
+struct ComGuard {
+    should_uninit: bool,
+}
+
+impl ComGuard {
+    fn init_sta() -> Self {
+        let should_uninit = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
+        Self { should_uninit }
+    }
+}
+
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        if self.should_uninit {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+}
 
 fn to_wide_null(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(Some(0)).collect()
@@ -53,6 +80,14 @@ fn to_wide_null(s: &OsStr) -> Vec<u16> {
 
 fn str_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
+}
+
+fn current_exe_file_name(exe: &Path) -> String {
+    exe.file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Tools3000_Picasa_Viewer.exe")
+        .to_string()
 }
 
 /// 按当前看图局部镜像翻转 (`flip_x` / `flip_y`) 与旋转方向（0°/90°/180°/270°）无损变换帧像素，
@@ -275,35 +310,33 @@ pub fn save_frame_as_png_dialog(
         format!("{default_stem}.png")
     };
 
-    let target = unsafe {
-        let com_ok = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
-        let picked = (|| -> Option<PathBuf> {
-            let dlg: IFileSaveDialog =
-                CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
-            let name_w = str_wide(s.save_png_filter);
-            let spec_w = str_wide("*.png");
-            let filters = [COMDLG_FILTERSPEC {
-                pszName: PCWSTR(name_w.as_ptr()),
-                pszSpec: PCWSTR(spec_w.as_ptr()),
-            }];
-            let _ = dlg.SetFileTypes(&filters);
-            let ext_w = str_wide("png");
-            let _ = dlg.SetDefaultExtension(PCWSTR(ext_w.as_ptr()));
-            let fn_w = str_wide(&default_name);
-            let _ = dlg.SetFileName(PCWSTR(fn_w.as_ptr()));
-            let title_w = str_wide(s.save_png_title);
-            let _ = dlg.SetTitle(PCWSTR(title_w.as_ptr()));
-            dlg.Show(hwnd).ok()?;
-            let item = dlg.GetResult().ok()?;
-            let pwstr = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
-            let p_str = pwstr.to_string().ok();
-            CoTaskMemFree(Some(pwstr.0 as *const _));
-            p_str.map(PathBuf::from)
-        })();
-        if com_ok {
-            CoUninitialize();
+    let target = {
+        let _com = ComGuard::init_sta();
+        unsafe {
+            (|| -> Option<PathBuf> {
+                let dlg: IFileSaveDialog =
+                    CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+                let name_w = str_wide(s.save_png_filter);
+                let spec_w = str_wide("*.png");
+                let filters = [COMDLG_FILTERSPEC {
+                    pszName: PCWSTR(name_w.as_ptr()),
+                    pszSpec: PCWSTR(spec_w.as_ptr()),
+                }];
+                let _ = dlg.SetFileTypes(&filters);
+                let ext_w = str_wide("png");
+                let _ = dlg.SetDefaultExtension(PCWSTR(ext_w.as_ptr()));
+                let fn_w = str_wide(&default_name);
+                let _ = dlg.SetFileName(PCWSTR(fn_w.as_ptr()));
+                let title_w = str_wide(s.save_png_title);
+                let _ = dlg.SetTitle(PCWSTR(title_w.as_ptr()));
+                dlg.Show(hwnd).ok()?;
+                let item = dlg.GetResult().ok()?;
+                let pwstr = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+                let p_str = pwstr.to_string().ok();
+                CoTaskMemFree(Some(pwstr.0 as *const _));
+                p_str.map(PathBuf::from)
+            })()
         }
-        picked
     };
 
     let Some(out_path) = target else {
@@ -349,7 +382,8 @@ pub fn save_premul_bgra_as_png(frame: &ImageFrame, out_path: &Path) -> Result<()
 
 /// 设为 Windows 桌面壁纸
 pub fn set_as_desktop_wallpaper(path: &Path) -> bool {
-    let wide = to_wide_null(path.as_os_str());
+    let abs = normalize_full_path(path);
+    let wide = to_wide_null(abs.as_os_str());
     unsafe {
         SystemParametersInfoW(
             SPI_SETDESKWALLPAPER,
@@ -361,10 +395,19 @@ pub fn set_as_desktop_wallpaper(path: &Path) -> bool {
     }
 }
 
-/// 唤起 Windows 原生「打开方式」对话框
-pub fn open_with_system_dialog(path: &Path) {
-    let arg = format!("shell32.dll,OpenAs_RunDLL {}", path.display());
-    let _ = Command::new("rundll32.exe").arg(arg).spawn();
+/// 唤起 Windows 原生「打开方式」对话框（SHOpenWithDialog，彻底兼容空格/中文/逗号/长路径）
+pub fn open_with_system_dialog(hwnd: HWND, path: &Path) {
+    let _com = ComGuard::init_sta();
+    let abs = normalize_full_path(path);
+    let wide = to_wide_null(abs.as_os_str());
+    let info = OPENASINFO {
+        pcszFile: PCWSTR(wide.as_ptr()),
+        pcszClass: PCWSTR::null(),
+        oaifInFlags: OAIF_ALLOW_REGISTRATION | OAIF_EXEC,
+    };
+    unsafe {
+        let _ = SHOpenWithDialog(hwnd, &info);
+    }
 }
 
 /// 唤起 Windows 10/11 原生「默认应用 -> Tools3000 Picasa Viewer」专属设置页，方便用户一键确认系统默认打开
@@ -395,31 +438,55 @@ pub fn open_windows_default_apps_settings(hwnd: HWND) {
     }
 }
 
-/// 将图片安全移入 Windows 回收站（可撤销恢复）
+/// 将图片通过现代 COM `IFileOperation` 安全移入 Windows 回收站（原生支持 longPathAware > 260 字符与可撤销恢复）
 pub fn move_to_recycle_bin(hwnd: HWND, path: &Path) -> bool {
-    let double_null: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain([0u16, 0u16])
-        .collect();
-    let mut op = SHFILEOPSTRUCTW {
-        hwnd,
-        wFunc: FO_DELETE,
-        pFrom: PCWSTR(double_null.as_ptr()),
-        pTo: PCWSTR::null(),
-        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT).0 as u16,
-        fAnyOperationsAborted: false.into(),
-        hNameMappings: std::ptr::null_mut(),
-        lpszProgressTitle: PCWSTR::null(),
-    };
-    let ret = unsafe { SHFileOperationW(&mut op) };
-    ret == 0 && !op.fAnyOperationsAborted.as_bool()
+    let _com = ComGuard::init_sta();
+    let abs = normalize_full_path(path);
+    let wide = to_wide_null(abs.as_os_str());
+    unsafe {
+        let item: IShellItem = match SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None) {
+            Ok(it) => it,
+            Err(_) => return false,
+        };
+        let fop: IFileOperation = match CoCreateInstance(&FileOperation, None, CLSCTX_ALL) {
+            Ok(op) => op,
+            Err(_) => return false,
+        };
+        let flags = FOF_ALLOWUNDO
+            | FOF_NOCONFIRMATION
+            | FOF_SILENT
+            | FOF_NOERRORUI
+            | FOFX_RECYCLEONDELETE;
+        if fop.SetOperationFlags(flags).is_err() {
+            return false;
+        }
+        if !hwnd.is_invalid() {
+            let _ = fop.SetOwnerWindow(hwnd);
+        }
+        if fop.DeleteItem(&item, None).is_err() {
+            return false;
+        }
+        if fop.PerformOperations().is_err() {
+            return false;
+        }
+        !fop.GetAnyOperationsAborted()
+            .map(|b| b.as_bool())
+            .unwrap_or(false)
+    }
 }
 
-/// 在 Windows 资源管理器中打开并精准选中该图片文件
+/// 使用原生 Shell API `SHOpenFolderAndSelectItems` 在资源管理器中打开并精准选中文件（兼容空格/中文/逗号/长路径）
 pub fn reveal_in_explorer(path: &Path) {
-    let arg = format!("/select,\"{}\"", path.display());
-    let _ = Command::new("explorer.exe").arg(arg).spawn();
+    let _com = ComGuard::init_sta();
+    let abs = normalize_full_path(path);
+    let wide = to_wide_null(abs.as_os_str());
+    unsafe {
+        let pidl = ILCreateFromPathW(PCWSTR(wide.as_ptr()));
+        if !pidl.is_null() {
+            let _ = SHOpenFolderAndSelectItems(pidl, None, 0);
+            ILFree(Some(pidl as *const _));
+        }
+    }
 }
 
 /// 原生 Win32 上下文菜单状态快照
@@ -610,8 +677,14 @@ fn reg_read_sz(subkey: &str, value_name: Option<&str>) -> Option<String> {
             .as_ref()
             .map(|v| PCWSTR(v.as_ptr()))
             .unwrap_or(PCWSTR::null());
-        let mut buf = [0u16; 260];
-        let mut byte_len = (buf.len() * 2) as u32;
+        let mut byte_len: u32 = 0;
+        let query_sz_ok =
+            RegQueryValueExW(hkey, name_ptr, None, None, None, Some(&mut byte_len)).is_ok();
+        if !query_sz_ok || byte_len < 2 || byte_len > 65536 {
+            let _ = RegCloseKey(hkey);
+            return None;
+        }
+        let mut buf = vec![0u16; (byte_len as usize).div_ceil(2)];
         let ok = RegQueryValueExW(
             hkey,
             name_ptr,
@@ -634,7 +707,7 @@ fn reg_read_sz(subkey: &str, value_name: Option<&str>) -> Option<String> {
     }
 }
 
-fn reg_delete_value(subkey: &str, value_name: &str) {
+fn reg_delete_value(subkey: &str, value_name: Option<&str>) {
     unsafe {
         let wide_sub = to_wide_null(OsStr::new(subkey));
         let mut hkey = HKEY::default();
@@ -647,20 +720,100 @@ fn reg_delete_value(subkey: &str, value_name: &str) {
         )
         .is_ok()
         {
-            let wide_name = to_wide_null(OsStr::new(value_name));
-            let _ = RegDeleteValueW(hkey, PCWSTR(wide_name.as_ptr()));
+            let wide_name = value_name.map(|n| to_wide_null(OsStr::new(n)));
+            let name_ptr = wide_name
+                .as_ref()
+                .map(|v| PCWSTR(v.as_ptr()))
+                .unwrap_or(PCWSTR::null());
+            let _ = RegDeleteValueW(hkey, name_ptr);
             let _ = RegCloseKey(hkey);
         }
     }
 }
 
+fn reg_delete_tree(subkey: &str) {
+    unsafe {
+        let wide = to_wide_null(OsStr::new(subkey));
+        let _ = RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(wide.as_ptr()));
+    }
+}
+
+/// 单扩展名在当前 Windows 用户环境下的真实默认关联状态
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtAssocStatus {
+    /// 当前由本看图器默认打开（UserChoice 或 HKCU Classes 指向 APP_PROG_ID）
+    ActiveTools3000,
+    /// 受 Win10/11 UserChoice 锁定在其他默认程序（需到系统「默认应用」确认）
+    LockedByUserChoice,
+    /// 未由本程序接管
+    NotAssociated,
+}
+
+/// 查询 Win10/11 `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.ext\UserChoice\ProgId`
+pub fn query_user_choice_prog_id(ext: &str) -> Option<String> {
+    let clean = ext.trim_start_matches('.');
+    let key = format!(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.{clean}\\UserChoice"
+    );
+    reg_read_sz(&key, Some("ProgId")).filter(|s| !s.is_empty())
+}
+
+/// 检测指定扩展名是否被 Win10/11 UserChoice 锁定在其他应用（非本看图器）
+pub fn is_ext_locked_by_other_user_choice(ext: &str) -> bool {
+    match query_user_choice_prog_id(ext) {
+        Some(prog_id) => !prog_id.eq_ignore_ascii_case(APP_PROG_ID),
+        None => false,
+    }
+}
+
+/// 查询单个扩展名的真实系统默认打开状态（结合 UserChoice 与 HKCU\Software\Classes）
+pub fn query_extension_assoc_status(ext: &str) -> ExtAssocStatus {
+    let clean = ext.trim_start_matches('.');
+    if is_ext_locked_by_other_user_choice(clean) {
+        return ExtAssocStatus::LockedByUserChoice;
+    }
+    if query_user_choice_prog_id(clean).is_some() {
+        return ExtAssocStatus::ActiveTools3000;
+    }
+    let ext_class_key = format!("Software\\Classes\\.{clean}");
+    if reg_read_sz(&ext_class_key, None)
+        .as_deref()
+        .map(|v| v.eq_ignore_ascii_case(APP_PROG_ID))
+        .unwrap_or(false)
+    {
+        ExtAssocStatus::ActiveTools3000
+    } else {
+        ExtAssocStatus::NotAssociated
+    }
+}
+
+/// 若扩展名当前默认类为本程序，优先从 BackupAssoc 还原原值；无备份时真正删除 `(Default)` 绝不写空串遮蔽 HKLM
+fn restore_or_delete_ext_default(ext: &str) {
+    let dot_ext = format!(".{ext}");
+    let ext_class_key = format!("Software\\Classes\\{dot_ext}");
+    let backup_key = format!("{BACKUP_ASSOC_ROOT}\\{dot_ext}");
+    if reg_read_sz(&ext_class_key, None)
+        .as_deref()
+        .map(|v| v.eq_ignore_ascii_case(APP_PROG_ID))
+        .unwrap_or(false)
+    {
+        if let Some(orig) = reg_read_sz(&backup_key, None).filter(|s| !s.is_empty()) {
+            let _ = reg_write_sz(&ext_class_key, None, &orig);
+        } else {
+            // 真正删除 (Default) 值，恢复回退至 HKLM\Software\Classes\.ext 系统默认类
+            reg_delete_value(&ext_class_key, None);
+        }
+    }
+    reg_delete_tree(&backup_key);
+}
+
 /// 查询当前用户已经在本软件注册关联的扩展名集合（不含前导点，小写）
 pub fn query_registered_extensions() -> HashSet<String> {
     let mut set = HashSet::new();
-    let assoc_key = "Software\\Tools3000\\PicasaViewer\\Capabilities\\FileAssociations";
+    let assoc_key = format!("{VIEWER_REG_ROOT}\\Capabilities\\FileAssociations");
     for &ext in SUPPORTED_EXTENSIONS {
         let dot_ext = format!(".{ext}");
-        if let Some(val) = reg_read_sz(assoc_key, Some(&dot_ext)) {
+        if let Some(val) = reg_read_sz(&assoc_key, Some(&dot_ext)) {
             if val == APP_PROG_ID {
                 set.insert(ext.to_string());
             }
@@ -674,41 +827,49 @@ pub fn register_user_file_associations() -> Result<(), String> {
     register_selected_file_associations(SUPPORTED_EXTENSIONS)
 }
 
-/// 为用户勾选的图片扩展名写入关联，并将关联后的图片文件图标设为 **Picasa 经典拍立得相纸图标 (`"{exe}",1`)**
+/// 为用户勾选的图片扩展名写入关联，备份原有默认值，并将关联图片图标设为经典 Picasa 拍立得相纸图标 (`"{exe}",1`)
 pub fn register_selected_file_associations(selected_exts: &[&str]) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("{e}"))?;
     let exe_str = exe.display().to_string();
+    let exe_name = current_exe_file_name(&exe);
     let open_cmd = format!("\"{}\" \"%1\"", exe_str);
     // 索引 0 = 应用主程序图标 (雕塑玻璃彩色快门圆轮)
     let app_icon_val = format!("\"{}\",0", exe_str);
-    // 索引 1 = 图片文件关联文档图标 (经典 Picasa 拍立得青松金丘相纸图标！对应 viewer.rc ID = 2)
+    // 索引 1 = 图片文件关联文档图标 (经典 Picasa 拍立得青松金丘相纸图标，对应 viewer.rc ID = 2)
     let doc_icon_val = format!("\"{}\",1", exe_str);
 
-    // 1. 图片文档 ProgID：使所有关联的图片文件显示经典 Picasa 拍立得相纸图标！
+    // 1. 图片文档 ProgID：使所有关联的图片文件显示经典 Picasa 拍立得相纸图标
     let prog_root = format!("Software\\Classes\\{}", APP_PROG_ID);
     reg_write_sz(&prog_root, None, "Picasa Photo Viewer Image")?;
     reg_write_sz(&format!("{prog_root}\\DefaultIcon"), None, &doc_icon_val)?;
     reg_write_sz(&format!("{prog_root}\\shell\\open\\command"), None, &open_cmd)?;
 
-    // 2. 应用程序实体：在「打开方式」与「默认应用」列表中展示软件主程序圆轮图标
-    let app_key = "Software\\Classes\\Applications\\Tools3000_Picasa_Viewer.exe";
-    reg_write_sz(app_key, Some("FriendlyAppName"), "Tools3000 Picasa Viewer")?;
+    // 2. 应用程序实体（动态使用当前 EXE 文件名，100% 兼容独立改名运行）
+    let prev_exe_name = reg_read_sz(VIEWER_REG_ROOT, Some("RegisteredExeName"));
+    if let Some(old_name) = prev_exe_name.as_deref() {
+        if !old_name.eq_ignore_ascii_case(&exe_name) && !old_name.is_empty() {
+            reg_delete_tree(&format!("Software\\Classes\\Applications\\{old_name}"));
+        }
+    }
+    let app_key = format!("Software\\Classes\\Applications\\{exe_name}");
+    reg_write_sz(&app_key, Some("FriendlyAppName"), "Tools3000 Picasa Viewer")?;
     reg_write_sz(&format!("{app_key}\\DefaultIcon"), None, &app_icon_val)?;
     reg_write_sz(&format!("{app_key}\\shell\\open\\command"), None, &open_cmd)?;
+    let _ = reg_write_sz(VIEWER_REG_ROOT, Some("RegisteredExeName"), &exe_name);
 
     // 3. 系统默认应用 Capabilities 清单
-    let cap_key = "Software\\Tools3000\\PicasaViewer\\Capabilities";
-    reg_write_sz(cap_key, Some("ApplicationName"), "Tools3000 Picasa Viewer")?;
+    let cap_key = format!("{VIEWER_REG_ROOT}\\Capabilities");
+    reg_write_sz(&cap_key, Some("ApplicationName"), "Tools3000 Picasa Viewer")?;
     reg_write_sz(
-        cap_key,
+        &cap_key,
         Some("ApplicationDescription"),
-        "Ultra-fast native image viewer inspired by Google Picasa Photo Viewer",
+        "Rust-recreated lightweight Picasa Photo Viewer (image viewer only, not full Google Picasa suite)",
     )?;
     reg_write_sz(&format!("{cap_key}\\ApplicationIcon"), None, &app_icon_val)?;
     reg_write_sz(
         "Software\\RegisteredApplications",
         Some("Tools3000 Picasa Viewer"),
-        cap_key,
+        &cap_key,
     )?;
 
     let selected_set: HashSet<&str> = selected_exts.iter().copied().collect();
@@ -718,55 +879,70 @@ pub fn register_selected_file_associations(selected_exts: &[&str]) -> Result<(),
         let dot_ext = format!(".{ext}");
         let ext_class_key = format!("Software\\Classes\\{dot_ext}");
         let owp_key = format!("{ext_class_key}\\OpenWithProgids");
+        let backup_key = format!("{BACKUP_ASSOC_ROOT}\\{dot_ext}");
         if selected_set.contains(ext) {
-            // 写入 Capabilities 与 OpenWithProgids
+            // 注册前若 HKCU\Software\Classes\.ext 已存在非本程序的默认值，先无损备份到 BackupAssoc\.ext
+            if let Some(existing) = reg_read_sz(&ext_class_key, None) {
+                if !existing.is_empty()
+                    && !existing.eq_ignore_ascii_case(APP_PROG_ID)
+                    && reg_read_sz(&backup_key, None).is_none()
+                {
+                    let _ = reg_write_sz(&backup_key, None, &existing);
+                }
+            }
             reg_write_sz(&fa_key, Some(&dot_ext), APP_PROG_ID)?;
             reg_write_sz(&owp_key, Some(APP_PROG_ID), "")?;
-            // 同步将 HKCU\Software\Classes\.ext 默认类指向 APP_PROG_ID（未被 UWP UserChoice 锁定的后缀立即生效并切换为拍立得图标！）
             let _ = reg_write_sz(&ext_class_key, None, APP_PROG_ID);
             let _ = reg_write_sz(&ext_class_key, Some("PerceivedType"), "image");
         } else {
-            // 取消未勾选扩展名在本软件下的关联
-            reg_delete_value(&fa_key, &dot_ext);
-            reg_delete_value(&owp_key, APP_PROG_ID);
-            if reg_read_sz(&ext_class_key, None).as_deref() == Some(APP_PROG_ID) {
-                let _ = reg_write_sz(&ext_class_key, None, "");
-            }
+            // 取消未勾选扩展名在本软件下的关联，并还原备份原值或真正删除默认值
+            reg_delete_value(&fa_key, Some(&dot_ext));
+            reg_delete_value(&owp_key, Some(APP_PROG_ID));
+            restore_or_delete_ext_default(ext);
         }
     }
 
-    // 4. 通知 Windows Explorer 立即刷新全系统文件类型关联与拍立得相纸图标缓存！
+    // 4. 通知 Windows Explorer 立即刷新全系统文件类型关联与拍立得相纸图标缓存
     unsafe {
         SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
     }
     Ok(())
 }
 
-/// 清理用户级 HKCU 文件关联注册并还原资源管理器图标缓存
+/// 清理用户级 HKCU 文件关联注册，还原原值或真正删除默认值并刷新资源管理器图标缓存
 pub fn unregister_user_file_associations() -> Result<(), String> {
+    // 顺序关键：必须先循环读取 BackupAssoc 还原/删除各扩展名默认值，最后再删除 VIEWER_REG_ROOT 整树
     for &ext in SUPPORTED_EXTENSIONS {
         let dot_ext = format!(".{ext}");
         let ext_class_key = format!("Software\\Classes\\{dot_ext}");
         let owp_key = format!("{ext_class_key}\\OpenWithProgids");
-        reg_delete_value(&owp_key, APP_PROG_ID);
-        if reg_read_sz(&ext_class_key, None).as_deref() == Some(APP_PROG_ID) {
-            let _ = reg_write_sz(&ext_class_key, None, "");
-        }
+        reg_delete_value(&owp_key, Some(APP_PROG_ID));
+        restore_or_delete_ext_default(ext);
     }
     reg_delete_value(
         "Software\\RegisteredApplications",
-        "Tools3000 Picasa Viewer",
+        Some("Tools3000 Picasa Viewer"),
     );
 
-    unsafe {
-        for sub in [
-            format!("Software\\Classes\\{}", APP_PROG_ID),
-            "Software\\Classes\\Applications\\Tools3000_Picasa_Viewer.exe".to_string(),
-            "Software\\Tools3000\\PicasaViewer".to_string(),
-        ] {
-            let wide = to_wide_null(OsStr::new(&sub));
-            let _ = RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(wide.as_ptr()));
+    let mut app_keys: Vec<String> = vec![
+        format!("Software\\Classes\\{}", APP_PROG_ID),
+        "Software\\Classes\\Applications\\Tools3000_Picasa_Viewer.exe".to_string(),
+    ];
+    if let Ok(exe) = std::env::current_exe() {
+        let cur_name = current_exe_file_name(&exe);
+        app_keys.push(format!("Software\\Classes\\Applications\\{cur_name}"));
+    }
+    if let Some(reg_name) = reg_read_sz(VIEWER_REG_ROOT, Some("RegisteredExeName")) {
+        if !reg_name.is_empty() {
+            app_keys.push(format!("Software\\Classes\\Applications\\{reg_name}"));
         }
+    }
+    app_keys.push(VIEWER_REG_ROOT.to_string());
+
+    for sub in app_keys {
+        reg_delete_tree(&sub);
+    }
+    unsafe {
         SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
     }
     Ok(())
@@ -800,5 +976,43 @@ mod tests {
         let fh = apply_transform_to_frame(&f, RotationQuarter::Deg0, true, false).into_owned();
         assert_eq!(&fh.bgra_premul[0..4], &[40, 50, 60, 255]);
         assert_eq!(&fh.bgra_premul[4..8], &[10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn supported_extensions_are_unique_lowercase_without_dots() {
+        assert!(SUPPORTED_EXTENSIONS.len() >= 40);
+        let mut seen = HashSet::new();
+        for &ext in SUPPORTED_EXTENSIONS {
+            assert!(!ext.is_empty());
+            assert!(
+                !ext.starts_with('.'),
+                "extension should not start with dot: {ext}"
+            );
+            assert_eq!(
+                ext,
+                ext.to_ascii_lowercase(),
+                "extension must be lowercase: {ext}"
+            );
+            assert!(seen.insert(ext), "duplicate extension: {ext}");
+        }
+    }
+
+    #[test]
+    fn dynamic_exe_name_supports_renamed_standalone_binary() {
+        assert_eq!(
+            current_exe_file_name(Path::new(r"D:\Portable\MyPhotoViewer.exe")),
+            "MyPhotoViewer.exe"
+        );
+    }
+
+    #[test]
+    fn reg_default_value_delete_removes_value_instead_of_empty_string() {
+        // 使用隔离临时子键实测 RegDeleteValueW(NULL) 真正删除 (Default) 值
+        let test_key = "Software\\Tools3000\\PicasaViewer_UnitTest_RegDefault";
+        reg_write_sz(test_key, None, "Custom.TestProgId").expect("write default");
+        assert_eq!(reg_read_sz(test_key, None).as_deref(), Some("Custom.TestProgId"));
+        reg_delete_value(test_key, None);
+        assert_eq!(reg_read_sz(test_key, None), None);
+        reg_delete_tree(test_key);
     }
 }

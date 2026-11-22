@@ -1,7 +1,13 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { RefreshCw, Square } from 'lucide-react';
-import type { SearchMode, SearchResult } from './searchTypes';
+import { PauseCircle, Play, RefreshCw, Square } from 'lucide-react';
+import type {
+  DbStatsSnapshot,
+  SearchMode,
+  SearchResult,
+  SortProgressState,
+} from './searchTypes';
+import type { ContentScanPauseState } from './useSearchEngine';
 import { formatBytes, isEffectiveContentSearch } from './searchUtils';
 
 export interface SearchFooterProps {
@@ -11,9 +17,14 @@ export interface SearchFooterProps {
   query: string;
   scanElapsedSeconds: number;
   scanProgress?: { scanned: number; total: number } | null;
+  contentScanPaused?: ContentScanPauseState | null;
   onStopSearch?: () => void;
+  onResumeContentScan?: () => void;
   isServiceStarting: boolean;
   isInitialIndexing: boolean;
+  dbStats?: DbStatsSnapshot | null;
+  sortProgress?: SortProgressState | null;
+  onCancelSort?: () => void;
   sortedResults: SearchResult[];
   totalIndexedFiles?: number;
   totalResultSize: number;
@@ -36,9 +47,14 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
   query,
   scanElapsedSeconds,
   scanProgress,
+  contentScanPaused,
   onStopSearch,
+  onResumeContentScan,
   isServiceStarting,
   isInitialIndexing,
+  dbStats,
+  sortProgress,
+  onCancelSort,
   sortedResults,
   totalIndexedFiles,
   totalResultSize,
@@ -66,13 +82,120 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
       ? Math.min(99, Math.max(1, Math.round((scanProgress.scanned / scanProgress.total) * 100)))
       : null;
 
+  // 实时后台索引/扫描/同步阶段文案（Everything 1.5 同款：正在扫描 OS (C:) / 正在构建索引 / 正在加载快照）
+  const activePhase = dbStats?.phase ?? 'idle';
+  const isPhaseBusy =
+    isInitialIndexing ||
+    isRebuilding ||
+    dbStats?.indexing === true ||
+    dbStats?.rebuildInProgress === true ||
+    (activePhase !== 'idle' && activePhase !== 'starting');
+
+  const formatDriveDisplay = (): string => {
+    const drive = dbStats?.activeDrive;
+    const label = dbStats?.activeVolumeLabel?.trim();
+    if (drive && label) return `${label} (${drive}:)`;
+    if (drive) return `(${drive}:)`;
+    return '';
+  };
+
+  const renderIndexPhaseText = (): string => {
+    const driveDisplay = formatDriveDisplay();
+    if (activePhase === 'scanning') {
+      return driveDisplay
+        ? t('search.phaseScanningDrive', 'Scanning {{drive}}...', { drive: driveDisplay })
+        : t('search.phaseScanningGeneric', 'Scanning local drives...');
+    }
+    if (activePhase === 'building') {
+      return driveDisplay
+        ? t('search.phaseBuildingDrive', 'Building folder index {{drive}}...', { drive: driveDisplay })
+        : t('search.phaseBuildingGeneric', 'Building folder index...');
+    }
+    if (activePhase === 'loading') {
+      return driveDisplay
+        ? t('search.phaseLoadingDrive', 'Loading snapshot {{drive}}...', { drive: driveDisplay })
+        : t('search.phaseLoadingGeneric', 'Loading index snapshot...');
+    }
+    if (activePhase === 'syncing') {
+      return driveDisplay
+        ? t('search.phaseSyncingDrive', 'Updating index {{drive}}...', { drive: driveDisplay })
+        : t('search.phaseSyncingGeneric', 'Updating file index...');
+    }
+    return t('search.initialIndexingTitle', 'Building and persisting full disk index...');
+  };
+
+  const renderStageProgressTrack = (percent: number | null) => (
+    <span className="search-footer-progress-track" role="progressbar" aria-valuenow={percent ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+      {percent !== null && percent > 0 ? (
+        <span className="search-footer-progress-fill" style={{ width: `${Math.min(100, Math.max(4, percent))}%` }} />
+      ) : (
+        <span className="search-footer-progress-fill search-footer-progress-fill--indeterminate" />
+      )}
+    </span>
+  );
+
+  const sortPercent =
+    sortProgress && sortProgress.active && sortProgress.total > 0
+      ? Math.min(99, Math.max(1, Math.round((sortProgress.completed / sortProgress.total) * 100)))
+      : null;
+
+  const indexPercent =
+    typeof dbStats?.progressPercent === 'number' && dbStats.progressPercent > 0 && dbStats.progressPercent < 100
+      ? dbStats.progressPercent
+      : null;
+
   return (
     <footer className="search-footer">
       <div className="search-footer-left">
-        {loading && sortedResults.length === 0 ? (
-          <div className="search-footer-stat-item search-footer-stat-item--scanning" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <RefreshCw size={11} className="spin-animation" style={{ color: 'var(--primary)' }} />
-            <span>
+        {sortProgress?.active ? (
+          <div className="search-footer-stat-item search-footer-stat-item--stage">
+            <RefreshCw size={11} className="spin-animation search-footer-stage-icon" aria-hidden="true" />
+            <span className="search-footer-stage-label">
+              <strong>
+                {t('search.sortingColumnStage', 'Sorting {{column}}...', { column: sortProgress.columnLabel })}
+              </strong>
+              <span className="search-footer-stage-count">
+                ({sortProgress.completed.toLocaleString()} / {sortProgress.total.toLocaleString()})
+              </span>
+            </span>
+            {renderStageProgressTrack(sortPercent)}
+            {onCancelSort && (
+              <button
+                type="button"
+                className="search-stop-scan-btn"
+                onClick={onCancelSort}
+                title={t('search.stopSortTitle', 'Stop property loading for sort')}
+              >
+                <Square size={9} fill="currentColor" aria-hidden="true" />
+                <span>{t('search.stopScan', 'Stop')}</span>
+              </button>
+            )}
+          </div>
+        ) : isServiceStarting ? (
+          <div className="search-footer-stat-item search-footer-stat-item--stage">
+            <RefreshCw size={11} className="spin-animation search-footer-stage-icon" aria-hidden="true" />
+            <span className="search-footer-stage-label">
+              <strong>{t('search.serviceConnectingStatus', 'Connecting to Index Service...')}</strong>
+            </span>
+            {renderStageProgressTrack(null)}
+          </div>
+        ) : isPhaseBusy && sortedResults.length === 0 ? (
+          <div className="search-footer-stat-item search-footer-stat-item--stage">
+            <RefreshCw size={11} className="spin-animation search-footer-stage-icon" aria-hidden="true" />
+            <span className="search-footer-stage-label">
+              <strong>{renderIndexPhaseText()}</strong>
+              {typeof dbStats?.scannedRecords === 'number' && dbStats.scannedRecords > 0 && (
+                <span className="search-footer-stage-count">
+                  {dbStats.scannedRecords.toLocaleString()}
+                </span>
+              )}
+            </span>
+            {renderStageProgressTrack(indexPercent)}
+          </div>
+        ) : loading && sortedResults.length === 0 ? (
+          <div className="search-footer-stat-item search-footer-stat-item--scanning search-footer-stat-item--stage">
+            <RefreshCw size={11} className="spin-animation search-footer-stage-icon" aria-hidden="true" />
+            <span className="search-footer-stage-label">
               <strong>
                 {isContentScan
                   ? t('search.contentSearchingFooter', 'Deep full-disk content search in progress... ({{elapsed}}s)', { elapsed: scanElapsedSeconds.toFixed(1) })
@@ -80,6 +203,7 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
                 {progressPercent !== null ? ` · ${progressPercent}%` : ''}
               </strong>
             </span>
+            {renderStageProgressTrack(progressPercent)}
             {onStopSearch && (
               <button
                 type="button"
@@ -97,11 +221,7 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
             {/* 1. 总对象数显示 (Everything 级核心状态) 与一键刷新微按钮 */}
             <div className="search-footer-stat-item search-footer-stat-primary search-footer-stat-item--interactive" title={t('search.rescanIndexTitle', 'Rescan full disk index and save snapshot (F5 / Ctrl+R)')}>
               <span>
-                {isServiceStarting ? (
-                  <><strong>{t('search.serviceConnectingStatus', 'Connecting to Index Service...')}</strong></>
-                ) : isInitialIndexing ? (
-                  <><strong>{t('search.initialIndexingTitle', 'Building and persisting full disk index...')}</strong></>
-                ) : sortedResults.length > 0 ? (
+                {sortedResults.length > 0 ? (
                   <><strong>{sortedResults.length.toLocaleString()}{loading ? '+' : ''}</strong> {t('search.objectsCount', 'objects')}</>
                 ) : (
                   <><strong>{totalIndexedFiles ? totalIndexedFiles.toLocaleString() : '--'}</strong> {t('search.objectsCount', 'objects')}</>
@@ -148,16 +268,26 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
               </>
             )}
 
-            {/* 4. 引擎匹配耗时或流式扫描进度 */}
-            {loading ? (
+            {/* 4. 后台重建/增量扫描实时进度胶囊（常驻可见，不受 960px 断点误隐藏）或检索耗时 */}
+            {isPhaseBusy ? (
               <>
-                <span className="search-footer-stat-divider search-footer-stat-divider--timing" />
-                <div className="search-footer-stat-item search-footer-stat-sub search-footer-stat-timing" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                  <RefreshCw size={10} className="spin-animation" style={{ color: 'var(--primary)' }} />
-                  <span>
+                <span className="search-footer-stat-divider search-footer-stat-divider--live" />
+                <div className="search-footer-stat-item search-footer-stat-sub search-footer-stat-live search-footer-stat-item--stage">
+                  <RefreshCw size={10} className="spin-animation search-footer-stage-icon" aria-hidden="true" />
+                  <span className="search-footer-stage-label">{renderIndexPhaseText()}</span>
+                  {renderStageProgressTrack(indexPercent)}
+                </div>
+              </>
+            ) : loading ? (
+              <>
+                <span className="search-footer-stat-divider search-footer-stat-divider--live" />
+                <div className="search-footer-stat-item search-footer-stat-sub search-footer-stat-live search-footer-stat-item--stage">
+                  <RefreshCw size={10} className="spin-animation search-footer-stage-icon" aria-hidden="true" />
+                  <span className="search-footer-stage-label">
                     {t('search.searchingElapsed', 'Searching... {{elapsed}}s', { elapsed: scanElapsedSeconds.toFixed(1) })}
                     {progressPercent !== null ? ` (${progressPercent}%)` : ''}
                   </span>
+                  {renderStageProgressTrack(progressPercent)}
                   {onStopSearch && (
                     <button
                       type="button"
@@ -167,6 +297,34 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
                     >
                       <Square size={9} fill="currentColor" aria-hidden="true" />
                       <span>{t('search.stopScan', 'Stop')}</span>
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : contentScanPaused ? (
+              <>
+                <span className="search-footer-stat-divider search-footer-stat-divider--live" />
+                <div className="search-footer-stat-item search-footer-stat-sub search-footer-stat-live search-footer-stat-item--stage">
+                  <PauseCircle size={11} className="search-footer-stage-icon search-footer-stage-icon--paused" aria-hidden="true" />
+                  <span className="search-footer-stage-label">
+                    {contentScanPaused.reason === 'background'
+                      ? t('search.contentScanPausedBackground', 'Deep scan paused in background')
+                      : contentScanPaused.total > 0
+                        ? t('search.contentScanPausedBudget', 'Scanned {{scanned}} / {{total}} docs (auto-paused)', {
+                            scanned: contentScanPaused.scanned.toLocaleString(),
+                            total: contentScanPaused.total.toLocaleString(),
+                          })
+                        : t('search.contentScanPausedBudgetGeneric', 'Deep scan auto-paused to save resources')}
+                  </span>
+                  {onResumeContentScan && (
+                    <button
+                      type="button"
+                      className="search-resume-scan-btn"
+                      onClick={onResumeContentScan}
+                      title={t('search.resumeDeepScanTitle', 'Continue scanning remaining documents from where it paused')}
+                    >
+                      <Play size={9} fill="currentColor" aria-hidden="true" />
+                      <span>{t('search.resumeDeepScan', 'Continue')}</span>
                     </button>
                   )}
                 </div>

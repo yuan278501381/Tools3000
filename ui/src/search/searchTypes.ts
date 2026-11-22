@@ -26,11 +26,22 @@ export interface SearchResult {
   size?: number;
   creationTime?: number;
   lastWriteTime?: number;
+  lastAccessTime?: number;
+  attributes?: number;
   matchRank?: number;
   snippets?: ContentSnippet[];
   runCount?: number;
   frecencyScore?: number;
 }
+
+/** 单个视口惰性提取属性单元格的值：展示文本 `d` 与可选精确数值排序键 `n`。 */
+export interface PropertyCellValue {
+  d: string;
+  n?: number;
+}
+
+/** `path -> { propId -> PropertyCellValue }` 映射表。 */
+export type PropertyCacheMap = Record<string, Record<string, PropertyCellValue>>;
 
 /**
  * 代际强锁步快照：将检索结果、对应查询词与高亮分词在同一帧原子提交，
@@ -46,7 +57,7 @@ export interface SearchSnapshot {
 export interface SearchResponse {
   results: SearchResult[];
   available: boolean;
-  status?: 'ready' | 'starting' | 'unavailable' | 'busy';
+  status?: 'ready' | 'starting' | 'unavailable' | 'busy' | 'timeout';
   busy?: boolean;
   totalIndexedFiles?: number;
   elapsedMs?: number;
@@ -60,12 +71,55 @@ export interface SearchResponse {
   totalCandidates?: number;
 }
 
+export type IndexScanPhase = 'idle' | 'scanning' | 'building' | 'syncing' | 'loading' | 'starting';
+
+export interface VolumeIndexStats {
+  drive: string;
+  label: string;
+  phase: IndexScanPhase;
+  records: number;
+  scanned: number;
+  estimated: number;
+  done: boolean;
+}
+
+export interface DbStatsSnapshot {
+  dbPath: string;
+  dbSize: number;
+  timestamp: number;
+  totalRecords: number;
+  volumeCount: number;
+  indexedVolumes?: number;
+  totalVolumes?: number;
+  exists: boolean;
+  indexing?: boolean;
+  phase?: IndexScanPhase;
+  activeDrive?: string;
+  activeVolumeLabel?: string;
+  scannedRecords?: number;
+  estimatedRecords?: number;
+  progressPercent?: number;
+  volumes?: VolumeIndexStats[];
+  rebuildInProgress?: boolean;
+  snapshotInProgress?: boolean;
+  runHistoryCount: number;
+  searchHistoryCount: number;
+}
+
+export interface SortProgressState {
+  active: boolean;
+  columnId: TableColumnId;
+  columnLabel: string;
+  completed: number;
+  total: number;
+}
+
 export type SearchDensity = 'compact' | 'standard' | 'comfortable';
 export type SearchIconStyle = 'native' | 'vector';
-export type SortField = 'relevance' | 'modified' | 'name' | 'size' | 'created';
+export type SortField = string;
 export type SortDirection = 'asc' | 'desc';
-export type FileFolderPriority = 'filesFirst' | 'foldersFirst' | 'mixed';
-export type ColumnId = 'name' | 'ext' | 'parent' | 'path' | 'size' | 'modified' | 'created' | 'snippets';
+export type ColumnId = 'name' | 'path' | 'size' | 'modified' | 'created' | 'snippets';
+export type TableColumnId = string;
 
 export interface ColumnSetting {
   id: ColumnId;
@@ -106,11 +160,9 @@ export interface FormatCategory {
   extensions: string[];
 }
 
-/** Column visibility and widths shared by every memoized result row. */
+/** 表格视图共享的列显示、顺序、宽度与正交全文摘要行配置。 */
 export interface ColumnLayout {
   name: boolean;
-  ext: boolean;
-  parent: boolean;
   path: boolean;
   size: boolean;
   modified: boolean;
@@ -118,4 +170,8 @@ export interface ColumnLayout {
   snippets: boolean;
   nameFlex: number;
   pathFlex: number;
+  tableOrder?: TableColumnId[];
+  tableWidths?: Partial<Record<TableColumnId, number>>;
+  /** 表格视图当前启用的列集合（单一事实源，缺省时回退到默认 5 列）。 */
+  visibleTableColumns?: TableColumnId[];
 }

@@ -149,14 +149,95 @@ if ($Portable) {
     exit 0
 }
 
+function Unregister-PicasaViewerAssociations {
+    $ViewerCandidates = @(
+        (Join-Path $ScriptDir "Tools3000_Picasa_Viewer.exe"),
+        (Join-Path $ScriptDir "deploy_dist\Tools3000_Picasa_Viewer.exe"),
+        (Join-Path (Resolve-InstalledAppDirectory) "Tools3000_Picasa_Viewer.exe")
+    ) | Select-Object -Unique
+    foreach ($Candidate in $ViewerCandidates) {
+        if ($Candidate -and (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
+            try {
+                & $Candidate --unregister-silent 2>$null | Out-Null
+                Write-CliLog "已通过看图器执行静默注销关联: $Candidate" "INFO"
+            } catch { }
+            break
+        }
+    }
+
+    # 兜底清理当前用户 HKCU 下的全部 41 个支持的图片扩展名关联与注册键，绝不留空串遮蔽 HKLM
+    $ProgId = "Tools3000.PicasaViewer"
+    $SupportedExts = @(
+        "jpg", "jpeg", "jpe", "jfif", "pjpeg",
+        "png", "apng", "webp", "gif",
+        "bmp", "dib", "rle", "ico", "cur",
+        "tif", "tiff", "svg", "svgz",
+        "avif", "heic", "heif", "hif",
+        "wdp", "hdp", "jxr",
+        "tga", "qoi", "ppm", "pgm", "pbm", "dds",
+        "dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "pef", "raf", "srw"
+    )
+    $Hkcu = [Microsoft.Win32.Registry]::CurrentUser
+    foreach ($Ext in $SupportedExts) {
+        $DotExt = ".$Ext"
+        $ExtSubKey = "Software\Classes\$DotExt"
+        $OwpSubKey = "$ExtSubKey\OpenWithProgids"
+        try {
+            $OwpKey = $Hkcu.OpenSubKey($OwpSubKey, $true)
+            if ($OwpKey) {
+                try { $OwpKey.DeleteValue($ProgId, $false) } finally { $OwpKey.Close() }
+            }
+        } catch { }
+        try {
+            $ExtKey = $Hkcu.OpenSubKey($ExtSubKey, $true)
+            if ($ExtKey) {
+                try {
+                    $CurDefault = [string]$ExtKey.GetValue("", "")
+                    if ($CurDefault -ieq $ProgId) {
+                        $BackupVal = ""
+                        $BackupSub = $Hkcu.OpenSubKey("Software\Tools3000\PicasaViewer\BackupAssoc\$DotExt", $false)
+                        if ($BackupSub) {
+                            try { $BackupVal = [string]$BackupSub.GetValue("", "") } finally { $BackupSub.Close() }
+                        }
+                        if ([string]::IsNullOrWhiteSpace($BackupVal)) {
+                            $BackupRoot = $Hkcu.OpenSubKey("Software\Tools3000\PicasaViewer\BackupAssoc", $false)
+                            if ($BackupRoot) {
+                                try { $BackupVal = [string]$BackupRoot.GetValue($DotExt, "") } finally { $BackupRoot.Close() }
+                            }
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($BackupVal) -and ($BackupVal -ine $ProgId)) {
+                            $ExtKey.SetValue("", $BackupVal, [Microsoft.Win32.RegistryValueKind]::String)
+                        } else {
+                            $ExtKey.DeleteValue("", $false)
+                        }
+                    }
+                } finally {
+                    $ExtKey.Close()
+                }
+            }
+        } catch { }
+    }
+    Remove-ItemProperty -Path "HKCU:\Software\RegisteredApplications" -Name "Tools3000 Picasa Viewer" -ErrorAction SilentlyContinue
+    foreach ($RegPath in @(
+        "HKCU:\Software\Tools3000\PicasaViewer",
+        "HKCU:\Software\Classes\Tools3000.PicasaViewer",
+        "HKCU:\Software\Classes\Applications\Tools3000_Picasa_Viewer.exe"
+    )) {
+        if (Test-Path -LiteralPath $RegPath) {
+            Remove-Item -LiteralPath $RegPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # 2. 卸载模式
 if ($Uninstall) {
     Write-CliLog "正在检索系统中的 Tools3000 安装实例..." "INFO"
-    $ActiveProcs = Get-Process -Name "Tools3000", "Tools3000_Service" -ErrorAction SilentlyContinue
+    $ActiveProcs = Get-Process -Name "Tools3000", "Tools3000_Service", "Tools3000_Picasa_Viewer" -ErrorAction SilentlyContinue
     if ($ActiveProcs) {
         Write-CliLog "检测到运行中的实例，正在极速终止进程树..." "INFO"
         taskkill.exe /F /T /IM Tools3000.exe 2>$null | Out-Null
         taskkill.exe /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
+        taskkill.exe /F /T /IM Tools3000_Picasa_Viewer.exe 2>$null | Out-Null
     }
     $svc = Get-Service -Name "Tools3000_SearchService" -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
@@ -223,6 +304,7 @@ if ($Uninstall) {
             schtasks.exe /delete /tn "Tools3000\Autorun for $env:USERNAME" /f 2>$null | Out-Null
         }
         Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Tools3000" -ErrorAction SilentlyContinue
+        Unregister-PicasaViewerAssociations
     }
     if (-not $KeepPersonalData) {
         @(
@@ -312,6 +394,7 @@ Write-CliLog "参数: $($InstallArgs -join ' ')" "INFO"
 sc.exe stop Tools3000_SearchService 2>$null | Out-Null
 taskkill /F /T /IM Tools3000.exe 2>$null | Out-Null
 taskkill /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
+taskkill /F /T /IM Tools3000_Picasa_Viewer.exe 2>$null | Out-Null
 Start-Sleep -Milliseconds 400
 
 

@@ -109,6 +109,7 @@ struct DeepOcrModelStatus {
 
 struct DeepOcrRunStats {
     long long totalMs = 0;
+    long long loadMs = 0;
     long long detMs = 0;
     long long packMs = 0;
     long long recMs = 0;
@@ -186,6 +187,9 @@ public:
 
     /// 释放内存中的 cv::dnn::Net 权重缓存（冷路径回收物理内存）
     void releaseLoadedModels();
+
+    /// 阶段 1 闲置软修剪：绝不销毁已编译 DirectML Session（维持 0ms 热启），仅触发 DXGI Trim 归还 GPU 暂存显存并收缩物理工作集
+    void trimIdleMemory();
 
     /// 后台空闲低优先级异步加载模型并预编译固定形状 DirectML 算子管线（消灭首次识字冷启动延迟）
     void warmupAsync(int delayMs = DeepOcrConstants::kWarmupInitialDelayMs);

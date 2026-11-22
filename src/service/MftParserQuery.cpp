@@ -72,8 +72,10 @@ HydrateResult hydrateResultProperties(SearchResult& result, bool allowRecycleBin
 
     const uint64_t preservedDirSize = result.fileSize;
     result.isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    result.fileAttributes = data.dwFileAttributes;
     result.creationTime = fileTimeToUint64(data.ftCreationTime);
     result.lastWriteTime = fileTimeToUint64(data.ftLastWriteTime);
+    result.lastAccessTime = fileTimeToUint64(data.ftLastAccessTime);
     result.fileSize = result.isDirectory
         ? preservedDirSize
         : (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
@@ -883,6 +885,8 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 candidate.rank,
                 candidate.folderPriority,
                 candidate.pathTier,
+                0ULL,
+                candidate.record.fileAttributes,
             });
             resultIds.push_back(candidate.id);
         }
@@ -903,6 +907,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             int rank = 7;
             int folderPriority = 200;
             uint8_t pathTier = tools3000::service::kPathTierPrimaryUser;
+            uint32_t fileAttributes = 0;
         };
 
         std::vector<OwnedRankedItem> ownedRanked;
@@ -919,6 +924,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 r.rank,
                 r.folderPriority,
                 r.pathTier,
+                r.record.fileAttributes,
             });
         }
         {
@@ -967,9 +973,9 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 viewRec.pinyinInitials = item.pinyinInitials.empty()
                     ? std::wstring_view(item.fileName)
                     : std::wstring_view(item.pinyinInitials);
-                viewRec.pinyinFull = item.pinyinFull.empty()
-                    ? std::wstring_view(item.fileName)
-                    : std::wstring_view(item.pinyinFull);
+                viewRec.pinyinFull = !item.pinyinFull.empty()
+                    ? std::wstring_view(item.pinyinFull)
+                    : (item.pinyinInitials.empty() ? std::wstring_view(item.fileName) : std::wstring_view{});
                 viewRec.isDirectory = item.isDirectory;
                 viewRec.fileAttributes = item.fileAttributes;
                 viewRec.fileSize = item.fileSize;
@@ -992,6 +998,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                         rnk,
                         item.folderPriority,
                         effectiveSingleDriveTier(item.pathTier, rnk),
+                        item.fileAttributes,
                     });
                 }
             }
@@ -1044,6 +1051,8 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 item.rank,
                 item.folderPriority,
                 item.pathTier,
+                0ULL,
+                item.fileAttributes,
             });
             resultIds.push_back(item.id);
         }
@@ -1059,7 +1068,8 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             validatedResults.clear();
             break;
         }
-        const bool neededStat = (results[i].fileSize == 0 && results[i].lastWriteTime == 0);
+        const bool neededStat = (!results[i].isDirectory && results[i].fileSize == 0) ||
+                                (results[i].lastWriteTime == 0);
         const HydrateResult status = hydrateResultProperties(results[i], queryExplicitRecycle, queryExplicitRecent);
         if (status == HydrateResult::Valid) {
             if (neededStat && (results[i].fileSize != 0 || results[i].lastWriteTime != 0)) {
@@ -1099,6 +1109,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         }
         if (anyErased) {
             m_Store.compactIfSparse();
+            m_FileCount.store(m_Store.size(), std::memory_order_release);
             m_IndexGeneration.fetch_add(1, std::memory_order_release);
             std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
             m_CachedQuery.clear();
@@ -1678,9 +1689,9 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                 recView.pinyinInitials = dItem.pinyinInitials.empty()
                     ? std::wstring_view(dItem.fileName)
                     : std::wstring_view(dItem.pinyinInitials);
-                recView.pinyinFull = dItem.pinyinFull.empty()
-                    ? std::wstring_view(dItem.fileName)
-                    : std::wstring_view(dItem.pinyinFull);
+                recView.pinyinFull = !dItem.pinyinFull.empty()
+                    ? std::wstring_view(dItem.pinyinFull)
+                    : (dItem.pinyinInitials.empty() ? std::wstring_view(dItem.fileName) : std::wstring_view{});
                 recView.isDirectory = false;
                 recView.fileAttributes = dItem.fileAttributes;
                 recView.fileSize = dItem.candidate.fileSize;

@@ -1,4 +1,352 @@
-import type { FileFolderPriority, SearchResult, SortDirection, SortField } from './searchTypes';
+import {
+  DEFAULT_VISIBLE_TABLE_COLUMNS,
+  extractDriveLabel,
+  extractFileExtension,
+  extractFileStem,
+  extractImmediateParentName,
+  formatFileAttributesBitmask,
+  isKnownTableColumnId,
+  resolveColumnDefinition,
+} from './columnCatalog';
+import type {
+  ColumnLayout,
+  PropertyCacheMap,
+  SearchResult,
+  SortDirection,
+  SortField,
+  TableColumnId,
+} from './searchTypes';
+
+export interface TableColumnSpec {
+  id: TableColumnId;
+  minWidth: number;
+  defaultWidth: number;
+  maxWidth: number;
+  isFlex: boolean;
+  sortField: SortField | null;
+  align: 'left' | 'right';
+}
+
+export const DEFAULT_TABLE_COLUMN_ORDER: readonly TableColumnId[] = [
+  ...DEFAULT_VISIBLE_TABLE_COLUMNS,
+];
+
+export const TABLE_COLUMN_GAP_PX = 14;
+
+/** 兼容旧引用：保留核心 5 列静态 spec，同时通过 `getTableColumnSpec(id)` 支持全系统任意列。 */
+export const TABLE_COLUMN_SPECS: Readonly<Record<string, TableColumnSpec>> = {
+  name: {
+    id: 'name',
+    minWidth: 120,
+    defaultWidth: 320,
+    maxWidth: 960,
+    isFlex: true,
+    sortField: 'name',
+    align: 'left',
+  },
+  path: {
+    id: 'path',
+    minWidth: 140,
+    defaultWidth: 460,
+    maxWidth: 1600,
+    isFlex: true,
+    sortField: 'path',
+    align: 'left',
+  },
+  size: {
+    id: 'size',
+    minWidth: 72,
+    defaultWidth: 96,
+    maxWidth: 280,
+    isFlex: false,
+    sortField: 'size',
+    align: 'right',
+  },
+  modified: {
+    id: 'modified',
+    minWidth: 118,
+    defaultWidth: 152,
+    maxWidth: 320,
+    isFlex: false,
+    sortField: 'modified',
+    align: 'left',
+  },
+  created: {
+    id: 'created',
+    minWidth: 118,
+    defaultWidth: 152,
+    maxWidth: 320,
+    isFlex: false,
+    sortField: 'created',
+    align: 'left',
+  },
+};
+
+export function getTableColumnSpec(id: TableColumnId): TableColumnSpec {
+  const def = resolveColumnDefinition(id);
+  return {
+    id: def.id,
+    minWidth: def.minWidth,
+    defaultWidth: def.defaultWidth,
+    maxWidth: def.maxWidth,
+    isFlex: def.isFlex,
+    sortField: def.id,
+    align: def.align,
+  };
+}
+
+export function clampTableColumnWidth(id: TableColumnId, width: number): number {
+  const spec = getTableColumnSpec(id);
+  const rounded = Math.round(width);
+  return Math.min(spec.maxWidth, Math.max(spec.minWidth, rounded));
+}
+
+export function normalizeTableColumnOrder(rawOrder?: readonly string[] | null): TableColumnId[] {
+  const result: TableColumnId[] = [];
+  if (Array.isArray(rawOrder)) {
+    for (const item of rawOrder) {
+      if (typeof item === 'string' && isKnownTableColumnId(item) && !result.includes(item)) {
+        result.push(item);
+      }
+    }
+  }
+  for (const fallback of DEFAULT_TABLE_COLUMN_ORDER) {
+    if (!result.includes(fallback)) {
+      result.push(fallback);
+    }
+  }
+  return result;
+}
+
+export function normalizeVisibleTableColumns(rawVisible?: readonly string[] | null): TableColumnId[] {
+  const result: TableColumnId[] = [];
+  if (Array.isArray(rawVisible)) {
+    for (const item of rawVisible) {
+      if (typeof item === 'string' && isKnownTableColumnId(item) && !result.includes(item)) {
+        result.push(item);
+      }
+    }
+  }
+  if (!result.includes('name')) {
+    result.unshift('name');
+  }
+  return result;
+}
+
+export function sanitizeTableColumnWidths(
+  rawWidths?: Record<string, unknown> | null,
+): Partial<Record<TableColumnId, number>> {
+  const clean: Partial<Record<TableColumnId, number>> = {};
+  if (!rawWidths || typeof rawWidths !== 'object') {
+    return clean;
+  }
+  for (const [id, val] of Object.entries(rawWidths)) {
+    if (!isKnownTableColumnId(id)) continue;
+    if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+      clean[id] = clampTableColumnWidth(id, val);
+    }
+  }
+  return clean;
+}
+
+export function getVisibleTableColumns(columns: ColumnLayout): TableColumnId[] {
+  if (Array.isArray(columns.visibleTableColumns) && columns.visibleTableColumns.length > 0) {
+    const visibleSet = new Set(normalizeVisibleTableColumns(columns.visibleTableColumns));
+    const ordered = normalizeTableColumnOrder([
+      ...(columns.tableOrder ?? []),
+      ...Array.from(visibleSet),
+    ]);
+    return ordered.filter((id) => visibleSet.has(id));
+  }
+
+  const ordered = normalizeTableColumnOrder(columns.tableOrder);
+  return ordered.filter((id) => {
+    if (id === 'name') return true;
+    if (id === 'path') return columns.path;
+    if (id === 'size') return columns.size;
+    if (id === 'modified') return columns.modified;
+    if (id === 'created') return columns.created;
+    return false;
+  });
+}
+
+export function reorderTableColumns(
+  currentOrder: readonly TableColumnId[],
+  sourceId: TableColumnId,
+  targetId: TableColumnId,
+  side: 'before' | 'after',
+): TableColumnId[] {
+  const normalized = normalizeTableColumnOrder([
+    ...currentOrder,
+    sourceId,
+    targetId,
+  ]);
+  if (sourceId === targetId) return normalized;
+
+  const withoutSource = normalized.filter((id) => id !== sourceId);
+  const targetIndex = withoutSource.indexOf(targetId);
+  if (targetIndex < 0) return normalized;
+
+  const insertIndex = side === 'after' ? targetIndex + 1 : targetIndex;
+  const next = [...withoutSource];
+  next.splice(insertIndex, 0, sourceId);
+
+  const unchanged = next.every((id, idx) => id === normalized[idx]);
+  return unchanged ? normalized : next;
+}
+
+export interface TableLayoutMetrics {
+  visibleCols: TableColumnId[];
+  gridTemplateColumns: string;
+  /** 所有可见列在不挤扁时的最小总像素宽（含列间距），用于多列启用时触发平滑横向滚动。 */
+  minTableWidthPx: number;
+}
+
+/**
+ * 表格视图（Table View）列轨道单一事实源 (SSOT)：
+ * 表头与虚拟列表每一行的主信息层严格共享此 CSS Grid 列定义，保障 1px 不差的垂直对齐。
+ */
+export function buildTableLayoutMetrics(columns: ColumnLayout): TableLayoutMetrics {
+  const visibleCols = getVisibleTableColumns(columns);
+  const widths = columns.tableWidths ?? {};
+
+  const flexCandidates = visibleCols.filter(
+    (id) => getTableColumnSpec(id).isFlex && widths[id] === undefined,
+  );
+  const hasExplicitFrTrack = flexCandidates.length > 0;
+  // 若所有弹性列均被用户锁定了固定宽度，选取一个兜底吸收列使用 minmax(px, 1fr) 保证铺满窗口无右缘空白
+  const fallbackStretchId: TableColumnId | null = hasExplicitFrTrack
+    ? null
+    : (visibleCols.includes('path')
+        ? 'path'
+        : visibleCols.includes('name')
+          ? 'name'
+          : (visibleCols[visibleCols.length - 1] ?? null));
+
+  let minWidthSum = 0;
+  const tracks = visibleCols.map((id) => {
+    const spec = getTableColumnSpec(id);
+    const customWidth = widths[id];
+
+    if (spec.isFlex) {
+      if (customWidth !== undefined) {
+        const clamped = clampTableColumnWidth(id, customWidth);
+        minWidthSum += clamped;
+        return id === fallbackStretchId ? `minmax(${clamped}px, 1fr)` : `${clamped}px`;
+      }
+      // 当可见列超过 5 列（开启了扩展属性列）时，保证名称与路径保留舒适底宽防止横向挤压
+      const floorPx = visibleCols.length > 5
+        ? Math.max(spec.minWidth, id === 'name' ? 200 : 220)
+        : spec.minWidth;
+      minWidthSum += floorPx;
+      const weight = id === 'name'
+        ? Math.max(10, columns.nameFlex || 35)
+        : Math.max(10, columns.pathFlex || 45);
+      return flexCandidates.length === 1
+        ? `minmax(${floorPx}px, 1fr)`
+        : `minmax(${floorPx}px, ${weight}fr)`;
+    }
+
+    const px = customWidth !== undefined
+      ? clampTableColumnWidth(id, customWidth)
+      : spec.defaultWidth;
+    minWidthSum += px;
+    return id === fallbackStretchId ? `minmax(${px}px, 1fr)` : `${px}px`;
+  });
+
+  const gapTotal = Math.max(0, visibleCols.length - 1) * TABLE_COLUMN_GAP_PX;
+  return {
+    visibleCols,
+    gridTemplateColumns: tracks.join(' '),
+    minTableWidthPx: minWidthSum + gapTotal,
+  };
+}
+
+export function buildTableGridTemplate(columns: ColumnLayout): string {
+  return buildTableLayoutMetrics(columns).gridTemplateColumns;
+}
+
+/**
+ * 估算一列内容的视觉像素宽度（用于表头右键“调整此列适应内容”与“调整全部列适应内容”）：
+ * 使用 Canvas 2D `measureText`（不可用时按全角/半角字宽回退估算），兼顾中英文、等宽数字与图标留白。
+ */
+let cachedMeasureCtx: CanvasRenderingContext2D | null | undefined;
+function measureTextVisualPx(text: string, isMono: boolean): number {
+  if (!text) return 0;
+  if (cachedMeasureCtx === undefined) {
+    try {
+      const canvas = document.createElement('canvas');
+      cachedMeasureCtx = canvas.getContext('2d');
+    } catch {
+      cachedMeasureCtx = null;
+    }
+  }
+  if (cachedMeasureCtx) {
+    cachedMeasureCtx.font = isMono
+      ? '500 12.5px "Cascadia Code", Consolas, monospace'
+      : '550 13.5px "Noto Sans SC", "Segoe UI", sans-serif';
+    return Math.ceil(cachedMeasureCtx.measureText(text).width);
+  }
+  let width = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    width += text.charCodeAt(i) > 0x7f ? 13.5 : 7.6;
+  }
+  return Math.ceil(width);
+}
+
+export function estimateFittedColumnWidth(
+  colId: TableColumnId,
+  headerLabel: string,
+  sampleValues: readonly string[],
+): number {
+  const def = resolveColumnDefinition(colId);
+  const headerPx = measureTextVisualPx(headerLabel, false) + 36;
+  const extraCellPadding = colId === 'name' ? 46 : 22;
+  let maxPx = headerPx;
+
+  const limit = Math.min(sampleValues.length, 120);
+  for (let i = 0; i < limit; i += 1) {
+    const val = sampleValues[i];
+    if (!val) continue;
+    const textPx = measureTextVisualPx(val, Boolean(def.isMono)) + extraCellPadding;
+    if (textPx > maxPx) {
+      maxPx = textPx;
+    }
+  }
+  // 单列拟合上限避免超长路径一次撑破视口
+  const fitCeiling = colId === 'path' ? 680 : colId === 'name' ? 520 : def.maxWidth;
+  return clampTableColumnWidth(colId, Math.min(fitCeiling, maxPx));
+}
+
+/**
+ * 为自适应列宽采样结果行：优先采集当前可见视口（含前后缓冲），
+ * 不足上限时再从列表头部补齐，确保长列表滚动后列宽拟合精准贴合当前所见内容。
+ */
+export function collectColumnFitSampleRows(
+  results: readonly SearchResult[],
+  visibleRange: { start: number; end: number },
+  maxSamples = 120,
+): SearchResult[] {
+  if (results.length <= maxSamples) {
+    return results.slice();
+  }
+  const sampled: SearchResult[] = [];
+  const seenIndices = new Set<number>();
+
+  const winStart = Math.max(0, Math.min(results.length - 1, visibleRange.start - 10));
+  const winEnd = Math.min(results.length, Math.max(visibleRange.end + 10, winStart + 60));
+
+  for (let i = winStart; i < winEnd && sampled.length < maxSamples; i += 1) {
+    seenIndices.add(i);
+    sampled.push(results[i]);
+  }
+  for (let i = 0; i < results.length && sampled.length < maxSamples; i += 1) {
+    if (!seenIndices.has(i)) {
+      sampled.push(results[i]);
+    }
+  }
+  return sampled;
+}
 
 export function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '0 B';
@@ -43,25 +391,6 @@ export function extractParentFolder(fullPath: string): string {
     return immediateParent ? `QQ\u00b7${immediateParent}` : 'QQ';
   }
   return immediateParent;
-}
-
-export function getFileTypeBadge(name: string, isDirectory: boolean): { label: string; colorClass: string } {
-  if (isDirectory) return { label: 'DIR', colorClass: 'badge-folder' };
-  const dot = name.lastIndexOf('.');
-  if (dot === -1) return { label: 'FILE', colorClass: 'badge-generic' };
-
-  const extension = name.slice(dot + 1).toUpperCase();
-  const lowerExtension = extension.toLowerCase();
-  if (['C', 'CPP', 'H', 'HPP', 'RS', 'GO'].includes(extension)) return { label: `.${lowerExtension}`, colorClass: 'badge-code-c' };
-  if (['JS', 'TS', 'TSX', 'JSX', 'VUE', 'HTML', 'CSS', 'SCSS'].includes(extension)) return { label: `.${lowerExtension}`, colorClass: 'badge-code-js' };
-  if (['PY', 'JAVA', 'CS', 'SH', 'BAT', 'PS1', 'LUA', 'SQL'].includes(extension)) return { label: `.${lowerExtension}`, colorClass: 'badge-code-other' };
-  if (['JSON', 'YAML', 'YML', 'TOML', 'XML', 'INI', 'CONF'].includes(extension)) return { label: `.${lowerExtension}`, colorClass: 'badge-config' };
-  if (['PNG', 'JPG', 'JPEG', 'WEBP', 'SVG', 'GIF', 'ICO', 'BMP'].includes(extension)) return { label: extension, colorClass: 'badge-img' };
-  if (['ZIP', '7Z', 'RAR', 'TAR', 'GZ', 'BZ2'].includes(extension)) return { label: extension, colorClass: 'badge-archive' };
-  if (['PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'PPT', 'PPTX', 'TXT', 'MD'].includes(extension)) return { label: extension, colorClass: 'badge-doc' };
-  if (['MP4', 'MKV', 'AVI', 'MOV', 'MP3', 'WAV', 'FLAC'].includes(extension)) return { label: extension, colorClass: 'badge-media' };
-  if (['EXE', 'DLL', 'SYS', 'SO', 'BIN'].includes(extension)) return { label: extension, colorClass: 'badge-bin' };
-  return { label: `.${lowerExtension.slice(0, 5)}`, colorClass: 'badge-generic' };
 }
 
 /**
@@ -141,239 +470,6 @@ export function formatWindowsTime(fileTime?: number | string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/**
- * 搜索结果质量分层枚举（数值越小优先级越高，同一层级内严格按用户选定的修改时间/大小/名称排序）：
- * - Tier 0 (NormalUserFile): 本地正常目录的原始文件与工作区文件（永远排最前）
- * - Tier 1 (UniqueChatFile): 微信/QQ/企微/钉钉/飞书等聊天记录中独有的最新文件（每个主干文件名仅保留最新 1 份）
- * - Tier 2 (RedundantChatCopy): 聊天记录中发给多个客户产生的历史重复副本，或本地已有原始文件的聊天副本
- * - Tier 3 (AppOrSystemData): AppData / ProgramData / Program Files 等应用内部数据目录文件
- * - Tier 4 (ShortcutFile): .lnk / .url 快捷方式文件
- * - Tier 5 (TempOrCache): Temp / Tmp / Cache / Recent 临时目录文件与 .tmp / ~$ 临时锁文件（永远沉底）
- */
-export const SearchResultQualityTier = {
-  NormalUserFile: 0,
-  UniqueChatFile: 1,
-  RedundantChatCopy: 2,
-  AppOrSystemData: 3,
-  ShortcutFile: 4,
-  TempOrCache: 5,
-} as const;
-
-export type SearchResultQualityTier =
-  (typeof SearchResultQualityTier)[keyof typeof SearchResultQualityTier];
-
-const TEMP_OR_CACHE_DIR_SEGMENTS = [
-  '\\temp\\',
-  '\\tmp\\',
-  '\\inetcache\\',
-  '\\webcache\\',
-  '\\cache\\',
-  '\\caches\\',
-  '\\code cache\\',
-  '\\gpucache\\',
-  '\\shadercache\\',
-  '\\dawncache\\',
-  '\\recent\\',
-  '\\automaticdestinations\\',
-  '\\customdestinations\\',
-  '\\crashpad\\',
-  '\\crashdumps\\',
-  '\\prefetch\\',
-  '\\winsxs\\',
-  '\\installer\\',
-  '\\package cache\\',
-  '\\$recycle.bin\\',
-  '\\system volume information\\',
-  '\\node_modules\\',
-  '\\.git\\',
-  '\\__pycache__\\',
-  '\\npm-cache\\',
-  '\\.gradle\\',
-  '\\.vs\\',
-  '\\cefcache\\',
-  '\\coverage_report\\',
-];
-
-const CHAT_HISTORY_DIR_SEGMENTS = [
-  '\\xwechat_files\\',
-  '\\xwechat\\',
-  '\\wechat files\\',
-  '\\tencent files\\',
-  '\\nt_qq\\',
-  '\\wxwork\\',
-  '\\wecom\\',
-  '\\dingtalk\\',
-  '\\feishu\\',
-  '\\lark\\',
-  '\\telegram desktop\\',
-  '\\filestorage\\file\\',
-  '\\filestorage\\msgattach\\',
-  '\\filestorage\\cache\\',
-  '\\msg\\file\\',
-  '\\msg\\attach\\',
-  '\\file_recv\\',
-  '\\filerecv\\',
-];
-
-const APP_OR_SYSTEM_DIR_SEGMENTS = [
-  '\\appdata\\local\\',
-  '\\appdata\\roaming\\',
-  '\\appdata\\locallow\\',
-  '\\appdata\\',
-  '\\programdata\\',
-  '\\program files\\',
-  '\\program files (x86)\\',
-  '\\windows\\',
-];
-
-/**
- * 提取文件名的规范化主干键（剔除副本后缀、括号备注与末尾版本号如 V10001/V10002/V01），
- * 用于识别“本地原始文件已升级版本，且曾通过微信/QQ多次发给不同客户”的同源副本关系。
- */
-export function extractCanonicalFileKey(fileName: string): string {
-  const lower = (fileName || '').trim().toLowerCase();
-  if (!lower) return '';
-
-  const dotPos = lower.lastIndexOf('.');
-  const ext = dotPos > 0 ? lower.slice(dotPos) : '';
-  let stem = dotPos > 0 ? lower.slice(0, dotPos) : lower;
-
-  // 1. 移除常见的系统重复副本后缀：- 副本, (1), (2), （1）
-  stem = stem.replace(/(?:\s*-\s*\u526f\u672c|\s*_\u526f\u672c|\s*-\s*copy|\s*_copy|\s*\(\d+\)|\s*\uff08\d+\uff09)+$/gi, '').trim();
-
-  // 2. 移除末尾括号补充说明（如 "V10002(注意：不能清空当前账号...)"），前提是主干长度充足
-  const parenMatch = stem.match(/^(.{4,}?)\s*(?:\([^()]*\)|（[^（）]*）)+$/);
-  if (parenMatch && parenMatch[1].trim().length >= 4) {
-    stem = parenMatch[1].trim();
-  }
-
-  // 3. 移除末尾版本号与构建后缀（如 V10002, V10001_MESID2, _v01, -v2.1），前提是前缀主干 >= 4 个字符
-  const versionMatch = stem.match(/^(.{4,}?)[_-]?v\d+(?:[._-][a-z0-9]+)*$/i);
-  if (versionMatch && versionMatch[1].trim().length >= 4) {
-    stem = versionMatch[1].trim();
-  }
-
-  return `${stem}${ext}`;
-}
-
-export function classifyResultBaseTier(result: SearchResult): SearchResultQualityTier {
-  const normalizedPath = (result.path || '').replace(/\//g, '\\').toLowerCase();
-  const lastSlash = normalizedPath.lastIndexOf('\\');
-  // 仅针对目录路径段匹配，绝不因文件名本身包含 "TEMP" 等词而误判为临时目录
-  const dirPath = lastSlash >= 0 ? normalizedPath.slice(0, lastSlash + 1) : '';
-  const fileName = (result.name || (lastSlash >= 0 ? normalizedPath.slice(lastSlash + 1) : normalizedPath)).toLowerCase();
-
-  // 1. 临时文件、锁文件与缓存/临时目录判定
-  if (!result.isDirectory) {
-    if (
-      fileName.startsWith('~$') ||
-      fileName.endsWith('.tmp') ||
-      fileName.endsWith('.temp') ||
-      fileName.endsWith('.bak') ||
-      fileName.endsWith('.crdownload') ||
-      fileName.endsWith('.part') ||
-      fileName.endsWith('.partial')
-    ) {
-      return SearchResultQualityTier.TempOrCache;
-    }
-  }
-
-  for (const seg of TEMP_OR_CACHE_DIR_SEGMENTS) {
-    if (dirPath.includes(seg)) {
-      return SearchResultQualityTier.TempOrCache;
-    }
-  }
-
-  // 2. 快捷方式文件 (.lnk / .url) 独立分层，避免混入正常文档顶部
-  if (
-    !result.isDirectory &&
-    (fileName.endsWith('.lnk') || fileName.endsWith('.url') || fileName.endsWith('.desklink'))
-  ) {
-    return SearchResultQualityTier.ShortcutFile;
-  }
-
-  // 3. 微信 / 企微 / QQ / 钉钉 / 飞书等聊天记录传输文件目录
-  for (const seg of CHAT_HISTORY_DIR_SEGMENTS) {
-    if (dirPath.includes(seg)) {
-      return SearchResultQualityTier.UniqueChatFile;
-    }
-  }
-
-  // 4. AppData / ProgramData / Program Files / Windows 等系统与应用内部数据目录
-  for (const seg of APP_OR_SYSTEM_DIR_SEGMENTS) {
-    if (dirPath.includes(seg)) {
-      return SearchResultQualityTier.AppOrSystemData;
-    }
-  }
-
-  // 5. 用户正常本地工作目录与原始文件
-  return SearchResultQualityTier.NormalUserFile;
-}
-
-export function computeEffectiveResultTiers(results: SearchResult[]): Map<SearchResult, SearchResultQualityTier> {
-  const tierMap = new Map<SearchResult, SearchResultQualityTier>();
-  const normalCanonicalKeys = new Set<string>();
-  const normalExactNames = new Set<string>();
-  const chatGroups = new Map<string, SearchResult[]>();
-
-  for (const item of results) {
-    const baseTier = classifyResultBaseTier(item);
-    tierMap.set(item, baseTier);
-
-    if (!item.isDirectory) {
-      const lowerName = (item.name || '').trim().toLowerCase();
-      const canonicalKey = extractCanonicalFileKey(item.name);
-      if (baseTier === SearchResultQualityTier.NormalUserFile) {
-        if (lowerName) normalExactNames.add(lowerName);
-        if (canonicalKey) normalCanonicalKeys.add(canonicalKey);
-      } else if (baseTier === SearchResultQualityTier.UniqueChatFile) {
-        const groupKey = canonicalKey || lowerName;
-        if (groupKey) {
-          const list = chatGroups.get(groupKey);
-          if (list) list.push(item);
-          else chatGroups.set(groupKey, [item]);
-        }
-      }
-    }
-  }
-
-  // 对聊天记录中的文件进行同源去重与降权：
-  // 1) 若本地正常目录 (Tier 0) 已存在同名或同主干的原始文件，则聊天记录中的副本全部降为 Tier 2 (RedundantChatCopy)
-  // 2) 若仅存在于聊天记录中但发给多个客户产生了多份副本，仅保留修改时间最新的一份在 Tier 1，其余历史副本降为 Tier 2
-  for (const [groupKey, groupItems] of chatGroups.entries()) {
-    const hasLocalOriginal =
-      normalCanonicalKeys.has(groupKey) ||
-      groupItems.some((item) => normalExactNames.has((item.name || '').trim().toLowerCase()));
-
-    if (hasLocalOriginal) {
-      for (const item of groupItems) {
-        tierMap.set(item, SearchResultQualityTier.RedundantChatCopy);
-      }
-      continue;
-    }
-
-    if (groupItems.length > 1) {
-      let newestItem = groupItems[0];
-      let newestTime = Number(newestItem.lastWriteTime) || 0;
-      for (let i = 1; i < groupItems.length; i += 1) {
-        const candidate = groupItems[i];
-        const candidateTime = Number(candidate.lastWriteTime) || 0;
-        if (candidateTime > newestTime) {
-          newestTime = candidateTime;
-          newestItem = candidate;
-        }
-      }
-      for (const item of groupItems) {
-        if (item !== newestItem) {
-          tierMap.set(item, SearchResultQualityTier.RedundantChatCopy);
-        }
-      }
-    }
-  }
-
-  return tierMap;
-}
-
 function getPathShallowScore(fullPath: string): number {
   if (!fullPath) return 0;
   const clean = fullPath.replace(/\//g, '\\');
@@ -386,72 +482,225 @@ function getPathShallowScore(fullPath: string): number {
   return score;
 }
 
+type SortableCellValue =
+  | { missing: true }
+  | { missing: false; num: number; str?: string }
+  | { missing: false; num?: undefined; str: string };
+
+const MISSING_CELL_VALUE: SortableCellValue = { missing: true };
+
+function extractSortableCellValue(
+  item: SearchResult,
+  sortField: SortField,
+  propertyCache?: PropertyCacheMap,
+): SortableCellValue {
+  switch (sortField) {
+    case 'modified': {
+      const ts = Number(item.lastWriteTime);
+      return Number.isFinite(ts) && ts > 0 ? { missing: false, num: ts } : MISSING_CELL_VALUE;
+    }
+    case 'created': {
+      const ts = Number(item.creationTime);
+      return Number.isFinite(ts) && ts > 0 ? { missing: false, num: ts } : MISSING_CELL_VALUE;
+    }
+    case 'accessed': {
+      const nativeTs = Number(item.lastAccessTime);
+      if (Number.isFinite(nativeTs) && nativeTs > 0) {
+        return { missing: false, num: nativeTs };
+      }
+      const cached = propertyCache?.[item.path]?.accessed;
+      if (typeof cached?.n === 'number' && Number.isFinite(cached.n) && cached.n > 0) {
+        return { missing: false, num: cached.n, str: cached.d?.trim() || undefined };
+      }
+      const text = cached?.d?.trim() ?? '';
+      return text && text !== '—' ? { missing: false, str: text } : MISSING_CELL_VALUE;
+    }
+    case 'size': {
+      if (item.isDirectory) return MISSING_CELL_VALUE;
+      if (item.size === undefined || item.size === null) return MISSING_CELL_VALUE;
+      const bytes = Number(item.size);
+      return Number.isFinite(bytes) && bytes >= 0 ? { missing: false, num: bytes } : MISSING_CELL_VALUE;
+    }
+    case 'name': {
+      const name = item.name ?? '';
+      return name.trim().length > 0 ? { missing: false, str: name } : MISSING_CELL_VALUE;
+    }
+    case 'path': {
+      const dir = extractParentDirectoryPath(item.path) || item.path || '';
+      return dir.trim().length > 0 ? { missing: false, str: dir } : MISSING_CELL_VALUE;
+    }
+    case 'ext': {
+      const ext = extractFileExtension(item.name, item.isDirectory);
+      return ext.length > 0 ? { missing: false, str: ext } : MISSING_CELL_VALUE;
+    }
+    case 'attributes': {
+      const attr = (
+        formatFileAttributesBitmask(item.attributes) ||
+        propertyCache?.[item.path]?.attributes?.d?.trim() ||
+        (item.isDirectory ? 'D' : '')
+      );
+      return attr.length > 0 && attr !== '—' ? { missing: false, str: attr } : MISSING_CELL_VALUE;
+    }
+    case 'runCount': {
+      const runs = Number(item.runCount);
+      return Number.isFinite(runs) && runs > 0 ? { missing: false, num: runs } : MISSING_CELL_VALUE;
+    }
+    case 'stem': {
+      const stem = extractFileStem(item.name, item.isDirectory);
+      return stem.length > 0 ? { missing: false, str: stem } : MISSING_CELL_VALUE;
+    }
+    case 'parentName': {
+      const parent = extractImmediateParentName(item.path);
+      return parent.length > 0 ? { missing: false, str: parent } : MISSING_CELL_VALUE;
+    }
+    case 'drive': {
+      const drive = extractDriveLabel(item.path);
+      return drive.length > 0 ? { missing: false, str: drive } : MISSING_CELL_VALUE;
+    }
+    case 'fullPathLength': {
+      return item.path && item.path.length > 0 ? { missing: false, num: item.path.length } : MISSING_CELL_VALUE;
+    }
+    case 'nameLength': {
+      return item.name && item.name.length > 0 ? { missing: false, num: item.name.length } : MISSING_CELL_VALUE;
+    }
+    default: {
+      const cell = propertyCache?.[item.path]?.[sortField];
+      if (!cell) return MISSING_CELL_VALUE;
+      const hasNum = typeof cell.n === 'number' && Number.isFinite(cell.n);
+      const rawText = typeof cell.d === 'string' ? cell.d.trim() : '';
+      const hasStr = rawText.length > 0 && rawText !== '—';
+      if (!hasNum && !hasStr) return MISSING_CELL_VALUE;
+      if (hasNum) {
+        return { missing: false, num: cell.n as number, str: hasStr ? rawText : undefined };
+      }
+      return { missing: false, str: rawText };
+    }
+  }
+}
+
+/**
+ * 严格按指定表头列值比较两条记录：
+ * - 缺失元数据（`—` / undefined / null / NaN / 空字符串）无论升序或降序一律沉底；
+ * - 有效值严格按用户选定的升序/降序排列；
+ * - 文本比较使用传入的 locale（回退为 'en'）+ 自然数字排序。
+ */
+export function compareByColumnField(
+  left: SearchResult,
+  right: SearchResult,
+  sortField: SortField,
+  sortDirection: SortDirection,
+  propertyCache?: PropertyCacheMap,
+  locale: string = 'en',
+): number {
+  const lVal = extractSortableCellValue(left, sortField, propertyCache);
+  const rVal = extractSortableCellValue(right, sortField, propertyCache);
+
+  if (lVal.missing && rVal.missing) return 0;
+  if (lVal.missing) return 1;
+  if (rVal.missing) return -1;
+
+  let rawDiff: number;
+  if (lVal.num !== undefined && rVal.num !== undefined) {
+    rawDiff = lVal.num - rVal.num;
+  } else {
+    const lStr = lVal.str ?? (lVal.num !== undefined ? String(lVal.num) : '');
+    const rStr = rVal.str ?? (rVal.num !== undefined ? String(rVal.num) : '');
+    const useAsciiLocale = sortField === 'ext' || sortField === 'attributes' || sortField === 'drive';
+    rawDiff = useAsciiLocale
+      ? lStr.localeCompare(rStr, 'en', { sensitivity: 'base' })
+      : lStr.localeCompare(rStr, locale, { numeric: true, sensitivity: 'base' });
+  }
+
+  if (rawDiff === 0) return 0;
+  return sortDirection === 'asc' ? rawDiff : -rawDiff;
+}
+
+/**
+ * 纯粹的表头列直控排序引擎：
+ * 1. 100% 严格按用户选定的表头列与升降序排列（空值永远沉底）；
+ * 2. 列值完全相等时，依次按 `matchRank` -> 浅路径 -> 本地化自然文件名 -> 完整路径决胜。
+ */
 export function getSortedResults(
   results: SearchResult[],
   sortField: SortField,
   sortDirection: SortDirection,
-  folderPriority: FileFolderPriority | boolean,
-  groupByType: boolean,
-  smartPathPriority: boolean = true,
+  propertyCache?: PropertyCacheMap,
+  locale: string = 'en',
 ): SearchResult[] {
   if (results.length <= 1) return results;
-  const priorityMode: FileFolderPriority =
-    typeof folderPriority === 'boolean'
-      ? (folderPriority ? 'foldersFirst' : 'mixed')
-      : folderPriority;
-
-  const effectiveTiers = smartPathPriority ? computeEffectiveResultTiers(results) : null;
+  const resolvedLocale = locale && locale.trim() ? locale : 'en';
 
   return [...results].sort((left, right) => {
-    if (left.isDirectory !== right.isDirectory) {
-      if (priorityMode === 'filesFirst') {
-        return left.isDirectory ? 1 : -1;
-      }
-      if (priorityMode === 'foldersFirst') {
-        return left.isDirectory ? -1 : 1;
-      }
+    const columnComparison = compareByColumnField(
+      left,
+      right,
+      sortField,
+      sortDirection,
+      propertyCache,
+      resolvedLocale,
+    );
+    if (columnComparison !== 0) return columnComparison;
+
+    const lHasRank = typeof left.matchRank === 'number' && Number.isFinite(left.matchRank);
+    const rHasRank = typeof right.matchRank === 'number' && Number.isFinite(right.matchRank);
+    if (lHasRank && rHasRank && left.matchRank !== right.matchRank) {
+      return (left.matchRank as number) - (right.matchRank as number);
+    }
+    if (lHasRank !== rHasRank) {
+      return lHasRank ? -1 : 1;
     }
 
-    if (effectiveTiers) {
-      const leftTier = effectiveTiers.get(left) ?? SearchResultQualityTier.NormalUserFile;
-      const rightTier = effectiveTiers.get(right) ?? SearchResultQualityTier.NormalUserFile;
-      if (leftTier !== rightTier) {
-        return leftTier - rightTier;
-      }
-    }
+    const shallowDiff = getPathShallowScore(right.path) - getPathShallowScore(left.path);
+    if (shallowDiff !== 0) return shallowDiff;
 
-    if (
-      (smartPathPriority || sortField === 'relevance') &&
-      typeof left.matchRank === 'number' &&
-      typeof right.matchRank === 'number' &&
-      left.matchRank !== right.matchRank
-    ) {
-      return left.matchRank - right.matchRank;
-    }
+    const nameDiff = left.name.localeCompare(right.name, resolvedLocale, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+    if (nameDiff !== 0) return nameDiff;
 
-    if (groupByType && !left.isDirectory && !right.isDirectory) {
-      const leftExtension = left.name.includes('.') ? left.name.slice(left.name.lastIndexOf('.')).toLowerCase() : '';
-      const rightExtension = right.name.includes('.') ? right.name.slice(right.name.lastIndexOf('.')).toLowerCase() : '';
-      const extensionComparison = leftExtension.localeCompare(rightExtension);
-      if (extensionComparison !== 0) return extensionComparison;
-    }
-
-    let comparison = 0;
-    if (sortField === 'relevance') comparison = (Number(left.frecencyScore) || 0) - (Number(right.frecencyScore) || 0);
-    else if (sortField === 'modified') comparison = (Number(left.lastWriteTime) || 0) - (Number(right.lastWriteTime) || 0);
-    else if (sortField === 'created') comparison = (Number(left.creationTime) || 0) - (Number(right.creationTime) || 0);
-    else if (sortField === 'size') comparison = (left.isDirectory ? -1 : Number(left.size) || 0) - (right.isDirectory ? -1 : Number(right.size) || 0);
-    else if (sortField === 'name') comparison = left.name.localeCompare(right.name, 'zh-CN', { numeric: true, sensitivity: 'base' });
-
-    if (comparison !== 0) return sortDirection === 'asc' ? comparison : -comparison;
-
-    if (smartPathPriority) {
-      const shallowDiff = getPathShallowScore(right.path) - getPathShallowScore(left.path);
-      if (shallowDiff !== 0) return shallowDiff;
-    }
-
-    return left.name.localeCompare(right.name, 'zh-CN', { numeric: true, sensitivity: 'base' });
+    return left.path.localeCompare(right.path, resolvedLocale, {
+      numeric: true,
+      sensitivity: 'base',
+    });
   });
+}
+
+const EXPLICIT_SORT_ALIAS_MAP: Readonly<Record<string, { field: TableColumnId; defaultDir: SortDirection }>> = {
+  date: { field: 'modified', defaultDir: 'desc' },
+  mtime: { field: 'modified', defaultDir: 'desc' },
+  time: { field: 'modified', defaultDir: 'desc' },
+  modified: { field: 'modified', defaultDir: 'desc' },
+  created: { field: 'created', defaultDir: 'desc' },
+  accessed: { field: 'accessed', defaultDir: 'desc' },
+  name: { field: 'name', defaultDir: 'asc' },
+  size: { field: 'size', defaultDir: 'desc' },
+  path: { field: 'path', defaultDir: 'asc' },
+  ext: { field: 'ext', defaultDir: 'asc' },
+};
+
+/**
+ * 精准解析独立 `sort:` 查询词元（仅匹配完整独立词元，避免粗糙子串 includes 误触发），
+ * 支持可选方向后缀（如 `sort:size-asc`、`sort:modified-desc`）。
+ */
+export function parseExplicitSortDirective(
+  query: string,
+): { field: TableColumnId; direction: SortDirection } | null {
+  if (!query || !query.includes(':')) return null;
+  const tokens = tokenizeQueryQuoteAware(query);
+  let matched: { field: TableColumnId; direction: SortDirection } | null = null;
+  for (const token of tokens) {
+    const match = token.match(/^sort:([a-z]+)(?:-(asc|desc))?$/i);
+    if (!match) continue;
+    const spec = EXPLICIT_SORT_ALIAS_MAP[match[1].toLowerCase()];
+    if (!spec) continue;
+    const explicitDir = match[2]?.toLowerCase() as SortDirection | undefined;
+    matched = {
+      field: spec.field,
+      direction: explicitDir ?? spec.defaultDir,
+    };
+  }
+  return matched;
 }
 
 const FILE_SCOPE_FILTER_PREFIXES = [

@@ -1,16 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// ui_layout.rs — 5 大空间图层与高分屏 (High-DPI) 自适应布局引擎
+// ui_layout.rs — 空间图层与高分屏 (High-DPI) 自适应布局引擎
 //   1. 右上角费茨定律 40 DIP 关闭徽章（紧贴屏幕最右上角物理顶点 `(vw, 0)`）
 //   2. 左上角极简元数据浮标 / 详细 EXIF 卡片
-//   3. 中央无框悬浮相片画布
+//   3. 中央无框悬浮相片画布（幻灯片放映态全屏纯黑零界面干扰，1:1 致敬原版 Picasa）
 //   4. 底部一体化缩略图胶片流与对称水晶控制栏（含水平翻转 & 垂直翻转，精确遮盖缩略图底 1/3）
-//   5. 幻灯片放映专属极简水晶迷你播控胶囊（`◀` / `⏸·▶` / `▶` / `× 退出放映`）
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::constants::{
     ANIM_BAR_HEIGHT_DIP, ANIM_SCRUBBER_WIDTH_DIP, CORNER_CLOSE_RADIUS_DIP, FILMSTRIP_ITEM_GAP_DIP,
     FILMSTRIP_ITEM_SIZE_DIP, MINIMAP_MARGIN_DIP, MINIMAP_MAX_SIDE_DIP, PLAY_BUTTON_SIZE_DIP,
-    SLIDESHOW_MINI_BAR_H_DIP, SLIDESHOW_MINI_BOTTOM_MARGIN_DIP, SLIDESHOW_MINI_BTN_SIZE_DIP,
     TOOLBAR_ACTUAL_W_DIP, TOOLBAR_BUTTON_GAP_DIP, TOOLBAR_BUTTON_H_DIP, TOOLBAR_BUTTON_W_DIP,
     TOOLBAR_HEIGHT_DIP,
 };
@@ -42,15 +40,11 @@ pub struct ViewerUiLayout {
     // 左上角极简元数据浮标位置
     pub top_left_hud_rect: RectF,
 
-    // 常规看图态底部 66 DIP 一体化通栏（48 DIP 高清缩略图 + 16.5 DIP 镜面倒影 + 对称水晶按钮簇）
+    // 常规看图态底部 68 DIP 一体化通栏（50 DIP 高清缩略图 + 16.5 DIP 镜面倒影 + 对称水晶按钮簇）
     pub toolbar_rect: RectF,
     pub center_pod_rect: RectF,
     pub caption_rect: RectF,
     pub buttons: Vec<ToolbarButtonLayout>,
-
-    // 幻灯片放映态专属底部极简迷你水晶播控胶囊
-    pub slideshow_mini_bar_rect: Option<RectF>,
-    pub slideshow_mini_buttons: Vec<ToolbarButtonLayout>,
 
     // 一体化内嵌胶片缩略图带
     pub filmstrip_rect: Option<RectF>,
@@ -90,7 +84,6 @@ pub struct LayoutInput {
     pub is_animated: bool,
     pub anim_playing: bool,
     pub is_slideshow: bool,
-    pub slideshow_paused: bool,
     pub is_actual_zoom: bool,
     pub is_flipped_h: bool,
     pub is_flipped_v: bool,
@@ -160,13 +153,13 @@ impl ViewerUiLayout {
             }
         }
 
-        // 3b. 前景对称主控按钮簇（按钮精确遮盖 48 DIP 缩略图底部 16 DIP = 33.3% 黄金 1/3）：
+        // 3b. 前景对称主控按钮簇（按钮精确遮盖 50 DIP 缩略图底部 16.5 DIP = 33.0% 黄金 1/3）：
         //     [+] [-] [1:1]   |   ◀ (▶ 44 DIP 水晶播放圆球) ▶   |   [↺] [↻] [水平翻转] [垂直翻转]
         let bw = TOOLBAR_BUTTON_W_DIP;
         let actual_bw = TOOLBAR_ACTUAL_W_DIP;
         let bh = TOOLBAR_BUTTON_H_DIP;
         let gap = TOOLBAR_BUTTON_GAP_DIP;
-        let btn_cy = bar_top + 46.0;
+        let btn_cy = bar_top + 48.0;
         let btn_top = btn_cy - bh * 0.5;
         let btn_bottom = btn_cy + bh * 0.5;
 
@@ -276,64 +269,9 @@ impl ViewerUiLayout {
             emphasized_circle: false,
         });
 
-        // 3c. 幻灯片放映态专属底部极简迷你水晶播控胶囊：`[ ◀ ]  [ ⏸/▶ ]  [ ▶ ]  |  [ × ]`
-        if input.is_slideshow {
-            let mb = SLIDESHOW_MINI_BTN_SIZE_DIP;
-            let mg = 8.0f32;
-            let sep_space = 14.0f32;
-            let pad_x = 14.0f32;
-            let bar_w = pad_x * 2.0 + mb * 4.0 + mg * 2.0 + sep_space;
-            let bar_h = SLIDESHOW_MINI_BAR_H_DIP;
-            let m_bottom = vh - SLIDESHOW_MINI_BOTTOM_MARGIN_DIP;
-            let m_top = m_bottom - bar_h;
-            let m_left = (vw - bar_w) * 0.5;
-            layout.slideshow_mini_bar_rect =
-                Some(RectF::new(m_left, m_top, m_left + bar_w, m_bottom));
-
-            let by = m_top + (bar_h - mb) * 0.5;
-            let mut bx = m_left + pad_x;
-
-            layout.slideshow_mini_buttons.push(ToolbarButtonLayout {
-                action: ToolbarAction::PrevImage,
-                rect: RectF::new(bx, by, bx + mb, by + mb),
-                active: false,
-                emphasized_circle: false,
-            });
-            bx += mb + mg;
-
-            layout.slideshow_mini_buttons.push(ToolbarButtonLayout {
-                action: ToolbarAction::SlideshowTogglePause,
-                rect: RectF::new(bx, by, bx + mb, by + mb),
-                active: !input.slideshow_paused,
-                emphasized_circle: false,
-            });
-            bx += mb + mg;
-
-            layout.slideshow_mini_buttons.push(ToolbarButtonLayout {
-                action: ToolbarAction::NextImage,
-                rect: RectF::new(bx, by, bx + mb, by + mb),
-                active: false,
-                emphasized_circle: false,
-            });
-            bx += mb + sep_space;
-
-            layout.slideshow_mini_buttons.push(ToolbarButtonLayout {
-                action: ToolbarAction::ExitSlideshow,
-                rect: RectF::new(bx, by, bx + mb, by + mb),
-                active: false,
-                emphasized_circle: false,
-            });
-        }
-
         // 4. 底栏正上方：动图专属轻量胶囊 + 共享微文件名/操作提示文字 (ss/statustext)
-        let mut stack_top = if input.is_slideshow {
-            layout
-                .slideshow_mini_bar_rect
-                .map(|r| r.top - 6.0)
-                .unwrap_or(bar_top - 6.0)
-        } else {
-            bar_top - 6.0
-        };
+        // （幻灯片放映态全屏纯黑净空，不渲染底部栏与文件名）
+        let mut stack_top = bar_top - 6.0;
 
         if input.is_animated && !input.is_slideshow {
             let ab = 24.0f32;
@@ -459,20 +397,6 @@ impl ViewerUiLayout {
         let s = lang.strings();
         match target {
             HitTarget::ToolbarButton(ToolbarAction::CloseViewer) => Some(s.tip_close),
-            HitTarget::ToolbarButton(ToolbarAction::ExitSlideshow) => Some(s.tip_exit_slideshow),
-            HitTarget::ToolbarButton(ToolbarAction::SlideshowTogglePause) => {
-                let playing = self
-                    .slideshow_mini_buttons
-                    .iter()
-                    .find(|b| b.action == ToolbarAction::SlideshowTogglePause)
-                    .map(|b| b.active)
-                    .unwrap_or(true);
-                Some(if playing {
-                    s.tip_pause_slideshow
-                } else {
-                    s.tip_resume_slideshow
-                })
-            }
             HitTarget::ToolbarButton(act) => {
                 let is_active = self
                     .buttons
@@ -532,65 +456,51 @@ impl ViewerUiLayout {
             }
         }
 
-        if ui_visible {
-            // 幻灯片放映态：仅检测底部极简水晶迷你播控胶囊
-            if self.is_slideshow {
-                for btn in &self.slideshow_mini_buttons {
-                    if btn.rect.contains(x, y) {
+        if ui_visible && !self.is_slideshow {
+            // 常规看图态：1. 中央水晶播放圆球严格优先命中
+            for btn in &self.buttons {
+                if btn.emphasized_circle {
+                    let r = btn.rect.width() * 0.5;
+                    let dx = x - btn.rect.center_x();
+                    let dy = y - btn.rect.center_y();
+                    if dx * dx + dy * dy <= (r + 1.5) * (r + 1.5) {
                         return HitTarget::ToolbarButton(btn.action);
                     }
                 }
-                if let Some(bar) = self.slideshow_mini_bar_rect {
-                    if bar.contains(x, y) {
-                        return HitTarget::ToolbarBackground;
-                    }
+            }
+            // 2. 其余前景操作按钮（含旋转、水平翻转、垂直翻转、缩放）
+            for btn in &self.buttons {
+                if !btn.emphasized_circle && btn.rect.contains(x, y) {
+                    return HitTarget::ToolbarButton(btn.action);
                 }
-            } else {
-                // 常规看图态：1. 中央水晶播放圆球严格优先命中
-                for btn in &self.buttons {
-                    if btn.emphasized_circle {
-                        let r = btn.rect.width() * 0.5;
-                        let dx = x - btn.rect.center_x();
-                        let dy = y - btn.rect.center_y();
-                        if dx * dx + dy * dy <= (r + 1.5) * (r + 1.5) {
-                            return HitTarget::ToolbarButton(btn.action);
-                        }
-                    }
+            }
+            // 3. 背景层一体化缩略图胶片流
+            for item in &self.filmstrip_items {
+                if item.rect.contains(x, y) {
+                    return HitTarget::FilmstripItem(item.index);
                 }
-                // 2. 其余前景操作按钮（含旋转、水平翻转、垂直翻转、缩放）
-                for btn in &self.buttons {
-                    if !btn.emphasized_circle && btn.rect.contains(x, y) {
-                        return HitTarget::ToolbarButton(btn.action);
-                    }
+            }
+            if let Some(rc) = self.filmstrip_rect {
+                if rc.contains(x, y) {
+                    return HitTarget::FilmstripBackground;
                 }
-                // 3. 背景层一体化缩略图胶片流
-                for item in &self.filmstrip_items {
-                    if item.rect.contains(x, y) {
-                        return HitTarget::FilmstripItem(item.index);
-                    }
+            }
+            if self.toolbar_rect.contains(x, y) {
+                return HitTarget::ToolbarBackground;
+            }
+            if let Some(rc) = self.anim_scrubber_rect {
+                if rc.contains(x, y) {
+                    return HitTarget::AnimScrubber;
                 }
-                if let Some(rc) = self.filmstrip_rect {
-                    if rc.contains(x, y) {
-                        return HitTarget::FilmstripBackground;
-                    }
+            }
+            for btn in &self.anim_buttons {
+                if btn.rect.contains(x, y) {
+                    return HitTarget::ToolbarButton(btn.action);
                 }
-                if self.toolbar_rect.contains(x, y) {
+            }
+            if let Some(rc) = self.anim_bar_rect {
+                if rc.contains(x, y) {
                     return HitTarget::ToolbarBackground;
-                }
-                if let Some(rc) = self.anim_scrubber_rect {
-                    if rc.contains(x, y) {
-                        return HitTarget::AnimScrubber;
-                    }
-                }
-                for btn in &self.anim_buttons {
-                    if btn.rect.contains(x, y) {
-                        return HitTarget::ToolbarButton(btn.action);
-                    }
-                }
-                if let Some(rc) = self.anim_bar_rect {
-                    if rc.contains(x, y) {
-                        return HitTarget::ToolbarBackground;
-                    }
                 }
             }
         }
@@ -625,7 +535,6 @@ mod tests {
             is_animated: false,
             anim_playing: false,
             is_slideshow: false,
-            slideshow_paused: false,
             is_actual_zoom: false,
             is_flipped_h: false,
             is_flipped_v: false,
@@ -703,11 +612,19 @@ mod tests {
     }
 
     #[test]
-    fn slideshow_mode_exposes_mini_control_bar() {
+    fn slideshow_mode_is_pure_canvas_without_bottom_bar() {
         let mut input = sample_input();
         input.is_slideshow = true;
         let layout = ViewerUiLayout::compute(&input);
-        assert!(layout.slideshow_mini_bar_rect.is_some());
-        assert_eq!(layout.slideshow_mini_buttons.len(), 4);
+        let img_rc = RectF::new(240.0, 0.0, 1680.0, 1080.0);
+        // 幻灯片放映态绝对纯净（1:1 致敬原版 Picasa），底部正中不渲染任何播控条或文件名
+        assert_eq!(
+            layout.hit_test(960.0, 1038.0, img_rc, true),
+            HitTarget::ImageCanvas
+        );
+        assert_eq!(
+            layout.hit_test(1919.0, 0.0, img_rc, true),
+            HitTarget::EmptyBackdrop
+        );
     }
 }
