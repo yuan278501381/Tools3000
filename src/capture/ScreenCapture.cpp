@@ -356,6 +356,20 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         });
     });
 
+    overlay.setTranslateCallback([](const CaptureRegion& region, const cv::Mat& cropped) {
+        if (cropped.empty()) return;
+        cv::Mat img = cropped.clone();
+        CaptureRegion capturedReg = region;
+        CaptureHistory::instance().push(img, capturedReg);
+        const POINT spawnPos = PinWindow::calculateSmartSpawnPosition(
+            img.cols, img.rows, nullptr, &capturedReg, 0, 0);
+        auto livePin = PinWindow::create(
+            img, spawnPos.x, spawnPos.y, 0.0f, {}, {}, {}, /*autoStartLiveOcr=*/false);
+        if (livePin) {
+            livePin->translateInPlace(/*selectedOnly=*/false);
+        }
+    });
+
     ScrollCapture::instance().setProgressCallback([](const cv::Mat& preview, int frameCount) {
         ScrollCaptureOverlay::instance().updatePreview(preview, frameCount);
     });

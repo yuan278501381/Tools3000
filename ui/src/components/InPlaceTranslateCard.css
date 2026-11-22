@@ -1,0 +1,140 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * InPlaceTranslateCard.css — 截图识别原位翻译配置卡片样式
+ * 遵循 @container 容器自适应、字号 >= 0.83rem、字重 >= 500、CSS 变量单一事实源
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.translate-card {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.translate-card__presets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.translate-card__preset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  line-height: var(--leading-normal);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.translate-card__preset-btn:hover {
+  border-color: var(--card-border-hover);
+  background: var(--card-hover);
+}
+
+.translate-card__preset-btn--active {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--bg-elevated);
+}
+
+.translate-card__fields-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+@container (max-width: 620px) {
+  .translate-card__fields-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.translate-card__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.translate-card__field--full {
+  grid-column: 1 / -1;
+}
+
+.translate-card__field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+}
+
+.translate-card__key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.translate-card__key-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.translate-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+  padding-top: 4px;
+}
+
+.translate-card__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.translate-card__probe-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--card-border);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  line-height: var(--leading-normal);
+  color: var(--text-secondary);
+}
+
+.translate-card__probe-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.translate-card__probe-sample {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  word-break: break-word;
+}

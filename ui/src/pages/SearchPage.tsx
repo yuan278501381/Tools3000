@@ -6,6 +6,7 @@ import { useState, useEffect, type FC } from 'react';
 import { Card, Toggle, SettingRow, SettingGroup, Button, Tabs, Select, PageSkeleton, type TabItem, CodeBadge } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
+import { SearchExternalApiCard } from '../components/SearchExternalApiCard';
 import { CATEGORY_DEFS } from '../search/searchConstants';
 import type { SearchMode } from '../search/searchTypes';
 import { safeStorageGetEnum, safeStorageSetItem } from '../search/storageUtils';
@@ -36,6 +37,9 @@ interface SearchSettings {
   pinyinEnabled: boolean;
   iconStyle?: 'native' | 'vector';
   autoBypassFullscreen?: boolean;
+  externalApiEnabled?: boolean;
+  externalApiExcludePaths?: string;
+  externalApiAllowedRoots?: string;
 }
 
 interface ServiceStatus {
@@ -71,6 +75,9 @@ export const SearchPage: FC = () => {
     pinyinEnabled: isChineseUi,
     iconStyle: 'native',
     autoBypassFullscreen: true,
+    externalApiEnabled: false,
+    externalApiExcludePaths: '',
+    externalApiAllowedRoots: '',
   });
   const [searchMode, setSearchMode] = useState<SearchMode>(() =>
     safeStorageGetEnum('tools3000_search_default_mode', ['name', 'both', 'content'] as const, 'name'),
@@ -439,6 +446,22 @@ export const SearchPage: FC = () => {
 
             </Card>
           </SettingGroup>
+
+          <SearchExternalApiCard
+            externalApiEnabled={settings.externalApiEnabled ?? false}
+            externalApiExcludePaths={settings.externalApiExcludePaths ?? ''}
+            externalApiAllowedRoots={settings.externalApiAllowedRoots ?? ''}
+            onSaveSettings={async (patch) => {
+              setSettings(prev => ({ ...prev, ...patch }));
+              try {
+                await bridgeRequest('search.saveSettings', patch);
+              } catch {
+                void bridgeRequest<SearchSettings>('search.getSettings')
+                  .then(res => setSettings(prev => ({ ...prev, ...res })))
+                  .catch(() => {});
+              }
+            }}
+          />
         </div>
       )}
 

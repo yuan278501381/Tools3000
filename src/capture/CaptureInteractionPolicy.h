@@ -38,6 +38,7 @@ inline bool isTerminalToolbarCommand(ToolbarCommand cmd) noexcept {
         case ToolbarCommand::QuickSave:
         case ToolbarCommand::Cancel:
         case ToolbarCommand::ExtractText:
+        case ToolbarCommand::Translate:
         case ToolbarCommand::PinWindow:
         case ToolbarCommand::ScrollCapture:
         case ToolbarCommand::StartRecord:

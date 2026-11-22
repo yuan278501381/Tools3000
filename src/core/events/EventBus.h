@@ -135,6 +135,18 @@ struct SpotlightStateChangedEvent {
     bool enabled = true;
 };
 
+/// 剪贴板历史模块启用状态变化事件
+struct ClipboardStateChangedEvent {
+    bool enabled = true;
+};
+
+/// 请求将本地图片文件悬浮贴图（可选自动执行离线 OCR 或原位翻译，跨模块零耦合桥接）
+struct ActionPinImageFileEvent {
+    std::string path;
+    bool autoOcr = false;
+    bool autoTranslate = false;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────// 显示全局 Toast 的事件
 struct ShowToastEvent {
     std::wstring message;
@@ -145,6 +157,13 @@ struct ThemeChangedEvent {
     std::string theme;       // "system" | "light" | "dark"
     std::string accentColor; // "violet" | "cyan" | "amber" | "blue" | "mint" | "coral"
     std::string trayIconTheme = "system"; // "system" | "light" | "dark" | "color"
+};
+
+/// 新版本检查与自动下载就绪状态变更事件（驱动托盘图标红点与 Tooltip 实时同步）
+struct UpdateStatusChangedEvent {
+    bool hasUpdate = false;
+    bool readyToInstall = false;
+    std::string latestVersion;
 };
 
 /// 鼠标活动事件 (供鼠标聚光灯、水波纹与轨迹等演示特效使用)

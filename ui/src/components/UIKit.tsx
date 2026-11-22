@@ -549,11 +549,12 @@ interface TextInputProps {
   rows?: number;
   readOnly?: boolean;
   ariaLabel?: string;
+  type?: 'text' | 'password';
 }
 
 export const TextInput: FC<TextInputProps> = ({
   id, value, onChange, placeholder, disabled = false, multiline = false, rows = 4,
-  readOnly = false, ariaLabel,
+  readOnly = false, ariaLabel, type = 'text',
 }) => {
   const a11y = useControlA11y();
   const accessibility = {
@@ -576,7 +577,7 @@ export const TextInput: FC<TextInputProps> = ({
   ) : (
     <input
       id={id}
-      type="text"
+      type={type}
       className="uikit-input"
       value={value}
       placeholder={placeholder}

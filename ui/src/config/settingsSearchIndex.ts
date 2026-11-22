@@ -68,6 +68,10 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'srch-syntax', navId: 'search', tabId: 'syntax', labelKey: 'searchPage.tabSyntax', descKey: 'searchPage.modifiersTitle', keywords: 'syntax manual wildcard operator ext folder' },
   { id: 'srch-regex', navId: 'search', tabId: 'regex', labelKey: 'searchPage.tabRegex', descKey: 'searchPage.regexHint', keywords: 'regex regular expression pattern zhengze' },
   { id: 'srch-status', navId: 'search', tabId: 'status', labelKey: 'searchPage.tabStatus', descKey: 'searchPage.serviceMonitor', keywords: 'ntfs mft usn pipe service index daemon suoyin' },
+  { id: 'srch-external', navId: 'search', tabId: 'settings', labelKey: 'searchExternal.enableTitle', descKey: 'searchExternal.enableDesc', keywords: 'cli mcp ai agent cursor claude json rpc terminal minglinhang' },
+
+  // Clipboard
+  { id: 'clip-history', navId: 'clipboard', labelKey: 'clipboardPage.enableTitle', descKey: 'clipboardPage.enableDesc', keywords: 'clipboard copy paste history pin ditto alt v rust jiantieban fuzhi zhantie' },
 
   // Gesture & HotCorner
   { id: 'gst-trigger', navId: 'gesture', labelKey: 'gesture.triggerButton', descKey: 'gesture.triggerButtonDesc', keywords: 'right middle button mouse trigger shoushi' },
@@ -84,6 +88,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'rec-video', navId: 'capture', labelKey: 'recording.title', descKey: 'recording.formatDesc', keywords: 'record mp4 gif webm fps audio microphone luping' },
   { id: 'rec-autozoom', navId: 'capture', labelKey: 'recording.studioAutoZoom', descKey: 'recording.studioAutoZoomDesc', keywords: 'studio auto zoom camera motion waveform yunjing zidongyunjing boxing' },
   { id: 'ocr-lang', navId: 'ocr', labelKey: 'ocr.language', descKey: 'ocr.languageDesc', keywords: 'ocr text extract japanese korean english shibie' },
+  { id: 'ocr-translate', navId: 'ocr', labelKey: 'translate.groupTitle', descKey: 'translate.providerDesc', keywords: 'translate in-place edge bing google openai deepseek ollama deepl fanyi yuanwei' },
   { id: 'his-recent', navId: 'history', labelKey: 'history.title', descKey: 'history.subtitle', keywords: 'history recent screenshot pin lishi' },
 
   // Keycast, Spotlight, Dialog Enhancer, Remote Boost, Stats

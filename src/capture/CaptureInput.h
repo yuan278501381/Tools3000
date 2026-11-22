@@ -76,6 +76,9 @@ private:
     std::function<void()> m_cancelCb;
     std::function<void(CaptureCompletion)> m_confirmCb;
     WindowElementDetector m_elementDetector;
+    HWND m_lastDetectedTopHwnd = nullptr;
+    POINT m_lastDetectScreenPt{INT_MIN, INT_MIN};
+    bool m_hasAsyncRefinedActive = false;
     
     void enableIME(bool enable);
     HIMC m_defaultImc = nullptr;

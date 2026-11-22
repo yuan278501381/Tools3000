@@ -49,7 +49,9 @@ constexpr SimpleKeyRule kActionTable[] = {
     {'A',       true,  false, false, true,  PinShortcutAction::SelectAllText},
     {'C',       true,  false, true,  false, PinShortcutAction::CopyAllText},
     {'C',       true,  false, false, true,  PinShortcutAction::CopySelectedOrImage},
-    {'T',       true,  false, false, false, PinShortcutAction::ExtractText},
+    {'T',       true,  false, true,  false, PinShortcutAction::TranslateInPlace},
+    {'T',       true,  false, false, true,  PinShortcutAction::ExtractText},
+    {VK_TAB,    false, true,  false, true,  PinShortcutAction::ToggleTranslationOverlay},
     {'S',       true,  false, false, false, PinShortcutAction::SaveImage},
     {VK_OEM_PLUS,   false, false, false, false, PinShortcutAction::ZoomIn},
     {VK_ADD,        false, false, false, false, PinShortcutAction::ZoomIn},
@@ -305,9 +307,9 @@ PinHoverToolbarLayout PinInputController::computeHoverToolbarLayout(float window
     const float availW = (std::max)(12.0f, safeWinW - 2.0f * tbPadding);
     const float availH = (std::max)(12.0f, safeWinH - 2.0f * tbPadding);
 
-    // 候选网格布局 (cols x rows): 优先 8x1 -> 4x2 -> 2x4 -> 1x8
-    constexpr int kCandidateCols[] = {8, 4, 2, 1};
-    int chosenCols = 8;
+    // 候选网格布局 (cols x rows): 优先 9x1 -> 5x2 -> 3x3 -> 1x9
+    constexpr int kCandidateCols[] = {9, 5, 3, 1};
+    int chosenCols = 9;
     int chosenRows = 1;
 
     for (int cols : kCandidateCols) {

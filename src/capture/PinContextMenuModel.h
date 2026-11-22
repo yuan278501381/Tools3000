@@ -88,6 +88,10 @@ enum class PinMenuAction {
     CopyAllText,
     EditMarkup,
     ExtractTextDialog,
+    TranslateInPlace,
+    RetranslateInPlace,
+    ToggleTranslationOverlay,
+    CopyTranslatedText,
     ToggleTextSelectionMode,
     SelectAllText,
     SaveImage,
@@ -142,6 +146,9 @@ struct PinContextMenuSnapshot {
     bool isTextSelectionMode = false;
     bool hasSelectedText = false;
     bool hasPinnedSourceText = false;
+    bool hasTranslation = false;
+    bool isShowingTranslation = false;
+    bool isTranslationInFlight = false;
     float scale = 1.0f;
     float opacity = 1.0f;
 

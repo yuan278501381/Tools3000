@@ -1,0 +1,16 @@
+[package]
+name = "tools3000_clipboard_rs"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-dependency Rust persistent storage, deduplication and sub-millisecond search kernel for Tools3000 Clipboard Manager"
+license = "GPL-3.0-only"
+
+[lib]
+name = "tools3000_clipboard_rs"
+crate-type = ["staticlib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

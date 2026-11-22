@@ -84,11 +84,23 @@ interface PerfMetrics {
 }
 
 interface UpdateResult {
-  status: 'available' | 'upToDate' | 'unavailable' | 'error';
+  status: 'idle' | 'checking' | 'available' | 'downloading' | 'readyToInstall' | 'upToDate' | 'unavailable' | 'error';
+  hasUpdate?: boolean;
+  isPortable?: boolean;
   currentVersion?: string;
   latestVersion?: string;
   releaseUrl?: string;
+  assetName?: string;
+  assetSize?: number;
+  downloadedBytes?: number;
+  progress?: number;
+  readyToInstall?: boolean;
   error?: string;
+}
+
+function formatUpdateMB(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '0 MB';
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 const safeMetric = (value: unknown) =>
@@ -106,18 +118,27 @@ export const AboutPage: FC = () => {
   useBridgeEvent('update.result', (data) => {
     if (!data || typeof data !== 'object') return;
     const result = data as UpdateResult;
-    if (!['available', 'upToDate', 'unavailable', 'error'].includes(result.status)) return;
+    if (!['available', 'downloading', 'readyToInstall', 'upToDate', 'unavailable', 'error'].includes(result.status)) return;
     setCheckingUpdate(false);
-    setUpdateResult(result);
-    if (result.status === 'available') {
+    setUpdateResult((prev) => ({ ...prev, ...result }));
+    if (result.status === 'available' || result.status === 'readyToInstall') {
       toast.success(t('about.updateAvailable', { version: result.latestVersion ?? '' }));
     } else if (result.status === 'upToDate') {
       toast.success(t('about.upToDate'));
     } else if (result.status === 'unavailable') {
       toast.info(t('about.noPublishedRelease'));
-    } else {
+    } else if (result.status === 'error') {
       toast.error(t('about.updateFailed'));
     }
+  });
+
+  useBridgeEvent('update.state', (data) => {
+    if (!data || typeof data !== 'object') return;
+    const st = data as UpdateResult;
+    if (st.status !== 'checking') {
+      setCheckingUpdate(false);
+    }
+    setUpdateResult((prev) => ({ ...prev, ...st }));
   });
 
   useEffect(() => {
@@ -125,6 +146,14 @@ export const AboutPage: FC = () => {
       .then((info) => {
         if (typeof info.version === 'string' && info.version.trim()) setVersion(info.version);
         if (typeof info.buildDate === 'string' && info.buildDate.trim()) setBuildDate(info.buildDate.trim());
+      })
+      .catch(() => undefined);
+    void bridgeRequest<UpdateResult>('app.getUpdateState', undefined, { silent: true })
+      .then((st) => {
+        if (st && typeof st.status === 'string' && st.status !== 'idle') {
+          setUpdateResult(st);
+          setCheckingUpdate(st.status === 'checking');
+        }
       })
       .catch(() => undefined);
   }, []);
@@ -196,6 +225,28 @@ export const AboutPage: FC = () => {
     }
   };
 
+  const handleDownloadUpdate = async () => {
+    try {
+      const res = await bridgeRequest<UpdateResult & { success?: boolean }>('app.downloadUpdate');
+      if (res && typeof res.status === 'string') {
+        setUpdateResult((prev) => ({ ...prev, ...res }));
+      }
+    } catch {
+      toast.error(t('about.updateFailed'));
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    try {
+      const res = await bridgeRequest<{ success?: boolean; error?: string }>('app.installUpdate');
+      if (!res?.success) {
+        toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
+      }
+    } catch {
+      toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
+    }
+  };
+
   const openReleasePage = async () => {
     const url = updateResult?.releaseUrl;
     if (!url || !url.toLowerCase().startsWith('https://github.com/yuan278501381/tools3000/')) return;
@@ -251,14 +302,61 @@ export const AboutPage: FC = () => {
               <Download size={13} />
               <span>{t('about.exportLogs', 'Export Logs')}</span>
             </Button>
-            {updateResult?.status === 'available' && updateResult.releaseUrl && (
-              <Button variant="primary" size="sm" onClick={() => void openReleasePage()}>
+            {updateResult?.readyToInstall ? (
+              <Button variant="primary" size="sm" onClick={() => void handleInstallUpdate()}>
+                <Download size={13} />
+                <span>
+                  {updateResult.isPortable
+                    ? t('about.openDownloadedPortable', 'Open Portable Package')
+                    : t('about.installUpdateNow', { version: updateResult.latestVersion ?? '', defaultValue: `Install ${updateResult.latestVersion ?? ''}` })}
+                </span>
+              </Button>
+            ) : updateResult?.hasUpdate && updateResult.status !== 'downloading' ? (
+              <Button variant="primary" size="sm" onClick={() => void handleDownloadUpdate()}>
+                <Download size={13} />
+                <span>{t('about.downloadUpdateNow', { version: updateResult.latestVersion ?? '', defaultValue: `Download ${updateResult.latestVersion ?? ''}` })}</span>
+              </Button>
+            ) : null}
+            {updateResult?.hasUpdate && updateResult.releaseUrl && (
+              <Button variant="secondary" size="sm" onClick={() => void openReleasePage()}>
                 <ExternalLink size={13} />
                 <span>{t('about.openRelease')}</span>
               </Button>
             )}
           </div>
         </div>
+
+        {updateResult?.hasUpdate && (
+          <div className={`about-update-panel${updateResult.readyToInstall ? ' about-update-panel--ready' : ''}`}>
+            <div className="about-update-panel__row">
+              <span className="about-update-panel__status">
+                <span className="about-update-panel__dot" aria-hidden="true" />
+                {updateResult.status === 'downloading'
+                  ? t('about.downloadingDetail', {
+                      version: updateResult.latestVersion ?? '',
+                      progress: updateResult.progress ?? 0,
+                      defaultValue: `Downloading ${updateResult.latestVersion ?? ''} (${updateResult.progress ?? 0}%)`,
+                    })
+                  : updateResult.readyToInstall
+                    ? t('about.updateReadyHint', {
+                        version: updateResult.latestVersion ?? '',
+                        defaultValue: `Version ${updateResult.latestVersion ?? ''} verified and ready to install`,
+                      })
+                    : t('about.updateAvailable', { version: updateResult.latestVersion ?? '' })}
+              </span>
+              {updateResult.status === 'downloading' && (
+                <span className="about-update-panel__bytes">
+                  {`${formatUpdateMB(updateResult.downloadedBytes)} / ${formatUpdateMB(updateResult.assetSize)}`}
+                </span>
+              )}
+            </div>
+            {updateResult.status === 'downloading' && (
+              <div className="about-update-panel__bar" role="progressbar" aria-valuenow={updateResult.progress ?? 0} aria-valuemin={0} aria-valuemax={100}>
+                <div className="about-update-panel__bar-fill" style={{ width: `${Math.min(100, Math.max(2, updateResult.progress ?? 0))}%` }} />
+              </div>
+            )}
+          </div>
+        )}
 
         <p className="about-desc">{t('about.description')}</p>
 

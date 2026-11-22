@@ -35,6 +35,7 @@ enum class CaptureIconId {
     ActionRedo,
     ActionClear,
     ActionExtractText,
+    ActionTranslate,
     ActionPinWindow,
     ActionPinGroup,
     ActionScrollCapture,

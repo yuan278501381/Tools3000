@@ -4,37 +4,76 @@
 #include "Tools3000Version.h"
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <thread>
 
 namespace tools3000::core {
 
-/// Bounded, non-blocking GitHub release checker.
+/// Bounded, non-blocking GitHub release checker with verified background auto-download & install.
 class TOOLS3000CORE_API UpdateChecker final {
 public:
     static UpdateChecker& instance();
 
-    /// Starts a background check. A started check emits `update.result`.
+    /// Starts a background check. A started check emits `update.result` and `update.state`.
     bool checkAsync(bool force = false);
+
+    /// Starts downloading the latest verified release asset in the background.
+    bool downloadUpdateAsync();
+
+    /// Launches the verified downloaded installer (or highlights the portable ZIP in Explorer).
+    bool installDownloadedUpdate(std::string& outError);
+
+    /// Returns a JSON snapshot string of the latest update & download state.
+    std::string getStateJsonString() const;
+
     void shutdown();
 
     static constexpr const char* CurrentVersion = tools3000::version::String;
     static bool isNewerVersion(std::string_view candidate, std::string_view current);
+    static bool isTrustedReleaseDownloadUrl(std::string_view url) noexcept;
+    static std::string extractExpectedSha256ForAsset(std::string_view sha256SumsBody, std::string_view assetName);
 
 private:
+    struct UpdateStateSnapshot {
+        std::string status = "idle"; // idle | checking | available | downloading | readyToInstall | upToDate | unavailable | error
+        bool hasUpdate = false;
+        bool isPortable = false;
+        std::string currentVersion = CurrentVersion;
+        std::string latestVersion;
+        std::string releaseUrl;
+        std::string releaseNotes;
+        std::string assetName;
+        std::string downloadUrl;
+        std::string checksumUrl;
+        uint64_t assetSize = 0;
+        uint64_t downloadedBytes = 0;
+        int progress = 0;
+        std::string downloadedFilePath;
+        std::string error;
+    };
+
     UpdateChecker() = default;
     ~UpdateChecker();
     UpdateChecker(const UpdateChecker&) = delete;
     UpdateChecker& operator=(const UpdateChecker&) = delete;
 
-    void workerMain(std::stop_token stopToken);
+    void workerMain(std::stop_token stopToken, bool autoDownloadIfAvailable);
+    void downloadWorkerMain(std::stop_token stopToken);
+    void broadcastStateLocked(bool emitLegacyResult, bool emitToast);
 
     std::mutex m_workerMutex;
     std::mutex m_requestMutex;
+    mutable std::mutex m_stateMutex;
     std::jthread m_worker;
+    std::jthread m_downloadWorker;
     void* m_activeRequest = nullptr;
+    void* m_activeDownloadRequest = nullptr;
+    UpdateStateSnapshot m_state;
     std::atomic<bool> m_busy{false};
+    std::atomic<bool> m_downloading{false};
     std::atomic<bool> m_stopping{false};
 };
 

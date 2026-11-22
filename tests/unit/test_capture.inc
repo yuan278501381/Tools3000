@@ -11,6 +11,7 @@
 #include "capture/CaptureVectorIcons.h"
 #include "capture/MarkupCurveGeometry.h"
 #include "capture/PinContextMenu.h"
+#include "capture/InPlaceTranslateEngine.h"
 
 TEST(CaptureBackendTest, Direct3DAndGdiSmoke) {
     const auto capabilities = tools3000::capture::captureBackendCapabilities();
@@ -718,23 +719,26 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
     const D2D1_SIZE_F desktop150 = D2D1::SizeF(2304.0f, 1440.0f);
     rebuildCaptureToolbar(screenshot, D2D1::RectF(180.0f, 120.0f, 1600.0f, 980.0f),
                           desktop150);
-    EXPECT_EQ(screenshot.toolbarButtons.size(), 19u);
+    EXPECT_EQ(screenshot.toolbarButtons.size(), 20u);
     EXPECT_EQ(screenshot.secondaryToolbarButtons.size(), 15u); // 7 属性 + 7 预设色 + 1 拾色器
     EXPECT_EQ(screenshot.selectionSideButtons.size(), 4u);
     bool hasRecordBtn = false;
     bool hasCopyBtn = false;
     bool hasQuickSaveBtn = false;
     bool hasMagnifierBtn = false;
+    bool hasTranslateBtn = false;
     for (const auto& btn : screenshot.toolbarButtons) {
         if (btn.command == ToolbarCommand::StartRecord) hasRecordBtn = true;
         if (btn.command == ToolbarCommand::Copy) hasCopyBtn = true;
         if (btn.command == ToolbarCommand::QuickSave) hasQuickSaveBtn = true;
+        if (btn.command == ToolbarCommand::Translate) hasTranslateBtn = true;
         if (btn.command == ToolbarCommand::SelectTool && btn.tool == MarkupTool::Magnifier) hasMagnifierBtn = true;
     }
     EXPECT_TRUE(hasRecordBtn);
     EXPECT_TRUE(hasCopyBtn);
     EXPECT_TRUE(hasQuickSaveBtn);
     EXPECT_TRUE(hasMagnifierBtn);
+    EXPECT_TRUE(hasTranslateBtn);
     EXPECT_NEAR(screenshot.toolbarButtons.front().rect.bottom -
                 screenshot.toolbarButtons.front().rect.top, 48.0f, 0.01f);
     check_toolbar_inside_surface(screenshot, desktop150);
@@ -749,7 +753,7 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
     wrapped.dpiScale = 2.0f;
     const D2D1_SIZE_F compact = D2D1::SizeF(1000.0f, 700.0f);
     rebuildCaptureToolbar(wrapped, D2D1::RectF(80.0f, 100.0f, 850.0f, 480.0f), compact);
-    EXPECT_EQ(wrapped.toolbarButtons.size(), 19u);
+    EXPECT_EQ(wrapped.toolbarButtons.size(), 20u);
     EXPECT_EQ(wrapped.secondaryToolbarButtons.size(), 15u); // 7 属性 + 7 预设色 + 1 拾色器
     EXPECT_EQ(wrapped.selectionSideButtons.size(), 4u);
     check_toolbar_inside_surface(wrapped, compact);
@@ -779,7 +783,7 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
     const D2D1_SIZE_F desktop500 = D2D1::SizeF(7680.0f, 4320.0f);
     rebuildCaptureToolbar(extreme, D2D1::RectF(500.0f, 400.0f, 7000.0f, 3600.0f),
                           desktop500);
-    EXPECT_EQ(extreme.toolbarButtons.size(), 19u);
+    EXPECT_EQ(extreme.toolbarButtons.size(), 20u);
     check_toolbar_inside_surface(extreme, desktop500);
 }
 
@@ -1137,7 +1141,7 @@ TEST(PinWindowTest, KeyboardShortcutsRotationFlipOpacityAndFocusPolicy) {
     }
 
     const auto normalTb = PinInputController::computeHoverToolbarLayout(400.0f, 200.0f, 1.0f);
-    EXPECT_EQ(normalTb.columns, 8);
+    EXPECT_EQ(normalTb.columns, 9);
     EXPECT_EQ(normalTb.rows, 1);
     const auto tipNormal = PinInputController::computeTooltipRect(
         normalTb.toolbarRect, (normalTb.buttons[1].left + normalTb.buttons[1].right) * 0.5f, 400.0f, 200.0f, 1.0f);
@@ -1146,7 +1150,7 @@ TEST(PinWindowTest, KeyboardShortcutsRotationFlipOpacityAndFocusPolicy) {
     EXPECT_LE(tipNormal.bottom, 200.0f);
 
     const auto narrowTb = PinInputController::computeHoverToolbarLayout(80.0f, 400.0f, 1.0f);
-    EXPECT_LT(narrowTb.columns, 8);
+    EXPECT_LT(narrowTb.columns, 9);
     EXPECT_GT(narrowTb.rows, 1);
     const auto tipNarrow = PinInputController::computeTooltipRect(
         narrowTb.toolbarRect, (narrowTb.buttons[1].left + narrowTb.buttons[1].right) * 0.5f, 80.0f, 400.0f, 1.0f);
@@ -7959,7 +7963,7 @@ TEST(CaptureMagnifierTest, FirstClassToolbarAndOffsetCalloutLoupe) {
     const D2D1_RECT_F sel = D2D1::RectF(160.0f, 120.0f, 1280.0f, 820.0f);
     rebuildCaptureToolbar(state, sel, surface);
 
-    ASSERT_EQ(state.toolbarButtons.size(), 19u);
+    ASSERT_EQ(state.toolbarButtons.size(), 20u);
     ASSERT_FALSE(state.secondaryToolbarButtons.empty());
 
     bool hasShapeToggle = false;
@@ -14806,7 +14810,7 @@ TEST(CaptureQuickSaveRegressionTest, ToolbarLayoutDpi100And150ContainsZeroOverla
         const D2D1_RECT_F narrowSel = D2D1::RectF(120.0f, 120.0f, 220.0f, 220.0f);
         rebuildCaptureToolbar(state, narrowSel, surface);
 
-        ASSERT_EQ(state.toolbarButtons.size(), 19u);
+        ASSERT_EQ(state.toolbarButtons.size(), 20u);
         check_toolbar_inside_surface(state, surface);
 
         int copyIdx = -1;
@@ -14989,6 +14993,252 @@ TEST(CaptureQuickSaveRegressionTest, ShortcutRoutingCommandDispatchIconRenderAnd
             fakeAppData / L"Screenshots");
     }
 }
+
+TEST(InPlaceTranslateEngineTest, ParagraphClusteringNoiseFilterAndNonDestructiveRender) {
+    using namespace tools3000::capture;
+
+    // 1. 段落聚类：左对齐连续两行（带连字符断词）合并成 1 段；不同表格列不跨列合并；纯数字/符号噪声被过滤
+    std::vector<PinOcrBlock> blocks;
+    blocks.push_back(PinOcrBlock{"High-perfor-", cv::Rect(24, 24, 180, 22), {}, 0, -1});
+    blocks.push_back(PinOcrBlock{"mance screenshot tool", cv::Rect(24, 50, 210, 22), {}, 0, -1});
+    blocks.push_back(PinOcrBlock{"Price", cv::Rect(320, 24, 72, 22), {}, 1, 0});
+    blocks.push_back(PinOcrBlock{"12,345.67%", cv::Rect(320, 56, 90, 22), {}, 1, 1});
+
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("12,345.67%"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("https://example.com/a/b"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("ZZ00445707"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("501023856AA"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("HB0502000441"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("AS0002"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("V8.6.0.724"));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("Price"));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("奇瑞T1Q项目"));
+
+    auto paragraphs = InPlaceTranslateEngine::buildTranslationParagraphs(blocks, cv::Size(480, 160));
+    ASSERT_EQ(paragraphs.size(), 2u);
+    EXPECT_EQ(paragraphs[0].originalText, "High-performance screenshot tool");
+    EXPECT_EQ(paragraphs[0].lineRects.size(), 2u);
+    EXPECT_FALSE(paragraphs[0].isSingleLine);
+    EXPECT_EQ(paragraphs[1].originalText, "Price");
+    EXPECT_EQ(paragraphs[1].lineRects.size(), 1u);
+    EXPECT_TRUE(paragraphs[1].isSingleLine);
+
+    // 2. 非破坏原位译图合成（BGR24 与 BGRA32 均严格保持原图不变、尺寸/通道一致，且文字区域像素产生真实重绘）
+    paragraphs[0].translatedText = "高性能桌面截图与效率工具";
+    paragraphs[1].translatedText = "价格";
+    EXPECT_NE(InPlaceTranslateEngine::joinTranslatedTexts(paragraphs).find("高性能桌面截图与效率工具"), std::string::npos);
+
+    cv::Mat srcBgr(160, 480, CV_8UC3, cv::Scalar(245, 247, 250));
+    cv::putText(srcBgr, "High-perfor-", cv::Point(26, 42), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(25, 32, 48), 2);
+    cv::putText(srcBgr, "mance tool", cv::Point(26, 68), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(25, 32, 48), 2);
+    cv::putText(srcBgr, "Price", cv::Point(322, 42), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(25, 32, 48), 2);
+    const cv::Mat snapshotBefore = srcBgr.clone();
+
+    const auto renderBgr = InPlaceTranslateEngine::renderTranslatedCanvas(srcBgr, paragraphs, "zh-Hans");
+    ASSERT_TRUE(renderBgr.success);
+    ASSERT_FALSE(renderBgr.translatedCanvas.empty());
+    EXPECT_EQ(renderBgr.renderedCount, 2u);
+    EXPECT_EQ(renderBgr.translatedCanvas.size(), srcBgr.size());
+    EXPECT_EQ(renderBgr.translatedCanvas.type(), srcBgr.type());
+    // 原图 100% 零修改（非破坏性保证）
+    EXPECT_EQ(cv::countNonZero(cv::Mat(srcBgr != snapshotBefore).reshape(1)), 0);
+    // 译图在段落区域发生了真实像素更新
+    cv::Mat diff;
+    cv::absdiff(srcBgr(paragraphs[0].unionRect), renderBgr.translatedCanvas(paragraphs[0].unionRect), diff);
+    cv::Mat grayDiff;
+    cv::cvtColor(diff, grayDiff, cv::COLOR_BGR2GRAY);
+    EXPECT_GT(cv::countNonZero(grayDiff > 15), 25);
+
+    // BGRA 通道完整性保护
+    cv::Mat srcBgra;
+    cv::cvtColor(srcBgr, srcBgra, cv::COLOR_BGR2BGRA);
+    const auto renderBgra = InPlaceTranslateEngine::renderTranslatedCanvas(srcBgra, paragraphs, "zh-Hans");
+    ASSERT_TRUE(renderBgra.success);
+    EXPECT_EQ(renderBgra.translatedCanvas.type(), CV_8UC4);
+
+    // 2.5. 当译文与原文语义一致（如代码文件名/路径）时跳过擦除与重绘，保护原始清晰像素
+    auto unchangedParas = paragraphs;
+    unchangedParas[0].translatedText = unchangedParas[0].originalText;
+    unchangedParas[1].translatedText = unchangedParas[1].originalText;
+    const auto renderNoop = InPlaceTranslateEngine::renderTranslatedCanvas(srcBgr, unchangedParas, "zh-Hans");
+    EXPECT_FALSE(renderNoop.success);
+    EXPECT_EQ(renderNoop.renderedCount, 0u);
+    EXPECT_EQ(cv::countNonZero(cv::Mat(srcBgr != renderNoop.translatedCanvas).reshape(1)), 0);
+
+    // 2.6. 表格单元格与相邻菜单防跨行踩线断言：单行中译英膨胀文本绝不向下突破邻行障碍
+    {
+        cv::Mat tableCanvas(120, 320, CV_8UC3, cv::Scalar(246, 246, 246));
+        cv::line(tableCanvas, cv::Point(10, 38), cv::Point(310, 38), cv::Scalar(60, 60, 60), 1);
+        cv::line(tableCanvas, cv::Point(140, 10), cv::Point(140, 90), cv::Scalar(60, 60, 60), 1);
+        std::vector<TranslationParagraph> cells;
+        TranslationParagraph cell1{};
+        cell1.unionRect = cv::Rect(20, 16, 62, 18);
+        cell1.lineRects = {cell1.unionRect};
+        cell1.isSingleLine = true;
+        cell1.alignedRowId = 0;
+        cell1.originalText = "原材料箱";
+        cell1.translatedText = "Raw Material Storage Box";
+        cells.push_back(cell1);
+
+        const std::vector<cv::Rect> obstacles = {cv::Rect(20, 44, 110, 20)};
+        const auto cellRes = InPlaceTranslateEngine::renderTranslatedCanvas(tableCanvas, cells, "en", obstacles);
+        ASSERT_TRUE(cellRes.success);
+        ASSERT_EQ(cellRes.paragraphs.size(), 1u);
+        // 严格被水平表格线 (y=38) 与垂直表格线 (x=140) 阻挡，绝不向下压盖下一行或穿破竖线！
+        EXPECT_LE(cellRes.paragraphs[0].renderedRect.y + cellRes.paragraphs[0].renderedRect.height, 38);
+        EXPECT_LE(cellRes.paragraphs[0].renderedRect.x + cellRes.paragraphs[0].renderedRect.width, 140);
+    }
+
+    // 2.7. 带递增 alignedRowId 的悬挂缩进多行正文段必须正确合并，同时相邻列表项（• 开头）与短表格单元格（是/是/是）严格分离
+    {
+        std::vector<PinOcrBlock> docBlocks;
+        docBlocks.push_back(PinOcrBlock{"• 双「剪贴板历史」菜单根因：App.tsx 的 standardPluginIds 漏加 'clipboard'，导致后端", cv::Rect(20, 40, 820, 20), {}, 0, 0});
+        docBlocks.push_back(PinOcrBlock{"渲染在顶部又渲染在底部，现已加双保险彻底消除。", cv::Rect(36, 66, 480, 20), {}, 0, 1});
+        docBlocks.push_back(PinOcrBlock{"• 菜单重命名（严格 MECE + 全站风格一致）：", cv::Rect(20, 96, 360, 20), {}, 0, 2});
+        // 右侧表格三行独立的“是”
+        docBlocks.push_back(PinOcrBlock{"是", cv::Rect(880, 40, 22, 18), {}, 1, 3});
+        docBlocks.push_back(PinOcrBlock{"是", cv::Rect(880, 64, 22, 18), {}, 1, 4});
+        docBlocks.push_back(PinOcrBlock{"是", cv::Rect(880, 88, 22, 18), {}, 1, 5});
+
+        const auto docParas = InPlaceTranslateEngine::buildTranslationParagraphs(docBlocks, cv::Size(960, 160));
+        ASSERT_EQ(docParas.size(), 5u);
+        EXPECT_EQ(docParas[0].lineRects.size(), 2u);
+        EXPECT_FALSE(docParas[0].isSingleLine);
+        EXPECT_EQ(docParas[1].lineRects.size(), 1u);
+        EXPECT_EQ(docParas[2].originalText, "是");
+        EXPECT_EQ(docParas[3].originalText, "是");
+        EXPECT_EQ(docParas[4].originalText, "是");
+    }
+
+    // 2.8. 开发软件代码语义防火墙防回退：JSON 键值/模板变量/驼峰下划线标识符/HTTP 动词与缩写严禁误译，常规 UI 词照常放行
+    {
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("POST"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("GET"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("PWD"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("AI"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("NGINX"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("WEBCH"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("BaseUrl"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("CmpnyDB"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("Team_Test"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("Sino@24Ch"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("{{BaseUrl}}/Login"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("\"SessionId\": \"203ac6de-11ef\""));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("\"SessionTimeout\": 30"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("GET UserObjectsMD"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("POST postUDFs"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("AlternativeTo"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("PostgreSQL"));
+
+        EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("COLLECTIONS"));
+        EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("ENVIRONMENTS"));
+        EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("All variables"));
+        EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("Query Params"));
+        EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("Invite"));
+        EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("Upgrade"));
+        EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("More tech news"));
+    }
+
+    // 2.9. 左对齐防漂移回归：缩进左对齐单行评论绝不因左侧留白漂移居中（renderedRect.x 必须严格锚定 baseRect.x）
+    {
+        cv::Mat hnCanvas(160, 800, CV_8UC3, cv::Scalar(239, 246, 246));
+        std::vector<TranslationParagraph> hnParas;
+        TranslationParagraph comment{};
+        comment.unionRect = cv::Rect(120, 48, 360, 16);
+        comment.lineRects = {comment.unionRect};
+        comment.isSingleLine = true;
+        comment.alignedRowId = 0;
+        comment.originalText = "Why not get your LLM to add support for you?";
+        comment.translatedText = "为什么不让你的大语言模型为你添加支持？";
+        hnParas.push_back(comment);
+
+        const auto hnRes = InPlaceTranslateEngine::renderTranslatedCanvas(hnCanvas, hnParas, "zh-CN");
+        ASSERT_TRUE(hnRes.success);
+        ASSERT_EQ(hnRes.paragraphs.size(), 1u);
+        EXPECT_EQ(hnRes.paragraphs[0].renderedRect.x, 120);
+    }
+
+    // 3. 贴图快捷键与右键菜单直达动作回归
+    const auto trKey = PinInputController::resolveKeyDown('T', true, true, false, false);
+    EXPECT_EQ(trKey.action, PinShortcutAction::TranslateInPlace);
+    const auto ocrKey = PinInputController::resolveKeyDown('T', true, false, false, false);
+    EXPECT_EQ(ocrKey.action, PinShortcutAction::ExtractText);
+    const auto tabKey = PinInputController::resolveKeyDown(VK_TAB, false, false, false, false);
+    EXPECT_EQ(tabKey.action, PinShortcutAction::ToggleTranslationOverlay);
+}
+
+#include "core/translate/TranslationService.h"
+#include <opencv2/imgcodecs.hpp>
+
+TEST(InPlaceTranslateEngineTest, LiveImageVisualQaWhenEnvSet) {
+    const char* imgEnv = std::getenv("TOOLS3000_LIVE_TRANSLATE_QA_IMG");
+    const char* outEnv = std::getenv("TOOLS3000_LIVE_TRANSLATE_QA_OUT");
+    if (!imgEnv || !*imgEnv || !outEnv || !*outEnv) {
+        GTEST_SKIP() << "Set TOOLS3000_LIVE_TRANSLATE_QA_IMG and TOOLS3000_LIVE_TRANSLATE_QA_OUT to run visual QA";
+    }
+
+    using namespace tools3000::capture;
+    cv::Mat src = cv::imread(imgEnv, cv::IMREAD_COLOR);
+    ASSERT_FALSE(src.empty()) << "Failed to load image: " << imgEnv;
+
+    const auto page = tools3000::ocr::OcrEngine::instance().extractPage(src);
+    ASSERT_FALSE(page.lines.empty()) << "OCR found 0 blocks";
+
+    std::vector<cv::Rect> obstacles;
+    std::vector<cv::Rect> qrBoxes;
+    for (const auto& q : page.qrCodes) {
+        if (q.boundingBox.width > 0 && q.boundingBox.height > 0) {
+            qrBoxes.push_back(q.boundingBox);
+            obstacles.push_back(q.boundingBox);
+        }
+    }
+    auto overlapsQr = [&](const cv::Rect& rc) noexcept -> bool {
+        if (rc.area() <= 0) return false;
+        const cv::Point c(rc.x + rc.width / 2, rc.y + rc.height / 2);
+        for (const auto& q : qrBoxes) {
+            const cv::Rect pad(q.x - 4, q.y - 4, q.width + 8, q.height + 8);
+            if (pad.contains(c) || (rc & pad).area() * 10 >= rc.area() * 4) return true;
+        }
+        return false;
+    };
+
+    // 与 PinWindowOcr::normalizePinOcrBlocksAndTableState 100% 同源：拆解含 \t 的对齐行为原子块
+    const auto atomicLines = tools3000::ocr::OcrEngine::splitIntoAtomicBlocks(page.lines);
+    std::vector<PinOcrBlock> blocks;
+    for (const auto& b : atomicLines) {
+        if (b.box.width > 0 && b.box.height > 0) obstacles.push_back(b.box);
+        if (overlapsQr(b.box)) continue;
+        blocks.push_back(PinOcrBlock{b.text, b.box, b.charBoxes, b.layoutRegionId, b.alignedRowId});
+    }
+
+    auto paragraphs = InPlaceTranslateEngine::buildTranslationParagraphs(blocks, src.size(), {}, src);
+    ASSERT_FALSE(paragraphs.empty());
+
+    tools3000::core::translate::TranslationBatchRequest req;
+    req.uiLanguageCode = "zh-CN";
+    for (const auto& p : paragraphs) req.texts.push_back(p.originalText);
+
+    auto settings = tools3000::core::translate::TranslationService::instance().loadSettings();
+    const auto batchRes = tools3000::core::translate::TranslationService::instance()
+                              .translateBatchWithSettings(req, settings, nullptr);
+    ASSERT_TRUE(batchRes.success) << "Translate failed: " << batchRes.errorCode << " " << batchRes.errorDetail;
+    ASSERT_EQ(batchRes.translations.size(), paragraphs.size());
+    for (size_t i = 0; i < paragraphs.size(); ++i) {
+        paragraphs[i].translatedText = batchRes.translations[i];
+    }
+
+    const auto renderRes = InPlaceTranslateEngine::renderTranslatedCanvas(
+        src, std::move(paragraphs), batchRes.effectiveTargetLang, obstacles);
+    ASSERT_TRUE(renderRes.success);
+    ASSERT_TRUE(cv::imwrite(outEnv, renderRes.translatedCanvas));
+    std::cout << "[QA] blocks=" << blocks.size()
+              << " paragraphs=" << renderRes.paragraphs.size()
+              << " rendered=" << renderRes.renderedCount
+              << " target=" << batchRes.effectiveTargetLang
+              << " provider=" << batchRes.providerUsed
+              << " elapsedMs=" << batchRes.elapsedMs << "\n";
+}
+
 
 
 

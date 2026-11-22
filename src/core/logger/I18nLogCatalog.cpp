@@ -2977,6 +2977,18 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 安装器初始配置触发 Picasa 图片查看器自动关联失败: error={}",
             "[{}] Failed to register Picasa Photo Viewer associations from installer initial config: error={}"
         }},
+        {"贴图原位翻译失败: code={}, detail={}", {
+            "[{}] 贴图原位翻译失败: code={}, detail={}",
+            "[{}] Pin window in-place translation failed: code={}, detail={}"
+        }},
+        {"贴图原位翻译完成: 段落={}, 目标语={}, 通道={}, 耗时={}ms", {
+            "[{}] 贴图原位翻译完成: 段落={}, 目标语={}, 通道={}, 耗时={}ms",
+            "[{}] Pin window in-place translation completed: paragraphs={}, target={}, provider={}, elapsed={}ms"
+        }},
+        {"贴图原位翻译无变化: 全部段落与原文一致（如代码标识、文件名或路径）", {
+            "[{}] 贴图原位翻译无变化: 全部段落与原文一致（如代码标识、文件名或路径）",
+            "[{}] Pin window in-place translation produced no text changes (all paragraphs matched source text)"
+        }},
     };
     return catalog;
 }

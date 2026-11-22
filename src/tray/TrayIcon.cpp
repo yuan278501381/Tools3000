@@ -11,6 +11,8 @@
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
 #include "ui/TrayWindow.h"
+#include <algorithm>
+#include <cmath>
 #include <format>
 #include <windowsx.h>
 
@@ -118,6 +120,105 @@ static HICON loadThemeAppropriateIcon(UINT* outIconId = nullptr, HWND hwnd = nul
     return hIcon;
 }
 
+static HICON createBadgedUpdateIcon(HICON baseIcon, HWND hwnd) {
+    if (!baseIcon) return nullptr;
+
+    int cx = GetSystemMetrics(SM_CXSMICON);
+    int cy = GetSystemMetrics(SM_CYSMICON);
+    HWND hTargetWnd = FindWindowW(L"Shell_TrayWnd", nullptr);
+    if (!hTargetWnd || !IsWindow(hTargetWnd)) hTargetWnd = hwnd;
+    if (hTargetWnd && IsWindow(hTargetWnd)) {
+        const UINT dpi = GetDpiForWindow(hTargetWnd);
+        if (dpi > 0) {
+            typedef int(WINAPI* PFN_GetSystemMetricsForDpi)(int, UINT);
+            static auto pfnGetMetrics = (PFN_GetSystemMetricsForDpi)GetProcAddress(
+                GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi");
+            if (pfnGetMetrics) {
+                cx = pfnGetMetrics(SM_CXSMICON, dpi);
+                cy = pfnGetMetrics(SM_CYSMICON, dpi);
+            }
+        }
+    }
+    cx = std::clamp(cx, 16, 64);
+    cy = std::clamp(cy, 16, 64);
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = cx;
+    bmi.bmiHeader.biHeight = -cy; // top-down 32bpp BGRA
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    HBITMAP colorBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HBITMAP maskBmp = CreateBitmap(cx, cy, 1, 1, nullptr);
+    if (!memDc || !colorBmp || !maskBmp || !bits) {
+        if (colorBmp) DeleteObject(colorBmp);
+        if (maskBmp) DeleteObject(maskBmp);
+        if (memDc) DeleteDC(memDc);
+        if (screenDc) ReleaseDC(nullptr, screenDc);
+        return nullptr;
+    }
+
+    ZeroMemory(bits, static_cast<size_t>(cx) * static_cast<size_t>(cy) * 4u);
+    HGDIOBJ oldBmp = SelectObject(memDc, colorBmp);
+    DrawIconEx(memDc, 0, 0, baseIcon, cx, cy, 0, nullptr, DI_NORMAL);
+    SelectObject(memDc, oldBmp);
+
+    // 在图标右上角以亚像素抗锯齿合成朱砂红点 (#EF4444) + 纯白描边环，深浅任务栏皆高对比锐利可见
+    auto* px = static_cast<uint8_t*>(bits);
+    const float radiusOuter = (std::max)(3.2f, static_cast<float>(cx) * 0.24f);
+    const float radiusInner = (std::max)(2.1f, radiusOuter - (std::max)(1.0f, static_cast<float>(cx) * 0.06f));
+    const float centerX = static_cast<float>(cx) - radiusOuter - 0.5f;
+    const float centerY = radiusOuter + 0.5f;
+
+    auto blendOver = [](uint8_t* dst, uint8_t sr, uint8_t sg, uint8_t sb, float alpha) {
+        const float a = std::clamp(alpha, 0.0f, 1.0f);
+        if (a <= 0.001f) return;
+        const float da = static_cast<float>(dst[3]) / 255.0f;
+        const float outA = a + da * (1.0f - a);
+        if (outA <= 0.001f) return;
+        const float dr = static_cast<float>(dst[2]);
+        const float dg = static_cast<float>(dst[1]);
+        const float db = static_cast<float>(dst[0]);
+        dst[2] = static_cast<uint8_t>(std::clamp((sr * a + dr * da * (1.0f - a)) / outA, 0.0f, 255.0f));
+        dst[1] = static_cast<uint8_t>(std::clamp((sg * a + dg * da * (1.0f - a)) / outA, 0.0f, 255.0f));
+        dst[0] = static_cast<uint8_t>(std::clamp((sb * a + db * da * (1.0f - a)) / outA, 0.0f, 255.0f));
+        dst[3] = static_cast<uint8_t>(std::clamp(outA * 255.0f, 0.0f, 255.0f));
+    };
+
+    for (int y = 0; y < cy; ++y) {
+        for (int x = 0; x < cx; ++x) {
+            const float dx = (static_cast<float>(x) + 0.5f) - centerX;
+            const float dy = (static_cast<float>(y) + 0.5f) - centerY;
+            const float dist = std::hypot(dx, dy);
+            if (dist > radiusOuter + 0.8f) continue;
+            uint8_t* cell = px + (static_cast<size_t>(y) * static_cast<size_t>(cx) + static_cast<size_t>(x)) * 4u;
+            const float ringAlpha = std::clamp(radiusOuter + 0.5f - dist, 0.0f, 1.0f);
+            blendOver(cell, 255, 255, 255, ringAlpha * 0.96f);
+            if (dist <= radiusInner + 0.6f) {
+                const float dotAlpha = std::clamp(radiusInner + 0.5f - dist, 0.0f, 1.0f);
+                blendOver(cell, 239, 68, 68, dotAlpha);
+            }
+        }
+    }
+
+    ICONINFO ii{};
+    ii.fIcon = TRUE;
+    ii.hbmMask = maskBmp;
+    ii.hbmColor = colorBmp;
+    HICON resultIcon = CreateIconIndirect(&ii);
+
+    DeleteObject(colorBmp);
+    DeleteObject(maskBmp);
+    DeleteDC(memDc);
+    ReleaseDC(nullptr, screenDc);
+    return resultIcon;
+}
+
 TrayIcon::TrayIcon() {
     ensureEventSubscriptions();
 }
@@ -125,14 +226,18 @@ TrayIcon::TrayIcon() {
 TrayIcon::~TrayIcon() {
     uint64_t gestureSub = 0;
     uint64_t themeSub = 0;
+    uint64_t updateSub = 0;
     {
         std::lock_guard lock(m_mutex);
         gestureSub = std::exchange(m_gesturePauseSubId, 0);
         themeSub = std::exchange(m_themeChangedSubId, 0);
+        updateSub = std::exchange(m_updateStatusSubId, 0);
+        releaseBadgedIconLocked();
     }
     auto& bus = tools3000::core::EventBus::instance();
     if (gestureSub != 0) bus.unsubscribeAndWait(gestureSub);
     if (themeSub != 0) bus.unsubscribeAndWait(themeSub);
+    if (updateSub != 0) bus.unsubscribeAndWait(updateSub);
 }
 
 TrayIcon& TrayIcon::instance() {
@@ -158,6 +263,77 @@ void TrayIcon::ensureEventSubscriptions() {
                 refreshThemeIcon();
             });
     }
+    if (m_updateStatusSubId == 0 ||
+        bus.subscriberCount<tools3000::core::UpdateStatusChangedEvent>() == 0) {
+        m_updateStatusSubId = bus.subscribe<tools3000::core::UpdateStatusChangedEvent>(
+            [this](const tools3000::core::UpdateStatusChangedEvent& ev) {
+                setUpdateBadge(ev.hasUpdate, ev.readyToInstall, ev.latestVersion);
+            });
+    }
+}
+
+void TrayIcon::releaseBadgedIconLocked() {
+    if (m_badgedIcon) {
+        DestroyIcon(m_badgedIcon);
+        m_badgedIcon = nullptr;
+    }
+}
+
+void TrayIcon::applyResolvedIconAndTooltipLocked() {
+    releaseBadgedIconLocked();
+    HICON displayIcon = m_icon;
+    if (m_updateAvailable && m_icon) {
+        m_badgedIcon = createBadgedUpdateIcon(m_icon, m_hwnd);
+        if (m_badgedIcon) {
+            displayIcon = m_badgedIcon;
+        }
+    }
+    if (displayIcon) {
+        m_nid.hIcon = displayIcon;
+    }
+
+    std::wstring tip;
+    if (m_updateAvailable) {
+        const std::wstring verW = tools3000::core::WinUtils::utf8ToWstring(m_updateLatestVersion);
+        if (isEnglishLocale()) {
+            tip = m_updateReadyToInstall
+                ? (L"Tools3000 - Update " + verW + L" ready to install")
+                : (L"Tools3000 - Update " + verW + L" available");
+        } else {
+            tip = m_updateReadyToInstall
+                ? (L"Tools3000 — 新版本 " + verW + L" 已就绪，点击安装")
+                : (L"Tools3000 — 发现新版本 " + verW);
+        }
+    } else if (m_gesturePaused.load(std::memory_order_acquire)) {
+        tip = isEnglishLocale() ? L"Tools3000 - Gesture Paused" : L"Tools3000 — 手势已暂停";
+    } else {
+        tip = isEnglishLocale() ? L"Tools3000 - Desktop Utility" : L"Tools3000 — 桌面效率工具";
+    }
+    wcsncpy_s(m_nid.szTip, tip.c_str(), _TRUNCATE);
+
+    if (m_created.load(std::memory_order_acquire) && m_hwnd) {
+        m_nid.uFlags = NIF_ICON | NIF_TIP;
+        if (!Shell_NotifyIconW(NIM_MODIFY, &m_nid)) {
+            Shell_NotifyIconW(NIM_ADD, &m_nid);
+        }
+        m_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    }
+}
+
+void TrayIcon::setUpdateBadge(bool available, bool readyToInstall, const std::string& latestVersion) {
+    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().postDeferred(
+            [this, available, readyToInstall, latestVersion]() {
+                setUpdateBadge(available, readyToInstall, latestVersion);
+            });
+        return;
+    }
+    std::lock_guard lock(m_mutex);
+    m_updateAvailable = available;
+    m_updateReadyToInstall = readyToInstall;
+    m_updateLatestVersion = latestVersion;
+    applyResolvedIconAndTooltipLocked();
 }
 
 std::wstring TrayIcon::tooltip() const {
@@ -181,14 +357,7 @@ void TrayIcon::refreshThemeIcon() {
     if (newIcon && (newIcon != m_icon || targetId != m_currentIconId)) {
         m_icon = newIcon;
         m_currentIconId = targetId;
-        if (m_created.load(std::memory_order_acquire)) {
-            m_nid.hIcon = m_icon;
-            m_nid.uFlags = NIF_ICON;
-            if (!Shell_NotifyIconW(NIM_MODIFY, &m_nid)) {
-                Shell_NotifyIconW(NIM_ADD, &m_nid);
-            }
-            m_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        }
+        applyResolvedIconAndTooltipLocked();
     }
 }
 
@@ -257,6 +426,9 @@ bool TrayIcon::create(HWND hwnd, HICON icon) {
         KillTimer(m_hwnd, TIMER_ID_TRAY_RETRY);
     }
     m_created.store(true, std::memory_order_release);
+    if (m_updateAvailable) {
+        applyResolvedIconAndTooltipLocked();
+    }
     NOTIFYICONDATAW nidVer = m_nid;
     nidVer.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &nidVer);
@@ -279,14 +451,17 @@ void TrayIcon::recreate() {
 void TrayIcon::destroy() {
     uint64_t gestureSub = 0;
     uint64_t themeSub = 0;
+    uint64_t updateSub = 0;
     {
         std::lock_guard lock(m_mutex);
         gestureSub = std::exchange(m_gesturePauseSubId, 0);
         themeSub = std::exchange(m_themeChangedSubId, 0);
+        updateSub = std::exchange(m_updateStatusSubId, 0);
     }
     auto& bus = tools3000::core::EventBus::instance();
     if (gestureSub != 0) bus.unsubscribeAndWait(gestureSub);
     if (themeSub != 0) bus.unsubscribeAndWait(themeSub);
+    if (updateSub != 0) bus.unsubscribeAndWait(updateSub);
 
     EndMenu();
     {
@@ -295,6 +470,7 @@ void TrayIcon::destroy() {
             KillTimer(m_hwnd, TIMER_ID_TRAY_RETRY);
         }
         Shell_NotifyIconW(NIM_DELETE, &m_nid);
+        releaseBadgedIconLocked();
         m_created.store(false, std::memory_order_release);
     }
     LOG_INFO("系统托盘图标已销毁");

@@ -35,6 +35,7 @@ interface GeneralSettings {
   elevated?: boolean;
   minimizeToTray: boolean;
   checkUpdates: boolean;
+  autoDownloadUpdates?: boolean;
   autoReleaseSettingsMemory?: boolean;
   fullscreenMode?: string;
   showOnboarding?: boolean;
@@ -75,6 +76,7 @@ export const GeneralPage: FC = () => {
     elevated: false,
     minimizeToTray: true,
     checkUpdates: true,
+    autoDownloadUpdates: true,
     autoReleaseSettingsMemory: true,
     fullscreenMode: 'smart',
     language: 'auto',
@@ -447,6 +449,14 @@ export const GeneralPage: FC = () => {
             description={t('general.checkUpdatesDesc')}
             checked={settings.checkUpdates}
             onChange={(v) => updateSetting('checkUpdates', v)}
+          />
+          <Toggle
+            id="autoDownloadUpdates"
+            label={t('general.autoDownloadUpdates', 'Auto-download updates')}
+            description={t('general.autoDownloadUpdatesDesc', 'Automatically download and verify SHA-256 checksums in the background when a new version is found')}
+            checked={settings.autoDownloadUpdates ?? true}
+            onChange={(v) => updateSetting('autoDownloadUpdates', v)}
+            disabled={!settings.checkUpdates}
           />
           <Toggle
             id="autoReleaseSettingsMemory"

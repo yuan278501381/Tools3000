@@ -1,0 +1,182 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SearchExternalApiCard.css — 外部 CLI / MCP 搜索接口卡片样式 (@container 自适应)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.external-api-card {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.external-api-card__header-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.external-api-card__security-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-secondary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.external-api-card__security-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--primary);
+}
+
+.external-api-card__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.external-api-card__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.external-api-card__field-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.external-api-card__field-hint {
+  font-size: 0.83rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.external-api-card__save-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.external-api-card__snippet-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-secondary);
+  border: 1px solid var(--border-subtle);
+  width: 100%;
+}
+
+.external-api-card__snippet-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.external-api-card__tabs {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.external-api-card__tab-btn {
+  padding: 6px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.external-api-card__tab-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--card-border-hover);
+}
+
+.external-api-card__tab-btn--active {
+  background: var(--bg-elevated);
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.external-api-card__code {
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.external-api-card__cli-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.external-api-card__cli-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.external-api-card__cli-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.external-api-card__cli-cmd-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  display: flex;
+}
+
+.external-api-card__cli-item > button {
+  flex-shrink: 0;
+}
+
+.external-api-card__cli-desc {
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+@container (max-width: 600px) {
+  .external-api-card__fields {
+    grid-template-columns: 1fr;
+  }
+  .external-api-card__cli-item {
+    flex-wrap: wrap;
+  }
+}

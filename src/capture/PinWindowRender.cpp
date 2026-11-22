@@ -165,18 +165,19 @@ void PinWindow::drawHoverToolbar() {
     const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
     m_dpiScale = dpiScale;
 
-    // 悬浮工具栏：折叠、旋转、反色、编辑、文字识别/复制、复制图片、保存、关闭 8 个高精度矢量按钮
+    // 悬浮工具栏：折叠、旋转、反色、编辑、文字识别/复制、原位翻译、复制图片、保存、关闭 9 个高精度矢量按钮
     // 自适应多行网格与紧凑缩放，保障窄贴图（如 400x20 旋转为 20x400 后）全部按钮仍在可视区内
     const auto layout = PinInputController::computeHoverToolbarLayout(size.width, size.height, dpiScale);
-    m_toolbarRect = layout.toolbarRect;
-    m_btnFoldRect   = layout.buttons[0];
-    m_btnRotateRect = layout.buttons[1];
-    m_btnInvertRect = layout.buttons[2];
-    m_btnEditRect   = layout.buttons[3];
-    m_btnTextRect   = layout.buttons[4];
-    m_btnCopyRect   = layout.buttons[5];
-    m_btnSaveRect   = layout.buttons[6];
-    m_btnCloseRect  = layout.buttons[7];
+    m_toolbarRect      = layout.toolbarRect;
+    m_btnFoldRect      = layout.buttons[0];
+    m_btnRotateRect    = layout.buttons[1];
+    m_btnInvertRect    = layout.buttons[2];
+    m_btnEditRect      = layout.buttons[3];
+    m_btnTextRect      = layout.buttons[4];
+    m_btnTranslateRect = layout.buttons[5];
+    m_btnCopyRect      = layout.buttons[6];
+    m_btnSaveRect      = layout.buttons[7];
+    m_btnCloseRect     = layout.buttons[8];
     
     // 绘制磨砂玻璃背景（跟随动态明暗主题与自定义强调色）
     const auto pal = FloatingGlassBar::resolveThemePalette();
@@ -188,11 +189,13 @@ void PinWindow::drawHoverToolbar() {
     iconColor.a *= m_hoverAlpha;
     m_renderTarget->CreateSolidColorBrush(iconColor, textBrush.GetAddressOf());
     
+    const bool translateActive = isShowingTranslation() || isTranslationInFlight();
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnFoldRect, 4.0f * dpiScale, m_hoverFold, false, false, false, m_hoverAlpha, pal.isDark);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnRotateRect, 4.0f * dpiScale, m_hoverRotate, false, false, false, m_hoverAlpha, pal.isDark);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnInvertRect, 4.0f * dpiScale, m_hoverInvert, false, false, false, m_hoverAlpha, pal.isDark);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnEditRect, 4.0f * dpiScale, m_hoverEdit, false, false, false, m_hoverAlpha, pal.isDark);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnTextRect, 4.0f * dpiScale, m_hoverText, m_textSelectionMode, false, false, m_hoverAlpha, pal.isDark);
+    FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnTranslateRect, 4.0f * dpiScale, m_hoverTranslate, translateActive, false, false, m_hoverAlpha, pal.isDark);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCopyRect, 4.0f * dpiScale, m_hoverCopy, false, false, false, m_hoverAlpha, pal.isDark);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnSaveRect, 4.0f * dpiScale, m_hoverSave, false, false, false, m_hoverAlpha, pal.isDark);
     FloatingGlassBar::drawButtonPill(m_renderTarget.Get(), m_btnCloseRect, 4.0f * dpiScale, m_hoverClose, false, true, false, m_hoverAlpha, pal.isDark);
@@ -218,15 +221,19 @@ void PinWindow::drawHoverToolbar() {
         m_pinnedSourceText.empty() ? CaptureIconId::ActionExtractText : CaptureIconId::ToolText,
         m_btnTextRect, textBrush.Get(), dpiScale);
 
-    // 6. Copy 图标 (Lucide: Copy)
+    // 6. Translate 原位翻译图标 (双语互译「文 / A」)
+    CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
+        CaptureIconId::ActionTranslate, m_btnTranslateRect, textBrush.Get(), dpiScale);
+
+    // 7. Copy 图标 (Lucide: Copy)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ActionCopy, m_btnCopyRect, textBrush.Get(), dpiScale);
     
-    // 7. Save 图标 (Lucide: Download)
+    // 8. Save 图标 (Lucide: Download)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ActionSave, m_btnSaveRect, textBrush.Get(), dpiScale);
     
-    // 8. Close 图标 (Lucide: X)
+    // 9. Close 图标 (Lucide: X)
     CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(),
         CaptureIconId::ActionCancel, m_btnCloseRect, textBrush.Get(), dpiScale);
 
@@ -253,6 +260,17 @@ void PinWindow::drawHoverToolbar() {
             tipText = tools3000::core::trWCstrFor(isZh, L"识别文字 / 划词 (Alt)", L"Recognize Text (Alt)");
         }
         anchorX = (m_btnTextRect.left + m_btnTextRect.right) * 0.5f;
+    } else if (m_hoverTranslate) {
+        if (isTranslationInFlight()) {
+            tipText = tools3000::core::trWCstrFor(isZh, L"正在翻译...", L"Translating...");
+        } else if (isShowingTranslation()) {
+            tipText = tools3000::core::trWCstrFor(isZh, L"切回原图 (Tab · Shift 重译)", L"Original (Tab · Shift Retranslate)");
+        } else if (hasTranslationResult()) {
+            tipText = tools3000::core::trWCstrFor(isZh, L"切回译图 (Tab · Shift 重译)", L"Translated (Tab · Shift Retranslate)");
+        } else {
+            tipText = tools3000::core::trWCstrFor(isZh, L"原位翻译 (Ctrl+Shift+T)", L"Translate In-Place (Ctrl+Shift+T)");
+        }
+        anchorX = (m_btnTranslateRect.left + m_btnTranslateRect.right) * 0.5f;
     } else if (m_hoverCopy) {
         tipText = tools3000::core::trWCstrFor(isZh, L"复制贴图 (Ctrl+C)", L"Copy Pin (Ctrl+C)");
         anchorX = (m_btnCopyRect.left + m_btnCopyRect.right) * 0.5f;
@@ -433,8 +451,8 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
 
 void PinWindow::render() {
     if ((!m_renderTarget || (!m_bitmap && m_bitmapTiles.empty())) &&
-        !m_sourceImage.empty() && m_hwnd && IsWindow(m_hwnd)) {
-        createRenderResources(m_sourceImage);
+        !activeDisplayImage().empty() && m_hwnd && IsWindow(m_hwnd)) {
+        createRenderResources(activeDisplayImage());
     }
     if (!m_renderTarget || (!m_bitmap && m_bitmapTiles.empty())) return;
 
@@ -497,7 +515,9 @@ void PinWindow::render() {
         ComPtr<ID2D1DeviceContext> dc;
         m_renderTarget.As(&dc);
         const bool pixelGridZoom = (m_scale >= 2.995f || (sx >= 2.995f && sy >= 2.995f));
-        const bool highQualityZoom = !pixelGridZoom && (std::abs(sx - 1.0f) > 0.01f || std::abs(sy - 1.0f) > 0.01f);
+        // 缩放动画进行中切换至极速硬件双线性采样跑满 120FPS 奶油丝滑，停止收敛终帧无缝切回 16-tap 高清双三次锐化
+        const bool highQualityZoom = !pixelGridZoom && !m_zoomAnimating &&
+            (std::abs(sx - 1.0f) > 0.01f || std::abs(sy - 1.0f) > 0.01f);
         const D2D1_INTERPOLATION_MODE dcInterp = pixelGridZoom
             ? D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR
             : (highQualityZoom ? D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC : D2D1_INTERPOLATION_MODE_LINEAR);
@@ -589,6 +609,8 @@ void PinWindow::render() {
         m_btnWavyFloatingRect = D2D1::RectF(0, 0, 0, 0);
         m_btnUnderlineFloatingRect = D2D1::RectF(0, 0, 0, 0);
         m_btnTextReplaceFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnTranslateFloatingRect = D2D1::RectF(0, 0, 0, 0);
+        m_btnTranslateStatusRect = D2D1::RectF(0, 0, 0, 0);
         m_btnUndoFloatingRect = D2D1::RectF(0, 0, 0, 0);
         m_btnColorDotFloatingRects.fill(D2D1::RectF(0, 0, 0, 0));
         clearTextReplaceToolbarRects();
@@ -752,6 +774,7 @@ void PinWindow::render() {
                     : (tools3000::core::trWCstrFor(isZh, L"复制", L"Copy"));
                 const wchar_t* lblTable = tools3000::core::trWCstrFor(isZh, L"复制表格", L"Table");
                 const wchar_t* lblPanel = tools3000::core::trWCstrFor(isZh, L"对照", L"Panel");
+                const wchar_t* lblTranslate = tools3000::core::trWCstrFor(isZh, L"翻译", L"Trans");
                 const wchar_t* lblHl = tools3000::core::trWCstrFor(isZh, L"荧光笔", L"Highlight");
                 const wchar_t* lblWavy = tools3000::core::trWCstrFor(isZh, L"波浪线", L"Wavy");
                 const wchar_t* lblLine = tools3000::core::trWCstrFor(isZh, L"直线", L"Line");
@@ -765,6 +788,7 @@ void PinWindow::render() {
                 const float wCopyFull = calcBtnW(lblCopy, 54.0f);
                 const float wTableFull = m_hasTableStructure ? calcBtnW(lblTable, 68.0f) : 0.0f;
                 const float wPanelFull = calcBtnW(lblPanel, 54.0f);
+                const float wTranslateFull = calcBtnW(lblTranslate, 54.0f);
                 const float wHlFull = calcBtnW(lblHl, 64.0f);
                 const float wWavyFull = calcBtnW(lblWavy, 64.0f);
                 const float wLineFull = calcBtnW(lblLine, 56.0f);
@@ -803,6 +827,7 @@ void PinWindow::render() {
 
                 bool showTableBtn = false;
                 bool showPanelBtn = false;
+                bool showTranslateBtn = false;
                 if (m_hasTableStructure && (outerPad * 2.0f + wCopyFull + btnGap + wTableFull + btnGap + wPanelFull) <= availBarW) {
                     showTableBtn = true;
                     showPanelBtn = true;
@@ -811,11 +836,16 @@ void PinWindow::render() {
                 } else if ((outerPad * 2.0f + wCopyFull + btnGap + wPanelFull) <= availBarW) {
                     showPanelBtn = true;
                 }
-
-                const float copyGroupFullW = wCopyFull +
+                const float curCopyBaseW = wCopyFull +
                     (showTableBtn ? (btnGap + wTableFull) : 0.0f) +
                     (showPanelBtn ? (btnGap + wPanelFull) : 0.0f);
-                const int copyBtnCount = 1 + (showTableBtn ? 1 : 0) + (showPanelBtn ? 1 : 0);
+                if (outerPad * 2.0f + curCopyBaseW + btnGap + wTranslateFull <= availBarW) {
+                    showTranslateBtn = true;
+                }
+
+                const float copyGroupFullW = curCopyBaseW +
+                    (showTranslateBtn ? (btnGap + wTranslateFull) : 0.0f);
+                const int copyBtnCount = 1 + (showTableBtn ? 1 : 0) + (showPanelBtn ? 1 : 0) + (showTranslateBtn ? 1 : 0);
                 const float copyGroupIconW = iconBtnW * static_cast<float>(copyBtnCount) +
                     btnGap * static_cast<float>(copyBtnCount - 1);
 
@@ -872,7 +902,7 @@ void PinWindow::render() {
                 }
 
                 if (!showMarkupTools) {
-                    if (showTableBtn || showPanelBtn) {
+                    if (showTableBtn || showPanelBtn || showTranslateBtn) {
                         totalBarW = outerPad * 2.0f + copyGroupFullW;
                     } else if (size.width >= 36.0f * dpiScale) {
                         totalBarW = (std::min)(wCopyFull, availBarW);
@@ -1045,13 +1075,14 @@ void PinWindow::render() {
                     }
                 };
 
-                if (showMarkupTools || showTableBtn || showPanelBtn) {
+                if (showMarkupTools || showTableBtn || showPanelBtn || showTranslateBtn) {
                     float curX = barX + outerPad;
                     const float innerTop = barY + 3.2f * dpiScale;
                     const float innerBot = barY + rowH - 3.2f * dpiScale;
                     const float wCopyCur = copyWithLabels ? wCopyFull : iconBtnW;
                     const float wTableCur = copyWithLabels ? wTableFull : iconBtnW;
                     const float wPanelCur = copyWithLabels ? wPanelFull : iconBtnW;
+                    const float wTranslateCur = copyWithLabels ? wTranslateFull : iconBtnW;
 
                     m_btnCopyFloatingRect = D2D1::RectF(curX, innerTop, curX + wCopyCur, innerBot);
                     drawCapsuleAction(m_btnCopyFloatingRect, CaptureIconId::ActionCopy,
@@ -1071,6 +1102,13 @@ void PinWindow::render() {
                         drawCapsuleAction(m_btnOpenPanelFloatingRect, CaptureIconId::ActionExtractText,
                                           copyWithLabels ? lblPanel : L"", m_hoverOpenPanelFloating);
                         curX += wPanelCur;
+                    }
+                    if (showTranslateBtn) {
+                        curX += btnGap;
+                        m_btnTranslateFloatingRect = D2D1::RectF(curX, innerTop, curX + wTranslateCur, innerBot);
+                        drawCapsuleAction(m_btnTranslateFloatingRect, CaptureIconId::ActionTranslate,
+                                          copyWithLabels ? lblTranslate : L"", m_hoverTranslateFloating);
+                        curX += wTranslateCur;
                     }
                     if (showMarkupTools) {
                         drawDivider(curX + sepSpace * 0.5f, innerTop, innerBot);
@@ -1671,22 +1709,28 @@ void PinWindow::render() {
                 borderBrush.Get(), 1.0f);
         }
 
-        // 后台首次显式异步 OCR 等待期“正在识别... / Recognizing...”微胶囊（后台静默预提取不显示遮挡胶囊）
+        // 后台首次显式异步 OCR / 原位翻译等待期微胶囊与译图对照交互胶囊
         m_lastRenderedOcrBadge = false;
+        const bool translateWaiting = m_translationInFlight.load(std::memory_order_acquire);
         const bool ocrWaiting = ((!m_silentOcrPreload.load(std::memory_order_acquire) &&
                                   m_ocrInFlightVersion.load(std::memory_order_acquire) != 0 &&
                                   !m_ocrReady.load(std::memory_order_acquire)) ||
                                  m_extractTextInFlight.load(std::memory_order_acquire));
         const uint64_t nowHudTick = GetTickCount64();
         const bool showPctBadge = (!m_hudBadgeText.empty() && nowHudTick < m_hudBadgeUntilTick);
-        if ((ocrWaiting || showPctBadge) && size.width >= 44.0f && size.height >= 24.0f) {
+        const bool showTranslatedPill = (isShowingTranslation() && !translateWaiting &&
+                                         !m_isSelectingText && m_editingTextReplaceIdx < 0 &&
+                                         !showPctBadge &&
+                                         size.width >= 110.0f * curDpiScale && size.height >= 48.0f * curDpiScale);
+        if ((ocrWaiting || translateWaiting || showPctBadge || showTranslatedPill) &&
+            size.width >= 44.0f && size.height >= 24.0f) {
             const float hudScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : (m_dpiScale > 0.0f ? m_dpiScale : 1.0f);
             if (ensureTextResources(hudScale) && m_uiCenterTextFormat) {
                 const auto hudPal = FloatingGlassBar::resolveHudPalette();
                 ComPtr<ID2D1SolidColorBrush> hudTxtBr;
                 m_renderTarget->CreateSolidColorBrush(hudPal.textPrimary, hudTxtBr.GetAddressOf());
 
-                auto drawCapsulePill = [&](const std::wstring& pillText, float preferCenterY) {
+                auto drawCapsulePill = [&](const std::wstring& pillText, float preferCenterY, bool hoveredPill = false) -> D2D1_RECT_F {
                     const float textW = measureUiTextWidth(pillText, hudScale);
                     const float pillH = (std::min)(size.height - 4.0f, 24.0f * hudScale);
                     const float pillW = std::clamp(textW + 20.0f * hudScale, 42.0f * hudScale, (std::max)(42.0f * hudScale, size.width - 8.0f));
@@ -1694,16 +1738,23 @@ void PinWindow::render() {
                     const float top = std::clamp(preferCenterY - pillH * 0.5f, 4.0f, (std::max)(4.0f, size.height - pillH - 4.0f));
                     const D2D1_RECT_F pillRect = D2D1::RectF(left, top, left + pillW, top + pillH);
                     FloatingGlassBar::drawGlassPanel(m_renderTarget.Get(), pillRect, pillH * 0.5f, hudPal.isDark);
+                    if (hoveredPill) {
+                        FloatingGlassBar::drawButtonPill(
+                            m_renderTarget.Get(), pillRect, pillH * 0.5f, true, false, false, false, 0.96f, hudPal.isDark);
+                    }
                     if (hudTxtBr) {
                         m_renderTarget->DrawTextW(
                             pillText.c_str(), static_cast<UINT32>(pillText.size()),
                             m_uiCenterTextFormat.Get(), pillRect, hudTxtBr.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
                     }
+                    return pillRect;
                 };
 
-                if (ocrWaiting) {
+                if (ocrWaiting || translateWaiting) {
                     const bool isZh = tools3000::core::isUiLanguageChinese();
-                    const std::wstring waitText = tools3000::core::trWCstrFor(isZh, L"正在识别...", L"Recognizing...");
+                    const std::wstring waitText = translateWaiting
+                        ? tools3000::core::trWCstrFor(isZh, L"正在翻译...", L"Translating...")
+                        : tools3000::core::trWCstrFor(isZh, L"正在识别...", L"Recognizing...");
                     const float topAnchor = (m_hoverAlpha > 0.05f && m_toolbarRect.bottom > m_toolbarRect.top)
                         ? (m_toolbarRect.bottom + 16.0f * hudScale)
                         : (size.height * 0.5f);
@@ -1713,6 +1764,13 @@ void PinWindow::render() {
                 if (showPctBadge) {
                     const float bottomAnchor = size.height - 20.0f * hudScale;
                     drawCapsulePill(m_hudBadgeText, bottomAnchor);
+                } else if (showTranslatedPill) {
+                    const bool isZh = tools3000::core::isUiLanguageChinese();
+                    const std::wstring statusText = (size.width >= 200.0f * hudScale)
+                        ? tools3000::core::trWCstrFor(isZh, L"译图 · 点击/Tab 切原图", L"Translated · Tab: Original")
+                        : tools3000::core::trWCstrFor(isZh, L"译图 · 原图", L"Translated");
+                    const float bottomAnchor = size.height - 18.0f * hudScale;
+                    m_btnTranslateStatusRect = drawCapsulePill(statusText, bottomAnchor, m_hoverTranslateStatus);
                 }
             }
         }

@@ -43,7 +43,7 @@ namespace PinInteractionConstants {
     inline constexpr int kNudgeStepNormalPx = 1;
     inline constexpr int kNudgeStepFastPx = 10;
 
-    inline constexpr int kHoverToolbarButtonCount = 8;
+    inline constexpr int kHoverToolbarButtonCount = 9;
     inline constexpr float kMinToolbarPinWidthDip = 260.0f;
     inline constexpr float kMinToolbarPinHeightDip = 108.0f;
     inline constexpr float kMinToolbarTextCardHeightDip = 140.0f;
@@ -73,6 +73,8 @@ enum class PinShortcutAction {
     CopyAllText,
     CopySelectedOrImage,
     ExtractText,
+    TranslateInPlace,
+    ToggleTranslationOverlay,
     SaveImage,
     HistoryPrev,
     HistoryNext,

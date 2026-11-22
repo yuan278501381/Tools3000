@@ -452,11 +452,16 @@ function Assert-PeMachineArchitecture {
 
 $ViewerProjectDir = Join-Path $ScriptDir "src\viewer"
 $ViewerExeName = "Tools3000_Picasa_Viewer.exe"
+$CliProjectDir = Join-Path $ScriptDir "src\cli"
+$CliExeName = "tools3000-cli.exe"
 $ViewerRustTarget = if ($Arch -eq "arm64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
 $ViewerTargetBinPath = Join-Path $ViewerProjectDir "target\$ViewerRustTarget\release\$ViewerExeName"
 $ViewerBinCandidates = @($ViewerTargetBinPath)
+$CliTargetBinPath = Join-Path $CliProjectDir "target\$ViewerRustTarget\release\$CliExeName"
+$CliBinCandidates = @($CliTargetBinPath)
 if ($Arch -eq "x64" -and -not $RequireSigning -and -not $RequirePublicTrust) {
     $ViewerBinCandidates += (Join-Path $ViewerProjectDir "target\release\$ViewerExeName")
+    $CliBinCandidates += (Join-Path $CliProjectDir "target\release\$CliExeName")
 }
 
 $CargoCmd = Get-Command "cargo" -ErrorAction SilentlyContinue
@@ -487,6 +492,7 @@ try {
         $RustArgs = @(
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RustScript,
             "-ViewerProjectDir", $ViewerProjectDir,
+            "-CliProjectDir", $CliProjectDir,
             "-Arch", $Arch,
             "-CargoPath", $CargoCmd.Source
         )
@@ -526,7 +532,7 @@ try {
     $VcpkgJsonHash = (Get-FileHash -LiteralPath (Join-Path $ScriptDir "vcpkg.json") -Algorithm SHA256).Hash
     $SrcFileInventory = @(
         Get-ChildItem -Path (Join-Path $ScriptDir "src") -Include "*.cpp","*.h","*.in","*.rc" -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notlike "*\src\viewer\*" } |
+            Where-Object { $_.FullName -notlike "*\src\viewer\*" -and $_.FullName -notlike "*\src\cli\*" } |
             ForEach-Object { $_.FullName.Substring($ScriptDir.Length) }
     ) + @(
         Get-ChildItem -Path (Join-Path $ScriptDir "plugins") -Filter "*.in" -File -ErrorAction SilentlyContinue |
@@ -634,6 +640,12 @@ if (-not $BuiltViewerExe) {
     throw "找不到编译后的 $ViewerExeName (架构: $Arch, 目标: $ViewerRustTarget)。请安装 Rust 工具链 (cargo) 后重试。"
 }
 Assert-PeMachineArchitecture -FilePath $BuiltViewerExe -ExpectedArch $Arch
+
+$BuiltCliExe = $CliBinCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $BuiltCliExe) {
+    throw "找不到编译后的 $CliExeName (架构: $Arch, 目标: $ViewerRustTarget)。请安装 Rust 工具链 (cargo) 后重试。"
+}
+Assert-PeMachineArchitecture -FilePath $BuiltCliExe -ExpectedArch $Arch
 
 # ------------------------------------------------------------------------------
 # 4.5 运行单元测试与代码覆盖率防回退分析 (失败则中断流水线)
@@ -826,6 +838,11 @@ if (Test-Path $ExePath) {
     Copy-Item -LiteralPath $BuiltViewerExe -Destination $StagedViewerExe -Force
     Assert-PeMachineArchitecture -FilePath $StagedViewerExe -ExpectedArch $Arch
     Write-Log "已复制并校验 Rust Picasa 图片查看器: $ViewerExeName"
+
+    $StagedCliExe = Join-Path $StagingDir $CliExeName
+    Copy-Item -LiteralPath $BuiltCliExe -Destination $StagedCliExe -Force
+    Assert-PeMachineArchitecture -FilePath $StagedCliExe -ExpectedArch $Arch
+    Write-Log "已复制并校验 Rust CLI / MCP 工具: $CliExeName"
 } else {
     throw "找不到编译后的 Tools3000.exe"
 }
@@ -939,7 +956,7 @@ $ServiceExeArtifact = "Tools3000_Service.exe"
 $ViewerExeArtifact = "Tools3000_Picasa_Viewer.exe"
 
 $RequiredArtifacts = @(
-    $MainExeArtifact, $ServiceExeArtifact, $ViewerExeArtifact, "Tools3000Core.dll",
+    $MainExeArtifact, $ServiceExeArtifact, $ViewerExeArtifact, $CliExeName, "Tools3000Core.dll",
     "LICENSE", "LICENSE-EXCEPTION.md", "THIRD_PARTY_NOTICES.txt", "SBOM.spdx.json",
     "ui\index.html", "plugins\Plugin_Gesture.dll", "plugins\Plugin_Capture.dll",
     "plugins\Plugin_Keycast.dll", "plugins\Plugin_Search.dll",
@@ -989,6 +1006,7 @@ $OwnedArtifacts = @(
     (Join-Path $StagingDir $MainExeArtifact),
     (Join-Path $StagingDir $ServiceExeArtifact),
     (Join-Path $StagingDir $ViewerExeArtifact),
+    (Join-Path $StagingDir $CliExeName),
     (Join-Path $StagingDir "Tools3000Core.dll")
 ) + @(Get-ChildItem -LiteralPath (Join-Path $StagingDir "plugins") -Filter "Plugin_*.dll" -File |
     Select-Object -ExpandProperty FullName)
@@ -1105,6 +1123,7 @@ if (Get-Process -Name "Tools3000*", "Tools3000_Service*" -ErrorAction SilentlyCo
     taskkill /F /T /IM Tools3000.exe 2>$null | Out-Null
     taskkill /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
     taskkill /F /T /IM Tools3000_Picasa_Viewer.exe 2>$null | Out-Null
+    taskkill /F /T /IM tools3000-cli.exe 2>$null | Out-Null
     Get-Process -Name "Tools3000*", "Tools3000_Service*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 250
 }
@@ -1148,11 +1167,13 @@ if (Test-Path -LiteralPath $DeployPluginsDir) {
     } | Remove-Item -Force -ErrorAction SilentlyContinue
 }
 Assert-PeMachineArchitecture -FilePath (Join-Path $DeployDir $ViewerExeArtifact) -ExpectedArch $Arch
+Assert-PeMachineArchitecture -FilePath (Join-Path $DeployDir $CliExeName) -ExpectedArch $Arch
 if ($RequireSigning -or $RequirePublicTrust) {
     & $SignScript -VerifyOnly -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust -Paths @(
         (Join-Path $DeployDir $MainExeArtifact),
         (Join-Path $DeployDir $ServiceExeArtifact),
         (Join-Path $DeployDir $ViewerExeArtifact),
+        (Join-Path $DeployDir $CliExeName),
         (Join-Path $DeployDir "Tools3000Core.dll")
     )
 }

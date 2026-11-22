@@ -12,6 +12,7 @@ const SettingsApp = lazy(() => import('./App.tsx'))
 const SearchApp = lazy(() => import('./SearchApp.tsx'))
 const TrayApp = lazy(() => import('./TrayApp.tsx'))
 const QuickLookApp = lazy(() => import('./QuickLookApp.tsx'))
+const ClipboardApp = lazy(() => import('./ClipboardApp.tsx'))
 
 class ErrorBoundary extends Component<{children: ReactNode}, {hasError: boolean, error: Error | null}> {
   constructor(props: {children: ReactNode}) {
@@ -49,6 +50,7 @@ class ErrorBoundary extends Component<{children: ReactNode}, {hasError: boolean,
 const isSearch = window.location.pathname === '/search' || window.location.hash.includes('/search') || window.location.search.includes('search=1');
 const isTray = window.location.search.includes('tray=1');
 const isQuickLook = window.location.pathname === '/quicklook' || window.location.hash.includes('/quicklook') || window.location.search.includes('quicklook=1');
+const isClipboard = window.location.pathname === '/clipboard' || window.location.hash.includes('/clipboard') || window.location.search.includes('clipboard=1');
 
 try {
   const storedTheme = localStorage.getItem('tools3000:theme');
@@ -71,6 +73,8 @@ if (isTray) {
   document.documentElement.dataset.surface = 'search';
 } else if (isQuickLook) {
   document.documentElement.dataset.surface = 'quicklook';
+} else if (isClipboard) {
+  document.documentElement.dataset.surface = 'clipboard';
 }
 
 // 统一页面可见性标记：当 WebView2 隐藏或最小化时立即暂停全部 CSS 无限动画，根除后台合成器与光栅化 CPU 消耗
@@ -103,7 +107,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
       <Suspense fallback={<div role="status" aria-live="polite" className="surface-loading">{i18n.t('main.loading', 'Loading...')}</div>}>
-        {isTray ? <TrayApp /> : (isSearch ? <SearchApp /> : (isQuickLook ? <QuickLookApp /> : <SettingsApp />))}
+        {isTray ? <TrayApp /> : (isSearch ? <SearchApp /> : (isQuickLook ? <QuickLookApp /> : (isClipboard ? <ClipboardApp /> : <SettingsApp />)))}
       </Suspense>
     </ErrorBoundary>
   </StrictMode>,

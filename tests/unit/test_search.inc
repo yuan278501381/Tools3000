@@ -4603,3 +4603,31 @@ TEST(SearchPropertyExtractorTest, CloudPlaceholderGuardAndGenerationCancellation
     EXPECT_TRUE(cancelledRes.cancelled);
     EXPECT_TRUE(cancelledRes.values.empty());
 }
+
+#include "service/ExternalApiPolicy.h"
+
+TEST(ExternalApiPolicyTest, EnforcesReadOnlyActionsAndSensitiveCredentialBlocklist) {
+    using namespace tools3000::service::external_api;
+
+    EXPECT_TRUE(isExternalClientSource("external_cli"));
+    EXPECT_TRUE(isExternalClientSource("external_mcp"));
+    EXPECT_FALSE(isExternalClientSource("ui"));
+    EXPECT_FALSE(isExternalClientSource(""));
+
+    // 外部客户端严格只读：仅允许 getDbStats，拒绝所有变更与关停动作
+    EXPECT_TRUE(isActionAllowedForExternal("getDbStats"));
+    EXPECT_FALSE(isActionAllowedForExternal("shutdown"));
+    EXPECT_FALSE(isActionAllowedForExternal("rebuild"));
+    EXPECT_FALSE(isActionAllowedForExternal("recordRun"));
+    EXPECT_FALSE(isActionAllowedForExternal("clearSearchHistory"));
+
+    // 内置敏感凭证路径黑名单
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\Users\\Alice\\.ssh\\id_ed25519"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\Users\\Alice\\.aws\\credentials"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\repo\\app\\.env"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\repo\\app\\.env.production"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\Users\\Alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"D:\\certs\\server.pem"));
+    EXPECT_FALSE(isSensitiveCredentialPath(L"C:\\repo\\Tools3000\\README.md"));
+    EXPECT_FALSE(isSensitiveCredentialPath(L"D:\\Work\\architecture_2026.docx"));
+}

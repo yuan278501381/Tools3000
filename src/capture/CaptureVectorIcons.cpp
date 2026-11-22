@@ -478,6 +478,19 @@ void CaptureVectorIcons::renderIconWithAccent(ID2D1RenderTarget* rt, ID2D1Factor
             break;
         }
 
+        // ── 15.5. 原位翻译 (高辨识度「文 / A」双语互译矢量图标) ─────────────────────
+        case CaptureIconId::ActionTranslate: {
+            // 左上精致「文」字形：顶短点 + 横梁 + 交叉撇捺
+            rt->DrawLine(p(7.8f, 3.6f), p(7.8f, 5.4f), brush, stroke * 0.96f, roundStroke.Get());
+            rt->DrawLine(p(3.4f, 5.8f), p(12.2f, 5.8f), brush, stroke * 0.94f, roundStroke.Get());
+            rt->DrawLine(p(10.6f, 6.2f), p(4.2f, 13.0f), brush, stroke * 0.92f, roundStroke.Get());
+            rt->DrawLine(p(5.4f, 6.6f), p(11.0f, 12.2f), brush, stroke * 0.92f, roundStroke.Get());
+            // 右下现代几何「A」字形：两斜笔 + 居中横杠
+            drawPolyline({ p(12.6f, 20.2f), p(16.5f, 10.6f), p(20.4f, 20.2f) }, false, stroke * 0.98f);
+            rt->DrawLine(p(14.1f, 17.0f), p(18.9f, 17.0f), brush, stroke * 0.92f, roundStroke.Get());
+            break;
+        }
+
         // ── 16. 钉在桌面 (优雅现代斜置/垂直图钉) ───────────────────────────────────
         case CaptureIconId::ActionPinWindow: {
             drawPolyline({

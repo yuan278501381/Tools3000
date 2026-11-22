@@ -8,7 +8,7 @@
 
 namespace tools3000::ui::web_security {
 
-enum class Surface { Settings, Search, Tray, QuickLook };
+enum class Surface { Settings, Search, Tray, QuickLook, Clipboard };
 
 // WebView bridge is a control plane, not a bulk-data channel.  Keep malformed
 // renderer input from forcing unbounded UTF conversion / JSON allocations.
@@ -88,6 +88,10 @@ inline bool isBridgeMethodAllowed(std::string_view message, Surface surface) {
                 break;
             case Surface::QuickLook:
                 allowed = starts("quicklook.") || starts("general.") ||
+                          method == "capture.pinImageFile";
+                break;
+            case Surface::Clipboard:
+                allowed = starts("clipboard.") || method == "general.getSettings" ||
                           method == "capture.pinImageFile";
                 break;
             case Surface::Settings:

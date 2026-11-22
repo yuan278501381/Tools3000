@@ -1328,6 +1328,9 @@ public:
             bool catDesign = cfg.get<bool>("/search/contentCategory_design", true);
             bool catArchive = cfg.get<bool>("/search/contentCategory_archive", true);
             std::string iconStyle = cfg.get<std::string>("/search/iconStyle", "native");
+            bool externalApiEnabled = cfg.get<bool>("/search/externalApiEnabled", false);
+            std::string externalApiExcludePaths = cfg.get<std::string>("/search/externalApiExcludePaths", "");
+            std::string externalApiAllowedRoots = cfg.get<std::string>("/search/externalApiAllowedRoots", "");
 
             nlohmann::json uiPreferences = cfg.get<nlohmann::json>("/search/uiPreferences", nlohmann::json::object());
             if (!uiPreferences.is_object()) {
@@ -1381,6 +1384,9 @@ public:
                 {"excludeSystem", excludeSystem},
                 {"autoBypassFullscreen", autoBypassFullscreen},
                 {"iconStyle", iconStyle},
+                {"externalApiEnabled", externalApiEnabled},
+                {"externalApiExcludePaths", externalApiExcludePaths},
+                {"externalApiAllowedRoots", externalApiAllowedRoots},
                 {"contentCategory_doc", catDoc},
                 {"contentCategory_code", catCode},
                 {"contentCategory_design", catDesign},
@@ -1477,6 +1483,15 @@ public:
             if (params.contains("iconStyle") && params["iconStyle"].is_string()) {
                 searchPatch["iconStyle"] = params["iconStyle"].get<std::string>();
             }
+            if (params.contains("externalApiEnabled") && params["externalApiEnabled"].is_boolean()) {
+                searchPatch["externalApiEnabled"] = params["externalApiEnabled"].get<bool>();
+            }
+            if (params.contains("externalApiExcludePaths") && params["externalApiExcludePaths"].is_string()) {
+                searchPatch["externalApiExcludePaths"] = params["externalApiExcludePaths"].get<std::string>();
+            }
+            if (params.contains("externalApiAllowedRoots") && params["externalApiAllowedRoots"].is_string()) {
+                searchPatch["externalApiAllowedRoots"] = params["externalApiAllowedRoots"].get<std::string>();
+            }
             if (params.contains("contentExtensions")) {
                 const auto clean = normalizeFormatListJson(params["contentExtensions"]);
                 searchPatch["contentExtensions"] = clean;
@@ -1554,6 +1569,31 @@ public:
             }
 
             return {{"success", true}};
+        });
+
+        mb.registerHandler("search.getExternalCliInfo", [](const nlohmann::json&) -> nlohmann::json {
+            wchar_t modulePath[MAX_PATH]{};
+            GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+            const std::filesystem::path exeDir = std::filesystem::path(modulePath).parent_path();
+            const std::filesystem::path companion = exeDir / L"tools3000-cli.exe";
+            std::error_code ec;
+            bool installed = std::filesystem::exists(companion, ec);
+            std::filesystem::path resolved = companion;
+            if (!installed) {
+                // 开发态回退探测 build/bin/Release 与 Cargo 产物路径
+                const std::filesystem::path parent2 = exeDir.parent_path().parent_path();
+                const std::filesystem::path devCargo =
+                    parent2 / L"src" / L"cli" / L"target" / L"x86_64-pc-windows-msvc" / L"release" / L"tools3000-cli.exe";
+                if (std::filesystem::exists(devCargo, ec)) {
+                    resolved = devCargo;
+                    installed = true;
+                }
+            }
+            return {
+                {"installed", installed},
+                {"executablePath", tools3000::core::WinUtils::wstringToUtf8(resolved.wstring())},
+                {"version", tools3000::version::String}
+            };
         });
 
         mb.registerHandler("search.getFileIcon", [](const nlohmann::json& params) -> nlohmann::json {

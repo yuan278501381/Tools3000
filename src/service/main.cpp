@@ -33,6 +33,7 @@
 #include "PipeProtocol.h"
 #include "PipeEndpoint.h"
 #include "PipeClientAuth.h"
+#include "ExternalApiPolicy.h"
 #include "SearchCancellation.h"
 #include "SearchRequestLimits.h"
 #include "content/ContentSearchEngine.h"
@@ -883,6 +884,7 @@ nlohmann::json ProcessSearchQuery(
     std::vector<std::pair<std::wstring, double>> dialogPriorities;
     std::optional<tools3000::service::content::ContentFormatFilter> requestFormatFilter;
     std::string formatSignaturePart;
+    bool isExternalClient = false;
 
     std::string utf8Input = WStringToString(rawInput);
     if (!g_SearchIndexReady.load(std::memory_order_acquire) ||
@@ -907,8 +909,15 @@ nlohmann::json ProcessSearchQuery(
     if (!utf8Input.empty() && utf8Input.front() == '{') {
         try {
             auto reqJson = nlohmann::json::parse(utf8Input);
+            if (reqJson.contains("clientSource") && reqJson["clientSource"].is_string()) {
+                isExternalClient = tools3000::service::external_api::isExternalClientSource(
+                    reqJson["clientSource"].get_ref<const std::string&>());
+            }
             if (reqJson.contains("action") && reqJson["action"].is_string()) {
                 std::string act = reqJson["action"].get<std::string>();
+                if (isExternalClient && !tools3000::service::external_api::isActionAllowedForExternal(act)) {
+                    return {{"success", false}, {"error", "read-only external API forbids mutating action: " + act}};
+                }
                 if (act == "cancel") {
                     tools3000::service::query::sharedEpochTracker().cancelAll();
                     return {{"success", true}, {"cancelled", true}};
@@ -2052,6 +2061,17 @@ nlohmann::json ProcessSearchQuery(
                 {"frecencyScore", histStats.frecencyScore}
             });
         }
+    }
+
+    if (isExternalClient && responseJson.contains("results") && responseJson["results"].is_array()) {
+        nlohmann::json filtered = nlohmann::json::array();
+        for (auto& item : responseJson["results"]) {
+            const std::string p = item.value("path", "");
+            if (!p.empty() && !tools3000::service::external_api::isSensitiveCredentialPath(StringToWString(p))) {
+                filtered.push_back(std::move(item));
+            }
+        }
+        responseJson["results"] = std::move(filtered);
     }
 
     const auto overallEndTime = std::chrono::steady_clock::now();

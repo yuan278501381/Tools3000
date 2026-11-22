@@ -10,6 +10,7 @@ Tools3000 Rust Picasa 看图器独立测试与 Release 构建轨道 (Build-RustV
 param(
     [Parameter(Mandatory = $true)]
     [string]$ViewerProjectDir,
+    [string]$CliProjectDir = "",
     [Parameter(Mandatory = $true)]
     [ValidateSet("x64", "arm64")]
     [string]$Arch,
@@ -78,8 +79,54 @@ try {
         throw "Rust Picasa 图片查看器编译失败！退出码: $LASTEXITCODE"
     }
     $BuildSw.Stop()
-    $TrackSw.Stop()
-    Write-Host ("[RUST] [OK] Rust Picasa 看图器编译完成 (build={0:N2}s, total={1:N2}s)" -f $BuildSw.Elapsed.TotalSeconds, $TrackSw.Elapsed.TotalSeconds) -ForegroundColor Green
+    Write-Host ("[RUST] [OK] Rust Picasa 看图器编译完成 (build={0:N2}s)" -f $BuildSw.Elapsed.TotalSeconds) -ForegroundColor Green
 } finally {
     Pop-Location
 }
+
+if (-not [string]::IsNullOrWhiteSpace($CliProjectDir) -and (Test-Path -LiteralPath (Join-Path $CliProjectDir "Cargo.toml"))) {
+    Push-Location $CliProjectDir
+    try {
+        if (-not $SkipTests -and $Arch -eq "x64") {
+            $CliTestSw = [System.Diagnostics.Stopwatch]::StartNew()
+            Write-Host "[RUST] 运行 Rust CLI / MCP 单元测试 (cargo test --target $ViewerRustTarget)..." -ForegroundColor Cyan
+            & $CargoPath test --target $ViewerRustTarget
+            if ($LASTEXITCODE -ne 0) {
+                throw "Rust CLI / MCP 单元测试失败！退出码: $LASTEXITCODE"
+            }
+            $CliTestSw.Stop()
+            Write-Host ("[RUST] [OK] Rust CLI / MCP 单元测试通过 ({0:N2}s)" -f $CliTestSw.Elapsed.TotalSeconds) -ForegroundColor Green
+        }
+
+        $CliBuildSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-Host "[RUST] 编译 Rust CLI / MCP 工具 (tools3000-cli.exe, $Arch Release)..." -ForegroundColor Cyan
+        & $CargoPath build --release --target $ViewerRustTarget
+        if ($LASTEXITCODE -ne 0) {
+            throw "Rust CLI / MCP 工具编译失败！退出码: $LASTEXITCODE"
+        }
+        $CliBuildSw.Stop()
+        Write-Host ("[RUST] [OK] Rust CLI / MCP 编译完成 (build={0:N2}s)" -f $CliBuildSw.Elapsed.TotalSeconds) -ForegroundColor Green
+    } finally {
+        Pop-Location
+    }
+}
+
+$ClipboardProjectDir = Join-Path (Split-Path -Parent $ViewerProjectDir) "clipboard\rust_clipboard"
+if (-not $SkipTests -and $Arch -eq "x64" -and (Test-Path -LiteralPath (Join-Path $ClipboardProjectDir "Cargo.toml"))) {
+    Push-Location $ClipboardProjectDir
+    try {
+        $ClipTestSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-Host "[RUST] 运行 Rust 持久化剪贴板内核单元测试 (cargo test --target $ViewerRustTarget)..." -ForegroundColor Cyan
+        & $CargoPath test --target $ViewerRustTarget
+        if ($LASTEXITCODE -ne 0) {
+            throw "Rust 剪贴板内核单元测试失败！退出码: $LASTEXITCODE"
+        }
+        $ClipTestSw.Stop()
+        Write-Host ("[RUST] [OK] Rust 剪贴板内核单元测试通过 ({0:N2}s)" -f $ClipTestSw.Elapsed.TotalSeconds) -ForegroundColor Green
+    } finally {
+        Pop-Location
+    }
+}
+
+$TrackSw.Stop()
+Write-Host ("[RUST] [OK] Rust 全量并行轨道完成 (total={0:N2}s)" -f $TrackSw.Elapsed.TotalSeconds) -ForegroundColor Green
