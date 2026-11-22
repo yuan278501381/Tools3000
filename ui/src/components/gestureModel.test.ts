@@ -7,6 +7,7 @@ import {
   parseDirectionSegments,
   parseGesturePreview,
   matchesGestureCategory,
+  resolveRequiredEdgeTriggerKey,
   assembleGestureCode,
   GESTURE_CODE_PATTERN,
   simplifyDirections,
@@ -325,6 +326,21 @@ describe('parseDirectionSegments and parseGesturePreview (U-06 regression)', () 
     expect(matchesGestureCategory('LeftEdge+WheelUp', 'edge')).toBe(true);
     expect(matchesGestureCategory('LeftEdge+WheelUp', 'wheel')).toBe(true);
     expect(matchesGestureCategory('LeftEdge+WheelUp', 'right')).toBe(false);
+  });
+
+  it('resolves the required screen-edge trigger key for edge wheel and slide gestures', () => {
+    expect(resolveRequiredEdgeTriggerKey('LeftEdge+WheelUp')).toBe('edge_left_wheel');
+    expect(resolveRequiredEdgeTriggerKey('LeftEdge+WheelDown')).toBe('edge_left_wheel');
+    expect(resolveRequiredEdgeTriggerKey('RightEdge+WheelUp')).toBe('edge_right_wheel');
+    expect(resolveRequiredEdgeTriggerKey('TopEdge+WheelDown')).toBe('edge_top_wheel');
+    expect(resolveRequiredEdgeTriggerKey('BottomEdge+WheelUp')).toBe('edge_bottom_wheel');
+    expect(resolveRequiredEdgeTriggerKey('LeftEdge+R')).toBe('edge_left_slide');
+    expect(resolveRequiredEdgeTriggerKey('TopEdge+D')).toBe('edge_top_slide');
+    expect(resolveRequiredEdgeTriggerKey('RightEdge+L')).toBe('edge_right_slide');
+    expect(resolveRequiredEdgeTriggerKey('BottomEdge+U')).toBe('edge_bottom_slide');
+    expect(resolveRequiredEdgeTriggerKey('WheelUp')).toBeNull();
+    expect(resolveRequiredEdgeTriggerKey('D-R')).toBeNull();
+    expect(resolveRequiredEdgeTriggerKey('Middle+L')).toBeNull();
   });
 });
 

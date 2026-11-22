@@ -7534,13 +7534,34 @@ TEST(CaptureLifecycleAndGhostWindowTest, ShortcutHintOverlayNeverRemainsAfterCap
     using namespace tools3000::capture;
 
     auto& hint = ShortcutHintOverlay::instance();
+    const DWORD selfPid = GetCurrentProcessId();
+    auto findOwnedHintWindow = [selfPid]() -> HWND {
+        struct SearchCtx {
+            DWORD pid;
+            HWND found;
+        } ctx{selfPid, nullptr};
+        EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+            auto* c = reinterpret_cast<SearchCtx*>(lp);
+            DWORD winPid = 0;
+            GetWindowThreadProcessId(hwnd, &winPid);
+            if (winPid != c->pid) return TRUE;
+            wchar_t cls[64]{};
+            if (GetClassNameW(hwnd, cls, 64) > 0 && wcscmp(cls, L"Tools3000_ShortcutHintOverlay") == 0) {
+                c->found = hwnd;
+                return FALSE;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&ctx));
+        return ctx.found;
+    };
+
     hint.hide();
     EXPECT_FALSE(hint.isVisible());
 
     // 1. 验证跨线程调用 hide() 时（如后台线程回调）立即隐藏窗口并投递销毁消息，绝不残留幽灵窗口
     hint.show(ShortcutHintContext::CaptureSelected);
     ASSERT_TRUE(hint.isVisible());
-    ASSERT_NE(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+    ASSERT_NE(findOwnedHintWindow(), nullptr);
 
     std::thread worker([]() {
         ShortcutHintOverlay::instance().hide();
@@ -7554,22 +7575,22 @@ TEST(CaptureLifecycleAndGhostWindowTest, ShortcutHintOverlayNeverRemainsAfterCap
         DispatchMessageW(&msg);
     }
     EXPECT_FALSE(hint.isVisible());
-    EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+    EXPECT_EQ(findOwnedHintWindow(), nullptr);
 
     // 2. 验证外部发送 WM_CLOSE 或直接 DestroyWindow 后，isVisible() 准确感知且重新 show() 自愈重建
     hint.show(ShortcutHintContext::CaptureSelecting);
     ASSERT_TRUE(hint.isVisible());
-    HWND hintHwnd = FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr);
+    HWND hintHwnd = findOwnedHintWindow();
     ASSERT_NE(hintHwnd, nullptr);
     SendMessageW(hintHwnd, WM_CLOSE, 0, 0);
     EXPECT_FALSE(hint.isVisible());
-    EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+    EXPECT_EQ(findOwnedHintWindow(), nullptr);
 
     hint.show(ShortcutHintContext::CaptureSelecting);
     EXPECT_TRUE(hint.isVisible());
     hint.hide();
     EXPECT_FALSE(hint.isVisible());
-    EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+    EXPECT_EQ(findOwnedHintWindow(), nullptr);
 
     // 3. 验证处于 Idle 态的 CaptureState 调用 transitionToRecordMode 绝不会意外弹出残留提示窗
     {
@@ -7601,21 +7622,21 @@ TEST(CaptureLifecycleAndGhostWindowTest, ShortcutHintOverlayNeverRemainsAfterCap
         s_mockOwnerActive.store(false);
         hint.show(ShortcutHintContext::CaptureSelected, {200, 200}, {});
         EXPECT_FALSE(hint.isVisible());
-        EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+        EXPECT_EQ(findOwnedHintWindow(), nullptr);
 
         // (b) 宿主处于活动态时正常显示，随后宿主变为非活动态（模拟异常退场漏调 hide），
         //     验证 WM_TIMER 守护自愈自动销毁提示窗
         s_mockOwnerActive.store(true);
         hint.show(ShortcutHintContext::CaptureSelected, {200, 200}, {});
         ASSERT_TRUE(hint.isVisible());
-        HWND watchdogHwnd = FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr);
+        HWND watchdogHwnd = findOwnedHintWindow();
         ASSERT_NE(watchdogHwnd, nullptr);
 
         s_mockOwnerActive.store(false);
         // 触发守护定时器消息 (kWatchdogTimerId = 1)
         SendMessageW(watchdogHwnd, WM_TIMER, 1, 0);
         EXPECT_FALSE(hint.isVisible());
-        EXPECT_EQ(FindWindowW(L"Tools3000_ShortcutHintOverlay", nullptr), nullptr);
+        EXPECT_EQ(findOwnedHintWindow(), nullptr);
     }
 }
 

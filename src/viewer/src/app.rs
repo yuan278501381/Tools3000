@@ -67,15 +67,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsZoomed, LoadCursorW, LoadImageW, MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage,
     RegisterClassExW, SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
     SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, CS_DBLCLKS, GWLP_USERDATA,
-    GWL_STYLE, HICON, HWND_NOTOPMOST, HWND_TOPMOST, ICON_BIG, ICON_SMALL, IDC_ARROW, IMAGE_ICON,
-    LR_DEFAULTCOLOR, LR_SHARED, MINMAXINFO, MSG, PM_REMOVE, QS_ALLINPUT, SIZE_MINIMIZED,
-    SMTO_ABORTIFHUNG, SMTO_NORMAL, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
+    GWL_STYLE, HICON, HTCAPTION, HWND_NOTOPMOST, HWND_TOPMOST, ICON_BIG, ICON_SMALL, IDC_ARROW,
+    IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, MINMAXINFO, MSG, PM_REMOVE, QS_ALLINPUT, SC_MAXIMIZE,
+    SIZE_MINIMIZED, SMTO_ABORTIFHUNG, SMTO_NORMAL, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_MAXIMIZE, SW_RESTORE,
     SW_SHOW, WM_ACTIVATE, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COPYDATA, WM_DESTROY,
     WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KILLFOCUS,
     WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_MOVE, WM_PAINT, WM_QUIT, WM_RBUTTONUP, WM_SETICON, WM_SETTINGCHANGE, WM_SIZE, WNDCLASSEXW,
-    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+    WM_MOVE, WM_NCLBUTTONDBLCLK, WM_PAINT, WM_QUIT, WM_RBUTTONUP, WM_SETICON, WM_SETTINGCHANGE,
+    WM_SIZE, WM_SYSCOMMAND, WNDCLASSEXW, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOPMOST,
+    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 };
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -217,6 +218,29 @@ fn should_auto_window_on_deactivate(
         && !modal_dialog_active
         && window_activated_once
         && !transitioning_window_mode
+}
+
+/// 判断收到 `WM_LBUTTONDBLCLK` 时是否应从小窗口态 (`Windowed`) 切回经典半透明全屏浮层态 (`Overlay`)：
+/// 1:1 复刻原版 Picasa，在小窗口内双击图片区域或空白背景即可回到原浮层，
+/// 而连点底栏按钮或胶片缩略图时绝不误触切换窗口形态。
+fn should_restore_overlay_on_double_click(
+    mode: WindowMode,
+    hit: HitTarget,
+    is_slideshow: bool,
+) -> bool {
+    mode == WindowMode::Windowed
+        && !is_slideshow
+        && matches!(hit, HitTarget::ImageCanvas | HitTarget::EmptyBackdrop)
+}
+
+/// 判断小窗口态下双击标题栏 (`WM_NCLBUTTONDBLCLK(HTCAPTION)`) 或点击最大化 (`SC_MAXIMIZE`) 时，
+/// 是否应直接还原为经典半透明全屏浮层而非带标题栏的实心最大化窗口。
+fn should_restore_overlay_on_titlebar_maximize(
+    mode: WindowMode,
+    is_slideshow: bool,
+    is_closing: bool,
+) -> bool {
+    mode == WindowMode::Windowed && !is_slideshow && !is_closing
 }
 
 /// 依据当前照片在屏幕上的实际显示几何、DPI 非客户区边框厚与显示器工作区，计算标准小窗口的外框物理 `RECT`：
@@ -947,8 +971,12 @@ impl ViewerApp {
         }
 
         self.transitioning_window_mode = true;
+        self.clear_pointer_captures();
         self.window_mode = WindowMode::Overlay;
         self.is_fullscreen = fullscreen;
+        self.return_to_windowed_on_f11 = false;
+        self.hovered = HitTarget::None;
+        self.ui_opacity = 1.0;
         self.camera.set_fit_layout_mode(FitLayoutMode::Overlay);
 
         let mut need_recreate = false;
@@ -978,6 +1006,7 @@ impl ViewerApp {
                     SWP_FRAMECHANGED | SWP_SHOWWINDOW,
                 );
             }
+            let _ = SetForegroundWindow(hwnd);
             self.suppress_size_render = false;
 
             let cur_dpi = GetDpiForWindow(hwnd).max(96) as f32;
@@ -2774,6 +2803,37 @@ impl ViewerApp {
                 }
                 None
             }
+            WM_NCLBUTTONDBLCLK => {
+                if (wparam.0 as u32) == HTCAPTION
+                    && should_restore_overlay_on_titlebar_maximize(
+                        self.window_mode,
+                        self.is_slideshow(),
+                        self.is_closing(),
+                    )
+                {
+                    // 小窗口双击标题栏直接切回原版经典半透明全屏浮层
+                    self.camera.is_fit_mode = true;
+                    self.enter_overlay_mode(false);
+                    return Some(LRESULT(0));
+                }
+                None
+            }
+            WM_SYSCOMMAND => {
+                let cmd = (wparam.0 as u32) & 0xFFF0;
+                if cmd == SC_MAXIMIZE
+                    && should_restore_overlay_on_titlebar_maximize(
+                        self.window_mode,
+                        self.is_slideshow(),
+                        self.is_closing(),
+                    )
+                {
+                    // 点击小窗口右上角最大化按钮 / 系统菜单最大化 / 拖顶最大化均切回经典半透明全屏浮层
+                    self.camera.is_fit_mode = true;
+                    self.enter_overlay_mode(false);
+                    return Some(LRESULT(0));
+                }
+                None
+            }
             WM_SETTINGCHANGE => {
                 if self.is_windowed() {
                     self.apply_window_dark_titlebar(hwnd);
@@ -3290,6 +3350,16 @@ impl ViewerApp {
                 let hit =
                     self.layout
                         .hit_test(dx, dy, self.image_screen_rect(), self.ui_opacity > 0.05);
+                if should_restore_overlay_on_double_click(
+                    self.window_mode,
+                    hit,
+                    self.is_slideshow(),
+                ) {
+                    // 1:1 复刻原版 Picasa：小窗口模式下双击图片或空白区域，立即回到经典半透明全屏浮层
+                    self.camera.is_fit_mode = true;
+                    self.enter_overlay_mode(false);
+                    return Some(LRESULT(0));
+                }
                 if hit == HitTarget::ImageCanvas {
                     if self.is_slideshow() {
                         self.stop_slideshow_gracefully();
@@ -3737,13 +3807,15 @@ mod tests {
         compute_next_filmstrip_offset, compute_window_center_compensation_dip,
         compute_windowed_outer_rect, compute_zoom_badge_alpha, format_window_title,
         next_index_after_delete, resolve_frame_for_export, should_auto_window_on_deactivate,
+        should_restore_overlay_on_double_click, should_restore_overlay_on_titlebar_maximize,
         should_skip_navigation,
     };
     use crate::constants::{
         WINDOWED_MAX_WORKAREA_RATIO, WINDOWED_MIN_CLIENT_H_DIP, WINDOWED_MIN_CLIENT_W_DIP,
         ZOOM_BADGE_FADE_MS, ZOOM_BADGE_HOLD_MS,
     };
-    use crate::types::{ImageFrame, LifecyclePhase, RectF, WindowMode};
+    use crate::types::{ImageFrame, LifecyclePhase, RectF, ToolbarAction, WindowMode};
+    use crate::ui_layout::HitTarget;
     use std::path::Path;
     use std::time::{Duration, Instant};
     use windows::Win32::Foundation::RECT;
@@ -3952,6 +4024,66 @@ mod tests {
             LifecyclePhase::Viewing,
             false,
             true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn windowed_double_click_restores_overlay_only_on_canvas_or_backdrop() {
+        assert!(should_restore_overlay_on_double_click(
+            WindowMode::Windowed,
+            HitTarget::ImageCanvas,
+            false,
+        ));
+        assert!(should_restore_overlay_on_double_click(
+            WindowMode::Windowed,
+            HitTarget::EmptyBackdrop,
+            false,
+        ));
+        // 连点底栏按钮或胶片缩略图绝不误切回浮层
+        assert!(!should_restore_overlay_on_double_click(
+            WindowMode::Windowed,
+            HitTarget::ToolbarButton(ToolbarAction::NextImage),
+            false,
+        ));
+        assert!(!should_restore_overlay_on_double_click(
+            WindowMode::Windowed,
+            HitTarget::FilmstripItem(0),
+            false,
+        ));
+        // 浮层态与幻灯片态由原有 1:1 缩放 / 退出放映接管
+        assert!(!should_restore_overlay_on_double_click(
+            WindowMode::Overlay,
+            HitTarget::ImageCanvas,
+            false,
+        ));
+        assert!(!should_restore_overlay_on_double_click(
+            WindowMode::Windowed,
+            HitTarget::ImageCanvas,
+            true,
+        ));
+    }
+
+    #[test]
+    fn windowed_titlebar_dblclk_and_maximize_restore_overlay() {
+        assert!(should_restore_overlay_on_titlebar_maximize(
+            WindowMode::Windowed,
+            false,
+            false,
+        ));
+        assert!(!should_restore_overlay_on_titlebar_maximize(
+            WindowMode::Overlay,
+            false,
+            false,
+        ));
+        assert!(!should_restore_overlay_on_titlebar_maximize(
+            WindowMode::Windowed,
+            true,
+            false,
+        ));
+        assert!(!should_restore_overlay_on_titlebar_maximize(
+            WindowMode::Windowed,
+            false,
             true,
         ));
     }

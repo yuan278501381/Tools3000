@@ -856,5 +856,9 @@
   "一, 二, 三": "Chino (1, 2, 3)",
   "Brightness {0}%": "Brillo {0}%",
   "Quick Save (Ctrl+Shift+S, Right-click Save As)": "Guardado rápido (Ctrl+Shift+S, clic derecho para Guardar como)",
-  "Screenshot saved and copied to clipboard": "Captura guardada y copiada al portapapeles"
+  "Screenshot saved and copied to clipboard": "Captura guardada y copiada al portapapeles",
+  "Brightness Up": "Subir brillo",
+  "Increase brightness of the display under cursor": "Aumenta el brillo del monitor bajo el cursor",
+  "Brightness Down": "Bajar brillo",
+  "Decrease brightness of the display under cursor": "Reduce el brillo del monitor bajo el cursor"
 }

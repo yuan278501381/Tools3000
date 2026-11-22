@@ -4045,4 +4045,82 @@ TEST(GestureAuditRegressionTest, ThreeVisualSwitchesRealHwndVisibilityMatrix) {
     overlay.shutdown();
 }
 
+TEST(GestureAuditRegressionTest, DefaultGlobalEdgeBrightnessPresetsDisabledByDefaultAndMigratedOnce) {
+    using namespace tools3000::gesture;
+    using namespace tools3000::core;
+
+    // 1. 新建默认全局 Profile 必须包含屏幕左边缘滚轮亮度调节预置，但默认处于关闭态且不触发
+    GestureProfile globalProf = GestureProfile::createDefaultGlobal();
+    const auto upMap = globalProf.findMapping("LeftEdge+WheelUp");
+    const auto downMap = globalProf.findMapping("LeftEdge+WheelDown");
+    ASSERT_TRUE(upMap.has_value());
+    ASSERT_TRUE(downMap.has_value());
+    EXPECT_FALSE(upMap->enabled);
+    EXPECT_FALSE(downMap->enabled);
+    EXPECT_EQ(upMap->action.type, ActionType::BuiltinCommand);
+    EXPECT_EQ(downMap->action.type, ActionType::BuiltinCommand);
+    EXPECT_EQ(upMap->action.builtinCmd, BuiltinCommand::BrightnessUp);
+    EXPECT_EQ(downMap->action.builtinCmd, BuiltinCommand::BrightnessDown);
+    EXPECT_FALSE(globalProf.findAction("LeftEdge+WheelUp").has_value());
+    EXPECT_FALSE(globalProf.findAction("LeftEdge+WheelDown").has_value());
+
+    // 启用后立即返回对应亮度内置命令
+    globalProf.setMappingEnabled("LeftEdge+WheelUp", true);
+    globalProf.setMappingEnabled("LeftEdge+WheelDown", true);
+    ASSERT_TRUE(globalProf.findAction("LeftEdge+WheelUp").has_value());
+    ASSERT_TRUE(globalProf.findAction("LeftEdge+WheelDown").has_value());
+    EXPECT_EQ(globalProf.findAction("LeftEdge+WheelUp")->builtinCmd, BuiltinCommand::BrightnessUp);
+    EXPECT_EQ(globalProf.findAction("LeftEdge+WheelDown")->builtinCmd, BuiltinCommand::BrightnessDown);
+
+    // 2. 一次性老配置迁移测试：缺少亮度预置的历史 default Profile 首次加载自动补齐为关闭态；删除后二次加载绝不复活
+    const auto tempRoot = std::filesystem::temp_directory_path() /
+        (L"tools3000_edge_brightness_migrate_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(tempRoot, ec);
+    std::filesystem::create_directories(tempRoot, ec);
+
+    auto& cfg = ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tempRoot));
+
+    GestureProfile legacyDefault("default");
+    GestureMapping backMap;
+    backMap.gestureCode = "L";
+    backMap.action.type = ActionType::SendKeys;
+    backMap.action.name = "Back";
+    backMap.action.keyStroke = KeyStroke::fromString("Alt+Left");
+    legacyDefault.addMapping(backMap);
+
+    cfg.set<nlohmann::json>("/gesture/profiles", nlohmann::json::array({legacyDefault.toJson()}));
+    cfg.set<bool>("/gesture/edgeBrightnessPresetV1Migrated", false);
+
+    auto& engine = GestureEngine::instance();
+    engine.loadFromConfig();
+    EXPECT_TRUE(cfg.get<bool>("/gesture/edgeBrightnessPresetV1Migrated", false));
+
+    const auto migratedProf = engine.getProfile("default");
+    ASSERT_TRUE(migratedProf.has_value());
+    const auto migUp = migratedProf->findMapping("LeftEdge+WheelUp");
+    const auto migDown = migratedProf->findMapping("LeftEdge+WheelDown");
+    ASSERT_TRUE(migUp.has_value());
+    ASSERT_TRUE(migDown.has_value());
+    EXPECT_FALSE(migUp->enabled);
+    EXPECT_FALSE(migDown->enabled);
+    // 默认不拦截屏幕左边缘滚轮
+    EXPECT_EQ(engine.computeTriggerMask() & GestureTriggerMask::EdgeLeftWheel, 0u);
+
+    // 模拟用户显式删除后，二次加载绝不再强行复活
+    GestureProfile userTrimmed = *migratedProf;
+    userTrimmed.removeMapping("LeftEdge+WheelUp");
+    userTrimmed.removeMapping("LeftEdge+WheelDown");
+    cfg.set<nlohmann::json>("/gesture/profiles", nlohmann::json::array({userTrimmed.toJson()}));
+    engine.loadFromConfig();
+    const auto reloadedProf = engine.getProfile("default");
+    ASSERT_TRUE(reloadedProf.has_value());
+    EXPECT_FALSE(reloadedProf->hasGesture("LeftEdge+WheelUp"));
+    EXPECT_FALSE(reloadedProf->hasGesture("LeftEdge+WheelDown"));
+
+    cfg.shutdown();
+    std::filesystem::remove_all(tempRoot, ec);
+}
+
 

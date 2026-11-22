@@ -195,9 +195,11 @@ GestureProfile GestureProfile::createDefaultGlobal() {
     };
 
     auto addBuiltin = [&](const std::string& code, const std::string& name,
-                          BuiltinCommand cmd, const std::string& desc = "") {
+                          BuiltinCommand cmd, const std::string& desc = "",
+                          bool enabled = true) {
         GestureMapping mapping;
         mapping.gestureCode = code;
+        mapping.enabled = enabled;
         mapping.action.type = ActionType::BuiltinCommand;
         mapping.action.name = name;
         mapping.action.description = desc;
@@ -229,6 +231,9 @@ GestureProfile GestureProfile::createDefaultGlobal() {
     addKeys("L-R",      tools3000::core::trUtf8CstrFor(zh, "撤销", "Undo"),                        "Ctrl+Z",           tools3000::core::trUtf8CstrFor(zh, "撤销上一步操作", "Undo last action"));
     addKeys("U-D-U",    tools3000::core::trUtf8CstrFor(zh, "强制刷新", "Hard Refresh"),            "Ctrl+F5",          tools3000::core::trUtf8CstrFor(zh, "强制刷新忽略缓存", "Hard refresh bypassing cache"));
     addKeys("D-U-D",    tools3000::core::trUtf8CstrFor(zh, "任务管理器", "Task Manager"),          "Ctrl+Shift+Escape",tools3000::core::trUtf8CstrFor(zh, "打开 Windows 任务管理器", "Open Windows Task Manager"));
+    // 屏幕左边缘滚轮调节硬件亮度：默认预置但默认关闭，用户在设置页可见且一键拨开即用
+    addBuiltin("LeftEdge+WheelUp",   tools3000::core::trUtf8CstrFor(zh, "调高屏幕亮度", "Brightness Up"),   BuiltinCommand::BrightnessUp,   tools3000::core::trUtf8CstrFor(zh, "提高光标所在显示器的硬件亮度", "Increase brightness of the display under cursor"), false);
+    addBuiltin("LeftEdge+WheelDown", tools3000::core::trUtf8CstrFor(zh, "调低屏幕亮度", "Brightness Down"), BuiltinCommand::BrightnessDown, tools3000::core::trUtf8CstrFor(zh, "降低光标所在显示器的硬件亮度", "Decrease brightness of the display under cursor"), false);
 
     LOG_INFO("创建默认全局手势配置集, 手势数量={}", profile.getMappings().size());
     return profile;
@@ -274,9 +279,11 @@ GestureProfile GestureProfile::createDesktopProfile() {
     };
 
     auto addBuiltin = [&](const std::string& code, const std::string& name,
-                          BuiltinCommand cmd, const std::string& desc = "") {
+                          BuiltinCommand cmd, const std::string& desc = "",
+                          bool enabled = true) {
         GestureMapping mapping;
         mapping.gestureCode = code;
+        mapping.enabled = enabled;
         mapping.action.type = ActionType::BuiltinCommand;
         mapping.action.name = name;
         mapping.action.description = desc;
@@ -300,9 +307,11 @@ GestureProfile GestureProfile::createTaskbarProfile() {
     const bool zh = tools3000::core::isUiLanguageChinese();
 
     auto addBuiltin = [&](const std::string& code, const std::string& name,
-                          BuiltinCommand cmd, const std::string& desc = "") {
+                          BuiltinCommand cmd, const std::string& desc = "",
+                          bool enabled = true) {
         GestureMapping mapping;
         mapping.gestureCode = code;
+        mapping.enabled = enabled;
         mapping.action.type = ActionType::BuiltinCommand;
         mapping.action.name = name;
         mapping.action.description = desc;
