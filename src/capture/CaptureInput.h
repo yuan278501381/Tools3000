@@ -53,6 +53,9 @@ private:
     void updateMarkup(POINT point);
     void finishMarkup(POINT point);
     void finalizeMultiPointLine(bool commit);
+    void commitPendingMarkupForDelivery();
+    void triggerQuickSave();
+    void triggerSaveSelectionAs(HWND hwnd);
     
     void prepareMarkupBase();
     void rebuildMarkupBase();

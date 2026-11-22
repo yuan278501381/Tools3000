@@ -853,5 +853,8 @@
   "en-US": "es-ES",
   "{0} frame": "{0} fotograma",
   "{0} frames": "{0} fotogramas",
-  "一, 二, 三": "Chino (1, 2, 3)"
+  "一, 二, 三": "Chino (1, 2, 3)",
+  "Brightness {0}%": "Brillo {0}%",
+  "Quick Save (Ctrl+Shift+S, Right-click Save As)": "Guardado rápido (Ctrl+Shift+S, clic derecho para Guardar como)",
+  "Screenshot saved and copied to clipboard": "Captura guardada y copiada al portapapeles"
 }

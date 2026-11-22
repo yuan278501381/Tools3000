@@ -77,6 +77,17 @@ public:
     void setTrailVisible(bool visible);
     bool trailVisible() const { return m_trailVisible.load(); }
 
+    /// 手势结束渐隐动画开关（关闭后松手 0ms 瞬消）
+    void setTrailFadeEnabled(bool enabled);
+    bool trailFadeEnabled() const { return m_trailFadeEnabled.load(); }
+
+    /// 手势动作提示文字胶囊开关
+    void setShowActionHint(bool show);
+    bool showActionHint() const { return m_showActionHint.load(); }
+
+    /// 是否存在任一视觉反馈（轨迹线或动作提示文字）
+    bool hasOverlayVisuals() const { return m_trailVisible.load() || m_showActionHint.load(); }
+
     /// 全屏应用/游戏自动免打扰开关
     void setAutoBypassFullscreen(bool enable);
     bool autoBypassFullscreen() const { return m_autoBypassFullscreen.load(); }
@@ -212,6 +223,8 @@ private:
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_recordingMode{false};
     std::atomic<bool> m_trailVisible{true};
+    std::atomic<bool> m_trailFadeEnabled{true};
+    std::atomic<bool> m_showActionHint{true};
     std::atomic<bool> m_autoBypassFullscreen{true};
     std::atomic<GestureTargetMode> m_targetMode{GestureTargetMode::UnderPointer};
     std::atomic<int> m_initialTimeoutMs{0};

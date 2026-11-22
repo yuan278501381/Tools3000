@@ -57,13 +57,17 @@ enum class BuiltinCommand {
     VolumeMute,               // 24: 静音切换 (全局多媒体)
     PrevVirtualDesktop,       // 25: 上一个虚拟桌面 (Win+Ctrl+Left)
     NextVirtualDesktop,       // 26: 下一个虚拟桌面 (Win+Ctrl+Right)
+    DeleteKey,                // 27: 删除键 (Delete)
+    BackspaceKey,             // 28: 退格键 (Backspace)
+    BrightnessUp,             // 29: 调高屏幕亮度 (光标所在显示器)
+    BrightnessDown,           // 30: 调低屏幕亮度 (光标所在显示器)
     PrevDesktop = PrevVirtualDesktop,
     NextDesktop = NextVirtualDesktop,
     SwitchDesktopLeft = PrevVirtualDesktop,   // 上一个虚拟桌面别名
     SwitchDesktopRight = NextVirtualDesktop   // 下一个虚拟桌面别名
 };
 
-inline constexpr BuiltinCommand kMaxBuiltinCommand = BuiltinCommand::NextVirtualDesktop;
+inline constexpr BuiltinCommand kMaxBuiltinCommand = BuiltinCommand::BrightnessDown;
 
 /// 统一校验 BuiltinCommand 整数索引是否合法 (0 ~ kMaxBuiltinCommand)
 inline constexpr bool isValidBuiltinCommandIndex(int index) noexcept {

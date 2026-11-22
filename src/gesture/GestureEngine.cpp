@@ -7,6 +7,7 @@
 #include "gesture/GestureDispatchWorker.h"
 #include "gesture/GestureTrailOverlay.h"
 #include "gesture/GestureInputPolicy.h"
+#include "gesture/MonitorBrightnessController.h"
 #include "core/logger/Logger.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/UiThreadJoin.h"
@@ -261,7 +262,12 @@ bool GestureEngine::start() {
     auto& trail = GestureTrailOverlay::instance();
     if (!trail.initialize(GetModuleHandleW(nullptr))) {
         m_trailVisible = false;
+        m_showActionHint = false;
         LOG_WARN("手势轨迹覆盖层不可用，手势识别与动作执行将继续运行");
+    } else {
+        trail.setDrawTrailLine(m_trailVisible.load());
+        trail.setFadeEnabled(m_trailFadeEnabled.load());
+        trail.setShowActionHint(m_showActionHint.load());
     }
 
     m_state = GestureState::Idle;
@@ -309,6 +315,7 @@ void GestureEngine::stop() {
         m_lastBypassEvalRect = {0, 0, 0, 0};
     }
     GestureTrailOverlay::instance().shutdown();
+    MonitorBrightnessController::instance().shutdown();
     m_state = GestureState::Idle;
     {
         std::lock_guard lock(m_integrityWarnMutex);
@@ -580,12 +587,30 @@ std::string GestureEngine::triggerButton() const {
 
 void GestureEngine::setTrailVisible(bool visible) {
     m_trailVisible = visible;
-    if (!visible) {
-        auto& trail = GestureTrailOverlay::instance();
+    auto& trail = GestureTrailOverlay::instance();
+    trail.setDrawTrailLine(visible);
+    if (!visible && !m_showActionHint.load()) {
         trail.hide();
         trail.releaseD2DResources();
     }
     LOG_INFO("手势轨迹显示状态: visible={}", visible);
+}
+
+void GestureEngine::setTrailFadeEnabled(bool enabled) {
+    m_trailFadeEnabled = enabled;
+    GestureTrailOverlay::instance().setFadeEnabled(enabled);
+    LOG_INFO("Gesture trail fade-out animation updated: enabled={}", enabled);
+}
+
+void GestureEngine::setShowActionHint(bool show) {
+    m_showActionHint = show;
+    auto& trail = GestureTrailOverlay::instance();
+    trail.setShowActionHint(show);
+    if (!show && !m_trailVisible.load()) {
+        trail.hide();
+        trail.releaseD2DResources();
+    }
+    LOG_INFO("Gesture action hint text updated: show={}", show);
 }
 
 void GestureEngine::setAutoBypassFullscreen(bool enable) {
@@ -1026,11 +1051,13 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
     m_state = GestureState::Tracking;
     MouseHook::instance().setIsTracking(true);
 
-    // 开始轨迹可视化
-    if (m_trailVisible.load()) {
+    // 开始轨迹可视化（轨迹线或动作提示文字任一开启即激活覆盖层）
+    if (hasOverlayVisuals()) {
         auto& trail = GestureTrailOverlay::instance();
         trail.beginTrail();
-        trail.addPoint(static_cast<float>(event.position.x), static_cast<float>(event.position.y));
+        if (m_trailVisible.load()) {
+            trail.addPoint(static_cast<float>(event.position.x), static_cast<float>(event.position.y));
+        }
     }
 
     LOG_TRACE("手势追踪开始: pos=({},{}), modifiers=0x{:02X}, edgeZone={}, trailVisible={}",
@@ -1127,7 +1154,8 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
         callback = m_trailCallback;
     }
 
-    const bool showTrail = m_trailVisible.load();
+    const bool showTrailLine = m_trailVisible.load();
+    const bool showOverlay = hasOverlayVisuals();
     const int evalDx = event.position.x - m_lastLiveEvalPt.x;
     const int evalDy = event.position.y - m_lastLiveEvalPt.y;
     const auto evalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastLiveEvalTime).count();
@@ -1146,7 +1174,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
     const std::vector<Direction>& dirs = m_cachedLiveDirs;
 
     auto& trail = GestureTrailOverlay::instance();
-    if (showTrail) {
+    if (showTrailLine) {
         trail.addPoint(
             static_cast<float>(event.position.x),
             static_cast<float>(event.position.y)
@@ -1154,7 +1182,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
     }
 
     if (elapsed >= 10000) {
-        if (showTrail) {
+        if (showOverlay) {
             // 连续画了 10 秒仍未松手：弹出红底 3 个大圆点调侃状态，并持续停留，直到用户真正松手
             trail.setRecognized(false);
             trail.setLiveAction("•••");
@@ -1208,7 +1236,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
                 }
 
                 if (matchedMapping) {
-                    if (showTrail) {
+                    if (showOverlay) {
                         trail.setRecognized(true);
                     }
                     if (matchedMapping->silentToast) {
@@ -1229,7 +1257,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
                 } else {
                     m_liveHadMatch = false;
                     m_liveHeldLabel.clear();
-                    if (showTrail) trail.setRecognized(false);
+                    if (showOverlay) trail.setRecognized(false);
                     liveLabel.clear();
                 }
             } else if (keepLiveGestureMatch(
@@ -1240,10 +1268,10 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
             } else {
                 m_liveHadMatch = false;
                 m_liveHeldLabel.clear();
-                if (showTrail) trail.setRecognized(false);
+                if (showOverlay) trail.setRecognized(false);
             }
 
-            if (showTrail) {
+            if (showOverlay) {
                 trail.setLiveAction(liveLabel);
             }
 
@@ -1253,7 +1281,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
                 tools3000::core::TraceId::setCurrent(m_gestureTraceId);
                 LOG_INFO("Instant gesture executed during tracking: code={}, action={}",
                          bareCode, matchedMapping->action.name);
-                if (showTrail) {
+                if (showOverlay) {
                     if (matchedMapping->silentToast) {
                         trail.setLiveAction("");
                         trail.endTrail("");
@@ -1319,7 +1347,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     }
 
     if (m_wheelExecutedDuringTracking) {
-        if (m_trailVisible.load()) {
+        if (hasOverlayVisuals()) {
             GestureTrailOverlay::instance().hide();
         }
         clearTrackingSessionFields();
@@ -1354,7 +1382,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
             LOG_INFO("手势抬起检测到当前窗口在手势黑名单或全屏放行，还原为原生点击");
             clearTrackingSessionFields();
             m_state = GestureState::Idle;
-            if (m_trailVisible.load()) GestureTrailOverlay::instance().hide();
+            if (hasOverlayVisuals()) GestureTrailOverlay::instance().hide();
             if (!wasConsumed && downSuppressed) {
                 reinjectTriggerClick(triggerSnap, downSuppressed);
             }
@@ -1386,7 +1414,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
         LOG_WARN("手势绘制超过 10 秒后松手结束 ({}ms)，红底调侃淡出", elapsed);
         clearTrackingSessionFields();
         m_state = GestureState::Idle;
-        if (m_trailVisible.load()) {
+        if (hasOverlayVisuals()) {
             GestureTrailOverlay::instance().setRecognized(false);
             GestureTrailOverlay::instance().endTrail("•••");
         }
@@ -1410,7 +1438,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
 
     if (!result || !result->isValid()) {
         m_state = GestureState::Idle;
-        if (m_trailVisible.load()) GestureTrailOverlay::instance().hide();
+        if (hasOverlayVisuals()) GestureTrailOverlay::instance().hide();
         if (!wasConsumed && downSuppressed) {
             // 轨迹未超过起始阈值且未涂抹取消：视为普通点击，补发被吞掉的触发键点击
             reinjectTriggerClick(triggerSnap, downSuppressed);
@@ -1433,7 +1461,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     if (!profile) {
         // 手势在当前窗口被禁用 → 仅在未消费且初始按下确被吞没时还原为普通点击
         m_state = GestureState::Idle;
-        if (m_trailVisible.load()) GestureTrailOverlay::instance().endTrail();
+        if (hasOverlayVisuals()) GestureTrailOverlay::instance().endTrail();
         if (!wasConsumed && downSuppressed) {
             reinjectTriggerClick(triggerSnap, downSuppressed);
         }
@@ -1451,7 +1479,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
                  result->toArrowString(), matchedCode, action.name, profile->name());
 
         // B5.4: silentToast 为真时静默淡出轨迹，不弹出手势名称 Toast 卡片
-        if (m_trailVisible.load()) {
+        if (hasOverlayVisuals()) {
             auto& trail = GestureTrailOverlay::instance();
             if (matchedMapping->silentToast) {
                 trail.setLiveAction("");
@@ -1465,7 +1493,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     } else {
         // 未绑定：轨迹保持灰色并淡出即可，不再弹出「未绑定」卡片。
         LOG_INFO("未找到手势映射: fullCode={}, bareCode={}", fullCode, bareCode);
-        if (m_trailVisible.load()) {
+        if (hasOverlayVisuals()) {
             GestureTrailOverlay::instance().setRecognized(false);
             GestureTrailOverlay::instance().endTrail();
         }
@@ -1502,7 +1530,9 @@ void GestureEngine::executeActionInternal(
                             action.builtinCmd == BuiltinCommand::MediaPlayPause ||
                             action.builtinCmd == BuiltinCommand::VolumeUp ||
                             action.builtinCmd == BuiltinCommand::VolumeDown ||
-                            action.builtinCmd == BuiltinCommand::VolumeMute)) ||
+                            action.builtinCmd == BuiltinCommand::VolumeMute ||
+                            action.builtinCmd == BuiltinCommand::BrightnessUp ||
+                            action.builtinCmd == BuiltinCommand::BrightnessDown)) ||
                           (action.type == ActionType::SendKeys &&
                            (action.keyStroke.modifiers & MOD_WIN ||
                             (action.keyStroke.virtualKey >= VK_VOLUME_MUTE && action.keyStroke.virtualKey <= VK_MEDIA_PLAY_PAUSE)));
@@ -1677,7 +1707,7 @@ bool GestureEngine::handleWheelGesture(const MouseEvent& event) {
     m_wheelExecutedDuringTracking = true;
     m_gestureConsumed = true;
 
-    if (m_trailVisible.load()) {
+    if (hasOverlayVisuals()) {
         auto& trail = GestureTrailOverlay::instance();
         if (matchedMapping->silentToast) {
             trail.setLiveAction("");
@@ -1917,7 +1947,7 @@ void GestureEngine::cancelTracking() {
     m_previousForeground = nullptr;
     m_contextResolved.store(false, std::memory_order_release);
     m_contextEpoch.fetch_add(1, std::memory_order_relaxed);
-    if (m_trailVisible.load()) {
+    if (hasOverlayVisuals()) {
         GestureTrailOverlay::instance().hide();
     }
     m_state = GestureState::Idle;
@@ -1965,6 +1995,8 @@ void GestureEngine::loadFromConfig() {
     tools3000::core::EventBus::instance().publish(tools3000::core::GesturePauseChangedEvent{paused});
     setTriggerButton(config.get<std::string>("/gesture/triggerButton", "right"));
     setTrailVisible(config.get<bool>("/gesture/trailVisible", true));
+    setTrailFadeEnabled(config.get<bool>("/gesture/trailFadeEnabled", true));
+    setShowActionHint(config.get<bool>("/gesture/showActionHint", true));
     setAutoBypassFullscreen(config.get<bool>("/gesture/autoBypassFullscreen", true));
     setTargetMode(config.get<std::string>("/gesture/targetMode", "underPointer"));
     int rawTimeoutMs = config.get<int>("/gesture/initialTimeoutMs", 0);
@@ -2032,6 +2064,8 @@ bool GestureEngine::saveToConfig() {
             {"enabled", !m_paused.load()},
             {"triggerButton", triggerButton()},
             {"trailVisible", m_trailVisible.load()},
+            {"trailFadeEnabled", m_trailFadeEnabled.load()},
+            {"showActionHint", m_showActionHint.load()},
             {"autoBypassFullscreen", m_autoBypassFullscreen.load()},
             {"targetMode", targetMode()},
             {"initialTimeoutMs", m_initialTimeoutMs.load()},

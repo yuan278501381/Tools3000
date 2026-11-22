@@ -221,6 +221,7 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
 
     // 动作组（带前置分隔线）
     specs.push_back({ToolbarCommand::Copy, MarkupTool::Rectangle, {}, L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, true});
+    specs.push_back({ToolbarCommand::QuickSave, MarkupTool::Rectangle, {}, L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false});
     specs.push_back({ToolbarCommand::Cancel, MarkupTool::Rectangle, {}, L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false});
     specs.push_back({ToolbarCommand::Confirm, MarkupTool::Rectangle, {}, L"", 42.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false});
 
@@ -1113,6 +1114,11 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
         case ToolbarCommand::CycleBeautyPadding: return chinese ? L"外壳留白边距 (Alt+B / 滚轮微调)" : L"Shell Padding (Alt+B / Scroll)";
         case ToolbarCommand::CycleBeautyRadius: return chinese ? L"外壳圆角弧度 (滚轮微调)" : L"Shell Corner Radius (Scroll)";
         case ToolbarCommand::Copy: return chinese ? L"复制到剪贴板 (Ctrl+C)" : L"Copy to clipboard (Ctrl+C)";
+        case ToolbarCommand::QuickSave:
+            return tools3000::core::trWCstrFor(
+                chinese,
+                L"快速保存 (Ctrl+Shift+S，右键另存为)",
+                L"Quick Save (Ctrl+Shift+S, Right-click Save As)");
         case ToolbarCommand::Confirm: return chinese ? L"完成并复制 (Enter)" : L"Done & Copy (Enter)";
         case ToolbarCommand::Cancel: return chinese ? L"取消 (Esc)" : L"Cancel (Esc)";
         case ToolbarCommand::ToggleFill:

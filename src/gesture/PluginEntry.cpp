@@ -299,6 +299,8 @@ public:
                 {"enabled", !engine.isPaused()},
                 {"triggerButton", engine.triggerButton()},
                 {"trailVisible", engine.trailVisible()},
+                {"trailFadeEnabled", engine.trailFadeEnabled()},
+                {"showActionHint", engine.showActionHint()},
                 {"autoBypassFullscreen", engine.autoBypassFullscreen()},
                 {"enableScribbleCancel", config.get<bool>("/gesture/enableScribbleCancel", true)},
                 {"targetMode", engine.targetMode()},
@@ -321,7 +323,8 @@ public:
                 return {{"success", false}, {"error", "no gesture settings supplied"}};
             }
             static const std::unordered_set<std::string> allowed = {
-                "enabled", "paused", "triggerButton", "trailVisible", "autoBypassFullscreen",
+                "enabled", "paused", "triggerButton", "trailVisible",
+                "trailFadeEnabled", "showActionHint", "autoBypassFullscreen",
                 "targetMode", "initialTimeoutMs", "minSegmentDistance",
                 "trailColorMode", "trailColor", "trailWidth", "trailOutlineWidth",
                 "enableScribbleCancel", "webSearchEngine"
@@ -334,6 +337,8 @@ public:
             if ((params.contains("enabled") && !params["enabled"].is_boolean()) ||
                 (params.contains("paused") && !params["paused"].is_boolean()) ||
                 (params.contains("trailVisible") && !params["trailVisible"].is_boolean()) ||
+                (params.contains("trailFadeEnabled") && !params["trailFadeEnabled"].is_boolean()) ||
+                (params.contains("showActionHint") && !params["showActionHint"].is_boolean()) ||
                 (params.contains("autoBypassFullscreen") && !params["autoBypassFullscreen"].is_boolean()) ||
                 (params.contains("enableScribbleCancel") && !params["enableScribbleCancel"].is_boolean()) ||
                 (params.contains("targetMode") && !params["targetMode"].is_string()) ||
@@ -367,6 +372,8 @@ public:
             if (params.contains("enabled")) paused = !params["enabled"].get<bool>();
             if (params.contains("paused")) paused = params["paused"].get<bool>();
             const bool trailVisible = params.value("trailVisible", engine.trailVisible());
+            const bool trailFadeEnabled = params.value("trailFadeEnabled", engine.trailFadeEnabled());
+            const bool showActionHint = params.value("showActionHint", engine.showActionHint());
             const bool autoBypassFullscreen = params.value("autoBypassFullscreen", engine.autoBypassFullscreen());
             std::string targetMode = params.value("targetMode", engine.targetMode());
             if (targetMode != "underPointer" && targetMode != "foreground") {
@@ -401,6 +408,8 @@ public:
             nlohmann::json patch = {
                 {"paused", paused}, {"enabled", !paused},
                 {"triggerButton", trigger}, {"trailVisible", trailVisible},
+                {"trailFadeEnabled", trailFadeEnabled},
+                {"showActionHint", showActionHint},
                 {"autoBypassFullscreen", autoBypassFullscreen},
                 {"enableScribbleCancel", enableScribbleCancel},
                 {"targetMode", targetMode},
@@ -417,6 +426,8 @@ public:
             }
             engine.setTriggerButton(trigger);
             engine.setTrailVisible(trailVisible);
+            engine.setTrailFadeEnabled(trailFadeEnabled);
+            engine.setShowActionHint(showActionHint);
             engine.setAutoBypassFullscreen(autoBypassFullscreen);
             engine.setTargetMode(targetMode);
             engine.setInitialTimeoutMs(initialTimeoutMs);
@@ -434,6 +445,8 @@ public:
                 {"enabled", !engine.isPaused()},
                 {"triggerButton", engine.triggerButton()},
                 {"trailVisible", engine.trailVisible()},
+                {"trailFadeEnabled", engine.trailFadeEnabled()},
+                {"showActionHint", engine.showActionHint()},
                 {"autoBypassFullscreen", engine.autoBypassFullscreen()},
                 {"enableScribbleCancel", enableScribbleCancel},
                 {"targetMode", engine.targetMode()},

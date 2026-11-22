@@ -53,19 +53,25 @@ Write-Host "=========================================" -ForegroundColor Cyan
 
 # VERSION 是唯一产品版本源。为彻底杜绝旧安装包缓存混淆，发布过程必须无条件清理旧产物并触发全量一键编译与打包。
 Write-Host "[BUILD] 正在清理旧产物并触发全量一键构建部署流水线 (VERSION: $CleanVersion)..." -ForegroundColor Cyan
-if (Test-Path "Output\Tools3000-Setup.exe") {
-    Remove-Item -Force "Output\Tools3000-Setup.exe"
+$ExpectedSetupExe = "Output\Tools3000-$Tag-Setup.exe"
+$ExpectedPortableZip = "Output\Tools3000-$Tag-win-x64-portable.zip"
+if (Test-Path -LiteralPath $ExpectedSetupExe) {
+    Remove-Item -Force -LiteralPath $ExpectedSetupExe
 }
 & pwsh -ExecutionPolicy Bypass -File .\deploy.ps1 -RequireSigning
 if ($LASTEXITCODE -ne 0) {
     throw "构建部署失败，终止发布！"
 }
 
+if (-not (Test-Path -LiteralPath $ExpectedSetupExe)) {
+    throw "未找到构建生成的安装包: $ExpectedSetupExe"
+}
+
 $SignedReleaseInputs = @(
-    (if (Test-Path "deploy_dist\Tools3000.exe") { "deploy_dist\Tools3000.exe" } else { "deploy_dist\Tools3000.exe" }),
-    (if (Test-Path "deploy_dist\Tools3000_Service.exe") { "deploy_dist\Tools3000_Service.exe" } else { "deploy_dist\Tools3000_Service.exe" }),
+    "deploy_dist\Tools3000.exe",
+    "deploy_dist\Tools3000_Service.exe",
     "deploy_dist\Tools3000Core.dll",
-    "Output\Tools3000-Setup.exe"
+    $ExpectedSetupExe
 ) + @(Get-ChildItem "deploy_dist\plugins\Plugin_*.dll" -File | Select-Object -ExpandProperty FullName)
 foreach ($SignedInput in $SignedReleaseInputs) {
     $Signature = Get-AuthenticodeSignature -LiteralPath $SignedInput
@@ -76,9 +82,9 @@ foreach ($SignedInput in $SignedReleaseInputs) {
 Write-Host "[OK] 自有二进制与安装包 Authenticode 签名验证通过" -ForegroundColor Green
 
 # 强校验：提取生成 EXE 的二进制版本元数据，必须与 VERSION 文件 100% 精确一致
-$BuiltExe = if (Test-Path "deploy_dist\Tools3000.exe") { "deploy_dist\Tools3000.exe" } else { "deploy_dist\Tools3000.exe" }
-if (-not (Test-Path $BuiltExe)) { throw "未找到编译产物: $BuiltExe" }
-$VersionInfo = (Get-Item $BuiltExe).VersionInfo
+$BuiltExe = "deploy_dist\Tools3000.exe"
+if (-not (Test-Path -LiteralPath $BuiltExe)) { throw "未找到编译产物: $BuiltExe" }
+$VersionInfo = (Get-Item -LiteralPath $BuiltExe).VersionInfo
 $ExeVersion = $VersionInfo.ProductVersion
 $SemVerExeVersion = "$($VersionInfo.ProductMajorPart).$($VersionInfo.ProductMinorPart).$($VersionInfo.ProductBuildPart)"
 if ($ExeVersion -ne $CleanVersion -and $SemVerExeVersion -ne $CleanVersion) {
@@ -90,19 +96,23 @@ $ReleaseDir = Join-Path $ScriptDir "release_assets"
 Remove-ProjectArtifactDirectorySafely -ProjectRoot $ScriptDir -RelativePath "release_assets"
 New-Item -ItemType Directory -Path $ReleaseDir | Out-Null
 
-$SetupExe = "Output\Tools3000-Setup.exe"
-if (-not (Test-Path $SetupExe)) {
+$SetupExe = $ExpectedSetupExe
+if (-not (Test-Path -LiteralPath $SetupExe)) {
     throw "未找到安装包文件: $SetupExe"
 }
 
 $TargetSetup = "$ReleaseDir\Tools3000-$Tag-Setup.exe"
-Copy-Item $SetupExe $TargetSetup
+Copy-Item -LiteralPath $SetupExe -Destination $TargetSetup -Force
 Write-Host "[OK] 安装包已就绪: $TargetSetup" -ForegroundColor Green
 
 $TargetZip = "$ReleaseDir\Tools3000-$Tag-win-x64-portable.zip"
-Compress-Archive -Path (Join-Path $ScriptDir "deploy_dist\*") `
-    -DestinationPath $TargetZip -CompressionLevel Optimal
-Write-Host "[OK] 绿色便携包已压缩: $TargetZip" -ForegroundColor Green
+if (Test-Path -LiteralPath $ExpectedPortableZip) {
+    Copy-Item -LiteralPath $ExpectedPortableZip -Destination $TargetZip -Force
+} else {
+    Compress-Archive -Path (Join-Path $ScriptDir "deploy_dist\*") `
+        -DestinationPath $TargetZip -CompressionLevel Optimal
+}
+Write-Host "[OK] 绿色便携包已就绪: $TargetZip" -ForegroundColor Green
 
 $Checksums = @()
 Get-ChildItem -Path $ReleaseDir -File | ForEach-Object {

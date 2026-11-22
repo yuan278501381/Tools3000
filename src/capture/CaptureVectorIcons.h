@@ -48,6 +48,7 @@ enum class CaptureIconId {
     ActionToggleSpeakerMuted,
     ActionCopy,
     ActionSave,
+    ActionQuickSave,
     ActionCancel,
     ActionConfirm,
     ActionInvert,

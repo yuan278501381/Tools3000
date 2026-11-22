@@ -1052,6 +1052,14 @@
       "pullDownMinimize": {
         "name": "下拉最小化",
         "desc": "上边缘中间下拉最小化窗口"
+      },
+      "brightnessUp": {
+        "name": "调高屏幕亮度",
+        "desc": "提高光标所在显示器的硬件亮度"
+      },
+      "brightnessDown": {
+        "name": "调低屏幕亮度",
+        "desc": "降低光标所在显示器的硬件亮度"
       }
     },
     "triggerEdgeLeftWheel": "屏幕左边缘 + 滚轮",
@@ -1069,7 +1077,11 @@
     "wheelShort": "滚轮",
     "side1Short": "侧键后退",
     "side2Short": "侧键前进",
-    "leftClickShort": "左键辅助"
+    "leftClickShort": "左键辅助",
+    "showActionHint": "显示手势动作提示文字",
+    "showActionHintDesc": "绘制和松手时显示识别到的动作名称浮层，可独立于轨迹线条单独开关",
+    "trailFadeEnabled": "手势结束渐隐动画",
+    "trailFadeEnabledDesc": "松手后让轨迹与提示平滑淡出；关闭后松手立即 0ms 瞬消，零视觉拖尾"
   },
   "hotcorner": {
     "title": "屏幕触发角",
@@ -1173,8 +1185,13 @@
       "volumeDown": "减小系统音量",
       "volumeMute": "静音切换",
       "prevDesktop": "上一个虚拟桌面",
-      "nextDesktop": "下一个虚拟桌面"
-    }
+      "nextDesktop": "下一个虚拟桌面",
+      "deleteKey": "删除键 (Delete)",
+      "backspaceKey": "退格键 (Backspace)",
+      "brightnessUp": "调高屏幕亮度 (当前屏)",
+      "brightnessDown": "调低屏幕亮度 (当前屏)"
+    },
+    "hotkeyHintSingleKey": "支持单个按键（如 Delete、Backspace、Enter）及任意组合键"
   },
   "gestureGuide": {
     "title": "手势演示",
@@ -1305,7 +1322,11 @@
       "spdlog": "低开销异步诊断日志与问题排查记录",
       "nlohmannJson": "前后端跨线程配置与通信数据高速解析",
       "gtest": "覆盖前后端核心逻辑的自动化回归测试防线",
-      "innoSetup": "标准安装向导、便携免安装打包与数字签名发布"
+      "innoSetup": "标准安装向导、便携免安装打包与数字签名发布",
+      "rustPicasaViewer": "纯 Rust 零 CRT 独立硬件加速看图器（41 种图片/动图/SVG/RAW、物理阻尼与高斯阴影）",
+      "ddcBrightness": "光标所在多屏独立硬件亮度双引擎（外接屏 DDC/CI + 笔记本内屏 WMI）",
+      "ppocrDirectml": "双阶纯离线深度学习 OCR（DirectML GPU + WinML），集成二维码/条码与原位改字",
+      "ifilterShellProps": "Office/WPS/邮件正文全文解析与 30+ 媒体/哈希/EXIF 扩展列属性按需提取"
     },
     "geekMode": "性能监控面板",
     "enablePerfMonitor": "开启性能监控",
@@ -1849,7 +1870,12 @@
     "contentScanPausedBudget": "已深扫 {{scanned}} / {{total}} 个文档（已自动暂停）",
     "contentScanPausedBudgetGeneric": "已自动暂停深扫以节省系统资源",
     "resumeDeepScan": "继续深扫",
-    "resumeDeepScanTitle": "从暂停断点继续深度扫描剩余文档"
+    "resumeDeepScanTitle": "从暂停断点继续深度扫描剩余文档",
+    "syntaxExPathSlashPinyin": "斜杠跨层级路径检索，自动支持 \\ / 及拼音首字母与全拼直达（如 工作目录\\user）",
+    "syntaxExPathSlashWildcard": "跨目录层级通配符 + 拼音首字母组合匹配，覆盖直接子级与深层子目录",
+    "syntaxExPathParent": "按上级目录路径过滤，支持拼音首字母与简写 p:",
+    "syntaxExExact": "文件名完全精确匹配，排除部分子串命中",
+    "syntaxExNoPinyin": "对该词临时关闭拼音匹配，仅按原始英文字母检索"
   },
   "searchPage": {
     "tabSettings": "基础与热键",
@@ -1953,7 +1979,8 @@
     "serviceStandbyDesc": "遵循零开机负担按需启动策略，首次呼出搜索时自动拉起，也可点击右侧立即唤醒引擎",
     "serviceStandbyToast": "索引引擎当前处于按需待机状态，点击“立即唤醒引擎”即可立即拉起",
     "serviceWoken": "NTFS 索引引擎已成功唤醒并就绪",
-    "wakeNow": "立即唤醒引擎"
+    "wakeNow": "立即唤醒引擎",
+    "opSlashPathPinyin": "斜杠分段跨目录检索（自动支持拼音首字母、全拼与通配符）"
   },
   "tray": {
     "brandName": "Tools3000",

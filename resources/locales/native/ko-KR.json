@@ -853,5 +853,8 @@
   "en-US": "ko-KR",
   "{0} frame": "{0}프레임",
   "{0} frames": "{0}프레임",
-  "一, 二, 三": "한자 (일, 이, 삼)"
+  "一, 二, 三": "한자 (일, 이, 삼)",
+  "Brightness {0}%": "밝기 {0}%",
+  "Quick Save (Ctrl+Shift+S, Right-click Save As)": "빠른 저장 (Ctrl+Shift+S, 우클릭 다른 이름으로 저장)",
+  "Screenshot saved and copied to clipboard": "스크린샷을 저장하고 클립보드에 복사했습니다"
 }

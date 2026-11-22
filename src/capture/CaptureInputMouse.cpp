@@ -1842,19 +1842,39 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
             if (!this) break;
             CaptureShortcutPolicy::cancelShiftTapCandidate(m_state->shiftTapCandidate);
 
-            // 0. 已选区截图态下右键点击主工具栏第 1 个形状组按钮：弹出「几何图形 / 聚光灯」模式切换菜单
+            // 0. 已选区截图态下右键点击主工具栏：
+            //    - 第 1 个形状组按钮：弹出「几何图形 / 聚光灯」模式切换菜单
+            //    - 「快速保存」按钮：弹出系统另存为对话框 (SaveAs)
             if (m_state->mode == OverlayMode::Screenshot &&
                 ((int)m_state->state.load() == (int)OverlayState::Selected ||
                  (int)m_state->state.load() == (int)OverlayState::Marking)) {
                 POINT rpt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 rebuildToolbarButtons(currentSelectionRect());
-                if (!m_state->toolbarButtons.empty()) {
+                const bool blockedByDropdown =
+                    (m_state->dropdownMenu.type != DropdownType::None &&
+                     (isPointInsideRectF(rpt, m_state->dropdownMenu.menuRect) ||
+                      isPointInsideRectF(rpt, m_state->dropdownMenu.childMenuRect))) ||
+                    (m_state->sliderPopup.type != SliderPopupType::None &&
+                     isPointInsideRectF(rpt, m_state->sliderPopup.popupRect)) ||
+                    (m_state->openSubmenu != SubmenuType::None &&
+                     isPointInsideRectF(rpt, m_state->openSubmenuRect));
+                if (!blockedByDropdown && !m_state->toolbarButtons.empty()) {
                     const auto& shapeBtn = m_state->toolbarButtons[0];
                     if (rpt.x >= shapeBtn.rect.left && rpt.x <= shapeBtn.rect.right &&
                         rpt.y >= shapeBtn.rect.top && rpt.y <= shapeBtn.rect.bottom) {
                         openDropdownMenu(DropdownType::ShapeMode, shapeBtn.rect);
                         m_renderer->invalidate();
                         return 0;
+                    }
+                    for (const auto& btn : m_state->toolbarButtons) {
+                        if (rpt.x >= btn.rect.left && rpt.x <= btn.rect.right &&
+                            rpt.y >= btn.rect.top && rpt.y <= btn.rect.bottom) {
+                            const auto rightAction = resolveToolbarCompletionAction(btn.command, /*isRightClick=*/true);
+                            if (rightAction && *rightAction == CaptureCompletionAction::SaveAs) {
+                                triggerSaveSelectionAs(hwnd);
+                                return 0;
+                            }
+                        }
                     }
                 }
             } else if (m_state->mode == OverlayMode::RecordRegion &&

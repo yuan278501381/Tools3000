@@ -84,6 +84,21 @@ public:
     /// 结束手势轨迹，显示识别结果（如 "← 后退"）
     void endTrail(const std::string& resultText = "");
 
+    /// 无轨迹独立轻提示胶囊（如屏幕边缘滚轮调节硬件亮度百分比实时回显）
+    void showStandaloneToast(const std::string& text, DWORD holdMs = 750);
+
+    /// 是否绘制手势轨迹线条（与动作提示文字正交解耦）
+    void setDrawTrailLine(bool enabled) noexcept { m_drawTrailLine.store(enabled, std::memory_order_release); }
+    bool drawTrailLine() const noexcept { return m_drawTrailLine.load(std::memory_order_acquire); }
+
+    /// 松手后是否播放渐隐动画（关闭后松手 0ms 瞬消）
+    void setFadeEnabled(bool enabled) noexcept { m_fadeEnabled.store(enabled, std::memory_order_release); }
+    bool fadeEnabled() const noexcept { return m_fadeEnabled.load(std::memory_order_acquire); }
+
+    /// 是否显示手势动作提示文字胶囊（关闭后仅画纯轨迹线）
+    void setShowActionHint(bool enabled) noexcept { m_showActionHint.store(enabled, std::memory_order_release); }
+    bool showActionHint() const noexcept { return m_showActionHint.load(std::memory_order_acquire); }
+
     /// 创建 Direct2D 资源 (按需初始化)
     bool createD2DResources();
 
@@ -382,6 +397,11 @@ private:
     tools3000::core::AccentColorRGB m_cachedTrailRgb{ 0.231f, 0.510f, 0.965f };
     
     std::atomic<bool> m_isRecognized{false};
+    std::atomic<bool> m_drawTrailLine{true};
+    std::atomic<bool> m_fadeEnabled{true};
+    std::atomic<bool> m_showActionHint{true};
+    std::atomic<bool> m_standaloneToastMode{false};
+    std::atomic<DWORD> m_standaloneToastHoldMs{750};
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_lineBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_glowBrush;

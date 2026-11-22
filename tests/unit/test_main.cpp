@@ -29,6 +29,7 @@
 #include "gesture/GestureProfile.h"
 #include "gesture/GestureInputPolicy.h"
 #include "gesture/BuiltinCommands.h"
+#include "gesture/MonitorBrightnessController.h"
 #include "gesture/HotCornerEngine.h"
 #include "gesture/ScopeRule.h"
 #include "gesture/RadialMenuStyle.h"

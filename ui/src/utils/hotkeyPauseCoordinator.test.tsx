@@ -104,4 +104,56 @@ describe('hotkeyPauseCoordinator & Recorder handoff', () => {
     expect(getHotkeyPauseRefCount()).toBe(0);
     expect(bridgeSpy).toHaveBeenLastCalledWith('hotkey.setPaused', { paused: false });
   });
+
+  it('allows recording standalone Delete and Backspace keys when allowSingleKey is enabled while preserving global safety by default', async () => {
+    const onSingleChange = vi.fn();
+    const onGlobalChange = vi.fn();
+
+    const { container } = render(
+      <div>
+        <HotkeyRecorder id="single-key" value="" onChange={onSingleChange} allowSingleKey />
+        <HotkeyRecorder id="global-key" value="Alt+Space" onChange={onGlobalChange} />
+      </div>,
+    );
+
+    const recorders = container.querySelectorAll<HTMLButtonElement>('.hotkey-recorder');
+    const singleRecorder = recorders[0];
+    const globalRecorder = recorders[1];
+
+    // allowSingleKey=true: standalone Delete records cleanly
+    await act(async () => {
+      fireEvent.click(singleRecorder);
+    });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Delete', code: 'Delete' });
+      fireEvent.keyUp(window, { key: 'Delete', code: 'Delete' });
+    });
+    expect(onSingleChange).toHaveBeenCalledWith('Delete');
+
+    // allowSingleKey=true: standalone Backspace records cleanly instead of clearing
+    onSingleChange.mockClear();
+    await act(async () => {
+      fireEvent.click(singleRecorder);
+    });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Backspace', code: 'Backspace' });
+      fireEvent.keyUp(window, { key: 'Backspace', code: 'Backspace' });
+    });
+    expect(onSingleChange).toHaveBeenCalledWith('Backspace');
+
+    // default global hotkey mode: standalone Delete is blocked, standalone Backspace clears binding
+    await act(async () => {
+      fireEvent.click(globalRecorder);
+    });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Delete', code: 'Delete' });
+      fireEvent.keyUp(window, { key: 'Delete', code: 'Delete' });
+    });
+    expect(onGlobalChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Backspace', code: 'Backspace' });
+    });
+    expect(onGlobalChange).toHaveBeenCalledWith('');
+  });
 });

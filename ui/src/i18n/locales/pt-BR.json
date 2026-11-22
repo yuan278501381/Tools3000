@@ -1052,6 +1052,14 @@
       "pullDownMinimize": {
         "name": "Puxar para minimizar",
         "desc": "Puxar para baixo no topo central para minimizar a janela"
+      },
+      "brightnessUp": {
+        "name": "Aumentar brilho",
+        "desc": "Aumenta o brilho do monitor sob o cursor"
+      },
+      "brightnessDown": {
+        "name": "Diminuir brilho",
+        "desc": "Reduz o brilho do monitor sob o cursor"
       }
     },
     "triggerEdgeLeftWheel": "Borda esquerda + roda do mouse",
@@ -1069,7 +1077,11 @@
     "wheelShort": "Roda",
     "side1Short": "Lateral X1",
     "side2Short": "Lateral X2",
-    "leftClickShort": "Botão esq."
+    "leftClickShort": "Botão esq.",
+    "showActionHint": "Mostrar texto de dica do gesto",
+    "showActionHintDesc": "Exibe a pílula com o nome da ação ao desenhar e ao soltar; pode ser alternada independentemente da linha do traço",
+    "trailFadeEnabled": "Animação de esmaecimento ao soltar",
+    "trailFadeEnabledDesc": "Desvanece suavemente o traço e a dica ao soltar; desative para limpar instantaneamente em 0 ms"
   },
   "hotcorner": {
     "title": "Cantos Ativos",
@@ -1173,8 +1185,13 @@
       "volumeDown": "Diminuir volume",
       "volumeMute": "Alternar mudo",
       "prevDesktop": "Área de trabalho virtual anterior",
-      "nextDesktop": "Próxima área de trabalho virtual"
-    }
+      "nextDesktop": "Próxima área de trabalho virtual",
+      "deleteKey": "Tecla Delete",
+      "backspaceKey": "Tecla Backspace",
+      "brightnessUp": "Aumentar brilho (tela sob o cursor)",
+      "brightnessDown": "Diminuir brilho (tela sob o cursor)"
+    },
+    "hotkeyHintSingleKey": "Suporta teclas únicas (ex.: Delete, Backspace, Enter) e combinações de teclas"
   },
   "gestureGuide": {
     "title": "Demonstração de Gestos",
@@ -1305,7 +1322,11 @@
       "spdlog": "Registro assíncrono de logs de diagnóstico com baixo consumo de recursos",
       "nlohmannJson": "Serialização rápida de configurações JSON e mensagens IPC",
       "gtest": "Suítes automatizadas de testes de regressão em C++ e frontend",
-      "innoSetup": "Instalador Windows, pacote portátil e empacotamento assinado digitalmente"
+      "innoSetup": "Instalador Windows, pacote portátil e empacotamento assinado digitalmente",
+      "rustPicasaViewer": "Visualizador de fotos autônomo em Rust zero-CRT com aceleração GPU (41 formatos, física e sombra gaussiana)",
+      "ddcBrightness": "Controle de brilho por hardware por monitor (DDC/CI externo + WMI para notebooks)",
+      "ppocrDirectml": "OCR offline de aprendizado profundo em dois estágios (DirectML GPU + WinML) com QR/código de barras",
+      "ifilterShellProps": "Extração de texto Office/WPS/e-mail e leitura sob demanda de 30+ metadados estendidos"
     },
     "geekMode": "Monitor de Desempenho",
     "enablePerfMonitor": "Ativar métricas em tempo real",
@@ -1849,7 +1870,12 @@
     "contentScanPausedBudget": "{{scanned}} / {{total}} documentos verificados (pausa automática)",
     "contentScanPausedBudgetGeneric": "Varredura profunda pausada automaticamente para economizar recursos",
     "resumeDeepScan": "Continuar",
-    "resumeDeepScanTitle": "Continuar verificando os documentos restantes de onde parou"
+    "resumeDeepScanTitle": "Continuar verificando os documentos restantes de onde parou",
+    "syntaxExPathSlashPinyin": "Busca hierárquica de caminho com barra (suporta \\, / e iniciais/Pinyin completo)",
+    "syntaxExPathSlashWildcard": "Correspondência multinível com curingas e Pinyin entre subpastas aninhadas",
+    "syntaxExPathParent": "Filtrar pelo caminho da pasta pai (suporta Pinyin e atalho p:)",
+    "syntaxExExact": "Correspondência exata do nome completo do arquivo sem acertos parciais",
+    "syntaxExNoPinyin": "Desativa Pinyin para este termo e busca apenas letras literais"
   },
   "searchPage": {
     "tabSettings": "Básico e Atalho",
@@ -1953,7 +1979,8 @@
     "serviceStandbyDesc": "Segue a política DEMAND_START sem carga na inicialização; acorda na primeira pesquisa ou ao clicar em Acordar motor.",
     "serviceStandbyToast": "O motor está em espera sob demanda; clique em Acordar motor agora para iniciar",
     "serviceWoken": "Motor de indexação ativado e pronto",
-    "wakeNow": "Acordar motor agora"
+    "wakeNow": "Acordar motor agora",
+    "opSlashPathPinyin": "Busca por segmentos de caminho com barra (suporta iniciais Pinyin, Pinyin completo e curingas)"
   },
   "tray": {
     "brandName": "Tools3000",

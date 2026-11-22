@@ -1052,6 +1052,14 @@
       "pullDownMinimize": {
         "name": "Deslizar abajo para minimizar",
         "desc": "Deslizar hacia abajo desde arriba-centro para minimizar ventana"
+      },
+      "brightnessUp": {
+        "name": "Subir brillo",
+        "desc": "Aumenta el brillo del monitor bajo el cursor"
+      },
+      "brightnessDown": {
+        "name": "Bajar brillo",
+        "desc": "Reduce el brillo del monitor bajo el cursor"
       }
     },
     "triggerEdgeLeftWheel": "Borde izquierdo + rueda",
@@ -1069,7 +1077,11 @@
     "wheelShort": "Rueda",
     "side1Short": "Lateral X1",
     "side2Short": "Lateral X2",
-    "leftClickShort": "Botón izq."
+    "leftClickShort": "Botón izq.",
+    "showActionHint": "Mostrar texto de sugerencia del gesto",
+    "showActionHintDesc": "Muestra la cápsula con el nombre de la acción al dibujar y al soltar; puede activarse de forma independiente del trazo",
+    "trailFadeEnabled": "Animación de desvanecimiento al soltar",
+    "trailFadeEnabledDesc": "Desvanece suavemente el trazo y la etiqueta al soltar; desactívelo para ocultarlos en 0 ms"
   },
   "hotcorner": {
     "title": "Esquinas activas",
@@ -1173,8 +1185,13 @@
       "volumeDown": "Bajar volumen",
       "volumeMute": "Alternar silencio",
       "prevDesktop": "Escritorio virtual anterior",
-      "nextDesktop": "Escritorio virtual siguiente"
-    }
+      "nextDesktop": "Escritorio virtual siguiente",
+      "deleteKey": "Tecla Supr (Delete)",
+      "backspaceKey": "Tecla Retroceso (Backspace)",
+      "brightnessUp": "Subir brillo (pantalla activa)",
+      "brightnessDown": "Bajar brillo (pantalla activa)"
+    },
+    "hotkeyHintSingleKey": "Admite teclas individuales (p. ej. Delete, Backspace, Enter) y combinaciones"
   },
   "gestureGuide": {
     "title": "Demostración de gestos",
@@ -1305,7 +1322,11 @@
       "spdlog": "Registro de diagnóstico asíncrono de muy bajo impacto",
       "nlohmannJson": "Serialización rápida de configuración JSON y mensajes IPC",
       "gtest": "Suites automatizadas de pruebas de regresión en C++ y frontend",
-      "innoSetup": "Instalador Windows, paquete portátil y empaquetado firmado"
+      "innoSetup": "Instalador Windows, paquete portátil y empaquetado firmado",
+      "rustPicasaViewer": "Visor fotográfico autónomo en Rust sin CRT con aceleración GPU (41 formatos, física y sombra gaussiana)",
+      "ddcBrightness": "Control de brillo por hardware por monitor (DDC/CI externo + WMI en paneles de portátil)",
+      "ppocrDirectml": "OCR offline de aprendizaje profundo en dos etapas (DirectML GPU + WinML) con QR/códigos de barras",
+      "ifilterShellProps": "Extracción de texto Office/WPS/correo y lectura bajo demanda de más de 30 metadatos extendidos"
     },
     "geekMode": "Monitor de rendimiento",
     "enablePerfMonitor": "Activar métricas en tiempo real",
@@ -1849,7 +1870,12 @@
     "contentScanPausedBudget": "{{scanned}} / {{total}} documentos escaneados (pausa automática)",
     "contentScanPausedBudgetGeneric": "Escaneo profundo pausado automáticamente para ahorrar recursos",
     "resumeDeepScan": "Continuar",
-    "resumeDeepScanTitle": "Continuar escaneando los documentos restantes desde donde se pausó"
+    "resumeDeepScanTitle": "Continuar escaneando los documentos restantes desde donde se pausó",
+    "syntaxExPathSlashPinyin": "Búsqueda jerárquica por segmentos con barra (admite \\, / e iniciales/Pinyin completo)",
+    "syntaxExPathSlashWildcard": "Coincidencia multinivel con comodines y Pinyin entre subcarpetas anidadas",
+    "syntaxExPathParent": "Filtrar por ruta de carpeta padre (admite Pinyin y alias p:)",
+    "syntaxExExact": "Coincidencia exacta del nombre completo del archivo sin coincidencias parciales",
+    "syntaxExNoPinyin": "Desactiva Pinyin para este término y busca solo caracteres literales"
   },
   "searchPage": {
     "tabSettings": "Ajustes y atajos",
@@ -1953,7 +1979,8 @@
     "serviceStandbyDesc": "Sigue la política DEMAND_START sin carga al inicio; despierta al abrir la búsqueda o al pulsar Despertar motor.",
     "serviceStandbyToast": "El motor está en espera bajo demanda; pulsa Despertar motor ahora para iniciarlo ya",
     "serviceWoken": "Motor de indexación activo y listo",
-    "wakeNow": "Despertar motor ahora"
+    "wakeNow": "Despertar motor ahora",
+    "opSlashPathPinyin": "Búsqueda por segmentos de ruta con barra (admite iniciales Pinyin, Pinyin completo y comodines)"
   },
   "tray": {
     "brandName": "Tools3000",

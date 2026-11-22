@@ -256,8 +256,8 @@ export const GestureEditorModal: FC<Props> = ({
         'TOPEDGE+WHEELDOWN': { nameKey: 'gesture.actions.nextVirtualDesktop.name', name: 'Next Virtual Desktop', type: 2, builtinCmd: 26, descKey: 'gesture.actions.nextVirtualDesktop.desc', desc: 'Switch to next virtual desktop' },
         'BOTTOMEDGE+WHEELUP': { nameKey: 'gesture.actions.volumeUp.name', name: 'Volume Up', type: 2, builtinCmd: 22, descKey: 'gesture.actions.volumeUp.desc', desc: 'Increase master volume' },
         'BOTTOMEDGE+WHEELDOWN': { nameKey: 'gesture.actions.volumeDown.name', name: 'Volume Down', type: 2, builtinCmd: 23, descKey: 'gesture.actions.volumeDown.desc', desc: 'Decrease master volume' },
-        'LEFTEDGE+WHEELUP': { nameKey: 'gesture.actions.volumeUp.name', name: 'Volume Up', type: 2, builtinCmd: 22, descKey: 'gesture.actions.volumeUp.desc', desc: 'Increase master volume' },
-        'LEFTEDGE+WHEELDOWN': { nameKey: 'gesture.actions.volumeDown.name', name: 'Volume Down', type: 2, builtinCmd: 23, descKey: 'gesture.actions.volumeDown.desc', desc: 'Decrease master volume' },
+        'LEFTEDGE+WHEELUP': { nameKey: 'gesture.actions.brightnessUp.name', name: 'Brightness Up', type: 2, builtinCmd: 29, descKey: 'gesture.actions.brightnessUp.desc', desc: 'Increase brightness of the display under cursor' },
+        'LEFTEDGE+WHEELDOWN': { nameKey: 'gesture.actions.brightnessDown.name', name: 'Brightness Down', type: 2, builtinCmd: 30, descKey: 'gesture.actions.brightnessDown.desc', desc: 'Decrease brightness of the display under cursor' },
         'RIGHTEDGE+WHEELUP': { nameKey: 'gesture.actions.prevVirtualDesktop.name', name: 'Previous Virtual Desktop', type: 2, builtinCmd: 25, descKey: 'gesture.actions.prevVirtualDesktop.desc', desc: 'Switch to previous virtual desktop' },
         'RIGHTEDGE+WHEELDOWN': { nameKey: 'gesture.actions.nextVirtualDesktop.name', name: 'Next Virtual Desktop', type: 2, builtinCmd: 26, descKey: 'gesture.actions.nextVirtualDesktop.desc', desc: 'Switch to next virtual desktop' },
       };
@@ -390,11 +390,12 @@ export const GestureEditorModal: FC<Props> = ({
 
         <div ref={actionDetailRef}>
           {draft.action.type === 0 && (
-            <Field label={t('gestureEditor.hotkey')} hint={t('gestureEditor.hotkeyHint')}>
+            <Field label={t('gestureEditor.hotkey')} hint={t('gestureEditor.hotkeyHintSingleKey', 'Supports single keys (e.g. Delete, Backspace, Enter) and key combinations')}>
               <HotkeyRecorder
                 id="gesture-hotkey-recorder"
                 value={draft.action.keyStroke ?? ''}
                 onChange={(v: string) => setAction({ keyStroke: v })}
+                allowSingleKey
               />
             </Field>
           )}

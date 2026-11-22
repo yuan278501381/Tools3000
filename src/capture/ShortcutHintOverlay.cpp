@@ -183,7 +183,7 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                 ? std::vector<ShortcutHintItem>{
                       {L"Enter", L"完成并复制"},
                       {L"Ctrl+T", L"贴图置顶"},
-                      {L"Ctrl+S", L"另存图片"},
+                      {L"Ctrl+S", L"另存 (+Shift 快存)"},
                       {L"Ctrl+C", L"复制选区"},
                       {L"WASD", L"1px 微调移动"},
                       {L"Shift+WASD", L"尺寸微调"},
@@ -194,7 +194,7 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                 : std::vector<ShortcutHintItem>{
                       {L"Enter", L"Copy & finish"},
                       {L"Ctrl+T", L"Pin to screen"},
-                      {L"Ctrl+S", L"Save image"},
+                      {L"Ctrl+S", L"Save (+Shift quick)"},
                       {L"Ctrl+C", L"Copy region"},
                       {L"WASD", L"1px nudge"},
                       {L"Shift+WASD", L"Resize"},

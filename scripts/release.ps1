@@ -392,8 +392,14 @@ foreach ($ArtifactDirectory in @("Output", "deploy_dist", "ui\dist", "release_as
 & pwsh -ExecutionPolicy Bypass -File .\deploy.ps1 -RequireSigning
 if ($LASTEXITCODE -ne 0) { throw "构建部署门禁失败，终止发版！" }
 
+$ExpectedSetupExe = "Output\Tools3000-v$TargetVersion-Setup.exe"
+$ExpectedPortableZip = "Output\Tools3000-v$TargetVersion-win-x64-portable.zip"
+if (-not (Test-Path -LiteralPath $ExpectedSetupExe)) {
+    throw "未找到构建生成的安装包: $ExpectedSetupExe"
+}
+
 $SignedReleaseInputs = @(
-    "Output\Tools3000-Setup.exe"
+    $ExpectedSetupExe
 ) + @(Get-ChildItem "deploy_dist" -Include "*.exe", "*.dll" -Recurse -File | Select-Object -ExpandProperty FullName)
 foreach ($SignedInput in $SignedReleaseInputs) {
     $Signature = Get-AuthenticodeSignature -LiteralPath $SignedInput
@@ -423,12 +429,12 @@ $ReleaseDir = Join-Path $ScriptDir "release_assets"
 Remove-ProjectArtifactDirectorySafely -ProjectRoot $ScriptDir -RelativePath "release_assets"
 New-Item -ItemType Directory -Path $ReleaseDir | Out-Null
 
-$SetupExe = "Output\Tools3000-Setup.exe"
+$SetupExe = $ExpectedSetupExe
 if (-not (Test-Path -LiteralPath $SetupExe)) { throw "未找到安装包: $SetupExe" }
 $TargetSetup = "$ReleaseDir\Tools3000-$TargetTag-Setup.exe"
 Copy-Item -LiteralPath $SetupExe -Destination $TargetSetup -Force
 
-$PrebuiltPortableZip = "Output\Tools3000-win-x64-portable.zip"
+$PrebuiltPortableZip = $ExpectedPortableZip
 $TargetZip = "$ReleaseDir\Tools3000-$TargetTag-win-x64-portable.zip"
 if (Test-Path -LiteralPath $PrebuiltPortableZip) {
     Copy-Item -LiteralPath $PrebuiltPortableZip -Destination $TargetZip -Force
@@ -601,7 +607,8 @@ if (-not [string]::IsNullOrWhiteSpace($NextFeatureBranch)) {
 
 Write-Host "=======================================================" -ForegroundColor Green
 Write-Host " [OK] Tools3000 $TargetTag 本地权威自动化发版流水线执行完毕！" -ForegroundColor Green
-Write-Host " - 最新安装包: Output\Tools3000-Setup.exe" -ForegroundColor Green
+Write-Host " - 最新安装包: $ExpectedSetupExe" -ForegroundColor Green
+Write-Host " - 最新便携包: $ExpectedPortableZip" -ForegroundColor Green
 Write-Host " - 发布资产库: release_assets" -ForegroundColor Green
 Write-Host " - GitHub 发布页: https://github.com/yuan278501381/Tools3000/releases/tag/$TargetTag" -ForegroundColor Green
 Write-Host " - 当前所在分支: $FinalBranch" -ForegroundColor Green

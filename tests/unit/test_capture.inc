@@ -718,19 +718,22 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
     const D2D1_SIZE_F desktop150 = D2D1::SizeF(2304.0f, 1440.0f);
     rebuildCaptureToolbar(screenshot, D2D1::RectF(180.0f, 120.0f, 1600.0f, 980.0f),
                           desktop150);
-    EXPECT_EQ(screenshot.toolbarButtons.size(), 18u);
+    EXPECT_EQ(screenshot.toolbarButtons.size(), 19u);
     EXPECT_EQ(screenshot.secondaryToolbarButtons.size(), 15u); // 7 属性 + 7 预设色 + 1 拾色器
     EXPECT_EQ(screenshot.selectionSideButtons.size(), 4u);
     bool hasRecordBtn = false;
     bool hasCopyBtn = false;
+    bool hasQuickSaveBtn = false;
     bool hasMagnifierBtn = false;
     for (const auto& btn : screenshot.toolbarButtons) {
         if (btn.command == ToolbarCommand::StartRecord) hasRecordBtn = true;
         if (btn.command == ToolbarCommand::Copy) hasCopyBtn = true;
+        if (btn.command == ToolbarCommand::QuickSave) hasQuickSaveBtn = true;
         if (btn.command == ToolbarCommand::SelectTool && btn.tool == MarkupTool::Magnifier) hasMagnifierBtn = true;
     }
     EXPECT_TRUE(hasRecordBtn);
     EXPECT_TRUE(hasCopyBtn);
+    EXPECT_TRUE(hasQuickSaveBtn);
     EXPECT_TRUE(hasMagnifierBtn);
     EXPECT_NEAR(screenshot.toolbarButtons.front().rect.bottom -
                 screenshot.toolbarButtons.front().rect.top, 48.0f, 0.01f);
@@ -746,7 +749,7 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
     wrapped.dpiScale = 2.0f;
     const D2D1_SIZE_F compact = D2D1::SizeF(1000.0f, 700.0f);
     rebuildCaptureToolbar(wrapped, D2D1::RectF(80.0f, 100.0f, 850.0f, 480.0f), compact);
-    EXPECT_EQ(wrapped.toolbarButtons.size(), 18u);
+    EXPECT_EQ(wrapped.toolbarButtons.size(), 19u);
     EXPECT_EQ(wrapped.secondaryToolbarButtons.size(), 15u); // 7 属性 + 7 预设色 + 1 拾色器
     EXPECT_EQ(wrapped.selectionSideButtons.size(), 4u);
     check_toolbar_inside_surface(wrapped, compact);
@@ -776,7 +779,7 @@ TEST(CaptureToolbarTest, DpiAdaptiveLayout) {
     const D2D1_SIZE_F desktop500 = D2D1::SizeF(7680.0f, 4320.0f);
     rebuildCaptureToolbar(extreme, D2D1::RectF(500.0f, 400.0f, 7000.0f, 3600.0f),
                           desktop500);
-    EXPECT_EQ(extreme.toolbarButtons.size(), 18u);
+    EXPECT_EQ(extreme.toolbarButtons.size(), 19u);
     check_toolbar_inside_surface(extreme, desktop500);
 }
 
@@ -7935,7 +7938,7 @@ TEST(CaptureMagnifierTest, FirstClassToolbarAndOffsetCalloutLoupe) {
     const D2D1_RECT_F sel = D2D1::RectF(160.0f, 120.0f, 1280.0f, 820.0f);
     rebuildCaptureToolbar(state, sel, surface);
 
-    ASSERT_EQ(state.toolbarButtons.size(), 18u);
+    ASSERT_EQ(state.toolbarButtons.size(), 19u);
     ASSERT_FALSE(state.secondaryToolbarButtons.empty());
 
     bool hasShapeToggle = false;
@@ -9848,16 +9851,20 @@ TEST(CaptureToolbarLayoutTest, WidenedBeautyShellAndTripleDigitFontSizeButtonsCo
                             (L"tools3000_toolbar_lang_cfg_" + std::to_wstring(GetCurrentProcessId()));
     std::filesystem::create_directories(tempCfgDir);
     auto& cfg = tools3000::core::ConfigManager::instance();
+    const std::string prevLang = cfg.get<std::string>("/general/language", "auto");
     cfg.shutdown();
     ASSERT_TRUE(cfg.initialize(tempCfgDir));
     struct LangCfgCleanupGuard {
         std::filesystem::path dir;
+        std::string prevLanguage;
         ~LangCfgCleanupGuard() {
-            tools3000::core::ConfigManager::instance().shutdown();
+            auto& c = tools3000::core::ConfigManager::instance();
+            c.set<std::string>("/general/language", prevLanguage);
+            c.shutdown();
             std::error_code ec;
             std::filesystem::remove_all(dir, ec);
         }
-    } langGuard{tempCfgDir};
+    } langGuard{tempCfgDir, prevLang};
 
     const D2D1_RECT_F sel = D2D1::RectF(120.0f, 120.0f, 900.0f, 620.0f);
     const D2D1_SIZE_F surface = D2D1_SIZE_F{1920.0f, 1080.0f};
@@ -13286,7 +13293,7 @@ TEST(CaptureBatch3TypographyAndBilingualGateTest, AccessibleEnglishLabelsAndMark
         ToolbarCommand::Undo, ToolbarCommand::Redo, ToolbarCommand::Clear,
         ToolbarCommand::ExtractText, ToolbarCommand::PinWindow, ToolbarCommand::ScrollCapture,
         ToolbarCommand::StartRecord, ToolbarCommand::ToggleBeautyShell, ToolbarCommand::Copy,
-        ToolbarCommand::Confirm, ToolbarCommand::Cancel
+        ToolbarCommand::QuickSave, ToolbarCommand::Confirm, ToolbarCommand::Cancel
     };
     for (ToolbarCommand cmd : sampleCommands) {
         ToolbarButton btn{};
@@ -14677,6 +14684,274 @@ TEST(MemoryHygieneRegressionTest, ScreenRecorderScrollCaptureAndAiInpaintCleanup
     EXPECT_EQ(dims.cx, 0);
     EXPECT_EQ(dims.cy, 0);
     EXPECT_FALSE(sc.isRunning());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 截图工具栏独立「快速保存」按钮全链路防回退测试套件
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CaptureQuickSaveRegressionTest, DeliveryDecisionForcesAutoSaveWithoutFallback) {
+    using namespace tools3000::capture;
+
+    // 1. saveToFile=false 且 copyToClipboard=false 时，QuickSave 仍强制直存且绝不触发另存为兜底弹窗
+    {
+        CaptureOptions opts;
+        opts.saveToFile = false;
+        opts.copyToClipboard = false;
+        opts.recordHistory = true;
+
+        CaptureCompletion quickSave;
+        quickSave.action = CaptureCompletionAction::QuickSave;
+        const auto d = resolveCaptureDeliveryDecision(opts, quickSave);
+        EXPECT_TRUE(d.shouldSaveAutomatically);
+        EXPECT_FALSE(d.shouldSaveExplicitly);
+        EXPECT_FALSE(d.shouldCopyToClipboard);
+        EXPECT_FALSE(d.shouldPromptSaveAsFallback);
+        EXPECT_TRUE(d.shouldRecordHistory);
+    }
+
+    // 2. saveToFile=false 且 copyToClipboard=true 时，QuickSave 同时直存并尊重 copyToClipboard 开关
+    {
+        CaptureOptions opts;
+        opts.saveToFile = false;
+        opts.copyToClipboard = true;
+        opts.recordHistory = true;
+
+        CaptureCompletion quickSave;
+        quickSave.action = CaptureCompletionAction::QuickSave;
+        const auto d = resolveCaptureDeliveryDecision(opts, quickSave);
+        EXPECT_TRUE(d.shouldSaveAutomatically);
+        EXPECT_FALSE(d.shouldSaveExplicitly);
+        EXPECT_TRUE(d.shouldCopyToClipboard);
+        EXPECT_FALSE(d.shouldPromptSaveAsFallback);
+        EXPECT_TRUE(d.shouldRecordHistory);
+    }
+
+    // 3. 回归确认：SaveAs / Copy / Default 原有交付策略 100% 保持不变
+    {
+        CaptureOptions bothOff;
+        bothOff.saveToFile = false;
+        bothOff.copyToClipboard = false;
+
+        const auto dDefault = resolveCaptureDeliveryDecision(bothOff, {CaptureCompletionAction::Default});
+        EXPECT_FALSE(dDefault.shouldSaveAutomatically);
+        EXPECT_TRUE(dDefault.shouldPromptSaveAsFallback);
+
+        const auto dCopy = resolveCaptureDeliveryDecision(bothOff, {CaptureCompletionAction::Copy});
+        EXPECT_TRUE(dCopy.shouldCopyToClipboard);
+        EXPECT_FALSE(dCopy.shouldSaveAutomatically);
+        EXPECT_FALSE(dCopy.shouldPromptSaveAsFallback);
+
+        const auto dSaveAs = resolveCaptureDeliveryDecision(
+            bothOff, {CaptureCompletionAction::SaveAs, "C:/temp/explicit.png", ImageFormat::PNG});
+        EXPECT_TRUE(dSaveAs.shouldSaveExplicitly);
+        EXPECT_FALSE(dSaveAs.shouldSaveAutomatically);
+        EXPECT_FALSE(dSaveAs.shouldCopyToClipboard);
+        EXPECT_FALSE(dSaveAs.shouldPromptSaveAsFallback);
+    }
+}
+
+TEST(CaptureQuickSaveRegressionTest, ToolbarLayoutDpi100And150ContainsZeroOverlapQuickSaveButton) {
+    using namespace tools3000::capture;
+
+    const std::array<std::pair<float, D2D1_SIZE_F>, 3> scenarios = {{
+        {1.0f, D2D1::SizeF(1920.0f, 1080.0f)},
+        {1.5f, D2D1::SizeF(2304.0f, 1440.0f)},
+        {1.5f, D2D1::SizeF(900.0f, 680.0f)}, // 窄视口响应式压缩校验
+    }};
+
+    for (const auto& [scale, surface] : scenarios) {
+        CaptureState state;
+        state.mode = OverlayMode::Screenshot;
+        state.state = OverlayState::Selected;
+        state.dpiScale = scale;
+        state.isMarkupToolActive = false;
+
+        const D2D1_RECT_F narrowSel = D2D1::RectF(120.0f, 120.0f, 220.0f, 220.0f);
+        rebuildCaptureToolbar(state, narrowSel, surface);
+
+        ASSERT_EQ(state.toolbarButtons.size(), 19u);
+        check_toolbar_inside_surface(state, surface);
+
+        int copyIdx = -1;
+        int quickSaveIdx = -1;
+        int cancelIdx = -1;
+        int confirmIdx = -1;
+        for (int i = 0; i < static_cast<int>(state.toolbarButtons.size()); ++i) {
+            const auto& btn = state.toolbarButtons[static_cast<std::size_t>(i)];
+            EXPECT_GT(btn.rect.right - btn.rect.left, 4.0f);
+            EXPECT_GT(btn.rect.bottom - btn.rect.top, 4.0f);
+            if (i + 1 < static_cast<int>(state.toolbarButtons.size())) {
+                const auto& next = state.toolbarButtons[static_cast<std::size_t>(i + 1)];
+                EXPECT_LE(btn.rect.right, next.rect.left + 0.01f)
+                    << "Toolbar buttons overlapped at scale=" << scale << " index=" << i;
+            }
+            if (btn.command == ToolbarCommand::Copy) copyIdx = i;
+            if (btn.command == ToolbarCommand::QuickSave) quickSaveIdx = i;
+            if (btn.command == ToolbarCommand::Cancel) cancelIdx = i;
+            if (btn.command == ToolbarCommand::Confirm) confirmIdx = i;
+        }
+
+        ASSERT_GE(quickSaveIdx, 0);
+        EXPECT_EQ(quickSaveIdx, copyIdx + 1);
+        EXPECT_EQ(cancelIdx, quickSaveIdx + 1);
+        EXPECT_EQ(confirmIdx, cancelIdx + 1);
+
+        const auto& qsBtn = state.toolbarButtons[static_cast<std::size_t>(quickSaveIdx)];
+        EXPECT_GT(qsBtn.rect.right - qsBtn.rect.left, 8.0f);
+        EXPECT_GT(qsBtn.rect.bottom - qsBtn.rect.top, 8.0f);
+        EXPECT_EQ(tooltipForButton(qsBtn, true), L"快速保存 (Ctrl+Shift+S，右键另存为)");
+        EXPECT_EQ(tooltipForButton(qsBtn, false), L"Quick Save (Ctrl+Shift+S, Right-click Save As)");
+        EXPECT_EQ(toolbarButtonAccessibleName(qsBtn, true), L"快速保存 (Ctrl+Shift+S，右键另存为)");
+        EXPECT_EQ(toolbarButtonAccessibleName(qsBtn, false), L"Quick Save (Ctrl+Shift+S, Right-click Save As)");
+        EXPECT_EQ(toolbarButtonKeyboardShortcut(qsBtn), L"Ctrl+Shift+S");
+        EXPECT_TRUE(isTerminalToolbarCommand(ToolbarCommand::QuickSave));
+        EXPECT_TRUE(isToolbarButtonEnabled(qsBtn, state));
+
+        state.state = OverlayState::Idle;
+        EXPECT_FALSE(isToolbarButtonEnabled(qsBtn, state));
+    }
+}
+
+TEST(CaptureQuickSaveRegressionTest, ShortcutRoutingCommandDispatchIconRenderAndDefaultFallbackSave) {
+    using namespace tools3000::capture;
+
+    // 1. 快捷键策略路由：Ctrl+Shift+S -> QuickSaveSelection，且严守 Ctrl+S / Ctrl+C / Enter 原有语义
+    {
+        CaptureKeyContext selectedCtx{};
+        selectedCtx.overlayState = OverlayState::Selected;
+        selectedCtx.mode = OverlayMode::Screenshot;
+
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectedCtx, 'S', true, true, false).action,
+                  CaptureShortcutAction::QuickSaveSelection);
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectedCtx, 'S', true, false, false).action,
+                  CaptureShortcutAction::SaveSelectionAs);
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectedCtx, 'C', true, false, false).action,
+                  CaptureShortcutAction::CopySelectionAndFinish);
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectedCtx, VK_RETURN, false, false, false).action,
+                  CaptureShortcutAction::ConfirmOrCommitUi);
+
+        // 录屏框选态隔离：Ctrl+Shift+S 不得误触发快速保存
+        CaptureKeyContext recordCtx = selectedCtx;
+        recordCtx.mode = OverlayMode::RecordRegion;
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(recordCtx, 'S', true, true, false).action,
+                  CaptureShortcutAction::None);
+
+        // 富文本编辑态隔离：Ctrl+Shift+S 交由文本编辑器
+        CaptureKeyContext textEditCtx = selectedCtx;
+        textEditCtx.editingText = true;
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(textEditCtx, 'S', true, true, false).action,
+                  CaptureShortcutAction::DelegateToTextEditor);
+    }
+
+    // 2. 工具栏命令分发单一事实源：左键 QuickSave -> QuickSave，右键 QuickSave -> SaveAs，
+    //    且完全保持 Copy / Confirm / PinWindow 原有语义不被破坏
+    {
+        const auto leftQuickSave = resolveToolbarCompletionAction(ToolbarCommand::QuickSave, false);
+        ASSERT_TRUE(leftQuickSave.has_value());
+        EXPECT_EQ(*leftQuickSave, CaptureCompletionAction::QuickSave);
+
+        const auto rightQuickSave = resolveToolbarCompletionAction(ToolbarCommand::QuickSave, true);
+        ASSERT_TRUE(rightQuickSave.has_value());
+        EXPECT_EQ(*rightQuickSave, CaptureCompletionAction::SaveAs);
+
+        const auto leftCopy = resolveToolbarCompletionAction(ToolbarCommand::Copy, false);
+        ASSERT_TRUE(leftCopy.has_value());
+        EXPECT_EQ(*leftCopy, CaptureCompletionAction::Copy);
+
+        const auto leftConfirm = resolveToolbarCompletionAction(ToolbarCommand::Confirm, false);
+        ASSERT_TRUE(leftConfirm.has_value());
+        EXPECT_EQ(*leftConfirm, CaptureCompletionAction::Default);
+
+        const auto leftPin = resolveToolbarCompletionAction(ToolbarCommand::PinWindow, false);
+        ASSERT_TRUE(leftPin.has_value());
+        EXPECT_EQ(*leftPin, CaptureCompletionAction::Pin);
+
+        // 非 QuickSave 按钮右键不得误触发另存为或任何终结动作
+        EXPECT_FALSE(resolveToolbarCompletionAction(ToolbarCommand::Copy, true).has_value());
+        EXPECT_FALSE(resolveToolbarCompletionAction(ToolbarCommand::Confirm, true).has_value());
+        EXPECT_FALSE(resolveToolbarCompletionAction(ToolbarCommand::PinWindow, true).has_value());
+        EXPECT_FALSE(resolveToolbarCompletionAction(ToolbarCommand::SelectTool, false).has_value());
+
+        // 快速双击 QuickSave 按钮必须被终结按钮防重入守卫安全吞掉
+        CaptureState dblState;
+        dblState.mode = OverlayMode::Screenshot;
+        dblState.state = OverlayState::Selected;
+        ToolbarButton qsBtn{};
+        qsBtn.command = ToolbarCommand::QuickSave;
+        qsBtn.rect = D2D1::RectF(100.0f, 100.0f, 132.0f, 132.0f);
+        EXPECT_EQ(
+            resolveDoubleClickIntent(dblState, POINT{116, 116}, false, HitArea::None, false, &qsBtn),
+            DoubleClickIntent::ConsumeNoOp);
+    }
+
+    // 3. 离屏 Direct2D 渲染校验：ActionQuickSave 矢量图标在 100% 和 150% DPI 均绘制出清晰非空像素
+    {
+        Microsoft::WRL::ComPtr<ID2D1Factory> factory;
+        ASSERT_EQ(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, factory.GetAddressOf()), S_OK);
+        for (float scale : {1.0f, 1.5f}) {
+            const int dim = static_cast<int>(std::lround(32.0f * scale));
+            BITMAPINFO bmi{};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = dim;
+            bmi.bmiHeader.biHeight = -dim;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            void* bits = nullptr;
+            HDC memDc = CreateCompatibleDC(nullptr);
+            ASSERT_NE(memDc, nullptr);
+            HBITMAP bmp = CreateDIBSection(memDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            ASSERT_NE(bmp, nullptr);
+            HGDIOBJ oldBmp = SelectObject(memDc, bmp);
+
+            D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> dcRt;
+            ASSERT_EQ(factory->CreateDCRenderTarget(&props, dcRt.GetAddressOf()), S_OK);
+            RECT bindRc{0, 0, dim, dim};
+            ASSERT_EQ(dcRt->BindDC(memDc, &bindRc), S_OK);
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+            ASSERT_EQ(dcRt->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f), brush.GetAddressOf()), S_OK);
+            dcRt->BeginDraw();
+            dcRt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+            CaptureVectorIcons::renderIcon(
+                dcRt.Get(), factory.Get(), CaptureIconId::ActionQuickSave,
+                D2D1::RectF(0.0f, 0.0f, static_cast<float>(dim), static_cast<float>(dim)),
+                brush.Get(), scale);
+            ASSERT_EQ(dcRt->EndDraw(), S_OK);
+
+            int litPixels = 0;
+            const auto* px = static_cast<const uint8_t*>(bits);
+            for (int i = 0; i < dim * dim; ++i) {
+                if (px[i * 4 + 3] > 20) ++litPixels;
+            }
+            EXPECT_GT(litPixels, 40);
+
+            SelectObject(memDc, oldBmp);
+            DeleteObject(bmp);
+            DeleteDC(memDc);
+        }
+    }
+
+    // 4. 保存目录空路径回退策略：优先 saveDirectory -> 其次兼容 savePath -> 均为空时回退 AppData/Screenshots
+    {
+        const std::filesystem::path fakeAppData = L"C:\\Users\\TestUser\\AppData\\Local\\Tools3000";
+        EXPECT_EQ(
+            resolveCaptureSaveDirectoryPath("D:\\CustomShots", "E:\\LegacyShots", fakeAppData),
+            std::filesystem::path(L"D:\\CustomShots"));
+        EXPECT_EQ(
+            resolveCaptureSaveDirectoryPath("   ", "E:\\LegacyShots", fakeAppData),
+            std::filesystem::path(L"E:\\LegacyShots"));
+        EXPECT_EQ(
+            resolveCaptureSaveDirectoryPath("", "", fakeAppData),
+            fakeAppData / L"Screenshots");
+        EXPECT_EQ(
+            resolveCaptureSaveDirectoryPath(" \t ", "\r\n", fakeAppData),
+            fakeAppData / L"Screenshots");
+    }
 }
 
 

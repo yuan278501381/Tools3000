@@ -9,11 +9,11 @@ Tools3000 微软 WinGet (winget-pkgs) 官方清单一键生成与校验工具
 
 .EXAMPLE
 .\scripts\generate-winget-manifest.ps1
-.\scripts\generate-winget-manifest.ps1 -InstallerPath "Output\Tools3000-Setup.exe" -Validate
+.\scripts\generate-winget-manifest.ps1 -InstallerPath "Output\Tools3000-v1.3.0-Setup.exe" -Validate
 #>
 
 param(
-    [string]$InstallerPath = "Output\Tools3000-Setup.exe",
+    [string]$InstallerPath = "",
     [string]$OutputDir = "manifests\winget",
     [switch]$Validate = $true
 )
@@ -28,8 +28,11 @@ if (-not (Test-Path $VersionFile)) {
     throw "VERSION 文件丢失: $VersionFile"
 }
 $Version = (Get-Content -LiteralPath $VersionFile -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($InstallerPath)) {
+    $InstallerPath = "Output\Tools3000-v$Version-Setup.exe"
+}
 
-if (-not (Test-Path $InstallerPath)) {
+if (-not (Test-Path -LiteralPath $InstallerPath)) {
     throw "安装包未找到: $InstallerPath；请先执行 .\deploy.ps1 生成安装包。"
 }
 
@@ -47,7 +50,7 @@ if (-not (Test-Path $OutputDir)) {
 }
 
 $ReleaseDate = (Get-Date).ToString("yyyy-MM-dd")
-$DownloadUrl = "https://github.com/yuan278501381/tools3000/releases/download/v$Version/Tools3000-Setup.exe"
+$DownloadUrl = "https://github.com/yuan278501381/Tools3000/releases/download/v$Version/Tools3000-v$Version-Setup.exe"
 
 # 1. version.yaml
 $VersionYaml = @"

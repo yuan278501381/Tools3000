@@ -71,7 +71,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
 
   // Gesture & HotCorner
   { id: 'gst-trigger', navId: 'gesture', labelKey: 'gesture.triggerButton', descKey: 'gesture.triggerButtonDesc', keywords: 'right middle button mouse trigger shoushi' },
-  { id: 'gst-trail', navId: 'gesture', labelKey: 'gesture.showTrail', descKey: 'gesture.showTrailDesc', keywords: 'trail color width outline guiji' },
+  { id: 'gst-trail', navId: 'gesture', labelKey: 'gesture.showTrail', descKey: 'gesture.showTrailDesc', keywords: 'trail color width outline fade hint text brightness delete backspace guiji jianyin tishi liangdu shanchu' },
   { id: 'gst-scope', navId: 'gesture', labelKey: 'gesture.targetConfigTitle', descKey: 'gesture.scopeRules', keywords: 'scope app blacklist whitelist rule yingyong' },
   { id: 'gst-websearch', navId: 'gesture', labelKey: 'gesture.webSearchEngine', descKey: 'gesture.webSearchEngineDesc', keywords: 'web search engine bing google baidu duckduckgo wheel edge' },
   { id: 'hc-corners', navId: 'hotcorner', labelKey: 'hotcorner.corners', descKey: 'hotcorner.enabledDesc', keywords: 'top bottom left right corner delay chufajiao' },

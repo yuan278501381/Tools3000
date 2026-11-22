@@ -853,5 +853,8 @@
   "en-US": "ru-RU",
   "{0} frame": "{0} кадр",
   "{0} frames": "{0} кадров",
-  "一, 二, 三": "Кит. цифры"
+  "一, 二, 三": "Кит. цифры",
+  "Brightness {0}%": "Яркость {0}%",
+  "Quick Save (Ctrl+Shift+S, Right-click Save As)": "Быстрое сохранение (Ctrl+Shift+S, ПКМ — Сохранить как)",
+  "Screenshot saved and copied to clipboard": "Снимок сохранён и скопирован в буфер обмена"
 }

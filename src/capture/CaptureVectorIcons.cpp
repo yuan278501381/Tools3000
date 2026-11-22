@@ -625,6 +625,47 @@ void CaptureVectorIcons::renderIconWithAccent(ID2D1RenderTarget* rt, ID2D1Factor
             break;
         }
 
+        // ── 19.7b 快速保存 (Lucide 现代矢量软盘：斜切右上角 + 顶部滑片 + 底部标签卡槽) ──
+        case CaptureIconId::ActionQuickSave: {
+            // 底部微晶半透明标签卡槽填充层次，提升明暗双主题辨识度
+            if (auto labelSub = makeSubBrush(0.18f)) {
+                auto labelFill = D2D1::RectF(p(7.6f, 13.6f).x, p(7.6f, 13.6f).y, p(16.4f, 19.4f).x, p(16.4f, 19.4f).y);
+                rt->FillRoundedRectangle(D2D1::RoundedRect(labelFill, 1.0f * s, 1.0f * s), labelSub.Get());
+            }
+            // 外壳主体：三边圆角 + 右上 45° 斜切
+            if (factory) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> bodyGeo;
+                if (SUCCEEDED(factory->CreatePathGeometry(bodyGeo.GetAddressOf())) && bodyGeo) {
+                    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(bodyGeo->Open(sink.GetAddressOf())) && sink) {
+                        const float r = 2.0f * s;
+                        sink->BeginFigure(p(6.2f, 4.2f), D2D1_FIGURE_BEGIN_HOLLOW);
+                        sink->AddLine(p(15.8f, 4.2f));
+                        sink->AddLine(p(19.8f, 8.2f));
+                        sink->AddLine(p(19.8f, 17.8f));
+                        sink->AddArc(D2D1::ArcSegment(p(17.8f, 19.8f), D2D1::SizeF(r, r), 0.0f,
+                                                      D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                        sink->AddLine(p(6.2f, 19.8f));
+                        sink->AddArc(D2D1::ArcSegment(p(4.2f, 17.8f), D2D1::SizeF(r, r), 0.0f,
+                                                      D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                        sink->AddLine(p(4.2f, 6.2f));
+                        sink->AddArc(D2D1::ArcSegment(p(6.2f, 4.2f), D2D1::SizeF(r, r), 0.0f,
+                                                      D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                        sink->Close();
+                        rt->DrawGeometry(bodyGeo.Get(), brush, stroke, roundStroke.Get());
+                    }
+                }
+            } else {
+                drawPolyline({ p(4.2f, 4.2f), p(15.8f, 4.2f), p(19.8f, 8.2f), p(19.8f, 19.8f), p(4.2f, 19.8f) }, true, stroke);
+            }
+            // 顶部金属保护滑片槽
+            drawPolyline({ p(8.0f, 4.2f), p(8.0f, 8.8f), p(14.8f, 8.8f), p(14.8f, 4.2f) }, false, stroke * 0.90f);
+            // 底部纸质标签卡槽
+            drawPolyline({ p(7.6f, 19.8f), p(7.6f, 13.6f), p(16.4f, 13.6f), p(16.4f, 19.8f) }, false, stroke * 0.92f);
+            break;
+        }
+
         // ── 19.8 反色 / 负片 ───────────────────────────────────────────────────────
         case CaptureIconId::ActionInvert: {
             auto circle = D2D1::Ellipse(D2D1::Point2F(cx, cy), 8.6f * s, 8.6f * s);

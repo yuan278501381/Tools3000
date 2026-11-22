@@ -72,6 +72,8 @@ interface GestureState {
   paused: boolean;
   triggerButton: string;
   trailVisible: boolean;
+  trailFadeEnabled?: boolean;
+  showActionHint?: boolean;
   autoBypassFullscreen?: boolean;
   enableScribbleCancel?: boolean;
   targetMode?: 'underPointer' | 'foreground';
@@ -158,6 +160,8 @@ export const GesturePage: FC = () => {
 
   const [enabled, setEnabled] = useState(true);
   const [trailVisible, setTrailVisible] = useState(true);
+  const [trailFadeEnabled, setTrailFadeEnabled] = useState(true);
+  const [showActionHint, setShowActionHint] = useState(true);
   const [autoBypassFullscreen, setAutoBypassFullscreen] = useState(true);
   const [targetMode, setTargetMode] = useState<'underPointer' | 'foreground'>('underPointer');
   const [initialTimeoutMs, setInitialTimeoutMs] = useState(0);
@@ -248,6 +252,8 @@ export const GesturePage: FC = () => {
         const normalizedTrigger = state.triggerButton === 'all' ? 'both' : (state.triggerButton ?? 'right');
         setTriggerButton(normalizedTrigger);
         setTrailVisible(state.trailVisible ?? true);
+        setTrailFadeEnabled(state.trailFadeEnabled ?? true);
+        setShowActionHint(state.showActionHint ?? true);
         setAutoBypassFullscreen(state.autoBypassFullscreen ?? true);
         setScribbleCancel(state.enableScribbleCancel ?? true);
         setTargetMode(state.targetMode === 'foreground' ? 'foreground' : 'underPointer');
@@ -576,6 +582,30 @@ export const GesturePage: FC = () => {
     }
   };
 
+  const handleToggleTrailFade = async (checked: boolean) => {
+    setTrailFadeEnabled(checked);
+    try {
+      const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { trailFadeEnabled: checked });
+      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+    } catch (err) {
+      setTrailFadeEnabled(!checked);
+      console.error('Failed to update gesture trail fade state:', err);
+      toast.error(tr('gesture.saveFailed'), { description: String(err) });
+    }
+  };
+
+  const handleToggleShowActionHint = async (checked: boolean) => {
+    setShowActionHint(checked);
+    try {
+      const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { showActionHint: checked });
+      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+    } catch (err) {
+      setShowActionHint(!checked);
+      console.error('Failed to update gesture action hint state:', err);
+      toast.error(tr('gesture.saveFailed'), { description: String(err) });
+    }
+  };
+
   const handleToggleTrailColorMode = async (mode: 'auto' | 'custom') => {
     const previous = trailColorMode;
     setTrailColorMode(mode);
@@ -883,6 +913,22 @@ export const GesturePage: FC = () => {
             checked={trailVisible}
             onChange={handleToggleTrail}
           />
+          <Toggle
+            id="gesture-action-hint"
+            label={t('gesture.showActionHint', 'Show gesture action hint text')}
+            description={t('gesture.showActionHintDesc', 'Display the recognized action name pill while drawing and upon release; can be toggled independently of trail lines')}
+            checked={showActionHint}
+            onChange={handleToggleShowActionHint}
+          />
+          {(trailVisible || showActionHint) && (
+            <Toggle
+              id="gesture-trail-fade"
+              label={t('gesture.trailFadeEnabled', 'Trail release fade-out animation')}
+              description={t('gesture.trailFadeEnabledDesc', 'Smoothly fade out the gesture trail and hint after release; disable to clear immediately at 0ms')}
+              checked={trailFadeEnabled}
+              onChange={handleToggleTrailFade}
+            />
+          )}
           {trailVisible && (
             <div className="gesture-trail-subgroup">
               <SettingRow label={tr('gesture.trailColorMode')} description={tr('gesture.trailColorModeDesc')}>

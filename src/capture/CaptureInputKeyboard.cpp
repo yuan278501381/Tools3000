@@ -1207,41 +1207,12 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                 }
 
                 case CaptureShortcutAction::SaveSelectionAs: {
-                    if (m_state->isLongImageMode()) {
-                        if (m_state->isMarking) {
-                            finishMarkup(m_state->currentCursor);
-                        }
-                        if (m_confirmCb) {
-                            m_confirmCb({CaptureCompletionAction::SaveAs});
-                        }
-                        return 0;
-                    }
-                    std::array<wchar_t, 32768> fileBuffer{};
-                    const auto defaultExtension = extensionForFormat(m_state->options.format);
-                    const auto defaultName = std::wstring(L"Tools3000_Screenshot.") + defaultExtension;
-                    wcsncpy_s(fileBuffer.data(), fileBuffer.size(), defaultName.c_str(), _TRUNCATE);
-                    OPENFILENAMEW ofn{};
-                    ofn.lStructSize = sizeof(ofn);
-                    ofn.hwndOwner = hwnd;
-                    ofn.lpstrFile = fileBuffer.data();
-                    ofn.nMaxFile = static_cast<DWORD>(fileBuffer.size());
-                    ofn.lpstrFilter = L"PNG Image (*.png)\0*.png\0JPEG Image (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0Bitmap (*.bmp)\0*.bmp\0WebP Image (*.webp)\0*.webp\0";
-                    ofn.nFilterIndex = filterIndexForFormat(m_state->options.format);
-                    ofn.lpstrDefExt = defaultExtension;
-                    ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-                    if (GetSaveFileNameW(&ofn)) {
-                        std::filesystem::path selected(fileBuffer.data());
-                        if (!selected.has_extension()) {
-                            selected += L".";
-                            selected += extensionForFormat(formatForSavePath(selected, ofn.nFilterIndex));
-                        }
-                        if (m_confirmCb) {
-                            m_confirmCb({
-                                CaptureCompletionAction::SaveAs,
-                                tools3000::core::WinUtils::wstringToUtf8(selected.wstring()),
-                                formatForSavePath(selected, ofn.nFilterIndex)});
-                        }
-                    }
+                    triggerSaveSelectionAs(hwnd);
+                    return 0;
+                }
+
+                case CaptureShortcutAction::QuickSaveSelection: {
+                    triggerQuickSave();
                     return 0;
                 }
 

@@ -853,5 +853,8 @@
   "en-US": "pt-BR",
   "{0} frame": "{0} quadro",
   "{0} frames": "{0} quadros",
-  "一, 二, 三": "Chinês (CJK)"
+  "一, 二, 三": "Chinês (CJK)",
+  "Brightness {0}%": "Brilho {0}%",
+  "Quick Save (Ctrl+Shift+S, Right-click Save As)": "Salvar rápido (Ctrl+Shift+S, botão direito para Salvar como)",
+  "Screenshot saved and copied to clipboard": "Captura salva e copiada para a área de transferência"
 }

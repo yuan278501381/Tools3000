@@ -519,7 +519,10 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
             } else {
                 DWORD holdMs = 150;
                 DWORD fadeMs = 180;
-                {
+                if (m_standaloneToastMode.load(std::memory_order_acquire)) {
+                    holdMs = m_standaloneToastHoldMs.load(std::memory_order_relaxed);
+                    fadeMs = 160;
+                } else {
                     std::lock_guard renderLock(m_renderMutex);
                     holdMs = static_cast<DWORD>(std::clamp(m_style.fadeHoldMs, 0.0f, 5000.0f));
                     fadeMs = static_cast<DWORD>(std::clamp(m_style.fadeOutMs, 16.0f, 5000.0f));
@@ -529,10 +532,12 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                 if (gestureFadeShouldFinish(clockStarted, elapsed, holdMs, fadeMs)) {
                     if (m_trailEpoch.load(std::memory_order_acquire) != m_fadeEpoch) {
                         m_fading.store(false, std::memory_order_relaxed);
+                        m_standaloneToastMode.store(false, std::memory_order_release);
                         m_fadeClockStarted.store(false, std::memory_order_relaxed);
                         fading = false;
                     } else {
                         m_fading.store(false, std::memory_order_relaxed);
+                        m_standaloneToastMode.store(false, std::memory_order_release);
                         m_fadeClockStarted.store(false, std::memory_order_relaxed);
                         m_fadeAlpha.store(0.0f, std::memory_order_relaxed);
                         m_pulseIntensity.store(0.0f, std::memory_order_relaxed);
@@ -651,6 +656,7 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
 void GestureTrailOverlay::beginTrail() {
     raiseZOrderForDraw();
     m_trailEpoch.fetch_add(1, std::memory_order_acq_rel);
+    m_standaloneToastMode.store(false, std::memory_order_release);
     m_hideRequested.store(false, std::memory_order_release);
     m_wantVisible.store(false, std::memory_order_release);
     m_strokeSurfaceLive.store(false, std::memory_order_release);
@@ -700,11 +706,14 @@ void GestureTrailOverlay::addPoint(float x, float y) {
 }
 
 void GestureTrailOverlay::setLiveAction(const std::string& actionText) {
+    const std::string effectiveText = m_showActionHint.load(std::memory_order_acquire)
+        ? actionText
+        : std::string();
     bool changed = false;
     {
         std::lock_guard lock(m_trailMutex);
-        if (m_resultText != actionText) {
-            m_resultText = actionText;
+        if (m_resultText != effectiveText) {
+            m_resultText = effectiveText;
             changed = true;
         }
     }
@@ -736,12 +745,20 @@ void GestureTrailOverlay::setRecognized(bool recognized) {
 }
 
 void GestureTrailOverlay::endTrail(const std::string& resultText) {
+    const bool showHint = m_showActionHint.load(std::memory_order_acquire);
+    const bool fadeEnabled = m_fadeEnabled.load(std::memory_order_acquire);
+    const bool drawLine = m_drawTrailLine.load(std::memory_order_acquire);
+    const std::string effectiveResultText = showHint ? resultText : std::string();
+
     bool hasPoints = false;
+    bool hasResultText = false;
     size_t overlayPoints = 0;
     {
         std::lock_guard lock(m_trailMutex);
-        if (!resultText.empty()) {
-            m_resultText = resultText;
+        if (!showHint) {
+            m_resultText.clear();
+        } else if (!effectiveResultText.empty()) {
+            m_resultText = effectiveResultText;
         }
         TrailPoint drainedPt;
         while (m_pointQueue.pop(drainedPt)) {
@@ -754,12 +771,13 @@ void GestureTrailOverlay::endTrail(const std::string& resultText) {
             m_points.push_back(drainedPt);
         }
         hasPoints = !m_points.empty();
+        hasResultText = !m_resultText.empty();
         overlayPoints = m_points.size();
     }
-    LOG_DEBUG("手势轨迹结束: overlayPoints={}, label={}", overlayPoints, resultText);
+    LOG_DEBUG("手势轨迹结束: overlayPoints={}, label={}", overlayPoints, effectiveResultText);
     // 松手时才命中的短手势（如 U=关闭窗口）过程中方向可能没变过，
     // live setRecognized(true) 没走到，Toast 不能因此被关掉。
-    if (!resultText.empty() && resultText != "•••") {
+    if (!effectiveResultText.empty() && effectiveResultText != "•••") {
         m_isRecognized.store(true, std::memory_order_relaxed);
         // endTrail may run on the low-level mouse-hook path. Do not synchronously
         // call a window API here; hand the accessibility update to the HWND's
@@ -768,27 +786,61 @@ void GestureTrailOverlay::endTrail(const std::string& resultText) {
             PostMessageW(m_hwnd, WM_GESTURE_ACCESSIBILITY_RESULT, 0, 0);
         }
     }
-    if (hasPoints) {
-        m_wantVisible.store(true, std::memory_order_release);
-    } else {
-        // 无轨迹点（如纯滚轮手势），立即隐藏覆盖层表面，绝不进入僵死淡出循环
+    if (!fadeEnabled) {
+        // 用户关闭手势结束渐隐效果：松手立即 0ms 瞬消画布与提示胶囊，彻底消除视觉拖尾
         hide();
         return;
     }
+    const bool hasVisualContent = (drawLine && hasPoints) || (showHint && hasResultText);
+    if (hasVisualContent) {
+        m_wantVisible.store(true, std::memory_order_release);
+    } else {
+        // 无轨迹点且无提示文字（如纯滚轮手势），立即隐藏覆盖层表面，绝不进入僵死淡出循环
+        hide();
+        return;
+    }
+    m_standaloneToastMode.store(false, std::memory_order_release);
     m_fadeEpoch = m_trailEpoch.load(std::memory_order_acquire);
     m_fadeClockStarted.store(false, std::memory_order_release);
     m_fadeStartTick = 0;
     m_fadeAlpha.store(1.0f, std::memory_order_release);
-    m_pulseIntensity.store((!resultText.empty() && resultText != "•••") ? 1.0f : 0.0f, std::memory_order_release);
+    m_pulseIntensity.store((!effectiveResultText.empty() && effectiveResultText != "•••") ? 1.0f : 0.0f, std::memory_order_release);
     m_fading.store(true, std::memory_order_release);
     m_renderRequested.store(true, std::memory_order_release);
     // 节拍器状态由专用渲染循环根据 m_fading 状态机统一驱动进入 Fadeout 态
     wakeRender();
 }
 
+void GestureTrailOverlay::showStandaloneToast(const std::string& text, DWORD holdMs) {
+    if (text.empty() || !m_hwnd) return;
+    raiseZOrderForDraw();
+    const uint64_t epoch = m_trailEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+    m_hideRequested.store(false, std::memory_order_release);
+    m_pointQueue.clear();
+    {
+        std::lock_guard lock(m_trailMutex);
+        m_points.clear();
+        m_resultText = text;
+        m_smoothPathGeometry.Reset();
+    }
+    m_isRecognized.store(true, std::memory_order_release);
+    m_standaloneToastHoldMs.store(std::clamp<DWORD>(holdMs, 150, 3000), std::memory_order_release);
+    m_standaloneToastMode.store(true, std::memory_order_release);
+    m_fadeEpoch = epoch;
+    m_fadeClockStarted.store(false, std::memory_order_release);
+    m_fadeStartTick = 0;
+    m_fadeAlpha.store(1.0f, std::memory_order_release);
+    m_pulseIntensity.store(0.0f, std::memory_order_release);
+    m_wantVisible.store(true, std::memory_order_release);
+    m_fading.store(true, std::memory_order_release);
+    m_renderRequested.store(true, std::memory_order_release);
+    wakeRender();
+}
+
 void GestureTrailOverlay::hide() {
     const uint64_t epoch = m_trailEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
     m_hideEpoch.store(epoch, std::memory_order_release);
+    m_standaloneToastMode.store(false, std::memory_order_release);
     m_fading.store(false, std::memory_order_release);
     m_fadeClockStarted.store(false, std::memory_order_release);
     m_pulseIntensity.store(0.0f, std::memory_order_release);
@@ -818,6 +870,7 @@ void GestureTrailOverlay::applyHideOverlayState() {
     }
     m_visible.store(false, std::memory_order_release);
     m_wantVisible.store(false, std::memory_order_release);
+    m_standaloneToastMode.store(false, std::memory_order_release);
     m_fading.store(false, std::memory_order_release);
     m_fadeClockStarted.store(false, std::memory_order_release);
     m_pulseIntensity.store(0.0f, std::memory_order_release);
@@ -2062,6 +2115,9 @@ bool GestureTrailOverlay::render() {
     }
 
     std::vector<TrailPoint> points;
+    const bool standaloneToast = m_standaloneToastMode.load(std::memory_order_acquire);
+    const bool drawLine = !standaloneToast && m_drawTrailLine.load(std::memory_order_acquire);
+    const bool showHint = standaloneToast || m_showActionHint.load(std::memory_order_acquire);
     std::string resultText;
     const bool isRecognized = m_isRecognized.load(std::memory_order_relaxed);
     {
@@ -2078,7 +2134,8 @@ bool GestureTrailOverlay::render() {
             m_points.push_back(drainedPt);
         }
 
-        if (m_points.empty()) return false;
+        if (drawLine && m_points.empty() && !showHint) return false;
+        if (!drawLine && m_resultText.empty()) return false;
         points = m_points;
         resultText = m_resultText;
     }
@@ -2090,12 +2147,14 @@ bool GestureTrailOverlay::render() {
 
     // 毫秒级跟手：在非淡出态下将实时采样的物理光标尖端原子补入轨迹尾部，
     // 彻底抹平输入队列投递与 DWM 表面合成间的采样相位差，实现极致贴合跟手感
-    const float lastPtX = points.empty() ? 0.0f : points.back().x;
-    const float lastPtY = points.empty() ? 0.0f : points.back().y;
-    if (gestureShouldInterpolateCursorTip(m_fading.load(std::memory_order_relaxed), !points.empty(),
-                                          static_cast<float>(cursor.x), static_cast<float>(cursor.y),
-                                          lastPtX, lastPtY)) {
-        points.push_back({static_cast<float>(cursor.x), static_cast<float>(cursor.y), GetTickCount()});
+    if (drawLine && !points.empty()) {
+        const float lastPtX = points.back().x;
+        const float lastPtY = points.back().y;
+        if (gestureShouldInterpolateCursorTip(m_fading.load(std::memory_order_relaxed), true,
+                                              static_cast<float>(cursor.x), static_cast<float>(cursor.y),
+                                              lastPtX, lastPtY)) {
+            points.push_back({static_cast<float>(cursor.x), static_cast<float>(cursor.y), GetTickCount()});
+        }
     }
     const RECT toastWork = pacing.rcWork;
     const float toastScale = pacing.dpiScale;
@@ -2104,8 +2163,33 @@ bool GestureTrailOverlay::render() {
         static_cast<int>(static_cast<float>(toastWork.bottom - toastWork.top) * 0.82f);
 
     const bool isExcessive = (resultText == "•••");
-    const bool shouldShowToast = shouldShowGestureResultToast(
-        isRecognized, !resultText.empty(), isExcessive);
+    const bool shouldShowToast = showHint &&
+        (standaloneToast || shouldShowGestureResultToast(isRecognized, !resultText.empty(), isExcessive));
+
+    // 纯文字轻提示模式（独立亮度 OSD 或用户关闭轨迹线但保留手势提示文字）
+    if (!drawLine || points.empty()) {
+        if (!shouldShowToast) {
+            hideToastWindow();
+            return false;
+        }
+        if (m_themeDirty.exchange(false, std::memory_order_acq_rel)) {
+            applyThemeColorsLocked();
+        }
+        if (m_strokeSurfaceLive.exchange(false, std::memory_order_acq_rel)) {
+            clearCanvasLocked();
+        }
+        const bool toastOk = presentToastLocked(
+            resultText, true, isExcessive,
+            toastCenterX, toastCenterY, toastScale,
+            standaloneToast ? 0.0f : m_pulseIntensity.load(std::memory_order_relaxed));
+        if (m_compositorReady && m_dcompDevice && m_toastFrontCtx.surface) {
+            m_dcompDevice->Commit();
+        }
+        if (toastOk) {
+            m_visible.store(true, std::memory_order_release);
+        }
+        return toastOk;
+    }
 
     constexpr int kSafetyMargin = 32;
     int left = INT_MAX, top = INT_MAX, right = INT_MIN, bottom = INT_MIN;

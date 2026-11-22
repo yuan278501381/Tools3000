@@ -3,8 +3,13 @@
 #define TOOLS3000_CAPTURE_CAPTUREINTERACTIONPOLICY_H
 
 #include "capture/CaptureState.h"
+#include "core/utils/WinUtils.h"
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <string_view>
 
 namespace tools3000::capture {
 
@@ -30,6 +35,7 @@ inline bool isTerminalToolbarCommand(ToolbarCommand cmd) noexcept {
     switch (cmd) {
         case ToolbarCommand::Confirm:
         case ToolbarCommand::Copy:
+        case ToolbarCommand::QuickSave:
         case ToolbarCommand::Cancel:
         case ToolbarCommand::ExtractText:
         case ToolbarCommand::PinWindow:
@@ -40,6 +46,60 @@ inline bool isTerminalToolbarCommand(ToolbarCommand cmd) noexcept {
         default:
             return false;
     }
+}
+
+/// 工具栏动作按钮到交付完成动作的单一事实源路由（支持左键与右键双通道语义）
+/// - 左键点击 QuickSave -> CaptureCompletionAction::QuickSave（一键免弹窗直存默认目录）
+/// - 右键点击 QuickSave -> CaptureCompletionAction::SaveAs（弹出系统另存为对话框）
+/// - 左键点击 Copy / Confirm / PinWindow -> 对应原有交付动作，绝不破坏
+inline std::optional<CaptureCompletionAction> resolveToolbarCompletionAction(
+    ToolbarCommand cmd, bool isRightClick) noexcept {
+    if (isRightClick) {
+        if (cmd == ToolbarCommand::QuickSave) {
+            return CaptureCompletionAction::SaveAs;
+        }
+        return std::nullopt;
+    }
+    switch (cmd) {
+        case ToolbarCommand::QuickSave:
+            return CaptureCompletionAction::QuickSave;
+        case ToolbarCommand::Copy:
+            return CaptureCompletionAction::Copy;
+        case ToolbarCommand::Confirm:
+            return CaptureCompletionAction::Default;
+        case ToolbarCommand::PinWindow:
+            return CaptureCompletionAction::Pin;
+        default:
+            return std::nullopt;
+    }
+}
+
+/// 截图默认保存目录解析策略（单一事实源）
+/// 优先使用非空 `/capture/saveDirectory`，其次兼容旧键 `/capture/savePath`，
+/// 若两者皆为空（或仅含空白字符），自动回退至 `<appDataDir>/Screenshots`。
+inline std::filesystem::path resolveCaptureSaveDirectoryPath(
+    std::string_view configuredSaveDirectory,
+    std::string_view configuredSavePath,
+    const std::filesystem::path& appDataDir) {
+    auto trimAsciiSpace = [](std::string_view sv) noexcept {
+        while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t' || sv.front() == '\r' || sv.front() == '\n')) {
+            sv.remove_prefix(1);
+        }
+        while (!sv.empty() && (sv.back() == ' ' || sv.back() == '\t' || sv.back() == '\r' || sv.back() == '\n')) {
+            sv.remove_suffix(1);
+        }
+        return sv;
+    };
+
+    const std::string_view primary = trimAsciiSpace(configuredSaveDirectory);
+    if (!primary.empty()) {
+        return std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(std::string(primary)));
+    }
+    const std::string_view legacy = trimAsciiSpace(configuredSavePath);
+    if (!legacy.empty()) {
+        return std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(std::string(legacy)));
+    }
+    return appDataDir / L"Screenshots";
 }
 
 /// 判定双击事件的唯一权威路由策略，彻底阻断标注创作或点击工具栏时误触发自动保存退出

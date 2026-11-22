@@ -1052,6 +1052,14 @@
       "pullDownMinimize": {
         "name": "Pull Down Minimize",
         "desc": "Top-middle pull down to minimize window"
+      },
+      "brightnessUp": {
+        "name": "Brightness Up",
+        "desc": "Increase brightness of the display under cursor"
+      },
+      "brightnessDown": {
+        "name": "Brightness Down",
+        "desc": "Decrease brightness of the display under cursor"
       }
     },
     "triggerEdgeLeftWheel": "Left Screen Edge + Wheel",
@@ -1069,7 +1077,11 @@
     "wheelShort": "Wheel",
     "side1Short": "Side X1",
     "side2Short": "Side X2",
-    "leftClickShort": "Left Btn"
+    "leftClickShort": "Left Btn",
+    "showActionHint": "Show gesture action hint text",
+    "showActionHintDesc": "Display the recognized action name pill while drawing and upon release; can be toggled independently of trail lines",
+    "trailFadeEnabled": "Trail release fade-out animation",
+    "trailFadeEnabledDesc": "Smoothly fade out the gesture trail and hint after release; disable to clear immediately at 0ms"
   },
   "hotcorner": {
     "title": "Hot Corners",
@@ -1173,8 +1185,13 @@
       "volumeDown": "Decrease Volume",
       "volumeMute": "Toggle Mute",
       "prevDesktop": "Previous Virtual Desktop",
-      "nextDesktop": "Next Virtual Desktop"
-    }
+      "nextDesktop": "Next Virtual Desktop",
+      "deleteKey": "Delete Key (Delete)",
+      "backspaceKey": "Backspace Key (Backspace)",
+      "brightnessUp": "Brightness Up (Active Display)",
+      "brightnessDown": "Brightness Down (Active Display)"
+    },
+    "hotkeyHintSingleKey": "Supports single keys (e.g. Delete, Backspace, Enter) and key combinations"
   },
   "gestureGuide": {
     "title": "Gesture Demo",
@@ -1305,7 +1322,11 @@
       "spdlog": "Low-overhead asynchronous diagnostic logging",
       "nlohmannJson": "Fast JSON configuration and IPC message serialization",
       "gtest": "Automated C++ and frontend regression test suites",
-      "innoSetup": "Windows installer, portable archive, and code-signed release packaging"
+      "innoSetup": "Windows installer, portable archive, and code-signed release packaging",
+      "rustPicasaViewer": "Standalone zero-CRT hardware-accelerated photo viewer (41 formats, physics & Gaussian shadow)",
+      "ddcBrightness": "Per-monitor hardware brightness engine (DDC/CI external displays + WMI laptop panels)",
+      "ppocrDirectml": "Dual-stage offline deep-learning OCR (DirectML GPU + WinML) with QR/barcode & in-place edit",
+      "ifilterShellProps": "Office/WPS/email full-text extraction and on-demand 30+ extended column metadata properties"
     },
     "geekMode": "Performance Monitor",
     "enablePerfMonitor": "Enable live metrics",
@@ -1849,7 +1870,12 @@
     "contentScanPausedBudget": "Scanned {{scanned}} / {{total}} docs (auto-paused)",
     "contentScanPausedBudgetGeneric": "Deep scan auto-paused to save resources",
     "resumeDeepScan": "Continue",
-    "resumeDeepScanTitle": "Continue scanning remaining documents from where it paused"
+    "resumeDeepScanTitle": "Continue scanning remaining documents from where it paused",
+    "syntaxExPathSlashPinyin": "Cross-folder slash path search with Pinyin initials / full Pinyin (supports \\ and /)",
+    "syntaxExPathSlashWildcard": "Cross-level wildcard + Pinyin path match across nested subfolders",
+    "syntaxExPathParent": "Filter by parent directory path (supports Pinyin initials and alias p:)",
+    "syntaxExExact": "Exact full filename match without partial substring hits",
+    "syntaxExNoPinyin": "Disable Pinyin matching for this term to match literal English letters only"
   },
   "searchPage": {
     "tabSettings": "Settings & Hotkey",
@@ -1953,7 +1979,8 @@
     "serviceStandbyDesc": "Follows zero-boot-overhead DEMAND_START policy; wakes automatically on first search or click Wake Engine Now.",
     "serviceStandbyToast": "Engine is in on-demand standby; click Wake Engine Now to start immediately",
     "serviceWoken": "Indexing engine woken and ready",
-    "wakeNow": "Wake Engine Now"
+    "wakeNow": "Wake Engine Now",
+    "opSlashPathPinyin": "Cross-folder path segment search (supports Pinyin initials, full Pinyin and wildcards)"
   },
   "tray": {
     "brandName": "Tools3000",

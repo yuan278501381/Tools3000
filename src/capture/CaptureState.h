@@ -19,7 +19,7 @@ namespace tools3000::capture {
 
 enum class OverlayMode { Screenshot, RecordRegion };
 enum class OverlayState { Idle, Selecting, Selected, Marking };
-enum class CaptureCompletionAction { Default, Copy, SaveAs, Pin };
+enum class CaptureCompletionAction { Default, Copy, SaveAs, QuickSave, Pin };
 enum class ToolbarCommand {
     SelectTool,
     SelectColor,
@@ -34,6 +34,7 @@ enum class ToolbarCommand {
     StartRecord,
     ToggleBeautyShell,       // 一键切换美化外壳导出模式 (CleanShot X / PixPin 风格)
     Copy,                    // 复制到剪贴板 (Ctrl+C)
+    QuickSave,               // 一键快速保存到默认截图目录 (Ctrl+Shift+S，右键另存为)
     Confirm,
     Cancel,
     // 二级属性栏专属命令
@@ -210,12 +211,18 @@ inline CaptureDeliveryDecision resolveCaptureDeliveryDecision(
     CaptureDeliveryDecision d;
     d.shouldSaveExplicitly =
         (completion.action == CaptureCompletionAction::SaveAs && !completion.filePath.empty());
-    d.shouldSaveAutomatically = (!d.shouldSaveExplicitly && options.saveToFile);
+    d.shouldSaveAutomatically =
+        (!d.shouldSaveExplicitly &&
+         (options.saveToFile || completion.action == CaptureCompletionAction::QuickSave));
     d.shouldInvokeMemoryCallback = static_cast<bool>(options.onImageCaptured);
 
     if (completion.action == CaptureCompletionAction::Copy) {
         // 用户显式按 Ctrl+C 或点击「复制」按钮：强制写入剪贴板
         d.shouldCopyToClipboard = true;
+    } else if (completion.action == CaptureCompletionAction::QuickSave) {
+        // 用户显式按 Ctrl+Shift+S 或点击「快速保存」按钮：强制免弹窗直存默认目录，不触发另存为兜底
+        d.shouldCopyToClipboard = options.copyToClipboard;
+        d.shouldPromptSaveAsFallback = false;
     } else if (completion.action == CaptureCompletionAction::Default) {
         // 默认完成动作（Enter、双击选区、点击「完成」勾号）：严格尊重用户 copyToClipboard 开关
         d.shouldCopyToClipboard = options.copyToClipboard;

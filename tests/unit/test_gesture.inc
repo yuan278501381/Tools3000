@@ -3561,17 +3561,17 @@ TEST(GestureAuditRegressionTest, B1_KeyStrokeOemPunctuationRoundTripAndModifierO
     EXPECT_EQ(invalidChar.virtualKey, 0);
 }
 
-TEST(GestureAuditRegressionTest, B2_BuiltinCommandFullRangeValidation0To26) {
-    EXPECT_EQ(static_cast<int>(kMaxBuiltinCommand), 26);
+TEST(GestureAuditRegressionTest, B2_BuiltinCommandFullRangeValidation0To30) {
+    EXPECT_EQ(static_cast<int>(kMaxBuiltinCommand), 30);
     EXPECT_EQ(BuiltinCommand::PrevDesktop, BuiltinCommand::PrevVirtualDesktop);
     EXPECT_EQ(BuiltinCommand::NextDesktop, BuiltinCommand::NextVirtualDesktop);
 
-    for (int idx = 0; idx <= 26; ++idx) {
+    for (int idx = 0; idx <= 30; ++idx) {
         EXPECT_TRUE(isValidBuiltinCommandIndex(idx)) << "Expected valid index: " << idx;
         EXPECT_TRUE(isValidBuiltinCommandValue(idx)) << "Expected valid value: " << idx;
     }
     EXPECT_FALSE(isValidBuiltinCommandIndex(-1));
-    EXPECT_FALSE(isValidBuiltinCommandIndex(27));
+    EXPECT_FALSE(isValidBuiltinCommandIndex(31));
     EXPECT_FALSE(isValidBuiltinCommandValue(100));
 }
 
@@ -3882,5 +3882,73 @@ TEST(GestureAuditRegressionTest, EdgeWheelTriggersAndDefaultGlobalScreenshotMapp
     ASSERT_TRUE(wheelDown.has_value());
     EXPECT_EQ(wheelUp->builtinCmd, BuiltinCommand::PrevVirtualDesktop);
     EXPECT_EQ(wheelDown->builtinCmd, BuiltinCommand::NextVirtualDesktop);
+}
+
+TEST(GestureAuditRegressionTest, TrailFadeActionHintAndNewBuiltinCommands) {
+    // 1. 验证新增 4 项内置命令枚举索引与上下界校验 (DeleteKey / BackspaceKey / BrightnessUp / BrightnessDown)
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::DeleteKey), 27);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::BackspaceKey), 28);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::BrightnessUp), 29);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::BrightnessDown), 30);
+    EXPECT_TRUE(isValidBuiltinCommandIndex(27));
+    EXPECT_TRUE(isValidBuiltinCommandIndex(28));
+    EXPECT_TRUE(isValidBuiltinCommandIndex(29));
+    EXPECT_TRUE(isValidBuiltinCommandIndex(30));
+    EXPECT_FALSE(isValidBuiltinCommandIndex(31));
+
+    // 2. 验证 Delete / Backspace 单键字符串往返解析无损
+    const KeyStroke delStroke = KeyStroke::fromString("Delete");
+    EXPECT_EQ(delStroke.modifiers, 0);
+    EXPECT_EQ(delStroke.virtualKey, VK_DELETE);
+    EXPECT_EQ(delStroke.toString(), "Delete");
+
+    const KeyStroke backStroke = KeyStroke::fromString("Backspace");
+    EXPECT_EQ(backStroke.modifiers, 0);
+    EXPECT_EQ(backStroke.virtualKey, VK_BACK);
+    EXPECT_EQ(backStroke.toString(), "Backspace");
+
+    // 3. 验证 MonitorBrightnessController 纯数学映射与安全夹紧 (防除零/防越界)
+    EXPECT_EQ(clampBrightnessPercent(-10), 0);
+    EXPECT_EQ(clampBrightnessPercent(145), 100);
+    EXPECT_EQ(stepBrightnessPercent(98, 5), 100);
+    EXPECT_EQ(stepBrightnessPercent(3, -5), 0);
+    EXPECT_EQ(stepBrightnessPercent(50, 5), 55);
+    EXPECT_EQ(mapRawRangeToPercent(150, 100, 200), 50);
+    EXPECT_EQ(mapRawRangeToPercent(50, 100, 100), 50);
+    EXPECT_EQ(mapPercentToRawRange(50, 100, 200), 150u);
+    EXPECT_EQ(mapPercentToRawRange(100, 0, 255), 255u);
+    EXPECT_EQ(mapPercentToRawRange(0, 20, 200), 20u);
+
+    // 4. 验证手势渐隐与提示文字开关在 GestureTrailOverlay 与 GestureEngine 中正交可控
+    auto& engine = GestureEngine::instance();
+    auto& overlay = GestureTrailOverlay::instance();
+    const bool prevVisible = engine.trailVisible();
+    const bool prevFade = engine.trailFadeEnabled();
+    const bool prevHint = engine.showActionHint();
+
+    engine.setTrailVisible(true);
+    engine.setTrailFadeEnabled(false);
+    engine.setShowActionHint(false);
+    EXPECT_TRUE(overlay.drawTrailLine());
+    EXPECT_FALSE(overlay.fadeEnabled());
+    EXPECT_FALSE(overlay.showActionHint());
+
+    overlay.setLiveAction("Delete");
+    EXPECT_TRUE(overlay.currentResultTextForTesting().empty());
+    overlay.endTrail("Delete");
+    EXPECT_TRUE(overlay.currentResultTextForTesting().empty());
+
+    // 仅开提示文字、关轨迹线时 hasOverlayVisuals 仍为真
+    engine.setTrailVisible(false);
+    engine.setShowActionHint(true);
+    EXPECT_TRUE(engine.hasOverlayVisuals());
+    overlay.setLiveAction("Brightness Up");
+    EXPECT_EQ(overlay.currentResultTextForTesting(), "Brightness Up");
+
+    // 恢复现场状态
+    overlay.hide();
+    engine.setTrailVisible(prevVisible);
+    engine.setTrailFadeEnabled(prevFade);
+    engine.setShowActionHint(prevHint);
 }
 

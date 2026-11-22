@@ -853,5 +853,8 @@
   "en-US": "ja-JP",
   "{0} frame": "{0}枚",
   "{0} frames": "{0}枚",
-  "一, 二, 三": "一, 二, 三"
+  "一, 二, 三": "一, 二, 三",
+  "Brightness {0}%": "明るさ {0}%",
+  "Quick Save (Ctrl+Shift+S, Right-click Save As)": "クイック保存 (Ctrl+Shift+S、右クリックで名前を付けて保存)",
+  "Screenshot saved and copied to clipboard": "スクリーンショットを保存し、クリップボードにコピーしました"
 }

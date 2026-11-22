@@ -1052,6 +1052,14 @@
       "pullDownMinimize": {
         "name": "下拉最小化",
         "desc": "上邊緣中間下拉最小化視窗"
+      },
+      "brightnessUp": {
+        "name": "調高螢幕亮度",
+        "desc": "提高游標所在顯示器的硬體亮度"
+      },
+      "brightnessDown": {
+        "name": "調低螢幕亮度",
+        "desc": "降低游標所在顯示器的硬體亮度"
       }
     },
     "triggerEdgeLeftWheel": "螢幕左邊緣 + 滾輪",
@@ -1069,7 +1077,11 @@
     "wheelShort": "滾輪",
     "side1Short": "側鍵上一頁",
     "side2Short": "側鍵下一頁",
-    "leftClickShort": "左鍵輔助"
+    "leftClickShort": "左鍵輔助",
+    "showActionHint": "顯示手勢動作提示文字",
+    "showActionHintDesc": "繪製與放開時顯示辨識到的動作名稱浮層，可獨立於軌跡線條單獨開關",
+    "trailFadeEnabled": "手勢結束漸隱動畫",
+    "trailFadeEnabledDesc": "放開後讓軌跡與提示平滑淡出；關閉後放開立即 0ms 瞬消，零視覺殘影"
   },
   "hotcorner": {
     "title": "螢幕觸發角",
@@ -1173,8 +1185,13 @@
       "volumeDown": "調低系統音量",
       "volumeMute": "靜音切換",
       "prevDesktop": "上一個虛擬桌面",
-      "nextDesktop": "下一個虛擬桌面"
-    }
+      "nextDesktop": "下一個虛擬桌面",
+      "deleteKey": "刪除鍵 (Delete)",
+      "backspaceKey": "退格鍵 (Backspace)",
+      "brightnessUp": "調高螢幕亮度 (目前螢幕)",
+      "brightnessDown": "調低螢幕亮度 (目前螢幕)"
+    },
+    "hotkeyHintSingleKey": "支援單一按鍵（如 Delete、Backspace、Enter）及任意組合鍵"
   },
   "gestureGuide": {
     "title": "手勢示範",
@@ -1305,7 +1322,11 @@
       "spdlog": "低開銷非同步診斷紀錄與問題排查紀錄",
       "nlohmannJson": "前後端跨執行緒設定與通訊資料高速解析",
       "gtest": "涵蓋前後端核心邏輯的自動化回歸測試防線",
-      "innoSetup": "標準安裝精靈、可攜免安裝封裝與數位簽章發布"
+      "innoSetup": "標準安裝精靈、可攜免安裝封裝與數位簽章發布",
+      "rustPicasaViewer": "純 Rust 零 CRT 獨立硬體加速看圖器（41 種圖片/動圖/SVG/RAW、物理阻尼與高斯陰影）",
+      "ddcBrightness": "游標所在多螢幕獨立硬體亮度雙引擎（外接螢幕 DDC/CI + 筆電內建螢幕 WMI）",
+      "ppocrDirectml": "雙階純離線深度學習 OCR（DirectML GPU + WinML），整合條碼辨識與原位改字",
+      "ifilterShellProps": "Office/WPS/郵件內文全文解析與 30+ 媒體/雜湊/EXIF 擴充欄屬性按需擷取"
     },
     "geekMode": "效能監控面板",
     "enablePerfMonitor": "開啟效能監控",
@@ -1849,7 +1870,12 @@
     "contentScanPausedBudget": "已深掃 {{scanned}} / {{total}} 份文件（已自動暫停）",
     "contentScanPausedBudgetGeneric": "已自動暫停深掃以節省系統資源",
     "resumeDeepScan": "繼續深掃",
-    "resumeDeepScanTitle": "從暫停斷點繼續深度掃描其餘文件"
+    "resumeDeepScanTitle": "從暫停斷點繼續深度掃描其餘文件",
+    "syntaxExPathSlashPinyin": "斜線跨層級路徑檢索，自動支援 \\ / 與拼音首字母、全拼直達",
+    "syntaxExPathSlashWildcard": "跨目錄層級萬用字元 + 拼音首字母組合比對，涵蓋直接與深層子目錄",
+    "syntaxExPathParent": "依上層目錄路徑篩選，支援拼音首字母與簡寫 p:",
+    "syntaxExExact": "檔案名稱完全精確比對，排除部分子字串命中",
+    "syntaxExNoPinyin": "對此詞暫時關閉拼音比對，僅依原始英文字母檢索"
   },
   "searchPage": {
     "tabSettings": "基礎與快速鍵",
@@ -1953,7 +1979,8 @@
     "serviceStandbyDesc": "遵循零開機負擔按需啟動原則，首次喚出搜尋時自動啟動，亦可點擊右側立即喚醒引擎",
     "serviceStandbyToast": "索引引擎目前處於按需待機狀態，點擊「立即喚醒引擎」即可立即啟動",
     "serviceWoken": "NTFS 索引引擎已成功喚醒並就緒",
-    "wakeNow": "立即喚醒引擎"
+    "wakeNow": "立即喚醒引擎",
+    "opSlashPathPinyin": "斜線分段跨目錄檢索（自動支援拼音首字母、全拼與萬用字元）"
   },
   "tray": {
     "brandName": "Tools3000",
