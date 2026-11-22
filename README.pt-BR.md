@@ -28,7 +28,7 @@ O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas es
 ## Visão geral
 
 <p align="center">
-  <img src="docs/images/pt-BR/feature_bento_overview.png" alt="Visão geral dos oito recursos principais do Tools3000" width="100%" />
+  <img src="docs/images/pt-BR/feature_bento_overview.png" alt="Visão geral dos nove recursos principais do Tools3000" width="100%" />
 </p>
 
 ---

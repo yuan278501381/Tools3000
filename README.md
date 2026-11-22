@@ -28,7 +28,7 @@ Tools3000 将日常高频的**文件搜索、文档内容搜索、滚动长截�
 ## 核心功能一览
 
 <p align="center">
-  <img src="docs/images/zh-CN/feature_bento_overview.png" alt="Tools3000 八大核心功能一图速览" width="100%" />
+  <img src="docs/images/zh-CN/feature_bento_overview.png" alt="Tools3000 九大核心功能一图速览" width="100%" />
 </p>
 
 ---
