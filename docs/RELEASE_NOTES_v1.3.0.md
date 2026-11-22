@@ -28,3 +28,20 @@
 ### 5. 后台待机瘦身与发布包精简
 - **后台静默资源治理**：完善 WebView2 隐藏挂起与 QuickLook 闲置销毁、截图插件 12 个重型多媒体/AI 运行库按需延迟加载、贴图写时复制及 AI 修复/聚光灯闲置释放，显著降低后台常驻内存与 CPU 唤醒，同时保持高压下手势跟手与搜索瞬开。
 - **安装包瘦身与文档同步**：剔除冗余未引用 DLL，跨账户卸载自动清理注册表与文件关联，发布资产精简为清爽 3 件套（安装包、便携包、`SHA256SUMS.txt`）；更新「关于」页面核心技术栈与全部 8 语种 README。
+
+---
+
+### 文件完整性校验与安全查验 (SHA-256 / VirusTotal)
+
+| 发布文件 | SHA-256 | 安全检测 |
+| :--- | :--- | :--- |
+| `Tools3000-v1.3.0-Setup.exe` | `c3e7b5becd1233fb2a3cc1d34383375ee8fdfbd91a668b18764541c051385734` | [VirusTotal 查验](https://www.virustotal.com/gui/file/c3e7b5becd1233fb2a3cc1d34383375ee8fdfbd91a668b18764541c051385734) |
+| `Tools3000-v1.3.0-win-x64-portable.zip` | `5b7fd4a03249ee2e784f52452ff0a250b01a2770cf2ccb165e12111c04cf6011` | [VirusTotal 查验](https://www.virustotal.com/gui/file/5b7fd4a03249ee2e784f52452ff0a250b01a2770cf2ccb165e12111c04cf6011) |
+
+下载后可在 PowerShell 中快速核对本地文件哈希：
+
+```powershell
+Get-FileHash .\Tools3000-v1.3.0-Setup.exe -Algorithm SHA256
+```
+
+> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 SBOM.spdx.json 软件物料清单。

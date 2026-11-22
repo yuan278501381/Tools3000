@@ -20,6 +20,6 @@ AppsAndFeaturesEntries:
 Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/yuan278501381/Tools3000/releases/download/v1.3.0/Tools3000-v1.3.0-Setup.exe
-  InstallerSha256: 585F03E052B09F7180B9B8D32B75F490551EC6D889A9ED53C429F3DD81E8FB72
+  InstallerSha256: C3E7B5BECD1233FB2A3CC1D34383375EE8FDFBD91A668B18764541C051385734
 ManifestType: installer
 ManifestVersion: 1.10.0
