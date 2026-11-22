@@ -27,3 +27,20 @@
 ### 5. 搜索结果表格「所在目录」列宽自由拖拽修复
 - **全列 1:1 像素级顺滑调宽**：修复默认表格视图下拖动「所在目录」右边界误压缩右侧「大小」列而被 `72px` 最小宽度卡死、以及锁宽后仍被 `minmax(px, 1fr)` 强行撑回导致缩不动的问题；改为与 Windows 资源管理器 / Everything 一致的单列像素直调，拖动时自动冻结左侧弹性列防漂移，超出窗口宽度自动触发平滑横向滚动（感谢 V2EX @lzrainchen）。
 
+
+---
+
+### 文件完整性校验与安全查验 (SHA-256 / VirusTotal)
+
+| 发布文件 | SHA-256 | 安全检测 |
+| :--- | :--- | :--- |
+| `Tools3000-v1.3.1-Setup.exe` | `8b7665cbe5442b83cb88290d29538f8356fac17787939c007231934158abf238` | [VirusTotal 查验](https://www.virustotal.com/gui/file/8b7665cbe5442b83cb88290d29538f8356fac17787939c007231934158abf238) |
+| `Tools3000-v1.3.1-win-x64-portable.zip` | `317c4d2db002f02481dcfd5c5b720f2cb2f0fbb21fed4d1adf8f37dcb3295712` | [VirusTotal 查验](https://www.virustotal.com/gui/file/317c4d2db002f02481dcfd5c5b720f2cb2f0fbb21fed4d1adf8f37dcb3295712) |
+
+下载后可在 PowerShell 中快速核对本地文件哈希：
+
+```powershell
+Get-FileHash .\Tools3000-v1.3.1-Setup.exe -Algorithm SHA256
+```
+
+> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 SBOM.spdx.json 软件物料清单。
