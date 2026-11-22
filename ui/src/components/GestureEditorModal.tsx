@@ -29,6 +29,7 @@ import {
   BUILTIN_COMMAND_KEYS,
   GESTURE_CODE_PATTERN,
   codeToArrows,
+  isGesturePrefixConflict,
   parseGestureCode,
   assembleGestureCode,
 } from './gestureModel';
@@ -179,7 +180,7 @@ export const GestureEditorModal: FC<Props> = ({
 
   const prefixConflicts =
     code && !codeError && !conflictWarning
-      ? allOtherCodes.filter((c) => (c.startsWith(code) || code.startsWith(c)) && c !== code)
+      ? allOtherCodes.filter((c) => isGesturePrefixConflict(c, code))
       : [];
 
   const nameError = draft.action.name.trim() ? '' : t('gestureEditor.actionNameRequired', 'Action name is required');

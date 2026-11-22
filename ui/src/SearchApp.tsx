@@ -1435,6 +1435,25 @@ export default function SearchApp() {
     [persistUiPreferencesPatch],
   );
 
+  const batchUpdateTableColumnWidths = useCallback(
+    (patch: Partial<Record<TableColumnId, number | undefined>>) => {
+      setTableColumnWidths((prev) => {
+        const next = { ...prev };
+        for (const [colId, widthPx] of Object.entries(patch)) {
+          if (widthPx === undefined) {
+            delete next[colId];
+          } else {
+            next[colId] = Math.round(widthPx);
+          }
+        }
+        safeStorageSetItem('tools3000_search_table_widths', JSON.stringify(next));
+        persistUiPreferencesPatch({ tableColumnWidths: next });
+        return next;
+      });
+    },
+    [persistUiPreferencesPatch],
+  );
+
   const reorderTableColumnsOrder = useCallback(
     (nextOrder: TableColumnId[]) => {
       const cleanOrder = normalizeTableColumnOrder(nextOrder);
@@ -2212,6 +2231,7 @@ export default function SearchApp() {
             onSelectSort={handleSelectSort}
             onUpdateNameAndPathFlex={updateNameAndPathFlex}
             onUpdateTableColumnWidth={updateTableColumnWidth}
+            onBatchUpdateTableColumnWidths={batchUpdateTableColumnWidths}
             onReorderTableColumns={reorderTableColumnsOrder}
             onToggleColumnVisibility={toggleColumnVisibility}
             onToggleTableColumn={toggleTableColumn}

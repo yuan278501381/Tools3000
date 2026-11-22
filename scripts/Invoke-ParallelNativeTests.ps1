@@ -47,9 +47,9 @@ if ($expectedTotalTests -le 0) {
     throw "未能从 $TestExePath 解析到有效 GTest 用例数"
 }
 
-# 2. 定义严格互斥无交集的 3 路并发分片（覆盖全集 100%，且 GUI/FindWindowW 用例独占单进程 0 碰撞）
+# 2. 定义严格互斥无交集的 3 路并发分片（覆盖全集 100%，且所有创建顶层 Win32 GUI 浮层/贴图的用例独占单进程 FAST，彻底消除跨进程窗口拦截碰撞）
 $ocrCorePattern   = "*Ocr*:*LiveOcr*"
-$ocrPluginPattern = "*TextReplace*:*WorkerIsolation*:*PinWindow*:*CapturePluginIntegration*:*CaptureBatch2InteractionUpgrade*"
+$ocrPluginPattern = "*TextReplace*:*WorkerIsolation*"
 $filterCore       = $ocrCorePattern
 $filterPlugin     = "${ocrPluginPattern}-${ocrCorePattern}"
 $filterFast       = "-${ocrCorePattern}:${ocrPluginPattern}"

@@ -4123,4 +4123,499 @@ TEST(GestureAuditRegressionTest, DefaultGlobalEdgeBrightnessPresetsDisabledByDef
     std::filesystem::remove_all(tempRoot, ec);
 }
 
+TEST(GestureAuditRegressionTest, Issue4AndVShapeArcRecognitionAndShapeMatchThreshold) {
+    using namespace tools3000::gesture;
+    using namespace tools3000::core;
+
+    // 1. 离散方向化简：反 C / 正 C / U / V 全变体精确还原，同时保护同象限收笔惯性 (D-R-DR -> D-R)
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::Right, Direction::DownRight, Direction::DownLeft, Direction::Left})), "R-D-L");
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::Right, Direction::Down, Direction::DownLeft})), "R-D-L");
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::Right, Direction::DownRight, Direction::Left})), "R-D-L");
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::Right, Direction::DownRight, Direction::DownLeft})), "R-D-L");
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::Left, Direction::DownLeft, Direction::DownRight, Direction::Right})), "L-D-R");
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::Down, Direction::DownRight, Direction::UpRight, Direction::Up})), "D-R-U");
+    // V 形：对角邻近正交微抖与底部微圆平滑过渡
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::DownRight, Direction::Down, Direction::DownRight, Direction::UpRight})), "DR-UR");
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::DownRight, Direction::Right, Direction::UpRight})), "DR-UR");
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::UpRight, Direction::Right, Direction::DownRight})), "UR-DR");
+    // 铁律回归：D-R 末尾同象限下垂绝不能误变 D-R-D
+    EXPECT_EQ(directionsToCode(GestureRecognizer::simplifyDirections({
+        Direction::Down, Direction::Right, Direction::DownRight})), "D-R");
+
+    // 2. 真实轨迹识别：半圆反 C (R-D-L)、60° 倾角 V (DR-UR) 与底部略圆 V
+    auto recognizeWith = [](const std::vector<TrackPoint>& pts, int minSeg = 24) {
+        RecognizerConfig cfg;
+        cfg.minSegmentDistance = minSeg;
+        GestureRecognizer rec(cfg);
+        rec.reset();
+        for (const auto& p : pts) rec.addPoint(p.x, p.y);
+        auto res = rec.finalize();
+        return res ? res->code : std::string{};
+    };
+
+    // 平滑半圆反 C（右手常见顺时针画弧）
+    constexpr double kPiTest = 3.14159265358979323846;
+    std::vector<TrackPoint> smoothReverseC;
+    for (int step = 0; step <= 36; ++step) {
+        const double theta = -kPiTest * 0.5 + kPiTest * (static_cast<double>(step) / 36.0);
+        const int x = 100 + static_cast<int>(std::lround(75.0 * std::cos(theta)));
+        const int y = 175 + static_cast<int>(std::lround(75.0 * std::sin(theta)));
+        smoothReverseC.push_back({x, y});
+    }
+    EXPECT_EQ(recognizeWith(smoothReverseC, 24), "R-D-L");
+
+    // 较窄 60° 倾角 V 形轨迹（左臂 dx=58, dy=100；右臂 dx=58, dy=-100）
+    std::vector<TrackPoint> naturalV;
+    for (int i = 0; i <= 25; ++i) {
+        naturalV.push_back({100 + i * 58 / 25, 100 + i * 100 / 25});
+    }
+    for (int i = 1; i <= 25; ++i) {
+        naturalV.push_back({158 + i * 58 / 25, 200 - i * 100 / 25});
+    }
+    EXPECT_EQ(recognizeWith(naturalV, 24), "DR-UR");
+
+    // 底部带微圆弧的 V 形
+    std::vector<TrackPoint> roundedBottomV;
+    for (int i = 0; i <= 20; ++i) roundedBottomV.push_back({100 + i * 3, 100 + i * 3});
+    for (int i = 1; i <= 6; ++i)  roundedBottomV.push_back({160 + i * 4, 160});
+    for (int i = 1; i <= 20; ++i) roundedBottomV.push_back({184 + i * 3, 160 - i * 3});
+    EXPECT_EQ(recognizeWith(roundedBottomV, 24), "DR-UR");
+
+    // 3. 连续几何形状相似度打分与阈值控制
+    const int simReverseC = computeGestureShapeSimilarity(smoothReverseC, "R-D-L");
+    const int simWrongRD = computeGestureShapeSimilarity(smoothReverseC, "R-D");
+    const int simOpposite = computeGestureShapeSimilarity(smoothReverseC, "L-U-R");
+    EXPECT_GE(simReverseC, 82);
+    EXPECT_GT(simReverseC, simWrongRD + 15);
+    EXPECT_LT(simOpposite, 30);
+
+    // 极窄 72° V（离散段会落入 D-U，但若只绑定 DR-UR 则几何相似度兜底精准命中）
+    std::vector<TrackPoint> steepNarrowV;
+    for (int i = 0; i <= 20; ++i) steepNarrowV.push_back({100 + i * 32 / 20, 100 + i * 100 / 20});
+    for (int i = 1; i <= 20; ++i) steepNarrowV.push_back({132 + i * 32 / 20, 200 - i * 100 / 20});
+    const std::vector<ShapeMatchCandidate> cands = {
+        {"DR-UR", "DR-UR"},
+        {"R-D-L", "R-D-L"},
+        {"D-R", "D-R"},
+        {"L", "L"},
+    };
+    const auto matchedAt75 = matchBestGestureShape(steepNarrowV, cands, 75, 24);
+    ASSERT_TRUE(matchedAt75.has_value());
+    EXPECT_EQ(matchedAt75->code, "DR-UR");
+    EXPECT_GE(matchedAt75->similarityPercent, 75);
+    // threshold=100 时关闭形状兜底
+    EXPECT_FALSE(matchBestGestureShape(steepNarrowV, cands, 100, 24).has_value());
+
+    // 相反直线绝不误匹配
+    const std::vector<TrackPoint> straightLeft = {{200, 100}, {150, 100}, {100, 100}};
+    EXPECT_LT(computeGestureShapeSimilarity(straightLeft, "R"), 15);
+    EXPECT_LT(computeGestureShapeSimilarity(straightLeft, "R-D-L"), 45);
+
+    // 4. GestureProfile 段级前缀冲突检测与大小写统一索引（彻底消除 D vs DR-UR 误报）
+    GestureProfile conflictProf("conflict_check");
+    GestureMapping dMap;
+    dMap.gestureCode = "D";
+    dMap.action.name = "Min";
+    conflictProf.addMapping(dMap);
+    GestureMapping drMap;
+    drMap.gestureCode = "DR";
+    drMap.action.name = "Diag";
+    conflictProf.addMapping(drMap);
+    GestureMapping luMap;
+    luMap.gestureCode = "L-U";
+    luMap.action.name = "Cut";
+    conflictProf.addMapping(luMap);
+
+    const auto conflictsForV = conflictProf.detectConflicts("DR-UR");
+    EXPECT_EQ(std::count(conflictsForV.begin(), conflictsForV.end(), "D"), 0)
+        << "D must never false-positive as a prefix conflict of DR-UR";
+    EXPECT_EQ(std::count(conflictsForV.begin(), conflictsForV.end(), "DR"), 1);
+
+    // 大小写一致索引：添加 TopEdge+WheelUp 后用小写也能精准禁用和删除
+    GestureMapping edgeMap;
+    edgeMap.gestureCode = "TopEdge+WheelUp";
+    edgeMap.action.name = "VolUp";
+    conflictProf.addMapping(edgeMap);
+    conflictProf.setMappingEnabled("topedge+wheelup", false);
+    EXPECT_FALSE(conflictProf.findAction("TopEdge+WheelUp").has_value());
+    conflictProf.removeMapping("TOPEDGE+WHEELUP");
+    EXPECT_FALSE(conflictProf.hasGesture("TopEdge+WheelUp"));
+}
+
+TEST(GestureAuditRegressionTest, Issue4DelayedTrailActivationZeroClickDotAndConfigAuthority) {
+    using namespace tools3000::gesture;
+    using namespace tools3000::core;
+
+    ScopedAuditDummyWindow hostDummy(L"GestureIssue4HostWnd", 0, 140, 140, 320, 260);
+    HWND hostWnd = hostDummy.hwnd;
+    ASSERT_NE(hostWnd, nullptr);
+    ShowWindow(hostWnd, SW_SHOWNOACTIVATE);
+
+    auto& engine = GestureEngine::instance();
+    auto& overlay = GestureTrailOverlay::instance();
+    ASSERT_TRUE(overlay.initialize(GetModuleHandleW(nullptr)));
+    HWND overlayHwnd = FindWindowW(L"Tools3000_GestureOverlay", nullptr);
+    ASSERT_NE(overlayHwnd, nullptr);
+
+    const auto oldDefaultProfile = engine.getProfile("default");
+    const auto oldRules = engine.scopeRules().getRules();
+    const bool oldPaused = engine.isPaused();
+    const bool oldBypass = engine.autoBypassFullscreen();
+    const bool oldTrail = engine.trailVisible();
+    const bool oldHint = engine.showActionHint();
+    const bool oldFade = engine.trailFadeEnabled();
+    const int oldMinSeg = engine.minSegmentDistance();
+    const int oldThreshold = engine.shapeMatchThreshold();
+
+    auto waitUntil = [](auto predicate, int timeoutMs) -> bool {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (predicate()) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return predicate();
+    };
+
+    engine.cancelActiveGesture();
+    engine.setSuppressReinjectForTesting(true);
+    engine.setPaused(false);
+    engine.setRecordingMode(false);
+    engine.setAutoBypassFullscreen(false);
+    engine.setTriggerButton("right");
+    engine.setTrailVisible(true);
+    engine.setShowActionHint(true);
+    engine.setTrailFadeEnabled(true);
+    engine.setMinSegmentDistance(24);
+    engine.setShapeMatchThreshold(75);
+    engine.scopeRules().clearRules();
+    overlay.hide();
+    ASSERT_TRUE(waitUntil([&]() { return !overlay.isVisible() && IsWindowVisible(overlayHwnd) == FALSE; }, 500));
+
+    std::atomic<int> shapeTriggered{0};
+    std::atomic<int> wheelTriggered{0};
+    BuiltinCommandDispatcher::instance().registerHandler(
+        BuiltinCommand::TakeScreenshot, [&]() { shapeTriggered.fetch_add(1, std::memory_order_relaxed); });
+    BuiltinCommandDispatcher::instance().registerHandler(
+        BuiltinCommand::VolumeUp, [&]() { wheelTriggered.fetch_add(1, std::memory_order_relaxed); });
+
+    GestureProfile prof("default");
+    GestureMapping vMap;
+    vMap.id = "v-shape";
+    vMap.enabled = true;
+    vMap.gestureCode = "DR-UR";
+    vMap.action.type = ActionType::BuiltinCommand;
+    vMap.action.name = "VShot";
+    vMap.action.builtinCmd = BuiltinCommand::TakeScreenshot;
+    prof.addMapping(vMap);
+
+    GestureMapping wheelUpMap;
+    wheelUpMap.id = "wheel-up";
+    wheelUpMap.enabled = true;
+    wheelUpMap.gestureCode = "WheelUp";
+    wheelUpMap.action.type = ActionType::BuiltinCommand;
+    wheelUpMap.action.name = "WheelVolUp";
+    wheelUpMap.action.builtinCmd = BuiltinCommand::VolumeUp;
+    prof.addMapping(wheelUpMap);
+    engine.setProfile("default", prof);
+
+    // 1. 按下右键及微幅抖动 (< 24px minSegmentDistance)：覆盖层全程绝不可见（0 起始光点！）
+    const auto t0 = std::chrono::steady_clock::now();
+    EXPECT_TRUE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::RightDown, {220, 220}, t0, hostWnd, 0, ScreenEdgeZone::None, true}));
+    EXPECT_FALSE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::Move, {230, 224}, t0 + std::chrono::milliseconds(15), hostWnd, 0, ScreenEdgeZone::None, true}));
+    EXPECT_FALSE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::Move, {236, 228}, t0 + std::chrono::milliseconds(30), hostWnd, 0, ScreenEdgeZone::None, true}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    EXPECT_FALSE(overlay.isVisible()) << "Right-click press/jitter below minSegmentDistance must NOT show a start dot";
+    EXPECT_EQ(IsWindowVisible(overlayHwnd), FALSE);
+
+    // 松开右键（普通点击）：覆盖层依然保持不可见
+    EXPECT_TRUE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::RightUp, {236, 228}, t0 + std::chrono::milliseconds(45), hostWnd, 0, ScreenEdgeZone::None, true}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    EXPECT_FALSE(overlay.isVisible());
+    EXPECT_EQ(IsWindowVisible(overlayHwnd), FALSE);
+
+    // 2. 跨过 24px 阈值后立即唤醒覆盖层并成功通过形状相似度兜底命中窄 V (DR-UR)
+    const auto t1 = std::chrono::steady_clock::now();
+    EXPECT_TRUE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::RightDown, {200, 160}, t1, hostWnd, 0, ScreenEdgeZone::None, true}));
+    EXPECT_FALSE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::Move, {204, 173}, t1 + std::chrono::milliseconds(10), hostWnd, 0, ScreenEdgeZone::None, true}));
+    EXPECT_FALSE(overlay.isVisible());
+
+    // 划出窄 V（72° 倾角，单调连续跨过阈值激活覆盖层，并通过形状兜底命中 DR-UR）
+    for (int i = 3; i <= 15; ++i) {
+        engine.handleMouseEventForTesting(MouseEvent{
+            MouseEventType::Move,
+            {200 + i * 32 / 15, 160 + i * 100 / 15},
+            t1 + std::chrono::milliseconds(15 + i * 3),
+            hostWnd, 0, ScreenEdgeZone::None, true});
+    }
+    EXPECT_TRUE(waitUntil([&]() { return overlay.isVisible() && IsWindowVisible(overlayHwnd) != FALSE; }, 800))
+        << "Crossing minSegmentDistance must activate the trail overlay seamlessly";
+    for (int i = 1; i <= 15; ++i) {
+        engine.handleMouseEventForTesting(MouseEvent{
+            MouseEventType::Move,
+            {232 + i * 32 / 15, 260 - i * 100 / 15},
+            t1 + std::chrono::milliseconds(70 + i * 3),
+            hostWnd, 0, ScreenEdgeZone::None, true});
+    }
+    EXPECT_TRUE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::RightUp, {264, 160}, t1 + std::chrono::milliseconds(130), hostWnd, 0, ScreenEdgeZone::None, true}));
+    pumpPendingThreadMessagesForGestureTest();
+    EXPECT_EQ(shapeTriggered.load(), 1) << "resultText=" << overlay.currentResultTextForTesting();
+
+    // 3. threshold=100 严格模式：同样的极窄 V（离散输出 D-U）不再走形状兜底命中 DR-UR
+    engine.setShapeMatchThreshold(100);
+    const auto t2 = std::chrono::steady_clock::now();
+    EXPECT_TRUE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::RightDown, {200, 160}, t2, hostWnd, 0, ScreenEdgeZone::None, true}));
+    for (int i = 1; i <= 15; ++i) {
+        engine.handleMouseEventForTesting(MouseEvent{
+            MouseEventType::Move,
+            {200 + i * 32 / 15, 160 + i * 100 / 15},
+            t2 + std::chrono::milliseconds(10 + i * 2),
+            hostWnd, 0, ScreenEdgeZone::None, true});
+    }
+    for (int i = 1; i <= 15; ++i) {
+        engine.handleMouseEventForTesting(MouseEvent{
+            MouseEventType::Move,
+            {232 + i * 32 / 15, 260 - i * 100 / 15},
+            t2 + std::chrono::milliseconds(50 + i * 2),
+            hostWnd, 0, ScreenEdgeZone::None, true});
+    }
+    EXPECT_TRUE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::RightUp, {264, 160}, t2 + std::chrono::milliseconds(100), hostWnd, 0, ScreenEdgeZone::None, true}));
+    pumpPendingThreadMessagesForGestureTest();
+    EXPECT_EQ(shapeTriggered.load(), 1);
+
+    // 4. 按住右键原地滚轮（未跨过 24px）：能安全激活展示提示且松开右键不秒杀
+    overlay.hide();
+    ASSERT_TRUE(waitUntil([&]() { return !overlay.isVisible() && IsWindowVisible(overlayHwnd) == FALSE; }, 500));
+    const auto t3 = std::chrono::steady_clock::now();
+    EXPECT_TRUE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::RightDown, {220, 220}, t3, hostWnd, 0, ScreenEdgeZone::None, true}));
+    EXPECT_TRUE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::WheelUp, {220, 220}, t3 + std::chrono::milliseconds(15), hostWnd, 0, ScreenEdgeZone::None, true}));
+    pumpPendingThreadMessagesForGestureTest();
+    EXPECT_EQ(wheelTriggered.load(), 1);
+    EXPECT_EQ(overlay.currentResultTextForTesting(), "WheelVolUp");
+    EXPECT_TRUE(engine.handleMouseEventForTesting(
+        MouseEvent{MouseEventType::RightUp, {220, 220}, t3 + std::chrono::milliseconds(30), hostWnd, 0, ScreenEdgeZone::None, true}));
+    EXPECT_TRUE(waitUntil([&]() { return overlay.isVisible() && IsWindowVisible(overlayHwnd) != FALSE; }, 600))
+        << "Releasing right button after wheel gesture must not instantly kill the wheel action toast";
+
+    // 5. 配置权威源验证：历史 /gesture/recognizer/minSegmentDistance 不得覆盖 /gesture/minSegmentDistance，
+    // 且 shapeMatchThreshold 持久化与边界夹紧正确
+    const auto tempRoot = std::filesystem::temp_directory_path() /
+        (L"tools3000_gesture_cfg_auth_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(tempRoot, ec);
+    std::filesystem::create_directories(tempRoot, ec);
+    auto& cfg = ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tempRoot));
+    cfg.set<int>("/gesture/minSegmentDistance", 32);
+    cfg.set<int>("/gesture/recognizer/minSegmentDistance", 12);
+    cfg.set<int>("/gesture/shapeMatchThreshold", 65);
+    engine.loadFromConfig();
+    EXPECT_EQ(engine.minSegmentDistance(), 32);
+    EXPECT_EQ(engine.recognizerConfig().minSegmentDistance, 32);
+    EXPECT_EQ(engine.shapeMatchThreshold(), 65);
+    engine.setShapeMatchThreshold(10);
+    EXPECT_EQ(engine.shapeMatchThreshold(), 50);
+    engine.setShapeMatchThreshold(150);
+    EXPECT_EQ(engine.shapeMatchThreshold(), 100);
+    cfg.shutdown();
+    std::filesystem::remove_all(tempRoot, ec);
+
+    // 清理并还原全局状态
+    overlay.hide();
+    overlay.shutdown();
+    hostDummy.reset();
+    engine.cancelActiveGesture();
+    engine.setSuppressReinjectForTesting(false);
+    engine.setTrailVisible(oldTrail);
+    engine.setShowActionHint(oldHint);
+    engine.setTrailFadeEnabled(oldFade);
+    engine.setMinSegmentDistance(oldMinSeg);
+    engine.setShapeMatchThreshold(oldThreshold);
+    engine.setAutoBypassFullscreen(oldBypass);
+    engine.setPaused(oldPaused);
+    engine.scopeRules().clearRules();
+    engine.scopeRules().addRules(oldRules);
+    if (oldDefaultProfile) {
+        engine.setProfile("default", *oldDefaultProfile);
+    }
+    BuiltinCommandDispatcher::instance().clearHandlers();
+}
+
+TEST(MouseGesture, RapidCloseTabSafetyAndRealUserVShapeRegression) {
+    auto recognizeWith = [](const std::vector<TrackPoint>& pts, int minSeg = 24) {
+        RecognizerConfig cfg;
+        cfg.minSegmentDistance = minSeg;
+        GestureRecognizer rec(cfg);
+        for (const auto& pt : pts) rec.addPoint(pt.x, pt.y);
+        return rec.finalize();
+    };
+
+    auto sampleLine = [](TrackPoint a, TrackPoint b, int steps) {
+        std::vector<TrackPoint> pts;
+        for (int i = 0; i <= steps; ++i) {
+            pts.push_back({a.x + (b.x - a.x) * i / steps, a.y + (b.y - a.y) * i / steps});
+        }
+        return pts;
+    };
+    auto concatPolyline = [&](const std::vector<TrackPoint>& vertices, int stepsPerEdge = 10) {
+        std::vector<TrackPoint> out;
+        for (size_t e = 0; e + 1 < vertices.size(); ++e) {
+            auto seg = sampleLine(vertices[e], vertices[e + 1], stepsPerEdge);
+            out.insert(out.end(), e == 0 ? seg.begin() : seg.begin() + 1, seg.end());
+        }
+        return out;
+    };
+
+    // 1. 实机截图 V 形全覆盖（偏陡左臂 20.7°、极陡左臂 13.4°、弧臂 D-DR-UR、对称窄印刷体 V）
+    auto userV1 = recognizeWith(concatPolyline({{176, 46}, {210, 136}, {296, 34}}), 24);
+    ASSERT_TRUE(userV1.has_value());
+    EXPECT_EQ(userV1->code, "DR-UR");
+    EXPECT_NE(userV1->formatDiagnosticSummary().find("raw=["), std::string::npos);
+
+    auto userV2 = recognizeWith(concatPolyline({{200, 100}, {220, 184}, {309, 92}}), 24);
+    ASSERT_TRUE(userV2.has_value());
+    EXPECT_EQ(userV2->code, "DR-UR");
+
+    auto userV3 = recognizeWith(concatPolyline({{200, 100}, {219, 158}, {244, 183}, {336, 91}}), 24);
+    ASSERT_TRUE(userV3.has_value());
+    EXPECT_EQ(userV3->code, "DR-UR");
+
+    auto narrowPrintV = recognizeWith(concatPolyline({{200, 100}, {238, 200}, {276, 100}}), 24);
+    ASSERT_TRUE(narrowPrintV.has_value());
+    EXPECT_EQ(narrowPrintV->code, "DR-UR");
+
+    // 保护日常 U-D（新建标签页：平行往返或窄幅抖动绝不误判为倒 V）
+    auto normalUD = recognizeWith(concatPolyline({{200, 200}, {210, 100}, {214, 205}}), 24);
+    ASSERT_TRUE(normalUD.has_value());
+    EXPECT_EQ(normalUD->code, "U-D");
+
+    // 2. 高速连划 D-R（minSeg=24 下，长竖 170px + 短右拐 24px 必须识别为 D-R，不退化成 D 最小化）
+    auto rapidShortTurnDR = recognizeWith(concatPolyline({{300, 100}, {285, 270}, {309, 272}}, 8), 24);
+    ASSERT_TRUE(rapidShortTurnDR.has_value());
+    EXPECT_EQ(rapidShortTurnDR->code, "D-R");
+
+    // 3. 形状相似度拓扑护栏：单段候选 D 绝不允许兜底吞噬多段轨迹 L-D-R
+    auto longDownShortEndsLDR = concatPolyline({{300, 100}, {260, 105}, {255, 285}, {290, 288}}, 8);
+    const std::vector<ShapeMatchCandidate> singleAndMultiCands = {
+        {"D", "D"},
+        {"D-R", "D-R"},
+        {"D-L", "D-L"},
+    };
+    ShapeMatchDiagnostics diag{};
+    const auto shapeRes = matchBestGestureShape(longDownShortEndsLDR, singleAndMultiCands, 75, 24, &diag);
+    if (shapeRes.has_value()) {
+        EXPECT_NE(shapeRes->code, "D") << "Multi-segment trajectory must NEVER fallback to single-segment D (Minimize)";
+    }
+
+    // 4. 方案 A + 首段微惯性裁噪端到端引擎回归（基于 19:07:53 & 19:08:07 真实 Chrome 翻车日志）
+    HWND hostWnd = CreateWindowExW(
+        0, L"STATIC", L"Tools3000RapidDRTestHost",
+        WS_POPUP, 0, 0, 640, 480,
+        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(hostWnd, nullptr);
+
+    auto& engine = GestureEngine::instance();
+    const auto oldDefaultProfile = engine.getProfile("default");
+    const auto oldRules = engine.scopeRules().getRules();
+    const bool oldPaused = engine.isPaused();
+    const bool oldBypass = engine.autoBypassFullscreen();
+    const int oldMinSeg = engine.minSegmentDistance();
+    const int oldThreshold = engine.shapeMatchThreshold();
+
+    engine.cancelActiveGesture();
+    engine.setSuppressReinjectForTesting(true);
+    engine.setPaused(false);
+    engine.setRecordingMode(false);
+    engine.setAutoBypassFullscreen(false);
+    engine.setTriggerButton("right");
+    engine.setMinSegmentDistance(24);
+    engine.setShapeMatchThreshold(75);
+    engine.scopeRules().clearRules();
+
+    std::atomic<int> closeTabCount{0};
+    std::atomic<int> minimizeCount{0};
+    std::atomic<int> closeWinCount{0};
+    BuiltinCommandDispatcher::instance().registerHandler(
+        BuiltinCommand::CloseTab, [&]() { closeTabCount.fetch_add(1, std::memory_order_relaxed); });
+    BuiltinCommandDispatcher::instance().registerHandler(
+        BuiltinCommand::MinimizeWindow, [&]() { minimizeCount.fetch_add(1, std::memory_order_relaxed); });
+    BuiltinCommandDispatcher::instance().registerHandler(
+        BuiltinCommand::CloseWindow, [&]() { closeWinCount.fetch_add(1, std::memory_order_relaxed); });
+
+    GestureProfile prof("default");
+    auto addBuiltinMap = [&](const char* id, const char* code, BuiltinCommand cmd, const char* name) {
+        GestureMapping m;
+        m.id = id;
+        m.enabled = true;
+        m.gestureCode = code;
+        m.action.type = ActionType::BuiltinCommand;
+        m.action.name = name;
+        m.action.builtinCmd = cmd;
+        prof.addMapping(m);
+    };
+    addBuiltinMap("min", "D", BuiltinCommand::MinimizeWindow, "Minimize");
+    addBuiltinMap("close-tab", "D-R", BuiltinCommand::CloseTab, "CloseTab");
+    addBuiltinMap("close-win", "D-L", BuiltinCommand::CloseWindow, "CloseWindow");
+    engine.setProfile("default", prof);
+
+    auto playGesture = [&](const std::vector<TrackPoint>& pts) {
+        const auto base = std::chrono::steady_clock::now();
+        ASSERT_GE(pts.size(), 2u);
+        engine.handleMouseEventForTesting(
+            MouseEvent{MouseEventType::RightDown, {pts.front().x, pts.front().y}, base, hostWnd, 0, ScreenEdgeZone::None, true});
+        for (size_t i = 1; i < pts.size(); ++i) {
+            engine.handleMouseEventForTesting(
+                MouseEvent{MouseEventType::Move, {pts[i].x, pts[i].y}, base + std::chrono::milliseconds(i * 4), hostWnd, 0, ScreenEdgeZone::None, true});
+        }
+        engine.handleMouseEventForTesting(
+            MouseEvent{MouseEventType::RightUp, {pts.back().x, pts.back().y}, base + std::chrono::milliseconds(pts.size() * 4 + 5), hostWnd, 0, ScreenEdgeZone::None, true});
+        pumpPendingThreadMessagesForGestureTest();
+    };
+
+    // 4a. 连续快划带 26px 左向复位惯性 + 175px 向下 + 45px 向右 -> 必须命中 D-R（关闭标签页），0 误触最小化
+    playGesture(concatPolyline({{320, 120}, {294, 120}, {294, 295}, {340, 295}}, 6));
+    EXPECT_EQ(closeTabCount.load(), 1);
+    EXPECT_EQ(minimizeCount.load(), 0);
+
+    // 4b. 方案 A 验真：单段向左下斜拉 ↙ (DL, dx=-142, dy=+197) 绝不得隐式展开为 D-L (关闭窗口 Alt+F4)
+    playGesture(concatPolyline({{400, 120}, {258, 317}}, 8));
+    EXPECT_EQ(closeWinCount.load(), 0) << "Single diagonal DL must NOT silently expand to destructive D-L CloseWindow";
+    EXPECT_EQ(minimizeCount.load(), 0);
+
+    // 清理并还原全局状态
+    engine.cancelActiveGesture();
+    engine.setSuppressReinjectForTesting(false);
+    engine.setMinSegmentDistance(oldMinSeg);
+    engine.setShapeMatchThreshold(oldThreshold);
+    engine.setAutoBypassFullscreen(oldBypass);
+    engine.setPaused(oldPaused);
+    engine.scopeRules().clearRules();
+    engine.scopeRules().addRules(oldRules);
+    if (oldDefaultProfile) {
+        engine.setProfile("default", *oldDefaultProfile);
+    }
+    BuiltinCommandDispatcher::instance().clearHandlers();
+    DestroyWindow(hostWnd);
+}
+
+
 

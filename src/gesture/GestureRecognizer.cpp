@@ -6,6 +6,7 @@
 #include "core/logger/Logger.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numbers>
 #include <optional>
@@ -13,6 +14,47 @@
 namespace tools3000::gesture {
 
 namespace {
+
+inline bool isDiagonalDirection(Direction d) noexcept {
+    return d == Direction::UpLeft || d == Direction::UpRight ||
+           d == Direction::DownLeft || d == Direction::DownRight;
+}
+
+inline Direction oppositeCardinal(Direction d) noexcept {
+    switch (d) {
+        case Direction::Up:    return Direction::Down;
+        case Direction::Down:  return Direction::Up;
+        case Direction::Left:  return Direction::Right;
+        case Direction::Right: return Direction::Left;
+        default:               return Direction::None;
+    }
+}
+
+inline Direction sharedCardinalBetweenDiagonals(Direction d1, Direction d2) noexcept {
+    if ((d1 == Direction::DownRight && d2 == Direction::DownLeft) ||
+        (d1 == Direction::DownLeft  && d2 == Direction::DownRight)) {
+        return Direction::Down;
+    }
+    if ((d1 == Direction::UpRight && d2 == Direction::UpLeft) ||
+        (d1 == Direction::UpLeft  && d2 == Direction::UpRight)) {
+        return Direction::Up;
+    }
+    if ((d1 == Direction::DownRight && d2 == Direction::UpRight) ||
+        (d1 == Direction::UpRight   && d2 == Direction::DownRight)) {
+        return Direction::Right;
+    }
+    if ((d1 == Direction::DownLeft && d2 == Direction::UpLeft) ||
+        (d1 == Direction::UpLeft   && d2 == Direction::DownLeft)) {
+        return Direction::Left;
+    }
+    return Direction::None;
+}
+
+inline bool isDiagonalCornerFillet(Direction a, Direction b, Direction c) noexcept {
+    if (!isDiagonalDirection(a) || !isDiagonalDirection(c) || a == c) return false;
+    const Direction shared = sharedCardinalBetweenDiagonals(a, c);
+    return shared != Direction::None && b == shared;
+}
 
 inline bool isCornerFillet(Direction a, Direction b, Direction c) noexcept {
     // b 是在直角转弯 (a -> c) 过程中由手腕/手指产生的自然圆角对角过渡
@@ -61,11 +103,18 @@ inline bool isJitterRebound(Direction a, Direction b, Direction c) noexcept {
         (a == Direction::Down && b == Direction::Up)) {
         return true;
     }
-    // 2. 45度微小对角抖动 (如 Down -> DownRight -> Down, Right -> UpRight -> Right)
+    // 2. 45度微小对角抖动 (正交 -> 邻近对角 -> 正交)
     if ((a == Direction::Down && (b == Direction::DownRight || b == Direction::DownLeft)) ||
         (a == Direction::Up   && (b == Direction::UpRight   || b == Direction::UpLeft))   ||
         (a == Direction::Left && (b == Direction::UpLeft    || b == Direction::DownLeft)) ||
         (a == Direction::Right&& (b == Direction::UpRight   || b == Direction::DownRight))) {
+        return true;
+    }
+    // 3. 45度对角邻近正交抖动 (对角 -> 邻近正交 -> 对角，如 DR-D-DR, UR-R-UR；严防误伤 DR-UR-DR)
+    if ((a == Direction::DownRight && (b == Direction::Down || b == Direction::Right)) ||
+        (a == Direction::DownLeft  && (b == Direction::Down || b == Direction::Left))  ||
+        (a == Direction::UpRight   && (b == Direction::Up   || b == Direction::Right)) ||
+        (a == Direction::UpLeft    && (b == Direction::Up   || b == Direction::Left))) {
         return true;
     }
     return false;
@@ -91,7 +140,75 @@ inline std::optional<Direction> completeIncompleteFillet(Direction known, Direct
 struct DirectionSegment {
     Direction dir = Direction::None;
     double length = 1.0;
+    double dx = 0.0;
+    double dy = 0.0;
 };
+
+constexpr double kSharpDiagonalPairMinTiltDeg = 6.0;
+constexpr double kArcArmDiagonalMergeMinTiltDeg = 12.0;
+constexpr double kArcArmShortBendMergeMinTiltDeg = 8.0;
+constexpr double kArcArmShortBendMaxRatio = 0.45;
+constexpr double kNarrowChevronEachMinTiltDeg = 15.0;
+constexpr double kNarrowChevronTotalSpreadDeg = 36.0;
+constexpr int kMaxTurnSegmentDistancePx = 16;
+
+inline Direction sharpDiagonalPartner(Direction cardinal, Direction diagonal) noexcept {
+    // 仅针对夹角严格等于 135° 的「正交 + 跨象限对角」尖角对（如 V: D+UR -> DR+UR）
+    switch (cardinal) {
+        case Direction::Down:
+            if (diagonal == Direction::UpRight) return Direction::DownRight;
+            if (diagonal == Direction::UpLeft)  return Direction::DownLeft;
+            return Direction::None;
+        case Direction::Up:
+            if (diagonal == Direction::DownRight) return Direction::UpRight;
+            if (diagonal == Direction::DownLeft)  return Direction::UpLeft;
+            return Direction::None;
+        case Direction::Right:
+            if (diagonal == Direction::DownLeft) return Direction::DownRight;
+            if (diagonal == Direction::UpLeft)   return Direction::UpRight;
+            return Direction::None;
+        case Direction::Left:
+            if (diagonal == Direction::DownRight) return Direction::DownLeft;
+            if (diagonal == Direction::UpRight)   return Direction::UpLeft;
+            return Direction::None;
+        default:
+            return Direction::None;
+    }
+}
+
+inline double tiltTowardDiagonalDeg(const DirectionSegment& seg,
+                                    Direction cardinal,
+                                    Direction targetDiag) noexcept {
+    if (std::hypot(seg.dx, seg.dy) < 1.0) return 0.0;
+    double primary = 0.0;
+    double side = 0.0;
+    switch (cardinal) {
+        case Direction::Down:
+            primary = seg.dy;
+            side = (targetDiag == Direction::DownRight) ? seg.dx
+                 : (targetDiag == Direction::DownLeft ? -seg.dx : 0.0);
+            break;
+        case Direction::Up:
+            primary = -seg.dy;
+            side = (targetDiag == Direction::UpRight) ? seg.dx
+                 : (targetDiag == Direction::UpLeft ? -seg.dx : 0.0);
+            break;
+        case Direction::Right:
+            primary = seg.dx;
+            side = (targetDiag == Direction::DownRight) ? seg.dy
+                 : (targetDiag == Direction::UpRight ? -seg.dy : 0.0);
+            break;
+        case Direction::Left:
+            primary = -seg.dx;
+            side = (targetDiag == Direction::DownLeft) ? seg.dy
+                 : (targetDiag == Direction::UpLeft ? -seg.dy : 0.0);
+            break;
+        default:
+            return 0.0;
+    }
+    if (primary <= 1e-6 || side <= 0.0) return 0.0;
+    return std::atan2(side, primary) * 180.0 / kPi;
+}
 
 void compressSegments(std::vector<DirectionSegment>& segs) {
     std::vector<DirectionSegment> out;
@@ -99,11 +216,79 @@ void compressSegments(std::vector<DirectionSegment>& segs) {
         if (s.dir == Direction::None || s.length <= 0.0) continue;
         if (!out.empty() && out.back().dir == s.dir) {
             out.back().length += s.length;
+            out.back().dx += s.dx;
+            out.back().dy += s.dy;
         } else {
             out.push_back(s);
         }
     }
     segs = std::move(out);
+}
+
+void resolveSharpDiagonalSegments(std::vector<DirectionSegment>& current) {
+    if (current.size() < 2) return;
+
+    // 1. 正交 + 135° 反向跨象限对角（如手写 V 左笔稍陡初判为 D-UR，或右笔稍陡初判为 DR-U）：
+    //    若正交段自身已向对应尖角侧倾斜 >= 6°，直接还原为双对角尖角（DR-UR 等），支持 V/∧/</>/W/M。
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (size_t i = 0; i + 1 < current.size(); ++i) {
+            auto& a = current[i];
+            auto& b = current[i + 1];
+            if (!isDiagonalDirection(a.dir) && isDiagonalDirection(b.dir)) {
+                const Direction partner = sharpDiagonalPartner(a.dir, b.dir);
+                if (partner != Direction::None &&
+                    tiltTowardDiagonalDeg(a, a.dir, partner) >= kSharpDiagonalPairMinTiltDeg) {
+                    a.dir = partner;
+                    changed = true;
+                }
+            } else if (isDiagonalDirection(a.dir) && !isDiagonalDirection(b.dir)) {
+                const Direction partner = sharpDiagonalPartner(b.dir, a.dir);
+                if (partner != Direction::None &&
+                    tiltTowardDiagonalDeg(b, b.dir, partner) >= kSharpDiagonalPairMinTiltDeg) {
+                    b.dir = partner;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    // 2. 两段 180° 反向正交且向同一侧大幅张开的对称窄尖角（如窄印刷体 V：两边各偏 >= 15°、总张角 >= 36°）：
+    //    往返直线（如 U-D 新建标签页）通常近平行或异侧偏折，不会满足同侧双臂大幅张开条件。
+    if (current.size() == 2 && oppositeCardinal(current[0].dir) == current[1].dir) {
+        auto tryPromoteNarrowChevron = [&](Direction diag0, Direction diag1) -> bool {
+            const double t0 = tiltTowardDiagonalDeg(current[0], current[0].dir, diag0);
+            const double t1 = tiltTowardDiagonalDeg(current[1], current[1].dir, diag1);
+            if (t0 >= kNarrowChevronEachMinTiltDeg &&
+                t1 >= kNarrowChevronEachMinTiltDeg &&
+                (t0 + t1) >= kNarrowChevronTotalSpreadDeg) {
+                current[0].dir = diag0;
+                current[1].dir = diag1;
+                return true;
+            }
+            return false;
+        };
+
+        const Direction d0 = current[0].dir;
+        if (d0 == Direction::Down) {
+            if (!tryPromoteNarrowChevron(Direction::DownRight, Direction::UpRight)) {
+                tryPromoteNarrowChevron(Direction::DownLeft, Direction::UpLeft);
+            }
+        } else if (d0 == Direction::Up) {
+            if (!tryPromoteNarrowChevron(Direction::UpRight, Direction::DownRight)) {
+                tryPromoteNarrowChevron(Direction::UpLeft, Direction::DownLeft);
+            }
+        } else if (d0 == Direction::Right) {
+            if (!tryPromoteNarrowChevron(Direction::DownRight, Direction::DownLeft)) {
+                tryPromoteNarrowChevron(Direction::UpRight, Direction::UpLeft);
+            }
+        } else if (d0 == Direction::Left) {
+            if (!tryPromoteNarrowChevron(Direction::DownLeft, Direction::DownRight)) {
+                tryPromoteNarrowChevron(Direction::UpLeft, Direction::UpRight);
+            }
+        }
+    }
 }
 
 std::vector<Direction> dirsFromSegments(const std::vector<DirectionSegment>& segs) {
@@ -113,7 +298,7 @@ std::vector<Direction> dirsFromSegments(const std::vector<DirectionSegment>& seg
     return out;
 }
 
-std::vector<Direction> simplifySegments(std::vector<DirectionSegment> current) {
+std::vector<DirectionSegment> simplifySegmentsDetailed(std::vector<DirectionSegment> current) {
     compressSegments(current);
 
     bool modified = true;
@@ -121,19 +306,79 @@ std::vector<Direction> simplifySegments(std::vector<DirectionSegment> current) {
         modified = false;
         std::vector<DirectionSegment> next;
         for (size_t i = 0; i < current.size(); ) {
+            // 1. 四段平滑半圆弧还原：R-DR-DL-L -> R-D-L（覆盖全部 8 种对称圆弧）
+            if (i + 3 < current.size()) {
+                const Direction a = current[i].dir;
+                const Direction d1 = current[i + 1].dir;
+                const Direction d2 = current[i + 2].dir;
+                const Direction c = current[i + 3].dir;
+                const Direction shared = sharedCardinalBetweenDiagonals(d1, d2);
+                if (shared != Direction::None &&
+                    isCornerFillet(a, d1, shared) &&
+                    isCornerFillet(shared, d2, c)) {
+                    next.push_back(current[i]);
+                    next.push_back({shared,
+                                    current[i + 1].length + current[i + 2].length,
+                                    current[i + 1].dx + current[i + 2].dx,
+                                    current[i + 1].dy + current[i + 2].dy});
+                    next.push_back(current[i + 3]);
+                    i += 4;
+                    modified = true;
+                    continue;
+                }
+            }
             if (i + 2 < current.size()) {
                 const Direction a = current[i].dir;
                 const Direction b = current[i + 1].dir;
                 const Direction c = current[i + 2].dir;
                 if (isJitterRebound(a, b, c)) {
-                    next.push_back(current[i]);
+                    next.push_back({a,
+                                    current[i].length + current[i + 1].length + current[i + 2].length,
+                                    current[i].dx + current[i + 1].dx + current[i + 2].dx,
+                                    current[i].dy + current[i + 1].dy + current[i + 2].dy});
                     i += 3;
                     modified = true;
                     continue;
                 }
-                if (isCornerFillet(a, b, c)) {
+                if (isCornerFillet(a, b, c) || isDiagonalCornerFillet(a, b, c)) {
                     next.push_back(current[i]);
                     next.push_back(current[i + 2]);
+                    i += 3;
+                    modified = true;
+                    continue;
+                }
+                // 反向夹心单对角圆弧：如 R-DR-L 或 R-DL-L -> R-D-L
+                const Direction oppA = oppositeCardinal(a);
+                if (oppA != Direction::None && c == oppA) {
+                    if (auto mid = completeIncompleteFillet(a, b)) {
+                        next.push_back(current[i]);
+                        next.push_back({*mid, current[i + 1].length, current[i + 1].dx, current[i + 1].dy});
+                        next.push_back(current[i + 2]);
+                        i += 3;
+                        modified = true;
+                        continue;
+                    }
+                }
+                // 三段未拉平圆弧双对角：如 R-DR-DL -> R-D-DL（随后由收尾回折规则补全为 R-D-L）；
+                // 但若首段正交已经明显朝 b 对角倾斜（如弧臂 V: D(18°)->DR->UR），则 a 与 b 实为同一斜臂，合并为 b。
+                const Direction sharedTail = sharedCardinalBetweenDiagonals(b, c);
+                if (sharedTail != Direction::None && isCornerFillet(a, b, sharedTail)) {
+                    const double tiltA = tiltTowardDiagonalDeg(current[i], a, b);
+                    const bool isArcArmBend =
+                        tiltA >= kArcArmDiagonalMergeMinTiltDeg ||
+                        (tiltA >= kArcArmShortBendMergeMinTiltDeg &&
+                         current[i + 1].length < current[i + 2].length * kArcArmShortBendMaxRatio);
+                    if (isArcArmBend) {
+                        next.push_back({b,
+                                        current[i].length + current[i + 1].length,
+                                        current[i].dx + current[i + 1].dx,
+                                        current[i].dy + current[i + 1].dy});
+                        next.push_back(current[i + 2]);
+                    } else {
+                        next.push_back(current[i]);
+                        next.push_back({sharedTail, current[i + 1].length, current[i + 1].dx, current[i + 1].dy});
+                        next.push_back(current[i + 2]);
+                    }
                     i += 3;
                     modified = true;
                     continue;
@@ -155,15 +400,36 @@ std::vector<Direction> simplifySegments(std::vector<DirectionSegment> current) {
                 current[1].dir = *completed;
                 filletModified = true;
             }
-        } else if (completeIncompleteFillet(current[current.size() - 2].dir, current.back().dir)) {
-            // 三段以上：末尾对角是前一段的收笔圆角，不能发明新的直角段
-            // （否则 D-R 末尾下垂会变成 D-R-D，截图手势被误触）。
-            current.pop_back();
-            filletModified = true;
+        } else if (auto completed = completeIncompleteFillet(
+                       current[current.size() - 2].dir, current.back().dir)) {
+            const Direction prevPrev = current[current.size() - 3].dir;
+            const Direction oppPrevPrev = oppositeCardinal(prevPrev);
+            if (oppPrevPrev != Direction::None && *completed == oppPrevPrev) {
+                // 反向回折第三笔（如反 C: R-D-DL -> R-D-L、U 形: D-R-UR -> D-R-U），
+                // 方向与首段相反绝非惯性下垂，补全为标准正交收笔段。
+                current.back().dir = *completed;
+                filletModified = true;
+            } else if (*completed == prevPrev) {
+                // 同象限收笔惯性微垂（如 D-R-DR -> D-R），必须丢弃以防误触 D-R-D 截图。
+                current.pop_back();
+                filletModified = true;
+            } else if (current.back().length >= 24.0 &&
+                       current.back().length >= current[current.size() - 2].length * 0.45) {
+                current.back().dir = *completed;
+                filletModified = true;
+            } else {
+                current.pop_back();
+                filletModified = true;
+            }
         }
         if (current.size() >= 2) {
             if (auto invented = completeIncompleteFillet(current[1].dir, current[0].dir)) {
-                if (current[0].length < current[1].length * 0.4) {
+                const bool isReversingThreeSeg =
+                    current.size() >= 3 &&
+                    oppositeCardinal(current[2].dir) != Direction::None &&
+                    *invented == oppositeCardinal(current[2].dir);
+                const double dropRatio = isReversingThreeSeg ? 0.22 : 0.40;
+                if (current[0].length < current[1].length * dropRatio) {
                     current.erase(current.begin());
                 } else {
                     current[0].dir = *invented;
@@ -174,10 +440,328 @@ std::vector<Direction> simplifySegments(std::vector<DirectionSegment> current) {
         compressSegments(current);
     }
 
-    return dirsFromSegments(current);
+    resolveSharpDiagonalSegments(current);
+    compressSegments(current);
+
+    return current;
+}
+
+std::vector<Direction> simplifySegments(std::vector<DirectionSegment> current) {
+    return dirsFromSegments(simplifySegmentsDetailed(std::move(current)));
+}
+
+// ── 连续几何形状相似度匹配器（方向敏感，支持折线 + 平滑圆弧双原型） ────────────
+
+constexpr size_t kShapeSampleCount = 32;
+
+struct ShapePt {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+double shapePtDist(const ShapePt& a, const ShapePt& b) noexcept {
+    return std::hypot(b.x - a.x, b.y - a.y);
+}
+
+double polylineLength(const std::vector<ShapePt>& pts) noexcept {
+    double total = 0.0;
+    for (size_t i = 1; i < pts.size(); ++i) {
+        total += shapePtDist(pts[i - 1], pts[i]);
+    }
+    return total;
+}
+
+bool resampleAndNormalize(const std::vector<ShapePt>& raw,
+                          std::array<ShapePt, kShapeSampleCount>& out) noexcept {
+    if (raw.size() < 2) return false;
+    const double totalLen = polylineLength(raw);
+    if (totalLen < 1e-4) return false;
+
+    const double step = totalLen / static_cast<double>(kShapeSampleCount - 1);
+    out[0] = raw.front();
+    size_t outIdx = 1;
+    double accum = 0.0;
+    ShapePt prev = raw[0];
+
+    for (size_t i = 1; i < raw.size() && outIdx < kShapeSampleCount; ++i) {
+        ShapePt curr = raw[i];
+        double segLen = shapePtDist(prev, curr);
+        while (segLen > 1e-9 && accum + segLen >= step && outIdx < kShapeSampleCount) {
+            const double remain = step - accum;
+            const double t = remain / segLen;
+            ShapePt interp{
+                prev.x + (curr.x - prev.x) * t,
+                prev.y + (curr.y - prev.y) * t
+            };
+            out[outIdx++] = interp;
+            prev = interp;
+            segLen = shapePtDist(prev, curr);
+            accum = 0.0;
+        }
+        accum += segLen;
+        prev = curr;
+    }
+    while (outIdx < kShapeSampleCount) {
+        out[outIdx++] = raw.back();
+    }
+
+    double cx = 0.0;
+    double cy = 0.0;
+    for (const auto& p : out) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= static_cast<double>(kShapeSampleCount);
+    cy /= static_cast<double>(kShapeSampleCount);
+
+    double sqSum = 0.0;
+    for (auto& p : out) {
+        p.x -= cx;
+        p.y -= cy;
+        sqSum += p.x * p.x + p.y * p.y;
+    }
+    const double rms = std::sqrt(sqSum / static_cast<double>(kShapeSampleCount));
+    if (rms < 1e-4) return false;
+
+    for (auto& p : out) {
+        p.x /= rms;
+        p.y /= rms;
+    }
+    return true;
+}
+
+ShapePt directionUnitVectorScreen(Direction d) noexcept {
+    constexpr double kInvSqrt2 = 0.7071067811865475244;
+    switch (d) {
+        case Direction::Right:     return { 1.0,  0.0};
+        case Direction::Left:      return {-1.0,  0.0};
+        case Direction::Up:        return { 0.0, -1.0};
+        case Direction::Down:      return { 0.0,  1.0};
+        case Direction::UpRight:   return { kInvSqrt2, -kInvSqrt2};
+        case Direction::UpLeft:    return {-kInvSqrt2, -kInvSqrt2};
+        case Direction::DownRight: return { kInvSqrt2,  kInvSqrt2};
+        case Direction::DownLeft:  return {-kInvSqrt2,  kInvSqrt2};
+        default:                   return { 0.0,  0.0};
+    }
+}
+
+std::vector<ShapePt> chaikinSmooth(std::vector<ShapePt> pts, int iterations) {
+    for (int iter = 0; iter < iterations && pts.size() >= 3; ++iter) {
+        std::vector<ShapePt> next;
+        next.reserve(pts.size() * 2);
+        next.push_back(pts.front());
+        for (size_t i = 0; i + 1 < pts.size(); ++i) {
+            const auto& p0 = pts[i];
+            const auto& p1 = pts[i + 1];
+            next.push_back({0.75 * p0.x + 0.25 * p1.x, 0.75 * p0.y + 0.25 * p1.y});
+            next.push_back({0.25 * p0.x + 0.75 * p1.x, 0.25 * p0.y + 0.75 * p1.y});
+        }
+        next.push_back(pts.back());
+        pts = std::move(next);
+    }
+    return pts;
+}
+
+double scoreNormalizedShapes(const std::array<ShapePt, kShapeSampleCount>& u,
+                             const std::array<ShapePt, kShapeSampleCount>& t) noexcept {
+    double distSum = 0.0;
+    for (size_t i = 0; i < kShapeSampleCount; ++i) {
+        distSum += shapePtDist(u[i], t[i]);
+    }
+    const double meanDist = distSum / static_cast<double>(kShapeSampleCount);
+    const double posScore = (std::clamp)(1.0 - meanDist / 1.45, 0.0, 1.0);
+
+    double cosSum = 0.0;
+    int validTangents = 0;
+    for (size_t i = 0; i + 1 < kShapeSampleCount; ++i) {
+        const double ux = u[i + 1].x - u[i].x;
+        const double uy = u[i + 1].y - u[i].y;
+        const double tx = t[i + 1].x - t[i].x;
+        const double ty = t[i + 1].y - t[i].y;
+        const double uLen = std::hypot(ux, uy);
+        const double tLen = std::hypot(tx, ty);
+        if (uLen > 1e-6 && tLen > 1e-6) {
+            cosSum += (ux * tx + uy * ty) / (uLen * tLen);
+            ++validTangents;
+        }
+    }
+    const double avgCos = validTangents > 0 ? (cosSum / static_cast<double>(validTangents)) : 0.0;
+    const double dirScore = (std::clamp)(avgCos, 0.0, 1.0);
+
+    // 端头方向一致性（前 1/6 起笔矢量 + 后 1/6 收笔矢量）：防止 180° 反 C 圆弧误匹配 90° L 形 R-D
+    auto endpointCos = [&](size_t a, size_t b) noexcept -> double {
+        const double ux = u[b].x - u[a].x;
+        const double uy = u[b].y - u[a].y;
+        const double tx = t[b].x - t[a].x;
+        const double ty = t[b].y - t[a].y;
+        const double uLen = std::hypot(ux, uy);
+        const double tLen = std::hypot(tx, ty);
+        if (uLen <= 1e-6 || tLen <= 1e-6) return 0.0;
+        return (std::clamp)((ux * tx + uy * ty) / (uLen * tLen), 0.0, 1.0);
+    };
+    const size_t span = 3;
+    const double startCos = endpointCos(0, span);
+    const double endCos = endpointCos(kShapeSampleCount - 1 - span, kShapeSampleCount - 1);
+    const double endpointScore = 0.5 * (startCos + endCos);
+
+    return (0.44 * posScore + 0.36 * dirScore + 0.20 * endpointScore) * 100.0;
+}
+
+int computeShapeSimilarityFromNormalized(const std::array<ShapePt, kShapeSampleCount>& normUser,
+                                         double userStraightness,
+                                         const std::string& bareDirectionCode) noexcept {
+    const auto dirs = codeToDirections(bareDirectionCode);
+    if (dirs.empty()) return 0;
+
+    auto evalPrototype = [&](const std::vector<double>& weights, bool allowArcSmooth) noexcept -> double {
+        std::vector<ShapePt> poly;
+        poly.reserve(dirs.size() + 1);
+        poly.push_back({0.0, 0.0});
+        for (size_t i = 0; i < dirs.size(); ++i) {
+            const double w = (i < weights.size()) ? weights[i] : 1.0;
+            const ShapePt v = directionUnitVectorScreen(dirs[i]);
+            poly.push_back({poly.back().x + v.x * w, poly.back().y + v.y * w});
+        }
+        const double templateLen = polylineLength(poly);
+        const double templateStraightness =
+            templateLen > 1e-4 ? (shapePtDist(poly.front(), poly.back()) / templateLen) : 1.0;
+
+        std::array<ShapePt, kShapeSampleCount> normPoly{};
+        if (!resampleAndNormalize(poly, normPoly)) return 0.0;
+        double score = scoreNormalizedShapes(normUser, normPoly);
+
+        if (allowArcSmooth && dirs.size() >= 2) {
+            std::array<ShapePt, kShapeSampleCount> normArc{};
+            if (resampleAndNormalize(chaikinSmooth(poly, 3), normArc)) {
+                score = (std::max)(score, scoreNormalizedShapes(normUser, normArc));
+            }
+        }
+
+        // 直线/折弯形态防混淆护栏：禁止弯折弧线误配单段直线，亦禁止笔直单线误配明显拐弯的多段模板
+        if (dirs.size() == 1 && userStraightness < 0.72) {
+            score *= 0.72;
+        } else if (dirs.size() >= 2 && templateStraightness < 0.88 && userStraightness > 0.95) {
+            score *= 0.72;
+        }
+        return score;
+    };
+
+    std::vector<double> equalWeights(dirs.size(), 1.0);
+    double bestScore = evalPrototype(equalWeights, true);
+
+    // 针对 2 段折线手势（如高速连划的「长竖+短横 D-R」），仅评估「长起笔+短拐角」折线原型
+    if (dirs.size() == 2) {
+        bestScore = (std::max)(bestScore, evalPrototype({1.0, 0.45}, false));
+    }
+
+    return static_cast<int>((std::clamp)(std::lround(bestScore), 0L, 100L));
 }
 
 } // namespace
+
+int computeGestureShapeSimilarity(const std::vector<TrackPoint>& rawPoints,
+                                  const std::string& bareDirectionCode) noexcept {
+    if (rawPoints.size() < 2 || bareDirectionCode.empty()) return 0;
+    std::vector<ShapePt> pts;
+    pts.reserve(rawPoints.size());
+    for (const auto& p : rawPoints) {
+        pts.push_back({static_cast<double>(p.x), static_cast<double>(p.y)});
+    }
+    const double totalLen = polylineLength(pts);
+    if (totalLen < 12.0) return 0;
+
+    std::array<ShapePt, kShapeSampleCount> normUser{};
+    if (!resampleAndNormalize(pts, normUser)) return 0;
+
+    const double userStraightness = shapePtDist(pts.front(), pts.back()) / totalLen;
+    return computeShapeSimilarityFromNormalized(normUser, userStraightness, bareDirectionCode);
+}
+
+std::optional<ShapeMatchResult> matchBestGestureShape(
+    const std::vector<TrackPoint>& rawPoints,
+    const std::vector<ShapeMatchCandidate>& candidates,
+    int thresholdPercent,
+    int minSegmentDistance,
+    ShapeMatchDiagnostics* outDiagnostics) noexcept {
+    if (outDiagnostics) {
+        *outDiagnostics = ShapeMatchDiagnostics{};
+    }
+    const int threshold = (std::clamp)(thresholdPercent, 50, 100);
+    if (threshold >= 100 || rawPoints.size() < 2 || candidates.empty()) {
+        return std::nullopt;
+    }
+
+    std::vector<ShapePt> pts;
+    pts.reserve(rawPoints.size());
+    for (const auto& p : rawPoints) {
+        pts.push_back({static_cast<double>(p.x), static_cast<double>(p.y)});
+    }
+    const double totalLen = polylineLength(pts);
+    const double minRequiredLen = static_cast<double>((std::max)(minSegmentDistance, 12));
+    if (totalLen < minRequiredLen) {
+        return std::nullopt;
+    }
+
+    std::array<ShapePt, kShapeSampleCount> normUser{};
+    if (!resampleAndNormalize(pts, normUser)) {
+        return std::nullopt;
+    }
+    const double userStraightness = shapePtDist(pts.front(), pts.back()) / totalLen;
+
+    int bestScore = -1;
+    int secondBestScore = -1;
+    std::string bestCode;
+    std::string bestBare;
+    std::string secondBestCode;
+
+    for (const auto& cand : candidates) {
+        if (cand.code.empty() || cand.bareDirection.empty()) continue;
+        // 拓扑保护铁律：绝不允许未命中的多段/圆弧轨迹通过形状相似度降维误触单段直线手势 (U/D/L/R)
+        const auto candDirs = codeToDirections(cand.bareDirection);
+        if (candDirs.size() <= 1) continue;
+
+        const int score = computeShapeSimilarityFromNormalized(normUser, userStraightness, cand.bareDirection);
+        if (score > bestScore) {
+            if (!bestCode.empty() && cand.bareDirection != bestBare) {
+                secondBestScore = bestScore;
+                secondBestCode = bestCode;
+            }
+            bestScore = score;
+            bestCode = cand.code;
+            bestBare = cand.bareDirection;
+        } else if (cand.bareDirection != bestBare && score > secondBestScore) {
+            secondBestScore = score;
+            secondBestCode = cand.code;
+        }
+    }
+
+    if (outDiagnostics) {
+        outDiagnostics->top1Code = bestCode;
+        outDiagnostics->top1Percent = (std::max)(bestScore, 0);
+        outDiagnostics->top2Code = secondBestCode;
+        outDiagnostics->top2Percent = (std::max)(secondBestScore, 0);
+    }
+
+    if (bestCode.empty() || bestScore < threshold) {
+        return std::nullopt;
+    }
+    // 防擦边歧义：两个不同手势同时紧贴阈值且分差 < 2% 时宁缺毋滥，避免误触
+    if (secondBestScore >= threshold &&
+        (bestScore - secondBestScore) < 2 &&
+        bestScore < threshold + 4) {
+        if (outDiagnostics) {
+            outDiagnostics->rejectedByAmbiguity = true;
+        }
+        return std::nullopt;
+    }
+
+    return ShapeMatchResult{
+        std::move(bestCode),
+        bestScore,
+        std::move(secondBestCode),
+        (std::max)(secondBestScore, 0),
+    };
+}
 
 std::string refineCodeWithPath(const std::string& code,
                                const std::vector<TrackPoint>& pts,
@@ -190,6 +774,7 @@ std::string refineCodeWithPath(const std::string& code,
     }
 
     const int minSeg = (std::max)(minSegmentDistance, 1);
+    const int turnSeg = (std::min)(minSeg, kMaxTurnSegmentDistancePx);
     const int n = static_cast<int>(pts.size());
     const int sx = pts.front().x;
     const int sy = pts.front().y;
@@ -203,13 +788,13 @@ std::string refineCodeWithPath(const std::string& code,
     TurnCandidate best;
 
     // 单纯倾斜的直线不应被“补全”为组合手势。真正的 L 形必须同时满足：
-    // 1. 第一段已经走够；2. 第二段长度显著；3. 第二段由正交轴主导。
-    // 第 3 条是关键：它把持续略向左的「下」与明确转向左的「下-左」分开。
-    auto considerTurn = [minSeg, &best](int firstPrimary, int firstOrtho,
-                                        int secondPrimary, int secondOrtho) noexcept {
-        if (firstPrimary < minSeg * 2) return;
+    // 1. 第一段已经走够；2. 第二段清晰达到拐弯阈值（与起笔防误触距离解耦）；3. 第二段由正交轴主导。
+    // 第 3 条是关键：它把持续略向左的「下」与明确转向左/右的「下-左 / 下-右」分开。
+    auto considerTurn = [minSeg, turnSeg, &best](int firstPrimary, int firstOrtho,
+                                                 int secondPrimary, int secondOrtho) noexcept {
+        if (firstPrimary < (std::max)(turnSeg * 2, minSeg)) return;
         const int secondLength = std::abs(secondOrtho);
-        const int requiredLength = (std::max)(minSeg * 2, firstPrimary * 24 / 100);
+        const int requiredLength = (std::max)(turnSeg + 4, firstPrimary * 16 / 100);
         if (secondLength < requiredLength) return;
 
         // 第一段可以自然倾斜，但不能本来就是一条明显对角线。
@@ -256,8 +841,11 @@ bool GestureRecognizer::isAdvancing(Direction dir, const TrackPoint& peak, const
     double angle = calculateAngle(peak.x, peak.y, current.x, current.y);
     if (angle < 0.0) angle += 2.0 * kPi;
     const double deg = angle * 180.0 / kPi;
-    // 比 45° 分箱更宽：自然下笔常偏 25–35°，不能因此切出假的第二段。
-    const double cone = (std::clamp)(m_config.angleToleranceDeg * 1.75, 32.0, 42.0);
+    // 正交方向保留适度自然手抖宽容度；对角方向收紧推进锥，
+    // 防止画反 C / 正 C 圆弧或 V 形转角时对角扇区把正交中段或转折臂吃掉。
+    const double cone = isDiagonalDirection(dir)
+        ? (std::clamp)(m_config.angleToleranceDeg * 1.25, 24.0, 30.0)
+        : (std::clamp)(m_config.angleToleranceDeg * 1.55, 30.0, 36.0);
     return circularDeltaDeg(deg, directionCenterDeg(dir)) <= cone;
 }
 
@@ -266,6 +854,7 @@ GestureRecognizer::GestureRecognizer(const RecognizerConfig& config)
     m_points.reserve(kMaxPoints);
     m_directions.reserve(16);
     m_segmentLengths.reserve(16);
+    m_segmentDeltas.reserve(16);
     m_cachedDirections.reserve(16);
 }
 
@@ -273,6 +862,7 @@ void GestureRecognizer::reset() {
     m_points.clear();
     m_directions.clear();
     m_segmentLengths.clear();
+    m_segmentDeltas.clear();
     m_currentDirection = Direction::None;
     m_hasSegmentStart = false;
     m_segmentStart = {0, 0};
@@ -281,6 +871,8 @@ void GestureRecognizer::reset() {
     m_cachedDirections.clear();
     m_cachedPackedDirections = 0;
     m_lastPeakPoint = {-1, -1};
+    m_lastEndPoint = {-1, -1};
+    m_lastPointCount = 0;
 }
 
 void GestureRecognizer::addPoint(int x, int y) {
@@ -347,21 +939,26 @@ void GestureRecognizer::processPoints() {
     }
 
     // 阶段 3: 偏折拐弯检测 (从最远拐点计算偏折矢量)
-    if (distFromPeak >= m_config.minSegmentDistance) {
+    // 起笔阶段(阶段1)严格守卫 minSegmentDistance 防单击误触，一旦进入已激活轨迹后，
+    // 拐弯切段距离解耦封顶为 16px，确保高速连划 D-R 等短拐角手势不漏切第二段。
+    const double turnMinDist = static_cast<double>((std::min)(m_config.minSegmentDistance, kMaxTurnSegmentDistancePx));
+    if (distFromPeak >= turnMinDist) {
         double turnAngle = calculateAngle(m_peakPoint.x, m_peakPoint.y, current.x, current.y);
         Direction turnDir = angleToDirection(turnAngle);
 
         if (turnDir != Direction::None && turnDir != m_currentDirection) {
-            if (m_directions.size() < static_cast<size_t>(m_config.maxDirections)) {
+            const size_t maxDirs = static_cast<size_t>((std::max)(m_config.maxDirections, 1));
+            if (m_directions.size() + 1 < maxDirs) {
                 const double len = calculateDistance(
                     m_segmentStart.x, m_segmentStart.y, m_peakPoint.x, m_peakPoint.y);
                 m_directions.push_back(m_currentDirection);
                 m_segmentLengths.push_back((std::max)(len, 1.0));
+                m_segmentDeltas.push_back({m_peakPoint.x - m_segmentStart.x, m_peakPoint.y - m_segmentStart.y});
+                m_segmentStart = m_peakPoint;
+                m_currentDirection = turnDir;
+                m_peakPoint = current;
+                m_dirsDirty = true;
             }
-            m_segmentStart = m_peakPoint;
-            m_currentDirection = turnDir;
-            m_peakPoint = current;
-            m_dirsDirty = true;
         }
     }
 }
@@ -377,20 +974,82 @@ namespace {
 
 std::vector<DirectionSegment> segmentsFrom(const std::vector<Direction>& dirs,
                                            const std::vector<double>& lengths,
+                                           const std::vector<TrackPoint>& deltas,
                                            Direction currentDir,
-                                           double currentLen) {
+                                           double currentLen,
+                                           TrackPoint currentDelta) {
     std::vector<DirectionSegment> segs;
     segs.reserve(dirs.size() + 1);
     for (size_t i = 0; i < dirs.size(); ++i) {
-        segs.push_back({dirs[i], i < lengths.size() ? lengths[i] : 1.0});
+        const TrackPoint delta = (i < deltas.size()) ? deltas[i] : TrackPoint{0, 0};
+        segs.push_back({
+            dirs[i],
+            i < lengths.size() ? lengths[i] : 1.0,
+            static_cast<double>(delta.x),
+            static_cast<double>(delta.y),
+        });
     }
     if (currentDir != Direction::None && (segs.empty() || segs.back().dir != currentDir)) {
-        segs.push_back({currentDir, (std::max)(currentLen, 1.0)});
+        segs.push_back({
+            currentDir,
+            (std::max)(currentLen, 1.0),
+            static_cast<double>(currentDelta.x),
+            static_cast<double>(currentDelta.y),
+        });
     }
     return segs;
 }
 
+std::vector<RecognizedSegmentInfo> toSegmentDiagnostics(const std::vector<DirectionSegment>& segs) {
+    std::vector<RecognizedSegmentInfo> out;
+    out.reserve(segs.size());
+    for (const auto& s : segs) {
+        double angleDeg = directionCenterDeg(s.dir);
+        if (std::hypot(s.dx, s.dy) >= 1.0) {
+            double rad = std::atan2(-s.dy, s.dx);
+            if (rad < 0.0) rad += 2.0 * kPi;
+            angleDeg = rad * 180.0 / kPi;
+        }
+        out.push_back(RecognizedSegmentInfo{s.dir, s.length, angleDeg});
+    }
+    return out;
+}
+
+std::string formatSegmentDiagnosticList(const std::vector<RecognizedSegmentInfo>& segs, bool withAngle) {
+    std::string out = "[";
+    for (size_t i = 0; i < segs.size(); ++i) {
+        if (i > 0) out += ",";
+        out += directionToCode(segs[i].dir);
+        out += ":";
+        out += std::to_string(static_cast<int>(std::lround(segs[i].length)));
+        out += "px";
+        if (withAngle) {
+            out += "(";
+            out += std::to_string(static_cast<int>(std::lround(segs[i].angleDeg)));
+            out += "deg)";
+        }
+    }
+    out += "]";
+    return out;
+}
+
 }  // namespace
+
+std::string GestureResult::formatDiagnosticSummary() const {
+    std::string summary;
+    summary.reserve(160);
+    summary += "raw=";
+    summary += formatSegmentDiagnosticList(rawSegments, true);
+    summary += ", simp=";
+    summary += formatSegmentDiagnosticList(simplifiedSegments, false);
+    summary += ", bbox=";
+    summary += std::to_string(bboxWidth);
+    summary += "x";
+    summary += std::to_string(bboxHeight);
+    summary += ", pathRefined=";
+    summary += refinedByPath ? "true" : "false";
+    return summary;
+}
 
 std::optional<GestureResult> GestureRecognizer::finalize() {
     if (isScribbleCanceled()) {
@@ -400,8 +1059,11 @@ std::optional<GestureResult> GestureRecognizer::finalize() {
 
     const double currentLen = calculateDistance(
         m_segmentStart.x, m_segmentStart.y, m_peakPoint.x, m_peakPoint.y);
-    auto simplified = simplifySegments(
-        segmentsFrom(m_directions, m_segmentLengths, m_currentDirection, currentLen));
+    const TrackPoint currentDelta{m_peakPoint.x - m_segmentStart.x, m_peakPoint.y - m_segmentStart.y};
+    auto rawSegs = segmentsFrom(
+        m_directions, m_segmentLengths, m_segmentDeltas, m_currentDirection, currentLen, currentDelta);
+    auto simplifiedSegs = simplifySegmentsDetailed(rawSegs);
+    auto simplified = dirsFromSegments(simplifiedSegs);
 
     if (simplified.empty()) {
         LOG_TRACE("手势识别: 轨迹太短或无有效方向段, 点数={}", m_points.size());
@@ -410,17 +1072,29 @@ std::optional<GestureResult> GestureRecognizer::finalize() {
 
     GestureResult result;
     result.rawPoints = m_points;
+    result.rawSegments = toSegmentDiagnostics(rawSegs);
+    result.simplifiedSegments = toSegmentDiagnostics(simplifiedSegs);
+
+    int minX = m_points[0].x, maxX = m_points[0].x;
+    int minY = m_points[0].y, maxY = m_points[0].y;
     for (size_t i = 1; i < m_points.size(); ++i) {
         result.totalDistance += calculateDistance(
             m_points[i - 1].x, m_points[i - 1].y,
             m_points[i].x, m_points[i].y
         );
+        minX = (std::min)(minX, m_points[i].x);
+        maxX = (std::max)(maxX, m_points[i].x);
+        minY = (std::min)(minY, m_points[i].y);
+        maxY = (std::max)(maxY, m_points[i].y);
     }
+    result.bboxWidth = maxX - minX;
+    result.bboxHeight = maxY - minY;
 
     const std::string rawCode = directionsToCode(simplified);
     result.code = refineCodeWithPath(rawCode, m_points, m_config.minSegmentDistance);
-    result.directions = (result.code == rawCode) ? std::move(simplified)
-                                                 : codeToDirections(result.code);
+    result.refinedByPath = (result.code != rawCode);
+    result.directions = !result.refinedByPath ? std::move(simplified)
+                                              : codeToDirections(result.code);
 
     LOG_DEBUG("手势识别完成: code={}, arrows={}, 点数={}, 总距离={:.1f}px",
               result.code, result.toArrowString(), m_points.size(), result.totalDistance);
@@ -429,17 +1103,22 @@ std::optional<GestureResult> GestureRecognizer::finalize() {
 }
 
 const std::vector<Direction>& GestureRecognizer::currentDirections() const {
+    const TrackPoint endPt = m_points.empty() ? TrackPoint{-1, -1} : m_points.back();
     if (!m_dirsDirty && m_lastPeakPoint.x != -1) {
-        const double delta = calculateDistance(m_lastPeakPoint.x, m_lastPeakPoint.y, m_peakPoint.x, m_peakPoint.y);
-        if (delta < 4.0) {
+        const double peakDelta = calculateDistance(m_lastPeakPoint.x, m_lastPeakPoint.y, m_peakPoint.x, m_peakPoint.y);
+        const double endDelta = (m_lastEndPoint.x != -1 && endPt.x != -1)
+            ? calculateDistance(m_lastEndPoint.x, m_lastEndPoint.y, endPt.x, endPt.y)
+            : 0.0;
+        if (peakDelta < 4.0 && endDelta < 4.0 && m_points.size() == m_lastPointCount) {
             return m_cachedDirections;
         }
     }
 
     const double currentLen = calculateDistance(
         m_segmentStart.x, m_segmentStart.y, m_peakPoint.x, m_peakPoint.y);
+    const TrackPoint currentDelta{m_peakPoint.x - m_segmentStart.x, m_peakPoint.y - m_segmentStart.y};
     auto simplified = simplifySegments(
-        segmentsFrom(m_directions, m_segmentLengths, m_currentDirection, currentLen));
+        segmentsFrom(m_directions, m_segmentLengths, m_segmentDeltas, m_currentDirection, currentLen, currentDelta));
 
     // 仅在单段主轴方向且具备轨迹转折时进行细化，避免无谓的字符串双向编解码
     if (simplified.size() == 1 && m_points.size() >= 3) {
@@ -456,6 +1135,8 @@ const std::vector<Direction>& GestureRecognizer::currentDirections() const {
         m_cachedDirections = std::move(simplified);
     }
     m_lastPeakPoint = m_peakPoint;
+    m_lastEndPoint = endPt;
+    m_lastPointCount = m_points.size();
     m_dirsDirty = false;
     return m_cachedDirections;
 }
@@ -515,10 +1196,10 @@ Direction GestureRecognizer::angleToDirection(double angleRad) const {
 
     double angleDeg = angleRad * 180.0 / std::numbers::pi;
 
-    // 人画水平/垂直线时比画对角线更容易产生小角度偏差。给四个基准方向
-    // 约 ±30° 的“磁吸区”，剩余区域才归为对角线；45° 对角手势仍完整保留。
+    // 人画水平/垂直线时比画对角线更容易产生小角度偏差：给四个基准方向 ±28° 磁吸区，
+    // 同时给 45° 对角（如 V 手势 DR-UR）留出 ±17° 充足扇区，兼顾抗手抖与斜角易画性。
     const double cardinalTolerance =
-        (std::clamp)(m_config.angleToleranceDeg + 7.5, 22.5, 35.0);
+        (std::clamp)(m_config.angleToleranceDeg + 5.5, 22.5, 32.0);
     if (circularDeltaDeg(angleDeg, 0.0)   <= cardinalTolerance) return Direction::Right;
     if (circularDeltaDeg(angleDeg, 90.0)  <= cardinalTolerance) return Direction::Up;
     if (circularDeltaDeg(angleDeg, 180.0) <= cardinalTolerance) return Direction::Left;

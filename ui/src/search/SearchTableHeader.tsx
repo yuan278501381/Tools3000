@@ -50,6 +50,7 @@ export interface SearchTableHeaderProps {
   onSelectSort: (field: SortField) => void;
   onUpdateNameAndPathFlex: (nameFlex: number) => void;
   onUpdateTableColumnWidth?: (colId: TableColumnId, widthPx: number | undefined) => void;
+  onBatchUpdateTableColumnWidths?: (patch: Partial<Record<TableColumnId, number | undefined>>) => void;
   onReorderTableColumns?: (nextOrder: TableColumnId[]) => void;
   onToggleColumnVisibility?: (colId: ColumnId) => void;
   onToggleTableColumn?: (colId: TableColumnId) => void;
@@ -71,6 +72,7 @@ export const SearchTableHeader: React.FC<SearchTableHeaderProps> = ({
   onSelectSort,
   onUpdateNameAndPathFlex,
   onUpdateTableColumnWidth,
+  onBatchUpdateTableColumnWidths,
   onReorderTableColumns,
   onToggleColumnVisibility,
   onToggleTableColumn,
@@ -143,48 +145,46 @@ export const SearchTableHeader: React.FC<SearchTableHeaderProps> = ({
       cleanupActiveDragRef.current?.();
 
       const startX = event.clientX;
-      const spec = getTableColumnSpec(colId);
-      const nextColId = visibleCols[colIndex + 1];
-      const nextSpec = nextColId ? getTableColumnSpec(nextColId) : null;
       const startColWidth = measureColumnWidth(colId);
-      const startNextWidth = nextColId ? measureColumnWidth(nextColId) : 0;
-      const startNameFlex = columns.nameFlex || 35;
+
+      // Everything / 资源管理器同款 1:1 像素级直觉拖拽：
+      // 拖哪一列的右分隔线，就精确调整那一列自身宽度；
+      // 拖动前若左侧存在尚未锁宽的弹性列 (如拖动 path 时左侧的 name)，先将其冻结为拖动起始瞬间的实测像素宽，
+      // 彻底防止左侧 1fr 弹性列反向吞噬 deltaX 造成分割线漂移或完全拖不动。
+      const frozenLeftCols: Array<{ id: TableColumnId; width: number }> = [];
+      for (let i = 0; i < colIndex; i += 1) {
+        const leftId = visibleCols[i];
+        if (getTableColumnSpec(leftId).isFlex && columns.tableWidths?.[leftId] === undefined) {
+          frozenLeftCols.push({
+            id: leftId,
+            width: clampTableColumnWidth(leftId, measureColumnWidth(leftId)),
+          });
+        }
+      }
+      let hasFrozenLeft = false;
 
       setResizingColId(colId);
 
       const onMouseMove = (moveEvent: MouseEvent) => {
         const deltaX = moveEvent.clientX - startX;
-
-        if (spec.isFlex && nextColId && nextSpec?.isFlex && columns.tableWidths?.[colId] === undefined && columns.tableWidths?.[nextColId] === undefined) {
-          const pairTotalPx = Math.max(240, startColWidth + startNextWidth);
-          const deltaFlex = Math.round((deltaX / pairTotalPx) * 80);
-          const nextNameFlex = colId === 'name'
-            ? Math.min(65, Math.max(15, startNameFlex + deltaFlex))
-            : Math.min(65, Math.max(15, startNameFlex - deltaFlex));
-          onUpdateNameAndPathFlex(nextNameFlex);
-          return;
-        }
-
-        if (!spec.isFlex) {
-          const nextWidth = clampTableColumnWidth(colId, startColWidth + deltaX);
-          onUpdateTableColumnWidth?.(colId, nextWidth);
-          return;
-        }
-
-        if (
-          spec.isFlex &&
-          nextColId &&
-          nextSpec &&
-          !nextSpec.isFlex &&
-          visibleCols.length <= 5 &&
-          columns.tableWidths?.[colId] === undefined
-        ) {
-          const nextRightWidth = clampTableColumnWidth(nextColId, startNextWidth - deltaX);
-          onUpdateTableColumnWidth?.(nextColId, nextRightWidth);
-          return;
-        }
-
         const nextWidth = clampTableColumnWidth(colId, startColWidth + deltaX);
+
+        if (!hasFrozenLeft && frozenLeftCols.length > 0) {
+          hasFrozenLeft = true;
+          if (onBatchUpdateTableColumnWidths) {
+            const patch: Partial<Record<TableColumnId, number | undefined>> = {};
+            for (const item of frozenLeftCols) {
+              patch[item.id] = item.width;
+            }
+            patch[colId] = nextWidth;
+            onBatchUpdateTableColumnWidths(patch);
+            return;
+          }
+          for (const item of frozenLeftCols) {
+            onUpdateTableColumnWidth?.(item.id, item.width);
+          }
+        }
+
         onUpdateTableColumnWidth?.(colId, nextWidth);
       };
 
@@ -208,47 +208,29 @@ export const SearchTableHeader: React.FC<SearchTableHeaderProps> = ({
       window.addEventListener('mouseup', onMouseUp);
     },
     [
-      columns.nameFlex,
       columns.tableWidths,
       measureColumnWidth,
-      onUpdateNameAndPathFlex,
+      onBatchUpdateTableColumnWidths,
       onUpdateTableColumnWidth,
       visibleCols,
     ],
   );
 
   const handleResizeReset = useCallback(
-    (colId: TableColumnId, colIndex: number, event: React.MouseEvent<HTMLDivElement>) => {
+    (colId: TableColumnId, _colIndex: number, event: React.MouseEvent<HTMLDivElement>) => {
       event.preventDefault();
       event.stopPropagation();
-      const spec = getTableColumnSpec(colId);
-      const nextColId = visibleCols[colIndex + 1];
-      const nextSpec = nextColId ? getTableColumnSpec(nextColId) : null;
-
-      if (
-        spec.isFlex &&
-        nextColId &&
-        nextSpec?.isFlex &&
-        columns.tableWidths?.[colId] === undefined &&
-        columns.tableWidths?.[nextColId] === undefined
-      ) {
-        onUpdateNameAndPathFlex(35);
-      } else if (!spec.isFlex) {
+      if (columns.tableWidths?.[colId] !== undefined) {
         onUpdateTableColumnWidth?.(colId, undefined);
-      } else if (
-        spec.isFlex &&
-        nextColId &&
-        nextSpec &&
-        !nextSpec.isFlex &&
-        visibleCols.length <= 5 &&
-        columns.tableWidths?.[colId] === undefined
-      ) {
-        onUpdateTableColumnWidth?.(nextColId, undefined);
+        return;
+      }
+      if (getTableColumnSpec(colId).isFlex) {
+        onUpdateNameAndPathFlex(35);
       } else {
         onUpdateTableColumnWidth?.(colId, undefined);
       }
     },
-    [columns.tableWidths, onUpdateNameAndPathFlex, onUpdateTableColumnWidth, visibleCols],
+    [columns.tableWidths, onUpdateNameAndPathFlex, onUpdateTableColumnWidth],
   );
 
   const computeDropTarget = useCallback(

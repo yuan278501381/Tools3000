@@ -460,15 +460,15 @@ export function calculateDistance(x1: number, y1: number, x2: number, y2: number
 
 /**
  * 将相对位移矢量转换为 8 方向枚举
- * 与 C++ 后端对齐：给四个主要正交方向 (R, U, L, D) ±30° 磁吸容错区，
- * 剩余 30° 区间归为对角线，消除自然绘制水平/垂直折线时的轻微手抖。
+ * 与 C++ 后端 100% 同源：给四个基准正交方向 (R, U, L, D) ±28° 磁吸区，
+ * 同时给 45° 对角方向 (DR, UR, DL, UL) 保留 ±17° 充足扇区，兼顾防手抖与 V 形斜角易画性。
  */
 export function angleToDirection(dx: number, dy: number): Direction | null {
   const angleRad = Math.atan2(-dy, dx);
   let angleDeg = (angleRad * 180) / Math.PI;
   if (angleDeg < 0) angleDeg += 360;
 
-  const cardinalTolerance = 30;
+  const cardinalTolerance = 28;
   const circularDelta = (a: number, b: number) => {
     let d = Math.abs(a - b) % 360;
     if (d > 180) d = 360 - d;
@@ -484,6 +484,51 @@ export function angleToDirection(dx: number, dy: number): Direction | null {
   if (angleDeg < 180) return 'UL';
   if (angleDeg < 270) return 'DL';
   return 'DR';
+}
+
+function isDiagonalDirection(d: Direction): boolean {
+  return d === 'UL' || d === 'UR' || d === 'DL' || d === 'DR';
+}
+
+function oppositeCardinal(d: Direction): Direction | null {
+  if (d === 'U') return 'D';
+  if (d === 'D') return 'U';
+  if (d === 'L') return 'R';
+  if (d === 'R') return 'L';
+  return null;
+}
+
+function sharedCardinalBetweenDiagonals(d1: Direction, d2: Direction): Direction | null {
+  if ((d1 === 'DR' && d2 === 'DL') || (d1 === 'DL' && d2 === 'DR')) return 'D';
+  if ((d1 === 'UR' && d2 === 'UL') || (d1 === 'UL' && d2 === 'UR')) return 'U';
+  if ((d1 === 'DR' && d2 === 'UR') || (d1 === 'UR' && d2 === 'DR')) return 'R';
+  if ((d1 === 'DL' && d2 === 'UL') || (d1 === 'UL' && d2 === 'DL')) return 'L';
+  return null;
+}
+
+function isDiagonalCornerFillet(a: Direction, b: Direction, c: Direction): boolean {
+  if (!isDiagonalDirection(a) || !isDiagonalDirection(c) || a === c) return false;
+  const shared = sharedCardinalBetweenDiagonals(a, c);
+  return shared !== null && b === shared;
+}
+
+function directionCenterDeg(dir: Direction): number {
+  switch (dir) {
+    case 'R': return 0;
+    case 'UR': return 45;
+    case 'U': return 90;
+    case 'UL': return 135;
+    case 'L': return 180;
+    case 'DL': return 225;
+    case 'D': return 270;
+    case 'DR': return 315;
+  }
+}
+
+function circularDeltaDeg(a: number, b: number): number {
+  let d = Math.abs(a - b) % 360;
+  if (d > 180) d = 360 - d;
+  return d;
 }
 
 /**
@@ -503,11 +548,8 @@ export function isCornerFillet(a: Direction, b: Direction, c: Direction): boolea
 }
 
 /**
- * 判定是否属于孤立回弹抖动或微小对角抖动
- * 严格限制在:
- * 1. 180度反向回弹 (如 Left -> Right -> Left, Down -> Up -> Down)
- * 2. 45度微小对角抖动 (如 Down -> DownRight -> Down, Right -> UpRight -> Right)
- * 严正红线: 阶梯状正交折线 (如 R-D-R、D-R-D、L-U-L) 绝对禁止误判为抖动！
+ * 判定是否属于孤立回弹抖动或 45° 邻近抖动（与 C++ 后端 100% 同源）
+ * 严正红线: 阶梯状正交折线 (如 R-D-R、D-R-D、L-U-L) 及对角折线 (DR-UR-DR) 绝不误判为抖动！
  */
 export function isJitterRebound(a: Direction, b: Direction, c: Direction): boolean {
   if (a !== c) return false;
@@ -520,12 +562,21 @@ export function isJitterRebound(a: Direction, b: Direction, c: Direction): boole
   ) {
     return true;
   }
-  // 2. 45度微小对角抖动
+  // 2. 正交 45° 邻近对角抖动
   if (
     (a === 'D' && (b === 'DR' || b === 'DL')) ||
     (a === 'U' && (b === 'UR' || b === 'UL')) ||
     (a === 'L' && (b === 'UL' || b === 'DL')) ||
     (a === 'R' && (b === 'UR' || b === 'DR'))
+  ) {
+    return true;
+  }
+  // 3. 对角 45° 邻近正交抖动（如 DR-D-DR, UR-R-UR）
+  if (
+    (a === 'DR' && (b === 'D' || b === 'R')) ||
+    (a === 'DL' && (b === 'D' || b === 'L')) ||
+    (a === 'UR' && (b === 'U' || b === 'R')) ||
+    (a === 'UL' && (b === 'U' || b === 'L'))
   ) {
     return true;
   }
@@ -552,41 +603,236 @@ export function completeIncompleteFillet(known: Direction, diagonal: Direction):
   return null;
 }
 
-/**
- * 智能平滑方向序列：消除抖动、折叠转弯圆角、修剪末尾收笔多余斜角
- */
-export function simplifyDirections(raw: Direction[]): Direction[] {
-  if (raw.length === 0) return [];
+interface DirectionSegment {
+  dir: Direction;
+  length: number;
+  dx: number;
+  dy: number;
+}
 
-  const current: Direction[] = [];
-  for (const d of raw) {
-    if (current.length === 0 || current[current.length - 1] !== d) {
-      current.push(d);
+const SHARP_DIAGONAL_PAIR_MIN_TILT_DEG = 6;
+const ARC_ARM_DIAGONAL_MERGE_MIN_TILT_DEG = 12;
+const ARC_ARM_SHORT_BEND_MERGE_MIN_TILT_DEG = 8;
+const ARC_ARM_SHORT_BEND_MAX_RATIO = 0.45;
+const NARROW_CHEVRON_EACH_MIN_TILT_DEG = 15;
+const NARROW_CHEVRON_TOTAL_SPREAD_DEG = 36;
+
+function sharpDiagonalPartner(cardinal: Direction, diagonal: Direction): Direction | null {
+  switch (cardinal) {
+    case 'D':
+      if (diagonal === 'UR') return 'DR';
+      if (diagonal === 'UL') return 'DL';
+      return null;
+    case 'U':
+      if (diagonal === 'DR') return 'UR';
+      if (diagonal === 'DL') return 'UL';
+      return null;
+    case 'R':
+      if (diagonal === 'DL') return 'DR';
+      if (diagonal === 'UL') return 'UR';
+      return null;
+    case 'L':
+      if (diagonal === 'DR') return 'DL';
+      if (diagonal === 'UR') return 'UL';
+      return null;
+    default:
+      return null;
+  }
+}
+
+function tiltTowardDiagonalDeg(
+  seg: DirectionSegment,
+  cardinal: Direction,
+  targetDiag: Direction,
+): number {
+  if (Math.hypot(seg.dx, seg.dy) < 1) return 0;
+  let primary: number;
+  let side: number;
+  switch (cardinal) {
+    case 'D':
+      primary = seg.dy;
+      side = targetDiag === 'DR' ? seg.dx : targetDiag === 'DL' ? -seg.dx : 0;
+      break;
+    case 'U':
+      primary = -seg.dy;
+      side = targetDiag === 'UR' ? seg.dx : targetDiag === 'UL' ? -seg.dx : 0;
+      break;
+    case 'R':
+      primary = seg.dx;
+      side = targetDiag === 'DR' ? seg.dy : targetDiag === 'UR' ? -seg.dy : 0;
+      break;
+    case 'L':
+      primary = -seg.dx;
+      side = targetDiag === 'DL' ? seg.dy : targetDiag === 'UL' ? -seg.dy : 0;
+      break;
+    default:
+      return 0;
+  }
+  if (primary <= 1e-6 || side <= 0) return 0;
+  return (Math.atan2(side, primary) * 180) / Math.PI;
+}
+
+function compressSegments(segs: DirectionSegment[]): DirectionSegment[] {
+  const out: DirectionSegment[] = [];
+  for (const s of segs) {
+    if (s.length <= 0) continue;
+    if (out.length > 0 && out[out.length - 1].dir === s.dir) {
+      out[out.length - 1].length += s.length;
+      out[out.length - 1].dx += s.dx;
+      out[out.length - 1].dy += s.dy;
+    } else {
+      out.push({ dir: s.dir, length: s.length, dx: s.dx, dy: s.dy });
     }
   }
+  return out;
+}
+
+function resolveSharpDiagonalSegments(current: DirectionSegment[]): void {
+  if (current.length < 2) return;
+
+  // 1. 正交 + 135° 反向跨象限对角（如手写 V 左笔稍陡初判为 D-UR，或右笔稍陡初判为 DR-U）
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i + 1 < current.length; i++) {
+      const a = current[i];
+      const b = current[i + 1];
+      if (!isDiagonalDirection(a.dir) && isDiagonalDirection(b.dir)) {
+        const partner = sharpDiagonalPartner(a.dir, b.dir);
+        if (partner && tiltTowardDiagonalDeg(a, a.dir, partner) >= SHARP_DIAGONAL_PAIR_MIN_TILT_DEG) {
+          a.dir = partner;
+          changed = true;
+        }
+      } else if (isDiagonalDirection(a.dir) && !isDiagonalDirection(b.dir)) {
+        const partner = sharpDiagonalPartner(b.dir, a.dir);
+        if (partner && tiltTowardDiagonalDeg(b, b.dir, partner) >= SHARP_DIAGONAL_PAIR_MIN_TILT_DEG) {
+          b.dir = partner;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  // 2. 两段 180° 反向正交且向同侧大幅张开的对称窄尖角（窄印刷体 V / ∧ / > / <）
+  if (current.length === 2 && oppositeCardinal(current[0].dir) === current[1].dir) {
+    const tryPromoteNarrowChevron = (diag0: Direction, diag1: Direction): boolean => {
+      const t0 = tiltTowardDiagonalDeg(current[0], current[0].dir, diag0);
+      const t1 = tiltTowardDiagonalDeg(current[1], current[1].dir, diag1);
+      if (
+        t0 >= NARROW_CHEVRON_EACH_MIN_TILT_DEG &&
+        t1 >= NARROW_CHEVRON_EACH_MIN_TILT_DEG &&
+        t0 + t1 >= NARROW_CHEVRON_TOTAL_SPREAD_DEG
+      ) {
+        current[0].dir = diag0;
+        current[1].dir = diag1;
+        return true;
+      }
+      return false;
+    };
+
+    const d0 = current[0].dir;
+    if (d0 === 'D') {
+      if (!tryPromoteNarrowChevron('DR', 'UR')) tryPromoteNarrowChevron('DL', 'UL');
+    } else if (d0 === 'U') {
+      if (!tryPromoteNarrowChevron('UR', 'DR')) tryPromoteNarrowChevron('UL', 'DL');
+    } else if (d0 === 'R') {
+      if (!tryPromoteNarrowChevron('DR', 'DL')) tryPromoteNarrowChevron('UR', 'UL');
+    } else if (d0 === 'L') {
+      if (!tryPromoteNarrowChevron('DL', 'DR')) tryPromoteNarrowChevron('UL', 'UR');
+    }
+  }
+}
+
+function simplifyDirectionSegments(rawSegs: DirectionSegment[]): Direction[] {
+  let current = compressSegments(rawSegs);
+  if (current.length === 0) return [];
 
   let modified = true;
   while (modified && current.length >= 3) {
     modified = false;
-    const next: Direction[] = [];
+    const next: DirectionSegment[] = [];
     for (let i = 0; i < current.length; ) {
+      // 1. 四段平滑半圆弧还原（R-DR-DL-L -> R-D-L 等 8 种）
+      if (i + 3 < current.length) {
+        const a = current[i].dir;
+        const d1 = current[i + 1].dir;
+        const d2 = current[i + 2].dir;
+        const c = current[i + 3].dir;
+        const shared = sharedCardinalBetweenDiagonals(d1, d2);
+        if (shared && isCornerFillet(a, d1, shared) && isCornerFillet(shared, d2, c)) {
+          next.push(current[i]);
+          next.push({
+            dir: shared,
+            length: current[i + 1].length + current[i + 2].length,
+            dx: current[i + 1].dx + current[i + 2].dx,
+            dy: current[i + 1].dy + current[i + 2].dy,
+          });
+          next.push(current[i + 3]);
+          i += 4;
+          modified = true;
+          continue;
+        }
+      }
       if (i + 2 < current.length) {
-        const a = current[i];
-        const b = current[i + 1];
-        const c = current[i + 2];
+        const a = current[i].dir;
+        const b = current[i + 1].dir;
+        const c = current[i + 2].dir;
 
-        // 抖动回弹消除 (注意: 绝不能无脑判断 a === c, 阶梯手势如 R-D-R、D-R-D 绝不能被吞噬)
         if (isJitterRebound(a, b, c)) {
-          next.push(a);
+          next.push({
+            dir: a,
+            length: current[i].length + current[i + 1].length + current[i + 2].length,
+            dx: current[i].dx + current[i + 1].dx + current[i + 2].dx,
+            dy: current[i].dy + current[i + 1].dy + current[i + 2].dy,
+          });
           i += 3;
           modified = true;
           continue;
         }
 
-        // 转弯对角圆角折叠 (Corner Fillet Folding)
-        if (isCornerFillet(a, b, c)) {
-          next.push(a);
-          next.push(c);
+        if (isCornerFillet(a, b, c) || isDiagonalCornerFillet(a, b, c)) {
+          next.push(current[i]);
+          next.push(current[i + 2]);
+          i += 3;
+          modified = true;
+          continue;
+        }
+
+        // 反向夹心单对角圆弧（如 R-DR-L -> R-D-L）
+        const oppA = oppositeCardinal(a);
+        if (oppA && c === oppA) {
+          const mid = completeIncompleteFillet(a, b);
+          if (mid) {
+            next.push(current[i]);
+            next.push({ dir: mid, length: current[i + 1].length, dx: current[i + 1].dx, dy: current[i + 1].dy });
+            next.push(current[i + 2]);
+            i += 3;
+            modified = true;
+            continue;
+          }
+        }
+
+        // 三段未拉平圆弧双对角（如 R-DR-DL -> R-D-DL）；若首段正交已明显朝 b 倾斜（弧臂 V: D->DR->UR），则合入斜臂 b
+        const sharedTail = sharedCardinalBetweenDiagonals(b, c);
+        if (sharedTail && isCornerFillet(a, b, sharedTail)) {
+          const tiltA = tiltTowardDiagonalDeg(current[i], a, b);
+          const isArcArmBend =
+            tiltA >= ARC_ARM_DIAGONAL_MERGE_MIN_TILT_DEG ||
+            (tiltA >= ARC_ARM_SHORT_BEND_MERGE_MIN_TILT_DEG &&
+              current[i + 1].length < current[i + 2].length * ARC_ARM_SHORT_BEND_MAX_RATIO);
+          if (isArcArmBend) {
+            next.push({
+              dir: b,
+              length: current[i].length + current[i + 1].length,
+              dx: current[i].dx + current[i + 1].dx,
+              dy: current[i].dy + current[i + 1].dy,
+            });
+            next.push(current[i + 2]);
+          } else {
+            next.push(current[i]);
+            next.push({ dir: sharedTail, length: current[i + 1].length, dx: current[i + 1].dx, dy: current[i + 1].dy });
+            next.push(current[i + 2]);
+          }
           i += 3;
           modified = true;
           continue;
@@ -595,65 +841,179 @@ export function simplifyDirections(raw: Direction[]): Direction[] {
       next.push(current[i]);
       i++;
     }
-
-    current.length = 0;
-    for (const d of next) {
-      if (current.length === 0 || current[current.length - 1] !== d) {
-        current.push(d);
-      }
-    }
+    current = compressSegments(next);
   }
 
-  // 处理松笔圆角或未完成圆角 (与 C++ 算法保持 100% 对齐)
   let filletModified = true;
   while (filletModified && current.length >= 2) {
     filletModified = false;
     if (current.length === 2) {
-      const completed = completeIncompleteFillet(current[0], current[1]);
+      const completed = completeIncompleteFillet(current[0].dir, current[1].dir);
       if (completed) {
-        current[1] = completed;
+        current[1].dir = completed;
         filletModified = true;
       }
-    } else if (completeIncompleteFillet(current[current.length - 2], current[current.length - 1])) {
-      // 3段以上收笔对角是自然下垂，不发明新的正交段
-      current.pop();
-      filletModified = true;
+    } else {
+      const completed = completeIncompleteFillet(
+        current[current.length - 2].dir,
+        current[current.length - 1].dir,
+      );
+      if (completed) {
+        const prevPrev = current[current.length - 3].dir;
+        const oppPrevPrev = oppositeCardinal(prevPrev);
+        if (oppPrevPrev && completed === oppPrevPrev) {
+          // 反向回折第三笔（反 C / 正 C / U 形）补全为正交收笔
+          current[current.length - 1].dir = completed;
+          filletModified = true;
+        } else if (completed === prevPrev) {
+          // 同象限收笔微垂（D-R-DR -> D-R）丢弃
+          current.pop();
+          filletModified = true;
+        } else if (
+          current[current.length - 1].length >= 24 &&
+          current[current.length - 1].length >= current[current.length - 2].length * 0.45
+        ) {
+          current[current.length - 1].dir = completed;
+          filletModified = true;
+        } else {
+          current.pop();
+          filletModified = true;
+        }
+      }
     }
+    if (current.length >= 2) {
+      const invented = completeIncompleteFillet(current[1].dir, current[0].dir);
+      if (invented) {
+        const isReversingThreeSeg =
+          current.length >= 3 &&
+          oppositeCardinal(current[2].dir) !== null &&
+          invented === oppositeCardinal(current[2].dir);
+        const dropRatio = isReversingThreeSeg ? 0.22 : 0.4;
+        if (current[0].length < current[1].length * dropRatio) {
+          current.shift();
+        } else {
+          current[0].dir = invented;
+        }
+        filletModified = true;
+      }
+    }
+    current = compressSegments(current);
   }
 
-  return current;
+  resolveSharpDiagonalSegments(current);
+  current = compressSegments(current);
+
+  return current.map((s) => s.dir);
 }
 
 /**
- * 从轨迹点集高保真识别手势方向编码 (如 "R-D-R")
+ * 智能平滑方向序列：与 C++ GestureRecognizer::simplifyDirections 100% 同源
+ */
+export function simplifyDirections(raw: Direction[]): Direction[] {
+  return simplifyDirectionSegments(raw.map((dir) => ({ dir, length: 1, dx: 0, dy: 0 })));
+}
+
+function isAdvancingInCone(dir: Direction, peak: Point, current: Point): boolean {
+  const dist = calculateDistance(peak.x, peak.y, current.x, current.y);
+  if (dist <= 0.5) return true;
+  let angleDeg = (Math.atan2(-(current.y - peak.y), current.x - peak.x) * 180) / Math.PI;
+  if (angleDeg < 0) angleDeg += 360;
+  const cone = isDiagonalDirection(dir) ? 28.125 : 34.875;
+  return circularDeltaDeg(angleDeg, directionCenterDeg(dir)) <= cone;
+}
+
+/**
+ * 从轨迹点集高保真识别手势方向编码（与 C++ 后端拐点检测 + 推进锥 + 段长化简 100% 同源）
  */
 export function recognizeStrokes(points: Point[], minSegmentDist = 16): string {
   if (points.length < 2) return '';
 
-  const rawDirs: Direction[] = [];
+  const segments: DirectionSegment[] = [];
   let segStart = points[0];
+  let peakPoint = points[0];
   let currentDir: Direction | null = null;
+  const deadzone = 4;
+  const maxDirections = 10;
 
   for (let i = 1; i < points.length; i++) {
     const pt = points[i];
-    const dist = calculateDistance(segStart.x, segStart.y, pt.x, pt.y);
-    if (dist < minSegmentDist) continue;
 
-    const dir = angleToDirection(pt.x - segStart.x, pt.y - segStart.y);
-    if (!dir) continue;
+    if (!currentDir) {
+      const dist = calculateDistance(segStart.x, segStart.y, pt.x, pt.y);
+      if (dist < minSegmentDist) continue;
+      const dir = angleToDirection(pt.x - segStart.x, pt.y - segStart.y);
+      if (dir) {
+        currentDir = dir;
+        peakPoint = pt;
+      }
+      continue;
+    }
 
-    if (dir !== currentDir) {
-      if (currentDir) rawDirs.push(currentDir);
-      currentDir = dir;
-      segStart = pt;
-    } else {
-      segStart = pt;
+    const distFromPeak = calculateDistance(peakPoint.x, peakPoint.y, pt.x, pt.y);
+    if (distFromPeak < deadzone) continue;
+
+    if (isAdvancingInCone(currentDir, peakPoint, pt)) {
+      peakPoint = pt;
+      continue;
+    }
+
+    if (distFromPeak >= minSegmentDist) {
+      const turnDir = angleToDirection(pt.x - peakPoint.x, pt.y - peakPoint.y);
+      if (turnDir && turnDir !== currentDir && segments.length + 1 < maxDirections) {
+        const len = calculateDistance(segStart.x, segStart.y, peakPoint.x, peakPoint.y);
+        segments.push({
+          dir: currentDir,
+          length: Math.max(len, 1),
+          dx: peakPoint.x - segStart.x,
+          dy: peakPoint.y - segStart.y,
+        });
+        segStart = peakPoint;
+        currentDir = turnDir;
+        peakPoint = pt;
+      }
     }
   }
-  if (currentDir) rawDirs.push(currentDir);
 
-  const simplified = simplifyDirections(rawDirs);
+  if (currentDir) {
+    const len = calculateDistance(segStart.x, segStart.y, peakPoint.x, peakPoint.y);
+    segments.push({
+      dir: currentDir,
+      length: Math.max(len, 1),
+      dx: peakPoint.x - segStart.x,
+      dy: peakPoint.y - segStart.y,
+    });
+  }
+
+  const simplified = simplifyDirectionSegments(segments);
   return simplified.join('-');
+}
+
+/**
+ * 段级前缀冲突检测：仅当触发前缀一致且方向段序列严格互为前缀时才判冲突（杜绝 D 与 DR-UR 误报）
+ */
+export function isGesturePrefixConflict(codeA: string, codeB: string): boolean {
+  const normA = codeA.trim().toUpperCase();
+  const normB = codeB.trim().toUpperCase();
+  if (!normA || !normB || normA === normB) return false;
+
+  const split = (code: string) => {
+    const plusIdx = code.lastIndexOf('+');
+    const prefix = plusIdx >= 0 ? code.slice(0, plusIdx + 1) : '';
+    const bare = plusIdx >= 0 ? code.slice(plusIdx + 1) : code;
+    const segs = bare.split('-').filter(Boolean);
+    return { prefix, segs };
+  };
+
+  const a = split(normA);
+  const b = split(normB);
+  if (a.prefix !== b.prefix || a.segs.length === 0 || b.segs.length === 0) return false;
+  if (a.segs.length === b.segs.length) return false;
+
+  const [shorter, longer] = a.segs.length < b.segs.length ? [a.segs, b.segs] : [b.segs, a.segs];
+  for (let i = 0; i < shorter.length; i++) {
+    if (shorter[i] !== longer[i]) return false;
+  }
+  return true;
 }
 
 /**

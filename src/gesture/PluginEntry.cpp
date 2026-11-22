@@ -306,6 +306,7 @@ public:
                 {"targetMode", engine.targetMode()},
                 {"initialTimeoutMs", engine.initialTimeoutMs()},
                 {"minSegmentDistance", engine.minSegmentDistance()},
+                {"shapeMatchThreshold", engine.shapeMatchThreshold()},
                 {"trailColorMode", config.get<std::string>("/gesture/trailColorMode", "auto")},
                 {"trailColor", config.get<std::string>("/gesture/trailColor", "#3B82F6")},
                 {"trailWidth", config.get<float>("/gesture/trailWidth", 2.5f)},
@@ -326,6 +327,7 @@ public:
                 "enabled", "paused", "triggerButton", "trailVisible",
                 "trailFadeEnabled", "showActionHint", "autoBypassFullscreen",
                 "targetMode", "initialTimeoutMs", "minSegmentDistance",
+                "shapeMatchThreshold",
                 "trailColorMode", "trailColor", "trailWidth", "trailOutlineWidth",
                 "enableScribbleCancel", "webSearchEngine"
             };
@@ -344,6 +346,7 @@ public:
                 (params.contains("targetMode") && !params["targetMode"].is_string()) ||
                 (params.contains("initialTimeoutMs") && !params["initialTimeoutMs"].is_number_integer()) ||
                 (params.contains("minSegmentDistance") && !params["minSegmentDistance"].is_number_integer()) ||
+                (params.contains("shapeMatchThreshold") && !params["shapeMatchThreshold"].is_number_integer()) ||
                 (params.contains("trailColorMode") && !params["trailColorMode"].is_string()) ||
                 (params.contains("trailColor") && !params["trailColor"].is_string()) ||
                 (params.contains("trailWidth") && !params["trailWidth"].is_number()) ||
@@ -386,6 +389,8 @@ public:
                 : std::clamp(rawInitialTimeoutMs, 100, 3000);
             const int minSegmentDistance = std::clamp(
                 params.value("minSegmentDistance", engine.minSegmentDistance()), 5, 100);
+            const int shapeMatchThreshold = std::clamp(
+                params.value("shapeMatchThreshold", engine.shapeMatchThreshold()), 50, 100);
 
             std::string trailColorMode = params.value("trailColorMode", config.get<std::string>("/gesture/trailColorMode", "auto"));
             if (trailColorMode != "auto" && trailColorMode != "custom") {
@@ -415,6 +420,7 @@ public:
                 {"targetMode", targetMode},
                 {"initialTimeoutMs", initialTimeoutMs},
                 {"minSegmentDistance", minSegmentDistance},
+                {"shapeMatchThreshold", shapeMatchThreshold},
                 {"trailColorMode", trailColorMode},
                 {"trailColor", trailColor},
                 {"trailWidth", trailWidth},
@@ -432,6 +438,7 @@ public:
             engine.setTargetMode(targetMode);
             engine.setInitialTimeoutMs(initialTimeoutMs);
             engine.setMinSegmentDistance(minSegmentDistance);
+            engine.setShapeMatchThreshold(shapeMatchThreshold);
             tools3000::gesture::RecognizerConfig recConfig = engine.recognizerConfig();
             recConfig.minSegmentDistance = engine.minSegmentDistance();
             recConfig.enableScribbleCancel = enableScribbleCancel;
@@ -452,6 +459,7 @@ public:
                 {"targetMode", engine.targetMode()},
                 {"initialTimeoutMs", engine.initialTimeoutMs()},
                 {"minSegmentDistance", engine.minSegmentDistance()},
+                {"shapeMatchThreshold", engine.shapeMatchThreshold()},
                 {"trailColorMode", trailColorMode},
                 {"trailColor", trailColor},
                 {"trailWidth", trailWidth},

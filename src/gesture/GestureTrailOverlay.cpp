@@ -513,10 +513,11 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
 
         m_renderRequested.store(false, std::memory_order_relaxed);
 
-        bool fading = m_fading.load(std::memory_order_relaxed);
+        bool fading = m_fading.load(std::memory_order_acquire);
         if (fading) {
             const uint64_t currentEpoch = m_trailEpoch.load(std::memory_order_acquire);
-            if (currentEpoch != m_fadeEpoch) {
+            const uint64_t fadeEpoch = m_fadeEpoch.load(std::memory_order_acquire);
+            if (currentEpoch != fadeEpoch) {
                 // 新手势已开始并打断了上一笔淡出，绝不隐藏窗口或释放资源
                 m_fading.store(false, std::memory_order_relaxed);
                 m_fadeClockStarted.store(false, std::memory_order_relaxed);
@@ -532,10 +533,12 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                     holdMs = static_cast<DWORD>(std::clamp(m_style.fadeHoldMs, 0.0f, 5000.0f));
                     fadeMs = static_cast<DWORD>(std::clamp(m_style.fadeOutMs, 16.0f, 5000.0f));
                 }
-                const bool clockStarted = m_fadeClockStarted.load(std::memory_order_relaxed);
-                const DWORD elapsed = clockStarted ? (GetTickCount() - m_fadeStartTick) : 0;
+                const bool clockStarted = m_fadeClockStarted.load(std::memory_order_acquire);
+                const DWORD elapsed = clockStarted
+                    ? (GetTickCount() - m_fadeStartTick.load(std::memory_order_relaxed))
+                    : 0;
                 if (gestureFadeShouldFinish(clockStarted, elapsed, holdMs, fadeMs)) {
-                    if (m_trailEpoch.load(std::memory_order_acquire) != m_fadeEpoch) {
+                    if (m_trailEpoch.load(std::memory_order_acquire) != m_fadeEpoch.load(std::memory_order_acquire)) {
                         m_fading.store(false, std::memory_order_relaxed);
                         m_standaloneToastMode.store(false, std::memory_order_release);
                         m_fadeClockStarted.store(false, std::memory_order_relaxed);
@@ -575,9 +578,9 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                     if (m_compositorReady && m_dcompDevice && m_trailDcompVisual) {
                         static thread_local bool s_dcompPostPulseBaked = false;
                         static thread_local uint64_t s_dcompBakedEpoch = 0;
-                        if (!clockStarted || s_dcompBakedEpoch != m_fadeEpoch) {
+                        if (!clockStarted || s_dcompBakedEpoch != fadeEpoch) {
                             s_dcompPostPulseBaked = false;
-                            s_dcompBakedEpoch = m_fadeEpoch;
+                            s_dcompBakedEpoch = fadeEpoch;
                         }
 
                         const bool standaloneNow = m_standaloneToastMode.load(std::memory_order_acquire);
@@ -604,7 +607,7 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                                 applyVisualOpacityLocked(fadeAlpha);
                             }
                             if (!clockStarted && presented) {
-                                m_fadeStartTick = GetTickCount();
+                                m_fadeStartTick.store(GetTickCount(), std::memory_order_relaxed);
                                 m_fadeClockStarted.store(true, std::memory_order_release);
                                 if (standaloneNow) {
                                     s_dcompPostPulseBaked = true;
@@ -629,7 +632,7 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                         const bool presented = render();
                         if (presented) {
                             if (!clockStarted) {
-                                m_fadeStartTick = GetTickCount();
+                                m_fadeStartTick.store(GetTickCount(), std::memory_order_relaxed);
                                 m_fadeClockStarted.store(true, std::memory_order_release);
                             }
                             m_pacer.advanceDeadline();
@@ -699,7 +702,6 @@ void GestureTrailOverlay::beginTrail() {
     m_isRecognized.store(false, std::memory_order_relaxed);
     m_themeDirty.store(true, std::memory_order_release);
     m_dismissPrevious.store(false, std::memory_order_release);
-    m_accumulatedStrokeDirtyRect = { 0, 0, 0, 0 };
     // 标记渲染线程在新笔划首帧前重置 Visual Opacity 并清理上一笔残留脏区域，
     // 彻底消除 WH_MOUSE_LL 钩子线程与渲染线程的 m_renderMutex 锁争用及跨线程 DComp 表面访问
     m_strokeResetPending.store(true, std::memory_order_release);
@@ -833,9 +835,9 @@ void GestureTrailOverlay::endTrail(const std::string& resultText) {
         return;
     }
     m_standaloneToastMode.store(false, std::memory_order_release);
-    m_fadeEpoch = m_trailEpoch.load(std::memory_order_acquire);
+    m_fadeEpoch.store(m_trailEpoch.load(std::memory_order_acquire), std::memory_order_release);
     m_fadeClockStarted.store(false, std::memory_order_release);
-    m_fadeStartTick = 0;
+    m_fadeStartTick.store(0, std::memory_order_relaxed);
     m_fadeAlpha.store(1.0f, std::memory_order_release);
     m_pulseIntensity.store(recognizedResult ? 1.0f : 0.0f, std::memory_order_release);
     m_fading.store(true, std::memory_order_release);
@@ -859,9 +861,9 @@ void GestureTrailOverlay::showStandaloneToast(const std::string& text, DWORD hol
     m_isRecognized.store(true, std::memory_order_release);
     m_standaloneToastHoldMs.store(std::clamp<DWORD>(holdMs, 150, 3000), std::memory_order_release);
     m_standaloneToastMode.store(true, std::memory_order_release);
-    m_fadeEpoch = epoch;
+    m_fadeEpoch.store(epoch, std::memory_order_release);
     m_fadeClockStarted.store(false, std::memory_order_release);
-    m_fadeStartTick = 0;
+    m_fadeStartTick.store(0, std::memory_order_relaxed);
     m_fadeAlpha.store(1.0f, std::memory_order_release);
     m_pulseIntensity.store(0.0f, std::memory_order_release);
     m_wantVisible.store(true, std::memory_order_release);

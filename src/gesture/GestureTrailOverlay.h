@@ -304,10 +304,10 @@ private:
     std::atomic<uint64_t> m_trailEpoch{0};
     std::atomic<uint64_t> m_hideEpoch{0};
     GesturePacer m_pacer;
-    uint64_t m_fadeEpoch = 0;
+    std::atomic<uint64_t> m_fadeEpoch{0};
     std::atomic<float> m_fadeAlpha{1.0f};
     std::atomic<float> m_pulseIntensity{0.0f};
-    DWORD m_fadeStartTick = 0;
+    std::atomic<DWORD> m_fadeStartTick{0};
     std::atomic<bool> m_fadeClockStarted{false};
     std::atomic<bool> m_themeDirty{true};
     std::atomic<bool> m_zOrderYielded{false};

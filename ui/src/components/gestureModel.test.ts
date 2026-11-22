@@ -10,6 +10,7 @@ import {
   resolveRequiredEdgeTriggerKey,
   assembleGestureCode,
   GESTURE_CODE_PATTERN,
+  isGesturePrefixConflict,
   simplifyDirections,
   recognizeStrokes,
   type GestureMapping,
@@ -341,6 +342,72 @@ describe('parseDirectionSegments and parseGesturePreview (U-06 regression)', () 
     expect(resolveRequiredEdgeTriggerKey('WheelUp')).toBeNull();
     expect(resolveRequiredEdgeTriggerKey('D-R')).toBeNull();
     expect(resolveRequiredEdgeTriggerKey('Middle+L')).toBeNull();
+  });
+
+  it('recognizes V shape (DR-UR) and Reverse C (R-D-L) arcs cleanly and avoids D vs DR-UR prefix false positives', () => {
+    // 反 C 圆弧与末端偏斜归约
+    expect(simplifyDirections(['R', 'DR', 'DL', 'L'])).toEqual(['R', 'D', 'L']);
+    expect(simplifyDirections(['R', 'D', 'DL'])).toEqual(['R', 'D', 'L']);
+    expect(simplifyDirections(['R', 'DR', 'L'])).toEqual(['R', 'D', 'L']);
+    expect(simplifyDirections(['L', 'DL', 'DR', 'R'])).toEqual(['L', 'D', 'R']);
+
+    // V 形对角抖动与底部微圆归约
+    expect(simplifyDirections(['DR', 'D', 'DR', 'UR'])).toEqual(['DR', 'UR']);
+    expect(simplifyDirections(['DR', 'R', 'UR'])).toEqual(['DR', 'UR']);
+    expect(simplifyDirections(['UR', 'R', 'DR'])).toEqual(['UR', 'DR']);
+
+    // 真实轨迹：60° 倾角 V 形与底部略圆 V 形
+    const naturalV: { x: number; y: number }[] = [];
+    for (let i = 0; i <= 20; i++) naturalV.push({ x: 80 + (i * 58) / 20, y: 40 + (i * 100) / 20 });
+    for (let i = 1; i <= 20; i++) naturalV.push({ x: 138 + (i * 58) / 20, y: 140 - (i * 100) / 20 });
+    expect(recognizeStrokes(naturalV)).toBe('DR-UR');
+
+    const roundedV: { x: number; y: number }[] = [];
+    for (let i = 0; i <= 15; i++) roundedV.push({ x: 60 + i * 4, y: 40 + i * 4 });
+    for (let i = 1; i <= 5; i++) roundedV.push({ x: 120 + i * 4, y: 100 });
+    for (let i = 1; i <= 15; i++) roundedV.push({ x: 140 + i * 4, y: 100 - i * 4 });
+    expect(recognizeStrokes(roundedV)).toBe('DR-UR');
+
+    // 实机用户画板 V 截图回归：左臂偏陡 (20.7° / 13.4°)、左臂带弧度 (D->DR->UR) 与对称窄印刷体 V
+    const samplePolyline = (verts: { x: number; y: number }[], steps = 10) => {
+      const pts: { x: number; y: number }[] = [];
+      for (let e = 0; e + 1 < verts.length; e++) {
+        const a = verts[e];
+        const b = verts[e + 1];
+        for (let i = e === 0 ? 0 : 1; i <= steps; i++) {
+          pts.push({
+            x: a.x + ((b.x - a.x) * i) / steps,
+            y: a.y + ((b.y - a.y) * i) / steps,
+          });
+        }
+      }
+      return pts;
+    };
+    expect(recognizeStrokes(samplePolyline([{ x: 176, y: 46 }, { x: 210, y: 136 }, { x: 296, y: 34 }]))).toBe('DR-UR');
+    expect(recognizeStrokes(samplePolyline([{ x: 200, y: 100 }, { x: 220, y: 184 }, { x: 309, y: 92 }]))).toBe('DR-UR');
+    expect(recognizeStrokes(samplePolyline([{ x: 200, y: 100 }, { x: 219, y: 158 }, { x: 244, y: 183 }, { x: 336, y: 91 }]))).toBe('DR-UR');
+    expect(recognizeStrokes(samplePolyline([{ x: 200, y: 100 }, { x: 238, y: 200 }, { x: 276, y: 100 }]))).toBe('DR-UR');
+    // 保护日常往返 U-D 绝不误判为倒 V
+    expect(recognizeStrokes(samplePolyline([{ x: 200, y: 200 }, { x: 210, y: 100 }, { x: 214, y: 205 }]))).toBe('U-D');
+
+    // 真实轨迹：平滑半圆反 C
+    const reverseC: { x: number; y: number }[] = [];
+    for (let step = 0; step <= 32; step++) {
+      const theta = -Math.PI * 0.5 + Math.PI * (step / 32);
+      reverseC.push({
+        x: 100 + Math.round(70 * Math.cos(theta)),
+        y: 120 + Math.round(70 * Math.sin(theta)),
+      });
+    }
+    expect(recognizeStrokes(reverseC)).toBe('R-D-L');
+
+    // 段级前缀冲突检测：D 与 DR-UR 绝不误报，D 与 D-R 精准报冲突
+    expect(isGesturePrefixConflict('D', 'DR-UR')).toBe(false);
+    expect(isGesturePrefixConflict('D', 'DR')).toBe(false);
+    expect(isGesturePrefixConflict('D', 'D-R')).toBe(true);
+    expect(isGesturePrefixConflict('DR', 'DR-UR')).toBe(true);
+    expect(isGesturePrefixConflict('Middle+L', 'L-U')).toBe(false);
+    expect(isGesturePrefixConflict('Middle+L', 'Middle+L-U')).toBe(true);
   });
 });
 

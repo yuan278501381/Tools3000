@@ -205,6 +205,81 @@ describe('U-06 GestureStrokePreview & GestureDrawCanvas Regression Suite', () =>
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave.mock.calls[0]?.[0]?.gestureCode).toBe('TOPEDGE+MIDDLE+R');
   });
+
+  it('supports manual 8-direction builder (V shape DR-UR), live stroke preview, click-without-drag cleanup, blur modifier reset, and non-false-positive D vs DR-UR conflict check', () => {
+    vi.spyOn(bridge, 'bridgeRequest').mockResolvedValue({ success: true });
+    const onChange = vi.fn();
+    const { container, rerender } = render(<GestureDrawCanvas value="" onChange={onChange} />);
+
+    // 1. 手动点选 ↘ + ↗ 秒建 V 手势 DR-UR，再点退格回到 DR
+    const drBtn = container.querySelector('[data-manual-dir="DR"]') as HTMLButtonElement;
+    const urBtn = container.querySelector('[data-manual-dir="UR"]') as HTMLButtonElement;
+    const backspaceBtn = container.querySelector('[data-testid="gesture-manual-backspace"]') as HTMLButtonElement;
+    expect(drBtn).not.toBeNull();
+    expect(urBtn).not.toBeNull();
+    expect(backspaceBtn.disabled).toBe(true);
+
+    fireEvent.click(drBtn);
+    expect(onChange).toHaveBeenLastCalledWith('DR');
+    rerender(<GestureDrawCanvas value="DR" onChange={onChange} />);
+    fireEvent.click(urBtn);
+    expect(onChange).toHaveBeenLastCalledWith('DR-UR');
+    rerender(<GestureDrawCanvas value="DR-UR" onChange={onChange} />);
+    fireEvent.click(backspaceBtn);
+    expect(onChange).toHaveBeenLastCalledWith('DR');
+
+    // 2. 按住 Alt 后失焦 blur，修饰键自动清零不卡死；原地单击不残留轨迹圆点
+    rerender(<GestureDrawCanvas value="" onChange={onChange} />);
+    const pad = container.querySelector('.gesture-draw-pad') as HTMLDivElement;
+    vi.spyOn(pad, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 400,
+      bottom: 240,
+      width: 400,
+      height: 240,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.keyDown(window, { key: 'Alt' });
+    fireEvent(window, new Event('blur'));
+    onChange.mockClear();
+
+    fireEvent.pointerDown(pad, { clientX: 120, clientY: 120, button: 2, pointerId: 30 });
+    fireEvent.pointerUp(pad, { clientX: 120, clientY: 120, button: 2, pointerId: 30 });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(container.querySelector('.gesture-draw-svg')).toBeNull();
+
+    // 3. 在画板自然划出 V 形：绘制中显示实时预览徽章，松手输出纯 DR-UR（无残留 Alt+ 前缀）
+    fireEvent.pointerDown(pad, { clientX: 80, clientY: 50, button: 2, pointerId: 31 });
+    fireEvent.pointerMove(pad, { clientX: 110, clientY: 100, button: 2, pointerId: 31 });
+    fireEvent.pointerMove(pad, { clientX: 140, clientY: 150, button: 2, pointerId: 31 });
+    expect(container.querySelector('[data-testid="gesture-live-badge"]')).not.toBeNull();
+    fireEvent.pointerMove(pad, { clientX: 170, clientY: 100, button: 2, pointerId: 31 });
+    fireEvent.pointerUp(pad, { clientX: 200, clientY: 50, button: 2, pointerId: 31 });
+    expect(onChange).toHaveBeenLastCalledWith('DR-UR');
+
+    // 4. GestureEditorModal 面对已有 D 手势新建 DR-UR 时绝不误报前缀冲突
+    cleanup();
+    const onSave = vi.fn();
+    render(
+      <GestureEditorModal
+        existingCodes={['D', 'R']}
+        initial={{
+          id: 'new-v',
+          gestureCode: 'DR-UR',
+          enabled: true,
+          action: { type: 0, name: 'V Action', keyStroke: 'Ctrl+V' },
+        }}
+        onSave={onSave}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(document.body.textContent ?? '').not.toContain('prefixConflict');
+    expect(document.body.textContent ?? '').not.toContain('conflictWithPrefix');
+  });
 });
 
 describe('V-01 GeneralPage Theme & Accent Broadcast Synchronization', () => {
