@@ -120,6 +120,22 @@ std::wstring sanitizeLabelText(std::wstring text, std::size_t maxChars = 14) {
 }
 
 bool isIgnoredTopLevelClass(const std::wstring& cls, HWND hwnd, const RECT& screenRect) {
+    // 屏蔽常见无边框阴影宿主 / 透明气泡提示 / 输入法幽灵窗口，防止鼠标靠近窗口外缘误捕窗外空白
+    if (cls.find(L"Shadow") != std::wstring::npos ||
+        cls.find(L"DropShadow") != std::wstring::npos ||
+        cls.find(L"tooltips_class") != std::wstring::npos) {
+        return true;
+    }
+    if (cls == L"Chrome_WidgetWin_0") {
+        // Chromium 无标题零交互隐藏辅助宿主常驻于后台或窗外
+        wchar_t titleBuf[16] = {};
+        if (GetWindowTextW(hwnd, titleBuf, 16) == 0) {
+            const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+            if ((style & WS_CAPTION) == 0 && (style & WS_THICKFRAME) == 0) {
+                return true;
+            }
+        }
+    }
     if (cls == L"Tools3000_ShortcutHintOverlay" ||
         cls == L"Progman" ||
         cls == L"WorkerW" ||
@@ -414,6 +430,43 @@ bool detectVisualCardRegionAtPoint(
     double bestArea = 1e18;
     cv::Rect bestBox{};
 
+    // 边缘校验掩码：仅轻微 1px 膨胀用于四边连续性抽检（绝不用粗重 MORPH_CLOSE 把两个交叉控件硬粘成一个假矩形）
+    cv::Mat edgeSupport;
+    cv::dilate(edges, edgeSupport, kernel);
+
+    auto verifyFourEdgesContinuous = [&](const cv::Rect& box) noexcept -> bool {
+        if (box.width < 12 || box.height < 12) return false;
+        const int x0 = std::clamp(box.x, 0, edgeSupport.cols - 1);
+        const int y0 = std::clamp(box.y, 0, edgeSupport.rows - 1);
+        const int x1 = std::clamp(box.x + box.width - 1, 0, edgeSupport.cols - 1);
+        const int y1 = std::clamp(box.y + box.height - 1, 0, edgeSupport.rows - 1);
+        const int insetX = (std::min)(3, box.width / 8);
+        const int insetY = (std::min)(3, box.height / 8);
+
+        int topHit = 0, botHit = 0, hSamples = 0;
+        const int stepX = (std::max)(1, (x1 - x0) / 28);
+        for (int x = x0 + insetX; x <= x1 - insetX; x += stepX) {
+            ++hSamples;
+            if (edgeSupport.at<uint8_t>(y0, x) > 0) ++topHit;
+            if (edgeSupport.at<uint8_t>(y1, x) > 0) ++botHit;
+        }
+
+        int leftHit = 0, rightHit = 0, vSamples = 0;
+        const int stepY = (std::max)(1, (y1 - y0) / 28);
+        for (int y = y0 + insetY; y <= y1 - insetY; y += stepY) {
+            ++vSamples;
+            if (edgeSupport.at<uint8_t>(y, x0) > 0) ++leftHit;
+            if (edgeSupport.at<uint8_t>(y, x1) > 0) ++rightHit;
+        }
+        if (hSamples < 4 || vSamples < 4) return false;
+
+        // 上下左右四条边各自必须至少 68% 落在真实视觉边缘上，彻底杜绝两个交叉控件拼出虚构外接矩形
+        return (topHit * 100 >= hSamples * 68) &&
+               (botHit * 100 >= hSamples * 68) &&
+               (leftHit * 100 >= vSamples * 68) &&
+               (rightHit * 100 >= vSamples * 68);
+    };
+
     for (const auto& contour : contours) {
         if (contour.size() < 4) continue;
         const cv::Rect box = cv::boundingRect(contour);
@@ -425,16 +478,17 @@ bool detectVisualCardRegionAtPoint(
         const double boxArea = static_cast<double>(box.width) * static_cast<double>(box.height);
         if (boxArea >= limitAreaScaled * 0.82) continue; // 过接近整个容器无增量价值
 
-        // 形状矩形度校验（过滤不规则文字块、图标碎片与杂乱自然景物）
+        // 严苛矩形度与周长紧凑度校验（排除交叉 L 形/T 形组合轮廓与杂乱图标文字块）
         const double contourArea = std::abs(cv::contourArea(contour));
         if (contourArea <= 0.0) continue;
         const double rectangularity = contourArea / boxArea;
-        if (rectangularity < 0.84) continue;
+        if (rectangularity < 0.90) continue;
 
-        // 轮廓点周长紧凑度校验（确保接近真实矩形边框而非锯齿迷宫）
         const double perimeter = cv::arcLength(contour, true);
         const double expectedPerimeter = 2.0 * (box.width + box.height);
-        if (perimeter <= 0.0 || perimeter > expectedPerimeter * 1.22) continue;
+        if (perimeter <= 0.0 || perimeter > expectedPerimeter * 1.14) continue;
+
+        if (!verifyFourEdgesContinuous(box)) continue;
 
         if (boxArea < bestArea) {
             bestArea = boxArea;
@@ -982,39 +1036,119 @@ void WindowElementDetector::workerLoop() {
             }
 
             if (itRoot != uiaTreeCache.end() && itRoot->second) {
-                UiaCachedNode* current = itRoot->second.get();
-                std::vector<const UiaCachedNode*> hitPath;
-                hitPath.reserve(kMaxUiaDepth);
+                auto isConcreteLeafControl = [](CONTROLTYPEID ct) noexcept -> bool {
+                    return ct == UIA_ButtonControlTypeId || ct == UIA_SplitButtonControlTypeId ||
+                           ct == UIA_HyperlinkControlTypeId || ct == UIA_CheckBoxControlTypeId ||
+                           ct == UIA_RadioButtonControlTypeId || ct == UIA_EditControlTypeId ||
+                           ct == UIA_ComboBoxControlTypeId || ct == UIA_TabItemControlTypeId ||
+                           ct == UIA_ListItemControlTypeId || ct == UIA_TreeItemControlTypeId ||
+                           ct == UIA_MenuItemControlTypeId || ct == UIA_ImageControlTypeId ||
+                           ct == UIA_DataItemControlTypeId || ct == UIA_SliderControlTypeId;
+                };
+                auto isGenericContainerControl = [](CONTROLTYPEID ct) noexcept -> bool {
+                    return ct == UIA_GroupControlTypeId || ct == UIA_PaneControlTypeId ||
+                           ct == UIA_CustomControlTypeId || ct == UIA_DocumentControlTypeId;
+                };
 
-                for (int depth = 0; depth < kMaxUiaDepth; ++depth) {
-                    if (req.generation != m_generation.load(std::memory_order_acquire)) break;
+                // 受限多分支穿透（Hit-Test Overlapping Siblings）：
+                // 当页面存在两个交叉/重叠的兄弟控件时，最多展开 3 条重叠分支，优先采纳能命中真正具体交互控件的路径，
+                // 彻底避免单路径贪心钻进空白透明 div 或交叉包装盒导致选错框。
+                std::vector<const UiaCachedNode*> bestPath;
+                bool bestPathHasLeaf = false;
+                int64_t bestPathMinArea = INT64_MAX;
+                int branchBudget = 18;
+
+                auto dfsHit = [&](auto&& self, UiaCachedNode* node, int depth,
+                                  std::vector<const UiaCachedNode*>& curPath) -> void {
+                    if (depth >= kMaxUiaDepth || branchBudget <= 0) return;
+                    if (req.generation != m_generation.load(std::memory_order_acquire)) return;
                     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now() - startClock).count();
-                    if (elapsedMs >= kUiaTimeBudgetMs) break;
+                    if (elapsedMs >= kUiaTimeBudgetMs) return;
 
-                    loadChildrenIfNeeded(*current);
-                    if (current->children.empty()) break;
+                    loadChildrenIfNeeded(*node);
 
-                    // 寻找包含光标的最具体（面积最小；面积近似时优先 Z 序靠后的）直接子节点
-                    UiaCachedNode* bestChild = nullptr;
-                    int64_t bestArea = INT64_MAX;
-                    for (const auto& childPtr : current->children) {
+                    std::vector<UiaCachedNode*> hits;
+                    for (const auto& childPtr : node->children) {
                         if (!childPtr) continue;
                         if (!PtInRect(&childPtr->screenRect, req.screenPt)) continue;
-                        const int64_t area = rectArea(childPtr->screenRect);
-                        if (area <= 0) continue;
-                        if (!bestChild || area <= bestArea) {
-                            bestArea = area;
-                            bestChild = childPtr.get();
-                        }
+                        if (rectArea(childPtr->screenRect) <= 0) continue;
+                        hits.push_back(childPtr.get());
                     }
 
-                    if (!bestChild) break;
-                    hitPath.push_back(bestChild);
-                    current = bestChild;
-                }
+                    if (hits.empty()) {
+                        if (!curPath.empty()) {
+                            const UiaCachedNode* leaf = curPath.back();
+                            const bool hasLeaf = isConcreteLeafControl(leaf->controlType);
+                            const int64_t leafArea = rectArea(leaf->screenRect);
+                            const bool better = bestPath.empty() ||
+                                (hasLeaf && !bestPathHasLeaf) ||
+                                (hasLeaf == bestPathHasLeaf && leafArea < bestPathMinArea);
+                            if (better) {
+                                bestPath = curPath;
+                                bestPathHasLeaf = hasLeaf;
+                                bestPathMinArea = leafArea;
+                            }
+                        }
+                        return;
+                    }
 
-                for (const UiaCachedNode* node : hitPath) {
+                    // 优先尝试具体交互控件与面积更紧凑的重叠兄弟（最多并行探 3 个交叉分支防组合爆炸）
+                    std::stable_sort(hits.begin(), hits.end(), [&](const UiaCachedNode* a, const UiaCachedNode* b) {
+                        const bool la = isConcreteLeafControl(a->controlType);
+                        const bool lb = isConcreteLeafControl(b->controlType);
+                        if (la != lb) return la > lb;
+                        return rectArea(a->screenRect) < rectArea(b->screenRect);
+                    });
+                    const size_t maxBranches = (std::min<size_t>)(hits.size(), 3u);
+                    for (size_t b = 0; b < maxBranches && branchBudget > 0; ++b) {
+                        --branchBudget;
+                        curPath.push_back(hits[b]);
+                        self(self, hits[b], depth + 1, curPath);
+                        curPath.pop_back();
+                    }
+                };
+
+                std::vector<const UiaCachedNode*> scratchPath;
+                scratchPath.reserve(kMaxUiaDepth);
+                dfsHit(dfsHit, itRoot->second.get(), 0, scratchPath);
+
+                cv::Mat frozenForBorderCheck;
+                {
+                    std::lock_guard<std::mutex> lock(m_frozenMutex);
+                    frozenForBorderCheck = m_frozenCopy;
+                }
+                auto hasMinimalVisualBorder = [&](const RECT& rc) noexcept -> bool {
+                    if (frozenForBorderCheck.empty() || frozenForBorderCheck.channels() < 3) return true;
+                    const RECT cl = clampRectToBounds(rc, frozenForBorderCheck.cols, frozenForBorderCheck.rows);
+                    const int w = rectWidth(cl);
+                    const int h = rectHeight(cl);
+                    if (w < 16 || h < 16) return true;
+                    // 快速 0.02ms 跨边梯度抽检：至少有任意一条边存在清晰色差，否则视为纯透明 HTML/WPF 幽灵 div
+                    auto lumaAt = [&](int x, int y) noexcept -> int {
+                        x = std::clamp(x, 0, frozenForBorderCheck.cols - 1);
+                        y = std::clamp(y, 0, frozenForBorderCheck.rows - 1);
+                        const uint8_t* p = frozenForBorderCheck.ptr<uint8_t>(y) + x * frozenForBorderCheck.channels();
+                        return (static_cast<int>(p[0]) + static_cast<int>(p[1]) * 2 + static_cast<int>(p[2])) >> 2;
+                    };
+                    int edgeSamples = 0, edgeHits = 0;
+                    const int stepX = (std::max)(1, w / 16);
+                    for (int x = cl.left + 2; x < cl.right - 2; x += stepX) {
+                        edgeSamples += 2;
+                        if (std::abs(lumaAt(x, cl.top - 1) - lumaAt(x, cl.top + 1)) >= 14) ++edgeHits;
+                        if (std::abs(lumaAt(x, cl.bottom - 2) - lumaAt(x, cl.bottom)) >= 14) ++edgeHits;
+                    }
+                    const int stepY = (std::max)(1, h / 16);
+                    for (int y = cl.top + 2; y < cl.bottom - 2; y += stepY) {
+                        edgeSamples += 2;
+                        if (std::abs(lumaAt(cl.left - 1, y) - lumaAt(cl.left + 1, y)) >= 14) ++edgeHits;
+                        if (std::abs(lumaAt(cl.right - 2, y) - lumaAt(cl.right, y)) >= 14) ++edgeHits;
+                    }
+                    return edgeSamples > 0 && (edgeHits * 100 >= edgeSamples * 18);
+                };
+
+                for (const UiaCachedNode* node : bestPath) {
+                    const int64_t rawArea = rectArea(node->screenRect);
                     RECT local{
                         std::max(req.topLocalBounds.left, node->screenRect.left - originX),
                         std::max(req.topLocalBounds.top, node->screenRect.top - originY),
@@ -1024,10 +1158,24 @@ void WindowElementDetector::workerLoop() {
                     if (rectWidth(local) <= kMinCandidateEdgePx || rectHeight(local) <= kMinCandidateEdgePx) {
                         continue;
                     }
+                    // 剔除严重溢出所属顶层窗口范围的虚拟滚动长容器（裁剪丢弃 > 60% 原面积）
+                    if (rawArea > 0 && rectArea(local) * 100 < rawArea * 40 && isGenericContainerControl(node->controlType)) {
+                        continue;
+                    }
+                    // 剔除无名字、无交互语义且肉眼完全透明无边框的幽灵布局 div（防止交叉控件处凭空框出一块空气）
+                    const bool unnamedGhostContainer =
+                        isGenericContainerControl(node->controlType) &&
+                        node->name.empty() &&
+                        !hasMinimalVisualBorder(local);
+                    if (unnamedGhostContainer) {
+                        continue;
+                    }
+
                     DetectedElementCandidate cand;
                     cand.rect = local;
                     cand.kind = DetectedCandidateKind::UiaElement;
-                    cand.zPriority = defaultPriorityForKind(cand.kind);
+                    cand.zPriority = defaultPriorityForKind(cand.kind) +
+                                     (isConcreteLeafControl(node->controlType) ? 10 : 0);
                     cand.cornerRadius = cornerRadiusForUiaControl(local, node->controlType);
                     cand.description = formatCandidateDesc(
                         uiaControlTypeLabel(node->controlType, isZh),

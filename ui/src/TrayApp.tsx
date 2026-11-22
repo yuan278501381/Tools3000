@@ -4,12 +4,14 @@ import {
   Crop,
   Video,
   Search,
+  ClipboardList,
   Shield,
   ShieldCheck,
   LogOut,
   RotateCw,
   RotateCcw,
   Pin,
+  Download,
 } from 'lucide-react';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
 import { useTranslation } from 'react-i18next';
@@ -37,6 +39,7 @@ interface TrayShortcuts {
   recording: string;
   pinPaste: string;
   search: string;
+  clipboard: string;
   emergencyFlush: string;
 }
 
@@ -45,6 +48,7 @@ const EMPTY_SHORTCUTS: TrayShortcuts = {
   recording: '',
   pinPaste: '',
   search: '',
+  clipboard: '',
   emergencyFlush: '',
 };
 
@@ -62,12 +66,25 @@ export default function TrayApp() {
   const [shortcuts, setShortcuts] = useState<TrayShortcuts>(EMPTY_SHORTCUTS);
   const [pinPanelExpanded, setPinPanelExpanded] = useState(false);
   const [pinGroupState, setPinGroupState] = useState<TrayPinGroupState>(DEFAULT_TRAY_PIN_GROUP_STATE);
+  const [updateBanner, setUpdateBanner] = useState<{
+    hasUpdate: boolean;
+    status: string;
+    latestVersion: string;
+    progress: number;
+    readyToInstall: boolean;
+  }>({
+    hasUpdate: false,
+    status: 'idle',
+    latestVersion: '',
+    progress: 0,
+    readyToInstall: false,
+  });
   const pendingRestartRef = useRef(false);
   const lastReportedSizeRef = useRef({ width: 0, height: 0 });
   const sizeFrameRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const [activePlugins, setActivePlugins] = useState<Set<string>>(() => new Set([
-    'capture', 'search', 'gesture', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost',
+    'capture', 'search', 'clipboard', 'gesture', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost',
   ]));
 
   // 立即同步直接测量并上报尺寸 (force=true 时绕过重复判定)
@@ -128,7 +145,7 @@ export default function TrayApp() {
         sizeFrameRef.current = null;
       }
     };
-  }, [reportSize, activePlugins, remoteBoostEnabled, pendingRestart, elevated, shortcuts, pinPanelExpanded, pinGroupState]);
+  }, [reportSize, activePlugins, remoteBoostEnabled, pendingRestart, elevated, shortcuts, pinPanelExpanded, pinGroupState, updateBanner]);
 
   const refreshState = useCallback(() => {
     if (refreshInFlightRef.current) return;
@@ -157,13 +174,15 @@ export default function TrayApp() {
             recording: byName.get('Record') ?? prev.recording,
             pinPaste: byName.get('Pin Paste') ?? prev.pinPaste,
             search: byName.get('Toggle Search') ?? prev.search,
+            clipboard: byName.get('Toggle Clipboard') ?? prev.clipboard,
             emergencyFlush: prev.emergencyFlush,
           };
           if (
             prev.screenshot === next.screenshot &&
             prev.recording === next.recording &&
             prev.pinPaste === next.pinPaste &&
-            prev.search === next.search
+            prev.search === next.search &&
+            prev.clipboard === next.clipboard
           ) {
             return prev;
           }
@@ -205,10 +224,48 @@ export default function TrayApp() {
     const pinGroupRequest = bridgeRequest<unknown>('capture.pinGroupControl')
       .then((res) => setPinGroupState(normalizePinGroupState(res)))
       .catch(() => {});
-    void Promise.allSettled([settingsRequest, pluginsRequest, remoteRequest, hotkeysRequest, pinGroupRequest]).finally(() => {
+    const updateRequest = bridgeRequest<{
+      hasUpdate?: boolean;
+      status?: string;
+      latestVersion?: string;
+      progress?: number;
+      readyToInstall?: boolean;
+    }>('app.getUpdateState')
+      .then((st) => {
+        if (st && typeof st.hasUpdate === 'boolean') {
+          setUpdateBanner({
+            hasUpdate: st.hasUpdate,
+            status: st.status ?? 'idle',
+            latestVersion: st.latestVersion ?? '',
+            progress: typeof st.progress === 'number' ? st.progress : 0,
+            readyToInstall: Boolean(st.readyToInstall),
+          });
+        }
+      })
+      .catch(() => {});
+    void Promise.allSettled([settingsRequest, pluginsRequest, remoteRequest, hotkeysRequest, pinGroupRequest, updateRequest]).finally(() => {
       refreshInFlightRef.current = false;
     });
   }, []);
+
+  useBridgeEvent('update.state', (raw: unknown) => {
+    const st = raw as {
+      hasUpdate?: boolean;
+      status?: string;
+      latestVersion?: string;
+      progress?: number;
+      readyToInstall?: boolean;
+    } | undefined;
+    if (st && typeof st.hasUpdate === 'boolean') {
+      setUpdateBanner({
+        hasUpdate: st.hasUpdate,
+        status: st.status ?? 'idle',
+        latestVersion: st.latestVersion ?? '',
+        progress: typeof st.progress === 'number' ? st.progress : 0,
+        readyToInstall: Boolean(st.readyToInstall),
+      });
+    }
+  });
 
   useBridgeEvent('plugins:changed', (data: unknown) => {
     const payload = data && typeof data === 'object' ? (data as { id?: string; enabled?: boolean; restartRequired?: boolean }) : null;
@@ -276,6 +333,18 @@ export default function TrayApp() {
         const next = new Set(prev);
         if (payload.enabled) next.add('spotlight');
         else next.delete('spotlight');
+        return next;
+      });
+    }
+  });
+
+  useBridgeEvent('clipboard:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      setActivePlugins((prev) => {
+        const next = new Set(prev);
+        if (payload.enabled) next.add('clipboard');
+        else next.delete('clipboard');
         return next;
       });
     }
@@ -497,6 +566,7 @@ export default function TrayApp() {
 
   const captureActive = activePlugins.has('capture');
   const searchActive = activePlugins.has('search');
+  const clipboardActive = activePlugins.has('clipboard');
 
   // 触发全局命令动作（立即乐观收起托盘，带来零延迟体验）
   const handleAction = async (action: string) => {
@@ -618,6 +688,42 @@ export default function TrayApp() {
         })}
       </div>
 
+      {/* 版本更新横幅（发现新版 / 自动下载进度 / 一键静默安装） */}
+      {updateBanner.hasUpdate && (
+        <button
+          type="button"
+          className={`tray-update-banner${updateBanner.readyToInstall ? ' tray-update-banner--ready' : ''}`}
+          disabled={updateBanner.status === 'downloading'}
+          onClick={() => {
+            if (updateBanner.readyToInstall) {
+              void bridgeRequest('tray.hide').catch(() => {});
+              void bridgeRequest('app.installUpdate').catch(() => {});
+            } else {
+              void bridgeRequest('app.downloadUpdate').catch(() => {});
+            }
+          }}
+        >
+          <span className="tray-update-banner__info">
+            <span className="tray-update-banner__dot" aria-hidden="true" />
+            <Download size={12} aria-hidden="true" />
+            <span className="tray-update-banner__text">
+              {updateBanner.status === 'downloading'
+                ? t('about.downloadingProgress', { progress: updateBanner.progress, defaultValue: `Downloading ${updateBanner.progress}%` })
+                : updateBanner.readyToInstall
+                  ? t('about.updateReadyShort', { version: updateBanner.latestVersion, defaultValue: `${updateBanner.latestVersion} Ready` })
+                  : t('about.updateAvailableShort', { version: updateBanner.latestVersion, defaultValue: `New ${updateBanner.latestVersion}` })}
+            </span>
+          </span>
+          <span className="tray-update-banner__btn">
+            {updateBanner.status === 'downloading'
+              ? `${updateBanner.progress}%`
+              : updateBanner.readyToInstall
+                ? t('about.installNowShort', 'Install')
+                : t('about.downloadShort', 'Download')}
+          </span>
+        </button>
+      )}
+
       {/* 待生效智能提示条 */}
       {pendingRestart && (
         <button
@@ -707,6 +813,22 @@ export default function TrayApp() {
             <span className="tray-menu__label">{t('tray.search', 'Search Files')}</span>
             {shortcuts.search && (
               <kbd className="tray-menu__shortcut">{shortcuts.search}</kbd>
+            )}
+          </button>
+        )}
+
+        {clipboardActive && (
+          <button
+            type="button"
+            role="menuitem"
+            className="tray-menu__item"
+            disabled={busy}
+            onClick={() => void handleAction('clipboard')}
+          >
+            <ClipboardList size={15} className="tray-menu__icon" aria-hidden="true" />
+            <span className="tray-menu__label">{t('tray.clipboard', 'Clipboard History')}</span>
+            {shortcuts.clipboard && (
+              <kbd className="tray-menu__shortcut">{shortcuts.clipboard}</kbd>
             )}
           </button>
         )}

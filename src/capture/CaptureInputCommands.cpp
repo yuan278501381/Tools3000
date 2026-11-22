@@ -1198,6 +1198,42 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             }
             break;
 
+        case ToolbarCommand::Translate:
+            if (m_state->translateCallback) {
+                int x1 = std::min(m_state->dragStart.x, m_state->dragEnd.x);
+                int y1 = std::min(m_state->dragStart.y, m_state->dragEnd.y);
+                int w = std::abs(m_state->dragEnd.x - m_state->dragStart.x);
+                int h = std::abs(m_state->dragEnd.y - m_state->dragStart.y);
+                if (w <= 0 || h <= 0) break;
+                prepareMarkupBase();
+
+                cv::Mat cropped;
+                if (m_state->markup.elementCount() > 0) cropped = m_state->markup.getCompositeImage();
+                else cropped = cropMarkupBase(m_state->frozenScreen, cv::Rect(x1, y1, w, h));
+
+                int offsetX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                int offsetY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                RECT winRc{};
+                if (m_hwnd && IsWindow(m_hwnd) && GetWindowRect(m_hwnd, &winRc)) {
+                    offsetX = winRc.left;
+                    offsetY = winRc.top;
+                }
+                CaptureRegion region{x1 + offsetX, y1 + offsetY, w, h};
+                if (m_state->isLongImageMode()) {
+                    const D2D1_RECT_F anchor = m_state->toolbarAnchorRect();
+                    region = CaptureRegion{
+                        offsetX + static_cast<int>(std::lround(anchor.left)),
+                        offsetY + static_cast<int>(std::lround(anchor.top)),
+                        std::max(120, static_cast<int>(std::lround(anchor.right - anchor.left))),
+                        std::max(120, static_cast<int>(std::lround(anchor.bottom - anchor.top)))
+                    };
+                }
+                auto trCb = m_state->translateCallback;
+                if (m_cancelCb) m_cancelCb();
+                trCb(region, cropped);
+            }
+            break;
+
         case ToolbarCommand::PinWindow: {
             if (m_state->isMarking) {
                 finishMarkup(m_state->currentCursor);

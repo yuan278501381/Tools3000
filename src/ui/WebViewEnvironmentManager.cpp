@@ -1,15 +1,61 @@
 ﻿#include "ui/WebViewEnvironmentManager.h"
 
+#include "core/i18n/UiI18n.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 
 #include <wrl.h>
 #include <WebView2EnvironmentOptions.h>
+#include <atomic>
+#include <thread>
 #include <vector>
 
 using namespace Microsoft::WRL;
 
 namespace tools3000::ui {
+
+namespace {
+
+constexpr const wchar_t* kWebView2EvergreenDownloadUrl =
+    L"https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+
+bool isWebView2RuntimeInstalled() noexcept {
+    LPWSTR versionInfo = nullptr;
+    const HRESULT hr = GetAvailableCoreWebView2BrowserVersionString(nullptr, &versionInfo);
+    if (versionInfo) {
+        CoTaskMemFree(versionInfo);
+    }
+    return SUCCEEDED(hr);
+}
+
+bool isAutomatedHeadlessProcess() noexcept {
+    const wchar_t* cmdLine = GetCommandLineW();
+    if (!cmdLine) return false;
+    return wcsstr(cmdLine, L"--lifecycle-test-instance") != nullptr ||
+           wcsstr(cmdLine, L"--headless") != nullptr;
+}
+
+void promptInstallWebView2RuntimeOnce() {
+    if (isAutomatedHeadlessProcess()) return;
+    static std::atomic<bool> s_prompted{false};
+    if (s_prompted.exchange(true, std::memory_order_acq_rel)) return;
+
+    std::thread([]() {
+        const std::wstring title = tools3000::core::UiI18n::trW(
+            L"缺少 Microsoft Edge WebView2 运行时",
+            L"Microsoft Edge WebView2 Runtime Required");
+        const std::wstring body = tools3000::core::UiI18n::trW(
+            L"当前 Windows 系统未安装 Microsoft Edge WebView2 运行时，因此设置、搜索与剪贴板界面暂时无法显示。\n\n点击“是”立即打开微软官方页面下载安装，完成后重启 Tools3000 即可正常使用。",
+            L"Microsoft Edge WebView2 Runtime is not installed on this Windows system, so Settings, Search, and Clipboard UI cannot be displayed yet.\n\nClick Yes to open the official Microsoft download page, then restart Tools3000 after installation.");
+        const int choice = MessageBoxW(
+            nullptr, body.c_str(), title.c_str(), MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST);
+        if (choice == IDYES) {
+            tools3000::core::WinUtils::openUrl(kWebView2EvergreenDownloadUrl);
+        }
+    }).detach();
+}
+
+}  // namespace
 
 WebViewEnvironmentManager& WebViewEnvironmentManager::instance() {
     static WebViewEnvironmentManager s_instance;
@@ -127,6 +173,10 @@ void WebViewEnvironmentManager::completeInitialization(
 
     if (FAILED(result) || !environment) {
         LOG_ERROR("共享 WebView2 环境创建失败, hr=0x{:08X}", static_cast<unsigned>(result));
+        if (!isWebView2RuntimeInstalled()) {
+            LOG_WARN("WebView2 Runtime is missing on this Windows machine; prompting official Evergreen installer");
+            promptInstallWebView2RuntimeOnce();
+        }
     } else {
         LOG_INFO("共享 WebView2 环境已就绪");
     }

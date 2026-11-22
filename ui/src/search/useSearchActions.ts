@@ -104,6 +104,17 @@ export function useSearchActions({
   const { t } = useTranslation();
   const exportingCsvRef = useRef(false);
 
+  const bumpLocalRunCount = useCallback((targetPath: string) => {
+    if (!targetPath) return;
+    setResults((prev) =>
+      prev.map((item) =>
+        item.path === targetPath
+          ? { ...item, runCount: (item.runCount ?? 0) + 1 }
+          : item,
+      ),
+    );
+  }, [setResults]);
+
   const openResult = useCallback(async (result: SearchResult | undefined) => {
     if (!result) return;
     setActionError('');
@@ -111,10 +122,11 @@ export function useSearchActions({
       onRecordSearch?.(query);
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openFile', 'system.openFile', result.path);
+      bumpLocalRunCount(result.path);
     } catch {
       setActionError(t('search.openFailed', 'Could not open this result'));
     }
-  }, [onRecordSearch, query, setActionError, t]);
+  }, [bumpLocalRunCount, onRecordSearch, query, setActionError, t]);
 
   const openFolderResult = useCallback(async (result: SearchResult | undefined) => {
     if (!result) return;
@@ -123,10 +135,11 @@ export function useSearchActions({
       onRecordSearch?.(query);
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openFolder', 'system.openFolder', result.path);
+      bumpLocalRunCount(result.path);
     } catch {
       setActionError(t('search.openFolderFailed', 'Could not open containing folder'));
     }
-  }, [onRecordSearch, query, setActionError, t]);
+  }, [bumpLocalRunCount, onRecordSearch, query, setActionError, t]);
 
   const copyPathResult = useCallback((result: SearchResult | undefined) => {
     if (!result) return;

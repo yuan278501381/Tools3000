@@ -18,6 +18,7 @@ import {
   FileText,
   FileVideo,
   Folder,
+  Globe,
 } from 'lucide-react';
 import {
   getColumnDisplayLabel,
@@ -135,8 +136,12 @@ function renderFileIcon(
   density: SearchDensity = 'standard',
   iconStyle: SearchIconStyle = 'native',
   iconBase64?: string,
+  resultType?: SearchResult['resultType'],
 ): ReactNode {
   const iconSize = density === 'compact' ? 15 : density === 'comfortable' ? 18 : 16;
+  if (resultType === 'bookmark') {
+    return <Globe className="file-icon file-icon--bookmark" size={iconSize} aria-hidden="true" />;
+  }
   if (iconStyle === 'native' && iconBase64) {
     return (
       <img
@@ -221,18 +226,29 @@ export const SearchResultRow = memo(function SearchResultRow({
 }: SearchResultRowProps) {
   const { t } = useTranslation();
   const visibleTableCols = getVisibleTableColumns(columns);
+  const showRunCountColumn = visibleTableCols.includes('runCount');
   const hasSnippets = Boolean(columns.snippets && result.snippets && result.snippets.length > 0);
 
   const translateLabel = (key: string, defaultVal?: string) =>
     t(key as never, defaultVal as never) as unknown as string;
 
   const renderTableCell = (colId: TableColumnId): ReactNode => {
+    const isBookmark = result.resultType === 'bookmark';
     if (colId === 'name') {
       return (
         <div key="name" data-table-col="name" className="table-cell table-cell--name" title={result.name}>
-          {renderFileIcon(result.name, result.isDirectory, density, iconStyle, iconBase64)}
+          {renderFileIcon(result.name, result.isDirectory, density, iconStyle, iconBase64, result.resultType)}
           <span className="file-name-text">{highlightMatch(result.name, queryKeywords)}</span>
-          {Boolean(result.runCount && result.runCount > 0) && (
+          {isBookmark && (
+            <span
+              className="file-bookmark-badge"
+              title={result.bookmarkFolder ? `${result.browserSource || 'Browser'} · ${result.bookmarkFolder}` : (result.browserSource || t('search.catBookmarks', 'Bookmarks'))}
+            >
+              {result.browserSource || t('search.catBookmarks', 'Bookmarks')}
+            </span>
+          )}
+          {/* 严格遵循 MECE 原则：当独立「打开次数」列已显示时绝不在文件名列重复展示徽标；仅当用户主动隐藏该列时回退提示 */}
+          {!showRunCountColumn && Boolean(result.runCount && result.runCount > 0) && (
             <span className="file-run-badge" title={t('search.runCountTip', 'Opened {{count}} times in history', { count: result.runCount })}>
               {t('search.runCountBadge', '{{count}} runs', { count: result.runCount })}
             </span>
@@ -242,12 +258,32 @@ export const SearchResultRow = memo(function SearchResultRow({
     }
 
     if (colId === 'path') {
-      const directoryPath = extractParentDirectoryPath(result.path) || result.path;
+      const directoryPath = isBookmark ? result.path : (extractParentDirectoryPath(result.path) || result.path);
       return (
         <div key="path" data-table-col="path" className="table-cell table-cell--dir" title={result.path}>
           <span className="table-dir-text">
             {directoryPath ? highlightMatch(directoryPath, queryKeywords) : '—'}
           </span>
+        </div>
+      );
+    }
+
+    if (colId === 'runCount') {
+      const runs = typeof result.runCount === 'number' && Number.isFinite(result.runCount) && result.runCount > 0
+        ? Math.floor(result.runCount)
+        : 0;
+      return (
+        <div
+          key="runCount"
+          data-table-col="runCount"
+          className={`table-cell table-cell--mono-right table-cell--run-count${runs > 0 ? ' table-cell--run-count-active' : ''}`}
+          title={
+            runs > 0
+              ? t('search.runCountTip', 'Opened {{count}} times in history', { count: runs })
+              : t('search.colRunCount', 'Open Count')
+          }
+        >
+          {runs > 0 ? runs : '—'}
         </div>
       );
     }

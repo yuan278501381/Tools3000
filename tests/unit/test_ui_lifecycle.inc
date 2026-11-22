@@ -1773,5 +1773,14 @@ TEST(FramelessWindowChromeRegressionTest, RoundedCornerPolicySkipsRegionOnWin11O
     WinUtils::clearWindowRegionIfSet(hwnd, false);
     EXPECT_EQ(GetWindowRgnBox(hwnd, &rgnBox), ERROR);
 
+    // 回归校验：当最大化调用 applyUniversalRoundedCorners(..., radius=0) 时，必须主动清除已有 RGN，
+    // 绝不能因 radius <= 0 静默早退而导致全屏窗口被普通态小尺寸 HRGN 裁切。
+    HRGN smallRgn = CreateRoundRectRgn(0, 0, 761, 561, 24, 24);
+    ASSERT_NE(smallRgn, nullptr);
+    ASSERT_NE(SetWindowRgn(hwnd, smallRgn, FALSE), 0);
+    EXPECT_NE(GetWindowRgnBox(hwnd, &rgnBox), ERROR);
+    WinUtils::applyUniversalRoundedCorners(hwnd, 1920, 1080, 0);
+    EXPECT_EQ(GetWindowRgnBox(hwnd, &rgnBox), ERROR);
+
     DestroyWindow(hwnd);
 }

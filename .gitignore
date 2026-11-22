@@ -16,6 +16,8 @@ deploy_symbols/
 deploy_logs/
 release_assets/
 src/service/rust_content/target/
+src/cli/target/
+src/clipboard/rust_clipboard/target/
 
 # 二进制目标与中间符号 (Binary Targets & Debug Symbols)
 *.exe

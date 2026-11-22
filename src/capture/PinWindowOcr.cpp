@@ -270,6 +270,8 @@ void PinWindow::invalidateOcrStateAndRefreshIfSelecting() {
         m_pendingSelectAllOcr = false;
         m_pendingCopyAllOcr = false;
         m_pendingOpenPanelOcr = false;
+        m_pendingTranslateAfterOcr = false;
+        m_pendingTranslateSelectedOnly = false;
         m_silentOcrPreload = false;
         ++m_ocrVersion;
         m_ocrInFlightVersion = 0;
@@ -469,19 +471,31 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
                         uint64_t expected = currentVer;
                         self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
                         if (self->m_ocrVersion.load() != currentVer) return;
-                        std::lock_guard<std::mutex> lock(self->m_ocrMutex);
-                        applyRecognizedPage(self, page, currentVer);
+                        {
+                            std::lock_guard<std::mutex> lock(self->m_ocrMutex);
+                            applyRecognizedPage(self, page, currentVer);
+                        }
+                        if (self->m_pendingTranslateAfterOcr.exchange(false, std::memory_order_acq_rel)) {
+                            const bool selOnly = self->m_pendingTranslateSelectedOnly.exchange(false, std::memory_order_acq_rel);
+                            self->translateInPlace(selOnly, /*forceRetranslate=*/true);
+                        }
                     }
                 });
             if (posted) {
                 inFlightHandedOff = true;
             } else if (!s_ocrShuttingDown.load(std::memory_order_acquire)) {
                 if (auto self = weakSelf.lock()) {
-                    std::lock_guard<std::mutex> lock(self->m_ocrMutex);
-                    uint64_t expected = currentVer;
-                    self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
-                    inFlightHandedOff = true;
-                    applyRecognizedPage(self, page, currentVer);
+                    {
+                        std::lock_guard<std::mutex> lock(self->m_ocrMutex);
+                        uint64_t expected = currentVer;
+                        self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
+                        inFlightHandedOff = true;
+                        applyRecognizedPage(self, page, currentVer);
+                    }
+                    if (self->m_pendingTranslateAfterOcr.exchange(false, std::memory_order_acq_rel)) {
+                        const bool selOnly = self->m_pendingTranslateSelectedOnly.exchange(false, std::memory_order_acq_rel);
+                        self->translateInPlace(selOnly, /*forceRetranslate=*/true);
+                    }
                 }
             }
         }).detach();
@@ -598,6 +612,8 @@ void PinWindow::setOcrBlocksForTest(std::vector<PinOcrBlock> blocks) {
         m_pendingSelectAllOcr = false;
         m_pendingCopyAllOcr = false;
         m_pendingOpenPanelOcr = false;
+        m_pendingTranslateAfterOcr = false;
+        m_pendingTranslateSelectedOnly = false;
         m_silentOcrPreload = false;
         ++m_ocrVersion;
         m_ocrInFlightVersion = 0;
@@ -926,6 +942,7 @@ void PinWindow::extractText() {
 
 void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {
     if (newImage.empty() || !m_hwnd) return;
+    clearTranslationState();
     if (m_editingTextReplaceIdx >= 0) {
         KillTimer(m_hwnd, 3);
         m_editingTextReplaceIdx = -1;
@@ -977,6 +994,7 @@ void PinWindow::applyEditedMarkup(
     const std::vector<MarkupElement>& elements,
     const cv::Mat& precomposited) {
     if (cleanBaseImage.empty() || !m_hwnd) return;
+    clearTranslationState();
     if (m_editingTextReplaceIdx >= 0) {
         KillTimer(m_hwnd, 3);
         m_editingTextReplaceIdx = -1;
@@ -1066,6 +1084,7 @@ void PinWindow::pushPinMarkupUndoState() {
 
 void PinWindow::recompositeMarkupPreservingOcr() {
     if (m_cleanBaseImage.empty() || !m_hwnd) return;
+    clearTranslationState();
     m_colorBackup.release();
     m_grayscale = false;
     m_inverted = false;

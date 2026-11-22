@@ -14,7 +14,9 @@
 #define TOOLS3000_CAPTURE_PINWINDOW_H
 
 #include "capture/PinGroupManager.h"
+#include "capture/PinOcrTypes.h"
 #include "capture/MarkupEngine.h"
+#include "capture/InPlaceTranslateEngine.h"
 #include "ocr/OcrEngine.h"
 #include <windows.h>
 #include <d2d1.h>
@@ -30,26 +32,6 @@
 #include <string>
 
 namespace tools3000::capture {
-
-struct PinOcrBlock {
-    std::string text;
-    cv::Rect origBox;
-    std::vector<cv::Rect> charBoxes;
-    int layoutRegionId = 0;
-    int alignedRowId = -1;
-};
-
-struct PinQrCodeItem {
-    std::string text;
-    cv::Rect origBox;
-    D2D1_RECT_F badgeRect{};
-};
-
-struct PinBlockCharSpan {
-    size_t blockIndex = 0;
-    size_t startChar = 0;
-    size_t endExclusive = 0;
-};
 
 struct CaptureRegion;
 
@@ -121,6 +103,25 @@ public:
 
     /// 提取贴图文本 (OCR)
     void extractText();
+
+    /// 原位无痕翻译贴图（selectedOnly=true 仅翻译当前划选文字；forceRetranslate=true 强制忽略缓存重译）
+    void translateInPlace(bool selectedOnly = false, bool forceRetranslate = false);
+
+    /// 0ms 瞬切原图 / 译图对照（非破坏原图）
+    void toggleTranslationOverlay();
+
+    /// 复制本次原位翻译的全部译文到剪贴板
+    void copyTranslatedText();
+
+    /// 清除过期译图并取消在途翻译请求
+    void clearTranslationState();
+
+    bool isShowingTranslation() const noexcept { return m_showingTranslation && !m_translatedImage.empty(); }
+    bool isTranslationInFlight() const noexcept { return m_translationInFlight.load(std::memory_order_acquire); }
+    bool hasTranslationResult() const noexcept { return !m_translatedImage.empty(); }
+    const cv::Mat& activeDisplayImage() const noexcept {
+        return (m_showingTranslation && !m_translatedImage.empty()) ? m_translatedImage : m_sourceImage;
+    }
 
     /// 全选贴图识别出的全部文字块并高亮 (Ctrl+A)
     void selectAllText();
@@ -340,6 +341,11 @@ private:
     void updateWindowCornerRegion();
     void render();
     void applyLayeredOpacity();  // 按 opacity × 穿透提示系数 应用分层透明度
+    void stopZoomAnimation(bool renderFinalSharpness = false);
+    void applyScaleAtAnchor(float newScale, POINT anchorScreenPt, float relX, float relY, bool finalFrame);
+    void stepZoomAnimation();
+
+    static constexpr UINT_PTR kTimerIdZoomAnim = 4;
 
     static LRESULT CALLBACK pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -347,6 +353,12 @@ private:
     float m_dpiScale = 1.0f;
     float m_opacity = 1.0f;
     float m_scale = 1.0f;
+    bool m_zoomAnimating = false;
+    float m_zoomTargetScale = 1.0f;
+    POINT m_zoomAnchorScreenPt{};
+    float m_zoomAnchorRelX = 0.5f;
+    float m_zoomAnchorRelY = 0.5f;
+    int64_t m_zoomLastQpc = 0;
     int m_origWidth = 0;
     int m_origHeight = 0;
     bool m_isDragging = false;
@@ -376,6 +388,7 @@ private:
     D2D1_RECT_F m_btnInvertRect = {};
     D2D1_RECT_F m_btnEditRect = {};
     D2D1_RECT_F m_btnTextRect = {};
+    D2D1_RECT_F m_btnTranslateRect = {};
     D2D1_RECT_F m_btnCopyRect = {};
     D2D1_RECT_F m_btnSaveRect = {};
     D2D1_RECT_F m_btnCloseRect = {};
@@ -384,6 +397,7 @@ private:
     bool m_hoverInvert = false;
     bool m_hoverEdit = false;
     bool m_hoverText = false;
+    bool m_hoverTranslate = false;
     bool m_hoverCopy = false;
     bool m_hoverSave = false;
     bool m_hoverClose = false;
@@ -425,6 +439,8 @@ private:
     D2D1_RECT_F m_btnWavyFloatingRect = {};
     D2D1_RECT_F m_btnUnderlineFloatingRect = {};
     D2D1_RECT_F m_btnTextReplaceFloatingRect = {};
+    D2D1_RECT_F m_btnTranslateFloatingRect = {};
+    D2D1_RECT_F m_btnTranslateStatusRect = {};
     D2D1_RECT_F m_btnUndoFloatingRect = {};
     std::array<D2D1_RECT_F, 5> m_btnColorDotFloatingRects = {};
     bool m_hoverCopyFloating = false;
@@ -434,6 +450,8 @@ private:
     bool m_hoverWavyFloating = false;
     bool m_hoverUnderlineFloating = false;
     bool m_hoverTextReplaceFloating = false;
+    bool m_hoverTranslateFloating = false;
+    bool m_hoverTranslateStatus = false;
     bool m_hoverUndoFloating = false;
     int m_hoveredColorDotIndex = -1;
     int m_textMarkupColorIndex = 0;
@@ -484,6 +502,16 @@ private:
 
     cv::Mat m_sourceImage;  // 原图副本，供"复制到剪贴板"
     cv::Mat m_cleanBaseImage;  // 1:1 原始物理分辨率无损纯净底图（与矢量标注分离存储）
+    cv::Mat m_translatedImage; // 非破坏原位翻译译图副本（与 m_sourceImage 独立存放，0ms 瞬切对照）
+    bool m_showingTranslation = false;
+    std::atomic<bool> m_translationInFlight{false};
+    std::atomic<uint64_t> m_translationVersion{0};
+    std::shared_ptr<std::atomic<bool>> m_translateCancelFlag;
+    std::atomic<bool> m_pendingTranslateAfterOcr{false};
+    std::atomic<bool> m_pendingTranslateSelectedOnly{false};
+    std::string m_translatedTargetLang;
+    std::string m_translatedProviderUsed;
+    std::vector<TranslationParagraph> m_translatedParagraphs;
     uint64_t m_contentFingerprint = 0; // 当前贴图内容 64-bit 指纹（供 F3 贴图防重复套娃去重）
     std::vector<MarkupElement> m_markupElements;  // 1:1 原始像素空间下的独立可二次编辑矢量列表
     float m_cardCornerRadius = 0.0f;       // 微晶字签/色卡签基准像素圆角 (0 = 普通直角截图)

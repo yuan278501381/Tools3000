@@ -10,6 +10,7 @@ endif()
 # ─────────────────────────────────────────────────────────────────────────────
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" TOOLS3000_VERSION)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
 string(STRIP "${TOOLS3000_VERSION}" TOOLS3000_VERSION)
 if(NOT TOOLS3000_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR "VERSION must contain exactly one stable SemVer value (for example 1.2.3)")
@@ -188,6 +189,7 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/BeautyShell.cpp
     src/capture/WatermarkRenderer.cpp
     src/capture/TextReplaceEngine.cpp
+    src/capture/InPlaceTranslateEngine.cpp
     src/capture/MarkupEngine.cpp
     src/capture/MarkupEngineEffects.cpp
     src/capture/MarkupEngineShapes.cpp
@@ -297,7 +299,7 @@ set(RUST_CONTENT_SRC "${CMAKE_SOURCE_DIR}/src/service/rust_content/src/lib.rs")
 add_custom_command(
     OUTPUT "${RUST_CONTENT_LIB}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/lib"
-    COMMAND "${RUSTC_EXECUTABLE}" --edition 2021 --crate-type staticlib --target "${RUSTC_TARGET_TRIPLE}" -C opt-level=3 -C panic=abort "${RUST_CONTENT_SRC}" -o "${RUST_CONTENT_LIB}"
+    COMMAND "${RUSTC_EXECUTABLE}" --edition 2021 --crate-name tools3000_content_rs -C metadata=tools3000_content_rs --crate-type staticlib --target "${RUSTC_TARGET_TRIPLE}" -C opt-level=3 -C panic=abort "${RUST_CONTENT_SRC}" -o "${RUST_CONTENT_LIB}"
     DEPENDS
         "${RUST_CONTENT_SRC}"
         "${CMAKE_SOURCE_DIR}/src/service/rust_content/src/constants.rs"
@@ -339,8 +341,27 @@ target_link_libraries(keycast_objects PUBLIC Tools3000Core
     d2d1 dwrite msimg32 user32 shell32 shcore dwmapi
 )
 
-# 6. ui_objects (5 个源文件)
+# 6. ui_objects (含纯 Rust 持久化剪贴板内核静态库 tools3000_clipboard_rs.lib)
+set(RUST_CLIPBOARD_LIB "${CMAKE_BINARY_DIR}/lib/tools3000_clipboard_rs.lib")
+set(RUST_CLIPBOARD_SRC "${CMAKE_SOURCE_DIR}/src/clipboard/rust_clipboard/src/lib.rs")
+add_custom_command(
+    OUTPUT "${RUST_CLIPBOARD_LIB}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/lib"
+    COMMAND "${RUSTC_EXECUTABLE}" --edition 2021 --crate-name tools3000_clipboard_rs -C metadata=tools3000_clipboard_rs --crate-type staticlib --target "${RUSTC_TARGET_TRIPLE}" -C opt-level=3 -C panic=abort "${RUST_CLIPBOARD_SRC}" -o "${RUST_CLIPBOARD_LIB}"
+    DEPENDS
+        "${RUST_CLIPBOARD_SRC}"
+        "${CMAKE_SOURCE_DIR}/src/clipboard/rust_clipboard/src/model.rs"
+        "${CMAKE_SOURCE_DIR}/src/clipboard/rust_clipboard/src/storage.rs"
+        "${CMAKE_SOURCE_DIR}/src/clipboard/rust_clipboard/src/store.rs"
+        "${CMAKE_SOURCE_DIR}/src/clipboard/rust_clipboard/src/ffi.rs"
+        "${CMAKE_SOURCE_DIR}/src/clipboard/rust_clipboard/Cargo.toml"
+    COMMENT "Building Rust persistent clipboard kernel (tools3000_clipboard_rs.lib)..."
+    VERBATIM
+)
+add_custom_target(tools3000_clipboard_rs_target DEPENDS "${RUST_CLIPBOARD_LIB}")
+
 set(UI_OBJECT_SOURCES
+    src/clipboard/ClipboardManager.cpp
     src/ui/WebViewSuspend.cpp
     src/ui/SpotlightOverlay.cpp
     src/ui/SpotlightOverlayInputController.cpp
@@ -348,12 +369,13 @@ set(UI_OBJECT_SOURCES
     src/tray/TrayIcon.cpp
 )
 add_library(ui_objects OBJECT ${UI_OBJECT_SOURCES})
+add_dependencies(ui_objects tools3000_clipboard_rs_target)
 target_include_directories(ui_objects PUBLIC ${CMAKE_SOURCE_DIR}/src)
 if(EXISTS "${WEBVIEW2_DIR}")
     target_include_directories(ui_objects PUBLIC "${WEBVIEW2_DIR}/build/native/include")
 endif()
-target_link_libraries(ui_objects PUBLIC Tools3000Core
-    shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 shcore d2d1 dwrite wtsapi32 dwmapi
+target_link_libraries(ui_objects PUBLIC "${RUST_CLIPBOARD_LIB}" Tools3000Core
+    shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 shcore d2d1 dwrite wtsapi32 dwmapi windowscodecs ntdll userenv ws2_32 bcrypt
 )
 
 # ── 2. Plugin_Gesture (动态库) ────────────────────────────────────────────────
@@ -389,6 +411,7 @@ set(CAPTURE_OTHER_SOURCES
     src/capture/PinWindowOcr.cpp
     src/capture/PinWindowRender.cpp
     src/capture/PinWindowTextReplace.cpp
+    src/capture/PinWindowTranslate.cpp
     src/capture/PluginEntry.cpp
     src/capture/ScreenCapture.cpp
     ${OCR_SOURCES}
@@ -479,6 +502,7 @@ set_target_properties(Plugin_DialogEnhancer PROPERTIES RUNTIME_OUTPUT_DIRECTORY 
 # ── 4. Tools3000 Host (可执行文件) ─────────────────────────────────────────────
 set(HOST_OTHER_SOURCES
     src/main.cpp
+    src/ui/ClipboardWindow.cpp
     src/ui/KeyboardPipeline.cpp
     src/ui/QuickLookWindow.cpp
     src/ui/SearchWindow.cpp
@@ -490,11 +514,12 @@ set(HOST_OTHER_SOURCES
     src/Tools3000.manifest
 )
 add_executable(Tools3000 WIN32 ${HOST_OTHER_SOURCES} $<TARGET_OBJECTS:ui_objects>)
+add_dependencies(Tools3000 tools3000_clipboard_rs_target)
 set_target_properties(Tools3000 PROPERTIES OUTPUT_NAME "Tools3000")
 tools3000_add_version_resource(Tools3000 "Tools3000 Desktop Productivity Toolkit" "Tools3000.exe" VFT_APP)
 target_include_directories(Tools3000 PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(Tools3000 PRIVATE Tools3000Core
-    shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 shcore d2d1 dwrite wtsapi32 dwmapi
+target_link_libraries(Tools3000 PRIVATE "${RUST_CLIPBOARD_LIB}" Tools3000Core
+    shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 shcore d2d1 dwrite wtsapi32 dwmapi windowscodecs ntdll userenv ws2_32 bcrypt
 )
 
 # A runnable host build must contain the same validated plugin bundle that the
@@ -601,6 +626,7 @@ if(BUILD_TESTING)
         src/ocr/OcrTableReconstructor.cpp
         src/ocr/OcrResultWindow.cpp
         src/search/SearchPropertyExtractor.cpp
+        src/search/BrowserBookmarkIndex.cpp
         $<TARGET_OBJECTS:capture_objects>
         $<TARGET_OBJECTS:gesture_objects>
         $<TARGET_OBJECTS:service_objects>
@@ -617,10 +643,10 @@ if(BUILD_TESTING)
     if (MSVC)
         target_compile_options(Tools3000Tests PRIVATE /bigobj)
     endif()
-    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 msimg32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 oleaut32 wbemuuid shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm winhttp windowsapp ntdll userenv ws2_32 dbghelp version bcrypt propsys
+    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" "${RUST_CLIPBOARD_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 msimg32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 oleaut32 wbemuuid shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm winhttp windowsapp ntdll userenv ws2_32 dbghelp version bcrypt propsys
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY} ${WEBP_LIBRARY} ${WEBPMUX_LIBRARY} ${OpenCV_LIBS})
-    add_dependencies(Tools3000Tests tools3000_content_rs_target Tools3000 Plugin_Gesture Plugin_Capture Plugin_Keycast Plugin_Search Plugin_DialogEnhancer)
+    add_dependencies(Tools3000Tests tools3000_content_rs_target tools3000_clipboard_rs_target Tools3000 Plugin_Gesture Plugin_Capture Plugin_Keycast Plugin_Search Plugin_DialogEnhancer)
     add_test(NAME Tools3000.Unit COMMAND Tools3000Tests)
 
     # Manual visual QA helper. It uses the production Direct2D renderer, writes

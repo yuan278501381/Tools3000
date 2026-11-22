@@ -1363,11 +1363,19 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         screenPt.x += offX;
                         screenPt.y += offY;
 
-                        // 光标防抖锁定：若光标物理位移为 0 或已处于高层级且仍在选区包围盒内（含 6px 容差），则保留当前层级，杜绝鼠标微动导致层级强制重置跳变
+                        // 光标防抖锁定：
+                        // 1. 距离上次有效探测点微移 < 3px 时跳过重复探测，彻底消除 1~2px 手抖触发边缘高频跳变；
+                        // 2. 已处于滚轮/Tab 手动锁定的高层级且仍在选区包围盒内（含 6px 容差），保留当前层级。
                         bool preserveHierarchy = false;
-                        if (m_state->currentCursor.x == m_state->lastMousePos.x &&
-                            m_state->currentCursor.y == m_state->lastMousePos.y &&
-                            !m_state->detectedWindowHierarchy.empty()) {
+                        const bool withinMicroJitter =
+                            !m_state->detectedWindowHierarchy.empty() &&
+                            m_lastDetectScreenPt.x != INT_MIN &&
+                            (std::abs(screenPt.x - m_lastDetectScreenPt.x) +
+                             std::abs(screenPt.y - m_lastDetectScreenPt.y)) < 3;
+                        if (withinMicroJitter ||
+                            (m_state->currentCursor.x == m_state->lastMousePos.x &&
+                             m_state->currentCursor.y == m_state->lastMousePos.y &&
+                             !m_state->detectedWindowHierarchy.empty())) {
                             preserveHierarchy = true;
                         } else if (m_state->detectedWindowHierarchyIndex > 0 &&
                             m_state->detectedWindow.right > m_state->detectedWindow.left &&

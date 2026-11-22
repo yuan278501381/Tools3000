@@ -11,6 +11,7 @@ import { useState, useEffect, useCallback, useRef, type FC } from 'react';
 import { Card, Toggle, SettingRow, SettingGroup, Badge, Select, Button, CodeBadge, PageSkeleton } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
+import { InPlaceTranslateCard } from '../components/InPlaceTranslateCard';
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -832,6 +833,8 @@ export const OcrPage: FC = () => {
           />
         </Card>
       </SettingGroup>
+
+      <InPlaceTranslateCard />
     </div>
   );
 };

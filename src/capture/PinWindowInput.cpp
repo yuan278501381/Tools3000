@@ -56,6 +56,9 @@ PinContextMenuSnapshot buildPinContextMenuSnapshot(const PinWindow* self) {
     snap.isTextSelectionMode = self->isTextSelectionMode();
     snap.hasSelectedText = (self->selectedTextBlockCount() > 0);
     snap.hasPinnedSourceText = !self->pinnedSourceText().empty();
+    snap.hasTranslation = self->hasTranslationResult();
+    snap.isShowingTranslation = self->isShowingTranslation();
+    snap.isTranslationInFlight = self->isTranslationInFlight();
     snap.scale = self->scale();
     snap.opacity = self->opacity();
 
@@ -134,6 +137,18 @@ void executePinContextMenuCommand(PinWindow* self, HWND hwnd, const PinMenuComma
         case PinMenuAction::ExtractTextDialog:
             self->extractText();
             break;
+        case PinMenuAction::TranslateInPlace:
+            self->translateInPlace(self->selectedTextBlockCount() > 0, /*forceRetranslate=*/false);
+            break;
+        case PinMenuAction::RetranslateInPlace:
+            self->translateInPlace(/*selectedOnly=*/false, /*forceRetranslate=*/true);
+            break;
+        case PinMenuAction::ToggleTranslationOverlay:
+            self->toggleTranslationOverlay();
+            break;
+        case PinMenuAction::CopyTranslatedText:
+            self->copyTranslatedText();
+            break;
         case PinMenuAction::ToggleTextSelectionMode:
             self->toggleTextSelectionMode();
             break;
@@ -142,7 +157,7 @@ void executePinContextMenuCommand(PinWindow* self, HWND hwnd, const PinMenuComma
             break;
         case PinMenuAction::SaveImage:
             if (hwnd && IsWindow(hwnd)) {
-                savePinnedImage(hwnd, self->sourceImage());
+                savePinnedImage(hwnd, self->activeDisplayImage());
             }
             break;
         case PinMenuAction::ResetScale:
@@ -281,6 +296,8 @@ void PinWindow::forceHoverStateForTest(bool hovering) {
         m_hoverCopyFloating = false;
         m_hoverCopyTableFloating = false;
         m_hoverOpenPanelFloating = false;
+        m_hoverTranslateFloating = false;
+        m_hoverTranslateStatus = false;
         m_hoveredQrBadgeIndex = -1;
     }
     if (m_hwnd && IsWindow(m_hwnd)) {
@@ -296,6 +313,7 @@ void PinWindow::clearHoverToolbarRects() noexcept {
     m_btnInvertRect = {};
     m_btnEditRect = {};
     m_btnTextRect = {};
+    m_btnTranslateRect = {};
     m_btnCopyRect = {};
     m_btnSaveRect = {};
     m_btnCloseRect = {};
@@ -304,6 +322,7 @@ void PinWindow::clearHoverToolbarRects() noexcept {
     m_hoverInvert = false;
     m_hoverEdit = false;
     m_hoverText = false;
+    m_hoverTranslate = false;
     m_hoverCopy = false;
     m_hoverSave = false;
     m_hoverClose = false;
@@ -335,6 +354,9 @@ int PinWindow::hitTestInteractiveButton(int x, int y) const noexcept {
         if (isPointInRectF(m_btnOpenPanelFloatingRect, x, y)) {
             return kPinBtnOpenPanelFloating;
         }
+        if (isPointInRectF(m_btnTranslateFloatingRect, x, y)) {
+            return kPinBtnTranslateFloating;
+        }
         if (isPointInRectF(m_btnHighlightFloatingRect, x, y)) {
             return kPinBtnHighlightFloating;
         }
@@ -364,15 +386,19 @@ int PinWindow::hitTestInteractiveButton(int x, int y) const noexcept {
             }
         }
     }
+    if (isPointInRectF(m_btnTranslateStatusRect, x, y)) {
+        return kPinBtnTranslateStatus;
+    }
     if (m_hoverAlpha > 0.0f && m_toolbarRect.right > m_toolbarRect.left) {
-        if (isPointInRectF(m_btnFoldRect, x, y))   return kPinBtnFold;
-        if (isPointInRectF(m_btnRotateRect, x, y)) return kPinBtnRotate;
-        if (isPointInRectF(m_btnInvertRect, x, y)) return kPinBtnInvert;
-        if (isPointInRectF(m_btnEditRect, x, y))   return kPinBtnEdit;
-        if (isPointInRectF(m_btnTextRect, x, y))   return kPinBtnText;
-        if (isPointInRectF(m_btnCopyRect, x, y))   return kPinBtnCopy;
-        if (isPointInRectF(m_btnSaveRect, x, y))   return kPinBtnSave;
-        if (isPointInRectF(m_btnCloseRect, x, y))  return kPinBtnClose;
+        if (isPointInRectF(m_btnFoldRect, x, y))      return kPinBtnFold;
+        if (isPointInRectF(m_btnRotateRect, x, y))    return kPinBtnRotate;
+        if (isPointInRectF(m_btnInvertRect, x, y))    return kPinBtnInvert;
+        if (isPointInRectF(m_btnEditRect, x, y))      return kPinBtnEdit;
+        if (isPointInRectF(m_btnTextRect, x, y))      return kPinBtnText;
+        if (isPointInRectF(m_btnTranslateRect, x, y)) return kPinBtnTranslate;
+        if (isPointInRectF(m_btnCopyRect, x, y))      return kPinBtnCopy;
+        if (isPointInRectF(m_btnSaveRect, x, y))      return kPinBtnSave;
+        if (isPointInRectF(m_btnCloseRect, x, y))     return kPinBtnClose;
     }
     return kPinBtnNone;
 }
@@ -405,6 +431,8 @@ bool PinWindow::isInteractiveButtonHitWithSlop(int btnId, int x, int y, float sl
         case kPinBtnWavyFloating:      return !m_selectedBlockIndices.empty() && hitExpanded(m_btnWavyFloatingRect);
         case kPinBtnUnderlineFloating: return !m_selectedBlockIndices.empty() && hitExpanded(m_btnUnderlineFloatingRect);
         case kPinBtnTextReplaceFloating: return !m_selectedBlockIndices.empty() && hitExpanded(m_btnTextReplaceFloatingRect);
+        case kPinBtnTranslateFloating:   return !m_selectedBlockIndices.empty() && hitExpanded(m_btnTranslateFloatingRect);
+        case kPinBtnTranslateStatus:     return hitExpanded(m_btnTranslateStatusRect);
         case kPinBtnUndoFloating:      return !m_selectedBlockIndices.empty() && hitExpanded(m_btnUndoFloatingRect);
         case kPinBtnTrFontDec:         return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrFontDecRect);
         case kPinBtnTrFontInc:         return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrFontIncRect);
@@ -413,15 +441,16 @@ bool PinWindow::isInteractiveButtonHitWithSlop(int btnId, int x, int y, float sl
         case kPinBtnTrBgMode:          return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrBgModeRect);
         case kPinBtnTrReflow:          return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrReflowRect);
         case kPinBtnTrDone:            return m_editingTextReplaceIdx >= 0 && hitExpanded(m_btnTrDoneRect);
-        // 右上角工具栏 8 键：只要按下时已锁定，抬手校验不受 m_hoverAlpha 定时器竞态淡出影响
-        case kPinBtnFold:   return hitExpanded(m_btnFoldRect);
-        case kPinBtnRotate: return hitExpanded(m_btnRotateRect);
-        case kPinBtnInvert: return hitExpanded(m_btnInvertRect);
-        case kPinBtnEdit:   return hitExpanded(m_btnEditRect);
-        case kPinBtnText:   return hitExpanded(m_btnTextRect);
-        case kPinBtnCopy:   return hitExpanded(m_btnCopyRect);
-        case kPinBtnSave:   return hitExpanded(m_btnSaveRect);
-        case kPinBtnClose:  return hitExpanded(m_btnCloseRect);
+        // 右上角工具栏 9 键：只要按下时已锁定，抬手校验不受 m_hoverAlpha 定时器竞态淡出影响
+        case kPinBtnFold:      return hitExpanded(m_btnFoldRect);
+        case kPinBtnRotate:    return hitExpanded(m_btnRotateRect);
+        case kPinBtnInvert:    return hitExpanded(m_btnInvertRect);
+        case kPinBtnEdit:      return hitExpanded(m_btnEditRect);
+        case kPinBtnText:      return hitExpanded(m_btnTextRect);
+        case kPinBtnTranslate: return hitExpanded(m_btnTranslateRect);
+        case kPinBtnCopy:      return hitExpanded(m_btnCopyRect);
+        case kPinBtnSave:      return hitExpanded(m_btnSaveRect);
+        case kPinBtnClose:     return hitExpanded(m_btnCloseRect);
         default:            return false;
     }
 }
@@ -430,7 +459,7 @@ bool PinWindow::copyPinImageWithFeedback() {
     if (m_editingTextReplaceIdx >= 0) {
         commitInPlaceTextReplace(true);
     }
-    const bool ok = copyImageToClipboard(m_sourceImage, m_hwnd);
+    const bool ok = copyImageToClipboard(activeDisplayImage(), m_hwnd);
     const bool isZh = tools3000::core::isUiLanguageChinese();
     tools3000::core::EventBus::instance().publish(
         tools3000::core::ShowToastEvent{
@@ -494,6 +523,12 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
         case kPinBtnTextReplaceFloating:
             startInPlaceTextReplace();
             break;
+        case kPinBtnTranslateFloating:
+            translateInPlace(/*selectedOnly=*/true, /*forceRetranslate=*/true);
+            break;
+        case kPinBtnTranslateStatus:
+            toggleTranslationOverlay();
+            break;
         case kPinBtnTrFontDec:
         case kPinBtnTrFontInc:
         case kPinBtnTrWeight:
@@ -555,12 +590,15 @@ void PinWindow::executeInteractiveButton(int btnId, int clientX, int clientY, bo
                 toggleTextSelectionMode();
             }
             break;
+        case kPinBtnTranslate:
+            translateInPlace(/*selectedOnly=*/false, /*forceRetranslate=*/shiftHeld);
+            break;
         case kPinBtnCopy:
             copyPinImageWithFeedback();
             break;
         case kPinBtnSave:
             if (m_hwnd && IsWindow(m_hwnd)) {
-                savePinnedImage(m_hwnd, m_sourceImage);
+                savePinnedImage(m_hwnd, activeDisplayImage());
             }
             break;
         case kPinBtnClose:
@@ -600,12 +638,13 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->m_hoverCopyTableFloating || self->m_hoverOpenPanelFloating ||
                     self->m_hoverHighlightFloating || self->m_hoverWavyFloating ||
                     self->m_hoverUnderlineFloating || self->m_hoverTextReplaceFloating ||
+                    self->m_hoverTranslateFloating || self->m_hoverTranslateStatus ||
                     self->m_hoverUndoFloating || self->m_hoveredColorDotIndex >= 0 ||
                     self->m_hoveredTrBtnId >= 0 ||
                     self->m_hoveredQrBadgeIndex >= 0 ||
                     self->m_hoverFold || self->m_hoverRotate || self->m_hoverInvert ||
-                    self->m_hoverEdit || self->m_hoverText || self->m_hoverCopy ||
-                    self->m_hoverSave || self->m_hoverClose;
+                    self->m_hoverEdit || self->m_hoverText || self->m_hoverTranslate ||
+                    self->m_hoverCopy || self->m_hoverSave || self->m_hoverClose;
                 if (self->m_editingTextReplaceIdx >= 0 && !hoverAnyBtn) {
                     if (self->m_isDraggingReplacePos || self->m_hoverReplaceDragHandle) {
                         SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
@@ -949,8 +988,16 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 case PinShortcutAction::ExtractText:
                     self->extractText();
                     return 0;
+                case PinShortcutAction::TranslateInPlace:
+                    self->translateInPlace(self->selectedTextBlockCount() > 0, /*forceRetranslate=*/false);
+                    return 0;
+                case PinShortcutAction::ToggleTranslationOverlay:
+                    if (self->hasTranslationResult()) {
+                        self->toggleTranslationOverlay();
+                    }
+                    return 0;
                 case PinShortcutAction::SaveImage:
-                    savePinnedImage(hwnd, self->m_sourceImage);
+                    savePinnedImage(hwnd, self->activeDisplayImage());
                     return 0;
                 case PinShortcutAction::HistoryPrev: {
                     const int totalHist = CaptureHistory::instance().count();
@@ -1147,10 +1194,14 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             }
 
             if (self->m_isDragging) {
+                if (self->m_zoomAnimating) {
+                    self->stopZoomAnimation(true);
+                }
                 if (self->m_hoverGroupBadge || self->m_hoverFold || self->m_hoverRotate || self->m_hoverInvert ||
-                    self->m_hoverEdit || self->m_hoverText || self->m_hoverCopy || self->m_hoverSave ||
-                    self->m_hoverClose || self->m_hoverCopyFloating ||
+                    self->m_hoverEdit || self->m_hoverText || self->m_hoverTranslate || self->m_hoverCopy ||
+                    self->m_hoverSave || self->m_hoverClose || self->m_hoverCopyFloating ||
                     self->m_hoverCopyTableFloating || self->m_hoverOpenPanelFloating ||
+                    self->m_hoverTranslateFloating || self->m_hoverTranslateStatus ||
                     self->m_hoveredQrBadgeIndex >= 0) {
                     self->m_hoverGroupBadge = false;
                     self->m_hoverFold = false;
@@ -1158,12 +1209,15 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->m_hoverInvert = false;
                     self->m_hoverEdit = false;
                     self->m_hoverText = false;
+                    self->m_hoverTranslate = false;
                     self->m_hoverCopy = false;
                     self->m_hoverSave = false;
                     self->m_hoverClose = false;
                     self->m_hoverCopyFloating = false;
                     self->m_hoverCopyTableFloating = false;
                     self->m_hoverOpenPanelFloating = false;
+                    self->m_hoverTranslateFloating = false;
+                    self->m_hoverTranslateStatus = false;
                     self->m_hoveredQrBadgeIndex = -1;
                     self->render();
                 }
@@ -1185,16 +1239,19 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             
             if (self->m_folded) {
                 if (self->m_hoverGroupBadge || self->m_hoverFold || self->m_hoverRotate || self->m_hoverInvert || self->m_hoverEdit ||
-                    self->m_hoverText || self->m_hoverCopy || self->m_hoverSave || self->m_hoverClose) {
+                    self->m_hoverText || self->m_hoverTranslate || self->m_hoverCopy || self->m_hoverSave || self->m_hoverClose ||
+                    self->m_hoverTranslateStatus) {
                     self->m_hoverGroupBadge = false;
                     self->m_hoverFold = false;
                     self->m_hoverRotate = false;
                     self->m_hoverInvert = false;
                     self->m_hoverEdit = false;
                     self->m_hoverText = false;
+                    self->m_hoverTranslate = false;
                     self->m_hoverCopy = false;
                     self->m_hoverSave = false;
                     self->m_hoverClose = false;
+                    self->m_hoverTranslateStatus = false;
                     self->render();
                 }
             } else {
@@ -1203,10 +1260,12 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 const bool hoverInvert = isPointInRectF(self->m_btnInvertRect, x, y);
                 const bool hoverEdit = isPointInRectF(self->m_btnEditRect, x, y);
                 const bool hoverText = isPointInRectF(self->m_btnTextRect, x, y);
+                const bool hoverTranslate = isPointInRectF(self->m_btnTranslateRect, x, y);
                 const bool hoverCopy = isPointInRectF(self->m_btnCopyRect, x, y);
                 const bool hoverSave = isPointInRectF(self->m_btnSaveRect, x, y);
                 const bool hoverClose = isPointInRectF(self->m_btnCloseRect, x, y);
                 const bool hoverGroupBadge = isPointInRectF(self->m_btnGroupBadgeRect, x, y);
+                const bool hoverTranslateStatus = isPointInRectF(self->m_btnTranslateStatusRect, x, y);
                 const bool hasSel = !self->m_selectedBlockIndices.empty() && self->m_editingTextReplaceIdx < 0;
                 const bool hoverCopyFloating = (hasSel && isPointInRectF(self->m_btnCopyFloatingRect, x, y));
                 const bool hoverCopyTableFloating = (hasSel && isPointInRectF(self->m_btnCopyTableFloatingRect, x, y));
@@ -1215,6 +1274,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 const bool hoverWavyFloating = (hasSel && isPointInRectF(self->m_btnWavyFloatingRect, x, y));
                 const bool hoverUnderlineFloating = (hasSel && isPointInRectF(self->m_btnUnderlineFloatingRect, x, y));
                 const bool hoverTextReplaceFloating = (hasSel && isPointInRectF(self->m_btnTextReplaceFloatingRect, x, y));
+                const bool hoverTranslateFloating = (hasSel && isPointInRectF(self->m_btnTranslateFloatingRect, x, y));
                 const bool hoverUndoFloating = (hasSel && isPointInRectF(self->m_btnUndoFloatingRect, x, y));
                 int hoveredTrBtnId = -1;
                 bool hoverReplaceDragHandle = false;
@@ -1277,8 +1337,10 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 if (hoverGroupBadge != self->m_hoverGroupBadge ||
                     hoverFold != self->m_hoverFold || hoverRotate != self->m_hoverRotate ||
                     hoverInvert != self->m_hoverInvert || hoverEdit != self->m_hoverEdit ||
-                    hoverText != self->m_hoverText || hoverCopy != self->m_hoverCopy ||
+                    hoverText != self->m_hoverText || hoverTranslate != self->m_hoverTranslate ||
+                    hoverCopy != self->m_hoverCopy ||
                     hoverSave != self->m_hoverSave || hoverClose != self->m_hoverClose ||
+                    hoverTranslateStatus != self->m_hoverTranslateStatus ||
                     hoverCopyFloating != self->m_hoverCopyFloating ||
                     hoverCopyTableFloating != self->m_hoverCopyTableFloating ||
                     hoverOpenPanelFloating != self->m_hoverOpenPanelFloating ||
@@ -1286,6 +1348,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     hoverWavyFloating != self->m_hoverWavyFloating ||
                     hoverUnderlineFloating != self->m_hoverUnderlineFloating ||
                     hoverTextReplaceFloating != self->m_hoverTextReplaceFloating ||
+                    hoverTranslateFloating != self->m_hoverTranslateFloating ||
                     hoverUndoFloating != self->m_hoverUndoFloating ||
                     hoveredTrBtnId != self->m_hoveredTrBtnId ||
                     hoverReplaceDragHandle != self->m_hoverReplaceDragHandle ||
@@ -1297,9 +1360,11 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->m_hoverInvert = hoverInvert;
                     self->m_hoverEdit = hoverEdit;
                     self->m_hoverText = hoverText;
+                    self->m_hoverTranslate = hoverTranslate;
                     self->m_hoverCopy = hoverCopy;
                     self->m_hoverSave = hoverSave;
                     self->m_hoverClose = hoverClose;
+                    self->m_hoverTranslateStatus = hoverTranslateStatus;
                     self->m_hoverCopyFloating = hoverCopyFloating;
                     self->m_hoverCopyTableFloating = hoverCopyTableFloating;
                     self->m_hoverOpenPanelFloating = hoverOpenPanelFloating;
@@ -1307,6 +1372,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     self->m_hoverWavyFloating = hoverWavyFloating;
                     self->m_hoverUnderlineFloating = hoverUnderlineFloating;
                     self->m_hoverTextReplaceFloating = hoverTextReplaceFloating;
+                    self->m_hoverTranslateFloating = hoverTranslateFloating;
                     self->m_hoverUndoFloating = hoverUndoFloating;
                     self->m_hoveredTrBtnId = hoveredTrBtnId;
                     self->m_hoverReplaceDragHandle = hoverReplaceDragHandle;
@@ -1682,9 +1748,11 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             self->m_hoverInvert = false;
             self->m_hoverEdit = false;
             self->m_hoverText = false;
+            self->m_hoverTranslate = false;
             self->m_hoverCopy = false;
             self->m_hoverSave = false;
             self->m_hoverClose = false;
+            self->m_hoverTranslateStatus = false;
             self->m_hoverCopyFloating = false;
             self->m_hoverCopyTableFloating = false;
             self->m_hoverOpenPanelFloating = false;
@@ -1692,6 +1760,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             self->m_hoverWavyFloating = false;
             self->m_hoverUnderlineFloating = false;
             self->m_hoverTextReplaceFloating = false;
+            self->m_hoverTranslateFloating = false;
             self->m_hoverUndoFloating = false;
             self->m_hoveredTrBtnId = -1;
             self->m_hoverReplaceDragHandle = false;
@@ -1717,6 +1786,8 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 } else {
                     KillTimer(hwnd, 3);
                 }
+            } else if (self && wParam == PinWindow::kTimerIdZoomAnim) {
+                self->stepZoomAnimation();
             }
             return 0;
         }
@@ -1847,18 +1918,19 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 float newOpacity = self->m_opacity + (delta > 0 ? 0.05f : -0.05f);
                 self->setOpacity(newOpacity);
             } else {
-                // 滚轮：光标在贴图内时以光标为锚点缩放，光标在窗外或无坐标消息时以贴图中心原地缩放 (0.1x ~ 5.0x)
+                // 无级丝滑阻尼滚轮缩放：按真实 delta 连续指数缩放 + 光标锚定 Zoom-to-Cursor + 120Hz 物理阻尼过渡 (0.1x ~ 5.0x)
+                if (self->m_folded || delta == 0) {
+                    return 0;
+                }
                 RECT rc{};
                 GetWindowRect(hwnd, &rc);
 
-                float oldScale = self->m_scale;
-                float zoomFactor = (delta > 0 ? 1.1f : 0.9f);
-                float newScale = std::clamp(oldScale * zoomFactor, 0.1f, 5.0f);
+                const float notches = static_cast<float>(delta) / static_cast<float>(WHEEL_DELTA);
+                const float zoomFactor = std::pow(1.12f, notches);
+                const float baseScale = self->m_zoomAnimating ? self->m_zoomTargetScale : self->m_scale;
+                const float newTarget = std::clamp(baseScale * zoomFactor, 0.1f, 5.0f);
 
-                if (std::abs(newScale - oldScale) > 0.001f) {
-                    if (self->m_folded) {
-                        return 0;
-                    }
+                if (std::abs(newTarget - self->m_scale) > 0.0005f || std::abs(newTarget - baseScale) > 0.0005f) {
                     POINT anchor{
                         (rc.left + rc.right) / 2,
                         (rc.top + rc.bottom) / 2
@@ -1882,36 +1954,19 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                         relY = (anchor.y - rc.top) / static_cast<float>((std::max)(1L, rc.bottom - rc.top));
                     }
 
-                    constexpr int64_t kMaxSafeWindowDim = 32000;
-                    const int64_t scaledW64 = std::clamp(
-                        static_cast<int64_t>(std::llround(static_cast<double>(self->m_origWidth) * newScale)),
-                        int64_t{1}, kMaxSafeWindowDim);
-                    const int64_t scaledH64 = std::clamp(
-                        static_cast<int64_t>(std::llround(static_cast<double>(self->m_origHeight) * newScale)),
-                        int64_t{1}, kMaxSafeWindowDim);
-                    int newW = static_cast<int>(scaledW64);
-                    int newH = static_cast<int>(scaledH64);
+                    self->m_zoomTargetScale = newTarget;
+                    self->m_zoomAnchorScreenPt = anchor;
+                    self->m_zoomAnchorRelX = relX;
+                    self->m_zoomAnchorRelY = relY;
 
-                    int newLeft = anchor.x - static_cast<int>(std::llround(static_cast<double>(newW) * relX));
-                    int newTop = anchor.y - static_cast<int>(std::llround(static_cast<double>(newH) * relY));
-
-                    self->m_scale = newScale;
-                    SetWindowPos(hwnd, nullptr, newLeft, newTop, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
-                    self->updateWindowCornerRegion();
-                    if (self->m_renderTarget) {
-                        self->m_renderTarget->SetDpi(96.0f, 96.0f);
-                        RECT clientRc{};
-                        GetClientRect(hwnd, &clientRc);
-                        const UINT32 maxRt = (std::max)(256u, self->m_renderTarget->GetMaximumBitmapSize());
-                        const UINT32 rtW = (std::min)(
-                            static_cast<UINT32>((std::max)(1L, clientRc.right - clientRc.left)), maxRt);
-                        const UINT32 rtH = (std::min)(
-                            static_cast<UINT32>((std::max)(1L, clientRc.bottom - clientRc.top)), maxRt);
-                        self->m_renderTarget->Resize(D2D1::SizeU(rtW, rtH));
+                    const bool startingAnim = !self->m_zoomAnimating;
+                    self->m_zoomAnimating = true;
+                    if (startingAnim) {
+                        self->m_zoomLastQpc = 0;
+                        SetTimer(hwnd, PinWindow::kTimerIdZoomAnim, 8, nullptr);
+                        // 零起手延迟：立刻按 8ms 首帧步进响应，手指刚动即见无级丝滑
+                        self->stepZoomAnimation();
                     }
-                    self->showTransientHudBadge(
-                        std::format(L"{}%", static_cast<int>(std::lround(newScale * 100.0f))), 800);
-                    self->render();
                 }
             }
             return 0;
@@ -1992,6 +2047,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 if (self->m_hwnd == hwnd) {
                     self->m_hwnd = nullptr;
                 }
+                self->clearTranslationState();
                 self->releaseGraphicsResources();
                 self->m_sourceImage.release();
                 s_instances.erase(

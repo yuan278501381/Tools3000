@@ -6,6 +6,76 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-23] v1.4.0 正式发版收尾：托盘右键菜单双通道接入历史剪贴板 + 全 8 语种 10 核视觉资产与 README 升级 + 贴图 120Hz 缩放回归适配
+- **核心改动与验证控制点**：
+  1. **系统托盘右键菜单双通道加入「历史剪贴板 (`Alt + V`)」 (`src/tray/TrayIcon.{h,cpp}`, `src/main.cpp`, `ui/src/TrayApp.tsx`, `ui/src/TrayApp.test.tsx`, 8 套 `ui/src/i18n/locales/*.json`)**：
+     - 现代 WebView2 托盘弹窗保留 7 格 Bento 控制舱不变，在快捷菜单区「搜索文件」正下方新增「历史剪贴板」入口（矢量 `ClipboardList` 图标、实时同步 `Toggle Clipboard` 快捷键胶囊、订阅 `clipboard:stateChanged` 与 `plugins:changed` 动态显隐，点击派发 `tray.action { action: "clipboard" }`）；
+     - Windows 原生兜底右键菜单新增 `TrayMenuId::Clipboard = 1007` 与 `onClipboard` 回调，双通道统一直接调用 `ClipboardWindow::instance().show(...)`。
+  2. **C++ 贴图缩放单测适配 120Hz 阻尼动画 (`tests/unit/test_capture.inc`)**：
+     - `CaptureBatch2InteractionUpgradeTest` 在连发 12 格 `WM_MOUSEWHEEL` 后，既断言首帧平滑起步（`scale > 1.0f && scale < 3.89f`），又泵 `WM_TIMER(kTimerIdZoomAnim=4)` 收敛至 `>= 3.8955f` 后断言终态 `1.12^12 ~= 3.896x`、像素网格与 `"390%"` HUD 胶囊。
+  3. **全 8 语种视觉资产与 README 同步升级 (`README*.md`, `docs/images/<locale>/{feature_bento_overview.png,translate_demo.webp,clipboard_demo.webp}`)**：
+     - 全部 8 国语言 README 同步补齐 v1.4.0 新功能介绍、对称 5×2 动态演示表（新增截图原位翻译与持久化剪贴板动图）、Ditto/`Win+V` 替代对照与 `Alt + V` 常用快捷键；Playwright 逐帧渲染动图严禁残留 CSS `transition`（否则跨帧截屏产生原文/译文鬼影叠层）。
+  4. **增量构建版本资源防陈旧缓存双保险 (`CMakeLists.txt`, `deploy.ps1`)**：
+     - 根因：`CMakeLists.txt` 使用 `file(READ VERSION)` 时未声明 `CMAKE_CONFIGURE_DEPENDS`，且 `deploy.ps1` 复用构建树时仅核对 `.tools3000_configure_stamp.sha256`，当手工回退分支/编译触发过中间版本 `Tools3000_version.rc` 覆写而 stamp 仍保留目标版本指纹时，二次发版会误跳过 CMake Configure 致 `Tools3000.exe` 沿用旧 `ProductVersion`；
+     - 根治：`CMakeLists.txt` 绑定 `CMAKE_CONFIGURE_DEPENDS` 追踪 `VERSION`，`deploy.ps1` 直接交叉校验 `build/generated/Tools3000Version.h` 与 `Tools3000_version.rc` 真实版本内容并在不一致时强制重跑 `cmake -B` 与重建 `*.res`。
+
+### [2026-11-23] 剪贴板桌面级 Shift/Ctrl 固定锚点多选根治 + 搜索分类栏「全部/文档内容」固定与自定义拖拽持久化
+- **核心痛点根治与架构沉淀**：
+  1. **剪贴板批量多选 `Shift` 连选 / `Ctrl` 加选实机失灵根治 (`ui/src/clipboardSelection.ts`, `ui/src/ClipboardApp.{tsx,css}`, `ui/src/clipboardSelection.test.tsx`)**：
+     - *实机根因*：① `.clip-popup__list` 与 `.clip-popup__item` 未声明 `user-select: none`，且在打开浮窗时搜索框自动聚焦选字，导致用户按住 `Shift` 点击列表项时 Chromium/WebView2 在 `mousedown` 直接触发跨区文本蓝底拖选并吞掉 `click` 事件；② 旧逻辑未保存固定锚点 (`anchorIndex`)，连续 `Shift` 点击无法回缩选区；③ 缺乏 `Ctrl+A` / `Shift+↑↓` / `Space` 键盘批量操作；
+     - *终局方案*：抽离纯函数状态机 `clipboardSelection.ts`（固定 `anchorIndex` + `shiftBaseIds` + 合并粘贴严格保序 + 反向连选保序）；列表容器强制 `user-select: none`，在 `onMouseDown` 当拍对 `Shift/Ctrl/Meta` 及多选模式点击执行 `e.preventDefault()`、`window.getSelection()?.removeAllRanges()`、主动聚焦列表项并即时完成选区更新（Windows 原生 `WM_LBUTTONDOWN` 级 0 吞点击，配合 `handledInMouseDownRef` 防 `mouseDown+click` 双触发），同时补齐 `Ctrl+A`（非空搜索框保留全选文字）、`Shift+↑/↓` 连续扩缩、`Space` 勾选与 `scrollIntoView` 自动跟屏。
+  2. **搜索分类栏固定「全部 / 文档内容」+ 其余分类自由拖拽排序并持久记忆 (`ui/src/search/SearchCategoryBar.tsx`, `searchConstants.ts`, `searchUtils.ts`, `SearchApp.tsx`, `filters-syntax.css`, 8 语种 JSON, `SearchCategoryBar.test.tsx`)**：
+     - *双区物理隔离*：`PINNED_SEARCH_CATEGORY_IDS = ['all', 'content']` 永久锁定最左前两位（数据层 `normalizeSearchCategoryOrder` / `reorderSearchCategories` 数学防越界 + 视觉层 `1px` 微晶垂直分隔线）；右侧 8 个文件/书签分类支持纯鼠标 5px 阈值拖拽排序（跟随光标浮空毛玻璃胶囊、光学插入亮线、拖至固定区自动磁吸至首个可排序位、`Esc` 撤回）；
+     - *交互与持久化*：右键分类栏弹出极简菜单一键「恢复默认分类顺序」；聚焦态采用 `Ctrl+Shift+←/→` 键盘微调顺序（避开 `KeyboardPipeline.cpp` 屏蔽浏览器前进后退的 `Alt+←/→`）；`localStorage` 0 闪烁首屏 + 后端 `/search/uiPreferences.categoryOrder` 跨重启/便携模式永久保存，并自动联动 `Tab` 轮切与 `Alt+1..9` 分类快捷键顺序。
+
+### [2026-11-23] 文件搜索默认 MECE 6 列「打开次数」+ 剪贴板最大化 4 重根治 + 剪贴板二进制快照/FFI 零历史负担收口
+- **核心架构决策与暗坑控制点**：
+  1. **文件搜索结果默认新增「打开次数 (`runCount`)」列（严格 MECE 3 组 × 2 列体系） (`columnCatalog.ts`, `searchUtils.ts`, `SearchApp.tsx`, `SearchResultRow.tsx`, `useSearchActions.ts`, `results-footer.css`, 8 语种 JSON)**：
+     - **MECE 列分组结构**：将开箱默认可见列升级为 `['name', 'path', 'size', 'runCount', 'modified', 'created']`——① 对象标识组（`name` 名称 / `path` 路径）、② 量化指标组（`size` 大小 / `runCount` 打开次数）、③ 时间维度组（`modified` 修改时间 / `created` 创建时间）；全 8 国语言包列名统一为「打开次数」（`zh: "打开次数"`, `zh-TW: "開啟次數"`, `en: "Open Count"`, `ja: "開いた回数"`, `ko: "열기 횟수"`, `ru: "Открытий"`, `pt-BR: "Aberturas"`, `es: "Aperturas"`）；
+     - **MECE 零冗余展示 + 等宽数字防抖 + 乐观即时刷新**：当独立 `runCount` 列可见时，自动隐藏 `name` 列中重复的 `.file-run-badge` 徽标（零信息冗余）；仅当用户主动隐藏 `runCount` 列时自动回退在 `name` 列展示徽标；单元格采用 `tabular-nums` 等宽右对齐（0 次淡显 `—`，`>0` 次高亮 `.table-cell--run-count-active`）；打开文件/目录后前端 `bumpLocalRunCount` 即时乐观 `+1` 同步当前列表；
+     - **老用户一次性无损迁移 (`TABLE_COLUMN_SCHEMA_VERSION = 2`)**：通过 `migrateTableColumnsToIncludeRunCount` 对旧偏好将 `runCount` 无损插入 `size` 之后（无 `size` 则锚定 `path`/`name` 后），完整保留用户自定义扩展列与顺序；落盘 `columnSchemaVersion: 2` 后永久尊重用户后续显式隐藏操作，绝不覆写。
+  2. **剪贴板窗口点击最大化显示异常且未成功 4 重根因彻底根治 (`WinUtils.cpp`, `ClipboardWindow.cpp`, `ClipboardApp.tsx`, `tests/unit/test_ui_lifecycle.inc`)**：
+     - *根因一（最致命：旧 `HRGN` 裁切全屏）*：`WinUtils::applyUniversalRoundedCorners(hwnd, w, h, radius)` 在 `radius <= 0`（最大化态）时直接早退，导致原先 `WS_POPUP` 普通态绑定的 `760×560` 圆角 `HRGN` 未被清除，全屏窗口瞬间被硬切为左上角残块；现 `radius <= 0` 主动下发 `DWMWCP_DONOTROUND` 并调用 `clearWindowRegionIfSet(hwnd, true)` 彻底解除区域裁切（附真 HWND 回归单测守护）；
+     - *根因二（窗体样式与多屏 `WM_GETMINMAXINFO` 错位）*：将 `ClipboardWindow` 样式统一升级为与 `SearchWindow`/`SettingsWindow` 一致的 `WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS` + `SWP_FRAMECHANGED`（Win11 纯 DWM 硬件圆角零 `SetWindowRgn`，Win10 平滑回退 RGN 且最大化清除）；删除多屏混合 DPI 下易算偏的手写 `ptMaxPosition`/`ptMaxSize`，仅保留 `ptMinTrackSize`，由 `WM_NCCALCSIZE` 在 `IsZoomed` 时对齐 `mi.rcWork`；
+     - *根因三（WebView2 回调内同步重入）*：`clipboard.toggleMaximize` 改经 `MainThreadDispatcher::instance().post` 异步执行，`clipboard.startDrag` / `clipboard.startResize` 改用 `PostMessageW(WM_SYSCOMMAND, ...)`（同步解锁 Aero Tear-Off 脱离还原）；`WM_SIZE` 在 `SIZE_MAXIMIZED || IsZoomed` 同步刷新 `put_Bounds` 与 `syncWebViewDpi`；
+     - *根因四（双击顶栏被拖动吞掉）*：`ClipboardApp.tsx` 顶栏 `handleHeaderMouseDown` 接入与 `SearchHeader.tsx` 一致的 **4px 拖动启动阈值**，双击最大化 100% 灵敏响应。
+  3. **剪贴板二进制持久化与 C ABI 零历史负担收口 (`src/clipboard/rust_clipboard/src/{storage.rs,ffi.rs}`, `src/clipboard/ClipboardRustFfi.h`, `src/clipboard/ClipboardManager.cpp`, `tests/unit/test_core.inc`)**：
+     - 遵循项目负责人「未发版能力不背 V1 历史包袱」架构要求，彻底移除 `history.t3k` 双版本 `v1 -> v2` 迁移分支与 `t3k_clip_add_item_v2` / `t3k_clip_query_json_v2` 重复导出，收口为单一纯净 `FORMAT_VERSION = 1`（原生内含 `groups`、`group_id`、`html_rel_path`、`rtf_rel_path`）与单一 `t3k_clip_add_item` / `t3k_clip_query_json` C ABI。
+
+### [2026-11-23] 实机多轮极限打磨：原位翻译 MECE 五维世界级重构 + 贴图 120Hz 无级阻尼缩放 + 剪贴板完整桌面窗 + F1 防抖防交叉误框 + 版本红点与自动下载安装
+- **核心痛点根治与架构沉淀**：
+  1. **原位翻译 MECE 五维终局升级 (`InPlaceTranslateEngine.{h,cpp}`, `TranslationService.{h,cpp}`, `PinWindowTranslate.cpp`)**：
+     - **零字体变形铁律**：永久移除 `Matrix3x2F::Scale(0.78f, 1.0f)` 非等比水平压扁与 `DWRITE_FONT_STRETCH_CONDENSED`，恒定 1:1 原生字形比例 + `Typographic Scale Harmonization`（全图常规正文簇视觉字号平滑归一 + 小英文行中译防蚂蚁字回拉 + CJK 正文细腻 `MEDIUM(500)` 字重防小英文误判粗黑体）；
+     - **版面聚合与视觉分隔墙 (`Visual Seam Barrier`)**：修正 `OcrEngine::assembleRecognizedBlocksWithLayout` 对全图所有行均赋值 `alignedRowId` 导致旧逻辑误杀全部多行段落合并的暗坑；收紧自然折行间距至 `0.72x`、删除跨缩进误合并的 `|| decentOverlap`、仅在列表首行允许悬挂缩进，并引入 0.05ms 像素级视觉分隔墙（背景色差 `>38` / 搜索框或表格水平边框线命中 `>=55%` / 灰黑前景字色差 `>82`）；
+     - **精准左对齐防漂移**：`computeSafeLayoutRect` 升级为结构化 `SafeLayoutBox{rect, centerHoriz}`，仅在双侧撞到真实视觉边框且留白对称（按钮/居中格）或整图水平中轴 `±4%` 对称横幅时才居中，其余 99% 严守 `baseRect.x` 左对齐（彻底消灭 HN 嵌套评论与 AlternativeTo 卡片向右漂移）；
+     - **开发软件代码语义防火墙**：`looksLikeCodeOrTechToken` 精准拦截 JSON 键值行、模板插值 `{{...}}`、无空格驼峰/下划线代码标识符（`BaseUrl`/`CmpnyDB`/`Team_Test`/`postUDFs`/`AlternativeTo`/`PostgreSQL`）、含 `@` 密码/邮箱及 HTTP/开发技术缩写（`POST`/`GET`/`PWD`/`AI`/`NGINX`/`WEBCH`），杜绝 Postman `POST -> 后处理`、`PWD -> 残疾人士` 误译；
+     - **极速并发 + 零显存瘦身**：移除原位翻译擦底对 `AiInpaintEngine`（DirectML MI-GAN 512）的调用避免纯白网页误拉 ~800 MB 显存/内存，恒走 0.8ms 0 显存 `cv::INPAINT_TELEA`；`TranslationService` 新增「已属目标语直通 + 512 条 `<128KB` 会话 LRU 缓存 + 批内去重 + Unicode 码点分批 + Bing 单线程预热防惊群 + `\n` 极速分段 + 4.5s 快败 + 5 分钟熔断直切 4 路并发 `GoogleFreeProvider`」；实测 4 张真实用户截图冷启耗时由 `47.1s / 65.3s / 33.7s` 骤降至 `8.5s / 8.9s / 12.3s / 11.5s`（常驻进程触发冷却后直连 `1.5~3.0s`），4 张渲染图均经实机视觉验收。
+  2. **贴图滚轮 120Hz 对数空间指数阻尼无级缩放 (`PinWindow.{h,cpp}`, `PinWindowInput.cpp`, `PinWindowRender.cpp`)**：
+     - 摒弃旧版离散 `1.1x/0.9x` 硬跳与每格同步 `16-tap HIGH_QUALITY_CUBIC` + `SetWindowRgn` 卡顿；改用连续指数滚轮映射 `pow(1.12, delta/120)` + 光标锚定 Zoom-to-Cursor + `kTimerIdZoomAnim=4` (`8ms` / 120Hz QPC 对数空间指数阻尼 `alpha = 1 - exp(-19*dt)`) + `SWP_NOREDRAW` 消双绘闪屏；动画中动态切换硬件 `LINEAR` 跑满帧，收敛终帧零延迟自动切回 `HIGH_QUALITY_CUBIC` 极清锐化并 `KillTimer` 恢复 0% 闲置 CPU。
+  3. **剪贴板历史窗口原生桌面操纵体验 (`ClipboardWindow.{h,cpp}`, `ClipboardApp.{tsx,css}`, 8 国语言 JSON)**：
+     - 升级窗口样式为 `WS_POPUP | WS_THICKFRAME | WS_MAXIMIZEBOX`（无 `WS_CAPTION` 零 Win11 旧框闪现）+ `WM_GETMINMAXINFO` (`560×420` 最小尺寸与工作区最大化防遮任务栏) + `WM_EXITSIZEMOVE` 自动记忆自定义位置与尺寸；前端挂齐 8 方向 `6px` 边缘/角落缩放热区（触发原生 `WM_NCLBUTTONDOWN`）、标题栏与筛选栏空白处全区可拖动 + 双击最大化/还原，以及右上角「置顶固定（开启时 `HWND_TOPMOST` 且失焦/粘贴不自动隐藏） / 最大化还原 / 关闭」三联矢量控制钮。
+  4. **F1 截图自动捕获窗口防抖 + 防捕歪 + 消灭交叉控件幽灵框 (`WindowElementDetector.cpp`, `CaptureInput.{h,cpp}`, `CaptureInputMouse.cpp`)**：
+     - **零回弹防抖**：同一顶层窗口内微移（`< 3px` 死区）或等待异步 UIA 返回期间严禁用粗糙同步整窗框弹回覆盖当前精细 UIA 框（彻底根治大小框爆闪抖动），保留弹簧柔和连续速度；
+     - **防捕歪/窗外**：屏蔽 `Shadow`/`DropShadow`/`tooltips_class`/无标题 `Chrome_WidgetWin_0` 隐形宿主窗并剔除裁剪丢弃 `>60%` 面积的外溢虚拟滚动容器；
+     - **消除交叉控件假框**：UIA 树遍历由单路径贪心升级为受限多分支重叠穿透（最多 3 条重叠兄弟，优先命中真实叶交互控件）+ 冻结帧 0.02ms 跨边梯度抽检过滤无名称透明幽灵 `div`；视觉卡片补全 `detectVisualCardRegionAtPoint` 加固四边真实边缘连续性校验（上下左右四边各自 `>=68%` 命中真实边缘 + 矩形度 `>=0.90` + 周长比 `<=1.14`）。
+  5. **版本更新角标红点 + SHA-256 强校验后台自动下载与一键静默安装 (`UpdateChecker.{h,cpp}`, `TrayIcon.{h,cpp}`, `EventBus.h`, `MessageBridge.cpp`, `Sidebar.{tsx,css}`, `TrayApp.{tsx,css}`, `AboutPage.{tsx,css}`, `GeneralPage.tsx`, 8 国语言 JSON)**：
+     - 后端解析 GitHub Latest Release 资产（自动匹配 x64/ARM64 与安装版 `.exe`/便携版 `.zip` + `SHA256SUMS.txt`），仅信任 GitHub 官方 HTTPS 域名且禁 HTTPS 降级，64KB 恒定流式内存后台自动下载（受 `/general/autoDownloadUpdates` 控制，默认开启）+ Windows CryptoAPI SHA-256 字节级强校验 + 清理历史旧安装包防回退 + 一键 `/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS` 平滑升级（便携版自动在资源管理器高亮定位）；
+     - 托盘图标通过 32bpp DIB 亚像素抗锯齿在当前主题图标右上角动态合成朱砂红点 `#EF4444` + 白描边环并同步 Tooltip，侧边栏「关于」亮红/绿点，托盘弹窗与「关于」页实时联动展示下载进度与一键安装入口。
+
+### [2026-11-23] v1.4.0 三大社区旗舰能力全栈落地：微信级截图原位翻译、纯 Rust 搜索 CLI + MCP Server、纯 Rust 内核持久化剪贴板管理
+- **架构选型与核心工程控制点**：
+  1. **微信级截图识别原位翻译 (`src/core/translate/`, `src/capture/InPlaceTranslateEngine.*`, `PinWindowTranslate.cpp`, `InPlaceTranslateCard.tsx`)**：
+     - *关键实网暗坑*：微软历史免费翻译认证端点 `https://edge.microsoft.com/translate/auth` 实网已返回 HTTP 404；现升级 `EdgeFreeProvider` 为实网验证通过的 **Microsoft Bing/Edge `ttranslatev3`**（优先中国大陆免代理直连 `https://cn.bing.com/translator`，失败自动回退 `https://www.bing.com/translator`，无 Cookie、解析 `IG`/`data-iid`/`params_AbusePreventionHelper` 并缓存 25 分钟，支持 `[[T3K_SEG_91827]]` 哨兵批量请求与逐条降级），并与 `GoogleFreeProvider` 组成可切换主备的免 Key 双引擎；同时通过多态 `ITranslationProvider` 支持 BYOK（OpenAI 兼容 / DeepSeek / Gemini / 本地 Ollama / DeepL）与 Windows DPAPI 加密存储 API Key；
+     - *原位排版渲染*：复用 OCR 版面聚类（`layoutRegionId`/`alignedRowId`）+ `TextReplaceEngine` 6D 风格提取与渐变擦底 + 零额外内存 `<0.5ms` 像素级障碍探针（逐列/逐行识别表格竖线、横线、按钮框、左侧图标，全量纳入未翻译编号与二维码包围盒为硬障碍，同时自动屏蔽落在 `m_qrCodes` 内的误识孤字与无空格工业料号/版本号）+ 单行紧凑（`CONDENSED` + 最低 `0.78x` 温和水平缩放）vs 多行折行双策略择优 + `PushAxisAlignedClip` 硬件防叠压裁切；非破坏保留 `m_cleanBaseImage` 实现 0ms 原/译瞬切；F1 截图主工具栏新增第 20 键 `ToolbarCommand::Translate`；设置菜单统一命名为「文本识别与翻译」（`OCR & Translation`，8 语种同构）；
+  2. **纯 Rust 零外部 Crate 依赖文件与正文搜索 CLI + MCP Server (`src/cli/`, `src/service/ExternalApiPolicy.h`, `SearchPlugin.cpp`, `SearchExternalApiCard.tsx`, `deploy.ps1`, `installer.iss`)**：
+     - 全纯标准库 Rust 编译（`+crt-static`），产出仅 **`352 KB`** 单文件 `tools3000-cli.exe`，PE 导入表仅 4 个 Windows 系统 DLL（`KERNEL32`/`ADVAPI32`/`api-ms-win-core-synch-l1-2-0`/`ntdll`，0 `VCRUNTIME140.dll`）；
+     - 严守 **`DEMAND_START`**（MCP `initialize`/`tools/list`/`ping` 与 `status --no-start` 0 唤醒服务）、默认关闭总开关（`/search/externalApiEnabled = false`）、服务端 `ExternalApiPolicy.h` 强制只读边界与客户端/服务端双层敏感凭证路径黑名单（`.ssh`/`.aws`/`.env`/私钥/浏览器凭据库），实机验证对接 289.9 万条索引：`search` `120ms`、`content` `446ms`、`mcp tools/call` `87ms`；
+  3. **纯 Rust 零依赖原子持久化剪贴板管理 (`src/clipboard/rust_clipboard/`, `src/clipboard/ClipboardManager.*`, `src/ui/ClipboardWindow.*`, `ClipboardApp.tsx`, `ClipboardPage.tsx`)**：
+     - 彻底解决 Windows 自带 `Win+V` 关机重启即清空历史痛点：Rust 原子二进制快照 `history.t3k`（带校验和 + `.bak` 回退 + 内容哈希去重顶置 + 孤儿 blob GC + 置顶保护 + 亚毫秒多词检索）+ C++ `AddClipboardFormatListener` 0% CPU 监听 + 后台 `std::jthread` WIC PNG 编码；严格遵守 Windows 官方隐私剪贴板格式与密码管理器进程黑名单；独立浮窗 `ClipboardWindow`（默认 `Alt+V`）通过虚拟主机 `clipboard-blobs.tools3000.local` 零拷贝渲染图片，60s 闲置自动销毁并冷路径调用 `trimWorkingSet()`，图片条目支持一键联动 `F3` 贴图 / 离线 OCR / 原位翻译；
+     - *两项关键底层防回退铁律*：① 同一进程（如 `Tools3000Tests.exe`）链接多个 Rust `staticlib`（`tools3000_content_rs.lib` 与 `tools3000_clipboard_rs.lib`）时，必须在 `CMakeLists.txt` 中为各 `rustc` 显式指定不同的 `--crate-name <name> -C metadata=<name>`，否则两者默认均命名为 `lib` 导致 MSVC `LNK2005` 单态化符号冲突；② `ClipboardWindow::pushEventJson` 与 `MessageBridge` 事件推送器必须统一经 `MainThreadDispatcher::instance().post(...)` 切回 UI STA 线程再调用 `ICoreWebView2::PostWebMessageAsString`，杜绝后台 WIC 线程跨线程调用 COM 崩溃；
+     - *实机验收捕获并根治的 5 项真实暗坑*：① `src/cli/src/config.rs` 必须严格对齐主程序 `WinUtils::getAppDataDirectory() / "config" / "config.json"`（含便携模式 `data\config\config.json` 与标准模式 `%LOCALAPPDATA%\Tools3000\config\config.json`），否则 CLI 无法读取设置页已开启的 `externalApiEnabled`；② 截图/微信/浏览器复制图像常同时写入 `CF_DIB` 与临时 PNG 的 `CF_HDROP`，`ClipboardManager::captureCurrentClipboard` 必须按 **图片 (`PNG`/`CF_DIBV5`/`CF_DIB`) -> 文件 (`CF_HDROP`) -> 文本** 顺序捕获，严禁把截图劫持进「文件」分类，且数据目录改用 `WinUtils::getAppDataDirectory() / L"clipboard"` 兼容便携模式；③ `ui/src/App.tsx` 的 `standardPluginIds` 与 `Sidebar.tsx` 的 `extensionNavItems` 必须排除 `ROUTE_MAP` 内置路由（含 `'clipboard'`），防止内置模块在侧边栏上下重复渲染；④ `InPlaceTranslateEngine::renderTranslatedCanvas` 跳过译文与原文语义一致的段落（如代码文件名/路径/专有名词）以 100% 保留原始像素，全部未变时给出透明 Toast 提示而非伪装“翻译完成”；⑤ `ClipboardWindow` 闲置销毁阈值由 `60s` 调优为 **`300s` (5 分钟)**（隐藏即 `TrySuspend` 降占用，5 分钟无交互再彻底 `destroy` + `trimWorkingSet`），平衡高频呼出 0ms 秒开与长时闲置零残留；
+  4. **全栈回归验证基线**：原生 C++ 3 路并发回归 **`816/816 PASS`**（含实网双通道翻译断言通过），Rust 4 Crate **`74/74 PASS`**（CLI 12 + Clipboard 2 + Content 7 + Viewer 53），前端 Vitest **`35/35 文件 / 237/237 用例 PASS`**，ESLint + `tsc -b` + 6 重并发静态门禁（8 语种、6 原生词典 892 词条、737 日志模板、209 CSS 变量、排版底线、28 处 `trimWorkingSet`）+ Vite 生产包全绿。
+
 ### [2026-11-22] 无边框应用窗口最大化闪 Win98 / 休眠切前台滞留 Win7 旧式标题栏根治（响应 V2EX `@lzrainchen` 反馈，`v1.3.2`）
 - **根因控制点**：
   1. **Win11 上对 `WS_OVERLAPPEDWINDOW` 多余叠加 `SetWindowRgn` 触发 DWM 非客户区降级 (`WinUtils.cpp`)**：`SearchWindow` 与 `SettingsWindow` 使用 `WS_OVERLAPPEDWINDOW`（含 `WS_CAPTION`）实现原生任务栏/Aero Snap，但 `applyUniversalRoundedCorners` 在 Win11 硬件圆角 `DWMWCP_ROUND` 生效后仍无条件调用 `SetWindowRgn(hwnd, hRgn, TRUE)`，导致 DWM 撤回现代非客户区帧并降级回老式 GDI 标题栏路径（主题态画出 Win7 Aero 标题栏，最大化 `SetWindowRgn(nullptr, TRUE)` 暴力拆卸瞬间或高负载回退画出 Win98 经典窗框）；
@@ -2558,3 +2628,21 @@
    - 完善幻灯片双场景叠化（屏蔽 `WM_SIZE` 抢跑、四方位任务栏中心补偿、透明 PNG `SOURCE_OVER` 除亮晕）、`WM_CAPTURECHANGED` 指针清理、单实例 `WM_COPYDATA` 转发、`D2DERR_RECREATE_TARGET` 设备丢失自愈、`assoc_dialog` 多屏 DPI/焦点环/无障碍/单刷复用、8 语种 EXIF 与错误本地化、真 LRU 缩略图与 `MsgWaitForMultipleObjects` 零轮询休眠；最终体积 `1.686 MB`（< 2MB），0 `VCRUNTIME140.dll`。
 5. **发布资产清爽 3 件套与安装/卸载/SBOM 闭环 (`deploy.ps1`, `installer.iss`, `scripts/*`, `bucket/tools3000.json`, 8 份 `README*.md`)**:
    - GitHub Release 精简为 3 件套（`Tools3000-vX.Y.Z-Setup.exe`、`Tools3000-vX.Y.Z-win-x64-portable.zip`、`SHA256SUMS.txt`）；剔除 124 个 PE 实测 0 引用的 6 个僵尸 DLL（含 `WebView2Loader.dll` 与 5 个多余 VC++ 运行库）；安装器跨账户遍历 `HKU\<SID>` 清理 41 格式关联、覆盖升级自动继承已有 `config.json` 开关；将 `Tools3000_Picasa_Viewer.exe` 纳入版本号 SSOT、Authenticode 签名与 61 个 Rust crates SBOM 清单；修复 Scoop `bucket/tools3000.json` 二维数组展平 Bug。
+
+
+---
+
+## 2026-11-23 Dependabot 全量清零、Windows 10 兼容加固、剪贴板 5 大旗舰增强与浏览器书签零冲突直搜
+1. **GitHub Dependabot 21 条前端供应链安全告警全量清零 (`ui/package.json`, `ui/package-lock.json`)**:
+   - 升级直接依赖 `vite@^8.3.8`、`vitest@^4.1.12`（连带 `@vitest/mocker@4.1.12`）、`eslint@^10.15.0`，并通过精确 `overrides` 锁定 `undici@^7.30.2`（严控 7.x 主版本避免 `undici@8` 破坏 `jsdom@29` 的内部 `wrap-handler.js` 加载）、`source-map-js@^1.2.4`、`brace-expansion@^5.0.13`、`minimatch@^11.0.9`、`zod@^4.6.6`；实测 `npm audit` 达 `0 vulnerabilities` 且全量 Vitest / ESLint / Vite build 全绿。
+2. **Windows 10 兼容性实机级 PE 审计与 3 点精准加固 (`WinUtils.{h,cpp}`, `WebViewEnvironmentManager.cpp`, `ClipboardWindow.cpp`, `QuickLookWindow.cpp`, `StudioPreviewWindow.cpp`)**:
+   - 通过 `dumpbin /dependents` 与 `/imports` 对全部 10 个核心二进制完成逐符号审计：证实全仓 0 个 Win11-only 静态导入 API，且全部 VC++ Runtime 均已随包分发，最低系统门槛稳定落在 Windows 10 1809+；
+   - 新增 `WinUtils::applyImmersiveDarkMode`（优先 DWM 属性 `20`，Win10 1809/1903/1909 自动回退属性 `19`）与 `WinUtils::applyWin11SystemBackdrop`（仅 Build >= 22621 启用 `DWMWA_SYSTEMBACKDROP_TYPE=38`，避免 Win10 无效属性调用）；
+   - 在 `WebViewEnvironmentManager` 中检测 Windows 10 常见未预装 Microsoft Edge WebView2 Runtime 场景（`GetAvailableCoreWebView2BrowserVersionString` 失败且非无头测试进程），每会话最多弹出一次 8 语种友好原生引导框，一键打开微软官方 Evergreen 引导程序下载页。
+3. **剪贴板历史 5 大旗舰增强 (`src/clipboard/rust_clipboard/src/*`, `ClipboardManager.{h,cpp}`, `src/main.cpp`, `ui/src/ClipboardApp.{tsx,css}`)**:
+   - **二进制快照 `history.t3k` v1 -> v2 无损向前兼容升级**：完整保留老版本快照零丢数据，新增收藏分组（`groups` CRUD + 删除分组不删条目 + 归组条目免于自动淘汰）、单条/批量归组、批量删除（单次原子刷盘 + 单次 GC）、纯文本内联编辑（自动重算颜色识别并回收失效富文本 blob）；
+   - **富文本 `CF_HTML` / `CF_RTF` 样式原样保留与内存铁律**：单块硬封顶 `512 KB`，后台线程按内容哈希去重原子落盘至 `blobs/h_*.html` 与 `blobs/r_*.rtf` 并纳入 `gc_unreferenced_blobs` 自动清理；列表查询 0 传大载荷（仅带 `hasRichText` 布尔标识），仅在真正贴回且 `!plainTextOnly` 时惰性读盘写回，按 `Shift+Enter` 随时纯文本剥离；
+   - **全键盘与多选合并流**：前 9 条展示等宽序号微标并支持 `Alt+1..9` 直接秒贴（`Alt+Shift+1..9` 纯文本秒贴）；支持 `Ctrl` 多选（严格按勾选先后顺序）、`Shift` 范围连选及「多选」开关，勾选后滑出批量操作条支持按换行/空行/空格分隔符一键合并粘贴、批量归组与批量删除。
+4. **全局搜索零冲突浏览器书签直达 (`src/search/BrowserBookmarkIndex.{h,cpp}`, `SearchPlugin.cpp`, `SearchInteractionHandlers.cpp`, `ui/src/search/*`, `SearchPage.tsx`)**:
+   - **零语法冲突三重直达**：绝不占用单字母 `b ` 前缀，采用与 `ext:`/`content:` 统一的独立 `bm:` 前缀 + 分类栏「书签」胶囊 + 可控常规搜索混排（`/search/includeBookmarks` 默认开启，自动避让显式文件操作符与盘符路径）；
+   - **零常驻线程与超低内存**：纯离线只读解析本地 Edge / Chrome / Brave / Vivaldi / Chromium 多 Profile `Bookmarks` JSON，按文件 `mtime` + 10s stat 节流惰性刷新（单文件上限 8 MB、全局 8000 条 URL 去重封顶，常规内存 `< 300 KB`），纯 `bm:` 查询 `< 0.5ms` 瞬出且绝不违背搜索服务 `DEMAND_START` 契约；安全校验仅放行 `http://` / `https://` 网址直开默认浏览器。

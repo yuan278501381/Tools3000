@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach } from 'vitest';
 import {
   BUILTIN_TABLE_COLUMNS,
+  DEFAULT_VISIBLE_TABLE_COLUMNS,
   doesItemRequireBackendProperty,
   extractDriveLabel,
   extractFileExtension,
@@ -22,11 +23,13 @@ import {
   formatWindowsTime,
   getSortedResults,
   getVisibleTableColumns,
+  migrateTableColumnsToIncludeRunCount,
 } from './searchUtils';
 import { SearchColumnManagerModal } from './SearchColumnManagerModal';
 import { SearchPropertyPickerModal } from './SearchPropertyPickerModal';
 import { SearchFooter } from './SearchFooter';
 import { SearchEmptyState } from './SearchEmptyState';
+import { SearchResultRow } from './SearchResultRow';
 import type { ColumnLayout, PropertyCacheMap, SearchResult } from './searchTypes';
 
 vi.mock('react-i18next', () => ({
@@ -463,5 +466,135 @@ describe('SearchColumnManagerModal & SearchPropertyPickerModal & SearchFooter & 
     );
 
     expect(screen.getByText('Scanning local drives...')).toBeTruthy();
+  });
+
+  it('includes runCount in default MECE 6 columns and migrates legacy layouts losslessly', () => {
+    expect(DEFAULT_VISIBLE_TABLE_COLUMNS).toEqual([
+      'name',
+      'path',
+      'size',
+      'runCount',
+      'modified',
+      'created',
+    ]);
+    const runCountDef = resolveColumnDefinition('runCount');
+    expect(runCountDef.defaultLabel).toBe('Open Count');
+    expect(runCountDef.align).toBe('right');
+    expect(runCountDef.minWidth).toBeGreaterThanOrEqual(78);
+
+    // 旧 5 列迁移：runCount 紧跟 size 之后，保留原有顺序
+    const migratedLegacy = migrateTableColumnsToIncludeRunCount(
+      ['name', 'path', 'size', 'modified', 'created'],
+      ['name', 'path', 'size', 'modified', 'created'],
+    );
+    expect(migratedLegacy.visible).toEqual([
+      'name',
+      'path',
+      'size',
+      'runCount',
+      'modified',
+      'created',
+    ]);
+    expect(migratedLegacy.order).toEqual([
+      'name',
+      'path',
+      'size',
+      'runCount',
+      'modified',
+      'created',
+    ]);
+
+    // 含自定义列且不含 size 列时的无损迁移：紧跟 path 之后且保留扩展列
+    const migratedCustom = migrateTableColumnsToIncludeRunCount(
+      ['name', 'ext', 'path', 'modified'],
+      ['name', 'ext', 'path', 'modified'],
+    );
+    expect(migratedCustom.visible).toEqual(['name', 'ext', 'path', 'runCount', 'modified']);
+    expect(migratedCustom.order.slice(0, 5)).toEqual(['name', 'ext', 'path', 'runCount', 'modified']);
+
+    // 已包含 runCount 时严格幂等
+    const alreadyHas = migrateTableColumnsToIncludeRunCount(
+      ['name', 'runCount', 'path'],
+      ['name', 'runCount', 'path'],
+    );
+    expect(alreadyHas.visible).toEqual(['name', 'runCount', 'path']);
+  });
+
+  it('deduplicates runCount badge in name cell when runCount column is visible and restores it when hidden', () => {
+    const sampleItem: SearchResult = {
+      name: 'QuarterlyReport.xlsx',
+      path: 'D:\\Docs\\QuarterlyReport.xlsx',
+      isDirectory: false,
+      size: 20480,
+      lastWriteTime: 134000000000000000,
+      creationTime: 133900000000000000,
+      runCount: 7,
+    };
+
+    const withRunCountCol: ColumnLayout = {
+      name: true,
+      path: true,
+      size: true,
+      modified: true,
+      created: true,
+      snippets: false,
+      nameFlex: 35,
+      pathFlex: 45,
+      visibleTableColumns: ['name', 'path', 'size', 'runCount', 'modified', 'created'],
+      tableOrder: ['name', 'path', 'size', 'runCount', 'modified', 'created'],
+    };
+
+    const { container, rerender } = render(
+      <ul>
+        <SearchResultRow
+          result={sampleItem}
+          index={0}
+          selected={false}
+          density="standard"
+          iconStyle="vector"
+          columns={withRunCountCol}
+          queryKeywords={[]}
+          onHover={vi.fn()}
+          onSelect={vi.fn()}
+          onOpen={vi.fn()}
+          onContextMenu={vi.fn()}
+        />
+      </ul>,
+    );
+
+    const runCountCell = container.querySelector('[data-table-col="runCount"]');
+    expect(runCountCell).toBeTruthy();
+    expect(runCountCell?.textContent).toBe('7');
+    expect(runCountCell?.classList.contains('table-cell--run-count-active')).toBe(true);
+    // MECE 去重：独立打开次数列可见时，名称列不再重复展示 file-run-badge
+    expect(container.querySelector('.file-run-badge')).toBeNull();
+
+    // 当用户主动隐藏打开次数列时，名称列自动回退展示 file-run-badge
+    const withoutRunCountCol: ColumnLayout = {
+      ...withRunCountCol,
+      visibleTableColumns: ['name', 'path', 'size', 'modified', 'created'],
+    };
+    rerender(
+      <ul>
+        <SearchResultRow
+          result={sampleItem}
+          index={0}
+          selected={false}
+          density="standard"
+          iconStyle="vector"
+          columns={withoutRunCountCol}
+          queryKeywords={[]}
+          onHover={vi.fn()}
+          onSelect={vi.fn()}
+          onOpen={vi.fn()}
+          onContextMenu={vi.fn()}
+        />
+      </ul>,
+    );
+
+    expect(container.querySelector('[data-table-col="runCount"]')).toBeNull();
+    const badge = container.querySelector('.file-run-badge');
+    expect(badge).toBeTruthy();
+    expect(badge?.textContent).toBe('7 runs');
   });
 });

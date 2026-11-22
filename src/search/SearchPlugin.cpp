@@ -6,6 +6,7 @@
 #include "core/hotkey/HotkeyManager.h"
 #include "core/utils/WinUtils.h"
 #include "search/ServiceStartupPolicy.h"
+#include "search/BrowserBookmarkIndex.h"
 #include "search/SearchInteractionHandlers.h"
 #include "search/SearchPropertyExtractor.h"
 #include "search/SearchQueryConfigUtils.h"
@@ -1036,6 +1037,31 @@ public:
             if (query.size() > tools3000::service::search_limits::MaxQueryUtf8Bytes) {
                 return invalidSearchRequest("query exceeds 1024-byte limit");
             }
+
+            // ── 零冲突浏览器书签直搜路径 (`bm:` 前缀，纯离线 0ms 响应，绝不拉起全盘索引服务) ──
+            const auto bmParsed = tools3000::search::BrowserBookmarkIndex::parseBookmarkQuery(query);
+            if (bmParsed.isExplicitBookmarkQuery) {
+                const auto t0 = std::chrono::steady_clock::now();
+                const uint64_t reqLimit = params.contains("limit") && params["limit"].is_number_unsigned()
+                    ? (std::min<uint64_t>)(params["limit"].get<uint64_t>(), 200u)
+                    : 80u;
+                auto bmResults = tools3000::search::BrowserBookmarkIndex::instance().searchLocalBookmarks(
+                    bmParsed.cleanQuery, static_cast<size_t>(reqLimit == 0 ? 80u : reqLimit), 1);
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - t0).count();
+                nlohmann::json bmResp = {
+                    {"results", std::move(bmResults)},
+                    {"available", true},
+                    {"status", "ready"},
+                    {"hasMore", false},
+                    {"elapsedMs", elapsed}
+                };
+                if (params.contains("queryId")) {
+                    bmResp["queryId"] = params["queryId"];
+                }
+                return bmResp;
+            }
+
             // Expand desktop user environment variables (`%APPDATA%`, `%LOCALAPPDATA%`,
             // `%USERPROFILE%`, `%TEMP%`, etc.) on the interactive client before IPC (`MED-13`).
             query = expandClientUserEnvUtf8(query, tools3000::service::search_limits::MaxQueryUtf8Bytes);
@@ -1157,6 +1183,40 @@ public:
                     }
                     result["available"] = !isInit;
                     result["status"] = isInit ? "starting" : "ready";
+
+                    // 常规搜索可控轻权重混排高相关浏览器书签（零语法冲突，仅首页 cursor == 0 且非全文/文件专用操作符时生效）
+                    const uint64_t reqCursor = normalized.contains("cursor") && normalized["cursor"].is_number_unsigned()
+                        ? normalized["cursor"].get<uint64_t>()
+                        : 0u;
+                    const bool includeBookmarks = tools3000::core::ConfigManager::instance().get<bool>("/search/includeBookmarks", true);
+                    if (includeBookmarks &&
+                        !isInit &&
+                        !isContentSearch &&
+                        reqCursor == 0 &&
+                        !result.value("cancelled", false) &&
+                        result.contains("results") &&
+                        result["results"].is_array() &&
+                        tools3000::search::BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery(query)) {
+                        auto mixedBookmarks = tools3000::search::BrowserBookmarkIndex::instance().searchLocalBookmarks(
+                            query, 5u, 55);
+                        if (mixedBookmarks.is_array() && !mixedBookmarks.empty()) {
+                            nlohmann::json combined = nlohmann::json::array();
+                            // 若文件列表首条是精确高分匹配（如完全同名），保留前 3 个本地文件在最前，否则书签直达前排
+                            auto& fileArr = result["results"];
+                            const size_t leadFiles = (std::min<size_t>)(fileArr.size(), 3u);
+                            for (size_t i = 0; i < leadFiles; ++i) {
+                                combined.push_back(std::move(fileArr[i]));
+                            }
+                            for (auto& bm : mixedBookmarks) {
+                                combined.push_back(std::move(bm));
+                            }
+                            for (size_t i = leadFiles; i < fileArr.size(); ++i) {
+                                combined.push_back(std::move(fileArr[i]));
+                            }
+                            result["results"] = std::move(combined);
+                        }
+                    }
+
                     const auto resultIt = result.find("results");
                     const size_t resultCount = resultIt != result.end() && resultIt->is_array()
                         ? resultIt->size() : 0;
@@ -1328,6 +1388,10 @@ public:
             bool catDesign = cfg.get<bool>("/search/contentCategory_design", true);
             bool catArchive = cfg.get<bool>("/search/contentCategory_archive", true);
             std::string iconStyle = cfg.get<std::string>("/search/iconStyle", "native");
+            bool includeBookmarks = cfg.get<bool>("/search/includeBookmarks", true);
+            bool externalApiEnabled = cfg.get<bool>("/search/externalApiEnabled", false);
+            std::string externalApiExcludePaths = cfg.get<std::string>("/search/externalApiExcludePaths", "");
+            std::string externalApiAllowedRoots = cfg.get<std::string>("/search/externalApiAllowedRoots", "");
 
             nlohmann::json uiPreferences = cfg.get<nlohmann::json>("/search/uiPreferences", nlohmann::json::object());
             if (!uiPreferences.is_object()) {
@@ -1381,6 +1445,10 @@ public:
                 {"excludeSystem", excludeSystem},
                 {"autoBypassFullscreen", autoBypassFullscreen},
                 {"iconStyle", iconStyle},
+                {"includeBookmarks", includeBookmarks},
+                {"externalApiEnabled", externalApiEnabled},
+                {"externalApiExcludePaths", externalApiExcludePaths},
+                {"externalApiAllowedRoots", externalApiAllowedRoots},
                 {"contentCategory_doc", catDoc},
                 {"contentCategory_code", catCode},
                 {"contentCategory_design", catDesign},
@@ -1477,6 +1545,18 @@ public:
             if (params.contains("iconStyle") && params["iconStyle"].is_string()) {
                 searchPatch["iconStyle"] = params["iconStyle"].get<std::string>();
             }
+            if (params.contains("includeBookmarks") && params["includeBookmarks"].is_boolean()) {
+                searchPatch["includeBookmarks"] = params["includeBookmarks"].get<bool>();
+            }
+            if (params.contains("externalApiEnabled") && params["externalApiEnabled"].is_boolean()) {
+                searchPatch["externalApiEnabled"] = params["externalApiEnabled"].get<bool>();
+            }
+            if (params.contains("externalApiExcludePaths") && params["externalApiExcludePaths"].is_string()) {
+                searchPatch["externalApiExcludePaths"] = params["externalApiExcludePaths"].get<std::string>();
+            }
+            if (params.contains("externalApiAllowedRoots") && params["externalApiAllowedRoots"].is_string()) {
+                searchPatch["externalApiAllowedRoots"] = params["externalApiAllowedRoots"].get<std::string>();
+            }
             if (params.contains("contentExtensions")) {
                 const auto clean = normalizeFormatListJson(params["contentExtensions"]);
                 searchPatch["contentExtensions"] = clean;
@@ -1554,6 +1634,31 @@ public:
             }
 
             return {{"success", true}};
+        });
+
+        mb.registerHandler("search.getExternalCliInfo", [](const nlohmann::json&) -> nlohmann::json {
+            wchar_t modulePath[MAX_PATH]{};
+            GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+            const std::filesystem::path exeDir = std::filesystem::path(modulePath).parent_path();
+            const std::filesystem::path companion = exeDir / L"tools3000-cli.exe";
+            std::error_code ec;
+            bool installed = std::filesystem::exists(companion, ec);
+            std::filesystem::path resolved = companion;
+            if (!installed) {
+                // 开发态回退探测 build/bin/Release 与 Cargo 产物路径
+                const std::filesystem::path parent2 = exeDir.parent_path().parent_path();
+                const std::filesystem::path devCargo =
+                    parent2 / L"src" / L"cli" / L"target" / L"x86_64-pc-windows-msvc" / L"release" / L"tools3000-cli.exe";
+                if (std::filesystem::exists(devCargo, ec)) {
+                    resolved = devCargo;
+                    installed = true;
+                }
+            }
+            return {
+                {"installed", installed},
+                {"executablePath", tools3000::core::WinUtils::wstringToUtf8(resolved.wstring())},
+                {"version", tools3000::version::String}
+            };
         });
 
         mb.registerHandler("search.getFileIcon", [](const nlohmann::json& params) -> nlohmann::json {
@@ -1721,6 +1826,7 @@ public:
             g_warmupInFlight.store(false, std::memory_order_release);
         }
         closeAllPooledPipes();
+        tools3000::search::BrowserBookmarkIndex::instance().clearCache();
         tools3000::core::MessageBridge::instance().unregisterHandlersByPrefix("search.");
         // 索引服务一旦因显式搜索需求启动，即独立常驻。
         // 主程序退出不发送 shutdown；SCM 的 demand start 保证下次开机不自启。

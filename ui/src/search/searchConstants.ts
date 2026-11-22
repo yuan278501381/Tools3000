@@ -1,4 +1,5 @@
 import {
+  Bookmark,
   FileArchive,
   FileAudio,
   FileCode,
@@ -42,7 +43,25 @@ export const CATEGORY_DEFS = [
   { id: 'archive', labelKey: 'search.catArchives', defaultLabel: 'Archives', prefix: 'ext:zip;rar;7z;tar;gz ', icon: FileArchive },
   { id: 'code', labelKey: 'search.catCode', defaultLabel: 'Code', prefix: 'ext:cpp;h;ts;tsx;js;py;rs;go;java;lua;json ', icon: FileCode },
   { id: 'folder', labelKey: 'search.catFolders', defaultLabel: 'Folders', prefix: 'folder: ', icon: Folder },
+  { id: 'bookmark', labelKey: 'search.catBookmarks', defaultLabel: 'Bookmarks', prefix: 'bm:', icon: Bookmark },
 ] as const;
+
+export type SearchCategoryId = (typeof CATEGORY_DEFS)[number]['id'];
+
+/** 搜索分类栏固定区（永远锁定在最左前两位，不可拖移或被其他分类插队）。 */
+export const PINNED_SEARCH_CATEGORY_IDS: readonly SearchCategoryId[] = ['all', 'content'] as const;
+
+/** 搜索分类栏默认顺序单一事实源（自动从 CATEGORY_DEFS 派生）。 */
+export const DEFAULT_SEARCH_CATEGORY_ORDER: readonly SearchCategoryId[] = CATEGORY_DEFS.map(
+  (def) => def.id,
+);
+
+/** 可由用户自由拖拽自定义排序的分类 ID 集合（不含固定核心分类）。 */
+export const DEFAULT_CUSTOM_CATEGORY_ORDER: readonly SearchCategoryId[] = CATEGORY_DEFS.filter(
+  (def) => !PINNED_SEARCH_CATEGORY_IDS.includes(def.id),
+).map((def) => def.id);
+
+export const SEARCH_CATEGORY_ORDER_STORAGE_KEY = 'tools3000_search_category_order';
 
 export const SYNTAX_CATEGORIES = [
   { id: 'all', labelKey: 'search.syntaxCatAll', defaultLabel: 'All Syntax' },
@@ -76,6 +95,7 @@ export const SYNTAX_EXAMPLES: SyntaxExampleItem[] = [
   { category: 'logic', syntax: 'nopy:wx', descKey: 'search.syntaxExNoPinyin', defaultDesc: 'Disable Pinyin matching for this term to match literal English letters only' },
   { category: 'logic', syntax: 'size:>10mb', descKey: 'search.syntaxExSize', defaultDesc: 'Filter by file size (supports kb / mb / gb and > < >= <=)' },
   { category: 'logic', syntax: 'dm:today', descKey: 'search.syntaxExDate', defaultDesc: 'Filter by modified date (today / yesterday / thisweek / 2026-09)' },
+  { category: 'logic', syntax: 'bm:github', descKey: 'search.syntaxExBookmark', defaultDesc: 'Search local Edge / Chrome / Brave browser bookmarks directly with zero file-syntax conflict', highlight: true },
 ];
 
 export const CONTENT_FORMAT_CATEGORIES: FormatCategory[] = [

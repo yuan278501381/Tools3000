@@ -96,6 +96,11 @@ bool configuredEnabled(const std::string& id) {
         if (config.has("/picasa_viewer/enabled")) return config.get<bool>("/picasa_viewer/enabled", false);
         return false;
     }
+    if (id == "clipboard") {
+        if (config.has("/plugins/clipboard/enabled")) return config.get<bool>("/plugins/clipboard/enabled", true);
+        if (config.has("/clipboard/enabled")) return config.get<bool>("/clipboard/enabled", true);
+        return true;
+    }
     const auto key = pluginConfigKey(id);
     if (config.has(key)) return config.get<bool>(key, true);
     return true;
@@ -199,6 +204,16 @@ void PluginManager::reconcilePluginConfigs() {
     }
     patch["picasa_viewer"]["enabled"] = picasaViewerEnabled;
     patch["plugins"]["picasa_viewer"]["enabled"] = picasaViewerEnabled;
+
+    // 9. clipboard: /clipboard/enabled 与 /plugins/clipboard/enabled 强同构，默认开启
+    bool clipboardEnabled = true;
+    if (cfg.has("/plugins/clipboard/enabled")) {
+        clipboardEnabled = cfg.get<bool>("/plugins/clipboard/enabled", true);
+    } else if (cfg.has("/clipboard/enabled")) {
+        clipboardEnabled = cfg.get<bool>("/clipboard/enabled", true);
+    }
+    patch["clipboard"]["enabled"] = clipboardEnabled;
+    patch["plugins"]["clipboard"]["enabled"] = clipboardEnabled;
 
     cfg.mergePatch(patch, "/plugins");
 }

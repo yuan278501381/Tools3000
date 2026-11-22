@@ -1206,6 +1206,13 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     return 0;
                 }
 
+                case CaptureShortcutAction::TranslateSelection: {
+                    ToolbarButton trBtn;
+                    trBtn.command = ToolbarCommand::Translate;
+                    executeToolbarCommand(trBtn);
+                    return 0;
+                }
+
                 case CaptureShortcutAction::SaveSelectionAs: {
                     triggerSaveSelectionAs(hwnd);
                     return 0;

@@ -38,6 +38,7 @@ enum class TrayMenuId : UINT {
     PauseGesture    = 1004,
     Search          = 1005,
     RestartElevated = 1006,
+    Clipboard       = 1007,
     Separator       = 0,
     Exit            = 1099
 };
@@ -86,6 +87,9 @@ public:
     /// 获取当前提示文本（用于状态断言）
     std::wstring tooltip() const;
 
+    /// 同步新版本更新红点状态（动态在托盘图标右上角叠加高对比朱砂红点角标并更新 Tooltip）
+    void setUpdateBadge(bool available, bool readyToInstall, const std::string& latestVersion = {});
+
     /// 根据当前 Windows 任务栏深浅主题热刷新托盘图标
     void refreshThemeIcon();
 
@@ -98,6 +102,7 @@ public:
     void onScreenshot(TrayEventCallback callback)    { m_callbacks[TrayMenuId::Screenshot]   = std::move(callback); }
     void onRecording(TrayEventCallback callback)     { m_callbacks[TrayMenuId::Recording]    = std::move(callback); }
     void onSearch(TrayEventCallback callback)        { m_callbacks[TrayMenuId::Search]       = std::move(callback); }
+    void onClipboard(TrayEventCallback callback)     { m_callbacks[TrayMenuId::Clipboard]    = std::move(callback); }
     void onPauseGesture(TrayEventCallback callback)  { m_callbacks[TrayMenuId::PauseGesture] = std::move(callback); }
     void onRestartElevated(TrayEventCallback callback) { m_callbacks[TrayMenuId::RestartElevated] = std::move(callback); }
     void onExit(TrayEventCallback callback)          { m_callbacks[TrayMenuId::Exit]         = std::move(callback); }
@@ -123,16 +128,24 @@ private:
     TrayIcon(const TrayIcon&) = delete;
     TrayIcon& operator=(const TrayIcon&) = delete;
 
+    void applyResolvedIconAndTooltipLocked();
+    void releaseBadgedIconLocked();
+
     mutable std::recursive_mutex m_mutex;
     NOTIFYICONDATAW m_nid{};
     HWND m_hwnd = nullptr;
     HICON m_icon = nullptr;
+    HICON m_badgedIcon = nullptr;
     UINT m_currentIconId = 0;
     uint64_t m_lastThemeRefreshTick = 0;
     uint64_t m_gesturePauseSubId = 0;
     uint64_t m_themeChangedSubId = 0;
+    uint64_t m_updateStatusSubId = 0;
     std::atomic<bool> m_created{false};
     std::atomic<bool> m_gesturePaused{false};
+    bool m_updateAvailable = false;
+    bool m_updateReadyToInstall = false;
+    std::string m_updateLatestVersion;
     UINT m_lastRightClickMsg = 0;
     uint64_t m_lastRightClickTick = 0;
     std::unordered_map<TrayMenuId, TrayEventCallback> m_callbacks;

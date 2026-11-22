@@ -22,6 +22,7 @@ import {
   Keyboard,
   Cast,
   Image as ImageIcon,
+  ClipboardList,
   Puzzle,
   type LucideIcon,
 } from 'lucide-react';
@@ -30,6 +31,7 @@ export type BuiltinNavId =
   | 'general'
   | 'plugins'
   | 'search'
+  | 'clipboard'
   | 'gesture'
   | 'hotcorner'
   | 'capture'
@@ -59,7 +61,7 @@ export interface RouteItemConfig {
   toneEnd: string;       // 精工 Squircle 模块徽标渐变终止色
   canvasWidth?: PageCanvasWidth; // 内容画布语义天花板: reading (960px) / workspace (1280px)
   fallbackLabel?: string;
-  requiresPlugin?: 'gesture' | 'capture' | 'search' | 'dialogenhancer' | 'dialog_enhancer' | 'keycast' | 'spotlight' | 'remote_boost' | 'picasa_viewer';
+  requiresPlugin?: 'gesture' | 'capture' | 'search' | 'clipboard' | 'dialogenhancer' | 'dialog_enhancer' | 'keycast' | 'spotlight' | 'remote_boost' | 'picasa_viewer';
 }
 
 export const APP_ROUTES: readonly RouteItemConfig[] = [
@@ -69,6 +71,7 @@ export const APP_ROUTES: readonly RouteItemConfig[] = [
 
   // ── 核心效率工具 ──────────────────────────────────────────────────────────
   { id: 'search', labelKey: 'nav.search', subtitleKey: 'navSubtitle.search', category: 'core_tools', icon: Search, toneStart: '#0ea5e9', toneEnd: '#0284c7', canvasWidth: 'workspace', requiresPlugin: 'search' },
+  { id: 'clipboard', labelKey: 'nav.clipboard', subtitleKey: 'navSubtitle.clipboard', category: 'core_tools', icon: ClipboardList, toneStart: '#0ea5e9', toneEnd: '#6366f1', canvasWidth: 'reading', requiresPlugin: 'clipboard' },
   { id: 'gesture', labelKey: 'nav.gesture', subtitleKey: 'navSubtitle.gesture', category: 'core_tools', icon: Mouse, toneStart: '#8b5cf6', toneEnd: '#7c3aed', canvasWidth: 'workspace', requiresPlugin: 'gesture' },
   { id: 'hotcorner', labelKey: 'nav.hotcorner', subtitleKey: 'navSubtitle.hotcorner', category: 'core_tools', icon: MonitorUp, toneStart: '#f59e0b', toneEnd: '#d97706', canvasWidth: 'reading', requiresPlugin: 'gesture' },
   { id: 'capture', labelKey: 'nav.capture', subtitleKey: 'navSubtitle.capture', category: 'core_tools', icon: Camera, toneStart: '#f43f5e', toneEnd: '#e11d48', canvasWidth: 'workspace', requiresPlugin: 'capture' },

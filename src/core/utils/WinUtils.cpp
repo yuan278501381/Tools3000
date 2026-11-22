@@ -2687,6 +2687,41 @@ bool WinUtils::isWindows11OrNewer() noexcept {
     return cached;
 }
 
+bool WinUtils::isWindows1122H2OrNewer() noexcept {
+    static const bool cached = []() noexcept {
+        using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+        if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll")) {
+            auto fn = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion"));
+            if (fn) {
+                RTL_OSVERSIONINFOW info{};
+                info.dwOSVersionInfoSize = sizeof(info);
+                if (fn(&info) == 0) {
+                    return info.dwMajorVersion > 10 ||
+                           (info.dwMajorVersion == 10 && info.dwBuildNumber >= 22621);
+                }
+            }
+        }
+        return false;
+    }();
+    return cached;
+}
+
+void WinUtils::applyImmersiveDarkMode(HWND hwnd, bool dark) noexcept {
+    if (!hwnd || !IsWindow(hwnd)) return;
+    constexpr DWORD kDwmwaUseImmersiveDarkMode = 20;
+    constexpr DWORD kDwmwaUseImmersiveDarkModeBefore20H1 = 19;
+    const BOOL flag = dark ? TRUE : FALSE;
+    if (FAILED(DwmSetWindowAttribute(hwnd, kDwmwaUseImmersiveDarkMode, &flag, sizeof(flag)))) {
+        (void)DwmSetWindowAttribute(hwnd, kDwmwaUseImmersiveDarkModeBefore20H1, &flag, sizeof(flag));
+    }
+}
+
+void WinUtils::applyWin11SystemBackdrop(HWND hwnd, DWORD backdropType) noexcept {
+    if (!hwnd || !IsWindow(hwnd) || !isWindows1122H2OrNewer()) return;
+    constexpr DWORD kDwmwaSystemBackdropType = 38;
+    (void)DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdropType, sizeof(backdropType));
+}
+
 bool WinUtils::shouldUseRegionFallbackForRoundedCorners(
     DWORD windowStyle,
     bool isWin11,
@@ -2756,7 +2791,16 @@ bool WinUtils::handleFramelessNonClientMessage(
 }
 
 void WinUtils::applyUniversalRoundedCorners(HWND hwnd, int width, int height, int radius) {
-    if (!hwnd || !IsWindow(hwnd) || width <= 0 || height <= 0 || radius <= 0) return;
+    if (!hwnd || !IsWindow(hwnd) || width <= 0 || height <= 0) return;
+
+    // radius <= 0 表示显式要求直角态（例如最大化铺满屏幕）：必须主动切换 DWMWCP_DONOTROUND
+    // 并清除此前普通态遗留的 SetWindowRgn 区域，防止全屏窗口被旧的小尺寸 HRGN 截断！
+    if (radius <= 0) {
+        const DWM_WINDOW_CORNER_PREFERENCE noCorners = DWMWCP_DONOTROUND;
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &noCorners, sizeof(noCorners));
+        clearWindowRegionIfSet(hwnd, true);
+        return;
+    }
 
     // 1. Windows 11 DWM 硬件级超平滑圆角首选
     const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;

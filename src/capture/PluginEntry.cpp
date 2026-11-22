@@ -9,6 +9,7 @@
 #include "core/hotkey/HotkeyPolicy.h"
 #include "core/events/EventBus.h"
 #include "core/events/MainThreadDispatcher.h"
+#include "core/translate/TranslationService.h"
 #include "core/utils/UiThreadJoin.h"
 #include "capture/ScreenCapture.h"
 #include "capture/ClipboardUtils.h"
@@ -1582,6 +1583,170 @@ public:
             return {{"success", saved}, {"error", saved ? "" : "failed to persist settings"}};
         });
 
+        auto providerToUi = [](const std::string& p) -> std::string {
+            using namespace tools3000::core::translate;
+            if (p == TranslationConstants::kProviderOpenAiCompatible) return "openai";
+            if (p == TranslationConstants::kProviderDeepL) return "deepl";
+            return "free_auto";
+        };
+        auto langToUi = [](const std::string& rawLang, const std::string& fallbackUiLang) -> std::string {
+            std::string canonical = tools3000::core::translate::TranslationService::canonicalizeLanguageCode(rawLang);
+            if (canonical.empty() || canonical == "auto") {
+                canonical = tools3000::core::translate::TranslationService::canonicalizeLanguageCode(fallbackUiLang);
+            }
+            if (canonical == "zh-CN" || canonical == "auto" || canonical.empty()) return "zh-Hans";
+            if (canonical == "zh-TW") return "zh-Hant";
+            if (canonical == "pt-BR") return "pt";
+            return canonical;
+        };
+
+        auto serializeTranslateSettings = [providerToUi, langToUi](const tools3000::core::translate::TranslationSettings& s) -> nlohmann::json {
+            using namespace tools3000::core::translate;
+            const std::string uiLang = tools3000::core::UiI18n::getEffectiveLanguageTag();
+            const std::string targetUi = langToUi(s.targetLang, uiLang);
+            const std::string secondaryUi = langToUi(s.secondaryTargetLang, targetUi == "en" ? "zh-CN" : "en");
+            const int timeoutSec = std::clamp(
+                (s.timeoutMs + 500) / 1000,
+                TranslationConstants::kMinTimeoutMs / 1000,
+                TranslationConstants::kMaxTimeoutMs / 1000);
+            return {
+                {"provider", providerToUi(s.provider)},
+                {"targetLang", targetUi},
+                {"secondaryTargetLang", secondaryUi},
+                {"freePrimary", s.freePrimary == TranslationConstants::kFreePrimaryGoogle ? "google" : "edge"},
+                {"openaiBaseUrl", s.openaiBaseUrl},
+                {"openaiModel", s.openaiModel},
+                {"hasOpenaiApiKey", !s.openaiApiKey.empty()},
+                {"openaiApiKeyMasked", TranslationService::maskApiKeyForUi(s.openaiApiKey)},
+                {"deeplEndpoint", s.deeplBaseUrl},
+                {"hasDeeplApiKey", !s.deeplApiKey.empty()},
+                {"deeplApiKeyMasked", TranslationService::maskApiKeyForUi(s.deeplApiKey)},
+                {"timeoutSec", timeoutSec}
+            };
+        };
+
+        auto applyTranslateParams = [](tools3000::core::translate::TranslationSettings& dst,
+                                       const nlohmann::json& params,
+                                       std::string& outError) -> bool {
+            using namespace tools3000::core::translate;
+            if (!params.is_object()) {
+                outError = "invalid translate settings payload";
+                return false;
+            }
+            for (const auto& [key, value] : params.items()) {
+                if (key == "provider") {
+                    if (!value.is_string()) { outError = "invalid provider"; return false; }
+                    const std::string v = value.get<std::string>();
+                    if (v == "free_auto" || v == TranslationConstants::kProviderAutoFree) {
+                        dst.provider = TranslationConstants::kProviderAutoFree;
+                    } else if (v == "openai" || v == TranslationConstants::kProviderOpenAiCompatible) {
+                        dst.provider = TranslationConstants::kProviderOpenAiCompatible;
+                    } else if (v == "deepl") {
+                        dst.provider = TranslationConstants::kProviderDeepL;
+                    } else {
+                        outError = "unsupported translation provider: " + v;
+                        return false;
+                    }
+                } else if (key == "targetLang") {
+                    if (!value.is_string() || value.get<std::string>().empty()) {
+                        outError = "invalid targetLang";
+                        return false;
+                    }
+                    dst.targetLang = TranslationService::canonicalizeLanguageCode(value.get<std::string>());
+                } else if (key == "secondaryTargetLang") {
+                    if (!value.is_string() || value.get<std::string>().empty()) {
+                        outError = "invalid secondaryTargetLang";
+                        return false;
+                    }
+                    dst.secondaryTargetLang = TranslationService::canonicalizeLanguageCode(value.get<std::string>());
+                } else if (key == "freePrimary") {
+                    if (!value.is_string()) { outError = "invalid freePrimary"; return false; }
+                    const std::string v = value.get<std::string>();
+                    if (v != TranslationConstants::kFreePrimaryEdge && v != TranslationConstants::kFreePrimaryGoogle) {
+                        outError = "unsupported freePrimary channel: " + v;
+                        return false;
+                    }
+                    dst.freePrimary = v;
+                } else if (key == "openaiBaseUrl") {
+                    if (!value.is_string()) { outError = "invalid openaiBaseUrl"; return false; }
+                    dst.openaiBaseUrl = value.get<std::string>();
+                } else if (key == "openaiModel") {
+                    if (!value.is_string()) { outError = "invalid openaiModel"; return false; }
+                    dst.openaiModel = value.get<std::string>();
+                } else if (key == "openaiApiKey") {
+                    if (!value.is_string()) { outError = "invalid openaiApiKey"; return false; }
+                    const std::string k = value.get<std::string>();
+                    if (!k.empty()) dst.openaiApiKey = k;
+                } else if (key == "clearOpenaiApiKey") {
+                    if (!value.is_boolean()) { outError = "invalid clearOpenaiApiKey"; return false; }
+                    if (value.get<bool>()) dst.openaiApiKey.clear();
+                } else if (key == "deeplEndpoint") {
+                    if (!value.is_string()) { outError = "invalid deeplEndpoint"; return false; }
+                    dst.deeplBaseUrl = value.get<std::string>();
+                } else if (key == "deeplApiKey") {
+                    if (!value.is_string()) { outError = "invalid deeplApiKey"; return false; }
+                    const std::string k = value.get<std::string>();
+                    if (!k.empty()) dst.deeplApiKey = k;
+                } else if (key == "clearDeeplApiKey") {
+                    if (!value.is_boolean()) { outError = "invalid clearDeeplApiKey"; return false; }
+                    if (value.get<bool>()) dst.deeplApiKey.clear();
+                } else if (key == "timeoutSec") {
+                    if (!value.is_number_integer()) { outError = "invalid timeoutSec"; return false; }
+                    dst.timeoutMs = std::clamp(value.get<int>(), 3, 60) * 1000;
+                } else {
+                    outError = "unsupported translate setting: " + key;
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        mb.registerHandler("translate.getSettings", [serializeTranslateSettings](const nlohmann::json&) -> nlohmann::json {
+            return serializeTranslateSettings(tools3000::core::translate::TranslationService::instance().loadSettings());
+        });
+
+        mb.registerHandler("translate.updateSettings", [serializeTranslateSettings, applyTranslateParams](const nlohmann::json& params) -> nlohmann::json {
+            if (!params.is_object() || params.empty()) {
+                return {{"success", false}, {"error", "no settings supplied"}};
+            }
+            auto next = tools3000::core::translate::TranslationService::instance().loadSettings();
+            std::string err;
+            if (!applyTranslateParams(next, params, err)) {
+                return {{"success", false}, {"error", err}};
+            }
+            const bool saved = tools3000::core::translate::TranslationService::instance().saveSettings(next);
+            return {
+                {"success", saved},
+                {"error", saved ? "" : "failed to persist translation settings"},
+                {"settings", serializeTranslateSettings(tools3000::core::translate::TranslationService::instance().loadSettings())}
+            };
+        });
+
+        mb.registerHandler("translate.testConnection", [applyTranslateParams](const nlohmann::json& params) -> nlohmann::json {
+            using namespace tools3000::core::translate;
+            auto candidate = TranslationService::instance().loadSettings();
+            if (params.is_object() && !params.empty()) {
+                std::string err;
+                if (!applyTranslateParams(candidate, params, err)) {
+                    return {{"success", false}, {"errorCode", "invalid_params"}, {"errorMessage", err}};
+                }
+            }
+            TranslationBatchRequest req;
+            req.texts = {"Hello, Tools3000!"};
+            req.uiLanguageCode = tools3000::core::UiI18n::getEffectiveLanguageTag();
+            const auto res = TranslationService::instance().translateBatchWithSettings(req, candidate);
+            const std::string sampleOutput = res.translations.empty() ? "" : res.translations[0];
+            return {
+                {"success", res.success},
+                {"providerUsed", res.providerUsed},
+                {"resolvedTargetLang", res.effectiveTargetLang},
+                {"elapsedMs", res.elapsedMs},
+                {"sampleOutput", sampleOutput},
+                {"errorCode", res.errorCode},
+                {"errorMessage", res.errorDetail}
+            };
+        });
+
         auto serializeModelStatus = []() -> nlohmann::json {
             const auto st = tools3000::ocr::DeepOcrEngine::instance().getModelStatus();
             return {
@@ -1806,6 +1971,8 @@ public:
 
         mb.registerHandler("capture.pinImageFile", [callOnUiThread](const nlohmann::json& params) -> nlohmann::json {
             std::string path = params.value("path", "");
+            const bool autoOcr = params.value("autoOcr", false);
+            const bool autoTranslate = params.value("autoTranslate", false);
             if (path.empty()) return {{"success", false}, {"error", "path is required"}};
             try {
                 const auto filePath = std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(path));
@@ -1815,11 +1982,18 @@ public:
                     (std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
                 cv::Mat image = cv::imdecode(bytes, cv::IMREAD_UNCHANGED);
                 if (!image.empty()) {
-                    return callOnUiThread([img = std::move(image)]() -> nlohmann::json {
+                    return callOnUiThread([img = std::move(image), autoOcr, autoTranslate]() -> nlohmann::json {
                         POINT pt;
                         GetCursorPos(&pt);
                         POINT spawnPos = tools3000::capture::PinWindow::calculateSmartSpawnPosition(img.cols, img.rows, &pt);
                         const auto pin = tools3000::capture::PinWindow::create(img, spawnPos.x, spawnPos.y);
+                        if (pin) {
+                            if (autoTranslate) {
+                                pin->translateInPlace(false, false);
+                            } else if (autoOcr) {
+                                pin->extractText();
+                            }
+                        }
                         return {{"success", static_cast<bool>(pin)}};
                     });
                 }
@@ -1829,6 +2003,38 @@ public:
             }
             return {{"success", false}, {"error", "unsupported or invalid image"}};
         });
+
+        m_pinImageFileSubId = tools3000::core::EventBus::instance().subscribe<tools3000::core::ActionPinImageFileEvent>(
+            [](const tools3000::core::ActionPinImageFileEvent& ev) {
+                if (ev.path.empty()) return;
+                std::thread([path = ev.path, autoOcr = ev.autoOcr, autoTranslate = ev.autoTranslate]() {
+                    try {
+                        const auto filePath = std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(path));
+                        std::ifstream stream(filePath, std::ios::binary);
+                        if (!stream) return;
+                        std::vector<unsigned char> bytes(
+                            (std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+                        cv::Mat image = cv::imdecode(bytes, cv::IMREAD_UNCHANGED);
+                        if (image.empty()) return;
+                        tools3000::core::MainThreadDispatcher::instance().post(
+                            [img = std::move(image), autoOcr, autoTranslate]() {
+                                POINT pt{};
+                                GetCursorPos(&pt);
+                                POINT spawnPos = tools3000::capture::PinWindow::calculateSmartSpawnPosition(
+                                    img.cols, img.rows, &pt);
+                                const auto pin = tools3000::capture::PinWindow::create(img, spawnPos.x, spawnPos.y);
+                                if (pin) {
+                                    if (autoTranslate) {
+                                        pin->translateInPlace(false, false);
+                                    } else if (autoOcr) {
+                                        pin->extractText();
+                                    }
+                                }
+                            });
+                    } catch (...) {
+                    }
+                }).detach();
+            });
 
         mb.registerHandler("capture.copyHistoryItem", [](const nlohmann::json& params) -> nlohmann::json {
             const uint64_t id = params.value("id", static_cast<uint64_t>(0));
@@ -2513,6 +2719,7 @@ public:
                  "capture.saveHistoryItemAs",
                  "history.getAll",
                  "history.getThumbnail",
+                 "translate.testConnection",
              }) {
             mb.markMethodAsync(asyncMethod);
         }
@@ -2528,6 +2735,7 @@ public:
         bridge.unregisterHandlersByPrefix("capture.");
         bridge.unregisterHandlersByPrefix("recording.");
         bridge.unregisterHandlersByPrefix("ocr.");
+        bridge.unregisterHandlersByPrefix("translate.");
         bridge.unregisterHandlersByPrefix("history.");
 
         auto& hotkeys = tools3000::core::HotkeyManager::instance();
@@ -2540,8 +2748,10 @@ public:
         bus.unsubscribeAndWait(m_screenshotSubscription);
         bus.unsubscribeAndWait(m_recordingSubscription);
         bus.unsubscribeAndWait(m_themeSubscription);
+        bus.unsubscribeAndWait(m_pinImageFileSubId);
         m_screenshotSubscription = 0;
         m_recordingSubscription = 0;
+        m_pinImageFileSubId = 0;
         if (m_configChangeId != 0) {
             tools3000::core::ConfigManager::instance().removeOnChange(m_configChangeId);
             m_configChangeId = 0;
@@ -2587,6 +2797,7 @@ private:
     tools3000::core::SubscriptionId m_screenshotSubscription = 0;
     tools3000::core::SubscriptionId m_recordingSubscription = 0;
     tools3000::core::SubscriptionId m_themeSubscription = 0;
+    tools3000::core::SubscriptionId m_pinImageFileSubId = 0;
     size_t m_configChangeId = 0;
 };
 

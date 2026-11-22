@@ -12,11 +12,12 @@ import { useTranslation } from 'react-i18next';
 import { Search, X, CornerDownRight, Power } from 'lucide-react';
 import { toast } from 'sonner';
 import { CodeBadge } from './UIKit';
-import { bridgeRequest } from '../hooks/useBridge';
+import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import type { PluginStatus } from '../pages/PluginsPage';
 import './Sidebar.css';
 import {
   APP_ROUTES,
+  ROUTE_MAP,
   resolveExtensionRoute,
   type RouteItemConfig,
   type NavId,
@@ -46,6 +47,7 @@ const SIDEBAR_KEYWORD_KEYS: Partial<Record<NavId, string>> = {
   general: 'sidebar.kw_general',
   plugins: 'sidebar.kw_plugins',
   search: 'sidebar.kw_search',
+  clipboard: 'sidebar.kw_clipboard',
   gesture: 'sidebar.kw_gesture',
   hotcorner: 'sidebar.kw_hotcorner',
   capture: 'sidebar.kw_capture',
@@ -70,7 +72,41 @@ export const Sidebar: FC<SidebarProps> = ({
   const { t } = useTranslation();
   const [filterQuery, setFilterQuery] = useState('');
   const [enablingPluginId, setEnablingPluginId] = useState<string | null>(null);
+  const [updateBadge, setUpdateBadge] = useState<{ hasUpdate: boolean; readyToInstall: boolean; latestVersion: string }>({
+    hasUpdate: false,
+    readyToInstall: false,
+    latestVersion: '',
+  });
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    bridgeRequest<{ hasUpdate?: boolean; readyToInstall?: boolean; latestVersion?: string }>(
+      'app.getUpdateState',
+      undefined,
+      { silent: true },
+    )
+      .then((st) => {
+        if (st && typeof st.hasUpdate === 'boolean') {
+          setUpdateBadge({
+            hasUpdate: st.hasUpdate,
+            readyToInstall: Boolean(st.readyToInstall),
+            latestVersion: st.latestVersion ?? '',
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useBridgeEvent('update.state', (raw) => {
+    const st = raw as { hasUpdate?: boolean; readyToInstall?: boolean; latestVersion?: string } | undefined;
+    if (st && typeof st.hasUpdate === 'boolean') {
+      setUpdateBadge({
+        hasUpdate: st.hasUpdate,
+        readyToInstall: Boolean(st.readyToInstall),
+        latestVersion: st.latestVersion ?? '',
+      });
+    }
+  });
 
   useEffect(() => {
     const mql = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 768px)') : null;
@@ -150,7 +186,7 @@ export const Sidebar: FC<SidebarProps> = ({
     const seen = new Set<string>();
     const routes: RouteItemConfig[] = [];
     for (const extId of ids) {
-      if (!extId || seen.has(extId)) continue;
+      if (!extId || seen.has(extId) || ROUTE_MAP.has(extId)) continue;
       seen.add(extId);
       routes.push(resolveExtensionRoute(extId, nameMap.get(extId)));
     }
@@ -384,6 +420,17 @@ export const Sidebar: FC<SidebarProps> = ({
         <span className="sidebar__item-label">
           {customLabel ?? t(item.labelKey as unknown as TemplateStringsArray)}
         </span>
+        {item.id === 'about' && updateBadge.hasUpdate && (
+          <span
+            className={`sidebar__update-dot${updateBadge.readyToInstall ? ' sidebar__update-dot--ready' : ''}`}
+            title={
+              updateBadge.readyToInstall
+                ? t('about.updateReadyHint', { version: updateBadge.latestVersion, defaultValue: `Update ${updateBadge.latestVersion} ready` })
+                : t('about.updateAvailable', { version: updateBadge.latestVersion, defaultValue: `Update ${updateBadge.latestVersion} available` })
+            }
+            aria-label={t('about.updateAvailable', { version: updateBadge.latestVersion, defaultValue: `Update ${updateBadge.latestVersion} available` })}
+          />
+        )}
       </button>
     );
   };

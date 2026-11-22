@@ -233,6 +233,8 @@ describe('parseQueryKeywords & Content Search Syntax Helpers', () => {
     expect(parseQueryKeywords('ext:docx content:"hello world" !"draft v1" dm:today size:>1mb')).toEqual(['hello', 'world']);
     expect(parseQueryKeywords('case:Tools3000 !temp path:src')).toEqual(['Tools3000']);
     expect(parseQueryKeywords('content: 采购合同')).toEqual(['采购合同']);
+    expect(parseQueryKeywords('bm:github')).toEqual(['github']);
+    expect(parseQueryKeywords('bm:')).toEqual([]);
     expect(parseQueryKeywords('')).toEqual([]);
   });
 

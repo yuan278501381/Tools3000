@@ -1666,7 +1666,7 @@ namespace {
 bool isCoreBuiltinPlugin(const std::string& id) {
     return id == "gesture" || id == "capture" || id == "search" ||
            id == "keycast" || id == "dialogenhancer" || id == "dialog_enhancer" ||
-           id == "spotlight" || id == "remote_boost" || id == "remote" ||
+           id == "spotlight" || id == "clipboard" || id == "remote_boost" || id == "remote" ||
            id == "picasa_viewer" || id == "picasaviewer";
 }
 
@@ -2223,6 +2223,28 @@ void MessageBridge::registerBuiltinHandlers() {
             {"isExtension", false}
         });
         existingIds.insert("picasa_viewer");
+
+        // 内置核心模块：持久化剪贴板历史 (clipboard，Rust 持久化内核 + Win32 事件监听)
+        const bool clipboardEnabled = ConfigManager::instance().has("/plugins/clipboard/enabled")
+            ? ConfigManager::instance().get<bool>("/plugins/clipboard/enabled", true)
+            : ConfigManager::instance().get<bool>("/clipboard/enabled", true);
+        plugins.push_back({
+            {"id", "clipboard"},
+            {"name", "剪贴板历史"},
+            {"version", tools3000::version::String},
+            {"fileName", "Tools3000.exe"},
+            {"abiVersion", 1},
+            {"capabilities", {"persistent-history", "instant-search", "image-dedup", "privacy-filter"}},
+            {"permissions", {"clipboard-listener", "input-synthesis"}},
+            {"executionModel", "trusted-native-in-process"},
+            {"enabled", clipboardEnabled},
+            {"active", clipboardEnabled},
+            {"restartRequired", false},
+            {"state", clipboardEnabled ? "running" : "disabled"},
+            {"error", ""},
+            {"isExtension", false}
+        });
+        existingIds.insert("clipboard");
         return plugins;
     });
 
@@ -2240,6 +2262,16 @@ void MessageBridge::registerBuiltinHandlers() {
             EventBus::instance().publish(SpotlightStateChangedEvent{enabled});
             MessageBridge::instance().pushEvent("spotlight:stateChanged", {{"enabled", enabled}});
             MessageBridge::instance().pushEvent("plugins:changed", {{"id", "spotlight"}, {"enabled", enabled}});
+            releasePluginResourcesAndTrim();
+            return {{"success", true}, {"restartRequired", false}};
+        }
+
+        if (id == "clipboard") {
+            ConfigManager::instance().set<bool>("/clipboard/enabled", enabled);
+            ConfigManager::instance().set<bool>("/plugins/clipboard/enabled", enabled);
+            EventBus::instance().publish(ClipboardStateChangedEvent{enabled});
+            MessageBridge::instance().pushEvent("clipboard:stateChanged", {{"enabled", enabled}});
+            MessageBridge::instance().pushEvent("plugins:changed", {{"id", "clipboard"}, {"enabled", enabled}});
             releasePluginResourcesAndTrim();
             return {{"success", true}, {"restartRequired", false}};
         }
@@ -2630,6 +2662,7 @@ void MessageBridge::registerBuiltinHandlers() {
             {"elevated", WinUtils::isCurrentProcessElevated()},
             {"minimizeToTray", config.get<bool>("/general/minimizeToTray", true)},
             {"checkUpdates", config.get<bool>("/general/checkUpdates", true)},
+            {"autoDownloadUpdates", config.get<bool>("/general/autoDownloadUpdates", true)},
             {"autoReleaseSettingsMemory", config.get<bool>("/general/autoReleaseSettingsMemory", true)},
             {"fullscreenMode", WinUtils::fullscreenPolicyModeToString(parsedFullscreenMode)},
             {"keycastEnabled", config.get<bool>("/general/keycastEnabled", true)},
@@ -2660,7 +2693,7 @@ void MessageBridge::registerBuiltinHandlers() {
     });
     registerHandler("general.updateSettings", [](const json& params) -> json {
         static const std::unordered_set<std::string> boolKeys = {
-            "autoStart", "runAsAdmin", "minimizeToTray", "checkUpdates", "autoReleaseSettingsMemory", "keycastEnabled", "showOnboarding"
+            "autoStart", "runAsAdmin", "minimizeToTray", "checkUpdates", "autoDownloadUpdates", "autoReleaseSettingsMemory", "keycastEnabled", "showOnboarding"
         };
         static const std::unordered_set<std::string> themes = {"system", "light", "dark"};
         static const std::unordered_set<std::string> trayIconThemes = {"system", "auto", "light", "dark", "color"};
@@ -2855,6 +2888,25 @@ void MessageBridge::registerBuiltinHandlers() {
     registerHostHandler("app.checkForUpdates", [](const json&) -> json {
         const bool started = UpdateChecker::instance().checkAsync(true);
         return {{"success", true}, {"started", started}};
+    });
+    registerHostHandler("app.getUpdateState", [](const json&) -> json {
+        auto state = json::parse(UpdateChecker::instance().getStateJsonString(), nullptr, false);
+        if (!state.is_object()) state = json::object();
+        state["success"] = true;
+        return state;
+    });
+    registerHostHandler("app.downloadUpdate", [](const json&) -> json {
+        const bool started = UpdateChecker::instance().downloadUpdateAsync();
+        auto state = json::parse(UpdateChecker::instance().getStateJsonString(), nullptr, false);
+        if (!state.is_object()) state = json::object();
+        state["success"] = true;
+        state["started"] = started;
+        return state;
+    });
+    registerHostHandler("app.installUpdate", [](const json&) -> json {
+        std::string err;
+        const bool ok = UpdateChecker::instance().installDownloadedUpdate(err);
+        return {{"success", ok}, {"error", err}};
     });
     // ── 应用系统信息 ─────────────────────────────────────────────────────
     registerHostHandler("app.getSystemInfo", [](const json&) -> json {

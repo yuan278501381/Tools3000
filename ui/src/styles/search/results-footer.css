@@ -139,6 +139,7 @@
 .file-icon--media,
 .file-icon--video { color: #f87171; }
 .file-icon--audio { color: #38bdf8; }
+.file-icon--bookmark { color: var(--primary); }
 .file-icon--doc { color: #94a3b8; }
 
 .file-icon--native {
@@ -1268,6 +1269,30 @@
     margin-top: 5px;
     margin-left: 25px;
     padding: 5px 10px;
+}
+
+.file-bookmark-badge {
+    flex-shrink: 0;
+    padding: 1px 6px;
+    margin-left: 4px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    background: var(--bg-elevated);
+    color: var(--primary);
+    border: 1px solid var(--card-border);
+}
+
+.table-cell--run-count {
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
+    color: var(--text-muted);
+}
+
+.table-cell--run-count-active {
+    color: var(--primary);
+    font-weight: 600;
 }
 
 .file-run-badge {

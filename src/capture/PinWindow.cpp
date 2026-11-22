@@ -206,6 +206,7 @@ void PinWindow::close() {
     }
 
     const int closedGroup = m_groupId;
+    stopZoomAnimation(false);
     if (m_editingTextReplaceIdx >= 0) {
         if (m_hwnd && IsWindow(m_hwnd)) {
             KillTimer(m_hwnd, 3);
@@ -216,6 +217,7 @@ void PinWindow::close() {
         clearTextReplaceToolbarRects();
     }
     PinContextMenu::instance().dismiss();
+    clearTranslationState();
     releaseGraphicsResources();
     HWND hwndToDestroy = std::exchange(m_hwnd, nullptr);
     m_sourceImage.release();
@@ -253,6 +255,7 @@ void PinWindow::closeAll() {
     s_instances.clear();
     for (auto& pin : targets) {
         if (pin) {
+            pin->clearTranslationState();
             pin->m_sourceImage.release();
             pin->m_cleanBaseImage.release();
             pin->m_markupElements.clear();
@@ -289,6 +292,7 @@ void PinWindow::closeAllExcept(const PinWindow* keepPin) {
     if (toClose.empty()) return;
 
     for (auto& pin : toClose) {
+        pin->clearTranslationState();
         pin->m_sourceImage.release();
         pin->m_cleanBaseImage.release();
         pin->m_markupElements.clear();
@@ -837,6 +841,7 @@ size_t PinWindow::closeGroup(int groupId) {
     size_t closedCount = 0;
     for (auto& pin : targets) {
         if (!pin) continue;
+        pin->clearTranslationState();
         pin->m_sourceImage.release();
         pin->m_cleanBaseImage.release();
         pin->m_markupElements.clear();
@@ -1130,10 +1135,103 @@ bool savePinnedImage(HWND owner, const cv::Mat& image) {
 
 } // namespace pin_detail
 
+void PinWindow::stopZoomAnimation(bool renderFinalSharpness) {
+    const bool wasAnimating = m_zoomAnimating;
+    m_zoomAnimating = false;
+    m_zoomLastQpc = 0;
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, kTimerIdZoomAnim);
+        if (wasAnimating && renderFinalSharpness) {
+            updateWindowCornerRegion();
+            render();
+        }
+    }
+}
+
+void PinWindow::applyScaleAtAnchor(
+    float newScale,
+    POINT anchorScreenPt,
+    float relX,
+    float relY,
+    bool finalFrame) {
+    if (!m_hwnd || !IsWindow(m_hwnd) || m_folded) return;
+    constexpr int64_t kMaxSafeWindowDim = 32000;
+    const float clamped = std::clamp(newScale, 0.1f, 5.0f);
+    const int64_t scaledW64 = std::clamp(
+        static_cast<int64_t>(std::llround(static_cast<double>(m_origWidth) * clamped)),
+        int64_t{1}, kMaxSafeWindowDim);
+    const int64_t scaledH64 = std::clamp(
+        static_cast<int64_t>(std::llround(static_cast<double>(m_origHeight) * clamped)),
+        int64_t{1}, kMaxSafeWindowDim);
+    const int newW = static_cast<int>(scaledW64);
+    const int newH = static_cast<int>(scaledH64);
+
+    const int newLeft = anchorScreenPt.x - static_cast<int>(std::llround(static_cast<double>(newW) * relX));
+    const int newTop = anchorScreenPt.y - static_cast<int>(std::llround(static_cast<double>(newH) * relY));
+
+    m_scale = clamped;
+    // 动画中叠加 SWP_NOREDRAW 避免 Windows 提前发 WM_ERASEBKGND/WM_PAINT 产生双重闪屏，完全交由 Direct2D Present 单次直出
+    SetWindowPos(
+        m_hwnd, nullptr, newLeft, newTop, newW, newH,
+        SWP_NOZORDER | SWP_NOACTIVATE | (finalFrame ? 0u : SWP_NOREDRAW));
+
+    if (finalFrame || m_cardCornerRadius > 0.5f) {
+        updateWindowCornerRegion();
+    }
+    if (m_renderTarget) {
+        m_renderTarget->SetDpi(96.0f, 96.0f);
+        const UINT32 maxRt = (std::max)(256u, m_renderTarget->GetMaximumBitmapSize());
+        const UINT32 rtW = (std::min)(static_cast<UINT32>((std::max)(1, newW)), maxRt);
+        const UINT32 rtH = (std::min)(static_cast<UINT32>((std::max)(1, newH)), maxRt);
+        const D2D1_SIZE_U curPx = m_renderTarget->GetPixelSize();
+        if (curPx.width != rtW || curPx.height != rtH) {
+            m_renderTarget->Resize(D2D1::SizeU(rtW, rtH));
+        }
+    }
+    showTransientHudBadge(
+        std::format(L"{}%", static_cast<int>(std::lround(m_scale * 100.0f))), 800);
+    render();
+}
+
+void PinWindow::stepZoomAnimation() {
+    if (!m_zoomAnimating || !m_hwnd || !IsWindow(m_hwnd) || m_folded) {
+        stopZoomAnimation(false);
+        return;
+    }
+    LARGE_INTEGER nowQpc{}, freqQpc{};
+    QueryPerformanceCounter(&nowQpc);
+    QueryPerformanceFrequency(&freqQpc);
+    float dt = 0.008f;
+    if (m_zoomLastQpc > 0 && freqQpc.QuadPart > 0) {
+        const double rawDt = static_cast<double>(nowQpc.QuadPart - m_zoomLastQpc) /
+                             static_cast<double>(freqQpc.QuadPart);
+        dt = static_cast<float>(std::clamp(rawDt, 0.002, 0.045));
+    }
+    m_zoomLastQpc = nowQpc.QuadPart;
+
+    // 对数空间指数阻尼平滑：放大到 500% 与缩小到 10% 视觉变焦速率绝对恒定匀称
+    const float logCur = std::log((std::max)(0.05f, m_scale));
+    const float logDst = std::log((std::max)(0.05f, m_zoomTargetScale));
+    const float logDiff = logDst - logCur;
+    if (std::abs(logDiff) <= 0.0022f) {
+        m_zoomAnimating = false;
+        m_zoomLastQpc = 0;
+        KillTimer(m_hwnd, kTimerIdZoomAnim);
+        applyScaleAtAnchor(m_zoomTargetScale, m_zoomAnchorScreenPt, m_zoomAnchorRelX, m_zoomAnchorRelY, /*finalFrame=*/true);
+        return;
+    }
+
+    const float alpha = 1.0f - std::exp(-dt * 19.0f);
+    const float nextScale = std::clamp(std::exp(logCur + logDiff * alpha), 0.1f, 5.0f);
+    applyScaleAtAnchor(nextScale, m_zoomAnchorScreenPt, m_zoomAnchorRelX, m_zoomAnchorRelY, /*finalFrame=*/false);
+}
+
 void PinWindow::setScale(float scale) {
+    stopZoomAnimation(false);
     const float clamped = std::clamp(scale, 0.1f, 5.0f);
     const bool changed = std::abs(clamped - m_scale) > 0.001f;
     m_scale = clamped;
+    m_zoomTargetScale = clamped;
     if (m_hwnd) {
         if (m_folded) {
             return;
@@ -1156,6 +1254,8 @@ void PinWindow::setScale(float scale) {
 void PinWindow::rotate(int angleDeg) {
     if (m_sourceImage.empty() || !m_hwnd) return;
     if (PinInputController::normalizeRightAngleDegrees(angleDeg) == 0) return;
+    stopZoomAnimation(false);
+    clearTranslationState();
 
     RECT baseRect{};
     GetWindowRect(m_hwnd, &baseRect);
@@ -1242,6 +1342,7 @@ void PinWindow::rotate(int angleDeg) {
 
 void PinWindow::flip(bool horizontal) {
     if (m_sourceImage.empty() || !m_hwnd) return;
+    clearTranslationState();
     const bool sharedCleanBase = (!m_cleanBaseImage.empty() && m_cleanBaseImage.data == m_sourceImage.data);
     if (!PinInputController::applyFlip(m_sourceImage, m_colorBackup, horizontal)) {
         return;
@@ -1303,6 +1404,7 @@ void PinWindow::flip(bool horizontal) {
 
 void PinWindow::invertColors() {
     if (m_sourceImage.empty() || !m_hwnd) return;
+    clearTranslationState();
     // COW 写前分离：防止原地像素反色污染共享的纯净底图 m_cleanBaseImage
     if (!m_cleanBaseImage.empty() && m_cleanBaseImage.data == m_sourceImage.data) {
         m_sourceImage = m_sourceImage.clone();
@@ -1330,6 +1432,7 @@ void PinWindow::invertColors() {
 
 void PinWindow::toggleGrayscale() {
     if (m_sourceImage.empty() || !m_hwnd) return;
+    clearTranslationState();
     if (!m_grayscale) {
         // COW 写前分离：防止原地灰度写回污染共享的纯净底图 m_cleanBaseImage
         if (!m_cleanBaseImage.empty() && m_cleanBaseImage.data == m_sourceImage.data) {
@@ -1369,6 +1472,7 @@ void PinWindow::resetScale() {
 
 void PinWindow::toggleFold() {
     if (!m_hwnd) return;
+    stopZoomAnimation(false);
     const float dpiScale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : m_dpiScale;
     m_dpiScale = dpiScale;
     if (!m_folded) {

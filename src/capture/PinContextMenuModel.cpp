@@ -282,8 +282,12 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
     {
         PinMenuItem ocrParent;
         ocrParent.icon = CaptureIconId::ActionExtractText;
-        ocrParent.label = tools3000::core::trWCstrFor(zh, L"文字划选与复制", L"Text & OCR");
-        if (snap.isTextSelectionMode) {
+        ocrParent.label = tools3000::core::trWCstrFor(zh, L"文字划选与翻译", L"Text, OCR & Translate");
+        if (snap.isTranslationInFlight) {
+            ocrParent.statusBadge = tools3000::core::trWCstrFor(zh, L"翻译中", L"Translating");
+        } else if (snap.isShowingTranslation) {
+            ocrParent.statusBadge = tools3000::core::trWCstrFor(zh, L"译文中", L"Translated");
+        } else if (snap.isTextSelectionMode) {
             ocrParent.statusBadge = tools3000::core::trWCstrFor(zh, L"划选中", L"Active");
         }
 
@@ -293,6 +297,41 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         openOcr.shortcutText = L"Ctrl+T";
         openOcr.command = {PinMenuAction::ExtractTextDialog, 0};
         ocrParent.submenu.push_back(std::move(openOcr));
+
+        PinMenuItem translateItem;
+        translateItem.icon = CaptureIconId::ActionTranslate;
+        translateItem.label = snap.isTranslationInFlight
+            ? tools3000::core::trWCstrFor(zh, L"正在原位翻译...", L"Translating...")
+            : (snap.hasSelectedText
+                ? tools3000::core::trWCstrFor(zh, L"原位翻译所选文字", L"Translate Selected In-Place")
+                : tools3000::core::trWCstrFor(zh, L"原位翻译图片", L"Translate Image In-Place"));
+        translateItem.shortcutText = L"Ctrl+Shift+T";
+        translateItem.command = {PinMenuAction::TranslateInPlace, 0};
+        ocrParent.submenu.push_back(std::move(translateItem));
+
+        if (snap.hasTranslation) {
+            PinMenuItem toggleTr;
+            toggleTr.icon = CaptureIconId::ActionTranslate;
+            toggleTr.isChecked = snap.isShowingTranslation;
+            toggleTr.label = snap.isShowingTranslation
+                ? tools3000::core::trWCstrFor(zh, L"切换查看原图对照", L"Show Original Image")
+                : tools3000::core::trWCstrFor(zh, L"切换显示译图", L"Show Translated Image");
+            toggleTr.shortcutText = L"Tab";
+            toggleTr.command = {PinMenuAction::ToggleTranslationOverlay, 0};
+            ocrParent.submenu.push_back(std::move(toggleTr));
+
+            PinMenuItem copyTr;
+            copyTr.icon = CaptureIconId::ActionCopy;
+            copyTr.label = tools3000::core::trWCstrFor(zh, L"复制全部译文", L"Copy Translated Text");
+            copyTr.command = {PinMenuAction::CopyTranslatedText, 0};
+            ocrParent.submenu.push_back(std::move(copyTr));
+
+            PinMenuItem reTr;
+            reTr.icon = CaptureIconId::ActionTranslate;
+            reTr.label = tools3000::core::trWCstrFor(zh, L"重新翻译", L"Retranslate");
+            reTr.command = {PinMenuAction::RetranslateInPlace, 0};
+            ocrParent.submenu.push_back(std::move(reTr));
+        }
 
         PinMenuItem copyAllTxt;
         copyAllTxt.icon = CaptureIconId::ActionCopy;
@@ -511,6 +550,7 @@ PinMenuCommand PinContextMenuBuilder::resolveDirectKeyShortcut(WPARAM vk,
             return {PinMenuAction::CopyImage, 0};
         }
         if (vk == 'S' && !shift) return {PinMenuAction::SaveImage, 0};
+        if (vk == 'T' && shift) return {PinMenuAction::TranslateInPlace, 0};
         if (vk == 'T' && !shift) return {PinMenuAction::ExtractTextDialog, 0};
         if (vk == 'A' && !shift) return {PinMenuAction::SelectAllText, 0};
         if (vk == 'W' && !shift) return {PinMenuAction::ClosePin, 0};
@@ -548,6 +588,9 @@ PinMenuCommand PinContextMenuBuilder::resolveDirectKeyShortcut(WPARAM vk,
             case 'V':
             case '4': return {PinMenuAction::FlipVertical, 0};
             case '0': return {PinMenuAction::ResetScale, 0};
+            case VK_TAB: return snap.hasTranslation
+                ? PinMenuCommand{PinMenuAction::ToggleTranslationOverlay, 0}
+                : PinMenuCommand{};
             case VK_DELETE: return {PinMenuAction::ClosePin, 0};
             default: break;
         }

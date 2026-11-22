@@ -8,6 +8,12 @@ import {
   isKnownTableColumnId,
   resolveColumnDefinition,
 } from './columnCatalog';
+import {
+  DEFAULT_CUSTOM_CATEGORY_ORDER,
+  DEFAULT_SEARCH_CATEGORY_ORDER,
+  PINNED_SEARCH_CATEGORY_IDS,
+  type SearchCategoryId,
+} from './searchConstants';
 import type {
   ColumnLayout,
   PropertyCacheMap,
@@ -30,6 +36,38 @@ export interface TableColumnSpec {
 export const DEFAULT_TABLE_COLUMN_ORDER: readonly TableColumnId[] = [
   ...DEFAULT_VISIBLE_TABLE_COLUMNS,
 ];
+
+/** 表格默认列迁移版本号：v2 起默认将「打开次数 (runCount)」纳入开箱可见列。 */
+export const TABLE_COLUMN_SCHEMA_VERSION = 2;
+
+/**
+ * 老用户一次性无损列迁移：当旧版偏好尚未升级至 v2 且未包含 `runCount` 时，
+ * 将 `runCount` 插入 `size` 之后（若无 `size` 则插在 `path` 或 `name` 之后），
+ * 完整保留用户既有列顺序与自定义扩展列；已迁移至 v2 的用户显式隐藏则永久尊重。
+ */
+export function migrateTableColumnsToIncludeRunCount(
+  rawVisible: readonly string[],
+  rawOrder?: readonly string[] | null,
+): { visible: TableColumnId[]; order: TableColumnId[] } {
+  const cleanVisible = normalizeVisibleTableColumns(rawVisible);
+  const insertAfterAnchor = (list: TableColumnId[]): TableColumnId[] => {
+    if (list.includes('runCount')) return list;
+    const next = [...list];
+    const sizeIdx = next.indexOf('size');
+    const pathIdx = next.indexOf('path');
+    const nameIdx = next.indexOf('name');
+    const anchor = sizeIdx >= 0 ? sizeIdx : pathIdx >= 0 ? pathIdx : nameIdx;
+    next.splice(anchor + 1, 0, 'runCount');
+    return next;
+  };
+
+  const nextVisible = insertAfterAnchor(cleanVisible);
+  const baseOrder = Array.isArray(rawOrder) && rawOrder.length > 0
+    ? rawOrder.filter((x): x is TableColumnId => typeof x === 'string' && isKnownTableColumnId(x))
+    : [...nextVisible];
+  const nextOrder = normalizeTableColumnOrder(insertAfterAnchor(baseOrder));
+  return { visible: nextVisible, order: nextOrder };
+}
 
 export const TABLE_COLUMN_GAP_PX = 14;
 
@@ -176,11 +214,12 @@ export function reorderTableColumns(
   targetId: TableColumnId,
   side: 'before' | 'after',
 ): TableColumnId[] {
-  const normalized = normalizeTableColumnOrder([
-    ...currentOrder,
-    sourceId,
-    targetId,
-  ]);
+  const normalized: TableColumnId[] = [];
+  for (const item of [...currentOrder, sourceId, targetId]) {
+    if (typeof item === 'string' && isKnownTableColumnId(item) && !normalized.includes(item)) {
+      normalized.push(item);
+    }
+  }
   if (sourceId === targetId) return normalized;
 
   const withoutSource = normalized.filter((id) => id !== sourceId);
@@ -1019,6 +1058,7 @@ const VALUE_BEARING_KEYWORD_PREFIXES = new Set([
   'file',
   'folder',
   'dir',
+  'bm',
 ]);
 
 /**
@@ -1068,4 +1108,78 @@ export function parseQueryKeywords(query: string): string[] {
     pushCleanedWords(token, keywords);
   }
   return keywords;
+}
+
+const KNOWN_SEARCH_CATEGORY_SET = new Set<string>(DEFAULT_SEARCH_CATEGORY_ORDER);
+const PINNED_SEARCH_CATEGORY_SET = new Set<string>(PINNED_SEARCH_CATEGORY_IDS);
+
+export function isPinnedSearchCategory(id: string): boolean {
+  return PINNED_SEARCH_CATEGORY_SET.has(id);
+}
+
+/**
+ * 规范化搜索分类顺序：
+ *   1. 固定核心分类（全部 / 文档内容）永远锁死在最左前两位；
+ *   2. 其余合法可排序分类严格保留用户偏好顺序并去重；
+ *   3. 任何缺失的默认/未来新增分类自动按官方默认顺序补齐至末尾。
+ */
+export function normalizeSearchCategoryOrder(rawOrder?: readonly string[] | null): SearchCategoryId[] {
+  const custom: SearchCategoryId[] = [];
+  if (Array.isArray(rawOrder)) {
+    for (const item of rawOrder) {
+      if (
+        typeof item === 'string' &&
+        KNOWN_SEARCH_CATEGORY_SET.has(item) &&
+        !PINNED_SEARCH_CATEGORY_SET.has(item) &&
+        !custom.includes(item as SearchCategoryId)
+      ) {
+        custom.push(item as SearchCategoryId);
+      }
+    }
+  }
+  for (const fallback of DEFAULT_CUSTOM_CATEGORY_ORDER) {
+    if (!custom.includes(fallback)) {
+      custom.push(fallback);
+    }
+  }
+  return [...PINNED_SEARCH_CATEGORY_IDS, ...custom];
+}
+
+/**
+ * 在非固定分类区段内移动单个分类位置：
+ *   - 源分类或目标分类若为固定核心分类（all / content），直接拒绝变更并返回规范化原序；
+ *   - 位置未实际变化时返回同一数组引用，避免多余渲染与落盘。
+ */
+export function reorderSearchCategories(
+  currentOrder: readonly SearchCategoryId[],
+  sourceId: SearchCategoryId,
+  targetId: SearchCategoryId,
+  side: 'before' | 'after',
+): SearchCategoryId[] {
+  const normalized = normalizeSearchCategoryOrder(currentOrder);
+  if (
+    sourceId === targetId ||
+    isPinnedSearchCategory(sourceId) ||
+    isPinnedSearchCategory(targetId)
+  ) {
+    return normalized;
+  }
+
+  const customOnly = normalized.filter((id) => !isPinnedSearchCategory(id));
+  const withoutSource = customOnly.filter((id) => id !== sourceId);
+  const targetIdx = withoutSource.indexOf(targetId);
+  if (targetIdx < 0) return normalized;
+
+  const insertIdx = side === 'after' ? targetIdx + 1 : targetIdx;
+  const nextCustom = [...withoutSource];
+  nextCustom.splice(insertIdx, 0, sourceId);
+
+  const nextFull: SearchCategoryId[] = [...PINNED_SEARCH_CATEGORY_IDS, ...nextCustom];
+  const unchanged = nextFull.every((id, idx) => id === normalized[idx]);
+  return unchanged ? normalized : nextFull;
+}
+
+export function isDefaultSearchCategoryOrder(order: readonly string[]): boolean {
+  if (order.length !== DEFAULT_SEARCH_CATEGORY_ORDER.length) return false;
+  return DEFAULT_SEARCH_CATEGORY_ORDER.every((id, idx) => order[idx] === id);
 }

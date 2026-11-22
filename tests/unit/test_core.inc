@@ -5014,3 +5014,257 @@ TEST(UiI18nTest, EightLanguageResolutionCatalogLoadingAndInstallerContract) {
     }
     EXPECT_TRUE(std::filesystem::exists(repoRoot / L"resources" / L"installer" / L"ChineseTraditional.isl", ec));
 }
+
+#include "core/translate/TranslationService.h"
+
+TEST(TranslationServiceTest, ProtocolParsersLanguageRoutingAndDpapiRoundTrip) {
+    using namespace tools3000::core::translate;
+
+    // 1. 智能双向目标语决策：英文转中文，中文自动切副语言英文，日文含假名不误判为中文
+    EXPECT_EQ(TranslationService::resolveEffectiveTargetLanguage({"Hello world", "Settings"}, "zh-Hans", "en", "zh-CN"), "zh-CN");
+    EXPECT_EQ(TranslationService::resolveEffectiveTargetLanguage({"你好世界", "系统设置"}, "zh-Hans", "en", "zh-CN"), "en");
+    EXPECT_EQ(TranslationService::resolveEffectiveTargetLanguage({"こんにちは世界"}, "zh-Hans", "en", "zh-CN"), "zh-CN");
+    EXPECT_EQ(TranslationService::resolveEffectiveTargetLanguage({"こんにちは世界"}, "ja", "zh-Hans", "zh-CN"), "zh-CN");
+    EXPECT_EQ(TranslationService::resolveEffectiveTargetLanguage({"Hello"}, "ja", "zh-Hans", "zh-CN"), "ja");
+    EXPECT_EQ(TranslationService::resolveEffectiveTargetLanguage({"你好世界"}, "auto", "en", "zh-CN"), "en");
+    EXPECT_EQ(TranslationService::resolveEffectiveTargetLanguage({"Hello world"}, "auto", "en", "zh-CN"), "zh-CN");
+
+    // 2. OpenAI / DeepL 端点规范化与 Loopback 本地离线判定
+    std::string fullUrl;
+    ASSERT_TRUE(TranslationService::normalizeOpenAiChatUrl("https://api.openai.com/v1", fullUrl));
+    EXPECT_EQ(fullUrl, "https://api.openai.com/v1/chat/completions");
+    ASSERT_TRUE(TranslationService::normalizeOpenAiChatUrl("https://api.openai.com/v1/", fullUrl));
+    EXPECT_EQ(fullUrl, "https://api.openai.com/v1/chat/completions");
+    ASSERT_TRUE(TranslationService::normalizeOpenAiChatUrl("http://127.0.0.1:11434/v1/chat/completions", fullUrl));
+    EXPECT_EQ(fullUrl, "http://127.0.0.1:11434/v1/chat/completions");
+    EXPECT_TRUE(TranslationService::isLoopbackHttpUrl("http://127.0.0.1:11434/v1"));
+    EXPECT_TRUE(TranslationService::isLoopbackHttpUrl("http://localhost:8080/v1"));
+    EXPECT_TRUE(TranslationService::isLoopbackHttpUrl("http://[::1]:11434/v1"));
+    EXPECT_FALSE(TranslationService::isLoopbackHttpUrl("https://api.openai.com/v1"));
+
+    ASSERT_TRUE(TranslationService::normalizeDeepLUrl("", "abc-key:fx", fullUrl));
+    EXPECT_EQ(fullUrl, "https://api-free.deepl.com/v2/translate");
+    ASSERT_TRUE(TranslationService::normalizeDeepLUrl("", "abc-pro-key", fullUrl));
+    EXPECT_EQ(fullUrl, "https://api.deepl.com/v2/translate");
+    ASSERT_TRUE(TranslationService::normalizeDeepLUrl("https://proxy.example.com/deepl", "k:fx", fullUrl));
+    EXPECT_EQ(fullUrl, "https://proxy.example.com/deepl/v2/translate");
+
+    // 3. Edge / Google / OpenAI / DeepL 4 种协议解析器全量回归断言
+    std::vector<std::string> out;
+    std::string detected;
+
+    ASSERT_TRUE(TranslationService::parseEdgeTranslateResponse(
+        R"([{"detectedLanguage":{"language":"en"},"translations":[{"text":"你好"}]},{"translations":[{"text":"世界"}]}])",
+        2, out, detected));
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_EQ(out[0], "你好");
+    EXPECT_EQ(out[1], "世界");
+    EXPECT_EQ(detected, "en");
+    EXPECT_FALSE(TranslationService::parseEdgeTranslateResponse(
+        R"([{"translations":[{"text":"only1"}]}])", 2, out, detected));
+
+    std::string mergedGoogle;
+    ASSERT_TRUE(TranslationService::parseGoogleTranslateResponse(
+        R"([[["你好\n","Hello\n",null,null,10],["世界","World",null,null,10]],null,"en"])",
+        mergedGoogle, detected));
+    EXPECT_EQ(mergedGoogle, "你好\n世界");
+    EXPECT_EQ(detected, "en");
+
+    ASSERT_TRUE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"```json\n{\"translations\":[{\"id\":0,\"text\":\"保存\"},{\"id\":1,\"text\":\"取消\"}]}\n```"}}]})",
+        2, out));
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_EQ(out[0], "保存");
+    EXPECT_EQ(out[1], "取消");
+
+    ASSERT_TRUE(TranslationService::parseDeepLTranslateResponse(
+        R"({"translations":[{"detected_source_language":"EN","text":"打开"},{"text":"关闭"}]})",
+        2, out, detected));
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_EQ(out[0], "打开");
+    EXPECT_EQ(out[1], "关闭");
+    EXPECT_EQ(detected, "EN");
+
+    // 3b. Bing/Edge 翻译页凭证提取纯函数回归
+    std::string bingIg, bingIid, bingKey, bingToken;
+    ASSERT_TRUE(TranslationService::parseBingTranslatorCredentials(
+        R"(<script>var x={IG:"5E91CB3546E946849A4461BC9CC0D4A3"};</script><div data-iid="translator.5023"></div><script>var params_AbusePreventionHelper = [1795361663141,"AbCdEfGh1234567890",3600000];</script>)",
+        bingIg, bingIid, bingKey, bingToken));
+    EXPECT_EQ(bingIg, "5E91CB3546E946849A4461BC9CC0D4A3");
+    EXPECT_EQ(bingIid, "translator.5023");
+    EXPECT_EQ(bingKey, "1795361663141");
+    EXPECT_EQ(bingToken, "AbCdEfGh1234567890");
+    EXPECT_FALSE(TranslationService::parseBingTranslatorCredentials("<html>no token</html>", bingIg, bingIid, bingKey, bingToken));
+
+    // 4. Windows DPAPI 加密解密往返与密钥脱敏（零明文残留）
+    const std::string sampleKey = "sk-tools3000-secret-key-987654";
+    const std::string protectedBlob = TranslationService::protectSecretForStorage(sampleKey);
+    ASSERT_FALSE(protectedBlob.empty());
+    EXPECT_EQ(protectedBlob.rfind("dpapi:", 0), 0u);
+    EXPECT_EQ(protectedBlob.find(sampleKey), std::string::npos);
+    EXPECT_EQ(TranslationService::unprotectSecretFromStorage(protectedBlob), sampleKey);
+    EXPECT_EQ(TranslationService::maskApiKeyForUi(sampleKey), "sk-t****7654");
+    EXPECT_EQ(TranslationService::maskApiKeyForUi("short"), "********");
+    EXPECT_EQ(TranslationService::maskApiKeyForUi(""), "");
+
+    // 5. 缺密钥快速拦截（绝不产生多余外网请求）
+    TranslationBatchRequest singleReq;
+    singleReq.texts = {"Hello"};
+    singleReq.uiLanguageCode = "zh-CN";
+
+    TranslationSettings noKeyOpenAi;
+    noKeyOpenAi.provider = TranslationConstants::kProviderOpenAiCompatible;
+    noKeyOpenAi.openaiBaseUrl = "https://api.openai.com/v1";
+    noKeyOpenAi.openaiApiKey.clear();
+    const auto missingRes = TranslationService::instance().translateBatchWithSettings(singleReq, noKeyOpenAi);
+    EXPECT_FALSE(missingRes.success);
+    EXPECT_EQ(missingRes.errorCode, "missing_api_key");
+
+    TranslationSettings noKeyDeepL;
+    noKeyDeepL.provider = TranslationConstants::kProviderDeepL;
+    noKeyDeepL.deeplApiKey.clear();
+    const auto missingDeepL = TranslationService::instance().translateBatchWithSettings(singleReq, noKeyDeepL);
+    EXPECT_FALSE(missingDeepL.success);
+    EXPECT_EQ(missingDeepL.errorCode, "missing_api_key");
+}
+
+TEST(TranslationServiceTest, LiveNetworkFreeChannelsSmokeWhenEnabled) {
+    using namespace tools3000::core::translate;
+    wchar_t envBuf[16]{};
+    const DWORD envLen = GetEnvironmentVariableW(L"TOOLS3000_LIVE_TRANSLATE_TEST", envBuf, 16);
+    if (envLen == 0 || envBuf[0] != L'1') {
+        GTEST_SKIP() << "Set TOOLS3000_LIVE_TRANSLATE_TEST=1 to run live network smoke test";
+    }
+
+    TranslationBatchRequest req;
+    req.texts = {"Save changes", "Cancel operation"};
+    req.uiLanguageCode = "zh-CN";
+
+    // 1. Edge/Bing 主通道实网多段翻译
+    TranslationSettings edgeSettings;
+    edgeSettings.provider = TranslationConstants::kProviderAutoFree;
+    edgeSettings.freePrimary = TranslationConstants::kFreePrimaryEdge;
+    edgeSettings.targetLang = "zh-CN";
+    edgeSettings.secondaryTargetLang = "en";
+    const auto edgeRes = TranslationService::instance().translateBatchWithSettings(req, edgeSettings);
+    ASSERT_TRUE(edgeRes.success) << edgeRes.errorCode << " : " << edgeRes.errorDetail;
+    EXPECT_EQ(edgeRes.providerUsed, "edge_free");
+    ASSERT_EQ(edgeRes.translations.size(), 2u);
+    EXPECT_FALSE(edgeRes.translations[0].empty());
+    EXPECT_FALSE(edgeRes.translations[1].empty());
+
+    // 2. Google 备选通道实网多段翻译
+    TranslationSettings googleSettings = edgeSettings;
+    googleSettings.freePrimary = TranslationConstants::kFreePrimaryGoogle;
+    const auto googleRes = TranslationService::instance().translateBatchWithSettings(req, googleSettings);
+    ASSERT_TRUE(googleRes.success) << googleRes.errorCode << " : " << googleRes.errorDetail;
+    EXPECT_EQ(googleRes.providerUsed, "google_free");
+    ASSERT_EQ(googleRes.translations.size(), 2u);
+    EXPECT_FALSE(googleRes.translations[0].empty());
+    EXPECT_FALSE(googleRes.translations[1].empty());
+}
+
+#include "clipboard/ClipboardManager.h"
+#include "clipboard/ClipboardRustFfi.h"
+
+TEST(ClipboardManagerTest, PrivacyBlocklistAndRustPersistenceAcrossRestart) {
+    using tools3000::clipboard::ClipboardManager;
+
+    // 1. 隐私密码管理器进程排除规则校验（大小写不敏感 + 省略 .exe 兼容）
+    const std::string defaults = "KeePass.exe,KeePassXC.exe,1Password.exe,Bitwarden.exe,Enpass.exe";
+    EXPECT_TRUE(ClipboardManager::isExcludedProcessName("bitwarden.exe", defaults));
+    EXPECT_TRUE(ClipboardManager::isExcludedProcessName("KeePassXC.EXE", defaults));
+    EXPECT_TRUE(ClipboardManager::isExcludedProcessName("1Password.exe", "1password,keepass"));
+    EXPECT_FALSE(ClipboardManager::isExcludedProcessName("Code.exe", defaults));
+    EXPECT_FALSE(ClipboardManager::isExcludedProcessName("", defaults));
+
+    // 2. 端到端 C++ <-> Rust FFI 持久化 + 模拟关机重启二次加载恢复
+    wchar_t tempDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tempDir);
+    const std::filesystem::path clipTestDir =
+        std::filesystem::path(tempDir) /
+        (L"Tools3000_ClipboardTest_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(clipTestDir, ec);
+
+    struct DirCleanup {
+        std::filesystem::path dir;
+        ~DirCleanup() {
+            t3k_clip_shutdown();
+            std::error_code e;
+            std::filesystem::remove_all(dir, e);
+        }
+    } cleanup{clipTestDir};
+
+    const std::string dirUtf8 = tools3000::core::WinUtils::wstringToUtf8(clipTestDir.wstring());
+    ASSERT_EQ(t3k_clip_init(dirUtf8.c_str()), 1);
+
+    const uint64_t idText = t3k_clip_add_item(
+        0, "Tools3000 persistent clipboard entry", "", 0, 0, "", "Code.exe", 0, 100, 30, "rich_1.html", "");
+    const uint64_t idColor = t3k_clip_add_item(
+        0, "#3b82f6", "", 0, 0, "", "Figma.exe", 0, 100, 30, "", "");
+    ASSERT_GT(idText, 0u);
+    ASSERT_GT(idColor, 0u);
+    ASSERT_EQ(t3k_clip_toggle_pin(idColor), 1);
+
+    // 重复添加相同文本 -> 自动去重复用原 ID
+    const uint64_t idDup = t3k_clip_add_item(
+        0, "Tools3000 persistent clipboard entry", "", 0, 0, "", "WindowsTerminal.exe", 0, 100, 30, "rich_1.html", "");
+    EXPECT_EQ(idDup, idText);
+
+    // 收藏分组创建与条目归组
+    char* groupJsonRaw = t3k_clip_create_group("Snippets");
+    ASSERT_NE(groupJsonRaw, nullptr);
+    const auto groupJson = nlohmann::json::parse(groupJsonRaw);
+    t3k_clip_free_string(groupJsonRaw);
+    const std::string groupId = groupJson.value("id", "");
+    ASSERT_FALSE(groupId.empty());
+    EXPECT_EQ(groupJson.value("name", ""), "Snippets");
+    EXPECT_EQ(t3k_clip_set_items_group(&idText, 1, groupId.c_str()), 1u);
+
+    // 模拟 Windows 关机/进程退出后重启再初始化
+    t3k_clip_shutdown();
+    ASSERT_EQ(t3k_clip_init(dirUtf8.c_str()), 1);
+
+    char* rawQuery = t3k_clip_query_json("", "all", "", 20, 0);
+    ASSERT_NE(rawQuery, nullptr);
+    const auto parsed = nlohmann::json::parse(rawQuery);
+    t3k_clip_free_string(rawQuery);
+    EXPECT_EQ(parsed.value("total", 0), 2);
+    ASSERT_TRUE(parsed.contains("items") && parsed["items"].size() == 2u);
+    // 置顶项排第一且识别为 color 类型
+    EXPECT_EQ(parsed["items"][0].value("id", 0ull), idColor);
+    EXPECT_EQ(parsed["items"][0].value("kind", ""), "color");
+    EXPECT_EQ(parsed["items"][0].value("colorHex", ""), "#3B82F6");
+    EXPECT_TRUE(parsed["items"][0].value("pinned", false));
+    // 第二条去重计数 == 2，且保留分组与富文本标记
+    EXPECT_EQ(parsed["items"][1].value("copyCount", 0), 2);
+    EXPECT_EQ(parsed["items"][1].value("groupId", ""), groupId);
+    EXPECT_TRUE(parsed["items"][1].value("hasRichText", false));
+
+    // 单条详情接口返回完整富文本路径
+    char* rawDetail = t3k_clip_get_item_json(idText);
+    ASSERT_NE(rawDetail, nullptr);
+    const auto parsedDetail = nlohmann::json::parse(rawDetail);
+    t3k_clip_free_string(rawDetail);
+    EXPECT_EQ(parsedDetail.value("htmlFile", ""), "rich_1.html");
+
+    // 按分组过滤检索只命中归组项
+    char* rawGroupQuery = t3k_clip_query_json("", "all", groupId.c_str(), 20, 0);
+    ASSERT_NE(rawGroupQuery, nullptr);
+    const auto parsedGroup = nlohmann::json::parse(rawGroupQuery);
+    t3k_clip_free_string(rawGroupQuery);
+    EXPECT_EQ(parsedGroup.value("matched", 0), 1);
+    ASSERT_EQ(parsedGroup["items"].size(), 1u);
+    EXPECT_EQ(parsedGroup["items"][0].value("id", 0ull), idText);
+
+    // 清理非置顶项后，置顶项必须存活
+    EXPECT_EQ(t3k_clip_clear_history(1), 1u);
+    char* statsRaw = t3k_clip_stats_json();
+    ASSERT_NE(statsRaw, nullptr);
+    const auto stats = nlohmann::json::parse(statsRaw);
+    t3k_clip_free_string(statsRaw);
+    EXPECT_EQ(stats.value("totalCount", 0), 1);
+    EXPECT_EQ(stats.value("pinnedCount", 0), 1);
+}
+

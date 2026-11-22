@@ -23,6 +23,9 @@ export interface SearchResult {
   name: string;
   path: string;
   isDirectory: boolean;
+  resultType?: 'file' | 'bookmark';
+  browserSource?: string;
+  bookmarkFolder?: string;
   size?: number;
   creationTime?: number;
   lastWriteTime?: number;

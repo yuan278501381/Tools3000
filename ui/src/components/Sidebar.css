@@ -170,6 +170,21 @@
   line-height: 1.5;
 }
 
+.sidebar__update-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 24%, transparent);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.sidebar__update-dot--ready {
+  background: var(--success);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 24%, transparent);
+}
+
 /* ── 导航区域 (Linear / Raycast 级单色线性图标 + 温润浮雕激活胶囊) ────────── */
 .sidebar__nav {
   flex: 1;

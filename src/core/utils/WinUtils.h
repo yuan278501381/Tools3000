@@ -357,6 +357,15 @@ public:
     /// 精准判定当前系统是否为 Windows 11 及以上版本（基于 RtlGetVersion Build >= 22000，免疫清单伪装）
     static bool isWindows11OrNewer() noexcept;
 
+    /// 精准判定当前系统是否为 Windows 11 22H2 及以上版本（Build >= 22621，支持 DWMWA_SYSTEMBACKDROP_TYPE）
+    static bool isWindows1122H2OrNewer() noexcept;
+
+    /// 跨版本应用 DWM 深色标题栏/边框属性（优先属性 20 [Win10 2004+/Win11]，失败自动回退属性 19 [Win10 1809/1903/1909]）
+    static void applyImmersiveDarkMode(HWND hwnd, bool dark) noexcept;
+
+    /// 仅在 Windows 11 22H2+ 上安全应用 DWMWA_SYSTEMBACKDROP_TYPE（Mica/Acrylic），在 Windows 10 上自动跳过避免无效 DWM 调用
+    static void applyWin11SystemBackdrop(HWND hwnd, DWORD backdropType) noexcept;
+
     /// 判定圆角渲染是否应回退至 Win32 SetWindowRgn 裁剪：
     /// - 对带 WS_CAPTION 的标准顶层无边框应用窗口，在 Win11 且 DWM 硬件圆角生效时严禁叠加 SetWindowRgn，
     ///   防止触发 DWM 降级绘制 Win7/Win98 旧式标题栏并保留原生高斯阴影；

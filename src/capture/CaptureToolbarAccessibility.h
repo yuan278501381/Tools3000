@@ -40,6 +40,7 @@ inline std::wstring toolbarButtonAccessibleName(const ToolbarButton& button, boo
         case ToolbarCommand::SideInvertSelection: return tools3000::core::trWCstrFor(zh, L"扩展至全屏或还原选区", L"Expand to Full Screen or Restore");
         case ToolbarCommand::SideResetSelection: return tools3000::core::trWCstrFor(zh, L"重置直角与自由比例", L"Reset Corner Radius and Aspect Ratio");
         case ToolbarCommand::ExtractText: return tools3000::core::trWCstrFor(zh, L"提取文本", L"Extract Text (OCR)");
+        case ToolbarCommand::Translate: return tools3000::core::trWCstrFor(zh, L"原位翻译", L"Translate In-Place");
         case ToolbarCommand::PinWindow: return tools3000::core::trWCstrFor(zh, L"置顶到屏幕", L"Pin to Screen");
         case ToolbarCommand::ScrollCapture: return tools3000::core::trWCstrFor(zh, L"开始长截图", L"Scrolling Capture");
         case ToolbarCommand::StartRecord: return tools3000::core::trWCstrFor(zh, L"区域录屏", L"Record Region");
@@ -131,6 +132,7 @@ inline std::wstring toolbarButtonKeyboardShortcut(const ToolbarButton& button) {
         case ToolbarCommand::ToggleCornerRadius: return L"[ / ]";
         case ToolbarCommand::SideCycleAspectRatio: return L"Shift+1..5";
         case ToolbarCommand::ToggleBeautyShell: return L"B";
+        case ToolbarCommand::Translate: return L"Ctrl+Shift+T";
         case ToolbarCommand::Undo: return L"Ctrl+Z";
         case ToolbarCommand::Redo: return L"Ctrl+Y";
         case ToolbarCommand::Copy: return L"Ctrl+C";
@@ -243,6 +245,7 @@ inline bool isToolbarButtonEnabled(const ToolbarButton& button, const CaptureSta
         case ToolbarCommand::Redo: return state.markup.canRedo();
         case ToolbarCommand::Clear: return state.markup.elementCount() > 0;
         case ToolbarCommand::ExtractText: return static_cast<bool>(state.ocrCallback);
+        case ToolbarCommand::Translate: return static_cast<bool>(state.translateCallback);
         default: return true;
     }
 }

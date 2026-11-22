@@ -4603,3 +4603,117 @@ TEST(SearchPropertyExtractorTest, CloudPlaceholderGuardAndGenerationCancellation
     EXPECT_TRUE(cancelledRes.cancelled);
     EXPECT_TRUE(cancelledRes.values.empty());
 }
+
+#include "service/ExternalApiPolicy.h"
+
+TEST(ExternalApiPolicyTest, EnforcesReadOnlyActionsAndSensitiveCredentialBlocklist) {
+    using namespace tools3000::service::external_api;
+
+    EXPECT_TRUE(isExternalClientSource("external_cli"));
+    EXPECT_TRUE(isExternalClientSource("external_mcp"));
+    EXPECT_FALSE(isExternalClientSource("ui"));
+    EXPECT_FALSE(isExternalClientSource(""));
+
+    // 外部客户端严格只读：仅允许 getDbStats，拒绝所有变更与关停动作
+    EXPECT_TRUE(isActionAllowedForExternal("getDbStats"));
+    EXPECT_FALSE(isActionAllowedForExternal("shutdown"));
+    EXPECT_FALSE(isActionAllowedForExternal("rebuild"));
+    EXPECT_FALSE(isActionAllowedForExternal("recordRun"));
+    EXPECT_FALSE(isActionAllowedForExternal("clearSearchHistory"));
+
+    // 内置敏感凭证路径黑名单
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\Users\\Alice\\.ssh\\id_ed25519"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\Users\\Alice\\.aws\\credentials"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\repo\\app\\.env"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\repo\\app\\.env.production"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"C:\\Users\\Alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data"));
+    EXPECT_TRUE(isSensitiveCredentialPath(L"D:\\certs\\server.pem"));
+    EXPECT_FALSE(isSensitiveCredentialPath(L"C:\\repo\\Tools3000\\README.md"));
+    EXPECT_FALSE(isSensitiveCredentialPath(L"D:\\Work\\architecture_2026.docx"));
+}
+
+#include "search/BrowserBookmarkIndex.h"
+
+TEST(BrowserBookmarkIndexTest, ParsesZeroConflictPrefixAndSearchesChromiumJson) {
+    using tools3000::search::BrowserBookmarkIndex;
+    using tools3000::search::BookmarkEntry;
+
+    // 1. 零冲突前缀解析：仅 bm: 触发纯书签搜索，绝不抢占 "b " 开头的文件查询
+    const auto p1 = BrowserBookmarkIndex::parseBookmarkQuery("bm:github");
+    EXPECT_TRUE(p1.isExplicitBookmarkQuery);
+    EXPECT_EQ(p1.cleanQuery, "github");
+
+    const auto p2 = BrowserBookmarkIndex::parseBookmarkQuery("BM:  ");
+    EXPECT_TRUE(p2.isExplicitBookmarkQuery);
+    EXPECT_TRUE(p2.cleanQuery.empty());
+
+    const auto p3 = BrowserBookmarkIndex::parseBookmarkQuery("b github");
+    EXPECT_FALSE(p3.isExplicitBookmarkQuery);
+
+    // 2. 常规混排智能避让显式文件语法与盘符路径
+    EXPECT_TRUE(BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery("github"));
+    EXPECT_FALSE(BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery("a"));
+    EXPECT_FALSE(BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery("ext:pdf report"));
+    EXPECT_FALSE(BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery("content:SELECT"));
+    EXPECT_FALSE(BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery("C:\\repo\\Tools3000"));
+    EXPECT_FALSE(BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery("*.png"));
+
+    // 3. 安全协议过滤
+    EXPECT_TRUE(BrowserBookmarkIndex::isSafeHttpUrl("https://github.com/yuan278501381/Tools3000"));
+    EXPECT_TRUE(BrowserBookmarkIndex::isSafeHttpUrl("http://localhost:3000"));
+    EXPECT_FALSE(BrowserBookmarkIndex::isSafeHttpUrl("javascript:alert(1)"));
+    EXPECT_FALSE(BrowserBookmarkIndex::isSafeHttpUrl("file:///C:/Windows/win.ini"));
+
+    // 4. Chromium Bookmarks JSON 嵌套解析、去重与相关性排序
+    const nlohmann::json sampleBookmarks = {
+        {"roots", {
+            {"bookmark_bar", {
+                {"type", "folder"},
+                {"name", "Bookmarks Bar"},
+                {"children", nlohmann::json::array({
+                    {
+                        {"type", "url"},
+                        {"name", "GitHub Tools3000"},
+                        {"url", "https://github.com/yuan278501381/Tools3000"},
+                        {"date_added", "13380000000000000"}
+                    },
+                    {
+                        {"type", "url"},
+                        {"name", "Duplicate Tools3000"},
+                        {"url", "https://github.com/yuan278501381/Tools3000"},
+                        {"date_added", "13380000000000001"}
+                    },
+                    {
+                        {"type", "url"},
+                        {"name", "Evil Bookmarklet"},
+                        {"url", "javascript:void(0)"}
+                    },
+                    {
+                        {"type", "folder"},
+                        {"name", "Tech Communities"},
+                        {"children", nlohmann::json::array({
+                            {
+                                {"type", "url"},
+                                {"name", "LINUX DO Community"},
+                                {"url", "https://linux.do/t/topic/3222848/"},
+                                {"date_added", "13380000000000002"}
+                            }
+                        })}
+                    }
+                })}
+            }}
+        }}
+    };
+
+    std::vector<BookmarkEntry> parsed;
+    BrowserBookmarkIndex::parseChromiumBookmarkJson(sampleBookmarks, "Edge", parsed, 100);
+    ASSERT_EQ(parsed.size(), 2u);
+
+    const auto hits = BrowserBookmarkIndex::searchEntriesToJson(parsed, "linux", 10, 1);
+    ASSERT_TRUE(hits.is_array());
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0].value("name", ""), "LINUX DO Community");
+    EXPECT_EQ(hits[0].value("path", ""), "https://linux.do/t/topic/3222848/");
+    EXPECT_EQ(hits[0].value("resultType", ""), "bookmark");
+    EXPECT_EQ(hits[0].value("browserSource", ""), "Edge");
+}

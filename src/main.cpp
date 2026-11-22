@@ -72,7 +72,9 @@
 #include "tray/TrayIcon.h"
 #include "ui/SettingsWindow.h"
 #include "ui/SearchWindow.h"
+#include "ui/ClipboardWindow.h"
 #include "ui/QuickLookWindow.h"
+#include "clipboard/ClipboardManager.h"
 #include "ui/QuickLookNavigation.h"
 #include "ui/TrayWindow.h"
 #include "ui/ToastOverlay.h"
@@ -991,6 +993,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     g_hostThemeSubId = tools3000::core::EventBus::instance().subscribe<tools3000::core::ThemeChangedEvent>(
         [](const tools3000::core::ThemeChangedEvent& ev) {
             tools3000::core::WinUtils::applyNativeMenuTheme(ev.theme);
+            tools3000::core::MainThreadDispatcher::instance().post([]() {
+                tools3000::ui::ClipboardWindow::instance().applyThemeChrome();
+            });
         });
 
     // 1. 托盘图标（内部管理并安全退订 GesturePauseChangedEvent 与 ThemeChangedEvent）
@@ -1006,6 +1011,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         auto& searchWnd = tools3000::ui::SearchWindow::instance();
         if (searchWnd.isForegroundActive()) searchWnd.minimize();
         else searchWnd.show(GetModuleHandleW(nullptr));
+    });
+    tray.onClipboard([]() {
+        tools3000::ui::ClipboardWindow::instance().show(GetModuleHandleW(nullptr));
     });
     tray.onPauseGesture([]() { tools3000::core::EventBus::instance().publish(tools3000::core::ActionToggleGesturePauseEvent{}); });
     tray.onRestartElevated([hwnd]() {
@@ -1586,6 +1594,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             auto& searchWnd = tools3000::ui::SearchWindow::instance();
             if (searchWnd.isForegroundActive()) searchWnd.minimize();
             else searchWnd.show(GetModuleHandleW(nullptr));
+        } else if (action == "clipboard") {
+            tools3000::ui::ClipboardWindow::instance().show(GetModuleHandleW(nullptr));
         } else if (action == "screenshot") {
             tools3000::core::EventBus::instance().publish(tools3000::core::ActionTriggerScreenshotEvent{});
         } else if (action == "recording") {
@@ -1779,6 +1789,268 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         return {{"success", true}};
     });
 
+    // 5.6. 轻量持久化剪贴板历史引擎 (Rust 存储检索内核 + Win32 0% CPU 事件监听 + 极速面板)
+    {
+        auto& clipMgr = tools3000::clipboard::ClipboardManager::instance();
+        clipMgr.initialize(GetModuleHandleW(nullptr));
+        clipMgr.setChangeNotifier([](const std::string& envelope) {
+            tools3000::ui::ClipboardWindow::instance().pushEventJson(envelope);
+        });
+
+        auto registerClipboardHotkey = []() {
+            const auto s = tools3000::clipboard::ClipboardManager::instance().getSettings();
+            auto& hm = tools3000::core::HotkeyManager::instance();
+            hm.unregisterHotkey("Toggle Clipboard");
+            if (!s.enabled || s.hotkey.empty()) return;
+            if (auto parsed = tools3000::core::HotkeyDef::fromString(s.hotkey)) {
+                hm.registerHotkey("Toggle Clipboard", *parsed, []() {
+                    if (!tools3000::clipboard::ClipboardManager::instance().isEnabled()) return;
+                    tools3000::core::MainThreadDispatcher::instance().post([]() {
+                        tools3000::ui::ClipboardWindow::instance().toggle(GetModuleHandleW(nullptr));
+                    });
+                });
+            }
+        };
+        registerClipboardHotkey();
+
+        tools3000::core::EventBus::instance().subscribe<tools3000::core::ClipboardStateChangedEvent>(
+            [registerClipboardHotkey](const tools3000::core::ClipboardStateChangedEvent& e) {
+                tools3000::clipboard::ClipboardManager::instance().setEnabled(e.enabled);
+                if (!e.enabled) {
+                    tools3000::core::MainThreadDispatcher::instance().post([]() {
+                        tools3000::ui::ClipboardWindow::instance().hide();
+                    });
+                }
+                registerClipboardHotkey();
+            });
+
+        auto& mb = tools3000::core::MessageBridge::instance();
+        mb.registerHostHandler("clipboard.getSettings", [](const nlohmann::json&) -> nlohmann::json {
+            const auto s = tools3000::clipboard::ClipboardManager::instance().getSettings();
+            return {
+                {"enabled", s.enabled},
+                {"hotkey", s.hotkey},
+                {"maxItems", s.maxItems},
+                {"maxDays", s.maxDays},
+                {"maxImageMb", s.maxImageMb},
+                {"autoPaste", s.autoPaste},
+                {"plainTextByDefault", s.plainTextByDefault},
+                {"captureImages", s.captureImages},
+                {"captureFiles", s.captureFiles},
+                {"excludedApps", s.excludedApps}
+            };
+        });
+
+        mb.registerHostHandler("clipboard.updateSettings", [registerClipboardHotkey](const nlohmann::json& params) -> nlohmann::json {
+            if (!params.is_object()) return {{"success", false}, {"error", "invalid payload"}};
+            auto s = tools3000::clipboard::ClipboardManager::instance().getSettings();
+            const bool enabledProvided = params.contains("enabled") && params["enabled"].is_boolean();
+            if (enabledProvided) s.enabled = params["enabled"].get<bool>();
+            if (params.contains("maxItems") && params["maxItems"].is_number_integer()) s.maxItems = params["maxItems"].get<int>();
+            if (params.contains("maxDays") && params["maxDays"].is_number_integer()) s.maxDays = params["maxDays"].get<int>();
+            if (params.contains("maxImageMb") && params["maxImageMb"].is_number_integer()) s.maxImageMb = params["maxImageMb"].get<int>();
+            if (params.contains("autoPaste") && params["autoPaste"].is_boolean()) s.autoPaste = params["autoPaste"].get<bool>();
+            if (params.contains("plainTextByDefault") && params["plainTextByDefault"].is_boolean()) s.plainTextByDefault = params["plainTextByDefault"].get<bool>();
+            if (params.contains("captureImages") && params["captureImages"].is_boolean()) s.captureImages = params["captureImages"].get<bool>();
+            if (params.contains("captureFiles") && params["captureFiles"].is_boolean()) s.captureFiles = params["captureFiles"].get<bool>();
+            if (params.contains("excludedApps") && params["excludedApps"].is_string()) s.excludedApps = params["excludedApps"].get<std::string>();
+
+            bool hotkeyChanged = false;
+            if (params.contains("hotkey") && params["hotkey"].is_string()) {
+                s.hotkey = params["hotkey"].get<std::string>();
+                tools3000::core::ConfigManager::instance().set<std::string>("/hotkeys/Toggle Clipboard", s.hotkey);
+                hotkeyChanged = true;
+            }
+
+            const bool saved = tools3000::clipboard::ClipboardManager::instance().updateSettings(s);
+            if (enabledProvided || hotkeyChanged) {
+                registerClipboardHotkey();
+            }
+            if (enabledProvided) {
+                if (!s.enabled) {
+                    tools3000::core::MainThreadDispatcher::instance().post([]() {
+                        tools3000::ui::ClipboardWindow::instance().hide();
+                    });
+                }
+                tools3000::core::MessageBridge::instance().pushEvent("clipboard:stateChanged", {{"enabled", s.enabled}});
+                tools3000::core::MessageBridge::instance().pushEvent("plugins:changed", {{"id", "clipboard"}, {"enabled", s.enabled}});
+            }
+            return {{"success", saved}};
+        });
+
+        mb.registerHostHandler("clipboard.query", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string q = params.is_object() ? params.value("query", "") : "";
+            const std::string kind = params.is_object() ? params.value("kind", "all") : "all";
+            const std::string groupId = params.is_object() ? params.value("groupId", "") : "";
+            const uint32_t limit = params.is_object() ? params.value("limit", 80u) : 80u;
+            const uint32_t offset = params.is_object() ? params.value("offset", 0u) : 0u;
+            return tools3000::clipboard::ClipboardManager::instance().queryItems(q, kind, limit, offset, groupId);
+        });
+
+        mb.registerHostHandler("clipboard.getItem", [](const nlohmann::json& params) -> nlohmann::json {
+            const uint64_t id = params.is_object() ? params.value("id", static_cast<uint64_t>(0)) : 0;
+            auto item = tools3000::clipboard::ClipboardManager::instance().getItem(id);
+            return {{"success", item.is_object()}, {"item", std::move(item)}};
+        });
+
+        mb.registerHostHandler("clipboard.pasteItem", [](const nlohmann::json& params) -> nlohmann::json {
+            const uint64_t id = params.is_object() ? params.value("id", static_cast<uint64_t>(0)) : 0;
+            const auto settings = tools3000::clipboard::ClipboardManager::instance().getSettings();
+            const bool plainTextOnly = params.is_object()
+                ? params.value("plainTextOnly", settings.plainTextByDefault)
+                : settings.plainTextByDefault;
+            const bool autoPaste = params.is_object()
+                ? params.value("autoPaste", settings.autoPaste)
+                : settings.autoPaste;
+            const bool hideAfter = params.is_object() ? params.value("hideAfter", true) : true;
+            const HWND prevHwnd = tools3000::ui::ClipboardWindow::instance().previousForegroundHwnd();
+            if (hideAfter) {
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::ClipboardWindow::instance().hide();
+                });
+            }
+            const bool ok = tools3000::clipboard::ClipboardManager::instance().activateItem(
+                id, plainTextOnly, autoPaste, prevHwnd);
+            return {{"success", ok}};
+        });
+
+        auto extractIdList = [](const nlohmann::json& params) -> std::vector<uint64_t> {
+            std::vector<uint64_t> out;
+            if (!params.is_object() || !params.contains("ids") || !params["ids"].is_array()) return out;
+            out.reserve((std::min<size_t>)(params["ids"].size(), 1000u));
+            for (const auto& v : params["ids"]) {
+                if (v.is_number_unsigned()) out.push_back(v.get<uint64_t>());
+                else if (v.is_number_integer() && v.get<int64_t>() > 0) out.push_back(static_cast<uint64_t>(v.get<int64_t>()));
+                if (out.size() >= 1000u) break;
+            }
+            return out;
+        };
+
+        mb.registerHostHandler("clipboard.pasteItemsBatch", [extractIdList](const nlohmann::json& params) -> nlohmann::json {
+            const auto ids = extractIdList(params);
+            if (ids.empty()) return {{"success", false}, {"error", "empty ids"}};
+            const auto settings = tools3000::clipboard::ClipboardManager::instance().getSettings();
+            const std::string separator = params.is_object() ? params.value("separator", "\n") : "\n";
+            const bool autoPaste = params.is_object() ? params.value("autoPaste", settings.autoPaste) : settings.autoPaste;
+            const bool hideAfter = params.is_object() ? params.value("hideAfter", true) : true;
+            const HWND prevHwnd = tools3000::ui::ClipboardWindow::instance().previousForegroundHwnd();
+            if (hideAfter) {
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::ClipboardWindow::instance().hide();
+                });
+            }
+            const bool ok = tools3000::clipboard::ClipboardManager::instance().activateItemsBatch(
+                ids, separator, autoPaste, prevHwnd);
+            return {{"success", ok}};
+        });
+
+        mb.registerHostHandler("clipboard.togglePin", [](const nlohmann::json& params) -> nlohmann::json {
+            const uint64_t id = params.is_object() ? params.value("id", static_cast<uint64_t>(0)) : 0;
+            const int res = tools3000::clipboard::ClipboardManager::instance().togglePin(id);
+            return {{"success", res >= 0}, {"pinned", res == 1}};
+        });
+
+        mb.registerHostHandler("clipboard.deleteItem", [](const nlohmann::json& params) -> nlohmann::json {
+            const uint64_t id = params.is_object() ? params.value("id", static_cast<uint64_t>(0)) : 0;
+            return {{"success", tools3000::clipboard::ClipboardManager::instance().deleteItem(id)}};
+        });
+
+        mb.registerHostHandler("clipboard.deleteItems", [extractIdList](const nlohmann::json& params) -> nlohmann::json {
+            const auto ids = extractIdList(params);
+            const bool skipPinned = params.is_object() ? params.value("skipPinned", false) : false;
+            const uint32_t removed = tools3000::clipboard::ClipboardManager::instance().deleteItems(ids, skipPinned);
+            return {{"success", true}, {"removed", removed}};
+        });
+
+        mb.registerHostHandler("clipboard.updateItemText", [](const nlohmann::json& params) -> nlohmann::json {
+            const uint64_t id = params.is_object() ? params.value("id", static_cast<uint64_t>(0)) : 0;
+            const std::string text = params.is_object() ? params.value("text", "") : "";
+            const bool ok = tools3000::clipboard::ClipboardManager::instance().updateItemText(id, text);
+            return {{"success", ok}};
+        });
+
+        mb.registerHostHandler("clipboard.listGroups", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::clipboard::ClipboardManager::instance().listGroups();
+        });
+
+        mb.registerHostHandler("clipboard.createGroup", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string name = params.is_object() ? params.value("name", "") : "";
+            auto grp = tools3000::clipboard::ClipboardManager::instance().createGroup(name);
+            return {{"success", grp.is_object()}, {"group", std::move(grp)}};
+        });
+
+        mb.registerHostHandler("clipboard.renameGroup", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string id = params.is_object() ? params.value("id", "") : "";
+            const std::string name = params.is_object() ? params.value("name", "") : "";
+            return {{"success", tools3000::clipboard::ClipboardManager::instance().renameGroup(id, name)}};
+        });
+
+        mb.registerHostHandler("clipboard.deleteGroup", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string id = params.is_object() ? params.value("id", "") : "";
+            return {{"success", tools3000::clipboard::ClipboardManager::instance().deleteGroup(id)}};
+        });
+
+        mb.registerHostHandler("clipboard.setItemsGroup", [extractIdList](const nlohmann::json& params) -> nlohmann::json {
+            const auto ids = extractIdList(params);
+            const std::string groupId = params.is_object() ? params.value("groupId", "") : "";
+            const uint32_t updated = tools3000::clipboard::ClipboardManager::instance().setItemsGroup(ids, groupId);
+            return {{"success", true}, {"updated", updated}};
+        });
+
+        mb.registerHostHandler("clipboard.clearHistory", [](const nlohmann::json& params) -> nlohmann::json {
+            const bool keepPinned = params.is_object() ? params.value("keepPinned", true) : true;
+            const uint32_t removed = tools3000::clipboard::ClipboardManager::instance().clearHistory(keepPinned);
+            return {{"success", true}, {"removed", removed}};
+        });
+
+        mb.registerHostHandler("clipboard.getStats", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::clipboard::ClipboardManager::instance().getStats();
+        });
+
+        mb.registerHostHandler("clipboard.openDataDir", [](const nlohmann::json&) -> nlohmann::json {
+            const auto dir = tools3000::clipboard::ClipboardManager::instance().getDataDir();
+            if (!dir.empty()) {
+                ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                return {{"success", true}};
+            }
+            return {{"success", false}};
+        });
+
+        mb.registerHostHandler("clipboard.pinImage", [](const nlohmann::json& params) -> nlohmann::json {
+            const uint64_t id = params.is_object() ? params.value("id", static_cast<uint64_t>(0)) : 0;
+            const bool autoOcr = params.is_object() ? params.value("autoOcr", false) : false;
+            const bool autoTranslate = params.is_object() ? params.value("autoTranslate", false) : false;
+            const auto blobPath = tools3000::clipboard::ClipboardManager::instance().resolveImageBlobPath(id);
+            std::error_code ec;
+            if (blobPath.empty() || !std::filesystem::exists(blobPath, ec)) {
+                return {{"success", false}, {"error", "image file not found"}};
+            }
+            tools3000::core::MainThreadDispatcher::instance().post([]() {
+                tools3000::ui::ClipboardWindow::instance().hide();
+            });
+            tools3000::core::EventBus::instance().publish(tools3000::core::ActionPinImageFileEvent{
+                tools3000::core::WinUtils::wstringToUtf8(blobPath.wstring()),
+                autoOcr,
+                autoTranslate
+            });
+            return {{"success", true}};
+        });
+
+        mb.registerHostHandler("clipboard.showWindow", [](const nlohmann::json&) -> nlohmann::json {
+            tools3000::core::MainThreadDispatcher::instance().post([]() {
+                tools3000::ui::ClipboardWindow::instance().show(GetModuleHandleW(nullptr));
+            });
+            return {{"success", true}};
+        });
+
+        mb.registerHostHandler("clipboard.hideWindow", [](const nlohmann::json&) -> nlohmann::json {
+            tools3000::core::MainThreadDispatcher::instance().post([]() {
+                tools3000::ui::ClipboardWindow::instance().hide();
+            });
+            return {{"success", true}};
+        });
+    }
+
     tools3000::core::MessageBridge::instance().registerHostHandler("remote.resetDefaults", [](const nlohmann::json&) -> nlohmann::json {
         tools3000::core::RemoteMasterEngine::instance().resetDefaults();
         return {{"success", true}};
@@ -1861,8 +2133,14 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             }
         }
 
-        // 2. ESC：先收 QuickLook；再通知手势/轮盘取消追踪，但不吞掉按键
+        // 2. ESC：先收 QuickLook / 剪贴板面板；再通知手势/轮盘取消追踪，但不吞掉按键
         if (vkCode == VK_ESCAPE) {
+            if (tools3000::ui::ClipboardWindow::instance().isVisible()) {
+                tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
+                    tools3000::ui::ClipboardWindow::instance().hide();
+                });
+                return true;
+            }
             if (tools3000::ui::QuickLookWindow::instance().isVisible()) {
                 tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
                     tools3000::ui::QuickLookWindow::instance().hide();
@@ -1988,8 +2266,10 @@ void shutdownSubsystems() {
     // 先关闭所有 WebView 入口并卸下全局输入钩子，阻止新的 IPC 请求或高频输入回调进入即将卸载的插件 DLL。
     tools3000::ui::SettingsWindow::instance().destroy();
     tools3000::ui::SearchWindow::instance().destroy();
+    tools3000::ui::ClipboardWindow::instance().destroy();
     tools3000::ui::QuickLookWindow::instance().destroy();
     tools3000::ui::TrayWindow::instance().destroy();
+    tools3000::clipboard::ClipboardManager::instance().shutdown();
     tools3000::core::KeyboardHook::instance().uninstall();
     tools3000::core::MouseHook::instance().uninstall();
     tools3000::core::LuaEngine::instance().shutdown();

@@ -212,6 +212,7 @@ std::vector<ButtonSpec> primaryButtonSpecs(const CaptureState& state, bool zh) {
 
     // 系统能力（带前置分隔线）
     specs.push_back({ToolbarCommand::ExtractText, MarkupTool::Rectangle, {}, L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, true});
+    specs.push_back({ToolbarCommand::Translate, MarkupTool::Rectangle, {}, L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false});
     specs.push_back({ToolbarCommand::PinWindow, MarkupTool::Rectangle, {}, L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false});
     if (!state.isLongImageMode()) {
         specs.push_back({ToolbarCommand::ScrollCapture, MarkupTool::Rectangle, {}, L"", 32.0f, 0, LineStyle::Solid, ArrowStyle::Standard, false, false, false, false});
@@ -1088,6 +1089,7 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
         case ToolbarCommand::SideInvertSelection: return chinese ? L"全屏选区 / 还原原选区" : L"Full Screen / Restore Selection";
         case ToolbarCommand::SideResetSelection: return chinese ? L"重置选区直角与自由比例" : L"Reset Sharp Corners & Free Ratio";
         case ToolbarCommand::ExtractText: return chinese ? L"提取文字 (OCR)" : L"Extract text (OCR)";
+        case ToolbarCommand::Translate: return chinese ? L"原位翻译 (Ctrl+Shift+T)" : L"Translate in-place (Ctrl+Shift+T)";
         case ToolbarCommand::PinWindow: return chinese ? L"贴图置顶到屏幕 (Ctrl+T)" : L"Pin to screen (Ctrl+T)";
         case ToolbarCommand::ScrollCapture: return chinese ? L"长截图" : L"Scrolling capture";
         case ToolbarCommand::StartRecord: return chinese ? L"区域录屏" : L"Record Video";

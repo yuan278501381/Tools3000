@@ -49,6 +49,7 @@ public:
     void setClosedCallback(std::function<void()> callback) { m_closedCallback = std::move(callback); }
     void setRecordCallback(RecordSelectionCallback callback) { m_state.recordCallback = std::move(callback); }
     void setOcrCallback(std::function<void(const CaptureRegion& region, const cv::Mat& cropped)> callback) { m_state.ocrCallback = std::move(callback); }
+    void setTranslateCallback(std::function<void(const CaptureRegion& region, const cv::Mat& cropped)> callback) { m_state.translateCallback = std::move(callback); }
 
     OverlayState state() const { return m_state.state.load(); }
     OverlayMode mode() const { return m_state.mode; }

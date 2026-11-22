@@ -1723,10 +1723,16 @@ void CaptureInput::beginDetectionSession(
     int width,
     int height,
     const cv::Mat* frozenScreen) {
+    m_lastDetectedTopHwnd = nullptr;
+    m_lastDetectScreenPt = {INT_MIN, INT_MIN};
+    m_hasAsyncRefinedActive = false;
     m_elementDetector.beginSession(m_hwnd, originX, originY, width, height, frozenScreen);
 }
 
 void CaptureInput::endDetectionSession() {
+    m_lastDetectedTopHwnd = nullptr;
+    m_lastDetectScreenPt = {INT_MIN, INT_MIN};
+    m_hasAsyncRefinedActive = false;
     m_elementDetector.endSession();
 }
 
@@ -1786,9 +1792,15 @@ void CaptureInput::applyDetectedCandidates(
                 static_cast<float>(prevRect.top),
                 static_cast<float>(prevRect.right),
                 static_cast<float>(prevRect.bottom));
+            m_state->animVelocity = D2D1::RectF(0, 0, 0, 0);
+        } else {
+            // 保留柔和连续速度防急刹顿挫，仅在跨越超远距离时适度阻尼收敛
+            m_state->animVelocity.left *= 0.45f;
+            m_state->animVelocity.top *= 0.45f;
+            m_state->animVelocity.right *= 0.45f;
+            m_state->animVelocity.bottom *= 0.45f;
         }
         m_state->targetDetectedWindowRect = targetF;
-        m_state->animVelocity = D2D1::RectF(0, 0, 0, 0);
         m_state->isHierarchyAnimating = true;
         if (hwnd) SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
     } else {
@@ -1803,7 +1815,31 @@ void CaptureInput::updateWindowDetectionAtCursor(HWND hwnd, POINT screenPt, bool
     if (!m_state) return;
     HWND topHwnd = nullptr;
     auto syncCandidates = m_elementDetector.querySync(screenPt, &topHwnd);
-    applyDetectedCandidates(syncCandidates, /*animate=*/true, hwnd);
+
+    const bool sameTopWindow = (topHwnd != nullptr && topHwnd == m_lastDetectedTopHwnd);
+    const bool hasActiveVisualRect =
+        (m_state->detectedWindow.right > m_state->detectedWindow.left &&
+         m_state->detectedWindow.bottom > m_state->detectedWindow.top);
+    const bool syncOnlyCoarseWindow =
+        syncCandidates.empty() ||
+        (syncCandidates.front().kind != DetectedCandidateKind::Win32Child &&
+         syncCandidates.front().kind != DetectedCandidateKind::UiaElement &&
+         syncCandidates.front().kind != DetectedCandidateKind::VisionRegion);
+
+    // 零回弹连续性防抖（Zero-Snapback Continuity）：
+    // 在同一现代顶层窗口内微移鼠标时，严禁用粗糙的“整窗同步框”强行覆盖当前已锁定的精细 UIA 控件框
+    // （杜绝“小控件 -> 闪弹回大窗口 -> 12ms 后又缩回小控件”的剧烈抖动），平稳等待异步 UIA 返回新框再平滑切换！
+    const bool deferCoarseOverwrite =
+        allowAsyncRefine && hwnd && sameTopWindow && hasActiveVisualRect &&
+        m_hasAsyncRefinedActive && syncOnlyCoarseWindow;
+
+    m_lastDetectedTopHwnd = topHwnd;
+    m_lastDetectScreenPt = screenPt;
+
+    if (!deferCoarseOverwrite) {
+        m_hasAsyncRefinedActive = false;
+        applyDetectedCandidates(syncCandidates, /*animate=*/true, hwnd);
+    }
     if (allowAsyncRefine && hwnd && topHwnd) {
         m_elementDetector.requestAsyncRefine(hwnd, screenPt, topHwnd, syncCandidates);
     }
@@ -1822,6 +1858,9 @@ void CaptureInput::handleAsyncElementRefined(HWND hwnd) {
     if (!m_elementDetector.consumeRefinedResult(result)) {
         return;
     }
+    m_hasAsyncRefinedActive = !result.candidates.empty() &&
+        (result.candidates.front().kind == DetectedCandidateKind::UiaElement ||
+         result.candidates.front().kind == DetectedCandidateKind::VisionRegion);
     applyDetectedCandidates(result.candidates, /*animate=*/true, hwnd);
     if (m_renderer) {
         m_renderer->invalidate();

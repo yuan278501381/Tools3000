@@ -29,6 +29,7 @@ enum class ToolbarCommand {
     Redo,
     Clear,
     ExtractText,
+    Translate,
     PinWindow,
     ScrollCapture,
     StartRecord,
@@ -494,6 +495,7 @@ public:
     RecordSelectionCallback recordCallback;
     RecordSetupOptions recordSetup;
     std::function<void(const CaptureRegion& region, const cv::Mat& cropped)> ocrCallback;
+    std::function<void(const CaptureRegion& region, const cv::Mat& cropped)> translateCallback;
 
     bool historyMode = false;
     int historyIndex = 0;

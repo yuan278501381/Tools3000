@@ -563,7 +563,8 @@ describe('VirtualSearchResults (Unified Table View)', () => {
     fireEvent.mouseDown(createdHeaderBtn, { button: 0, clientX: 620, clientY: 16 });
     fireEvent.mouseMove(window, { clientX: 20, clientY: 16 });
     fireEvent.mouseUp(window, { clientX: 20, clientY: 16 });
-    expect(onReorder).toHaveBeenCalledWith(['created', 'name', 'modified', 'path', 'size']);
+    // 默认列全集已升级为 6 列（含打开次数 runCount），拖拽重排时必须保留隐藏默认列在 fullOrder 中的位置
+    expect(onReorder).toHaveBeenCalledWith(['created', 'name', 'modified', 'path', 'size', 'runCount']);
     expect(onSelectSort).not.toHaveBeenCalled();
 
     // 跨列松手未派发 click；经过 0ms 宏任务兜底后，再次点击排序必须立刻触发

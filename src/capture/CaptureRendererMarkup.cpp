@@ -104,6 +104,9 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
         case ToolbarCommand::ExtractText:
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionExtractText, rect, brush, scale);
             return;
+        case ToolbarCommand::Translate:
+            CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionTranslate, rect, brush, scale);
+            return;
         case ToolbarCommand::PinWindow:
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionPinWindow, rect, brush, scale);
             return;

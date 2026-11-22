@@ -21,14 +21,14 @@
 
 <br />
 
-Tools3000 unifies everyday **file search, document content search, scrolling capture, precision markup, grouped desktop pins, high-accuracy offline OCR, screen recording with auto-zoom Studio (exporting MP4, WeChat-ready GIF, and animated WebP), and global mouse gestures** into one native Windows app. It idles at around a dozen MB of RAM, runs 100% offline, and supports personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
+Tools3000 unifies everyday **file & browser bookmark search (with CLI / MCP), document content search, persistent clipboard history, scrolling capture, precision markup, grouped desktop pins, high-accuracy offline OCR & in-place screenshot translation, screen recording with auto-zoom Studio (exporting MP4, WeChat-ready GIF, and animated WebP), global mouse gestures, and a Rust Picasa photo viewer** into one native Windows app. It idles at around a dozen MB of RAM, runs local-first with zero telemetry, and supports personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
 
 ---
 
 ## At a Glance
 
 <p align="center">
-  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Nine Core Capabilities Overview" width="100%" />
+  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Ten Core Capabilities Overview" width="100%" />
 </p>
 
 ---
@@ -76,16 +76,27 @@ Tools3000 unifies everyday **file search, document content search, scrolling cap
       <sub><b>Global Mouse Gestures</b> · Right-drag to close tabs, instant trigger without release, and edge-wheel volume</sub>
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/translate_demo.webp" alt="WeChat-grade 1:1 in-place screenshot translation with code protection" width="100%" /><br />
+      <sub><b>In-Place Screenshot Translation</b> · Zero-config dual free channels + BYOK LLMs, 1:1 overlay, code token protection &amp; 0ms toggle</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/clipboard_demo.webp" alt="Pure Rust persistent clipboard history with Shift/Ctrl ordered merge paste" width="100%" /><br />
+      <sub><b>Persistent Clipboard History (Alt + V)</b> · Pure Rust storage survives reboots, Shift/Ctrl ordered merge paste, rich text &amp; groups</sub>
+    </td>
+  </tr>
 </table>
 
 | Module | Core Experience |
 | :--- | :--- |
-| **Instant File Search** | `Alt + Space` searches millions of files in milliseconds with full-pinyin & initials support; hit `Space` on any result for instant preview (images, Office, PDF, code, CAD, PSD, and 3D models). |
+| **Instant File Search** | `Alt + Space` searches millions of files in milliseconds with full-pinyin & initials, `bm:` Chrome/Edge/Firefox browser bookmark search, default Open Count column, and draggable category tabs; hit `Space` on any result for instant preview (images, Office, PDF, code, CAD, PSD, and 3D models); ships a 350 KB zero-dep pure Rust `tools3000-cli.exe` (CLI & MCP server for AI agents). |
 | **Document Content Search** | Prefix `content:` to search directly inside Word, Excel, PDF, PowerPoint, CAD, and source code with live highlighted snippets and one-click line copying. |
+| **Persistent Clipboard History** | Press `Alt + V` (or open right from the system tray menu) for pure Rust atomic clipboard history that survives reboots; supports `Shift / Ctrl` anchored batch merge-paste & delete, HTML/RTF rich text, collection groups, inline editing, `Alt + 1..9` instant paste, color swatches, and sensitive-app exclusion. |
 | **Scrolling Capture** | Auto-scroll seamless stitching for web pages, documents, and chats with live side preview, lossless head/tail trim, and in-place annotation. |
 | **Precision Screenshot Markup** | `F1` snaps directly to windows and UI elements with pixel color picker, default dashed optical magnifier, 6 arrow styles, self-healing step badges, mosaic, and sharing frames. |
-| **Desktop Pins & Pin Groups** | `F3` pins screenshots or clipboard content always-on-top with scroll zoom, opacity, and click-through; organize multiple pins into color groups and snap-tile with one click. |
-| **High-Accuracy Offline OCR** | Pure local offline recognition beating WeChat screenshot OCR on dense code, JSON, and complex tables; select/copy text directly on pins, highlight/underline, replace text in place, and extract tables/QR codes. |
+| **Desktop Pins & Pin Groups** | `F3` pins screenshots or clipboard content always-on-top with 120Hz damped zoom, opacity, and click-through; organize multiple pins into color groups and snap-tile with one click. |
+| **High-Accuracy Offline OCR & In-Place Translation** | Pure local offline recognition beating WeChat screenshot OCR on dense code, JSON, and complex tables (select/copy, highlight/underline, edit in place, extract tables/QR codes); plus **WeChat-grade 1:1 in-place screenshot translation** (zero-config dual free engines + BYOK OpenAI-compatible LLMs) with automatic code-identifier protection and 0ms original/translated toggle. |
 | **Screen Recorder & Auto-Zoom Studio** | Screen recording with keystroke overlay flows directly into Studio — automatic click-focus zoom, curated wallpapers, audio waveform timeline, and one-click export to **MP4**, **WeChat-ready GIF**, and **animated WebP**. |
 | **Global Mouse Gestures** | Right-drag to switch tabs, navigate back, or close windows; supports instant trigger without releasing, screen-edge wheel volume, per-app profiles, and automatic fullscreen game bypass. |
 | **Presenter & Remote Boost** | Crisp keystroke OSD and double-`Ctrl` spotlight; File Dialog quick-jump bar; remote desktop (`mstsc`, RustDesk, ToDesk) hotkey passthrough and one-key stuck-modifier recovery. |
@@ -150,8 +161,9 @@ Dedicated single-purpose tools each excel at deep niche workflows. Tools3000 is 
 
 | Classic Utility | Everyday Workflows Covered by Tools3000 | When to Keep the Dedicated Tool |
 | :--- | :--- | :--- |
-| **Everything** | `Alt + Space` millisecond NTFS filename, phonetic, and `content:` full-text document search, starting strictly on demand | When you need HTTP/ETP network file servers, full EXIF/media property column indexing, or the `es.exe` CLI ecosystem |
-| **Snipaste / PixPin** | `F1` region capture & markup, dashed magnifier, scrolling capture, `F3` grouped desktop pins, and fast local offline OCR with in-place text replacement | When you rely on Snipaste's ultra-specialized legacy GUI element snapping or custom CLI screenshot chains |
+| **Everything** | `Alt + Space` millisecond NTFS filename, phonetic, `bm:` browser bookmarks, and `content:` full-text document search, plus a 350 KB pure Rust CLI / MCP server — starting strictly on demand | When you need HTTP/ETP network file servers, full EXIF/media property column indexing, or legacy scripts tied to `es.exe` syntax |
+| **Ditto / Windows `Win + V` Clipboard** | `Alt + V` pure Rust atomic persistent clipboard history (survives reboots) with `Shift / Ctrl` ordered merge-paste & batch delete, HTML/RTF rich text, custom groups, inline edit, and `Alt + 1..9` instant paste | When you need real-time LAN clipboard sync across multiple PCs or cloud-synced clipboard roaming |
+| **Snipaste / PixPin** | `F1` region capture & markup, dashed magnifier, scrolling capture, `F3` 120Hz grouped desktop pins, 1:1 in-place screenshot translation, and fast local offline OCR with in-place text replacement | When you rely on Snipaste's ultra-specialized legacy GUI element snapping or custom CLI screenshot chains |
 | **WGestures / StrokesPlus** | Right-drag gestures for tabs/back/close, instant trigger without release, screen-edge wheel volume, hot corners, fullscreen game bypass, and Lua scripting | When you need multi-button chord gestures (e.g., left-hold + right-gesture), intricate window-region conditions, or years of recorded macros |
 | **Screen Recorders (e.g. ShareX)** | Screen recording, keystroke overlay, instant auto-zoom Studio (waveform trimming & cursor auto-zoom), exporting MP4, messenger-ready GIF, and animated WebP | When you need 80+ cloud/S3/FTP/Webhook auto-upload workflows or heavily customized FFmpeg post-capture pipelines |
 | **Picasa Photo Viewer / FastStone / Windows Photos** | Optional under-2 MB zero-dependency Rust recreation of the classic lightweight Picasa viewer (also works completely standalone), bringing faithful animations plus 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW, and lossless flip | When you need full Google Picasa album catalog management, face recognition, or dedicated batch RAW editing |
@@ -164,8 +176,9 @@ All shortcuts can be customized in Settings with real-time conflict detection:
 
 | Shortcut | Action |
 | :--- | :--- |
-| `Alt + Space` | Toggle instant search (`Space` on a result opens instant preview) |
-| `F1` | Region screenshot & annotation |
+| `Alt + Space` | Toggle instant search (supports `bm:` bookmarks; `Space` on a result opens instant preview) |
+| `Alt + V` | Toggle persistent clipboard history (`Shift / Ctrl` batch merge paste & `Alt + 1..9` instant paste; also in the tray menu) |
+| `F1` | Region screenshot, annotation & one-click in-place translation |
 | `F3` | Pin clipboard image or text always-on-top |
 | Double-tap `Ctrl` | Toggle cursor spotlight |
 | `Ctrl + Alt + Backspace` | Release stuck remote-desktop modifier keys (or double-tap right `Ctrl`) |
@@ -174,7 +187,7 @@ All shortcuts can be customized in Settings with real-time conflict detection:
 
 ## Privacy & Principles
 
-- **100% Offline**: File indexing, full-text search, OCR, annotations, and input stats run strictly on your machine — even with no internet connection.
+- **Local-First & Offline-Capable**: File indexing, full-text search, persistent clipboard history, offline OCR, annotations, and input stats run strictly on your machine — even offline. Only when you explicitly trigger screenshot translation is the selected text sent to your chosen translation provider.
 - **Zero Telemetry, No Accounts**: No ads, no sign-in walls, and zero uploading of your files or keystrokes.
 - **Lightweight by Default**: Every module toggles independently, and the search service launches strictly on demand to keep idle footprint minimal.
 

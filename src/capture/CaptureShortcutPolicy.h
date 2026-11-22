@@ -74,6 +74,7 @@ enum class CaptureShortcutAction {
     RedoMarkup,                  // Ctrl+Y / Ctrl+Shift+Z：重做
     ClearAllMarkup,              // Ctrl+Shift+Delete / Ctrl+Shift+Back：清空全部标注
     PinSelection,                // Ctrl+T：贴图置顶
+    TranslateSelection,          // Ctrl+Shift+T：原地贴图并原位翻译
     SaveSelectionAs,             // Ctrl+S：另存为图片文件
     QuickSaveSelection,          // Ctrl+Shift+S：一键快速保存到默认截图目录
     ConfirmOrCommitUi,           // Enter：提交打开的下拉菜单 / 收起滑块，或确认完成并复制
@@ -297,8 +298,10 @@ public:
                 return out;
             }
             if (hasSelection && isScreenshotMode) {
-                if (vk == 'T' && !shift) {
-                    out.action = CaptureShortcutAction::PinSelection;
+                if (vk == 'T') {
+                    out.action = shift
+                        ? CaptureShortcutAction::TranslateSelection
+                        : CaptureShortcutAction::PinSelection;
                     return out;
                 }
                 if (vk == 'S') {

@@ -50,6 +50,7 @@ const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const KeyStatsPage = lazy(() => import('./pages/KeyStatsPage').then((module) => ({ default: module.KeyStatsPage })));
 const HotCornerPage = lazy(() => import('./pages/HotCornerPage').then((module) => ({ default: module.HotCornerPage })));
 const SearchPage = lazy(() => import('./pages/SearchPage').then((module) => ({ default: module.SearchPage })));
+const ClipboardPage = lazy(() => import('./pages/ClipboardPage').then((module) => ({ default: module.ClipboardPage })));
 const KeycastPage = lazy(() => import('./pages/KeycastPage').then((module) => ({ default: module.KeycastPage })));
 const SpotlightPage = lazy(() => import('./pages/SpotlightPage').then((module) => ({ default: module.SpotlightPage })));
 const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then((module) => ({ default: module.DialogEnhancerPage })));
@@ -327,6 +328,7 @@ function App() {
       'gesture',
       'capture',
       'search',
+      'clipboard',
       'keycast',
       'spotlight',
       'dialogenhancer',
@@ -392,6 +394,7 @@ function App() {
       case 'ocr':             return <OcrPage />;
       case 'history':         return <HistoryPage />;
       case 'search':          return <SearchPage />;
+      case 'clipboard':       return <ClipboardPage />;
       case 'keycast':         return <KeycastPage />;
       case 'spotlight':       return <SpotlightPage />;
       case 'dialog_enhancer': return <DialogEnhancerPage />;
