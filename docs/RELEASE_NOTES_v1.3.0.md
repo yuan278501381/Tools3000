@@ -37,3 +37,20 @@
 - 清理全部 8 语种 README 中不再提及的 QuickLook 对比项，保持多语言文档行数与口径完全对齐
 
 
+
+---
+
+### 文件完整性校验与安全查验 (SHA-256 / VirusTotal)
+
+| 发布文件 | SHA-256 | 安全检测 |
+| :--- | :--- | :--- |
+| `Tools3000-v1.3.0-Setup.exe` | `ef04d081244d13f3477c5c3116cdafdf91eb389d4034f3597100ebea99ade34a` | [VirusTotal 查验](https://www.virustotal.com/gui/file/ef04d081244d13f3477c5c3116cdafdf91eb389d4034f3597100ebea99ade34a) |
+| `Tools3000-v1.3.0-win-x64-portable.zip` | `6f3f3263ca0d73750cc0e4caaf0bac7951bb2c93b1a4270641937e1e366e67f5` | [VirusTotal 查验](https://www.virustotal.com/gui/file/6f3f3263ca0d73750cc0e4caaf0bac7951bb2c93b1a4270641937e1e366e67f5) |
+
+下载后可在 PowerShell 中快速核对本地文件哈希：
+
+```powershell
+Get-FileHash .\Tools3000-v1.3.0-Setup.exe -Algorithm SHA256
+```
+
+> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 SBOM.spdx.json 软件物料清单。
