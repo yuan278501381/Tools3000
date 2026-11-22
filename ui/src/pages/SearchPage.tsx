@@ -486,6 +486,11 @@ export const SearchPage: FC = () => {
                     <td>{t('searchPage.opWildcardSingle', 'Wildcard, matches 1 character')}</td>
                     <td><CodeBadge>img_??.png</CodeBadge></td>
                   </tr>
+                  <tr>
+                    <td><CodeBadge>\</CodeBadge> / <CodeBadge>/</CodeBadge></td>
+                    <td>{t('searchPage.opSlashPathPinyin', 'Cross-folder path segment search (supports Pinyin initials, full Pinyin and wildcards)')}</td>
+                    <td><CodeBadge>gzml\user</CodeBadge>, <CodeBadge>*gzml*\*user*</CodeBadge></td>
+                  </tr>
                 </tbody>
               </table>
             </div>

@@ -75,6 +75,7 @@ enum class CaptureShortcutAction {
     ClearAllMarkup,              // Ctrl+Shift+Delete / Ctrl+Shift+Back：清空全部标注
     PinSelection,                // Ctrl+T：贴图置顶
     SaveSelectionAs,             // Ctrl+S：另存为图片文件
+    QuickSaveSelection,          // Ctrl+Shift+S：一键快速保存到默认截图目录
     ConfirmOrCommitUi,           // Enter：提交打开的下拉菜单 / 收起滑块，或确认完成并复制
     CopySelectionAndFinish,      // Ctrl+C：完成当前选区/拖拽/探测窗口截图并复制到剪贴板
     HierarchicalEscape,          // Esc：分级退出
@@ -300,8 +301,10 @@ public:
                     out.action = CaptureShortcutAction::PinSelection;
                     return out;
                 }
-                if (vk == 'S' && !shift) {
-                    out.action = CaptureShortcutAction::SaveSelectionAs;
+                if (vk == 'S') {
+                    out.action = shift
+                        ? CaptureShortcutAction::QuickSaveSelection
+                        : CaptureShortcutAction::SaveSelectionAs;
                     return out;
                 }
                 if (vk == 'Z') {

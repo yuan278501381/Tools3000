@@ -3,7 +3,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "gesture/BuiltinCommands.h"
+#include "gesture/GestureTrailOverlay.h"
+#include "gesture/MonitorBrightnessController.h"
 #include "core/config/ConfigManager.h"
+#include "core/i18n/UiI18n.h"
 #include "core/logger/Logger.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
@@ -272,6 +275,8 @@ void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr
         // ── 标签页 / 编辑 (优先作用于鼠标下方目标窗口) ─────────────────────
         case BuiltinCommand::CloseTab:           sendCombo(MOD_CONTROL, 'W', targetWindowPtr); break;
         case BuiltinCommand::RestoreClosedTab:   sendCombo(MOD_CONTROL | MOD_SHIFT, 'T', targetWindowPtr); break;
+        case BuiltinCommand::DeleteKey:          sendCombo(0, VK_DELETE, targetWindowPtr); break;
+        case BuiltinCommand::BackspaceKey:       sendCombo(0, VK_BACK, targetWindowPtr); break;
         case BuiltinCommand::WebSearch: {
             if (HWND target = resolveTargetWindow(targetWindowPtr);
                 target && IsWindow(target) && target != GetForegroundWindow()) {
@@ -296,6 +301,23 @@ void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr
         case BuiltinCommand::VolumeUp:           sendCombo(0, VK_VOLUME_UP); break;
         case BuiltinCommand::VolumeDown:         sendCombo(0, VK_VOLUME_DOWN); break;
         case BuiltinCommand::VolumeMute:         sendCombo(0, VK_VOLUME_MUTE); break;
+
+        // ── 硬件屏幕亮度控制 (光标所在屏 DDC/CI + WMI 双引擎异步合并) ────────
+        case BuiltinCommand::BrightnessUp:
+        case BuiltinCommand::BrightnessDown: {
+            POINT pt{};
+            GetCursorPos(&pt);
+            const int delta = (cmd == BuiltinCommand::BrightnessUp)
+                ? kDefaultBrightnessStepPercent
+                : -kDefaultBrightnessStepPercent;
+            MonitorBrightnessController::instance().adjustAtPointAsync(pt, delta, [](int percent) {
+                const std::string pctStr = std::to_string(percent);
+                const std::string label = tools3000::core::UiI18n::trFmtUtf8(
+                    "亮度 {0}%", "Brightness {0}%", {pctStr});
+                GestureTrailOverlay::instance().showStandaloneToast(label, 750);
+            });
+            break;
+        }
 
         // ── 系统 / 桌面 ──────────────────────────────────────────────────────
         case BuiltinCommand::ShowDesktop:        sendCombo(MOD_WIN, 'D'); break;

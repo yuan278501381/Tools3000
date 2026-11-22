@@ -38,7 +38,7 @@ const normalizeKey = (e: KeyboardEvent): string => {
   // 4. 特殊导航与编辑键
   const keyMap: Record<string, string> = {
     ArrowLeft: 'Left', ArrowRight: 'Right', ArrowUp: 'Up', ArrowDown: 'Down',
-    Enter: 'Enter', Tab: 'Tab', Delete: 'Delete', Home: 'Home', End: 'End',
+    Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete', Home: 'Home', End: 'End',
     PageUp: 'PageUp', PageDown: 'PageDown', Insert: 'Insert', CapsLock: 'CapsLock',
     PrintScreen: 'PrintScreen', ScrollLock: 'ScrollLock', Pause: 'Pause',
     ContextMenu: 'Apps',
@@ -98,9 +98,14 @@ interface HotkeyRecorderProps {
   /** 唯一标识 */
   id: string;
   ariaLabel?: string;
+  /**
+   * 允许录入单个按键（如 Delete / Backspace / Enter / 方向键等），专用于手势发送按键等
+   * 目标窗口动作场景；默认 false 保持全局热键防误触校验。
+   */
+  allowSingleKey?: boolean;
 }
 
-export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, placeholder, id, ariaLabel }) => {
+export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, placeholder, id, ariaLabel, allowSingleKey = false }) => {
   const { t } = useTranslation();
   const a11y = useControlA11y();
   const [recording, setRecording] = useState(false);
@@ -192,8 +197,8 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
         return;
       }
 
-      // Backspace 清除绑定 (仅在未按下任何修饰键时生效)
-      if (key === 'Backspace' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      // 全局热键模式下 Backspace 清除绑定；手势发送单键模式下 Backspace 作为合法可录入按键
+      if (!allowSingleKey && key === 'Backspace' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
         onChange('');
         recordingRef.current = false;
         setRecording(false);
@@ -225,7 +230,7 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
         const combo = [...filteredMods, mainKey];
         setActiveKeys(combo);
 
-        if (isSafeKeyCombo(filteredMods, mainKey)) {
+        if (allowSingleKey || isSafeKeyCombo(filteredMods, mainKey)) {
           clearWarning();
           pendingRef.current = combo.join('+');
         } else {
@@ -259,7 +264,7 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
     };
-  }, [recording, cancelRecording, confirmRecording, onChange, clearWarning, unlockHotkeyPause]);
+  }, [recording, allowSingleKey, cancelRecording, confirmRecording, onChange, clearWarning, unlockHotkeyPause]);
 
   // ── 点击外部退出录入 ──────────────────────────────────────────────────────
   useEffect(() => {

@@ -16,6 +16,7 @@
 #include "core/events/EventBus.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "capture/CaptureOverlay.h"
+#include "capture/CaptureInteractionPolicy.h"
 #include "core/logger/Logger.h"
 #include "core/stats/PerformanceMonitor.h"
 #include "core/utils/TraceId.h"
@@ -107,14 +108,31 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         }
 
         // 复制到剪贴板：仅在显式复制 (Copy) 或用户开启了 copyToClipboard 时写入，绝不在关闭开关或快捷键 OCR 时污染剪贴板
+        const bool isQuickSave = (completion.action == CaptureCompletionAction::QuickSave);
+        bool copiedOk = false;
         if (decision.shouldCopyToClipboard && !deliverableImage.empty()) {
             const std::wstring widePath = tools3000::core::WinUtils::utf8ToWstring(result.filePath);
             int padX = (deliverableImage.cols > region.width && region.width > 0) ? (deliverableImage.cols - region.width) / 2 : 0;
             int padY = (deliverableImage.rows > region.height && region.height > 0) ? (deliverableImage.rows - region.height) / 2 : 0;
-            copyToClipboard(deliverableImage, widePath, &region, padX, padY);
-            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                tools3000::core::trWCstrFor(isZh, L"截图已复制到剪贴板", L"Screenshot copied to clipboard")});
-        } else if (!decision.shouldSaveExplicitly &&
+            copiedOk = copyToClipboard(deliverableImage, widePath, &region, padX, padY);
+            if (!isQuickSave) {
+                tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                    tools3000::core::trWCstrFor(isZh, L"截图已复制到剪贴板", L"Screenshot copied to clipboard")});
+            }
+        }
+        if (isQuickSave) {
+            if (result.filePath.empty()) {
+                tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                    tools3000::core::trWCstrFor(isZh, L"截图保存失败", L"Failed to save screenshot")});
+            } else if (copiedOk) {
+                tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                    tools3000::core::trWCstrFor(isZh, L"截图已保存并复制到剪贴板", L"Screenshot saved and copied to clipboard")});
+            } else {
+                tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                    tools3000::core::trWCstrFor(isZh, L"截图已保存", L"Screenshot saved")});
+            }
+        } else if (!decision.shouldCopyToClipboard &&
+                   !decision.shouldSaveExplicitly &&
                    decision.shouldSaveAutomatically &&
                    !decision.shouldInvokeMemoryCallback) {
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
@@ -398,6 +416,7 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
     const bool isZh = useChineseCaptureToast();
     const auto action = static_cast<ScrollFinishAction>(finishActionCode);
     const bool forceCopy = (action == ScrollFinishAction::Copy);
+    const bool forceSave = (action == ScrollFinishAction::QuickSave);
     const bool shouldCopy = forceCopy || m_activeOptions.copyToClipboard;
     bool copied = false;
     if (shouldCopy) {
@@ -405,7 +424,7 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
     }
 
     std::string savedPath;
-    if (m_activeOptions.saveToFile) {
+    if (m_activeOptions.saveToFile || forceSave) {
         auto encoded = encodeImage(finalImage, m_activeOptions.format, m_activeOptions.quality);
         if (!encoded.empty()) {
             std::string path = m_activeOptions.savePath.empty()
@@ -511,12 +530,19 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
         return;
     }
 
-    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-        savedPath.empty()
-            ? (copied
-                ? (tools3000::core::trWCstrFor(isZh, L"长截图已复制到剪贴板", L"Long screenshot copied to clipboard"))
-                : (tools3000::core::trWCstrFor(isZh, L"长截图已完成", L"Long screenshot completed")))
-            : (tools3000::core::trWCstrFor(isZh, L"长截图已保存", L"Long screenshot saved"))});
+    if (forceSave) {
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            savedPath.empty()
+                ? (tools3000::core::trWCstrFor(isZh, L"截图保存失败", L"Failed to save screenshot"))
+                : (tools3000::core::trWCstrFor(isZh, L"长截图已保存", L"Long screenshot saved"))});
+    } else {
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            savedPath.empty()
+                ? (copied
+                    ? (tools3000::core::trWCstrFor(isZh, L"长截图已复制到剪贴板", L"Long screenshot copied to clipboard"))
+                    : (tools3000::core::trWCstrFor(isZh, L"长截图已完成", L"Long screenshot completed")))
+                : (tools3000::core::trWCstrFor(isZh, L"长截图已保存", L"Long screenshot saved"))});
+    }
     LOG_INFO("长截图已保存，共 {} 帧", frameCount);
     releaseScrollCaptureWorkingSet();
 }
@@ -841,6 +867,27 @@ std::string ScreenCapture::saveToFile(const std::vector<uint8_t>& data,
     }
 }
 
+std::string ScreenCapture::saveCapturedImage(const cv::Mat& image,
+                                             ImageFormat format,
+                                             int quality,
+                                             const std::string& explicitPath,
+                                             bool applyGlobalWatermark) {
+    if (image.empty()) {
+        return "";
+    }
+    const cv::Mat deliverable = applyGlobalWatermark
+        ? WatermarkRenderer::applyGlobalCaptureWatermarkIfEnabled(image)
+        : image;
+    const auto encoded = encodeImage(deliverable, format, std::clamp(quality, 1, 100));
+    if (encoded.empty()) {
+        return "";
+    }
+    const std::string targetPath = explicitPath.empty()
+        ? generateSavePath(format)
+        : explicitPath;
+    return saveToFile(encoded, targetPath, format);
+}
+
 std::string ScreenCapture::generateSavePath(ImageFormat format) const {
     auto now = std::chrono::system_clock::now();
     auto time_t = std::chrono::system_clock::to_time_t(now);
@@ -856,9 +903,13 @@ std::string ScreenCapture::generateSavePath(ImageFormat format) const {
         << "_" << std::setfill('0') << std::setw(3) << ms.count()
         << "." << formatExtension(format);
 
-    // 保存到用户图片目录
-    auto picturesDir = tools3000::core::WinUtils::getAppDataDirectory() / L"Screenshots";
-    return tools3000::core::WinUtils::wstringToUtf8((picturesDir / oss.str()).wstring());
+    // 优先使用用户在设置中配置的截图保存目录；为空时自动回退至默认 Screenshots 目录
+    auto& config = tools3000::core::ConfigManager::instance();
+    const std::string configuredDir = config.get<std::string>("/capture/saveDirectory", "");
+    const std::string legacyDir = config.get<std::string>("/capture/savePath", "");
+    const std::filesystem::path saveDir = resolveCaptureSaveDirectoryPath(
+        configuredDir, legacyDir, tools3000::core::WinUtils::getAppDataDirectory());
+    return tools3000::core::WinUtils::wstringToUtf8((saveDir / oss.str()).wstring());
 }
 
 std::string ScreenCapture::formatExtension(ImageFormat format) {

@@ -47,21 +47,27 @@ function Get-NativeHostArch {
 
 function Resolve-LatestSetupExe {
     $arch = Get-NativeHostArch
-    $defaultName = if ($arch -eq "arm64") { "Tools3000-Setup-arm64.exe" } else { "Tools3000-Setup.exe" }
+    $versionFile = Join-Path $ScriptDir "VERSION"
+    $projectVer = if (Test-Path -LiteralPath $versionFile) { (Get-Content -LiteralPath $versionFile -Raw).Trim() } else { "" }
+    $defaultName = if ($projectVer -match '^\d+\.\d+\.\d+$') {
+        if ($arch -eq "arm64") { "Tools3000-v$projectVer-Setup-arm64.exe" } else { "Tools3000-v$projectVer-Setup.exe" }
+    } else {
+        if ($arch -eq "arm64") { "Tools3000-v0.0.0-Setup-arm64.exe" } else { "Tools3000-v0.0.0-Setup.exe" }
+    }
     $fallbackPath = Join-Path $OutputDir $defaultName
     if (-not (Test-Path -LiteralPath $OutputDir)) {
         return $fallbackPath
     }
 
-    $candidates = Get-ChildItem -LiteralPath $OutputDir -Filter "Tools3000*Setup*.exe" -File -ErrorAction SilentlyContinue | Where-Object {
+    $candidates = @(Get-ChildItem -LiteralPath $OutputDir -Filter "Tools3000*Setup*.exe" -File -ErrorAction SilentlyContinue | Where-Object {
         if ($arch -eq "arm64") {
             $_.Name -match "(?i)arm64"
         } else {
             $_.Name -notmatch "(?i)arm64"
         }
-    } | Sort-Object LastWriteTimeUtc -Descending
+    } | Sort-Object LastWriteTimeUtc -Descending)
 
-    if ($candidates -and $candidates.Count -gt 0) {
+    if ($candidates.Count -gt 0) {
         return $candidates[0].FullName
     }
     return $fallbackPath

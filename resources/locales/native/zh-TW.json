@@ -853,5 +853,8 @@
   "en-US": "zh-TW",
   "{0} frame": "{0} 影格",
   "{0} frames": "{0} 影格",
-  "一, 二, 三": "一, 二, 三"
+  "一, 二, 三": "一, 二, 三",
+  "Brightness {0}%": "亮度 {0}%",
+  "Quick Save (Ctrl+Shift+S, Right-click Save As)": "快速儲存 (Ctrl+Shift+S，右鍵另存新檔)",
+  "Screenshot saved and copied to clipboard": "擷圖已儲存並複製到剪貼簿"
 }

@@ -103,6 +103,13 @@ public:
     /// 截取指定区域
     CaptureResult captureRegion(const CaptureRegion& region, const CaptureOptions& options = {});
 
+    /// 统一快速保存/导出接口（空路径自动读取配置的截图保存目录或回退默认 Screenshots 目录，自动按需压印全局水印）
+    std::string saveCapturedImage(const cv::Mat& image,
+                                  ImageFormat format = ImageFormat::PNG,
+                                  int quality = 90,
+                                  const std::string& explicitPath = "",
+                                  bool applyGlobalWatermark = true);
+
     /// 设置截图完成回调
     void setCallback(CaptureCallback callback) { m_callback = std::move(callback); }
 

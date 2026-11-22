@@ -243,7 +243,7 @@ target_link_libraries(capture_objects PUBLIC Tools3000Core ${OpenCV_LIBS}
     shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 windowscodecs winhttp windowsapp Shcore imm32 ws2_32
 )
 
-# 2. gesture_objects (11 个源文件)
+# 2. gesture_objects (12 个源文件)
 set(GESTURE_OBJECT_SOURCES
     src/gesture/GestureRecognizer.cpp
     src/gesture/ScopeRule.cpp
@@ -256,11 +256,12 @@ set(GESTURE_OBJECT_SOURCES
     src/gesture/GestureEngine.cpp
     src/gesture/GestureDispatchWorker.cpp
     src/gesture/GestureTrailOverlay.cpp
+    src/gesture/MonitorBrightnessController.cpp
 )
 add_library(gesture_objects OBJECT ${GESTURE_OBJECT_SOURCES})
 target_include_directories(gesture_objects PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(gesture_objects PUBLIC Tools3000Core
-    d2d1 dwrite windowscodecs user32 shell32 shcore dwmapi dcomp d3d11 dxgi winmm
+    d2d1 dwrite windowscodecs user32 shell32 shcore dwmapi dcomp d3d11 dxgi winmm ole32 oleaut32 wbemuuid
 )
 
 # 3. service_objects (12 个源文件)
@@ -364,7 +365,7 @@ tools3000_add_plugin_manifest(Plugin_Gesture)
 target_compile_definitions(Plugin_Gesture PRIVATE PLUGIN_EXPORTS)
 target_include_directories(Plugin_Gesture PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(Plugin_Gesture PRIVATE Tools3000Core
-    d2d1 dwrite windowscodecs user32 shell32 shcore dwmapi dcomp d3d11 dxgi winmm
+    d2d1 dwrite windowscodecs user32 shell32 shcore dwmapi dcomp d3d11 dxgi winmm ole32 oleaut32 wbemuuid
 )
 set_target_properties(Plugin_Gesture PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/plugins")
 
@@ -615,7 +616,7 @@ if(BUILD_TESTING)
     if (MSVC)
         target_compile_options(Tools3000Tests PRIVATE /bigobj)
     endif()
-    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 msimg32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 oleaut32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm winhttp windowsapp ntdll userenv ws2_32 dbghelp version bcrypt propsys
+    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 msimg32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 oleaut32 wbemuuid shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm winhttp windowsapp ntdll userenv ws2_32 dbghelp version bcrypt propsys
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY} ${WEBP_LIBRARY} ${WEBPMUX_LIBRARY} ${OpenCV_LIBS})
     add_dependencies(Tools3000Tests tools3000_content_rs_target Tools3000 Plugin_Gesture Plugin_Capture Plugin_Keycast Plugin_Search Plugin_DialogEnhancer)

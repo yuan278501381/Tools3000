@@ -116,7 +116,6 @@ PinContextMenuSnapshot buildPinContextMenuSnapshot(const PinWindow* self) {
 
 void executePinContextMenuCommand(PinWindow* self, HWND hwnd, const PinMenuCommand& cmd) {
     if (!self || !self->isAlive() || !cmd.isValid()) return;
-    const bool isZh = tools3000::core::isUiLanguageChinese();
 
     switch (cmd.action) {
         case PinMenuAction::CopyImage:

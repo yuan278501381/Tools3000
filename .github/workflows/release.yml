@@ -240,14 +240,18 @@ jobs:
           Write-Host "[OK] Applied first-pass signed binaries into deploy_dist." -ForegroundColor Green
         shell: pwsh
 
-      # 打包阶段：在 deploy_dist 完成内层签名后，构建规范命名的便携 ZIP 与 Inno Setup 安装包
+      # 打包阶段：在 deploy_dist 完成内层签名后，构建唯一规范命名的便携 ZIP 与 Inno Setup 安装包
       - name: Build Portable Archive and Inno Setup Installer
         run: |
           if (-not (Test-Path "Output")) { New-Item -ItemType Directory -Path "Output" -Force | Out-Null }
           $Tag = $env:RELEASE_TAG
           $Ver = $env:RELEASE_VERSION
+          Get-ChildItem -LiteralPath "Output" -File -ErrorAction SilentlyContinue | Where-Object {
+            ($_.Name -like "Tools3000-*.exe" -or $_.Name -like "Tools3000-*.zip") -and
+            $_.Name -ne "Tools3000-InnerBinaries-Unsigned.zip"
+          } | Remove-Item -Force -ErrorAction SilentlyContinue
+
           $VersionedPortableZip = "Output\Tools3000-$Tag-win-x64-portable.zip"
-          if (Test-Path -LiteralPath $VersionedPortableZip) { Remove-Item -Force -LiteralPath $VersionedPortableZip }
           Compress-Archive -Path "deploy_dist\*" -DestinationPath $VersionedPortableZip -CompressionLevel Optimal -Force
 
           $ISCC = if (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue) {
@@ -257,17 +261,17 @@ jobs:
           }
           if (-not (Test-Path -LiteralPath $ISCC)) { throw "ISCC.exe not found!" }
 
+          $SetupBaseName = "Tools3000-$Tag-Setup"
           $CompressionArg = if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") { "/DCompressionLevel=lzma2/ultra64" } else { "/DCompressionLevel=lzma2/fast" }
-          & $ISCC "/DTools3000Version=$Ver" "/DTools3000Architecture=x64" "/DTools3000SetupBaseFilename=Tools3000-Setup" "/DDeployDir=deploy_dist" $CompressionArg "installer.iss"
+          & $ISCC "/DTools3000Version=$Ver" "/DTools3000Architecture=x64" "/DTools3000SetupBaseFilename=$SetupBaseName" "/DDeployDir=deploy_dist" $CompressionArg "installer.iss"
           if ($LASTEXITCODE -ne 0) { throw "ISCC compilation failed with exit code $LASTEXITCODE" }
 
-          $SetupPath = "Output\Tools3000-Setup.exe"
+          $SetupPath = "Output\$SetupBaseName.exe"
           if (-not (Test-Path -LiteralPath $SetupPath)) { throw "Installer artifact not found at: $SetupPath" }
-          Copy-Item -LiteralPath $SetupPath -Destination "Output\Tools3000-$Tag-Setup.exe" -Force
-          Write-Host "[OK] Portable ZIP and Setup.exe built successfully." -ForegroundColor Green
+          Write-Host "[OK] Portable ZIP ($VersionedPortableZip) and installer ($SetupPath) built successfully." -ForegroundColor Green
         shell: pwsh
 
-      # 第二轮签名 (Azure Trusted Signing): 对生成的 Tools3000-Setup.exe 进行外层签名
+      # 第二轮签名 (Azure Trusted Signing): 对生成的带版本号安装包进行外层签名
       - name: Second-Pass Outer Installer Signing via Azure Trusted Signing
         if: steps.signing-config.outputs.provider == 'azure'
         uses: azure/trusted-signing-action@v0.5
@@ -275,26 +279,20 @@ jobs:
           endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
           trusted-signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
-          files: Output\Tools3000-Setup.exe
+          files: Output\Tools3000-${{ env.RELEASE_TAG }}-Setup.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
           description: Tools3000 Installer
 
-      - name: Sync Azure Signed Installer Artifact
-        if: steps.signing-config.outputs.provider == 'azure'
-        run: |
-          Copy-Item -LiteralPath "Output\Tools3000-Setup.exe" -Destination "Output\Tools3000-$($env:RELEASE_TAG)-Setup.exe" -Force
-        shell: pwsh
-
-      # 第二轮签名 (SignPath): 对生成的 Tools3000-Setup.exe 进行外层签名
+      # 第二轮签名 (SignPath): 对生成的带版本号安装包进行外层签名
       - name: Upload Unsigned Outer Installer for SignPath
         if: steps.signing-config.outputs.provider == 'signpath'
         uses: actions/upload-artifact@v4
         id: upload-unsigned-installer
         with:
           name: Tools3000-Setup-Unsigned
-          path: Output\Tools3000-Setup.exe
+          path: Output\Tools3000-${{ env.RELEASE_TAG }}-Setup.exe
           retention-days: 1
 
       - name: Submit Outer Installer Signing Request to SignPath
@@ -321,7 +319,6 @@ jobs:
             }
           }
           if ($SignedFile) {
-            Copy-Item -Path $SignedFile.FullName -Destination "Output\Tools3000-Setup.exe" -Force
             Copy-Item -Path $SignedFile.FullName -Destination "Output\Tools3000-$($env:RELEASE_TAG)-Setup.exe" -Force
             Write-Host "[OK] Replaced outer installer with signed artifact: $($SignedFile.FullName)" -ForegroundColor Green
           } else {
@@ -338,7 +335,7 @@ jobs:
             "deploy_dist\Tools3000_Service.exe",
             "deploy_dist\Tools3000_Picasa_Viewer.exe",
             "deploy_dist\Tools3000Core.dll",
-            "Output\Tools3000-Setup.exe"
+            "Output\Tools3000-$($env:RELEASE_TAG)-Setup.exe"
           )
         shell: pwsh
 

@@ -1052,6 +1052,14 @@
       "pullDownMinimize": {
         "name": "引き下げて最小化",
         "desc": "画面上端中央から下に引いてウィンドウを最小化"
+      },
+      "brightnessUp": {
+        "name": "画面の明るさを上げる",
+        "desc": "カーソルがあるディスプレイのハードウェア輝度を上げます"
+      },
+      "brightnessDown": {
+        "name": "画面の明るさを下げる",
+        "desc": "カーソルがあるディスプレイのハードウェア輝度を下げます"
       }
     },
     "triggerEdgeLeftWheel": "画面左端 + ホイール",
@@ -1069,7 +1077,11 @@
     "wheelShort": "ホイール",
     "side1Short": "サイド X1",
     "side2Short": "サイド X2",
-    "leftClickShort": "左ボタン"
+    "leftClickShort": "左ボタン",
+    "showActionHint": "ジェスチャー動作ヒント文字を表示",
+    "showActionHintDesc": "描画中およびリリース時に認識された動作名ピルを表示します（軌跡ラインとは独立して切替可能）",
+    "trailFadeEnabled": "終了時のフェードアウト演出",
+    "trailFadeEnabledDesc": "リリース後に軌跡とヒントを滑らかにフェードアウトします。オフにすると 0ms で即座に消去されます"
   },
   "hotcorner": {
     "title": "ホットコーナー",
@@ -1173,8 +1185,13 @@
       "volumeDown": "音量を下げる",
       "volumeMute": "ミュート切替",
       "prevDesktop": "前の仮想デスクトップ",
-      "nextDesktop": "次の仮想デスクトップ"
-    }
+      "nextDesktop": "次の仮想デスクトップ",
+      "deleteKey": "Delete キー (削除)",
+      "backspaceKey": "Backspace キー (後退)",
+      "brightnessUp": "画面の明るさを上げる (現在の画面)",
+      "brightnessDown": "画面の明るさを下げる (現在の画面)"
+    },
+    "hotkeyHintSingleKey": "単一キー（Delete・Backspace・Enter など）およびショートカットの組み合わせに対応"
   },
   "gestureGuide": {
     "title": "ジェスチャーデモ",
@@ -1305,7 +1322,11 @@
       "spdlog": "低オーバーヘッド非同期診断ロギング基盤",
       "nlohmannJson": "高速な JSON 設定および IPC メッセージシリアライズ",
       "gtest": "C++ およびフロントエンドの自動回帰テストスイート",
-      "innoSetup": "Windows インストーラー、ポータブル配布パッケージ、コード署名ビルド"
+      "innoSetup": "Windows インストーラー、ポータブル配布パッケージ、コード署名ビルド",
+      "rustPicasaViewer": "純 Rust・ゼロ CRT の独立 GPU フォトビューアー（41 形式・物理ダンピング・ガウス影）",
+      "ddcBrightness": "カーソル画面ごとのハードウェア輝度制御（外部 DDC/CI ＋ ノート内蔵 WMI）",
+      "ppocrDirectml": "2 段階完全オフライン深層学習 OCR（DirectML GPU / WinML）、QR・バーコード対応",
+      "ifilterShellProps": "Office/WPS/メールの全文抽出と 30 種以上の拡張列プロパティのオンデマンド取得"
     },
     "geekMode": "パフォーマンスモニター",
     "enablePerfMonitor": "リアルタイム指標を表示",
@@ -1849,7 +1870,12 @@
     "contentScanPausedBudget": "{{scanned}} / {{total}} 件の文書をスキャン済み（自動一時停止）",
     "contentScanPausedBudgetGeneric": "リソース節約のため詳細スキャンを自動一時停止しました",
     "resumeDeepScan": "続行",
-    "resumeDeepScanTitle": "一時停止した位置から残りの文書スキャンを続行します"
+    "resumeDeepScanTitle": "一時停止した位置から残りの文書スキャンを続行します",
+    "syntaxExPathSlashPinyin": "スラッシュ区切りの階層パス検索（\\ / およびピンイン頭文字・全拼に対応）",
+    "syntaxExPathSlashWildcard": "複数階層にまたがるワイルドカード＋ピンインのパス一致検索",
+    "syntaxExPathParent": "親フォルダパスで絞り込み（ピンイン頭文字・短縮形 p: に対応）",
+    "syntaxExExact": "ファイル名の完全一致検索（部分一致を除外）",
+    "syntaxExNoPinyin": "この語句のみピンイン一致を無効化し、英字そのままの文字で検索"
   },
   "searchPage": {
     "tabSettings": "基本設定・ホットキー",
@@ -1953,7 +1979,8 @@
     "serviceStandbyDesc": "起動負荷ゼロの DEMAND_START 設計。初回検索時に自動起動するか、右のボタンで今すぐ起動できます。",
     "serviceStandbyToast": "エンジンはオンデマンド待機中です。「今すぐエンジンを起動」で起動できます",
     "serviceWoken": "NTFS インデックスエンジンを起動し準備が完了しました",
-    "wakeNow": "今すぐエンジンを起動"
+    "wakeNow": "今すぐエンジンを起動",
+    "opSlashPathPinyin": "スラッシュ区切りの複数階層パス検索（ピンイン頭文字・全拼・ワイルドカード対応）"
   },
   "tray": {
     "brandName": "Tools3000",

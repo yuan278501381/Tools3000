@@ -1226,14 +1226,37 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     if (editPinnedMarkupCb && !cropped.empty()) {
         editPinnedMarkupCb(true, cleanBaseDelivered, cropped, std::move(updatedElements));
     }
+    if ((editPinnedCb || editPinnedMarkupCb) && !cropped.empty() &&
+        (completion.action == CaptureCompletionAction::QuickSave ||
+         (completion.action == CaptureCompletionAction::SaveAs && !completion.filePath.empty()))) {
+        auto& cfg = tools3000::core::ConfigManager::instance();
+        const std::string fmtStr = cfg.get<std::string>("/capture/format", "png");
+        ImageFormat cfgFmt = ImageFormat::PNG;
+        if (fmtStr == "jpg" || fmtStr == "jpeg") cfgFmt = ImageFormat::JPEG;
+        else if (fmtStr == "webp") cfgFmt = ImageFormat::WebP;
+        else if (fmtStr == "bmp") cfgFmt = ImageFormat::BMP;
+        const int cfgQuality = std::clamp(cfg.get<int>("/capture/quality", 90), 1, 100);
+        const bool isExplicitSave =
+            (completion.action == CaptureCompletionAction::SaveAs && !completion.filePath.empty());
+        const ImageFormat targetFmt = isExplicitSave ? completion.format : cfgFmt;
+        const std::string targetPath = isExplicitSave ? completion.filePath : std::string{};
+        const std::string savedPath = ScreenCapture::instance().saveCapturedImage(
+            cropped, targetFmt, cfgQuality, targetPath, true);
+        const bool isZh = tools3000::core::isUiLanguageChinese();
+        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+            savedPath.empty()
+                ? (tools3000::core::trWCstrFor(isZh, L"截图保存失败", L"Failed to save screenshot"))
+                : (tools3000::core::trWCstrFor(isZh, L"截图已保存", L"Screenshot saved"))});
+    }
     if (editLongCb) {
         ScrollFinishAction finishAct = ScrollFinishAction::Confirm;
         switch (completion.action) {
-            case CaptureCompletionAction::Copy:   finishAct = ScrollFinishAction::Copy; break;
-            case CaptureCompletionAction::Pin:    finishAct = ScrollFinishAction::Pin; break;
-            case CaptureCompletionAction::SaveAs: finishAct = ScrollFinishAction::SaveAs; break;
+            case CaptureCompletionAction::Copy:      finishAct = ScrollFinishAction::Copy; break;
+            case CaptureCompletionAction::Pin:       finishAct = ScrollFinishAction::Pin; break;
+            case CaptureCompletionAction::SaveAs:    finishAct = ScrollFinishAction::SaveAs; break;
+            case CaptureCompletionAction::QuickSave: finishAct = ScrollFinishAction::QuickSave; break;
             case CaptureCompletionAction::Default:
-            default:                              finishAct = ScrollFinishAction::Confirm; break;
+            default:                                 finishAct = ScrollFinishAction::Confirm; break;
         }
         editLongCb(cropped, finishAct, savedLongFrames);
     }

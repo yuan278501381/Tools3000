@@ -9,13 +9,17 @@ import './AboutPage.css';
 type DepPurposeKey =
   | 'about.depPurpose.cppStandard'
   | 'about.depPurpose.rustSimd'
+  | 'about.depPurpose.rustPicasaViewer'
   | 'about.depPurpose.direct2d'
   | 'about.depPurpose.llHooks'
+  | 'about.depPurpose.ddcBrightness'
   | 'about.depPurpose.ntfsEngine'
   | 'about.depPurpose.pinyin'
+  | 'about.depPurpose.ppocrDirectml'
   | 'about.depPurpose.opencv'
   | 'about.depPurpose.ffmpeg'
   | 'about.depPurpose.windowsOcr'
+  | 'about.depPurpose.ifilterShellProps'
   | 'about.depPurpose.uiaShell'
   | 'about.depPurpose.webview2'
   | 'about.depPurpose.react'
@@ -37,33 +41,37 @@ interface DependencyInfo {
 
 const DEPENDENCIES: DependencyInfo[] = [
   // 第一梯队：核心底座与硬核原生性能 (Native Core & Hardware Acceleration)
-  { name: 'C++20',                          version: 'MSVC v145 · x64 / ARM64',   purpose: 'about.depPurpose.cppStandard' },
-  { name: 'Rust (SIMD Kernel)',             version: 'Edition 2021 · AVX2 / NEON', purpose: 'about.depPurpose.rustSimd' },
-  { name: 'Direct2D & DirectComposition',   version: 'GPU Hardware',               purpose: 'about.depPurpose.direct2d' },
-  { name: 'Win32 LL Hooks & Raw Input',     version: 'Native API',                 purpose: 'about.depPurpose.llHooks' },
+  { name: 'C++20',                          version: 'MSVC v145 · x64 / ARM64',      purpose: 'about.depPurpose.cppStandard' },
+  { name: 'Rust (SIMD Kernel)',             version: 'Edition 2021 · AVX2 / NEON',   purpose: 'about.depPurpose.rustSimd' },
+  { name: 'Rust Picasa Viewer',             version: 'D3D11 · DComp · WIC · resvg',  purpose: 'about.depPurpose.rustPicasaViewer' },
+  { name: 'Direct2D & DirectComposition',   version: 'GPU Hardware',                 purpose: 'about.depPurpose.direct2d' },
+  { name: 'Win32 LL Hooks & Raw Input',     version: 'Native API',                   purpose: 'about.depPurpose.llHooks' },
+  { name: 'DDC/CI & WMI Display',           version: 'dxva2 · root\\wmi',            purpose: 'about.depPurpose.ddcBrightness' },
 
   // 第二梯队：垂直业务引擎与多媒体管线 (Domain Engines & Multimedia)
-  { name: 'NTFS MFT & USN Journal',         version: 'Kernel I/O',                 purpose: 'about.depPurpose.ntfsEngine' },
-  { name: 'PinyinEngine',                   version: 'Built-in',                   purpose: 'about.depPurpose.pinyin' },
-  { name: 'OpenCV',                         version: '4.12',                       purpose: 'about.depPurpose.opencv' },
-  { name: 'FFmpeg & WASAPI',                version: '8.1',                        purpose: 'about.depPurpose.ffmpeg' },
-  { name: 'Windows.Media.Ocr & Pdf',        version: '100% Offline',               purpose: 'about.depPurpose.windowsOcr' },
-  { name: 'UIAutomation & Shell COM',       version: 'System API',                 purpose: 'about.depPurpose.uiaShell' },
+  { name: 'NTFS MFT & USN Journal',         version: 'Kernel I/O',                   purpose: 'about.depPurpose.ntfsEngine' },
+  { name: 'PinyinEngine',                   version: 'Built-in',                     purpose: 'about.depPurpose.pinyin' },
+  { name: 'PP-OCRv4 & DirectML / WinML',    version: 'GPU · 100% Offline',           purpose: 'about.depPurpose.ppocrDirectml' },
+  { name: 'OpenCV',                         version: '4.12',                         purpose: 'about.depPurpose.opencv' },
+  { name: 'FFmpeg & WASAPI',                version: '8.1',                          purpose: 'about.depPurpose.ffmpeg' },
+  { name: 'Windows.Media.Ocr & Pdf',        version: '100% Offline',                 purpose: 'about.depPurpose.windowsOcr' },
+  { name: 'Windows IFilter & Shell Props',  version: 'COM · Property System',        purpose: 'about.depPurpose.ifilterShellProps' },
+  { name: 'UIAutomation & Shell COM',       version: 'System API',                   purpose: 'about.depPurpose.uiaShell' },
 
   // 第三梯队：现代化人机交互与展现容器 (Modern UI, Shell & Design Tokens)
-  { name: 'WebView2',                       version: '1.0.4022 · Evergreen',       purpose: 'about.depPurpose.webview2' },
-  { name: 'React & TypeScript',             version: '19.2 / 6.0',                 purpose: 'about.depPurpose.react' },
-  { name: 'Vite',                           version: '8.0',                        purpose: 'about.depPurpose.vite' },
-  { name: 'Lucide Icons',                   version: '1.21',                       purpose: 'about.depPurpose.lucideIcons' },
-  { name: 'CSS Design Tokens',              version: 'Native CSS',                 purpose: 'about.depPurpose.designTokens' },
+  { name: 'WebView2',                       version: '1.0.4022 · Evergreen',         purpose: 'about.depPurpose.webview2' },
+  { name: 'React & TypeScript',             version: '19.2 / 6.0',                   purpose: 'about.depPurpose.react' },
+  { name: 'Vite',                           version: '8.0',                          purpose: 'about.depPurpose.vite' },
+  { name: 'Lucide Icons',                   version: '1.21',                         purpose: 'about.depPurpose.lucideIcons' },
+  { name: 'CSS Design Tokens',              version: 'Native CSS',                   purpose: 'about.depPurpose.designTokens' },
 
   // 第四梯队：数据存储、扩展性与工程门禁 (Storage, Scripting & QA Gates)
-  { name: 'SQLite & zlib',                  version: '3.x / 1.3',                  purpose: 'about.depPurpose.sqliteZlib' },
-  { name: 'Lua + sol2',                     version: '5.5 / 3.5',                  purpose: 'about.depPurpose.luaSol2' },
-  { name: 'spdlog',                         version: '1.17',                       purpose: 'about.depPurpose.spdlog' },
-  { name: 'nlohmann/json',                  version: '3.12',                       purpose: 'about.depPurpose.nlohmannJson' },
-  { name: 'GoogleTest & Vitest',            version: '1.17 / 4.1',                 purpose: 'about.depPurpose.gtest' },
-  { name: 'Inno Setup',                     version: '6.7',                        purpose: 'about.depPurpose.innoSetup' },
+  { name: 'SQLite & zlib',                  version: '3.x / 1.3',                    purpose: 'about.depPurpose.sqliteZlib' },
+  { name: 'Lua + sol2',                     version: '5.5 / 3.5',                    purpose: 'about.depPurpose.luaSol2' },
+  { name: 'spdlog',                         version: '1.17',                         purpose: 'about.depPurpose.spdlog' },
+  { name: 'nlohmann/json',                  version: '3.12',                         purpose: 'about.depPurpose.nlohmannJson' },
+  { name: 'GoogleTest & Vitest',            version: '1.17 / 4.1',                   purpose: 'about.depPurpose.gtest' },
+  { name: 'Inno Setup',                     version: '6.7',                          purpose: 'about.depPurpose.innoSetup' },
 ];
 
 interface PerfMetrics {

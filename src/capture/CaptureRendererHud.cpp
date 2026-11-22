@@ -1278,7 +1278,6 @@ void CaptureRenderer::renderLongImageStudio(CaptureState& state) {
 
     const auto surfaceSize = m_renderTarget->GetSize();
     const float scale = std::clamp(state.dpiScale > 0.0f ? state.dpiScale : 1.0f, 1.0f, 5.0f);
-    const bool zh = isCaptureUiChinese();
 
     // 1. 专业暗房曜石灰底衬
     ComPtr<ID2D1SolidColorBrush> studioBg, stageShadowBr;

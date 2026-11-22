@@ -48,6 +48,7 @@ enum class ScrollFinishAction {
     Copy,       // 显式完成并强制复制到剪贴板 (Ctrl+C)
     Pin,        // 完成并立即置顶贴图 (Ctrl+T)
     SaveAs,     // 完成并弹出另存为对话框 (Ctrl+S)
+    QuickSave,  // 一键快速保存到默认目录 (Ctrl+Shift+S)
     Cancelled,  // 用户主动取消并丢弃本次采集 (Esc)
 };
 

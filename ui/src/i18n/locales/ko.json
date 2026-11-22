@@ -1052,6 +1052,14 @@
       "pullDownMinimize": {
         "name": "아래로 당겨 최소화",
         "desc": "상단 중앙 가장자리에서 아래로 당겨 창 최소화"
+      },
+      "brightnessUp": {
+        "name": "화면 밝기 높이기",
+        "desc": "커서가 위치한 디스플레이의 하드웨어 밝기를 높입니다"
+      },
+      "brightnessDown": {
+        "name": "화면 밝기 낮추기",
+        "desc": "커서가 위치한 디스플레이의 하드웨어 밝기를 낮춥니다"
       }
     },
     "triggerEdgeLeftWheel": "화면 왼쪽 가장자리 + 휠",
@@ -1069,7 +1077,11 @@
     "wheelShort": "휠",
     "side1Short": "측면 뒤로",
     "side2Short": "측면 앞으로",
-    "leftClickShort": "왼쪽 보조"
+    "leftClickShort": "왼쪽 보조",
+    "showActionHint": "제스처 동작 안내 텍스트 표시",
+    "showActionHintDesc": "그리는 동안과 놓을 때 인식된 동작 이름 배지를 표시하며, 궤적 선과 독립적으로 켜고 끌 수 있습니다",
+    "trailFadeEnabled": "제스처 종료 페이드아웃 효과",
+    "trailFadeEnabledDesc": "마우스를 놓은 뒤 궤적과 안내를 부드럽게 사라지게 합니다. 끄면 0ms로 즉시 지워집니다"
   },
   "hotcorner": {
     "title": "핫 코너",
@@ -1173,8 +1185,13 @@
       "volumeDown": "볼륨 낮추기",
       "volumeMute": "음소거 전환",
       "prevDesktop": "이전 가상 데스크톱",
-      "nextDesktop": "다음 가상 데스크톱"
-    }
+      "nextDesktop": "다음 가상 데스크톱",
+      "deleteKey": "Delete 키 (삭제)",
+      "backspaceKey": "Backspace 키 (백스페이스)",
+      "brightnessUp": "화면 밝기 높이기 (현재 화면)",
+      "brightnessDown": "화면 밝기 낮추기 (현재 화면)"
+    },
+    "hotkeyHintSingleKey": "단일 키(Delete, Backspace, Enter 등) 및 조합 단축키 모두 지원"
   },
   "gestureGuide": {
     "title": "제스처 시연",
@@ -1305,7 +1322,11 @@
       "spdlog": "저부하 비동기 진단 로깅 및 문제 추적 기록",
       "nlohmannJson": "고속 JSON 설정 파싱 및 프로세스 간 IPC 메시지 직렬화",
       "gtest": "C++ 및 프런트엔드 핵심 로직 자동화 회귀 테스트 스위트",
-      "innoSetup": "Windows 표준 설치 마법사, 포터블 패키지 및 코드 서명 릴리스 패키징"
+      "innoSetup": "Windows 표준 설치 마법사, 포터블 패키지 및 코드 서명 릴리스 패키징",
+      "rustPicasaViewer": "순수 Rust·제로 CRT 독립 하드웨어 가속 이미지 뷰어(41개 포맷, 물리 감쇠 및 가우시안 그림자)",
+      "ddcBrightness": "커서 위치 모니터별 독립 하드웨어 밝기 엔진(외장 DDC/CI + 노트북 내장 WMI)",
+      "ppocrDirectml": "2단계 완전 오프라인 딥러닝 OCR(DirectML GPU + WinML), QR/바코드 및 제자리 텍스트 편집",
+      "ifilterShellProps": "Office/WPS/이메일 본문 전문 추출 및 30개 이상 확장 열 메타데이터 온디맨드 조회"
     },
     "geekMode": "성능 모니터",
     "enablePerfMonitor": "실시간 지표 활성화",
@@ -1849,7 +1870,12 @@
     "contentScanPausedBudget": "{{scanned}} / {{total}}개 문서 스캔 완료 (자동 일시 중지)",
     "contentScanPausedBudgetGeneric": "시스템 리소스 절약을 위해 심층 스캔이 자동 일시 중지되었습니다",
     "resumeDeepScan": "계속 스캔",
-    "resumeDeepScanTitle": "일시 중지된 지점부터 남은 문서의 심층 스캔을 계속합니다"
+    "resumeDeepScanTitle": "일시 중지된 지점부터 남은 문서의 심층 스캔을 계속합니다",
+    "syntaxExPathSlashPinyin": "슬래시 다중 계층 경로 검색(\\ / 및 병음 초성/전체 병음 지원)",
+    "syntaxExPathSlashWildcard": "하위 폴더 전반에 걸친 와일드카드 + 병음 경로 일치 검색",
+    "syntaxExPathParent": "상위 디렉터리 경로로 필터링(병음 초성 및 별칭 p: 지원)",
+    "syntaxExExact": "부분 일치를 제외한 파일 이름 완전 일치 검색",
+    "syntaxExNoPinyin": "이 검색어에 한해 병음 매칭을 끄고 영문 리터럴만 일치"
   },
   "searchPage": {
     "tabSettings": "기본 설정 및 단축키",
@@ -1953,7 +1979,8 @@
     "serviceStandbyDesc": "부팅 부담 없는 DEMAND_START 정책을 따르며, 첫 검색 시 자동 시작하거나 오른쪽 버튼으로 즉시 깨울 수 있습니다.",
     "serviceStandbyToast": "색인 엔진이 대기 상태입니다. '지금 엔진 깨우기'를 클릭하면 즉시 시작됩니다",
     "serviceWoken": "NTFS 색인 엔진이 깨어나 준비되었습니다",
-    "wakeNow": "지금 엔진 깨우기"
+    "wakeNow": "지금 엔진 깨우기",
+    "opSlashPathPinyin": "슬래시 구분 다중 계층 경로 검색(병음 초성, 전체 병음 및 와일드카드 지원)"
   },
   "tray": {
     "brandName": "Tools3000",

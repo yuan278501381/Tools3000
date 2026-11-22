@@ -74,6 +74,9 @@ void CaptureRenderer::drawVectorButtonIcon(const ToolbarButton& button, const D2
         case ToolbarCommand::Copy:
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionCopy, rect, brush, scale);
             return;
+        case ToolbarCommand::QuickSave:
+            CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionQuickSave, rect, brush, scale);
+            return;
         case ToolbarCommand::Confirm:
             CaptureVectorIcons::renderIcon(m_renderTarget.Get(), m_d2dFactory.Get(), CaptureIconId::ActionConfirm, rect, brush, scale);
             return;

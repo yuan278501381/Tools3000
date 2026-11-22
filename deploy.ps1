@@ -998,16 +998,19 @@ $OutputInstallerDir = Join-Path $ScriptDir "Output"
 if (-not (Test-Path -LiteralPath $OutputInstallerDir)) {
     New-Item -ItemType Directory -Path $OutputInstallerDir -Force | Out-Null
 }
+$PortableArchivePath = Join-Path $OutputInstallerDir "Tools3000-v$ProjectVersion-win-$Arch-portable.zip"
+$SetupBaseName = if ($Arch -eq "arm64") { "Tools3000-v$ProjectVersion-Setup-arm64" } else { "Tools3000-v$ProjectVersion-Setup" }
+$TargetSetupFile = Join-Path $OutputInstallerDir "$SetupBaseName.exe"
+
 if (-not $SkipInstaller) {
-    $PortableArchivePath = Join-Path $OutputInstallerDir "Tools3000-win-$Arch-portable.zip"
-    if (Test-Path -LiteralPath $PortableArchivePath) {
-        Remove-Item -Force -LiteralPath $PortableArchivePath -ErrorAction SilentlyContinue
-    }
+    # 每次构建前清理 Output\ 中可能残留的旧版或旧别名打包产物，确保收口为唯一规范 2 件套
+    Get-ChildItem -LiteralPath $OutputInstallerDir -File -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like "Tools3000-*.exe" -or $_.Name -like "Tools3000-*.zip"
+    } | Remove-Item -Force -ErrorAction SilentlyContinue
+    Write-Log "已清理 Output\ 中的历史残留与旧别名产物 (Tools3000-*.exe / Tools3000-*.zip)"
+
     Write-Log "正在基于已完成第一轮签名的纯净 deploy_dist 生成便携包: $PortableArchivePath..."
     Compress-Archive -Path (Join-Path $DeployDir "*") -DestinationPath $PortableArchivePath -CompressionLevel Optimal -Force
-    foreach ($AliasZip in @("Tools3000-Portable-$Arch.zip", "Tools3000-v$ProjectVersion-win-$Arch-portable.zip")) {
-        Copy-Item -LiteralPath $PortableArchivePath -Destination (Join-Path $OutputInstallerDir $AliasZip) -Force
-    }
     Write-Log "绿色便携包已生成: $PortableArchivePath" "SUCCESS"
 }
 
@@ -1034,14 +1037,11 @@ if ($SkipInstaller) {
 } elseif ($ISCC) {
     Write-Log "找到 Inno Setup 编译器: $ISCC"
     $InstallerScript = Join-Path $ScriptDir "installer.iss"
-    $OutputInstallerDir = Join-Path $ScriptDir "Output"
     
     if (Test-Path $InstallerScript) {
-        $SetupBaseName = if ($Arch -eq "arm64") { "Tools3000-Setup-arm64" } else { "Tools3000-Setup" }
         Write-Log "正在编译安装包 ($SetupBaseName.exe)..."
-        $TargetSetupFile = Join-Path $OutputInstallerDir "$SetupBaseName.exe"
-        if (Test-Path $TargetSetupFile) {
-            Remove-Item -Force $TargetSetupFile -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $TargetSetupFile) {
+            Remove-Item -Force -LiteralPath $TargetSetupFile -ErrorAction SilentlyContinue
         }
         $InnoArgs = @(
             "/DTools3000Version=$ProjectVersion",
@@ -1075,9 +1075,7 @@ if ($SkipInstaller) {
             } else {
                 & $SignScript -Paths $TargetSetupFile -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust
             }
-            $VersionedSetupName = if ($Arch -eq "arm64") { "Tools3000-v$ProjectVersion-Setup-arm64.exe" } else { "Tools3000-v$ProjectVersion-Setup.exe" }
-            Copy-Item -LiteralPath $TargetSetupFile -Destination (Join-Path $OutputInstallerDir $VersionedSetupName) -Force
-            Write-Log "安装包已成功生成到: $OutputInstallerDir ($SetupBaseName.exe & $VersionedSetupName)" "SUCCESS"
+            Write-Log "安装包已成功生成到: $TargetSetupFile" "SUCCESS"
         } else {
             throw "安装包编译失败！退出码: $LASTEXITCODE"
         }
@@ -1193,8 +1191,11 @@ if (-not $SkipTests) {
 Write-Log "======================================================="
 Write-Log "Tools3000 一键原子部署成功！" "SUCCESS"
 Write-Log "您的纯净发布版位于: $DeployDir"
-if (Test-Path (Join-Path $ScriptDir "Output\Tools3000-Setup.exe")) {
-    Write-Log "您的安装包位于: $(Join-Path $ScriptDir "Output\Tools3000-Setup.exe")"
+if (Test-Path -LiteralPath $TargetSetupFile) {
+    Write-Log "您的安装包位于: $TargetSetupFile"
+}
+if (Test-Path -LiteralPath $PortableArchivePath) {
+    Write-Log "您的便携包位于: $PortableArchivePath"
 }
 Write-Log "全链路 TraceID: $TraceID (详见 deploy_logs)"
 

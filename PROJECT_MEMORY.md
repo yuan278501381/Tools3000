@@ -6,6 +6,23 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-22] v1.3.0 社区实测反馈全量吸收与构建产物 Hygiene 收口（截图独立快速保存、手势渐隐/提示正交开关 + 删除键 + 多屏硬件亮度滚轮、Output 2 件套去重、F1 跨层级拼音速查与关于页技术栈更新）
+- **核心产品决策与工程暗坑控制点**：
+  1. **截图工具栏独立「快速保存」按钮 (`src/capture/**`, `tests/unit/test_capture.inc`)**：
+     - 响应社区对标 PixPin 反馈，在主工具栏动作区 `Copy` 与 `Confirm` 之间新增独立按钮 `ToolbarCommand::QuickSave`（主工具栏按钮数 `18 -> 19`，采用 24x24 归一化网格矢量软盘图标 `CaptureIconId::ActionQuickSave`）；
+     - 单一事实源交付契约（`CaptureCompletionAction::QuickSave` + `resolveCaptureDeliveryDecision` + `resolveToolbarCompletionAction`）：左键点击或 `Ctrl+Shift+S` 先提交挂起标注再强制免弹窗一键直存默认截图目录（路径经 `resolveCaptureSaveDirectoryPath` 统一解析，未配置时自动回退 `<AppData>/Screenshots`）并按配置同步复制剪贴板；右键点击按钮或按 `Ctrl+S` 弹出系统另存为对话框；常规截图、长截图与贴图二次编辑全链路打通，且 `isTerminalToolbarCommand` 阻断快速双击重入。
+  2. **鼠标手势正交视觉开关、原生删除键/单键录入与多屏硬件亮度滚轮 (`src/gesture/**`, `HotkeyRecorder.tsx`, `GesturePage.tsx`, `GestureEditorModal.tsx`, `CMakeLists.txt`)**：
+     - **渐隐与提示文字正交解耦 (`GestureTrailOverlay.{h,cpp}`, `GestureEngine.{h,cpp}`)**: 新增独立持久化字段 `/gesture/trailFadeEnabled` 与 `/gesture/showActionHint`；关闭渐隐时 `endTrail()` 0ms 瞬清隐藏，关闭提示文字时零文字渲染；支持仅开提示文字关闭轨迹线的纯胶囊模式，并新增独立无轨迹 OSD 入口 `showStandaloneToast(text, holdMs)`；
+     - **原生删除键与手势单键录入 (`GestureAction.h`, `BuiltinCommands.cpp`, `HotkeyRecorder.tsx`)**: 新增 `BuiltinCommand::DeleteKey (27)` 与 `BackspaceKey (28)`；`HotkeyRecorder` 新增 `allowSingleKey?: boolean`（默认 `false` 保持全局热键防误触，手势发送快捷键场景显式开启，支持单键录入 `Delete`/`Backspace` 与导航键）；
+     - **多屏独立硬件亮度滚轮 (`MonitorBrightnessController.{h,cpp}`, `CMakeLists.txt`)**: 新增 `BuiltinCommand::BrightnessUp (29)` / `BrightnessDown (30)`（`LEFTEDGE+WHEELUP/DOWN` 预设默认推荐），通过 `QueryDisplayConfig` 精准区分笔记本内置面板（`root\wmi` `WmiMonitorBrightnessMethods`）与外接显示器（动态加载 `dxva2.dll` `Get/SetMonitorBrightness` 并降级 VCP `0x10`），按光标所在显示器独立调光；内置 1500ms 读缓存与后台合并异步队列，0 阻塞 1000Hz 鼠标钩子，并实时弹出本地化百分比 OSD；**CMake 暗坑防回退**：`Plugin_Gesture` 与 `Tools3000Tests` 通过 `$<TARGET_OBJECTS:gesture_objects>` 消费对象文件时不传递 `PUBLIC` 依赖，必须同时在两目标显式链接 `wbemuuid`（及 `ole32 oleaut32`）。
+  3. **`Output\` 构建产物去重收口为 2 件套 (`deploy.ps1`, `scripts/release.ps1`, `scripts/publish_release.ps1`, `scripts/generate-winget-manifest.ps1`, `install.ps1`, `.github/workflows/release.yml`)**：
+     - 彻底移除 `Output\` 中历史遗留的无版本号重复别名副本（旧版单次打包同时生成 3 个相同 ZIP 与 2 个相同 Setup.exe）；`deploy.ps1` 打包前自动清理旧产物并仅直接生成 `Output\Tools3000-v<VERSION>-Setup.exe`（ARM64 为 `-Setup-arm64.exe`）与 `Output\Tools3000-v<VERSION>-win-<ARCH>-portable.zip`，全仓发版/安装/CI/Winget 脚本统一收敛至单一事实源命名。
+  4. **F1 语法速查、设置页语法手册与关于页技术栈同步 (`searchConstants.ts`, `SearchPage.tsx`, `AboutPage.tsx`, 8 语种 JSON + 6 套原生词典)**：
+     - F1 语法速查与设置页操作符表格补全跨层级斜杠拼音/通配符语法（`gzml\user`、`*gzml*\*user*`、`parent:gzml\user`）与 `exact:`/`nopy:`；`AboutPage` 技术栈补齐 `Rust Picasa Viewer`、`PP-OCRv4 & DirectML / WinML`、`DDC/CI & WMI Display`、`Windows IFilter & Shell Props`。
+  5. **发行版 Release Notes 基线与社区反馈署名铁律 (`docs/RELEASE_NOTES_v*.md`)**：
+     - **对比基线必须锚定上一个已发布的 GitHub Release（`gh release list`）**，而非本地中间开发提交，绝不把未发布过的新功能写成「修复」或暴露中间迭代缺陷；
+     - 凡源自用户/社区反馈的功能或修复，均须以精炼描述注明来源社区与用户名（如 `（感谢 V2EX @wildqueen）`）；若仅知用户名未知社区则留空社区仅写 `@username`；若为 GitHub Issue 则遵循 GitHub 惯例（如 `(#123, @username)`）。
+
 ### [2026-11-22] Rust 复刻 Picasa 轻量图片查看器全栈接入安装包、设置中心与零依赖独立交付 (`installer.iss`, `deploy.ps1`, `PluginManager.cpp`, `MessageBridge.cpp`, `main.cpp`, `src/viewer/`, `PicasaViewerPage.tsx`, 8 套语言包 & 8 套 README)
 - **核心产品定位与防回退架构基线**：
   1. **100% 零外部依赖 `< 2 MB` 单文件独立可用 (`src/viewer/.cargo/config.toml`, `viewer.manifest`)**：

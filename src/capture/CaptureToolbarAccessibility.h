@@ -112,6 +112,7 @@ inline std::wstring toolbarButtonAccessibleName(const ToolbarButton& button, boo
         case ToolbarCommand::RecordToggleSettingsMenu: return tools3000::core::trWCstrFor(zh, L"录屏更多设置", L"More Recording Settings");
         case ToolbarCommand::RecordStartConfirm: return tools3000::core::trWCstrFor(zh, L"正式开始录屏", L"Start Recording");
         case ToolbarCommand::Copy: return tools3000::core::trWCstrFor(zh, L"复制到剪贴板", L"Copy to Clipboard");
+        case ToolbarCommand::QuickSave: return tools3000::core::trWCstrFor(zh, L"快速保存 (Ctrl+Shift+S，右键另存为)", L"Quick Save (Ctrl+Shift+S, Right-click Save As)");
         case ToolbarCommand::Confirm: return tools3000::core::trWCstrFor(zh, L"确认截图", L"Confirm Capture");
         case ToolbarCommand::Cancel: return tools3000::core::trWCstrFor(zh, L"取消截图", L"Cancel Capture");
         default: break;
@@ -133,6 +134,7 @@ inline std::wstring toolbarButtonKeyboardShortcut(const ToolbarButton& button) {
         case ToolbarCommand::Undo: return L"Ctrl+Z";
         case ToolbarCommand::Redo: return L"Ctrl+Y";
         case ToolbarCommand::Copy: return L"Ctrl+C";
+        case ToolbarCommand::QuickSave: return L"Ctrl+Shift+S";
         case ToolbarCommand::Confirm: return L"Enter";
         case ToolbarCommand::Cancel: return L"Escape";
         default: return L"";
