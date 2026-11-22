@@ -1816,7 +1816,7 @@
     "colFileType": "Type",
     "colAccessed": "Date Accessed",
     "colAttributes": "Attributes",
-    "colRunCount": "Run Count",
+    "colRunCount": "Open Count",
     "colStem": "Stem",
     "colParentName": "Parent Name",
     "colDrive": "Drive",
@@ -1920,7 +1920,12 @@
     "syntaxExExact": "Exact full filename match without partial substring hits",
     "syntaxExNoPinyin": "Disable Pinyin matching for this term to match literal English letters only",
     "catBookmarks": "Bookmarks",
-    "syntaxExBookmark": "Search local Edge / Chrome / Brave browser bookmarks directly with zero file-syntax conflict"
+    "syntaxExBookmark": "Search local Edge / Chrome / Brave browser bookmarks directly with zero file-syntax conflict",
+    "categoryBarAria": "Search categories",
+    "categoryPinnedTip": "Pinned core category",
+    "categoryDragTip": "Drag to reorder, right-click to reset",
+    "resetCategoryOrder": "Reset category order",
+    "toastCategoryOrderReset": "Category order reset to default"
   },
   "searchPage": {
     "tabSettings": "Settings & Hotkey",

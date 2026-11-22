@@ -18,6 +18,7 @@ import { SearchHistoryBar } from './search/SearchHistoryBar';
 import { SearchEmptyState } from './search/SearchEmptyState';
 import { SearchFooter } from './search/SearchFooter';
 import { SearchHeader } from './search/SearchHeader';
+import { SearchCategoryBar } from './search/SearchCategoryBar';
 import { SearchColumnManagerModal } from './search/SearchColumnManagerModal';
 import { SearchPropertyPickerModal } from './search/SearchPropertyPickerModal';
 import { useSearchActions } from './search/useSearchActions';
@@ -35,6 +36,9 @@ import {
 import {
   CATEGORY_DEFS,
   DEFAULT_COLUMNS,
+  DEFAULT_SEARCH_CATEGORY_ORDER,
+  SEARCH_CATEGORY_ORDER_STORAGE_KEY,
+  type SearchCategoryId,
 } from './search/searchConstants';
 import type {
   CategoryFilter,
@@ -64,12 +68,15 @@ import {
   getSortedResults,
   getVisibleTableColumns,
   hasContentSyntaxInQuery,
+  migrateTableColumnsToIncludeRunCount,
+  normalizeSearchCategoryOrder,
   normalizeTableColumnOrder,
   normalizeVisibleTableColumns,
   parseExplicitSortDirective,
   resolveNativeIconRequest,
   sanitizeTableColumnWidths,
   stripContentSyntaxFromQuery,
+  TABLE_COLUMN_SCHEMA_VERSION,
 } from './search/searchUtils';
 import {
   safeStorageGetBoolean,
@@ -136,6 +143,51 @@ function saveCachedSearchHistory(items: StoredSearchHistoryItem[]): void {
     SEARCH_HISTORY_STORAGE_KEY,
     JSON.stringify(items.slice(0, SEARCH_HISTORY_MAX_ITEMS)),
   );
+}
+
+const CATEGORY_DEF_MAP = new Map<string, (typeof CATEGORY_DEFS)[number]>(
+  CATEGORY_DEFS.map((def) => [def.id, def]),
+);
+
+function loadInitialCategoryOrder(): SearchCategoryId[] {
+  const saved = safeStorageGetJsonArray<string>(
+    SEARCH_CATEGORY_ORDER_STORAGE_KEY,
+    (v): v is string => typeof v === 'string',
+    [],
+  );
+  return normalizeSearchCategoryOrder(saved);
+}
+
+function loadInitialTableColumnState(): { visible: TableColumnId[]; order: TableColumnId[] } {
+  const storedSchemaVer = safeStorageGetNumber('tools3000_search_col_schema_ver', 0, { integer: true });
+  const parsedVisible = safeStorageGetJsonArray<string>(
+    'tools3000_search_visible_table_cols',
+    (v): v is string => typeof v === 'string',
+    [],
+  );
+  const parsedOrder = safeStorageGetJsonArray<string>(
+    'tools3000_search_table_order',
+    (v): v is string => typeof v === 'string',
+    [],
+  );
+  if (parsedVisible.length > 0) {
+    if (storedSchemaVer < TABLE_COLUMN_SCHEMA_VERSION) {
+      const migrated = migrateTableColumnsToIncludeRunCount(parsedVisible, parsedOrder);
+      safeStorageSetItem('tools3000_search_visible_table_cols', JSON.stringify(migrated.visible));
+      safeStorageSetItem('tools3000_search_table_order', JSON.stringify(migrated.order));
+      safeStorageSetItem('tools3000_search_col_schema_ver', String(TABLE_COLUMN_SCHEMA_VERSION));
+      return migrated;
+    }
+    return {
+      visible: normalizeVisibleTableColumns(parsedVisible),
+      order: parsedOrder.length > 0 ? normalizeTableColumnOrder(parsedOrder) : [...DEFAULT_TABLE_COLUMN_ORDER],
+    };
+  }
+  safeStorageSetItem('tools3000_search_col_schema_ver', String(TABLE_COLUMN_SCHEMA_VERSION));
+  return {
+    visible: [...DEFAULT_VISIBLE_TABLE_COLUMNS],
+    order: parsedOrder.length > 0 ? normalizeTableColumnOrder(parsedOrder) : [...DEFAULT_TABLE_COLUMN_ORDER],
+  };
 }
 
 // ── 组件主入口 ──────────────────────────────────────────────────
@@ -400,16 +452,39 @@ export default function SearchApp() {
     }
   }, [isMaximized]);
 
+  const [categoryOrder, setCategoryOrder] = useState<SearchCategoryId[]>(loadInitialCategoryOrder);
+
+  const handleReorderCategories = useCallback(
+    (nextOrder: SearchCategoryId[]) => {
+      const clean = normalizeSearchCategoryOrder(nextOrder);
+      setCategoryOrder(clean);
+      safeStorageSetItem(SEARCH_CATEGORY_ORDER_STORAGE_KEY, JSON.stringify(clean));
+      persistUiPreferencesPatch({ categoryOrder: clean });
+    },
+    [persistUiPreferencesPatch],
+  );
+
+  const handleResetCategoryOrder = useCallback(() => {
+    const clean = [...DEFAULT_SEARCH_CATEGORY_ORDER];
+    setCategoryOrder(clean);
+    safeStorageRemoveItem(SEARCH_CATEGORY_ORDER_STORAGE_KEY);
+    persistUiPreferencesPatch({ categoryOrder: clean });
+    toast.success(t('search.toastCategoryOrderReset', 'Category order reset to default'));
+  }, [persistUiPreferencesPatch, t]);
+
   const categories: CategoryFilter[] = useMemo(() => {
-    return CATEGORY_DEFS.map(def => ({
-      id: def.id,
-      label: t(def.labelKey as unknown as 'search.catAll', def.defaultLabel),
-      labelKey: def.labelKey,
-      defaultLabel: def.defaultLabel,
-      prefix: def.prefix,
-      icon: def.icon,
-    }));
-  }, [t]);
+    return categoryOrder
+      .map((id) => CATEGORY_DEF_MAP.get(id))
+      .filter((def): def is (typeof CATEGORY_DEFS)[number] => Boolean(def))
+      .map((def) => ({
+        id: def.id,
+        label: t(def.labelKey as unknown as 'search.catAll', def.defaultLabel),
+        labelKey: def.labelKey,
+        defaultLabel: def.defaultLabel,
+        prefix: def.prefix,
+        icon: def.icon,
+      }));
+  }, [categoryOrder, t]);
 
   const [searchHistory, setSearchHistory] = useState<StoredSearchHistoryItem[]>(() => loadCachedSearchHistory());
   const lastRecordedQueryRef = useRef<string>('');
@@ -619,29 +694,13 @@ export default function SearchApp() {
   const viewSettingsRef = useRef<HTMLDivElement>(null);
 
   const [windowSize, setWindowSize] = useState<{ width: number; height: number }>({ width: 760, height: 520 });
-  const [tableColumnOrder, setTableColumnOrder] = useState<TableColumnId[]>(() => {
-    const parsed = safeStorageGetJsonArray<string>(
-      'tools3000_search_table_order',
-      (v): v is string => typeof v === 'string',
-      [],
-    );
-    return parsed.length > 0 ? normalizeTableColumnOrder(parsed) : [...DEFAULT_TABLE_COLUMN_ORDER];
-  });
+  const [initialTableColumnState] = useState(loadInitialTableColumnState);
+  const [tableColumnOrder, setTableColumnOrder] = useState<TableColumnId[]>(initialTableColumnState.order);
   const [tableColumnWidths, setTableColumnWidths] = useState<Partial<Record<TableColumnId, number>>>(() => {
     const raw = safeStorageGetJsonRecord('tools3000_search_table_widths');
     return raw ? sanitizeTableColumnWidths(raw) : {};
   });
-  const [visibleTableColumns, setVisibleTableColumns] = useState<TableColumnId[]>(() => {
-    const parsed = safeStorageGetJsonArray<string>(
-      'tools3000_search_visible_table_cols',
-      (v): v is string => typeof v === 'string',
-      [],
-    );
-    if (parsed.length > 0) {
-      return normalizeVisibleTableColumns(parsed);
-    }
-    return [...DEFAULT_VISIBLE_TABLE_COLUMNS];
-  });
+  const [visibleTableColumns, setVisibleTableColumns] = useState<TableColumnId[]>(initialTableColumnState.visible);
   const [recentTableColumns, setRecentTableColumns] = useState<TableColumnId[]>(() => {
     return safeStorageGetJsonArray<string>(
       'tools3000_search_recent_table_cols',
@@ -765,24 +824,45 @@ export default function SearchApp() {
               setDensity(prefs.density);
               safeStorageSetItem('tools3000_search_density', prefs.density);
             }
-            if (Array.isArray(prefs.tableColumnOrder)) {
-              const cleanOrder = normalizeTableColumnOrder(
-                prefs.tableColumnOrder.filter((x): x is string => typeof x === 'string'),
-              );
-              setTableColumnOrder(cleanOrder);
-              safeStorageSetItem('tools3000_search_table_order', JSON.stringify(cleanOrder));
+            const remoteSchemaVer = typeof prefs.columnSchemaVersion === 'number' ? prefs.columnSchemaVersion : 0;
+            const rawRemoteOrder = Array.isArray(prefs.tableColumnOrder)
+              ? prefs.tableColumnOrder.filter((x): x is string => typeof x === 'string')
+              : null;
+            const rawRemoteVisible = Array.isArray(prefs.visibleTableColumns) && prefs.visibleTableColumns.length > 0
+              ? prefs.visibleTableColumns.filter((x): x is string => typeof x === 'string')
+              : null;
+
+            if (rawRemoteVisible && remoteSchemaVer < TABLE_COLUMN_SCHEMA_VERSION) {
+              const migrated = migrateTableColumnsToIncludeRunCount(rawRemoteVisible, rawRemoteOrder);
+              setTableColumnOrder(migrated.order);
+              setVisibleTableColumns(migrated.visible);
+              safeStorageSetItem('tools3000_search_table_order', JSON.stringify(migrated.order));
+              safeStorageSetItem('tools3000_search_visible_table_cols', JSON.stringify(migrated.visible));
+              safeStorageSetItem('tools3000_search_col_schema_ver', String(TABLE_COLUMN_SCHEMA_VERSION));
+              persistUiPreferencesPatch({
+                columnSchemaVersion: TABLE_COLUMN_SCHEMA_VERSION,
+                tableColumnOrder: migrated.order,
+                visibleTableColumns: migrated.visible,
+              });
+            } else {
+              if (rawRemoteOrder) {
+                const cleanOrder = normalizeTableColumnOrder(rawRemoteOrder);
+                setTableColumnOrder(cleanOrder);
+                safeStorageSetItem('tools3000_search_table_order', JSON.stringify(cleanOrder));
+              }
+              if (rawRemoteVisible) {
+                const cleanVisible = normalizeVisibleTableColumns(rawRemoteVisible);
+                setVisibleTableColumns(cleanVisible);
+                safeStorageSetItem('tools3000_search_visible_table_cols', JSON.stringify(cleanVisible));
+              }
+              if (remoteSchemaVer >= TABLE_COLUMN_SCHEMA_VERSION) {
+                safeStorageSetItem('tools3000_search_col_schema_ver', String(remoteSchemaVer));
+              }
             }
             if (prefs.tableColumnWidths && typeof prefs.tableColumnWidths === 'object' && !Array.isArray(prefs.tableColumnWidths)) {
               const cleanWidths = sanitizeTableColumnWidths(prefs.tableColumnWidths as Record<string, unknown>);
               setTableColumnWidths(cleanWidths);
               safeStorageSetItem('tools3000_search_table_widths', JSON.stringify(cleanWidths));
-            }
-            if (Array.isArray(prefs.visibleTableColumns) && prefs.visibleTableColumns.length > 0) {
-              const cleanVisible = normalizeVisibleTableColumns(
-                prefs.visibleTableColumns.filter((x): x is string => typeof x === 'string'),
-              );
-              setVisibleTableColumns(cleanVisible);
-              safeStorageSetItem('tools3000_search_visible_table_cols', JSON.stringify(cleanVisible));
             }
             if (Array.isArray(prefs.recentTableColumns)) {
               const cleanRecent = (prefs.recentTableColumns as unknown[])
@@ -790,6 +870,14 @@ export default function SearchApp() {
                 .slice(0, 12);
               setRecentTableColumns(cleanRecent);
               safeStorageSetItem('tools3000_search_recent_table_cols', JSON.stringify(cleanRecent));
+            }
+            if (Array.isArray(prefs.categoryOrder)) {
+              const rawCatOrder = prefs.categoryOrder.filter((x): x is string => typeof x === 'string');
+              if (rawCatOrder.length > 0) {
+                const cleanCatOrder = normalizeSearchCategoryOrder(rawCatOrder);
+                setCategoryOrder(cleanCatOrder);
+                safeStorageSetItem(SEARCH_CATEGORY_ORDER_STORAGE_KEY, JSON.stringify(cleanCatOrder));
+              }
             }
           }
           const defaultPyByLang = (i18n.resolvedLanguage ?? i18n.language ?? '').toLowerCase().startsWith('zh');
@@ -831,7 +919,7 @@ export default function SearchApp() {
       window.removeEventListener('storage', onStorageSync);
       document.removeEventListener('visibilitychange', onVisibilitySync);
     };
-  }, [refreshQuery, i18n.resolvedLanguage, i18n.language]);
+  }, [refreshQuery, persistUiPreferencesPatch, i18n.resolvedLanguage, i18n.language]);
 
   const fetchNativeIcon = useCallback(async (ext: string, isDirectory: boolean, filePath?: string) => {
     const normalizedPath = filePath ? filePath.replace(/\//g, '\\').toLowerCase() : '';
@@ -1328,7 +1416,9 @@ export default function SearchApp() {
       );
       setTableColumnOrder(mergedOrder);
       safeStorageSetItem('tools3000_search_table_order', JSON.stringify(mergedOrder));
+      safeStorageSetItem('tools3000_search_col_schema_ver', String(TABLE_COLUMN_SCHEMA_VERSION));
       persistUiPreferencesPatch({
+        columnSchemaVersion: TABLE_COLUMN_SCHEMA_VERSION,
         visibleTableColumns: cleanVisible,
         tableColumnOrder: mergedOrder,
       });
@@ -1478,8 +1568,10 @@ export default function SearchApp() {
     safeStorageRemoveItem('tools3000_search_table_widths');
     safeStorageRemoveItem('tools3000_search_visible_table_cols');
     safeStorageRemoveItem('tools3000_search_recent_table_cols');
+    safeStorageSetItem('tools3000_search_col_schema_ver', String(TABLE_COLUMN_SCHEMA_VERSION));
     fallbackSortIfColumnRemoved(defaultCols);
     persistUiPreferencesPatch({
+      columnSchemaVersion: TABLE_COLUMN_SCHEMA_VERSION,
       tableColumnOrder: defaultOrder,
       tableColumnWidths: {},
       visibleTableColumns: defaultCols,
@@ -1992,19 +2084,13 @@ export default function SearchApp() {
         />
 
         <div className="search-categories-bar">
-          <div className="search-categories">
-            {categories.map(cat => (
-              <button
-                key={cat.id}
-                className={`category-pill ${activeCategory === cat.id ? 'category-pill--active' : ''}`}
-                onClick={() => selectCategory(cat)}
-                type="button"
-              >
-                {cat.icon && <cat.icon size={13} className="category-pill-icon" aria-hidden="true" />}
-                <span>{cat.label}</span>
-              </button>
-            ))}
-          </div>
+          <SearchCategoryBar
+            categories={categories}
+            activeCategory={activeCategory}
+            onSelectCategory={selectCategory}
+            onReorderCategories={handleReorderCategories}
+            onResetCategoryOrder={handleResetCategoryOrder}
+          />
 
           <div className="search-bar-right-group">
             {/* 全盘已索引总数与耗时统计胶囊 */}
@@ -2156,6 +2242,8 @@ export default function SearchApp() {
             safeStorageRemoveItem('tools3000_search_sort_folders_first');
             safeStorageRemoveItem('tools3000_search_sort_group_type');
             safeStorageRemoveItem('tools3000_search_smart_path_priority');
+            safeStorageRemoveItem(SEARCH_CATEGORY_ORDER_STORAGE_KEY);
+            setCategoryOrder([...DEFAULT_SEARCH_CATEGORY_ORDER]);
             void bridgeRequest('search.saveSettings', {
               iconStyle: 'native',
               defaultCategory: 'all',
@@ -2167,6 +2255,7 @@ export default function SearchApp() {
             persistUiPreferencesPatch({
               searchMode: 'name',
               defaultCategory: 'all',
+              categoryOrder: [...DEFAULT_SEARCH_CATEGORY_ORDER],
               tableColumnOrder: [...DEFAULT_TABLE_COLUMN_ORDER],
               tableColumnWidths: {},
               visibleTableColumns: [...DEFAULT_VISIBLE_TABLE_COLUMNS],

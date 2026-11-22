@@ -64,35 +64,6 @@ pub unsafe extern "C" fn t3k_clip_add_item(
     byte_size: u64,
     max_items: u32,
     max_days: u32,
-) -> u64 {
-    t3k_clip_add_item_v2(
-        kind,
-        text_utf8,
-        image_file_utf8,
-        image_width,
-        image_height,
-        content_hash_utf8,
-        source_app_utf8,
-        byte_size,
-        max_items,
-        max_days,
-        ptr::null(),
-        ptr::null(),
-    )
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn t3k_clip_add_item_v2(
-    kind: u8,
-    text_utf8: *const c_char,
-    image_file_utf8: *const c_char,
-    image_width: u32,
-    image_height: u32,
-    content_hash_utf8: *const c_char,
-    source_app_utf8: *const c_char,
-    byte_size: u64,
-    max_items: u32,
-    max_days: u32,
     html_file_utf8: *const c_char,
     rtf_file_utf8: *const c_char,
 ) -> u64 {
@@ -126,16 +97,6 @@ pub unsafe extern "C" fn t3k_clip_add_item_v2(
 
 #[no_mangle]
 pub unsafe extern "C" fn t3k_clip_query_json(
-    query_utf8: *const c_char,
-    filter_kind_utf8: *const c_char,
-    limit: u32,
-    offset: u32,
-) -> *mut c_char {
-    t3k_clip_query_json_v2(query_utf8, filter_kind_utf8, ptr::null(), limit, offset)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn t3k_clip_query_json_v2(
     query_utf8: *const c_char,
     filter_kind_utf8: *const c_char,
     group_id_utf8: *const c_char,

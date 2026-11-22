@@ -1284,6 +1284,17 @@
     border: 1px solid var(--card-border);
 }
 
+.table-cell--run-count {
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1;
+    color: var(--text-muted);
+}
+
+.table-cell--run-count-active {
+    color: var(--primary);
+    font-weight: 600;
+}
+
 .file-run-badge {
     flex-shrink: 0;
     padding: 1px 5px;

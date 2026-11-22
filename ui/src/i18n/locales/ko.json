@@ -1816,7 +1816,7 @@
     "colFileType": "유형",
     "colAccessed": "액세스한 날짜",
     "colAttributes": "특성",
-    "colRunCount": "실행 횟수",
+    "colRunCount": "열기 횟수",
     "colStem": "기본 파일명",
     "colParentName": "상위 폴더명",
     "colDrive": "드라이브",
@@ -1920,7 +1920,12 @@
     "syntaxExExact": "부분 일치를 제외한 파일 이름 완전 일치 검색",
     "syntaxExNoPinyin": "이 검색어에 한해 병음 매칭을 끄고 영문 리터럴만 일치",
     "catBookmarks": "북마크",
-    "syntaxExBookmark": "파일 검색 구문 충돌 없이 로컬 Edge / Chrome / Brave 브라우저 북마크를 즉시 검색"
+    "syntaxExBookmark": "파일 검색 구문 충돌 없이 로컬 Edge / Chrome / Brave 브라우저 북마크를 즉시 검색",
+    "categoryBarAria": "검색 카테고리",
+    "categoryPinnedTip": "고정된 핵심 카테고리",
+    "categoryDragTip": "드래그하여 순서 변경, 우클릭하여 기본 순서로 초기화",
+    "resetCategoryOrder": "카테고리 순서 초기화",
+    "toastCategoryOrderReset": "카테고리 순서를 기본값으로 복원했습니다"
   },
   "searchPage": {
     "tabSettings": "기본 설정 및 단축키",

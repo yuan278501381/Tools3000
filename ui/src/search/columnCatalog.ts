@@ -57,11 +57,17 @@ export const PROPERTY_CATEGORIES: readonly PropertyCategoryMeta[] = [
   { id: 'windows', labelKey: 'search.propCatWindows', defaultLabel: 'Windows Property System' },
 ];
 
-/** 默认开箱表格列（保持与既有 5 列完全一致，确保用户无感平滑升级） */
+/**
+ * 默认开箱表格列（严格遵循 MECE 3 组 × 2 列信息架构）：
+ * - 对象标识域：name（文件名）、path（所在目录 / 书签 URL）
+ * - 量化指标域：size（文件大小）、runCount（打开次数）
+ * - 生命周期域：modified（修改时间）、created（创建时间）
+ */
 export const DEFAULT_VISIBLE_TABLE_COLUMNS: readonly TableColumnId[] = [
   'name',
   'path',
   'size',
+  'runCount',
   'modified',
   'created',
 ];
@@ -238,9 +244,9 @@ export const BUILTIN_TABLE_COLUMNS: readonly TableColumnDefinition[] = [
     tier: 1,
     category: 'file',
     labelKey: 'search.colRunCount',
-    defaultLabel: 'Run Count',
-    canonicalName: 'Run Count',
-    minWidth: 76,
+    defaultLabel: 'Open Count',
+    canonicalName: 'Open Count',
+    minWidth: 78,
     defaultWidth: 92,
     maxWidth: 180,
     isFlex: false,

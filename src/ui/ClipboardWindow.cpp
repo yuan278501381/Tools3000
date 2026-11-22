@@ -208,6 +208,12 @@ void ClipboardWindow::toggleMaximize() {
         }
         ShowWindow(m_hwnd, SW_MAXIMIZE);
     }
+    if (m_controller) {
+        RECT rc{};
+        GetClientRect(m_hwnd, &rc);
+        m_controller->put_Bounds(rc);
+        syncWebViewDpi(m_controller.Get(), m_hwnd);
+    }
 }
 
 void ClipboardWindow::applyThemeChrome() {
@@ -297,14 +303,16 @@ bool ClipboardWindow::createWindow(HINSTANCE hInstance) {
     const int x = work.left + (work.right - work.left - targetW) / 2;
     const int y = work.top + static_cast<int>((work.bottom - work.top - targetH) * 0.38);
 
-    // WS_POPUP + WS_THICKFRAME + WS_MAXIMIZEBOX（无 WS_CAPTION）：完整支持原生 8 向缩放与最大化贴边，
-    // 同时从内核层面彻底杜绝 Win11 DWM 旧式 Win7/Win98 标题栏降级闪现。
+    // 与 SearchWindow / SettingsWindow 完全对齐的标准无边框应用窗体样式 (WS_OVERLAPPEDWINDOW)：
+    // 完整支持多屏/高分屏原生最大化、Aero Snap 分屏与最大化拖动脱离 (Aero Tear-Off)；
+    // 在 Win11 上走纯硬件 DWMWCP_ROUND（零 SetWindowRgn 裁剪），在 Win10 上安全降级 RGN，
+    // 配合 handleFramelessNonClientMessage + WM_NCCALCSIZE=0 彻底零旧式标题栏闪现。
     const DWORD exStyle = WS_EX_TOOLWINDOW | (m_pinned ? WS_EX_TOPMOST : 0u);
     m_hwnd = CreateWindowExW(
         exStyle,
         kClipboardWindowClass,
         L"Tools3000 Clipboard",
-        WS_POPUP | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
         x, y, targetW, targetH,
         nullptr, nullptr, hInstance, this);
 
@@ -317,6 +325,8 @@ bool ClipboardWindow::createWindow(HINSTANCE hInstance) {
     tools3000::core::WinUtils::applyWin11SystemBackdrop(m_hwnd, DWMSBT_TRANSIENTWINDOW);
     const MARGINS margins = {1, 1, 1, 1};
     DwmExtendFrameIntoClientArea(m_hwnd, &margins);
+    SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     const int radius = tools3000::core::dpi::scaleMetric(12, scale);
     tools3000::core::WinUtils::applyUniversalRoundedCorners(m_hwnd, targetW, targetH, radius);
     return true;
@@ -418,7 +428,8 @@ void ClipboardWindow::initializeWebView2() {
                                             if (method == "clipboard.startDrag") {
                                                 if (generation == m_generation.load() && m_hwnd && IsWindow(m_hwnd)) {
                                                     ReleaseCapture();
-                                                    SendMessageW(m_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                                                    // 异步投递 SC_MOVE (0xF012)：避免在 WebMessage 回调中阻塞重入，并原生支持最大化 Aero Tear-Off 脱离还原
+                                                    PostMessageW(m_hwnd, WM_SYSCOMMAND, 0xF012, 0);
                                                 }
                                                 sendReply({{"success", true}});
                                                 return S_OK;
@@ -427,18 +438,24 @@ void ClipboardWindow::initializeWebView2() {
                                                 if (generation == m_generation.load() && m_hwnd && IsWindow(m_hwnd) && !IsZoomed(m_hwnd)) {
                                                     const auto params = parsed.value("params", json::object());
                                                     const std::string edge = params.value("edge", "");
-                                                    WPARAM ht = HTNOWHERE;
-                                                    if (edge == "n") ht = HTTOP;
-                                                    else if (edge == "s") ht = HTBOTTOM;
-                                                    else if (edge == "e") ht = HTRIGHT;
-                                                    else if (edge == "w") ht = HTLEFT;
-                                                    else if (edge == "ne") ht = HTTOPRIGHT;
-                                                    else if (edge == "nw") ht = HTTOPLEFT;
-                                                    else if (edge == "se") ht = HTBOTTOMRIGHT;
-                                                    else if (edge == "sw") ht = HTBOTTOMLEFT;
-                                                    if (ht != HTNOWHERE) {
+                                                    WPARAM scSizeParam = 0;
+                                                    if (edge == "w" || edge == "left") scSizeParam = 0xF001;
+                                                    else if (edge == "e" || edge == "right") scSizeParam = 0xF002;
+                                                    else if (edge == "n" || edge == "top") scSizeParam = 0xF003;
+                                                    else if (edge == "nw" || edge == "top_left") scSizeParam = 0xF004;
+                                                    else if (edge == "ne" || edge == "top_right") scSizeParam = 0xF005;
+                                                    else if (edge == "s" || edge == "bottom") scSizeParam = 0xF006;
+                                                    else if (edge == "sw" || edge == "bottom_left") scSizeParam = 0xF007;
+                                                    else if (edge == "se" || edge == "bottom_right") scSizeParam = 0xF008;
+                                                    if (scSizeParam != 0) {
+                                                        SetForegroundWindow(m_hwnd);
                                                         ReleaseCapture();
-                                                        SendMessageW(m_hwnd, WM_NCLBUTTONDOWN, ht, 0);
+                                                        POINT pt{};
+                                                        LPARAM lp = 0;
+                                                        if (GetCursorPos(&pt)) {
+                                                            lp = MAKELPARAM(pt.x, pt.y);
+                                                        }
+                                                        PostMessageW(m_hwnd, WM_SYSCOMMAND, scSizeParam, lp);
                                                     }
                                                 }
                                                 sendReply({{"success", true}});
@@ -456,10 +473,15 @@ void ClipboardWindow::initializeWebView2() {
                                                 return S_OK;
                                             }
                                             if (method == "clipboard.toggleMaximize") {
+                                                const bool targetMax = (m_hwnd && IsWindow(m_hwnd)) ? !IsZoomed(m_hwnd) : !m_maximized;
+                                                sendReply({{"success", true}, {"pinned", m_pinned}, {"maximized", targetMax}});
                                                 if (generation == m_generation.load()) {
-                                                    toggleMaximize();
+                                                    tools3000::core::MainThreadDispatcher::instance().post([this, generation]() {
+                                                        if (generation == m_generation.load()) {
+                                                            toggleMaximize();
+                                                        }
+                                                    });
                                                 }
-                                                sendReply({{"success", true}, {"pinned", m_pinned}, {"maximized", m_maximized}});
                                                 return S_OK;
                                             }
                                             if (method == "clipboard.getWindowState") {
@@ -552,6 +574,8 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
 
     if (self) {
         switch (uMsg) {
+            case WM_ERASEBKGND:
+                return 1;
             case WM_NCCALCSIZE: {
                 if (wParam == TRUE && IsZoomed(hwnd)) {
                     auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
@@ -566,19 +590,19 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                 return 0;
             }
             case WM_GETMINMAXINFO: {
+                // 仅限定最小追踪尺寸，绝不手写 ptMaxPosition/ptMaxSize，避免多显示器与混合 DPI 坐标偏移；
+                // 最大化精准贴合当前显示器 rcWork 由 Windows 原生与 WM_NCCALCSIZE 协同接管。
                 auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
                 if (mmi) {
                     const float scale = tools3000::core::dpi::scaleForWindow(hwnd);
                     mmi->ptMinTrackSize.x = tools3000::core::dpi::scaleMetric(560, scale);
                     mmi->ptMinTrackSize.y = tools3000::core::dpi::scaleMetric(420, scale);
-                    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-                    MONITORINFO mi{sizeof(mi)};
-                    if (mon && GetMonitorInfoW(mon, &mi)) {
-                        mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
-                        mmi->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
-                        mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
-                        mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
-                    }
+                }
+                return 0;
+            }
+            case WM_MOVE: {
+                if (self->m_controller) {
+                    self->m_controller->NotifyParentWindowPositionChanged();
                 }
                 return 0;
             }
@@ -599,7 +623,7 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
             case WM_SIZE: {
                 const int w = LOWORD(lParam);
                 const int h = HIWORD(lParam);
-                const bool nowMaximized = (wParam == SIZE_MAXIMIZED);
+                const bool nowMaximized = (wParam == SIZE_MAXIMIZED || IsZoomed(hwnd));
                 const bool maxChanged = (nowMaximized != self->m_maximized);
                 self->m_maximized = nowMaximized;
                 if (w > 0 && h > 0) {
@@ -613,6 +637,7 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                     if (self->m_controller) {
                         RECT rc{0, 0, w, h};
                         self->m_controller->put_Bounds(rc);
+                        syncWebViewDpi(self->m_controller.Get(), hwnd);
                     }
                 }
                 if (maxChanged) {

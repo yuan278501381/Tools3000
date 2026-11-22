@@ -767,7 +767,9 @@ void ClipboardManager::processTask(PendingCaptureTask& task) {
             task.sourceApp.c_str(),
             static_cast<uint64_t>(pngBytes.size()),
             static_cast<uint32_t>(snap.maxItems),
-            static_cast<uint32_t>(snap.maxDays));
+            static_cast<uint32_t>(snap.maxDays),
+            "",
+            "");
     } else {
         if (task.textUtf8.empty()) return;
         auto persistRichBlob = [&](const std::vector<uint8_t>& bytes, const char* prefix, const char* ext) -> std::string {
@@ -797,7 +799,7 @@ void ClipboardManager::processTask(PendingCaptureTask& task) {
         const std::string htmlFile = persistRichBlob(task.rawHtmlBytes, "h_", ".html");
         const std::string rtfFile = persistRichBlob(task.rawRtfBytes, "r_", ".rtf");
 
-        addedId = t3k_clip_add_item_v2(
+        addedId = t3k_clip_add_item(
             task.kind,
             task.textUtf8.c_str(),
             "",
@@ -844,7 +846,7 @@ nlohmann::json ClipboardManager::queryItems(
         return {{"total", 0}, {"matched", 0}, {"items", nlohmann::json::array()}};
     }
     const std::string raw = consumeRustJsonString(
-        t3k_clip_query_json_v2(query.c_str(), kind.c_str(), groupId.c_str(), limit, offset));
+        t3k_clip_query_json(query.c_str(), kind.c_str(), groupId.c_str(), limit, offset));
     try {
         return nlohmann::json::parse(raw);
     } catch (...) {

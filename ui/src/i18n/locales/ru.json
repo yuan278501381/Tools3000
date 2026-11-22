@@ -1816,7 +1816,7 @@
     "colFileType": "Тип",
     "colAccessed": "Дата доступа",
     "colAttributes": "Атрибуты",
-    "colRunCount": "Запусков",
+    "colRunCount": "Открытий",
     "colStem": "Имя без расш.",
     "colParentName": "Родительская папка",
     "colDrive": "Диск",
@@ -1920,7 +1920,12 @@
     "syntaxExExact": "Точное совпадение полного имени файла без частичных вхождений",
     "syntaxExNoPinyin": "Отключить пиньинь для этого слова и искать только буквальное совпадение",
     "catBookmarks": "Закладки",
-    "syntaxExBookmark": "Прямой поиск локальных закладок Edge / Chrome / Brave без конфликта с синтаксисом файлов"
+    "syntaxExBookmark": "Прямой поиск локальных закладок Edge / Chrome / Brave без конфликта с синтаксисом файлов",
+    "categoryBarAria": "Категории поиска",
+    "categoryPinnedTip": "Закрепленная базовая категория",
+    "categoryDragTip": "Перетащите для сортировки, ПКМ — сбросить порядок",
+    "resetCategoryOrder": "Сбросить порядок категорий",
+    "toastCategoryOrderReset": "Порядок категорий сброшен по умолчанию"
   },
   "searchPage": {
     "tabSettings": "Основные и клавиша",

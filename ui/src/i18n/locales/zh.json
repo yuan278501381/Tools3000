@@ -1816,7 +1816,7 @@
     "colFileType": "类型",
     "colAccessed": "访问时间",
     "colAttributes": "属性",
-    "colRunCount": "运行次数",
+    "colRunCount": "打开次数",
     "colStem": "文件名(无后缀)",
     "colParentName": "父文件夹名",
     "colDrive": "驱动器",
@@ -1920,7 +1920,12 @@
     "syntaxExExact": "文件名完全精确匹配，排除部分子串命中",
     "syntaxExNoPinyin": "对该词临时关闭拼音匹配，仅按原始英文字母检索",
     "catBookmarks": "书签",
-    "syntaxExBookmark": "零冲突直搜本机 Edge / Chrome / Brave 浏览器书签，回车直开网页"
+    "syntaxExBookmark": "零冲突直搜本机 Edge / Chrome / Brave 浏览器书签，回车直开网页",
+    "categoryBarAria": "搜索分类筛选",
+    "categoryPinnedTip": "固定核心分类",
+    "categoryDragTip": "拖动可调整顺序，右键可重置默认顺序",
+    "resetCategoryOrder": "恢复默认分类顺序",
+    "toastCategoryOrderReset": "已恢复默认分类顺序"
   },
   "searchPage": {
     "tabSettings": "基础与热键",

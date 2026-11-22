@@ -6,6 +6,29 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-23] 剪贴板桌面级 Shift/Ctrl 固定锚点多选根治 + 搜索分类栏「全部/文档内容」固定与自定义拖拽持久化
+- **核心痛点根治与架构沉淀**：
+  1. **剪贴板批量多选 `Shift` 连选 / `Ctrl` 加选实机失灵根治 (`ui/src/clipboardSelection.ts`, `ui/src/ClipboardApp.{tsx,css}`, `ui/src/clipboardSelection.test.tsx`)**：
+     - *实机根因*：① `.clip-popup__list` 与 `.clip-popup__item` 未声明 `user-select: none`，且在打开浮窗时搜索框自动聚焦选字，导致用户按住 `Shift` 点击列表项时 Chromium/WebView2 在 `mousedown` 直接触发跨区文本蓝底拖选并吞掉 `click` 事件；② 旧逻辑未保存固定锚点 (`anchorIndex`)，连续 `Shift` 点击无法回缩选区；③ 缺乏 `Ctrl+A` / `Shift+↑↓` / `Space` 键盘批量操作；
+     - *终局方案*：抽离纯函数状态机 `clipboardSelection.ts`（固定 `anchorIndex` + `shiftBaseIds` + 合并粘贴严格保序 + 反向连选保序）；列表容器强制 `user-select: none`，在 `onMouseDown` 当拍对 `Shift/Ctrl/Meta` 及多选模式点击执行 `e.preventDefault()`、`window.getSelection()?.removeAllRanges()`、主动聚焦列表项并即时完成选区更新（Windows 原生 `WM_LBUTTONDOWN` 级 0 吞点击，配合 `handledInMouseDownRef` 防 `mouseDown+click` 双触发），同时补齐 `Ctrl+A`（非空搜索框保留全选文字）、`Shift+↑/↓` 连续扩缩、`Space` 勾选与 `scrollIntoView` 自动跟屏。
+  2. **搜索分类栏固定「全部 / 文档内容」+ 其余分类自由拖拽排序并持久记忆 (`ui/src/search/SearchCategoryBar.tsx`, `searchConstants.ts`, `searchUtils.ts`, `SearchApp.tsx`, `filters-syntax.css`, 8 语种 JSON, `SearchCategoryBar.test.tsx`)**：
+     - *双区物理隔离*：`PINNED_SEARCH_CATEGORY_IDS = ['all', 'content']` 永久锁定最左前两位（数据层 `normalizeSearchCategoryOrder` / `reorderSearchCategories` 数学防越界 + 视觉层 `1px` 微晶垂直分隔线）；右侧 8 个文件/书签分类支持纯鼠标 5px 阈值拖拽排序（跟随光标浮空毛玻璃胶囊、光学插入亮线、拖至固定区自动磁吸至首个可排序位、`Esc` 撤回）；
+     - *交互与持久化*：右键分类栏弹出极简菜单一键「恢复默认分类顺序」；聚焦态采用 `Ctrl+Shift+←/→` 键盘微调顺序（避开 `KeyboardPipeline.cpp` 屏蔽浏览器前进后退的 `Alt+←/→`）；`localStorage` 0 闪烁首屏 + 后端 `/search/uiPreferences.categoryOrder` 跨重启/便携模式永久保存，并自动联动 `Tab` 轮切与 `Alt+1..9` 分类快捷键顺序。
+
+### [2026-11-23] 文件搜索默认 MECE 6 列「打开次数」+ 剪贴板最大化 4 重根治 + 剪贴板二进制快照/FFI 零历史负担收口
+- **核心架构决策与暗坑控制点**：
+  1. **文件搜索结果默认新增「打开次数 (`runCount`)」列（严格 MECE 3 组 × 2 列体系） (`columnCatalog.ts`, `searchUtils.ts`, `SearchApp.tsx`, `SearchResultRow.tsx`, `useSearchActions.ts`, `results-footer.css`, 8 语种 JSON)**：
+     - **MECE 列分组结构**：将开箱默认可见列升级为 `['name', 'path', 'size', 'runCount', 'modified', 'created']`——① 对象标识组（`name` 名称 / `path` 路径）、② 量化指标组（`size` 大小 / `runCount` 打开次数）、③ 时间维度组（`modified` 修改时间 / `created` 创建时间）；全 8 国语言包列名统一为「打开次数」（`zh: "打开次数"`, `zh-TW: "開啟次數"`, `en: "Open Count"`, `ja: "開いた回数"`, `ko: "열기 횟수"`, `ru: "Открытий"`, `pt-BR: "Aberturas"`, `es: "Aperturas"`）；
+     - **MECE 零冗余展示 + 等宽数字防抖 + 乐观即时刷新**：当独立 `runCount` 列可见时，自动隐藏 `name` 列中重复的 `.file-run-badge` 徽标（零信息冗余）；仅当用户主动隐藏 `runCount` 列时自动回退在 `name` 列展示徽标；单元格采用 `tabular-nums` 等宽右对齐（0 次淡显 `—`，`>0` 次高亮 `.table-cell--run-count-active`）；打开文件/目录后前端 `bumpLocalRunCount` 即时乐观 `+1` 同步当前列表；
+     - **老用户一次性无损迁移 (`TABLE_COLUMN_SCHEMA_VERSION = 2`)**：通过 `migrateTableColumnsToIncludeRunCount` 对旧偏好将 `runCount` 无损插入 `size` 之后（无 `size` 则锚定 `path`/`name` 后），完整保留用户自定义扩展列与顺序；落盘 `columnSchemaVersion: 2` 后永久尊重用户后续显式隐藏操作，绝不覆写。
+  2. **剪贴板窗口点击最大化显示异常且未成功 4 重根因彻底根治 (`WinUtils.cpp`, `ClipboardWindow.cpp`, `ClipboardApp.tsx`, `tests/unit/test_ui_lifecycle.inc`)**：
+     - *根因一（最致命：旧 `HRGN` 裁切全屏）*：`WinUtils::applyUniversalRoundedCorners(hwnd, w, h, radius)` 在 `radius <= 0`（最大化态）时直接早退，导致原先 `WS_POPUP` 普通态绑定的 `760×560` 圆角 `HRGN` 未被清除，全屏窗口瞬间被硬切为左上角残块；现 `radius <= 0` 主动下发 `DWMWCP_DONOTROUND` 并调用 `clearWindowRegionIfSet(hwnd, true)` 彻底解除区域裁切（附真 HWND 回归单测守护）；
+     - *根因二（窗体样式与多屏 `WM_GETMINMAXINFO` 错位）*：将 `ClipboardWindow` 样式统一升级为与 `SearchWindow`/`SettingsWindow` 一致的 `WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS` + `SWP_FRAMECHANGED`（Win11 纯 DWM 硬件圆角零 `SetWindowRgn`，Win10 平滑回退 RGN 且最大化清除）；删除多屏混合 DPI 下易算偏的手写 `ptMaxPosition`/`ptMaxSize`，仅保留 `ptMinTrackSize`，由 `WM_NCCALCSIZE` 在 `IsZoomed` 时对齐 `mi.rcWork`；
+     - *根因三（WebView2 回调内同步重入）*：`clipboard.toggleMaximize` 改经 `MainThreadDispatcher::instance().post` 异步执行，`clipboard.startDrag` / `clipboard.startResize` 改用 `PostMessageW(WM_SYSCOMMAND, ...)`（同步解锁 Aero Tear-Off 脱离还原）；`WM_SIZE` 在 `SIZE_MAXIMIZED || IsZoomed` 同步刷新 `put_Bounds` 与 `syncWebViewDpi`；
+     - *根因四（双击顶栏被拖动吞掉）*：`ClipboardApp.tsx` 顶栏 `handleHeaderMouseDown` 接入与 `SearchHeader.tsx` 一致的 **4px 拖动启动阈值**，双击最大化 100% 灵敏响应。
+  3. **剪贴板二进制持久化与 C ABI 零历史负担收口 (`src/clipboard/rust_clipboard/src/{storage.rs,ffi.rs}`, `src/clipboard/ClipboardRustFfi.h`, `src/clipboard/ClipboardManager.cpp`, `tests/unit/test_core.inc`)**：
+     - 遵循项目负责人「未发版能力不背 V1 历史包袱」架构要求，彻底移除 `history.t3k` 双版本 `v1 -> v2` 迁移分支与 `t3k_clip_add_item_v2` / `t3k_clip_query_json_v2` 重复导出，收口为单一纯净 `FORMAT_VERSION = 1`（原生内含 `groups`、`group_id`、`html_rel_path`、`rtf_rel_path`）与单一 `t3k_clip_add_item` / `t3k_clip_query_json` C ABI。
+
 ### [2026-11-23] 实机多轮极限打磨：原位翻译 MECE 五维世界级重构 + 贴图 120Hz 无级阻尼缩放 + 剪贴板完整桌面窗 + F1 防抖防交叉误框 + 版本红点与自动下载安装
 - **核心痛点根治与架构沉淀**：
   1. **原位翻译 MECE 五维终局升级 (`InPlaceTranslateEngine.{h,cpp}`, `TranslationService.{h,cpp}`, `PinWindowTranslate.cpp`)**：

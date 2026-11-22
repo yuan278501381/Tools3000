@@ -226,6 +226,7 @@ export const SearchResultRow = memo(function SearchResultRow({
 }: SearchResultRowProps) {
   const { t } = useTranslation();
   const visibleTableCols = getVisibleTableColumns(columns);
+  const showRunCountColumn = visibleTableCols.includes('runCount');
   const hasSnippets = Boolean(columns.snippets && result.snippets && result.snippets.length > 0);
 
   const translateLabel = (key: string, defaultVal?: string) =>
@@ -246,7 +247,8 @@ export const SearchResultRow = memo(function SearchResultRow({
               {result.browserSource || t('search.catBookmarks', 'Bookmarks')}
             </span>
           )}
-          {Boolean(result.runCount && result.runCount > 0) && (
+          {/* 严格遵循 MECE 原则：当独立「打开次数」列已显示时绝不在文件名列重复展示徽标；仅当用户主动隐藏该列时回退提示 */}
+          {!showRunCountColumn && Boolean(result.runCount && result.runCount > 0) && (
             <span className="file-run-badge" title={t('search.runCountTip', 'Opened {{count}} times in history', { count: result.runCount })}>
               {t('search.runCountBadge', '{{count}} runs', { count: result.runCount })}
             </span>
@@ -262,6 +264,26 @@ export const SearchResultRow = memo(function SearchResultRow({
           <span className="table-dir-text">
             {directoryPath ? highlightMatch(directoryPath, queryKeywords) : '—'}
           </span>
+        </div>
+      );
+    }
+
+    if (colId === 'runCount') {
+      const runs = typeof result.runCount === 'number' && Number.isFinite(result.runCount) && result.runCount > 0
+        ? Math.floor(result.runCount)
+        : 0;
+      return (
+        <div
+          key="runCount"
+          data-table-col="runCount"
+          className={`table-cell table-cell--mono-right table-cell--run-count${runs > 0 ? ' table-cell--run-count-active' : ''}`}
+          title={
+            runs > 0
+              ? t('search.runCountTip', 'Opened {{count}} times in history', { count: runs })
+              : t('search.colRunCount', 'Open Count')
+          }
+        >
+          {runs > 0 ? runs : '—'}
         </div>
       );
     }

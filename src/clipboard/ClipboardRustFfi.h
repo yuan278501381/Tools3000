@@ -23,29 +23,11 @@ uint64_t t3k_clip_add_item(
     const char* source_app_utf8,
     uint64_t byte_size,
     uint32_t max_items,
-    uint32_t max_days);
-
-uint64_t t3k_clip_add_item_v2(
-    uint8_t kind,
-    const char* text_utf8,
-    const char* image_file_utf8,
-    uint32_t image_width,
-    uint32_t image_height,
-    const char* content_hash_utf8,
-    const char* source_app_utf8,
-    uint64_t byte_size,
-    uint32_t max_items,
     uint32_t max_days,
     const char* html_file_utf8,
     const char* rtf_file_utf8);
 
 char* t3k_clip_query_json(
-    const char* query_utf8,
-    const char* filter_kind_utf8,
-    uint32_t limit,
-    uint32_t offset);
-
-char* t3k_clip_query_json_v2(
     const char* query_utf8,
     const char* filter_kind_utf8,
     const char* group_id_utf8,

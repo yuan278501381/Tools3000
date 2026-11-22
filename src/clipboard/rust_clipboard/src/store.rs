@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn supports_groups_batch_delete_inline_edit_and_rich_text_blob_gc() {
-        let dir = make_temp_dir("v2_features");
+        let dir = make_temp_dir("rich_group_features");
         fs::create_dir_all(blobs_dir(&dir)).unwrap();
         let html_blob = blobs_dir(&dir).join("h_rich1.html");
         fs::write(&html_blob, b"<b>Bold Title</b>").unwrap();
@@ -706,7 +706,7 @@ mod tests {
             assert!(store.list_groups_json().contains("工作常用"));
         }
 
-        // 重启恢复验证 v2 快照完整持久化
+        // 重启恢复验证完整持久化
         {
             let mut reopened = ClipboardStore::open(dir.clone());
             assert!(reopened.list_groups_json().contains("\"count\":2"));

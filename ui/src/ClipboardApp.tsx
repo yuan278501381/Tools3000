@@ -51,6 +51,15 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { CodeBadge } from './components/UIKit';
+import {
+  applyClipboardItemClick,
+  applyClipboardSelectAll,
+  applyClipboardShiftArrow,
+  applyClipboardToggleAtFocus,
+  createInitialClipboardSelectionState,
+  pruneClipboardSelection,
+  type ClipboardSelectionState,
+} from './clipboardSelection';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
 import './ClipboardApp.css';
 
@@ -122,15 +131,14 @@ export const ClipboardApp: FC = () => {
   const [groups, setGroups] = useState<ClipboardGroupInfo[]>([]);
   const [items, setItems] = useState<ClipboardItemSummary[]>([]);
   const [totalCount, setTotalCount] = useState(0);
-  const [selectedIndex, setSelectedIndex] = useState(0);
   const [detailCache, setDetailCache] = useState<{ id: number; text: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [windowPinned, setWindowPinned] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
 
-  // 批量多选状态（数组严格保序，用于按勾选先后顺序合并粘贴）
+  // 批量多选状态（固定锚点模型 + 严格保序数组，用于按勾选先后顺序合并粘贴）
   const [multiSelectMode, setMultiSelectMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [selection, setSelection] = useState<ClipboardSelectionState>(createInitialClipboardSelectionState);
   const [mergeSeparator, setMergeSeparator] = useState<MergeSeparator>('\n');
 
   // 自定义收藏分组内联创建 / 重命名状态
@@ -147,6 +155,30 @@ export const ClipboardApp: FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
   const newGroupInputRef = useRef<HTMLInputElement>(null);
+  const itemBtnRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
+  const handledInMouseDownRef = useRef<number | null>(null);
+
+  const selectedIndex = selection.focusIndex;
+  const selectedIds = selection.selectedIds;
+  const itemIds = useMemo(() => items.map((it) => it.id), [items]);
+
+  const setFocusIndexOnly = useCallback((nextIdx: number) => {
+    setSelection((prev) => ({
+      ...prev,
+      focusIndex: nextIdx,
+      anchorIndex: nextIdx,
+      shiftBaseIds: null,
+    }));
+  }, []);
+
+  const clearMultiSelection = useCallback(() => {
+    setSelection((prev) => ({
+      ...prev,
+      selectedIds: [],
+      shiftBaseIds: null,
+    }));
+    setMultiSelectMode(false);
+  }, []);
 
   const selectedItem = items[selectedIndex] ?? null;
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -191,12 +223,8 @@ export const ClipboardApp: FC = () => {
       if (res && Array.isArray(res.items)) {
         setItems(res.items);
         setTotalCount(typeof res.total === 'number' ? res.total : res.items.length);
-        setSelectedIndex((prev) => (res.items.length === 0 ? 0 : Math.min(prev, res.items.length - 1)));
-        const aliveIds = new Set(res.items.map((it) => it.id));
-        setSelectedIds((prev) => {
-          const filtered = prev.filter((id) => aliveIds.has(id));
-          return filtered.length === prev.length ? prev : filtered;
-        });
+        const aliveList = res.items.map((it) => it.id);
+        setSelection((prev) => pruneClipboardSelection(prev, aliveList));
       }
     } catch {
       // 静默兜底
@@ -250,7 +278,7 @@ export const ClipboardApp: FC = () => {
   }, [selectedItem]);
 
   useBridgeEvent('clipboard:shown', () => {
-    setSelectedIndex(0);
+    setFocusIndexOnly(0);
     setEditingItemId(null);
     void fetchGroups();
     void fetchItems(query, filterKind, activeGroupId);
@@ -307,10 +335,30 @@ export const ClipboardApp: FC = () => {
   }, []);
 
   const handleHeaderMouseDown = useCallback((e: ReactMouseEvent<HTMLElement>) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || e.detail >= 2) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest('input, button, a, textarea, select, [data-no-drag="true"]')) return;
-    void bridgeRequest('clipboard.startDrag', undefined, { silent: true });
+    // 4px 拖动启动阈值：避免首次按下立刻进入 Win32 SC_MOVE 模态循环而吞掉双击最大化事件
+    const startX = e.screenX;
+    const startY = e.screenY;
+    const cleanup = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', cleanup);
+      window.removeEventListener('blur', cleanup);
+    };
+    const onMove = (moveEvt: MouseEvent) => {
+      if ((moveEvt.buttons & 1) === 0) {
+        cleanup();
+        return;
+      }
+      if (Math.hypot(moveEvt.screenX - startX, moveEvt.screenY - startY) >= 4) {
+        cleanup();
+        void bridgeRequest('clipboard.startDrag', undefined, { silent: true });
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', cleanup);
+    window.addEventListener('blur', cleanup);
   }, []);
 
   const handleHeaderDoubleClick = useCallback(
@@ -352,9 +400,8 @@ export const ClipboardApp: FC = () => {
       autoPaste: true,
       hideAfter: !windowPinned,
     });
-    setSelectedIds([]);
-    setMultiSelectMode(false);
-  }, [selectedIds, mergeSeparator, windowPinned]);
+    clearMultiSelection();
+  }, [selectedIds, mergeSeparator, windowPinned, clearMultiSelection]);
 
   const handleBatchDelete = useCallback(async () => {
     if (selectedIds.length === 0) return;
@@ -362,11 +409,10 @@ export const ClipboardApp: FC = () => {
       ids: selectedIds,
       skipPinned: false,
     });
-    setSelectedIds([]);
-    setMultiSelectMode(false);
+    clearMultiSelection();
     void fetchGroups();
     void fetchItems(query, filterKind, activeGroupId);
-  }, [selectedIds, fetchGroups, fetchItems, query, filterKind, activeGroupId]);
+  }, [selectedIds, clearMultiSelection, fetchGroups, fetchItems, query, filterKind, activeGroupId]);
 
   const handleAssignGroup = useCallback(
     async (ids: number[], groupId: string) => {
@@ -394,9 +440,9 @@ export const ClipboardApp: FC = () => {
     await fetchGroups();
     if (res?.group?.id) {
       setActiveGroupId(res.group.id);
-      setSelectedIndex(0);
+      setFocusIndexOnly(0);
     }
-  }, [newGroupName, fetchGroups]);
+  }, [newGroupName, fetchGroups, setFocusIndexOnly]);
 
   const handleRenameGroupSubmit = useCallback(async () => {
     if (!renamingGroupId) return;
@@ -478,46 +524,76 @@ export const ClipboardApp: FC = () => {
     [],
   );
 
-  const toggleItemChecked = useCallback((id: number) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((existing) => existing !== id) : [...prev, id],
-    );
-  }, []);
+  const scrollItemIntoView = useCallback((idx: number) => {
+    const targetItem = items[idx];
+    if (!targetItem) return;
+    const el = itemBtnRefs.current.get(targetItem.id);
+    el?.scrollIntoView?.({ block: 'nearest' });
+  }, [items]);
 
-  const handleItemClick = useCallback(
-    (item: ClipboardItemSummary, idx: number, e: ReactMouseEvent<HTMLButtonElement>) => {
+  const applyItemSelection = useCallback(
+    (
+      item: ClipboardItemSummary,
+      idx: number,
+      modifiers: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
+    ) => {
       if (editingItemId !== null && editingItemId !== item.id) {
         setEditingItemId(null);
       }
-      if (e.shiftKey && items.length > 0) {
-        e.preventDefault();
-        const lo = Math.min(selectedIndex, idx);
-        const hi = Math.max(selectedIndex, idx);
-        const rangeIds = items.slice(lo, hi + 1).map((it) => it.id);
-        setSelectedIds((prev) => {
-          const merged = [...prev];
-          for (const id of rangeIds) {
-            if (!merged.includes(id)) merged.push(id);
-          }
-          return merged;
-        });
-        setSelectedIndex(idx);
-        return;
-      }
-      if (e.ctrlKey || e.metaKey || multiSelectMode) {
-        e.preventDefault();
-        toggleItemChecked(item.id);
-        setSelectedIndex(idx);
-        return;
-      }
-      setSelectedIndex(idx);
+      setSelection((prev) =>
+        applyClipboardItemClick(prev, itemIds, idx, {
+          shiftKey: modifiers.shiftKey,
+          ctrlKey: modifiers.ctrlKey,
+          metaKey: modifiers.metaKey,
+          multiSelectMode,
+        }),
+      );
     },
-    [editingItemId, items, selectedIndex, multiSelectMode, toggleItemChecked],
+    [editingItemId, itemIds, multiSelectMode],
+  );
+
+  const handleItemMouseDown = useCallback(
+    (item: ClipboardItemSummary, idx: number, e: ReactMouseEvent<HTMLButtonElement>) => {
+      if (e.button !== 0) return;
+      const isMultiGesture = e.shiftKey || e.ctrlKey || e.metaKey || multiSelectMode;
+      if (!isMultiGesture) {
+        handledInMouseDownRef.current = null;
+        return;
+      }
+      // 在 mousedown 当拍拦截 Shift/Ctrl 原生文字蓝底选区并即时完成勾选/连选（对齐 Windows 原生 ListView 手感，0 吞点击）
+      e.preventDefault();
+      try {
+        window.getSelection()?.removeAllRanges();
+      } catch {
+        // 忽略不可用环境
+      }
+      e.currentTarget.focus({ preventScroll: true });
+      handledInMouseDownRef.current = item.id;
+      applyItemSelection(item, idx, e);
+    },
+    [applyItemSelection, multiSelectMode],
+  );
+
+  const handleItemClick = useCallback(
+    (item: ClipboardItemSummary, idx: number, e: ReactMouseEvent<HTMLButtonElement>) => {
+      if (handledInMouseDownRef.current === item.id && e.detail > 0) {
+        handledInMouseDownRef.current = null;
+        return;
+      }
+      handledInMouseDownRef.current = null;
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+      applyItemSelection(item, idx, e);
+    },
+    [applyItemSelection],
   );
 
   const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    const activeTag = (document.activeElement as HTMLElement | null)?.tagName;
-    const isTypingInEditor = activeTag === 'TEXTAREA' || (activeTag === 'INPUT' && document.activeElement !== searchInputRef.current);
+    const activeEl = document.activeElement as HTMLElement | null;
+    const activeTag = activeEl?.tagName;
+    const isInSearchInput = activeEl === searchInputRef.current;
+    const isTypingInEditor = activeTag === 'TEXTAREA' || (activeTag === 'INPUT' && !isInSearchInput);
 
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -534,8 +610,7 @@ export const ClipboardApp: FC = () => {
         return;
       }
       if (selectedIds.length > 0 || multiSelectMode) {
-        setSelectedIds([]);
-        setMultiSelectMode(false);
+        clearMultiSelection();
         return;
       }
       void bridgeRequest('clipboard.hideWindow', undefined, { silent: true });
@@ -543,6 +618,30 @@ export const ClipboardApp: FC = () => {
     }
 
     if (isTypingInEditor) {
+      return;
+    }
+
+    // Ctrl+A：焦点不在非空搜索框时一键全选当前列表（搜索框有输入词时保留原生全选文本）
+    if (
+      (e.ctrlKey || e.metaKey) &&
+      !e.altKey &&
+      !e.shiftKey &&
+      e.key.toLowerCase() === 'a' &&
+      (!isInSearchInput || query.length === 0)
+    ) {
+      if (itemIds.length > 0) {
+        e.preventDefault();
+        setSelection((prev) => applyClipboardSelectAll(prev, itemIds));
+      }
+      return;
+    }
+
+    // Space：焦点不在输入框时快速勾选 / 取消当前焦点行
+    if (e.key === ' ' && !isInSearchInput && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (itemIds.length > 0) {
+        e.preventDefault();
+        setSelection((prev) => applyClipboardToggleAtFocus(prev, itemIds));
+      }
       return;
     }
 
@@ -562,26 +661,32 @@ export const ClipboardApp: FC = () => {
       !e.altKey &&
       !e.ctrlKey &&
       !e.metaKey &&
-      document.activeElement !== searchInputRef.current &&
+      !isInSearchInput &&
       e.key >= '1' &&
       e.key <= '9'
     ) {
       const slot = Number(e.key) - 1;
       if (items[slot]) {
         e.preventDefault();
-        setSelectedIndex(slot);
+        setFocusIndexOnly(slot);
+        scrollItemIntoView(slot);
       }
       return;
     }
 
-    if (e.key === 'ArrowDown') {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex((prev) => (items.length === 0 ? 0 : (prev + 1) % items.length));
-      return;
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setSelectedIndex((prev) => (items.length === 0 ? 0 : (prev - 1 + items.length) % items.length));
+      if (items.length === 0) return;
+      const delta: -1 | 1 = e.key === 'ArrowDown' ? 1 : -1;
+      if (e.shiftKey) {
+        const nextIdx = Math.max(0, Math.min(items.length - 1, selectedIndex + delta));
+        setSelection((prev) => applyClipboardShiftArrow(prev, itemIds, delta, multiSelectMode));
+        scrollItemIntoView(nextIdx);
+        return;
+      }
+      const nextIdx = (selectedIndex + delta + items.length) % items.length;
+      setFocusIndexOnly(nextIdx);
+      scrollItemIntoView(nextIdx);
       return;
     }
     if (e.key === 'Enter') {
@@ -600,7 +705,7 @@ export const ClipboardApp: FC = () => {
       void handleTogglePin(selectedItem);
       return;
     }
-    if (e.key === 'Delete' && document.activeElement !== searchInputRef.current) {
+    if (e.key === 'Delete' && !isInSearchInput) {
       e.preventDefault();
       if (selectedIds.length > 0) {
         void handleBatchDelete();
@@ -753,7 +858,7 @@ export const ClipboardApp: FC = () => {
               className={`clip-popup__pill${filterKind === f.id ? ' clip-popup__pill--active' : ''}`}
               onClick={() => {
                 setFilterKind(f.id);
-                setSelectedIndex(0);
+                setFocusIndexOnly(0);
               }}
             >
               <span>{f.label}</span>
@@ -768,8 +873,7 @@ export const ClipboardApp: FC = () => {
             aria-pressed={showCheckboxes}
             onClick={() => {
               if (showCheckboxes) {
-                setMultiSelectMode(false);
-                setSelectedIds([]);
+                clearMultiSelection();
               } else {
                 setMultiSelectMode(true);
               }
@@ -792,7 +896,7 @@ export const ClipboardApp: FC = () => {
           className={`clip-popup__group-chip${activeGroupId === '' ? ' clip-popup__group-chip--active' : ''}`}
           onClick={() => {
             setActiveGroupId('');
-            setSelectedIndex(0);
+            setFocusIndexOnly(0);
           }}
         >
           <Folder size={13} aria-hidden="true" />
@@ -830,7 +934,7 @@ export const ClipboardApp: FC = () => {
                   className={`clip-popup__group-chip${activeGroupId === grp.id ? ' clip-popup__group-chip--active' : ''}`}
                   onClick={() => {
                     setActiveGroupId(grp.id);
-                    setSelectedIndex(0);
+                    setFocusIndexOnly(0);
                   }}
                 >
                   <Folder size={13} aria-hidden="true" />
@@ -924,17 +1028,14 @@ export const ClipboardApp: FC = () => {
             <button
               type="button"
               className="clip-popup__batch-link"
-              onClick={() => setSelectedIds(items.map((it) => it.id))}
+              onClick={() => setSelection((prev) => applyClipboardSelectAll(prev, itemIds))}
             >
               {t('clipboard.selectAll', 'Select All')}
             </button>
             <button
               type="button"
               className="clip-popup__batch-link"
-              onClick={() => {
-                setSelectedIds([]);
-                setMultiSelectMode(false);
-              }}
+              onClick={clearMultiSelection}
             >
               {t('clipboard.clearSelection', 'Clear')}
             </button>
@@ -1021,10 +1122,19 @@ export const ClipboardApp: FC = () => {
               return (
                 <button
                   key={item.id}
+                  ref={(node) => {
+                    if (node) {
+                      itemBtnRefs.current.set(item.id, node);
+                    } else {
+                      itemBtnRefs.current.delete(item.id);
+                    }
+                  }}
                   type="button"
                   role="option"
-                  aria-selected={idx === selectedIndex}
+                  aria-selected={idx === selectedIndex || isChecked}
+                  data-clip-id={item.id}
                   className={`clip-popup__item${idx === selectedIndex ? ' clip-popup__item--selected' : ''}${isChecked ? ' clip-popup__item--checked' : ''}`}
+                  onMouseDown={(e) => handleItemMouseDown(item, idx, e)}
                   onClick={(e) => handleItemClick(item, idx, e)}
                   onDoubleClick={() => {
                     if (!multiSelectMode && selectedIds.length === 0) {
@@ -1306,7 +1416,7 @@ export const ClipboardApp: FC = () => {
             <span>{t('clipboard.hintPlainText', 'Plain Text')}</span>
           </span>
           <span className="clip-popup__hint">
-            <CodeBadge>Ctrl+Click</CodeBadge>
+            <CodeBadge>Ctrl/Shift+Click</CodeBadge>
             <span>{t('clipboard.hintMultiSelect', 'Multi-Select')}</span>
           </span>
           <span className="clip-popup__hint">

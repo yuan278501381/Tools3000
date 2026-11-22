@@ -1816,7 +1816,7 @@
     "colFileType": "種類",
     "colAccessed": "アクセス日時",
     "colAttributes": "属性",
-    "colRunCount": "実行回数",
+    "colRunCount": "開いた回数",
     "colStem": "ベース名",
     "colParentName": "親フォルダ名",
     "colDrive": "ドライブ",
@@ -1920,7 +1920,12 @@
     "syntaxExExact": "ファイル名の完全一致検索（部分一致を除外）",
     "syntaxExNoPinyin": "この語句のみピンイン一致を無効化し、英字そのままの文字で検索",
     "catBookmarks": "ブックマーク",
-    "syntaxExBookmark": "ローカルの Edge / Chrome / Brave ブックマークを構文衝突なしで直接検索"
+    "syntaxExBookmark": "ローカルの Edge / Chrome / Brave ブックマークを構文衝突なしで直接検索",
+    "categoryBarAria": "検索カテゴリ",
+    "categoryPinnedTip": "固定されたコアカテゴリ",
+    "categoryDragTip": "ドラッグで並べ替え、右クリックで初期順序にリセット",
+    "resetCategoryOrder": "カテゴリの順序をリセット",
+    "toastCategoryOrderReset": "カテゴリの順序を既定に戻しました"
   },
   "searchPage": {
     "tabSettings": "基本設定・ホットキー",

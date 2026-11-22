@@ -5199,21 +5199,34 @@ TEST(ClipboardManagerTest, PrivacyBlocklistAndRustPersistenceAcrossRestart) {
     const std::string dirUtf8 = tools3000::core::WinUtils::wstringToUtf8(clipTestDir.wstring());
     ASSERT_EQ(t3k_clip_init(dirUtf8.c_str()), 1);
 
-    const uint64_t idText = t3k_clip_add_item(0, "Tools3000 persistent clipboard entry", "", 0, 0, "", "Code.exe", 0, 100, 30);
-    const uint64_t idColor = t3k_clip_add_item(0, "#3b82f6", "", 0, 0, "", "Figma.exe", 0, 100, 30);
+    const uint64_t idText = t3k_clip_add_item(
+        0, "Tools3000 persistent clipboard entry", "", 0, 0, "", "Code.exe", 0, 100, 30, "rich_1.html", "");
+    const uint64_t idColor = t3k_clip_add_item(
+        0, "#3b82f6", "", 0, 0, "", "Figma.exe", 0, 100, 30, "", "");
     ASSERT_GT(idText, 0u);
     ASSERT_GT(idColor, 0u);
     ASSERT_EQ(t3k_clip_toggle_pin(idColor), 1);
 
     // 重复添加相同文本 -> 自动去重复用原 ID
-    const uint64_t idDup = t3k_clip_add_item(0, "Tools3000 persistent clipboard entry", "", 0, 0, "", "WindowsTerminal.exe", 0, 100, 30);
+    const uint64_t idDup = t3k_clip_add_item(
+        0, "Tools3000 persistent clipboard entry", "", 0, 0, "", "WindowsTerminal.exe", 0, 100, 30, "rich_1.html", "");
     EXPECT_EQ(idDup, idText);
+
+    // 收藏分组创建与条目归组
+    char* groupJsonRaw = t3k_clip_create_group("Snippets");
+    ASSERT_NE(groupJsonRaw, nullptr);
+    const auto groupJson = nlohmann::json::parse(groupJsonRaw);
+    t3k_clip_free_string(groupJsonRaw);
+    const std::string groupId = groupJson.value("id", "");
+    ASSERT_FALSE(groupId.empty());
+    EXPECT_EQ(groupJson.value("name", ""), "Snippets");
+    EXPECT_EQ(t3k_clip_set_items_group(&idText, 1, groupId.c_str()), 1u);
 
     // 模拟 Windows 关机/进程退出后重启再初始化
     t3k_clip_shutdown();
     ASSERT_EQ(t3k_clip_init(dirUtf8.c_str()), 1);
 
-    char* rawQuery = t3k_clip_query_json("", "all", 20, 0);
+    char* rawQuery = t3k_clip_query_json("", "all", "", 20, 0);
     ASSERT_NE(rawQuery, nullptr);
     const auto parsed = nlohmann::json::parse(rawQuery);
     t3k_clip_free_string(rawQuery);
@@ -5224,8 +5237,26 @@ TEST(ClipboardManagerTest, PrivacyBlocklistAndRustPersistenceAcrossRestart) {
     EXPECT_EQ(parsed["items"][0].value("kind", ""), "color");
     EXPECT_EQ(parsed["items"][0].value("colorHex", ""), "#3B82F6");
     EXPECT_TRUE(parsed["items"][0].value("pinned", false));
-    // 第二条去重计数 == 2
+    // 第二条去重计数 == 2，且保留分组与富文本标记
     EXPECT_EQ(parsed["items"][1].value("copyCount", 0), 2);
+    EXPECT_EQ(parsed["items"][1].value("groupId", ""), groupId);
+    EXPECT_TRUE(parsed["items"][1].value("hasRichText", false));
+
+    // 单条详情接口返回完整富文本路径
+    char* rawDetail = t3k_clip_get_item_json(idText);
+    ASSERT_NE(rawDetail, nullptr);
+    const auto parsedDetail = nlohmann::json::parse(rawDetail);
+    t3k_clip_free_string(rawDetail);
+    EXPECT_EQ(parsedDetail.value("htmlFile", ""), "rich_1.html");
+
+    // 按分组过滤检索只命中归组项
+    char* rawGroupQuery = t3k_clip_query_json("", "all", groupId.c_str(), 20, 0);
+    ASSERT_NE(rawGroupQuery, nullptr);
+    const auto parsedGroup = nlohmann::json::parse(rawGroupQuery);
+    t3k_clip_free_string(rawGroupQuery);
+    EXPECT_EQ(parsedGroup.value("matched", 0), 1);
+    ASSERT_EQ(parsedGroup["items"].size(), 1u);
+    EXPECT_EQ(parsedGroup["items"][0].value("id", 0ull), idText);
 
     // 清理非置顶项后，置顶项必须存活
     EXPECT_EQ(t3k_clip_clear_history(1), 1u);

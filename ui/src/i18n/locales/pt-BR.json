@@ -1816,7 +1816,7 @@
     "colFileType": "Tipo",
     "colAccessed": "Data de acesso",
     "colAttributes": "Atributos",
-    "colRunCount": "Execuções",
+    "colRunCount": "Aberturas",
     "colStem": "Nome base",
     "colParentName": "Pasta pai",
     "colDrive": "Unidade",
@@ -1920,7 +1920,12 @@
     "syntaxExExact": "Correspondência exata do nome completo do arquivo sem acertos parciais",
     "syntaxExNoPinyin": "Desativa Pinyin para este termo e busca apenas letras literais",
     "catBookmarks": "Favoritos",
-    "syntaxExBookmark": "Pesquisa favoritos locais do Edge / Chrome / Brave diretamente sem conflito de sintaxe"
+    "syntaxExBookmark": "Pesquisa favoritos locais do Edge / Chrome / Brave diretamente sem conflito de sintaxe",
+    "categoryBarAria": "Categorias de pesquisa",
+    "categoryPinnedTip": "Categoria principal fixada",
+    "categoryDragTip": "Arraste para reordenar, clique com o botão direito para redefinir",
+    "resetCategoryOrder": "Redefinir ordem das categorias",
+    "toastCategoryOrderReset": "Ordem das categorias redefinida para o padrão"
   },
   "searchPage": {
     "tabSettings": "Básico e Atalho",

@@ -1816,7 +1816,7 @@
     "colFileType": "Tipo",
     "colAccessed": "Fecha de acceso",
     "colAttributes": "Atributos",
-    "colRunCount": "Ejecuciones",
+    "colRunCount": "Aperturas",
     "colStem": "Nombre base",
     "colParentName": "Carpeta superior",
     "colDrive": "Unidad",
@@ -1920,7 +1920,12 @@
     "syntaxExExact": "Coincidencia exacta del nombre completo del archivo sin coincidencias parciales",
     "syntaxExNoPinyin": "Desactiva Pinyin para este término y busca solo caracteres literales",
     "catBookmarks": "Marcadores",
-    "syntaxExBookmark": "Busca marcadores locales de Edge / Chrome / Brave directamente sin conflictos de sintaxis"
+    "syntaxExBookmark": "Busca marcadores locales de Edge / Chrome / Brave directamente sin conflictos de sintaxis",
+    "categoryBarAria": "Categorías de búsqueda",
+    "categoryPinnedTip": "Categoría principal fijada",
+    "categoryDragTip": "Arrastra para reordenar, clic derecho para restablecer",
+    "resetCategoryOrder": "Restablecer orden de categorías",
+    "toastCategoryOrderReset": "Orden de categorías restablecido al predeterminado"
   },
   "searchPage": {
     "tabSettings": "Ajustes y atajos",

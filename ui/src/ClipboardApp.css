@@ -455,6 +455,8 @@
   flex-direction: column;
   gap: 6px;
   border-right: 1px solid var(--border-subtle);
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .clip-popup__item {
@@ -467,7 +469,14 @@
   background: var(--bg-surface-secondary);
   text-align: left;
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
   transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.clip-popup__item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 65%, transparent);
+  outline-offset: -2px;
 }
 
 .clip-popup__item:hover {

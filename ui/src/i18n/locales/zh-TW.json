@@ -1816,7 +1816,7 @@
     "colFileType": "類型",
     "colAccessed": "存取時間",
     "colAttributes": "屬性",
-    "colRunCount": "執行次數",
+    "colRunCount": "開啟次數",
     "colStem": "檔名(無副檔名)",
     "colParentName": "父資料夾名",
     "colDrive": "磁碟機",
@@ -1920,7 +1920,12 @@
     "syntaxExExact": "檔案名稱完全精確比對，排除部分子字串命中",
     "syntaxExNoPinyin": "對此詞暫時關閉拼音比對，僅依原始英文字母檢索",
     "catBookmarks": "書籤",
-    "syntaxExBookmark": "零衝突直搜本機 Edge / Chrome / Brave 瀏覽器書籤，按 Enter 直接開啟網頁"
+    "syntaxExBookmark": "零衝突直搜本機 Edge / Chrome / Brave 瀏覽器書籤，按 Enter 直接開啟網頁",
+    "categoryBarAria": "搜尋分類篩選",
+    "categoryPinnedTip": "固定核心分類",
+    "categoryDragTip": "拖曳可調整順序，右鍵可重設預設順序",
+    "resetCategoryOrder": "恢復預設分類順序",
+    "toastCategoryOrderReset": "已恢復預設分類順序"
   },
   "searchPage": {
     "tabSettings": "基礎與快速鍵",
