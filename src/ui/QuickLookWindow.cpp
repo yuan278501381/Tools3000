@@ -1309,6 +1309,10 @@ void QuickLookWindow::initializeWebView2() {
 
 LRESULT CALLBACK QuickLookWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     auto* self = reinterpret_cast<QuickLookWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    LRESULT ncResult = 0;
+    if (tools3000::core::WinUtils::handleFramelessNonClientMessage(hwnd, uMsg, wParam, lParam, ncResult)) {
+        return ncResult;
+    }
 
     switch (uMsg) {
         case WM_TIMER: {
@@ -1336,12 +1340,8 @@ LRESULT CALLBACK QuickLookWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
             EndPaint(hwnd, &ps);
             return 0;
         }
-        case WM_NCCALCSIZE: {
-            if (wParam == TRUE) {
-                return 0;
-            }
-            break;
-        }
+        case WM_NCCALCSIZE:
+            return 0;
         case WM_NCHITTEST: {
             if (!IsZoomed(hwnd)) {
                 POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -1379,7 +1379,9 @@ LRESULT CALLBACK QuickLookWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
             const int newH = HIWORD(lParam);
             if (newW > 0 && newH > 0) {
                 if (IsZoomed(hwnd)) {
-                    SetWindowRgn(hwnd, nullptr, TRUE);
+                    const DWM_WINDOW_CORNER_PREFERENCE noCorners = DWMWCP_DONOTROUND;
+                    DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &noCorners, sizeof(noCorners));
+                    tools3000::core::WinUtils::clearWindowRegionIfSet(hwnd, false);
                 } else {
                     const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
                     const float scale = tools3000::core::dpi::scaleForMonitor(monitor);

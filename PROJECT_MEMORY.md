@@ -6,6 +6,15 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-22] 无边框应用窗口最大化闪 Win98 / 休眠切前台滞留 Win7 旧式标题栏根治（响应 V2EX `@lzrainchen` 反馈，`v1.3.2`）
+- **根因控制点**：
+  1. **Win11 上对 `WS_OVERLAPPEDWINDOW` 多余叠加 `SetWindowRgn` 触发 DWM 非客户区降级 (`WinUtils.cpp`)**：`SearchWindow` 与 `SettingsWindow` 使用 `WS_OVERLAPPEDWINDOW`（含 `WS_CAPTION`）实现原生任务栏/Aero Snap，但 `applyUniversalRoundedCorners` 在 Win11 硬件圆角 `DWMWCP_ROUND` 生效后仍无条件调用 `SetWindowRgn(hwnd, hRgn, TRUE)`，导致 DWM 撤回现代非客户区帧并降级回老式 GDI 标题栏路径（主题态画出 Win7 Aero 标题栏，最大化 `SetWindowRgn(nullptr, TRUE)` 暴力拆卸瞬间或高负载回退画出 Win98 经典窗框）；
+  2. **缺失非客户区重绘拦截 (`SearchWindow.cpp`, `SettingsWindow.cpp`, `StudioPreviewWindowInput.cpp`, `QuickLookWindow.cpp`)**：未拦截 `WM_NCACTIVATE`、`WM_NCPAINT` 与 `WM_NCCALCSIZE(wParam==FALSE)`，导致每次切前台、最大化或系统重绘时 `DefWindowProcW`/UxTheme 主动绘制旧式标题栏；
+  3. **WebView2 `TrySuspend` 唤醒空窗期透明穿底 (`SearchWindow.cpp`, `SettingsWindow.cpp`)**：长时间闲置最小化挂起后切回前台，原 `SearchWindow` 既缺 `WM_PAINT` 底衬又将 WebView2 `DefaultBackgroundColor` 设为 `{0,0,0,0}` 全透明，资源紧张时渲染器唤醒延迟直接把底层 GDI 旧框完整暴露直到新帧到达。
+- **终局标准**：
+  - `WinUtils` 统一封装 `isWindows11OrNewer()`、`shouldUseRegionFallbackForRoundedCorners()`、`clearWindowRegionIfSet(hwnd, false)` 与 `handleFramelessNonClientMessage()`（非最小化态拦截 `WM_NCACTIVATE -> TRUE` 并处理 `WM_DWMCOMPOSITIONCHANGED`；**关键 Windows DWM 内核铁律**：`WM_NCPAINT` 仅在 `DWMWA_NCRENDERING_ENABLED == FALSE` 时截断返回 `0`，若在 Win11 DWM 合成启用态截断 `WM_NCPAINT` 会反致内核把 `DWMWA_NCRENDERING_ENABLED` 从 `1` 永久打成 `0` 并让 `uxtheme` 强行贴上 Win7 Basic 3px 顶角 RGN）；Win11 下带 `WS_CAPTION` 顶层无边框窗口纯走 DWM 硬件圆角零 RGN（`ncEnabled=1, rgn=0` 贯穿 `NORMAL/MAX/UNMAX` 全周期），Win10/Server/RDP 与无 `WS_CAPTION` 自定义大圆角 `WS_POPUP` 浮层保留 RGN 双保险；
+  - `SearchWindow` 与 `SettingsWindow` 统一补齐主题实色 `WM_PAINT` 与不透明 WebView2 默认背景，`SearchWindow` 在 `WM_ACTIVATE` 激活态抢跑调用 `m_suspendController.resume()`，配套 `FramelessWindowChromeRegressionTest` 策略矩阵 + 真 HWND 回归单测守护。
+
 ### [2026-11-22] 鼠标手势前后端 MECE 全链路架构重构（响应 GitHub Issue `#4` `@Yafeiml` 与小众软件 `@buliugu` 反馈）
 - **核心问题与底层根因控制点**：
   1. **反 C (`R-D-L`) / 正 C / U / V (`DR-UR`) 识别率提升与 FastGestures 风格「手势图形匹配阈值（%）」 (`GestureRecognizer.{h,cpp}`, `GestureEngine.{h,cpp}`, `PluginEntry.cpp`, `GesturePage.tsx`, 8 语种 JSON)**：
@@ -28,7 +37,7 @@
   6. **搜索结果表格列宽拖拽与并发单测隔离根治 (`ui/src/search/searchUtils.ts`, `SearchTableHeader.tsx`, `SearchApp.tsx`, `scripts/Invoke-ParallelNativeTests.ps1`)**：
      - 响应 V2EX `@lzrainchen` 反馈（14 楼：搜索结果列表「所在目录」列拖不动）：定位双根因——① 默认 `<=5` 列拖弹性列 `path` 右边界误改右侧固定列 `size` 导致仅拉 16–24px 即撞死 `size.minWidth=72`；② 所有弹性列锁宽后 `fallbackStretchId` 仍对 `path` 套用 `minmax(px, 1fr)` 导致宽窗口下向左缩不动。根治方案：彻底移除 `fallbackStretchId` 对已锁宽列的劫持；`SearchTableHeader` 改为 Everything 风格单列 1:1 像素直调并在拖拽瞬间通过 `batchUpdateTableColumnWidths` 原子冻结左侧未锁宽弹性列防反向漂移；
      - 同步修复 `Invoke-ParallelNativeTests.ps1` 中 `OCR_PLUGIN` 分片含 `*PinWindow*:*CapturePluginIntegration*:*CaptureBatch2InteractionUpgrade*` 顶层全屏捕获浮层与 `FAST` 分片 `MouseHook` 单测跨进程碰撞问题，将所有创建顶层 GUI 浮层的用例收敛回唯一确定性 `FAST` 进程；
-  7. **回归验证**：C++ 全量并发单测 + 手势 **223/223 PASS**，前端 `tsc -b` + ESLint + 6 重并发静态门禁 + Vitest 全量 + `vite:build` 生产构建全部 100% 通过。
+  7. **回归验证与 v1.3.1 发布及 L2 Issue 巡检授权**：C++ 全量并发单测 **810/810 PASS**（手势 **223/223 PASS**），Rust **53/53 PASS**，前端 **231/231 PASS** + 6 重门禁 + 5 项桌面 E2E 门禁全绿，已正式发布 `v1.3.1`（`Latest`）并回复 GitHub Issue `#4`；2026-11-22 项目负责人正式授权 **L2 级 GitHub Issue 自动巡检与追踪权限**（内置跨多语种 4 重反恶意零信任安全护栏 + 自动匹配 Tools3000 支持的 8 国语言 `zh-CN/zh-TW/en/ja/ko/ru/pt-BR/es` 及其他语种回退 `en`，对内汇报与外语草稿中文对照仍用简体中文；详见 `.agents/rules/agent.md` 第 8 节）。
 
 ### [2026-11-22] 手势 3 视觉开关真实 HWND 根治、Rust Picasa 看图器内存瘦身与标准小窗重构、全链路并发与增量打包提速引擎
 - **核心架构决策与实机验证控制点**：

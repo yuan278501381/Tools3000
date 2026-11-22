@@ -422,6 +422,12 @@ void SettingsWindow::onWebView2Ready() {
     LOG_INFO("WebView2 控件就绪");
 
     // ── 调整控件尺寸以填满窗口并确保可见 ─────────────────────────────────
+    ComPtr<ICoreWebView2Controller2> controller2;
+    if (SUCCEEDED(m_controller.As(&controller2))) {
+        const COLORREF bg = isSettingsDarkTheme() ? RGB(15, 23, 42) : RGB(248, 250, 252);
+        COREWEBVIEW2_COLOR solidBg = {255, GetRValue(bg), GetGValue(bg), GetBValue(bg)};
+        controller2->put_DefaultBackgroundColor(solidBg);
+    }
     if (m_visible.load()) {
         m_controller->put_IsVisible(TRUE);
     } else {
@@ -469,13 +475,6 @@ void SettingsWindow::onWebView2Ready() {
                 L"tools3000.local", uiFolder.c_str(),
                 COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
         }
-    }
-
-    // ── 设置 WebView2 透明背景，使得底层 Mica 材质透出 ──────────────────
-    ComPtr<ICoreWebView2Controller2> controller2;
-    if (SUCCEEDED(m_controller.As(&controller2))) {
-        COREWEBVIEW2_COLOR color = { 0, 0, 0, 0 }; // 完全透明
-        controller2->put_DefaultBackgroundColor(color);
     }
 
     web_security::applyNavigationPolicy(m_webView.Get());
@@ -840,6 +839,10 @@ bool SettingsWindow::isMaximized() const {
 
 LRESULT CALLBACK SettingsWindow::windowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto* self = reinterpret_cast<SettingsWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    LRESULT ncResult = 0;
+    if (tools3000::core::WinUtils::handleFramelessNonClientMessage(hwnd, msg, wParam, lParam, ncResult)) {
+        return ncResult;
+    }
 
     switch (msg) {
         case WM_TIMER: {
@@ -866,9 +869,8 @@ LRESULT CALLBACK SettingsWindow::windowProc(HWND hwnd, UINT msg, WPARAM wParam, 
                         params->rgrc[0] = mi.rcWork;
                     }
                 }
-                return 0;
             }
-            return DefWindowProcW(hwnd, msg, wParam, lParam);
+            return 0;
         }
 
         case WM_NCHITTEST: {
@@ -920,7 +922,9 @@ LRESULT CALLBACK SettingsWindow::windowProc(HWND hwnd, UINT msg, WPARAM wParam, 
                 const int newH = HIWORD(lParam);
                 if (newW > 0 && newH > 0) {
                     if (maxState) {
-                        SetWindowRgn(hwnd, nullptr, TRUE);
+                        const DWM_WINDOW_CORNER_PREFERENCE noCorners = DWMWCP_DONOTROUND;
+                        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &noCorners, sizeof(noCorners));
+                        tools3000::core::WinUtils::clearWindowRegionIfSet(hwnd, false);
                     } else {
                         const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
                         const float scale = tools3000::core::dpi::scaleForMonitor(monitor);

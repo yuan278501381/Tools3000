@@ -2668,17 +2668,119 @@ void WinUtils::applyTaskbarSafeOverlayStyle(HWND hwnd, bool excludeFromCapture) 
     allowWindowCapture(hwnd);
 }
 
+bool WinUtils::isWindows11OrNewer() noexcept {
+    static const bool cached = []() noexcept {
+        using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+        if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll")) {
+            auto fn = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion"));
+            if (fn) {
+                RTL_OSVERSIONINFOW info{};
+                info.dwOSVersionInfoSize = sizeof(info);
+                if (fn(&info) == 0) {
+                    return info.dwMajorVersion > 10 ||
+                           (info.dwMajorVersion == 10 && info.dwBuildNumber >= 22000);
+                }
+            }
+        }
+        return false;
+    }();
+    return cached;
+}
+
+bool WinUtils::shouldUseRegionFallbackForRoundedCorners(
+    DWORD windowStyle,
+    bool isWin11,
+    bool dwmCompositionEnabled,
+    HRESULT dwmCornerHr) noexcept {
+    const bool hasCaptionFrame = (windowStyle & WS_CAPTION) == WS_CAPTION;
+    if (hasCaptionFrame && isWin11 && dwmCompositionEnabled && SUCCEEDED(dwmCornerHr)) {
+        return false;
+    }
+    return true;
+}
+
+void WinUtils::clearWindowRegionIfSet(HWND hwnd, bool redraw) noexcept {
+    if (!hwnd || !IsWindow(hwnd)) return;
+    RECT rgnBox{};
+    if (GetWindowRgnBox(hwnd, &rgnBox) != ERROR) {
+        SetWindowRgn(hwnd, nullptr, redraw ? TRUE : FALSE);
+    }
+}
+
+bool WinUtils::handleFramelessNonClientMessage(
+    HWND hwnd,
+    UINT msg,
+    WPARAM wParam,
+    LPARAM lParam,
+    LRESULT& outResult) noexcept {
+    (void)wParam;
+    (void)lParam;
+    if (!hwnd || !IsWindow(hwnd)) return false;
+
+    switch (msg) {
+        case WM_NCACTIVATE:
+            // 最小化态交由系统默认维护；非最小化态直接返回 TRUE 允许激活/失焦，
+            // 彻底阻断 DefWindowProcW 与 UxTheme 在非客户区绘制 Win7/Win98 旧式标题栏。
+            if (IsIconic(hwnd)) {
+                return false;
+            }
+            outResult = TRUE;
+            return true;
+        case WM_NCPAINT: {
+            if (IsIconic(hwnd)) {
+                return false;
+            }
+            // 关键 Windows DWM 铁律：当 DWMWA_NCRENDERING_ENABLED 为 TRUE 时（如 Win11 纯硬件圆角态），
+            // 若截断 WM_NCPAINT 不交给 DefWindowProcW，内核会判定应用自绘非客户区并永久将 DWM 非客户区渲染
+            // 降级关闭（从 1 -> 0），进而触发 uxtheme 强行附加 Win7 Basic 3px 顶角 RGN。
+            // 此时 WM_NCCALCSIZE 已将非客户区归零，放行 DefWindowProcW 既零旧标题栏残留又完整保留原生 DWM 阴影；
+            // 仅在非 DWM 合成或 Win10/Server RGN 降级态（ncEnabled == FALSE）时拦截返回 0 封死 GDI 旧框。
+            BOOL ncEnabled = FALSE;
+            if (SUCCEEDED(DwmGetWindowAttribute(
+                    hwnd, DWMWA_NCRENDERING_ENABLED, &ncEnabled, sizeof(ncEnabled))) &&
+                ncEnabled != FALSE) {
+                return false;
+            }
+            outResult = 0;
+            return true;
+        }
+        case WM_DWMCOMPOSITIONCHANGED: {
+            MARGINS margins = {1, 1, 1, 1};
+            DwmExtendFrameIntoClientArea(hwnd, &margins);
+            outResult = 0;
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
 void WinUtils::applyUniversalRoundedCorners(HWND hwnd, int width, int height, int radius) {
     if (!hwnd || !IsWindow(hwnd) || width <= 0 || height <= 0 || radius <= 0) return;
 
     // 1. Windows 11 DWM 硬件级超平滑圆角首选
     const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-    DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+    const HRESULT dwmHr = DwmSetWindowAttribute(
+        hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
 
-    // 2. Win32 硬件级 RGN 裁剪兜底 (确保在 Win10、Windows Server 2022/2025、虚拟机与 RDP 下 100% 绝对圆角)
+    BOOL dwmEnabled = FALSE;
+    const bool compositionEnabled =
+        SUCCEEDED(DwmIsCompositionEnabled(&dwmEnabled)) && (dwmEnabled != FALSE);
+    const DWORD style = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_STYLE));
+
+    if (!shouldUseRegionFallbackForRoundedCorners(
+            style, isWindows11OrNewer(), compositionEnabled, dwmHr)) {
+        // Win11 下带 WS_CAPTION 的标准无边框应用窗口由 DWM 硬件圆角与原生高斯阴影全权托管，
+        // 严禁叠加 SetWindowRgn 触发系统降级绘制 Win7/Win98 旧式标题栏。
+        clearWindowRegionIfSet(hwnd, false);
+        return;
+    }
+
+    // 2. Win32 硬件级 RGN 裁剪兜底 (确保在 Win10、Windows Server 2019/2022/2025、RDP 与自定义大圆角浮层下 100% 绝对圆角)
     const HRGN hRgn = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
     if (hRgn) {
-        SetWindowRgn(hwnd, hRgn, TRUE);
+        const BOOL redraw = ((style & WS_CAPTION) == WS_CAPTION) ? FALSE : TRUE;
+        SetWindowRgn(hwnd, hRgn, redraw);
         // SetWindowRgn 成功后系统接管 hRgn 句柄的所有权，无需手动 DeleteObject
     }
 }
