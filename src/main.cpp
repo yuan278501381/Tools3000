@@ -646,10 +646,55 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
                 if (stamp != appliedStamp) {
                     nlohmann::json patch = nlohmann::json::parse(rawContent, nullptr, false);
                     if (!patch.is_discarded() && patch.is_object()) {
+                        const bool picasaEnabledByInstaller =
+                            (patch.contains("plugins") && patch["plugins"].is_object() &&
+                             patch["plugins"].contains("picasa_viewer") &&
+                             patch["plugins"]["picasa_viewer"].is_object() &&
+                             patch["plugins"]["picasa_viewer"].value("enabled", false)) ||
+                            (patch.contains("picasa_viewer") && patch["picasa_viewer"].is_object() &&
+                             patch["picasa_viewer"].value("enabled", false));
                         patch["general"]["appliedInitialModulesStamp"] = stamp;
                         tools3000::core::ConfigManager::instance().mergePatch(patch);
                         tools3000::core::ConfigManager::instance().flush();
                         LOG_INFO("成功从安装包初始配置同步模块开关并写入当前用户配置");
+
+                        if (picasaEnabledByInstaller) {
+                            // 若安装器已通过 runasoriginaluser 完成当前用户关联注册，则跳过二次重复调用
+                            HKEY hCheckKey = nullptr;
+                            const bool alreadyRegistered =
+                                (RegOpenKeyExW(
+                                     HKEY_CURRENT_USER,
+                                     L"Software\\Tools3000\\PicasaViewer\\Capabilities\\FileAssociations",
+                                     0, KEY_READ, &hCheckKey) == ERROR_SUCCESS);
+                            if (hCheckKey) {
+                                RegCloseKey(hCheckKey);
+                            }
+                            if (!alreadyRegistered) {
+                                const auto viewerExe =
+                                    tools3000::core::WinUtils::getExeDirectory() / L"Tools3000_Picasa_Viewer.exe";
+                                const DWORD attrs = GetFileAttributesW(viewerExe.c_str());
+                                const bool safeBinary =
+                                    attrs != INVALID_FILE_ATTRIBUTES &&
+                                    (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+                                    (attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+                                if (safeBinary) {
+                                    std::wstring cmdLine = L"\"" + viewerExe.wstring() + L"\" --register-silent";
+                                    STARTUPINFOW si{};
+                                    si.cb = sizeof(si);
+                                    PROCESS_INFORMATION pi{};
+                                    if (CreateProcessW(
+                                            viewerExe.c_str(), cmdLine.data(), nullptr, nullptr, FALSE,
+                                            CREATE_NO_WINDOW, nullptr, viewerExe.parent_path().c_str(), &si, &pi)) {
+                                        CloseHandle(pi.hThread);
+                                        CloseHandle(pi.hProcess);
+                                        LOG_INFO("安装器初始配置已启用 Picasa 图片查看器，正在后台自动关联全部支持的图片格式");
+                                    } else {
+                                        LOG_WARN("安装器初始配置触发 Picasa 图片查看器自动关联失败: error={}",
+                                                 GetLastError());
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -959,7 +1004,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     tray.onRecording([]() { tools3000::core::EventBus::instance().publish(tools3000::core::ActionToggleRecordingEvent{}); });
     tray.onSearch([]() {
         auto& searchWnd = tools3000::ui::SearchWindow::instance();
-        if (searchWnd.isVisible()) searchWnd.hide();
+        if (searchWnd.isForegroundActive()) searchWnd.minimize();
         else searchWnd.show(GetModuleHandleW(nullptr));
     });
     tray.onPauseGesture([]() { tools3000::core::EventBus::instance().publish(tools3000::core::ActionToggleGesturePauseEvent{}); });
@@ -996,8 +1041,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             : tools3000::core::HotkeyDef::fromString(searchText).value_or(searchFallback);
         auto toggleSearchSafe = []() {
             auto& searchWnd = tools3000::ui::SearchWindow::instance();
-            if (searchWnd.isVisible()) {
-                searchWnd.hide();
+            if (searchWnd.isForegroundActive()) {
+                // 搜索窗口当前已在最前台获焦：再次按快捷键优雅最小化到任务栏，完整保留搜索结果与滚动状态
+                searchWnd.minimize();
                 return;
             }
             if (tools3000::core::ConfigManager::instance().get<bool>("/search/autoBypassFullscreen", true)) {
@@ -1007,6 +1053,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                     return;
                 }
             }
+            // 无论窗口处于隐藏、最小化在任务栏还是被其他应用遮挡，一律毫秒还原并置前聚焦搜索框
             searchWnd.show(GetModuleHandleW(nullptr));
         };
 
@@ -1021,13 +1068,62 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             });
         tools3000::core::MessageBridge::instance().registerHostHandler(
             "search.hide", [](const nlohmann::json&) -> nlohmann::json {
-                tools3000::ui::SearchWindow::instance().hide();
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::SearchWindow::instance().hide();
+                });
+                return {{"success", true}};
+            });
+        tools3000::core::MessageBridge::instance().registerHostHandler(
+            "search.minimize", [](const nlohmann::json&) -> nlohmann::json {
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::SearchWindow::instance().minimize();
+                });
+                return {{"success", true}};
+            });
+        tools3000::core::MessageBridge::instance().registerHostHandler(
+            "search.showSystemMenu", [](const nlohmann::json& params) -> nlohmann::json {
+                const int x = (params.is_object() && params.contains("x") && params["x"].is_number_integer())
+                    ? params["x"].get<int>()
+                    : -1;
+                const int y = (params.is_object() && params.contains("y") && params["y"].is_number_integer())
+                    ? params["y"].get<int>()
+                    : -1;
+                tools3000::core::MainThreadDispatcher::instance().post([x, y]() {
+                    tools3000::ui::SearchWindow::instance().showSystemMenu(x, y);
+                });
                 return {{"success", true}};
             });
         tools3000::core::MessageBridge::instance().registerHostHandler(
             "search.getWindowSize", [](const nlohmann::json&) -> nlohmann::json {
                 auto [w, h] = tools3000::ui::SearchWindow::instance().getWindowSize();
-                return {{"width", w}, {"height", h}};
+                return {
+                    {"width", w},
+                    {"height", h},
+                    {"maximized", tools3000::ui::SearchWindow::instance().isMaximized()}
+                };
+            });
+        tools3000::core::MessageBridge::instance().registerHostHandler(
+            "search.getMaximized", [](const nlohmann::json&) -> nlohmann::json {
+                return {
+                    {"success", true},
+                    {"maximized", tools3000::ui::SearchWindow::instance().isMaximized()}
+                };
+            });
+        tools3000::core::MessageBridge::instance().registerHostHandler(
+            "search.setMaximized", [](const nlohmann::json& params) -> nlohmann::json {
+                const bool maximized = jsonBoolOr(params, "maximized", false);
+                tools3000::core::MainThreadDispatcher::instance().post([maximized]() {
+                    tools3000::ui::SearchWindow::instance().setMaximized(maximized);
+                });
+                return {{"success", true}, {"maximized", maximized}};
+            });
+        tools3000::core::MessageBridge::instance().registerHostHandler(
+            "search.toggleMaximized", [](const nlohmann::json&) -> nlohmann::json {
+                const bool next = !tools3000::ui::SearchWindow::instance().isMaximized();
+                tools3000::core::MainThreadDispatcher::instance().post([next]() {
+                    tools3000::ui::SearchWindow::instance().setMaximized(next);
+                });
+                return {{"success", true}, {"maximized", next}};
             });
         tools3000::core::MessageBridge::instance().registerHostHandler(
             "search.setWindowSize", [](const nlohmann::json& params) -> nlohmann::json {
@@ -1040,7 +1136,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                     tools3000::core::MainThreadDispatcher::instance().post([w, h, center]() {
                         tools3000::ui::SearchWindow::instance().setWindowSize(w, h, center);
                     });
-                    return {{"success", true}, {"width", w}, {"height", h}};
+                    return {{"success", true}, {"width", w}, {"height", h}, {"maximized", false}};
                 }
                 return {{"success", false}, {"error", "missing width or height"}};
             });
@@ -1488,7 +1584,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             }
         } else if (action == "search") {
             auto& searchWnd = tools3000::ui::SearchWindow::instance();
-            if (searchWnd.isVisible()) searchWnd.hide();
+            if (searchWnd.isForegroundActive()) searchWnd.minimize();
             else searchWnd.show(GetModuleHandleW(nullptr));
         } else if (action == "screenshot") {
             tools3000::core::EventBus::instance().publish(tools3000::core::ActionTriggerScreenshotEvent{});
@@ -1720,7 +1816,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                         });
                         return true;
                     }
-                    if (tools3000::ui::SearchWindow::instance().isVisible()) {
+                    // 仅当搜索窗口本身位于最前台获焦时，Alt+Space 才用于预览当前选中结果；
+                    // 当用户已切到其他软件（搜索窗在后台或最小化）时，放行 Alt+Space 给全局搜索热键，立即呼出搜索窗口！
+                    if (tools3000::ui::SearchWindow::instance().isForegroundActive()) {
                         tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
                             tools3000::ui::SearchWindow::instance().triggerQuickLookForSelection();
                         });

@@ -147,12 +147,8 @@ public:
         m_arena.releaseInterner();
         m_pinyinAsciiInitialsScratch.clear();
         m_pinyinAsciiInitialsScratch.shrink_to_fit();
-        m_pinyinAsciiFullScratch.clear();
-        m_pinyinAsciiFullScratch.shrink_to_fit();
         m_pinyinWideInitialsScratch.clear();
         m_pinyinWideInitialsScratch.shrink_to_fit();
-        m_pinyinWideFullScratch.clear();
-        m_pinyinWideFullScratch.shrink_to_fit();
     }
 
     uint64_t approximateBytes() const noexcept;
@@ -160,9 +156,7 @@ public:
 private:
     struct PinyinEntry {
         uint32_t initialsOffset = 0;
-        uint32_t fullOffset = 0;
         uint16_t initialsLength = 0;
-        uint16_t fullLength = 0;
     };
 
     static constexpr uint64_t EmptyKey = 0;
@@ -184,9 +178,7 @@ private:
     std::vector<uint32_t> m_freePinyinSlots;
     std::vector<uint32_t> m_slots;
     std::string m_pinyinAsciiInitialsScratch;
-    std::string m_pinyinAsciiFullScratch;
     std::wstring m_pinyinWideInitialsScratch;
-    std::wstring m_pinyinWideFullScratch;
     size_t m_liveCount = 0;
     size_t m_tombstones = 0;
     char m_driveLetter = 'C';

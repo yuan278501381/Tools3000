@@ -124,7 +124,9 @@ export const AboutPage: FC = () => {
   useEffect(() => {
     if (!geekMode) return;
     let active = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
     const fetchMetrics = async () => {
+      if (document.hidden) return;
       try {
         const data = await bridgeRequest<PerfMetrics>('perf.getMetrics');
         if (active) setMetrics({
@@ -139,11 +141,34 @@ export const AboutPage: FC = () => {
         console.error('Failed to fetch perf metrics', e);
       }
     };
-    fetchMetrics();
-    const timer = setInterval(fetchMetrics, 1000);
+    const stopPolling = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const startPolling = () => {
+      if (document.hidden) return;
+      void fetchMetrics();
+      if (timer === null) {
+        timer = setInterval(() => {
+          void fetchMetrics();
+        }, 1000);
+      }
+    };
+    const handleVisibility = () => {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        startPolling();
+      }
+    };
+    startPolling();
+    document.addEventListener('visibilitychange', handleVisibility);
     return () => {
       active = false;
-      clearInterval(timer);
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [geekMode]);
 

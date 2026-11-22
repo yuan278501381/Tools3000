@@ -374,6 +374,7 @@ set(CAPTURE_OTHER_SOURCES
     src/capture/CaptureInputCommands.cpp
     src/capture/CaptureInputKeyboard.cpp
     src/capture/CaptureInputMouse.cpp
+    src/capture/CaptureDelayLoadHook.cpp
     src/capture/CaptureOverlay.cpp
     src/capture/CaptureWorkerEntry.cpp
     src/capture/CaptureRenderer.cpp
@@ -402,6 +403,30 @@ target_link_libraries(Plugin_Capture PRIVATE Tools3000Core
     d2d1 dwrite d3d11 dxgi dxguid dwmapi mfplat mfreadwrite mfuuid
     shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 windowscodecs winhttp windowsapp Shcore imm32 ws2_32
 )
+if(MSVC)
+    # 冷启动按需延迟加载 12 个重型多媒体/AI DLL（PE 导入表已验证 100% 纯函数导入、0 数据导入、冷启动 0 调用），
+    # 配合 CaptureDelayLoadHook.cpp 根目录安全寻址，冷启动直接免映射 ~47 MB DLL 映像。
+    target_link_libraries(Plugin_Capture PRIVATE delayimp)
+    target_link_options(Plugin_Capture PRIVATE
+        /DELAYLOAD:avcodec-62.dll
+        /DELAYLOAD:avformat-62.dll
+        /DELAYLOAD:avutil-60.dll
+        /DELAYLOAD:swscale-9.dll
+        /DELAYLOAD:swresample-6.dll
+        /DELAYLOAD:libwebp.dll
+        /DELAYLOAD:libwebpmux.dll
+        $<$<NOT:$<CONFIG:Debug>>:/DELAYLOAD:opencv_imgproc4.dll>
+        $<$<NOT:$<CONFIG:Debug>>:/DELAYLOAD:opencv_imgcodecs4.dll>
+        $<$<NOT:$<CONFIG:Debug>>:/DELAYLOAD:opencv_photo4.dll>
+        $<$<NOT:$<CONFIG:Debug>>:/DELAYLOAD:opencv_dnn4.dll>
+        $<$<NOT:$<CONFIG:Debug>>:/DELAYLOAD:opencv_objdetect4.dll>
+        $<$<CONFIG:Debug>:/DELAYLOAD:opencv_imgproc4d.dll>
+        $<$<CONFIG:Debug>:/DELAYLOAD:opencv_imgcodecs4d.dll>
+        $<$<CONFIG:Debug>:/DELAYLOAD:opencv_photo4d.dll>
+        $<$<CONFIG:Debug>:/DELAYLOAD:opencv_dnn4d.dll>
+        $<$<CONFIG:Debug>:/DELAYLOAD:opencv_objdetect4d.dll>
+    )
+endif()
 if(FFMPEG_INCLUDE_DIR)
     target_include_directories(Plugin_Capture PRIVATE ${FFMPEG_INCLUDE_DIR})
 endif()
@@ -430,7 +455,7 @@ tools3000_add_version_resource(Plugin_Search "Tools3000 Search Plugin" "Plugin_S
 tools3000_add_plugin_manifest(Plugin_Search)
 target_compile_definitions(Plugin_Search PRIVATE PLUGIN_EXPORTS)
 target_include_directories(Plugin_Search PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(Plugin_Search PRIVATE Tools3000Core nlohmann_json::nlohmann_json spdlog::spdlog advapi32 shell32 bcrypt)
+target_link_libraries(Plugin_Search PRIVATE Tools3000Core nlohmann_json::nlohmann_json spdlog::spdlog advapi32 shell32 bcrypt version windowscodecs propsys ole32 oleaut32)
 set_target_properties(Plugin_Search PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/plugins")
 
 # ── 3.7. Plugin_DialogEnhancer (动态库) ────────────────────────────────────────
@@ -497,7 +522,10 @@ add_custom_command(TARGET Tools3000 POST_BUILD
         "$<TARGET_FILE:Plugin_DialogEnhancer>" "$<TARGET_FILE_DIR:Tools3000>/plugins/$<TARGET_FILE_NAME:Plugin_DialogEnhancer>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE_DIR:Plugin_DialogEnhancer>/Plugin_DialogEnhancer.plugin.json" "$<TARGET_FILE_DIR:Tools3000>/plugins/Plugin_DialogEnhancer.plugin.json"
-    COMMENT "Deploying validated plugin bundle beside Tools3000..."
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/scripts/sync-delayed-dlls.ps1"
+        -TargetDir "$<TARGET_FILE_DIR:Tools3000>"
+        -SearchDirs "${CMAKE_SOURCE_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/$<$<CONFIG:Debug>:debug/>bin;${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/$<$<CONFIG:Debug>:debug/>bin;$<TARGET_FILE_DIR:Plugin_Capture>"
+    COMMENT "Deploying validated plugin bundle and delayed DLL dependencies beside Tools3000..."
 )
 
 if(EXISTS "${WEBVIEW2_DIR}")
@@ -570,6 +598,7 @@ if(BUILD_TESTING)
         src/ocr/OcrWorkerHost.cpp
         src/ocr/OcrTableReconstructor.cpp
         src/ocr/OcrResultWindow.cpp
+        src/search/SearchPropertyExtractor.cpp
         $<TARGET_OBJECTS:capture_objects>
         $<TARGET_OBJECTS:gesture_objects>
         $<TARGET_OBJECTS:service_objects>
@@ -586,7 +615,7 @@ if(BUILD_TESTING)
     if (MSVC)
         target_compile_options(Tools3000Tests PRIVATE /bigobj)
     endif()
-    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 msimg32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 oleaut32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm winhttp windowsapp ntdll userenv ws2_32 dbghelp
+    target_link_libraries(Tools3000Tests PRIVATE "${RUST_CONTENT_LIB}" Tools3000Core GTest::gtest GTest::gmock ZLIB::ZLIB user32 shell32 gdi32 msimg32 dwmapi dcomp windowscodecs d3d11 dxgi ole32 oleaut32 shcore advapi32 mfplat mfuuid shlwapi d2d1 dwrite winmm winhttp windowsapp ntdll userenv ws2_32 dbghelp version bcrypt propsys
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY} ${WEBP_LIBRARY} ${WEBPMUX_LIBRARY} ${OpenCV_LIBS})
     add_dependencies(Tools3000Tests tools3000_content_rs_target Tools3000 Plugin_Gesture Plugin_Capture Plugin_Keycast Plugin_Search Plugin_DialogEnhancer)

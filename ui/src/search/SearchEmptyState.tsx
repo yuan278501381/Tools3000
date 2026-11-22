@@ -10,13 +10,14 @@ import {
   Search,
   Lightbulb,
 } from 'lucide-react';
-import type { CategoryFilter, SearchMode, SearchResult } from './searchTypes';
+import type { CategoryFilter, DbStatsSnapshot, SearchMode, SearchResult } from './searchTypes';
 import { isEffectiveContentSearch } from './searchUtils';
 
 export interface SearchEmptyStateProps {
   isInitialIndexing: boolean;
   isServiceStarting: boolean;
   serviceAvailable: boolean;
+  dbStats?: DbStatsSnapshot | null;
   loading: boolean;
   activeCategory: string;
   searchMode?: SearchMode;
@@ -36,6 +37,7 @@ export const SearchEmptyState: React.FC<SearchEmptyStateProps> = ({
   isInitialIndexing,
   isServiceStarting,
   serviceAvailable,
+  dbStats,
   loading,
   activeCategory,
   searchMode = 'name',
@@ -110,15 +112,51 @@ export const SearchEmptyState: React.FC<SearchEmptyStateProps> = ({
 
   // 2. 初始索引构建或服务正在唤醒
   if ((isInitialIndexing || isServiceStarting) && sortedResults.length === 0) {
+    const driveDisplay = dbStats?.activeDrive
+      ? (dbStats.activeVolumeLabel?.trim()
+          ? `${dbStats.activeVolumeLabel.trim()} (${dbStats.activeDrive}:)`
+          : `(${dbStats.activeDrive}:)`)
+      : '';
+    const pct =
+      typeof dbStats?.progressPercent === 'number' && dbStats.progressPercent > 0 && dbStats.progressPercent < 100
+        ? dbStats.progressPercent
+        : null;
+    const resolveInitialStageHeading = (): string => {
+      if (!isInitialIndexing) {
+        return t('search.serviceStartingTitle', 'Connecting to File Indexing Engine...');
+      }
+      const phase = dbStats?.phase;
+      if (phase === 'scanning') {
+        return driveDisplay
+          ? t('search.phaseScanningDrive', 'Scanning {{drive}}...', { drive: driveDisplay })
+          : t('search.phaseScanningGeneric', 'Scanning local drives...');
+      }
+      if (phase === 'building') {
+        return driveDisplay
+          ? t('search.phaseBuildingDrive', 'Building folder index {{drive}}...', { drive: driveDisplay })
+          : t('search.phaseBuildingGeneric', 'Building folder index...');
+      }
+      if (phase === 'loading') {
+        return driveDisplay
+          ? t('search.phaseLoadingDrive', 'Loading snapshot {{drive}}...', { drive: driveDisplay })
+          : t('search.phaseLoadingGeneric', 'Loading index snapshot...');
+      }
+      if (phase === 'syncing') {
+        return driveDisplay
+          ? t('search.phaseSyncingDrive', 'Updating index {{drive}}...', { drive: driveDisplay })
+          : t('search.phaseSyncingGeneric', 'Updating file index...');
+      }
+      return t('search.initialIndexingTitle', 'Building and persisting full disk index...');
+    };
+    const stageHeading = resolveInitialStageHeading();
+
     return (
       <div className="search-empty-container search-empty-container--indexing" role="status">
         <div className="search-empty-icon-wrap search-empty-icon-wrap--indexing">
           <RefreshCw size={32} className="search-empty-icon spin-animation" />
         </div>
         <div className="search-empty-title">
-          {isInitialIndexing
-             ? t('search.initialIndexingTitle', 'Building and persisting full disk index...')
-            : t('search.serviceStartingTitle', 'Connecting to File Indexing Engine...')}
+          {stageHeading}
         </div>
         <div className="search-empty-desc">
           {isInitialIndexing
@@ -126,7 +164,11 @@ export const SearchEmptyState: React.FC<SearchEmptyStateProps> = ({
             : t('search.serviceStartingDesc', 'Waking up the indexing engine on demand and loading disk cache. Results will appear automatically, please wait...')}
         </div>
         <div className="search-indexing-progress-bar-wrap">
-          <div className="search-indexing-progress-bar-indeterminate" />
+          {pct !== null ? (
+            <div className="search-indexing-progress-bar-determinate" style={{ width: `${pct}%` }} />
+          ) : (
+            <div className="search-indexing-progress-bar-indeterminate" />
+          )}
         </div>
       </div>
     );

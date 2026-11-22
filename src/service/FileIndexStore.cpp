@@ -593,21 +593,15 @@ void FileIndexStore::upsert(const FileRecordInit& init, bool metadataHydrated, b
 
     PinyinEntry newPinyin{};
     if (hasChinese) {
-        PinyinEngine::BuildNormalizedPinyin(
+        PinyinEngine::BuildNormalizedInitials(
             nameView,
             m_pinyinAsciiInitialsScratch,
-            m_pinyinAsciiFullScratch,
-            m_pinyinWideInitialsScratch,
-            m_pinyinWideFullScratch
+            m_pinyinWideInitialsScratch
         );
         newPinyin.initialsLength = static_cast<uint16_t>(
             std::min<size_t>(m_pinyinWideInitialsScratch.size(), 0xFFFF));
-        newPinyin.fullLength = static_cast<uint16_t>(
-            std::min<size_t>(m_pinyinWideFullScratch.size(), 0xFFFF));
         newPinyin.initialsOffset = m_arena.intern(
             std::wstring_view{m_pinyinWideInitialsScratch}.substr(0, newPinyin.initialsLength));
-        newPinyin.fullOffset = m_arena.intern(
-            std::wstring_view{m_pinyinWideFullScratch}.substr(0, newPinyin.fullLength));
     }
 
     if (hasExistingLive) {
@@ -977,7 +971,7 @@ FileRecord FileIndexStore::view(const StoredFileRecord& record) const noexcept {
     } else {
         const auto& entry = m_pinyin[record.pinyinSlot];
         out.pinyinInitials = m_arena.view(entry.initialsOffset, entry.initialsLength);
-        out.pinyinFull = m_arena.view(entry.fullOffset, entry.fullLength);
+        out.pinyinFull = {};
     }
     return out;
 }

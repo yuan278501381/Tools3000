@@ -2949,6 +2949,34 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 长截图检测到重复内容段，已自动拦截: rows={}, score={:.3f}",
             "[{}] ScrollCapture detected duplicated content segment and blocked it: rows={}, score={:.3f}"
         }},
+        {"Picasa 图片查看器已启用并自动关联全部支持的图片格式: count={}", {
+            "[{}] Picasa 图片查看器已启用并自动关联全部支持的图片格式: count={}",
+            "[{}] Picasa Photo Viewer enabled and automatically associated all supported image formats: count={}"
+        }},
+        {"Picasa 图片查看器启用失败，无法完成文件关联: {}", {
+            "[{}] Picasa 图片查看器启用失败，无法完成文件关联: {}",
+            "[{}] Failed to enable Picasa Photo Viewer file associations: {}"
+        }},
+        {"Picasa 图片查看器已关闭并自动清理文件关联", {
+            "[{}] Picasa 图片查看器已关闭并自动清理文件关联",
+            "[{}] Picasa Photo Viewer disabled and file associations cleared"
+        }},
+        {"Picasa 图片查看器关闭时清理文件关联失败: {}", {
+            "[{}] Picasa 图片查看器关闭时清理文件关联失败: {}",
+            "[{}] Failed to clear Picasa Photo Viewer file associations while disabling: {}"
+        }},
+        {"Picasa 图片查看器已重新关联全部支持的图片格式: count={}", {
+            "[{}] Picasa 图片查看器已重新关联全部支持的图片格式: count={}",
+            "[{}] Picasa Photo Viewer re-associated all supported image formats: count={}"
+        }},
+        {"安装器初始配置已启用 Picasa 图片查看器，正在后台自动关联全部支持的图片格式", {
+            "[{}] 安装器初始配置已启用 Picasa 图片查看器，正在后台自动关联全部支持的图片格式",
+            "[{}] Installer initial config enabled Picasa Photo Viewer; registering all supported image associations in background"
+        }},
+        {"安装器初始配置触发 Picasa 图片查看器自动关联失败: error={}", {
+            "[{}] 安装器初始配置触发 Picasa 图片查看器自动关联失败: error={}",
+            "[{}] Failed to register Picasa Photo Viewer associations from installer initial config: error={}"
+        }},
     };
     return catalog;
 }

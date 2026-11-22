@@ -240,19 +240,15 @@ jobs:
           Write-Host "[OK] Applied first-pass signed binaries into deploy_dist." -ForegroundColor Green
         shell: pwsh
 
-      # 打包阶段：在 deploy_dist 完成内层签名后，构建便携 ZIP 与 Inno Setup 安装包
+      # 打包阶段：在 deploy_dist 完成内层签名后，构建规范命名的便携 ZIP 与 Inno Setup 安装包
       - name: Build Portable Archive and Inno Setup Installer
         run: |
           if (-not (Test-Path "Output")) { New-Item -ItemType Directory -Path "Output" -Force | Out-Null }
           $Tag = $env:RELEASE_TAG
           $Ver = $env:RELEASE_VERSION
-          $PortableZip = "Output\Tools3000-win-x64-portable.zip"
-          $GenericPortableZip = "Output\Tools3000-Portable-x64.zip"
           $VersionedPortableZip = "Output\Tools3000-$Tag-win-x64-portable.zip"
-          if (Test-Path $PortableZip) { Remove-Item -Force $PortableZip }
-          Compress-Archive -Path "deploy_dist\*" -DestinationPath $PortableZip -CompressionLevel Optimal -Force
-          Copy-Item -LiteralPath $PortableZip -Destination $GenericPortableZip -Force
-          Copy-Item -LiteralPath $PortableZip -Destination $VersionedPortableZip -Force
+          if (Test-Path -LiteralPath $VersionedPortableZip) { Remove-Item -Force -LiteralPath $VersionedPortableZip }
+          Compress-Archive -Path "deploy_dist\*" -DestinationPath $VersionedPortableZip -CompressionLevel Optimal -Force
 
           $ISCC = if (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue) {
             (Get-Command "ISCC.exe").Source
@@ -340,6 +336,7 @@ jobs:
           pwsh -File .\scripts\sign-artifacts.ps1 -VerifyOnly -Required -RequirePublicTrust -Paths @(
             "deploy_dist\Tools3000.exe",
             "deploy_dist\Tools3000_Service.exe",
+            "deploy_dist\Tools3000_Picasa_Viewer.exe",
             "deploy_dist\Tools3000Core.dll",
             "Output\Tools3000-Setup.exe"
           )
@@ -348,10 +345,7 @@ jobs:
       - name: Generate SHA256SUMS Manifest
         run: |
           $ReleaseArtifacts = @(
-            "Output\Tools3000-Setup.exe",
             "Output\Tools3000-$($env:RELEASE_TAG)-Setup.exe",
-            "Output\Tools3000-Portable-x64.zip",
-            "Output\Tools3000-win-x64-portable.zip",
             "Output\Tools3000-$($env:RELEASE_TAG)-win-x64-portable.zip"
           )
           $ChecksumLines = @()
@@ -375,10 +369,7 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Tools3000 ${{ env.RELEASE_TAG }}
           files: |
-            Output/Tools3000-Setup.exe
             Output/Tools3000-${{ env.RELEASE_TAG }}-Setup.exe
-            Output/Tools3000-Portable-x64.zip
-            Output/Tools3000-win-x64-portable.zip
             Output/Tools3000-${{ env.RELEASE_TAG }}-win-x64-portable.zip
             Output/SHA256SUMS.txt
           fail_on_unmatched_files: true

@@ -63,6 +63,8 @@ export function resolveBridgeTimeoutMs(method: string, params: Record<string, un
   if (
     method === 'search.query' &&
     (params.mode === 'content' ||
+      params.searchMode === 'content' ||
+      params.searchMode === 'both' ||
       params.searchContent === true ||
       (typeof params.query === 'string' && /(?:^|\s)content:/i.test(params.query)))
   ) {

@@ -1,10 +1,21 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { bridgeRequest } from '../hooks/useBridge';
+import {
+  DEFAULT_VISIBLE_TABLE_COLUMNS,
+  doesItemRequireBackendProperty,
+  getColumnDisplayLabel,
+  isBackendExtractableColumn,
+  resolveTableCellText,
+} from './columnCatalog';
 import { IMAGE_EXTENSIONS } from './searchConstants';
-import type { SearchResult } from './searchTypes';
-import { formatFileSize, formatWindowsTime } from './searchUtils';
+import type { PropertyCacheMap, SearchResult, TableColumnId } from './searchTypes';
+import {
+  extractParentDirectoryPath,
+  formatFileSize,
+  formatWindowsTime,
+} from './searchUtils';
 
 interface NativeActionResponse {
   success: boolean;
@@ -59,6 +70,15 @@ export interface UseSearchActionsProps {
   setResults: React.Dispatch<React.SetStateAction<SearchResult[]>>;
   query: string;
   sortedResults: SearchResult[];
+  visibleTableColumns?: readonly TableColumnId[];
+  propertyCache?: PropertyCacheMap;
+  getLatestPropertyCache?: () => PropertyCacheMap;
+  ensureColumnLoadedForSort?: (
+    colId: TableColumnId,
+    colLabel: string,
+    items: SearchResult[],
+  ) => Promise<boolean>;
+  onRecordSearch?: (searchText: string) => void;
 }
 
 export function useSearchActions({
@@ -73,32 +93,40 @@ export function useSearchActions({
   setResults,
   query,
   sortedResults,
+  visibleTableColumns,
+  propertyCache,
+  getLatestPropertyCache,
+  ensureColumnLoadedForSort,
+  onRecordSearch,
 }: UseSearchActionsProps) {
+  void isPinned;
+  void hide;
   const { t } = useTranslation();
+  const exportingCsvRef = useRef(false);
 
   const openResult = useCallback(async (result: SearchResult | undefined) => {
     if (!result) return;
     setActionError('');
     try {
+      onRecordSearch?.(query);
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openFile', 'system.openFile', result.path);
-      if (!isPinned) hide();
     } catch {
       setActionError(t('search.openFailed', 'Could not open this result'));
     }
-  }, [hide, isPinned, setActionError, t]);
+  }, [onRecordSearch, query, setActionError, t]);
 
   const openFolderResult = useCallback(async (result: SearchResult | undefined) => {
     if (!result) return;
     setActionError('');
     try {
+      onRecordSearch?.(query);
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openFolder', 'system.openFolder', result.path);
-      if (!isPinned) hide();
     } catch {
       setActionError(t('search.openFolderFailed', 'Could not open containing folder'));
     }
-  }, [hide, isPinned, setActionError, t]);
+  }, [onRecordSearch, query, setActionError, t]);
 
   const copyPathResult = useCallback((result: SearchResult | undefined) => {
     if (!result) return;
@@ -158,24 +186,24 @@ export function useSearchActions({
       return;
     }
     try {
+      onRecordSearch?.(query);
       await bridgeRequest('capture.pinImageFile', { path: result.path });
-      if (!isPinned) hide();
     } catch {
       toast.error(t('search.toastPinFail', 'Pin failed'));
     }
-  }, [hide, isPinned, t]);
+  }, [onRecordSearch, query, t]);
 
   const openResultAsAdmin = useCallback(async (result: SearchResult | undefined) => {
     if (!result) return;
     setActionError('');
     try {
+      onRecordSearch?.(query);
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openFileAsAdmin', 'system.openFileAsAdmin', result.path);
-      if (!isPinned) hide();
     } catch {
       setActionError(t('search.errRunAsAdmin', 'Failed to run as administrator'));
     }
-  }, [hide, isPinned, setActionError, t]);
+  }, [onRecordSearch, query, setActionError, t]);
 
   const showFileProperties = useCallback(async (result: SearchResult | undefined) => {
     if (!result) return;
@@ -217,13 +245,13 @@ export function useSearchActions({
     if (!result) return;
     setActionError('');
     try {
+      onRecordSearch?.(query);
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openWithNotepad', 'system.openWithNotepad', result.path);
-      if (!isPinned) hide();
     } catch {
       setActionError(t('search.errOpenNotepad', 'Unable to open file with Notepad'));
     }
-  }, [hide, isPinned, setActionError, t]);
+  }, [onRecordSearch, query, setActionError, t]);
 
   const startRename = useCallback((result: SearchResult | undefined) => {
     if (!result) return;
@@ -296,49 +324,110 @@ export function useSearchActions({
     }
   }, [renameTarget, searchInputRef, setRenameTarget, setResults, t]);
 
-  const exportResultsToCsv = useCallback(() => {
+  const exportResultsToCsv = useCallback(async () => {
+    if (exportingCsvRef.current) return;
     if (sortedResults.length === 0) {
       toast.error(t('search.toastNoExport', 'No search results to export'));
       return;
     }
 
-    const headers = [t('search.csvName', 'File Name'), t('search.csvPath', 'Full Path'), t('search.csvType', 'Type'), t('search.csvSizeBytes', 'Size (Bytes)'), t('search.csvSizeHuman', 'Size (Readable)'), t('search.csvModified', 'Modified Time'), t('search.csvCreated', 'Created Time')];
-    const rows = sortedResults.map((item) => {
-      const isDir = item.isDirectory;
-      const typeStr = isDir ? t('search.folderType', 'Folder') : (item.name.includes('.') ? item.name.split('.').pop()?.toUpperCase() || t('search.fileType', 'File') : t('search.fileType', 'File'));
-      const sizeBytes = item.size ?? 0;
-      const sizeFormatted = isDir ? '-' : formatFileSize(sizeBytes, isDir);
-      const modTime = item.lastWriteTime ? formatWindowsTime(item.lastWriteTime) : '-';
-      const createTime = item.creationTime ? formatWindowsTime(item.creationTime) : '-';
+    exportingCsvRef.current = true;
+    const exportCols: TableColumnId[] =
+      visibleTableColumns && visibleTableColumns.length > 0
+        ? Array.from(new Set(visibleTableColumns))
+        : [...DEFAULT_VISIBLE_TABLE_COLUMNS];
+    const translateLabel = (key: string, defaultVal?: string) =>
+      t(key as never, defaultVal as never) as unknown as string;
+    const formatters = { formatFileSize, formatWindowsTime, extractParentDirectoryPath };
+    const escapeCsv = (str: string) => `"${String(str).replace(/"/g, '""')}"`;
 
-      const escapeCsv = (str: string) => `"${str.replace(/"/g, '""')}"`;
+    let usedLoadingToast = false;
+    try {
+      let currentCache = getLatestPropertyCache ? getLatestPropertyCache() : (propertyCache ?? {});
 
-      return [
-        escapeCsv(item.name),
-        escapeCsv(item.path),
-        escapeCsv(typeStr),
-        sizeBytes,
-        escapeCsv(sizeFormatted),
-        escapeCsv(modTime),
-        escapeCsv(createTime)
-      ].join(',');
-    });
+      if (ensureColumnLoadedForSort) {
+        const columnsNeedingFetch = exportCols.filter((colId) => {
+          if (!isBackendExtractableColumn(colId)) return false;
+          return sortedResults.some(
+            (item) =>
+              item.path &&
+              doesItemRequireBackendProperty(item, colId) &&
+              !Object.prototype.hasOwnProperty.call(currentCache[item.path] ?? {}, colId),
+          );
+        });
 
-    const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    const nowStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const queryTag = query.trim() ? `_${query.trim().slice(0, 20).replace(/[/\\:*?"<>|]/g, '_')}` : '';
-    link.setAttribute('download', `Tools3000_Search_Export${queryTag}_${nowStr}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+        if (columnsNeedingFetch.length > 0) {
+          usedLoadingToast = true;
+          toast.loading(
+            t(
+              'search.exportLoadingPropsToast' as never,
+              'Loading extended column properties before exporting CSV...' as never,
+            ) as unknown as string,
+            { id: 'search-csv-export' },
+          );
+          for (const colId of columnsNeedingFetch) {
+            const colLabel = getColumnDisplayLabel(colId, translateLabel);
+            const ok = await ensureColumnLoadedForSort(colId, colLabel, sortedResults);
+            if (!ok) {
+              toast.info(
+                t(
+                  'search.exportCancelledToast' as never,
+                  'CSV export cancelled' as never,
+                ) as unknown as string,
+                { id: 'search-csv-export' },
+              );
+              return;
+            }
+          }
+          currentCache = getLatestPropertyCache ? getLatestPropertyCache() : (propertyCache ?? {});
+        }
+      }
 
-    toast.success(t('search.toastExportSuccess', { count: sortedResults.length, defaultValue: `Successfully exported ${sortedResults.length} search results to CSV file` }));
-  }, [sortedResults, query, t]);
+      const headers = exportCols.map((colId) =>
+        escapeCsv(getColumnDisplayLabel(colId, translateLabel)),
+      );
+      const rows = sortedResults.map((item) => {
+        const propRow = currentCache[item.path];
+        return exportCols
+          .map((colId) => {
+            const text = resolveTableCellText(colId, item, propRow, formatters);
+            return escapeCsv(text || '');
+          })
+          .join(',');
+      });
+
+      const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      const nowStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const queryTag = query.trim() ? `_${query.trim().slice(0, 20).replace(/[/\\:*?"<>|]/g, '_')}` : '';
+      link.setAttribute('download', `Tools3000_Search_Export${queryTag}_${nowStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast.success(
+        t('search.toastExportSuccess', {
+          count: sortedResults.length,
+          defaultValue: `Successfully exported ${sortedResults.length} search results to CSV file`,
+        }),
+        usedLoadingToast ? { id: 'search-csv-export' } : undefined,
+      );
+    } finally {
+      exportingCsvRef.current = false;
+    }
+  }, [
+    ensureColumnLoadedForSort,
+    getLatestPropertyCache,
+    propertyCache,
+    query,
+    sortedResults,
+    t,
+    visibleTableColumns,
+  ]);
 
   return {
     openResult,

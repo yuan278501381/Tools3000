@@ -11,13 +11,16 @@ import {
 } from 'react';
 import { DynamicRowLayout, isSelectedOutsideVirtualRange } from '../searchVirtualization';
 import { SearchResultRow } from './SearchResultRow';
-import { resolveNativeIconRequest } from './searchUtils';
+import { buildTableLayoutMetrics, resolveNativeIconRequest } from './searchUtils';
 import type {
   ColumnLayout,
+  PropertyCacheMap,
   SearchDensity,
   SearchIconStyle,
   SearchResult,
 } from './searchTypes';
+
+const MAX_MEASURED_HEIGHTS_CACHE = 2048;
 
 export interface VirtualSearchResultsProps {
   results: SearchResult[];
@@ -27,15 +30,18 @@ export interface VirtualSearchResultsProps {
   iconCache?: Record<string, string>;
   onRequestIcon?: (ext: string, isDirectory: boolean, filePath?: string) => void;
   columns: ColumnLayout;
+  propertyCache?: PropertyCacheMap;
   queryKeywords: string[];
   onHover: (index: number) => void;
   onSelect: (index: number) => void;
   onOpen: (result: SearchResult) => void;
   onContextMenu: (event: ReactMouseEvent, index: number, result: SearchResult) => void;
+  onVisibleRangeChange?: (range: { start: number; end: number }) => void;
+  onHorizontalScroll?: (scrollLeft: number) => void;
   hidden?: boolean;
 }
 
-/** A dynamic-height virtual list that measures only rows near the viewport. */
+/** 单一表格视图（支持正交全文摘要行展开）的高性能动态行高虚拟列表。 */
 export const VirtualSearchResults = memo(function VirtualSearchResults({
   results,
   selectedIndex,
@@ -44,11 +50,14 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
   iconCache = {},
   onRequestIcon,
   columns,
+  propertyCache,
   queryKeywords,
   onHover,
   onSelect,
   onOpen,
   onContextMenu,
+  onVisibleRangeChange,
+  onHorizontalScroll,
   hidden = false,
 }: VirtualSearchResultsProps) {
   const listRef = useRef<HTMLUListElement>(null);
@@ -63,8 +72,7 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
   const isScrollingRef = useRef(false);
   const scrollEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 跨流式分片持久化已测量的真实 DOM 行高（如含多行代码片段 snippets 的高行），
-  // 杜绝流式追加新结果时重建 DynamicRowLayout 导致已渲染行瞬间坍缩为 56px 引发界面闪烁
+  // 带 LRU 容量上限的已测真实 DOM 行高缓存（跨流式分片保活，防止含多行摘要的结果坍缩闪烁）
   const measuredHeightsRef = useRef<Map<string, number>>(new Map());
   const prevDensityRef = useRef<SearchDensity>(density);
   if (prevDensityRef.current !== density) {
@@ -81,6 +89,9 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
   }, []);
 
   const keywordsKey = useMemo(() => queryKeywords.join('\u0001'), [queryKeywords]);
+  const tableMetrics = useMemo(() => buildTableLayoutMetrics(columns), [columns]);
+  const tableGridTemplate = tableMetrics.gridTemplateColumns;
+  const tableMinWidthPx = tableMetrics.minTableWidthPx;
 
   // 渲染帧同步重置：当查询词或显示状态变更且首项选中时，立即将滚动偏移同步归零，同时保持流式分片追加期间视口零跳动
   const [prevKeywordsState, setPrevKeywordsState] = useState(keywordsKey);
@@ -93,9 +104,8 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
     }
   }
 
-  // 精准校准不同密度模式的行高估算基线 (紧凑 32px / 标准 56px / 宽松 70px)
-  // 与 CSS 中盒模型基准 1:1 绝对对齐，消除普通搜索行测高时反复抖动 Fenwick 树及重算 totalHeight
-  const estimatedHeight = density === 'compact' ? 32 : density === 'comfortable' ? 70 : 56;
+  // 表格视图三档密度基线行高：紧凑 32px / 标准 36px / 宽松 42px
+  const estimatedHeight = density === 'compact' ? 32 : density === 'comfortable' ? 42 : 36;
   const layout = useMemo(() => {
     const nextLayout = new DynamicRowLayout(results.length, estimatedHeight);
     const cache = measuredHeightsRef.current;
@@ -129,6 +139,19 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
   }, [findIndexAtOffset, layoutRevision, results.length, scrollTop, viewportHeight]);
   const selectedOutsideRange = isSelectedOutsideVirtualRange(results.length, selectedIndex, range);
 
+  useEffect(() => {
+    if (!hidden && onVisibleRangeChange) {
+      onVisibleRangeChange({ start: range.start, end: range.end });
+    }
+  }, [hidden, onVisibleRangeChange, range.end, range.start]);
+
+  // 取消隐藏或表头列布局变更时，主动同步表头水平滚动偏移，防止列错位
+  useLayoutEffect(() => {
+    if (!hidden && listRef.current && onHorizontalScroll) {
+      onHorizontalScroll(listRef.current.scrollLeft);
+    }
+  }, [hidden, onHorizontalScroll, tableGridTemplate, tableMinWidthPx]);
+
   const updateViewport = useCallback(() => {
     if (listRef.current) setViewportHeight(listRef.current.clientHeight);
   }, []);
@@ -149,11 +172,28 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
       let changed = false;
       const currentLayout = layoutRef.current;
       const currentResults = resultsRef.current;
+      const heightCache = measuredHeightsRef.current;
       for (const entry of entries) {
-        const index = Number((entry.target as HTMLElement).dataset.virtualIndex);
+        const targetEl = entry.target as HTMLElement;
+        const index = Number(targetEl.dataset.virtualIndex);
+        const targetPath = targetEl.dataset.virtualPath;
         const height = Math.ceil(entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
-        if (Number.isInteger(index) && index >= 0 && index < currentResults.length && height > 0) {
-          measuredHeightsRef.current.set(currentResults[index].path, height);
+        if (!Number.isInteger(index) || index < 0 || index >= currentResults.length || height <= 0) {
+          continue;
+        }
+        const rowItem = currentResults[index];
+        // 严格校验 DOM 绑定路径与当前结果集同槽位路径一致，防止异步测量污染新结果
+        if (targetPath && rowItem.path !== targetPath) {
+          continue;
+        }
+        if (heightCache.has(rowItem.path)) {
+          heightCache.delete(rowItem.path);
+        }
+        heightCache.set(rowItem.path, height);
+        while (heightCache.size > MAX_MEASURED_HEIGHTS_CACHE) {
+          const oldestKey = heightCache.keys().next().value;
+          if (oldestKey === undefined) break;
+          heightCache.delete(oldestKey);
         }
         changed = currentLayout.updateHeight(index, height) || changed;
       }
@@ -187,11 +227,8 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
     prevResultsRef.current = results;
     prevKeywordsKeyRef.current = keywordsKey;
 
-    // 当用户正在主动拖拽滚动条或滚轮滚动时，绝不强行将视口扯回选区
     if (isScrollingRef.current) return;
-    // 选区与结果集均未变更时，绝不因 DOM 行高测量与 layoutRevision 触发视口跳跃
     if (!selectionChanged && !resultsChanged) return;
-    // 流式分片追加期间若选区未发生变化且查询词未变，保持当前视口稳定，不强行扯动滚动条
     if (!selectionChanged && !keywordsChanged) return;
 
     const itemTop = layout.offsetOf(selectedIndex);
@@ -220,7 +257,10 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
       isScrollingRef.current = false;
     }, 150);
     setScrollTop(event.currentTarget.scrollTop);
-  }, []);
+    if (onHorizontalScroll) {
+      onHorizontalScroll(event.currentTarget.scrollLeft);
+    }
+  }, [onHorizontalScroll]);
 
   const getIconBase64 = useCallback((item: SearchResult) => {
     const spec = resolveNativeIconRequest(item);
@@ -251,16 +291,26 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
     }
   }, [hidden, iconCache, iconStyle, onRequestIcon, range.end, range.start, results, selectedIndex, selectedOutsideRange]);
 
+  // 精确对齐像素：数据行内含 12px*2 padding + 1px*2 border = 26px；外层加 left/right 各 8px = 42px
+  const tableSpacerMinWidth = tableMinWidthPx ? `${tableMinWidthPx + 42}px` : undefined;
+  const rowWidthStyle = tableMinWidthPx
+    ? { minWidth: `${tableMinWidthPx + 26}px` }
+    : undefined;
+
   return (
     <ul
       id="search-results"
       ref={listRef}
-      className={`search-results search-results--virtualized density-${density}`}
+      className={`search-results search-results--virtualized density-${density} view-table`}
       role="listbox"
       style={{ display: hidden ? 'none' : undefined }}
       onScroll={handleScroll}
     >
-      <li aria-hidden="true" role="presentation" style={{ height: layout.totalHeight() }} />
+      <li
+        aria-hidden="true"
+        role="presentation"
+        style={{ height: layout.totalHeight(), minWidth: tableSpacerMinWidth }}
+      />
       {results.slice(range.start, range.end).map((result, relativeIndex) => {
         const index = range.start + relativeIndex;
         return (
@@ -270,9 +320,12 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
             index={index}
             selected={index === selectedIndex}
             density={density}
+            tableGridTemplate={tableGridTemplate}
+            tableMinWidthPx={tableMinWidthPx}
             iconStyle={iconStyle}
             iconBase64={getIconBase64(result)}
             columns={columns}
+            rowProperties={propertyCache?.[result.path]}
             queryKeywords={queryKeywords}
             onHover={onHover}
             onSelect={onSelect}
@@ -280,7 +333,7 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
             onContextMenu={onContextMenu}
             measureRef={measureRef}
             setSize={results.length}
-            style={{ position: 'absolute', top: layout.offsetOf(index), left: 0, right: 0 }}
+            style={{ position: 'absolute', top: layout.offsetOf(index), left: 0, right: 0, ...rowWidthStyle }}
           />
         );
       })}
@@ -291,9 +344,12 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
           index={selectedIndex}
           selected
           density={density}
+          tableGridTemplate={tableGridTemplate}
+          tableMinWidthPx={tableMinWidthPx}
           iconStyle={iconStyle}
           iconBase64={getIconBase64(results[selectedIndex])}
           columns={columns}
+          rowProperties={propertyCache?.[results[selectedIndex].path]}
           queryKeywords={queryKeywords}
           onHover={onHover}
           onSelect={onSelect}
@@ -301,7 +357,7 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
           onContextMenu={onContextMenu}
           measureRef={measureRef}
           setSize={results.length}
-          style={{ position: 'absolute', top: layout.offsetOf(selectedIndex), left: 0, right: 0 }}
+          style={{ position: 'absolute', top: layout.offsetOf(selectedIndex), left: 0, right: 0, ...rowWidthStyle }}
         />
       )}
     </ul>

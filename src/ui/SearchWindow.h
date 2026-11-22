@@ -22,12 +22,20 @@ public:
 
     void show(HINSTANCE hInstance);
     void hide();
+    void minimize();
     bool isVisible() const;
+    bool isMinimized() const;
+    bool isForegroundActive() const;
     void destroy();
     void setWindowSize(int baseWidth, int baseHeight, bool forceCenter = false);
     std::pair<int, int> getWindowSize() const;
+    void setMaximized(bool maximized);
+    void toggleMaximized();
+    bool isMaximized() const { return m_isMaximized.load(); }
     void setPinned(bool pinned);
     bool isPinned() const { return m_isPinned.load(); }
+    void dragMove();
+    void showSystemMenu(int screenX = -1, int screenY = -1);
     HWND getHwnd() const { return m_hwnd; }
     void focusSearchIfVisible();
     void triggerQuickLookForSelection();
@@ -49,6 +57,23 @@ public:
             return true;
         }
         return false;
+    }
+
+    /// 原生独立应用窗口样式单一事实源：具备任务栏图标、Alt+Tab、最小化/最大化、Aero Snap 与系统菜单
+    static constexpr DWORD NativeWindowExStyle = WS_EX_APPWINDOW;
+    static constexpr DWORD NativeWindowStyle = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+
+    enum class ToggleAction {
+        ShowOrFocus,
+        Minimize,
+    };
+
+    /// Alt+Space / 托盘呼出行为决策：仅当前台激活可见时最小化到任务栏，其余状态一律拉起聚焦
+    static constexpr ToggleAction resolveToggleAction(
+        bool visible, bool minimized, bool foreground) noexcept {
+        return (visible && !minimized && foreground)
+            ? ToggleAction::Minimize
+            : ToggleAction::ShowOrFocus;
     }
 
     /// 计算窗口非客户区命中测试结果（支持按 DPI 比例校准，全高放行边缘拉伸）
@@ -77,6 +102,7 @@ private:
     bool createWindow(HINSTANCE hInstance);
     void initializeWebView2();
     void updatePlacement();
+    void persistNormalGeometry();
 
     static LRESULT CALLBACK windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
@@ -87,8 +113,10 @@ private:
     WebViewSuspendController m_suspendController;
 
     std::atomic<bool> m_visible{false};
+    std::atomic<bool> m_minimized{false};
     std::atomic<bool> m_webViewReady{false};
     std::atomic<bool> m_isPinned{false};
+    std::atomic<bool> m_isMaximized{false};
     std::atomic<bool> m_menuActive{false};
     std::atomic<bool> m_inSizeMove{false};
     std::atomic<uint64_t> m_lastMenuCloseTick{0};

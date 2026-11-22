@@ -102,6 +102,13 @@ $PortableUrl = "$REPO_URL/releases/download/$Tag/Tools3000-$Tag-win-x64-portable
 $ReleaseUrl  = "$REPO_URL/releases/tag/$Tag"
 
 # ── 1. 生成 Scoop 清单 (bucket/tools3000.json) ──────────────────────────────────
+# 使用显式 List[object] 包装单元素二维数组，避免 PowerShell @(@(...)) 解包导致 ConvertTo-Json 展平为一维数组
+$ScoopBinEntries = [System.Collections.Generic.List[object]]::new()
+$ScoopBinEntries.Add([string[]]@("Tools3000.exe", "tools3000"))
+
+$ScoopShortcutEntries = [System.Collections.Generic.List[object]]::new()
+$ScoopShortcutEntries.Add([string[]]@("Tools3000.exe", "Tools3000"))
+
 $ScoopManifestObj = [ordered]@{
     version      = $Version
     description  = "Lightweight native Windows all-in-one productivity suite: instant NTFS file & content search, QuickLook, screenshot markup, scrolling capture, offline OCR, screen recorder with auto-zoom Studio, and global mouse gestures."
@@ -117,12 +124,8 @@ $ScoopManifestObj = [ordered]@{
             hash = $PortableSha256Lower
         }
     }
-    bin          = @(
-        @("Tools3000.exe", "tools3000")
-    )
-    shortcuts    = @(
-        @("Tools3000.exe", "Tools3000")
-    )
+    bin          = $ScoopBinEntries
+    shortcuts    = $ScoopShortcutEntries
     persist      = "data"
     checkver     = [ordered]@{
         github = $REPO_URL
@@ -276,7 +279,15 @@ if ($Validate) {
     if ($parsedScoop.persist -ne "data") {
         throw "Scoop 清单必须持久化 'data' 目录以保证绿色便携模式配置不丢失。"
     }
-    Write-Host "[OK] Scoop 清单 Schema 与便携持久化校验通过" -ForegroundColor Green
+    if (-not ($parsedScoop.bin -is [System.Array]) -or $parsedScoop.bin.Count -lt 1 -or
+        -not ($parsedScoop.bin[0] -is [System.Array]) -or $parsedScoop.bin[0].Count -lt 2) {
+        throw "Scoop 清单 bin 字段必须为二维嵌套数组（如 [[`"Tools3000.exe`", `"tools3000`"]]），防止被 ConvertTo-Json 展平！"
+    }
+    if (-not ($parsedScoop.shortcuts -is [System.Array]) -or $parsedScoop.shortcuts.Count -lt 1 -or
+        -not ($parsedScoop.shortcuts[0] -is [System.Array]) -or $parsedScoop.shortcuts[0].Count -lt 2) {
+        throw "Scoop 清单 shortcuts 字段必须为二维嵌套数组（如 [[`"Tools3000.exe`", `"Tools3000`"]]），防止被 ConvertTo-Json 展平！"
+    }
+    Write-Host "[OK] Scoop 清单 Schema、二维嵌套数组与便携持久化校验通过" -ForegroundColor Green
 
     $wingetCmd = Get-Command "winget.exe" -ErrorAction SilentlyContinue
     if (-not $wingetCmd) {

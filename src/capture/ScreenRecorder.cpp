@@ -1592,6 +1592,7 @@ void ScreenRecorder::notifyState(RecordState state) {
 ScreenRecorder::~ScreenRecorder() {
     waitForAsyncStop();
     reapFinishedSnapshots(true);
+    clearStudioTransientData();
 }
 
 void ScreenRecorder::setOutOfProcessWorkerOverrideForTest(const std::filesystem::path& exePath) {
@@ -2815,6 +2816,12 @@ void ScreenRecorder::cleanupEncoder(bool& closeOk) {
     m_audioEncodingFailed = false;
     m_headerWritten = false;
     m_gifOptimizer.reset();
+    std::vector<float>{}.swap(m_liveAudioWaveformPeaks);
+    // 仅在非演播室路径或封装异常中止时立即释放实时预览帧牌组与时间轴；
+    // 正常演播室会话由上层 takeLastStudioPreviewDeck()/takeLastStudioTimeline() 接管消费。
+    if (!m_options.studioMode || m_options.format == RecordFormat::GIF || !closeOk) {
+        clearStudioTransientData();
+    }
 }
 
 std::string ScreenRecorder::generateOutputPath(RecordFormat format) const {
@@ -2854,7 +2861,15 @@ StudioTimelineData ScreenRecorder::takeLastStudioTimeline() {
 
 std::vector<cv::Mat> ScreenRecorder::takeLastStudioPreviewDeck() {
     std::lock_guard lock(m_studioDataMutex);
-    return std::move(m_livePreviewDeck);
+    std::vector<cv::Mat> deck;
+    deck.swap(m_livePreviewDeck);
+    return deck;
+}
+
+void ScreenRecorder::clearStudioTransientData() {
+    std::lock_guard lock(m_studioDataMutex);
+    m_lastStudioTimeline = StudioTimelineData{};
+    std::vector<cv::Mat>{}.swap(m_livePreviewDeck);
 }
 
 }  // namespace tools3000::capture

@@ -104,7 +104,7 @@ bool SpotlightOverlay::initialize(HINSTANCE hInstance) {
     m_settings.rightClickColor = cfg.get<std::string>("/spotlight/rightClickColor", "#fb7185");
     m_settings.middleClickColor = cfg.get<std::string>("/spotlight/middleClickColor", "#fbbf24");
 
-    if (!initializeBase(hInstance, SPOTLIGHT_CLASS, L"Tools3000_SpotlightHelperOwner")) {
+    if (!initializeBase(hInstance, SPOTLIGHT_CLASS, L"Tools3000_SpotlightHelperOwner", /*lazyCompositor=*/true)) {
         LOG_ERROR("聚光灯独立渲染线程或 DirectComposition 硬件上下文初始化失败");
         return false;
     }

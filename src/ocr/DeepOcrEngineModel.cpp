@@ -44,6 +44,22 @@ bool readFileBytes(const std::filesystem::path& filePath, std::vector<uint8_t>& 
     return static_cast<size_t>(ifs.gcount()) == outBytes.size();
 }
 
+bool isValidOnnxFileHeader(const std::filesystem::path& filePath, size_t minBytes, size_t maxBytes) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(filePath, ec) || ec) return false;
+    const auto sz = std::filesystem::file_size(filePath, ec);
+    if (ec || sz < minBytes || sz < 16 || sz > maxBytes) return false;
+    std::ifstream ifs(filePath, std::ios::binary);
+    if (!ifs) return false;
+    constexpr size_t kHeaderProbeBytes = 4096;
+    const size_t toRead = static_cast<size_t>((std::min<std::uintmax_t>)(sz, static_cast<std::uintmax_t>(kHeaderProbeBytes)));
+    std::array<uint8_t, kHeaderProbeBytes> header{};
+    ifs.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(toRead));
+    const size_t got = static_cast<size_t>(ifs.gcount());
+    if (got < 16) return false;
+    return DeepOcrEngine::isValidOnnxBuffer(header.data(), got, (std::min)(minBytes, got));
+}
+
 bool loadDictionaryLines(const std::filesystem::path& dictPath, std::vector<std::string>& outKeys) {
     std::ifstream ifs(dictPath, std::ios::binary);
     if (!ifs) return false;
@@ -307,11 +323,18 @@ std::filesystem::path DeepOcrEngine::defaultInstallDirectory() const {
 }
 
 void DeepOcrEngine::setCustomModelDirectoryForTest(const std::filesystem::path& customDir) {
+    bool changed = false;
     {
         std::lock_guard<std::mutex> lock(m_pathMutex);
-        m_customTestModelDir = customDir;
+        if (m_customTestModelDir != customDir) {
+            m_customTestModelDir = customDir;
+            changed = true;
+        }
     }
-    releaseLoadedModels();
+    // 仅在自定义模型目录实际变更时释放已加载模型，避免 Worker 热保活期间同路径请求误销毁已编译 DirectML Session
+    if (changed) {
+        releaseLoadedModels();
+    }
 }
 
 std::filesystem::path DeepOcrEngine::resolveModelDirectory(bool* outInstalled) const {

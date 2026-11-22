@@ -47,6 +47,9 @@ TEST(WebViewSecurityTest, AllowsTrayRequiredMethods) {
     EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"quicklook.hide\"}", Surface::QuickLook));
     EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"general.getSettings\"}", Surface::QuickLook));
     EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"search.quickLook\"}", Surface::Search));
+    EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"search.minimize\"}", Surface::Search));
+    EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"search.showSystemMenu\"}", Surface::Search));
+    EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"search.recordSearch\"}", Surface::Search));
     EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"general.getSettings\"}", Surface::Search));
     EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"quicklook.startDrag\"}", Surface::QuickLook));
     EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"quicklook.stepSelection\"}", Surface::QuickLook));
@@ -67,9 +70,29 @@ TEST(KeyboardPipelineTest, FiltersSystemMenuAndHelpMessages) {
 
     // 普通命令如最大化/最小化/关闭等不能被误拦截
     EXPECT_FALSE(KeyboardPipeline::filterWindowMessage(nullptr, WM_SYSCOMMAND, SC_CLOSE, 0));
+    EXPECT_FALSE(KeyboardPipeline::filterWindowMessage(nullptr, WM_SYSCOMMAND, SC_MINIMIZE, 0));
+    EXPECT_FALSE(KeyboardPipeline::filterWindowMessage(nullptr, WM_SYSCOMMAND, SC_RESTORE, 0));
     EXPECT_FALSE(KeyboardPipeline::filterWindowMessage(nullptr, WM_SYSCOMMAND, SC_MAXIMIZE, 0));
+    EXPECT_FALSE(KeyboardPipeline::filterWindowMessage(nullptr, WM_SYSCOMMAND, SC_MOVE | 0x0002, 0));
     EXPECT_FALSE(KeyboardPipeline::filterWindowMessage(nullptr, WM_KEYDOWN, VK_SPACE, 0));
     EXPECT_FALSE(KeyboardPipeline::filterWindowMessage(nullptr, WM_SYSKEYDOWN, 'A', 0));
+}
+
+TEST(SearchWindowNativeAppContractTest, NativeAppWindowStylesAndTogglePolicy) {
+    using tools3000::ui::SearchWindow;
+    EXPECT_NE(SearchWindow::NativeWindowExStyle & WS_EX_APPWINDOW, 0u);
+    EXPECT_EQ(SearchWindow::NativeWindowExStyle & WS_EX_TOOLWINDOW, 0u);
+    EXPECT_EQ(SearchWindow::NativeWindowExStyle & WS_EX_TOPMOST, 0u);
+    EXPECT_NE(SearchWindow::NativeWindowStyle & WS_MINIMIZEBOX, 0u);
+    EXPECT_NE(SearchWindow::NativeWindowStyle & WS_MAXIMIZEBOX, 0u);
+    EXPECT_NE(SearchWindow::NativeWindowStyle & WS_THICKFRAME, 0u);
+    EXPECT_NE(SearchWindow::NativeWindowStyle & WS_SYSMENU, 0u);
+    EXPECT_NE(SearchWindow::NativeWindowStyle & WS_CLIPCHILDREN, 0u);
+
+    EXPECT_EQ(SearchWindow::resolveToggleAction(true, false, true), SearchWindow::ToggleAction::Minimize);
+    EXPECT_EQ(SearchWindow::resolveToggleAction(true, false, false), SearchWindow::ToggleAction::ShowOrFocus);
+    EXPECT_EQ(SearchWindow::resolveToggleAction(true, true, false), SearchWindow::ToggleAction::ShowOrFocus);
+    EXPECT_EQ(SearchWindow::resolveToggleAction(false, false, false), SearchWindow::ToggleAction::ShowOrFocus);
 }
 
 

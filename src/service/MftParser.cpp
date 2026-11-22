@@ -22,6 +22,19 @@ uint64_t fileTimeToUint64(const FILETIME& value) noexcept {
     return raw.QuadPart;
 }
 
+struct ScopedScanPhaseGuard {
+    std::atomic<uint8_t>& phase;
+    ScopedScanPhaseGuard(std::atomic<uint8_t>& target, MftParser::ScanPhase initial) noexcept
+        : phase(target) {
+        phase.store(static_cast<uint8_t>(initial), std::memory_order_release);
+    }
+    ~ScopedScanPhaseGuard() noexcept {
+        phase.store(static_cast<uint8_t>(MftParser::ScanPhase::Idle), std::memory_order_release);
+    }
+    ScopedScanPhaseGuard(const ScopedScanPhaseGuard&) = delete;
+    ScopedScanPhaseGuard& operator=(const ScopedScanPhaseGuard&) = delete;
+};
+
 }  // namespace
 
 namespace tools3000::service {
@@ -133,6 +146,19 @@ void QueryThreadPool::shutdown() noexcept {
     }
 }
 
+namespace {
+
+thread_local int t_queryPoolTaskDepth = 0;
+
+struct ScopedQueryPoolDepth {
+    ScopedQueryPoolDepth() noexcept { ++t_queryPoolTaskDepth; }
+    ~ScopedQueryPoolDepth() noexcept { --t_queryPoolTaskDepth; }
+    ScopedQueryPoolDepth(const ScopedQueryPoolDepth&) = delete;
+    ScopedQueryPoolDepth& operator=(const ScopedQueryPoolDepth&) = delete;
+};
+
+}  // namespace
+
 void QueryThreadPool::finishOneItem(const std::shared_ptr<JobBatch>& batch) noexcept {
     if (batch->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         std::lock_guard<std::mutex> doneLk(batch->doneMutex);
@@ -162,9 +188,12 @@ bool QueryThreadPool::stealOneTask() {
     if (!picked) {
         return false;
     }
-    try {
-        picked->fn(idx);
-    } catch (...) {
+    {
+        ScopedQueryPoolDepth depthGuard;
+        try {
+            picked->fn(idx);
+        } catch (...) {
+        }
     }
     finishOneItem(picked);
     return true;
@@ -189,7 +218,10 @@ void QueryThreadPool::parallelFor(size_t taskCount, const std::function<void(siz
     if (taskCount == 0 || !fn) {
         return;
     }
-    if (taskCount == 1 || m_workerCount <= 1) {
+    // 嵌套在线程池任务内调用时严禁再次入队等待或跨批次窃取（否则持 shared_lock 线程
+    // 窃取到外部请求的 unique_lock 任务会触发同线程 SRWLock 自死锁），直接同步完成。
+    if (taskCount == 1 || m_workerCount <= 1 || t_queryPoolTaskDepth > 0) {
+        ScopedQueryPoolDepth depthGuard;
         for (size_t i = 0; i < taskCount; ++i) {
             fn(i);
         }
@@ -207,6 +239,7 @@ void QueryThreadPool::parallelFor(size_t taskCount, const std::function<void(siz
         std::unique_lock<std::mutex> lk(m_mutex);
         if (m_stopping || m_workers.empty()) {
             lk.unlock();
+            ScopedQueryPoolDepth depthGuard;
             for (size_t i = 0; i < taskCount; ++i) {
                 fn(i);
             }
@@ -224,29 +257,26 @@ void QueryThreadPool::parallelFor(size_t taskCount, const std::function<void(siz
         }
     }
 
-    // Caller participates immediately and steals queued tasks while waiting,
-    // guaranteeing forward progress even under nested `parallelFor` invocations.
-    while (true) {
-        const size_t myIdx = batch->nextIndex.fetch_add(1, std::memory_order_relaxed);
-        if (myIdx >= taskCount) {
-            break;
+    // 调用方只协作消费当前 batch 自身的分片，绝不跨批次窃取其他请求的任务，
+    // 从根本上阻断跨查询锁层次反转与同线程 SRWLock 共享→独占自死锁。
+    {
+        ScopedQueryPoolDepth depthGuard;
+        while (true) {
+            const size_t myIdx = batch->nextIndex.fetch_add(1, std::memory_order_relaxed);
+            if (myIdx >= taskCount) {
+                break;
+            }
+            try {
+                batch->fn(myIdx);
+            } catch (...) {
+            }
+            finishOneItem(batch);
         }
-        try {
-            batch->fn(myIdx);
-        } catch (...) {
-        }
-        finishOneItem(batch);
     }
 
-    while (batch->remaining.load(std::memory_order_acquire) > 0) {
-        if (stealOneTask()) {
-            continue;
-        }
+    if (batch->remaining.load(std::memory_order_acquire) > 0) {
         std::unique_lock<std::mutex> doneLk(batch->doneMutex);
-        if (batch->remaining.load(std::memory_order_acquire) == 0) {
-            break;
-        }
-        batch->doneCv.wait_for(doneLk, std::chrono::microseconds(250), [&batch]() {
+        batch->doneCv.wait(doneLk, [&batch]() {
             return batch->remaining.load(std::memory_order_acquire) == 0;
         });
     }
@@ -266,8 +296,7 @@ MftParser::~MftParser() {
 }
 
 size_t MftParser::getFileCount() const {
-    std::shared_lock lock(m_MapMutex);
-    return m_Store.size();
+    return m_FileCount.load(std::memory_order_acquire);
 }
 
 uint64_t MftParser::getApproximateIndexBytes() const {
@@ -477,6 +506,7 @@ void MftParser::UsnListenerLoop() {
 
                 if (changed) {
                     m_Store.compactIfSparse();
+                    m_FileCount.store(m_Store.size(), std::memory_order_release);
                     m_IndexGeneration.fetch_add(1, std::memory_order_release);
                     std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
                     m_CachedQuery.clear();
@@ -693,6 +723,14 @@ bool MftParser::Initialize(char driveLetter) {
     m_Initialized = true;
     const std::wstring root{static_cast<wchar_t>(driveLetter), L':', L'\\'};
     m_DriveType = GetDriveTypeW(root.c_str());
+    {
+        wchar_t labelBuf[MAX_PATH + 1]{};
+        if (GetVolumeInformationW(root.c_str(), labelBuf, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0)) {
+            m_VolumeLabel.assign(labelBuf);
+        } else {
+            m_VolumeLabel.clear();
+        }
+    }
 
     std::string volumePath = "\\\\.\\";
     volumePath += driveLetter;
@@ -755,6 +793,9 @@ bool MftParser::QueryUsnJournal() {
 }
 
 void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
+    ScopedScanPhaseGuard phaseGuard(m_ScanPhase, ScanPhase::Scanning);
+    m_ScannedRecords.store(0, std::memory_order_release);
+    m_EstimatedRecords.store(0, std::memory_order_release);
     spdlog::info("Starting high-speed directory walk enumeration for drive {}: ...", driveLetter);
     std::wstring rootPath;
     rootPath += static_cast<wchar_t>(driveLetter);
@@ -779,6 +820,8 @@ void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
         for (const auto& item : batch) {
             m_Store.upsert(item, /*metadataHydrated=*/true);
         }
+        m_FileCount.store(m_Store.size(), std::memory_order_release);
+        m_ScannedRecords.store(static_cast<uint64_t>(count), std::memory_order_release);
         batch.clear();
         m_IndexGeneration.fetch_add(1, std::memory_order_release);
     };
@@ -847,6 +890,11 @@ void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
     }
 
     flushBatch();
+    if (m_StopRequested.load(std::memory_order_acquire)) {
+        spdlog::info("Directory walk enumeration cancelled on drive {}:", driveLetter);
+        return;
+    }
+    m_ScanPhase.store(static_cast<uint8_t>(ScanPhase::BuildingHierarchy), std::memory_order_release);
     {
         std::unique_lock lock(m_MapMutex);
         m_Store.recomputeHierarchyMetadata();
@@ -862,6 +910,7 @@ void MftParser::EnumerateFiles() {
         std::unique_lock lock(m_MapMutex);
         m_Store.clear();
         m_Store.setDriveLetter(m_DriveLetter);
+        m_FileCount.store(0, std::memory_order_release);
     }
     if (m_IsFallbackDirectoryWalk || m_hVolume == INVALID_HANDLE_VALUE) {
         EnumerateFilesViaDirectoryWalk(m_DriveLetter);
@@ -871,6 +920,8 @@ void MftParser::EnumerateFiles() {
         return;
     }
 
+    ScopedScanPhaseGuard phaseGuard(m_ScanPhase, ScanPhase::Scanning);
+    m_ScannedRecords.store(0, std::memory_order_release);
     spdlog::info("Starting MFT enumeration...");
     {
         NTFS_VOLUME_DATA_BUFFER ntfsVolData{};
@@ -893,6 +944,7 @@ void MftParser::EnumerateFiles() {
             estimatedRecords = static_cast<size_t>(
                 std::clamp<uint64_t>(rawSlots, 65536ULL, 8000000ULL));
         }
+        m_EstimatedRecords.store(static_cast<uint64_t>(estimatedRecords), std::memory_order_release);
         std::unique_lock lock(m_MapMutex);
         m_Store.reserve(estimatedRecords);
     }
@@ -945,9 +997,12 @@ void MftParser::EnumerateFiles() {
             dwRetBytes -= parsed.recordLength;
             pRecordBytes += parsed.recordLength;
         }
+        m_FileCount.store(m_Store.size(), std::memory_order_release);
+        m_ScannedRecords.store(static_cast<uint64_t>(count), std::memory_order_release);
         med.StartFileReferenceNumber = *pUsn;
     }
 
+    m_ScanPhase.store(static_cast<uint8_t>(ScanPhase::BuildingHierarchy), std::memory_order_release);
     size_t storeCount = 0;
     uint64_t storeBytes = 0;
     const bool completedFullScan = !m_StopRequested.load(std::memory_order_acquire);
@@ -962,6 +1017,7 @@ void MftParser::EnumerateFiles() {
         // `MED-14`: Read `m_Store.size()` and `m_Store.approximateBytes()` strictly BEFORE
         // releasing `m_MapMutex` so concurrent USN listener / snapshot readers never race.
         storeCount = m_Store.size();
+        m_FileCount.store(storeCount, std::memory_order_release);
         storeBytes = m_Store.approximateBytes();
         if (completedFullScan) {
             m_InitialScanDone.store(true, std::memory_order_release);
@@ -1058,6 +1114,10 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
     }
     if (!next) return false;
 
+    ScopedScanPhaseGuard phaseGuard(m_ScanPhase, ScanPhase::LoadingSnapshot);
+    m_ScannedRecords.store(0, std::memory_order_release);
+    m_EstimatedRecords.store(static_cast<uint64_t>(expectedRecords), std::memory_order_release);
+
     {
         std::unique_lock lock(m_MapMutex);
         m_Store.clear();
@@ -1065,6 +1125,7 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
         m_Store.reserve(expectedRecords);
 
         FileRecordInit scratch;
+        uint64_t imported = 0;
         while (true) {
             scratch.fileName.clear();
             scratch.fileReferenceNumber = 0;
@@ -1076,9 +1137,15 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
             scratch.lastWriteTime = 0;
             if (!next(scratch)) break;
             m_Store.upsert(scratch, /*metadataHydrated=*/false, /*bulkImport=*/true);
+            if ((++imported & 0x1FFFu) == 0) {
+                m_ScannedRecords.store(imported, std::memory_order_release);
+            }
         }
+        m_ScannedRecords.store(imported, std::memory_order_release);
+        m_ScanPhase.store(static_cast<uint8_t>(ScanPhase::BuildingHierarchy), std::memory_order_release);
         m_Store.recomputeHierarchyMetadata();
         m_Store.releaseBuildScratch();
+        m_FileCount.store(m_Store.size(), std::memory_order_release);
         m_InitialScanDone.store(true, std::memory_order_release);
     }
 
@@ -1107,6 +1174,7 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
     if (m_hVolume == INVALID_HANDLE_VALUE || m_IsFallbackDirectoryWalk) {
         return false;
     }
+    ScopedScanPhaseGuard phaseGuard(m_ScanPhase, ScanPhase::Syncing);
 
     if (!QueryUsnJournal()) {
         return false;
@@ -1273,6 +1341,7 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
                 dwRetBytes -= parsed.recordLength;
                 pRecordBytes += parsed.recordLength;
             }
+            m_FileCount.store(m_Store.size(), std::memory_order_release);
         }
     }
 

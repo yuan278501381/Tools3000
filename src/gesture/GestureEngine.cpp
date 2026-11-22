@@ -199,6 +199,8 @@ GestureEngine::GestureEngine() {
 
 bool GestureEngine::start() {
     tools3000::core::TraceId::Scope scope;
+    // 保持全生命周期 1ms 系统时钟精度：经实机对比验证，在 CPU 100% 满载高压下，
+    // 常驻 timeBeginPeriod(1) 是保障手势首帧 0 断线、与 WGestures 2 同级绝对跟手的关键防线。
     if (!m_timerPeriodActive) {
         m_timerPeriodActive = (timeBeginPeriod(1) == TIMERR_NOERROR);
     }

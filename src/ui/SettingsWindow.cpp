@@ -156,12 +156,14 @@ void SettingsWindow::smoothPresent() {
     SetActiveWindow(m_hwnd);
     SetFocus(m_hwnd);
     m_visible = true;
+    m_minimized = false;
 
     if (m_webView) m_suspendController.resume(m_webView.Get(), "settings");
     if (m_controller) {
         m_controller->put_IsVisible(TRUE);
         syncWebViewDpi(m_controller.Get(), m_hwnd);
     }
+    flushPendingEvents();
 
     if (m_showRequestedAt != std::chrono::steady_clock::time_point{}) {
         tools3000::core::PerformanceMonitor::instance().recordLatency(
@@ -239,7 +241,9 @@ void SettingsWindow::destroy() {
         DestroyWindow(hwnd);
     }
     m_visible = false;
+    m_minimized = false;
     m_webViewReady = false;
+    m_pendingEvents.clear();
     tools3000::core::WinUtils::trimWorkingSet();
     LOG_INFO("设置窗口已彻底销毁并释放 WebView2 渲染器");
 }
@@ -526,7 +530,14 @@ void SettingsWindow::onWebView2Ready() {
                 const nlohmann::json envelope = {
                     {"type", "event"}, {"event", eventName}, {"data", data}
                 };
-                const auto msg = tools3000::core::WinUtils::utf8ToWstring(envelope.dump());
+                const std::string payload = envelope.dump();
+                // 隐藏或最小化期间合批暂存最新事件，严禁调用 PostWebMessage 唤醒已挂起 renderer；
+                // 窗口重新呈现或还原时由 flushPendingEvents() 一次性送达前端，确保零状态丢失。
+                if (!isVisible() || m_minimized.load()) {
+                    m_pendingEvents[eventName] = payload;
+                    return;
+                }
+                const auto msg = tools3000::core::WinUtils::utf8ToWstring(payload);
                 m_webView->PostWebMessageAsString(msg.c_str());
             });
         }
@@ -548,6 +559,11 @@ void SettingsWindow::onWebView2Ready() {
                     if (m_showWhenReady) {
                         m_showWhenReady = false;
                         smoothPresent();
+                    } else if (!isVisible() || m_minimized.load()) {
+                        if (m_controller) m_controller->put_IsVisible(FALSE);
+                        if (m_webView) m_suspendController.requestSuspend(m_webView.Get(), "settings");
+                    } else {
+                        flushPendingEvents();
                     }
                     const auto now = std::chrono::steady_clock::now();
                     if (m_initializationStartedAt != std::chrono::steady_clock::time_point{}) {
@@ -714,6 +730,17 @@ void SettingsWindow::navigateTo(const std::string& path) {
     m_webView->ExecuteScript(wScript.c_str(), nullptr);
 }
 
+void SettingsWindow::flushPendingEvents() {
+    if (!m_webView || !m_webViewReady || m_pendingEvents.empty()) return;
+    if (!isVisible() || m_minimized.load()) return;
+    auto pending = std::move(m_pendingEvents);
+    m_pendingEvents.clear();
+    for (const auto& [_, payload] : pending) {
+        const std::wstring wMsg = tools3000::core::WinUtils::utf8ToWstring(payload);
+        m_webView->PostWebMessageAsString(wMsg.c_str());
+    }
+}
+
 void SettingsWindow::pushEventToFrontend(const std::string& eventName, const std::string& dataJson) {
     if (!tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
         tools3000::core::MainThreadDispatcher::instance().post(
@@ -723,6 +750,10 @@ void SettingsWindow::pushEventToFrontend(const std::string& eventName, const std
     if (!m_webView || !m_webViewReady) return;
 
     std::string envelope = R"({"type":"event","event":")" + eventName + R"(","data":)" + dataJson + "}";
+    if (!isVisible() || m_minimized.load()) {
+        m_pendingEvents[eventName] = std::move(envelope);
+        return;
+    }
     std::wstring wMsg = tools3000::core::WinUtils::utf8ToWstring(envelope);
     m_webView->PostWebMessageAsString(wMsg.c_str());
 }
@@ -862,6 +893,25 @@ LRESULT CALLBACK SettingsWindow::windowProc(HWND hwnd, UINT msg, WPARAM wParam, 
 
         case WM_SIZE: {
             if (self) {
+                if (wParam == SIZE_MINIMIZED) {
+                    self->m_minimized = true;
+                    if (self->m_controller) {
+                        self->m_controller->put_IsVisible(FALSE);
+                    }
+                    if (self->m_webView) {
+                        // 最小化仅执行 TrySuspend 冻结渲染器 CPU/GPU，严禁启动销毁定时器以完整保护表单草稿与滚动位置
+                        self->m_suspendController.requestSuspend(self->m_webView.Get(), "settings");
+                    }
+                    return 0;
+                }
+
+                const bool restoredFromMinimize = self->m_minimized.exchange(false);
+                if (restoredFromMinimize) {
+                    if (self->m_webView) {
+                        self->m_suspendController.resume(self->m_webView.Get(), "settings");
+                    }
+                }
+
                 const bool maxState = (wParam == SIZE_MAXIMIZED || IsZoomed(hwnd));
                 nlohmann::json data = {{"isMaximized", maxState}};
                 self->pushEventToFrontend("window:maximizedChanged", data.dump());
@@ -885,6 +935,9 @@ LRESULT CALLBACK SettingsWindow::windowProc(HWND hwnd, UINT msg, WPARAM wParam, 
                     if (IsWindowVisible(hwnd)) {
                         self->m_controller->put_IsVisible(TRUE);
                     }
+                }
+                if (restoredFromMinimize) {
+                    self->flushPendingEvents();
                 }
             }
             return 0;

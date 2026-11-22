@@ -827,6 +827,7 @@ void QuickLookWindow::show(const std::wstring& filePath, HINSTANCE hInstance) {
     m_visible = true;
 
     if (m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, IDT_IDLE_DESTROY);
         syncQuickLookWindowTheme(m_hwnd);
         if (!wasAlreadyVisible) {
             updatePlacement();
@@ -839,6 +840,9 @@ void QuickLookWindow::show(const std::wstring& filePath, HINSTANCE hInstance) {
         SetFocus(m_hwnd);
         m_visible = true;
 
+        if (m_webView) {
+            m_suspendController.resume(m_webView.Get(), "quicklook");
+        }
         if (m_controller) {
             m_controller->put_IsVisible(TRUE);
             m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
@@ -963,6 +967,8 @@ void QuickLookWindow::hide() {
         ShowWindow(m_hwnd, SW_HIDE);
         m_visible = false;
         if (m_controller) m_controller->put_IsVisible(FALSE);
+        if (m_webView) m_suspendController.requestSuspend(m_webView.Get(), "quicklook");
+        SetTimer(m_hwnd, IDT_IDLE_DESTROY, IDLE_DESTROY_TIMEOUT_MS, nullptr);
         tools3000::core::WinUtils::trimWorkingSet();
 
         // 若搜索窗口仍处于显示状态（用户从 Alt+Space 搜索窗口唤起预览），关闭预览后自动将焦点归还给搜索窗口
@@ -979,6 +985,7 @@ bool QuickLookWindow::isVisible() const {
 }
 
 void QuickLookWindow::destroy() {
+    m_suspendController.abandon();
     ++m_generation;
     ++m_previewRequestId;
     shutdownAsyncWorker();
@@ -987,6 +994,9 @@ void QuickLookWindow::destroy() {
     clearCachedPinDataUri();
     m_currentIsPdfPreview.store(false, std::memory_order_release);
     clearMediaHostMapping();
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, IDT_IDLE_DESTROY);
+    }
     if (m_controller) {
         m_controller->Close();
         m_controller = nullptr;
@@ -1000,6 +1010,7 @@ void QuickLookWindow::destroy() {
     }
     m_visible = false;
     m_webViewReady = false;
+    tools3000::core::WinUtils::trimWorkingSet();
 }
 
 void QuickLookWindow::updatePlacement() {
@@ -1026,6 +1037,7 @@ void QuickLookWindow::updatePlacement() {
 }
 
 bool QuickLookWindow::createWindow(HINSTANCE hInstance) {
+    m_suspendController.reset();
     WNDCLASSEXW wc{};
     const HMONITOR monitor = tools3000::core::dpi::activeMonitor();
     const RECT work = tools3000::core::dpi::workArea(monitor);
@@ -1256,12 +1268,16 @@ void QuickLookWindow::initializeWebView2() {
                         EventRegistrationToken token;
                         m_webView->add_NavigationCompleted(
                             Callback<ICoreWebView2NavigationCompletedEventHandler>(
-                                [this](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+                                [this, generation](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+                                    if (generation != m_generation.load()) return S_OK;
                                     BOOL success;
                                     args->get_IsSuccess(&success);
                                     if (success) {
                                         m_webViewReady = true;
-                                        if (!m_pendingFilePath.empty()) {
+                                        if (!m_visible.load()) {
+                                            if (m_controller) m_controller->put_IsVisible(FALSE);
+                                            if (m_webView) m_suspendController.requestSuspend(m_webView.Get(), "quicklook");
+                                        } else if (!m_pendingFilePath.empty()) {
                                             previewFile(m_pendingFilePath);
                                         }
                                     }
@@ -1295,6 +1311,17 @@ LRESULT CALLBACK QuickLookWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
     auto* self = reinterpret_cast<QuickLookWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 
     switch (uMsg) {
+        case WM_TIMER: {
+            if (wParam == IDT_IDLE_DESTROY) {
+                KillTimer(hwnd, IDT_IDLE_DESTROY);
+                if (self && !self->isVisible()) {
+                    LOG_INFO("QuickLookWindow: idle 60s, destroying WebView2 and releasing memory");
+                    self->destroy();
+                }
+                return 0;
+            }
+            break;
+        }
         case WM_ERASEBKGND:
             return 1;
         case WM_PAINT: {

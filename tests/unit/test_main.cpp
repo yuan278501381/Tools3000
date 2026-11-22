@@ -75,6 +75,7 @@
 #include "ui/WebViewSuspend.h"
 #include "ui/KeyboardPipeline.h"
 #include "service/PipeEndpoint.h"
+#include "search/SearchPropertyExtractor.h"
 #include "ui/WebViewWindowStyle.h"
 #include "capture/CaptureToolbarLayout.h"
 #include "capture/CaptureDropdownMenu.h"

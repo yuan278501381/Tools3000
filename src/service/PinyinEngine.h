@@ -25,6 +25,19 @@ public:
         std::wstring& outFull
     );
 
+    // Compact initials-only builder used by FileIndexStore so full pinyin does not need to stay resident in StringArena.
+    static void BuildNormalizedInitials(
+        std::wstring_view text,
+        std::string& scratchAsciiInitials,
+        std::wstring& outInitials
+    );
+
+    // On-demand normalized full-pinyin builder used lazily during query evaluation when initials do not match.
+    static void BuildNormalizedFull(
+        std::wstring_view text,
+        std::wstring& outFull
+    );
+
     static wchar_t GetFirstLetter(wchar_t ch) noexcept;
     static std::wstring GetCharPinyin(wchar_t ch);
 };

@@ -256,6 +256,7 @@ public:
     StudioRenderConfig lastStudioConfig() const;
     StudioTimelineData takeLastStudioTimeline();
     std::vector<cv::Mat> takeLastStudioPreviewDeck();
+    void clearStudioTransientData();
 
 private:
     struct FrameTimings {

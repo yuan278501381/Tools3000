@@ -1,5 +1,8 @@
 #pragma once
 
+#include "core/config/ConfigManager.h"
+#include "core/i18n/UiI18n.h"
+
 #include <windows.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -11,6 +14,21 @@
 #include <vector>
 
 namespace tools3000::search {
+
+/// 根据有效界面语言判定未显式配置时的默认拼音搜索开关：
+/// - 中文语境 (zh-CN / zh-TW) 默认开启，开箱支持汉语拼音首字母与全拼；
+/// - 非中文语境 (en-US / ja-JP / ko-KR / ru-RU / pt-BR / es-ES) 默认关闭，彻底消除日文汉字 (Kanji) 等假阳性碰撞。
+inline constexpr bool defaultPinyinEnabledForUiLanguage(tools3000::core::UiLanguage lang) noexcept {
+    return lang == tools3000::core::UiLanguage::ZhCN ||
+           lang == tools3000::core::UiLanguage::ZhTW;
+}
+
+/// 解析当前生效的拼音搜索开关：用户显式保存的 `/search/pinyinEnabled` 始终优先，未配置时按有效语言自适应。
+inline bool resolveEffectivePinyinEnabled(
+    const tools3000::core::ConfigManager& cfg,
+    tools3000::core::UiLanguage effectiveUiLang = tools3000::core::UiI18n::getEffectiveLanguage()) {
+    return cfg.get<bool>("/search/pinyinEnabled", defaultPinyinEnabledForUiLanguage(effectiveUiLang));
+}
 
 inline std::string normalizeExtensionToken(std::string_view raw) {
     while (!raw.empty() && (raw.front() == '.' || std::isspace(static_cast<unsigned char>(raw.front())))) {

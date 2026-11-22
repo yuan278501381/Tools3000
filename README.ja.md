@@ -89,6 +89,7 @@ Tools3000 は、日々の業務で頻繁に使う **高速ファイル検索、�
 | **画面録画 ＆ 自動ズームスタジオ** | キー・クリック表示付きの画面録画後、そのままスタジオ画面へ移行。クリック箇所へのスマート自動ズーム、厳選背景、波形タイムライン編集に対応し、**MP4**・**軽量 GIF（WeChat 等向け）**・**高品質アニメーション WebP** をワンクリックで書き出せます。 |
 | **グローバルマウスジェスチャー** | 右クリックドラッグだけでタブ切替・戻る・ウィンドウ閉じを完結。ホールド中の即時実行、画面端でのホイール音量調整、アプリ別カスタムルール、フルスクリーンゲーム自動回避に対応します。 |
 | **プレゼン演出 ＆ リモート支援** | 画面共有向けキー入力表示と `Ctrl` 2 回押しスポットライト、標準「開く / 保存」ダイアログのクイック移動バー、mstsc・RustDesk・ToDesk・AnyDesk などのリモート環境向けショートカット透過と修飾キー固着解除を備えます。 |
+| **Picasa フォトビューアー（Rust 再現・オプション）** | Rust + Direct2D で再現した軽量 Picasa 風画像ビューアー（**閲覧専用・オリジナル Google Picasa 全機能版ではありません**）。**2 MB 未満の単一バイナリかつ外部ランタイム依存ゼロで、Tools3000 連携はもちろん単体でもそのまま独立動作**します。インストーラー既定ではオフ、有効化すると対応 41 形式を一括自動関連付け（定番ポラロイドアイコン＆ダーク／ライト対応 Direct2D 設定画面付き）。カーソル基準の滑らかズームやフィルムストリップ波紋・クロスディゾルブ・スライドショーを忠実に再現しつつ、**オリジナルに無かった最新機能を補完**：4K High-DPI（100%–250%+）鮮明描画、60–240Hz VSync、WebP / AVIF / HEIC / SVG / QOI / DDS / カメラ RAW、アニメーション再生コントロール、可逆反転、8 言語 UI に対応。 |
 
 ---
 
@@ -109,8 +110,8 @@ scoop install tools3000/tools3000
 
 最新バージョンは **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases/latest)** からダウンロードできます：
 
-- **標準インストーラー（`Tools3000-Setup.exe`）** — 日常利用におすすめ。コンポーネント選択、自動起動、シームレスな上書きアップデートに対応します。
-- **ポータブル版（`Tools3000-Portable-x64.zip`）** — 解凍するだけで即利用可能。設定やデータはすべて展開先フォルダー内に保存されます。
+- **標準インストーラー（`Tools3000-vX.Y.Z-Setup.exe`）** — 日常利用におすすめ。コンポーネント選択、自動起動、シームレスな上書きアップデートに対応します。
+- **ポータブル版（`Tools3000-vX.Y.Z-win-x64-portable.zip`）** — 解凍するだけで即利用可能。設定やデータはすべて展開先フォルダー内に保存されます。
 - **チェックサム（`SHA256SUMS.txt`）** — 各リリースの SHA-256 整合性検証ハッシュを同梱しています。
 
 > **動作環境**：Windows 10（1809 以降）/ Windows 11 / Windows Server 2019–2025。ソース・ビルド基盤は `x64`・`ARM64` ネイティブ対応（GitHub Releases では現在 `x64` ビルド済みインストーラー／ポータブル版を配布中。ARM64 環境は[開発者ガイド](docs/DEVELOPER.md)に沿ってネイティブビルド、または `x64` 版を直接実行可能）、標準の Microsoft Edge WebView2 Runtime が必要です。アプリ UI は日本語を含む 8 言語にネイティブ対応し、既定で OS 言語に自動追従します。
@@ -121,7 +122,7 @@ scoop install tools3000/tools3000
 
 1. **SHA-256 整合性チェック**：PowerShell でローカルのハッシュを算出し `SHA256SUMS.txt` と照合できます：
    ```powershell
-   Get-FileHash .\Tools3000-Setup.exe -Algorithm SHA256
+   Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **VirusTotal 公開スキャン確認**：**[VirusTotal](https://www.virustotal.com/)** に SHA-256 を入力する（または今後の Release ノート記載の直リンクを開く）ことで、70 以上のセキュリティエンジンの結果を公開確認できます。
 3. **Windows Defender SmartScreen 警告について**：個人 OSS で商用 EV 署名／公的信頼署名（SignPath 等を準備中）が未適用、または新バージョン直後のレピュテーション蓄積前は「Windows によって PC が保護されました」と表示される場合があります。SHA-256 と VirusTotal を確認のうえ **「詳細情報 -> 実行」** で続行するか、**[開発者ガイド](docs/DEVELOPER.md)** からソースビルドしてください。
@@ -132,6 +133,8 @@ scoop install tools3000/tools3000
 ## 開発のきっかけ
 
 私は **Everything** を 10 年以上愛用してきました。スクリーンショットは **QQ・WeChat の内蔵キャプチャ** から始まり、注釈が便利な **FastStone Capture** へ、さらに画面上にピン留めできる **Snipaste** へと移り、スクロール撮影・虫眼鏡注釈・OCR が必要になって **PixPin** へ。マウスジェスチャーは **WGestures** から **WGestures 2** を使い、画面録画ツールもいくつも乗り換え、途中で Microsoft **PowerToys** も試してみましたが、どうしても日常の必須機能がいくつか足りず、結局また複数の常駐アプリに戻ってしまいました。
+
+画像ビューアーも同じ悩みでした。国内製フリービューアーの多くは広告やバンドルが多く、Google が **Picasa** を終了してからは **FastStone Image Viewer** や Everything 作者公式の画像ビューアー（**Void Image Viewer**）などいくつも試したものの、Picasa 特有の軽快な手触りと心地よい演出には届かず、最終的には諦めて Windows 標準のフォトアプリで妥協していました。そこで Rust + Direct2D で軽量な Picasa フォトビューアーを自分の手で再現し（2 MB 未満・外部依存ゼロで単体利用も可能）、当時なかった高 DPI 鮮明化や WebP/AVIF/HEIC/SVG/RAW などの最新形式まで一気に補完しました。
 
 ある日 Windows のタスクトレイに並ぶいくつもの常駐アイコンを眺めながら、**「これらが 1 つのアプリにまとまればいいのに」**と思いました。さらに、PixPin の OCR は精度・速度ともに WeChat に及ばないと感じており、WGestures もある日から画面に小さなテキストボックスが居座って再起動しないと消えない現象に悩まされていました。AI 時代の追い風もあり、それなら自分で作ろうと手掛けたオールインワンツールが **Tools3000** です。
 
@@ -148,10 +151,10 @@ scoop install tools3000/tools3000
 | 定番の単機能ツール | Tools3000 がカバーする日常ワークフロー | 専用ツールの併用をおすすめする場面 |
 | :--- | :--- | :--- |
 | **Everything** | `Alt + Space` によるミリ秒ファイル名・`content:` 全文検索（オンデマンド起動で常駐負荷ゼロ） | HTTP/ETP ネットワーク共有検索、EXIF 等全プロパティ列ソート、`es.exe` CLI 連携が必要な場合 |
-| **QuickLook** | 検索結果上で `Space` を押すだけで画像・Office・PDF・コード・CAD・PSD・3D モデルを即プレビュー | デスクトップやエクスプローラー上の任意のフォルダから直接スペースプレビューしたい場合 |
 | **Snipaste / PixPin / Rapture** | `F1` キャプチャ注釈、破線ルーペ、スクロール撮影、`F3` ピン留めグループ、高速オフライン OCR（選択コピー・その場文字修正） | 特殊レガシー GUI の極限スナップ検出や独自 CLI キャプチャ連携に依存する場合 |
 | **WGestures / StrokesPlus** | 右ドラッグ操作、ホールド中即時実行、画面端ホイール音量、ホットコーナー、ゲーム自動回避、Lua 拡張 | 複雑なマルチボタン同時押しや高度なウィンドウ領域条件・既存マクロ資産を使う場合 |
 | **画面録画ツール（ShareX 等）** | 画面録画、キー表示、自動ズームスタジオ（波形編集＆カーソル自動ズーム）、MP4 / GIF / WebP ワンクリック出力 | 80 以上のクラウド / S3 / FTP 自動アップロードや複雑な FFmpeg 後処理パイプラインを使う場合 |
+| **Picasa ビューアー / FastStone / Windows フォト** | 2 MB 未満・依存ゼロの Rust 再現軽量 Picasa ビューアー（単体起動可）。定番アニメを再現しつつ 4K High-DPI・WebP/AVIF/HEIC/SVG/RAW・可逆反転を補完 | オリジナル Google Picasa のアルバム管理・顔認識や、本格的なバッチ変換／RAW 現像が必要な場合 |
 
 ---
 
@@ -182,6 +185,18 @@ scoop install tools3000/tools3000
 - **不具合報告**：**[Bug Report テンプレート](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** から環境と再現手順をお知らせください。
 - **機能提案**：**[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** や **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)** で気軽にアイデアを共有いただけます。
 - **Pull Request 共創**：コントリビューションを大歓迎しています。詳細は **[開発者ガイド](docs/DEVELOPER.md)**・**[パッケージ管理ガイド](packaging/README.md)** を参照してください。
+
+---
+
+## Star History
+
+<a href="https://www.star-history.com/#yuan278501381/Tools3000&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+ </picture>
+</a>
 
 ---
 

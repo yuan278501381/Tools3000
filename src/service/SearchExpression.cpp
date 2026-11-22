@@ -1,4 +1,5 @@
 #include "SearchExpression.h"
+#include "PinyinEngine.h"
 #include "SearchRequestLimits.h"
 #include "content/ContentSearchEngine.h"
 #include "content/RustContentKernel.h"
@@ -348,6 +349,30 @@ void stripOuterQuotes(std::wstring& value) {
     }
 }
 
+void populateClausePinyinPattern(SearchClause& clause) {
+    clause.pinyinPattern.clear();
+    clause.pinyinPattern.reserve(clause.pattern.size());
+    clause.isAsciiOnly = !clause.pattern.empty();
+    bool hasAlpha = false;
+    for (wchar_t ch : clause.pattern) {
+        if (ch >= L'a' && ch <= L'z') {
+            hasAlpha = true;
+            clause.pinyinPattern.push_back(ch);
+        } else if (ch == L'\'') {
+            // 忽略拼音音节分隔符 (如 tong'xi -> tongxi)，保留连字符 '-' 以避免 e-mail / xykj-cg 失真
+            continue;
+        } else if (ch == L'*' || ch == L'?' || ch == L'.' || ch == L'_' || ch == L'-' ||
+                   (ch >= L'0' && ch <= L'9')) {
+            clause.pinyinPattern.push_back(ch);
+        } else {
+            clause.isAsciiOnly = false;
+        }
+    }
+    if (!hasAlpha || clause.pinyinPattern.empty()) {
+        clause.isAsciiOnly = false;
+    }
+}
+
 SearchClause parseSingleToken(const RawQueryToken& rawTok, const SearchParseOptions& options) {
     SearchClause clause;
     std::wstring token = rawTok.text;
@@ -362,26 +387,17 @@ SearchClause parseSingleToken(const RawQueryToken& rawTok, const SearchParseOpti
             clause.pattern = SearchExpression::normalize(token);
             clause.hasWildcard = clause.pattern.find(L'*') != std::wstring::npos ||
                                  clause.pattern.find(L'?') != std::wstring::npos;
+            populateClausePinyinPattern(clause);
             return clause;
+        }
+        if (token.find(L'/') != std::wstring::npos || token.find(L'\\') != std::wstring::npos) {
+            token = normalizePathSeparators(token);
         }
         clause.rawPattern = token;
         clause.pattern = SearchExpression::normalize(token);
         clause.hasWildcard = clause.pattern.find(L'*') != std::wstring::npos ||
                              clause.pattern.find(L'?') != std::wstring::npos;
-        clause.pinyinPattern.reserve(clause.pattern.size());
-        clause.isAsciiOnly = !clause.pattern.empty();
-        for (wchar_t ch : clause.pattern) {
-            if (ch >= L'a' && ch <= L'z') {
-                clause.pinyinPattern.push_back(ch);
-            } else if (ch == L'\'' || ch == L'-') {
-                continue;
-            } else {
-                clause.isAsciiOnly = false;
-            }
-        }
-        if (clause.pinyinPattern.empty()) {
-            clause.isAsciiOnly = false;
-        }
+        populateClausePinyinPattern(clause);
         return clause;
     }
 
@@ -395,6 +411,7 @@ SearchClause parseSingleToken(const RawQueryToken& rawTok, const SearchParseOpti
             clause.pattern = SearchExpression::normalize(token);
             clause.hasWildcard = clause.pattern.find(L'*') != std::wstring::npos ||
                                  clause.pattern.find(L'?') != std::wstring::npos;
+            populateClausePinyinPattern(clause);
             return clause;
         }
     }
@@ -660,22 +677,7 @@ SearchClause parseSingleToken(const RawQueryToken& rawTok, const SearchParseOpti
     clause.rawPattern = token;
     clause.pattern = SearchExpression::normalize(token);
     clause.hasWildcard = clause.pattern.find(L'*') != std::wstring::npos || clause.pattern.find(L'?') != std::wstring::npos;
-
-    clause.pinyinPattern.reserve(clause.pattern.size());
-    clause.isAsciiOnly = !clause.pattern.empty();
-    for (wchar_t ch : clause.pattern) {
-        if (ch >= L'a' && ch <= L'z') {
-            clause.pinyinPattern.push_back(ch);
-        } else if (ch == L'\'' || ch == L'-') {
-            // 忽略拼音音节分隔符 (如 tong'xi -> tongxi)
-            continue;
-        } else {
-            clause.isAsciiOnly = false;
-        }
-    }
-    if (clause.pinyinPattern.empty()) {
-        clause.isAsciiOnly = false;
-    }
+    populateClausePinyinPattern(clause);
     return clause;
 }
 
@@ -783,9 +785,10 @@ bool isClauseRecordLocalOnly(const SearchClause& clause, bool requiresFullPath) 
         case SearchFilterType::Extension:
         case SearchFilterType::Drive:
         case SearchFilterType::Exact:
-        case SearchFilterType::PinyinOnly:
         case SearchFilterType::Content:
             return true;
+        case SearchFilterType::PinyinOnly:
+            return !clause.hasPathSeparator;
         case SearchFilterType::FileOnly:
         case SearchFilterType::FolderOnly:
             return clause.pattern.empty() || !requiresFullPath || isPureSuffixWildcardPattern(clause.rawPattern);
@@ -814,10 +817,12 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
             clause.slashAllowBranchA = false;
             clause.slashAllowBranchB = false;
             clause.slashLeafCaseSensitive = false;
+            clause.slashLeafAllowPinyin = false;
             clause.slashBranchADirMask = 0;
             clause.slashBranchBDirMask = 0;
             clause.slashLeafPrefix.clear();
             clause.slashLeafSuffix.clear();
+            clause.slashLeafContains.clear();
 
             if (clause.filterType == SearchFilterType::Regex) {
                 m_hasRegexClause = true;
@@ -959,12 +964,29 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
         }
     }
 
-    // `U-05`: Precompile slash-separated path fragment clauses (`A\B\C`, `service\main.cpp`,
+    // `U-05`: Precompile slash-separated path fragment clauses (`A\B\C`, `gzml\user`, `*gzml*\*user*`,
     // `parent:src\service`, etc.) into ancestor directory bitmask predicates + leaf name
-    // prefix/suffix checks so non-matching records are rejected in O(1) without `buildFullPath`.
+    // prefix/suffix/contains checks (with CJK Pinyin awareness) so non-matching records are rejected
+    // in O(1) without `buildFullPath`.
     if (m_requiresFullPath) {
         size_t nextPredBit = groupCount;
-        auto allocDirPred = [&](DirSegMatchOp op, std::wstring_view needle, bool cs, uint64_t& outMask) -> bool {
+        auto isAsciiAlphaCandidate = [](std::wstring_view s) noexcept {
+            bool hasAlpha = false;
+            for (wchar_t ch : s) {
+                if (ch >= 0x80) return false;
+                if ((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z')) {
+                    hasAlpha = true;
+                }
+            }
+            return hasAlpha;
+        };
+
+        auto allocDirPred = [&](DirSegMatchOp op,
+                                std::wstring_view needle,
+                                bool cs,
+                                bool allowPy,
+                                bool forcePy,
+                                uint64_t& outMask) -> bool {
             if (needle.empty()) {
                 return true;
             }
@@ -972,9 +994,14 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
                 needle.size() == 2 && std::iswalpha(needle[0]) && needle[1] == L':';
             const bool effectiveCs = isDriveToken ? false : cs;
             std::wstring storedNeedle = effectiveCs ? std::wstring(needle) : normalize(needle);
+            const bool effectiveAllowPy =
+                !effectiveCs && !isDriveToken && allowPy && isAsciiAlphaCandidate(storedNeedle);
+            const bool effectiveForcePy = effectiveAllowPy && forcePy;
             for (const auto& existing : m_slashDirPredicates) {
                 if (existing.op == op &&
                     existing.caseSensitive == effectiveCs &&
+                    existing.allowPinyin == effectiveAllowPy &&
+                    existing.forcePinyin == effectiveForcePy &&
                     existing.needle == storedNeedle) {
                     outMask |= (1ULL << existing.bitIndex);
                     return true;
@@ -987,6 +1014,8 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
             m_slashDirPredicates.push_back(DirSegmentPredicate{
                 op,
                 effectiveCs,
+                effectiveAllowPy,
+                effectiveForcePy,
                 bitIdx,
                 std::move(storedNeedle),
             });
@@ -1012,6 +1041,30 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
             return segs;
         };
 
+        auto extractWildcardFreeRuns = [](std::wstring_view seg) {
+            std::vector<std::wstring_view> runs;
+            size_t i = 0;
+            while (i < seg.size()) {
+                while (i < seg.size() && (seg[i] == L'*' || seg[i] == L'?')) ++i;
+                const size_t start = i;
+                while (i < seg.size() && seg[i] != L'*' && seg[i] != L'?') ++i;
+                if (i > start) {
+                    runs.push_back(seg.substr(start, i - start));
+                }
+            }
+            return runs;
+        };
+
+        auto extractLongestWildcardFreeRun = [&](std::wstring_view seg) -> std::wstring_view {
+            std::wstring_view best{};
+            for (std::wstring_view run : extractWildcardFreeRuns(seg)) {
+                if (run.size() > best.size()) {
+                    best = run;
+                }
+            }
+            return best;
+        };
+
         for (auto& group : m_orGroups) {
             for (auto& clause : group.clauses) {
                 const bool effCs =
@@ -1019,41 +1072,66 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
                 const std::wstring_view effPat = effCs
                     ? std::wstring_view(clause.rawPattern)
                     : std::wstring_view(clause.pattern);
+                const bool clauseForcePy = (clause.filterType == SearchFilterType::PinyinOnly);
+                const bool clauseAllowPy =
+                    !effCs &&
+                    clause.filterType != SearchFilterType::NoPinyin &&
+                    clause.filterType != SearchFilterType::CaseSensitive &&
+                    (m_pinyinEnabled || clauseForcePy);
 
                 if (clause.filterType == SearchFilterType::Parent &&
-                    !clause.parentDriveRootOnly && !clause.hasWildcard &&
+                    !clause.parentDriveRootOnly &&
                     !effPat.empty() && effPat.find(L'/') == std::wstring_view::npos) {
-                    if (effPat.find(L'\\') == std::wstring_view::npos) {
-                        uint64_t mask = 0;
-                        if (allocDirPred(DirSegMatchOp::Contains, effPat, effCs, mask) && mask != 0) {
-                            clause.hasSlashPreFilter = true;
-                            clause.slashAllowBranchA = true;
-                            clause.slashAllowBranchB = false;
-                            clause.slashBranchADirMask = mask;
-                            clause.slashLeafCaseSensitive = effCs;
-                        }
-                    } else {
-                        const auto segs = splitBackslashSegments(effPat);
-                        bool validMiddle = segs.size() >= 2;
-                        for (size_t i = 1; validMiddle && i + 1 < segs.size(); ++i) {
-                            if (segs[i].empty()) validMiddle = false;
-                        }
-                        if (validMiddle) {
+                    if (!clause.hasWildcard) {
+                        if (effPat.find(L'\\') == std::wstring_view::npos) {
                             uint64_t mask = 0;
-                            bool ok = allocDirPred(DirSegMatchOp::Suffix, segs.front(), effCs, mask);
-                            for (size_t i = 1; ok && i + 1 < segs.size(); ++i) {
-                                ok = allocDirPred(DirSegMatchOp::Exact, segs[i], effCs, mask);
-                            }
-                            if (ok) {
-                                ok = allocDirPred(DirSegMatchOp::Prefix, segs.back(), effCs, mask);
-                            }
-                            if (ok && mask != 0) {
+                            if (allocDirPred(DirSegMatchOp::Contains, effPat, effCs, clauseAllowPy, clauseForcePy, mask) && mask != 0) {
                                 clause.hasSlashPreFilter = true;
                                 clause.slashAllowBranchA = true;
                                 clause.slashAllowBranchB = false;
                                 clause.slashBranchADirMask = mask;
                                 clause.slashLeafCaseSensitive = effCs;
                             }
+                        } else {
+                            const auto segs = splitBackslashSegments(effPat);
+                            bool validMiddle = segs.size() >= 2;
+                            for (size_t i = 1; validMiddle && i + 1 < segs.size(); ++i) {
+                                if (segs[i].empty()) validMiddle = false;
+                            }
+                            if (validMiddle) {
+                                uint64_t mask = 0;
+                                bool ok = allocDirPred(DirSegMatchOp::Suffix, segs.front(), effCs, clauseAllowPy, clauseForcePy, mask);
+                                for (size_t i = 1; ok && i + 1 < segs.size(); ++i) {
+                                    ok = allocDirPred(DirSegMatchOp::Exact, segs[i], effCs, clauseAllowPy, clauseForcePy, mask);
+                                }
+                                if (ok) {
+                                    ok = allocDirPred(DirSegMatchOp::Prefix, segs.back(), effCs, clauseAllowPy, clauseForcePy, mask);
+                                }
+                                if (ok && mask != 0) {
+                                    clause.hasSlashPreFilter = true;
+                                    clause.slashAllowBranchA = true;
+                                    clause.slashAllowBranchB = false;
+                                    clause.slashBranchADirMask = mask;
+                                    clause.slashLeafCaseSensitive = effCs;
+                                }
+                            }
+                        }
+                    } else {
+                        uint64_t mask = 0;
+                        bool ok = true;
+                        for (std::wstring_view seg : splitBackslashSegments(effPat)) {
+                            for (std::wstring_view run : extractWildcardFreeRuns(seg)) {
+                                if (!ok) break;
+                                ok = allocDirPred(DirSegMatchOp::Contains, run, effCs, clauseAllowPy, clauseForcePy, mask);
+                            }
+                            if (!ok) break;
+                        }
+                        if (ok && mask != 0) {
+                            clause.hasSlashPreFilter = true;
+                            clause.slashAllowBranchA = true;
+                            clause.slashAllowBranchB = false;
+                            clause.slashBranchADirMask = mask;
+                            clause.slashLeafCaseSensitive = effCs;
                         }
                     }
                     continue;
@@ -1065,6 +1143,7 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
                      clause.filterType == SearchFilterType::Path ||
                      clause.filterType == SearchFilterType::FileOnly ||
                      clause.filterType == SearchFilterType::FolderOnly ||
+                     clause.filterType == SearchFilterType::PinyinOnly ||
                      clause.filterType == SearchFilterType::NoPinyin ||
                      clause.filterType == SearchFilterType::CaseSensitive);
                 if (!supportsSlashPath ||
@@ -1090,13 +1169,13 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
                         continue;
                     }
                     uint64_t prefixMask = 0;
-                    bool ok = allocDirPred(DirSegMatchOp::Suffix, segs.front(), effCs, prefixMask);
+                    bool ok = allocDirPred(DirSegMatchOp::Suffix, segs.front(), effCs, clauseAllowPy, clauseForcePy, prefixMask);
                     for (size_t i = 1; ok && i + 1 < segs.size(); ++i) {
-                        ok = allocDirPred(DirSegMatchOp::Exact, segs[i], effCs, prefixMask);
+                        ok = allocDirPred(DirSegMatchOp::Exact, segs[i], effCs, clauseAllowPy, clauseForcePy, prefixMask);
                     }
                     uint64_t branchAMask = prefixMask;
                     if (ok && !segs.back().empty()) {
-                        ok = allocDirPred(DirSegMatchOp::Prefix, segs.back(), effCs, branchAMask);
+                        ok = allocDirPred(DirSegMatchOp::Prefix, segs.back(), effCs, clauseAllowPy, clauseForcePy, branchAMask);
                     }
                     if (ok) {
                         clause.hasSlashPreFilter = true;
@@ -1106,15 +1185,24 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
                         clause.slashBranchBDirMask = prefixMask;
                         clause.slashLeafPrefix = std::wstring(segs.back());
                         clause.slashLeafCaseSensitive = effCs;
+                        clause.slashLeafAllowPinyin = clauseAllowPy && isAsciiAlphaCandidate(segs.back());
                     }
                 } else {
                     uint64_t prefixMask = 0;
                     bool ok = true;
                     for (size_t i = 0; ok && i + 1 < segs.size(); ++i) {
-                        if (!segs[i].empty() && segs[i].find_first_of(L"*?") == std::wstring_view::npos) {
+                        if (segs[i].empty()) continue;
+                        if (segs[i].find_first_of(L"*?") == std::wstring_view::npos) {
                             ok = allocDirPred(
                                 i == 0 ? DirSegMatchOp::Suffix : DirSegMatchOp::Exact,
-                                segs[i], effCs, prefixMask);
+                                segs[i], effCs, clauseAllowPy, clauseForcePy, prefixMask);
+                        } else {
+                            for (std::wstring_view run : extractWildcardFreeRuns(segs[i])) {
+                                if (!ok) break;
+                                ok = allocDirPred(
+                                    DirSegMatchOp::Contains,
+                                    run, effCs, clauseAllowPy, clauseForcePy, prefixMask);
+                            }
                         }
                     }
                     const std::wstring_view lastSeg = segs.back();
@@ -1122,13 +1210,34 @@ void SearchExpression::recomputePathRequirement(const SearchParseOptions& option
                     const std::wstring_view tailLit = (lastWild == std::wstring_view::npos)
                         ? lastSeg
                         : lastSeg.substr(lastWild + 1);
-                    if (ok && (prefixMask != 0 || !tailLit.empty())) {
+                    const std::wstring_view coreLit = extractLongestWildcardFreeRun(lastSeg);
+                    const bool endsWithStar = !lastSeg.empty() && lastSeg.back() == L'*';
+
+                    if (ok && endsWithStar && !coreLit.empty()) {
+                        uint64_t branchAMask = prefixMask;
+                        const bool branchAOk = allocDirPred(
+                            DirSegMatchOp::Contains, coreLit, effCs, clauseAllowPy, clauseForcePy, branchAMask);
+                        if (branchAOk) {
+                            clause.hasSlashPreFilter = true;
+                            clause.slashAllowBranchA = true;
+                            clause.slashAllowBranchB = true;
+                            clause.slashBranchADirMask = branchAMask;
+                            clause.slashBranchBDirMask = prefixMask;
+                            clause.slashLeafContains = std::wstring(coreLit);
+                            clause.slashLeafSuffix = std::wstring(tailLit);
+                            clause.slashLeafCaseSensitive = effCs;
+                            clause.slashLeafAllowPinyin = clauseAllowPy && isAsciiAlphaCandidate(coreLit);
+                        }
+                    } else if (ok && (prefixMask != 0 || !tailLit.empty() || !coreLit.empty())) {
                         clause.hasSlashPreFilter = true;
                         clause.slashAllowBranchA = false;
                         clause.slashAllowBranchB = true;
                         clause.slashBranchBDirMask = prefixMask;
+                        clause.slashLeafContains = std::wstring(coreLit);
                         clause.slashLeafSuffix = std::wstring(tailLit);
                         clause.slashLeafCaseSensitive = effCs;
+                        clause.slashLeafAllowPinyin = clauseAllowPy &&
+                            (isAsciiAlphaCandidate(coreLit) || isAsciiAlphaCandidate(tailLit));
                     }
                 }
             }
@@ -1349,6 +1458,22 @@ SearchExpression SearchExpression::parse(const std::wstring& query, const Search
 
     expr.recomputePathRequirement(options);
 
+    // 提取斜杠路径子句的末尾非通配目标名提示（例如 gzml\user -> "user"），使目标文件夹本身及相关主干名优先排前
+    if (expr.m_rankingQuery.empty()) {
+        for (const auto& grp : expr.m_orGroups) {
+            for (const auto& c : grp.clauses) {
+                if (!c.isNegated && c.hasPathSeparator && !c.hasWildcard && !c.pattern.empty()) {
+                    const size_t lastSlash = c.pattern.rfind(L'\\');
+                    if (lastSlash != std::wstring::npos && lastSlash + 1 < c.pattern.size()) {
+                        expr.m_slashLeafRankHint = c.pattern.substr(lastSlash + 1);
+                        break;
+                    }
+                }
+            }
+            if (!expr.m_slashLeafRankHint.empty()) break;
+        }
+    }
+
     const std::wstring& effectiveRankBasis = expr.m_rankingQuery.empty() ? expr.m_normalizedQuery : expr.m_rankingQuery;
     expr.m_isAsciiQuery = !effectiveRankBasis.empty() &&
         std::all_of(effectiveRankBasis.begin(), effectiveRankBasis.end(),
@@ -1356,7 +1481,7 @@ SearchExpression SearchExpression::parse(const std::wstring& query, const Search
     if (expr.m_isAsciiQuery) {
         expr.m_cleanAsciiQuery.reserve(effectiveRankBasis.size());
         for (wchar_t ch : effectiveRankBasis) {
-            if (ch != L'\'' && ch != L'-') expr.m_cleanAsciiQuery.push_back(ch);
+            if (ch != L'\'') expr.m_cleanAsciiQuery.push_back(ch);
         }
     }
 
@@ -1507,49 +1632,6 @@ bool matchTextSegment(std::wstring_view text, std::wstring_view normalizedText,
     return containsIgnoreCase(target, clause.pattern);
 }
 
-bool matchPathSegment(std::wstring_view fullPath, const SearchClause& clause, bool caseSensitive) {
-    if (fullPath.empty()) return false;
-    const bool hasForwardSlash = fullPath.find(L'/') != std::wstring_view::npos;
-    if (!caseSensitive && !hasForwardSlash) {
-        if (clause.hasWildcard) {
-            return SearchExpression::matchWildcard(clause.pattern, fullPath, false);
-        }
-        if (clause.isCaselessPattern) {
-            return fullPath.find(clause.pattern) != std::wstring_view::npos;
-        }
-        return containsIgnoreCase(fullPath, clause.pattern);
-    }
-
-    std::wstring slashNormPath = normalizePathSeparators(fullPath);
-    if (caseSensitive) {
-        std::wstring pat = clause.rawPattern;
-        if (slashNormPath.size() >= 2 && std::iswalpha(slashNormPath[0]) && slashNormPath[1] == L':' &&
-            pat.size() >= 2 && std::iswalpha(pat[0]) && pat[1] == L':') {
-            slashNormPath[0] = static_cast<wchar_t>(std::towupper(slashNormPath[0]));
-            pat[0] = static_cast<wchar_t>(std::towupper(pat[0]));
-        }
-        return clause.hasWildcard
-            ? SearchExpression::matchWildcard(pat, slashNormPath, true)
-            : (slashNormPath.find(pat) != std::wstring::npos);
-    }
-    if (clause.hasWildcard) {
-        return SearchExpression::matchWildcard(clause.pattern, slashNormPath, false);
-    }
-    if (clause.isCaselessPattern) {
-        return slashNormPath.find(clause.pattern) != std::wstring::npos;
-    }
-    return containsIgnoreCase(slashNormPath, clause.pattern);
-}
-
-inline std::wstring_view stripLeafExtension(std::wstring_view s) noexcept {
-    if (s.empty()) return s;
-    const size_t dotPos = s.rfind(L'.');
-    if (dotPos == std::wstring_view::npos || dotPos == 0) return s;
-    const size_t slashPos = s.find_last_of(L"\\/");
-    if (slashPos != std::wstring_view::npos && dotPos <= slashPos + 1) return s;
-    return s.substr(0, dotPos);
-}
-
 inline bool startsWithText(std::wstring_view str, std::wstring_view prefix, bool caseSensitive) noexcept {
     if (str.size() < prefix.size()) return false;
     return caseSensitive
@@ -1563,10 +1645,378 @@ inline bool endsWithText(std::wstring_view str, std::wstring_view suffix, bool c
     return caseSensitive ? (tail == suffix) : equalsIgnoreCase(tail, suffix);
 }
 
+inline bool textHasCjkOrHighBmp(std::wstring_view text) noexcept {
+    for (wchar_t ch : text) {
+        if (static_cast<uint16_t>(ch) >= 0x3400) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool textHasCjkIdeograph(std::wstring_view text) noexcept {
+    for (wchar_t ch : text) {
+        const auto code = static_cast<uint16_t>(ch);
+        if ((code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3400 && code <= 0x4DBF)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool recordSupportsPinyinFallback(std::wstring_view rawName, std::wstring_view pyInit) noexcept {
+    if (rawName.empty()) return false;
+    if (!pyInit.empty()) {
+        return pyInit.data() != rawName.data();
+    }
+    return textHasCjkIdeograph(rawName);
+}
+
+inline bool patternHasAsciiLowerAlpha(std::wstring_view pat) noexcept {
+    for (wchar_t ch : pat) {
+        if ((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline std::wstring stripAsciiApostrophes(std::wstring_view pat) {
+    std::wstring out;
+    out.reserve(pat.size());
+    for (wchar_t ch : pat) {
+        if (ch != L'\'') {
+            out.push_back(fastTowLower(ch));
+        }
+    }
+    return out;
+}
+
+void buildDualPinyinForms(std::wstring_view text, std::wstring& outPyInit, std::wstring& outPyFull) {
+    outPyInit.clear();
+    outPyFull.clear();
+    outPyInit.reserve(text.size());
+    outPyFull.reserve(text.size() * 3);
+    for (size_t i = 0; i < text.size(); ++i) {
+        const wchar_t ch = text[i];
+        if (ch <= 0x7F) {
+            const wchar_t low = fastTowLower(ch);
+            outPyInit.push_back(low);
+            outPyFull.push_back(low);
+            continue;
+        }
+        if (ch >= static_cast<wchar_t>(0xD800) && ch <= static_cast<wchar_t>(0xDBFF) &&
+            i + 1 < text.size() &&
+            text[i + 1] >= static_cast<wchar_t>(0xDC00) && text[i + 1] <= static_cast<wchar_t>(0xDFFF)) {
+            const wchar_t lo = text[++i];
+            outPyInit.push_back(ch);
+            outPyInit.push_back(lo);
+            outPyFull.push_back(ch);
+            outPyFull.push_back(lo);
+            continue;
+        }
+        const char* py = PinyinEngine::LookupSyllableAscii(ch);
+        if (py != nullptr && py[0] != '\0') {
+            outPyInit.push_back(static_cast<wchar_t>(static_cast<unsigned char>(py[0])));
+            while (*py) {
+                outPyFull.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*py++)));
+            }
+        } else {
+            const wchar_t low = fastTowLower(ch);
+            outPyInit.push_back(low);
+            outPyFull.push_back(low);
+        }
+    }
+}
+
+struct MultiRepSegment {
+    std::wstring raw;
+    std::wstring pyInit;
+    std::wstring pyFull;
+    bool hasPinyin = false;
+};
+
+inline bool segMatchesExact(const MultiRepSegment& seg, std::wstring_view pat) noexcept {
+    if (equalsIgnoreCase(seg.raw, pat)) return true;
+    return seg.hasPinyin && (equalsIgnoreCase(seg.pyInit, pat) || equalsIgnoreCase(seg.pyFull, pat));
+}
+
+inline bool segMatchesPrefix(const MultiRepSegment& seg, std::wstring_view pat) noexcept {
+    if (startsWithIgnoreCase(seg.raw, pat)) return true;
+    return seg.hasPinyin && (startsWithIgnoreCase(seg.pyInit, pat) || startsWithIgnoreCase(seg.pyFull, pat));
+}
+
+inline bool segMatchesSuffix(const MultiRepSegment& seg, std::wstring_view pat) noexcept {
+    if (endsWithText(seg.raw, pat, false)) return true;
+    return seg.hasPinyin && (endsWithText(seg.pyInit, pat, false) || endsWithText(seg.pyFull, pat, false));
+}
+
+inline bool segMatchesContains(const MultiRepSegment& seg, std::wstring_view pat) noexcept {
+    if (containsIgnoreCase(seg.raw, pat)) return true;
+    return seg.hasPinyin && (containsIgnoreCase(seg.pyInit, pat) || containsIgnoreCase(seg.pyFull, pat));
+}
+
+inline bool segMatchesWildcard(const MultiRepSegment& seg, std::wstring_view pat) noexcept {
+    if (SearchExpression::matchWildcard(pat, seg.raw, false)) return true;
+    return seg.hasPinyin &&
+           (SearchExpression::matchWildcard(pat, seg.pyInit, false) ||
+            SearchExpression::matchWildcard(pat, seg.pyFull, false));
+}
+
+bool matchMultiRepPathSegments(std::wstring_view slashNormPath,
+                               std::wstring_view cleanPat,
+                               bool hasWildcard,
+                               bool exactWholePath = false) {
+    if (slashNormPath.empty() || cleanPat.empty()) return false;
+
+    std::vector<MultiRepSegment> segs;
+    segs.reserve(10);
+    {
+        size_t start = 0;
+        while (true) {
+            const size_t pos = slashNormPath.find(L'\\', start);
+            const std::wstring_view slice = (pos == std::wstring_view::npos)
+                ? slashNormPath.substr(start)
+                : slashNormPath.substr(start, pos - start);
+            MultiRepSegment item;
+            item.raw.assign(slice.data(), slice.size());
+            if (textHasCjkOrHighBmp(slice)) {
+                item.hasPinyin = true;
+                buildDualPinyinForms(slice, item.pyInit, item.pyFull);
+            }
+            segs.push_back(std::move(item));
+            if (pos == std::wstring_view::npos) break;
+            start = pos + 1;
+        }
+    }
+
+    std::vector<std::wstring_view> patSegs;
+    patSegs.reserve(6);
+    {
+        size_t start = 0;
+        while (true) {
+            const size_t pos = cleanPat.find(L'\\', start);
+            if (pos == std::wstring_view::npos) {
+                patSegs.push_back(cleanPat.substr(start));
+                break;
+            }
+            patSegs.push_back(cleanPat.substr(start, pos - start));
+            start = pos + 1;
+        }
+    }
+
+    const size_t N = segs.size();
+    const size_t M = patSegs.size();
+
+    if (!hasWildcard) {
+        if (exactWholePath) {
+            if (N != M) return false;
+            for (size_t k = 0; k < M; ++k) {
+                if (!segMatchesExact(segs[k], patSegs[k])) return false;
+            }
+            return true;
+        }
+        if (M == 1) {
+            for (const auto& s : segs) {
+                if (segMatchesContains(s, patSegs[0])) return true;
+            }
+            return false;
+        }
+        if (N < M) return false;
+        for (size_t start = 0; start + M <= N; ++start) {
+            if (!patSegs.front().empty() && !segMatchesSuffix(segs[start], patSegs.front())) {
+                continue;
+            }
+            bool midOk = true;
+            for (size_t k = 1; k + 1 < M; ++k) {
+                if (!segMatchesExact(segs[start + k], patSegs[k])) {
+                    midOk = false;
+                    break;
+                }
+            }
+            if (!midOk) continue;
+            if (!patSegs.back().empty() && !segMatchesPrefix(segs[start + M - 1], patSegs.back())) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Wildcard multi-segment DP with memoization (supports '*' spanning across '\')
+    if (M > 32 || N > 128) return false;
+    std::vector<uint8_t> memo((M + 1) * (N + 1), 0); // 0=unvisited, 1=false, 2=true
+
+    auto extractInnerLiterals = [](std::wstring_view pSeg, size_t firstStar, size_t lastStar) {
+        std::vector<std::wstring_view> inner;
+        if (lastStar <= firstStar + 1) return inner;
+        const std::wstring_view mid = pSeg.substr(firstStar + 1, lastStar - firstStar - 1);
+        size_t i = 0;
+        while (i < mid.size()) {
+            while (i < mid.size() && mid[i] == L'*') ++i;
+            const size_t st = i;
+            while (i < mid.size() && mid[i] != L'*') ++i;
+            if (i > st) inner.push_back(mid.substr(st, i - st));
+        }
+        return inner;
+    };
+
+    auto segContainsWildcardToken = [](const MultiRepSegment& s, std::wstring_view tok) noexcept {
+        if (tok.find(L'?') == std::wstring_view::npos) {
+            return segMatchesContains(s, tok);
+        }
+        std::wstring wrapped;
+        wrapped.reserve(tok.size() + 2);
+        wrapped.push_back(L'*');
+        wrapped.append(tok);
+        wrapped.push_back(L'*');
+        return segMatchesWildcard(s, wrapped);
+    };
+
+    auto dfs = [&](auto& self, size_t pIdx, size_t sIdx) -> bool {
+        if (pIdx == M && sIdx == N) return true;
+        if (pIdx == M || sIdx == N) return false;
+        uint8_t& cell = memo[pIdx * (N + 1) + sIdx];
+        if (cell != 0) return cell == 2;
+
+        const std::wstring_view pSeg = patSegs[pIdx];
+        if (segMatchesWildcard(segs[sIdx], pSeg) && self(self, pIdx + 1, sIdx + 1)) {
+            cell = 2;
+            return true;
+        }
+
+        const size_t firstStar = pSeg.find(L'*');
+        if (firstStar != std::wstring_view::npos) {
+            const size_t lastStar = pSeg.rfind(L'*');
+            const std::wstring_view headPat = pSeg.substr(0, firstStar + 1);
+            const std::wstring_view tailPat = pSeg.substr(lastStar);
+            if (segMatchesWildcard(segs[sIdx], headPat)) {
+                const auto innerToks = extractInnerLiterals(pSeg, firstStar, lastStar);
+                size_t matchedInner = 0;
+                // Check if inner tokens already appear in sIdx (after head prefix if headPat == "*")
+                if (firstStar == 0) {
+                    while (matchedInner < innerToks.size() &&
+                           segContainsWildcardToken(segs[sIdx], innerToks[matchedInner])) {
+                        ++matchedInner;
+                    }
+                }
+                for (size_t sEnd = sIdx + 1; sEnd < N; ++sEnd) {
+                    if (sEnd > sIdx + 1) {
+                        while (matchedInner < innerToks.size() &&
+                               segContainsWildcardToken(segs[sEnd - 1], innerToks[matchedInner])) {
+                            ++matchedInner;
+                        }
+                    }
+                    size_t totalMatchedWithTail = matchedInner;
+                    if (lastStar + 1 == pSeg.size()) {
+                        while (totalMatchedWithTail < innerToks.size() &&
+                               segContainsWildcardToken(segs[sEnd], innerToks[totalMatchedWithTail])) {
+                            ++totalMatchedWithTail;
+                        }
+                    }
+                    if (totalMatchedWithTail == innerToks.size() &&
+                        segMatchesWildcard(segs[sEnd], tailPat) &&
+                        self(self, pIdx + 1, sEnd + 1)) {
+                        cell = 2;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        cell = 1;
+        return false;
+    };
+
+    return dfs(dfs, 0, 0);
+}
+
+bool matchPathSegment(std::wstring_view fullPath,
+                      const SearchClause& clause,
+                      bool caseSensitive,
+                      bool allowPinyin = false) {
+    if (fullPath.empty()) return false;
+    const bool hasForwardSlash = fullPath.find(L'/') != std::wstring_view::npos;
+    if (!caseSensitive && !hasForwardSlash) {
+        bool literalHit = false;
+        if (clause.hasWildcard) {
+            literalHit = SearchExpression::matchWildcard(clause.pattern, fullPath, false);
+        } else if (clause.isCaselessPattern) {
+            literalHit = fullPath.find(clause.pattern) != std::wstring_view::npos;
+        } else {
+            literalHit = containsIgnoreCase(fullPath, clause.pattern);
+        }
+        if (literalHit) return true;
+    } else {
+        std::wstring slashNormPath = normalizePathSeparators(fullPath);
+        if (caseSensitive) {
+            std::wstring pat = clause.rawPattern;
+            if (slashNormPath.size() >= 2 && std::iswalpha(slashNormPath[0]) && slashNormPath[1] == L':' &&
+                pat.size() >= 2 && std::iswalpha(pat[0]) && pat[1] == L':') {
+                slashNormPath[0] = static_cast<wchar_t>(std::towupper(slashNormPath[0]));
+                pat[0] = static_cast<wchar_t>(std::towupper(pat[0]));
+            }
+            return clause.hasWildcard
+                ? SearchExpression::matchWildcard(pat, slashNormPath, true)
+                : (slashNormPath.find(pat) != std::wstring::npos);
+        }
+        bool literalHit = false;
+        if (clause.hasWildcard) {
+            literalHit = SearchExpression::matchWildcard(clause.pattern, slashNormPath, false);
+        } else if (clause.isCaselessPattern) {
+            literalHit = slashNormPath.find(clause.pattern) != std::wstring::npos;
+        } else {
+            literalHit = containsIgnoreCase(slashNormPath, clause.pattern);
+        }
+        if (literalHit) return true;
+    }
+
+    if (!allowPinyin || caseSensitive || !patternHasAsciiLowerAlpha(clause.pattern) ||
+        !textHasCjkOrHighBmp(fullPath)) {
+        return false;
+    }
+
+    const std::wstring slashNormPath = hasForwardSlash
+        ? normalizePathSeparators(fullPath)
+        : std::wstring(fullPath);
+    const std::wstring cleanPat = (clause.pattern.find(L'\'') != std::wstring::npos)
+        ? stripAsciiApostrophes(clause.pattern)
+        : clause.pattern;
+
+    std::wstring pyInitPath;
+    std::wstring pyFullPath;
+    buildDualPinyinForms(slashNormPath, pyInitPath, pyFullPath);
+
+    if (clause.hasWildcard) {
+        if (SearchExpression::matchWildcard(cleanPat, pyInitPath, false) ||
+            SearchExpression::matchWildcard(cleanPat, pyFullPath, false)) {
+            return true;
+        }
+    } else {
+        if (containsIgnoreCase(pyInitPath, cleanPat) ||
+            containsIgnoreCase(pyFullPath, cleanPat)) {
+            return true;
+        }
+    }
+
+    return matchMultiRepPathSegments(slashNormPath, cleanPat, clause.hasWildcard, false);
+}
+
+inline std::wstring_view stripLeafExtension(std::wstring_view s) noexcept {
+    if (s.empty()) return s;
+    const size_t dotPos = s.rfind(L'.');
+    if (dotPos == std::wstring_view::npos || dotPos == 0) return s;
+    const size_t slashPos = s.find_last_of(L"\\/");
+    if (slashPos != std::wstring_view::npos && dotPos <= slashPos + 1) return s;
+    return s.substr(0, dotPos);
+}
+
 inline bool canPossiblyMatchSlashClause(const SearchClause& clause,
                                         std::wstring_view leafName,
+                                        std::wstring_view leafPyInit,
+                                        std::wstring_view leafPyFull,
                                         uint64_t dirClauseMask,
-                                        bool hasDirMask) noexcept {
+                                        bool hasDirMask) {
     if (!hasDirMask || !clause.hasSlashPreFilter) {
         return true;
     }
@@ -1576,11 +2026,46 @@ inline bool canPossiblyMatchSlashClause(const SearchClause& clause,
     }
     if (clause.slashAllowBranchB &&
         (dirClauseMask & clause.slashBranchBDirMask) == clause.slashBranchBDirMask) {
-        const bool prefixOk = clause.slashLeafPrefix.empty() ||
+        const bool hasCjkLeafPinyin =
+            clause.slashLeafAllowPinyin &&
+            !leafPyInit.empty() &&
+            leafPyInit.data() != leafName.data();
+
+        std::wstring lazyLeafPyFullBuf;
+        bool lazyLeafPyFullBuilt = false;
+        auto getLeafPyFull = [&]() -> std::wstring_view {
+            if (!leafPyFull.empty()) return leafPyFull;
+            if (!lazyLeafPyFullBuilt) {
+                PinyinEngine::BuildNormalizedFull(leafName, lazyLeafPyFullBuf);
+                lazyLeafPyFullBuilt = true;
+            }
+            return lazyLeafPyFullBuf;
+        };
+
+        bool prefixOk = clause.slashLeafPrefix.empty() ||
             startsWithText(leafName, clause.slashLeafPrefix, clause.slashLeafCaseSensitive);
-        const bool suffixOk = clause.slashLeafSuffix.empty() ||
+        if (!prefixOk && hasCjkLeafPinyin) {
+            prefixOk = startsWithIgnoreCase(leafPyInit, clause.slashLeafPrefix) ||
+                       startsWithIgnoreCase(getLeafPyFull(), clause.slashLeafPrefix);
+        }
+
+        bool suffixOk = clause.slashLeafSuffix.empty() ||
             endsWithText(leafName, clause.slashLeafSuffix, clause.slashLeafCaseSensitive);
-        if (prefixOk && suffixOk) {
+        if (!suffixOk && hasCjkLeafPinyin) {
+            suffixOk = endsWithText(leafPyInit, clause.slashLeafSuffix, false) ||
+                       endsWithText(getLeafPyFull(), clause.slashLeafSuffix, false);
+        }
+
+        bool containsOk = clause.slashLeafContains.empty() ||
+            (clause.slashLeafCaseSensitive
+                ? (leafName.find(clause.slashLeafContains) != std::wstring_view::npos)
+                : containsIgnoreCase(leafName, clause.slashLeafContains));
+        if (!containsOk && hasCjkLeafPinyin) {
+            containsOk = containsIgnoreCase(leafPyInit, clause.slashLeafContains) ||
+                         containsIgnoreCase(getLeafPyFull(), clause.slashLeafContains);
+        }
+
+        if (prefixOk && suffixOk && containsOk) {
             return true;
         }
     }
@@ -1601,10 +2086,32 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
     bool matched = false;
     const bool stripExt = hasPureExtensionGroup && !record.isDirectory &&
                           !clause.hasWildcard && clause.pattern.find(L'.') == std::wstring::npos;
-    const std::wstring_view effFileName = stripExt ? stripLeafExtension(record.fileName) : record.fileName;
-    const std::wstring_view effNormName = stripExt ? stripLeafExtension(record.normalizedName) : record.normalizedName;
-    const std::wstring_view effPyInit   = stripExt ? stripLeafExtension(record.pinyinInitials) : record.pinyinInitials;
-    const std::wstring_view effPyFull   = stripExt ? stripLeafExtension(record.pinyinFull) : record.pinyinFull;
+    const std::wstring_view effFileName   = stripExt ? stripLeafExtension(record.fileName) : record.fileName;
+    const std::wstring_view effNormName   = stripExt ? stripLeafExtension(record.normalizedName) : record.normalizedName;
+    const std::wstring_view effPyInit     = stripExt ? stripLeafExtension(record.pinyinInitials) : record.pinyinInitials;
+    const std::wstring_view rawEffPyFull  = stripExt ? stripLeafExtension(record.pinyinFull) : record.pinyinFull;
+
+    std::wstring lazyEffPyFullBuf;
+    bool lazyEffPyFullBuilt = false;
+    auto getEffPyFull = [&]() -> std::wstring_view {
+        if (!rawEffPyFull.empty()) return rawEffPyFull;
+        if (!lazyEffPyFullBuilt) {
+            PinyinEngine::BuildNormalizedFull(effFileName, lazyEffPyFullBuf);
+            lazyEffPyFullBuilt = true;
+        }
+        return lazyEffPyFullBuf;
+    };
+
+    std::wstring lazyRawPyFullBuf;
+    bool lazyRawPyFullBuilt = false;
+    auto getRawPyFull = [&]() -> std::wstring_view {
+        if (!record.pinyinFull.empty()) return record.pinyinFull;
+        if (!lazyRawPyFullBuilt) {
+            PinyinEngine::BuildNormalizedFull(record.fileName, lazyRawPyFullBuf);
+            lazyRawPyFullBuilt = true;
+        }
+        return lazyRawPyFullBuf;
+    };
 
     switch (clause.filterType) {
         case SearchFilterType::FileOnly:
@@ -1612,10 +2119,22 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
             else if (clause.pattern.empty()) matched = true;
             else {
                 matched = matchTextSegment(effFileName, effNormName, clause, caseSensitive);
-                if (!matched && requiresFullPath &&
-                    canPossiblyMatchSlashClause(clause, effFileName, dirClauseMask, hasDirMask)) {
+                if (!matched && pinyinEnabled && !caseSensitive && clause.isAsciiOnly &&
+                    !isPureSuffixWildcardPattern(clause.rawPattern) &&
+                    recordSupportsPinyinFallback(record.fileName, record.pinyinInitials)) {
+                    const auto& pat = clause.pinyinPattern.empty() ? clause.pattern : clause.pinyinPattern;
+                    matched = clause.hasWildcard
+                        ? ((!effPyInit.empty() && SearchExpression::matchWildcard(pat, effPyInit)) ||
+                           SearchExpression::matchWildcard(pat, getEffPyFull()))
+                        : ((!effPyInit.empty() && containsIgnoreCase(effPyInit, pat)) ||
+                           containsIgnoreCase(getEffPyFull(), pat));
+                }
+                if (!matched && requiresFullPath && !isPureSuffixWildcardPattern(clause.rawPattern) &&
+                    canPossiblyMatchSlashClause(clause, effFileName, effPyInit, rawEffPyFull, dirClauseMask, hasDirMask)) {
                     const std::wstring& fullP = getPath();
-                    matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, caseSensitive);
+                    matched = matchPathSegment(
+                        stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP),
+                        clause, caseSensitive, pinyinEnabled && !caseSensitive);
                 }
             }
             break;
@@ -1625,9 +2144,18 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
             else if (clause.pattern.empty()) matched = true;
             else {
                 matched = matchTextSegment(record.fileName, record.normalizedName, clause, caseSensitive);
+                if (!matched && pinyinEnabled && !caseSensitive && clause.isAsciiOnly &&
+                    recordSupportsPinyinFallback(record.fileName, record.pinyinInitials)) {
+                    const auto& pat = clause.pinyinPattern.empty() ? clause.pattern : clause.pinyinPattern;
+                    matched = clause.hasWildcard
+                        ? ((!record.pinyinInitials.empty() && SearchExpression::matchWildcard(pat, record.pinyinInitials)) ||
+                           SearchExpression::matchWildcard(pat, getRawPyFull()))
+                        : ((!record.pinyinInitials.empty() && containsIgnoreCase(record.pinyinInitials, pat)) ||
+                           containsIgnoreCase(getRawPyFull(), pat));
+                }
                 if (!matched && requiresFullPath &&
-                    canPossiblyMatchSlashClause(clause, record.fileName, dirClauseMask, hasDirMask)) {
-                    matched = matchPathSegment(getPath(), clause, caseSensitive);
+                    canPossiblyMatchSlashClause(clause, record.fileName, record.pinyinInitials, record.pinyinFull, dirClauseMask, hasDirMask)) {
+                    matched = matchPathSegment(getPath(), clause, caseSensitive, pinyinEnabled && !caseSensitive);
                 }
             }
             break;
@@ -1659,13 +2187,13 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
         case SearchFilterType::Path:
             if (!requiresFullPath) {
                 matched = matchTextSegment(record.fileName, record.normalizedName, clause, caseSensitive);
-            } else if (canPossiblyMatchSlashClause(clause, record.fileName, dirClauseMask, hasDirMask)) {
-                matched = matchPathSegment(getPath(), clause, caseSensitive);
+            } else if (canPossiblyMatchSlashClause(clause, record.fileName, record.pinyinInitials, record.pinyinFull, dirClauseMask, hasDirMask)) {
+                matched = matchPathSegment(getPath(), clause, caseSensitive, pinyinEnabled && !caseSensitive);
             }
             break;
 
         case SearchFilterType::Parent: {
-            if (!canPossiblyMatchSlashClause(clause, {}, dirClauseMask, hasDirMask)) {
+            if (!canPossiblyMatchSlashClause(clause, {}, {}, {}, dirClauseMask, hasDirMask)) {
                 matched = false;
                 break;
             }
@@ -1689,6 +2217,17 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
                         matched = SearchExpression::matchWildcard(pat, parentPath, true);
                     } else {
                         matched = SearchExpression::matchWildcard(clause.pattern, parentPath, false);
+                        if (!matched && pinyinEnabled && patternHasAsciiLowerAlpha(clause.pattern) &&
+                            textHasCjkOrHighBmp(parentPath)) {
+                            const std::wstring cleanPat = (clause.pattern.find(L'\'') != std::wstring::npos)
+                                ? stripAsciiApostrophes(clause.pattern)
+                                : clause.pattern;
+                            std::wstring pyInitParent, pyFullParent;
+                            buildDualPinyinForms(parentPath, pyInitParent, pyFullParent);
+                            matched = SearchExpression::matchWildcard(cleanPat, pyInitParent, false) ||
+                                      SearchExpression::matchWildcard(cleanPat, pyFullParent, false) ||
+                                      matchMultiRepPathSegments(parentPath, cleanPat, true, false);
+                        }
                     }
                 } else if (clause.pattern.find(L'\\') != std::wstring::npos) {
                     const bool hasDrivePrefix = clause.rawPattern.size() >= 2 &&
@@ -1701,11 +2240,33 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
                                       (std::wstring_view(parentPath).substr(1) == std::wstring_view(clause.rawPattern).substr(1));
                         } else {
                             matched = equalsIgnoreCase(parentPath, clause.pattern);
+                            if (!matched && pinyinEnabled && patternHasAsciiLowerAlpha(clause.pattern) &&
+                                textHasCjkOrHighBmp(parentPath)) {
+                                const std::wstring cleanPat = (clause.pattern.find(L'\'') != std::wstring::npos)
+                                    ? stripAsciiApostrophes(clause.pattern)
+                                    : clause.pattern;
+                                std::wstring pyInitParent, pyFullParent;
+                                buildDualPinyinForms(parentPath, pyInitParent, pyFullParent);
+                                matched = equalsIgnoreCase(pyInitParent, cleanPat) ||
+                                          equalsIgnoreCase(pyFullParent, cleanPat) ||
+                                          matchMultiRepPathSegments(parentPath, cleanPat, false, true);
+                            }
                         }
                     } else {
                         matched = caseSensitive
                             ? (parentPath.find(clause.rawPattern) != std::wstring::npos)
                             : containsIgnoreCase(parentPath, clause.pattern);
+                        if (!matched && pinyinEnabled && !caseSensitive &&
+                            patternHasAsciiLowerAlpha(clause.pattern) && textHasCjkOrHighBmp(parentPath)) {
+                            const std::wstring cleanPat = (clause.pattern.find(L'\'') != std::wstring::npos)
+                                ? stripAsciiApostrophes(clause.pattern)
+                                : clause.pattern;
+                            std::wstring pyInitParent, pyFullParent;
+                            buildDualPinyinForms(parentPath, pyInitParent, pyFullParent);
+                            matched = containsIgnoreCase(pyInitParent, cleanPat) ||
+                                      containsIgnoreCase(pyFullParent, cleanPat) ||
+                                      matchMultiRepPathSegments(parentPath, cleanPat, false, false);
+                        }
                     }
                 } else {
                     const auto parentSlash = parentPath.rfind(L'\\');
@@ -1716,6 +2277,16 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
                         matched = !directParent.empty() && directParent.find(clause.rawPattern) != std::wstring_view::npos;
                     } else {
                         matched = !directParent.empty() && containsIgnoreCase(directParent, clause.pattern);
+                        if (!matched && pinyinEnabled && !directParent.empty() &&
+                            patternHasAsciiLowerAlpha(clause.pattern) && textHasCjkOrHighBmp(directParent)) {
+                            const std::wstring cleanPat = (clause.pattern.find(L'\'') != std::wstring::npos)
+                                ? stripAsciiApostrophes(clause.pattern)
+                                : clause.pattern;
+                            std::wstring pyInitDir, pyFullDir;
+                            buildDualPinyinForms(directParent, pyInitDir, pyFullDir);
+                            matched = containsIgnoreCase(pyInitDir, cleanPat) ||
+                                      containsIgnoreCase(pyFullDir, cleanPat);
+                        }
                     }
                 }
             }
@@ -1760,30 +2331,39 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
         case SearchFilterType::CaseSensitive:
             matched = matchTextSegment(effFileName, effNormName, clause, true);
             if (!matched && requiresFullPath &&
-                canPossiblyMatchSlashClause(clause, effFileName, dirClauseMask, hasDirMask)) {
+                canPossiblyMatchSlashClause(clause, effFileName, {}, {}, dirClauseMask, hasDirMask)) {
                 const std::wstring& fullP = getPath();
-                matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, true);
+                matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, true, false);
             }
             break;
 
         case SearchFilterType::PinyinOnly:
-            if (clause.hasWildcard) {
-                const auto& pat = clause.pinyinPattern.empty() ? clause.pattern : clause.pinyinPattern;
-                matched = SearchExpression::matchWildcard(pat, effPyFull) ||
-                          SearchExpression::matchWildcard(pat, effPyInit);
-            } else {
-                const auto& pat = clause.pinyinPattern.empty() ? clause.pattern : clause.pinyinPattern;
-                matched = (containsIgnoreCase(effPyInit, pat) ||
-                           containsIgnoreCase(effPyFull, pat));
+            if (!clause.hasPathSeparator) {
+                if (recordSupportsPinyinFallback(record.fileName, record.pinyinInitials)) {
+                    const auto& pat = clause.pinyinPattern.empty() ? clause.pattern : clause.pinyinPattern;
+                    if (clause.hasWildcard) {
+                        matched = (!effPyInit.empty() && SearchExpression::matchWildcard(pat, effPyInit)) ||
+                                  SearchExpression::matchWildcard(pat, getEffPyFull());
+                    } else {
+                        matched = (!effPyInit.empty() && containsIgnoreCase(effPyInit, pat)) ||
+                                  containsIgnoreCase(getEffPyFull(), pat);
+                    }
+                }
+            } else if (requiresFullPath &&
+                       canPossiblyMatchSlashClause(clause, effFileName, effPyInit, rawEffPyFull, dirClauseMask, hasDirMask)) {
+                const std::wstring& fullP = getPath();
+                matched = matchPathSegment(
+                    stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP),
+                    clause, false, /*allowPinyin=*/true);
             }
             break;
 
         case SearchFilterType::NoPinyin:
             matched = matchTextSegment(effFileName, effNormName, clause, caseSensitive);
             if (!matched && requiresFullPath &&
-                canPossiblyMatchSlashClause(clause, effFileName, dirClauseMask, hasDirMask)) {
+                canPossiblyMatchSlashClause(clause, effFileName, {}, {}, dirClauseMask, hasDirMask)) {
                 const std::wstring& fullP = getPath();
-                matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, caseSensitive);
+                matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, caseSensitive, false);
             }
             break;
 
@@ -1850,36 +2430,33 @@ static bool matchSingleClauseLazy(const SearchClause& clause, const FileRecord& 
         default: {
             // 1. 优先在文件名中匹配 (零路径回溯，极致毫秒级热路径)
             matched = matchTextSegment(effFileName, effNormName, clause, caseSensitive);
-            if (!matched && pinyinEnabled && clause.isAsciiOnly) {
+            if (!matched && pinyinEnabled && clause.isAsciiOnly &&
+                !isPureSuffixWildcardPattern(clause.rawPattern) &&
+                recordSupportsPinyinFallback(record.fileName, record.pinyinInitials)) {
                 const auto& pat = clause.pinyinPattern.empty() ? clause.pattern : clause.pinyinPattern;
-                const bool isRedundantNonCjkPinyin =
-                    !caseSensitive &&
-                    record.pinyinInitials.data() == record.fileName.data() &&
-                    record.pinyinFull.data() == record.fileName.data() &&
-                    pat.size() == clause.pattern.size();
-                if (!isRedundantNonCjkPinyin) {
-                    const bool allowPinyinFallback = !caseSensitive ||
-                        (clause.rawPattern == clause.pattern &&
-                         !(clause.hasWildcard
-                           ? SearchExpression::matchWildcard(clause.pattern, effFileName, false)
-                           : containsIgnoreCase(effFileName, clause.pattern)));
-                    if (allowPinyinFallback) {
-                        if (clause.hasWildcard) {
-                            matched = SearchExpression::matchWildcard(pat, effPyFull) ||
-                                      SearchExpression::matchWildcard(pat, effPyInit);
-                        } else {
-                            matched = containsIgnoreCase(effPyInit, pat) ||
-                                      containsIgnoreCase(effPyFull, pat);
-                        }
+                const bool allowPinyinFallback = !caseSensitive ||
+                    (clause.rawPattern == clause.pattern &&
+                     !(clause.hasWildcard
+                       ? SearchExpression::matchWildcard(clause.pattern, effFileName, false)
+                       : containsIgnoreCase(effFileName, clause.pattern)));
+                if (allowPinyinFallback) {
+                    if (clause.hasWildcard) {
+                        matched = (!effPyInit.empty() && SearchExpression::matchWildcard(pat, effPyInit)) ||
+                                  SearchExpression::matchWildcard(pat, getEffPyFull());
+                    } else {
+                        matched = (!effPyInit.empty() && containsIgnoreCase(effPyInit, pat)) ||
+                                  containsIgnoreCase(getEffPyFull(), pat);
                     }
                 }
             }
 
             // 2. 仅当检索表达式需要全路径 (如开启 matchPath 偏好、包含多词组、斜杠或 path: 前缀) 且文件名未命中时，才兜底在路径中匹配
             if (!matched && requiresFullPath && !isPureSuffixWildcardPattern(clause.rawPattern) &&
-                canPossiblyMatchSlashClause(clause, effFileName, dirClauseMask, hasDirMask)) {
+                canPossiblyMatchSlashClause(clause, effFileName, effPyInit, rawEffPyFull, dirClauseMask, hasDirMask)) {
                 const std::wstring& fullP = getPath();
-                matched = matchPathSegment(stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP), clause, caseSensitive);
+                matched = matchPathSegment(
+                    stripExt ? stripLeafExtension(fullP) : std::wstring_view(fullP),
+                    clause, caseSensitive, pinyinEnabled && !caseSensitive);
             }
             break;
         }
@@ -1894,6 +2471,18 @@ uint64_t SearchExpression::computeDirectorySegmentMask(std::wstring_view dirSegm
     if (((m_separableGroupMask | m_slashPredicateMask) == 0) || dirSegmentName.empty()) {
         return 0;
     }
+
+    std::wstring lazyDirPyFullBuf;
+    bool lazyDirPyFullBuilt = false;
+    auto getDirPyFull = [&]() -> std::wstring_view {
+        if (!pinyinFull.empty()) return pinyinFull;
+        if (!lazyDirPyFullBuilt) {
+            PinyinEngine::BuildNormalizedFull(dirSegmentName, lazyDirPyFullBuf);
+            lazyDirPyFullBuilt = true;
+        }
+        return lazyDirPyFullBuf;
+    };
+
     uint64_t mask = 0;
     if (m_separableGroupMask != 0) {
         const size_t groupCount = std::min<size_t>(m_orGroups.size(), 64);
@@ -1910,18 +2499,15 @@ uint64_t SearchExpression::computeDirectorySegmentMask(std::wstring_view dirSegm
                 const bool effCaseSensitive =
                     m_caseSensitive || (clause.filterType == SearchFilterType::CaseSensitive);
                 bool segMatched = matchTextSegment(dirSegmentName, {}, clause, effCaseSensitive);
-                if (!segMatched && m_pinyinEnabled && clause.isAsciiOnly &&
-                    clause.filterType == SearchFilterType::None && !pinyinInitials.empty()) {
+                if (!segMatched && m_pinyinEnabled && !effCaseSensitive && clause.isAsciiOnly &&
+                    (clause.filterType == SearchFilterType::None ||
+                     clause.filterType == SearchFilterType::Path ||
+                     clause.filterType == SearchFilterType::FileOnly ||
+                     clause.filterType == SearchFilterType::FolderOnly) &&
+                    recordSupportsPinyinFallback(dirSegmentName, pinyinInitials)) {
                     const auto& pat = clause.pinyinPattern.empty() ? clause.pattern : clause.pinyinPattern;
-                    const bool isRedundantNonCjk =
-                        !effCaseSensitive &&
-                        pinyinInitials.data() == dirSegmentName.data() &&
-                        pinyinFull.data() == dirSegmentName.data() &&
-                        pat.size() == clause.pattern.size();
-                    if (!isRedundantNonCjk) {
-                        segMatched = containsIgnoreCase(pinyinInitials, pat) ||
-                                     containsIgnoreCase(pinyinFull, pat);
-                    }
+                    segMatched = (!pinyinInitials.empty() && containsIgnoreCase(pinyinInitials, pat)) ||
+                                 containsIgnoreCase(getDirPyFull(), pat);
                 }
                 if (segMatched) {
                     mask |= bit;
@@ -1938,25 +2524,39 @@ uint64_t SearchExpression::computeDirectorySegmentMask(std::wstring_view dirSegm
             rootDriveBuf[0] = dirSegmentName[0];
             slashSeg = std::wstring_view(rootDriveBuf, 2);
         }
-        for (const auto& pred : m_slashDirPredicates) {
-            bool hit = false;
-            switch (pred.op) {
+        const bool hasCjkDirPinyin =
+            !pinyinInitials.empty() && pinyinInitials.data() != dirSegmentName.data();
+
+        auto evalSegOp = [](DirSegMatchOp op,
+                            std::wstring_view candidate,
+                            std::wstring_view needle,
+                            bool cs) noexcept -> bool {
+            switch (op) {
                 case DirSegMatchOp::Contains:
-                    hit = pred.caseSensitive
-                        ? (slashSeg.find(pred.needle) != std::wstring_view::npos)
-                        : containsIgnoreCase(slashSeg, pred.needle);
-                    break;
+                    return cs
+                        ? (candidate.find(needle) != std::wstring_view::npos)
+                        : containsIgnoreCase(candidate, needle);
                 case DirSegMatchOp::Prefix:
-                    hit = startsWithText(slashSeg, pred.needle, pred.caseSensitive);
-                    break;
+                    return startsWithText(candidate, needle, cs);
                 case DirSegMatchOp::Suffix:
-                    hit = endsWithText(slashSeg, pred.needle, pred.caseSensitive);
-                    break;
+                    return endsWithText(candidate, needle, cs);
                 case DirSegMatchOp::Exact:
-                    hit = pred.caseSensitive
-                        ? (slashSeg == pred.needle)
-                        : equalsIgnoreCase(slashSeg, pred.needle);
-                    break;
+                    return cs ? (candidate == needle) : equalsIgnoreCase(candidate, needle);
+            }
+            return false;
+        };
+
+        for (const auto& pred : m_slashDirPredicates) {
+            bool hit = evalSegOp(pred.op, slashSeg, pred.needle, pred.caseSensitive);
+            if (!hit && hasCjkDirPinyin && pred.allowPinyin && (m_pinyinEnabled || pred.forcePinyin)) {
+                if (pred.needle.find(L'\'') != std::wstring::npos) {
+                    const std::wstring cleanNeedle = stripAsciiApostrophes(pred.needle);
+                    hit = evalSegOp(pred.op, pinyinInitials, cleanNeedle, false) ||
+                          evalSegOp(pred.op, getDirPyFull(), cleanNeedle, false);
+                } else {
+                    hit = evalSegOp(pred.op, pinyinInitials, pred.needle, false) ||
+                          evalSegOp(pred.op, getDirPyFull(), pred.needle, false);
+                }
             }
             if (hit) {
                 mask |= (1ULL << pred.bitIndex);
@@ -2338,12 +2938,29 @@ int SearchExpression::calculateRank(const FileRecord& record) const {
     const std::wstring_view stem = record.isDirectory
         ? record.fileName
         : stripLeafExtension(record.fileName);
-    const std::wstring_view pyFullStem = record.isDirectory
-        ? record.pinyinFull
-        : stripLeafExtension(record.pinyinFull);
     const std::wstring_view pyInitStem = record.isDirectory
         ? record.pinyinInitials
         : stripLeafExtension(record.pinyinInitials);
+    const bool hasCjkRecord = recordSupportsPinyinFallback(record.fileName, record.pinyinInitials);
+    const bool allowRecordPinyinRank = m_pinyinEnabled && hasCjkRecord;
+
+    std::wstring lazyPyFullStemBuf;
+    bool lazyPyFullStemBuilt = false;
+    auto getPyFullStem = [&]() -> std::wstring_view {
+        if (!record.pinyinFull.empty()) {
+            return record.isDirectory
+                ? record.pinyinFull
+                : stripLeafExtension(record.pinyinFull);
+        }
+        if (!hasCjkRecord) {
+            return stem;
+        }
+        if (!lazyPyFullStemBuilt) {
+            PinyinEngine::BuildNormalizedFull(stem, lazyPyFullStemBuf);
+            lazyPyFullStemBuilt = true;
+        }
+        return lazyPyFullStemBuf;
+    };
 
     if (equalsIgnoreCase(record.fileName, targetQuery)) return 0;
 
@@ -2356,14 +2973,15 @@ int SearchExpression::calculateRank(const FileRecord& record) const {
         for (size_t i = 0; i < m_rankingTerms.size(); ++i) {
             const auto& term = m_rankingTerms[i];
             bool hit = containsIgnoreCase(stem, term);
-            if (!hit && m_pinyinEnabled) {
-                hit = containsIgnoreCase(pyFullStem, term) || containsIgnoreCase(pyInitStem, term);
+            if (!hit && allowRecordPinyinRank) {
+                hit = (!pyInitStem.empty() && containsIgnoreCase(pyInitStem, term)) ||
+                      containsIgnoreCase(getPyFullStem(), term);
             }
             if (hit) {
                 ++stemMatchedCount;
                 if (i == 0 && (startsWithIgnoreCase(stem, term) ||
-                               (m_pinyinEnabled && (startsWithIgnoreCase(pyFullStem, term) ||
-                                                    startsWithIgnoreCase(pyInitStem, term))))) {
+                               (allowRecordPinyinRank && ((!pyInitStem.empty() && startsWithIgnoreCase(pyInitStem, term)) ||
+                                                          startsWithIgnoreCase(getPyFullStem(), term))))) {
                     firstTermPrefix = true;
                 }
             }
@@ -2378,14 +2996,36 @@ int SearchExpression::calculateRank(const FileRecord& record) const {
         return 7;
     }
 
+    if (!m_slashLeafRankHint.empty()) {
+        if (equalsIgnoreCase(record.fileName, m_slashLeafRankHint) ||
+            equalsIgnoreCase(stem, m_slashLeafRankHint)) {
+            return 1;
+        }
+        if (allowRecordPinyinRank && ((!pyInitStem.empty() && equalsIgnoreCase(pyInitStem, m_slashLeafRankHint)) ||
+                                      equalsIgnoreCase(getPyFullStem(), m_slashLeafRankHint))) {
+            return 2;
+        }
+        if (startsWithIgnoreCase(stem, m_slashLeafRankHint) ||
+            (allowRecordPinyinRank && ((!pyInitStem.empty() && startsWithIgnoreCase(pyInitStem, m_slashLeafRankHint)) ||
+                                       startsWithIgnoreCase(getPyFullStem(), m_slashLeafRankHint)))) {
+            return 3;
+        }
+        if (containsIgnoreCase(stem, m_slashLeafRankHint) ||
+            (allowRecordPinyinRank && ((!pyInitStem.empty() && containsIgnoreCase(pyInitStem, m_slashLeafRankHint)) ||
+                                       containsIgnoreCase(getPyFullStem(), m_slashLeafRankHint)))) {
+            return 5;
+        }
+    }
+
     if (startsWithIgnoreCase(stem, targetQuery)) return 1;
-    if (m_pinyinEnabled && m_isAsciiQuery) {
+    if (allowRecordPinyinRank && m_isAsciiQuery) {
         const auto& q = m_cleanAsciiQuery.empty() ? targetQuery : m_cleanAsciiQuery;
+        const std::wstring_view pyFullStem = getPyFullStem();
         if (startsWithIgnoreCase(pyFullStem, q)) return 2;
-        if (startsWithIgnoreCase(pyInitStem, q)) return 3;
+        if (!pyInitStem.empty() && startsWithIgnoreCase(pyInitStem, q)) return 3;
         if (containsIgnoreCase(stem, targetQuery)) return 4;
         if (containsIgnoreCase(pyFullStem, q)) return 5;
-        if (containsIgnoreCase(pyInitStem, q)) return 6;
+        if (!pyInitStem.empty() && containsIgnoreCase(pyInitStem, q)) return 6;
     } else {
         if (containsIgnoreCase(stem, targetQuery)) return 4;
     }

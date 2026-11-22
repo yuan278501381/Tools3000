@@ -1027,17 +1027,69 @@ nlohmann::json ProcessSearchQuery(
                     uint64_t totalMemRecords = 0;
                     uint32_t indexedVolumes = 0;
                     uint32_t totalVolumes = 0;
-                    if (searchIndexReady) {
-                        const auto parsers = snapshotParsers();
-                        totalVolumes = static_cast<uint32_t>(parsers.size());
-                        for (const auto& p : parsers) {
-                            if (!p) continue;
-                            totalMemRecords += p->getFileCount();
-                            if (p->isInitialScanDone()) {
-                                ++indexedVolumes;
-                            }
+
+                    auto phaseToString = [](MftParser::ScanPhase ph) noexcept -> const char* {
+                        switch (ph) {
+                            case MftParser::ScanPhase::Scanning: return "scanning";
+                            case MftParser::ScanPhase::BuildingHierarchy: return "building";
+                            case MftParser::ScanPhase::Syncing: return "syncing";
+                            case MftParser::ScanPhase::LoadingSnapshot: return "loading";
+                            case MftParser::ScanPhase::Idle:
+                            default: return "idle";
                         }
+                    };
+
+                    std::string activePhase = searchIndexReady ? "idle" : "starting";
+                    std::string activeDrive;
+                    std::string activeVolumeLabel;
+                    uint64_t activeScanned = 0;
+                    uint64_t activeEstimated = 0;
+                    double weightedVolumeProgressSum = 0.0;
+                    nlohmann::json volumesJson = nlohmann::json::array();
+
+                    const auto parsers = snapshotParsers();
+                    totalVolumes = static_cast<uint32_t>(parsers.size());
+                    for (const auto& p : parsers) {
+                        if (!p) continue;
+                        const size_t recCount = p->getFileCount();
+                        const auto ph = p->getScanPhase();
+                        const uint64_t scanned = p->getScannedRecords();
+                        const uint64_t estimated = p->getEstimatedRecords();
+                        const bool done = p->isInitialScanDone();
+                        const std::string driveStr(1, p->getDriveLetter());
+                        const std::string labelUtf8 = WStringToString(p->getVolumeLabel());
+
+                        totalMemRecords += recCount;
+                        if (done) {
+                            ++indexedVolumes;
+                            weightedVolumeProgressSum += 1.0;
+                        } else if (ph == MftParser::ScanPhase::BuildingHierarchy) {
+                            weightedVolumeProgressSum += 0.92;
+                        } else if (estimated > 0 && scanned > 0) {
+                            weightedVolumeProgressSum += std::clamp(
+                                (static_cast<double>(scanned) / static_cast<double>(estimated)) * 0.90,
+                                0.01,
+                                0.90);
+                        }
+                        if (ph != MftParser::ScanPhase::Idle && activeDrive.empty()) {
+                            activePhase = phaseToString(ph);
+                            activeDrive = driveStr;
+                            activeVolumeLabel = labelUtf8;
+                            activeScanned = scanned;
+                            activeEstimated = estimated;
+                        }
+
+                        volumesJson.push_back({
+                            {"drive", driveStr},
+                            {"label", labelUtf8},
+                            {"phase", phaseToString(ph)},
+                            {"records", recCount},
+                            {"scanned", scanned},
+                            {"estimated", estimated},
+                            {"done", done}
+                        });
                     }
+
                     const uint64_t effectiveRecords = totalMemRecords > 0 ? totalMemRecords : stats.totalRecords;
                     const uint32_t effectiveVolumes = totalVolumes > 0 ? totalVolumes : stats.volumeCount;
                     const int initialWorkers = g_InitialIndexWorkers.load(std::memory_order_acquire);
@@ -1052,6 +1104,24 @@ nlohmann::json ProcessSearchQuery(
                                             dynamicWorkers > 0 ||
                                             rebuildInProgress ||
                                             (indexedVolumes < totalVolumes);
+
+                    if (activePhase == "idle" && snapshotInProgress) {
+                        activePhase = "saving";
+                    }
+
+                    int progressPercent = isIndexing ? 0 : 100;
+                    if (isIndexing) {
+                        if (totalVolumes > 0) {
+                            const double aggPct = (weightedVolumeProgressSum / static_cast<double>(totalVolumes)) * 100.0;
+                            progressPercent = std::clamp(static_cast<int>(std::lround(aggPct)), 1, 99);
+                        } else if (activePhase == "building") {
+                            progressPercent = 92;
+                        } else if (activeEstimated > 0 && activeScanned > 0) {
+                            const double rawPct = (static_cast<double>(activeScanned) / static_cast<double>(activeEstimated)) * 90.0;
+                            progressPercent = std::clamp(static_cast<int>(rawPct), 1, 90);
+                        }
+                    }
+
                     return {
                         {"success", true},
                         {"dbPath", WStringToString(stats.dbPath)},
@@ -1063,6 +1133,13 @@ nlohmann::json ProcessSearchQuery(
                         {"totalVolumes", totalVolumes},
                         {"exists", stats.exists || totalMemRecords > 0},
                         {"indexing", isIndexing},
+                        {"phase", activePhase},
+                        {"activeDrive", activeDrive},
+                        {"activeVolumeLabel", activeVolumeLabel},
+                        {"scannedRecords", activeScanned},
+                        {"estimatedRecords", activeEstimated},
+                        {"progressPercent", progressPercent},
+                        {"volumes", std::move(volumesJson)},
                         {"initialWorkers", initialWorkers},
                         {"dynamicWorkers", dynamicWorkers},
                         {"rebuildInProgress", rebuildInProgress},
@@ -1174,6 +1251,8 @@ nlohmann::json ProcessSearchQuery(
             }
             if (reqJson.contains("pinyinEnabled") && reqJson["pinyinEnabled"].is_boolean()) {
                 parseOpts.pinyinEnabled = reqJson["pinyinEnabled"].get<bool>();
+            } else {
+                parseOpts.pinyinEnabled = (PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE);
             }
             if (reqJson.contains("matchPath") && reqJson["matchPath"].is_boolean()) {
                 parseOpts.matchPath = reqJson["matchPath"].get<bool>();
@@ -1368,17 +1447,12 @@ nlohmann::json ProcessSearchQuery(
         }
 
         std::vector<std::vector<SearchResult>> perVolumeResults(activeParsers.size());
-        if (activeParsers.size() == 1) {
-            perVolumeResults[0] = activeParsers[0]->Search(
+        // 每个卷的 `MftParser::Search` 内部已在叶级满血调用 `QueryThreadPool::parallelFor` 并行扫描全部分片，
+        // 外层按卷顺序驱动可最大化 L3 缓存局部性，同时彻底消除外层/内层嵌套入池引发的锁层次反转风险。
+        for (size_t i = 0; i < activeParsers.size(); ++i) {
+            if (isCancelled()) break;
+            perVolumeResults[i] = activeParsers[i]->Search(
                 queryStr, static_cast<int>(perVolumeCap), excludeOpts, isCancelled, parseOpts);
-        } else if (activeParsers.size() > 1) {
-            tools3000::service::QueryThreadPool::instance().parallelFor(
-                activeParsers.size(),
-                [&](size_t i) {
-                    if (isCancelled()) return;
-                    perVolumeResults[i] = activeParsers[i]->Search(
-                        queryStr, static_cast<int>(perVolumeCap), excludeOpts, isCancelled, parseOpts);
-                });
         }
 
         std::vector<SearchResult> results;
@@ -1578,15 +1652,46 @@ nlohmann::json ProcessSearchQuery(
         std::atomic<size_t> matchCount{0};
         std::atomic<bool> sliceBudgetReached{false};
 
+        const unsigned int hwThreads = std::thread::hardware_concurrency();
+        // 内容搜索属于后台重 I/O 与解压任务，并发上限收敛至半核（2~6 线程），
+        // 永远为前台桌面应用与 OCR 推理预留充足的 CPU、L3 缓存与 NVMe I/O 带宽。
         const size_t numWorkers = static_cast<size_t>(
-            (std::max)(2u, (std::min)(16u, std::thread::hardware_concurrency())));
+            std::clamp(hwThreads / 2u, 2u, 6u));
         std::atomic<size_t> nextIndex{startCursor};
         const auto sliceStart = std::chrono::steady_clock::now();
+
+        struct ScopedBackgroundIoPriority {
+            bool bgModeEntered = false;
+            int prevPriority = THREAD_PRIORITY_NORMAL;
+            bool priorityLowered = false;
+            ScopedBackgroundIoPriority() noexcept {
+                HANDLE hThread = GetCurrentThread();
+                if (SetThreadPriority(hThread, THREAD_MODE_BACKGROUND_BEGIN)) {
+                    bgModeEntered = true;
+                } else {
+                    prevPriority = GetThreadPriority(hThread);
+                    if (SetThreadPriority(hThread, THREAD_PRIORITY_BELOW_NORMAL)) {
+                        priorityLowered = true;
+                    }
+                }
+            }
+            ~ScopedBackgroundIoPriority() noexcept {
+                HANDLE hThread = GetCurrentThread();
+                if (bgModeEntered) {
+                    SetThreadPriority(hThread, THREAD_MODE_BACKGROUND_END);
+                } else if (priorityLowered && prevPriority != THREAD_PRIORITY_ERROR_RETURN) {
+                    SetThreadPriority(hThread, prevPriority);
+                }
+            }
+            ScopedBackgroundIoPriority(const ScopedBackgroundIoPriority&) = delete;
+            ScopedBackgroundIoPriority& operator=(const ScopedBackgroundIoPriority&) = delete;
+        };
 
         tools3000::service::QueryThreadPool::instance().parallelFor(
             numWorkers,
             [&, hClientToken, isSameUserProcessSid, reqFilterPtr](size_t workerSlot) {
                 (void)workerSlot;
+                ScopedBackgroundIoPriority bgIoGuard;
                 tools3000::service::pipe_auth::ScopedContentReadImpersonation impGuard(
                     hClientToken, isSameUserProcessSid, effectiveClientSid);
                 if (!impGuard.isAuthorized()) {
@@ -1646,15 +1751,20 @@ nlohmann::json ProcessSearchQuery(
                             uint64_t finalSize = item.fileSize;
                             uint64_t finalCreation = item.creationTime;
                             uint64_t finalWrite = item.lastWriteTime;
-                            if (finalSize == 0 || finalWrite == 0) {
+                            uint64_t finalAccess = 0;
+                            uint32_t finalAttrs = 0;
+                            {
                                 WIN32_FILE_ATTRIBUTE_DATA attr{};
                                 if (GetFileAttributesExW(item.fullPath.c_str(), GetFileExInfoStandard, &attr)) {
+                                    finalAttrs = attr.dwFileAttributes;
                                     finalSize = (static_cast<uint64_t>(attr.nFileSizeHigh) << 32) |
                                                 static_cast<uint64_t>(attr.nFileSizeLow);
                                     finalCreation = (static_cast<uint64_t>(attr.ftCreationTime.dwHighDateTime) << 32) |
                                                     static_cast<uint64_t>(attr.ftCreationTime.dwLowDateTime);
                                     finalWrite = (static_cast<uint64_t>(attr.ftLastWriteTime.dwHighDateTime) << 32) |
                                                  static_cast<uint64_t>(attr.ftLastWriteTime.dwLowDateTime);
+                                    finalAccess = (static_cast<uint64_t>(attr.ftLastAccessTime.dwHighDateTime) << 32) |
+                                                  static_cast<uint64_t>(attr.ftLastAccessTime.dwLowDateTime);
                                 }
                             }
 
@@ -1677,6 +1787,8 @@ nlohmann::json ProcessSearchQuery(
                                 {"size", finalSize},
                                 {"creationTime", finalCreation},
                                 {"lastWriteTime", finalWrite},
+                                {"lastAccessTime", finalAccess},
+                                {"attributes", finalAttrs},
                                 {"runCount", histStats.runCount},
                                 {"frecencyScore", histStats.frecencyScore},
                                 {"snippets", std::move(snippetsJson)}
@@ -1792,6 +1904,8 @@ nlohmann::json ProcessSearchQuery(
                 {"size", result.fileSize},
                 {"creationTime", result.creationTime},
                 {"lastWriteTime", result.lastWriteTime},
+                {"lastAccessTime", result.lastAccessTime},
+                {"attributes", result.fileAttributes},
                 {"matchRank", result.matchRank},
                 {"runCount", histStats.runCount},
                 {"frecencyScore", histStats.frecencyScore}
@@ -1931,6 +2045,8 @@ nlohmann::json ProcessSearchQuery(
                 {"size", result.fileSize},
                 {"creationTime", result.creationTime},
                 {"lastWriteTime", result.lastWriteTime},
+                {"lastAccessTime", result.lastAccessTime},
+                {"attributes", result.fileAttributes},
                 {"matchRank", result.matchRank},
                 {"runCount", histStats.runCount},
                 {"frecencyScore", histStats.frecencyScore}
@@ -2271,7 +2387,7 @@ void IPCServerThread() {
             if (pShared->consumeRescannedDuringCatchUp()) {
                 anyCatchUpRescanned = true;
             }
-            if (pShared->getFileCount() == 0) {
+            if (pShared->getFileCount() == 0 && !pShared->isInitialScanDone()) {
                 anyMissing = true;
                 char drive = pShared->getDriveLetter();
                 g_InitialIndexWorkers.fetch_add(1, std::memory_order_relaxed);

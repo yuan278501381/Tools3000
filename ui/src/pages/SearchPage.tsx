@@ -8,6 +8,7 @@ import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { CATEGORY_DEFS } from '../search/searchConstants';
 import type { SearchMode } from '../search/searchTypes';
+import { safeStorageGetEnum, safeStorageSetItem } from '../search/storageUtils';
 import { consumePendingDeepNavigation, type DeepNavigationPayload } from '../config/settingsSearchIndex';
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
@@ -43,7 +44,8 @@ interface ServiceStatus {
 }
 
 export const SearchPage: FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const isChineseUi = (i18n.resolvedLanguage ?? i18n.language ?? '').toLowerCase().startsWith('zh');
   const [activeTab, setActiveTab] = useState<'settings' | 'syntax' | 'regex' | 'status'>(
     () => consumePendingDeepNavigation('search')?.tabId ?? 'settings',
   );
@@ -66,14 +68,13 @@ export const SearchPage: FC = () => {
     defaultCategory: 'all',
     caseSensitive: false,
     matchPath: false,
-    pinyinEnabled: true,
+    pinyinEnabled: isChineseUi,
     iconStyle: 'native',
     autoBypassFullscreen: true,
   });
-  const [searchMode, setSearchMode] = useState<SearchMode>(() => {
-    const saved = localStorage.getItem('tools3000_search_default_mode');
-    return saved === 'both' || saved === 'content' ? saved : 'name';
-  });
+  const [searchMode, setSearchMode] = useState<SearchMode>(() =>
+    safeStorageGetEnum('tools3000_search_default_mode', ['name', 'both', 'content'] as const, 'name'),
+  );
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus>({
     available: false,
     pipeName: '\\\\.\\pipe\\Tools3000SearchPipe',
@@ -96,7 +97,7 @@ export const SearchPage: FC = () => {
             setSettings(prev => ({ ...prev, ...res, defaultCategory: normalizedCategory }));
             if (res.defaultCategory === 'content' && !remoteHasMode) {
               setSearchMode('content');
-              localStorage.setItem('tools3000_search_default_mode', 'content');
+              safeStorageSetItem('tools3000_search_default_mode', 'content');
             }
           }
         })
@@ -110,7 +111,7 @@ export const SearchPage: FC = () => {
           if (prefs.searchMode === 'name' || prefs.searchMode === 'both' || prefs.searchMode === 'content') {
             remoteHasMode = true;
             setSearchMode(prefs.searchMode);
-            localStorage.setItem('tools3000_search_default_mode', prefs.searchMode);
+            safeStorageSetItem('tools3000_search_default_mode', prefs.searchMode);
           }
         })
         .catch(() => undefined),
@@ -148,9 +149,23 @@ export const SearchPage: FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void bridgeRequest<SearchSettings>('search.getSettings')
+      .then(res => {
+        if (!cancelled && res && typeof res === 'object' && typeof res.pinyinEnabled === 'boolean') {
+          setSettings(prev => (prev.pinyinEnabled === res.pinyinEnabled ? prev : { ...prev, pinyinEnabled: res.pinyinEnabled }));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [i18n.resolvedLanguage, i18n.language]);
+
   const saveSearchMode = async (mode: SearchMode) => {
     setSearchMode(mode);
-    localStorage.setItem('tools3000_search_default_mode', mode);
+    safeStorageSetItem('tools3000_search_default_mode', mode);
     try {
       const raw = await bridgeRequest<{ value?: unknown }>('config.get', { key: '/search/uiPreferences' });
       const prevObj = raw && typeof raw === 'object' && 'value' in raw && raw.value && typeof raw.value === 'object'
@@ -171,9 +186,9 @@ export const SearchPage: FC = () => {
   const saveSetting = async <K extends keyof SearchSettings>(key: K, value: SearchSettings[K]) => {
     setSettings(prev => ({ ...prev, [key]: value }));
     if (key === 'defaultCategory') {
-      localStorage.setItem('tools3000_search_default_category', String(value));
+      safeStorageSetItem('tools3000_search_default_category', String(value));
     } else if (key === 'iconStyle' && value) {
-      localStorage.setItem('tools3000_search_icon_style', String(value));
+      safeStorageSetItem('tools3000_search_icon_style', String(value));
     }
     try {
       await bridgeRequest('search.saveSettings', { [key]: value });

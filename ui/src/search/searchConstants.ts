@@ -18,12 +18,10 @@ import type {
 
 export const DEFAULT_COLUMNS: ColumnSetting[] = [
   { id: 'name', labelKey: 'search.colName', visible: true, flex: 32 },
-  { id: 'ext', labelKey: 'search.colExt', visible: true },
-  { id: 'parent', labelKey: 'search.colParent', visible: true },
-  { id: 'path', labelKey: 'search.colPath', visible: true, flex: 42 },
+  { id: 'path', labelKey: 'search.colDirectory', visible: true, flex: 42 },
   { id: 'size', labelKey: 'search.colSize', visible: true },
   { id: 'modified', labelKey: 'search.colModified', visible: true },
-  { id: 'created', labelKey: 'search.colCreated', visible: false },
+  { id: 'created', labelKey: 'search.colCreated', visible: true },
   { id: 'snippets', labelKey: 'search.colSnippets', visible: true },
 ];
 

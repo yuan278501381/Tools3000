@@ -89,6 +89,7 @@ Tools3000 將日常高頻使用的**檔案搜尋、文件內容搜尋、捲動�
 | **錄影與自動運鏡演播室** | 螢幕錄影聯動鍵鼠回顯，停止即進入演播室——滑鼠點擊處智慧自動運鏡聚焦，搭配多款質感背景與聲波時間軸剪輯；支援一鍵匯出 **MP4**、**WeChat 直傳 GIF**（自動播放小圖 / 可雙擊放大高畫質大圖分檔）與**高畫質動態 WebP**。 |
 | **全域滑鼠手勢** | 按住右鍵一劃即可切換分頁、上一頁或關閉視窗，支援不放鍵瞬發、螢幕邊緣滾輪調音量、分應用程式專屬規則與全螢幕遊戲自動避讓。 |
 | **簡報特效與遠端控制助手** | 投屏清透鍵帽與雙擊 `Ctrl` 聚光燈；系統「開啟 / 另存新檔」對話框快速導覽列；mstsc、RustDesk、ToDesk、AnyDesk 等遠端桌面熱鍵直通與卡鍵一鍵釋放。 |
+| **Picasa 圖片檢視器（Rust 復刻 · 選用）** | 基於 Rust + Direct2D 復刻的經典 Picasa 輕量圖片檢視器（**非原版 Google Picasa 全功能套件**）。**單檔不到 2 MB、零外部執行庫相依，既可隨 Tools3000 使用也可直接單獨複製出去完全獨立執行**；安裝預設不勾選，勾選或於設定頁啟用即自動關聯全部 41 種支援的圖片格式（附經典拍立得圖示與原生深淺自適應 Direct2D 關聯面板）。在還原原版游標阻尼縮放、膠片縮圖漣漪、關閉收攏與全螢幕交叉疊化幻燈片的同時，**補足了原版缺少的現代功能**：4K High-DPI 100%–250%+ 實體像素銳度與 60–240Hz VSync 硬體算圖、WebP / AVIF / HEIC / SVG / QOI / DDS / 主流相機 RAW 解碼、動圖逐幀與倍速控制、水平／垂直無損鏡像翻轉及全 8 語種介面。 |
 
 ---
 
@@ -109,8 +110,8 @@ scoop install tools3000/tools3000
 
 前往 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases/latest)** 下載最新版本：
 
-- **標準安裝程式（`Tools3000-Setup.exe`）** — 推薦日常使用，支援開機自啟、按需勾選元件與無感覆蓋升級。
-- **免安裝可攜版（`Tools3000-Portable-x64.zip`）** — 解壓即用，設定與資料完整保存在目前資料夾。
+- **標準安裝程式（`Tools3000-vX.Y.Z-Setup.exe`）** — 推薦日常使用，支援開機自啟、按需勾選元件與無感覆蓋升級。
+- **免安裝可攜版（`Tools3000-vX.Y.Z-win-x64-portable.zip`）** — 解壓即用，設定與資料完整保存在目前資料夾。
 - **校驗清單（`SHA256SUMS.txt`）** — 提供每次發佈的 SHA-256 完整性校驗值。
 
 > **系統需求**：Windows 10（1809 及以上）/ Windows 11 / Windows Server 2019–2025，原始碼與建置管線原生支援 `x64` 與 `ARM64` 架構（GitHub Releases 目前預先編譯提供 `x64` 安裝程式與可攜版，ARM64 裝置可依[開發者指南](docs/DEVELOPER.md)原生編譯或直接執行 `x64` 版本），依賴系統內建 Microsoft Edge WebView2 Runtime。軟體介面原生支援 8 種語言，預設自動跟隨系統語言。
@@ -121,7 +122,7 @@ Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](SE
 
 1. **SHA-256 完整性校驗**：下載後可在 PowerShell 核對雜湊並與 `SHA256SUMS.txt` 比對：
    ```powershell
-   Get-FileHash .\Tools3000-Setup.exe -Algorithm SHA256
+   Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **VirusTotal 公開查驗**：前往 **[VirusTotal](https://www.virustotal.com/)** 輸入發佈檔 SHA-256（後續每次 GitHub Release 頁面亦直接附帶可點擊直連），公開檢視 70+ 主流防毒引擎掃描結果。
 3. **關於 Windows Defender SmartScreen 提示**：獨立開源專案在尚未配置商業 EV / 公網受信任程式碼簽章（SignPath / Trusted Signing 推進中）或新版剛發佈累積信譽初期，Windows 可能彈出「未知發行者」提示；核對 SHA-256 與 VirusTotal 無誤後點選 **「其他資訊 -> 仍要執行」** 即可，或依 **[開發者指南](docs/DEVELOPER.md)** 從原始碼自行編譯。
@@ -132,6 +133,8 @@ Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](SE
 ## 開發初衷
 
 我是 **Everything** 十多年的老用戶；擷圖軟體最早用 **QQ、微信擷圖**，後來換到標註方便的 **FastStone Capture**，再之後換到可以貼圖的 **Snipaste**，後來因為需要捲動長擷圖、擷圖放大鏡效果與文字辨識，又換到了 **PixPin**；滑鼠手勢從 **WGestures** 用到 **WGestures 2**；錄影軟體也前前後後換過許多款，中途還試過微軟的 **PowerToys** 工具套件，但總還是少那麼幾塊核心拼圖，最後依然得同時常駐好幾個工具。
+
+至於看圖軟體，國產看圖工具大多充滿彈窗廣告與捆綁推廣；Google 停更 **Picasa** 後，我也在網上試過不少替代品——像是 **FastStone Image Viewer**，甚至 **Everything** 官方推出的看圖工具（Void Image Viewer）——但用下來總覺得少了 Picasa 那種行雲流水的跟手操作與靈魂動效，最後索性放棄，改回湊合使用 Windows 內建相片應用。趁著打造 Tools3000，便用 Rust + Direct2D 把最懷念的經典 Picasa 輕量檢視器親手復刻回來（不到 2 MB 單檔零相依、亦可獨立使用），並補足原版欠缺的高分屏銳度與現代格式支援。
 
 某天看著 Windows 系統匣裡排成一串的圖示，心想：**要是能把它們合併成一個軟體就好了。** 再加上日常使用一直被幾個痛點困擾——PixPin 的文字辨識在辨識率與速度上始終不如微信；WGestures 從某一天起總會在螢幕上殘留一個很小的文字框擋住畫面，只有重啟軟體才能消除。趁著 AI 時代到來，我決定自己動手，借助 AI 一步步打造出這款多合一效率工具 **Tools3000**。
 
@@ -148,10 +151,10 @@ Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](SE
 | 常見獨立工具 | Tools3000 涵蓋的日常高頻情境 | 仍建議保留或搭配原工具的專精情境 |
 | :--- | :--- | :--- |
 | **Everything** | `Alt + Space` 毫秒級全磁碟檔名、拼音與 `content:` 文件內文穿透搜尋，按需啟動不拖慢開機 | 需要 HTTP/ETP 區網共享搜尋、EXIF/影音全屬性欄索引，或深度依賴 `es.exe` CLI 生態 |
-| **QuickLook** | 搜尋結果列表選取按 `Space` 免開啟秒看圖片、Office、PDF、程式碼、CAD、PSD 與 3D 模型 | 需要直接在 Windows 桌面或檔案總管任意資料夾按空白鍵全域預覽，或依賴豐富社群 `.qlplugin` |
 | **Snipaste / PixPin** | `F1` 擷圖標註、預設虛線放大鏡、捲動長擷圖、`F3` 多貼圖分組，以及純離線高精度 OCR（框選複製、批註與原位改字） | 需要 Snipaste 對老舊特殊 GUI 控制項的極致單點元素偵測，或特定命令列擷圖工作流 |
 | **WGestures / StrokesPlus** | 按住右鍵一劃切分頁/上一頁/關窗、不放鍵瞬發、螢幕邊緣滾輪調音量、四角觸發、全螢幕遊戲自動避讓與內建 Lua 擴充 | 需要複雜多鍵組合觸發、細部視窗區域條件，或長年累積的巨集錄製腳本 |
 | **各類錄影工具（如 ShareX）** | 錄影、鍵鼠回顯、停止即進自動運鏡演播室（聲波剪輯與滑鼠運鏡），一鍵匯出 MP4、WeChat GIF 與動態 WebP | 需要 80+ 圖床/S3/FTP/Webhook 擷完自動上傳工作流，或高度客製化 FFmpeg 批次管線 |
+| **Picasa 檢視器 / FastStone / Windows 相片** | 選用內建不到 2 MB 零相依的 Rust 復刻 Picasa 輕量檢視器（亦可完全獨立執行），還原經典動效並補足 4K High-DPI、WebP/AVIF/HEIC/SVG/RAW 與無損翻轉 | 需要原版 Google Picasa 相簿庫掃描管理、人臉辨識，或專業批次轉檔／RAW 後製修圖軟體 |
 
 ---
 
@@ -182,6 +185,18 @@ Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](SE
 - **問題回報**：歡迎透過 **[Bug Report 範本](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** 提供重現步驟與環境資訊。
 - **功能建議**：歡迎提交 **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** 或前往 **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)** 交流。
 - **開源共創**：歡迎提交 Pull Request，建置細節參閱 **[開發者指南](docs/DEVELOPER.md)** 與 **[套件管理器說明](packaging/README.md)**。
+
+---
+
+## Star History
+
+<a href="https://www.star-history.com/#yuan278501381/Tools3000&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+ </picture>
+</a>
 
 ---
 

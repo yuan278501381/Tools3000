@@ -244,19 +244,26 @@ if (-not (Test-Path $NotesFile)) {
     Write-Host "[INFO] 使用已存在的 Release Notes: $NotesFile" -ForegroundColor Cyan
 }
 
-# 4. 更新 VERSION 单一事实源，并同步更新 ui/package.json 与 ui/package-lock.json
+# 4. 更新 VERSION 单一事实源，并同步更新前端与 Rust Picasa 看图器版本元数据
 Set-Content -Path $VersionFile -Value $TargetVersion -NoNewline -Encoding utf8
 Write-Host "[OK] VERSION 已更新为: $TargetVersion" -ForegroundColor Green
+
+if ($TargetVersion -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
+    throw "目标版本号格式不合规: $TargetVersion"
+}
+$TargetMajor = [int]$Matches[1]
+$TargetMinor = [int]$Matches[2]
+$TargetPatch = [int]$Matches[3]
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $UiPackageJsonPath = Join-Path $ScriptDir "ui\package.json"
 if (Test-Path -LiteralPath $UiPackageJsonPath) {
     $pkgRaw = [System.IO.File]::ReadAllText($UiPackageJsonPath, [System.Text.Encoding]::UTF8)
-    $pkgUpdated = [regex]::Replace($pkgRaw, '("version"\s*:\s*")[^"]+(")', "`${1}$TargetVersion`${2}", [System.Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromSeconds(2))
     # 仅替换顶层第一个 "version" 字段
     $firstMatch = [regex]::Match($pkgRaw, '"version"\s*:\s*"[^"]+"')
     if ($firstMatch.Success) {
         $pkgUpdated = $pkgRaw.Substring(0, $firstMatch.Index) + "`"version`": `"$TargetVersion`"" + $pkgRaw.Substring($firstMatch.Index + $firstMatch.Length)
-        [System.IO.File]::WriteAllText($UiPackageJsonPath, $pkgUpdated, (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText($UiPackageJsonPath, $pkgUpdated, $Utf8NoBom)
         Write-Host "[OK] ui/package.json version 已同步为: $TargetVersion" -ForegroundColor Green
     }
 }
@@ -281,9 +288,67 @@ if (Test-Path -LiteralPath $UiPackageLockPath) {
             $replacement = $m.Groups[1].Value + $TargetVersion + $m.Groups[2].Value
             $lockUpdated = $lockUpdated.Substring(0, $m.Index) + $replacement + $lockUpdated.Substring($m.Index + $m.Length)
         }
-        [System.IO.File]::WriteAllText($UiPackageLockPath, $lockUpdated, (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText($UiPackageLockPath, $lockUpdated, $Utf8NoBom)
         Write-Host "[OK] ui/package-lock.json 顶层 version 已同步为: $TargetVersion" -ForegroundColor Green
     }
+}
+
+# 同步更新 Rust Picasa 看图器版本号（Cargo.toml / Cargo.lock / viewer.rc / viewer.manifest）
+$ViewerCargoTomlPath = Join-Path $ScriptDir "src\viewer\Cargo.toml"
+if (Test-Path -LiteralPath $ViewerCargoTomlPath) {
+    $cargoRaw = [System.IO.File]::ReadAllText($ViewerCargoTomlPath, [System.Text.Encoding]::UTF8)
+    $cargoUpdated = [regex]::Replace(
+        $cargoRaw,
+        '(?ms)(^\[package\][^\[]*?^version\s*=\s*")[^"]+(")',
+        "`${1}$TargetVersion`${2}",
+        1
+    )
+    if ($cargoUpdated -eq $cargoRaw -and $cargoRaw -notmatch "(?m)^version\s*=\s*`"$([regex]::Escape($TargetVersion))`"") {
+        throw "无法在 src/viewer/Cargo.toml 中定位 [package] version 字段！"
+    }
+    [System.IO.File]::WriteAllText($ViewerCargoTomlPath, $cargoUpdated, $Utf8NoBom)
+    Write-Host "[OK] src/viewer/Cargo.toml version 已同步为: $TargetVersion" -ForegroundColor Green
+}
+
+$ViewerCargoLockPath = Join-Path $ScriptDir "src\viewer\Cargo.lock"
+if (Test-Path -LiteralPath $ViewerCargoLockPath) {
+    $cargoLockRaw = [System.IO.File]::ReadAllText($ViewerCargoLockPath, [System.Text.Encoding]::UTF8)
+    $cargoLockUpdated = [regex]::Replace(
+        $cargoLockRaw,
+        '(?ms)(name\s*=\s*"tools3000_picasa_viewer"\r?\nversion\s*=\s*")[^"]+(")',
+        "`${1}$TargetVersion`${2}",
+        1
+    )
+    [System.IO.File]::WriteAllText($ViewerCargoLockPath, $cargoLockUpdated, $Utf8NoBom)
+    Write-Host "[OK] src/viewer/Cargo.lock 主包 version 已同步为: $TargetVersion" -ForegroundColor Green
+}
+
+$ViewerRcPath = Join-Path $ScriptDir "src\viewer\viewer.rc"
+if (Test-Path -LiteralPath $ViewerRcPath) {
+    $rcRaw = [System.IO.File]::ReadAllText($ViewerRcPath, [System.Text.Encoding]::UTF8)
+    $rcUpdated = $rcRaw
+    $rcUpdated = [regex]::Replace($rcUpdated, '(?m)(^\s*FILEVERSION\s+)\d+,\d+,\d+,\d+', "`${1}$TargetMajor,$TargetMinor,$TargetPatch,0")
+    $rcUpdated = [regex]::Replace($rcUpdated, '(?m)(^\s*PRODUCTVERSION\s+)\d+,\d+,\d+,\d+', "`${1}$TargetMajor,$TargetMinor,$TargetPatch,0")
+    $rcUpdated = [regex]::Replace($rcUpdated, '(VALUE\s+"FileVersion"\s*,\s*")[^"]+(")', "`${1}$TargetVersion.0`${2}")
+    $rcUpdated = [regex]::Replace($rcUpdated, '(VALUE\s+"ProductVersion"\s*,\s*")[^"]+(")', "`${1}$TargetVersion`${2}")
+    [System.IO.File]::WriteAllText($ViewerRcPath, $rcUpdated, $Utf8NoBom)
+    Write-Host "[OK] src/viewer/viewer.rc 版本资源已同步为: $TargetVersion ($TargetVersion.0)" -ForegroundColor Green
+}
+
+$ViewerManifestPath = Join-Path $ScriptDir "src\viewer\viewer.manifest"
+if (Test-Path -LiteralPath $ViewerManifestPath) {
+    $manifestRaw = [System.IO.File]::ReadAllText($ViewerManifestPath, [System.Text.Encoding]::UTF8)
+    $manifestUpdated = [regex]::Replace(
+        $manifestRaw,
+        '(<assemblyIdentity\s+version=")[^"]+("[^>]*name="Yy1\.Tools3000\.PicasaViewer")',
+        "`${1}$TargetVersion.0`${2}",
+        1
+    )
+    if ($manifestUpdated -eq $manifestRaw -and $manifestRaw -notmatch "version=`"$([regex]::Escape($TargetVersion))\.0`"[^>]*name=`"Yy1\.Tools3000\.PicasaViewer`"") {
+        throw "无法在 src/viewer/viewer.manifest 中定位 Yy1.Tools3000.PicasaViewer 版本字段！"
+    }
+    [System.IO.File]::WriteAllText($ViewerManifestPath, $manifestUpdated, $Utf8NoBom)
+    Write-Host "[OK] src/viewer/viewer.manifest assemblyIdentity 版本已同步为: $TargetVersion.0" -ForegroundColor Green
 }
 
 # 5. 提交版本升级 commit
@@ -291,12 +356,16 @@ $FilesToStage = @("VERSION", "docs/RELEASE_NOTES_$TargetTag.md")
 if (Test-Path -LiteralPath (Join-Path $ScriptDir "CHANGELOG.md")) { $FilesToStage += "CHANGELOG.md" }
 if (Test-Path -LiteralPath $UiPackageJsonPath) { $FilesToStage += "ui/package.json" }
 if (Test-Path -LiteralPath $UiPackageLockPath) { $FilesToStage += "ui/package-lock.json" }
+if (Test-Path -LiteralPath $ViewerCargoTomlPath) { $FilesToStage += "src/viewer/Cargo.toml" }
+if (Test-Path -LiteralPath $ViewerCargoLockPath) { $FilesToStage += "src/viewer/Cargo.lock" }
+if (Test-Path -LiteralPath $ViewerRcPath) { $FilesToStage += "src/viewer/viewer.rc" }
+if (Test-Path -LiteralPath $ViewerManifestPath) { $FilesToStage += "src/viewer/viewer.manifest" }
 git add -- @FilesToStage
 if ($LASTEXITCODE -ne 0) { throw "暂存版本与发布说明失败！" }
 $HasStaged = @(git diff --cached --name-only)
 if ($LASTEXITCODE -ne 0) { throw "无法检查待提交的发布文件！" }
 if ($HasStaged.Count -gt 0) {
-    git commit -m "chore(release): 升级项目版本至 $TargetTag 并同步官方发布日志与版本元数据`n`n[业务角度]`n- 发布 Tools3000 $TargetTag 官方正式版；`n- 同步生成以用户体感与痛点解决为视角的官方 Release Notes。`n`n[技术角度]`n- 升级唯一事实源 VERSION 与前端包元数据至 $TargetVersion；`n- 准备主分支本地权威签名发布与资产打包。"
+    git commit -m "chore(release): 升级项目版本至 $TargetTag 并同步官方发布日志与版本元数据`n`n[业务角度]`n- 发布 Tools3000 $TargetTag 官方正式版；`n- 同步生成以用户体感与痛点解决为视角的官方 Release Notes。`n`n[技术角度]`n- 升级唯一事实源 VERSION、前端包元数据及 Rust Picasa 看图器版本资源至 $TargetVersion；`n- 准备主分支本地权威签名发布与资产打包。"
     if ($LASTEXITCODE -ne 0) { throw "提交版本元数据失败！" }
     Write-Host "[OK] 版本元数据已在当前分支提交" -ForegroundColor Green
 }
@@ -334,39 +403,39 @@ foreach ($SignedInput in $SignedReleaseInputs) {
 }
 Write-Host "[OK] deploy_dist 全部可执行文件/动态库及外层安装包 Authenticode 签名验证通过" -ForegroundColor Green
 
-# 8. EXE 二进制版本强校验门禁
-$BuiltExe = if (Test-Path "deploy_dist\Tools3000.exe") { "deploy_dist\Tools3000.exe" } else { "deploy_dist\Tools3000.exe" }
-if (-not (Test-Path $BuiltExe)) { throw "未找到编译产物: $BuiltExe" }
-$VersionInfo = (Get-Item $BuiltExe).VersionInfo
-$ExeVersion = $VersionInfo.ProductVersion
-$SemVerExeVersion = "$($VersionInfo.ProductMajorPart).$($VersionInfo.ProductMinorPart).$($VersionInfo.ProductBuildPart)"
-if ($ExeVersion -ne $TargetVersion -and $SemVerExeVersion -ne $TargetVersion) {
-    throw "版本强校验失败！编译产物版本 ($ExeVersion / $SemVerExeVersion) 与目标发版版本 ($TargetVersion) 不匹配！"
+# 8. EXE 二进制版本强校验门禁（覆盖主程序与 Rust Picasa 看图器）
+foreach ($BuiltExe in @("deploy_dist\Tools3000.exe", "deploy_dist\Tools3000_Picasa_Viewer.exe")) {
+    if (-not (Test-Path -LiteralPath $BuiltExe)) { throw "未找到编译产物: $BuiltExe" }
+    $VersionInfo = (Get-Item -LiteralPath $BuiltExe).VersionInfo
+    $ExeVersion = $VersionInfo.ProductVersion
+    $SemVerExeVersion = "$($VersionInfo.ProductMajorPart).$($VersionInfo.ProductMinorPart).$($VersionInfo.ProductBuildPart)"
+    if ($ExeVersion -ne $TargetVersion -and $SemVerExeVersion -ne $TargetVersion) {
+        throw "版本强校验失败！编译产物 $BuiltExe 版本 ($ExeVersion / $SemVerExeVersion) 与目标发版版本 ($TargetVersion) 不匹配！"
+    }
+    Write-Host "[OK] 二进制版本强校验通过: $BuiltExe ProductVersion = $ExeVersion (SemVer: $SemVerExeVersion)" -ForegroundColor Green
 }
-Write-Host "[OK] 二进制版本强校验通过: $BuiltExe ProductVersion = $ExeVersion (SemVer: $SemVerExeVersion)" -ForegroundColor Green
 
-# 9. 资产归档与 SHA256 校验和生成
+& pwsh -File (Join-Path $ScriptDir "scripts\verify-version.ps1") -Tag $TargetTag -RequireBinary
+if ($LASTEXITCODE -ne 0) { throw "版本号单一事实源全链路校验 (verify-version.ps1) 失败！" }
+
+# 9. 资产归档与 SHA256 校验和生成（严格精简为规范 3 件套：带版本号安装包、便携包与 SHA256SUMS.txt）
 $ReleaseDir = Join-Path $ScriptDir "release_assets"
 Remove-ProjectArtifactDirectorySafely -ProjectRoot $ScriptDir -RelativePath "release_assets"
 New-Item -ItemType Directory -Path $ReleaseDir | Out-Null
 
 $SetupExe = "Output\Tools3000-Setup.exe"
-if (-not (Test-Path $SetupExe)) { throw "未找到安装包: $SetupExe" }
+if (-not (Test-Path -LiteralPath $SetupExe)) { throw "未找到安装包: $SetupExe" }
 $TargetSetup = "$ReleaseDir\Tools3000-$TargetTag-Setup.exe"
-Copy-Item $SetupExe $TargetSetup
-$TargetGenericSetup = "$ReleaseDir\Tools3000-Setup.exe"
-Copy-Item $SetupExe $TargetGenericSetup
+Copy-Item -LiteralPath $SetupExe -Destination $TargetSetup -Force
 
 $PrebuiltPortableZip = "Output\Tools3000-win-x64-portable.zip"
 $TargetZip = "$ReleaseDir\Tools3000-$TargetTag-win-x64-portable.zip"
-$TargetGenericZip = "$ReleaseDir\Tools3000-Portable-x64.zip"
 if (Test-Path -LiteralPath $PrebuiltPortableZip) {
     Copy-Item -LiteralPath $PrebuiltPortableZip -Destination $TargetZip -Force
 } else {
     Compress-Archive -Path (Join-Path $ScriptDir "deploy_dist\*") `
         -DestinationPath $TargetZip -CompressionLevel Optimal
 }
-Copy-Item -LiteralPath $TargetZip -Destination $TargetGenericZip -Force
 
 $Checksums = @()
 $HashTableRows = @()
@@ -379,7 +448,7 @@ Get-ChildItem -Path $ReleaseDir -File | Sort-Object Name | ForEach-Object {
 }
 $ChecksumFile = "$ReleaseDir\SHA256SUMS.txt"
 $Checksums | Out-File -FilePath $ChecksumFile -Encoding utf8
-Write-Host "[OK] 发布资产已就绪并生成 SHA256 校验和" -ForegroundColor Green
+Write-Host "[OK] 发布资产 3 件套已就绪并生成 SHA256 校验和" -ForegroundColor Green
 
 # 9.1 在 Release Notes 中自动追加 SHA-256 完整性校验与 VirusTotal 直链
 if ((Test-Path -LiteralPath $NotesFile) -and $HashTableRows.Count -gt 0) {
@@ -418,7 +487,7 @@ if (Test-Path -LiteralPath $ManifestUpdater) {
     if ($LASTEXITCODE -ne 0) {
         throw "包管理器清单更新或 winget validate 门禁失败！"
     }
-    git add bucket/tools3000.json packaging/winget/
+    git add bucket/tools3000.json packaging/winget/ "docs/RELEASE_NOTES_$TargetTag.md"
     $PkgDiff = @(git diff --cached --name-only)
     if ($PkgDiff.Count -gt 0) {
         $PkgCommitMsg = @"
@@ -485,7 +554,7 @@ if (-not $LocalOnly -and -not $SkipGitHubPublish) {
         } else {
             "Tools3000 $TargetTag"
         }
-        gh release create $TargetTag $TargetSetup $TargetGenericSetup $TargetZip $TargetGenericZip $ChecksumFile --title $ActualTitle --notes-file $NotesFile --latest
+        gh release create $TargetTag $TargetSetup $TargetZip $ChecksumFile --title $ActualTitle --notes-file $NotesFile --latest
         if ($LASTEXITCODE -ne 0) { throw "创建 GitHub Release 失败！" }
     }
     Write-Host "[OK] GitHub Release 发布成功！" -ForegroundColor Green

@@ -31,7 +31,7 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
 $Notice = [System.Text.StringBuilder]::new()
 [void]$Notice.AppendLine("Tools3000 Third-Party Notices")
-[void]$Notice.AppendLine("Generated from the exact vcpkg triplet and npm lockfile used for this build.")
+[void]$Notice.AppendLine("Generated from the exact vcpkg triplet, npm lockfile, and Cargo.lock used for this build.")
 [void]$Notice.AppendLine()
 $Packages = [System.Collections.Generic.List[object]]::new()
 $PackageKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
@@ -54,11 +54,12 @@ function Add-PackageRecord {
         [string]$License,
         [string]$Source,
         [string[]]$NoticeFiles,
-        [string]$DownloadLocation = "NOASSERTION"
+        [string]$DownloadLocation = "NOASSERTION",
+        [string]$FallbackNoticeText = ""
     )
     if ([string]::IsNullOrWhiteSpace($License)) { $License = "NOASSERTION" }
     if ([string]::IsNullOrWhiteSpace($DownloadLocation)) { $DownloadLocation = "NOASSERTION" }
-    $PackageKey = "$Name`0$Version"
+    $PackageKey = "$Source`0$Name`0$Version"
     if (-not $PackageKeys.Add($PackageKey)) { return }
 
     $IdName = ($Name -replace '[^A-Za-z0-9.-]', '-')
@@ -97,6 +98,11 @@ function Add-PackageRecord {
             [void]$Notice.AppendLine()
             $AddedText = $true
         }
+    }
+    if (-not $AddedText -and -not [string]::IsNullOrWhiteSpace($FallbackNoticeText)) {
+        [void]$Notice.AppendLine($FallbackNoticeText.Trim())
+        [void]$Notice.AppendLine()
+        $AddedText = $true
     }
     if (-not $AddedText) {
         throw "缺少第三方许可证正文: $Name $Version ($Source)"
@@ -231,6 +237,144 @@ foreach ($Asset in @($DependencyMetadata.vendoredAssets)) {
     Add-PackageRecord -Name $AssetName -Version $AssetVersion -License ([string]$Asset.license) `
         -Source "vendored:$($Asset.path) from $($Asset.sourcePath); sha256:$ActualHash" `
         -NoticeFiles @($AssetLicensePath) -DownloadLocation ([string]$Asset.downloadLocation)
+}
+
+# 解析 Rust Picasa 看图器第三方依赖（src/viewer/Cargo.lock），排除本仓自有包
+$CargoLockFile = Join-Path $ProjectRoot "src\viewer\Cargo.lock"
+$ViewerDir = Join-Path $ProjectRoot "src\viewer"
+if (Test-Path -LiteralPath $CargoLockFile) {
+    function ConvertTo-SpdxLicenseExpression {
+        param([string]$RawLicense)
+        if ([string]::IsNullOrWhiteSpace($RawLicense)) { return "NOASSERTION" }
+        # 兼容 Cargo 历史斜杠语法（如 MIT/Apache-2.0），规范化为 SPDX 2.3 OR 表达式
+        $Normalized = $RawLicense.Trim() -replace '\s*/\s*', ' OR '
+        return $Normalized
+    }
+
+    # 1. 优先通过 cargo metadata --locked 提取精确许可证与本地缓存源码路径
+    $CargoMetaByKey = @{}
+    $CargoCmd = Get-Command "cargo" -ErrorAction SilentlyContinue
+    if (-not $CargoCmd -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"))) {
+        $CargoCmd = Get-Command (Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe") -ErrorAction SilentlyContinue
+    }
+    if ($CargoCmd -and (Test-Path -LiteralPath (Join-Path $ViewerDir "Cargo.toml"))) {
+        Push-Location $ViewerDir
+        try {
+            $MetaOut = & $CargoCmd.Source metadata --format-version 1 --locked --offline 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($MetaOut -join ""))) {
+                $MetaOut = & $CargoCmd.Source metadata --format-version 1 --locked 2>$null
+            }
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($MetaOut -join ""))) {
+                $MetaObj = ($MetaOut -join "`n") | ConvertFrom-Json
+                foreach ($Pkg in @($MetaObj.packages)) {
+                    if ([string]::IsNullOrWhiteSpace([string]$Pkg.source)) { continue }
+                    $Key = "$($Pkg.name)@$($Pkg.version)"
+                    $CargoMetaByKey[$Key] = $Pkg
+                }
+            }
+        } catch {
+            Write-Warning "解析 cargo metadata 失败，将回退至 Cargo.lock 与本地 Cargo 缓存扫描: $_"
+        } finally {
+            Pop-Location
+        }
+    }
+
+    # 2. 收集本地 Cargo registry 源码根目录，便于在无 cargo metadata 环境下仍可提取许可证正文
+    $CargoRegistrySrcRoots = @()
+    $CargoHomeCandidates = @($env:CARGO_HOME, (Join-Path $env:USERPROFILE ".cargo")) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+    foreach ($HomeDir in $CargoHomeCandidates) {
+        $RegSrc = Join-Path $HomeDir "registry\src"
+        if (Test-Path -LiteralPath $RegSrc -PathType Container) {
+            $CargoRegistrySrcRoots += @(Get-ChildItem -LiteralPath $RegSrc -Directory -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName)
+        }
+    }
+
+    # 3. 逐块解析 Cargo.lock 中的 [[package]]，仅保留带 source 的第三方 crates
+    $CargoLockText = (Get-Content -LiteralPath $CargoLockFile -Raw) -replace "`r`n", "`n"
+    $CargoBlocks = [regex]::Split($CargoLockText, '(?m)^\[\[package\]\]\s*$')
+    $CargoThirdPartyCrates = [System.Collections.Generic.List[object]]::new()
+    foreach ($Block in $CargoBlocks) {
+        if ([string]::IsNullOrWhiteSpace($Block)) { continue }
+        $NameMatch = [regex]::Match($Block, '(?m)^name\s*=\s*"([^"]+)"')
+        $VersionMatch = [regex]::Match($Block, '(?m)^version\s*=\s*"([^"]+)"')
+        $SourceMatch = [regex]::Match($Block, '(?m)^source\s*=\s*"([^"]+)"')
+        $ChecksumMatch = [regex]::Match($Block, '(?m)^checksum\s*=\s*"([^"]+)"')
+        if (-not $NameMatch.Success -or -not $VersionMatch.Success -or -not $SourceMatch.Success) {
+            continue
+        }
+        $CargoThirdPartyCrates.Add([pscustomobject]@{
+            Name     = $NameMatch.Groups[1].Value
+            Version  = $VersionMatch.Groups[1].Value
+            Source   = $SourceMatch.Groups[1].Value
+            Checksum = if ($ChecksumMatch.Success) { $ChecksumMatch.Groups[1].Value } else { "" }
+        })
+    }
+
+    foreach ($Crate in ($CargoThirdPartyCrates | Sort-Object Name, Version)) {
+        $CrateKey = "$($Crate.Name)@$($Crate.Version)"
+        $CrateDir = $null
+        $RawLicense = ""
+        $ExplicitLicenseFile = ""
+
+        if ($CargoMetaByKey.ContainsKey($CrateKey)) {
+            $MetaPkg = $CargoMetaByKey[$CrateKey]
+            $RawLicense = [string]$MetaPkg.license
+            $ExplicitLicenseFile = [string]$MetaPkg.license_file
+            if (-not [string]::IsNullOrWhiteSpace([string]$MetaPkg.manifest_path)) {
+                $CrateDir = Split-Path -Parent ([string]$MetaPkg.manifest_path)
+            }
+        }
+
+        if (-not $CrateDir -or -not (Test-Path -LiteralPath $CrateDir -PathType Container)) {
+            foreach ($RegRoot in $CargoRegistrySrcRoots) {
+                $CandidateDir = Join-Path $RegRoot "$($Crate.Name)-$($Crate.Version)"
+                if (Test-Path -LiteralPath $CandidateDir -PathType Container) {
+                    $CrateDir = $CandidateDir
+                    break
+                }
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($RawLicense) -and $CrateDir) {
+            $CrateToml = Join-Path $CrateDir "Cargo.toml"
+            if (Test-Path -LiteralPath $CrateToml -PathType Leaf) {
+                $CrateTomlText = Get-Content -LiteralPath $CrateToml -Raw
+                $LicMatch = [regex]::Match($CrateTomlText, '(?m)^license\s*=\s*"([^"]+)"')
+                if ($LicMatch.Success) {
+                    $RawLicense = $LicMatch.Groups[1].Value
+                }
+            }
+        }
+
+        $DeclaredLicense = ConvertTo-SpdxLicenseExpression -RawLicense $RawLicense
+        $CrateNoticeFiles = @()
+        if ($CrateDir -and (Test-Path -LiteralPath $CrateDir -PathType Container)) {
+            $CrateNoticeFiles = @(Get-ChildItem -LiteralPath $CrateDir -File -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -match '^(LICENSE|LICENCE|COPYING|NOTICE)(\.|[-_]|$)'
+            } | Sort-Object Name | Select-Object -ExpandProperty FullName)
+            if (-not [string]::IsNullOrWhiteSpace($ExplicitLicenseFile)) {
+                $ExplicitFull = Join-Path $CrateDir $ExplicitLicenseFile
+                if ((Test-Path -LiteralPath $ExplicitFull -PathType Leaf) -and ($CrateNoticeFiles -notcontains $ExplicitFull)) {
+                    $CrateNoticeFiles += $ExplicitFull
+                }
+            }
+        }
+
+        $DownloadLocation = if ($Crate.Source -like "registry+https://github.com/rust-lang/crates.io-index*") {
+            "https://crates.io/crates/$($Crate.Name)/$($Crate.Version)"
+        } else {
+            $Crate.Source
+        }
+        $FallbackNotice = "Rust crate $($Crate.Name) $($Crate.Version) (license: $DeclaredLicense, source: $($Crate.Source)" +
+            $(if ($Crate.Checksum) { ", sha256: $($Crate.Checksum)" } else { "" }) + ")."
+
+        Add-PackageRecord -Name $Crate.Name -Version $Crate.Version -License $DeclaredLicense `
+            -Source "cargo:src/viewer/Cargo.lock" -NoticeFiles $CrateNoticeFiles `
+            -DownloadLocation $DownloadLocation -FallbackNoticeText $FallbackNotice
+    }
 }
 
 $NoticePath = Join-Path $OutputDirectory "THIRD_PARTY_NOTICES.txt"

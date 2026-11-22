@@ -10,6 +10,7 @@
 #include <opencv2/core.hpp>
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -135,6 +136,12 @@ public:
     /// 清空推理会话与 LRU 缓存（插件卸载/释放内存时调用）
     void releaseResources();
 
+    /// 查询当前 WinML 推理会话是否驻留于内存（供生命周期单测验证）
+    bool isSessionLoaded() const;
+
+    /// 配置闲置自动卸载超时时间（默认 90 秒，供单元测试缩短窗口验证）
+    void setIdleUnloadTimeoutMs(uint64_t timeoutMs) noexcept { m_idleUnloadTimeoutMs.store(timeoutMs, std::memory_order_release); }
+
 private:
     AiInpaintEngine() = default;
     ~AiInpaintEngine();
@@ -143,11 +150,20 @@ private:
 
     std::filesystem::path resolveModelDirectory(bool* outInstalled = nullptr) const;
     bool ensureSessionLoadedLocked(const std::filesystem::path& modelPath);
+    void ensureIdleReaperStarted();
+    void stopIdleReaper();
 
     struct WinMlInpaintContext;
     std::unique_ptr<WinMlInpaintContext> m_winMl;
     mutable std::mutex m_inferMutex;
     std::atomic<bool> m_usingGpu{false};
+    std::atomic<uint64_t> m_lastUsedTick{0};
+    std::atomic<uint64_t> m_idleUnloadTimeoutMs{90000ULL};
+
+    std::mutex m_idleMutex;
+    std::condition_variable_any m_idleCv;
+    std::jthread m_idleReaper;
+    std::atomic<bool> m_idleReaperRunning{false};
 
     mutable std::mutex m_downloadMutex;
     std::thread m_downloadWorker;

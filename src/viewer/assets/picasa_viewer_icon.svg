@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="m2Disc" cx="35%" cy="22%" r="78%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="78%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#E6ECF5"/>
+    </radialGradient>
+    <linearGradient id="m2Rim" x1="15%" y1="10%" x2="85%" y2="90%">
+      <stop offset="0%" stop-color="#E2E8F0"/>
+      <stop offset="100%" stop-color="#94A3B8"/>
+    </linearGradient>
+    <linearGradient id="m2Red" x1="5%" y1="0%" x2="95%" y2="100%">
+      <stop offset="0%" stop-color="#FF6A5B"/>
+      <stop offset="100%" stop-color="#E11D48"/>
+    </linearGradient>
+    <linearGradient id="m2Yellow" x1="15%" y1="0%" x2="85%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047"/>
+      <stop offset="100%" stop-color="#F59E0B"/>
+    </linearGradient>
+    <linearGradient id="m2Green" x1="0%" y1="30%" x2="100%" y2="70%">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="m2Blue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="m2Purple" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#C084FC"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <clipPath id="m2Inner"><circle cx="256" cy="256" r="212"/></clipPath>
+  </defs>
+
+  <!-- 1. 极简无糖果高光的 2026 纯白微晶圆盘 -->
+  <circle cx="256" cy="256" r="238" fill="url(#m2Disc)" stroke="url(#m2Rim)" stroke-width="4.5"/>
+
+  <!-- 2. 经典 5 色方位现代流体圆角色块（等宽 22px 清爽纯白缝隙，无任何尖角与小房子） -->
+  <g clip-path="url(#m2Inner)" transform="rotate(-10 256 256)">
+    <rect x="164" y="14" width="334" height="128" rx="24" fill="url(#m2Red)"/>
+    <rect x="370" y="164" width="128" height="334" rx="24" fill="url(#m2Yellow)"/>
+    <rect x="164" y="370" width="184" height="128" rx="24" fill="url(#m2Green)"/>
+    <rect x="14" y="284" width="128" height="214" rx="24" fill="url(#m2Blue)"/>
+    <rect x="14" y="14" width="128" height="248" rx="24" fill="url(#m2Purple)"/>
+  </g>
+
+  <!-- 3. 中心极简现代取景框（干净通透，带 subtle 极淡极细聚焦角标，绝不抢戏） -->
+  <g transform="rotate(-10 256 256)">
+    <path d="M 198,226 L 198,198 L 226,198" fill="none" stroke="#64748B" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.52"/>
+    <path d="M 286,198 L 314,198 L 314,226" fill="none" stroke="#64748B" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.52"/>
+    <path d="M 314,286 L 314,314 L 286,314" fill="none" stroke="#64748B" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.52"/>
+    <path d="M 226,314 L 198,314 L 198,286" fill="none" stroke="#64748B" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.52"/>
+  </g>
+</svg>

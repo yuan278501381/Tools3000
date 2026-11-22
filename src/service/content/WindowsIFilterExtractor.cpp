@@ -28,7 +28,7 @@ constexpr size_t MaxBinaryFallbackScanBytes = 64ULL * 1024ULL * 1024ULL;
 constexpr size_t MaxExtractedTotalChars = 15ULL * 1024ULL * 1024ULL;
 constexpr ULONG IFilterChunkReadChars = 16384;
 constexpr size_t CancelCheckByteStride = 65536;
-constexpr ULONGLONG MaxIFilterExtractDurationMs = 15000ULL;
+constexpr ULONGLONG MaxIFilterExtractDurationMs = 2000ULL;
 
 using PfnLoadIFilter = HRESULT (STDAPICALLTYPE*)(PCWSTR pwcsPath, IUnknown* pUnkOuter, void** ppIUnk);
 using PfnBindIFilterFromStream = HRESULT (STDAPICALLTYPE*)(IStream* pStm, IUnknown* pUnkOuter, void** ppIUnk);

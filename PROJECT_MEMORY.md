@@ -6,6 +6,116 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-22] Rust 复刻 Picasa 轻量图片查看器全栈接入安装包、设置中心与零依赖独立交付 (`installer.iss`, `deploy.ps1`, `PluginManager.cpp`, `MessageBridge.cpp`, `main.cpp`, `src/viewer/`, `PicasaViewerPage.tsx`, 8 套语言包 & 8 套 README)
+- **核心产品定位与防回退架构基线**：
+  1. **100% 零外部依赖 `< 2 MB` 单文件独立可用 (`src/viewer/.cargo/config.toml`, `viewer.manifest`)**：
+     - 实测 PE 导入表审计曾发现默认 Rust MSVC 构建动态链接了 `VCRUNTIME140.dll` 与 `api-ms-win-crt-*`（裸机无 VC++ Redist 无法独立启动）；启用 `rustflags = ["-C", "target-feature=+crt-static"]` 后实测单文件签名体积极限收敛于 **`1.70 MB`**（ZIP 归档 `0.95 MB`），PE 导入表 100% 仅含 Windows 原生系统库（0 `VCRUNTIME140.dll` / 0 第三方 DLL），并在空目录 `standalone_verify` 真机实测独立解码与 41 种格式静默注册/注销全链路通过；
+     - 同步在 `viewer.manifest` 补齐 `Microsoft.Windows.Common-Controls` 6.0.0.0 视觉样式声明。
+  2. **原生 Direct2D + DirectWrite 世界级文件关联面板 (`src/viewer/src/assoc_dialog.rs`)**：
+     - 彻底淘汰传统 Win32 灰控件对话框，重写为全矢量抗锯齿 Direct2D + DirectWrite + WIC 位图图标面板：自动感知系统深浅主题（`AppsUseLightTheme` + `DWMWA_USE_IMMERSIVE_DARK_MODE` + `DWMWCP_ROUND`）、PerMonitorV2 200% DPI 亚像素锐利渲染、顶部醒目「Rust 复刻 · 仅看图（非原版全功能）」微晶边界徽章、左侧经典 Picasa 拍立得图标 + 实时 `41 / 41` 计数与三联快捷钮、右侧 8 组圆角可点击格式族卡片、底栏基于 DirectWrite 动态测宽（实拍 200% DPI 浅色/深色中文与最长俄语文案 0 截断）；
+     - `main.rs` 新增 `--register-silent`、`--unregister-silent`（零弹窗供安装器与设置中心静默调用）及 `--dump-assoc-ui` 视觉回归导出参数。
+  3. **安装包默认不勾选 + 跨账户 UAC 双保险自动关联 + 零残留卸载 (`installer.iss`, `deploy.ps1`, `main.cpp`)**：
+     - `installer.iss` `[Components]` 新增 `picasaviewer`（**不绑定 `full` 与 `compact`，初始默认安装严格不勾选**），8 语种 `CompPicasaViewer` 明确注明「Rust 复刻轻量看图器，非原版全功能，启用自动关联全格式」；`[Files]` 始终打包 `Tools3000_Picasa_Viewer.exe`（严守 0 `restartreplace` 零重启红线）以便用户日后在设置页零重装一键开启；
+     - 双保险解决跨账户 UAC 提权写错 `HKCU` 暗坑：`[Run]` 以 `runasoriginaluser runhidden waituntilterminated` 执行 `--register-silent`，同时 `main.cpp` 首次消费 `initial_modules.json` 检测到 `picasa_viewer.enabled == true` 时也在交互用户上下文后台兜底静默注册；卸载 `usUninstall` 调用 `--unregister-silent` 并在 `CleanScheduledTasksAndRegistries` 跨 `HKCU`/`HKU\<SID>` 清场；`deploy.ps1` 原生集成 `x64`/`arm64` Rust 编译、测试、必需产物校验与 Authenticode 签名。
+  4. **C++ 微内核与 React 设置中心全 8 语种接入 (`PluginManager.cpp`, `MessageBridge.cpp`, `I18nLogCatalog.cpp`, `PicasaViewerPage.{tsx,css}`, `PluginsPage.tsx`, `routes.ts`, `settingsSearchIndex.ts`, `Sidebar.tsx`, `App.tsx`, 8 套 `locales/*.json`, 8 套 `README*.md`)**：
+     - `PluginManager::reconcilePluginConfigs()` 严格保持空白配置下 `/plugins/picasa_viewer/enabled == false`；`plugins.setEnabled` 与 `picasaViewer.*` 7 个异步 IPC 处理器实现「启用即自动静默关联全部 41 种图片格式、关闭即自动清理关联」，支持一键重关联、拉起原生 `--config` 勾选面板、直达 `ms-settings:defaultapps` 与直接打开图片预览；
+     - 全 8 套 README 同步列出 Picasa 图片查看器（< 2 MB 零依赖可独立使用、补足原版缺失的高分屏/现代格式/动图播控/无损翻转能力）并在「开发初衷」与「一软替代清单」补充国产看图广告及试用 FastStone / Void Image Viewer 后的真实历程；
+     - 回归门禁全绿：Rust `23/23`、C++ 回归 `14/14`（含新建 `PicasaViewerDefaultDisabledAndInstallerContractTest`）、前端 7 重门禁（含 8 语种同构 & 735 条 C++ 日志 1:1 校验）与 Vitest `29/29` 文件 `213/213` 用例全通过，Inno Setup 6.7.3 实测 `installer.iss` 编译通过。
+
+### [2026-11-22] 独立纯 Rust Picasa 看图器 v5/v6 — 逐帧对标原版录屏 5 大灵魂物理动效 + 双场景整屏线性叠化播放 + 对数无级阻尼滚轮 (`src/viewer/`)
+- **基于原版 Picasa 高清录屏 (`Tools3000_Rec_20261122_022222.mp4`) 逐帧像素测量的五大根治升级 (`viewport.rs`, `constants.rs`, `physics.rs`, `types.rs`, `app.rs`, `renderer.rs`, `ui_layout.rs`)**：
+  1. **全倍率光标锚点对数无级丝滑阻尼缩放 (`viewport.rs`, `renderer.rs`, `constants.rs`)**：
+     - *旧版双根因*：① `max_pan_bounds` 在 `scaled_w <= view_w` 时返回 `0.0`，强行把未撑满屏的缩放拍回中心；② 阻尼 `15.0` 过硬（`180ms` 急刹产生一格一顿感）、线性 `zoom` 插值前冲后慢，且运动期每帧跑高开销 `HIGH_QUALITY_CUBIC` 拖低 4K 帧率；
+     - *终局架构*：① 引入 `cursor_zoom_free_pan` 与宽松防飞屏包络 `cursor_zoom_envelope`（至少保留 `120 DIP` 可见），从第 1 格滚轮即 100% 锁定鼠标下像素零漂移、跨满屏临界零跳变，缩回 Fit 时自由偏移按比例丝滑归中；② 对照原版实测衰减曲线（`exp(-k*0.133) ≈ 0.42..0.48`）将 `ZOOM_ANIM_DAMPING` 调柔至 `7.6`（`ZOOM_STEP_FACTOR = 1.22`），改为**对数空间 `ln(zoom)` 感知等速平滑**并用精确同步比例 `alpha = (zoom_next - zoom) / (target_zoom - zoom)` 驱动 `pan`（保证 120~240Hz 每一中间帧鼠标下像素严格 0.00px 漂移）；③ 双档 GPU 采样策略：运动期启用单周期硬件 `D2D1_INTERPOLATION_MODE_LINEAR` 跑满高刷零掉帧，静止落定自动切回 `HIGH_QUALITY_CUBIC`（`>= 400%` 像素审计再切 `NEAREST_NEIGHBOR`）；
+  2. **原版 1:1 整屏双场景线性交叉叠化播放 + 纯净放映画面 + 防 DWM 全屏闪黑 (`types.rs`, `app.rs`, `renderer.rs`, `ui_layout.rs`)**：
+     - *像素级发现*：放大原版点击播放逐帧画面证实，原版并非将小图几何 zoom-in 撑大，而是将**常规看图场景（透桌面灰幕 + 原位不动的小号白框图 + 右上角关闭钮）**与**全屏幻灯片场景（`#000000` 纯黑 + 已排版好的 100% 满屏无白框大图）**做精确 **`1.00s` 整屏双层线性交叉叠化**（退出为 `0.30s` 逆向叠化），且放映态底部 100% 纯净无播控条与文件名；
+     - *终局架构*：① 所有覆盖全屏态恒定保留 `rcMonitor.height - 1` 永保 DWM Alpha 穿透；② 新增 `SlideshowPortalSnapshot` 在进出放映时做 `dy_comp` 0.00px 位置对齐，渲染管线底层绘完整常规场景 -> `SrcOver` 铺 `[0,0,0,a]` 黑幕将底层全像素缩放为 `(1-a)*Viewing` -> `D2D1_PRIMITIVE_BLEND_ADD` 叠加 `a*SlideshowBigPhoto`，精确实现亮度 100% 守恒的 `lerp(Viewing, Slideshow, a)`；③ 彻底移除幻灯片底部迷你播控胶囊与文件名（单击画面任意处或 `Esc` 即 `0.30s` 叠化退回，`Space` 暂停/继续，`←`/`→` 切图）；
+  3. **幻灯片光学能量守恒双投影机叠化 (`renderer.rs` — `D2D1_PRIMITIVE_BLEND_ADD`)**：
+     - 纯黑放映厅轮播切图 (`1.05s` S 曲线) 启用硬件线性加法混合 `D2D1_PRIMITIVE_BLEND_ADD` 绘制 `(1-t)*Old + t*New` 并抑制透明图亮棋盘格，彻底消灭 `SrcOver` 中段 25% 暗闪；
+  4. **主图首次打开防吞帧实体弹开 + 下方缩略图接力涟漪弹性绽放 (`app.rs`, `renderer.rs`, `physics.rs`)**：
+     - 严守 `presented_frames >= 2 && has_visual` 确保 DWM 挂屏后再起跑 `open_started_at`；雾灰幕布与稳固底栏底座 `140ms` 就位；主图前 `45ms` 即 100% 实色清晰，以 `420ms` `ease_out_picasa_open(1-(1-t)^2.15)` 从 `0.15x` 饱满弹大至 `1.0x`；
+     - 下方胶片缩略图在 `240ms` 接力引爆，以 `44ms/格` 从正中央向两翼按 `ease_out_back_soft` 从 `0.06x` 清晰实色弹性绽放（修复未解码完先画灰块再重弹的隐形 Bug，`has_active_thumb_growth` 完整覆盖 `1.14s`）；
+  5. **两段式「先收实体相片、再撤雾灰遮罩」原版关闭动效 (`renderer.rs`, `physics.rs`)**：
+     - 精确对标原版 `#501..#504`（`340ms`）：前 `55ms` HUD 收隐；前 `238ms` 实体照片保持 `100%` 实色清晰（白框与投影完整）沿 `0.34t + 0.66t^2` 加速吸入中心至 `0.10x`（末 22% 收尖淡出）；第 `225ms~340ms` 照片消失后再柔散雾灰幕布。全部 22/22 Rust 单测 0 警告通过，已完成 Authenticode 签名、热部署并更新 `Output/` 归档。
+
+### [2026-11-22] 全 8 语种 README 接入 GitHub 明暗自适应 Star History 星标走势图 (`README*.md`)
+- 为全部 8 份多语种 README（`zh-CN/zh-TW/en/ja/ko/ru/pt-BR/es`）接入实测 `200 OK` 的 `api.star-history.com/svg`（`<picture>` 原生 `prefers-color-scheme: dark/light` 双主题自适应），零注册、零 Token 门槛。
+
+### [2026-11-22] 搜索中心 Everything 1.5 级高性能自定义列系统（Tier 1 零 I/O 核心列 + Tier 2 视口惰性扩展属性引擎）+ 底部实时阶段进度状态栏
+- **架构分层与零膨胀高性能实现 (`MftParser.{h,cpp}`, `MftParserQuery.cpp`, `service/main.cpp`, `SearchPropertyExtractor.{h,cpp}`, `SearchPlugin.cpp`, `ui/src/search/*`, 8 套语言包)**：
+  1. **Tier 1 零额外内存膨胀核心 10 列 (`name`, `path`, `size`, `extension`, `type`, `modified`, `created`, `accessed`, `attributes`, `runCount`)**：
+     - 严守 `StoredFileRecord` 64 字节结构体零修改红线，在 `SearchResult` 新增 `lastAccessTime` 与 `fileAttributes`，复用既有 `hydrateResultProperties` 的单次 `GetFileAttributesExW`（0 额外磁盘 I/O）在 `name`/`both`/`content` 三出口透传；前端通过 `columnCatalog.ts` 单一事实源统一管理默认列、顺序、宽度与格式化；
+  2. **Tier 2 视口惰性属性提取引擎 (`SearchPropertyExtractor.{h,cpp}` + `search.batchGetProperties` 异步 IPC + `useViewportProperties.ts`)**：
+     - 支持 9 大分类 36+ 常用扩展属性（图像尺寸/宽高比/位深/相机型号、音频比特率/采样率/声道/歌手/专辑、视频分辨率/帧率/时长、文档标题/作者/页数、程序文件版本/产品名/公司名、文件属性/所有者/子项数/完整路径长度、哈希 CRC32/MD5/SHA256）以及任意自定义 Windows Property System `System.*` 规范名；
+     - 仅按当前虚拟列表可视视口范围（+ 小缓冲）触发分批提取，按策略桶极致提速（Shell 按扩展名全局缓存类型名 `SHGetFileInfoW`、WIC 零像素读头、PE `GetFileVersionInfoW`、`IPropertyStore` 高速/降级读取、SID 缓存所有者、流式 64KB 单遍 `zlib crc32` + CNG `MD5/SHA256` 限 64MB）；双端（C++ 后端 + React 前端）均配备 4096 项带 `(size, mtime)` 版本失效校验的 LRU 缓存与 `1800ms` 批次预算保护；支持扩展属性列可取消分批客户端排序并展示实时进度；
+  3. **表头完整右键菜单 + 「管理列」+ 「添加属性列」双弹窗 + 底部实时阶段进度状态栏 (`SearchColumnHeaderMenu.tsx`, `SearchColumnManagerModal.tsx`, `SearchPropertyPickerModal.tsx`, `SearchFooter.tsx`)**：
+     - 表头右键支持适应列宽 / 适应全部列宽 / 隐藏列 / 添加列 / 最近使用列 / 管理列 / 10 大核心列快捷勾选 / 重置列；多列溢出时启用同步横向滚动并保持等宽数字列防抖对齐；
+     - 服务端在 `MftParser` 引入无锁原子 `ScanPhase`（`Idle/Scanning/BuildingHierarchy/Syncing/LoadingSnapshot`）、`m_ScannedRecords`、`m_EstimatedRecords` 与初始化缓存卷标 `m_VolumeLabel`（如 `OS`、`SAMSUNG_990PRO2`），`getDbStats` 实时上报盘符、卷标、进度百分比与各卷明细；前端底栏实时呈现「正在扫描 OS (C:)…」「正在构建目录树…」「正在排序… (xx%)」及绿色细进度条，搜索完成后回归汇总项数与总大小；
+  4. **全链路防回退门禁与真机管道验收**：C++ `*Search*:*Mft*:*Property*` 47/47 通过、前端 `npm run lint`（ESLint + 8 语种 103 新增键同构 + CSS/排版/日志 7 重门禁）全绿、Vitest 28/28 文件 212/212 通过、Authenticode 签名热部署并通过 `Tools3000SearchPipe_KernelAuth` 真机管道实测 `DEMAND_START` 与 288.1 万条索引全链路响应。
+
+### [2026-11-22] 独立纯 Rust Picasa 看图器 (`src/viewer/`, `Tools3000_Picasa_Viewer.exe`) — 对标原版 Picasa 录屏全生命周期灵魂校准 + 4K 高分屏锐利精工 (v4)
+- **逐帧对标原版 Picasa 录屏 (`Tools3000_Rec_20261122_022222.mp4`) 的 7 项核心灵魂对齐与高分屏增强 (`constants.rs`, `app.rs`, `renderer.rs`, `ui_layout.rs`, `cache.rs`, `physics.rs`, `main.rs`)**：
+  1. **常规工作区贴任务栏 vs 幻灯片真全屏切换**：常规看图态默认 `is_fullscreen = false` 精准贴合 `mi.rcWork`（底部 `68 DIP` 底栏紧贴 Windows 任务栏上沿，任务栏始终露出可点且天然免 DWM 黑底）；点击播放球 / `F5` 进入幻灯片时无缝切为完整 `mi.rcMonitor` 纯黑真全屏覆盖任务栏（`0` 漏边），第 1 次按 `Esc` 退出放映自动缩回工作区重新露出任务栏，手动 `F11` 全屏半透明态仍保持 `monitor_h - 1` 保护 DWM Alpha 穿透；
+  2. **原版轻盈雾灰穿透幕布 + 两段式打开/关闭韵律**：将常规遮罩由过重的 `0.78` 校准为轻盈通透的 `rgba(24, 25, 27, 0.58)`；打开 (`Opening`) 校准为 `260ms`（遮罩前 `140ms` 柔滑浮现，主图从 `0.24x` 沿 `EaseOutQuint` 舒展弹出）；关闭 (`Closing`) 校准为 `230ms` 两段式退场（前 `70ms` HUD 瞬间消隐，前 `72%` 照片向中心坍缩至 `0.24x` 淡散，后段灰雾幕布温柔退还桌面）；
+  3. **纯净左上角 + 常规底栏常驻可见**：移除左上角常驻重复文字浮标，保留按 `I` 展开真 EXIF 玻璃卡；文件名、分辨率与序号以双层柔和暗影清晰居中浮于底栏正上方；常规看图态底栏与右上角 `40 DIP` 关闭扇形常驻不乱藏，仅在幻灯片态静止 `2.0s` 自动隐退极简迷你播控胶囊；
+  4. **正中央悬浮缩放倍率胶囊 + `6400%` 像素级放大**：`MAX_ZOOM` 升至 `64.0`（支持高达 `6400%` 像素审图）；缩放触发屏幕正中央圆角磨砂等宽数字倍率胶囊（停留 `850ms` 后 `220ms` 淡出）；
+  5. **幻灯片沉稳影院熄灯感 + 常规零拖影秒切**：`CINEMA_DIM_DAMPING = 6.2`（`~550ms` 影院熄灯渐变沉入 `#000000`），`SLIDESHOW_MARGIN_RATIO = 1.0` 满屏贴边，去除令用户眩晕的 Ken Burns 晃动，采用 `650ms` S 曲线柔和 Cross-dissolve；常规左右翻图收束为 `55ms` 原地零偏移干脆切换；
+  6. **损坏/无效图片与加载态原版致敬 + 防重复解码**：`ImageCachePool` 新增 `thumb_errors` 防损坏图死循环重排，胶片带坏图槽位绘深炭方格 + 淡红短横线微标；主画布无效图以宽幅立体投影黑卡 + 珊瑚红高对比标题呈现，加载态配纯矢量旋转弧形环；
+  7. **4K / 200%~250%+ 高分屏全矢量升级与签名归档**：缩略图采样升至 `256px`（配 `50 DIP` 胶片方格 + `68 DIP` 底栏 + `33.0%` 黄金 1/3 按钮覆盖），全部 21/21 单测 0 警告、200% 高分屏 GPU 离线实渲与真机 GUI 4 阶段实测（`2304x1392` 工作区 <-> `2304x1440` 全屏幻灯片 -> 两级 `Esc` 325ms 净退）全绿，已完成 Authenticode 签名并归档至 `Output/Tools3000_Picasa_Viewer.exe` 与 `Output/Tools3000_Picasa_Viewer-v1.2.1-win-x64.zip`。
+
+### [2026-11-22] 搜索中心原生独立 Windows 窗口（纯 Everything 模式）+ 默认表格视图全列调宽/拖拽换序 + 随时可选历史搜索下拉 + 跨斜杠拼音/通配符路径引擎
+- **背景与产品校准**：
+  - 针对 V2EX 深度用户反馈与项目负责人多轮实机校准（① 默认即「表格视图」，每列均可自由调宽和拖拽换序；② 升级为标准 Windows 独立应用窗口，任务栏可驻留/最小化/切软件不自动隐藏，`Alt+Space` 仍一键呼出或前台最小化，右上角标准三联控制钮；③ 提供随时可选的历史搜索下拉记录；④ 支持 `gzml\user`、`*gzml*\*user*` 中文路径拼音+通配符搜索且海外非中文语境零冲突隔离），完成全链路 C++ 与前端落地：
+  1. **原生独立 Windows 应用窗口（纯 Everything 模式）+ `Alt+Space` 呼出/最小化 + 4px 拖动防吞双击 (`SearchWindow.{h,cpp}`, `SearchInteractionHandlers.cpp`, `main.cpp`, `SearchHeader.tsx`, `useSearchActions.ts`, `tests/unit/test_ui_lifecycle.inc`)**：
+     - *样式与原生窗口能力升级*：窗口样式由 `WS_EX_TOOLWINDOW + WS_POPUP` 升级为 `WS_EX_APPWINDOW + WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN`（本地化标题 `Tools3000 搜索` / `Tools3000 Search`），完整支持任务栏图标、`Alt+Tab` 切换、切其他软件不自动隐藏、最小化/任务栏恢复、`Win+↑/↓/←/→` Aero Snap 贴靠、最大化态拖顶栏 Aero Tear-Off 脱离还原、右键顶栏原生系统菜单（`search.showSystemMenu`）与八向边缘拉伸；
+     - *暗坑根除*：① `WM_NCCALCSIZE` 在 `IsZoomed(hwnd)` 时将客户区精准对齐 `mi.rcWork`，彻底消除无边框 `WS_OVERLAPPEDWINDOW` 原生 `SW_MAXIMIZE` 四边 `8px` 隐形边框溢出；② 彻底移除旧版 Spotlight 失焦隐藏（`WM_ACTIVATE(WA_INACTIVE)`）与 `useSearchActions.ts` 中打开文件/目录/记事本/管理员运行/贴图后自动 `hide()` 的残留逻辑，置顶按钮 (`Ctrl+P`) 收敛为纯 Always-on-Top 开关；③ `WM_SIZE(SIZE_MINIMIZED)` 仅 `TrySuspend` 挂起 WebView2 省电而不销毁状态，还原时自动恢复并同步 `tools3000:searchMaximizedChanged`；④ 前端顶栏采用 `4px` 拖动启动阈值，防止首次 `mousedown` 立刻进入 Win32 `SC_MOVE` 模态循环而吞掉双击最大化事件；⑤ `Alt+Space` 全局热键与托盘入口统一为：`isForegroundActive() -> minimize()`，否则 `show()`（最小化/后台/关闭均一键秒唤醒至前台）；右上角提供标准 Windows 三联控制钮（最小化 `—` / 最大化·还原 `□` / 关闭 `×`）。
+  2. **默认「表格视图」+ 全列自由调宽 + 全列拖拽换序 + 表头右键菜单 + 内容搜索正交融合 (`SearchHeader.tsx`, `SearchTableHeader.tsx`, `SearchResultRow.tsx`, `VirtualSearchResults.tsx`, `SearchViewSettingsModal.tsx`, `searchUtils.ts`, 8 套 `locales/*.json`)**：
+     - 顶部提供并排 `[ 表格视图 | 卡片视图 ]` 切换组（快捷键 `Ctrl+L`，默认初始化为「表格视图」并持久化）；
+     - **全列自由调宽 & 拖拽换序**：引入 `TableColumnId = 'name' | 'path' | 'size' | 'modified' | 'created'` 与持久化字段 `tableColumnOrder` / `tableColumnWidths`（`localStorage` + `/search/uiPreferences`）；`buildTableGridTemplate(columns)` 作为单一事实源同时驱动吸顶表头与虚拟行每列，支持**每一列**（含最末列）拖拽右侧分隔条调宽、双击分隔条恢复自适应/默认宽、按住列标题拖拽自由换序（带跟随微晶胶囊 + 光学插入线，且不误触排序）以及右键表头快速显隐任意列或一键重置列宽与顺序；
+     - **内容搜索正交支持（Spanning Sub-row）**：在 `content:`、混合模式 `both` 或全文模式 `content` 下，普通无摘要行保持 `36px` 紧凑单行对齐；含 `snippets` 的命中项在同一虚拟列表 `<li>` 内采用上层动态 Grid 严格对齐 + 下层 `.file-snippets-container--table` 横跨全宽展示 `L行号` 复制与高亮正文摘要，由 `DynamicRowLayout`（Fenwick 树 + `ResizeObserver`）零闪烁支撑混合高度滚动。
+  3. **修复历史盲区 + 随时可选「历史搜索下拉菜单」(`SearchApp.tsx`, `SearchHeader.tsx`, `useSearchActions.ts`, `useSearchKeyboard.ts`, `base-header.css`)**：
+     - *历史盲区修复*：此前后端虽已实现 `SearchHistoryManager` (`Search History.csv`) 与 `search.recordSearch` IPC，但前端全仓从未调用过 `search.recordSearch` 且旧 `SearchHistoryBar` 仅在空输入框时渲染；现打通 3 节点自动沉淀（① 非组字稳态停留 `1.35s` 自动记；② 打开文件/目录/记事本/管理员运行/贴图立即记；③ 最小化或关闭窗口前 flush 当前有效查询），配合 `localStorage` 镜像实现首屏秒显并自动过滤单字母与纯操作符前缀（如 `ext:`/`content:`）；
+     - *随时可选下拉面板*：在搜索框右侧新增常驻历史下拉按钮（快捷键 `Alt+Down` / `Ctrl+H`），无论输入框为空还是已有检索词皆可一键展开，自动将匹配当前词的历史置顶并保留其余历史，支持 `↑`/`↓`/`Enter` 键盘选择、`Esc` 优先关闭不穿透、单条删除与一键清空。
+  4. **跨路径分隔符的拼音（首字母 / 全拼）与通配符多形态检索内核 + 3,689 字全拼表补完 + 惰性全拼零驻留内存优化 (`SearchExpression.{h,cpp}`, `UnicodePinyinData.h`, `PinyinEngine.{h,cpp}`, `FileIndexStore.{h,cpp}`, `MftParserQuery.cpp`, `tests/unit/test_search.inc`)**：
+     - *暗坑根除*：① 实测发现旧版 `UnicodePinyinData.h` 3,755 个一级常用汉字中仅有 50 字具备多字母全拼（其余 3,689 字如「作」「目」「录」仅存单首字母 `z`/`m`/`l`），现按国家标准 GB 2312-80 全部 396 音节区位边界无损升级全部 3,689 字完整全拼（总音节数由 69 扩至 397，100% 保持全部 3,755 字首字母不变）；② **消除 `StringArena` 全拼双份宽字符驻留膨胀**：补齐完整全拼后若仍在 `FileIndexStore::upsert` 将 `pinyinFull` 宽字符写入 `StringArena`，5 万文件基准测试均摊内存由 `~162 B/file` 升至 `205 B/file`（触发 `FileIndexStoreMemoryAndThroughputGate < 180u` 拦截）。现将 `FileIndexStore::PinyinEntry` 精简为仅常驻 `pinyinInitials`（`PinyinEngine::BuildNormalizedInitials`），中文记录 `view()` 返回空 `pinyinFull = {}`，由 `SearchExpression` 在 `pinyinInitials` 短路未命中时按需调用 `PinyinEngine::BuildNormalizedFull` 惰性展开全拼——既 100% 保留完整全拼检索精度，又使均摊内存重回 `< 180 B/file`（36ms 过关，275 万文件全盘索引立省 `~100 MB` 物理内存）；③ **海外多语种零冲突隔离 (`SearchQueryConfigUtils.h`, `SearchPlugin.cpp`, `SearchExpression.cpp`)**：未显式配置 `/search/pinyinEnabled` 时按 `UiI18n::getEffectiveLanguage()` 自适应（仅 `zh-CN`/`zh-TW` 默认 `true`，`en-US`/`ja-JP`/`ko-KR`/`ru-RU`/`pt-BR`/`es-ES` 默认 `false`，消除日语 Kanji 假阳性碰撞并尊重用户手动开关）；同时引擎侧通过 `recordSupportsPinyinFallback` 强制阻断非 CJK 纯西文记录进入拼音分支并保留连字符 `-`，彻底杜绝 `e-mail` / `don't` / `!e-mail` 误触 `email.txt` / `dont.txt`；④ 修复 `parseSingleToken` 遇到 `*`/`?`/`.` 误将 `clause.isAsciiOnly` 置 `false` 并吃掉通配符导致单文件名 `*smwd*.md` / `py:*gzml*` 失效的盲区；⑤ 升级 `U-05` 祖先目录位掩码预编译器（`m_slashDirPredicates` + `canPossiblyMatchSlashClause`），支持从含通配符段（如 `*gzml*\*user*`）提取连续无通配字面核注册 `DirSegMatchOp::Contains` 并在 `computeDirectorySegmentMask` 中同步比对目录 `pinyinInitials` / 惰性 `pinyinFull`，确保百万级无关文件在 O(1) 位运算阶段直接淘汰、零全盘 `buildFullPath` 退化；⑥ 升级 `matchPathSegment` 与 `SearchFilterType::Parent` / `PinyinOnly`，支持单遍首字母/全拼双轨路径以及段级 `{原文, 首字母, 全拼}` 多形态自动机，全面打通 `gzml\user`、`gzml/user`、`"gzml\user"`、`gongzuomulu\user`、`*gzml*\*user*`、`parent:gzml\user`、`工作目录\csxm` 与 `*工作目录*\*smwd*`，并对斜杠末段目标名赋予相关性提权；顺带加固 `scripts/sync-delayed-dlls.ps1` 在 `Enter-VsDevShell` 无效 `LIB` 路径下的 `Add-Type -IgnoreWarnings` 免疫能力。
+
+### [2026-11-21] 独立超轻纯 Rust 现代致敬版 Picasa 看图器 (`src/viewer/`, `Tools3000_Picasa_Viewer.exe`) — v3 高分屏与 6 大物理动效终局升级
+- **核心架构演进与工程控制点（结合高分屏规范与帧率无关物理引擎重构）**：
+  1. **100% 物理独立纯原生引擎（单文件 ~`1.5 MB` Release，0% 静止 CPU 占用）**：
+     - 采用 `Win32 + Direct3D11 + DirectComposition + Direct2D 1.1 + DirectWrite + WIC/纯Rust解码器`，窗口高度严格设为 `monitor_height - 1` 像素，100% 规避 Windows DWM 全屏独占关闭 Alpha 混合导致纯黑底的暗坑，真实穿透底层桌面；
+     - 自适应按需高刷调度（`TIMER_ANIM_ID` + `TIMER_IDLE_HIDE_ID`）：动画活跃期配合 VSync 自适应 60~240Hz 刷新率并以真实 `dt` 驱动指数阻尼，动画收敛后立即 `KillTimer` 休眠于 `GetMessageW`，静止状态 CPU 占用严格 `0.0%`；
+  2. **Windows 100%~250%+ 高分屏黄金 DIP 体系与水平/垂直翻转增强 (`constants.rs`, `ui_layout.rs`, `renderer.rs`)**：
+     - 摒弃早年未适配高分屏截图导致的过小像素尺寸：右上角费茨定律关闭徽章升级为 `40 DIP` 半径紧贴屏幕最右上角顶点 `(view_w, 0)`（盲甩必中，悬停阻尼弹扩并亮起珊瑚绯红柔和光晕 + `9.8×9.8 DIP` 清脆抗锯齿白色 `×`）；
+     - 底部 `66 DIP` 一体化水晶底栏：`48 DIP` 高清胶片缩略图流（`192px` 采样 + 携带 `orig_width`/`orig_height`，当前图居中放大 `1.12x` 亮白框、悬停平滑上浮提亮、底部柔和倒影）；前景按钮精确遮盖缩略图底 `1/3`（`33.3%`）：`[+] [-] [1:1]` | `◀ (▶ 44 DIP 无黑框柔弧水晶播放球) ▶` | `[↺] [↻] [水平翻转 H] [垂直翻转 V]`；
+     - 左上角 `(18, 14)` 增设无底框清透投影元数据浮标（`文件名 | 分辨率 | 缩放% | 序号`，按 `I` 切换详细 EXIF 卡片；按 `O` 打开本地图片）；
+  3. **6 大帧率无关灵魂物理动效 (`physics.rs`, `viewport.rs`, `app.rs`, `integration.rs`)**：
+     - 四态状态机 `Opening -> Viewing <-> Slideshow -> Closing`：`Opening` (`195ms`) 从中心 `0.35 * fit_scale` 按 `EaseOutQuint` 清脆弹开；`Closing` (`175ms`) 前 `75ms` HUD 率先消隐，快照当前视觉姿态使任何放大/平移/旋转状态下的主图均向**屏幕正中心**坍缩至 `0.28 * fit_scale` 淡出后干净退出；
+     - 电影级幻灯片放映：`350ms` 暗房沉降为 `#000000` 纯黑放映厅 + `3.5s` 帧率无关 Ken Burns 缓慢推拉平移 + `900ms` 双缓冲交叉叠化 (`Cross-dissolve`，离场纹理保持推镜惯性不急停) + 晃动鼠标仅浮现极简水晶迷你播控胶囊（`◀` / `⏸·▶` / `▶` / `×`）+ 严格**两级 `Esc`**（第 1 次退回半透明看图态，第 2 次坍缩退出程序）；
+     - 2D 物理相机：光标像素锁定对数滚轮缩放 + 拖拽速度采样惯性滑行 (`Kinetic Pan`) + 越界渐近橡皮筋阻尼与弹簧回弹 (`Rubber-banding`) + 连续 `90°` 丝滑旋转 + 屏幕感知水平/垂直 3D 镜像翻转（投影与 `1.4px` 微白相纸描边全程随矩阵同步旋转零闪烁；`Ctrl+C` 复制与 `Ctrl+S` 另存 PNG 无损应用旋转+翻转）；
+  4. **单文件内嵌 8 语种自动跟随系统语言 (`i18n.rs`) + 双图标组与 Picasa 经典拍立得文件关联面板 (`assoc_dialog.rs`, `viewer.rc`)**：
+     - 编译期静态内嵌与 Tools3000 1:1 对齐的 8 大语种（`zh-CN`, `zh-TW`, `en-US`, `ja-JP`, `ko-KR`, `ru-RU`, `pt-BR`, `es-ES`），通过 `GetUserDefaultUILanguage()` 100% 独立自动跟随系统显示语言并匹配各语种原生 CJK/西文 DirectWrite 字体；
+     - PE 资源双图标组：`ID=1`（索引 `0`）为主程序雕塑玻璃快门圆轮，`ID=2`（索引 `1`）为 Clean-Room 高清重绘的 **经典 Picasa 拍立得青松金丘相纸文档图标 (`picasa_photo_doc.ico`)**；内置 `--config` 与右键菜单 `Ctrl+M` 原生高分屏文件关联配置窗口，支持按格式勾选写入 `DefaultIcon = "{exe}",1`、调用 `SHChangeNotify` 即刻刷新资源管理器图标并拉起系统默认应用页；实测 20/20 单测（0 警告）+ 200% 高分屏 GPU 实渲回读 + 两级 Esc 真机 GUI E2E 全绿通过。
+
+### [2026-11-21] 全链路内存驻留治理、WebView2 隐藏零 CPU、`/DELAYLOAD` 12 库与传递依赖闭包同步 & CPU 满载手势 `timeBeginPeriod(1)` 铁律
+- **核心架构改进与已实测验收成果**：
+  1. **WebView2 全宿主生命周期静默零 CPU 与防唤醒闭环 (`TrayWindow.cpp`, `SearchWindow.cpp`, `SettingsWindow.{h,cpp}`, `QuickLookWindow.{h,cpp}`, `ui/src/main.tsx`, `index.css`, `GestureGuide.tsx`, `AboutPage.tsx`, `SearchApp.tsx`, `useSearchEngine.ts`)**：
+     - 修复 `TrayWindow` 在 `Navigate()` 之前调用 `requestSuspend()` 立即失效与 `SearchWindow` 预载从未调用 `TrySuspend` 的缺陷，统一在 `NavigationCompleted` 末尾检测 `!m_visible` 立即挂起；
+     - `TrayWindow` 隐藏态跳过 `"tray"` 推送（依赖 `tray:show` 全量 `refreshState()`）；`SettingsWindow` 隐藏/最小化态将事件按 `eventName` 合批暂存 `m_pendingEvents`，严禁唤醒挂起 renderer，并在 `smoothPresent()` / 还原时 `flushPendingEvents()` 100% 无损送达；最小化仅执行 `TrySuspend` 绝不销毁，保护表单草稿；
+     - `QuickLookWindow` 接入 `WebViewSuspendController` + 60 秒 `IDT_IDLE_DESTROY` 闲置销毁（销毁第 4 个 renderer 与 `m_asyncWorker` 并冷路径 `trimWorkingSet()`）；
+     - 前端 `main.tsx` + `index.css` 挂载全局 `html.t3k-page-hidden` 规则在不可见时统一暂停一切无限 CSS 动画（含 `GestureGuide` SVG 路径动画），`GestureGuide` / `AboutPage` / `SearchApp` / `useSearchEngine` 全部接入 `document.hidden` 轮询暂停，`SearchApp` 的 `nativeIconCache` 升级为 512 条上限 LRU；
+  2. **`Plugin_Capture.dll` 12 个重型多媒体/AI 库 `/DELAYLOAD` + 传递依赖闭包防漏门禁 (`CMakeLists.txt`, `CaptureDelayLoadHook.cpp`, `scripts/sync-delayed-dlls.ps1`, `deploy.ps1`)**：
+     - PE 导入表实证 FFmpeg 5 库、WebP 2 库与 OpenCV 非 core 5 库（12 库共 ~47 MB）100% 为纯函数导入、冷启动 0 调用，挂载 `CaptureDelayLoadHook.cpp` 以 `LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` 防劫持解析；
+     - *关键工程暗坑预防*：vcpkg `applocal.ps1` 仅扫描常规导入表，会漏拷贝延迟加载 DLL 及其传递依赖（如 `openh264-7.dll`、`libprotobuf.dll`、`abseil_dll.dll` 等）。新增纯 .NET PE Directory[1]+Directory[13] 递归解析脚本 `scripts/sync-delayed-dlls.ps1`，作为 SSOT 同时接入 `CMakeLists.txt` `POST_BUILD` 与 `deploy.ps1`，确保全新洁净编译与发包 100% 齐备全部延迟依赖；
+  3. **主进程 C++ 滞留源清理与 `PinWindow` 写时复制 COW (`ScrollCapture.cpp`, `ScreenRecorder.{h,cpp}`, `PluginEntry.cpp`, `StudioPreviewWindow.cpp`, `PinWindow.cpp`, `PinWindowOcr.cpp`, `TextReplaceEngine.{h,cpp}`, `MouseFeedbackOverlayBase.{h,cpp}`, `SpotlightOverlay.{cpp,Renderer.cpp}`)**：
+     - 补齐 `ScrollCapture::clearStorage()` 漏清 `m_lastFrame`、`ScreenRecorder::cleanupEncoder()` 非演播室/异常路径调用 `clearStudioTransientData()` 清理 `m_livePreviewDeck`（严保正常演播室消费时序不被破坏）、`StudioPreviewWindow::closeSessionAndCleanup()` 补清 `m_timeline` 与 `m_videoClips`；
+     - `PinWindow` 改用 `cv::Mat` 原子引用计数写时复制（COW）共享 `m_cleanBaseImage` 与 `m_sourceImage`，原地反色/灰度前自动分离，单张 4K 贴图立省 ~33 MB；
+     - `AiInpaintEngine` 接入 90 秒闲置可中断回收守护；`SpotlightOverlay` 接入 `MouseFeedbackOverlayBase` 惰性 D3D11/D2D1/DComp 初始化与 60 秒闲置 `releaseIdleCompositor()`；
+  4. **CPU 100% 满载手势跟手红线（经项目负责人一线对比 WGestures 2 明确锚定）**：
+     - **严禁**为了微小待机功耗移除或作用域化 `GestureEngine.cpp` 与 `GestureTrailOverlay.cpp` 中的全生命周期 `timeBeginPeriod(1)`；在 CPU 100% 满载高压下，全生命周期 1ms 系统时钟精度配合 `HIGH_PRIORITY_CLASS` 与 MMCSS CRITICAL 是保证鼠标手势起手首帧 0 断线、0 迟滞的刚性防线；
+  5. **全进程树基准脚本升级与 Winget 官方源过审**：
+     - `scripts/collect-performance-baseline.ps1` 新增 `SnapshotProcessTree`（全进程树角色分组）与 `CheckColdModules`（14 个重型 DLL 零预载门禁），新增 `scripts/test_memory_lifecycle_e2e.ps1`；
+     - `microsoft/winget-pkgs` PR #485809（`Yy1.Tools3000` v1.2.1）已一次性 **11/11 全绿通过**微软全部自动化检查与沙盒静默安装验证（`Azure-Pipeline-Passed` + `Validation-Completed`）。
+
 ### [2026-11-21] 全站统一 Warm Precision Toast 体系 (`AppToaster`) + 标题栏彩色 Logo + 1:1 自适应渐变面积活动图 (`7天/本月/本年`) + 搜索模式/初始分类 MECE 正交解耦
 - **全站 Toast 与悬浮气泡统一 (`AppToaster.{tsx,css}`, `SavedToast.{tsx,css}`, `HotkeyRecorder.css`, `App.tsx`, `SearchApp.tsx`)**：
   - 废除 `sonner` 默认 `richColors` 高饱和大色块与 `356px` 固定空旷宽盒，建立单一事实源 `<AppToaster />`（覆盖主设置窗与搜文件浮窗，搜文件底偏 `44px` 自动避让底部快捷键栏）；
@@ -2343,3 +2453,42 @@
    - **架构解法**：区分起止分区是否为真正左右并排双栏（`sideBySideColumns`：垂直重叠 `>= 40%` 且水平重叠 `< 25%`）；仅左右并排双栏走带可见橡皮筋引导框（`m_showCrossRegionRectGuide`）的二维围选，上下堆叠分区保持完整阅读序流式选字，杜绝右侧腰斩。配套真窗口回归测试 `PinWindowCrossRegionVerticalFlowSelectionTest`。
 3. **中英双语精装 README 与原位改字视觉资产 (`README.md`, `README.en.md`, `docs/DEVELOPER.md`, `docs/images/{zh-CN,en-US}/scene_pin_live_text_wavy.png`)**:
    - README 瘦身至 118 行极简名片风，研发/架构/构建文档外链收口至 `docs/DEVELOPER.md`；调用真实 `TextReplaceEngine` + `MarkupEngine` + `FloatingGlassBar` + `CaptureVectorIcons` 产出含错别字原位编辑（`新版本发[不|]前核对清单` + `bu | 1. 布 2. 步 3. 部`）、波浪线、荧光笔、直线与划选复制的 1.5x 双语实景展示图。
+
+
+---
+
+## 2026-11-22 搜索服务跨批次窃取 SRWLock 自死锁根治与 Rust Picasa Viewer VSync 满血动效 / 物理高斯阴影重构
+1. **搜索服务并发卡死根治 (`src/service/MftParser.{h,cpp}`, `src/service/MftParserQuery.cpp`, `src/service/main.cpp`, `src/search/SearchPlugin.cpp`, `ui/src/search/useSearchEngine.ts`, `ui/src/hooks/useBridge.ts`)**:
+   - **事故根因**：通过实时线程栈抓取锁定 `QueryThreadPool::parallelFor` 嵌套调用 + 等待循环中 `stealOneTask()` 跨批次偷任务，导致已持有 `C:` 盘 `std::shared_lock(m_MapMutex)` 的搜索线程偷走了另一并发请求的 `MftParser::Search()`，随后在回写元数据时尝试获取同一把 `m_MapMutex` 的 `std::unique_lock`，触发 Windows SRWLock **同线程 Shared→Exclusive 永久自死锁**；SRWLock 写者优先队列随即阻塞全部后续读锁（包括 `getFileCount()` 与新查询），耗尽全部 16 条命名管道 worker，客户端 122s 报 `error=1460`。同时前端 `useSearchEngine.ts` 的 `catch` 误将查询超时标记为 `isServiceStarting=true` 并引发 90 次重试雪崩。
+   - **架构铁律**：
+     - `QueryThreadPool::parallelFor` 引入 `thread_local t_queryPoolTaskDepth` 嵌套守卫（池内嵌套直接同步完成）并彻底禁止等待期跨批次 `stealOneTask()`；
+     - `runNameSearch` 按卷顺序驱动，各卷内部叶级满血 16 核并行，兼顾 L3 缓存局部性与零锁重入；
+     - `MftParser::getFileCount()` 改为无锁 `std::atomic<size_t> m_FileCount`；
+     - `SearchPlugin` 常规查询超时收紧至 25s 并显式区分 `status: "timeout"` 与 `"starting"`，`useSearchEngine.ts` 首拍清零遗留 `isServiceStarting`，彻底杜绝超时伪装为“连接索引服务”；
+     - 配套防回退回归单测 `MftParserConcurrencyRegressionTest.NestedParallelForAndConcurrentSearchWritebackNeverDeadlocks` 及 `useSearchEngine.test.tsx`。
+2. **独立 Rust Picasa 看图器双模态硬件 VSync 主循环与真实 GPU 高斯阴影 (`src/viewer/src/{app,renderer,constants}.rs`)**:
+   - **动效升级**：彻底告别 Windows 15.6ms 低优先级 `SetTimer` 驱动，升级为游戏引擎级双模态消息循环（动画活跃期 `PeekMessageW` 排空输入 + `IDXGISwapChain1::Present(1)` 硬件 VSync 满血锁定 60~240Hz，静止期阻塞 `GetMessageW` 保持 0.00% CPU）；引入 `open_anim_armed` + `presented_frames >= 1` 双条件起跳机制，确保大图解码与 DWM 首帧挂载绝不吞没 360ms `EaseOutCubic` 中心弹开动画；幻灯片进出做垂直中心补偿 + 连续 `cinema_dim` 驱动相框/阴影淡出，消除硬切跳帧。
+   - **阴影与相纸框升级**：启动期用高精度 Abramowitz-Stegun `erf()` 数学解析烘焙 `192×192` 真实 2D 盒式高斯阴影 9-Slice GPU 纹理（`< 0.3ms` / `144 KB`），配合 4.5 DIP 原版纯白相纸边框在旋转/缩放/弹入坍缩全程零闪烁丝滑跟随；右上角关闭扇形去除硬圆环与白描边，改用 `ID2D1RadialGradientBrush` 18 阶解析高斯核绘制宽幅柔和落影。
+
+
+---
+
+## 2026-11-22 v1.3.0 全栈极致攻坚：搜索单一表格纯表头直控、OCR 20x 提速、全盘内容搜索软熔断、Rust Picasa 看图器全量加固与发布瘦身
+1. **搜索系统单一表格视图收敛、全格热区与后台焦点防误触 (`ui/src/SearchApp.tsx`, `ui/src/search/*`, `src/main.cpp`, `src/search/*`, `src/ui/SearchWindow.cpp`)**:
+   - **极简减法与严格排序**：彻底移除卡片视图与工具栏 `SearchSortDropdown` 排序弹窗（同步清理 8 套 locale 50 个废弃键），收敛为单一表格视图 + 每列表头直控手动排序；`getSortedResults()` 严格按用户所选列比较（不再被 `matchRank`/`effectiveTiers` 截胡），空值/缺失值无论升降序永远沉底，支持多语种 `locale` 排序。
+   - **世界级整格热区与零像素对齐**：升级 `SearchTableHeader` 为 100% Full-Bleed 整格热区（排序、拖拽调序、右键菜单在整列任意空白处均可触发，仅边缘 resize 抓手保留列宽调整），引入指针位移门控消除跨列拖拽松手吞下一次点击；`.search-results` 启用 `scrollbar-gutter: stable` 根治表头与数据行 14px 水平错位，隐藏重显保留 `scrollLeft`；修复 `path` 列锁宽分隔线误改 `size` 列宽。
+   - **Alt+Space 前台精准语义 (`src/main.cpp`)**：`Alt+Space` 快捷预览仅在搜索窗真实处于前台焦点（`SearchWindow::instance().isForegroundActive()`）时触发 QuickLook；当搜索窗开在后台且用户切到其他软件时，按 `Alt+Space` 立即呼出并置前搜索窗口。
+   - **扩展属性提取与云盘防误触 (`src/search/SearchPropertyExtractor.{h,cpp}`)**：新增 OneDrive/云盘脱机占位属性保护（`FILE_ATTRIBUTE_OFFLINE | RECALL_ON_DATA_ACCESS | RECALL_ON_OPEN`）防无意触发云端下载；SHA 哈希与目录遍历内部嵌入时间预算与代际取消；批次复用单个 `IWICImagingFactory`；前端 `useViewportProperties.ts` 通过稳定 `sourceResults` 解耦防排序自杀、不可变更新修复 `React.memo`、`budgetExceeded` 续批与动态 LRU 扩容。
+   - **F5 重建与交互完整性**：F5 重建索引轮询完结再报成功且后台重建期间不白屏遮罩；底栏实时进度条在 760px 默认窗宽保持常驻可见；CSV 按当前可见列导出并自动补齐后端属性；列管理弹窗实行严格草稿事务；全链路 `localStorage` 读写收口至 `storageUtils.ts`。
+2. **OCR 20x 性能提速与 SVTR Attention 4 桶精度铁律 (`src/ocr/*`, `src/capture/CaptureWorkerCommon.h`)**:
+   - **实机根因**：端到端 20~30 秒卡顿的主因是 `OcrWorkerHost.cpp` + `DeepOcrEngineModel.cpp` 每次识别传入相同 `modelDir` 时无条件 `releaseLoadedModels()` 销毁全部已编译 DirectML Session、60s 短命 Worker 频繁冷启、每次冷启 102MB ONNX 整文件读盘校验以及后台内容搜索抢占 CPU/磁盘。
+   - **架构解法**：同目录跳过重建保留已编译 Session；引入两阶段智能热保活（闲置 60s 仅执行 `DXGI Trim` + 物理工作集收缩不销毁 Session，闲置满 15 分钟 `900s` 彻底退出归零）；以 `isValidOnnxFileHeader`（文件大小 + 4KB 魔数）替代 102MB 整文件校验读盘；OCR Worker 提升至 `ABOVE_NORMAL_PRIORITY_CLASS`；新增 `loadMs` / `wallMs` 埋点；QR 检测优先走 1x 定位框与回字形局部 ROI 2x 放大快路径（工业小码保留并行 2x 兜底 100% 召回）。
+   - **关键经验记忆（SVTR Attention Padding 效应）**：不可为省冷编译而裁掉 `16x160` / `4x640` 识别桶！将中等长度文本强行塞入 `2x960` 桶会引入 600px 右侧全零 padding，在 SVTR 全局自注意力中诱发字符混淆（如 `"DocTotal"` -> `"DocTota1"`、`": "` 漏空格）。保持 4 档甜点桶（`16x160 / 16x320 / 4x640 / 2x960`）配合 15 分钟热保活即可同时实现 100% 识别精度与 0ms 热复用。
+3. **全盘 `content:` 文档搜索防失控四重护城河 (`src/service/*`, `src/search/SearchPlugin.cpp`, `src/ui/SearchWindow.cpp`, `src/core/ipc/MessageBridge.cpp`, `ui/src/search/useSearchEngine.ts`, `SearchFooter.tsx`)**:
+   - **内核级降权与并发收敛**：`MftParserQuery.cpp` 内容扫描并发上限由 `min(16, hw)` 收敛至半核（`clamp(hw/2, 2, 6)`）并挂载 RAII `ScopedBackgroundIoPriority`（`THREAD_MODE_BACKGROUND_BEGIN` 同时降级 CPU、磁盘 I/O 与内存页优先级），彻底消除扫描拖慢系统及 OCR；>16MB 大纯文本接入 4MB 滑窗（带重叠）Rust SIMD 零拷贝预过滤；COM IFilter 单文件超时由 15s 压至 2s；`MessageBridge` 异步工作池由 4 扩至 8 防慢请求饿死 OCR/图标。
+   - **全链路非阻塞取消 + 窗口联动 + 20s/30k 软熔断**：新增 `search.cancel` 非阻塞快车道；隐藏/最小化窗口立即派发 `tools3000:searchWindowHidden` 中止在途扫描（保留已命中结果）；窗口失焦 3 秒自动软暂停并通知服务端取消；无目录且无格式限定的全盘 `content:` 扫描达 20s 或 30,000 候选自动软熔断并保留结果，底栏呈现【继续深扫】按钮支持从断点 `planId`/`cursor` 无缝续扫。
+4. **独立 Rust Picasa 看图器全量 P0/P1/P2 加固 (`src/viewer/**/*`, `ui/src/pages/PicasaViewerPage.tsx`, `ui/src/App.tsx`)**:
+   - 修复删除非末尾图画面僵死；全解码器接入像素硬上限（134M 像素 / 131K 边长 / 32MB SVGZ 炸弹拦截）、`try_reserve_exact` 防 OOM Abort 与超 GPU 纹理上限盒式安全降采样；迁移至原生 Shell API（`SHOpenFolderAndSelectItems` / `SHOpenWithDialog` / `IFileOperation` 支持超长路径）；注册表关联备份原值、真删除 `(Default)` 不留空串、检测 Win10/11 `UserChoice` 并在设置页与 `--config` 弹窗诚实展示锁定状态。
+   - 完善幻灯片双场景叠化（屏蔽 `WM_SIZE` 抢跑、四方位任务栏中心补偿、透明 PNG `SOURCE_OVER` 除亮晕）、`WM_CAPTURECHANGED` 指针清理、单实例 `WM_COPYDATA` 转发、`D2DERR_RECREATE_TARGET` 设备丢失自愈、`assoc_dialog` 多屏 DPI/焦点环/无障碍/单刷复用、8 语种 EXIF 与错误本地化、真 LRU 缩略图与 `MsgWaitForMultipleObjects` 零轮询休眠；最终体积 `1.686 MB`（< 2MB），0 `VCRUNTIME140.dll`。
+5. **发布资产清爽 3 件套与安装/卸载/SBOM 闭环 (`deploy.ps1`, `installer.iss`, `scripts/*`, `bucket/tools3000.json`, 8 份 `README*.md`)**:
+   - GitHub Release 精简为 3 件套（`Tools3000-vX.Y.Z-Setup.exe`、`Tools3000-vX.Y.Z-win-x64-portable.zip`、`SHA256SUMS.txt`）；剔除 124 个 PE 实测 0 引用的 6 个僵尸 DLL（含 `WebView2Loader.dll` 与 5 个多余 VC++ 运行库）；安装器跨账户遍历 `HKU\<SID>` 清理 41 格式关联、覆盖升级自动继承已有 `config.json` 开关；将 `Tools3000_Picasa_Viewer.exe` 纳入版本号 SSOT、Authenticode 签名与 61 个 Rust crates SBOM 清单；修复 Scoop `bucket/tools3000.json` 二维数组展平 Bug。

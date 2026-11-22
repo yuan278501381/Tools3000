@@ -1,0 +1,36 @@
+#pragma code_page(65001)
+
+// ID = 1 (索引 0): 应用主程序图标（2026 雕塑旋涡流线玻璃快门圆轮）
+1 ICON "assets/picasa_viewer.ico"
+
+// ID = 2 (索引 1): 图片文件关联文档图标（经典 Picasa 拍立得青松金丘相纸图标）
+2 ICON "assets/picasa_photo_doc.ico"
+
+1 VERSIONINFO
+ FILEVERSION 1,3,0,0
+ PRODUCTVERSION 1,3,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x00040004L
+ FILETYPE 0x00000001L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Yy1 (yuan278501381)"
+            VALUE "FileDescription",  "Tools3000 Picasa Viewer"
+            VALUE "FileVersion",      "1.3.0.0"
+            VALUE "InternalName",     "Tools3000_Picasa_Viewer"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors"
+            VALUE "OriginalFilename", "Tools3000_Picasa_Viewer.exe"
+            VALUE "ProductName",      "Tools3000 Picasa Viewer"
+            VALUE "ProductVersion",   "1.3.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

@@ -1,0 +1,266 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// decode/apng_decoder.rs — 纯 Rust 动态 APNG 多帧合成解码器（安全防 OOM）
+// ─────────────────────────────────────────────────────────────────────────────
+
+use crate::constants::{
+    DEFAULT_FRAME_DELAY_MS, MAX_ANIM_FRAMES, MAX_ANIM_TOTAL_BYTES, MAX_DECODE_PIXELS,
+    MIN_FRAME_DELAY_MS,
+};
+use crate::decode::{try_alloc_zeroed_buffer, try_clone_buffer, validate_image_dimensions};
+use crate::types::{
+    try_rgba_straight_to_bgra_premul, DecodeError, DecodedImage, ExifField, ImageFormatKind,
+    ImageFrame,
+};
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+/// 快速扫描 PNG 文件头部块，判断是否包含 `acTL` 动图控制块（静态 PNG < 0.05ms 直接跳过走 WIC）
+pub fn is_animated_png_file(path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    let mut sig = [0u8; 8];
+    if f.read_exact(&mut sig).is_err() || sig != [137, 80, 78, 71, 13, 10, 26, 10] {
+        return false;
+    }
+    let mut hdr = [0u8; 8];
+    for _ in 0..24 {
+        if f.read_exact(&mut hdr).is_err() {
+            break;
+        }
+        let chunk_len = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as i64;
+        let chunk_type = &hdr[4..8];
+        if chunk_type == b"acTL" {
+            return true;
+        }
+        if chunk_type == b"IDAT" || chunk_type == b"IEND" {
+            return false;
+        }
+        use std::io::{Seek, SeekFrom};
+        if f.seek(SeekFrom::Current(chunk_len + 4)).is_err() {
+            break;
+        }
+    }
+    false
+}
+
+fn alpha_over_rgba(dst: &mut [u8], src: &[u8]) {
+    let sa = src[3] as u32;
+    if sa == 0 {
+        return;
+    }
+    if sa == 255 || dst[3] == 0 {
+        dst.copy_from_slice(src);
+        return;
+    }
+    let da = dst[3] as u32;
+    let inv_sa = 255 - sa;
+    let out_a = sa * 255 + da * inv_sa;
+    if out_a == 0 {
+        dst.copy_from_slice(&[0, 0, 0, 0]);
+        return;
+    }
+    for c in 0..3 {
+        let num = src[c] as u32 * sa * 255 + dst[c] as u32 * da * inv_sa;
+        dst[c] = ((num + out_a / 2) / out_a).min(255) as u8;
+    }
+    dst[3] = ((out_a + 127) / 255).min(255) as u8;
+}
+
+pub fn decode_apng(path: &Path, file_size: u64) -> Result<DecodedImage, DecodeError> {
+    let file = File::open(path).map_err(|e| DecodeError::OpenFile(e.to_string()))?;
+    let mut decoder = png::Decoder::new(BufReader::new(file));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| DecodeError::DecodeFailed {
+            format: "APNG",
+            detail: e.to_string(),
+        })?;
+
+    let info = reader.info();
+    let canvas_w = info.width;
+    let canvas_h = info.height;
+    let total_pixels = validate_image_dimensions(canvas_w, canvas_h, "APNG")?;
+    let total_expected = info
+        .animation_control()
+        .map(|ac| ac.num_frames as usize)
+        .unwrap_or(1)
+        .max(1);
+
+    let frame_bytes = total_pixels.checked_mul(4).ok_or(DecodeError::OutOfMemory)?;
+    let scratch_len = reader.output_buffer_size();
+    let max_scratch = (MAX_DECODE_PIXELS as usize).saturating_mul(4);
+    if scratch_len > max_scratch {
+        return Err(DecodeError::DimensionsTooLarge {
+            width: canvas_w,
+            height: canvas_h,
+        });
+    }
+
+    let mut canvas = try_alloc_zeroed_buffer(frame_bytes)?;
+    let mut frames = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut total_duration_ms = 0u64;
+    let mut has_alpha = false;
+    let mut scratch = try_alloc_zeroed_buffer(scratch_len)?;
+
+    for _ in 0..total_expected.min(MAX_ANIM_FRAMES) {
+        let fc = reader.info().frame_control().cloned();
+        let out_info = match reader.next_frame(&mut scratch) {
+            Ok(i) => i,
+            Err(_) => break,
+        };
+        let fw = out_info.width;
+        let fh = out_info.height;
+        let (x_off, y_off, delay_ms, dispose_op, blend_op) = if let Some(fc) = fc {
+            let den = if fc.delay_den == 0 { 100 } else { fc.delay_den } as u32;
+            let raw_ms = (fc.delay_num as u32) * 1000 / den;
+            let ms = if raw_ms == 0 {
+                DEFAULT_FRAME_DELAY_MS
+            } else {
+                raw_ms.max(MIN_FRAME_DELAY_MS)
+            };
+            (fc.x_offset, fc.y_offset, ms, fc.dispose_op, fc.blend_op)
+        } else {
+            (
+                0,
+                0,
+                DEFAULT_FRAME_DELAY_MS,
+                png::DisposeOp::None,
+                png::BlendOp::Source,
+            )
+        };
+
+        let prev_canvas = if dispose_op == png::DisposeOp::Previous {
+            Some(try_clone_buffer(&canvas)?)
+        } else {
+            None
+        };
+
+        let raw_frame = &scratch[..out_info.buffer_size().min(scratch.len())];
+        let bpp = match out_info.color_type {
+            png::ColorType::Rgba => 4,
+            png::ColorType::Rgb => 3,
+            png::ColorType::GrayscaleAlpha => 2,
+            png::ColorType::Grayscale => 1,
+            _ => 4,
+        };
+
+        for y in 0..fh {
+            let cy = y_off.saturating_add(y);
+            if cy >= canvas_h {
+                continue;
+            }
+            for x in 0..fw {
+                let cx = x_off.saturating_add(x);
+                if cx >= canvas_w {
+                    continue;
+                }
+                let si = ((y as usize) * (fw as usize) + (x as usize)) * bpp;
+                if si + bpp > raw_frame.len() {
+                    continue;
+                }
+                let rgba = match bpp {
+                    4 => [
+                        raw_frame[si],
+                        raw_frame[si + 1],
+                        raw_frame[si + 2],
+                        raw_frame[si + 3],
+                    ],
+                    3 => [raw_frame[si], raw_frame[si + 1], raw_frame[si + 2], 255],
+                    2 => [
+                        raw_frame[si],
+                        raw_frame[si],
+                        raw_frame[si],
+                        raw_frame[si + 1],
+                    ],
+                    _ => [raw_frame[si], raw_frame[si], raw_frame[si], 255],
+                };
+                let di = ((cy as usize) * (canvas_w as usize) + (cx as usize)) * 4;
+                if blend_op == png::BlendOp::Source {
+                    canvas[di..di + 4].copy_from_slice(&rgba);
+                } else {
+                    alpha_over_rgba(&mut canvas[di..di + 4], &rgba);
+                }
+            }
+        }
+
+        let (bgra_premul, frame_alpha) = try_rgba_straight_to_bgra_premul(&canvas)?;
+        if frame_alpha {
+            has_alpha = true;
+        }
+        total_bytes = total_bytes.saturating_add(bgra_premul.len());
+        total_duration_ms = total_duration_ms.saturating_add(delay_ms as u64);
+        frames.push(ImageFrame {
+            width: canvas_w,
+            height: canvas_h,
+            delay_ms,
+            bgra_premul,
+        });
+
+        match dispose_op {
+            png::DisposeOp::Background => {
+                for y in 0..fh {
+                    let cy = y_off.saturating_add(y);
+                    if cy >= canvas_h {
+                        continue;
+                    }
+                    for x in 0..fw {
+                        let cx = x_off.saturating_add(x);
+                        if cx >= canvas_w {
+                            continue;
+                        }
+                        let di = ((cy as usize) * (canvas_w as usize) + (cx as usize)) * 4;
+                        canvas[di..di + 4].copy_from_slice(&[0, 0, 0, 0]);
+                    }
+                }
+            }
+            png::DisposeOp::Previous => {
+                if let Some(prev) = prev_canvas {
+                    canvas = prev;
+                }
+            }
+            png::DisposeOp::None => {}
+        }
+
+        if total_bytes >= MAX_ANIM_TOTAL_BYTES {
+            break;
+        }
+    }
+
+    if frames.is_empty() {
+        return Err(DecodeError::NoValidFrames { format: "APNG" });
+    }
+
+    let is_anim = frames.len() > 1;
+    let format_kind = if is_anim {
+        ImageFormatKind::AnimatedApng
+    } else {
+        ImageFormatKind::Static("PNG".to_string())
+    };
+    let mut exif = vec![
+        ExifField::Format(format_kind.clone()),
+        ExifField::Dimensions(canvas_w, canvas_h),
+    ];
+    if is_anim {
+        exif.push(ExifField::FrameCount {
+            count: frames.len(),
+            best_selected: false,
+            duration_sec: Some(total_duration_ms as f64 / 1000.0),
+        });
+    }
+
+    Ok(DecodedImage {
+        path: path.to_path_buf(),
+        format_kind,
+        file_size_bytes: file_size,
+        width: canvas_w,
+        height: canvas_h,
+        has_alpha,
+        frames,
+        total_duration_ms: if is_anim { total_duration_ms } else { 0 },
+        exif_summary: exif,
+    })
+}

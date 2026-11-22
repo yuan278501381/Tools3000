@@ -25,8 +25,10 @@
 #include "Tools3000Version.h"
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
+#include <cwchar>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -1147,7 +1149,8 @@ std::string MessageBridge::handleMessage(const std::string& messageJson) {
 
 namespace {
 
-constexpr size_t AsyncWorkerCount = 4;
+// 8 线程异步池：避免慢速内容搜索与批量扩展属性提取占满槽位而饿死文件 OCR / 图标 / 设置等高频前台 IPC。
+constexpr size_t AsyncWorkerCount = 8;
 
 /// 队列上限。搜索场景下堆积几乎都来自连续击键，因此过载时丢弃最旧的一条，
 /// 并立刻给它回一个错误响应，避免前端 Promise 悬挂到超时。
@@ -1663,7 +1666,391 @@ namespace {
 bool isCoreBuiltinPlugin(const std::string& id) {
     return id == "gesture" || id == "capture" || id == "search" ||
            id == "keycast" || id == "dialogenhancer" || id == "dialog_enhancer" ||
-           id == "spotlight" || id == "remote_boost" || id == "remote";
+           id == "spotlight" || id == "remote_boost" || id == "remote" ||
+           id == "picasa_viewer" || id == "picasaviewer";
+}
+
+constexpr wchar_t PicasaViewerExeName[] = L"Tools3000_Picasa_Viewer.exe";
+constexpr wchar_t PicasaViewerProgIdW[] = L"Tools3000.PicasaViewer";
+constexpr wchar_t PicasaViewerFileAssocRegPath[] =
+    L"Software\\Tools3000\\PicasaViewer\\Capabilities\\FileAssociations";
+constexpr DWORD PicasaViewerCliTimeoutMs = 10000;
+
+constexpr std::string_view PicasaViewerSupportedExtensions[] = {
+    "jpg", "jpeg", "jpe", "jfif", "pjpeg",
+    "png", "apng",
+    "webp",
+    "gif",
+    "bmp", "dib", "rle",
+    "ico", "cur",
+    "tif", "tiff",
+    "svg", "svgz",
+    "avif", "heic", "heif", "hif",
+    "wdp", "hdp", "jxr",
+    "tga", "qoi", "ppm", "pgm", "pbm", "dds",
+    "dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "pef", "raf", "srw",
+};
+
+std::filesystem::path getPicasaViewerExePath() {
+    return WinUtils::getExeDirectory() / PicasaViewerExeName;
+}
+
+bool isSafePicasaViewerBinary(const std::filesystem::path& exePath) noexcept {
+    if (exePath.empty()) return false;
+    std::error_code ec;
+    if (!std::filesystem::exists(exePath, ec) || !std::filesystem::is_regular_file(exePath, ec)) {
+        return false;
+    }
+    const DWORD dirAttrs = GetFileAttributesW(exePath.parent_path().c_str());
+    const DWORD fileAttrs = GetFileAttributesW(exePath.c_str());
+    if (dirAttrs == INVALID_FILE_ATTRIBUTES || fileAttrs == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    return ((dirAttrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0) &&
+           ((fileAttrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0);
+}
+
+std::wstring buildPicasaViewerLangArg() {
+    const std::string lang = ConfigManager::instance().get<std::string>("/general/language", "auto");
+    if (lang.empty() || lang == "auto" || lang == "system" || lang.size() > 16) {
+        return L"";
+    }
+    for (unsigned char ch : lang) {
+        const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                        (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
+        if (!ok) {
+            return L"";
+        }
+    }
+    return L"--lang " + WinUtils::utf8ToWstring(lang);
+}
+
+std::wstring readHkcuRegString(const std::wstring& subKey, const wchar_t* valueName) {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, subKey.c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+        return L"";
+    }
+    wchar_t buf[260]{};
+    DWORD bytes = static_cast<DWORD>(sizeof(buf));
+    DWORD type = 0;
+    const LONG st = RegQueryValueExW(
+        hKey, valueName, nullptr, &type, reinterpret_cast<LPBYTE>(buf), &bytes);
+    RegCloseKey(hKey);
+    if (st != ERROR_SUCCESS || type != REG_SZ || bytes < sizeof(wchar_t)) {
+        return L"";
+    }
+    const size_t chars = std::min<size_t>(bytes / sizeof(wchar_t), std::size(buf) - 1);
+    buf[chars] = L'\0';
+    return std::wstring(buf);
+}
+
+bool isPicasaViewerEffectiveDefaultForExt(const std::string& extLower) {
+    const std::wstring dotExt = L"." + WinUtils::utf8ToWstring(extLower);
+    const std::wstring userChoicePath =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\" + dotExt + L"\\UserChoice";
+    const std::wstring userChoiceProgId = readHkcuRegString(userChoicePath, L"ProgId");
+    if (!userChoiceProgId.empty()) {
+        return _wcsicmp(userChoiceProgId.c_str(), PicasaViewerProgIdW) == 0;
+    }
+    const std::wstring classesPath = L"Software\\Classes\\" + dotExt;
+    const std::wstring defaultProgId = readHkcuRegString(classesPath, nullptr);
+    return _wcsicmp(defaultProgId.c_str(), PicasaViewerProgIdW) == 0;
+}
+
+bool isExtLockedByOtherUserChoice(const std::string& extLower) {
+    const std::wstring dotExt = L"." + WinUtils::utf8ToWstring(extLower);
+    const std::wstring userChoicePath =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\" + dotExt + L"\\UserChoice";
+    const std::wstring userChoiceProgId = readHkcuRegString(userChoicePath, L"ProgId");
+    return !userChoiceProgId.empty() && _wcsicmp(userChoiceProgId.c_str(), PicasaViewerProgIdW) != 0;
+}
+
+std::vector<std::string> queryPicasaViewerRegisteredExtensions() {
+    std::vector<std::string> result;
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, PicasaViewerFileAssocRegPath, 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+        return result;
+    }
+
+    std::unordered_set<std::string> dedup;
+    wchar_t valueName[128]{};
+    wchar_t valueData[256]{};
+    for (DWORD index = 0;; ++index) {
+        DWORD nameLen = static_cast<DWORD>(std::size(valueName));
+        DWORD dataBytes = static_cast<DWORD>(sizeof(valueData));
+        DWORD valueType = 0;
+        const LONG status = RegEnumValueW(
+            hKey, index, valueName, &nameLen, nullptr, &valueType,
+            reinterpret_cast<LPBYTE>(valueData), &dataBytes);
+        if (status == ERROR_NO_MORE_ITEMS) {
+            break;
+        }
+        if (status != ERROR_SUCCESS || valueType != REG_SZ || dataBytes < sizeof(wchar_t)) {
+            continue;
+        }
+        const size_t dataChars = std::min<size_t>(dataBytes / sizeof(wchar_t), std::size(valueData) - 1);
+        valueData[dataChars] = L'\0';
+        if (wcscmp(valueData, PicasaViewerProgIdW) != 0) {
+            continue;
+        }
+        std::wstring extW(valueName, nameLen);
+        if (!extW.empty() && extW.front() == L'.') {
+            extW.erase(extW.begin());
+        }
+        std::string ext = WinUtils::wstringToUtf8(extW);
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        if (!ext.empty() && dedup.insert(ext).second) {
+            result.push_back(std::move(ext));
+        }
+    }
+    RegCloseKey(hKey);
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+bool runPicasaViewerCliSync(const std::wstring& args, std::string& error) {
+    const auto exePath = getPicasaViewerExePath();
+    if (!isSafePicasaViewerBinary(exePath)) {
+        error = "Tools3000_Picasa_Viewer.exe not found";
+        return false;
+    }
+
+    std::wstring cmdLine = L"\"" + exePath.wstring() + L"\"";
+    if (!args.empty()) {
+        cmdLine += L" ";
+        cmdLine += args;
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    const BOOL created = CreateProcessW(
+        exePath.c_str(),
+        cmdLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        exePath.parent_path().c_str(),
+        &si,
+        &pi);
+    if (!created) {
+        error = "CreateProcessW failed (" + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+
+    const DWORD waitResult = WaitForSingleObject(pi.hProcess, PicasaViewerCliTimeoutMs);
+    DWORD exitCode = 1;
+    if (waitResult == WAIT_OBJECT_0) {
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+    } else {
+        TerminateProcess(pi.hProcess, 1);
+        error = "Picasa viewer CLI timed out";
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    if (waitResult != WAIT_OBJECT_0) {
+        return false;
+    }
+    if (exitCode != 0) {
+        error = "Picasa viewer CLI exited with code " + std::to_string(exitCode);
+        return false;
+    }
+    return true;
+}
+
+bool launchPicasaViewerDetached(const std::wstring& args, std::string& error) {
+    const auto exePath = getPicasaViewerExePath();
+    if (!isSafePicasaViewerBinary(exePath)) {
+        error = "Tools3000_Picasa_Viewer.exe not found";
+        return false;
+    }
+
+    std::wstring cmdLine = L"\"" + exePath.wstring() + L"\"";
+    if (!args.empty()) {
+        cmdLine += L" ";
+        cmdLine += args;
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    const BOOL created = CreateProcessW(
+        exePath.c_str(),
+        cmdLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        0,
+        nullptr,
+        exePath.parent_path().c_str(),
+        &si,
+        &pi);
+    if (!created) {
+        error = "CreateProcessW failed (" + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
+bool getConfiguredPicasaViewerEnabled() {
+    auto& cfg = ConfigManager::instance();
+    if (cfg.has("/plugins/picasa_viewer/enabled")) {
+        return cfg.get<bool>("/plugins/picasa_viewer/enabled", false);
+    }
+    if (cfg.has("/picasa_viewer/enabled")) {
+        return cfg.get<bool>("/picasa_viewer/enabled", false);
+    }
+    return false;
+}
+
+bool reconcilePicasaViewerEnabledFromRegistry() {
+    const auto exePath = getPicasaViewerExePath();
+    const bool installed = isSafePicasaViewerBinary(exePath);
+    const bool configured = getConfiguredPicasaViewerEnabled();
+    if (!installed) {
+        return false;
+    }
+    const auto registered = queryPicasaViewerRegisteredExtensions();
+    const bool actualEnabled = !registered.empty();
+    if (actualEnabled != configured) {
+        ConfigManager::instance().set<bool>("/picasa_viewer/enabled", actualEnabled);
+        ConfigManager::instance().set<bool>("/plugins/picasa_viewer/enabled", actualEnabled);
+        return true;
+    }
+    return false;
+}
+
+json buildPicasaViewerStatusJson() {
+    const auto exePath = getPicasaViewerExePath();
+    const bool installed = isSafePicasaViewerBinary(exePath);
+    const auto registered = queryPicasaViewerRegisteredExtensions();
+    const bool configured = getConfiguredPicasaViewerEnabled();
+    // 双向状态对账：以 HKCU 真实关联存在性为准收敛外部 --config/--register/--unregister 改动
+    bool enabled = installed && configured;
+    if (installed && ((!registered.empty()) != configured)) {
+        enabled = !registered.empty();
+        ConfigManager::instance().set<bool>("/picasa_viewer/enabled", enabled);
+        ConfigManager::instance().set<bool>("/plugins/picasa_viewer/enabled", enabled);
+    }
+
+    std::vector<std::string> effectiveDefaults;
+    size_t userChoiceLockedCount = 0;
+    for (const auto& ext : registered) {
+        if (isPicasaViewerEffectiveDefaultForExt(ext)) {
+            effectiveDefaults.push_back(ext);
+        } else if (isExtLockedByOtherUserChoice(ext)) {
+            ++userChoiceLockedCount;
+        }
+    }
+
+    json supportedArr = json::array();
+    for (const auto ext : PicasaViewerSupportedExtensions) {
+        supportedArr.push_back(std::string(ext));
+    }
+    const size_t supportedCount = std::size(PicasaViewerSupportedExtensions);
+    return {
+        {"enabled", enabled},
+        {"installed", installed},
+        {"exePath", WinUtils::wstringToUtf8(exePath.wstring())},
+        {"registeredExtensions", registered},
+        {"registeredCount", registered.size()},
+        {"effectiveDefaultExtensions", effectiveDefaults},
+        {"effectiveDefaultCount", effectiveDefaults.size()},
+        {"userChoiceLockedCount", userChoiceLockedCount},
+        {"supportedExtensions", std::move(supportedArr)},
+        {"supportedCount", supportedCount},
+        {"allAssociated", installed && registered.size() >= supportedCount},
+    };
+}
+
+bool launchPicasaViewerConfigAndWatch(const std::wstring& args, std::string& error) {
+    const auto exePath = getPicasaViewerExePath();
+    if (!isSafePicasaViewerBinary(exePath)) {
+        error = "Tools3000_Picasa_Viewer.exe not found";
+        return false;
+    }
+
+    std::wstring cmdLine = L"\"" + exePath.wstring() + L"\"";
+    if (!args.empty()) {
+        cmdLine += L" ";
+        cmdLine += args;
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    const BOOL created = CreateProcessW(
+        exePath.c_str(),
+        cmdLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        0,
+        nullptr,
+        exePath.parent_path().c_str(),
+        &si,
+        &pi);
+    if (!created) {
+        error = "CreateProcessW failed (" + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    HANDLE hProcess = pi.hProcess;
+    std::thread([hProcess]() {
+        WaitForSingleObject(hProcess, INFINITE);
+        CloseHandle(hProcess);
+        reconcilePicasaViewerEnabledFromRegistry();
+        const auto status = buildPicasaViewerStatusJson();
+        const bool nowEnabled = status.value("enabled", false);
+        MessageBridge::instance().pushEvent("picasa_viewer:stateChanged", status);
+        MessageBridge::instance().pushEvent("plugins:changed", {{"id", "picasa_viewer"}, {"enabled", nowEnabled}});
+    }).detach();
+    return true;
+}
+
+bool applyPicasaViewerEnabledState(bool enabled, std::string& error) {
+    const auto exePath = getPicasaViewerExePath();
+    const bool installed = isSafePicasaViewerBinary(exePath);
+    if (enabled) {
+        if (!installed) {
+            error = "Tools3000_Picasa_Viewer.exe not found";
+            LOG_ERROR("Picasa 图片查看器启用失败，无法完成文件关联: {}", error);
+            return false;
+        }
+        if (!runPicasaViewerCliSync(L"--register-silent", error)) {
+            LOG_ERROR("Picasa 图片查看器启用失败，无法完成文件关联: {}", error);
+            return false;
+        }
+        ConfigManager::instance().set<bool>("/picasa_viewer/enabled", true);
+        ConfigManager::instance().set<bool>("/plugins/picasa_viewer/enabled", true);
+        const auto status = buildPicasaViewerStatusJson();
+        LOG_INFO("Picasa 图片查看器已启用并自动关联全部支持的图片格式: count={}",
+                 status.value("registeredCount", 0));
+        MessageBridge::instance().pushEvent("picasa_viewer:stateChanged", status);
+        MessageBridge::instance().pushEvent("plugins:changed", {{"id", "picasa_viewer"}, {"enabled", true}});
+        return true;
+    }
+
+    if (installed) {
+        std::string unregErr;
+        if (!runPicasaViewerCliSync(L"--unregister-silent", unregErr)) {
+            LOG_WARN("Picasa 图片查看器关闭时清理文件关联失败: {}", unregErr);
+        }
+    }
+    ConfigManager::instance().set<bool>("/picasa_viewer/enabled", false);
+    ConfigManager::instance().set<bool>("/plugins/picasa_viewer/enabled", false);
+    const auto status = buildPicasaViewerStatusJson();
+    LOG_INFO("Picasa 图片查看器已关闭并自动清理文件关联");
+    MessageBridge::instance().pushEvent("picasa_viewer:stateChanged", status);
+    MessageBridge::instance().pushEvent("plugins:changed", {{"id", "picasa_viewer"}, {"enabled", false}});
+    return true;
 }
 
 void releasePluginResourcesAndTrim() {
@@ -1711,6 +2098,13 @@ void MessageBridge::registerBuiltinHandlers() {
              "config.reset",
              "capture.browseDirectory",
              "window.getOpenWindows",
+             "picasaViewer.getStatus",
+             "picasaViewer.setEnabled",
+             "picasaViewer.associateAll",
+             "picasaViewer.unassociateAll",
+             "picasaViewer.openFormatConfig",
+             "picasaViewer.openDefaultApps",
+             "picasaViewer.launchViewer",
          }) {
         markMethodAsync(method);
     }
@@ -1806,6 +2200,29 @@ void MessageBridge::registerBuiltinHandlers() {
             {"isExtension", false}
         });
         existingIds.insert("remote_boost");
+
+        // 内置独立模块：Picasa 图片查看器 (Rust 复刻轻量版，默认关闭，开启自动关联全部支持图片格式)
+        reconcilePicasaViewerEnabledFromRegistry();
+        const auto picasaExePath = getPicasaViewerExePath();
+        const bool picasaInstalled = isSafePicasaViewerBinary(picasaExePath);
+        const bool picasaEnabled = picasaInstalled && getConfiguredPicasaViewerEnabled();
+        plugins.push_back({
+            {"id", "picasa_viewer"},
+            {"name", "Picasa 图片查看器"},
+            {"version", tools3000::version::String},
+            {"fileName", "Tools3000_Picasa_Viewer.exe"},
+            {"abiVersion", 1},
+            {"capabilities", {"image-viewer", "file-associations", "slideshow", "high-dpi-d2d"}},
+            {"permissions", {"hkcu-file-associations"}},
+            {"executionModel", "standalone-rust-process"},
+            {"enabled", picasaEnabled},
+            {"active", picasaEnabled},
+            {"restartRequired", false},
+            {"state", !picasaInstalled ? "unavailable" : (picasaEnabled ? "running" : "disabled")},
+            {"error", picasaInstalled ? "" : "Tools3000_Picasa_Viewer.exe not found"},
+            {"isExtension", false}
+        });
+        existingIds.insert("picasa_viewer");
         return plugins;
     });
 
@@ -1837,6 +2254,20 @@ void MessageBridge::registerBuiltinHandlers() {
             MessageBridge::instance().pushEvent("plugins:changed", {{"id", "remote_boost"}, {"enabled", enabled}});
             releasePluginResourcesAndTrim();
             return {{"success", true}, {"restartRequired", false}};
+        }
+
+        if (id == "picasa_viewer" || id == "picasaviewer") {
+            std::string error;
+            const bool success = applyPicasaViewerEnabledState(enabled, error);
+            if (success) {
+                releasePluginResourcesAndTrim();
+            }
+            return {
+                {"success", success},
+                {"restartRequired", false},
+                {"error", error},
+                {"status", buildPicasaViewerStatusJson()}
+            };
         }
 
         if (id == "dialogenhancer" || id == "dialog_enhancer") {
@@ -2544,6 +2975,87 @@ void MessageBridge::registerBuiltinHandlers() {
             {"windowClass", WinUtils::wstringToUtf8(cls)},
             {"pid", pid}
         };
+    });
+
+    registerHostHandler("picasaViewer.getStatus", [](const json&) -> json {
+        return buildPicasaViewerStatusJson();
+    });
+
+    registerHostHandler("picasaViewer.setEnabled", [](const json& params) -> json {
+        if (!params.is_object() || !params.contains("enabled") || !params["enabled"].is_boolean()) {
+            return {{"success", false}, {"error", "enabled is required"}};
+        }
+        std::string error;
+        const bool ok = applyPicasaViewerEnabledState(params["enabled"].get<bool>(), error);
+        if (ok) {
+            releasePluginResourcesAndTrim();
+        }
+        return {
+            {"success", ok},
+            {"error", error},
+            {"status", buildPicasaViewerStatusJson()}
+        };
+    });
+
+    registerHostHandler("picasaViewer.associateAll", [](const json&) -> json {
+        std::string error;
+        if (!runPicasaViewerCliSync(L"--register-silent", error)) {
+            LOG_ERROR("Picasa 图片查看器启用失败，无法完成文件关联: {}", error);
+            return {{"success", false}, {"error", error}, {"status", buildPicasaViewerStatusJson()}};
+        }
+        ConfigManager::instance().set<bool>("/picasa_viewer/enabled", true);
+        ConfigManager::instance().set<bool>("/plugins/picasa_viewer/enabled", true);
+        const auto status = buildPicasaViewerStatusJson();
+        LOG_INFO("Picasa 图片查看器已重新关联全部支持的图片格式: count={}",
+                 status.value("registeredCount", 0));
+        MessageBridge::instance().pushEvent("picasa_viewer:stateChanged", status);
+        MessageBridge::instance().pushEvent("plugins:changed", {{"id", "picasa_viewer"}, {"enabled", true}});
+        return {{"success", true}, {"status", status}};
+    });
+
+    registerHostHandler("picasaViewer.unassociateAll", [](const json&) -> json {
+        std::string error;
+        if (!runPicasaViewerCliSync(L"--unregister-silent", error)) {
+            LOG_WARN("Picasa 图片查看器关闭时清理文件关联失败: {}", error);
+            return {{"success", false}, {"error", error}, {"status", buildPicasaViewerStatusJson()}};
+        }
+        ConfigManager::instance().set<bool>("/picasa_viewer/enabled", false);
+        ConfigManager::instance().set<bool>("/plugins/picasa_viewer/enabled", false);
+        const auto status = buildPicasaViewerStatusJson();
+        MessageBridge::instance().pushEvent("picasa_viewer:stateChanged", status);
+        MessageBridge::instance().pushEvent("plugins:changed", {{"id", "picasa_viewer"}, {"enabled", false}});
+        return {{"success", true}, {"status", status}};
+    });
+
+    registerHostHandler("picasaViewer.openFormatConfig", [](const json&) -> json {
+        std::wstring args = L"--config";
+        const std::wstring langArg = buildPicasaViewerLangArg();
+        if (!langArg.empty()) {
+            args += L" " + langArg;
+        }
+        std::string error;
+        const bool ok = launchPicasaViewerConfigAndWatch(args, error);
+        return {{"success", ok}, {"error", error}};
+    });
+
+    registerHostHandler("picasaViewer.openDefaultApps", [](const json&) -> json {
+        HINSTANCE hInst = ShellExecuteW(
+            nullptr, L"open",
+            L"ms-settings:defaultapps?registeredAppUser=Tools3000%20Picasa%20Viewer",
+            nullptr, nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(hInst) <= 32) {
+            hInst = ShellExecuteW(
+                nullptr, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        const bool ok = reinterpret_cast<INT_PTR>(hInst) > 32;
+        return {{"success", ok}, {"error", ok ? "" : "failed to open Windows default apps settings"}};
+    });
+
+    registerHostHandler("picasaViewer.launchViewer", [](const json&) -> json {
+        const std::wstring langArg = buildPicasaViewerLangArg();
+        std::string error;
+        const bool ok = launchPicasaViewerDetached(langArg, error);
+        return {{"success", ok}, {"error", error}};
     });
 
     LOG_INFO("内置核心 IPC 处理器注册完成（含性能监控、配置管理、系统信息、窗口枚举）");

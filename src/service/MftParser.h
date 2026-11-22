@@ -25,6 +25,8 @@ struct SearchResult {
     int matchRank = 7;
     int folderPriority = 200;
     uint8_t pathTier = tools3000::service::kPathTierUncomputed;
+    uint64_t lastAccessTime = 0;
+    uint32_t fileAttributes = 0;
 };
 
 struct SearchExcludeOptions {
@@ -126,6 +128,27 @@ public:
         return m_InitialScanDone.load(std::memory_order_acquire);
     }
 
+    enum class ScanPhase : uint8_t {
+        Idle = 0,
+        Scanning = 1,
+        BuildingHierarchy = 2,
+        Syncing = 3,
+        LoadingSnapshot = 4,
+    };
+
+    ScanPhase getScanPhase() const noexcept {
+        return static_cast<ScanPhase>(m_ScanPhase.load(std::memory_order_acquire));
+    }
+    uint64_t getScannedRecords() const noexcept {
+        return m_ScannedRecords.load(std::memory_order_acquire);
+    }
+    uint64_t getEstimatedRecords() const noexcept {
+        return m_EstimatedRecords.load(std::memory_order_acquire);
+    }
+    const std::wstring& getVolumeLabel() const noexcept {
+        return m_VolumeLabel;
+    }
+
     char getDriveLetter() const { return m_DriveLetter; }
     UINT getDriveType() const { return m_DriveType; }
     uint64_t getCurrentUsn() const;
@@ -164,6 +187,7 @@ private:
     mutable std::shared_mutex m_MapMutex;
     mutable std::atomic<size_t> m_LastSearchPathBuildCount{0};
     tools3000::service::FileIndexStore m_Store;
+    std::atomic<size_t> m_FileCount{0};
     std::atomic<uint64_t> m_IndexGeneration{0};
     std::mutex m_SearchCacheMutex;
     std::wstring m_CachedQuery;
@@ -189,4 +213,8 @@ private:
     bool m_Initialized{false};
     std::atomic<bool> m_RescannedDuringCatchUp{false};
     uint32_t m_VolumeSerial{0};
+    std::wstring m_VolumeLabel;
+    std::atomic<uint8_t> m_ScanPhase{static_cast<uint8_t>(ScanPhase::Idle)};
+    std::atomic<uint64_t> m_ScannedRecords{0};
+    std::atomic<uint64_t> m_EstimatedRecords{0};
 };

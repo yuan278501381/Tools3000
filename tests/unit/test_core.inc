@@ -1681,12 +1681,13 @@ TEST(MessageBridgeAsyncTest, QueueOverloadRespondsWithTheEvictedRequestId) {
             [response](std::string value) { response->set_value(std::move(value)); });
     };
 
-    for (int id = 1000; id < 1004; ++id) submit(id);
+    constexpr int kExpectedAsyncWorkers = 8;
+    for (int id = 1000; id < 1000 + kExpectedAsyncWorkers; ++id) submit(id);
     bool allWorkersStarted = false;
     {
         std::unique_lock lock(gateMutex);
         allWorkersStarted = gateCv.wait_for(lock, std::chrono::seconds(5), [&running]() {
-            return running == 4;
+            return running == kExpectedAsyncWorkers;
         });
         if (!allWorkersStarted) {
             release = true;
@@ -1700,10 +1701,11 @@ TEST(MessageBridgeAsyncTest, QueueOverloadRespondsWithTheEvictedRequestId) {
     }
 
     for (int id = 2000; id < 2065; ++id) submit(id);
+    const size_t evictedFutureIndex = static_cast<size_t>(kExpectedAsyncWorkers);
     const bool evictionResponded =
-        futures[4].wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+        futures[evictedFutureIndex].wait_for(std::chrono::seconds(5)) == std::future_status::ready;
     std::string evictedResponse;
-    if (evictionResponded) evictedResponse = futures[4].get();
+    if (evictionResponded) evictedResponse = futures[evictedFutureIndex].get();
 
     {
         std::lock_guard lock(gateMutex);
@@ -1712,7 +1714,7 @@ TEST(MessageBridgeAsyncTest, QueueOverloadRespondsWithTheEvictedRequestId) {
     gateCv.notify_all();
     bool allResponsesReady = true;
     for (size_t index = 0; index < futures.size(); ++index) {
-        if (index == 4) continue;
+        if (index == evictedFutureIndex) continue;
         if (futures[index].wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
             allResponsesReady = false;
         }
@@ -2533,6 +2535,26 @@ TEST(MouseFeedbackOverlayBaseTest, LifecycleAndSleepContract) {
     overlay.shutdownBase();
     EXPECT_FALSE(overlay.isCompositorReady());
     EXPECT_FALSE(overlay.isVisible());
+    EXPECT_EQ(overlay.hwnd(), nullptr);
+}
+
+TEST(MouseFeedbackOverlayBaseTest, LazyCompositorStaysUnallocatedUntilDraw) {
+    TestMouseOverlay overlay;
+    EXPECT_FALSE(overlay.isCompositorReady());
+
+    const bool inited = overlay.initializeBase(
+        GetModuleHandleW(nullptr),
+        L"Tools3000_TestLazyMouseFeedbackOverlay",
+        L"Tools3000_TestLazyMouseHelperOwner",
+        /*lazyCompositor=*/true
+    );
+    EXPECT_TRUE(inited);
+    EXPECT_NE(overlay.hwnd(), nullptr);
+    // 惰性模式下冷启动不得预建第二套 D3D11/D2D1/DComp 设备
+    EXPECT_FALSE(overlay.isCompositorReady());
+
+    overlay.shutdownBase();
+    EXPECT_FALSE(overlay.isCompositorReady());
     EXPECT_EQ(overlay.hwnd(), nullptr);
 }
 
@@ -4568,6 +4590,96 @@ TEST(CaptureDefaultEnabledContractTest, FreshInstallConfigAndInstallerCheckableA
     EXPECT_TRUE(foundOcrChild);
     EXPECT_TRUE(captureHasCheckableAlone)
         << "Parent component 'capture' has optional child 'capture\\ocr_models' and MUST set Flags: checkablealone";
+}
+
+TEST(PicasaViewerDefaultDisabledAndInstallerContractTest, DefaultDisabledInConfigAndUncheckedByDefaultInInstaller) {
+    // 1. 空白配置下 reconcilePluginConfigs() 必须保持 picasa_viewer 默认关闭，且同步写入同构键
+    std::error_code ec;
+    const auto tempDir = std::filesystem::temp_directory_path(ec) /
+                         (L"tools3000_picasa_default_test_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(tempDir, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(tempDir, ec));
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tempDir, "config.json"));
+    tools3000::core::PluginManager::instance().reconcilePluginConfigs();
+
+    EXPECT_TRUE(cfg.has("/plugins/picasa_viewer/enabled"));
+    EXPECT_TRUE(cfg.has("/picasa_viewer/enabled"));
+    EXPECT_FALSE(cfg.get<bool>("/plugins/picasa_viewer/enabled", true));
+    EXPECT_FALSE(cfg.get<bool>("/picasa_viewer/enabled", true));
+
+    // 2. 当安装器或用户显式启用后，reconcilePluginConfigs() 必须尊重开启状态
+    cfg.set("/plugins/picasa_viewer/enabled", true);
+    tools3000::core::PluginManager::instance().reconcilePluginConfigs();
+    EXPECT_TRUE(cfg.get<bool>("/plugins/picasa_viewer/enabled", false));
+    EXPECT_TRUE(cfg.get<bool>("/picasa_viewer/enabled", false));
+
+    cfg.shutdown();
+    std::filesystem::remove_all(tempDir, ec);
+
+    // 3. 校验 installer.iss：picasaviewer 组件存在、不绑定 full/compact（初始默认不勾选）、8 语种文案齐备且含静默注册钩子
+    std::filesystem::path issPath;
+    auto probe = std::filesystem::current_path(ec);
+    for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+        if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+            issPath = probe / L"installer.iss";
+            break;
+        }
+        probe = probe.parent_path();
+    }
+    if (issPath.empty()) {
+        wchar_t exeBuf[MAX_PATH]{};
+        const DWORD len = GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            probe = std::filesystem::path(exeBuf).parent_path();
+            for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+                if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+                    issPath = probe / L"installer.iss";
+                    break;
+                }
+                probe = probe.parent_path();
+            }
+        }
+    }
+    ASSERT_FALSE(issPath.empty()) << "Unable to locate installer.iss";
+
+    std::ifstream ifs(issPath, std::ios::binary);
+    ASSERT_TRUE(ifs.is_open());
+    const std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+
+    EXPECT_NE(content.find("chinesesimplified.CompPicasaViewer="), std::string::npos);
+    EXPECT_NE(content.find("english.CompPicasaViewer="), std::string::npos);
+    EXPECT_NE(content.find("Tools3000_Picasa_Viewer.exe"), std::string::npos);
+    EXPECT_NE(content.find("--register-silent"), std::string::npos);
+    EXPECT_NE(content.find("--unregister-silent"), std::string::npos);
+    EXPECT_NE(content.find("IsPicasaViewerComponentSelected"), std::string::npos);
+
+    std::istringstream issStream(content);
+    bool inComponents = false;
+    bool foundPicasa = false;
+    bool picasaHasFull = false;
+    bool picasaHasCompact = false;
+    std::string line;
+    while (std::getline(issStream, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const auto firstNonWs = line.find_first_not_of(" \t");
+        if (firstNonWs == std::string::npos || line[firstNonWs] == ';') continue;
+        const std::string trimmed = line.substr(firstNonWs);
+        if (trimmed.front() == '[') {
+            inComponents = (trimmed == "[Components]");
+            continue;
+        }
+        if (!inComponents) continue;
+        if (trimmed.find("Name: \"picasaviewer\"") != std::string::npos) {
+            foundPicasa = true;
+            picasaHasFull = trimmed.find("full") != std::string::npos;
+            picasaHasCompact = trimmed.find("compact") != std::string::npos;
+        }
+    }
+    EXPECT_TRUE(foundPicasa);
+    EXPECT_FALSE(picasaHasFull) << "picasaviewer MUST NOT be checked by default in 'full' install type";
+    EXPECT_FALSE(picasaHasCompact) << "picasaviewer MUST NOT be checked by default in 'compact' install type";
 }
 
 TEST(InstallerRebootGuardAndI18nTest, PfroSelfHealAndChineseRestartRadioContract) {

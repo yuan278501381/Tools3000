@@ -19,10 +19,34 @@ export const GestureGuide: React.FC = () => {
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      setIndex((i) => (i + 1) % GUIDES.length);
-    }, 2500);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const start = () => {
+      if (document.hidden || timer !== null) return;
+      timer = setInterval(() => {
+        if (!document.hidden) {
+          setIndex((i) => (i + 1) % GUIDES.length);
+        }
+      }, 2500);
+    };
+    const handleVisibility = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        start();
+      }
+    };
+    start();
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
   const guide = GUIDES[index];

@@ -1879,6 +1879,7 @@ void StudioPreviewWindow::closeSessionAndCleanup() {
     m_lastExportedSpecLine.clear();
     m_copyFeedbackUntilTick = 0;
     m_masterVideoPath.clear();
+    m_rawVideoPath.clear();
     m_masterIsIsolatedTemp = false;
     m_scrubbingTimeline = false;
     m_draggingWindow = false;
@@ -1900,11 +1901,17 @@ void StudioPreviewWindow::closeSessionAndCleanup() {
     m_clickDemoStartTick = 0;
     m_annDemoStartTick = 0;
     m_coachHoverZones.clear();
+    m_coachHoverZones.shrink_to_fit();
     m_hoveredCoachId = 0;
     m_coachHoverEnterTick = 0;
     m_coachLastActiveTick = 0;
+    m_timeline = StudioTimelineData{};
+    m_videoClips.clear();
+    m_videoClips.shrink_to_fit();
     m_undoStack.clear();
+    m_undoStack.shrink_to_fit();
     m_redoStack.clear();
+    m_redoStack.shrink_to_fit();
     m_hiResReader.close();
     m_filmstripBitmaps.clear();
     m_filmstripDirty = true;

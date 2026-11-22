@@ -5,6 +5,7 @@ import {
   ChevronDown,
   FileSearch,
   FolderSymlink,
+  Image as ImageIcon,
   Keyboard,
   Mouse,
   Puzzle,
@@ -28,7 +29,7 @@ export interface PluginStatus {
   abiVersion: number;
   capabilities: string[];
   permissions: string[];
-  executionModel?: 'trusted-native-in-process';
+  executionModel?: 'trusted-native-in-process' | 'standalone-rust-process';
   enabled: boolean;
   active: boolean;
   restartRequired: boolean;
@@ -58,6 +59,8 @@ const ICONS = {
   dialog_enhancer: FolderSymlink,
   remote_boost: Cast,
   remote: Cast,
+  picasa_viewer: ImageIcon,
+  picasaviewer: ImageIcon,
 } as const;
 
 const PLUGIN_DISPLAY_ORDER: Record<string, number> = {
@@ -70,6 +73,8 @@ const PLUGIN_DISPLAY_ORDER: Record<string, number> = {
   spotlight: 6,
   remote_boost: 7,
   remote: 7,
+  picasa_viewer: 8,
+  picasaviewer: 8,
 };
 
 const PLUGIN_NAV_MAP: Record<string, NavId> = {
@@ -82,6 +87,8 @@ const PLUGIN_NAV_MAP: Record<string, NavId> = {
   spotlight: 'spotlight',
   remote_boost: 'remote_boost',
   remote: 'remote_boost',
+  picasa_viewer: 'picasa_viewer',
+  picasaviewer: 'picasa_viewer',
 };
 
 export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavigate }) => {
@@ -119,7 +126,12 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => { void refresh(); });
-    return () => cancelAnimationFrame(frame);
+    const onFocus = () => { void refresh(); };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [refresh]);
 
   const updatePluginState = useCallback((id: string, enabled: boolean) => {
@@ -128,12 +140,22 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
         ? ['dialogenhancer', 'dialog_enhancer']
         : (id === 'remote_boost' || id === 'remote')
           ? ['remote_boost', 'remote']
-          : [id];
-      const next = items.map((item) =>
-        aliases.includes(item.id)
-          ? { ...item, enabled, active: enabled, state: (enabled ? 'running' : 'disabled') as PluginStatus['state'] }
-          : item
-      );
+          : (id === 'picasa_viewer' || id === 'picasaviewer')
+            ? ['picasa_viewer', 'picasaviewer']
+            : [id];
+      const next = items.map((item) => {
+        if (!aliases.includes(item.id)) return item;
+        // 若二进制缺失处于 unavailable 状态，绝不被外部状态事件误覆写为 disabled 并解锁开关
+        if (item.state === 'unavailable') {
+          return { ...item, enabled: false, active: false };
+        }
+        return {
+          ...item,
+          enabled,
+          active: enabled,
+          state: (enabled ? 'running' : 'disabled') as PluginStatus['state'],
+        };
+      });
       window.dispatchEvent(new CustomEvent('tools3000:plugins-changed', { detail: next }));
       return next;
     });
@@ -173,6 +195,13 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
     const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
     if (payload && typeof payload.enabled === 'boolean') {
       updatePluginState('remote_boost', payload.enabled);
+    }
+  });
+
+  useBridgeEvent('picasa_viewer:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      updatePluginState('picasa_viewer', payload.enabled);
     }
   });
 

@@ -73,6 +73,13 @@ if (isTray) {
   document.documentElement.dataset.surface = 'quicklook';
 }
 
+// 统一页面可见性标记：当 WebView2 隐藏或最小化时立即暂停全部 CSS 无限动画，根除后台合成器与光栅化 CPU 消耗
+const syncPageVisibilityClass = () => {
+  document.documentElement.classList.toggle('t3k-page-hidden', document.hidden);
+};
+syncPageVisibilityClass();
+document.addEventListener('visibilitychange', syncPageVisibilityClass);
+
 window.onerror = function (msg, url, lineNo, columnNo, error) {
   if (document.getElementById('tools3000-global-error')) return;
   const errDiv = document.createElement('div');

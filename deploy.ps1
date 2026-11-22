@@ -423,6 +423,127 @@ if ($LASTEXITCODE -ne 0) {
 Write-Log "C++ 编译完成。" "SUCCESS"
 
 # ------------------------------------------------------------------------------
+# 4.2 构建 Rust 复刻 Picasa 轻量图片查看器 (Tools3000_Picasa_Viewer.exe)
+# ------------------------------------------------------------------------------
+function Assert-PeMachineArchitecture {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][ValidateSet("x64", "arm64")][string]$ExpectedArch
+    )
+    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
+        throw "PE 架构头校验失败，文件不存在: $FilePath"
+    }
+    $Fs = [System.IO.File]::OpenRead($FilePath)
+    try {
+        if ($Fs.Length -lt 0x40) {
+            throw "PE 架构头校验失败，文件长度异常并非有效 PE 二进制: $FilePath"
+        }
+        $DosHeader = New-Object byte[] 0x40
+        [void]$Fs.Read($DosHeader, 0, 0x40)
+        if ($DosHeader[0] -ne 0x4D -or $DosHeader[1] -ne 0x5A) {
+            throw "PE 架构头校验失败，缺少 MZ 魔数: $FilePath"
+        }
+        $PeOffset = [System.BitConverter]::ToInt32($DosHeader, 0x3C)
+        if ($PeOffset -le 0 -or ($PeOffset + 6) -gt $Fs.Length) {
+            throw "PE 架构头校验失败，PE 头偏移无效 ($PeOffset): $FilePath"
+        }
+        [void]$Fs.Seek($PeOffset, [System.IO.SeekOrigin]::Begin)
+        $PeSigAndMachine = New-Object byte[] 6
+        [void]$Fs.Read($PeSigAndMachine, 0, 6)
+        if ($PeSigAndMachine[0] -ne 0x50 -or $PeSigAndMachine[1] -ne 0x45 -or
+            $PeSigAndMachine[2] -ne 0x00 -or $PeSigAndMachine[3] -ne 0x00) {
+            throw "PE 架构头校验失败，缺少 PE 签名: $FilePath"
+        }
+        $ActualMachine = [System.BitConverter]::ToUInt16($PeSigAndMachine, 4)
+        $ExpectedMachine = if ($ExpectedArch -eq "arm64") { [uint16]0xAA64 } else { [uint16]0x8664 }
+        if ($ActualMachine -ne $ExpectedMachine) {
+            throw ("PE Machine 架构不匹配！文件={0}，实际=0x{1:X4}，期望={2} (0x{3:X4})，严禁混装错架构二进制！" -f $FilePath, $ActualMachine, $ExpectedArch, $ExpectedMachine)
+        }
+        Write-Log ("PE Machine 架构头校验通过: {0} -> {1} (0x{2:X4})" -f (Split-Path -Leaf $FilePath), $ExpectedArch, $ActualMachine) "SUCCESS"
+    } finally {
+        $Fs.Dispose()
+    }
+}
+
+$ViewerProjectDir = Join-Path $ScriptDir "src\viewer"
+$ViewerExeName = "Tools3000_Picasa_Viewer.exe"
+$ViewerRustTarget = if ($Arch -eq "arm64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
+$ViewerTargetBinPath = Join-Path $ViewerProjectDir "target\$ViewerRustTarget\release\$ViewerExeName"
+$ViewerBinCandidates = @($ViewerTargetBinPath)
+if ($Arch -eq "x64" -and -not $RequireSigning -and -not $RequirePublicTrust) {
+    $ViewerBinCandidates += (Join-Path $ViewerProjectDir "target\release\$ViewerExeName")
+}
+
+$CargoCmd = Get-Command "cargo" -ErrorAction SilentlyContinue
+if (-not $CargoCmd -and (Test-Path (Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"))) {
+    $CargoCmd = Get-Command (Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe") -ErrorAction SilentlyContinue
+}
+if ($CargoCmd) {
+    $CargoBinDir = Split-Path -Parent $CargoCmd.Source
+    $RustupCmd = Get-Command "rustup" -ErrorAction SilentlyContinue
+    if (-not $RustupCmd -and (Test-Path -LiteralPath (Join-Path $CargoBinDir "rustup.exe"))) {
+        $RustupCmd = Get-Command (Join-Path $CargoBinDir "rustup.exe") -ErrorAction SilentlyContinue
+    }
+    if (-not $RustupCmd -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe"))) {
+        $RustupCmd = Get-Command (Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe") -ErrorAction SilentlyContinue
+    }
+
+    # 构建前强校验目标架构 Rust 工具链（尤其 ARM64 交叉编译目标），防止静默编出宿主架构或半途报错
+    if ($RustupCmd) {
+        $InstalledRustTargets = @(& $RustupCmd.Source target list --installed 2>$null | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($LASTEXITCODE -ne 0) {
+            throw "无法通过 rustup 查询已安装的 Rust 编译目标（退出码: $LASTEXITCODE）。"
+        }
+        if ($ViewerRustTarget -notin $InstalledRustTargets) {
+            throw "未安装 Rust 目标工具链 '$ViewerRustTarget'（当前已安装: $($InstalledRustTargets -join ', ')）。请先执行: rustup target add $ViewerRustTarget"
+        }
+        Write-Log "Rust 目标工具链校验通过: $ViewerRustTarget" "SUCCESS"
+    } elseif ($Arch -eq "arm64") {
+        $RustcCmd = Get-Command "rustc" -ErrorAction SilentlyContinue
+        if (-not $RustcCmd -and (Test-Path -LiteralPath (Join-Path $CargoBinDir "rustc.exe"))) {
+            $RustcCmd = Get-Command (Join-Path $CargoBinDir "rustc.exe") -ErrorAction SilentlyContinue
+        }
+        if (-not $RustcCmd) {
+            throw "ARM64 交叉编译未找到 rustup 或 rustc，无法验证 Rust 目标 '$ViewerRustTarget' 是否已安装。"
+        }
+        $RustSysroot = (& $RustcCmd.Source --print sysroot 2>$null).Trim()
+        if ([string]::IsNullOrWhiteSpace($RustSysroot) -or -not (Test-Path -LiteralPath (Join-Path $RustSysroot "lib\rustlib\$ViewerRustTarget"))) {
+            throw "未安装 Rust ARM64 目标标准库 '$ViewerRustTarget'（sysroot: $RustSysroot）。请先执行: rustup target add $ViewerRustTarget"
+        }
+        Write-Log "Rust ARM64 sysroot 目标工具链校验通过: $ViewerRustTarget" "SUCCESS"
+    }
+
+    Push-Location $ViewerProjectDir
+    try {
+        if (-not $SkipTests -and $Arch -eq "x64") {
+            Write-Log "运行 Rust Picasa 图片查看器单元测试 (cargo test --target $ViewerRustTarget)..."
+            & $CargoCmd.Source test --target $ViewerRustTarget
+            if ($LASTEXITCODE -ne 0) {
+                throw "Rust Picasa 图片查看器单元测试失败！退出码: $LASTEXITCODE"
+            }
+        }
+        Write-Log "编译 Rust Picasa 图片查看器 ($Arch Release, target=$ViewerRustTarget)..."
+        & $CargoCmd.Source build --release --target $ViewerRustTarget
+        if ($LASTEXITCODE -ne 0) {
+            throw "Rust Picasa 图片查看器编译失败！退出码: $LASTEXITCODE"
+        }
+        Write-Log "Rust Picasa 图片查看器编译完成。" "SUCCESS"
+    } finally {
+        Pop-Location
+    }
+} else {
+    if ($RequireSigning -or $RequirePublicTrust) {
+        throw "正式发布门禁 (-RequireSigning / -RequirePublicTrust) 要求必须具备 Rust cargo 工具链以现场编译最新 $ViewerExeName，严禁静默复用过期旧二进制！"
+    }
+    Write-Log "未检测到 cargo 工具链，开发构建尝试复用已有预编译产物: $ViewerExeName" "WARN"
+}
+$BuiltViewerExe = $ViewerBinCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $BuiltViewerExe) {
+    throw "找不到编译后的 $ViewerExeName (架构: $Arch, 目标: $ViewerRustTarget)。请安装 Rust 工具链 (cargo) 后重试。"
+}
+Assert-PeMachineArchitecture -FilePath $BuiltViewerExe -ExpectedArch $Arch
+
+# ------------------------------------------------------------------------------
 # 4.5 运行单元测试与代码覆盖率防回退分析 (失败则中断流水线)
 # ------------------------------------------------------------------------------
 if (-not $SkipTests) {
@@ -529,14 +650,25 @@ if (Test-Path $ExePath) {
     Write-Log "已复制文件索引服务: $TargetServiceName"
     Copy-Item $ServicePath -Destination (Join-Path $StagingDir "Tools3000_Service.exe") -Force
     
-    # 复制所有同一目录下的运行库 DLL 文件 (显式排除 *gtest*.dll, *gmock*.dll 与 Plugin_*.dll)
+    # 全仓 0 引用冗余 DLL 黑名单（经全量 PE 导入/延迟导入表审计确认 0 依赖；WebView2 已静态链接 WebView2LoaderStatic.lib）
+    $ObsoleteUnusedDlls = @(
+        "WebView2Loader.dll",
+        "vccorlib140.dll",
+        "msvcp140_1.dll",
+        "msvcp140_2.dll",
+        "msvcp140_codecvt_ids.dll",
+        "vcruntime140_threads.dll"
+    )
+
+    # 复制所有同一目录下的运行库 DLL 文件 (显式排除 *gtest*.dll, *gmock*.dll, Plugin_*.dll 及 0 引用冗余 DLL)
     $DllFiles = Get-ChildItem -Path $ExeDir -Filter "*.dll" -File | Where-Object {
-        $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll" -and $_.Name -notlike "Plugin_*.dll"
+        $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll" -and $_.Name -notlike "Plugin_*.dll" -and
+        ($ObsoleteUnusedDlls -notcontains $_.Name)
     }
     foreach ($dll in $DllFiles) {
         Copy-Item $dll.FullName -Destination $StagingDir
     }
-    Write-Log "已复制生产运行库 DLL 文件 (已排除测试库 *gtest*/*gmock* 与插件本体)"
+    Write-Log "已复制生产运行库 DLL 文件 (已排除测试库 *gtest*/*gmock*、插件本体及 0 引用冗余 DLL)"
     
     # 复制插件目录 (严格仅复制 Plugin_*.dll 与 *.plugin.json，严禁复制 pdb 及重复三方库)
     $PluginsDir = Join-Path $BuildDir "bin\plugins\$Configuration"
@@ -553,7 +685,8 @@ if (Test-Path $ExePath) {
 
         # 补充收集插件所需但主程序未直接引用的第三方运行库 (如 opencv_photo4.dll 等) 到根运行目录 (唯一保留一份)
         $PluginDependencyDlls = Get-ChildItem -Path $PluginsDir -Filter "*.dll" -File | Where-Object {
-            $_.Name -notlike "Plugin_*.dll" -and $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll"
+            $_.Name -notlike "Plugin_*.dll" -and $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll" -and
+            ($ObsoleteUnusedDlls -notcontains $_.Name)
         }
         foreach ($pDll in $PluginDependencyDlls) {
             $destFile = Join-Path $StagingDir $pDll.Name
@@ -565,6 +698,23 @@ if (Test-Path $ExePath) {
     } else {
         Write-Log "未找到插件构建目录: $PluginsDir" "WARN"
     }
+
+    # 递归补齐 /DELAYLOAD 延迟加载 DLL 及其传递依赖 (防止 vcpkg applocal 漏拷贝)
+    $DelaySyncScript = Join-Path $ScriptDir "scripts\sync-delayed-dlls.ps1"
+    if (Test-Path -LiteralPath $DelaySyncScript) {
+        $VcpkgSubBin = if ($Configuration -eq "Debug") { "debug\bin" } else { "bin" }
+        $SearchPool = @(
+            (Join-Path $ScriptDir "vcpkg_installed\$VcpkgTargetTriplet\$VcpkgSubBin"),
+            (Join-Path $BuildDir "vcpkg_installed\$VcpkgTargetTriplet\$VcpkgSubBin"),
+            $ExeDir,
+            $PluginsDir
+        )
+        & $DelaySyncScript -TargetDir $StagingDir -SearchDirs ($SearchPool -join ';')
+    }
+    $StagedViewerExe = Join-Path $StagingDir $ViewerExeName
+    Copy-Item -LiteralPath $BuiltViewerExe -Destination $StagedViewerExe -Force
+    Assert-PeMachineArchitecture -FilePath $StagedViewerExe -ExpectedArch $Arch
+    Write-Log "已复制并校验 Rust Picasa 图片查看器: $ViewerExeName"
 } else {
     throw "找不到编译后的 Tools3000.exe"
 }
@@ -572,6 +722,7 @@ if (Test-Path $ExePath) {
 # MSVC 动态运行库。Tools3000 与 vcpkg 动态 triplet 依赖均使用动态 CRT；
 # 便携包不能假设目标机器预装了 Visual C++ Redistributable。优先使用当前
 # DevShell 精确对应的 Redist 目录，CI 中再通过 vswhere 定位同一工具链。
+# 严格按实测引用白名单拷贝，剔除 0 引用的 vccorlib140 / msvcp140_1 / msvcp140_2 / msvcp140_codecvt_ids / vcruntime140_threads。
 $VcRuntimeNames = @(
     "msvcp140.dll", "msvcp140_atomic_wait.dll", "concrt140.dll", "vcruntime140.dll"
 )
@@ -618,18 +769,12 @@ foreach ($Root in $VcRedistRoots | Select-Object -Unique) {
 if (-not $VcCrtDir) {
     throw "找不到与 MSVC 工具链匹配的 $Arch Visual C++ Runtime 可再发行文件"
 }
-Copy-Item (Join-Path $VcCrtDir "*.dll") -Destination $StagingDir
-Write-Log "已复制 Visual C++ Runtime: $VcCrtDir"
-
-# WebView2Loader.dll
-$WebView2PackageDir = Get-Item $WebView2TargetDir -ErrorAction SilentlyContinue
-if ($WebView2PackageDir) {
-    $LoaderPath = Join-Path $WebView2PackageDir.FullName "build\native\$Arch\WebView2Loader.dll"
-    if (Test-Path $LoaderPath) {
-        Copy-Item $LoaderPath -Destination $StagingDir
-        Write-Log "已复制 WebView2Loader.dll"
-    }
+foreach ($VcDll in $VcRuntimeNames) {
+    Copy-Item -LiteralPath (Join-Path $VcCrtDir $VcDll) -Destination $StagingDir -Force
 }
+Write-Log "已按白名单复制必需 Visual C++ Runtime ($($VcRuntimeNames -join ', ')): $VcCrtDir"
+
+# WebView2 已通过 WebView2LoaderStatic.lib 静态链接入 Tools3000.exe，无需额外分发外部 WebView2Loader.dll。
 
 # 白名单资产注入 (resources/)
 $TargetResourcesDir = Join-Path $StagingDir "resources"
@@ -680,9 +825,10 @@ if ($LASTEXITCODE -ne 0) { throw "第三方许可与 SBOM 生成失败" }
 
 $MainExeArtifact = "Tools3000.exe"
 $ServiceExeArtifact = "Tools3000_Service.exe"
+$ViewerExeArtifact = "Tools3000_Picasa_Viewer.exe"
 
 $RequiredArtifacts = @(
-    $MainExeArtifact, $ServiceExeArtifact, "Tools3000Core.dll",
+    $MainExeArtifact, $ServiceExeArtifact, $ViewerExeArtifact, "Tools3000Core.dll",
     "LICENSE", "LICENSE-EXCEPTION.md", "THIRD_PARTY_NOTICES.txt", "SBOM.spdx.json",
     "ui\index.html", "plugins\Plugin_Gesture.dll", "plugins\Plugin_Capture.dll",
     "plugins\Plugin_Keycast.dll", "plugins\Plugin_Search.dll",
@@ -730,6 +876,7 @@ $HasSigningIdentity = $HasAzureTrustedSigning -or
 $OwnedArtifacts = @(
     (Join-Path $StagingDir $MainExeArtifact),
     (Join-Path $StagingDir $ServiceExeArtifact),
+    (Join-Path $StagingDir $ViewerExeArtifact),
     (Join-Path $StagingDir "Tools3000Core.dll")
 ) + @(Get-ChildItem -LiteralPath (Join-Path $StagingDir "plugins") -Filter "Plugin_*.dll" -File |
     Select-Object -ExpandProperty FullName)
@@ -791,6 +938,7 @@ if ($runningProcesses) {
 $BackupDir = Join-Path $ScriptDir "deploy_dist_backup"
 taskkill /F /T /IM Tools3000.exe 2>$null | Out-Null
 taskkill /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
+taskkill /F /T /IM Tools3000_Picasa_Viewer.exe 2>$null | Out-Null
 Get-Process -Name "Tools3000*", "Tools3000_Service*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 600
 if (Test-Path $DeployDir) {
@@ -820,9 +968,10 @@ if (Test-Path $DeployDir) {
     Rename-Item -Path $StagingDir -NewName "deploy_dist"
 }
 
-# 终局瘦身去污守卫：确保 deploy_dist 根目录无测试库/插件本体，且 deploy_dist/plugins 严格仅保留 Plugin_*.dll 与 *.plugin.json
+# 终局瘦身去污守卫：确保 deploy_dist 根目录无测试库/插件本体/0 引用僵尸 DLL，且 deploy_dist/plugins 严格仅保留 Plugin_*.dll 与 *.plugin.json
 Get-ChildItem -LiteralPath $DeployDir -File -ErrorAction SilentlyContinue | Where-Object {
-    $_.Name -like "*gtest*.dll" -or $_.Name -like "*gmock*.dll" -or $_.Name -like "Plugin_*.dll" -or $_.Name -like "Tools3000Tests*" -or $_.Extension -ieq ".pdb"
+    $_.Name -like "*gtest*.dll" -or $_.Name -like "*gmock*.dll" -or $_.Name -like "Plugin_*.dll" -or $_.Name -like "Tools3000Tests*" -or $_.Extension -ieq ".pdb" -or
+    ($ObsoleteUnusedDlls -contains $_.Name)
 } | Remove-Item -Force -ErrorAction SilentlyContinue
 
 $DeployPluginsDir = Join-Path $DeployDir "plugins"
@@ -831,7 +980,16 @@ if (Test-Path -LiteralPath $DeployPluginsDir) {
         ($_.Extension -ieq ".dll" -and $_.Name -notlike "Plugin_*.dll") -or $_.Extension -ieq ".pdb"
     } | Remove-Item -Force -ErrorAction SilentlyContinue
 }
-Write-Log "新版本秒级切换上线完成，发布目录已完成瘦身去污校验。" "SUCCESS"
+Assert-PeMachineArchitecture -FilePath (Join-Path $DeployDir $ViewerExeArtifact) -ExpectedArch $Arch
+if ($RequireSigning -or $RequirePublicTrust) {
+    & $SignScript -VerifyOnly -Required:$RequireSigning -RequirePublicTrust:$RequirePublicTrust -Paths @(
+        (Join-Path $DeployDir $MainExeArtifact),
+        (Join-Path $DeployDir $ServiceExeArtifact),
+        (Join-Path $DeployDir $ViewerExeArtifact),
+        (Join-Path $DeployDir "Tools3000Core.dll")
+    )
+}
+Write-Log "新版本秒级切换上线完成，发布目录已完成瘦身去污与架构/签名校验。" "SUCCESS"
 
 # ------------------------------------------------------------------------------
 # 7. 生成绿色便携包与 Windows 安装程序 (先内层签名 -> 打包便携 ZIP & Setup.exe -> 外层签名)
@@ -941,7 +1099,7 @@ if ((Test-Path -LiteralPath $MpCmdRun) -and $env:CI -ne 'true' -and $env:GITHUB_
     $AvGateDir = Join-Path ([System.IO.Path]::GetTempPath()) "tools3000_av_gate_$TraceID"
     New-Item -ItemType Directory -Path $AvGateDir -Force | Out-Null
     try {
-        foreach ($CoreBin in @("Tools3000.exe", "Tools3000_Service.exe", "Tools3000Core.dll")) {
+        foreach ($CoreBin in @("Tools3000.exe", "Tools3000_Service.exe", "Tools3000_Picasa_Viewer.exe", "Tools3000Core.dll")) {
             $SrcBin = Join-Path $DeployDir $CoreBin
             if (Test-Path -LiteralPath $SrcBin) {
                 Copy-Item -LiteralPath $SrcBin -Destination (Join-Path $AvGateDir $CoreBin) -Force
