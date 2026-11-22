@@ -33,3 +33,20 @@
 - **F1 智能捕获窗口稳态升级**：大幅降低同窗口微移时的选框抖动，屏蔽隐形阴影与窗外幽灵层，显著减少交叉控件误框。
 - **版本更新红点提醒与自动下载安装**：检测到新版本时托盘图标动态合成红点角标、侧边栏与托盘弹窗联动提示，支持后台流式下载、SHA-256 字节级强校验与一键静默升级。
 - **Windows 10 兼容加固与供应链清零**：兼容 Windows 10 旧版深色边框属性与 DWM 降级逻辑，缺失 WebView2 Runtime 时弹出 8 语种友好引导直达微软官方安装页（感谢 Linux.do @siryu）；同步清零 GitHub Dependabot 全部前端依赖告警（`npm audit` 达 `0 vulnerabilities`）。
+
+---
+
+### 文件完整性校验与安全查验 (SHA-256 / VirusTotal)
+
+| 发布文件 | SHA-256 | 安全检测 |
+| :--- | :--- | :--- |
+| `Tools3000-v1.4.0-Setup.exe` | `4a9327759c58e88b44262c29d0c57eea3f13cd97806e7ba7044a2c70e916bbd2` | [VirusTotal 查验](https://www.virustotal.com/gui/file/4a9327759c58e88b44262c29d0c57eea3f13cd97806e7ba7044a2c70e916bbd2) |
+| `Tools3000-v1.4.0-win-x64-portable.zip` | `4ca7eb66fd1ca511c2effd4b5d23e01a48459e7ceabd829be666717a610c1349` | [VirusTotal 查验](https://www.virustotal.com/gui/file/4ca7eb66fd1ca511c2effd4b5d23e01a48459e7ceabd829be666717a610c1349) |
+
+下载后可在 PowerShell 中快速核对本地文件哈希：
+
+```powershell
+Get-FileHash .\Tools3000-v1.4.0-Setup.exe -Algorithm SHA256
+```
+
+> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 SBOM.spdx.json 软件物料清单。
