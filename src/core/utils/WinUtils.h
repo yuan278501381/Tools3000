@@ -354,6 +354,32 @@ public:
     /// 将窗口样式标准化为绝对不污染任务栏与 Alt+Tab 的零泄漏 Overlay 窗口
     static void applyTaskbarSafeOverlayStyle(HWND hwnd, bool excludeFromCapture = true);
 
+    /// 精准判定当前系统是否为 Windows 11 及以上版本（基于 RtlGetVersion Build >= 22000，免疫清单伪装）
+    static bool isWindows11OrNewer() noexcept;
+
+    /// 判定圆角渲染是否应回退至 Win32 SetWindowRgn 裁剪：
+    /// - 对带 WS_CAPTION 的标准顶层无边框应用窗口，在 Win11 且 DWM 硬件圆角生效时严禁叠加 SetWindowRgn，
+    ///   防止触发 DWM 降级绘制 Win7/Win98 旧式标题栏并保留原生高斯阴影；
+    /// - 对 Win10/Server/RDP 或无 WS_CAPTION 的自定义大圆角弹出浮层，保留 RGN 裁剪双保险。
+    static bool shouldUseRegionFallbackForRoundedCorners(
+        DWORD windowStyle,
+        bool isWin11,
+        bool dwmCompositionEnabled,
+        HRESULT dwmCornerHr) noexcept;
+
+    /// 仅当窗口当前实际绑定了自定义区域时才静默清除 RGN（避免冗余重绘与最大化瞬间闪旧式框）
+    static void clearWindowRegionIfSet(HWND hwnd, bool redraw = false) noexcept;
+
+    /// 统一拦截全客户区无边框应用窗口的非客户区重绘消息（WM_NCACTIVATE / WM_NCPAINT / WM_DWMCOMPOSITIONCHANGED），
+    /// 彻底杜绝最大化、休眠唤醒与前后台切换时系统 GDI 绘制 Win7/Win98 旧式标题栏。
+    /// 返回 true 表示已处理且调用方应直接返回 outResult。
+    static bool handleFramelessNonClientMessage(
+        HWND hwnd,
+        UINT msg,
+        WPARAM wParam,
+        LPARAM lParam,
+        LRESULT& outResult) noexcept;
+
     /// 为任意 Win32 / WebView2 宿主窗口赋予跨平台通用圆角 (全兼容 Windows 10/11/Server 2019/2022/2025)
     static void applyUniversalRoundedCorners(HWND hwnd, int width, int height, int radius = 12);
 

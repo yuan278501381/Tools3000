@@ -1662,3 +1662,116 @@ TEST(TrayLifecycleRegressionTest, NotifyIconProbeAndSafeRepeatedDestroy) {
         tray.destroy();
     });
 }
+
+TEST(FramelessWindowChromeRegressionTest, RoundedCornerPolicySkipsRegionOnWin11OverlappedAndBlocksClassicNcPaint) {
+    using tools3000::core::WinUtils;
+
+    // 1. 纯策略矩阵校验：Win11 且 DWM 硬件圆角成功时，带 WS_CAPTION 的标准顶层无边框应用窗口严禁叠加 SetWindowRgn
+    EXPECT_FALSE(WinUtils::shouldUseRegionFallbackForRoundedCorners(
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, true, true, S_OK));
+    // Win10 / Server / DWM 关闭 / DwmSetWindowAttribute 失败时必须保留 RGN 双保险兜底
+    EXPECT_TRUE(WinUtils::shouldUseRegionFallbackForRoundedCorners(
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, false, true, S_OK));
+    EXPECT_TRUE(WinUtils::shouldUseRegionFallbackForRoundedCorners(
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, true, false, S_OK));
+    EXPECT_TRUE(WinUtils::shouldUseRegionFallbackForRoundedCorners(
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, true, true, E_INVALIDARG));
+    // 无 WS_CAPTION 的 WS_POPUP 胶囊浮层/托盘弹窗始终保留自定义圆角 RGN
+    EXPECT_TRUE(WinUtils::shouldUseRegionFallbackForRoundedCorners(
+        WS_POPUP | WS_CLIPCHILDREN, true, true, S_OK));
+
+    // 2. 真实 WS_OVERLAPPEDWINDOW 无边框测试 HWND 验真
+    static const wchar_t* kClassName = L"Tools3000_FramelessChromeRegressionWnd";
+    auto wndProc = [](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) -> LRESULT {
+        LRESULT ncResult = 0;
+        if (WinUtils::handleFramelessNonClientMessage(hwnd, msg, wParam, lParam, ncResult)) {
+            return ncResult;
+        }
+        if (msg == WM_NCCALCSIZE) {
+            return 0;
+        }
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    };
+    WNDCLASSEXW wc{sizeof(wc)};
+    wc.lpfnWndProc = wndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = kClassName;
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(
+        WS_EX_APPWINDOW, kClassName, L"FramelessChromeRegression",
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        120, 120, 640, 420,
+        nullptr, nullptr, wc.hInstance, nullptr);
+    ASSERT_NE(hwnd, nullptr);
+
+    // 验证 WM_NCCALCSIZE 在 wParam=FALSE 时不会把窗口客户区扣掉旧式标题栏高度
+    RECT proposed{120, 120, 760, 540};
+    SendMessageW(hwnd, WM_NCCALCSIZE, FALSE, reinterpret_cast<LPARAM>(&proposed));
+    EXPECT_EQ(proposed.left, 120);
+    EXPECT_EQ(proposed.top, 120);
+    EXPECT_EQ(proposed.right, 760);
+    EXPECT_EQ(proposed.bottom, 540);
+
+    // 验证 WM_NCACTIVATE 被直接拦截，阻止 DefWindowProcW / UxTheme 绘制 Win7/Win98 旧标题栏
+    EXPECT_EQ(SendMessageW(hwnd, WM_NCACTIVATE, TRUE, 0), TRUE);
+    EXPECT_EQ(SendMessageW(hwnd, WM_NCACTIVATE, FALSE, 0), TRUE);
+
+    // 在 Windows 11 宿主机上，带 WS_CAPTION 的窗口经历 显示 -> 最大化 -> 取消最大化 + 消息泵 全周期后，
+    // 必须保持 DWMWA_NCRENDERING_ENABLED == TRUE 且不得产生任何 HRGN（防止 uxtheme 降级为 Win7 Basic 3px RGN）。
+    auto pumpMessages = []() {
+        MSG msg{};
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    };
+    MARGINS margins{1, 1, 1, 1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    WinUtils::applyUniversalRoundedCorners(hwnd, 640, 420, 12);
+
+    BOOL dwmEnabled = FALSE;
+    const bool compositionEnabled = SUCCEEDED(DwmIsCompositionEnabled(&dwmEnabled)) && (dwmEnabled != FALSE);
+    RECT rgnBox{};
+    if (WinUtils::isWindows11OrNewer() && compositionEnabled) {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        pumpMessages();
+        BOOL ncEnabled = FALSE;
+        EXPECT_TRUE(SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_NCRENDERING_ENABLED, &ncEnabled, sizeof(ncEnabled))));
+        EXPECT_NE(ncEnabled, FALSE);
+        EXPECT_EQ(GetWindowRgnBox(hwnd, &rgnBox), ERROR);
+
+        ShowWindow(hwnd, SW_MAXIMIZE);
+        WinUtils::clearWindowRegionIfSet(hwnd, false);
+        pumpMessages();
+        ncEnabled = FALSE;
+        EXPECT_TRUE(SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_NCRENDERING_ENABLED, &ncEnabled, sizeof(ncEnabled))));
+        EXPECT_NE(ncEnabled, FALSE);
+        EXPECT_EQ(GetWindowRgnBox(hwnd, &rgnBox), ERROR);
+
+        ShowWindow(hwnd, SW_RESTORE);
+        WinUtils::applyUniversalRoundedCorners(hwnd, 640, 420, 12);
+        pumpMessages();
+        ncEnabled = FALSE;
+        EXPECT_TRUE(SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_NCRENDERING_ENABLED, &ncEnabled, sizeof(ncEnabled))));
+        EXPECT_NE(ncEnabled, FALSE);
+        EXPECT_EQ(GetWindowRgnBox(hwnd, &rgnBox), ERROR);
+        ShowWindow(hwnd, SW_HIDE);
+    }
+
+    // 模拟非 DWM / Win10 RGN 降级态：手动施加 RGN 后，DWM 非客户区被关闭，handleFramelessNonClientMessage
+    // 必须自动接管 WM_NCPAINT 返回 0 封死 GDI 旧式标题栏，且 clearWindowRegionIfSet 可安全清除 RGN。
+    HRGN manualRgn = CreateRoundRectRgn(0, 0, 641, 421, 24, 24);
+    ASSERT_NE(manualRgn, nullptr);
+    ASSERT_NE(SetWindowRgn(hwnd, manualRgn, FALSE), 0);
+    EXPECT_NE(GetWindowRgnBox(hwnd, &rgnBox), ERROR);
+    LRESULT ncPaintRes = -1;
+    EXPECT_TRUE(WinUtils::handleFramelessNonClientMessage(hwnd, WM_NCPAINT, 1, 0, ncPaintRes));
+    EXPECT_EQ(ncPaintRes, 0);
+    WinUtils::clearWindowRegionIfSet(hwnd, false);
+    EXPECT_EQ(GetWindowRgnBox(hwnd, &rgnBox), ERROR);
+
+    DestroyWindow(hwnd);
+}

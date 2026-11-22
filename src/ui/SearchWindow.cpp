@@ -57,11 +57,22 @@ LRESULT CALLBACK WebViewResizeSubclassProc(
     return DefSubclassProc(hwnd, uMsg, wParam, lParam);
 }
 
+bool isSearchDarkTheme() {
+    const std::string theme = tools3000::core::ConfigManager::instance().get<std::string>("/general/theme", "dark");
+    if (theme == "light") return false;
+    if (theme == "dark") return true;
+    return tools3000::core::WinUtils::isSystemDarkMode();
+}
+
+COLORREF searchWindowBackdropColor() {
+    return isSearchDarkTheme() ? RGB(15, 23, 42) : RGB(248, 250, 252);
+}
+
 void applySquareCornersForMaximized(HWND hwnd) noexcept {
     if (!hwnd || !IsWindow(hwnd)) return;
     const DWM_WINDOW_CORNER_PREFERENCE noCorners = DWMWCP_DONOTROUND;
     DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &noCorners, sizeof(noCorners));
-    SetWindowRgn(hwnd, nullptr, TRUE);
+    tools3000::core::WinUtils::clearWindowRegionIfSet(hwnd, false);
 }
 
 void hookWebViewChildWindows(HWND parentHwnd) {
@@ -632,11 +643,14 @@ void SearchWindow::initializeWebView2() {
                                 }
                             }
                             
-                            // Enable true alpha transparency
+                            // 使用与当前主题一致的不透明实色背景，彻底杜绝最大化或 TrySuspend 唤醒空窗期透明露底
                             Microsoft::WRL::ComPtr<ICoreWebView2Controller2> controller2;
                             if (SUCCEEDED(m_controller.As(&controller2))) {
-                                COREWEBVIEW2_COLOR transparent = {0, 0, 0, 0};
-                                controller2->put_DefaultBackgroundColor(transparent);
+                                const COLORREF bg = searchWindowBackdropColor();
+                                COREWEBVIEW2_COLOR solidBg = {
+                                    255, GetRValue(bg), GetGValue(bg), GetBValue(bg)
+                                };
+                                controller2->put_DefaultBackgroundColor(solidBg);
                             }
 
                             RECT bounds;
@@ -764,10 +778,26 @@ void SearchWindow::initializeWebView2() {
 
 LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     auto& inst = SearchWindow::instance();
+    LRESULT ncResult = 0;
+    if (tools3000::core::WinUtils::handleFramelessNonClientMessage(hwnd, uMsg, wParam, lParam, ncResult)) {
+        return ncResult;
+    }
     switch (uMsg) {
         case WM_ERASEBKGND:
-            // 拦截背景擦除，WebView2 DirectComposition 完全接管绘制，消除偶发底衬微闪
+            // 拦截背景擦除，由 WM_PAINT 与 WebView2 接管绘制，消除底衬微闪
             return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC hdc = BeginPaint(hwnd, &ps);
+            // 填充当前主题底色，防止最大化或后台休眠唤醒首帧到达前露底或残留旧帧
+            HBRUSH hBrush = CreateSolidBrush(searchWindowBackdropColor());
+            if (hBrush) {
+                FillRect(hdc, &ps.rcPaint, hBrush);
+                DeleteObject(hBrush);
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
         case WM_NCCALCSIZE: {
             if (wParam) {
                 if (IsZoomed(hwnd)) {
@@ -778,9 +808,9 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
                         params->rgrc[0] = mi.rcWork;
                     }
                 }
-                return 0; // 消除系统传统标题栏与最大化 8px 隐形溢出边框，使 WebView2 客户区严丝合缝铺满工作区
             }
-            return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+            // 无论 wParam 为 TRUE 或 FALSE 均保持全客户区，彻底消除系统传统标题栏与最大化 8px 溢出边框
+            return 0;
         }
         case WM_NCHITTEST: {
             if (!IsZoomed(hwnd)) {
@@ -931,11 +961,16 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
             }
             return 0;
         case WM_ACTIVATE: {
-            // 纯独立桌面窗口模式：失焦时停留在后台和任务栏，不再自动隐藏；切回前台时恢复控制器可见与焦点同步，
+            // 纯独立桌面窗口模式：失焦时停留在后台和任务栏，不再自动隐藏；切回前台时抢跑唤醒渲染器、恢复控制器可见与焦点同步，
             // 并通知前端感知前后台切换以对重型全盘内容扫描执行失焦软暂停，绝不拖慢前台其他应用或 OCR。
             const bool active = (LOWORD(wParam) != WA_INACTIVE);
-            if (active && inst.m_controller && IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
-                inst.m_controller->put_IsVisible(TRUE);
+            if (active && IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
+                if (inst.m_webView) {
+                    inst.m_suspendController.resume(inst.m_webView.Get(), "search");
+                }
+                if (inst.m_controller) {
+                    inst.m_controller->put_IsVisible(TRUE);
+                }
             }
             if (inst.m_webView) {
                 inst.m_webView->ExecuteScript(

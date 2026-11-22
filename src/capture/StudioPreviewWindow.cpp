@@ -705,19 +705,10 @@ void StudioPreviewWindow::applyWindowRoundingForCurrentState(int physW, int phys
     if (m_isMaximized || IsZoomed(m_hwnd)) {
         const DWM_WINDOW_CORNER_PREFERENCE flatCorner = DWMWCP_DONOTROUND;
         DwmSetWindowAttribute(m_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &flatCorner, sizeof(flatCorner));
-        SetWindowRgn(m_hwnd, nullptr, TRUE);
+        tools3000::core::WinUtils::clearWindowRegionIfSet(m_hwnd, false);
     } else {
-        const DWM_WINDOW_CORNER_PREFERENCE roundCorner = DWMWCP_ROUND;
-        const HRESULT hr = DwmSetWindowAttribute(
-            m_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &roundCorner, sizeof(roundCorner));
-        if (SUCCEEDED(hr)) {
-            // Windows 11 原生 DWM 硬件圆角已生效：清除 RGN 以完整保留原生高斯阴影、Aero Snap 动画与四角零死角拉伸热区
-            SetWindowRgn(m_hwnd, nullptr, FALSE);
-        } else {
-            // Windows 10 / Server 2019/2022 / RDP 回退内核 RGN 圆角双保险
-            tools3000::core::WinUtils::applyUniversalRoundedCorners(
-                m_hwnd, physW, physH, tools3000::core::dpi::scaleMetric(12, m_dpiScale));
-        }
+        tools3000::core::WinUtils::applyUniversalRoundedCorners(
+            m_hwnd, physW, physH, tools3000::core::dpi::scaleMetric(12, m_dpiScale));
     }
 }
 

@@ -2105,6 +2105,11 @@ LRESULT CALLBACK StudioPreviewWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam
     }
     if (!self) return DefWindowProcW(hwnd, msg, wParam, lParam);
 
+    LRESULT ncResult = 0;
+    if (tools3000::core::WinUtils::handleFramelessNonClientMessage(hwnd, msg, wParam, lParam, ncResult)) {
+        return ncResult;
+    }
+
     switch (msg) {
         case WM_STUDIO_CUSTOM_BG_PICKED:
             self->onCustomWallpaperPicked();
@@ -2126,9 +2131,8 @@ LRESULT CALLBACK StudioPreviewWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam
                         params->rgrc[0] = mi.rcWork;
                     }
                 }
-                return 0;
             }
-            return DefWindowProcW(hwnd, msg, wParam, lParam);
+            return 0;
         }
         case WM_GETMINMAXINFO: {
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
