@@ -28,7 +28,7 @@ Tools3000은 매일 자주 쓰는 **초고속 파일 검색, 문서 본문 검�
 ## 핵심 기능 한눈에 보기
 
 <p align="center">
-  <img src="docs/images/ko-KR/feature_bento_overview.png" alt="Tools3000 8대 핵심 기능 개요" width="100%" />
+  <img src="docs/images/ko-KR/feature_bento_overview.png" alt="Tools3000 9대 핵심 기능 개요" width="100%" />
 </p>
 
 ---

@@ -28,7 +28,7 @@ Tools3000 將日常高頻使用的**檔案搜尋、文件內容搜尋、捲動�
 ## 核心功能一覽
 
 <p align="center">
-  <img src="docs/images/zh-TW/feature_bento_overview.png" alt="Tools3000 八大核心功能一圖速覽" width="100%" />
+  <img src="docs/images/zh-TW/feature_bento_overview.png" alt="Tools3000 九大核心功能一圖速覽" width="100%" />
 </p>
 
 ---

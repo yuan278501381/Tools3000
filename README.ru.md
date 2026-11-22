@@ -28,7 +28,7 @@ Tools3000 объединяет повседневные инструменты �
 ## Обзор возможностей
 
 <p align="center">
-  <img src="docs/images/ru-RU/feature_bento_overview.png" alt="Обзор восьми ключевых возможностей Tools3000" width="100%" />
+  <img src="docs/images/ru-RU/feature_bento_overview.png" alt="Обзор девяти ключевых возможностей Tools3000" width="100%" />
 </p>
 
 ---

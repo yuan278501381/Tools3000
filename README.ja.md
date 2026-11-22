@@ -28,7 +28,7 @@ Tools3000 は、日々の業務で頻繁に使う **高速ファイル検索、�
 ## 機能一覧
 
 <p align="center">
-  <img src="docs/images/ja-JP/feature_bento_overview.png" alt="Tools3000 8つのコア機能オーバービュー" width="100%" />
+  <img src="docs/images/ja-JP/feature_bento_overview.png" alt="Tools3000 9つのコア機能オーバービュー" width="100%" />
 </p>
 
 ---

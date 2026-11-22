@@ -28,7 +28,7 @@ Tools3000 unifies everyday **file search, document content search, scrolling cap
 ## At a Glance
 
 <p align="center">
-  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Eight Core Capabilities Overview" width="100%" />
+  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Nine Core Capabilities Overview" width="100%" />
 </p>
 
 ---
