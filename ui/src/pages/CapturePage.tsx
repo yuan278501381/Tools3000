@@ -550,30 +550,29 @@ export const CapturePage: FC = () => {
             checked={capture.saveToFile}
             onChange={(v) => updateCapture('saveToFile', v)}
           />
-          {capture.saveToFile && (
-            <SettingRow label={t('capture.saveDir')} description={t('capture.saveDirDesc')}>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                <div>
-                  <TextInput
-                    id="saveDir"
-                    value={capture.saveDirectory || ''}
-                    readOnly
-                    onChange={() => {}}
-                  />
-                </div>
-                <Button variant="ghost" onClick={handleBrowseDir}>{t('capture.browse')}</Button>
-                <Button
-                  id="open-capture-save-dir"
-                  variant="ghost"
-                  title={t('capture.openFolder')}
-                  onClick={() => void handleOpenSaveFolder(capture.saveDirectory, 'capture')}
-                >
-                  <FolderOpen size={14} aria-hidden="true" />
-                  <span>{t('capture.openFolder')}</span>
-                </Button>
+          <SettingRow label={t('capture.saveDir')} description={t('capture.saveDirDesc')}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ minWidth: '280px' }}>
+                <TextInput
+                  id="saveDir"
+                  value={capture.saveDirectory || ''}
+                  placeholder={t('capture.saveDirPlaceholder')}
+                  readOnly
+                  onChange={() => {}}
+                />
               </div>
-            </SettingRow>
-          )}
+              <Button variant="ghost" onClick={handleBrowseDir}>{t('capture.browse')}</Button>
+              <Button
+                id="open-capture-save-dir"
+                variant="ghost"
+                title={t('capture.openFolder')}
+                onClick={() => void handleOpenSaveFolder(capture.saveDirectory, 'capture')}
+              >
+                <FolderOpen size={14} aria-hidden="true" />
+                <span>{t('capture.openFolder')}</span>
+              </Button>
+            </div>
+          </SettingRow>
           <SettingRow label={t('capture.imageFormat')} description={t('capture.imageFormatDesc')}>
             <Select
               id="capture-format"
@@ -868,7 +867,15 @@ export const CapturePage: FC = () => {
           </SettingRow>
           <SettingRow label={t('recording.saveDir')} description={t('recording.saveDirDesc')}>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-              <TextInput id="recordSaveDir" value={recording.saveDirectory || ''} readOnly onChange={() => {}} />
+              <div style={{ minWidth: '280px' }}>
+                <TextInput
+                  id="recordSaveDir"
+                  value={recording.saveDirectory || ''}
+                  placeholder={t('recording.saveDirPlaceholder')}
+                  readOnly
+                  onChange={() => {}}
+                />
+              </div>
               <Button variant="ghost" onClick={handleBrowseRecordingDir}>{t('capture.browse')}</Button>
               <Button
                 id="open-recording-save-dir"

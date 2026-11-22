@@ -372,7 +372,8 @@
     "saveToFile": "自动保存到文件",
     "saveToFileDesc": "截图完成后自动将图片保存为文件",
     "saveDir": "保存目录",
-    "saveDirDesc": "自动保存截图文件的默认文件夹",
+    "saveDirDesc": "自动保存与快速保存 (Ctrl+Shift+S) 的默认文件夹（留空使用默认路径）",
+    "saveDirPlaceholder": "默认：%LOCALAPPDATA%\\Tools3000\\Screenshots",
     "imageFormat": "图片格式",
     "imageFormatDesc": "自动保存的图片格式",
     "pressToBind": "请按下组合键...",
@@ -659,7 +660,8 @@
     "bitrate16": "16 Mbps (高清)",
     "bitrate32": "32 Mbps (极清)",
     "saveDir": "录屏保存目录",
-    "saveDirDesc": "选择录屏完成后的保存位置"
+    "saveDirDesc": "选择录屏完成后的保存位置",
+    "saveDirPlaceholder": "默认：%LOCALAPPDATA%\\Tools3000\\Recordings"
   },
   "ocr": {
     "title": "文本识别设置",

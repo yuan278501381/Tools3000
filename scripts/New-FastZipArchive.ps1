@@ -7,12 +7,14 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$DestinationPath,
     [string]$SourceDirectory = "",
-    [string[]]$SourceFiles = @(),
+    [string]$SourceFilesList = "",
     [ValidateSet("Optimal", "Fastest", "NoCompression")]
     [string]$CompressionLevel = "Optimal"
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
@@ -28,11 +30,12 @@ if (Test-Path -LiteralPath $DestinationPath) {
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 if (-not [string]::IsNullOrWhiteSpace($SourceDirectory)) {
     [System.IO.Compression.ZipFile]::CreateFromDirectory($SourceDirectory, $DestinationPath, $level, $false)
-} elseif ($SourceFiles.Count -gt 0) {
+} elseif (-not [string]::IsNullOrWhiteSpace($SourceFilesList)) {
+    $sourceFiles = @($SourceFilesList -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     $zip = [System.IO.Compression.ZipFile]::Open($DestinationPath, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
         $usedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($f in $SourceFiles) {
+        foreach ($f in $sourceFiles) {
             if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
             $leaf = Split-Path -Leaf $f
             if ($usedNames.Add($leaf)) {
@@ -43,7 +46,7 @@ if (-not [string]::IsNullOrWhiteSpace($SourceDirectory)) {
         $zip.Dispose()
     }
 } else {
-    throw "必须提供 -SourceDirectory 或 -SourceFiles 之一。"
+    throw "必须提供 -SourceDirectory 或 -SourceFilesList 之一。"
 }
 $sw.Stop()
 $sizeMb = [math]::Round((Get-Item -LiteralPath $DestinationPath).Length / 1MB, 2)

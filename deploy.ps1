@@ -729,12 +729,13 @@ $PdbFiles = @(Get-ChildItem -Path (Join-Path $BuildDir "bin") -Filter "*.pdb" -R
 $PdbArchiveTask = $null
 if ($PdbFiles.Count -gt 0) {
     Write-Log "[PARALLEL] 后台启动 $($PdbFiles.Count) 个调试符号 (*.pdb) 高速归档 -> $SymbolsZip..."
+    $pdbFilesJoined = ($PdbFiles | Select-Object -ExpandProperty FullName) -join ';'
     $pdbZipArgs = @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $FastZipScript,
         "-DestinationPath", $SymbolsZip,
         "-CompressionLevel", "Fastest",
-        "-SourceFiles"
-    ) + ($PdbFiles | Select-Object -ExpandProperty FullName)
+        "-SourceFilesList", $pdbFilesJoined
+    )
     $PdbArchiveTask = Start-BackgroundPwshTask -Name "Symbols-PDB-Zip" -Arguments $pdbZipArgs -WorkingDir $ScriptDir
 }
 

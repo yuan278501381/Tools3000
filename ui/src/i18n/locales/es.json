@@ -372,7 +372,8 @@
     "saveToFile": "Guardar automáticamente",
     "saveToFileDesc": "Guarda la imagen como archivo automáticamente al terminar la captura",
     "saveDir": "Carpeta de guardado",
-    "saveDirDesc": "Carpeta donde se guardan automáticamente las capturas de pantalla",
+    "saveDirDesc": "Carpeta predeterminada para guardado automático y Guardado Rápido (Ctrl+Shift+S); déjalo vacío para la ruta predeterminada",
+    "saveDirPlaceholder": "Predeterminado: %LOCALAPPDATA%\\Tools3000\\Screenshots",
     "imageFormat": "Formato de imagen",
     "imageFormatDesc": "Elige el formato para las capturas guardadas",
     "pressToBind": "Pulsa cualquier combinación de teclas...",
@@ -659,7 +660,8 @@
     "bitrate16": "16 Mbps (HD)",
     "bitrate32": "32 Mbps (Ultra HD)",
     "saveDir": "Carpeta de grabaciones",
-    "saveDirDesc": "Elige dónde guardar las grabaciones terminadas"
+    "saveDirDesc": "Elige dónde guardar las grabaciones terminadas",
+    "saveDirPlaceholder": "Predeterminado: %LOCALAPPDATA%\\Tools3000\\Recordings"
   },
   "ocr": {
     "title": "Configuración de OCR sin conexión",

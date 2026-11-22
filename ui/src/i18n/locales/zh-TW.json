@@ -372,7 +372,8 @@
     "saveToFile": "自動儲存為檔案",
     "saveToFileDesc": "擷圖完成後自動將圖片儲存為檔案",
     "saveDir": "儲存目錄",
-    "saveDirDesc": "自動儲存擷圖檔案的預設資料夾",
+    "saveDirDesc": "自動儲存與快速儲存 (Ctrl+Shift+S) 的預設資料夾（留空使用預設路徑）",
+    "saveDirPlaceholder": "預設：%LOCALAPPDATA%\\Tools3000\\Screenshots",
     "imageFormat": "圖片格式",
     "imageFormatDesc": "自動儲存的圖片格式",
     "pressToBind": "請按下組合鍵...",
@@ -659,7 +660,8 @@
     "bitrate16": "16 Mbps (高畫質)",
     "bitrate32": "32 Mbps (極致畫質)",
     "saveDir": "錄影儲存目錄",
-    "saveDirDesc": "選擇錄影完成後的儲存位置"
+    "saveDirDesc": "選擇錄影完成後的儲存位置",
+    "saveDirPlaceholder": "預設：%LOCALAPPDATA%\\Tools3000\\Recordings"
   },
   "ocr": {
     "title": "文字辨識設定",
