@@ -246,8 +246,10 @@ if (-not (Test-Path $NotesFile)) {
     Write-Host "[INFO] 使用已存在的 Release Notes: $NotesFile" -ForegroundColor Cyan
 }
 
-# 4. 更新 VERSION 单一事实源，并同步更新前端与 Rust Picasa 看图器版本元数据
-Set-Content -Path $VersionFile -Value $TargetVersion -NoNewline -Encoding utf8
+# 4. 更新 VERSION 单一事实源，并幂等同步更新前端与 Rust Picasa 看图器版本元数据（内容未变则不重写，保护增量构建时间戳）
+if ($CurrentVersion -ne $TargetVersion) {
+    Set-Content -Path $VersionFile -Value $TargetVersion -NoNewline -Encoding utf8
+}
 Write-Host "[OK] VERSION 已更新为: $TargetVersion" -ForegroundColor Green
 
 if ($TargetVersion -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
@@ -258,6 +260,13 @@ $TargetMinor = [int]$Matches[2]
 $TargetPatch = [int]$Matches[3]
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
+function Write-TextIfChanged {
+    param([string]$Path, [string]$Original, [string]$Updated, [System.Text.Encoding]$Encoding)
+    if ($Updated -cne $Original) {
+        [System.IO.File]::WriteAllText($Path, $Updated, $Encoding)
+    }
+}
+
 $UiPackageJsonPath = Join-Path $ScriptDir "ui\package.json"
 if (Test-Path -LiteralPath $UiPackageJsonPath) {
     $pkgRaw = [System.IO.File]::ReadAllText($UiPackageJsonPath, [System.Text.Encoding]::UTF8)
@@ -265,7 +274,7 @@ if (Test-Path -LiteralPath $UiPackageJsonPath) {
     $firstMatch = [regex]::Match($pkgRaw, '"version"\s*:\s*"[^"]+"')
     if ($firstMatch.Success) {
         $pkgUpdated = $pkgRaw.Substring(0, $firstMatch.Index) + "`"version`": `"$TargetVersion`"" + $pkgRaw.Substring($firstMatch.Index + $firstMatch.Length)
-        [System.IO.File]::WriteAllText($UiPackageJsonPath, $pkgUpdated, $Utf8NoBom)
+        Write-TextIfChanged -Path $UiPackageJsonPath -Original $pkgRaw -Updated $pkgUpdated -Encoding $Utf8NoBom
         Write-Host "[OK] ui/package.json version 已同步为: $TargetVersion" -ForegroundColor Green
     }
 }
@@ -290,7 +299,7 @@ if (Test-Path -LiteralPath $UiPackageLockPath) {
             $replacement = $m.Groups[1].Value + $TargetVersion + $m.Groups[2].Value
             $lockUpdated = $lockUpdated.Substring(0, $m.Index) + $replacement + $lockUpdated.Substring($m.Index + $m.Length)
         }
-        [System.IO.File]::WriteAllText($UiPackageLockPath, $lockUpdated, $Utf8NoBom)
+        Write-TextIfChanged -Path $UiPackageLockPath -Original $lockRaw -Updated $lockUpdated -Encoding $Utf8NoBom
         Write-Host "[OK] ui/package-lock.json 顶层 version 已同步为: $TargetVersion" -ForegroundColor Green
     }
 }
@@ -308,7 +317,7 @@ if (Test-Path -LiteralPath $ViewerCargoTomlPath) {
     if ($cargoUpdated -eq $cargoRaw -and $cargoRaw -notmatch "(?m)^version\s*=\s*`"$([regex]::Escape($TargetVersion))`"") {
         throw "无法在 src/viewer/Cargo.toml 中定位 [package] version 字段！"
     }
-    [System.IO.File]::WriteAllText($ViewerCargoTomlPath, $cargoUpdated, $Utf8NoBom)
+    Write-TextIfChanged -Path $ViewerCargoTomlPath -Original $cargoRaw -Updated $cargoUpdated -Encoding $Utf8NoBom
     Write-Host "[OK] src/viewer/Cargo.toml version 已同步为: $TargetVersion" -ForegroundColor Green
 }
 
@@ -321,7 +330,7 @@ if (Test-Path -LiteralPath $ViewerCargoLockPath) {
         "`${1}$TargetVersion`${2}",
         1
     )
-    [System.IO.File]::WriteAllText($ViewerCargoLockPath, $cargoLockUpdated, $Utf8NoBom)
+    Write-TextIfChanged -Path $ViewerCargoLockPath -Original $cargoLockRaw -Updated $cargoLockUpdated -Encoding $Utf8NoBom
     Write-Host "[OK] src/viewer/Cargo.lock 主包 version 已同步为: $TargetVersion" -ForegroundColor Green
 }
 
@@ -333,7 +342,7 @@ if (Test-Path -LiteralPath $ViewerRcPath) {
     $rcUpdated = [regex]::Replace($rcUpdated, '(?m)(^\s*PRODUCTVERSION\s+)\d+,\d+,\d+,\d+', "`${1}$TargetMajor,$TargetMinor,$TargetPatch,0")
     $rcUpdated = [regex]::Replace($rcUpdated, '(VALUE\s+"FileVersion"\s*,\s*")[^"]+(")', "`${1}$TargetVersion.0`${2}")
     $rcUpdated = [regex]::Replace($rcUpdated, '(VALUE\s+"ProductVersion"\s*,\s*")[^"]+(")', "`${1}$TargetVersion`${2}")
-    [System.IO.File]::WriteAllText($ViewerRcPath, $rcUpdated, $Utf8NoBom)
+    Write-TextIfChanged -Path $ViewerRcPath -Original $rcRaw -Updated $rcUpdated -Encoding $Utf8NoBom
     Write-Host "[OK] src/viewer/viewer.rc 版本资源已同步为: $TargetVersion ($TargetVersion.0)" -ForegroundColor Green
 }
 
@@ -349,7 +358,7 @@ if (Test-Path -LiteralPath $ViewerManifestPath) {
     if ($manifestUpdated -eq $manifestRaw -and $manifestRaw -notmatch "version=`"$([regex]::Escape($TargetVersion))\.0`"[^>]*name=`"Yy1\.Tools3000\.PicasaViewer`"") {
         throw "无法在 src/viewer/viewer.manifest 中定位 Yy1.Tools3000.PicasaViewer 版本字段！"
     }
-    [System.IO.File]::WriteAllText($ViewerManifestPath, $manifestUpdated, $Utf8NoBom)
+    Write-TextIfChanged -Path $ViewerManifestPath -Original $manifestRaw -Updated $manifestUpdated -Encoding $Utf8NoBom
     Write-Host "[OK] src/viewer/viewer.manifest assemblyIdentity 版本已同步为: $TargetVersion.0" -ForegroundColor Green
 }
 
@@ -372,14 +381,45 @@ if ($HasStaged.Count -gt 0) {
     Write-Host "[OK] 版本元数据已在当前分支提交" -ForegroundColor Green
 }
 
-# 6. 合并至 main 分支 (若当前不在 main 分支则执行 --no-ff 显式合并)
+# 6. 合并至 main 分支 (若当前不在 main 分支则执行 --no-ff 显式合并，并对字节未变文件保鲜 mtime 避免无效全量重编)
 if ($OriginalBranch -ne "main") {
+    # 记录将受 main..OriginalBranch 差异影响的源码与构建配置 SHA-256 与 mtime：
+    # checkout main 再 merge 回同内容会无谓刷新文件时间戳，触发 CMake / Cargo / tsc 误判为全量重编；
+    # 仅对合并后 SHA-256 100% 字节一致的文件还原原始 mtime，任何 1 字节变更都严格保持新时间戳触发重编。
+    $MtimeSnapshot = @{}
+    $ChangedRelFiles = @(git diff --name-only "main...$OriginalBranch" 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    foreach ($rel in $ChangedRelFiles) {
+        $absPath = Join-Path $ScriptDir ($rel -replace '/', '\')
+        if (Test-Path -LiteralPath $absPath -PathType Leaf) {
+            $item = Get-Item -LiteralPath $absPath
+            $MtimeSnapshot[$absPath] = @{
+                Hash  = (Get-FileHash -LiteralPath $absPath -Algorithm SHA256).Hash
+                Mtime = $item.LastWriteTimeUtc
+            }
+        }
+    }
+
     Write-Host "[GIT] 切换至 main 分支并执行 --no-ff 显式合并..." -ForegroundColor Cyan
     git checkout main
     if ($LASTEXITCODE -ne 0) { throw "切换至 main 分支失败！" }
 
     git merge --no-ff $OriginalBranch -m "merge($OriginalBranch): 合并 $OriginalBranch 分支至 main 分支，发布 $TargetTag 正式版"
     if ($LASTEXITCODE -ne 0) { throw "合并至 main 分支失败！" }
+
+    $RestoredMtimeCount = 0
+    foreach ($kv in $MtimeSnapshot.GetEnumerator()) {
+        $absPath = $kv.Key
+        if (Test-Path -LiteralPath $absPath -PathType Leaf) {
+            $curHash = (Get-FileHash -LiteralPath $absPath -Algorithm SHA256).Hash
+            if ($curHash -eq $kv.Value.Hash) {
+                [System.IO.File]::SetLastWriteTimeUtc($absPath, $kv.Value.Mtime)
+                $RestoredMtimeCount++
+            }
+        }
+    }
+    if ($RestoredMtimeCount -gt 0) {
+        Write-Host "[OK] 已按 SHA-256 守卫无损保鲜 $RestoredMtimeCount 个同内容文件时间戳（避免 CMake/Cargo/tsc 无效重编）" -ForegroundColor Green
+    }
     Write-Host "[OK] main 分支已成功完成显式非快进合并" -ForegroundColor Green
 } else {
     Write-Host "[GIT] 当前已在 main 分支，直接进入洁净构建与本地权威签名流程..." -ForegroundColor Cyan
@@ -407,7 +447,7 @@ if (-not (Test-Path -LiteralPath $ExpectedSetupExe)) {
 $SignedReleaseInputs = @(
     $ExpectedSetupExe
 ) + @(Get-ChildItem "deploy_dist" -Include "*.exe", "*.dll" -Recurse -File | Select-Object -ExpandProperty FullName)
-& pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir "scripts\sign-artifacts.ps1") `
+& (Join-Path $ScriptDir "scripts\sign-artifacts.ps1") `
     -Paths $SignedReleaseInputs -VerifyOnly -Required
 if ($LASTEXITCODE -ne 0) {
     throw "正式发布批量签名校验失败！"
